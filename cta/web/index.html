@@ -96,14 +96,11 @@
         /></label>
         <select id="asset" size="8"></select>
       </fieldset>
-      <fieldset>
-        <legend>band</legend>
-        <div id="params"></div>
-        <div class="hint">
-          c 中线 / w 宽度 / n 周期 (日) / k 半宽倍数 / m 映射 / N 档数 / h
-          档内滞回; 下拉提示是测试台网格取值, 可填任意值
-        </div>
-      </fieldset>
+      <div id="parts"></div>
+      <div class="hint">
+        周期轴以日计; k = 半宽倍数, N = 层数, h = 层内滞回 (占通道全宽);
+        下拉提示是测试台网格取值, 可填任意值
+      </div>
       <fieldset>
         <legend>引擎</legend>
         <label

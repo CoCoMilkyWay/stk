@@ -240,7 +240,7 @@ public:
   }
 };
 
-// ---- 映射 ----
+// ---- 分层 ----
 
 // 一个配置在一个资产上: 目标仓位 + 上线 / 下线 + 吊灯线 (判本根用的; 无 = NaN)
 struct Sig {
@@ -299,9 +299,9 @@ inline Col hold(const Tape &t) { return Col(t.n, 1); }
 //   三组部件, 每组选一个模型; 各模型自带参数轴 (网格取值); 单值轴 = 固定参数, 自动优化不动它, 要换就改这里或在轨迹界面填
 //   以日计的轴经 to_bars 乘每日根数, 模型函数拿到的都是根
 
-enum : size_t { kC, // 中线
-                kW, // 带
-                kM, // 分层
+enum : size_t { kCenter, // 中线
+                kBand,   // 带
+                kLayer,  // 分层
                 kNP };
 
 struct Axis {
@@ -353,18 +353,18 @@ inline Cfg to_bars(Cfg g, double S) {
 }
 
 // 组合约束 (以根计): 中线 / 带的周期 ≥ 5 根
-inline bool admit(const Cfg &g) { return g.p[kC][0] >= 5 && g.p[kW][0] >= 5; }
+inline bool admit(const Cfg &g) { return g.p[kCenter][0] >= 5 && g.p[kBand][0] >= 5; }
 
 // band: 上线 / 下线 = 中线 ± k · 半宽, 再按分层给仓位
 inline Sig band(Tape &t, const Cfg &g) {
-  const P &cp = g.p[kC], &wp = g.p[kW], &mp = g.p[kM];
+  const P &cp = g.p[kCenter], &wp = g.p[kBand], &mp = g.p[kLayer];
   const float k = wp[1];
   assert(k > 0 && "带半宽倍数");
-  const Col &m = t.center(g.k[kC], cp), &s = t.width(g.k[kW], len(wp[0]), g.k[kC], cp);
+  const Col &m = t.center(g.k[kCenter], cp), &s = t.width(g.k[kBand], len(wp[0]), g.k[kCenter], cp);
   Col up(t.n), dn(t.n);
   for (size_t i = 0; i < t.n; ++i)
     up[i] = m[i] + k * s[i], dn[i] = m[i] - k * s[i];
-  switch (g.k[kM]) {
+  switch (g.k[kLayer]) {
   case 0:
     return grid(t, std::move(up), std::move(dn), static_cast<int>(mp[0]), mp[1], false);
   case 1:

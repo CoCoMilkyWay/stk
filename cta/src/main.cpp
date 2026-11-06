@@ -1,15 +1,17 @@
-// cta_bench — 只做多 band 测试台: 参数网格 (Model.hpp kAxes) × 测试集 (篮子表的 set), 逐资产回测 → 等权组合 + 跨资产中位数
+// cta_bench — 只做多 band 测试台: 部件网格 (Model.hpp kParts: 中线 × 带 × 分层, 各含模型参数) × 测试集 (篮子表的 set), 逐资产回测 → 等权组合 + 跨资产中位数
 //   用法: cta_bench [--freq 1m|1d] [--sets idx,ind,concept] [--cost 0.001] [--vol 0] [--buffer 0]
-//                   [--top 15] [--expo 0.2] [--roll 250] [--refit 20] [--assets 50]
+//                   [--target sharpe|sortino] [--roll 250] [--refit 20] [--top 15] [--expo 0.2] [--assets 50]
 //   每测试集固定种子随机抽 assets 只 (0 = 全部; 不足 kMinDays 的跳过不计)
-//   先把 CTA 库 (cta/data, Db.hpp) 合成到 all.bar 特征库末日, 再按 freq 取面板; 窗口 / 方差比周期的单位都是根 (1m = 分钟), band 的 n 以日计
-//   任务 = (测试集, 组): 组 = 只在 kShare 之后的轴上不同的配置, 逐资产共用一份指标列 (Tape); 基准 hold 每测试集一份
-//   终端: 各测试集先给方差比 VR(k) (各资产中位数: 哪些周期有趋势 / 均值回归), 再按组合夏普排行 (+ 基准 hold),
-//         末尾网格汇总 (最优 / 平原顶 / 网格均值); cta/data/bench_<freq>.tsv = 全部行
-//   平原: 参数网格上的夏普曲面按邻域 (数值轴下标差 ≤ 1, 类别轴相同) 取均值, 平原顶 = 邻域均值最高的点 (不挑孤立尖峰)
-//   滚动调参 (--roll W 日, ≥ 一年; 0 = 关): 每 refit 日, 用前 W 日 (向上取整到 refit 的倍数) 各资产 (样本) 的夏普均值拟一张曲面, 取平原顶参数用到下一个 refit 日; 前 W 日空仓
-//   排行与最优只取平均仓位中位数 ≥ expo 的: 几乎不开仓的配置夏普没有可比性
-//   列: SR / CAGR / MDD = 测试集等权组合 (逐根等权各资产净收益, 空仓部分计现金), SR1 / SR2 = 组合前 / 后半段夏普;
+//   先把 CTA 库 (cta/data, Db.hpp) 合成到 all.bar 特征库末日, 再按 freq 取面板; 窗口 / 方差比周期的单位都是根 (1m = 分钟), 部件的周期轴以日计
+//   任务 = (测试集, 组): 组 = 中线 (模型 + 参数) 与带 (模型 + 周期) 相同的配置, 逐资产共用一份指标列 (Tape); 基准 hold 每测试集一份
+//   优化目标 = 模型 (--target: sharpe / sortino) + 周期 (--roll W 日窗, ≥ 一年; --refit R 日重拟), 只做滚动, 不用未来信息:
+//     每 R 日, 用前 W 日 (向上取整到 R 的倍数) 各资产 (样本) 的目标值均值拟一张曲面, 取平原顶配置用到下一个 R 日; 前 W 日空仓
+//   全期网格 (按目标排行 / 平原顶 / 网格均值) 只是曲面的样子, 含未来信息, 不是可执行结果; band@roll 才是
+//   终端: 各测试集先给方差比 VR(k) (各资产中位数: 哪些周期有趋势 / 均值回归), 再按全期目标排行 (+ 基准 hold, band@roll),
+//         末尾网格汇总 + 滚动调参选中统计; cta/data/bench_<freq>.tsv = 全部行
+//   平原: 曲面按邻域 (各组模型相同, 参数轴下标差 ≤ 1) 取均值, 平原顶 = 邻域均值最高的点 (不挑孤立尖峰)
+//   排行与最优只取平均仓位中位数 ≥ expo 的: 几乎不开仓的配置没有可比性
+//   列: SR / So / CAGR / MDD = 测试集等权组合 (逐根等权各资产净收益, 空仓部分计现金) 的夏普 / 索提诺 / ..., SR1 / SR2 = 组合前 / 后半段夏普;
 //       mSR = 各资产夏普中位数, mΔSR = 各资产 (夏普 − 自身买入持有夏普) 中位数, beat = 夏普胜过买入持有的资产占比;
 //       Up / Dn / Edge / Expo / Turn / Tr/y / Win / Pay / Hold = 各资产中位数 (Metrics.hpp)
 #include "Metrics.hpp"
@@ -34,32 +36,39 @@ constexpr size_t kMinRoll = 250;                                                
 constexpr size_t kMinDays = 500;                                                                                                  // 资产有效根数下限 = 这么多日的根
 const std::vector<size_t> kVrLags[] = {{2, 3, 5, 10, 20, 40, 60, 120, 250}, {2, 5, 15, 30, 60, 120, 240, 480, 1200, 2400, 4800}}; // 1d / 1m
 
+// 优化目标 (模型): 夏普 = 均值 / 标准差, 索提诺 = 均值 / 下行波动; 滚动块前缀和留 [Σr, Σq], q = r² / min(r, 0)²
+enum Target { kSharpe,
+              kSortino };
+
 struct Spec {
-  P p;                    // 以根计
-  std::vector<size_t> at; // 各轴取值下标
+  Cfg g;                  // 以根计
+  std::vector<size_t> at; // 各组所选模型的参数轴取值下标, 按组序拼成一条
 };
 
+// 显示串: 各组 模型(轴=值, …) 以 " | " 隔开, 值按轴单位 (日)
 std::string params_of(const Spec &s) {
   std::string o;
   char buf[32];
-  for (size_t i = 0; i < s.p.size(); ++i) {
-    const Axis &a = kAxes[i];
-    if (a.label.empty())
-      std::snprintf(buf, sizeof(buf), "%s%s=%g", i ? "," : "", a.name, a.v[s.at[i]]);
-    else
-      std::snprintf(buf, sizeof(buf), "%s%s=%s", i ? "," : "", a.name, a.label[s.at[i]]);
-    o += buf;
+  for (size_t j = 0, x = 0; j < kNP; ++j) {
+    const Kind &K = kParts[j].kinds[s.g.k[j]];
+    o += j ? " | " : "", o += K.name;
+    for (size_t i = 0; i < K.axes.size(); ++i, ++x) {
+      std::snprintf(buf, sizeof(buf), "%s%s=%g", i ? "," : "(", K.axes[i].name, K.axes[i].v[s.at[x]]);
+      o += buf;
+    }
+    if (!K.axes.empty())
+      o += ')';
   }
   return o;
 }
 
-// 网格相邻: 类别轴相同, 数值轴下标差 ≤ 1 (含自身)
+// 网格相邻: 各组模型相同, 参数轴下标差 ≤ 1 (含自身)
 bool near(const Spec &a, const Spec &b) {
-  for (size_t i = 0; i < a.at.size(); ++i) {
-    const size_t d = a.at[i] > b.at[i] ? a.at[i] - b.at[i] : b.at[i] - a.at[i];
-    if (d > (kAxes[i].label.empty() ? 1u : 0u))
+  if (a.g.k != b.g.k)
+    return false;
+  for (size_t i = 0; i < a.at.size(); ++i)
+    if ((a.at[i] > b.at[i] ? a.at[i] - b.at[i] : b.at[i] - a.at[i]) > 1)
       return false;
-  }
   return true;
 }
 
@@ -87,32 +96,50 @@ std::vector<double> smooth(const std::vector<std::vector<size_t>> &nb, const std
   return out;
 }
 
+// 里程表进一格: at[i] ∈ [0, size(i)); 转满一圈 → false
+template <class A, class F>
+bool tick(A &at, F size) {
+  for (size_t i = 0; i < at.size(); ++i) {
+    if (++at[i] < size(i))
+      return true;
+    at[i] = 0;
+  }
+  return false;
+}
+
+// 全网格: 各组模型的组合 × 所选模型参数轴的组合
 std::vector<Spec> specs_of(double S) {
   std::vector<Spec> out;
-  std::vector<size_t> at(std::size(kAxes), 0); // 网格里程表
-  for (bool more = true; more;) {
-    P p;
-    for (size_t i = 0; i < at.size(); ++i)
-      p.push_back(kAxes[i].v[at[i]]);
-    p = to_bars(std::move(p), S);
-    if (admit(p))
-      out.push_back({p, at});
-    more = false;
-    for (size_t i = 0; i < at.size() && !more; ++i)
-      if (++at[i] < kAxes[i].v.size())
-        more = true;
-      else
-        at[i] = 0;
-  }
+  std::array<size_t, kNP> k{};
+  do {
+    std::vector<const Axis *> ax;
+    for (size_t j = 0; j < kNP; ++j)
+      for (const Axis &a : kParts[j].kinds[k[j]].axes)
+        ax.push_back(&a);
+    std::vector<size_t> at(ax.size(), 0);
+    do {
+      Cfg g{k, {}};
+      for (size_t j = 0, x = 0; j < kNP; ++j)
+        for (size_t i = 0; i < kParts[j].kinds[k[j]].axes.size(); ++i, ++x)
+          g.p[j].push_back(ax[x]->v[at[x]]);
+      g = to_bars(std::move(g), S);
+      if (admit(g))
+        out.push_back({std::move(g), at});
+    } while (tick(at, [&](size_t i) { return ax[i]->v.size(); }));
+  } while (tick(k, [](size_t j) { return kParts[j].kinds.size(); }));
   return out;
 }
 
-// 按前 kShare 根轴取值分组 → 各组的 specs 下标
+// 按中线 (模型 + 参数) 与带 (模型 + 周期 = 带的首轴) 分组 → 各组的 specs 下标
 std::vector<std::vector<size_t>> groups_of(const std::vector<Spec> &specs) {
   std::map<std::vector<size_t>, size_t> at;
   std::vector<std::vector<size_t>> out;
   for (size_t j = 0; j < specs.size(); ++j) {
-    const auto [it, fresh] = at.try_emplace(std::vector<size_t>(specs[j].at.begin(), specs[j].at.begin() + static_cast<long>(kShare)), out.size());
+    const Spec &s = specs[j];
+    const size_t nc = kParts[kCenter].kinds[s.g.k[kCenter]].axes.size();
+    std::vector<size_t> key = {s.g.k[kCenter], s.g.k[kBand]};
+    key.insert(key.end(), s.at.begin(), s.at.begin() + static_cast<long>(nc + 1));
+    const auto [it, fresh] = at.try_emplace(std::move(key), out.size());
     if (fresh)
       out.emplace_back();
     out[it->second].push_back(j);
@@ -128,7 +155,8 @@ struct Universe {
   std::vector<float> live = {};     // [t − lo] 当根有数据的资产数
   size_t total = 0;                 // 测试集资产数 (抽样前)
   size_t skipped = 0;               // 有效根数不足 kMinDays 日的
-  // 滚动调参的块 (refit 日一块, 自 lo 所在日起): 块数 + [资产][块] 根数前缀和
+  // 滚动调参: 目标 + 块 (refit 日一块, 自 lo 所在日起): 块数 + [资产][块] 根数前缀和
+  Target tg = kSharpe;
   size_t S = 1, R = 0, nb = 0;
   std::vector<std::vector<double>> cnt = {};
   size_t block_of(size_t t) const { return (t / S - lo / S) / R; }
@@ -139,8 +167,11 @@ struct Row {
   Stat port, med;              // 等权组合 / 各资产中位数
   double sr1 = 0, sr2 = 0;     // 组合前 / 后半段夏普
   double m_dsr = 0, beat = 0;  // 各资产 (夏普 − 自身买入持有夏普) 中位数 / 夏普胜过买入持有的资产占比
-  std::vector<float> blk = {}; // 滚动调参: [资产][块][Σr, Σr²] 前缀和 (空 = 未留)
+  std::vector<float> blk = {}; // 滚动调参: [资产][块][Σr, Σq] 前缀和 (空 = 未留)
 };
+
+// 全期目标值 (只用于看曲面, 不用于滚动选参)
+double obj(const Row &r, Target tg) { return tg == kSharpe ? r.port.sharpe : r.port.sortino; }
 
 using Make = std::function<std::vector<Col>(size_t, Tape &)>; // (资产下标, 其列) → 各行的目标仓位列
 
@@ -168,7 +199,8 @@ std::vector<Row> evaluate(const Universe &u, size_t k, const Make &make, const S
       std::vector<double> acc(u.nb * 2, 0);
       for (size_t i = 0; i < t.n; ++i) {
         const size_t b = u.block_of(se.t[i]);
-        acc[2 * b] += run.r[i], acc[2 * b + 1] += run.r[i] * run.r[i];
+        const double r = run.r[i], q = u.tg == kSharpe ? r : std::min(r, 0.0);
+        acc[2 * b] += r, acc[2 * b + 1] += q * q;
       }
       for (size_t x = 2; x < acc.size(); ++x)
         acc[x] += acc[x - 2];
@@ -198,7 +230,7 @@ std::vector<Row> evaluate(const Universe &u, size_t k, const Make &make, const S
   return rows;
 }
 
-// 滚动调参: 块 b ≥ W 起, 以块 [b − W, b) 内各资产 (样本) 夏普的均值作曲面, 取平原顶 → pick[b] (rows 内下标; −1 = 空仓)
+// 滚动调参: 块 b ≥ W 起, 以块 [b − W, b) 内各资产 (样本) 目标值的均值作曲面, 取平原顶 → pick[b] (rows 内下标; −1 = 空仓)
 //   窗内根数不足满窗一半的资产不入样本
 std::vector<int> roll_pick(const Universe &u, const std::vector<const Row *> &rows, const std::vector<std::vector<size_t>> &nb, size_t W) {
   std::vector<int> pick(u.nb, -1);
@@ -214,8 +246,8 @@ std::vector<int> roll_pick(const Universe &u, const std::vector<const Row *> &ro
         if (n < min_n)
           continue;
         const float *p = rows[s]->blk.data() + a * u.nb * 2;
-        const double mean = win(p, 0) / n, var = win(p, 1) / n - mean * mean;
-        sum += var > 0 ? mean / std::sqrt(var) : 0, m += 1;
+        const double mean = win(p, 0) / n, q = win(p, 1) / n, d = u.tg == kSharpe ? q - mean * mean : q;
+        sum += d > 0 ? mean / std::sqrt(d) : 0, m += 1;
       }
       sc[s] = m > 0 ? sum / m : kNaN;
     }
@@ -241,13 +273,13 @@ std::string date_of(int64_t t) {
 }
 
 void print_head() {
-  std::printf("  %-16s %-36s %5s %6s %6s %5s %5s | %5s %5s %4s | %4s %4s %5s %4s %5s %5s %4s %4s %5s\n", "model", "params", "SR", "CAGR", "MDD",
+  std::printf("  %-10s %-54s %5s %5s %6s %6s %5s %5s | %5s %5s %4s | %4s %4s %5s %4s %5s %5s %4s %4s %5s\n", "model", "params", "SR", "So", "CAGR", "MDD",
               "SR1", "SR2", "mSR", "mΔSR", "beat", "Up", "Dn", "Edge", "Expo", "Turn", "Tr/y", "Win", "Pay", "Hold");
 }
 
 void print_row(const Row &r) {
-  std::printf("  %-16s %-36s %5.2f %5.1f%% %5.1f%% %5.2f %5.2f | %5.2f %5.2f %3.0f%% | %4.2f %4.2f %+5.2f %4.2f %5.1f %5.1f %3.0f%% %4.2f %5.0f\n",
-              r.model.c_str(), r.params.c_str(), r.port.sharpe, 100 * r.port.cagr, 100 * r.port.mdd, r.sr1, r.sr2, r.med.sharpe, r.m_dsr, 100 * r.beat,
+  std::printf("  %-10s %-54s %5.2f %5.2f %5.1f%% %5.1f%% %5.2f %5.2f | %5.2f %5.2f %3.0f%% | %4.2f %4.2f %+5.2f %4.2f %5.1f %5.1f %3.0f%% %4.2f %5.0f\n",
+              r.model.c_str(), r.params.c_str(), r.port.sharpe, r.port.sortino, 100 * r.port.cagr, 100 * r.port.mdd, r.sr1, r.sr2, r.med.sharpe, r.m_dsr, 100 * r.beat,
               r.med.up, r.med.dn, r.med.edge, r.med.expo, r.med.turn, r.med.trades, 100 * r.med.win, r.med.payoff, r.med.hold);
 }
 
@@ -296,7 +328,7 @@ void parallel(const char *what, size_t n, const std::function<void(size_t)> &f) 
 } // namespace
 
 int main(int argc, char **argv) {
-  std::map<std::string, std::string> arg = {{"freq", "1m"}, {"sets", "idx,ind,concept"}, {"cost", "0.001"}, {"vol", "0"}, {"buffer", "0"}, {"top", "15"}, {"expo", "0.2"}, {"roll", "250"}, {"refit", "20"}, {"assets", "50"}};
+  std::map<std::string, std::string> arg = {{"freq", "1m"}, {"sets", "idx,ind,concept"}, {"cost", "0.001"}, {"vol", "0"}, {"buffer", "0"}, {"target", "sharpe"}, {"roll", "250"}, {"refit", "20"}, {"top", "15"}, {"expo", "0.2"}, {"assets", "50"}};
   assert(argc % 2 == 1 && "参数须成对: --键 值");
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string k = argv[i];
@@ -316,16 +348,18 @@ int main(int argc, char **argv) {
   const std::vector<std::vector<size_t>> groups = groups_of(specs), nb = near_of(specs);
   const size_t top = std::stoul(arg["top"]);
   const double expo = std::stod(arg["expo"]);
+  assert((arg["target"] == "sharpe" || arg["target"] == "sortino") && "--target: sharpe | sortino");
+  const Target tg = arg["target"] == "sharpe" ? kSharpe : kSortino;
   const size_t W = std::stoul(arg["roll"]), R = std::stoul(arg["refit"]);
   assert(R > 0 && "--refit 须 > 0");
   const size_t Wb = (W + R - 1) / R; // 滚动窗块数 (向上取整)
-  assert((W == 0 || W >= kMinRoll) && "--roll 须 ≥ 一年");
+  assert(W >= kMinRoll && "--roll 须 ≥ 一年");
   const size_t cap = std::stoul(arg["assets"]);
 
   std::vector<Universe> us;
   for (const std::string &name : split(arg["sets"])) {
     Universe u{name};
-    u.lo = panel.T, u.hi = 0, u.S = panel.S, u.R = R;
+    u.lo = panel.T, u.hi = 0, u.tg = tg, u.S = panel.S, u.R = R;
     std::vector<size_t> pool;
     for (size_t b = 0; b < panel.B; ++b)
       if (panel.assets[b].set == name)
@@ -355,17 +389,15 @@ int main(int argc, char **argv) {
     for (const Series &se : u.series)
       for (const uint32_t t : se.t)
         u.live[t - u.lo] += 1;
-    if (W > 0) {
-      u.nb = u.block_of(u.hi) + 1;
-      assert(u.nb > Wb && "样本短于滚动窗");
-      for (const Series &se : u.series) {
-        std::vector<double> c(u.nb, 0);
-        for (const uint32_t t : se.t)
-          c[u.block_of(t)] += 1;
-        for (size_t b = 1; b < u.nb; ++b)
-          c[b] += c[b - 1];
-        u.cnt.push_back(std::move(c));
-      }
+    u.nb = u.block_of(u.hi) + 1;
+    assert(u.nb > Wb && "样本短于滚动窗");
+    for (const Series &se : u.series) {
+      std::vector<double> c(u.nb, 0);
+      for (const uint32_t t : se.t)
+        c[u.block_of(t)] += 1;
+      for (size_t b = 1; b < u.nb; ++b)
+        c[b] += c[b - 1];
+      u.cnt.push_back(std::move(c));
     }
     us.push_back(std::move(u));
   }
@@ -383,10 +415,10 @@ int main(int argc, char **argv) {
         [&](size_t, Tape &t) {
           std::vector<Col> ws;
           for (const size_t j : ids)
-            ws.push_back(rule(t, specs[j].p).w);
+            ws.push_back(band(t, specs[j].g).w);
           return ws;
         },
-        setup, W > 0);
+        setup, true);
     for (size_t x = 0; x < ids.size(); ++x) {
       Row &r = rows[i * specs.size() + ids[x]] = std::move(rs[x]);
       r.model = "band", r.params = params_of(specs[ids[x]]);
@@ -398,46 +430,44 @@ int main(int argc, char **argv) {
     holds[i].model = "hold", holds[i].params = "-";
   });
 
-  std::vector<Roll> rolls(W > 0 ? us.size() : 0); // [测试集]
-  if (W > 0) {
-    parallel("拟曲面", us.size(), [&](size_t i) {
-      std::vector<const Row *> rs;
-      for (size_t j = 0; j < specs.size(); ++j)
-        rs.push_back(&rows[i * specs.size() + j]);
-      rolls[i].pick = roll_pick(us[i], rs, nb, Wb);
-    });
-    for (Row &r : rows)
-      r.blk = {};
-    parallel("滚动调参", rolls.size(), [&](size_t i) {
-      Roll &ro = rolls[i];
-      const Universe &u = us[i];
-      std::vector<char> used(specs.size(), 0);
-      for (const int p : ro.pick)
-        if (p >= 0)
-          used[static_cast<size_t>(p)] = 1;
-      ro.row = std::move(evaluate(
-          u, 1,
-          [&](size_t a, Tape &t) {
-            std::vector<Col> ws(specs.size());
-            for (size_t x = 0; x < ws.size(); ++x)
-              if (used[x])
-                ws[x] = rule(t, specs[x].p).w;
-            Col w(t.n, 0);
-            for (size_t j = 0; j < t.n; ++j)
-              if (const int p = ro.pick[u.block_of(u.series[a].t[j])]; p >= 0)
-                w[j] = ws[static_cast<size_t>(p)][j];
-            return std::vector<Col>{std::move(w)};
-          },
-          setup, false)[0]);
-      ro.row.model = "band@roll";
-      ro.row.params = "W=" + std::to_string(Wb * R) + ",R=" + std::to_string(R);
-    });
-  }
+  std::vector<Roll> rolls(us.size()); // [测试集]
+  parallel("拟曲面", us.size(), [&](size_t i) {
+    std::vector<const Row *> rs;
+    for (size_t j = 0; j < specs.size(); ++j)
+      rs.push_back(&rows[i * specs.size() + j]);
+    rolls[i].pick = roll_pick(us[i], rs, nb, Wb);
+  });
+  for (Row &r : rows)
+    r.blk = {};
+  const std::string roll_params = arg["target"] + ",W=" + std::to_string(Wb * R) + ",R=" + std::to_string(R);
+  parallel("滚动调参", rolls.size(), [&](size_t i) {
+    Roll &ro = rolls[i];
+    const Universe &u = us[i];
+    std::vector<char> used(specs.size(), 0);
+    for (const int p : ro.pick)
+      if (p >= 0)
+        used[static_cast<size_t>(p)] = 1;
+    ro.row = std::move(evaluate(
+        u, 1,
+        [&](size_t a, Tape &t) {
+          std::vector<Col> ws(specs.size());
+          for (size_t x = 0; x < ws.size(); ++x)
+            if (used[x])
+              ws[x] = band(t, specs[x].g).w;
+          Col w(t.n, 0);
+          for (size_t j = 0; j < t.n; ++j)
+            if (const int p = ro.pick[u.block_of(u.series[a].t[j])]; p >= 0)
+              w[j] = ws[static_cast<size_t>(p)][j];
+          return std::vector<Col>{std::move(w)};
+        },
+        setup, false)[0]);
+    ro.row.model = "band@roll";
+    ro.row.params = roll_params;
+  });
 
   const std::string vol = setup.vol > 0 ? std::to_string(static_cast<int>(setup.vol * 100)) + "%" : "关";
-  const std::string roll = W > 0 ? std::to_string(W) + " 日 / 每 " + std::to_string(R) + " 日" : "关";
-  std::printf("CTA bench %s: %zu 配置 | 成本 %.1fbp | 目标波动 %s | 不交易带 %g | 滚动调参 %s | 每年 %.0f 根 | 排行仓位 ≥ %g\n", arg["freq"].c_str(),
-              specs.size(), setup.cost * 1e4, vol.c_str(), setup.buffer, roll.c_str(), setup.bpy, expo);
+  std::printf("CTA bench %s: %zu 配置 | 成本 %.1fbp | 目标波动 %s | 不交易带 %g | 优化目标 %s, 窗 %zu 日 / 每 %zu 日 | 每年 %.0f 根 | 排行仓位 ≥ %g\n",
+              arg["freq"].c_str(), specs.size(), setup.cost * 1e4, vol.c_str(), setup.buffer, arg["target"].c_str(), Wb * R, R, setup.bpy, expo);
   std::vector<char> flat_of(rows.size(), 0); // 平原顶行
   for (size_t i = 0; i < us.size(); ++i) {
     const Universe &u = us[i];
@@ -458,39 +488,37 @@ int main(int argc, char **argv) {
     for (size_t j = 0; j < specs.size(); ++j)
       if (rs[j].med.expo >= expo)
         by.push_back(&rs[j]);
-    if (W > 0 && rolls[i].row.med.expo >= expo)
+    if (rolls[i].row.med.expo >= expo)
       by.push_back(&rolls[i].row);
-    std::stable_sort(by.begin(), by.end(), [](const Row *a, const Row *b) { return a->port.sharpe > b->port.sharpe; });
+    std::stable_sort(by.begin(), by.end(), [&](const Row *a, const Row *b) { return obj(*a, tg) > obj(*b, tg); });
     for (size_t k = 0; k < std::min(top, by.size()); ++k)
       print_row(*by[k]);
 
-    std::printf("\n  %-16s %4s  %-36s %6s  %-36s %6s %6s %6s %6s %6s %5s %5s %5s\n", "网格汇总", "n", "最优 params", "最优SR", "平原顶 params", "平原SR",
-                "邻均SR", "均SR", "均mΔSR", "均beat", "均Up", "均Dn", "均Edge");
-    std::vector<double> sr;
+    std::printf("\n  %-10s %4s  %-54s %6s  %-54s %6s %6s %6s %6s %6s %5s %5s %5s\n", "网格汇总", "n", "最优 params", "最优", "平原顶 params", "平原",
+                "邻均", "均", "均mΔSR", "均beat", "均Up", "均Dn", "均Edge");
+    std::vector<double> sc;
     for (size_t j = 0; j < specs.size(); ++j)
-      sr.push_back(rs[j].port.sharpe);
-    const std::vector<double> sm = smooth(nb, sr);
+      sc.push_back(obj(rs[j], tg));
+    const std::vector<double> sm = smooth(nb, sc);
     const Row *best = nullptr;
     size_t flat = specs.size();
-    double n = 0, ssr = 0, dsr = 0, beat = 0, up = 0, dn = 0, edge = 0;
+    double n = 0, ssc = 0, dsr = 0, beat = 0, up = 0, dn = 0, edge = 0;
     for (size_t j = 0; j < specs.size(); ++j) {
       const Row &r = rs[j];
-      if (r.med.expo >= expo && (!best || r.port.sharpe > best->port.sharpe))
+      if (r.med.expo >= expo && (!best || sc[j] > obj(*best, tg)))
         best = &r;
       if (r.med.expo >= expo && (flat == specs.size() || sm[j] > sm[flat]))
         flat = j;
-      n += 1, ssr += r.port.sharpe, dsr += r.m_dsr, beat += r.beat, up += r.med.up, dn += r.med.dn, edge += r.med.edge;
+      n += 1, ssc += sc[j], dsr += r.m_dsr, beat += r.beat, up += r.med.up, dn += r.med.dn, edge += r.med.edge;
     }
     const bool f = flat < specs.size();
     if (f)
       flat_of[i * specs.size() + flat] = 1;
-    std::printf("  %-16s %4.0f  %-36s %6.2f  %-36s %6.2f %6.2f %6.2f %6.2f %5.0f%% %5.2f %5.2f %+5.2f\n", "band", n,
-                best ? best->params.c_str() : "-", best ? best->port.sharpe : kNaN, f ? rs[flat].params.c_str() : "-",
-                f ? rs[flat].port.sharpe : kNaN, f ? sm[flat] : kNaN, ssr / n, dsr / n, 100 * beat / n, up / n, dn / n, edge / n);
+    std::printf("  %-10s %4.0f  %-54s %6.2f  %-54s %6.2f %6.2f %6.2f %6.2f %5.0f%% %5.2f %5.2f %+5.2f\n", arg["target"].c_str(), n,
+                best ? best->params.c_str() : "-", best ? obj(*best, tg) : kNaN, f ? rs[flat].params.c_str() : "-",
+                f ? sc[flat] : kNaN, f ? sm[flat] : kNaN, ssc / n, dsr / n, 100 * beat / n, up / n, dn / n, edge / n);
 
-    if (W == 0)
-      continue;
-    std::printf("\n  滚动调参 (窗 %zu 日, 每 %zu 日重拟; 前 %zu 日空仓)\n", Wb * R, R, Wb * R);
+    std::printf("\n  滚动调参 (%s, 窗 %zu 日, 每 %zu 日重拟; 前 %zu 日空仓)\n", arg["target"].c_str(), Wb * R, R, Wb * R);
     print_head();
     const Roll &ro = rolls[i];
     print_row(ro.row);
@@ -508,7 +536,7 @@ int main(int argc, char **argv) {
   const std::string out = dir + "/bench_" + arg["freq"] + ".tsv";
   std::FILE *f = std::fopen(out.c_str(), "w");
   assert(f && "bench.tsv: 写不了");
-  std::fprintf(f, "set\tmodel\tparams\tplateau\tsr\tcagr\tvol\tmdd\tsr1\tsr2\tm_dsr\tbeat");
+  std::fprintf(f, "set\tmodel\tparams\tplateau\tobj\tsr\tso\tcagr\tvol\tmdd\tsr1\tsr2\tm_dsr\tbeat");
   for (const Metric &x : kStat)
     std::fprintf(f, "\tm_%s", x.key);
   std::fputc('\n', f);
@@ -517,13 +545,12 @@ int main(int argc, char **argv) {
     all.emplace_back(&holds[i], 0);
     for (size_t k = i * specs.size(); k < (i + 1) * specs.size(); ++k)
       all.emplace_back(&rows[k], flat_of[k]);
-    if (W > 0)
-      all.emplace_back(&rolls[i].row, 0);
+    all.emplace_back(&rolls[i].row, 0);
   }
   for (const auto &[p, flat] : all) {
     const Row &r = *p;
-    std::fprintf(f, "%s\t%s\t%s\t%d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f", r.set.c_str(), r.model.c_str(), r.params.c_str(), flat, r.port.sharpe,
-                 r.port.cagr, r.port.vol, r.port.mdd, r.sr1, r.sr2, r.m_dsr, r.beat);
+    std::fprintf(f, "%s\t%s\t%s\t%d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f", r.set.c_str(), r.model.c_str(), r.params.c_str(), flat,
+                 obj(r, tg), r.port.sharpe, r.port.sortino, r.port.cagr, r.port.vol, r.port.mdd, r.sr1, r.sr2, r.m_dsr, r.beat);
     for (const Metric &x : kStat)
       std::fprintf(f, "\t%.4f", r.med.*x.v);
     std::fputc('\n', f);

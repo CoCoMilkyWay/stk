@@ -1,5 +1,5 @@
 // app.js — CTA 轨迹前端: 收集选项 + 视窗 → GET /api/run (cta_trace 现算 / 聚合) → 画; 本文件不做任何计算
-//   主图: 收盘线 + 上线 / 下线 + 中线 + 档线 (grid / fade) 或吊灯线 (chase) + 加减仓点 (逐根时); 底部: 仓位 + 全期净值 (策略 vs 持有, 对数轴)
+//   主图: 收盘线 + 上线 / 下线 + 中线 + 层线 (grid / fade) 或吊灯线 (chase) + 加减仓点 (逐根时); 底部: 仓位 + 全期净值 (策略 vs 持有, 对数轴)
 //   x = 有效根下标 (连续, 无休市空档); 框选矩形放大 (x / y 一起, plotly 原生), 横轴视窗一变就按新视窗重取数据;
 //   双击还原不走 plotly 原生 (它会先按旧数据定一次范围), 取回全期数据后一次画好
 const $ = (id) => document.getElementById(id);
@@ -19,18 +19,33 @@ const minute = (t) => {
   return `${dash(s.slice(0, 8))} ${s.slice(8, 10)}:${s.slice(10, 12)}`;
 };
 
-const fields = () => [...$("params").querySelectorAll("[data-i]")];
-const field = (name) => fields()[META.axes.findIndex((a) => a.name === name)];
+// 部件 pt 的当前模型 / 参数输入框
+const kindOf = (pt) => pt.kinds.find((k) => k.name === $(`k_${pt.name}`).value);
+const fields = (pt) => [...$(`p_${pt.name}`).querySelectorAll("input")];
+const part = (name) => META.parts.find((pt) => pt.name === name);
+const value = (pt, axis) =>
+  Number(fields(pt)[kindOf(pt).axes.findIndex((a) => a.name === axis)].value);
 
-function renderParams() {
-  $("params").innerHTML = META.axes
-    .map((a, i) => {
-      if (a.labels.length)
-        return `<label>${a.name} <select data-i="${i}">${a.labels.map((l, j) => `<option value="${a.values[j]}">${l}</option>`).join("")}</select></label>`;
-      const mid = a.values[Math.floor(a.values.length / 2)];
+function renderParts() {
+  $("parts").innerHTML = META.parts
+    .map(
+      (pt) =>
+        `<fieldset><legend>${pt.title}</legend>` +
+        `<label>模型 <select id="k_${pt.name}">${pt.kinds.map((k) => `<option>${k.name}</option>`).join("")}</select></label>` +
+        `<div id="p_${pt.name}"></div></fieldset>`,
+    )
+    .join("");
+  META.parts.forEach(renderParams);
+}
+
+function renderParams(pt) {
+  $(`p_${pt.name}`).innerHTML = kindOf(pt)
+    .axes.map((a, i) => {
+      const id = `dl_${pt.name}${i}`,
+        mid = a.values[Math.floor(a.values.length / 2)];
       return (
-        `<label>${a.name} <input data-i="${i}" type="number" step="any" value="${mid}" list="dl${i}">` +
-        `<datalist id="dl${i}">${a.values.map((v) => `<option value="${v}">`).join("")}</datalist></label>`
+        `<label>${a.name}${a.day ? " (日)" : ""} <input type="number" step="any" value="${mid}" list="${id}">` +
+        `<datalist id="${id}">${a.values.map((v) => `<option value="${v}">`).join("")}</datalist></label>`
       );
     })
     .join("");
@@ -58,21 +73,27 @@ function renderAssets() {
   return $("asset").value !== cur;
 }
 
-// 参数的显示串: 类别轴写标签
+// 配置的显示串: 各组 模型(轴=值, …)
 const paramText = () =>
-  fields()
-    .map((e, i) => {
-      const a = META.axes[i];
-      return `${a.name}=${a.labels.length ? e.selectedOptions[0].text : e.value}`;
+  META.parts
+    .map((pt) => {
+      const K = kindOf(pt),
+        p = fields(pt).map((e, i) => `${K.axes[i].name}=${e.value}`);
+      return p.length ? `${K.name}(${p.join(",")})` : K.name;
     })
-    .join(", ");
+    .join(" | ");
 
 function query() {
+  const parts = {};
+  for (const pt of META.parts) {
+    parts[pt.name] = kindOf(pt).name;
+    parts[pt.name + "p"] = fields(pt)
+      .map((e) => e.value)
+      .join(",");
+  }
   return new URLSearchParams({
     a: $("asset").value,
-    p: fields()
-      .map((e) => e.value)
-      .join(","),
+    ...parts,
     cost: ($("cost").value || 0) / 1e4,
     vol: $("vol").value || 0,
     buffer: $("buffer").value || 0,
@@ -113,6 +134,7 @@ const f0 = fmt((v) => v.toFixed(0)),
 const pct = fmt((v) => (100 * v).toFixed(1) + "%");
 const ROWS = [
   ["夏普", "sr", f2],
+  ["索提诺", "so", f2],
   ["年化", "cagr", pct],
   ["最大回撤", "mdd", pct],
   ["年化波动", "vol", pct],
@@ -169,7 +191,8 @@ function draw(d) {
     v.dn.map((d, k) =>
       d == null || v.up[k] == null ? null : d + z * (v.up[k] - d),
     );
-  if (field("m").selectedOptions[0].text === "chase")
+  const layer = part("m");
+  if (kindOf(layer).name === "chase")
     traces.push({
       x,
       y: v.stop,
@@ -177,12 +200,12 @@ function draw(d) {
       line: { color: BAND, width: 1.3, dash: "dash" },
     });
   else {
-    const N = Number(field("N").value);
+    const N = value(layer, "N");
     for (let j = 1; j < N; j++)
       traces.push({
         x,
         y: at(j / N),
-        name: `档 ${j}/${N}`,
+        name: `层 ${j}/${N}`,
         line: { color: "gray", width: 0.6, dash: "dot" },
         showlegend: false,
       });
@@ -313,13 +336,14 @@ function draw(d) {
 
 (async () => {
   META = await (await fetch("/api/meta")).json();
-  renderParams();
+  renderParts();
   renderAssets();
   $("filter").addEventListener("input", () => {
     if (renderAssets()) ((view = [0, 0]), schedule());
   });
   $("side").addEventListener("change", (e) => {
     if (e.target.id === "filter") return;
+    if (e.target.id.startsWith("k_")) renderParams(part(e.target.id.slice(2)));
     if (e.target.id === "set") renderAssets();
     if (e.target.id === "set" || e.target.id === "asset") view = [0, 0];
     schedule();

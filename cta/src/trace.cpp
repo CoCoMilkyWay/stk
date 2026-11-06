@@ -1,7 +1,7 @@
-// cta_trace — 分钟线单配置交互轨迹 (后端): 浏览器里选资产 (idx / ind / concept) / band 参数, 每次现算一个配置的全期
+// cta_trace — 分钟线单配置交互轨迹 (后端): 浏览器里选资产 (idx / ind / concept) / 各组部件 (中线 / 带 / 分层) 的模型与参数, 每次现算一个配置的全期
 //   用法: cta_trace [端口 8766]; 计算全在这里 (模型 + 回测 + 指标 + 视窗聚合), 前端 cta/web 只画
-//   接口: GET /api/meta → 全部资产 (名 / 码 / 测试集) + 参数轴 (网格取值) + 每日根数
-//         GET /api/run?a=资产&p=参数 (逗号分隔, 轴序)&cost=单边费率&vol=目标年化波动&buffer=不交易带
+//   接口: GET /api/meta → 全部资产 (名 / 码 / 测试集) + 部件表 (各组模型 + 其参数轴, 网格取值) + 每日根数
+//         GET /api/run?a=资产&c=中线模型&cp=其参数&w=带模型&wp=…&m=分层模型&mp=… (参数逗号分隔, 轴序, 轴单位)&cost=单边费率&vol=目标年化波动&buffer=不交易带
 //                     &lo=&hi=视窗 [lo, hi) (有效根下标, hi = 0 即到末根)&px=视窗最多几点
 //           → 全期指标 (策略 / 持有) + 视窗逐点 (每 step 根取末根: 收 / 上线 / 下线 / 吊灯线 / 仓位 / 全期净值 / 持有净值)
 //   配置不变只换视窗时不重算; 视窗根数 ≤ px 时 step = 1 (逐根)
@@ -87,15 +87,24 @@ std::string meta(const Panel &panel) {
     o += b ? ",{" : "{";
     o += "\"name\":", str(o, a.name), o += ",\"code\":", str(o, a.code), o += ",\"set\":", str(o, a.set), o += '}';
   }
-  o += "],\"axes\":[";
-  for (size_t a = 0; a < std::size(kAxes); ++a) {
-    const Axis &x = kAxes[a];
-    o += a ? ",{" : "{";
-    o += "\"name\":", str(o, x.name), o += ',';
-    arr(o, "values", x.v.size(), [&](size_t i) { return x.v[i]; });
-    o += ",\"labels\":[";
-    for (size_t i = 0; i < x.label.size(); ++i)
-      o += i ? "," : "", str(o, x.label[i]);
+  o += "],\"parts\":[";
+  for (size_t j = 0; j < kNP; ++j) {
+    const Part &pt = kParts[j];
+    o += j ? ",{" : "{";
+    o += "\"name\":", str(o, pt.name), o += ",\"title\":", str(o, pt.title), o += ",\"kinds\":[";
+    for (size_t k = 0; k < pt.kinds.size(); ++k) {
+      const Kind &K = pt.kinds[k];
+      o += k ? ",{" : "{";
+      o += "\"name\":", str(o, K.name), o += ",\"axes\":[";
+      for (size_t a = 0; a < K.axes.size(); ++a) {
+        const Axis &x = K.axes[a];
+        o += a ? ",{" : "{";
+        o += "\"name\":", str(o, x.name), o += ",\"day\":", o += x.day ? "true," : "false,";
+        arr(o, "values", x.v.size(), [&](size_t i) { return x.v[i]; });
+        o += '}';
+      }
+      o += "]}";
+    }
     o += "]}";
   }
   return o + "]}";
@@ -111,8 +120,10 @@ std::vector<float> floats(const std::string &s) {
 
 void compute(State &s, const Panel &panel, const Query &q) {
   std::string key;
-  for (const char *k : {"a", "p", "cost", "vol", "buffer"})
+  for (const char *k : {"a", "cost", "vol", "buffer"})
     key += q.at(k), key += '|';
+  for (const Part &pt : kParts)
+    key += q.at(pt.name), key += '|', key += q.at(std::string(pt.name) + "p"), key += '|';
   if (key == s.key)
     return;
   const size_t a = std::stoul(q.at("a"));
@@ -121,14 +132,19 @@ void compute(State &s, const Panel &panel, const Query &q) {
     s.se = series_of(panel, a), s.a = a;
     assert(s.se.c.size() > 1 && "资产无数据");
   }
-  const P p = floats(q.at("p"));
-  assert(p.size() == std::size(kAxes) && "参数个数与参数轴不符");
+  Cfg cfg;
+  for (size_t j = 0; j < kNP; ++j) {
+    const Part &pt = kParts[j];
+    const auto k = std::find_if(pt.kinds.begin(), pt.kinds.end(), [&](const Kind &K) { return q.at(pt.name) == K.name; });
+    assert(k != pt.kinds.end() && "未知部件模型");
+    cfg.k[j] = static_cast<size_t>(k - pt.kinds.begin()), cfg.p[j] = floats(q.at(std::string(pt.name) + "p"));
+  }
 
   Setup u;
   u.cost = std::stod(q.at("cost")), u.vol = std::stod(q.at("vol")), u.buffer = std::stod(q.at("buffer"));
   u.bpy = panel.bars_per_year;
   Tape t(s.se);
-  Sig g = rule(t, to_bars(p, static_cast<double>(panel.S)));
+  Sig g = band(t, to_bars(std::move(cfg), static_cast<double>(panel.S)));
   s.rs = simulate(t, std::move(g.w), u);
   s.st = stat_of(t, s.rs, u), s.sh = stat_of(t, simulate(t, hold(t), u), u);
   s.up = std::move(g.up), s.dn = std::move(g.dn), s.stop = std::move(g.stop);

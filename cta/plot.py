@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # plot.py — 测试台结果弹窗 (plotly, 浏览器打开)
-#   bench_<freq>.tsv → 结果网格: 每测试集一行 = 排行表 | 夏普 vs 下跌捕获 (磨损) | band 曲面 (中线/宽度 × n, 其余参数取均值) | 平原顶处 k × 映射/N/h 切面
+#   bench_<freq>.tsv → 结果网格: 每测试集一行 = 排行表 | 目标 vs 下跌捕获 (磨损) | 中线 × 带 (模型 + 周期) 曲面 (其余取均值) | 平原顶处 带 k × 分层 切面
+#   obj = 测试台 --target 的全期值 (只看曲面形状; 可执行的是 band@roll)
 #   python3 cta/plot.py [1m|1d]; run.py (APP = bench) 跑完测试台自动调用
 
 import csv
@@ -30,8 +31,23 @@ def read(path):
     return rows
 
 
-def kv(params):
-    return dict(x.split("=") for x in params.split(","))
+# "ema(n=5) | vol(n=5,k=1) | grid(N=20,h=0.1)" → [(模型, {轴: 值}), …] 按组序 (中线 / 带 / 分层)
+def parts(params):
+    out = []
+    for s in params.split(" | "):
+        name, _, rest = s.partition("(")
+        out.append(
+            (
+                name,
+                dict(x.split("=") for x in rest.rstrip(")").split(",")) if rest else {},
+            )
+        )
+    return out
+
+
+def label(name, kv, skip=()):
+    p = ",".join(f"{k}={v}" for k, v in kv.items() if k not in skip)
+    return f"{name}({p})" if p else name
 
 
 def mean(v):
@@ -47,9 +63,9 @@ def bench_fig(rows, freq):
     for s in sets:
         titles += [
             f"{s}: 排行 (仓位 ≥ {EXPO}, ◆ = 平原顶)",
-            f"{s}: 夏普 vs 下跌捕获 (磨损)",
-            f"{s}: band 曲面 (其余参数均值, × = 平原顶)",
-            f"{s}: 平原顶处 k × 映射/N/h",
+            f"{s}: 目标 vs 下跌捕获 (磨损)",
+            f"{s}: 中线 × 带 (k / 分层取均值, × = 平原顶)",
+            f"{s}: 平原顶处 带 k × 分层",
         ]
     fig = make_subplots(
         rows=len(sets),
@@ -70,11 +86,12 @@ def bench_fig(rows, freq):
         hold = next(r for r in rs if r["model"] == "hold")
         tab = [hold] + sorted(
             (r for r in rs if r["model"] != "hold" and r["m_expo"] >= EXPO),
-            key=lambda r: -r["sr"],
+            key=lambda r: -r["obj"],
         )[:TOP]
         cols = [
             ("model", "model"),
             ("params", "params"),
+            ("目标", "obj"),
             ("SR", "sr"),
             ("CAGR", "cagr"),
             ("MDD", "mdd"),
@@ -97,7 +114,7 @@ def bench_fig(rows, freq):
 
         fig.add_trace(
             go.Table(
-                columnwidth=[1.3, 3.4] + [0.7] * 7,
+                columnwidth=[1.1, 4.4] + [0.7] * 8,
                 header=dict(values=[c[0] for c in cols], align="left"),
                 cells=dict(
                     values=[[cell(r, k) for r in tab] for _, k in cols],
@@ -116,7 +133,7 @@ def bench_fig(rows, freq):
             fig.add_trace(
                 go.Scatter(
                     x=[r["m_dn"] for r in g],
-                    y=[r["sr"] for r in g],
+                    y=[r["obj"] for r in g],
                     mode="markers",
                     name=m,
                     legendgroup=m,
@@ -129,45 +146,53 @@ def bench_fig(rows, freq):
                     ),
                     text=[r["params"] for r in g],
                     hovertemplate=m
-                    + "<br>%{text}<br>SR %{y:.2f} | Dn %{x:.2f}<extra></extra>",
+                    + "<br>%{text}<br>目标 %{y:.2f} | Dn %{x:.2f}<extra></extra>",
                 ),
                 row=i,
                 col=2,
             )
             shown.add(m)
         fig.update_xaxes(title_text="Dn (下跌捕获)", row=i, col=2)
-        fig.update_yaxes(title_text="SR", row=i, col=2)
+        fig.update_yaxes(title_text="目标", row=i, col=2)
 
-        band = [(r, kv(r["params"])) for r in rs if r["model"] == "band"]
+        # 每行: (行, 中线, 带 (模型 + 周期), 带 k, 分层)
+        band = []
+        for r in rs:
+            if r["model"] != "band":
+                continue
+            (cn, cp), (wn, wp), (ln, lp) = parts(r["params"])
+            band.append(
+                (r, label(cn, cp), label(wn, wp, ("k",)), wp["k"], label(ln, lp))
+            )
         if not band:
             continue
-        ns = sorted({p["n"] for _, p in band}, key=float)
-        cws = list(dict.fromkeys(f'{p["c"]}/{p["w"]}' for _, p in band))
+        cs = list(dict.fromkeys(b[1] for b in band))
+        ws = list(dict.fromkeys(b[2] for b in band))
         acc = defaultdict(list)
-        for r, p in band:
-            acc[(f'{p["c"]}/{p["w"]}', p["n"])].append(r["sr"])
+        for r, c, w, _, _ in band:
+            acc[(c, w)].append(r["obj"])
         fig.add_trace(
             go.Heatmap(
-                x=[f"n={n}" for n in ns],
-                y=cws,
-                z=[[mean(acc[(cw, n)]) for n in ns] for cw in cws],
+                x=ws,
+                y=cs,
+                z=[[mean(acc[(c, w)]) for w in ws] for c in cs],
                 colorscale="RdBu",
                 zmid=0,
                 texttemplate="%{z:.2f}",
                 showscale=False,
-                hovertemplate="%{y} %{x}<br>均SR %{z:.2f}<extra></extra>",
+                hovertemplate="%{y} %{x}<br>均目标 %{z:.2f}<extra></extra>",
             ),
             row=i,
             col=3,
         )
-        top = next(((r, p) for r, p in band if r["plateau"]), None)
+        top = next((b for b in band if b[0]["plateau"]), None)
         if top is None:
             continue
-        _, p = top
+        _, tc, tw, tk, tl = top
         fig.add_trace(
             go.Scatter(
-                x=[f'n={p["n"]}'],
-                y=[f'{p["c"]}/{p["w"]}'],
+                x=[tw],
+                y=[tc],
                 mode="markers",
                 marker=dict(symbol="x", size=16, color="black"),
                 showlegend=False,
@@ -176,36 +201,28 @@ def bench_fig(rows, freq):
             row=i,
             col=3,
         )
-        sl = [
-            (r, q)
-            for r, q in band
-            if (q["c"], q["w"], q["n"]) == (p["c"], p["w"], p["n"])
-        ]
-
-        def mnh(q):
-            return f'{q["m"]},N={q["N"]},h={q["h"]}'
-
-        ks = sorted({q["k"] for _, q in sl}, key=float)
-        nh = list(dict.fromkeys(mnh(q) for _, q in sl))
-        zz = {(q["k"], mnh(q)): r["sr"] for r, q in sl}
+        sl = [b for b in band if (b[1], b[2]) == (tc, tw)]
+        ks = sorted({b[3] for b in sl}, key=float)
+        ls = list(dict.fromkeys(b[4] for b in sl))
+        zz = {(b[3], b[4]): b[0]["obj"] for b in sl}
         fig.add_trace(
             go.Heatmap(
-                x=nh,
+                x=ls,
                 y=[f"k={k}" for k in ks],
-                z=[[zz.get((k, c)) for c in nh] for k in ks],
+                z=[[zz.get((k, l)) for l in ls] for k in ks],
                 colorscale="RdBu",
                 zmid=0,
                 texttemplate="%{z:.2f}",
                 showscale=False,
-                hovertemplate="%{y} %{x}<br>SR %{z:.2f}<extra></extra>",
+                hovertemplate="%{y} %{x}<br>目标 %{z:.2f}<extra></extra>",
             ),
             row=i,
             col=4,
         )
         fig.add_trace(
             go.Scatter(
-                x=[mnh(p)],
-                y=[f'k={p["k"]}'],
+                x=[tl],
+                y=[f"k={tk}"],
                 mode="markers",
                 marker=dict(symbol="x", size=16, color="black"),
                 showlegend=False,
