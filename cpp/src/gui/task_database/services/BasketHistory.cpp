@@ -3,20 +3,19 @@
 #include "features/Bar1mDay.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "fundamental/Scan.hpp"
+#include "gui/task_database/services/BasketRow.hpp"
 #include "misc/fs.hpp"
 #include "misc/snap.hpp"
 #include "shared/AssetAxis.hpp"
-#include "shared/Basket.hpp" // basket_line / basket_count / cut_of / concept_cut / weight_of
+#include "shared/Basket.hpp" // basket_count / weight_of
 #include "shared/FeatureLib.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <fstream>
-#include <initializer_list>
 #include <iterator>
 #include <memory>
-#include <string_view>
 #include <utility>
 
 namespace GUI::Database {
@@ -25,99 +24,6 @@ namespace {
 
 constexpr uint64_t kMagic = 0x314B534142544B53ULL; // "SKTBASK1" 小端
 constexpr const char *kFile = "/baskets.bin";
-
-// all Bar 字段表里 code 的列下标 (落盘变换须是 tf)
-size_t col_of(size_t lvl, std::string_view code, ts::TfId tf) {
-  const LevelInfo &li = level_info(TierId::Bar, lvl);
-  for (size_t i = 0; i < li.field_count; ++i)
-    if (code == li.fields[i].code) {
-      assert(li.fields[i].ts_tf == tf && "all.bar: 列的落盘变换与读法不符");
-      return i;
-    }
-  assert(false && "all.bar: 字段表里没有这一列");
-  return 0;
-}
-
-float val(const FeatureRead::DayColumns &dc, size_t t, size_t i, size_t a) {
-  const float x = static_cast<float>(dc.get(t, i, a));
-  return std::isfinite(x) ? x : 0.f;
-}
-
-// 一日的 L_1day 收盘行 (A 轴); 缺 / 非有限 → 0
-enum DayCol : size_t { kCs,
-                       kTs,
-                       kOpen,
-                       kHigh,
-                       kLow,
-                       kClose,
-                       kAmount,
-                       kPre,
-                       kShares,
-                       kInd,
-                       kPools }; // 子池 p ∈ [1, NP) 的池列 = kPools + p − 1
-struct Row {
-  std::vector<float> px[4], amount, pre, shares; // 开 高 低 收
-  std::vector<uint8_t> live, trade, ind;
-  std::vector<uint8_t> pool; // [(p − 1) · A + a]
-};
-
-void read_row(const FeatureRead::DayColumns &dc, size_t A, size_t NP, Row &r) {
-  for (std::vector<float> &v : r.px)
-    v.resize(A);
-  r.amount.resize(A), r.pre.resize(A), r.shares.resize(A);
-  r.live.resize(A), r.trade.resize(A), r.ind.resize(A);
-  r.pool.resize((NP - 1) * A);
-  for (size_t a = 0; a < A; ++a) {
-    r.live[a] = val(dc, 0, kCs, a) > 0.5f;
-    r.trade[a] = val(dc, 0, kTs, a) > 0.5f;
-    for (size_t j = 0; j < 4; ++j)
-      r.px[j][a] = val(dc, 0, kOpen + j, a);
-    r.amount[a] = std::expm1(val(dc, 0, kAmount, a));
-    r.pre[a] = val(dc, 0, kPre, a);
-    r.shares[a] = val(dc, 0, kShares, a);
-    const float k = val(dc, 0, kInd, a);
-    r.ind[a] = k >= 1.f && k < static_cast<float>(kAllCuts) ? static_cast<uint8_t>(k + 0.5f) : 0;
-    for (size_t p = 1; p < NP; ++p)
-      r.pool[(p - 1) * A + a] = val(dc, 0, kPools + p - 1, a) > 0.5f;
-  }
-}
-
-// 收盘行 r 定次日成员表 (下标 = 库轴): 所属切片各进等权 (1) / 加权 (收盘市值; 缺股本不进); 概念随全A
-void members(const Row &r, const PoolAxis &axis, size_t NP, Members &m) {
-  const ConceptTable &ct = concepts();
-  const size_t A = axis.size();
-  m.clear();
-  for (size_t a = 0; a < A; ++a) {
-    const float c = r.px[3][a], cap = c * r.shares[a];
-    const auto put = [&](size_t cut) {
-      m.add(static_cast<uint32_t>(basket_line(cut, kWeightEq)), 1.f);
-      if (cap > 0)
-        m.add(static_cast<uint32_t>(basket_line(cut, kWeightCap)), cap);
-    };
-    if (c > 0 && r.live[a]) {
-      put(0);
-      if (r.ind[a])
-        put(r.ind[a]);
-      for (const uint16_t k : ct.concepts_of(axis.global(a)))
-        put(concept_cut(k));
-    }
-    for (PoolId p = 1; c > 0 && p < NP; ++p)
-      if (r.pool[(p - 1) * A + a])
-        put(cut_of(p));
-    m.next();
-  }
-}
-
-// 一只一日的 L_1min (列序同 mcols) → 分钟根: 无成交的行不收 (与 bar1m 的 bars_of 同一并根)
-void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b) {
-  b.date = d;
-  b.has.reset();
-  for (size_t t = 0; t < level_valid_rows(L_1min); ++t) {
-    const float x = val(mc, t, 4, a);
-    if (val(mc, t, 0, a) > 0.5f && x > 0)
-      b.add(row_slot(t), cell(val(mc, t, 1, a), val(mc, t, 2, a), val(mc, t, 3, a), x, 0, std::expm1(val(mc, t, 5, a))));
-  }
-}
 
 // 定长元素的序列: 长度 + 逐个
 template <class Ar, class T>
@@ -290,17 +196,7 @@ bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
 
 bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const std::vector<misc::Ymd> &dates, Members &mem) {
   const size_t A = lib.axis.size(), NP = pool_count(), N = dates.size(), NB = basket_count(), i_lo = book_.dates.size();
-  std::vector<size_t> dcols = {col_of(L_1day, "cs_valid", ts::TfId::None), col_of(L_1day, "ts_valid", ts::TfId::None),
-                               col_of(L_1day, "open_day", ts::TfId::None), col_of(L_1day, "high_day", ts::TfId::None),
-                               col_of(L_1day, "low_day", ts::TfId::None), col_of(L_1day, "close_day", ts::TfId::None),
-                               col_of(L_1day, "amount_day", ts::TfId::Log), col_of(L_1day, "pre_close", ts::TfId::None),
-                               col_of(L_1day, "total_shares", ts::TfId::None), col_of(L_1day, "ind_l1", ts::TfId::None)};
-  assert(dcols.size() == kPools);
-  for (PoolId p = 1; p < NP; ++p)
-    dcols.push_back(pool_def(p).pool_col);
-  const std::vector<size_t> mcols = {col_of(L_1min, "ts_valid", ts::TfId::None), col_of(L_1min, "open", ts::TfId::None),
-                                     col_of(L_1min, "high", ts::TfId::None), col_of(L_1min, "low", ts::TfId::None),
-                                     col_of(L_1min, "close", ts::TfId::None), col_of(L_1min, "amount", ts::TfId::Log)};
+  const std::vector<size_t> dcols = row_cols(), mcols = minute_cols();
   const size_t T = static_cast<size_t>(pool_.threads()), batch = 2 * T;
   std::vector<FeatureRead::DayColumns> dc(T); // 按线程
   for (FeatureRead::DayColumns &c : dc)

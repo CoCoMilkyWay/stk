@@ -130,7 +130,7 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
     ui.log_y = false;
   }
   if (ImGui::IsItemHovered())
-    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL 标的 / 展开的行 / 叠加的成分股 / 区间 (回全段) / log 关");
+    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL / CTA 标的 / 展开的行 / 叠加的成分股 / 区间 (回全段) / log 关");
   for (const PortfolioItem &it : ui.items) {
     const auto f = res.factors.find(it.e.key());
     const std::string &why = !it.missing.empty() ? it.missing : f != res.factors.end() ? f->second->error
@@ -141,7 +141,7 @@ int head(PortfolioService &svc, PortfolioUIState &ui, const PortfolioDerived &d,
   return action;
 }
 
-// ---- 页签: NAV = 资金曲线 / VAL = 池估值 (同一布局; 区间 / log 共用) / FLOW = 篮子日内资金流. 返回 PortfolioPage ----
+// ---- 页签: NAV = 资金曲线 / VAL = 池估值 (同一布局; 区间 / log 共用) / FLOW = 篮子日内资金流 / CTA = 单标的择时回测. 返回 PortfolioPage ----
 int pages() {
   int page = kPageNav;
   if (ImGui::BeginTabBar("##pf_page")) {
@@ -303,7 +303,8 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
   ImGui::EndChild();
 }
 
-int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed_impact, const Database::Market *mk, const StockInfos &infos) {
+int RenderTabPortfolio(PortfolioService &svc, CtaService &cta, PortfolioUIState &ui, double fixed_impact, const Database::Market *mk,
+                       const StockInfos &infos) {
   PortfolioResult res;
   uint64_t gen = 0;
   std::string message;
@@ -345,8 +346,8 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
   const int page = pages();
   const bool nav = page == kPageNav;
 
-  // ---- 布局: 左 = 日内 (NAV 开日内, 切 1/3 高) / 主图 (NAV ↔ VAL) / 区间条 自上而下, FLOW = 只一张资金流图; 最右 = 右图例 (三页同宽) ----
-  constexpr float kBarH = 90.0f, kLegendCells = 100.0f, kLegendMaxFrac = 0.5f; // 右图例定宽 (三页同宽: 字符格数, 表格超宽横滚) / 至多占整宽的比例
+  // ---- 布局: 左 = 日内 (NAV 开日内, 切 1/3 高) / 主图 (NAV ↔ VAL) / 区间条 自上而下, FLOW = 只一张资金流图, CTA = 两图 + 中栏; 最右 = 右图例 (各页同宽) ----
+  constexpr float kBarH = 90.0f, kLegendCells = 100.0f, kLegendMaxFrac = 0.5f; // 右图例定宽 (各页同宽: 字符格数, 表格超宽横滚) / 至多占整宽的比例
   const ImGuiStyle &st = ImGui::GetStyle();
   const ImVec2 av = ImGui::GetContentRegionAvail();
   const float lw = std::min(kLegendCells * ImGui::CalcTextSize("0").x + 2.0f * (st.WindowPadding.x + st.ChildBorderSize), av.x * kLegendMaxFrac);
@@ -378,6 +379,14 @@ int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed
     ImGui::SameLine();
     ImGui::BeginChild("##pf_flegend", ImVec2(lw, av.y), ImGuiChildFlags_Borders);
     RenderPortfolioSheet(ui, page, mk ? Database::FlowDays(*mk, ui.basket) : std::vector<misc::Ymd>{}, infos);
+    ImGui::EndChild();
+    return action;
+  }
+  if (page == kPageCta) {
+    RenderPortfolioCta(cta, ui, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y));
+    ImGui::SameLine();
+    ImGui::BeginChild("##pf_flegend", ImVec2(lw, av.y), ImGuiChildFlags_Borders);
+    RenderPortfolioSheet(ui, page, {}, infos);
     ImGui::EndChild();
     return action;
   }

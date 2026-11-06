@@ -7,11 +7,11 @@
 //     近况两列 (Database::Recent; 篮子行 = Assets 篮子的日线 + 新浪当日, 因子 / 策略 = 净值日末点) 按涨跌着色, 不随区间;
 //     只数 / 总市值 (只篮子行) = 当日成员表 (Tape::members / weight): 只数取同切片等权线, 总市值取同切片加权线 (当日接上 × 当日涨跌), 不着色;
 //     换手 / 资金流入 (只篮子行) = 新浪当日 成交额占总市值 / 净流入占成交额 (Day::flow, 分钟涨跌法), 流入按正负着色, 悬停格看分子分母金额;
-//     篮子组 (指数 / 行业 / 概念) 表上一行过滤条 (BasketFilter, 三页共用): 只数 / 总市值区间 + |流入| 下限, 一项一个按钮 (名 + 当前条件摘要, 设了 = 按下色),
+//     篮子组 (指数 / 行业 / 概念) 表上一行过滤条 (BasketFilter, 各页共用): 只数 / 总市值区间 + |流入| 下限, 一项一个按钮 (名 + 当前条件摘要, 设了 = 按下色),
 //       点开 = 预设 (点即设) + 精确输入; 选中 / 展开行恒列;
-//     右栏定宽 (三页同宽, 不随内容): 三页右表同一骨架 (sheet), 列宽按内容最紧 (数值右对齐不补宽, 表头取短名, 名超 kNameCells 格截断补 …),
+//     右栏定宽 (各页同宽, 不随内容): 各页右表同一骨架 (sheet), 列宽按内容最紧 (数值右对齐不补宽, 表头取短名, 名超 kNameCells 格截断补 …),
 //       名列伸满余宽, 内容超宽 → 横滚 (名列钉住);
-//     篮子行可展开 (名前 ▸, 至多一行, 三页同一份): 展开行钉在表头下 (不随滚动), 其下先列成分行 = 历史末日收盘定的成员表 (Tape::cons, 默认权降序,
+//     篮子行可展开 (名前 ▸, 至多一行, 各页同一份): 展开行钉在表头下 (不随滚动), 其下先列成分行 = 历史末日收盘定的成员表 (Tape::cons, 默认权降序,
 //       表头排序时按同列), 再列其余行; 成分行与篮子行同一种行 (PortfolioRow: 一对线 = 后复权收盘, 两条同一条; 行情键 = 个股; 估值腿 = 个股账),
 //       列同一张表, 能算的填 (近况 / 总市值 / 换手 / 流入 = 个股新浪当日 + 基本面; NAV 数值列 / VAL 各口名次在成分之间; FLOW 只当日), 其余 "-";
 //       名悬停看权占比 / 行业 / 估值; 点成分行 = 同篮子行的选中 (NAV 主图画线 + 日内栏 / FLOW 图叠加, 线色按 id 定色相; VAL 选为标的), 收起后选中的照画;
@@ -54,10 +54,15 @@
 //     日轴 = 行情日及其前 n − 1 个交易日, n = 档 日内 / 2日 … 5日; 自首日开盘逐分钟累计, 跨日接续; y = 占近 5 日日均成交额 % (默认; 分母盘前已定) / 金额 亿元;
 //     开收盘开关 (默认关) = 计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价), 图与右表同一份; 当日随新浪快照动);
 //     右表 = 类别条 (指数 / 行业 / 概念) + 过滤条 + 点行选中; 列 = 中文名 | 只数 | 总市值 | 换手 | 资金流入 (同 NAV) | 日轴各日净流入占当日成交额 | 档内合计净流入 | 合计占比 (按正负着色, 悬停格看金额)
+//   页 CTA = 单标的只做多 band 模型的滚动调参回测 (CtaService; 不看区间条): 标的 = 右表单选 (与 VAL 同一份选中: 篮子行 / 成分行), 价格 = all.bar 库合成的 1 分钟后复权点位;
+//     中栏 = 设定 (优化目标 / 滚动窗 / 三组部件各选模型 / 费率 / 目标波动 / 不交易带; 改了即重算) + 光标处所用参数 + 全期指标 (策略 vs 买入持有);
+//     左 = 上下两图共一条 x (有效根下标, 无隔夜空档; 刻度标日, 放大到几日内标时刻; 每像素取末根): 上 = 收盘 + 上线 / 下线 (带间填色) + 中线 + 分层线 / 吊灯线
+//     + 逐根时的加 / 减仓标记; 下 = 仓位 (阶梯填色, 左轴 [0, 1]) + 策略 / 持有净值 (右轴 log); 悬停 = 光标 (中栏参数跟着走)
 #pragma once
 
 #include "gui/task_database/services/Market.hpp"
 #include "gui/task_database/ui/QuotesPanel.hpp"      // BasketState / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
+#include "gui/task_factors/services/CtaService.hpp"  // CtaSpec / CtaRequest (CTA 页)
 #include "gui/task_factors/services/FactorsFile.hpp" // FactorRow
 #include "gui/task_factors/services/PortfolioService.hpp"
 #include "gui/task_factors/ui/PortfolioView.hpp" // 派生 → 滚动分位 / 末点分位 → 视图
@@ -95,14 +100,25 @@ struct PortfolioRange {
 // 页签 (同一个右图例位; 图例宽 / 类别条按页各一份; 页表 kPageDefs 见 PortfolioCommon.hpp)
 enum PortfolioPage : int { kPageNav,
                            kPageVal,
-                           kPageFlow };
-inline constexpr int kPages = 3;
+                           kPageFlow,
+                           kPageCta };
+inline constexpr int kPages = 4;
 // 右表行的选中方式 (页表按页指定; 同方式的页共用一份选中)
 enum PickMode : int { kPickMany,  // 多选 (NAV / FLOW)
-                      kPickOne }; // 单选, 再点 = 取消 (VAL)
+                      kPickOne }; // 单选, 再点 = 取消 (VAL / CTA)
 inline constexpr int kPicks = 2;
 
-// 篮子组 (指数 / 行业 / 概念) 右表的行过滤 (三页共用, 按组各一份): 只数 / 总市值 [亿元] ∈ [lo, hi] (hi 0 = 不限), |资金流入| ≥ flow (%; 0 = 不限);
+// CTA 页: 设定 (进请求; 标的 = kPickOne 那一行) + 两图同一 x 视野 + 光标
+struct CtaUIState {
+  CtaSpec spec;
+  CtaRequest sent;       // 上次发出的 (gen 0 = 未发)
+  bool editing = false;  // 数值框编辑中 (spec 未定, 不发请求)
+  uint32_t fitted = 0;   // x 视野已归位到的结果代
+  double x0 = 0, x1 = 1; // 两图 x 视野 (有效根下标)
+  int cursor = -1;       // 光标所在有效根 (−1 = 不在图上: 读数取末根)
+};
+
+// 篮子组 (指数 / 行业 / 概念) 右表的行过滤 (各页共用, 按组各一份): 只数 / 总市值 [亿元] ∈ [lo, hi] (hi 0 = 不限), |资金流入| ≥ flow (%; 0 = 不限);
 // 设了的条件缺值 (未到 / 无新浪行情日) 即不过; 选中 / 展开行恒列
 struct BasketFilter {
   int n_lo = 0, n_hi = 0;
@@ -167,7 +183,7 @@ struct PortfolioSheet {
 struct PortfolioPick {
   std::string of;
   std::map<std::string, PortfolioQuote> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个; 多选的个股至多 StockHistory::kKeep 只)
-  std::string open;                                   // 展开的篮子行 (至多一行, 三页同一份; 空 = 无)
+  std::string open;                                   // 展开的篮子行 (至多一行, 各页同一份; 空 = 无)
   // 方式 m (kPicks = 全部) 选中的个股 (全局 id, 升序)
   std::vector<uint32_t> stocks(int m) const {
     std::vector<uint32_t> o;
@@ -208,11 +224,12 @@ struct PortfolioUIState {
   std::set<std::string> reveal;                                              // 待在主图例里回默认显隐的线 ID (行刚选中; 画到时消费; 理想列显, 可成交列隐)
   std::string shown_key;                                                     // 上帧主图各线显隐 (进 fit 键)
   PortfolioFitKey fit_key;                                                   // 上次 fit 的键 (BeginPlot 没起来不记: 下帧照 fit)
-  int cat[kPages] = {kGroupPool, kGroupPool, kGroupPool};                    // [PortfolioPage] 右表类别条选中组 (NAV = RowGroup; VAL / FLOW = BasketGroup)
+  int cat[kPages] = {kGroupPool, kGroupPool, kGroupPool, kGroupPool};        // [PortfolioPage] 右表类别条选中组 (NAV = RowGroup; 其余 = BasketGroup)
   BasketFilter filter[kBasketGroups] = {{}, {}, {.n_hi = 500, .flow = 5.f}}; // [BasketGroup] 默认: 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%
   bool intraday = true;                                                      // NAV 日内栏
   Database::BasketState basket;                                              // 篮子历史 + 当日 + 选中的个股 (日内栏 / FLOW / 篮子行近况 / 成分)
   PortfolioConsToday cons;                                                   // 成分行的新浪当日
+  CtaUIState cta;
 };
 
 // GUI 线程每帧 (两页都调): 目录变 → 重列, 当前组合不在了 → 选第一个 (载入内容, content_gen +1)
@@ -220,7 +237,8 @@ void SyncPortfolioDir(PortfolioUIState &ui, const std::string &dir);
 // Factors 页 1. 区右侧两框. view_row = Factors 表高光行 (nullptr = 无); (pool, lv, hold) = Factors 页当前池 / 层 / Hold
 void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, LevelId lv, int hold);
 // mk = 行情 (已起, ui.basket 本帧已 Sync; nullptr = AssetInfo 未建, 日内栏 / 指数行业近况 / 成分行当日空着); infos = 基本面档案 (成分行名 / 近况 / 估值).
-// 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
-int RenderTabPortfolio(PortfolioService &svc, PortfolioUIState &ui, double fixed_impact, const Database::Market *mk, const StockInfos &infos);
+// cta = CTA 页的服务. 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
+int RenderTabPortfolio(PortfolioService &svc, CtaService &cta, PortfolioUIState &ui, double fixed_impact, const Database::Market *mk,
+                       const StockInfos &infos);
 
 } // namespace GUI::Factors

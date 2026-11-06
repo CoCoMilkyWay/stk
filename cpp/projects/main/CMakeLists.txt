@@ -21,9 +21,9 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 get_filename_component(CPP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../.. ABSOLUTE)
-set(SRC_ROOT  ${CPP_ROOT}/src)
-set(INC_ROOT  ${CPP_ROOT}/include)
-set(PKG_ROOT  ${CPP_ROOT}/package)
+set(SRC_ROOT ${CPP_ROOT}/src)
+set(INC_ROOT ${CPP_ROOT}/include)
+set(PKG_ROOT ${CPP_ROOT}/package)
 set(FONT_ROOT ${CPP_ROOT}/fonts)
 
 # ============================================================================
@@ -48,7 +48,7 @@ function(axis_pick name)
     message(STATUS "${name}: ${${name}}")
 endfunction()
 
-axis(BUILD_MODE  PRODUCTION TSAN DEBUG PROFILE ASSERT)
+axis(BUILD_MODE PRODUCTION TSAN DEBUG PROFILE ASSERT)
 axis(GUI_BACKEND OpenGL Vulkan)
 axis(GPU_BACKEND Stub CUDA)
 set(CUDA_ARCH "native" CACHE STRING "GPU 架构算力号, native = 探测本机 GPU")
@@ -58,46 +58,46 @@ set(CUDA_ARCH "native" CACHE STRING "GPU 架构算力号, native = 探测本机 
 #   CC   调试 / 插桩   C / C++ (nvcc 的 -forward-unknown-to-host-compiler 会把 clang 专属 flag 转给 gcc 宿主)
 #   LD   链接
 #   DEF  宏            C / C++ / CUDA (NDEBUG 只在 PRODUCTION: 其余模式 .cu 的断言同样生效)
-set(BUILD_MODE_TSAN_OPT         -O1)
-set(BUILD_MODE_TSAN_CC          -g -fsanitize=thread -fno-omit-frame-pointer)
-set(BUILD_MODE_TSAN_LD          -fsanitize=thread)
-set(BUILD_MODE_TSAN_DEF         TSAN_MODE)
+set(BUILD_MODE_TSAN_OPT -O1)
+set(BUILD_MODE_TSAN_CC -g -fsanitize=thread -fno-omit-frame-pointer)
+set(BUILD_MODE_TSAN_LD -fsanitize=thread)
+set(BUILD_MODE_TSAN_DEF TSAN_MODE)
 
-set(BUILD_MODE_DEBUG_OPT        -O0)
-set(BUILD_MODE_DEBUG_CC         -g)
-set(BUILD_MODE_DEBUG_LD         "")
-set(BUILD_MODE_DEBUG_DEF        DEBUG_MODE)
+set(BUILD_MODE_DEBUG_OPT -O0)
+set(BUILD_MODE_DEBUG_CC -g)
+set(BUILD_MODE_DEBUG_LD "")
+set(BUILD_MODE_DEBUG_DEF DEBUG_MODE)
 
-set(BUILD_MODE_PROFILE_OPT      -O2)
-set(BUILD_MODE_PROFILE_CC       -g)
-set(BUILD_MODE_PROFILE_LD       "")
-set(BUILD_MODE_PROFILE_DEF      PROFILE_MODE)
+set(BUILD_MODE_PROFILE_OPT -O2)
+set(BUILD_MODE_PROFILE_CC -g)
+set(BUILD_MODE_PROFILE_LD "")
+set(BUILD_MODE_PROFILE_DEF PROFILE_MODE)
 
-set(BUILD_MODE_ASSERT_OPT       -O2)
-set(BUILD_MODE_ASSERT_CC        "")
-set(BUILD_MODE_ASSERT_LD        "")
-set(BUILD_MODE_ASSERT_DEF       ASSERT_MODE)
+set(BUILD_MODE_ASSERT_OPT -O2)
+set(BUILD_MODE_ASSERT_CC "")
+set(BUILD_MODE_ASSERT_LD "")
+set(BUILD_MODE_ASSERT_DEF ASSERT_MODE)
 
-set(BUILD_MODE_PRODUCTION_OPT   -O2)
-set(BUILD_MODE_PRODUCTION_CC    "")
-set(BUILD_MODE_PRODUCTION_LD    "")
-set(BUILD_MODE_PRODUCTION_DEF   NDEBUG)
+set(BUILD_MODE_PRODUCTION_OPT -O2)
+set(BUILD_MODE_PRODUCTION_CC "")
+set(BUILD_MODE_PRODUCTION_LD "")
+set(BUILD_MODE_PRODUCTION_DEF NDEBUG)
 
 # GUI 后端表: SRC 入口 / IMPL imgui 后端 (package/imgui/backends/imgui_impl_<IMPL>.cpp) / LINK 图形库; find_package(<取值>)
-set(GUI_BACKEND_OpenGL_SRC      gui/Run_OpenGL.cpp)
-set(GUI_BACKEND_OpenGL_IMPL     opengl3)
-set(GUI_BACKEND_OpenGL_LINK     OpenGL::GL)
+set(GUI_BACKEND_OpenGL_SRC gui/Run_OpenGL.cpp)
+set(GUI_BACKEND_OpenGL_IMPL opengl3)
+set(GUI_BACKEND_OpenGL_LINK OpenGL::GL)
 
-set(GUI_BACKEND_Vulkan_SRC      gui/Run_Vulkan.cpp)
-set(GUI_BACKEND_Vulkan_IMPL     vulkan)
-set(GUI_BACKEND_Vulkan_LINK     Vulkan::Vulkan)
+set(GUI_BACKEND_Vulkan_SRC gui/Run_Vulkan.cpp)
+set(GUI_BACKEND_Vulkan_IMPL vulkan)
+set(GUI_BACKEND_Vulkan_LINK Vulkan::Vulkan)
 
 # GPU 后端表: SRC GpuRun.hpp 的实现 / LINK 运行时
-set(GPU_BACKEND_Stub_SRC        factor/op_check_gpu_stub.cpp)
-set(GPU_BACKEND_Stub_LINK       "")
+set(GPU_BACKEND_Stub_SRC factor/op_check_gpu_stub.cpp)
+set(GPU_BACKEND_Stub_LINK "")
 
-set(GPU_BACKEND_CUDA_SRC        factor/op_check_gpu.cu)
-set(GPU_BACKEND_CUDA_LINK       CUDA::cudart)
+set(GPU_BACKEND_CUDA_SRC factor/op_check_gpu.cu)
+set(GPU_BACKEND_CUDA_LINK CUDA::cudart)
 
 # ============================================================================
 # CUDA (GPU_BACKEND=CUDA): 先于一切编译参数启用, 模式表对 C / C++ / CUDA 一视同仁
@@ -144,7 +144,7 @@ else()
     message(STATUS "factor: GPU 后端 Stub (op_check 两方对拍; GUI Operators 页 GPU 列 n/a)")
 endif()
 
-axis_pick(BUILD_MODE  OPT CC LD DEF)
+axis_pick(BUILD_MODE OPT CC LD DEF)
 axis_pick(GUI_BACKEND SRC IMPL LINK)
 axis_pick(GPU_BACKEND SRC LINK)
 find_package(${GUI_BACKEND} REQUIRED)
@@ -206,8 +206,8 @@ file(GLOB_RECURSE SRC_ALL CONFIGURE_DEPENDS RELATIVE ${SRC_ROOT}
     ${SRC_ROOT}/*.cu)
 
 set(SRC_OP_CHECK factor/op_check.cpp)
-set(SRC_APP      ${SRC_ALL})
-set(SRC_PARTS    SRC_APP SRC_OP_CHECK)
+set(SRC_APP ${SRC_ALL})
+set(SRC_PARTS SRC_APP SRC_OP_CHECK)
 list(REMOVE_ITEM SRC_APP ${SRC_OP_CHECK})
 foreach(axis GUI_BACKEND GPU_BACKEND)
     foreach(value ${${axis}_VALUES})
@@ -226,7 +226,7 @@ assert_partition(源表 SRC_ALL ${SRC_PARTS})
 #            IEEE / NaN / inf 语义不受影响 (只影响 errno 写不写).
 #   .cu 经 nvcc -Xcompiler 转给宿主编译器 (逗号分隔多个宿主参数)
 # ============================================================================
-set(MATH_FAST_FLAGS    -ffast-math)
+set(MATH_FAST_FLAGS -ffast-math)
 set(MATH_PRECISE_FLAGS -fno-fast-math -fno-math-errno)
 
 # 两表同一段序 (shared → misc → api → fundamental → codec → features → worker → gui → agent → factor → 入口), 段内按路径序; 某档无文件的段留空
@@ -323,6 +323,7 @@ set(MATH_PRECISE
     gui/task_database/TaskDatabase.cpp
     gui/task_database/services/AssetLoader.cpp
     gui/task_database/services/BasketHistory.cpp
+    gui/task_database/services/BasketRow.cpp
     gui/task_database/services/FundamentalService.cpp
     gui/task_database/services/Kline.cpp
     gui/task_database/services/Market.cpp
@@ -341,8 +342,10 @@ set(MATH_PRECISE
     gui/task_features/ui/TabFeature.cpp
     gui/task_features/ui/TabOrderFlow.cpp
     gui/task_features/ui/TabTransform.cpp
-    # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) 的消费者
+    # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) / CTA 模型 (cta/: NaN = 未就绪) 的消费者
     gui/task_factors/TaskFactors.cpp
+    gui/task_factors/services/CtaLib.cpp
+    gui/task_factors/services/CtaService.cpp
     gui/task_factors/services/FactorsBook.cpp
     gui/task_factors/services/FactorsEngine.cpp
     gui/task_factors/services/FactorsFile.cpp
@@ -361,6 +364,7 @@ set(MATH_PRECISE
     gui/task_factors/ui/TabInspect.cpp
     gui/task_factors/ui/TabOperators.cpp
     gui/task_factors/ui/TabPortfolio.cpp
+    gui/task_factors/ui/PortfolioCta.cpp
     gui/task_factors/ui/PortfolioPlot.cpp
     gui/task_factors/ui/PortfolioSheet.cpp
     gui/task_factors/ui/PortfolioView.cpp
@@ -432,7 +436,7 @@ endforeach()
 #     <Tier>_<LVL>_FIELDS(X) 和 #include 清单.
 #   CMAKE_CONFIGURE_DEPENDS 盯住每个文件内容: 改动后下次 build 自动重新 configure.
 # ============================================================================
-set(DAG_SCAN_ROOT     ${INC_ROOT}/features)
+set(DAG_SCAN_ROOT ${INC_ROOT}/features)
 set(DAG_TEMPLATE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/templates)
 # 落盘层名 (与 FeaturesDefine.hpp FeatureLevel / TIER_LEVELS 一致)
 set(DAG_LEVELS L_sec L_1min L_5min L_15min L_30min L_60min L_1day)
@@ -524,13 +528,13 @@ macro(dag_scan)
         ${DAG_TIER_ROOT}/CS/*.hpp)
     list(SORT DAG_SCAN_FILES)
 
-    set(DAG_NODES "")                          # 全部节点名 (发现序)
-    set(DAG_FIELD_OWNERS "")                   # 有任一 FIELDS_ 宏的名字 (节点或非节点列; 发现序)
-    set(DAG_CATEGORIES "")                     # Node/TS/<分类> 或 Node/CS/<分类> 的目录名
-    set(DAG_CAT2S "")                          # 字段表中实际出现过的二级分类 token
-    set(DAG_INCLUDES "")                       # 有 NODE_ / FIELDS_ 的节点文件 (include/ 下相对)
+    set(DAG_NODES "") # 全部节点名 (发现序)
+    set(DAG_FIELD_OWNERS "") # 有任一 FIELDS_ 宏的名字 (节点或非节点列; 发现序)
+    set(DAG_CATEGORIES "") # Node/TS/<分类> 或 Node/CS/<分类> 的目录名
+    set(DAG_CAT2S "") # 字段表中实际出现过的二级分类 token
+    set(DAG_INCLUDES "") # 有 NODE_ / FIELDS_ 的节点文件 (include/ 下相对)
     set(DAG_GEN_MACROS "${DAG_COMMON_MACROS}") # 抽取的 #define/#undef 行 (FieldsGenerated 内联)
-    set(DAG_MACRO_NAMES "")                    # 抽取宏名 (NodesGenerated 先 #undef; 不含 Common)
+    set(DAG_MACRO_NAMES "") # 抽取宏名 (NodesGenerated 先 #undef; 不含 Common)
     foreach(scan_file ${DAG_SCAN_FILES})
         file(RELATIVE_PATH scan_rel ${INC_ROOT} ${scan_file})
         file(RELATIVE_PATH scan_op_rel ${DAG_TIER_ROOT} ${scan_file})
@@ -573,7 +577,7 @@ macro(dag_scan)
             string(REGEX MATCHALL "${port_ref_re}" port_refs "${node_line}")
             string(REGEX REPLACE "${port_ref_re}" " " node_rest "${node_line}")
             string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*\\." node_refs "${node_rest}")
-            set(DAG_DEPS_${node_name} "")    # 节点名 (拓扑排序用)
+            set(DAG_DEPS_${node_name} "") # 节点名 (拓扑排序用)
             set(DAG_DEPREFS_${node_name} "") # "Up" / "Up.port" (node_deps::TABLE 用)
             foreach(ref ${node_refs})
                 string(REGEX REPLACE "\\.$" "" ref "${ref}")
@@ -638,9 +642,9 @@ endmacro()
 macro(dag_emit)
     # NodesGenerated 在 include 节点头前先 #undef 全部抽取宏 (FieldsGenerated 可能已定义同名守卫宏),
     # 让节点头内的定义成为现行定义, 两种 include 顺序都无重复定义诊断.
-    dag_join(DAG_GEN_UNDEFS   "" "#undef "     "\n"   ${DAG_MACRO_NAMES})
+    dag_join(DAG_GEN_UNDEFS "" "#undef " "\n" ${DAG_MACRO_NAMES})
     dag_join(DAG_GEN_INCLUDES "" "#include \"" "\"\n" ${DAG_INCLUDES})
-    dag_join(DAG_GEN_NODES    "" " \\\n  ${DAG_TIER}_NODE_" "(N)" ${DAG_ORDER})
+    dag_join(DAG_GEN_NODES "" " \\\n  ${DAG_TIER}_NODE_" "(N)" ${DAG_ORDER})
 
     set(DAG_GEN_PREV "")
     set(dag_prev DAG_Root)
@@ -710,7 +714,7 @@ endmacro()
 
 function(dag_generate DAG_TIER DAG_NS)
     set(DAG_TIER_ROOT ${DAG_SCAN_ROOT}/Node/${DAG_TIER})
-    set(DAG_GEN_DIR   ${CMAKE_CURRENT_BINARY_DIR}/generated/features/${DAG_TIER})
+    set(DAG_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/features/${DAG_TIER})
     dag_scan()
     dag_sort()
     dag_emit()
@@ -737,7 +741,7 @@ foreach(vendor_dir ${VENDOR_DIRS})
     add_subdirectory(${PKG_ROOT}/${vendor_dir} ${CMAKE_BINARY_DIR}/vendor/${vendor_dir} EXCLUDE_FROM_ALL)
 endforeach()
 
-add_library(tracy  OBJECT ${PKG_ROOT}/tracy/public/TracyClient.cpp)
+add_library(tracy OBJECT ${PKG_ROOT}/tracy/public/TracyClient.cpp)
 add_library(yyjson OBJECT ${PKG_ROOT}/yyjson/yyjson.c)
 target_include_directories(tracy SYSTEM PUBLIC ${PKG_ROOT}/tracy/public/tracy)
 
@@ -828,7 +832,7 @@ add_custom_target(run_main
 
 # 运行时资源: build/<名> ← RES_<名> (字体 / MicroTeX 资源)
 set(RES_fonts ${FONT_ROOT})
-set(RES_res   ${MICROTEX_RES_DIR})
+set(RES_res ${MICROTEX_RES_DIR})
 foreach(res fonts res)
     add_custom_command(TARGET app_main POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${RES_${res}} ${CMAKE_BINARY_DIR}/${res}

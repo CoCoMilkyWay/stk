@@ -1,5 +1,5 @@
-// Factors→Portfolio 页的内部件 (TabPortfolio / PortfolioPlot / PortfolioSheet 三处共用): 页表 / 行色 / 估值口表 / 选中 + 图与右表的入口
-//   TabPortfolio = 头 / 页签 / 布局 / 三级缓存; PortfolioPlot = 主图 (NAV ↔ VAL) + 区间条; PortfolioSheet = 右表 (NAV / VAL / FLOW 同一骨架)
+// Factors→Portfolio 页的内部件 (TabPortfolio / PortfolioPlot / PortfolioSheet / PortfolioCta 共用): 页表 / 行色 / 估值口表 / 选中 + 图与右表的入口
+//   TabPortfolio = 头 / 页签 / 布局 / 三级缓存; PortfolioPlot = 主图 (NAV ↔ VAL) + 区间条; PortfolioSheet = 右表 (各页同一骨架); PortfolioCta = CTA 页的图 + 中栏
 //   图与右表只读 ui 的缓存末级 (ui.der.val / ui.view.val), 写 ui 的交互态 (选中 / 展开 / 区间 / 显隐)
 #pragma once
 
@@ -56,9 +56,17 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 左图 = 右表选中行 (与 NAV 页同一份选中) 自日轴首日开盘起逐分钟累计的净流入, 跨日接续; 档位 日内 / 2日 … 5日 叠在图左上角\n"
      "• y 口径 (图左上角切): 占比 = 累计净流入 / 近 5 日日均成交额 (默认; 分母盘前已定, 开盘即稳, 跨篮子可比) / 金额 = 累计净流入 (亿元)\n"
      "• 开收盘 (图左上角开关, 默认关): 计入首根 09:31 (开盘集合竞价并入) / 末根 15:00 (收盘集合竞价); 关 = 两根的额与净流入都不计 (图与右表同一开关)\n"
-     "• 右表: 日轴各日的净流入占当日成交额 + 档内合计; 过滤条与 NAV / VAL 页同一份\n"
+     "• 右表: 日轴各日的净流入占当日成交额 + 档内合计; 过滤条各页同一份\n"
      "• 历史日 = all.bar 库 L_1min (其后至基本面末日 = bar1m) 合成, 当日 = 新浪快照合成; 不看区间条",
      kBasketGroups, kPickMany, "##pf_flow_tbl"},
+    {"CTA",
+     "CTA = 单标的只做多 band 择时, 参数滚动调优\n"
+     "• 右侧单选一个指数 / 行业 / 概念 / 成分股 (与 VAL 同一份选中); 价格 = all.bar 库合成落盘的 1 分钟价 (篮子 = 同 Assets 口径的点位, 个股 = 后复权价; 首次打开一趟备齐)\n"
+     "• 模型 = 三组部件各选一个: 中线 (ema / kama / mid) · 带 (vol / rng / dev / atr: 上线 / 下线 = 中线 ± k · 半宽) · 分层 (grid / fade / chase)\n"
+     "• 只选模型, 参数滚动选出: 每日以前 W 日 (滚动窗) 各参数组合的目标值拟岭回归曲面, 取最高点用到当日; 前 W 日空仓\n"
+     "• 仓位按本根收盘调到, 成本 = 单边费率 × 换手; 可选目标年化波动定仓 / 不交易带\n"
+     "• 中栏 = 设定 + 光标处所用参数 + 全期指标 (策略 vs 买入持有); 左图 上 = 价格与带, 下 = 仓位 + 净值; 不看区间条",
+     kBasketGroups, kPickOne, "##pf_cta_tbl"},
 };
 
 // 线 ID 后缀 [PairLine]: 线的 ImGui ID = 行 id + 后缀 (主图例显隐 / 行刚选中回默认显隐同一份)
@@ -112,8 +120,12 @@ void RenderPortfolioPlot(PortfolioUIState &ui, const PortfolioAt &pin, bool nav,
 // 区间条 (size): 全段策略线 (nav) / VAL 标的可成交线上拖选 ui.range
 void RenderPortfolioRange(PortfolioUIState &ui, const PortfolioAt &pin, bool nav, const ImVec2 &size);
 
+// ---- CTA 页 (PortfolioCta.cpp) ----
+// 标的 (kPickOne) / 设定变 → 发请求; 画 size 内: 左 = 两图, 右 = 中栏 (设定 + 光标处参数 + 指标); name = 标的行名 (nullptr = 未选)
+void RenderPortfolioCta(CtaService &svc, PortfolioUIState &ui, const char *name, const ImVec2 &size);
+
 // ---- 右表 (PortfolioSheet.cpp) ----
-// 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW; flow_days = FLOW 日轴 (其余页不看); infos = 成分行的近况 / 当日
+// 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW / CTA; flow_days = FLOW 日轴 (其余页不看); infos = 成分行的近况 / 当日
 void RenderPortfolioSheet(PortfolioUIState &ui, int page, const std::vector<misc::Ymd> &flow_days, const StockInfos &infos);
 // 成分行在新浪当日的根 (ui.cons): 成分集 / 行情日 · 快照时刻变了才重取
 void SyncPortfolioCons(PortfolioUIState &ui, const Database::QuoteService &q);

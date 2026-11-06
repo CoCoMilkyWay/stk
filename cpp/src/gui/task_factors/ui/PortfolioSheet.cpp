@@ -1,4 +1,4 @@
-// Factors→Portfolio 右图例 (NAV / VAL / FLOW 同一骨架的右表) — 见 PortfolioCommon.hpp
+// Factors→Portfolio 右图例 (NAV / VAL / FLOW / CTA 同一骨架的右表) — 见 PortfolioCommon.hpp
 #include "gui/task_factors/ui/PortfolioCommon.hpp"
 
 #include "gui/task_factors/ui/TabFactors.hpp" // tip
@@ -99,7 +99,7 @@ void name_tip(const std::string &s) {
     tip("%s", s.c_str());
 }
 
-// ---- 右表 (NAV / VAL / FLOW 同一骨架 table): 列 = 名 + 各段 (Seg) 的列 (SheetCol), 格 = 文本 + 排序键 + 底色名次 (SheetCell);
+// ---- 右表 (各页同一骨架 table): 列 = 名 + 各段 (Seg) 的列 (SheetCol), 格 = 文本 + 排序键 + 底色名次 (SheetCell);
 //      格缓存 (sheet_of: 来源变才整组重填) → 列出 (listing: 篮子组按过滤条, 选中 / 展开行恒列) → 量列出行各列最宽 → 表头排序 (组内) → 画 (sheet) ----
 // 一列: 表头 / 悬停说明 (各列同一格式: "列名 = 全称" + 算法 / 数据 / 显示 / 适用 四行)
 struct SheetCol {
@@ -411,7 +411,7 @@ void bound_chip(const char *id, const char *name, T &lo, T *hi, std::initializer
   ImGui::TextDisabled("(0 = 不限)");
   ImGui::EndPopup();
 }
-// 篮子组右表的过滤条 (三页同一份): [只数 …] [市值 …] [|流入| …] 列出 / 总数; 改动下帧生效
+// 篮子组右表的过滤条 (各页同一份): [只数 …] [市值 …] [|流入| …] 列出 / 总数; 改动下帧生效
 void filter_bar(BasketFilter &f, size_t listed, size_t total) {
   const auto pct = [](float v) {
     char s[16];
@@ -428,12 +428,12 @@ void filter_bar(BasketFilter &f, size_t listed, size_t total) {
   ImGui::SameLine();
   ImGui::TextDisabled("%zu/%zu", listed, total);
   if (ImGui::IsItemHovered())
-    tip("过滤本组的行 (指数 / 行业 / 概念各一份, NAV / VAL / FLOW 三页共用): 只数 / 总市值 [亿元] 在区间内, |资金流入| [%%] ≥ 下限\n"
+    tip("过滤本组的行 (指数 / 行业 / 概念各一份, 各页共用): 只数 / 总市值 [亿元] 在区间内, |资金流入| [%%] ≥ 下限\n"
         "• 点一项 = 弹出: 预设 (点即设) / 精确输入 (0 = 该端不限); 设了的项按下色\n"
         "• 设了的条件缺值 (行情未到 / 无新浪行情日) 即不列; 已选中 / 展开的行恒列\n"
         "• 本处 = 列出 / 总数");
 }
-// 右表的一段列 (三页由段拼成, 同一段三页同一份): 列 + 表行的格 + 悬停格
+// 右表的一段列 (各页由段拼成, 同一段各页同一份): 列 + 表行的格 + 悬停格
 struct Seg {
   std::vector<SheetCol> cols;
   std::function<void(const RowSrc &, size_t, PortfolioSheet &, SheetCell *)> cell; // 表行 (源, 下标) → 段内格 out[0, cols)
@@ -494,7 +494,7 @@ std::vector<size_t> listing(PortfolioUIState &ui, const PortfolioSheet &ps, cons
     filter_bar(ui.filter[g], o.size(), n);
   return o;
 }
-// 页 page 的右表 (三页同一条; 组 = 类别条选中的): 格 (sheet_of) → 列出 (listing) → 画 (sheet: 点表行 = 按页的选中方式选 / 取消,
+// 页 page 的右表 (各页同一条; 组 = 类别条选中的): 格 (sheet_of) → 列出 (listing) → 画 (sheet: 点表行 = 按页的选中方式选 / 取消,
 // 悬停数值格 → 所在段的 tip)
 void table(PortfolioUIState &ui, const StockInfos &infos, const PortfolioDerived &d, int page, const SheetCol &name, const std::vector<Seg> &segs,
            std::vector<misc::Ymd> days = {}, bool ends = false) {
@@ -518,7 +518,7 @@ void table(PortfolioUIState &ui, const StockInfos &infos, const PortfolioDerived
       });
   ImGui::PopID();
 }
-// 段: 当日四列 (三页同一份)
+// 段: 当日四列 (各页同一份)
 Seg today_seg() {
   return {{std::begin(kTodayCols), std::end(kTodayCols)},
           [](const RowSrc &, size_t t, PortfolioSheet &p, SheetCell *out) { today_cells(p.today[t], out); },
@@ -618,8 +618,8 @@ void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• 因子 = 单因子各自的 G20 多头净值: 可成交列 = 有冲击 (它自己的冲击段: Lob 最小金额段 / Bar 固定冲击), 理想列 = 无冲击\n"
         "• 策略 = 本组合 G20 多头: 可成交列 = 有冲击, 理想列 = 无冲击\n"
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
-        "• 指数 / 行业 / 概念表上过滤条 (与 VAL / FLOW 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 已画 / 展开的行恒列\n"
-        "• 指数 / 行业 / 概念行名前 ▸ = 展开成分股 (至多一行, 三页同一份): 该行钉在表头下, 成分接在其下 (列同篮子行, 不能算的 -);\n"
+        "• 指数 / 行业 / 概念表上过滤条 (各页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 已画 / 展开的行恒列\n"
+        "• 指数 / 行业 / 概念行名前 ▸ = 展开成分股 (至多一行, 各页同一份): 该行钉在表头下, 成分接在其下 (列同篮子行, 不能算的 -);\n"
         "  成分行 = 后复权收盘 (两条同一条), 与组内行同一套: 点 = 选中 (主图 + 日内栏 / FLOW 图; 至多 64 只), 收起后选中的照画\n"
         "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
   table(ui, infos, d, kPageNav, kNavName, {recent_seg(ui.basket.feed), today_seg(), num_seg(v)});
@@ -683,8 +683,8 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
         "• Band = 价格 × 当日收益率 / q, q = 窗内 5/10/25/50/75/90/95%% 贵度分位的收益率 (与倍数口径的 Band 同一条线);\n"
         "  当日 ≤ 0 或窗内收益率 > 0 的日子不足 80%% 整段不画, 某档 q ≤ 0 该档线断开 (价格无解); 分位照常. 最便宜档以下绿 → 最贵档以上红\n"
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
-        "• 表上过滤条 (与 NAV / FLOW 页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中 / 展开行恒列\n"
-        "• 行名前 ▸ = 展开成分股 (至多一行, 三页同一份; 该行钉在表头下): 各口 = 该股本只的估值分位 (底色 = 成分之间名次); 点成分行 = 选该股\n"
+        "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中 / 展开行恒列\n"
+        "• 行名前 ▸ = 展开成分股 (至多一行, 各页同一份; 该行钉在表头下): 各口 = 该股本只的估值分位 (底色 = 成分之间名次); 点成分行 = 选该股\n"
         "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
   table(ui, infos, d, kPageVal, kValName, {today_seg(), val_seg(v)});
 }
@@ -772,10 +772,30 @@ void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vec
     tip("点行 = 选中 / 取消, 选中 = 左图画该篮子的累计净流入 (与 NAV 页同一份选中: 这里选的 NAV 主图 / 日内栏也画); 选中换组保留\n"
         "• 指数 = 各池 (all 池拆 全A.等 / 全A.加); 行业 = 申万一级; 概念 = 东财题材概念 (全A 内切)\n"
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
-        "• 表上过滤条 (与 NAV / VAL 页同一份): 按只数 / 总市值 / |当日资金流入| 筛本组的行, 已画 / 展开的行恒列\n"
-        "• 行名前 ▸ = 展开成分股 (至多一行, 三页同一份; 该行钉在表头下): 资金流只当日; 点成分行 = 选中, 左图画它 (个股历史 + 新浪当日, 跨日接续)\n"
+        "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |当日资金流入| 筛本组的行, 已画 / 展开的行恒列\n"
+        "• 行名前 ▸ = 展开成分股 (至多一行, 各页同一份; 该行钉在表头下): 资金流只当日; 点成分行 = 选中, 左图画它 (个股历史 + 新浪当日, 跨日接续)\n"
         "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
   table(ui, infos, d, kPageFlow, kFlowNameCol, {today_seg(), flow_seg(ui.basket, days)}, days, ui.basket.flow_ends);
+}
+
+// ---- CTA 右图例: 类别条 (指数 / 行业 / 概念) + 过滤条; 表 = 该组一行一篮子, 点行 = 选为回测标的 (与 VAL 同一份单选). 列 = 中文名 | 当日四列 ----
+const SheetCol kCtaName = {"名", "名 = 篮子名\n"
+                                 "• 算法: 切片名 + .等 (等权) / .加 (总市值加权)\n"
+                                 "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念; 回测价格 = all.bar 库合成的 1 分钟点位 (同 Assets 篮子口径)\n"
+                                 "• 显示: 超长截断补 …, 悬停看全名; 选中行高亮 (左图回测它)\n"
+                                 "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 点成分行 = 回测该股 (后复权 1 分钟价)\n"
+                                 "• 适用: 指数 / 行业 / 概念"};
+void legend_cta(PortfolioUIState &ui, const PortfolioDerived &d, const StockInfos &infos) {
+  button_bar(kRowGroupName, kPageDefs[kPageCta].groups, ui.cat[kPageCta]);
+  ImGui::SameLine();
+  ImGui::TextColored(kHead, "(单选)");
+  if (ImGui::IsItemHovered())
+    tip("类别条选一组 (指数 = 各池, 行业 = 申万一级, 概念 = 东财题材概念), 点行 / 成分行选一个 = 左图回测它 (与 VAL 页同一份选中); 再点 = 取消\n"
+        "• 篮子价格 = all.bar 库逐日合成 (成员 / 权重 / 基准取前一日收盘, 同 Assets 篮子), 存在库目录 cta/ 下续算; 首次要合成全库, 之后只补新日\n"
+        "• 成分股价格 = 同一合成 (单成员, 基准 = 前收 ⇒ 后复权), 不落盘, 最近几只留在内存\n"
+        "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中 / 展开行恒列\n"
+        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
+  table(ui, infos, d, kPageCta, kCtaName, {today_seg()});
 }
 
 } // namespace
@@ -787,8 +807,10 @@ void RenderPortfolioSheet(PortfolioUIState &ui, int page, const std::vector<misc
     legend_nav(ui, d, v, infos);
   else if (page == kPageVal)
     legend_val(ui, d, v, infos);
-  else
+  else if (page == kPageFlow)
     legend_flow(ui, d, flow_days, infos);
+  else
+    legend_cta(ui, d, infos);
 }
 
 void SyncPortfolioCons(PortfolioUIState &ui, const Database::QuoteService &q) {
