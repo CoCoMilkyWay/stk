@@ -4,6 +4,7 @@
 //   时间 = YYYYMMDD (日线) / YYYYMMDDHHMM (分钟); 某资产某根无数据 = NaN
 //   载入即转成资产主序 [B][T][F]: 单资产时序连续
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
