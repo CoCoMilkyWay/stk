@@ -100,7 +100,7 @@ std::pair<int, size_t> seg_at(const cta::Track &tr, size_t i) {
 
 // ---- 两图: 上 = 仓位色 (多 = 收盘线以上, 空 = 以下, 越满越浓) + 收盘 + 上线 / 下线 (带间填色) + 中线 + 分层线 (等差 / 等比) + 逐根时的买 / 卖标记;
 //      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换). x 同一视野 (链到 ui), 每像素取末根; 光标 = 可拖竖线 (两图同一条)
-//      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 价格图右上角 "全段" 回全段;
+//      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 双击回全段;
 //      光标 = 橙色竖线 (同 OrderFlow 锚线): 参数点云展开时才出现 (初放视野正中), 只能拖动, 标注时刻 ----
 void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &size) {
   const cta::Series &se = *r.se;
@@ -160,14 +160,14 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
   const double pad = static_cast<double>(n) * 0.02 + 10.0;
   bool pinned = c.cloud_open && c.cursor < 0, reset = false;
   double pin = c.cursor >= 0 ? c.cursor : std::clamp((c.x0 + c.x1) / 2, 0.0, static_cast<double>(n - 1));
-  ImVec2 px_corner(-1, -1); // 价格图右上角 (回全段按钮)
   const auto setup_x = [&](ImPlotAxisFlags f) {
     ImPlot::SetupAxis(ImAxis_X1, nullptr, f);
     ImPlot::SetupAxisLinks(ImAxis_X1, &c.x0, &c.x1);
     ImPlot::SetupAxisFormat(ImAxis_X1, x_formatter, &fmt);
     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, -pad, static_cast<double>(n) + pad);
   };
-  const auto track = [&](int id) { // 光标 (同 OrderFlow 锚线): 左键拖动, 松手停住
+  const auto track = [&](int id) { // 双击 = 回全段; 光标 (同 OrderFlow 锚线): 左键拖动, 松手停住
+    reset |= ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
     if (c.cloud_open)
       pinned |= ImPlot::DragLineX(id, &pin, kPinCol, 2.0f, ImPlotDragToolFlags_NoFit);
   };
@@ -246,7 +246,6 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
       ImPlot::Annotation(static_cast<double>(i), se.c[i], kPinCol, ImVec2(5, -15), true, "%s", when(r, i).c_str());
     }
     c.boxing = ImPlot::IsPlotSelected();
-    px_corner = ImVec2(ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x, ImPlot::GetPlotPos().y);
     ImPlot::EndPlot();
   }
   ImVec2 corner(-1, -1); // 净值图右上角 (轴切换按钮)
@@ -310,10 +309,6 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     int cur = c.nav_log ? 0 : 1;
     if (button_bar(kScale, 2, cur))
       c.nav_log = cur == 0;
-  }
-  if (px_corner.x >= 0) { // 价格图右上角: 回全段
-    ImGui::SetCursorScreenPos(ImVec2(px_corner.x - ImGui::CalcTextSize("全段").x - 2 * st.FramePadding.x - 4, px_corner.y + 4));
-    reset |= ImGui::SmallButton("全段");
   }
   ImPlot::PopStyleVar(2);
   ImPlot::GetInputMap() = keep;
