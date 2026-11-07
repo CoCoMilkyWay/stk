@@ -1,8 +1,8 @@
 #pragma once
 
 // 调参: 优化目标 (模型表 kGoals; split = 逐根链的汇 Split, 累成日前缀取窗) + 参数网格 Grid (格点 + 中心可移的网格 + 其上的岭回归曲面)
-//   参数轴 = 自 v0 向两侧铺的格点 (相邻之比 r = 对数步长, 可配; 间距不小于轴的基本单位), 一个配置 = 各轴格点号 Q, 以根计的参数由它查 (Grid::p)
-//   网格 = 中心周围各轴 m 个格点的全部组合 (≥ kMinGrid 个配置); 一点在网格内 = 各轴下标 At
+//   参数轴 = 自 v0 向两侧铺的格点 (相邻之比 kStep; 间距不小于轴的基本单位), 一个配置 = 各轴格点号 Q, 以根计的参数由它查 (Grid::p)
+//   网格 = 中心周围各轴 m 个相邻格点的全部组合 (配置数可配, 由各多值轴轮流分得 m); 一点在网格内 = 各轴下标 At
 //   每日重拟: 窗 = 此前至多 W 日 (不足 = 自首日起, expanding); 最高点落在网格边上 → 以它为中心移网格再拟 (Trace.hpp)
 //   岭回归曲面 (网格上): 特征 = 各多值参数轴的网格内下标坐标 u ∈ [−1, 1] 的二次项 (u, u² (≥ 3 值的轴), 两两 u · u'), 去均值 → X [n][d];
 //     ŷ = ȳ + X (XᵀX + λ · n · I)⁻¹ Xᵀ (y − ȳ) = ȳ + X Z y (X 去均值 ⇒ Z · 1 = 0); Z [d][n] 只看网格, 预先算好; 拟合最高点 = 平原顶
@@ -216,7 +216,7 @@ inline Ridge ridge_of(const std::vector<size_t> &m, const std::vector<At> &at) {
 // 一个配置 = 各轴的格点号 q (按组序拼成一条; q = 0 = v0), 参数值查轴的格点表 (Grid::value)
 using Q = std::vector<int>;
 
-inline constexpr size_t kMinGrid = 100; // 网格至少的配置数: 多值轴每轴 m = ⌈kMinGrid^(1 / 多值轴数)⌉ 个格点
+inline constexpr double kStep = 1.41421356; // 相邻格点之比 (大值处; 小值处退成等差 u)
 
 // 一组模型的格点 + 中心可移的网格 + 网格上的岭回归曲面
 //   网格 = 中心 c 周围各轴 m 个相邻格点的全部组合 (收进硬边界); 岭回归只看网格内下标, 与中心无关, 预先算好
@@ -224,12 +224,11 @@ struct Grid {
   Kinds kinds{};
   size_t dir = kLong;                   // 方向 (kDirs 下标)
   size_t S = 0;                         // 每日根数 (以日计的轴 × S)
-  double r = 0;                         // 对数步长: 相邻格点之比 (间距不小于轴的基本单位)
   std::vector<const Axis *> ax;         // [轴] 按组序拼成一条
   std::vector<size_t> off;              // [组 + 1] 组 j 的轴 = [off[j], off[j + 1])
   std::vector<int> lo, hi;              // [轴] 格点号的硬边界 (固定轴 = 0, 0)
   std::vector<std::vector<double>> val; // [轴][q − lo] 格点值
-  std::vector<size_t> m;                // [轴] 网格格点数 (固定轴 = 1)
+  std::vector<size_t> m;                // [轴] 网格格点数 (固定轴 = 1; 各轴之积 ≤ 配置数)
   std::vector<At> at;                   // [网格配置] 各轴网格内下标 ∈ [0, m)
   Ridge ridge;
 
@@ -277,36 +276,40 @@ struct Grid {
   Ladder ladder(const Q &q) const { return ladder_of(kinds[kLadder], p(q, kLadder), dir); }
 };
 
-// S = 每日根数, k = 各组所选模型, dir = 方向, r = 对数步长 (> 1)
-inline Grid grid_of(size_t S, const Kinds &k, size_t dir, double r) {
-  assert(r > 1 && "对数步长");
-  Grid g{.kinds = k, .dir = dir, .S = S, .r = r};
+// S = 每日根数, k = 各组所选模型, dir = 方向, n = 网格配置数上限 (≥ 1)
+inline Grid grid_of(size_t S, const Kinds &k, size_t dir, size_t n) {
+  assert(n >= 1 && "网格配置数");
+  Grid g{.kinds = k, .dir = dir, .S = S};
   g.off.push_back(0);
   for (size_t j = 0; j < kNP; ++j) {
     for (const Axis &a : kParts[j].kinds[k[j]].axes)
       g.ax.push_back(&a);
     g.off.push_back(g.ax.size());
   }
-  size_t nfree = 0; // 多值轴数
   for (const Axis *a : g.ax) {
     assert(a->lo <= a->v0 && a->v0 <= a->hi && a->u > 0 && "参数轴: 中心在边界内, 单位为正");
     std::vector<double> dn, up; // 自 v0 向下 / 向上
-    for (double v = a->v0, w; (w = std::min(v / r, v - a->u)) >= a->lo * (1 - 1e-9);)
+    for (double v = a->v0, w; (w = std::min(v / kStep, v - a->u)) >= a->lo * (1 - 1e-9);)
       dn.push_back(v = w);
-    for (double v = a->v0, w; (w = std::max(v * r, v + a->u)) <= a->hi * (1 + 1e-9);)
+    for (double v = a->v0, w; (w = std::max(v * kStep, v + a->u)) <= a->hi * (1 + 1e-9);)
       up.push_back(v = w);
     g.lo.push_back(-static_cast<int>(dn.size()));
     g.hi.push_back(static_cast<int>(up.size()));
     std::vector<double> &t = g.val.emplace_back(dn.rbegin(), dn.rend());
     t.push_back(a->v0);
     t.insert(t.end(), up.begin(), up.end());
-    nfree += g.hi.back() > g.lo.back();
   }
-  size_t m = 1;
-  while (nfree && std::pow(static_cast<double>(m), static_cast<double>(nfree)) < static_cast<double>(kMinGrid))
-    ++m;
-  for (size_t a = 0; a < g.ax.size(); ++a)
-    g.m.push_back(std::min(m, static_cast<size_t>(g.hi[a] - g.lo[a] + 1)));
+  // 配置数分到各轴: 每次给格点最少 (未铺满整轴) 的轴加一个, 积不超过 n
+  g.m.assign(g.ax.size(), 1);
+  for (size_t prod = 1;;) {
+    size_t a = g.ax.size();
+    for (size_t b = 0; b < g.ax.size(); ++b)
+      if (g.m[b] < static_cast<size_t>(g.hi[b] - g.lo[b] + 1) && (a == g.ax.size() || g.m[b] < g.m[a]))
+        a = b;
+    if (a == g.ax.size() || prod / g.m[a] * (g.m[a] + 1) > n)
+      break;
+    prod = prod / g.m[a] * (g.m[a] + 1), ++g.m[a];
+  }
   At at(g.ax.size(), 0);
   do
     g.at.push_back(at);

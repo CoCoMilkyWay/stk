@@ -416,8 +416,8 @@ void model_combo(const char *id, const Xs &xs, size_t &cur, const std::string &h
   }
 }
 
-// ---- 参数点云: 光标日网格各配置在行为坐标 (cloud_of: 其选参窗内逐日目标值的前 3 主成分) 里的 3 维散点;
-//      着色 = 窗内目标值 (拟合 / 实际), 圈 = 岭最优点; 正交投影, 左键拖动旋转, 悬停看配置 ----
+// ---- 参数点云: 至光标日打过分的配置在行为坐标 (cloud_of: 其选参窗内逐日目标值的前 3 主成分) 里的 3 维散点;
+//      当日网格着色 = 窗内目标值 (拟合 / 实际), 圈 = 岭最优点; 其余 = 历史点, 淡画垫底; 正交投影, 左键拖动旋转, 悬停看配置 ----
 
 // 配置 q 的参数: 一组一行 (组名 模型  轴 = 值 …)
 std::string params_of(const cta::Grid &g, const cta::Q &q) {
@@ -454,23 +454,27 @@ void cloud(CtaUIState &c, const CtaResult &r) {
   }
   const std::vector<cta::Q> g = tr.grid.around(pk.center);
   const size_t ng = g.size(), d0 = pk.from;
-  std::vector<const cta::Terms *> acc(ng);
+  std::vector<uint32_t> id(ng); // [点] pts 下标: 当日网格 [0, ng) + 历史点 (至当日打过分、不在当日网格的配置) [ng, ns)
+  std::vector<char> now(pk.seen, 0);
   std::vector<double> real(ng);
   size_t best = ng;
   for (size_t x = 0; x < ng; ++x) {
-    const uint32_t k = tr.index.at(g[x]);
-    acc[x] = &tr.acc[k], real[x] = acc[x]->over(d0, d);
-    if (static_cast<int>(k) == pk.pt)
+    id[x] = tr.index.at(g[x]), now[id[x]] = 1, real[x] = tr.acc[id[x]].over(d0, d);
+    if (static_cast<int>(id[x]) == pk.pt)
       best = x;
   }
   assert(best < ng && "当日所用配置在当日网格内");
+  for (uint32_t k = 0; k < pk.seen; ++k)
+    if (!now[k])
+      id.push_back(k);
+  const size_t ns = id.size();
   const std::vector<double> fit = tr.grid.ridge.fit(real);
-  if (c.cloud_gen != r.gen || c.cloud_day != d) { // 坐标: 窗内逐日目标值 → 前 3 主成分; 各成分朝拟合值升的一侧
-    std::vector<float> score((d - d0) * ng);
+  if (c.cloud_gen != r.gen || c.cloud_day != d) { // 坐标: 窗内逐日目标值 → 前 3 主成分; 各成分朝当日网格拟合值升的一侧
+    std::vector<float> score((d - d0) * ns);
     for (size_t e = d0; e < d; ++e)
-      for (size_t x = 0; x < ng; ++x)
-        score[(e - d0) * ng + x] = static_cast<float>(acc[x]->over(e, e + 1));
-    c.cloud = cta::cloud_of(score, ng), c.cloud_gen = r.gen, c.cloud_day = d;
+      for (size_t x = 0; x < ns; ++x)
+        score[(e - d0) * ns + x] = static_cast<float>(tr.acc[id[x]].over(e, e + 1));
+    c.cloud = cta::cloud_of(score, ns), c.cloud_gen = r.gen, c.cloud_day = d;
     const double fm = std::accumulate(fit.begin(), fit.end(), 0.0) / static_cast<double>(ng);
     for (size_t k = 0; k < 3; ++k) {
       double s = 0;
@@ -484,7 +488,8 @@ void cloud(CtaUIState &c, const CtaResult &r) {
   const cta::Cloud &cl = c.cloud;
   ImGui::TextDisabled("%s  ·  主成分 %.0f / %.0f / %.0f%%", misc::dash(day_of(r, i)).c_str(), cl.share[0] * 100, cl.share[1] * 100, cl.share[2] * 100);
   if (ImGui::IsItemHovered())
-    tip("点 = 光标日 (主图可拖竖线) 的参数网格各配置; 坐标 = 各配置在当日选参窗内逐日目标值序列的前 3 主成分 (表现相近的配置挨在一起; 各成分朝拟合值升的一侧),\n"
+    tip("彩点 = 光标日 (主图可拖竖线) 的参数网格各配置; 淡点 = 历史点: 至当日打过分 (网格移动留下)、不在当日网格的配置\n"
+        "坐标 = 两者一起在当日选参窗内逐日目标值序列的前 3 主成分 (表现相近的配置挨在一起; 各成分朝当日网格拟合值升的一侧),\n"
         "百分比 = 各主成分占配置间总方差; 着色 = 窗内目标值: 拟合 = 岭回归曲面 / 实际 = 逐点; 圈 = 岭最优点 (当日所用)\n"
         "• 左键拖动旋转, 悬停看配置");
   const std::vector<double> &v = c.cloud_fit ? fit : real;
@@ -535,13 +540,18 @@ void cloud(CtaUIState &c, const CtaResult &r) {
       dl->AddText(corner(1 << k), ImGui::GetColorU32(ImGuiCol_TextDisabled), kAxis[k]);
   }
 
-  // 点: 远的先画; 近大远小; 悬停取屏幕上最近的点
-  std::vector<Px> px(ng);
+  // 点: 历史点垫底 (淡, 小, 无描边); 当日网格远的先画, 近大远小; 悬停取屏幕上最近的当日点
+  std::vector<Px> px(ns);
   std::vector<size_t> ord(ng);
+  for (size_t x = 0; x < ns; ++x)
+    px[x] = at(x);
   for (size_t x = 0; x < ng; ++x)
-    px[x] = at(x), ord[x] = x;
+    ord[x] = x;
   std::sort(ord.begin(), ord.end(), [&](size_t a, size_t b) { return px[a].z > px[b].z; });
   const float r0 = std::max(3.0f, ImGui::GetFontSize() * 0.32f);
+  const ImU32 faint = ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.2f);
+  for (size_t x = ng; x < ns; ++x)
+    dl->AddCircleFilled(px[x].p, 0.6f * r0 * (1.0f - 0.25f * px[x].z), faint);
   const ImVec2 mouse = ImGui::GetIO().MousePos;
   int hot = -1;
   float dmin = FLT_MAX;
@@ -601,7 +611,7 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
   CtaSpec &sp = c.spec;
   const float x0 = ImGui::GetCursorPosX();
   float lw = 0.0f; // 名列宽 (控件 / 灰显参数都从这里起)
-  for (const char *s : {"滚动窗 (日)", "对数步长", "模型", "方向", "佣金 (bp)", "印花税 (bp)", "冲击 (bp)", "目标年化波动", "不交易带"})
+  for (const char *s : {"滚动窗 (日)", "网格配置数", "模型", "方向", "佣金 (bp)", "印花税 (bp)", "冲击 (bp)", "目标年化波动", "不交易带"})
     lw = std::max(lw, ImGui::CalcTextSize(s).x);
   lw += ImGui::GetStyle().ItemSpacing.x;
   const auto label = [&](const char *s) {
@@ -627,15 +637,16 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
         "首日 / 窗内根数不足窗长一半 / 窗内各配置的带都未就绪 = 买入持有 (与基准同口径)\n"
         "• 编辑完生效",
         cta::kMinRoll);
-  label("对数步长");
-  ImGui::InputFloat("##cta_step", &sp.step, 0.05f, 0.2f, "%.3f");
-  sp.step = std::clamp(sp.step, 1.05f, 4.0f);
+  label("网格配置数");
+  ImGui::InputInt("##cta_grid", &sp.grid, 10, 50);
+  sp.grid = std::clamp(sp.grid, 8, 1000);
   c.editing |= ImGui::IsItemActive();
   if (ImGui::IsItemHovered())
-    tip("参数轴 = 自 v0 向两侧铺的格点, 相邻之比 r, 间距不小于各轴基本单位 (小值处退成等差), 收进各轴硬边界; 网格 = 中心周围各多值轴 m 个格点的全部组合 (≥ %zu 个配置)\n"
+    tip("参数轴 = 自 v0 向两侧铺的格点, 相邻之比 %.3g, 间距不小于各轴基本单位 (小值处退成等差), 收进各轴硬边界\n"
+        "网格 = 以当前最优为中点、各多值轴 m 个相邻格点的全部组合 (碰到硬边界则整格平移进界); 各轴的 m 轮流分得 (每次给格点最少的轴加一个), 积不超过此数\n"
         "每日最高点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日\n"
         "• 编辑完生效",
-        cta::kMinGrid, cta::kHops);
+        cta::kStep, cta::kHops);
   hint("各组只选模型, 参数每日以此前至多 W 日的网格曲面最高点选出, 网格随最高点移动");
   c.cloud_open = r && ImGui::CollapsingHeader("参数点云");
   if (c.cloud_open)
