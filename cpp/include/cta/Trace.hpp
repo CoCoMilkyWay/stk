@@ -1,17 +1,16 @@
 #pragma once
 
-// 单资产的滚动调参全期轨迹 (只用本资产, 不用未来信息); 各遍同一骨架: 逐根核串起来跑, 不落中间列
-//   打分 (格点首次进网格时, 一批): 取列 (串行, 写 Tape) → Signal → Size → Split 全期一遍 (并行, 只读 Tape), 出目标项日前缀
+// 单资产的滚动调参全期轨迹 (只用本资产, 不用未来信息); 各遍同一骨架: 逐根链 drive (Engine.hpp), 只换源与汇, 不落中间列
+//   打分 (格点首次进网格时, 一批): 取列 (串行, 写 Tape) → drive (Signal → Split) 全期一遍 (并行, 只读 Tape), 出目标项日前缀
 //   选参 (逐日): 以此前至多 W 日 (不足 W 日 = 自首日起全部, expanding) 网格各配置的目标值拟岭回归曲面 (Tune.hpp), 最高点配置用到当日;
 //         最高点落在网格边上 (未到硬边界) → 以它为中心移网格, 补打新格点再拟, 当日至多 kHops 次; 中心留到次日 (各日只读当日之前的窗)
 //         (首日 / 窗内根数不足窗长一半 / 窗内各配置的带都未就绪 = 未选参, 买入持有, 与基准同口径)
 //         各配置的目标项日前缀留作 acc (参数点云: 某日网格各配置在其选参窗内的逐日目标值 → 行为坐标 cloud_of, 着色 = 窗内目标值)
-//   拼接遍 (串行, 逐日): 信号核无状态, 只跑当日选中配置, 刀写进轨迹列 Cuts
-//   回测: 轨迹的刀 → Size → Pnl (切换计成本, 成本分项见 Engine.hpp); 买入持有 = 满仓不动 (不定仓, 无不交易带, 无层线 / 越线差)
+//   拼接遍 (串行, 逐日): 信号核无状态, 只跑当日的源 (选中配置的 Signal / 未选参 = Hold), 刀写进轨迹列 Cuts
+//   两本账: drive (Cuts → Pnl) = 策略 (切换计成本, 成本分项见 Engine.hpp) ↔ drive (Hold → Pnl, 仓位层不调) = 买入持有 (满仓不动, 无层线 / 越线差)
 #include "cta/Metrics.hpp"
 #include "cta/Tune.hpp"
 
-#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -33,16 +32,22 @@ struct Cloud {
 
 inline constexpr int kHops = 8; // 一日内最多移网格几次
 
+// 一日的选参
+struct Pick {
+  Q center;        // 网格中心 (未选参 = 空)
+  size_t from = 0; // 选参窗首日
+  int pt = -1;     // 所用配置 (pts 下标; −1 = 未选参)
+};
+
 struct Track {
   Grid grid;                               // 所选模型的格点 + 网格 + 曲面
+  Ladder lad;                              // 各配置同一分层 (参数固定): 层线 / 越线差
   std::vector<Q> pts;                      // [配置] 打过分的格点, 按首次进网格的先后
   std::map<Q, uint32_t> index;             // 格点 → pts 下标
   std::vector<Terms> acc;                  // [配置] 目标项日前缀
-  std::vector<Q> center;                   // [日] 当日网格中心 (未选参日 = 空)
-  std::vector<size_t> from;                // [日] 选参窗首日
-  std::vector<int> pick;                   // [日] 当日所用配置 (pts 下标; −1 = 未选参); 日下标同 days_of
+  std::vector<Pick> pick;                  // [日] 日下标同 days_of
   std::vector<std::pair<size_t, int>> seg; // 选参段: (起根, pts 下标; −1 = 未选参), 起根升序
-  Cuts cut;                                // [根] 当日选中配置的刀 (未选参日: 带 NaN / 仓 1 = 买入持有)
+  Cuts cut;                                // [根] 当日源的刀 (未选参日 = Hold: 带 NaN / 仓 1)
   Book strat, hold;                        // 策略 / 买入持有
 };
 
@@ -119,10 +124,11 @@ bool trace(const Series &se, Grid grid, size_t goal, size_t W, const Setup &u, E
   const Days days = days_of(se, S);
   const size_t n = se.c.size(), nd = days.size();
   assert(n > 1 && W >= kMinRoll && nd > 1 && "样本须跨 2 日以上");
-  for (size_t a = grid.ax.size() - kParts[kLayer].kinds[grid.kinds[kLayer]].axes.size(); a < grid.ax.size(); ++a)
+  for (size_t a = grid.off[kLadder]; a < grid.off[kLadder + 1]; ++a)
     assert(grid.lo[a] == grid.hi[a] && "分层参数固定");
-  const Ladder m = grid.ladder(grid.home()); // 拼成的刀列的分层 (越线差按其层线计)
+  const Ladder lad = grid.ladder(grid.home());
   Tape t(se, S);
+  const Size size(t, u.sizing, u.bpy);
 
   std::vector<Q> pts;
   std::map<Q, uint32_t> index;
@@ -141,23 +147,13 @@ bool trace(const Series &se, Grid grid, size_t goal, size_t W, const Setup &u, E
       if (stop())
         return;
       const size_t x = b + static_cast<size_t>(k);
-      const Signal sig = grid.signal(t, pts[x], src[x]);
-      Size size(t, u);
-      Split split = goal_of(goal, t, u, sig.layer, nd);
-      for (size_t e = 0; e < nd; ++e) {
-        for (size_t i = days.off[e]; i < days.off[e + 1]; ++i) {
-          const Cut c = sig(i);
-          split(i, c, size(i, c.w));
-        }
-        split.seal();
-      }
+      Split split = goal_of(goal, t, lad, nd);
+      drive(t, days, lad, u.rates, size, grid.signal(t, pts[x], src[x]), split);
       acc[x] = std::move(split.acc);
     });
   };
 
-  std::vector<int> pick(nd, -1);
-  std::vector<Q> center(nd);
-  std::vector<size_t> from(nd);
+  std::vector<Pick> pick(nd);
   Q c = grid.home();
   std::vector<double> y(grid.at.size());
   for (size_t d = 1; d < nd; ++d) {
@@ -182,37 +178,36 @@ bool trace(const Series &se, Grid grid, size_t goal, size_t W, const Setup &u, E
         c = q;
         continue;
       }
-      pick[d] = static_cast<int>(index.at(q)), center[d] = c, from[d] = d0;
+      pick[d] = {c, d0, static_cast<int>(index.at(q))};
       break;
     }
   }
 
   Cuts cut(n);
   for (size_t d = 0; d < nd; ++d) {
-    if (pick[d] < 0) {
-      std::fill(cut.w.begin() + static_cast<std::ptrdiff_t>(days.off[d]), cut.w.begin() + static_cast<std::ptrdiff_t>(days.off[d + 1]), 1.0f);
-      continue;
-    }
-    const size_t x = static_cast<size_t>(pick[d]);
-    const Signal sig = grid.signal(t, pts[x], src[x]);
-    for (size_t i = days.off[d]; i < days.off[d + 1]; ++i)
-      cut.put(i, sig(i));
+    const auto put = [&](const auto &source) {
+      for (size_t i = days.off[d]; i < days.off[d + 1]; ++i)
+        cut.put(i, source(i));
+    };
+    if (const int x = pick[d].pt; x < 0)
+      put(Hold{});
+    else
+      put(grid.signal(t, pts[static_cast<size_t>(x)], src[static_cast<size_t>(x)]));
   }
 
   out.seg.clear();
   for (size_t d = 0; d < nd; ++d)
-    if (days.off[d] < days.off[d + 1] && (out.seg.empty() || out.seg.back().second != pick[d]))
-      out.seg.emplace_back(days.off[d], pick[d]);
-  Cuts hold(n);
-  std::fill(hold.w.begin(), hold.w.end(), 1.0f);
-  out.strat = book_of(t, cut, m, u);
-  Setup still = u;
-  still.vol = still.buffer = 0;
-  out.hold = book_of(t, hold, m, still);
+    if (days.off[d] < days.off[d + 1] && (out.seg.empty() || out.seg.back().second != pick[d].pt))
+      out.seg.emplace_back(days.off[d], pick[d].pt);
+  Pnl strat(t), hold(t);
+  drive(t, days, lad, u.rates, size, cut, strat);
+  drive(t, days, lad, u.rates, Size(t, {}, u.bpy), Hold{}, hold);
+  out.strat = book_of(t, std::move(strat.run), u.bpy);
+  out.hold = book_of(t, std::move(hold.run), u.bpy);
   out.cut = std::move(cut);
-  out.grid = std::move(grid);
+  out.grid = std::move(grid), out.lad = lad;
   out.pts = std::move(pts), out.index = std::move(index), out.acc = std::move(acc);
-  out.center = std::move(center), out.from = std::move(from), out.pick = std::move(pick);
+  out.pick = std::move(pick);
   return true;
 }
 

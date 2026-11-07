@@ -6,13 +6,15 @@
 //   在场段 = 仓位同号非零的连续根 (建仓根到清仓 / 翻向根, 均为收盘), 段收益 = 段内 Π(1 + 净) − 1; 开仓成本归本段 (翻向根的成本按平旧 |p| : 开新 |w| 分给两段)
 //   平均仓位 = 逐根 |w| 的均值
 //   年成本 = 佣金 + 印花税 + 冲击 + 震荡 + 跳空 (Engine.hpp 成本分项各自 Σ / 年数)
-//   一本账 Book = 刀列 → 回测 + 全期指标 + 复利净值 + 成本叠层 (逐项叠回成本的复利净值, 画成压在净值之上的成本带; 策略 / 买入持有同一份)
+//   一本账 Book = 一条逐根链 (汇 Pnl) 的 Run → 全期指标 + 复利净值 + 成本叠层 (逐项叠回成本的复利净值, 画成压在净值之上的成本带; 策略 / 买入持有同一份)
 #include "cta/Engine.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace cta {
@@ -43,8 +45,8 @@ inline Stat returns_stat(std::span<const double> r, double bpy) {
   return s;
 }
 
-inline Stat stat_of(const Tape &t, const Run &run, const Setup &u) {
-  Stat s = returns_stat(run.r, u.bpy);
+inline Stat stat_of(const Tape &t, const Run &run, double bpy) {
+  Stat s = returns_stat(run.r, bpy);
   const size_t n = t.n;
   double expo = 0, ua = 0, ug = 0, da = 0, dg = 0;
   for (size_t i = 0; i < n; ++i) {
@@ -100,10 +102,11 @@ struct Book {
   std::array<std::vector<double>, kNC> lift; // [项][根] 叠回前 j + 1 项成本的复利净值 Π(1 + 净 + Σ_{≤ j} 成本); 末项 = 毛
 };
 
-// cut = 刀列 (目标仓位 + 层线), m = 其分层
-inline Book book_of(const Tape &t, const Cuts &cut, const Ladder &m, const Setup &u) {
-  Book b{simulate(t, cut, m, u), {}, std::vector<double>(t.n), {}};
-  b.st = stat_of(t, b.run, u);
+// run = 回测 (Pnl), bpy = 每年根数
+inline Book book_of(const Tape &t, Run run, double bpy) {
+  assert(run.w.size() == t.n && "回测长度");
+  Book b{std::move(run), {}, std::vector<double>(t.n), {}};
+  b.st = stat_of(t, b.run, bpy);
   double v = 1;
   for (size_t i = 0; i < t.n; ++i)
     b.nav[i] = v *= 1 + b.run.r[i];

@@ -1,6 +1,6 @@
 #pragma once
 
-// 单资产 band 模型: 有效根 → 指标列 (Tape 缓存, 同资产各配置共用) → 信号核 Signal 逐根出一刀 Cut (上线 / 中线 / 下线 + 目标仓位, 按本根收盘价调到)
+// 单资产 band 模型: 有效根 → 指标列 (Tape 缓存, 同资产各配置共用) → 信号核 Signal 逐根出一刀 Cut (上线 / 中线 / 下线 + 分层坐标 + 目标仓位, 按本根收盘价调到)
 //   方向 kDirs: long [0, 1] / short [−1, 0] / longshort [−1, 1], 仓位按方向截取
 //   列 = 逐根一个量, 因果 ([i] 只看 ≤ i 的根); 窗口一律以根计 (日线 / 分钟同一套)
 //   未就绪 = NaN: 比较恒假, 预热期不入也不出
@@ -11,8 +11,9 @@
 //              步长 · √n    vol            atr      (收 · √n · 均方根: 对数收益 / 对数真实波幅)
 //              窗内离散     dev            rng      (收盘偏离中线的均方根 / 近 n 根最高最低的半差)
 //     中线同按源: 收盘 ema / kama, 高低 mid; mid ↔ rng = 同一对 (近 n 根最高, 最低) 的均值 / 半差
-//   列只在两端: 指标列 (取齐后 Tape 只读) → 逐根核 (信号 / 仓位层 / 目标 / 损益, 状态在核里, 不落列) → 轨迹列 Cuts
-//   成交 / 仓位层 / 成本归 Engine
+//   列只在两端: 指标列 (取齐后 Tape 只读) → 逐根链 (源 → 仓位层 → 成交 → 汇, 核无状态, 前根状态只在链里, 不落列) → 轨迹列 Cuts
+//   源 = 逐根出刀的可调用 Cut(i): Signal (一个配置) / Cuts (拼好的轨迹) / Hold (买入持有)
+//   成交 / 仓位层 / 成本 / 逐根链归 Engine
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -246,7 +247,7 @@ public:
 
 enum : size_t { kCenter, // 中线
                 kBand,   // 带
-                kLayer,  // 分层
+                kLadder, // 分层
                 kNP };
 
 // 各组模型 (下标同 kParts[组].kinds)
@@ -282,7 +283,7 @@ using P = std::vector<float>;          // 一个部件模型的参数 (轴序, �
 
 inline constexpr Axis kDays{"n", 5, 1.0f / 16, 250, 1.0f / 16, true};         // 周期 (日; 单位 = 15 分钟)
 inline const std::vector<Axis> kBandAxes = {kDays, {"k", 1, 0.25f, 8, 0.1f}}; // 带: 周期 + 半宽倍数
-inline const std::vector<Axis> kLayerAxes = {{"N", 10, 10, 10, 1}};           // 分层: 每侧层数 (固定)
+inline const std::vector<Axis> kLadderAxes = {{"N", 10, 10, 10, 1}};          // 分层: 每侧层数 (固定)
 
 // clang-format off
 inline const Part kParts[kNP] = {
@@ -290,18 +291,18 @@ inline const Part kParts[kNP] = {
         {"ema", "指数均线, 跟得最匀", {kDays}},
         {"kama", "考夫曼自适应均线: n = 效率比窗, L = 震荡跨度", {kDays, {"L", 40, 1, 250, 1, true}}},
         {"mid", "唐奇安中线 = 近 n 根 (最高 + 最低) / 2, 区间内呈台阶", {kDays}}}},
-    {"w", "带", "上线 / 下线 = 中线 ± k · 半宽; 半宽 (周期 n) = 源 (收盘 / 高低) × 量法 (步长 · √n / 窗内离散)", {
+    {"b", "带", "上线 / 下线 = 中线 ± k · 半宽; 半宽 (周期 n) = 源 (收盘 / 高低) × 量法 (步长 · √n / 窗内离散)", {
         {"vol", "收 · √n · 对数收益的均方根", kBandAxes},
         {"atr", "收 · √n · 对数真实波幅的均方根 (含跳空与盘中振幅)", kBandAxes},
         {"dev", "收盘偏离中线的均方根 (布林式)", kBandAxes},
         {"rng", "唐奇安半宽 = 近 n 根 (最高 − 最低) / 2", kBandAxes}}},
-    {"m", "分层", "跟随网格: 中线 = 空仓, 中线到上线 / 下线各分 N 层; 收每越过一层线开 / 平一份 (1 / N), 跳空越过几层一次开 / 平几份; 到上线满多, 到下线满空; 按方向截取 (long 只取中线以上, short 只取中线以下), 按本根收盘调到", {
-        {"arith", "等差: 层距 = 同一价差 (中线两侧各按价格等分)", kLayerAxes},
-        {"geo", "等比: 层距 = 同一涨幅 (中线两侧各按对数价等分)", kLayerAxes}}},
+    {"l", "分层", "跟随网格: 中线 = 空仓, 中线到上线 / 下线各分 N 层; 收每越过一层线开 / 平一份 (1 / N), 跳空越过几层一次开 / 平几份; 到上线满多, 到下线满空; 按方向截取 (long 只取中线以上, short 只取中线以下), 按本根收盘调到", {
+        {"arith", "等差: 层距 = 同一价差 (中线两侧各按价格等分)", kLadderAxes},
+        {"geo", "等比: 层距 = 同一涨幅 (中线两侧各按对数价等分)", kLadderAxes}}},
 };
 // clang-format on
 
-// ---- 中线 / 半宽 (取列) ----
+// ---- 中线 / 带 (取列) ----
 
 // 中线 (周期 k 根): ema (跟得最匀) / kama (k = ER 窗, L = 震荡跨度) / mid (唐奇安中线, 区间内呈台阶)
 inline const Col &center(Tape &t, size_t kind, const P &p) {
@@ -318,8 +319,8 @@ inline const Col &center(Tape &t, size_t kind, const P &p) {
   std::unreachable();
 }
 
-// 带半宽 (价格单位, 周期 k 根): vol ↔ atr (收 · √k · 均方根 对数收益 / 对数真实波幅) · dev ↔ rng (偏离中线 m 的均方根 / 唐奇安半宽)
-inline const Col &width(Tape &t, size_t kind, const P &p, const Col &m) {
+// 带半宽 (价格单位, 周期 k 根): vol ↔ atr (收 · √k · 均方根 对数收益 / 对数真实波幅) · dev ↔ rng (偏离中线 mid 的均方根 / 唐奇安半宽)
+inline const Col &band(Tape &t, size_t kind, const P &p, const Col &mid) {
   const size_t k = len(p[0]);
   switch (kind) {
   case kVol:
@@ -327,7 +328,7 @@ inline const Col &width(Tape &t, size_t kind, const P &p, const Col &m) {
   case kAtr:
     return t.walk(t.rms(t.lt, k), k);
   case kDev:
-    return t.rms(t.sub(t.c, m), k);
+    return t.rms(t.sub(t.c, mid), k);
   case kRng:
     return t.half(t.top(t.h, k), t.bot(t.l, k));
   }
@@ -337,44 +338,32 @@ inline const Col &width(Tape &t, size_t kind, const P &p, const Col &m) {
 
 // 一个配置所读的指标列: 中线 + 半宽 (Tape 缓存里的列)
 struct Src {
-  const Col *m, *s;
+  const Col *mid, *half;
 };
 
-inline Src src_of(Tape &t, const Kinds &k, const P &pm, const P &ps) {
-  const Col &m = center(t, k[kCenter], pm);
-  return {&m, &width(t, k[kBand], ps, m)};
+inline Src src_of(Tape &t, const Kinds &k, const P &pc, const P &pb) {
+  const Col &mid = center(t, k[kCenter], pc);
+  return {&mid, &band(t, k[kBand], pb, mid)};
 }
 
-// ---- 信号核 ----
+// ---- 刀 ----
 
-// 一刀 = 一根的信号: 上线 / 中线 / 下线 (未就绪 = NaN) + 目标仓位
+// 一刀 = 一根的信号: 上线 / 中线 / 下线 + 分层坐标 s (未就绪 = NaN) + 目标仓位 w
 struct Cut {
-  float up = kNaN, mid = kNaN, dn = kNaN, w = 0;
+  float up = kNaN, mid = kNaN, dn = kNaN, s = kNaN, w = 0;
 };
 
-// 一条轨迹的刀 (列, 与 Cut 同字段)
+// 一条轨迹的刀 (列, 与 Cut 同字段); 本身是源: 逐根读回
 struct Cuts {
-  Col up, mid, dn, w;
+  Col up, mid, dn, s, w;
   Cuts() = default;
-  explicit Cuts(size_t n) : up(n, kNaN), mid(n, kNaN), dn(n, kNaN), w(n, 0) {}
-  void put(size_t i, const Cut &x) { up[i] = x.up, mid[i] = x.mid, dn[i] = x.dn, w[i] = x.w; }
-  Cut at(size_t i) const { return {up[i], mid[i], dn[i], w[i]}; }
+  explicit Cuts(size_t n) : up(n, kNaN), mid(n, kNaN), dn(n, kNaN), s(n, kNaN), w(n, 0) {}
+  void put(size_t i, const Cut &x) { up[i] = x.up, mid[i] = x.mid, dn[i] = x.dn, s[i] = x.s, w[i] = x.w; }
+  Cut operator()(size_t i) const { return {up[i], mid[i], dn[i], s[i], w[i]}; }
 };
 
 // 带就绪: 0 < 下线 < 中线 < 上线
 inline bool ready(const Cut &x) { return x.dn > 0 && x.mid > x.dn && x.up > x.mid; }
-
-// 分层的仓位坐标: 收 c 自中线起走向上线 / 下线的几成 s ∈ [−1, 1] (中线 = 0, 上线 = 1, 下线 = −1, 带外截到边); 等差按价格 / 等比按对数价; 带须就绪
-inline double pos(bool geo, double c, const Cut &x) {
-  const double m = x.mid, e = c >= m ? x.up : x.dn, s = geo ? std::log(c / m) / std::log(e / m) : (c - m) / (e - m);
-  return std::clamp(c >= m ? s : -s, -1.0, 1.0);
-}
-
-// pos 的逆: 仓位坐标 s ∈ [−1, 1] 处的层线价 (s ≥ 0 走向上线, s < 0 走向下线); 带须就绪
-inline double line(bool geo, double s, const Cut &x) {
-  const double m = x.mid, e = s >= 0 ? x.up : x.dn, f = std::fabs(s);
-  return geo ? m * std::pow(e / m, f) : m + (e - m) * f;
-}
 
 // 方向: 仓位坐标 / 目标仓位截到 [lo, hi]
 enum : size_t { kLong,
@@ -388,15 +377,29 @@ inline constexpr Dir kDirs[] = {{"long", "只做多: 中线以下空仓, 中线�
                                 {"short", "只做空: 中线以上空仓, 中线到下线 N 层加到满空", -1, 0},
                                 {"longshort", "多空: 中线 = 空仓, 到上线满多 / 到下线满空", -1, 1}};
 
-// 分层核 (逐根): 读刀 x 的三线 + 本根收 c, 写目标仓位 w
-//   跟随网格: 仓位 = 收自中线起越过的层线数 / N (向上 = 多, 向下 = 空), 按方向截取; 跳空越过几层一次开 / 平几份; 带未就绪 = 空仓
+// 分层 = 层线几何 (坐标 s ↔ 线价 line 互逆) + 分层核 (逐根): 读刀 x 的三线 + 本根收 c, 写坐标 s 与目标仓位 w
+//   坐标: 收自中线起走向上线 / 下线的几成 (中线 = 0, 上线 = 1, 下线 = −1, 带外截到边), 按方向截到 [lo, hi]; 等差按价格 / 等比按对数价
+//   跟随网格: 仓位 = 收自中线起越过的层线数 / N (向上 = 多, 向下 = 空); 跳空越过几层一次开 / 平几份; 带未就绪 = 空仓
 struct Ladder {
   int N;
   bool geo;
   float lo, hi; // 方向 (kDirs)
-  // 本方向的仓位坐标 ∈ [lo, hi]; 带须就绪
-  double s(double c, const Cut &x) const { return std::clamp(pos(geo, c, x), static_cast<double>(lo), static_cast<double>(hi)); }
-  void operator()(Cut &x, float c) const { x.w = ready(x) ? static_cast<float>(std::trunc(s(c, x) * N) / N) : 0.0f; }
+  // 收 c 的坐标 ∈ [lo, hi]; 带须就绪
+  double s(double c, const Cut &x) const {
+    const double m = x.mid, e = c >= m ? x.up : x.dn, f = geo ? std::log(c / m) / std::log(e / m) : (c - m) / (e - m);
+    return std::clamp(c >= m ? f : -f, static_cast<double>(lo), static_cast<double>(hi));
+  }
+  // s 的逆: 坐标 s ∈ [−1, 1] 处的层线价 (s ≥ 0 走向上线, s < 0 走向下线); 带须就绪
+  double line(double s, const Cut &x) const {
+    const double m = x.mid, e = s >= 0 ? x.up : x.dn, f = std::fabs(s);
+    return geo ? m * std::pow(e / m, f) : m + (e - m) * f;
+  }
+  void operator()(Cut &x, float c) const {
+    if (!ready(x))
+      return;
+    const double v = s(c, x);
+    x.s = static_cast<float>(v), x.w = static_cast<float>(std::trunc(v * N) / N);
+  }
 };
 
 // 分层模型 kind (参数 p = [N]) + 方向 dir (kDirs 下标) 的核: arith / geo → Ladder
@@ -407,17 +410,24 @@ inline Ladder ladder_of(size_t kind, const P &p, size_t dir) {
   return {static_cast<int>(p[0]), kind == kGeo, kDirs[dir].lo, kDirs[dir].hi};
 }
 
+// ---- 源 (逐根出刀) ----
+
 // 信号核: 一个配置逐根出一刀; 上线 / 下线 = 中线 ± k · 半宽 → 分层核 (只读 Tape)
 struct Signal {
   const Tape &t;
-  const Col &m, &s;
+  const Col &mid, &half;
   float k;
-  Ladder layer;
+  Ladder lad;
   Cut operator()(size_t i) const {
-    Cut x{m[i] + k * s[i], m[i], m[i] - k * s[i]};
-    layer(x, t.c[i]);
+    Cut x{mid[i] + k * half[i], mid[i], mid[i] - k * half[i]};
+    lad(x, t.c[i]);
     return x;
   }
+};
+
+// 买入持有: 无带, 恒满多
+struct Hold {
+  Cut operator()(size_t) const { return {.w = 1}; }
 };
 
 } // namespace cta

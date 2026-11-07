@@ -203,15 +203,14 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
       dl->Flags = keep_flags;
     }
     shaded("带", xs, dn, up, kMidCol);
-    { // 分层线: 中线到上线 / 下线各 N 层; 等差 = 价格等分 / 等比 = 对数价等分
-      const int N = static_cast<int>(tr.grid.p(tr.grid.home(), cta::kLayer)[0]);
-      const bool geo = r.spec.kind[cta::kLayer] == cta::kGeo;
+    { // 分层线: 中线到上线 / 下线各 N 层 (Ladder::line, 与越线差同一份); 等差 = 价格等分 / 等比 = 对数价等分
+      const cta::Ladder &lad = tr.lad;
       std::vector<double> y(xs.size());
-      for (const std::vector<double> *e : {&up, &dn})
-        for (int j = 1; j < N; ++j) {
-          const double f = static_cast<double>(j) / N;
+      for (const double side : {1.0, -1.0})
+        for (int j = 1; j < lad.N; ++j) {
+          const double s = side * j / lad.N;
           for (size_t k = 0; k < xs.size(); ++k)
-            y[k] = geo ? mid[k] * std::pow((*e)[k] / mid[k], f) : mid[k] + ((*e)[k] - mid[k]) * f;
+            y[k] = lad.line(s, tr.cut(at[k]));
           ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.25f), 1.0f);
           ImPlot::PlotLine("##分层", xs.data(), y.data(), static_cast<int>(xs.size()));
         }
@@ -448,19 +447,20 @@ void cloud(CtaUIState &c, const CtaResult &r) {
   if (button_bar(kShade, 2, shade))
     c.cloud_fit = shade == 0;
   ImGui::SameLine();
-  if (tr.pick[d] < 0) {
+  const cta::Pick &pk = tr.pick[d];
+  if (pk.pt < 0) {
     ImGui::TextDisabled("%s  ·  该日未选参 (买入持有)", misc::dash(day_of(r, i)).c_str());
     return;
   }
-  const std::vector<cta::Q> g = tr.grid.around(tr.center[d]);
-  const size_t ng = g.size(), d0 = tr.from[d];
+  const std::vector<cta::Q> g = tr.grid.around(pk.center);
+  const size_t ng = g.size(), d0 = pk.from;
   std::vector<const cta::Terms *> acc(ng);
   std::vector<double> real(ng);
   size_t best = ng;
   for (size_t x = 0; x < ng; ++x) {
     const uint32_t k = tr.index.at(g[x]);
     acc[x] = &tr.acc[k], real[x] = acc[x]->over(d0, d);
-    if (static_cast<int>(k) == tr.pick[d])
+    if (static_cast<int>(k) == pk.pt)
       best = x;
   }
   assert(best < ng && "当日所用配置在当日网格内");
