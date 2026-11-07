@@ -240,7 +240,8 @@ public:
 };
 
 // ---- 部件与参数 ----
-//   三组部件, 每组选一个模型; 各模型自带参数轴 (网格取值); 单值轴 = 固定参数, 自动优化不动它, 要换就改这里
+//   三组部件, 每组选一个模型; 各模型自带参数轴: 格点自 v0 (q = 0) 向两侧铺, 相邻之比 r (对数步长), 间距不小于轴的基本单位 u
+//   (大值处等比, 小值处退成等差 u), 限在硬边界 [lo, hi] 内; lo = hi = 固定参数, 自动优化不动它
 //   以日计的轴乘每日根数 (Grid::p), 模型拿到的都是根
 
 enum : size_t { kCenter, // 中线
@@ -261,7 +262,8 @@ enum : size_t { kArith,
 
 struct Axis {
   const char *name;
-  std::vector<float> v;
+  float v0, lo, hi; // 初始网格中心 (格点 q = 0) / 硬边界
+  float u;          // 基本单位: 相邻格点的最小间距 (> 0)
   bool day = false; // 以日计
 };
 
@@ -278,15 +280,16 @@ struct Part {
 using Kinds = std::array<size_t, kNP>; // 各组所选模型 (kParts[组].kinds 下标)
 using P = std::vector<float>;          // 一个部件模型的参数 (轴序, 以根计)
 
-inline const std::vector<Axis> kBandAxes = {{"n", {1, 5, 20}, true}, {"k", {0.5, 1, 2}}}; // 带: 周期 + 半宽倍数
-inline const std::vector<Axis> kLayerAxes = {{"N", {10}}};                                // 分层: 每侧层数 (固定)
+inline constexpr Axis kDays{"n", 5, 1.0f / 16, 250, 1.0f / 16, true};         // 周期 (日; 单位 = 15 分钟)
+inline const std::vector<Axis> kBandAxes = {kDays, {"k", 1, 0.25f, 8, 0.1f}}; // 带: 周期 + 半宽倍数
+inline const std::vector<Axis> kLayerAxes = {{"N", 10, 10, 10, 1}};           // 分层: 每侧层数 (固定)
 
 // clang-format off
 inline const Part kParts[kNP] = {
     {"c", "中线", "中线 (周期 n)", {
-        {"ema", "指数均线, 跟得最匀", {{"n", {1, 5, 20, 60}, true}}},
-        {"kama", "考夫曼自适应均线: n = 效率比窗, L = 震荡跨度", {{"n", {1, 5, 20}, true}, {"L", {20, 60}, true}}},
-        {"mid", "唐奇安中线 = 近 n 根 (最高 + 最低) / 2, 区间内呈台阶", {{"n", {1, 5, 20, 60}, true}}}}},
+        {"ema", "指数均线, 跟得最匀", {kDays}},
+        {"kama", "考夫曼自适应均线: n = 效率比窗, L = 震荡跨度", {kDays, {"L", 40, 1, 250, 1, true}}},
+        {"mid", "唐奇安中线 = 近 n 根 (最高 + 最低) / 2, 区间内呈台阶", {kDays}}}},
     {"w", "带", "上线 / 下线 = 中线 ± k · 半宽; 半宽 (周期 n) = 源 (收盘 / 高低) × 量法 (步长 · √n / 窗内离散)", {
         {"vol", "收 · √n · 对数收益的均方根", kBandAxes},
         {"atr", "收 · √n · 对数真实波幅的均方根 (含跳空与盘中振幅)", kBandAxes},

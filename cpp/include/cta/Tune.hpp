@@ -1,15 +1,16 @@
 #pragma once
 
-// 调参: 优化目标 (模型表 kGoals; split = 逐根核 Split, 累成日前缀取窗) + 参数网格 Grid (网格 + 其上的岭回归曲面)
-//   网格 = 各组所选模型参数轴的全部组合; 一点 = 各轴取值下标 At, 以根计的参数由它查 (Grid::p)
-//   每日重拟: 窗 = 此前至多 W 日 (不足 = 自首日起, expanding), 参数逐日微调不跳变
-//   岭回归曲面 (一组模型的网格上): 特征 = 各多值参数轴的下标坐标 u ∈ [−1, 1] 的二次项 (u, u² (≥ 3 值的轴), 两两 u · u'), 去均值 → X [n][d];
+// 调参: 优化目标 (模型表 kGoals; split = 逐根核 Split, 累成日前缀取窗) + 参数网格 Grid (格点 + 中心可移的网格 + 其上的岭回归曲面)
+//   参数轴 = 自 v0 向两侧铺的格点 (相邻之比 r = 对数步长, 可配; 间距不小于轴的基本单位), 一个配置 = 各轴格点号 Q, 以根计的参数由它查 (Grid::p)
+//   网格 = 中心周围各轴 m 个格点的全部组合 (≥ kMinGrid 个配置); 一点在网格内 = 各轴下标 At
+//   每日重拟: 窗 = 此前至多 W 日 (不足 = 自首日起, expanding); 最高点落在网格边上 → 以它为中心移网格再拟 (Trace.hpp)
+//   岭回归曲面 (网格上): 特征 = 各多值参数轴的网格内下标坐标 u ∈ [−1, 1] 的二次项 (u, u² (≥ 3 值的轴), 两两 u · u'), 去均值 → X [n][d];
 //     ŷ = ȳ + X (XᵀX + λ · n · I)⁻¹ Xᵀ (y − ȳ) = ȳ + X Z y (X 去均值 ⇒ Z · 1 = 0); Z [d][n] 只看网格, 预先算好; 拟合最高点 = 平原顶
 #include "cta/Engine.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <limits>
 #include <vector>
 
 namespace cta {
@@ -101,7 +102,7 @@ inline Split goal_of(size_t goal, const Tape &t, const Setup &u, const Ladder &m
   return Split(t, u, m, nd);
 }
 
-// 网格的一点: 各组所选模型的参数轴取值下标, 按组序拼成一条
+// 网格的一点: 各轴网格内下标, 按组序拼成一条
 using At = std::vector<size_t>;
 
 // 里程表进一格: at[i] ∈ [0, size(i)); 转满一圈 → false
@@ -159,39 +160,42 @@ struct Ridge {
   std::vector<double> X; // [n][d] 去均值特征
   std::vector<double> Z; // [d][n] (XᵀX + λ · n · I)⁻¹ Xᵀ
 
-  // 拟合最高点 argmax X (Z y)
-  size_t best(const std::vector<double> &y) const {
+  // 拟合值 ŷ = ȳ + X (Z y) [n]
+  std::vector<double> fit(const std::vector<double> &y) const {
     assert(y.size() == n && "岭回归: 样本数");
-    for ([[maybe_unused]] const double v : y)
+    double m = 0;
+    for (const double v : y) {
       assert(std::isfinite(v) && "岭回归: 目标值");
-    std::vector<double> z(d, 0);
+      m += v;
+    }
+    m /= static_cast<double>(n);
+    std::vector<double> z(d, 0), o(n, m);
     for (size_t k = 0; k < d; ++k)
       for (size_t j = 0; j < n; ++j)
         z[k] += Z[k * n + j] * y[j];
-    size_t b = 0;
-    double top = -std::numeric_limits<double>::infinity();
-    for (size_t i = 0; i < n; ++i) {
-      double f = 0;
+    for (size_t i = 0; i < n; ++i)
       for (size_t k = 0; k < d; ++k)
-        f += X[i * d + k] * z[k];
-      if (f > top)
-        top = f, b = i;
-    }
-    return b;
+        o[i] += X[i * d + k] * z[k];
+    return o;
+  }
+  // 拟合最高点 argmax ŷ
+  size_t best(const std::vector<double> &y) const {
+    const std::vector<double> f = fit(y);
+    return static_cast<size_t>(std::max_element(f.begin(), f.end()) - f.begin());
   }
 };
 
-// ax = 一组模型的参数轴, at = 其网格
-inline Ridge ridge_of(const std::vector<const Axis *> &ax, const std::vector<At> &at) {
+// m = 各轴网格格点数, at = 网格 (各轴网格内下标)
+inline Ridge ridge_of(const std::vector<size_t> &m, const std::vector<At> &at) {
   assert(!at.empty() && "岭回归: 空网格");
   const size_t n = at.size();
   std::vector<std::vector<double>> X(n);
   for (size_t s = 0; s < n; ++s) {
     std::vector<double> u;
     std::vector<char> sq;
-    for (size_t x = 0; x < ax.size(); ++x)
-      if (const size_t m = ax[x]->v.size(); m > 1)
-        u.push_back(2.0 * static_cast<double>(at[s][x]) / static_cast<double>(m - 1) - 1), sq.push_back(m > 2);
+    for (size_t x = 0; x < m.size(); ++x)
+      if (m[x] > 1)
+        u.push_back(2.0 * static_cast<double>(at[s][x]) / static_cast<double>(m[x] - 1) - 1), sq.push_back(m[x] > 2);
     for (size_t i = 0; i < u.size(); ++i) {
       X[s].push_back(u[i]);
       if (sq[i])
@@ -223,45 +227,101 @@ inline Ridge ridge_of(const std::vector<const Axis *> &ax, const std::vector<At>
   return rg;
 }
 
-// 一组模型的参数网格 + 其上的岭回归曲面
+// 一个配置 = 各轴的格点号 q (按组序拼成一条; q = 0 = v0), 参数值查轴的格点表 (Grid::value)
+using Q = std::vector<int>;
+
+inline constexpr size_t kMinGrid = 100; // 网格至少的配置数: 多值轴每轴 m = ⌈kMinGrid^(1 / 多值轴数)⌉ 个格点
+
+// 一组模型的格点 + 中心可移的网格 + 网格上的岭回归曲面
+//   网格 = 中心 c 周围各轴 m 个相邻格点的全部组合 (收进硬边界); 岭回归只看网格内下标, 与中心无关, 预先算好
 struct Grid {
   Kinds kinds{};
-  size_t dir = kLong; // 方向 (kDirs 下标)
-  size_t S = 0;       // 每日根数 (以日计的轴 × S)
-  std::vector<At> at; // [配置]
+  size_t dir = kLong;                   // 方向 (kDirs 下标)
+  size_t S = 0;                         // 每日根数 (以日计的轴 × S)
+  double r = 0;                         // 对数步长: 相邻格点之比 (间距不小于轴的基本单位)
+  std::vector<const Axis *> ax;         // [轴] 按组序拼成一条
+  std::vector<int> lo, hi;              // [轴] 格点号的硬边界 (固定轴 = 0, 0)
+  std::vector<std::vector<double>> val; // [轴][q − lo] 格点值
+  std::vector<size_t> m;                // [轴] 网格格点数 (固定轴 = 1)
+  std::vector<At> at;                   // [网格配置] 各轴网格内下标 ∈ [0, m)
   Ridge ridge;
 
-  // 配置 x 部件 j 的参数 (以根计)
-  P p(size_t x, size_t j) const {
+  // 轴 a 格点 q 的值 (轴的单位: 日 / 倍数 / 层数)
+  double value(size_t a, int q) const { return val[a][static_cast<size_t>(q - lo[a])]; }
+  // 初始中心
+  Q home() const { return Q(ax.size(), 0); }
+  // 中心 c 的网格在轴 a 上的首个格点号 (整格收进硬边界)
+  int base(const Q &c, size_t a) const { return std::clamp(c[a] - static_cast<int>(m[a] - 1) / 2, lo[a], hi[a] - static_cast<int>(m[a]) + 1); }
+  // 中心 c 的网格 (序同 at)
+  std::vector<Q> around(const Q &c) const {
+    std::vector<Q> o(at.size(), Q(ax.size()));
+    for (size_t a = 0; a < ax.size(); ++a) {
+      const int b = base(c, a);
+      for (size_t x = 0; x < at.size(); ++x)
+        o[x][a] = b + static_cast<int>(at[x][a]);
+    }
+    return o;
+  }
+  // q 落在中心 c 的网格边上, 且网格还能往那边移 (未到硬边界)
+  bool edge(const Q &c, const Q &q) const {
+    for (size_t a = 0; a < ax.size(); ++a) {
+      const int b = base(c, a), e = b + static_cast<int>(m[a]) - 1;
+      if ((q[a] == b && b > lo[a]) || (q[a] == e && e < hi[a]))
+        return true;
+    }
+    return false;
+  }
+  // 配置 q 部件 j 的参数 (以根计)
+  P p(const Q &q, size_t j) const {
     size_t o = 0;
     for (size_t i = 0; i < j; ++i)
       o += kParts[i].kinds[kinds[i]].axes.size();
-    const std::vector<Axis> &ax = kParts[j].kinds[kinds[j]].axes;
-    P v(ax.size());
-    for (size_t i = 0; i < ax.size(); ++i)
-      v[i] = ax[i].v[at[x][o + i]] * (ax[i].day ? static_cast<float>(S) : 1.0f);
+    P v(kParts[j].kinds[kinds[j]].axes.size());
+    for (size_t i = 0; i < v.size(); ++i)
+      v[i] = static_cast<float>(value(o + i, q[o + i]) * (ax[o + i]->day ? static_cast<double>(S) : 1.0));
     return v;
   }
-  // 配置 x 所读的指标列 (取进 Tape, 串行)
-  Src src(Tape &t, size_t x) const { return src_of(t, kinds, p(x, kCenter), p(x, kBand)); }
-  // 配置 x 的信号核 (只读 Tape, 可并行)
-  Signal signal(const Tape &t, size_t x, const Src &s) const {
-    const float k = p(x, kBand)[1];
+  // 配置 q 所读的指标列 (取进 Tape, 串行)
+  Src src(Tape &t, const Q &q) const { return src_of(t, kinds, p(q, kCenter), p(q, kBand)); }
+  // 配置 q 的信号核 (只读 Tape, 可并行)
+  Signal signal(const Tape &t, const Q &q, const Src &s) const {
+    const float k = p(q, kBand)[1];
     assert(k > 0 && "带半宽倍数");
-    return {t, *s.m, *s.s, k, ladder(x)};
+    return {t, *s.m, *s.s, k, ladder(q)};
   }
-  // 配置 x 的分层核
-  Ladder ladder(size_t x) const { return ladder_of(kinds[kLayer], p(x, kLayer), dir); }
+  // 配置 q 的分层核
+  Ladder ladder(const Q &q) const { return ladder_of(kinds[kLayer], p(q, kLayer), dir); }
 };
 
-inline Grid grid_of(size_t S, const Kinds &k, size_t dir) {
-  const std::vector<const Axis *> ax = axes_of(k);
-  Grid g{k, dir, S, {}, {}};
-  At at(ax.size(), 0);
+// S = 每日根数, k = 各组所选模型, dir = 方向, r = 对数步长 (> 1)
+inline Grid grid_of(size_t S, const Kinds &k, size_t dir, double r) {
+  assert(r > 1 && "对数步长");
+  Grid g{k, dir, S, r, axes_of(k), {}, {}, {}, {}, {}, {}};
+  size_t nfree = 0; // 多值轴数
+  for (const Axis *a : g.ax) {
+    assert(a->lo <= a->v0 && a->v0 <= a->hi && a->u > 0 && "参数轴: 中心在边界内, 单位为正");
+    std::vector<double> dn, up; // 自 v0 向下 / 向上
+    for (double v = a->v0, w; (w = std::min(v / r, v - a->u)) >= a->lo * (1 - 1e-9);)
+      dn.push_back(v = w);
+    for (double v = a->v0, w; (w = std::max(v * r, v + a->u)) <= a->hi * (1 + 1e-9);)
+      up.push_back(v = w);
+    g.lo.push_back(-static_cast<int>(dn.size()));
+    g.hi.push_back(static_cast<int>(up.size()));
+    std::vector<double> &t = g.val.emplace_back(dn.rbegin(), dn.rend());
+    t.push_back(a->v0);
+    t.insert(t.end(), up.begin(), up.end());
+    nfree += g.hi.back() > g.lo.back();
+  }
+  size_t m = 1;
+  while (nfree && std::pow(static_cast<double>(m), static_cast<double>(nfree)) < static_cast<double>(kMinGrid))
+    ++m;
+  for (size_t a = 0; a < g.ax.size(); ++a)
+    g.m.push_back(std::min(m, static_cast<size_t>(g.hi[a] - g.lo[a] + 1)));
+  At at(g.ax.size(), 0);
   do
     g.at.push_back(at);
-  while (tick(at, [&](size_t i) { return ax[i]->v.size(); }));
-  g.ridge = ridge_of(ax, g.at);
+  while (tick(at, [&](size_t i) { return g.m[i]; }));
+  g.ridge = ridge_of(g.m, g.at);
   return g;
 }
 

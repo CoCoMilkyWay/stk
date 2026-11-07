@@ -1,4 +1,4 @@
-// Factors→Portfolio CTA 页: 左 = 两图 (价格与带, 底色 = 仓位 / 净值, 共一条 x), 其右 = 中栏 (设定 / 光标处参数 / 全期指标; 与右表分右栏) — 见 TabPortfolio.hpp
+// Factors→Portfolio CTA 页: 左 = 两图 (价格与带, 底色 = 仓位 / 净值, 共一条 x), 其右 = 中栏 (设定 / 参数点云 / 光标处参数 / 全期指标; 与右表分右栏) — 见 TabPortfolio.hpp
 #include "gui/task_factors/ui/PortfolioCommon.hpp"
 
 #include "gui/Tasks.hpp"                      // StatusColor
@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -27,9 +28,9 @@ namespace GUI::Factors {
 namespace {
 
 constexpr size_t kS = Database::kSlots;
-constexpr float kPriceFrac = 0.62f; // 上图占两图高的比例
-constexpr float kPosA = 0.35f;      // 满仓仓位色的不透明度 (多 = kUp, 空 = kDn)
-constexpr ImVec4 kMidCol(1.0f, 0.6f, 0.2f, 1.0f), kHoldCol(0.6f, 0.6f, 0.6f, 1.0f);
+constexpr float kPriceFrac = 0.62f;                                                                                  // 上图占两图高的比例
+constexpr float kPosA = 0.35f;                                                                                       // 满仓仓位色的不透明度 (多 = kUp, 空 = kDn)
+constexpr ImVec4 kMidCol(1.0f, 0.6f, 0.2f, 1.0f), kHoldCol(0.6f, 0.6f, 0.6f, 1.0f), kPinCol(1.0f, 0.5f, 0.0f, 1.0f); // kPinCol = 光标 (同 OrderFlow 锚线)
 // 成本带色 (序同 cta::kCosts) + 常态 / 悬停的不透明度
 constexpr ImVec4 kCostCol[] = {{0.35f, 0.60f, 0.95f, 1.0f}, {0.70f, 0.50f, 0.95f, 1.0f}, {0.95f, 0.65f, 0.25f, 1.0f}, {0.30f, 0.80f, 0.75f, 1.0f}, {0.95f, 0.40f, 0.55f, 1.0f}};
 static_assert(std::size(kCostCol) == cta::kNC, "成本带色");
@@ -90,7 +91,7 @@ void shaded(const char *label, const std::vector<double> &xs, const std::vector<
   }
 }
 
-// 有效根 i 所在的选参段: grid.at 下标 (−1 = 未选参) + 段起根
+// 有效根 i 所在的选参段: pts 下标 (−1 = 未选参) + 段起根
 std::pair<int, size_t> seg_at(const cta::Track &tr, size_t i) {
   const auto it = std::upper_bound(tr.seg.begin(), tr.seg.end(), i, [](size_t v, const std::pair<size_t, int> &s) { return v < s.first; });
   assert(it != tr.seg.begin());
@@ -98,15 +99,16 @@ std::pair<int, size_t> seg_at(const cta::Track &tr, size_t i) {
 }
 
 // ---- 两图: 上 = 仓位色 (多 = 收盘线以上, 空 = 以下, 越满越浓) + 收盘 + 上线 / 下线 (带间填色) + 中线 + 分层线 (等差 / 等比) + 逐根时的买 / 卖标记;
-//      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换). x 同一视野 (链到 ui), 每像素取末根; 悬停 = 光标
-//      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 双击回全段 ----
+//      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换). x 同一视野 (链到 ui), 每像素取末根; 光标 = 可拖竖线 (两图同一条)
+//      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 价格图右上角 "全段" 回全段;
+//      光标 = 橙色竖线 (同 OrderFlow 锚线): 参数点云展开时才出现 (初放视野正中), 只能拖动, 标注时刻 ----
 void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &size) {
   const cta::Series &se = *r.se;
   const cta::Track &tr = r.tr;
   const size_t n = se.c.size();
-  if (c.fit_side != r.side || c.fit_key != r.key) { // 换标的: 回全段
+  if (c.fit_side != r.side || c.fit_key != r.key) { // 换标的: 回全段, 光标回末根
     c.fit_side = r.side, c.fit_key = r.key;
-    c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true;
+    c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true, c.cursor = -1;
   }
   const size_t step = std::max<size_t>(1, static_cast<size_t>((c.x1 - c.x0) / std::max(1.0f, size.x)));
   const std::vector<size_t> at = sample(n, c.x0, c.x1, step);
@@ -156,24 +158,18 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
   const float ph = ImGui::GetContentRegionAvail().y - st.ItemSpacing.y, h1 = std::floor(ph * kPriceFrac);
   XFmt fmt{&r, c.x1 - c.x0 < 3.0 * kS};
   const double pad = static_cast<double>(n) * 0.02 + 10.0;
-  int hover = -1;
-  bool reset = false;
+  bool pinned = c.cloud_open && c.cursor < 0, reset = false;
+  double pin = c.cursor >= 0 ? c.cursor : std::clamp((c.x0 + c.x1) / 2, 0.0, static_cast<double>(n - 1));
+  ImVec2 px_corner(-1, -1); // 价格图右上角 (回全段按钮)
   const auto setup_x = [&](ImPlotAxisFlags f) {
     ImPlot::SetupAxis(ImAxis_X1, nullptr, f);
     ImPlot::SetupAxisLinks(ImAxis_X1, &c.x0, &c.x1);
     ImPlot::SetupAxisFormat(ImAxis_X1, x_formatter, &fmt);
     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, -pad, static_cast<double>(n) + pad);
   };
-  const auto track = [&] { // 悬停 → 光标; 光标竖线; 双击 → 回全段
-    if (ImPlot::IsPlotHovered()) {
-      hover = static_cast<int>(std::clamp(std::lround(ImPlot::GetPlotMousePos().x), 0L, static_cast<long>(n - 1)));
-      reset |= ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
-    }
-    if (c.cursor >= 0 && static_cast<size_t>(c.cursor) < n) {
-      const double x = c.cursor;
-      ImPlot::SetNextLineStyle(ImVec4(0.7f, 0.7f, 0.7f, 0.6f));
-      ImPlot::PlotInfLines("##cursor", &x, 1);
-    }
+  const auto track = [&](int id) { // 光标 (同 OrderFlow 锚线): 左键拖动, 松手停住
+    if (c.cloud_open)
+      pinned |= ImPlot::DragLineX(id, &pin, kPinCol, 2.0f, ImPlotDragToolFlags_NoFit);
   };
   const ImPlotInputMap keep = ImPlot::GetInputMap(); // 本页两图: 左键框选 / 右键平移, 画完还原
   ImPlot::MapInputReverse();
@@ -208,7 +204,7 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     }
     shaded("带", xs, dn, up, kMidCol);
     { // 分层线: 中线到上线 / 下线各 N 层; 等差 = 价格等分 / 等比 = 对数价等分
-      const int N = static_cast<int>(tr.grid.p(0, cta::kLayer)[0]);
+      const int N = static_cast<int>(tr.grid.p(tr.grid.home(), cta::kLayer)[0]);
       const bool geo = r.spec.kind[cta::kLayer] == cta::kGeo;
       std::vector<double> y(xs.size());
       for (const std::vector<double> *e : {&up, &dn})
@@ -244,11 +240,15 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
       }
       ImPlot::PopPlotClipRect();
     }
-    track();
+    track(0);
+    if (c.cloud_open) {
+      const size_t i = static_cast<size_t>(std::clamp(std::lround(pin), 0L, static_cast<long>(n - 1)));
+      ImPlot::Annotation(static_cast<double>(i), se.c[i], kPinCol, ImVec2(5, -15), true, "%s", when(r, i).c_str());
+    }
     c.boxing = ImPlot::IsPlotSelected();
+    px_corner = ImVec2(ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x, ImPlot::GetPlotPos().y);
     ImPlot::EndPlot();
   }
-
   ImVec2 corner(-1, -1); // 净值图右上角 (轴切换按钮)
   if (ImPlot::BeginPlot("##cta_nav", ImVec2(size.x, ph - h1), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus)) {
     setup_x(ImPlotAxisFlags_None);
@@ -290,7 +290,7 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     ImPlot::PlotLine("持有净值", xs.data(), hold.data(), static_cast<int>(xs.size()));
     ImPlot::SetNextLineStyle(ImGui::GetStyleColorVec4(ImGuiCol_Text), 1.5f);
     ImPlot::PlotLine("策略净值", xs.data(), nav.data(), static_cast<int>(xs.size()));
-    track();
+    track(1);
     if (band >= 0) {
       const cta::CostItem &ci = cta::kCosts[band];
       const size_t j = static_cast<size_t>(band);
@@ -311,9 +311,14 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     if (button_bar(kScale, 2, cur))
       c.nav_log = cur == 0;
   }
+  if (px_corner.x >= 0) { // 价格图右上角: 回全段
+    ImGui::SetCursorScreenPos(ImVec2(px_corner.x - ImGui::CalcTextSize("全段").x - 2 * st.FramePadding.x - 4, px_corner.y + 4));
+    reset |= ImGui::SmallButton("全段");
+  }
   ImPlot::PopStyleVar(2);
   ImPlot::GetInputMap() = keep;
-  c.cursor = hover;
+  if (pinned)
+    c.cursor = static_cast<int>(std::clamp(std::lround(pin), 0L, static_cast<long>(n - 1)));
   if (reset)
     c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true;
 }
@@ -391,12 +396,12 @@ void stat_table(const CtaResult &r) {
   ImGui::EndTable();
 }
 
-// 光标处 (−1 = 末根) 所在选参段 → at = 所用配置的轴下标 (未选参 = nullptr); 返回段说明
-std::string cursor_at(const CtaResult &r, int cursor, const cta::At *&at) {
+// 光标处 (−1 = 末根) 所在选参段 → q = 所用配置的格点号 (未选参 = nullptr); 返回段说明
+std::string cursor_at(const CtaResult &r, int cursor, const cta::Q *&q) {
   const size_t n = r.se->c.size(), i = cursor >= 0 ? static_cast<size_t>(cursor) : n - 1;
   const auto [x, from] = seg_at(r.tr, i);
   const std::string head = cursor >= 0 ? "光标 " + when(r, i) : "末根";
-  at = x < 0 ? nullptr : &r.tr.grid.at[static_cast<size_t>(x)];
+  q = x < 0 ? nullptr : &r.tr.pts[static_cast<size_t>(x)];
   return head + (x < 0 ? ": 买入持有 (首日 / 窗内数据不足 / 带未就绪, 未选参)" : ": 自 " + misc::dash(day_of(r, from)) + " 起用");
 }
 
@@ -417,6 +422,168 @@ void model_combo(const char *id, const Xs &xs, size_t &cur, const std::string &h
   }
 }
 
+// ---- 参数点云: 光标日网格各配置在行为坐标 (cloud_of: 其选参窗内逐日目标值的前 3 主成分) 里的 3 维散点;
+//      着色 = 窗内目标值 (拟合 / 实际), 圈 = 岭最优点; 正交投影, 左键拖动旋转, 悬停看配置 ----
+
+// 配置 q 的参数: 一组一行 (组名 模型  轴 = 值 …)
+std::string params_of(const cta::Grid &g, const cta::Q &q) {
+  std::string s;
+  size_t a = 0;
+  for (size_t j = 0; j < cta::kNP; ++j) {
+    const cta::Kind &k = cta::kParts[j].kinds[g.kinds[j]];
+    s += std::string(j ? "\n" : "") + cta::kParts[j].title + " " + k.name;
+    for (const cta::Axis &ax : k.axes) {
+      char b[48];
+      std::snprintf(b, sizeof(b), "  %s = %.3g%s", ax.name, g.value(a, q[a]), ax.day ? " 日" : "");
+      s += b;
+      ++a;
+    }
+  }
+  return s;
+}
+
+void cloud(CtaUIState &c, const CtaResult &r) {
+  const cta::Track &tr = r.tr;
+  const size_t n = r.se->c.size();
+  const size_t i = c.cursor >= 0 ? static_cast<size_t>(c.cursor) : n - 1, d = r.se->t[i] / kS - r.se->t[0] / kS;
+  assert(d < tr.pick.size());
+
+  static const char *const kShade[] = {"拟合", "实际"};
+  int shade = c.cloud_fit ? 0 : 1;
+  if (button_bar(kShade, 2, shade))
+    c.cloud_fit = shade == 0;
+  ImGui::SameLine();
+  if (tr.pick[d] < 0) {
+    ImGui::TextDisabled("%s  ·  该日未选参 (买入持有)", misc::dash(day_of(r, i)).c_str());
+    return;
+  }
+  const std::vector<cta::Q> g = tr.grid.around(tr.center[d]);
+  const size_t ng = g.size(), d0 = tr.from[d];
+  std::vector<const cta::Terms *> acc(ng);
+  std::vector<double> real(ng);
+  size_t best = ng;
+  for (size_t x = 0; x < ng; ++x) {
+    const uint32_t k = tr.index.at(g[x]);
+    acc[x] = &tr.acc[k], real[x] = acc[x]->over(d0, d);
+    if (static_cast<int>(k) == tr.pick[d])
+      best = x;
+  }
+  assert(best < ng && "当日所用配置在当日网格内");
+  const std::vector<double> fit = tr.grid.ridge.fit(real);
+  if (c.cloud_gen != r.gen || c.cloud_day != d) { // 坐标: 窗内逐日目标值 → 前 3 主成分; 各成分朝拟合值升的一侧
+    std::vector<float> score((d - d0) * ng);
+    for (size_t e = d0; e < d; ++e)
+      for (size_t x = 0; x < ng; ++x)
+        score[(e - d0) * ng + x] = static_cast<float>(acc[x]->over(e, e + 1));
+    c.cloud = cta::cloud_of(score, ng), c.cloud_gen = r.gen, c.cloud_day = d;
+    const double fm = std::accumulate(fit.begin(), fit.end(), 0.0) / static_cast<double>(ng);
+    for (size_t k = 0; k < 3; ++k) {
+      double s = 0;
+      for (size_t x = 0; x < ng; ++x)
+        s += c.cloud.at[x][k] * (fit[x] - fm);
+      if (s < 0)
+        for (cta::P3 &p : c.cloud.at)
+          p[k] = -p[k];
+    }
+  }
+  const cta::Cloud &cl = c.cloud;
+  ImGui::TextDisabled("%s  ·  主成分 %.0f / %.0f / %.0f%%", misc::dash(day_of(r, i)).c_str(), cl.share[0] * 100, cl.share[1] * 100, cl.share[2] * 100);
+  if (ImGui::IsItemHovered())
+    tip("点 = 光标日 (主图可拖竖线) 的参数网格各配置; 坐标 = 各配置在当日选参窗内逐日目标值序列的前 3 主成分 (表现相近的配置挨在一起; 各成分朝拟合值升的一侧),\n"
+        "百分比 = 各主成分占配置间总方差; 着色 = 窗内目标值: 拟合 = 岭回归曲面 / 实际 = 逐点; 圈 = 岭最优点 (当日所用)\n"
+        "• 左键拖动旋转, 悬停看配置");
+  const std::vector<double> &v = c.cloud_fit ? fit : real;
+  const auto [vlo, vhi] = std::minmax_element(v.begin(), v.end());
+  const double lo = *vlo, span = *vhi - *vlo;
+
+  // 画布 + 旋转
+  const float w = ImGui::GetContentRegionAvail().x, h = std::floor(w * 0.8f);
+  ImGui::InvisibleButton("##cta_cloud", ImVec2(w, h));
+  const bool hovered = ImGui::IsItemHovered();
+  if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+    const ImVec2 dm = ImGui::GetIO().MouseDelta;
+    c.yaw += dm.x * 0.01f, c.pitch = std::clamp(c.pitch + dm.y * 0.01f, -1.5f, 1.5f);
+  }
+  const ImVec2 p0 = ImGui::GetItemRectMin(), p1 = ImGui::GetItemRectMax(), o((p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImGuiCol_FrameBg));
+  dl->PushClipRect(p0, p1, true);
+
+  // 坐标 → 中心化, 三轴同一尺度 (保持主成分间的比例) → 绕竖轴 yaw, 俯仰 pitch → 屏幕 (x, y) + 深度 z (大 = 远)
+  cta::P3 mid{}, half{};
+  for (size_t k = 0; k < 3; ++k) {
+    const auto [a, b] = std::minmax_element(cl.at.begin(), cl.at.end(), [k](const cta::P3 &p, const cta::P3 &q) { return p[k] < q[k]; });
+    mid[k] = ((*a)[k] + (*b)[k]) / 2, half[k] = ((*b)[k] - (*a)[k]) / 2;
+  }
+  const float s = std::max({half[0], half[1], half[2], 1e-12f}), scale = 0.36f * std::min(w, h);
+  const float cy = std::cos(c.yaw), sy = std::sin(c.yaw), cp = std::cos(c.pitch), sp = std::sin(c.pitch);
+  struct Px {
+    ImVec2 p;
+    float z;
+  };
+  const auto proj = [&](float a, float b, float e) {
+    const float x = a * cy - b * sy, q = a * sy + b * cy;
+    return Px{ImVec2(o.x + x * scale, o.y - (e * cp - q * sp) * scale), q * cp + e * sp};
+  };
+  const auto at = [&](size_t x) { return proj((cl.at[x][0] - mid[0]) / s, (cl.at[x][1] - mid[1]) / s, (cl.at[x][2] - mid[2]) / s); };
+
+  { // 外框 (各轴实际跨度) + 轴名
+    const ImU32 edge = ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.35f);
+    const float hx[3] = {half[0] / s, half[1] / s, half[2] / s};
+    const auto corner = [&](int m) { return proj(m & 1 ? hx[0] : -hx[0], m & 2 ? hx[1] : -hx[1], m & 4 ? hx[2] : -hx[2]).p; };
+    for (int m = 0; m < 8; ++m)
+      for (int b = 1; b < 8; b <<= 1)
+        if (!(m & b))
+          dl->AddLine(corner(m), corner(m | b), edge);
+    static const char *const kAxis[] = {"PC1", "PC2", "PC3"};
+    for (int k = 0; k < 3; ++k)
+      dl->AddText(corner(1 << k), ImGui::GetColorU32(ImGuiCol_TextDisabled), kAxis[k]);
+  }
+
+  // 点: 远的先画; 近大远小; 悬停取屏幕上最近的点
+  std::vector<Px> px(ng);
+  std::vector<size_t> ord(ng);
+  for (size_t x = 0; x < ng; ++x)
+    px[x] = at(x), ord[x] = x;
+  std::sort(ord.begin(), ord.end(), [&](size_t a, size_t b) { return px[a].z > px[b].z; });
+  const float r0 = std::max(3.0f, ImGui::GetFontSize() * 0.32f);
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  int hot = -1;
+  float dmin = FLT_MAX;
+  for (const size_t x : ord) {
+    const float rad = r0 * (1.0f - 0.25f * px[x].z);
+    const ImVec4 col = ImPlot::SampleColormap(span > 0 ? static_cast<float>((v[x] - lo) / span) : 0.5f, ImPlotColormap_Viridis);
+    dl->AddCircleFilled(px[x].p, rad, ImGui::GetColorU32(col));
+    dl->AddCircle(px[x].p, rad, IM_COL32(0, 0, 0, 140));
+    if (x == best)
+      dl->AddCircle(px[x].p, rad + 4, ImGui::GetColorU32(ImGuiCol_Text), 0, 2.0f);
+    const float dx = px[x].p.x - mouse.x, dy = px[x].p.y - mouse.y, e = dx * dx + dy * dy;
+    if (hovered && e <= (rad + 3) * (rad + 3) && e < dmin)
+      dmin = e, hot = static_cast<int>(x);
+  }
+  dl->PopClipRect();
+  if (hot >= 0) {
+    const size_t x = static_cast<size_t>(hot);
+    tip("%s\n拟合 %.4f  ·  实际 %.4f%s", params_of(tr.grid, g[x]).c_str(), fit[x], real[x], x == best ? "\n岭最优点 (当日所用)" : "");
+  }
+
+  // 色标: 低 → 高
+  const float bh = ImGui::GetTextLineHeight() * 0.5f;
+  const ImVec2 b0 = ImGui::GetCursorScreenPos();
+  constexpr int kSeg = 32;
+  for (int k = 0; k < kSeg; ++k) {
+    const float x0 = b0.x + w * static_cast<float>(k) / kSeg, x1 = b0.x + w * static_cast<float>(k + 1) / kSeg;
+    dl->AddRectFilled(ImVec2(x0, b0.y), ImVec2(x1, b0.y + bh), ImGui::GetColorU32(ImPlot::SampleColormap((static_cast<float>(k) + 0.5f) / kSeg, ImPlotColormap_Viridis)));
+  }
+  ImGui::Dummy(ImVec2(w, bh));
+  char a[32], b[32];
+  std::snprintf(a, sizeof(a), "%.4f", lo);
+  std::snprintf(b, sizeof(b), "%.4f", lo + span);
+  ImGui::TextDisabled("%s", a);
+  ImGui::SameLine();
+  right(b, true);
+}
+
 void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::string &lack) {
   // 状态: 进度 / 算不了的原因 / 全期跨度
   const Phase ph = svc.phase.load(std::memory_order_acquire);
@@ -424,7 +591,7 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
   if (ph == Phase::Loading)
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "合成价格 %zu/%zu 日", done, total);
   else if (ph == Phase::Running)
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "回测网格 %zu/%zu", done, total);
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "滚动选参 %zu/%zu 日", done, total);
   else if (!lack.empty())
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%s", lack.c_str());
   else if (r) {
@@ -439,7 +606,7 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
   CtaSpec &sp = c.spec;
   const float x0 = ImGui::GetCursorPosX();
   float lw = 0.0f; // 名列宽 (控件 / 灰显参数都从这里起)
-  for (const char *s : {"滚动窗 (日)", "模型", "方向", "佣金 (bp)", "印花税 (bp)", "冲击 (bp)", "目标年化波动", "不交易带"})
+  for (const char *s : {"滚动窗 (日)", "对数步长", "模型", "方向", "佣金 (bp)", "印花税 (bp)", "冲击 (bp)", "目标年化波动", "不交易带"})
     lw = std::max(lw, ImGui::CalcTextSize(s).x);
   lw += ImGui::GetStyle().ItemSpacing.x;
   const auto label = [&](const char *s) {
@@ -461,14 +628,26 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
   sp.roll = std::max(sp.roll, static_cast<int>(cta::kMinRoll));
   c.editing = ImGui::IsItemActive();
   if (ImGui::IsItemHovered())
-    tip("每日以此前至多 W 日 (≥ %zu; 不足 W 日 = 自首日起全部, expanding) 各参数组合的目标值拟岭回归曲面, 取最高点 (平原顶) 用到当日; "
-        "首日 / 窗内根数不足窗长一半 / 窗内各组合的带都未就绪 = 买入持有 (与基准同口径)\n"
+    tip("每日以此前至多 W 日 (≥ %zu; 不足 W 日 = 自首日起全部, expanding) 网格各配置的目标值拟岭回归曲面, 取最高点 (平原顶) 用到当日; "
+        "首日 / 窗内根数不足窗长一半 / 窗内各配置的带都未就绪 = 买入持有 (与基准同口径)\n"
         "• 编辑完生效",
         cta::kMinRoll);
-  hint("各组只选模型, 参数每日以此前至多 W 日的网格曲面最高点选出");
+  label("对数步长");
+  ImGui::InputFloat("##cta_step", &sp.step, 0.05f, 0.2f, "%.3f");
+  sp.step = std::clamp(sp.step, 1.05f, 4.0f);
+  c.editing |= ImGui::IsItemActive();
+  if (ImGui::IsItemHovered())
+    tip("参数轴 = 自 v0 向两侧铺的格点, 相邻之比 r, 间距不小于各轴基本单位 (小值处退成等差), 收进各轴硬边界; 网格 = 中心周围各多值轴 m 个格点的全部组合 (≥ %zu 个配置)\n"
+        "每日最高点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日\n"
+        "• 编辑完生效",
+        cta::kMinGrid, cta::kHops);
+  hint("各组只选模型, 参数每日以此前至多 W 日的网格曲面最高点选出, 网格随最高点移动");
+  c.cloud_open = r && ImGui::CollapsingHeader("参数点云");
+  if (c.cloud_open)
+    cloud(c, *r);
 
-  const cta::At *at = nullptr;
-  const std::string where = r ? cursor_at(*r, c.cursor, at) : std::string{};
+  const cta::Q *at = nullptr;
+  const std::string where = r ? cursor_at(*r, c.cloud_open ? c.cursor : -1, at) : std::string{};
   const cta::Kinds &shown = r ? r->spec.kind : sp.kind; // 灰显参数按结果的模型
   for (size_t j = 0, a = 0; j < cta::kNP; ++j) {
     const cta::Part &p = cta::kParts[j];
@@ -481,7 +660,7 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
       ImGui::TextUnformatted(s);
       ImGui::SameLine(x0 + lw);
       if (at)
-        ImGui::TextDisabled("%g", ax.v[(*at)[a]]);
+        ImGui::TextDisabled("%.3g", r->tr.grid.value(a, (*at)[a]));
       else
         ImGui::TextDisabled("-");
       ++a;
@@ -490,7 +669,7 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
   if (r) {
     hint(where.c_str());
     if (ImGui::IsItemHovered())
-      tip("灰显 = 图上光标处 (不在图上 = 末根) 所用的参数; 周期轴以日计, k = 半宽倍数, N = 每侧层数");
+      tip("灰显 = 光标 (参数点云展开时图上可拖的竖线; 收起 = 末根) 处所用的参数; 周期轴以日计, k = 半宽倍数, N = 每侧层数");
   }
 
   ImGui::SeparatorText("引擎");

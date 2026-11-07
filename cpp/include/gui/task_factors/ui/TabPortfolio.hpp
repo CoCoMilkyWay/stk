@@ -120,11 +120,17 @@ struct CtaUIState {
   bool editing = false;                        // 数值框编辑中 (spec 未定, 不发请求)
   Database::Side fit_side = Database::kBasket; // x 视野所属的标的 (fit_side, fit_key): 换标的即回全段, 只改设定保留缩放
   uint32_t fit_key = kCtaNone;
-  double x0 = 0, x1 = 1; // 两图 x 视野 (有效根下标)
-  bool fit_y = true;     // 价格轴跟随视野内数据 (框选放大后 = 用框的 y)
-  bool boxing = false;   // 价格图上框选进行中
-  int cursor = -1;       // 光标所在有效根 (−1 = 不在图上: 读数取末根)
-  bool nav_log = true;   // 净值图 y 轴: log / 绝对
+  double x0 = 0, x1 = 1;           // 两图 x 视野 (有效根下标)
+  bool fit_y = true;               // 价格轴跟随视野内数据 (框选放大后 = 用框的 y)
+  bool boxing = false;             // 价格图上框选进行中
+  int cursor = -1;                 // 光标 (两图上可拖的竖线) 所在有效根 (−1 = 未放; 换标的重放)
+  bool cloud_open = false;         // 参数点云展开 (光标只此时出现并生效, 否则按末根)
+  bool nav_log = true;             // 净值图 y 轴: log / 绝对
+  float yaw = 0.6f, pitch = 0.35f; // 参数点云视角 (弧度; 左键拖动旋转)
+  bool cloud_fit = true;           // 参数点云着色: 拟合 / 实际
+  uint32_t cloud_gen = 0;          // 参数点云坐标所属: 结果 (gen) + 日 (坐标随日)
+  size_t cloud_day = SIZE_MAX;
+  cta::Cloud cloud;
 };
 
 // 篮子组 (指数 / 行业 / 概念) 右表的行过滤 (各页共用, 按组各一份): 只数 / 总市值 [亿元] ∈ [lo, hi] (hi 0 = 不限), |资金流入| ≥ flow (%; 0 = 不限);
