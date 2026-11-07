@@ -6,7 +6,8 @@
 #include "gui/util/Chart.hpp"                 // kUp / kDn
 #include "imgui.h"
 #include "implot.h"
-#include "misc/date.hpp" // dash
+#include "implot_internal.h" // GetItem (图例显隐)
+#include "misc/date.hpp"     // dash
 
 #include <algorithm>
 #include <cassert>
@@ -30,7 +31,7 @@ constexpr float kPriceFrac = 0.62f; // 上图占两图高的比例
 constexpr float kPosA = 0.35f;      // 满仓仓位色的不透明度 (多 = kUp, 空 = kDn)
 constexpr ImVec4 kMidCol(1.0f, 0.6f, 0.2f, 1.0f), kHoldCol(0.6f, 0.6f, 0.6f, 1.0f);
 // 成本带色 (序同 cta::kCosts) + 常态 / 悬停的不透明度
-constexpr ImVec4 kCostCol[] = {{0.35f, 0.60f, 0.95f, 1.0f}, {0.70f, 0.50f, 0.95f, 1.0f}, {0.95f, 0.65f, 0.25f, 1.0f}, {0.95f, 0.40f, 0.55f, 1.0f}};
+constexpr ImVec4 kCostCol[] = {{0.35f, 0.60f, 0.95f, 1.0f}, {0.70f, 0.50f, 0.95f, 1.0f}, {0.95f, 0.65f, 0.25f, 1.0f}, {0.30f, 0.80f, 0.75f, 1.0f}, {0.95f, 0.40f, 0.55f, 1.0f}};
 static_assert(std::size(kCostCol) == cta::kNC, "成本带色");
 constexpr float kCostA = 0.22f, kCostHotA = 0.6f;
 
@@ -97,7 +98,7 @@ std::pair<int, size_t> seg_at(const cta::Track &tr, size_t i) {
 }
 
 // ---- 两图: 上 = 仓位色 (多 = 收盘线以上, 空 = 以下, 越满越浓) + 收盘 + 上线 / 下线 (带间填色) + 中线 + 分层线 (等差 / 等比) + 逐根时的买 / 卖标记;
-//      下 = 策略 / 持有净值 (log). x 同一视野 (链到 ui), 每像素取末根; 悬停 = 光标
+//      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换). x 同一视野 (链到 ui), 每像素取末根; 悬停 = 光标
 //      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 双击回全段 ----
 void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &size) {
   const cta::Series &se = *r.se;
@@ -248,30 +249,42 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     ImPlot::EndPlot();
   }
 
+  ImVec2 corner(-1, -1); // 净值图右上角 (轴切换按钮)
   if (ImPlot::BeginPlot("##cta_nav", ImVec2(size.x, ph - h1), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus)) {
     setup_x(ImPlotAxisFlags_None);
     ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
-    ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+    ImPlot::SetupAxisScale(ImAxis_Y1, c.nav_log ? ImPlotScale_Log10 : ImPlotScale_Linear);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_Horizontal);
-    // 成本带: 自策略净值向上逐项叠 (带下沿 = 叠回前几项, 上沿 = 再叠回本项), 带厚 = 该项把净值压下去的量; 悬停的带高亮 + 说明
+    // 成本带: 逐项叠 (带下沿 = 叠回前几项, 上沿 = 再叠回本项), 带厚 = 该项把净值压下去的量; 悬停的带高亮 + 说明
+    //   基线 = 策略净值; 图例隐去策略净值时 = 1 (各沿除以策略净值, 只看成本本身)
     const cta::Book &sb = tr.strat;
+    const bool hovered = ImPlot::IsPlotHovered(); // 锁定 setup 之后 item 才能按 label 查
+    const ImPlotItem *nav_it = ImPlot::GetItem("策略净值");
+    const bool on_nav = !nav_it || nav_it->Show;
+    const auto edge = [&](size_t j, size_t i) { // 第 j 层的下沿 (j = 0 = 基线; j = kNC = 毛)
+      const double v = j ? sb.lift[j - 1][i] : sb.nav[i];
+      return on_nav ? v : v / sb.nav[i];
+    };
     int band = -1;
     size_t bi = 0;
-    if (ImPlot::IsPlotHovered()) {
+    if (hovered) {
       const ImPlotPoint mp = ImPlot::GetPlotMousePos();
       bi = static_cast<size_t>(std::clamp(std::lround(mp.x), 0L, static_cast<long>(n - 1)));
       for (size_t j = 0; j < cta::kNC && band < 0; ++j) {
-        const double y0 = j ? sb.lift[j - 1][bi] : sb.nav[bi], y1 = sb.lift[j][bi];
+        const double y0 = edge(j, bi), y1 = edge(j + 1, bi);
         if (y1 > y0 && mp.y >= y0 && mp.y <= y1)
           band = static_cast<int>(j);
       }
     }
-    std::vector<double> lo = nav;
+    std::vector<double> lo(xs.size()), hi(xs.size());
+    for (size_t k = 0; k < at.size(); ++k)
+      lo[k] = edge(0, at[k]);
     for (size_t j = 0; j < cta::kNC; ++j) {
-      std::vector<double> hi = take(sb.lift[j]);
+      for (size_t k = 0; k < at.size(); ++k)
+        hi[k] = edge(j + 1, at[k]);
       ImPlot::SetNextFillStyle(kCostCol[j], band == static_cast<int>(j) ? kCostHotA : kCostA);
       ImPlot::PlotShaded(cta::kCosts[j].name, xs.data(), lo.data(), hi.data(), static_cast<int>(xs.size()));
-      lo = std::move(hi);
+      std::swap(lo, hi);
     }
     ImPlot::SetNextLineStyle(kHoldCol, 1.0f);
     ImPlot::PlotLine("持有净值", xs.data(), hold.data(), static_cast<int>(xs.size()));
@@ -281,11 +294,22 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     if (band >= 0) {
       const cta::CostItem &ci = cta::kCosts[band];
       const size_t j = static_cast<size_t>(band);
-      const double y0 = j ? sb.lift[j - 1][bi] : sb.nav[bi], y1 = sb.lift[j][bi];
+      const double y0 = edge(j, bi), y1 = edge(j + 1, bi);
       tip("%s\n截至 %s: 不扣这项, 净值高 %.2f%% (%.4f → %.4f)\n全期年均 %.2f%% (占净值)", ci.name, when(r, bi).c_str(), (y1 / y0 - 1) * 100, y0, y1,
           sb.run.cost.*ci.f / sb.st.years * 100);
     }
+    corner = ImVec2(ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x, ImPlot::GetPlotPos().y);
     ImPlot::EndPlot();
+  }
+  if (corner.x >= 0) { // 净值图 y 轴切换: 叠在右上角
+    static const char *const kScale[] = {"log", "绝对"};
+    float bw = 2.0f;
+    for (const char *s : kScale)
+      bw += ImGui::CalcTextSize(s).x + 2 * st.FramePadding.x;
+    ImGui::SetCursorScreenPos(ImVec2(corner.x - bw - 4, corner.y + 4));
+    int cur = c.nav_log ? 0 : 1;
+    if (button_bar(kScale, 2, cur))
+      c.nav_log = cur == 0;
   }
   ImPlot::PopStyleVar(2);
   ImPlot::GetInputMap() = keep;
@@ -311,12 +335,13 @@ const StatRow kStatRows[] = {
     {"年化波动", &cta::Stat::vol, "%.1f%%", 100, "逐根净收益标准差 × √每年根数"},
     {"平均仓位", &cta::Stat::expo, "%.2f", 1, "逐根 |仓位| 的均值 (满多 / 满空 = 1)"},
     {"年换手", &cta::Stat::turn, "%.1f", 1, "单边: Σ |Δ仓位| / 年数"},
-    {"年成本", &cta::Stat::cost, "%.2f%%", 100, "佣金 + 印花税 + 冲击 + 跳空, 每年占净值"},
+    {"年成本", &cta::Stat::cost, "%.2f%%", 100, "佣金 + 印花税 + 冲击 + 震荡 + 跳空, 每年占净值"},
     {"  佣金", &cta::Stat::commission, "%.2f%%", 100, "佣金率 × Σ |Δ仓位| / 年数"},
     {"  印花税", &cta::Stat::stamp, "%.2f%%", 100, "印花税率 × Σ 卖出量 (多头减仓 / 融券卖出) / 年数"},
     {"  冲击", &cta::Stat::impact, "%.2f%%", 100, "冲击率 × Σ |Δ仓位| / 年数"},
-    {"  跳空", &cta::Stat::gap, "%.2f%%", 100,
-     "收盘价穿过层线 (前根收与本根收在线两侧) 时, 按本根收盘成交相对按线价成交的差, 调仓量均摊到越过的各线; Σ / 年数"},
+    {"  震荡", &cta::Stat::chop, "%.2f%%", 100,
+     "越线差的震荡部分: 收盘价穿过层线 (前根收与本根收在线两侧) 时按收盘成交比按线价成交多付的差, 每条越过的线都按离收盘最近那条线的差计 (只越过一条线 = 全归震荡); Σ / 年数"},
+    {"  跳空", &cta::Stat::gap, "%.2f%%", 100, "越线差的跳空部分: 一根越过几条线时, 远处的线比最近那条线多越的整档; Σ / 年数"},
     {"上涨捕获", &cta::Stat::up, "%.2f", 1, "资产上涨的根上 Σ 策略毛收益 / Σ 资产收益 (满多 = 1, 满空 = −1, 随机择时 ≈ 平均净仓位)"},
     {"下跌捕获", &cta::Stat::dn, "%.2f", 1, "资产下跌的根上 Σ 策略毛收益 / Σ 资产收益 = 承受的下跌 (做空为负 = 下跌里挣的)"},
     {"Edge", &cta::Stat::edge, "%+.2f", 1, "上涨捕获 − 下跌捕获 = 择时本身挣的 (不含成本)"},
@@ -414,7 +439,7 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
   CtaSpec &sp = c.spec;
   const float x0 = ImGui::GetCursorPosX();
   float lw = 0.0f; // 名列宽 (控件 / 灰显参数都从这里起)
-  for (const char *s : {"滚动窗 (日)", "模型", "佣金 (bp)", "印花税 (bp)", "冲击 (bp)", "目标年化波动", "不交易带"})
+  for (const char *s : {"滚动窗 (日)", "模型", "方向", "佣金 (bp)", "印花税 (bp)", "冲击 (bp)", "目标年化波动", "不交易带"})
     lw = std::max(lw, ImGui::CalcTextSize(s).x);
   lw += ImGui::GetStyle().ItemSpacing.x;
   const auto label = [&](const char *s) {
@@ -469,6 +494,19 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
   }
 
   ImGui::SeparatorText("引擎");
+  {
+    constexpr int nd = static_cast<int>(std::size(cta::kDirs));
+    const char *names[nd];
+    std::string s = "方向: 仓位按方向截取, 方向之外的半边空仓";
+    for (int k = 0; k < nd; ++k)
+      names[k] = cta::kDirs[k].name, s += std::string("\n• ") + cta::kDirs[k].name + " = " + cta::kDirs[k].tip;
+    label("方向");
+    ImGui::BeginGroup();
+    button_bar(names, nd, sp.dir);
+    ImGui::EndGroup();
+    if (ImGui::IsItemHovered())
+      tip("%s", s.c_str());
+  }
   const auto bp = [&](const char *name, const char *id, float &v, const char *s) {
     label(name);
     ImGui::InputFloat(id, &v, 0.5f, 1.0f, "%.1f");
@@ -480,13 +518,13 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
   bp("佣金 (bp)", "##cta_commission", sp.commission_bp, "佣金 = 佣金率 × |Δ仓位|, 买卖各一次");
   bp("印花税 (bp)", "##cta_stamp", sp.stamp_bp, "印花税 = 印花税率 × 卖出量 (多头减仓 / 融券卖出), 买入不收");
   bp("冲击 (bp)", "##cta_impact", sp.impact_bp,
-     "冲击 = 冲击率 × |Δ仓位|, 固定, 不按金额变\n• 跳空另计: 收盘价穿过层线时, 按本根收盘成交相对按线价成交的差");
+     "冲击 = 冲击率 × |Δ仓位|, 固定, 不按金额变\n• 震荡 / 跳空另计: 收盘价穿过层线时按收盘成交比按线价成交多付的差; 最近那条线的差 = 震荡, 一根越过几条线多出的整档 = 跳空");
   label("目标年化波动");
   ImGui::InputFloat("##cta_vol", &sp.vol, 0.05f, 0.1f, "%.2f");
   sp.vol = std::max(sp.vol, 0.0f);
   c.editing |= ImGui::IsItemActive();
   if (ImGui::IsItemHovered())
-    tip("波动率定仓: 仓位 × min(1, 目标 / 近 %zu 根年化波动); 0 = 不调; 编辑完生效", cta::kVolSpan);
+    tip("波动率定仓: 仓位 × min(1, 目标 / 近 %zu 根日内年化波动 (隔夜跳空不计)); 只作用于策略, 持有 = 满仓不动; 0 = 不调; 编辑完生效", cta::kVolSpan);
   label("不交易带");
   ImGui::InputFloat("##cta_buf", &sp.buffer, 0.05f, 0.1f, "%.2f");
   sp.buffer = std::clamp(sp.buffer, 0.0f, 1.0f);

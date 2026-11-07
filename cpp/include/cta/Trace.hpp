@@ -6,7 +6,7 @@
 //   选参: 每日以此前至多 W 日 (不足 W 日 = 自首日起全部, expanding) 各配置目标值拟岭回归曲面 (Tune.hpp), 最高点配置用到当日
 //         (首日 / 窗内根数不足窗长一半 / 窗内各配置的带都未就绪 = 未选参, 买入持有, 与基准同口径)
 //   拼接遍 (串行, 逐日): 信号核无状态, 只跑当日选中配置, 刀写进轨迹列 Cuts
-//   回测: 轨迹的刀 → Size → Pnl (切换计成本, 成本分项见 Engine.hpp); 买入持有同一份 (无层线, 无跳空)
+//   回测: 轨迹的刀 → Size → Pnl (切换计成本, 成本分项见 Engine.hpp); 买入持有 = 满仓不动 (不定仓, 无不交易带, 无层线 / 越线差)
 #include "cta/Metrics.hpp"
 #include "cta/Tune.hpp"
 
@@ -33,10 +33,10 @@ bool trace(const Series &se, Grid grid, size_t goal, size_t W, const Setup &u, E
   const Days days = days_of(se, S);
   const size_t n = se.c.size(), nd = days.size(), ns = grid.at.size();
   assert(n > 1 && W >= kMinRoll && nd > 1 && ns > 0 && "样本须跨 2 日以上");
-  const Ladder m = ladder_of(grid.kinds[kLayer], grid.p(0, kLayer)); // 拼成的刀列的分层 (跳空按其层线计)
+  const Ladder m = grid.ladder(0); // 拼成的刀列的分层 (越线差按其层线计)
   for (size_t x = 1; x < ns; ++x)
     assert(grid.p(x, kLayer) == grid.p(0, kLayer) && "各配置同一分层");
-  Tape t(se);
+  Tape t(se, S);
   std::vector<Src> src(ns);
   for (size_t x = 0; x < ns; ++x)
     src[x] = grid.src(t, x);
@@ -94,7 +94,9 @@ bool trace(const Series &se, Grid grid, size_t goal, size_t W, const Setup &u, E
   Cuts hold(n);
   std::fill(hold.w.begin(), hold.w.end(), 1.0f);
   out.strat = book_of(t, cut, m, u);
-  out.hold = book_of(t, hold, m, u);
+  Setup still = u;
+  still.vol = still.buffer = 0;
+  out.hold = book_of(t, hold, m, still);
   out.cut = std::move(cut);
   out.grid = std::move(grid);
   return true;

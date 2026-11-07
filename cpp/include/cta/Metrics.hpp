@@ -1,11 +1,11 @@
 #pragma once
 
 // 指标: 收益序列统计 (策略 / 买入持有同一份) + 择时 / 交易统计
-//   择时 = 上涨捕获 up / 下跌捕获 dn (毛, 不含成本): 资产逐根收益 a 为正的根上 Σ 策略毛收益 / Σ a, 为负的同理
+//   择时 = 上涨捕获 up / 下跌捕获 dn (毛 = 按层线价成交, 不含各项成本): 资产逐根收益 a 为正的根上 Σ 策略毛收益 / Σ a, 为负的同理
 //     全程满多 up = dn = 1, 满空 = −1; 随机择时 (平均净仓位 e) up ≈ dn ≈ e; edge = up − dn = 择时本身挣的, dn = 磨损 (承受的下跌, 做空为负), 成本另计
-//   在场段 = 仓位同号非零的连续根 (建仓根到清仓 / 翻向根, 均为收盘; 翻向根的损益归旧段), 段收益 = 段内 Π(1 + 净) − 1
+//   在场段 = 仓位同号非零的连续根 (建仓根到清仓 / 翻向根, 均为收盘), 段收益 = 段内 Π(1 + 净) − 1; 开仓成本归本段 (翻向根的成本按平旧 |p| : 开新 |w| 分给两段)
 //   平均仓位 = 逐根 |w| 的均值
-//   年成本 = 佣金 + 印花税 + 冲击 + 跳空 (Engine.hpp 成本分项各自 Σ / 年数)
+//   年成本 = 佣金 + 印花税 + 冲击 + 震荡 + 跳空 (Engine.hpp 成本分项各自 Σ / 年数)
 //   一本账 Book = 刀列 → 回测 + 全期指标 + 复利净值 + 成本叠层 (逐项叠回成本的复利净值, 画成压在净值之上的成本带; 策略 / 买入持有同一份)
 #include "cta/Engine.hpp"
 
@@ -18,11 +18,11 @@
 namespace cta {
 
 struct Stat {
-  double years = 0, cagr = 0, vol = 0, sharpe = 0, sortino = 0, mdd = 0; // 索提诺 = 均值 / 下行波动 √E[min(r, 0)²]
-  double expo = 0, turn = 0;                                             // 平均仓位 / 年换手 (单边)
-  double cost = 0, commission = 0, stamp = 0, impact = 0, gap = 0;       // 年成本 = 佣金 + 印花税 + 冲击 + 跳空
-  double up = 0, dn = 0, edge = 0;                                       // 上涨 / 下跌捕获, 两者之差
-  double trades = 0, win = 0, payoff = 0, hold = 0;                      // 年在场段数 / 胜率 / 盈亏比 (均盈 / 均亏) / 平均在场根数
+  double years = 0, cagr = 0, vol = 0, sharpe = 0, sortino = 0, mdd = 0;     // 索提诺 = 均值 / 下行波动 √E[min(r, 0)²]
+  double expo = 0, turn = 0;                                                 // 平均仓位 / 年换手 (单边)
+  double cost = 0, commission = 0, stamp = 0, impact = 0, chop = 0, gap = 0; // 年成本 = 佣金 + 印花税 + 冲击 + 震荡 + 跳空
+  double up = 0, dn = 0, edge = 0;                                           // 上涨 / 下跌捕获, 两者之差
+  double trades = 0, win = 0, payoff = 0, hold = 0;                          // 年在场段数 / 胜率 / 盈亏比 (均盈 / 均亏) / 平均在场根数
 };
 
 inline Stat returns_stat(std::span<const double> r, double bpy) {
@@ -55,7 +55,7 @@ inline Stat stat_of(const Tape &t, const Run &run, const Setup &u) {
   s.expo = expo / static_cast<double>(n);
   const Costs &k = run.cost;
   s.turn = run.turn / s.years, s.cost = k.sum() / s.years;
-  s.commission = k.commission / s.years, s.stamp = k.stamp / s.years, s.impact = k.impact / s.years, s.gap = k.gap / s.years;
+  s.commission = k.commission / s.years, s.stamp = k.stamp / s.years, s.impact = k.impact / s.years, s.chop = k.chop / s.years, s.gap = k.gap / s.years;
   s.up = ua > 0 ? ug / ua : kNaN, s.dn = da < 0 ? dg / da : kNaN, s.edge = s.up - s.dn;
   double nw = 0, sw = 0, nl = 0, sl = 0, bars = 0, nav = 1;
   size_t i0 = n; // 在场段建仓根 (n = 不在场)
@@ -65,14 +65,22 @@ inline Stat stat_of(const Tape &t, const Run &run, const Setup &u) {
     bars += static_cast<double>(i1 - i0);
   };
   for (size_t i = 0; i < n; ++i) {
-    const bool flat = i0 == n; // 前根空仓
-    if (!flat) {
-      nav *= 1 + run.r[i];
-      if (!(run.w[i] * run.w[i0] > 0))
-        seal(i), i0 = n;
+    const double r = run.r[i], w = run.w[i];
+    if (i0 == n) { // 前根空仓
+      if (w != 0)
+        i0 = i, nav = 1 + r;
+      continue;
     }
-    if (i0 == n && run.w[i] != 0)
-      i0 = i, nav = flat ? 1 + run.r[i] : 1;
+    if (w * run.w[i0] > 0) {
+      nav *= 1 + r;
+      continue;
+    }
+    const Costs &e = run.k[i];
+    const double p = run.w[i - 1], open = (e.commission + e.stamp + e.impact) * std::fabs(w) / std::fabs(w - p); // 本根成本里开新仓的那份
+    nav *= 1 + r + open;
+    seal(i), i0 = n;
+    if (w != 0)
+      i0 = i, nav = 1 - open;
   }
   if (i0 < n)
     seal(n - 1);

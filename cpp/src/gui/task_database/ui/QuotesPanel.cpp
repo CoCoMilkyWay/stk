@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cfloat>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <initializer_list>
 #include <limits>
@@ -544,12 +545,19 @@ const Candle *last(const Kline &kl, const Day &today) {
                                                              : &kl.daily.back();
 }
 
-// d 日的日根前收: 当日 (joins) / 历史; 无 → 0
-float ref_of(const Kline &kl, const Day &today, misc::Ymd d) {
+// d 日的日根: 当日 (joins) / 历史; 无 → nullptr
+const Candle *candle_on(const Kline &kl, const Day &today, misc::Ymd d) {
   if (joins(kl, today) && today.candle.date == d)
-    return today.candle.ref;
+    return &today.candle;
   const auto it = std::lower_bound(kl.daily.begin(), kl.daily.end(), d, [](const Candle &c, misc::Ymd x) { return c.date < x; });
-  return it != kl.daily.end() && it->date == d ? it->ref : 0;
+  return it != kl.daily.end() && it->date == d ? &*it : nullptr;
+}
+
+// 一根的价 × a (量 / 额不动)
+Cell scaled(Cell c, double a) {
+  c.open = static_cast<float>(c.open * a), c.high = static_cast<float>(c.high * a);
+  c.low = static_cast<float>(c.low * a), c.close = static_cast<float>(c.close * a);
+  return c;
 }
 
 // 日线的根 = 历史 + 当日 (joins 才接); 涨跌基准 = 末根前收
@@ -595,20 +603,38 @@ double flow_ref(const Kline &kl) {
 }
 
 // 日内的根 = 日轴各日的分钟 (历史 + 当日, joins 才接; 某日无源 → 留空), x = 第 k 日 · kSlots + 槽;
-//   分钟根的前收 = 同日日根的; 涨跌基准 = 末个有根日的前收
+//   价按前收链前复权到末个有根日 (末日真价): 相邻日根逐个 × 上一日根收 / 本日前收 (篮子点位本已接续 ⇒ 恒 1);
+//   分钟根的前收 = 同日日根的 (同乘); 涨跌基准 = 末个有根日的前收
 void intraday(const Kline &kl, const Day &today, std::span<const misc::Ymd> days, bool money, Series &s) {
   s.intraday = true;
   s.money = money;
   s.days.assign(days.begin(), days.end());
-  for (size_t k = 0; k < days.size(); ++k) {
-    const Bars *b = bars_on(kl, today, days[k]);
+  const size_t nd = days.size();
+  std::vector<const Candle *> cs(nd);
+  std::vector<const Bars *> bs(nd);
+  std::vector<double> f(nd, 0.0); // 后复权比: 日轴内首个日根 = 1
+  double end = 0;                 // 末个有根日的 f
+  for (size_t k = 0, p = SIZE_MAX; k < nd; ++k) {
+    cs[k] = candle_on(kl, today, days[k]), bs[k] = bars_on(kl, today, days[k]);
+    assert((!bs[k] || cs[k]) && "有分钟根的日必有日根");
+    if (!cs[k])
+      continue;
+    assert((p == SIZE_MAX || cs[k]->ref > 0) && "前收链: 接续的日根须有前收");
+    f[k] = p == SIZE_MAX ? 1.0 : f[p] * cs[p]->close / cs[k]->ref;
+    p = k;
+    if (bs[k])
+      end = f[k];
+  }
+  for (size_t k = 0; k < nd; ++k) {
+    const Bars *b = bs[k];
     if (!b)
       continue;
-    const float ref = ref_of(kl, today, b->date);
+    const double a = f[k] / end;
+    const float ref = static_cast<float>(cs[k]->ref * a);
     s.ref = ref;
     for (int j = 0; j < kSlots; ++j)
       if (b->has[static_cast<size_t>(j)])
-        s.push({b->cell[static_cast<size_t>(j)], b->date, ref}, static_cast<double>(k) * kSlots + j);
+        s.push({scaled(b->cell[static_cast<size_t>(j)], a), b->date, ref}, static_cast<double>(k) * kSlots + j);
   }
 }
 
@@ -1114,11 +1140,13 @@ Recent RecentOf(std::span<const Mark> m) {
   const size_t n = m.size();
   if (n >= 1 && m[0].ref > 0)
     r.chg = m[0].close / m[0].ref - 1.0;
-  if (n >= 5) {
-    double c = 0;
-    for (size_t i = 0; i < 5; ++i)
-      c += m[i].close;
-    r.ma5 = m[0].close / (c / 5) - 1.0;
+  if (n >= kMarks && std::all_of(m.begin(), m.begin() + kMarks - 1, [](const Mark &x) { return x.ref > 0; })) {
+    double c = m[0].close, f = 1; // f = 第 i 日收折到最新一日口径的前复权比 (前收链)
+    for (size_t i = 1; i < kMarks; ++i) {
+      f *= m[i - 1].ref / m[i].close;
+      c += m[i].close * f;
+    }
+    r.ma5 = m[0].close / (c / kMarks) - 1.0;
   }
   return r;
 }

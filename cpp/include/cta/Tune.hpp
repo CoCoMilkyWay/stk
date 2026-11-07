@@ -26,8 +26,8 @@ struct Goal {
 
 inline const Goal kGoals[] = {
     {"split", "行情分割质量: 带把行情切成带外的趋势段与带内的震荡段, 切得好 = 趋势吃满、震荡不挨打、换手少; "
-              "分数 = (带外顺向 − 带内来回 − 成本) / 总振幅, 对数价单位, 1 ≈ 走过的路程全部顺向吃到; 带内来回在分层仓位坐标里量, 单边穿过带不罚; "
-              "成本 = 佣金 + 印花税 + 冲击 + 跳空, 与回测同一份"},
+              "分数 = (带外顺向 − 带内来回 − 成本) / 总振幅, 对数价单位, 1 ≈ 走过的路程全部顺向吃到; 带内来回在分层仓位坐标里量, 单边穿过不罚; 方向之外的一侧 (空仓) 不计; "
+              "成本 = 佣金 + 印花税 + 冲击 + 震荡 + 跳空, 与回测同一份"},
 };
 
 // split = 行情分割质量: 逐根两项 [a, b] = [净顺向, 振幅] (见 Split)
@@ -44,10 +44,10 @@ struct Terms {
 
 // 目标核 (逐根, 与损益核 Pnl 对仗): 一刀 x + 实际仓位 w (仓位层之后) → 两项; seal 收一日进前缀
 //   净顺向 = 带外顺向 − 带内来回 − 成本, 振幅 = |对数涨跌|; 都是对数价 (≈ 满仓收益) 单位, 带就绪 (0 < 下线 < 中线 < 上线, 本根与前根) 才计
-//     带外顺向: 前根在上线之上 (满多) → +对数涨跌, 在下线之下 (满空) → −对数涨跌 (随机游走期望 0); 前根在带内、本根破线 → 越线那截记正
-//     带内来回: 带内位置 s = 分层的仓位坐标 pos ∈ [−1, 1] (等差按价格 / 等比按对数价; 每层仓位相同), 一步的带内路程 = |Δs| / 2 · ln(上线 / 下线),
-//               s 含带本身的漂移; 一段 = s 离开边界到再碰边界 (或带失效), 来回 = 段内路程 − |段内净位移|, 单边穿过带不罚
-//     成本: 佣金 + 印花税 + 冲击 + 跳空 (costs_of, 与回测 Pnl 同一份), 窄带的代价
+//     带外顺向: 前根在上线之上 (满多) → +对数涨跌, 在下线之下 (满空) → −对数涨跌 (随机游走期望 0); 前根在带内、本根破线 → 越线那截记正; 方向之外的一侧 (空仓) 不计
+//     带内来回: 带内位置 s = 分层的仓位坐标 Ladder::s ∈ [lo, hi] (等差按价格 / 等比按对数价, 按方向截取; 每层仓位相同), 一步的带内路程 = |Δs| / 2 · ln(上线 / 下线),
+//               s 含带本身的漂移; 一段 = s 离开边界 (lo / hi) 到再碰边界 (或带失效), 来回 = 段内路程 − |段内净位移|, 单边穿过不罚
+//     成本: 佣金 + 印花税 + 冲击 + 震荡 + 跳空 (costs_of, 与回测 Pnl 同一份), 窄带的代价
 struct Split {
   const Tape &t;
   const Setup &u;
@@ -75,18 +75,18 @@ struct Split {
     const double r = t.lr[i];
     b += std::fabs(r);
     if (c0 > z.up)
-      a += r;
+      a += m.hi * r;
     else if (c0 < z.dn)
-      a -= r;
+      a += m.lo * r;
     else {
       if (c > x.up)
-        a += std::log(static_cast<double>(c) / x.up);
+        a += m.hi * std::log(static_cast<double>(c) / x.up);
       else if (c < x.dn)
-        a += std::log(static_cast<double>(x.dn) / c);
-      const double ds = (pos(m.geo, c, x) - pos(m.geo, c0, z)) / 2 * std::log(static_cast<double>(x.up) / x.dn);
+        a -= m.lo * std::log(static_cast<double>(x.dn) / c);
+      const double ds = (m.s(c, x) - m.s(c0, z)) / 2 * std::log(static_cast<double>(x.up) / x.dn);
       a -= std::fabs(ds), net += ds;
     }
-    if (std::fabs(pos(m.geo, c, x)) >= 1)
+    if (const double s = m.s(c, x); s <= m.lo || s >= m.hi)
       a += std::fabs(net), net = 0;
   }
   void seal() {
@@ -226,6 +226,7 @@ inline Ridge ridge_of(const std::vector<const Axis *> &ax, const std::vector<At>
 // 一组模型的参数网格 + 其上的岭回归曲面
 struct Grid {
   Kinds kinds{};
+  size_t dir = kLong; // 方向 (kDirs 下标)
   size_t S = 0;       // 每日根数 (以日计的轴 × S)
   std::vector<At> at; // [配置]
   Ridge ridge;
@@ -247,13 +248,15 @@ struct Grid {
   Signal signal(const Tape &t, size_t x, const Src &s) const {
     const float k = p(x, kBand)[1];
     assert(k > 0 && "带半宽倍数");
-    return {t, *s.m, *s.s, k, ladder_of(kinds[kLayer], p(x, kLayer))};
+    return {t, *s.m, *s.s, k, ladder(x)};
   }
+  // 配置 x 的分层核
+  Ladder ladder(size_t x) const { return ladder_of(kinds[kLayer], p(x, kLayer), dir); }
 };
 
-inline Grid grid_of(size_t S, const Kinds &k) {
+inline Grid grid_of(size_t S, const Kinds &k, size_t dir) {
   const std::vector<const Axis *> ax = axes_of(k);
-  Grid g{k, S, {}, {}};
+  Grid g{k, dir, S, {}, {}};
   At at(ax.size(), 0);
   do
     g.at.push_back(at);

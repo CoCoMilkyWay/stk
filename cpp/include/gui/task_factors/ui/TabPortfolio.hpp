@@ -124,6 +124,7 @@ struct CtaUIState {
   bool fit_y = true;     // 价格轴跟随视野内数据 (框选放大后 = 用框的 y)
   bool boxing = false;   // 价格图上框选进行中
   int cursor = -1;       // 光标所在有效根 (−1 = 不在图上: 读数取末根)
+  bool nav_log = true;   // 净值图 y 轴: log / 绝对
 };
 
 // 篮子组 (指数 / 行业 / 概念) 右表的行过滤 (各页共用, 按组各一份): 只数 / 总市值 [亿元] ∈ [lo, hi] (hi 0 = 不限), |资金流入| ≥ flow (%; 0 = 不限);

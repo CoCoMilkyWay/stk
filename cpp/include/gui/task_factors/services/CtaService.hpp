@@ -24,6 +24,7 @@ namespace GUI::Factors {
 struct CtaSpec {
   size_t goal = cta::kSplit;                  // 优化目标 (cta::kGoals 下标)
   cta::Kinds kind{};                          // [部件] 所选模型 (cta::kParts[j].kinds 下标)
+  int dir = cta::kLong;                       // 方向 (cta::kDirs 下标)
   int roll = static_cast<int>(cta::kMinRoll); // 滚动窗 (日, ≥ kMinRoll)
   float commission_bp = 1;                    // 佣金率 [bp] (买卖各一次)
   float stamp_bp = 5;                         // 印花税率 [bp] (卖出单边)

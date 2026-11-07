@@ -3,11 +3,13 @@
 // 单资产回测, 两个逐根核: 仓位层 Size (目标仓位 → 实际仓位) ↔ 损益 Pnl (实际仓位 → 逐根毛 / 成本 / 净); 仓位按本根收盘价调到
 //   仓位 w ∈ [−1, 1]: 正 = 多, 负 = 空
 //   仓位层: 波动率定仓 w · min(1, 目标 / σ̂) → 不交易带 (前后同向持仓且 |Δw| < 带宽 不调)
-//   损益: 每根毛收益 g = p · a, 净 r = g − 成本; p = 前根收盘调到的仓位, w = 本根收盘调到的, a = 资产本根收益
-//   成本 (占净值比例) 分四项逐根记, 四项之和 = 毛 − 净:
+//   损益: 实际按本根收盘成交, 净 r = p · a − 佣金 − 印花税 − 冲击; p = 前根收盘调到的仓位, w = 本根收盘调到的, a = 资产本根收益
+//         毛 g = 按层线价成交的理想毛 = p · a + 越线差 (收盘成交比线价成交少挣的已在 p · a 里, 越线差把它拆出来), 故 净 = 毛 − 五项成本
+//   成本 (占净值比例) 分五项逐根记, 五项之和 = 毛 − 净:
 //     佣金 = 佣金率 × |w − p|; 印花税 = 印花税率 × 卖出量 max(p − w, 0) (多头减仓 / 融券卖出); 冲击 = 冲击率 × |w − p| (固定, 不按金额变)
-//     跳空 = 按本根收盘成交相对按层线价成交的差: 分层目标越过的层线 L (本根刀的线价) 被收盘价穿过 (前根收与本根收在 L 两侧) 才计, 每线 |收 / L − 1|;
-//            实际调仓与分层同向才计, 量均摊到越过的各线 (波动率定仓 / 不交易带改量不改线); 线随带移过价 / 带未就绪 = 按收盘决策, 不计
+//     越线差 = 按本根收盘成交相对按层线价成交的差: 分层目标越过的层线 L (本根刀的线价) 被收盘价穿过 (前根收与本根收在 L 两侧) 才计, 每线 |收 / L − 1|;
+//              实际调仓与分层同向才计, 量均摊到越过的各线 (波动率定仓 / 不交易带改量不改线); 线随带移过价 / 带未就绪 = 按收盘决策, 不计
+//       分两项: 震荡 = 每线都按离收盘最近那条线的越线差计 (只越过一条线 = 全归震荡); 跳空 = 各线多出的整档 (一根越过几条线, 远处的线比最近那条多越的部分)
 //   simulate = 刀列 (目标仓位 + 层线) 逐根过 Size → Pnl
 #include "cta/Model.hpp"
 
@@ -31,10 +33,10 @@ struct Setup {
 
 // 成本分项 (占净值比例): 一根 / 累计同一形
 struct Costs {
-  double commission = 0, stamp = 0, impact = 0, gap = 0;
-  double sum() const { return commission + stamp + impact + gap; }
+  double commission = 0, stamp = 0, impact = 0, chop = 0, gap = 0;
+  double sum() const { return commission + stamp + impact + chop + gap; }
   Costs &operator+=(const Costs &o) {
-    commission += o.commission, stamp += o.stamp, impact += o.impact, gap += o.gap;
+    commission += o.commission, stamp += o.stamp, impact += o.impact, chop += o.chop, gap += o.gap;
     return *this;
   }
 };
@@ -44,32 +46,39 @@ struct CostItem {
   const char *name;
   double Costs::*f;
 };
-inline constexpr CostItem kCosts[] = {{"佣金", &Costs::commission}, {"印花税", &Costs::stamp}, {"冲击", &Costs::impact}, {"跳空", &Costs::gap}};
+inline constexpr CostItem kCosts[] = {
+    {"佣金", &Costs::commission}, {"印花税", &Costs::stamp}, {"冲击", &Costs::impact}, {"震荡", &Costs::chop}, {"跳空", &Costs::gap}};
 inline constexpr size_t kNC = std::size(kCosts);
 
-// 跳空 (见文件头): 前根收 c0 → 本根收 c, 分层目标 q → 刀 x (分层 m), 实际调仓 dw
-inline double gap_of(const Ladder &m, float c0, float c, float q, const Cut &x, float dw) {
+// 越线差 → 震荡 / 跳空 (见文件头) 写进 k: 前根收 c0 → 本根收 c, 分层目标 q → 刀 x (分层 m), 实际调仓 dw
+inline void cross_of(const Ladder &m, float c0, float c, float q, const Cut &x, float dw, Costs &k) {
   const long a = std::lround(q * static_cast<float>(m.N)), b = std::lround(x.w * static_cast<float>(m.N));
   if (!ready(x) || a == b || dw * static_cast<float>(b - a) <= 0)
-    return 0;
-  double s = 0;
-  for (long k = std::min(a, b); k < std::max(a, b); ++k) {
-    const double L = line(m.geo, static_cast<double>(k + 1 > 0 ? k + 1 : k) / m.N, x); // 相邻两层之间的线 = 离中线远的那层
-    if ((c0 - L) * (c - L) < 0)
-      s += std::fabs(c / L - 1);
+    return;
+  double s = 0, near = 0;
+  long hit = 0;
+  for (long j = std::min(a, b); j < std::max(a, b); ++j) {
+    const double L = line(m.geo, static_cast<double>(j + 1 > 0 ? j + 1 : j) / m.N, x); // 相邻两层之间的线 = 离中线远的那层
+    if ((c0 - L) * (c - L) < 0) {
+      const double o = std::fabs(c / L - 1);
+      s += o, near = hit++ ? std::min(near, o) : o;
+    }
   }
-  return std::fabs(dw) * s / static_cast<double>(std::labs(b - a));
+  const double v = std::fabs(dw) / static_cast<double>(std::labs(b - a)); // 每线份额
+  k.chop = v * static_cast<double>(hit) * near, k.gap = v * (s - static_cast<double>(hit) * near);
 }
 
 // 一根的成本: 前根收 c0 → 本根收 c, 分层目标 q → 刀 x, 实际仓位 p → w (本根收盘成交); 回测 Pnl 与优化目标 Split 同一份
 inline Costs costs_of(const Setup &u, const Ladder &m, float c0, float c, float q, const Cut &x, float p, float w) {
   const double dw = std::fabs(w - p);
-  return {u.commission * dw, u.stamp * std::max(0.0f, p - w), u.impact * dw, gap_of(m, c0, c, q, x, w - p)};
+  Costs k{u.commission * dw, u.stamp * std::max(0.0f, p - w), u.impact * dw};
+  cross_of(m, c0, c, q, x, w - p, k);
+  return k;
 }
 
 struct Run {
   Col w;                    // [n] 每根收盘调到的仓位
-  std::vector<double> g, r; // [n] 每根毛 / 净收益
+  std::vector<double> g, r; // [n] 每根毛 (按层线价成交) / 净收益
   std::vector<Costs> k;     // [n] 每根成本分项
   double turn = 0;          // Σ 换手
   Costs cost;               // Σ 成本分项
@@ -102,7 +111,7 @@ struct Pnl {
       : t(t), u(u), m(m), run{Col(t.n), std::vector<double>(t.n), std::vector<double>(t.n), std::vector<Costs>(t.n)} {}
   void operator()(size_t i, const Cut &x, float w) {
     const Costs k = costs_of(u, m, t.c[i ? i - 1 : 0], t.c[i], q, x, p, w);
-    run.w[i] = w, run.g[i] = p * t.a[i], run.r[i] = run.g[i] - k.sum(), run.k[i] = k, run.turn += std::fabs(w - p), run.cost += k;
+    run.w[i] = w, run.g[i] = p * t.a[i] + k.chop + k.gap, run.r[i] = run.g[i] - k.sum(), run.k[i] = k, run.turn += std::fabs(w - p), run.cost += k;
     q = x.w, p = w;
   }
 };
