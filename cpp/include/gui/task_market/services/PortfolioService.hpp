@@ -44,6 +44,9 @@ struct SharedData;
 
 namespace GUI::Market {
 
+// 组合的账走 Alpha 的因子引擎 (字段表 / 作用域 / 净值引擎同一份)
+using namespace Alpha;
+
 // ---- 组合文件 (GUI 线程读写) ----
 struct PortfolioEntry {
   std::string pool;

@@ -14,9 +14,11 @@
 
 struct AssetItem;
 
-namespace GUI::Alpha {
-
+namespace GUI::Market {
 struct PortfolioUIState; // TabPortfolio.hpp
+}
+
+namespace GUI::Alpha {
 
 // 构建器的一个槽: 未选 / 特征叶 / 算子 (带 arity 个子槽 + 参数). 从外到内填: 先选根算子, 再逐槽往里选
 struct BuildNode {
@@ -84,9 +86,6 @@ struct FactorsUIContext {
   const std::vector<AssetItem> *assets = nullptr; // 全局资产轴 (data.asset.items): Inspect 右下按全局 id 显示代码 / 名称
 };
 
-// Factors / Inspect 两页所有文字提示走这一个: 固定宽度处折行 (SetTooltip 不折行, 长句会被视口裁掉).
-// 写法约定: 首行一句话说用途; 多个方面要讲时一方面一行, "• " 开头, 同类行对仗
-void tip(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 // 持有期在因子层 lv 上的开 / 清仓 = Stat/Contract.hpp【协议表 1】的一行: 各一个 时点 @ 价 (UI 凡显示开关仓处同一份; 由层表 + Geo 推, 不按层分支)
 struct HoldPoint {
   std::string at, px;
@@ -114,6 +113,6 @@ void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h);
 
 // 返回值: 1 = Run 高光行所在文件 (ui.run_file), 5 = Run all (整目录), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_one),
 // 4 = Search all (ui.search_queue 已填), -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (TabPortfolio RenderPortfolioBoxes)
-int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx);
+int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Market::PortfolioUIState &pui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Alpha

@@ -1,10 +1,9 @@
 // Beta→Style: 左 = 参数网格条 + 状态 / 选池改动 + 净值图, 右 = 风格表 (点开 = 跑该风格的网格, 其下列各组绩效与选池勾选) — 见头文件
 #include "gui/task_beta/ui/TabStyle.hpp"
 
-#include "gui/Tasks.hpp"                          // StatusColor
-#include "gui/task_alpha/ui/TabFactors.hpp"       // tip
-#include "gui/task_market/ui/PortfolioCommon.hpp" // 色表 / sheet_width
-#include "gui/util/Chart.hpp"                     // draw_end_tags
+#include "gui/Tasks.hpp"      // StatusColor
+#include "gui/util/Chart.hpp" // 色 / sheet_width / draw_end_tags
+#include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "imgui_internal.h" // TableGetHoveredRow
 #include "implot.h"

@@ -114,7 +114,7 @@ bool ShouldShowAsset(const AssetItem &asset, const StockInfo *info, const Assets
   const int listed = !info ? -1 : (info->out_date ? 1 : 0);
   if (!f.listed.empty() && (listed < 0 || !f.listed.count(listed)))
     return false;
-  if (!f.board.empty() && !f.board.count(GetBoardType(asset.asset_code)))
+  if (!f.board.empty() && !f.board.count(Database::GetBoardType(asset.asset_code)))
     return false;
   if (!f.industry.empty() && (!info || !f.industry.count(info->ind_code)))
     return false;
@@ -162,17 +162,17 @@ Row MakeRow(const Asset &asset, const StockInfos &stock_info, const AssetsToday 
 }
 
 // 市场缩写 交易所.板块
-const char *MarketAbbr(BoardType b) {
+const char *MarketAbbr(Database::BoardType b) {
   switch (b) {
-  case BoardType::SH_Main:
+  case Database::BoardType::SH_Main:
     return "SH.主";
-  case BoardType::STAR:
+  case Database::BoardType::STAR:
     return "SH.科";
-  case BoardType::SZ_Main:
+  case Database::BoardType::SZ_Main:
     return "SZ.主";
-  case BoardType::ChiNext:
+  case Database::BoardType::ChiNext:
     return "SZ.创";
-  case BoardType::BSE:
+  case Database::BoardType::BSE:
     return "BJ.北";
   default:
     return "-";
@@ -254,10 +254,10 @@ const Column kCols[] = {
     {"Mkt", "Market",
      "市场 = 交易所.板块 (板块按代码前缀, 色按交易所)\nSH.主 = 沪市主板 (600/601/603/605)\nSH.科 = 科创板 (688/689)\nSZ.主 = 深市主板 (000/001/002/003/004)\nSZ.创 = 创业板 (300/301/302/309)\nBJ.北 = 北交所 (43/83/87/88/92)",
      Kind::Category, Good::None, nullptr,
-     [](const Row &r) { return static_cast<double>(GetBoardType(r.a.asset_code)); },
-     [](const Row &r) -> std::string_view { return MarketAbbr(GetBoardType(r.a.asset_code)); },
+     [](const Row &r) { return static_cast<double>(Database::GetBoardType(r.a.asset_code)); },
+     [](const Row &r) -> std::string_view { return MarketAbbr(Database::GetBoardType(r.a.asset_code)); },
      [](const Row &r, double, ImU32) {
-       const char *t = MarketAbbr(GetBoardType(r.a.asset_code));
+       const char *t = MarketAbbr(Database::GetBoardType(r.a.asset_code));
        if (t[0] == '-')
          return Dash();
        ImGui::TextColored(r.a.exchange == "SH" ? COLOR_SH : r.a.exchange == "SZ" ? COLOR_SZ
@@ -550,7 +550,7 @@ void RenderFilterBar(
   // ST/Listed/Board: 与 FEATURES/ORDERFLOW 共用控件 (gui/util/AssetFilter.hpp).
   // ST 只有 0..2 (GetStLevel 口径, 无退市整理期一级); Listed 看 out_date 是否为 0
   ImGui::SameLine();
-  GUI::Filter::CommonFilters<BoardType>("Assets", false, state.filter.st, state.filter.listed, state.filter.board);
+  GUI::Filter::CommonFilters<Database::BoardType>("Assets", false, state.filter.st, state.filter.listed, state.filter.board);
 
   // 行业维自绘: 这里的键是字符串行业码 ind_code, 与 ORDERFLOW 的数字 SW2021 ID
   // 不同源, 且选项要从当前 stock_info 动态扫出来

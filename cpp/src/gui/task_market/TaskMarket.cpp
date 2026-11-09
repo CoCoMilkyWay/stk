@@ -1,8 +1,8 @@
 // Task Market - 行情面: 个股 (ASSET) 与篮子 / 组合的曲线、估值、资金流、单标的回测 (NAV · VAL · FLOW · CTA).
 //   ASSET: 资产表 + 右栏 Quotes / Statistics (见 TabAssets.hpp), AssetInfo 建好且扫描过才可进.
 //   NAV / VAL / FLOW: 篮子账 (all 标签库建好即算) + 因子 / 策略两组 (Alpha → Factors 页编辑的组合, 无组合时只少这两组),
-//     走因子面的 PortfolioService (见 AlphaHub.hpp); 日内栏 / 近况列取 Market 行情 (新浪当日 + 篮子历史 + 叠加的成分股), AssetInfo 建好才起.
-//   CTA: 单标的回测走自己的 CtaService (首次进页建; 价格直接由 all.bar 库合成, 不经 Market).
+//     走 AlphaHub 的 PortfolioService (见 gui/task_alpha/AlphaHub.hpp); 日内栏 / 近况列取 MarketHub 行情 (新浪当日 + 篮子历史 + 叠加的成分股), AssetInfo 建好才起.
+//   CTA: 单标的回测走自己的 CtaService (首次进页建; 价格直接由 all.bar 库合成, 不经 MarketHub).
 #include "gui/task_market/TaskMarket.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_alpha/AlphaHub.hpp"
@@ -36,15 +36,15 @@ static_assert(TAB_COUNT - TAB_NAV == Market::kPages);
 
 struct TaskMarketState {
   std::shared_ptr<Market::MarketHub> market; // 与 Database 任务共用 (首次画本任务才起)
-  std::shared_ptr<Alpha::AlphaHub> factors;
+  std::shared_ptr<Alpha::AlphaHub> alpha;
   std::unique_ptr<Market::CtaService> cta_service;
   Market::AssetsState assets_state;
 };
 
-TaskHandle CreateMarketTask(std::shared_ptr<Market::MarketHub> market, std::shared_ptr<Alpha::AlphaHub> factors) {
+TaskHandle CreateMarketTask(std::shared_ptr<Market::MarketHub> market, std::shared_ptr<Alpha::AlphaHub> alpha) {
   auto state = std::make_shared<TaskMarketState>();
   state->market = std::move(market);
-  state->factors = std::move(factors);
+  state->alpha = std::move(alpha);
 
   TaskHandle handle;
   handle.name = "Market";
@@ -63,7 +63,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Market::MarketHub> market, std::shar
       return state->market->quote ? TaskStatus{TaskStatus::Kind::Muted, "live"} : TaskStatus{};
     if (idx == TAB_CTA)
       return state->cta_service ? ProgressStatus(*state->cta_service) : TaskStatus{};
-    const auto &ps = state->factors->portfolio_service;
+    const auto &ps = state->alpha->portfolio_service;
     return ps ? ProgressStatus(*ps) : TaskStatus{};
   };
 
@@ -77,7 +77,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Market::MarketHub> market, std::shar
       ImGui::EndChild();
       return;
     }
-    Alpha::AlphaHub &f = *state->factors;
+    Alpha::AlphaHub &f = *state->alpha;
     Alpha::EnsurePortfolio(data, f);
     const Market::MarketHub *mk = nullptr;
     if (data.taskstate.database.all_json_ready) {

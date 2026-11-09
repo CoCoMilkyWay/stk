@@ -2,7 +2,7 @@
 #include "gui/task_market/ui/TabPortfolio.hpp"
 
 #include "gui/Tasks.hpp"                    // StatusColor
-#include "gui/task_alpha/ui/TabFactors.hpp" // tip / hold_desc
+#include "gui/task_alpha/ui/TabFactors.hpp" // hold_desc
 #include "gui/task_market/ui/PortfolioCommon.hpp"
 #include "imgui.h"
 

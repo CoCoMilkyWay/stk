@@ -1,5 +1,22 @@
 ```
 入口: run.py ──► py/main.py ──► CMake ──► app_main (C++可执行文件)
+
+GUI布局:
+┌───────────────────────────────────────────────────────────────────────────┐
+│ Tasks                                │ Panel:                             │
+│  > Settings[done/syncing]            │                                    │
+│  > DataBase                          │ Sync / Encode / Calendar           │
+│  > Beta                              │ Compute / Style                    │
+│  > Alpha                             │ Compute / Operators / Factors /    │
+│                                      │ Inspect                            │
+│  > Market                            │ ASSET / NAV / VAL / FLOW / CTA     │
+│  > Features                          │ Table / Distribution / Transform / │
+│                                      │ Correlation / OrderFlow / NodeTime │
+│  > Agent                             │ Mine / Config                      │
+│  > Tools                             │ LaTeX / System                     │
+│ Icon:                                │                                    │
+│  |Network|FPS│                       │                                    │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ```
@@ -172,7 +189,8 @@ stk/
 │   │   │   │                                         #    · Encode: 有 archive 未编码 = pending; raw 缺口 (archive 也没有) 只在页内提示, 不影响 done
 │   │   │   ├── util/{Color,AssetFilter,Latex}.hpp    # 🖥️ 颜色 / 资产过滤 / LaTeX 渲染
 │   │   │   ├── util/Sparkline.hpp                    # 🖥️ 表格格内迷你图 (Features 预览 / Alpha 因子表共用)
-│   │   │   ├── util/Chart.hpp                        # 🖥️ 图表公共件 (ASSET 行情 / Market 净值共用): 涨跌色 tint / 档位按钮条 button_bar / 线尾小字 EndTag / 现价十字 NowCross
+│   │   │   ├── util/Chart.hpp                        # 🖥️ 图表公共件 (ASSET 行情 / Market 净值 / Beta 风格表共用): 涨跌色 tint / 名次色 band_col / 色环 oklch / 右表宽 sheet_width / 档位按钮条 button_bar / 线尾小字 EndTag / 现价十字 NowCross
+│   │   │   ├── util/Tip.hpp                          # 🖥️ 悬停提示 tip: 定宽折行 (全部页同一份)
 │   │   │   ├── util/Service.hpp                      # 🖥️ 后台单线程服务骨架 GUI::Service<Derived, Req> (CRTP): 新请求覆盖旧请求; 全部 GUI 服务共用
 │   │   │   ├── task_settings/                        # 🖥️ 设置
 │   │   │   │   └── TaskSettings.hpp                  # 🖥️ 设置: 配置管理 [done / syncing]
@@ -202,7 +220,107 @@ stk/
 │   │   │   │   │   │                                 #    · RescanStorage 逐日重扫 / RecomputeCoverage 只用扫描缓存重算; 扫盘 / 覆盖统计各一个常驻执行器
 │   │   │   │   │   ├── EncodingService.hpp           # 🖥️ 编码: CSV 归档 → L2 逐笔二进制 (按天流水: producer 列举 → worker 并行解码); 收尾 StateManager 重扫
 │   │   │   │   │   │                                 #    · FileCheckService: 归档格式 / 结构 / 完整性核查 (顺序探测, 单盘)
-│   │   │   │   │   ├── AssetLoader.hpp               # 🖥️ A 轴物化: AssetInfo::codes (cn_stock_basic_info 全量, 含退市, 不含基金) → AssetAxis → Asset::items (下标 = asset_id)
+│   │   │   │   │   └── AssetLoader.hpp               # 🖥️ A 轴物化: AssetInfo::codes (cn_stock_basic_info 全量, 含退市, 不含基金) → AssetAxis → Asset::items (下标 = asset_id)
+│   │   │   │   └── ui/                               # 🖥️ UI
+│   │   │   │       ├── TabSync.hpp                   # 🖥️ 数据源状态与同步入口: 一源一张分表 (BigQuant / Tushare / 东财 / 新浪), 列同形; 表头 = 各道同步状态 [状态] 本轮 @ 时刻
+│   │   │   │       │                                 #    · Update 四道 bigquant → tushare → eastmoney.concept → bigquant.bar1m (道序即执行序, 日志 tag 同名); sina.live = Quote 常驻轮询
+│   │   │   │       │                                 #    · 基本面状态卡 (股票数 / 日历 / D 轴范围 / BigQuant 周配额) + Audit 区 (逐表核对汇总, 每表 audit / sync 小按钮)
+│   │   │   │       ├── TabEncode.hpp                 # 🖥️ L2 编码: Coverage Check 覆盖结论 + File Check + 编码 (worker 数 / 跳过已有; 未过 File Check 需"风险自负"确认) + 全屏进度
+│   │   │   │       │                                 #    · Asset Summary 三页签: Archives / Orders (按资产的缺失表) / By Date (同一批缺口按日期归堆, 只出这批日期真出现过的判据列)
+│   │   │   │       │                                 #    · 表视图 = 过滤 + 排序后的行序, 统计代数 / 排序规则变才重建
+│   │   │   │       └── TabCalendar.hpp               # 🖥️ 交易日历格: 按 AssetInfo::days 逐日一格, 四层可开关 (除权除息 黄 (按当日事件数定 alpha) / 节假日 紫 / 回测区间 绿 / L2 覆盖 蓝) + 完整度边框
+│   │   │   ├── compute/                              # 🖥️ 特征计算 (Beta / Alpha 的 Compute 页同一份, Features 读轮次)
+│   │   │   │   ├── services/ComputeService.hpp       # 🖥️ 特征计算: 请求 = 库 (池 × 档), 每库同一流程: fund::Panel (全市场) → pool::Panel (A 轴 + 成员) → pipeline<T> (tier_ops 分发)
+│   │   │   │   │                                     #    · 规划 plan_libs → 每库一份 LibPlan (库清单 + 已落盘 + 规划日期轴; 上游未落盘齐 = blocked); 起算 lib_run → LibRun (本轮日期轴 = 续算尾窗 + 新日)
+│   │   │   │   │                                     #    · 全量 (清库重建) / 续算 (A 轴冻结, 只算库末之后的新日; 快照与库清单、字段表对得上, Lob 轴在同池 Bar 轴内才可续)
+│   │   │   │   └── ui/TabCompute.hpp                 # 🖥️ 计算面 ComputeHub (一个服务 + 一张库表; Beta 页只列 all.bar, Alpha 页列其余; 轮次 rounds 供 Features 作废缓存): 状态行 (进度条 + 取消 + 自动续算) / 核布局 (两档两栏, 按机器先配) / 库表 (一行一池, bar | lob 两组同构子列: 状态 / 数据初始 / 数据末日 / 天数 / 已落盘 / 未落盘 / 资产 / 轴外 / 操作; 日期列按规划日期轴, 建库前即可见; 池名过滤) / 架构说明 (折叠); 每库 Rebuild (全量, 先弹窗确认) / Append (续算) / Remove, 上游库 (lib_parent: lob ← 同池 bar; 子池 bar ← all.bar) 未算完则禁用, 灰按钮悬浮给原因、可用给将算日期段; 数据换进 (同步 / 编码) 后可续算且未判废的库自动依次 Append (不必在本页)
+│   │   │   ├── task_beta/                            # 🖥️ Beta 任务 (风格择优)
+│   │   │   │   ├── TaskBeta.hpp                      # 🖥️ Beta 任务主界面: Compute (只 all.bar) / Style (风格篮子参数优选 → pools.json); 每帧推进计算面
+│   │   │   │   ├── services/StyleService.hpp         # 🖥️ Style 页的单 worker: 一个风格的参数网格 (shared/PoolSpec.hpp Grid) 逐组选池 → 篮子净值 / 绩效 (对全A)
+│   │   │   │   │                                     #    · 原料带 = all.bar 已落盘日 (库轴 / 日轴不变即常驻); 风格键逐行次序按风格留最近几份; 篮子账按参数留, 改网格只算新出现的组
+│   │   │   │   └── ui/TabStyle.hpp                   # 🖥️ Beta → Style 页: 右表 = 风格 (点一行 = 按参数网格逐组选池回测), 左 = 网格条 / 改动 (确认写 pools.json) / 各线净值
+│   │   │   ├── task_alpha/                           # 🖥️ Alpha 任务 (因子挖掘, factor/ 的 GUI)
+│   │   │   │   │                                     #    · Operators 算子表, 三后端对拍 (合成张量, 不依赖特征库) / Factors 因子表, Run 评估 / Search 参数搜索 / Inspect 单因子深看
+│   │   │   │   │                                     #    · 因子引擎 (services/Factors*) 全部因子服务同一份, Market 的组合账也走它
+│   │   │   │   ├── TaskAlpha.hpp                     # 🖥️ Alpha 任务主界面: Compute (all.lob + 子池各库) / Operators / Factors / Inspect; 页顶条自选 池 + 因子层
+│   │   │   │   ├── AlphaHub.hpp                      # 🖥️ AlphaHub (Alpha / Market 共用): 四服务 + 作用域 (页顶条选择 / 已生效) + 组合; EnsurePortfolio / SyncPortfolio
+│   │   │   │   ├── services/
+│   │   │   │   │   ├── OperatorsService.hpp          # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
+│   │   │   │   │   ├── RunService.hpp                # 🖥️ 因子表 (Run): 扫描 → 逐文件一张共享 DAG (毛 HoldStat + 各金额段换手成本 CostAcc; 每层至少一段: Lob 盘口段 / Bar 固定段) → 逐条目发布行, 文件走完 (未取消) 一次回写
+│   │   │   │   │   │                                 #    · 表中 score / util 由 stat 现算
+│   │   │   │   │   ├── FactorsWorker.hpp             # 🖥️ FactorWorker<D, Req>: 全部因子服务同一份骨架 (进度面 + message + 优先级 Prio + FactorFlow + 中断收尾 settle)
+│   │   │   │   │   ├── FactorsFile.hpp               # 🖥️ 因子文件 (一因子一文件) 读写: 格式 / FactorRow / ScanFactorFile / 构建器 Add · Update · Delete / WriteFactorSearch (Search) / WriteFactorStats (Run)
+│   │   │   │   │   │                                 #    · Run 只回写 run + stats[i] (与 weights 同序), expr / weights 不动; 破碎因子标 BROKEN, 不删
+│   │   │   │   │   ├── FactorsTable.hpp              # 🖥️ 因子层公共类型: FactorLevel / FeatureTable / FactorScope / Request<Spec> / FactorRef / EvalStat (StatScope / HoldStat / CostTier / MiniPdf) / TailRow (两端组内最极端 50 / 20 / 5%) / AlphaDist
+│   │   │   │   │   │                                 #    · 层表 FACTOR_LEVELS 唯一真相 (网格层 / 标签档 / 名 / K 线列名式; 加层只加一行) → LevelId / PerLevel; 服务 / 装载 / UI 不按层分支
+│   │   │   │   │   │                                 #    · 字段表视图按层建一次, 全页共享 (FeatureTables / table_of)
+│   │   │   │   │   ├── FactorsScope.hpp              # 🖥️ 作用域层 (最底): Domain 评估域 (库 + 评估期 + 资产轴; span_of 只取评估期) / Budget (load / work / fixed / dev) → plan_chunks 分块 Plan / Rc 唯一结局
+│   │   │   │   │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (四服务共用, 只装数据): 特征 / 门控 / 标签 / 成本 宿主平面 (可成交 / 顺延已在标签里, 不另读)
+│   │   │   │   │   │                                 #    · X ↔ Y ↔ B 三侧同一份逐天并行骨架 (Io = 字段表 + 评估域 + 读者 + 并行 + 取消 + 进度): load_x (因子输入叶) / load_y (门控 + 标签 [hold] + 成本 [amt]
+│   │   │   │   │   │                                 #      + 满仓只数) / load_b (池篮子输入 BPlanes: all Bar 库全轴, 全部池成员位 PoolMask + T+1C 标签 + 原料一趟读齐, 不进块; 日频原料 / 池列 as-of 取 bar.1d)
+│   │   │   │   │   │                                 #    · 门控 / 标签取因子池 Bar 库本层列, 盘口成本取同池 Lob 库本层列 (同行, 原值入缓存; 买入冲击取用时按 max_impact 封顶)
+│   │   │   │   │   │                                 #    · Store = 进程唯一的计算面: 线程池 + 已开的库 + 平面缓存 + 计算权 (单 worker 优先级队列: 交互 > 批, 批在文件 / 趟边界让位)
+│   │   │   │   │   │                                 #      平面逐张缓存, 键 = 层 | 评估域 | 日段 | 角色 (门控 / 标签组 / 金额段 / 标签秩 / 叶), 与服务无关 → 跨服务命中; 未钉的按 LRU 淘汰
+│   │   │   │   │   │                                 #      满仓只数按评估域记 (整期 = 门控在池格数, 多块 = n_full_of 预扫); 库判废 / reload → clear
+│   │   │   │   │   │                                 #    · BlockSpec (x 叶 / y YSpec / ry) → Store::pin = 块 Block (钉住一组平面的视图, 只活在一块的迭代内; gen = Y 的代); stat_scope = 结果作用域头
+│   │   │   │   │   │                                 #    · Keys<N> (Holds / Amts) 键集 (keys_union 并); Pick = 子集下标, labels_pick 取会话持有期子集
+│   │   │   │   │   ├── FactorsBook.hpp               # 🖥️ 净值引擎 (唯一): RowLines (逐行批收益, 每线自带持有期 / 平仓实现或建仓即付) → fold_book → BookLines → compound 复利
+│   │   │   │   │   │                                 #    · Inspect 分层 / Portfolio 因子线 / 池篮子 / 池线同一份; 口径 = Stat/Contract.hpp【协议表 1 / 2】
+│   │   │   │   │   │                                 #    · baskets: 全部池 + all 内行业 / 概念篮子 (shared/Basket.hpp 篮子表) 一趟出可成交指数 / 逐行增仓量 / 估值 (吃 B); pool_line = 池整体等权 (吃 Y)
+│   │   │   │   │   ├── FactorsProbe.hpp              # 🖥️ 探针层 (一个根的一种输出): RootView / Ctx / Ranks 两后端同形, Probes<P...> 逐钩子 need / open / row / root / finish
+│   │   │   │   │   │                                 #    · 通用探针 Hold / Cost / Cover / Alpha / IcPdf 四服务共用; 服务私有探针在各自 .cpp
+│   │   │   │   │   │                                 #    · 原料按块要: need 每块 / need_last 只末块 (alpha 分布); 预算: bytes 每根常驻 / scratch 一根评时暂存
+│   │   │   │   │   │                                 #    · 根上统计核: cover_rows (有效率 + 可秩率一遍) / alpha_dist / mini_pdf_of / group_abs (换手成本三探针 CostP / TurnP / BookP 平级直调 Stat cost_rows)
+│   │   │   │   │   │                                 #    · 落地基类 LandRowsP (逐持有期逐行) / LandCellsP (逐行逐资产) / LinesP (净值线 → fold_book); EvalProbes<X...> + fill_eval → EvalStat (Run 行 / Inspect 结果同一份)
+│   │   │   │   │   ├── FactorsEngine.hpp             # 🖥️ 评估引擎 Engine<Cpu | Gpu> 同一接口: budget / batch_of / bind / walk / plant / eval (森林单入口, 原料后端 ready / view)
+│   │   │   │   │   │                                 #      CPU 恒逐根 Stat (Search 也是, 抽样行拷 rx); GPU 逐根 stat_eval / 批核 (kBatched: 只累加 + 抽样行) 走完森林一次 search_eval
+│   │   │   │   │   │                                 #      FactorFlow = 服务 worker 的计算句柄: Store 引用 + 取消 / 进度 / 优先级 + 引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU); 请求末 end
+│   │   │   │   │   │                                 #    · 计算权租约 Lease (RAII): 计算全在租约内; 粒度 = Run 每文件 / Search 每趟 / 交互服务每请求; 租约末引擎 release (会话 / 工作区还回) + 块解钉
+│   │   │   │   │   │                                 #    · 管线 (全部服务同一份): Job → prepare (open_job 评估域 + 开库 → y_spec (持有期 + 探针 Ps::segs 成本段) → 前后带 → budget_of
+│   │   │   │   │   │                                 #      → plan_chunks 分块) → pass (一趟: 逐块 load_block (Store::pin) → hk.block → 逐批 plant → plan_forest (坏根跨块粘住) → hk.plan → eval (hk.node),
+│   │   │   │   │   │                                 #      末块 finish → hk.done); Run / Inspect / Portfolio 走 eval_job (根集 RootSet 去重 → 一张森林种一次各块共用; 根 = 式 + 口径 + 方向 + 持有期,
+│   │   │   │   │   │                                 #      Y 持有期 = 各根 hd 之并; 钩子 whole (Inspect) → 整期一块, 否则前后带 bands_of 按预算分块; 条目终局下沉: 每条目恰一个 hk.fail / hk.post);
+│   │   │   │   │   │                                 #      Search 一次 prepare, 每趟一次 pass (逐块逐批现种); 池篮子走 eval_baskets (与 eval_job 平级, 不走森林)
+│   │   │   │   │   │                                 #    · 预算: 宿主 = Store::budget (平面缓存全可让, 规划与他服务的缓存无关); 最小的块都装不下 → assert
+│   │   │   │   │   │                                 #    · 钩子 HookBase (block / plan / node / done / fail / post, 各服务派生遮蔽) 与探针对仗: 探针 = 一个根的输出, 钩子 = 一趟的事件
+│   │   │   │   │   │                                 #    · 不做跨因子 (跨请求 / 跨文件) 的森林合并或结果缓存: 设计决定, 见 FactorsScope.hpp Domain 注释
+│   │   │   │   │   │                                 #    · 评估期 = 标签库 ∪ 叶所在库的落盘日交集 (四服务同一份 span_of): 只用 bar.* 叶的因子不碰 Lob 库, 评估期 = Bar 库全期
+│   │   │   │   │   │                                 #    · 叶身份 = LeafId (字段表叶下标): XPlanes / 值域缓存 / GPU 输入全按它, 叶名只在 Dag 边界
+│   │   │   │   │   │                                 #    · Job = 规格 + 作用域 + 预算 + 计划 + 满仓只数; JobOut = Job + 森林 + 节点耗时 + 后端
+│   │   │   │   │   │                                 #    · 结局 Rc 各服务同一写法: settle (中断 → false, Stale 弃平面缓存; 否则 true, Empty / Broken 的条目已由 fail 收尾)
+│   │   │   │   │   │                                 #    · 四服务的差别只在探针元组; 引擎按根的 hd 取会话持有期子集
+│   │   │   │   │   ├── InspectService.hpp            # 🖥️ 单因子深看: 平面经 Store 缓存, 每请求整条重算 (池等权线随 Y 的代复用); 不写文件
+│   │   │   │   │   │                                 #    · 期限结构净线的换手成本 = Cost 探针 (与 Run 同一份); 分层累计 = NavP 落线 (Row + 尾部) → fold_book
+│   │   │   │   │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
+│   │   │   │   │   ├── LensService.hpp               # 🖥️ Agent 观察: 一组根 (秩 / Row / 两端真持有格) + 一组特征 (根的输入原值) 在评估期上整期一块 (CPU, 单持有期), 不写文件
+│   │   │   │   │   │                                 #    · 落地列 = 指定资产一列, 或评估期内进过池的资产; 另落门控 / 标签 / 逐行池内标签均值; 两端格与 Row::grp 同一份判据 (label_row 逐格扩展)
+│   │   │   │   │   │                                 #    · 逐行尾部 TailRow (TailExt, 与 Inspect 同一份): 两端组内最极端 50 / 20 / 5% 各沿自己的交接链持仓
+│   │   │   │   │   ├── StatJson.hpp                  # 🖥️ HoldStat / CostTier / MiniPdf ↔ JSON; EvalStat = scope_json (run) + eval_json (stats[i]) ⇄ load_eval
+│   │   │   │   │   └── SearchService.hpp             # 🖥️ 参数搜索 (Search 按钮, 单线程)
+│   │   │   │   │                                     #    · 流程: 模板自由参数低差异采样 → 拟合曲面取峰 → 活跃峰 ± 试探细化 (只评可能显著胜过峰的点) → 按截面相关挑显著且不冗余的 → 整体替换 weights
+│   │   │   │   │                                     #    · 结果 SearchResult: hold / n_peak / cands / picks (单持有期, 扁平)
+│   │   │   │   │                                     #    · 只搜给定持有期, 限 Search/Config 区间 (Search = 看板当前 Hold; Search all = 各模板 × 本层该区间内各档, 不看 Hold)
+│   │   │   │   │                                     #    · 回写: Search 只替换该 h 的权重 (搜不出 = 清空该 h); Search all 整份覆盖各文件 weights
+│   │   │   │   │                                     #    · 目标: 每期毛 LS (持仓口径, 已含资金利用率, 按 rIC 定向) · rIC · mono² (不看成本, 不跨 h 比); 硬门槛 mono ≥ kMinMono (分层先于收益)
+│   │   │   │   │                                     #    · 无自由参数的具体式也走它: 只评本身, 定方向 + 判显著
+│   │   │   │   │                                     #    · 结局: 评估期 + 无显著时的代表点 (过门槛的曲面峰, 否则过门槛的点里曲面估计最高的, 再否则 mono 最高的点) 落进因子文件 search[]
+│   │   │   │   └── ui/
+│   │   │   │       ├── TabOperators.hpp              # 🖥️ 算子表 tab
+│   │   │   │       ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
+│   │   │   │       │                                 #    · 显示级别; Hold 选择 = hold_cycler "Hold ◂ 周期名 ▸" + hold_points_line 分色开 / 清仓 (看板写 Hold 行下一行, Inspect 同行); 组合框写 hold_desc 文本, 同一份 hold_points
+│   │   │   │       └── TabInspect.hpp                # 🖥️ 单因子深看 tab: 切片控件 (Hold / 分层 / 滚动窗口等) 只切结果立方体, 不发请求; 只有 Recompute / 自动 Inspect / Kline 才发
+│   │   │   ├── task_market/                          # 🖥️ Market 任务 (行情)
+│   │   │   │   │                                     #    · ASSET = 个股表 + 行情图; NAV / VAL / FLOW / CTA = 池指数 / 行业 / 概念篮子 + 因子组合 (一组合一文件, 跨池跨层) 净值 + 日内行情 / 资金流 + 单标的 CTA 择时
+│   │   │   │   ├── TaskMarket.hpp                    # 🖥️ Market 任务主界面: ASSET (TabAssets) / NAV / VAL / FLOW / CTA (TabPortfolio); 篮子账不依赖组合
+│   │   │   │   ├── services/
+│   │   │   │   │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池, 所用库) 一张森林 (根 = 去重规范串, BookP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
+│   │   │   │   │   │                                 #    · 结果一律是账 PortfolioBook (线键 keys + 四列 = 毛收益 / 冲击 / 固定份数 / 增仓量, 各 [线][行]): 因子 = 一线 (键 0); 篮子 = basket_line 条线 (不扣成本: 只毛收益 / 增仓量两列) + 估值; 个股 = all 池轴每只一线 (键 = 全局 id; 只毛收益一列 = 后复权日收益) + 本只估值, 与篮子账同一作业同日轴
+│   │   │   │   │   │                                 #    · BasketTask 全部篮子日层一个作业 (eval_baskets: open_job → load_b → baskets); 因子按条目缓存, 只算新增 (换组合留着, 按最近被请求限总量), 根评完即逐条发布
+│   │   │   │   │   ├── CtaService.hpp                # 🖥️ Market → CTA 页: 选中的一个标的 (篮子线 / 个股) → 1 分钟后复权价 → cta/Trace.hpp 滚动调参全期轨迹; 标的序列留最近几个 (只改设定不重读)
+│   │   │   │   │   ├── CtaLib.hpp                    # 🖥️ CTA 价格库: 两侧 (库轴全部个股 / basket_group 三组线) 一趟过日合成落 <all.bar 库目录>/cta/, 之后只补新日 (CTA 页首次打开即备)
+│   │   │   │   │   │                                 #    · 两侧同一种记录 (一行一日 = 因子 + 分钟价) 与同一条因子链 (首个有根日 1 起, 逢前收 ≠ 参考价乘 参考价 / 前收); 读口 series(侧, 键)
+│   │   │   │   │   │                                 #    · 个股: 价 = 库存原价 (f16 原样), 前收 = D−1 行前收 ⇒ 因子 = 后复权; 篮子: 价 = BasketRow + Fold 日内点位 (前日收 = 1, f32), 前收 = 1 ⇒ 因子 = 点位接续
+│   │   │   │   │   │                                 #    · 有效根 = 价 × 因子, 时间格 = 日下标 · 240 + 槽
 │   │   │   │   │   ├── Kline.hpp                     # 🖥️ 行情公共件 (ASSET 个股 / Market 篮子), 两边 Side (个股 / 篮子) × 历史 (Kline) / 当日 (Day) 四路同一套类型: 个股 / 篮子只差 Fold 一步, 历史 / 当日只差源
 │   │   │   │   │   │                                 #    · 键 = 个股全局 id / 篮子 basket_line; 两边同一个请求 HistoryRequest (键集) / 发布 HistoryPub (Tape: [键] Kline, 源未就绪带 lack)
 │   │   │   │   │   │                                 #    · 分钟根 Bars (240 槽稠密, 竞价并入首根; 逐根净流入 net: 篮子 = 成员之和, 个股 = 本只 net_flow); 槽代数 label_slot / sec_slot / row_slot (三种时间坐标 → 槽); 日根自带前收 ref, 涨跌一律对 ref
@@ -221,15 +339,38 @@ stk/
 │   │   │   │   │   │                                 #    · 库末日之后至基本面末日为补日 (不落盘): 成员 / 池 / 行业 / 股本冻结在库末日收盘行, 价取 bar1d / bar1m, 加权权重随 收 / 前收 漂移
 │   │   │   │   │   │                                 #    · 跑完把末日成员表 + 点位交给 Quote, 之后的行情日由它合成; NAV 理想线 / 日内栏 / 近况 / FLOW 同出于此; 发布另带末日成员表两两的权重余弦 (NAV 配色的成员重合) 与各篮子成分 (Market 右表展开)
 │   │   │   │   │   ├── BasketRow.hpp                 # 🖥️ 篮子合成的 all.bar 源 (BasketHistory / CTA 库同一份): L_1day 收盘行 Row → 次日成员表 members, L_1min → 分钟根 bars_of
-│   │   │   │   │   └── Market.hpp                    # 🖥️ Quote + StockHistory + BasketHistory 一份, request / history 按 Side 分派; Market 任务各页共用, Database Sync 页读新浪状态 (CreateAllTasks 建, 两任务各持 shared_ptr; AssetInfo 建好才起)
-│   │   │   │   └── ui/                               # 🖥️ UI
-│   │   │   │       ├── TabSync.hpp                   # 🖥️ 数据源状态与同步入口: 一源一张分表 (BigQuant / Tushare / 东财 / 新浪), 列同形; 表头 = 各道同步状态 [状态] 本轮 @ 时刻
-│   │   │   │       │                                 #    · Update 四道 bigquant → tushare → eastmoney.concept → bigquant.bar1m (道序即执行序, 日志 tag 同名); sina.live = Quote 常驻轮询
-│   │   │   │       │                                 #    · 基本面状态卡 (股票数 / 日历 / D 轴范围 / BigQuant 周配额) + Audit 区 (逐表核对汇总, 每表 audit / sync 小按钮)
-│   │   │   │       ├── TabEncode.hpp                 # 🖥️ L2 编码: Coverage Check 覆盖结论 + File Check + 编码 (worker 数 / 跳过已有; 未过 File Check 需"风险自负"确认) + 全屏进度
-│   │   │   │       │                                 #    · Asset Summary 三页签: Archives / Orders (按资产的缺失表) / By Date (同一批缺口按日期归堆, 只出这批日期真出现过的判据列)
-│   │   │   │       │                                 #    · 表视图 = 过滤 + 排序后的行序, 统计代数 / 排序规则变才重建
-│   │   │   │       ├── TabCalendar.hpp               # 🖥️ 交易日历格: 按 AssetInfo::days 逐日一格, 四层可开关 (除权除息 黄 (按当日事件数定 alpha) / 节假日 紫 / 回测区间 绿 / L2 覆盖 蓝) + 完整度边框
+│   │   │   │   │   └── MarketHub.hpp                 # 🖥️ MarketHub = Quote + StockHistory + BasketHistory 一份, request / history 按 Side 分派; Market 任务各页共用, Database Sync 页读新浪状态 (CreateAllTasks 建, 两任务各持 shared_ptr; AssetInfo 建好才起)
+│   │   │   │   └── ui/
+│   │   │   │       ├── PortfolioView.hpp             # 🖥️ Market 行情页的纯计算层 (无 ImGui): 派生 (行 / 线 / 色相) → 滚动分位 (估值分位 + 等值线档) / 末点分位 (VAL 表格, 不随区间起点) → 视图 (区间切片 / 名次), 各级一个 MakePortfolio* 入口
+│   │   │   │       │                                 #    · 线的来路只两种: 腿集合成 mix (腿 = 账的一线; 一腿 = 单因子 / 篮子 / 个股, 全部因子腿 = 策略) / 价格指数 → 点位 → project 投到日并集轴 → PortfolioLine (画图点 + 日末视图; 年化 / 夏普 / 近况 / 配色同读日末视图)
+│   │   │   │       │                                 #    · mix: 稠密格 [日][各腿行末分钟之并], 同格同腿复利, 跨腿按当日份额加和, 逐格复利; 年换手 = 增仓量同份额累加, 自首次建仓起在有腿的日上的日均 × 每年交易日 (全部行同式)
+│   │   │   │       │                                 #    · 行只一种 PortfolioRow (篮子 / 因子 / 策略 / 成分股): 两条线 + 可选行情键 PortfolioQuote (近况 / 当日 / 资金流 / 日内叠加) + 可选估值腿 (估值分位 / band)
+│   │   │   │       │                                 #    · 线按线源 PortfolioLineSrc (腿集 + 扣不扣成本 / 价格指数; 源对象由派生持有) 逐线沿用上一份; 两线源相同 (成分股: 个股账无成本列) → 同一条
+│   │   │   │       │                                 #    · 估值按日并集轴日 (val_at → 篮子账 / 个股账行): 滚动 / 末点分位同一个核 pct_at, 窗 = ValSeries, 权重表 RollW
+│   │   │   │       │                                 #    · VAL 标的 = 一行 (PortfolioAt): 主图 = 该行可成交线, 估值 = 该行估值腿; 篮子与个股同一套
+│   │   │   │       ├── PortfolioCommon.hpp           # 🖥️ Market 行情页的内部件: 页表 / 行色 (OKLCH) / 估值口表 / 选中 + 主图 / 区间条 (PortfolioPlot.cpp)、右表 (PortfolioSheet.cpp)、CTA 页 (PortfolioCta.cpp) 的入口
+│   │   │   │       ├── TabPortfolio.hpp              # 🖥️ Market 行情页 (NAV / VAL / FLOW / CTA) + Alpha → Factors 组合两小框: 组合线 (增量等权聚合, 逐格复利) / 池指数线 / 行业线 / 概念线 / 单因子线, 区间条选日段
+│   │   │   │       │                                 #    · NAV 右表: 类别条 指数 / 行业 / 概念 / 自选 / 因子 / 策略 (一次一组), 列 = 中文名 (切片名.等 / .加; 线色 = 指数 / 行业 / 概念 / 因子一起按 max(当日成员重合, 剔全A.加的残差相关) 定 OKLCH 色相, 色差 ∝ 不相似, 没算完全灰; 名列排序 = 按色相) | 当日涨幅 / Δ5日线 / 只数 / 总市值 / 换手 (新浪当日成交额占总市值) / 资金流入 (新浪当日分钟涨跌法净流入占成交额; 两列悬停看金额) | 区间年化 / 夏普 / 年换手
+│   │   │   │       │                                 #      一行 PortfolioRow = 一对线 (可成交 / 理想 = 有冲击 / 无冲击); 指数 / 行业 / 概念 = basket_group 三组, 可成交 (篮子账) + 理想 (Market 篮子价格指数);
+│   │   │   │       │                                 #      近况两列同一核 (QuotesPanel RecentOf); VAL 表行 = 这三组同一份, 列 = 只数 / 总市值 / 可成交 / 理想 / 夏普 / 年换手 (同 NAV) | 各口估值分位
+│   │   │   │       │                                 #      各页右表 = 名列 + 段 (近况 / 当日四列 / NAV 数值 / 估值分位 / 资金流; 同一段各页同一份); 页表 kPageDefs 定页名 / 组数 / 选中方式 (NAV / FLOW 多选同一份, VAL / CTA 单选同一份)
+│   │   │   │       │                                 #      右栏定宽 (各页同宽, 不随内容): 列宽按内容最紧, 名列伸满余宽, 超宽横滚 (名列钉住)
+│   │   │   │       │                                 #      三组各一份过滤条 (各页共用): 只数 / 总市值区间 + |资金流入| 下限, 一项一个按钮 (名 + 条件摘要; 点开 = 预设 + 精确输入),
+│   │   │   │       │                                 #      默认 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%; 选中 / 展开行恒列
+│   │   │   │       │                                 #      自选 (各页类别条都有, 排在概念后) = 首列星 / 名格右键加入的篮子行与成分行 (全局一份 <config_dir>/watch.json, 加入序);
+│   │   │   │       │                                 #      自选行 = 原行的副本 (同一份选中 / 展开, 线共用, 主图只画原行), 数值列名次在自选之间; 找不到的键表上计数, 可一键移出
+│   │   │   │       │                                 #      三组的行名前 ▸ 展开成分股 (至多一行, 各页同一份; 展开行钉在表头下, 成分接在其下, 再列其余行; 成员表 = Tape::cons, 默认权降序, 表头排序按同列):
+│   │   │   │       │                                 #      成分行与篮子行同一种行 (一对线 = 后复权收盘, 两条同一条), 同列, 能算的填 (近况 / 总市值 / 换手 / 流入 / NAV 数值列; VAL 各口 = 本只估值分位; 名次在成分之间; FLOW 只当日), 其余 -;
+│   │   │   │       │                                 #      点成分行 = 同篮子行的选中: NAV / FLOW = 主图画线 + 叠加到日内栏 / FLOW 图 (个股历史 + 新浪当日, 与 ASSET 同一路; 至多 64 只), VAL / CTA = 选为标的; 收起后选中的照画
+│   │   │   │       │                                 #    · 日内栏 (默认开): 主图上方, 日内 : 主图 = 1 : 2 (高), 选中的篮子行 / 成分行的日内行情 (Market; 多行 = 同主图线色叠加, 一行 = 蜡烛 + 现价十字); 主图 / 日内栏贴边; VAL 右表类别条 指数 / 行业 / 概念 / 自选
+│   │   │   │       │                                 #    · 主图 (NAV / VAL) 只显示一条线时同日内栏画现价十字 (Chart.hpp NowCross 同一份): 视野内末点, 右壁标区间涨跌, 底壁标日期
+│   │   │   │       │                                 #    · VAL 主图恒贴合 (x = 区间, y 只看价格线, 上限 = 最高点 + 20%, band 不撑图); 左键横向框选 = 区间改成该段 (区间条同步), 双击 = 主图与区间条回全段
+│   │   │   │       │                                 #    · FLOW 页 (与 NAV / VAL 并列, 只一张图): 选中篮子行 (NAV 同一份选中) 日内 / 2日 … 5日的逐分钟累计净流入 (分钟涨跌法, 跨日接续, 当日随新浪快照动),
+│   │   │   │       │                                 #      y = 占近 5 日日均成交额 % (默认; 分母盘前已定, 开盘即稳) / 金额 亿元; 开收盘开关 (默认关) 计入首根 (开盘集合竞价) / 末根 (收盘集合竞价); 右表类别条 指数 / 行业 / 概念 / 自选, 列 = 只数 / 总市值 / 换手 / 资金流入 (同 NAV) | 各日净流入占成交额 | 档内合计净流入 | 合计占比
+│   │   │   │       │                                 #    · CTA 页 (与 NAV / VAL / FLOW 并列, 不看区间条): 右表单选一个标的 (与 VAL 同一份: 篮子行 / 成分行) → CtaService 单资产 band 择时 (方向 long / short / longshort, 默认 long) 的滚动调参回测; 左栏只画图;
+│   │   │   │       │                                 #      左 = 两图共一条 x (有效根下标, 无隔夜空档; 刻度标日, 放大到几日内标时刻; 每像素取末根): 上 = 仓位色 (多 = 收盘线以上 / 空 = 以下, 越满越浓) + 收盘 + 上线 / 下线 (带间填色) + 中线 + 分层线 (等差 / 等比) + 逐根时买卖标记,
+│   │   │   │       │                                 #      下 = 策略 / 持有复利净值 (y 轴 log / 绝对, 右上角切换) + 成本带 (佣金 / 印花税 / 冲击 / 震荡 / 跳空自策略净值向上逐项叠回, 带厚 = 该项压下去的量; 图例隐去策略净值 = 改叠在 y = 1 上只看成本; 悬停高亮该带并说明); 左键框选放大 / 双击回全段, 换标的回全段; 光标 = 两图同一条橙色竖线 (同 OrderFlow 锚线: 参数点云展开时才出现, 初放视野正中, 只能拖动, 松手停住, 标注时刻; 换标的重放); 右栏 = 中栏 + 右表各半 (右表列 = 名 | 理想 | 夏普, 同 NAV); 中栏 = 优化目标与三组各选模型 (下拉; 参数灰显光标处所用的)
+│   │   │   │       │                                 #      + 参数点云 (优化目标下, 默认折叠: 至光标日打过分的配置在行为坐标 = 当日选参窗内逐日目标值序列前 3 主成分里的 3 维散点; 当日网格着色 = 窗内目标值的拟合 (默认) / 实际值, 圈 = 岭最优点; 不在当日网格的历史点淡画垫底; 拖动旋转, 悬停看配置) / 滚动窗 / 网格配置数 (默认 50) / 方向 (按钮) / 佣金 / 印花税 / 冲击 / 目标波动 / 不交易带 + 全期指标 (策略 vs 持有; 年成本分 佣金 / 印花税 / 冲击 / 震荡 / 跳空)
 │   │   │   │       ├── TabAssets.hpp                 # 🖥️ Market → ASSET 页: 左栏 个股 (过滤条 + 资产表); 右栏 Quotes (日内 + 五档盘口 + 日线) / Statistics (截面分析); 列定义一张表 kCols:
 │   │   │   │       │                                 #    · 取值 / 文本 / 画格 + 类型 (文本 / 分类 / 数值) + 好坏口径 (估值序 / 越高越好), 排序 (NaN 恒末) / 截面色 / 截面分析都只读它
 │   │   │   │       │                                 #    · 列序 Code | Name | Mkt (交易所.板块) | 当日涨幅 | Δ5日线 | Ind | 估值 | Cap | ST | DL | Listed | 逐笔统计
@@ -241,156 +382,24 @@ stk/
 │   │   │   │       │                                 #      多篮子 = 收盘线, 单篮子 = 分钟蜡烛 (窄了按 240 的因子并根, 同 py/app/tdx) + 现价十字; 档位按钮 (日内 / 2日 … 5日) 叠在各图左上角, 当日分钟未补齐时行尾小字待补只数
 │   │   │   │       │                                 #    · 资金流 = FLOW 页同一叠加图: 自日轴首日开盘逐分钟累计净流入 (跨日接续), y = 占近 5 日日均成交额 % / 金额 亿元
 │   │   │   │       └── CrossSectionAnalysis.hpp      # 🖥️ 截面分析 (TabAssets Statistics): 数值列 去两端 5% 统计 / 直方图 / 首尾排名 / 按板块分组; 分类列 计数 / 按板块分组
-│   │   │   ├── task_beta/TaskBeta.hpp                # 🖥️ Beta 任务 (风格择优): Compute (只 all.bar) / Style (风格篮子参数优选 → pools.json); 每帧推进计算面
-│   │   │   ├── task_alpha/TaskAlpha.hpp              # 🖥️ Alpha 任务 (因子挖掘): Compute (all.lob + 子池各库) / Operators / Factors / Inspect; 页顶条自选 池 + 因子层
-│   │   │   ├── task_market/TaskMarket.hpp            # 🖥️ Market 任务 (行情): ASSET (TabAssets) / NAV / VAL / FLOW / CTA (TabPortfolio); 篮子账不依赖组合
-│   │   │   ├── task_features/                        # 🖥️ 特征面板与调试工具 + 计算面 (Beta / Alpha 的 Compute 页)
-│   │   │   │   ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面: Table / Distribution / Transform / Correlation / OrderFlow / NodeTime; 计算面轮次变 → 预览 / 矩阵 / 订单流作废
-│   │   │   │   ├── services/                         # 🖥️ 服务层
-│   │   │   │   │   ├── ComputeService.hpp            # 🖥️ 特征计算: 请求 = 库 (池 × 档), 每库同一流程: fund::Panel (全市场) → pool::Panel (A 轴 + 成员) → pipeline<T> (tier_ops 分发)
-│   │   │   │   │   │                                 #    · 规划 plan_libs → 每库一份 LibPlan (库清单 + 已落盘 + 规划日期轴; 上游未落盘齐 = blocked); 起算 lib_run → LibRun (本轮日期轴 = 续算尾窗 + 新日)
-│   │   │   │   │   │                                 #    · 全量 (清库重建) / 续算 (A 轴冻结, 只算库末之后的新日; 快照与库清单、字段表对得上, Lob 轴在同池 Bar 轴内才可续)
-│   │   │   │   │   ├── StreamService.hpp             # 🖥️ 流式分析服务骨架 (CRTP, 派生自 Service)
-│   │   │   │   │   ├── DistService.hpp               # 🖥️ 分布分析 (StreamService)
-│   │   │   │   │   ├── TransformService.hpp          # 🖥️ 特征变换 (StreamService)
-│   │   │   │   │   ├── PreviewService.hpp            # 🖥️ 特征表预览 (StreamService); 每库跑完的成品留到进程结束 (切档 / 切池 / 切出任务不重算), Compute 落盘作废
-│   │   │   │   │   ├── OrderFlowService.hpp          # 🖥️ 订单流: 三 worker (Kline / Depth / Pick) 同一读请求 (尾部行 RowPlane); 一代服务绑一个主库
-│   │   │   │   │   ├── ReplayService.hpp             # 🖥️ Agent 盘口重放 (view_book): 一 (资产, 日) 日文件帧逐笔进订单簿 (与 OrderFlow Sec 同一条路), 落窗口逐秒盘口 / 流量 + 大单事件 + 某秒全簿; 交易秒编号 (收盘竞价逐秒可分)
-│   │   │   │   │   └── CorrService.hpp               # 🖥️ 相关矩阵 / lead-lag (StreamService)
-│   │   │   │   └── ui/                               # 🖥️ UI
-│   │   │   │       ├── Common.hpp                    # 🖥️ 流式 tab 公共件
-│   │   │   │       ├── TabFeature.hpp                # 🖥️ Table 页 特征表: Scope 池 / 档 (bar | lob, 默认 bar) / 层下拉 (Features 自持, 与 Alpha 无关), 过滤 + 跨库跨层多选 (同列在不同库各选一次); 预览列按 (档, 层) 取
-│   │   │   │       │                                 #    · NodeTime 页: 当前库时序 / 截面两段各一条用时堆叠条 (一个文件一个色系, 悬停高亮文件 + 明细; 含非节点段, 可只看本层; 读 node_time.json)
-│   │   │   │       ├── TabCompute.hpp                # 🖥️ 计算面 ComputeHub (一个服务 + 一张库表; Beta 页只列 all.bar, Alpha 页列其余; 轮次 rounds 供 Features 作废缓存): 状态行 (进度条 + 取消 + 自动续算) / 核布局 (两档两栏, 按机器先配) / 库表 (一行一池, bar | lob 两组同构子列: 状态 / 数据初始 / 数据末日 / 天数 / 已落盘 / 未落盘 / 资产 / 轴外 / 操作; 日期列按规划日期轴, 建库前即可见; 池名过滤) / 架构说明 (折叠); 每库 Rebuild (全量, 先弹窗确认) / Append (续算) / Remove, 上游库 (lib_parent: lob ← 同池 bar; 子池 bar ← all.bar) 未算完则禁用, 灰按钮悬浮给原因、可用给将算日期段; 数据换进 (同步 / 编码) 后可续算且未判废的库自动依次 Append (不必在本页)
-│   │   │   │       ├── TabOrderFlow.hpp              # 🖥️ 订单流
-│   │   │   │       ├── TabDist.hpp                   # 🖥️ 分布 PDF
-│   │   │   │       ├── TabTransform.hpp              # 🖥️ 变换链 + 平稳性诊断
-│   │   │   │       └── TabCorr.hpp                   # 🖥️ 相关矩阵热图 + lead-lag; 列集 = 选中 ≥ 2 列, 否则当前层过滤行集
-│   │   │   └── task_factors/                         # 🖥️ 因子面 (factor/ 的 GUI) 的服务与页:
-│   │   │       │                                     #    · Alpha: Operators 算子表, 三后端对拍 (合成张量, 不依赖特征库) / Factors 因子表, Run 评估 / Search 参数搜索 / Inspect 单因子深看
-│   │   │       │                                     #    · Market: NAV / VAL / FLOW / CTA = 池指数 / 行业 / 概念篮子 + 因子组合 (一组合一文件, 跨池跨层) 净值 + 日内行情 / 资金流 + 单标的 CTA 择时
-│   │   │       │                                     #    · Beta: Style 风格篮子参数优选
-│   │   │       ├── FactorsHub.hpp                    # 🖥️ 因子面共享状态 (Alpha / Market 共用): 四服务 + 作用域 (页顶条选择 / 已生效) + 组合; EnsurePortfolio / SyncPortfolio
-│   │   │       ├── services/
-│   │   │       │   ├── OperatorsService.hpp          # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
-│   │   │       │   ├── RunService.hpp                # 🖥️ 因子表 (Run): 扫描 → 逐文件一张共享 DAG (毛 HoldStat + 各金额段换手成本 CostAcc; 每层至少一段: Lob 盘口段 / Bar 固定段) → 逐条目发布行, 文件走完 (未取消) 一次回写
-│   │   │       │   │                                 #    · 表中 score / util 由 stat 现算
-│   │   │       │   ├── FactorsWorker.hpp             # 🖥️ FactorWorker<D, Req>: 全部因子服务同一份骨架 (进度面 + message + 优先级 Prio + FactorFlow + 中断收尾 settle)
-│   │   │       │   ├── FactorsFile.hpp               # 🖥️ 因子文件 (一因子一文件) 读写: 格式 / FactorRow / ScanFactorFile / 构建器 Add · Update · Delete / WriteFactorSearch (Search) / WriteFactorStats (Run)
-│   │   │       │   │                                 #    · Run 只回写 run + stats[i] (与 weights 同序), expr / weights 不动; 破碎因子标 BROKEN, 不删
-│   │   │       │   ├── FactorsTable.hpp              # 🖥️ 因子层公共类型: FactorLevel / FeatureTable / FactorScope / Request<Spec> / FactorRef / EvalStat (StatScope / HoldStat / CostTier / MiniPdf) / TailRow (两端组内最极端 50 / 20 / 5%) / AlphaDist
-│   │   │       │   │                                 #    · 层表 FACTOR_LEVELS 唯一真相 (网格层 / 标签档 / 名 / K 线列名式; 加层只加一行) → LevelId / PerLevel; 服务 / 装载 / UI 不按层分支
-│   │   │       │   │                                 #    · 字段表视图按层建一次, 全页共享 (FeatureTables / table_of)
-│   │   │       │   ├── FactorsScope.hpp              # 🖥️ 作用域层 (最底): Domain 评估域 (库 + 评估期 + 资产轴; span_of 只取评估期) / Budget (load / work / fixed / dev) → plan_chunks 分块 Plan / Rc 唯一结局
-│   │   │       │   ├── FactorsLoad.hpp               # 🖥️ 装载层 (四服务共用, 只装数据): 特征 / 门控 / 标签 / 成本 宿主平面 (可成交 / 顺延已在标签里, 不另读)
-│   │   │       │   │                                 #    · X ↔ Y ↔ B 三侧同一份逐天并行骨架 (Io = 字段表 + 评估域 + 读者 + 并行 + 取消 + 进度): load_x (因子输入叶) / load_y (门控 + 标签 [hold] + 成本 [amt]
-│   │   │       │   │                                 #      + 满仓只数) / load_b (池篮子输入 BPlanes: all Bar 库全轴, 全部池成员位 PoolMask + T+1C 标签 + 原料一趟读齐, 不进块; 日频原料 / 池列 as-of 取 bar.1d)
-│   │   │       │   │                                 #    · 门控 / 标签取因子池 Bar 库本层列, 盘口成本取同池 Lob 库本层列 (同行, 原值入缓存; 买入冲击取用时按 max_impact 封顶)
-│   │   │       │   │                                 #    · Store = 进程唯一的计算面: 线程池 + 已开的库 + 平面缓存 + 计算权 (单 worker 优先级队列: 交互 > 批, 批在文件 / 趟边界让位)
-│   │   │       │   │                                 #      平面逐张缓存, 键 = 层 | 评估域 | 日段 | 角色 (门控 / 标签组 / 金额段 / 标签秩 / 叶), 与服务无关 → 跨服务命中; 未钉的按 LRU 淘汰
-│   │   │       │   │                                 #      满仓只数按评估域记 (整期 = 门控在池格数, 多块 = n_full_of 预扫); 库判废 / reload → clear
-│   │   │       │   │                                 #    · BlockSpec (x 叶 / y YSpec / ry) → Store::pin = 块 Block (钉住一组平面的视图, 只活在一块的迭代内; gen = Y 的代); stat_scope = 结果作用域头
-│   │   │       │   │                                 #    · Keys<N> (Holds / Amts) 键集 (keys_union 并); Pick = 子集下标, labels_pick 取会话持有期子集
-│   │   │       │   ├── FactorsBook.hpp               # 🖥️ 净值引擎 (唯一): RowLines (逐行批收益, 每线自带持有期 / 平仓实现或建仓即付) → fold_book → BookLines → compound 复利
-│   │   │       │   │                                 #    · Inspect 分层 / Portfolio 因子线 / 池篮子 / 池线同一份; 口径 = Stat/Contract.hpp【协议表 1 / 2】
-│   │   │       │   │                                 #    · baskets: 全部池 + all 内行业 / 概念篮子 (shared/Basket.hpp 篮子表) 一趟出可成交指数 / 逐行增仓量 / 估值 (吃 B); pool_line = 池整体等权 (吃 Y)
-│   │   │       │   ├── FactorsProbe.hpp              # 🖥️ 探针层 (一个根的一种输出): RootView / Ctx / Ranks 两后端同形, Probes<P...> 逐钩子 need / open / row / root / finish
-│   │   │       │   │                                 #    · 通用探针 Hold / Cost / Cover / Alpha / IcPdf 四服务共用; 服务私有探针在各自 .cpp
-│   │   │       │   │                                 #    · 原料按块要: need 每块 / need_last 只末块 (alpha 分布); 预算: bytes 每根常驻 / scratch 一根评时暂存
-│   │   │       │   │                                 #    · 根上统计核: cover_rows (有效率 + 可秩率一遍) / alpha_dist / mini_pdf_of / group_abs (换手成本三探针 CostP / TurnP / BookP 平级直调 Stat cost_rows)
-│   │   │       │   │                                 #    · 落地基类 LandRowsP (逐持有期逐行) / LandCellsP (逐行逐资产) / LinesP (净值线 → fold_book); EvalProbes<X...> + fill_eval → EvalStat (Run 行 / Inspect 结果同一份)
-│   │   │       │   ├── FactorsEngine.hpp             # 🖥️ 评估引擎 Engine<Cpu | Gpu> 同一接口: budget / batch_of / bind / walk / plant / eval (森林单入口, 原料后端 ready / view)
-│   │   │       │   │                                 #      CPU 恒逐根 Stat (Search 也是, 抽样行拷 rx); GPU 逐根 stat_eval / 批核 (kBatched: 只累加 + 抽样行) 走完森林一次 search_eval
-│   │   │       │   │                                 #      FactorFlow = 服务 worker 的计算句柄: Store 引用 + 取消 / 进度 / 优先级 + 引擎 (懒建, with_engine<Ps> 分叉: Ps 有逐格扩展恒 CPU); 请求末 end
-│   │   │       │   │                                 #    · 计算权租约 Lease (RAII): 计算全在租约内; 粒度 = Run 每文件 / Search 每趟 / 交互服务每请求; 租约末引擎 release (会话 / 工作区还回) + 块解钉
-│   │   │       │   │                                 #    · 管线 (全部服务同一份): Job → prepare (open_job 评估域 + 开库 → y_spec (持有期 + 探针 Ps::segs 成本段) → 前后带 → budget_of
-│   │   │       │   │                                 #      → plan_chunks 分块) → pass (一趟: 逐块 load_block (Store::pin) → hk.block → 逐批 plant → plan_forest (坏根跨块粘住) → hk.plan → eval (hk.node),
-│   │   │       │   │                                 #      末块 finish → hk.done); Run / Inspect / Portfolio 走 eval_job (根集 RootSet 去重 → 一张森林种一次各块共用; 根 = 式 + 口径 + 方向 + 持有期,
-│   │   │       │   │                                 #      Y 持有期 = 各根 hd 之并; 钩子 whole (Inspect) → 整期一块, 否则前后带 bands_of 按预算分块; 条目终局下沉: 每条目恰一个 hk.fail / hk.post);
-│   │   │       │   │                                 #      Search 一次 prepare, 每趟一次 pass (逐块逐批现种); 池篮子走 eval_baskets (与 eval_job 平级, 不走森林)
-│   │   │       │   │                                 #    · 预算: 宿主 = Store::budget (平面缓存全可让, 规划与他服务的缓存无关); 最小的块都装不下 → assert
-│   │   │       │   │                                 #    · 钩子 HookBase (block / plan / node / done / fail / post, 各服务派生遮蔽) 与探针对仗: 探针 = 一个根的输出, 钩子 = 一趟的事件
-│   │   │       │   │                                 #    · 不做跨因子 (跨请求 / 跨文件) 的森林合并或结果缓存: 设计决定, 见 FactorsScope.hpp Domain 注释
-│   │   │       │   │                                 #    · 评估期 = 标签库 ∪ 叶所在库的落盘日交集 (四服务同一份 span_of): 只用 bar.* 叶的因子不碰 Lob 库, 评估期 = Bar 库全期
-│   │   │       │   │                                 #    · 叶身份 = LeafId (字段表叶下标): XPlanes / 值域缓存 / GPU 输入全按它, 叶名只在 Dag 边界
-│   │   │       │   │                                 #    · Job = 规格 + 作用域 + 预算 + 计划 + 满仓只数; JobOut = Job + 森林 + 节点耗时 + 后端
-│   │   │       │   │                                 #    · 结局 Rc 各服务同一写法: settle (中断 → false, Stale 弃平面缓存; 否则 true, Empty / Broken 的条目已由 fail 收尾)
-│   │   │       │   │                                 #    · 四服务的差别只在探针元组; 引擎按根的 hd 取会话持有期子集
-│   │   │       │   ├── InspectService.hpp            # 🖥️ 单因子深看: 平面经 Store 缓存, 每请求整条重算 (池等权线随 Y 的代复用); 不写文件
-│   │   │       │   │                                 #    · 期限结构净线的换手成本 = Cost 探针 (与 Run 同一份); 分层累计 = NavP 落线 (Row + 尾部) → fold_book
-│   │   │       │   ├── PortfolioService.hpp          # 🖥️ 组合: FactorTask 同 (层, 池, 所用库) 一张森林 (根 = 去重规范串, BookP 多 hold 落线 (Row + 逐行换手) → fold_book, G20 多头)
-│   │   │       │   │                                 #    · 结果一律是账 PortfolioBook (线键 keys + 四列 = 毛收益 / 冲击 / 固定份数 / 增仓量, 各 [线][行]): 因子 = 一线 (键 0); 篮子 = basket_line 条线 (不扣成本: 只毛收益 / 增仓量两列) + 估值; 个股 = all 池轴每只一线 (键 = 全局 id; 只毛收益一列 = 后复权日收益) + 本只估值, 与篮子账同一作业同日轴
-│   │   │       │   │                                 #    · BasketTask 全部篮子日层一个作业 (eval_baskets: open_job → load_b → baskets); 因子按条目缓存, 只算新增 (换组合留着, 按最近被请求限总量), 根评完即逐条发布
-│   │   │       │   ├── CtaService.hpp                # 🖥️ Market → CTA 页: 选中的一个标的 (篮子线 / 个股) → 1 分钟后复权价 → cta/Trace.hpp 滚动调参全期轨迹; 标的序列留最近几个 (只改设定不重读)
-│   │   │       │   ├── CtaLib.hpp                    # 🖥️ CTA 价格库: 两侧 (库轴全部个股 / basket_group 三组线) 一趟过日合成落 <all.bar 库目录>/cta/, 之后只补新日 (CTA 页首次打开即备)
-│   │   │       │   │                                 #    · 两侧同一种记录 (一行一日 = 因子 + 分钟价) 与同一条因子链 (首个有根日 1 起, 逢前收 ≠ 参考价乘 参考价 / 前收); 读口 series(侧, 键)
-│   │   │       │   │                                 #    · 个股: 价 = 库存原价 (f16 原样), 前收 = D−1 行前收 ⇒ 因子 = 后复权; 篮子: 价 = BasketRow + Fold 日内点位 (前日收 = 1, f32), 前收 = 1 ⇒ 因子 = 点位接续
-│   │   │       │   │                                 #    · 有效根 = 价 × 因子, 时间格 = 日下标 · 240 + 槽
-│   │   │       │   ├── KlineService.hpp              # 🖥️ Inspect 右下 K 线: 沿结果交易日逐日流式读选中资产 L_1min OHLC, 单调前缀发布 (PrefixPub)
-│   │   │       │   ├── LensService.hpp               # 🖥️ Agent 观察: 一组根 (秩 / Row / 两端真持有格) + 一组特征 (根的输入原值) 在评估期上整期一块 (CPU, 单持有期), 不写文件
-│   │   │       │   │                                 #    · 落地列 = 指定资产一列, 或评估期内进过池的资产; 另落门控 / 标签 / 逐行池内标签均值; 两端格与 Row::grp 同一份判据 (label_row 逐格扩展)
-│   │   │       │   │                                 #    · 逐行尾部 TailRow (TailExt, 与 Inspect 同一份): 两端组内最极端 50 / 20 / 5% 各沿自己的交接链持仓
-│   │   │       │   ├── StatJson.hpp                  # 🖥️ HoldStat / CostTier / MiniPdf ↔ JSON; EvalStat = scope_json (run) + eval_json (stats[i]) ⇄ load_eval
-│   │   │       │   └── SearchService.hpp             # 🖥️ 参数搜索 (Search 按钮, 单线程)
-│   │   │       │                                     #    · 流程: 模板自由参数低差异采样 → 拟合曲面取峰 → 活跃峰 ± 试探细化 (只评可能显著胜过峰的点) → 按截面相关挑显著且不冗余的 → 整体替换 weights
-│   │   │       │                                     #    · 结果 SearchResult: hold / n_peak / cands / picks (单持有期, 扁平)
-│   │   │       │                                     #    · 只搜给定持有期, 限 Search/Config 区间 (Search = 看板当前 Hold; Search all = 各模板 × 本层该区间内各档, 不看 Hold)
-│   │   │       │                                     #    · 回写: Search 只替换该 h 的权重 (搜不出 = 清空该 h); Search all 整份覆盖各文件 weights
-│   │   │       │                                     #    · 目标: 每期毛 LS (持仓口径, 已含资金利用率, 按 rIC 定向) · rIC · mono² (不看成本, 不跨 h 比); 硬门槛 mono ≥ kMinMono (分层先于收益)
-│   │   │       │                                     #    · 无自由参数的具体式也走它: 只评本身, 定方向 + 判显著
-│   │   │       │                                     #    · 结局: 评估期 + 无显著时的代表点 (过门槛的曲面峰, 否则过门槛的点里曲面估计最高的, 再否则 mono 最高的点) 落进因子文件 search[]
-│   │   │       └── ui/
-│   │   │           ├── TabOperators.hpp              # 🖥️ 算子表 tab
-│   │   │           ├── TabFactors.hpp                # 🖥️ 因子表 tab: 构建器 + 因子表 (Run 评估 / Search 参数搜索)
-│   │   │           │                                 #    · 显示级别; Hold 选择 = hold_cycler "Hold ◂ 周期名 ▸" + hold_points_line 分色开 / 清仓 (看板写 Hold 行下一行, Inspect 同行); 组合框写 hold_desc 文本, 同一份 hold_points
-│   │   │           ├── TabInspect.hpp                # 🖥️ 单因子深看 tab: 切片控件 (Hold / 分层 / 滚动窗口等) 只切结果立方体, 不发请求; 只有 Recompute / 自动 Inspect / Kline 才发
-│   │   │           ├── TabStyle.hpp                  # 🖥️ Beta → Style 页: 右表 = 风格 (点一行 = 按参数网格逐组选池回测), 左 = 网格条 / 改动 (确认写 pools.json) / 各线净值
-│   │   │           ├── PortfolioView.hpp             # 🖥️ Market 行情页的纯计算层 (无 ImGui): 派生 (行 / 线 / 色相) → 滚动分位 (估值分位 + 等值线档) / 末点分位 (VAL 表格, 不随区间起点) → 视图 (区间切片 / 名次), 各级一个 MakePortfolio* 入口
-│   │   │           │                                 #    · 线的来路只两种: 腿集合成 mix (腿 = 账的一线; 一腿 = 单因子 / 篮子 / 个股, 全部因子腿 = 策略) / 价格指数 → 点位 → project 投到日并集轴 → PortfolioLine (画图点 + 日末视图; 年化 / 夏普 / 近况 / 配色同读日末视图)
-│   │   │           │                                 #    · mix: 稠密格 [日][各腿行末分钟之并], 同格同腿复利, 跨腿按当日份额加和, 逐格复利; 年换手 = 增仓量同份额累加, 自首次建仓起在有腿的日上的日均 × 每年交易日 (全部行同式)
-│   │   │           │                                 #    · 行只一种 PortfolioRow (篮子 / 因子 / 策略 / 成分股): 两条线 + 可选行情键 PortfolioQuote (近况 / 当日 / 资金流 / 日内叠加) + 可选估值腿 (估值分位 / band)
-│   │   │           │                                 #    · 线按线源 PortfolioLineSrc (腿集 + 扣不扣成本 / 价格指数; 源对象由派生持有) 逐线沿用上一份; 两线源相同 (成分股: 个股账无成本列) → 同一条
-│   │   │           │                                 #    · 估值按日并集轴日 (val_at → 篮子账 / 个股账行): 滚动 / 末点分位同一个核 pct_at, 窗 = ValSeries, 权重表 RollW
-│   │   │           │                                 #    · VAL 标的 = 一行 (PortfolioAt): 主图 = 该行可成交线, 估值 = 该行估值腿; 篮子与个股同一套
-│   │   │           ├── PortfolioCommon.hpp           # 🖥️ Market 行情页的内部件: 页表 / 行色 (OKLCH) / 估值口表 / 选中 + 主图 / 区间条 (PortfolioPlot.cpp)、右表 (PortfolioSheet.cpp)、CTA 页 (PortfolioCta.cpp) 的入口
-│   │   │           └── TabPortfolio.hpp              # 🖥️ Market 行情页 (NAV / VAL / FLOW / CTA) + Alpha → Factors 组合两小框: 组合线 (增量等权聚合, 逐格复利) / 池指数线 / 行业线 / 概念线 / 单因子线, 区间条选日段
-│   │   │                                             #    · NAV 右表: 类别条 指数 / 行业 / 概念 / 自选 / 因子 / 策略 (一次一组), 列 = 中文名 (切片名.等 / .加; 线色 = 指数 / 行业 / 概念 / 因子一起按 max(当日成员重合, 剔全A.加的残差相关) 定 OKLCH 色相, 色差 ∝ 不相似, 没算完全灰; 名列排序 = 按色相) | 当日涨幅 / Δ5日线 / 只数 / 总市值 / 换手 (新浪当日成交额占总市值) / 资金流入 (新浪当日分钟涨跌法净流入占成交额; 两列悬停看金额) | 区间年化 / 夏普 / 年换手
-│   │   │                                             #      一行 PortfolioRow = 一对线 (可成交 / 理想 = 有冲击 / 无冲击); 指数 / 行业 / 概念 = basket_group 三组, 可成交 (篮子账) + 理想 (Market 篮子价格指数);
-│   │   │                                             #      近况两列同一核 (QuotesPanel RecentOf); VAL 表行 = 这三组同一份, 列 = 只数 / 总市值 / 可成交 / 理想 / 夏普 / 年换手 (同 NAV) | 各口估值分位
-│   │   │                                             #      各页右表 = 名列 + 段 (近况 / 当日四列 / NAV 数值 / 估值分位 / 资金流; 同一段各页同一份); 页表 kPageDefs 定页名 / 组数 / 选中方式 (NAV / FLOW 多选同一份, VAL / CTA 单选同一份)
-│   │   │                                             #      右栏定宽 (各页同宽, 不随内容): 列宽按内容最紧, 名列伸满余宽, 超宽横滚 (名列钉住)
-│   │   │                                             #      三组各一份过滤条 (各页共用): 只数 / 总市值区间 + |资金流入| 下限, 一项一个按钮 (名 + 条件摘要; 点开 = 预设 + 精确输入),
-│   │   │                                             #      默认 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%; 选中 / 展开行恒列
-│   │   │                                             #      自选 (各页类别条都有, 排在概念后) = 首列星 / 名格右键加入的篮子行与成分行 (全局一份 <config_dir>/watch.json, 加入序);
-│   │   │                                             #      自选行 = 原行的副本 (同一份选中 / 展开, 线共用, 主图只画原行), 数值列名次在自选之间; 找不到的键表上计数, 可一键移出
-│   │   │                                             #      三组的行名前 ▸ 展开成分股 (至多一行, 各页同一份; 展开行钉在表头下, 成分接在其下, 再列其余行; 成员表 = Tape::cons, 默认权降序, 表头排序按同列):
-│   │   │                                             #      成分行与篮子行同一种行 (一对线 = 后复权收盘, 两条同一条), 同列, 能算的填 (近况 / 总市值 / 换手 / 流入 / NAV 数值列; VAL 各口 = 本只估值分位; 名次在成分之间; FLOW 只当日), 其余 -;
-│   │   │                                             #      点成分行 = 同篮子行的选中: NAV / FLOW = 主图画线 + 叠加到日内栏 / FLOW 图 (个股历史 + 新浪当日, 与 ASSET 同一路; 至多 64 只), VAL / CTA = 选为标的; 收起后选中的照画
-│   │   │                                             #    · 日内栏 (默认开): 主图上方, 日内 : 主图 = 1 : 2 (高), 选中的篮子行 / 成分行的日内行情 (Market; 多行 = 同主图线色叠加, 一行 = 蜡烛 + 现价十字); 主图 / 日内栏贴边; VAL 右表类别条 指数 / 行业 / 概念 / 自选
-│   │   │                                             #    · 主图 (NAV / VAL) 只显示一条线时同日内栏画现价十字 (Chart.hpp NowCross 同一份): 视野内末点, 右壁标区间涨跌, 底壁标日期
-│   │   │                                             #    · VAL 主图恒贴合 (x = 区间, y 只看价格线, 上限 = 最高点 + 20%, band 不撑图); 左键横向框选 = 区间改成该段 (区间条同步), 双击 = 主图与区间条回全段
-│   │   │                                             #    · FLOW 页 (与 NAV / VAL 并列, 只一张图): 选中篮子行 (NAV 同一份选中) 日内 / 2日 … 5日的逐分钟累计净流入 (分钟涨跌法, 跨日接续, 当日随新浪快照动),
-│   │   │                                             #      y = 占近 5 日日均成交额 % (默认; 分母盘前已定, 开盘即稳) / 金额 亿元; 开收盘开关 (默认关) 计入首根 (开盘集合竞价) / 末根 (收盘集合竞价); 右表类别条 指数 / 行业 / 概念 / 自选, 列 = 只数 / 总市值 / 换手 / 资金流入 (同 NAV) | 各日净流入占成交额 | 档内合计净流入 | 合计占比
-│   │   │                                             #    · CTA 页 (与 NAV / VAL / FLOW 并列, 不看区间条): 右表单选一个标的 (与 VAL 同一份: 篮子行 / 成分行) → CtaService 单资产 band 择时 (方向 long / short / longshort, 默认 long) 的滚动调参回测; 左栏只画图;
-│   │   │                                             #      左 = 两图共一条 x (有效根下标, 无隔夜空档; 刻度标日, 放大到几日内标时刻; 每像素取末根): 上 = 仓位色 (多 = 收盘线以上 / 空 = 以下, 越满越浓) + 收盘 + 上线 / 下线 (带间填色) + 中线 + 分层线 (等差 / 等比) + 逐根时买卖标记,
-│   │   │                                             #      下 = 策略 / 持有复利净值 (y 轴 log / 绝对, 右上角切换) + 成本带 (佣金 / 印花税 / 冲击 / 震荡 / 跳空自策略净值向上逐项叠回, 带厚 = 该项压下去的量; 图例隐去策略净值 = 改叠在 y = 1 上只看成本; 悬停高亮该带并说明); 左键框选放大 / 双击回全段, 换标的回全段; 光标 = 两图同一条橙色竖线 (同 OrderFlow 锚线: 参数点云展开时才出现, 初放视野正中, 只能拖动, 松手停住, 标注时刻; 换标的重放); 右栏 = 中栏 + 右表各半 (右表列 = 名 | 理想 | 夏普, 同 NAV); 中栏 = 优化目标与三组各选模型 (下拉; 参数灰显光标处所用的)
-│   │   │                                             #      + 参数点云 (优化目标下, 默认折叠: 至光标日打过分的配置在行为坐标 = 当日选参窗内逐日目标值序列前 3 主成分里的 3 维散点; 当日网格着色 = 窗内目标值的拟合 (默认) / 实际值, 圈 = 岭最优点; 不在当日网格的历史点淡画垫底; 拖动旋转, 悬停看配置) / 滚动窗 / 网格配置数 (默认 50) / 方向 (按钮) / 佣金 / 印花税 / 冲击 / 目标波动 / 不交易带 + 全期指标 (策略 vs 持有; 年成本分 佣金 / 印花税 / 冲击 / 震荡 / 跳空)
-│   │   │   GUI布局:
-│   │   │   ┌───────────────────────────────────────────────────────────────────────────┐
-│   │   │   │ Tasks                                │ Panel:                             │
-│   │   │   │  > Settings[done/syncing]            │                                    │
-│   │   │   │  > DataBase                          │ Sync / Encode / Calendar           │
-│   │   │   │  > Beta                              │ Compute / Style                    │
-│   │   │   │  > Alpha                             │ Compute / Operators / Factors /    │
-│   │   │   │                                      │ Inspect                            │
-│   │   │   │  > Market                            │ ASSET / NAV / VAL / FLOW / CTA     │
-│   │   │   │  > Features                          │ Table / Distribution / Transform / │
-│   │   │   │                                      │ Correlation / OrderFlow / NodeTime │
-│   │   │   │  > Agent                             │ Mine / Config                      │
-│   │   │   │  > Tools                             │ LaTeX / System                     │
-│   │   │   │ Icon:                                │                                    │
-│   │   │   │  |Network|FPS│                       │                                    │
-│   │   │   └───────────────────────────────────────────────────────────────────────────┘
+│   │   │   └── task_features/                        # 🖥️ 特征面板与调试工具
+│   │   │       ├── TaskFeatures.hpp                  # 🖥️ 特征任务主界面: Table / Distribution / Transform / Correlation / OrderFlow / NodeTime; 计算面轮次变 → 预览 / 矩阵 / 订单流作废
+│   │   │       ├── services/                         # 🖥️ 服务层
+│   │   │       │   ├── StreamService.hpp             # 🖥️ 流式分析服务骨架 (CRTP, 派生自 Service)
+│   │   │       │   ├── DistService.hpp               # 🖥️ 分布分析 (StreamService)
+│   │   │       │   ├── TransformService.hpp          # 🖥️ 特征变换 (StreamService)
+│   │   │       │   ├── PreviewService.hpp            # 🖥️ 特征表预览 (StreamService); 每库跑完的成品留到进程结束 (切档 / 切池 / 切出任务不重算), Compute 落盘作废
+│   │   │       │   ├── OrderFlowService.hpp          # 🖥️ 订单流: 三 worker (Kline / Depth / Pick) 同一读请求 (尾部行 RowPlane); 一代服务绑一个主库
+│   │   │       │   ├── ReplayService.hpp             # 🖥️ Agent 盘口重放 (view_book): 一 (资产, 日) 日文件帧逐笔进订单簿 (与 OrderFlow Sec 同一条路), 落窗口逐秒盘口 / 流量 + 大单事件 + 某秒全簿; 交易秒编号 (收盘竞价逐秒可分)
+│   │   │       │   └── CorrService.hpp               # 🖥️ 相关矩阵 / lead-lag (StreamService)
+│   │   │       └── ui/                               # 🖥️ UI
+│   │   │           ├── Common.hpp                    # 🖥️ 流式 tab 公共件
+│   │   │           ├── TabFeature.hpp                # 🖥️ Table 页 特征表: Scope 池 / 档 (bar | lob, 默认 bar) / 层下拉 (Features 自持, 与 Alpha 无关), 过滤 + 跨库跨层多选 (同列在不同库各选一次); 预览列按 (档, 层) 取
+│   │   │           │                                 #    · NodeTime 页: 当前库时序 / 截面两段各一条用时堆叠条 (一个文件一个色系, 悬停高亮文件 + 明细; 含非节点段, 可只看本层; 读 node_time.json)
+│   │   │           ├── TabOrderFlow.hpp              # 🖥️ 订单流
+│   │   │           ├── TabDist.hpp                   # 🖥️ 分布 PDF
+│   │   │           ├── TabTransform.hpp              # 🖥️ 变换链 + 平稳性诊断
+│   │   │           └── TabCorr.hpp                   # 🖥️ 相关矩阵热图 + lead-lag; 列集 = 选中 ≥ 2 列, 否则当前层过滤行集
 │   │   ├── agent/                                          # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge)
 │   │   │   ├── Config.hpp                                  # 🤖 配置: 后端表 kBackends (名 / key 字段 / 假 key / 主机 / 模型表端点 / 默认连接; 模型不写死, 运行时嗅探), 超时 / 重试, 每条回复的调用数 / 回测数 / 结果字数上限, 入库门槛默认值, 会话目录 / 工具样本目录 / 提示词目录 / 族卡文件 / 研报库目录 / 密钥文件
 │   │   │   ├── Llm.hpp                                     # 🤖 对话客户端 Session (纯传输, HTTPS via OpenSSL, 直连 / HTTP 代理 CONNECT): send 阻塞收齐一轮, 增量回调; models 嗅探账号可用模型 (GET models, Config 页下拉选)

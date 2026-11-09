@@ -15,7 +15,6 @@
 #include <array>
 #include <cassert>
 #include <cmath>
-#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -27,18 +26,6 @@
 #include <vector>
 
 namespace GUI::Alpha {
-
-constexpr float kTipWrapEm = 48.0f;
-void tip(const char *fmt, ...) {
-  ImGui::BeginTooltip();
-  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetFontSize() * kTipWrapEm);
-  va_list args;
-  va_start(args, fmt);
-  ImGui::TextV(fmt, args);
-  va_end(args);
-  ImGui::PopTextWrapPos();
-  ImGui::EndTooltip();
-}
 
 HoldPoints hold_points(int hold, LevelId lv) {
   namespace st = factor::stat;
@@ -1142,7 +1129,7 @@ void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h) {
   ImGui::EndTable();
 }
 
-int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, PortfolioUIState &pui, const FactorsUIContext &ctx) {
+int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Market::PortfolioUIState &pui, const FactorsUIContext &ctx) {
   int action = 0;
   const Phase st = svc.phase.load(std::memory_order_acquire);
   const bool busy = svc.busy();
@@ -1461,7 +1448,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Por
     const float pad = ImGui::GetContentRegionAvail().x - kBoxesW - ImGui::GetStyle().ItemSpacing.x;
     if (pad > 0.0f)
       ImGui::SetCursorPosX(ImGui::GetCursorPosX() + pad);
-    RenderPortfolioBoxes(pui, view_row, ctx.pool, ctx.lv, cur_hold);
+    Market::RenderPortfolioBoxes(pui, view_row, ctx.pool, ctx.lv, cur_hold);
   }
 
   ImGui::Separator();

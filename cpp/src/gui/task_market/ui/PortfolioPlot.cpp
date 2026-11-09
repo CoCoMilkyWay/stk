@@ -1,8 +1,7 @@
 // Market 行情页主图 (NAV 资金曲线 ↔ VAL 估值 band) + 区间条 — 见 PortfolioCommon.hpp
 #include "gui/task_market/ui/PortfolioCommon.hpp"
 
-#include "gui/task_alpha/ui/TabFactors.hpp" // tip
-#include "gui/util/Chart.hpp"               // tint / EndTag / NowCross
+#include "gui/util/Chart.hpp" // tint / EndTag / NowCross
 #include "imgui.h"
 #include "implot.h"
 #include "implot_internal.h" // GetItem (主图例显隐 / 线色), ButtonBehavior (图例矩阵)

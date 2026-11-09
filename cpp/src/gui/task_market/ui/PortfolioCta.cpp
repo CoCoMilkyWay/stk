@@ -1,9 +1,8 @@
 // Market→CTA 页: 左 = 两图 (价格与带, 底色 = 仓位 / 净值, 共一条 x), 其右 = 中栏 (设定 / 参数点云 / 光标处参数 / 全期指标; 与右表分右栏) — 见 TabPortfolio.hpp
 #include "gui/task_market/ui/PortfolioCommon.hpp"
 
-#include "gui/Tasks.hpp"                    // StatusColor
-#include "gui/task_alpha/ui/TabFactors.hpp" // tip
-#include "gui/util/Chart.hpp"               // kUp / kDn
+#include "gui/Tasks.hpp"      // StatusColor
+#include "gui/util/Chart.hpp" // kUp / kDn
 #include "imgui.h"
 #include "implot.h"
 #include "implot_internal.h" // GetItem (图例显隐)

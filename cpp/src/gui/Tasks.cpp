@@ -129,16 +129,16 @@ TaskTree CreateAllTasks(SharedData &data) {
   TaskTree tree;
   tree.tasks.reserve(8);
 
-  // 跨任务共用: 行情 (Database 的 Sync 页读状态, Market 各页用), 计算面 (Beta / Alpha 两个 Compute 页, Features 读轮次),
-  // 因子面 (Alpha 编辑组合, Market 画)
+  // 跨任务共用的三个 Hub: 行情 (Database 的 Sync 页读状态, Market 各页用), 计算 (Beta / Alpha 两个 Compute 页, Features 读轮次),
+  // 因子 (Alpha 编辑组合, Market 画)
   const auto market = std::make_shared<Market::MarketHub>();
   const auto compute = std::make_shared<Compute::ComputeHub>();
-  const auto factors = Tasks::CreateAlphaHub();
+  const auto alpha = Tasks::CreateAlphaHub();
   tree.tasks.push_back(Tasks::CreateSettingsTask());
   tree.tasks.push_back(Tasks::CreateDatabaseTask(market));
   tree.tasks.push_back(Tasks::CreateBetaTask(compute));
-  tree.tasks.push_back(Tasks::CreateAlphaTask(compute, factors));
-  tree.tasks.push_back(Tasks::CreateMarketTask(market, factors));
+  tree.tasks.push_back(Tasks::CreateAlphaTask(compute, alpha));
+  tree.tasks.push_back(Tasks::CreateMarketTask(market, alpha));
   tree.tasks.push_back(Tasks::CreateFeaturesTask(compute));
   tree.tasks.push_back(::agent::CreateAgentTask());
   tree.tasks.push_back(Tasks::CreateToolsTask());

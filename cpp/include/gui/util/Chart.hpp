@@ -1,6 +1,6 @@
 #pragma once
 
-// 图表公共件 (ASSET 行情 / Market 净值同一份): 涨跌色, 档位按钮条, 线尾小字, 现价十字
+// 图表公共件 (ASSET 行情 / Market 净值 / Beta 风格表同一份): 涨跌色, 名次色, 色环, 右表宽, 档位按钮条, 线尾小字, 现价十字
 
 #include "imgui.h"
 #include "implot.h"
@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,37 @@ namespace GUI {
 inline constexpr ImVec4 kUp(0.945f, 0.298f, 0.298f, 1.f), kDn(0.416f, 0.600f, 0.333f, 1.f), kFlat(0.80f, 0.80f, 0.80f, 1.f);
 inline ImVec4 tint(double v, double ref) { return v > ref ? kUp : v < ref ? kDn
                                                                           : kFlat; }
+
+inline constexpr ImVec4 kHead(0.4f, 0.8f, 1.0f, 1.0f);       // 节标题
+inline constexpr ImVec4 kStratCol(1.0f, 0.55f, 0.15f, 1.0f); // 强调 (策略线 / 新选)
+
+// 好 → 差色: u ∈ [0, 1] (0 = 最便宜 / 名次最好 绿 → 1 = 最贵 / 最差 红) 按色相渐变 (VAL band / 各右表名次底色同一份)
+inline ImVec4 band_col(double u, float a) {
+  ImVec4 c(0.f, 0.f, 0.f, a);
+  ImGui::ColorConvertHSVtoRGB(0.33f * static_cast<float>(1.0 - u), 0.8f, 0.9f, c.x, c.y, c.z);
+  return c;
+}
+
+// OKLCH (感知均匀: 同 L / C 的色环上两色的感知距离 = OKLab 弦长, 小角度 ∝ 色相差) → sRGB; 分量截到 [0, 1] 只吸收舍入
+inline ImVec4 oklch(float L, float C, float hue) {
+  const float h = 2.0f * std::numbers::pi_v<float> * hue, a = C * std::cos(h), b = C * std::sin(h);
+  const float l = std::pow(L + 0.3963377774f * a + 0.2158037573f * b, 3.0f), m = std::pow(L - 0.1055613458f * a - 0.0638541728f * b, 3.0f),
+              s = std::pow(L - 0.0894841775f * a - 1.2914855480f * b, 3.0f);
+  const auto gamma = [](float x) {
+    x = std::clamp(x, 0.0f, 1.0f);
+    return x <= 0.0031308f ? 12.92f * x : 1.055f * std::pow(x, 1.0f / 2.4f) - 0.055f;
+  };
+  return {gamma(4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s), gamma(-1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s),
+          gamma(-0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s), 1.0f};
+}
+inline constexpr float kRowL = 0.75f, kRowC = 0.125f; // 行色的 OKLCH 亮度 / 艳度: 该亮度下整环都在 sRGB 色域内的艳度上限附近 (环不被截变形)
+
+// 右表宽 (Market 各页与 Beta→Style 同宽, 不随内容: 字符格数, 表格超宽横滚) / 至多占整宽的比例; avail = 页内可用宽
+inline float sheet_width(float avail) {
+  constexpr float kCells = 100.0f, kMaxFrac = 0.5f;
+  const ImGuiStyle &st = ImGui::GetStyle();
+  return std::min(kCells * ImGui::CalcTextSize("0").x + 2.0f * (st.WindowPadding.x + st.ChildBorderSize), avail * kMaxFrac);
+}
 
 // 一排小按钮单选 (选中的按下色): 点 = cur 换成它; 返回是否换了
 inline bool button_bar(const char *const names[], int n, int &cur) {

@@ -19,11 +19,11 @@ namespace GUI::Market {
 
 // 过滤条件: 多选, 空集合 = 不过滤 (全选)
 struct AssetsFilter {
-  std::set<int> st;               // 0=正常 1=ST 2=*ST (GetStLevel 口径)
-  std::set<int> listed{0};        // 0=在市 1=退市 (out_date 是否为 0); 默认在市
-  std::set<BoardType> board;      // BoardType (Unknown ~ BSE, 不含 All 哨兵)
-  std::set<std::string> industry; // 申万一级行业代码 (ind_code)
-  std::string search;             // 代码 / 简称子串
+  std::set<int> st;                    // 0=正常 1=ST 2=*ST (GetStLevel 口径)
+  std::set<int> listed{0};             // 0=在市 1=退市 (out_date 是否为 0); 默认在市
+  std::set<Database::BoardType> board; // BoardType (Unknown ~ BSE, 不含 All 哨兵)
+  std::set<std::string> industry;      // 申万一级行业代码 (ind_code)
+  std::string search;                  // 代码 / 简称子串
   bool operator==(const AssetsFilter &) const = default;
 };
 

@@ -102,11 +102,11 @@ std::vector<BoardStats> GroupNumericByBoard(
     if (!std::isfinite(v))
       continue;
 
-    BoardType board = GetBoardType(codes[i]);
-    if (board == BoardType::All || board == BoardType::Unknown)
+    Database::BoardType board = Database::GetBoardType(codes[i]);
+    if (board == Database::BoardType::All || board == Database::BoardType::Unknown)
       continue;
 
-    std::string board_name = GetBoardName(board);
+    std::string board_name = Database::GetBoardName(board);
     board_values[board_name].push_back(v);
   }
 
@@ -232,11 +232,11 @@ std::vector<BoardCategoryBreakdown> GroupCategoricalByBoard(
     if (categories[i].empty())
       continue;
 
-    BoardType board = GetBoardType(codes[i]);
-    if (board == BoardType::All || board == BoardType::Unknown)
+    Database::BoardType board = Database::GetBoardType(codes[i]);
+    if (board == Database::BoardType::All || board == Database::BoardType::Unknown)
       continue;
 
-    std::string board_name = GetBoardName(board);
+    std::string board_name = Database::GetBoardName(board);
     board_categories[board_name].push_back(categories[i]);
   }
 

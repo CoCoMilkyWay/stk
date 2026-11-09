@@ -1,4 +1,4 @@
-// 因子面: Alpha (Operators / Factors / Inspect) 与 Market (NAV / VAL / FLOW / CTA) 共用的服务与状态; CreateAllTasks 建, 两任务各持一个 shared_ptr.
+// AlphaHub: Alpha (Operators / Factors / Inspect) 与 Market (NAV / VAL / FLOW / CTA) 共用的服务与状态; CreateAllTasks 建, 两任务各持一个 shared_ptr.
 //   作用域 (池 + 因子层) 由 Alpha 页顶条自持: 所有服务空闲时生效 (lv / pool); 换层 = 四个服务整体重建, 同层换池只换目录.
 //   字段表按层建一次 (Factors / Search / Inspect / 组合共享, 换层不重建).
 //   组合 (与层无关): Alpha→Factors 页 1. 区右侧两小框编辑, Market 各页画; 组合内容变 / 因子重扫后重解析, 有效条目变才发请求
@@ -56,8 +56,8 @@ struct AlphaHub {
   InspectUIState inspect_ui;
 
   // 组合 (与层无关, 换层不重建; 首次进 Factors / Inspect 页或 Market 行情页建)
-  std::unique_ptr<PortfolioService> portfolio_service;
-  PortfolioUIState portfolio_ui;
+  std::unique_ptr<Market::PortfolioService> portfolio_service;
+  Market::PortfolioUIState portfolio_ui;
   uint64_t portfolio_gen = ~0ull;        // 已解析的 portfolio_ui.content_gen
   bool portfolio_dirty = false;          // 解析过, 请求还没发 (资产轴未就绪时挂着)
   std::string portfolio_sig;             // 上次请求的内容签名

@@ -1,8 +1,7 @@
 // Market 行情页右图例 (NAV / VAL / FLOW / CTA 同一骨架的右表) — 见 PortfolioCommon.hpp
 #include "gui/task_market/ui/PortfolioCommon.hpp"
 
-#include "gui/task_alpha/ui/TabFactors.hpp" // tip
-#include "gui/util/Chart.hpp"               // tint / button_bar
+#include "gui/util/Chart.hpp" // tint / button_bar
 #include "imgui.h"
 #include "imgui_internal.h"  // TableFindByID (右表内容宽)
 #include "shared/Basket.hpp" // basket_line / cut_of_line

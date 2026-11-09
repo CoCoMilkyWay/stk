@@ -358,7 +358,7 @@ void lane_chip(const FundamentalState &state, Lane l) {
 }
 
 // 新浪当日 (常驻轮询): 未起 → [-]; 补分钟 K 中 → syncing, 否则 live; 时刻 = 最新快照
-void sina_chip(const QuoteStatus *q) {
+void sina_chip(const Market::QuoteStatus *q) {
   if (!q) {
     sync_chip("sina.live", {}, "未起 (Market 任务首次打开才起)", "");
     return;
@@ -513,7 +513,7 @@ void RenderTabSync(
     const FundamentalState &state,
     const Progress &progress,
     const TaskStatus &status,
-    const QuoteStatus *sina,
+    const Market::QuoteStatus *sina,
     bool *update_clicked,
     bool *update_cancel_clicked,
     bool disable_update_controls,
@@ -705,7 +705,7 @@ void RenderTabSync(
     }
     char desc[256];
     std::snprintf(desc, sizeof(desc), "当日分钟 K (快照合成 + 分钟 K 补根) + 五档, 只存行情日一天; 快照盘中 %ds / 盘外 %ds 一轮",
-                  QuoteService::kTick, QuoteService::kIdleTick);
+                  Market::QuoteService::kTick, Market::QuoteService::kIdleTick);
     table_row({"live", "-", "轮询", "实时", desc}, sina != nullptr, sina && sina->bytes ? &live : nullptr,
               sina && sina->pending > 0, nullptr, av, disable_audit, audit_table, repair_table, weekly);
   });

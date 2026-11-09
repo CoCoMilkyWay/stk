@@ -1,4 +1,4 @@
-// Task Alpha - 因子挖掘: 子池张量 → 算子 → 因子 → 单因子展示. 共用的服务与状态见 gui/task_factors/AlphaHub.hpp.
+// Task Alpha - 因子挖掘: 子池张量 → 算子 → 因子 → 单因子展示. 共用的服务与状态见 gui/task_alpha/AlphaHub.hpp.
 //   Compute: 库表的 Alpha 段 (all.lob + 子池各档, 因子的张量库), 与 Beta → Compute 同一个计算服务 (见 TabCompute.hpp).
 //   Operators: OpTable 全部算子对拍 + 计时. 不依赖特征库 / 数据库扫描 (合成张量), 故任何时候可进.
 //     首次进页默认不算: 先载入本地 operators.json 显示 (校验不过则删文件); 只有手动 Run —— 或本地无有效
@@ -32,26 +32,26 @@ namespace GUI::Alpha {
 
 void EnsurePortfolio(const SharedData &data, AlphaHub &s) {
   if (!s.portfolio_service)
-    s.portfolio_service = std::make_unique<PortfolioService>();
-  SyncPortfolioDir(s.portfolio_ui, data.config.portfolio_dir);
-  SyncPortfolioWatch(s.portfolio_ui, data.config.config_dir);
+    s.portfolio_service = std::make_unique<Market::PortfolioService>();
+  Market::SyncPortfolioDir(s.portfolio_ui, data.config.portfolio_dir);
+  Market::SyncPortfolioWatch(s.portfolio_ui, data.config.config_dir);
 }
 
 void SyncPortfolio(const SharedData &data, AlphaHub &s, bool reload) {
-  PortfolioUIState &pui = s.portfolio_ui;
+  Market::PortfolioUIState &pui = s.portfolio_ui;
   const Phase fst = s.run_service ? s.run_service->phase.load(std::memory_order_acquire) : Phase::Idle;
   const bool fs_done = fst == Phase::Done && s.portfolio_prev_fs != Phase::Done;
   s.portfolio_prev_fs = fst;
   if (pui.content_gen != s.portfolio_gen || fs_done) {
     s.portfolio_gen = pui.content_gen;
-    ResolvePortfolio(data, s.tables, pui.entries, pui.items);
+    Market::ResolvePortfolio(data, s.tables, pui.entries, pui.items);
     ++pui.items_gen;
     s.portfolio_dirty = true;
   }
   if ((s.portfolio_dirty || reload) && !data.asset.items.empty()) {
     s.portfolio_dirty = false;
-    PortfolioRequest req;
-    MakePortfolioRequest(data, s.tables, pui.items, reload, s.factors_ui.backend == 1, req);
+    Market::PortfolioRequest req;
+    Market::MakePortfolioRequest(data, s.tables, pui.items, reload, s.factors_ui.backend == 1, req);
     ++pui.items_gen; // 作用域建不成的条目在这里标失效
     std::string sig = req.sig();
     if (reload || sig != s.portfolio_sig) {
@@ -318,9 +318,9 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
         // 因子层 = 所用特征的最细层 (叶写全名 档.层.列); 门控 / 标签在因子池的 Bar 库 (截面 = 该库 cs_valid);
         // 用了 lob.* 叶 (只 min 层有) 评估期缩到同池 Lob 库落盘日, 另有真实冲击段; 因子目录 <factor_dir>/<池>/<层>/
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-          Alpha::tip("池 + 因子层 (括号里是因子数)\n"
-                     "• 窗长 d 等参数按本层行数计\n"
-                     "• 有计算在跑时, 先取消, 停下后切过去");
+          tip("池 + 因子层 (括号里是因子数)\n"
+              "• 窗长 d 等参数按本层行数计\n"
+              "• 有计算在跑时, 先取消, 停下后切过去");
       }
       {
         const bool busy = (state->run_service && state->run_service->busy()) || (state->search_service && state->search_service->busy()) ||

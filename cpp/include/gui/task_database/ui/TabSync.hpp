@@ -24,8 +24,8 @@ struct SyncTabState {
 void RenderTabSync(
     const FundamentalState &state,
     const Progress &progress,
-    const TaskStatus &status, // 基本面状态标签
-    const QuoteStatus *sina,  // 新浪当日; nullptr = 未起 (Market 任务首次打开才起)
+    const TaskStatus &status,        // 基本面状态标签
+    const Market::QuoteStatus *sina, // 新浪当日; nullptr = 未起 (Market 任务首次打开才起)
     bool *update_clicked,
     bool *update_cancel_clicked,
     bool disable_update_controls,
