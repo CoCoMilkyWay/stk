@@ -45,7 +45,7 @@
 //                       软源 (Lob: 暖逐笔 page cache, TS 不等它) / 硬源 (Bar: 解码 bar1m 进源格, TS 等 pf_ready)
 //   TS: ts_try_open(d)  d 在张量窗 → 句柄写 (纯指针算术) → 每 (asset, d) 一次 ts_close, 计满全轴 → 推进源窗
 //   CS: cs_try_open(d)  本日计满全轴 → 逐拍扫 (cs_prev: 跨日只读 d−1 槽位 TS 列) → cs_close → slot.cs_closed
-//   IO: io_try_open(d)  d 在张量窗 ∧ slot.cs_closed ∧ (末日 ∨ CS(d+1) 已 close) → 落盘 (FeatureDay::write, 池不碰格式)
+//   IO: io_try_open(d)  d 在张量窗 ∧ slot.cs_closed ∧ (末日 ∨ CS(d+1) 已 close) → 落盘 (FeatureDay::write, 日环不碰格式)
 //                       → io_close (清零) → slot.io_mark → 推进张量窗
 //
 // 续算: 日期轴前 tail 日 = 库末 tail 日 (尾窗, 标签可能仍悬挂), 启动前 seed 从盘整层读回各自的 slot (IO 的逆);
@@ -132,7 +132,7 @@ struct StoreSlot {
 
 // 日句柄 (TS/CS/IO 同一形态): open 时定址一次, 之后所有读写是纯指针算术 ——
 // 热路径没有字符串比较 / 原子验证 / slot 查找.
-// 空句柄 = 没拿到 (池满 / 本日未就绪), try_open 以此表示失败.
+// 空句柄 = 没拿到 (日环满 / 本日未就绪), try_open 以此表示失败.
 template <class T>
 struct StoreDay {
   StoreSlot<T> *slot = nullptr;
@@ -362,7 +362,7 @@ public:
   // ===== TS: open 按 d, close 按 (asset, d) =====
 
   // 背压: 日 d 须在张量窗 (其格已由上一日落盘交还). 回填旧日也走这里 (旧日未计满 ⇒ 仍在飞, 必得).
-  // slot 在 io_close 已清零, 拿来即写. 空句柄 = 池满 —— 调用方拿等待时间去干别的 (领跑者在池边领养回填).
+  // slot 在 io_close 已清零, 拿来即写. 空句柄 = 日环满 —— 调用方拿等待时间去干别的 (领跑者在日环边领养回填).
   // acquire 与张量窗推进的 release 配对 (清零先于复用).
   Day ts_try_open(size_t d) {
     const DayWindow::Span s = ring_.span();
@@ -389,7 +389,7 @@ public:
 
   // ===== CS: 每 d 一对 open/close =====
 
-  // 按日流控: 本日计满全轴才放行, 返回后两层张量整体可读 —— CS 内部不需要任何行级等待.
+  // 按日流控: 本日计满全轴才放行, 返回后本档各层张量整体可读 —— CS 内部不需要任何行级等待.
   // 先验日 d 在张量窗: 否则映射还指着上一日 (已计满待落盘) 的格, 计数会误放行.
   // 截面多核各开各的日 (d % K), 互不握手
   Day cs_try_open(size_t d) {
@@ -424,7 +424,7 @@ public:
 
   // ===== IO: 每 d 一对 open/close =====
 
-  // 截面已 close 的日才放行 (逐 slot 查: 截面多核 close 乱序); 返回后本日两层张量只归 IO 读 (落盘见 FeatureDay::write).
+  // 截面已 close 的日才放行 (逐 slot 查: 截面多核 close 乱序); 返回后本日各层张量只归 IO 读 (落盘见 FeatureDay::write).
   // 落盘多核按日轮转: 先验日 d 在张量窗, 否则映射还指着上一日 (已截面待落盘) 的格, cs_closed 会误放行.
   // 非末日 (last = d 是日期轴末日) 还要 CS(d+1) 已 close: 它经 cs_prev 读本 slot. d+1 同样先验在窗;
   // CS(d+1) close 后 IO(d+1) 可能抢先落盘清零 (cs_closed 复位) → 再认 io_mark == d+2 (粘滞; 两者都读漏只是晚一轮)
@@ -460,9 +460,6 @@ public:
   const std::string &query_dir() const { return output_dir_; } // 特征库目录 (日文件落在其下)
   std::uint64_t query_axis_hash() const { return axis_hash_; } // A 轴指纹 (落进每个日文件头)
 };
-
-using LobFeatureStore = FeatureStore<lob::Tier>;
-using BarFeatureStore = FeatureStore<bar::Tier>;
 
 // ============================================================================
 // 写回 / 截面读写 API (fstore 命名空间): 层是模板参数 (FeatureLevel), 档从日句柄推导,

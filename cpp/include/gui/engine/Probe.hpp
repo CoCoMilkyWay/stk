@@ -1,11 +1,11 @@
 // Probe — 探针层 (一个根的一种输出; 引擎 Engine 按 need 备原料, 逐钩子调): 装载层 (Load) / 净值引擎 (Book) 之上, 引擎之下.
 //   原料 RootView / 上下文 Ctx / 抽样行 Ranks 两后端同形; Probes<P...> 逐钩子折叠;
-//   通用探针 Hold / Cost / Cover / Alpha / IcPdf 四服务共用, 服务私有探针 (Search 抽样 / Inspect 净值线 / 秩 / 尾部换手 / Portfolio 出参线)
+//   通用探针 Hold / Cost / Cover / Alpha / IcPdf 各服务共用, 服务私有探针 (Search 抽样 / Inspect 净值线 / 秩 / 尾部换手 / Portfolio 出参线)
 //   在各自 .cpp; 落地探针的三种形 LandRowsP (逐行) / LandCellsP (逐格) / LinesP (净值线: 逐行批收益 → finish 折成 BookLines);
 //   根上的统计核: cover_rows 有效率 / 可秩率 (一遍, 块间可加); 换手成本直接走 Stat cost_rows (CostP / TurnP / BookP 平级); alpha_dist alpha 分布
 //   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / LS 绝对 / Portfolio 曲线);
 //   尾部分层的阈值 / 端码 / 逐格扩展 TailExt (Inspect 净值线与尾部换手 / Lens 逐行同一份).
-// include Stat CPU 流程头 (受控浮点): 只给 CMake PRECISE_MATH 源.
+// include Stat CPU 流程头 (受控浮点): 只给 CMake MATH_PRECISE 源.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"

@@ -1,5 +1,5 @@
-// ComputeProgress —— 特征计算仪表盘 (拉取式, 固定 5 行, 布局见 Progress.hpp)
-#include "worker/compute/Progress.hpp"
+// ComputeDashboard —— 特征计算仪表盘 (拉取式, 固定 5 行, 布局见 Dashboard.hpp)
+#include "worker/compute/Dashboard.hpp"
 #include "worker/compute/Stages.hpp"
 
 #include "features/Storage/FeatureStore.hpp"
@@ -48,8 +48,8 @@ void cell(std::ostringstream &os, float t, bool idle) {
 
 } // namespace
 
-ComputeProgress::ComputeProgress(const StoreRing &store, const TsSchedule &sched,
-                                 const ComputeStats &stats, const std::vector<misc::Ymd> &dates, const char *unit)
+ComputeDashboard::ComputeDashboard(const StoreRing &store, const TsSchedule &sched,
+                                   const ComputeStats &stats, const std::vector<misc::Ymd> &dates, const char *unit)
     : store_(store), unit_(unit), sched_(sched), stats_(stats), dates_(dates),
       start_time_(std::chrono::steady_clock::now()) {
   assert(!dates_.empty() && "日期轴为空, 不应启动进度渲染");
@@ -73,9 +73,9 @@ ComputeProgress::ComputeProgress(const StoreRing &store, const TsSchedule &sched
   });
 }
 
-ComputeProgress::~ComputeProgress() { stop(); }
+ComputeDashboard::~ComputeDashboard() { stop(); }
 
-void ComputeProgress::stop() {
+void ComputeDashboard::stop() {
   if (!running_.exchange(false, std::memory_order_release))
     return;
   if (refresh_thread_.joinable())
@@ -85,13 +85,13 @@ void ComputeProgress::stop() {
             << std::flush;
 }
 
-long long ComputeProgress::elapsed_ms() const {
+long long ComputeDashboard::elapsed_ms() const {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::steady_clock::now() - start_time_)
       .count();
 }
 
-void ComputeProgress::render() {
+void ComputeDashboard::render() {
   const size_t total = dates_.size();
   const size_t num_pf = stats_.prefetch.size();
   const size_t num_ts = sched_.frontier.size();
@@ -255,7 +255,7 @@ void ComputeProgress::render() {
     out << "\033[K\n";
   }
 
-  // 每核一格 = 忙碌占比 (见 Progress.hpp); 干等 / 本核已完成 = 绿
+  // 每核一格 = 忙碌占比 (见 Dashboard.hpp); 干等 / 本核已完成 = 绿
   auto cells = [&](size_t c0, size_t n) {
     for (size_t c = c0; c < c0 + n; ++c)
       cell(out, busy[c], busy[c] < kIdleBusy || done[c]);

@@ -1,4 +1,4 @@
-// 篮子合成的 all.bar 源 (BasketHistory 价格指数 / Factors CTA 库同一份): L_1day 收盘行 → 次日成员表, L_1min → 分钟根.
+// 篮子合成的 all.bar 源 (BasketHistory 价格指数 / Market → CTA 的库同一份): L_1day 收盘行 → 次日成员表, L_1min → 分钟根.
 //   交易日 D 的成员 / 权重 / 基准一律取库内前一交易日 (D−1) 的收盘行 (口径见 BasketHistory.hpp); 合成核 = Quote.hpp Fold.
 #pragma once
 

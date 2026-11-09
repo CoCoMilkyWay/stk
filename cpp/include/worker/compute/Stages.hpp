@@ -2,7 +2,7 @@
 
 #include "features/Storage/FeatureLevels.hpp" // PerTier / LEVEL_COUNT
 #include "misc/date.hpp"
-#include "worker/compute/Progress.hpp" // ComputeStats::Core
+#include "worker/compute/Dashboard.hpp" // ComputeStats::Core
 
 #include <array>
 #include <atomic>
@@ -20,7 +20,7 @@ class FeatureStore;
 // TS 调度面: per-asset 处置权 + 认领/完成游标 (负载再平衡)
 //
 // 资产静态分给 worker 只是初始形态: 权重模型有偏差 + 核速不一, 差距持续拉开 (漂移),
-// 而落后者的活别人接不了就只能全员等它. 所以处置权可转移 —— 领跑 worker 在池边
+// 而落后者的活别人接不了就只能全员等它. 所以处置权可转移 —— 领跑 worker 在日环边
 // 干等 slot 时, 对落后 ≥2 天且该让出 (配额 > 0) 的候选按前沿升序逐个尝试, 接手其
 // 放得进双方余额的最重资产, 立刻回填该资产落下的旧日期 —— 含 victim 的当天 (claim CAS
 // 裁决, victim 见 owner 已变即跳过, 当天即刻变轻; 旧日 slot 未计满必为
@@ -29,8 +29,8 @@ class FeatureStore;
 //
 // 不要改成"自由领任务 (全局队列 / 每日游标)"或"按日窃取 (借一天, 次日归还)":
 //   各核专注自己的资产是刻意的 —— per-asset core 状态 (~百 KB, first-touch 在初始 owner 核)
-//   跟着 owner 走, 换核才付冷启动. 日间负载起伏 (轮换) 由池深吸收 (各核前沿可相差至多 P 天, 按需扩格), 不搬资产;
-//   只有持续落后 (领跑者被池子卡住 且 对方落后 ≥ 2 天) 才永久转移处置权 —— 一次转移修正一次
+//   跟着 owner 走, 换核才付冷启动. 日间负载起伏 (轮换) 由日环深吸收 (各核前沿可相差至多 P 天, 按需扩格), 不搬资产;
+//   只有持续落后 (领跑者被日环卡住 且 对方落后 ≥ 2 天) 才永久转移处置权 —— 一次转移修正一次
 //   权重偏差, 之后不再换核. 自由领 / 按日窃取会把每次噪声都变成换核, 且偏差不收敛 (天天重复偷).
 //
 //   owner:    处置权路标 (领养 CAS victim→adopter; 原 owner 观察到即弃)
@@ -104,7 +104,7 @@ struct StageCtx {
 
 // 干等原语 (四角色共用): try_open() 为真即返回它; 否则 cancel → 返回空, 未 cancel → on_idle()
 // (干等时可做的活: 时序 = 领养回填, 其余无), sleep kIdleMs 并把实测睡眠时长记入 idle_us (仪表盘忙碌占比; on_idle 算忙).
-// on_idle 返回 true = 这一轮是池边干等 (时序: 源已就绪而池满), 睡眠另记入 edge_us.
+// on_idle 返回 true = 这一轮是日环边干等 (时序: 源已就绪而日环满), 睡眠另记入 edge_us.
 // 先试后查 cancel: 已就绪的照做 —— 落盘靠它在取消后刷完截面已关的日子.
 inline constexpr size_t kIdleMs = 10;
 

@@ -384,7 +384,7 @@ void RenderTabCalendar(
     const Asset &asset_data,
     misc::Ymd backtest_start,
     misc::Ymd backtest_end,
-    CalendarState &dates_state) {
+    CalendarState &calendar_state) {
 
   // Build calendar from info.days
   CalendarData calendar;
@@ -397,14 +397,14 @@ void RenderTabCalendar(
   }
 
   // Build or reuse daily statistics cache
-  if (dates_state.generation != asset_data.generation) {
-    dates_state.generation = asset_data.generation;
-    dates_state.daily_stats_cache = BuildDailyStats(info, asset_data, backtest_start, backtest_end);
+  if (calendar_state.generation != asset_data.generation) {
+    calendar_state.generation = asset_data.generation;
+    calendar_state.daily_stats_cache = BuildDailyStats(info, asset_data, backtest_start, backtest_end);
   }
 
   if (ImGui::Button("Refresh Data")) {
-    dates_state.daily_stats_cache.clear();
-    dates_state.daily_stats_cache = BuildDailyStats(info, asset_data, backtest_start, backtest_end);
+    calendar_state.daily_stats_cache.clear();
+    calendar_state.daily_stats_cache = BuildDailyStats(info, asset_data, backtest_start, backtest_end);
   }
 
   // Layer Toggle Buttons
@@ -412,44 +412,44 @@ void RenderTabCalendar(
   ImGui::SameLine();
 
   // Dividend/Split layer (Yellow)
-  ImVec4 yellow_btn = dates_state.layers.show_dividend_split ? COLOR_YELLOW : ImVec4(0.3f, 0.3f, 0.1f, 1.0f);
+  ImVec4 yellow_btn = calendar_state.layers.show_dividend_split ? COLOR_YELLOW : ImVec4(0.3f, 0.3f, 0.1f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, yellow_btn);
   if (ImGui::SmallButton("除权除息")) {
-    dates_state.layers.show_dividend_split = !dates_state.layers.show_dividend_split;
+    calendar_state.layers.show_dividend_split = !calendar_state.layers.show_dividend_split;
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
 
   // Holiday layer (Purple)
-  ImVec4 purple_btn = dates_state.layers.show_holiday ? COLOR_PURPLE : ImVec4(0.2f, 0.1f, 0.3f, 1.0f);
+  ImVec4 purple_btn = calendar_state.layers.show_holiday ? COLOR_PURPLE : ImVec4(0.2f, 0.1f, 0.3f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, purple_btn);
   if (ImGui::SmallButton("节假日")) {
-    dates_state.layers.show_holiday = !dates_state.layers.show_holiday;
+    calendar_state.layers.show_holiday = !calendar_state.layers.show_holiday;
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
 
   // Backtest range layer (Green)
-  ImVec4 green_btn = dates_state.layers.show_backtest_range ? COLOR_GREEN : ImVec4(0.1f, 0.3f, 0.1f, 1.0f);
+  ImVec4 green_btn = calendar_state.layers.show_backtest_range ? COLOR_GREEN : ImVec4(0.1f, 0.3f, 0.1f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, green_btn);
   if (ImGui::SmallButton("回测区间")) {
-    dates_state.layers.show_backtest_range = !dates_state.layers.show_backtest_range;
+    calendar_state.layers.show_backtest_range = !calendar_state.layers.show_backtest_range;
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
 
   // L2 data layer (Blue)
-  ImVec4 blue_btn = dates_state.layers.show_l2_data ? COLOR_BLUE : ImVec4(0.1f, 0.1f, 0.3f, 1.0f);
+  ImVec4 blue_btn = calendar_state.layers.show_l2_data ? COLOR_BLUE : ImVec4(0.1f, 0.1f, 0.3f, 1.0f);
   ImGui::PushStyleColor(ImGuiCol_Button, blue_btn);
   if (ImGui::SmallButton("L2数据")) {
-    dates_state.layers.show_l2_data = !dates_state.layers.show_l2_data;
+    calendar_state.layers.show_l2_data = !calendar_state.layers.show_l2_data;
   }
   ImGui::PopStyleColor();
   ImGui::SameLine();
 
   // Completeness border toggle
-  if (ImGui::SmallButton(dates_state.layers.show_completeness ? "完整性边框✓" : "完整性边框✗")) {
-    dates_state.layers.show_completeness = !dates_state.layers.show_completeness;
+  if (ImGui::SmallButton(calendar_state.layers.show_completeness ? "完整性边框✓" : "完整性边框✗")) {
+    calendar_state.layers.show_completeness = !calendar_state.layers.show_completeness;
   }
 
   ImGui::Spacing();
@@ -462,7 +462,7 @@ void RenderTabCalendar(
   float avg_completeness = 0.0f;
   int backtest_days = 0;
 
-  for (const auto &[date, stats] : dates_state.daily_stats_cache) {
+  for (const auto &[date, stats] : calendar_state.daily_stats_cache) {
     if (stats.is_trading_day) {
       total_trading_days++;
     }
@@ -532,7 +532,7 @@ void RenderTabCalendar(
 
   // Render each year as a row
   for (int year = calendar.start_year; year <= calendar.end_year; ++year) {
-    RenderYearRow(year, dates_state.daily_stats_cache, dates_state);
+    RenderYearRow(year, calendar_state.daily_stats_cache, calendar_state);
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();

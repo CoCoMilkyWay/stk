@@ -899,7 +899,7 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
     if (ImGui::CollapsingHeader("Asset Summary", ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::Indent();
 
-      // 统计由扫描末尾一次算好 (见 ScanService Phase 5)
+      // 统计由扫描的覆盖统计一次算好 (见 ScanService::run)
       const bool stats_ready = asset.asset_stats.size() == asset.items.size() && !asset.items.empty();
 
       ImGui::Spacing();

@@ -8,8 +8,8 @@
 //   OFI_N = Σ w_i·(ΔV_i^B - ΔV_i^A),  w_i = 1 - (i-1)/N 归一化 (近端权重高)
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
+#include "orders/L2DataType.hpp"
 
 template <size_t N_LEVELS, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class OFI {

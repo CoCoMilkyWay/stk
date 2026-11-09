@@ -1,8 +1,8 @@
 #pragma once
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp" // Trigger
 #include "features/TimeIndex.hpp"  // BIN_MINUTES / BIN_COUNT (分钟箱层)
+#include "orders/L2DataType.hpp"
 #include <array>
 #include <cstdint>
 
@@ -152,7 +152,7 @@ DEFINE_ENUM(FeatureDataType, FEATURE_DATA_TYPES)
 #undef ENUM_CASE
 #undef ENUM_ENTRY
 
-// L2::ValidType 定义在 codec/, 只补 to_string
+// L2::ValidType 定义在 orders/L2DataType.hpp, 只补 to_string
 inline constexpr EnumStr to_string(L2::ValidType t) {
   switch (t) {
   case L2::ValidType::ALL:

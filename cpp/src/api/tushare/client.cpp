@@ -73,7 +73,7 @@ yyjson_doc *call(const std::string &token, std::string_view api_name, const Para
 
       http::request<http::string_body> req{http::verb::post, "/", 11};
       req.set(http::field::host, kHost);
-      req.set(http::field::user_agent, "qmt-tushare/1.0");
+      req.set(http::field::user_agent, "stk-tushare/1.0");
       req.set(http::field::content_type, "application/json");
       req.body() = body;
       req.prepare_payload();

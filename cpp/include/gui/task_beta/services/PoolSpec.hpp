@@ -4,7 +4,8 @@
 //     ST / 板块 / 融资 各自划分全部在市 A 股 (取值 全 = 不切); 过滤 = 过滤表的子集 (各条件 1 = 滤掉, 剔的条件并起来剔)
 //     切片 = ST ∩ 板块 ∩ 融资 ∩ 过滤后的在市资产; 只数 N > 0 = 切片内键的一端取前 N, N = 0 = 切片内全选 (与风格端无关, canon 归一)
 //   键 / 切片的原料全是 all.bar L_1day 的基础列 (行 D = D+1 盘前态, 见 Node/Common/Fund/Fund.hpp), 成员由 gui/task_beta/services/PoolSelect.hpp 现算
-//   选定的池 = <config_dir>/pools.json (Beta → Style 页确认后写; 无文件 = default_pools())
+//   选定的池 = <config_dir>/pools.json (Beta → Style 页确认后写; 无文件 = default_pools()); 只是本页的选中落地,
+//     计算与各页用的池表是编译期 feature_pools() (features/Storage/FeatureLib.hpp), 不读此文件
 //
 //   池名 (库目录名) 与中文名都按维序以 "." 连, 每维一段:
 //     beta_low.200.d.nost.all.all.f0  = 低β.200.日.非ST.全.全.不剔

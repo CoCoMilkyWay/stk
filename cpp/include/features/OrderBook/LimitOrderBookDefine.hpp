@@ -8,8 +8,8 @@
 #include <type_traits>
 #include <utility>
 
-#include "codec/L2DataType.hpp"
 #include "define/CBuffer.hpp"
+#include "orders/L2DataType.hpp"
 
 //========================================================================================
 // PROFILING CONTROL MACROS

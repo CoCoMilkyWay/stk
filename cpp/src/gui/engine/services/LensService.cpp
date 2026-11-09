@@ -1,4 +1,4 @@
-// LensService — 见头文件. include 因子 CPU 后端头 (Stat/Cpu.hpp / Host.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
+// LensService — 见头文件. include 因子 CPU 后端头 (Stat/Cpu.hpp / Host.hpp), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/services/LensService.hpp"
 
 #include "factor/Stat/Host.hpp"  // h2f

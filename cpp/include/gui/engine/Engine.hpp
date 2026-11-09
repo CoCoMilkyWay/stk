@@ -19,7 +19,7 @@
 //   eval_job = prepare + 一趟 (Run / Inspect / Portfolio / Lens; 根集 RootSet 一张森林, 种一次各块共用; 钩子 whole → 整期一块 (装不下截最近的日), 否则按预算分块)
 //   + 条目收尾 (每条目恰一个 hk.fail / hk.post); Search 一次 prepare, 每趟一次 pass (逐块逐批现种). eval_baskets = 池篮子作业 (不走森林).
 //   租约粒度: Run 每文件 / Search 每趟 / 交互服务每请求; 中断结局统一 FactorWorker::settle.
-// 只给服务 .cpp include (EvalCpu → TS / CS Cpu.hpp, 受控浮点: CMake PRECISE_MATH 源).
+// 只给服务 .cpp include (EvalCpu → TS / CS Cpu.hpp, 受控浮点: CMake MATH_PRECISE 源).
 #pragma once
 
 #include "factor/EvalCpu.hpp"
@@ -56,7 +56,7 @@ struct Root {
   factor::stat::Dir d = factor::stat::kFwd;
   Holds hd;
 };
-// 根集 (四服务同一份): 条目 (规范串, 口径, 方向) → 根; 三者相同的条目共一个根 (只评一次, 持有期 = 各条目之并).
+// 根集 (各服务同一份): 条目 (规范串, 口径, 方向) → 根; 三者相同的条目共一个根 (只评一次, 持有期 = 各条目之并).
 // 根 k ↔ roots()[k] / 探针 ps(k); 条目 i 的根 = of[i]
 struct RootSet {
   std::vector<factor::expr::Expr> es;  // [k] 式

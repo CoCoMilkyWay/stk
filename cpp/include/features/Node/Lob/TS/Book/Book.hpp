@@ -26,9 +26,9 @@
 //   【fast-math 契约】不做 isnan; 无定义用 ok_ 位图显式表示, 不靠 NaN 传播.
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 #include "features/TimeIndex.hpp"
+#include "orders/L2DataType.hpp"
 #include <algorithm>
 #include <cstdint>
 

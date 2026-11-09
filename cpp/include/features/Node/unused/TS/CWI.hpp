@@ -8,8 +8,8 @@
 //   GAMMA_X10 = γ×10 (避免浮点模板参数)
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
+#include "orders/L2DataType.hpp"
 #include <cmath>
 
 template <int GAMMA_X10, size_t DEPTH_SIZE = L2::LOB_DEPTH>

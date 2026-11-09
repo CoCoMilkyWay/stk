@@ -1600,7 +1600,7 @@ bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &
   if (!view_row(fsvc, fui.view_file, row) || !inspectable(row))
     return false;
   const std::string key = probe_key(row, ctx);
-  if (ui.last_req_key == key) // 取消过 / 已发过的 key 不反复起 (Compute 手动)
+  if (ui.last_req_key == key) // 取消过 / 已发过的 key 不反复起 (Recompute 手动)
     return false;
   {
     std::lock_guard<std::mutex> lock(isvc.mutex);
@@ -1632,7 +1632,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
     ImGui::EndTable();
     return 0;
   }
-  // sel = 选中行 (view_file = 权重行 key; 箭头 / 自动起算 / Compute 的对象); row = 显示行 = 现结果的权重 (切换期间整页继续画旧的, 新结果到了一次性换),
+  // sel = 选中行 (view_file = 权重行 key; 箭头 / 自动起算 / Recompute 的对象); row = 显示行 = 现结果的权重 (切换期间整页继续画旧的, 新结果到了一次性换),
   // 无结果 (或结果权重已不在表里) 时 = sel
   FactorRow sel;
   std::string prev_key, next_key;
@@ -1812,7 +1812,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   if (kreq)
     ksvc.Request(std::move(*kreq));
 
-  // ---- 作用域行 (左栏末: 作用域 + 分层 / Compute / Cancel / 状态) + 选定持有期的 stat 面板 (右栏) ----
+  // ---- 作用域行 (左栏末: 作用域 + 分层 / Recompute / Cancel / 状态) + 选定持有期的 stat 面板 (右栏) ----
   // match = 结果就是当前请求 (选中行 + 作用域); 否则仍整页画旧结果 (服务不清旧 result), 新结果发布一次性换; 头部显示行 row 已随结果
   const bool match = res_has && res_key == key;
   const bool shown = res_has;
@@ -1827,7 +1827,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
     if (ImGui::IsItemHovered())
       tip("有效率 %.1f%%  可秩率 %.1f%%\n耗时 %.0f ms (%s, %s)", res_ev.valid_pct, res_ev.rank_pct, res_ev.eval_ms, sc.backend.c_str(), sc.time.c_str());
   } else {
-    ImGui::TextDisabled("%s", busy ? "计算中…" : (ctx.axis_ready ? "尚未计算 (自动起算 / Compute)" : "资产轴未就绪, 先在 Database 页扫描"));
+    ImGui::TextDisabled("%s", busy ? "计算中…" : (ctx.axis_ready ? "尚未计算 (自动起算 / Recompute)" : "资产轴未就绪, 先在 Database 页扫描"));
   }
   ImGui::SameLine(0.f, kCtlGap);
   {
@@ -2040,7 +2040,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
     plot_term(row.hold, n_hold, row.costs.data(), static_cast<int>(row.costs.size()), nullptr, ctx.fixed_impact, ui.hold_idx,
               row.stat_from_file ? "文件 stat" : "Factors Run", cell);
   } else {
-    empty_plot("期限结构###term", cell, "无 stat (Factors 页 Run 或此处 Compute)");
+    empty_plot("期限结构###term", cell, "无 stat (Factors 页 Run 或此处 Recompute)");
   }
   return action;
 }

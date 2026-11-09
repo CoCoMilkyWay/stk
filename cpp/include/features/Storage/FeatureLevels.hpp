@@ -11,10 +11,10 @@
 // 日文件格式 / 落盘编码在 FeatureDay.hpp.
 // ============================================================================
 
-#include "codec/L2DataType.hpp"        // L2::ValidType (FieldInfo.valid)
 #include "features/FeaturesDefine.hpp" // FeatureDataType / ALL_TIERS
 #include "features/Method/TS.hpp"      // ts::TfId (FieldInfo.ts_tf)
 #include "features/TimeIndex.hpp"      // L_SEC_ROWS / L_1MIN_ROWS / bin_rows / L_1DAY_ROWS
+#include "orders/L2DataType.hpp"       // L2::ValidType (FieldInfo.valid)
 #include <array>
 #include <bit>
 #include <cassert>

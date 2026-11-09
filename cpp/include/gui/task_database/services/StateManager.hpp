@@ -5,7 +5,7 @@
 // 共享状态 (asset_info / asset.items / Asset 扫描产物) 只在 tick 里换进 (GUI 线程), 换进时机保证无 worker 正在读:
 //   冻结:     特征计算在飞 (task_state.compute.computing) → 件都留在邮箱里, 不发编码 (Lob 按帧目录快照读日文件, 编码 rename 换掉它们);
 //             同步 / 扫描照跑, 收尾后再换进. 反向: 编码在飞时特征计算不开跑 (task_state.database.encode_inflight)
-//   基本面件: 扫描 / 编码都不在飞才收 (二者读 asset_info / items) → 换 asset_info → AssetLoader 重建 items → 请求覆盖扫描
+//   基本面件: 扫描 / 编码都不在飞才收 (二者读 asset_info / items) → 换 asset_info → Asset::materialize 重建 items → 请求覆盖扫描
 //   扫描件:   adopt 扫描产物 + 留存覆盖结论 (扫描只在基本面件收下后 / 编码收尾后发, 编码只在扫描不在飞时发)
 //   编码件:   请求 RescanStorage (日文件被 rename 换掉)
 //   核对件:   Repair 收尾 → refresh (改了分片, 重建 AssetInfo)

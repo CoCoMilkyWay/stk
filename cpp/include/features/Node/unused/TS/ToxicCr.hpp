@@ -6,8 +6,8 @@
 //   toxic_cr = Σ|O^C|_{t-5s}^{t} / Σ|O^C|_{t-60s}^{t}   (60 秒环形缓冲, 按秒推进)
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
+#include "orders/L2DataType.hpp"
 
 class ToxicCr {
   static constexpr size_t SHORT_WINDOW = 5; // 秒

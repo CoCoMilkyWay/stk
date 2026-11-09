@@ -12,7 +12,7 @@
 //   cs_valid = 当日在池 ? 1 : 0 (整日常量, 与事件无关; 判定用 data_valid), 决定谁进截面
 //   (CoreCs gather / 因子层 CS 节点 / Stat), 不与 ts_valid 相与 (见 Meta.hpp)
 
-#include "codec/L2DataType.hpp" // L2::ValidType (fmeta::valid)
+#include "orders/L2DataType.hpp" // L2::ValidType (fmeta::valid)
 #include <bit>
 #include <cassert>
 #include <cstddef>

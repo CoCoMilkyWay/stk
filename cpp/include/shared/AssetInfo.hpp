@@ -1,5 +1,5 @@
 // Asset Information - 全市场个股基本面快照 (BigQuant + Tushare) + 交易日历
-// 由 SyncService 从 output/fundamental/ parquet 构建.
+// 由 AssetInfo::build 从 output/fundamental/ parquet 构建 (Sync 每轮同步之后).
 // 个股一律按全局 id (A 轴下标, fundamental/AssetAxis.hpp) 稠密存: 一对一 = vector, 一对多 = Csr.
 // 一律原生类型: 日期 Ymd (0 = 无), 数值 float (NaN = 无效); 格式化只在 UI.
 #pragma once
@@ -12,9 +12,15 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <string>
 #include <vector>
+
+namespace fundamental {
+class Catalog;
+}
+struct Progress;
 
 // ============================================================================
 // StockInfo — 一只股票的最新快照 (每字段一个出处)
@@ -74,7 +80,7 @@ struct CalendarDay {
 // ============================================================================
 
 struct AssetInfo {
-  std::vector<std::string> codes; // [全局 id] "000001.SZ" = 构建时的 A 轴 + 档案里新见的代码 (追加在尾, 换进时 AssetLoader intern)
+  std::vector<std::string> codes; // [全局 id] "000001.SZ" = 构建时的 A 轴 + 档案里新见的代码 (追加在尾, 换进时 Asset::materialize intern)
   StockInfos stocks;              // [全局 id]
   Csr<FactorPoint> factors;       // [全局 id] → 复权因子变点, date 升序
   AssetEvents events;             // [全局 id] → 个股历史事件 (shared/AssetEvent.hpp)
@@ -89,4 +95,8 @@ struct AssetInfo {
     const StockInfo &s = stocks[id];
     return s.known ? &s : nullptr;
   }
+
+  // 本地 parquet → 全部字段 (实现 shared/AssetInfo.cpp). 返回 false = 本地数据缺失 (首跑需先联网同步).
+  // 进度: p.begin(Running, 分片数) + 逐分片计步; stage(说明) = 阶段切换
+  bool build(const fundamental::Catalog &cat, Progress &p, const std::function<void(std::string)> &stage);
 };

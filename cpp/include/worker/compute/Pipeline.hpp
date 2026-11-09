@@ -9,9 +9,9 @@
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 #include "misc/snap.hpp"
+#include "worker/compute/Dashboard.hpp"
 #include "worker/compute/Layout.hpp"
 #include "worker/compute/Profile.hpp"
-#include "worker/compute/Progress.hpp"
 #include "worker/compute/Stages.hpp"
 #include "worker/compute/TierOps.hpp"
 #include "worker/compute/TsTuner.hpp"
@@ -181,9 +181,9 @@ void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed, size_t lane, size_
     Logger::log("worker_" + std::to_string(worker_id), "Prefetch completed: " + std::to_string(cumulative_bytes) + " bytes across " + std::to_string(completed_dates) + " dates");
 }
 
-// 时序: 逐资产喂源 + DAG, 写张量 (日期主序遍历); 领跑核在池边干等时领养落后核的资产并回填
+// 时序: 逐资产喂源 + DAG, 写张量 (日期主序遍历); 领跑核在日环边干等时领养落后核的资产并回填
 // (wait_open 的 on_idle, 处置权转移见 TsSchedule).
-// 触发时机 = 领跑者在池边干等 slot (它已领先, 等待时间白白浪费, 正好拿来帮最慢者);
+// 触发时机 = 领跑者在日环边干等 slot (它已领先, 等待时间白白浪费, 正好拿来帮最慢者);
 // 额度 = 两侧配额 (sched.quota, 协调线程按实测忙碌占比每窗重算, 见 TsTuner): victim 让出 / leader 接手都不超过各自余额.
 template <class T>
 void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
@@ -195,7 +195,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   TsSchedule &sched = role.sched;
   std::vector<std::unique_ptr<CoreOf<T>>> &cores = role.cores;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
-  // 本核发布槽 (单写者): work = 累计源条数, idle_us = 累计干等微秒 (edge_us = 其中池边干等);
+  // 本核发布槽 (单写者): work = 累计源条数, idle_us = 累计干等微秒 (edge_us = 其中日环边干等);
   // 前沿/持仓在 store/sched 里, 渲染线程 / 协调线程自取
   ComputeStats::Core &stat = ctx.stat;
 
@@ -283,13 +283,13 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     return work;
   };
 
-  // 负载再平衡: 只在池边干等 slot 时调用 (本 worker 已领先满池深, 等待时间正好拿来
+  // 负载再平衡: 只在日环边干等 slot 时调用 (本 worker 已领先满日环深, 等待时间正好拿来
   // 帮落后者). 本核可接手 (配额 < 0) 才领: 接手 victim 放得进双方余额的最重资产 (一次修正得多、换核少;
   // 放不进 = 偏差小于一个资产, 不动), 立刻回填落下的旧日期 —— 含 victim
   // 的"当天" (claim CAS 唯一裁决: victim 日循环还没轮到它就被本 worker 先
   // claim 走, victim 见 owner 已变直接跳过, 当天即刻变轻). 旧日未计满 ⇒
   // 仍在飞, ts_try_open 必得; 硬源的旧日源格同理未复用 (见 StoreRing 源窗); 回填后并入本 worker 日循环 (永久转移, 不归还).
-  // 触发条件 (池边干等 + 落后 ≥ 2 天) 与永久转移都是刻意的: 不要改成自由领 / 按日窃取 (理由见 TsSchedule).
+  // 触发条件 (日环边干等 + 落后 ≥ 2 天) 与永久转移都是刻意的: 不要改成自由领 / 按日窃取 (理由见 TsSchedule).
   std::atomic<int64_t> &my_quota = sched.quota[static_cast<size_t>(worker_id)];
   auto try_adopt = [&](size_t my_days_done) {
     const int64_t room = -my_quota.load(std::memory_order_relaxed);
@@ -394,9 +394,9 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     date_assets_processed = 0;
 
     // 本日写句柄: 每 worker 每日 open 一次, 之后所有写回是纯指针算术.
-    // 池满 (或硬源未就绪) = 本 worker 领先到把池子吃满 —— 干等的时间拿去领养最慢者的资产
+    // 日环满 (或硬源未就绪) = 本 worker 领先到把日环吃满 —— 干等的时间拿去领养最慢者的资产
     // 并回填 (回填日仍在飞, 不占新 slot), 等 IO 交还 slot 后再继续本日.
-    // 只有 sleep 算干等 (领养回填是干活, 见 wait_open); 源已就绪的那部分是池边干等 (扩格的观测面).
+    // 只有 sleep 算干等 (领养回填是干活, 见 wait_open); 源已就绪的那部分是日环边干等 (扩格的观测面).
     Day day;
     {
       TraceN("PoolWait");
@@ -509,7 +509,7 @@ bool pipeline(const PipelineArgs &args) {
   const size_t cap = std::max(slots, std::min(mem_cap, dates.size()));
   assert(slots >= CoreOf<T>::kMinRingSlots && slots > tail && "内存不够: 日环不到 MIN_RING_SLOTS, 会死锁");
 
-  std::cout << "\n=== Phase 2: Feature Computation (" << tier_name(T::kId) << ") ===\n"
+  std::cout << "\n=== Compute (" << tier_name(T::kId) << ") ===\n"
             << L.summary() << "\n"
             << "Assets: " << num_assets
             << " | Ring 初值: " << slots << " (下游 " << floor_slots << " + 时序余量 " << lead << ", 上限 " << cap << ")"
@@ -542,7 +542,7 @@ bool pipeline(const PipelineArgs &args) {
   // 统一 launch(worker_id, name, cpus, fn): 线程名 name (StageLayout::thread_name), pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
   // 进度 = 仪表盘自行采样 store/sched/stats (拉取式); 采样窗 (PROFILE 模式) / 时序调参同样拉取式, 见 ComputeProfile / TsTuner.
   ComputeStats stats(num_pf, num_ts, num_cs, num_io);
-  ComputeProgress progress(store, sched, stats, dates, TierFeed<T>::kUnit);
+  ComputeDashboard dashboard(store, sched, stats, dates, TierFeed<T>::kUnit);
   ComputeProfile profile({pool_def(lib.pool()).name, T::kId, TierFeed<T>::kUnit, num_assets, dates}, L, store, stats);
   TsTuner tuner(store, sched, stats, dates.size(), budget, [&store] { store.grow(); });
   auto ctx = [&](int worker_id, ComputeStats::Core &stat) {
@@ -597,7 +597,7 @@ bool pipeline(const PipelineArgs &args) {
   args.on_io(store.query_io_done());
   profile.finish();
   // 仪表盘引用 store/sched/dates, 必须先于它们的析构停掉
-  progress.stop();
+  dashboard.stop();
 
   const bool completed = !args.cancel.load(std::memory_order_relaxed);
   if (completed)

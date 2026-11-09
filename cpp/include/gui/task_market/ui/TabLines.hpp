@@ -241,7 +241,7 @@ struct LinesUIState {
   CtaUIState cta;
 };
 
-// 自选文件 <config_dir>/watch.json (GUI 线程读写; Portfolio 右表星列 / 右键增删): { "watch": [ "sw01.加", "BK0493.加", "600512.SH", … ] }
+// 自选文件 <config_dir>/watch.json (GUI 线程读写; NAV 右表星列 / 右键增删): { "watch": [ "sw01.加", "BK0493.加", "600512.SH", … ] }
 //   条目 = 自选键 (LinesRow::watch), 文件序 = 加入序; 与组合无关, 全局一份
 std::vector<std::string> LoadWatch(const std::string &path);                    // 文件不存在 = 空; 格式不对 → assert
 void SaveWatch(const std::string &path, const std::vector<std::string> &watch); // tmp + rename

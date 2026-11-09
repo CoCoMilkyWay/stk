@@ -18,7 +18,7 @@
 //   cs_gate       截面池掩码 [T][A] (特征库 cs_valid 列 = 当日在池, 整日常量, 见 features/MetaFlag.hpp), 原样递给 CS 节点
 //                 (A 域 ALL / GROUP) 的算子 —— 池内统计 / 池外就近取值全在算子内部 (契约【截面池 g】); TS 节点不收.
 //                 evaluator 不做任何二次门控 / 补值; 有 CS 节点时 cs_gate 必填
-//   依赖受控浮点: 消费者 TU 编进 -fno-fast-math (CMake PRECISE_MATH_FLAG).
+//   依赖受控浮点: 消费者 TU 编进 -fno-fast-math (CMake MATH_PRECISE).
 // =============================================================================
 
 #include "factor/Check.hpp" // check::Plane / check::Arena (宿主 SoA 平面 / 每线程暂存)

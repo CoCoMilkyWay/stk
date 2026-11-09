@@ -1,6 +1,5 @@
 // State Manager Implementation
 #include "gui/task_database/services/StateManager.hpp"
-#include "gui/task_database/services/AssetLoader.hpp"
 #include "gui/task_database/services/EncodeService.hpp"
 #include "gui/task_database/services/SyncService.hpp"
 #include "shared/SharedData.hpp"
@@ -92,7 +91,7 @@ void StateManager::tick() {
         if (r->ok) {
           data_.asset_info = std::move(r->asset_info);
           // 股票全量 → A 轴注册表 → Asset::items (全市场, 无人工名单)
-          AssetLoader::load(data_);
+          data_.asset.materialize(data_.asset_info);
           scan(ScanMode::RecomputeCoverage);
         }
       }

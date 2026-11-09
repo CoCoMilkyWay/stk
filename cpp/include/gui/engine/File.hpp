@@ -2,7 +2,7 @@
 // Run 回写 WriteFactorStats. 计算服务 (Run / Search / Inspect / Portfolio) 只经这里碰文件.
 //
 // 因子文件 (独立落盘, 格式破碎也**绝不删**: 表里标 BROKEN + 原因, 人手动处理):
-//   { "type":   "alpha",                                      // 必有: alpha (选股 / 择时, 走 Stat) | beta (风险暴露, 未实现, 留位)
+//   { "type":   "alpha",                                      // 必有: alpha (选股 / 择时, 走 Stat) | beta (风险暴露, 不评估)
 //     "name_cn": "三十分钟动量",                                // 必有: 中文名, 纯汉字 1..10 字 (英文名 = 文件名主干 name_en)
 //     "expr":   "CsRank(TsMeanRoll(TsLog(amt), d))",         // 必有: **模板**, 裸键名 d / k / k2 / w = 待搜参数 (Expr.hpp 自由参数), 数字 = 固定
 //     "note":   "…",                                          // 可选, 人 / agent 写的一句话
@@ -41,7 +41,7 @@
 
 namespace GUI::Engine {
 
-// 因子类型 (文件 type 键): alpha 走 Stat 评估 (口径由根算子定); beta 只留位, 扫描到即标 error
+// 因子类型 (文件 type 键): alpha 走 Stat 评估 (口径由根算子定); beta 不评估, 扫描到即标 error
 enum class FactorKind : uint8_t { Alpha,
                                   Beta };
 inline constexpr const char *kind_name(FactorKind k) { return k == FactorKind::Alpha ? "alpha" : "beta"; }

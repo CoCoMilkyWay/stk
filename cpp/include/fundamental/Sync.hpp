@@ -12,7 +12,7 @@
 //   Src = Bq (BigQuant) / Tu (Tushare); 客户端类型 = Src::Client.
 //
 // plan<Src>: 纯本地判定 (零网络) = SPECS 里来自 Src 的表逐张 ledger → todo (表序 = SPECS 序, 表内 ym 升序):
-//   已存在的分片 mtime 距 now.at < PIPELINE_DEDUP_WINDOW_SECONDS → 本轮不动 (节流); keep 再滤; 其余槽的动作全由 todo 定
+//   已存在的分片 mtime 距 now.at < kDedupSeconds → 本轮不动 (节流); keep 再滤; 其余槽的动作全由 todo 定
 //   (一槽至多一条任务). 空 ⇒ 本轮无事可做.
 //   run 只执行这份计划, 不重判 ⇒ "判定" 与 "执行" 结构上就是同一份.
 // round 是本轮开头的本地视图: 每表只写自己的分片, 表间互不影响, 故一轮内无需重扫.

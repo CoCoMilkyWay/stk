@@ -8,9 +8,9 @@
 // 不碰 SharedData: 帧目录快照 / 日文件目录 / 交易所随请求给 (GUI 线程取). 结果只在内存, UI 持 mutex 取走; 首个请求才建订单簿 (奢侈容量, 常驻复用)
 #pragma once
 
-#include "codec/L2DataType.hpp" // ExchangeType
 #include "gui/util/Service.hpp"
 #include "misc/date.hpp"
+#include "orders/L2DataType.hpp" // ExchangeType
 
 #include <cstdint>
 #include <memory>

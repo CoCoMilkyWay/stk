@@ -1,10 +1,10 @@
 // Lob 档管线 (逐笔 → 订单簿源): 档的源 TierFeed<lob::Tier> + 档入口表 lob_ops. 本 TU fast-math.
 #include "worker/compute/Pipeline.hpp"
 
-#include "codec/L2DataType.hpp"
-#include "codec/OrderFrame.hpp"
 #include "features/CoreLob.hpp"
 #include "features/OrderBook/LimitOrderBook.hpp"
+#include "orders/L2DataType.hpp"
+#include "orders/OrderFrame.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>

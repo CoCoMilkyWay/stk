@@ -10,8 +10,8 @@
 //   ord_size = avg(|O^M|)                       (平均单笔规模)
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
+#include "orders/L2DataType.hpp"
 #include <cmath>
 
 class Behav {

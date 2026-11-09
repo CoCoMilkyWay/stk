@@ -229,7 +229,7 @@ assert_partition(源表 SRC_ALL ${SRC_PARTS})
 set(MATH_FAST_FLAGS -ffast-math)
 set(MATH_PRECISE_FLAGS -fno-fast-math -fno-math-errno)
 
-# 两表同一段序 (shared → misc → api → fundamental → codec → features → worker → gui → factor → 入口), 段内按路径序; 某档无文件的段留空
+# 两表同一段序 (shared → misc → api → fundamental → orders → features → worker → gui → factor → 入口), 段内按路径序; 某档无文件的段留空
 set(MATH_FAST
     # shared
     shared/Asset.cpp
@@ -243,20 +243,20 @@ set(MATH_FAST
     misc/system_metrics.cpp
     # api
     # fundamental
-    # codec
-    codec/L2Validator.cpp
-    codec/OrderEncoder.cpp
-    codec/OrderFrame.cpp
-    codec/OrdersDay.cpp
+    # orders
+    orders/L2Validator.cpp
+    orders/OrderEncoder.cpp
+    orders/OrderFrame.cpp
+    orders/OrdersDay.cpp
     # features
     features/FeatureMeta.cpp
     # worker: compute 的 Lob 档管线 + 档无关的截面 / 落盘 / 调参; encode 逐笔编码
+    worker/compute/Dashboard.cpp
     worker/compute/FeedLob.cpp
-    worker/compute/Progress.cpp
     worker/compute/StageCs.cpp
     worker/compute/StageIo.cpp
     worker/compute/TsTuner.cpp
-    worker/encode/EncodeWorker.cpp
+    worker/encode/Pipeline.cpp
     # gui
     gui/Gui.cpp
     gui/Run_OpenGL.cpp
@@ -286,6 +286,7 @@ set(MATH_FAST
 
 set(MATH_PRECISE
     # shared
+    shared/AssetInfo.cpp
     shared/Config.cpp
     shared/ReadRequest.cpp
     # misc
@@ -326,7 +327,6 @@ set(MATH_PRECISE
     gui/task_beta/services/PoolSelect.cpp
     gui/task_beta/services/PoolSpec.cpp
     gui/task_database/TaskDatabase.cpp
-    gui/task_database/services/AssetLoader.cpp
     gui/task_database/services/ScanService.cpp
     gui/task_database/services/StateManager.cpp
     gui/task_database/services/SyncService.cpp

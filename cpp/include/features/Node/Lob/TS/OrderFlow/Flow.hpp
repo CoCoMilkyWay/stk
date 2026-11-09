@@ -19,9 +19,9 @@
 //   只接 Fund.out(Fund.lim_up) / Fund.out(Fund.lim_dn) 两口: Fund 日频口盘前承接后 back() 即当日适用值, 委托 9:15 起可读 (与 Depth 同法).
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 #include "features/TimeIndex.hpp"
+#include "orders/L2DataType.hpp"
 
 class Flow {
   static constexpr size_t NG = 10; // 累加组: taker {amt, vol, n, dlogp} + maker {amt, vol, n} + cancel {amt, vol, n}

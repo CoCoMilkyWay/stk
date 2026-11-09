@@ -1,4 +1,4 @@
-// Load — 见头文件. include 因子 Stat CPU 头 (标签秩 prep_label), 依赖受控浮点: CMake PRECISE_MATH 源.
+// Load — 见头文件. include 因子 Stat CPU 头 (标签秩 prep_label), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Load.hpp"
 
 #include "factor/Stat/Cpu.hpp"                      // prep_label / Workspace
@@ -311,7 +311,7 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
             ok = ok && cell(w[l], a, x[l]) && fmeta::finite(x[l]);
           for (size_t l = 0; l < K; ++l)
             p.v[l][row + a] = ok ? std::bit_cast<uint16_t>(x[l]) : 0;
-          assert((!ok || g.eo[row + a]) && "标签有效格须有建仓可成交码 (旧标签库: 重算)");
+          assert((!ok || g.eo[row + a]) && "标签有效格须有建仓可成交码");
           p.m[row + a] = ok;
         }
       }
@@ -423,7 +423,7 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
         for (size_t l = 0; l < K; ++l)
           B.lab.v[l][row + a] = ok ? std::bit_cast<uint16_t>(x[l]) : 0;
         B.lab.m[row + a] = ok;
-        assert((!ok || B.eo[row + a]) && "标签有效格须有建仓可成交码 (旧标签库: 重算)");
+        assert((!ok || B.eo[row + a]) && "标签有效格须有建仓可成交码");
       }
       // close: 本行有成交 (ts_valid 按 DATA 口径) ∧ 有限 ∧ > 0 (此处不复权, 装完乘复权因子)
       const View wt = view(ts_i, t), wp = view(px_i, t), wa = view(adj_i, t);

@@ -1,5 +1,5 @@
 // SearchService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Search/Cpu.hpp → Stat/Cpu.hpp), 依赖受控浮点:
-// CMake PRECISE_MATH 源.
+// CMake MATH_PRECISE 源.
 #include "gui/engine/services/SearchService.hpp"
 
 #include "factor/Dag.hpp"

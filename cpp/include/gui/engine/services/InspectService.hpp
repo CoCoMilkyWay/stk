@@ -37,7 +37,7 @@
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; 新请求开跑不清旧 result: 页面继续整页画旧结果
 // (旧因子, 头部文字一并), 新结果发布时一次性覆盖 (UI 持 mutex 读; 一级平面大 (秩 2B × T × A), UI 不拷, 持锁派生成日级序列后放手;
 // 发布 = 与 worker 的 InspectPlanes 交换, 不分配). 进度走原子: Loading 期 done/total = 天; Running 期 = 算子节点 + 标签集.
-// 后端: 只 CPU (单因子一棵 Dag; GPU 留后).
+// 后端: 只 CPU (单因子一棵 Dag).
 #pragma once
 
 #include "factor/Stat/Contract.hpp"

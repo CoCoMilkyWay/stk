@@ -1,4 +1,4 @@
-// Scope — 见头文件. include 因子契约头 (Table → Stat/Contract.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
+// Scope — 见头文件. include 因子契约头 (Table → Stat/Contract.hpp), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Scope.hpp"
 
 #include "factor/GpuRun.hpp"       // mem_info (显存预算)

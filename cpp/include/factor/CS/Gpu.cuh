@@ -632,7 +632,7 @@ __device__ inline void gh_prefix(k::Sh &sh) {
 // 组内 pct rank 的公共实现 (单趟分组统计, 不逐组重扫):
 //   趟 1: 组 cnt / lo / hi 一次 shared 原子算完 (极值走 ord 保序整数编码的 atomicMin/Max);
 //   然后每 kGB 组一批: 一趟建 kGB 张 256 桶直方图 → 一 warp 一组原地前缀 → 一趟输出该批的资产.
-//   G ≈ 30 → 2 批 ≈ 6 趟 + 几次同步, 旧法是 (G+1)·3 趟 + 3(G+1) 次块归约.
+//   G ≈ 30 → 2 批 ≈ 6 趟 + 几次同步 (逐组重扫是 (G+1)·3 趟 + 3(G+1) 次块归约).
 //   无组 / 组无池成员的资产末尾用全池直方图补 (sh.cb / sh.pre).
 template <class Gid>
 __device__ inline void group_rank(k::Sh &sh, const float *xv, const uint8_t *xm, const uint8_t *gm, const Gid &gi, float *ov, uint8_t *om, int base, int A) {

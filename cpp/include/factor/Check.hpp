@@ -8,7 +8,7 @@
 //     src/gui/task_alpha/services/OperatorsService  GUI Operators 表 (单张量, 逐算子对拍 + 计时)
 //   本头只依赖 Contract.hpp; 驱动是模板, 具体的 Stream / Cpu struct 由消费者 include 后实例化.
 //   Arena (每线程暂存) 也在此, EvalCpu 共用.
-//   依赖受控浮点: 消费者 TU 必须编进 -fno-fast-math (CMake PRECISE_MATH_FLAG).
+//   依赖受控浮点: 消费者 TU 必须编进 -fno-fast-math (CMake MATH_PRECISE).
 // =============================================================================
 
 #include "factor/Contract.hpp"

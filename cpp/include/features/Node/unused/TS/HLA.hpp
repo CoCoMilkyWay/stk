@@ -7,8 +7,8 @@
 //   ρ^s = (|O^{M,s}| - |O^{C,s}|) / (|O^{M,s}| + |O^{C,s}|)   (分钟内 refill rate)
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
+#include "orders/L2DataType.hpp"
 
 class HLA {
 public:

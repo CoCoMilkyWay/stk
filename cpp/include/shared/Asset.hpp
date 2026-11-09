@@ -1,8 +1,8 @@
 #pragma once
 
-#include "codec/L2DataType.hpp"
-#include "codec/OrdersDay.hpp"
 #include "misc/date.hpp"
+#include "orders/L2DataType.hpp"
+#include "orders/OrdersDay.hpp"
 
 #include <memory>
 #include <mutex>
@@ -35,7 +35,7 @@ struct AssetItem {
   misc::Ymd start_date = 0;
   misc::Ymd end_date = 0;
 
-  // 按日的帧不在这里, 在 Asset::catalog() (日主序, 见 codec/OrdersDay.hpp).
+  // 按日的帧不在这里, 在 Asset::catalog() (日主序, 见 orders/OrdersDay.hpp).
 
   // 构造
   AssetItem() = default;
@@ -55,12 +55,18 @@ struct Asset {
   // ========================================
   // 核心数据
   // ========================================
+  // A 轴物化: 资产集 = 基本面 cn_stock_basic_info 的股票全量 (含已退市, 天然不含 ETF/基金 —
+  // archive 里那 ~2200 个基金目录不进 A 轴), 不由人工名单决定. items[i].asset_id == i == AssetAxis 下标.
   std::vector<AssetItem> items;
+
+  // AssetInfo::codes → AssetAxis (append-only intern, 下标逐个对上) → items (下标对齐).
+  // 前置: 基本面已就绪 (StateManager 收下 ok 的基本面交接件后调)
+  void materialize(const AssetInfo &info);
 
   // ========================================
   // 全库帧目录: [日][资产] 一格一个 FrameRef + 每天的编码账目
   // ========================================
-  // 由 orders 扫描整体重建 (见 codec/OrdersDay.hpp), 建好即只读, 以快照发布:
+  // 由 orders 扫描整体重建 (见 orders/OrdersDay.hpp), 建好即只读, 以快照发布:
   // 读者 catalog() 取一份, 持有期间内容不变, 与重扫描 / 重编码并发安全. 账目里有
   // 缺口的"原因" —— 只有编码器知道, date_gaps 只知道"缺了几个", 两者在 By Date
   // 表里按日期对齐.
@@ -68,7 +74,7 @@ struct Asset {
   void publish_catalog(std::shared_ptr<const OrdersCatalog> catalog);
 
   // ========================================
-  // 按日统计 (Dates 用, 加载 stock_info 后算一次)
+  // 按日统计 (Calendar 页用, 与 asset_stats 同一趟扫描产出)
   // ========================================
   struct DateStats {
     size_t total_assets = 0;       // 当日已上市未退市的资产数
@@ -199,14 +205,14 @@ struct Asset {
   // ========================================
   // 扫描 (Scan worker 线程, 同步): 一趟扫完就把三个页面要的数据全部备齐 (覆盖判定 /
   // 每资产条数体积 / 完整性), 之后 Encode、ASSET、Calendar 直接读缓存, 不各自重算.
-  // 四步同一形状: 只读本对象 (items / 上一版两源缓存) + 只写 AssetScan, 批内并行走 ex.tasks,
-  // 进度 begin(阶段, 总量) / publish(1). 产物由 GUI 帧首 adopt 整体换进 —— 中途页面看到的是上一版完整结果.
+  // 四步同一形状: 只读本对象 (items / 上次扫描的两源缓存) + 只写 AssetScan, 批内并行走 ex.tasks,
+  // 进度 begin(阶段, 总量) / publish(1). 产物由 GUI 帧首 adopt 整体换进 —— 中途页面看到的是上次扫描的完整结果.
   // ========================================
   void scan_orders(AssetScan &out, const std::string &orders_dir, misc::exec::ForkJoin &ex, Progress &p) const;
   static void scan_archive(AssetScan &out, const std::string &archive_dir, const std::string &archive_extension,
                            misc::exec::ForkJoin &ex, Progress &p);
 
-  // 覆盖分析: 建回测日历 —— 行 = 基本面交易日历 (asset_info.stock_days) ∩ [start, 末个 L2 日], 每行标两源有无 (out 的两源缓存).
+  // 覆盖分析: 建回测日历 —— 行 = 基本面交易日历 (asset_info.days) ∩ [start, 末个 L2 日], 每行标两源有无 (out 的两源缓存).
   // 几百个日期, 单线程. 区间内的条数/体积 (要遍历帧目录) 归 compute_coverage_statistics 那趟一起算.
   static void compute_backtest_coverage(AssetScan &out, misc::Ymd start, const AssetInfo &asset_info);
 

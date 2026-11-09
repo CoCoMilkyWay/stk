@@ -1,4 +1,4 @@
-// Engine — 见头文件 (plan_forest / eval_baskets). include 因子 CPU 后端头, 依赖受控浮点: CMake PRECISE_MATH 源.
+// Engine — 见头文件 (plan_forest / eval_baskets). include 因子 CPU 后端头, 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Engine.hpp"
 
 #include "features/Storage/FeatureLib.hpp" // pool_id

@@ -1,23 +1,27 @@
-#include "worker/encode/EncodeWorker.hpp"
+#include "worker/encode/Pipeline.hpp"
 #include "shared/SharedData.hpp"
 
-#include "codec/L2DataType.hpp"
-#include "codec/OrderEncoder.hpp"
-#include "codec/OrderFrame.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "misc/affinity.hpp"
 #include "misc/archive.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
+#include "orders/L2DataType.hpp"
+#include "orders/OrderEncoder.hpp"
+#include "orders/OrderFrame.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <filesystem>
+#include <future>
+#include <iostream>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 // ============================================================================
 // BATCH QUEUE
@@ -128,7 +132,7 @@ std::unordered_map<size_t, EncodeTask> group_by_asset(const std::vector<misc::Ar
 
 void encode_producer(SharedData &data,
                      BatchQueue &queue,
-                     std::atomic<bool> *cancel_flag,
+                     const std::atomic<bool> *cancel_flag,
                      bool skip_existing,
                      EncodeStats &stats,
                      size_t worker_count,
@@ -137,7 +141,7 @@ void encode_producer(SharedData &data,
 
   const AssetAxis &axis = asset_axis();
   assert(data.asset.items.size() == axis.size() &&
-         "items 未与 A 轴对齐 (AssetLoader::load 没跑?)");
+         "items 未与 A 轴对齐 (Asset::materialize 没跑?)");
   // 空轴下每一天都会退化成"零分母" (包里认不出任何资产), 编出来的只有一堆
   // 空账目 — 与其跑完再排查, 不如开跑前就断在这里
   assert(!axis.empty() && "A 轴为空 (基本面未就绪?), 编码无从进行");
@@ -145,7 +149,7 @@ void encode_producer(SharedData &data,
   const MemberFiles files = member_files(data.config);
 
   // 编码日期轴 = 回测日历 (交易日历 ∩ [start_date, 末个 L2 日]), Lob 库日期轴是它的前缀; 进度条总量
-  // (EncodeService) 也是它. 归档缺的天在列举处按 Missing 跳过.
+  // (encode_pipeline) 也是它. 归档缺的天在列举处按 Missing 跳过.
   const std::vector<misc::Ymd> dates = data.asset.backtest_dates();
   assert(data.asset.backtest.start == data.config.start_date && "回测日历与配置起点不符 (改配置后没重算覆盖?)");
 
@@ -160,15 +164,15 @@ void encode_producer(SharedData &data,
 
     const std::string &orders_dir = data.config.orders_dir;
 
-    // 上一轮的日文件 (见 codec/OrdersDay.hpp), 新鲜才认 (新鲜 ⇒ 存在). 三处用它:
+    // 上一轮的日文件 (见 orders/OrdersDay.hpp), 新鲜才认 (新鲜 ⇒ 存在). 三处用它:
     // 整天快路径看 complete, 下面的逐资产过滤看目录里的帧与墓碑, 新日文件从它
     // adopt 旧帧.
     std::optional<DayReader> prev;
     if (skip_existing && day_file_fresh(orders_dir, archive_path, date))
       prev.emplace(orders_dir, date);
 
-    // 整天快路径 — 必须在列举之前: 下面那次 unrar l 要在机械盘上走完整条包头
-    // 链 (实测 0.2~2.5s), 光"确认无事可做"就是几秒一天.
+    // 整天快路径 — 必须在列举之前: 下面那次 unrar l 要走完整条包头链
+    // (实测 0.2~2.5s), 光"确认无事可做"就是几秒一天.
     //
     // 出错的天同样会留下日文件 (供界面按日拆解原因), 所以判据是 complete 项
     // 而不是文件在不在 —— 只有整天齐备才能跳过.
@@ -452,7 +456,7 @@ std::shared_ptr<DayJob> settle_in_day(EncodeStats &stats, const EncodeBatch &bat
 
 void encode_worker(SharedData &data,
                    BatchQueue &queue,
-                   std::atomic<bool> *cancel_flag,
+                   const std::atomic<bool> *cancel_flag,
                    EncodeStats &stats,
                    unsigned int worker_id,
                    misc::ProgressHandle progress_handle) {
@@ -605,4 +609,95 @@ void encode_worker(SharedData &data,
 
   progress_handle.set_label("Idle");
   Logger::log("encoding", "[Worker " + std::to_string(worker_id) + "] Finished");
+}
+
+// ============================================================================
+// PIPELINE
+// ============================================================================
+
+bool encode_pipeline(const EncodeArgs &args) {
+  assert(args.workers > 0 && "encode_pipeline: workers 须 > 0");
+  SharedData &data = args.data;
+  const auto start_time = std::chrono::steady_clock::now();
+  const size_t target_dates = data.asset.backtest.days.size();
+
+  std::cout << "\n=== Encoding Started ===\n"
+            << "Workers: " << args.workers << " | Assets: " << data.asset.items.size()
+            << " | Backtest dates: " << target_dates << "\n"
+            << std::endl;
+
+  // 容量即流水深度: ~85 批/天, 256 ≈ 领先 2-3 天. 批是纯元数据, 队列本身不占什么内存.
+  BatchQueue queue(256);
+  // 汇总行以天为单位, 总量 = 回测区间交易日; 附注显示最老在编天的资产进度, 由 producer/worker 维护.
+  misc::ParallelProgress progress(args.workers, 100, "days");
+  progress.set_summary_total(target_dates, true);
+
+  EncodeStats stats;
+
+  std::vector<std::future<void>> workers;
+  workers.reserve(args.workers);
+  for (int i = 0; i < args.workers; ++i) {
+    workers.push_back(std::async(std::launch::async, [&args, i, &queue, &stats, &progress]() {
+      encode_worker(args.data, queue, &args.cancel, stats, i, progress.get_handle(i));
+    }));
+  }
+
+  auto producer = std::async(std::launch::async, [&args, &queue, &stats, &progress]() {
+    encode_producer(args.data, queue, &args.cancel, args.skip_existing, stats,
+                    static_cast<size_t>(args.workers), &progress);
+  });
+
+  // 盯流水: 汇总天数交给 on_day; 见取消即 close 队列 (唤醒被背压堵住的 producer 与等批的 worker)
+  bool closed = false;
+  while (producer.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
+    args.on_day(progress.summary_done());
+    if (!closed && args.cancel.load(std::memory_order_relaxed)) {
+      queue.close();
+      closed = true;
+      std::cout << "[Encoding] Cancelling..." << std::endl;
+    }
+  }
+  queue.close();
+
+  for (auto &worker : workers)
+    worker.wait();
+  progress.stop();
+  args.on_day(progress.summary_done());
+
+  const size_t pairs = stats.pairs_listed.load();
+  const size_t skipped = stats.pairs_skipped.load();
+  const size_t days_skipped = stats.days_skipped.load();
+  const bool completed = !args.cancel.load(std::memory_order_relaxed);
+
+  const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::steady_clock::now() - start_time)
+                           .count();
+
+  std::cout << "\n=== Encoding " << (completed ? "Complete" : "Cancelled") << " ===\n"
+            << "Encoded: " << pairs << " (asset, date) pairs across "
+            << stats.assets_with_work.size() << " assets in " << elapsed << "s"
+            << (skipped > 0 ? " (" + std::to_string(skipped) + " pairs already encoded, skipped)" : "")
+            << (days_skipped > 0 ? " (" + std::to_string(days_skipped) + " days skipped via completion marker)" : "")
+            << std::endl;
+
+  // 源损坏的都被跳过留在了日志里 (从不 abort): 醒目提示一下, 修完源文件
+  // 直接重跑增量即可 —— 这些 (资产, 日期) 既没有产物也没有完成标记.
+  const size_t pairs_corrupt = stats.run.count(L2::Outcome::Corrupt);
+  const size_t days_corrupt = stats.days_corrupt.load();
+  if (pairs_corrupt > 0 || days_corrupt > 0) {
+    std::cout << "CORRUPT SOURCE: " << pairs_corrupt << " (asset, date) pairs + " << days_corrupt
+              << " whole days skipped — grep '[CORRUPT' in " << data.config.log_dir
+              << "/encoding.log, repair, then re-run incremental\n"
+              << std::endl;
+  }
+
+  // 准入校验未过的同理: 逐笔流本身缺片 (见 orders/L2Validator.hpp), 数据源
+  // 侧的问题, 编码器无从修复. 核查/换源之后重跑增量即可.
+  const size_t pairs_invalid = stats.run.count(L2::Outcome::Invalid);
+  if (pairs_invalid > 0) {
+    std::cout << "INVALID DATA: " << pairs_invalid << " (asset, date) pairs failed validation — grep '[INVALID' in "
+              << data.config.log_dir << "/encoding.log, check source, then re-run incremental\n"
+              << std::endl;
+  }
+  return completed;
 }

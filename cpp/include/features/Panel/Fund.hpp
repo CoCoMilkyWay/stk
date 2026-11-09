@@ -1,6 +1,6 @@
-// fund — 日频 PIT 基本面 (qmt 估值/因子/filter 链路移植): Fund 节点的数据源 + 逐日推进方法
+// fund — 日频 PIT 基本面 (估值 / 因子 / filter 链路): Fund 节点的数据源 + 逐日推进方法
 //
-//   Panel    数据源. Phase 2 前构建一次: 扫 output/fundamental/ 月度 parquet → 全交易日历 D 轴 × 全局 A 轴 (asset_axis, 全市场) 的
+//   Panel    数据源. Compute 开跑前构建一次: 扫 output/fundamental/ 月度 parquet → 全交易日历 D 轴 × 全局 A 轴 (asset_axis, 全市场) 的
 //           原始网格 (close/股本/涨跌停/状态/两融, cutoff 已套, ffill 已做) + per-A 事件链 (ttm/资产负债/年报/分红/预告/行业).
 //           网格只保留 [首回测日 − 15, 末] (trading_st 连续 15 日计数所需), 历史依赖全在事件链上; 只读, 全部 TS worker 共享.
 //           与库无关: 任一池任一档的库都 build 同一份全市场面板, 节点按全局 id 取行 (TS 不随池变).
@@ -20,10 +20,10 @@
 //   涨跌停价: row T 即 "T 当日适用涨跌停" (由 pre_close(T) 推出), 直接配盘中实时价判触板.
 //   D 轴 = 交易日历截到 today. 库末日 ≤ last_day: 行 D 所读各表本地已齐到 D 盘后 / D+1 盘前, 且 D+1 在轴内
 //   (Fund 收盘推进到 d+1). 缺尾日的表不默认补 (status 缺行 = 非 ST / 两融缺行 = 非标的, 会被库追加落盘), 库止于源齐处.
-//   三表 raw (qmt 无): 利润表 / 现金流量表按 YTD 链差分出 Q 单季 / TTM / LYR, 资产负债表取 MRQ; 定义见 .cpp YtdState.
+//   三表 raw: 利润表 / 现金流量表按 YTD 链差分出 Q 单季 / TTM / LYR, 资产负债表取 MRQ; 定义见 .cpp YtdState.
 //
 // fast-math 契约: 输出行被 -ffast-math TU (Valuation 节点/CoreLob) 盲算消费 — 只做算术 (NaN 硬件透传) 与
-//   "NaN 恒 false" 语义的比较, 不做 isnan/isfinite. 本文件 .cpp 在 precise-math 列表里, 类型细节全在 .cpp.
+//   "NaN 恒 false" 语义的比较, 不做 isnan/isfinite. 本文件 .cpp 在 MATH_PRECISE 列表里, 类型细节全在 .cpp.
 #pragma once
 
 #include "misc/date.hpp"
@@ -43,7 +43,7 @@ class Catalog;
 namespace fund {
 
 // ============================================================================
-// SW2021 一级行业 (与 qmt feature/industry.hpp 同表同 ID, 顺序不得改动)
+// SW2021 一级行业 (下标即落盘 ID, 顺序不得改动)
 //   落盘列 ind_l1 的取值域: 0 = 未知, 1..31; GUI 行业筛选按此显示中文名
 // ============================================================================
 inline constexpr std::string_view SW2021_L1_NAMES[32] = {
@@ -110,7 +110,7 @@ public:
   Panel &operator=(const Panel &) = delete;
 
   // A 轴 = asset_axis 全轴 (查码表漏收); dates: 库日期轴升序 (决定网格切片起点, 必须全部命中交易日历).
-  // 本地 parquet 缺失 → assert (Phase 2 前置条件: 基本面 sync 已完成).
+  // 本地 parquet 缺失 → assert (前置条件: 基本面 Sync 已完成).
   void build(const std::vector<misc::Ymd> &dates);
 
   int date_index(misc::Ymd d) const; // D 轴下标; 不是交易日 → -1

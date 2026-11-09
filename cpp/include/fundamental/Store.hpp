@@ -114,7 +114,7 @@ struct Slot {
   Window w;
 };
 
-// s 的全部槽位: Meta = {0}; Month = [ym(PIPELINE_START_DATE), ym(today)] 升序; Daily = 交易日升序
+// s 的全部槽位: Meta = {0}; Month = [ym(kSyncStart), ym(today)] 升序; Daily = 交易日升序
 std::vector<Slot> ledger(const Spec &s, const Round &r);
 
 // ledger 中 Frozen 的 Month / Daily 槽 ((ym, 日) 升序) —— audit 与本地清点的唯一来源. 只看 now.today (关月判定与时刻无关)
@@ -137,7 +137,7 @@ Task whole(const Spec &s, const Slot &sl);
 Ymd mark(const Spec &s, const Shard &sh);
 
 // 本地已齐到的最晚数据日 (此日及以前的行都已入盘; 0 = 无) —— 库规划 (fund::last_day) 的输入
-//   Month: 自 PIPELINE_START_DATE 所在月逐月连续, 缺月 → 止于前一月末. 一月整齐 = 该片末次写盘时 horizon 已过月末
+//   Month: 自 kSyncStart 所在月逐月连续, 缺月 → 止于前一月末. 一月整齐 = 该片末次写盘时 horizon 已过月末
 //          (Snap::Day 月初快照: 有行即整月); 首个未齐月齐到:
 //            dense (逐交易日都有行: 日线 / 股本 / 涨跌停 / 状态 / 两融) → 水位 (远端未入库的日拉到 0 行, 不算齐)
 //            否则 (事件表) → max(水位, 末次写盘时的 horizon) (同步拉到 horizon; 0 行探测也 touch mtime)

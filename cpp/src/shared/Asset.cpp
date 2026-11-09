@@ -31,6 +31,35 @@ AssetItem::AssetItem(size_t id, std::string code, std::string name, std::string 
 // Asset Implementation
 // ============================================================================
 
+void Asset::materialize(const AssetInfo &info) {
+  // 帧目录 (catalog) 按资产下标定址, 不随 items 重建: 轴 append-only,
+  // items[i].asset_id == i 不变
+  items.clear();
+
+  AssetAxis &axis = asset_axis(); // 首次访问即 load + 自校验
+
+  // 码表 = 构建时的轴 + 档案新见代码 (追加在尾) ⇒ 逐个 intern 恰好落在自己的下标上
+  for (std::size_t i = 0; i < info.codes.size(); ++i) {
+    [[maybe_unused]] const std::size_t id = axis.intern(info.codes[i]);
+    assert(id == i && "AssetInfo 码表须是 A 轴的延伸");
+  }
+  axis.save();
+  assert(axis.size() == info.stocks.size() && "AssetInfo 未覆盖 A 轴");
+
+  // 轴里可能有档案不再收录的老代码 (注册表 append-only, 从不删) — 那些
+  // 保留占位, 名称留空、区间给全开, encode 时 archive 里没有自然跳过.
+  const std::size_t n = axis.size();
+  items.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::string &code_ex = axis.code(i);
+    const std::size_t dot = code_ex.find('.');
+    assert(dot != std::string::npos && "AssetAxis 资产码缺少 .EX 后缀");
+    const StockInfo &s = info.stocks[i];
+    items.emplace_back(i, code_ex.substr(0, dot), s.name, code_ex.substr(dot + 1),
+                       s.ipo_date ? s.ipo_date : 19900101, s.out_date ? s.out_date : 20991231);
+  }
+}
+
 std::shared_ptr<const OrdersCatalog> Asset::catalog() const {
   std::lock_guard<std::mutex> lock(catalog_mutex_);
   return catalog_;
@@ -74,7 +103,7 @@ void Asset::scan_orders(AssetScan &out, const std::string &orders_dir, misc::exe
   // 1. 行 = 全部日文件 (升序), 列 = items; 整块一次定形, 之后各天的任务只往
   //    自己那一行写 (不同天 = 不相交的连续段, 免锁免合并).
   // ------------------------------------------------------------------
-  assert(items.size() == asset_axis().size() && "items 未与 A 轴对齐 (AssetLoader::load 没跑?)");
+  assert(items.size() == asset_axis().size() && "items 未与 A 轴对齐 (Asset::materialize 没跑?)");
   auto cat = std::make_shared<OrdersCatalog>(orders_days(orders_dir), items.size());
   const size_t n_days = cat->days.size();
 
@@ -235,7 +264,7 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &asset_i
                                         Progress &p) const {
   const std::vector<CalendarDay> &stock_days = asset_info.days;
   const Backtest &bt = out.backtest;
-  assert(asset_info.stocks.size() == items.size() && "AssetInfo 未与 items 对齐 (AssetLoader::load 没跑?)");
+  assert(asset_info.stocks.size() == items.size() && "AssetInfo 未与 items 对齐 (Asset::materialize 没跑?)");
 
   std::unordered_map<misc::Ymd, DateStats> local_date_stats;
   std::vector<AssetStats> local_asset_stats(items.size());

@@ -14,7 +14,7 @@
 //   当前轴的前缀一致". asset_id 仍是纯数组下标, 计算路径不受任何影响.
 //
 // 注: orders 库 (日文件) 的目录同样按 A 轴下标寻址 (见
-//   codec/OrdersDay.hpp), 与特征库一起依赖 append-only.
+//   orders/OrdersDay.hpp), 与特征库一起依赖 append-only.
 #pragma once
 
 #include <algorithm>

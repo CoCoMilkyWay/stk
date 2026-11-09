@@ -7,8 +7,8 @@
 //   值域 [-1,1] (Depth 已钳 bid ≥ 0 / ask ≤ 0), 正值买方占优; 当日尚无盘口 / 两侧皆空 → NaN
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
+#include "orders/L2DataType.hpp"
 
 template <size_t N_LEVELS, size_t DEPTH_SIZE = L2::LOB_DEPTH>
 class CI {

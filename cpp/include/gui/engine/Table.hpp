@@ -1,14 +1,14 @@
-// Table — 因子层公共类型 (GUI 线程建, worker 只读; 四服务与装载层共用):
+// Table — 因子层公共类型 (GUI 线程建, worker 只读; 各服务与装载层共用):
 //   因子层 FactorLevel (FactorLevelId / PerFactorLevel) ↔ 网格层 / 因子子目录 / K 线列;
 //   字段表视图 FeatureTable (X 叶 ↔ Y 门控 / 标签 / 成本 ↔ B K 线 / 复权 / 股本 / 估值 / 行业) + 按层缓存 FeatureTables;
 //   作用域 FactorScope + 请求 Request<Spec> / FactorRef; 评估结果 EvalStat (StatScope / HoldStat / CostTier / MiniPdf) + AlphaDist.
 #pragma once
 
-#include "codec/L2DataType.hpp" // L2::ValidType
 #include "factor/Expr.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "features/Storage/FeatureLib.hpp" // FeatureLib (请求的库清单)
 #include "math/distribution/PdfSnap.hpp"   // AggPdf
+#include "orders/L2DataType.hpp"           // L2::ValidType
 #include "shared/Feature.hpp"              // Feature
 #include "shared/ReadRequest.hpp"          // reader::Request / read_plan
 
@@ -209,7 +209,7 @@ std::shared_ptr<const FeatureTable> table_of(FeatureTables &tables, const Featur
 std::string now_string();
 
 // ---- 请求 (GUI 线程解析 config, worker 不碰) = 作用域 + 服务自己的 Spec (与 reader::Request<Spec> 对仗) ----
-// 作用域: 四服务同一份; 评估期 / A 轴按因子在 worker 解析 (Scope domain_of)
+// 作用域: 各服务同一份; 评估期 / A 轴按因子在 worker 解析 (Scope domain_of)
 struct FactorScope {
   FactorLevelId lv = 0;                   // 因子层 (= ft->lv)
   std::string pool;                       // 因子池
@@ -225,7 +225,7 @@ template <class Spec>
 struct Request {
   FactorScope scope;
   Spec spec;
-  bool reload = false; // 弃作用域缓存整体重读 (特征库重算过 / 手动 Compute; 每轮本就重读的服务不看)
+  bool reload = false; // 弃作用域缓存整体重读 (特征库重算过 / 手动 Recompute; 每轮本就重读的服务不看)
 };
 // 一个因子 (Inspect 请求 / Portfolio 条目同一份): 具体规范串 (已校验, worker 用 scope.ft->reparse 再解析) + 口径 + 所评方向 (权重行的 sign)
 struct FactorRef {

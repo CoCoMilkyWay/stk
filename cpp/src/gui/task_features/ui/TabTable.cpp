@@ -177,8 +177,7 @@ void FilteredFeatureIndices(const Feature &feature, const Preview &pv, std::vect
 }
 
 // ============================================================================
-// Within-group ordering: 拓扑依赖序 + 贪心名字相似度聚类.
-// 参考: qmt/cpp/src/feature/report.cpp (by_kind_then_topo + greedy_nearest_neighbor).
+// Within-group ordering: 拓扑依赖序 + 贪心名字相似度聚类 (by_kind_then_topo + greedy_nearest_neighbor).
 // 仅在单个 cat_l1 组内生效, 只考虑组内依赖 (跨组依赖被忽略, cat_l1 分组优先).
 // ============================================================================
 

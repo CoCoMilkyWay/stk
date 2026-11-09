@@ -172,9 +172,9 @@ inline constexpr uint32_t kPriceIndexRange = 65536;
 // price_base 的对齐粒度 (分). 只为让基准取整可读, 不参与任何判据.
 inline constexpr uint32_t kPriceIndexGuard = 4096;
 
-// 一个 (资产, 当天) 一个 zstd 帧, 解开就是 Order × count (见 codec/OrderFrame.hpp).
+// 一个 (资产, 当天) 一个 zstd 帧, 解开就是 Order × count (见 orders/OrderFrame.hpp).
 // 帧装在当天全市场的日文件里, 位置 / 条数 / price_base 记在日文件目录 (见
-// codec/OrdersDay.hpp). price_base 是该资产当天全部非零价格的下界 (分), 向下
+// orders/OrdersDay.hpp). price_base 是该资产当天全部非零价格的下界 (分), 向下
 // 对齐; 订单簿用它把绝对价折进 65536 价位的直接索引数组: index = price - price_base.
 // 低价股恒为 0, 只有高价股才非零. 见 LimitOrderBookDefine.hpp.
 

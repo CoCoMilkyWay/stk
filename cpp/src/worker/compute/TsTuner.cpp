@@ -141,7 +141,7 @@ void TsTuner::close_window(long long now_us, size_t f_min, const std::vector<siz
                              ms_text(loss_us_) + ", 下游饥饿 " + ms_text(starve) + " / 窗 " + ms_text(static_cast<size_t>(wall)));
   }
 
-  // 配额: 持仓权重 × 忙碌占比偏离的半量; 下游不缺活 / 窗内无池边干等 = 偏差没卡住产出, 不动
+  // 配额: 持仓权重 × 忙碌占比偏离的半量; 下游不缺活 / 窗内无日环边干等 = 偏差没卡住产出, 不动
   std::vector<int64_t> hold(N, 0);
   for (size_t i = 0; i < sched_.owner.size(); ++i)
     hold[static_cast<size_t>(sched_.owner[i].load(std::memory_order_relaxed))] += sched_.weight[i];

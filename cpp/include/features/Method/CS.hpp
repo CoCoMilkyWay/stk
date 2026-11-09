@@ -10,9 +10,9 @@
 //   截面方法 Method (CS 行第四参; None 同时充当"关"):
 //     Rank         pct_rank, 输出 ∈ [0,1] (并列均秩), 缺失 → 均值填充.  最干净的基线, 丢弃截面离散度
 //     NormRank     rank → inverse normal, 输出 ~N(0,1), 缺失 → 0.  Φ⁻¹((rank+1)/(N+1)), Beasley-Springer-Moro 近似, 钳 ±6
-//     WinsorRank   winsor_mad(k=3) → z → pct_rank → 均值填充, 输出 ∈ [0,1]                    (= qmt factor_pipeline)
+//     WinsorRank   winsor_mad(k=3) → z → pct_rank → 均值填充, 输出 ∈ [0,1]
 //     NeutralRank  winsor_q(1%,99%) → 中性化 (行业 + log 市值 OLS 残差, FWL 等价: 行业组内 demean → 对 demean 后 log(mcap)
-//                  标量回归取残差, 行业 0 独立组) → z → pct_rank → 均值填充, 输出 ∈ [0,1]     (= qmt neutral_pipeline)
+//                  标量回归取残差, 行业 0 独立组) → z → pct_rank → 均值填充, 输出 ∈ [0,1]
 //                  唯一需要上下文的方法 (kNeutral): Ctx 由 CoreCs 每拍准备一次, 全部 NeutralRank 行复用 (源列见文件末 NEUTRAL_RANK_*)
 //     Demean       x − mean, 缺失 → 0.  去市场分量但保留截面离散度的时变 (z 会把每分钟离散度抹平成 1)
 //     Z            (x − mean)/sd (double 累加), 缺失 → 0.  保留量级信息 (全市场同向尖峰 rank 看不见)
@@ -24,8 +24,8 @@
 //     SelectAll    池: 有限值 → 1, 其余 (含缺失) → 0 (不截断; 成员由键的范围定)
 //                  池方法截面 = 全轴 (FullAxis, 不看 cs_valid): 键已自带范围掩码
 //
-//   忠实性契约: WinsorRank / NeutralRank 与 qmt/cpp/src/feature/cs.cpp 逐步一致
-//   (中位数取法 / z 的 double 累加 / pct_rank 并列均秩 / 均值填充), 保证 qmt 因子效果可复现.
+//   口径契约: WinsorRank / NeutralRank 的中位数取法 / z 的 double 累加 / pct_rank 并列均秩 / 均值填充
+//   逐值固定, 定义见 CS.cpp 文件头.
 //
 //   两种消费方式, 同一套 struct:
 //     编译期: CoreCs 按字段表 CS(src, Tf, Method) 模板展开 (回测 / 实盘)

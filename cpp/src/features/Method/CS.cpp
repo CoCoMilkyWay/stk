@@ -1,8 +1,8 @@
-// 截面方法实现 (Method/CS.hpp), qmt/cpp/src/feature/cs.cpp 逐步复刻.
+// 截面方法实现 (Method/CS.hpp).
 //   Tf:     Reciprocal / Log
 //   Method: Rank / NormRank / WinsorRank / NeutralRank / Demean / Z / WinsorZ / Select{Low,High}{400,200} / SelectAll (+ 运行期分派表 column_fn)
 //
-// 忠实性契约 (决定 qmt 因子效果能否复现, 改动前先对 qmt 源码逐行核对):
+// 口径契约 (逐值决定全部截面列, 改动即改变已落盘库的口径):
 //   median_in_place: nth_element 取上中位, 偶数长度与下中位平均
 //   winsor_mad:      k=3, mad==0 → 不动; 样本 <2 → 不动
 //   winsorize_quantile: lo_k=floor(lo·(n-1)), hi_k=ceil(hi·(n-1)), 样本 <2 → 不动
@@ -12,10 +12,9 @@
 //                    (FWL 等价 full OLS); 样本无效 → 残差 NaN; 行业 id 0 为独立组
 //   均值填充:        NaN → finite 均值; 全缺失 → 全 0
 //
-// 与 qmt 的唯一口径差: 参与集. qmt 用在市全集 (mask_offmarket), 本项目热路径
-//   上游已按 ts_valid 收成 dense 活跃子集 (停牌/退市自然缺席), 无需再 mask.
+// 参与集: 上游已按 ts_valid 收成 dense 活跃子集 (停牌/退市自然缺席), 无需再 mask.
 //
-// 注意: 本文件依赖 NaN 语义, 必须在 CMake PRECISE_MATH 列表里 (-fno-fast-math).
+// 注意: 本文件依赖 NaN 语义, 必须在 CMake MATH_PRECISE 列表里 (-fno-fast-math).
 #include "features/Method/CS.hpp"
 
 #include <algorithm>
@@ -386,7 +385,7 @@ void select_top(float *y, std::size_t n, std::size_t N) {
 } // anonymous namespace
 
 // ---- 元素预变换 ----
-// qmt ep/bp/sp/cp 口径: 非 finite 或 0 → NaN, 否则 1/x
+// ep/bp/sp/cp 口径: 非 finite 或 0 → NaN, 否则 1/x
 void Reciprocal::apply(float *y, std::size_t n) {
   for (std::size_t i = 0; i < n; ++i) {
     float v = y[i];

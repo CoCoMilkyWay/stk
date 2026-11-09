@@ -63,7 +63,7 @@ struct CSVTrade;
 // ============================================================================
 //
 // 判据 (Check) 回答"为什么不收", 结局回答"最后怎么处置". 下标即日文件账目的桶
-// (DayRecord::outcome, 见 codec/OrdersDay.hpp), 顺序即盘上顺序, 不能动.
+// (DayRecord::outcome, 见 orders/OrdersDay.hpp), 顺序即盘上顺序, 不能动.
 //   Ok:        落了帧
 //   Tombstone: 源数据为空 (停牌日的纯表头文件), 确定性结论 → 写墓碑, 别再重试;
 //              低流动性但非空的照常编码, 不在存储层做策略过滤
@@ -173,7 +173,7 @@ enum Check : uint32_t {
 
 // 判据位的元信息 — 下标即 Check 的移位量.
 //
-// 日文件账目 (见 codec/OrdersDay.hpp 的 DayRecord) 按位存命中资产数, Encode 页
+// 日文件账目 (见 orders/OrdersDay.hpp 的 DayRecord) 按位存命中资产数, Encode 页
 // 的按日分析表按位出列, 两边都要给这些位起名字. 名字集中在这一张表里, 加一
 // 条判据只改这一处.
 //

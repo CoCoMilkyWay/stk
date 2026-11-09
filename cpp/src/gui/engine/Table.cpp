@@ -1,4 +1,4 @@
-// Table — 见头文件. include 因子契约头 (Stat/Contract.hpp: hold_ok / hold_from_name), 依赖受控浮点: CMake PRECISE_MATH 源.
+// Table — 见头文件. include 因子契约头 (Stat/Contract.hpp: hold_ok / hold_from_name), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Table.hpp"
 
 #include "features/Storage/FeatureLib.hpp" // feature_pools

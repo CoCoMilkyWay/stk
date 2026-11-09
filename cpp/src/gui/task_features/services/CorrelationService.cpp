@@ -20,7 +20,7 @@ bool MakeCorrelationRequest(SharedData &data, const std::vector<ColRef> &in, Cor
   std::sort(cols.begin(), cols.end());
   cols.erase(std::unique(cols.begin(), cols.end()), cols.end());
   if (cols.size() < 2)
-    return false; // 可算的列不足 (L_sec 现状: 只有 ts_valid / cs_valid)
+    return false; // 可算的列不足 (如 L_sec 只落 ts_valid / cs_valid)
 
   size_t lvl = L_1day; // 网格 = 最细层
   for (const ColRef &c : cols)

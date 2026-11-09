@@ -8,7 +8,7 @@
 //     1. 区右侧两小框编辑因子组合 (<portfolio_dir>/<name>.json), Market → NAV 画它的曲线.
 //   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 资产 K 线). 行信息来自 RunService; 一级 Row 由自己的
 //     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Recompute = 弃缓存重读); 选中资产的分钟 K 线由 KlineService 逐日流式读.
-//   作用域 (池 + 因子层) 由页顶条自持: 所有服务空闲时生效 (lv / pool); 换层 = 四个服务整体重建, 同层换池只换目录.
+//   作用域 (池 + 因子层) 由页顶条自持: 所有服务空闲时生效 (lv / pool); 换层 = 层服务 (Run / Search / Inspect / Kline) 整体重建, 同层换池只换目录.
 #include "gui/task_alpha/TaskAlpha.hpp"
 #include "features/Storage/FeatureLib.hpp" // feature_pools (页顶池选择)
 #include "gui/Tasks.hpp"
@@ -68,7 +68,7 @@ struct TaskAlphaState {
   Phase prev_search_phase = Phase::Idle;
 
   std::unique_ptr<Engine::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (构造即起 worker); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
-  std::unique_ptr<Alpha::KlineService> kline_service;      // Inspect 右下选中资产的分钟 K 线流 (与 inspect_service 同生灭)
+  std::unique_ptr<Alpha::KlineService> kline_service;      // Inspect 右上选中资产的分钟 K 线流 (与 inspect_service 同生灭)
   Alpha::InspectUIState inspect_ui;
 };
 
@@ -86,7 +86,7 @@ static std::shared_ptr<const Engine::FeatureTable> level_table(const SharedData 
   return Engine::table_of(s.engine->tables, data.feature, *s.lv);
 }
 
-// 换层: 四个服务整体重建 (析构 Stop() join worker; 下次 Draw 按新层建)
+// 换层: 层服务整体重建 (析构 Stop() join worker; 下次 Draw 按新层建)
 static void reset_level_services(TaskAlphaState &s) {
   s.search_service.reset();
   s.prev_search_phase = Phase::Idle;
@@ -270,7 +270,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
     }
     case TAB_FACTORS:
     case TAB_INSPECT: {
-      // 页顶条选 (want_pool, want_lv); 已生效的 (pool, lv) 在所有服务空闲时追上: 换层 = 四个服务整体重建
+      // 页顶条选 (want_pool, want_lv); 已生效的 (pool, lv) 在所有服务空闲时追上: 换层 = 层服务整体重建
       // (目录 / Inspect 缓存都随层, 字段表按层常驻); 同层换池只换目录 (下方自动重扫); 有服务在跑 = 取消旧作用域, 停下再切
       {
         ImGui::BeginGroup();

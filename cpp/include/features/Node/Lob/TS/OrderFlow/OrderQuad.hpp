@@ -26,9 +26,9 @@
 //   fp16 落盘: 全部 Log Tf.
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 #include "math/distribution/SizeThresholds.hpp"
+#include "orders/L2DataType.hpp"
 #include <cstdint>
 
 // 阈值枚举 (输出槽序): 前 3 = B 轴固定金额, 后 6 = q 轴分位; aq = 主动侧_象限 token (bid_bb …)

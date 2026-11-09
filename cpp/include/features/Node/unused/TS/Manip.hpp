@@ -9,8 +9,8 @@
 //   stale_ratio_bid/ask = 老单占比 (深度稳定性近似)
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
+#include "orders/L2DataType.hpp"
 #include <cmath>
 
 class Manip {

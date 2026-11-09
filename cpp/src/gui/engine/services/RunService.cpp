@@ -1,8 +1,8 @@
 // RunService — 见头文件. 本 TU include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点:
-// CMake 里已列入 PRECISE_MATH 源 (-fno-fast-math), 与 OperatorsService 同待遇.
+// CMake 里已列入 MATH_PRECISE 源 (-fno-fast-math), 与 OperatorsService 同待遇.
 #include "gui/engine/services/RunService.hpp"
 
-#include "gui/engine/Engine.hpp" // eval_job / Probes / FactorFlow (四服务同一条管线)
+#include "gui/engine/Engine.hpp" // eval_job / Probes / FactorFlow (各服务同一条管线)
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 

@@ -27,13 +27,13 @@ bool ScanService::run(ScanRequest &req) {
   const Asset &asset = data_.asset;
 
   // ========================================
-  // Phase 1: Validate config (before any FS operations)
+  // 配置 (先于任何盘操作)
   // ========================================
   const misc::Ymd backtest_start = data_.config.start_date;
   assert(backtest_start && "回测起点未配置 (Config::Load 已校验)");
 
   // ========================================
-  // Phase 2: Check file system
+  // 两源目录
   // ========================================
   const bool orders_exists = fs::exists(data_.config.orders_dir) &&
                              !fs::is_empty(data_.config.orders_dir);
@@ -48,7 +48,7 @@ bool ScanService::run(ScanRequest &req) {
   }
 
   // ========================================
-  // Phase 3-4: 扫盘 (RescanStorage) 或沿用上一版两源缓存 (RecomputeCoverage)
+  // 两源扫盘 (RescanStorage) 或沿用上次扫描的两源缓存 (RecomputeCoverage)
   // ========================================
   AssetScan &s = r.scan.emplace();
   if (req.mode == ScanMode::RescanStorage) {
@@ -64,7 +64,7 @@ bool ScanService::run(ScanRequest &req) {
   }
 
   // ========================================
-  // Phase 5: Compute backtest coverage
+  // 覆盖: 回测日历 + 覆盖统计
   // ========================================
   // 回测日历的 ground truth = 基本面交易日历 (StateManager 只在基本面交接 ok 后请求扫描)
   assert(!data_.asset_info.days.empty() && "基本面日历未就绪, 不应触发扫描");
@@ -76,7 +76,7 @@ bool ScanService::run(ScanRequest &req) {
   asset.compute_coverage_statistics(s, data_.asset_info, misc::exec::ensure(cpu_ex_, misc::exec::hw()), *this);
 
   // ========================================
-  // Phase 6: Analyze and determine status
+  // 结论: 两源概况 + 覆盖状态
   // ========================================
   result.orders.exists = s.orders.exists;
   result.orders.path = s.orders.path;

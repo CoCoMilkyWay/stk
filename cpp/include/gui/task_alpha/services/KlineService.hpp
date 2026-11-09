@@ -1,4 +1,4 @@
-// KlineService — Alpha→Inspect 右下图的单 worker: 对选中的一个资产, 沿 Inspect 结果的交易日逐日流式读因子层 OHLC (选列读, 每日只碰
+// KlineService — Alpha→Inspect 右上图的单 worker: 对选中的一个资产, 沿 Inspect 结果的交易日逐日流式读因子层 OHLC (选列读, 每日只碰
 // 4~5 个小文件) → 追加 + 单调前缀发布, GUI 画已发布前缀 (发布协议 = shared/Progress.hpp PrefixPub, 与 gui/task_features/services/OrderFlow.hpp 的 Min 同一份).
 // 每天之间查 cancel_: 拖资产随时打断, 新代从头流.
 // 请求 = (gen, 特征库作用域 (目录 + 池轴), 日期表, A 轴资产下标, 列号). gen 由 GUI 递增自持, 与发布面配对; 新请求覆盖旧的.

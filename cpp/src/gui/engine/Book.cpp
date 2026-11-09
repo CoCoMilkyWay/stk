@@ -1,4 +1,4 @@
-// Book — 见头文件. include 因子契约 / Stat 行核头 (h2f), 依赖受控浮点: CMake PRECISE_MATH 源.
+// Book — 见头文件. include 因子契约 / Stat 行核头 (h2f), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Book.hpp"
 
 #include "factor/Stat/Host.hpp" // h2f

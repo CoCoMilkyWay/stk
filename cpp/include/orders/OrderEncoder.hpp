@@ -115,7 +115,7 @@ public:
   FrameView orders() const;
 
   // 上一次 finish 的准入校验结果 — 返回 Invalid 时, 调用方靠 flags 把这一对
-  // 记进当天的账目 (见 codec/OrdersDay.hpp)
+  // 记进当天的账目 (见 orders/OrdersDay.hpp)
   const ValidationReport &report() const { return report_; }
 
   // ------------------------------------------------------------

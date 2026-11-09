@@ -15,13 +15,13 @@
 //   TS:             每个逻辑 CPU 一个 worker, pin 单个逻辑 CPU (超线程吞吐全归 TS; 无超线程即每核一个)
 //   CS / IO / 预取: 各 K 个 worker 各独占一个物理核 (pin 该核全部逻辑 CPU), 按日轮转 (日 d 归第 d % K 个;
 //                   三段日间无状态, 逐值与 K 无关)
-// CS / IO / 预取不要落在 TS 物理核的超线程兄弟上, 也不要互相共核: 同核争访存资源, 慢数倍, 整条流水线被池子卡住
+// CS / IO / 预取不要落在 TS 物理核的超线程兄弟上, 也不要互相共核: 同核争访存资源, 慢数倍, 整条流水线被日环卡住
 // (Bar 硬源的预取是 parquet 解码, 与落盘编码同为 CPU 活).
 //
 // 全部线程 pin 死 —— 没有浮动线程抢占 pinned worker 的时间片.
 // worker_id = 全局序号 [TS 0..num_ts−1][CS × K_cs][IO × K_io][预取 × K_pf] (TS 用作 frontier / stats 下标), 与 pin 的 CPU 号无关.
 // stage 顺序 = UI 表格顺序 = 预取, TS..., CS, IO.
-// 进度不按行挂 worker: 仪表盘 (ComputeProgress) 自行采样, 见 Progress.hpp.
+// 进度不按行挂 worker: 仪表盘 (ComputeDashboard) 自行采样, 见 Dashboard.hpp.
 // ============================================================================
 enum class ComputeStage : size_t {
   Prefetch = 0,

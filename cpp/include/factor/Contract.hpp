@@ -11,7 +11,7 @@
 //   类型约束 (非归约核不消费集合, 部分格子空): MAP ⇒ POINT×SELF; SHIFT ⇒ SELF 纯滞后 (不看整窗);
 //   RECUR ⇔ EXPO 一一绑定; 归约核 (MOMENT / EXTREME / ORDER) 与窗/域自由组合. 复合算子标主导 (最重) 一级.
 //   现库只填积空间里的"十字": SELF×任意窗 (Ts 前缀) ∪ POINT×{ALL, GROUP} (Cs 前缀), 外加 N 元 {POINT, ROLL}×ALL (CsLinRank*);
-//   十字外 (如 EXPAND×GROUP 段内组均值) 是合法格子, 留待将来, 命名按计算顺序 TsCs<核> / CsTs<核>.
+//   十字外 (如 EXPAND×GROUP 段内组均值) 是合法格子, 未填; 其命名按计算顺序 TsCs<核> / CsTs<核>.
 //   【N 元】元数 N (kNary) 的算子: 2..kLrN 个特征元, 各元取池内截面秩 x̃ = pct − 1/2, 输出 Σ w_i·x̃_i (任一元无效 → 无效).
 //     定权 POINT (CsLinRankFix): w = 参数 w, 一元一个, 逐行无状态.
 //   【N 元回归】ROLL (CsLinRankRoll): 特征元后接末元回归目标 (h 持有期的做多标签, 表达式不写, 解析时补);
@@ -95,7 +95,7 @@
 //
 //   【对拍】掩码逐位相等, 且有效位上 |Δ| ≤ atol + rtol·max(|a|,|b|).
 //
-//   【precise-math】本模块依赖受控浮点语义, 必须编进 -fno-fast-math TU (CMake PRECISE_MATH_FLAG).
+//   【precise-math】本模块依赖受控浮点语义, 必须编进 -fno-fast-math TU (CMake MATH_PRECISE).
 // =============================================================================
 
 #include <algorithm>

@@ -1027,13 +1027,13 @@ static void RenderMinPlot(SharedData &data, OrderFlow &of, const Preview &pv, fl
 }
 
 // ============================================================================
-// Asset Filter + Selector (筛选口径同 MARKET/ASSET, 数据换成锚点日的逐日 PIT)
+// Asset Filter + Selector (筛选口径同 Market → ASSET, 数据换成锚点日的逐日 PIT)
 // ============================================================================
 
 static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
   auto &pick = of.pick;
 
-  // ST/Listed/Board 与 MARKET/ASSET 共用控件 (gui/util/AssetFilter.hpp);
+  // ST/Listed/Board 与 Market → ASSET 共用控件 (gui/util/AssetFilter.hpp);
   // risk_warn 有 3=退市整理期, 所以 ST 要全 4 个价位
   bool changed = GUI::Filter::CommonFilters<int>("of", true, pick.st_filter,
                                                  pick.listed_filter, pick.board_filter);

@@ -2,7 +2,7 @@
 // 对它算出的一级 Row[H][T] (沿时间) + 二级 HoldStat (每持有期).
 //
 // 布局: 顶部 2:1 两栏. 左 = 头信息 (◂ ▸ 按表序切相邻有效因子 / 中文名 英文名 / 口径 / 规范串 (按语法着色, 按词折行) / note) + 控件 (◂ Hold ▸ 周期名 hold_name + 开 / 清仓
-//   hold_points (时点 / 价分色); 箭头循环切, 不用下拉) + 作用域行 (作用域 + 分层 toggle / Compute / Cancel / 状态); 右 = 选定持有期的 stat 面板
+//   hold_points (时点 / 价分色); 箭头循环切, 不用下拉) + 作用域行 (作用域 + 分层 toggle / Recompute / Cancel / 状态); 右 = 选定持有期的 stat 面板
 //   (hold_stat_panel: 按组分列, 定义 / 着色与因子表同一份).
 //   整页 (头部文字 + 四图) 画的是**现结果**的因子: 切因子后服务不清旧 result, 旧的继续画, 头部标 "→ 新因子 (计算中…)", 新结果发布时一次性覆盖, 不闪
 //   成本只进期限结构 (右下): 分层 / IC / 顶部 stat 全是毛价格收益 (与 Factors Run 同), 拿来看分层 / 拟合形状; 成本与仓位映射另做.
@@ -152,7 +152,7 @@ struct InspectUIState {
 // 进 Inspect 即有东西看; 换池 / 换层后重新默认一次
 bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 
-// 返回值: 1 = 手动 Compute / 导出 (ui.req_row / ui.req_reload / ui.req_export 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file.
+// 返回值: 1 = 手动 Recompute / 导出 (ui.req_row / ui.req_reload / ui.req_export 已填), -1 = Cancel, 0 = 无. fui 非 const: 页内箭头循环切 view_file.
 // ksvc: 右上 K 线流 (页内按期望态直接 Request, 不经返回值)
 int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx);
 

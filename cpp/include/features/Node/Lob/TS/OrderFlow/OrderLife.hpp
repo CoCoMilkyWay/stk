@@ -16,8 +16,8 @@
 //   fp16 落盘: 全部 Log Tf.
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
+#include "orders/L2DataType.hpp"
 #include <cstdint>
 
 #define ORDERLIFE_TAUS(T, e) T(e, 1s) T(e, 10s) T(e, 60s) T(e, 300s)

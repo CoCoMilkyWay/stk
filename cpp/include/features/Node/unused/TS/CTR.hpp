@@ -12,9 +12,9 @@
 //   分母为 0 (尚无成交 / 该时段尚未开始, 如上午的 cnbi_pm) → NaN (缺失), 不用 0 (0 = 完全均衡, 是合法取值)
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 #include "math/distribution/KLLcache.hpp"
+#include "orders/L2DataType.hpp"
 #include <algorithm>
 #include <cmath>
 #include <vector>

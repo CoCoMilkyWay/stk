@@ -1,4 +1,4 @@
-// Probe — 见头文件. include Stat CPU 流程头 (cost_rows), 依赖受控浮点: CMake PRECISE_MATH 源.
+// Probe — 见头文件. include Stat CPU 流程头 (cost_rows), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Probe.hpp"
 
 #include <algorithm>

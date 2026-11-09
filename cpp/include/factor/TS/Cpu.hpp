@@ -11,7 +11,7 @@
 //   内层循环 branchless select 交给自动向量化. 有状态算子按资产列块 (kTileA 列) 推进: 状态数组按块容量
 //   从调用方暂存切出 (scratch 声明, 驻留 L1/L2), 算子内部不分配.
 //
-//   【算法】(旧 naive 参考实现按定义 O(T·d·A) 重算, 本文件全部摊到 O(T·A) 或 O(T·A·B)):
+//   【算法】(按定义是 O(T·d·A) 重算, 本文件全部摊到 O(T·A) 或 O(T·A·B)):
 //     POINT   单遍逐元素
 //     EXPAND  沿 t 递推累加 (double 幂和), 段界 reset; 序统计 = 增量直方图 (段内 lo/hi 只扩不缩, 扩时重建)
 //     ROLL    滑动加减幂和 (double); spread 判据要求精确 lo/hi → van Herk 分块前后缀滑窗极值;

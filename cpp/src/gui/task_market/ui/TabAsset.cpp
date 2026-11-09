@@ -3,7 +3,7 @@
 
 #include "gui/task_market/ui/TabAsset.hpp"
 #include "gui/task_market/ui/CrossSectionAnalysis.hpp"
-#include "gui/util/AssetFilter.hpp" // 筛选控件 (与 ORDERFLOW 共用)
+#include "gui/util/AssetFilter.hpp" // 筛选控件 (与 OrderFlow 共用)
 #include "gui/util/Board.hpp"
 #include "gui/util/Chart.hpp" // tint
 #include "imgui.h"
@@ -547,12 +547,12 @@ void RenderFilterBar(
   if (ImGui::InputTextWithHint("##Search", "Search code/name...", state.search_buf.data(), state.search_buf.size()))
     state.filter.search = state.search_buf.data();
 
-  // ST/Listed/Board: 与 FEATURES/ORDERFLOW 共用控件 (gui/util/AssetFilter.hpp).
+  // ST/Listed/Board: 与 Features → OrderFlow 共用控件 (gui/util/AssetFilter.hpp).
   // ST 只有 0..2 (GetStLevel 口径, 无退市整理期一级); Listed 看 out_date 是否为 0
   ImGui::SameLine();
   GUI::Filter::CommonFilters<BoardType>("Assets", false, state.filter.st, state.filter.listed, state.filter.board);
 
-  // 行业维自绘: 这里的键是字符串行业码 ind_code, 与 ORDERFLOW 的数字 SW2021 ID
+  // 行业维自绘: 这里的键是字符串行业码 ind_code, 与 OrderFlow 的数字 SW2021 ID
   // 不同源, 且选项要从当前 stock_info 动态扫出来
   if (state.industries_of != stock_info.size()) {
     std::map<std::string, std::string> ind_map; // code -> name
@@ -983,7 +983,7 @@ void RenderTabAsset(
 
   const std::vector<AssetItem> &assets = asset.items;
 
-  // 每资产统计由扫描末尾一次算好 (见 ScanService Phase 5), 这里只是等它到位
+  // 每资产统计由扫描的覆盖统计一次算好 (见 ScanService::run), 这里只是等它到位
   if (asset.asset_stats.size() != assets.size()) {
     ImGui::TextDisabled("Waiting for database scan...");
     return;

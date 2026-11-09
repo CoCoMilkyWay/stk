@@ -1,8 +1,8 @@
-// 资产筛选栏控件 (MARKET/ASSET 与 FEATURES/ORDERFLOW 共用)
+// 资产筛选栏控件 (Market → ASSET 与 Features → OrderFlow 共用)
 //
 // 两页筛选口径同源、数据源不同:
 //   ASSET     = AssetInfo 全局快照 (StockInfo: 字符串行业码, 静态上市状态)
-//   ORDERFLOW = 锚点日 L_1min 落盘列 (逐日 PIT: 数字 SW2021 行业 ID)
+//   OrderFlow = 锚点日 L_1min 落盘列 (逐日 PIT: 数字 SW2021 行业 ID)
 // 所以这里只共享控件本身与 ST/Listed/Board 三维的选项表; 行业维 (键类型不同)
 // 和尾部统计由各页自绘.
 #pragma once
@@ -22,7 +22,7 @@ namespace GUI::Filter {
 // ============================================================================
 // items: (取值, 显示名); selected 空集 = "全选/不过滤" (与两页的过滤判据一致,
 // 而不是"什么都不选"). 预览: 空 = "All"; 少量选中 = 逐项列出; 过长 = "N selected".
-// 返回本帧是否发生变更 (ORDERFLOW 靠它 bump filter_epoch).
+// 返回本帧是否发生变更 (OrderFlow 靠它 bump filter_epoch).
 template <typename T>
 bool MultiSelectCombo(const char *label, float width,
                       const std::vector<std::pair<T, std::string>> &items,
@@ -69,7 +69,7 @@ bool MultiSelectCombo(const char *label, float width,
 // 选项表
 // ============================================================================
 
-// ST. with_delist_period: ORDERFLOW 的 risk_warn 有 3=退市整理期, 而 ASSET 的
+// ST. with_delist_period: OrderFlow 的 risk_warn 有 3=退市整理期, 而 ASSET 的
 // GetStLevel 只产 0..2 —— 传 false 免得列出永不命中的选项.
 inline const std::vector<std::pair<int, std::string>> &StItems(bool with_delist_period) {
   static const std::vector<std::pair<int, std::string>> without = {
@@ -84,7 +84,7 @@ inline const std::vector<std::pair<int, std::string>> &ListedItems() {
   return items;
 }
 
-// Board. T = BoardType (ASSET 直接存枚举) 或 int (ORDERFLOW: OrderFlow::Pick::board_filter 存底层值).
+// Board. T = BoardType (ASSET 直接存枚举) 或 int (OrderFlow: OrderFlow::Pick::board_filter 存底层值).
 // 不含 BoardType::All 哨兵 —— 空集已经等价于全选.
 template <typename T>
 const std::vector<std::pair<T, std::string>> &BoardItems() {

@@ -1,4 +1,4 @@
-// File — 见头文件. include 因子契约头 (Expr → Contract.hpp: isfinite), CMake 列入 PRECISE_MATH 源.
+// File — 见头文件. include 因子契约头 (Expr → Contract.hpp: isfinite), CMake 列入 MATH_PRECISE 源.
 #include "gui/engine/File.hpp"
 
 #include "factor/Dag.hpp" // build (n_feats / n_slots 列)
@@ -240,10 +240,10 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
     return;
   }
   r.expr_raw = eit->get<std::string>();
-  // type: 必填; beta 只留位
+  // type: 必填; beta 不评估
   if (json_str_is(j, "type", kind_name(FactorKind::Beta))) {
     r.kind = FactorKind::Beta;
-    r.error = "beta 类因子未实现 (留位)";
+    r.error = "beta 类因子不评估";
     emit(r);
     return;
   }

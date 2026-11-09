@@ -19,7 +19,7 @@
 
 //----------------------------------------------------------------------------------------
 // TRIGGER: 节点 compute()/flush() 的采样域. 每个节点在节点文件末尾的 NODE_ 宏里
-// 声明 (compute 触发, flush 触发), LobGraph 按 CMake 汇总的 NODES 表展开成直线调度代码.
+// 声明 (compute 触发, flush 触发), 档的 DAG (LobGraph / BarGraph) 按 CMake 汇总的 NODES 表展开成直线调度代码.
 //----------------------------------------------------------------------------------------
 enum class Trigger : uint8_t {
   onDay,    // 盘前 (begin_day, 节点 reset / carry 之后)
@@ -92,7 +92,7 @@ inline constexpr float kPxEps = 1e-4f;
 //     static void apply(float *y, size_t n[, const Ctx &]); // dense 列原地: 输入 = 有效资产子集的源列 (缺失 NaN), 输出 = 结果
 //   };
 //   struct <Tf> { static void apply(float *y, size_t n); }; // 元素预变换, 先于 <Method>
-// 无状态 (静态函数), 无实例; 一行字段 CS(src_lvl, src, Tf, Method) = gather → Tf::apply → Method::apply → scatter,
+// 无状态 (静态函数), 无实例; 一行字段 CS(ns, lvl, src, Tf, Method) = gather → Tf::apply → Method::apply → scatter,
 // CoreCs 按字段表编译期展开 (与 TS 的 NODES 展开同构). 无效资产输出 0 由基建写.
 // 方法依赖 NaN 语义 (isfinite): 实现在 src/features/Method/CS.cpp (precise-math TU), 头文件只声明.
 // 截面列文件按"算的是什么特征"命名 (= 源节点名), 不按方法命名; 一文件 = 该节点输出列的全部截面列.

@@ -29,7 +29,7 @@ struct FeatureMetadata {
   const char *name_en;     // "Tick Return Z-score"
   const char *name_cn;     // "微小对数收益"
   const char *description; // "滚动窗口标准化..."
-  uint8_t level;           // 0=L_sec, 1=L_1min
+  uint8_t level;           // FeatureLevel (L_sec .. L_1day)
 };
 
 // ============================================================================

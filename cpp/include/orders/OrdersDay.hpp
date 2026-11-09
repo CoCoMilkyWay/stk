@@ -1,8 +1,8 @@
 #pragma once
 
-#include "codec/L2Validator.hpp" // L2::Outcome / L2::kCheckBitCount
-#include "codec/OrderFrame.hpp"
 #include "misc/date.hpp"
+#include "orders/L2Validator.hpp" // L2::Outcome / L2::kCheckBitCount
+#include "orders/OrderFrame.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -24,7 +24,7 @@
 //   头: 定宽, 全 uint32 无填充 —— magic / 头长 / 目录条数 / 账目 (DayRecord 整块
 //       原样落盘). 头长即 sizeof, 结局数 (kOutcomeCount) 或判据列数
 //       (kCheckBitCount) 一改头就变长, 对不上当场拒读.
-//   帧: 见 codec/OrderFrame.hpp. 解开的字节数与目录项的 head.count 对账.
+//   帧: 见 orders/OrderFrame.hpp. 解开的字节数与目录项的 head.count 对账.
 //   目录: 在尾部, 起点 = 文件长 − 条数 × 24, 按 asset_id 升序. 编码时各 worker
 //       并发往数据区追加帧, 帧长要到收工才全知道, 所以目录与头最后写.
 //
@@ -276,7 +276,7 @@ private:
 // 密集 = 日数 × 资产数 × 24B ≈ 400MB, 定址 O(1). 每次扫描整体重建成一份新的,
 // 建好后只读, 以快照发布 (见 Asset::catalog) —— 读者持有期间内容不变, 与重扫描
 // 并发安全. 一次重建是几百次读日文件头 + 目录, 百毫秒量级. 扫描之后新上市的
-// 资产 (AssetLoader 追加) 下标 ≥ width, at 对越界返回缺席格子.
+// 资产 (Asset::materialize 追加) 下标 ≥ width, at 对越界返回缺席格子.
 //
 // 格子三态 (见 FrameRef): 帧 / 墓碑 / 缺席 —— 与编码器的结局同源, 覆盖统计直接读.
 struct OrdersCatalog {

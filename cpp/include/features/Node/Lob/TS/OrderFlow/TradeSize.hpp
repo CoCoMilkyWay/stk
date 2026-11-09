@@ -17,9 +17,9 @@
 //   fp16 落盘: 额 / 量 / 笔 Log Tf; dlogp 原值 (基点).
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 #include "math/distribution/SizeThresholds.hpp"
+#include "orders/L2DataType.hpp"
 
 // 阈值枚举 (输出槽序): 前 3 = B 轴固定金额, 后 6 = q 轴分位
 #define TRADESIZE_THRS(T) T(4w) T(20w) T(100w) T(p50) T(p80) T(p84) T(p93) T(p95) T(p98)

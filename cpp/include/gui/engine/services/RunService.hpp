@@ -23,7 +23,7 @@
 // 换手成本 (每金额段: 固定段 + 评估域含 Lob 库时的 lb_cost_* 盘口段, 买入冲击取用时按 Config::max_impact 封顶) 用同一份秩再攒一遍 CostAcc (gui/engine/Probe CostP →
 // Stat cost_rows, 两后端同一份宿主代码: CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs (年换手取段 0); 净线由 Inspect plot_term 在二级上现算,
 // 因子表 score (排序 / 选代表权重) 由 RowScore 从该 h 的 HoldStat 算,
-// Config::fixed_impact 只进公式不进文件. 因子表的全部数据都来自 stat —— Search 只内部用同一份目标挑参数, 不往文件写结论.
+// Config::fixed_impact 只进公式不进文件. 因子表的全部数据都来自 stat —— Search 用同一份目标挑参数, 只写 weights 与结局 search[], 不写 stat.
 // time 列 (eval_ms) = 该因子子树全部节点 wall 之和 (共享节点算给每个用它的因子 = 单独算它要多久).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.
 #pragma once

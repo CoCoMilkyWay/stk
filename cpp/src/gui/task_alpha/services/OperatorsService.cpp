@@ -1,5 +1,5 @@
 // OperatorsService — 见头文件. 本 TU include 三后端头 (Stream / Cpu; GPU 经 GpuRun.hpp),
-// 依赖受控浮点: CMake 里已列入 PRECISE_MATH 源 (-fno-fast-math), 与 op_check 同待遇.
+// 依赖受控浮点: CMake 里已列入 MATH_PRECISE 源 (-fno-fast-math), 与 op_check 同待遇.
 #include "gui/task_alpha/services/OperatorsService.hpp"
 
 #include "factor/TS/Cpu.hpp"    // IWYU pragma: keep

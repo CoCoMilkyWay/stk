@@ -350,7 +350,7 @@ static void stage_column(ComputeState &state, TierId tier, const StageLayout::To
   const StageLayout layout = StageLayout::make(topo, state.config.pf_cores[tier], state.config.cs_cores[tier], state.config.io_cores[tier]);
   ImGui::Text("%d 物理核 / %u 逻辑 CPU, 日环自动", layout.total_phys(), misc::Affinity::core_count());
   hover_tip("日环初值 = 下游段 (T+N 悬挂 + 时序下一日 + 截面跨日 + 截面核 + 落盘核 + 1) + 时序余量 (按初始分配的逐日负载模拟);\n"
-            "运行中领跑核撞池边且之后自己成了最慢者 (损失落在关键路径) 才扩格, 至多用到 %.0f%% 内存; 时序核持续快慢由领养按实测忙碌占比修正",
+            "运行中领跑核撞日环边且之后自己成了最慢者 (损失落在关键路径) 才扩格, 至多用到 %.0f%% 内存; 时序核持续快慢由领养按实测忙碌占比修正",
             (1.0 - RingBudget::kMemMargin) * 100.0);
   if (ImGui::BeginTable("StageLayout", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings)) {
     ImGui::TableSetupColumn("Stage");

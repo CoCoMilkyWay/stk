@@ -80,12 +80,12 @@ struct FactorsUIState {
 // 当前作用域 (GUI 线程每帧从 SharedData 取): 显示 + 与文件里 stat 的作用域 (池) 对比着色; 评估期按因子定 (所用库落盘日交集), 不在这里
 struct FactorsUIContext {
   FactorLevelId lv = 0;                           // 因子层 (本页已生效的, 跟页顶 / 特征面板选择走) = ft->lv
-  std::shared_ptr<const FeatureTable> ft;         // 该层字段表 (四服务请求同一份)
+  std::shared_ptr<const FeatureTable> ft;         // 该层字段表 (各服务请求同一份)
   std::string factor_dir;                         // factor_dir_of(pool, lv) = <factor_dir>/<池>/<层名>
   std::string pool;                               // 本页已生效的池名
   double fixed_impact = 0.0;                      // Config::fixed_impact (Inspect 期限结构净线的平仓侧常数; 纯显示平移, 不进请求, 改了即时生效)
   bool axis_ready = false;                        // 资产轴就绪 (数据库扫过) 才能读特征库评估
-  const std::vector<AssetItem> *assets = nullptr; // 全局资产轴 (data.asset.items): Inspect 右下按全局 id 显示代码 / 名称
+  const std::vector<AssetItem> *assets = nullptr; // 全局资产轴 (data.asset.items): Inspect 右上按全局 id 显示代码 / 名称
 };
 
 // hold_points 分色一行 (时点 / 价各一色), 从当前光标处画; 返回排版宽. draw = false 只量不画 (调用方定宽占位用)

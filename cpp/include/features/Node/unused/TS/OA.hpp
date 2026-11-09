@@ -7,8 +7,8 @@
 //   oa_tr_bid/tr_ask = Σ|O^{T,B/A}| / Σ|O^{M,B/A}|   (买/卖方成交率)
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
+#include "orders/L2DataType.hpp"
 
 class OA {
   static constexpr size_t OA_END_SEC = 600; // 10分钟 * 60秒

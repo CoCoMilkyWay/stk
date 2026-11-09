@@ -38,7 +38,7 @@
 //   FeatureDay::read      (path, L, cols[n], dst [n][T][A], A, hash, s) → Status
 //   FeatureDay::read_layer(path, L, layer [T][F][A], A, hash, s) → Status   (整层读回, write 的逆; 续算尾窗日)
 //
-// 与 orders 日文件 (codec/OrdersDay.hpp) 同形: 头 + 载荷 + 目录. 这里单写者顺序
+// 与 orders 日文件 (orders/OrdersDay.hpp) 同形: 头 + 载荷 + 目录. 这里单写者顺序
 // 追加且 F 已知, 目录放前部; orders 多 worker 并发追加, 目录只能放尾部.
 // ============================================================================
 

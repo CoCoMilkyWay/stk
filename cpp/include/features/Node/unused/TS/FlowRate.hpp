@@ -8,8 +8,8 @@
 //   flow_imb     = (ΔA^B - ΔA^A) / (|ΔA^B| + |ΔA^A|)        (订单流失衡)
 // =============================================================================
 
-#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
+#include "orders/L2DataType.hpp"
 #include <cmath>
 
 class FlowRate {

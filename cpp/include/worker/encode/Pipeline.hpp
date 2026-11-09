@@ -1,14 +1,15 @@
 #pragma once
 
-#include "codec/OrderEncoder.hpp" // L2::Member
-#include "codec/OrdersDay.hpp"
 #include "misc/date.hpp"
 #include "misc/progress_parallel.hpp"
+#include "orders/OrderEncoder.hpp" // L2::Member
+#include "orders/OrdersDay.hpp"
 
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -20,7 +21,7 @@
 struct SharedData;
 
 // ============================================================================
-// PHASE 1: ENCODING PIPELINE (单 producer 列举 → N worker 并行解压解码)
+// 编码流水线 (单 producer 列举 → N worker 并行解压解码)
 // ============================================================================
 //
 // 解压必须并行: 单条 unrar 流单核只有几十 (资产, 日期)/s, 喂不满几十个解码核
@@ -34,10 +35,10 @@ struct SharedData;
 // stream_archive_files), 到达即解析成中间结构.
 
 // 一天的产物就是一个日文件 orders/YYYY/MM/YYYYMMDD.bin (帧 + 齐备标记 + 处置
-// 分类 + 目录), 定义见 codec/OrdersDay.hpp.
+// 分类 + 目录), 定义见 orders/OrdersDay.hpp.
 //
 // 它不老于当天归档且 complete ⇒ 这一天的全部 (资产, 日期) 都有了结局.
-// 增量重跑靠它整天跳过, 省掉一次 unrar l (机械盘上 0.2~2.5s) —— 没有它,
+// 增量重跑靠它整天跳过, 省掉一次 unrar l (0.2~2.5s) —— 没有它,
 // "确认无事可做"本身就要几秒一天.
 //
 // 不齐备的天增量补编: 旧日文件里已有结局的帧原样搬进新日文件 (免解压免重编),
@@ -83,7 +84,7 @@ struct EncodeBatch {
 };
 
 // 有界批队列 — producer (列举) 与 worker (解压+解码) 之间的交接.
-// 容量即流水深度: 大致对应 producer 领先几天, 见 EncodeService 的容量常量.
+// 容量即流水深度: 大致对应 producer 领先几天, 见 encode_pipeline 的容量常量.
 class BatchQueue {
 public:
   explicit BatchQueue(size_t capacity) : capacity_(capacity) {}
@@ -132,7 +133,7 @@ struct EncodeStats {
 // 整天跳过 (产物全部新鲜) 的天由 producer 直接推进.
 void encode_producer(SharedData &data,
                      BatchQueue &queue,
-                     std::atomic<bool> *cancel_flag,
+                     const std::atomic<bool> *cancel_flag,
                      bool skip_existing,
                      EncodeStats &stats,
                      size_t worker_count,
@@ -140,7 +141,22 @@ void encode_producer(SharedData &data,
 
 void encode_worker(SharedData &data,
                    BatchQueue &queue,
-                   std::atomic<bool> *cancel_flag,
+                   const std::atomic<bool> *cancel_flag,
                    EncodeStats &stats,
                    unsigned int worker_id,
                    misc::ProgressHandle progress_handle);
+
+// ============================================================================
+// 编码管线入口: EncodeService 备好前置 (回测日历 / 帧目录撤下 / 日志) 后调用, 返回 = 未取消.
+// 1 producer + workers 个 worker 跑回测日历 (data.asset.backtest_dates()); on_day(n) = 已完成天数
+// (协调线程每 100ms 调, 进度面镜像). 取消 = cancel 置位: 关队列唤醒双方, 在编的天不 commit.
+// ============================================================================
+struct EncodeArgs {
+  SharedData &data;
+  int workers;
+  bool skip_existing; // 增量: 新鲜日文件整天跳过, 不齐备的天只编缺的
+  const std::atomic<bool> &cancel;
+  std::function<void(size_t)> on_day;
+};
+
+bool encode_pipeline(const EncodeArgs &args);

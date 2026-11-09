@@ -1,14 +1,14 @@
-// fund — 日频 PIT 基本面实现 (qmt pit.cpp + def/ 链路移植)
+// fund — 日频 PIT 基本面实现
 //
 // 结构: Panel::build   parquet 月度分片 → 网格 (raw cutoff 单点应用, ffill, 切到 [首回测日−15, 末]) + per-A 事件链 (v 升序)
 //                     全部 15 张月度表登记进同一个 fundamental::Scan (列裁剪 + 字典键 + 跨表重段先跑)
 //                     切片前另从全史网格扫出行情派生 (build_market: 长窗时序 + 全市场截面)
-//       Stream        per-A 沿 D 轴逐日推进的状态机 (估值分母 / 因子 raw / filter), 与 qmt 批量扫描逐日等价:
+//       Stream        per-A 沿 D 轴逐日推进的状态机 (估值分母 / 因子 raw / filter), 与按事件批量前扫逐日等价:
 //                       ttm/balance 取 latest (上市前事件丢弃), 年报 annuals, 分红按报告期取窗 (近 4 季 / 近 3 会计年度双阈值),
 //                       预亏/营收区间 = "d < max{off : on ≤ d}" (区间并集的流式形式), 行业 replay, trading_st 连续计数
 //                     每日产出 Fund::kCount 列 (缺失 = NaN, fp16 存不下的极值也归 NaN).
 //
-// 注意: 本文件依赖 NaN 语义, 必须在 CMake PRECISE_MATH 列表里 (-fno-fast-math).
+// 注意: 本文件依赖 NaN 语义, 必须在 CMake MATH_PRECISE 列表里 (-fno-fast-math).
 #include "features/Panel/Fund.hpp"
 
 #include "features/Node/Common/Fund/Fund.hpp" // Fund::Out 输出行布局
@@ -124,7 +124,7 @@ int get_list_d(int a, const Axes &axes, const Meta &meta) {
 }
 
 // ============================================================================
-// PIT 池 (qmt PitPool 精简版: 只留本模块用到的字段)
+// PIT 事件池 (只含本模块用到的字段)
 // ============================================================================
 struct FinancialTtmEv {
   std::int32_t v;
@@ -334,7 +334,7 @@ struct Data {
 namespace {
 
 // ============================================================================
-// vd 日 → D 轴 row (qmt GridRowMemo / EventRowMemo 合一)
+// vd 日 → D 轴 row (网格 / 事件同一入口)
 //   Exact: 须是交易日 (网格);  Floor: 落到 ≤ 它的最近交易日 (事件)
 //   再按 cutoff 平移 (row = idx − cutoff), 越界 / 缺失 → -1. 行按日成块, 只在换日时查一次.
 // ============================================================================
@@ -408,7 +408,7 @@ void grid_ffill(std::vector<float> &grid, int n_a, int n_d) {
 }
 
 // ============================================================================
-// itf 构建 (qmt pit.cpp 各 itf_* 移植; cutoff 语义逐一保持)
+// itf 构建 (各表 cutoff 语义见文件头 PIT 口径)
 // ============================================================================
 // 网格表 (5 张): fold 直写 p 的全 D 轴网格. 同一 (a, row) 只来自唯一一个源日期 (row = idx − cutoff
 // 是双射) ⇒ 分片写集不相交, 免锁 (Sink). add 登记, Scan::run 之后 finish 做 ffill.
@@ -1383,7 +1383,7 @@ void EventScan::finish(int n_a, PitPool &p) && {
 }
 
 // ============================================================================
-// 财务 helper (qmt def/detail.hpp 移植)
+// 财务 helper
 // ============================================================================
 
 // report_date 的上一个季末; 非标准季末 → 0
@@ -1426,7 +1426,7 @@ inline std::int32_t quarter_end(int s) {
   return s / 4 * 10000 + kMd[s % 4];
 }
 
-// YTD 链 → 三口径 (qmt 无此链路; 差分口径为标准定义):
+// YTD 链 → 三口径 (差分口径为标准定义):
 //   Q   = YTD(R) − YTD(上季末 R)            (Q1 即 YTD)
 //   TTM = YTD(R) + YTD(上年年报) − YTD(去年同期 R)  (年报即 YTD)
 //   LYR = YTD(≤ R 的最近年报)
@@ -1762,7 +1762,7 @@ void Panel::build(const std::vector<Ymd> &dates) {
 }
 
 // ============================================================================
-// State / Stream: per-A 日频状态机 (qmt 批量前扫的逐日形式; 状态只依赖 ≤ d 的事件)
+// State / Stream: per-A 日频状态机 (批量前扫的逐日形式; 状态只依赖 ≤ d 的事件)
 // ============================================================================
 struct State {
   struct Trig {
@@ -1852,7 +1852,7 @@ struct State {
     }
   }
 
-  // 上市前 0 哨兵 (qmt fill_before_list)
+  // 上市前 0 哨兵
   float close_raw(int d) const {
     return d < list_d ? 0.0f : D.pit.at(D.pit.close, a, d);
   }
@@ -1972,7 +1972,7 @@ struct State {
   const FinancialTtmEv *ttm() const {
     return last_ttm >= 0 ? &D.pit.ttm[static_cast<std::size_t>(a)][static_cast<std::size_t>(last_ttm)] : nullptr;
   }
-  // 营收 TTM: 负营收是源脏值 (qmt ps_raw 口径): ≤0 → NaN
+  // 营收 TTM: 负营收是源脏值: ≤0 → NaN
   float rev_ttm() const {
     const FinancialTtmEv *t = ttm();
     const float r = t ? t->total_operating_revenue_ttm : NaNF;

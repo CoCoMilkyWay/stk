@@ -686,7 +686,7 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
 
 namespace {
 
-// 文件是上次运行留下的 (可能来自旧代码 / 半截崩的), 故 parse 关异常, 取值全走 find + 类型判定 (StatJson.hpp json_*):
+// 文件是上次运行留下的 (可能格式不符 / 半截崩的), 故 parse 关异常, 取值全走 find + 类型判定 (StatJson.hpp json_*):
 // 任一环节不合就整份判废 (调用方删了重算), 不做部分接受
 
 bool load_diff(const nlohmann::json &j, factor::check::Diff &out) {

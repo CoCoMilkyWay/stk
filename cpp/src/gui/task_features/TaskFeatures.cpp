@@ -75,7 +75,7 @@ struct TaskFeaturesState {
   // Correlation: 切走只中断 (矩阵留在内存); 请求由 TabCorrelation 按"过滤行集变了"自发, 不走 StreamTabLifecycle
   bool correlation_tab_was_active = false;
 
-  // 流式分析三件 (Distribution / Transform / Preview) 同点起 worker: 输入就绪一次 (切出任务时回收并复位)
+  // 流式分析服务 (Distribution / Transform / Preview) 同点起 worker: 输入就绪一次 (切出任务时回收并复位)
   bool streams_started = false;
   // Auto-compute tracking (Distribution / Transform 共用): 主特征 (库/层/列) 变了即重算 (无论当前在哪个 tab)
   std::optional<ColRef> prev_primary;
@@ -249,7 +249,7 @@ TaskHandle CreateFeaturesTask(std::shared_ptr<Compute::ComputeHub> compute) {
     assert(idx >= 0 && idx < TAB_COUNT);
     state->active_tab = idx;
 
-    // 流式分析三件同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (池 A 轴要它).
+    // 流式分析服务同点起 worker: 输入就绪 (Update 帧首已算) 且资产表非空 (池 A 轴要它).
     // 构建内存按请求分配, 保留到切出 Features 任务 (OnCollapse 回收).
     // Preview 起手即自动构建 (全 L_1min 特征轮训抽样, 不依赖选中); Distribution / Transform 等选中特征
     const LibId lib = data.feature.selection.lib();

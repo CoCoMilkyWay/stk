@@ -5,9 +5,9 @@
 #include <cstdio>
 #include <cstring>
 
-// 本 TU 依赖 NaN / Inf 判定, 必须 precise-math (CMakeLists PRECISE_MATH_FLAG 列表)
+// 本 TU 依赖 NaN / Inf 判定, 必须 precise-math (CMakeLists MATH_PRECISE 列表)
 #ifdef __FAST_MATH__
-#error "misc/format.cpp 依赖 NaN/Inf 判定, 需加入 CMakeLists 的 PRECISE_MATH_FLAG 列表"
+#error "misc/format.cpp 依赖 NaN/Inf 判定, 需加入 CMakeLists 的 MATH_PRECISE 列表"
 #endif
 
 namespace misc {

@@ -1,5 +1,5 @@
 // Compute Service - Manages feature computation with multi-threaded workers
-// High-performance mode: Prefetch + TS workers + CS worker + IO worker (两档同一管线, 见 worker/compute/Pipeline.hpp)
+// 四角色: Prefetch + TS / CS / IO workers (两档同一管线, 见 worker/compute/Pipeline.hpp)
 // 线程模型 (gui/util/Service.hpp, 随对象): 进度面 = 自身 (done/total = 已落盘天 / 档的日期轴);
 //   store / 调度面 / 仪表盘全是档的管线 (tier_ops) 的局部, 一轮一建
 #pragma once
