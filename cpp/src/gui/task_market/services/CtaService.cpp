@@ -1,8 +1,8 @@
 #include "gui/task_market/services/CtaService.hpp"
 
+#include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/date.hpp"
-#include "shared/FeatureLib.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -26,7 +26,7 @@ bool CtaService::publish(const CtaRequest &req, std::string lack, std::shared_pt
 bool CtaService::run(CtaRequest &req) {
   const CtaSpec &sp = req.spec;
   assert(sp.roll >= static_cast<int>(cta::kMinRoll));
-  const FeatureLib lib = load_lib(cfg_, kAllBar);
+  const FeatureLib lib = load_lib(cfg_.feature_dir, kAllBar);
   if (!lib.ready())
     return publish(req, "CTA 价格由 all.bar 特征库合成: 先在 Beta → Compute 算好 all 池的 Bar 库.");
   FeatureRead rd(lib, &cancel_);
@@ -51,7 +51,7 @@ bool CtaService::run(CtaRequest &req) {
   } else {
     auto s = std::make_shared<cta::Series>();
     if (!lib_.series(req.side, req.key, *s)) {
-      assert(req.side == Market::kStock && "CTA 篮子 = 篮子目录三组的线");
+      assert(req.side == Quote::kStock && "CTA 篮子 = 篮子目录三组的线");
       return publish(req, "该股不在 all.bar 库轴上 (库建成之后上市 / 进池; 全量重算 all.bar 即并入).");
     }
     se = std::move(s);
@@ -60,7 +60,7 @@ bool CtaService::run(CtaRequest &req) {
   if (kept_.size() > kKeep)
     kept_.pop_back();
 
-  constexpr size_t S = Market::kSlots;
+  constexpr size_t S = Quote::kSlots;
   const size_t W = static_cast<size_t>(sp.roll), nd = cta::days_of(*se, S).size();
   if (nd < 2)
     return publish(req, "有效根只跨 " + std::to_string(nd) + " 日, 至少 2 日.");

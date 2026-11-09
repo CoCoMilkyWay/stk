@@ -1,6 +1,5 @@
 #include "api/bigquant/client.hpp"
 
-#include "shared/Config.hpp"
 #include "yyjson/yyjson.h"
 
 #include <arrow/array.h>
@@ -98,14 +97,14 @@ Client::Client(std::string ak, std::string sk)
   assert(!ak_.empty() && !sk_.empty());
 }
 
-Client::Client() : Client(::config::BIGQUANT_AK, ::config::BIGQUANT_SK) {}
+Client::Client() : Client(kAk, kSk) {}
 
 void Client::ensure_flight() {
   if (flight_)
     return;
 
   arrow::Result<flight::Location> loc_r =
-      flight::Location::Parse(::config::BIGQUANT_FLIGHT_URI);
+      flight::Location::Parse(kFlightUri);
   flight::Location loc = unwrap(std::move(loc_r), "Location::Parse");
 
   flight::FlightClientOptions opts = flight::FlightClientOptions::Defaults();
@@ -113,7 +112,7 @@ void Client::ensure_flight() {
   opts.generic_options.emplace_back(
       std::string("grpc.max_metadata_size"),
       std::variant<int, std::string>(static_cast<int>(
-          ::config::BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE)));
+          kGrpcMaxMetadataSize)));
 
   auto client_r = flight::FlightClient::Connect(loc, opts);
   flight_ = unwrap(std::move(client_r), "FlightClient::Connect");

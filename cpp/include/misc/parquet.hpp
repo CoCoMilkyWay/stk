@@ -55,7 +55,7 @@ void append_table_atomic(const std::filesystem::path &path,
 
 // 写者痕迹 (只读 footer): created_by ≠ 本库 (parquet::DEFAULT_CREATED_BY) 或带键值元数据
 //   (ARROW:schema / pandas …) → true. write_table_atomic 写的两者皆无; 外来写者 (远端 pyarrow /
-//   换版前的本库) 至少占一条.
+//   其它 arrow 版本) 至少占一条.
 bool foreign_writer(const std::filesystem::path &path);
 
 // foreign_writer → 以本库原样重写 (write_table_atomic) 并返回 true; 否则不动, 返回 false.

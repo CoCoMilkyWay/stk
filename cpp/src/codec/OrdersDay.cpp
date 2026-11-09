@@ -1,6 +1,5 @@
 #include "codec/OrdersDay.hpp"
 #include "misc/cross_platform.hpp"
-#include "shared/Config.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -31,12 +30,12 @@ constexpr size_t kRunCap = size_t(16) << 20;
 
 std::string archive_day_path(const std::string &dir, misc::Ymd date) {
   const std::string d = misc::dense(date);
-  return dir + "/" + d.substr(0, 4) + "/" + d.substr(0, 6) + "/" + d + config::ARCHIVE_EXTENSION;
+  return dir + "/" + d.substr(0, 4) + "/" + d.substr(0, 6) + "/" + d + kArchiveExtension;
 }
 
 std::string orders_day_path(const std::string &dir, misc::Ymd date) {
   const std::string d = misc::dense(date);
-  return dir + "/" + d.substr(0, 4) + "/" + d.substr(4, 2) + "/" + d + config::BINARY_EXTENSION;
+  return dir + "/" + d.substr(0, 4) + "/" + d.substr(4, 2) + "/" + d + kOrdersExtension;
 }
 
 std::vector<misc::Ymd> orders_days(const std::string &dir) {
@@ -49,7 +48,7 @@ std::vector<misc::Ymd> orders_days(const std::string &dir) {
       if (!month_entry.is_directory())
         continue;
       for (const auto &day_entry : fs::directory_iterator(month_entry.path())) {
-        if (!day_entry.is_regular_file() || day_entry.path().extension().string() != config::BINARY_EXTENSION)
+        if (!day_entry.is_regular_file() || day_entry.path().extension().string() != kOrdersExtension)
           continue;
         const std::string stem = day_entry.path().stem().string();
         const misc::Ymd date = stem.size() == 8 ? misc::parse_ymd(stem) : 0;

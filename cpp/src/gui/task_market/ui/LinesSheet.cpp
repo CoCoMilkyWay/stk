@@ -89,7 +89,7 @@ void pick(LinesUIState &ui, int page, const LinesRow &r) {
     return;
   if (m == kPickOne)
     s.clear();
-  else if (r.q.is(Market::kStock) && ui.pick.stocks(m).size() >= Market::StockHistory::kKeep)
+  else if (r.q.is(Quote::kStock) && ui.pick.stocks(m).size() >= Quote::StockHistory::kKeep)
     return;
   s.emplace(r.id, r.q);
   if (m == kPickMany)
@@ -232,7 +232,7 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
       ImGui::Unindent();
       if (ImGui::IsItemClicked())
         click(t);
-    } else if (h.q.is(Market::kBasket)) {
+    } else if (h.q.is(Quote::kBasket)) {
       const bool open = t == pin;
       ImGui::SetNextItemOpen(open, ImGuiCond_Always);
       ImGui::TreeNodeEx(label.c_str(), kNode | ImGuiTreeNodeFlags_OpenOnArrow | (on(t) ? ImGuiTreeNodeFlags_Selected : 0));
@@ -317,16 +317,16 @@ struct RowSrc {
   LinesAt at;
   const LinesRow *row = nullptr;
   const StockInfo *info = nullptr;
-  const Market::Day *day = nullptr;
+  const Quote::Day *day = nullptr;
 };
 RowSrc src_of(const LinesUIState &ui, const StockInfos &infos, const LinesDerived &d, const LinesAt &a) {
   RowSrc x{a, &d.row(a)};
   const LinesQuote &q = x.row->q;
-  const Market::Day *t = nullptr;
-  if (const Market::Feed &f = ui.basket.feed; q.is(Market::kBasket) && f.data && f.today) {
+  const Quote::Day *t = nullptr;
+  if (const Market::Feed &f = ui.basket.feed; q.is(Quote::kBasket) && f.data && f.today) {
     assert(f.today->size() == f.data->list.size());
     t = &(*f.today)[q.key];
-  } else if (q.is(Market::kStock)) {
+  } else if (q.is(Quote::kStock)) {
     if (q.key < infos.size() && infos[q.key].known)
       x.info = &infos[q.key];
     const auto it = std::ranges::lower_bound(ui.cons.ids, q.key);
@@ -346,7 +346,7 @@ SheetToday basket_today(const Market::Feed &f, const RowSrc &x) {
   const size_t c = cut_of_line(x.row->q.key), eq = basket_line(c, kWeightEq), cap = basket_line(c, kWeightCap);
   assert(f.data->keys[eq] == eq && f.data->keys[cap] == cap && f.today && f.today->size() == f.data->list.size());
   double w = f.data->weight[cap];
-  if (const Market::Day &t = (*f.today)[cap]; Market::joins(*f.data->list[cap], t))
+  if (const Quote::Day &t = (*f.today)[cap]; Quote::joins(*f.data->list[cap], t))
     w *= t.candle.close / t.candle.ref;
   o.v[kTodayMembers] = f.data->members[eq];
   o.v[kTodayCap] = w > 0 ? w : kNaN;
@@ -371,17 +371,17 @@ SheetToday stock_today(const RowSrc &x) {
 // 表行的当日: 按行情键 (篮子 = 篮子 Feed 的同切片两线 + 当日; 个股 = 档案 + 当日; 无 = 全不可算)
 SheetToday today_of(const Market::Feed &f, const RowSrc &x) {
   const LinesQuote &q = x.row->q;
-  return q.is(Market::kBasket) ? basket_today(f, x) : q.is(Market::kStock) ? stock_today(x)
-                                                                           : SheetToday{};
+  return q.is(Quote::kBasket) ? basket_today(f, x) : q.is(Quote::kStock) ? stock_today(x)
+                                                                         : SheetToday{};
 }
 // 表行的近况 (Market::RecentOf 同一核): 篮子 = Market 篮子历史同一份; 个股 = ASSET 个股同一份 (无档案 → 不可算); 无行情键 = 可成交线日末
 Market::Recent recent_row(const Market::Feed &f, const RowSrc &x) {
   const LinesQuote &q = x.row->q;
-  if (q.is(Market::kBasket))
+  if (q.is(Quote::kBasket))
     return Market::RecentOf(f, q.key);
-  if (q.is(Market::kStock))
+  if (q.is(Quote::kStock))
     return !x.info ? Market::Recent{} : x.day ? Market::RecentOf(*x.info, x.day->candle, x.day->prev)
-                                              : Market::RecentOf(*x.info, Market::Candle{}, 0);
+                                              : Market::RecentOf(*x.info, Quote::Candle{}, 0);
   return recent_of(*x.row->line[kTrade]);
 }
 // 四列 → out[0, kTodays)
@@ -828,7 +828,7 @@ Seg flow_seg(const Market::BasketState &bs, const std::vector<misc::Ymd> &days) 
   s.cell = [&bs, &days, fill, nd](const RowSrc &x, size_t t, LinesSheet &p, SheetCell *out) {
     const LinesQuote &q = x.row->q;
     assert(q.ok() && "FLOW 表行都有行情键");
-    if (q.is(Market::kBasket))
+    if (q.is(Quote::kBasket))
       return fill(Market::FlowOf(bs, q.key, days), true, t, p, out);
     std::vector<Market::Flow> fl(nd);
     bool whole = true;
@@ -896,16 +896,16 @@ void RenderLinesSheet(LinesUIState &ui, int page, const std::vector<misc::Ymd> &
     legend_cta(ui, d, v, infos);
 }
 
-void SyncLinesCons(LinesUIState &ui, const Market::QuoteService &q) {
+void SyncLinesCons(LinesUIState &ui, const Quote::QuoteService &q) {
   std::vector<uint32_t> ids;
   for (const LinesRow &r : ui.der.val.rows[kGroupKid])
     ids.push_back(r.q.key);
   std::ranges::sort(ids);
-  const Market::QuoteStatus st = q.status();
+  const Quote::QuoteStatus st = q.status();
   const int64_t at = static_cast<int64_t>(st.date) * 86400 + st.sec;
   if (ids == ui.cons.ids && at == ui.cons.at && (ui.cons.day || ids.empty()))
     return;
-  ui.cons.day = ids.empty() ? nullptr : q.today(Market::kStock, ids);
+  ui.cons.day = ids.empty() ? nullptr : q.today(Quote::kStock, ids);
   ui.cons.ids = std::move(ids);
   ui.cons.at = at;
 }

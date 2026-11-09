@@ -49,7 +49,7 @@
 //       L_1min  S 255, N 1,   M0 0
 //       分钟箱 n (5 / 15 / 30 / 60)  S = 1 + 240/n, N = n, M0 = 14 (首箱 = 09:15–09:30 集合竞价 15 分钟, 其后每箱 n 分钟)
 //       日     S 1,   N 255, M0 254 (收盘行)
-//     S 两两不同, 故 S 唯一确定层 (geo_of). 与 features/TimeIndex 的对账在 GUI 侧 (gui/factors/Load).
+//     S 两两不同, 故 S 唯一确定层 (geo_of). 与 features/TimeIndex 的对账在 GUI 侧 (gui/engine/Load).
 //     Roll 窗未满 (t < d−1) **不是无效**: 窗 = 已有前缀 [max(0, t−d+1), t], 同公式 (expanding 直到满窗);
 //     TsDelayRoll / TsDeltaRoll 的滞后夹到序列头: 取 x_{max(t−d, 0)}, 满窗后与 x_{t−d} 无缝衔接.
 //     窗内位置 (Wma 权 / Arg 距今期数) 以**最新一格 = d−1** 锚定, 未满窗时最旧格的位置 = d−n, 三后端同口径.

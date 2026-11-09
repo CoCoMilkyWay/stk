@@ -16,7 +16,7 @@
 //     CLOSE_N T+n 收盘价
 //   可成交: 分钟价点 = Tradable 节点本分钟 can_buy / can_sell (整分钟封板判); 开盘 / 收盘价点按单一价撮合判 (LabelHold::auction_px).
 //     建仓可成交码 (lb_entry_ok) / 平仓顺延 / 环满按最近收盘价结清 见 Common/Label/LabelHold.hpp.
-//   全日无成交 (停牌 / 无 bar1m): 当日行无 entry, 不写; 名义今日到期的组进等待; 因子层 (gui/factors/Load) 把"当日无任何成交"的 asset-day 剔出截面池门控.
+//   全日无成交 (停牌 / 无 bar1m): 当日行无 entry, 不写; 名义今日到期的组进等待; 因子层 (gui/engine/Load) 把"当日无任何成交"的 asset-day 剔出截面池门控.
 //   价格均为 bar1m 价 × 当日复权比 (Fund adj_ratio, 日内恒定): 日内型与不复权同值, 日级型跨除权日的收益不含除权缺口.
 //   落盘层: L_1min / L_5min / L_15min / L_30min / L_60min / L_1day —— 行 = 该层行的末分钟 m 的标签;
 //     每层只留本层及以上的持有期组 (LABEL_GROUPS_FROM_<LVL>: 5min 层无 1m, L_1day 只有日级型). 逐分钟照算, 粗层只是不落非行末分钟.

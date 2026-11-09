@@ -1,10 +1,10 @@
 // Market 行情页派生层 — 见头文件
 #include "gui/task_market/ui/LinesView.hpp"
 
-#include "gui/task_alpha/ui/TabFactors.hpp" // hold_desc
-#include "misc/date.hpp"                    // to_days (滚动窗权重按日历天)
-#include "shared/AssetAxis.hpp"             // asset_axis (成分行代码)
-#include "shared/Basket.hpp"                // basket_group / basket_name / cut_code
+#include "fundamental/AssetAxis.hpp" // asset_axis (成分行代码)
+#include "gui/engine/Hold.hpp"       // hold_desc
+#include "misc/date.hpp"             // to_days (滚动窗权重按日历天)
+#include "shared/Basket.hpp"         // basket_group / basket_name / cut_code
 
 #include <algorithm>
 #include <array>
@@ -135,7 +135,7 @@ void paint(LinesDerived &d, const LinesDerived &o) {
   for (int g = 0; g < kRowGroups; ++g)
     if (kGroupDefs[g].paint)
       for (LinesRow &r : d.rows[g]) {
-        if (r.q.is(Market::kBasket) && r.q.key == basket_line(0, kWeightCap))
+        if (r.q.is(Quote::kBasket) && r.q.key == basket_line(0, kWeightCap))
           mkt = rs.size();
         rs.push_back(&r);
         key.rows.emplace_back(r.id, r.line[kIdeal].get());
@@ -167,7 +167,7 @@ void paint(LinesDerived &d, const LinesDerived &o) {
   for (size_t i = 0; i < n; ++i)
     for (size_t j = i + 1; j < n; ++j) {
       double s = corr(res[i], res[j]);
-      if (const LinesQuote &a = rs[i]->q, &b = rs[j]->q; a.is(Market::kBasket) && b.is(Market::kBasket))
+      if (const LinesQuote &a = rs[i]->q, &b = rs[j]->q; a.is(Quote::kBasket) && b.is(Quote::kBasket))
         s = std::max(s, static_cast<double>(d.prices->overlap[a.key * K + b.key]));
       far[i * n + j] = far[j * n + i] = 1.0 - s;
     }
@@ -351,13 +351,13 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
   return o;
 }
 // 价格指数: 起点 = 首根前收 (无 → 首根收盘) + 每根收盘
-Levels levels(const Market::Kline &k) {
+Levels levels(const Quote::Kline &k) {
   Levels s;
   if (k.daily.empty())
     return s;
-  const Market::Candle &c0 = k.daily.front();
+  const Quote::Candle &c0 = k.daily.front();
   s.push(c0.date, -kStartDx, c0.ref > 0 ? c0.ref : c0.close);
-  for (const Market::Candle &c : k.daily)
+  for (const Quote::Candle &c : k.daily)
     s.push(c.date, kClose, c.close);
   return s;
 }
@@ -491,19 +491,19 @@ std::vector<const PortfolioItem *> ready_of(const std::vector<PortfolioItem> &it
 }
 
 // 行情两侧的账 (同有同无, 同日轴; 没算成 → 空) + 价格指数 (源未就绪 → 空) → d; 日轴并入账日, 日轴 → 两侧账的行 (val_at)
-void bind_quotes(const PortfolioResult &res, const std::shared_ptr<const Market::Tape> &prices, LinesDerived &d) {
-  const PortfolioBook *s = res.quotes[Market::kStock].get(), *b = res.quotes[Market::kBasket].get();
+void bind_quotes(const PortfolioResult &res, const std::shared_ptr<const Quote::Tape> &prices, LinesDerived &d) {
+  const PortfolioBook *s = res.quotes[Quote::kStock].get(), *b = res.quotes[Quote::kBasket].get();
   assert(!s == !b && (!b || (s->error == b->error && s->dates == b->dates)));
   if (b && b->error.empty())
     d.quotes = res.quotes;
   d.prices = prices && !prices->list.empty() ? prices : nullptr;
-  if (d.quotes[Market::kBasket]) {
+  if (d.quotes[Quote::kBasket]) {
     std::vector<misc::Ymd> u;
     std::ranges::set_union(d.dates, b->dates, std::back_inserter(u));
     d.dates = std::move(u);
   }
   d.val_at.assign(d.dates.size(), -1);
-  if (d.quotes[Market::kBasket]) {
+  if (d.quotes[Quote::kBasket]) {
     const std::vector<misc::Ymd> &hd = b->dates;
     const std::vector<size_t> di = days_on(hd, d.dates);
     for (size_t k = 0; k < d.dates.size(); ++k)
@@ -519,7 +519,7 @@ LinesRow basket_row(size_t line) {
   r.en = cut_code(cut_of_line(line));
   r.hover = r.en + "  " + basket_name(line);
   r.cn = r.tag = clip_name(cut_name(cut_of_line(line))) + weight_suffix(weight_of(line));
-  r.q = {Market::kBasket, static_cast<uint32_t>(line)};
+  r.q = {Quote::kBasket, static_cast<uint32_t>(line)};
   r.watch = r.en + weight_suffix(weight_of(line));
   return r;
 }
@@ -563,7 +563,7 @@ LinesRow stock_row(const StockInfos &infos, uint32_t id, double share) {
   r.cn = clip_name(r.tag);
   r.hover = stock_hover(infos, id, share);
   r.hue = stock_hue(id);
-  r.q = {Market::kStock, id};
+  r.q = {Quote::kStock, id};
   r.watch = r.en;
   return r;
 }
@@ -574,7 +574,7 @@ LinesRow factor_row(const PortfolioItem &it, const PortfolioBook &b) {
   r.en = std::filesystem::path(it.e.file).stem().string();
   r.cn = clip_name(it.name_cn);
   r.tag = it.name_en + " " + factor::stat::hold_name(it.e.hold);
-  r.hover = r.en + "  " + it.name_cn + "\n• " + it.e.pool + " " + factor_level(it.e.lv).name + "\n• " + Alpha::hold_desc(it.e.hold, it.e.lv) +
+  r.hover = r.en + "  " + it.name_cn + "\n• " + it.e.pool + " " + factor_level(it.e.lv).name + "\n• " + Engine::hold_desc(it.e.hold, it.e.lv) +
             "\n• 冲击 " + amt_name(b.amt) + "\n• 规范串 " + it.e.expr + (it.e.sign < 0 ? " · 取反" : "");
   return r;
 }
@@ -592,7 +592,7 @@ LinesRow strat_row(const std::string &name) {
 void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const Reuse &ru) {
   r.val = leg_of(d.quotes[r.q.side], r.q.key);
   r.src[kTrade] = mix_src(legs_of(r.val), true, fixed_impact);
-  if (r.q.is(Market::kStock))
+  if (r.q.is(Quote::kStock))
     r.src[kIdeal] = mix_src(legs_of(r.val), false, 0.0);
   else if (d.prices) {
     assert(d.prices->keys[r.q.key] == r.q.key);
@@ -617,7 +617,7 @@ void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, c
   if (const LinesAt o = d.at(open); o.g >= 0 && d.prices && !d.prices->lack) {
     assert(o.g < kBasketGroups);
     const uint32_t line = d.row(o).q.key;
-    for (const Market::Constituent &c : d.prices->cons[line])
+    for (const Quote::Constituent &c : d.prices->cons[line])
       ks.emplace_back(c.id, c.w / d.prices->weight[line]);
   }
   d.n_cons = ks.size();
@@ -892,7 +892,7 @@ void rank_col(size_t n, int good, const At &at) {
 } // namespace
 
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
-                      const std::shared_ptr<const Market::Tape> &prices, double fixed_impact, const std::string &open,
+                      const std::shared_ptr<const Quote::Tape> &prices, double fixed_impact, const std::string &open,
                       const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos, LinesDerived &d) {
   LinesDerived o = std::move(d);
   d = LinesDerived{};
@@ -925,9 +925,9 @@ void MakeLinesRoll(const LinesDerived &d, const LinesLeg &lg, int years, LinesRo
 void MakeLinesPct(const LinesDerived &d, int d1, int years, LinesPct &p) {
   for (int g = 0; g < kRowGroups; ++g)
     p.rows[g].assign(d.rows[g].size(), {});
-  if (!d.quotes[Market::kBasket])
+  if (!d.quotes[Quote::kBasket])
     return;
-  const ValAxis ax(*d.quotes[Market::kBasket]);
+  const ValAxis ax(*d.quotes[Quote::kBasket]);
   RollW rw;
   for (const auto &[at, lg] : val_rows(d))
     for (int b = 0; b < kPoolVals; ++b)

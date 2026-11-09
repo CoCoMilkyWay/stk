@@ -1,12 +1,14 @@
 // Tab Compute Implementation
 #include "gui/compute/ui/TabCompute.hpp"
+#include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
+#include "fundamental/Spec.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/compute/services/ComputeService.hpp"
 #include "misc/affinity.hpp"
-#include "shared/Config.hpp"
-#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
+#include "worker/compute/Layout.hpp"  // StageLayout
+#include "worker/compute/TsTuner.hpp" // RingBudget
 
 #include "imgui.h"
 
@@ -73,94 +75,6 @@ static void action_tooltip(const LibPlan &s, const char *busy, bool resume) {
     ImGui::SetTooltip("续算: %s ~ %s (%zu 新日), 沿用库资产轴 (%zu 资产), 轴外 %zu 个不纳入",
                       misc::dash(s.plan[dates.size()]).c_str(), misc::dash(s.plan.back()).c_str(),
                       s.plan.size() - dates.size(), s.lib.axis.size(), s.lib.outside.size());
-}
-
-// 起一轮 (弹窗状态机从 ShowingPopup 走)
-static void begin_compute(ComputeState &state, const LibPlan &s, bool resume) {
-  state.config.lib = s.lib.id;
-  state.config.dates = s.plan;
-  state.config.resume = resume;
-  state.ui_state = ComputeUIState::ShowingPopup;
-  state.popup_frame_count = 0;
-}
-
-void TickCompute(ComputeHub &hub, SharedData &data) {
-  hub.inputs_ready = data.taskstate.database.all_json_ready && data.taskstate.database.binary_scanned && data.asset.binary.exists &&
-                     !data.asset.backtest.days.empty() && !data.taskstate.database.l2_scan_inflight;
-  if (hub.inputs_ready && !hub.service)
-    hub.service = std::make_unique<ComputeService>(data);
-  if (!hub.service)
-    return;
-  ComputeService &service = *hub.service;
-  ComputeState &state = hub.state;
-  const bool inputs_ready = hub.inputs_ready;
-  const Phase phase = service.phase.load(std::memory_order_acquire);
-  if (hub.prev_phase == Phase::Running && (phase == Phase::Done || phase == Phase::Cancelled))
-    ++hub.rounds;
-  hub.prev_phase = phase;
-
-  const Config &config = data.config;
-  const bool is_running = service.busy();
-
-  // ---- 弹窗状态机 ----
-  switch (state.ui_state) {
-  case ComputeUIState::Idle:
-    break;
-  case ComputeUIState::ShowingPopup:
-    // 弹窗至少画过一帧再开跑 (开跑即低刷新)
-    if (++state.popup_frame_count >= 2) {
-      service.Request(state.config);
-      state.ui_state = ComputeUIState::WaitingStart;
-    }
-    break;
-  case ComputeUIState::WaitingStart:
-    if (is_running)
-      state.ui_state = ComputeUIState::Computing;
-    break;
-  case ComputeUIState::Computing:
-    if (!is_running) {
-      state.ui_state = ComputeUIState::Idle;
-      state.popup_frame_count = 0;
-      state.libs_dirty = true;
-      if (service.phase.load(std::memory_order_acquire) == Phase::Cancelled)
-        state.auto_append = false;
-    }
-    break;
-  }
-  // 点下 Rebuild / Append 起到一轮收尾 (弹窗状态机非 Idle): 共享数据冻结
-  data.taskstate.compute.computing = state.ui_state != ComputeUIState::Idle;
-  if (!inputs_ready)
-    return;
-
-  // ---- 库表: 数据换进 (同步 / 编码收尾都以扫描换进结束) 即重扫, 数据末日 / 未落盘随之前移; 并起一轮自动续算 ----
-  if (state.generation != data.asset.generation) {
-    state.generation = data.asset.generation;
-    state.libs_dirty = true;
-    state.auto_append = true;
-    state.auto_done.clear();
-  }
-  if (state.libs_dirty && !is_running) {
-    state.libs_dirty = false;
-    state.libs = plan_libs(data);
-  }
-
-  // ---- 自动续算: 空闲 (无在算 / 无全量确认 / 无编码在飞) 时依次 Append 可续算且未判废的库, 每库一轮至多一次;
-  //      规划序上游在前, 它算完重扫, 下游的规划随之前移再轮到; 无可续算 / 取消即止 ----
-  if (!state.auto_append || state.ui_state != ComputeUIState::Idle || is_running || state.libs_dirty || state.confirm || state.confirm_remove ||
-      data.taskstate.database.encode_inflight)
-    return;
-  assert(state.libs && "库表未扫");
-  const PerLib<LibPlan> &libs = *state.libs;
-  const std::vector<LibId> order = lib_order();
-  const auto it = std::ranges::find_if(order, [&](LibId l) {
-    return libs[l].appendable() && !FeatureRead::dir_stale(lib_dir(config, l)) && std::ranges::find(state.auto_done, l) == state.auto_done.end();
-  });
-  if (it == order.end()) {
-    state.auto_append = false;
-    return;
-  }
-  state.auto_done.push_back(*it);
-  begin_compute(state, libs[*it], true);
 }
 
 // 状态列: 文字 / 色 / 悬浮说明同一条判定链
@@ -254,7 +168,7 @@ static void lib_cells(ComputeState &state, const LibPlan &s, bool computing, boo
   ImGui::SameLine();
   ImGui::BeginDisabled(blocked || !s.appendable());
   if (ImGui::SmallButton(("Append##" + id).c_str()))
-    begin_compute(state, s, true);
+    state.begin(s, true);
   ImGui::EndDisabled();
   action_tooltip(s, busy, true);
   ImGui::SameLine();
@@ -273,9 +187,9 @@ static void lib_cells(ComputeState &state, const LibPlan &s, bool computing, boo
 
 // 不可开算的原因 (库表按钮 / 全量确认同一份; nullptr = 可算). 编码在飞不开算: Lob 按帧目录快照读日文件, 编码会 rename 换掉它们
 static const char *busy_reason(const ComputeState &state, const SharedData &data) {
-  return state.ui_state != ComputeUIState::Idle    ? "特征计算进行中"
-         : data.taskstate.database.encode_inflight ? "编码进行中: 编码会 rename 换掉日文件, 收尾后再算"
-                                                   : nullptr;
+  return state.ui_state != ComputeUIState::Idle     ? "特征计算进行中"
+         : data.task_state.database.encode_inflight ? "编码进行中: 编码会 rename 换掉日文件, 收尾后再算"
+                                                    : nullptr;
 }
 
 // 进度条 (库 / 模式 / 日数) + 取消 (同行)
@@ -355,7 +269,7 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
             "• Remove = 删库 (清单 / 日文件 / 续算点; 先弹窗确认); 下游库保留, 本库重新落盘齐前不可算\n"
             "\n"
             "• Beta 页 = all.bar (全市场根库: Style 调优与 Market 的源); Alpha 页 = all.lob + 子池各档 (因子的张量库)",
-            misc::dash(::config::PIPELINE_START_DATE).c_str(), misc::dash(config.start_date).c_str());
+            misc::dash(fundamental::kSyncStart).c_str(), misc::dash(config.start_date).c_str());
 
   const auto shown = [&](PoolId p) {
     const PoolDef &d = pool_def(p);
@@ -415,7 +329,7 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
       const bool computing = is_running && state.config.lib == l;
       const ImU32 tint = ImGui::GetColorU32(computing ? kBusyTint : kTierTint[order_of(t)]);
       if (state.libs && on_side(side, l)) {
-        lib_cells(state, (*state.libs)[l], computing, FeatureRead::dir_stale(lib_dir(config, l)), busy, tint);
+        lib_cells(state, (*state.libs)[l], computing, FeatureRead::dir_stale(lib_dir(config.feature_dir, l)), busy, tint);
         continue;
       }
       for (int c = 0; c < kLibColN; ++c) { // 他页的库 / 库表未扫 (重扫在下一帧)
@@ -501,22 +415,6 @@ static void render_stages(ComputeState &state, LibSide side) {
     ImGui::EndTable();
   }
   ImGui::TextDisabled("PF / CS / IO = 预取 / 截面 / 落盘核数: 按日轮转, 每核独占一个物理核, 从时序让出; 看仪表盘哪段忙满就给哪段加核");
-}
-
-TaskStatus ComputeStatus(const ComputeHub &hub, const SharedData &data, LibSide side) {
-  if (!hub.inputs_ready)
-    return {TaskStatus::Kind::Muted, "waiting"};
-  const ComputeService *const service = hub.service.get();
-  const bool running = service && service->busy();
-  // 任一 reader 判废删了本页某个库 → 待重算 (该库开跑即撤销登记; 哪个库见库表)
-  const auto lib_stale = [&](LibId l) { return on_side(side, l) && FeatureRead::dir_stale(lib_dir(data.config, l)); };
-  if (!running && std::ranges::any_of(lib_ids(), lib_stale))
-    return {TaskStatus::Kind::Warn, "pending"};
-  if (!service || !on_side(side, hub.state.config.lib))
-    return {};
-  if (service->cancelling())
-    return {TaskStatus::Kind::Busy, "cancelling"};
-  return ProgressStatus(*service);
 }
 
 void RenderTabCompute(ComputeHub &hub, SharedData &data, LibSide side) {
@@ -741,7 +639,7 @@ void RenderTabCompute(ComputeHub &hub, SharedData &data, LibSide side) {
     ImGui::Spacing();
     ImGui::BeginDisabled(!ok);
     if (ImGui::Button("Rebuild", ImVec2(120, 0))) {
-      begin_compute(state, *s, false);
+      state.begin(*s, false);
       state.confirm.reset();
       ImGui::CloseCurrentPopup();
     }

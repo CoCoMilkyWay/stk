@@ -1,7 +1,7 @@
 #include "gui/task_market/ui/QuotesPanel.hpp"
+#include "fundamental/AssetAxis.hpp"
 #include "gui/Tasks.hpp"      // StatusColor (补分钟进度条 = 进行中色)
 #include "gui/util/Chart.hpp" // kUp / kDn / tint / button_bar / EndTag
-#include "shared/AssetAxis.hpp"
 
 #include "imgui.h"
 #include "implot.h"
@@ -865,7 +865,7 @@ bool pull(const HistoryPub &x, Feed &f) {
 }
 
 // 篮子图的前置: 源未就绪 / 读取中 → 画提示, false
-bool basket_ready(const MarketHub &mk, Feed &f) {
+bool basket_ready(const QuoteHub &mk, Feed &f) {
   if (f.data && f.data->lack) {
     ImGui::TextWrapped("%s", f.data->lack);
     if (ImGui::SmallButton("重载"))
@@ -960,7 +960,7 @@ void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *
 
 } // namespace
 
-void Sync(MarketHub &mk, Side s, std::span<const uint32_t> want, Feed &f) {
+void Sync(QuoteHub &mk, Side s, std::span<const uint32_t> want, Feed &f) {
   const bool lost = pull(mk.history(s), f) && !f.want.empty(); // 空键集被覆盖不必重发
   if (lost || f.reload || !std::ranges::equal(want, f.want)) {
     f.reload = false;
@@ -979,7 +979,7 @@ void Sync(MarketHub &mk, Side s, std::span<const uint32_t> want, Feed &f) {
   f.today = mk.quote->today(s, f.data->keys);
 }
 
-void RenderStockPanel(const MarketHub &mk, StockState &st, const std::string &title) {
+void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &title) {
   const QuoteStatus qs = mk.quote->status();
   char note[160];
   if (qs.date == 0)
@@ -1014,7 +1014,7 @@ void RenderStockPanel(const MarketHub &mk, StockState &st, const std::string &ti
   charts("stock", is, ds, static_cast<uint64_t>(f.shown) << 32, st.chart, mk.quote->book(id), qs.date);
 }
 
-void RenderBasketIntraday(const MarketHub &mk, BasketState &st, const std::vector<OverlayPick> &picks) {
+void RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks) {
   Feed &f = st.feed;
   if (!basket_ready(mk, f))
     return;
@@ -1067,7 +1067,7 @@ void RenderBasketIntraday(const MarketHub &mk, BasketState &st, const std::vecto
   ImGui::PopID();
 }
 
-void RenderBasketFlow(const MarketHub &mk, BasketState &st, const std::vector<OverlayPick> &picks) {
+void RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks) {
   Feed &f = st.feed;
   if (!basket_ready(mk, f))
     return;
@@ -1129,7 +1129,7 @@ void RenderBasketFlow(const MarketHub &mk, BasketState &st, const std::vector<Ov
   ImGui::PopID();
 }
 
-std::vector<misc::Ymd> FlowDays(const MarketHub &mk, const BasketState &st) {
+std::vector<misc::Ymd> FlowDays(const QuoteHub &mk, const BasketState &st) {
   return day_axis(mk.quote->trading(), mk.quote->status().date, kIntraDays[st.flow]);
 }
 

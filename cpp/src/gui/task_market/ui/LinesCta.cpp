@@ -27,7 +27,7 @@ namespace GUI::Market {
 
 namespace {
 
-constexpr size_t kS = Market::kSlots;
+constexpr size_t kS = Quote::kSlots;
 constexpr float kPriceFrac = 0.62f;                                                                                  // 上图占两图高的比例
 constexpr float kPosA = 0.35f;                                                                                       // 满仓仓位色的不透明度 (多 = kUp, 空 = kDn)
 constexpr ImVec4 kMidCol(1.0f, 0.6f, 0.2f, 1.0f), kHoldCol(0.6f, 0.6f, 0.6f, 1.0f), kPinCol(1.0f, 0.5f, 0.0f, 1.0f); // kPinCol = 光标 (同 OrderFlow 锚线)
@@ -41,7 +41,7 @@ misc::Ymd day_of(const CtaResult &r, size_t i) { return r.dates[r.se->t[i] / kS]
 int slot_of(const CtaResult &r, size_t i) { return static_cast<int>(r.se->t[i] % kS); }
 // 有效根 i 的时刻 "YYYY-MM-DD hh:mm" (标号 = 根结束分钟)
 std::string when(const CtaResult &r, size_t i) {
-  const int m = Market::slot_label(slot_of(r, i));
+  const int m = Quote::slot_label(slot_of(r, i));
   char s[24];
   std::snprintf(s, sizeof(s), " %02d:%02d", m / 60, m % 60);
   return misc::dash(day_of(r, i)) + s;
@@ -61,7 +61,7 @@ int x_formatter(double v, char *buf, int size, void *ud) {
   const misc::Ymd y = day_of(*f.r, i);
   if (!f.time)
     return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
-  const int m = Market::slot_label(slot_of(*f.r, i));
+  const int m = Quote::slot_label(slot_of(*f.r, i));
   return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d %02d:%02d", y / 100 % 100, y % 100, m / 60, m % 60);
 }
 
@@ -732,7 +732,7 @@ void RenderLinesCta(CtaService &svc, LinesUIState &ui, const char *name, const I
     c.sent = {c.sent.gen + 1, q.side, q.key, c.spec};
     svc.Request(c.sent);
   } else if (!q.ok() && !c.sent.gen) { // 首次打开未选标的: 先备价格库
-    c.sent = {1, Market::kBasket, kCtaNone, c.spec};
+    c.sent = {1, Quote::kBasket, kCtaNone, c.spec};
     svc.Request(c.sent);
   }
   std::shared_ptr<const CtaResult> r;

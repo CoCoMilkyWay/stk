@@ -35,7 +35,7 @@ struct AssetItem {
   misc::Ymd start_date = 0;
   misc::Ymd end_date = 0;
 
-  // 按日的帧不在这里, 在 Asset::orders() (日主序, 见 codec/OrdersDay.hpp).
+  // 按日的帧不在这里, 在 Asset::catalog() (日主序, 见 codec/OrdersDay.hpp).
 
   // 构造
   AssetItem() = default;
@@ -60,12 +60,12 @@ struct Asset {
   // ========================================
   // 全库帧目录: [日][资产] 一格一个 FrameRef + 每天的编码账目
   // ========================================
-  // 由二进制扫描整体重建 (见 codec/OrdersDay.hpp), 建好即只读, 以快照发布:
-  // 读者 orders() 取一份, 持有期间内容不变, 与重扫描 / 重编码并发安全. 账目里有
+  // 由 orders 扫描整体重建 (见 codec/OrdersDay.hpp), 建好即只读, 以快照发布:
+  // 读者 catalog() 取一份, 持有期间内容不变, 与重扫描 / 重编码并发安全. 账目里有
   // 缺口的"原因" —— 只有编码器知道, date_gaps 只知道"缺了几个", 两者在 By Date
   // 表里按日期对齐.
-  std::shared_ptr<const OrdersCatalog> orders() const;
-  void publish_orders(std::shared_ptr<const OrdersCatalog> catalog);
+  std::shared_ptr<const OrdersCatalog> catalog() const;
+  void publish_catalog(std::shared_ptr<const OrdersCatalog> catalog);
 
   // ========================================
   // 按日统计 (Dates 用, 加载 stock_info 后算一次)
@@ -123,12 +123,12 @@ struct Asset {
   std::vector<AssetStats> asset_stats; // 按 asset_id 索引; 空 = 待重算
 
   // ========================================
-  // 二进制库元数据
+  // orders 库元数据
   // ========================================
-  struct Binary {
+  struct Orders {
     bool scanned = false; // 是否已完成扫描
-    bool exists = false;  // 二进制库目录是否存在
-    std::string path;     // 二进制库根目录
+    bool exists = false;  // orders 库目录是否存在
+    std::string path;     // orders 库根目录
 
     // 日期覆盖
     misc::Ymd min_date = 0;    // 已编码日期的最早
@@ -146,7 +146,7 @@ struct Asset {
     size_t backtest_orders = 0;          // 回测区间内逐笔条数
     float backtest_orders_size_gb = 0.0; // 回测区间内帧体积
     size_t backtest_order_days = 0;      // 回测区间内有逐笔的 (资产, 日期) 对数
-  } binary;
+  } orders;
 
   // ========================================
   // 归档库元数据
@@ -173,15 +173,15 @@ struct Asset {
   // 待编码 / raw 缺口都是行上的谓词, 不另存集合.
   struct BacktestDay {
     misc::Ymd date = 0;
-    bool binary = false;  // 日文件里至少一帧
+    bool orders = false;  // 日文件里至少一帧
     bool archive = false; // 归档有这天
 
-    bool pending() const { return !binary && archive; }
-    bool gap() const { return !binary && !archive; }
+    bool pending() const { return !orders && archive; }
+    bool gap() const { return !orders && !archive; }
   };
   struct Backtest {
     misc::Ymd start = 0;           // 起始日 (Config::start_date)
-    misc::Ymd end = 0;             // 末个 L2 日 (binary / archive 任一有的最晚日)
+    misc::Ymd end = 0;             // 末个 L2 日 (orders / archive 任一有的最晚日)
     std::vector<BacktestDay> days; // 升序
 
     template <typename Pred>
@@ -202,13 +202,13 @@ struct Asset {
   // 四步同一形状: 只读本对象 (items / 上一版两源缓存) + 只写 AssetScan, 批内并行走 ex.tasks,
   // 进度 begin(阶段, 总量) / publish(1). 产物由 GUI 帧首 adopt 整体换进 —— 中途页面看到的是上一版完整结果.
   // ========================================
-  void scan_binary(AssetScan &out, const std::string &orders_dir, misc::exec::ForkJoin &ex, Progress &p) const;
+  void scan_orders(AssetScan &out, const std::string &orders_dir, misc::exec::ForkJoin &ex, Progress &p) const;
   static void scan_archive(AssetScan &out, const std::string &archive_dir, const std::string &archive_extension,
                            misc::exec::ForkJoin &ex, Progress &p);
 
-  // 覆盖分析: 建回测日历 —— 行 = 基本面交易日历 (assetinfo.stock_days) ∩ [start, 末个 L2 日], 每行标两源有无 (out 的两源缓存).
+  // 覆盖分析: 建回测日历 —— 行 = 基本面交易日历 (asset_info.stock_days) ∩ [start, 末个 L2 日], 每行标两源有无 (out 的两源缓存).
   // 几百个日期, 单线程. 区间内的条数/体积 (要遍历帧目录) 归 compute_coverage_statistics 那趟一起算.
-  static void compute_backtest_coverage(AssetScan &out, misc::Ymd start, const AssetInfo &assetinfo);
+  static void compute_backtest_coverage(AssetScan &out, misc::Ymd start, const AssetInfo &asset_info);
 
   // 按日统计 (Calendar 完整性 / ASSET 的 Orders% / Encode 的缺失表,
   // 同一份统计一次算完)
@@ -225,23 +225,23 @@ struct Asset {
   //
   // 交易日 × 资产的双重遍历 (885 × 5800 量级) 切成连续的交易日段 (一段一个 task),
   // 每段各自累加, 结束后按段的先后顺序合并 (缺失日期样本要保持时间序).
-  void compute_coverage_statistics(AssetScan &out, const AssetInfo &assetinfo, misc::exec::ForkJoin &ex, Progress &p) const;
+  void compute_coverage_statistics(AssetScan &out, const AssetInfo &asset_info, misc::exec::ForkJoin &ex, Progress &p) const;
 
   // GUI 线程: 一趟扫描的产物整体换进 (帧目录随之发布)
   void adopt(AssetScan &&scan);
   uint64_t generation = 0; // 数据代: 每次 adopt +1 (同步 / 编码都以扫描换进收尾), 驱动 GUI 视图失效
 
 private:
-  mutable std::mutex orders_mutex_;
-  std::shared_ptr<const OrdersCatalog> orders_ = std::make_shared<const OrdersCatalog>();
+  mutable std::mutex catalog_mutex_;
+  std::shared_ptr<const OrdersCatalog> catalog_ = std::make_shared<const OrdersCatalog>();
 };
 
 // 一趟扫描的全部产物 = Asset 里扫描负责的那几块 + 帧目录快照 (Scan worker 私有算出, Asset::adopt 换进)
 struct AssetScan {
-  Asset::Binary binary;
+  Asset::Orders orders;
   Asset::Archive archive;
   Asset::Backtest backtest;
-  std::shared_ptr<const OrdersCatalog> orders = std::make_shared<const OrdersCatalog>();
+  std::shared_ptr<const OrdersCatalog> catalog = std::make_shared<const OrdersCatalog>();
   std::unordered_map<misc::Ymd, Asset::DateStats> date_stats;
   std::vector<Asset::DateGap> date_gaps;
   std::vector<Asset::AssetStats> asset_stats;

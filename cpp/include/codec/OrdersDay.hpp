@@ -52,9 +52,44 @@
 //   orders/YYYY/MM/YYYYMMDD.bin        一天的产物 (编码写, 特征读)
 // orders_days 是 orders_day_path 的逆: 目录下全部日文件 (升序), 编码中的 .tmp 与
 // 放错位置的文件不认.
+//   misc/archive.cpp 的列表 / 流式解压命令行硬编码 unrar 语法 ("vt" 技术列表 /
+//   "p -inul" 抽取到 stdout), 解压工具与归档格式绑死, 不可切换.
+inline constexpr const char *kArchiveExtension = ".rar";
+inline constexpr const char *kArchiveTool = "unrar";
+inline constexpr const char *kOrdersExtension = ".bin";
 std::string archive_day_path(const std::string &dir, misc::Ymd date);
 std::string orders_day_path(const std::string &dir, misc::Ymd date);
 std::vector<misc::Ymd> orders_days(const std::string &dir);
+
+// 代码变更 (同一家公司换了证券代码): 归档目录名用当时的代码, 资产轴用现行代码.
+// A 股换代码极罕见 —— 重大资产重组通常也不换 —— 全库实测只有中航电测一例 (300114.SZ → 302132.SZ)
+struct CodeChange {
+  const char *code;   // 现行代码 (资产轴上的那个)
+  const char *former; // 变更前代码 (归档目录名)
+  misc::Ymd until;    // 新代码生效日; 早于这天的归档里叫 former
+};
+
+inline constexpr CodeChange kCodeChanges[] = {
+    {"302132.SZ", "300114.SZ", 20250217}, // 中航电测 → 中航成飞
+};
+
+// 现行代码 → 归档里的目录名. 无变更记录时原样返回.
+inline std::string archive_code(const std::string &code, misc::Ymd date) {
+  for (const auto &c : kCodeChanges) {
+    if (code == c.code && date < c.until)
+      return c.former;
+  }
+  return code;
+}
+
+// archive_code 的逆向: 归档里读到的目录名 → 现行代码.
+inline std::string current_code(const std::string &archived, misc::Ymd date) {
+  for (const auto &c : kCodeChanges) {
+    if (archived == c.former && date < c.until)
+      return c.code;
+  }
+  return archived;
+}
 
 // 一个 (资产, 当天) 的帧在日文件里的位置 —— 日文件的目录项, 也是 OrdersCatalog
 // 的格子. 与 L2::Frame 对仗: 内存指针换成文件偏移, 再带上目录键.
@@ -239,7 +274,7 @@ private:
 // 日主序: 下游 (特征计算 / 预读 / 覆盖统计 / 订单流重放) 全是按天推进、天内扫资产.
 //
 // 密集 = 日数 × 资产数 × 24B ≈ 400MB, 定址 O(1). 每次扫描整体重建成一份新的,
-// 建好后只读, 以快照发布 (见 Asset::orders) —— 读者持有期间内容不变, 与重扫描
+// 建好后只读, 以快照发布 (见 Asset::catalog) —— 读者持有期间内容不变, 与重扫描
 // 并发安全. 一次重建是几百次读日文件头 + 目录, 百毫秒量级. 扫描之后新上市的
 // 资产 (AssetLoader 追加) 下标 ≥ width, at 对越界返回缺席格子.
 //

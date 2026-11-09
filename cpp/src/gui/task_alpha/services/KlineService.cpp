@@ -19,7 +19,7 @@ struct KlineService::Impl {
   FeatureRead::DayColumns cols;
   std::vector<size_t> idx;
 
-  void ensure(const analysis::ReadScope &sc, size_t lvl) {
+  void ensure(const reader::ReadScope &sc, size_t lvl) {
     const FeatureLib &lib = sc.lib();
     if (reader && dir == lib.dir && hash == lib.axis.hash && A == lib.axis.size() && level == lvl) {
       reader->revive(); // 新请求 = Inspect 刚读过库 (库已落地), 判废解除

@@ -32,6 +32,15 @@ namespace fundamental {
 using misc::Ym;
 using misc::Ymd;
 
+// 同步参数 (sync::plan / Store 账本共用)
+//   kSyncStart: 同步起点 (A 股财报电子化从 2015 起逐渐完整). 与 Config::start_date (回测日历起点)
+//     语义不同, 不合并 —— 基本面历史为特征表全周期服务, 不随回测日历收窄
+//   kLookbackDays: 月末仍在该窗口内的月视为开放月 (兜服务端回填修订)
+//   kDedupSeconds: parquet mtime 距今 < 该值则本表跳过 (连跑零网络)
+inline constexpr Ymd kSyncStart = 20150101;
+inline constexpr int kLookbackDays = 7;
+inline constexpr int kDedupSeconds = 60 * 60;
+
 // 落盘形态
 //   Month: output/fundamental/YYYY-MM/<name>.parquet, 行按 vd 归月 (0 行月也落文件 = 拉过)
 //   Meta : output/fundamental/_meta/<name>.parquet 单文件整刷

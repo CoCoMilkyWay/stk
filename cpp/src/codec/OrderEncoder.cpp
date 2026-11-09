@@ -362,7 +362,7 @@ bool OrderEncoder::parse_market_tail(const char *data, size_t len, MarketSummary
 }
 
 // ============================================================================
-// Section 3: Data Conversion (CSV structures → Binary structures)
+// Section 3: Data Conversion (CSV structures → Order frames)
 // ============================================================================
 
 Order OrderEncoder::csv_to_order(const CSVOrder &csv, uint32_t price_base, bool szse) {

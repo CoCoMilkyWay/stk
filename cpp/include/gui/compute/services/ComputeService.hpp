@@ -5,10 +5,10 @@
 #pragma once
 
 #include "features/Storage/FeatureLevels.hpp" // TierId / PerTier / PerLib
+#include "features/Storage/FeatureLib.hpp"
 #include "gui/util/Service.hpp"
 #include "misc/date.hpp"
-#include "shared/FeatureLib.hpp"
-#include "worker/compute/Stages.hpp" // StageLayout (UI 核布局表) / tier_ops
+#include "worker/compute/TierOps.hpp" // tier_ops
 
 #include <algorithm>
 #include <optional>
@@ -63,7 +63,7 @@ void remove_lib(const Config &cfg, LibId id);
 // Compute Config (= 请求)
 // ============================================================================
 
-// 日环深度 / 领养额度不在这里: 管线按负载模拟定初值、运行中按实测调 (见 worker/compute/Stages.hpp 时序调参)
+// 日环深度 / 领养额度不在这里: 管线按负载模拟定初值、运行中按实测调 (见 worker/compute/TsTuner.hpp)
 struct ComputeConfig {
   // 按档. 预取 / 截面 / 落盘核数: 各自按日轮转, 从时序让核 (Lob 时序是瓶颈, 不让).
   PerTier<int> pf_cores{{1, 1}};

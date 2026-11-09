@@ -5,15 +5,15 @@
 namespace GUI {
 struct TaskHandle;
 }
-namespace GUI::Market {
-struct MarketHub;
+namespace GUI::Quote {
+struct QuoteHub;
 }
-namespace GUI::Alpha {
-struct AlphaHub;
+namespace GUI::Engine {
+struct EngineHub;
 }
 
 namespace GUI::Tasks {
 
-TaskHandle CreateMarketTask(std::shared_ptr<Market::MarketHub> market, std::shared_ptr<Alpha::AlphaHub> alpha);
+TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_ptr<Engine::EngineHub> engine);
 
 } // namespace GUI::Tasks

@@ -6,7 +6,7 @@
 // 读端 (FeatureRead / GUI / shared) 只需要这里的结构体 + 运行时层表访问, 不 include
 // 字段表 (FieldsGenerated) —— 增删改特征不触发它们重编, 只重编 FeatureMeta.cpp + 写端.
 //   level_info(tier, lvl)   运行时层表 (定义在 src/features/FeatureMeta.cpp, 指向编译期 <tier>::LEVELS)
-//   编译期 <tier>::LEVELS[] (写端定址折叠用) 在 FeatureStoreConfig.hpp, 仅写端 include.
+//   编译期 <tier>::LEVELS[] (写端定址折叠用) 在 FeatureTier.hpp, 仅写端 include.
 // 层号 / 行数 / 层名 (文件名) 与档无关 (L_sec 秒 / L_1min 分钟 / L_5min .. L_60min 分钟箱 / L_1day 日, 全档同一套), 是这里的常量; 字段数 / 字段表 / 指纹才随档.
 // 日文件格式 / 落盘编码在 FeatureDay.hpp.
 // ============================================================================
@@ -66,7 +66,7 @@ struct PerTier {
   bool operator==(const PerTier &) const = default;
 };
 
-// 池: 池表 feature_pools() 下标 (shared/FeatureLib.hpp; [0] = all, 其余 = 子池)
+// 池: 池表 feature_pools() 下标 (features/Storage/FeatureLib.hpp; [0] = all, 其余 = 子池)
 using PoolId = uint8_t;
 inline constexpr PoolId kAllPool = 0;
 size_t pool_count(); // 池表长 (由 Bar 字段表池列定; 定义在 FeatureMeta.cpp)

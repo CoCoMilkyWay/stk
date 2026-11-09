@@ -2,22 +2,21 @@
 // FeatureMeta — 字段表元数据的唯一数据 TU
 // ============================================================================
 // 全项目只有这个 TU (加上写端 worker) include 生成的字段表 (FieldsGenerated, 经
-// FeatureStoreConfig) 与 FeatureCategoriesGenerated —— GUI/shared 消费者只 include
-// 稳定头 (shared/Feature.hpp / features/Storage/FeatureLevels.hpp), 增删改特征时
+// FeatureTier) 与 FeatureCategoriesGenerated —— 其余消费者只 include
+// 稳定头 (features/FeatureMeta.hpp / features/Storage/FeatureLevels.hpp), 增删改特征时
 // 它们不重编, 只重编本文件 + 写端, 再重链.
 //   level_info(tier, lvl)      FeatureLevels.hpp 声明的运行时层表入口
 //   feature_meta::features     每档每层 FeatureMetadata 表 (编译期展开, 运行时只读)
 //   feature_meta::categories_* 每档分类表 (FeatureCategoriesGenerated)
-//   Feature::Metadata::init_from_compile_time  元数据拷贝 + 依赖解析 (node_deps)
+//   feature_meta::deps         字段直接依赖解析 (node_deps)
 //   两档 TS / CS 列名全局唯一 (编译期断言): 因子层按列名拼两档, 重名即歧义
 // ============================================================================
 
+#include "features/FeatureMeta.hpp"
 #include "features/Bar/FeatureCategoriesGenerated.hpp"
 #include "features/Lob/FeatureCategoriesGenerated.hpp"
-#include "features/Storage/FeatureStoreConfig.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
-#include "shared/Config.hpp"                       // Config::kAllPoolDir (池表 [0])
-#include "shared/Feature.hpp"
-#include "shared/FeatureLib.hpp"
+#include "features/Storage/FeatureLib.hpp"
+#include "features/Storage/FeatureTier.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
 
 #include <algorithm>
 #include <array>
@@ -193,7 +192,7 @@ constexpr size_t kPoolCount = std::count_if(kBarDay.begin(), kBarDay.end(), is_p
 static_assert(kPoolCount > 0, "Bar 字段表没有池列 (Node/Bar/CS/Pool 的 pool_*)");
 constexpr std::array<PoolDef, 1 + kPoolCount> kPools = [] {
   std::array<PoolDef, 1 + kPoolCount> out{};
-  out[0] = {Config::kAllPoolDir, "全市场", SIZE_MAX};
+  out[0] = {kAllPoolName, "全市场", SIZE_MAX};
   size_t n = 1;
   for (size_t i = 0; i < kBarDay.size(); ++i)
     if (is_pool(kBarDay[i]))
@@ -232,20 +231,9 @@ std::span<const char *const> categories_l1(TierId tier) { return tier_meta(tier)
 
 std::span<const char *const> categories_l2(TierId tier) { return tier_meta(tier).cat2; }
 
-} // namespace feature_meta
-
-// ============================================================================
-// Feature::Metadata 初始化 (从编译期表拷贝 + 依赖解析)
-// ============================================================================
-
-void Feature::Metadata::init_from_compile_time(TierId t) {
-  tier = t;
+std::array<std::vector<std::string>, LEVEL_COUNT> deps(TierId t) {
   const TierMeta &tm = tier_meta(t);
-  // 1. Copy from constexpr arrays to runtime vectors (for filtering/sorting); 档缺的层为空
-  for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
-    features[lvl].assign((*tm.meta)[lvl].begin(), (*tm.meta)[lvl].end());
-
-  // 2. 节点上游依赖表: node name → 直接依赖项 (来自 CMake 生成的 <tier>::node_deps::TABLE)
+  // 1. 节点上游依赖表: node name → 直接依赖项 (来自 CMake 生成的 <tier>::node_deps::TABLE)
   //    项 = "Up" (整节点: Up.out() / Up.outs() / Up.hist() / Up.member) 或 "Up.port" (单口: Up.out(Up.port))
   std::unordered_map<std::string, std::vector<std::string>> node_deps_map;
   auto load_deps = [&](const auto &table) {
@@ -258,7 +246,7 @@ void Feature::Metadata::init_from_compile_time(TierId t) {
   ALL_TIERS(TIER_DEPS_ONE)
 #undef TIER_DEPS_ONE
 
-  // 3. 节点 → 产出字段 (code, 口名) (跨所有层)
+  // 2. 节点 → 产出字段 (code, 口名) (跨所有层)
   //    FieldSource.source: TS → 节点名 (在 node_deps_map 中); CS → 源字段 code; "" → 无
   struct NodeField {
     std::string code, port;
@@ -274,7 +262,7 @@ void Feature::Metadata::init_from_compile_time(TierId t) {
   for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
     add_node_fields((*tm.sources)[lvl]);
 
-  // 4. 逐字段解析直接依赖 (字段 code, 分号分隔)
+  // 3. 逐字段解析直接依赖 (字段 code, 分号分隔)
   auto resolve_level = [&](std::span<const FieldSource> srcs, std::vector<std::string> &out) {
     const size_t n = srcs.size();
     out.assign(n, {});
@@ -306,6 +294,10 @@ void Feature::Metadata::init_from_compile_time(TierId t) {
       }
     }
   };
+  std::array<std::vector<std::string>, LEVEL_COUNT> out;
   for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
-    resolve_level((*tm.sources)[lvl], deps[lvl]);
+    resolve_level((*tm.sources)[lvl], out[lvl]);
+  return out;
 }
+
+} // namespace feature_meta

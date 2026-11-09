@@ -145,36 +145,7 @@ struct EnumStr {
   X(LB, 2, "标签")            \
   X(META, 3, "元数据")
 
-// Transform 探索用的时序归一化 (math/normalize/Normalize.hpp, Params::ts_norm). 字段表无此列:
-// 落盘归一化由 SRC 列声明 (TS(..., Tf, Method) → ts::, CS(..., Tf, Method) → cs::), GUI 从 SRC 推导显示
-#define NORM_METHODS(X)                                       \
-  X(NONE, 0, "无") /* x */                                    \
-  /* scale (linear) */                                        \
-  X(ZSCORE, 1, "Z标准化")       /* (x - mean) / std */        \
-  X(ROBUST_ZSCORE, 2, "稳健Z")  /* (x - median) / MAD */      \
-  X(IQR_ZSCORE, 3, "IQR标准化") /* (x - Q2) / (Q3 - Q1) */    \
-  /* order based */                                           \
-  X(RANK, 4, "排名")              /* rank / N */              \
-  X(RANK_ZSCORE, 5, "排名标准化") /* rank → inverse normal */ \
-  /* bounding */                                              \
-  X(CLIP, 6, "截断")   /* clip(x, [-k, k]) */                 \
-  X(WINSOR, 7, "缩尾") /* winsorize by percentile */          \
-  /* nonlinear */                                             \
-  X(LOG, 8, "对数")                                           \
-  X(POWER, 9, "幂变换")                                       \
-  X(ASINH, 10, "反双曲正弦")                                  \
-  X(TANH, 11, "双曲正切")                                     \
-  X(SINCOS, 12, "正余弦编码") /* x → (sin, cos) */            \
-  /* composite pipelines */                                   \
-  X(LOG_ZSCORE, 20, "对数+Z")                                 \
-  X(POWER_ZSCORE, 21, "幂+Z")                                 \
-  X(ASINH_ZSCORE, 22, "asinh+Z")                              \
-  X(CLIP_ZSCORE, 23, "Z+截断")                                \
-  X(WINSOR_ZSCORE, 24, "缩尾+Z")                              \
-  X(CLIP_LOG_ZSCORE, 25, "截断+对数+Z")
-
 DEFINE_ENUM(FeatureDataType, FEATURE_DATA_TYPES)
-DEFINE_ENUM(NormMethod, NORM_METHODS)
 
 #undef DEFINE_ENUM
 #undef ENUM_VALUE
@@ -237,7 +208,7 @@ constexpr L2::ValidType valid_of(size_t lvl, Trigger flush) {
 // ----------------------------------------------------------------------------
 // SRC 列解析 (字段表消费者共用)
 //   SRC_KIND_##src             → FeatureDataType
-//   SRC_VALID_##src            → L2::ValidType (TS 看本层 + 节点 flush 域: 需要 kLevel 与 node_flush::<node>, 见 FeatureStoreConfig)
+//   SRC_VALID_##src            → L2::ValidType (TS 看本层 + 节点 flush 域: 需要 kLevel 与 node_flush::<node>, 见 FeatureTier)
 //   SRC_TS_TF_##src / SRC_TS_METHOD_##src → ts::TfId:: / ts::MethodId:: (TS 行取 Tf / Method, 其余 None; 消费者需 include Method/TS.hpp)
 //   SRC_CS_TF_##src / SRC_CS_METHOD_##src → cs::TfId:: / cs::MethodId:: (CS 行取 Tf / Method, 其余 None; 消费者需 include Method/CS.hpp)
 //   SRC_DISPATCH(P, code, src) → P_TS(code, node[, port], Tf, Method) / P_CS(code, ns, lvl, s, Tf, Method) /

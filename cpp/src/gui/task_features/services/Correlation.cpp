@@ -1,10 +1,10 @@
 #include "gui/task_features/services/Correlation.hpp"
 #include "features/DataDefine.hpp" // kNaN (全库缺失值口径)
-#include "features/Storage/DayBatchPlane.hpp"
+#include "features/Storage/FeaturePlane.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
+#include "gui/task_features/services/Analysis.hpp" // threads_for / ForkJoin
 #include "misc/profiler.hpp"
-#include "shared/Analysis.hpp" // threads_for / ForkJoin
 
 #include <algorithm>
 #include <bit>
@@ -13,6 +13,7 @@
 namespace GUI::Features {
 
 using namespace analysis;
+using namespace reader;
 
 size_t corr_slice_stride(size_t level) {
   if (level == L_1day)
@@ -353,12 +354,12 @@ struct RankPlane {
 // ============================================================================
 // Engine — 三个目标共用: 天批流水线 (IO 预读 → 秩 → 等价类 → 累加 → 发布)
 // ============================================================================
-// 两个常驻池: ex = 计算 (worker 线程 dispatch), Prefetch 自带 io 池 (预读线程 dispatch), 两者并发互不重入.
+// 两个常驻池: ex = 计算 (worker 线程 dispatch), Stream 自带 io 池 (预读线程 dispatch), 两者并发互不重入.
 // 累加任务 = (8×8 特征宏块对 I ≤ J) × lag 组: 每个 (对, lag) 累加格只被一个任务写, 免 shard 免归约.
 struct Engine {
   CorrelationPlan plan{};
   size_t F = 0, A = 0, S = 0, days = 0, L = 0, P = 0;
-  Prefetch<CsPlane> pf;
+  Stream<CsPlane> stream;
   RankPlane rk;
   std::vector<PairSums> acc; // [P][L] 跨天累加
   std::vector<double> diag;  // [F] Σ 有效资产数 (矩阵对角 pair_n)
@@ -393,8 +394,8 @@ struct Engine {
     lag_group = tile_pairs.size() >= 4 * n_threads ? L : 1;
 
     const size_t n_blk = (F + CsPlane::kBlockCols - 1) / CsPlane::kBlockCols + spec.plan.srcs.size() - 1; // 源列块数上界
-    pf.prepare(threads_for(days * n_blk), spec.plan, As, CsPlane::kBlockCols);
-    for (CsPlane &pl : pf.buf)
+    stream.prepare(threads_for(days * n_blk), spec.plan, As, CsPlane::kBlockCols);
+    for (CsPlane &pl : stream.buf)
       pl.prepare(A, spec.level(), days, S, F);
     rk.prepare(days * S * F, A);
     acc.assign(P * L, PairSums{});
@@ -426,7 +427,7 @@ struct Engine {
         pl.load_batch(io, slots, rd, spec.plan, sample, d0, bd, cancel);
       };
     };
-    return pf.stream(
+    return stream.run(
         n_days, days, cancel, load,
         [&](const CsPlane &pl, size_t, size_t bd) {
           rank(pl, bd, cancel);

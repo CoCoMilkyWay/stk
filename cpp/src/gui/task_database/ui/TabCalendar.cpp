@@ -1,4 +1,4 @@
-// Tab Dates - Calendar Grid View Implementation
+// Tab Calendar - 交易日历格
 // Dense calendar display for trading day visualization
 
 #include "gui/task_database/ui/TabCalendar.hpp"

@@ -229,7 +229,7 @@ assert_partition(源表 SRC_ALL ${SRC_PARTS})
 set(MATH_FAST_FLAGS -ffast-math)
 set(MATH_PRECISE_FLAGS -fno-fast-math -fno-math-errno)
 
-# 两表同一段序 (shared → misc → api → fundamental → codec → features → worker → gui → agent → factor → 入口), 段内按路径序; 某档无文件的段留空
+# 两表同一段序 (shared → misc → api → fundamental → codec → features → worker → gui → factor → 入口), 段内按路径序; 某档无文件的段留空
 set(MATH_FAST
     # shared
     shared/Asset.cpp
@@ -262,10 +262,12 @@ set(MATH_FAST
     gui/Run_OpenGL.cpp
     gui/Run_Vulkan.cpp
     gui/Tasks.cpp
+    gui/compute/ComputeHub.cpp
     gui/compute/services/ComputeService.cpp
     gui/compute/ui/TabCompute.cpp
     gui/task_database/services/AuditService.cpp
     gui/task_database/services/EncodeService.cpp
+    gui/task_database/services/FileCheckService.cpp
     gui/task_database/ui/TabCalendar.cpp
     gui/task_database/ui/TabEncode.cpp
     gui/task_database/ui/TabSync.cpp
@@ -274,11 +276,10 @@ set(MATH_FAST
     gui/task_features/services/DistributionService.cpp
     gui/task_features/services/PreviewService.cpp
     gui/task_features/services/TransformService.cpp
-    gui/task_icon_bar/NetworkService.cpp
-    gui/task_icon_bar/TaskIconBar.cpp
+    gui/icon_bar/NetworkService.cpp
+    gui/icon_bar/IconBar.cpp
     gui/task_settings/TaskSettings.cpp
     gui/task_tools/ui/TabSystem.cpp
-    # agent
     # factor
     # 入口
     main.cpp
@@ -286,8 +287,6 @@ set(MATH_FAST
 
 set(MATH_PRECISE
     # shared
-    shared/Analysis.cpp
-    shared/AssetAxis.cpp
     shared/Config.cpp
     shared/ReadRequest.cpp
     # misc
@@ -301,6 +300,7 @@ set(MATH_PRECISE
     api/sina/client.cpp
     api/tushare/client.cpp
     # fundamental
+    fundamental/AssetAxis.cpp
     fundamental/Audit.cpp
     fundamental/Remote.cpp
     fundamental/Scan.cpp
@@ -312,17 +312,26 @@ set(MATH_PRECISE
     features/Method/CS.cpp
     features/Panel/Fund.cpp
     features/Panel/Pool.cpp
+    features/Storage/FeatureLib.cpp
     # worker: compute 的 Bar 档管线 (TS: Fund 缺失值 / PoolKey 范围 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
     worker/compute/FeedBar.cpp
     worker/compute/Profile.cpp
     # gui
+    gui/engine/ui/PortfolioBoxes.cpp
+    gui/quote/BasketRow.cpp
+    gui/quote/Quote.cpp
+    gui/quote/QuoteHub.cpp
+    gui/quote/services/BasketHistory.cpp
+    gui/quote/services/QuoteService.cpp
+    gui/quote/services/StockHistory.cpp
     gui/task_beta/services/PoolSelect.cpp
     gui/task_beta/services/PoolSpec.cpp
     gui/task_database/TaskDatabase.cpp
     gui/task_database/services/AssetLoader.cpp
-    gui/task_database/services/FundamentalService.cpp
     gui/task_database/services/ScanService.cpp
     gui/task_database/services/StateManager.cpp
+    gui/task_database/services/SyncService.cpp
+    gui/task_features/services/Analysis.cpp
     gui/task_features/services/Correlation.cpp
     gui/task_features/services/Distribution.cpp
     gui/task_features/services/OrderFlow.cpp
@@ -336,30 +345,27 @@ set(MATH_PRECISE
     gui/task_features/ui/TabOrderFlow.cpp
     gui/task_features/ui/TabTable.cpp
     gui/task_features/ui/TabTransform.cpp
-    gui/task_market/services/BasketHistory.cpp
-    gui/task_market/services/BasketRow.cpp
-    gui/task_market/services/Kline.cpp
-    gui/task_market/services/MarketHub.cpp
-    gui/task_market/services/QuoteService.cpp
-    gui/task_market/services/StockHistory.cpp
     gui/task_market/ui/CrossSectionAnalysis.cpp
-    gui/task_market/ui/PortfolioBoxes.cpp
     gui/task_market/ui/QuotesPanel.cpp
-    gui/task_market/ui/TabAssets.cpp
+    gui/task_market/ui/TabAsset.cpp
     # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) / CTA 模型 (cta/: NaN = 未就绪) 的消费者
-    gui/factors/Book.cpp
-    gui/factors/Engine.cpp
-    gui/factors/File.cpp
-    gui/factors/Load.cpp
-    gui/factors/Probe.cpp
-    gui/factors/Scope.cpp
-    gui/factors/Table.cpp
+    gui/engine/Book.cpp
+    gui/engine/Engine.cpp
+    gui/engine/EngineHub.cpp
+    gui/engine/File.cpp
+    gui/engine/Hold.cpp
+    gui/engine/Load.cpp
+    gui/engine/Probe.cpp
+    gui/engine/Scope.cpp
+    gui/engine/Table.cpp
+    gui/engine/services/InspectService.cpp
+    gui/engine/services/LensService.cpp
+    gui/engine/services/PortfolioService.cpp
+    gui/engine/services/RunService.cpp
+    gui/engine/services/SearchService.cpp
     gui/task_alpha/TaskAlpha.cpp
-    gui/task_alpha/services/InspectService.cpp
     gui/task_alpha/services/KlineService.cpp
     gui/task_alpha/services/OperatorsService.cpp
-    gui/task_alpha/services/RunService.cpp
-    gui/task_alpha/services/SearchService.cpp
     gui/task_alpha/ui/TabFactors.cpp
     gui/task_alpha/ui/TabInspect.cpp
     gui/task_alpha/ui/TabOperators.cpp
@@ -369,7 +375,6 @@ set(MATH_PRECISE
     gui/task_market/TaskMarket.cpp
     gui/task_market/services/CtaLib.cpp
     gui/task_market/services/CtaService.cpp
-    gui/task_market/services/PortfolioService.cpp
     gui/task_market/ui/LinesCta.cpp
     gui/task_market/ui/LinesPlot.cpp
     gui/task_market/ui/LinesSheet.cpp
@@ -379,22 +384,21 @@ set(MATH_PRECISE
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp
     gui/util/Latex.cpp
-    # agent: Bridge / services/LensService = 因子契约头的消费者; services/ReplayService = 盘口重放 (同 OrderFlow 读端); Views = 观察的统计 (NaN 即无效); Docs = 研报统计 (原文没给 = NaN); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
-    agent/Acts.cpp
-    agent/Board.cpp
-    agent/Bridge.cpp
-    agent/Chat.cpp
-    agent/Docs.cpp
-    agent/Journal.cpp
-    agent/Llm.cpp
-    agent/Mine.cpp
-    agent/Notes.cpp
-    agent/Prompt.cpp
-    agent/Tools.cpp
-    agent/Views.cpp
-    agent/services/LensService.cpp
-    agent/services/ReplayService.cpp
-    agent/ui/TaskAgent.cpp
+    # gui: task_agent 的 Bridge = 因子契约头的消费者; services/ReplayService = 盘口重放 (同 OrderFlow 读端); Views = 观察的统计 (NaN 即无效); Docs = 研报统计 (原文没给 = NaN); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
+    gui/task_agent/Acts.cpp
+    gui/task_agent/Board.cpp
+    gui/task_agent/Bridge.cpp
+    gui/task_agent/Chat.cpp
+    gui/task_agent/Docs.cpp
+    gui/task_agent/Journal.cpp
+    gui/task_agent/Llm.cpp
+    gui/task_agent/Mine.cpp
+    gui/task_agent/Notes.cpp
+    gui/task_agent/Prompt.cpp
+    gui/task_agent/TaskAgent.cpp
+    gui/task_agent/Tools.cpp
+    gui/task_agent/Views.cpp
+    gui/task_agent/services/ReplayService.cpp
     # factor: 因子契约头的消费者 = op_check 本体与 GPU 后端
     factor/op_check.cpp
     factor/op_check_gpu.cu
@@ -428,12 +432,12 @@ endforeach()
 # 每档生成物 (build 目录 generated/features/<Tier>/), 切开"字段表消费者"与"节点代码消费者"的编译依赖:
 #   FieldsGenerated.hpp  宏文本汇总, 不 #include 任何节点头 —— NODE_/FIELDS_/helper 宏
 #                        原样抽自节点文件 (逐 token 一致) + <Tier>_NODES(N) + <Tier>_L*_FIELDS(X) + <tier>::node_deps.
-#                        消费者 = FeatureStoreConfig (写端布局/指纹) / FeatureMeta.cpp (GUI 元数据).
+#                        消费者 = FeatureTier (写端布局/指纹) / FeatureMeta.cpp (GUI 元数据).
 #                        只改节点实现体 → 本文件内容不变 (configure_file 不重写) → 消费者不重编.
 #   NodesGenerated.hpp   本档全部节点 #include + <Tier>_NODE_PREV_* 声明链 —— 只给本档构图端用.
 #                        一个 TU 只许 include 一档的 NodesGenerated (两档节点文件的 NODE_ 宏同名).
 #   FeatureCategoriesGenerated.hpp  本档一级 / 二级分类表 (namespace <tier>)
-#   两档 FieldsGenerated 同处一个 TU (FeatureMeta.cpp / FeatureStoreConfig), 而节点 / 字段 owner 可同名
+#   两档 FieldsGenerated 同处一个 TU (FeatureMeta.cpp / FeatureTier), 而节点 / 字段 owner 可同名
 #   (Fund / Kline / Meta) 且内容不同 —— 所以内联的 NODE_ / FIELDS_ 宏改名加档前缀 (<Tier>_NODE_x / <Tier>_FIELDS_L_1min_x);
 #   helper 宏原名内联, 两档同名必须逐字一致 (否则 FATAL_ERROR).
 #   节点实例和落盘列直接写在节点文件里 (TS/ 时序节点, CS/ 截面列; 方法在 Method/):
@@ -797,7 +801,7 @@ target_link_libraries(factor_gpu PUBLIC ${GPU_BACKEND_LINK})
 add_executable(op_check ${SRC_ROOT}/${SRC_OP_CHECK})
 target_link_libraries(op_check PRIVATE factor_gpu)
 
-# OpenSSL: agent/Llm 的 LLM 接口走 HTTPS (asio ssl::stream)
+# OpenSSL: task_agent/Llm 的 LLM 接口走 HTTPS (asio ssl::stream)
 #   须链在 arrow 前: vendored libparquet 静态打包了一份 libcrypto 并导出无版本符号 (X509_* / EVP_* / ERR_* …),
 #   排在前面会抢占全局符号查找, asio / libssl 调到它 → 结构体不对位崩溃. NEEDED 序 = 链接序
 find_package(OpenSSL REQUIRED)

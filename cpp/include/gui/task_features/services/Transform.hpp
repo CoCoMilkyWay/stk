@@ -2,6 +2,7 @@
 
 #include "features/FeaturesDefine.hpp"
 #include "features/Method/CS.hpp"
+#include "gui/task_features/services/Analysis.hpp"
 #include "math/Step.hpp"
 #include "math/normalize/Normalize.hpp"
 #include "math/spectral/IIRBandpass.hpp"
@@ -9,7 +10,6 @@
 #include "math/stationary/IntDiff.hpp"
 #include "math/stationary/MADetrend.hpp"
 #include "math/stationary/TodProfile.hpp"
-#include "shared/Analysis.hpp"
 #include "shared/Progress.hpp"
 
 #include <array>
@@ -22,7 +22,7 @@ class FeatureRead;
 namespace GUI::Features {
 
 // ============================================================================
-// Transform Analysis (特征变换探索, 分批流式; 公共骨架见 shared/Analysis.hpp)
+// Transform Analysis (特征变换探索, 分批流式; 公共骨架见 gui/task_features/services/Analysis.hpp)
 // ============================================================================
 // 目的: 在全区间 × 全资产上试一条变换链, 看它对平稳性 / 分布 / 频谱的效果 —— 而且
 // 链上每一步都必须是生产节点能逐值复现的东西, 否则结论不可迁移:
@@ -165,7 +165,7 @@ struct Transform : Published {
     uint64_t psd_n = 0;                                       // 参与平均的 (资产, 段) 数
     std::array<float, kTfMaxLag + 1> acf_mean{}, pacf_mean{}; // 逐 (资产, 段) 单段 ACF/PACF 的算术平均 (lag 0 = 1)
     uint64_t acf_n = 0;                                       // 参与平均的 (资产, 段) 数 (有效样本 ≥ 4×kTfMaxLag)
-    analysis::AggPdf global;                                  // 全资产全区间链末有限输出
+    AggPdf global;                                            // 全资产全区间链末有限输出
     // 链路账目: 输入 = f16 源 (门控不过 / NaN / ±inf / 有限), 输出 = 链末 (NaN = 缺/预热/常数槽, 不分账)
     analysis::Integrity in, out;
   };
@@ -177,7 +177,7 @@ struct Transform : Published {
   ~Transform();
 
   // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), 池轴变了才重建资产线
-  void reset(analysis::ReadScope scope, Spec spec);
+  void reset(reader::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式; 被取消返回 false
   bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
@@ -189,7 +189,7 @@ private:
   template <class G>
   bool build_grid(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   std::unique_ptr<Runtime> rt_;
-  analysis::ReadScope scope_; // reset 时定好, build 全程只读
+  reader::ReadScope scope_; // reset 时定好, build 全程只读
 };
 
 } // namespace GUI::Features

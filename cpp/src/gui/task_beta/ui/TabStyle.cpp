@@ -112,7 +112,7 @@ double col_val(const StyleLine &l, int c) {
 }
 
 // 网格维 [GridDim]: 维名; 线在该维的取值 (−1 = 该维对它不起作用: 全选池的端); 过滤表每个条件一维 (取值 0 = 留 / 1 = 剔)
-enum GridDim : int { kDimSide,
+enum GridDim : int { kDimEnd,
                      kDimN,
                      kDimRebal,
                      kDimWeight,
@@ -126,14 +126,14 @@ const char *dim_name(int d) {
   return d < kDimFilter ? kName[d] : pool::kFilterDefs[d - kDimFilter].name_cn;
 }
 uint8_t &dim_bits(pool::Grid &g, int d) {
-  uint8_t *b[kDimFilter] = {&g.side, &g.n, &g.rebal, &g.weight, &g.st, &g.board, &g.margin};
+  uint8_t *b[kDimFilter] = {&g.end, &g.n, &g.rebal, &g.weight, &g.st, &g.board, &g.margin};
   return d < kDimFilter ? *b[d] : g.filter[d - kDimFilter];
 }
 uint8_t dim_bits(const pool::Grid &g, int d) { return dim_bits(const_cast<pool::Grid &>(g), d); }
 int dim_value(const StyleLine &l, int d) {
   switch (d) {
-  case kDimSide:
-    return l.spec.n ? l.spec.side : -1;
+  case kDimEnd:
+    return l.spec.n ? l.spec.end : -1;
   case kDimN:
     return static_cast<int>(std::ranges::find(pool::kCounts, l.spec.n) - std::begin(pool::kCounts));
   case kDimRebal:
@@ -266,9 +266,9 @@ void grid_bar(StyleUIState &s) {
     bar(d, names, tips, n, 1);
   };
   const pool::StyleDef *sd = s.open >= 0 ? &pool::kStyleDefs[s.open] : nullptr;
-  const char *side[pool::kSides] = {sd ? sd->side_cn[0] : "低端", sd ? sd->side_cn[1] : "高端"};
-  const char *side_tip[pool::kSides] = {"键的低端 (由小到大取前 N)", "键的高端 (由大到小取前 N)"};
-  bar(kDimSide, side, side_tip, pool::kSides);
+  const char *end[pool::kEnds] = {sd ? sd->end_cn[0] : "低端", sd ? sd->end_cn[1] : "高端"};
+  const char *end_tip[pool::kEnds] = {"键的低端 (由小到大取前 N)", "键的高端 (由大到小取前 N)"};
+  bar(kDimEnd, end, end_tip, pool::kEnds);
   ImGui::SameLine(0, 16);
   std::string cn[pool::kNCounts];
   const char *count[pool::kNCounts], *count_tip[pool::kNCounts];
@@ -579,7 +579,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
         if (ImGui::IsItemClicked())
           s.open = s.open == st ? -1 : st;
         if (ImGui::IsItemHovered())
-          tip("%s: 键 = %s\n端: 低 = %s / 高 = %s", sd.name_cn, sd.key, sd.side_cn[0], sd.side_cn[1]);
+          tip("%s: 键 = %s\n端: 低 = %s / 高 = %s", sd.name_cn, sd.key, sd.end_cn[0], sd.end_cn[1]);
         break;
       }
       case kRowNote:

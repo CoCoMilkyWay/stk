@@ -1,14 +1,15 @@
 #include "gui/task_database/TaskDatabase.hpp"
 #include "gui/Tasks.hpp"
+#include "gui/quote/QuoteHub.hpp"
 #include "gui/task_database/services/AuditService.hpp"
 #include "gui/task_database/services/EncodeService.hpp"
-#include "gui/task_database/services/FundamentalService.hpp"
+#include "gui/task_database/services/FileCheckService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
+#include "gui/task_database/services/SyncService.hpp"
 #include "gui/task_database/ui/TabCalendar.hpp"
 #include "gui/task_database/ui/TabEncode.hpp"
 #include "gui/task_database/ui/TabSync.hpp"
-#include "gui/task_market/services/MarketHub.hpp"
 #include "imgui.h"
 #include "misc/exec.hpp"
 #include "shared/Config.hpp"
@@ -28,14 +29,14 @@ using namespace GUI::Database;
 class DatabaseTask {
 private:
   // Service layer
-  std::unique_ptr<FundamentalService> fundamental_svc_;
+  std::unique_ptr<SyncService> sync_svc_;
   std::unique_ptr<AuditService> audit_svc_;
   std::unique_ptr<ScanService> scan_svc_;
   std::unique_ptr<EncodeService> encode_svc_;
   std::unique_ptr<FileCheckService> filecheck_svc_;
   std::unique_ptr<StateManager> state_mgr_;
   // 行情 (Market 任务起): Sync 页只读新浪当日的状态
-  std::shared_ptr<const Market::MarketHub> market_;
+  std::shared_ptr<const Quote::QuoteHub> quote_;
 
   // UI state
   SyncTabState sync_state_;
@@ -49,7 +50,7 @@ private:
   std::string config_dir_ = "../../config";
 
 public:
-  explicit DatabaseTask(std::shared_ptr<const Market::MarketHub> market) : market_(std::move(market)) {}
+  explicit DatabaseTask(std::shared_ptr<const Quote::QuoteHub> quote) : quote_(std::move(quote)) {}
 
   const char *GetName() const {
     return "Database";
@@ -74,7 +75,7 @@ public:
     is_expanded_ = false;
   }
 
-  // 每帧 (无论选中): 收交接 / 推流水线 → taskstate.database (左栏标签/使能同帧读)
+  // 每帧 (无论选中): 收交接 / 推流水线 → task_state.database (左栏标签/使能同帧读)
   void Update(SharedData & /*data*/) {
     if (state_mgr_)
       state_mgr_->tick();
@@ -133,24 +134,24 @@ public:
 private:
   void InitializeServices(SharedData &data) {
     // Create services (in dependency order); 各自构造即起 worker
-    fundamental_svc_ = std::make_unique<FundamentalService>();
+    sync_svc_ = std::make_unique<SyncService>();
     audit_svc_ = std::make_unique<AuditService>();
     scan_svc_ = std::make_unique<ScanService>(data);
     encode_svc_ = std::make_unique<EncodeService>(data);
     filecheck_svc_ = std::make_unique<FileCheckService>();
     // 构造即发首批请求 (核对 Load + 基本面 → 扫描); 进度在终端与各页
-    state_mgr_ = std::make_unique<StateManager>(data, *fundamental_svc_, *scan_svc_, *encode_svc_, *audit_svc_);
+    state_mgr_ = std::make_unique<StateManager>(data, *sync_svc_, *scan_svc_, *encode_svc_, *audit_svc_);
   }
 
   // 基本面状态标签: 在跑 (进度面) > 在飞未起跑 / 件待收 > 最近一件结论
-  TaskStatus FundamentalStatus() const {
-    if (fundamental_svc_->busy())
-      return ProgressStatus(*fundamental_svc_);
+  TaskStatus SyncStatus() const {
+    if (sync_svc_->busy())
+      return ProgressStatus(*sync_svc_);
     if (state_mgr_->syncing())
       return {TaskStatus::Kind::Busy, "syncing"};
-    if (state_mgr_->get_state().fundamental_ok)
+    if (state_mgr_->get_state().asset_info_ready)
       return {TaskStatus::Kind::Ready, "done"};
-    if (state_mgr_->get_state().fundamental_taken)
+    if (state_mgr_->get_state().sync_taken)
       return {TaskStatus::Kind::Error, "error"};
     return {TaskStatus::Kind::Muted, "waiting"};
   }
@@ -166,15 +167,15 @@ private:
       if (audit_svc_->state.op == AuditOp::Repair)
         return {TaskStatus::Kind::Busy, "repairing"};
     }
-    return FundamentalStatus();
+    return SyncStatus();
   }
 
   // Calendar 子行标签: 纯浏览页, 状态跟随前置计算.
   // 前置 (基本面同步 / L2 扫描) 在跑 → 显示进行中; 解锁后 → done; 锁定且无在跑 → none
   TaskStatus BrowseStatus(const SharedData &data, bool can_access) const {
-    if (data.taskstate.database.json_update_inflight)
+    if (data.task_state.database.sync_inflight)
       return {TaskStatus::Kind::Busy, "syncing"};
-    if (data.taskstate.database.l2_scan_inflight)
+    if (data.task_state.database.scan_inflight)
       return {TaskStatus::Kind::Busy, "scanning"};
     if (can_access)
       return {TaskStatus::Kind::Ready, "done"};
@@ -190,24 +191,24 @@ private:
     // 状态已在 Update (帧首) 刷新, 这里只读
     const auto &state = state_mgr_->get_state();
 
-    const DatabaseCheckResult &check_result = state.check;
+    const CoverageCheck &check_result = state.coverage;
 
     // Status indicator at top (流水线顺序: 基本面 → L2)
-    const TaskStatus fstatus = FundamentalStatus();
-    ImGui::Text("Fundamental: ");
+    const TaskStatus fstatus = SyncStatus();
+    ImGui::Text("Sync: ");
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(fstatus.kind), "[%s]", fstatus.text.c_str());
     if (fstatus.kind == TaskStatus::Kind::Warn || fstatus.kind == TaskStatus::Kind::Error) {
-      std::lock_guard lk(fundamental_svc_->mutex);
+      std::lock_guard lk(sync_svc_->mutex);
       ImGui::SameLine();
-      ImGui::TextDisabled("%s", fundamental_svc_->state.message.c_str());
+      ImGui::TextDisabled("%s", sync_svc_->state.message.c_str());
     }
 
     ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();
     const TaskStatus estatus = GUI::Database::EncodeStatus(*state_mgr_, *encode_svc_, *scan_svc_);
-    ImGui::Text("L2 Database: ");
+    ImGui::Text("Orders: ");
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(estatus.kind), "[%s]", estatus.text.c_str());
     if (estatus.kind == TaskStatus::Kind::Warn) {
@@ -246,7 +247,7 @@ private:
 
   void DrawTabSync() {
     // Safety: check if services are initialized
-    if (!fundamental_svc_) {
+    if (!sync_svc_) {
       ImGui::TextDisabled("Services initializing...");
       return;
     }
@@ -259,22 +260,22 @@ private:
     std::string audit_table;
     std::string repair_table;
 
-    // 编码读着 assetinfo / items: 编码在飞时基本面件不收, Update 也不给点
+    // 编码读着 asset_info / items: 编码在飞时基本面件不收, Update 也不给点
     const bool busy = state_mgr_->syncing() || state_mgr_->scanning() || state_mgr_->encoding();
     // 同步改写的正是被核对 / 修复的分片: 三者互斥
     const bool auditing = state_mgr_->auditing();
     const bool disable_audit = busy || auditing || !(data_->config.sync_fundamental || data_->config.sync_bar1m);
-    const TaskStatus fstatus = FundamentalStatus();
-    const Market::QuoteStatus sina = market_->quote ? market_->quote->status() : Market::QuoteStatus{};
+    const TaskStatus fstatus = SyncStatus();
+    const Quote::QuoteStatus sina = quote_->quote ? quote_->quote->status() : Quote::QuoteStatus{};
 
     {
       // 展示字段持锁读 (worker 只短锁写)
-      std::scoped_lock lk(fundamental_svc_->mutex, audit_svc_->mutex);
+      std::scoped_lock lk(sync_svc_->mutex, audit_svc_->mutex);
       RenderTabSync(
-          fundamental_svc_->state,
-          *fundamental_svc_,
+          sync_svc_->state,
+          *sync_svc_,
           fstatus,
-          market_->quote ? &sina : nullptr,
+          quote_->quote ? &sina : nullptr,
           &update_clicked,
           &update_cancel_clicked,
           busy || auditing,
@@ -293,7 +294,7 @@ private:
     if (update_clicked && !busy && !auditing)
       state_mgr_->refresh();
     if (update_cancel_clicked)
-      fundamental_svc_->RequestCancel();
+      sync_svc_->RequestCancel();
     if (audit_cancel_clicked)
       audit_svc_->RequestCancel();
     if (disable_audit)
@@ -311,7 +312,7 @@ private:
     // 惰性补算: 渲染帧里现算是双重遍历, 而且会跟扫描抢着写同一份统计.
     // 扫描没跑完时 date_stats 是空的, 表格照常渲染, 数字等扫描落地.
     RenderTabCalendar(
-        data_->assetinfo,
+        data_->asset_info,
         data_->asset,
         data_->asset.backtest.start,
         data_->asset.backtest.end,
@@ -325,8 +326,8 @@ private:
 
 } // namespace
 
-TaskHandle CreateDatabaseTask(std::shared_ptr<const Market::MarketHub> market) {
-  auto instance = std::make_shared<DatabaseTask>(std::move(market));
+TaskHandle CreateDatabaseTask(std::shared_ptr<const Quote::QuoteHub> quote) {
+  auto instance = std::make_shared<DatabaseTask>(std::move(quote));
 
   TaskHandle handle;
   handle.name = instance->GetName();

@@ -2,6 +2,7 @@
 #include "gui/task_database/ui/TabEncode.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_database/services/EncodeService.hpp"
+#include "gui/task_database/services/FileCheckService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
 #include "gui/util/Board.hpp"
@@ -386,7 +387,7 @@ void sync_date_view(DateTableView &view, const Asset &asset, const OrdersCatalog
 
 void render_date_table(const char *table_id, const Asset &asset, DateTableView &view,
                        DateDim dim, const char *what) {
-  const std::shared_ptr<const OrdersCatalog> orders = asset.orders(); // 本帧同一份快照
+  const std::shared_ptr<const OrdersCatalog> orders = asset.catalog(); // 本帧同一份快照
 
   // 必须先于 BeginTable —— 列数是构造参数, 而哪些原因列存在要等视图建完才知道
   sync_date_view(view, asset, *orders, dim);
@@ -485,17 +486,17 @@ TaskStatus EncodeStatus(const StateManager &sm, const EncodeService &encode_serv
     return ProgressStatus(scan_service);
   if (sm.scanning())
     return {TaskStatus::Kind::Busy, "scanning"};
-  switch (sm.get_state().check.status) {
-  case DatabaseStatus::Unchecked:
+  switch (sm.get_state().coverage.status) {
+  case CoverageStatus::Unchecked:
     return {TaskStatus::Kind::Muted, "waiting"};
-  case DatabaseStatus::Pending:
+  case CoverageStatus::Pending:
     return {TaskStatus::Kind::Warn, "pending"};
-  case DatabaseStatus::Done:
+  case CoverageStatus::Done:
     return {TaskStatus::Kind::Ready, "done"};
-  case DatabaseStatus::NoData:
+  case CoverageStatus::NoData:
     return {TaskStatus::Kind::Error, "error"};
   }
-  assert(false && "unknown DatabaseStatus");
+  assert(false && "unknown CoverageStatus");
   return {};
 }
 
@@ -510,11 +511,11 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
 
   // 在飞 (请求发出到交接收下), 不是进度面忙: 刚确认开跑那几帧 worker 还没摘请求, 全屏进度不能因此关掉
   const bool is_running = sm.encoding();
-  // 开跑须同步 / 扫描都不在飞 (编码读 assetinfo / items / 回测日历), 且共享数据未冻结 (特征计算在读日文件)
+  // 开跑须同步 / 扫描都不在飞 (编码读 asset_info / items / 回测日历), 且共享数据未冻结 (特征计算在读日文件)
   const bool start_blocked = !sm.can_encode();
   // 这两个按引用接 —— 里面的缺失日期/错误文件列表是几千条
   // std::string, 逐帧整份复制就是逐帧几千次分配
-  const auto &check_result = sm.get_state().check;
+  const auto &check_result = sm.get_state().coverage;
   const auto &file_check_result = state.file_check;
   const bool file_check_running = file_check_service.busy();
 
@@ -529,7 +530,7 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
   else if (!file_check_result.was_run())
     file_check_label += "not run";
   else if (!file_check_result.archive_dir_exists)
-    file_check_label += "no archive dir (using built binaries)";
+    file_check_label += "no archive dir (using existing orders)";
   else if (!file_check_result.commands_available)
     file_check_label += "missing commands (unrar, 7z, rar, gdb)";
   else if (file_check_result.passed)
@@ -583,34 +584,34 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
     if (!sm.scanning() && !sm.encoding()) {
       const char *hint = "";
       switch (check_result.status) {
-      case DatabaseStatus::Unchecked:
+      case CoverageStatus::Unchecked:
         hint = "Coverage check runs automatically after fundamental sync";
         break;
-      case DatabaseStatus::Pending:
+      case CoverageStatus::Pending:
         hint = "Some days have archives but are not encoded yet — run encoding";
         break;
-      case DatabaseStatus::Done:
+      case CoverageStatus::Done:
         hint = "Every day with an archive is encoded; raw gaps (no archive) cannot be filled by encoding";
         break;
-      case DatabaseStatus::NoData:
+      case CoverageStatus::NoData:
         hint = check_result.error_message.c_str();
         break;
       }
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", hint);
 
-      if (check_result.status == DatabaseStatus::NoData) {
+      if (check_result.status == CoverageStatus::NoData) {
         ImGui::SameLine();
         ImGui::TextColored(StatusColor(status.kind), "— %s", check_result.error_message.c_str());
       }
 
-      // binary 有缺的天就给覆盖进度与明细: 待编码 (黄) 与 raw 缺口 (灰, 只提示)
+      // orders 有缺的天就给覆盖进度与明细: 待编码 (黄) 与 raw 缺口 (灰, 只提示)
       if (!check_result.pending.empty() || !check_result.gaps.empty()) {
         ImGui::SameLine(0.0f, 24.0f);
         ImGui::Text("Covered %zu / %zu days (%.1f%%)",
-                    check_result.binary_coverage,
+                    check_result.orders_coverage,
                     check_result.required_dates,
-                    100.0 * check_result.binary_coverage / check_result.required_dates);
+                    100.0 * check_result.orders_coverage / check_result.required_dates);
         ImGui::SameLine(0.0f, 24.0f);
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "%zu pending", check_result.pending.size());
         ImGui::SameLine(0.0f, 12.0f);
@@ -772,9 +773,9 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", asset.archive.path.c_str());
 
-    ImGui::BulletText("Binary Path:");
+    ImGui::BulletText("Orders Path:");
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", asset.binary.path.c_str());
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", asset.orders.path.c_str());
 
     ImGui::Spacing();
     ImGui::Text("Date Ranges:");
@@ -785,9 +786,9 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
       ImGui::BulletText("Archive Range: %s ~ %s",
                         misc::dense(asset.archive.min_date).c_str(), misc::dense(asset.archive.max_date).c_str());
     }
-    if (asset.binary.exists) {
-      ImGui::BulletText("Binary Range: %s ~ %s",
-                        misc::dense(asset.binary.min_date).c_str(), misc::dense(asset.binary.max_date).c_str());
+    if (asset.orders.exists) {
+      ImGui::BulletText("Orders Range: %s ~ %s",
+                        misc::dense(asset.orders.min_date).c_str(), misc::dense(asset.orders.max_date).c_str());
     }
 
     ImGui::Spacing();
@@ -857,9 +858,9 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
 
       // Statistics
       // 条数只有跑过明细扫描才有值 (见 Asset::orders), 没有就不占一行
-      if (asset.binary.backtest_orders > 0) {
+      if (asset.orders.backtest_orders > 0) {
         ImGui::SetCursorPosX(center_x - 150);
-        ImGui::Text("Total Orders: %zu", asset.binary.backtest_orders);
+        ImGui::Text("Total Orders: %zu", asset.orders.backtest_orders);
       }
 
       const double elapsed = ImGui::GetTime() - state.start_time;
@@ -963,11 +964,11 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
         if (ImGui::BeginTabItem("Orders")) {
           ImGui::Spacing();
 
-          const size_t order_days_in_backtest = asset.binary.backtest_order_days;
+          const size_t order_days_in_backtest = asset.orders.backtest_order_days;
 
           ImGui::Text("Database Path:");
           ImGui::SameLine();
-          ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "%s", asset.binary.path.c_str());
+          ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.4f, 1.0f), "%s", asset.orders.path.c_str());
 
           ImGui::Text("Backtest Range (Target):");
           ImGui::SameLine();
@@ -984,12 +985,12 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
           ImGui::Separator();
           ImGui::Spacing();
 
-          if (asset.binary.exists) {
+          if (asset.orders.exists) {
             ImGui::Text("Range (Scanned):");
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s ~ %s (%zu assets, %.2f GB)",
-                               misc::dense(asset.binary.min_date).c_str(), misc::dense(asset.binary.max_date).c_str(),
-                               asset.binary.encoded_assets, asset.binary.orders_size_gb);
+                               misc::dense(asset.orders.min_date).c_str(), misc::dense(asset.orders.max_date).c_str(),
+                               asset.orders.encoded_assets, asset.orders.orders_size_gb);
 
             ImGui::Spacing();
             ImGui::Separator();
@@ -997,7 +998,7 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
 
             render_missing_table("order_missing_table", asset, state.order_view, kOrderDim, "orders");
           } else {
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No binary database found");
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No orders found");
           }
 
           ImGui::EndTabItem();

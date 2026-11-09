@@ -2,7 +2,7 @@
 //   源 = all.bar 特征库: 交易日 D 的成员 / 权重 / 基准取 D−1 收盘行, D 的日根 + L_1min 分钟根 (口径 = BasketRow), 一日一读两侧共用
 //   两侧同一种记录 (一行一日 = 因子 + 分钟价), 有效根 = 价 × 因子:
 //     个股: 价 = 库存原价 (f16, 与库逐位一致), 前收 = D−1 行的前收
-//     篮子: 价 = 合成核 Market::Fold 的日内点位 (前日收 = 1, f32), 前收 = 1
+//     篮子: 价 = 合成核 Quote::Fold 的日内点位 (前日收 = 1, f32), 前收 = 1
 //     因子同一条链: 自首个有根日 1 起, 逢前收 ≠ 参考价乘 参考价 / 前收, 参考价 = 末个收盘 (按前收滚动) ⇒ 个股 = 后复权, 篮子 = 点位逐日接续
 //   时间格: 有效根 t = 日下标 · kSlots + 槽, 日下标 = 库落盘日序 (首日只定成员, 无根); 无根 (无成员 / 无成交 / 末个有根的槽之后) 不收
 // 落盘 <库目录>/cta/ (日主序, 续算只追加; 库全量重算连目录一起删):
@@ -12,8 +12,8 @@
 //   Head 与键表对得上、两文件够长且已合成日是库落盘日的前缀 → 只合成其后的新日, 否则清目录从头; 每批落一次头 (取消不丢已合成的)
 #pragma once
 
-#include "cta/Model.hpp"                      // Series
-#include "gui/task_market/services/Kline.hpp" // Side / PerSide
+#include "cta/Model.hpp"       // Series
+#include "gui/quote/Quote.hpp" // Side / PerSide
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "shared/Progress.hpp"
@@ -28,6 +28,8 @@ class FeatureRead;
 
 namespace GUI::Market {
 
+using namespace Quote;
+
 class CtaLib {
 public:
   enum Field : int { kHigh,
@@ -41,7 +43,7 @@ public:
   // 价格库补到 dates (= 库已落盘日, 升序, ≥ 2 日); false = 取消 / 判废
   bool sync(const FeatureLib &lib, const FeatureRead &rd, const std::vector<misc::Ymd> &dates);
   // 标的 (个股 = 全局 id / 篮子 = basket_line) 的有效根 (sync 之后); 不在该侧键表 (库轴外 / 三组线外) → false
-  bool series(Market::Side side, uint32_t key, cta::Series &se) const;
+  bool series(Quote::Side side, uint32_t key, cta::Series &se) const;
 
 private:
   struct Head {
@@ -63,9 +65,9 @@ private:
   misc::exec::ForkJoin &pool_;
   std::string dir_;
   Head head_;
-  Market::PerSide<std::vector<uint32_t>> keys_; // [侧][行] → 键 (个股 = 全局 id, 篮子 = basket_line)
-  std::vector<misc::Ymd> dates_;                // [D] 已合成日 (首日只定成员, 其块无根)
-  Market::PerSide<std::vector<Link>> link_;     // [侧][行]
+  Quote::PerSide<std::vector<uint32_t>> keys_; // [侧][行] → 键 (个股 = 全局 id, 篮子 = basket_line)
+  std::vector<misc::Ymd> dates_;               // [D] 已合成日 (首日只定成员, 其块无根)
+  Quote::PerSide<std::vector<Link>> link_;     // [侧][行]
 };
 
 } // namespace GUI::Market

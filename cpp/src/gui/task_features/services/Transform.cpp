@@ -1,5 +1,5 @@
 #include "gui/task_features/services/Transform.hpp"
-#include "features/Storage/DayBatchPlane.hpp"
+#include "features/Storage/FeaturePlane.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "math/stationary/ADF.hpp"
 #include "math/stationary/KPSS.hpp"
@@ -12,6 +12,7 @@
 namespace GUI::Features {
 
 using namespace analysis;
+using namespace reader;
 
 namespace {
 
@@ -34,7 +35,7 @@ struct Transform::RuntimeOf final : Transform::Runtime {
   static constexpr size_t R = G::R;
   using PSD = typename G::PSD;
 
-  Prefetch<TsPlane> pf;                          // 输入 f16 [列][A][批段][R] ×2 + io 池 (列 0 = 特征, 1/2 = mcap/ind 旁读)
+  Stream<TsPlane> stream;                        // 输入 f16 [列][A][批段][R] ×2 + io 池 (列 0 = 特征, 1/2 = mcap/ind 旁读)
   std::vector<float> out;                        // 输出 [A][批段][R] float (NaN = 缺/预热)
   std::vector<math::stationary::TodProfile> tod; // [A] 跨天 TOD 轮廓 (season 开时)
   math::spectral::IIRCoeffs iir;                 // 带通系数 (一次设计)
@@ -99,8 +100,8 @@ struct Transform::RuntimeOf final : Transform::Runtime {
     const size_t BS = batch_segs(G::kLevel);
     const size_t n_threads = threads_for(n_asset_blocks(A));
 
-    pf.prepare(threads_for(BS), sp.plan, As, SIZE_MAX);
-    for (TsPlane &pl : pf.buf)
+    stream.prepare(threads_for(BS), sp.plan, As, SIZE_MAX);
+    for (TsPlane &pl : stream.buf)
       pl.prepare(A, G::kLevel, BS, sp.plan.n());
     out.resize(A * BS * R);
 
@@ -283,7 +284,7 @@ bool Transform::build_grid(const PerLib<const FeatureRead *> &fr, const std::ato
   };
 
   // ==========================================================================
-  // 批循环 (Prefetch::stream): 下一批 IO 后台预读, 本批四相 (TS → CS → 统计 → 归约), 每相一次 dispatch (返回即栅栏);
+  // 批循环 (Stream::run): 下一批 IO 后台预读, 本批四相 (TS → CS → 统计 → 归约), 每相一次 dispatch (返回即栅栏);
   // 批末发布在本线程 (单线程, 天然串行)
   // ==========================================================================
   const auto compute = [&](const TsPlane &pl, size_t b0, size_t bd) {
@@ -485,7 +486,7 @@ bool Transform::build_grid(const PerLib<const FeatureRead *> &fr, const std::ato
     // ------------------------------------------------------------------
     reduce_tree(ex, rt.shards);
   };
-  return rt.pf.stream(n_days, BS, cancel, load, compute, publish_batch);
+  return rt.stream.run(n_days, BS, cancel, load, compute, publish_batch);
 }
 
 // ============================================================================

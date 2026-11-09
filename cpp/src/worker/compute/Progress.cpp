@@ -1,4 +1,5 @@
-// ComputeProgress —— 特征计算仪表盘 (拉取式, 固定 6 行, 布局见 Stages.hpp)
+// ComputeProgress —— 特征计算仪表盘 (拉取式, 固定 5 行, 布局见 Progress.hpp)
+#include "worker/compute/Progress.hpp"
 #include "worker/compute/Stages.hpp"
 
 #include "features/Storage/FeatureStore.hpp"
@@ -254,7 +255,7 @@ void ComputeProgress::render() {
     out << "\033[K\n";
   }
 
-  // 每核一格 = 忙碌占比 (见 Stages.hpp); 干等 / 本核已完成 = 绿
+  // 每核一格 = 忙碌占比 (见 Progress.hpp); 干等 / 本核已完成 = 绿
   auto cells = [&](size_t c0, size_t n) {
     for (size_t c = c0; c < c0 + n; ++c)
       cell(out, busy[c], busy[c] < kIdleBusy || done[c]);

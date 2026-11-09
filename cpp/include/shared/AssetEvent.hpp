@@ -1,5 +1,5 @@
 // AssetEvent — 个股历史事件 (全市场, 基本面派生): 单点 / 区间两形, 一张种类表
-// 由 FundamentalService 随 AssetInfo 同一次 fundamental::Scan 构建; 消费端: OrderFlow 图2 时间轴标注.
+// 由 SyncService 随 AssetInfo 同一次 fundamental::Scan 构建; 消费端: OrderFlow 图2 时间轴标注.
 // 一律原生类型: 日期 Ymd (0 = 无), 数值 float (NaN = 无, 源单位), 文本 = 字符串池下标 (0 = 无); 格式化只在 UI.
 #pragma once
 
@@ -103,7 +103,7 @@ struct AssetEvent {
 static_assert(sizeof(AssetEvent) == 32, "AssetEvent: 全市场百万条量级, 保持 32 字节");
 
 struct AssetEvents {
-  std::uint64_t seq = 0;              // 构建代 (FundamentalRequest::seq, 0 = 未建): GUI 缓存失效键
+  std::uint64_t seq = 0;              // 构建代 (SyncRequest::seq, 0 = 未建): GUI 缓存失效键
   std::vector<std::string> texts{""}; // 字符串池 ([0] = 无)
   Csr<AssetEvent> of;                 // [全局 id] → 事件 (d0 升序)
 };

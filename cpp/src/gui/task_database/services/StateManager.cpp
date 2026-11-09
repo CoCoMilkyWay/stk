@@ -2,7 +2,7 @@
 #include "gui/task_database/services/StateManager.hpp"
 #include "gui/task_database/services/AssetLoader.hpp"
 #include "gui/task_database/services/EncodeService.hpp"
-#include "gui/task_database/services/FundamentalService.hpp"
+#include "gui/task_database/services/SyncService.hpp"
 #include "shared/SharedData.hpp"
 
 #include <cassert>
@@ -14,19 +14,19 @@ namespace GUI::Database {
 // Lifecycle
 // ============================================================================
 
-StateManager::StateManager(SharedData &data, FundamentalService &fund, ScanService &scan, EncodeService &enc,
+StateManager::StateManager(SharedData &data, SyncService &sync, ScanService &scan, EncodeService &enc,
                            AuditService &audit)
-    : data_(data), fund_(fund), scan_(scan), enc_(enc), audit_(audit) {
+    : data_(data), sync_(sync), scan_(scan), enc_(enc), audit_(audit) {
   // 上次核对结果: 读逐表状态 (零网络)
   this->audit(AuditOp::Load, {}, false);
   refresh();
 }
 
 void StateManager::refresh() {
-  fund_.Request({fund_ch_.next(), data_.config.sync_fundamental, data_.config.sync_bar1m});
+  sync_.Request({sync_ch_.next(), data_.config.sync_fundamental, data_.config.sync_bar1m});
 }
 
-bool StateManager::frozen() const { return data_.taskstate.compute.computing; }
+bool StateManager::frozen() const { return data_.task_state.compute.computing; }
 
 void StateManager::encode(int workers, bool skip_existing) {
   assert(can_encode() && "encode: 同步 / 扫描 / 编码在飞, 或共享数据冻结");
@@ -41,9 +41,9 @@ void StateManager::audit(AuditOp op, std::string table, bool incremental) {
 
 void StateManager::scan(ScanMode mode) {
   const bool cache_matches_config =
-      data_.asset.binary.scanned &&
+      data_.asset.orders.scanned &&
       data_.asset.archive.scanned &&
-      data_.asset.binary.path == data_.config.orders_dir &&
+      data_.asset.orders.path == data_.config.orders_dir &&
       data_.asset.archive.path == data_.config.archive_dir;
   if (mode == ScanMode::RecomputeCoverage && !cache_matches_config)
     mode = ScanMode::RescanStorage;
@@ -76,21 +76,21 @@ void StateManager::tick() {
       if (scan_ch_.latest(r->seq)) {
         if (r->scan)
           data_.asset.adopt(std::move(*r->scan));
-        state_.check = std::move(r->check);
+        state_.coverage = std::move(r->coverage);
       }
     }
   }
 
-  // 基本面: 扫描 / 编码在飞时不收 (它们正读 assetinfo / items), 冻结时不收, 件留在邮箱里等
+  // 基本面: 扫描 / 编码在飞时不收 (它们正读 asset_info / items), 冻结时不收, 件留在邮箱里等
   if (!frozen() && !scanning() && !encoding()) {
-    if (auto r = fund_.handoff.take()) {
-      fund_ch_.taken = r->seq;
-      if (fund_ch_.latest(r->seq)) {
-        state_.fundamental_taken = true;
-        state_.fundamental_ok = r->ok;
+    if (auto r = sync_.handoff.take()) {
+      sync_ch_.taken = r->seq;
+      if (sync_ch_.latest(r->seq)) {
+        state_.sync_taken = true;
+        state_.asset_info_ready = r->ok;
         // 失败 (本地 parquet 缺失) 不扫: 日历是覆盖判定的 ground truth, Encode 保持锁定
         if (r->ok) {
-          data_.assetinfo = std::move(r->assetinfo);
+          data_.asset_info = std::move(r->asset_info);
           // 股票全量 → A 轴注册表 → Asset::items (全市场, 无人工名单)
           AssetLoader::load(data_);
           scan(ScanMode::RecomputeCoverage);
@@ -107,26 +107,26 @@ void StateManager::tick() {
   state_.tabs.can_access_sync = true;
 
   // Encode: 基本面 Ready 后解锁 (L2 覆盖检查以交易日历为 ground truth)
-  const bool ready = state_.all_json_ready();
+  const bool ready = state_.asset_info_ready;
   state_.tabs.can_access_encode = ready;
 
   // Calendar: 基本面 Ready 且 L2 覆盖检查至少跑过一遍 (Encode 页扫描完成) ——
   // 不要求编码全部 done, 它本身就是来看覆盖缺口的. 扫描前 Asset::items 等数据还没建好, 依然要灰着.
-  const bool scanned = state_.check.status != DatabaseStatus::Unchecked;
+  const bool scanned = state_.coverage.status != CoverageStatus::Unchecked;
   state_.tabs.can_access_calendar = ready && scanned;
 
   publish_task_state();
 }
 
 void StateManager::publish_task_state() {
-  auto &ts = data_.taskstate.database;
-  const DatabaseCheckResult &check = state_.check;
+  auto &ts = data_.task_state.database;
+  const CoverageCheck &coverage = state_.coverage;
 
-  ts.json_update_inflight = syncing();
-  ts.l2_scan_inflight = scanning();
+  ts.sync_inflight = syncing();
+  ts.scan_inflight = scanning();
   ts.encode_inflight = encoding();
-  ts.binary_scanned = (check.status != DatabaseStatus::Unchecked);
-  ts.all_json_ready = state_.all_json_ready();
+  ts.scanned = (coverage.status != CoverageStatus::Unchecked);
+  ts.asset_info_ready = state_.asset_info_ready;
 }
 
 } // namespace GUI::Database

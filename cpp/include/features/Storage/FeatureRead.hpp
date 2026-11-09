@@ -1,8 +1,8 @@
 #pragma once
 
 #include "FeatureDay.hpp" // 稳定层: level_info / 日文件格式 (不依赖字段表, 增删特征不重编读端)
+#include "features/Storage/FeatureLib.hpp"
 #include "misc/profiler.hpp"
-#include "shared/FeatureLib.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cassert>

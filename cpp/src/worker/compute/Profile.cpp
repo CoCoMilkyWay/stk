@@ -1,5 +1,5 @@
-// ComputeProfile —— 特征计算 perf 采样窗 + meta.json (产物布局见 Stages.hpp / misc/perf.hpp)
-#include "worker/compute/Stages.hpp"
+// ComputeProfile —— 特征计算 perf 采样窗 + meta.json (产物布局见 Profile.hpp / misc/perf.hpp)
+#include "worker/compute/Profile.hpp"
 
 #include "features/Storage/FeatureStore.hpp"
 #include "misc/affinity.hpp"
@@ -7,7 +7,6 @@
 #include "misc/logging.hpp"
 #include "misc/perf.hpp"
 #include "nlohmann/json.hpp"
-#include "shared/Config.hpp"
 
 #include <cassert>
 #include <ctime>
@@ -83,7 +82,7 @@ void ComputeProfile::tick() {
   if (!capture_) {
     if (store_.query_io_done() == 0)
       return;
-    dir_ = std::string(config::PROFILE_DIR) + "/" + spec_.pool + "/" + tier_name(spec_.tier) + "/" + stamp_now();
+    dir_ = std::string(kProfileDir) + "/" + spec_.pool + "/" + tier_name(spec_.tier) + "/" + stamp_now();
     capture_ = std::make_unique<misc::perf::Capture>(dir_);
     start_ = snap();
     return;

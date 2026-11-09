@@ -4,11 +4,11 @@
 #include "codec/L2DataType.hpp"
 #include "codec/OrderEncoder.hpp"
 #include "codec/OrderFrame.hpp"
+#include "fundamental/AssetAxis.hpp"
 #include "misc/affinity.hpp"
 #include "misc/archive.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
-#include "shared/AssetAxis.hpp"
 
 #include <algorithm>
 #include <array>
@@ -112,8 +112,8 @@ std::unordered_map<size_t, EncodeTask> group_by_asset(const std::vector<misc::Ar
       continue; // 委托队列.csv 等历史遗留文件
 
     // 代码变更前的日子, 归档里是老代码, 轴上只有新代码 — 换回来才认得出
-    // (见 config::CODE_CHANGES). 无变更记录时 current_code 原样返回.
-    const size_t asset_id = axis.find(config::current_code(code_ex, date));
+    // (见 kCodeChanges). 无变更记录时 current_code 原样返回.
+    const size_t asset_id = axis.find(current_code(code_ex, date));
     if (asset_id == axis.size())
       continue; // 非股票 (ETF/基金) 或轴外代码
 
@@ -185,7 +185,7 @@ void encode_producer(SharedData &data,
     // ------------------------------------------------------------------
     std::vector<misc::ArchiveEntry> entries;
     const misc::ArchiveListStatus list_status =
-        misc::list_archive(archive_path, config::ARCHIVE_TOOL, entries);
+        misc::list_archive(archive_path, kArchiveTool, entries);
 
     if (list_status == misc::ArchiveListStatus::Corrupt) {
       // 包头链断了, 这天连有哪些资产都问不出来 — 留日志跳过, 不落完成标记,
@@ -318,7 +318,7 @@ void encode_producer(SharedData &data,
 // ENCODING WORKER — 每批自己 unrar + 解码 + 往当天日文件追加帧
 // ============================================================================
 //
-// worker 只写日文件, 不回填帧目录 (Asset::orders()).
+// worker 只写日文件, 不回填帧目录 (Asset::catalog()).
 //
 // 同一天的不同资产落在不同批上, 由不同 worker 并发处理 —— 再去写同一行帧
 // 目录就要加锁. 编码产物的真相由编码后的重新扫描统一读取 (ScanService).
@@ -390,8 +390,8 @@ struct BatchPlan {
     for (const auto &[archive_index, slot] : order_) {
       const EncodeTask &task = batch.tasks[slot.task_idx];
       const AssetItem &asset = data.asset.items[task.asset_id];
-      // 归档里是当时的代码 (见 config::CODE_CHANGES), 变更前的日子要换回老的
-      const std::string asset_full = config::archive_code(asset.code_ex(), batch.date);
+      // 归档里是当时的代码 (见 kCodeChanges), 变更前的日子要换回老的
+      const std::string asset_full = archive_code(asset.code_ex(), batch.date);
       const size_t m = static_cast<size_t>(slot.member);
       RarPlan &plan = plans[plan_of_[slot.task_idx]];
       plan.paths.push_back(misc::dense(batch.date) + "/" + asset_full + "/" + *files[m]);
@@ -554,7 +554,7 @@ void encode_worker(SharedData &data,
         continue;
       TraceN("StreamPlan");
       const bool stream_ok = misc::stream_archive_files(
-          batch.archive_path, config::ARCHIVE_TOOL, plan.paths, plan.sizes,
+          batch.archive_path, kArchiveTool, plan.paths, plan.sizes,
           [&](size_t i, const char *csv, size_t len) {
             const StreamSlot &slot = plan.slots[i];
 

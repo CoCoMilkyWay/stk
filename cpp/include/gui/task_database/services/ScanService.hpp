@@ -1,9 +1,9 @@
-// Scan Service - L2 binary / archive 扫盘 + 回测区间覆盖检查 (单 worker)
+// Scan Service - orders / L2 归档扫盘 + 回测区间覆盖检查 (单 worker)
 //
 // 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request({seq, mode}); 帧首 handoff.take() → Asset::adopt 换进 + 留存覆盖结论
-//   - worker:   run = [扫 binary → 扫 archive] (RescanStorage) → 回测日历 → 覆盖统计 → 判定, 产物整件 post
-//               只读 data_.asset / data_.assetinfo (StateManager 保证扫描在飞期间 GUI 不换它们)
+//   - worker:   run = [扫 orders → 扫 archive] (RescanStorage) → 回测日历 → 覆盖统计 → 判定, 产物整件 post
+//               只读 data_.asset / data_.asset_info (StateManager 保证扫描在飞期间 GUI 不换它们)
 //   - UI:       进度面 = 自身 (Scanning: 扫盘 天 / 月; Running: 覆盖统计 交易日)
 #pragma once
 
@@ -24,51 +24,51 @@ struct SharedData;
 namespace GUI::Database {
 
 enum class ScanMode {
-  RecomputeCoverage, // 只用已有 binary/archive 扫描缓存重算 backtest coverage
-  RescanStorage      // 底层 binary/archive 可能变了, 重新逐日扫盘
+  RecomputeCoverage, // 只用已有 orders / archive 扫描缓存重算 backtest coverage
+  RescanStorage      // 底层 orders / archive 可能变了, 重新逐日扫盘
 };
 
 // ============================================================================
 // Database Check Types
 // ============================================================================
 
-// 只看有没有能做的事: archive 有而 binary 无的天 = 待编码; 两者皆无的天 = raw 缺口, 编码补不上, 不影响状态
-enum class DatabaseStatus {
+// 只看有没有能做的事: archive 有而 orders 无的天 = 待编码; 两者皆无的天 = raw 缺口, 编码补不上, 不影响状态
+enum class CoverageStatus {
   Unchecked, // 未扫描
   Pending,   // 有待编码的天
   Done,      // 无待编码的天 (raw 缺口不计)
-  NoData     // binary 与 archive 都不存在
+  NoData     // orders 与 archive 都不存在
 };
 
-struct BinaryDatabaseInfo {
+struct OrdersInfo {
   bool exists = false;
   std::string path;
   size_t total_dates = 0;
   std::vector<misc::Ymd> available_dates;
 };
 
-struct ArchiveDatabaseInfo {
+struct ArchiveInfo {
   bool exists = false;
   std::string path;
   size_t total_dates = 0;
   std::vector<misc::Ymd> available_dates;
 };
 
-struct DatabaseCheckResult {
-  DatabaseStatus status = DatabaseStatus::Unchecked;
+struct CoverageCheck {
+  CoverageStatus status = CoverageStatus::Unchecked;
   std::string error_message;
 
-  // Binary database
-  BinaryDatabaseInfo binary;
+  // Orders
+  OrdersInfo orders;
 
   // Archive database
-  ArchiveDatabaseInfo archive;
+  ArchiveInfo archive;
 
   // Coverage analysis
   size_t required_dates = 0;  // Required trading days in backtest period
-  size_t binary_coverage = 0; // Binary covered dates
+  size_t orders_coverage = 0; // orders 覆盖的天数
 
-  // Missing details (binary 缺的天 = pending ∪ gaps)
+  // Missing details (orders 缺的天 = pending ∪ gaps)
   std::vector<misc::Ymd> pending; // 有 archive, 待编码
   std::vector<misc::Ymd> gaps;    // raw 缺口: archive 也没有
 };
@@ -86,7 +86,7 @@ struct ScanRequest {
 struct ScanResult {
   uint64_t seq = 0;
   std::optional<AssetScan> scan;
-  DatabaseCheckResult check;
+  CoverageCheck coverage;
 };
 
 class ScanService : public Service<ScanService, ScanRequest>, public Progress {

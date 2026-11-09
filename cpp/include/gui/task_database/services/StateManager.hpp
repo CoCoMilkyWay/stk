@@ -2,10 +2,10 @@
 //
 // 四个 worker 服务 (基本面 / 扫描 / 编码 / 核对) 各自一条通道: 发请求带递增请求代, 交接件原样带回.
 //   在飞 = 发出代 != 收到代; 收到的不是最新代 = 陈旧件, 丢弃 (最新请求已在路上)
-// 共享状态 (assetinfo / asset.items / Asset 扫描产物) 只在 tick 里换进 (GUI 线程), 换进时机保证无 worker 正在读:
-//   冻结:     特征计算在飞 (taskstate.compute.computing) → 件都留在邮箱里, 不发编码 (Lob 按帧目录快照读日文件, 编码 rename 换掉它们);
-//             同步 / 扫描照跑, 收尾后再换进. 反向: 编码在飞时特征计算不开跑 (taskstate.database.encode_inflight)
-//   基本面件: 扫描 / 编码都不在飞才收 (二者读 assetinfo / items) → 换 assetinfo → AssetLoader 重建 items → 请求覆盖扫描
+// 共享状态 (asset_info / asset.items / Asset 扫描产物) 只在 tick 里换进 (GUI 线程), 换进时机保证无 worker 正在读:
+//   冻结:     特征计算在飞 (task_state.compute.computing) → 件都留在邮箱里, 不发编码 (Lob 按帧目录快照读日文件, 编码 rename 换掉它们);
+//             同步 / 扫描照跑, 收尾后再换进. 反向: 编码在飞时特征计算不开跑 (task_state.database.encode_inflight)
+//   基本面件: 扫描 / 编码都不在飞才收 (二者读 asset_info / items) → 换 asset_info → AssetLoader 重建 items → 请求覆盖扫描
 //   扫描件:   adopt 扫描产物 + 留存覆盖结论 (扫描只在基本面件收下后 / 编码收尾后发, 编码只在扫描不在飞时发)
 //   编码件:   请求 RescanStorage (日文件被 rename 换掉)
 //   核对件:   Repair 收尾 → refresh (改了分片, 重建 AssetInfo)
@@ -22,7 +22,7 @@ struct SharedData;
 
 namespace GUI::Database {
 
-class FundamentalService;
+class SyncService;
 class EncodeService;
 
 // ============================================================================
@@ -47,12 +47,9 @@ struct AggregatedState {
   // Tab access control
   TabAccessState tabs;
 
-  bool fundamental_taken = false; // 收到过基本面交接件 (之前 = 首轮在跑)
-  bool fundamental_ok = false;    // 最近一件 ok (AssetInfo 已从 parquet 构建并换进)
-  DatabaseCheckResult check;      // 最近一件扫描交接的覆盖结论
-
-  // Helper: fundamental data ready (AssetInfo built from parquet)
-  bool all_json_ready() const { return fundamental_ok; }
+  bool sync_taken = false;       // 收到过同步交接件 (否 = 首轮在跑)
+  bool asset_info_ready = false; // 最近一件 ok (AssetInfo 已从 parquet 构建并换进)
+  CoverageCheck coverage;        // 最近一件扫描交接的覆盖结论
 };
 
 // ============================================================================
@@ -62,20 +59,20 @@ struct AggregatedState {
 class StateManager {
 public:
   // 构造即发首批请求: 核对 Load + refresh
-  StateManager(SharedData &data, FundamentalService &fund, ScanService &scan, EncodeService &enc,
+  StateManager(SharedData &data, SyncService &sync, ScanService &scan, EncodeService &enc,
                AuditService &audit);
 
-  // 每帧帧首 (GUI 线程): 收交接 → 换进共享状态 → 推下一站 → 刷解锁 + taskstate.database
+  // 每帧帧首 (GUI 线程): 收交接 → 换进共享状态 → 推下一站 → 刷解锁 + task_state.database
   void tick();
 
   // 唯一刷新链入口: 基本面 / 分钟线同步 (联网按 config.sync_fundamental / sync_bar1m) → AssetInfo/items 重建 → L2 覆盖扫描.
-  // GUI 启动、Fundamental Update、修复收尾都走这里, 不各写一份流程.
+  // GUI 启动、Sync 页 Update、修复收尾都走这里, 不各写一份流程.
   void refresh();
   // 编码 / 核对请求 (调用方按 can_encode / auditing 使能)
   void encode(int workers, bool skip_existing);
   void audit(AuditOp op, std::string table, bool incremental);
 
-  bool syncing() const { return fund_ch_.inflight(); }
+  bool syncing() const { return sync_ch_.inflight(); }
   bool scanning() const { return scan_ch_.inflight(); }
   bool encoding() const { return enc_ch_.inflight(); }
   bool auditing() const { return audit_ch_.inflight(); }
@@ -98,11 +95,11 @@ private:
   void publish_task_state();
 
   SharedData &data_;
-  FundamentalService &fund_;
+  SyncService &sync_;
   ScanService &scan_;
   EncodeService &enc_;
   AuditService &audit_;
-  Channel fund_ch_, scan_ch_, enc_ch_, audit_ch_;
+  Channel sync_ch_, scan_ch_, enc_ch_, audit_ch_;
   AuditOp audit_op_ = AuditOp::Load; // 最近一次核对请求的 op (收尾分流)
   AggregatedState state_;
 };

@@ -12,7 +12,7 @@
 #include <random>
 #include <tuple>
 
-namespace analysis {
+namespace reader {
 
 void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
   const bool own = assets.empty();
@@ -53,7 +53,7 @@ ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &c
   const auto add = [&](LibId l) {
     if (s.has(l))
       return;
-    s.libs[l] = load_lib(cfg, l);
+    s.libs[l] = load_lib(cfg.feature_dir, l);
     ready &= s.libs[l].ready();
   };
   if (main != kAutoMain)
@@ -288,4 +288,4 @@ void check_axis(const std::vector<uint32_t> &global_ids) {
   (void)global_ids;
 }
 
-} // namespace analysis
+} // namespace reader

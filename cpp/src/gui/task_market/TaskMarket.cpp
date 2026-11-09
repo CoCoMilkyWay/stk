@@ -1,17 +1,18 @@
 // Task Market - 行情面: 个股 (ASSET) 与篮子 / 组合的曲线、估值、资金流、单标的回测 (NAV · VAL · FLOW · CTA).
-//   ASSET: 资产表 + 右栏 Quotes / Statistics (见 TabAssets.hpp), AssetInfo 建好且扫描过才可进.
+//   ASSET: 资产表 + 右栏 Quotes / Statistics (见 TabAsset.hpp), AssetInfo 建好且扫描过才可进.
 //   NAV / VAL / FLOW: 篮子账 (all 标签库建好即算) + 因子 / 策略两组 (Alpha → Factors 页编辑的组合, 无组合时只少这两组),
-//     走 AlphaHub 的 PortfolioService (见 gui/task_alpha/AlphaHub.hpp); 日内栏 / 近况列取 MarketHub 行情 (新浪当日 + 篮子历史 + 叠加的成分股), AssetInfo 建好才起.
-//   CTA: 单标的回测走自己的 CtaService (首次进页建; 价格直接由 all.bar 库合成, 不经 MarketHub).
+//     走 EngineHub 的 PortfolioService (见 gui/engine/EngineHub.hpp); 日内栏 / 近况列取 QuoteHub 行情 (新浪当日 + 篮子历史 + 叠加的成分股), AssetInfo 建好才起.
+//   CTA: 单标的回测走自己的 CtaService (首次进页建; 价格直接由 all.bar 库合成, 不经 QuoteHub).
 #include "gui/task_market/TaskMarket.hpp"
 #include "gui/Tasks.hpp"
-#include "gui/task_alpha/AlphaHub.hpp"
+#include "gui/engine/EngineHub.hpp"
+#include "gui/quote/QuoteHub.hpp"
 #include "gui/task_market/services/CtaService.hpp"
-#include "gui/task_market/services/MarketHub.hpp"
 #include "gui/task_market/ui/QuotesPanel.hpp" // Sync
-#include "gui/task_market/ui/TabAssets.hpp"
+#include "gui/task_market/ui/TabAsset.hpp"
+#include "gui/task_market/ui/TabLines.hpp"
 #include "shared/Basket.hpp"     // basket_count (篮子键集)
-#include "shared/SharedData.hpp" // config, asset, assetinfo, taskstate.database
+#include "shared/SharedData.hpp" // config, asset, asset_info, task_state.database
 
 #include "imgui.h"
 
@@ -35,16 +36,17 @@ enum TabIdx {
 static_assert(TAB_COUNT - TAB_NAV == Market::kPages);
 
 struct TaskMarketState {
-  std::shared_ptr<Market::MarketHub> market; // 与 Database 任务共用 (首次画本任务才起)
-  std::shared_ptr<Alpha::AlphaHub> alpha;
+  std::shared_ptr<Quote::QuoteHub> quote;    // 与 Database 任务共用 (首次画本任务才起)
+  std::shared_ptr<Engine::EngineHub> engine; // 与 Alpha 任务共用
   std::unique_ptr<Market::CtaService> cta_service;
-  Market::AssetsState assets_state;
+  Market::AssetState asset_state;
+  Market::LinesUIState lines_ui; // 缓存键含 portfolio_service 的结果代 / portfolio_ui 的解析代
 };
 
-TaskHandle CreateMarketTask(std::shared_ptr<Market::MarketHub> market, std::shared_ptr<Alpha::AlphaHub> alpha) {
+TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_ptr<Engine::EngineHub> engine) {
   auto state = std::make_shared<TaskMarketState>();
-  state->market = std::move(market);
-  state->alpha = std::move(alpha);
+  state->quote = std::move(quote);
+  state->engine = std::move(engine);
 
   TaskHandle handle;
   handle.name = "Market";
@@ -54,16 +56,16 @@ TaskHandle CreateMarketTask(std::shared_ptr<Market::MarketHub> market, std::shar
   handle.Enabled = [](const SharedData &data, int idx) {
     if (idx != TAB_ASSET)
       return true;
-    return data.taskstate.database.all_json_ready && data.taskstate.database.binary_scanned;
+    return data.task_state.database.asset_info_ready && data.task_state.database.scanned;
   };
 
   handle.Status = [state](const SharedData & /*data*/, int idx) -> TaskStatus {
     assert(idx >= 0 && idx < TAB_COUNT);
     if (idx == TAB_ASSET) // 新浪行情起了即常驻 (背景常态, 灰色)
-      return state->market->quote ? TaskStatus{TaskStatus::Kind::Muted, "live"} : TaskStatus{};
+      return state->quote->quote ? TaskStatus{TaskStatus::Kind::Muted, "live"} : TaskStatus{};
     if (idx == TAB_CTA)
       return state->cta_service ? ProgressStatus(*state->cta_service) : TaskStatus{};
-    const auto &ps = state->alpha->portfolio_service;
+    const auto &ps = state->engine->portfolio_service;
     return ps ? ProgressStatus(*ps) : TaskStatus{};
   };
 
@@ -72,37 +74,40 @@ TaskHandle CreateMarketTask(std::shared_ptr<Market::MarketHub> market, std::shar
     ImGui::BeginChild("MarketTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     if (idx == TAB_ASSET) {
-      state->market->start(data);
-      Market::RenderTabAssets(data.asset, data.assetinfo.stocks, state->assets_state, *state->market);
+      state->quote->start(data);
+      Market::RenderTabAsset(data.asset, data.asset_info.stocks, state->asset_state, *state->quote);
       ImGui::EndChild();
       return;
     }
-    Alpha::AlphaHub &f = *state->alpha;
-    Alpha::EnsurePortfolio(data, f);
-    const Market::MarketHub *mk = nullptr;
-    if (data.taskstate.database.all_json_ready) {
-      state->market->start(data);
+    Engine::EngineHub &e = *state->engine;
+    Market::LinesUIState &ui = state->lines_ui;
+    Engine::EnsurePortfolio(data, e);
+    Market::SyncLinesWatch(ui, data.config.config_dir);
+    const Quote::QuoteHub *mk = nullptr;
+    if (data.task_state.database.asset_info_ready) {
+      state->quote->start(data);
       static const std::vector<uint32_t> lines = [] { // 全部篮子线
         std::vector<uint32_t> k(basket_count());
         std::iota(k.begin(), k.end(), 0u);
         return k;
       }();
-      Market::Sync(*state->market, Market::kBasket, lines, f.lines_ui.basket.feed);
-      Market::Sync(*state->market, Market::kStock, f.lines_ui.pick.stocks(Market::kPickMany), f.lines_ui.basket.stocks);
-      mk = state->market.get();
+      Market::Sync(*state->quote, Quote::kBasket, lines, ui.basket.feed);
+      Market::Sync(*state->quote, Quote::kStock, ui.pick.stocks(Market::kPickMany), ui.basket.stocks);
+      mk = state->quote.get();
     }
     if (!state->cta_service)
       state->cta_service = std::make_unique<Market::CtaService>(data.config);
-    const int action = Market::RenderTabLines(idx - TAB_NAV, *f.portfolio_service, *state->cta_service, f.portfolio_ui, f.lines_ui,
-                                              data.config.fixed_impact, mk, data.assetinfo.stocks);
+    const int action = Market::RenderTabLines(idx - TAB_NAV, *e.portfolio_service, *state->cta_service, e.portfolio_ui, ui,
+                                              data.config.fixed_impact, mk, data.asset_info.stocks);
     if (action == -1)
-      f.portfolio_service->RequestCancel();
-    Alpha::SyncPortfolio(data, f, action == 1);
+      e.portfolio_service->RequestCancel();
+    Engine::SyncPortfolio(data, e, action == 1);
     ImGui::EndChild();
   };
 
   handle.Destroy = [state]() {
     state->cta_service.reset(); // 析构 Stop() join worker
+    state->lines_ui = Market::LinesUIState{};
   };
 
   return handle;

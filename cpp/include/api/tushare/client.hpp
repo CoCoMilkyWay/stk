@@ -23,9 +23,17 @@ struct Query {
 };
 
 // Tushare HTTP 客户端 — 与 bigquant::Client 对仗: 纯传输, 不知 Spec.
+// pro token; *_vip 接口需 5000+ 积分
+inline constexpr const char *kToken = "6b5ea435a4626b1eeedefb2115bcf9e84fc64a0d212d21cf2be03d54";
+inline constexpr const char *kHost = "api.tushare.pro";
+inline constexpr const char *kPort = "80"; // 走 80, 省掉 SSL 依赖
+inline constexpr int kTimeoutSeconds = 60; // 单次连接 + 读写整体时长; range 接口序列化耗时可达 20s
+inline constexpr int kRetryMax = 4;        // 额外重试次数 (共 5 次尝试), 线性间隔
+inline constexpr int kRetryIntervalSeconds = 30;
+
 class Client {
 public:
-  // 缺省构造: token 取 config.hpp::TUSHARE_TOKEN
+  // 缺省构造: token 取 kToken
   Client();
   // 显式指定 (测试 / 多账号切换)
   explicit Client(std::string token);

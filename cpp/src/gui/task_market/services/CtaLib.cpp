@@ -1,12 +1,12 @@
 #include "gui/task_market/services/CtaLib.hpp"
 
 #include "features/Storage/FeatureLevels.hpp" // feature_storage_t
+#include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
-#include "gui/task_market/services/BasketRow.hpp"
+#include "gui/quote/BasketRow.hpp"
 #include "misc/fs.hpp"
 #include "misc/snap.hpp"
 #include "shared/Basket.hpp" // basket_group / basket_count
-#include "shared/FeatureLib.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -22,13 +22,13 @@ namespace GUI::Market {
 
 namespace {
 
-using Market::kBasket;
-using Market::kStock;
-using Market::Side;
+using Quote::kBasket;
+using Quote::kStock;
+using Quote::Side;
 
-constexpr uint64_t kMagic = 0x5850415443544B53ULL;                           // "SKTCTAPX" 小端
-constexpr size_t kSlots = Market::kSlots, kCell = kSlots * CtaLib::kFields;  // 一行一日的值数
-constexpr const char *kFile[Market::kSides] = {"/stock.bin", "/basket.bin"}; // [侧]
+constexpr uint64_t kMagic = 0x5850415443544B53ULL;                          // "SKTCTAPX" 小端
+constexpr size_t kSlots = Quote::kSlots, kCell = kSlots * CtaLib::kFields;  // 一行一日的值数
+constexpr const char *kFile[Quote::kSides] = {"/stock.bin", "/basket.bin"}; // [侧]
 
 // 两侧的价: 个股 = 库存原价 (f16, 与库逐位一致), 篮子 = 日内点位 (f32)
 template <Side S>
@@ -73,11 +73,11 @@ void items(Ar &ar, std::vector<T> &v) {
 
 // 一行一日的价 ← 分钟根 (无根的槽 = NaN)
 template <Side S>
-void put(Rec<S> &r, const Market::Bars &b) {
+void put(Rec<S> &r, const Quote::Bars &b) {
   std::fill(r.x, r.x + kCell, static_cast<Px<S>>(cta::kNaN));
   for (size_t s = 0; s < kSlots; ++s)
     if (b.has[s]) {
-      const Market::Cell &c = b.cell[s];
+      const Quote::Cell &c = b.cell[s];
       Px<S> *p = r.x + s * CtaLib::kFields;
       p[CtaLib::kHigh] = static_cast<Px<S>>(c.high), p[CtaLib::kLow] = static_cast<Px<S>>(c.low), p[CtaLib::kClose] = static_cast<Px<S>>(c.close);
     }
@@ -119,12 +119,12 @@ struct Lane {
     mc.preallocate(A, L_1min, nm);
   }
   FeatureRead::DayColumns dc, mc;
-  Market::Row prev, cur; // D−1 / D 收盘行
-  Market::Fold fold;
-  std::vector<Market::Day> day; // [B]
-  Market::Bars bars;            // 一只一日的分钟根
-  Market::Members mem;
-  std::vector<Market::Members::Weight> ws; // 一只滤到篮子行的所属线
+  Quote::Row prev, cur; // D−1 / D 收盘行
+  Quote::Fold fold;
+  std::vector<Quote::Day> day; // [B]
+  Quote::Bars bars;            // 一只一日的分钟根
+  Quote::Members mem;
+  std::vector<Quote::Members::Weight> ws; // 一只滤到篮子行的所属线
 };
 
 } // namespace
@@ -153,7 +153,7 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vecto
   for (int g = 0; g < kBasketGroups; ++g)
     for (const size_t l : basket_group(static_cast<BasketGroup>(g)))
       lines.push_back(static_cast<uint32_t>(l));
-  const Market::PerSide<std::vector<uint32_t>> keys{lib.axis.ids, std::move(lines)};
+  const Quote::PerSide<std::vector<uint32_t>> keys{lib.axis.ids, std::move(lines)};
   const size_t NA = keys[kStock].size(), NB = keys[kBasket].size();
   const Head want{kMagic, concepts().hash, dates.front()};
   const auto fits = [&] {
@@ -199,10 +199,10 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vecto
   std::vector<uint32_t> line(basket_count(), static_cast<uint32_t>(NB)); // basket_line → 篮子行 (NB = 不在)
   for (size_t j = 0; j < NB; ++j)
     line[keys_[kBasket][j]] = static_cast<uint32_t>(j);
-  Market::PerSide<std::ofstream> f;
+  Quote::PerSide<std::ofstream> f;
   each_side([&]<Side S>() { f[S].open(dir_ + kFile[S], std::ios::binary | std::ios::app); });
   const size_t NP = pool_count(), N = dates.size(), T = static_cast<size_t>(pool_.threads());
-  const std::vector<size_t> dcols = Market::row_cols(), mcols = Market::minute_cols();
+  const std::vector<size_t> dcols = Quote::row_cols(), mcols = Quote::minute_cols();
   std::vector<std::unique_ptr<Lane>> lanes;
   for (size_t t = 0; t < T; ++t)
     lanes.push_back(std::make_unique<Lane>(NA, NB, dcols.size(), mcols.size()));
@@ -219,26 +219,26 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vecto
       const size_t i = i0 + static_cast<size_t>(k);
       const misc::Ymd d = dates[i];
       rd.load_day_columns(dates[i - 1], dcols, L.dc);
-      Market::read_row(L.dc, NA, NP, L.prev);
+      Quote::read_row(L.dc, NA, NP, L.prev);
       rd.load_day_columns(d, dcols, L.dc);
-      Market::read_row(L.dc, NA, NP, L.cur);
+      Quote::read_row(L.dc, NA, NP, L.cur);
       rd.load_day_columns(d, mcols, L.mc);
       Market::members(L.prev, lib.axis, NP, L.mem);
-      L.fold.open(Market::kSlots);
+      L.fold.open(Quote::kSlots);
       so.rec.assign(NA, {});
       so.pre.assign(L.prev.pre.begin(), L.prev.pre.end());
       so.last.assign(NA, 0.f);
       for (size_t a = 0; a < NA; ++a) {
         const float c = L.cur.px[3][a];
         const bool on = L.cur.trade[a] && c > 0;
-        const Market::Cell day = Market::cell(L.cur.px[0][a], L.cur.px[1][a], L.cur.px[2][a], c, 0, L.cur.amount[a]);
-        Market::bars_of(L.mc, a, d, L.bars);
+        const Quote::Cell day = Quote::cell(L.cur.px[0][a], L.cur.px[1][a], L.cur.px[2][a], c, 0, L.cur.amount[a]);
+        Quote::bars_of(L.mc, a, d, L.bars);
         if (on && L.bars.has.any()) {
           so.last[a] = c;
           put(so.rec[a], L.bars);
         }
         L.ws.clear();
-        for (const Market::Members::Weight &w : L.mem.of(a))
+        for (const Quote::Members::Weight &w : L.mem.of(a))
           if (const uint32_t j = line[w.basket]; j < NB)
             L.ws.push_back({j, w.w});
         if (!L.ws.empty())
@@ -249,7 +249,7 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vecto
       bo.pre.assign(NB, 1.f);
       bo.last.assign(NB, 0.f);
       for (size_t b = 0; b < NB; ++b)
-        if (const Market::Day &y = L.day[b]; y.candle.date) {
+        if (const Quote::Day &y = L.day[b]; y.candle.date) {
           bo.last[b] = y.candle.close;
           put(bo.rec[b], y.bars);
         }

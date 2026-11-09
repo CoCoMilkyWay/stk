@@ -10,13 +10,11 @@
 
 struct SharedData {
   Config config;
-  TaskState taskstate;
+  TaskState task_state;
   Asset asset;
-  AssetInfo assetinfo;
+  AssetInfo asset_info;
   Feature feature;
 
   bool request_reinit = false;
-  std::atomic<bool> high_performance_mode{false}; // 编码 / 特征计算的 worker 线程开关, 渲染循环读
-  void EnableHighPerformanceMode() { high_performance_mode = true; }
-  void DisableHighPerformanceMode() { high_performance_mode = false; }
+  std::atomic<bool> high_performance_mode{false}; // 编码 / 特征计算在飞 (各服务 run 首尾写), 渲染循环读以降帧率
 };

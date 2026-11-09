@@ -3,7 +3,7 @@
 #include "features/Bar1mDay.hpp"
 #include "features/BarGraph.hpp"
 #include "features/CoreTs.hpp"
-#include "math/sample/ResamplerBar2Min.hpp"
+#include "features/Sample/ResamplerBar2Min.hpp"
 
 // ============================================================================
 // CoreBar: Bar 档单资产时序计算 (源 = bar1m 分钟 K; L_1min / 分钟箱层 / L_1day). 日 / 分钟 / 分钟箱 / 标签骨架见 CoreTs.hpp

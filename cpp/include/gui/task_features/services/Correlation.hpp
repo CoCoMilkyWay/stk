@@ -1,7 +1,7 @@
 #pragma once
 
 #include "shared/Progress.hpp"
-#include "shared/ReadRequest.hpp" // analysis::ReadScope
+#include "shared/ReadRequest.hpp" // reader::ReadScope
 
 #include <array>
 #include <atomic>
@@ -14,7 +14,7 @@ class FeatureRead;
 namespace GUI::Features {
 
 // ============================================================================
-// Correlation (特征两两相关矩阵, 逐抽样日流式; 公共骨架见 shared/Analysis.hpp)
+// Correlation (特征两两相关矩阵, 逐抽样日流式; 公共骨架见 gui/task_features/services/Analysis.hpp)
 // ============================================================================
 // 口径 (为什么是这个口径, 而不是把全部 (分钟, 资产) 格子倒进一个池子):
 //
@@ -97,7 +97,7 @@ struct Correlation : Published {
   ~Correlation();
 
   // 重置全部状态并进入 Building (列集/层变了旧矩阵下标全错位, 快照整体清)
-  void reset(analysis::ReadScope scope, Spec spec);
+  void reset(reader::ReadScope scope, Spec spec);
   // 逐抽样日构建 (日内切片累加, 每步发布); 被取消返回 false
   bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
@@ -106,7 +106,7 @@ struct Correlation : Published {
 private:
   struct Runtime; // worker 私有 (引擎 + 发布 staging), 定义在 Correlation.cpp
   std::unique_ptr<Runtime> rt_;
-  analysis::ReadScope scope_; // reset 时定好, build 全程只读
+  reader::ReadScope scope_; // reset 时定好, build 全程只读
 };
 
 // ============================================================================
@@ -133,7 +133,7 @@ struct CorrelationPair : Published {
   CorrelationPair();
   ~CorrelationPair();
 
-  void reset(analysis::ReadScope scope, Spec spec);
+  void reset(reader::ReadScope scope, Spec spec);
   bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
   LibId main() const { return scope_.main; }
@@ -141,7 +141,7 @@ struct CorrelationPair : Published {
 private:
   struct Runtime;
   std::unique_ptr<Runtime> rt_;
-  analysis::ReadScope scope_;
+  reader::ReadScope scope_;
 };
 
 // ============================================================================
@@ -169,7 +169,7 @@ struct CorrelationLag : Published {
   CorrelationLag();
   ~CorrelationLag();
 
-  void reset(analysis::ReadScope scope, Spec spec);
+  void reset(reader::ReadScope scope, Spec spec);
   bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
   LibId main() const { return scope_.main; }
@@ -177,7 +177,7 @@ struct CorrelationLag : Published {
 private:
   struct Runtime;
   std::unique_ptr<Runtime> rt_;
-  analysis::ReadScope scope_;
+  reader::ReadScope scope_;
 };
 
 } // namespace GUI::Features

@@ -144,7 +144,7 @@ public:
   // output/fundamental/_audit/ (不放 output/log: 特征计算开跑会整删 log_dir)
   static std::filesystem::path dir();
 
-  // 读 dir 下全部 <表>.tsv (.tmp 残留不读); 不参与核对的表 / 格式不符 (旧格式等) 的文件直接删, 该表视为未核
+  // 读 dir 下全部 <表>.tsv (.tmp 残留不读); 不参与核对的表 / 格式不符的文件直接删, 该表视为未核
   Book();
 
   // 唯一写点 (与 Store::put 对仗): 覆盖 u 各月的结论 (at = 核对时刻) + 整写该表文件

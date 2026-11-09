@@ -21,7 +21,7 @@
 
 #include "factor/Check.hpp"
 #include "factor/Contract.hpp"
-#include "gui/factors/Table.hpp" // RowState
+#include "gui/engine/Table.hpp" // RowState
 #include "gui/util/Service.hpp"
 
 #include <atomic>
@@ -30,7 +30,7 @@
 
 namespace GUI::Alpha {
 
-using namespace Factors;
+using namespace Engine;
 
 struct RoundCtx; // 一轮的常驻件 (输入缓存 / 输出缓冲 / GPU 会话), 定义在 .cpp
 

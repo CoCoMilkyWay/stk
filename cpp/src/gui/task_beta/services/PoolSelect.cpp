@@ -236,7 +236,7 @@ void Selector::at(size_t r, std::vector<uint32_t> &out) const {
   }
   const size_t want = std::min<size_t>(s_.n, n_fin);
   const uint32_t *o = rk_->ord.data() + rk_->off[r], *e = rk_->ord.data() + rk_->off[r + 1];
-  if (s_.side == kSideLow) {
+  if (s_.end == kEndLow) {
     for (; o != e && out.size() < want; ++o)
       if (in(*o))
         out.push_back(*o);

@@ -1,5 +1,5 @@
-// Tab Encode - L2 Binary Database Encoding Control Panel
-// Controls CSV→Binary conversion with worker management
+// Tab Encode - L2 归档 (CSV) → output/orders 编码面板
+// 覆盖检查 / 文件核查 / 编码 (worker 数可调)
 #pragma once
 
 #include "gui/Tasks.hpp"

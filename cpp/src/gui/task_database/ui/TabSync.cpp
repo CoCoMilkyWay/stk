@@ -1,15 +1,15 @@
-// Tab Fundamental - 数据源 (BigQuant / Tushare / 东财 / 新浪) 状态与同步入口
+// Tab Sync - 数据源 (BigQuant / Tushare / 东财 / 新浪) 状态与同步入口
 // 数据落地 = output/fundamental/{YYYY-MM, _meta}/<表>.parquet + YYYY-MM/<表>/YYYY-MM-DD.parquet (Daily)
-//   (水位增量, 常量见 shared/Config.hpp) + output/concept/YYYYMMDD.tsv + output/sina/live.bin;
-// AssetInfo 由 FundamentalService 从 parquet 构建, 此处只渲染状态 + 回写按钮 flag.
+//   (水位增量, 常量见 fundamental/Spec.hpp) + output/concept/YYYYMMDD.tsv + output/sina/live.bin;
+// AssetInfo 由 SyncService 从 parquet 构建, 此处只渲染状态 + 回写按钮 flag.
 //
 // 一源一张分表 (BigQuant / Tushare / 东财 / 新浪), 列同形; 表头 = 源名 + 说明 + 各道同步状态
-//   (Update 四道 = FundamentalState::lanes, 道序即执行序; 新浪当日 = QuoteStatus, 常驻轮询).
+//   (Update 四道 = SyncState::lanes, 道序即执行序; 新浪当日 = QuoteStatus, 常驻轮询).
 //
 // 逐表清单的两半信息各有出处, 谁也不抄谁:
 //   静态元描述 (增量键 / 抓法 / 就绪 / 说明) — 直接遍历 fundamental::SPECS
 //     (按 src 分两张清单), spec 加一张表这里自动多一行, 不存在漏配.
-//   本地落盘状态 (分片数 / 最新分片 / 体积 / 落盘时刻) — FundamentalState::tables,
+//   本地落盘状态 (分片数 / 最新分片 / 体积 / 落盘时刻) — SyncState::tables,
 //     工作线程扫好的快照, 按表名关联; 渲染帧内零 IO.
 #include "gui/task_database/ui/TabSync.hpp"
 #include "fundamental/Spec.hpp"
@@ -331,7 +331,7 @@ void sync_chip(const char *tag, const TaskStatus &st, const std::string &round, 
 }
 
 // Update 的一道: 未联网同步过 → [-]; 计划为空 → 已到水位 (概念: 当日已有); 否则 计步 · 行数; 时刻 = 收尾
-void lane_chip(const FundamentalState &state, Lane l) {
+void lane_chip(const SyncState &state, Lane l) {
   const LaneStat &s = state.lanes[l];
   TaskStatus st;
   switch (s.run) {
@@ -358,7 +358,7 @@ void lane_chip(const FundamentalState &state, Lane l) {
 }
 
 // 新浪当日 (常驻轮询): 未起 → [-]; 补分钟 K 中 → syncing, 否则 live; 时刻 = 最新快照
-void sina_chip(const Market::QuoteStatus *q) {
+void sina_chip(const Quote::QuoteStatus *q) {
   if (!q) {
     sync_chip("sina.live", {}, "未起 (Market 任务首次打开才起)", "");
     return;
@@ -381,7 +381,7 @@ struct Totals {
   std::uint64_t bytes = 0;
 };
 
-Totals count_totals(const FundamentalState &state) {
+Totals count_totals(const SyncState &state) {
   Totals t;
   for (const fundamental::Spec &spec : fundamental::SPECS) {
     ++t.listed;
@@ -510,10 +510,10 @@ void audit_section(const AuditView &v, bool *audit_clicked, bool *audit_incr_cli
 } // namespace
 
 void RenderTabSync(
-    const FundamentalState &state,
+    const SyncState &state,
     const Progress &progress,
     const TaskStatus &status,
-    const Market::QuoteStatus *sina,
+    const Quote::QuoteStatus *sina,
     bool *update_clicked,
     bool *update_cancel_clicked,
     bool disable_update_controls,
@@ -705,7 +705,7 @@ void RenderTabSync(
     }
     char desc[256];
     std::snprintf(desc, sizeof(desc), "当日分钟 K (快照合成 + 分钟 K 补根) + 五档, 只存行情日一天; 快照盘中 %ds / 盘外 %ds 一轮",
-                  Market::QuoteService::kTick, Market::QuoteService::kIdleTick);
+                  Quote::QuoteService::kTick, Quote::QuoteService::kIdleTick);
     table_row({"live", "-", "轮询", "实时", desc}, sina != nullptr, sina && sina->bytes ? &live : nullptr,
               sina && sina->pending > 0, nullptr, av, disable_audit, audit_table, repair_table, weekly);
   });

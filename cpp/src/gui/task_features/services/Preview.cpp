@@ -1,6 +1,6 @@
 #include "gui/task_features/services/Preview.hpp"
 #include "features/DataDefine.hpp" // kPxEps (涨跌停比较容差, 全库统一)
-#include "features/Storage/DayBatchPlane.hpp"
+#include "features/Storage/FeaturePlane.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/profiler.hpp"
 
@@ -11,6 +11,7 @@
 namespace GUI::Features {
 
 using namespace analysis;
+using namespace reader;
 
 // ============================================================================
 // Runtime: worker 私有状态 (UI 不看)

@@ -1,5 +1,4 @@
 #include "api/tushare/client.hpp"
-#include "shared/Config.hpp"
 #include "yyjson/yyjson.h"
 
 #include <arrow/array/builder_binary.h>
@@ -66,14 +65,14 @@ yyjson_doc *call(const std::string &token, std::string_view api_name, const Para
       tcp::resolver resolver(ioc);
       beast::tcp_stream stream(ioc);
       stream.expires_after(
-          std::chrono::seconds(::config::TUSHARE_HTTP_TIMEOUT_SECONDS));
+          std::chrono::seconds(kTimeoutSeconds));
 
-      auto results = resolver.resolve(::config::TUSHARE_HTTP_HOST,
-                                      ::config::TUSHARE_HTTP_PORT);
+      auto results = resolver.resolve(kHost,
+                                      kPort);
       stream.connect(results);
 
       http::request<http::string_body> req{http::verb::post, "/", 11};
-      req.set(http::field::host, ::config::TUSHARE_HTTP_HOST);
+      req.set(http::field::host, kHost);
       req.set(http::field::user_agent, "qmt-tushare/1.0");
       req.set(http::field::content_type, "application/json");
       req.body() = body;
@@ -92,11 +91,11 @@ yyjson_doc *call(const std::string &token, std::string_view api_name, const Para
       res_body = std::move(res.body());
     } catch (const boost::system::system_error &e) {
       std::cerr << "\n[http] transient error (attempt " << (attempt + 1) << "/"
-                << (::config::TUSHARE_HTTP_RETRY_MAX + 1) << ") api=" << api_name
+                << (kRetryMax + 1) << ") api=" << api_name
                 << ": " << e.what() << std::endl;
-      assert(attempt < ::config::TUSHARE_HTTP_RETRY_MAX);
+      assert(attempt < kRetryMax);
       std::this_thread::sleep_for(
-          std::chrono::seconds(::config::TUSHARE_HTTP_RETRY_INTERVAL_SECONDS));
+          std::chrono::seconds(kRetryIntervalSeconds));
       continue;
     }
 
@@ -121,13 +120,13 @@ yyjson_doc *call(const std::string &token, std::string_view api_name, const Para
     // 40203 = 频率超限 (e.g. "访问接口(income_vip)频率超限(400次/分钟)")，等 1 分钟窗口刷新即可恢复
     if (code == 40203) {
       std::cerr << "\n[http] rate limit (attempt " << (attempt + 1) << "/"
-                << (::config::TUSHARE_HTTP_RETRY_MAX + 1) << ") api=" << api_name
+                << (kRetryMax + 1) << ") api=" << api_name
                 << ": " << msg << std::endl;
       yyjson_doc_free(doc);
       doc = nullptr;
-      assert(attempt < ::config::TUSHARE_HTTP_RETRY_MAX);
+      assert(attempt < kRetryMax);
       std::this_thread::sleep_for(
-          std::chrono::seconds(::config::TUSHARE_HTTP_RETRY_INTERVAL_SECONDS));
+          std::chrono::seconds(kRetryIntervalSeconds));
       continue;
     }
     std::cerr << "Tushare API error: code=" << code << " msg=" << msg
@@ -209,7 +208,7 @@ Client::Client(std::string token) : token_(std::move(token)) {
   assert(!token_.empty());
 }
 
-Client::Client() : Client(::config::TUSHARE_TOKEN) {}
+Client::Client() : Client(kToken) {}
 
 std::shared_ptr<arrow::Table> Client::query(const Query &q) {
   yyjson_doc *doc = call(token_, q.api, q.params);

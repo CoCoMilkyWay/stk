@@ -18,7 +18,7 @@
 //        分层 / LS 同一口径同一 y 轴 (不平移; LS = ½ (G20 − G1), 与单组同一资金尺度), y 范围按显示的线定 (
 //        图例 (对仗 Portfolio, 逐列定宽): "LS 100%" (顶底 = 整组) / "LS 50%" … + 全段对数年化 + 夏普 + 年换手 (三项恒为全段, 不随窗口);
 //        夏普 = 日收益年化 Sharpe; 年换手 = 该级两端 Δw 换手 (InspectResult::ls_turn → turn_annual); LS 随模式: 超额 = 两端超额之差的一半, 绝对 = 两端原值之差的一半; 两模式换手同一份). 分层色 = G1 冷蓝 / G20 暖橙, 中心中性灰, 线性底坡 + 两侧反向 tanh 台阶: 边上 2 组近全色, 第 3 组过半, 再往里渐淡到中心灰 (单调)
-//        尾部 (gui/factors/Table TailRow): G20 / G1 内更极端的 50% / 20% / 5% 再各一条分层线 (饱和顶 / 底色, 越极端越细) + 一条尾部 LS
+//        尾部 (gui/engine/Table TailRow): G20 / G1 内更极端的 50% / 20% / 5% 再各一条分层线 (饱和顶 / 底色, 越极端越细) + 一条尾部 LS
 //        (白, 越极端越细); 相邻尾部分层线之间填淡色带 (G20↔50% / 50%↔20% / 20%↔5%, 越极端越重), 底侧同;
 //        一级一个图例项 ("LS 50%" …, 列与 LS 100% 对齐) 管该级分层 + 色带 + LS, 默认隐藏; y 范围只按显示的簇合成, 开关图例即重贴
 //        时序上一条可拖光标 (cursor_day, 锚在交易日边界, 双击落点, 默认末日; 与右上 K 线共享, 拖哪边另一边同步; 不做 hover 列表)
@@ -53,11 +53,11 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_alpha/services/InspectService.hpp"
+#include "gui/engine/services/InspectService.hpp"
+#include "gui/engine/services/RunService.hpp"
 #include "gui/task_alpha/services/KlineService.hpp"
-#include "gui/task_alpha/services/RunService.hpp"
 #include "gui/task_alpha/ui/TabFactors.hpp" // FactorsUIState / FactorsUIContext
-#include "shared/Analysis.hpp"              // AggPdf (KLL 成品快照)
+#include "math/distribution/PdfSnap.hpp"    // AggPdf (KLL 成品快照)
 
 #include <cstdint>
 #include <string>
@@ -85,7 +85,7 @@ struct InspectDerived {
   // 各簇 / 各 LS 线 (按 win) 的 min / max (含 0); 左上 y 范围按图例当前显示的簇每帧合成 (layer_range), 开关图例 / 拖窗口即重贴
   float lay_lo[kLsLines] = {}, lay_hi[kLsLines] = {};
   float ls_lo[kLsLines] = {}, ls_hi[kLsLines] = {};
-  analysis::AggPdf ic_pdf;      // = InspectResult::ic_agg 选定 hold (n_pts = 0 → 样本不足不画)
+  AggPdf ic_pdf;                // = InspectResult::ic_agg 选定 hold (n_pts = 0 → 样本不足不画)
   std::vector<float> ic_series; // 逐行 rank IC (ok 行, 时序) = ic_pdf 的样本; 左下左半背景
   std::vector<float> ic_cum;    // [T] 逐行 rank IC 累计 (非 ok 行持平): 右上 K 线右轴叠加
   std::vector<float> ic_dd;     // [T] ic_cum 距此前最高 (含起点 0) 的回撤 ≥ 0: 累计线着色

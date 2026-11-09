@@ -1,4 +1,4 @@
-// Tab Dates - Calendar Grid View for Trading Days
+// Tab Calendar - 交易日历格: 除权除息 / 节假日 / 回测区间 / L2 覆盖
 // Displays dense calendar grid based on AssetInfo::days
 
 #pragma once

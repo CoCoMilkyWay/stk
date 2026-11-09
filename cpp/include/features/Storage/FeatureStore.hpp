@@ -1,7 +1,7 @@
 #pragma once
 
 #include "FeatureDay.hpp" // 续算尾窗读回 (seed)
-#include "FeatureStoreConfig.hpp"
+#include "features/Storage/FeatureTier.hpp"
 #include "misc/exec.hpp"
 #include "misc/logging.hpp"
 #include <algorithm>
@@ -65,7 +65,7 @@
 // 性能约束: TS / CS 热路径 (逐笔 / 逐秒) 只许指针算术 —— 无锁、无查找、无分配、无
 // 运行时校验 (只 assert); 握手开销全压在每日一次的 open / close 上.
 //
-// 档 T (lob::Tier / bar::Tier, 见 FeatureStoreConfig) 是模板参数: 布局常量取 T::LEVELS, 档缺的层不分配
+// 档 T (lob::Tier / bar::Tier, 见 FeatureTier) 是模板参数: 布局常量取 T::LEVELS, 档缺的层不分配
 // (data[lvl] == nullptr). Slot / Day 独立成模板, fstore:: 的写读 API 从句柄推导档.
 // ============================================================================
 

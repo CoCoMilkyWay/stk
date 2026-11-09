@@ -31,14 +31,14 @@ int index_of(const DimValue (&defs)[N], std::string_view c) {
 
 Spec canon(Spec s) {
   if (s.n == 0)
-    s.style = kStyleSize, s.side = kSideLow;
+    s.style = kStyleSize, s.end = kEndLow;
   return s;
 }
 
 std::string code(const Spec &s) {
   const StyleDef &d = kStyleDefs[s.style];
   constexpr char kHex[] = "0123456789abcdef";
-  std::string c = s.n ? std::string(d.code) + "_" + d.side[s.side] + "." + std::to_string(s.n) : std::string("all.all");
+  std::string c = s.n ? std::string(d.code) + "_" + d.end[s.end] + "." + std::to_string(s.n) : std::string("all.all");
   for (const char *p : {kRebalDefs[s.rebal].code, kStDefs[s.st].code, kBoardDefs[s.board].code, kMarginDefs[s.margin].code})
     c += std::string(".") + p;
   return c + ".f" + kHex[s.filter];
@@ -66,8 +66,8 @@ Spec parse(std::string_view c) {
       ++st;
     assert(st < kStyles && "池名: 未知风格");
     const std::string_view sd = seg[0].substr(u + 1);
-    assert((sd == kStyleDefs[st].side[0] || sd == kStyleDefs[st].side[1]) && "池名: 未知端");
-    s.style = static_cast<Style>(st), s.side = sd == kStyleDefs[st].side[0] ? kSideLow : kSideHigh;
+    assert((sd == kStyleDefs[st].end[0] || sd == kStyleDefs[st].end[1]) && "池名: 未知端");
+    s.style = static_cast<Style>(st), s.end = sd == kStyleDefs[st].end[0] ? kEndLow : kEndHigh;
     int n = 0;
     const auto [p, ec] = std::from_chars(seg[1].data(), seg[1].data() + seg[1].size(), n);
     assert(ec == std::errc() && p == seg[1].data() + seg[1].size() && n > 0 && std::ranges::find(kCounts, n) != std::end(kCounts) &&
@@ -89,7 +89,7 @@ Spec parse(std::string_view c) {
 std::array<Part, kParts> parts(const Spec &s) {
   const bool keyed = s.n > 0;
   return {{
-      {keyed ? kStyleDefs[s.style].side_cn[s.side] : "全", keyed},
+      {keyed ? kStyleDefs[s.style].end_cn[s.end] : "全", keyed},
       {keyed ? std::to_string(s.n) : "全", keyed},
       {kRebalDefs[s.rebal].name_cn, true},
       {kStDefs[s.st].name_cn, s.st != kStAll},
@@ -117,17 +117,17 @@ std::string filter_cn(uint8_t f) {
 std::vector<Spec> default_pools() {
   constexpr uint8_t kAll = (1u << kFilters) - 1, kLive = kAll & ~(1u << kFltWarn);
   std::vector<Spec> v;
-  const auto two = [&](Style st, Side sd, Margin mg = kMarginAll) {
+  const auto two = [&](Style st, End sd, Margin mg = kMarginAll) {
     for (const uint16_t n : {400, 200})
       v.push_back({st, sd, n, kRebalDay, kStNone, kBoardAll, mg, kAll});
   };
-  two(kStyleSize, kSideLow), two(kStyleSize, kSideHigh), two(kStyleSize, kSideLow, kMarginOn);
-  two(kStyleEp, kSideHigh), two(kStyleEp, kSideLow), two(kStyleBp, kSideHigh), two(kStyleBp, kSideLow), two(kStyleDy, kSideHigh);
-  two(kStyleRoe, kSideHigh), two(kStyleRoe, kSideLow), two(kStyleInv, kSideLow), two(kStyleInv, kSideHigh);
-  two(kStyleMom, kSideHigh), two(kStyleMom, kSideLow), two(kStyleRev, kSideLow), two(kStyleRev, kSideHigh);
-  two(kStyleTurn, kSideLow), two(kStyleTurn, kSideHigh), two(kStyleIvol, kSideLow), two(kStyleIvol, kSideHigh);
-  two(kStyleResvol, kSideLow), two(kStyleResvol, kSideHigh), two(kStyleBeta, kSideLow), two(kStyleBeta, kSideHigh);
-  two(kStyleTrend, kSideHigh), two(kStyleTrend, kSideLow), two(kStylePrice, kSideHigh), two(kStylePrice, kSideLow);
+  two(kStyleSize, kEndLow), two(kStyleSize, kEndHigh), two(kStyleSize, kEndLow, kMarginOn);
+  two(kStyleEp, kEndHigh), two(kStyleEp, kEndLow), two(kStyleBp, kEndHigh), two(kStyleBp, kEndLow), two(kStyleDy, kEndHigh);
+  two(kStyleRoe, kEndHigh), two(kStyleRoe, kEndLow), two(kStyleInv, kEndLow), two(kStyleInv, kEndHigh);
+  two(kStyleMom, kEndHigh), two(kStyleMom, kEndLow), two(kStyleRev, kEndLow), two(kStyleRev, kEndHigh);
+  two(kStyleTurn, kEndLow), two(kStyleTurn, kEndHigh), two(kStyleIvol, kEndLow), two(kStyleIvol, kEndHigh);
+  two(kStyleResvol, kEndLow), two(kStyleResvol, kEndHigh), two(kStyleBeta, kEndLow), two(kStyleBeta, kEndHigh);
+  two(kStyleTrend, kEndHigh), two(kStyleTrend, kEndLow), two(kStylePrice, kEndHigh), two(kStylePrice, kEndLow);
   for (const St st : {kStSt, kStSst})
     v.push_back(canon({.n = 0, .st = st, .filter = kLive}));
   for (const Board bd : {kBoardShMain, kBoardSzMain, kBoardStar, kBoardChiNext})
@@ -183,16 +183,16 @@ std::vector<Spec> specs_of(Style st, const Grid &g) {
   }
   std::vector<Spec> v;
   std::set<Spec> seen;
-  for (int sd = 0; sd < kSides; ++sd)
+  for (int sd = 0; sd < kEnds; ++sd)
     for (int k = 0; k < kNCounts; ++k)
       for (int t = 0; t < kSts; ++t)
         for (int bd = 0; bd < kBoards; ++bd)
           for (int mg = 0; mg < kMargins; ++mg)
             for (const uint8_t f : flts)
               for (int rb = 0; rb < kRebals; ++rb) {
-                if (!(g.side >> sd & 1) || !(g.n >> k & 1) || !(g.st >> t & 1) || !(g.board >> bd & 1) || !(g.margin >> mg & 1) || !(g.rebal >> rb & 1))
+                if (!(g.end >> sd & 1) || !(g.n >> k & 1) || !(g.st >> t & 1) || !(g.board >> bd & 1) || !(g.margin >> mg & 1) || !(g.rebal >> rb & 1))
                   continue;
-                const Spec s = canon({st, static_cast<Side>(sd), static_cast<uint16_t>(kCounts[k]), static_cast<Rebal>(rb), static_cast<St>(t),
+                const Spec s = canon({st, static_cast<End>(sd), static_cast<uint16_t>(kCounts[k]), static_cast<Rebal>(rb), static_cast<St>(t),
                                       static_cast<Board>(bd), static_cast<Margin>(mg), f});
                 if (seen.insert(s).second)
                   v.push_back(s);

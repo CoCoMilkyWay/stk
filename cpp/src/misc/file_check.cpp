@@ -366,7 +366,7 @@ FileCheckResult check_src_archives(const std::string &archive_base_dir,
   // Check if path exists
   if (!std::filesystem::exists(archive_base_dir)) {
     result.archive_dir_exists = false;
-    result.passed = true; // OK to proceed with built binaries
+    result.passed = true; // OK to proceed with existing orders
     return result;
   }
 

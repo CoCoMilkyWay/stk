@@ -18,7 +18,7 @@ namespace GUI::Alpha {
 
 struct KlineRequest {
   uint32_t gen = 0;
-  analysis::ReadScope scope;    // = InspectResult::read_scope: 读主池 (标签库: 目录 + 池轴, reader 的期望)
+  reader::ReadScope scope;      // = InspectResult::read_scope: 读主池 (标签库: 目录 + 池轴, reader 的期望)
   std::vector<misc::Ymd> dates; // = InspectResult::dates; x = 日下标 × VR + 行 (VR = 该层每日有效行数)
   int sub = -1;                 // A 轴资产下标 (scope.to[main] 映射到主池轴)
   size_t level = 0;             // 特征库层 (因子层)

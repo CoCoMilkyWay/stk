@@ -1,5 +1,4 @@
 #include "api/eastmoney/client.hpp"
-#include "shared/Config.hpp"
 #include "yyjson/yyjson.h"
 
 #include <boost/asio/ip/tcp.hpp>
@@ -91,14 +90,14 @@ std::string Client::get(const std::string &target) {
       const auto now = std::chrono::steady_clock::now();
       if (!stream_ || now - used_ > kIdle) {
         stream_.emplace(ioc_);
-        stream_->expires_after(std::chrono::seconds(::config::EASTMONEY_HTTP_TIMEOUT_SECONDS));
-        stream_->connect(tcp::resolver(ioc_).resolve(::config::EASTMONEY_HOST, "80"));
+        stream_->expires_after(std::chrono::seconds(kTimeoutSeconds));
+        stream_->connect(tcp::resolver(ioc_).resolve(kHost, "80"));
       }
       http::request<http::empty_body> req{http::verb::get, target, 11};
-      req.set(http::field::host, ::config::EASTMONEY_HOST);
+      req.set(http::field::host, kHost);
       req.set(http::field::user_agent, "Mozilla/5.0");
       req.keep_alive(true);
-      stream_->expires_after(std::chrono::seconds(::config::EASTMONEY_HTTP_TIMEOUT_SECONDS));
+      stream_->expires_after(std::chrono::seconds(kTimeoutSeconds));
       http::write(*stream_, req);
       beast::flat_buffer buf;
       http::response<http::string_body> res;
@@ -114,9 +113,9 @@ std::string Client::get(const std::string &target) {
       return std::move(res.body());
     } catch (const boost::system::system_error &e) {
       stream_.reset();
-      std::cerr << "[eastmoney] transient error (attempt " << (attempt + 1) << "/" << (::config::EASTMONEY_HTTP_RETRY_MAX + 1)
+      std::cerr << "[eastmoney] transient error (attempt " << (attempt + 1) << "/" << (kRetryMax + 1)
                 << "): " << e.what() << std::endl;
-      assert(attempt < ::config::EASTMONEY_HTTP_RETRY_MAX);
+      assert(attempt < kRetryMax);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   }

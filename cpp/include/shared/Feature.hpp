@@ -1,48 +1,12 @@
 #pragma once
 
-#include "features/FeaturesDefine.hpp"        // FeatureDataType / EnumStr
-#include "features/Method/CS.hpp"             // CS 行 Tf / Method (GUI "CS Norm" 列)
-#include "features/Method/TS.hpp"             // TS 行 Tf / Method (GUI "TS Norm" 列)
-#include "features/Storage/FeatureLevels.hpp" // LEVEL_COUNT / FieldInfo (稳定层, 不依赖字段表)
+#include "features/FeatureMeta.hpp" // FeatureMetadata / feature_meta:: (稳定头, 不依赖字段表)
 #include <array>
 #include <cassert>
 #include <set>
-#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
-
-// ============================================================================
-// Feature Metadata Structure (for UI display)
-// ============================================================================
-
-struct FeatureMetadata {
-  const char *code;          // tick_ret_z
-  L2::ValidType valid_type;  // ALL/DATA/DEPTH (由 SRC / 节点 flush 域推出)
-  FeatureDataType data_type; // TS/CS/LB/META (由 SRC 列推出)
-  const char *cat_l1;        // Node/TS/<dir> or Node/CS/<dir>
-  const char *file;          // 定义该列的节点文件 (include/ 下相对路径, 如 features/Node/Bar/TS/Basic/Kline.hpp)
-  const char *cat_l2;        // FIELDS row token (AUTO = GUI 值域自动探测; 其他 = 人工覆盖), generated into FeatureCategoryL2_ALL
-  ts::TfId ts_tf;            // 由 SRC 推出: TS(..., Tf, Method) → 时序归一化 (Tf 已落盘套用, Method 占位); 非 TS 行 None
-  ts::MethodId ts_method;
-  cs::TfId cs_tf; // 由 SRC 推出: CS(..., Tf, Method) → 截面归一化; 非 CS 行 None
-  cs::MethodId cs_method;
-  const char *formula;     // "(r-μ)/σ, W=50"
-  const char *name_en;     // "Tick Return Z-score"
-  const char *name_cn;     // "微小对数收益"
-  const char *description; // "滚动窗口标准化..."
-  uint8_t level;           // 0=L_sec, 1=L_1min
-};
-
-// ============================================================================
-// 字段表元数据的运行时入口 (定义在 src/features/FeatureMeta.cpp — 唯一依赖生成字段表
-// 的元数据 TU; 本头保持稳定, 增删改特征不重编 GUI/shared 消费者, 只重编 FeatureMeta.cpp)
-// ============================================================================
-namespace feature_meta {
-std::span<const FeatureMetadata> features(TierId tier, size_t level); // 该档该层字段表 (行序 = 列序; 档缺的层为空)
-std::span<const char *const> categories_l1(TierId tier);              // Node/<Tier>/{TS,CS}/<分类> 目录名 (排序)
-std::span<const char *const> categories_l2(TierId tier);              // 字段表二级分类 token (排序)
-} // namespace feature_meta
 
 // ts:: / cs:: 归一化枚举的 GUI 适配 (与 FeaturesDefine 的 to_string / *_ALL 同形, 供 TabTable 过滤下拉 / 两列显示)
 inline constexpr EnumStr to_string(ts::TfId t) { return {ts::TF_TOKENS[static_cast<size_t>(t)], ts::TF_NAMES[static_cast<size_t>(t)]}; }
@@ -72,7 +36,7 @@ struct Feature {
     TierId tier = TierId::Lob;
     std::vector<FeatureMetadata> features[LEVEL_COUNT]; // [level] (FeatureLevel; 档缺的层为空)
     std::vector<std::string> deps[LEVEL_COUNT];         // [level][i] = 该特征直接依赖的字段 code (分号分隔), 与 features 平行
-    void init_from_compile_time(TierId t);              // Copy from constexpr arrays + resolve deps
+    void init_from_compile_time(TierId t);              // 字段表拷贝 + 依赖 (feature_meta::)
 
     // 字段 code → 该层列下标; 字段表里找不到 = 字段表与消费方脱节, assert
     size_t col_of(size_t level, const char *code) const;

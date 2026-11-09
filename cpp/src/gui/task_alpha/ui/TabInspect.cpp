@@ -927,7 +927,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const InspectDerived 
 // λ 自适应分布尺度: 等效平滑宽 ≈ (λ / f)^(1/6) 格, 峰处取 kFitWidthSd · sd → λ = f_pk · (kFitWidthSd · sd / dx)^6 (与单位 / 格距无关).
 // 法方程 diag(w) + λ DᵀD 是半带宽 3 的对称正定带状阵; double (大 λ 时 float 条件数不够) 带状 Cholesky, O(n)
 constexpr double kFitWidthSd = 0.35;
-void smooth_fit(const analysis::AggPdf &p, std::vector<float> &g) {
+void smooth_fit(const AggPdf &p, std::vector<float> &g) {
   constexpr int P = 3;
   constexpr double c[P + 1] = {-1.0, 3.0, -3.0, 1.0};
   const int n = static_cast<int>(p.n_pts);
@@ -992,7 +992,7 @@ void smooth_fit(const analysis::AggPdf &p, std::vector<float> &g) {
 //   x: 0 恒钉在横向正中 (follow_centered); 目标半宽 = x_half, 给 0 则贴 PDF 两端 max |x|
 struct DistView {
   const char *title, *x_label, *series_label;
-  const analysis::AggPdf &pdf;
+  const AggPdf &pdf;
   const std::vector<float> &series; // 时序 (行序)
   double mean;
   double x_half = 0.0;
@@ -1004,7 +1004,7 @@ void plot_dist(const DistView &v, const ImVec2 &size) {
   if (!ImPlot::BeginPlot(v.title, size, ImPlotFlags_NoMenus))
     return;
   CompactLegend cl;
-  const analysis::AggPdf &p = v.pdf;
+  const AggPdf &p = v.pdf;
   const int np = static_cast<int>(p.n_pts);
   ImPlot::SetupAxes(v.x_label, "density", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);

@@ -3,7 +3,6 @@
 #include "misc/cross_platform.hpp"
 #include "misc/fs.hpp"
 #include "misc/parquet.hpp"
-#include "shared/Config.hpp"
 
 #include <arrow/array.h>
 
@@ -80,7 +79,7 @@ bool is_daily(std::string_view name) {
 }
 
 bool closed(Ym m, Ymd today) {
-  return misc::last_day(m) < misc::add_days(today, -::config::PIPELINE_LOOKBACK_DAYS);
+  return misc::last_day(m) < misc::add_days(today, -kLookbackDays);
 }
 
 // s 的分片槽: Meta = {0}; Month = [ym(start), ym(today)]
@@ -88,7 +87,7 @@ std::vector<Ym> slots(const Spec &s, const Now &now) {
   if (s.shape == Shape::Meta)
     return {0};
   std::vector<Ym> out;
-  for (Ym m = misc::ym_of(::config::PIPELINE_START_DATE);; m = misc::next_ym(m)) {
+  for (Ym m = misc::ym_of(kSyncStart);; m = misc::next_ym(m)) {
     out.push_back(m);
     if (m == misc::ym_of(now.today))
       break;
@@ -98,7 +97,7 @@ std::vector<Ym> slots(const Spec &s, const Now &now) {
 
 // 分片槽 m 的整段窗口 (见 Slot::w)
 Window window(const Spec &s, Ym m, const Now &now) {
-  const Ymd start = ::config::PIPELINE_START_DATE;
+  const Ymd start = kSyncStart;
   const Ymd hz = horizon(s.avail_hour, now);
   if (s.shape == Shape::Meta)
     return s.vd.empty() ? Window{} : Window{start, hz};
@@ -119,8 +118,8 @@ State state(const Spec &s, const Shard *sh, Ym m, const Now &now) {
   if (s.shape == Shape::Daily)
     return State::Frozen; // 日文件只拉到 horizon (昨天) ⇒ 落盘即整日, 无半月文件
   // 冻结 = 写盘日 ≥ 月末 + lookback: 写盘时该月已出 lookback 窗口, "整月行 + 全部回填" 才都已入盘
-  return write_date(*sh) >= misc::add_days(misc::last_day(m), ::config::PIPELINE_LOOKBACK_DAYS) ? State::Frozen
-                                                                                                : State::Stale;
+  return write_date(*sh) >= misc::add_days(misc::last_day(m), kLookbackDays) ? State::Frozen
+                                                                             : State::Stale;
 }
 
 // t 的逐行 vd (YYYYMMDD) 与逐行是否命中 keys (Day 键整日命中, Asset 键按 日|资产 命中)
@@ -294,7 +293,7 @@ Round::Round() : now(fundamental::now()) {
 }
 
 std::vector<Slot> ledger(const Spec &s, const Round &r) {
-  assert(::config::PIPELINE_START_DATE > 0 && ::config::PIPELINE_START_DATE <= r.now.today);
+  assert(kSyncStart > 0 && kSyncStart <= r.now.today);
   std::vector<Slot> out;
   if (s.shape == Shape::Daily) {
     // 日历未入盘 (首轮同步前) → days 空: 本轮无槽, 下轮再排
@@ -302,7 +301,7 @@ std::vector<Slot> ledger(const Spec &s, const Round &r) {
     for (const Ymd d : r.days) {
       if (d > hz)
         break;
-      if (d < ::config::PIPELINE_START_DATE)
+      if (d < kSyncStart)
         continue;
       const Shard *sh = r.cat.find_day(s.name, d);
       out.push_back({misc::ym_of(d), sh, state(s, sh, misc::ym_of(d), r.now), {d, d}});
@@ -360,7 +359,7 @@ Ymd covered(const Spec &s, const Catalog &cat, bool dense) {
                                   : mark(s, *sh);
   }
   Ymd out = 0;
-  for (Ym m = misc::ym_of(::config::PIPELINE_START_DATE);; m = misc::next_ym(m)) {
+  for (Ym m = misc::ym_of(kSyncStart);; m = misc::next_ym(m)) {
     const Shard *sh = cat.find(s.name, m);
     if (!sh)
       return out;

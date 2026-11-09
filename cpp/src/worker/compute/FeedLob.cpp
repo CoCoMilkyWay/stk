@@ -4,7 +4,7 @@
 #include "codec/L2DataType.hpp"
 #include "codec/OrderFrame.hpp"
 #include "features/CoreLob.hpp"
-#include "lob/LimitOrderBook.hpp"
+#include "features/OrderBook/LimitOrderBook.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -28,7 +28,7 @@ struct TierFeed<lob::Tier> {
     assert(data.asset.backtest.start == data.config.start_date && "回测日历与配置起点不符 (改配置后没重算覆盖?)");
     std::vector<misc::Ymd> dates;
     for (const Asset::BacktestDay &day : data.asset.backtest.days) {
-      if (day.date > data.asset.binary.max_date || day.pending())
+      if (day.date > data.asset.orders.max_date || day.pending())
         break;
       dates.push_back(day.date);
     }
@@ -46,7 +46,7 @@ struct TierFeed<lob::Tier> {
 
   explicit TierFeed(const PipelineArgs &args)
       : data(args.data), axis(args.libs[TierId::Lob].axis), dates(args.dates),
-        orders(args.data.asset.orders()->slice(args.dates, axis.ids)) {}
+        orders(args.data.asset.catalog()->slice(args.dates, axis.ids)) {}
 
   void bind(const StoreRing &) {}
 
@@ -61,7 +61,7 @@ struct TierFeed<lob::Tier> {
     return DayReader(data.config.orders_dir, dates[d]).prefetch(refs);
   }
 
-  // 源格 = 日文件里本资产当日的帧引用 (空 = 缺二进制)
+  // 源格 = 日文件里本资产当日的帧引用 (空 = 缺帧)
   const FrameRef &cell(size_t sub, size_t d) const { return orders.at(d, sub); }
 
   // 每 TS worker 一份工作区

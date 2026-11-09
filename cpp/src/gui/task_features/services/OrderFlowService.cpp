@@ -2,11 +2,10 @@
 #include "gui/task_features/services/OrderFlowService.hpp"
 
 #include "codec/OrderFrame.hpp"
+#include "features/OrderBook/LimitOrderBook.hpp"
+#include "gui/task_features/services/Analysis.hpp" // threads_for
 #include "gui/util/Service.hpp"
-#include "lob/LimitOrderBook.hpp"
 #include "misc/profiler.hpp"
-#include "shared/Analysis.hpp" // threads_for
-#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -93,22 +92,22 @@ inline bool present(feature_storage_t g) { return std::bit_cast<uint16_t>(g) != 
 
 // ============================================================================
 // worker 私有常驻读端: 库集 reader (清单没变复用) + 双缓冲尾部行平面预读 (稳态零分配)
-//   Min = stream (分批流式, 与 Distribution / Transform / Correlation 同一骨架), Sec / Pick = now (单日)
+//   Min = run (分批流式, 与 Distribution / Transform / Correlation 同一骨架), Sec / Pick = now (单日)
 // ============================================================================
 struct RowRead {
   LibReaders libs;
   Readers rd; // ids 指向 scope.to: scope 须活过本代 (lane 存在 cur_ 里)
-  Prefetch<RowPlane> pf;
+  Stream<RowPlane> stream;
 
   // 换代: 按范围开库 (新请求 = 重读库: 重算后新库已落地, 判废解除; 判废拉起 abort), 按计划 × 批段数备容量
-  void reset(const analysis::ReadScope &scope, const ReadPlan &plan, size_t segs, std::atomic<bool> *abort) {
+  void reset(const reader::ReadScope &scope, const ReadPlan &plan, size_t segs, std::atomic<bool> *abort) {
     libs.open(scope.libs, abort);
     rd = scope.readers(libs.ptr);
-    pf.prepare(analysis::threads_for(segs), plan, scope.sizes(), SIZE_MAX);
-    for (RowPlane &p : pf.buf)
+    stream.prepare(analysis::threads_for(segs), plan, scope.sizes(), SIZE_MAX);
+    for (RowPlane &p : stream.buf)
       p.prepare(scope.axis.size(), plan, segs);
   }
-  // 段 [s0, s0 + bs) 的 IO (Prefetch 跑; 只写传入的平面)
+  // 段 [s0, s0 + bs) 的 IO (Stream 跑; 只写传入的平面)
   auto load(const ReadPlan &plan, const SegPlan &sp, const std::atomic<bool> &cancel) {
     return [this, &plan, &sp, &cancel](size_t s0, size_t bs) {
       return [this, &plan, &sp, &cancel, s0, bs](RowPlane &pl, misc::exec::ForkJoin &io, std::vector<IoSlot> &slots) {
@@ -119,13 +118,13 @@ struct RowRead {
   // 单日 (sp = plan_day) 读进 front; false = 被打断 / 库判废 (abort 即 cancel)
   bool now(const ReadPlan &plan, const SegPlan &sp, const std::atomic<bool> &cancel) {
     assert(sp.size() == 1);
-    pf.now(load(plan, sp, cancel)(0, 1));
+    stream.now(load(plan, sp, cancel)(0, 1));
     return !cancel.load(std::memory_order_relaxed);
   }
 };
 
 // 单资产范围: 资产在库集任一库轴内
-bool any_lib(const analysis::ReadScope &scope) {
+bool any_lib(const reader::ReadScope &scope) {
   return std::ranges::any_of(lib_ids(), [&](LibId l) { return scope.has(l) && (scope.to[l].empty() || scope.to[l][0] != kAbsent); });
 }
 
@@ -310,15 +309,15 @@ bool OrderFlowService::make(const SharedData &data, RowReq &req, const LaneDef &
     req.spec.k0 = cols.size();
     req.spec.ts_price = ts_price_of(data.feature, lines);
     cols.insert(cols.end(), lines.begin(), lines.end());
-    return analysis::read_request(data.config, data.feature,
-                                  {.main = m,
-                                   .days = analysis::DayAxis::Union,
-                                   .level = def.grid,
-                                   .rows = analysis::Rows::Tail,
-                                   .carry = def.carry,
-                                   .cols = std::move(cols),
-                                   .assets = assets},
-                                  req.scope, req.spec.plan);
+    return reader::read_request(data.config, data.feature,
+                                {.main = m,
+                                 .days = reader::DayAxis::Union,
+                                 .level = def.grid,
+                                 .rows = reader::Rows::Tail,
+                                 .carry = def.carry,
+                                 .cols = std::move(cols),
+                                 .assets = assets},
+                                req.scope, req.spec.plan);
   };
   return attempt(main, feats) || (main != kAllBar && attempt(kAllBar, {}));
 }
@@ -347,7 +346,7 @@ void OrderFlowService::Request(const SharedData &data, uint32_t gen, const Order
 }
 
 // ============================================================================
-// Min: 换代 + 分批流式 (Prefetch::stream)
+// Min: 换代 + 分批流式 (Stream::run)
 // ============================================================================
 
 bool OrderFlowService::MinLane::run(RowReq &req) {
@@ -360,7 +359,7 @@ bool OrderFlowService::MinLane::run(RowReq &req) {
   // 此刻 GUI 请求代 == req.gen, 发布代 == 旧代 → GUI 不读 min, dates/数组可安全重建
   if (sp.rescan || days_.dates.empty()) {
     out.begin(Phase::Scanning);
-    days_ = analysis::plan_segs(cur_.scope, L_1min, analysis::DayOrder::Sequential, 0);
+    days_ = reader::plan_segs(cur_.scope, L_1min, reader::DayOrder::Sequential, 0);
     libs_ = cur_.scope.days;
     out.dates = days_.dates;
   }
@@ -391,7 +390,7 @@ bool OrderFlowService::MinLane::run(RowReq &req) {
   // 批与批之间可被新代打断; 特征库被判废删除 (字段表改了) 经 abort 同样拉起 cancel_: 停流, 别把空转的陈旧列喂进 K 线;
   // 重算后 needs_rescan 自愈
   out.begin(Phase::Running, days_.size());
-  return read_.pf.stream(
+  return read_.stream.run(
       days_.size(), kDaysPerBatch, cancel_, read_.load(sp.plan, days_, cancel_),
       [&](const RowPlane &p, size_t b0, size_t bd) { emit(p, b0, bd); },
       [&](size_t b0, size_t bd) { publish(b0, bd); });
@@ -442,7 +441,7 @@ bool OrderFlowService::PickLane::run(RowReq &req) {
   const RowSpec &sp = cur_.spec;
   assert(sp.date != 0 && sp.k0 == PICK_COUNT && sp.plan.n() == PICK_COUNT);
   read_.reset(cur_.scope, sp.plan, 1, &cancel_);
-  if (!read_.now(sp.plan, analysis::plan_day(cur_.scope, sp.date), cancel_)) // 状态取承接日 L_1day 行
+  if (!read_.now(sp.plan, reader::plan_day(cur_.scope, sp.date), cancel_)) // 状态取承接日 L_1day 行
     return false;
 
   OrderFlow::Pick::Slot &out = pp.back();
@@ -454,7 +453,7 @@ bool OrderFlowService::PickLane::run(RowReq &req) {
   out.meta.assign(data_.asset.items.size(), OrderFlow::Pick::Meta{});
 
   // 状态取承接日 L_1day 行; 承接格无源 = 状态不可判读
-  const RowPlane &p = read_.pf.front();
+  const RowPlane &p = read_.stream.front();
   const PoolAxis &axis = cur_.scope.axis;
   for (size_t a = 0; a < axis.size(); ++a) {
     if (!present(p.carry(PICK_LIST_AGE, a, 0)))
@@ -495,7 +494,7 @@ bool OrderFlowService::SecLane::run(RowReq &in) {
   Res &res = *res_;
   cur_ = std::move(in);
   const RowSpec &req = cur_.spec;
-  const analysis::ReadScope &scope = cur_.scope;
+  const reader::ReadScope &scope = cur_.scope;
   assert(req.date != 0 && scope.axis.size() == 1 && req.k0 == SEC_COUNT);
   read_.reset(scope, req.plan, 1, &cancel_);
   const size_t asset_idx = scope.axis.global(0);
@@ -509,7 +508,7 @@ bool OrderFlowService::SecLane::run(RowReq &in) {
   // ---- 重放当天日文件里这个资产的帧 (无帧 = 停牌/未编码/早于逐笔, 发布空槽) ----
   // 帧目录快照定位 (与 TS worker 同一条路); 快照与重扫描并发安全, 本请求期间持有.
   const AssetItem &asset = data_.asset.items[asset_idx];
-  const std::shared_ptr<const OrdersCatalog> orders = data_.asset.orders();
+  const std::shared_ptr<const OrdersCatalog> orders = data_.asset.catalog();
   const FrameRef &ref = orders->at(orders->day_idx(req.date), asset_idx);
   L2::FrameView view;
   if (!ref.empty()) {
@@ -579,7 +578,7 @@ bool OrderFlowService::SecLane::run(RowReq &in) {
   // 承接日 = 日轴上的前一日 (plan_day; 各源库当日已落盘才承接): 粗层开盘时的已知值 = 前日末行
   {
     TraceN("OF_SecFeats");
-    if (!read_.now(req.plan, analysis::plan_day(scope, req.date), cancel_))
+    if (!read_.now(req.plan, reader::plan_day(scope, req.date), cancel_))
       return false;
   }
 
@@ -587,7 +586,7 @@ bool OrderFlowService::SecLane::run(RowReq &in) {
   out.feat.begin(std::vector<ColRef>(req.plan.cols.begin() + req.k0, req.plan.cols.end()));
   LineRange range;
   range.reset();
-  emit_rows(req.plan, read_.pf.front(), 0, req.k0, 0.0, req.ts_price, out.feat, range);
+  emit_rows(req.plan, read_.stream.front(), 0, req.k0, 0.0, req.ts_price, out.feat, range);
   out.feat.publish(range.lo.data(), range.hi.data());
 
   // ---- 背槽整体发布 (GUI 帧首 ack 翻面) ----

@@ -1,10 +1,10 @@
 // Tab Correlation Implementation — 特征相关矩阵下三角热图 + 悬停对 lead-lag + 全矩阵 lag 峭点图
 #include "gui/task_features/ui/TabCorrelation.hpp"
-#include "gui/Tasks.hpp" // TextPhase
+#include "features/Storage/FeatureLib.hpp" // lib_name
+#include "gui/Tasks.hpp"                   // TextPhase
 #include "gui/task_features/services/CorrelationService.hpp"
 #include "gui/task_features/ui/Common.hpp"
 #include "gui/task_features/ui/TabTable.hpp"
-#include "shared/FeatureLib.hpp" // lib_name
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"

@@ -3,14 +3,14 @@
 // 线程模型 (发布协议见 gui/task_features/services/OrderFlow.hpp 头注释):
 //   - GUI 线程: 每帧把期望态键 (OrderFlow::MinKey / SecKey / PickKey) 交给 Request (三路同形重载);
 //     变化检测与 gen 递增在 GUI 侧 (Want), 服务侧只管"照单执行最新一代" (新请求覆盖旧的, 在跑的被打断)
-//     Request 在 GUI 线程解析读取范围 + 读计划 (与 StreamService::RequestCompute 同一个 analysis::read_request, 尾部行), worker 不碰 config
+//     Request 在 GUI 线程解析读取范围 + 读计划 (与 StreamService::RequestCompute 同一个 reader::read_request, 尾部行), worker 不碰 config
 //   - 三个 worker 线程, 私有常驻读端 (库集 reader 清单没变复用 / 双缓冲 RowPlane 预读), 三路同一请求 RowReq:
-//       Min 流式: 分批 (与 Distribution / Transform / Correlation 同一个 Prefetch::stream, 算本批同时预读下一批) → 追加 + 单调前缀发布;
+//       Min 流式: 分批 (与 Distribution / Transform / Correlation 同一个 Stream::run, 算本批同时预读下一批) → 追加 + 单调前缀发布;
 //         批与批之间可被新代打断
 //       Sec 重放: decode 帧 → 订单簿逐笔重放 → 秒序列 + 热力图 → overlay → 背槽整体发布
 //       Pick 逐日状态: 锚点日承接的状态列 → 主库全资产 PIT 状态 (ST / 在市 / 行业) → 背槽整体发布 (供 GUI 资产筛选)
-//   日轴 = 库集各库落盘日的并集 (analysis::DayAxis::Union: Min = all + overlay 各库, 不受回测区间限; 每天带各库落盘位);
-//     Sec / Pick 只取锚点日 (analysis::plan_day). Min 底图 = all Bar 库日 K (all 缺的日不画), overlay 各画各的
+//   日轴 = 库集各库落盘日的并集 (reader::DayAxis::Union: Min = all + overlay 各库, 不受回测区间限; 每天带各库落盘位);
+//     Sec / Pick 只取锚点日 (reader::plan_day). Min 底图 = all Bar 库日 K (all 缺的日不画), overlay 各画各的
 //   读计划 = 固定列 [0, k0) (路表定, 按字段表 code 定列) + overlay [k0, n) (选中 ColRef + 路表尾挂列, 任意库任意层), 同一条读路径:
 //     尾部行 (各列按自己的层画, 行末对齐到网格行; 网格: Min = L_1min / Sec = L_sec, 细于网格的列不进 Min),
 //     资产不在列所在库 / 该库缺这天 = 无点.
@@ -23,7 +23,7 @@
 //   (逐笔重放按 orders 日文件, 与主库无关; 退回后无 VWAP / overlay)
 #pragma once
 
-#include "features/Storage/DayBatchPlane.hpp"       // ReadPlan
+#include "features/Storage/FeaturePlane.hpp"        // ReadPlan
 #include "gui/task_features/services/OrderFlow.hpp" // MinKey / SecKey / PickKey
 #include "misc/date.hpp"
 #include "shared/ReadRequest.hpp" // ReadScope
@@ -67,7 +67,7 @@ private:
     uint32_t ts_price = 0; // 第 i 位 = overlay 线 i 是其层 ts_valid (展示幅值 = micro price)
     bool rescan = false;   // Min: 重扫日轴 (特征重算后 / 库集变了)
   };
-  using RowReq = analysis::Request<RowSpec>;
+  using RowReq = reader::Request<RowSpec>;
 
   // 路表一行 (.cpp): 网格 / 承接 / 固定列 / overlay 尾挂列
   struct LaneDef;

@@ -48,9 +48,15 @@ struct Quota {
 //   - 构造即可用; Flight 客户端 + JWT 在首次 query() 时 lazy 建立.
 //   - JWT TTL 约 12h, 过期由调用方重建 Client.
 //   - 所有错误一律 assert; gRPC 自带 backoff, 这里不做应用层重试.
+// 凭据: AK = Flight Basic Token 用户名; SK = 密码, 永不回传
+inline constexpr const char *kAk = "6dS0GYgxocXL";
+inline constexpr const char *kSk = "bKDM141Hz2etbj3QTLf9GA6aGmEZRu68MJuvaJBJyPgq22E3fNNDRehFCbgComTQ";
+inline constexpr const char *kFlightUri = "grpc+tcp://bigquant.com:17010";
+inline constexpr int kGrpcMaxMetadataSize = 16 * 1024 * 1024; // SDK 默认 8KB 会被 JWT 撑爆
+
 class Client {
 public:
-  // 缺省构造: ak/sk 取 config.hpp::BIGQUANT_AK/SK
+  // 缺省构造: ak/sk 取 kAk / kSk
   Client();
   // 显式指定 (测试 / 多账号切换)
   Client(std::string ak, std::string sk);

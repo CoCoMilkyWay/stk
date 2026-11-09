@@ -1,7 +1,6 @@
 #include "fundamental/Sync.hpp"
 
 #include "fundamental/Remote.hpp"
-#include "shared/Config.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -26,7 +25,7 @@ std::vector<Task> plan(const Round &r, const Keep &keep) {
       continue;
     for (const Slot &sl : ledger(s, r)) {
       // 已存在的分片刚写过 → 本轮不动
-      if (sl.sh && age_seconds(*sl.sh, r.now) < ::config::PIPELINE_DEDUP_WINDOW_SECONDS)
+      if (sl.sh && age_seconds(*sl.sh, r.now) < kDedupSeconds)
         continue;
       if (keep && !keep(s, sl))
         continue;

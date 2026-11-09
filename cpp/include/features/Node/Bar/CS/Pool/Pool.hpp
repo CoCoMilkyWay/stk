@@ -4,7 +4,7 @@
 // Pool (CS) - 池列: 每行 = "收盘按 PoolKey 调仓"的成员位 (1 = 入池, 0 = 不入; 截面 = 全轴, 成员范围由键掩码定, 见 Method/CS.hpp FullAxis)
 // =============================================================================
 //   池表 = all (全市场, 成员 = 活跃, 含 ST / *ST / 退市整理期) + 本类每列一个子池 (列名 pool_<pool> 的 <pool> = 子池名, 由 feature_pools 展开,
-//     见 shared/FeatureLib.hpp). 加一列即多一个池.
+//     见 features/Storage/FeatureLib.hpp). 加一列即多一个池.
 //
 //   范围口径 (键自带掩码, 判据见 Panel/Fund.cpp univ_mask; 各口按 D 日盘前态判):
 //     活跃 = 非北交所 ∧ 已上市 ∧ 未退市 ∧ 过滤表 flt_new / flt_susp / flt_noind 皆 0 (非次新 ∧ 非停牌 ∧ 申万一级行业已知)

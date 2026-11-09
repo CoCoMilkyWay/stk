@@ -1,12 +1,13 @@
 #include "gui/Tasks.hpp"
-#include "agent/ui/TaskAgent.hpp"
-#include "gui/compute/ui/TabCompute.hpp" // ComputeHub
+#include "gui/compute/ComputeHub.hpp"
+#include "gui/engine/EngineHub.hpp"
+#include "gui/quote/QuoteHub.hpp"
+#include "gui/task_agent/TaskAgent.hpp"
 #include "gui/task_alpha/TaskAlpha.hpp"
 #include "gui/task_beta/TaskBeta.hpp"
 #include "gui/task_database/TaskDatabase.hpp"
 #include "gui/task_features/TaskFeatures.hpp"
 #include "gui/task_market/TaskMarket.hpp"
-#include "gui/task_market/services/MarketHub.hpp"
 #include "gui/task_settings/TaskSettings.hpp"
 #include "gui/task_tools/TaskTools.hpp"
 #include "imgui.h"
@@ -130,17 +131,17 @@ TaskTree CreateAllTasks(SharedData &data) {
   tree.tasks.reserve(8);
 
   // 跨任务共用的三个 Hub: 行情 (Database 的 Sync 页读状态, Market 各页用), 计算 (Beta / Alpha 两个 Compute 页, Features 读轮次),
-  // 因子 (Alpha 编辑组合, Market 画)
-  const auto market = std::make_shared<Market::MarketHub>();
+  // 因子引擎 (Alpha 写因子 / 编辑组合, Market 画)
+  const auto quote = std::make_shared<Quote::QuoteHub>();
   const auto compute = std::make_shared<Compute::ComputeHub>();
-  const auto alpha = Tasks::CreateAlphaHub();
+  const auto engine = std::make_shared<Engine::EngineHub>();
   tree.tasks.push_back(Tasks::CreateSettingsTask());
-  tree.tasks.push_back(Tasks::CreateDatabaseTask(market));
+  tree.tasks.push_back(Tasks::CreateDatabaseTask(quote));
   tree.tasks.push_back(Tasks::CreateBetaTask(compute));
-  tree.tasks.push_back(Tasks::CreateAlphaTask(compute, alpha));
-  tree.tasks.push_back(Tasks::CreateMarketTask(market, alpha));
+  tree.tasks.push_back(Tasks::CreateAlphaTask(compute, engine));
+  tree.tasks.push_back(Tasks::CreateMarketTask(quote, engine));
   tree.tasks.push_back(Tasks::CreateFeaturesTask(compute));
-  tree.tasks.push_back(::agent::CreateAgentTask());
+  tree.tasks.push_back(Tasks::CreateAgentTask());
   tree.tasks.push_back(Tasks::CreateToolsTask());
 
   // 按 push 顺序立即 Init 一遍 (与"选中才 Draw"解耦, 后台检查提前起):
@@ -183,8 +184,8 @@ void CleanupAllTasks(TaskTree &tree) {
 }
 
 void ReinitAllTasks(TaskTree &tree, SharedData &data) {
-  // Asset 不保留: 重建后 binary.scanned == false, StateManager 会走 RescanStorage
-  // 重扫一遍 —— 一次扫描是几百次读日文件头 + 目录 (见 Asset::scan_binary),
+  // Asset 不保留: 重建后 orders.scanned == false, StateManager 会走 RescanStorage
+  // 重扫一遍 —— 一次扫描是几百次读日文件头 + 目录 (见 Asset::scan_orders),
   // 百毫秒量级, 不值得为省它把七个字段搬出来再搬回去 (帧目录与 items 必须同生
   // 同死, 漏一个就是无主下标).
 

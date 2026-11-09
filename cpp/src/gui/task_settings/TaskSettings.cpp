@@ -1,4 +1,7 @@
 #include "gui/task_settings/TaskSettings.hpp"
+#include "api/bigquant/client.hpp"
+#include "api/tushare/client.hpp"
+#include "fundamental/Spec.hpp"
 #include "gui/Tasks.hpp"
 #include "imgui.h"
 #include "misc/cross_platform.hpp"
@@ -184,7 +187,7 @@ private:
   }
 
   void EnsureConfigReady(SharedData &data) {
-    auto &ts = data.taskstate.settings;
+    auto &ts = data.task_state.settings;
     if (ts.initialized) {
       return;
     }
@@ -201,7 +204,7 @@ private:
 
   // 每帧维护 (无论选中): 状态标签 + 自动落盘 —— 切走 Settings 后 dirty 配置照样落盘
   void MaintainAutoSync(SharedData &data) {
-    auto &ts = data.taskstate.settings;
+    auto &ts = data.task_state.settings;
     Config &cfg = data.config;
 
     if (!ts.initialized) {
@@ -398,7 +401,7 @@ private:
                       sizeof(cfg.archive_dir_buf),
                       cfg.archive_dir);
         draw_path_row("Orders Dir",
-                      "L2逐笔二进制目录: YYYY/MM/YYYYMMDD.bin (一天全市场一个文件, 委托+成交合并, 快照不落盘)",
+                      "orders 目录: YYYY/MM/YYYYMMDD.bin (一天全市场一个文件, 委托+成交合并, 快照不落盘)",
                       "##orders_dir",
                       cfg.orders_dir_buf,
                       sizeof(cfg.orders_dir_buf),
@@ -481,14 +484,14 @@ private:
         draw_csv_row("Market Trade CSV",
                      "逐笔成交(trade)文件名",
                      "##csv_trade",
-                     cfg.csv_tick_trade_buf,
-                     sizeof(cfg.csv_tick_trade_buf),
+                     cfg.csv_market_trade_buf,
+                     sizeof(cfg.csv_market_trade_buf),
                      cfg.csv_market_trade);
         draw_csv_row("Market Order CSV",
                      "逐笔委托(order)文件名",
                      "##csv_order",
-                     cfg.csv_tick_order_buf,
-                     sizeof(cfg.csv_tick_order_buf),
+                     cfg.csv_market_order_buf,
+                     sizeof(cfg.csv_market_order_buf),
                      cfg.csv_market_order);
 
         ImGui::EndTable();
@@ -533,30 +536,30 @@ private:
       // 数据源凭据 (与官方 CLI / 控制台 token 同源, 永不回传)
       ImGui::SeparatorText("数据源凭据");
       readonly_table("db_credential_table", [] {
-        draw_readonly_row("BigQuant AK", "Flight Basic Token 用户名", config::BIGQUANT_AK);
-        draw_readonly_row("BigQuant SK", "Flight Basic Token 密码 (永不回传)", config::BIGQUANT_SK);
-        draw_readonly_row("Tushare Token", "Tushare pro token (*_vip 接口需 5000+ 积分)", config::TUSHARE_TOKEN);
+        draw_readonly_row("BigQuant AK", "Flight Basic Token 用户名", bigquant::kAk);
+        draw_readonly_row("BigQuant SK", "Flight Basic Token 密码 (永不回传)", bigquant::kSk);
+        draw_readonly_row("Tushare Token", "Tushare pro token (*_vip 接口需 5000+ 积分)", tushare::kToken);
       });
 
       // 数据源端点 (host / port / 超时 / 重试)
       ImGui::SeparatorText("数据源端点");
       readonly_table("db_endpoint_table", [] {
-        draw_readonly_row("BigQuant Flight URI", "数据面: 明文 gRPC + Arrow IPC RecordBatch, 零拷贝", config::BIGQUANT_FLIGHT_URI);
-        draw_readonly_row("gRPC Max Metadata", "SDK 默认 8KB 会被 JWT 撑爆 [bytes]", std::to_string(config::BIGQUANT_FLIGHT_GRPC_MAX_METADATA_SIZE));
-        draw_readonly_row("Tushare Host", "明文 JSON POST, 三张事件表", config::TUSHARE_HTTP_HOST);
-        draw_readonly_row("Tushare Port", "走 80, 省掉 SSL 依赖", config::TUSHARE_HTTP_PORT);
+        draw_readonly_row("BigQuant Flight URI", "数据面: 明文 gRPC + Arrow IPC RecordBatch, 零拷贝", bigquant::kFlightUri);
+        draw_readonly_row("gRPC Max Metadata", "SDK 默认 8KB 会被 JWT 撑爆 [bytes]", std::to_string(bigquant::kGrpcMaxMetadataSize));
+        draw_readonly_row("Tushare Host", "明文 JSON POST, 三张事件表", tushare::kHost);
+        draw_readonly_row("Tushare Port", "走 80, 省掉 SSL 依赖", tushare::kPort);
       });
 
-      // 抓取流水线 (落地 output/fundamental/YYYY-MM/*.parquet)
-      ImGui::SeparatorText("抓取流水线");
-      readonly_table("db_pipeline_table", [] {
-        draw_readonly_row("Pipeline Start", "数据同步起点, 与回测窗口语义不同, 不随其收窄", misc::dash(config::PIPELINE_START_DATE));
-        draw_readonly_row("Lookback Days", "月末仍在窗口内视为开放月 (兜服务端回填修订)", std::to_string(config::PIPELINE_LOOKBACK_DAYS));
-        draw_readonly_row("Dedup Window", "parquet mtime 距今 < 该值则本表跳过 [s]", std::to_string(config::PIPELINE_DEDUP_WINDOW_SECONDS));
+      // 同步参数 (落地 output/fundamental/YYYY-MM/*.parquet)
+      ImGui::SeparatorText("同步参数");
+      readonly_table("db_sync_table", [] {
+        draw_readonly_row("Sync Start", "数据同步起点, 与回测窗口语义不同, 不随其收窄", misc::dash(fundamental::kSyncStart));
+        draw_readonly_row("Lookback Days", "月末仍在窗口内视为开放月 (兜服务端回填修订)", std::to_string(fundamental::kLookbackDays));
+        draw_readonly_row("Dedup Window", "parquet mtime 距今 < 该值则本表跳过 [s]", std::to_string(fundamental::kDedupSeconds));
       });
 
       ImGui::Spacing();
-      ImGui::TextDisabled("以上均为编译期常量 (shared/Config.hpp namespace config), 不进 config.json");
+      ImGui::TextDisabled("以上均为编译期常量 (各数据源 client / fundamental/Spec.hpp), 不进 config.json");
     }
     return changed;
   }
@@ -595,7 +598,7 @@ public:
 
   // 任务行状态标签 (子行无)
   TaskStatus Status(const SharedData &data, int /*idx*/) const {
-    switch (data.taskstate.settings.status) {
+    switch (data.task_state.settings.status) {
     case TaskState::Settings::Status::Initializing:
       return {TaskStatus::Kind::Muted, "initializing"};
     case TaskState::Settings::Status::Syncing:

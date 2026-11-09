@@ -1,5 +1,5 @@
-// Task Alpha - 因子挖掘: 子池张量 → 算子 → 因子 → 单因子展示. 共用的服务与状态见 gui/task_alpha/AlphaHub.hpp.
-//   Compute: 库表的 Alpha 段 (all.lob + 子池各档, 因子的张量库), 与 Beta → Compute 同一个计算服务 (见 TabCompute.hpp).
+// Task Alpha - 因子挖掘: 子池张量 → 算子 → 因子 → 单因子展示. 与 Market 共用的字段表 / 后端 / 组合见 gui/engine/EngineHub.hpp.
+//   Compute: 库表的 Alpha 段 (all.lob + 子池各档, 因子的张量库), 与 Beta → Compute 同一个计算服务 (见 ComputeHub.hpp).
 //   Operators: OpTable 全部算子对拍 + 计时. 不依赖特征库 / 数据库扫描 (合成张量), 故任何时候可进.
 //     首次进页默认不算: 先载入本地 operators.json 显示 (校验不过则删文件); 只有手动 Run —— 或本地无有效
 //     快照时的那一次自动补算 —— 才真跑 worker, 一轮结束落盘覆盖.
@@ -8,11 +8,20 @@
 //     1. 区右侧两小框编辑因子组合 (<portfolio_dir>/<name>.json), Market → NAV 画它的曲线.
 //   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 资产 K 线). 行信息来自 RunService; 一级 Row 由自己的
 //     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Recompute = 弃缓存重读); 选中资产的分钟 K 线由 KlineService 逐日流式读.
+//   作用域 (池 + 因子层) 由页顶条自持: 所有服务空闲时生效 (lv / pool); 换层 = 四个服务整体重建, 同层换池只换目录.
 #include "gui/task_alpha/TaskAlpha.hpp"
+#include "features/Storage/FeatureLib.hpp" // feature_pools (页顶池选择)
 #include "gui/Tasks.hpp"
 #include "gui/compute/ui/TabCompute.hpp"
-#include "gui/task_alpha/AlphaHub.hpp"
-#include "shared/FeatureLib.hpp" // feature_pools (页顶池选择)
+#include "gui/engine/EngineHub.hpp"
+#include "gui/engine/services/InspectService.hpp"
+#include "gui/engine/services/RunService.hpp"
+#include "gui/engine/services/SearchService.hpp"
+#include "gui/task_alpha/services/KlineService.hpp"
+#include "gui/task_alpha/services/OperatorsService.hpp"
+#include "gui/task_alpha/ui/TabFactors.hpp"
+#include "gui/task_alpha/ui/TabInspect.hpp"
+#include "gui/task_alpha/ui/TabOperators.hpp"
 #include "shared/SharedData.hpp" // config.factor_dir / 池 / 日期区间, feature.metadata, asset.items
 
 #include "gui/util/Tip.hpp"
@@ -29,41 +38,39 @@
 #include <utility>
 #include <vector>
 
-namespace GUI::Alpha {
-
-void EnsurePortfolio(const SharedData &data, AlphaHub &s) {
-  if (!s.portfolio_service)
-    s.portfolio_service = std::make_unique<Market::PortfolioService>();
-  Market::SyncPortfolioDir(s.portfolio_ui, data.config.portfolio_dir);
-  Market::SyncLinesWatch(s.lines_ui, data.config.config_dir);
-}
-
-void SyncPortfolio(const SharedData &data, AlphaHub &s, bool reload) {
-  Market::PortfolioUIState &pui = s.portfolio_ui;
-  const Phase fst = s.run_service ? s.run_service->phase.load(std::memory_order_acquire) : Phase::Idle;
-  const bool fs_done = fst == Phase::Done && s.portfolio_prev_fs != Phase::Done;
-  s.portfolio_prev_fs = fst;
-  if (pui.content_gen != s.portfolio_gen || fs_done) {
-    s.portfolio_gen = pui.content_gen;
-    Market::ResolvePortfolio(data, s.tables, pui.entries, pui.items);
-    ++pui.items_gen;
-    s.portfolio_dirty = true;
-  }
-  if ((s.portfolio_dirty || reload) && !data.asset.items.empty()) {
-    s.portfolio_dirty = false;
-    Market::PortfolioRequest req;
-    Market::MakePortfolioRequest(data, s.tables, pui.items, reload, s.factors_ui.backend == 1, req);
-    ++pui.items_gen; // 作用域建不成的条目在这里标失效
-    std::string sig = req.sig();
-    if (reload || sig != s.portfolio_sig) {
-      s.portfolio_sig = std::move(sig);
-      s.portfolio_service->Request(std::move(req));
-    }
-  }
-}
-
-} // namespace GUI::Alpha
 namespace GUI::Tasks {
+
+struct TaskAlphaState {
+  std::shared_ptr<Engine::EngineHub> engine; // 与 Market 共用
+
+  std::unique_ptr<Alpha::OperatorsService> operators_service;
+  Alpha::OperatorsUIState operators_ui;
+  bool operators_started = false; // 首次 Draw 载入本地 json, 没有才 Request 一次
+  // 一轮结束检测 (Running → Done / Cancelled 那一帧把算子表落地 operators.json)
+  Phase prev_operators_phase = Phase::Idle;
+
+  // 页顶条的选择
+  PoolId want_pool = kAllPool;
+  Engine::FactorLevelId want_lv = Engine::factor_level_of(L_1min);
+  // 已生效的 (池, 因子层): 所有服务空闲时才追上选择; lv 空 = 未进过 Factors / Inspect (无服务)
+  std::optional<Engine::FactorLevelId> lv;
+  std::string pool;
+  // 页顶层按钮后的因子文件数 (所选池各因子层目录): 池变 / 因子服务进 Done (扫描 / Run / Add / 删除后的 Rescan) 时重数
+  std::string counted_key; // config.factor_dir | 所选池; 空 = 没数过. 变 (进页 / 换池) → 按因子文件数重定默认层
+  Engine::PerFactorLevel<size_t> level_files;
+  std::vector<size_t> pool_files; // [PoolId] 页顶池下拉里各池因子文件数 (该池各因子层之和): 每次打开下拉重数
+  Phase prev_factors_phase = Phase::Idle;
+  std::unique_ptr<Engine::RunService> run_service;
+  Phase prev_run_phase = Phase::Idle; // Update 每帧: 进 Done → EngineHub::files_gen +1
+  Alpha::FactorsUIState factors_ui;
+  std::string factors_scanned_dir;                       // 上次扫描的目录 (池切换 → 自动重扫)
+  std::unique_ptr<Engine::SearchService> search_service; // Factors 页 Search (与 run_service 同建); 写了 weights 的那一轮结束 → 自动 Run
+  Phase prev_search_phase = Phase::Idle;
+
+  std::unique_ptr<Engine::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (构造即起 worker); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
+  std::unique_ptr<Alpha::KlineService> kline_service;      // Inspect 右下选中资产的分钟 K 线流 (与 inspect_service 同生灭)
+  Alpha::InspectUIState inspect_ui;
+};
 
 enum TabIdx {
   TAB_COMPUTE = 0,
@@ -74,16 +81,17 @@ enum TabIdx {
 };
 
 // 本页已生效层的字段表
-static std::shared_ptr<const Factors::FeatureTable> level_table(const SharedData &data, Alpha::AlphaHub &s) {
+static std::shared_ptr<const Engine::FeatureTable> level_table(const SharedData &data, TaskAlphaState &s) {
   assert(s.lv);
-  return Factors::table_of(s.tables, data.feature, *s.lv);
+  return Engine::table_of(s.engine->tables, data.feature, *s.lv);
 }
 
 // 换层: 四个服务整体重建 (析构 Stop() join worker; 下次 Draw 按新层建)
-static void reset_level_services(Alpha::AlphaHub &s) {
+static void reset_level_services(TaskAlphaState &s) {
   s.search_service.reset();
   s.prev_search_phase = Phase::Idle;
   s.run_service.reset();
+  s.prev_run_phase = Phase::Idle;
   s.factors_scanned_dir.clear();
   s.kline_service.reset();
   s.inspect_service.reset();
@@ -92,23 +100,23 @@ static void reset_level_services(Alpha::AlphaHub &s) {
 
 // Search all 出队一个发 Search; 队空 = 整目录 Run 一次并收尾. 请求建不成 (资产轴 / 区间) = 整轮放弃.
 // wrote = 上一项落盘了; 没落盘的 fresh 项把 fresh 顺延给同文件下一档 (该文件仍须整份覆盖)
-static void search_all_next(const SharedData &data, Alpha::AlphaHub &s, bool wrote) {
+static void search_all_next(const SharedData &data, TaskAlphaState &s, bool wrote) {
   Alpha::FactorsUIState &ui = s.factors_ui;
   assert(ui.search_all_n > 0 && s.run_service && s.search_service);
   if (!wrote && ui.search_cur.fresh && !ui.search_queue.empty() && ui.search_queue.front().row.file == ui.search_cur.row.file)
     ui.search_queue.front().fresh = true;
   if (ui.search_queue.empty()) {
     ui.search_all_n = 0;
-    Alpha::RunRequest req;
-    if (Alpha::MakeRunRequest(data, level_table(data, s), s.pool, /*evaluate=*/true, ui.backend == 1, req))
+    Engine::RunRequest req;
+    if (Engine::MakeRunRequest(data, level_table(data, s), s.pool, /*evaluate=*/true, s.engine->gpu(), req))
       s.run_service->Request(req);
     return;
   }
   ui.search_cur = std::move(ui.search_queue.front());
   ui.search_queue.erase(ui.search_queue.begin());
   const Alpha::SearchJob &job = ui.search_cur;
-  Alpha::SearchRequest req;
-  if (Alpha::MakeSearchRequest(data, level_table(data, s), s.pool, job.row, job.hold, job.fresh, ui.backend == 1, req)) {
+  Engine::SearchRequest req;
+  if (Engine::MakeSearchRequest(data, level_table(data, s), s.pool, job.row, job.hold, job.fresh, s.engine->gpu(), req)) {
     s.search_service->Request(req);
   } else {
     ui.search_queue.clear();
@@ -117,11 +125,11 @@ static void search_all_next(const SharedData &data, Alpha::AlphaHub &s, bool wro
 }
 
 // Factors 子页的作用域 (每帧从 config 取; 池 / 层取本页已生效的)
-static Alpha::FactorsUIContext factors_context(const SharedData &data, std::shared_ptr<const Factors::FeatureTable> ft, const std::string &pool) {
+static Alpha::FactorsUIContext factors_context(const SharedData &data, std::shared_ptr<const Engine::FeatureTable> ft, const std::string &pool) {
   Alpha::FactorsUIContext c;
   c.lv = ft->lv;
   c.pool = pool;
-  c.factor_dir = Factors::factor_dir_of(data, pool, c.lv);
+  c.factor_dir = Engine::factor_dir_of(data, pool, c.lv);
   c.ft = std::move(ft);
   c.fixed_impact = data.config.fixed_impact;
   c.axis_ready = !data.asset.items.empty();
@@ -129,9 +137,10 @@ static Alpha::FactorsUIContext factors_context(const SharedData &data, std::shar
   return c;
 }
 
-std::shared_ptr<Alpha::AlphaHub> CreateAlphaHub() { return std::make_shared<Alpha::AlphaHub>(); }
+TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::shared_ptr<Engine::EngineHub> engine) {
+  auto state = std::make_shared<TaskAlphaState>();
+  state->engine = std::move(engine);
 
-TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::shared_ptr<Alpha::AlphaHub> state) {
   TaskHandle handle;
   handle.name = "Alpha";
   handle.storage = state;
@@ -144,6 +153,12 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
   // 每帧 (无论是否选中): 一轮跑完 / 取消那一帧把算子表落地 <factor_dir>/operators.json
   // (与池无关, 全局一份; 取消也落, 已跑完的行不白算). 切走任务 worker 仍在跑, 故放 Update 不放 Draw
   handle.Update = [state](SharedData &data) {
+    if (state->run_service) { // 因子文件可能改了 → 组合重解析
+      const Phase fst = state->run_service->phase.load(std::memory_order_acquire);
+      if (fst == Phase::Done && state->prev_run_phase != Phase::Done)
+        ++state->engine->files_gen;
+      state->prev_run_phase = fst;
+    }
     // Search all: 一个文件搜完 (忙 → Done / Cancelled, 含 Loading 期就放弃的) → 出队下一个, 队空整目录 Run; 被取消 → 整轮放弃
     // 单个 Search 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
     if (state->search_service && state->run_service) {
@@ -171,8 +186,8 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           file = state->search_service->result.file;
         }
         if (wrote) {
-          Alpha::RunRequest req;
-          if (Alpha::MakeRunRequest(data, level_table(data, *state), state->pool, /*evaluate=*/true, state->factors_ui.backend == 1, req)) {
+          Engine::RunRequest req;
+          if (Engine::MakeRunRequest(data, level_table(data, *state), state->pool, /*evaluate=*/true, state->engine->gpu(), req)) {
             req.spec.only_file = file;
             state->run_service->Request(req);
           }
@@ -240,7 +255,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
     }
 
     if (idx != TAB_OPERATORS)
-      Alpha::EnsurePortfolio(data, *state);
+      Engine::EnsurePortfolio(data, *state->engine);
 
     ImGui::BeginChild("AlphaTab", ImVec2(0, 0), false);
     ImGui::Spacing();
@@ -267,8 +282,8 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
             state->pool_files.clear();
             for (const PoolDef &d : feature_pools()) {
               size_t n = 0;
-              for (const Factors::FactorLevel &l : Factors::kFactorLevels)
-                n += Factors::list_factor_files(Factors::factor_dir_of(data, d.name, l.id)).size();
+              for (const Engine::FactorLevel &l : Engine::kFactorLevels)
+                n += Engine::list_factor_files(Engine::factor_dir_of(data, d.name, l.id)).size();
               state->pool_files.push_back(n);
             }
           }
@@ -297,18 +312,18 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           const bool repool = key != state->counted_key;
           if (repool || (fst == Phase::Done && state->prev_factors_phase != Phase::Done)) {
             state->counted_key = key;
-            for (const Factors::FactorLevel &l : Factors::kFactorLevels)
-              state->level_files[l.id] = Factors::list_factor_files(Factors::factor_dir_of(data, pool_def(state->want_pool).name, l.id)).size();
+            for (const Engine::FactorLevel &l : Engine::kFactorLevels)
+              state->level_files[l.id] = Engine::list_factor_files(Engine::factor_dir_of(data, pool_def(state->want_pool).name, l.id)).size();
           }
           state->prev_factors_phase = fst;
           if (repool) // 进页 / 换池: 切到该池最低频的有因子文件的层 (都没有 → 不动)
-            for (const Factors::FactorLevel &l : Factors::kFactorLevels | std::views::reverse)
+            for (const Engine::FactorLevel &l : Engine::kFactorLevels | std::views::reverse)
               if (state->level_files[l.id] > 0) {
                 state->want_lv = l.id;
                 break;
               }
         }
-        for (const Factors::FactorLevel &l : Factors::kFactorLevels) {
+        for (const Engine::FactorLevel &l : Engine::kFactorLevels) {
           char label[48];
           std::snprintf(label, sizeof(label), "%s (%zu)###flvl%d", l.name, state->level_files[l.id], l.id);
           ImGui::SameLine();
@@ -326,7 +341,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
       {
         const bool busy = (state->run_service && state->run_service->busy()) || (state->search_service && state->search_service->busy()) ||
                           (state->inspect_service && state->inspect_service->busy()) || state->factors_ui.search_all_n > 0;
-        const Factors::LevelId want_lv = state->want_lv;
+        const Engine::FactorLevelId want_lv = state->want_lv;
         const std::string want_pool = pool_def(state->want_pool).name;
         if (!busy) {
           if (want_lv != state->lv || want_pool != state->pool) { // 换作用域: 高光作废, 新表扫出后重新默认高光 (rIC 最高)
@@ -351,27 +366,27 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           state->factors_ui.search_queue.clear();
           state->factors_ui.search_all_n = 0;
           ImGui::SameLine();
-          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(取消中, 停下后切到 %s / %s)", want_pool.c_str(), Factors::factor_level(want_lv).name);
+          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(取消中, 停下后切到 %s / %s)", want_pool.c_str(), Engine::factor_level(want_lv).name);
         }
       }
       assert(state->lv); // 有服务在跑 ⇒ 之前已生效过
       // 首次进页 / 换层: 只扫描不算 (字段表视图按层建一次, 编译期字段表, 不随运行变); 池切换 → 目录变 → 自动重扫
-      const std::shared_ptr<const Factors::FeatureTable> ft = level_table(data, *state);
+      const std::shared_ptr<const Engine::FeatureTable> ft = level_table(data, *state);
       if (!state->run_service) {
-        state->run_service = std::make_unique<Alpha::RunService>();
-        state->search_service = std::make_unique<Alpha::SearchService>();
+        state->run_service = std::make_unique<Engine::RunService>();
+        state->search_service = std::make_unique<Engine::SearchService>();
       }
       auto &fs = *state->run_service;
       auto &ss = *state->search_service;
       const Alpha::FactorsUIContext ctx = factors_context(data, ft, state->pool);
       if (state->factors_scanned_dir != ctx.factor_dir) {
         state->factors_scanned_dir = ctx.factor_dir;
-        Alpha::RunRequest req;
-        Alpha::MakeRunRequest(data, ft, state->pool, /*evaluate=*/false, false, req);
+        Engine::RunRequest req;
+        Engine::MakeRunRequest(data, ft, state->pool, /*evaluate=*/false, false, req);
         fs.Request(req);
       }
       if (!state->inspect_service) {
-        state->inspect_service = std::make_unique<Alpha::InspectService>();
+        state->inspect_service = std::make_unique<Engine::InspectService>();
         state->kline_service = std::make_unique<Alpha::KlineService>();
       }
       auto &is = *state->inspect_service;
@@ -379,10 +394,10 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
       if (idx == TAB_INSPECT) {
         iaction = Alpha::RenderTabInspect(fs, is, *state->kline_service, state->factors_ui, state->inspect_ui, ctx);
       } else {
-        const int action = Alpha::RenderTabFactors(fs, ss, state->factors_ui, state->portfolio_ui, ctx);
+        const int action = Alpha::RenderTabFactors(fs, ss, state->factors_ui, state->engine->backend, state->engine->portfolio_ui, ctx);
         if (action == 1 || action == 5 || action == 2) {
-          Alpha::RunRequest req;
-          if (Alpha::MakeRunRequest(data, ft, state->pool, /*evaluate=*/action != 2, state->factors_ui.backend == 1, req)) {
+          Engine::RunRequest req;
+          if (Engine::MakeRunRequest(data, ft, state->pool, /*evaluate=*/action != 2, state->engine->gpu(), req)) {
             if (action == 1)
               req.spec.only_file = state->factors_ui.run_file;
             fs.Request(req);
@@ -390,9 +405,9 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
         } else if (action == -1) {
           fs.RequestCancel();
         } else if (action == 3) {
-          Alpha::SearchRequest req;
-          if (Alpha::MakeSearchRequest(data, ft, state->pool, state->factors_ui.search_one.row, state->factors_ui.search_one.hold,
-                                       state->factors_ui.search_one.fresh, state->factors_ui.backend == 1, req))
+          Engine::SearchRequest req;
+          if (Engine::MakeSearchRequest(data, ft, state->pool, state->factors_ui.search_one.row, state->factors_ui.search_one.hold,
+                                        state->factors_ui.search_one.fresh, state->engine->gpu(), req))
             ss.Request(req);
         } else if (action == 4) {
           state->factors_ui.search_cur = Alpha::SearchJob{};
@@ -405,9 +420,9 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
       if (iaction == 0 && Alpha::InspectAutoRequest(fs, is, state->factors_ui, state->inspect_ui, ctx))
         iaction = 1;
       if (iaction == 1) {
-        Alpha::InspectRequest req;
-        if (Alpha::MakeInspectRequest(data, ft, state->pool, state->inspect_ui.req_row, state->inspect_ui.req_reload,
-                                      state->factors_ui.backend == 1, state->inspect_ui.req_export, state->inspect_ui.top_n, req))
+        Engine::InspectRequest req;
+        if (Engine::MakeInspectRequest(data, ft, state->pool, state->inspect_ui.req_row, state->inspect_ui.req_reload,
+                                       state->engine->gpu(), state->inspect_ui.req_export, state->inspect_ui.top_n, req))
           is.Request(req);
       } else if (iaction == -1) {
         is.RequestCancel();
@@ -418,7 +433,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
       break;
     }
     if (idx != TAB_OPERATORS)
-      Alpha::SyncPortfolio(data, *state, false);
+      Engine::SyncPortfolio(data, *state->engine, false);
     ImGui::EndChild();
   };
 
@@ -430,19 +445,13 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
     state->factors_ui.search_queue.clear(); // Search all 随服务一起作废
     state->factors_ui.search_all_n = 0;
     state->run_service.reset();
+    state->prev_run_phase = Phase::Idle;
     state->factors_scanned_dir.clear();
     state->kline_service.reset();   // 析构 Stop() join worker
     state->inspect_service.reset(); // 析构 Stop() join worker
     state->inspect_ui = Alpha::InspectUIState{};
-    state->tables = {};
     state->counted_key.clear();
-    state->portfolio_service.reset(); // 析构 Stop() join worker
-    state->portfolio_ui = Market::PortfolioUIState{};
-    state->lines_ui = Market::LinesUIState{};
-    state->portfolio_gen = ~0ull;
-    state->portfolio_dirty = false;
-    state->portfolio_sig.clear();
-    state->portfolio_prev_fs = Phase::Idle;
+    state->engine->reset();
   };
 
   return handle;

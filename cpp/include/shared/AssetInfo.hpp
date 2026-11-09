@@ -1,6 +1,6 @@
 // Asset Information - 全市场个股基本面快照 (BigQuant + Tushare) + 交易日历
-// 由 FundamentalService 从 output/fundamental/ parquet 构建.
-// 个股一律按全局 id (A 轴下标, shared/AssetAxis.hpp) 稠密存: 一对一 = vector, 一对多 = Csr.
+// 由 SyncService 从 output/fundamental/ parquet 构建.
+// 个股一律按全局 id (A 轴下标, fundamental/AssetAxis.hpp) 稠密存: 一对一 = vector, 一对多 = Csr.
 // 一律原生类型: 日期 Ymd (0 = 无), 数值 float (NaN = 无效); 格式化只在 UI.
 #pragma once
 

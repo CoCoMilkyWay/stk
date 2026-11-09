@@ -1,6 +1,6 @@
 #pragma once
 
-#include "shared/Analysis.hpp"
+#include "gui/task_features/services/Analysis.hpp"
 #include "shared/Progress.hpp"
 
 #include <array>
@@ -16,7 +16,7 @@ namespace GUI::Features {
 
 // ============================================================================
 // Preview (特征表内联预览: 每特征 平均分布 + 平均单日频谱, 轮训抽样流式;
-//                 公共骨架见 shared/Analysis.hpp)
+//                 公共骨架见 gui/task_features/services/Analysis.hpp)
 // ============================================================================
 // 目的: Table 页每行尾部两个迷你曲线 (PDF / PSD), 全表一眼对比形态.
 // 与 Distribution/Transform 维度反转 —— 那边单特征全数据, 这边全特征抽样数据:
@@ -63,7 +63,7 @@ PsdAxis psd_axis(size_t N); // N = FFT 长度
 
 struct Preview : Published {
   // 每特征发布快照 (槽位 = (层, 该层 metadata 下标); 非预览列 (META 类) 恒空)
-  struct Cell : analysis::PdfSnap<kPvKllResolution> {
+  struct Cell : PdfSnap<kPvKllResolution> {
     uint32_t psd_n = 0;                  // 参与谱平均的 (资产, 段) 数 (含段内恒值段: 投占比全 0 的一票)
     std::array<float, kPvPsdBins> psd{}; // log10 桶内每 bin 能量占比均值 × N/2 (Parseval 归一), 周期升序 (见 PsdAxis);
                                          // 白噪声参照 = 0 (全层同一条线); 恒值段拉低整条曲线 (高度 = 有动的段占比),
@@ -101,8 +101,8 @@ struct Preview : Published {
   Preview();
   ~Preview();
 
-  // 重置全部状态并进入 Building (预览是全表底图: cells 清空, 逐块填回); 主库有成品则换回成品
-  void reset(analysis::ReadScope scope, Spec spec);
+  // 重置全部状态并发布 (预览是全表底图: cells 清空, 逐块填回); 主库有成品则换回成品
+  void reset(reader::ReadScope scope, Spec spec);
   // 轮训构建 (笼相 + 块相各一次 dispatch; 块任务 = IO + 扫描 + 块末 fold 发布); 被取消返回 false; 跑完存成品
   bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
@@ -120,7 +120,7 @@ private:
   };
   void keep(size_t rounds); // 存本轮成品 (forget 过则不存)
   std::unique_ptr<Runtime> rt_;
-  analysis::ReadScope scope_; // reset 时定好, build 全程只读
+  reader::ReadScope scope_; // reset 时定好, build 全程只读
   // 以下持锁
   std::map<LibId, Kept> kept_; // 主库 → 完整跑完的成品
   uint64_t gen_ = 0;           // forget 计数

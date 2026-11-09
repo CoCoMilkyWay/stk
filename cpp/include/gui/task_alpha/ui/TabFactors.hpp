@@ -4,8 +4,9 @@
 // 结构规模 / 选定持有期的 Stat 列 / 耗时; 首列勾选 → 模板载入构建器编辑, 点行高光 → 给 Inspect 页).
 #pragma once
 
-#include "gui/task_alpha/services/RunService.hpp"
-#include "gui/task_alpha/services/SearchService.hpp"
+#include "gui/engine/Hold.hpp"
+#include "gui/engine/services/RunService.hpp"
+#include "gui/engine/services/SearchService.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -14,11 +15,13 @@
 
 struct AssetItem;
 
-namespace GUI::Market {
+namespace GUI::Engine {
 struct PortfolioUIState; // PortfolioBoxes.hpp
 }
 
 namespace GUI::Alpha {
+
+using namespace Engine;
 
 // 构建器的一个槽: 未选 / 特征叶 / 算子 (带 arity 个子槽 + 参数). 从外到内填: 先选根算子, 再逐槽往里选
 struct BuildNode {
@@ -37,7 +40,6 @@ struct SearchJob {
 };
 
 struct FactorsUIState {
-  int backend = -1;          // 0 = CPU, 1 = GPU; -1 = 未定, 首帧按 GPU 可用性定 (有 GPU 默认 GPU)
   int hold_idx = 0;          // FeatureTable::labels 下标 (表列显示哪个持有期; 多权重因子的父行取该 h 下 score 最高的权重)
   BuildNode build;           // 加因子构建器的根
   char name_buf[64] = "";    // name_en = 文件名主干, 必填
@@ -77,7 +79,7 @@ struct FactorsUIState {
 
 // 当前作用域 (GUI 线程每帧从 SharedData 取): 显示 + 与文件里 stat 的作用域 (池) 对比着色; 评估期按因子定 (所用库落盘日交集), 不在这里
 struct FactorsUIContext {
-  LevelId lv = 0;                                 // 因子层 (本页已生效的, 跟页顶 / 特征面板选择走) = ft->lv
+  FactorLevelId lv = 0;                           // 因子层 (本页已生效的, 跟页顶 / 特征面板选择走) = ft->lv
   std::shared_ptr<const FeatureTable> ft;         // 该层字段表 (四服务请求同一份)
   std::string factor_dir;                         // factor_dir_of(pool, lv) = <factor_dir>/<池>/<层名>
   std::string pool;                               // 本页已生效的池名
@@ -86,16 +88,6 @@ struct FactorsUIContext {
   const std::vector<AssetItem> *assets = nullptr; // 全局资产轴 (data.asset.items): Inspect 右下按全局 id 显示代码 / 名称
 };
 
-// 持有期在因子层 lv 上的开 / 清仓 = Stat/Contract.hpp【协议表 1】的一行: 各一个 时点 @ 价 (UI 凡显示开关仓处同一份; 由层表 + Geo 推, 不按层分支)
-struct HoldPoint {
-  std::string at, px;
-};
-struct HoldPoints {
-  HoldPoint open, close;
-};
-HoldPoints hold_points(int hold, LevelId lv);
-// hold_points 的完整写法: "开仓: C(层) @ 价, 清仓: 点 @ 价"
-std::string hold_desc(int hold, LevelId lv);
 // hold_points 分色一行 (时点 / 价各一色), 从当前光标处画; 返回排版宽. draw = false 只量不画 (调用方定宽占位用)
 float hold_points_line(const HoldPoints &p, bool draw = true);
 // 紧凑切换控件 (替代下拉): "label ◂ value ▸", 方形箭头循环切, 值占位定宽 (最宽一项, 居中) → 按钮位置不随值跳;
@@ -112,7 +104,8 @@ inline constexpr const char *kHoldRulesTip = "• 新进成交不了 → 不建�
 void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h);
 
 // 返回值: 1 = Run 高光行所在文件 (ui.run_file), 5 = Run all (整目录), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_one),
-// 4 = Search all (ui.search_queue 已填), -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (PortfolioBoxes RenderPortfolioBoxes)
-int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Market::PortfolioUIState &pui, const FactorsUIContext &ctx);
+// 4 = Search all (ui.search_queue 已填), -3 = 取消 Search (Search all 的队列已清), 0 = 无.
+// backend = EngineHub::backend (首帧按 GPU 可用性定); pui: 1. 区右侧组合两小框 (PortfolioBoxes RenderPortfolioBoxes)
+int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int &backend, PortfolioUIState &pui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Alpha

@@ -2,7 +2,7 @@
 
 #include "features/CoreTs.hpp"
 #include "features/LobGraph.hpp"
-#include "math/sample/ResamplerTick2Min.hpp"
+#include "features/Sample/ResamplerTick2Min.hpp"
 #include "misc/profiler.hpp"
 
 // ============================================================================

@@ -3,7 +3,7 @@
 // ============================================================================
 // Task State - 统一的任务状态管理 (纯数据, 跨任务通信面)
 // 各 Task 写入自己的状态，读取其他 Task 的状态
-// 通过 data.taskstate.xxx 直接访问，无需设计 API
+// 通过 data.task_state.xxx 直接访问，无需设计 API
 // 显示层 (文字/颜色) 在各任务的 TaskHandle::Status 回调里 (见 gui/Tasks.hpp)
 // ============================================================================
 
@@ -24,13 +24,13 @@ struct TaskState {
   // Database Task
   // ==========================================================================
   struct Database {
-    // 关键状态标志 (其他 Task 可读取)
-    bool binary_scanned = false; // 二进制数据库已扫描
-    bool all_json_ready = false; // AssetInfo 已从 parquet 构建
+    // 产物就绪 (其他 Task 可读取)
+    bool asset_info_ready = false; // AssetInfo 已从 parquet 构建并换进
+    bool scanned = false;          // orders / 归档覆盖扫描至少收过一件
 
     // 流水线在飞 (StateManager 每帧写)
-    bool json_update_inflight = false;
-    bool l2_scan_inflight = false;
+    bool sync_inflight = false;
+    bool scan_inflight = false;
     bool encode_inflight = false; // 编码改写日文件: 在飞时特征计算不开跑
   } database;
 

@@ -6,7 +6,7 @@
 //   定位: 无 GPU 时的参数搜索路径. 行核与流程全部复用 Stat CPU (Stat/Cpu.hpp: rank_x / accum_rows), 本文件只加:
 //     run         一批候选: 候选串行, 候选内全核切行 (rank_x → accum_rows, 行丢弃). 候选内并行而不是候选间: C 小 (局部网格几个点) 也能跑满核,
 //                 且只留一张 [T][A] 的 r16 (调用方持有), 不留 ring / 每线程平面.
-//   GUI 的 CPU 搜索不走会话: 引擎 (gui/factors/Engine Engine<Cpu>) 逐根 Stat; 本文件只给对拍 (Search/Check.hpp).
+//   GUI 的 CPU 搜索不走会话: 后端 (gui/engine/Engine Backend<Cpu>) 逐根 Stat; 本文件只给对拍 (Search/Check.hpp).
 //   【与 Stat CPU 的关系】同一流程 ⇒ 整数派生量 / 浮点和都逐位同 Stat CPU; 对拍 (Search/Check.hpp) 验的是块语义 / 累加.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================

@@ -15,7 +15,7 @@
 
 namespace GUI::Features {
 
-using analysis::AggPdf;
+using AggPdf;
 
 // ============================================================================
 // Helpers
@@ -79,14 +79,14 @@ static double nearest_seg_dist_sq(const float *x, const float *y, size_t n,
 // 行业色: 一个行业一个颜色 (资产表静态, 缓存一次; 基本面未就绪时下帧重试)
 // ============================================================================
 
-static void EnsureIndustryCache(DistributionUIState &ui, const Asset &asset, const AssetInfo &assetinfo) {
+static void EnsureIndustryCache(DistributionUIState &ui, const Asset &asset, const AssetInfo &asset_info) {
   if (ui.industry_idx.size() == asset.items.size() && !ui.industry_names.empty())
     return;
   ui.industry_idx.assign(asset.items.size(), -1);
   ui.industry_names.clear();
   std::map<std::string, int> name_to_idx;
   for (size_t a = 0; a < asset.items.size(); ++a) {
-    const StockInfo *si = assetinfo.find(asset.items[a].asset_id);
+    const StockInfo *si = asset_info.find(asset.items[a].asset_id);
     if (!si || si->ind_name.empty())
       continue;
     auto [it, inserted] = name_to_idx.try_emplace(si->ind_name, static_cast<int>(ui.industry_names.size()));
@@ -268,7 +268,7 @@ static float AssetColorValue(const StockInfo &si, int mode) {
 }
 
 // 构建连续值缓存 (资产表静态, 每模式一次): [A] + 5/95 分位范围
-static void EnsureColorCache(DistributionUIState &ui, const Asset &asset, const AssetInfo &assetinfo) {
+static void EnsureColorCache(DistributionUIState &ui, const Asset &asset, const AssetInfo &asset_info) {
   if (ui.color_cache_mode == ui.color_mode && !ui.color_values.empty())
     return;
   ui.color_cache_mode = ui.color_mode;
@@ -276,7 +276,7 @@ static void EnsureColorCache(DistributionUIState &ui, const Asset &asset, const 
   std::vector<float> valid;
   valid.reserve(asset.items.size());
   for (size_t a = 0; a < asset.items.size(); ++a) {
-    const StockInfo *si = assetinfo.find(asset.items[a].asset_id);
+    const StockInfo *si = asset_info.find(asset.items[a].asset_id);
     float v = si ? AssetColorValue(*si, ui.color_mode) : std::nanf("");
     ui.color_values[a] = v;
     if (!std::isnan(v))
@@ -318,7 +318,7 @@ static const char *kColorModeNames[] = {"行业", "市值", "PE", "PB",
                                         "PS", "PCF", "股息率"};
 
 static void RenderColorModeSelector(DistributionUIState &ui, const Asset &asset,
-                                    const AssetInfo &assetinfo) {
+                                    const AssetInfo &asset_info) {
   ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
   ImGui::TextUnformatted("[染色]");
   ImGui::PopFont();
@@ -326,7 +326,7 @@ static void RenderColorModeSelector(DistributionUIState &ui, const Asset &asset,
   ImGui::SetNextItemWidth(-1);
   ImGui::Combo("##ColorMode", &ui.color_mode, kColorModeNames,
                IM_ARRAYSIZE(kColorModeNames));
-  EnsureColorCache(ui, asset, assetinfo);
+  EnsureColorCache(ui, asset, asset_info);
   // 连续模式显示当前 winsorize 范围
   if (ui.color_mode != 0 && ui.color_hi > ui.color_lo) {
     ImGui::TextDisabled("范围 [%.3g, %.3g]", ui.color_lo, ui.color_hi);
@@ -459,7 +459,7 @@ static void RenderPDFByDim(const Distribution::Snap &dist, DistributionUIState &
 // 资产截面: 高亮模式 = hover 到线/点, 或滑条按住中 (焦点 = ui.focus[DIM_ASSETS]); 高亮线置顶,
 // 其余线全资产压暗作背景; 松手/移开即恢复常态. 输出 hovered_line_out (无 hover → -1,
 // 详情面板回落到焦点资产)
-static void RenderAssetsPDF(const Distribution::Snap &dist, const Asset &asset, const AssetInfo &assetinfo,
+static void RenderAssetsPDF(const Distribution::Snap &dist, const Asset &asset, const AssetInfo &asset_info,
                             DistributionUIState &ui, int &clicked_dimension, int &hovered_line_out) {
   // Title with tooltip
   ImGui::TextUnformatted(kDimTitles[DIM_ASSETS]);
@@ -493,8 +493,8 @@ static void RenderAssetsPDF(const Distribution::Snap &dist, const Asset &asset, 
   ImGui::Separator();
 
   // 发布快照: worker 批末算好整条线 (PDF/矩/W2), UI 零计算零重建只画
-  EnsureIndustryCache(ui, asset, assetinfo);
-  EnsureColorCache(ui, asset, assetinfo);
+  EnsureIndustryCache(ui, asset, asset_info);
+  EnsureColorCache(ui, asset, asset_info);
 
   auto &line_indices = ui.line_indices;
   line_indices.clear();
@@ -681,7 +681,7 @@ static void RenderAssetsPDF(const Distribution::Snap &dist, const Asset &asset, 
 // ============================================================================
 
 static void RenderAssetInfo(const Distribution::Snap &dist, const Asset &asset,
-                            const AssetInfo &assetinfo, int hovered_line, int focus_asset) {
+                            const AssetInfo &asset_info, int hovered_line, int focus_asset) {
   // Use remaining height in parent
   float remaining_height = ImGui::GetContentRegionAvail().y;
   ImGui::BeginChild("AssetInfoPanel", ImVec2(350, remaining_height), true);
@@ -708,7 +708,7 @@ static void RenderAssetInfo(const Distribution::Snap &dist, const Asset &asset,
   const auto &asset_item = asset.items[ln.asset];
 
   // Get real-time info from AssetInfo
-  const StockInfo *stock_info = assetinfo.find(asset_item.asset_id);
+  const StockInfo *stock_info = asset_info.find(asset_item.asset_id);
 
   // Asset name and code
   if (stock_info && !stock_info->name.empty()) {
@@ -844,8 +844,8 @@ void RenderTabDistribution(DistributionService *service, SharedData &data, Distr
 
   // Left column: Color Mode Selector + Asset Info (hover 优先, 否则焦点资产; 剩余空间)
   ImGui::BeginChild("LeftSection", ImVec2(0, content_height), false);
-  RenderColorModeSelector(ui, data.asset, data.assetinfo);
-  RenderAssetInfo(snap, data.asset, data.assetinfo, ui.hovered_line, FocusAssetOf(snap, ui.focus[DIM_ASSETS]));
+  RenderColorModeSelector(ui, data.asset, data.asset_info);
+  RenderAssetInfo(snap, data.asset, data.asset_info, ui.hovered_line, FocusAssetOf(snap, ui.focus[DIM_ASSETS]));
   ImGui::EndChild();
 
   ImGui::NextColumn();
@@ -876,7 +876,7 @@ void RenderTabDistribution(DistributionService *service, SharedData &data, Distr
 
   // Bottom: Assets PDF (outputs ui.hovered_line)
   ImGui::BeginChild("AssetsPDFSection", ImVec2(0, 0), true);
-  RenderAssetsPDF(snap, data.asset, data.assetinfo, ui, clicked_dimension, ui.hovered_line);
+  RenderAssetsPDF(snap, data.asset, data.asset_info, ui, clicked_dimension, ui.hovered_line);
   ImGui::EndChild();
 
   // 点图 → 选中该维度 (顶部滑条切到它的焦点)

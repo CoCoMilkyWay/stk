@@ -1,7 +1,7 @@
 #include "gui/task_features/ui/TabNodeTime.hpp"
+#include "features/Storage/FeatureLib.hpp" // lib_dir / lib_name
 #include "gui/task_features/ui/Common.hpp" // 作用域条
 #include "shared/Feature.hpp"
-#include "shared/FeatureLib.hpp" // lib_dir / lib_name
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -257,7 +257,7 @@ static void render_node_time(SharedData &data, const Feature &feature) {
   static NodeTimeFile s_nt;
   static bool s_level_only = false;
   const LibId lib = feature.selection.lib();
-  load_node_time(s_nt, (std::filesystem::path(lib_dir(data.config, lib)) / "node_time.json").string());
+  load_node_time(s_nt, (std::filesystem::path(lib_dir(data.config.feature_dir, lib)) / "node_time.json").string());
   if (!s_nt.ok) {
     ImGui::TextDisabled("%s 尚无用时: Rebuild / Append 跑完即有", lib_name(lib).c_str());
     return;

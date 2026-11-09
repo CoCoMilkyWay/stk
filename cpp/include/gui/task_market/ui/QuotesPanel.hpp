@@ -1,4 +1,4 @@
-// 行情图, 数据 = 历史 Kline + 当日 Day (见 Kline.hpp); 个股 / 篮子同一个 Feed + Sync (键集 → 历史发布 + 当日)
+// 行情图, 数据 = 历史 Kline + 当日 Day (见 Quote.hpp); 个股 / 篮子同一个 Feed + Sync (键集 → 历史发布 + 当日)
 //   个股 = ASSET 右栏: 键集 {选中标的}, 日内 (右挂盘口: 当日最新快照五档) + 日线 (布局与配色同 py/app/tdx 行情页);
 //   篮子 = NAV 日内栏: 键集 = 全部篮子线, 叠加图 (对首日前收的涨跌幅, 刻度区全空: 横网格 (含 0 轴) 涨跌幅小字内标在右壁, 线名小字贴线尾;
 //     不画量, 读数看十字光标); 多篮子 = 收盘线, 单篮子 = 分钟蜡烛 (窄了按 kSlots 的因子并根, 同 py/app/tdx) + 现价十字 (虚线, 标涨跌幅 / 时刻), 版面不变;
@@ -15,7 +15,7 @@
 // 每帧先 Sync (键集变 → 发请求 / 收发布 / 当日版本变了才拷), 再画
 #pragma once
 
-#include "gui/task_market/services/MarketHub.hpp"
+#include "gui/quote/QuoteHub.hpp"
 #include "shared/AssetInfo.hpp" // StockInfo (个股近况)
 
 #include <cstdint>
@@ -26,6 +26,8 @@
 #include <vector>
 
 namespace GUI::Market {
+
+using namespace Quote;
 
 // 一张图的 x 视野 (唯一真相: 每帧以 Always 设给 ImPlot, 其自带的拖动 / 滚轮 / 双击全失效, 交互只改这里)
 struct QuotesView {
@@ -55,7 +57,7 @@ struct Feed {
   uint64_t ver = ~0ull;                          // 已取的当日版本 (QuoteStatus::ver); ~0 = 待取
 };
 // 每帧: 键集变 / reload / 被同路别的 Feed 覆盖 → 发请求 (个股另 select 给新浪); 末次请求的发布到齐 → 整体换上; 当日版本变 → 取
-void Sync(MarketHub &mk, Side s, std::span<const uint32_t> want, Feed &f);
+void Sync(QuoteHub &mk, Side s, std::span<const uint32_t> want, Feed &f);
 
 struct StockState {
   Feed feed; // 键集 = {选中标的} / 空
@@ -97,13 +99,13 @@ Recent RecentOf(const Feed &f, size_t k);
 Recent RecentOf(const StockInfo &info, const Candle &today, misc::Ymd prev);
 
 // title = 在画标的的标题 (简称 + 代码)
-void RenderStockPanel(const MarketHub &mk, StockState &st, const std::string &title);
+void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &title);
 // picks 各条的日内叠加图 (一条 = 蜡烛), 占满当前区域 (日轴止于行情日, 当日未接上 → 当日空 + 提示); 篮子源未就绪 / 读取中 → 提示; 个股历史未到的条不画
-void RenderBasketIntraday(const MarketHub &mk, BasketState &st, const std::vector<OverlayPick> &picks);
+void RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks);
 // picks 各条的累计净流入叠加图 (日轴 = FlowDays, 跨日接续; 档位 / 口径 / 开收盘开关叠在左上角), 其余同 RenderBasketIntraday
-void RenderBasketFlow(const MarketHub &mk, BasketState &st, const std::vector<OverlayPick> &picks);
+void RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks);
 // 资金流档的日轴: 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
-std::vector<misc::Ymd> FlowDays(const MarketHub &mk, const BasketState &st);
+std::vector<misc::Ymd> FlowDays(const QuoteHub &mk, const BasketState &st);
 // 一段的资金流 [元]: 净流入 (分钟涨跌法, 见 Fold) / 成交额; amount 0 = 无根
 struct Flow {
   double net = 0, amount = 0;

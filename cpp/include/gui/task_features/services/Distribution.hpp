@@ -1,7 +1,7 @@
 #pragma once
 
 #include "features/TimeIndex.hpp"
-#include "shared/Analysis.hpp"
+#include "gui/task_features/services/Analysis.hpp"
 #include "shared/Progress.hpp"
 
 #include <array>
@@ -14,7 +14,7 @@ class FeatureRead;
 namespace GUI::Features {
 
 // ============================================================================
-// Distribution Analysis (KLL-based, 分批流式; 公共骨架见 shared/Analysis.hpp)
+// Distribution Analysis (KLL-based, 分批流式; 公共骨架见 gui/task_features/services/Analysis.hpp)
 // ============================================================================
 // 天是流式维度: 每批 kDaysPerBatch 个抽样天, 批内扫全部资产, 全部视图逐批收敛.
 // 首帧 = 第一批的 IO + 扫描 (几十 ms), 与总区间长度无关 —— 列存按天分文件,
@@ -99,13 +99,13 @@ struct Distribution : Published {
   };
   // 发布快照 (worker 批末短锁 swap; UI 持锁只画)
   struct Snap {
-    std::vector<misc::Ym> month_keys;         // [n_months] 月键 (= scope 月份表, reset 时定)
-    std::vector<analysis::AggPdf> months;     // [n_months] 月度漂移
-    std::vector<analysis::AggPdf> by_weekday; // [7]
-    std::vector<analysis::AggPdf> by_tod;     // [kTodBins] 日内 10 分钟桶
-    analysis::AggPdf global;                  // 全区间
-    std::vector<AssetLine> lines;             // [A_sub] 槽位 == 池轴下标, .asset = 全局轴下标
-    Integrity integrity;                      // 全区间
+    std::vector<misc::Ym> month_keys; // [n_months] 月键 (= scope 月份表, reset 时定)
+    std::vector<AggPdf> months;       // [n_months] 月度漂移
+    std::vector<AggPdf> by_weekday;   // [7]
+    std::vector<AggPdf> by_tod;       // [kTodBins] 日内 10 分钟桶
+    AggPdf global;                    // 全区间
+    std::vector<AssetLine> lines;     // [A_sub] 槽位 == 池轴下标, .asset = 全局轴下标
+    Integrity integrity;              // 全区间
     // 聚合槽抽样 stride (1 = 全量). 月/星期/日内/全局的 n 是抽样后的数, 资产线恒为全量
     size_t agg_stride = 1;
   };
@@ -115,8 +115,8 @@ struct Distribution : Published {
   Distribution();
   ~Distribution();
 
-  // 重置构建参数并进入 Building. 展示字段不清 (旧图留住), 池轴变了才重建资产线
-  void reset(analysis::ReadScope scope, Spec spec);
+  // 重置构建参数并发布. 展示字段不清 (旧图留住), 池轴变了才重建资产线
+  void reset(reader::ReadScope scope, Spec spec);
   // 全区间构建: 分批流式 (每批 IO → 扫描 → 归约 → 发布); 被取消返回 false
   bool build(const PerLib<const FeatureRead *> &fr, const std::atomic<bool> &cancel);
   void clear();
@@ -124,7 +124,7 @@ struct Distribution : Published {
 private:
   struct Runtime; // worker 私有 (批平面 / sketch / staging / shard), 定义在 Distribution.cpp
   std::unique_ptr<Runtime> rt_;
-  analysis::ReadScope scope_; // reset 时定好, build 全程只读
+  reader::ReadScope scope_; // reset 时定好, build 全程只读
 };
 
 } // namespace GUI::Features

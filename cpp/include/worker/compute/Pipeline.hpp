@@ -2,14 +2,19 @@
 
 #include "features/GraphNode.hpp" // graph::NodeClock (节点用时抽样)
 #include "features/Panel/Pool.hpp"
+#include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureSnap.hpp"
 #include "features/Storage/FeatureStore.hpp"
 #include "misc/affinity.hpp"
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 #include "misc/snap.hpp"
-#include "shared/FeatureLib.hpp"
+#include "worker/compute/Layout.hpp"
+#include "worker/compute/Profile.hpp"
+#include "worker/compute/Progress.hpp"
 #include "worker/compute/Stages.hpp"
+#include "worker/compute/TierOps.hpp"
+#include "worker/compute/TsTuner.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -493,7 +498,7 @@ bool pipeline(const PipelineArgs &args) {
     }
   }
 
-  // 日环 (口径见 Stages.hpp 时序调参): 下游段 = MIN_RING_SLOTS (悬挂 + 时序下一日 + 截面跨日, 少于此死锁)
+  // 日环 (口径见 TsTuner.hpp): 下游段 = MIN_RING_SLOTS (悬挂 + 时序下一日 + 截面跨日, 少于此死锁)
   //   + 截面在飞 ≤ K_cs + 落盘在飞 ≤ K_io + 1 (截面 / 落盘单日耗时波动与落盘前缀乱序); 再加时序余量 (模拟), 按内存截断.
   // 格数上限 = 总内存口径 ∧ 日期轴天数 (窗口比整轴还长无益)
   const RingBudget budget{FeatureStore<T>::Slot::bytes(num_assets) + TierFeed<T>::cell_bytes(num_assets)};

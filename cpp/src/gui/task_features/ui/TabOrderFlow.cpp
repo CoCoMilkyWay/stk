@@ -5,11 +5,11 @@
 //   3. 渲染: Min 画已发布前缀 (gen 配对), Sec 画 front 槽 (新代在途时旧槽照画 + Loading 提示)
 #include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "features/Panel/Fund.hpp"
+#include "features/Storage/FeatureLib.hpp" // lib_name (legend 库名)
 #include "gui/task_features/services/OrderFlowService.hpp"
 #include "gui/task_features/ui/TabTable.hpp" // EffectiveCat2Snapshot (legend 标注)
 #include "gui/util/AssetFilter.hpp"          // 筛选控件 (与 ASSET 共用)
 #include "gui/util/Board.hpp"                // BoardType / GetBoardType (板块口径与 ASSET 同源)
-#include "shared/FeatureLib.hpp"             // lib_name (legend 库名)
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -969,7 +969,7 @@ static void RenderMinPlot(SharedData &data, OrderFlow &of, const Preview &pv, fl
 
     // 事件标注: (Min 请求代, 事件构建代) 变了才重建 (dates 只在 ready 时可读)
     if (pre.ready) {
-      const AssetEvents &events = data.assetinfo.events;
+      const AssetEvents &events = data.asset_info.events;
       if (of.event_marks.key.stale(ui.min.gen, events.seq))
         of.event_marks.build(mn.dates, events.of[data.asset.items[ui.min.key->asset].asset_id]);
       PlotEventLanes(of.event_marks, events, ui.event_groups);
@@ -1317,7 +1317,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data, const Previ
   // 默认锚点 = 日轴上末个已编码日 (图1 / 深度图有逐笔可重放; 无已编码日 = 末日). 不取轴首: 无承接日, Pick 状态读不到
   if (!ui.min_anchor_date && min_ready && !of.min.dates.empty()) {
     const auto &dates = of.min.dates;
-    const std::set<misc::Ymd> &encoded = data.asset.binary.dates;
+    const std::set<misc::Ymd> &encoded = data.asset.orders.dates;
     const auto it = std::find_if(dates.rbegin(), dates.rend(), [&](misc::Ymd d) { return encoded.contains(d); });
     const size_t d = it == dates.rend() ? dates.size() - 1 : static_cast<size_t>(dates.rend() - it) - 1;
     ui.min_anchor_x = static_cast<double>(d * OrderFlowConst::MIN_CAPACITY);

@@ -1,4 +1,5 @@
-// 时序调参 —— 初始日环模拟 / 日环内存预算 / 运行中扩格 + 领养配额 (口径见 Stages.hpp)
+// 时序调参 —— 初始日环模拟 / 日环内存预算 / 运行中扩格 + 领养配额 (口径见 TsTuner.hpp)
+#include "worker/compute/TsTuner.hpp"
 #include "worker/compute/Stages.hpp"
 
 #include "features/Storage/FeatureStore.hpp"

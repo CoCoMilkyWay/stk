@@ -1,6 +1,6 @@
 #pragma once
 // fmeta — ts_valid / cs_valid 列编码/解码唯一事实源 (稳定头:
-// 消费端 (DayBatchPlane / Preview / CoreCs / OrderFlowService) 只需
+// 消费端 (FeaturePlane / Preview / CoreCs / OrderFlowService) 只需
 // 判定函数, 不依赖节点文件 —— 节点改动不牵连它们重编). 写入端状态机 MetaTracker
 // 与落盘列声明在 Meta.hpp.
 //

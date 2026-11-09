@@ -1,6 +1,6 @@
 #include "shared/Asset.hpp"
+#include "fundamental/AssetAxis.hpp"
 #include "misc/exec.hpp"
-#include "shared/AssetAxis.hpp"
 #include "shared/AssetInfo.hpp"
 #include "shared/Progress.hpp"
 
@@ -31,22 +31,22 @@ AssetItem::AssetItem(size_t id, std::string code, std::string name, std::string 
 // Asset Implementation
 // ============================================================================
 
-std::shared_ptr<const OrdersCatalog> Asset::orders() const {
-  std::lock_guard<std::mutex> lock(orders_mutex_);
-  return orders_;
+std::shared_ptr<const OrdersCatalog> Asset::catalog() const {
+  std::lock_guard<std::mutex> lock(catalog_mutex_);
+  return catalog_;
 }
 
-void Asset::publish_orders(std::shared_ptr<const OrdersCatalog> catalog) {
-  assert(catalog && "publish_orders: 空快照用默认构造的 OrdersCatalog, 不用 nullptr");
-  std::lock_guard<std::mutex> lock(orders_mutex_);
-  orders_ = std::move(catalog);
+void Asset::publish_catalog(std::shared_ptr<const OrdersCatalog> catalog) {
+  assert(catalog && "publish_catalog: 空快照用默认构造的 OrdersCatalog, 不用 nullptr");
+  std::lock_guard<std::mutex> lock(catalog_mutex_);
+  catalog_ = std::move(catalog);
 }
 
 void Asset::adopt(AssetScan &&scan) {
-  binary = std::move(scan.binary);
+  orders = std::move(scan.orders);
   archive = std::move(scan.archive);
   backtest = std::move(scan.backtest);
-  publish_orders(std::move(scan.orders));
+  publish_catalog(std::move(scan.catalog));
   date_stats = std::move(scan.date_stats);
   date_gaps = std::move(scan.date_gaps);
   asset_stats = std::move(scan.asset_stats);
@@ -54,15 +54,15 @@ void Asset::adopt(AssetScan &&scan) {
 }
 
 // ============================================================================
-// Binary Database Scan
+// Orders Scan
 // ============================================================================
 
-void Asset::scan_binary(AssetScan &out, const std::string &orders_dir, misc::exec::ForkJoin &ex, Progress &p) const {
+void Asset::scan_orders(AssetScan &out, const std::string &orders_dir, misc::exec::ForkJoin &ex, Progress &p) const {
   namespace fs = std::filesystem;
 
   // 整体重建帧目录, 不做增量 (见 OrdersCatalog); encoded_assets 由 compute_coverage_statistics 填
-  Binary &bin = out.binary;
-  bin = Binary{};
+  Orders &bin = out.orders;
+  bin = Orders{};
   bin.scanned = true;
   bin.path = orders_dir;
   bin.exists = fs::exists(orders_dir) && fs::is_directory(orders_dir);
@@ -144,7 +144,7 @@ void Asset::scan_archive(AssetScan &out, const std::string &archive_dir, const s
     return;
 
   // Collect all month paths (archive_dir/YYYY/YYYYMM/).
-  // 与 binary 扫描同理: 按年切只有十来个任务, 按月切才喂得满执行器.
+  // 与 orders 扫描同理: 按年切只有十来个任务, 按月切才喂得满执行器.
   std::vector<std::string> month_paths;
   for (const auto &year_entry : fs::directory_iterator(archive_dir)) {
     if (!year_entry.is_directory())
@@ -198,25 +198,25 @@ void Asset::scan_archive(AssetScan &out, const std::string &archive_dir, const s
 // Backtest Coverage Analysis
 // ============================================================================
 
-void Asset::compute_backtest_coverage(AssetScan &out, misc::Ymd start, const AssetInfo &assetinfo) {
+void Asset::compute_backtest_coverage(AssetScan &out, misc::Ymd start, const AssetInfo &asset_info) {
   Backtest &bt = out.backtest;
   bt = Backtest{};
   bt.start = start;
-  bt.end = std::max(out.binary.max_date, out.archive.max_date);
+  bt.end = std::max(out.orders.max_date, out.archive.max_date);
 
   // 行 = 基本面交易日历 (权威, archive 自身缺日也能发现); 调用方保证基本面 Ready (ScanService assert).
   // 两源未扫描 / 不存在时其日期集为空, 行上自然标"无".
-  const std::vector<CalendarDay> &stock_days = assetinfo.days;
+  const std::vector<CalendarDay> &stock_days = asset_info.days;
   assert(!stock_days.empty() && "基本面交易日历未就绪");
   for (const CalendarDay &day : stock_days)
     if (day.trading && day.date >= bt.start && day.date <= bt.end)
-      bt.days.push_back({day.date, out.binary.dates.count(day.date) > 0, out.archive.dates.count(day.date) > 0});
+      bt.days.push_back({day.date, out.orders.dates.count(day.date) > 0, out.archive.dates.count(day.date) > 0});
   assert(std::is_sorted(bt.days.begin(), bt.days.end(),
                         [](const BacktestDay &a, const BacktestDay &b) { return a.date < b.date; }) &&
          "基本面交易日历须升序");
 
   // 区间内有数据的天数 (区间内条数/体积要遍历帧目录, 归 compute_coverage_statistics 那趟)
-  out.binary.backtest_order_days = bt.count([](const BacktestDay &d) { return d.binary; });
+  out.orders.backtest_order_days = bt.count([](const BacktestDay &d) { return d.orders; });
 }
 
 std::vector<misc::Ymd> Asset::backtest_dates() const {
@@ -231,11 +231,11 @@ std::vector<misc::Ymd> Asset::backtest_dates() const {
 // Coverage Statistics (Calendar / ASSET / Encode 共用的一份统计)
 // ============================================================================
 
-void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetinfo, misc::exec::ForkJoin &ex,
+void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &asset_info, misc::exec::ForkJoin &ex,
                                         Progress &p) const {
-  const std::vector<CalendarDay> &stock_days = assetinfo.days;
+  const std::vector<CalendarDay> &stock_days = asset_info.days;
   const Backtest &bt = out.backtest;
-  assert(assetinfo.stocks.size() == items.size() && "AssetInfo 未与 items 对齐 (AssetLoader::load 没跑?)");
+  assert(asset_info.stocks.size() == items.size() && "AssetInfo 未与 items 对齐 (AssetLoader::load 没跑?)");
 
   std::unordered_map<misc::Ymd, DateStats> local_date_stats;
   std::vector<AssetStats> local_asset_stats(items.size());
@@ -287,11 +287,11 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetin
   };
   std::vector<AssetKey> keys(items.size());
   for (size_t i = 0; i < items.size(); ++i) {
-    const StockInfo &s = assetinfo.stocks[i];
+    const StockInfo &s = asset_info.stocks[i];
     keys[i] = {s.ipo_date, s.out_date, items[i].exchange == "BJ"};
   }
 
-  const Binary &bin = out.binary;
+  const Orders &bin = out.orders;
   const bool has_db_range = bin.min_date && bin.max_date;
   const bool has_bt_range = bt.start && bt.end;
 
@@ -364,7 +364,7 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetin
 
       // 当日停牌名单 → 位图 (资产下标 = 全局 id)
       std::fill(susp.begin(), susp.end(), 0);
-      for (const uint32_t id : assetinfo.suspended[job.cal])
+      for (const uint32_t id : asset_info.suspended[job.cal])
         susp[id] = 1;
 
       DateStats *ds = job.in_db_range ? &ck.date_stats[job.date] : nullptr;
@@ -434,9 +434,9 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &assetin
     for (const AssetStats &st : local_asset_stats)
       if (st.total_days > 0)
         ++encoded_assets;
-    out.binary.backtest_orders = backtest_orders;
-    out.binary.backtest_orders_size_gb = static_cast<float>(backtest_bytes / (1024.0 * 1024.0 * 1024.0));
-    out.binary.encoded_assets = encoded_assets;
+    out.orders.backtest_orders = backtest_orders;
+    out.orders.backtest_orders_size_gb = static_cast<float>(backtest_bytes / (1024.0 * 1024.0 * 1024.0));
+    out.orders.encoded_assets = encoded_assets;
   }
 
   // 按段序合并. 段的 per-asset 部分和只有回测口径那几列, 全库口径两列已由

@@ -1,14 +1,12 @@
 #include "shared/Feature.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 
 // ============================================================================
 // Feature Constructor
 // ============================================================================
-// init_from_compile_time 的定义在 src/features/FeatureMeta.cpp (唯一依赖生成字段表的
-// 元数据 TU) —— 本文件与字段表解耦, 增删改特征不重编.
-
 Feature::Feature() {
   // Initialize metadata from compile-time arrays on construction (每档一份)
   for (size_t t = 0; t < TIER_COUNT; ++t)
@@ -18,6 +16,16 @@ Feature::Feature() {
 // ============================================================================
 // Feature::Metadata Implementation
 // ============================================================================
+
+void Feature::Metadata::init_from_compile_time(TierId t) {
+  tier = t;
+  for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+    const auto f = feature_meta::features(t, lvl); // 档缺的层为空
+    features[lvl].assign(f.begin(), f.end());
+  }
+  auto d = feature_meta::deps(t);
+  std::move(d.begin(), d.end(), deps);
+}
 
 size_t Feature::Metadata::col_of(size_t level, const char *code) const {
   assert(level < LEVEL_COUNT);

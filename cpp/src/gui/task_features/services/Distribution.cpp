@@ -1,5 +1,5 @@
 #include "gui/task_features/services/Distribution.hpp"
-#include "features/Storage/DayBatchPlane.hpp"
+#include "features/Storage/FeaturePlane.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/profiler.hpp"
 
@@ -8,6 +8,7 @@
 namespace GUI::Features {
 
 using namespace analysis;
+using namespace reader;
 
 namespace {
 
@@ -108,7 +109,7 @@ struct Distribution::Runtime {
     }
   };
 
-  Prefetch<TsPlane> pf;      // [A][批段][行] 资产主序批平面 ×2 (f16) + io 池
+  Stream<TsPlane> stream;    // [A][批段][行] 资产主序批平面 ×2 (f16) + io 池
   AssetSketches assets;      // [A] 每资产累积 sketch
   Snap pub;                  // 发布 staging (扫描线程各写各资产线, 批末导出聚合槽; 短锁与 snap swap)
   W2Ref w2_ref;              // 上一批末的全局分位参考 (批末发布更新, 扫描只读)
@@ -121,8 +122,8 @@ struct Distribution::Runtime {
     const size_t n_threads = threads_for(n_asset_blocks(A));
     const size_t bs = batch_segs(plan.level), days = bs * seg_days(plan.level);
     const size_t asset_stride = bs * seg_rows(plan.level);
-    pf.prepare(threads_for(bs), plan, As, SIZE_MAX);
-    for (TsPlane &p : pf.buf)
+    stream.prepare(threads_for(bs), plan, As, SIZE_MAX);
+    for (TsPlane &p : stream.buf)
       p.prepare(A, plan.level, bs, 1);
     assets.prepare(A);
     w2_ref = W2Ref{};
@@ -216,7 +217,7 @@ bool Distribution::build(const PerLib<const FeatureRead *> &fr, const std::atomi
   rt.pub.agg_stride = agg_stride;
 
   // ==========================================================================
-  // 批循环 (Prefetch::stream): 下一批 IO 后台预读, 本批两相 (扫描 → 归约), 每相一次 dispatch (返回即栅栏);
+  // 批循环 (Stream::run): 下一批 IO 后台预读, 本批两相 (扫描 → 归约), 每相一次 dispatch (返回即栅栏);
   // 批末发布在本线程 (单线程, 天然串行)
   // ==========================================================================
   Runtime::Shard &acc = rt.shards[0]; // 归约终点 = 全程累加器
@@ -343,7 +344,7 @@ bool Distribution::build(const PerLib<const FeatureRead *> &fr, const std::atomi
     // ------------------------------------------------------------------
     reduce_tree(ex, rt.shards);
   };
-  return rt.pf.stream(n_sel, BS, cancel, load, compute, [&](size_t, size_t bd) { publish_batch(bd); });
+  return rt.stream.run(n_sel, BS, cancel, load, compute, [&](size_t, size_t bd) { publish_batch(bd); });
 }
 
 // ============================================================================

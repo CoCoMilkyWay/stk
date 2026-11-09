@@ -1,6 +1,6 @@
 // Asset Loader Implementation
 #include "gui/task_database/services/AssetLoader.hpp"
-#include "shared/AssetAxis.hpp"
+#include "fundamental/AssetAxis.hpp"
 #include "shared/SharedData.hpp"
 
 #include <cassert>
@@ -9,11 +9,11 @@
 namespace GUI::Database {
 
 void AssetLoader::load(SharedData &data) {
-  // 帧目录 (Asset::orders) 按资产下标定址, 不随 items 重建: 轴 append-only,
+  // 帧目录 (Asset::catalog) 按资产下标定址, 不随 items 重建: 轴 append-only,
   // items[i].asset_id == i 不变
   data.asset.items.clear();
 
-  const AssetInfo &info = data.assetinfo;
+  const AssetInfo &info = data.asset_info;
   AssetAxis &axis = asset_axis(); // 首次访问即 load + 自校验
 
   // 码表 = 构建时的轴 + 档案新见代码 (追加在尾) ⇒ 逐个 intern 恰好落在自己的下标上

@@ -1,7 +1,7 @@
 #include "shared/Concept.hpp"
 
+#include "fundamental/AssetAxis.hpp"
 #include "misc/fs.hpp"
-#include "shared/AssetAxis.hpp"
 
 #include <algorithm>
 #include <cassert>

@@ -1,7 +1,7 @@
 // StreamService — Features 页流式分析 (Distribution / Transform / Preview / Correlation*) 的 Service 特化
 //
-// 线程模型 (骨架见 gui/util/Service.hpp; 目标形状与发布协议见 shared/Analysis.hpp):
-//   - GUI 线程: Derived::RequestCompute 解析参数快照成 Req = analysis::Request<Target::Spec>
+// 线程模型 (骨架见 gui/util/Service.hpp; 目标形状与发布协议见 gui/task_features/services/Analysis.hpp):
+//   - GUI 线程: Derived::RequestCompute 解析参数快照成 Req = reader::Request<Target::Spec>
 //     (ReadScope: 月份表 + 池轴 + 库目录, worker 不碰 config; Spec: 目标自己的输入) → Request():
 //     覆盖挂起请求 + 取消在跑
 //   - worker 线程 run: 池集各池 FeatureRead (LibReaders) → target.reset(scope, spec) → target.build(readers)
@@ -27,9 +27,9 @@
 namespace GUI::Features {
 
 template <class Derived, class Target>
-class StreamService : public Service<Derived, analysis::Request<typename Target::Spec>> {
+class StreamService : public Service<Derived, reader::Request<typename Target::Spec>> {
 public:
-  using Req = analysis::Request<typename Target::Spec>;
+  using Req = reader::Request<typename Target::Spec>;
 
 private:
   using Base = Service<Derived, Req>;

@@ -17,6 +17,11 @@ namespace sina {
 inline constexpr int kLevels = 5;     // 盘口档数
 inline constexpr int kQuoteMax = 800; // 一次批量快照至多几只 (实测 1000 只 URL 超长回 431)
 
+inline constexpr const char *kQuoteHost = "hq.sinajs.cn";              // 批量快照 /list=
+inline constexpr const char *kBarHost = "quotes.sina.cn";              // 1 分钟 K getKLineData
+inline constexpr const char *kReferer = "https://finance.sina.com.cn"; // 明文 GET 须带 Referer
+inline constexpr int kTimeoutSeconds = 5;                              // 单次连接 + 读写整体时长
+
 // 一只的实时快照 (hq.sinajs.cn 一行; 名称 GBK 不取)
 //   价 [元], 0 = 未开盘 / 停牌; 量 [股]、额 [元] 为当日累计; 盘口 0 = 空档
 struct Quote {
@@ -43,7 +48,7 @@ struct Bar {
 //   要 gzip (批量快照 99K→29K、240 根分钟线 30K→5K). 网络瞬抖重建连接隔 1s 无限重试; 回包不符 → assert.
 class Client {
 public:
-  explicit Client(std::string host); // config::SINA_HQ_HOST / SINA_KLINE_HOST
+  explicit Client(std::string host); // kQuoteHost / kBarHost
 
   // 批量快照 (≤ kQuoteMax 只); 回包里查无此码 (空串) 的不出现, 顺序同回包
   std::vector<Quote> quotes(const std::vector<std::string> &syms);

@@ -47,8 +47,8 @@ void Config::SyncStringBuffers() {
   snprintf(log_dir_buf, sizeof(log_dir_buf), "%s", log_dir.c_str());
   snprintf(config_dir_buf, sizeof(config_dir_buf), "%s", config_dir.c_str());
   snprintf(csv_market_data_buf, sizeof(csv_market_data_buf), "%s", csv_market_data.c_str());
-  snprintf(csv_tick_trade_buf, sizeof(csv_tick_trade_buf), "%s", csv_market_trade.c_str());
-  snprintf(csv_tick_order_buf, sizeof(csv_tick_order_buf), "%s", csv_market_order.c_str());
+  snprintf(csv_market_trade_buf, sizeof(csv_market_trade_buf), "%s", csv_market_trade.c_str());
+  snprintf(csv_market_order_buf, sizeof(csv_market_order_buf), "%s", csv_market_order.c_str());
 }
 
 void Config::AutoSync() {

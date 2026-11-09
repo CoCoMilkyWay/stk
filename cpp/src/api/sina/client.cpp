@@ -1,5 +1,4 @@
 #include "api/sina/client.hpp"
-#include "shared/Config.hpp"
 #include "yyjson/yyjson.h"
 
 #include <boost/asio/ip/tcp.hpp>
@@ -75,16 +74,16 @@ std::string Client::get(const std::string &target) {
       const auto now = std::chrono::steady_clock::now();
       if (!stream_ || now - used_ > kIdle) {
         stream_.emplace(ioc_);
-        stream_->expires_after(std::chrono::seconds(::config::SINA_HTTP_TIMEOUT_SECONDS));
+        stream_->expires_after(std::chrono::seconds(kTimeoutSeconds));
         stream_->connect(tcp::resolver(ioc_).resolve(host_, "80"));
       }
       http::request<http::empty_body> req{http::verb::get, target, 11};
       req.set(http::field::host, host_);
-      req.set(http::field::referer, ::config::SINA_REFERER);
+      req.set(http::field::referer, kReferer);
       req.set(http::field::user_agent, "Mozilla/5.0");
       req.set(http::field::accept_encoding, "gzip");
       req.keep_alive(true);
-      stream_->expires_after(std::chrono::seconds(::config::SINA_HTTP_TIMEOUT_SECONDS));
+      stream_->expires_after(std::chrono::seconds(kTimeoutSeconds));
       http::write(*stream_, req);
       beast::flat_buffer buf;
       http::response<http::string_body> res;

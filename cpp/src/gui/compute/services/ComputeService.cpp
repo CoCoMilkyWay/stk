@@ -2,13 +2,12 @@
 #include "gui/compute/services/ComputeService.hpp"
 #include "features/Panel/Fund.hpp"
 #include "features/Panel/Pool.hpp"
+#include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "features/Storage/FeatureSnap.hpp"
+#include "fundamental/AssetAxis.hpp"
 #include "misc/logging.hpp"
-#include "shared/AssetAxis.hpp"
-#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
-#include "worker/compute/Stages.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -34,7 +33,7 @@ PerLib<LibPlan> plan_libs(const SharedData &data) {
   PerLib<LibPlan> out;
   for (const LibId l : lib_order()) {
     LibPlan &p = out[l];
-    p.lib = load_lib(cfg, l);
+    p.lib = load_lib(cfg.feature_dir, l);
     std::vector<misc::Ymd> landed; // 已落盘日 (升序)
     if (p.lib.ready()) {
       std::ranges::copy_if(p.lib.dates, std::back_inserter(landed), [&](misc::Ymd d) { return FeatureRead::has_date(p.lib.tier(), p.lib.dir, d); });
@@ -58,7 +57,7 @@ PerLib<LibPlan> plan_libs(const SharedData &data) {
 bool resumable(const Config &cfg, const FeatureLib &lib) {
   if (!lib.ready())
     return false;
-  if (axis_lib(lib.id) != lib.id && !axis_within(lib.axis, load_lib(cfg, axis_lib(lib.id)).axis))
+  if (axis_lib(lib.id) != lib.id && !axis_within(lib.axis, load_lib(cfg.feature_dir, axis_lib(lib.id)).axis))
     return false;
   return FeatureSnap::head(lib.dir) == tier_ops(lib.tier()).snap_header(lib, lib.dates.back());
 }
@@ -66,14 +65,14 @@ bool resumable(const Config &cfg, const FeatureLib &lib) {
 LibRun lib_run(const Config &cfg, LibId id, std::vector<misc::Ymd> plan, bool resume) {
   assert(!plan.empty() && std::is_sorted(plan.begin(), plan.end()) && "规划日期轴为空 / 非升序");
   LibRun r;
-  r.lib = FeatureLib{.id = id, .dir = lib_dir(cfg, id), .dates = std::move(plan)};
+  r.lib = FeatureLib{.id = id, .dir = lib_dir(cfg.feature_dir, id), .dates = std::move(plan)};
   if (const auto up = lib_parent(id)) {
-    const FeatureLib u = load_lib(cfg, up->lib);
+    const FeatureLib u = load_lib(cfg.feature_dir, up->lib);
     assert(u.ready() && std::ranges::all_of(r.lib.dates, [&](misc::Ymd d) { return parent_covers(u.dates, up->prev, d); }) &&
            "日期轴越出上游库 (先把上游库算到这天)");
   }
   if (resume) {
-    r.old = load_lib(cfg, id);
+    r.old = load_lib(cfg.feature_dir, id);
     assert(resumable(cfg, r.old) && "续算: 库没有对得上的续算点 (先全量)");
     assert(r.lib.dates.size() > r.old.dates.size() && std::equal(r.old.dates.begin(), r.old.dates.end(), r.lib.dates.begin()) &&
            "续算: 库日期轴须是规划的真前缀");
@@ -84,7 +83,7 @@ LibRun lib_run(const Config &cfg, LibId id, std::vector<misc::Ymd> plan, bool re
 }
 
 void remove_lib(const Config &cfg, LibId id) {
-  const std::string dir = lib_dir(cfg, id);
+  const std::string dir = lib_dir(cfg.feature_dir, id);
   FeatureRead::wipe_dir(dir); // 可能与 reader 判废删库并发
   FeatureRead::set_dir_stale(dir, false);
   std::cout << "[features] 删库 " << lib_name(id) << ": " << dir << std::endl;
@@ -109,7 +108,7 @@ bool ComputeService::run(ComputeConfig &config) {
   LibRun r = lib_run(cfg, config.lib, std::move(config.dates), config.resume);
 
   // Enable High Performance Mode: GUI low-refresh, compute owns cores
-  data_.EnableHighPerformanceMode();
+  data_.high_performance_mode = true;
   std::cout << "[High Performance Mode] Enabled - GUI low-refresh\n"
             << std::endl;
   begin(Phase::Running, r.dates.size());
@@ -118,13 +117,13 @@ bool ComputeService::run(ComputeConfig &config) {
   fund::Panel fund;
   fund.build(r.lib.dates);
   // 池面板 (本库 A 轴 × 管线日期轴逐日成员 + 轴外, 见 features/Panel/Pool.hpp)
-  const pool::Panel members = pool::Panel::build(r.lib.id, cfg, fund, r.dates, r.old);
+  const pool::Panel members = pool::Panel::build(r.lib.id, cfg.feature_dir, fund, r.dates, r.old);
   r.lib.axis = members.axis();
   r.lib.outside = members.outside();
   PerTier<FeatureLib> libs;
   for (const TierId s : TIER_IDS)
     if (tier_side(tier, s))
-      libs[s] = load_lib(cfg, lib_id(pool, s));
+      libs[s] = load_lib(cfg.feature_dir, lib_id(pool, s));
   FeatureLib &lib = libs[tier] = std::move(r.lib);
   std::cout << "Lib " << lib_name(lib.id) << ": " << lib.dir << " → " << lib.axis.size() << " / "
             << asset_axis().size() << " assets (轴外 " << lib.outside.size() << ")"
@@ -158,7 +157,7 @@ bool ComputeService::run(ComputeConfig &config) {
     save_lib(lib);
 
   // Disable High Performance Mode: GUI resumes
-  data_.DisableHighPerformanceMode();
+  data_.high_performance_mode = false;
   std::cout << "[High Performance Mode] Disabled - GUI full-refresh\n"
             << std::endl;
   return completed;

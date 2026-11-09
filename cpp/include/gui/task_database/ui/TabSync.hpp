@@ -1,10 +1,10 @@
-// Tab Fundamental - 数据源 (BigQuant / Tushare / 东财 / 新浪) 状态与同步入口
+// Tab Sync - 数据源 (BigQuant / Tushare / 东财 / 新浪) 状态与同步入口
 #pragma once
 
 #include "gui/Tasks.hpp"
+#include "gui/quote/services/QuoteService.hpp"
 #include "gui/task_database/services/AuditService.hpp"
-#include "gui/task_database/services/FundamentalService.hpp"
-#include "gui/task_market/services/QuoteService.hpp"
+#include "gui/task_database/services/SyncService.hpp"
 
 #include <cstdint>
 #include <string>
@@ -18,14 +18,14 @@ struct SyncTabState {
   int fit_frames = 0;
 };
 
-// 渲染 Fundamental: 数据源表 (Update 四道 + 新浪当日) + 基本面状态卡 + Update 按钮 + Audit (远端核对) 区
+// 渲染 Sync: 数据源表 (Update 四道 + 新浪当日) + 基本面状态卡 + Update 按钮 + Audit (远端核对) 区
 // state / audit: 调用方持各自 mutex 传入; progress / audit_progress: 两服务的进度面 (原子)
 // audit_table / repair_table: 点了某表的 audit / sync 小按钮 → 写入表名 (与 Audit 同一使能 disable_audit)
 void RenderTabSync(
-    const FundamentalState &state,
+    const SyncState &state,
     const Progress &progress,
-    const TaskStatus &status,        // 基本面状态标签
-    const Market::QuoteStatus *sina, // 新浪当日; nullptr = 未起 (Market 任务首次打开才起)
+    const TaskStatus &status,       // 基本面状态标签
+    const Quote::QuoteStatus *sina, // 新浪当日; nullptr = 未起 (Market 任务首次打开才起)
     bool *update_clicked,
     bool *update_cancel_clicked,
     bool disable_update_controls,

@@ -1,8 +1,8 @@
 // Features 页公共 UI 件: 作用域条 (Table / NodeTime 页顶) + 流式分析 (Distribution / Transform / Table 页预览) 的展示件
-// 对仗 shared/Analysis.hpp: 状态面 (Published) / 值账目 (Integrity) 的展示都只有这一份
+// 对仗 gui/task_features/services/Analysis.hpp: 状态面 (Published) / 值账目 (Integrity) 的展示都只有这一份
 #pragma once
 
-#include "shared/Analysis.hpp"
+#include "gui/task_features/services/Analysis.hpp"
 #include "shared/Progress.hpp"
 
 #include <cstddef>

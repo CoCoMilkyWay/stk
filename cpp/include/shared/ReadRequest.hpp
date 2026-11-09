@@ -1,10 +1,10 @@
 #pragma once
 
 #include "features/MetaFlag.hpp"              // fmeta::ColumnSet
-#include "features/Storage/DayBatchPlane.hpp" // SegPlan / ReadPlan / Readers
 #include "features/Storage/FeatureLevels.hpp" // TierId / ColRef
+#include "features/Storage/FeatureLib.hpp"    // FeatureLib
+#include "features/Storage/FeaturePlane.hpp"  // SegPlan / ReadPlan / Readers
 #include "misc/date.hpp"
-#include "shared/FeatureLib.hpp" // FeatureLib
 
 #include <cstdint>
 #include <vector>
@@ -17,10 +17,10 @@ struct Feature;
 // 读请求 — GUI 各读端 (Features 流式分析 / OrderFlow / 因子引擎 / K 线) 的请求构建
 // ============================================================================
 //   读请求 = 主库 × 日轴 × A 轴 × 行映射 × 列 (ReadSpec) → 读取范围 (ReadScope) + 读计划 (ReadPlan)
-//   → 段序 (SegPlan) → 载入平面 (features/Storage/DayBatchPlane.hpp)
+//   → 段序 (SegPlan) → 载入平面 (features/Storage/FeaturePlane.hpp)
 //   GUI 线程从库清单解析, worker 只消费 (不碰 config)
 // ============================================================================
-namespace analysis {
+namespace reader {
 
 // ---- 读取范围: 库集 = 主库 + 各列所在库 (多池 / 跨档一视同仁; 资产不在列所在库 / 该库这天没落盘 = 无源), 余库空 ----
 inline constexpr LibId kAutoMain = UINT8_MAX; // 主库 = 列所在库里池轴最短者 (子池优先: all 的列旁读, 池外格不算)
@@ -100,4 +100,4 @@ SegPlan plan_day(const ReadScope &scope, misc::Ymd date);
 // [0, n) 固定种子洗牌 (抽样段序 / 绘制子集: 无偏且跨构建稳定)
 std::vector<uint32_t> shuffled_order(size_t n);
 
-} // namespace analysis
+} // namespace reader

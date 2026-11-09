@@ -1,11 +1,11 @@
 #include "gui/task_features/ui/TabTable.hpp"
+#include "features/Storage/FeatureLib.hpp"
 #include "gui/task_features/services/Preview.hpp"
 #include "gui/task_features/ui/Common.hpp" // 作用域条 / 账目着色 / 状态文本
 #include "gui/util/Latex.hpp"              // 公式渲染 (Name CN 悬停)
 #include "gui/util/Sparkline.hpp"          // 迷你图 (Dist / PSD 列)
 #include "misc/format.hpp"                 // misc::fmt_width
 #include "shared/Feature.hpp"
-#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -1376,7 +1376,7 @@ static double sig4(float v) {
 void SaveFeatureTableJson(const SharedData &data, const Preview &pv) {
   using json = nlohmann::json;
   const Feature::Metadata &meta = data.feature.meta();
-  const FeatureLib lib = load_lib(data.config, data.feature.selection.lib());
+  const FeatureLib lib = load_lib(data.config.feature_dir, data.feature.selection.lib());
   assert(lib.ready() && "features.json: 当前库未建");
   const std::filesystem::path dir = lib.dir;
 

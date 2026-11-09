@@ -1,11 +1,11 @@
 #pragma once
 
-#include "features/MetaFlag.hpp"              // fmeta::data_valid (之前经 NodesGenerated→Meta.hpp 传递获得)
-#include "features/Method/CS.hpp"             // cs::<Tf> / cs::<Method> + NeutralRank::Ctx + NEUTRAL_RANK_* 源列
-#include "features/Storage/DayBatchPlane.hpp" // 上游读: Source / load_source (与读端同一份)
+#include "features/MetaFlag.hpp"  // fmeta::data_valid
+#include "features/Method/CS.hpp" // cs::<Tf> / cs::<Method> + NeutralRank::Ctx + NEUTRAL_RANK_* 源列
+#include "features/Storage/FeatureLib.hpp"
+#include "features/Storage/FeaturePlane.hpp" // 上游读: Source / load_source (与读端同一份)
 #include "features/Storage/FeatureStore.hpp"
 #include "misc/profiler.hpp"
-#include "shared/FeatureLib.hpp"
 #include <algorithm>
 #include <array>
 #include <cstddef>

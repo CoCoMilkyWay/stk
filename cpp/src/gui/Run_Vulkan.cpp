@@ -5,7 +5,7 @@
 #include "gui/Config.hpp"
 #include "gui/Gui.hpp"
 #include "gui/Tasks.hpp"
-#include "gui/task_icon_bar/TaskIconBar.hpp"
+#include "gui/icon_bar/IconBar.hpp"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
@@ -352,7 +352,7 @@ int RunGUI() {
   std::cout << init_msg << std::endl;
 
   // Initialize icon bar with network monitoring
-  TaskIconBar::InitIconBar();
+  IconBar::Init();
 
   // Setup error callback
   glfwSetErrorCallback(glfw_error_callback_vulkan);
@@ -559,7 +559,7 @@ int RunGUI() {
   check_vk_result(err);
 
   // Cleanup
-  TaskIconBar::CleanupIconBar();
+  IconBar::Cleanup();
   ImGui_ImplVulkan_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImPlot::DestroyContext();

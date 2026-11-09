@@ -1,11 +1,11 @@
 #pragma once
 
-#include "features/FeaturesDefine.hpp"
 #include "math/Step.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <span>
 #include <vector>
 
@@ -18,6 +18,35 @@
 // 探索里验证的截面变换必须就是能落盘的截面列.
 //
 // ============================================================================
+
+// Transform 探索用的时序归一化 (Params::ts_norm). 字段表无此列:
+// 落盘归一化由 SRC 列声明 (TS(..., Tf, Method) → ts::, CS(..., Tf, Method) → cs::), GUI 从 SRC 推导显示
+enum class NormMethod : uint8_t {
+  NONE = 0, // x
+  // scale (linear)
+  ZSCORE = 1,        // (x - mean) / std
+  ROBUST_ZSCORE = 2, // (x - median) / MAD
+  IQR_ZSCORE = 3,    // (x - Q2) / (Q3 - Q1)
+  // order based
+  RANK = 4,        // rank / N
+  RANK_ZSCORE = 5, // rank → inverse normal
+  // bounding
+  CLIP = 6,   // clip(x, [-k, k])
+  WINSOR = 7, // winsorize by percentile
+  // nonlinear
+  LOG = 8,
+  POWER = 9,
+  ASINH = 10,
+  TANH = 11,
+  SINCOS = 12, // x → (sin, cos)
+  // composite pipelines
+  LOG_ZSCORE = 20,
+  POWER_ZSCORE = 21,
+  ASINH_ZSCORE = 22,
+  CLIP_ZSCORE = 23,
+  WINSOR_ZSCORE = 24,
+  CLIP_LOG_ZSCORE = 25,
+};
 
 namespace math::normalize {
 

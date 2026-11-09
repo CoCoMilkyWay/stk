@@ -1,6 +1,6 @@
 #include "gui/Gui.hpp"
 #include "gui/Tasks.hpp"
-#include "gui/task_icon_bar/TaskIconBar.hpp"
+#include "gui/icon_bar/IconBar.hpp"
 #include "imgui.h"
 #include "shared/SharedData.hpp"
 #include <cassert>
@@ -92,7 +92,7 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
 
   // Icon bar at bottom
   ImGui::Separator();
-  TaskIconBar::DrawIconBar();
+  IconBar::Draw();
 
   ImGui::End();
 

@@ -35,16 +35,16 @@ enum Style : uint8_t { kStyleSize,
                        kStylePrice };
 inline constexpr int kStyles = 14;
 // 端: 键的低端 / 高端
-enum Side : uint8_t { kSideLow,
-                      kSideHigh };
-inline constexpr int kSides = 2;
+enum End : uint8_t { kEndLow,
+                     kEndHigh };
+inline constexpr int kEnds = 2;
 
 struct StyleDef {
-  const char *code;            // 池名风格端段 <code>_<side>
-  const char *name_cn;         // 风格名 (Style 页右表)
-  const char *key;             // 键 (悬停)
-  const char *side[kSides];    // 端名
-  const char *side_cn[kSides]; // 风格端中文名
+  const char *code;          // 池名风格端段 <code>_<end>
+  const char *name_cn;       // 风格名 (Style 页右表)
+  const char *key;           // 键 (悬停)
+  const char *end[kEnds];    // 端名
+  const char *end_cn[kEnds]; // 风格端中文名
 };
 inline constexpr StyleDef kStyleDefs[kStyles] = {
     {"size", "市值", "收盘总市值 = close × total_shares", {"small", "big"}, {"小盘", "大盘"}},
@@ -134,7 +134,7 @@ inline constexpr DimValue kFilterDefs[kFilters] = {
 
 struct Spec {
   Style style = kStyleSize;
-  Side side = kSideLow;
+  End end = kEndLow;
   uint16_t n = 200; // 0 = 全选 (风格 / 端不起作用, canon 归一)
   Rebal rebal = kRebalDay;
   St st = kStAll;
@@ -165,7 +165,7 @@ void save_pools(const std::string &path, const std::vector<Spec> &pools);
 // Style 页参数网格: 各维勾选的取值 (位 i = 该维取值表第 i 个), 网格 = 各维笛卡尔积; weight 只是篮子的两条线 (Weight 位), 不进池身份
 //   过滤表每个条件一维: 位 0 = 留, 位 1 = 剔 (只勾剔 = 整个网格剔它; 都勾 = 留 / 剔两组都算); 缺省只留
 struct Grid {
-  uint8_t side = (1u << kSides) - 1;
+  uint8_t end = (1u << kEnds) - 1;
   uint8_t n = (1u << kNCounts) - 1;
   uint8_t rebal = (1u << kRebals) - 1;
   uint8_t st = (1u << kSts) - 1;

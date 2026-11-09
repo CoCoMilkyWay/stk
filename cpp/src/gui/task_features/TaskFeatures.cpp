@@ -3,7 +3,7 @@
 //   本任务盯计算面的轮次 (ComputeHub::rounds) 作废预览 / 矩阵 / 订单流清单, 计算在飞时锁住其它页.
 #include "gui/task_features/TaskFeatures.hpp"
 #include "gui/Tasks.hpp"
-#include "gui/compute/ui/TabCompute.hpp"
+#include "gui/compute/ComputeHub.hpp"
 #include "gui/task_features/services/CorrelationService.hpp"
 #include "gui/task_features/services/DistributionService.hpp"
 #include "gui/task_features/services/OrderFlowService.hpp"
@@ -143,12 +143,12 @@ TaskHandle CreateFeaturesTask(std::shared_ptr<Compute::ComputeHub> compute) {
   // 子项 (叶子) 名字, 顺序与 TabIdx 一致
   handle.tabs = {"Table", "Distribution", "Transform", "Correlation", "OrderFlow", "NodeTime"};
 
-  // Update: 每帧 (无论选中) 更新 taskstate.features + tab 锁定/使能 ——
+  // Update: 每帧 (无论选中) 更新 task_state.features + tab 锁定/使能 ——
   // 左栏标签/使能同帧读取, 不依赖 "打开过 Features 页" 的上一帧缓存 (计算面已由 Beta 的 Update 先推进)
   handle.Update = [state](SharedData &data) {
     const Compute::ComputeHub &hub = *state->compute;
     const bool has_selection = data.feature.selection.primary() != nullptr;
-    data.taskstate.features.has_selection = has_selection;
+    data.task_state.features.has_selection = has_selection;
 
     // 一轮收尾 (池表重扫在 TickCompute): 新库落盘 → OrderFlow 按新清单重建 + 重扫, 预览成品作废并重抽, 相关矩阵作废 (没建 / 没起的首次 Draw 自然按新库)
     if (hub.rounds != state->rounds) {
@@ -219,7 +219,7 @@ TaskHandle CreateFeaturesTask(std::shared_ptr<Compute::ComputeHub> compute) {
     case TAB_TABLE: // 主 feature 选没选
       if (!state->compute->inputs_ready)
         return {};
-      return data.taskstate.features.has_selection
+      return data.task_state.features.has_selection
                  ? TaskStatus{TaskStatus::Kind::Ready, "selected"}
                  : TaskStatus{TaskStatus::Kind::Warn, "selecting"};
 

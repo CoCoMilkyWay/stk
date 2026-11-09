@@ -155,7 +155,7 @@ std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::strin
 //   Daily: tbl 全部行属任务日 (w.lo), 落该日文件; 0 行 → assert (交易日远端未入库; 日文件落盘即不再拉, 不可留空文件)
 void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl);
 
-// 外来写者的分片 (远端 pyarrow / 换版前的本库, 见 misc::pq::foreign_writer) 以本库原样重写; 本库写的 → 不动.
+// 外来写者的分片 (远端 pyarrow / 其它 arrow 版本, 见 misc::pq::foreign_writer) 以本库原样重写; 本库写的 → 不动.
 //   内容与 mtime 不变 ⇒ 槽位状态 / 水位 / dedup 皆不变. 返回是否重写
 bool renative(const Shard &sh);
 

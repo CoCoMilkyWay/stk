@@ -18,7 +18,7 @@
 //
 //   消费方式:
 //     编译期: fstore::RowWriter (FeatureStore.hpp) 按 TS(..., Tf, Method) 展开 ts::Tf::apply(值) 写槽位
-//     元数据: FieldInfo.ts_tf (FeatureStoreConfig, 进指纹) / FeatureMetadata.ts_tf + ts_method (Feature.hpp, GUI 两列)
+//     元数据: FieldInfo.ts_tf (FeatureTier, 进指纹) / FeatureMetadata.ts_tf + ts_method (Feature.hpp, GUI 两列)
 // =============================================================================
 
 #include <cmath>

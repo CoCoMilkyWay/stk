@@ -17,7 +17,7 @@ enum class Outcome { Done,
                      Cancelled };
 
 // ============================================================================
-// drive — 逐项驱动骨架: 同步 (sync::Task) 与核对 (audit::Unit) 同一份 (FundamentalService / AuditService 共用);
+// drive — 逐项驱动骨架: 同步 (sync::Task) 与核对 (audit::Unit) 同一份 (SyncService / AuditService 共用);
 //   取消 / 计步 / 日志只在这里写一次
 //   每项开跑前: cancel → Cancelled (跳过余下全部)
 //   每项: say(label) → step(x) 返回一句结果 (日志) → board.publish(1)

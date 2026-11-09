@@ -5,8 +5,8 @@
 #pragma once
 
 #include "cta/Trace.hpp"
+#include "gui/quote/Quote.hpp" // Side
 #include "gui/task_market/services/CtaLib.hpp"
-#include "gui/task_market/services/Kline.hpp" // Side
 #include "gui/util/Service.hpp"
 #include "misc/exec.hpp"
 #include "shared/Progress.hpp"
@@ -19,6 +19,8 @@
 struct Config;
 
 namespace GUI::Market {
+
+using namespace Quote;
 
 // 模型与回测设定 (UI 编辑, 进请求)
 struct CtaSpec {
@@ -39,14 +41,14 @@ inline constexpr uint32_t kCtaNone = UINT32_MAX; // 请求的 key: 无标的, �
 
 struct CtaRequest {
   uint32_t gen = 0;
-  Market::Side side = Market::kBasket;
+  Quote::Side side = Quote::kBasket;
   uint32_t key = 0; // 篮子 = basket_line, 个股 = 全局 id; kCtaNone = 只备价格库
   CtaSpec spec;
 };
 
 struct CtaResult {
   uint32_t gen = 0; // = 请求的
-  Market::Side side = Market::kBasket;
+  Quote::Side side = Quote::kBasket;
   uint32_t key = 0;
   CtaSpec spec;
   std::string lack;                      // 算不了的原因 (空 = 有轨迹)
@@ -75,7 +77,7 @@ private:
 
   // 一个标的的有效根 (库轴 hash + 日轴末日 / 日数对得上才用)
   struct Kept {
-    Market::Side side;
+    Quote::Side side;
     uint32_t key;
     uint64_t axis;
     misc::Ymd last;

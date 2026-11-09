@@ -1,11 +1,11 @@
 // Tab Factors — 见头文件
 #include "gui/task_alpha/ui/TabFactors.hpp"
-#include "factor/Check.hpp"                      // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
-#include "factor/GpuRun.hpp"                     // available / device_name
-#include "factor/Search/Contract.hpp"            // Score: 父行代表权重
-#include "gui/Tasks.hpp"                         // StatusColor
-#include "gui/task_market/ui/PortfolioBoxes.hpp" // RenderPortfolioBoxes
-#include "gui/util/Sparkline.hpp"                // ic~ / alpha~ 列迷你图
+#include "factor/Check.hpp"                 // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
+#include "factor/GpuRun.hpp"                // available / device_name
+#include "factor/Search/Contract.hpp"       // Score: 父行代表权重
+#include "gui/Tasks.hpp"                    // StatusColor
+#include "gui/engine/ui/PortfolioBoxes.hpp" // RenderPortfolioBoxes
+#include "gui/util/Sparkline.hpp"           // ic~ / alpha~ 列迷你图
 
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
@@ -27,27 +27,6 @@
 #include <vector>
 
 namespace GUI::Alpha {
-
-HoldPoints hold_points(int hold, LevelId lv) {
-  namespace st = factor::stat;
-  const FactorLevel &L = factor_level(lv);
-  const bool at_close = st::close_entry(0, L.geo()); // 首行就按收盘价建仓 = 每行都是 (行即整日)
-  const std::string px = "次分钟VWAP";
-  const std::string close_px = "收盘撮合价", open_px = "开盘撮合价";
-  const std::string at = at_close ? "C(T)" : "C(" + std::string(L.name) + ")";
-  const HoldPoint open{at, at_close ? close_px : px};
-  if (st::hold_intraday(hold))
-    return {open, {at + "+" + std::to_string(hold) + "m", px}};
-  if (hold == st::kHoldClose)
-    return {open, {"C(T)", close_px}};
-  const std::string n = std::to_string(st::hold_days(hold));
-  return {open, st::hold_is_open(hold) ? HoldPoint{"O(T+" + n + ")", open_px} : HoldPoint{"C(T+" + n + ")", close_px}};
-}
-
-std::string hold_desc(int hold, LevelId lv) {
-  const HoldPoints p = hold_points(hold, lv);
-  return "开仓: " + p.open.at + " @ " + p.open.px + ", 清仓: " + p.close.at + " @ " + p.close.px;
-}
 
 constexpr ImVec4 kColHoldAt(0.45f, 0.75f, 1.f, 1.f), kColHoldPx(1.f, 0.78f, 0.40f, 1.f); // 开 / 清仓: 时点 / 价
 
@@ -1130,7 +1109,7 @@ void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h) {
   ImGui::EndTable();
 }
 
-int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Market::PortfolioUIState &pui, const FactorsUIContext &ctx) {
+int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int &backend, PortfolioUIState &pui, const FactorsUIContext &ctx) {
   int action = 0;
   const Phase st = svc.phase.load(std::memory_order_acquire);
   const bool busy = svc.busy();
@@ -1140,9 +1119,9 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Mar
   const FeatureTable &ft = *ctx.ft;
   const bool gpu_ok = factor::gpu::available();
   if (!gpu_ok)
-    ui.backend = 0;
-  else if (ui.backend < 0)
-    ui.backend = 1; // 有 GPU 默认 GPU
+    backend = 0;
+  else if (backend < 0)
+    backend = 1; // 有 GPU 默认 GPU
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, static_cast<int>(ft.y.labels.size()) - 1));
   const int cur_hold = ft.y.labels.empty() ? 0 : ft.y.labels[static_cast<size_t>(ui.hold_idx)].key;
 
@@ -1164,13 +1143,13 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Mar
   ImGui::SetNextItemWidth(70);
   {
     const char *items[] = {"CPU", "GPU"};
-    if (ImGui::BeginCombo("##backend", items[ui.backend])) {
-      if (ImGui::Selectable("CPU", ui.backend == 0))
-        ui.backend = 0;
+    if (ImGui::BeginCombo("##backend", items[backend])) {
+      if (ImGui::Selectable("CPU", backend == 0))
+        backend = 0;
       if (!gpu_ok)
         ImGui::BeginDisabled();
-      if (ImGui::Selectable("GPU", ui.backend == 1))
-        ui.backend = 1;
+      if (ImGui::Selectable("GPU", backend == 1))
+        backend = 1;
       if (!gpu_ok)
         ImGui::EndDisabled();
       ImGui::EndCombo();
@@ -1449,7 +1428,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Mar
     const float pad = ImGui::GetContentRegionAvail().x - kBoxesW - ImGui::GetStyle().ItemSpacing.x;
     if (pad > 0.0f)
       ImGui::SetCursorPosX(ImGui::GetCursorPosX() + pad);
-    Market::RenderPortfolioBoxes(pui, view_row, ctx.pool, ctx.lv, cur_hold);
+    Engine::RenderPortfolioBoxes(pui, view_row, ctx.pool, ctx.lv, cur_hold);
   }
 
   ImGui::Separator();
