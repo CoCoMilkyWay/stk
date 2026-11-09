@@ -3,8 +3,6 @@
 
 namespace GUI::Features {
 
-Preview &PreviewService::target(SharedData &data) { return data.preview; }
-
 void PreviewService::RequestCompute(SharedData &data) {
   // 预览覆盖当前档每层全部非 META 特征 (各层网格 = 该层), 不看选中
   const TierId tier = data.feature.selection.tier;

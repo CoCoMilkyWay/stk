@@ -8,8 +8,6 @@
 
 namespace GUI::Features {
 
-Transform &TransformService::target(SharedData &data) { return data.transform; }
-
 void TransformService::RequestCompute(SharedData &data, const Transform::Params &params, int focus) {
   const auto &sel = data.feature.selection;
   const ColRef *feat = sel.primary();

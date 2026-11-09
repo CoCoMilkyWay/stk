@@ -44,7 +44,7 @@
 #include "gui/factors/Book.hpp"   // BookLines
 #include "gui/factors/File.hpp"   // FeatureTable / FactorRow / StatScope / AlphaDist
 #include "gui/factors/Worker.hpp" // FactorWorker
-#include "shared/Analysis.hpp"                       // ReadScope / AggPdf
+#include "shared/Analysis.hpp"    // ReadScope / AggPdf
 
 #include <cstdint>
 #include <memory>

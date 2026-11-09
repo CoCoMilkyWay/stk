@@ -1,6 +1,7 @@
 #pragma once
 
 #include "features/GraphNode.hpp" // graph::NodeClock (节点用时抽样)
+#include "features/Panel/Pool.hpp"
 #include "features/Storage/FeatureSnap.hpp"
 #include "features/Storage/FeatureStore.hpp"
 #include "misc/affinity.hpp"
@@ -8,7 +9,6 @@
 #include "misc/profiler.hpp"
 #include "misc/snap.hpp"
 #include "shared/FeatureLib.hpp"
-#include "features/Panel/Pool.hpp"
 #include "worker/compute/Stages.hpp"
 
 #include <algorithm>

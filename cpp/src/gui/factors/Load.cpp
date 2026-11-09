@@ -3,13 +3,13 @@
 
 #include "factor/Stat/Cpu.hpp"                      // prep_label / Workspace
 #include "features/MetaFlag.hpp"                    // fmeta::valid / keep / finite
-#include "features/Panel/Fund.hpp"          // fund::SW2021_L1_COUNT (行业 ID 上界)
 #include "features/Node/Common/Label/LabelHold.hpp" // 只取 kContCloseMin 对账尾部界 (不含字段表)
+#include "features/Panel/Fund.hpp"                  // fund::SW2021_L1_COUNT (行业 ID 上界)
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
-#include "shared/Analysis.hpp"
 #include "shared/Concept.hpp" // concepts (BPlanes::cc)
+#include "shared/ReadRequest.hpp"
 
 #include <algorithm>
 #include <bit>

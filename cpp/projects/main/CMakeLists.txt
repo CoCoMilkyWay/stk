@@ -235,7 +235,6 @@ set(MATH_FAST
     shared/Asset.cpp
     shared/Concept.cpp
     shared/Feature.cpp
-    codec/OrdersDay.cpp
     # misc
     misc/archive.cpp
     misc/file_check.cpp
@@ -248,15 +247,16 @@ set(MATH_FAST
     codec/L2Validator.cpp
     codec/OrderEncoder.cpp
     codec/OrderFrame.cpp
+    codec/OrdersDay.cpp
     # features
     features/FeatureMeta.cpp
-    # worker: Lob 档管线 + 档无关的截面 / 落盘
-    worker/crosssectional_worker.cpp
-    worker/encoding_worker.cpp
-    worker/feature_progress.cpp
-    worker/feature_tuner.cpp
-    worker/io_worker.cpp
-    worker/lob_pipeline.cpp
+    # worker: compute 的 Lob 档管线 + 档无关的截面 / 落盘 / 调参; encode 逐笔编码
+    worker/compute/FeedLob.cpp
+    worker/compute/Progress.cpp
+    worker/compute/StageCs.cpp
+    worker/compute/StageIo.cpp
+    worker/compute/TsTuner.cpp
+    worker/encode/EncodeWorker.cpp
     # gui
     gui/Gui.cpp
     gui/Run_OpenGL.cpp
@@ -265,13 +265,13 @@ set(MATH_FAST
     gui/compute/services/ComputeService.cpp
     gui/compute/ui/TabCompute.cpp
     gui/task_database/services/AuditService.cpp
-    gui/task_database/services/EncodingService.cpp
+    gui/task_database/services/EncodeService.cpp
     gui/task_database/ui/TabCalendar.cpp
     gui/task_database/ui/TabEncode.cpp
     gui/task_database/ui/TabSync.cpp
     gui/task_features/TaskFeatures.cpp
-    gui/task_features/services/CorrService.cpp
-    gui/task_features/services/DistService.cpp
+    gui/task_features/services/CorrelationService.cpp
+    gui/task_features/services/DistributionService.cpp
     gui/task_features/services/PreviewService.cpp
     gui/task_features/services/TransformService.cpp
     gui/task_icon_bar/NetworkService.cpp
@@ -289,14 +289,7 @@ set(MATH_PRECISE
     shared/Analysis.cpp
     shared/AssetAxis.cpp
     shared/Config.cpp
-    shared/Corr.cpp
-    shared/Dist.cpp
-    shared/OrderFlow.cpp
-    features/Panel/Pool.cpp
-    gui/task_beta/services/PoolSelect.cpp
-    gui/task_beta/services/PoolSpec.cpp
-    shared/Preview.cpp
-    shared/Transform.cpp
+    shared/ReadRequest.cpp
     # misc
     misc/date.cpp
     misc/format.cpp
@@ -318,22 +311,30 @@ set(MATH_PRECISE
     features/Bar1mDay.cpp
     features/Method/CS.cpp
     features/Panel/Fund.cpp
-    # worker: Bar 档管线 (TS: Fund 缺失值 / PoolKey 范围 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
-    worker/bar_pipeline.cpp
-    worker/feature_profile.cpp
+    features/Panel/Pool.cpp
+    # worker: compute 的 Bar 档管线 (TS: Fund 缺失值 / PoolKey 范围 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
+    worker/compute/FeedBar.cpp
+    worker/compute/Profile.cpp
     # gui
+    gui/task_beta/services/PoolSelect.cpp
+    gui/task_beta/services/PoolSpec.cpp
     gui/task_database/TaskDatabase.cpp
     gui/task_database/services/AssetLoader.cpp
     gui/task_database/services/FundamentalService.cpp
     gui/task_database/services/ScanService.cpp
     gui/task_database/services/StateManager.cpp
+    gui/task_features/services/Correlation.cpp
+    gui/task_features/services/Distribution.cpp
+    gui/task_features/services/OrderFlow.cpp
     gui/task_features/services/OrderFlowService.cpp
-    gui/task_features/services/ReplayService.cpp
+    gui/task_features/services/Preview.cpp
+    gui/task_features/services/Transform.cpp
     gui/task_features/ui/Common.cpp
-    gui/task_features/ui/TabCorr.cpp
-    gui/task_features/ui/TabDist.cpp
-    gui/task_features/ui/TabFeature.cpp
+    gui/task_features/ui/TabCorrelation.cpp
+    gui/task_features/ui/TabDistribution.cpp
+    gui/task_features/ui/TabNodeTime.cpp
     gui/task_features/ui/TabOrderFlow.cpp
+    gui/task_features/ui/TabTable.cpp
     gui/task_features/ui/TabTransform.cpp
     gui/task_market/services/BasketHistory.cpp
     gui/task_market/services/BasketRow.cpp
@@ -342,20 +343,20 @@ set(MATH_PRECISE
     gui/task_market/services/QuoteService.cpp
     gui/task_market/services/StockHistory.cpp
     gui/task_market/ui/CrossSectionAnalysis.cpp
+    gui/task_market/ui/PortfolioBoxes.cpp
     gui/task_market/ui/QuotesPanel.cpp
     gui/task_market/ui/TabAssets.cpp
     # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) / CTA 模型 (cta/: NaN = 未就绪) 的消费者
+    gui/factors/Book.cpp
+    gui/factors/Engine.cpp
+    gui/factors/File.cpp
+    gui/factors/Load.cpp
+    gui/factors/Probe.cpp
+    gui/factors/Scope.cpp
+    gui/factors/Table.cpp
     gui/task_alpha/TaskAlpha.cpp
-    gui/task_alpha/services/FactorsBook.cpp
-    gui/task_alpha/services/FactorsEngine.cpp
-    gui/task_alpha/services/FactorsFile.cpp
-    gui/task_alpha/services/FactorsLoad.cpp
-    gui/task_alpha/services/FactorsProbe.cpp
-    gui/task_alpha/services/FactorsScope.cpp
-    gui/task_alpha/services/FactorsTable.cpp
     gui/task_alpha/services/InspectService.cpp
     gui/task_alpha/services/KlineService.cpp
-    gui/task_alpha/services/LensService.cpp
     gui/task_alpha/services/OperatorsService.cpp
     gui/task_alpha/services/RunService.cpp
     gui/task_alpha/services/SearchService.cpp
@@ -369,16 +370,16 @@ set(MATH_PRECISE
     gui/task_market/services/CtaLib.cpp
     gui/task_market/services/CtaService.cpp
     gui/task_market/services/PortfolioService.cpp
-    gui/task_market/ui/PortfolioCta.cpp
-    gui/task_market/ui/PortfolioPlot.cpp
-    gui/task_market/ui/PortfolioSheet.cpp
-    gui/task_market/ui/PortfolioView.cpp
-    gui/task_market/ui/TabPortfolio.cpp
+    gui/task_market/ui/LinesCta.cpp
+    gui/task_market/ui/LinesPlot.cpp
+    gui/task_market/ui/LinesSheet.cpp
+    gui/task_market/ui/LinesView.cpp
+    gui/task_market/ui/TabLines.cpp
     # gui: microtex 头 (nums.h: POS_INF = infinity()) 的消费者, -ffinite-math-only 下是 UB
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp
     gui/util/Latex.cpp
-    # agent: Bridge = agent 里唯一的因子契约头消费者; Views = 观察的统计 (NaN 即无效); Docs = 研报统计 (原文没给 = NaN); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
+    # agent: Bridge / services/LensService = 因子契约头的消费者; services/ReplayService = 盘口重放 (同 OrderFlow 读端); Views = 观察的统计 (NaN 即无效); Docs = 研报统计 (原文没给 = NaN); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
     agent/Acts.cpp
     agent/Board.cpp
     agent/Bridge.cpp
@@ -391,6 +392,8 @@ set(MATH_PRECISE
     agent/Prompt.cpp
     agent/Tools.cpp
     agent/Views.cpp
+    agent/services/LensService.cpp
+    agent/services/ReplayService.cpp
     agent/ui/TaskAgent.cpp
     # factor: 因子契约头的消费者 = op_check 本体与 GPU 后端
     factor/op_check.cpp

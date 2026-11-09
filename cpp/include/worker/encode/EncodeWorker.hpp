@@ -1,9 +1,9 @@
 #pragma once
 
 #include "codec/OrderEncoder.hpp" // L2::Member
+#include "codec/OrdersDay.hpp"
 #include "misc/date.hpp"
 #include "misc/progress_parallel.hpp"
-#include "codec/OrdersDay.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -83,7 +83,7 @@ struct EncodeBatch {
 };
 
 // 有界批队列 — producer (列举) 与 worker (解压+解码) 之间的交接.
-// 容量即流水深度: 大致对应 producer 领先几天, 见 EncodingService 的容量常量.
+// 容量即流水深度: 大致对应 producer 领先几天, 见 EncodeService 的容量常量.
 class BatchQueue {
 public:
   explicit BatchQueue(size_t capacity) : capacity_(capacity) {}
@@ -131,16 +131,16 @@ struct EncodeStats {
 // progress 可空; 汇总行以天为单位 (总量 = 全部日期数, 开跑即精确),
 // 整天跳过 (产物全部新鲜) 的天由 producer 直接推进.
 void encode_producer(SharedData &data,
-                       BatchQueue &queue,
-                       std::atomic<bool> *cancel_flag,
-                       bool skip_existing,
-                       EncodeStats &stats,
-                       size_t worker_count,
-                       misc::ParallelProgress *progress);
-
-void encode_worker(SharedData &data,
                      BatchQueue &queue,
                      std::atomic<bool> *cancel_flag,
+                     bool skip_existing,
                      EncodeStats &stats,
-                     unsigned int worker_id,
-                     misc::ProgressHandle progress_handle);
+                     size_t worker_count,
+                     misc::ParallelProgress *progress);
+
+void encode_worker(SharedData &data,
+                   BatchQueue &queue,
+                   std::atomic<bool> *cancel_flag,
+                   EncodeStats &stats,
+                   unsigned int worker_id,
+                   misc::ProgressHandle progress_handle);

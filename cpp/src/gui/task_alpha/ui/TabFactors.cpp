@@ -1,11 +1,11 @@
 // Tab Factors — 见头文件
 #include "gui/task_alpha/ui/TabFactors.hpp"
-#include "factor/Check.hpp"                    // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
-#include "factor/GpuRun.hpp"                   // available / device_name
-#include "factor/Search/Contract.hpp"          // Score: 父行代表权重
-#include "gui/Tasks.hpp"                       // StatusColor
-#include "gui/task_market/ui/TabPortfolio.hpp" // RenderPortfolioBoxes
-#include "gui/util/Sparkline.hpp"              // ic~ / alpha~ 列迷你图
+#include "factor/Check.hpp"                      // default_d / set_k: 构建器选中算子时的参数默认值 (与 Operators 页同一张表)
+#include "factor/GpuRun.hpp"                     // available / device_name
+#include "factor/Search/Contract.hpp"            // Score: 父行代表权重
+#include "gui/Tasks.hpp"                         // StatusColor
+#include "gui/task_market/ui/PortfolioBoxes.hpp" // RenderPortfolioBoxes
+#include "gui/util/Sparkline.hpp"                // ic~ / alpha~ 列迷你图
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll
@@ -1146,7 +1146,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Mar
   const int cur_hold = ft.y.labels.empty() ? 0 : ft.y.labels[static_cast<size_t>(ui.hold_idx)].key;
 
   // ==========================================================================
-  // 1. 作用域 + 后端 / Hold + Run / Cancel / Rescan + 状态 / 开清仓规则 / Search; 右侧 组合两小框 (TabPortfolio)
+  // 1. 作用域 + 后端 / Hold + Run / Cancel / Rescan + 状态 / 开清仓规则 / Search; 右侧 组合两小框 (TabLines)
   // ==========================================================================
   ImGui::BeginGroup();
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");

@@ -4,8 +4,10 @@
 // 触发: 进 Features 任务输入就绪 / 池 / 档变了 / Compute 落了新库; 跑完过的库由 Preview 换回成品, 不重算
 #pragma once
 
+#include "gui/task_features/services/Preview.hpp"
 #include "gui/task_features/services/StreamService.hpp"
-#include "shared/Preview.hpp"
+
+struct SharedData;
 
 namespace GUI::Features {
 
@@ -15,7 +17,6 @@ public:
   void RequestCompute(SharedData &data);
 
   static constexpr const char *kName = "PreviewWorker";
-  static Preview &target(SharedData &data);
 };
 
 } // namespace GUI::Features

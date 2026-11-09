@@ -2,9 +2,9 @@
 #include "agent/services/ReplayService.hpp"
 
 #include "codec/OrderFrame.hpp"
+#include "codec/OrdersDay.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/profiler.hpp"
-#include "codec/OrdersDay.hpp"
 
 #include <algorithm>
 #include <cassert>

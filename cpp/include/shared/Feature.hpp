@@ -44,7 +44,7 @@ std::span<const char *const> categories_l1(TierId tier);              // Node/<T
 std::span<const char *const> categories_l2(TierId tier);              // 字段表二级分类 token (排序)
 } // namespace feature_meta
 
-// ts:: / cs:: 归一化枚举的 GUI 适配 (与 FeaturesDefine 的 to_string / *_ALL 同形, 供 TabFeature 过滤下拉 / 两列显示)
+// ts:: / cs:: 归一化枚举的 GUI 适配 (与 FeaturesDefine 的 to_string / *_ALL 同形, 供 TabTable 过滤下拉 / 两列显示)
 inline constexpr EnumStr to_string(ts::TfId t) { return {ts::TF_TOKENS[static_cast<size_t>(t)], ts::TF_NAMES[static_cast<size_t>(t)]}; }
 inline constexpr EnumStr to_string(ts::MethodId m) { return {ts::METHOD_TOKENS[static_cast<size_t>(m)], ts::METHOD_NAMES[static_cast<size_t>(m)]}; }
 inline constexpr EnumStr to_string(cs::TfId t) { return {cs::TF_TOKENS[static_cast<size_t>(t)], cs::TF_NAMES[static_cast<size_t>(t)]}; }
@@ -85,7 +85,7 @@ struct Feature {
 
   struct Selection {
     PoolId pool = kAllPool;      // 当前池 (特征面板与因子页共用读写; 切档保留)
-    TierId tier = TierId::Bar;   // 当前浏览的档 (TabFeature 档单选)
+    TierId tier = TierId::Bar;   // 当前浏览的档 (TabTable 档单选)
     int selected_level = L_1min; // 当前浏览的层 (FeatureLevel: L_sec / L_1min / L_5min .. L_60min / L_1day), 默认 L_1min
 
     LibId lib() const { return lib_id(pool, tier); } // 当前库

@@ -1,12 +1,12 @@
 // Compute Service Implementation
 #include "gui/compute/services/ComputeService.hpp"
 #include "features/Panel/Fund.hpp"
+#include "features/Panel/Pool.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "features/Storage/FeatureSnap.hpp"
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
 #include "shared/FeatureLib.hpp"
-#include "features/Panel/Pool.hpp"
 #include "shared/SharedData.hpp"
 #include "worker/compute/Stages.hpp"
 

@@ -225,7 +225,7 @@ struct SegBatch {
 };
 
 // ============================================================================
-// TsPlane: 段批 TS 视图 (Dist / Transform 分批流式, Preview 单段)
+// TsPlane: 段批 TS 视图 (Distribution / Transform 分批流式, Preview 单段)
 // ============================================================================
 struct TsPlane : SegBatch<TsPlane> {
   static constexpr size_t kTransposeBlock = 64; // 转置按 64 资产一块: 块内写驻留在 64 条 cache line 上
@@ -296,7 +296,7 @@ struct TsPlane : SegBatch<TsPlane> {
 };
 
 // ============================================================================
-// CsPlane: 段批 CS 视图 (Corr / CorrLag / CorrPair) —— 每段只抽 slice_t 指定的 S 行
+// CsPlane: 段批 CS 视图 (Correlation / CorrelationLag / CorrelationPair) —— 每段只抽 slice_t 指定的 S 行
 // ============================================================================
 // 行号 g = (j·S + s)·n_cols + c  ↔  data + g·A  (切片主序: 同一 (j, s) 的全部列相邻)
 struct CsPlane {
@@ -496,7 +496,7 @@ struct Prefetch {
     assert(!th.joinable());
     cur ^= 1;
   }
-  // 流式批骨架 (Dist / Transform / Corr / OrderFlow Min 同一份): n 段每批 bs 段, 算本批的同时预读下一批; 取消 → false (半批不发布)
+  // 流式批骨架 (Distribution / Transform / Correlation / OrderFlow Min 同一份): n 段每批 bs 段, 算本批的同时预读下一批; 取消 → false (半批不发布)
   //   load(b0, bd) → fn(Plane &, ForkJoin &io, std::vector<IoSlot> &);  compute(const Plane &, b0, bd);  publish(b0, bd)
   template <class Load, class Compute, class Publish>
   bool stream(size_t n, size_t bs, const std::atomic<bool> &cancel, Load &&load, Compute &&compute, Publish &&publish) {

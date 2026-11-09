@@ -127,13 +127,13 @@ std::unordered_map<size_t, EncodeTask> group_by_asset(const std::vector<misc::Ar
 } // namespace
 
 void encode_producer(SharedData &data,
-                       BatchQueue &queue,
-                       std::atomic<bool> *cancel_flag,
-                       bool skip_existing,
-                       EncodeStats &stats,
-                       size_t worker_count,
-                       misc::ParallelProgress *progress) {
-  TraceNS("EncodingProducer", 5);
+                     BatchQueue &queue,
+                     std::atomic<bool> *cancel_flag,
+                     bool skip_existing,
+                     EncodeStats &stats,
+                     size_t worker_count,
+                     misc::ParallelProgress *progress) {
+  TraceNS("EncodeProducer", 5);
 
   const AssetAxis &axis = asset_axis();
   assert(data.asset.items.size() == axis.size() &&
@@ -145,7 +145,7 @@ void encode_producer(SharedData &data,
   const MemberFiles files = member_files(data.config);
 
   // 编码日期轴 = 回测日历 (交易日历 ∩ [start_date, 末个 L2 日]), Lob 库日期轴是它的前缀; 进度条总量
-  // (EncodingService) 也是它. 归档缺的天在列举处按 Missing 跳过.
+  // (EncodeService) 也是它. 归档缺的天在列举处按 Missing 跳过.
   const std::vector<misc::Ymd> dates = data.asset.backtest_dates();
   assert(data.asset.backtest.start == data.config.start_date && "回测日历与配置起点不符 (改配置后没重算覆盖?)");
 
@@ -451,14 +451,14 @@ std::shared_ptr<DayJob> settle_in_day(EncodeStats &stats, const EncodeBatch &bat
 } // namespace
 
 void encode_worker(SharedData &data,
-                     BatchQueue &queue,
-                     std::atomic<bool> *cancel_flag,
-                     EncodeStats &stats,
-                     unsigned int worker_id,
-                     misc::ProgressHandle progress_handle) {
+                   BatchQueue &queue,
+                   std::atomic<bool> *cancel_flag,
+                   EncodeStats &stats,
+                   unsigned int worker_id,
+                   misc::ProgressHandle progress_handle) {
   TraceNS("EncodeWorker", 5);
   TraceValue(worker_id);
-  TraceThread(("encoding_worker_" + std::to_string(worker_id)).c_str());
+  TraceThread(("encode_worker_" + std::to_string(worker_id)).c_str());
 
   static thread_local bool affinity_set = false;
   if (!affinity_set && misc::Affinity::supported()) {

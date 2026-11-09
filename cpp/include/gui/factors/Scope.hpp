@@ -3,9 +3,9 @@
 //   之上: Load (装载) → Probe (探针) → Engine (引擎 + 管线); 净值引擎 Book 吃装载层的 Y / B.
 #pragma once
 
-#include "features/Storage/DayBatchPlane.hpp"       // Day / LibReaders
-#include "gui/factors/Table.hpp" // FeatureTable / FactorScope
-#include "shared/Analysis.hpp"                      // ReadScope
+#include "features/Storage/DayBatchPlane.hpp" // Day / LibReaders
+#include "gui/factors/Table.hpp"              // FeatureTable / FactorScope
+#include "shared/ReadRequest.hpp"             // ReadScope
 
 #include <cstdint>
 #include <string>

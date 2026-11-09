@@ -12,7 +12,7 @@ namespace GUI::Alpha {
 
 struct OperatorsUIState {
   OperatorsRequest req; // 页面正在编辑的参数 (Run 时快照给 service)
-  // 表列宽贴合: 发布代变了 (限速) → 连发几帧 TableSetColumnWidthAutoAll (对仗 TabFeature)
+  // 表列宽贴合: 发布代变了 (限速) → 连发几帧 TableSetColumnWidthAutoAll (对仗 TabTable)
   uint64_t fit_epoch = ~0ull;
   double fit_last_time = 0.0;
   int fit_frames = 0;

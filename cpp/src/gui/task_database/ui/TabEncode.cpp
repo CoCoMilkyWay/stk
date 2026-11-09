@@ -1,10 +1,10 @@
 // Tab Encode Implementation
 #include "gui/task_database/ui/TabEncode.hpp"
 #include "gui/Tasks.hpp"
-#include "gui/task_database/models/SharedTypes.hpp"
-#include "gui/task_database/services/EncodingService.hpp"
+#include "gui/task_database/services/EncodeService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
+#include "gui/util/Board.hpp"
 #include "imgui.h"
 #include "misc/exec.hpp"
 #include "shared/Asset.hpp"
@@ -474,11 +474,11 @@ void render_date_table(const char *table_id, const Asset &asset, DateTableView &
 
 } // namespace
 
-TaskStatus EncodeStatus(const StateManager &sm, const EncodingService &encoding_service, const ScanService &scan_service) {
-  if (encoding_service.cancelling())
+TaskStatus EncodeStatus(const StateManager &sm, const EncodeService &encode_service, const ScanService &scan_service) {
+  if (encode_service.cancelling())
     return {TaskStatus::Kind::Busy, "cancelling"};
-  if (encoding_service.busy())
-    return ProgressStatus(encoding_service);
+  if (encode_service.busy())
+    return ProgressStatus(encode_service);
   if (sm.encoding())
     return {TaskStatus::Kind::Busy, "encoding"};
   if (scan_service.busy())
@@ -499,7 +499,7 @@ TaskStatus EncodeStatus(const StateManager &sm, const EncodingService &encoding_
   return {};
 }
 
-void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, FileCheckService &file_check_service,
+void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, FileCheckService &file_check_service,
                      const ScanService &scan_service, EncodeState &state, Asset &asset) {
   if (auto r = file_check_service.handoff.take())
     state.file_check = std::move(*r);
@@ -578,7 +578,7 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
 
     // 状态一行说完, 解释挂在 hover 上 —— 这些说明每次都一样, 常驻会把
     // 下面的表挤下去
-    const TaskStatus status = EncodeStatus(sm, encoding_service, scan_service);
+    const TaskStatus status = EncodeStatus(sm, encode_service, scan_service);
     ImGui::TextColored(StatusColor(status.kind), "%s", status.text.c_str());
     if (!sm.scanning() && !sm.encoding()) {
       const char *hint = "";
@@ -652,10 +652,10 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
 
     // Start/Stop button
     if (is_running) {
-      const bool cancelling = encoding_service.cancelling();
+      const bool cancelling = encode_service.cancelling();
       ImGui::BeginDisabled(cancelling);
       if (ImGui::Button(cancelling ? "Cancelling..." : "Stop Encoding", ImVec2(150, 0)))
-        encoding_service.RequestCancel();
+        encode_service.RequestCancel();
       ImGui::EndDisabled();
       ImGui::SameLine();
       ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Encoding in progress...");
@@ -690,7 +690,7 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
       ImGui::TextDisabled("|");
       ImGui::SameLine();
 
-      TextPhase(encoding_service.phase.load(std::memory_order_acquire));
+      TextPhase(encode_service.phase.load(std::memory_order_acquire));
     }
 
     ImGui::Unindent();
@@ -841,8 +841,8 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
       ImGui::Spacing();
 
       // Dates Progress (进度面: 汇总天数, 含增量跳过的天)
-      const size_t days_done = encoding_service.done.load(std::memory_order_relaxed);
-      const size_t days_total = encoding_service.total.load(std::memory_order_relaxed);
+      const size_t days_done = encode_service.done.load(std::memory_order_relaxed);
+      const size_t days_total = encode_service.total.load(std::memory_order_relaxed);
       float dates_progress = days_total > 0 ? (float)days_done / days_total : 0.0f;
       ImGui::SetCursorPosX(center_x - 200);
       ImGui::Text("Trading Days: %zu / %zu (%.1f%%)",
@@ -875,10 +875,10 @@ void RenderTabEncode(const StateManager &sm, EncodingService &encoding_service, 
 
       // Stop button
       ImGui::SetCursorPosX(center_x - 75);
-      const bool cancelling = encoding_service.cancelling();
+      const bool cancelling = encode_service.cancelling();
       ImGui::BeginDisabled(cancelling);
       if (ImGui::Button(cancelling ? "Cancelling..." : "Stop Encoding", ImVec2(150, 40)))
-        encoding_service.RequestCancel();
+        encode_service.RequestCancel();
       ImGui::EndDisabled();
 
       ImGui::End();

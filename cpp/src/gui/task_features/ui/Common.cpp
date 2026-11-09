@@ -1,12 +1,82 @@
 #include "gui/task_features/ui/Common.hpp"
 #include "gui/Tasks.hpp"
-#include "shared/FeatureLib.hpp" // lib_name
+#include "shared/Feature.hpp"
+#include "shared/FeatureLib.hpp" // lib_name / pool_def
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
 #include "implot.h"
 
+#include <algorithm>
+#include <cstdio>
+#include <string>
+
 namespace GUI::Features {
+
+// ============================================================================
+// 作用域条
+// ============================================================================
+
+void RenderScope(Feature &feature) {
+  Feature::Selection &sel = feature.selection;
+  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
+  ImGui::SameLine();
+  ImGui::TextUnformatted("Pool");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(140);
+  if (ImGui::BeginCombo("##pool", pool_def(sel.pool).name)) {
+    float cn_x = 0.0f; // 中文名列起点 (对齐最长池名)
+    for (const PoolDef &d : feature_pools())
+      cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name).x);
+    cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
+    for (PoolId p = 0; p < pool_count(); ++p) {
+      const PoolDef &d = pool_def(p);
+      const bool selected = sel.pool == p;
+      if (ImGui::Selectable(d.name, selected))
+        sel.pool = p; // 选中是 ColRef (带库), 切池保留
+      ImGui::SameLine(cn_x);
+      ImGui::TextDisabled("%s", d.name_cn);
+      if (selected)
+        ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SameLine();
+  ImGui::TextUnformatted("Tier");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(80);
+  if (ImGui::BeginCombo("##tier", tier_name(sel.tier))) {
+    for (const TierId t : TIER_ORDER)
+      if (ImGui::Selectable(tier_name(t), sel.tier == t) && sel.tier != t) {
+        sel.clear_filters(); // 换档 = 换字段表: 过滤作废
+        sel.tier = t;
+      }
+    ImGui::EndCombo();
+  }
+  if (!has_level(sel.tier, static_cast<size_t>(sel.selected_level)))
+    sel.selected_level = L_1min; // 档缺该层 (Bar 无 L_sec, Lob 无分钟箱层 / L_1day); 两档都有 L_1min
+
+  // 换层只换视图: 选中是 ColRef (带层), 跨层保留. 项带该层特征数
+  ImGui::SameLine();
+  ImGui::TextUnformatted("Level");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(140);
+  const auto level_label = [&](size_t lvl) {
+    char label[48];
+    std::snprintf(label, sizeof(label), "%s (%zu)", level_name(lvl), feature.meta().features[lvl].size());
+    return std::string(label);
+  };
+  if (ImGui::BeginCombo("##level", level_label(static_cast<size_t>(sel.selected_level)).c_str())) {
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+      if (!has_level(sel.tier, lvl))
+        continue;
+      if (ImGui::Selectable(level_label(lvl).c_str(), sel.selected_level == static_cast<int>(lvl)))
+        sel.selected_level = static_cast<int>(lvl);
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::Separator();
+}
 
 // ============================================================================
 // 状态面

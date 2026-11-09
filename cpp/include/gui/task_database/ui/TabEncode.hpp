@@ -11,7 +11,7 @@
 // Forward declarations
 namespace GUI::Database {
 class StateManager;
-class EncodingService;
+class EncodeService;
 class FileCheckService;
 class ScanService;
 } // namespace GUI::Database
@@ -96,12 +96,12 @@ struct EncodeState {
 // ============================================================================
 
 // Encode 状态标签 (左栏子行 / 状态头 / Coverage Check 共用): 取消 > 编码 > 扫描 > 覆盖结论
-TaskStatus EncodeStatus(const StateManager &sm, const EncodingService &encoding_service, const ScanService &scan_service);
+TaskStatus EncodeStatus(const StateManager &sm, const EncodeService &encode_service, const ScanService &scan_service);
 
 // sm: 覆盖结论 + 流水线在飞 (编码 / 扫描 / 同步); 服务: 进度面 + 请求 / 取消
 void RenderTabEncode(
     const StateManager &sm,
-    EncodingService &encoding_service,
+    EncodeService &encode_service,
     FileCheckService &file_check_service,
     const ScanService &scan_service,
     EncodeState &state,

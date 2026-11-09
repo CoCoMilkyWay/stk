@@ -25,10 +25,10 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/factors/Book.hpp"   // BookLines / compound
-#include "gui/factors/Table.hpp"  // FactorScope / FactorRef / kPoolVals
-#include "gui/factors/Worker.hpp" // FactorWorker
-#include "gui/task_market/services/Kline.hpp"        // PerSide (行情两侧的账)
+#include "gui/factors/Book.hpp"               // BookLines / compound
+#include "gui/factors/Table.hpp"              // FactorScope / FactorRef / kPoolVals
+#include "gui/factors/Worker.hpp"             // FactorWorker
+#include "gui/task_market/services/Kline.hpp" // PerSide (行情两侧的账)
 
 #include <algorithm>
 #include <atomic>
@@ -66,7 +66,7 @@ bool RenamePortfolio(const std::string &dir, const std::string &from, const std:
 void DeletePortfolio(const std::string &dir, const std::string &name);
 
 // ---- 自选文件 <config_dir>/watch.json (GUI 线程读写; Portfolio 右表星列 / 右键增删): { "watch": [ "sw01.加", "BK0493.加", "600512.SH", … ] }
-//   条目 = 自选键 (PortfolioRow::watch), 文件序 = 加入序; 与组合无关, 全局一份
+//   条目 = 自选键 (LinesRow::watch), 文件序 = 加入序; 与组合无关, 全局一份
 std::vector<std::string> LoadWatch(const std::string &path);                    // 文件不存在 = 空; 格式不对 → assert
 void SaveWatch(const std::string &path, const std::vector<std::string> &watch); // tmp + rename
 

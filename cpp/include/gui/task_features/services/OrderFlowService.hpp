@@ -1,11 +1,11 @@
 // OrderFlowService — OrderFlow 三路请求的编排外观: Min / Sec / Pick 各一条 lane (后台线程) (gui/util/Service.hpp), 三路并行
 //
-// 线程模型 (发布协议见 shared/OrderFlow.hpp 头注释):
+// 线程模型 (发布协议见 gui/task_features/services/OrderFlow.hpp 头注释):
 //   - GUI 线程: 每帧把期望态键 (OrderFlow::MinKey / SecKey / PickKey) 交给 Request (三路同形重载);
 //     变化检测与 gen 递增在 GUI 侧 (Want), 服务侧只管"照单执行最新一代" (新请求覆盖旧的, 在跑的被打断)
 //     Request 在 GUI 线程解析读取范围 + 读计划 (与 StreamService::RequestCompute 同一个 analysis::read_request, 尾部行), worker 不碰 config
 //   - 三个 worker 线程, 私有常驻读端 (库集 reader 清单没变复用 / 双缓冲 RowPlane 预读), 三路同一请求 RowReq:
-//       Min 流式: 分批 (与 Dist / Transform / Corr 同一个 Prefetch::stream, 算本批同时预读下一批) → 追加 + 单调前缀发布;
+//       Min 流式: 分批 (与 Distribution / Transform / Correlation 同一个 Prefetch::stream, 算本批同时预读下一批) → 追加 + 单调前缀发布;
 //         批与批之间可被新代打断
 //       Sec 重放: decode 帧 → 订单簿逐笔重放 → 秒序列 + 热力图 → overlay → 背槽整体发布
 //       Pick 逐日状态: 锚点日承接的状态列 → 主库全资产 PIT 状态 (ST / 在市 / 行业) → 背槽整体发布 (供 GUI 资产筛选)
@@ -17,15 +17,16 @@
 //     背槽 worker 写前等 GUI ack (限时睡轮询, 等待中可被新请求打断)
 //
 // 生命周期: 进 OrderFlow tab Start (幂等, 建三个 worker); 切 tab 不停 (流式继续, 回来即全);
-//           切出 Features 任务 Destroy → Stop (析构 join). 库重算后整体重建 + 重扫 (TaskFeatures).
+//           切出 Features 任务 Destroy → Stop (析构 join). 库重算后 Stop + 重扫 (TaskFeatures), 下帧 Start 按新库建 worker;
+//           target (发布面 + GUI 态) 随服务对象常驻, 不随 worker 重建
 // 主库 (图1 VWAP / 候选轴) 随请求: GUI 按选中列定 (无选中 = all Bar, 单库 = 该库); 主库未建 → 退回 all Bar 并丢 overlay (三路同一条)
 //   (逐笔重放按 orders 日文件, 与主库无关; 退回后无 VWAP / overlay)
 #pragma once
 
-#include "features/Storage/DayBatchPlane.hpp" // ReadPlan
+#include "features/Storage/DayBatchPlane.hpp"       // ReadPlan
+#include "gui/task_features/services/OrderFlow.hpp" // MinKey / SecKey / PickKey
 #include "misc/date.hpp"
-#include "shared/Analysis.hpp"  // ReadScope
-#include "shared/OrderFlow.hpp" // MinKey / SecKey / PickKey
+#include "shared/ReadRequest.hpp" // ReadScope
 
 #include <cstdint>
 #include <memory>
@@ -44,7 +45,7 @@ public:
   void Start(SharedData &data);
   void Stop();
 
-  // GUI 线程: 期望态键 (最新覆盖旧请求; gen 调用方 Want 自持, 与发布面配对). 库集未建 → 不提交 (算完库后服务重建再来)
+  // GUI 线程: 期望态键 (最新覆盖旧请求; gen 调用方 Want 自持, 与发布面配对). 库集未建 → 不提交 (算完库后服务重起再来)
   //   Min:  key.feats 只收 ≥ L_1min 的列; rescan = 重扫日轴 (特征重算后 / 库集变了; 事件, 不入键)
   //   Sec:  key.main = 主库 (VWAP 尾挂)
   //   Pick: key.main = 主库 (候选轴)
@@ -53,6 +54,8 @@ public:
   void Request(const SharedData &data, uint32_t gen, const OrderFlow::PickKey &key);
 
   bool is_running() const { return min_ != nullptr; }
+
+  OrderFlow target; // 三路发布面 (worker 写) + GUI 态 (筛选 / 缓存 / 期望态键); 先于 lane 声明 = 后于 lane 析构
 
 private:
   // 三路同一请求: 读取范围 (A 轴: Min / Sec = {资产}, Pick = 主库轴; 日轴 = 库集并集) + 代 + 读计划 (固定列 [0, k0) + overlay [k0, n))

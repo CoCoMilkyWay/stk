@@ -4,8 +4,8 @@
 //   切片 c: 0 = 全A, 1..kAllCuts−1 = SW2021 一级行业 (全A 内切), kAllCuts.. = 子池 (池表序), concept_cut(0).. = 概念 (全A 内切, 概念表序)
 //   线 basket_line(c, w) = kWeights · c + w: 两边一切按篮子的量 (点位 / 收益 / 估值 / 换手 / 成员权) 都以线为键, 线序 / 名同此
 #include "features/Panel/Fund.hpp" // SW2021_L1_COUNT / NAMES
-#include "shared/Concept.hpp"              // concepts
-#include "shared/FeatureLib.hpp"           // pool_count / pool_def
+#include "shared/Concept.hpp"      // concepts
+#include "shared/FeatureLib.hpp"   // pool_count / pool_def
 
 #include <cstddef>
 #include <cstdio>

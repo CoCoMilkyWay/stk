@@ -58,7 +58,7 @@ static bool RenderStepParams(math::Step &op, const char *suffix) {
 
 static void RenderControl(TransformService *service, SharedData &data, TransformUIState &ui) {
   const auto &sel = data.feature.selection;
-  const int action = RenderStreamControl(data.transform, data, "天");
+  const int action = RenderStreamControl(service->target, data, "天");
   if (action > 0)
     service->RequestCompute(data, ui.params, ui.focus);
   else if (action < 0)
@@ -423,7 +423,7 @@ static void RenderSeries(const Transform &tf, const Asset &asset, TransformUISta
 // ============================================================================
 
 static void RenderDistAndPSD(const Transform &tf, TransformUIState &ui, float height, bool &bp_changed) {
-  TraceN("UI:DistPSD");
+  TraceN("UI:DistributionPSD");
   const float col_w = ImGui::GetContentRegionAvail().x / 3.0f;
   const size_t A = tf.snap.lines.size();
   // 焦点槽位 == 池轴下标 (统计无子集, 与 lines 同轴)
@@ -610,9 +610,9 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
     input_configured = true;
   }
   if (!service->is_running())
-    service->Start(data);
+    service->Start();
 
-  auto &tf = data.transform;
+  auto &tf = service->target;
 
   // 控件 (不持锁)
   RenderControl(service, data, ui);
@@ -660,10 +660,9 @@ void RenderTabTransform(TransformService *service, SharedData &data, TransformUI
   }
 }
 
-void StopTabTransform(TransformService *service, SharedData &data) {
+void StopTabTransform(TransformService *service) {
   // 切走 tab: 只中断在跑构建 (内存与 worker 保留); 切出 Features 任务由 Shutdown 整体释放
   service->RequestCancel();
-  (void)data;
 }
 
 } // namespace GUI::Features

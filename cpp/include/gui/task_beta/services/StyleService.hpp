@@ -5,10 +5,10 @@
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (shared_ptr 拷出即放锁)
 #pragma once
 
+#include "gui/task_beta/services/PoolSelect.hpp"
 #include "gui/util/Service.hpp"
 #include "misc/exec.hpp"
 #include "shared/Basket.hpp" // Weight
-#include "gui/task_beta/services/PoolSelect.hpp"
 #include "shared/Progress.hpp"
 
 #include <cstdint>

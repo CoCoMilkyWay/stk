@@ -9,8 +9,9 @@ struct SharedData;
 namespace GUI::Features {
 
 class OrderFlowService;
+struct Preview;
 
-// Render OrderFlow tab - starts service on first call
-void RenderTabOrderFlow(OrderFlowService *service, SharedData &data);
+// Render OrderFlow tab - starts service on first call (pv: legend Cat2 标注 / flag 轴缩放, 与 Table 页同口径)
+void RenderTabOrderFlow(OrderFlowService *service, SharedData &data, const Preview &pv);
 
 } // namespace GUI::Features

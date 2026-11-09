@@ -10,8 +10,8 @@
 //   右表与 Market 各页同宽 (sheet_width)
 #pragma once
 
+#include "gui/task_beta/services/PoolSpec.hpp"     // Spec / Grid
 #include "gui/task_beta/services/StyleService.hpp" // StyleRequest
-#include "gui/task_beta/services/PoolSpec.hpp"                     // Spec / Grid
 
 #include <cstdint>
 #include <string>

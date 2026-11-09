@@ -5,10 +5,10 @@
 //     (日频 = r+1 日; 周频 = 到下一调仓行的次日), 无前视
 //   交易日 d 的收益 = close_d / 前收 − 1 (前收 = 行 d−1 的 pre_close, 已除权; d 无成交 → 0): 后复权收盘价, 不看可成交 (与行情侧价格指数同口径)
 #include "features/Storage/FeatureRead.hpp"
+#include "gui/task_beta/services/PoolSpec.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "shared/Basket.hpp" // kWeights
-#include "gui/task_beta/services/PoolSpec.hpp"
 
 #include <atomic>
 #include <cstddef>

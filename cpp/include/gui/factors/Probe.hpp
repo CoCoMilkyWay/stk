@@ -9,7 +9,7 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "factor/Stat/Cpu.hpp"                     // Workspace / NoExt
+#include "factor/Stat/Cpu.hpp"  // Workspace / NoExt
 #include "gui/factors/Book.hpp" // RowLines / fold_book
 #include "gui/factors/Load.hpp"
 #include "misc/exec.hpp"

@@ -95,7 +95,7 @@ public:
   void revive() { stale_.store(false, std::memory_order_relaxed); }
 
   // ========================================================================
-  // Single Day Selected Columns (GUI 单列 overlay / Transform / Dist / 因子装载)
+  // Single Day Selected Columns (GUI 单列 overlay / Transform / Distribution / 因子装载)
   // ========================================================================
 
   // 单日选列张量 [n][T][A] (列主序 = 落盘单位: 每列解码直写进自己的 [T][A], 无交织)

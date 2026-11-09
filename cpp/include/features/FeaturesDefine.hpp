@@ -83,7 +83,7 @@
 //
 //   #define FIELDS_<LVL>_<Name>(X, CAT1)  X(code, CAT1, cat_l2, name_en, name_cn, description, formula, SRC) ...
 //     LVL ∈ {L_sec, L_1min, L_5min, L_15min, L_30min, L_60min, L_1day}: 落盘层 (见 FeatureLevel). 可无 (纯中间节点), 可多层. 一行 = 一个落盘列.
-//     cat_l2 缺省写 AUTO (dummy): GUI 按预览值域自动探测 (price/flag/rank/ratio_pos/ratio_neg/ratio/raw, 见 TabFeature detect_cat2);
+//     cat_l2 缺省写 AUTO (dummy): GUI 按预览值域自动探测 (price/flag/rank/ratio_pos/ratio_neg/ratio/raw, 见 TabTable detect_cat2);
 //       写别的 token = 人类强行赋值, 覆盖探测 (表格绿字). 不参与落盘指纹, 改了不用重算.
 //     同族列 (Flow 的 {amt,vol,n}_{taker,maker,cancel}_{bid,ask}, Book 的 qty_{bid,ask}_{1,5,10,all} …) 在文件内用 helper 宏生成行, ## 拼进名字, 字面串拼进 EN/CN/公式.
 //     SRC 这一列的值从哪来 (基建按它生成写回 / 截面展开); 数据类型 / 有效性标志 / 归一化 (GUI 两列 TS Norm / CS Norm) 全部由它推出:

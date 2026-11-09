@@ -87,14 +87,14 @@ TaskHandle CreateMarketTask(std::shared_ptr<Market::MarketHub> market, std::shar
         std::iota(k.begin(), k.end(), 0u);
         return k;
       }();
-      Market::Sync(*state->market, Market::kBasket, lines, f.portfolio_ui.basket.feed);
-      Market::Sync(*state->market, Market::kStock, f.portfolio_ui.pick.stocks(Market::kPickMany), f.portfolio_ui.basket.stocks);
+      Market::Sync(*state->market, Market::kBasket, lines, f.lines_ui.basket.feed);
+      Market::Sync(*state->market, Market::kStock, f.lines_ui.pick.stocks(Market::kPickMany), f.lines_ui.basket.stocks);
       mk = state->market.get();
     }
     if (!state->cta_service)
       state->cta_service = std::make_unique<Market::CtaService>(data.config);
-    const int action = Market::RenderMarketPage(idx - TAB_NAV, *f.portfolio_service, *state->cta_service, f.portfolio_ui,
-                                                data.config.fixed_impact, mk, data.assetinfo.stocks);
+    const int action = Market::RenderTabLines(idx - TAB_NAV, *f.portfolio_service, *state->cta_service, f.portfolio_ui, f.lines_ui,
+                                              data.config.fixed_impact, mk, data.assetinfo.stocks);
     if (action == -1)
       f.portfolio_service->RequestCancel();
     Alpha::SyncPortfolio(data, f, action == 1);

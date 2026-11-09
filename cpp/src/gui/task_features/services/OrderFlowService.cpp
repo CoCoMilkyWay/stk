@@ -1,10 +1,11 @@
-// OrderFlowService Implementation — 线程模型与发布协议见头文件 / shared/OrderFlow.hpp
+// OrderFlowService Implementation — 线程模型与发布协议见头文件 / gui/task_features/services/OrderFlow.hpp
 #include "gui/task_features/services/OrderFlowService.hpp"
 
 #include "codec/OrderFrame.hpp"
 #include "gui/util/Service.hpp"
 #include "lob/LimitOrderBook.hpp"
 #include "misc/profiler.hpp"
+#include "shared/Analysis.hpp" // threads_for
 #include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 
@@ -92,7 +93,7 @@ inline bool present(feature_storage_t g) { return std::bit_cast<uint16_t>(g) != 
 
 // ============================================================================
 // worker 私有常驻读端: 库集 reader (清单没变复用) + 双缓冲尾部行平面预读 (稳态零分配)
-//   Min = stream (分批流式, 与 Dist / Transform / Corr 同一骨架), Sec / Pick = now (单日)
+//   Min = stream (分批流式, 与 Distribution / Transform / Correlation 同一骨架), Sec / Pick = now (单日)
 // ============================================================================
 struct RowRead {
   LibReaders libs;
@@ -192,7 +193,7 @@ const OrderFlowService::LaneDef OrderFlowService::kSecDef{L_sec, true, sec_cols,
 const OrderFlowService::LaneDef OrderFlowService::kPickDef{L_1min, true, pick_cols, no_cols};
 
 // ============================================================================
-// 三个 worker (gui/util/Service.hpp): board = SharedData 里各自的发布面
+// 三个 worker (gui/util/Service.hpp): board = target 里各自的发布面
 // ============================================================================
 
 class OrderFlowService::MinLane : public Service<MinLane, RowReq> {
@@ -200,18 +201,19 @@ class OrderFlowService::MinLane : public Service<MinLane, RowReq> {
 
 public:
   static constexpr const char *kName = "OF_MinLane";
-  explicit MinLane(SharedData &data) : data_(data) { Start(); }
+  MinLane(SharedData &data, OrderFlow &of) : data_(data), of_(of) { Start(); }
   ~MinLane() { Stop(); }
 
 private:
   static constexpr Phase kStart = Phase::Running;
   static constexpr size_t kDaysPerBatch = 16; // 一批天数 = 发布粒度
-  Progress &board() { return data_.orderflow.min; }
+  Progress &board() { return of_.min; }
   bool run(RowReq &req);
   void emit(const RowPlane &p, size_t b0, size_t bd); // 批 [b0, b0 + bd) → 追加 OHLC + overlay
   void publish(size_t b0, size_t bd);                 // overlay 计数 / 值域 → pub word
 
   SharedData &data_;
+  OrderFlow &of_;
   RowRead read_;
   RowReq cur_{};
   SegPlan days_;              // 日轴 (随 rescan 重扫; 库集变了 GUI 必带 rescan)
@@ -225,7 +227,7 @@ class OrderFlowService::SecLane : public Service<SecLane, RowReq> {
 
 public:
   static constexpr const char *kName = "OF_SecLane";
-  explicit SecLane(SharedData &data) : data_(data) { Start(); }
+  SecLane(SharedData &data, OrderFlow &of) : data_(data), of_(of) { Start(); }
   ~SecLane() { Stop(); }
 
 private:
@@ -237,10 +239,11 @@ private:
     Res() : lob(L2::LOB_ORDER_CAPACITY) {}
   };
   static constexpr Phase kStart = Phase::Running;
-  Progress &board() { return data_.orderflow.sec; }
+  Progress &board() { return of_.sec; }
   bool run(RowReq &req); // 重放 + 构建 + 背槽发布
 
   SharedData &data_;
+  OrderFlow &of_;
   std::optional<Res> res_; // 首个请求时在 worker 线程建
   RowRead read_;
   RowReq cur_{};
@@ -251,15 +254,16 @@ class OrderFlowService::PickLane : public Service<PickLane, RowReq> {
 
 public:
   static constexpr const char *kName = "OF_PickLane";
-  explicit PickLane(SharedData &data) : data_(data) { Start(); }
+  PickLane(SharedData &data, OrderFlow &of) : data_(data), of_(of) { Start(); }
   ~PickLane() { Stop(); }
 
 private:
   static constexpr Phase kStart = Phase::Running;
-  Progress &board() { return data_.orderflow.pick.slots; }
+  Progress &board() { return of_.pick.slots; }
   bool run(RowReq &req); // 逐日 filter 列 → 全资产状态 + 背槽发布
 
   SharedData &data_;
+  OrderFlow &of_;
   RowRead read_; // A 轴 = 主库轴 (候选范围); 状态列读 all Bar 库 (全轴)
   RowReq cur_{};
 };
@@ -277,9 +281,9 @@ OrderFlowService::~OrderFlowService() {
 void OrderFlowService::Start(SharedData &data) {
   if (min_)
     return;
-  min_ = std::make_unique<MinLane>(data);
-  sec_ = std::make_unique<SecLane>(data);
-  pick_ = std::make_unique<PickLane>(data);
+  min_ = std::make_unique<MinLane>(data, target);
+  sec_ = std::make_unique<SecLane>(data, target);
+  pick_ = std::make_unique<PickLane>(data, target);
 }
 
 void OrderFlowService::Stop() { // worker 析构即 Stop (join)
@@ -348,7 +352,7 @@ void OrderFlowService::Request(const SharedData &data, uint32_t gen, const Order
 
 bool OrderFlowService::MinLane::run(RowReq &req) {
   TraceN("OF_MinBegin");
-  OrderFlow::Min &out = data_.orderflow.min;
+  OrderFlow::Min &out = of_.min;
   cur_ = std::move(req);
   const RowSpec &sp = cur_.spec;
   assert(sp.date == 0 && sp.k0 == MIN_COUNT);
@@ -395,7 +399,7 @@ bool OrderFlowService::MinLane::run(RowReq &req) {
 
 void OrderFlowService::MinLane::emit(const RowPlane &p, size_t b0, size_t bd) {
   TraceN("OF_MinBatch");
-  OrderFlow::Min &out = data_.orderflow.min;
+  OrderFlow::Min &out = of_.min;
   const RowSpec &sp = cur_.spec;
   for (size_t j = 0; j < bd; ++j) {
     const double x0 = static_cast<double>((b0 + j) * OrderFlowConst::MIN_CAPACITY);
@@ -417,7 +421,7 @@ void OrderFlowService::MinLane::emit(const RowPlane &p, size_t b0, size_t bd) {
 
 // 发布: 先 overlay 计数 / 值域 (release), 后 pub word (release) — GUI acquire 读 pub 即见全量
 void OrderFlowService::MinLane::publish(size_t b0, size_t bd) {
-  OrderFlow::Min &out = data_.orderflow.min;
+  OrderFlow::Min &out = of_.min;
   out.feat.publish(range_.lo.data(), range_.hi.data());
   out.pub.store(OrderFlow::Min::pack(cur_.spec.gen, b0 + bd, out.x.size()), std::memory_order_release);
   out.publish(bd);
@@ -430,7 +434,7 @@ void OrderFlowService::MinLane::publish(size_t b0, size_t bd) {
 // ============================================================================
 
 bool OrderFlowService::PickLane::run(RowReq &req) {
-  PingPong<OrderFlow::Pick::Slot> &pp = data_.orderflow.pick.slots;
+  PingPong<OrderFlow::Pick::Slot> &pp = of_.pick.slots;
   if (!await_back(pp, cancel_))
     return false;
   TraceN("OF_PickBuild");
@@ -482,7 +486,7 @@ bool OrderFlowService::PickLane::run(RowReq &req) {
 // ============================================================================
 
 bool OrderFlowService::SecLane::run(RowReq &in) {
-  PingPong<OrderFlow::Sec> &pp = data_.orderflow.sec;
+  PingPong<OrderFlow::Sec> &pp = of_.sec;
   if (!await_back(pp, cancel_))
     return false;
   TraceN("OF_SecBuild");

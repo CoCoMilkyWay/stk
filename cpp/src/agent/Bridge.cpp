@@ -3,6 +3,8 @@
 #include "agent/Config.hpp" // kMaxOps / kGoodOps / kWorkDir / kGlobalDir
 #include "agent/Text.hpp"
 
+#include "agent/services/LensService.hpp"
+#include "agent/services/ReplayService.hpp"
 #include "factor/Expr.hpp"            // kOps / operand_tex
 #include "factor/GpuRun.hpp"          // available
 #include "factor/Search/Contract.hpp" // search_hold / Score / kMinMono
@@ -10,14 +12,12 @@
 #include "features/TimeIndex.hpp"     // bin_to_Clock (行的收盘时刻)
 #include "gui/factors/File.hpp"
 #include "gui/factors/Scope.hpp" // span_of
-#include "agent/services/LensService.hpp"
 #include "gui/task_alpha/services/RunService.hpp"
 #include "gui/task_alpha/services/SearchService.hpp"
 #include "gui/task_alpha/ui/TabFactors.hpp" // hold_desc
-#include "agent/services/ReplayService.hpp"
-#include "misc/date.hpp"         // dash
-#include "shared/AssetAxis.hpp"  // 码 ↔ 全局资产下标
-#include "shared/FeatureLib.hpp" // feature_pools
+#include "misc/date.hpp"                    // dash
+#include "shared/AssetAxis.hpp"             // 码 ↔ 全局资产下标
+#include "shared/FeatureLib.hpp"            // feature_pools
 #include "shared/SharedData.hpp"
 
 #include <algorithm>

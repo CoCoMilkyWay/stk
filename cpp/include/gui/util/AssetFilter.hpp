@@ -1,13 +1,13 @@
-// 资产筛选栏控件 (DATABASE/TABLE 与 FEATURES/ORDERFLOW 共用)
+// 资产筛选栏控件 (MARKET/ASSET 与 FEATURES/ORDERFLOW 共用)
 //
 // 两页筛选口径同源、数据源不同:
-//   TABLE     = AssetInfo 全局快照 (StockInfo: 字符串行业码, 静态上市状态)
+//   ASSET     = AssetInfo 全局快照 (StockInfo: 字符串行业码, 静态上市状态)
 //   ORDERFLOW = 锚点日 L_1min 落盘列 (逐日 PIT: 数字 SW2021 行业 ID)
 // 所以这里只共享控件本身与 ST/Listed/Board 三维的选项表; 行业维 (键类型不同)
 // 和尾部统计由各页自绘.
 #pragma once
 
-#include "gui/task_database/models/SharedTypes.hpp" // BoardType (全 GUI 通用口径)
+#include "gui/util/Board.hpp" // BoardType (全 GUI 通用口径)
 #include "imgui.h"
 
 #include <set>
@@ -69,7 +69,7 @@ bool MultiSelectCombo(const char *label, float width,
 // 选项表
 // ============================================================================
 
-// ST. with_delist_period: ORDERFLOW 的 risk_warn 有 3=退市整理期, 而 TABLE 的
+// ST. with_delist_period: ORDERFLOW 的 risk_warn 有 3=退市整理期, 而 ASSET 的
 // GetStLevel 只产 0..2 —— 传 false 免得列出永不命中的选项.
 inline const std::vector<std::pair<int, std::string>> &StItems(bool with_delist_period) {
   static const std::vector<std::pair<int, std::string>> without = {
@@ -84,18 +84,17 @@ inline const std::vector<std::pair<int, std::string>> &ListedItems() {
   return items;
 }
 
-// Board. T = BoardType (TABLE 直接存枚举) 或 int (ORDERFLOW 存底层值, 因为
-// 状态挂在 shared/ 层的 OrderFlow::Pick, 不该依赖 gui/ 层类型).
+// Board. T = BoardType (ASSET 直接存枚举) 或 int (ORDERFLOW: OrderFlow::Pick::board_filter 存底层值).
 // 不含 BoardType::All 哨兵 —— 空集已经等价于全选.
 template <typename T>
 const std::vector<std::pair<T, std::string>> &BoardItems() {
   static const std::vector<std::pair<T, std::string>> items = {
-      {static_cast<T>(Database::BoardType::Unknown), "Unknown"},
-      {static_cast<T>(Database::BoardType::SH_Main), "沪主板"},
-      {static_cast<T>(Database::BoardType::SZ_Main), "深主板"},
-      {static_cast<T>(Database::BoardType::STAR), "科创板"},
-      {static_cast<T>(Database::BoardType::ChiNext), "创业板"},
-      {static_cast<T>(Database::BoardType::BSE), "北交所"}};
+      {static_cast<T>(BoardType::Unknown), "Unknown"},
+      {static_cast<T>(BoardType::SH_Main), "沪主板"},
+      {static_cast<T>(BoardType::SZ_Main), "深主板"},
+      {static_cast<T>(BoardType::STAR), "科创板"},
+      {static_cast<T>(BoardType::ChiNext), "创业板"},
+      {static_cast<T>(BoardType::BSE), "北交所"}};
   return items;
 }
 

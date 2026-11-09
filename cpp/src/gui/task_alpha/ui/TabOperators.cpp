@@ -1,10 +1,10 @@
 // Tab Operators — 见头文件
 #include "gui/task_alpha/ui/TabOperators.hpp"
-#include "factor/GpuRun.hpp"                    // device_name: GPU 型号显示
-#include "factor/Stat/Contract.hpp"             // hold_token: operand 的 ⟨h⟩
-#include "gui/Tasks.hpp"                        // StatusColor: 全局色表, 行状态着色不自配颜色
+#include "factor/GpuRun.hpp"        // device_name: GPU 型号显示
+#include "factor/Stat/Contract.hpp" // hold_token: operand 的 ⟨h⟩
+#include "gui/Tasks.hpp"            // StatusColor: 全局色表, 行状态着色不自配颜色
 #include "gui/factors/StatJson.hpp" // sig4 / json_* (与因子文件同一格式)
-#include "gui/util/Latex.hpp"                   // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
+#include "gui/util/Latex.hpp"       // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll (强制列宽贴合)
@@ -309,7 +309,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
                         "• 按 Run 才重算, 跑完覆盖该文件");
   }
 
-  // 列宽贴合: 发布代变了 (限速 0.5s) → 连发 2 帧 AutoAll (全行每帧都提交, 测量完整, 不必像 TabFeature 那样等 clipper)
+  // 列宽贴合: 发布代变了 (限速 0.5s) → 连发 2 帧 AutoAll (全行每帧都提交, 测量完整, 不必像 TabTable 那样等 clipper)
   {
     const uint64_t ep = svc.epoch.load(std::memory_order_acquire);
     const double now = ImGui::GetTime();
@@ -589,7 +589,7 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
 }
 
 // ============================================================================
-// 算子表落地 JSON (对仗 TabFeature::SaveFeatureTableJson: 手写外层, 一行一算子, ordered_json 保键序 = 列序)
+// 算子表落地 JSON (对仗 TabTable.cpp SaveFeatureTableJson: 手写外层, 一行一算子, ordered_json 保键序 = 列序)
 // ============================================================================
 
 namespace {

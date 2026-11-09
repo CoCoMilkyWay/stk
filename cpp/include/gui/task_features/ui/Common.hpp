@@ -1,4 +1,4 @@
-// Features 页三个流式分析 tab (Dist / Transform / Table 页预览) 的公共 UI 件
+// Features 页公共 UI 件: 作用域条 (Table / NodeTime 页顶) + 流式分析 (Distribution / Transform / Table 页预览) 的展示件
 // 对仗 shared/Analysis.hpp: 状态面 (Published) / 值账目 (Integrity) 的展示都只有这一份
 #pragma once
 
@@ -7,10 +7,14 @@
 
 #include <cstddef>
 
+struct Feature;
 struct ImVec4;
 struct SharedData;
 
 namespace GUI::Features {
+
+// ---- 作用域条 (Table / NodeTime 页顶): 池 × 档 = 库, 层 = 视图; Features 自持, 不与 Alpha 同步 ----
+void RenderScope(Feature &feature);
 
 // ---- 状态面 (阶段名/颜色走 gui/Tasks.hpp TextPhase) ----
 // Row: Compute | (仅 L_1min) | Cancel | Status: xxx (unit done/total)
@@ -18,7 +22,7 @@ namespace GUI::Features {
 int RenderStreamControl(const Progress &st, const SharedData &data, const char *unit);
 
 // ---- 值账目 ----
-// 着色阈值 (Dist 完整性条 与 Feature 表账目列 共用)
+// 着色阈值 (Distribution 完整性条 与 Table 页账目列 共用)
 ImVec4 GetMinMaxColor(float val);    // |val| > 100 红
 ImVec4 GetZeroPctColor(float pct);   // ≥10% 红, ≥5% 黄
 ImVec4 GetNanInfPctColor(float pct); // ≥1% 红, >0 黄

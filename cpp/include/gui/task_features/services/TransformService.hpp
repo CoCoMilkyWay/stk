@@ -5,7 +5,9 @@
 #pragma once
 
 #include "gui/task_features/services/StreamService.hpp"
-#include "shared/Transform.hpp"
+#include "gui/task_features/services/Transform.hpp"
+
+struct SharedData;
 
 namespace GUI::Features {
 
@@ -16,7 +18,6 @@ public:
   void RequestCompute(SharedData &data, const Transform::Params &params, int focus);
 
   static constexpr const char *kName = "TransformWorker";
-  static Transform &target(SharedData &data);
 };
 
 } // namespace GUI::Features

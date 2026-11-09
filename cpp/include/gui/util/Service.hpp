@@ -24,10 +24,10 @@ namespace GUI {
 // Derived 提供 (缺一编译错):
 //   static constexpr const char *kName;   线程名 (profiler)
 //   static constexpr Phase kStart;        起始阶段
-//   Progress &board();                    进度面 (流式分析 = SharedData 里的目标; 因子服务 = 自身)
+//   Progress &board();                    进度面 (流式分析 = 自持的目标; 因子服务 = 自身)
 //   bool run(Req &req);                   false = 取消: 在抢任务处查 cancel_ 放弃
 //   ~Derived() { Stop(); }                先停线程再拆成员 (worker 正用着它们)
-// 生命周期二选一: 随对象 (ctor Start / dtor Stop, 因子服务) 或随任务 (UI 输入就绪 Start(data), 流式分析)
+// 生命周期二选一: 随对象 (ctor Start / dtor Stop, 因子服务) 或随任务 (UI 输入就绪 Start(), 流式分析)
 // worker 私有常驻件 (reader / 缓冲 / 线程池) 是 Derived 的成员, 只 worker 线程碰.
 // ============================================================================
 template <class Derived, class Req>

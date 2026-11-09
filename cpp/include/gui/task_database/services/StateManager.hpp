@@ -23,7 +23,7 @@ struct SharedData;
 namespace GUI::Database {
 
 class FundamentalService;
-class EncodingService;
+class EncodeService;
 
 // ============================================================================
 // Tab Access Control State
@@ -62,7 +62,7 @@ struct AggregatedState {
 class StateManager {
 public:
   // 构造即发首批请求: 核对 Load + refresh
-  StateManager(SharedData &data, FundamentalService &fund, ScanService &scan, EncodingService &enc,
+  StateManager(SharedData &data, FundamentalService &fund, ScanService &scan, EncodeService &enc,
                AuditService &audit);
 
   // 每帧帧首 (GUI 线程): 收交接 → 换进共享状态 → 推下一站 → 刷解锁 + taskstate.database
@@ -100,7 +100,7 @@ private:
   SharedData &data_;
   FundamentalService &fund_;
   ScanService &scan_;
-  EncodingService &enc_;
+  EncodeService &enc_;
   AuditService &audit_;
   Channel fund_ch_, scan_ch_, enc_ch_, audit_ch_;
   AuditOp audit_op_ = AuditOp::Load; // 最近一次核对请求的 op (收尾分流)

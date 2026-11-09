@@ -1,7 +1,7 @@
 // State Manager Implementation
 #include "gui/task_database/services/StateManager.hpp"
 #include "gui/task_database/services/AssetLoader.hpp"
-#include "gui/task_database/services/EncodingService.hpp"
+#include "gui/task_database/services/EncodeService.hpp"
 #include "gui/task_database/services/FundamentalService.hpp"
 #include "shared/SharedData.hpp"
 
@@ -14,7 +14,7 @@ namespace GUI::Database {
 // Lifecycle
 // ============================================================================
 
-StateManager::StateManager(SharedData &data, FundamentalService &fund, ScanService &scan, EncodingService &enc,
+StateManager::StateManager(SharedData &data, FundamentalService &fund, ScanService &scan, EncodeService &enc,
                            AuditService &audit)
     : data_(data), fund_(fund), scan_(scan), enc_(enc), audit_(audit) {
   // 上次核对结果: 读逐表状态 (零网络)

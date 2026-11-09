@@ -34,7 +34,7 @@ void EnsurePortfolio(const SharedData &data, AlphaHub &s) {
   if (!s.portfolio_service)
     s.portfolio_service = std::make_unique<Market::PortfolioService>();
   Market::SyncPortfolioDir(s.portfolio_ui, data.config.portfolio_dir);
-  Market::SyncPortfolioWatch(s.portfolio_ui, data.config.config_dir);
+  Market::SyncLinesWatch(s.lines_ui, data.config.config_dir);
 }
 
 void SyncPortfolio(const SharedData &data, AlphaHub &s, bool reload) {
@@ -437,6 +437,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
     state->counted_key.clear();
     state->portfolio_service.reset(); // 析构 Stop() join worker
     state->portfolio_ui = Market::PortfolioUIState{};
+    state->lines_ui = Market::LinesUIState{};
     state->portfolio_gen = ~0ull;
     state->portfolio_dirty = false;
     state->portfolio_sig.clear();

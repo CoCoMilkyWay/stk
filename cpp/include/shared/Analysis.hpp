@@ -1,15 +1,12 @@
 #pragma once
 
-#include "features/MetaFlag.hpp"              // fmeta::ColumnSet
-#include "features/Storage/DayBatchPlane.hpp" // SegPlan / ReadPlan / seg_days
-#include "features/Storage/FeatureLevels.hpp" // TierId / ColRef
+#include "features/MetaFlag.hpp" // fmeta::kNaNBits
 #include "features/TimeIndex.hpp"
 #include "math/distribution/KLLcache.hpp"
 #include "math/spectral/DayPSD.hpp"
-#include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
-#include "shared/FeatureLib.hpp" // FeatureLib
+#include "shared/ReadRequest.hpp" // ReadScope / Request / plan_segs (段序) / seg_days
 
 #include <algorithm>
 #include <array>
@@ -21,12 +18,9 @@
 #include <utility>
 #include <vector>
 
-class FeatureRead;
-struct Config;
-struct Feature;
-
 // ============================================================================
-// analysis — Features 页流式分析 (Dist / Transform / Preview / Corr / CorrLag / CorrPair) 的公共骨架
+// analysis — Features 页流式分析 (Distribution / Transform / Preview / Correlation / CorrelationLag / CorrelationPair)
+//   的公共骨架; PDF 快照 / KLL 档位与因子引擎 (gui/factors) 共用
 // ============================================================================
 // 六个目标同一个形状:
 //   struct X : Published {
@@ -43,8 +37,8 @@ struct Feature;
 //     要编译期段长 (FFT / LUT) 的目标经 with_grid 分派到 Grid<L>
 //   - 状态面 Published (shared/Progress.hpp): 进度原子 (UI 免锁读) + 发布快照锁;
 //     reset 末尾 publish() (数据变了), 每批 publish(批天数), clear 末尾 idle()
-//   - Service 层 (gui/task_features/services/StreamService.hpp) 统一单 worker 编排: Request = ReadScope + Spec,
-//     GUI 线程解析, worker 不碰 config
+//   - Service 层 (gui/task_features/services/StreamService.hpp) 统一单 worker 编排: Request = ReadScope + Spec
+//     (shared/ReadRequest.hpp), GUI 线程解析, worker 不碰 config
 // ============================================================================
 namespace analysis {
 
@@ -92,7 +86,7 @@ decltype(auto) with_grid(size_t lvl, Fn &&fn) {
 // 一批段数: 每 (资产, 列) ≤ kBatchRows 行 (L_sec 1 段, 其余 kDaysPerBatch 段)
 inline constexpr size_t batch_segs(size_t lvl) { return std::clamp<size_t>(kBatchRows / seg_rows(lvl), 1, kDaysPerBatch); }
 
-// ---- 值账目 (Dist 完整性条 / Feature 表账目列 共用) ----
+// ---- 值账目 (Distribution 完整性条 / Table 页账目列 共用) ----
 struct Integrity {
   size_t n_total = 0;
   size_t n_valid = 0;
@@ -138,7 +132,7 @@ struct Integrity {
     return false;
   }
 
-  // 门控不过的格子 (ts_valid 按 valid_type 判否): 两个账目源 (Preview / Dist) 都只把门控过的格子分到
+  // 门控不过的格子 (ts_valid 按 valid_type 判否): 两个账目源 (Preview / Distribution) 都只把门控过的格子分到
   // valid / nan / ±inf, 其余即门控不过, 推导得出不另设计数器. 特征应稠密: 这一项比 nan 更要紧
   size_t n_invalid() const {
     assert(n_total >= n_valid + n_nan + n_pos_inf + n_neg_inf);
@@ -184,9 +178,6 @@ struct PdfSnap {
 using AssetPdf = PdfSnap<kAssetKllResolution>;
 using AggPdf = PdfSnap<kAggKllResolution>;
 
-// [0, n) 固定种子洗牌 (绘制子集 / 抽样序: 无偏且跨构建稳定)
-std::vector<uint32_t> shuffled_order(size_t n);
-
 // 每资产一条线 (槽位 == 池轴下标): asset = 全局轴下标 (UI 查 items), draw = PDF 折线绘制子集
 struct AssetLine : AssetPdf {
   uint32_t asset = 0;
@@ -205,86 +196,10 @@ void init_lines(std::vector<Line> &lines, const std::vector<uint32_t> &global_id
     lines[order[i]].draw = 1;
 }
 
-// ---- 读取范围 (Request 公共头): GUI 线程从库清单解析, worker 只消费 ----
-// 库集 = 主库 + 各列所在库 (多池 / 跨档一视同仁; 资产不在列所在库 / 该库这天没落盘 = 无源), 余库空
-inline constexpr LibId kAutoMain = UINT8_MAX; // 主库 = 列所在库里池轴最短者 (子池优先: all 的列旁读, 池外格不算)
-// 日轴: 段序 / 承接日取哪些库的落盘日
-enum class DayAxis : uint8_t { Main,    // 主库日期轴首尾 × 主库 (流式分析: 主库日 = 样本日, 余库只旁读)
-                               Union }; // 各库日期轴首尾 × 库集并集 (OrderFlow: 各库自画自的, 叠加)
-struct ReadScope {
-  std::vector<misc::Ym> months;     // 升序 (日轴区间覆盖的月); 库集任一未建 → 空
-  LibId main = kAllBar;             // 主库: A 轴 (池轴) / K 线等主库列
-  LibMask days = 0;                 // 日轴库集 (DayAxis 定): 这些库落盘日的并集
-  PoolAxis axis;                    // A 轴 (平面资产维, 槽位 → 全局 id): 主库轴, 或指定资产 (OrderFlow 单资产)
-  PerLib<FeatureLib> libs;          // 档 / 池轴 / 目录, 与写端同一清单
-  PerLib<std::vector<uint32_t>> to; // A 轴 a → 该库轴下标 (kAbsent = 不在该库轴); 与 A 轴同轴的库空
-
-  bool has(LibId l) const { return !libs[l].dir.empty(); } // 在库集内
-  const FeatureLib &lib() const { return libs[main]; }
-  PerLib<size_t> sizes() const;                                 // 各库的池轴长 (源暂存按源库开)
-  Readers readers(const PerLib<const FeatureRead *> &fr) const; // fr: 库集各库 reader (LibReaders::ptr)
-};
-// 库集 = main + cols 所在库 (main = kAutoMain → 见上); assets 空 = A 轴取主库轴, 否则 = 这些全局 id (升序去重)
-ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets = {},
-                     DayAxis days = DayAxis::Main);
-// A 轴 + 各库映射 (s.libs / s.main 已定; assets 空 = 主库轴, 主库同轴不映射)
-void map_axis(ReadScope &s, std::vector<uint32_t> assets);
-// 库 lib 落了第 d 天 (按库清单日期轴 + 末层日文件, 与写端 commit 标记同一判据)
-bool landed(const FeatureLib &lib, misc::Ymd d);
-
-// ---- 请求 (Service → 目标): 读取范围 + 目标自己的 Spec ----
-template <class Spec>
-struct Request {
-  ReadScope scope;
-  Spec spec;
-};
-
-// GUI 线程: 该档该层元数据 → 列描述 (vt 查元数据; 任一列需门控才追加该层 ts_valid)
-fmeta::ColumnSet column_set(const Feature &feature, TierId tier, size_t level, std::vector<size_t> cols);
-
-// 日轴 (升序): scope.days 各库落盘日 (按库清单日期轴) 的并集 ∩ months + 每日所属月下标 + 每日落了盘的日轴库
-// (余库的位由 plan_segs 只对入选的日补判)
-struct DateList {
-  std::vector<misc::Ymd> dates;
-  std::vector<uint16_t> month;
-  std::vector<LibMask> has;
-};
-DateList enumerate_dates(const ReadScope &scope);
-
-// 行映射: 平面行怎么由源行得到 (gather / scatter 对仗)
-enum class Rows : uint8_t { AsOf,   // gather: 网格行 t ← 源行 level_asof(源列, 网格层, t)   (TsPlane / CsPlane)
-                            Tail }; // scatter: 源行 r → 网格行 (行末秒 − 1 所在; 盘后 = 收盘之后), 原生行  (RowPlane)
-// GUI 线程: 一组 ColRef → 读计划. 同 (库, 层, 盘后) 的列并成一个源 (column_set 定门控). carry = 开盘承接前日末行 (AsOf 必须)
-ReadPlan read_plan(const Feature &feature, size_t level, Rows rows, bool carry, std::vector<ColRef> cols);
-
-// 读请求 = 主库 × 日轴 × A 轴 × 行映射 × 列
-struct ReadSpec {
-  LibId main = kAutoMain;
-  DayAxis days = DayAxis::Main;
-  size_t level = L_1min;
-  Rows rows = Rows::AsOf;
-  bool carry = true; // Tail 可关 (前一日的点已在图上)
-  std::vector<ColRef> cols;
-  std::vector<uint32_t> assets; // 空 = 主库轴
-};
-// 统一请求构建 (= read_scope + read_plan): 库集未建 → false (请求方放弃)
-bool read_request(const Config &cfg, const Feature &feature, ReadSpec rs, ReadScope &scope, ReadPlan &plan);
-
-// ---- 段序 (全部读端唯一一份): 日轴 (enumerate_dates) 按 seg_days(level) 连续成段, 再排段 ----
-//   Shuffle:    固定种子洗牌取前 limit 段 —— 无偏, 首批即覆盖全区间 (Dist / Preview / Corr*)
-//   Sequential: 升序取前 limit 段 —— 因果 (Transform 的 TOD 轮廓跨段 / OrderFlow K 线)
-enum class DayOrder : uint8_t { Shuffle,
-                                Sequential };
-SegPlan plan_segs(const ReadScope &scope, size_t level, DayOrder order, size_t limit); // limit 0 = 全部
-// 单日段序 (OrderFlow Depth / Pick): 与 plan_segs 同口径, 只判这一天 + 日轴上前一日 (不枚举整轴); 单日不分月
-SegPlan plan_day(const ReadScope &scope, misc::Ymd date);
-
 // ---- 容量准备 / 线程布局 (幂等, 尺寸对得上零分配) ----
 // 槽数对得上就只 clear (KLL 保留 buffer 容量), 对不上才重建
 void prepare_slots(std::vector<KLLcache> &slots, size_t n, size_t capacity, size_t resolution);
 void clear_slots(std::vector<KLLcache> &slots);
-// 池轴 → 全局轴映射必须升序去重非空 (PoolAxis::ids)
-void check_axis(const std::vector<uint32_t> &global_ids);
 
 inline size_t n_asset_blocks(size_t A) { return (A + kAssetBlock - 1) / kAssetBlock; }
 // 资产块 blk → [a0, a1)
@@ -324,7 +239,7 @@ void reduce_tree(misc::exec::ForkJoin &ex, std::vector<Shard> &shards) {
 
 // ---- 共用累加器 ----
 
-// 每资产累积 sketch (Dist / Transform): 资产独占 (每资产单线程写), 免归约
+// 每资产累积 sketch (Distribution / Transform): 资产独占 (每资产单线程写), 免归约
 struct AssetSketches {
   std::vector<KLLcache> klls; // [A] 全程累积
 

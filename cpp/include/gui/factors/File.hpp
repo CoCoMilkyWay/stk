@@ -85,8 +85,8 @@ struct FactorRow : EvalStat {
   std::string dup_of;               // 非空 = 与该行 (key) 同 hold 同方向同一具体规范串
   int n_ops = 0, n_feats = 0, n_slots = 0;
   RowState status = RowState::Pending; // Done = 本轮算过 (evaluate) 或本轮不算 (只扫描)
-  bool has_stat = false;                 // EvalStat 有内容 (本轮算的或文件载入的)
-  bool stat_from_file = false;           // stat 来自文件 (非本进程算的); EvalStat::eval_ms = time 列
+  bool has_stat = false;               // EvalStat 有内容 (本轮算的或文件载入的)
+  bool stat_from_file = false;         // stat 来自文件 (非本进程算的); EvalStat::eval_ms = time 列
 };
 
 // 因子表的目标分量 (Search/Contract.hpp【目标】, 与 Search 打分同一份 score_of): 该行 stat 在持有期 hold 下的 每期真实毛 LS / rIC / score.

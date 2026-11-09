@@ -15,7 +15,7 @@
 struct AssetItem;
 
 namespace GUI::Market {
-struct PortfolioUIState; // TabPortfolio.hpp
+struct PortfolioUIState; // PortfolioBoxes.hpp
 }
 
 namespace GUI::Alpha {
@@ -112,7 +112,7 @@ inline constexpr const char *kHoldRulesTip = "• 新进成交不了 → 不建�
 void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h);
 
 // 返回值: 1 = Run 高光行所在文件 (ui.run_file), 5 = Run all (整目录), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_one),
-// 4 = Search all (ui.search_queue 已填), -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (TabPortfolio RenderPortfolioBoxes)
+// 4 = Search all (ui.search_queue 已填), -3 = 取消 Search (Search all 的队列已清), 0 = 无. pui: 1. 区右侧组合两小框 (TabLines RenderPortfolioBoxes)
 int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, Market::PortfolioUIState &pui, const FactorsUIContext &ctx);
 
 } // namespace GUI::Alpha

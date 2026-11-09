@@ -1,4 +1,4 @@
-// TabTransform - 特征变换探索 (分批流式, 对仗 TabDist)
+// TabTransform - 特征变换探索 (分批流式, 对仗 TabDistribution)
 //
 // UI 布局:
 //   1. Compute | Cancel | Status (天进度) | 特征 | 完整性 (输入/输出有效率)
@@ -14,7 +14,7 @@
 // Threading: UI 渲染帧内持 transform.mutex; 计算在 TransformService 单 worker (批末发布快照)
 #pragma once
 
-#include "shared/Transform.hpp"
+#include "gui/task_features/services/Transform.hpp"
 
 struct SharedData;
 
@@ -48,6 +48,6 @@ struct TransformUIState {
 };
 
 void RenderTabTransform(TransformService *service, SharedData &data, TransformUIState &ui);
-void StopTabTransform(TransformService *service, SharedData &data);
+void StopTabTransform(TransformService *service);
 
 } // namespace GUI::Features

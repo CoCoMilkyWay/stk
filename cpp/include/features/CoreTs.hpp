@@ -2,13 +2,13 @@
 
 #include "features/DataDefine.hpp"
 #include "features/GraphNode.hpp"             // graph::BIN_DATA (分钟箱层 + L_1day 输入)
-#include "features/Panel/Fund.hpp"    // fund::Panel
 #include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid / cs_valid)
+#include "features/Panel/Fund.hpp"            // fund::Panel
+#include "features/Panel/Pool.hpp"
 #include "features/Storage/FeatureStore.hpp"
 #include "math/sample/ResamplerMin2Bin.hpp"
 #include "misc/date.hpp"
 #include "misc/profiler.hpp"
-#include "features/Panel/Pool.hpp"
 
 #include <array>
 #include <cassert>

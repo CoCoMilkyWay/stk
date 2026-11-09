@@ -1,15 +1,15 @@
 // TabOrderFlow Implementation - OrderFlow Visualization
-// 渲染面 (数据面/线程模型见 shared/OrderFlow.hpp):
+// 渲染面 (数据面/线程模型见 gui/task_features/services/OrderFlow.hpp):
 //   1. 帧首 ack: Sec / Pick 背槽发布 → 翻 front
 //   2. 期望态: 三路 Want (MinKey / SecKey / PickKey) 键变 → gen++ → Request
 //   3. 渲染: Min 画已发布前缀 (gen 配对), Sec 画 front 槽 (新代在途时旧槽照画 + Loading 提示)
 #include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "features/Panel/Fund.hpp"
-#include "gui/task_database/models/SharedTypes.hpp" // BoardType / GetBoardType (板块口径与 TABLE 同源)
 #include "gui/task_features/services/OrderFlowService.hpp"
-#include "gui/task_features/ui/TabFeature.hpp" // EffectiveCat2Snapshot (legend 标注)
-#include "gui/util/AssetFilter.hpp"            // 筛选控件 (与 TABLE 共用)
-#include "shared/FeatureLib.hpp"               // lib_name (legend 库名)
+#include "gui/task_features/ui/TabTable.hpp" // EffectiveCat2Snapshot (legend 标注)
+#include "gui/util/AssetFilter.hpp"          // 筛选控件 (与 ASSET 共用)
+#include "gui/util/Board.hpp"                // BoardType / GetBoardType (板块口径与 ASSET 同源)
+#include "shared/FeatureLib.hpp"             // lib_name (legend 库名)
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -97,14 +97,14 @@ struct FeatCat {
   float val_min = 1.0f, val_max = 0.0f;
 };
 // cols → [i] FeatCat: 每个 (档, 层) 取一次快照
-static void CollectFeatCats(SharedData &data, const std::vector<ColRef> &cols, std::vector<FeatCat> &out) {
+static void CollectFeatCats(const Feature &feature, const Preview &pv, const std::vector<ColRef> &cols, std::vector<FeatCat> &out) {
   static Cat2Snapshot s_snap; // GUI 单线程, 帧内复用
   out.assign(cols.size(), FeatCat{});
   std::vector<bool> done(cols.size(), false);
   for (size_t i = 0; i < cols.size(); ++i) {
     if (done[i])
       continue;
-    EffectiveCat2Snapshot(data, cols[i].tier(), cols[i].level, s_snap);
+    EffectiveCat2Snapshot(feature, pv, cols[i].tier(), cols[i].level, s_snap);
     for (size_t j = i; j < cols.size(); ++j) {
       if (done[j] || cols[j].tier() != cols[i].tier() || cols[j].level != cols[i].level)
         continue;
@@ -514,8 +514,7 @@ static void PlotHeat(const OrderFlow::Sec &sc, const std::vector<uint32_t> &colo
 // L_sec Plot Renderer (图1: front Sec 槽)
 // ============================================================================
 
-static void RenderSecPlot(SharedData &data) {
-  OrderFlow &of = data.orderflow;
+static void RenderSecPlot(SharedData &data, OrderFlow &of, const Preview &pv) {
   auto &ui = of.ui;
   const OrderFlow::Sec &sc = of.sec.front_slot();
 
@@ -529,7 +528,7 @@ static void RenderSecPlot(SharedData &data) {
     return;
   }
   static std::vector<FeatCat> cats; // GUI 单线程, 帧内复用
-  CollectFeatCats(data, ov.refs, cats);
+  CollectFeatCats(data.feature, pv, ov.refs, cats);
 
   // 新槽 (gen 变了) → 重置视图 + 热力图阈值回到当日自动初值 (之后尊重用户拖动)
   const bool slot_changed = (ui.sec_last_gen != sc.gen);
@@ -876,8 +875,7 @@ static void PlotEventLanes(const OrderFlow::EventMarks &em, const AssetEvents &s
 // L_1min Plot Renderer (图2: Min 已发布前缀)
 // ============================================================================
 
-static void RenderMinPlot(SharedData &data, float height) {
-  OrderFlow &of = data.orderflow;
+static void RenderMinPlot(SharedData &data, OrderFlow &of, const Preview &pv, float height) {
   auto &ui = of.ui;
   auto &mn = of.min;
 
@@ -901,7 +899,7 @@ static void RenderMinPlot(SharedData &data, float height) {
   const OrderFlow::Overlay &ov = mn.feat;
   static const std::vector<ColRef> kNone;
   static std::vector<FeatCat> cats; // GUI 单线程, 帧内复用
-  CollectFeatCats(data, pre.ready ? ov.refs : kNone, cats);
+  CollectFeatCats(data.feature, pv, pre.ready ? ov.refs : kNone, cats);
 
   // Y1: 发布范围变化 (换代 / 流式追加) 或上帧 X 视野变了 → 按可见 X 区间内的 K 线贴合 (RangeFit); 只动 Y 轴不重贴
   if ((pre.points > 0 && ui.min_last_pub_days != pre.days) || ui.min_fit_y)
@@ -1029,18 +1027,18 @@ static void RenderMinPlot(SharedData &data, float height) {
 }
 
 // ============================================================================
-// Asset Filter + Selector (筛选口径搬自 DATABASE/TABLE, 数据换成锚点日的逐日 PIT)
+// Asset Filter + Selector (筛选口径同 MARKET/ASSET, 数据换成锚点日的逐日 PIT)
 // ============================================================================
 
 static void RenderAssetFilterBar(SharedData &data, OrderFlow &of) {
   auto &pick = of.pick;
 
-  // ST/Listed/Board 与 DATABASE/TABLE 共用控件 (gui/util/AssetFilter.hpp);
+  // ST/Listed/Board 与 MARKET/ASSET 共用控件 (gui/util/AssetFilter.hpp);
   // risk_warn 有 3=退市整理期, 所以 ST 要全 4 个价位
   bool changed = GUI::Filter::CommonFilters<int>("of", true, pick.st_filter,
                                                  pick.listed_filter, pick.board_filter);
 
-  // 行业维自绘: 这里的键是数字 SW2021 一级 ID (0 = 未知), 与 TABLE 的字符串
+  // 行业维自绘: 这里的键是数字 SW2021 一级 ID (0 = 未知), 与 ASSET 的字符串
   // 行业码不同源, 表在 fund::SW2021_L1_NAMES
   static const std::vector<std::pair<int, std::string>> industry_items = [] {
     std::vector<std::pair<int, std::string>> v;
@@ -1237,11 +1235,8 @@ static void RenderEventControls(OrderFlow &of) {
 // Main Orchestration
 // ============================================================================
 
-void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
-  if (!service) {
-    ImGui::TextDisabled("OrderFlowService not initialized");
-    return;
-  }
+void RenderTabOrderFlow(OrderFlowService *service, SharedData &data, const Preview &pv) {
+  assert(service);
 
   // Configure input mapping: Left-click for box select, Right-click for pan
   static bool input_map_configured = false;
@@ -1250,7 +1245,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     input_map_configured = true;
   }
 
-  auto &of = data.orderflow;
+  auto &of = service->target;
   auto &ui = of.ui;
   const size_t num_assets = data.asset.items.size();
   if (num_assets == 0) {
@@ -1348,7 +1343,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     asset_boards.resize(num_assets);
     for (size_t i = 0; i < num_assets; ++i) {
       exch_code[i] = {data.asset.items[i].exchange, data.asset.items[i].asset_code};
-      asset_boards[i] = static_cast<int>(GUI::Database::GetBoardType(data.asset.items[i].asset_code));
+      asset_boards[i] = static_cast<int>(GUI::GetBoardType(data.asset.items[i].asset_code));
     }
     pick.build_display_order(exch_code);
     pick.key.reset(); // 强制重建候选
@@ -1389,7 +1384,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   // ==========================================================================
   ImGui::BeginChild("TopSection", ImVec2(0, top_view_height), false);
   ImGui::BeginChild("SecChart", ImVec2(chart_width, -1), false);
-  RenderSecPlot(data);
+  RenderSecPlot(data, of, pv);
   ImGui::EndChild();
 
   ImGui::SameLine();
@@ -1418,7 +1413,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
   RenderStatusBar(of);
 
   const float min_height = ImGui::GetContentRegionAvail().y;
-  RenderMinPlot(data, min_height);
+  RenderMinPlot(data, of, pv, min_height);
 
   ImGui::EndChild(); // BottomSection
 }

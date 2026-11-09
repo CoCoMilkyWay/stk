@@ -33,11 +33,11 @@ struct LensCell {
   float ret = 0.f;
 };
 struct LensRoot {
-  std::string error;                   // 非空 = 该根没算成 (叶值域越界)
-  std::vector<uint16_t> rx;            // [T][A'] r16 (已定向: 高 = 做多端; kRankNone 无效)
-  std::vector<factor::stat::Row> rows; // [T] (已定向)
-  std::vector<GUI::Factors::TailRow> tails;          // [T] 两端组内的尾部分层 (已定向; 只在 Row::ok 行有值)
-  std::vector<LensCell> cells;         // 行序
+  std::string error;                        // 非空 = 该根没算成 (叶值域越界)
+  std::vector<uint16_t> rx;                 // [T][A'] r16 (已定向: 高 = 做多端; kRankNone 无效)
+  std::vector<factor::stat::Row> rows;      // [T] (已定向)
+  std::vector<GUI::Factors::TailRow> tails; // [T] 两端组内的尾部分层 (已定向; 只在 Row::ok 行有值)
+  std::vector<LensCell> cells;              // 行序
 };
 struct LensFeat {
   std::string error;

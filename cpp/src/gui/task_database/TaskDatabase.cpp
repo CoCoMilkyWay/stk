@@ -1,7 +1,7 @@
 #include "gui/task_database/TaskDatabase.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_database/services/AuditService.hpp"
-#include "gui/task_database/services/EncodingService.hpp"
+#include "gui/task_database/services/EncodeService.hpp"
 #include "gui/task_database/services/FundamentalService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
@@ -31,7 +31,7 @@ private:
   std::unique_ptr<FundamentalService> fundamental_svc_;
   std::unique_ptr<AuditService> audit_svc_;
   std::unique_ptr<ScanService> scan_svc_;
-  std::unique_ptr<EncodingService> encoding_svc_;
+  std::unique_ptr<EncodeService> encode_svc_;
   std::unique_ptr<FileCheckService> filecheck_svc_;
   std::unique_ptr<StateManager> state_mgr_;
   // 行情 (Market 任务起): Sync 页只读新浪当日的状态
@@ -107,7 +107,7 @@ public:
     case 1:
       if (!state_mgr_)
         return {TaskStatus::Kind::Muted, "initializing"};
-      return GUI::Database::EncodeStatus(*state_mgr_, *encoding_svc_, *scan_svc_);
+      return GUI::Database::EncodeStatus(*state_mgr_, *encode_svc_, *scan_svc_);
     case 2:
       return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_calendar);
     }
@@ -136,10 +136,10 @@ private:
     fundamental_svc_ = std::make_unique<FundamentalService>();
     audit_svc_ = std::make_unique<AuditService>();
     scan_svc_ = std::make_unique<ScanService>(data);
-    encoding_svc_ = std::make_unique<EncodingService>(data);
+    encode_svc_ = std::make_unique<EncodeService>(data);
     filecheck_svc_ = std::make_unique<FileCheckService>();
     // 构造即发首批请求 (核对 Load + 基本面 → 扫描); 进度在终端与各页
-    state_mgr_ = std::make_unique<StateManager>(data, *fundamental_svc_, *scan_svc_, *encoding_svc_, *audit_svc_);
+    state_mgr_ = std::make_unique<StateManager>(data, *fundamental_svc_, *scan_svc_, *encode_svc_, *audit_svc_);
   }
 
   // 基本面状态标签: 在跑 (进度面) > 在飞未起跑 / 件待收 > 最近一件结论
@@ -206,7 +206,7 @@ private:
     ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();
-    const TaskStatus estatus = GUI::Database::EncodeStatus(*state_mgr_, *encoding_svc_, *scan_svc_);
+    const TaskStatus estatus = GUI::Database::EncodeStatus(*state_mgr_, *encode_svc_, *scan_svc_);
     ImGui::Text("L2 Database: ");
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(estatus.kind), "[%s]", estatus.text.c_str());
@@ -319,7 +319,7 @@ private:
   }
 
   void DrawTabEncode() {
-    RenderTabEncode(*state_mgr_, *encoding_svc_, *filecheck_svc_, *scan_svc_, encode_state_, data_->asset);
+    RenderTabEncode(*state_mgr_, *encode_svc_, *filecheck_svc_, *scan_svc_, encode_state_, data_->asset);
   }
 };
 

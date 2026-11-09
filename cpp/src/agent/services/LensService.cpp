@@ -1,7 +1,7 @@
 // LensService — 见头文件. include 因子 CPU 后端头 (Stat/Cpu.hpp / Host.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "agent/services/LensService.hpp"
 
-#include "factor/Stat/Host.hpp"                      // h2f
+#include "factor/Stat/Host.hpp"   // h2f
 #include "gui/factors/Engine.hpp" // eval_job / Probes / FactorFlow
 #include "misc/profiler.hpp"
 
@@ -19,8 +19,8 @@ using GUI::Factors::eval_job;
 using GUI::Factors::FactorFlow;
 using GUI::Factors::FactorRef;
 using GUI::Factors::FactorScope;
-using GUI::Factors::HookBase;
 using GUI::Factors::Holds;
+using GUI::Factors::HookBase;
 using GUI::Factors::JobOut;
 using GUI::Factors::keys_of;
 using GUI::Factors::kNeedAlpha;

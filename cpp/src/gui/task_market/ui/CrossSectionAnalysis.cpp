@@ -1,7 +1,7 @@
 // Cross-section analysis implementation
 
 #include "gui/task_market/ui/CrossSectionAnalysis.hpp"
-#include "gui/task_database/models/SharedTypes.hpp" // For BoardType
+#include "gui/util/Board.hpp" // BoardType
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -102,11 +102,11 @@ std::vector<BoardStats> GroupNumericByBoard(
     if (!std::isfinite(v))
       continue;
 
-    Database::BoardType board = Database::GetBoardType(codes[i]);
-    if (board == Database::BoardType::All || board == Database::BoardType::Unknown)
+    BoardType board = GetBoardType(codes[i]);
+    if (board == BoardType::All || board == BoardType::Unknown)
       continue;
 
-    std::string board_name = Database::GetBoardName(board);
+    std::string board_name = GetBoardName(board);
     board_values[board_name].push_back(v);
   }
 
@@ -232,11 +232,11 @@ std::vector<BoardCategoryBreakdown> GroupCategoricalByBoard(
     if (categories[i].empty())
       continue;
 
-    Database::BoardType board = Database::GetBoardType(codes[i]);
-    if (board == Database::BoardType::All || board == Database::BoardType::Unknown)
+    BoardType board = GetBoardType(codes[i]);
+    if (board == BoardType::All || board == BoardType::Unknown)
       continue;
 
-    std::string board_name = Database::GetBoardName(board);
+    std::string board_name = GetBoardName(board);
     board_categories[board_name].push_back(categories[i]);
   }
 
