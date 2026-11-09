@@ -7,6 +7,7 @@
 #include "gui/task_market/ui/PortfolioBoxes.hpp" // RenderPortfolioBoxes
 #include "gui/util/Sparkline.hpp"                // ic~ / alpha~ 列迷你图
 
+#include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll
 #include "implot.h"

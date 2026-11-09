@@ -574,7 +574,7 @@ LinesRow factor_row(const PortfolioItem &it, const PortfolioBook &b) {
   r.en = std::filesystem::path(it.e.file).stem().string();
   r.cn = clip_name(it.name_cn);
   r.tag = it.name_en + " " + factor::stat::hold_name(it.e.hold);
-  r.hover = r.en + "  " + it.name_cn + "\n• " + it.e.pool + " " + factor_level(it.e.lv).name + "\n• " + hold_desc(it.e.hold, it.e.lv) +
+  r.hover = r.en + "  " + it.name_cn + "\n• " + it.e.pool + " " + factor_level(it.e.lv).name + "\n• " + Alpha::hold_desc(it.e.hold, it.e.lv) +
             "\n• 冲击 " + amt_name(b.amt) + "\n• 规范串 " + it.e.expr + (it.e.sign < 0 ? " · 取反" : "");
   return r;
 }

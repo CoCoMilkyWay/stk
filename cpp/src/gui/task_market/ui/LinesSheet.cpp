@@ -2,6 +2,7 @@
 #include "gui/task_market/ui/LinesCommon.hpp"
 
 #include "gui/util/Chart.hpp" // tint / button_bar
+#include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"  // TableFindByID (右表内容宽)
 #include "shared/Basket.hpp" // basket_line / cut_of_line

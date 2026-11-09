@@ -180,7 +180,7 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
       tip("%s / %s  %s  %s\n"
           "• %s\n"
           "• 规范串 %s%s%s%s",
-          e.pool.c_str(), factor_level(e.lv).name, e.file.c_str(), it ? it->name_cn.c_str() : "", hold_desc(e.hold, e.lv).c_str(), e.expr.c_str(),
+          e.pool.c_str(), factor_level(e.lv).name, e.file.c_str(), it ? it->name_cn.c_str() : "", Alpha::hold_desc(e.hold, e.lv).c_str(), e.expr.c_str(),
           e.sign < 0 ? " · 取反" : "", bad ? "\n• 失效: " : "", bad ? it->missing.c_str() : "");
   }
   ImGui::EndChild();

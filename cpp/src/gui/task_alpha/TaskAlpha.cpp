@@ -15,6 +15,7 @@
 #include "shared/FeatureLib.hpp" // feature_pools (页顶池选择)
 #include "shared/SharedData.hpp" // config.factor_dir / 池 / 日期区间, feature.metadata, asset.items
 
+#include "gui/util/Tip.hpp"
 #include "imgui.h"
 
 #include <algorithm>

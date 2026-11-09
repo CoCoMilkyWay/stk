@@ -4,6 +4,7 @@
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
+#include "shared/Analysis.hpp" // threads_for / ForkJoin
 
 #include <algorithm>
 #include <bit>

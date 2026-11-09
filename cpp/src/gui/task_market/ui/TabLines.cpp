@@ -3,9 +3,9 @@
 
 #include "gui/Tasks.hpp" // StatusColor
 #include "gui/task_market/ui/LinesCommon.hpp"
+#include "gui/util/Tip.hpp"
 #include "imgui.h"
 
-#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>

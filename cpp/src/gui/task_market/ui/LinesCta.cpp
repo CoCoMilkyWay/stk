@@ -3,6 +3,7 @@
 
 #include "gui/Tasks.hpp"      // StatusColor
 #include "gui/util/Chart.hpp" // kUp / kDn
+#include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "implot.h"
 #include "implot_internal.h" // GetItem (图例显隐)

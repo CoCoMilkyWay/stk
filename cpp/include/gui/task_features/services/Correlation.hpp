@@ -1,7 +1,7 @@
 #pragma once
 
-#include "shared/Analysis.hpp"
 #include "shared/Progress.hpp"
+#include "shared/ReadRequest.hpp" // analysis::ReadScope
 
 #include <array>
 #include <atomic>

@@ -5,6 +5,7 @@
 #include "gui/Tasks.hpp"          // StatusColor
 #include "shared/Asset.hpp"       // AssetItem (资产代码 / 名称)
 
+#include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "implot.h"
 #include "implot_internal.h" // BeginItem / FitPoint (自绘蜡烛)

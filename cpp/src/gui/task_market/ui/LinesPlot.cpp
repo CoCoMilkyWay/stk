@@ -2,6 +2,7 @@
 #include "gui/task_market/ui/LinesCommon.hpp"
 
 #include "gui/util/Chart.hpp" // tint / EndTag / NowCross
+#include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "implot.h"
 #include "implot_internal.h" // GetItem (主图例显隐 / 线色), ButtonBehavior (图例矩阵)
