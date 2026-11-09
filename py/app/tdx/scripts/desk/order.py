@@ -1,7 +1,7 @@
 # desk/order — 下单（闪电下单窗 UI 自动化）。
 # 一步一函数，ORDER 即流程也即前端步骤条；每步 (o 本单上下文) → 该单要更新的字段：
 #   行情  按盘口定委托价
-#   切换  图表切到该只（闪电窗只认图表当前证券）：向视图投代码按键，键盘精灵筛出该只后选中、回车
+#   切换  图表切到该只（闪电窗只认图表当前证券）：向主窗投通达信外部联动消息，等标题换过来
 #   开窗  主窗 WM_COMMAND 打开闪电窗
 #   填单  窗内证券代码再核一遍，填价格 / 数量（数量单位为元即按额：只收整数元，客户端按价折股、向下取整步长，以预估股数核对）
 #   确认  点提交，「…交易确认」框核对正文（代码 / 价格 / 数量）
@@ -13,24 +13,21 @@
 
 import math
 import re
+import time
 import types
 
-from mem.common import BUY, SELL, sec
+from mem.common import BUY, SELL, SH, SZ, sec
 
 from . import book, sina, ui
 from .feed import Feed, Jobs
 from .hub import HUB
 from .ui import SHIM, UI
 
-WM_KEYDOWN, WM_KEYUP, WM_COMMAND = 0x100, 0x101, 0x111
-VK_RETURN, SC_RETURN = 0x0D, 0x1C
-WM_MDIGETACTIVE = 0x229
-LB_SETCURSEL, LB_GETTOPINDEX = 0x186, 0x18E
-# 键盘精灵：标题、输入框 / 候选列表 id；候选每项「代码  名称  市场」
-SPIRIT, SPIRIT_EDIT, SPIRIT_LIST = "Tdx", 1024, 1026
-SPIRIT_IDLE = 10  # 投键前等界面线程缓过来最长几秒
-# MFC AFX_IDW_PANE_FIRST：主框架下的 MDIClient、MDI 子窗下的视图都是这个 id
-AFX_PANE = 59648
+WM_COMMAND = 0x111
+# 通达信外部联动：注册消息「Stock」投给主窗，wParam = 市场前缀 × 10⁶ + 代码，图表即切到该只
+LINK = "Stock"
+LINK_MKT = {SZ: 6, SH: 7}
+LINK_REPOST, LINK_TIMEOUT = 1, 6  # 标题没换过来每几秒重投、共等几秒
 MAIN_WND = "class=TdxW_MainFrame_Class"
 # 闪电窗按 (方向, 信用方式) 取：主窗命令 id、窗标题、FLASH_CTLS 各控件 id
 # （证券代码 / 价格 / 数量 / 数量单位 / 报价方式 / 最大可买·可卖·可融（股）/ 提交）；卖券还款未录到，没有 (SELL, margin)
@@ -70,13 +67,6 @@ def _max_qty(h):
     t = ui.text(h)
     assert re.fullmatch(r"\d+(\.\d+)?", t), f"最大可买/可卖读到 {t!r}"
     return int(float(t))
-
-
-def _press(h, vk, sc):
-    """投递按下 + 抬起（同 shim post_key），WM_CHAR 由客户端消息泵照常生成。"""
-    lp = 1 | sc << 16
-    ui.post(h, WM_KEYDOWN, vk, lp)
-    ui.post(h, WM_KEYUP, vk, lp | 0xC0000000)
 
 
 def _tops():
@@ -123,61 +113,28 @@ def _bare(s):
     return "".join(s.split())
 
 
-def _pick(c, code, name):
-    """键盘精灵 c 输入框恰为 code、候选里代码与名称都对上的那项 → [列表序号]（候选只给可见项，加上顶项序号）；
-    还没筛出即 []。"""
-    if ui.text(c["edit"]) != code:
-        return []
-    items = SHIM("detail", c["list"])[0]["items"]
-    hits = [
-        i
-        for i, it in enumerate(items)
-        if it[5].split()[:1] == [code] and _bare(name) in _bare(it[5])
-    ]
-    assert len(hits) <= 1, f"键盘精灵候选里 {code} {name} 有 {len(hits)} 项"
-    top = SHIM("send", c["list"], LB_GETTOPINDEX, 0, 0)[0]["ret"]
-    return [top + i for i in hits]
-
-
-def _goto(main, code, name):
-    """图表切到 code：主窗标题已是「…-名称]」即跳过，否则向活动 MDI 子窗的视图投代码按键
-    （键盘精灵由视图处理，投给主框架不经过它），等精灵（标题 SPIRIT 的新窗）弹出、输入框恰为 code、
-    候选筛出该只，选中该项后向输入框投回车，再等标题换过来。"""
-    want = _bare(f"-{name}]")
+def _goto(main, x):
+    """图表切到证券 x：主窗标题已是「…-名称]」即跳过，否则向主窗投联动消息、等标题换过来。
+    切到同一只重投无副作用：界面线程忙时消息可能落空，标题没换过来即每 LINK_REPOST 秒重投。"""
+    want = _bare(f"-{x['name']}]")
     if _bare(ui.title(main)).endswith(want):
         return
-    mdi = ui.ctls(main, {"mdi": AFX_PANE})["mdi"]
-    child = f"0x{SHIM('send', mdi, WM_MDIGETACTIVE, 0, 0)[0]['ret'] & 0xFFFFFFFF:08x}"
-    view = ui.ctls(child, {"view": AFX_PANE})["view"]
-    # 经界面线程读一次（上一单刚提交时界面线程忙一阵），等它缓过来再投键
-    ui.text(view, SPIRIT_IDLE)
-    before = _tops()
-    for ch in code:
-        # 数字键扫描码 1..9→2..10、0→11
-        _press(view, ord(ch), 11 if ch == "0" else int(ch) + 1)
-    spirit = ui.wait(
-        lambda: f"键盘精灵弹出（已向「{ui.title(child)}」视图 {view} 投 {code}），期间新窗口："
-        + ("、".join(f"「{n['title']}」" for h, n in _tops().items() if h not in before) or "无"),
-        lambda: next(
-            (h for h, n in _tops().items() if h not in before and n["title"] == SPIRIT),
-            None,
-        ),
-        3,
-    )
-    c = ui.ctls(spirit, {"edit": SPIRIT_EDIT, "list": SPIRIT_LIST})
-    (at,) = ui.wait(
-        lambda: f"键盘精灵筛出 {code} {name}，输入「{ui.text(c['edit'])}」",
-        lambda: _pick(c, code, name),
-        1,
-    )
-    SHIM("send", c["list"], LB_SETCURSEL, at, 0)
-    _press(c["edit"], VK_RETURN, SC_RETURN)
-    ui.wait(
-        lambda: f"主窗切到「{name}」，现为「{ui.title(main)}」"
-        + ("（键盘精灵还开着）" if spirit in _tops() else ""),
-        lambda: _bare(ui.title(main)).endswith(want),
-        3,
-    )
+    mkt = x["market_flag"]
+    assert mkt in LINK_MKT, f"{x['code']} 沪深标志 {mkt} 没有联动前缀"
+    msg = SHIM("regmsg", LINK)[0]["msg"]
+    wp = LINK_MKT[mkt] * 10**6 + int(x["code"])
+    t0 = time.monotonic()
+    n = 0
+    while not _bare(ui.title(main)).endswith(want):
+        dt = time.monotonic() - t0
+        assert dt < LINK_TIMEOUT, (
+            f"{LINK_TIMEOUT}s 内主窗未切到「{x['name']}」，现为「{ui.title(main)}」"
+            f"（联动 {wp} 已投 {n} 次）"
+        )
+        if dt >= n * LINK_REPOST:
+            ui.post(main, msg, wp)
+            n += 1
+        time.sleep(0.05)
 
 
 def _settext(h, s):
@@ -205,7 +162,7 @@ def _switch(o):
     main = SHIM("find", MAIN_WND)
     assert len(main) == 1, "找不到通达信主窗"
     o.main = main[0]["hwnd"]
-    _goto(o.main, o.code, o.sec["name"])
+    _goto(o.main, o.sec)
     return {}
 
 
@@ -267,7 +224,7 @@ def _confirm(o):
 
 
 def _reply(o):
-    """读回报、点掉；等回报框、确认框、闪电窗都关了才算完（下一单紧接着敲代码，键盘精灵要落在主窗上）。"""
+    """读回报、点掉；等回报框、确认框、闪电窗都关了才算完（下一单紧接着切图表、开窗）。"""
     res = _popup((RESULT_TITLE,), 10, lambda: ui.command(o.box, MSG_YES))
     body = _body(res)
     ui.command(res, MSG_YES)

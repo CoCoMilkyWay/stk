@@ -14,6 +14,7 @@
 //   settext <target> <utf8>       {ret}
 //   post <target> <msg> <wp> <lp> {ret}  PostMessageW
 //   send <target> <msg> <wp> <lp> {ret}  SendMessageW
+//   regmsg <name>                 {msg}  RegisterWindowMessageW
 //   click <target>                {ret}  BM_CLICK
 //   clickat <target> <x> <y>      {client:[x,y]}  屏幕坐标投递左键按下+抬起
 //                                 （clickat / mouse 投递前把进程内光标钉在该处，
@@ -641,6 +642,17 @@ static const char *cmd_send(struct out *o, HWND h, char *a) {
   if (!m.msg)
     return "msg=0";
   emit(o, "{\"ret\":%ld}\n", (long)SendMessageW(h, m.msg, m.wp, m.lp));
+  return NULL;
+}
+
+static const char *cmd_regmsg(struct out *o, HWND h, char *a) {
+  wchar_t w[256];
+  if (!*a || strlen(a) >= 256)
+    return "expected <name>";
+  u2w(a, w, 256);
+  UINT m = RegisterWindowMessageW(w);
+  assert(m);
+  emit(o, "{\"msg\":%u}\n", m);
   return NULL;
 }
 
@@ -2695,6 +2707,7 @@ static const struct cmd CMDS[] = {
     {"settext", cmd_settext, ARG_REQ},
     {"post", cmd_post, ARG_REQ},
     {"send", cmd_send, ARG_REQ},
+    {"regmsg", cmd_regmsg, ARG_NONE},
     {"click", cmd_click, ARG_REQ},
     {"clickat", cmd_clickat, ARG_REQ},
     {"highlight", cmd_highlight, ARG_REQ},

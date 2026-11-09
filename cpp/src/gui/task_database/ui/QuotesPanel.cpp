@@ -1,4 +1,5 @@
 #include "gui/task_database/ui/QuotesPanel.hpp"
+#include "gui/Tasks.hpp"      // StatusColor (补分钟进度条 = 进行中色)
 #include "gui/util/Chart.hpp" // kUp / kDn / tint / button_bar / EndTag
 #include "shared/AssetAxis.hpp"
 
@@ -916,7 +917,28 @@ Source source_of(const BasketState &st, const OverlayPick &p) {
   return {f.data->list[k].get(), &(*f.today)[k]};
 }
 
-// 叠加图左上角 (corner; < 0 = 图没起来): bars() 画档位条, 再 "重载" (悬停看 note), 当日分钟未补齐时行尾小字待补只数;
+// 新浪补当日分钟 K 的进度, 接在上一项行尾 (无事不画): 在取 → 进行中色进度条 "新浪补分钟 已取 / 共" (随补取动);
+// 只剩等定稿的缺根 → 灰字待补只数; 悬停看说明
+void fill_chip(const QuoteStatus &qs) {
+  if (qs.pending == 0 && qs.gaps == 0)
+    return;
+  ImGui::SameLine(0, 8);
+  if (qs.pending > 0) {
+    const size_t n = qs.fetched + qs.pending;
+    char s[64];
+    std::snprintf(s, sizeof(s), "新浪补分钟 %zu / %zu", qs.fetched, n);
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, StatusColor(TaskStatus::Kind::Busy));
+    ImGui::ProgressBar(static_cast<float>(qs.fetched) / static_cast<float>(n), ImVec2(ImGui::CalcTextSize(s).x + 16, ImGui::GetTextLineHeight()), s);
+    ImGui::PopStyleColor();
+  } else {
+    ImGui::TextDisabled("待补 %zu 只", qs.gaps);
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("当日分钟补取中: 在取 %zu 根 / 已取 %zu, %zu 只待补 (含等定稿的)\n未补齐的分钟暂按前收持平, 曲线随补取更新", qs.pending,
+                      qs.fetched, qs.gaps);
+}
+
+// 叠加图左上角 (corner; < 0 = 图没起来): bars() 画档位条, 再 "重载" (悬停看 note), 行尾新浪补分钟进度 (fill_chip);
 //   hint 非空 → 下一行提示
 template <class Tools>
 void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *hint, const QuoteStatus &qs, const Tools &bars) {
@@ -929,12 +951,7 @@ void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *
     f.reload = true;
   if (ImGui::IsItemHovered() && note[0])
     ImGui::SetTooltip("%s", note);
-  if (qs.gaps) {
-    ImGui::SameLine(0, 8);
-    ImGui::TextDisabled("补取 %zu", qs.gaps);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("当日分钟补取中: %zu 只待补 (已取 %zu)\n未补齐的分钟暂按前收持平, 曲线随补取更新", qs.gaps, qs.fetched);
-  }
+  fill_chip(qs);
   if (hint) {
     ImGui::SetCursorScreenPos(ImVec2(corner.x + 4, corner.y + 4 + ImGui::GetFrameHeightWithSpacing()));
     ImGui::TextDisabled("%s", hint);
@@ -968,13 +985,13 @@ void RenderStockPanel(const Market &mk, StockState &st, const std::string &title
   if (qs.date == 0)
     std::snprintf(note, sizeof(note), "新浪: 等待首轮快照…");
   else if (qs.fill)
-    std::snprintf(note, sizeof(note), "新浪 %02d:%02d:%02d · 分钟 K 已补 %zu / 待补 %zu", qs.sec / 3600, qs.sec / 60 % 60, qs.sec % 60,
-                  qs.fetched, qs.pending);
+    std::snprintf(note, sizeof(note), "新浪 %02d:%02d:%02d · 当日分钟由分钟 K 补", qs.sec / 3600, qs.sec / 60 % 60, qs.sec % 60);
   else
     std::snprintf(note, sizeof(note), "新浪 %02d:%02d:%02d · 当日分钟由 bar1m 给", qs.sec / 3600, qs.sec / 60 % 60, qs.sec % 60);
   const Feed &f = st.feed;
   if (!f.data || f.data->keys.empty()) {
     ImGui::TextDisabled("%s", note);
+    fill_chip(qs);
     ImGui::TextWrapped(f.want.empty() ? "点表格中的一行查看行情." : "读取历史…");
     return;
   }
@@ -993,6 +1010,7 @@ void RenderStockPanel(const Market &mk, StockState &st, const std::string &title
   else
     gap_note(kl, today, note, sizeof(note));
   header(title.c_str(), kl, today, note);
+  fill_chip(qs);
   charts("stock", is, ds, static_cast<uint64_t>(f.shown) << 32, st.chart, mk.quote->book(id), qs.date);
 }
 

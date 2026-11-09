@@ -9,12 +9,16 @@
 #   购买力 = C' + min(L, max(0, X'))（融资保证金比例按 100% 计）。
 #   行使：C'、X'、L 各 × pct 为本次可用额度，以下都在其内。
 #   买入：名单里可作担保品买入的（否则不可买：不在担保品表 / 担保状态非正常 / 北交所）等权补到共同目标市值 V，
-#     缺口 need = max(0, V − 卖后市值)，多了不卖。融资标的先融资：按保证金比例从低到高分，
+#     缺口 need = V − 卖后市值，不足该只最小单元即不补（多了不卖）。融资标的先融资：按保证金比例从低到高分，
 #     Σ 比例 × 融资额 ≤ X'、Σ 融资额 ≤ L；其余（含融不到的部分）用现金，现金买入 + 全部买入费用 ≤ C'。
-#     现金需求随 V 不减、随并入的只数不减，故 V 二分到可行的最大（精度 TOL），并入下一只时以上一个 V 为上界。
-#   入选：先融资标的、后其余，各按排名逐只试并入，并入后的 V 下未开仓的（卖后市值不足一个最小单元）缺口都够一个最小单元才收，否则跳过；
-#     最小单元 = max(起买股数, unit / 参考价) 取整步长的股数 × 委托价。购买力少时只开融资标的里排名靠前的，多了即铺开、近于等权。
-#   下单：缺口按委托价折股、取整手，不足起买量或不足 unit 的单不做；预期行使购买力 = Σ 买单额（参考价计）。
+#     每只的融资腿、现金腿也各为 0 或够一个最小单元：融不满时融资腿让出一个最小单元给现金腿，融资腿不足一个最小单元即全用现金。
+#     V 在 [0, 上界] 里二分取可行的（精度 TOL），并入下一只时以上一个 V 为上界；
+#     现金需求大体随 V 增，只在缺口与腿够上最小单元处分段跳变，二分取到的未必是最大。
+#   入选：先融资标的、后其余，各按排名逐只试并入，并入后的 V 够得上其中卖后无持仓各只的最小单元才收，否则跳过；
+#     已持有的不设门槛，缺口够一个最小单元即补。购买力少时只开融资标的里排名靠前的，多了即铺开、近于等权。
+#   委托价：买 n 股按 n × 参考价的额定价（与 order 同算）；一腿 a 元买 n × 委托价 ≤ a 的最大整步长股数。
+#     最小单元 = max(起买股数, unit / 参考价) 取整步长的股数 × 其委托价，即恰能买出这些股的最小额。
+#   下单：各腿按上述折股；预期行使购买力 = Σ 买单额（参考价计）。
 #     卖单与买单同形：各行 {order 单, skip 不做的原因}，持仓行一单、名单行融资 / 现金两腿。
 #   成本 = 各单按 5 档吃出的滑点（相对参考价，竞价中计 0）+ 费用（佣金万 1 双向、印花税 0.05% 卖、过户费 0.001% 双向）。
 #   账户现 / 调仓后两栏同形（_sheet）：预期总资产 = 现总资产 + 融资额 − 成本，预期净资产 = 现净资产 − 成本，
@@ -83,14 +87,16 @@ def _why(t):
     return None
 
 
-def _leg(q, s, n, lot, px, unit, credit_, x):
-    """证券 x 一单 n 股 → (单, None)：参考价计额、5 档吃出滑点；不足 lot 股或不足 unit 元 → (None, 原因)。"""
-    r = book.ref(q)
-    amt = n * r
-    if n < lot:
-        return None, f"不足一手（{lot} 股）"
-    if amt < unit:
-        return None, "不足最小单元"
+def _least(r, unit, lot, step):
+    """一单最少股数：够 lot 股、按参考价 r 计够 unit 元，取整步长。"""
+    return math.ceil(max(lot, unit / r) / step) * step
+
+
+def _leg(q, s, n, least, px, credit_, x):
+    """证券 x 一单 n 股 → (单, None)：参考价计额、5 档吃出滑点；不足 least 股 → (None, 原因)。"""
+    if n < least:
+        return None, f"不足最小单元（{least} 股）"
+    amt = n * book.ref(q)
     slip, full = book.cost(q, s, amt)
     return {
         **x,
@@ -138,9 +144,8 @@ def _sells(st, terms, cfg):
                 q,
                 SELL,
                 n,
-                1 if n == avail else lot,
+                _least(px, cfg["unit"], *((1, 1) if n == avail else (lot, step))),
                 book.order_px(q, SELL, cfg["px"], n * px) or px,
-                cfg["unit"],
                 "plain",
                 sec(h),
             )
@@ -148,44 +153,67 @@ def _sells(st, terms, cfg):
     return rows, [r["order"] for r in rows if r["order"]]
 
 
+def _px(q, mode, n):
+    """买 n 股的委托价：按 n × 参考价的额定（与 order 同算）；竞价中或空盘取参考价。"""
+    r = book.ref(q)
+    return book.order_px(q, BUY, mode, n * r) or r
+
+
+def _qty(q, mode, a, step):
+    """a 元能买的最多股数（整步长）：n × _px(n) ≤ a，左边随 n 增，二分 n / step。"""
+    lo, hi = 0, int(a / (step * _px(q, mode, step))) + 1
+    while lo < hi:
+        k = (lo + hi + 1) // 2
+        lo, hi = (k, hi) if k * step * _px(q, mode, k * step) <= a else (lo, k - 1)
+    return lo * step
+
+
 def _targets(codes, terms, quotes, bal, cfg):
-    """可买的各只 → {代码: {held 卖后市值, ratio 融资保证金比例（非融资标的为 None）, px 做一个最小调仓单元的委托价,
+    """可买的各只 → {代码: {held 卖后市值, ratio 融资保证金比例（非融资标的为 None）, least 一单最少股数,
     min 最小单元}}。"""
     tgt = {}
     for c in codes:
         t, q = terms[c], quotes[c]
         r = book.ref(q)
         assert r, f"{c} {t.name} 没有参考价"
-        px = book.order_px(q, BUY, cfg["px"], cfg["unit"]) or r
-        lot, step = book.lot(c)
+        n = _least(r, cfg["unit"], *book.lot(c))
         tgt[c] = {
             "held": bal.get(c, 0.0) * q["price"],
             "ratio": t.ratio if t.financeable else None,
-            "px": px,
-            "min": math.ceil(max(lot, cfg["unit"] / r) / step) * step * px,
+            "least": n,
+            "min": n * _px(q, cfg["px"], n),
         }
     return tgt
 
 
 def _fill(V, tgt, X, L):
-    """目标市值 V 下各只缺口与融资额，及现金需求 → (need, fin, cash)；tgt 已按保证金比例从低到高排。"""
-    need = {c: max(0.0, V - x["held"]) for c, x in tgt.items()}
-    fin, xb, lb = {}, max(0.0, X), L
+    """目标市值 V 下各只两腿 → ({代码: (融资额, 现金额)}, 现金需求)；tgt 已按保证金比例从低到高排。
+    缺口与两腿各为 0 或够该只最小单元（见文件头）。"""
+    legs, xb, lb = {}, max(0.0, X), L
     for c, x in tgt.items():
-        if x["ratio"] is None:
+        m, g = x["min"], V - x["held"]
+        if g < m:
+            legs[c] = (0.0, 0.0)
             continue
-        f = min(need[c], lb, xb / x["ratio"])
-        fin[c], xb, lb = f, xb - x["ratio"] * f, lb - f
-    total = sum(need.values())
-    return need, fin, total - sum(fin.values()) + fee(total, BUY)
+        f = 0.0 if x["ratio"] is None else min(g, lb, xb / x["ratio"])
+        p = g - f
+        if 0 < p < m:
+            f, p = g - m, m
+        if f < m:
+            f, p = 0.0, g
+        legs[c] = (f, p)
+        if f:
+            xb, lb = xb - x["ratio"] * f, lb - f
+    need = sum(f + p for f, p in legs.values())
+    return legs, sum(p for _, p in legs.values()) + fee(need, BUY)
 
 
 def _level(tgt, C, X, L, hi):
-    """tgt 等权补齐可行的最大目标市值 V：在 [0, hi] 里二分到 TOL。"""
+    """tgt 等权补齐可行的目标市值 V：在 [0, hi] 里二分到 TOL（见文件头）。"""
     lo = 0.0
     while hi - lo > TOL:
         mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if _fill(mid, tgt, X, L)[2] <= C else (lo, mid)
+        lo, hi = (mid, hi) if _fill(mid, tgt, X, L)[1] <= C else (lo, mid)
     return lo
 
 
@@ -197,14 +225,14 @@ def _pick(tries, tgt, C, X, L):
     for c in tries:
         s = {k: tgt[k] for k in by_ratio if k in picked or k == c}
         v = _level(s, C, X, L, V)
-        if all(v - x["held"] >= x["min"] for x in s.values() if x["held"] < x["min"]):
+        if all(v >= x["min"] for x in s.values() if not x["held"]):
             picked.add(c)
             V = v
     return {k: tgt[k] for k in by_ratio if k in picked}, V if picked else 0.0
 
 
-def _buys(codes, terms, quotes, tgt, picked, need, fin, cfg):
-    """名单各行（带融资 / 现金两腿 {credit, want, order, skip}）→ (行, 买单)，买单融资在前；各腿按其额定委托价。"""
+def _buys(codes, terms, quotes, tgt, picked, V, legs, cfg):
+    """名单各行（带融资 / 现金两腿 {credit, want, order, skip}）→ (行, 买单)，买单融资在前；各腿按 _qty 折股。"""
     rows, buys = [], []
     for i, c in enumerate(codes, 1):
         t = terms.get(c)
@@ -227,16 +255,19 @@ def _buys(codes, terms, quotes, tgt, picked, need, fin, cfg):
         if c not in picked:
             row["skip"] = "购买力不够开仓"
             continue
-        q = quotes[c]
-        lot, step = book.lot(c)
-        row["need"] = need[c]
-        f = fin.get(c, 0.0)
-        for cr, part in (("margin", f), ("plain", need[c] - f)):
-            if part <= 0:
+        f, p = legs[c]
+        row["need"] = f + p
+        if not row["need"] and V > tgt[c]["held"]:
+            row["skip"] = "缺口不足最小单元"
+            continue
+        q, step = quotes[c], book.lot(c)[1]
+        for cr, part in (("margin", f), ("plain", p)):
+            if not part:
                 continue
-            px = book.order_px(q, BUY, cfg["px"], part) or tgt[c]["px"]
-            n = int(part / px) // step * step
-            o, skip = _leg(q, BUY, n, lot, px, cfg["unit"], cr, sec(t._asdict()))
+            n = _qty(q, cfg["px"], part, step)
+            o, skip = _leg(
+                q, BUY, n, tgt[c]["least"], _px(q, cfg["px"], n), cr, sec(t._asdict())
+            )
             row["legs"].append({"credit": cr, "want": part, "order": o, "skip": skip})
             if o:
                 buys.append(o)
@@ -278,8 +309,8 @@ def plan(st, terms, codes, cfg):
     tgt = _targets(ok, terms, quotes, bal, cfg)
     tries = sorted(ok, key=lambda c: tgt[c]["ratio"] is None)
     picked, V = _pick(tries, tgt, C * pct, X * pct, L * pct)
-    need, fin, _ = _fill(V, picked, X * pct, L * pct)
-    targets, buys = _buys(codes, terms, quotes, tgt, picked, need, fin, cfg)
+    legs, _ = _fill(V, picked, X * pct, L * pct)
+    targets, buys = _buys(codes, terms, quotes, tgt, picked, V, legs, cfg)
 
     orders = [*sells, *buys]
     F = sum(o["amount"] for o in buys if o["credit"] == "margin")
