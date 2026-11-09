@@ -11,7 +11,7 @@
 //
 //   比较口径 (契约): 掩码必须**逐位相等**; 有效位上 |Δ| ≤ atol + rtol·max(|a|,|b|).
 //   属性列也对拍: 流式 TS struct::kT 与 OpTable 的 T 窗列不符 → static_assert 错.
-//   造数 / 配方 / 容差 / 比较 / 驱动在 factor/Check.hpp (与 GUI Factors→Operators 页共用同一口径);
+//   造数 / 配方 / 容差 / 比较 / 驱动在 factor/Check.hpp (与 GUI Alpha→Operators 页共用同一口径);
 //   本文件只剩 profile × d 全扫 + 汇总. 本 TU 依赖受控浮点, CMake 里整 target -fno-fast-math.
 //   单算子之后一节 Fuse (逐点链融合: 随机表达式树, 融合 DAG 与不融合 DAG 在 cpu / gpu 上各自逐位相等): --op Fuse 单跑.
 //   末尾另有一节 Stat (因子评估算子, factor/Stat; 不在 OpTable, 无流式后端, cpu ↔ gpu 两方 match): --op Stat 单跑.

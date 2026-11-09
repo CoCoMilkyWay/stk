@@ -1281,7 +1281,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data) {
     for (const LibId l : lib_ids())
       if (picked_libs & lib_bit(l))
         names += (names.empty() ? "" : " / ") + lib_name(l);
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "选中特征跨多个库 (%s), 请在 Feature 页只选一个库的特征", names.c_str());
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "选中特征跨多个库 (%s), 请在 Table 页只选一个库的特征", names.c_str());
     return;
   }
   // 主库变了 = SecKey / PickKey 变了 → 图1 / Pick 自然重发

@@ -1,28 +1,29 @@
-// Task Features - Feature Engineering Task
+// Task Features - 特征面板与调试工具: 特征表 / 分布 / 变换 / 相关 / 订单流 / 节点用时.
+//   作用域 (池 / 档 / 层) 在 Table 页自选 (Feature::Selection, 与 Alpha 页顶条互不相干); 库由 Beta / Alpha → Compute 算,
+//   本任务盯计算面的轮次 (ComputeHub::rounds) 作废预览 / 矩阵 / 订单流清单, 计算在飞时锁住其它页.
 #include "gui/task_features/TaskFeatures.hpp"
-#include "features/Storage/FeatureRead.hpp"
 #include "gui/Tasks.hpp"
-#include "gui/task_features/services/ComputeService.hpp"
+#include "gui/compute/ui/TabCompute.hpp"
 #include "gui/task_features/services/CorrService.hpp"
 #include "gui/task_features/services/DistService.hpp"
 #include "gui/task_features/services/OrderFlowService.hpp"
 #include "gui/task_features/services/PreviewService.hpp"
 #include "gui/task_features/services/TransformService.hpp"
-#include "gui/task_features/ui/TabCompute.hpp"
 #include "gui/task_features/ui/TabCorr.hpp"
 #include "gui/task_features/ui/TabDist.hpp"
 #include "gui/task_features/ui/TabFeature.hpp"
 #include "gui/task_features/ui/TabOrderFlow.hpp"
 #include "gui/task_features/ui/TabTransform.hpp"
 #include "shared/Analysis.hpp"
-#include "shared/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
 
-#include <algorithm>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace GUI::Tasks {
 
@@ -31,12 +32,12 @@ namespace GUI::Tasks {
 // ============================================================================
 
 enum TabIdx {
-  TAB_COMPUTE = 0,
-  TAB_FEATURE,
-  TAB_CORR,
+  TAB_TABLE = 0,
   TAB_DIST,
   TAB_TRANSFORM,
+  TAB_CORR,
   TAB_ORDERFLOW,
+  TAB_NODETIME,
   TAB_COUNT
 };
 
@@ -45,8 +46,10 @@ enum TabIdx {
 // ============================================================================
 
 struct TaskFeaturesState {
+  std::shared_ptr<Compute::ComputeHub> compute; // 与 Beta / Alpha 共用
+  uint64_t rounds = 0;                          // 已处理的计算轮次 (ComputeHub::rounds)
+
   // Services
-  std::unique_ptr<Features::ComputeService> compute_service;
   std::unique_ptr<Features::OrderFlowService> orderflow_service;
   std::unique_ptr<Features::DistService> dist_service;
   std::unique_ptr<Features::TransformService> transform_service;
@@ -60,10 +63,8 @@ struct TaskFeaturesState {
   int locked_tab = -1;
   bool tabs_locked = false;
   // 每帧 Update 产出 (帧首写, 左栏/Draw 同帧读)
-  bool inputs_ready = false;        // 数据库扫描完 + 回测日历就绪
   bool tab_enabled[TAB_COUNT] = {}; // 左栏子行使能
   Features::FeatureUIState feature_ui_state;
-  Features::ComputeState compute_state;
   Features::TransformUIState transform_ui_state;
   Features::DistUIState dist_ui_state;
   Features::CorrUIState corr_ui_state;
@@ -73,9 +74,6 @@ struct TaskFeaturesState {
   bool transform_tab_was_active = false;
   // Corr: 切走只中断 (矩阵留在内存); 请求由 TabCorr 按"过滤行集变了"自发, 不走 StreamTabLifecycle
   bool corr_tab_was_active = false;
-
-  // Compute 进度面上一帧阶段 (忙 → 非忙 = 一轮收尾)
-  Phase prev_compute_phase = Phase::Idle;
 
   // 流式分析三件 (Dist / Transform / Preview) 同点起 worker: 输入就绪一次 (切出任务时回收并复位)
   bool streams_started = false;
@@ -108,8 +106,9 @@ static void StreamTabLifecycle(bool open, bool &was_active, const Progress &st,
 // Task Features Implementation
 // ============================================================================
 
-TaskHandle CreateFeaturesTask() {
+TaskHandle CreateFeaturesTask(std::shared_ptr<Compute::ComputeHub> compute) {
   auto state = std::make_shared<TaskFeaturesState>();
+  state->compute = std::move(compute);
 
   TaskHandle handle;
   handle.name = "Features";
@@ -141,44 +140,29 @@ TaskHandle CreateFeaturesTask() {
   };
 
   // 子项 (叶子) 名字, 顺序与 TabIdx 一致
-  handle.tabs = {"Compute", "Feature", "Corr", "Dist", "Transform", "OrderFlow"};
+  handle.tabs = {"Table", "Distribution", "Transform", "Correlation", "OrderFlow", "NodeTime"};
 
   // Update: 每帧 (无论选中) 更新 taskstate.features + tab 锁定/使能 ——
-  // 左栏标签/使能同帧读取, 不依赖 "打开过 Features 页" 的上一帧缓存
+  // 左栏标签/使能同帧读取, 不依赖 "打开过 Features 页" 的上一帧缓存 (计算面已由 Beta 的 Update 先推进)
   handle.Update = [state](SharedData &data) {
-    auto &fs = data.taskstate.features;
-    state->inputs_ready =
-        data.taskstate.database.all_json_ready &&
-        data.taskstate.database.binary_scanned &&
-        data.asset.binary.exists &&
-        !data.asset.backtest.days.empty() &&
-        !data.taskstate.database.l2_scan_inflight;
+    const Compute::ComputeHub &hub = *state->compute;
     const bool has_selection = data.feature.selection.primary() != nullptr;
-    fs.has_selection = has_selection;
+    data.taskstate.features.has_selection = has_selection;
 
-    // 计算服务输入就绪即建 (自动续算不等进 Features 页), 其余 Services 懒创建 (首次 Draw)
-    if (state->inputs_ready && !state->compute_service)
-      state->compute_service = std::make_unique<Features::ComputeService>(data);
-    if (state->compute_service) {
-      Features::TickCompute(*state->compute_service, state->compute_state, data, state->inputs_ready);
-      // 一轮收尾 (池表重扫在 TickCompute): 新库落盘 → OrderFlow 按新清单重建 + 重扫, 预览成品作废并重抽, 相关矩阵作废 (没建 / 没起的首次 Draw 自然按新库)
-      const Phase current_phase = state->compute_service->phase.load(std::memory_order_acquire);
-      if (state->prev_compute_phase == Phase::Running && (current_phase == Phase::Done || current_phase == Phase::Cancelled)) {
-        data.preview.forget();
-        if (state->orderflow_service) {
-          state->orderflow_service = std::make_unique<Features::OrderFlowService>();
-          data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
-        }
-        if (state->streams_started) {
-          state->preview_service->RequestCompute(data);
-          Features::InvalidateCorrRequests(state->corr_ui_state);
-        }
+    // 一轮收尾 (池表重扫在 TickCompute): 新库落盘 → OrderFlow 按新清单重建 + 重扫, 预览成品作废并重抽, 相关矩阵作废 (没建 / 没起的首次 Draw 自然按新库)
+    if (hub.rounds != state->rounds) {
+      state->rounds = hub.rounds;
+      data.preview.forget();
+      if (state->orderflow_service) {
+        state->orderflow_service = std::make_unique<Features::OrderFlowService>();
+        data.orderflow.needs_rescan.store(true, std::memory_order_relaxed);
       }
-      state->prev_compute_phase = current_phase;
+      if (state->streams_started) {
+        state->preview_service->RequestCompute(data);
+        Features::InvalidateCorrRequests(state->corr_ui_state);
+      }
     }
-    const bool compute_busy = state->compute_service && state->compute_service->busy();
-    // 点下 Compute 起到一轮收尾 (弹窗状态机非 Idle): 共享数据冻结
-    fs.computing = state->compute_state.ui_state != Features::ComputeUIState::Idle;
+    const bool compute_busy = hub.service && hub.service->busy();
 
     // Tab 锁定: 计算期间锁住其它 tab (Dist/Transform 是流式构建, 切走即取消, 不参与锁)
     if (compute_busy) {
@@ -186,7 +170,7 @@ TaskHandle CreateFeaturesTask() {
         state->tabs_locked = true;
         state->locked_tab = state->active_tab;
         if (state->locked_tab < 0)
-          state->locked_tab = TAB_FEATURE;
+          state->locked_tab = TAB_TABLE;
       }
     } else {
       state->tabs_locked = false;
@@ -195,14 +179,14 @@ TaskHandle CreateFeaturesTask() {
 
     // 子行使能表 (whitelist), 顺序与 TabIdx 一致
     auto is_locked = [&](int tab) { return state->tabs_locked && state->locked_tab != tab; };
-    const bool inputs_ready = state->inputs_ready;
+    const bool inputs_ready = hub.inputs_ready;
     const bool disable[TAB_COUNT] = {
-        !inputs_ready || is_locked(TAB_COMPUTE),                     // Compute: needs scanned inputs
-        is_locked(TAB_FEATURE),                                      // Feature: always accessible
-        !inputs_ready || is_locked(TAB_CORR),                        // Corr: 矩阵按过滤行集算, 不看选中
+        is_locked(TAB_TABLE),                                        // Table: always accessible
         !inputs_ready || !has_selection || is_locked(TAB_DIST),      // Dist: needs inputs + selection
         !inputs_ready || !has_selection || is_locked(TAB_TRANSFORM), // Transform: needs inputs + selection
+        !inputs_ready || is_locked(TAB_CORR),                        // Corr: 矩阵按过滤行集算, 不看选中
         !inputs_ready || is_locked(TAB_ORDERFLOW),                   // OrderFlow: needs scanned inputs
+        is_locked(TAB_NODETIME),                                     // NodeTime: always accessible
     };
     for (int k = 0; k < TAB_COUNT; k++)
       state->tab_enabled[k] = !disable[k];
@@ -232,27 +216,15 @@ TaskHandle CreateFeaturesTask() {
   // Status: 子行状态标签 = 各 tab 实际进展 (任务行由子行聚合)
   handle.Status = [state](const SharedData &data, int idx) -> TaskStatus {
     switch (idx) {
-    case TAB_FEATURE: // 主 feature 选没选
-      if (!state->inputs_ready)
+    case TAB_TABLE: // 主 feature 选没选
+      if (!state->compute->inputs_ready)
         return {};
       return data.taskstate.features.has_selection
                  ? TaskStatus{TaskStatus::Kind::Ready, "selected"}
                  : TaskStatus{TaskStatus::Kind::Warn, "selecting"};
 
-    case TAB_COMPUTE: { // 全量特征计算
-      if (!state->inputs_ready)
-        return {TaskStatus::Kind::Muted, "waiting"};
-      const bool running = state->compute_service && state->compute_service->busy();
-      // 任一 reader (含 Factors 页) 判废删了某个库 → 待重算 (该库 compute 开跑即撤销登记; 哪个库见 Compute 页库表)
-      const auto lib_stale = [&](LibId l) { return FeatureRead::dir_stale(lib_dir(data.config, l)); };
-      if (!running && std::ranges::any_of(lib_ids(), lib_stale))
-        return {TaskStatus::Kind::Warn, "pending"};
-      if (!state->compute_service)
-        return {};
-      if (state->compute_service->cancelling())
-        return {TaskStatus::Kind::Busy, "cancelling"};
-      return ProgressStatus(*state->compute_service);
-    }
+    case TAB_NODETIME:
+      return {};
 
     case TAB_TRANSFORM:
       return ProgressStatus(data.transform);
@@ -278,9 +250,6 @@ TaskHandle CreateFeaturesTask() {
     state->active_tab = idx;
 
     // Lazy initialization
-    if (!state->compute_service) {
-      state->compute_service = std::make_unique<Features::ComputeService>(data);
-    }
     if (!state->orderflow_service) {
       state->orderflow_service = std::make_unique<Features::OrderFlowService>();
     }
@@ -307,7 +276,7 @@ TaskHandle CreateFeaturesTask() {
     // 构建内存按请求分配, 保留到切出 Features 任务 (OnCollapse 回收).
     // Preview 起手即自动构建 (全 L_1min 特征轮训抽样, 不依赖选中); Dist / Transform 等选中特征
     const LibId lib = data.feature.selection.lib();
-    if (!state->streams_started && state->inputs_ready && !data.asset.items.empty()) {
+    if (!state->streams_started && state->compute->inputs_ready && !data.asset.items.empty()) {
       state->dist_service->Start(data);
       state->transform_service->Start(data);
       state->preview_service->Start(data);
@@ -368,11 +337,11 @@ TaskHandle CreateFeaturesTask() {
     ImGui::BeginChild("FeaturesTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     switch (idx) {
-    case TAB_FEATURE:
-      Features::RenderTabFeature(data, state->feature_ui_state);
+    case TAB_TABLE:
+      Features::RenderTabTable(data, state->feature_ui_state);
       break;
-    case TAB_COMPUTE:
-      Features::RenderTabCompute(state->compute_service.get(), state->compute_state, data);
+    case TAB_NODETIME:
+      Features::RenderTabNodeTime(data);
       break;
     case TAB_TRANSFORM:
       Features::RenderTabTransform(state->transform_service.get(), data,
@@ -396,7 +365,6 @@ TaskHandle CreateFeaturesTask() {
 
   // Destroy
   handle.Destroy = [state]() {
-    state->compute_service.reset();   // 析构 Stop(): 取消 + join worker
     state->orderflow_service.reset(); // 析构 Stop() join worker
     if (state->dist_service)
       state->dist_service->Shutdown(); // Reinit 复用 SharedData, 构建内存一并释放

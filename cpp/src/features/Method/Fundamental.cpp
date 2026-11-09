@@ -75,8 +75,8 @@ inline float sum_nan0(std::initializer_list<float> xs) {
 // 首选缺失 → 回退
 inline float first_finite(float a, float b) { return std::isfinite(a) ? a : b; }
 
-// 资产态掩码位 (univ_mask; 母集 ⊂ 活跃)
-constexpr std::uint8_t kLive = 1, kBase = 2;
+// 资产态掩码位 (univ_mask)
+constexpr std::uint8_t kLive = 1;
 
 inline int year_of(Ymd d) { return d / 10000; }
 inline int month_of(Ymd d) { return d / 100 % 100; }
@@ -248,7 +248,7 @@ struct PitPool {
   std::vector<float> fin_repayment;    // 融资偿还额
   std::vector<float> sec_sales_qty;    // 融券卖出量 [股]
   std::vector<float> sec_repay_qty;    // 融券偿还量 [股]
-  std::vector<std::uint8_t> univ;      // 资产态掩码 (univ_mask: 行 d = d 日盘前态的 kLive | kBase; 切片前写入)
+  std::vector<std::uint8_t> univ;      // 资产态掩码 (univ_mask: 行 d = d 日盘前态的 kLive; 切片前写入)
 
   // 事件 (per-a, v 升序)
   std::vector<std::vector<FinancialTtmEv>> ttm;
@@ -567,11 +567,11 @@ void GridScan::finish(const Axes &axes, PitPool &p) const {
 }
 
 // ============================================================================
-// 行情派生 build_market: 全史网格 (切片前, g0 = 0) + 全史母集掩码 → Market (只留 [g0, n_d)); 数据日 T 的值落行 T+1.
-//   截面一律取母集 (univ_mask 的 kBase 位, 与节点侧 Fund base 口同一份): 数据日 T 的成员 = T 日盘前母集 (当日池),
-//   键的截面 (resvol) = T+1 日盘前母集 (PoolKey 在 T 收盘按次日态取母集)
+// 行情派生 build_market: 全史网格 (切片前, g0 = 0) + 全史活跃掩码 → Market (只留 [g0, n_d)); 数据日 T 的值落行 T+1.
+//   截面一律取活跃 (univ_mask 的 kLive 位, 与节点侧 Fund live 口 / all 库 cs_valid 同一份): 数据日 T 的成员 = T 日盘前活跃 (当日池),
+//   键的截面 (resvol) = T+1 日盘前活跃 (PoolKey 在 T 收盘按次日态取范围)
 //   后复权价 P_T = close_T · adj_T (停牌携带), 成交 = volume_T > 0, 日收益 r_T = P_T / P_{T−1} − 1 (T 有成交)
-//   市场收益 m_T = 母集当日有成交者 r 的等权均值 (= 母集等权指数日收益), 市场累计 I_T = Π (1 + m) (无 m 的日计 0)
+//   市场收益 m_T = 活跃当日有成交者 r 的等权均值 (= 活跃等权指数日收益), 市场累计 I_T = Π (1 + m) (无 m 的日计 0)
 //   扩张窗: 各口标称窗 W 取 min(W, 本资产可得史) (首个有价日起; 数据起点 / 新股同一条规则, 数据起点上全市场同窗长),
 //           同口的短窗 / 跳过段 / 最少样本按 窗 / W 同比例缩 ⇒ 史满 W 后即标称口径, 之前也一直有值
 //   ret_12_1  P_{T−20} / P_{T−250} − 1
@@ -580,7 +580,7 @@ void GridScan::finish(const Axes &axes, PitPool &p) const {
 //   ivol      近 250 日 (r, m) 成对 OLS 残差标准差 (≥ 120 对)
 //   beta      近 156 周周收益对市场周收益 OLS 斜率 (≥ 52 周): 周收益 = 5 日滚动收益 P_T / P_{T−5} − 1 逐日采样
 //             (对 I 同取), 窗 156 × 5 日, 不依赖自然周界; 扩张期周长取 min(5, 可得史)
-//   trend     均线信号 A_L(T) = MA_L(P)_T / P_T (L ∈ kTrendLags). 每日截面回归 (T−h 日母集, T−h 与 T 皆有成交, ≥ 200 只)
+//   trend     均线信号 A_L(T) = MA_L(P)_T / P_T (L ∈ kTrendLags). 每日截面回归 (T−h 日活跃, T−h 与 T 皆有成交, ≥ 200 只)
 //             P_T / P_{T−h} − 1 ~ 1 + A(T−h) 得系数 b_T (h = 20, 数据起点后先按 h ≤ 已过日数 / 2 扩张; 去均值 + 相对岭:
 //             史不满时长短均线重合, 协方差奇异); trend = Σ_L b̄_L · A_L(T), b̄ = 近 250 日有效 b_T 均值 (≥ 120 日)
 //   resvol    残差波动 (Barra RESVOL 结构, 权重数据驱动). 三项: dastd = 近 250 日日收益标准差 (与 ivol 同窗同对),
@@ -741,10 +741,10 @@ Market build_market(const Axes &axes, const PitPool &p, const std::vector<float>
   assert(p.g0 == 0 && p.n_g == n_d && "build_market 须在切片前");
   assert(p.univ.size() == static_cast<std::size_t>(n_a) * static_cast<std::size_t>(n_d) && "资产态掩码须先于行情派生");
   const auto sz = [](int i) { return static_cast<std::size_t>(i); };
-  const auto member = [&](int a, int d) { return (p.univ[sz(a) * sz(n_d) + sz(d)] & kBase) != 0; };
+  const auto member = [&](int a, int d) { return (p.univ[sz(a) * sz(n_d) + sz(d)] & kLive) != 0; };
   misc::exec::ForkJoin pool(misc::exec::hw());
 
-  // 数据起点 t0 = 最早有价的母集日 (趋势回归的扩张基准)
+  // 数据起点 t0 = 最早有价的活跃日 (趋势回归的扩张基准)
   int t0 = n_d;
   for (int a = 0; a < n_a; ++a) {
     const std::size_t o = sz(a) * sz(n_d);
@@ -920,7 +920,7 @@ Market build_market(const Axes &axes, const PitPool &p, const std::vector<float>
               r[3] = v[mk_beta] = static_cast<float>(cxy / cxx);
           }
         }
-        // resvol 暂存: 样本 = 键截面 (T+1 日盘前母集) ∧ 五项皆有限, 否则整格记无. 只供 resvol 的两项只给键截面算:
+        // resvol 暂存: 样本 = 键截面 (T+1 日盘前活跃) ∧ 五项皆有限, 否则整格记无. 只供 resvol 的两项只给键截面算:
         //   cmra = 月末价 P_{T − k·L} (k = 0..K) 的对数极差, 月长 L 随可得史扩张; log 市值 = log(收盘 × 总股本)
         if (member(a, T + 1)) {
           const int L = std::max(1, std::min(kMonth * kCmraMonths, h) / kCmraMonths), K = std::min(kCmraMonths, h / L);
@@ -1998,7 +1998,7 @@ struct State {
     return i0 >= 0 ? annuals[static_cast<std::size_t>(i0)].val : NaNF;
   }
 
-  // 母集判定所用的状态口 (上市龄 / 退市龄 / 行业 / 板块 / 停牌 / ST 与四项 filter / 次新); emit 与全史母集掩码共用
+  // 资产态口 (上市龄 / 退市龄 / 行业 / 板块 / ST 等级 / 四项预警 / 过滤表); emit 与全史活跃掩码共用
   void emit_status(int d, float *out) const {
     const Axes &axes = D.axes;
     const Meta &meta = D.meta;
@@ -2021,7 +2021,7 @@ struct State {
     out[Fund::list_age] = lage;
     out[Fund::delist_age] = dage;
 
-    // filter
+    // 四项预警
     const float rev = rev_ttm(), ni = ni_raw();
     const bool profit_st = d < profit_until;
     const bool revenue_st = mb && std::isfinite(rev) &&
@@ -2029,16 +2029,19 @@ struct State {
     const bool dividend_st = mb && d >= warmup_d && std::isfinite(ni) && ni > 0.0f &&
                              sum_3y < 0.30f * ni && sum_3y < 5e7f;
 
-    // 状态 / filter (0/1 常量)
+    // 状态 / 预警 (0/1 常量)
     out[Fund::ind_l1] = static_cast<float>(industry);
     out[Fund::board] = static_cast<float>(meta.board[ai]);
-    out[Fund::is_susp] = static_cast<float>(p.at(p.suspended, a, d));
     out[Fund::st_level] = static_cast<float>(p.at(p.st_status, a, d));
     out[Fund::st_profit] = profit_st ? 1.0f : 0.0f;
     out[Fund::st_revenue] = revenue_st ? 1.0f : 0.0f;
     out[Fund::st_dividend] = dividend_st ? 1.0f : 0.0f;
     out[Fund::st_trading] = (run >= 15) ? 1.0f : 0.0f;
-    out[Fund::is_new] = (std::isfinite(lage) && lage < kNewListDays) ? 1.0f : 0.0f;
+    // 过滤表 (1 = 滤掉)
+    out[Fund::flt_new] = (std::isfinite(lage) && lage < kNewListDays) ? 1.0f : 0.0f;
+    out[Fund::flt_susp] = static_cast<float>(p.at(p.suspended, a, d));
+    out[Fund::flt_noind] = industry > 0 ? 0.0f : 1.0f;
+    out[Fund::flt_warn] = (profit_st || revenue_st || dividend_st || run >= 15) ? 1.0f : 0.0f;
   }
 
   // 当日行 (布局 Fund::Out; 亿单位; fp16 饱和: 极值 / +inf 违约束标记 → NaN)
@@ -2054,7 +2057,6 @@ struct State {
     emit_status(d, out);
     const std::uint8_t u = p.at(p.univ, a, d); // 状态口的全史判定结果 (univ_mask)
     out[Fund::live] = (u & kLive) ? 1.0f : 0.0f;
-    out[Fund::base] = (u & kBase) ? 1.0f : 0.0f;
     const float m = mcap_raw(d);
     const FinancialTtmEv *t = ttm();
 
@@ -2235,9 +2237,8 @@ struct State {
 };
 
 namespace {
-// 全史资产态掩码 [a · n_d + d] = d 日盘前态的 kLive | kBase (全系统唯一一次判定; 切片前调, 状态机沿全 D 轴只推事件 + 状态口)
-//   活跃 kLive = 非北交所 ∧ 上市满 kNewListDays 日历日 ∧ 未退市 (delist_age 未定义) ∧ 非停牌 ∧ 申万一级行业已知
-//   母集 kBase = 活跃 ∧ st_level == 0 (非 ST / *ST / 退市整理期) ∧ st_trading / st_profit / st_revenue / st_dividend 皆 0
+// 全史资产态掩码 [a · n_d + d] = d 日盘前态的 kLive (全系统唯一一次判定; 切片前调, 状态机沿全 D 轴只推事件 + 状态口)
+//   活跃 kLive = 非北交所 ∧ 已上市 ∧ 未退市 (delist_age 未定义) ∧ 过滤表 flt_new / flt_susp / flt_noind 皆 0 (非次新 ∧ 非停牌 ∧ 申万一级行业已知)
 std::vector<std::uint8_t> univ_mask(const Data &data) {
   const int n_a = data.axes.n_a(), n_d = data.axes.n_d();
   assert(data.pit.g0 == 0 && data.pit.n_g == n_d && "univ_mask 须在切片前");
@@ -2252,11 +2253,9 @@ std::vector<std::uint8_t> univ_mask(const Data &data) {
       for (int d = 0; d < n_d; ++d) {
         s.step(d);
         s.emit_status(d, y);
-        const bool live = !bj && y[Fund::list_age] >= kNewListDays && !(y[Fund::delist_age] >= 0.0f) &&
-                          y[Fund::is_susp] == 0.0f && y[Fund::ind_l1] > 0.0f;
-        const bool base = live && y[Fund::st_level] == 0.0f && y[Fund::st_trading] == 0.0f && y[Fund::st_profit] == 0.0f &&
-                          y[Fund::st_revenue] == 0.0f && y[Fund::st_dividend] == 0.0f;
-        row[d] = static_cast<std::uint8_t>((live ? kLive : 0) | (base ? kBase : 0));
+        const bool live = !bj && y[Fund::list_age] >= 0.0f && !(y[Fund::delist_age] >= 0.0f) && y[Fund::flt_new] == 0.0f && y[Fund::flt_susp] == 0.0f &&
+                          y[Fund::flt_noind] == 0.0f;
+        row[d] = live ? kLive : 0;
       }
     }
   });

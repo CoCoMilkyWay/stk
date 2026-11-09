@@ -17,7 +17,7 @@
 // ============================================================================
 // Store — 本地数据集 output/fundamental/{YYYY-MM, _meta}/<name>.parquet + YYYY-MM/<name>/YYYY-MM-DD.parquet (Daily)
 //
-// Catalog: 一次目录遍历的本地清单 (表名 → 分片). sync / audit / 构建 / GUI Fundamental 页全只读它.
+// Catalog: 一次目录遍历的本地清单 (表名 → 分片). sync / audit / 构建 / GUI Sync 页全只读它.
 // Round  : 一轮的本地视图 = 清单 + 时刻 + 日历 (同一时刻各取一次); sync / audit 的 plan 只读它.
 // read / put: 本地唯一读点 / 唯一写点 (路径只在 Store 内拼).
 //

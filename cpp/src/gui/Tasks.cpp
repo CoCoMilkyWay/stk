@@ -1,11 +1,13 @@
 #include "gui/Tasks.hpp"
 #include "agent/ui/TaskAgent.hpp"
+#include "gui/compute/ui/TabCompute.hpp" // ComputeHub
+#include "gui/task_alpha/TaskAlpha.hpp"
+#include "gui/task_beta/TaskBeta.hpp"
 #include "gui/task_database/TaskDatabase.hpp"
-#include "gui/task_database/services/Market.hpp"
-#include "gui/task_factors/TaskFactors.hpp"
 #include "gui/task_features/TaskFeatures.hpp"
+#include "gui/task_market/TaskMarket.hpp"
+#include "gui/task_market/services/MarketHub.hpp"
 #include "gui/task_settings/TaskSettings.hpp"
-#include "gui/task_system_info/TaskSystemInfo.hpp"
 #include "gui/task_tools/TaskTools.hpp"
 #include "imgui.h"
 #include "shared/SharedData.hpp"
@@ -125,20 +127,26 @@ void TaskTree::Select(int task_idx, int tab_idx) {
 
 TaskTree CreateAllTasks(SharedData &data) {
   TaskTree tree;
-  tree.tasks.reserve(7);
+  tree.tasks.reserve(8);
 
-  const auto market = std::make_shared<Database::Market>(); // Assets / Portfolio 共用的行情
+  // 跨任务共用: 行情 (Database 的 Sync 页读状态, Market 各页用), 计算面 (Beta / Alpha 两个 Compute 页, Features 读轮次),
+  // 因子面 (Alpha 编辑组合, Market 画)
+  const auto market = std::make_shared<Market::MarketHub>();
+  const auto compute = std::make_shared<Compute::ComputeHub>();
+  const auto factors = Tasks::CreateAlphaHub();
   tree.tasks.push_back(Tasks::CreateSettingsTask());
-  tree.tasks.push_back(Tasks::CreateSystemInfoTask());
   tree.tasks.push_back(Tasks::CreateDatabaseTask(market));
-  tree.tasks.push_back(Tasks::CreateFeaturesTask());
-  tree.tasks.push_back(Tasks::CreateFactorsTask(market));
+  tree.tasks.push_back(Tasks::CreateBetaTask(compute));
+  tree.tasks.push_back(Tasks::CreateAlphaTask(compute, factors));
+  tree.tasks.push_back(Tasks::CreateMarketTask(market, factors));
+  tree.tasks.push_back(Tasks::CreateFeaturesTask(compute));
   tree.tasks.push_back(::agent::CreateAgentTask());
   tree.tasks.push_back(Tasks::CreateToolsTask());
 
   // 按 push 顺序立即 Init 一遍 (与"选中才 Draw"解耦, 后台检查提前起):
   // Settings 先把 config.json 落到内存, Database 才能在第一帧前拿到真实
   // backtest range 去跑覆盖检查 —— 顺序即依赖, 不需要额外判断.
+  // Update 也按此序: Beta 先推进计算面, Features 同帧读到.
   for (auto &handle : tree.tasks) {
     if (handle.Init)
       handle.Init(data);

@@ -1,0 +1,544 @@
+// Tab Dates - Calendar Grid View Implementation
+// Dense calendar display for trading day visualization
+
+#include "gui/task_database/ui/TabCalendar.hpp"
+#include "imgui.h"
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdio>
+#include <map>
+#include <set>
+
+namespace GUI::Database {
+
+// Color constants - Fill colors
+constexpr ImVec4 COLOR_YELLOW = ImVec4(1.0f, 0.95f, 0.2f, 1.0f); // Yellow: Dividend/split
+constexpr ImVec4 COLOR_BLUE = ImVec4(0.3f, 0.7f, 1.0f, 1.0f);    // Blue: Has L2 data
+constexpr ImVec4 COLOR_GREEN = ImVec4(0.3f, 0.95f, 0.4f, 1.0f);  // Green: Backtest trading day
+constexpr ImVec4 COLOR_PURPLE = ImVec4(0.7f, 0.3f, 0.9f, 1.0f);  // Purple: Holiday
+constexpr ImVec4 COLOR_GRAY = ImVec4(0.3f, 0.3f, 0.3f, 1.0f);    // Gray: Other
+constexpr ImVec4 COLOR_HOVER = ImVec4(1.0f, 0.95f, 0.3f, 1.0f);  // Hover highlight
+
+// Border colors - Completeness
+constexpr ImVec4 BORDER_GREEN = ImVec4(0.2f, 0.9f, 0.3f, 1.0f);   // 100%
+constexpr ImVec4 BORDER_YELLOW = ImVec4(0.95f, 0.9f, 0.2f, 1.0f); // 95-99%
+constexpr ImVec4 BORDER_RED = ImVec4(0.95f, 0.2f, 0.2f, 1.0f);    // <95%
+
+constexpr float CELL_SIZE = 12.0f;       // 12px cell
+constexpr float BORDER_THICKNESS = 2.0f; // Border thickness in pixels (1/2/3)
+constexpr float MONTH_SPACING = 15.0f;   // Space between months
+
+// ============================================================================
+// Helper: Date conversion utilities
+// ============================================================================
+
+// Get day of week (0=Sun, 1=Mon, ..., 6=Sat)
+int GetDayOfWeek(misc::Ymd date) { return (misc::weekday_of(date) + 1) % 7; }
+
+bool IsLeapYear(int year) {
+  return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+int DaysInMonth(int year, int month) {
+  assert(month >= 1 && month <= 12);
+
+  static constexpr int days_by_month[] = {
+      31, 28, 31, 30, 31, 30,
+      31, 31, 30, 31, 30, 31};
+
+  if (month == 2 && IsLeapYear(year)) {
+    return 29;
+  }
+
+  return days_by_month[month - 1];
+}
+
+// ============================================================================
+// Build Daily Statistics from all data sources
+// ============================================================================
+
+std::map<misc::Ymd, DailyStats> BuildDailyStats(
+    const AssetInfo &info,
+    const Asset &asset_data,
+    misc::Ymd backtest_start,
+    misc::Ymd backtest_end) {
+
+  std::map<misc::Ymd, DailyStats> stats_map;
+
+  // Step 1: Initialize from info.days (trading calendar)
+  for (const CalendarDay &day : info.days) {
+    const misc::Ymd date = day.date;
+
+    DailyStats &stats = stats_map[date];
+    stats.date = date;
+    stats.is_trading_day = day.trading;
+
+    // Detect holidays: non-trading weekdays (Mon-Fri)
+    int dow = GetDayOfWeek(date);
+    if (!stats.is_trading_day && dow >= 1 && dow <= 5) {
+      stats.is_holiday = true;
+    }
+
+    // Mark backtest range
+    if (date >= backtest_start && date <= backtest_end) {
+      stats.is_in_backtest_range = true;
+    }
+  }
+
+  // Step 2: Copy L2 data statistics from precomputed Asset::date_stats
+  for (const auto &[date, date_stat] : asset_data.date_stats) {
+    auto it = stats_map.find(date);
+    if (it != stats_map.end()) {
+      it->second.total_assets = date_stat.total_assets;
+      it->second.assets_with_orders = date_stat.assets_with_orders;
+    }
+  }
+
+  // Step 3: Detect dividend/split events from info.factors
+  // Compare factor[i] / factor[i-1], if ratio != 1.0, event occurred
+  for (size_t id = 0; id < info.factors.size(); ++id) {
+    const std::span<const FactorPoint> points = info.factors[id];
+    for (size_t i = 1; i < points.size(); ++i) {
+      // Check if there's a significant factor change (dividend/split)
+      const float ratio = points[i].factor / points[i - 1].factor;
+      if (std::abs(ratio - 1.0) > 0.0001) { // Threshold for detecting events
+        auto it = stats_map.find(points[i].date);
+        if (it != stats_map.end())
+          it->second.dividend_events.push_back({info.codes[id], info.stocks[id].name, ratio});
+      }
+    }
+  }
+
+  return stats_map;
+}
+
+// ============================================================================
+// Helper: Build calendar structure from AssetInfo::days
+// ============================================================================
+
+struct CalendarData {
+  std::map<int, std::map<int, std::set<int>>> trading_days; // year -> month -> days
+  int start_year = 0;
+  int end_year = 0;
+
+  void Build(const std::vector<CalendarDay> &days) {
+    trading_days.clear();
+
+    for (const CalendarDay &day : days)
+      if (day.trading)
+        trading_days[day.date / 10000][day.date / 100 % 100].insert(day.date % 100);
+
+    // Get year range
+    if (!trading_days.empty()) {
+      start_year = trading_days.begin()->first;
+      end_year = trading_days.rbegin()->first;
+    }
+  }
+
+  bool IsTradingDay(int year, int month, int day) const {
+    auto year_it = trading_days.find(year);
+    if (year_it == trading_days.end())
+      return false;
+
+    auto month_it = year_it->second.find(month);
+    if (month_it == year_it->second.end())
+      return false;
+
+    return month_it->second.find(day) != month_it->second.end();
+  }
+};
+
+// ============================================================================
+// Helper: Render a single month calendar grid
+// ============================================================================
+
+void RenderMonthGrid(
+    int year,
+    int month,
+    const std::map<misc::Ymd, DailyStats> &daily_stats,
+    CalendarState &state) {
+  const char *month_names[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+  ImGui::BeginGroup();
+
+  // Month label and day headers in one line
+  ImGui::Text("%s 一...日", month_names[month - 1]);
+
+  // Get the day of week for the 1st day of this month
+  int first_dow = GetDayOfWeek(year * 10000 + month * 100 + 1); // 0=Sunday, 1=Monday, ..., 6=Saturday
+
+  // Convert first_dow to Mon=0 format: Sunday=6, Monday=0
+  int first_col = (first_dow + 6) % 7;
+
+  // Get starting position for grid
+  ImVec2 grid_start = ImGui::GetCursorScreenPos();
+
+  // Get draw list once (outside loop)
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+
+  // Pre-convert colors to U32 (avoid repeated conversions)
+  const ImU32 color_bg_weekday = ImGui::GetColorU32(COLOR_GRAY);
+  const ImU32 color_bg_weekend = ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
+  const ImU32 color_purple = ImGui::GetColorU32(COLOR_PURPLE);
+  const ImU32 color_green = ImGui::GetColorU32(COLOR_GREEN);
+  const ImU32 color_blue = ImGui::GetColorU32(COLOR_BLUE);
+  const ImU32 color_hover = ImGui::GetColorU32(COLOR_HOVER);
+  const ImU32 color_border_green = ImGui::GetColorU32(BORDER_GREEN);
+  const ImU32 color_border_yellow = ImGui::GetColorU32(BORDER_YELLOW);
+  const ImU32 color_border_red = ImGui::GetColorU32(BORDER_RED);
+  const ImU32 color_border_dark = ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
+
+  // Track maximum row for height calculation
+  int max_row = 0;
+
+  const int days_in_month = DaysInMonth(year, month);
+
+  // Day grid (only valid days in month, arranged in rows of 7, aligned by day of week)
+  for (int day = 1; day <= days_in_month; ++day) {
+    const misc::Ymd date_key = year * 10000 + month * 100 + day;
+
+    int dow = GetDayOfWeek(date_key);
+
+    // Calculate grid position
+    int total_offset = first_col + day - 1;
+    int col = total_offset % 7;
+    int row = total_offset / 7;
+    if (row > max_row)
+      max_row = row;
+
+    // Get daily stats
+    auto stats_it = daily_stats.find(date_key);
+    const DailyStats *stats = (stats_it != daily_stats.end()) ? &stats_it->second : nullptr;
+
+    // Calculate position for dense packing
+    ImVec2 cell_pos = ImVec2(
+        grid_start.x + col * CELL_SIZE,
+        grid_start.y + row * CELL_SIZE);
+
+    // Determine background color: weekend or weekday
+    const ImU32 bg_color = (dow == 0 || dow == 6) ? color_bg_weekend : color_bg_weekday;
+
+    // Pre-calculate pixel-aligned coordinates for reuse
+    const float x0 = floorf(cell_pos.x);
+    const float y0 = floorf(cell_pos.y);
+    const float x1 = floorf(cell_pos.x + CELL_SIZE);
+    const float y1 = floorf(cell_pos.y + CELL_SIZE);
+
+    // Step 1: Determine border color (shows completeness only when total_assets > 0)
+    ImU32 border_color = color_border_dark; // Default: dark gray
+
+    // For trading days with assets and completeness enabled: show green/yellow/red
+    // If total_assets == 0, it means this date is outside database range, keep default gray
+    if (state.layers.show_completeness && stats && stats->is_trading_day && stats->total_assets > 0) {
+      const float completeness = stats->completeness_orders();
+
+      border_color = (completeness >= 0.9999f) ? color_border_green
+                     : (completeness >= 0.95f) ? color_border_yellow
+                                               : color_border_red;
+    }
+
+    // Step 2: Draw border (entire cell first)
+    draw_list->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), border_color);
+
+    // Step 3: Determine fill color based on priority (highest visible layer wins)
+    // Priority: Purple > Green > Blue > Background (除权除息是叠加层, 见 Step 5)
+    ImU32 fill_color = bg_color;
+
+    if (stats) {
+      // Check from lowest to highest priority (last match wins)
+      if (state.layers.show_l2_data && stats->assets_with_orders > 0) {
+        fill_color = color_blue;
+      }
+
+      if (state.layers.show_backtest_range && stats->is_in_backtest_range && stats->is_trading_day) {
+        fill_color = color_green;
+      }
+
+      if (state.layers.show_holiday && stats->is_holiday) {
+        fill_color = color_purple;
+      }
+    }
+
+    // Step 4: Draw inner fill (inset by BORDER_THICKNESS from all sides)
+    const ImVec2 inner_min(x0 + BORDER_THICKNESS, y0 + BORDER_THICKNESS);
+    const ImVec2 inner_max(x1 - BORDER_THICKNESS, y1 - BORDER_THICKNESS);
+    draw_list->AddRectFilled(inner_min, inner_max, fill_color);
+
+    // Step 5: 除权除息叠一层黄, alpha 按当日事件数给 (见 kDividendSaturationCount).
+    // 不是替换 fill 而是叠加 —— 否则这一层一开就把节假日/回测区间/L2 全盖掉.
+    if (state.layers.show_dividend_split && stats && !stats->dividend_events.empty()) {
+      const float t = std::min(
+          static_cast<float>(stats->dividend_events.size()) / kDividendSaturationCount, 1.0f);
+      const float alpha = kDividendAlphaFloor + (1.0f - kDividendAlphaFloor) * t;
+      draw_list->AddRectFilled(
+          inner_min, inner_max,
+          ImGui::GetColorU32(ImVec4(COLOR_YELLOW.x, COLOR_YELLOW.y, COLOR_YELLOW.z, alpha)));
+    }
+
+    // Step 6: Hover detection and tooltip
+    const ImVec2 cell_max(x1, y1);
+    if (ImGui::IsMouseHoveringRect(cell_pos, cell_max)) {
+      state.hover_date = date_key;
+      draw_list->AddRect(cell_pos, cell_max, color_hover, 0.0f, 0, 2.0f);
+
+      // Tooltip
+      if (stats) {
+        static const char *dow_names[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+        const char *dow_name = (dow >= 0 && dow <= 6) ? dow_names[dow] : "?";
+
+        const float completeness = stats->completeness_orders() * 100.0f;
+
+        ImGui::BeginTooltip();
+        ImGui::Text("Date: %s (%s)%s", misc::dash(state.hover_date).c_str(), dow_name,
+                    stats->is_trading_day ? " [Trading Day]" : "");
+        ImGui::Separator();
+        ImGui::Text("Backtest Range: %s", stats->is_in_backtest_range ? "YES" : "NO");
+        ImGui::Separator();
+        ImGui::Text("L2 Data Coverage: (BJ / 当日停牌 不计入分母)");
+        ImGui::Text("  Total Stocks: %zu", stats->total_assets);
+        ImGui::Text("  With Orders: %zu (%.1f%%)", stats->assets_with_orders, completeness);
+        ImGui::Separator();
+        ImGui::Text("Dividend/Split Events: %zu stocks", stats->dividend_events.size());
+        // 明细: 代码 + 简称 + 复权因子比值 (>1 = 除权除息, 因子被上调)
+        constexpr size_t kMaxListed = 30;
+        const size_t listed = std::min(stats->dividend_events.size(), kMaxListed);
+        if (listed > 0) {
+          // 固定列宽, 避免中文简称 3/4 字宽度不同导致错位
+          ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 1.0f));
+          if (ImGui::BeginTable(
+                  "##dividend_events", 3,
+                  ImGuiTableFlags_PadOuterX | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                      ImGuiTableFlags_NoSavedSettings)) {
+            ImGui::TableSetupColumn("code", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+            ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+            ImGui::TableSetupColumn("ratio", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+            for (size_t k = 0; k < listed; ++k) {
+              const DividendEvent &ev = stats->dividend_events[k];
+              ImGui::TableNextRow();
+              ImGui::TableSetColumnIndex(0);
+              ImGui::TextUnformatted(ev.code.c_str());
+              ImGui::TableSetColumnIndex(1);
+              ImGui::TextUnformatted(ev.name.empty() ? "-" : ev.name.c_str());
+              ImGui::TableSetColumnIndex(2);
+              ImGui::Text("x%.6f", ev.ratio);
+            }
+            ImGui::EndTable();
+          }
+          ImGui::PopStyleVar();
+        }
+        if (stats->dividend_events.size() > listed) {
+          ImGui::TextDisabled("  ... +%zu more",
+                              stats->dividend_events.size() - listed);
+        }
+        ImGui::EndTooltip();
+      } else {
+        ImGui::SetTooltip("%s (No data)", misc::dash(state.hover_date).c_str());
+      }
+
+      // Handle click
+      if (ImGui::IsMouseClicked(0)) {
+        state.selected_year = year;
+        state.selected_month = month;
+        state.selected_day = day;
+      }
+    }
+  }
+
+  // Reserve space for the grid
+  float total_height = (max_row + 1) * CELL_SIZE;
+  ImGui::SetCursorScreenPos(ImVec2(grid_start.x, grid_start.y + total_height));
+  ImGui::Dummy(ImVec2(7 * CELL_SIZE, 0));
+
+  ImGui::EndGroup();
+}
+
+// ============================================================================
+// Helper: Render year row (12 months)
+// ============================================================================
+
+void RenderYearRow(
+    int year,
+    const std::map<misc::Ymd, DailyStats> &daily_stats,
+    CalendarState &state) {
+  ImGui::Text("%d", year);
+  ImGui::SameLine(0, 20);
+
+  ImGui::BeginGroup();
+  for (int month = 1; month <= 12; ++month) {
+    if (month > 1) {
+      ImGui::SameLine(0, MONTH_SPACING);
+    }
+    RenderMonthGrid(year, month, daily_stats, state);
+  }
+  ImGui::EndGroup();
+}
+
+// ============================================================================
+// Main TabCalendar Render Function
+// ============================================================================
+
+void RenderTabCalendar(
+    const AssetInfo &info,
+    const Asset &asset_data,
+    misc::Ymd backtest_start,
+    misc::Ymd backtest_end,
+    CalendarState &dates_state) {
+
+  // Build calendar from info.days
+  CalendarData calendar;
+  calendar.Build(info.days);
+
+  if (calendar.start_year == 0) {
+    ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f),
+                       "No trading calendar data available. Please sync fundamental first.");
+    return;
+  }
+
+  // Build or reuse daily statistics cache
+  if (dates_state.generation != asset_data.generation) {
+    dates_state.generation = asset_data.generation;
+    dates_state.daily_stats_cache = BuildDailyStats(info, asset_data, backtest_start, backtest_end);
+  }
+
+  if (ImGui::Button("Refresh Data")) {
+    dates_state.daily_stats_cache.clear();
+    dates_state.daily_stats_cache = BuildDailyStats(info, asset_data, backtest_start, backtest_end);
+  }
+
+  // Layer Toggle Buttons
+  ImGui::Text("Layers:");
+  ImGui::SameLine();
+
+  // Dividend/Split layer (Yellow)
+  ImVec4 yellow_btn = dates_state.layers.show_dividend_split ? COLOR_YELLOW : ImVec4(0.3f, 0.3f, 0.1f, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_Button, yellow_btn);
+  if (ImGui::SmallButton("除权除息")) {
+    dates_state.layers.show_dividend_split = !dates_state.layers.show_dividend_split;
+  }
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+
+  // Holiday layer (Purple)
+  ImVec4 purple_btn = dates_state.layers.show_holiday ? COLOR_PURPLE : ImVec4(0.2f, 0.1f, 0.3f, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_Button, purple_btn);
+  if (ImGui::SmallButton("节假日")) {
+    dates_state.layers.show_holiday = !dates_state.layers.show_holiday;
+  }
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+
+  // Backtest range layer (Green)
+  ImVec4 green_btn = dates_state.layers.show_backtest_range ? COLOR_GREEN : ImVec4(0.1f, 0.3f, 0.1f, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_Button, green_btn);
+  if (ImGui::SmallButton("回测区间")) {
+    dates_state.layers.show_backtest_range = !dates_state.layers.show_backtest_range;
+  }
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+
+  // L2 data layer (Blue)
+  ImVec4 blue_btn = dates_state.layers.show_l2_data ? COLOR_BLUE : ImVec4(0.1f, 0.1f, 0.3f, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_Button, blue_btn);
+  if (ImGui::SmallButton("L2数据")) {
+    dates_state.layers.show_l2_data = !dates_state.layers.show_l2_data;
+  }
+  ImGui::PopStyleColor();
+  ImGui::SameLine();
+
+  // Completeness border toggle
+  if (ImGui::SmallButton(dates_state.layers.show_completeness ? "完整性边框✓" : "完整性边框✗")) {
+    dates_state.layers.show_completeness = !dates_state.layers.show_completeness;
+  }
+
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Spacing();
+
+  // Calculate summary statistics
+  int total_trading_days = 0;
+  int total_dividend_events = 0;
+  float avg_completeness = 0.0f;
+  int backtest_days = 0;
+
+  for (const auto &[date, stats] : dates_state.daily_stats_cache) {
+    if (stats.is_trading_day) {
+      total_trading_days++;
+    }
+    if (stats.is_in_backtest_range && stats.is_trading_day) {
+      backtest_days++;
+      avg_completeness += stats.completeness_orders();
+    }
+    total_dividend_events += static_cast<int>(stats.dividend_events.size());
+  }
+
+  if (backtest_days > 0) {
+    avg_completeness = (avg_completeness / backtest_days) * 100.0f;
+  }
+
+  // Summary Bar
+  ImGui::Text("[%d-%d] %d trading days | Backtest: [%s to %s] %d days",
+              calendar.start_year, calendar.end_year, total_trading_days,
+              misc::dash(backtest_start).c_str(), misc::dash(backtest_end).c_str(),
+              backtest_days);
+  ImGui::SameLine();
+  ImGui::TextColored(ImVec4(0.3f, 0.95f, 1.0f, 1.0f),
+                     " | Avg Completeness: %.1f%% | Dividend Events: %d",
+                     avg_completeness, total_dividend_events);
+
+  ImGui::Spacing();
+
+  // Legend - Multi-layer Display (Left to Right)
+  ImGui::Text("Layers (Left → Right):");
+  ImGui::SameLine();
+  ImGui::TextColored(COLOR_YELLOW, "■");
+  ImGui::SameLine(0, 2);
+  ImGui::Text("除权除息(≥%d只满黄)", static_cast<int>(kDividendSaturationCount));
+  ImGui::SameLine(0, 10);
+  ImGui::TextColored(COLOR_PURPLE, "■");
+  ImGui::SameLine(0, 2);
+  ImGui::Text("节假日");
+  ImGui::SameLine(0, 10);
+  ImGui::TextColored(COLOR_GREEN, "■");
+  ImGui::SameLine(0, 2);
+  ImGui::Text("回测区间");
+  ImGui::SameLine(0, 10);
+  ImGui::TextColored(COLOR_BLUE, "■");
+  ImGui::SameLine(0, 2);
+  ImGui::Text("L2数据");
+
+  // Legend - Border Colors
+  ImGui::Text("Border:");
+  ImGui::SameLine();
+  ImGui::TextColored(BORDER_GREEN, "■");
+  ImGui::SameLine(0, 2);
+  ImGui::Text("100%%");
+  ImGui::SameLine(0, 10);
+  ImGui::TextColored(BORDER_YELLOW, "■");
+  ImGui::SameLine(0, 2);
+  ImGui::Text("95-99%%");
+  ImGui::SameLine(0, 10);
+  ImGui::TextColored(BORDER_RED, "■");
+  ImGui::SameLine(0, 2);
+  ImGui::Text("<95%%");
+
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Spacing();
+
+  // Calendar grid (scrollable)
+  ImGui::BeginChild("CalendarScroll", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
+
+  // Render each year as a row
+  for (int year = calendar.start_year; year <= calendar.end_year; ++year) {
+    RenderYearRow(year, dates_state.daily_stats_cache, dates_state);
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+  }
+
+  ImGui::EndChild();
+}
+
+} // namespace GUI::Database

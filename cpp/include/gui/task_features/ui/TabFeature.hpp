@@ -1,9 +1,7 @@
-// Tab Feature - Feature Selection and Analysis Panel
-// Allows users to:
-//   1. Select feature level (L_sec/L_1min/L2)
-//   2. Filter features by multiple dimensions
-//   3. Select primary feature and secondary features for analysis
-//   4. (Future) View analysis results
+// Tab Feature - 特征表 (Table 页) + 节点用时 (NodeTime 页)
+//   1. Scope: 池 / 档 / 层下拉 (两页同一份 Feature::Selection, Features 自持)
+//   2. Filters: 多维过滤
+//   3. Features: 选主特征与对比特征 (Distribution / Transform 的输入)
 #pragma once
 
 #include "features/Storage/FeatureLevels.hpp" // TierId
@@ -56,9 +54,10 @@ struct FeatureUIState {
 // Render Function
 // ============================================================================
 
-void RenderTabFeature(SharedData &data, FeatureUIState &ui_state);
+void RenderTabTable(SharedData &data, FeatureUIState &ui_state);
+void RenderTabNodeTime(SharedData &data);
 
-// 该 (档, 层) 每行有效 Cat2 (值域探测 or 字段表人工覆盖, 与 FEATURE 表同口径; 无预览 = "?") + 预览抽样全局值域.
+// 该 (档, 层) 每行有效 Cat2 (值域探测 or 字段表人工覆盖, 与 Table 页同口径; 无预览 = "?") + 预览抽样全局值域.
 // cat2[i] 指向静态串或字段表串 (稳定); 无预览的行 (含非预览档) val_min > val_max (空账目 ±inf).
 // 内部短锁读 preview cells. OrderFlow legend 标注 / flag 轴缩放用
 struct Cat2Snapshot {

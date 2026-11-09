@@ -208,7 +208,7 @@ struct ConceptTask {
 
 std::string label(const ConceptTask &t) { return std::string(kConceptTable) + " " + misc::dash(t.day); }
 
-// 在拉的表 (Fundamental 页整行底色)
+// 在拉的表 (Sync 页整行底色)
 std::string_view table_of(const fundamental::Task &t) { return t.spec->name; }
 std::string_view table_of(const ConceptTask &) { return kConceptTable; }
 
@@ -793,7 +793,7 @@ bool build(Job &job, const Catalog &cat) {
 
   // ---- 日频行情 + 复权因子 ← cn_stock_real_bar1d ----
   //   最新行 → update_date; 最新有效报价行 → volume/amount/turn/close; 最近几个有效报价行 → closes;
-  //   adjust_factor → 文件内变点压缩 (分红/拆分事件日, TabDates 用)
+  //   adjust_factor → 文件内变点压缩 (分红/拆分事件日, TabCalendar 用)
   Part<BarAcc> bar_p;
   scan.add(bar_p, spec("cn_stock_real_bar1d"), {"adjust_factor", "volume", "amount", "turn", "close", "pre_close"}, BarAcc(nid),
            [nid](const Rows &r, BarAcc &a) {
@@ -1036,7 +1036,7 @@ bool FundamentalService::run(FundamentalRequest &req) {
     using Tasks = std::vector<fundamental::Task>;
     const fundamental::Round round; // 本轮开头的本地视图 (plan 只算这一次, sync 照单执行)
     bigquant::Client bq;
-    // 配额读数 → state (探针不耗配额; Fundamental 页常显本周余额, 未联网的轮次沿用上次读数)
+    // 配额读数 → state (探针不耗配额; Sync 页常显本周余额, 未联网的轮次沿用上次读数)
     auto show_quota = [this, &job]() {
       std::lock_guard lk(mutex);
       state.quota_weekly = job.quota.weekly;

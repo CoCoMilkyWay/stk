@@ -3,7 +3,7 @@
 // 四个 worker 服务 (基本面 / 扫描 / 编码 / 核对) 各自一条通道: 发请求带递增请求代, 交接件原样带回.
 //   在飞 = 发出代 != 收到代; 收到的不是最新代 = 陈旧件, 丢弃 (最新请求已在路上)
 // 共享状态 (assetinfo / asset.items / Asset 扫描产物) 只在 tick 里换进 (GUI 线程), 换进时机保证无 worker 正在读:
-//   冻结:     特征计算在飞 (taskstate.features.computing) → 件都留在邮箱里, 不发编码 (Lob 按帧目录快照读日文件, 编码 rename 换掉它们);
+//   冻结:     特征计算在飞 (taskstate.compute.computing) → 件都留在邮箱里, 不发编码 (Lob 按帧目录快照读日文件, 编码 rename 换掉它们);
 //             同步 / 扫描照跑, 收尾后再换进. 反向: 编码在飞时特征计算不开跑 (taskstate.database.encode_inflight)
 //   基本面件: 扫描 / 编码都不在飞才收 (二者读 assetinfo / items) → 换 assetinfo → AssetLoader 重建 items → 请求覆盖扫描
 //   扫描件:   adopt 扫描产物 + 留存覆盖结论 (扫描只在基本面件收下后 / 编码收尾后发, 编码只在扫描不在飞时发)
@@ -30,15 +30,13 @@ class EncodingService;
 // ============================================================================
 
 struct TabAccessState {
-  // Tab unlock progression (基本面 → L2 → 消费端)
-  bool can_access_fundamental = true; // 基本面面板, 流水线第一步, 永远可进
-  bool can_access_encode = false;     // 基本面 Ready 后解锁 (覆盖检查依赖日历)
+  // Tab unlock progression (基本面 → L2 → 日历)
+  bool can_access_sync = true;    // 数据源同步, 流水线第一步, 永远可进
+  bool can_access_encode = false; // 基本面 Ready 后解锁 (覆盖检查依赖日历)
 
-  // Assets 主要展示 Fundamental 的日频基本面, Dates 本身就是在展示 L2 数据
-  // 完整性 (缺口正是它要呈现的东西) —— 两者都不需要 L2 覆盖 100% Pass,
-  // 但仍要等 Encode 页跑过一遍覆盖扫描 (数据才建好).
-  bool can_access_assets = false; // 基本面 Ready 且已扫描过一遍
-  bool can_access_dates = false;  // 基本面 Ready 且已扫描过一遍
+  // Calendar 本身就是在展示 L2 数据完整性 (缺口正是它要呈现的东西) ——
+  // 不需要 L2 覆盖 100% Pass, 但仍要等 Encode 页跑过一遍覆盖扫描 (数据才建好).
+  bool can_access_calendar = false; // 基本面 Ready 且已扫描过一遍
 };
 
 // ============================================================================

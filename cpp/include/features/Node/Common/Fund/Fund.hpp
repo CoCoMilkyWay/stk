@@ -23,7 +23,7 @@
 //     financial ttm / balance / income / cashflow / notes    公告日 T 盘后          −1       公告日 ≤ D
 //     dividend / forecast                                    公告日 T 盘后          −1       公告日 ≤ D
 //     industry component / change                            T 盘后                 −1       T ≤ D
-//     日历派生 (list_age / delist_age / is_new / days_since_report / shares_yoy 回看)   按 D+1 的日历日计
+//     日历派生 (list_age / delist_age / flt_new / days_since_report / shares_yoy 回看)   按 D+1 的日历日计
 //     行情派生 (ret_12_1 / ret_1m / turn / ivol / resvol / beta / trend; 全市场预计算, 见 Method/Fundamental.hpp)   T 收盘后  −1   T ≤ D
 //   盘前态全部在 D 收盘后至 D+1 开盘前可知 → L_1day 行 D 在 D+1 全天可 act on (实盘: 盘前表 D+1 早盘到齐后补算末行).
 //   库末日 ≤ fund::last_day: 上表各源本地已齐到行 D 所需的数据日 (D 盘后 / D+1 盘前), D+1 在 D 轴内
@@ -56,7 +56,6 @@ public:
     list_age,    // [日历日] 未上市 → NaN
     delist_age,  // [日历日] 未退市 → NaN
     is_margin,   // 0/1
-    is_susp,     // 0/1
     roe_ttm,     // [%]
     roa_ttm,     // [%]
     dy_ttm,      // [ratio] 近 4 季报告期税前分红 / 本日收盘总市值
@@ -69,7 +68,10 @@ public:
     st_dividend, // 0/1
     st_trading,  // 0/1
     st_level,    // 0=正常/1=ST/2=*ST/3=退市整理期
-    is_new,      // 0/1
+    flt_new,     // 0/1 过滤表 (1 = 滤掉): 次新
+    flt_susp,    // 0/1 停牌
+    flt_noind,   // 0/1 申万一级行业未知
+    flt_warn,    // 0/1 风险预警 (st_trading / st_profit / st_revenue / st_dividend 任一)
     // ---- 行情日线 / 两融明细 / 公告日 ----
     pre_close,         // [元] 次日除权后前收 (盘中 back() = 当日前收)
     adj_factor,        // 次日复权因子
@@ -83,13 +85,12 @@ public:
     ta_yoy,            // [ratio] 总资产 MRQ 同比 (对去年同报告期)
     // ---- 资产态位 (fund::Panel 全史资产态掩码; 不落盘) ----
     live, // 0/1 活跃
-    base, // 0/1 母集 (⊂ 活跃)
     // ---- 行情派生 (全市场预计算, 窗按可得史扩张; 子池库 Panel 无全市场 → NaN) ----
     ret_12_1, // [ratio] 12−1 月动量 P^adj_{D−20} / P^adj_{D−250} − 1
     ret_1m,   // [ratio] 1 月收益 P^adj_D / P^adj_{D−20} − 1
     turn,     // [ratio] 20 日均换手 / 250 日均换手 (换手 = 成交量 / A 股流通股本)
     ivol,     // [日收益] 近 250 日日收益对等权市场收益回归的残差标准差
-    resvol,   // [z] 残差波动: dastd / cmra / hsigma 三项 z 按相关阵第一主成分合成, 对 β / log 市值截面正交 (母集外 NaN)
+    resvol,   // [z] 残差波动: dastd / cmra / hsigma 三项 z 按相关阵第一主成分合成, 对 β / log 市值截面正交 (活跃外 NaN)
     beta,     // 近 156 周周收益对等权市场周收益的 β (周收益 = 5 日滚动, 逐日采样)
     trend,    // [20 日收益] 均线截面回归的预期收益 (系数取近 250 日均值)
     // ---- 资产负债表 MRQ [亿元] ----
@@ -171,10 +172,8 @@ public:
 
   // 资产态 (fund::Panel 全史判定一次, 判据见 Fundamental.cpp univ_mask; 行情派生截面 / all 池成员 (Panel::live) / PoolKey 全读这一份)
   //   活跃 = 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌) ∧ 非次新 (上市满 fund::kNewListDays 日历日) ∧ 申万一级行业已知
-  //   母集 = 活跃 ∧ 非 ST / *ST / 退市整理期 ∧ st_trading / st_profit / st_revenue / st_dividend 皆 0
   // 节点侧读输出口 (PoolKey onSettle = 次日)
   static bool is_live(const Ports<kCount> &f) { return f[live] != 0.0f; }
-  static bool is_base(const Ports<kCount> &f) { return f[base] != 0.0f; }
 
   // onSettle (收盘后): 状态机推进到次日 d+1, 写 y → 发布 = L_1day 行 D
   void compute() {

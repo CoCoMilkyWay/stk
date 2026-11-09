@@ -18,7 +18,7 @@ int RenderStreamControl(const Progress &st, const SharedData &data, const char *
   int action = 0;
 
   ImGui::BeginDisabled(st.busy() || !feat);
-  if (ImGui::Button("Compute"))
+  if (ImGui::Button("Recompute"))
     action = 1;
   ImGui::EndDisabled();
   if (feat) {

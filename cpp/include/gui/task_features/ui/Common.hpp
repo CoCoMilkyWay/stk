@@ -1,4 +1,4 @@
-// Features 页三个流式分析 tab (Dist / Transform / Feature 表预览) 的公共 UI 件
+// Features 页三个流式分析 tab (Dist / Transform / Table 页预览) 的公共 UI 件
 // 对仗 shared/Analysis.hpp: 状态面 (Published) / 值账目 (Integrity) 的展示都只有这一份
 #pragma once
 

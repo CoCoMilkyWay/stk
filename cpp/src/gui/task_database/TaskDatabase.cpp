@@ -3,13 +3,12 @@
 #include "gui/task_database/services/AuditService.hpp"
 #include "gui/task_database/services/EncodingService.hpp"
 #include "gui/task_database/services/FundamentalService.hpp"
-#include "gui/task_database/services/Market.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 #include "gui/task_database/services/StateManager.hpp"
-#include "gui/task_database/ui/TabAssets.hpp"
-#include "gui/task_database/ui/TabDates.hpp"
+#include "gui/task_database/ui/TabCalendar.hpp"
 #include "gui/task_database/ui/TabEncode.hpp"
-#include "gui/task_database/ui/TabFundamental.hpp"
+#include "gui/task_database/ui/TabSync.hpp"
+#include "gui/task_market/services/MarketHub.hpp"
 #include "imgui.h"
 #include "misc/exec.hpp"
 #include "shared/Config.hpp"
@@ -35,14 +34,13 @@ private:
   std::unique_ptr<EncodingService> encoding_svc_;
   std::unique_ptr<FileCheckService> filecheck_svc_;
   std::unique_ptr<StateManager> state_mgr_;
-  // Assets 行情: 首次画 Assets 页才起 (之前不碰网络); 新浪当日与 Portfolio 共用
-  std::shared_ptr<Market> market_;
+  // 行情 (Market 任务起): Sync 页只读新浪当日的状态
+  std::shared_ptr<const Market::MarketHub> market_;
 
   // UI state
-  FundamentalTabState fundamental_state_;
+  SyncTabState sync_state_;
   EncodeState encode_state_;
-  AssetsState assets_state_;
-  DatesState dates_state_;
+  CalendarState calendar_state_;
 
   // Lifecycle
   bool is_expanded_ = false;
@@ -51,7 +49,7 @@ private:
   std::string config_dir_ = "../../config";
 
 public:
-  explicit DatabaseTask(std::shared_ptr<Market> market) : market_(std::move(market)) {}
+  explicit DatabaseTask(std::shared_ptr<const Market::MarketHub> market) : market_(std::move(market)) {}
 
   const char *GetName() const {
     return "Database";
@@ -83,10 +81,10 @@ public:
   }
 
   // Enabled: 左栏叶子是否可点, 直读 StateManager 的解锁进度 (Update 同帧已刷新)
-  // idx: -1=任务行(不可点选, 恒真) 0=Fundamental 1=Encode 2=Assets 3=Dates
+  // idx: -1=任务行(不可点选, 恒真) 0=Sync 1=Encode 2=Calendar
   bool Enabled(const SharedData & /*data*/, int idx) const {
     if (idx <= 0)
-      return true; // 任务行 / Fundamental 永远可用
+      return true; // 任务行 / Sync 永远可用
     if (!state_mgr_)
       return false;
     const auto &tabs = state_mgr_->get_state().tabs;
@@ -94,28 +92,24 @@ public:
     case 1:
       return tabs.can_access_encode;
     case 2:
-      return tabs.can_access_assets;
-    case 3:
-      return tabs.can_access_dates;
+      return tabs.can_access_calendar;
     }
     return false;
   }
 
-  // Status: 子行状态标签 (任务行由子行聚合). 0 Fundamental (基本面), 1 Encode
-  // (编码进度/覆盖检查结果), 2 Assets / 3 Dates (纯浏览: 前置计算中显示进行中,
+  // Status: 子行状态标签 (任务行由子行聚合). 0 Sync (基本面), 1 Encode
+  // (编码进度/覆盖检查结果), 2 Calendar (纯浏览: 前置计算中显示进行中,
   // 解锁后 done, 锁定且无在跑 none)
   TaskStatus Status(const SharedData &data, int idx) const {
     switch (idx) {
     case 0:
-      return FundamentalTabStatus();
+      return SyncTabStatus();
     case 1:
       if (!state_mgr_)
         return {TaskStatus::Kind::Muted, "initializing"};
       return GUI::Database::EncodeStatus(*state_mgr_, *encoding_svc_, *scan_svc_);
     case 2:
-      return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_assets);
-    case 3:
-      return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_dates);
+      return BrowseStatus(data, state_mgr_ && state_mgr_->get_state().tabs.can_access_calendar);
     }
     assert(false && "Database 子行越界");
     return {};
@@ -123,7 +117,7 @@ public:
 
   // Draw: 渲染指定 tab (状态头 + 对应 DrawTabX) + 处理编码触发
   void Draw(SharedData &data, int idx) {
-    assert(idx >= 0 && idx < 4);
+    assert(idx >= 0 && idx < 3);
     RenderUI(idx);
 
     // Handle encoding trigger from UI (Encode tab 设置 trigger_start; Start 按钮已按同一条件使能)
@@ -161,8 +155,8 @@ private:
     return {TaskStatus::Kind::Muted, "waiting"};
   }
 
-  // Fundamental 子行标签: 核对 / 修复在跑 > 基本面流水线状态 (BigQuant + Tushare → AssetInfo)
-  TaskStatus FundamentalTabStatus() const {
+  // Sync 子行标签: 核对 / 修复在跑 > 基本面流水线状态 (BigQuant + Tushare → AssetInfo)
+  TaskStatus SyncTabStatus() const {
     if (!state_mgr_)
       return {TaskStatus::Kind::Muted, "initializing"};
     if (audit_svc_->busy()) {
@@ -175,7 +169,7 @@ private:
     return FundamentalStatus();
   }
 
-  // Assets / Dates 子行标签: 纯浏览页, 状态跟随前置计算.
+  // Calendar 子行标签: 纯浏览页, 状态跟随前置计算.
   // 前置 (基本面同步 / L2 扫描) 在跑 → 显示进行中; 解锁后 → done; 锁定且无在跑 → none
   TaskStatus BrowseStatus(const SharedData &data, bool can_access) const {
     if (data.taskstate.database.json_update_inflight)
@@ -231,23 +225,17 @@ private:
     // 渲染当前选中 tab (左栏已按 can_access_* 屏蔽未解锁项, 这里直接分发)
     switch (idx) {
     case 0:
-      DrawTabFundamental();
+      DrawTabSync();
       break;
     case 1:
       if (tabs.can_access_encode)
         DrawTabEncode();
       else
-        ImGui::TextDisabled("Sync fundamental data in Fundamental tab first");
+        ImGui::TextDisabled("Sync fundamental data in Sync tab first");
       break;
     case 2:
-      if (tabs.can_access_assets)
-        DrawTabAssets();
-      else
-        ImGui::TextDisabled("Requires fundamental data ready and at least one coverage scan (Encode tab)");
-      break;
-    case 3:
-      if (tabs.can_access_dates)
-        DrawTabDates();
+      if (tabs.can_access_calendar)
+        DrawTabCalendar();
       else
         ImGui::TextDisabled("Requires fundamental data ready and at least one coverage scan (Encode tab)");
       break;
@@ -256,7 +244,7 @@ private:
     }
   }
 
-  void DrawTabFundamental() {
+  void DrawTabSync() {
     // Safety: check if services are initialized
     if (!fundamental_svc_) {
       ImGui::TextDisabled("Services initializing...");
@@ -282,7 +270,7 @@ private:
     {
       // 展示字段持锁读 (worker 只短锁写)
       std::scoped_lock lk(fundamental_svc_->mutex, audit_svc_->mutex);
-      RenderTabFundamental(
+      RenderTabSync(
           fundamental_svc_->state,
           *fundamental_svc_,
           fstatus,
@@ -298,7 +286,7 @@ private:
           disable_audit,
           &audit_table,
           &repair_table,
-          fundamental_state_);
+          sync_state_);
     }
 
     // Handle button events (一帧至多一个请求)
@@ -318,25 +306,16 @@ private:
       state_mgr_->audit(AuditOp::Repair, repair_table, false);
   }
 
-  void DrawTabAssets() {
-    market_->start(*data_);
-    RenderTabAssets(
-        data_->asset,
-        data_->assetinfo.stocks,
-        assets_state_,
-        *market_);
-  }
-
-  void DrawTabDates() {
+  void DrawTabCalendar() {
     // date_stats 由扫描的 Phase 5 统一产出 (ScanService::run → Asset::adopt), 这里不
     // 惰性补算: 渲染帧里现算是双重遍历, 而且会跟扫描抢着写同一份统计.
     // 扫描没跑完时 date_stats 是空的, 表格照常渲染, 数字等扫描落地.
-    RenderTabDates(
+    RenderTabCalendar(
         data_->assetinfo,
         data_->asset,
         data_->asset.backtest.start,
         data_->asset.backtest.end,
-        dates_state_);
+        calendar_state_);
   }
 
   void DrawTabEncode() {
@@ -346,14 +325,14 @@ private:
 
 } // namespace
 
-TaskHandle CreateDatabaseTask(std::shared_ptr<Market> market) {
+TaskHandle CreateDatabaseTask(std::shared_ptr<const Market::MarketHub> market) {
   auto instance = std::make_shared<DatabaseTask>(std::move(market));
 
   TaskHandle handle;
   handle.name = instance->GetName();
   handle.storage = instance;
-  // 子项 (叶子) 顺序: Fundamental / Encode / Assets / Dates
-  handle.tabs = {"Fundamental", "Encode", "Assets", "Dates"};
+  // 子项 (叶子) 顺序 = 流水线顺序: Sync (基本面) → Encode (L2) → Calendar (覆盖)
+  handle.tabs = {"Sync", "Encode", "Calendar"};
   handle.Init = [instance](SharedData &data) { instance->Init(data); };
   handle.Update = [instance](SharedData &data) { instance->Update(data); };
   handle.OnExpand = [instance]() { instance->OnExpand(); };

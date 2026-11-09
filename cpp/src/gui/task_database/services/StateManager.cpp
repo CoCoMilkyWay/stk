@@ -26,7 +26,7 @@ void StateManager::refresh() {
   fund_.Request({fund_ch_.next(), data_.config.sync_fundamental, data_.config.sync_bar1m});
 }
 
-bool StateManager::frozen() const { return data_.taskstate.features.computing; }
+bool StateManager::frozen() const { return data_.taskstate.compute.computing; }
 
 void StateManager::encode(int workers, bool skip_existing) {
   assert(can_encode() && "encode: 同步 / 扫描 / 编码在飞, 或共享数据冻结");
@@ -103,19 +103,17 @@ void StateManager::tick() {
   // Tab Access Control (基本面 → L2 → 消费端)
   // ============================================================================
 
-  // Fundamental (基本面面板): 流水线第一步, 永远可进
-  state_.tabs.can_access_fundamental = true;
+  // Sync (数据源同步): 流水线第一步, 永远可进
+  state_.tabs.can_access_sync = true;
 
   // Encode: 基本面 Ready 后解锁 (L2 覆盖检查以交易日历为 ground truth)
   const bool ready = state_.all_json_ready();
   state_.tabs.can_access_encode = ready;
 
-  // Assets/Dates: 基本面 Ready 且 L2 覆盖检查至少跑过一遍 (Encode 页扫描
-  // 完成) —— 不要求编码全部 done, Assets 看的是基本面, Dates 本身就是
-  // 来看覆盖缺口的. 扫描前 Asset::items 等数据还没建好, 依然要灰着.
+  // Calendar: 基本面 Ready 且 L2 覆盖检查至少跑过一遍 (Encode 页扫描完成) ——
+  // 不要求编码全部 done, 它本身就是来看覆盖缺口的. 扫描前 Asset::items 等数据还没建好, 依然要灰着.
   const bool scanned = state_.check.status != DatabaseStatus::Unchecked;
-  state_.tabs.can_access_assets = ready && scanned;
-  state_.tabs.can_access_dates = ready && scanned;
+  state_.tabs.can_access_calendar = ready && scanned;
 
   publish_task_state();
 }

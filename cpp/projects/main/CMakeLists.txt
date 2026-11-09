@@ -262,22 +262,22 @@ set(MATH_FAST
     gui/Run_OpenGL.cpp
     gui/Run_Vulkan.cpp
     gui/Tasks.cpp
+    gui/compute/services/ComputeService.cpp
+    gui/compute/ui/TabCompute.cpp
     gui/task_database/services/AuditService.cpp
     gui/task_database/services/EncodingService.cpp
-    gui/task_database/ui/TabDates.cpp
+    gui/task_database/ui/TabCalendar.cpp
     gui/task_database/ui/TabEncode.cpp
-    gui/task_database/ui/TabFundamental.cpp
+    gui/task_database/ui/TabSync.cpp
     gui/task_features/TaskFeatures.cpp
-    gui/task_features/services/ComputeService.cpp
     gui/task_features/services/CorrService.cpp
     gui/task_features/services/DistService.cpp
     gui/task_features/services/PreviewService.cpp
     gui/task_features/services/TransformService.cpp
-    gui/task_features/ui/TabCompute.cpp
     gui/task_icon_bar/NetworkService.cpp
     gui/task_icon_bar/TaskIconBar.cpp
     gui/task_settings/TaskSettings.cpp
-    gui/task_system_info/TaskSystemInfo.cpp
+    gui/task_tools/ui/TabSystem.cpp
     # agent
     # factor
     # 入口
@@ -293,6 +293,8 @@ set(MATH_PRECISE
     shared/Dist.cpp
     shared/OrderFlow.cpp
     shared/Pool.cpp
+    shared/PoolSelect.cpp
+    shared/PoolSpec.cpp
     shared/Preview.cpp
     shared/Transform.cpp
     # misc
@@ -316,24 +318,15 @@ set(MATH_PRECISE
     features/Bar1mDay.cpp
     features/Method/CS.cpp
     features/Method/Fundamental.cpp
-    # worker: Bar 档管线 (TS: Fund 缺失值 / PoolKey 母集 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
+    # worker: Bar 档管线 (TS: Fund 缺失值 / PoolKey 范围 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
     worker/bar_pipeline.cpp
     worker/feature_profile.cpp
     # gui
     gui/task_database/TaskDatabase.cpp
     gui/task_database/services/AssetLoader.cpp
-    gui/task_database/services/BasketHistory.cpp
-    gui/task_database/services/BasketRow.cpp
     gui/task_database/services/FundamentalService.cpp
-    gui/task_database/services/Kline.cpp
-    gui/task_database/services/Market.cpp
-    gui/task_database/services/QuoteService.cpp
     gui/task_database/services/ScanService.cpp
     gui/task_database/services/StateManager.cpp
-    gui/task_database/services/StockHistory.cpp
-    gui/task_database/ui/CrossSectionAnalysis.cpp
-    gui/task_database/ui/QuotesPanel.cpp
-    gui/task_database/ui/TabAssets.cpp
     gui/task_features/services/OrderFlowService.cpp
     gui/task_features/services/ReplayService.cpp
     gui/task_features/ui/Common.cpp
@@ -342,32 +335,45 @@ set(MATH_PRECISE
     gui/task_features/ui/TabFeature.cpp
     gui/task_features/ui/TabOrderFlow.cpp
     gui/task_features/ui/TabTransform.cpp
+    gui/task_market/services/BasketHistory.cpp
+    gui/task_market/services/BasketRow.cpp
+    gui/task_market/services/Kline.cpp
+    gui/task_market/services/MarketHub.cpp
+    gui/task_market/services/QuoteService.cpp
+    gui/task_market/services/StockHistory.cpp
+    gui/task_market/ui/CrossSectionAnalysis.cpp
+    gui/task_market/ui/QuotesPanel.cpp
+    gui/task_market/ui/TabAssets.cpp
     # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) / CTA 模型 (cta/: NaN = 未就绪) 的消费者
-    gui/task_factors/TaskFactors.cpp
-    gui/task_factors/services/CtaLib.cpp
-    gui/task_factors/services/CtaService.cpp
-    gui/task_factors/services/FactorsBook.cpp
-    gui/task_factors/services/FactorsEngine.cpp
-    gui/task_factors/services/FactorsFile.cpp
-    gui/task_factors/services/FactorsLoad.cpp
-    gui/task_factors/services/FactorsProbe.cpp
-    gui/task_factors/services/FactorsScope.cpp
-    gui/task_factors/services/FactorsTable.cpp
-    gui/task_factors/services/InspectService.cpp
-    gui/task_factors/services/KlineService.cpp
-    gui/task_factors/services/LensService.cpp
-    gui/task_factors/services/OperatorsService.cpp
-    gui/task_factors/services/PortfolioService.cpp
-    gui/task_factors/services/RunService.cpp
-    gui/task_factors/services/SearchService.cpp
-    gui/task_factors/ui/TabFactors.cpp
-    gui/task_factors/ui/TabInspect.cpp
-    gui/task_factors/ui/TabOperators.cpp
-    gui/task_factors/ui/TabPortfolio.cpp
-    gui/task_factors/ui/PortfolioCta.cpp
-    gui/task_factors/ui/PortfolioPlot.cpp
-    gui/task_factors/ui/PortfolioSheet.cpp
-    gui/task_factors/ui/PortfolioView.cpp
+    gui/task_alpha/TaskAlpha.cpp
+    gui/task_alpha/services/FactorsBook.cpp
+    gui/task_alpha/services/FactorsEngine.cpp
+    gui/task_alpha/services/FactorsFile.cpp
+    gui/task_alpha/services/FactorsLoad.cpp
+    gui/task_alpha/services/FactorsProbe.cpp
+    gui/task_alpha/services/FactorsScope.cpp
+    gui/task_alpha/services/FactorsTable.cpp
+    gui/task_alpha/services/InspectService.cpp
+    gui/task_alpha/services/KlineService.cpp
+    gui/task_alpha/services/LensService.cpp
+    gui/task_alpha/services/OperatorsService.cpp
+    gui/task_alpha/services/RunService.cpp
+    gui/task_alpha/services/SearchService.cpp
+    gui/task_alpha/ui/TabFactors.cpp
+    gui/task_alpha/ui/TabInspect.cpp
+    gui/task_alpha/ui/TabOperators.cpp
+    gui/task_beta/TaskBeta.cpp
+    gui/task_beta/services/StyleService.cpp
+    gui/task_beta/ui/TabStyle.cpp
+    gui/task_market/TaskMarket.cpp
+    gui/task_market/services/CtaLib.cpp
+    gui/task_market/services/CtaService.cpp
+    gui/task_market/services/PortfolioService.cpp
+    gui/task_market/ui/PortfolioCta.cpp
+    gui/task_market/ui/PortfolioPlot.cpp
+    gui/task_market/ui/PortfolioSheet.cpp
+    gui/task_market/ui/PortfolioView.cpp
+    gui/task_market/ui/TabPortfolio.cpp
     # gui: microtex 头 (nums.h: POS_INF = infinity()) 的消费者, -ffinite-math-only 下是 UB
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp

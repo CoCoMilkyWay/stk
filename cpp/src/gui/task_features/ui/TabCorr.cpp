@@ -290,7 +290,7 @@ void RenderTabCorr(CorrService *service, CorrPairService *pair_service,
   const Phase status = corr.phase.load(std::memory_order_acquire);
   const bool building = corr.busy();
   ImGui::BeginDisabled(building);
-  if (ImGui::Button("Compute"))
+  if (ImGui::Button("Recompute"))
     service->RequestCompute(data, cols);
   ImGui::EndDisabled();
   ImGui::SameLine();

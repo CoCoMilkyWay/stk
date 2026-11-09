@@ -6,7 +6,7 @@
 //     all 定轴库   = 当日活跃 (fund::Panel::live, D 日盘前态; 与 Fund live 口同一份)
 //     子池定轴库   = 上游 all Bar 库 D 的前一交易日 (其日期轴上的前一日) L_1day 行 (收盘) 的 pool_<pool> 列 > 0.5
 //                    (池是 Bar 档截面列 Node/Bar/CS/Pool/Pool.hpp, 盘后列: 盘中 as-of 恒 -1)
-//                    L_1day 也不读 D 收盘行: 池键母集按次日 (D+1) 停牌 / ST 判 (盘后列), D 收盘建仓时尚不可知 (前视)
+//                    L_1day 也不读 D 收盘行: 池键范围按次日 (D+1) 停牌 / ST 判 (盘后列), D 收盘建仓时尚不可知 (前视)
 //     随轴库 (Lob) = 上游同池定轴库 D 的 L_1day 行 cs_valid (即上游那份面板写下的成员位)
 //     上游轴外 = 不在池; 上游一律经读端 Source 同一投影读 (level_asof): 盘后池列 → D−1 收盘行, 盘中 cs_valid → D 行
 //   自然轴 = 本库本该有的 A 轴 (全局 id 升序): all 定轴库 = 全部标的 (asset_axis 全轴); 其余 = dates 内进过池的

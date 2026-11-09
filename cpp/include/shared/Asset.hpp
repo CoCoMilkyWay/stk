@@ -198,7 +198,7 @@ struct Asset {
 
   // ========================================
   // 扫描 (Scan worker 线程, 同步): 一趟扫完就把三个页面要的数据全部备齐 (覆盖判定 /
-  // 每资产条数体积 / 完整性), 之后 Encode、Assets、Dates 直接读缓存, 不各自重算.
+  // 每资产条数体积 / 完整性), 之后 Encode、ASSET、Calendar 直接读缓存, 不各自重算.
   // 四步同一形状: 只读本对象 (items / 上一版两源缓存) + 只写 AssetScan, 批内并行走 ex.tasks,
   // 进度 begin(阶段, 总量) / publish(1). 产物由 GUI 帧首 adopt 整体换进 —— 中途页面看到的是上一版完整结果.
   // ========================================
@@ -210,7 +210,7 @@ struct Asset {
   // 几百个日期, 单线程. 区间内的条数/体积 (要遍历帧目录) 归 compute_coverage_statistics 那趟一起算.
   static void compute_backtest_coverage(AssetScan &out, misc::Ymd start, const AssetInfo &assetinfo);
 
-  // 按日统计 (Dates 完整性 / Assets 的 Orders% / Encode 的缺失表,
+  // 按日统计 (Calendar 完整性 / ASSET 的 Orders% / Encode 的缺失表,
   // 同一份统计一次算完)
   //
   // 分母 = 当日"本该有逐笔"的资产: 已上市未退市, 且排除

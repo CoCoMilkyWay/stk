@@ -25,6 +25,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -899,7 +900,7 @@ static void render_filter_dropdown(const char *label, bool &show_dropdown, std::
 }
 
 // ============================================================================
-// Node Time: 当前库 <库目录>/node_time.json (Compute / Append 时计时, 每轮覆盖) 按节点文件归并.
+// Node Time: 当前库 <库目录>/node_time.json (Rebuild / Append 时计时, 每轮覆盖) 按节点文件归并.
 //   时序 / 截面两段各自成 100% (不同 worker): 时序 = 抽样 asset-day 的节点 + 标签 + 写张量 + 源与调度; 截面 = 逐列 + 调度
 // ============================================================================
 
@@ -1136,7 +1137,7 @@ static void render_node_time(SharedData &data, const Feature &feature) {
   const LibId lib = feature.selection.lib();
   load_node_time(s_nt, (std::filesystem::path(lib_dir(data.config, lib)) / "node_time.json").string());
   if (!s_nt.ok) {
-    ImGui::TextDisabled("%s 尚无用时: Compute / Append 跑完即有", lib_name(lib).c_str());
+    ImGui::TextDisabled("%s 尚无用时: Rebuild / Append 跑完即有", lib_name(lib).c_str());
     return;
   }
   const auto &meta = feature.meta().features;
@@ -1223,14 +1224,12 @@ static void render_node_time(SharedData &data, const Feature &feature) {
 // Main Render Function
 // ============================================================================
 
-void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
-  Feature &feature = data.feature;
+// 作用域条 (Table / NodeTime 页顶): 池 × 档 = 库, 层 = 视图; Features 自持, 不与 Alpha 同步
+static void render_scope(Feature &feature) {
   Feature::Selection &sel = feature.selection;
-
-  // ==========================================================================
-  // Section 1: Pool + Tier + Level (库 = 池 × 档; 分析页读所选库, 因子页与本处共用当前池)
-  // ==========================================================================
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Pool:");
+  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
+  ImGui::SameLine();
+  ImGui::TextUnformatted("Pool");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(140);
   if (ImGui::BeginCombo("##pool", pool_def(sel.pool).name)) {
@@ -1251,49 +1250,52 @@ void RenderTabFeature(SharedData &data, FeatureUIState &ui_state) {
     ImGui::EndCombo();
   }
   ImGui::SameLine();
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Tier:");
-  for (const TierId t : TIER_ORDER) {
-    ImGui::SameLine();
-    if (ImGui::RadioButton(tier_name(t), sel.tier == t) && sel.tier != t) {
-      sel.clear_filters(); // 换档 = 换字段表: 过滤作废
-      sel.tier = t;
-    }
+  ImGui::TextUnformatted("Tier");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(80);
+  if (ImGui::BeginCombo("##tier", tier_name(sel.tier))) {
+    for (const TierId t : TIER_ORDER)
+      if (ImGui::Selectable(tier_name(t), sel.tier == t) && sel.tier != t) {
+        sel.clear_filters(); // 换档 = 换字段表: 过滤作废
+        sel.tier = t;
+      }
+    ImGui::EndCombo();
   }
   if (!has_level(sel.tier, static_cast<size_t>(sel.selected_level)))
     sel.selected_level = L_1min; // 档缺该层 (Bar 无 L_sec, Lob 无分钟箱层 / L_1day); 两档都有 L_1min
 
+  // 换层只换视图: 选中是 ColRef (带层), 跨层保留. 项带该层特征数
   ImGui::SameLine();
-  ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Level:");
+  ImGui::TextUnformatted("Level");
   ImGui::SameLine();
-
-  // 换层只换视图: 选中是 ColRef (带层), 跨层保留. 标签带该层特征数
-  for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
-    if (lvl > 0)
-      ImGui::SameLine();
+  ImGui::SetNextItemWidth(140);
+  const auto level_label = [&](size_t lvl) {
     char label[48];
-    std::snprintf(label, sizeof(label), "%s (%zu)###lvl%zu", level_name(lvl), feature.meta().features[lvl].size(), lvl);
-    ImGui::BeginDisabled(!has_level(sel.tier, lvl));
-    ImGui::RadioButton(label, &sel.selected_level, static_cast<int>(lvl));
-    ImGui::EndDisabled();
+    std::snprintf(label, sizeof(label), "%s (%zu)", level_name(lvl), feature.meta().features[lvl].size());
+    return std::string(label);
+  };
+  if (ImGui::BeginCombo("##level", level_label(static_cast<size_t>(sel.selected_level)).c_str())) {
+    for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+      if (!has_level(sel.tier, lvl))
+        continue;
+      if (ImGui::Selectable(level_label(lvl).c_str(), sel.selected_level == static_cast<int>(lvl)))
+        sel.selected_level = static_cast<int>(lvl);
+    }
+    ImGui::EndCombo();
   }
-
   ImGui::Separator();
+}
 
-  // 视图: Features (过滤 + 特征表) / Node Time (当前库本层相关文件的节点用时占比)
-  bool features_view = false;
-  if (ImGui::BeginTabBar("##feature_view")) {
-    if (ImGui::BeginTabItem("Features")) {
-      features_view = true;
-      ImGui::EndTabItem();
-    }
-    if (ImGui::BeginTabItem("Node Time")) {
-      render_node_time(data, feature);
-      ImGui::EndTabItem();
-    }
-    ImGui::EndTabBar();
-  }
-  if (!features_view)
-    return;
+// NodeTime 页: 当前库本层相关文件的节点用时占比
+void RenderTabNodeTime(SharedData &data) {
+  render_scope(data.feature);
+  render_node_time(data, data.feature);
+}
+
+void RenderTabTable(SharedData &data, FeatureUIState &ui_state) {
+  Feature &feature = data.feature;
+  Feature::Selection &sel = feature.selection;
+  render_scope(feature);
 
   // ==========================================================================
   // Section 2: Filters

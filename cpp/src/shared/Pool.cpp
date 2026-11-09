@@ -32,7 +32,7 @@ size_t col_of(TierId tier, size_t lvl, std::string_view code) {
 }
 
 // 上游库 up 的 L_1day 列 col 在本库日 D 的盘中 as-of (盘后列 → D−1 收盘行, 盘中列 → D 行) > 0.5 → [date_i][上游轴下标]
-// NaN (母集外) → 0 (本 TU precise-math)
+// NaN (范围外) → 0 (本 TU precise-math)
 std::vector<uint8_t> parent_bits(const FeatureLib &up, size_t col, std::span<const misc::Ymd> dates) {
   assert(up.ready() && "上游库未建: 先算上游库");
   Source s{.lib = up.id, .level = L_1day, .settle = level_info(up.tier(), L_1day).fields[col].settle};

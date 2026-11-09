@@ -351,7 +351,7 @@ void rank_inverse_normal(float *y, std::size_t n) {
 }
 
 // 池: 有限值中按 before (严格弱序, 并列按下标先到先得) 取前 N → 1, 其余 → 0; 有限值不足 N 全选;
-// 有限值不足非 NaN (母集) 的 kMinCover → 非 NaN 全选
+// 有限值不足非 NaN (范围) 的 kMinCover → 非 NaN 全选
 constexpr double kMinCover = 0.8;
 template <bool kHigh>
 void select_top(float *y, std::size_t n, std::size_t N) {

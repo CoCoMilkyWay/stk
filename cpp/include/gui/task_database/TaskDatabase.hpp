@@ -5,12 +5,12 @@
 namespace GUI {
 struct TaskHandle;
 }
-namespace GUI::Database {
-struct Market;
+namespace GUI::Market {
+struct MarketHub;
 }
 
 namespace GUI::Tasks {
 
-TaskHandle CreateDatabaseTask(std::shared_ptr<Database::Market> market);
+TaskHandle CreateDatabaseTask(std::shared_ptr<const Market::MarketHub> market);
 
 } // namespace GUI::Tasks

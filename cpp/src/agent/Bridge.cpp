@@ -8,12 +8,12 @@
 #include "factor/Search/Contract.hpp" // search_hold / Score / kMinMono
 #include "factor/Search/Space.hpp"    // slots_of (曲面的槽)
 #include "features/TimeIndex.hpp"     // bin_to_Clock (行的收盘时刻)
-#include "gui/task_factors/services/FactorsFile.hpp"
-#include "gui/task_factors/services/FactorsScope.hpp" // span_of
-#include "gui/task_factors/services/LensService.hpp"
-#include "gui/task_factors/services/RunService.hpp"
-#include "gui/task_factors/services/SearchService.hpp"
-#include "gui/task_factors/ui/TabFactors.hpp" // hold_desc
+#include "gui/task_alpha/services/FactorsFile.hpp"
+#include "gui/task_alpha/services/FactorsScope.hpp" // span_of
+#include "gui/task_alpha/services/LensService.hpp"
+#include "gui/task_alpha/services/RunService.hpp"
+#include "gui/task_alpha/services/SearchService.hpp"
+#include "gui/task_alpha/ui/TabFactors.hpp" // hold_desc
 #include "gui/task_features/services/ReplayService.hpp"
 #include "misc/date.hpp"         // dash
 #include "shared/AssetAxis.hpp"  // 码 ↔ 全局资产下标
@@ -32,7 +32,7 @@
 
 namespace agent {
 
-namespace F = GUI::Factors;
+namespace F = GUI::Alpha;
 namespace fs = std::filesystem;
 
 static_assert(kGroups == factor::stat::kGroups && kRankNone == factor::stat::kRankNone && kRankMax == factor::stat::kRankMax);

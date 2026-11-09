@@ -6,14 +6,14 @@
 #include <string>
 #include <vector>
 
-// 系统监控采集层。GUI 的 SystemInfo 面板与左下角 IconBar 共用这一份数据,
+// 系统监控采集层。GUI 的 Tools → System 页与左下角 IconBar 共用这一份数据,
 // 不各自去读一遍 /proc (Windows 下也不各开一个 PDH query)。
 //
 // 机器的算力要留给编码/特征计算, 监控本身必须近乎免费:
 //   * 静态信息 (OS / CPU 型号 / 缓存 / 指令集 / 内存总量) 只在构造时探测一次;
 //   * 每个数据源各记各的上次采样时刻, 没到点 poll() 就只是一次时间比较, 零系统调用;
 //   * Linux 下 /proc 句柄常驻, 采样 = lseek(0) + read + 手写整数解析, 稳态零堆分配;
-//   * GPU 走 NVML, 只有 SystemInfo 面板真被打开 (Scope::Full) 时才 dlopen 并初始化。
+//   * GPU 走 NVML, 只有 System 页真被打开 (Scope::Full) 时才 dlopen 并初始化。
 //
 // 线程约束: 只在 GUI 线程调用, 内部无锁。
 namespace misc::sysmon {
@@ -86,7 +86,7 @@ struct StaticInfo {
 // ============================================================================
 
 // Basic: CPU (总量 + 每核) + 内存, 给 IconBar。
-// Full : 追加 GPU / 网络 / 磁盘, 给 SystemInfo 面板。
+// Full : 追加 GPU / 网络 / 磁盘, 给 System 页。
 enum class Scope { Basic,
                    Full };
 

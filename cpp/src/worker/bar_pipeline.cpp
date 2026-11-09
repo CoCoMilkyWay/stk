@@ -1,5 +1,5 @@
 // Bar 档管线 (bar1m + 基本面): 档的源 TierFeed<bar::Tier> + 档入口表 bar_ops.
-// 本 TU precise-math (CMakeLists PRECISE 表): Fund 缺失值 / PoolKey 母集判定 / cs_valid 依赖 NaN 比较语义.
+// 本 TU precise-math (CMakeLists PRECISE 表): Fund 缺失值 / PoolKey 范围判定 / cs_valid 依赖 NaN 比较语义.
 #include "worker/feature_pipeline.hpp"
 
 #include "features/Bar1mDay.hpp"

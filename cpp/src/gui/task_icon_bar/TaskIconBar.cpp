@@ -118,7 +118,7 @@ private:
     if (elapsed.count() < IconBarConfig::UPDATE_INTERVAL_MS)
       return;
 
-    // 与 SystemInfo 面板共用同一次采样; 面板开着时它已经按 100ms 刷过了, 这里直接读结果
+    // 与 Tools → System 页共用同一次采样; 面板开着时它已经按 100ms 刷过了, 这里直接读结果
     sysmon::Monitor &monitor = sysmon::Monitor::instance();
     monitor.poll(sysmon::Scope::Basic, std::chrono::milliseconds(IconBarConfig::UPDATE_INTERVAL_MS));
     const sysmon::Sample &sample = monitor.sample();

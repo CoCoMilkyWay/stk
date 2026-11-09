@@ -1,6 +1,6 @@
 #pragma once
 
-// 图表公共件 (Assets 行情 / Portfolio 净值同一份): 涨跌色, 档位按钮条, 线尾小字, 现价十字
+// 图表公共件 (ASSET 行情 / Market 净值同一份): 涨跌色, 档位按钮条, 线尾小字, 现价十字
 
 #include "imgui.h"
 #include "implot.h"

@@ -35,10 +35,16 @@ struct TaskState {
   } database;
 
   // ==========================================================================
+  // Beta / Alpha Task (两个 Compute 页同一个特征计算服务)
+  // ==========================================================================
+  struct Compute {
+    bool computing = false; // 特征计算在飞 (点下 Rebuild / Append 起到收尾): 共享数据冻结 (Database 件留邮箱, 不发编码)
+  } compute;
+
+  // ==========================================================================
   // Features Task
   // ==========================================================================
   struct Features {
-    bool computing = false;     // 特征计算在飞 (点下 Compute 起到收尾): 共享数据冻结 (Database 件留邮箱, 不发编码)
     bool has_selection = false; // 主 feature 已选好
   } features;
 };

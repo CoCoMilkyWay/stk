@@ -516,7 +516,7 @@ private:
     bool changed = false;
     if (ImGui::CollapsingHeader("数据库配置", ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::TextWrapped("encode 始终全市场日频, A 轴来自基本面股票全量 (注册表 output/fundamental/asset_axis.json);"
-                         " 特征库 (all / 各池) 在 Features → Compute 页按池计算.");
+                         " 特征库在 Beta → Compute (all.bar) 与 Alpha → Compute (all.lob / 各池) 页计算.");
       ImGui::Spacing();
 
       auto readonly_table = [](const char *table_id, auto draw_rows) {

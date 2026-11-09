@@ -56,7 +56,7 @@
 //   归约算子一律 \mathrm{名}_下标 (\mathrm 不是 mathop, 下标必落右下, 不会顶到符号正下方把行撑高).
 //
 //   【operator 符号】继承 features/FeaturesDefine.hpp 的规范 (t = 分钟, D = 交易日, 1[·] 指示),
-//   算子库专用补充 (GUI Factors→Operators 页按 LaTeX 渲染):
+//   算子库专用补充 (GUI Alpha→Operators 页按 LaTeX 渲染):
 //     x, y, z     输入序列, 按元数取前 1..3 个; 每格 Val{v, m}, 所有 ∑ / 计数 / 极值只计有效 (m = 1) 样本; N 元写 x_1..x_N
 //     r^h         h 持有期的做多标签 (N 元回归的目标); L_t = 行 t 收盘时已实现标签的最近 d 行 (Contract【N 元回归】)
 //     a, b        资产 (截面轴). TS 只看本资产, 省略 a; CS 只看同一 t 的截面, 写 x_a 省略 t
