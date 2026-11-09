@@ -10,7 +10,7 @@
 //   resil_recov_bid/ask = max(0, Δd) · 1_{d<0}   (恢复信号)
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 
 class Resiliency {

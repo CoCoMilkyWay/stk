@@ -1,31 +1,31 @@
 // InspectService — Alpha→Inspect 页的单 worker: 对 Factors 表里高光的那一个因子 (view_file) 读特征库 → 一棵 Dag → CPU
 // evaluator → Stat, **沿时间落一级量** (逐行 rIC + 分层 / 多空净值线; RunService 全表 Run 只留二级 HoldStat) 给页面画分层累计 / 多空 / IC 分布.
-// 装载层与 RunService 共用 (FactorsLoad.hpp); 算子 / 流程层 (factor/Stat/Cpu.hpp run / EvalCpu.hpp run_node) 与搜索共用, 并行由
+// 装载层与 RunService 共用 (gui/factors/Load.hpp); 算子 / 流程层 (factor/Stat/Cpu.hpp run / EvalCpu.hpp run_node) 与搜索共用, 并行由
 // 常驻 ForkJoin 出 (misc/exec.hpp).
 //
 // 与 RunService 的分工: Factors 页 = 全部因子一轮排名 (回写文件); Inspect = 一个因子深看 (不写文件, 结果只在内存).
 //
 // 计算 flow (worker 的 FactorFlow + 本服务的平面缓冲; 交互服务, 一请求一次计算权租约). 平面在进程唯一的 Store 里缓存 (与 Run / Search / Portfolio /
 // agent 共用, 作用域不变就命中), 其后每次请求整条重算;
-// 整条走管线 eval_job (FactorsEngine.hpp, 与 Run / Portfolio 同一份), R / C / L / T / N 是探针 (InspectProbes); N 落线进净值引擎 fold_book
-// (FactorsBook.hpp, 与 Portfolio / 池线同一份):
-//   S  块       FactorsLoad Block = Store::pin 钉住的平面 (键 = 层 | Domain::key | 日段 | 角色)
+// 整条走管线 eval_job (gui/factors/Engine.hpp, 与 Run / Portfolio 同一份), R / C / L / T / N 是探针 (InspectProbes); N 落线进净值引擎 fold_book
+// (gui/factors/Book.hpp, 与 Portfolio / 池线同一份):
+//   S  块       gui/factors/Load Block = Store::pin 钉住的平面 (键 = 层 | Domain::key | 日段 | 角色)
 //               → Y = 截面门控, 毛标签 [H], 成本 [C]; X = 本因子的特征平面. 池等权线 (pool_line, 每持有期一条) 随 Y 的代算一次
 //               (块钩子, whole: 整期一块; 装不下内存预算 → 评估期只留最近的日, fit_recent)
 //   Y  标签     随 S                                       → 毛标签秩: 块上钉的标签秩 (Store 首次 prep_label, 随缓存常驻); 没有净标签集
 //   X  因子                                                → 缺的特征补读 (Store::pin) → Engine<Cpu>::walk (run_node, 全核) → 根平面 (HostPool, 租约内)
 //   R  rank_x (引擎)                                       → RxP 落 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);
 //                                                            RxAllP 另跑一遍 g = xm 的 rank_x → rx_all, 池外段也有秩可显
-//   C  成本                                                → end_codes(rx) → CostTier[C ≥ 1] (FactorsTable.hpp): 每金额段 × 每持有期一份换手成本 CostAcc (FactorsProbe
+//   C  成本                                                → end_codes(rx) → CostTier[C ≥ 1] (gui/factors/Table.hpp): 每金额段 × 每持有期一份换手成本 CostAcc (gui/factors/Probe
 //                                                            CostP → cost_rows, 与 Run 同一份; Stat 契约【换手成本】: 端成员 = 端码 ∧ 标签有效位, 逐格 Δw,
 //                                                            同一价点才与 t−h 交接; 一遍 [T][A], 无排序). 期限结构的净线 = 毛二级 − 两端均摊成本 (含 Config::fixed_impact), 全在 UI 现算
 //                                                            (成本不进标签, 不被截面去均值吃掉; fixed_impact 只进均摊公式, 不进请求)
 //   L  评估 + 尾部                                         → 一级 Row (逐行, 不落) + 二级 HoldStat[H] (只毛, accum_rows 一遍 → finish_all); 逐行 rIC 落 InspectPlanes::ric;
-//                                                            尾部 (两端组内更极端的 kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; 不进 Stat 契约 / Search, 见 FactorsTable TailRow)
-//                                                            是 label_row 的逐格扩展 (FactorsProbe TailExt), 与标签侧同一遍 A 轴
+//                                                            尾部 (两端组内更极端的 kTailOfGroup 截的分层 / 多空, 只在 Row::ok 行; 不进 Stat 契约 / Search, 见 gui/factors/Table TailRow)
+//                                                            是 label_row 的逐格扩展 (gui/factors/Probe TailExt), 与标签侧同一遍 A 轴
 //   T  换手                                                → 各 LS 线两端的换手量 CostAcc: 顶底 = C 的段 0 (各段同一份 Δw); 各级尾部 = Stat cost_rows 一个固定段
 //                                                            (端成员 = 该级端码 ∧ 标签有效位, 满仓 = cap · kTailOfGroup[j]); 图例年换手 = turn_annual, UI 现算
-//   N  净值                                                → 落线探针 NavP: 每行由 Row + 尾部算各线这一批的收益 (FactorsBook RowLines), 全部持有期一次 fold_book
+//   N  净值                                                → 落线探针 NavP: 每行由 Row + 尾部算各线这一批的收益 (gui/factors/Book RowLines), 全部持有期一次 fold_book
 //                                                            (Stat 契约【净值】: 平仓行实现 1/h̄), stride = S → nav 日收益 (分层 / 尾部 / LS 的绝对 + 超额, 只毛;
 //                                                            可成交 / 顺延在标签里)
 //   E  导出 (请求带 InspectExport)                          → 逐行按定向后的池内秩 rx 取做多端前 N (秩降序, 并列按 A 轴序; 本行无一有秩 → 不换仓), 只记进出:
@@ -41,9 +41,9 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_alpha/services/FactorsBook.hpp"   // BookLines
-#include "gui/task_alpha/services/FactorsFile.hpp"   // FeatureTable / FactorRow / StatScope / AlphaDist
-#include "gui/task_alpha/services/FactorsWorker.hpp" // FactorWorker
+#include "gui/factors/Book.hpp"   // BookLines
+#include "gui/factors/File.hpp"   // FeatureTable / FactorRow / StatScope / AlphaDist
+#include "gui/factors/Worker.hpp" // FactorWorker
 #include "shared/Analysis.hpp"                       // ReadScope / AggPdf
 
 #include <cstdint>
@@ -54,6 +54,8 @@
 struct SharedData;
 
 namespace GUI::Alpha {
+
+using namespace Factors;
 
 // 请求 = 一个因子 (FactorRef, 与 Portfolio 条目同一份) + 权重行 key; reload = 弃 Store 平面缓存整体重读 (特征库重算过 / 手动 Compute).
 // scope.max_impact 取用时封顶 (不进缓存键); scope.gpu 不看 (只 CPU)

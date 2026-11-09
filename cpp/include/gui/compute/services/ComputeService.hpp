@@ -1,5 +1,5 @@
 // Compute Service - Manages feature computation with multi-threaded workers
-// High-performance mode: Prefetch + TS workers + CS worker + IO worker (两档同一管线, 见 worker/feature_pipeline.hpp)
+// High-performance mode: Prefetch + TS workers + CS worker + IO worker (两档同一管线, 见 worker/compute/Pipeline.hpp)
 // 线程模型 (gui/util/Service.hpp, 随对象): 进度面 = 自身 (done/total = 已落盘天 / 档的日期轴);
 //   store / 调度面 / 仪表盘全是档的管线 (tier_ops) 的局部, 一轮一建
 #pragma once
@@ -8,7 +8,7 @@
 #include "gui/util/Service.hpp"
 #include "misc/date.hpp"
 #include "shared/FeatureLib.hpp"
-#include "worker/feature_workers.hpp" // StageLayout (UI 核布局表) / tier_ops
+#include "worker/compute/Stages.hpp" // StageLayout (UI 核布局表) / tier_ops
 
 #include <algorithm>
 #include <optional>
@@ -45,7 +45,7 @@ PerLib<LibPlan> plan_libs(const SharedData &data); // 按规划序 (lib_order, �
 bool resumable(const Config &cfg, const FeatureLib &lib);
 
 // 一轮的写端规划 (worker 线程; 请求 = 规划日期轴快照 + 全量 / 续算):
-//   lib   新清单 = 本库 + 规划日期轴 (A 轴 / 轴外由池面板定, 见 shared/Pool.hpp)
+//   lib   新清单 = 本库 + 规划日期轴 (A 轴 / 轴外由池面板定, 见 features/Panel/Pool.hpp)
 //   old   旧清单 (续算; 全量 = 未建库)
 //   dates 管线日期轴 = 规划日期轴从尾窗起; 尾窗 tail = 旧末 min(悬挂日环, 旧日数) 日 (标签可能仍悬挂, 此轮结清; 全量 0 = 整轴)
 // 越出上游库 / 不可续算 / 旧日期轴不是规划的真前缀 → assert
@@ -63,7 +63,7 @@ void remove_lib(const Config &cfg, LibId id);
 // Compute Config (= 请求)
 // ============================================================================
 
-// 日环深度 / 领养额度不在这里: 管线按负载模拟定初值、运行中按实测调 (见 worker/feature_workers.hpp 时序调参)
+// 日环深度 / 领养额度不在这里: 管线按负载模拟定初值、运行中按实测调 (见 worker/compute/Stages.hpp 时序调参)
 struct ComputeConfig {
   // 按档. 预取 / 截面 / 落盘核数: 各自按日轮转, 从时序让核 (Lob 时序是瓶颈, 不让).
   PerTier<int> pf_cores{{1, 1}};

@@ -7,14 +7,14 @@
 //   条目 = 权重粒度: (池, 因子层, 因子文件, 具体规范串, 方向) 定位 Factors 表里的一个权重 (FactorRow::expr / sign; sign 缺 = +1); hold = 加入时 Factors 页的 Hold.
 //   因子文件里找不到该规范串 + 方向 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
 //
-// 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Run / Inspect 同一条管线 (FactorsEngine eval_job: 装载 → 森林 → 探针).
+// 逐因子独立 (各用自己的层 / 池 / 评估期, 不统一网格): 与 Run / Inspect 同一条管线 (gui/factors/Engine eval_job: 装载 → 森林 → 探针).
 //   同 (层, 池) 的待算条目一组一张森林 (同 Y = 各根 hd 之并, 公共子式只算一次): 根 = 去重的 (具体规范串, 口径, 方向), 根的 hd = 其在组内的全部 hold;
-//   落账探针 BookP (accum_rows 一级 Row 的 G20 绝对收益 + cost_rows 逐行换手, 与 Run 同口径) → 净值引擎 fold_book (FactorsBook; Stat 契约【净值】:
+//   落账探针 BookP (accum_rows 一级 Row 的 G20 绝对收益 + cost_rows 逐行换手, 与 Run 同口径) → 净值引擎 fold_book (gui/factors/Book; Stat 契约【净值】:
 //   G20 多头, 每批 1/h̄, 平仓行实现; 可成交 / 顺延在标签里) → 一线的账.
 //   成本按 Δw (契约【换手成本】), 取主段 (y_spec Segs::First: 首个盘口段, 无则固定段): 盘口段 = 增仓 Δw⁺ × 买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 固定段 =
 //   增仓量 / 平仓量各付 fixed_impact (固定量 UI 乘). 净值 / 聚合 (等权, 日并集轴) / 年化换手在 UI 现算.
-// 篮子: 全部篮子一个作业 (FactorsEngine eval_baskets, 与 eval_job 平级), 在 kBasketLevel 的 all 池评估域 (全轴; 不走森林): load_b 一趟读齐各池成员位 (池列) + T+1C 标签 + 原料 → baskets 一趟扫完
-//   (FactorsBook) → 一本 basket_count 线的账 (线 = basket_line, 与行情侧价格指数同一张篮子表): 两权重可成交指数日收益 (净值引擎 fold_book) + 逐日增仓量
+// 篮子: 全部篮子一个作业 (gui/factors/Engine eval_baskets, 与 eval_job 平级), 在 kBasketLevel 的 all 池评估域 (全轴; 不走森林): load_b 一趟读齐各池成员位 (池列) + T+1C 标签 + 原料 → baskets 一趟扫完
+//   (gui/factors/Book) → 一本 basket_count 线的账 (线 = basket_line, 与行情侧价格指数同一张篮子表): 两权重可成交指数日收益 (净值引擎 fold_book) + 逐日增仓量
 //   + 估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率; 滚动分位 band 在 UI 按可调窗长现算);
 //   同一趟另出一本个股账 (线 = all 池轴的每只: 后复权日收益 + 本只收益率); 两本按 Side 并列 (PortfolioResult::quotes), UI 的两侧同一套.
 // 缓存: 因子按 FactorTask::key 存, 账记算时的 sig (变了重算), 只算缺的 (加一个因子只算它); 请求外的 (换组合 / 删条目) 按上次被请求的先后留到总量上限
@@ -25,9 +25,9 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_alpha/services/FactorsBook.hpp"   // BookLines / compound
-#include "gui/task_alpha/services/FactorsTable.hpp"  // FactorScope / FactorRef / kPoolVals
-#include "gui/task_alpha/services/FactorsWorker.hpp" // FactorWorker
+#include "gui/factors/Book.hpp"   // BookLines / compound
+#include "gui/factors/Table.hpp"  // FactorScope / FactorRef / kPoolVals
+#include "gui/factors/Worker.hpp" // FactorWorker
 #include "gui/task_market/services/Kline.hpp"        // PerSide (行情两侧的账)
 
 #include <algorithm>
@@ -44,8 +44,8 @@ struct SharedData;
 
 namespace GUI::Market {
 
-// 组合的账走 Alpha 的因子引擎 (字段表 / 作用域 / 净值引擎同一份)
-using namespace Alpha;
+// 组合的账走因子引擎 (gui/factors: 字段表 / 作用域 / 净值引擎同一份)
+using namespace Factors;
 
 // ---- 组合文件 (GUI 线程读写) ----
 struct PortfolioEntry {

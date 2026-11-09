@@ -37,7 +37,7 @@ struct ArchiveEntry {
 
 // 列举结果. Missing 与 Corrupt 必须分开, 且都不能和 "Ok + 空表" 混为一谈:
 // 调用方靠"列举出多少资产"反推"这一天是否齐备", 而 Missing 下条目表恒为空,
-// 混在一起就会把"没源可读"读成"没活可干" (见 encoding_producer 的完成标记).
+// 混在一起就会把"没源可读"读成"没活可干" (见 encode_producer 的完成标记).
 enum class ArchiveListStatus {
   Ok,      // unrar 正常退出, entries 是这个包的真实内容
   Missing, // 包不在盘上 — 不是错误, 这一天单纯没有源

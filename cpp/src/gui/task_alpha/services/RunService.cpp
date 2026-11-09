@@ -2,7 +2,7 @@
 // CMake 里已列入 PRECISE_MATH 源 (-fno-fast-math), 与 OperatorsService 同待遇.
 #include "gui/task_alpha/services/RunService.hpp"
 
-#include "gui/task_alpha/services/FactorsEngine.hpp" // eval_job / Probes / FactorFlow (四服务同一条管线)
+#include "gui/factors/Engine.hpp" // eval_job / Probes / FactorFlow (四服务同一条管线)
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 
@@ -51,16 +51,16 @@ bool RunService::run(RunRequest &req) {
   if (!ok) { // 中断: 没评到的行也收尾 (判废后不再有新请求刷新)
     std::lock_guard<std::mutex> lock(mutex);
     for (FactorRow &r : rows)
-      r.status = RowStatus::Done;
+      r.status = RowState::Done;
   }
   return ok;
 }
 
 void RunService::mark(size_t i, const std::string &why) {
   FactorRow &r = rows[i];
-  assert(r.status != RowStatus::Done && "每行至多收尾一次");
+  assert(r.status != RowState::Done && "每行至多收尾一次");
   r.error = why;
-  r.status = RowStatus::Done;
+  r.status = RowState::Done;
   broken_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -82,7 +82,7 @@ void RunService::scan(const RunRequest &req, std::vector<FactorRow> &out) {
   }
   if (!req.spec.evaluate) // 只扫描: BROKEN 行也算"处理完"
     for (FactorRow &r : out)
-      r.status = RowStatus::Done;
+      r.status = RowState::Done;
 }
 
 // 装载 + 评估 (worker 线程; 返回 false = 取消 / 判废): 逐因子文件 eval_file, 每文件一次租约 (文件之间让位给交互服务)
@@ -94,7 +94,7 @@ bool RunService::eval(const RunRequest &req, FactorFlow &F) {
     std::lock_guard<std::mutex> lock(mutex);
     for (size_t i = 0; i < rows.size(); ++i) {
       if (!rows[i].error.empty() || rows[i].expr.empty() || (!req.spec.only_file.empty() && rows[i].file != req.spec.only_file)) {
-        rows[i].status = RowStatus::Done; // BROKEN / 未搜索 / 不在 only_file 的行本轮不算
+        rows[i].status = RowState::Done; // BROKEN / 未搜索 / 不在 only_file 的行本轮不算
         continue;
       }
       if (idx.empty() || rows[idx.back().front()].file != rows[i].file)
@@ -105,7 +105,7 @@ bool RunService::eval(const RunRequest &req, FactorFlow &F) {
   if (idx.empty()) {
     std::lock_guard<std::mutex> lock(mutex);
     for (FactorRow &r : rows)
-      r.status = RowStatus::Done;
+      r.status = RowState::Done;
     message = "无有效因子";
     return true;
   }
@@ -145,8 +145,8 @@ bool RunService::eval_file(const RunRequest &req, FactorFlow &F, E &eng, const s
     void plan(size_t, const Forest &, const std::vector<std::string> &, const std::vector<uint8_t> &) {
       std::lock_guard<std::mutex> lock(W.mutex);
       for (const size_t i : idx)
-        if (W.rows[i].status != RowStatus::Done)
-          W.rows[i].status = RowStatus::Running;
+        if (W.rows[i].status != RowState::Done)
+          W.rows[i].status = RowState::Running;
     }
     void fail(int e, const std::string &why) {
       {
@@ -168,7 +168,7 @@ bool RunService::eval_file(const RunRequest &req, FactorFlow &F, E &eng, const s
         static_cast<EvalStat &>(r) = st;
         r.has_stat = true;
         r.stat_from_file = false;
-        r.status = RowStatus::Done;
+        r.status = RowState::Done;
       }
       fin.push_back(static_cast<size_t>(e));
       W.publish();

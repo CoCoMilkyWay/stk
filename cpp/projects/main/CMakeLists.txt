@@ -235,7 +235,7 @@ set(MATH_FAST
     shared/Asset.cpp
     shared/Concept.cpp
     shared/Feature.cpp
-    shared/OrdersDay.cpp
+    codec/OrdersDay.cpp
     # misc
     misc/archive.cpp
     misc/file_check.cpp
@@ -245,7 +245,7 @@ set(MATH_FAST
     # api
     # fundamental
     # codec
-    codec/L2_Validator.cpp
+    codec/L2Validator.cpp
     codec/OrderEncoder.cpp
     codec/OrderFrame.cpp
     # features
@@ -292,9 +292,9 @@ set(MATH_PRECISE
     shared/Corr.cpp
     shared/Dist.cpp
     shared/OrderFlow.cpp
-    shared/Pool.cpp
-    shared/PoolSelect.cpp
-    shared/PoolSpec.cpp
+    features/Panel/Pool.cpp
+    gui/task_beta/services/PoolSelect.cpp
+    gui/task_beta/services/PoolSpec.cpp
     shared/Preview.cpp
     shared/Transform.cpp
     # misc
@@ -317,7 +317,7 @@ set(MATH_PRECISE
     # features
     features/Bar1mDay.cpp
     features/Method/CS.cpp
-    features/Method/Fundamental.cpp
+    features/Panel/Fund.cpp
     # worker: Bar 档管线 (TS: Fund 缺失值 / PoolKey 范围 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
     worker/bar_pipeline.cpp
     worker/feature_profile.cpp

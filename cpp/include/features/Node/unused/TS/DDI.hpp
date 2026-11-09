@@ -8,7 +8,7 @@
 //   LAMBDA_X100 = λ×100; exp 用泰勒前 4 项近似 (相对误差 < 1%)
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 
 template <int LAMBDA_X100, size_t DEPTH_SIZE = L2::LOB_DEPTH>

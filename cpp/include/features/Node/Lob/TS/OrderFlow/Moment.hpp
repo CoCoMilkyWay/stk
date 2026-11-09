@@ -15,7 +15,7 @@
 //   量纲: |O| ≤ 10⁶ 股 (交易所单笔上限) → |O|⁴ ≤ 10²⁴, fp32 分钟累加不溢出; fp16 落盘 Log Tf.
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 #include <cstdint>
 

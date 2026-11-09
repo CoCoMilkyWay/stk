@@ -21,14 +21,16 @@
 
 #include "factor/Check.hpp"
 #include "factor/Contract.hpp"
+#include "gui/factors/Table.hpp" // RowState
 #include "gui/util/Service.hpp"
 
 #include <atomic>
-#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace GUI::Alpha {
+
+using namespace Factors;
 
 struct RoundCtx; // 一轮的常驻件 (输入缓存 / 输出缓冲 / GPU 会话), 定义在 .cpp
 
@@ -42,10 +44,6 @@ struct OperatorsRequest {
   int A = 500;
   unsigned seed = 1; // Request() 时间戳填充, UI 不编辑
 };
-
-enum class RowStatus : uint8_t { Pending,
-                                 Running,
-                                 Done };
 
 // 一行 = 一个算子: 静态列 + 一个跑手 (RunFn) + 跑手发布的动态列. 所有行同一套: OpTable 算子由宏实例化跑手,
 // 评估算子 Stat / Search (factor/Stat, factor/Search; 不在 OpTable, 前两行) 各自一个手写跑手, worker 一视同仁.
@@ -73,7 +71,7 @@ struct OperatorRow {
   bool classified = true;                 // false = 不在 OpTable 三维分类里 (Stat / Search), T / A / Kernel 列空着
   // 动态 (跑手写满每项; 复位时清)
   factor::Param param; // 本轮实际喂的参数 (d/k/k2 来自 Check.hpp 每算子默认表); 复位时就填, 不等跑到
-  RowStatus status = RowStatus::Pending;
+  RowState status = RowState::Pending;
   factor::check::Diff cpu_chk, gpu_chk;           // 见上
   double cpu_ms = 0, stream_ms = -1, gpu_ms = -1; // wall / wall / 纯 kernel; < 0 = 无该后端
   std::string detail;                             // 跑手的附带文本 (表列放不下的: prep 耗时 / 二级汇总 / 候选得分), 悬停 e_name 看, 落盘 detail 键

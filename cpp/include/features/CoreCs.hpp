@@ -188,7 +188,7 @@ public:
       using S = typename TierSide<T>::type;
       const FeatureLib &side = libs[S::kId], &self = libs[T::kId];
       assert(side.tier() == S::kId && self.axis.size() == A_);
-      assert(axis_within(self.axis, side.axis) && "本库轴须 ⊆ 旁读库轴 (见 shared/Pool.hpp)");
+      assert(axis_within(self.axis, side.axis) && "本库轴须 ⊆ 旁读库轴 (见 features/Panel/Pool.hpp)");
       side_rd_.emplace(side);
       side_readers_.rd[side.id] = &*side_rd_;
       if (side.axis.hash != self.axis.hash) {

@@ -7,11 +7,11 @@
 //     活跃 = Fund live 口 (在市: 非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌; 非次新: 上市满 365 日历日; 申万一级行业已知) ∧ 收盘市值 > 0
 //     范围 = 活跃 ∧ st_level == 0 (剔除 ST / *ST / 退市整理期) ∧ 收盘市值 > 0
 //     活跃口由 fund::Panel 全史判定一次, 与 all 库 cs_valid / 行情派生截面同一份 (那边按当日盘前态)
-//   键 (升序 = 指标由低到高, 池取低端 / 高端; 行情派生项全市场预计算, 截至本日收盘, 见 Method/Fundamental.hpp):
+//   键 (升序 = 指标由低到高, 池取低端 / 高端; 行情派生项全市场预计算, 截至本日收盘, 见 Panel/Fund.hpp):
 //     size   mcap (亿元, 收盘)
 //     ep     NP_ttm / mcap          (亏损为负, 低端 = 亏损最深)
 //     bp     EQ_mrq / mcap          (负净资产为负)
-//     dy     dy_ttm                 (近 4 季报告期税前分红 / 本日收盘总市值, 见 Fundamental.cpp)
+//     dy     dy_ttm                 (近 4 季报告期税前分红 / 本日收盘总市值, 见 Panel/Fund.cpp)
 //     roe    NP^p_Q / EQ_mrq        (单季归母净利 / 归母权益 MRQ; 权益 ≤ 0 记缺)
 //     inv    ta_yoy                 (总资产 MRQ 同比)
 //     mom    ret_12_1               (后复权 P_{D−20} / P_{D−250} − 1)
@@ -31,12 +31,12 @@
 //   分组键 (不走范围, 含 ST; 活跃 ∧ 落在该组 → mcap, 否则 NaN; 池列全选):
 //     sh_main 沪市主板 / sz_main 深市主板 / star 科创板 / chinext 创业板 (fund::Board)
 //     margin 融资融券标的 / nonmargin 非标的 (is_margin)
-//   池日频: 键落 L_1day (收盘后, 范围按次日在市 / ST / 停牌判), 交易日 D 的池 = D−1 的 L_1day 行池列 (shared/Pool.hpp 读 all Bar 库).
+//   池日频: 键落 L_1day (收盘后, 范围按次日在市 / ST / 停牌判), 交易日 D 的池 = D−1 的 L_1day 行池列 (features/Panel/Pool.hpp 读 all Bar 库).
 //   delist 只看已发生 (不含未来信息).
 //   边界: 行情项窗按可得史扩张, 数据起点次日起即有值; 财务项随首批公告渐次到齐. 范围内键缺记 +inf (与范围外 NaN 分开),
 //         池列据此算覆盖率, 不足则范围内全选 (CS::Select*), 指数在暖机段等于范围等权而不停摆.
 //
-// 本 TU (bar_pipeline.cpp) precise-math: 依赖 NaN 语义 (mcap 缺失 = NaN 比较为假; 键 isfinite 分缺 / 有).
+// 本 TU (worker/compute/FeedBar.cpp) precise-math: 依赖 NaN 语义 (mcap 缺失 = NaN 比较为假; 键 isfinite 分缺 / 有).
 // =============================================================================
 
 #include "features/DataDefine.hpp"

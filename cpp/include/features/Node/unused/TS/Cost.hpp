@@ -10,7 +10,7 @@
 //   当日尚无盘口 / 该侧 N 个价位皆空 / mid 无效 → NaN
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 
 template <size_t N_LEVELS, bool IS_BUY, size_t DEPTH_SIZE = L2::LOB_DEPTH>

@@ -66,7 +66,7 @@
 //     + 中线 + 分层线 (等差 / 等比) + 逐根时的买 / 卖标记; 下 = 策略 / 持有净值 (log); 悬停 = 光标 (中栏参数跟着走)
 #pragma once
 
-#include "gui/task_alpha/services/FactorsFile.hpp" // FactorRow
+#include "gui/factors/File.hpp" // FactorRow
 #include "gui/task_market/services/CtaService.hpp" // CtaSpec / CtaRequest (CTA 页)
 #include "gui/task_market/services/MarketHub.hpp"
 #include "gui/task_market/services/PortfolioService.hpp"

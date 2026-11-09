@@ -8,13 +8,13 @@
 #include "factor/Search/Contract.hpp" // search_hold / Score / kMinMono
 #include "factor/Search/Space.hpp"    // slots_of (曲面的槽)
 #include "features/TimeIndex.hpp"     // bin_to_Clock (行的收盘时刻)
-#include "gui/task_alpha/services/FactorsFile.hpp"
-#include "gui/task_alpha/services/FactorsScope.hpp" // span_of
-#include "gui/task_alpha/services/LensService.hpp"
+#include "gui/factors/File.hpp"
+#include "gui/factors/Scope.hpp" // span_of
+#include "agent/services/LensService.hpp"
 #include "gui/task_alpha/services/RunService.hpp"
 #include "gui/task_alpha/services/SearchService.hpp"
 #include "gui/task_alpha/ui/TabFactors.hpp" // hold_desc
-#include "gui/task_features/services/ReplayService.hpp"
+#include "agent/services/ReplayService.hpp"
 #include "misc/date.hpp"         // dash
 #include "shared/AssetAxis.hpp"  // 码 ↔ 全局资产下标
 #include "shared/FeatureLib.hpp" // feature_pools
@@ -32,19 +32,20 @@
 
 namespace agent {
 
-namespace F = GUI::Alpha;
+namespace A = GUI::Alpha;
+namespace F = GUI::Factors;
 namespace fs = std::filesystem;
 
 static_assert(kGroups == factor::stat::kGroups && kRankNone == factor::stat::kRankNone && kRankMax == factor::stat::kRankMax);
 static_assert(kTails == F::kTails && kTailOfGroup[0] == F::kTailOfGroup[0] && kTailOfGroup[1] == F::kTailOfGroup[1] && kTailOfGroup[2] == F::kTailOfGroup[2] &&
               factor::stat::kTop == 0 && factor::stat::kEnds == 2);
-static_assert(static_cast<int>(BookKind::New) == static_cast<int>(GUI::Features::ReplayKind::New) &&
-              static_cast<int>(BookKind::Cancel) == static_cast<int>(GUI::Features::ReplayKind::Cancel) &&
-              static_cast<int>(BookKind::Filled) == static_cast<int>(GUI::Features::ReplayKind::Filled) &&
-              static_cast<int>(BookKind::Sweep) == static_cast<int>(GUI::Features::ReplayKind::Sweep) && GUI::Features::kBigQuantile == 0.99f);
+static_assert(static_cast<int>(BookKind::New) == static_cast<int>(ReplayKind::New) &&
+              static_cast<int>(BookKind::Cancel) == static_cast<int>(ReplayKind::Cancel) &&
+              static_cast<int>(BookKind::Filled) == static_cast<int>(ReplayKind::Filled) &&
+              static_cast<int>(BookKind::Sweep) == static_cast<int>(ReplayKind::Sweep) && kBigQuantile == 0.99f);
 
 double Mono(const double *g, int n) { return factor::stat::mono_of(g, n); }
-int TradeSec(int clock) { return static_cast<int>(GUI::Features::trade_sec(static_cast<uint32_t>(clock))); }
+int TradeSec(int clock) { return static_cast<int>(trade_sec(static_cast<uint32_t>(clock))); }
 
 namespace {
 
@@ -341,7 +342,7 @@ int open_of(const std::vector<std::string> &clock) {
 
 // Lens 的落地 → Look (r16 原样, 行 / 格换成 agent 的形); 因子根与 labels 对齐;
 // 特征根先是 LookSpec::feats 里成的式 (feat_err 与 LookSpec::feats 对齐, 非空 = 不成, 没算), 其后按 kBars 序 = bars 里取了的 K 线叶 (kline = 其全名, 逆落盘变换成原量)
-Look look_of(F::LensResult &&r, const F::FeatureTable &ft, const std::vector<std::string> &labels, std::vector<std::string> &&feat_err, const PerBar<bool> &bars,
+Look look_of(LensResult &&r, const F::FeatureTable &ft, const std::vector<std::string> &labels, std::vector<std::string> &&feat_err, const PerBar<bool> &bars,
              const PerBar<std::string> &kline) {
   Look o;
   o.error = std::move(r.error);
@@ -356,7 +357,7 @@ Look look_of(F::LensResult &&r, const F::FeatureTable &ft, const std::vector<std
   o.gate = std::move(r.gate), o.label = std::move(r.label), o.mkt = std::move(r.mkt);
   assert(r.roots.size() == labels.size());
   for (size_t j = 0; j < r.roots.size(); ++j) {
-    F::LensRoot &x = r.roots[j];
+    LensRoot &x = r.roots[j];
     LookRoot y;
     y.label = labels[j];
     y.error = std::move(x.error), y.rx = std::move(x.rx);
@@ -373,7 +374,7 @@ Look look_of(F::LensResult &&r, const F::FeatureTable &ft, const std::vector<std
           z.tail[e][j] = tr.sum[e][j], z.tcnt[e][j] = tr.cnt[e][j];
       y.rows.push_back(z);
     }
-    for (const F::LensCell &c : x.cells)
+    for (const LensCell &c : x.cells)
       y.cells.push_back({c.t, c.a, c.e == factor::stat::kTop, c.ret});
     o.factors.push_back(std::move(y));
   }
@@ -400,7 +401,7 @@ Look look_of(F::LensResult &&r, const F::FeatureTable &ft, const std::vector<std
 bool searchable(const F::FactorRow &r) { return r.error.empty() && !r.tmpl.empty(); }
 
 // Search 评过的点 → 曲面: 各点的具体式按模板的槽 (前序节点) 读回参数值
-Surface surface_of(const F::FeatureTable &ft, const F::SearchResult &r) {
+Surface surface_of(const F::FeatureTable &ft, const A::SearchResult &r) {
   namespace sp = factor::search::space;
   Surface s;
   if (r.slots.empty())
@@ -409,7 +410,7 @@ Surface surface_of(const F::FeatureTable &ft, const F::SearchResult &r) {
   const std::vector<sp::Slot> slots = sp::slots_of(t, ft.seg, r.n_full * kGroups);
   assert(slots.size() == r.slots.size());
   s.slots = r.slots;
-  for (const F::SearchCand &c : r.cands) {
+  for (const A::SearchCand &c : r.cands) {
     if (!c.sc.ok)
       continue;
     const factor::expr::Expr e = ft.reparse(c.expr);
@@ -714,7 +715,7 @@ std::vector<Choice> holds(const SharedData &data, int level) {
       out.push_back({lg.key, factor::stat::hold_name(lg.key)});
   return out;
 }
-std::string hold_desc(int hold, int level) { return F::hold_desc(hold, level_id(level)); }
+std::string hold_desc(int hold, int level) { return A::hold_desc(hold, level_id(level)); }
 bool gpu() { return factor::gpu::available(); }
 
 bool ready(const SharedData &data, const Scope &sc, bool gpu) {
@@ -747,7 +748,7 @@ struct Lab::Impl {
   static_assert(static_cast<size_t>(Step::Search) == 0 && static_cast<size_t>(Step::Run) == 1 && static_cast<size_t>(Step::Look) == 2 &&
                 static_cast<size_t>(Step::Book) == 3);
   bool gpu = false;
-  std::tuple<Lane<F::SearchService>, Lane<F::RunService>, Lane<F::LensService>, Lane<GUI::Features::ReplayService>> lanes;
+  std::tuple<Lane<A::SearchService>, Lane<A::RunService>, Lane<LensService>, Lane<ReplayService>> lanes;
   // 在做的那件事
   bool running = false;              // send 起, 到 End 入队
   bool halt = false;                 // 已 cancel: 在跑那步收尾即 End
@@ -817,25 +818,25 @@ struct Lab::Impl {
   void start(BookSpec s) { enter<Step::Book>(replay_req(std::move(s))); }
 
   // ---- 各道的请求 ----
-  F::SearchRequest search_req() const {
-    F::SearchRequest req;
-    [[maybe_unused]] const bool ok = F::MakeSearchRequest(*data, ft(), sc.pool, row, sc.hold, /*fresh=*/true, gpu, req);
+  A::SearchRequest search_req() const {
+    A::SearchRequest req;
+    [[maybe_unused]] const bool ok = A::MakeSearchRequest(*data, ft(), sc.pool, row, sc.hold, /*fresh=*/true, gpu, req);
     assert(ok && "作用域须 ready");
     req.scope.factor_dir = dir;
     return req;
   }
-  F::RunRequest run_req() const {
-    F::RunRequest req;
-    [[maybe_unused]] const bool ok = F::MakeRunRequest(*data, ft(), sc.pool, /*evaluate=*/true, gpu, req);
+  A::RunRequest run_req() const {
+    A::RunRequest req;
+    [[maybe_unused]] const bool ok = A::MakeRunRequest(*data, ft(), sc.pool, /*evaluate=*/true, gpu, req);
     assert(ok && "作用域须 ready");
     req.scope.factor_dir = dir;
     req.spec.only_file = file;
     return req;
   }
   // 记下成文要的 labels / feat_err / bars
-  F::LensRequest lens_req(LookSpec s) {
+  LensRequest lens_req(LookSpec s) {
     assert(!s.factors.empty() || std::any_of(s.feats.begin(), s.feats.end(), [](const LookExpr &x) { return x.error.empty(); }) || s.kline);
-    F::LensRequest req;
+    LensRequest req;
     [[maybe_unused]] const bool ok = F::MakeFactorScope(*data, ft(), sc.pool, /*gpu=*/false, req.scope);
     assert(ok && "作用域须 ready");
     req.spec.hold = sc.hold;
@@ -868,21 +869,20 @@ struct Lab::Impl {
     return req;
   }
   // 记下在放的那段
-  GUI::Features::ReplayRequest replay_req(BookSpec s) {
-    namespace X = GUI::Features;
+  ReplayRequest replay_req(BookSpec s) {
     assert(s.from < s.to && s.at >= s.from && s.at < s.to);
     const size_t id = asset_axis().find(s.code);
     assert(id < asset_axis().size() && id < data->asset.items.size() && "码须经 code_of");
-    X::ReplayRequest req;
+    ReplayRequest req;
     req.orders = data->asset.orders();
     assert(req.orders && "逐笔帧目录未扫描");
     req.dir = data->config.orders_dir;
     req.asset = static_cast<uint32_t>(id);
     req.exchange = data->asset.items[id].exchange_type;
     req.date = s.date;
-    req.s0 = X::trade_sec(static_cast<uint32_t>(s.from));
-    req.s1 = X::trade_sec(static_cast<uint32_t>(s.to - 1)) + 1;
-    req.at = X::trade_sec(static_cast<uint32_t>(s.at));
+    req.s0 = trade_sec(static_cast<uint32_t>(s.from));
+    req.s1 = trade_sec(static_cast<uint32_t>(s.to - 1)) + 1;
+    req.at = trade_sec(static_cast<uint32_t>(s.at));
     req.big = static_cast<float>(s.big);
     spec = std::move(s);
     return req;
@@ -891,8 +891,8 @@ struct Lab::Impl {
   // ---- 各道跑完 ----
   // Search: 落了盘 → 取曲面, 进 Run; 中途放弃 → 记下原因 (该文件 BROKEN), 评完
   void searched() {
-    Lane<F::SearchService> &l = lane<Step::Search>();
-    if (const F::SearchResult r = l.take(); r.wrote) {
+    Lane<A::SearchService> &l = lane<Step::Search>();
+    if (const A::SearchResult r = l.take(); r.wrote) {
       fails.erase(file), surf = surface_of(*ft(), r);
       return enter<Step::Run>(run_req());
     }
@@ -935,7 +935,7 @@ struct Lab::Impl {
   }
   // Book: 交易秒 → 钟面秒
   void booked() {
-    GUI::Features::ReplayResult r = lane<Step::Book>().take();
+    ReplayResult r = lane<Step::Book>().take();
     Book b{.spec = spec,
            .error = std::move(r.error),
            .orders = static_cast<int>(r.orders),
@@ -945,16 +945,16 @@ struct Lab::Impl {
            .close = r.close,
            .amount = r.amount,
            .big = r.big};
-    const uint32_t s0 = GUI::Features::trade_sec(static_cast<uint32_t>(spec.from));
+    const uint32_t s0 = trade_sec(static_cast<uint32_t>(spec.from));
     for (size_t i = 0; i < r.secs.size(); ++i) {
-      const GUI::Features::ReplaySec &x = r.secs[i];
+      const ReplaySec &x = r.secs[i];
       BookSec &y = b.secs.emplace_back();
-      y.clock = static_cast<int>(GUI::Features::trade_clock(s0 + static_cast<uint32_t>(i)));
+      y.clock = static_cast<int>(trade_clock(s0 + static_cast<uint32_t>(i)));
       y.bid = x.bid, y.ask = x.ask, y.ref = x.ref, y.matched = x.matched, y.imbalance = x.imbalance, y.last = x.last;
       for (int s = 0; s < 2; ++s)
         y.depth[s] = x.depth[s], y.taker[s] = x.taker[s], y.maker[s] = x.maker[s], y.cancel[s] = x.cancel[s];
     }
-    for (const GUI::Features::ReplayEvent &e : r.events)
+    for (const ReplayEvent &e : r.events)
       b.events.push_back({L2::tick_hour(e.tick) * 3600 + L2::tick_minute(e.tick) * 60 + L2::tick_second(e.tick), L2::tick_millisecond(e.tick), static_cast<BookKind>(e.kind), e.side,
                           e.levels, e.price, e.first, e.amount, e.life});
     b.book = std::move(r.book);

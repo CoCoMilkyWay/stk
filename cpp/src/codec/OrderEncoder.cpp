@@ -490,7 +490,7 @@ Outcome OrderEncoder::finish(const std::string &tag) {
     return Outcome::Tombstone;
   }
 
-  // 准入校验 — 判据与经验依据见 L2_Validator.hpp.
+  // 准入校验 — 判据与经验依据见 L2Validator.hpp.
   //
   // 用中间结构而非转换后的 Order: 中间结构是源数据原样, 而转换会把价格折进价位
   // 窗口、把其余字段钳到位宽上界, 拿加工过的值去和快照对拍等于自己骗自己.

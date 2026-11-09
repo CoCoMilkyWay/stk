@@ -17,7 +17,7 @@
 //   fp16 落盘: 额 / 量 / 笔 Log Tf; dlogp 原值 (基点).
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 #include "math/distribution/SizeThresholds.hpp"
 

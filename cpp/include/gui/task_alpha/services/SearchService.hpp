@@ -2,7 +2,7 @@
 // (factor/Search/Space.hpp 定槽 / 坐标 / 区间), 只搜调用方给定的一个持有期 h (限 Search/Config kSearchHolds; 搜哪个周期由上层定), 目标 = 该 h 的
 // 每期真实毛 LS (持仓口径, 已含触发 / 利用率) · rIC · mono² (Contract【目标】: 只评排序能力, 不跨 h 比, 不看成本; 硬门槛 mono ≥ kMinMono), 按冗余规则终选持仓重合少的
 // 显著权重 (Contract【多权重】, 个数不设上限), picks 替换该因子文件里同 h 的 weights (空 picks = 清掉该 h), 别的 h 的权重不动; fresh 先清空
-// 全部 weights (Search all 每文件首档: 该文件各档整份重搜) (FactorsFile WriteFactorSearch; UI 随后自动 Run 重算每权重的 stat).
+// 全部 weights (Search all 每文件首档: 该文件各档整份重搜) (gui/factors/File WriteFactorSearch; UI 随后自动 Run 重算每权重的 stat).
 // 无自由参数的具体式也可搜: 只评它本身一个点 (定方向, μ = 观测 g 判显著).
 // 分数只在搜索内部用: 因子表排序 / 选代表权重由 Run 落的 stat 用同一份 score_of 现算; 文件里只留结局 (search[]: 评估期 + 无显著时的代表点).
 // 配置全在 factor/Search/Config.hpp. 唯一的预算量 = 第 0 趟点数 kInit; 停机 / 高原 / 去重全由各候选的标准误 (Contract【噪声】) 判, 无比例 / 步长 / 个数常数.
@@ -22,11 +22,11 @@
 //                 不另开一趟
 //
 // 评估 (Search 算子, 两后端语义同 Stat; 只装 / 评给定持有期的标签组):
-//   分块流式  按天切块, 块 i 统计交易日 [i·D, (i+1)·D), 装载时前后多带 FactorsEngine bands_of 日: 前带 = ⌈(模板回看 + 持有期行) / seg⌉
+//   分块流式  按天切块, 块 i 统计交易日 [i·D, (i+1)·D), 装载时前后多带 gui/factors/Engine bands_of 日: 前带 = ⌈(模板回看 + 持有期行) / seg⌉
 //             + kChainDays (Space lookback: 各路径 ROLL 窗长之和, 自由 d 取 kMaxD), 后带 = ⌈持有期行 / seg⌉ (首块无前带 / 末块无后带);
 //             块大小 D 按显存 / 内存预算定, 全装得下就一块. 块内候选评估与整张量一致 (EXPAND 段界 reset; 各窗回看与交接链都有限,
 //             前后带盖住); 跨块 Result::merge. 块平面经 Store 缓存: 内存装得下就各趟全命中, 否则每趟重读.
-//   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次); 批 = 引擎 batch_of (FactorsEngine).
+//   候选批    一趟的候选按批合成共享 DAG (factor::build_forest: 参数不同的节点以下公共前缀只算一次); 批 = 引擎 batch_of (gui/factors/Engine).
 //             CPU: 每节点全核 (run_node), 根算完立刻全核 Stat (rank_x + accum_rows, 与 Run 同一条; 抽样行拷 rx), 不留根平面; 批 = kBatch;
 //             GPU: keep_roots 森林, 一批 C 张根平面同在显存, 一次 search_eval (核内 8 候选共用标签行); C 按显存定, 上限 search_max_batch.
 //
@@ -38,8 +38,8 @@
 
 #include "factor/Search/Contract.hpp" // Score
 #include "factor/Stat/Contract.hpp"
-#include "gui/task_alpha/services/FactorsFile.hpp"   // FeatureTable / FactorRow
-#include "gui/task_alpha/services/FactorsWorker.hpp" // FactorWorker
+#include "gui/factors/File.hpp"   // FeatureTable / FactorRow
+#include "gui/factors/Worker.hpp" // FactorWorker
 
 #include <atomic>
 #include <cstdint>
@@ -50,6 +50,8 @@
 struct SharedData;
 
 namespace GUI::Alpha {
+
+using namespace Factors;
 
 struct SearchSpec {
   std::string file, tmpl;                              // 因子文件名 + 模板规范串 (FactorRow::tmpl; 无自由参数 = 只评本身)

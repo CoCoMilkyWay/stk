@@ -1,8 +1,8 @@
 // PortfolioService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点: CMake PRECISE_MATH 源.
 #include "gui/task_market/services/PortfolioService.hpp"
 
-#include "gui/task_alpha/services/FactorsEngine.hpp" // with_engine / eval_job / eval_baskets / Probes / LinesP / group_abs
-#include "gui/task_alpha/services/FactorsFile.hpp"   // ValidFactorName / FactorRow / ScanFactorFile
+#include "gui/factors/Engine.hpp" // with_engine / eval_job / eval_baskets / Probes / LinesP / group_abs
+#include "gui/factors/File.hpp"   // ValidFactorName / FactorRow / ScanFactorFile
 #include "misc/profiler.hpp"
 #include "shared/Basket.hpp"     // basket_count
 #include "shared/FeatureLib.hpp" // pool_def

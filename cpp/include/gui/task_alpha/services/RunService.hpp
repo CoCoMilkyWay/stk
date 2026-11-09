@@ -1,8 +1,8 @@
 // RunService — Alpha→Factors 表 (因子看板) 的单 worker: 扫 <factor_dir>/<pool>/*.json 因子文件 → 解析 / 校验模板与权重表达式
 // (factor/Expr.hpp) → (Run 时) 读特征库把因子输入 + 标签装成 [T = days·seg][A] 平面 (seg = 因子层, 见 FactorLevel) → 每权重 Expr → Dag →
-// CPU / GPU evaluator 算根平面 → Stat 评估 → 发布一行; 一个文件的森林走完 (未取消) 一次回写它全部权重的 stat (FactorsFile WriteFactorStats).
+// CPU / GPU evaluator 算根平面 → Stat 评估 → 发布一行; 一个文件的森林走完 (未取消) 一次回写它全部权重的 stat (gui/factors/File WriteFactorStats).
 //
-// 因子文件格式 / 行 FactorRow / 文件增删改: FactorsFile.hpp.
+// 因子文件格式 / 行 FactorRow / 文件增删改: gui/factors/File.hpp.
 //   同一具体规范串多行 (跨文件 / 同文件) → 后者标 dup (黄), 仍算 (同文件的在共享 DAG 里是同一个根, Stat 也只算一次).
 //
 // 线程模型 (gui/util/Service.hpp, 随对象): GUI 线程 Request 覆盖挂起请求 + 取消在跑; UI 持 mutex 读 rows;
@@ -11,7 +11,7 @@
 // 装载: 逐因子文件 (各文件评估期 / A 轴不同, 见 FactorLevel) 把该文件用到的特征 (去重, 跨库跨层 level_asof 投影) + 标签库 ts_valid / cs_valid
 // + 全部持有期标签列读进宿主 (逐天并行, 门控 fmeta::valid ∧ isfinite → 值 + 掩码); 标签存 fp16 位 (与落盘同格式, Stat 直接吃).
 // 评估期 = 评估域全期 (与 Search 同一份); 装载前按宿主 / 显存预算分块: 装得下 = 整期一块, 否则逐块流式
-// (前带 = 根的最长回看 + lag; alpha 小图只取末块, 见 FactorsProbe AlphaP). 平面经 Store 缓存 (Y / 叶跨文件、跨服务复用);
+// (前带 = 根的最长回看 + lag; alpha 小图只取末块, 见 gui/factors/Probe AlphaP). 平面经 Store 缓存 (Y / 叶跨文件、跨服务复用);
 // 批服务: 每文件一次计算权租约, 文件之间让位给交互服务.
 // 两张门控列的分工 (features/MetaFlag.hpp): 特征输入按 ts_valid 门控 (TS 节点要跨进出池的历史); 标签按 cs_valid 门控 (只被 Stat 吃,
 // rank(y) 得在池内排); cs_valid 的有效位另成一张截面池掩码平面 g, 原样递给 CS 节点的算子与 Stat (factor/Contract.hpp【截面池 g】:
@@ -20,7 +20,7 @@
 // 顺序走节点; CPU 每个节点内部切满所有核 (factor::cpu::run_node + 常驻 ForkJoin, 结果与单线程逐位一致), 根算完立刻全核 Stat, 再按槽计划
 // 释放 (内存 = 峰值活槽 × T·A × 5B, 确定); GPU 同一张 DAG, 输入上传一次, 中间量常驻显存 (DevPool), Stat 走常驻会话.
 // Stat 的持有期维 hd.n = n_hold ≤ kMaxHold, x 的 rank 只算一次. 标签是毛价格收益 (不含冲击 / 税佣), HoldStat 是毛口径;
-// 换手成本 (每金额段: 固定段 + 评估域含 Lob 库时的 lb_cost_* 盘口段, 买入冲击取用时按 Config::max_impact 封顶) 用同一份秩再攒一遍 CostAcc (FactorsProbe CostP →
+// 换手成本 (每金额段: 固定段 + 评估域含 Lob 库时的 lb_cost_* 盘口段, 买入冲击取用时按 Config::max_impact 封顶) 用同一份秩再攒一遍 CostAcc (gui/factors/Probe CostP →
 // Stat cost_rows, 两后端同一份宿主代码: CPU 用刚算的 rx, GPU 把 r16(x) 拷回), 落 stat.costs (年换手取段 0); 净线由 Inspect plot_term 在二级上现算,
 // 因子表 score (排序 / 选代表权重) 由 RowScore 从该 h 的 HoldStat 算,
 // Config::fixed_impact 只进公式不进文件. 因子表的全部数据都来自 stat —— Search 只内部用同一份目标挑参数, 不往文件写结论.
@@ -28,9 +28,9 @@
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 特征库 / 契约不一致 → assert.
 #pragma once
 
-#include "gui/task_alpha/services/FactorsFile.hpp"   // FactorRow (+ 文件增删改, 调用方经本头一并可见)
-#include "gui/task_alpha/services/FactorsTable.hpp"  // FeatureTable / FactorScope
-#include "gui/task_alpha/services/FactorsWorker.hpp" // FactorWorker
+#include "gui/factors/File.hpp"   // FactorRow (+ 文件增删改, 调用方经本头一并可见)
+#include "gui/factors/Table.hpp"  // FeatureTable / FactorScope
+#include "gui/factors/Worker.hpp" // FactorWorker
 
 #include <atomic>
 #include <memory>
@@ -40,6 +40,8 @@
 struct SharedData;
 
 namespace GUI::Alpha {
+
+using namespace Factors;
 
 struct RunSpec {
   bool evaluate = false; // false = 只扫描解析 (不读库)
@@ -70,7 +72,7 @@ private:
   void scan(const RunRequest &req, std::vector<FactorRow> &out);
   bool eval(const RunRequest &req, FactorFlow &F); // false = 取消 / 判废
   // 一个因子文件的全部待评权重 (idx = rows 下标, 同文件同模板 → 同叶 → 同评估期 / A 轴): 根集 → 管线 eval_job (共享森林; 须持租约)
-  // 走引擎 E (FactorsEngine Engine<Cpu | Gpu>, 本轮一个). false = 取消 / 判废 (该文件 Empty / Broken: 行已标, true)
+  // 走引擎 E (gui/factors/Engine Engine<Cpu | Gpu>, 本轮一个). false = 取消 / 判废 (该文件 Empty / Broken: 行已标, true)
   template <class E>
   bool eval_file(const RunRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx);
   void mark(size_t i, const std::string &why); // 行 i 收尾为 BROKEN (调用方持锁; 每行至多一次)

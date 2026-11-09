@@ -1,6 +1,6 @@
 #pragma once
 
-#include "L2_DataType.hpp"
+#include "L2DataType.hpp"
 #include <cstdint>
 #include <vector>
 
@@ -20,8 +20,8 @@ namespace L2 {
 //   FrameEncoder::encode(FrameView) → Frame        FrameDecoder::decode(Frame) → FrameView
 //
 // 两侧都只碰内存, 不碰 fd —— 帧进出日文件归 DayWriter / DayReader (见
-// shared/OrdersDay.hpp). FrameHead 随帧走: 编码侧来自准入校验, 解码侧来自日文件
-// 目录, 交给订单簿把绝对价折成价位下标 (见 L2_DataType.hpp 的 kPriceIndexRange).
+// codec/OrdersDay.hpp). FrameHead 随帧走: 编码侧来自准入校验, 解码侧来自日文件
+// 目录, 交给订单簿把绝对价折成价位下标 (见 L2DataType.hpp 的 kPriceIndexRange).
 
 // 帧的两项元数据, FrameView / Frame / FrameRef 共用同一份.
 struct FrameHead {

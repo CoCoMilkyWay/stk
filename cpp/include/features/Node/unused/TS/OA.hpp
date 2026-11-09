@@ -7,7 +7,7 @@
 //   oa_tr_bid/tr_ask = Σ|O^{T,B/A}| / Σ|O^{M,B/A}|   (买/卖方成交率)
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 
 class OA {

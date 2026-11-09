@@ -8,7 +8,7 @@
 #include <type_traits>
 #include <utility>
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "define/CBuffer.hpp"
 
 //========================================================================================
@@ -483,7 +483,7 @@ struct LOB_Feature {
   uint32_t volume = 0; // 股
 
   // depth_buffer 里 Level::price 是价位下标而非绝对价, 还原成分要加上这个基准.
-  // 低价股恒为 0. 来源是日文件目录项, 见 L2_DataType.hpp 的 kPriceIndexRange.
+  // 低价股恒为 0. 来源是日文件目录项, 见 L2DataType.hpp 的 kPriceIndexRange.
   uint32_t price_base = 0;
 
   // 价位下标 → 绝对价 (元); 下标 0 (市价单 / 占位价位) 无价 → 0. 下标空间只在这里还原,

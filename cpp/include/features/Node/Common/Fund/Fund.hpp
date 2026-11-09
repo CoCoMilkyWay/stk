@@ -4,14 +4,14 @@
 // Fund - 日频 PIT 基本面 (日频节点: compute=flush=onSettle, 每个交易日收盘后发布一次; 输出口跨天保留)
 //        持一个 fund::Stream (per-资产日频状态机), 收盘后沿 D 轴推进到次日 (d+1) 算出全部口 (估值分母 / 因子 raw / filter):
 //        L_1day 行 D = 次日盘前态; 下游 (Valuation / Depth / Flow / Book / Auction / Kline / LabelLob) 按口引用,
-//        盘中读到的 = 前一交易日 L_1day 行 = 当日适用值; 落盘列直接 TS(Fund, 口). 方法见 Method/Fundamental.hpp
+//        盘中读到的 = 前一交易日 L_1day 行 = 当日适用值; 落盘列直接 TS(Fund, 口). 方法见 Panel/Fund.hpp
 //        两档共用类; 节点实例 / 落盘列见 Node/{Bar,Lob}/TS/Fund/Fund.hpp
 // =============================================================================
 //   Out = 输出行布局 (一处定义, fund::Stream 按 Fund::<口> 写). 缺失 = NaN.
 //   单位: 股本 [亿股], 金额 [亿元], 价格 [元] — 与 L_1min 特征输出单位直接对齐 (mcap = close × total_shares 即为亿元).
 //   涨跌停比较容差统一用 kPxEps (DataDefine.hpp).
 //
-//   逐表对齐 (源表 date = T 的行; Stream 网格行 row = idx − cutoff, 见 Fundamental.cpp RowOf; L_1day 行 D = Stream 状态 d+1):
+//   逐表对齐 (源表 date = T 的行; Stream 网格行 row = idx − cutoff, 见 Panel/Fund.cpp RowOf; L_1day 行 D = Stream 状态 d+1):
 //     表 (字段)                                              更新时点               cutoff   L_1day 行 D 含
 //     real_bar1d.close                                       T 盘后                 −1       T ≤ D
 //     real_bar1d.pre_close / adjust_factor                   T 盘前 (交易所公布)     0       T ≤ D+1 (次日前收 / 除权)
@@ -24,7 +24,7 @@
 //     dividend / forecast                                    公告日 T 盘后          −1       公告日 ≤ D
 //     industry component / change                            T 盘后                 −1       T ≤ D
 //     日历派生 (list_age / delist_age / flt_new / days_since_report / shares_yoy 回看)   按 D+1 的日历日计
-//     行情派生 (ret_12_1 / ret_1m / turn / ivol / resvol / beta / trend; 全市场预计算, 见 Method/Fundamental.hpp)   T 收盘后  −1   T ≤ D
+//     行情派生 (ret_12_1 / ret_1m / turn / ivol / resvol / beta / trend; 全市场预计算, 见 Panel/Fund.hpp)   T 收盘后  −1   T ≤ D
 //   盘前态全部在 D 收盘后至 D+1 开盘前可知 → L_1day 行 D 在 D+1 全天可 act on (实盘: 盘前表 D+1 早盘到齐后补算末行).
 //   库末日 ≤ fund::last_day: 上表各源本地已齐到行 D 所需的数据日 (D 盘后 / D+1 盘前), D+1 在 D 轴内
 //   (Bar 源日历截到此日, fund::Panel::build 断言). 源缺尾日则库停在源齐处, 数据入盘后再追加.
@@ -33,7 +33,7 @@
 // =============================================================================
 
 #include "features/DataDefine.hpp"
-#include "features/Method/Fundamental.hpp"
+#include "features/Panel/Fund.hpp"
 #include <cassert>
 #include <cstddef>
 
@@ -170,7 +170,7 @@ public:
   Fund(const fund::Panel &panel, size_t global_id, const misc::Ymd &date)
       : panel_(panel), date_(date), stream_(panel, global_id) {}
 
-  // 资产态 (fund::Panel 全史判定一次, 判据见 Fundamental.cpp univ_mask; 行情派生截面 / all 池成员 (Panel::live) / PoolKey 全读这一份)
+  // 资产态 (fund::Panel 全史判定一次, 判据见 Panel/Fund.cpp univ_mask; 行情派生截面 / all 池成员 (Panel::live) / PoolKey 全读这一份)
   //   活跃 = 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌) ∧ 非次新 (上市满 fund::kNewListDays 日历日) ∧ 申万一级行业已知
   // 节点侧读输出口 (PoolKey onSettle = 次日)
   static bool is_live(const Ports<kCount> &f) { return f[live] != 0.0f; }

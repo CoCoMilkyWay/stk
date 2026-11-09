@@ -73,9 +73,9 @@ enum TabIdx {
 };
 
 // 本页已生效层的字段表
-static std::shared_ptr<const Alpha::FeatureTable> level_table(const SharedData &data, Alpha::AlphaHub &s) {
+static std::shared_ptr<const Factors::FeatureTable> level_table(const SharedData &data, Alpha::AlphaHub &s) {
   assert(s.lv);
-  return Alpha::table_of(s.tables, data.feature, *s.lv);
+  return Factors::table_of(s.tables, data.feature, *s.lv);
 }
 
 // 换层: 四个服务整体重建 (析构 Stop() join worker; 下次 Draw 按新层建)
@@ -116,11 +116,11 @@ static void search_all_next(const SharedData &data, Alpha::AlphaHub &s, bool wro
 }
 
 // Factors 子页的作用域 (每帧从 config 取; 池 / 层取本页已生效的)
-static Alpha::FactorsUIContext factors_context(const SharedData &data, std::shared_ptr<const Alpha::FeatureTable> ft, const std::string &pool) {
+static Alpha::FactorsUIContext factors_context(const SharedData &data, std::shared_ptr<const Factors::FeatureTable> ft, const std::string &pool) {
   Alpha::FactorsUIContext c;
   c.lv = ft->lv;
   c.pool = pool;
-  c.factor_dir = Alpha::factor_dir_of(data, pool, c.lv);
+  c.factor_dir = Factors::factor_dir_of(data, pool, c.lv);
   c.ft = std::move(ft);
   c.fixed_impact = data.config.fixed_impact;
   c.axis_ready = !data.asset.items.empty();
@@ -266,8 +266,8 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
             state->pool_files.clear();
             for (const PoolDef &d : feature_pools()) {
               size_t n = 0;
-              for (const Alpha::FactorLevel &l : Alpha::kFactorLevels)
-                n += Alpha::list_factor_files(Alpha::factor_dir_of(data, d.name, l.id)).size();
+              for (const Factors::FactorLevel &l : Factors::kFactorLevels)
+                n += Factors::list_factor_files(Factors::factor_dir_of(data, d.name, l.id)).size();
               state->pool_files.push_back(n);
             }
           }
@@ -296,18 +296,18 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           const bool repool = key != state->counted_key;
           if (repool || (fst == Phase::Done && state->prev_factors_phase != Phase::Done)) {
             state->counted_key = key;
-            for (const Alpha::FactorLevel &l : Alpha::kFactorLevels)
-              state->level_files[l.id] = Alpha::list_factor_files(Alpha::factor_dir_of(data, pool_def(state->want_pool).name, l.id)).size();
+            for (const Factors::FactorLevel &l : Factors::kFactorLevels)
+              state->level_files[l.id] = Factors::list_factor_files(Factors::factor_dir_of(data, pool_def(state->want_pool).name, l.id)).size();
           }
           state->prev_factors_phase = fst;
           if (repool) // 进页 / 换池: 切到该池最低频的有因子文件的层 (都没有 → 不动)
-            for (const Alpha::FactorLevel &l : Alpha::kFactorLevels | std::views::reverse)
+            for (const Factors::FactorLevel &l : Factors::kFactorLevels | std::views::reverse)
               if (state->level_files[l.id] > 0) {
                 state->want_lv = l.id;
                 break;
               }
         }
-        for (const Alpha::FactorLevel &l : Alpha::kFactorLevels) {
+        for (const Factors::FactorLevel &l : Factors::kFactorLevels) {
           char label[48];
           std::snprintf(label, sizeof(label), "%s (%zu)###flvl%d", l.name, state->level_files[l.id], l.id);
           ImGui::SameLine();
@@ -325,7 +325,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
       {
         const bool busy = (state->run_service && state->run_service->busy()) || (state->search_service && state->search_service->busy()) ||
                           (state->inspect_service && state->inspect_service->busy()) || state->factors_ui.search_all_n > 0;
-        const Alpha::LevelId want_lv = state->want_lv;
+        const Factors::LevelId want_lv = state->want_lv;
         const std::string want_pool = pool_def(state->want_pool).name;
         if (!busy) {
           if (want_lv != state->lv || want_pool != state->pool) { // 换作用域: 高光作废, 新表扫出后重新默认高光 (rIC 最高)
@@ -350,12 +350,12 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           state->factors_ui.search_queue.clear();
           state->factors_ui.search_all_n = 0;
           ImGui::SameLine();
-          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(取消中, 停下后切到 %s / %s)", want_pool.c_str(), Alpha::factor_level(want_lv).name);
+          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(取消中, 停下后切到 %s / %s)", want_pool.c_str(), Factors::factor_level(want_lv).name);
         }
       }
       assert(state->lv); // 有服务在跑 ⇒ 之前已生效过
       // 首次进页 / 换层: 只扫描不算 (字段表视图按层建一次, 编译期字段表, 不随运行变); 池切换 → 目录变 → 自动重扫
-      const std::shared_ptr<const Alpha::FeatureTable> ft = level_table(data, *state);
+      const std::shared_ptr<const Factors::FeatureTable> ft = level_table(data, *state);
       if (!state->run_service) {
         state->run_service = std::make_unique<Alpha::RunService>();
         state->search_service = std::make_unique<Alpha::SearchService>();

@@ -8,7 +8,7 @@
 //   一侧一个节点两口; IS_BID: true=买侧, false=卖侧
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 
 template <bool IS_BID, size_t DEPTH_SIZE = L2::LOB_DEPTH>

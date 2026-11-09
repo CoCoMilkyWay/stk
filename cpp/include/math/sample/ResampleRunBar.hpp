@@ -6,7 +6,7 @@
 #include <numeric>
 #include <vector>
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 
 //========================================================================================
 // VOLUME-IMBALANCE RUN BAR SAMPLER

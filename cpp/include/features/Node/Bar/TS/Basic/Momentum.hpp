@@ -5,7 +5,7 @@
 // =============================================================================
 //   ret_20d = P^adj_D / P^adj_{D−20} − 1   (CloseAdjDay 后复权收盘价; 回看 20 个交易日, 停牌日 = 携带价, 照常占一格)
 //   窗 = 最近 kLag + 1 个交易日的 CloseAdjDay.value (同域 onClose, 每日 compute 一次推一格); 不满 → NaN.
-//   本 TU (bar_pipeline.cpp) precise-math: 缺失 NaN 经除法透传.
+//   本 TU (worker/compute/FeedBar.cpp) precise-math: 缺失 NaN 经除法透传.
 // =============================================================================
 
 #include "define/CBuffer.hpp"

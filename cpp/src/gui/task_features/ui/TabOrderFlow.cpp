@@ -4,7 +4,7 @@
 //   2. 期望态: 三路 Want (MinKey / SecKey / PickKey) 键变 → gen++ → Request
 //   3. 渲染: Min 画已发布前缀 (gen 配对), Sec 画 front 槽 (新代在途时旧槽照画 + Loading 提示)
 #include "gui/task_features/ui/TabOrderFlow.hpp"
-#include "features/Method/Fundamental.hpp"
+#include "features/Panel/Fund.hpp"
 #include "gui/task_database/models/SharedTypes.hpp" // BoardType / GetBoardType (板块口径与 TABLE 同源)
 #include "gui/task_features/services/OrderFlowService.hpp"
 #include "gui/task_features/ui/TabFeature.hpp" // EffectiveCat2Snapshot (legend 标注)

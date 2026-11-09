@@ -3,7 +3,7 @@
 #include "factor/GpuRun.hpp"                    // device_name: GPU 型号显示
 #include "factor/Stat/Contract.hpp"             // hold_token: operand 的 ⟨h⟩
 #include "gui/Tasks.hpp"                        // StatusColor: 全局色表, 行状态着色不自配颜色
-#include "gui/task_alpha/services/StatJson.hpp" // sig4 / json_* (与因子文件同一格式)
+#include "gui/factors/StatJson.hpp" // sig4 / json_* (与因子文件同一格式)
 #include "gui/util/Latex.hpp"                   // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
 
 #include "imgui.h"
@@ -135,9 +135,9 @@ const char *kern_name(factor::Kern k) {
 //   slower = 该后端比上游慢 (要求 stream ≥ cpu ≥ gpu), 标红 ms
 // chk = nullptr 表示该列无对拍 (stream 列)
 void render_time_cell(const OperatorRow &r, double ms, const factor::check::Diff *chk, bool slower) {
-  if (r.status != RowStatus::Done) {
-    ImGui::TextColored(StatusColor(r.status == RowStatus::Running ? TaskStatus::Kind::Busy : TaskStatus::Kind::Muted),
-                       "%s", r.status == RowStatus::Running ? "running" : "…");
+  if (r.status != RowState::Done) {
+    ImGui::TextColored(StatusColor(r.status == RowState::Running ? TaskStatus::Kind::Busy : TaskStatus::Kind::Muted),
+                       "%s", r.status == RowState::Running ? "running" : "…");
     return;
   }
   if (ms < 0) {
@@ -156,9 +156,9 @@ void render_time_cell(const OperatorRow &r, double ms, const factor::check::Diff
 }
 
 // 排序键: 未跑的行按 -1 (排最前 / 降序时最后), FAIL 恒排在 ok 之后
-double sort_ms(const OperatorRow &r, double ms) { return r.status == RowStatus::Done ? ms : -1.0; }
+double sort_ms(const OperatorRow &r, double ms) { return r.status == RowState::Done ? ms : -1.0; }
 double sort_ms_chk(const OperatorRow &r, double ms, const factor::check::Diff &d) {
-  if (r.status != RowStatus::Done || ms < 0)
+  if (r.status != RowState::Done || ms < 0)
     return -1.0;
   return d.ok() ? ms : 1e300;
 }
@@ -170,7 +170,7 @@ const char *cls_kern(const OperatorRow &r) { return r.classified ? kern_name(r.k
 
 // 悬停 e_name: 静态详述 (doc) + 跑完后跑手的附带文本 (detail); 两者都空 → 不弹
 void row_tooltip(const OperatorRow &r) {
-  const bool has_detail = r.status == RowStatus::Done && !r.detail.empty();
+  const bool has_detail = r.status == RowState::Done && !r.detail.empty();
   if (r.doc[0] == '\0' && !has_detail)
     return;
   ImGui::BeginTooltip();
@@ -533,10 +533,10 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
       ImGui::TableSetColumnIndex(0);
       ImGui::TextDisabled("%d", idx); // 全局 idx = operators.json 的 idx (评估算子在前, 之后 = OpTable 表序)
       ImGui::TableSetColumnIndex(1);
-      ImGui::TextColored(StatusColor(r.status == RowStatus::Done
+      ImGui::TextColored(StatusColor(r.status == RowState::Done
                                          ? ((r.cpu_chk.ok() && (r.gpu_ms < 0 || r.gpu_chk.ok())) ? TaskStatus::Kind::Ready
                                                                                                  : TaskStatus::Kind::Error)
-                                         : (r.status == RowStatus::Running ? TaskStatus::Kind::Busy : TaskStatus::Kind::Muted)),
+                                         : (r.status == RowState::Running ? TaskStatus::Kind::Busy : TaskStatus::Kind::Muted)),
                          "%s", r.e_name);
       if (ImGui::IsItemHovered())
         row_tooltip(r);
@@ -594,13 +594,13 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
 
 namespace {
 
-const char *row_status_name(RowStatus st) {
+const char *row_status_name(RowState st) {
   switch (st) {
-  case RowStatus::Pending:
+  case RowState::Pending:
     return "pending";
-  case RowStatus::Running:
+  case RowState::Running:
     return "running";
-  case RowStatus::Done:
+  case RowState::Done:
     return "done";
   }
   return "?";
@@ -655,7 +655,7 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
       j["note"] = r.note;
       j["status"] = row_status_name(r.status);
       // 动态列只落跑完的行 (表格显示 "…" 的格子不落键); 没有的后端 (ms < 0) 不落其耗时 / 对拍键; detail 非空才落
-      if (r.status == RowStatus::Done) {
+      if (r.status == RowState::Done) {
         const bool has_stream = r.stream_ms >= 0, has_gpu = r.gpu_ms >= 0;
         j["cpu_chk"] = diff_json(r.cpu_chk);
         if (has_gpu)
@@ -759,7 +759,7 @@ bool load_row(const nlohmann::json &j, OperatorRow &dst) {
   } else {
     dst.detail = dit->get<std::string>();
   }
-  dst.status = RowStatus::Done;
+  dst.status = RowState::Done;
   return true;
 }
 

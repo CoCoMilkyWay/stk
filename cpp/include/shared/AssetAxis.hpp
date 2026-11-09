@@ -14,7 +14,7 @@
 //   当前轴的前缀一致". asset_id 仍是纯数组下标, 计算路径不受任何影响.
 //
 // 注: L2 二进制库 (orders 日文件) 的目录同样按 A 轴下标寻址 (见
-//   shared/OrdersDay.hpp), 与特征库一起依赖 append-only.
+//   codec/OrdersDay.hpp), 与特征库一起依赖 append-only.
 #pragma once
 
 #include <algorithm>
@@ -76,7 +76,7 @@ AssetAxis &asset_axis();
 // PoolAxis — 特征库的 A 轴 (池轴)
 //
 // ids = 池内资产在全局轴上的下标 (升序去重), hash = 按池轴顺序对码表做同一条 FNV 累积链 (fnv_append).
-// 写端规划 (池的自然轴 / 冻结轴, 见 shared/Pool.hpp; all 全轴的 hash == asset_axis().hash_at(size), 同一条链的前缀值)
+// 写端规划 (池的自然轴 / 冻结轴, 见 features/Panel/Pool.hpp; all 全轴的 hash == asset_axis().hash_at(size), 同一条链的前缀值)
 // 后码表落库清单 (见 FeatureLib.hpp), 读端从清单重建同一池轴. 特征文件头存 (A_sub, hash), 不符 = 库内文件与清单
 // 不一致 → 读端删库判废, 等重算 (见 FeatureRead).
 //

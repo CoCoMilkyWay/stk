@@ -10,7 +10,7 @@
 //                   (高低取在 5 日均线上, 不受单箱插针影响; 现价可越出 [0, 1]; H − L ≤ ε → NaN)
 //   停牌 / 无成交日照常占 B 格 (携带价, 同 Momentum); 窗内有非有限价 (上市前 / PIT 缺) → NaN, 窗满且全有限才出值.
 //   均线和 = double 增量 (进出各一次); 高低按日分块: 整日 MA^5 高低进日环, 盘前 (reset) 折出前 N−1 日段, 盘中只并今日.
-//   本 TU (bar_pipeline.cpp) precise-math: 有限性用 isfinite 判.
+//   本 TU (worker/compute/FeedBar.cpp) precise-math: 有限性用 isfinite 判.
 // =============================================================================
 
 #include "define/CBuffer.hpp"

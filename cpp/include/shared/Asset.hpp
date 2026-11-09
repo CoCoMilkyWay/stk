@@ -1,8 +1,8 @@
 #pragma once
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "misc/date.hpp"
-#include "shared/OrdersDay.hpp"
+#include "codec/OrdersDay.hpp"
 
 #include <memory>
 #include <mutex>
@@ -35,7 +35,7 @@ struct AssetItem {
   misc::Ymd start_date = 0;
   misc::Ymd end_date = 0;
 
-  // 按日的帧不在这里, 在 Asset::orders() (日主序, 见 shared/OrdersDay.hpp).
+  // 按日的帧不在这里, 在 Asset::orders() (日主序, 见 codec/OrdersDay.hpp).
 
   // 构造
   AssetItem() = default;
@@ -60,7 +60,7 @@ struct Asset {
   // ========================================
   // 全库帧目录: [日][资产] 一格一个 FrameRef + 每天的编码账目
   // ========================================
-  // 由二进制扫描整体重建 (见 shared/OrdersDay.hpp), 建好即只读, 以快照发布:
+  // 由二进制扫描整体重建 (见 codec/OrdersDay.hpp), 建好即只读, 以快照发布:
   // 读者 orders() 取一份, 持有期间内容不变, 与重扫描 / 重编码并发安全. 账目里有
   // 缺口的"原因" —— 只有编码器知道, date_gaps 只知道"缺了几个", 两者在 By Date
   // 表里按日期对齐.

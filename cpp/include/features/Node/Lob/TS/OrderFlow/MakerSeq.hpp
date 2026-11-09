@@ -10,7 +10,7 @@
 //   委托号相关项 (成交用时 / 撤单用时 / 广义市价 / 委托维度大小单) 需订单簿暴露委托记账, 另议.
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 #include <cstdint>
 

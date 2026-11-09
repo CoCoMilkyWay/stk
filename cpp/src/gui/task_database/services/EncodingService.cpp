@@ -4,7 +4,7 @@
 #include "misc/logging.hpp"
 #include "misc/progress_parallel.hpp"
 #include "shared/SharedData.hpp"
-#include "worker/encoding_worker.hpp"
+#include "worker/encode/EncodeWorker.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -55,7 +55,7 @@ bool EncodingService::run(EncodeRequest &req) {
   // ------------------------------------------------------------------
   // 流水线: producer 按天 [列举 → 推元数据批], worker 每批自己 unrar +
   // 解码. 解压在 worker 侧并行 — 单条 unrar 流喂不满几十个核, 归档在
-  // NVMe 上多路并发直读也没有寻道代价 (见 encoding_worker.hpp).
+  // NVMe 上多路并发直读也没有寻道代价 (见 worker/encode/EncodeWorker.hpp).
   // ------------------------------------------------------------------
   // 容量即流水深度: ~85 批/天, 256 ≈ 领先 2-3 天. 批是纯元数据, 队列本身
   // 不占什么内存.
@@ -71,12 +71,12 @@ bool EncodingService::run(EncodeRequest &req) {
   workers.reserve(req.workers);
   for (int i = 0; i < req.workers; ++i) {
     workers.push_back(std::async(std::launch::async, [this, i, &queue, &stats, &progress]() {
-      encoding_worker(data_, queue, &cancel_, stats, i, progress.get_handle(i));
+      encode_worker(data_, queue, &cancel_, stats, i, progress.get_handle(i));
     }));
   }
 
   auto producer = std::async(std::launch::async, [this, &req, &queue, &stats, &progress]() {
-    encoding_producer(data_, queue, &cancel_, req.skip_existing, stats,
+    encode_producer(data_, queue, &cancel_, req.skip_existing, stats,
                       static_cast<size_t>(req.workers), &progress);
   });
 
@@ -126,7 +126,7 @@ bool EncodingService::run(EncodeRequest &req) {
               << std::endl;
   }
 
-  // 准入校验未过的同理: 逐笔流本身缺片 (见 codec/L2_Validator.hpp), 数据源
+  // 准入校验未过的同理: 逐笔流本身缺片 (见 codec/L2Validator.hpp), 数据源
   // 侧的问题, 编码器无从修复. 核查/换源之后重跑增量即可.
   const size_t pairs_invalid = stats.run.count(L2::Outcome::Invalid);
   if (pairs_invalid > 0) {

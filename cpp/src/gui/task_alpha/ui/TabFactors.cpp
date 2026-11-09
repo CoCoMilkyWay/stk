@@ -891,13 +891,13 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
     return;
   }
   switch (r.status) {
-  case RowStatus::Pending:
+  case RowState::Pending:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "…");
     return;
-  case RowStatus::Running:
+  case RowState::Running:
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "running");
     return;
-  case RowStatus::Done:
+  case RowState::Done:
     break;
   }
   if (!r.has_stat) {

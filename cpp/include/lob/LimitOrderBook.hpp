@@ -10,7 +10,7 @@
 #include <sstream>
 #include <vector>
 
-// #include "codec/L2_DataType.hpp"
+// #include "codec/L2DataType.hpp"
 #include "codec/OrderFrame.hpp"
 #include "define/FastBitmap.hpp"
 #include "features/CoreLob.hpp"
@@ -54,7 +54,7 @@ public:
   //   实盘: 每资产一个工作区, 启动时 bind 一次.
   // DAG 与簿的唯一耦合是 tick_data_ 指针: TickData 归 core 所有 (DAG 节点引用
   // 它, 终身有效), bind() 把本簿的写出口指过去 —— 资产因此不与任何 worker 绑死,
-  // 处置权可转移 (见 feature_pipeline.hpp ts_loop 的负载再平衡).
+  // 处置权可转移 (见 worker/compute/Pipeline.hpp ts_loop 的负载再平衡).
   explicit LimitOrderBook(size_t ORDER_SIZE)
       : order_table_(ORDER_SIZE) { // 委托表按最忙资产预留, reserve_orders 按日收窄
     auction_bids_.reserve(1024);

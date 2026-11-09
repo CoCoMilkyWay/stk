@@ -21,7 +21,7 @@
 // 三块各带进度面 (Min 自身 / PingPong), 是各自 worker 的 board.
 #pragma once
 
-#include "codec/L2_DataType.hpp"              // L2::LOB_DEPTH
+#include "codec/L2DataType.hpp"              // L2::LOB_DEPTH
 #include "features/Storage/FeatureLevels.hpp" // ColRef / level_end_sec (稳定层, 不依赖字段表)
 #include "features/TimeIndex.hpp"             // L_SEC_ROWS / L_1MIN_ROWS (稳定形状常量, 不依赖字段表)
 #include "misc/date.hpp"

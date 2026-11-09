@@ -1,14 +1,14 @@
 // Compute Service Implementation
 #include "gui/compute/services/ComputeService.hpp"
-#include "features/Method/Fundamental.hpp"
+#include "features/Panel/Fund.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "features/Storage/FeatureSnap.hpp"
 #include "misc/logging.hpp"
 #include "shared/AssetAxis.hpp"
 #include "shared/FeatureLib.hpp"
-#include "shared/Pool.hpp"
+#include "features/Panel/Pool.hpp"
 #include "shared/SharedData.hpp"
-#include "worker/feature_workers.hpp"
+#include "worker/compute/Stages.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -117,7 +117,7 @@ bool ComputeService::run(ComputeConfig &config) {
   // 日频 PIT 基本面数据源 (全市场 × 库日期轴: 切片起点 / 复权锚随库首日, 续算与全量同一面板), Fund 节点在 worker 内逐日推进; worker 只读
   fund::Panel fund;
   fund.build(r.lib.dates);
-  // 池面板 (本库 A 轴 × 管线日期轴逐日成员 + 轴外, 见 shared/Pool.hpp)
+  // 池面板 (本库 A 轴 × 管线日期轴逐日成员 + 轴外, 见 features/Panel/Pool.hpp)
   const pool::Panel members = pool::Panel::build(r.lib.id, cfg, fund, r.dates, r.old);
   r.lib.axis = members.axis();
   r.lib.outside = members.outside();

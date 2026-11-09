@@ -1,6 +1,6 @@
 #pragma once
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp" // Trigger
 #include "features/TimeIndex.hpp"  // BIN_MINUTES / BIN_COUNT (分钟箱层)
 #include <array>

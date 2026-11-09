@@ -451,7 +451,7 @@ bool OperatorsService::run(OperatorsRequest &req) {
     from_json = false; // 这一轮是本进程算的
     for (OperatorRow &r : rows) {
       r.param = param_of(r);
-      r.status = RowStatus::Pending;
+      r.status = RowState::Pending;
       r.cpu_chk = {}, r.gpu_chk = {};
       r.cpu_ms = 0, r.stream_ms = -1, r.gpu_ms = -1;
       r.detail.clear();
@@ -468,13 +468,13 @@ bool OperatorsService::run(OperatorsRequest &req) {
       return false;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      rows[i].status = RowStatus::Running;
+      rows[i].status = RowState::Running;
     }
     publish();
 
     OperatorRow r = rows[i]; // 静态列 + Running + 已复位的动态列; 只有本线程写 rows, 无锁读安全
     runners_[i](R, r);
-    r.status = RowStatus::Done;
+    r.status = RowState::Done;
     {
       std::lock_guard<std::mutex> lock(mutex);
       rows[i] = r;

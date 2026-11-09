@@ -40,7 +40,7 @@
 //   截面 → 落盘: slot.cs_closed (cs_done_ 只是已截面日数, 仪表盘用)
 //   落盘 → 时序/截面: slot.io_mark = d + 1, io_close 据此把张量窗推到首个未落盘日
 //
-// 各段 open / close 同构 (try_open 非阻塞; 等待 / 取消是 worker 骨架的事, 见 feature_workers.hpp):
+// 各段 open / close 同构 (try_open 非阻塞; 等待 / 取消是 worker 骨架的事, 见 worker/compute/Stages.hpp):
 //   PF: pf_try_open(d)  d 在源窗 → 备源 (不占 slot) → pf_close → pf_mark_
 //                       软源 (Lob: 暖逐笔 page cache, TS 不等它) / 硬源 (Bar: 解码 bar1m 进源格, TS 等 pf_ready)
 //   TS: ts_try_open(d)  d 在张量窗 → 句柄写 (纯指针算术) → 每 (asset, d) 一次 ts_close, 计满全轴 → 推进源窗
@@ -283,7 +283,7 @@ private:
 public:
   // num_assets: 档 A 轴大小; axis_hash: PoolAxis::hash, 写进每个
   // 特征文件头锁定"列 → 资产"映射 (读端从同一 FeatureLib 推导同一轴比对).
-  // slots = 初始格数 P, cap = 格数上限 (映射表长; 格数与内存预算由管线定, 见 feature_pipeline.hpp)
+  // slots = 初始格数 P, cap = 格数上限 (映射表长; 格数与内存预算由管线定, 见 worker/compute/Pipeline.hpp)
   FeatureStore(size_t num_assets, std::uint64_t axis_hash, const std::string &output_dir, size_t slots, size_t cap)
       : StoreRing(num_assets, slots, cap),
         axis_hash_(axis_hash), output_dir_(output_dir), slots_(cap) {

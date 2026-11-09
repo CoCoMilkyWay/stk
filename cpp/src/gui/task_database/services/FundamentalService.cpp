@@ -28,7 +28,7 @@
 #include "api/eastmoney/client.hpp"
 #include "api/tushare/client.hpp"
 #include "define/Csr.hpp"
-#include "features/Method/Fundamental.hpp"
+#include "features/Panel/Fund.hpp"
 #include "fundamental/Scan.hpp"
 #include "fundamental/Sync.hpp"
 #include "gui/task_database/services/Drive.hpp"

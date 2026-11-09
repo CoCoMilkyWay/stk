@@ -40,7 +40,7 @@ struct Config {
   // 固定冲击 (比率, 模拟值, 不按金额变): 标签 exit 是分钟 VWAP (不含冲击), Lob 库建仓冲击按深度精确算成特征 (lb_cost_*),
   //   平仓侧统一扣这一常数 (做多卖出); 固定段 (因子没用 lob 叶时唯一的段) 建仓也按它. 默认 20bp
   double fixed_impact = 0.0020;
-  // 建仓买入冲击封顶 (比率): lb_cost_buy_* 装载时 min(·, max_impact) 再进组均 (FactorsLoad). 深度吃穿 / 涨停成交的格冲击可到百分之几,
+  // 建仓买入冲击封顶 (比率): lb_cost_buy_* 装载时 min(·, max_impact) 再进组均 (gui/factors/Load). 深度吃穿 / 涨停成交的格冲击可到百分之几,
   //   原值进均值把期限结构净线整体砸穿 (过罚); 封顶后那些格最多扣这么多, 可执行性另议. 卖出侧不封. 默认 1%
   double max_impact = 0.01;
 
@@ -178,7 +178,7 @@ inline constexpr misc::Ymd PIPELINE_START_DATE = 20150101;
 inline constexpr int PIPELINE_LOOKBACK_DAYS = 7;
 inline constexpr int PIPELINE_DEDUP_WINDOW_SECONDS = 60 * 60;
 
-// ---- 特征计算 perf 采样落地 (PROFILE 模式, 见 worker/feature_workers.hpp FeatureProfile) ----
+// ---- 特征计算 perf 采样落地 (PROFILE 模式, 见 worker/compute/Stages.hpp ComputeProfile) ----
 inline constexpr const char *PROFILE_DIR = "../../../../output/profile";
 
 } // namespace config

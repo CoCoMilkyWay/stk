@@ -8,7 +8,7 @@
 //   GAMMA_X10 = γ×10 (避免浮点模板参数)
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 #include <cmath>
 

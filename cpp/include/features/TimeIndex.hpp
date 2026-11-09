@@ -1,6 +1,6 @@
 #pragma once
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>

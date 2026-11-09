@@ -10,7 +10,7 @@
 //   有成交 bar 的 amount 夹到 [volume · low, volume · high] (源数据有 amount = 0 / 整数元截断 / 与 OHLC 不同口径的 bar; 缺 → 下界):
 //   amount / volume (VWAP: 标签 entry / Trade / Tod) 恒落在本 bar 价格区间内.
 //   读盘经 fundamental::daily (与基本面表同一读侧); 代码 → ids (A 轴码表, id = 轴下标), 不在 ids 的代码跳过.
-//   分片缺失 → assert (日期轴不越过末个 bar1m 日, 见 bar_pipeline).
+//   分片缺失 → assert (日期轴不越过末个 bar1m 日, 见 worker/compute/FeedBar.cpp).
 // 本 TU (Bar1mDay.cpp) precise-math: parquet 缺失值是 NaN.
 // =============================================================================
 

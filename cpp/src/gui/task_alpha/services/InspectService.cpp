@@ -4,7 +4,7 @@
 #include "factor/Stat/Cpu.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
-#include "gui/task_alpha/services/FactorsEngine.hpp" // eval_job (只 CPU) / Probes / LinesP / pool_line
+#include "gui/factors/Engine.hpp" // eval_job (只 CPU) / Probes / LinesP / pool_line
 #include "misc/date.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"

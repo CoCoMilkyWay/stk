@@ -18,7 +18,7 @@
 //   【fast-math 契约】不做 isnan; NaN 边界靠 "比较遇 NaN 恒 false" 透传 (与 Valuation 同约).
 // =============================================================================
 
-#include "codec/L2_DataType.hpp"
+#include "codec/L2DataType.hpp"
 #include "features/DataDefine.hpp"
 #include <algorithm>
 

@@ -34,7 +34,7 @@ stk/
 ├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + CUDA 开关 → py/main.py
 ├── config/                                             # ⚙️ 全局配置
 │   ├── config.json                                     # ⚙️ 路径 / 回测日历起点 (末日随数据) / 交易成本 / 同步开关
-│   ├── pools.json                                      # ⚙️ Beta → Style 选定的子池 (池名 = shared/PoolSpec.hpp 规范串)
+│   ├── pools.json                                      # ⚙️ Beta → Style 选定的子池 (池名 = gui/task_beta/services/PoolSpec.hpp 规范串)
 │   ├── watch.json                                      # ⚙️ Market 自选 (本地, gitignore): 篮子键 / 个股代码
 │   ├── sample/                                         # ⚙️ 样例数据 (Level-1 / Level-2 / 财务报表); L2/README = 逐笔 CSV 字段格式
 │   └── agent/                                          # ⚙️ Agent: prompt/ 提示词模板 (system / first / round / retry / review / test) · families.md 特征族卡 · keys.json 后端 key (本地)
@@ -83,11 +83,11 @@ stk/
 │   │   │   ├── LimitOrderBook.hpp                      # 📊 买卖盘维护 + 撮合
 │   │   │   └── LimitOrderBookDefine.hpp                # 📊 订单 / 价位结构
 │   │   ├── codec/                                      # 🔄 Level-2 逐笔编解码
-│   │   │   ├── L2_DataType.hpp                         # 🔄 逐笔 Order (委托 / 成交 / 撤单)
-│   │   │   ├── L2_Gateway_DataType.hpp                 # 🔄 网关数据类型
+│   │   │   ├── L2DataType.hpp                         # 🔄 逐笔 Order (委托 / 成交 / 撤单)
+│   │   │   ├── L2GatewayDataType.hpp                 # 🔄 网关数据类型
 │   │   │   ├── OrderEncoder.hpp                        # 🔄 CSV → 排序后的逐笔 (FrameView)
 │   │   │   ├── OrderFrame.hpp                          # 🔄 逐笔 ↔ zstd 帧 (FrameEncoder ↔ FrameDecoder)
-│   │   │   └── L2_Validator.hpp                        # 🔄 逐笔数据准入校验 (编码期)
+│   │   │   └── L2Validator.hpp                        # 🔄 逐笔数据准入校验 (编码期)
 │   │   ├── features/                                   # 🧮 特征工程: 事件驱动, 回测与实盘逐值一致
 │   │   │   │                                           #    两档 (TierId), 同一列只在一档算:
 │   │   │   │                                           #    · Lob: Level-2 逐笔 → 订单簿还原 → L_sec 秒 + L_1min 分钟; 回测日历起
@@ -426,7 +426,7 @@ stk/
 #        - 回看型:       同域 = 消费方自持窗口 (Node/Bar/TS/Basic/Momentum.hpp); 跨域 = 上游声明 kHist, 下游接 Up.hist() (见 DataDefine.hpp)
 #        - 日频型:       Node/Common/Fund/Fund.hpp + Node/Bar/TS/Fund/Fund.hpp (onSettle; 输出口跨天保留, 盘中读到的 = 当日适用值)
 #                        (Lob 档的 Fund 节点只供盘中节点取前收 / 涨跌停, 不落盘)
-#                        全市场截面 / 长窗的日频量 (市场收益 → ivol / β, 趋势回归, 12−1 动量) 在 fund::Panel 预计算 (Method/Fundamental.cpp build_market), 经 Fund 口进 TS
+#                        全市场截面 / 长窗的日频量 (市场收益 → ivol / β, 趋势回归, 12−1 动量) 在 fund::Panel 预计算 (Panel/Fund.cpp build_market), 经 Fund 口进 TS
 #        - 截面列:       Node/Bar/CS/Fund/Valuation.hpp
 #        - 池列:         Node/Bar/CS/Pool/Pool.hpp
 #

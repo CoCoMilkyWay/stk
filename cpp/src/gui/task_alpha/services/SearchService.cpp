@@ -5,7 +5,7 @@
 #include "factor/Dag.hpp"
 #include "factor/Search/Space.hpp"
 #include "factor/Search/Surface.hpp"
-#include "gui/task_alpha/services/FactorsEngine.hpp" // FactorFlow / Engine<Cpu | Gpu> / Job 管线
+#include "gui/factors/Engine.hpp" // FactorFlow / Engine<Cpu | Gpu> / Job 管线
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
@@ -268,7 +268,7 @@ struct SearchService::Searcher {
     W.publish();
   }
 
-  // ---- 模板 → 作用域 (评估期 = 模板叶所用库落盘日交集) → 预算 → 分块 (FactorsEngine prepare; 见头文件【分块流式】) ----
+  // ---- 模板 → 作用域 (评估期 = 模板叶所用库落盘日交集) → 预算 → 分块 (gui/factors/Engine prepare; 见头文件【分块流式】) ----
   //   load   宿主作用域块: 叶 + Y (截面门控 + 所搜持有期的标签, 不装成本)
   //   work   宿主引擎 (随绑定的块重开) / dev 显存: 引擎 E::budget 的批核口径 (d0 = 一个候选)
   //   fixed  探针: r16 常驻 (SampleP::bytes × 趟 0 的 kInit 个候选)
@@ -281,7 +281,7 @@ struct SearchService::Searcher {
     d0 = factor::build_forest({&ep}, /*keep_roots=*/false, /*fuse=*/false);
     job.who = "Search";
     const Clock::time_point t_plan = Clock::now();
-    if (!go(Alpha::prepare<E, SearchProbes>(eng, F, scope, d0, look, hd, factor::search::kInit, job)))
+    if (!go(Factors::prepare<E, SearchProbes>(eng, F, scope, d0, look, hd, factor::search::kInit, job)))
       return false;
     // 前后带 (bands_of): 统计首行的 lag 行 / 交接链所及的行也须整窗, 末统计行的续持要看后一批
     lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, factor::search::hold_reach(hd, seg), fs::kChainDays,
@@ -479,7 +479,7 @@ struct SearchService::Searcher {
     return ents[static_cast<size_t>(a)].sc.sign * ents[static_cast<size_t>(b)].sc.sign * it->second;
   }
 
-  // ---- 一趟: ids (全是待评) 沿全部块流过 (FactorsEngine pass, 引擎 E: 每批一张共享森林, plant 收前 ≤ batch 个, GPU 批核再按显存减半;
+  // ---- 一趟: ids (全是待评) 沿全部块流过 (gui/factors/Engine pass, 引擎 E: 每批一张共享森林, plant 收前 ≤ batch 个, GPU 批核再按显存减半;
   //      逐候选进探针 HoldP 续攒 Accum + SampleP 抽样 r16, 末块即 finish), 收尾打分 + 发布. 坏根 (某块叶值域越界) 不打分 (score −∞) ----
   template <class E>
   Rc run_pass(E &eng, const std::vector<int> &ids, int pass) {
@@ -511,7 +511,7 @@ struct SearchService::Searcher {
       }
       void done(int) { S.W.publish(1); }
     } hooks{{}, *this, ids.size()};
-    const Rc rc = GUI::Alpha::pass(eng, F, job, roots.size(), PlantBatch<SearchProbes, E>{eng, roots, batch, {}}, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[static_cast<size_t>(k)])].ps; }, hooks);
+    const Rc rc = GUI::Factors::pass(eng, F, job, roots.size(), PlantBatch<SearchProbes, E>{eng, roots, batch, {}}, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[static_cast<size_t>(k)])].ps; }, hooks);
     const double load_s = hooks.load_s;
     if (rc != Rc::Ok)
       return rc;

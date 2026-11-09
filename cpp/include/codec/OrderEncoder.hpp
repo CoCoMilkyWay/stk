@@ -1,7 +1,7 @@
 #pragma once
 
-#include "L2_DataType.hpp"
-#include "L2_Validator.hpp"
+#include "L2DataType.hpp"
+#include "L2Validator.hpp"
 #include "OrderFrame.hpp"
 #include <cassert>
 #include <cstdint>
@@ -16,7 +16,7 @@ namespace L2 {
 // ============================================================================
 //
 // 委托必有 (没有就无从重建盘口); 成交可缺; 行情不编码落盘, 只读末行做准入校验
-// (见 L2_Validator.hpp).
+// (见 L2Validator.hpp).
 enum class Member : uint8_t { Order,
                               Trade,
                               Market };
@@ -97,7 +97,7 @@ public:
   //
   // 快照 (行情.csv) 不编码落盘: 其产物全项目无人读取 —— 特征计算只吃 orders,
   // 靠 LimitOrderBook 重建盘口. 但它必须被读进来: 末行是交易所给的当日结算
-  // 口径, 是逐笔流唯一的外部真值, 编码后归档就不再打开了 (见 L2_Validator.hpp).
+  // 口径, 是逐笔流唯一的外部真值, 编码后归档就不再打开了 (见 L2Validator.hpp).
   // 代价只有多解压那一份字节 (归档在 NVMe 上, 多路并发直读无寻道代价),
   // 且解析只碰末行.
 
@@ -115,7 +115,7 @@ public:
   FrameView orders() const;
 
   // 上一次 finish 的准入校验结果 — 返回 Invalid 时, 调用方靠 flags 把这一对
-  // 记进当天的账目 (见 shared/OrdersDay.hpp)
+  // 记进当天的账目 (见 codec/OrdersDay.hpp)
   const ValidationReport &report() const { return report_; }
 
   // ------------------------------------------------------------
@@ -184,7 +184,7 @@ private:
   // 不另起独立扫描, 也不进 CSVOrder (不污染下游).
   size_t sci_price_count_ = 0;
 
-  // 准入校验 (见 L2_Validator.hpp). validator_ 内部的哈希表跨资产复用.
+  // 准入校验 (见 L2Validator.hpp). validator_ 内部的哈希表跨资产复用.
   MarketSummary market_;
   Validator validator_;
   ValidationReport report_;
