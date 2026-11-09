@@ -61,13 +61,13 @@ void Asset::scan_orders(AssetScan &out, const std::string &orders_dir, misc::exe
   namespace fs = std::filesystem;
 
   // 整体重建帧目录, 不做增量 (见 OrdersCatalog); encoded_assets 由 compute_coverage_statistics 填
-  Orders &bin = out.orders;
-  bin = Orders{};
-  bin.scanned = true;
-  bin.path = orders_dir;
-  bin.exists = fs::exists(orders_dir) && fs::is_directory(orders_dir);
-  out.orders = std::make_shared<const OrdersCatalog>();
-  if (!bin.exists)
+  Orders &ord = out.orders;
+  ord = Orders{};
+  ord.scanned = true;
+  ord.path = orders_dir;
+  ord.exists = fs::exists(orders_dir) && fs::is_directory(orders_dir);
+  out.catalog = std::make_shared<const OrdersCatalog>();
+  if (!ord.exists)
     return;
 
   // ------------------------------------------------------------------
@@ -114,16 +114,16 @@ void Asset::scan_orders(AssetScan &out, const std::string &orders_dir, misc::exe
     total_bytes += o.bytes;
     // 一帧都没有的日文件 (全是墓碑) 不算"有这天", 否则会把 min/max 区间往外撑
     if (o.frames > 0)
-      bin.dates.insert(cat->days[d]);
+      ord.dates.insert(cat->days[d]);
   }
-  out.orders = std::move(cat);
+  out.catalog = std::move(cat);
 
-  bin.total_orders = total_orders;
-  bin.orders_size_gb = static_cast<float>(total_bytes / (1024.0 * 1024.0 * 1024.0));
+  ord.total_orders = total_orders;
+  ord.orders_size_gb = static_cast<float>(total_bytes / (1024.0 * 1024.0 * 1024.0));
 
-  if (!bin.dates.empty()) {
-    bin.min_date = *bin.dates.begin();
-    bin.max_date = *bin.dates.rbegin();
+  if (!ord.dates.empty()) {
+    ord.min_date = *ord.dates.begin();
+    ord.max_date = *ord.dates.rbegin();
   }
 }
 
@@ -252,7 +252,7 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &asset_i
     std::vector<size_t> days_by_asset;   // 有帧的天数
     std::vector<size_t> orders_by_asset; // 逐笔条数
   };
-  const std::shared_ptr<const OrdersCatalog> &cat = out.orders; // 本趟扫出 (或沿用) 的那份快照
+  const std::shared_ptr<const OrdersCatalog> &cat = out.catalog; // 本趟扫出 (或沿用) 的那份快照
   assert(cat->width <= items.size() && "帧目录宽于 items");
   const size_t n_days = cat->days.size();
   const size_t per_task = std::max<size_t>(1, (n_days + n_workers - 1) / n_workers);
@@ -291,8 +291,8 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &asset_i
     keys[i] = {s.ipo_date, s.out_date, items[i].exchange == "BJ"};
   }
 
-  const Orders &bin = out.orders;
-  const bool has_db_range = bin.min_date && bin.max_date;
+  const Orders &ord = out.orders;
+  const bool has_db_range = ord.min_date && ord.max_date;
   const bool has_bt_range = bt.start && bt.end;
 
   // 要算的交易日先挑出来 (区间外的不进任务, 进度分母也只数这些).
@@ -314,7 +314,7 @@ void Asset::compute_coverage_statistics(AssetScan &out, const AssetInfo &asset_i
   for (size_t cal = 0; cal < stock_days.size(); ++cal) {
     const CalendarDay &day = stock_days[cal];
     const bool in_db_range =
-        !has_db_range || (day.date >= bin.min_date && day.date <= bin.max_date);
+        !has_db_range || (day.date >= ord.min_date && day.date <= ord.max_date);
     const bool in_backtest = has_bt_range && day.trading &&
                              day.date >= bt.start && day.date <= bt.end;
     if (!in_db_range && !in_backtest)

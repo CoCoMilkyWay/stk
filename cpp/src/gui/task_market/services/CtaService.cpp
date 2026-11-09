@@ -3,6 +3,7 @@
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/date.hpp"
+#include "shared/Config.hpp"
 
 #include <algorithm>
 #include <cassert>
