@@ -261,10 +261,11 @@ set(MATH_FAST
     gui/Gui.cpp
     gui/Run_OpenGL.cpp
     gui/Run_Vulkan.cpp
-    gui/Tasks.cpp
     gui/compute/ComputeHub.cpp
     gui/compute/services/ComputeService.cpp
     gui/compute/ui/TabCompute.cpp
+    gui/icon_bar/IconBar.cpp
+    gui/icon_bar/NetworkService.cpp
     gui/task_database/services/AuditService.cpp
     gui/task_database/services/EncodeService.cpp
     gui/task_database/services/FileCheckService.cpp
@@ -276,8 +277,6 @@ set(MATH_FAST
     gui/task_features/services/DistributionService.cpp
     gui/task_features/services/PreviewService.cpp
     gui/task_features/services/TransformService.cpp
-    gui/icon_bar/NetworkService.cpp
-    gui/icon_bar/IconBar.cpp
     gui/task_settings/TaskSettings.cpp
     gui/task_tools/ui/TabSystem.cpp
     # factor
@@ -348,7 +347,8 @@ set(MATH_PRECISE
     gui/task_market/ui/CrossSectionAnalysis.cpp
     gui/task_market/ui/QuotesPanel.cpp
     gui/task_market/ui/TabAsset.cpp
-    # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) / CTA 模型 (cta/: NaN = 未就绪) 的消费者
+    # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) / CTA 模型 (cta/: NaN = 未就绪) 的消费者; Tasks 经 EngineHub 建因子引擎
+    gui/Tasks.cpp
     gui/engine/Book.cpp
     gui/engine/Engine.cpp
     gui/engine/EngineHub.cpp
