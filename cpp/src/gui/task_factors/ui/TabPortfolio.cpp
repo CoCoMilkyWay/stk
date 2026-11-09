@@ -324,8 +324,8 @@ int RenderTabPortfolio(PortfolioService &svc, CtaService &cta, PortfolioUIState 
   }
   PortfolioDerived &d = ui.der.val;
 
-  // ---- 三级缓存: 派生 (键含成分组: 展开行 / 选中的个股) → 滚动分位 / 末点分位 (键 = 估值代) → 视图 (键 = 派生 gen + 二级两份 gen):
-  //      上级重算 → 下级自动重算 ----
+  // ---- 三级缓存, 各级的键 = 它读的东西: 派生 (键含成分组: 展开行 / 选中的个股) → 滚动分位 (日轴代 + 标的估值腿) / 末点分位 (估值代)
+  //      → 视图 (派生 gen + 二级两份 gen + 标的): 上级重算 → 下级自动重算 ----
   if (ui.pick.of != ui.name) // 换组合 → 选中清掉
     ui.pick = PortfolioPick{.of = ui.name};
   ui.der.update(PortfolioDerKey{gen, ui.items_gen, ui.basket.feed.shown, fixed_impact, infos.size(), ui.pick.open, ui.pick.stocks(kPicks), ui.watch},
@@ -340,9 +340,10 @@ int RenderTabPortfolio(PortfolioService &svc, CtaService &cta, PortfolioUIState 
     SyncPortfolioCons(ui, *mk->quote);
   const std::map<std::string, PortfolioQuote> &one = ui.pick.rows[kPickOne];
   const PortfolioAt pin = one.empty() ? PortfolioAt{} : d.at(one.begin()->first); // VAL 标的
-  ui.roll.update(PortfolioRollKey{d.val_gen, ui.band_years, pin}, [&](PortfolioRolls &r) { MakePortfolioRoll(d, pin, ui.band_years, r); });
+  const PortfolioLeg lg = pin.g >= 0 ? d.row(pin).val : PortfolioLeg{};           // 其估值腿
+  ui.roll.update(PortfolioRollKey{d.axis_gen, lg, ui.band_years}, [&](PortfolioRolls &r) { MakePortfolioRoll(d, lg, ui.band_years, r); });
   ui.pct.update(PortfolioPctKey{d.val_gen, ui.band_years, ui.range.d1}, [&](PortfolioPct &p) { MakePortfolioPct(d, ui.range.d1, ui.band_years, p); });
-  ui.view.update(PortfolioViewKey{ui.der.gen, ui.roll.gen, ui.pct.gen, ui.range.d0, ui.range.d1},
+  ui.view.update(PortfolioViewKey{ui.der.gen, ui.roll.gen, ui.pct.gen, pin, ui.range.d0, ui.range.d1},
                  [&](PortfolioView &vw) { MakePortfolioView(d, ui.range.d0, ui.range.d1, pin, ui.roll.val, ui.pct.val, vw); });
 
   ImGui::TextColored(kHead, "Portfolio:");
@@ -370,10 +371,11 @@ int RenderTabPortfolio(PortfolioService &svc, CtaService &cta, PortfolioUIState 
     ImGui::PopStyleVar();
     if (mk) {
       std::vector<Database::OverlayPick> picks;
-      for (const int g : kPlotOrder)
+      for_each_layer([&](int g) {
         for (size_t r = 0; r < d.rows[g].size(); ++r)
           if (const PortfolioRow &h = d.rows[g][r]; h.q.ok() && picked(ui, page, h))
             picks.push_back({h.q.side, h.q.key, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag});
+      });
       if (flow)
         Database::RenderBasketFlow(*mk, ui.basket, picks);
       else

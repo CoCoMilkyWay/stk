@@ -103,14 +103,14 @@ inline ImVec4 oklch(float L, float C, float hue) {
   return {gamma(4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s), gamma(-1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s),
           gamma(-0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s), 1.0f};
 }
-// 组 g 行 r 线 l 的色 (主图 / 右表 / 日内栏 / FLOW 图同一份): 策略 = kStratCol, 其余 = 行色相 (PortfolioRow::hue) 的定亮定艳色, 未定色 = 同亮度灰; 理想列 = 同色淡
+// 组 g 行 r 线 l 的色 (主图 / 右表 / 日内栏 / FLOW 图同一份): 强调组 (kGroupDefs::accent) = kStratCol, 其余 = 行色相 (PortfolioRow::hue) 的定亮定艳色, 未定色 = 同亮度灰; 理想列 = 同色淡
 inline constexpr ImVec4 kStratCol(1.0f, 0.55f, 0.15f, 1.0f);
 inline constexpr float kIdealAlpha = 0.5f;
 inline constexpr float kRowL = 0.75f, kRowC = 0.125f; // 行色的 OKLCH 亮度 / 艳度: 该亮度下整环都在 sRGB 色域内的艳度上限附近 (环不被截变形)
 inline ImVec4 row_color(const PortfolioDerived &d, int g, size_t r, int l) {
   const float hue = d.rows[g][r].hue;
-  ImVec4 c = g == kGroupStrat ? kStratCol : std::isnan(hue) ? oklch(kRowL, 0.0f, 0.0f)
-                                                            : oklch(kRowL, kRowC, hue);
+  ImVec4 c = kGroupDefs[g].accent ? kStratCol : std::isnan(hue) ? oklch(kRowL, 0.0f, 0.0f)
+                                                                : oklch(kRowL, kRowC, hue);
   c.w = l == kIdeal ? kIdealAlpha : 1.0f;
   return c;
 }

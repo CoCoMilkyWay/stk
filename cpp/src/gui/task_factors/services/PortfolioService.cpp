@@ -321,7 +321,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
     message.clear();
     prune(result.factors, used_, tick_, req.reload);
     if (req.reload || !req.baskets)
-      result.baskets.reset(), result.stocks.reset();
+      result.quotes = {};
     ++result_gen;
   }
   publish();
@@ -333,7 +333,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
     groups[group_of(*t)].push_back(t);
   for (auto &[g, ts] : groups)
     std::sort(ts.begin(), ts.end(), [](const FactorTask *a, const FactorTask *b) { return std::tie(a->f.expr, a->f.frame, a->f.dir) < std::tie(b->f.expr, b->f.frame, b->f.dir); });
-  const bool todo_b = req.baskets && !result.baskets;
+  const bool todo_b = req.baskets && !result.quotes[Database::kBasket];
   jobs_done.store(0, std::memory_order_relaxed);
   jobs_total.store(static_cast<int>(todo_f.size()) + todo_b, std::memory_order_relaxed);
   const bool ok = [&] {
@@ -400,8 +400,8 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
   return settle(rc);
 }
 
-// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 两本账同发布: 篮子 basket_count 线 (键 = basket_line; 不扣成本: 无 imp / fix 列)
-// + 个股 all 池轴每只一线 (键 = 全局 id = 评估域池轴; 只毛收益)
+// 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 行情两侧的账同发布 (PortfolioResult::quotes, 同日轴):
+// 篮子 basket_count 线 (键 = basket_line; 不扣成本: 只毛收益 / 增仓量两列) ↔ 个股 all 池轴每只一线 (键 = 全局 id = 评估域池轴; 只毛收益一列); 各带估值
 bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   TraceN("PortfolioBaskets");
   assert(t.scope.ft->lv == kBasketLevel && "篮子账按日");
@@ -411,31 +411,38 @@ bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   const Rc rc = eval_baskets(F, t.scope, j, bs);
   if (!settle(rc))
     return false;
-  auto b = std::make_shared<PortfolioBook>(), s = std::make_shared<PortfolioBook>();
-  for (PortfolioBook *x : {b.get(), s.get()})
+  Database::PerSide<std::shared_ptr<PortfolioBook>> q;
+  for (std::shared_ptr<PortfolioBook> &x : q) {
+    x = std::make_shared<PortfolioBook>();
     x->sig = t.sig(), x->lv = kBasketLevel;
-  if (rc != Rc::Ok) {
-    b->error = s->error = j.why;
-  } else {
-    b->dates = s->dates = j.dm.dates;
-    const int D = static_cast<int>(b->dates.size());
+    if (rc != Rc::Ok)
+      x->error = j.why;
+    else
+      x->dates = j.dm.dates;
+  }
+  if (rc == Rc::Ok) {
+    PortfolioBook &b = *q[Database::kBasket], &s = *q[Database::kStock];
+    const int D = static_cast<int>(j.dm.dates.size());
     assert(bs.index.n == static_cast<int>(basket_count()) && bs.index.P == D);
     assert(bs.buy.n == bs.index.n && bs.buy.P == D);
     assert(bs.stock.n == static_cast<int>(j.dm.rs.axis.size()) && bs.stock.P == D);
-    b->keys.resize(basket_count());
-    std::iota(b->keys.begin(), b->keys.end(), 0u);
-    s->keys = j.dm.rs.axis.ids;
-    assert(std::ranges::is_sorted(s->keys) && "池轴 sub → 全局 id 升序 (line_of 二分)");
-    b->col[kBookRet] = std::move(bs.index);
-    b->col[kBookBuy] = std::move(bs.buy);
-    s->col[kBookRet] = std::move(bs.stock);
+    b.keys.resize(basket_count());
+    std::iota(b.keys.begin(), b.keys.end(), 0u);
+    s.keys = j.dm.rs.axis.ids;
+    assert(std::ranges::is_sorted(s.keys) && "池轴 sub → 全局 id 升序 (line_of 二分)");
+    b.col[kBookRet] = std::move(bs.index);
+    b.col[kBookBuy] = std::move(bs.buy);
+    s.col[kBookRet] = std::move(bs.stock);
     for (int m = 0; m < kPoolVals; ++m) {
-      assert(bs.val[m].size() == b->keys.size() * b->dates.size() && bs.stock_val[m].size() == s->keys.size() * s->dates.size());
-      b->val[m] = {bs.index.n, D, std::move(bs.val[m])};
-      s->val[m] = {bs.stock.n, D, std::move(bs.stock_val[m])};
+      assert(bs.val[m].size() == b.keys.size() * b.dates.size() && bs.stock_val[m].size() == s.keys.size() * s.dates.size());
+      b.val[m] = {b.col[kBookRet].n, D, std::move(bs.val[m])};
+      s.val[m] = {s.col[kBookRet].n, D, std::move(bs.stock_val[m])};
     }
   }
-  put([&](PortfolioResult &r) { r.baskets = std::move(b), r.stocks = std::move(s); });
+  put([&](PortfolioResult &r) {
+    for (int k = 0; k < Database::kSides; ++k)
+      r.quotes[k] = std::move(q[k]);
+  });
   return true;
 }
 

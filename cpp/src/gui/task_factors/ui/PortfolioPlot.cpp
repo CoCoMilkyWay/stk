@@ -77,8 +77,8 @@ void setup_day_axis(const std::vector<misc::Ymd> &dates) {
   ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].Locator = day_locator;
 }
 
-// 组线宽 [RowGroup] (策略加粗)
-constexpr float kRowWidth[kRowGroups] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 1.0f};
+// 组线宽: 强调组 (kGroupDefs::accent) 加粗
+float row_width(int g) { return kGroupDefs[g].accent ? 2.0f : 1.0f; }
 // 成对线表 [口径][PairLine] (口径 = pair_kind: 0 = 有行情键 (篮子 / 成分), 1 = 因子 / 策略): 主图例口径列 / 线尾小字后缀
 constexpr const char *kPairName[2][kPairLines] = {{"可成交", "理想"}, {"有冲击", "无冲击"}};
 constexpr const char *kPairTag[2][kPairLines] = {{" 可成交", " 理想"}, {"", " 无冲击"}};
@@ -226,7 +226,7 @@ bool now_cross(const PlotFrame &pf, const std::vector<misc::Ymd> &dates, NowCros
   return true;
 }
 
-// ---- NAV 主图: 画选中行的两条线, 按 kPlotOrder (策略在最上层). 主图例 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (align_cols; 悬停一项看 hover), ###线 ID 定 ID (数值变了不换 item);
+// ---- NAV 主图: 画选中行的两条线, 按组表画层 (for_each_layer; 策略在最上层). 主图例 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (align_cols; 悬停一项看 hover), ###线 ID 定 ID (数值变了不换 item);
 //      点图例单独隐 / 显一条 (行刚选中 → ui.reveal 强制回默认显隐一次: 理想列显, 可成交列隐) ----
 void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, PlotFrame &pf) {
   struct Draw {
@@ -236,11 +236,12 @@ void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioVi
     ImVec4 col;
   };
   std::vector<Draw> ds; // 画序, 只含选中行的
-  for (const int g : kPlotOrder)
+  for_each_layer([&](int g) {
     for (size_t r = 0; r < d.rows[g].size(); ++r)
       if (picked(ui, kPageNav, d.rows[g][r]))
         for (int l = 0; l < kPairLines; ++l)
           ds.push_back({g, l, &d.rows[g][r], &v.slice[g][r][l], row_color(d, g, r, l)});
+  });
   std::vector<std::array<std::string, 5>> rows;
   for (const Draw &x : ds) {
     char ann[48] = "", shp[48] = "", turn[48] = "";
@@ -258,7 +259,7 @@ void plot_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioVi
     const std::string id = line_id(*x.row, x.l), lb = texts[i] + "###" + id;
     if (ui.reveal.erase(id))
       ImPlot::HideNextItem(x.l == kTrade, ImPlotCond_Always);
-    ImPlot::SetNextLineStyle(x.col, kRowWidth[x.g]);
+    ImPlot::SetNextLineStyle(x.col, row_width(x.g));
     plot_slice(lb.c_str(), *x.s);
     if (ImPlot::IsLegendEntryHovered(lb.c_str()))
       tip("%s", x.row->hover.c_str());

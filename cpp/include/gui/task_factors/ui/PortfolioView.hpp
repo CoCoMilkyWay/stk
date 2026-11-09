@@ -1,9 +1,11 @@
 // Factors→Portfolio 页的派生层 (GUI 线程, 只算不画): PortfolioService 的账 + 行情侧价格指数 → 三级缓存, TabPortfolio 只读末级画
 //   派生 PortfolioDerived (结果 / 内容 / fixed_impact / 成分组变) → 二级两份: 滚动分位 PortfolioRolls (VAL 标的 / 窗长变)
 //   + 末点分位 PortfolioPct (窗长 / 区间末 / 估值行变; 不随区间起点) → 区间视图 PortfolioView (区间变)
-//   各级一个入口 MakePortfolio{Derived, Roll, Pct, View}; 各级的键带上级的 gen (PortfolioStage): 上级重算 → 下级自动重算
-//   行只一种 PortfolioRow (篮子 / 因子 / 策略 / 成分股): 两条线 + 可选的行情键 (近况 / 当日 / 资金流 / 日内叠加) + 可选的估值腿 (估值分位 / band)
+//   各级一个入口 MakePortfolio{Derived, Roll, Pct, View}; 各级的键 = 它读的东西 (上级的部分以 gen 代表; PortfolioStage): 来源变 → 本级重算
+//   行只一种 PortfolioRow (篮子 / 因子 / 策略 / 成分股): 两条线 + 可选的行情键 (近况 / 当日 / 资金流 / 日内叠加) + 可选的估值腿 (估值分位 / band);
+//     构造只两种, 互为对仗: 有行情键 (篮子 / 成分: 腿 = 该侧账 quotes[side] 的键线, 理想 = 该侧价格线) ↔ 无行情键 (因子 / 策略: 腿集扣 / 不扣成本)
 //   线的来路只两种 (PortfolioLineSrc): 腿集合成 (腿 = 账的一线) / 价格指数 → 点位 → 投到日并集轴 → PortfolioLine; 按线源逐线沿用
+//   组的属性只在组表 kGroupDefs
 #pragma once
 
 #include "features/TimeIndex.hpp"               // TRADE_MINUTES_PER_DAY (横轴每日跨度)
@@ -96,13 +98,52 @@ struct PortfolioRow {
   std::string watch;                                     // 自选键: 篮子 = 切片代码 + .等 / .加, 个股 = 代码; 因子 / 策略 = 空 (不可自选)
 };
 
-// 行组 (右表类别条 = 前 kGroupKid 组; 成分行只挂在展开的篮子行下): 前 kBasketGroups 组 = 篮子目录三组 (BasketGroup), 其后 自选 / 因子 / 策略 / 成分
+// 行组 (右表类别条 = 前 PageDef::groups 组; 成分行只挂在展开的篮子行下): 前 kBasketGroups 组 = 篮子目录三组 (BasketGroup), 其后 自选 / 因子 / 策略 / 成分
 enum RowGroup : int { kGroupWatch = kBasketGroups,
                       kGroupFactor,
                       kGroupStrat,
                       kGroupKid };
 inline constexpr int kRowGroups = kGroupKid + 1;
-inline constexpr int kPlotOrder[kRowGroups - 1] = {kGroupPool, kGroupInd, kGroupConcept, kGroupKid, kGroupFactor, kGroupStrat}; // 主图画序 (策略在最上层; 自选 = 别组行的副本, 不另画)
+static_assert(kBasketGroups == 3);
+// 组表 [RowGroup]: 类别条名 / 主图画层 (升序画, 后画在上; −1 = 不画: 自选 = 别组行的副本) / 配色 (一起按相似度定色相, 见 PortfolioDerived::rows;
+// 否则行自带色相) / 强调 (定色 + 线加粗) / 可自选 (自选行的来源) / 右表过滤条
+struct GroupDef {
+  const char *name;
+  int layer;
+  bool paint, accent, watch, filter;
+};
+inline constexpr GroupDef kGroupDefs[kRowGroups] = {
+    {"指数", 0, true, false, true, true},
+    {"行业", 1, true, false, true, true},
+    {"概念", 2, true, false, true, true},
+    {"自选", -1, false, false, false, false},
+    {"因子", 4, true, false, false, false},
+    {"策略", 5, false, true, false, false},
+    {"成分", 3, false, false, true, false},
+};
+static_assert([] {
+  int seen = 0;
+  for (int g = 0; g < kRowGroups; ++g) {
+    const GroupDef &x = kGroupDefs[g];
+    if (x.filter && g >= kBasketGroups)
+      return false;
+    if (x.layer >= 0) {
+      if (seen >> x.layer & 1)
+        return false;
+      seen |= 1 << x.layer;
+    }
+  }
+  return true;
+}(),
+              "组表: 画层不重, 过滤条只在篮子组 (BasketFilter [BasketGroup])");
+// 按画层逐组 f(g) (主图 / 日内栏 / FLOW 图同一序)
+template <class F>
+void for_each_layer(F &&f) {
+  for (int z = 0; z < kRowGroups; ++z)
+    for (int g = 0; g < kRowGroups; ++g)
+      if (kGroupDefs[g].layer == z)
+        f(g);
+}
 // NAV 右表一行的数值列 (前两列下标 = PairLine)
 enum NavNum : int { kNumTrade,  // 可成交列区间年化
                     kNumIdeal,  // 理想列区间年化
@@ -118,40 +159,47 @@ struct PortfolioAt {
   size_t r = 0;
   bool operator==(const PortfolioAt &) const = default;
 };
-// 成分行的选中键 = 前缀 + 全局 id
-inline std::string stock_key(uint32_t id) { return "stk_" + std::to_string(id); }
+// 配色的来源: 配色组各行的 (id, 理想线) + 成员重合 (价格指数的发布) + 可否定色; 与上一份同 → 色相照搬
+struct PortfolioPaintKey {
+  std::vector<std::pair<std::string, const PortfolioLine *>> rows;
+  const Database::Tape *prices = nullptr;
+  bool ready = false;
+  bool operator==(const PortfolioPaintKey &) const = default;
+};
 
-// 一级: 派生 (结果 / 内容 / fixed_impact / 成分组变才重算): 全段. 各线按线源沿用上一份 (PortfolioLineSrc)
+// 一级: 派生 (结果 / 内容 / fixed_impact / 成分组变才重算): 全段. 各线按线源沿用上一份 (PortfolioLineSrc), 色按配色来源沿用 (PortfolioPaintKey)
 struct PortfolioDerived {
-  std::vector<misc::Ymd> dates;                            // 日并集轴 (横轴 day 下标)
-  std::vector<PortfolioRow> rows[kRowGroups];              // [RowGroup][行]:
-                                                           //   组             | 行情键    | 可成交 / 有冲击线           | 理想 / 无冲击线        | 估值腿
-                                                           //   指数/行业/概念 | 篮子线    | 篮子账该线合成 (不扣成本)   | 价格指数 (篮子历史该线) | 篮子账该线
-                                                           //   因子           | -         | 该因子账扣成本合成          | 同腿不扣               | -
-                                                           //   策略           | -         | 全部因子账扣成本合成        | 同腿不扣               | -
-                                                           //   成分           | 个股 id   | 个股账该只合成 (后复权收盘, 无成本列 ⇒ 两条同一条)    | 个股账该只
-                                                           //   自选           | 同原行    | 同原行                      | 同原行                 | 同原行
-                                                           //   指数 / 行业 / 概念 = [basket_group 序] (源没算成也列, 线空); en = cut_code, cn = tag = 切片名 (超长截断) + .等 / .加, hover = en + 全名;
-                                                           //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头; id = PortfolioEntry::key,
-                                                           //     en | cn = 因子文件主干 | 中文名 (超长截断), hover = en + 全名 + 池 层 持有期 冲击段 规范串
-                                                           //   策略 = 一行, 组合 G20 多头; en | cn = 组合名 | G20 多头
-                                                           //   成分 = 展开的篮子行的成分 (Tape::cons, 权降序; 前 n_cons 行, 右表挂在展开行下) + 其余选中 / 自选的个股 (收起后照画, 升序);
-                                                           //     id = stock_key, en | cn = 代码 | 简称, hover = 代码 + 权占比 + 行业 / 估值
-                                                           //   自选 = [自选键序] 篮子三组 / 成分组里同自选键行的副本 (同 id: 选中 / 展开与原行同一份; 线 / 色共用; 不进 index, 主图只画原行);
-                                                           //     名次在自选之间 (视图按组排); 找不到的键 (概念换快照没了 / 代码不在资产轴) 记 watch_lost
-                                                           //   色: 指数 / 行业 / 概念 / 因子四组的行一起按相似度 s = max(成员重合, 残差相关) 建 Ward 树, 叶序相邻两行色相差 ∝ 树上分开处两侧平均 1 − s
-                                                           //     (OKLCH 定亮定艳色环); 因子没到齐 / 价格指数未就绪 → 全灰. 右表名列排序 = 色相序 (相似的挨着)
-                                                           //     成员重合 = Tape::overlap (只篮子之间), 残差相关 = 理想线末段日收益对全A.加回归的残差相关; 成分 = 按全局 id 黄金角散开
-  std::map<std::string, PortfolioAt> index;                // 行 id → 位置 (选中解析)
-  int n_ready = 0, n_error = 0, n_wait = 0;                // 已算成 / 算失败 / 未到的因子数
-  size_t n_cons = 0;                                       // 成分组前 n_cons 行 = 展开行的成分
-  std::vector<std::string> watch_lost;                     // 找不到行的自选键 (自选序)
-  std::vector<std::shared_ptr<const PortfolioBook>> books; // [因子行] 因子账 (因子 / 策略行的腿)
-  std::shared_ptr<const PortfolioBook> baskets;            // 篮子账 (篮子行的腿 / 估值腿; 没算成 = 空)
-  std::shared_ptr<const PortfolioBook> stocks;             // 个股账 (成分行的腿 / 估值腿; 与篮子账同有同无, 同日轴)
-  std::shared_ptr<const Database::Tape> prices;            // 篮子理想线 / 成分表的源 (篮子历史 [basket_line]; 未到 / 源未就绪 = 空)
-  std::vector<int32_t> val_at;                             // [日并集轴] 两本账的行 (估值的源下标; −1 = 账无该日 / 没算成)
-  uint64_t val_gen = 0;                                    // 估值行 (位置 + 估值腿) / 日轴变的次数 (滚动分位 / 末点分位键)
+  std::vector<misc::Ymd> dates;                                   // 日并集轴 (横轴 day 下标)
+  std::vector<PortfolioRow> rows[kRowGroups];                     // [RowGroup][行]:
+                                                                  //   组             | 行情键    | 可成交 / 有冲击线           | 理想 / 无冲击线         | 估值腿
+                                                                  //   指数/行业/概念 | 篮子线    | 篮子账该线合成 (不扣成本)   | 价格指数 (篮子历史该线) | 篮子账该线
+                                                                  //   成分           | 个股 id   | 个股账该只合成 (后复权收盘) | 同可成交 (同一条)       | 个股账该只
+                                                                  //   因子           | -         | 该因子账扣成本合成          | 同腿不扣                | -
+                                                                  //   策略           | -         | 全部因子账扣成本合成        | 同腿不扣                | -
+                                                                  //   自选           | 同原行    | 同原行                      | 同原行                  | 同原行
+                                                                  //   篮子三组 / 成分 = 有行情键的行 (腿 = quotes[side] 的键线); 因子 / 策略 = 无行情键的行 (腿集 = 因子账)
+                                                                  //   指数 / 行业 / 概念 = [basket_group 序] (源没算成也列, 线空); en = cut_code, cn = tag = 切片名 (超长截断) + .等 / .加, hover = en + 全名;
+                                                                  //   成分 = 展开的篮子行的成分 (Tape::cons, 权降序; 前 n_cons 行, 右表挂在展开行下) + 其余选中 / 自选的个股 (收起后照画, 升序);
+                                                                  //     en | cn = 代码 | 简称, hover = 代码 + 权占比 + 行业 / 估值
+                                                                  //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头; id = PortfolioEntry::key,
+                                                                  //     en | cn = 因子文件主干 | 中文名 (超长截断), hover = en + 全名 + 池 层 持有期 冲击段 规范串
+                                                                  //   策略 = 一行, 组合 G20 多头; en | cn = 组合名 | G20 多头
+                                                                  //   自选 = [自选键序] 可自选组里同自选键行的副本 (同 id: 选中 / 展开与原行同一份; 线 / 色共用; 不进 index, 主图只画原行);
+                                                                  //     名次在自选之间 (视图按组排); 找不到的键 (概念换快照没了 / 代码不在资产轴) 记 watch_lost
+                                                                  //   色: 配色组 (指数 / 行业 / 概念 / 因子) 的行一起按相似度 s = max(成员重合, 残差相关) 建 Ward 树, 叶序相邻两行色相差 ∝ 树上分开处两侧平均 1 − s
+                                                                  //     (OKLCH 定亮定艳色环); 因子没到齐 / 价格指数未就绪 → 全灰. 右表名列排序 = 色相序 (相似的挨着)
+                                                                  //     成员重合 = Tape::overlap (只篮子之间), 残差相关 = 理想线末段日收益对全A.加回归的残差相关; 成分 = 按全局 id 黄金角散开
+  std::map<std::string, PortfolioAt> index;                       // 行 id → 位置 (选中解析)
+  int n_ready = 0, n_error = 0, n_wait = 0;                       // 已算成 / 算失败 / 未到的因子数
+  size_t n_cons = 0;                                              // 成分组前 n_cons 行 = 展开行的成分
+  std::vector<std::string> watch_lost;                            // 找不到行的自选键 (自选序)
+  std::vector<std::shared_ptr<const PortfolioBook>> books;        // [因子行] 因子账 (因子 / 策略行的腿)
+  Database::PerSide<std::shared_ptr<const PortfolioBook>> quotes; // [Side] 行情两侧的账 (有行情键的行的腿 / 估值腿; 同有同无, 同日轴; 没算成 = 空)
+  std::shared_ptr<const Database::Tape> prices;                   // 篮子理想线 / 成分表的源 (篮子历史 [basket_line]; 未到 / 源未就绪 = 空)
+  std::vector<int32_t> val_at;                                    // [日并集轴] 两侧账的行 (估值的源下标; −1 = 账无该日 / 没算成)
+  PortfolioPaintKey paint;                                        // 配色的来源
+  uint64_t axis_gen = 0;                                          // 日并集轴 / 两侧账变的次数 (val_at 的来源; 滚动分位键)
+  uint64_t val_gen = 0;                                           // 估值行 (位置 + 估值腿) 或 axis_gen 变的次数 (末点分位键)
   PortfolioAt at(const std::string &id) const {
     const auto it = index.find(id);
     return it == index.end() ? PortfolioAt{} : it->second;
@@ -167,7 +215,7 @@ inline constexpr double kBandQs[kBandQ] = {0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95
 // 绝对估值等值线的档: 标的全史倍数 m (= 1 / 收益率) 区间两头各剔 kContourTrim 分位 (近 0 收益率的日子倍数极大, 不让它撑开区间), kContours 等分
 inline constexpr int kContours = 20;
 inline constexpr double kContourTrim = 0.02;
-// 标的一口 [日并集轴] (窗内按距今天数加权, 见 PortfolioView.cpp roll_w). 标的全日 ↔ 末点分位 PortfolioPct 各行一日, 分位同一个核 pct_at
+// 标的一口 [日并集轴] (窗内按距今天数加权, 见 PortfolioView.cpp roll_w). 标的全日 ↔ 末点分位 PortfolioPct 各行一日, 分位同一定义 pct_of
 struct PortfolioRoll {
   std::vector<float> q[kBandQ]; // 窗内贵度 kBandQs 加权分位处的收益率 (便宜 → 贵 = 降序; NaN = 史不满 1 年 / 账无该日)
   std::vector<float> pct;       // 当日贵度在窗内的加权分位 (%, 高 = 贵; NaN = 同上 / 当日不可算)
@@ -246,9 +294,9 @@ struct PortfolioDerKey {
   bool operator==(const PortfolioDerKey &) const = default;
 };
 struct PortfolioRollKey {
-  uint64_t val = 0; // PortfolioDerived::val_gen
-  int years = 0;    // 窗长
-  PortfolioAt pin;  // VAL 标的
+  uint64_t axis = 0; // PortfolioDerived::axis_gen
+  PortfolioLeg leg;  // VAL 标的的估值腿
+  int years = 0;     // 窗长
   bool operator==(const PortfolioRollKey &) const = default;
 };
 struct PortfolioPctKey {
@@ -259,6 +307,7 @@ struct PortfolioPctKey {
 };
 struct PortfolioViewKey {
   uint64_t der = 0, roll = 0, pct = 0; // 派生 gen / 滚动分位 gen / 末点分位 gen
+  PortfolioAt pin;                     // VAL 标的
   int d0 = 0, d1 = 0;                  // 区间
   bool operator==(const PortfolioViewKey &) const = default;
 };
@@ -268,8 +317,8 @@ struct PortfolioViewKey {
 void MakePortfolioDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
                           const std::shared_ptr<const Database::Tape> &prices, double fixed_impact, const std::string &open,
                           const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos, PortfolioDerived &d);
-// 二级: VAL 标的 pin 的估值腿各口 [PoolVal], 窗长 years; 无标的 / 无估值腿 → 空
-void MakePortfolioRoll(const PortfolioDerived &d, const PortfolioAt &pin, int years, PortfolioRolls &r);
+// 二级: VAL 标的的估值腿 lg 各口 [PoolVal], 窗长 years; 空腿 → 空
+void MakePortfolioRoll(const PortfolioDerived &d, const PortfolioLeg &lg, int years, PortfolioRolls &r);
 // 二级: 区间末 d1 (日并集轴下标) 之前各估值行各口的末个可算日, 窗长 years
 void MakePortfolioPct(const PortfolioDerived &d, int d1, int years, PortfolioPct &p);
 // 三级: 区间 [d0, d1) (日并集轴下标); pin / roll / pct = 二级的

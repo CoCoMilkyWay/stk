@@ -27,8 +27,13 @@ namespace GUI::Factors {
 
 namespace {
 
-// 行组名 [RowGroup] (类别条 = 前 PageDef::groups 个)
-constexpr const char *kRowGroupName[kRowGroups] = {"指数", "行业", "概念", "自选", "因子", "策略", "成分"};
+// 行组名 [RowGroup] (= kGroupDefs::name; 类别条 = 前 PageDef::groups 个)
+constexpr std::array<const char *, kRowGroups> kRowGroupName = [] {
+  std::array<const char *, kRowGroups> n{};
+  for (int g = 0; g < kRowGroups; ++g)
+    n[static_cast<size_t>(g)] = kGroupDefs[g].name;
+  return n;
+}();
 // 右表格名次底色的 alpha
 constexpr float kValCellA = 0.45f;
 
@@ -306,7 +311,8 @@ std::string yi_text(double y, bool sign = false) {
                   pm, a);
   return s;
 }
-// 表行的源: 位置 / 行 + 个股行情键的源 (基本面档案: 无 → nullptr; 新浪当日: 未取 / 当日无成交 → nullptr)
+// 表行的源: 位置 / 行 + 行情键的源 (基本面档案: 个股才有, 无 → nullptr; 当日 Day: 篮子 = 篮子 Feed 的该线 / 个股 = 新浪当日,
+// 未取 / 当日无成交 → nullptr)
 struct RowSrc {
   PortfolioAt at;
   const PortfolioRow *row = nullptr;
@@ -315,36 +321,41 @@ struct RowSrc {
 };
 RowSrc src_of(const PortfolioUIState &ui, const StockInfos &infos, const PortfolioDerived &d, const PortfolioAt &a) {
   RowSrc x{a, &d.row(a)};
-  if (const PortfolioQuote &q = x.row->q; q.is(Database::kStock)) {
+  const PortfolioQuote &q = x.row->q;
+  const Database::Day *t = nullptr;
+  if (const Database::Feed &f = ui.basket.feed; q.is(Database::kBasket) && f.data && f.today) {
+    assert(f.today->size() == f.data->list.size());
+    t = &(*f.today)[q.key];
+  } else if (q.is(Database::kStock)) {
     if (q.key < infos.size() && infos[q.key].known)
       x.info = &infos[q.key];
     const auto it = std::ranges::lower_bound(ui.cons.ids, q.key);
     if (ui.cons.day && it != ui.cons.ids.end() && *it == q.key)
-      if (const Database::Day &t = (*ui.cons.day)[static_cast<size_t>(it - ui.cons.ids.begin())]; t.candle.date != 0)
-        x.day = &t;
+      t = &(*ui.cons.day)[static_cast<size_t>(it - ui.cons.ids.begin())];
   }
+  if (t && t->candle.date != 0)
+    x.day = t;
   return x;
 }
-// 篮子线 line 的当日 (SheetToday): 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线 (总市值当日接上 × 加权线当日涨跌);
-// 成交额 / 流入 = 新浪当日合成的 Day (不看接续); 换手 = 成交额 / 总市值
-SheetToday basket_today(const Database::Feed &f, size_t line) {
+// 篮子行的当日 (SheetToday): 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线 (总市值当日接上 × 加权线当日涨跌);
+// 成交额 / 流入 = 当日 Day (不看接续); 换手 = 成交额 / 总市值
+SheetToday basket_today(const Database::Feed &f, const RowSrc &x) {
   SheetToday o;
   if (!f.data || f.data->members.empty())
     return o;
-  const size_t c = cut_of_line(line), eq = basket_line(c, kWeightEq), cap = basket_line(c, kWeightCap);
+  const size_t c = cut_of_line(x.row->q.key), eq = basket_line(c, kWeightEq), cap = basket_line(c, kWeightCap);
   assert(f.data->keys[eq] == eq && f.data->keys[cap] == cap && f.today && f.today->size() == f.data->list.size());
-  const std::vector<Database::Day> &today = *f.today;
   double w = f.data->weight[cap];
-  if (const Database::Day &t = today[cap]; Database::joins(*f.data->list[cap], t))
+  if (const Database::Day &t = (*f.today)[cap]; Database::joins(*f.data->list[cap], t))
     w *= t.candle.close / t.candle.ref;
   o.v[kTodayMembers] = f.data->members[eq];
   o.v[kTodayCap] = w > 0 ? w : kNaN;
-  if (const Database::Day &t = today[line]; t.candle.date != 0 && t.candle.amount > 0)
-    o.amount = t.candle.amount / 1e8, o.v[kTodayFlow] = t.flow / t.candle.amount;
+  if (x.day && x.day->candle.amount > 0)
+    o.amount = x.day->candle.amount / 1e8, o.v[kTodayFlow] = x.day->flow / x.day->candle.amount;
   o.v[kTodayTurn] = o.amount / o.v[kTodayCap];
   return o;
 }
-// 个股的当日 (SheetToday): 总市值 = 档案末日收盘总市值 (新浪当日接上档案末日再 × 当日涨跌); 成交额 / 流入 = 新浪当日 (本只分钟涨跌法);
+// 个股行的当日 (SheetToday): 总市值 = 档案末日收盘总市值 (当日接上档案末日再 × 当日涨跌); 成交额 / 流入 = 当日 Day (本只分钟涨跌法);
 // 换手 = 成交额 / 总市值; 无只数
 SheetToday stock_today(const RowSrc &x) {
   SheetToday o;
@@ -357,11 +368,11 @@ SheetToday stock_today(const RowSrc &x) {
   o.v[kTodayTurn] = o.amount / o.v[kTodayCap];
   return o;
 }
-// 表行的当日: 按行情键 (篮子 = 篮子 Feed 的该线; 个股 = 档案 + 新浪当日; 无 = 全不可算)
+// 表行的当日: 按行情键 (篮子 = 篮子 Feed 的同切片两线 + 当日; 个股 = 档案 + 当日; 无 = 全不可算)
 SheetToday today_of(const Database::Feed &f, const RowSrc &x) {
   const PortfolioQuote &q = x.row->q;
-  return q.is(Database::kBasket) ? basket_today(f, q.key) : q.is(Database::kStock) ? stock_today(x)
-                                                                                   : SheetToday{};
+  return q.is(Database::kBasket) ? basket_today(f, x) : q.is(Database::kStock) ? stock_today(x)
+                                                                               : SheetToday{};
 }
 // 表行的近况 (Database::RecentOf 同一核): 篮子 = Assets 篮子同一份; 个股 = Assets 个股同一份 (无档案 → 不可算); 无行情键 = 可成交线日末
 Database::Recent recent_row(const Database::Feed &f, const RowSrc &x) {
@@ -542,16 +553,17 @@ void watch_bar(PortfolioUIState &ui, size_t n, const std::vector<std::string> &l
   if (ImGui::IsItemHovered())
     tip("找不到行的自选键 (概念换快照没了 / 代码不在资产轴), 点 = 一并移出:%s", keys.c_str());
 }
-// 组 g 右表列出的行: 篮子组 = 过过滤条的 ∪ 选中的 (on) ∪ 展开的 (表上画过滤条), 其余组全列 (自选组表上画项数)
+// 组 g 右表列出的行: 有过滤条的组 (kGroupDefs::filter) = 过过滤条的 ∪ 选中的 (on) ∪ 展开的 (表上画过滤条), 其余组全列 (自选组表上画项数)
 template <class On>
 std::vector<size_t> listing(PortfolioUIState &ui, const PortfolioSheet &ps, const PortfolioDerived &d, int g, const On &on) {
   const std::vector<PortfolioRow> &rs = d.rows[g];
+  const bool filter = kGroupDefs[g].filter;
   std::vector<size_t> o;
   const size_t n = ps.R;
   for (size_t r = 0; r < n; ++r)
-    if (g >= kBasketGroups || on(r) || rs[r].id == ui.pick.open || passes(ui.filter[g], ps.today[r]))
+    if (!filter || on(r) || rs[r].id == ui.pick.open || passes(ui.filter[g], ps.today[r]))
       o.push_back(r);
-  if (g < kBasketGroups)
+  if (filter)
     filter_bar(ui.filter[g], o.size(), n);
   else if (g == kGroupWatch)
     watch_bar(ui, n, d.watch_lost);
@@ -661,7 +673,7 @@ Seg num_seg(const PortfolioView &v, std::vector<int> ks = {kNumTrade, kNumIdeal,
   return s;
 }
 void legend_nav(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, const StockInfos &infos) {
-  button_bar(kRowGroupName, kPageDefs[kPageNav].groups, ui.cat[kPageNav]);
+  button_bar(kRowGroupName.data(), kPageDefs[kPageNav].groups, ui.cat[kPageNav]);
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
@@ -738,7 +750,7 @@ void legend_val(PortfolioUIState &ui, const PortfolioDerived &d, const Portfolio
     tip("Band 分位的滚动窗长 N: 每日取过去 N 年 (含当日) 的收益率加权分位, 拖动即时重算\n"
         "• 权重 = 1 - exp(-10 u), u = 1 - 距今 / 窗跨度: 近 ~3/4 窗约等权, 窗尾段快速降到 0 (老点出窗时分位不跳)\n"
         "• 估值史不足 N 年时先扩张窗 (权重按实际史长缩放); 不满 1 年不画");
-  button_bar(kRowGroupName, kPageDefs[kPageVal].groups, ui.cat[kPageVal]);
+  button_bar(kRowGroupName.data(), kPageDefs[kPageVal].groups, ui.cat[kPageVal]);
   ImGui::SameLine();
   ImGui::TextColored(kHead, "(单选)");
   if (ImGui::IsItemHovered())
@@ -835,7 +847,7 @@ Seg flow_seg(const Database::BasketState &bs, const std::vector<misc::Ymd> &days
   return s;
 }
 void legend_flow(PortfolioUIState &ui, const PortfolioDerived &d, const std::vector<misc::Ymd> &days, const StockInfos &infos) {
-  button_bar(kRowGroupName, kPageDefs[kPageFlow].groups, ui.cat[kPageFlow]);
+  button_bar(kRowGroupName.data(), kPageDefs[kPageFlow].groups, ui.cat[kPageFlow]);
   ImGui::SameLine();
   ImGui::TextColored(kHead, "(点行 = 画)");
   if (ImGui::IsItemHovered())
@@ -856,7 +868,7 @@ const SheetCol kCtaName = {"名", "名 = 篮子名\n"
                                  "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 点成分行 = 回测该股 (后复权 1 分钟价)\n"
                                  "• 适用: 指数 / 行业 / 概念 / 自选"};
 void legend_cta(PortfolioUIState &ui, const PortfolioDerived &d, const PortfolioView &v, const StockInfos &infos) {
-  button_bar(kRowGroupName, kPageDefs[kPageCta].groups, ui.cat[kPageCta]);
+  button_bar(kRowGroupName.data(), kPageDefs[kPageCta].groups, ui.cat[kPageCta]);
   ImGui::SameLine();
   ImGui::TextColored(kHead, "(单选)");
   if (ImGui::IsItemHovered())
