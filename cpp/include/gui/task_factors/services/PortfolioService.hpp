@@ -61,6 +61,11 @@ void SavePortfolio(const std::string &dir, const std::string &name, const std::v
 bool RenamePortfolio(const std::string &dir, const std::string &from, const std::string &to);               // to 已存在 → false
 void DeletePortfolio(const std::string &dir, const std::string &name);
 
+// ---- 自选文件 <config_dir>/watch.json (GUI 线程读写; Portfolio 右表星列 / 右键增删): { "watch": [ "sw01.加", "BK0493.加", "600512.SH", … ] }
+//   条目 = 自选键 (PortfolioRow::watch), 文件序 = 加入序; 与组合无关, 全局一份
+std::vector<std::string> LoadWatch(const std::string &path);                    // 文件不存在 = 空; 格式不对 → assert
+void SaveWatch(const std::string &path, const std::vector<std::string> &watch); // tmp + rename
+
 // ---- 解析 (GUI 线程): 条目 → 该 (池, 层) 目录下 ScanFactorFile 找回的权重行 (字段表取全页共享的 FeatureTables) ----
 struct PortfolioItem {
   PortfolioEntry e;

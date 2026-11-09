@@ -168,6 +168,14 @@ void SyncPortfolioDir(PortfolioUIState &ui, const std::string &dir) {
   relist(ui, ui.name);
 }
 
+void SyncPortfolioWatch(PortfolioUIState &ui, const std::string &config_dir) {
+  const std::string path = (std::filesystem::path(config_dir) / "watch.json").string();
+  if (ui.watch_path == path)
+    return;
+  ui.watch_path = path;
+  ui.watch = LoadWatch(path);
+}
+
 void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, LevelId lv, int hold) {
   const ImGuiStyle &st = ImGui::GetStyle();
   const float h = 3.0f * ImGui::GetFrameHeightWithSpacing() - st.ItemSpacing.y + 2.0f * st.WindowPadding.y;
@@ -320,10 +328,11 @@ int RenderTabPortfolio(PortfolioService &svc, CtaService &cta, PortfolioUIState 
   //      上级重算 → 下级自动重算 ----
   if (ui.pick.of != ui.name) // 换组合 → 选中清掉
     ui.pick = PortfolioPick{.of = ui.name};
-  ui.der.update(PortfolioDerKey{gen, ui.items_gen, ui.basket.feed.shown, fixed_impact, infos.size(), ui.pick.open, ui.pick.stocks(kPicks)},
+  ui.der.update(PortfolioDerKey{gen, ui.items_gen, ui.basket.feed.shown, fixed_impact, infos.size(), ui.pick.open, ui.pick.stocks(kPicks), ui.watch},
                 [&](PortfolioDerived &dv) {
                   const std::vector<misc::Ymd> old = dv.dates;
-                  MakePortfolioDerived(ui.items, ui.name, res, ui.basket.feed.data, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks), infos, dv);
+                  MakePortfolioDerived(ui.items, ui.name, res, ui.basket.feed.data, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks), ui.watch, infos,
+                                       dv);
                   if (dv.dates != old) // 日轴变 → 区间回全段
                     ui.range = PortfolioRange{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())};
                 });
@@ -361,7 +370,7 @@ int RenderTabPortfolio(PortfolioService &svc, CtaService &cta, PortfolioUIState 
     ImGui::PopStyleVar();
     if (mk) {
       std::vector<Database::OverlayPick> picks;
-      for (int g = 0; g < kRowGroups; ++g)
+      for (const int g : kPlotOrder)
         for (size_t r = 0; r < d.rows[g].size(); ++r)
           if (const PortfolioRow &h = d.rows[g][r]; h.q.ok() && picked(ui, page, h))
             picks.push_back({h.q.side, h.q.key, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag});

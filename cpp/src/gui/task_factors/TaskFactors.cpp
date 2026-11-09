@@ -285,6 +285,7 @@ TaskHandle CreateFactorsTask(std::shared_ptr<Database::Market> market) {
       if (!state->portfolio_service)
         state->portfolio_service = std::make_unique<Factors::PortfolioService>();
       Factors::SyncPortfolioDir(state->portfolio_ui, data.config.portfolio_dir);
+      Factors::SyncPortfolioWatch(state->portfolio_ui, data.config.config_dir);
     }
     bool portfolio_reload = false;
 

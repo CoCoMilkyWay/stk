@@ -117,6 +117,42 @@ bool RenamePortfolio(const std::string &dir, const std::string &from, const std:
 void DeletePortfolio(const std::string &dir, const std::string &name) { std::filesystem::remove(portfolio_path(dir, name)); }
 
 // ============================================================================
+// 自选文件
+// ============================================================================
+
+std::vector<std::string> LoadWatch(const std::string &path) {
+  if (!std::filesystem::exists(path))
+    return {};
+  std::ifstream f(path);
+  assert(f.is_open() && "自选文件打不开");
+  const json j = json::parse(f, nullptr, /*allow_exceptions=*/false);
+  assert(!j.is_discarded() && j.is_object() && j.contains("watch") && j["watch"].is_array() && "自选文件: 顶层须是 {watch: [...]}");
+  std::vector<std::string> w;
+  for (const json &o : j["watch"]) {
+    assert(o.is_string() && "自选文件: 条目须是字符串");
+    w.push_back(o.get<std::string>());
+  }
+  return w;
+}
+
+// 一条目一行 (人能直接读 / diff)
+void SaveWatch(const std::string &path, const std::vector<std::string> &watch) {
+  const std::filesystem::path p(path);
+  std::filesystem::create_directories(p.parent_path());
+  const std::filesystem::path tmp = p.string() + ".tmp";
+  {
+    std::ofstream f(tmp);
+    assert(f.is_open() && "自选文件: 临时文件打不开");
+    f << "{\n  \"watch\": [";
+    for (size_t i = 0; i < watch.size(); ++i)
+      f << (i ? ",\n    " : "\n    ") << json(watch[i]).dump();
+    f << (watch.empty() ? "]\n}\n" : "\n  ]\n}\n");
+    assert(f.good() && "自选文件: 写入失败");
+  }
+  std::filesystem::rename(tmp, p);
+}
+
+// ============================================================================
 // 解析 / 请求
 // ============================================================================
 

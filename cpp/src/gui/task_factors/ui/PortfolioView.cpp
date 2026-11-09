@@ -127,7 +127,8 @@ std::vector<Merge> ward_linkage(std::vector<double> &dist, size_t n) {
 void paint(PortfolioDerived &d) {
   std::vector<PortfolioRow *> rs;
   size_t mkt = SIZE_MAX; // 全A.加 (残差的基准)
-  for (int g = 0; g < kGroupStrat; ++g)
+  constexpr int kPainted[] = {kGroupPool, kGroupInd, kGroupConcept, kGroupFactor};
+  for (const int g : kPainted)
     for (PortfolioRow &r : d.rows[g]) {
       if (r.q.is(Database::kBasket) && r.q.key == basket_line(0, kWeightCap))
         mkt = rs.size();
@@ -531,6 +532,7 @@ void derive_baskets(const PortfolioResult &res, const std::shared_ptr<const Data
       r.hover = r.en + "  " + basket_name(line);
       r.cn = r.tag = clip_name(cut_name(cut_of_line(line))) + weight_suffix(weight_of(line));
       r.q = {Database::kBasket, static_cast<uint32_t>(line)};
+      r.watch = r.en + weight_suffix(weight_of(line));
       r.val = leg_of(d.baskets, r.q.key);
       r.src[kTrade] = mix_src(legs_of(r.val), true, fixed_impact);
       if (d.prices) {
@@ -571,7 +573,7 @@ float stock_hue(uint32_t id) {
   const double h = static_cast<double>(id) * 0.6180339887498949;
   return static_cast<float>(h - std::floor(h));
 }
-// 成分行 (见头文件): 展开的篮子行的成分 (Tape::cons, 权降序) + 其余选中的个股 (stocks 升序); 腿 / 估值腿 = 个股账该只
+// 成分行 (见头文件): 展开的篮子行的成分 (Tape::cons, 权降序) + 其余选中 / 自选的个股 (stocks 升序); 腿 / 估值腿 = 个股账该只
 void derive_kids(const std::string &open, const std::vector<uint32_t> &stocks, const StockInfos &infos, double fixed_impact, const Reuse &ru,
                  PortfolioDerived &d) {
   std::vector<std::pair<uint32_t, double>> ks; // (全局 id, 权占比)
@@ -597,11 +599,35 @@ void derive_kids(const std::string &open, const std::vector<uint32_t> &stocks, c
     r.hover = stock_hover(infos, id, share);
     r.hue = stock_hue(id);
     r.q = {Database::kStock, id};
+    r.watch = r.en;
     r.val = leg_of(d.stocks, id);
     r.src[kTrade] = mix_src(legs_of(r.val), true, fixed_impact);
     r.src[kIdeal] = mix_src(legs_of(r.val), false, 0.0);
     push(d, kGroupKid, std::move(r), ru);
   }
+}
+
+// 自选键里的个股 (全局 id; 篮子键 / 不在资产轴的码不收)
+std::vector<uint32_t> watch_stocks(const std::vector<std::string> &watch) {
+  std::vector<uint32_t> o;
+  for (const std::string &w : watch)
+    if (!w.ends_with(weight_suffix(kWeightEq)) && !w.ends_with(weight_suffix(kWeightCap)))
+      if (const size_t id = asset_axis().find(w); id < asset_axis().size())
+        o.push_back(static_cast<uint32_t>(id));
+  return o;
+}
+// 自选行 (见头文件): 篮子三组 / 成分组同自选键行的副本, 不登记 index (选中 / 展开按 id 落回原行)
+void derive_watch(const std::vector<std::string> &watch, PortfolioDerived &d) {
+  std::map<std::string, PortfolioAt> at;
+  constexpr int kSrc[] = {kGroupPool, kGroupInd, kGroupConcept, kGroupKid};
+  for (const int g : kSrc)
+    for (size_t r = 0; r < d.rows[g].size(); ++r)
+      at.emplace(d.rows[g][r].watch, PortfolioAt{g, r});
+  for (const std::string &w : watch)
+    if (const auto it = at.find(w); it != at.end())
+      d.rows[kGroupWatch].push_back(d.row(it->second));
+    else
+      d.watch_lost.push_back(w);
 }
 
 // 估值行 (位置 + 估值腿; 连同日轴 = 滚动分位 / 末点分位的全部来源)
@@ -829,7 +855,7 @@ void rank_col(size_t n, int good, const At &at) {
 
 void MakePortfolioDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
                           const std::shared_ptr<const Database::Tape> &prices, double fixed_impact, const std::string &open,
-                          const std::vector<uint32_t> &stocks, const StockInfos &infos, PortfolioDerived &d) {
+                          const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos, PortfolioDerived &d) {
   PortfolioDerived o = std::move(d);
   d = PortfolioDerived{};
   const std::vector<const PortfolioItem *> its = ready_of(items, res, d);
@@ -837,8 +863,13 @@ void MakePortfolioDerived(const std::vector<PortfolioItem> &items, const std::st
   derive_factors(its, fixed_impact, ru, d);
   derive_strat(name, fixed_impact, ru, d);
   derive_baskets(res, prices, fixed_impact, ru, d);
-  derive_kids(open, stocks, infos, fixed_impact, ru, d);
+  std::vector<uint32_t> kids = watch_stocks(watch);
+  kids.insert(kids.end(), stocks.begin(), stocks.end());
+  std::ranges::sort(kids);
+  kids.erase(std::unique(kids.begin(), kids.end()), kids.end());
+  derive_kids(open, kids, infos, fixed_impact, ru, d);
   paint(d);
+  derive_watch(watch, d);
   d.val_gen = o.val_gen + (d.dates != o.dates || val_rows(d) != val_rows(o));
 }
 

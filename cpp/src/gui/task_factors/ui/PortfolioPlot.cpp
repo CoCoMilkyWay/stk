@@ -78,7 +78,7 @@ void setup_day_axis(const std::vector<misc::Ymd> &dates) {
 }
 
 // 组线宽 [RowGroup] (策略加粗)
-constexpr float kRowWidth[kRowGroups] = {1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 1.0f};
+constexpr float kRowWidth[kRowGroups] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 1.0f};
 // 成对线表 [口径][PairLine] (口径 = pair_kind: 0 = 有行情键 (篮子 / 成分), 1 = 因子 / 策略): 主图例口径列 / 线尾小字后缀
 constexpr const char *kPairName[2][kPairLines] = {{"可成交", "理想"}, {"有冲击", "无冲击"}};
 constexpr const char *kPairTag[2][kPairLines] = {{" 可成交", " 理想"}, {"", " 无冲击"}};
