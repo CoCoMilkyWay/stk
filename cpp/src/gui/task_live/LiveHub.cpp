@@ -201,8 +201,8 @@ void fetch(Core &c, sina::Client &cl, const live::State &st, const std::vector<l
   c.quotes = q;
   ++c.quotes_ver;
   c.quote_at = at;
-  if (px && st.acct != c.px_acct) {
-    c.px_acct = st.acct;
+  if (px && st.acct.v != c.px_acct) {
+    c.px_acct = st.acct.v;
     c.px0 = px;
     ++c.px_ver;
   }
@@ -415,7 +415,7 @@ std::shared_ptr<const live::State> sync(Core &c) {
   auto st = c.broker->state();
   assert(st->pos && st->fills && st->orders && st->acct);
   const live::Account &a = *st->acct;
-  note(c, "acct", {{"acct", {{"at", a.at}, {"assets", a.assets}, {"line", a.line}, {"debt", a.debt}, {"net", a.net}, {"avail", a.avail}, {"cash", a.cash}, {"debts", a.debts}}}});
+  note(c, "acct", {{"acct", {{"at", st->acct.at}, {"assets", a.assets}, {"line", a.line}, {"debt", a.debt}, {"net", a.net}, {"avail", a.avail}, {"cash", a.cash}, {"debts", a.debts}}}});
   return st;
 }
 
@@ -430,7 +430,7 @@ live::rebal::Plan plan_now(Core &c, sina::Client &cl) {
   {
     Lock lk(c.mu);
     live::need(c.terms != nullptr, "当日两融条款还没拉");
-    live::need(c.px_acct == st->acct, "账户各只的行情没取齐");
+    live::need(c.px_acct == st->acct.v, "账户各只的行情没取齐");
     terms = c.terms;
     px0 = c.px0;
     q = c.quotes;
@@ -660,7 +660,7 @@ void LiveHub::tick() {
       plan_.wait = "当日两融条款还没拉 (更新两融名单)";
     else if (!st.pos || !st.acct)
       plan_.wait = "还没读到信用账户 (等刷新)";
-    else if (px_acct != st.acct || !q)
+    else if (px_acct != st.acct.v || !q)
       plan_.wait = "等账户各只的行情";
     else {
       try {

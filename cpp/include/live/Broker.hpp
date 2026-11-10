@@ -95,7 +95,7 @@ struct Flow : Sec {
   bool operator==(const Flow &) const = default;
 };
 
-// 按代码索引的表: list 首见序, at = 代码 → 下标
+// 按键索引的表 (键多为代码): list 首见序, at = 键 → 下标
 template <class T>
 struct Keyed {
   std::vector<T> list;
@@ -114,7 +114,6 @@ struct Fills {
 
 // 信用账户 (读时)
 struct Account {
-  std::string at;                                         // 读于 HH:MM:SS
   double assets = 0, line = 0, debt = 0, net = 0;         // 担保资产 / 可融额度余量 (最高融资额度 − 融资负债含费用) / 负债总额 / 净资产
   double avail = 0, cash = 0;                             // 可用保证金 / 现金
   std::map<std::string, std::pair<double, double>> debts; // 代码 → (负债数量 [股], 负债金额 [元])
@@ -134,24 +133,45 @@ struct Term {
 };
 using Terms = std::map<std::string, Term>;
 
-// 客户端读到的一份 (各样 nullptr = 还没读过)
+// 读到的一样: v 值 (nullptr = 还没读过), at 客户端重查后读于 HH:MM:SS (空 = 只经被动扫描读过)
+template <class T>
+struct Got {
+  std::shared_ptr<const T> v;
+  std::string at;
+  explicit operator bool() const { return v != nullptr; }
+  const T &operator*() const { return *v; }
+  const T *operator->() const { return v.get(); }
+};
+
+// 客户端读到的一份; 各样按一轮的刷新序
 struct State {
   uint64_t ver = 0;
   std::string who; // 客户端 (进程)
-  std::shared_ptr<const Keyed<Position>> pos;
-  std::shared_ptr<const Fills> fills;
-  std::shared_ptr<const std::vector<Pending>> orders;
-  std::shared_ptr<const Account> acct;
+  Got<Fills> fills;
+  Got<Keyed<Position>> pos;
+  Got<std::vector<Pending>> orders;
+  Got<Account> acct;
+
+  static const char *name(Got<Fills> State::*) { return "成交"; }
+  static const char *name(Got<Keyed<Position>> State::*) { return "持仓"; }
+  static const char *name(Got<std::vector<Pending>> State::*) { return "挂单"; }
+  static const char *name(Got<Account> State::*) { return "信用账户"; }
+  // f(名称, 读于) 逐样
+  template <class F>
+  void each(F &&f) const {
+    f(name(&State::fills), fills.at);
+    f(name(&State::pos), pos.at);
+    f(name(&State::orders), orders.at);
+    f(name(&State::acct), acct.at);
+  }
 };
 
 // 刷新进度
 struct Refresh {
-  std::vector<std::string> steps;        // 一轮各样的名称
-  std::string step;                      // 正做的 (空 = 闲)
-  std::map<std::string, std::string> at; // 名称 → 读于 HH:MM:SS
-  std::string err;                       // 上一轮失败原因
-  std::string down;                      // 接入失败原因 (盯客户端的上一步出错; 空 = 在线)
-  double every = 0;                      // 定时周期 [s], 0 = 不定时
+  std::string step; // 正做的 (空 = 闲)
+  std::string err;  // 上一轮失败原因
+  std::string down; // 接入失败原因 (盯客户端的上一步出错; 空 = 在线)
+  double every = 0; // 定时周期 [s], 0 = 不定时
 };
 
 enum class Credit : uint8_t { Plain,    // 普通 (担保品买卖)

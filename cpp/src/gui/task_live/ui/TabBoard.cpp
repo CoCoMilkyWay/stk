@@ -105,12 +105,9 @@ void order_line(const OrderJob &j, bool priv) {
 // 刷新进度两行: 各样读于几时 · 行情时刻 · 接入的客户端; 时有时无的 (接入断、刷新中、上轮失败), 都没有即「空闲」
 void progress(LiveHub &hub) {
   const live::Refresh &g = hub.refresh();
-  std::string at;
-  for (const std::string &n : g.steps) {
-    const auto i = g.at.find(n);
-    at += strf("%s%s %s", at.empty() ? "" : " · ", n.c_str(), i == g.at.end() ? "—" : i->second.c_str());
-  }
   const auto &st = hub.state();
+  std::string at;
+  (st ? *st : live::State{}).each([&](const char *n, const std::string &t) { at += strf("%s%s %s", at.empty() ? "" : " · ", n, t.empty() ? "—" : t.c_str()); });
   ImGui::Text("%s · 读于 %s · 行情 %s · %s", hub.broker().name(), at.c_str(), hub.quote_time().empty() ? "—" : hub.quote_time().c_str(),
               st && !st->who.empty() ? st->who.c_str() : "未接入");
   bool any = false;

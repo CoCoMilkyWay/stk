@@ -2,27 +2,25 @@
 
 #include "live/Book.hpp"
 #include "live/tdx/Ui.hpp"
+#include "live/tdx/Until.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cctype>
-#include <chrono>
 #include <cmath>
-#include <map>
-#include <thread>
 
 namespace live::tdx::flash {
+
+using win::Hwnd;
 
 namespace {
 
 // 通达信外部联动: 注册消息「Stock」投给主窗, wParam = 市场前缀 × 10⁶ + 代码, 图表即切到该只
 constexpr const char *kLink = "Stock";
 constexpr double kLinkRepost = 1, kLinkTimeout = 6; // 标题没换过来每几秒重投、共等几秒
-constexpr const char *kMainWnd = "class=TdxW_MainFrame_Class";
 const std::vector<std::string> kConfirmTitles = {"买入交易确认", "卖出交易确认", "交易确认"};
 const std::string kResultTitle = "提示";
-constexpr long kMsgText = 7013, kMsgYes = 7015; // 确认框 / 回报框: 正文 Static、确认按钮
-constexpr long kEst = 8915;                     // 闪电窗按额时的「预估金额:…(N股)」
+constexpr long kEst = 8915; // 闪电窗按额时的「预估金额:…(N股)」
 
 // 闪电窗: 主窗命令 id、窗标题、各控件 id (证券代码 / 价格 / 数量 / 数量单位 / 报价方式 / 最大可买·可卖·可融 (股) / 提交)
 struct Kind {
@@ -49,63 +47,10 @@ const Kind *kind_of(int side, Credit credit) {
 struct Ctx {
   const OrderReq &o;
   const Kind &k;
-  std::string main, dlg, box, px_s;
+  Hwnd main, dlg, box;
+  std::string px_s;
   long n = 0;
 };
-
-using Tops = std::map<std::string, ui::Node>;
-
-// 可见顶层窗口
-Tops tops() {
-  Tops out;
-  for (ui::Node &n : ui::enum_())
-    if (n.depth == 0 && n.vis)
-      out.emplace(n.hwnd, std::move(n));
-  return out;
-}
-
-// 确认 / 提示框正文, 没有该控件 → 空串
-std::string body(const std::string &h) {
-  std::vector<std::string> hits;
-  for (const ui::Node &n : ui::enum_(h))
-    if (n.depth == 1 && n.id == kMsgText)
-      hits.push_back(n.hwnd);
-  return hits.size() == 1 ? ui::squash(ui::text(hits[0])) : "";
-}
-
-// 做 act, 等其后新出现、标题在 titles 内的可见对话框 (须唯一); 超时报出期间冒出的新窗口及正文
-template <class Act>
-std::string popup(const std::vector<std::string> &titles, double timeout, Act &&act) {
-  const Tops before = tops();
-  act();
-  std::string want;
-  for (const std::string &t : titles)
-    want += (want.empty() ? "" : "/") + t;
-  const auto fresh = [&] {
-    Tops out;
-    for (auto &[h, n] : tops())
-      if (!before.contains(h) && n.cls == "#32770")
-        out.emplace(h, n);
-    return out;
-  };
-  return *ui::wait(
-      [&] {
-        std::string s;
-        for (const auto &[h, n] : fresh())
-          s += (s.empty() ? "" : "; ") + ("「" + n.title + "」") + body(h);
-        return "「" + want + "」, 期间新窗口: " + (s.empty() ? "无" : s);
-      },
-      [&]() -> std::optional<std::string> {
-        std::vector<std::string> hits;
-        for (const auto &[h, n] : fresh())
-          if (std::find(titles.begin(), titles.end(), n.title) != titles.end())
-            hits.push_back(h);
-        if (hits.size() > 1)
-          fail(strf("「%s」同时出现 %zu 个", want.c_str(), hits.size()));
-        return hits.empty() ? std::nullopt : std::optional<std::string>(hits[0]);
-      },
-      timeout);
-}
 
 bool is_num(const std::string &t) {
   const size_t dot = t.find('.');
@@ -113,8 +58,8 @@ bool is_num(const std::string &t) {
   return dot == std::string::npos ? digits(t) : digits(std::string_view(t).substr(0, dot)) && digits(std::string_view(t).substr(dot + 1));
 }
 
-long max_qty(const std::string &h) {
-  const std::string t = ui::text(h);
+long max_qty(const Hwnd &h) {
+  const std::string t = win::text(h);
   if (!is_num(t))
     fail("最大可买 / 可卖读到「" + t + "」");
   return static_cast<long>(std::stod(t));
@@ -139,9 +84,9 @@ long order_qty(const OrderReq &o, double px, long cap) {
 }
 
 // 写入后客户端的 EN_CHANGE 处理会先改写一下, 等读回恰为 s
-void settext(const std::string &h, const std::string &s) {
-  ui::settext(h, s);
-  ui::wait([&] { return "写入「" + s + "」后读回「" + ui::text(h) + "」"; }, [&] { return ui::text(h) == s; }, 1);
+void settext(const Hwnd &h, const std::string &s) {
+  win::settext(h, s);
+  until([&] { return "写入「" + s + "」后读回「" + win::text(h) + "」"; }, [&] { return win::text(h) == s; }, 1);
 }
 
 // 正文里首个「label 空格* 数字串 unit」的数字串 (dots: 可含小数点); take > 0 = 只取开头 take 位 (须够, 不看 unit)
@@ -161,62 +106,59 @@ std::string after(const std::string &text, const std::string &label, bool dots, 
 
 // 图表切到 sec: 主窗标题已是「…-名称]」即跳过, 否则向主窗投联动消息、等标题换过来.
 // 切到同一只重投无副作用: 界面线程忙时消息可能落空, 标题没换过来即每 kLinkRepost 秒重投
-void go_to(const std::string &main, const Sec &x) {
-  const std::string want = ui::bare("-" + x.name + "]");
-  if (ui::bare(ui::title(main)).ends_with(want))
+void go_to(const Hwnd &main, const Sec &x) {
+  const std::string want = win::bare("-" + x.name + "]");
+  const auto there = [&] { return win::bare(win::title(main)).ends_with(want); };
+  if (there())
     return;
   if (x.mkt == Mkt::BJ)
     fail(x.code + " 北交所没有联动前缀");
-  const unsigned msg = ui::regmsg(kLink);
+  const unsigned msg = win::regmsg(kLink);
   const long wp = (x.mkt == Mkt::SH ? 7 : 6) * 1'000'000L + std::stol(x.code);
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = Clock::now();
   int n = 0;
-  while (!ui::bare(ui::title(main)).ends_with(want)) {
-    const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    if (dt >= kLinkTimeout)
-      fail(strf("%gs 内主窗未切到「%s」, 现为「%s」(联动 %ld 已投 %d 次)", kLinkTimeout, x.name.c_str(), ui::title(main).c_str(), wp, n));
-    if (dt >= n * kLinkRepost) {
-      ui::post(main, msg, wp);
-      ++n;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  }
+  until([&] { return strf("主窗切到「%s」, 现为「%s」(联动 %ld 已投 %d 次)", x.name.c_str(), win::title(main).c_str(), wp, n); },
+        [&] {
+          if (Secs(Clock::now() - t0).count() >= n * kLinkRepost) {
+            win::post(main, msg, wp);
+            ++n;
+          }
+          return there();
+        },
+        kLinkTimeout);
 }
 
 void switch_to(Ctx &c) {
-  const std::vector<ui::Node> main = ui::find_wnd(kMainWnd);
-  if (main.size() != 1)
-    fail("找不到通达信主窗");
-  c.main = main[0].hwnd;
+  c.main = ui::main_wnd();
   go_to(c.main, c.o.sec);
 }
 
 void open(Ctx &c) {
-  for (const auto &[h, n] : tops())
+  for (const auto &[h, n] : win::tops())
     if (n.title == c.k.title)
       fail(strf("已有未关的「%s」窗", c.k.title));
-  c.dlg = popup({c.k.title}, 3, [&] { ui::post(c.main, ui::kWmCommand, c.k.cmd); });
+  c.dlg = ui::popup({c.k.title}, 3, [&] { win::post(c.main, win::kWmCommand, c.k.cmd); });
 }
 
 std::string form(Ctx &c, double &px_out) {
-  const auto ids = ui::ctls(c.dlg, {{"code", c.k.code}, {"price", c.k.price}, {"qty", c.k.qty}, {"unit", c.k.unit}, {"quote", c.k.quote}, {"max", c.k.max}});
-  const std::string got = ui::text(ids.at("code"));
+  const auto ids = win::ctls(c.dlg, {{"code", c.k.code}, {"price", c.k.price}, {"qty", c.k.qty}, {"unit", c.k.unit}, {"quote", c.k.quote}, {"max", c.k.max}});
+  const std::string got = win::text(ids.at("code"));
   if (got != c.o.sec.code)
     fail("闪电窗证券 " + got + " ≠ " + c.o.sec.code);
-  const std::string quote = ui::text(ids.at("quote"));
+  const std::string quote = win::text(ids.at("quote"));
   if (quote.find("限价") == std::string::npos)
     fail("报价方式为「" + quote + "」, 需限价委托");
-  const std::string dflt = *ui::wait(ui::said("闪电窗默认价"), [&]() -> std::optional<std::string> {
-    std::string t = ui::text(ids.at("price"));
+  const std::string dflt = *until(said("闪电窗默认价"), [&]() -> std::optional<std::string> {
+    std::string t = win::text(ids.at("price"));
     return t.empty() ? std::nullopt : std::optional<std::string>(t); }, 1);
   const size_t dot = dflt.find('.');
   if (dot == std::string::npos)
     fail("默认价「" + dflt + "」定不出小数位");
   c.px_s = strf("%.*f", static_cast<int>(dflt.size() - dot - 1), c.o.px);
-  const std::string unit = ui::text(ids.at("unit"));
+  const std::string unit = win::text(ids.at("unit"));
   if (unit != "股" && unit != "元")
     fail("数量单位「" + unit + "」不认识");
-  ui::wait(ui::said("闪电窗最大可买 / 可卖"), [&] { return !ui::text(ids.at("max")).empty(); }, 1);
+  until(said("闪电窗最大可买 / 可卖"), [&] { return !win::text(ids.at("max")).empty(); }, 1);
   const long cap0 = max_qty(ids.at("max"));
   settext(ids.at("price"), c.px_s);
   const double px = std::stod(c.px_s);
@@ -229,9 +171,9 @@ std::string form(Ctx &c, double &px_out) {
   } else {
     // 向上取整到元: 多出的不足一股, 折回恰为 n 股
     settext(ids.at("qty"), std::to_string(static_cast<long>(std::ceil(std::round(c.n * px * 100) / 100))));
-    const std::string est = ui::ctls(c.dlg, {{"est", kEst}}).at("est");
+    const Hwnd est = win::ctls(c.dlg, {{"est", kEst}}).at("est");
     const auto shares = [&]() -> long {
-      const std::string t = ui::text(est);
+      const std::string t = win::text(est);
       const std::string tail = "股)";
       const size_t open = t.rfind('(');
       if (!t.ends_with(tail) || open == std::string::npos || open + 1 + tail.size() > t.size())
@@ -241,15 +183,15 @@ std::string form(Ctx &c, double &px_out) {
         return -1;
       return std::stol(d);
     };
-    ui::wait([&] { return strf("预估 %ld 股, 现为「%s」", c.n, ui::text(est).c_str()); }, [&] { return shares() == c.n; }, 1);
+    until([&] { return strf("预估 %ld 股, 现为「%s」", c.n, win::text(est).c_str()); }, [&] { return shares() == c.n; }, 1);
   }
   px_out = px;
   return strf("%ld股 @ %s (最大 %ld)", c.n, c.px_s.c_str(), cap);
 }
 
 void confirm(Ctx &c) {
-  c.box = popup(kConfirmTitles, 5, [&] { ui::command(c.dlg, c.k.ok); });
-  const std::string b = body(c.box);
+  c.box = ui::popup(kConfirmTitles, 5, [&] { win::command(c.dlg, c.k.ok); });
+  const std::string b = ui::body(c.box);
   const std::string code = after(b, "股票代码:", false, 6, "");
   const std::string px = after(b, "委托价格:", true, 0, "");
   const std::string qty = after(b, "委托数量:", false, 0, "股");
@@ -259,23 +201,23 @@ void confirm(Ctx &c) {
 
 // 读回报、点掉; 等回报框、确认框、闪电窗都关了才算完 (下一单紧接着切图表、开窗)
 std::string reply(Ctx &c) {
-  const std::string res = popup({kResultTitle}, 10, [&] { ui::command(c.box, kMsgYes); });
-  const std::string b = body(res);
-  ui::command(res, kMsgYes);
+  const Hwnd res = ui::popup({kResultTitle}, 10, [&] { ui::yes(c.box); });
+  const std::string b = ui::body(res);
+  ui::yes(res);
   if (b.find("合同号") == std::string::npos)
     fail("委托未成功: " + b);
-  const std::string mine[3] = {res, c.box, c.dlg};
-  ui::wait(
+  const Hwnd mine[3] = {res, c.box, c.dlg};
+  until(
       [&] {
         std::string s;
-        for (const auto &[h, n] : tops())
+        for (const auto &[h, n] : win::tops())
           if (std::find(std::begin(mine), std::end(mine), h) != std::end(mine))
             s += "「" + n.title + "」";
         return "回报框 / 确认框 / 闪电窗关掉, 还开着: " + s;
       },
       [&] {
-        const Tops t = tops();
-        return std::none_of(std::begin(mine), std::end(mine), [&](const std::string &h) { return t.contains(h); });
+        const win::Tops t = win::tops();
+        return std::none_of(std::begin(mine), std::end(mine), [&](const Hwnd &h) { return t.contains(h); });
       },
       3);
   return b;

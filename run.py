@@ -79,6 +79,13 @@ def _sync_remote(fetch):
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
+def _prune_untracked():
+    """Offer to delete files that are neither tracked nor gitignored, one by one."""
+    for path in _git_paths("ls-files", "--others", "--exclude-standard"):
+        if input(f"  delete untracked {path}? [Y/n] ").strip() in ("", "y", "Y"):
+            os.remove(path)
+
+
 def _cleanup_processes():
     """Kill old processes."""
     subprocess.run(["pkill", "-f", f"app_{APP_NAME}"], capture_output=True, check=False)
@@ -98,6 +105,9 @@ def main():
 
     print("Syncing remote...")
     _sync_remote(fetch)
+
+    print("Scanning untracked...")
+    _prune_untracked()
 
     print("Building...")
     build.build(PROJECT_DIR, MODE, ENABLE_CUDA)

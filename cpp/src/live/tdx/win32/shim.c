@@ -34,7 +34,7 @@
 //   文字/填色/贴图入口，按窗口记录可见文字与色块（on 首次装钩并重绘全部窗口；
 //   patched = 已装入口数，装不上的先各回一行 {skip}；evicted = 图层满时挤掉
 //   的内存位图图层数）
-//   gdidump                       全部窗口图层各一条图层记录
+//   gdidump [target]              全部窗口（或只 target）图层各一条图层记录
 //   gdiwatch 长连接，窗口绘制层变更即推变了的图层记录（不收尾） help / spy help
 //   req on / off / clear / drain  交易请求对象追踪（只记录，不改参数）
 //   req attach <hwnd> [offset]     从 MFC 窗口对象接入宿主请求接口；offset
@@ -2674,8 +2674,19 @@ static LONG gdi_pump(struct out *o, LONG last, int beat) {
   return keep;
 }
 
+// 不带 target 即全部窗口；带即只该窗口（无图层或正重绘则无记录）。
 static const char *cmd_gdidump(struct out *o, HWND h, char *a) {
-  return feed_dump(o, &GDI_FEED);
+  if (!h)
+    return feed_dump(o, &GDI_FEED);
+  POINT off;
+  if (!client_off(h, &off))
+    return NULL;
+  EnterCriticalSection(&g_gdi_cs);
+  const struct layer *L = lay_get(h, 1, 0);
+  if (L && !in_paint(L, GetTickCount()))
+    emit_layer(o, L, off);
+  LeaveCriticalSection(&g_gdi_cs);
+  return NULL;
 }
 
 static const char *cmd_gdiwatch(struct out *o, HWND h, char *a) {
@@ -2706,7 +2717,7 @@ static const struct cmd CMDS[] = {
     {"ping", cmd_ping, ARG_NONE},
     {"treegen", cmd_treegen, ARG_NONE},
     {"treewatch", cmd_treewatch, ARG_NONE},
-    {"gdidump", cmd_gdidump, ARG_NONE},
+    {"gdidump", cmd_gdidump, ARG_OPT},
     {"gdiwatch", cmd_gdiwatch, ARG_NONE},
     {"spy", cmd_spy, ARG_NONE},
     {"enum", cmd_enum, ARG_OPT},
