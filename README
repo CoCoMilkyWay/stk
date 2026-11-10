@@ -10,7 +10,7 @@ GUI布局:
 │  > Alpha                             │ Compute / Operators / Factors /    │
 │                                      │ Inspect                            │
 │  > Market                            │ ASSET / NAV / VAL / FLOW / CTA     │
-│  > Live                              │ Board / Rebal / Client             │
+│  > Live                              │ Board / Client                     │
 │  > Features                          │ Table / Distribution / Transform / │
 │                                      │ Correlation / OrderFlow / NodeTime │
 │  > Agent                             │ Mine / Config                      │
@@ -264,11 +264,10 @@ stk/
 │   │   │   │       ├── TabOrderFlow.hpp                # 🖥️ 订单流
 │   │   │   │       └── TabNodeTime.hpp                 # 🖥️ 节点用时: 当前库 node_time.json 按节点文件归并成堆叠条
 │   │   │   ├── task_live/                              # 💹 Live 任务 (实盘): 中枢券商无关, 客户端适配在 live/
-│   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board / Rebal / Client (所连客户端的调试台)
+│   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board / Client (所连客户端的调试台)
 │   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 新浪行情一路 + 当日两融条款 + 下单 / 调仓事务 (日志落 output/run/live)
 │   │   │   │   └── ui/
-│   │   │   │       ├── TabBoard.hpp                    # 💹 持仓页: 刷新进度 + 持仓表 (行内闪电下单, 按钮即滑点色块) + 右栏行情图 (Market 的个股面板)
-│   │   │   │       └── TabRebal.hpp                    # 💹 调仓页: 名单 / 配置 / 账户 现 · 调仓后 / 卖出滑杆 / 名单买入 / 执行与日志
+│   │   │   │       └── TabBoard.hpp                    # 💹 持仓 · 调仓页: 数据 / 下单 / 调仓 / 账户 现 · 调仓后 + 持仓表 (行内闪电下单, 按钮即滑点色块; 卖出滑杆) + 调仓名单 + 日志 + 右栏行情图
 │   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge; 协议见 AGENT.md)
 │   │   │       ├── TaskAgent.hpp                       # 🤖 Agent 任务: Mine (作用域 / 会话 / 时间线 / 候选 / 开放的特征与算子) / Config
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 / 入库门槛默认值 / 各目录

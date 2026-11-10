@@ -372,7 +372,6 @@ set(MATH_PRECISE
     gui/task_live/LiveHub.cpp
     gui/task_live/TaskLive.cpp
     gui/task_live/ui/TabBoard.cpp
-    gui/task_live/ui/TabRebal.cpp
     gui/task_market/ui/CrossSectionAnalysis.cpp
     gui/task_market/ui/QuotesPanel.cpp
     gui/task_market/ui/TabAsset.cpp
