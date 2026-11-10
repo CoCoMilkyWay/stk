@@ -182,8 +182,8 @@ void spy(Core &c, const std::string &action, const std::string &filter);
 std::string trim(std::string_view s);            // 去头尾空白
 std::string cut(const std::string &s, size_t n); // 前 n 个码点
 std::string lower(std::string s);
-bool std_class(const std::string &cls);                    // 按类画的标准控件 (表外即自绘窗口)
-bool needs_detail(const win::Node &n);                      // 可见、矩形非空、该类要拉 detail 子项
+bool std_class(const std::string &cls);                      // 按类画的标准控件 (表外即自绘窗口)
+bool needs_detail(const win::Node &n);                       // 可见、矩形非空、该类要拉 detail 子项
 const win::Layer *gdi_of(const View &v, const win::Node &n); // 绘制层开且该窗口有内容
 std::vector<Pick> elems_of(const View &v, const win::Node &n);
 std::optional<Pick> pick_of(const View &v, const std::string &id);

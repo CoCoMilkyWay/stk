@@ -22,7 +22,6 @@ namespace live::tdx {
 
 namespace {
 
-using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 
 constexpr auto kTick = 100ms;

@@ -351,9 +351,10 @@ stk/
 │   │   │   ├── Rebal.hpp                               # 💹 一键调仓试算 (纯函数): 名单等权补齐, 先卖、融资、再现金; 可用保证金按读时校准
 │   │   │   └── tdx/                                    # 💹 通达信 (Wine 下 TdxW.exe): 读走进程堆里的明文表, 写与重查经注入的 shim 驱动界面
 │   │   │       ├── Tdx.hpp                             # 💹 Broker 实现: 盯进程 (守望线程) + 刷新线程 + 界面闸
-│   │   │       ├── Mem.hpp / Tables.hpp                # 💹 /proc/<pid>/mem 扫表 (形 / 列 / 模式 / 索引四轴) + 各表规格
-│   │   │       ├── Shim.hpp / Proc.hpp                 # 💹 shim 编译注入 + TCP 控制通道 / 子进程
-│   │   │       ├── Ui.hpp / Flash.hpp / Credit.hpp     # 💹 界面原语 / 闪电下单 / 两融全表与信用账户
+│   │   │       ├── Mem.hpp / Tables.hpp                # 💹 进程堆 (常开 fd、段间并行扫) + 形 / 列 / 读法 / 索引四轴的表流程 / 各表声明
+│   │   │       ├── Shim.hpp / Proc.hpp / Until.hpp     # 💹 shim 编译注入 + TCP 控制通道 / 子进程 / 轮询原语 (poll · until)
+│   │   │       ├── Win.hpp / Ui.hpp                    # 💹 通用 Win32 (窗口 · 图层 · 消息 · 控件) / 通达信界面 (主窗 · 交易栏 · 查询页 · 弹框)
+│   │   │       ├── Flash.hpp / Credit.hpp              # 💹 闪电下单 / 两融全表与信用账户
 │   │   │       └── Console.hpp / console/              # 💹 调试台 (纯 ImGui): 布局图 (按类 + 绘制层还原界面, 可直接操作) / 窗口树 / 消息工具与 Spy / 录制器 / 探内存
 │   │   ├── disk/                                       # 💽 落盘: output/ 的唯一布局 + 唯一路径入口
 │   │   │   ├── Disk.hpp                                # 💽 段表 DISK_SEGS (字段 × 写法 × 值域) × 布局表 DISK_LAYOUT (一行一节点); name ⇄ parse / path ⇄ list / read ⇄ write (原子) / ensure ⇄ remove (墓碑)

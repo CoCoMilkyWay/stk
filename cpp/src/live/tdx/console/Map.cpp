@@ -289,7 +289,7 @@ void draw_other(const Painter &p, const win::Node &n, bool leaf) {
 void draw_static(const Painter &p, const win::Node &n) {
   const unsigned a = n.style & 0x1f;
   p.text_in(rect_of(n.rect), mnem(win::squash(n.title)), a == 1 ? kMiddle : a == 2 ? kEnd
-                                                                                  : kStart,
+                                                                                   : kStart,
             n.en ? kFg : kGray);
 }
 
