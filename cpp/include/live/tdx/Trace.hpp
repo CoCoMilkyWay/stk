@@ -5,14 +5,20 @@
 //     段外不记 (调试台的轮询、推送与手动操作都在段外)
 //   同一线程相邻几条除 ms 外全同的事件只记首条, 其后记一行 rep {n 又几次, ms 首条到末条}
 //   适配里的 fail / need 经此 (遮住 live::fail): 先在当时的段路径下记一行 fail {why}, 再抛 live::Fail
-//   种类: begin / end / rep / fail
-//     shim {cmd, ms, ret 应答记录 | n 条数 + kb (应答大于 kRetCap 字节)}   run {argv, rc, ms, err / out 尾部}
-//     build / inject / online   shim 编译、注入、注入后上线                attach {pid} / ptrace {scope}   接进程、放开 ptrace
-//     gen {tab, rows, at}       盯着的表换代 (at = 选中各块的地址)        wait {tab, ms, by: gen | full}  等客户端重查后的换代
-//     ask {tab, rows, ms}       act 后等到新应答                          torn {tab, n}  连读 n 次才一致
-//     rows {func, n, got}       两融整表拼表进度 (页上条数 / 内存行数)    popup {title, hwnd}  等到的弹框
-//     gate {by, ms}             界面锁被 by 占着, 等了 ms                  back  接回客户端    unsynced {try}  持仓与成交对不上
-//     put {what, ...}           发布挂单 / 信用账户                        placed {qty, px, msg}  委托回报
+//   段: 刷新 {why 起因, n 轮号} › 成交 / 持仓 / 挂单 / 信用账户;  盯持仓 › 接入;  下单 {委托} › 切换 / 开窗 / 填单 / 确认 / 回报;
+//     两融条款 › <功能名> (另一线程 <功能名>条数标签);  <独占者> (调仓整批等);  界面件: 点「文字」/ 功能树「项」/ 开页「功能」{col} / 弹框 {titles}
+//   种类:
+//     shim {cmd, ms, ret 应答记录 | n 条数 + kb (应答大于 kRetCap 字节)}   run {argv, rc, ms, err / out 尾部}   外部进程
+//     build {dll, cc} / inject {dll, port, proc} / online {port}           shim 编译、注入、注入后上线
+//     attach {pid} / ptrace {scope}      接进程堆、放开 ptrace             torn {tab, n}  连读 n 次才一致
+//     gen {tab, rows, at}                盯着的表换代 (at = 选中各块的地址)
+//     wait {tab, ms, by: gen | full}     等客户端重查后的换代              ask {tab, rows, at, ms}  act 后等到新应答
+//     rows {n, got}                      两融整表拼表 (页上条数 / 内存行数) 每变一次
+//     texts {wins, seen}                 点文字不恰一处: 候选窗口数、各候选窗口上画着的文字
+//     popup {title, hwnd}                等到的弹框                        form {px, dflt, unit, cap0, cap, n}  填单的价、默认价、单位、最大量、股数
+//     gate {by, ms}                      界面锁被 by 占着, 等了 ms         unsynced {try}  持仓与成交对不上
+//     put {what, …}                      发布信用账户                      placed {qty, px, msg}  委托回报    terms {n}  两融条款只数
+//     back {down} / down {why}           盯持仓: 接回客户端 / 掉线期间原因变了 (原因不变的重试不记)
 #pragma once
 
 #include "nlohmann/json.hpp"
@@ -40,15 +46,16 @@ inline constexpr size_t kKeep = 20;     // 留几个日志文件
 inline constexpr size_t kRetCap = 1024; // shim 应答至多这么多字节照录, 再大只记条数与大小
 
 bool on(); // 当前线程在段内 (段外的事件不记; 拼字段较贵的调用方先问)
-void ev(const char *ev, Kw kw = Kw::object());
+void ev(const char *kind, Kw kw = Kw::object());
 
 inline long ms_since(std::chrono::steady_clock::time_point t0) {
   return static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
 }
 
+// loud = false: 段内一概不记 (连同嵌套的段)
 class Span {
 public:
-  explicit Span(std::string name, Kw kw = Kw::object());
+  explicit Span(std::string name, Kw kw = Kw::object(), bool loud = true);
   ~Span();
   Span(const Span &) = delete;
   Span &operator=(const Span &) = delete;

@@ -1,5 +1,6 @@
 #include "live/tdx/Credit.hpp"
 
+#include "live/tdx/Trace.hpp"
 #include "live/tdx/Ui.hpp"
 #include "live/tdx/Until.hpp"
 
@@ -41,7 +42,7 @@ mem::IndexOf<S> full(mem::Table<S> &table, const mem::HeapP &heap, const Log &lo
   Clock::time_point at = t0;
   std::optional<std::string> err;
   std::thread label([&] {
-    trace::Span span(func + "条数标签");
+    trace::Span labelling(func + "条数标签");
     try {
       std::unique_lock lk(mu);
       while (!stop) {

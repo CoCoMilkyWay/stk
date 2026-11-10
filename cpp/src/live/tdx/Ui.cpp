@@ -1,6 +1,7 @@
 #include "live/tdx/Ui.hpp"
 
 #include "live/tdx/Shim.hpp"
+#include "live/tdx/Trace.hpp"
 #include "live/tdx/Until.hpp"
 
 #include <algorithm>

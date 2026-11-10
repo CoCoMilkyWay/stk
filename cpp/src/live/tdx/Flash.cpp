@@ -1,6 +1,7 @@
 #include "live/tdx/Flash.hpp"
 
 #include "live/Book.hpp"
+#include "live/tdx/Trace.hpp"
 #include "live/tdx/Ui.hpp"
 #include "live/tdx/Until.hpp"
 

@@ -1,9 +1,8 @@
 #include "live/tdx/Trace.hpp"
 
 #include "disk/Disk.hpp"
-#include "misc/cross_platform.hpp"
-
 #include "live/Broker.hpp"
+#include "misc/cross_platform.hpp"
 
 #include <cassert>
 #include <ctime>
@@ -28,12 +27,14 @@ struct Frame {
   Kw kw;
   Steady::time_point t0;
   Wall::time_point at;
+  bool loud = true;
   bool open = false; // 已落 begin
 };
 
-// 本线程: 段栈 (已落 begin 的恒为前缀) + 待并的重复事件
+// 本线程: 段栈 (已落 begin 的恒为前缀) + 静默的段数 + 待并的重复事件
 struct Local {
   std::vector<Frame> frames;
+  int quiet = 0;
   Kw last; // 上一条落盘事件去掉 ms; null = 无可并
   long rep = 0;
   Steady::time_point first, end;
@@ -78,11 +79,11 @@ Sink &sink() {
 }
 
 // 一行, 段路径取前 depth 段
-void write(Wall::time_point at, const char *ev, const Kw &kw, size_t depth) {
+void write(Wall::time_point at, const char *kind, const Kw &kw, size_t depth) {
   std::string path;
   for (size_t i = 0; i < depth; ++i)
     path += (i ? "/" : "") + L.frames[i].name;
-  Kw j = {{"t", text(at)}, {"th", static_cast<long>(::gettid())}, {"at", std::move(path)}, {"ev", ev}};
+  Kw j = {{"t", text(at)}, {"th", static_cast<long>(::gettid())}, {"at", std::move(path)}, {"ev", kind}};
   for (const auto &e : kw.items())
     j[e.key()] = e.value();
   sink().put(j.dump(-1, ' ', false, Kw::error_handler_t::replace));
@@ -113,15 +114,15 @@ void open_all() {
 
 } // namespace
 
-bool on() { return !L.frames.empty(); }
+bool on() { return !L.frames.empty() && !L.quiet; }
 
-void ev(const char *ev, Kw kw) {
-  if (L.frames.empty())
+void ev(const char *kind, Kw kw) {
+  if (!on())
     return;
   open_all();
   Kw key = kw;
   key.erase("ms");
-  key["ev"] = ev;
+  key["ev"] = kind;
   const Steady::time_point now = Steady::now();
   if (key == L.last) {
     ++L.rep;
@@ -130,18 +131,20 @@ void ev(const char *ev, Kw kw) {
     return;
   }
   flush();
-  write(Wall::now(), ev, kw, L.frames.size());
+  write(Wall::now(), kind, kw, L.frames.size());
   L.last = std::move(key);
   L.first = now;
 }
 
-Span::Span(std::string name, Kw kw) : unwinding_(std::uncaught_exceptions()) {
-  L.frames.push_back({std::move(name), std::move(kw), Steady::now(), Wall::now()});
+Span::Span(std::string name, Kw kw, bool loud) : unwinding_(std::uncaught_exceptions()) {
+  L.frames.push_back({std::move(name), std::move(kw), Steady::now(), Wall::now(), loud});
+  L.quiet += !loud;
 }
 
 Span::~Span() {
   assert(!L.frames.empty());
   const Frame &f = L.frames.back();
+  L.quiet -= !f.loud;
   if (f.open) {
     flush();
     Kw kw = {{"ms", ms_since(f.t0)}};

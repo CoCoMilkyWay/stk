@@ -144,7 +144,8 @@ struct Core {
 
   // ---------- 盯持仓线程 ----------
 
-  void step() {
+  // loud = false: 掉线期间的重试, 不记日志
+  void step(bool loud) {
     const Clock::time_point now = Clock::now();
     bool was_lost;
     {
@@ -153,7 +154,7 @@ struct Core {
         return;
       was_lost = lost;
     }
-    trace::Span span("盯持仓");
+    trace::Span span("盯持仓", trace::Kw::object(), loud);
     std::lock_guard wk(work);
     if (was_lost) {
       attach(); // 客户端不在即 Fail, 不去空注入
@@ -164,8 +165,6 @@ struct Core {
     }
     if (was_lost || !pos.snap || now - scan_at >= kFullEvery) {
       scan();
-      if (was_lost)
-        trace::ev("back");
       std::lock_guard lk(mu);
       lost = false;
       prog.down.clear();
@@ -181,15 +180,30 @@ struct Core {
     return stop;
   }
 
+  std::string down() const {
+    std::lock_guard lk(mu);
+    return prog.down;
+  }
+
+  // 掉线期间原因不变的重试不记; 接回 (back) 与原因变了 (down) 各记一行
   void watch_loop() {
     while (!stopped()) {
+      const std::string was = down();
       try {
-        step();
+        step(was.empty());
+        if (!was.empty() && down().empty()) {
+          trace::Span span("盯持仓");
+          trace::ev("back", {{"down", was}});
+        }
       } catch (const Fail &f) { // 错误边界: 记下原因, 下一步先接回客户端
         {
           std::lock_guard lk(mu);
           lost = true;
           prog.down = f.why;
+        }
+        if (!was.empty() && was != f.why) {
+          trace::Span span("盯持仓");
+          trace::ev("down", {{"why", f.why}});
         }
         std::this_thread::sleep_for(1s);
       }
@@ -257,23 +271,34 @@ struct Core {
       refresh(pos);
       if (synced())
         break;
+      trace::ev("unsynced", {{"try", i + 1}});
     }
     mem::Chain q(h, {&tables::Pendings::kShape, &tables::Assets::kShape, &tables::Debts::kShape});
     note(State::name(&State::orders));
-    // 「撤单」页: 切页与刷新同在一问内 (切页自带一次查询, 其应答可能早于刷新)
-    auto orders = q.ask(pendings, [] {
-      ui::click_tool("撤单");
-      ui::click_tool("刷新");
-    });
     std::shared_ptr<const Keyed<Position>> held;
     {
+      trace::Span span(State::name(&State::orders));
+      // 「撤单」页: 切页与刷新同在一问内 (切页自带一次查询, 其应答可能早于刷新)
+      auto orders = q.ask(pendings, [] {
+        ui::click_tool("撤单");
+        ui::click_tool("刷新");
+      });
       std::lock_guard lk(mu);
       put(&State::orders, std::make_shared<const std::vector<Pending>>(std::move(orders.rows)), true);
       held = st->pos.v;
     }
     note(State::name(&State::acct));
-    auto a = std::make_shared<const Account>(credit::account(credit, q, *held));
     {
+      trace::Span span(State::name(&State::acct));
+      auto a = std::make_shared<const Account>(credit::account(credit, q, *held));
+      trace::ev("put", {{"what", State::name(&State::acct)},
+                        {"assets", a->assets},
+                        {"line", a->line},
+                        {"debt", a->debt},
+                        {"net", a->net},
+                        {"avail", a->avail},
+                        {"cash", a->cash},
+                        {"debts", a->debts.size()}});
       std::lock_guard lk(mu);
       put(&State::acct, std::move(a), true);
     }
@@ -282,12 +307,14 @@ struct Core {
 
   void tick() {
     uint64_t n;
+    const char *why = nullptr;
     {
       std::unique_lock lk(mu);
-      if (!cv.wait_for(lk, kTick, [&] { return stop || due(Clock::now()); }) || stop)
+      if (!cv.wait_for(lk, kTick, [&] { return stop || (why = due(Clock::now())) != nullptr; }) || stop)
         return;
       n = asked;
     }
+    trace::Span span("刷新", {{"why", why}, {"n", n}});
     std::string msg;
     try {
       round();
@@ -308,11 +335,17 @@ struct Core {
     while (!stopped()) {
       try {
         tick();
-      } catch (const Fail &f) { // 错误边界: 起因判不了 (持仓与成交自相矛盾) 也只报在进度里
+      } catch (const Fail &f) { // 错误边界: 起因判不了 (持仓与成交自相矛盾) 也只报在进度里, 原因变了才记
+        bool fresh;
         {
           std::lock_guard lk(mu);
+          fresh = prog.err != f.why;
           prog.step.clear();
           prog.err = f.why;
+        }
+        if (fresh) {
+          trace::Span span("刷新");
+          trace::ev("fail", {{"why", f.why}});
         }
         std::this_thread::sleep_for(1s);
       }
@@ -391,16 +424,23 @@ public:
 
   const std::vector<std::string> &order_steps() const override { return flash::steps(); }
   Placed place(const OrderReq &o, const Step &step) override {
+    trace::Span span("下单", {{"code", o.sec.code}, {"name", o.sec.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}, {"size", o.size}});
     ui::Gate::Hold g(c_->gate, "下单");
-    return flash::place(o, step);
+    Placed p = flash::place(o, step);
+    trace::ev("placed", {{"qty", p.qty}, {"px", p.px}, {"msg", p.msg}});
+    return p;
   }
   void exclusive(const char *who, const std::function<void()> &fn) override {
+    trace::Span span(who);
     ui::Gate::Hold g(c_->gate, who);
     fn();
   }
   Terms pull_terms(const Log &log, const Live &live) override {
+    trace::Span span("两融条款");
     ui::Gate::Hold g(c_->gate, "两融条款");
-    return credit::pull(c_->credit, c_->attached(), log, live);
+    Terms t = credit::pull(c_->credit, c_->attached(), log, live);
+    trace::ev("terms", {{"n", t.size()}});
+    return t;
   }
 
   void console() override {
