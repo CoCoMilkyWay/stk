@@ -2,7 +2,7 @@
 #include "gui/task_market/ui/LinesCommon.hpp"
 
 #include "disk/Disk.hpp"
-#include "gui/util/Chart.hpp" // tint / button_bar
+#include "gui/util/Chart.hpp" // tint / toggle_button / button_bar
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"  // TableFindByID (右表内容宽)
@@ -427,13 +427,8 @@ std::string bound_text(T lo, T hi, const Fmt &fmt) {
 template <class T, class Fmt>
 void bound_chip(const char *id, const char *name, T &lo, T *hi, std::initializer_list<Bound<T>> presets, const char *in_fmt, const Fmt &fmt) {
   const T h = hi ? *hi : T{};
-  const bool on = lo > 0 || h > 0;
-  if (on)
-    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-  if (ImGui::SmallButton((std::string(name) + " " + bound_text(lo, h, fmt) + "###" + id).c_str()))
+  if (toggle_button((std::string(name) + " " + bound_text(lo, h, fmt) + "###" + id).c_str(), lo > 0 || h > 0))
     ImGui::OpenPopup(id);
-  if (on)
-    ImGui::PopStyleColor();
   if (!ImGui::BeginPopup(id))
     return;
   for (const Bound<T> &p : presets)
@@ -678,12 +673,7 @@ void legend_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, con
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
-  if (ui.intraday)
-    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-  const bool flip = ImGui::SmallButton("日内");
-  if (ui.intraday)
-    ImGui::PopStyleColor();
-  if (flip)
+  if (toggle_button("日内", ui.intraday))
     ui.intraday = !ui.intraday;
   if (ImGui::IsItemHovered())
     tip("日内栏开关: 主图上方 (日内 : 主图 = 1 : 2, 上下分) 叠加选中的指数 / 行业 / 概念 / 成分行的日内收盘线 (同主图线色); 因子 / 策略无日内\n"

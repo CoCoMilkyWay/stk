@@ -1,7 +1,7 @@
 #include "gui/task_market/ui/QuotesPanel.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/Tasks.hpp"      // StatusColor (补分钟进度条 = 进行中色)
-#include "gui/util/Chart.hpp" // kUp / kDn / tint / button_bar / EndTag
+#include "gui/util/Chart.hpp" // kUp / kDn / tint / toggle_button / button_bar / EndTag
 
 #include "imgui.h"
 #include "implot.h"
@@ -1112,12 +1112,7 @@ void RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<Ove
                   ImGui::SameLine(0, 8);
                   button_bar(kFlowUnitName, 2, st.flow_unit);
                   ImGui::SameLine(0, 8);
-                  if (st.flow_ends)
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-                  const bool flip = ImGui::SmallButton("开收盘");
-                  if (st.flow_ends)
-                    ImGui::PopStyleColor();
-                  if (flip)
+                  if (toggle_button("开收盘", st.flow_ends))
                     st.flow_ends = !st.flow_ends;
                   if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("计入开盘 / 收盘的资金流 (默认不计; 图与右表同一开关)\n"

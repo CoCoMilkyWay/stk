@@ -1,6 +1,6 @@
 #pragma once
 
-// 图表公共件 (ASSET 行情 / Market 净值 / Beta 风格表同一份): 涨跌色, 名次色, 色环, 右表宽, 档位按钮条, 线尾小字, 现价十字
+// 图表公共件 (ASSET 行情 / Market 净值 / Beta 风格表同一份): 涨跌色, 名次色, 色环, 右表宽, 开关按钮 / 档位按钮条, 线尾小字, 现价十字
 
 #include "imgui.h"
 #include "implot.h"
@@ -50,21 +50,28 @@ inline float sheet_width(float avail) {
   return std::min(kCells * ImGui::CalcTextSize("0").x + 2.0f * (st.WindowPadding.x + st.ChildBorderSize), avail * kMaxFrac);
 }
 
-// 一排小按钮单选 (选中的按下色): 点 = cur 换成它; 返回是否换了
+// 开关小按钮 (各页的开 / 关与档位同一种): 开 = 按下色, 关 = 底色; 悬停 / 按住各按自身态提亮, 两态始终分得开; 返回是否点了
+inline bool toggle_button(const char *label, bool on) {
+  const ImVec4 c = ImGui::GetStyleColorVec4(on ? ImGuiCol_ButtonActive : ImGuiCol_Button);
+  const ImVec4 lit = on ? ImVec4(c.x + (1.f - c.x) * 0.25f, c.y + (1.f - c.y) * 0.25f, c.z + (1.f - c.z) * 0.25f, c.w) : ImVec4(c.x, c.y, c.z, std::min(1.f, c.w * 1.6f));
+  ImGui::PushStyleColor(ImGuiCol_Button, c);
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, lit);
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, lit);
+  const bool hit = ImGui::SmallButton(label);
+  ImGui::PopStyleColor(3);
+  return hit;
+}
+
+// 一排小按钮单选 (toggle_button, 选中的开): 点 = cur 换成它; 返回是否换了
 inline bool button_bar(const char *const names[], int n, int &cur) {
   bool changed = false;
   for (int i = 0; i < n; ++i) {
     if (i)
       ImGui::SameLine(0, 2);
-    const bool on = cur == i;
-    if (on)
-      ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-    if (ImGui::SmallButton(names[i]) && !on) {
+    if (toggle_button(names[i], cur == i) && cur != i) {
       cur = i;
       changed = true;
     }
-    if (on)
-      ImGui::PopStyleColor();
   }
   return changed;
 }

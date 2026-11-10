@@ -135,7 +135,7 @@ private:
 // 篮子净值账 (两种权重同一趟): 交易日 d 的成员 = pick(源行 r, out) (r = src_of(rb, 行, d); 换源才重选), 权 = Tape::omega 归一
 struct Book {
   std::vector<float> ret[kWeights]; // [Weight][日] 日收益 (首日 / 未建仓 0)
-  double buy[kWeights] = {};        // [Weight] 累计增仓量 Σ (w − w̃)⁺ (w = 目标权, w̃ = 漂移后的权; 建仓 = 1)
+  std::vector<float> buy[kWeights]; // [Weight][日] 增仓量 Σ (w − w̃)⁺ (w = 目标权, w̃ = 漂移后的权; 建仓 = 1; 不调仓 0)
   size_t first = 0;                 // 首个有仓日 (无 → days)
 };
 using Pick = std::function<void(size_t r, std::vector<uint32_t> &out)>;

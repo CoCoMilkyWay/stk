@@ -1,13 +1,12 @@
-// Beta→Style: 左 = 参数网格条 + 状态 / 选池改动 + 净值图, 右 = 风格表 (点开 = 跑该风格的网格, 其下列各组绩效与选池勾选) — 见头文件
+// Beta→Style: 左 = 参数网格条 + 状态 / 选池改动 + 净值图, 右 = 风格表 (点开 = 跑该风格的网格, 其下列各组绩效, 点行选池) — 见头文件
 #include "gui/task_beta/ui/TabStyle.hpp"
 
 #include "disk/Disk.hpp"
 #include "features/Storage/FeatureLib.hpp" // feature_pools (本进程池表) / kMaxPools
 #include "gui/Tasks.hpp"                   // StatusColor
-#include "gui/util/Chart.hpp"              // 色 / sheet_width / draw_end_tags
+#include "gui/util/Chart.hpp"              // 色 / sheet_width / toggle_button / draw_end_tags
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
-#include "imgui_internal.h" // TableGetHoveredRow
 #include "implot.h"
 #include "implot_internal.h" // ImPlotTicker / Locator_Default / Locator_Log10 (净值轴刻度)
 #include "misc/date.hpp"
@@ -35,6 +34,7 @@ using pool::Spec;
 constexpr ImVec4 kBenchCol(0.6f, 0.6f, 0.6f, 1.0f), kHotCol(1.0f, 1.0f, 1.0f, 1.0f), kNoneCol(0.5f, 0.5f, 0.5f, 1.0f);
 constexpr ImVec4 kPairCol[2] = {{0.30f, 0.65f, 1.00f, 1.0f}, {1.00f, 0.55f, 0.15f, 1.0f}}; // 二元维的两色
 constexpr float kIdleA = 0.4f;                                                             // 未选线的不透明度
+constexpr float kFadeA = 0.12f;                                                            // 悬停网格取值时, 其余线的不透明度
 constexpr float kCellA = 0.45f;                                                            // 名次底色的不透明度
 constexpr float kNearPx = 8.0f;                                                            // 图上悬停: 离鼠标纵向这么近的线才算
 constexpr float kTagScale = 0.85f;                                                         // 线尾小字字号
@@ -46,14 +46,25 @@ constexpr const char *kStyleTip =
     "• 网格各维多选, 组 = 笛卡尔积: 端 (键低端 / 高端) · 只数 (全 = 切片内全选, 与风格无关) · 周期 (日 = 每日重选 / 周 = 按上周末重选, 权随价漂移) · 权重 (等权 / 总市值加权)\n"
     "  · 切片维 ST / 板块 / 融资 / 次新 / 停牌 / 行业 / 预警: 各按一列把在市 A 股分类, 全 = 不切; ST / 板块 / 融资 缺省全开, 其余缺省只勾全\n"
     "  · 切片 = 各切片维之交\n"
-    "• 名 = 风格端.只数.周期.ST.板块.融资.次新.停牌.行业.预警 (灰段 = 不起作用: 全); 全程切片为空的组不列\n"
+    "• 网格按钮: 按下色 = 勾, 灰字 = 不起作用的取值 (全; 只数只勾全时的端); 左键 = 翻转 (至少留一个), 右键 = 只留它 (已只留它 = 该维全开)\n"
+    "• 名 = 风格端.只数.周期.ST.板块.融资.次新.停牌.行业.预警 (灰段 = 不起作用, 与网格按钮的灰字同一判据); 全程切片为空的组不列\n"
     "• 篮子 = 源行收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 超额 / IR 对全A (行情页同一条: 当日活跃, 日频, 同权重)\n"
-    "• 勾选 = 改选中 (落地蓝 / 新选橙 / 去掉红; 有选池态的恒在表前); [确认…] 弹窗列出改动, 写 pools.json 即落地, 重启后计算 / 各页用新池表\n"
+    "• 窗 (滑条, 整年; 缺省全程): 拖短到 W 年 = 右表绩效只算末 W 年 (名次 / 线色 / 表序随之), 图 = 滚动 W 年净值 (每日 = 该日净值 / W 年前净值;\n"
+    "  不足 W 年的前段自建仓起), 竖线 = 右表窗起; 早年的极端行情只在盖住它的窗里起作用\n"
+    "• 点表行 / 图上的线 = 选中 ↔ 去掉 (选中的行底色亮; 名色 落地蓝 / 新选橙 / 去掉红; 有选池态的恒在表前); [确认…] 弹窗列出改动, 写 pools.json 即落地, 重启后计算 / 各页用新池表\n"
     "• 池表里的池名 = 简称 (高低端 + 风格 + 只数, 如 低β200; 全选池 = 切片名), 同简称按池表序加 A / B / C…; 悬停池名看全部参数\n"
-    "• 主图: 线色 = 夏普名次 (绿好 → 红差); 悬停网格条某一维 = 按该维取值着色 (按钮字色即图例), 看哪个取值整体占优\n"
+    "• 主图: 线色 = 夏普名次 (绿好 → 红差); 悬停网格条某一维 = 按该维取值着色 (按钮字色即图例), 看哪个取值整体占优; 悬停到某个取值 = 只亮该取值的线\n"
     "• 细线 = 未选, 粗线 = 落地 / 新选 / 去掉, 灰 = 全A; 悬停图上 / 表行 = 白粗线 + 绩效";
 
 bool has(const std::vector<Spec> &v, const Spec &p) { return std::ranges::find(v, p) != v.end(); }
+// 选中 ↔ 去掉 (点表行 / 图上的线同一份)
+void flip(StyleUIState &s, const Spec &p) {
+  if (has(s.chosen, p))
+    std::erase(s.chosen, p);
+  else
+    s.chosen.push_back(p);
+  ++s.pick_gen;
+}
 
 // 净值轴 (log 态): 1 以下线性, 1 以上 ln (在 1 处与线性同斜率); 深亏的线只压在 1 以下的一小段
 double nav_fwd(double v, void *) { return v > 1.0 ? std::log(v) : v - 1.0; }
@@ -116,20 +127,26 @@ struct ColDef {
   double scale;
   int better;
 };
+// 各列只算窗内: 窗 = 末 W 年 (滑条; 全程 = 自首个建仓行起) 到末日, 窗起早于首个建仓行的自建仓行起; 年 = 基日 (窗起前一日) 到末日的日历跨度 / 365.25
 constexpr ColDef kCols[kStyleCols] = {
-    {"年化", "年化 = 年化收益: 净值^(1/年) − 1\n• 自首个建仓行起到末日; 年 = 日历跨度 / 365.25", "%+.1f%%", 100.0, 1},
-    {"夏普", "夏普 = 夏普比率: 日收益 均值 / 标准差 × √每年交易日 (无风险 0)\n• 缺省按它降序; 线的缺省色 = 它的组内名次 (绿 = 好 → 红 = 差)", "%.2f", 1.0, 1},
-    {"回撤", "回撤 = 最大回撤: 净值自前高的最大跌幅", "%.1f%%", 100.0, -1},
-    {"超额", "超额 = 对全A 的年化超额: 相对净值 Π (1 + r) / (1 + r_全A) 年化\n• 全A = 行情页同一条 (当日活跃), 日频, 与该线同权重", "%+.1f%%", 100.0, 1},
-    {"IR", "IR = 信息比: 相对日收益 (1 + r) / (1 + r_全A) − 1 的 均值 / 标准差 × √每年交易日", "%.2f", 1.0, 1},
-    {"换手", "换手 = 年化单边换手 (倍/年): 每次调仓 Σ (目标权 − 漂移后的权)⁺ 累计 / 年\n• 建仓计 1; 日频每日回到目标权, 周频两次调仓之间权随价漂移",
+    {"年化", "年化 = 窗内年化收益: (末日净值 / 基日净值)^(1/年) − 1", "%+.1f%%", 100.0, 1},
+    {"夏普", "夏普 = 窗内夏普比率: 日收益 均值 / 标准差 × √每年交易日 (无风险 0)\n• 缺省按它降序; 线的缺省色 = 它的组内名次 (绿 = 好 → 红 = 差)", "%.2f", 1.0,
+     1},
+    {"回撤", "回撤 = 窗内最大回撤: 净值自窗内前高 (含基日) 的最大跌幅", "%.1f%%", 100.0, -1},
+    {"超额", "超额 = 窗内对全A 的年化超额: 相对净值 Π (1 + r) / (1 + r_全A) 年化\n• 全A = 行情页同一条 (当日活跃), 日频, 与该线同权重", "%+.1f%%", 100.0, 1},
+    {"IR", "IR = 窗内信息比: 相对日收益 (1 + r) / (1 + r_全A) − 1 的 均值 / 标准差 × √每年交易日", "%.2f", 1.0, 1},
+    {"换手", "换手 = 窗内年化单边换手 (倍/年): 每次调仓 Σ (目标权 − 漂移后的权)⁺ 累计 / 年\n• 建仓 (在窗内) 计 1; 日频每日回到目标权, 周频两次调仓之间权随价漂移",
      "%.1f", 1.0, -1},
 };
-constexpr int kColBase = 2; // 表列 = 勾选 + 名 + 绩效列
-double col_val(const StyleLine &l, int c) {
-  const float v[kStyleCols] = {l.ann, l.sharpe, l.mdd, l.exc, l.ir, l.turn};
+constexpr int kColBase = 1; // 表列 = 名 + 绩效列
+// 线在当前窗 (s.of_win 年) 的列 c
+double col_val(const StyleUIState &s, const StyleLine &l, int c) {
+  const StyleStat &t = l.win[static_cast<size_t>(s.of_win - 1)];
+  const float v[kStyleCols] = {t.ann, t.sharpe, t.mdd, t.exc, t.ir, t.turn};
   return v[c];
 }
+// 生效的窗 (年)
+int win_of(const StyleUIState &s, const StyleResult &r) { return s.win ? std::min(s.win, r.years) : r.years; }
 
 // 网格维 = 池参数的维 pool::Dim (风格维由打开的风格定, 不上条) + 权重 (篮子的两条线, 不进池身份); 线在该维的取值 (−1 = 不起作用: 全选池的端)
 constexpr int kDimWeight = pool::kDims;
@@ -164,22 +181,25 @@ int day_fmt(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
 
-// ---- 结果派生 (见 StyleUIState): 名 / 名次 / 画序随结果, 选池态随选中 ----
+// ---- 结果派生 (见 StyleUIState): 名随结果, 名次 / 画序 / 基日随 (结果, 窗), 选池态随选中 ----
 void derive(StyleUIState &s, const StyleResult &r) {
-  const size_t n = r.lines.size();
+  const size_t n = r.lines.size(), D = r.dates.size();
   if (s.of_gen != r.gen) {
-    s.of_gen = r.gen, s.of_pick = 0, s.of_sort = -2;
+    s.of_gen = r.gen, s.of_win = 0, s.of_pick = 0;
     s.names.resize(n);
     for (size_t i = 0; i < n; ++i)
       s.names[i] = pool::name_cn(r.lines[i].spec) + weight_suffix(r.lines[i].weight);
+  }
+  if (const int W = win_of(s, r); s.of_win != W) {
+    s.of_win = W, s.of_sort = -2;
     s.ranks.assign(n * kStyleCols, std::numeric_limits<float>::quiet_NaN());
     std::vector<uint32_t> ok;
     for (int c = 0; c < kStyleCols; ++c) {
       ok.clear();
       for (size_t i = 0; i < n; ++i)
-        if (std::isfinite(col_val(r.lines[i], c)))
+        if (std::isfinite(col_val(s, r.lines[i], c)))
           ok.push_back(static_cast<uint32_t>(i));
-      std::ranges::sort(ok, [&](uint32_t a, uint32_t b) { return kCols[c].better * col_val(r.lines[a], c) > kCols[c].better * col_val(r.lines[b], c); });
+      std::ranges::sort(ok, [&](uint32_t a, uint32_t b) { return kCols[c].better * col_val(s, r.lines[a], c) > kCols[c].better * col_val(s, r.lines[b], c); });
       for (size_t k = 0; k < ok.size(); ++k)
         s.ranks[ok[k] * kStyleCols + c] = ok.size() > 1 ? static_cast<float>(k) / static_cast<float>(ok.size() - 1) : 0.5f;
     }
@@ -187,6 +207,9 @@ void derive(StyleUIState &s, const StyleResult &r) {
     std::iota(s.paint.begin(), s.paint.end(), 0u);
     const auto worse = [&](uint32_t i) { const float u = s.ranks[i * kStyleCols + kColSharpe]; return std::isnan(u) ? 2.0f : u; };
     std::ranges::stable_sort(s.paint, [&](uint32_t a, uint32_t b) { return worse(a) > worse(b); });
+    s.base.resize(D);
+    for (size_t t = 0; t < D; ++t)
+      s.base[t] = static_cast<int32_t>(win_start(r.dates, t, W)) - 1;
   }
   if (s.of_pick != s.pick_gen) {
     s.of_pick = s.pick_gen, s.of_sort = -2;
@@ -212,35 +235,50 @@ void sort_lines(StyleUIState &s, const StyleResult &r, int sort) {
       return false;
     if (c < 0)
       return desc ? s.names[a] > s.names[b] : s.names[a] < s.names[b];
-    const double x = col_val(r.lines[a], c), y = col_val(r.lines[b], c);
+    const double x = col_val(s, r.lines[a], c), y = col_val(s, r.lines[b], c);
     if (!std::isfinite(x) || !std::isfinite(y))
       return std::isfinite(x) && !std::isfinite(y);
     return desc ? x > y : x < y;
   });
 }
 
-// 一维的多选条 (位 i = names[i], 按下色 = 选; 至少留一位); tips 可空; idle 位 = 不起作用的取值 (字灰); lit = 上帧悬停在这一维
-// (按钮字色 = 各取值的线色). 返回本帧悬停在这一维
-bool toggles(StyleUIState &s, int d, const char *const names[], const char *const tips[], int n, uint16_t idle = 0) {
+// 维 d 在网格 g 下不起作用的取值 (位; 与线名灰段同一判据 pool::on): 取值 全; 只数只勾 全 时端的全部取值
+uint16_t idle_bits(const pool::Grid &g, int d) {
+  if (d == kDimWeight)
+    return 0;
+  if (d == pool::kDimEnd && g.bits[pool::kDimN] == 1u << pool::kCountAll)
+    return static_cast<uint16_t>((1u << pool::dim_size(d)) - 1);
+  return pool::kDimDefs[d].all0 ? 1 : 0;
+}
+
+// 一维的多选条 (位 i = names[i], toggle_button 开 = 勾): 左键 = 翻转 (至少留一位), 右键 = 只留它 (已只留它 = 全开); tips 可空;
+// 不起作用的取值字灰 (idle_bits); lit = 上帧悬停在这一维 (按钮字色 = 各取值的线色). 返回本帧悬停在这一维; val = 悬停的取值 (不在任一取值上则不动)
+bool toggles(StyleUIState &s, int d, const char *const names[], const char *const tips[], int n, int &val) {
   uint16_t bits = dim_bits(s.grid, d);
+  const uint16_t idle = idle_bits(s.grid, d), all = static_cast<uint16_t>((1u << n) - 1);
   const bool lit = s.dim == d;
   ImGui::PushID(d);
   ImGui::BeginGroup();
   ImGui::TextDisabled("%s", dim_name(d));
   for (int i = 0; i < n; ++i) {
     ImGui::SameLine(0, i ? 2.0f : -1.0f);
-    const bool on = bits >> i & 1, grey = !lit && (idle >> i & 1);
-    if (on)
-      ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    const uint16_t b = static_cast<uint16_t>(1u << i);
+    const bool grey = !lit && (idle & b);
     if (lit || grey)
       ImGui::PushStyleColor(ImGuiCol_Text, lit ? dim_col(bits, i) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     ImGui::PushID(i);
-    if (ImGui::SmallButton(names[i]) && !(on && bits == (1u << i)))
-      bits ^= static_cast<uint16_t>(1u << i);
+    if (toggle_button(names[i], bits & b) && bits != b)
+      bits ^= b;
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+      bits = bits == b ? all : b;
     ImGui::PopID();
-    ImGui::PopStyleColor(on + (lit || grey));
-    if (tips && ImGui::IsItemHovered())
-      tip("%s", tips[i]);
+    if (lit || grey)
+      ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+      val = i;
+      if (tips)
+        tip("%s", tips[i]);
+    }
   }
   ImGui::EndGroup();
   ImGui::PopID();
@@ -248,21 +286,22 @@ bool toggles(StyleUIState &s, int d, const char *const names[], const char *cons
   return ImGui::IsItemHovered();
 }
 
-// 网格条: 端 / 只数 / 周期 / 权重 一行, ST / 板块 / 融资 一行, 次新 / 停牌 / 行业 / 预警 一行; 悬停的维 → s.dim (本帧图起按它着色)
+// 网格条: 端 / 只数 / 周期 / 权重 一行, ST / 板块 / 融资 一行, 次新 / 停牌 / 行业 / 预警 一行; 悬停的维 / 取值 → s.dim / s.val (本帧图起按它着色 / 提亮)
 void grid_bar(StyleUIState &s) {
-  int hov = -1;
-  const auto bar = [&](int d, const char *const names[], const char *const tips[], int n, uint16_t idle = 0) {
-    if (toggles(s, d, names, tips, n, idle))
-      hov = d;
+  int hov = -1, val = -1;
+  const auto bar = [&](int d, const char *const names[], const char *const tips[], int n) {
+    int v = -1;
+    if (toggles(s, d, names, tips, n, v))
+      hov = d, val = v;
   };
-  // 维表的一维 (取值 0 = 全 的维: 全字灰); 端名随打开的风格
+  // 维表的一维; 端名随打开的风格
   const auto dim = [&](int d) {
     const pool::DimDef &df = pool::kDimDefs[d];
     const char *names[8], *tips[8];
     assert(pool::dim_size(d) <= 8);
     for (int i = 0; i < pool::dim_size(d); ++i)
       names[i] = d == pool::kDimEnd && s.open >= 0 ? pool::kStyleDefs[s.open].end_cn[i] : df.values[i].name_cn, tips[i] = df.values[i].tip;
-    bar(d, names, tips, pool::dim_size(d), df.all0 ? 1 : 0);
+    bar(d, names, tips, pool::dim_size(d));
   };
   const auto line = [&](std::initializer_list<int> ds) {
     bool first = true;
@@ -280,7 +319,7 @@ void grid_bar(StyleUIState &s) {
   line({pool::kDimEnd, pool::kDimN, pool::kDimRebal, kDimWeight});
   line({pool::kDimSt, pool::kDimBoard, pool::kDimMargin});
   line({pool::kDimNew, pool::kDimSusp, pool::kDimInd, pool::kDimWarn});
-  s.dim = hov;
+  s.dim = hov, s.val = val;
 }
 
 // 状态: 进度 / 算不了的原因 / 结果跨度
@@ -393,10 +432,11 @@ void name_text(const StyleLine &l, const ImVec4 &col) {
 // 一条线的绩效提示
 void line_tip(const StyleUIState &s, const StyleResult &r, size_t i) {
   const StyleLine &l = r.lines[i];
-  std::string t = s.names[i] + "  " + pool::code(l.spec) + "  · " + kMarkName[s.marks[i]] + "\n简称: " + pool::short_cn(l.spec);
+  std::string t = s.names[i] + "  " + pool::code(l.spec) + "  · " + kMarkName[s.marks[i]] + "\n简称: " + pool::short_cn(l.spec) + "\n窗: " +
+                  (s.of_win == r.years ? std::string("全程") : "末 " + std::to_string(s.of_win) + " 年");
   for (int c = 0; c < kStyleCols; ++c) {
     char v[32];
-    const double x = col_val(l, c);
+    const double x = col_val(s, l, c);
     if (std::isfinite(x))
       std::snprintf(v, sizeof(v), kCols[c].fmt, kCols[c].scale * x);
     else
@@ -406,13 +446,32 @@ void line_tip(const StyleUIState &s, const StyleResult &r, size_t i) {
   tip("%s", t.c_str());
 }
 
-// 净值图: 全A 灰; 线色 = 夏普名次 (悬停网格维 = 该维取值色), 未选细线 (合计点数超上限按步长抽点), 有选池态的粗线, 悬停白粗线; 返回图上悬停的线 (−1 = 无)
+// 滚动净值: 日 d 的净值 / 基日净值 (基日 = s.base[d]; −1 → 基 = 1)
+float roll(const StyleUIState &s, const StyleLine &l, size_t d) {
+  const int32_t b = s.base[d];
+  return b < 0 ? l.nav[d] : l.nav[d] / l.nav[static_cast<size_t>(b)];
+}
+// PlotLineG 取点: 线 l 自日 f 起每 step 日一点
+struct RollPts {
+  const StyleUIState *s;
+  const StyleLine *l;
+  size_t f, step;
+};
+ImPlotPoint roll_pt(int k, void *p) {
+  const RollPts &o = *static_cast<const RollPts *>(p);
+  const size_t d = o.f + static_cast<size_t>(k) * o.step;
+  return {static_cast<double>(d), roll(*o.s, *o.l, d)};
+}
+
+// 滚动净值图 (窗 = 全程即净值; 窗短于全程时竖线 = 右表窗的基日): 全A 灰; 线色 = 窗内夏普名次 (悬停网格维 = 该维取值色, 悬停到取值 = 只亮该取值的线),
+// 未选细线 (合计点数超上限按步长抽点), 有选池态的粗线, 悬停白粗线; 点悬停的线 = 选中 ↔ 去掉; 返回图上悬停的线 (−1 = 无)
 int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
   const size_t D = r.dates.size(), n = r.lines.size();
-  if (s.fit_gen != r.gen) {
+  if (s.fit_gen != r.gen)
     ImPlot::SetNextAxesToFit();
-    s.fit_gen = r.gen;
-  }
+  else if (s.fit_win != s.of_win)
+    ImPlot::SetNextAxisToFit(ImAxis_Y1);
+  s.fit_gen = r.gen, s.fit_win = s.of_win;
   if (!ImPlot::BeginPlot("##style_nav", size, ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
     return -1;
   ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_None);
@@ -427,13 +486,17 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
   const auto draw = [&](const StyleLine &l, const ImVec4 &col, float w, size_t step, const std::string *tag) {
     if (l.first >= D)
       return;
-    const size_t f = l.first - 1;
+    RollPts pts{&s, &l, l.first - 1, step};
     ImPlot::SetNextLineStyle(col, w);
-    ImPlot::PlotLine(id, l.nav.data() + f, static_cast<int>((D - 1 - f) / step + 1), static_cast<double>(step), static_cast<double>(f),
-                     ImPlotLineFlags_None, 0, static_cast<int>(step * sizeof(float)));
+    ImPlot::PlotLineG(id, roll_pt, &pts, static_cast<int>((D - 1 - pts.f) / step + 1));
     if (tag)
-      tags.push_back({ImPlot::PlotToPixels(static_cast<double>(D - 1), l.nav[D - 1]), ImGui::ColorConvertFloat4ToU32(col), *tag});
+      tags.push_back({ImPlot::PlotToPixels(static_cast<double>(D - 1), roll(s, l, D - 1)), ImGui::ColorConvertFloat4ToU32(col), *tag});
   };
+  if (s.of_win < r.years) {
+    const double x = static_cast<double>(s.base[D - 1]);
+    ImPlot::SetNextLineStyle(kBenchCol, 1.0f);
+    ImPlot::PlotInfLines("##win", &x, 1);
+  }
   for (int w = 0; w < kWeights; ++w)
     if (r.grid.weight >> w & 1) {
       const std::string name = basket_name(0, static_cast<Weight>(w));
@@ -450,10 +513,14 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
         const StyleLine &l = r.lines[i];
         if (l.first >= D || static_cast<size_t>(d) + 1 < l.first)
           continue;
-        if (const float dy = std::abs(ImPlot::PlotToPixels(static_cast<double>(d), l.nav[static_cast<size_t>(d)]).y - my); dy < best)
+        if (const float dy = std::abs(ImPlot::PlotToPixels(static_cast<double>(d), roll(s, l, static_cast<size_t>(d))).y - my); dy < best)
           best = dy, near = static_cast<int>(i);
       }
   }
+  const ImGuiIO &io = ImGui::GetIO(); // 松手且没拖过 = 点 (拖动归平移)
+  if (near >= 0 && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+      io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < io.MouseDragThreshold * io.MouseDragThreshold)
+    flip(s, r.lines[static_cast<size_t>(near)].spec);
   const int hot = near >= 0 ? near : s.hot;
   const uint16_t bits = s.dim >= 0 ? dim_bits(r.grid, s.dim) : 0;
   const auto color = [&](size_t i, Mark m) {
@@ -469,16 +536,24 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
     if (s.marks[i] == kMarkNone && r.lines[i].first < D)
       idle += D - r.lines[i].first + 1;
   const size_t step = std::max<size_t>(1, (idle + kIdlePoints - 1) / kIdlePoints);
-  for (const bool marked : {false, true})
+  const int focus = s.dim >= 0 ? s.val : -1;
+  const auto lit = [&](uint32_t i) { return focus >= 0 && dim_value(r.lines[i], s.dim) == focus; };
+  // 层 = 悬停取值的线 · 2 + 有选池态 (自下而上): 悬停到取值时其余线淡出, 该取值的线不透明加粗
+  for (const int layer : {0, 1, 2, 3})
     for (const uint32_t i : s.paint) {
       const Mark m = static_cast<Mark>(s.marks[i]);
-      if ((m != kMarkNone) != marked || static_cast<int>(i) == hot)
+      const bool marked = m != kMarkNone, up = lit(i);
+      if ((up ? 2 : 0) + (marked ? 1 : 0) != layer || static_cast<int>(i) == hot)
         continue;
       ImVec4 c = color(i, m);
-      if (!marked)
+      if (focus >= 0 && !up)
+        c.w = kFadeA;
+      else if (!marked && !up)
         c.w = kIdleA;
       std::snprintf(id, sizeof(id), "##l%u", i);
-      draw(r.lines[i], c, marked ? 2.5f : 1.0f, marked ? 1 : step, marked ? &s.names[i] : nullptr);
+      draw(r.lines[i], c, marked ? 2.5f : up ? 1.5f
+                                             : 1.0f,
+           marked ? 1 : step, marked ? &s.names[i] : nullptr);
     }
   if (hot >= 0 && hot < static_cast<int>(n)) {
     std::snprintf(id, sizeof(id), "##hot");
@@ -491,15 +566,14 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
   return near;
 }
 
-// 右表: 风格行 (点 = 打开 / 收起) + 打开的风格之下 全A 两行 + 各线 (勾选 = 改选中; 有选池态的在前; 底色 = 组内名次; 缺省夏普降序); 只画可见行.
-// 返回悬停的线 (−1 = 无)
+// 右表: 风格行 (点 = 打开 / 收起) + 打开的风格之下 全A 两行 + 各线 (点行 = 选中 ↔ 去掉, 选中的行底色亮; 有选池态的在前; 底色 = 组内名次; 缺省夏普降序);
+// 只画可见行. 返回悬停的线 (−1 = 无)
 int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
                                      ImGuiTableFlags_SortTristate;
   if (!ImGui::BeginTable("##pf_style_tbl", kColBase + kStyleCols, kFlags))
     return -1;
   ImGui::TableSetupScrollFreeze(kColBase, 1);
-  ImGui::TableSetupColumn("##sel", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, ImGui::GetFrameHeight());
   ImGui::TableSetupColumn("风格 / 参数", ImGuiTableColumnFlags_WidthStretch);
   for (int c = 0; c < kStyleCols; ++c)
     ImGui::TableSetupColumn(kCols[c].name, c == kColSharpe ? ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending : 0);
@@ -507,12 +581,12 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   for (int c = 0; c < kColBase + kStyleCols; ++c) {
     if (!ImGui::TableSetColumnIndex(c))
       continue;
-    ImGui::TableHeader(c == 0 ? "##sel" : c == 1 ? "风格 / 参数"
-                                                 : kCols[c - kColBase].name);
+    ImGui::TableHeader(c == 0 ? "风格 / 参数" : kCols[c - kColBase].name);
     if (ImGui::IsItemHovered())
-      tip("%s", c == 0   ? "勾选 = 选为子池 (同一组参数的两种权重同一个池)"
-                : c == 1 ? "点风格 = 打开 (跑参数网格) / 收起; 有选池态的线恒在前\n名色: 蓝 = 落地, 橙 = 新选, 红 = 落地被去掉"
-                         : kCols[c - kColBase].tip);
+      tip("%s", c == 0 ? "点风格行 = 打开 (跑参数网格) / 收起\n"
+                         "点参数行 = 选为子池 ↔ 去掉 (图上点线同一份; 同一组参数的两种权重同一个池); 选中的行底色亮, 有选池态的线恒在前\n"
+                         "名色: 蓝 = 落地, 橙 = 新选, 红 = 落地被去掉"
+                       : kCols[c - kColBase].tip);
   }
   const bool open_ok = r && r->lack.empty();
   if (open_ok) {
@@ -548,12 +622,11 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   }
   rows.push_back({kRowFoot, 0});
 
-  const int hovered_row = ImGui::TableGetHoveredRow(); // 上帧
   int hot = -1;
   const auto cells = [&](const StyleLine &l, const float *rk) {
     for (int c = 0; c < kStyleCols; ++c) {
       ImGui::TableSetColumnIndex(kColBase + c);
-      const double x = col_val(l, c);
+      const double x = col_val(s, l, c);
       if (rk && !std::isnan(rk[c]))
         ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(rk[c], kCellA)));
       if (std::isfinite(x))
@@ -571,7 +644,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
       const Row &w = rows[static_cast<size_t>(k)];
       ImGui::TableNextRow(ImGuiTableRowFlags_None, rh);
       ImGui::PushID(k);
-      ImGui::TableSetColumnIndex(1);
+      ImGui::TableSetColumnIndex(0);
       switch (w.kind) {
       case kRowStyle: {
         const int st = static_cast<int>(w.i);
@@ -599,24 +672,21 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
         break;
       case kRowLine: {
         const StyleLine &l = r->lines[w.i];
-        if (ImGui::TableGetRowIndex() == hovered_row)
-          hot = static_cast<int>(w.i);
         if (static_cast<int>(w.i) == plot_hot)
           ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImGuiCol_HeaderHovered));
+        // 整行可点 (先交, AllowOverlap 让名盖在上面); 名格悬停看绩效
+        const ImVec2 at = ImGui::GetCursorPos();
+        if (ImGui::Selectable("##pick", has(s.chosen, l.spec), ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap, ImVec2(0, rh)))
+          flip(s, l.spec);
+        if (ImGui::IsItemHovered()) {
+          hot = static_cast<int>(w.i);
+          if (ImGui::TableGetHoveredColumn() == 0)
+            line_tip(s, *r, w.i);
+        }
+        ImGui::SetCursorPos(at);
         ImGui::Indent();
         name_text(l, mark_col(static_cast<Mark>(s.marks[w.i])));
         ImGui::Unindent();
-        if (ImGui::IsItemHovered())
-          line_tip(s, *r, w.i);
-        ImGui::TableSetColumnIndex(0);
-        bool on = has(s.chosen, l.spec);
-        if (ImGui::Checkbox("##on", &on)) {
-          if (on)
-            s.chosen.push_back(l.spec);
-          else
-            std::erase(s.chosen, l.spec);
-          ++s.pick_gen;
-        }
         cells(l, s.ranks.data() + static_cast<size_t>(w.i) * kStyleCols);
         break;
       }
@@ -669,16 +739,29 @@ void RenderTabStyle(StyleService &svc, StyleUIState &s) {
   status(svc, s, mine ? r.get() : nullptr, mine && r->gen == s.sent.gen);
   changes(s);
   ImGui::SameLine(0, 16);
-  ImGui::Checkbox("log", &s.log_y);
+  if (toggle_button("log", s.log_y))
+    s.log_y = !s.log_y;
   if (ImGui::IsItemHovered())
     tip("y 轴 (净值) 1 以上切对数刻度; 1 以下恒为线性");
+  if (show) {
+    ImGui::SameLine(0, 16);
+    int w = win_of(s, *show);
+    ImGui::SetNextItemWidth(12.0f * ImGui::GetFontSize());
+    if (ImGui::SliderInt("##win", &w, 1, show->years, w == show->years ? "窗 全程" : "窗 末 %d 年", ImGuiSliderFlags_AlwaysClamp))
+      s.win = w == show->years ? 0 : w;
+    if (ImGui::IsItemHovered())
+      tip("窗 (整年, 缺省全程 = %d 年盖住整个回测期): 右表绩效 / 名次 / 线色 / 表序只算末 W 年, 图 = 滚动 W 年净值\n"
+          "• 图上每日 = 该日净值 / W 年前净值 (不足 W 年的前段自建仓起); 竖线 = 右表窗起\n"
+          "• 各窗绩效随结果一次算好, 拖动即时",
+          show->years);
+  }
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
     tip("%s", kStyleTip);
   int plot_hot = -1;
   if (show) {
-    derive(s, *show); // 改动 (撤销 / 写入) 可能刚改了选中
+    derive(s, *show); // 改动 (撤销 / 写入) / 窗可能刚变
     plot_hot = plot(s, *show, ImGui::GetContentRegionAvail());
   }
   ImGui::EndChild();

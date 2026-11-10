@@ -66,7 +66,8 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesUISta
     ImGui::SameLine();
   }
   if (page == kPageNav || page == kPageVal) {
-    ImGui::Checkbox("log", &ui.log_y);
+    if (toggle_button("log", ui.log_y))
+      ui.log_y = !ui.log_y;
     if (ImGui::IsItemHovered())
       tip("y 轴 (净值) 切对数刻度");
     ImGui::SameLine();

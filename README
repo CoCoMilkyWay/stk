@@ -218,8 +218,8 @@ stk/
 │   │   │   │       └── TabCalendar.hpp                 # 🖥️ 交易日历格: 除权除息 / 节假日 / 回测区间 / L2 覆盖
 │   │   │   ├── task_beta/                              # 🖥️ Beta 任务 (风格择优)
 │   │   │   │   ├── TaskBeta.hpp                        # 🖥️ Beta 任务主界面: Compute (只 all.bar) / Style
-│   │   │   │   ├── services/StyleService.hpp           # 🖥️ 一个风格的参数网格 (pool::Grid) 逐组选池 (PoolSelect) → 篮子净值 / 绩效 (对全A = 行情侧同名线)
-│   │   │   │   └── ui/TabStyle.hpp                     # 🖥️ 风格 × 参数网格回测 (维条按维表生成), 选定的子池写 pools.json
+│   │   │   │   ├── services/StyleService.hpp           # 🖥️ 一个风格的参数网格 (pool::Grid) 逐组选池 (PoolSelect) → 篮子净值 / 各窗 (末 W 年) 绩效 (对全A = 行情侧同名线)
+│   │   │   │   └── ui/TabStyle.hpp                     # 🖥️ 风格 × 参数网格回测 (维条按维表生成; 窗滑条 = 滚动净值 + 窗内绩效), 选定的子池写 pools.json
 │   │   │   ├── task_alpha/                             # 🖥️ Alpha 任务 (因子挖掘, factor/ 的 GUI)
 │   │   │   │   ├── TaskAlpha.hpp                       # 🖥️ Alpha 任务主界面: Compute (all.lob + 子池各库) / Operators / Factors / Inspect; 页顶条选 池 + 因子层
 │   │   │   │   ├── services/
@@ -483,7 +483,7 @@ stk/
 #       · 行末源标: CS(<源档>, <层>, <源列>, Tf, Method); <层> 任意: 源行 = level_asof(源列, 本列, t)
 #         (粗层读已收的上一行; 落到前一交易日只许 TS / 元列, 区间首日 NaN)
 #   - 两档都要: 节点类放 Node/Common/<分类>/, 两档各写各的 NODE_ / FIELDS_ (列名跨档不许重名, FeatureMeta.cpp 编译期断言)
-#   - 新池:   不写节点; Beta → Style 勾选写 output/config/beta/pools.json (重启生效), 每个子池两档各一库
+#   - 新池:   不写节点; Beta → Style 点选后确认写 output/config/beta/pools.json (重启生效), 每个子池两档各一库
 #       · 新风格 (排序键) = features/Panel/PoolSpec.hpp 风格表加一行 + PoolSelect.cpp 键表 kKeyDefs 对应一行
 #       · 新切片维 = PoolSpec.hpp 维表加一张取值表 + PoolSelect.cpp 日行列表 kDayColDefs / 类映射 kSliceCls 各加一项 (类号混合进制随之扩) + TabStyle 维条排进一行
 #   - 其他文件一律不改: CMake 按档扫描生成 <Tier>/NodesGenerated.hpp + FieldsGenerated.hpp

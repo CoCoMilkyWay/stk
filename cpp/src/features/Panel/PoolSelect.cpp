@@ -412,7 +412,7 @@ void Selector::at(const RowView &r, std::vector<uint32_t> &out) const {
 void run_book(const Tape &t, Rebal rb, const Pick &pick, Book &b) {
   const size_t D = t.days(), A = t.A;
   for (int w = 0; w < kWeights; ++w)
-    b.ret[w].assign(D, 0.0f), b.buy[w] = 0.0;
+    b.ret[w].assign(D, 0.0f), b.buy[w].assign(D, 0.0f);
   b.first = D;
   std::vector<uint32_t> mem, nx; // 当前 / 新选的成员 (资产下标升序)
   // [Weight][成员] 持仓额 (源行 = 目标权, 其后各乘 1 + r; 漂移后的权 = 额 / 总额) / 新目标权; [Weight] 总额
@@ -432,15 +432,16 @@ void run_book(const Tape &t, Rebal rb, const Pick &pick, Book &b) {
       tw[kWeightCap].resize(n);
       for (size_t i = 0; i < n; ++i)
         tw[kWeightCap][i] = cap > 0.0 ? mc[nx[i]] / cap : 0.0;
+      double buy[kWeights] = {};
       for (size_t i = 0, j = 0; i < n; ++i) {
         while (j < mem.size() && mem[j] < nx[i])
           ++j;
         const bool held = j < mem.size() && mem[j] == nx[i];
         for (int w = 0; w < kWeights; ++w)
-          b.buy[w] += std::max(tw[w][i] - (held ? v[w][j] / sum[w] : 0.0), 0.0);
+          buy[w] += std::max(tw[w][i] - (held ? v[w][j] / sum[w] : 0.0), 0.0);
       }
       for (int w = 0; w < kWeights; ++w)
-        v[w].swap(tw[w]), sum[w] = 1.0;
+        v[w].swap(tw[w]), sum[w] = 1.0, b.buy[w][d] = static_cast<float>(buy[w]);
       mem.swap(nx);
       if (b.first == D && !mem.empty())
         b.first = d;

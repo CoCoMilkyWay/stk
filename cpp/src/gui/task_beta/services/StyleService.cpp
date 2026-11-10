@@ -18,36 +18,40 @@ namespace {
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
-// 日收益 r (对全A 同权重日收益 rb) 自 first 起的净值与绩效; 年数 = 建仓行 (first − 1) 到末日的日历跨度
-void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<float> &r, const std::vector<float> &rb, size_t first, double buy) {
-  const size_t D = dates.size();
+// 日收益 r (对全A 同权重日收益 rb) / 日增仓量 buy 自 first 起的净值, 与各窗的绩效 (starts[W − 1] = 末 W 年的窗起).
+// 自末日倒推一趟: 窗左端 lo 每前移一日, 窗内各和 / 回撤随之累加, 到某窗的左端 max(窗起, first) 即记该窗
+void fill(StyleLine &l, std::span<const misc::Ymd> dates, std::span<const size_t> starts, const std::vector<float> &r, const std::vector<float> &rb,
+          const std::vector<float> &buy, size_t first) {
+  const size_t D = dates.size(), Ws = starts.size();
   l.first = first;
   l.nav.assign(D, 1.0f);
-  if (first >= D) {
-    l.ann = l.sharpe = l.mdd = l.exc = l.ir = l.turn = kNaN;
+  l.win.assign(Ws, {kNaN, kNaN, kNaN, kNaN, kNaN, kNaN});
+  if (first >= D)
     return;
-  }
   assert(first >= 1);
-  const double years = static_cast<double>((misc::to_days(dates.back()) - misc::to_days(dates[first - 1])).count()) / 365.25;
-  const double n = static_cast<double>(D - first), ppy = n / years;
-  double nav = 1.0, peak = 1.0, mdd = 0.0, rel = 1.0, s = 0.0, ss = 0.0, e = 0.0, ee = 0.0;
-  for (size_t d = first; d < D; ++d) {
-    const double x = r[d], y = (1.0 + x) / (1.0 + rb[d]) - 1.0;
-    nav *= 1.0 + x, rel *= 1.0 + y;
-    l.nav[d] = static_cast<float>(nav);
-    peak = std::max(peak, nav), mdd = std::max(mdd, 1.0 - nav / peak);
-    s += x, ss += x * x, e += y, ee += y * y;
+  double nav = 1.0;
+  for (size_t d = first; d < D; ++d)
+    l.nav[d] = static_cast<float>(nav *= 1.0 + r[d]);
+  // 窗内 Σ ln(1 + r) / Σ r / Σ r² · 相对日收益 y 同三项 · Σ 增仓; low = 窗内净值最低, mdd = 峰在 [基日, 末日) 的最大回撤
+  double g = 0.0, s = 0.0, ss = 0.0, h = 0.0, e = 0.0, ee = 0.0, b = 0.0, mdd = 0.0;
+  float low = l.nav[D - 1];
+  size_t W = 0; // 待记的窗 (下标)
+  for (size_t lo = D - 1; lo >= first && W < Ws; --lo) {
+    const double x = r[lo], y = (1.0 + x) / (1.0 + rb[lo]) - 1.0;
+    g += std::log1p(x), s += x, ss += x * x, h += std::log1p(y), e += y, ee += y * y, b += buy[lo];
+    low = std::min(low, l.nav[lo]);
+    mdd = std::max(mdd, 1.0 - static_cast<double>(low) / l.nav[lo - 1]);
+    for (; W < Ws && std::max(starts[W], first) >= lo; ++W) {
+      const double years = static_cast<double>((misc::to_days(dates.back()) - misc::to_days(dates[lo - 1])).count()) / 365.25;
+      const double n = static_cast<double>(D - lo), ppy = n / years;
+      const auto ratio = [&](double m, double m2) {
+        const double sd = std::sqrt(std::max(m2 / n - (m / n) * (m / n), 0.0));
+        return sd > 0.0 ? static_cast<float>(m / n / sd * std::sqrt(ppy)) : kNaN;
+      };
+      l.win[W] = {static_cast<float>(std::expm1(g / years)), ratio(s, ss), static_cast<float>(mdd), static_cast<float>(std::expm1(h / years)),
+                  ratio(e, ee), static_cast<float>(b / years)};
+    }
   }
-  const auto ratio = [&](double m, double m2) {
-    const double sd = std::sqrt(std::max(m2 / n - (m / n) * (m / n), 0.0));
-    return sd > 0.0 ? static_cast<float>(m / n / sd * std::sqrt(ppy)) : kNaN;
-  };
-  l.ann = static_cast<float>(std::pow(nav, 1.0 / years) - 1.0);
-  l.sharpe = ratio(s, ss);
-  l.mdd = static_cast<float>(mdd);
-  l.exc = static_cast<float>(std::pow(rel, 1.0 / years) - 1.0);
-  l.ir = ratio(e, ee);
-  l.turn = static_cast<float>(buy / years);
 }
 
 } // namespace
@@ -134,10 +138,14 @@ bool StyleService::run(StyleRequest &req) {
 
   const std::vector<misc::Ymd> &dates = tape_->dates;
   auto out = std::make_shared<StyleResult>();
+  out->years = win_years(dates);
+  std::vector<size_t> starts(static_cast<size_t>(out->years));
+  for (int W = 1; W <= out->years; ++W)
+    starts[static_cast<size_t>(W - 1)] = win_start(dates, dates.size() - 1, W);
   const pool::Book &bb = *bench_;
   for (int w = 0; w < kWeights; ++w) {
     out->bench[w].weight = static_cast<Weight>(w);
-    fill(out->bench[w], dates, bb.ret[w], bb.ret[w], bb.first, bb.buy[w]);
+    fill(out->bench[w], dates, starts, bb.ret[w], bb.ret[w], bb.buy[w], bb.first);
   }
   std::vector<size_t> src; // [线] 所属的组
   for (size_t i = 0; i < specs.size(); ++i) {
@@ -155,7 +163,7 @@ bool StyleService::run(StyleRequest &req) {
   pool_.tasks(static_cast<int>(out->lines.size()), [&](int k, int) {
     StyleLine &l = out->lines[static_cast<size_t>(k)];
     const pool::Book &b = *books[src[static_cast<size_t>(k)]];
-    fill(l, dates, b.ret[l.weight], bb.ret[l.weight], b.first, b.buy[l.weight]);
+    fill(l, dates, starts, b.ret[l.weight], bb.ret[l.weight], b.buy[l.weight], b.first);
   });
   out->dates = dates;
   return publish(req, {}, std::move(out));
