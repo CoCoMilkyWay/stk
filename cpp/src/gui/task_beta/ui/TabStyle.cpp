@@ -9,6 +9,7 @@
 #include "imgui.h"
 #include "imgui_internal.h" // TableGetHoveredRow
 #include "implot.h"
+#include "implot_internal.h" // ImPlotTicker / Locator_Default / Locator_Log10 (净值轴刻度)
 #include "misc/date.hpp"
 
 #include <algorithm>
@@ -53,6 +54,21 @@ constexpr const char *kStyleTip =
     "• 细线 = 未选, 粗线 = 落地 / 新选 / 去掉, 灰 = 全A; 悬停图上 / 表行 = 白粗线 + 绩效";
 
 bool has(const std::vector<Spec> &v, const Spec &p) { return std::ranges::find(v, p) != v.end(); }
+
+// 净值轴 (log 态): 1 以下线性, 1 以上 ln (在 1 处与线性同斜率); 深亏的线只压在 1 以下的一小段
+double nav_fwd(double v, void *) { return v > 1.0 ? std::log(v) : v - 1.0; }
+double nav_inv(double s, void *) { return s > 0.0 ? std::exp(s) : s + 1.0; }
+// 刻度: 1 以下按线性取, 1 以上按对数取, 各按其所占像素
+void nav_ticks(ImPlotTicker &t, const ImPlotRange &r, float px, bool vertical, ImPlotFormatter f, void *fd) {
+  if (r.Max <= 1.0)
+    return ImPlot::Locator_Default(t, r, px, vertical, f, fd);
+  if (r.Min >= 1.0)
+    return ImPlot::Locator_Log10(t, r, px, vertical, f, fd);
+  const double lo = nav_fwd(r.Min, nullptr), hi = nav_fwd(r.Max, nullptr);
+  const float below = static_cast<float>(px * -lo / (hi - lo));
+  ImPlot::Locator_Default(t, ImPlotRange(r.Min, std::nextafter(1.0, 0.0)), below, vertical, f, fd); // 1 归对数段标
+  ImPlot::Locator_Log10(t, ImPlotRange(1.0, r.Max), px - below, vertical, f, fd);
+}
 
 // 池在选池表上的态
 enum Mark : uint8_t { kMarkNone,  // 未选
@@ -400,7 +416,10 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
   if (!ImPlot::BeginPlot("##style_nav", size, ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
     return -1;
   ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_None);
-  ImPlot::SetupAxisScale(ImAxis_Y1, s.log_y ? ImPlotScale_Log10 : ImPlotScale_Linear);
+  if (s.log_y) {
+    ImPlot::SetupAxisScale(ImAxis_Y1, nav_fwd, nav_inv);
+    ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].Locator = nav_ticks;
+  }
   ImPlot::SetupAxisFormat(ImAxis_X1, day_fmt, const_cast<std::vector<misc::Ymd> *>(&r.dates));
   std::vector<EndTag> tags;
   char id[24];
@@ -652,7 +671,7 @@ void RenderTabStyle(StyleService &svc, StyleUIState &s) {
   ImGui::SameLine(0, 16);
   ImGui::Checkbox("log", &s.log_y);
   if (ImGui::IsItemHovered())
-    tip("y 轴 (净值) 切对数刻度");
+    tip("y 轴 (净值) 1 以上切对数刻度; 1 以下恒为线性");
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
