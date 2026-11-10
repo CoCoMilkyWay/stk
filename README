@@ -359,7 +359,7 @@ stk/
 │   │   │       └── Console.hpp / console/              # 💹 调试台 (纯 ImGui): 布局图 (按类 + 绘制层还原界面, 可直接操作) / 窗口树 / 消息工具与 Spy / 录制器 / 探内存
 │   │   ├── disk/                                       # 💽 落盘: output/ 的唯一布局 + 唯一路径入口
 │   │   │   ├── Disk.hpp                                # 💽 段表 DISK_SEGS (字段 × 写法 × 值域) × 布局表 DISK_LAYOUT (一行一节点); name ⇄ parse / path ⇄ list / read ⇄ write (原子) / ensure ⇄ remove (墓碑)
-│   │   │   └── Sweep.hpp                               # 💽 开机整理: 残留直接清 / 基石 (orders / fundamental / concept + output/config 下本机配置) 自动迁入布局 / 其余不合布局的按 (节点, 名字) 归组逐组问删
+│   │   │   └── Sweep.hpp                               # 💽 开机整理: 残留 (含空目录) 直接清 / 基石 (orders / fundamental / concept + output/config 下本机配置) 自动迁入布局 / 其余不合布局的按 (节点, 名字) 归组逐组问删
 │   │   └── misc/                                       # 🔧 通用工具库
 │   │       ├── logging.hpp / print.hpp                 # 🔧 日志 / STL 容器格式化打印
 │   │       ├── format.hpp                              # 🔧 定宽数值格式化

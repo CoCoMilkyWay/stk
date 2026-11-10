@@ -80,10 +80,17 @@ def _sync_remote(fetch):
 
 
 def _prune_untracked():
-    """Offer to delete files that are neither tracked nor gitignored, one by one."""
+    """Offer to delete files that are neither tracked nor gitignored, one by one; then drop empty untracked directories."""
     for path in _git_paths("ls-files", "--others", "--exclude-standard"):
         if input(f"  delete untracked {path}? [Y/n] ").strip() in ("", "y", "Y"):
             os.remove(path)
+    for top in _git_paths("ls-files", "--others", "--exclude-standard", "--directory"):
+        if not top.endswith("/"):
+            continue
+        for path, _, _ in os.walk(top, topdown=False):
+            if not os.listdir(path):
+                print(f"  delete empty {path}")
+                os.rmdir(path)
 
 
 def _cleanup_processes():

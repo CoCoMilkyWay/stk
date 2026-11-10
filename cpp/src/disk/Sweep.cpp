@@ -83,7 +83,7 @@ struct Plan {
   std::vector<std::pair<Node, fs::path>> foreign; // (所在目录的节点, 路径)
 };
 
-// 每项一次分类: 布局内 (目录则下行) / 残留 / 放错地方的基石 / 不合布局
+// 每项一次分类: 空目录 (残留) / 布局内 (目录则下行) / 残留 / 放错地方的基石 / 不合布局
 void walk(const fs::path &at, Node n, const Key &k, Plan &plan) {
   std::vector<fs::directory_entry> entries{fs::directory_iterator(at), fs::directory_iterator()};
   std::sort(entries.begin(), entries.end());
@@ -92,7 +92,9 @@ void walk(const fs::path &at, Node n, const Key &k, Plan &plan) {
     const std::string name = p.filename().string();
     const bool dir = e.is_directory();
     Key kk = k;
-    if (const Node c = child(n, name, dir, kk); c != kNodeCount) {
+    if (dir && !e.is_symlink() && fs::is_empty(p)) {
+      plan.debris.push_back(p);
+    } else if (const Node c = child(n, name, dir, kk); c != kNodeCount) {
       if (def(c).kind == Kind::Dir)
         walk(p, c, kk, plan);
     } else if (debris(n, name, dir, k)) {
@@ -177,9 +179,8 @@ std::string describe(const std::vector<fs::path> &ps) {
   return "  (" + std::to_string(ps.size()) + " 处, 共 " + std::to_string(files) + " 个文件, " + std::to_string(bytes >> 20) + " MB)";
 }
 
-} // namespace
-
-void sweep() {
+// 残留 / 放错地方的基石处理到不再冒出 (删掉的目录让上层成空目录 → 下一轮清), 余下不合布局的
+std::vector<std::pair<Node, fs::path>> settle() {
   Plan plan = scan();
   while (!plan.debris.empty() || !plan.moves.empty()) {
     for (const fs::path &p : plan.debris) {
@@ -193,11 +194,13 @@ void sweep() {
     }
     plan = scan();
   }
-  if (plan.foreign.empty())
-    return;
+  return std::move(plan.foreign);
+}
 
-  const std::vector<std::vector<fs::path>> groups = group(plan.foreign);
-  std::cout << "[disk] " << plan.foreign.size() << " 处不合布局, " << groups.size() << " 组 (disk/Disk.hpp DISK_LAYOUT):" << std::endl;
+// 不合布局的先全部列出, 再逐组问删
+void ask(const std::vector<std::pair<Node, fs::path>> &foreign) {
+  const std::vector<std::vector<fs::path>> groups = group(foreign);
+  std::cout << "[disk] " << foreign.size() << " 处不合布局, " << groups.size() << " 组 (disk/Disk.hpp DISK_LAYOUT):" << std::endl;
   std::vector<std::string> name, what;
   for (const std::vector<fs::path> &g : groups) {
     name.push_back(pattern(g));
@@ -215,6 +218,13 @@ void sweep() {
     for (const fs::path &p : groups[i])
       fs::remove_all(p);
   }
+}
+
+} // namespace
+
+void sweep() {
+  for (std::vector<std::pair<Node, fs::path>> foreign = settle(); !foreign.empty(); foreign = settle())
+    ask(foreign);
 }
 
 } // namespace disk

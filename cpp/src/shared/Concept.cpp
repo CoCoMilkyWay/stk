@@ -71,6 +71,9 @@ void save_concepts(misc::Ymd date, const std::vector<Concept> &list) {
     s += '\n';
   }
   disk::write(disk::ConceptDay, {.date = date}, s);
+  for (const disk::Key &k : disk::list(disk::ConceptDay))
+    if (k.date != date)
+      disk::remove(disk::ConceptDay, k);
 }
 
 const ConceptTable &concepts() {
