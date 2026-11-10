@@ -144,7 +144,7 @@ void CtaLib::save_head() {
   disk::write(disk::LibCtaHead, lib_, {reinterpret_cast<const char *>(blob.data()), blob.size()});
 }
 
-bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vector<misc::Ymd> &dates) {
+bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk, const std::vector<misc::Ymd> &dates) {
   assert(dates.size() >= 2);
   lib_ = lib_key(lib.id);
   std::vector<uint32_t> lines;
@@ -153,7 +153,7 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vecto
       lines.push_back(static_cast<uint32_t>(l));
   const Quote::PerSide<std::vector<uint32_t>> keys{lib.axis.ids, std::move(lines)};
   const size_t NA = keys[kStock].size(), NB = keys[kBasket].size();
-  const Head want{kMagic, concepts().hash, dates.front()};
+  const Head want{kMagic, concepts().hash, pool_hash(), dates.front()};
   const auto fits = [&] {
     return head_ == want && keys_ == keys && !dates_.empty() && dates_.size() <= dates.size() && std::equal(dates_.begin(), dates_.end(), dates.begin());
   };
@@ -199,7 +199,7 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vecto
     line[keys_[kBasket][j]] = static_cast<uint32_t>(j);
   Quote::PerSide<std::ofstream> f;
   each_side([&]<Side S>() { f[S].open(disk::path(kFile[S], lib_), std::ios::binary | std::ios::app); });
-  const size_t NP = pool_count(), N = dates.size(), T = static_cast<size_t>(pool_.threads());
+  const size_t N = dates.size(), T = static_cast<size_t>(pool_.threads());
   const std::vector<size_t> dcols = Quote::row_cols(), mcols = Quote::minute_cols();
   std::vector<std::unique_ptr<Lane>> lanes;
   for (size_t t = 0; t < T; ++t)
@@ -217,11 +217,11 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vecto
       const size_t i = i0 + static_cast<size_t>(k);
       const misc::Ymd d = dates[i];
       rd.load_day_columns(dates[i - 1], dcols, L.dc);
-      Quote::read_row(L.dc, NA, NP, L.prev);
+      Quote::read_row(L.dc, NA, L.prev);
       rd.load_day_columns(d, dcols, L.dc);
-      Quote::read_row(L.dc, NA, NP, L.cur);
+      Quote::read_row(L.dc, NA, L.cur);
       rd.load_day_columns(d, mcols, L.mc);
-      Market::members(L.prev, lib.axis, NP, L.mem);
+      Market::members(L.prev, lib.axis, pk, d, L.mem);
       L.fold.open(Quote::kSlots);
       so.rec.assign(NA, {});
       so.pre.assign(L.prev.pre.begin(), L.prev.pre.end());

@@ -1,11 +1,12 @@
 #include "gui/quote/BasketRow.hpp"
 
-#include "features/Storage/FeatureLib.hpp"
 #include "shared/Basket.hpp" // basket_line / cut_of / concept_cut
 
 #include <cassert>
 #include <cmath>
+#include <span>
 #include <string_view>
+#include <vector>
 
 namespace GUI::Quote {
 
@@ -28,7 +29,7 @@ float val(const FeatureRead::DayColumns &dc, size_t t, size_t i, size_t a) {
   return std::isfinite(x) ? x : 0.f;
 }
 
-// row_cols 的列序; 子池 p ∈ [1, NP) 的池列 = kPools + p − 1
+// row_cols 的列序
 enum DayCol : size_t { kCs,
                        kTs,
                        kOpen,
@@ -39,7 +40,7 @@ enum DayCol : size_t { kCs,
                        kPre,
                        kShares,
                        kInd,
-                       kPools };
+                       kDayCols };
 
 } // namespace
 
@@ -49,9 +50,7 @@ std::vector<size_t> row_cols() {
                            col_of(L_1day, "low_day", ts::TfId::None), col_of(L_1day, "close_day", ts::TfId::None),
                            col_of(L_1day, "amount_day", ts::TfId::Log), col_of(L_1day, "pre_close", ts::TfId::None),
                            col_of(L_1day, "total_shares", ts::TfId::None), col_of(L_1day, "ind_l1", ts::TfId::None)};
-  assert(c.size() == kPools);
-  for (PoolId p = 1; p < pool_count(); ++p)
-    c.push_back(pool_def(p).pool_col);
+  assert(c.size() == kDayCols);
   return c;
 }
 
@@ -60,12 +59,11 @@ std::vector<size_t> minute_cols() {
           col_of(L_1min, "low", ts::TfId::None), col_of(L_1min, "close", ts::TfId::None), col_of(L_1min, "amount", ts::TfId::Log)};
 }
 
-void read_row(const FeatureRead::DayColumns &dc, size_t A, size_t NP, Row &r) {
+void read_row(const FeatureRead::DayColumns &dc, size_t A, Row &r) {
   for (std::vector<float> &v : r.px)
     v.resize(A);
   r.amount.resize(A), r.pre.resize(A), r.shares.resize(A);
   r.live.resize(A), r.trade.resize(A), r.ind.resize(A);
-  r.pool.resize((NP - 1) * A);
   for (size_t a = 0; a < A; ++a) {
     r.live[a] = val(dc, 0, kCs, a) > 0.5f;
     r.trade[a] = val(dc, 0, kTs, a) > 0.5f;
@@ -76,14 +74,16 @@ void read_row(const FeatureRead::DayColumns &dc, size_t A, size_t NP, Row &r) {
     r.shares[a] = val(dc, 0, kShares, a);
     const float k = val(dc, 0, kInd, a);
     r.ind[a] = k >= 1.f && k < static_cast<float>(kAllCuts) ? static_cast<uint8_t>(k + 0.5f) : 0;
-    for (size_t p = 1; p < NP; ++p)
-      r.pool[(p - 1) * A + a] = val(dc, 0, kPools + p - 1, a) > 0.5f;
   }
 }
 
-void members(const Row &r, const PoolAxis &axis, size_t NP, Members &m) {
+void members(const Row &r, const PoolAxis &axis, const pool::Picks &pk, misc::Ymd d, Members &m) {
   const ConceptTable &ct = concepts();
-  const size_t A = axis.size();
+  const size_t A = axis.size(), NP = pool_count();
+  assert(pk.axis == axis.hash && "选股表与库轴不符");
+  std::vector<std::span<const uint16_t>> in(NP); // [子池] 未扫到的成员 (升序, 随资产下标推进)
+  for (PoolId p = 1; p < NP; ++p)
+    in[p] = pk.of(p, d);
   m.clear();
   for (size_t a = 0; a < A; ++a) {
     const float c = r.px[3][a], cap = c * r.shares[a];
@@ -99,9 +99,12 @@ void members(const Row &r, const PoolAxis &axis, size_t NP, Members &m) {
       for (const uint16_t k : ct.concepts_of(axis.global(a)))
         put(concept_cut(k));
     }
-    for (PoolId p = 1; c > 0 && p < NP; ++p)
-      if (r.pool[(p - 1) * A + a])
-        put(cut_of(p));
+    for (PoolId p = 1; p < NP; ++p)
+      if (!in[p].empty() && in[p].front() == a) {
+        in[p] = in[p].subspan(1);
+        if (c > 0)
+          put(cut_of(p));
+      }
     m.next();
   }
 }

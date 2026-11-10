@@ -1,6 +1,6 @@
 // 截面方法实现 (Method/CS.hpp).
 //   Tf:     Reciprocal / Log
-//   Method: Rank / NormRank / WinsorRank / NeutralRank / Demean / Z / WinsorZ / Select{Low,High}{400,200} / SelectAll (+ 运行期分派表 column_fn)
+//   Method: Rank / NormRank / WinsorRank / NeutralRank / Demean / Z / WinsorZ (+ 运行期分派表 column_fn)
 //
 // 口径契约 (逐值决定全部截面列, 改动即改变已落盘库的口径):
 //   median_in_place: nth_element 取上中位, 偶数长度与下中位平均
@@ -74,12 +74,6 @@ float median_in_place(std::vector<float> &tmp) {
 // thread_local scratch: 避免每特征每分钟反复 malloc
 std::vector<float> &scratch_f(std::size_t reserve_n) {
   thread_local std::vector<float> v;
-  v.clear();
-  v.reserve(reserve_n);
-  return v;
-}
-std::vector<std::size_t> &scratch_idx(std::size_t reserve_n) {
-  thread_local std::vector<std::size_t> v;
   v.clear();
   v.reserve(reserve_n);
   return v;
@@ -349,39 +343,6 @@ void rank_inverse_normal(float *y, std::size_t n) {
     y[rank_index(sv[rank])] = inverse_normal_cdf((static_cast<float>(rank) + 1.0f) * scale);
 }
 
-// 池: 有限值中按 before (严格弱序, 并列按下标先到先得) 取前 N → 1, 其余 → 0; 有限值不足 N 全选;
-// 有限值不足非 NaN (范围) 的 kMinCover → 非 NaN 全选
-constexpr double kMinCover = 0.8;
-template <bool kHigh>
-void select_top(float *y, std::size_t n, std::size_t N) {
-  std::vector<std::size_t> &idx = scratch_idx(n);
-  std::size_t base = 0;
-  for (std::size_t i = 0; i < n; ++i) {
-    base += !std::isnan(y[i]);
-    if (std::isfinite(y[i]))
-      idx.push_back(i);
-  }
-  if (static_cast<double>(idx.size()) < kMinCover * static_cast<double>(base)) {
-    for (std::size_t i = 0; i < n; ++i)
-      y[i] = std::isnan(y[i]) ? 0.0f : 1.0f;
-    return;
-  }
-  auto before = [y](std::size_t a, std::size_t b) {
-    if (y[a] != y[b])
-      return kHigh ? y[a] > y[b] : y[a] < y[b];
-    return a < b;
-  };
-  if (idx.size() > N)
-    std::nth_element(idx.begin(), idx.begin() + static_cast<std::ptrdiff_t>(N), idx.end(), before);
-  const std::size_t k = std::min(N, idx.size());
-  thread_local std::vector<std::uint8_t> pick;
-  pick.assign(n, 0);
-  for (std::size_t j = 0; j < k; ++j)
-    pick[idx[j]] = 1;
-  for (std::size_t i = 0; i < n; ++i)
-    y[i] = pick[i] ? 1.0f : 0.0f;
-}
-
 } // anonymous namespace
 
 // ---- 元素预变换 ----
@@ -432,19 +393,6 @@ void WinsorZ::apply(float *y, std::size_t n) {
   winsor_mad(y, n, 3.0f);
   z(y, n);
   zero_fill(y, n);
-}
-
-void SelectLow400::apply(float *y, std::size_t n) { select_top<false>(y, n, 400); }
-
-void SelectHigh400::apply(float *y, std::size_t n) { select_top<true>(y, n, 400); }
-
-void SelectLow200::apply(float *y, std::size_t n) { select_top<false>(y, n, 200); }
-
-void SelectHigh200::apply(float *y, std::size_t n) { select_top<true>(y, n, 200); }
-
-void SelectAll::apply(float *y, std::size_t n) {
-  for (std::size_t i = 0; i < n; ++i)
-    y[i] = std::isfinite(y[i]) ? 1.0f : 0.0f;
 }
 
 void NeutralRank::prepare_logmc(float *mcap, std::size_t n) {

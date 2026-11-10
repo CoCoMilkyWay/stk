@@ -1,11 +1,11 @@
 #pragma once
-// 选池引擎: all.bar L_1day 基础列 → 逐行成员 (gui/task_beta/services/PoolSpec.hpp 的一组参数) → 篮子净值账
+// 选池引擎: all.bar L_1day 基础列 → 逐行成员 (features/Panel/PoolSpec.hpp 的一组参数) → 篮子净值账 (Style 页) / 选股表 (池表各子池)
 //   原料带 Tape = all.bar 全轴 × 已落盘日: 资产类 / 收益 / 市值常驻, 风格键按需另装 (load_key) 并排成逐行次序 (rank_key, 同风格的池共用一份)
 //   行 r 的键 / 资产态 = L_1day 行 r (= r+1 盘前态); 调仓行 r 选出的成员持有于其后的交易日
 //     (日频 = r+1 日; 周频 = 到下一调仓行的次日), 无前视
 //   交易日 d 的收益 = close_d / 前收 − 1 (前收 = 行 d−1 的 pre_close, 已除权; d 无成交 → 0): 后复权收盘价, 不看可成交 (与行情侧价格指数同口径)
+#include "features/Panel/PoolSpec.hpp"
 #include "features/Storage/FeatureRead.hpp"
-#include "gui/task_beta/services/PoolSpec.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
 #include "shared/Basket.hpp" // kWeights
@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -56,17 +57,24 @@ struct Ranks {
 // 逐行调 tick; 取消 → false
 bool rank_key(const Tape &t, const std::vector<float> &key, misc::exec::ForkJoin &ex, const Cancel &cancel, const Tick &tick, Ranks &rk);
 
-// 选股: 行 r 的切片内; N > 0: 键覆盖率 (有限 / 切片内) < kCover → 切片内全选 (键未到齐时不按残缺截面截两端),
-//   否则有限键取低端 / 高端前 N (次序两头往里取: 并列时低端取下标小的, 高端取下标大的; 有限不足 N 则全取); N = 0 全选 (rk 可空)
+// 一行的选股原料: 类号 [A] / 类内资产数 [kClasses]; N > 0 另要有限键的次序 [o, e) 与类内有限键数 fin [kClasses]
+struct RowView {
+  size_t A = 0;
+  const uint16_t *cls = nullptr, *cnt = nullptr;
+  const uint32_t *o = nullptr, *e = nullptr;
+  const uint16_t *fin = nullptr;
+};
+RowView row_view(const Tape &t, const Ranks *rk, size_t r); // rk 可空 (只给 N = 0 用)
+
+// 选股: 行内切片; N > 0: 键覆盖率 (有限 / 切片内) < kCover → 切片内全选 (键未到齐时不按残缺截面截两端),
+//   否则有限键取低端 / 高端前 N (次序两头往里取: 并列时低端取下标小的, 高端取下标大的; 有限不足 N 则全取); N = 0 全选
 inline constexpr float kCover = 0.8f;
 class Selector {
 public:
-  Selector(const Tape &t, const Ranks *rk, const Spec &s);
-  void at(size_t r, std::vector<uint32_t> &out) const; // out = 成员 (资产下标升序)
+  explicit Selector(const Spec &s);
+  void at(const RowView &r, std::vector<uint32_t> &out) const; // out = 成员 (资产下标升序)
 
 private:
-  const Tape &t_;
-  const Ranks *rk_;
   Spec s_;
   std::vector<uint8_t> in_;   // [类号 (含 kOut)] 在切片内
   std::vector<uint16_t> cls_; // 切片内的类
@@ -79,5 +87,19 @@ struct Book {
   size_t first = 0;                 // 首个有仓日 (无 → days)
 };
 void run_book(const Tape &t, const Ranks *rk, const Spec &s, Book &b);
+
+// 选股表 (池表全部子池同一份): all.bar 已落盘日 = 行, 行 r 的选股 = 子池参数在行 r 选出的成员 (all.bar 轴下标升序; 周频池也逐行选)
+//   交易日 d 的成员 = 源行的选股: 源行 = d 之前的末行 (日频) / d 所在周之前的末行 (周频 = 上周末个交易日收盘重选); 无源行 = 空
+//   与 run_book 的调仓同一口径. 子池库成员 (features/Panel/Pool.hpp) / 篮子 (gui/quote/BasketRow.hpp) / 因子引擎池篮子 (gui/engine/Load.hpp) 同读它
+struct Picks {
+  uint64_t axis = 0;                                         // all.bar 轴指纹
+  std::vector<misc::Ymd> rows;                               // all.bar 已落盘日 (升序)
+  std::span<const uint16_t> of(PoolId p, misc::Ymd d) const; // 子池 p (≥ 1) 在交易日 d 的成员
+
+  std::vector<std::vector<uint32_t>> off; // [p − 1][行 + 1]
+  std::vector<std::vector<uint16_t>> ids; // [p − 1] 逐行接排
+};
+// all.bar 库 lib 的选股表: 进程内一份, 已落盘日多出的行增量补 (轴变 / 旧行不再是前缀 → 重建); 库判废 → nullptr
+std::shared_ptr<const Picks> picks(const FeatureLib &lib);
 
 } // namespace pool

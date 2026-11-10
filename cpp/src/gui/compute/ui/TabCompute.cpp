@@ -273,7 +273,7 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
 
   const auto shown = [&](PoolId p) {
     const PoolDef &d = pool_def(p);
-    return side_pool(side, p) && (!state.pool_filter[0] || side == LibSide::Beta || std::strstr(d.name, state.pool_filter) || std::strstr(d.name_cn, state.pool_filter));
+    return side_pool(side, p) && (!state.pool_filter[0] || side == LibSide::Beta || std::strstr(d.name.c_str(), state.pool_filter) || std::strstr(d.name_cn.c_str(), state.pool_filter));
   };
   size_t n_shown = 0, n_side = 0;
   for (const PoolId p : pool_ids()) {
@@ -321,9 +321,11 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
     const PoolDef &pd = pool_def(p);
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    ImGui::Text("%s", pd.name);
+    ImGui::TextUnformatted(pd.name.c_str());
+    hover_tip("%s", pd.tip.c_str());
     ImGui::TableNextColumn();
-    ImGui::Text("%s", pd.name_cn);
+    ImGui::TextUnformatted(pd.name_cn.c_str());
+    hover_tip("%s", pd.tip.c_str());
     for (const TierId t : tiers) {
       const LibId l = lib_id(p, t);
       const bool computing = is_running && state.config.lib == l;
@@ -624,7 +626,7 @@ void RenderTabCompute(ComputeHub &hub, SharedData &data, LibSide side) {
     const bool ok = s && !busy && !s->plan.empty();
     if (s) {
       const FeatureLib &lib = s->lib;
-      ImGui::Text("库 %s (%s): 全量 Rebuild", lib_name(lib.id).c_str(), pool_def(lib_pool(lib.id)).name_cn);
+      ImGui::Text("库 %s (%s): 全量 Rebuild", lib_name(lib.id).c_str(), pool_def(lib_pool(lib.id)).name_cn.c_str());
       if (!s->plan.empty())
         ImGui::BulletText("区间 %s ~ %s (%zu 天), 按规划重建资产轴从头算", misc::dash(s->plan.front()).c_str(),
                           misc::dash(s->plan.back()).c_str(), s->plan.size());
@@ -660,7 +662,7 @@ void RenderTabCompute(ComputeHub &hub, SharedData &data, LibSide side) {
     const bool ok = s && !busy && s->lib.ready();
     if (s) {
       const FeatureLib &lib = s->lib;
-      ImGui::Text("库 %s (%s): 删除全部特征结果", lib_name(lib.id).c_str(), pool_def(lib_pool(lib.id)).name_cn);
+      ImGui::Text("库 %s (%s): 删除全部特征结果", lib_name(lib.id).c_str(), pool_def(lib_pool(lib.id)).name_cn.c_str());
       ImGui::BulletText("目录 %s", lib.dir.c_str());
       if (lib.ready())
         ImGui::BulletText("%s ~ %s (%zu 天, %zu 资产, 已落盘 %zu) 连同续算点, 删后只能 Rebuild 重建", misc::dash(lib.dates.front()).c_str(),

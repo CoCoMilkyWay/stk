@@ -12,7 +12,6 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <numeric>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -23,7 +22,7 @@
 //   每拍按收行判据 (for_each_close) 级联本拍末秒收行的各层 (节拍层 → L_1min → 分钟箱层 → L_1day, 细 → 粗); 档有该层才算
 //   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, for_each_close 同一级联) / end_day, 逐层 run<LVL>
 //   字段表 CS(ns, src_lvl, src, Tf, Method) 行由 CsLevel<T, LVL>::run 编译期展开 (与 fstore::RowWriter<T, LVL> 同构),
-//   每行 = run_one<...>: gather(valid 子集 dense; 池方法 cs::FullAxis 取全轴) → Tf::apply → Method::apply → scatter (子集外资产输出 0)
+//   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (子集外资产输出 0)
 //   源层任意: 源行 = level_asof(源列, 本列, t) (同刻先写的读同刻行, 后写的 (粗层 / 盘后列) 读已收的上一行; −1 = 前一交易日末行,
 //   与读端同一投影; 本列盘后 = FieldInfo::settle, 同层 CS 继承源列, 故 L_1day 盘后截面读同行).
 //   跨日 (−1): 本档读日环 d−1 槽位 (FeatureStore::cs_prev; IO(d−1) 等本日 cs_close 才放行), 只许 TS / 元列 —— d−1 的截面可能还在写;
@@ -181,9 +180,8 @@ public:
 
   // libs[T::kId] = 本库 (轴 sub → global); libs[旁读档] = 同池旁读档的库 (无旁读列时不读)
   CoreCs(FeatureStore<T> &store, [[maybe_unused]] const PerTier<FeatureLib> &libs)
-      : A_(store.query_A()), axis_indices_(A_), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
+      : A_(store.query_A()), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
-    std::iota(axis_indices_.begin(), axis_indices_.end(), size_t{0});
     if constexpr (kSides) {
       using S = typename TierSide<T>::type;
       const FeatureLib &side = libs[S::kId], &self = libs[T::kId];
@@ -240,9 +238,8 @@ public:
     static_assert(!Method::kNeutral || LVL != L_sec, "NeutralRank needs L_1min / bin / L_1day context (mcap / industry)");
     constexpr bool kSettle = T::LEVELS[LVL].fields[DST].settle;
 
-    static_assert(!(cs::FullAxis<Method> && Method::kNeutral), "全轴方法无中性化上下文");
     const uint64_t t0 = __builtin_ia32_rdtsc();
-    const std::vector<size_t> &idx = cs::FullAxis<Method> ? axis_indices_ : valid_indices_;
+    const std::vector<size_t> &idx = valid_indices_;
     const size_t n = idx.size();
     float *y = input_fp32_.data();
     gather_(src_col_<S, SRC_LVL, SRC, LVL, kSettle>(t), idx, y);
@@ -268,8 +265,7 @@ private:
       return;
     } else {
       TraceN(level_name(LVL));
-      // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面
-      // (池方法 cs::FullAxis 除外: 全轴, 成员范围由键掩码定).
+      // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面.
       // 虽是整日常量仍逐行读第 t 行: CS 在 t 的输入只许来自张量第 t 行 (行自足), 实盘逐秒推进时也成立 —— 别挪成每日向量
       constexpr size_t VALID = field_of<T>(LVL, "cs_valid");
       static_assert(VALID < T::LEVELS[LVL].field_count, "有 CS 行的层必须有 cs_valid 列");
@@ -404,7 +400,6 @@ private:
   std::array<IoSlot::Buf, LEVEL_COUNT> side_buf_{}; // [源层] 本日 (+ 承接日) 旁读张量 (旁读库轴)
 
   std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)
-  std::vector<size_t> axis_indices_;  // 全轴 0..A−1 (池方法 cs::FullAxis 的截面)
   std::vector<float> input_fp32_;
   std::vector<float> logmc_dense_;                                                      // 中性化输入 (本拍本层)
   std::vector<float> industry_dense_;                                                   // 中性化输入 (本拍本层)

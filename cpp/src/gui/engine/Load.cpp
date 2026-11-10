@@ -5,6 +5,7 @@
 #include "features/MetaFlag.hpp"                    // fmeta::valid / keep / finite
 #include "features/Node/Common/Label/LabelHold.hpp" // 只取 kContCloseMin 对账尾部界 (不含字段表)
 #include "features/Panel/Fund.hpp"                  // fund::SW2021_L1_COUNT (行业 ID 上界)
+#include "features/Panel/PoolSelect.hpp"            // pool::picks (BPlanes::in 子池位)
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
 #include "misc/profiler.hpp"
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <functional>
 #include <limits>
+#include <memory>
 
 // 因子层几何 (factor::Geo) 与特征库层对账: 下标 = id; 行 t 的末分钟 = 该行末秒所在的 L_1min 分钟 (每日行数已由 FactorLevel::seg 取自特征库层)
 static_assert(factor::kSegMax == static_cast<int>(TRADE_MINUTES_PER_DAY), "factor::kSegMax 必须等于 L_1min 每日分钟数");
@@ -355,12 +357,17 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   TraceN("FactorsLoadB");
   constexpr size_t K = factor::stat::kLegs;
   const FeatureTable &ft = io.ft;
-  assert(io.dm.pool == kAllPool && "池篮子在 all 池评估域 (全轴; 各池成员读池列)");
+  assert(io.dm.pool == kAllPool && "池篮子在 all 池评估域 (全轴; 各池成员 = all.bar 选股表)");
   B = BPlanes{};
   B.sh = shape_of(io, k);
-  const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg), NP = ft.b.pools.size();
-  assert(NP == pool_count() && NP <= static_cast<size_t>(kPoolBits));
-  // ---- 列段 ts_valid cs_valid lb_entry_ok T+1C 标签 [K] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 池列 [1, NP)
+  const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg), NP = pool_count();
+  assert(NP <= static_cast<size_t>(kPoolBits));
+  assert(io.dm.rs.has(kAllBar));
+  const std::shared_ptr<const pool::Picks> pk = pool::picks(io.dm.rs.libs[kAllBar]);
+  if (!pk)
+    return false;
+  assert(pk->axis == io.dm.rs.axis.hash && "选股表与评估域 A 轴不符");
+  // ---- 列段 ts_valid cs_valid lb_entry_ok T+1C 标签 [K] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1
   //      (日频原料 bar.1d, as-of 到网格行) ----
   ColList cols{io.dm.pool, {}};
   const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs), eo_i = cols.add(ft.y.entry);
@@ -372,9 +379,6 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   for (const Col &v : ft.b.val)
     cols.add(v);
   const size_t ind_i = cols.add(ft.b.ind_l1);
-  const size_t pool_i = cols.refs.size(); // 池 p 的列 = pool_i + p − 1
-  for (size_t p = 1; p < NP; ++p)
-    cols.add(ft.b.pools[p]);
   assert(cols.refs[ts_i].lib == io.dm.rs.main && "门控 / 标签 / K 线在标签库");
   std::vector<float> vadj(n, 0.f); // 本行 adj_factor (盘后列, as-of = 当日因子; 缺 / 非正 → 0): 装完把 close 乘成后复权, 即弃
   B.in.assign(n, 0);
@@ -391,24 +395,22 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   B.ind.assign(n, 0);
   const size_t nt = static_cast<size_t>(io.ex.threads());
   std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A)); // 每线程: 当日有成交 / all 截面门控
-  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &, size_t d, size_t tid) {
+  std::vector<std::vector<PoolMask>> sub(nt, std::vector<PoolMask>(A));                                       // 每线程: 当日子池成员位
+  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &day, size_t d, size_t tid) {
     gate_day(view, ts_i, cs_i, VR, A, has[tid], gate[tid].data());
     const std::vector<uint8_t> &on = has[tid];
+    std::vector<PoolMask> &sm = sub[tid];
+    std::fill(sm.begin(), sm.end(), PoolMask{0});
+    if (day.date)
+      for (PoolId p = 1; p < NP; ++p)
+        for (const uint16_t a : pk->of(p, day.date))
+          sm[a] |= pool_bit(p);
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
-      // 池成员位: 位 kAllPool = all 截面门控; 位 p = 池列 > 0.5 (NaN = 键外 → 不在池) ∧ 当日有成交
+      // 池成员位: 位 kAllPool = all 截面门控; 位 p = 选股表当日成员 ∧ 当日有成交
       PoolMask *in = B.in.data() + row;
       for (size_t a = 0; a < A; ++a)
-        in[a] = gate[tid][t * A + a] ? pool_bit(kAllPool) : PoolMask{0};
-      for (size_t p = 1; p < NP; ++p) {
-        const View w = view(pool_i + p - 1, t);
-        const PoolMask bit = pool_bit(static_cast<PoolId>(p));
-        for (size_t a = 0; a < A; ++a) {
-          feature_storage_t x;
-          if (on[a] && cell(w, a, x) && static_cast<float>(x) > 0.5f)
-            in[a] |= bit;
-        }
-      }
+        in[a] = (gate[tid][t * A + a] ? pool_bit(kAllPool) : PoolMask{0}) | (on[a] ? sm[a] : PoolMask{0});
       // 建仓可成交码 / T+1C 两侧 (同 load_y 的折叠, 池内 = 在任一池)
       const View we = view(eo_i, t), wl[K] = {view(lab_i, t), view(lab_i + 1, t)};
       for (size_t a = 0; a < A; ++a) {

@@ -1,7 +1,7 @@
 // Table — 见头文件. include 因子契约头 (Stat/Contract.hpp: hold_ok / hold_from_name), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Table.hpp"
 
-#include "features/Storage/FeatureLib.hpp" // feature_pools
+#include "features/Storage/FeatureLib.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -176,8 +176,6 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
   for (int m = 0; m < kPoolVals; ++m)
     t.b.val[m] = daily(kPoolValCols[m]);
   t.b.ind_l1 = daily("ind_l1");
-  for (const PoolDef &d : feature_pools())
-    t.b.pools.push_back(d.pool_col == SIZE_MAX ? Col{} : Col{TierId::Bar, L_1day, static_cast<uint32_t>(d.pool_col)});
   struct Lab {
     bool is_long;
     int hold;

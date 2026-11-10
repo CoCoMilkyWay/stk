@@ -38,7 +38,7 @@ stk/
 ├── AGENT.md                                            # 🤖 Agent 挖因子: 状态机 / 调用协议与工具表 / 会话流水字段
 ├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + CUDA 开关 → py/main.py
 ├── config/                                             # ⚙️ 配置: 入 git 的共享部分 + local/ 本机部分 (整目录 gitignore)
-│   ├── pools.json                                      # ⚙️ Beta → Style 选定的子池 (池名 = gui/task_beta/services/PoolSpec.hpp 规范串)
+│   ├── pools.json                                      # ⚙️ 子池表: Beta → Style 选定的子池 (池名 = features/Panel/PoolSpec.hpp 规范串; 无文件 = 缺省池表); 启动时读, 重启生效
 │   ├── agent/                                          # ⚙️ Agent: prompt/<名>.md 提示词模板 (system / first / round / retry / review / test) · families.md 特征族卡
 │   ├── sample/                                         # ⚙️ 样例数据 (Level-1 / Level-2 / 财务报表); L2/README = 逐笔 CSV 字段格式
 │   └── local/                                          # ⚙️ 本机 (gitignore)
@@ -105,15 +105,20 @@ stk/
 │   │   │   ├── OrderBook/                              # 🧮 限价订单簿引擎: LimitOrderBook (买卖盘维护 + 撮合) / LimitOrderBookDefine (订单 / 价位结构)
 │   │   │   ├── Sample/                                 # 🧮 重采样: 逐笔 / bar1m → 稠密分钟 K (Tick2Min / Bar2Min) → 本层 bar (Min2Bin); run bar
 │   │   │   ├── Node/Lob/TS/<分类>/                     # 🧮 Lob 档节点: 节点类 + NODE_ / FIELDS_ 宏
-│   │   │   ├── Node/Bar/{TS,CS}/<分类>/                # 🧮 Bar 档节点: TS 同上; CS = 截面列 (只有 FIELDS_ 行); Pool/ = 池键 + 池列 pool_<pool>
+│   │   │   ├── Node/Bar/{TS,CS}/<分类>/                # 🧮 Bar 档节点: TS 同上; CS = 截面列 (只有 FIELDS_ 行)
 │   │   │   ├── Node/Common/<分类>/                     # 🧮 两档共用节点类 (只许 class + helper 宏, 不许 NODE_ / FIELDS_)
 │   │   │   ├── Node/unused/                            # 🧮 未启用半成品
 │   │   │   ├── Method/                                 # 🧮 TS.hpp / CS.hpp 时序 / 截面归一方法 (字段表 SRC 列引用)
 │   │   │   ├── Panel/                                  # 🧮 日频面板 (TS / CS 的日频数据源, 两者对仗)
 │   │   │   │   ├── Fund.hpp                            # 🧮 fund::Panel 日频 PIT 基本面 (全市场): 全交易日历 × 全局 A 轴 + 逐资产事件链; 市场收益 / 长窗量预计算
+│   │   │   │   ├── PoolSpec.hpp                        # 🧮 池参数: 子池 = 风格 (排序键) × 端 × 只数 × 周期 × ST / 板块 / 融资切片 × 过滤
+│   │   │   │   │                                       #    · 池名 (目录名) = 各维段以 "." 连; 显示名 = 简称 (低β200 / 沪主板), 同简称按池表序加 A / B / C…; 悬停看全部参数
+│   │   │   │   ├── PoolSelect.hpp                      # 🧮 选池引擎: all.bar L_1day 基础列 → 逐行成员 (一组 Spec)
+│   │   │   │   │                                       #    · 选股表 Picks: 子池表各池在 all.bar 每个落盘行的成员 (进程内一份, 增量补) → 子池库 / 篮子 / 组合的子池成员
+│   │   │   │   │                                       #    · 篮子净值账 run_book: Beta → Style 的参数网格回测
 │   │   │   │   └── Pool.hpp                            # 🧮 pool::Panel 池日频面板: 本库 A 轴 + 逐日成员 (→ cs_valid) + 轴外
 │   │   │   │                                           #    · 成员沿库树来自上游: all.bar = 当日活跃 (在市 ∧ 上市满 365 日 ∧ 行业已知, 含 ST);
-│   │   │   │                                           #      子池 Bar = all.bar 库 D−1 收盘行池列; Lob = 同池 Bar 库当日 cs_valid (Lob 轴 ⊆ 同池 Bar 轴)
+│   │   │   │                                           #      子池 Bar = all.bar 选股表 (D 之前的调仓行选出); Lob = 同池 Bar 库当日 cs_valid (Lob 轴 ⊆ 同池 Bar 轴)
 │   │   │   │                                           #    · A 轴 = 本库日期轴内进过池的资产, 轴上资产全程算 TS; 建库即冻结, 续算沿用, 新进池的记轴外
 │   │   │   └── Storage/                                # 🧮 特征存储
 │   │   │       ├── FeatureTier.hpp                     # 🧮 写端层表: 字段表 → 编译期层表
@@ -122,7 +127,7 @@ stk/
 │   │   │       │                                       #    · 行时间代数: emit 全序 = (行末秒, 层, 盘后); level_asof(src, dst, t) = 不晚于 dst 行末的最近 src 行 (−1 = 前一交易日末行)
 │   │   │       │                                       #    · 收行判据 level_closes / for_each_close: 哪层在哪秒收行的唯一判据 (写端 CoreTs / CoreCs 同一路径)
 │   │   │       ├── FeatureLib.hpp                      # 🧮 特征库: 库 LibId = 池 × 档; 每库一份清单 lib.json (A 轴 / 日期轴 / 轴外; 写端规划后落, 读端只读)
-│   │   │       │                                       #    · 池表 feature_pools: [0] = all (全市场); 其余 = 子池 (all Bar 库 pool_<pool> 列)
+│   │   │       │                                       #    · 池表 feature_pools (启动时定): [0] = all (全市场); 其余 = 子池表 config/pools.json
 │   │   │       │                                       #    · 库树 lib_parent: all.bar 为根 → 子池 Bar 库 → 同池 Lob 库; 计算序 lib_order = 上游先, 本库日须落在上游日期轴上
 │   │   │       ├── FeatureDay.hpp                      # 🧮 日文件格式: write ⇄ read 互逆 (逐列编码 + 列目录)
 │   │   │       ├── FeatureStore.hpp                    # 🧮 写端存储引擎: [T][F][A] Float16 日环; TS / CS / IO 三段 open-close 握手; 续算从盘上 seed 尾窗日
@@ -201,7 +206,7 @@ stk/
 │   │   │   │   └── services/
 │   │   │   │       ├── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin; 篮子当日按 BasketHistory 交接的成员表增量合成
 │   │   │   │       ├── StockHistory.hpp                # 🖥️ 个股历史: 基本面日线 + bar1m 分钟 (LRU)
-│   │   │   │       └── BasketHistory.hpp               # 🖥️ 篮子价格指数: 源 = all.bar 库 (D 日成员 / 权重取 D−1 收盘行), 账本只折新日; 库末日之后由基本面补日
+│   │   │   │       └── BasketHistory.hpp               # 🖥️ 篮子价格指数: 源 = all.bar 库 (D 日成员 / 权重取 D−1 收盘行, 子池成员取选股表), 账本只折新日; 库末日之后由基本面补日
 │   │   │   ├── task_settings/TaskSettings.hpp          # 🖥️ 设置: 配置管理
 │   │   │   ├── task_tools/                             # 🖥️ 工具: LaTeX 渲染 / 系统监控
 │   │   │   ├── task_database/                          # 🖥️ 数据库管理
@@ -223,8 +228,6 @@ stk/
 │   │   │   │       └── TabCalendar.hpp                 # 🖥️ 交易日历格: 除权除息 / 节假日 / 回测区间 / L2 覆盖
 │   │   │   ├── task_beta/                              # 🖥️ Beta 任务 (风格择优)
 │   │   │   │   ├── TaskBeta.hpp                        # 🖥️ Beta 任务主界面: Compute (只 all.bar) / Style
-│   │   │   │   ├── services/PoolSpec.hpp               # 🖥️ 池参数框架: 子池 = 风格 (排序键) × 端 × 只数 × 周期 × ST / 板块 / 融资切片 × 过滤; 池名 = 各维段以 "." 连
-│   │   │   │   ├── services/PoolSelect.hpp             # 🖥️ 选池引擎: all.bar L_1day 基础列 → 逐行成员 (一组 Spec) → 篮子净值账
 │   │   │   │   ├── services/StyleService.hpp           # 🖥️ 一个风格的参数网格逐组选池 (PoolSelect) → 篮子净值 / 绩效 (对全A)
 │   │   │   │   └── ui/TabStyle.hpp                     # 🖥️ 风格 × 参数网格回测, 选定的子池写 pools.json
 │   │   │   ├── task_alpha/                             # 🖥️ Alpha 任务 (因子挖掘, factor/ 的 GUI)
@@ -383,7 +386,7 @@ stk/
 │   │   ├── factor/op_check.cpp                         # 💾 三后端对拍 CLI (独立 target)
 │   │   ├── factor/op_check_gpu.cu                      # 💾 GPU 后端 CUDA 实现 (GPU_BACKEND=CUDA 时入链)
 │   │   ├── factor/op_check_gpu_stub.cpp                # 💾 GPU stub (未开 CUDA)
-│   │   ├── features/FeatureMeta.cpp                    # 💾 字段表元数据唯一 TU (增删特征 GUI 不重编) + 池表
+│   │   ├── features/FeatureMeta.cpp                    # 💾 字段表元数据唯一 TU (增删特征 GUI 不重编)
 │   │   ├── worker/compute/Feed{Lob,Bar}.cpp            # 💾 两档的源 TierFeed + 档入口表 (Lob fast-math / Bar precise-math)
 │   │   ├── worker/compute/StageCs.cpp                  # 💾 截面 cs_loop (档无关)
 │   │   ├── worker/compute/StageIo.cpp                  # 💾 落盘 io_loop (档无关)
@@ -467,7 +470,6 @@ stk/
 #                        (Lob 档的 Fund 节点只供盘中节点取前收 / 涨跌停, 不落盘)
 #                        全市场截面 / 长窗的日频量 (市场收益 → ivol / β, 趋势回归, 12−1 动量) 在 fund::Panel 预计算 (Panel/Fund.cpp build_market), 经 Fund 口进 TS
 #        - 截面列:       Node/Bar/CS/Fund/Valuation.hpp
-#        - 池列:         Node/Bar/CS/Pool/Pool.hpp
 #
 # 加在哪 (先定档: 要逐笔 / 盘口 → Lob; 只要分钟 K + 基本面 → Bar):
 #   - 时序列:   Node/<Tier>/TS/<分类>/<Name>.hpp
@@ -479,8 +481,8 @@ stk/
 #       · 行末源标: CS(<源档>, <层>, <源列>, Tf, Method); <层> 任意: 源行 = level_asof(源列, 本列, t)
 #         (粗层读已收的上一行; 落到前一交易日只许 TS / 元列, 区间首日 NaN)
 #   - 两档都要: 节点类放 Node/Common/<分类>/, 两档各写各的 NODE_ / FIELDS_ (列名跨档不许重名, FeatureMeta.cpp 编译期断言)
-#   - 新池:   Node/Bar/CS/Pool/Pool.hpp 加一列 pool_<pool> = 多一个子池 <pool> (两档各一库)
-#       · 键不够就在 Node/Bar/TS/Pool/PoolKey.hpp 加
+#   - 新池:   不写节点; Beta → Style 勾选写 config/pools.json (重启生效), 每个子池两档各一库
+#       · 新风格 (排序键) = features/Panel/PoolSpec.hpp 风格表加一行 + PoolSelect.cpp 键表 kKeyDefs 对应一行
 #   - 其他文件一律不改: CMake 按档扫描生成 <Tier>/NodesGenerated.hpp + FieldsGenerated.hpp
 #
 # 规矩:

@@ -277,7 +277,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
         ImGui::TextUnformatted("Pool:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(140);
-        if (ImGui::BeginCombo("##factor_pool", pool_def(state->want_pool).name)) {
+        if (ImGui::BeginCombo("##factor_pool", pool_def(state->want_pool).name_cn.c_str())) {
           if (ImGui::IsWindowAppearing()) {
             state->pool_files.clear();
             for (const PoolDef &d : feature_pools()) {
@@ -288,17 +288,19 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
             }
           }
           assert(state->pool_files.size() == feature_pools().size());
-          float cn_x = 0.0f; // 中文名列起点 (对齐最长池名)
+          float cn_x = 0.0f; // 因子数列起点 (对齐最长池名)
           for (const PoolDef &d : feature_pools())
-            cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name).x);
+            cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name_cn.c_str()).x);
           cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
           for (const PoolId p : pool_ids()) {
             const PoolDef &d = pool_def(p);
             const bool selected = state->want_pool == p;
-            if (ImGui::Selectable(d.name, selected))
+            if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
               state->want_pool = p;
+            if (ImGui::IsItemHovered())
+              tip("%s", d.tip.c_str());
             ImGui::SameLine(cn_x);
-            ImGui::TextDisabled("%s (%zu)", d.name_cn, state->pool_files[p]);
+            ImGui::TextDisabled("(%zu)", state->pool_files[p]);
             if (selected)
               ImGui::SetItemDefaultFocus();
           }

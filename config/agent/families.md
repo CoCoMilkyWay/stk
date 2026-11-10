@@ -124,9 +124,6 @@
 - `mcap` / `fmcap` (亿元), `pe_ttm` / `pb_mrq` / `ps_ttm` / `pcf_ttm` (市值 / 财务量, 亏损为负), `is_limit_up` / `is_limit_dn` (箱末价在涨 / 跌停), `is_low_px` (< 1 元), `is_low_mcap`.
 - 坑: 比率在分母近 0 时极端 (用倒数口径的 `*_cs` 更稳); 标记列是 0/1.
 
-# Bar/TS/Pool/PoolKey 池排序键
-- `key_*`: 构造风格池用的日频键 (size / ep / bp / dy / roe / inv / mom / rev / turn / ivol / resvol / beta / trend / price / st / sst), 定义同 Fund / Valuation 的对应列; 母集外 NaN.
-
 # Bar/CS/Basic/Kline 股价截面分位
 - `close_cs`: 分钟收盘价去极值后的截面分位.
 
@@ -135,7 +132,3 @@
 
 # Bar/CS/Fund/Valuation 估值截面分位 (5 分钟)
 - `ep_ttm_cs` / `bp_mrq_cs` / `sp_ttm_cs` / `cp_ttm_cs`: 估值倒数经行业 / 市值中性化后的截面分位; `mcap_cs` / `fmcap_cs`: 市值截面分位.
-
-# Bar/CS/Pool/Pool 风格池成员位
-- `pool_*`: 0/1, 是否在该风格池 (交易日 D 用 D−1 收盘的池).
-- 坑: 0/1 离散, 不能直接作根输入; 本作用域的池子固定, 与本池同名的那列在池内恒为 1.

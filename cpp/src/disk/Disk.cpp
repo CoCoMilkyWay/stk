@@ -233,6 +233,14 @@ bool parse(Node n, std::string_view name, Key &k) {
       return false;
     k.stamp = v;
     return true;
+  case Seg::Pool: // 池名 = all 或子池规范码 (点分各维, 见 features/Panel/PoolSpec.hpp)
+    for (size_t i = 0, j = 0; i <= v.size(); j = ++i) {
+      i = std::min(v.find('.', i), v.size());
+      if (!token(v.substr(j, i - j)))
+        return false;
+    }
+    k.pool = v;
+    return true;
   default:
     if (!token(v))
       return false;

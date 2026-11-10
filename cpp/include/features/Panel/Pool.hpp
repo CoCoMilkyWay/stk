@@ -4,11 +4,10 @@
 //   每库一份, 成员沿库树自上游来 (features/Storage/FeatureLib.hpp lib_parent):
 //   逐日成员 (第 D 日, 只是 (资产, 日) 的 bool; 各层同一成员, 整日常量, 含 L_1day):
 //     all 定轴库   = 当日活跃 (fund::Panel::live, D 日盘前态; 与 Fund live 口同一份)
-//     子池定轴库   = 上游 all Bar 库 D 的前一交易日 (其日期轴上的前一日) L_1day 行 (收盘) 的 pool_<pool> 列 > 0.5
-//                    (池是 Bar 档截面列 Node/Bar/CS/Pool/Pool.hpp, 盘后列: 盘中 as-of 恒 -1)
-//                    L_1day 也不读 D 收盘行: 池键范围按次日 (D+1) 停牌 / ST 判 (盘后列), D 收盘建仓时尚不可知 (前视)
-//     随轴库 (Lob) = 上游同池定轴库 D 的 L_1day 行 cs_valid (即上游那份面板写下的成员位)
-//     上游轴外 = 不在池; 上游一律经读端 Source 同一投影读 (level_asof): 盘后池列 → D−1 收盘行, 盘中 cs_valid → D 行
+//     子池定轴库   = 上游 all Bar 库的选股表 (features/Panel/PoolSelect.hpp Picks): 池参数 (features/Panel/PoolSpec.hpp) 在 D 之前的
+//                    调仓行 (日频 = D−1, 周频 = 上周末个交易日) 收盘选出的成员; D 收盘行不读: 切片按次日 (D+1) 停牌 / ST 判, D 收盘建仓时尚不可知 (前视)
+//     随轴库 (Lob) = 上游同池定轴库 D 的 L_1day 行 cs_valid (即上游那份面板写下的成员位), 经读端 Source 同一投影读 (level_asof)
+//     上游轴外 = 不在池
 //   自然轴 = 本库本该有的 A 轴 (全局 id 升序): all 定轴库 = 全部标的 (asset_axis 全轴); 其余 = dates 内进过池的
 //     (随轴库只看自己的日期段 ⇒ 轴 ⊆ 同池定轴库轴)
 //   axis() = 旧清单轴 (续算冻结) 或自然轴 (全量). 张量列 / 落盘 / 读端都按它; 轴上资产在区间内全程算 TS, 区间内日后进池不用补历史

@@ -2,8 +2,9 @@
 #include "gui/task_beta/ui/TabStyle.hpp"
 
 #include "disk/Disk.hpp"
-#include "gui/Tasks.hpp"      // StatusColor
-#include "gui/util/Chart.hpp" // 色 / sheet_width / draw_end_tags
+#include "features/Storage/FeatureLib.hpp" // feature_pools (本进程池表) / kMaxPools
+#include "gui/Tasks.hpp"                   // StatusColor
+#include "gui/util/Chart.hpp"              // 色 / sheet_width / draw_end_tags
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "imgui_internal.h" // TableGetHoveredRow
@@ -19,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -44,7 +46,8 @@ constexpr const char *kStyleTip =
     "  · 过滤 (次新 / 停牌 / 行业未知 / 风险预警 各 留 / 剔, 缺省只留); 切片 = ST ∩ 板块 ∩ 融资 ∩ 过滤后的在市资产\n"
     "• 名 = 风格端.只数.周期.ST.板块.融资.过滤 (灰段 = 不起作用: 全 / 不剔); 全程切片为空的组不列\n"
     "• 篮子 = 行 D 收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 超额 / IR 对全A (在市全选, 日频, 同权重)\n"
-    "• 勾选 = 改选中 (落地蓝 / 新选橙 / 去掉红; 有选池态的恒在表前); [确认…] 弹窗列出改动, 写 pools.json 即落地\n"
+    "• 勾选 = 改选中 (落地蓝 / 新选橙 / 去掉红; 有选池态的恒在表前); [确认…] 弹窗列出改动, 写 pools.json 即落地, 重启后计算 / 各页用新池表\n"
+    "• 池表里的池名 = 简称 (高低端 + 风格 + 只数, 如 低β200; 全选池 = 切片名), 同简称按池表序加 A / B / C…; 悬停池名看全部参数\n"
     "• 主图: 线色 = 夏普名次 (绿好 → 红差); 悬停网格条某一维 = 按该维取值着色 (按钮字色即图例), 看哪个取值整体占优\n"
     "• 细线 = 未选, 粗线 = 落地 / 新选 / 去掉, 灰 = 全A; 悬停图上 / 表行 = 白粗线 + 绩效";
 
@@ -341,6 +344,13 @@ void changes(StyleUIState &s) {
     ImGui::TextDisabled("选池 %zu (= 落地)", s.landed.size());
     if (ImGui::IsItemHovered())
       tip("落地 = %s", disk::path(disk::PoolsFile).c_str());
+    const std::span<const PoolDef> run = feature_pools();
+    if (!std::ranges::equal(run.subspan(1), s.landed, {}, &PoolDef::spec)) {
+      ImGui::SameLine();
+      ImGui::TextColored(kStratCol, "重启生效");
+      if (ImGui::IsItemHovered())
+        tip("本进程的池表 (计算 / 各页) 启动时读一次, 落地的新池表重启后才用上");
+    }
   } else {
     ImGui::TextColored(kStratCol, "+%zu", add.size());
     ImGui::SameLine();
@@ -356,19 +366,33 @@ void changes(StyleUIState &s) {
   }
   if (!ImGui::BeginPopupModal(kModal, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     return;
-  ImGui::Text("写入 %s: 池表 %zu → %zu", disk::path(disk::PoolsFile).c_str(), s.landed.size(), s.chosen.size());
+  ImGui::Text("写入 %s: 池表 %zu → %zu (重启生效)", disk::path(disk::PoolsFile).c_str(), s.landed.size(), s.chosen.size());
+  // 池名 = 新池表序的简称 (同简称加 A/B/C…); 去掉的按旧池表序
+  const std::vector<std::string> now = pool::aliases(s.chosen), was = pool::aliases(s.landed);
+  const auto alias = [](const std::vector<Spec> &t, const std::vector<std::string> &a, const Spec &p) { return a[static_cast<size_t>(std::ranges::find(t, p) - t.begin())]; };
   const float lh = ImGui::GetTextLineHeightWithSpacing();
   ImGui::BeginChild("##style_diff", ImVec2(0, std::min(static_cast<float>(add.size() + del.size()) * lh + lh, 24.0f * lh)), ImGuiChildFlags_Borders);
-  for (const Spec &p : add)
-    ImGui::TextColored(kStratCol, "+ %s  %s", pool::name_cn(p).c_str(), pool::code(p).c_str());
-  for (const Spec &p : del)
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "− %s  %s", pool::name_cn(p).c_str(), pool::code(p).c_str());
+  for (const Spec &p : add) {
+    ImGui::TextColored(kStratCol, "+ %s  %s", alias(s.chosen, now, p).c_str(), pool::code(p).c_str());
+    if (ImGui::IsItemHovered())
+      tip("%s", pool::detail_cn(p).c_str());
+  }
+  for (const Spec &p : del) {
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "− %s  %s", alias(s.landed, was, p).c_str(), pool::code(p).c_str());
+    if (ImGui::IsItemHovered())
+      tip("%s", pool::detail_cn(p).c_str());
+  }
   ImGui::EndChild();
+  const bool fits = s.chosen.size() + 1 <= kMaxPools;
+  if (!fits)
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "子池至多 %zu 个 (库号 = 池 × 档 是 8 位)", kMaxPools - 1);
+  ImGui::BeginDisabled(!fits);
   if (ImGui::Button("写入", ImVec2(90, 0))) {
     pool::save_pools(s.chosen);
     s.landed = s.chosen, ++s.pick_gen;
     ImGui::CloseCurrentPopup();
   }
+  ImGui::EndDisabled();
   ImGui::SameLine();
   if (ImGui::Button("取消", ImVec2(90, 0)))
     ImGui::CloseCurrentPopup();
@@ -392,7 +416,7 @@ void name_text(const StyleLine &l, const ImVec4 &col) {
 // 一条线的绩效提示
 void line_tip(const StyleUIState &s, const StyleResult &r, size_t i) {
   const StyleLine &l = r.lines[i];
-  std::string t = s.names[i] + "  " + pool::code(l.spec) + "  · " + kMarkName[s.marks[i]] + "\n剔: " + pool::filter_cn(l.spec.filter);
+  std::string t = s.names[i] + "  " + pool::code(l.spec) + "  · " + kMarkName[s.marks[i]] + "\n简称: " + pool::short_cn(l.spec) + "\n剔: " + pool::filter_cn(l.spec.filter);
   for (int c = 0; c < kStyleCols; ++c) {
     char v[32];
     const double x = col_val(l, c);

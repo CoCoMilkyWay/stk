@@ -1,11 +1,13 @@
 #include "gui/task_market/services/CtaService.hpp"
 
+#include "features/Panel/PoolSelect.hpp"
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/date.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -36,7 +38,8 @@ bool CtaService::run(CtaRequest &req) {
       dates.push_back(d);
   if (dates.size() < 2)
     return publish(req, "all.bar 特征库落盘不足 2 日.");
-  if (!lib_.sync(lib, rd, dates))
+  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib);
+  if (!pk || !lib_.sync(lib, rd, *pk, dates))
     return false;
   if (req.key == kCtaNone)
     return publish(req, {});

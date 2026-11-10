@@ -1,6 +1,0 @@
-{
- "type": "alpha",
- "name_cn": "通达信小盘价值",
- "expr": "CsRank(TsSub(TsAdd(CsRank(bar.5m.cp_ttm_cs), CsRank(bar.5m.sp_ttm_cs)), TsAdd(CsRank(bar.5m.mcap), CsRank(bar.5m.fmcap))))",
- "note": "通达信排名: 总市值↑ 1 + 流通市值↑ 1 + 中性 CP↓ 1 + 中性 SP↓ 1, 降序秩 = N + 1 − 升序秩, 等权和越小越靠做多端 ⇔ CP / SP 秩和减市值秩和越大; 小盘池即其选股 / 筛选条件"
-}

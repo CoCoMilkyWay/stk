@@ -1,5 +1,5 @@
 // Beta→Style: 风格篮子的参数优选 (StyleService; 原料 = all.bar 库), 选定的子池写 config/pools.json.
-//   右表 = 风格 (gui/task_beta/services/PoolSpec.hpp kStyleDefs, 名后计 落地 / 选中 的池数),
+//   右表 = 风格 (features/Panel/PoolSpec.hpp kStyleDefs, 名后计 落地 / 选中 的池数),
 //     点一行 = 打开 (至多一个) = 按左上参数网格 (端 / 只数 / 周期 / 权重 / ST / 板块 / 融资 / 过滤表各条件 各维多选, 笛卡尔积) 逐组选池回测,
 //     其下列全A 两条 + 各组 × 权重的线 (全程切片为空的组不列):
 //     勾选 | 中文名 (各段按维, 不起作用的段灰; 落地蓝 / 新选橙 / 去掉红) | 年化 | 夏普 | 回撤 | 超额 (对全A 同权重) | IR | 年换手, 底色 = 组内名次;
@@ -10,7 +10,7 @@
 //   右表与 Market 各页同宽 (sheet_width)
 #pragma once
 
-#include "gui/task_beta/services/PoolSpec.hpp"     // Spec / Grid
+#include "features/Panel/PoolSpec.hpp"             // Spec / Grid
 #include "gui/task_beta/services/StyleService.hpp" // StyleRequest
 
 #include <cstdint>

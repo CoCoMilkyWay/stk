@@ -1,11 +1,13 @@
 #include "features/Panel/Pool.hpp"
 #include "features/Panel/Fund.hpp"
+#include "features/Panel/PoolSelect.hpp" // 子池成员: all 库选股表
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeaturePlane.hpp" // 上游读: Source / load_source / source_row (与读端同一份)
 
 #include <algorithm>
 #include <cassert>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <string_view>
 
@@ -75,22 +77,33 @@ Panel Panel::build(LibId lib, const fund::Panel &fund, std::span<const misc::Ymd
   Panel p;
   p.dates_.assign(dates.begin(), dates.end());
 
-  // 全轴逐日成员 [date_i][global]: 根 (all 定轴库) = 当日活跃; 其余 = 上游列 (子池定轴库: all 库池列; 随轴库: 同池定轴库 cs_valid), 上游轴外 = 不在池
+  // 全轴逐日成员 [date_i][global]: 根 (all 定轴库) = 当日活跃; 子池定轴库 = all 库选股表; 随轴库 = 同池定轴库 cs_valid; 上游轴外 = 不在池
   const std::optional<LibParent> parent = lib_parent(lib);
   const size_t n = asset_axis().size();
   std::vector<uint8_t> full;
   FeatureLib up;
   if (!parent)
     full = live_members(fund, dates, n);
-  else {
+  else if (axis_lib(lib) != lib) {
     up = load_lib(parent->lib);
-    const size_t col = axis_lib(lib) != lib ? col_of(up.tier(), L_1day, "cs_valid") : pool_def(lib_pool(lib)).pool_col;
-    const std::vector<uint8_t> bits = parent_bits(up, col, dates);
+    const std::vector<uint8_t> bits = parent_bits(up, col_of(up.tier(), L_1day, "cs_valid"), dates);
     const size_t As = up.axis.size();
     full.assign(dates.size() * n, 0);
     for (size_t i = 0; i < dates.size(); ++i)
       for (size_t a = 0; a < As; ++a)
         full[i * n + up.axis.global(a)] = bits[i * As + a];
+  } else {
+    up = load_lib(parent->lib);
+    assert(up.ready() && "上游库未建: 先算上游库");
+    const std::shared_ptr<const Picks> pk = picks(up);
+    assert(pk && "上游库判废 (头不符): 重算上游库");
+    full.assign(dates.size() * n, 0);
+    for (size_t i = 0; i < dates.size(); ++i) {
+      assert(parent->prev && parent_covers(up.dates, true, dates[i]) && "库日不在上游库日期轴 (或是其首日, 无 D−1)");
+      assert(FeatureRead::has_date(up.id, *(std::lower_bound(up.dates.begin(), up.dates.end(), dates[i]) - 1)) && "上游库缺这天: 先把上游库算完");
+      for (const uint16_t a : pk->of(lib_pool(lib), dates[i]))
+        full[i * n + up.axis.global(a)] = 1;
+    }
   }
 
   // 自然轴: 根 = 全部标的; 其余 = dates 内进过池的

@@ -69,7 +69,8 @@ struct PerTier {
 // 池: 池表 feature_pools() 下标 (features/Storage/FeatureLib.hpp; [0] = all, 其余 = 子池)
 using PoolId = uint8_t;
 inline constexpr PoolId kAllPool = 0;
-size_t pool_count(); // 池表长 (由 Bar 字段表池列定; 定义在 FeatureMeta.cpp)
+size_t pool_count();  // 池表长 (= 1 + 子池表; 定义在 FeatureLib.cpp)
+uint64_t pool_hash(); // 池表指纹 (各池名依序; 按池下标存的缓存以此判废)
 inline auto pool_ids() { return std::views::iota(PoolId{0}, static_cast<PoolId>(pool_count())); }
 
 // 库 = 池 × 档 (每池每档一库, 字段表按档, 数据按库): 库号 = 池 × TIER_COUNT + 档
@@ -77,7 +78,7 @@ using LibId = uint8_t;
 inline constexpr LibId lib_id(PoolId pool, TierId tier) { return static_cast<LibId>(pool * TIER_COUNT + static_cast<size_t>(tier)); }
 inline constexpr PoolId lib_pool(LibId l) { return static_cast<PoolId>(l / TIER_COUNT); }
 inline constexpr TierId lib_tier(LibId l) { return static_cast<TierId>(l % TIER_COUNT); }
-inline constexpr LibId kAllBar = lib_id(kAllPool, TierId::Bar); // 全市场 Bar 库: 池列 (子池成员) / 池篮子的来源
+inline constexpr LibId kAllBar = lib_id(kAllPool, TierId::Bar); // 全市场 Bar 库: 选股表 (子池成员) / 池篮子的来源
 inline size_t lib_count() { return pool_count() * TIER_COUNT; }
 // 库表全部下标 (与 TIER_IDS 对仗, 运行时长)
 inline auto lib_ids() { return std::views::iota(LibId{0}, static_cast<LibId>(lib_count())); }
@@ -100,6 +101,9 @@ struct PerLib {
 //   位宽 = LibId 值域 (clang _BitInt: 整数运算 / 比较照常, std::popcount 等不收 → 按 64 位分段)
 inline constexpr int kLibBits = 256;
 using LibMask = unsigned _BitInt(kLibBits);
+// 池表上限 (含 all): 库号 LibId 与库集位宽都要装得下
+inline constexpr size_t kMaxPools = UINT8_MAX / TIER_COUNT;
+static_assert(kMaxPools * TIER_COUNT <= static_cast<size_t>(kLibBits));
 inline constexpr LibMask lib_bit(LibId l) { return LibMask{1} << l; }
 inline constexpr int lib_popcount(LibMask m) {
   int n = 0;

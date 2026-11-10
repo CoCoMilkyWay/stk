@@ -1,4 +1,4 @@
-#include "gui/task_beta/services/PoolSpec.hpp"
+#include "features/Panel/PoolSpec.hpp"
 #include "disk/Disk.hpp"
 
 #include "nlohmann/json.hpp"
@@ -8,6 +8,7 @@
 #include <cassert>
 #include <charconv>
 #include <iterator>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -112,6 +113,46 @@ std::string filter_cn(uint8_t f) {
     if (f >> k & 1)
       c += (c.empty() ? "" : " / ") + std::string(kFilterDefs[k].name_cn);
   return f ? c : "不剔";
+}
+
+std::string short_cn(const Spec &s) {
+  if (s.n)
+    return kStyleDefs[s.style].end_cn[s.end] + std::to_string(s.n);
+  std::string c;
+  if (s.st != kStAll)
+    c += kStDefs[s.st].name_cn;
+  if (s.board != kBoardAll)
+    c += kBoardDefs[s.board].name_cn;
+  if (s.margin != kMarginAll)
+    c += kMarginDefs[s.margin].name_cn;
+  return c.empty() ? "全选" : c;
+}
+
+std::string detail_cn(const Spec &s) {
+  std::string t = code(s) + "\n" + name_cn(s);
+  if (s.n) {
+    const StyleDef &d = kStyleDefs[s.style];
+    t += std::string("\n• ") + d.name_cn + ": " + d.key + "\n• " + (s.end == kEndLow ? "低端" : "高端") + "前 " + std::to_string(s.n) + " 只 (" + d.end_cn[s.end] + ")";
+  } else
+    t += "\n• 切片内全选";
+  t += std::string("\n• 调仓: ") + kRebalDefs[s.rebal].tip;
+  t += std::string("\n• 切片: ST ") + kStDefs[s.st].name_cn + " · 板块 " + kBoardDefs[s.board].name_cn + " · 融资 " + kMarginDefs[s.margin].name_cn;
+  return t + "\n• 剔: " + filter_cn(s.filter);
+}
+
+std::vector<std::string> aliases(const std::vector<Spec> &pools) {
+  std::vector<std::string> v;
+  std::map<std::string, int> total, seen;
+  for (const Spec &s : pools)
+    ++total[v.emplace_back(short_cn(s))];
+  for (std::string &x : v)
+    if (total[x] > 1) {
+      std::string suf;
+      for (int k = seen[x]++ + 1; k > 0; k = (k - 1) / 26)
+        suf.insert(suf.begin(), static_cast<char>('A' + (k - 1) % 26));
+      x += suf;
+    }
+  return v;
 }
 
 std::vector<Spec> default_pools() {

@@ -1,11 +1,11 @@
-// StyleService — Beta→Style 页的单 worker: 一个风格的参数网格 (gui/task_beta/services/PoolSpec.hpp Grid) 逐组选池 → 篮子净值 / 绩效 (对全A)
+// StyleService — Beta→Style 页的单 worker: 一个风格的参数网格 (features/Panel/PoolSpec.hpp Grid) 逐组选池 → 篮子净值 / 绩效 (对全A)
 //   原料带 = all.bar 已落盘日 (库轴 / 日轴不变即常驻); 风格键的逐行次序按风格留最近 kKeep 份; 篮子账按参数留 (全选池不分风格常留,
 //   其余只留当前风格): 改网格只算新出现的组
 //   请求 = 风格 + 网格; 新请求覆盖旧的. 进度: Loading = 原料 / 键读 / 排序日数, Running = 待算的篮子数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (shared_ptr 拷出即放锁)
 #pragma once
 
-#include "gui/task_beta/services/PoolSelect.hpp"
+#include "features/Panel/PoolSelect.hpp"
 #include "gui/util/Service.hpp"
 #include "misc/exec.hpp"
 #include "shared/Basket.hpp" // Weight

@@ -315,8 +315,10 @@ set(MATH_PRECISE
     features/Method/CS.cpp
     features/Panel/Fund.cpp
     features/Panel/Pool.cpp
+    features/Panel/PoolSelect.cpp
+    features/Panel/PoolSpec.cpp
     features/Storage/FeatureLib.cpp
-    # worker: compute 的 Bar 档管线 (TS: Fund 缺失值 / PoolKey 范围 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
+    # worker: compute 的 Bar 档管线 (TS: Fund 缺失值 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
     worker/compute/FeedBar.cpp
     worker/compute/Profile.cpp
     # live: 实盘 (nlohmann 落盘 / 回包 JSON; 行情与账户缺失 = 无)
@@ -340,8 +342,6 @@ set(MATH_PRECISE
     gui/quote/services/BasketHistory.cpp
     gui/quote/services/QuoteService.cpp
     gui/quote/services/StockHistory.cpp
-    gui/task_beta/services/PoolSelect.cpp
-    gui/task_beta/services/PoolSpec.cpp
     gui/task_database/TaskDatabase.cpp
     gui/task_database/services/ScanService.cpp
     gui/task_database/services/StateManager.cpp

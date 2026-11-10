@@ -6,7 +6,7 @@
 //   源缺尾日 → 库停在源齐处, 数据入盘后再追加 (追加不改已落盘行)
 //   库树 (lib_parent): 每库至多一个上游, 本库日期轴 ⊆ 上游日期轴, 上游落盘齐才可算. 末日随数据走, 各库首末日只在清单里 (重算即前移).
 //   A 轴 + 逐日成员每库一份 (features/Panel/Pool.hpp), 池由定轴库 (同池定轴档 tier_base 的库 = Bar) 定:
-//     定轴库  A 轴 = 池的自然轴 (续算 = 旧清单轴); 成员 all = 当日活跃 (Fund live), 子池 = 上游 all Bar 库池列 pool_<池> (D−1 收盘行)
+//     定轴库  A 轴 = 池的自然轴 (续算 = 旧清单轴); 成员 all = 当日活跃 (Fund live), 子池 = 上游 all Bar 库的选股表 (features/Panel/PoolSelect.hpp Picks)
 //     随轴库  上游 = 同池定轴库: 成员 = 它同日的 cs_valid, A 轴 = 本库日期段内进过池的 (⊆ 它的清单轴); 截面旁读它
 //   A 轴一经建库即冻结, 续算只记轴外; 何时改轴由用户定 (全量重算该库).
 // 写端 (ComputeService) 规划后落清单 <dir>/lib.json (save_lib); 读端 (FeatureRead / ReadScope / 截面旁读) 只读清单 (load_lib),
@@ -20,6 +20,7 @@
 //   一般只算一个库, 不为"多库一起算"做共享优化.
 
 #include "disk/Disk.hpp"
+#include "features/Panel/PoolSpec.hpp"        // pool::Spec
 #include "features/Storage/FeatureLevels.hpp" // TierId / PoolId / LibId
 #include "fundamental/AssetAxis.hpp"          // PoolAxis
 #include "misc/date.hpp"
@@ -33,11 +34,12 @@
 
 inline constexpr const char *kAllPoolName = "all"; // 全市场池的池名 (= 目录名)
 
-// 池表 (全部池唯一一份, 定义在 FeatureMeta.cpp): [0] = all, 其余 = 子池 (由 Bar 字段表 Pool 类 pool_* 列展开, 字段表序)
+// 池表 (全部池唯一一份, 进程启动时定): [0] = all, 其余 = 子池表 (pool::load_pools, 表序)
 struct PoolDef {
-  const char *name;    // 池名 = 目录名 (子池 = 列名去 pool_ 前缀)
-  const char *name_cn; // 中文名 (子池 = pool_<name> 列的 name_cn; all = 全市场), UI 下拉跟在池名后
-  size_t pool_col;     // 子池: all Bar 库 L_1day 的 pool_<name> 列下标; all: SIZE_MAX
+  std::string name;    // 池名 = 目录名 (子池 = 规范串 pool::code)
+  std::string name_cn; // 显示名 (all = 全市场; 子池 = pool::aliases)
+  std::string tip;     // 悬停: 全部参数 (子池 = pool::detail_cn)
+  pool::Spec spec;     // 子池参数 (all 不用)
 };
 std::span<const PoolDef> feature_pools(); // 下标 = PoolId
 const PoolDef &pool_def(PoolId pool);
@@ -60,7 +62,7 @@ struct FeatureLib {
 // 定轴库: 同池定轴档的库 (自身 = 本库定轴; 随轴库轴 ⊆ 它)
 inline LibId axis_lib(LibId l) { return lib_id(lib_pool(l), tier_base(lib_tier(l))); }
 // 库树的边 (写端规划 / 断言唯一一份): 本库每日都在上游日期轴上; prev = 还读上游的前一交易日 (本库日不许是上游首日)
-//   随轴库 → 同池定轴库 (A 轴 + 成员 + 截面旁读); 子池定轴库 → all 同档库 (成员 = D−1 收盘行池列); all 定轴库 = 根
+//   随轴库 → 同池定轴库 (A 轴 + 成员 + 截面旁读); 子池定轴库 → all 同档库 (成员 = 其选股表, D 之前调仓行选出); all 定轴库 = 根
 struct LibParent {
   LibId lib;
   bool prev;

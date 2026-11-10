@@ -143,7 +143,7 @@ inline std::vector<factor::stat::Cost> costs_of(const YPlanes &y) {
 // 池篮子输入 (load_b; all 池评估域 = 全轴, 一趟读齐, 交 Book baskets)
 struct BPlanes {
   Shape sh;
-  std::vector<PoolMask> in;          // 池成员位 (整日常量): 位 kAllPool = all 截面门控 (同 YPlanes::gate), 位 p = 第 p 池当日成员 (池列 as-of) ∧ 当日有成交
+  std::vector<PoolMask> in;          // 池成员位 (整日常量): 位 kAllPool = all 截面门控 (同 YPlanes::gate), 位 p = 第 p 池当日成员 (all.bar 选股表) ∧ 当日有成交
   LegPlane lab;                      // T+1C 两侧毛收益 (同 YPlanes::labels 的折叠, 池内 = 在任一池 in ≠ 0)
   std::vector<uint8_t> eo;           // 建仓可成交码 (同 YPlanes::eo, 池内 = in ≠ 0)
   factor::check::Plane close;        // 本行有成交的后复权 close (估值 / 换手漂移, 跨日除权不进收益)
@@ -181,8 +181,8 @@ struct Io {
 // X 列段 = 叶 ids (按所在 (库, 层) 投影) → out[ids 序];
 // Y 列段 = [ts_valid | cs_valid | lb_entry_ok (have 空才读, 进 core)] | 标签 [hd][kLegs] | 盘口段买入冲击 [ad] → labels [hd 序] / costs [ad 序]
 //   (门控取 have 或刚装的 core; ad 只含盘口段);
-// B 列段 = ts_valid cs_valid lb_entry_ok T+1C 标签 [kLegs] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 池列 (日频原料 bar.1d);
-// B 只在 all 池评估域 (assert); 概念成员不读库, 取概念表 (A 轴 → 全局 id).
+// B 列段 = ts_valid cs_valid lb_entry_ok T+1C 标签 [kLegs] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 (日频原料 bar.1d);
+// B 只在 all 池评估域 (assert); 子池成员不读列, 取 all.bar 选股表; 概念成员不读库, 取概念表 (A 轴 → 全局 id).
 // 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 四个装载同一份进度: prog.begin Loading (日数), 每天 publish(1)
 bool load_x(const Io &io, const Chunk &k, const std::vector<LeafId> &ids, std::vector<Leaf> &out);
 bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LegPlane> &labels,

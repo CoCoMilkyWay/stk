@@ -5,7 +5,7 @@
 //   cs_valid = 当日成员 ? 1 : 0 —— 日频常量 (盘前一次写满全部行, 逐行存, CS 行自足), 成员 = pool::Panel (见 features/Panel/Pool.hpp):
 //              all = 当日活跃 (与 Fund live 口同一份): 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 当日非停牌) ∧ 非次新 (上市满 365 日历日) ∧ 申万一级行业已知 (全部盘前可知);
 //              子池 = 当日在池. 只看本资产 + 日频 PIT 输入 → TS 资产局部纯函数, 不破一致性红线.
-//              截面 (CS 列) 只在它上面算; 池列 (Select*) 例外走全轴, 成员范围由 PoolKey 键掩码定.
+//              截面 (CS 列) 只在它上面算.
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define FIELDS_L_1min_Meta(X, CAT1)                                                                                                      \

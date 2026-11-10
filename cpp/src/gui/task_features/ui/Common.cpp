@@ -1,13 +1,13 @@
 #include "gui/task_features/ui/Common.hpp"
 #include "features/Storage/FeatureLib.hpp" // lib_name / pool_def
 #include "gui/Tasks.hpp"
+#include "gui/util/Tip.hpp"
 #include "shared/Feature.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
 #include "implot.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -24,18 +24,14 @@ void RenderScope(Feature &feature) {
   ImGui::TextUnformatted("Pool");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(140);
-  if (ImGui::BeginCombo("##pool", pool_def(sel.pool).name)) {
-    float cn_x = 0.0f; // 中文名列起点 (对齐最长池名)
-    for (const PoolDef &d : feature_pools())
-      cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name).x);
-    cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
+  if (ImGui::BeginCombo("##pool", pool_def(sel.pool).name_cn.c_str())) {
     for (PoolId p = 0; p < pool_count(); ++p) {
       const PoolDef &d = pool_def(p);
       const bool selected = sel.pool == p;
-      if (ImGui::Selectable(d.name, selected))
+      if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
         sel.pool = p; // 选中是 ColRef (带库), 切池保留
-      ImGui::SameLine(cn_x);
-      ImGui::TextDisabled("%s", d.name_cn);
+      if (ImGui::IsItemHovered())
+        tip("%s", d.tip.c_str());
       if (selected)
         ImGui::SetItemDefaultFocus();
     }

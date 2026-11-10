@@ -1,5 +1,5 @@
 // CtaLib — CTA 页的分钟价格库 (CtaService worker 私有): 两侧 (个股 = 库轴全部个股 / 篮子 = 指数 / 行业 / 概念三组线) 一趟过日合成落盘, 之后只补新日
-//   源 = all.bar 特征库: 交易日 D 的成员 / 权重 / 基准取 D−1 收盘行, D 的日根 + L_1min 分钟根 (口径 = BasketRow), 一日一读两侧共用
+//   源 = all.bar 特征库: 交易日 D 的成员 / 权重 / 基准取 D−1 收盘行 + 选股表, D 的日根 + L_1min 分钟根 (口径 = BasketRow), 一日一读两侧共用
 //   两侧同一种记录 (一行一日 = 因子 + 分钟价), 有效根 = 价 × 因子:
 //     个股: 价 = 库存原价 (f16, 与库逐位一致), 前收 = D−1 行的前收
 //     篮子: 价 = 合成核 Quote::Fold 的日内点位 (前日收 = 1, f32), 前收 = 1
@@ -25,6 +25,9 @@
 
 struct FeatureLib;
 class FeatureRead;
+namespace pool {
+struct Picks;
+}
 
 namespace GUI::Market {
 
@@ -40,15 +43,15 @@ public:
   // cancel / x / pool = 宿主服务的 (取消 / 进度面 Loading 天 / 线程池)
   CtaLib(const std::atomic<bool> &cancel, Progress &x, misc::exec::ForkJoin &pool) : cancel_(cancel), x_(x), pool_(pool) {}
 
-  // 价格库补到 dates (= 库已落盘日, 升序, ≥ 2 日); false = 取消 / 判废
-  bool sync(const FeatureLib &lib, const FeatureRead &rd, const std::vector<misc::Ymd> &dates);
+  // 价格库补到 dates (= 库已落盘日, 升序, ≥ 2 日; pk = 该库选股表); false = 取消 / 判废
+  bool sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk, const std::vector<misc::Ymd> &dates);
   // 标的 (个股 = 全局 id / 篮子 = basket_line) 的有效根 (sync 之后); 不在该侧键表 (库轴外 / 三组线外) → false
   bool series(Quote::Side side, uint32_t key, cta::Series &se) const;
 
 private:
   struct Head {
-    uint64_t magic = 0, concepts = 0; // 概念表指纹
-    misc::Ymd first = 0;              // 库首个落盘日
+    uint64_t magic = 0, concepts = 0, pools = 0; // 概念表指纹 / 池表指纹
+    misc::Ymd first = 0;                         // 库首个落盘日
     bool operator==(const Head &) const = default;
   };
   // 一行的因子链: 末日因子 (0 = 尚无根) / 参考价 (末个收盘, 按前收滚动; 0 = 尚无)

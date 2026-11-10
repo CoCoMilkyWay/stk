@@ -36,7 +36,7 @@ enum class RowState : uint8_t { Pending,
 // ---- 因子层 (唯一真相 FACTOR_LEVELS: 加层只加一行) ↔ 网格层 / 因子子目录 / K 线列 ----
 //   因子层 = 网格 (行 / d 的单位) = 所用特征的最细层; 分类 = 池 × 层 (任何池都能用任何层), 因子文件在 output/factors/<池>/<层>/.
 //   标签库 (门控 ts / cs_valid + 标签 + K 线, 恒取网格层本层列, 同行) = 因子池的 Bar 库 (label_lib); 截面 = 该库 cs_valid
-//   (all: 当日活跃; 子池: 当日成员, 第 D 日 = all Bar 库 D−1 收盘行池列).
+//   (all: 当日活跃; 子池: 当日成员 = all Bar 库选股表在 D 之前调仓行选出的).
 //   特征叶写全名 档.层.列 (kLevelToken): bar.* / lob.* = 因子池的 Bar / Lob 库; 叶可来自任意不细于网格的层 (level_asof 投影).
 //   成本: 固定段恒有; 评估域含 Lob 库 (用了 lob.* 叶) 时另有盘口段 (Lob 库网格层的建仓冲击列, 只 min 层有)
 //   评估期 = 标签库 + 所用库 落盘日的交集 (不看 config 区间)
@@ -184,12 +184,11 @@ struct YCols {
   std::vector<LegCol> costs;  // 按 key 升序: 固定段 (恒在, 首个) + 盘口段 (Lob 档本层冲击列; 评估域含 Lob 库才可用, 见 y_spec). Run / Inspect / Portfolio 每段攒 CostAcc; Search 不看成本
 };
 struct BCols {
-  Col ohlc[4];            // open high low close (K 线, 不复权; 列名 FactorLevel::kline)
-  Col adj_factor;         // 复权因子 (盘后列, 网格行 as-of = 当日因子): 后复权收盘 = 本行 close × 本列
-  Col total_shares;       // 总股本: 池估值的市值 + 池加权指数的权重 = close × 本列
-  Col val[kPoolVals];     // [PoolVal] 估值输入 (kPoolValCols): 池估值 EP / BP / SP / CP / DY (整体法)
-  Col ind_l1;             // SW2021 一级行业 ID (池估值页的行业切分)
-  std::vector<Col> pools; // [PoolId] all Bar 库池列 pool_<pool> (盘后列, 网格行 as-of = 当日成员 = D−1 收盘行); [kAllPool] 无列
+  Col ohlc[4];        // open high low close (K 线, 不复权; 列名 FactorLevel::kline)
+  Col adj_factor;     // 复权因子 (盘后列, 网格行 as-of = 当日因子): 后复权收盘 = 本行 close × 本列
+  Col total_shares;   // 总股本: 池估值的市值 + 池加权指数的权重 = close × 本列
+  Col val[kPoolVals]; // [PoolVal] 估值输入 (kPoolValCols): 池估值 EP / BP / SP / CP / DY (整体法)
+  Col ind_l1;         // SW2021 一级行业 ID (池估值页的行业切分)
 };
 struct FeatureTable {
   FactorLevelId lv = 0;             // 因子层

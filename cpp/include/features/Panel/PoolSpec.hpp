@@ -3,14 +3,16 @@
 //   维: 风格端 · 只数 · 周期 · ST · 板块 · 融资 · 过滤
 //     ST / 板块 / 融资 各自划分全部在市 A 股 (取值 全 = 不切); 过滤 = 过滤表的子集 (各条件 1 = 滤掉, 剔的条件并起来剔)
 //     切片 = ST ∩ 板块 ∩ 融资 ∩ 过滤后的在市资产; 只数 N > 0 = 切片内键的一端取前 N, N = 0 = 切片内全选 (与风格端无关, canon 归一)
-//   键 / 切片的原料全是 all.bar L_1day 的基础列 (行 D = D+1 盘前态, 见 Node/Common/Fund/Fund.hpp), 成员由 gui/task_beta/services/PoolSelect.hpp 现算
-//   选定的池 = config/pools.json (Beta → Style 页确认后写; 无文件 = default_pools()); 只是本页的选中落地,
-//     计算与各页用的池表是编译期 feature_pools() (features/Storage/FeatureLib.hpp), 不读此文件
+//   键 / 切片的原料全是 all.bar L_1day 的基础列 (行 D = D+1 盘前态, 见 Node/Common/Fund/Fund.hpp), 成员由 features/Panel/PoolSelect.hpp 现算 (选股表 Picks)
+//   子池表 = config/pools.json (Beta → Style 页确认后写; 无文件 = default_pools()); 计算与各页的池表 feature_pools() (features/Storage/FeatureLib.hpp)
+//     = all + 子池表, 进程启动时读一次 (改了重启生效)
 //
 //   池名 (库目录名) 与中文名都按维序以 "." 连, 每维一段:
 //     beta_low.200.d.nost.all.all.f0  = 低β.200.日.非ST.全.全.不剔
 //     all.all.w.st.all.margin.f3       = 全.全.周.ST.全.融资.剔2      (过滤段: f<剔的条件位, 十六进制>; 中文只写条数, 明细见 filter_cn)
 //   不起作用的段 (全 / 不剔 / 全选池的风格端) 见 parts().on
+//   显示名 (各页) = 简称 short_cn: 风格池 = 端名 + 只数 (低β200); 全选池 = 起作用的切片名 (ST / 沪主板 / 非ST融资; 都不切 = 全选);
+//     同简称的池按池表序加 A / B / C … 区分 (aliases); 其余参数悬停见 detail_cn
 #include <array>
 #include <cstdint>
 #include <string>
@@ -155,10 +157,14 @@ struct Part {
 };
 inline constexpr int kParts = 7;
 std::array<Part, kParts> parts(const Spec &s);
-std::string name_cn(const Spec &s); // 各段以 "." 连 (篮子行名, 不带权重后缀)
-std::string filter_cn(uint8_t f);   // 剔的条件 "次新 / 停牌" (0 → "不剔")
+std::string name_cn(const Spec &s);   // 各段以 "." 连 (Style 页线名, 不带权重后缀)
+std::string filter_cn(uint8_t f);     // 剔的条件 "次新 / 停牌" (0 → "不剔")
+std::string short_cn(const Spec &s);  // 简称 (不带区分后缀)
+std::string detail_cn(const Spec &s); // 全部参数 (悬停, 多行): 池名 / 中文名 / 键与端 / 调仓 / 切片 / 剔的条件
+// 子池表各池的显示名: 简称, 同简称不止一个的按表序加 A / B / C … (过 Z 接 AA)
+std::vector<std::string> aliases(const std::vector<Spec> &pools);
 
-// 选定的池 (config/pools.json, 池表序)
+// 子池表 (config/pools.json, 池表序)
 std::vector<Spec> default_pools();
 std::vector<Spec> load_pools(); // 文件不存在 = default_pools(); 格式不对 / 重名 → assert
 void save_pools(const std::vector<Spec> &pools);

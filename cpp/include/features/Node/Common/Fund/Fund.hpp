@@ -32,7 +32,6 @@
 // 【fast-math 契约】本文件不做 isnan/isfinite (状态机在 precise-math TU 里), y 只被下游算术消费, NaN 硬件透传.
 // =============================================================================
 
-#include "features/DataDefine.hpp"
 #include "features/Panel/Fund.hpp"
 #include <cassert>
 #include <cstddef>
@@ -170,10 +169,8 @@ public:
   Fund(const fund::Panel &panel, size_t global_id, const misc::Ymd &date)
       : panel_(panel), date_(date), stream_(panel, global_id) {}
 
-  // 资产态 (fund::Panel 全史判定一次, 判据见 Panel/Fund.cpp univ_mask; 行情派生截面 / all 池成员 (Panel::live) / PoolKey 全读这一份)
+  // 资产态 (fund::Panel 全史判定一次, 判据见 Panel/Fund.cpp univ_mask; 行情派生截面 / all 池成员 (Panel::live) / 选股表切片全读这一份)
   //   活跃 = 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌) ∧ 非次新 (上市满 fund::kNewListDays 日历日) ∧ 申万一级行业已知
-  // 节点侧读输出口 (PoolKey onSettle = 次日)
-  static bool is_live(const Ports<kCount> &f) { return f[live] != 0.0f; }
 
   // onSettle (收盘后): 状态机推进到次日 d+1, 写 y → 发布 = L_1day 行 D
   void compute() {

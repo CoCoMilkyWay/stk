@@ -17,12 +17,6 @@
 //     Demean       x − mean, 缺失 → 0.  去市场分量但保留截面离散度的时变 (z 会把每分钟离散度抹平成 1)
 //     Z            (x − mean)/sd (double 累加), 缺失 → 0.  保留量级信息 (全市场同向尖峰 rank 看不见)
 //     WinsorZ      winsor_mad(k=3) → z, 缺失 → 0.  稳健 z (= WinsorRank 去掉末尾 pct_rank)
-//     SelectLow400 / SelectHigh400   池: 有限值中取最低 / 最高 400 个 → 1, 其余 (含缺失) → 0; 并列按 dense 下标
-//                  (= 资产轴序) 先到先得, 有限值不足 400 则全选. 输入 = 范围掩码后的排序键 (PoolKey, 范围外 NaN, 范围内键缺 +inf)
-//                  覆盖率 (有限 / 非 NaN) < 0.8 → 非 NaN 全选 (键未到齐时池 = 范围, 不按残缺截面截两端)
-//     SelectLow200 / SelectHigh200   同上取 200 个 (同键同序 ⇒ 200 档 ⊂ 400 档)
-//     SelectAll    池: 有限值 → 1, 其余 (含缺失) → 0 (不截断; 成员由键的范围定)
-//                  池方法截面 = 全轴 (FullAxis, 不看 cs_valid): 键已自带范围掩码
 //
 //   口径契约: WinsorRank / NeutralRank 的中位数取法 / z 的 double 累加 / pct_rank 并列均秩 / 均值填充
 //   逐值固定, 定义见 CS.cpp 文件头.
@@ -52,12 +46,7 @@ namespace cs {
   X(NeutralRank, "NeutralRank") \
   X(Demean, "Demean")           \
   X(Z, "Z")                     \
-  X(WinsorZ, "WinsorZ")         \
-  X(SelectLow400, "Low400")     \
-  X(SelectHigh400, "High400")   \
-  X(SelectLow200, "Low200")     \
-  X(SelectHigh200, "High200")   \
-  X(SelectAll, "All")
+  X(WinsorZ, "WinsorZ")
 
 // ---- 元素预变换 ----
 struct None { // Tf 与 Method 双身份: 恒等
@@ -102,36 +91,6 @@ struct WinsorZ {
   static void apply(float *y, std::size_t n);
 };
 
-struct SelectLow400 {
-  static constexpr bool kNeutral = false;
-  static constexpr bool kFullAxis = true;
-  static void apply(float *y, std::size_t n);
-};
-
-struct SelectHigh400 {
-  static constexpr bool kNeutral = false;
-  static constexpr bool kFullAxis = true;
-  static void apply(float *y, std::size_t n);
-};
-
-struct SelectLow200 {
-  static constexpr bool kNeutral = false;
-  static constexpr bool kFullAxis = true;
-  static void apply(float *y, std::size_t n);
-};
-
-struct SelectHigh200 {
-  static constexpr bool kNeutral = false;
-  static constexpr bool kFullAxis = true;
-  static void apply(float *y, std::size_t n);
-};
-
-struct SelectAll {
-  static constexpr bool kNeutral = false;
-  static constexpr bool kFullAxis = true;
-  static void apply(float *y, std::size_t n);
-};
-
 struct NeutralRank {
   static constexpr bool kNeutral = true;
 
@@ -144,10 +103,6 @@ struct NeutralRank {
   static void prepare_logmc(float *mcap, std::size_t n); // mcap → log(mcap) 原地
   static void apply(float *y, std::size_t n, const Ctx &c);
 };
-
-// 池方法 (kFullAxis): CoreCs 截面取全轴而非 cs_valid 子集, 成员范围由键自带的掩码定 (键外 NaN)
-template <class M>
-concept FullAxis = requires { requires M::kFullAxis; };
 
 // ---- 运行期分派 (Transform 分析) ----
 #define CS_ENUM_ONE(name, label) name,
