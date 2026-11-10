@@ -19,8 +19,10 @@
 //   写回 [lo, 定稿线]: 有根写根, 无根清空, 全段标精确 (此后快照不写); lo 推到定稿线后.
 //   定稿线: 标号不晚于 "此刻 − kSettle" 的根不再变 (刚过去那根还会被修正); 行情日不是今天 (盘前看昨日 / 周末) → 整日定稿.
 //   行情日 ≤ fund_end (基本面 bar1m 已入库) 不取分钟 K (那天由 bar1m 给).
-//   落盘 output/data/quote/live.bin: 单文件存行情日全部 Track (Track::snap 一份清单读写) + 末轮快照时刻, 有变化时每 kSave 与析构各写一次.
-//     换日 (含启动首轮) 先读同日缓存 —— 停机那段即一次断档, 照断档规则只补其间有成交的只; 收盘后重启零请求.
+//   落盘 output/data/quote/live.bin: 行情日全部 Track + 末轮快照时刻, 定长文件整份 MAP_SHARED 映射; 原子粒度 = 一只的状态 / 一格 (只, 分钟),
+//     改一处当场写一处 (进程被杀 / 崩溃不丢; 写到一半的条目读回当作没有: 状态 → 该只从零, 格 → 该格待补).
+//     换日 (含启动首轮) 先读同日缓存 (按新浪码对上本次全市场) 再重写成本次布局 —— 停机那段即一次断档, 照断档规则只补其间有成交的只;
+//     收盘后重启零请求.
 //   全市场 = 构造时给定的全局轴子集 (PoolAxis; 对外一律全局 id, 内部下标 = sub, 新浪码由轴码派生); 前一交易日取自构造时给定的交易日历;
 //   线程: 快照 1 (每批一路并发) + 分钟 K kFillers, 随对象.
 // 当日的 Day: 有成交才有 (个股 = 本只当日有成交, 篮子 = 成员有成交); 基准 = 新浪昨收; 个股的净流入 = 本只分钟涨跌法 (net_flow).
@@ -55,8 +57,8 @@ struct QuoteStatus {
   size_t gaps = 0;            // 有待补区间的只 (含等定稿的; 补齐前其缺根按上根收 / 前收持平); 不取分钟 K 的日恒 0
   bool fill = false;          // 行情日 > fund_end (取分钟 K)
   PerSide<uint64_t> ver = {}; // 当日表版本: 个股 (每轮快照 / 每次补根 +1) / 篮子 (每次合成 +1)
-  size_t bytes = 0;           // 盘上缓存 (末次读入 / 写出) 字节; 0 = 无
-  std::time_t saved = 0;      // 盘上缓存的落盘时刻
+  size_t bytes = 0;           // 盘上缓存字节; 0 = 未建 (尚无行情日)
+  std::time_t saved = 0;      // 盘上缓存的末次写入时刻
 };
 
 class QuoteService {
@@ -65,7 +67,6 @@ public:
   static constexpr int kSettle = 90;                   // 定稿延迟 [s]
   static constexpr int kLag = (kSettle + 59) / 60 + 1; // 此刻所在根 − 定稿线 的上界 [根]
   static constexpr int kGap = 10;                      // 断档判据: 两轮快照间连续竞价时长 [s]
-  static constexpr int kSave = 300;                    // 落盘间隔 [s]
   static constexpr int kFillers = 16;                  // 分钟 K 并发 (再高新浪会 RST)
   static constexpr uint32_t kFoldChunk = 256;          // 篮子合成每段只数 (持 mu_ 的粒度)
 
@@ -104,14 +105,6 @@ private:
     void mark(int l, int h) { lo = std::min(lo, l), hi = std::max(hi, h); }
     bool absorb(const sina::Quote &q, int gap);                                        // 同日快照; gap = 断档起始根 (-1 = 无); 返回 = 有变化
     void merge(int l, int settled, misc::Ymd date, const std::vector<sina::Bar> &got); // 分钟 K 写回 [l, settled]
-    // 落盘清单 (misc/snap.hpp): 根只存有成交的
-    template <class Ar>
-    void snap(Ar &ar) {
-      ar(bars.has), ar(exact), ar(lo), ar(hi), ar(vol), ar(amt), ar(high), ar(low);
-      for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
-        if (bars.has[s])
-          ar(bars.cell[s]);
-    }
   };
 
   // bind 的成员表 + 前日点位 (不可变, 合成期间整份持有)
@@ -136,8 +129,9 @@ private:
   int settled() const;
   int live_slot() const;
   bool traded(const sina::Quote &q) const { return q.date == date_ && q.volume > 0 && q.price > 0; }
-  void load();                        // 行情日的盘上缓存 → tracks_ / sec_ (换日后调)
-  std::vector<std::byte> serialize(); // 当日全部 Track → 缓存文件内容
+  void load();                 // 行情日的盘上缓存 → tracks_ / sec_, 再重写成本次布局并映射 (换日后调)
+  void put(uint32_t i);        // tracks_[i] 的状态 → 映射
+  void put(uint32_t i, int s); // tracks_[i] 的格 s → 映射
 
   const PoolAxis axis_;
   const misc::Ymd fund_end_;
@@ -155,9 +149,9 @@ private:
   std::deque<uint32_t> todo_;
   uint32_t sel_ = ~0u;
   size_t inflight_ = 0, fetched_ = 0;
-  bool changed_ = false; // 上次落盘后 tracks_ 变过
-  int sec_ = 0;          // 行情日最新快照时刻 (断档判据的上轮时刻)
-  size_t bytes_ = 0;     // 盘上缓存 (QuoteStatus::bytes / saved)
+  int sec_ = 0;              // 行情日最新快照时刻 (断档判据的上轮时刻)
+  std::byte *map_ = nullptr; // 盘上缓存的映射 (bytes_ 字节; 空 = 尚无行情日)
+  size_t bytes_ = 0;         // QuoteStatus::bytes / saved
   std::time_t saved_ = 0;
   std::shared_ptr<const Basis> basis_;              // 空 = 未 bind
   std::shared_ptr<const std::vector<Day>> baskets_; // [篮子] 当日 (末次合成, 整份不可变; 空 = 未合成)

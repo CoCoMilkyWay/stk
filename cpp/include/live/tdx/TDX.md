@@ -19,6 +19,7 @@ Console        调试台（Live 的 Client 页，ImGui）
 - 读只经进程内存；写只经 shim 操作客户端界面，客户端自己负责登录会话与交易通讯。
 - 客户端状态与预期不符（界面没弹出 / 内存正被改写 / 回报失败）是外部结局：`fail` 抛 `Fail`，在各轮 / 各事务的边界收成原因文本；本程序自身的不变式一律 `assert`。不重试，等下一个起因。
 - 等待一律经 `Until.hpp`：`poll` 等到即回、超时回空（调用方另有退路），`until` 超时即 `Fail`（报出当时的状态）。
+- 交互日志经 `Trace.hpp`：shim 命令与应答、读内存的换代与应答、外部进程、Broker 的轮次 / 下单 / 两融条款按段（`Span`）一行一事件，落 `output/run/live/tdx/log/<启动时刻>.jsonl`。段内有事件才落盘，相邻同样的事件并成一行 `rep`；适配里的 `fail` 先在当时的段路径下记一行再抛；调试台在段外，不记。事件种类与字段见其文件头。
 
 ## 一、内存明文表（`Mem.hpp` `Tables.hpp`）
 
@@ -208,6 +209,7 @@ include/live/tdx/
 ├── Mem.hpp        进程堆 / 四条轴 / 读法 / 表流程 / Chain
 ├── Tables.hpp     7 张表并排声明
 ├── Until.hpp      轮询原语 poll / until
+├── Trace.hpp      交互日志：段 / 事件 / 适配里的 fail
 ├── Shim.hpp       shim 构建、注入与控制通道
 ├── Proc.hpp       起外部进程
 ├── Win.hpp        通用 Win32：节点 / 图层 / 窗口 / 消息 / 控件 / 按绘制文字点
@@ -221,7 +223,7 @@ src/live/tdx/win32/
 └── inject.c       注入器
 ```
 
-- 本机（不入库）：`output/config/live/.sudo_pass`、`output/run/live/tdx/shim/`（`shim_<H>.dll` / `inject.exe`）、`output/run/live/tdx/rec/`。
+- 本机（不入库）：`output/config/live/.sudo_pass`、`output/run/live/tdx/shim/`（`shim_<H>.dll` / `inject.exe`）、`output/run/live/tdx/rec/`、`output/run/live/tdx/log/`。
 
 ## 未完成
 

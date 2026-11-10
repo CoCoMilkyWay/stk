@@ -353,6 +353,7 @@ stk/
 │   │   │       ├── Tdx.hpp                             # 💹 Broker 实现: 盯进程 (守望线程) + 刷新线程 + 界面闸
 │   │   │       ├── Mem.hpp / Tables.hpp                # 💹 进程堆 (常开 fd、段间并行扫) + 形 / 列 / 读法 / 索引四轴的表流程 / 各表声明
 │   │   │       ├── Shim.hpp / Proc.hpp / Until.hpp     # 💹 shim 编译注入 + TCP 控制通道 / 子进程 / 轮询原语 (poll · until)
+│   │   │       ├── Trace.hpp                           # 💹 交互日志: shim 命令 / 读内存 / 外部进程 / Broker 流程按段一行一事件; 适配里的 fail 先在当时的段下记一行
 │   │   │       ├── Win.hpp / Ui.hpp                    # 💹 通用 Win32 (窗口 · 图层 · 消息 · 控件) / 通达信界面 (主窗 · 交易栏 · 查询页 · 弹框)
 │   │   │       ├── Flash.hpp / Credit.hpp              # 💹 闪电下单 / 两融全表与信用账户
 │   │   │       └── Console.hpp / console/              # 💹 调试台 (纯 ImGui): 布局图 (按类 + 绘制层还原界面, 可直接操作) / 窗口树 / 消息工具与 Spy / 录制器 / 探内存
@@ -450,6 +451,7 @@ stk/
         ├── agent/<main|test>/                          # Agent: tools/<工具名>.md 各工具最近一次交给 agent 的结果 / sessions/<pool>/<层>/<持有期>/search/<name>.log
         ├── live/rebal/<YYYYMMDD-HHMMSS>.jsonl          # Live 调仓事务日志 (一事务一文件, 一行一步)
         ├── live/tdx/                                   # 通达信适配: shim/ 注入件构建产物 (shim_<源码哈希>.dll / inject.exe) / rec/<YYYYMMDD-HHMMSS>.jsonl 调试台录制
+        │                                               #    / log/<YYYYMMDD-HHMMSS>.jsonl 交互日志 (一次启动一个, 留最近 20 个)
         └── app/                                        # 进程级: tsan_report.log (TSAN 模式) / crash_stacks.txt (DEBUG 模式)
 ```
 

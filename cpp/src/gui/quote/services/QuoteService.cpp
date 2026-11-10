@@ -3,10 +3,14 @@
 #include "disk/Disk.hpp"
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
-#include "misc/snap.hpp"
+
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cctype>
 #include <chrono>
@@ -48,15 +52,42 @@ bool in_session(const Clock &c) {
                            (c.sec >= 12 * 3600 + 59 * 60 && c.sec <= 15 * 3600 + 90));
 }
 
-// 缓存文件 = Head + n × (Sym + Track::snap); 本机字节序. 头不符 = 别的格式, 弃
-constexpr uint32_t kMagic = 0x4B52544B; // "KTRK"
-struct Head {
+// 缓存文件 = FileRec + n × AssetRec + n × kSlots × SlotRec (定长, 本机字节序); 头不符 = 别的格式 / 别的行情日, 弃.
+//   AssetRec / SlotRec 各是一个原子条目: 整条写入, busy 先置后清 —— 读回 busy 的 = 写到一半进程没了
+constexpr uint32_t kMagic = 0x56494C51; // "QLIV"
+struct FileRec {
   uint32_t magic;
   misc::Ymd date;
-  int32_t sec;
+  int32_t sec; // 末轮快照时刻
   uint32_t n;
 };
-using Sym = std::array<char, 12>;
+struct AssetRec {
+  std::array<char, 12> sym;
+  int32_t lo, hi;
+  double vol, amt;
+  float high, low;
+  uint8_t busy;
+};
+struct SlotRec {
+  Cell bar;
+  uint8_t has, exact, busy;
+};
+
+size_t file_bytes(size_t n) { return sizeof(FileRec) + n * (sizeof(AssetRec) + kSlots * sizeof(SlotRec)); }
+FileRec &file_rec(std::byte *m) { return *reinterpret_cast<FileRec *>(m); }
+AssetRec &asset_rec(std::byte *m, uint32_t i) { return reinterpret_cast<AssetRec *>(m + sizeof(FileRec))[i]; }
+SlotRec &slot_rec(std::byte *m, size_t n, uint32_t i, int s) {
+  return reinterpret_cast<SlotRec *>(m + sizeof(FileRec) + n * sizeof(AssetRec))[static_cast<size_t>(i) * kSlots + static_cast<size_t>(s)];
+}
+
+template <class R>
+void store(R &dst, R src) {
+  std::atomic_ref<uint8_t>(dst.busy).store(1, std::memory_order_relaxed);
+  std::atomic_signal_fence(std::memory_order_seq_cst);
+  src.busy = 1;
+  dst = src;
+  std::atomic_ref<uint8_t>(dst.busy).store(0, std::memory_order_release);
+}
 
 // 全局轴码 "600000.SH" → 新浪 "sh600000"
 std::string sina_sym(const std::string &code) {
@@ -97,10 +128,8 @@ QuoteService::~QuoteService() {
   poll_.join();
   for (std::thread &t : fillers_)
     t.join();
-  if (changed_) {
-    const std::vector<std::byte> blob = serialize();
-    disk::write(disk::QuoteLive, {}, {reinterpret_cast<const char *>(blob.data()), blob.size()});
-  }
+  if (map_)
+    munmap(map_, bytes_);
 }
 
 void QuoteService::select(uint32_t id) {
@@ -250,8 +279,6 @@ void QuoteService::poll() {
   misc::exec::ForkJoin ex(batches);
   std::vector<std::vector<sina::Quote>> parts(chunks.size());
   std::vector<sina::Quote> qs;
-  std::vector<std::byte> blob;
-  auto saved = std::chrono::steady_clock::now();
   while (true) {
     const auto t0 = std::chrono::steady_clock::now();
     ex.tasks(batches, [&](int k, int) { parts[static_cast<size_t>(k)] = clients[static_cast<size_t>(k)].quotes(chunks[static_cast<size_t>(k)]); });
@@ -261,6 +288,7 @@ void QuoteService::poll() {
     misc::Ymd d = 0;
     for (const sina::Quote &q : qs)
       d = std::max(d, q.date);
+    assert(d > 0 && "sina: 全市场快照一只都没回");
     {
       std::unique_lock<std::mutex> lock(mu_);
       if (stop_)
@@ -290,26 +318,18 @@ void QuoteService::poll() {
           continue;
         sec_ = std::max(sec_, q.sec);
         if (tracks_[i].absorb(q, gap)) {
-          changed_ = dirty_ = true;
+          put(i, sec_slot(q.sec));
+          put(i);
+          dirty_ = true;
           touched_ = std::min(touched_, sec_slot(q.sec));
         }
       }
+      std::atomic_ref<int32_t>(file_rec(map_).sec).store(sec_, std::memory_order_release); // 本轮各只落定之后
       ++ver_[kStock];
       schedule();
-      if (changed_ && t0 - saved >= std::chrono::seconds(kSave)) {
-        blob = serialize();
-        changed_ = false;
-        saved = t0;
-      }
     }
     cv_.notify_all();
     fold();
-    if (!blob.empty()) {
-      disk::write(disk::QuoteLive, {}, {reinterpret_cast<const char *>(blob.data()), blob.size()});
-      std::lock_guard<std::mutex> lock(mu_);
-      bytes_ = blob.size(), saved_ = std::time(nullptr);
-      blob.clear();
-    }
     std::unique_lock<std::mutex> lock(mu_);
     cv_.wait_until(lock, t0 + std::chrono::seconds(in_session(clock_now()) ? kTick : kIdleTick), [&] { return stop_; });
     if (stop_)
@@ -369,8 +389,10 @@ void QuoteService::schedule() {
     int s = 0;
     while (s <= st && t.exact[s])
       ++s;
-    if (s <= st)
+    if (s <= st) {
       t.mark(s, st);
+      put(sel_);
+    }
     if (t.fill == Fill::Queued && todo_.front() != sel_) {
       todo_.erase(std::find(todo_.begin(), todo_.end(), sel_));
       todo_.push_front(sel_);
@@ -414,10 +436,14 @@ void QuoteService::fill() {
       continue;
     Track &t = tracks_[i];
     t.fill = Fill::Idle;
-    t.merge(lo, settled(), date_, bars);
+    const int st = settled();
+    t.merge(lo, st, date_, bars);
+    for (int s = lo; s <= st; ++s)
+      put(i, s);
+    put(i);
     ++fetched_;
     ++ver_[kStock];
-    changed_ = dirty_ = true;
+    dirty_ = true;
     touched_ = std::min(touched_, lo);
   }
 }
@@ -445,46 +471,77 @@ void QuoteService::Track::merge(int l, int settled, misc::Ymd date, const std::v
 // ---------------------------------------------------------------------------
 // 落盘
 // ---------------------------------------------------------------------------
-std::vector<std::byte> QuoteService::serialize() {
-  std::vector<std::byte> out;
-  misc::snap::Save ar(out);
-  Head h{kMagic, date_, sec_, 0};
-  for (const Track &t : tracks_)
-    h.n += t.vol >= 0;
-  ar(h);
-  for (uint32_t i = 0; i < tracks_.size(); ++i) {
-    if (tracks_[i].vol < 0)
-      continue;
-    Sym s{};
-    assert(syms_[i].size() < s.size());
-    std::copy(syms_[i].begin(), syms_[i].end(), s.begin());
-    ar(s);
-    tracks_[i].snap(ar);
-  }
-  return out;
+void QuoteService::put(uint32_t i) {
+  const Track &t = tracks_[i];
+  AssetRec a{};
+  assert(syms_[i].size() < a.sym.size());
+  std::copy(syms_[i].begin(), syms_[i].end(), a.sym.begin());
+  a.lo = t.lo, a.hi = t.hi, a.vol = t.vol, a.amt = t.amt, a.high = t.high, a.low = t.low;
+  store(asset_rec(map_, i), a);
+  saved_ = std::time(nullptr);
+}
+
+void QuoteService::put(uint32_t i, int s) {
+  const Track &t = tracks_[i];
+  const size_t k = static_cast<size_t>(s);
+  store(slot_rec(map_, tracks_.size(), i, s), SlotRec{t.bars.cell[k], t.bars.has[k], t.exact[k], 0});
 }
 
 void QuoteService::load() {
-  if (!disk::exists(disk::QuoteLive))
-    return;
-  const std::string blob = disk::read(disk::QuoteLive);
-  bytes_ = blob.size();
-  saved_ = std::chrono::system_clock::to_time_t(
-      std::chrono::clock_cast<std::chrono::system_clock>(std::filesystem::last_write_time(disk::path(disk::QuoteLive))));
-  misc::snap::Load ar(std::as_bytes(std::span(blob)));
-  Head h;
-  ar(h);
-  if (h.magic != kMagic || h.date != date_)
-    return;
-  Track gone; // 不在本次全市场的 (已退市): 读过即弃
-  for (uint32_t k = 0; k < h.n; ++k) {
-    Sym s;
-    ar(s);
-    const auto it = index_.find(std::string(s.data(), strnlen(s.data(), s.size())));
-    (it != index_.end() ? tracks_[it->second] : (gone = Track{})).snap(ar);
+  if (map_)
+    munmap(map_, bytes_);
+  if (disk::exists(disk::QuoteLive)) {
+    const std::string blob = disk::read(disk::QuoteLive);
+    FileRec f{};
+    std::memcpy(&f, blob.data(), std::min(blob.size(), sizeof(f)));
+    if (f.magic == kMagic && f.date == date_) {
+      assert(blob.size() == file_bytes(f.n) && "sina 缓存: 文件长度与只数不符");
+      const char *as = blob.data() + sizeof(FileRec), *ss = as + f.n * sizeof(AssetRec);
+      for (uint32_t k = 0; k < f.n; ++k) {
+        AssetRec a;
+        std::memcpy(&a, as + k * sizeof(a), sizeof(a));
+        const auto it = index_.find(std::string(a.sym.data(), strnlen(a.sym.data(), a.sym.size())));
+        if (a.busy || it == index_.end()) // 写到一半 (该只从零) / 不在本次全市场 (已退市)
+          continue;
+        Track &t = tracks_[it->second];
+        t.lo = a.lo, t.hi = a.hi, t.vol = a.vol, t.amt = a.amt, t.high = a.high, t.low = a.low;
+        for (int s = 0; s < kSlots; ++s) {
+          SlotRec r;
+          std::memcpy(&r, ss + (static_cast<size_t>(k) * kSlots + static_cast<size_t>(s)) * sizeof(r), sizeof(r));
+          if (r.busy) {
+            t.mark(s, s);
+            continue;
+          }
+          t.bars.has[static_cast<size_t>(s)] = r.has;
+          t.bars.cell[static_cast<size_t>(s)] = r.bar;
+          t.exact[static_cast<size_t>(s)] = r.exact;
+        }
+      }
+      sec_ = f.sec;
+    }
   }
-  assert(ar.done() && "sina 缓存: 文件尾有多余字节");
-  sec_ = h.sec;
+  // 重写成本次布局: 临时文件建满再 rename, 映射随 inode 留用
+  const uint32_t n = static_cast<uint32_t>(tracks_.size());
+  bytes_ = file_bytes(n);
+  const std::filesystem::path p = disk::path(disk::QuoteLive);
+  std::filesystem::path tmp = p;
+  tmp += ".tmp";
+  std::filesystem::create_directories(p.parent_path());
+  const int fd = ::open(tmp.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+  assert(fd >= 0 && "sina 缓存: 临时文件建不出来");
+  [[maybe_unused]] const int sized = ftruncate(fd, static_cast<off_t>(bytes_));
+  assert(sized == 0 && "sina 缓存: 定长扩不出来");
+  void *m = mmap(nullptr, bytes_, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  assert(m != MAP_FAILED && "sina 缓存: 映射失败");
+  ::close(fd);
+  map_ = static_cast<std::byte *>(m);
+  file_rec(map_) = {kMagic, date_, sec_, n};
+  for (uint32_t i = 0; i < n; ++i) {
+    for (int s = 0; s < kSlots; ++s)
+      put(i, s);
+    put(i);
+  }
+  std::filesystem::rename(tmp, p);
 }
 
 } // namespace GUI::Quote
