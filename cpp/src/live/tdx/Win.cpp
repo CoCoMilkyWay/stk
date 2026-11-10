@@ -2,6 +2,7 @@
 
 #include "live/Broker.hpp"
 #include "live/tdx/Shim.hpp"
+#include "live/tdx/Trace.hpp"
 
 #include <cctype>
 
@@ -146,8 +147,9 @@ std::map<std::string, Hwnd> ctls(const Hwnd &h, const std::vector<std::pair<std:
 
 void command(const Hwnd &dlg, long cid) { post(dlg, kWmCommand, cid, ctls(dlg, {{"btn", cid}}).at("btn")); }
 
-// 候选窗口恰一个即只取它的图层, 否则取全部再按候选筛
+// 候选窗口恰一个即只取它的图层, 否则取全部再按候选筛; 不恰一处时先把候选窗口上画着的文字记进日志
 void click_text(const std::string &cls, const std::string &ttl, const std::string &txt) {
+  trace::Span span("点「" + txt + "」");
   std::map<Hwnd, Node> wins;
   for (Node &n : tree())
     if (n.vis && (cls.empty() || n.cls == cls) && (ttl.empty() || n.title == ttl))
@@ -158,16 +160,25 @@ void click_text(const std::string &cls, const std::string &ttl, const std::strin
     Item it;
   };
   std::vector<Hit> hits;
+  trace::Kw seen = trace::Kw::object();
   for (const Layer &l : layers(wins.size() == 1 ? wins.begin()->first : "")) {
     const auto w = wins.find(l.hwnd);
     if (w == wins.end())
       continue;
-    for (const Item &it : l.items)
-      if (it.text && squash(*it.text) == txt)
+    trace::Kw &texts = seen[l.hwnd + " " + w->second.cls + "「" + squash(w->second.title) + "」"] = trace::Kw::array();
+    for (const Item &it : l.items) {
+      const std::string t = it.text ? squash(*it.text) : "";
+      if (t.empty())
+        continue;
+      if (t == txt)
         hits.push_back({&w->second, l.off[0], l.off[1], it});
+      texts.push_back(t);
+    }
   }
-  if (hits.size() != 1)
+  if (hits.size() != 1) {
+    trace::ev("texts", {{"wins", wins.size()}, {"seen", std::move(seen)}});
     fail(strf("「%s」(%s %s) 命中 %zu 处, 需唯一", txt.c_str(), cls.c_str(), ttl.c_str(), hits.size()));
+  }
   const Hit &h = hits[0];
   clickat(h.n->hwnd, h.n->rect[0] + h.ox + half(h.it.l, h.it.r), h.n->rect[1] + h.oy + half(h.it.t, h.it.b));
 }

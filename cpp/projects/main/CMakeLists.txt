@@ -335,6 +335,7 @@ set(MATH_PRECISE
     live/tdx/Shim.cpp
     live/tdx/Tables.cpp
     live/tdx/Tdx.cpp
+    live/tdx/Trace.cpp
     live/tdx/Ui.cpp
     live/tdx/Win.cpp
     live/tdx/console/Console.cpp

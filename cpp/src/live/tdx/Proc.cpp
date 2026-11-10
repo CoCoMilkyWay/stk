@@ -1,5 +1,7 @@
 #include "live/tdx/Proc.hpp"
 
+#include "live/tdx/Trace.hpp"
+
 #include <cassert>
 #include <cerrno>
 #include <cstdlib>
@@ -15,8 +17,24 @@ extern char **environ;
 
 namespace live::tdx {
 
+namespace {
+
+constexpr size_t kTail = 600; // 输出记进日志的尾部字节数
+
+const Ran &noted(const std::vector<std::string> &argv, const Ran &r, std::chrono::steady_clock::time_point t0) {
+  trace::Kw kw = {{"argv", argv}, {"rc", r.rc}, {"ms", trace::ms_since(t0)}};
+  for (const auto &[k, s] : {std::pair{"err", &r.err}, std::pair{"out", &r.out}})
+    if (!s->empty())
+      kw[k] = s->size() <= kTail ? *s : s->substr(s->size() - kTail);
+  trace::ev("run", std::move(kw));
+  return r;
+}
+
+} // namespace
+
 Ran run(const std::vector<std::string> &argv, const std::string &in, const std::filesystem::path &cwd) {
   assert(!argv.empty());
+  const auto t0 = std::chrono::steady_clock::now();
   int pin[2], pout[2], perr[2];
   const int piped = pipe2(pin, O_CLOEXEC) | pipe2(pout, O_CLOEXEC) | pipe2(perr, O_CLOEXEC);
   assert(piped == 0);
@@ -44,7 +62,7 @@ Ran run(const std::vector<std::string> &argv, const std::string &in, const std::
     ::close(pout[0]);
     ::close(perr[0]);
     r.err = std::string("起不来 ") + argv[0] + ": " + std::strerror(rc);
-    return r;
+    return noted(argv, r, t0);
   }
   for (size_t off = 0; off < in.size();) {
     const ssize_t k = ::write(pin[1], in.data() + off, in.size() - off);
@@ -78,7 +96,7 @@ Ran run(const std::vector<std::string> &argv, const std::string &in, const std::
   while (::waitpid(pid, &st, 0) < 0)
     assert(errno == EINTR);
   r.rc = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
-  return r;
+  return noted(argv, r, t0);
 }
 
 bool on_path(const std::string &exe) {

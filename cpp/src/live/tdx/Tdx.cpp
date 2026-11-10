@@ -7,6 +7,7 @@
 #include "live/tdx/Mem.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/Tables.hpp"
+#include "live/tdx/Trace.hpp"
 #include "live/tdx/Ui.hpp"
 #include "live/tdx/Win.hpp"
 
@@ -100,6 +101,7 @@ struct Core {
   void fresh(W &w, typename W::Snap s, bool stamp) {
     std::shared_ptr<const typename W::Value> v;
     if (!w.snap || !(*w.snap == s)) {
+      trace::ev("gen", {{"tab", State::name(w.got)}, {"rows", s.rows.size()}, {"at", mem::addrs(s.mark)}});
       v = std::make_shared<const typename W::Value>(w.view(s));
       w.snap = std::move(s);
     }
@@ -151,14 +153,19 @@ struct Core {
         return;
       was_lost = lost;
     }
+    trace::Span span("盯持仓");
     std::lock_guard wk(work);
     if (was_lost) {
       attach(); // 客户端不在即 Fail, 不去空注入
-      if (!shim::online())
+      if (!shim::online()) {
+        trace::Span attaching("接入");
         win::attach();
+      }
     }
     if (was_lost || !pos.snap || now - scan_at >= kFullEvery) {
       scan();
+      if (was_lost)
+        trace::ev("back");
       std::lock_guard lk(mu);
       lost = false;
       prog.down.clear();
@@ -192,25 +199,30 @@ struct Core {
 
   // ---------- 刷新线程 ----------
 
-  // 该刷新一轮了 (须持 mu)
-  bool due(Clock::time_point now) {
+  // 该刷新一轮了 → 起因; 不该 → nullptr (须持 mu)
+  const char *due(Clock::time_point now) {
     if (asked > done)
-      return true;
+      return "请求";
     if (!watched(now))
-      return false;
+      return nullptr;
     if (!kicks.empty() && now >= kicks.front()) {
       kicks.erase(kicks.begin());
-      return true;
+      return "下单后";
     }
-    if (!last || (prog.every > 0 && now - *last >= std::chrono::duration<double>(prog.every)))
-      return true;
-    return checked && st->pos && st->fills && st->pos.v != checked && !board::synced(*st->pos, *st->fills);
+    if (!last)
+      return "首轮";
+    if (prog.every > 0 && now - *last >= std::chrono::duration<double>(prog.every))
+      return "定时";
+    if (checked && st->pos && st->fills && st->pos.v != checked && !board::synced(*st->pos, *st->fills))
+      return "持仓与成交对不上";
+    return nullptr;
   }
 
   // 重查盯着的一样: 切到其页签点刷新, 等快照换代
   template <class W>
   void refresh(W &w) {
     note(State::name(w.got));
+    trace::Span span(State::name(w.got));
     const typename W::Snap old = [&] {
       std::lock_guard wk(work);
       return *w.snap;

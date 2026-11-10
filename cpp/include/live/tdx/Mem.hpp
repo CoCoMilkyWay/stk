@@ -266,8 +266,11 @@ auto stable(F &&fn, const char *name, int tries = 5) {
   for (int i = 1; i < tries; ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     auto cur = fn();
-    if (cur == prev)
+    if (cur == prev) {
+      if (i > 1)
+        trace::ev("torn", {{"tab", name}, {"n", i + 1}});
       return cur;
+    }
     prev = std::move(cur);
   }
   fail(strf("%s连读 %d 次仍不一致, 内存正被改写", name, tries));
@@ -288,6 +291,12 @@ std::vector<Hit> near_of(const Snap<S> &s) {
 
 template <class C>
 bool in(const C &hs, const Hit &h) { return std::find(hs.begin(), hs.end(), h) != hs.end(); }
+inline std::vector<std::string> addrs(const std::vector<Hit> &hs) {
+  std::vector<std::string> out;
+  for (const Hit &h : hs)
+    out.push_back(strf("%#llx", static_cast<unsigned long long>(h.addr)));
+  return out;
+}
 inline std::vector<Hit> tagged(const std::vector<Hit> &hits, std::string_view tag) {
   std::vector<Hit> out;
   for (const Hit &h : hits)
@@ -487,12 +496,14 @@ public:
   // timeout 内没换代 (应答与旧的逐字节相同, 如收盘后; 或盯不到新块) 即全量读; s 没有块即无从盯, 等 blind 秒全量读
   Snap wait(const Snap &s, double timeout = 3, double blind = 1) {
     static_assert(Mode::kWatch);
+    const Clock::time_point t0 = Clock::now();
     std::optional<Snap> n = poll(
         [&]() -> std::optional<Snap> {
           Snap f = follow(s);
           return f == s ? std::nullopt : std::optional<Snap>(std::move(f));
         },
         s.mark.empty() ? blind : timeout, 0.01);
+    trace::ev("wait", {{"tab", S::kShape.name}, {"ms", trace::ms_since(t0)}, {"by", n ? "gen" : "full"}});
     return n ? std::move(*n) : read(s.heap);
   }
 
@@ -520,8 +531,9 @@ public:
     const size_t at = static_cast<size_t>(std::find(shapes_.begin(), shapes_.end(), &S::kShape) - shapes_.begin());
     assert(at < shapes_.size());
     t.arm(last_[at]);
+    const Clock::time_point t0 = Clock::now();
     act();
-    return std::move(*until(
+    Snap<S> got = std::move(*until(
         said(strf("%s的新应答", S::kShape.name)),
         [&]() -> std::optional<Snap<S>> {
           last_ = heap_->scan(shapes_);
@@ -529,6 +541,8 @@ public:
           return s.mark.empty() ? std::nullopt : std::optional<Snap<S>>(std::move(s));
         },
         timeout, 0));
+    trace::ev("ask", {{"tab", S::kShape.name}, {"rows", got.rows.size()}, {"at", addrs(got.mark)}, {"ms", trace::ms_since(t0)}});
+    return got;
   }
 
 private:

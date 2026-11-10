@@ -25,6 +25,7 @@ double secs(Clock::time_point a, Clock::time_point b) { return Secs(b - a).count
 // 条数标签经客户端界面线程读, 客户端卡着时读不动, 故另起线程读; 内存直接读, 不受卡顿影响
 template <class S>
 mem::IndexOf<S> full(mem::Table<S> &table, const mem::HeapP &heap, const Log &log, const Live &live, const std::string &func, const std::string &col) {
+  trace::Span span(func);
   log("page", {{"func", func}});
   live("开「" + func + "」页, 等客户端重查…");
   const win::Hwnd dlg = ui::open_page(func, col);
@@ -40,6 +41,7 @@ mem::IndexOf<S> full(mem::Table<S> &table, const mem::HeapP &heap, const Log &lo
   Clock::time_point at = t0;
   std::optional<std::string> err;
   std::thread label([&] {
+    trace::Span span(func + "条数标签");
     try {
       std::unique_lock lk(mu);
       while (!stop) {
@@ -94,6 +96,7 @@ mem::IndexOf<S> full(mem::Table<S> &table, const mem::HeapP &heap, const Log &lo
         if (!seen || *seen != std::pair{pn, got}) {
           seen = std::pair{pn, got};
           log("rows", {{"func", func}, {"n", pn ? nlohmann::json(*pn) : nlohmann::json()}, {"got", got}});
+          trace::ev("rows", {{"n", pn ? trace::Kw(*pn) : trace::Kw()}, {"got", got}});
         }
         if (pn && got == static_cast<size_t>(*pn))
           return rows;

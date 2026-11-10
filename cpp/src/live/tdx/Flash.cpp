@@ -166,6 +166,7 @@ std::string form(Ctx &c, double &px_out) {
   long cap = max_qty(ids.at("max"));
   cap = std::min(cap, c.o.side == kBuy ? static_cast<long>(cap0 * std::stod(dflt) / px) : cap0);
   c.n = order_qty(c.o, px, cap);
+  trace::ev("form", {{"px", c.px_s}, {"dflt", dflt}, {"unit", unit}, {"cap0", cap0}, {"cap", cap}, {"n", c.n}});
   if (unit == "股") {
     settext(ids.at("qty"), std::to_string(c.n));
   } else {
@@ -238,18 +239,20 @@ Placed place(const OrderReq &o, const Step &step) {
   assert((o.qty > 0) != (o.size > 0) && o.px > 0);
   Ctx c{o, *k, {}, {}, {}, {}};
   Placed p;
-  step(0, "");
-  switch_to(c);
-  step(1, "");
-  open(c);
-  step(2, "");
-  p.detail = form(c, p.px);
-  p.qty = static_cast<double>(c.n);
-  step(2, p.detail);
-  step(3, "");
-  confirm(c);
-  step(4, "");
-  p.msg = reply(c);
+  const auto at = [&](size_t i, const auto &fn) {
+    trace::Span span(steps()[i]);
+    step(i, "");
+    fn();
+  };
+  at(0, [&] { switch_to(c); });
+  at(1, [&] { open(c); });
+  at(2, [&] {
+    p.detail = form(c, p.px);
+    p.qty = static_cast<double>(c.n);
+    step(2, p.detail);
+  });
+  at(3, [&] { confirm(c); });
+  at(4, [&] { p.msg = reply(c); });
   return p;
 }
 

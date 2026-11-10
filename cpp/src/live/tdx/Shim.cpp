@@ -108,6 +108,7 @@ void build() {
   if (fs::exists(dir / dll_name()))
     return;
   const std::vector<std::string> base = toolchain();
+  trace::ev("build", {{"dll", dll_name()}, {"cc", base[0]}});
   const std::vector<std::vector<std::string>> steps = {
       {"-shared", "-o", dll_name(), (src / "shim.c").string(), "-lws2_32", "-luser32", "-lkernel32", "-lgdi32"},
       {"-o", "inject.exe", (src / "inject.c").string(), "-lkernel32"},
@@ -122,6 +123,7 @@ void build() {
 }
 
 void inject() {
+  trace::ev("inject", {{"dll", dll_name()}, {"port", port()}, {"proc", target_proc()}});
   const fs::path tmp = wine_temp();
   fs::create_directories(tmp);
   prune(tmp);
@@ -187,10 +189,12 @@ void ensure(double timeout) {
     return;
   inject();
   until(said(strf("shim 注入后应答 (端口 %d)", port())), online, timeout, 0.1);
+  trace::ev("online", {{"port", port()}});
 }
 
 std::vector<nlohmann::json> call(const std::string &line, double timeout) {
   const std::string cmd = line.substr(0, line.find(' '));
+  const Clock::time_point t0 = Clock::now();
   const int s = open_to(line, cmd, timeout);
   std::string buf;
   for (char tmp[65536];;) {
@@ -219,6 +223,16 @@ std::vector<nlohmann::json> call(const std::string &line, double timeout) {
     nlohmann::json j = nlohmann::json::parse(lines[i], nullptr, false);
     assert(!j.is_discarded());
     out.push_back(std::move(j));
+  }
+  if (trace::on()) {
+    trace::Kw kw = {{"cmd", line}, {"ms", trace::ms_since(t0)}};
+    if (buf.size() <= trace::kRetCap) {
+      kw["ret"] = nlohmann::json(out);
+    } else {
+      kw["n"] = out.size();
+      kw["kb"] = (buf.size() + 512) / 1024;
+    }
+    trace::ev("shim", std::move(kw));
   }
   return out;
 }

@@ -14,6 +14,7 @@ namespace pool {
 namespace {
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+constexpr size_t kSparse = 16; // 切片全选: 切片内数 × kSparse < A → 按类段收拢再排 (否则沿 A 轴扫)
 
 // 日行各列: 代码 / 落盘变换
 struct ColDef {
@@ -103,6 +104,12 @@ struct KeyCols {
   }
 };
 
+// 按类分段的表: 段长 n [kClasses] → 各类的段首 at [kClasses]
+void seg_starts(const uint16_t *n, size_t *at) {
+  for (size_t c = 0, s = 0; c < kClasses; s += n[c++])
+    at[c] = s;
+}
+
 // 一日的读 (列序 = day_cols) → 原料带行 r; pre / close [A] = 该行前收 / 收盘 (无成交 → 0)
 void fill_row(const FeatureRead::DayColumns &c, Tape &t, size_t r, float *pre, float *close) {
   const size_t A = t.A;
@@ -130,10 +137,17 @@ void fill_row(const FeatureRead::DayColumns &c, Tape &t, size_t r, float *pre, f
     if (k == kSlices)
       t.cls[i] = static_cast<uint16_t>(id), ++cnt[id];
   }
+  size_t at[kClasses];
+  seg_starts(cnt, at);
+  const uint16_t *cl = t.cls.data() + r * A;
+  uint16_t *byc = t.byc.data() + r * A;
+  for (size_t a = 0; a < A; ++a)
+    if (cl[a] != kOut)
+      byc[at[cl[a]]++] = static_cast<uint16_t>(a);
 }
 
-// 一行的键 k [A] → 有限键资产按 (键, 下标) 升序写进 o (返回个数) + 各类的有限键数 fin [kClasses]
-size_t rank_row(const float *k, const uint16_t *cl, size_t A, uint32_t *o, uint16_t *fin) {
+// 一行的键 k [A] → 有限键资产按 (键, 下标) 升序写进 o (返回个数) + 各类的有限键数 fin [kClasses] + 在市的在 o 里的位置按类分段 rbc
+size_t rank_row(const float *k, const uint16_t *cl, size_t A, uint32_t *o, uint16_t *fin, uint16_t *rbc) {
   std::fill(fin, fin + kClasses, uint16_t{0});
   size_t n = 0;
   for (size_t a = 0; a < A; ++a)
@@ -143,6 +157,11 @@ size_t rank_row(const float *k, const uint16_t *cl, size_t A, uint32_t *o, uint1
         ++fin[cl[a]];
     }
   std::sort(o, o + n, [&](uint32_t a, uint32_t b) { return k[a] < k[b] || (k[a] == k[b] && a < b); });
+  size_t at[kClasses];
+  seg_starts(fin, at);
+  for (size_t i = 0; i < n; ++i)
+    if (const uint16_t c = cl[o[i]]; c != kOut)
+      rbc[at[c]++] = static_cast<uint16_t>(i);
   return n;
 }
 
@@ -234,7 +253,7 @@ std::shared_ptr<const Tape> tape(const FeatureLib &lib, const Cancel *cancel, co
   assert(A > 0 && A <= UINT16_MAX && R > lo);
   auto t = keep ? std::make_shared<Tape>(*cur) : std::make_shared<Tape>();
   t->dates = std::move(rows), t->A = A, t->axis = lib.axis.hash;
-  t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->live.resize(R * A), t->ind.resize(R * A), t->mcap.resize(R * A), t->ret.resize(R * A);
+  t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->byc.resize(R * A), t->live.resize(R * A), t->ind.resize(R * A), t->mcap.resize(R * A), t->ret.resize(R * A);
   t->pre.resize(A);
   std::vector<float> pre((R - lo) * A), close((R - lo) * A); // [新行 · A]
   const FeatureRead rd(lib);
@@ -290,6 +309,7 @@ bool rank_rows(const FeatureLib &lib, const Tape &t, Style st, misc::exec::ForkJ
     l.key.resize(A);
   }
   std::vector<std::vector<uint32_t>> ord(R - lo); // [新行]
+  std::vector<std::vector<uint16_t>> rbc(R - lo); // [新行]
   rk.fin.resize(R * kClasses);
   ex.tasks(static_cast<int>(R - lo), [&](int i, int tid) {
     if (cancel.load(std::memory_order_relaxed))
@@ -300,25 +320,28 @@ bool rank_rows(const FeatureLib &lib, const Tape &t, Style st, misc::exec::ForkJ
       rd.load_day_columns(t.dates[r], kc.cols, l.dc);
     kc.row(st, l.dc, t.mcap.data() + r * A, A, l.key.data());
     std::vector<uint32_t> &o = ord[static_cast<size_t>(i)];
-    o.resize(A);
-    o.resize(rank_row(l.key.data(), t.cls.data() + r * A, A, o.data(), rk.fin.data() + r * kClasses));
+    std::vector<uint16_t> &b = rbc[static_cast<size_t>(i)];
+    o.resize(A), b.resize(A);
+    o.resize(rank_row(l.key.data(), t.cls.data() + r * A, A, o.data(), rk.fin.data() + r * kClasses, b.data()));
+    b.resize(o.size());
     tick();
   });
   if (cancel.load(std::memory_order_relaxed) || rd.stale()) {
     rk.fin.resize(lo * kClasses);
     return false;
   }
-  for (const std::vector<uint32_t> &o : ord) {
-    rk.ord.insert(rk.ord.end(), o.begin(), o.end());
+  for (size_t i = 0; i < R - lo; ++i) {
+    rk.ord.insert(rk.ord.end(), ord[i].begin(), ord[i].end());
+    rk.rbc.insert(rk.rbc.end(), rbc[i].begin(), rbc[i].end());
     rk.off.push_back(rk.ord.size());
   }
   return true;
 }
 
 RowView row_view(const Tape &t, const Ranks *rk, size_t r) {
-  RowView v{t.A, t.cls.data() + r * t.A, t.cnt.data() + r * kClasses};
+  RowView v{t.A, t.cls.data() + r * t.A, t.cnt.data() + r * kClasses, t.byc.data() + r * t.A};
   if (rk)
-    v.o = rk->ord.data() + rk->off[r], v.e = rk->ord.data() + rk->off[r + 1], v.fin = rk->fin.data() + r * kClasses;
+    v.o = rk->ord.data() + rk->off[r], v.e = rk->ord.data() + rk->off[r + 1], v.fin = rk->fin.data() + r * kClasses, v.rbc = rk->rbc.data() + rk->off[r];
   return v;
 }
 
@@ -336,6 +359,12 @@ void Selector::at(const RowView &r, std::vector<uint32_t> &out) const {
       n += p[c];
     return n;
   };
+  // 切片内各类在按类分段的表 (段长 n [kClasses]) 里的段 [b, e) 依次收进 out
+  const auto gather = [&](const uint16_t *n, const uint16_t *seg) {
+    for (size_t c = 0, b = 0; c < kClasses; b += n[c++])
+      if (in_[c])
+        out.insert(out.end(), seg + b, seg + b + n[c]);
+  };
   const size_t A = r.A, n_in = sum(r.cnt);
   if (n_in == 0)
     return;
@@ -343,21 +372,39 @@ void Selector::at(const RowView &r, std::vector<uint32_t> &out) const {
   assert((!s_.keyed() || r.fin) && "风格池须有键次序");
   const size_t n_fin = s_.keyed() ? sum(r.fin) : 0;
   if (!s_.keyed() || static_cast<float>(n_fin) < kCover * static_cast<float>(n_in)) {
-    for (size_t a = 0; a < A; ++a)
-      if (in(static_cast<uint32_t>(a)))
-        out.push_back(static_cast<uint32_t>(a));
+    if (n_in * kSparse < A) {
+      gather(r.cnt, r.byc);
+      std::ranges::sort(out);
+    } else
+      for (size_t a = 0; a < A; ++a)
+        if (in(static_cast<uint32_t>(a)))
+          out.push_back(static_cast<uint32_t>(a));
     return;
   }
-  const size_t want = std::min<size_t>(static_cast<size_t>(s_.n()), n_fin);
-  const uint32_t *o = r.o, *e = r.e;
-  if (s_.end() == kEndLow) {
-    for (; o != e && out.size() < want; ++o)
-      if (in(*o))
-        out.push_back(*o);
+  const size_t want = std::min<size_t>(static_cast<size_t>(s_.n()), n_fin), len = static_cast<size_t>(r.e - r.o);
+  if (want == n_fin || 3 * n_fin * n_fin < want * len) { // 收拢 + 选秩 ≈ 3 n_fin; 沿次序扫 ≈ want · len / n_fin
+    gather(r.fin, r.rbc);
+    if (want < n_fin) {
+      const auto cut = s_.end() == kEndLow ? out.begin() + static_cast<std::ptrdiff_t>(want) : out.end() - static_cast<std::ptrdiff_t>(want);
+      std::nth_element(out.begin(), cut, out.end());
+      if (s_.end() == kEndLow)
+        out.erase(cut, out.end());
+      else
+        out.erase(out.begin(), cut);
+    }
+    for (uint32_t &x : out)
+      x = r.o[x];
   } else {
-    while (e != o && out.size() < want)
-      if (in(*--e))
-        out.push_back(*e);
+    const uint32_t *o = r.o, *e = r.e;
+    if (s_.end() == kEndLow) {
+      for (; o != e && out.size() < want; ++o)
+        if (in(*o))
+          out.push_back(*o);
+    } else {
+      while (e != o && out.size() < want)
+        if (in(*--e))
+          out.push_back(*e);
+    }
   }
   std::ranges::sort(out);
 }
@@ -457,7 +504,7 @@ std::shared_ptr<const Picks> picks(const FeatureLib &lib, const Cancel *cancel, 
   struct Lane {
     FeatureRead::DayColumns dc;
     std::vector<float> key;
-    std::vector<uint16_t> fin;
+    std::vector<uint16_t> fin, rbc;
     std::vector<uint32_t> ord, out;
   };
   const FeatureRead rd(lib);
@@ -466,7 +513,7 @@ std::shared_ptr<const Picks> picks(const FeatureLib &lib, const Cancel *cancel, 
   for (Lane &l : lanes) {
     if (!kc.cols.empty())
       l.dc.preallocate(A, L_1day, kc.cols.size());
-    l.key.resize(A), l.fin.resize(kClasses), l.ord.resize(A);
+    l.key.resize(A), l.fin.resize(kClasses), l.rbc.resize(A), l.ord.resize(A);
   }
   std::vector<std::vector<std::vector<uint16_t>>> got(R - lo, std::vector<std::vector<uint16_t>>(NP - 1)); // [新行][p − 1]
   ex.tasks(static_cast<int>(R - lo), [&](int i, int tid) {
@@ -487,7 +534,7 @@ std::shared_ptr<const Picks> picks(const FeatureLib &lib, const Cancel *cancel, 
       if (by_style[st].empty())
         continue;
       kc.row(static_cast<Style>(st), l.dc, t->mcap.data() + r * A, A, l.key.data());
-      v.o = l.ord.data(), v.e = v.o + rank_row(l.key.data(), v.cls, A, l.ord.data(), l.fin.data()), v.fin = l.fin.data();
+      v.o = l.ord.data(), v.e = v.o + rank_row(l.key.data(), v.cls, A, l.ord.data(), l.fin.data(), l.rbc.data()), v.fin = l.fin.data(), v.rbc = l.rbc.data();
       for (const PoolId p : by_style[st])
         take(p);
     }

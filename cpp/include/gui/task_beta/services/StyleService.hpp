@@ -61,8 +61,7 @@ public:
 
 private:
   static constexpr Phase kStart = Phase::Loading;
-  static constexpr size_t kKeep = 3; // 留在内存的风格次序数 (每份 ≈ [日 · A] uint32)
-  static constexpr int kThreads = 8; // 键: 每线程一行的列读 + 排序; 篮子: 每线程一组参数的成员 / 权
+  static constexpr size_t kKeep = 3; // 留在内存的风格次序数 (每份 ≈ [日 · A] uint32 + uint16)
   Progress &board() { return *this; }
   bool run(StyleRequest &req);
   bool publish(const StyleRequest &req, std::string lack, std::shared_ptr<StyleResult> out = nullptr);
@@ -74,7 +73,7 @@ private:
     std::shared_ptr<const pool::Ranks> rk;
   };
 
-  misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
+  misc::exec::ForkJoin pool_{misc::exec::hw()};                   // 键: 每线程一行的列读 + 排序; 篮子: 每线程一组参数的成员 / 权
   std::shared_ptr<const pool::Tape> tape_;                        // 上次用的原料带 (空 = 未装)
   std::vector<Key> keys_;                                         // 新 → 旧 (原料带重建清空, 补行随用随补)
   std::map<pool::Spec, std::shared_ptr<const pool::Book>> books_; // 篮子账 (随 tape_ 换代清空)

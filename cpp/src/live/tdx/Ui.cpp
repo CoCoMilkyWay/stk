@@ -64,7 +64,12 @@ std::vector<std::string> cols(const Hwnd &dlg, double timeout) {
 } // namespace
 
 Gate::Hold::Hold(Gate &g, const char *who) : g_(g) {
-  g_.mu_.lock();
+  if (!g_.mu_.try_lock()) {
+    const std::string by = g_.who();
+    const Clock::time_point t0 = Clock::now();
+    g_.mu_.lock();
+    trace::ev("gate", {{"by", by}, {"ms", trace::ms_since(t0)}});
+  }
   std::lock_guard lk(g_.who_mu_);
   outer_ = g_.who_;
   if (g_.who_.empty())
@@ -104,6 +109,7 @@ void show_bar() {
 }
 
 void click_func(const std::string &name) {
+  trace::Span span("功能树「" + name + "」");
   const std::vector<Node> trees = func_trees();
   if (trees.size() != 1)
     fail(strf("交易功能树命中 %zu 个", trees.size()));
@@ -130,6 +136,7 @@ void click_func(const std::string &name) {
 // ---------- 查询页 ----------
 
 Hwnd open_page(const std::string &func, const std::string &col, double timeout) {
+  trace::Span span("开页「" + func + "」", {{"col", col}});
   click_func(func);
   return *until(
       said("「" + func + "」页 (表头含「" + col + "」)"),
@@ -168,6 +175,7 @@ std::optional<int> page_count(const Hwnd &lbl, double timeout) {
 // ---------- 弹框 ----------
 
 Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::function<void()> &act) {
+  trace::Span span("弹框", {{"titles", titles}});
   const win::Tops before = win::tops();
   act();
   std::string want;
@@ -180,7 +188,8 @@ Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::fu
         out.emplace(h, n);
     return out;
   };
-  return *until(
+  std::string title;
+  const Hwnd box = *until(
       [&] {
         std::string s;
         for (const auto &[h, n] : fresh())
@@ -190,13 +199,17 @@ Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::fu
       [&]() -> std::optional<Hwnd> {
         std::vector<Hwnd> hits;
         for (const auto &[h, n] : fresh())
-          if (std::find(titles.begin(), titles.end(), n.title) != titles.end())
+          if (std::find(titles.begin(), titles.end(), n.title) != titles.end()) {
             hits.push_back(h);
+            title = n.title;
+          }
         if (hits.size() > 1)
           fail(strf("「%s」同时出现 %zu 个", want.c_str(), hits.size()));
         return hits.empty() ? std::nullopt : std::optional<Hwnd>(hits[0]);
       },
       timeout);
+  trace::ev("popup", {{"title", title}, {"hwnd", box}});
+  return box;
 }
 
 std::string body(const Hwnd &box) {

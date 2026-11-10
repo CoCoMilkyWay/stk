@@ -52,6 +52,7 @@ int ptrace_scope() {
 void ensure_access() {
   if (ptrace_scope() == 0)
     return;
+  trace::ev("ptrace", {{"scope", ptrace_scope()}});
   const fs::path pass = disk::path(disk::LiveSudoFile);
   if (!fs::exists(pass))
     fail("需 sudo 放开 ptrace, 但缺密码文件 " + pass.string());
@@ -439,6 +440,7 @@ HeapP attach() {
   const int pid = find_pid();
   if (!pid)
     fail("找不到 tdxw.exe 进程");
+  trace::ev("attach", {{"pid", pid}});
   ensure_access();
   return std::make_shared<const Heap>(pid);
 }

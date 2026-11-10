@@ -82,6 +82,7 @@ struct Tape {
   uint64_t axis = 0;              // 轴指纹
   std::vector<uint16_t> cls;      // [行 · A] 类号 (不在市 = kOut)
   std::vector<uint16_t> cnt;      // [行 · kClasses] 类内资产数
+  std::vector<uint16_t> byc;      // [行 · A] 在市资产按 (类, 下标) 升序 (类段 = cnt 前缀和; 行尾在市数之后不用)
   std::vector<uint8_t> live, ind; // [行 · A] 全A 成员 (cs_valid ∧ 收盘 > 0) / 申万一级 (0 = 未知)
   std::vector<float> mcap;        // [行 · A] 收盘总市值 = close_day × total_shares (缺 → 0)
   std::vector<float> ret;         // [行 · A] 日收益 (首行 0)
@@ -98,6 +99,7 @@ void live_at(const Tape &t, size_t r, std::vector<uint32_t> &out);
 // 键的逐行次序 (选股只看次序): 行 r 的有限键资产按 (键, 下标) 升序 + 各类的有限键数
 struct Ranks {
   std::vector<uint32_t> ord;  // 逐行接排: 行 r = ord[off[r], off[r + 1])
+  std::vector<uint16_t> rbc;  // 逐行接排 (同 off): 在市有限键资产在本行 ord 里的位置, 按 (类, 位置) 升序 (类段 = fin 前缀和; 行尾在市数之后不用)
   std::vector<size_t> off{0}; // [行 + 1]
   std::vector<uint16_t> fin;  // [行 · kClasses] 类内有限键数
   size_t rows() const { return off.size() - 1; }
@@ -105,17 +107,19 @@ struct Ranks {
 // 风格 st 的次序补到 t 的末行 (rk 已排的行 = t 的前缀行; 只用原料带的风格不读库), 每排完一行调 tick; 取消 / 库判废 → false
 bool rank_rows(const FeatureLib &lib, const Tape &t, Style st, misc::exec::ForkJoin &ex, const Cancel &cancel, const Tick &tick, Ranks &rk);
 
-// 一行的选股原料: 类号 [A] / 类内资产数 [kClasses]; 风格池另要有限键的次序 [o, e) 与类内有限键数 fin [kClasses]
+// 一行的选股原料: 类号 [A] / 类内资产数 [kClasses] / 按类分段的在市资产 byc; 风格池另要有限键的次序 [o, e)、类内有限键数 fin [kClasses]
+//   与按类分段的次序位置 rbc
 struct RowView {
   size_t A = 0;
-  const uint16_t *cls = nullptr, *cnt = nullptr;
+  const uint16_t *cls = nullptr, *cnt = nullptr, *byc = nullptr;
   const uint32_t *o = nullptr, *e = nullptr;
-  const uint16_t *fin = nullptr;
+  const uint16_t *fin = nullptr, *rbc = nullptr;
 };
 RowView row_view(const Tape &t, const Ranks *rk, size_t r); // rk 可空 (只给全选池用)
 
 // 选股: 行内切片; 风格池: 键覆盖率 (有限 / 切片内) < kCover → 切片内全选 (键未到齐时不按残缺截面截两端),
 //   否则有限键取低端 / 高端前 N (次序两头往里取: 并列时低端取下标小的, 高端取下标大的; 有限不足 N 则全取); 全选池 = 切片内全选
+//   取法按代价二选一 (结果相同): 宽切片沿 A 轴 / 次序扫, 窄切片按类段收拢 (byc / rbc)
 inline constexpr float kCover = 0.8f;
 class Selector {
 public:
