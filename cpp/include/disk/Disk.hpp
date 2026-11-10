@@ -20,7 +20,7 @@
 // output/ = config/ 人定的输入 + 按产研流水线分段的产物 + run/ 各段运行产物的同构镜像 (整删无损):
 //   config/      配置: 一任务一目录 (settings / beta / market / agent / live, 与左栏任务树对仗); 本机件由 output/.gitignore 逐项列出
 //   data/        ① 数据 ← 外部 + 样例       run/data/       编码日志 / 归档修复
-//   features/    ② 特征 ← data              run/features/   计算日志 / 节点用时 / perf 采样 (同 <池>/<档>)
+//   features/    ② 特征 ← data              run/features/   计算日志 / 节点用时 (同 <池>/<档>)
 //   factors/     ③ 因子 ← features          run/factors/    Search 日志 / Inspect 导出 (同 <池>/<层>) + 算子表
 //   portfolios/  ④ 组合 ← factors
 //   agent/       ③ 的旁路: 挖候选 → 入库      run/agent/      Search 日志 (同会话作用域) + 工具结果样本 (同 <main|test>)
@@ -187,8 +187,6 @@ enum class Seg : std::uint8_t {
   X(RunLibLog,         RunLib,            Dir,    Lit,       "log",               "",         false)       \
   X(RunLibLogFile,     RunLibLog,         File,   Log,       "",                  ".log",     false)       \
   X(RunLibNodeTime,    RunLib,            File,   Lit,       "node_time.json",    "",         false)       \
-  X(RunLibProfiles,    RunLib,            Dir,    Lit,       "profile",           "",         false)       \
-  X(RunLibProfile,     RunLibProfiles,    Bundle, Stamp,     "",                  "",         false)       \
   X(RunFactors,        Run,               Dir,    Lit,       "factors",           "",         false)       \
   X(RunOperators,      RunFactors,        File,   Lit,       "operators.json",    "",         false)       \
   X(RunFactorPool,     RunFactors,        Dir,    Pool,      "",                  "",         false)       \

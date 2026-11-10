@@ -1,5 +1,5 @@
 // Tab Encode - L2 归档 (CSV) → output/data/orders 编码面板
-// 覆盖检查 / 文件核查 / 编码 (worker 数可调)
+// 文件核查 ⇄ 修复 / 覆盖检查 / 编码 (worker 数可调)
 #pragma once
 
 #include "gui/Tasks.hpp"

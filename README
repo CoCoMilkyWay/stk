@@ -1,5 +1,5 @@
 ```
-入口: run.py ──► py/main.py ──► CMake ──► app_main (C++可执行文件)
+入口: run.py ──► py/build.py ──► CMake ──► app_main (C++可执行文件)
 
 GUI布局:
 ┌───────────────────────────────────────────────────────────────────────────┐
@@ -36,12 +36,11 @@ GUI布局:
 ```
 stk/
 ├── AGENT.md                                            # 🤖 Agent 挖因子: 状态机 / 调用协议与工具表 / 会话流水字段
-├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + CUDA 开关 → py/main.py
+├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + CUDA 开关 → py/build.py → py/modes.py
 ├── py/                                                 # 🐍 Python 工具链
-│   ├── main.py                                         # 🐍 构建脚本 (调 CMake)
-│   ├── mode_*.py                                       # 🐍 模式开关: tsan / debug / profile / assert / production
-│   ├── rank.py                                         # 🐍 自选资产区间位置排序 (读 output/data/fundamental)
-│   └── app/                                            # 🐍 Fetch (BigQuant 下载) / FileRepair (归档修复) / format_cpp / lint_cpp
+│   ├── build.py                                        # 🐍 构建: CMake 配置 + 编译 (BUILD_MODE / GPU_BACKEND)
+│   ├── modes.py                                        # 🐍 运行: 五模式同签名 (tsan / debug / profile / assert / production)
+│   └── app/                                            # 🐍 cpp/ format · lint (clang-format / clangd)
 ├── cpp/
 │   ├── include/
 │   │   ├── shared/                                     # 📦 跨模块数据层 (GUI 任务与 worker 共享的状态)
@@ -137,7 +136,6 @@ stk/
 │   │   │   ├── compute/TierOps.hpp                     # ⚡ 档入口表 tier_ops(tier): ComputeService 备好共享前置后经它调档的 pipeline<T>
 │   │   │   ├── compute/TsTuner.hpp                     # ⚡ 时序调参: 日环深度 (RingBudget) 与领养额度全自动
 │   │   │   ├── compute/Progress.hpp                    # ⚡ 计算统计 ComputeStats + 终端仪表盘 ComputeProgress
-│   │   │   ├── compute/Profile.hpp                     # ⚡ perf 采样窗 (PROFILE 模式, 落 output/run/features/<pool>/<tier>/profile)
 │   │   │   └── compute/Stages.hpp                      # ⚡ 特征计算四角色日流水线; 段间只经 FeatureStore 的日窗握手
 │   │   │                                               #    前提: 特征多带串行状态 (订单簿 / DAG), 无法向量化 ⇒ 并行只靠切资产 + 分流水段
 │   │   │                                               #    角色 | 核数 | 推进方向  | 工作                       | 流控
@@ -212,7 +210,7 @@ stk/
 │   │   │   │   │   ├── Drive.hpp                       # 🖥️ 逐项驱动骨架 (同步 / 核对共用): 取消 / 计步 / 日志
 │   │   │   │   │   ├── ScanService.hpp                 # 🖥️ L2 binary / archive 扫盘 + 回测区间覆盖: 待编码 = archive 有 binary 无
 │   │   │   │   │   ├── EncodeService.hpp               # 🖥️ 编码: CSV 归档 → output/data/orders (按天流水并行)
-│   │   │   │   │   ├── FileCheckService.hpp            # 🖥️ 归档核查: 格式 / 结构 / 完整性顺序探测 (单盘); 结论交 Encode 页
+│   │   │   │   │   ├── FileCheckService.hpp            # 🖥️ 归档核查 ⇄ 修复 (Check / Repair 两请求, 顺序逐个, 单盘); 结论交 Encode 页
 │   │   │   │   │   └── AssetLoader.hpp                 # 🖥️ A 轴物化: AssetInfo::codes (含退市) → AssetAxis → Asset::items (下标 = asset_id)
 │   │   │   │   └── ui/
 │   │   │   │       ├── TabSync.hpp                     # 🖥️ 数据源状态与同步入口 (BigQuant / Tushare / 东财 / 新浪) + 核对
@@ -363,14 +361,13 @@ stk/
 │   │   └── misc/                                       # 🔧 通用工具库
 │   │       ├── logging.hpp / print.hpp                 # 🔧 日志 / STL 容器格式化打印
 │   │       ├── format.hpp                              # 🔧 定宽数值格式化
-│   │       ├── timer.hpp / profiler.hpp                # 🔧 计时器 / 性能剖析
+│   │       ├── timer.hpp / profiler.hpp                # 🔧 计时器 / Tracy 打桩 (PROFILE 模式开)
 │   │       ├── progress_{single,parallel}.hpp          # 🔧 单行 / 多线程进度条
 │   │       ├── snap.hpp                                # 🔧 快照归档 Save ⇄ Load: 每类型一份成员清单, 两向同一份
 │   │       ├── exec.hpp                                # 🔧 执行器 (全仓唯一批内并行抽象): Serial / ForkJoin 逐位一致
 │   │       ├── affinity.hpp                            # 🔧 CPU 亲和性 / 线程命名
-│   │       ├── perf.hpp                                # 🔧 perf record 本进程 + 按线程组出报告
 │   │       ├── archive.hpp / parquet.hpp               # 🔧 归档操作 / Parquet 读写
-│   │       ├── file_check.hpp                          # 🔧 归档完整性校验
+│   │       ├── file_check.hpp / file_repair.hpp        # 🔧 归档核查 ⇄ 修复: 同一份问题分类, 可修项重打包为非固实 RAR 原地原子替换
 │   │       ├── date.hpp / cross_platform.hpp           # 🔧 Ymd / Ym 日历运算 / 跨平台兼容层
 │   │       ├── system_metrics.hpp                      # 🔧 系统监控采集
 │   │       └── VariableMonitor.hpp                     # 🔧 变量值监控
@@ -385,7 +382,6 @@ stk/
 │   │   ├── worker/compute/StageIo.cpp                  # 💾 落盘 io_loop (档无关)
 │   │   ├── worker/compute/TsTuner.cpp                  # 💾 时序调参: 初始日环 / 内存预算 / 扩格 + 领养
 │   │   ├── worker/compute/Progress.cpp                 # 💾 特征计算终端仪表盘
-│   │   ├── worker/compute/Profile.cpp                  # 💾 特征计算 perf 采样窗 (PROFILE 模式)
 │   │   ├── worker/encode/EncodeWorker.cpp              # 💾 逐笔编码 worker
 │   │   ├── live/tdx/win32/                             # 💾 注入件 Windows 源 (shim.c 消息桥 / inject.c 远程加载): 不入本机构建, 接入时交叉编译
 │   │   ├── gui/Gui.cpp / Tasks.cpp                     # 💾 GUI 主循环 / 任务注册 (共享模块 QuoteHub / ComputeHub / EngineHub 在此建)
@@ -445,9 +441,8 @@ stk/
     ├── live/terms/YYYYMMDD.csv                         # ⑤ 当日两融条款 (只留当日): 代码 / 名称 / 市场 / 保证金比例 / 融资标的 / 折算率 / 担保状态
     └── run/                                            # 运行产物
         ├── data/orders/log/*.log                       # 编码日志
-        ├── data/repair/                                # 归档修复 (py/app/FileRepair): fix/ 成品 + 日志 / temp/ 解包
+        ├── data/repair/                                # 归档修复的解包暂存 (Encode → File Check → Repair, 修完即清)
         ├── features/<pool>/<tier>/                     # 特征计算: log/*.log / node_time.json 用时 (时序逐节点 / 截面逐列, 每轮覆盖)
-        │                                               #    / profile/<YYYYMMDD-HHMMSS>/ perf 采样 (PROFILE 模式): meta.json / threads.txt / 各段热点 / perf.data
         ├── factors/                                    # 因子
         │   ├── operators.json                          # 算子表快照 (对拍 + 耗时), 与当前 OpTable 不符则重算
         │   └── <pool>/<层>/                            # search/<name>.log Search 过程日志 (每次覆盖) / export/ Inspect 导出 <因子>_w<权重号>_top<N>_{log,snap}.csv

@@ -11,7 +11,6 @@
 #include "misc/snap.hpp"
 #include "worker/compute/Dashboard.hpp"
 #include "worker/compute/Layout.hpp"
-#include "worker/compute/Profile.hpp"
 #include "worker/compute/Stages.hpp"
 #include "worker/compute/TierOps.hpp"
 #include "worker/compute/TsTuner.hpp"
@@ -535,10 +534,9 @@ bool pipeline(const PipelineArgs &args) {
   TsRole<T> role{feed, args.fund, args.members, sched, cores, snap_in ? &*snap_in : nullptr, tail_days, snap_out, clock_every, clocks};
 
   // 统一 launch(worker_id, name, cpus, fn): 线程名 name (StageLayout::thread_name), pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
-  // 进度 = 仪表盘自行采样 store/sched/stats (拉取式); 采样窗 (PROFILE 模式) / 时序调参同样拉取式, 见 ComputeProfile / TsTuner.
+  // 进度 = 仪表盘自行采样 store/sched/stats (拉取式); 时序调参同样拉取式, 见 TsTuner.
   ComputeStats stats(num_pf, num_ts, num_cs, num_io);
   ComputeDashboard dashboard(store, sched, stats, dates, TierFeed<T>::kUnit);
-  ComputeProfile profile({pool_def(lib.pool()).name, T::kId, TierFeed<T>::kUnit, num_assets, dates}, L, store, stats);
   TsTuner tuner(store, sched, stats, dates.size(), budget, [&store] { store.grow(); });
   auto ctx = [&](int worker_id, ComputeStats::Core &stat) {
     return StageCtx<T>{worker_id, store, args.libs, dates, tail, args.cancel, stat};
@@ -576,21 +574,18 @@ bool pipeline(const PipelineArgs &args) {
       }
     }
 
-  // 等收尾: 已落盘天数镜像进进度面, 采样窗 / 时序调参随之推进 (worker 自己查 cancel, 这里报一声并就地收采样窗出报告)
+  // 等收尾: 已落盘天数镜像进进度面, 时序调参随之推进 (worker 自己查 cancel, 这里报一声)
   bool announced = false;
   for (auto &worker : workers)
     while (worker.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
       args.on_io(store.query_io_done());
-      profile.tick();
       tuner.tick();
       if (!announced && args.cancel.load(std::memory_order_relaxed)) {
         announced = true;
         std::cout << "[Compute] Cancelling..." << std::endl;
-        profile.finish();
       }
     }
   args.on_io(store.query_io_done());
-  profile.finish();
   // 仪表盘引用 store/sched/dates, 必须先于它们的析构停掉
   dashboard.stop();
 

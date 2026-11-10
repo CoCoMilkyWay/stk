@@ -8,9 +8,9 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
-# Import mode handlers
-from py import mode_tsan, mode_debug, mode_profile, mode_assert, mode_production
+from py import build, modes
 
 # ============================================================================
 # Configuration
@@ -19,9 +19,9 @@ APP_NAME = "main"
 
 # Build & Run mode:
 #   MODE          优化  调试符号  断言  运行方式                     产出
-#   "tsan"        -O1   -g        开    ThreadSanitizer, 首错即停    output/log/tsan_report.log
-#   "debug"       -O0   -g        开    gdb 托管, 崩溃抓全线程栈     output/debug/crash_stacks.txt
-#   "profile"     -O2   -g        开    perf 采样特征计算            output/profile/
+#   "tsan"        -O1   -g        开    ThreadSanitizer, 首错即停    output/run/app/tsan_report.log
+#   "debug"       -O0   -g        开    gdb 托管, 崩溃抓全线程栈     output/run/app/crash_stacks.txt
+#   "profile"     -O2   -g        开    Tracy 剖析 (自动拉起 UI)     -
 #   "assert"      -O2   -         开    直接运行                     -
 #   "production"  -O2   -         关    直接运行 (NDEBUG)            -
 MODE = "assert"
@@ -30,11 +30,15 @@ MODE = "assert"
 # op_check 与 app_main (Alpha→Operators 页 GPU 列) 一并链 cudart; OFF 链 stub, GPU 列显示 n/a.
 ENABLE_CUDA = True
 
+REPO_ROOT = Path(__file__).resolve().parent
+PROJECT_DIR = REPO_ROOT / "cpp" / "projects" / APP_NAME
+BUILD_DIR = PROJECT_DIR / "build"
+BINARY = BUILD_DIR / "bin" / f"app_{APP_NAME}"
+
 
 def _start_fetch():
     """Fetch upstream in background; overlaps network latency with cleanup/format."""
-    env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"
+    env = os.environ | {"GIT_TERMINAL_PROMPT": "0"}
     return subprocess.Popen(["git", "fetch", "--quiet"], env=env)
 
 
@@ -81,69 +85,25 @@ def _cleanup_processes():
     time.sleep(0.3)
 
 
-def _build(app_name, mode, enable_cuda):
-    """Build project via py/{app_name}.py."""
-    py_script = f"py/{app_name}.py"
-
-    if not os.path.exists(py_script):
-        print(f"ERROR: Build script not found: {py_script}")
-        sys.exit(1)
-
-    env = os.environ.copy()
-    env["TSAN_MODE"] = "ON" if mode == "tsan" else "OFF"
-    env["DEBUG_MODE"] = "ON" if mode == "debug" else "OFF"
-    env["PROFILE_MODE"] = "ON" if mode == "profile" else "OFF"
-    env["ASSERT_MODE"] = "ON" if mode == "assert" else "OFF"
-    env["FACTOR_CUDA"] = "ON" if enable_cuda else "OFF"
-
-    result = subprocess.run(["python", py_script], env=env)
-    if result.returncode != 0:
-        sys.exit(1)
-
-
-def _run(binary_path, working_dir, mode):
-    """Run binary with selected mode."""
-    if not os.path.exists(binary_path):
-        print(f"ERROR: Binary not found: {binary_path}")
-        sys.exit(1)
-
-    match mode:
-        case "tsan":
-            mode_tsan.run(binary_path, working_dir)
-        case "debug":
-            mode_debug.run(binary_path, working_dir)
-        case "profile":
-            mode_profile.run(binary_path, working_dir)
-        case "assert":
-            mode_assert.run(binary_path, working_dir)
-        case "production":
-            mode_production.run(binary_path, working_dir)
-
-
 def main():
-    assert MODE in ("tsan", "debug", "profile", "assert", "production"), MODE
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
+    assert MODE in modes.MODES, MODE
+    os.chdir(REPO_ROOT)
     fetch = _start_fetch()
 
     print("Cleanup...")
     _cleanup_processes()
 
     print("Formatting...")
-    result = subprocess.run(["python", "py/app/format_cpp.py"])
-    if result.returncode != 0:
-        sys.exit(1)
+    subprocess.run([sys.executable, "py/app/cpp/format.py"], check=True)
 
     print("Syncing remote...")
     _sync_remote(fetch)
 
     print("Building...")
-    _build(APP_NAME, MODE, ENABLE_CUDA)
+    build.build(PROJECT_DIR, MODE, ENABLE_CUDA)
 
     print("Running...")
-    build_dir = os.path.abspath(f"cpp/projects/{APP_NAME}/build")
-    binary_path = os.path.join(build_dir, f"bin/app_{APP_NAME}")
-    _run(binary_path, build_dir, MODE)
+    sys.exit(modes.launch(MODE, BINARY, BUILD_DIR))
 
 
 if __name__ == "__main__":

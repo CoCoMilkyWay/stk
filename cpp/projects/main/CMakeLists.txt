@@ -28,7 +28,7 @@ set(FONT_ROOT ${CPP_ROOT}/fonts)
 
 # ============================================================================
 # 选择轴: 一轴 = cache 名 + 取值集 (首项为默认) + 每取值一行表 <轴>_<取值>_<列>
-#   axis(<轴> <取值>...)        声明 + 断言取值合法 (py/main.py 传 -D<轴>=<取值>)
+#   axis(<轴> <取值>...)        声明 + 断言取值合法 (py/build.py 传 -D<轴>=<取值>)
 #   axis_pick(<轴> <列>...)     <轴>_<列> = <轴>_<当前取值>_<列>
 #   三轴两两正交; 轴内互斥由"一个 cache 变量只有一个值"自然保证
 # ============================================================================
@@ -71,7 +71,7 @@ set(BUILD_MODE_DEBUG_DEF DEBUG_MODE)
 set(BUILD_MODE_PROFILE_OPT -O2)
 set(BUILD_MODE_PROFILE_CC -g)
 set(BUILD_MODE_PROFILE_LD "")
-set(BUILD_MODE_PROFILE_DEF PROFILE_MODE)
+set(BUILD_MODE_PROFILE_DEF PROFILE_MODE TRACY_ENABLE TRACY_NO_SYSTEM_TRACING TRACY_NO_SAMPLING)
 
 set(BUILD_MODE_ASSERT_OPT -O2)
 set(BUILD_MODE_ASSERT_CC "")
@@ -240,8 +240,8 @@ set(MATH_FAST
     # misc
     misc/archive.cpp
     misc/file_check.cpp
+    misc/file_repair.cpp
     misc/logging.cpp
-    misc/perf.cpp
     misc/system_metrics.cpp
     # api
     # fundamental
@@ -320,9 +320,8 @@ set(MATH_PRECISE
     features/Panel/PoolSelect.cpp
     features/Panel/PoolSpec.cpp
     features/Storage/FeatureLib.cpp
-    # worker: compute 的 Bar 档管线 (TS: Fund 缺失值 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
+    # worker: compute 的 Bar 档管线 (TS: Fund 缺失值 / cs_valid 依赖 NaN 比较)
     worker/compute/FeedBar.cpp
-    worker/compute/Profile.cpp
     # live: 实盘 (nlohmann 落盘 / 回包 JSON; 行情与账户缺失 = 无)
     live/Board.cpp
     live/Book.cpp

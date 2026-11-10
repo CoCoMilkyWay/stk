@@ -89,11 +89,14 @@ PACK = True
 #                   (例: industry_component 月度快照 + industry_change 日频增量 cover).
 
 # local: 本地表名 (= cpp SPECS 的 name); None = 同远端表名 name
-Table = namedtuple("Table", "name visible_date strategy freq local", defaults=("day", None))
+Table = namedtuple(
+    "Table", "name visible_date strategy freq local", defaults=("day", None)
+)
 
 
 def _local(t):
     return t.local or t.name
+
 
 TABLES = [
     # # ---- 静态快照 (优先下载, 无时间维度) ----
@@ -315,10 +318,21 @@ def _save_json_day_split(t, df, json_root):
 
 
 # ============================================================================
-# 主流程
+# 选表 & 打包
 # ============================================================================
 def _select():
     assert MODE in ("all", "static", "range"), f"bad MODE: {MODE}"
+    for t in TABLES:
+        assert t.strategy in (
+            "static",
+            "partition",
+            "where",
+            "minute",
+        ), f"{t.name}: strategy {t.strategy}"
+        assert t.freq in ("day", "month_first"), f"{t.name}: freq {t.freq}"
+        assert not (
+            SPLIT_JSON and t.strategy == "minute"
+        ), f"{t.name}: 分钟表不支持 JSON 切片"
     sel = TABLES
     if MODE == "static":
         sel = [t for t in sel if t.strategy == "static"]
@@ -377,6 +391,82 @@ def _pack(data_root, sel):
             )
 
 
+# ============================================================================
+# 同步: 一类表一个函数 (静态 / 月度 / 分钟), 已落盘即跳过 (= 增量)
+# ============================================================================
+def _cached_or_fetch(pq_path, fetch):
+    """(表 | None (已缓存且不切 JSON), parquet 字节数)."""
+    if os.path.exists(pq_path):
+        return (pq.read_table(pq_path) if SPLIT_JSON else None), os.path.getsize(
+            pq_path
+        )
+    tbl = fetch()
+    return tbl, _save_parquet(tbl, pq_path)
+
+
+def _summary(tbl, size, msg_json):
+    rows = "cached" if tbl is None else str(tbl.num_rows)
+    return f"rows={rows:>9}  pq={size/1024:>9.1f} KB{msg_json}"
+
+
+def _sync_static(t, fund_root, json_root):
+    tbl, size = _cached_or_fetch(
+        os.path.join(fund_root, "_meta", f"{t.name}.parquet"), lambda: _query(t)
+    )
+    msg_json = ""
+    if SPLIT_JSON:
+        _save_json_static(t, tbl.to_pandas(), json_root)
+        msg_json = "  +json"
+    return f"{t.name:<42} {_summary(tbl, size, msg_json)}"
+
+
+def _sync_month(t, ym, fund_root, json_root):
+    month_start, month_end = _month_bounds(ym)
+    tbl, size = _cached_or_fetch(
+        os.path.join(fund_root, ym, f"{t.name}.parquet"),
+        lambda: _query(t, month_start, month_end),
+    )
+    msg_json = ""
+    if SPLIT_JSON:
+        nfile = _save_json_day_split(t, tbl.to_pandas(), json_root)
+        msg_json = f"  +json({nfile}d)"
+    return (
+        f"{t.name:<42} ({t.strategy:<9} key={t.visible_date:<12} freq={t.freq:<11})  "
+        f"{_summary(tbl, size, msg_json)}"
+    )
+
+
+def _sync_minute(t, ym, days, fund_root, head):
+    """逐交易日一个 parquet; 进度在同一行原地刷新."""
+    ncached = 0
+    last_msg = ""
+
+    def progress(done, status):
+        # \r 回行首 + \033[K 清行尾
+        print(
+            f"\r\033[K{head}{t.name:<42} days={done:>2}/{len(days)}  cached={ncached:>2}  {status}",
+            end="",
+            flush=True,
+        )
+
+    progress(0, "")
+    for di, day in enumerate(days, 1):
+        pq_path = os.path.join(fund_root, ym, _local(t), f"{day}.parquet")
+        if os.path.exists(pq_path):
+            ncached += 1
+            progress(di, last_msg)
+            continue
+        progress(di - 1, f"fetching {day} ...  {last_msg}")
+        tbl = _query_minute_day(t, day)
+        size = _save_parquet(tbl, pq_path)
+        last_msg = f"last={day} rows={tbl.num_rows:>8} pq={size/2**20:>6.1f} MB"
+        progress(di, last_msg)
+    print()
+
+
+# ============================================================================
+# 主流程
+# ============================================================================
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     data_root = os.path.join(here, "data")
@@ -400,22 +490,8 @@ def main():
 
     # ---- 1. 静态表 (只拉一次) ----
     for i, t in enumerate(static_tables, 1):
-        pq_path = os.path.join(fund_root, "_meta", f"{t.name}.parquet")
-        cached = os.path.exists(pq_path)
-        if cached:
-            size = os.path.getsize(pq_path)
-            tbl = pq.read_table(pq_path) if SPLIT_JSON else None
-        else:
-            tbl = _query(t)
-            size = _save_parquet(tbl, pq_path)
-        msg_json = ""
-        if SPLIT_JSON:
-            _save_json_static(t, tbl.to_pandas(), json_root)
-            msg_json = "  +json"
-        rows_str = "cached" if tbl is None else str(tbl.num_rows)
         print(
-            f"[static {i}/{len(static_tables)}] {t.name:<42} "
-            f"rows={rows_str:>9}  pq={size/1024:>9.1f} KB{msg_json}"
+            f"[static {i}/{len(static_tables)}] {_sync_static(t, fund_root, json_root)}"
         )
 
     # ---- 2. 区间表: 月 × 表 ----
@@ -424,62 +500,16 @@ def main():
         print(
             f"\n== [{mi}/{len(months)}] month {ym}  ({month_start} .. {month_end}) =="
         )
-        days = None
+        last_day = min(month_end, yesterday)
+        days = None  # 分钟表共用的当月交易日 (只拉到昨天), 首次用到才查
         for ti, t in enumerate(range_tables, 1):
-            assert t.freq in ("day", "month_first"), f"unknown freq: {t.freq}"
-            if t.strategy == "minute":
-                assert not SPLIT_JSON, "分钟表不支持 JSON 切片"
-                last = min(month_end, yesterday)
-                if month_start > last:
-                    continue
+            head = f"  [{ti:>2}/{len(range_tables)}] "
+            if t.strategy != "minute":
+                print(head + _sync_month(t, ym, fund_root, json_root))
+            elif month_start <= last_day:
                 if days is None:
-                    days = _trading_days(month_start, last)
-                ncached = 0
-                last_msg = ""
-                head = f"  [{ti:>2}/{len(range_tables)}] {t.name:<42}"
-
-                def _progress(done, status):
-                    # \r 回行首 + \033[K 清行尾: 同一行原地刷新
-                    print(
-                        f"\r\033[K{head} days={done:>2}/{len(days)}  cached={ncached:>2}  {status}",
-                        end="",
-                        flush=True,
-                    )
-
-                _progress(0, "")
-                for di, day in enumerate(days, 1):
-                    pq_path = os.path.join(fund_root, ym, _local(t), f"{day}.parquet")
-                    if os.path.exists(pq_path):
-                        ncached += 1
-                        _progress(di, last_msg)
-                        continue
-                    _progress(di - 1, f"fetching {day} ...  {last_msg}")
-                    tbl = _query_minute_day(t, day)
-                    size = _save_parquet(tbl, pq_path)
-                    last_msg = (
-                        f"last={day} rows={tbl.num_rows:>8} pq={size/2**20:>6.1f} MB"
-                    )
-                    _progress(di, last_msg)
-                print()
-                continue
-            pq_path = os.path.join(fund_root, ym, f"{t.name}.parquet")
-            cached = os.path.exists(pq_path)
-            if cached:
-                size = os.path.getsize(pq_path)
-                tbl = pq.read_table(pq_path) if SPLIT_JSON else None
-            else:
-                tbl = _query(t, month_start, month_end)
-                size = _save_parquet(tbl, pq_path)
-            msg_json = ""
-            if SPLIT_JSON:
-                nfile = _save_json_day_split(t, tbl.to_pandas(), json_root)
-                msg_json = f"  +json({nfile}d)"
-            rows_str = "cached" if tbl is None else str(tbl.num_rows)
-            print(
-                f"  [{ti:>2}/{len(range_tables)}] {t.name:<42} "
-                f"({t.strategy:<9} key={t.visible_date:<12} freq={t.freq:<11})  "
-                f"rows={rows_str:>9}  pq={size/1024:>9.1f} KB{msg_json}"
-            )
+                    days = _trading_days(month_start, last_day)
+                _sync_minute(t, ym, days, fund_root, head)
 
     # ---- 3. 打包: 每表每年一个 tar ----
     if PACK:

@@ -518,23 +518,27 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
   const auto &check_result = sm.get_state().coverage;
   const auto &file_check_result = state.file_check;
   const bool file_check_running = file_check_service.busy();
+  const bool file_repair_running = file_check_service.repairing();
+  const size_t repairable = file_check_result.repairable();
 
   // ========================================================================
-  // File Check (Archive Validation)
+  // File Check (Archive Validation ⇄ Repair)
   // ========================================================================
 
   // 结论直接写进折叠头 —— 这一节是一次性动作, 平时不需要展开占地方
   std::string file_check_label = "File Check: ";
-  if (file_check_running)
+  if (file_repair_running)
+    file_check_label += "repairing...";
+  else if (file_check_running)
     file_check_label += "checking...";
-  else if (!file_check_result.was_run())
+  else if (!file_check_result.ran)
     file_check_label += "not run";
-  else if (!file_check_result.archive_dir_exists)
+  else if (!file_check_result.dir_exists)
     file_check_label += "no archive dir (using existing orders)";
-  else if (!file_check_result.commands_available)
-    file_check_label += "missing commands (unrar, 7z, rar, gdb)";
-  else if (file_check_result.passed)
-    file_check_label += "pass — " + std::to_string(file_check_result.valid_archives) + " archives";
+  else if (!file_check_result.tools_ok)
+    file_check_label += "missing commands (unrar, 7z, rar)";
+  else if (file_check_result.passed())
+    file_check_label += "pass — " + std::to_string(file_check_result.valid) + " archives";
   else
     file_check_label += "FAILED";
   file_check_label += "###FileCheck";
@@ -544,28 +548,30 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
 
     if (file_check_running) {
       ImGui::TextDisabled("Running in background, see Terminal for progress");
-    } else if (file_check_result.was_run() && file_check_result.archive_dir_exists &&
-               !file_check_result.passed) {
-      if (file_check_result.naming_errors > 0)
-        ImGui::BulletText("Naming errors: %zu", file_check_result.naming_errors);
-      if (file_check_result.format_errors > 0)
-        ImGui::BulletText("Format errors: %zu (7z/solid RAR)", file_check_result.format_errors);
-      if (file_check_result.structure_errors > 0)
-        ImGui::BulletText("Structure errors: %zu", file_check_result.structure_errors);
-      if (file_check_result.integrity_errors > 0)
-        ImGui::BulletText("Integrity errors: %zu (truncated/corrupt)", file_check_result.integrity_errors);
-      if (file_check_result.zip_files > 0)
-        ImGui::BulletText("ZIP files: %zu (need conversion)", file_check_result.zip_files);
+    } else if (!file_check_result.findings.empty()) {
+      for (size_t i = 0; i < FileCheck::kIssueCount; ++i) {
+        const auto issue = static_cast<FileCheck::Issue>(i);
+        const FileCheck::IssueMeta &m = FileCheck::meta(issue);
+        if (const size_t n = file_check_result.count(issue))
+          ImGui::BulletText("%s: %zu (%s) — %s", m.name, n, m.desc, m.fix);
+      }
       ImGui::TextDisabled("(详细错误信息见下方 Terminal)");
     }
 
     ImGui::BeginDisabled(file_check_running);
-    if (ImGui::Button(file_check_running ? "Checking..." : "Run File Check", ImVec2(150, 0))) {
-      file_check_service.Request(asset.archive.path);
-    }
-    ImGui::EndDisabled();
+    if (ImGui::Button(file_check_running && !file_repair_running ? "Checking..." : "Run File Check", ImVec2(150, 0)))
+      file_check_service.Request({FileCheckOp::Check, asset.archive.path, {}});
     ImGui::SameLine();
-    ImGui::TextDisabled("Check archive format, structure and integrity");
+    ImGui::BeginDisabled(repairable == 0);
+    const std::string repair_label = file_repair_running ? "Repairing..." : "Repair " + std::to_string(repairable);
+    if (ImGui::Button((repair_label + "###FileRepair").c_str(), ImVec2(150, 0)))
+      file_check_service.Request({FileCheckOp::Repair, asset.archive.path, file_check_result.findings});
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("重打包 Container / Solid / Structure 类归档: 非固实 RAR, 原地原子替换, 修完自动重核");
+    ImGui::SameLine();
+    ImGui::TextDisabled("Check ⇄ repair archive format, structure and integrity");
 
     ImGui::Unindent();
   }
@@ -662,9 +668,6 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
       ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Encoding in progress...");
     } else {
       // File Check 不硬性挡住入口 — 未通过时在确认弹窗里要求"风险自负"勾选
-      bool file_check_ok = file_check_result.was_run() &&
-                           (file_check_result.passed || !file_check_result.archive_dir_exists);
-
       ImGui::BeginDisabled(start_blocked);
       if (ImGui::Button("Start Encoding", ImVec2(150, 0))) {
         // 每次打开弹窗都要重新勾 —— 风险自负不跨会话累积
@@ -677,11 +680,11 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
         ImGui::SetTooltip("基本面同步 / 覆盖扫描 / 特征计算进行中");
 
       ImGui::SameLine();
-      if (!file_check_result.was_run()) {
+      if (!file_check_result.ran) {
         ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "[!] File Check Not Run");
-      } else if (!file_check_result.archive_dir_exists) {
+      } else if (!file_check_result.dir_exists) {
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[✓] No Archive");
-      } else if (!file_check_ok) {
+      } else if (!file_check_result.passed()) {
         ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "[✗] File Check Failed");
       } else {
         ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "[✓] File Check Passed");
@@ -723,29 +726,24 @@ void RenderTabEncode(const StateManager &sm, EncodeService &encode_service, File
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Check prerequisites
-    bool file_check_ok = file_check_result.was_run() &&
-                         (file_check_result.passed || !file_check_result.archive_dir_exists);
-
     // Encode 按天增量, 只编 archive 有的天 (raw 缺口照常跳过) —— 两条
     // 硬性前置条件都留一个"风险自负"的旁路, 不是全有全无.
     bool can_encode = (asset.archive.exists || state.skip_archive_exists_ack) &&
-                      (file_check_ok || state.skip_file_check_ack);
+                      (file_check_result.passed() || state.skip_file_check_ack);
 
     ImGui::Text("Prerequisites:");
     ImGui::Spacing();
 
-    if (!file_check_result.was_run()) {
+    if (!file_check_result.ran) {
       render_prereq_row("File Check:", false, "Not Run",
                         &state.skip_file_check_ack, "风险自负##skip_fc");
-    } else if (!file_check_result.archive_dir_exists) {
+    } else if (!file_check_result.dir_exists) {
       render_prereq_row("File Check:", true, "N/A (no archive)", nullptr, nullptr);
-    } else if (file_check_result.passed) {
+    } else if (file_check_result.passed()) {
       render_prereq_row("File Check:", true, "Passed", nullptr, nullptr);
     } else {
-      const size_t errors = file_check_result.naming_errors + file_check_result.format_errors +
-                            file_check_result.structure_errors + file_check_result.zip_files;
-      render_prereq_row("File Check:", false, ("Failed (" + std::to_string(errors) + " errors)").c_str(),
+      const std::string failed = "Failed (" + std::to_string(file_check_result.findings.size()) + " findings)";
+      render_prereq_row("File Check:", false, failed.c_str(),
                         &state.skip_file_check_ack, "风险自负##skip_fc");
     }
 

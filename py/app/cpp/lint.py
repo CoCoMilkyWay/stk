@@ -11,41 +11,21 @@ picks up cpp/compile_commands.json automatically), so results match what you
 see in Cursor.
 
 Usage:
-    python py/app/lint_cpp.py              # lint all files
-    python py/app/lint_cpp.py <path>       # lint a single file / dir
-    python py/app/lint_cpp.py --all        # include Error severity too
+    python py/app/cpp/lint.py              # lint all files
+    python py/app/cpp/lint.py <path>       # lint a single file / dir
+    python py/app/cpp/lint.py --all        # include Error severity too
 """
 
 import json
 import os
 import select
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
-# ============================================================================
-# Configuration
-# ============================================================================
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CPP_DIR = PROJECT_ROOT / "cpp"
-
-EXTENSIONS = {".hpp", ".cpp", ".h", ".cc", ".hh", ".ipp", ".cxx"}
-
-# Directories to skip (build artifacts, vendored libs, generated code)
-SKIP_DIRS = {
-    "build",
-    ".git",
-    "CMakeFiles",
-    "cmake-build-debug",
-    "cmake-build-release",
-    # vendored / third-party packages
-    "package",
-    "boost",
-}
+from common import CPP_DIR, LINT_EXTENSIONS, PROJECT_ROOT, iter_sources, which
 
 # Concurrent preamble/AST builds inside clangd. Lower if memory runs out.
 CLANGD_JOBS = os.cpu_count()
@@ -53,28 +33,14 @@ CLANGD_JOBS = os.cpu_count()
 # LSP severity values
 SEV_ERROR = 1
 SEV_WARNING = 2
-SEV_INFO = 3
-SEV_HINT = 4
-SEV_NAME = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 
+# Max wall-clock seconds to wait for clangd to report on all opened files.
+# (clangd may stay silent on headers it can't build a TU for.)
+DRAIN_TIMEOUT_S = 120.0
 
-# ============================================================================
-# Helpers
-# ============================================================================
-
-
-def find_clangd() -> str:
-    found = shutil.which("clangd")
-    assert found, "clangd not found on PATH"
-    return found
-
-
-def iter_sources(root: Path):
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-        for name in filenames:
-            if Path(name).suffix in EXTENSIONS:
-                yield Path(dirpath) / name
+# Once clangd has reported on at least one file, a quiet window this long
+# with no new diagnostics means we consider it done.
+DRAIN_QUIET_S = 2.0
 
 
 def file_uri(path: Path) -> str:
@@ -121,7 +87,7 @@ class LspClient:
     def notify(self, method: str, params: dict) -> None:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
-    def read_message(self, timeout: float = None):
+    def read_message(self, timeout: float | None = None):
         # Read headers
         headers = {}
         while True:
@@ -188,33 +154,21 @@ class LspClient:
         # wait for initialize response
         while True:
             msg = self.read_message()
-            if msg is None:
-                raise RuntimeError("clangd closed during initialize")
+            assert msg is not None, "clangd closed during initialize"
             if msg.get("id") is not None:
                 break
         self.notify("initialized", {})
 
     def shutdown(self):
-        try:
-            self.notify("shutdown", {})
-            self.notify("exit", None)
-        finally:
-            self.proc.stdin.close()
-            self.proc.wait(timeout=5)
+        self.notify("shutdown", {})
+        self.notify("exit", None)
+        self.proc.stdin.close()
+        self.proc.wait(timeout=5)
 
 
 # ============================================================================
-# Linting (batched & pipelined)
+# Linting (all files opened at once, diagnostics printed as they land)
 # ============================================================================
-
-# How many files to hand to clangd at once. clangd parses up to -j in parallel.
-# Max wall-clock seconds to wait for clangd to report on all opened files.
-# (clangd may stay silent on headers it can't build a TU for.)
-DRAIN_TIMEOUT_S = 120.0
-
-# Once clangd has reported on at least one file, a quiet window this long
-# with no new diagnostics means we consider it done.
-DRAIN_QUIET_S = 2.0
 
 
 def status(msg: str) -> None:
@@ -306,25 +260,18 @@ def main():
     include_errors = "--all" in sys.argv
 
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    if args:
-        target = (PROJECT_ROOT / args[0]).resolve()
-        assert target.exists(), f"target not found: {target}"
-        files = list(iter_sources(target)) if target.is_dir() else [target]
-    else:
-        assert CPP_DIR.is_dir(), f"cpp directory not found: {CPP_DIR}"
-        files = list(iter_sources(CPP_DIR))
-
-    assert files, "No C/C++ source files to lint"
+    target = (PROJECT_ROOT / args[0]).resolve() if args else CPP_DIR
+    assert target.exists(), f"target not found: {target}"
+    files = list(iter_sources(target, LINT_EXTENSIONS)) if target.is_dir() else [target]
+    assert files, f"No C/C++ source files to lint under {target}"
     print(f"Linting {len(files)} file(s) with clangd ...", flush=True)
 
-    binary = find_clangd()
+    binary = which("clangd")
     client = LspClient(binary, CPP_DIR)
     client.initialize()
 
-    try:
-        total = lint_all(client, files, include_errors)
-    finally:
-        client.shutdown()
+    total = lint_all(client, files, include_errors)
+    client.shutdown()
 
     print(f"\nDone. {total} diagnostic(s) across linted files.", flush=True)
 
