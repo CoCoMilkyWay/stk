@@ -1,7 +1,5 @@
 #include "live/tdx/Proc.hpp"
 
-#include "disk/Disk.hpp"
-
 #include <cassert>
 #include <cerrno>
 #include <cstdlib>
@@ -96,8 +94,5 @@ bool on_path(const std::string &exe) {
   }
   return false;
 }
-
-std::filesystem::path shim_dir() { return disk::root() / "py/app/tdx/scripts/bridge/shim"; }
-std::filesystem::path sudo_pass_file() { return disk::root() / "py/app/tdx/scripts/.sudo_pass"; }
 
 } // namespace live::tdx

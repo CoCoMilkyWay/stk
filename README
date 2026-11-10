@@ -10,7 +10,7 @@ GUI布局:
 │  > Alpha                             │ Compute / Operators / Factors /    │
 │                                      │ Inspect                            │
 │  > Market                            │ ASSET / NAV / VAL / FLOW / CTA     │
-│  > Live                              │ Board / Rebal                      │
+│  > Live                              │ Board / Rebal / Client             │
 │  > Features                          │ Table / Distribution / Transform / │
 │                                      │ Correlation / OrderFlow / NodeTime │
 │  > Agent                             │ Mine / Config                      │
@@ -28,8 +28,8 @@ GUI布局:
           特征库 ─(读端 Source: 选列读 + level_asof 行映射)─► Features 分析 / Alpha 因子引擎 / Market 篮子与组合 / Beta 选池 / Agent
   ③ 因子  因子引擎 (Run / Search) ─► output/factors/<pool>/<层> (一因子一文件); Agent 候选 output/agent ─(达门槛)─► 同上
   ④ 组合  因子 ─► output/portfolios (Market 组合)
-  ⑤ 实盘  券商客户端 (live/<客户端>/, 现只有通达信) ─(Broker: 读持仓 / 成交 / 挂单 / 信用账户, 下单 / 重查两融条款)─► Live 持仓页 / 一键调仓;
-          行情走新浪 (不读客户端的), 当日两融条款落 output/live, 调仓名单 output/config/live/lists
+  ⑤ 实盘  券商客户端 (live/<客户端>/, 登记于 live/Clients.hpp, 现只有通达信) ─(Broker: 读持仓 / 成交 / 挂单 / 信用账户, 下单 / 重查两融条款)─► Live 持仓页 / 一键调仓;
+          客户端适配自带调试台 (Live 的 Client 页); 行情走新浪 (不读客户端的), 当日两融条款落 output/live, 调仓名单 output/config/live/lists
   人定的配置落 output/config/ (一任务一目录); 各段的运行产物 (日志 / 用时 / 导出 / 采样) 落 output/run/ 下的同构位置; output/ 的布局唯一由 disk/Disk.hpp 定
 ```
 
@@ -41,8 +41,7 @@ stk/
 │   ├── main.py                                         # 🐍 构建脚本 (调 CMake)
 │   ├── mode_*.py                                       # 🐍 模式开关: tsan / debug / profile / assert / production
 │   ├── rank.py                                         # 🐍 自选资产区间位置排序 (读 output/data/fundamental)
-│   └── app/                                            # 🐍 Fetch (BigQuant 下载) / FileRepair (归档修复) / format_cpp / lint_cpp / tdx (通达信数据与交易控制台, 独立子项目;
-│                                                       #    其 scripts/bridge/shim (注入 TdxW.exe 的控制 DLL 源码) 与 scripts/.sudo_pass 由 C++ live/tdx 共用)
+│   └── app/                                            # 🐍 Fetch (BigQuant 下载) / FileRepair (归档修复) / format_cpp / lint_cpp
 ├── cpp/
 │   ├── include/
 │   │   ├── shared/                                     # 📦 跨模块数据层 (GUI 任务与 worker 共享的状态)
@@ -102,11 +101,13 @@ stk/
 │   │   │   ├── Method/                                 # 🧮 TS.hpp / CS.hpp 时序 / 截面归一方法 (字段表 SRC 列引用)
 │   │   │   ├── Panel/                                  # 🧮 日频面板 (TS / CS 的日频数据源, 两者对仗)
 │   │   │   │   ├── Fund.hpp                            # 🧮 fund::Panel 日频 PIT 基本面 (全市场): 全交易日历 × 全局 A 轴 + 逐资产事件链; 市场收益 / 长窗量预计算
-│   │   │   │   ├── PoolSpec.hpp                        # 🧮 池参数: 子池 = 风格 (排序键) × 端 × 只数 × 周期 × ST / 板块 / 融资切片 × 过滤
-│   │   │   │   │                                       #    · 池名 (目录名) = 各维段以 "." 连; 显示名 = 简称 (低β200 / 沪主板), 同简称按池表序加 A / B / C…; 悬停看全部参数
-│   │   │   │   ├── PoolSelect.hpp                      # 🧮 选池引擎: all.bar L_1day 基础列 → 逐行成员 (一组 Spec)
-│   │   │   │   │                                       #    · 选股表 Picks: 子池表各池在 all.bar 每个落盘行的成员 (进程内一份, 增量补) → 子池库 / 篮子 / 组合的子池成员
-│   │   │   │   │                                       #    · 篮子净值账 run_book: Beta → Style 的参数网格回测
+│   │   │   │   ├── PoolSpec.hpp                        # 🧮 池参数 = 维表 (一维一张取值表): 风格 × 端 × 只数 × 周期 × ST / 板块 / 融资 / 次新 / 停牌 / 行业 / 风险警示
+│   │   │   │   │                                       #    · Spec = 各维取值下标; 池名 (目录名) = 各维取值码以 "." 连; 显示名 = 简称 (低β200 / 沪主板), 同简称按池表序加 A / B / C…
+│   │   │   │   │                                       #    · Grid = 各维取值位集 (Style 页参数网格), specs_of 展开成一组 Spec
+│   │   │   │   ├── PoolSelect.hpp                      # 🧮 选池引擎: all.bar L_1day 日行 → 原料带 Tape (进程内一份, 增量补) → 逐行成员 (一组 Spec)
+│   │   │   │   │                                       #    · 调仓日历 src_of / rebal_at (日频 / 周频) + 持仓权 Tape::omega (源行目标权随价漂移): 选股表 / 篮子账 / 行情篮子 / 因子池篮子同一份
+│   │   │   │   │                                       #    · 选股表 Picks: 子池表各池在原料带每行的成员 → 子池库 / 行情篮子 / 组合的子池成员
+│   │   │   │   │                                       #    · 篮子净值账 run_book: Beta → Style 的参数网格回测; all_bar = Style / 行情篮子 / CTA 同一段开场
 │   │   │   │   └── Pool.hpp                            # 🧮 pool::Panel 池日频面板: 本库 A 轴 + 逐日成员 (→ cs_valid) + 轴外
 │   │   │   │                                           #    · 成员沿库树来自上游: all.bar = 当日活跃 (在市 ∧ 上市满 365 日 ∧ 行业已知, 含 ST);
 │   │   │   │                                           #      子池 Bar = all.bar 选股表 (D 之前的调仓行选出); Lob = 同池 Bar 库当日 cs_valid (Lob 轴 ⊆ 同池 Bar 轴)
@@ -193,11 +194,11 @@ stk/
 │   │   │   │   ├── QuoteHub.hpp                        # 🖥️ QuoteService + StockHistory + BasketHistory 一份; 首次用到才起 (之前不碰网络)
 │   │   │   │   ├── Quote.hpp                           # 🖥️ 行情公共件: 个股 / 篮子 × 历史 / 当日 四路同一套类型 (请求 / Tape / 分钟根 Bars)
 │   │   │   │   │                                       #    · 篮子合成核 Fold (历史 / 当日同一份): 成员表 (CSR) → 点位 + 分钟净流入
-│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成的 all.bar 源 (BasketHistory / CtaLib 同一份)
+│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成的 all.bar 源: 选股表 → 成员表 (权 = Tape::omega) + 一日合成件 Lane (BasketHistory / CtaLib 同一份)
 │   │   │   │   └── services/
 │   │   │   │       ├── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin; 篮子当日按 BasketHistory 交接的成员表增量合成
 │   │   │   │       ├── StockHistory.hpp                # 🖥️ 个股历史: 基本面日线 + bar1m 分钟 (LRU)
-│   │   │   │       └── BasketHistory.hpp               # 🖥️ 篮子价格指数: 源 = all.bar 库 (D 日成员 / 权重取 D−1 收盘行, 子池成员取选股表), 账本只折新日; 库末日之后由基本面补日
+│   │   │   │       └── BasketHistory.hpp               # 🖥️ 篮子价格指数: 源 = all.bar 库 (D 日成员 / 权取选股表与原料带, 基准取 D−1 行), 账本只折新日; 库末日之后由基本面补日 (权随价漂移)
 │   │   │   ├── task_settings/TaskSettings.hpp          # 🖥️ 设置: 配置管理
 │   │   │   ├── task_tools/                             # 🖥️ 工具: LaTeX 渲染 / 系统监控
 │   │   │   ├── task_database/                          # 🖥️ 数据库管理
@@ -219,8 +220,8 @@ stk/
 │   │   │   │       └── TabCalendar.hpp                 # 🖥️ 交易日历格: 除权除息 / 节假日 / 回测区间 / L2 覆盖
 │   │   │   ├── task_beta/                              # 🖥️ Beta 任务 (风格择优)
 │   │   │   │   ├── TaskBeta.hpp                        # 🖥️ Beta 任务主界面: Compute (只 all.bar) / Style
-│   │   │   │   ├── services/StyleService.hpp           # 🖥️ 一个风格的参数网格逐组选池 (PoolSelect) → 篮子净值 / 绩效 (对全A)
-│   │   │   │   └── ui/TabStyle.hpp                     # 🖥️ 风格 × 参数网格回测, 选定的子池写 pools.json
+│   │   │   │   ├── services/StyleService.hpp           # 🖥️ 一个风格的参数网格 (pool::Grid) 逐组选池 (PoolSelect) → 篮子净值 / 绩效 (对全A = 行情侧同名线)
+│   │   │   │   └── ui/TabStyle.hpp                     # 🖥️ 风格 × 参数网格回测 (维条按维表生成), 选定的子池写 pools.json
 │   │   │   ├── task_alpha/                             # 🖥️ Alpha 任务 (因子挖掘, factor/ 的 GUI)
 │   │   │   │   ├── TaskAlpha.hpp                       # 🖥️ Alpha 任务主界面: Compute (all.lob + 子池各库) / Operators / Factors / Inspect; 页顶条选 池 + 因子层
 │   │   │   │   ├── services/
@@ -234,7 +235,7 @@ stk/
 │   │   │   │   │                                       #    · ASSET = 个股表 + 行情; NAV / VAL / FLOW / CTA = 篮子 (池指数 / 行业 / 概念) + 因子组合 + 个股的 净值 / 估值 / 资金流 / 择时
 │   │   │   │   ├── TaskMarket.hpp                      # 🖥️ Market 任务主界面
 │   │   │   │   ├── services/
-│   │   │   │   │   ├── CtaLib.hpp                      # 🖥️ CTA 价格库: 全部个股 + 篮子线的 1 分钟价, 续算只补新日
+│   │   │   │   │   ├── CtaLib.hpp                      # 🖥️ CTA 价格库: 全部个股 + 篮子线的 1 分钟价 (篮子 = BasketRow Lane), 续算只补新日
 │   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 → cta/Trace 滚动调参轨迹
 │   │   │   │   └── ui/
 │   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / FLOW / CTA (一行一对线 Line, 四页同一份派生 / 选中 / 区间)
@@ -263,7 +264,7 @@ stk/
 │   │   │   │       ├── TabOrderFlow.hpp                # 🖥️ 订单流
 │   │   │   │       └── TabNodeTime.hpp                 # 🖥️ 节点用时: 当前库 node_time.json 按节点文件归并成堆叠条
 │   │   │   ├── task_live/                              # 💹 Live 任务 (实盘): 中枢券商无关, 客户端适配在 live/
-│   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board / Rebal
+│   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board / Rebal / Client (所连客户端的调试台)
 │   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 新浪行情一路 + 当日两融条款 + 下单 / 调仓事务 (日志落 output/run/live)
 │   │   │   │   └── ui/
 │   │   │   │       ├── TabBoard.hpp                    # 💹 持仓页: 刷新进度 + 持仓表 (行内闪电下单, 按钮即滑点色块) + 右栏行情图 (Market 的个股面板)
@@ -346,7 +347,8 @@ stk/
 │   │   │   └── Audit.hpp                               # 📊 核对: 远端指纹 ↔ 本地指纹
 │   │   ├── mining/                                     # ⛏️ 数据挖掘设计文档 (特征 → 因子): README.md 方法论 / COPULA.md
 │   │   ├── live/                                       # 💹 实盘: 券商无关的一层 + 各客户端适配; 外部结局 Fail 收在各轮 / 各事务边界, 自身不变式 assert
-│   │   │   ├── Broker.hpp                              # 💹 统一类型 (持仓 / 成交 / 挂单 / 信用账户 / 两融条款 / 限价单) + Broker 接口 (读 / 刷新 / 下单 / 独占)
+│   │   │   ├── Broker.hpp                              # 💹 统一类型 (持仓 / 成交 / 挂单 / 信用账户 / 两融条款 / 限价单) + Broker 接口 (读 / 刷新 / 下单 / 独占 / 调试台)
+│   │   │   ├── Clients.hpp                             # 💹 客户端登记表: 名称 + 建 Broker
 │   │   │   ├── Book.hpp                                # 💹 5 档盘口: 参考价 / 滑点 / 委托价 / 整手规则
 │   │   │   ├── Board.hpp                               # 💹 持仓页一帧: 持仓 × 当日成交 × 行情 按代码对齐 (纯函数)
 │   │   │   ├── Rebal.hpp                               # 💹 一键调仓试算 (纯函数): 名单等权补齐, 先卖、融资、再现金; 可用保证金按读时校准
@@ -354,7 +356,8 @@ stk/
 │   │   │       ├── Tdx.hpp                             # 💹 Broker 实现: 盯进程 (守望线程) + 刷新线程 + 界面闸
 │   │   │       ├── Mem.hpp / Tables.hpp                # 💹 /proc/<pid>/mem 扫表 (形 / 列 / 模式 / 索引四轴) + 各表规格
 │   │   │       ├── Shim.hpp / Proc.hpp                 # 💹 shim 编译注入 + TCP 控制通道 / 子进程
-│   │   │       └── Ui.hpp / Flash.hpp / Credit.hpp     # 💹 界面原语 / 闪电下单 / 两融全表与信用账户
+│   │   │       ├── Ui.hpp / Flash.hpp / Credit.hpp     # 💹 界面原语 / 闪电下单 / 两融全表与信用账户
+│   │   │       └── Console.hpp / console/              # 💹 调试台 (纯 ImGui): 布局图 (按类 + 绘制层还原界面, 可直接操作) / 窗口树 / 消息工具与 Spy / 录制器 / 探内存
 │   │   ├── disk/                                       # 💽 落盘: output/ 的唯一布局 + 唯一路径入口
 │   │   │   ├── Disk.hpp                                # 💽 段表 DISK_SEGS (字段 × 写法 × 值域) × 布局表 DISK_LAYOUT (一行一节点); name ⇄ parse / path ⇄ list / read ⇄ write (原子) / ensure ⇄ remove (墓碑)
 │   │   │   └── Sweep.hpp                               # 💽 开机整理: 残留直接清 / 基石 (orders / fundamental / concept + output/config 下本机配置) 自动迁入布局 / 其余不合布局的按 (节点, 名字) 归组逐组问删
@@ -385,6 +388,7 @@ stk/
 │   │   ├── worker/compute/Progress.cpp                 # 💾 特征计算终端仪表盘
 │   │   ├── worker/compute/Profile.cpp                  # 💾 特征计算 perf 采样窗 (PROFILE 模式)
 │   │   ├── worker/encode/EncodeWorker.cpp              # 💾 逐笔编码 worker
+│   │   ├── live/tdx/win32/                             # 💾 注入件 Windows 源 (shim.c 消息桥 / inject.c 远程加载): 不入本机构建, 接入时交叉编译
 │   │   ├── gui/Gui.cpp / Tasks.cpp                     # 💾 GUI 主循环 / 任务注册 (共享模块 QuoteHub / ComputeHub / EngineHub 在此建)
 │   │   └── gui/Run_{OpenGL,Vulkan}.cpp                 # 💾 OpenGL / Vulkan 后端入口
 │   ├── package/                                        # 📚 第三方库 (源码内置)
@@ -407,7 +411,8 @@ stk/
     │   ├── market/watch.json                           # ⚙️ Market 自选: 篮子键 / 个股代码 (本机)
     │   ├── agent/                                      # ⚙️ Agent: prompt/<名>.md 提示词模板 (system / first / round / retry / review / test) · families.md 特征族卡
     │   │                                               #    · keys.json 后端 key · ui.json Mine / Config 页选项 (本机)
-    │   └── live/lists/<名>.csv                         # ⚙️ Live 调仓名单 (名 = 字母数字下划线): 每行首列一个 6 位代码, 行序即排名 (本机)
+    │   └── live/                                       # ⚙️ Live: lists/<名>.csv 调仓名单 (名 = 字母数字下划线; 每行首列一个 6 位代码, 行序即排名)
+    │                                                   #    · ui.json 页面选项 (隐私) · .sudo_pass 放开 ptrace 读客户端内存用的 sudo 密码 (本机)
     ├── data/                                           # ① 数据
     │   ├── sample/                                     # 样例 (Level-1 / Level-2 / 财务报表); L2/README = 逐笔 CSV 字段格式
     │   ├── orders/YYYY/MM/YYYYMMDD.bin                 # Level-2 逐笔编码: 一天全市场一个文件, 每资产一个 zstd 帧 + 账目 + 尾部目录
@@ -449,6 +454,7 @@ stk/
         │   └── <pool>/<层>/                            # search/<name>.log Search 过程日志 (每次覆盖) / export/ Inspect 导出 <因子>_w<权重号>_top<N>_{log,snap}.csv
         ├── agent/<main|test>/                          # Agent: tools/<工具名>.md 各工具最近一次交给 agent 的结果 / sessions/<pool>/<层>/<持有期>/search/<name>.log
         ├── live/rebal/<YYYYMMDD-HHMMSS>.jsonl          # Live 调仓事务日志 (一事务一文件, 一行一步)
+        ├── live/tdx/                                   # 通达信适配: shim/ 注入件构建产物 (shim_<源码哈希>.dll / inject.exe) / rec/<YYYYMMDD-HHMMSS>.jsonl 调试台录制
         └── app/                                        # 进程级: tsan_report.log (TSAN 模式) / crash_stacks.txt (DEBUG 模式)
 ```
 
@@ -482,6 +488,7 @@ stk/
 #   - 两档都要: 节点类放 Node/Common/<分类>/, 两档各写各的 NODE_ / FIELDS_ (列名跨档不许重名, FeatureMeta.cpp 编译期断言)
 #   - 新池:   不写节点; Beta → Style 勾选写 output/config/beta/pools.json (重启生效), 每个子池两档各一库
 #       · 新风格 (排序键) = features/Panel/PoolSpec.hpp 风格表加一行 + PoolSelect.cpp 键表 kKeyDefs 对应一行
+#       · 新切片维 = PoolSpec.hpp 维表加一张取值表 + PoolSelect.cpp 日行列表 kDayColDefs / 类映射 kSliceCls 各加一项 (类号混合进制随之扩) + TabStyle 维条排进一行
 #   - 其他文件一律不改: CMake 按档扫描生成 <Tier>/NodesGenerated.hpp + FieldsGenerated.hpp
 #
 # 规矩:

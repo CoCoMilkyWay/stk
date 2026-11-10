@@ -1,5 +1,6 @@
 #include "live/tdx/Shim.hpp"
 
+#include "disk/Disk.hpp"
 #include "live/Broker.hpp"
 #include "live/tdx/Proc.hpp"
 
@@ -27,6 +28,9 @@ namespace {
 constexpr const char *kGcc = "i686-w64-mingw32-gcc";
 constexpr const char *kSysroot = "/usr/i686-w64-mingw32";
 
+fs::path src_dir() { return disk::root() / "cpp/src/live/tdx/win32"; }
+fs::path out_dir() { return disk::ensure(disk::RunLiveTdxShim); }
+
 std::string slurp(const fs::path &p) {
   std::ifstream f(p, std::ios::binary);
   assert(f);
@@ -41,7 +45,7 @@ const std::string &hash() {
     boost::beast::detail::sha1_context ctx;
     boost::beast::detail::init(ctx);
     for (const char *n : {"shim.c", "inject.c"}) {
-      const std::string s = slurp(shim_dir() / n);
+      const std::string s = slurp(src_dir() / n);
       boost::beast::detail::update(ctx, s.data(), s.size());
     }
     unsigned char d[boost::beast::detail::sha1_context::digest_size];
@@ -100,14 +104,14 @@ std::vector<std::string> toolchain() {
 }
 
 void build() {
-  const fs::path dir = shim_dir();
+  const fs::path dir = out_dir(), src = src_dir();
   prune(dir);
   if (fs::exists(dir / dll_name()))
     return;
   const std::vector<std::string> base = toolchain();
   const std::vector<std::vector<std::string>> steps = {
-      {"-shared", "-o", dll_name(), "shim.c", "-lws2_32", "-luser32", "-lkernel32", "-lgdi32"},
-      {"-o", "inject.exe", "inject.c", "-lkernel32"},
+      {"-shared", "-o", dll_name(), (src / "shim.c").string(), "-lws2_32", "-luser32", "-lkernel32", "-lgdi32"},
+      {"-o", "inject.exe", (src / "inject.c").string(), "-lkernel32"},
   };
   for (const auto &args : steps) {
     std::vector<std::string> argv = base;
@@ -122,9 +126,9 @@ void inject() {
   const fs::path tmp = wine_temp();
   fs::create_directories(tmp);
   prune(tmp);
-  fs::copy_file(shim_dir() / dll_name(), tmp / dll_name(), fs::copy_options::overwrite_existing);
+  fs::copy_file(out_dir() / dll_name(), tmp / dll_name(), fs::copy_options::overwrite_existing);
   std::ofstream(tmp / "tdx_shim_port.txt") << port();
-  const Ran r = run({"wine", (shim_dir() / "inject.exe").string(), "C:\\windows\\temp\\" + dll_name(), target_proc()});
+  const Ran r = run({"wine", (out_dir() / "inject.exe").string(), "C:\\windows\\temp\\" + dll_name(), target_proc()});
   if (r.rc != 0)
     fail(strf("注入失败 rc=%d\n%s", r.rc, r.err.c_str()));
 }
@@ -145,6 +149,26 @@ int connect_to(double timeout) {
   }
   return s;
 }
+
+// 连上并发出一行命令 → socket
+int open_to(const std::string &line, const std::string &cmd, double timeout) {
+  assert(line.find('\n') == std::string::npos);
+  const int s = connect_to(timeout);
+  if (s < 0)
+    fail("shim 不在线 (" + cmd + ")");
+  const std::string req = line + "\n";
+  for (size_t off = 0; off < req.size();) {
+    const ssize_t k = ::send(s, req.data() + off, req.size() - off, MSG_NOSIGNAL);
+    if (k <= 0) {
+      ::close(s);
+      fail("shim 发送失败 (" + cmd + ")");
+    }
+    off += static_cast<size_t>(k);
+  }
+  return s;
+}
+
+std::string_view chomp(std::string_view l) { return l.ends_with('\r') ? l.substr(0, l.size() - 1) : l; }
 
 } // namespace
 
@@ -172,20 +196,8 @@ void ensure(double timeout) {
 }
 
 std::vector<nlohmann::json> call(const std::string &line, double timeout) {
-  assert(line.find('\n') == std::string::npos);
   const std::string cmd = line.substr(0, line.find(' '));
-  const int s = connect_to(timeout);
-  if (s < 0)
-    fail("shim 不在线 (" + cmd + ")");
-  const std::string req = line + "\n";
-  for (size_t off = 0; off < req.size();) {
-    const ssize_t k = ::send(s, req.data() + off, req.size() - off, MSG_NOSIGNAL);
-    if (k <= 0) {
-      ::close(s);
-      fail("shim 发送失败 (" + cmd + ")");
-    }
-    off += static_cast<size_t>(k);
-  }
+  const int s = open_to(line, cmd, timeout);
   std::string buf;
   for (char tmp[65536];;) {
     const ssize_t k = ::recv(s, tmp, sizeof tmp, 0);
@@ -203,10 +215,7 @@ std::vector<nlohmann::json> call(const std::string &line, double timeout) {
   std::vector<std::string_view> lines;
   for (std::string_view v = buf; !v.empty();) {
     const size_t e = v.find('\n');
-    std::string_view l = v.substr(0, e);
-    if (l.ends_with('\r'))
-      l.remove_suffix(1);
-    lines.push_back(l);
+    lines.push_back(chomp(v.substr(0, e)));
     v = e == std::string_view::npos ? std::string_view{} : v.substr(e + 1);
   }
   if (lines.empty() || lines.back() != "ok")
@@ -218,6 +227,35 @@ std::vector<nlohmann::json> call(const std::string &line, double timeout) {
     out.push_back(std::move(j));
   }
   return out;
+}
+
+void watch(const std::string &line, const std::function<bool(const nlohmann::json &)> &on, double timeout) {
+  const std::string cmd = line.substr(0, line.find(' '));
+  const int s = open_to(line, cmd, timeout);
+  std::string buf;
+  for (char tmp[65536];;) {
+    const ssize_t k = ::recv(s, tmp, sizeof tmp, 0);
+    if (k <= 0) {
+      ::close(s);
+      fail(k < 0 ? strf("%s: %gs 内没推送 (客户端卡着?)", cmd.c_str(), timeout) : cmd + ": 连接被关");
+    }
+    buf.append(tmp, static_cast<size_t>(k));
+    size_t from = 0;
+    for (size_t e; (e = buf.find('\n', from)) != std::string::npos; from = e + 1) {
+      const std::string_view l = chomp(std::string_view(buf).substr(from, e - from));
+      if (l.starts_with("err")) {
+        ::close(s);
+        fail(cmd + ": " + std::string(l));
+      }
+      const nlohmann::json j = nlohmann::json::parse(l, nullptr, false);
+      assert(!j.is_discarded());
+      if (!on(j)) {
+        ::close(s);
+        return;
+      }
+    }
+    buf.erase(0, from);
+  }
 }
 
 } // namespace live::tdx::shim

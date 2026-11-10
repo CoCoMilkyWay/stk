@@ -24,7 +24,7 @@
 //   factors/     ③ 因子 ← features          run/factors/    Search 日志 / Inspect 导出 (同 <池>/<层>) + 算子表
 //   portfolios/  ④ 组合 ← factors
 //   agent/       ③ 的旁路: 挖候选 → 入库      run/agent/      Search 日志 (同会话作用域) + 工具结果样本 (同 <main|test>)
-//   live/        实盘: 当日两融条款          run/live/       调仓事务日志
+//   live/        实盘: 当日两融条款          run/live/       调仓事务日志 + 客户端适配的运行产物 (<客户端>/: 注入件构建 / 录制)
 //                                           run/app/        进程级: TSan 报告 / 崩溃栈
 //
 // 读写: 小文件 (清单 / 配置 / 因子 / 记录行) 走 read / write / append; write = <正式名>.tmp → rename 原子替换.
@@ -108,6 +108,8 @@ enum class Seg : std::uint8_t {
   X(ConfigLive,        Config,            Dir,    Lit,       "live",              "",         false)       \
   X(LiveLists,         ConfigLive,        Dir,    Lit,       "lists",             "",         true)        \
   X(LiveListFile,      LiveLists,         File,   List,      "",                  ".csv",     false)       \
+  X(LiveUiFile,        ConfigLive,        File,   Lit,       "ui.json",           "",         true)        \
+  X(LiveSudoFile,      ConfigLive,        File,   Lit,       ".sudo_pass",        "",         true)        \
   /* ① 数据 */                                                                                            \
   X(Data,              Output,            Dir,    Lit,       "data",              "",         false)       \
   X(Sample,            Data,              Bundle, Lit,       "sample",            "",         false)       \
@@ -208,6 +210,10 @@ enum class Seg : std::uint8_t {
   X(RunLive,           Run,               Dir,    Lit,       "live",              "",         false)       \
   X(RunLiveRebal,      RunLive,           Dir,    Lit,       "rebal",             "",         false)       \
   X(RunLiveRebalLog,   RunLiveRebal,      File,   Stamp,     "",                  ".jsonl",   false)       \
+  X(RunLiveTdx,        RunLive,           Dir,    Lit,       "tdx",               "",         false)       \
+  X(RunLiveTdxShim,    RunLiveTdx,        Bundle, Lit,       "shim",              "",         false)       \
+  X(RunLiveTdxRec,     RunLiveTdx,        Dir,    Lit,       "rec",               "",         false)       \
+  X(RunLiveTdxRecLog,  RunLiveTdxRec,     File,   Stamp,     "",                  ".jsonl",   false)       \
   X(RunApp,            Run,               Dir,    Lit,       "app",               "",         false)       \
   X(RunAppTsan,        RunApp,            File,   Lit,       "tsan_report.log",   "",         false)       \
   X(RunAppCrash,       RunApp,            File,   Lit,       "crash_stacks.txt",  "",         false)

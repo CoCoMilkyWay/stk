@@ -1,4 +1,4 @@
-// 通达信适配: 读客户端进程堆里的明文表 (只服务 Tables.hpp 里的表)
+// 通达信适配: 读客户端进程堆里的明文表 (只服务 Tables.hpp 里的表; 调试台的探内存只借 attach / each_region)
 //   定位 TdxW 进程、枚举堆段、确保有跨进程读权限 (本机存的密码自动 sudo 放开 ptrace)、
 //   "连读两次一致才采信" 的完整性原语、明文表的找块 / 复读 / 解析, 以及各表共用的流程.
 //
@@ -68,7 +68,9 @@ int attach();                                      // 定位进程并确保有�
 std::string read_at(int pid, Addr addr, size_t n); // 须整段可读
 std::vector<Hit> find(const Shape &t, Addr lo, std::string_view data);
 std::optional<std::string> reread(const Shape &t, int pid, const Hit &h); // 块已不在 (被释放 / 改作他用 / 标签变了) → 无
-// 一遍读堆段 (near 给定时只读含其中任一地址的段), 每段交给各形状 find → 与 shapes 同序的命中
+// 一遍读堆段 (near 给定时只读含其中任一地址的段): 每段 (段首址, 读到的字节) 交给 fn
+void each_region(int pid, const std::function<void(Addr lo, std::string_view data)> &fn, const std::vector<Addr> *near = nullptr);
+// each_region 每段交给各形状 find → 与 shapes 同序的命中
 std::vector<std::vector<Hit>> scan(int pid, const std::vector<const Shape *> &shapes, const std::vector<Addr> *near = nullptr);
 // 块 → 各行的列 (GBK 解码为 UTF-8、无非法字节, 首行表头其后每行一条; 列数全表一致且在 views 里) → (UTF-8 全文, 各行列, 布局号)
 struct Split {

@@ -15,8 +15,4 @@ struct Ran {
 Ran run(const std::vector<std::string> &argv, const std::string &in = "", const std::filesystem::path &cwd = {});
 bool on_path(const std::string &exe);
 
-// py/app/tdx 下与浏览器控制台共用的件: shim 源码与构建产物、本机 sudo 密码 (已 gitignore)
-std::filesystem::path shim_dir();
-std::filesystem::path sudo_pass_file();
-
 } // namespace live::tdx

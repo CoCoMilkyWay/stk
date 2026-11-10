@@ -28,19 +28,15 @@ bool CtaService::publish(const CtaRequest &req, std::string lack, std::shared_pt
 bool CtaService::run(CtaRequest &req) {
   const CtaSpec &sp = req.spec;
   assert(sp.roll >= static_cast<int>(cta::kMinRoll));
-  const FeatureLib lib = load_lib(kAllBar);
-  if (!lib.ready())
-    return publish(req, "CTA 价格由 all.bar 特征库合成: 先在 Beta → Compute 算好 all 池的 Bar 库.");
+  const pool::AllBar ab = pool::all_bar("CTA 价格由 all.bar 特征库合成");
+  if (!ab.lack.empty())
+    return publish(req, ab.lack);
+  const FeatureLib &lib = ab.lib;
   FeatureRead rd(lib, &cancel_);
-  std::vector<misc::Ymd> dates; // 已落盘日 (清单日期轴可能还在算)
-  for (const misc::Ymd d : lib.dates)
-    if (rd.has_date(d))
-      dates.push_back(d);
-  if (dates.size() < 2)
-    return publish(req, "all.bar 特征库落盘不足 2 日.");
-  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib);
-  if (!pk || !lib_.sync(lib, rd, *pk, dates))
+  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &cancel_);
+  if (!pk || !lib_.sync(lib, rd, *pk))
     return false;
+  std::vector<misc::Ymd> dates = pk->tape->dates; // 已落盘日 (清单日期轴可能还在算)
   if (req.key == kCtaNone)
     return publish(req, {});
 

@@ -56,12 +56,16 @@ void config(LiveHub &hub, RebalState &st) {
     text_col(kRed, "✗ " + hub.list_err());
   }
   ImGui::SameLine();
-  double unit = cfg.unit;
+  double unit = st.unit.value_or(cfg.unit);
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
-  if (ImGui::InputDouble("最小调仓单元", &unit, 0, 0, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue))
+  if (ImGui::InputDouble("最小调仓单元", &unit, 0, 0, "%.0f"))
+    st.unit = unit;
+  if (ImGui::IsItemDeactivatedAfterEdit())
     hub.set_unit(std::max(0.0, unit));
+  if (!ImGui::IsItemActive())
+    st.unit.reset();
   if (ImGui::IsItemHovered())
-    tip("元, 不足即不做; 回车生效");
+    tip("元, 不足即不做; 回车或点别处生效");
   ImGui::SameLine();
   int pct = static_cast<int>(std::lround(cfg.pct));
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
@@ -85,6 +89,12 @@ void config(LiveHub &hub, RebalState &st) {
   if (ImGui::Button("执行调仓"))
     st.ask = true;
   ImGui::EndDisabled();
+  ImGui::SameLine();
+  bool priv = hub.priv();
+  if (ImGui::Checkbox("隐私", &priv))
+    hub.set_priv(priv);
+  if (ImGui::IsItemHovered())
+    tip("遮住代码、名称与账户金额 (连同日志), 比例、只数与卖出各列照显; Board / Rebal 共用");
 }
 
 void confirm(LiveHub &hub, RebalState &st) {
@@ -116,14 +126,15 @@ void confirm(LiveHub &hub, RebalState &st) {
   ImGui::EndPopup();
 }
 
-void info(const live::rebal::Plan &p) {
+void info(const live::rebal::Plan &p, bool priv) {
+  const auto w = [&](double v) { return priv ? std::string(kMask) : wan(v); };
   ImGui::TextWrapped("购买力 %s · 本次行使 %s (融资 %s) · 成本 %.0f 元 · 入选 %d / %d 只, 每只目标 %s · 卖后现金 %s / 可用保证金 %s",
-                     wan(p.power).c_str(), wan(p.use).c_str(), wan(p.financed).c_str(), p.cost, p.picked, p.buyable, wan(p.V).c_str(), wan(p.C).c_str(),
-                     wan(p.X).c_str());
+                     w(p.power).c_str(), w(p.use).c_str(), w(p.financed).c_str(), p.cost, p.picked, p.buyable, w(p.V).c_str(), w(p.C).c_str(),
+                     w(p.X).c_str());
 }
 
 // 账户对照: 现 / 调仓后, 调仓后与现不同的格标色
-void sheet(const live::rebal::Plan *p) {
+void sheet(const live::rebal::Plan *p, bool priv) {
   constexpr const char *kHeads[] = {"", "总资产", "净资产", "负债", "现金", "可用保证金", "可融余量", "杠杆", "维持担保"};
   const auto cells = [](const live::rebal::Sheet &s) {
     const auto opt = [](const std::optional<double> &v, auto f) { return v ? f(*v) : std::string(); };
@@ -144,12 +155,13 @@ void sheet(const live::rebal::Plan *p) {
     for (int c = 0; c < 8; ++c) {
       ImGui::TableSetColumnIndex(c + 1);
       const std::string &v = (r ? exp : now)[c];
+      const std::string &shown = priv ? kMask : v;
       if (v.empty())
         ImGui::TextDisabled("—");
       else if (r && v != now[c])
-        text_col(kHot, v);
+        text_col(kHot, shown);
       else
-        ImGui::TextUnformatted(v.c_str());
+        ImGui::TextUnformatted(shown.c_str());
     }
   }
   ImGui::EndTable();
@@ -158,6 +170,7 @@ void sheet(const live::rebal::Plan *p) {
 // 持仓行: 融、市值、卖出滑杆与其面值 / 成本
 void holds(LiveHub &hub, const live::rebal::Plan &p) {
   const double unit = hub.cfg().unit;
+  const bool priv = hub.priv();
   ImGui::SeparatorText("持仓 (调仓先卖的拖卖出)");
   if (!ImGui::BeginTable("##holds", 7, kFlags))
     return;
@@ -170,14 +183,14 @@ void holds(LiveHub &hub, const live::rebal::Plan &p) {
     ImGui::TableNextRow();
     ImGui::PushID(h.code.c_str());
     ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted(h.code.c_str());
+    ImGui::TextUnformatted(priv ? kMask : h.code.c_str());
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(h.name.c_str());
+    ImGui::TextUnformatted(priv ? kMask : h.name.c_str());
     ImGui::TableSetColumnIndex(2);
     if (h.financeable)
       text_col(kHot, "R");
     ImGui::TableSetColumnIndex(3);
-    ImGui::TextUnformatted(wan(h.value).c_str());
+    ImGui::TextUnformatted(priv ? kMask : wan(h.value).c_str());
     ImGui::TableSetColumnIndex(4);
     const auto i = hub.cfg().sells.find(h.code);
     int n = std::min(i == hub.cfg().sells.end() ? 0 : i->second, h.avail);
@@ -218,20 +231,22 @@ void holds(LiveHub &hub, const live::rebal::Plan &p) {
 }
 
 // 名单行: 排名、可买与否、条款、补多少、融资 / 现金两腿
-void targets(const live::rebal::Plan &p) {
+void targets(const live::rebal::Plan &p, bool priv) {
   ImGui::SeparatorText("名单");
   if (!ImGui::BeginTable("##targets", 10, kFlags))
     return;
   for (const char *h : {"排名", "代码", "名称", "", "保证金比例", "折算率", "现市值", "补", "融资买入", "现金买入"})
     ImGui::TableSetupColumn(h);
   ImGui::TableHeadersRow();
-  const auto leg = [](const live::rebal::Target &t, live::Credit c) {
+  const auto leg = [&](const live::rebal::Target &t, live::Credit c) {
     const auto l = std::find_if(t.legs.begin(), t.legs.end(), [&](const live::rebal::Leg &x) { return x.credit == c; });
-    if (l == t.legs.end())
+    if (l == t.legs.end() || (!l->order && l->skip.empty()))
       return;
-    if (l->order)
+    if (priv)
+      ImGui::TextDisabled("%s", kMask);
+    else if (l->order)
       ImGui::Text("%.0f股 · %s", l->order->qty, wan(l->order->amount).c_str());
-    else if (!l->skip.empty())
+    else
       text_col(grey(), strf("%s (%s)", l->skip.c_str(), wan(l->want).c_str()));
   };
   for (const live::rebal::Target &t : p.targets) {
@@ -239,9 +254,9 @@ void targets(const live::rebal::Plan &p) {
     ImGui::TableSetColumnIndex(0);
     ImGui::Text("%d", t.rank);
     ImGui::TableSetColumnIndex(1);
-    ImGui::TextUnformatted(t.code.c_str());
+    ImGui::TextUnformatted(priv ? kMask : t.code.c_str());
     ImGui::TableSetColumnIndex(2);
-    ImGui::TextUnformatted(t.name.c_str());
+    ImGui::TextUnformatted(priv ? kMask : t.name.c_str());
     ImGui::TableSetColumnIndex(3);
     if (!t.why.empty())
       text_col(kRed, t.why);
@@ -257,9 +272,11 @@ void targets(const live::rebal::Plan &p) {
       ImGui::Text("%.2f", *t.rate);
     ImGui::TableSetColumnIndex(6);
     if (t.held)
-      ImGui::TextUnformatted(wan(*t.held).c_str());
+      ImGui::TextUnformatted(priv ? kMask : wan(*t.held).c_str());
     ImGui::TableSetColumnIndex(7);
-    if (!t.skip.empty())
+    if (priv && (!t.skip.empty() || t.need))
+      ImGui::TextDisabled("%s", kMask);
+    else if (!t.skip.empty())
       text_col(grey(), t.skip);
     else if (t.need)
       ImGui::TextUnformatted(wan(*t.need).c_str());
@@ -271,7 +288,7 @@ void targets(const live::rebal::Plan &p) {
   ImGui::EndTable();
 }
 
-void task(LiveHub &hub) {
+void task(LiveHub &hub, bool priv) {
   const auto &t = hub.task();
   if (!t)
     return;
@@ -282,7 +299,10 @@ void task(LiveHub &hub) {
   ImGui::TextDisabled("%s", t->file.c_str());
   ImGui::BeginChild("##log", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 12), true);
   for (const LogLine &l : t->log)
-    ImGui::Text("%8.2f %s %s", l.t, l.kind.c_str(), l.text.c_str());
+    if (priv)
+      ImGui::TextDisabled("%8.2f %s %s", l.t, l.kind.c_str(), kMask);
+    else
+      ImGui::Text("%8.2f %s %s", l.t, l.kind.c_str(), l.text.c_str());
   if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
     ImGui::SetScrollHereY(1.0f);
   ImGui::EndChild();
@@ -303,12 +323,12 @@ void RenderTabRebal(LiveHub &hub, RebalState &st) {
   else if (!v.plan)
     ImGui::TextDisabled("%s", v.wait.empty() ? "(等试算)" : v.wait.c_str());
   else
-    info(*v.plan);
-  sheet(v.plan ? &*v.plan : nullptr);
-  task(hub);
+    info(*v.plan, hub.priv());
+  sheet(v.plan ? &*v.plan : nullptr, hub.priv());
+  task(hub, hub.priv());
   if (v.plan) {
     holds(hub, *v.plan);
-    targets(*v.plan);
+    targets(*v.plan, hub.priv());
   }
 }
 

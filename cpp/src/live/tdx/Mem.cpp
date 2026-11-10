@@ -1,5 +1,6 @@
 #include "live/tdx/Mem.hpp"
 
+#include "disk/Disk.hpp"
 #include "live/tdx/Proc.hpp"
 
 #include <cassert>
@@ -48,7 +49,7 @@ int ptrace_scope() {
 void ensure_access() {
   if (ptrace_scope() == 0)
     return;
-  const fs::path pass = sudo_pass_file();
+  const fs::path pass = disk::path(disk::LiveSudoFile);
   if (!fs::exists(pass))
     fail("需 sudo 放开 ptrace, 但缺密码文件 " + pass.string());
   std::string pw = slurp(pass);
@@ -229,8 +230,7 @@ std::optional<std::string> reread(const Shape &t, int pid, const Hit &h) {
   return body(t, d, *m);
 }
 
-std::vector<std::vector<Hit>> scan(int pid, const std::vector<const Shape *> &shapes, const std::vector<Addr> *near) {
-  std::vector<std::vector<Hit>> hits(shapes.size());
+void each_region(int pid, const std::function<void(Addr lo, std::string_view data)> &fn, const std::vector<Addr> *near) {
   const int fd = open_mem(pid);
   std::string buf;
   for (const Region &r : regions(pid)) {
@@ -239,15 +239,23 @@ std::vector<std::vector<Hit>> scan(int pid, const std::vector<const Shape *> &sh
     buf.resize(r.hi - r.lo);
     // 个别段运行时不可读 (守护页等) 属正常, 跳过
     const size_t got = pread_full(fd, buf.data(), buf.size(), r.lo);
-    if (!got)
-      continue;
-    const std::string_view data(buf.data(), got);
-    for (size_t i = 0; i < shapes.size(); ++i) {
-      std::vector<Hit> h = find(*shapes[i], r.lo, data);
-      hits[i].insert(hits[i].end(), std::make_move_iterator(h.begin()), std::make_move_iterator(h.end()));
-    }
+    if (got)
+      fn(r.lo, std::string_view(buf.data(), got));
   }
   ::close(fd);
+}
+
+std::vector<std::vector<Hit>> scan(int pid, const std::vector<const Shape *> &shapes, const std::vector<Addr> *near) {
+  std::vector<std::vector<Hit>> hits(shapes.size());
+  each_region(
+      pid,
+      [&](Addr lo, std::string_view data) {
+        for (size_t i = 0; i < shapes.size(); ++i) {
+          std::vector<Hit> h = find(*shapes[i], lo, data);
+          hits[i].insert(hits[i].end(), std::make_move_iterator(h.begin()), std::make_move_iterator(h.end()));
+        }
+      },
+      near);
   return hits;
 }
 

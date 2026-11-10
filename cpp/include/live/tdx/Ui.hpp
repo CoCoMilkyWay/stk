@@ -43,15 +43,32 @@ inline constexpr unsigned kWmVscroll = 0x115, kWmCommand = 0x111;
 inline constexpr int kSbPagedown = 3, kSbTop = 6;
 inline constexpr int kPageCount = 166, kPageAll = 454; // 查询页: 列表上方「第1--N条」/「共N条」、「查询全部」按钮
 
-// 节点记录 (enum / tree / find / rect)
+// 节点记录 (enum / tree / find / rect): 先序, depth 定父子, 兄弟序即 z 序 (先 = 上层); rect 为屏幕坐标
 struct Node {
   int depth = 0;
   std::string hwnd;
   long id = 0;
   std::string cls, title;
   int rect[4] = {};
+  unsigned style = 0, exstyle = 0;
   bool vis = false, en = false;
 };
+Node node_of(const nlohmann::json &j);
+std::vector<Node> nodes_of(const std::vector<nlohmann::json> &recs);
+
+// 图层记录 (detail / gdidump / gdiwatch): 一窗口一份, off = 客户区左上相对窗口左上;
+//   项为客户区坐标, 后出的在上; v 在绘制层为色 0x00BBGGRR, 在 detail 为 st 位
+struct Item {
+  int l = 0, t = 0, r = 0, b = 0;
+  unsigned v = 0;
+  std::optional<std::string> text;
+};
+struct Layer {
+  std::string hwnd;
+  int off[2] = {};
+  std::vector<Item> items;
+};
+Layer layer_of(const nlohmann::json &j);
 
 // 接入客户端: shim 不在线即编译 + 注入; 再开 noraise 不抬窗 (重扫模块, 补钩 shim 注入后才加载的 DLL)、
 // gdi 绘制层 (首次装入口钩子并重绘全部窗口). 启动时与客户端重启后各一次

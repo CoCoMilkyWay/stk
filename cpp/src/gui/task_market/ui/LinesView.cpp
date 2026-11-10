@@ -614,7 +614,7 @@ void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, c
     for (const size_t line : basket_group(static_cast<BasketGroup>(g)))
       push_quote(d, g, basket_row(line), fixed_impact, ru);
   std::vector<std::pair<uint32_t, double>> ks; // (全局 id, 权占比)
-  if (const LinesAt o = d.at(open); o.g >= 0 && d.prices && !d.prices->lack) {
+  if (const LinesAt o = d.at(open); o.g >= 0 && d.prices && d.prices->lack.empty()) {
     assert(o.g < kBasketGroups);
     const uint32_t line = d.row(o).q.key;
     for (const Quote::Constituent &c : d.prices->cons[line])

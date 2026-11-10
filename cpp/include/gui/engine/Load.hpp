@@ -8,7 +8,8 @@
 
 #include "factor/Check.hpp" // check::Plane
 #include "factor/Stat/Contract.hpp"
-#include "gui/engine/Scope.hpp" // Domain / Chunk / Rc
+#include "features/Panel/PoolSpec.hpp" // kRebals
+#include "gui/engine/Scope.hpp"        // Domain / Chunk / Rc
 #include "misc/exec.hpp"
 #include "shared/Progress.hpp" // Progress
 
@@ -143,15 +144,16 @@ inline std::vector<factor::stat::Cost> costs_of(const YPlanes &y) {
 // 池篮子输入 (load_b; all 池评估域 = 全轴, 一趟读齐, 交 Book baskets)
 struct BPlanes {
   Shape sh;
-  std::vector<PoolMask> in;          // 池成员位 (整日常量): 位 kAllPool = all 截面门控 (同 YPlanes::gate), 位 p = 第 p 池当日成员 (all.bar 选股表) ∧ 当日有成交
-  LegPlane lab;                      // T+1C 两侧毛收益 (同 YPlanes::labels 的折叠, 池内 = 在任一池 in ≠ 0)
-  std::vector<uint8_t> eo;           // 建仓可成交码 (同 YPlanes::eo, 池内 = in ≠ 0)
-  factor::check::Plane close;        // 本行有成交的后复权 close (估值 / 换手漂移, 跨日除权不进收益)
-  std::vector<float> mcap;           // 本行总市值 = close × total_shares (加权版的权; close 无效 / 缺股本 → 0)
-  std::vector<float> px, shares;     // 本行有成交的 close (不复权; 否则 0) / 总股本 (缺 → NaN)
-  std::vector<float> val[kPoolVals]; // [PoolVal] 估值输入 (BCols::val 原值; 缺 → NaN)
-  std::vector<uint8_t> ind;          // 行业 ID (SW2021 一级; 0 = 未知 / 缺 / 越界)
-  std::vector<uint32_t> cc_at;       // [A + 1] 资产 a 所属概念 = cc[cc_at[a], cc_at[a + 1]) (概念表下标, 全期同一份)
+  std::vector<PoolMask> in;                  // 池成员位 (整日常量): 位 kAllPool = all 截面门控 (同 YPlanes::gate), 位 p = 第 p 池当日成员 (all.bar 选股表) ∧ 当日有成交
+  LegPlane lab;                              // T+1C 两侧毛收益 (同 YPlanes::labels 的折叠, 池内 = 在任一池 in ≠ 0)
+  std::vector<uint8_t> eo;                   // 建仓可成交码 (同 YPlanes::eo, 池内 = in ≠ 0)
+  factor::check::Plane close;                // 本行有成交的后复权 close (估值 / 换手漂移, 跨日除权不进收益)
+  std::vector<float> mcap;                   // 本行总市值 = close × total_shares (加权版的目标权; close 无效 / 缺股本 → 0)
+  std::vector<uint32_t> from[pool::kRebals]; // [Rebal][T] 行 t 所在调仓期的首行 (pool::rebal_at 换源之日; 期首在块前 → 0)
+  std::vector<float> px, shares;             // 本行有成交的 close (不复权; 否则 0) / 总股本 (缺 → NaN)
+  std::vector<float> val[kPoolVals];         // [PoolVal] 估值输入 (BCols::val 原值; 缺 → NaN)
+  std::vector<uint8_t> ind;                  // 行业 ID (SW2021 一级; 0 = 未知 / 缺 / 越界)
+  std::vector<uint32_t> cc_at;               // [A + 1] 资产 a 所属概念 = cc[cc_at[a], cc_at[a + 1]) (概念表下标, 全期同一份)
   std::vector<uint16_t> cc;
   std::span<const uint16_t> concepts_of(size_t a) const { return {cc.data() + cc_at[a], cc_at[a + 1] - cc_at[a]}; }
 };

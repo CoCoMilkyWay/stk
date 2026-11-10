@@ -199,11 +199,13 @@ endfunction()
 #   SRC_OP_CHECK            因子算子对拍 CLI
 #   <轴>_<取值>_SRC          GUI_BACKEND / GPU_BACKEND 每个取值一份, 当前取值入链
 #   SRC_APP                 其余全部 → app_main
+# 任一层 win32/ 目录 = 注入目标进程的 Windows 源 (客户端适配运行时交叉编译), 不入本机构建
 # ============================================================================
 file(GLOB_RECURSE SRC_ALL CONFIGURE_DEPENDS RELATIVE ${SRC_ROOT}
     ${SRC_ROOT}/*.cpp
     ${SRC_ROOT}/*.c
     ${SRC_ROOT}/*.cu)
+list(FILTER SRC_ALL EXCLUDE REGEX "(^|/)win32/")
 
 set(SRC_OP_CHECK factor/op_check.cpp)
 set(SRC_APP ${SRC_ALL})
@@ -325,6 +327,7 @@ set(MATH_PRECISE
     live/Board.cpp
     live/Book.cpp
     live/Broker.cpp
+    live/Clients.cpp
     live/Rebal.cpp
     live/tdx/Credit.cpp
     live/tdx/Flash.cpp
@@ -334,6 +337,12 @@ set(MATH_PRECISE
     live/tdx/Tables.cpp
     live/tdx/Tdx.cpp
     live/tdx/Ui.cpp
+    live/tdx/console/Console.cpp
+    live/tdx/console/List.cpp
+    live/tdx/console/Map.cpp
+    live/tdx/console/Probe.cpp
+    live/tdx/console/Rec.cpp
+    live/tdx/console/Tools.cpp
     # gui
     gui/engine/ui/PortfolioBoxes.cpp
     gui/quote/BasketRow.cpp

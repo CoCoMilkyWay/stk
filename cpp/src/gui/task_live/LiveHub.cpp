@@ -2,7 +2,7 @@
 
 #include "api/sina/client.hpp"
 #include "disk/Disk.hpp"
-#include "live/tdx/Tdx.hpp"
+#include "live/Clients.hpp"
 #include "misc/date.hpp"
 
 #include <algorithm>
@@ -562,6 +562,8 @@ LiveHub::LiveHub() : c_(std::make_shared<Core>()) {
   const std::vector<std::string> names = live::rebal::lists();
   if (!names.empty())
     set_list(names[0]);
+  if (disk::exists(disk::LiveUiFile))
+    priv_ = nlohmann::json::parse(disk::read(disk::LiveUiFile)).at("priv").get<bool>();
 }
 
 LiveHub::~LiveHub() {
@@ -572,10 +574,15 @@ LiveHub::~LiveHub() {
 
 bool LiveHub::connected() const { return c_->broker != nullptr; }
 
-void LiveHub::connect() {
-  assert(!connected());
-  c_->broker = live::tdx::make();
+void LiveHub::connect(size_t client) {
+  assert(!connected() && client < live::clients().size());
+  c_->broker = live::clients()[client].make();
   std::thread([c = c_] { quote_loop(c); }).detach();
+}
+
+void LiveHub::set_priv(bool on) {
+  priv_ = on;
+  disk::write(disk::LiveUiFile, {}, nlohmann::json{{"priv", on}}.dump(2));
 }
 
 live::Broker &LiveHub::broker() {

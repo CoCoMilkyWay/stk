@@ -61,9 +61,10 @@ void compound(const R *r, size_t n, Put &&put) {
 //   个股 = 单只的篮子 (线 = 池轴资产): 收益 / 估值与篮子的个股项同一份输入同一式, 不看成员位
 struct Baskets {
   BookLines index;                         // [basket_line][T] 可成交指数的逐行收益 (stride 1; 净值 = compound, 调用方) = fold_book: 行 t 一批 = 成分 (行 t 成员位合判据 ∧ T+1C
-                                           //   标签有效) 做多标签按权平均 (等权 1 / 总市值加权 = 行 t 的 close × total_shares, 不复权;
-                                           //   缺股本权 0), 平仓行实现 1/h̄. T+1C = C(行) → C(D+1) 复权, 顺延在标签里, 建仓 / 续持仓位感知 (Stat 契约)
-  BookLines buy;                           // [basket_line][T] 逐行增仓量 Σ (w_t − w̃)⁺: 成分行 t 的权 w_t = ω / Σω (等权 ω = 1, 加权 ω = mcap) 对上一成分行漂移后的权
+                                           //   标签有效) 做多标签按持仓权 ω 平均 (调仓期首行的目标权: 等权 1 / 总市值 close × total_shares 不复权, 缺股本 0;
+                                           //   随后复权 close 漂移到行 t; 日频切片 = 行 t 的目标权), 平仓行实现 1/h̄. T+1C = C(行) → C(D+1) 复权, 顺延在标签里,
+                                           //   建仓 / 续持仓位感知 (Stat 契约)
+  BookLines buy;                           // [basket_line][T] 逐行增仓量 Σ (w_t − w̃)⁺: 成分行 t 的权 w_t = ω / Σω (ω 同 index) 对上一成分行漂移后的权
                                            //   w̃ = w (1 + r) / (1 + R) (成分 = 上一有效 close 行成员位合判据; 停牌 = 移出 / 复牌 = 移回; 首个成分行 = 建仓 1); 非成分行 0.
                                            //   两边满仓 ⇒ = 单边 ½ Σ|w_t − w̃| (再平衡 + 成分进出); 与因子账的增仓量同一列 (UI 折年化换手同一式)
   std::vector<float> val[kPoolVals];       // [PoolVal][basket_line · T] 估值: 行 t 成分 = 上一行成员位合判据 (行业按本行); 市值 = 本行收盘价 (停牌带上一有效价) × 本行总股本;

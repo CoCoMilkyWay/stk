@@ -1,7 +1,7 @@
 // Beta→Style: 风格篮子的参数优选 (StyleService; 原料 = all.bar 库), 选定的子池写 output/config/beta/pools.json.
 //   右表 = 风格 (features/Panel/PoolSpec.hpp kStyleDefs, 名后计 落地 / 选中 的池数),
-//     点一行 = 打开 (至多一个) = 按左上参数网格 (端 / 只数 / 周期 / 权重 / ST / 板块 / 融资 / 过滤表各条件 各维多选, 笛卡尔积) 逐组选池回测,
-//     其下列全A 两条 + 各组 × 权重的线 (全程切片为空的组不列):
+//     点一行 = 打开 (至多一个) = 按左上参数网格 (端 / 只数 / 周期 / 权重 / 各切片维 各维多选, 笛卡尔积) 逐组选池回测,
+//     其下列全A 两条 (行情页同一条) + 各组 × 权重的线 (全程切片为空的组不列):
 //     勾选 | 中文名 (各段按维, 不起作用的段灰; 落地蓝 / 新选橙 / 去掉红) | 年化 | 夏普 | 回撤 | 超额 (对全A 同权重) | IR | 年换手, 底色 = 组内名次;
 //     有选池态 (落地 / 新选 / 去掉) 的线恒在前, 各自按表头排序 (缺省夏普降序); 只画可见行;
 //   左 = 网格条 + 状态 + 改动 (+新 / −去) [确认…] 弹窗列出改动, 写 output/config/beta/pools.json = 落地 / [撤销] 回落地; 下 = 各线净值 (log 可切):
@@ -21,8 +21,8 @@ namespace GUI::Beta {
 
 // 打开的风格 + 参数网格 (进请求) + 选池的落地 (= pools.json) / 改动中的选中 + 悬停 / 视图 + 结果派生
 struct StyleUIState {
-  int open = -1; // 打开的风格 (pool::Style; −1 = 无)
-  pool::Grid grid;
+  int open = -1;                  // 打开的风格 (pool::Style; −1 = 无)
+  pool::Grid grid;                // 风格维 = 打开的风格
   StyleRequest sent;              // 上次发出的 (gen 0 = 未发)
   bool loaded = false;            // 读过 output/config/beta/pools.json
   std::vector<pool::Spec> landed; // = 文件 (池表序)

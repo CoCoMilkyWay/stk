@@ -25,6 +25,10 @@ inline size_t basket_count() { return cut_count() * kWeights; }
 inline size_t basket_line(size_t c, Weight w) { return kWeights * c + static_cast<size_t>(w); }
 inline size_t cut_of_line(size_t line) { return line / kWeights; }
 inline Weight weight_of(size_t line) { return static_cast<Weight>(line % kWeights); }
+// 切片的调仓周期: 子池 = 池参数的, 其余日频 (成员源 = 前一交易日收盘, 见 features/Panel/PoolSelect.hpp src_of)
+inline pool::Rebal cut_rebal(size_t c) {
+  return c >= kAllCuts && c < concept_cut(0) ? pool_def(static_cast<PoolId>(c - kAllCuts + 1)).spec.rebal() : pool::kRebalDay;
+}
 
 // 切片代码: 全A / 子池 = 池名, 行业 = sw<ID>, 概念 = 板块代码
 inline std::string cut_code(size_t c) {

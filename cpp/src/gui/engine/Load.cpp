@@ -362,11 +362,12 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   B.sh = shape_of(io, k);
   const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg), NP = pool_count();
   assert(NP <= static_cast<size_t>(kPoolBits));
+  assert(VR == 1 && "池篮子按日 (一行一日)");
   assert(io.dm.rs.has(kAllBar));
   const std::shared_ptr<const pool::Picks> pk = pool::picks(io.dm.rs.libs[kAllBar]);
   if (!pk)
     return false;
-  assert(pk->axis == io.dm.rs.axis.hash && "选股表与评估域 A 轴不符");
+  assert(pk->tape->axis == io.dm.rs.axis.hash && "选股表与评估域 A 轴不符");
   // ---- 列段 ts_valid cs_valid lb_entry_ok T+1C 标签 [K] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1
   //      (日频原料 bar.1d, as-of 到网格行) ----
   ColList cols{io.dm.pool, {}};
@@ -464,6 +465,13 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
       B.close.v[i] = B.close.m[i] ? B.close.v[i] * f : 0.f;
     }
   });
+  const size_t T = static_cast<size_t>(B.sh.T);
+  for (int rb = 0; rb < pool::kRebals; ++rb) {
+    std::vector<uint32_t> &s = B.from[rb];
+    s.assign(T, 0);
+    for (size_t t = 1; t < T; ++t)
+      s[t] = pool::rebal_at(static_cast<pool::Rebal>(rb), io.dm.dates[k.d0 + t - 1], io.dm.dates[k.d0 + t]) ? static_cast<uint32_t>(t) : s[t - 1];
+  }
   const ConceptTable &ct = concepts();
   assert(io.dm.rs.axis.size() == A);
   B.cc_at.assign(A + 1, 0);

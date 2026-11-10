@@ -58,16 +58,7 @@ void each_side(F &&f) {
   f.template operator()<kBasket>();
 }
 
-// 定长元素的序列: 长度 + 逐个
-template <class Ar, class T>
-void items(Ar &ar, std::vector<T> &v) {
-  uint64_t n = v.size();
-  ar(n);
-  if constexpr (Ar::kLoad)
-    v.resize(n);
-  for (T &x : v)
-    ar(x);
-}
+using misc::snap::items;
 
 // 一行一日的价 ← 分钟根 (无根的槽 = NaN)
 template <Side S>
@@ -110,19 +101,11 @@ void load(const disk::Key &lib, size_t N, size_t D, size_t row, cta::Series &se)
   }
 }
 
-// 一个线程的合成件 (逐日复用)
-struct Lane {
-  Lane(size_t A, size_t B, size_t nd, size_t nm) : fold(B), day(B) {
-    dc.preallocate(A, L_1day, nd);
-    mc.preallocate(A, L_1min, nm);
-  }
-  FeatureRead::DayColumns dc, mc;
-  Quote::Row prev, cur; // D−1 / D 收盘行
-  Quote::Fold fold;
-  std::vector<Quote::Day> day; // [B]
-  Quote::Bars bars;            // 一只一日的分钟根
-  Quote::Members mem;
-  std::vector<Quote::Members::Weight> ws; // 一只滤到篮子行的所属线
+// 一个线程的合成件 (逐日复用): 一日合成件 (篮子行 = 合成线) + D−1 / D 日根行
+struct Work {
+  Work(size_t A, size_t B, const std::vector<uint32_t> &slot) : lane(A, B, slot) {}
+  Quote::Lane lane;
+  Quote::Row prev, cur;
 };
 
 } // namespace
@@ -144,7 +127,8 @@ void CtaLib::save_head() {
   disk::write(disk::LibCtaHead, lib_, {reinterpret_cast<const char *>(blob.data()), blob.size()});
 }
 
-bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk, const std::vector<misc::Ymd> &dates) {
+bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk) {
+  const std::vector<misc::Ymd> &dates = pk.tape->dates;
   assert(dates.size() >= 2);
   lib_ = lib_key(lib.id);
   std::vector<uint32_t> lines;
@@ -154,9 +138,7 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Pick
   const Quote::PerSide<std::vector<uint32_t>> keys{lib.axis.ids, std::move(lines)};
   const size_t NA = keys[kStock].size(), NB = keys[kBasket].size();
   const Head want{kMagic, concepts().hash, pool_hash(), dates.front()};
-  const auto fits = [&] {
-    return head_ == want && keys_ == keys && !dates_.empty() && dates_.size() <= dates.size() && std::equal(dates_.begin(), dates_.end(), dates.begin());
-  };
+  const auto fits = [&] { return head_ == want && keys_ == keys && pool::extends(dates_, dates); };
   if (!fits()) {
     head_ = {}, keys_ = {}, dates_.clear(), link_ = {};
     if (disk::exists(disk::LibCtaHead, lib_)) {
@@ -193,17 +175,16 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Pick
   if (dates_.size() == dates.size())
     return true;
 
-  // dates[i] (i ≥ 已合成日数) 逐日: 按线程一日一件 (读 D−1 / D 收盘行 + D 的 L_1min, 两侧同出) → 按日序过链落盘, 每批落一次头
+  // dates[i] (i ≥ 已合成日数) 逐日: 按线程一日一件 (读 D−1 / D 日根行 + D 的 L_1min, 两侧同出) → 按日序过链落盘, 每批落一次头
   std::vector<uint32_t> line(basket_count(), static_cast<uint32_t>(NB)); // basket_line → 篮子行 (NB = 不在)
   for (size_t j = 0; j < NB; ++j)
     line[keys_[kBasket][j]] = static_cast<uint32_t>(j);
   Quote::PerSide<std::ofstream> f;
   each_side([&]<Side S>() { f[S].open(disk::path(kFile[S], lib_), std::ios::binary | std::ios::app); });
   const size_t N = dates.size(), T = static_cast<size_t>(pool_.threads());
-  const std::vector<size_t> dcols = Quote::row_cols(), mcols = Quote::minute_cols();
-  std::vector<std::unique_ptr<Lane>> lanes;
+  std::vector<std::unique_ptr<Work>> works;
   for (size_t t = 0; t < T; ++t)
-    lanes.push_back(std::make_unique<Lane>(NA, NB, dcols.size(), mcols.size()));
+    works.push_back(std::make_unique<Work>(NA, NB, line));
   std::vector<DayOut> out(T);
   const std::vector<double> one(NB, 1.0);
   x_.begin(Phase::Loading, N - dates_.size());
@@ -212,37 +193,24 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Pick
       break;
     const size_t n = std::min(T, N - i0);
     pool_.tasks(static_cast<int>(n), [&](int k, int tid) {
-      Lane &L = *lanes[static_cast<size_t>(tid)];
+      Work &w = *works[static_cast<size_t>(tid)];
+      Quote::Lane &L = w.lane;
       auto &[so, bo] = out[static_cast<size_t>(k)];
       const size_t i = i0 + static_cast<size_t>(k);
       const misc::Ymd d = dates[i];
-      rd.load_day_columns(dates[i - 1], dcols, L.dc);
-      Quote::read_row(L.dc, NA, L.prev);
-      rd.load_day_columns(d, dcols, L.dc);
-      Quote::read_row(L.dc, NA, L.cur);
-      rd.load_day_columns(d, mcols, L.mc);
-      Market::members(L.prev, lib.axis, pk, d, L.mem);
-      L.fold.open(Quote::kSlots);
+      Quote::read_row(rd, dates[i - 1], L.dc, w.prev);
+      Quote::read_row(rd, d, L.dc, w.cur);
+      Quote::read_minutes(rd, d, L.mc);
+      Quote::members(pk, lib.axis, d, L.mem);
       so.rec.assign(NA, {});
-      so.pre.assign(L.prev.pre.begin(), L.prev.pre.end());
+      so.pre.assign(w.prev.pre.begin(), w.prev.pre.end());
       so.last.assign(NA, 0.f);
-      for (size_t a = 0; a < NA; ++a) {
-        const float c = L.cur.px[3][a];
-        const bool on = L.cur.trade[a] && c > 0;
-        const Quote::Cell day = Quote::cell(L.cur.px[0][a], L.cur.px[1][a], L.cur.px[2][a], c, 0, L.cur.amount[a]);
-        Quote::bars_of(L.mc, a, d, L.bars);
-        if (on && L.bars.has.any()) {
-          so.last[a] = c;
-          put(so.rec[a], L.bars);
+      L.run(w.prev, w.cur, d, dates[i - 1], true, one, [&](size_t a, const Quote::Cell *on, const Quote::Bars &bars) {
+        if (on && bars.has.any()) {
+          so.last[a] = on->close;
+          put(so.rec[a], bars);
         }
-        L.ws.clear();
-        for (const Quote::Members::Weight &w : L.mem.of(a))
-          if (const uint32_t j = line[w.basket]; j < NB)
-            L.ws.push_back({j, w.w});
-        if (!L.ws.empty())
-          L.fold.add({L.prev.pre[a], on ? &day : nullptr, &L.bars}, L.ws);
-      }
-      L.fold.finish(d, dates[i - 1], one, L.day);
+      });
       bo.rec.assign(NB, {});
       bo.pre.assign(NB, 1.f);
       bo.last.assign(NB, 0.f);

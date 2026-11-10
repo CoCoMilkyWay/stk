@@ -161,7 +161,7 @@ void candle(ImDrawList *dl, double x, double half, double from, double high, dou
   dl->AddRectFilled(ImVec2(std::min(x0, cx - 0.5f), y0), ImVec2(std::max(x1, cx + 0.5f), y1), col);
 }
 
-// 日内蜡烛并根 (同 py/app/tdx): g = span 槽在 px 宽里每根不窄于 kMinPx 的最小 kSlots 因子;
+// 日内蜡烛并根: g = span 槽在 px 宽里每根不窄于 kMinPx 的最小 kSlots 因子;
 //   同日每 g 槽并一根 (开取先, 高 / 低取极, 收取后, 量 / 额相加), x = 组中点. 返回 g
 int merge(Series &s, double span, float px) {
   int g = 1;
@@ -866,8 +866,8 @@ bool pull(const HistoryPub &x, Feed &f) {
 
 // 篮子图的前置: 源未就绪 / 读取中 → 画提示, false
 bool basket_ready(const QuoteHub &mk, Feed &f) {
-  if (f.data && f.data->lack) {
-    ImGui::TextWrapped("%s", f.data->lack);
+  if (f.data && !f.data->lack.empty()) {
+    ImGui::TextWrapped("%s", f.data->lack.c_str());
     if (ImGui::SmallButton("重载"))
       f.reload = true;
     return false;

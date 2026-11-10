@@ -6,8 +6,6 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
-#include <charconv>
-#include <iterator>
 #include <map>
 #include <set>
 #include <sstream>
@@ -18,31 +16,24 @@ namespace {
 
 using json = nlohmann::json;
 
-// c 在取值表 defs 里的下标 (没有 → assert)
-template <size_t N>
-int index_of(const DimValue (&defs)[N], std::string_view c) {
-  for (size_t i = 0; i < N; ++i)
-    if (c == defs[i].code)
-      return static_cast<int>(i);
-  assert(false && "池名: 段不在该维取值表里");
-  return 0;
-}
+// 全选池的风格 / 端 (取值归 0, 池名写 all)
+bool inert(const Spec &s, int d) { return (d == kDimStyle || d == kDimEnd) && !s.keyed(); }
 
 } // namespace
 
 Spec canon(Spec s) {
-  if (s.n == 0)
-    s.style = kStyleSize, s.end = kEndLow;
+  if (!s.keyed())
+    s.v[kDimStyle] = 0, s.v[kDimEnd] = 0;
   return s;
 }
 
+bool on(const Spec &s, int d) { return !inert(s, d) && !(kDimDefs[d].all0 && s.v[d] == 0); }
+
 std::string code(const Spec &s) {
-  const StyleDef &d = kStyleDefs[s.style];
-  constexpr char kHex[] = "0123456789abcdef";
-  std::string c = s.n ? std::string(d.code) + "_" + d.end[s.end] + "." + std::to_string(s.n) : std::string("all.all");
-  for (const char *p : {kRebalDefs[s.rebal].code, kStDefs[s.st].code, kBoardDefs[s.board].code, kMarginDefs[s.margin].code})
-    c += std::string(".") + p;
-  return c + ".f" + kHex[s.filter];
+  std::string c;
+  for (int d = 0; d < kDims; ++d)
+    c += std::string(d ? "." : "") + (inert(s, d) ? "all" : kDimDefs[d].values[s.v[d]].code);
+  return c;
 }
 
 Spec parse(std::string_view c) {
@@ -54,50 +45,26 @@ Spec parse(std::string_view c) {
       break;
     i = j + 1;
   }
-  assert(seg.size() == kParts && "池名: 须是 7 段");
+  assert(seg.size() == kDims && "池名: 段数须是维数");
   Spec s;
-  if (seg[0] == "all") {
-    assert(seg[1] == "all" && "池名: 全选池的只数段须是 all");
-    s.n = 0;
-  } else {
-    const size_t u = seg[0].rfind('_');
-    assert(u != std::string_view::npos && "池名: 风格端段须是 <风格>_<端>");
-    int st = 0;
-    while (st < kStyles && seg[0].substr(0, u) != kStyleDefs[st].code)
-      ++st;
-    assert(st < kStyles && "池名: 未知风格");
-    const std::string_view sd = seg[0].substr(u + 1);
-    assert((sd == kStyleDefs[st].end[0] || sd == kStyleDefs[st].end[1]) && "池名: 未知端");
-    s.style = static_cast<Style>(st), s.end = sd == kStyleDefs[st].end[0] ? kEndLow : kEndHigh;
-    int n = 0;
-    const auto [p, ec] = std::from_chars(seg[1].data(), seg[1].data() + seg[1].size(), n);
-    assert(ec == std::errc() && p == seg[1].data() + seg[1].size() && n > 0 && std::ranges::find(kCounts, n) != std::end(kCounts) &&
-           "池名: 只数不在 kCounts 里");
-    s.n = static_cast<uint16_t>(n);
+  for (int d = 0; d < kDims; ++d) {
+    const std::span<const DimValue> vs = kDimDefs[d].values;
+    const auto it = std::ranges::find_if(vs, [&](const DimValue &x) { return seg[d] == x.code; });
+    assert((it != vs.end() || ((d == kDimStyle || d == kDimEnd) && seg[d] == "all")) && "池名: 段不在该维取值表里");
+    s.v[d] = it == vs.end() ? 0 : static_cast<uint8_t>(it - vs.begin());
   }
-  s.rebal = static_cast<Rebal>(index_of(kRebalDefs, seg[2]));
-  s.st = static_cast<St>(index_of(kStDefs, seg[3]));
-  s.board = static_cast<Board>(index_of(kBoardDefs, seg[4]));
-  s.margin = static_cast<Margin>(index_of(kMarginDefs, seg[5]));
-  assert(seg[6].size() == 2 && seg[6][0] == 'f' && "池名: 过滤段须是 f<十六进制位>");
-  const char h = seg[6][1];
-  assert(((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f')) && "池名: 过滤段须是 f<十六进制位>");
-  s.filter = static_cast<uint8_t>(h <= '9' ? h - '0' : h - 'a' + 10);
   assert(code(s) == c && "池名: 不是规范拼法");
   return s;
 }
 
 std::array<Part, kParts> parts(const Spec &s) {
-  const bool keyed = s.n > 0;
-  return {{
-      {keyed ? kStyleDefs[s.style].end_cn[s.end] : "全", keyed},
-      {keyed ? std::to_string(s.n) : "全", keyed},
-      {kRebalDefs[s.rebal].name_cn, true},
-      {kStDefs[s.st].name_cn, s.st != kStAll},
-      {kBoardDefs[s.board].name_cn, s.board != kBoardAll},
-      {kMarginDefs[s.margin].name_cn, s.margin != kMarginAll},
-      {s.filter ? "剔" + std::to_string(std::popcount(s.filter)) : "不剔", s.filter != 0},
-  }};
+  std::array<Part, kParts> p;
+  for (int d = kDimEnd; d < kDims; ++d)
+    p[d - kDimEnd] = {inert(s, d)    ? "全"
+                      : d == kDimEnd ? kStyleDefs[s.style()].end_cn[s.end()]
+                                     : kDimDefs[d].values[s.v[d]].name_cn,
+                      on(s, d)};
+  return p;
 }
 
 std::string name_cn(const Spec &s) {
@@ -107,37 +74,32 @@ std::string name_cn(const Spec &s) {
   return c;
 }
 
-std::string filter_cn(uint8_t f) {
-  std::string c;
-  for (int k = 0; k < kFilters; ++k)
-    if (f >> k & 1)
-      c += (c.empty() ? "" : " / ") + std::string(kFilterDefs[k].name_cn);
-  return f ? c : "不剔";
-}
-
 std::string short_cn(const Spec &s) {
-  if (s.n)
-    return kStyleDefs[s.style].end_cn[s.end] + std::to_string(s.n);
+  if (s.keyed())
+    return kStyleDefs[s.style()].end_cn[s.end()] + std::to_string(s.n());
   std::string c;
-  if (s.st != kStAll)
-    c += kStDefs[s.st].name_cn;
-  if (s.board != kBoardAll)
-    c += kBoardDefs[s.board].name_cn;
-  if (s.margin != kMarginAll)
-    c += kMarginDefs[s.margin].name_cn;
+  for (int d = kDimSt; d < kDimNew; ++d)
+    if (on(s, d))
+      c += kDimDefs[d].values[s.v[d]].name_cn;
   return c.empty() ? "全选" : c;
 }
 
 std::string detail_cn(const Spec &s) {
   std::string t = code(s) + "\n" + name_cn(s);
-  if (s.n) {
-    const StyleDef &d = kStyleDefs[s.style];
-    t += std::string("\n• ") + d.name_cn + ": " + d.key + "\n• " + (s.end == kEndLow ? "低端" : "高端") + "前 " + std::to_string(s.n) + " 只 (" + d.end_cn[s.end] + ")";
+  if (s.keyed()) {
+    const StyleDef &d = kStyleDefs[s.style()];
+    t += std::string("\n• ") + d.name_cn + ": " + d.key + "\n• " + kEndValues[s.end()].name_cn + "前 " + std::to_string(s.n()) + " 只 (" + d.end_cn[s.end()] + ")";
   } else
     t += "\n• 切片内全选";
-  t += std::string("\n• 调仓: ") + kRebalDefs[s.rebal].tip;
-  t += std::string("\n• 切片: ST ") + kStDefs[s.st].name_cn + " · 板块 " + kBoardDefs[s.board].name_cn + " · 融资 " + kMarginDefs[s.margin].name_cn;
-  return t + "\n• 剔: " + filter_cn(s.filter);
+  t += std::string("\n• 调仓: ") + kRebalValues[s.rebal()].tip;
+  bool cut = false;
+  for (int d = kDimSt; d < kDims; ++d)
+    if (on(s, d)) {
+      const DimValue &v = kDimDefs[d].values[s.v[d]];
+      t += std::string("\n• ") + kDimDefs[d].name_cn + " " + v.name_cn + ": " + v.tip;
+      cut = true;
+    }
+  return cut ? t : t + "\n• 切片: 全部在市";
 }
 
 std::vector<std::string> aliases(const std::vector<Spec> &pools) {
@@ -156,25 +118,36 @@ std::vector<std::string> aliases(const std::vector<Spec> &pools) {
 }
 
 std::vector<Spec> default_pools() {
-  constexpr uint8_t kAll = (1u << kFilters) - 1, kLive = kAll & ~(1u << kFltWarn);
+  Spec live; // 剔次新 / 停牌 / 行业未知
+  live.v[kDimNew] = live.v[kDimSusp] = live.v[kDimInd] = kFlagOff;
+  Spec base = live; // 非ST, 再剔预警
+  base.v[kDimSt] = kStNone, base.v[kDimWarn] = kFlagOff;
   std::vector<Spec> v;
-  const auto two = [&](Style st, End sd, Margin mg = kMarginAll) {
-    for (const uint16_t n : {400, 200})
-      v.push_back({st, sd, n, kRebalDay, kStNone, kBoardAll, mg, kAll});
+  const auto two = [&](Style st, End sd, Flag mg = kFlagAll) {
+    for (const Count n : {kCount400, kCount200}) {
+      Spec s = base;
+      s.v[kDimStyle] = st, s.v[kDimEnd] = sd, s.v[kDimN] = n, s.v[kDimMargin] = mg;
+      v.push_back(s);
+    }
   };
-  two(kStyleSize, kEndLow), two(kStyleSize, kEndHigh), two(kStyleSize, kEndLow, kMarginOn);
+  two(kStyleSize, kEndLow), two(kStyleSize, kEndHigh), two(kStyleSize, kEndLow, kFlagOn);
   two(kStyleEp, kEndHigh), two(kStyleEp, kEndLow), two(kStyleBp, kEndHigh), two(kStyleBp, kEndLow), two(kStyleDy, kEndHigh);
   two(kStyleRoe, kEndHigh), two(kStyleRoe, kEndLow), two(kStyleInv, kEndLow), two(kStyleInv, kEndHigh);
   two(kStyleMom, kEndHigh), two(kStyleMom, kEndLow), two(kStyleRev, kEndLow), two(kStyleRev, kEndHigh);
   two(kStyleTurn, kEndLow), two(kStyleTurn, kEndHigh), two(kStyleIvol, kEndLow), two(kStyleIvol, kEndHigh);
   two(kStyleResvol, kEndLow), two(kStyleResvol, kEndHigh), two(kStyleBeta, kEndLow), two(kStyleBeta, kEndHigh);
   two(kStyleTrend, kEndHigh), two(kStyleTrend, kEndLow), two(kStylePrice, kEndHigh), two(kStylePrice, kEndLow);
+  const auto cut = [&](Dim d, uint8_t x) {
+    Spec s = live;
+    s.v[d] = x;
+    v.push_back(s);
+  };
   for (const St st : {kStSt, kStSst})
-    v.push_back(canon({.n = 0, .st = st, .filter = kLive}));
+    cut(kDimSt, st);
   for (const Board bd : {kBoardShMain, kBoardSzMain, kBoardStar, kBoardChiNext})
-    v.push_back(canon({.n = 0, .board = bd, .filter = kLive}));
-  for (const Margin mg : {kMarginOn, kMarginOff})
-    v.push_back(canon({.n = 0, .margin = mg, .filter = kLive}));
+    cut(kDimBoard, bd);
+  for (const Flag mg : {kFlagOn, kFlagOff})
+    cut(kDimMargin, mg);
   return v;
 }
 
@@ -206,32 +179,35 @@ void save_pools(const std::vector<Spec> &pools) {
   disk::write(disk::PoolsFile, {}, f.str());
 }
 
-std::vector<Spec> specs_of(Style st, const Grid &g) {
-  std::vector<uint8_t> flts; // 网格允许的过滤集
-  for (unsigned f = 0; f < (1u << kFilters); ++f) {
-    bool ok = true;
-    for (int k = 0; k < kFilters; ++k)
-      ok &= (g.filter[k] >> (f >> k & 1) & 1) != 0;
-    if (ok)
-      flts.push_back(static_cast<uint8_t>(f));
-  }
+Style Grid::style() const {
+  assert(std::popcount(bits[kDimStyle]) == 1 && "网格: 风格维须只勾一个");
+  return static_cast<Style>(std::countr_zero(bits[kDimStyle]));
+}
+
+std::vector<Spec> specs_of(const Grid &g) {
+  for (int d = 0; d < kDims; ++d)
+    assert(g.bits[d] && g.bits[d] >> dim_size(d) == 0 && "网格: 每维至少勾一个, 不越取值表");
   std::vector<Spec> v;
   std::set<Spec> seen;
-  for (int sd = 0; sd < kEnds; ++sd)
-    for (int k = 0; k < kNCounts; ++k)
-      for (int t = 0; t < kSts; ++t)
-        for (int bd = 0; bd < kBoards; ++bd)
-          for (int mg = 0; mg < kMargins; ++mg)
-            for (const uint8_t f : flts)
-              for (int rb = 0; rb < kRebals; ++rb) {
-                if (!(g.end >> sd & 1) || !(g.n >> k & 1) || !(g.st >> t & 1) || !(g.board >> bd & 1) || !(g.margin >> mg & 1) || !(g.rebal >> rb & 1))
-                  continue;
-                const Spec s = canon({st, static_cast<End>(sd), static_cast<uint16_t>(kCounts[k]), static_cast<Rebal>(rb), static_cast<St>(t),
-                                      static_cast<Board>(bd), static_cast<Margin>(mg), f});
-                if (seen.insert(s).second)
-                  v.push_back(s);
-              }
-  return v;
+  Spec s;
+  const auto first = [&](int d) { s.v[d] = static_cast<uint8_t>(std::countr_zero(g.bits[d])); };
+  for (int d = 0; d < kDims; ++d)
+    first(d);
+  for (;;) {
+    if (const Spec c = canon(s); seen.insert(c).second)
+      v.push_back(c);
+    int d = kDims - 1;
+    for (; d >= 0; --d) {
+      const unsigned rest = g.bits[d] >> (s.v[d] + 1u);
+      if (rest) {
+        s.v[d] = static_cast<uint8_t>(s.v[d] + 1 + std::countr_zero(rest));
+        break;
+      }
+      first(d);
+    }
+    if (d < 0)
+      return v;
+  }
 }
 
 } // namespace pool

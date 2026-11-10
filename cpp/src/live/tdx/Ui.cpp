@@ -17,45 +17,7 @@ const std::string kToolbarClass = "MHPToolBar", kToolbarTitle = "MainViewBar";
 const std::string kFuncTreeClass = "SysTreeView32";
 constexpr long kFuncTreeId = 59653;
 
-Node node_of(const json &j) {
-  Node n;
-  n.depth = j.at("depth").get<int>();
-  n.hwnd = j.at("hwnd").get<std::string>();
-  n.id = j.at("id").get<long>();
-  n.cls = j.at("class").get<std::string>();
-  n.title = j.at("title").get<std::string>();
-  const json &r = j.at("rect");
-  for (int i = 0; i < 4; ++i)
-    n.rect[i] = r.at(static_cast<size_t>(i)).get<int>();
-  n.vis = j.at("vis").get<long>() != 0;
-  n.en = j.at("en").get<long>() != 0;
-  return n;
-}
-
-std::vector<Node> nodes_of(const std::vector<json> &recs) {
-  std::vector<Node> out;
-  for (const json &j : recs)
-    out.push_back(node_of(j));
-  return out;
-}
-
 int half(int a, int b) { return (a + b) >= 0 ? (a + b) / 2 : -((-(a + b) + 1) / 2); } // 向下取整
-
-// 绘制层 / detail 一项: [l, t, r, b, v] 或 [l, t, r, b, v, "文字"]
-struct Item {
-  int l, t, r, b;
-  std::optional<std::string> text;
-};
-std::vector<Item> items_of(const json &layer) {
-  std::vector<Item> out;
-  for (const json &it : layer.at("items")) {
-    Item x{it.at(0).get<int>(), it.at(1).get<int>(), it.at(2).get<int>(), it.at(3).get<int>(), std::nullopt};
-    if (it.size() > 5)
-      x.text = it.at(5).get<std::string>();
-    out.push_back(std::move(x));
-  }
-  return out;
-}
 
 std::vector<Node> func_trees() {
   std::vector<Node> out;
@@ -89,7 +51,7 @@ std::vector<std::string> cols(const std::string &dlg, double timeout) {
   std::vector<std::string> out;
   for (const Node &n : tree(dlg, timeout))
     if (n.vis && n.cls == "SysHeader32")
-      for (const Item &it : items_of(shim::cmd_wait(timeout, "detail", n.hwnd).at(0)))
+      for (const Item &it : layer_of(shim::cmd_wait(timeout, "detail", n.hwnd).at(0)).items)
         if (it.text)
           out.push_back(*it.text);
   return out;
@@ -108,6 +70,44 @@ size_t space_at(const std::string &s, size_t i) {
 }
 
 } // namespace
+
+Node node_of(const json &j) {
+  Node n;
+  n.depth = j.at("depth").get<int>();
+  n.hwnd = j.at("hwnd").get<std::string>();
+  n.id = j.at("id").get<long>();
+  n.cls = j.at("class").get<std::string>();
+  n.title = j.at("title").get<std::string>();
+  const json &r = j.at("rect");
+  for (int i = 0; i < 4; ++i)
+    n.rect[i] = r.at(static_cast<size_t>(i)).get<int>();
+  n.style = j.at("style").get<unsigned>();
+  n.exstyle = j.at("exstyle").get<unsigned>();
+  n.vis = j.at("vis").get<long>() != 0;
+  n.en = j.at("en").get<long>() != 0;
+  return n;
+}
+
+std::vector<Node> nodes_of(const std::vector<json> &recs) {
+  std::vector<Node> out;
+  for (const json &j : recs)
+    out.push_back(node_of(j));
+  return out;
+}
+
+Layer layer_of(const json &j) {
+  Layer l;
+  l.hwnd = j.at("hwnd").get<std::string>();
+  l.off[0] = j.at("off").at(0).get<int>();
+  l.off[1] = j.at("off").at(1).get<int>();
+  for (const json &it : j.at("items")) {
+    Item x{it.at(0).get<int>(), it.at(1).get<int>(), it.at(2).get<int>(), it.at(3).get<int>(), it.at(4).get<unsigned>(), std::nullopt};
+    if (it.size() > 5)
+      x.text = it.at(5).get<std::string>();
+    l.items.push_back(std::move(x));
+  }
+  return l;
+}
 
 Gate::Hold::Hold(Gate &g, const char *who) : g_(g) {
   g_.mu_.lock();
@@ -202,13 +202,13 @@ void click_text(const std::string &cls, const std::string &ttl, const std::strin
   };
   std::vector<Hit> hits;
   for (const json &d : shim::cmd("gdidump")) {
-    const auto w = wins.find(d.at("hwnd").get<std::string>());
+    const Layer l = layer_of(d);
+    const auto w = wins.find(l.hwnd);
     if (w == wins.end())
       continue;
-    const json &off = d.at("off");
-    for (const Item &it : items_of(d))
+    for (const Item &it : l.items)
       if (it.text && squash(*it.text) == txt)
-        hits.push_back({&w->second, off.at(0).get<int>(), off.at(1).get<int>(), it});
+        hits.push_back({&w->second, l.off[0], l.off[1], it});
   }
   if (hits.size() != 1)
     fail(strf("「%s」(%s %s) 命中 %zu 处, 需唯一", txt.c_str(), cls.c_str(), ttl.c_str(), hits.size()));
@@ -234,7 +234,7 @@ void click_func(const std::string &name) {
   send(t.hwnd, kWmVscroll, kSbTop, 0);
   std::optional<std::vector<std::string>> seen;
   while (true) {
-    const std::vector<Item> items = items_of(shim::cmd("detail", t.hwnd).at(0));
+    const std::vector<Item> items = layer_of(shim::cmd("detail", t.hwnd).at(0)).items;
     std::vector<std::string> names;
     for (const Item &it : items) {
       if (it.text && *it.text == name) {

@@ -1,0 +1,5 @@
+CompileFlags:
+  Compiler: clang
+  Add:
+    - --target=i686-w64-windows-gnu
+    - --sysroot=/usr/i686-w64-mingw32

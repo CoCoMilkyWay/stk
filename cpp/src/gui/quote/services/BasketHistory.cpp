@@ -23,16 +23,7 @@ namespace {
 
 constexpr uint64_t kMagic = 0x314B534142544B53ULL; // "SKTBASK1" 小端
 
-// 定长元素的序列: 长度 + 逐个
-template <class Ar, class T>
-void items(Ar &ar, std::vector<T> &v) {
-  uint64_t n = v.size();
-  ar(n);
-  if constexpr (Ar::kLoad)
-    v.resize(n);
-  for (T &x : v)
-    ar(x);
-}
+using misc::snap::items;
 
 // Book 的一条改前先独占 (发布还持有着就复制一份)
 Kline &own(std::shared_ptr<Kline> &p) {
@@ -62,27 +53,18 @@ void BasketHistory::Book::snap(Ar &ar) {
 }
 
 bool BasketHistory::run(HistoryRequest &req) {
-  const FeatureLib lib = load_lib(kAllBar);
-  if (!lib.ready())
-    return publish(req, "指数 / 行业由 all.bar 特征库合成: 先在 Beta → Compute 算好 all 池的 Bar 库.");
+  const pool::AllBar ab = pool::all_bar("指数 / 行业由 all.bar 特征库合成");
+  if (!ab.lack.empty())
+    return publish(req, ab.lack);
+  const FeatureLib &lib = ab.lib;
   FeatureRead rd(lib, &cancel_);
-  std::vector<misc::Ymd> dates; // 已落盘日 (清单日期轴可能还在算)
-  for (const misc::Ymd d : lib.dates)
-    if (rd.has_date(d))
-      dates.push_back(d);
-  if (dates.size() < 2) // 首日只给成员 / 基准, 次日起才有根
-    return publish(req, "all.bar 特征库落盘不足 2 日.");
-
-  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib);
-  if (!pk) {
-    book_ = {};
+  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &cancel_);
+  if (!pk)
     return false;
-  }
+  const std::vector<misc::Ymd> &dates = pk->tape->dates;
   const Book::Head head{kMagic, lib.axis.hash, concepts().hash, pool_hash(), static_cast<uint32_t>(lib.axis.size()),
                         static_cast<uint32_t>(basket_count()), sizeof(Candle), sizeof(Bars)};
-  const auto fits = [&](const Book &b) {
-    return b.head == head && !b.dates.empty() && b.dates.size() <= dates.size() && std::equal(b.dates.begin(), b.dates.end(), dates.begin());
-  };
+  const auto fits = [&](const Book &b) { return b.head == head && pool::extends(b.dates, dates); };
   if (!fits(book_)) {
     book_ = {};
     if (disk::exists(disk::LibBaskets, lib_key(lib.id))) {
@@ -103,7 +85,7 @@ bool BasketHistory::run(HistoryRequest &req) {
 
   const size_t done = book_.dates.size();
   Members mem;
-  if (!extend(lib, rd, *pk, dates, mem)) {
+  if (!extend(lib, rd, *pk, mem)) {
     if (rd.stale())
       book_ = {};
     return false;
@@ -127,7 +109,7 @@ bool BasketHistory::run(HistoryRequest &req) {
     live.next();
   }
   live_.bind(std::move(live), tail_.level);
-  return publish(req, nullptr, &lib.axis);
+  return publish(req, {}, &lib.axis);
 }
 
 bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
@@ -161,7 +143,8 @@ bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
   Fold fold(NB);
   std::vector<Day> day(NB);
   Bar1mDay bd;
-  Bars bars; // 一只一日的分钟根
+  Bars bars;                 // 一只一日的分钟根
+  std::vector<float> rel(A); // [库轴] 当日 收 / 前收 (无成交 1)
   for (size_t k = 0; k < N; ++k) {
     if (cancel_.load(std::memory_order_relaxed))
       return false;
@@ -186,36 +169,30 @@ bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
     }
     for (size_t a = 0; a < A; ++a) {
       const Candle &c = px[k * A + a];
-      if (!(c.ref > 0 && c.close > 0))
-        continue;
-      for (Members::Weight &w : mem.of(a))
-        if (weight_of(w.basket) == kWeightCap)
-          w.w *= c.close / c.ref;
+      rel[a] = c.ref > 0 && c.close > 0 ? static_cast<float>(c.close / c.ref) : 1.f;
     }
+    const auto next = std::upper_bound(trading.begin(), trading.end(), d);
+    assert(next != trading.end() && "交易日历缺补日的次交易日");
+    drift(mem, d, *next, rel);
   }
   tail_.mem = mem;
   return true;
 }
 
-bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk, const std::vector<misc::Ymd> &dates, Members &mem) {
+bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk, Members &mem) {
+  const std::vector<misc::Ymd> &dates = pk.tape->dates;
   const size_t A = lib.axis.size(), N = dates.size(), NB = basket_count(), i_lo = book_.dates.size();
-  const std::vector<size_t> dcols = row_cols(), mcols = minute_cols();
   const size_t T = static_cast<size_t>(pool_.threads()), batch = 2 * T;
   std::vector<FeatureRead::DayColumns> dc(T); // 按线程
   for (FeatureRead::DayColumns &c : dc)
-    c.preallocate(A, L_1day, dcols.size());
-  FeatureRead::DayColumns mc;
-  mc.preallocate(A, L_1min, mcols.size());
+    row_alloc(c, A);
+  Lane L(A, NB);
 
   std::vector<Row> rows(batch + 1); // [0] = 上一批末日, [1 + k] = 本批第 k 日
   const auto read = [&](size_t i, Row &r, size_t tid) {
-    rd.load_day_columns(dates[i], dcols, dc[tid]);
-    read_row(dc[tid], A, r);
+    read_row(rd, dates[i], dc[tid], r);
     x_.publish(1);
   };
-  std::vector<Day> day(NB);
-  Fold fold(NB);
-  Bars bars; // 一只一日的分钟根
   x_.begin(Phase::Loading, N - i_lo + 1);
   read(i_lo - 1, rows[0], 0);
   for (size_t i0 = i_lo; i0 < N; i0 += batch) {
@@ -228,34 +205,23 @@ bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const p
     for (size_t k = 0; k < n; ++k) {
       const size_t i = i0 + k;
       const misc::Ymd d = dates[i];
-      const Row &prev = rows[k], &cur = rows[1 + k];
-      members(prev, lib.axis, pk, d, mem);
+      members(pk, lib.axis, d, L.mem);
       const bool minutes = i + kMinuteDays >= N;
       if (minutes) {
-        rd.load_day_columns(d, mcols, mc);
+        read_minutes(rd, d, L.mc);
         if (rd.stale())
           return false;
       }
-      fold.open(minutes ? kSlots : 0);
-      for (size_t a = 0; a < A; ++a) {
-        const std::span<const Members::Weight> ws = mem.of(a);
-        if (ws.empty())
-          continue;
-        const float x = cur.px[3][a];
-        const Cell c = cell(cur.px[0][a], cur.px[1][a], cur.px[2][a], x, 0, cur.amount[a]);
-        if (minutes)
-          bars_of(mc, a, d, bars);
-        fold.add({prev.pre[a], cur.trade[a] && x > 0 ? &c : nullptr, minutes ? &bars : nullptr}, ws);
-      }
-      fold.finish(d, dates[i - 1], book_.level, day);
+      L.run(rows[k], rows[1 + k], d, dates[i - 1], minutes, book_.level, [](size_t, const Cell *, const Bars &) {});
       for (size_t b = 0; b < NB; ++b) {
-        if (!day[b].candle.date)
+        const Day &y = L.day[b];
+        if (!y.candle.date)
           continue;
         Kline &kl = own(book_.list[b]);
-        kl.daily.push_back(day[b].candle);
+        kl.daily.push_back(y.candle);
         if (minutes)
-          kl.minutes.push_back(day[b].bars);
-        book_.level[b] = day[b].candle.close;
+          kl.minutes.push_back(y.bars);
+        book_.level[b] = y.candle.close;
       }
       book_.dates.push_back(d);
     }
@@ -273,15 +239,15 @@ bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const p
   const std::span<const misc::Ymd> trading = live_.trading();
   const auto next = std::upper_bound(trading.begin(), trading.end(), dates.back());
   assert(next != trading.end() && "交易日历缺库末日的次交易日");
-  members(rows[0], lib.axis, pk, *next, mem);
+  members(pk, lib.axis, *next, mem);
   return true;
 }
 
-bool BasketHistory::publish(const HistoryRequest &req, const char *lack, const PoolAxis *axis) {
+bool BasketHistory::publish(const HistoryRequest &req, const std::string &lack, const PoolAxis *axis) {
   auto out = std::make_shared<Tape>();
   out->keys = req.keys;
   out->lack = lack;
-  if (!lack) {
+  if (lack.empty()) {
     assert(axis && axis->size() == tail_.mem.assets());
     // 窗按 Book 落盘日 + 补日截: 自末往前第 n 日
     const size_t nb = book_.dates.size(), nt = tail_.dates.size();

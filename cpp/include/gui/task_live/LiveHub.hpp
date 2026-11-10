@@ -1,4 +1,4 @@
-// Live 任务的中枢: 一个 Broker (客户端适配, 点「连接」才建) + 新浪行情 + 两融条款 + 下单 / 调仓事务, 券商无关
+// Live 任务的中枢: 一个 Broker (客户端适配表 live/Clients.hpp 里选一个, 点「连接」才建) + 新浪行情 + 两融条款 + 下单 / 调仓事务, 券商无关
 //   行情: 只此一路 (持仓、今日清仓、负债、调仓名单里可买的), 有人在看才转, 每 kQuoteEvery 取一次, 要的码多了即补取;
 //     盘口列同帧复用其 5 档. 账户读到后头一次取齐其各只的行情记作读时现价 (可用保证金按它校准, 见 live/Rebal.hpp)
 //   条款: 只认当日的, 落盘 output/live/terms/<日>.csv (只留当日); 跨日即换成当日落盘的; 调仓页打开时当日还没有即后台拉
@@ -29,6 +29,7 @@ inline constexpr size_t kOrderCap = 5;  // 留最近几单
 inline constexpr size_t kLogTail = 200; // 调仓日志留给页面的条数
 
 inline std::string wan(double v) { return live::strf("%.2fW", v / 1e4); }
+inline constexpr const char *kMask = "****"; // 隐私下遮住的一段 (见 LiveHub::priv)
 
 enum class JobSt : uint8_t { Run,
                              Ok,
@@ -84,8 +85,11 @@ public:
 
   // ---------- 以下皆 GUI 线程 ----------
   bool connected() const;
-  void connect(); // 建 broker (现只有通达信), 起行情线程
+  void connect(size_t client); // 按 live::clients() 的下标建 broker, 起行情线程
   live::Broker &broker();
+  // 隐私: 遮住代码、名称与账户金额 (连同其悬停提示), 比例、只数与下单照显; 落盘 output/config/live/ui.json
+  bool priv() const { return priv_; }
+  void set_priv(bool on);
   void peek(); // 每帧: 取单 / 事务 / 刷新进度 (左栏标签用), 不算有人在看
   void tick(); // 每帧 (页面可见时): peek + 有人在看 + 其余快照, 输入变了即重算持仓帧 / 试算
 
@@ -120,6 +124,7 @@ public:
 
 private:
   std::shared_ptr<Core> c_;
+  bool priv_ = false;
   std::shared_ptr<const live::State> st_;
   live::Refresh prog_;
   BoardView board_;

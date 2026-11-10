@@ -10,6 +10,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <span>
 #include <type_traits>
@@ -54,5 +55,16 @@ private:
   }
   const std::byte *p_, *end_;
 };
+
+// 变长序列 (元素平凡可拷贝): 长度 + 逐个
+template <class Ar, class T>
+void items(Ar &ar, std::vector<T> &v) {
+  uint64_t n = v.size();
+  ar(n);
+  if constexpr (Ar::kLoad)
+    v.resize(n);
+  for (T &x : v)
+    ar(x);
+}
 
 } // namespace misc::snap

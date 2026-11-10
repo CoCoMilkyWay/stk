@@ -13,9 +13,10 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
-#include <iterator>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -41,11 +42,11 @@ constexpr size_t kIdlePoints = 200000;                                          
 constexpr const char *kStyleTip =
     "Style = 风格篮子的参数优选 (beta 收益): 选哪组参数做子池\n"
     "• 右表 = 风格 (一列排序键; 名后 = 落地 / 选中的池数), 点一行打开: 按左上参数网格逐组选池回测, 其下列各组 × 权重的绩效\n"
-    "• 网格各维多选, 组 = 笛卡尔积: 端 (键低端 / 高端) · 只数 (全 = 切片内全选, 与风格无关) · 周期 (日 = 每日重选 / 周 = 周五重选, 权随价漂移) · 权重 (等权 / 总市值加权)\n"
-    "  · ST (全 / 非ST / ST / *ST / 退市整理) · 板块 (全 / 沪主板 / 深主板 / 科创板 / 创业板 / 北交所) · 融资 (全 / 融资 / 非融资): 各自划分在市 A 股, 缺省全开\n"
-    "  · 过滤 (次新 / 停牌 / 行业未知 / 风险预警 各 留 / 剔, 缺省只留); 切片 = ST ∩ 板块 ∩ 融资 ∩ 过滤后的在市资产\n"
-    "• 名 = 风格端.只数.周期.ST.板块.融资.过滤 (灰段 = 不起作用: 全 / 不剔); 全程切片为空的组不列\n"
-    "• 篮子 = 行 D 收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 超额 / IR 对全A (在市全选, 日频, 同权重)\n"
+    "• 网格各维多选, 组 = 笛卡尔积: 端 (键低端 / 高端) · 只数 (全 = 切片内全选, 与风格无关) · 周期 (日 = 每日重选 / 周 = 按上周末重选, 权随价漂移) · 权重 (等权 / 总市值加权)\n"
+    "  · 切片维 ST / 板块 / 融资 / 次新 / 停牌 / 行业 / 预警: 各按一列把在市 A 股分类, 全 = 不切; ST / 板块 / 融资 缺省全开, 其余缺省只勾全\n"
+    "  · 切片 = 各切片维之交\n"
+    "• 名 = 风格端.只数.周期.ST.板块.融资.次新.停牌.行业.预警 (灰段 = 不起作用: 全); 全程切片为空的组不列\n"
+    "• 篮子 = 源行收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 超额 / IR 对全A (行情页同一条: 当日活跃, 日频, 同权重)\n"
     "• 勾选 = 改选中 (落地蓝 / 新选橙 / 去掉红; 有选池态的恒在表前); [确认…] 弹窗列出改动, 写 pools.json 即落地, 重启后计算 / 各页用新池表\n"
     "• 池表里的池名 = 简称 (高低端 + 风格 + 只数, 如 低β200; 全选池 = 切片名), 同简称按池表序加 A / B / C…; 悬停池名看全部参数\n"
     "• 主图: 线色 = 夏普名次 (绿好 → 红差); 悬停网格条某一维 = 按该维取值着色 (按钮字色即图例), 看哪个取值整体占优\n"
@@ -78,12 +79,12 @@ ImVec4 mark_col(Mark m) {
 }
 constexpr const char *kMarkName[] = {"未选", "落地 → 去掉 (待确认)", "落地", "新选 (待确认)"};
 
-// 风格 st 下 (N > 0) 的池数 / 全选池数
+// 风格 st 下的风格池数 / 全选池数
 int count_of(const std::vector<Spec> &v, int st) {
-  return static_cast<int>(std::ranges::count_if(v, [&](const Spec &p) { return p.n > 0 && p.style == st; }));
+  return static_cast<int>(std::ranges::count_if(v, [&](const Spec &p) { return p.keyed() && p.style() == st; }));
 }
 int count_all(const std::vector<Spec> &v) {
-  return static_cast<int>(std::ranges::count_if(v, [](const Spec &p) { return p.n == 0; }));
+  return static_cast<int>(std::ranges::count_if(v, [](const Spec &p) { return !p.keyed(); }));
 }
 
 // 绩效列 [StyleCol]: 表头 / 悬停 / 格式 / 显示倍数 / 好的方向 (+1 = 高好)
@@ -103,7 +104,7 @@ constexpr ColDef kCols[kStyleCols] = {
     {"年化", "年化 = 年化收益: 净值^(1/年) − 1\n• 自首个建仓行起到末日; 年 = 日历跨度 / 365.25", "%+.1f%%", 100.0, 1},
     {"夏普", "夏普 = 夏普比率: 日收益 均值 / 标准差 × √每年交易日 (无风险 0)\n• 缺省按它降序; 线的缺省色 = 它的组内名次 (绿 = 好 → 红 = 差)", "%.2f", 1.0, 1},
     {"回撤", "回撤 = 最大回撤: 净值自前高的最大跌幅", "%.1f%%", 100.0, -1},
-    {"超额", "超额 = 对全A 的年化超额: 相对净值 Π (1 + r) / (1 + r_全A) 年化\n• 全A = 在市全选 (不切不剔), 日频, 与该线同权重", "%+.1f%%", 100.0, 1},
+    {"超额", "超额 = 对全A 的年化超额: 相对净值 Π (1 + r) / (1 + r_全A) 年化\n• 全A = 行情页同一条 (当日活跃), 日频, 与该线同权重", "%+.1f%%", 100.0, 1},
     {"IR", "IR = 信息比: 相对日收益 (1 + r) / (1 + r_全A) − 1 的 均值 / 标准差 × √每年交易日", "%.2f", 1.0, 1},
     {"换手", "换手 = 年化单边换手 (倍/年): 每次调仓 Σ (目标权 − 漂移后的权)⁺ 累计 / 年\n• 建仓计 1; 日频每日回到目标权, 周频两次调仓之间权随价漂移",
      "%.1f", 1.0, -1},
@@ -114,47 +115,23 @@ double col_val(const StyleLine &l, int c) {
   return v[c];
 }
 
-// 网格维 [GridDim]: 维名; 线在该维的取值 (−1 = 该维对它不起作用: 全选池的端); 过滤表每个条件一维 (取值 0 = 留 / 1 = 剔)
-enum GridDim : int { kDimEnd,
-                     kDimN,
-                     kDimRebal,
-                     kDimWeight,
-                     kDimSt,
-                     kDimBoard,
-                     kDimMargin,
-                     kDimFilter,
-                     kDims = kDimFilter + pool::kFilters };
-const char *dim_name(int d) {
-  constexpr const char *kName[kDimFilter] = {"端", "只数", "周期", "权重", "ST", "板块", "融资"};
-  return d < kDimFilter ? kName[d] : pool::kFilterDefs[d - kDimFilter].name_cn;
+// 网格维 = 池参数的维 pool::Dim (风格维由打开的风格定, 不上条) + 权重 (篮子的两条线, 不进池身份); 线在该维的取值 (−1 = 不起作用: 全选池的端)
+constexpr int kDimWeight = pool::kDims;
+const char *dim_name(int d) { return d == kDimWeight ? "权重" : pool::kDimDefs[d].name_cn; }
+uint16_t dim_bits(const pool::Grid &g, int d) { return d == kDimWeight ? g.weight : g.bits[d]; }
+void set_bits(pool::Grid &g, int d, uint16_t bits) {
+  if (d == kDimWeight)
+    g.weight = static_cast<uint8_t>(bits);
+  else
+    g.bits[d] = bits;
 }
-uint8_t &dim_bits(pool::Grid &g, int d) {
-  uint8_t *b[kDimFilter] = {&g.end, &g.n, &g.rebal, &g.weight, &g.st, &g.board, &g.margin};
-  return d < kDimFilter ? *b[d] : g.filter[d - kDimFilter];
-}
-uint8_t dim_bits(const pool::Grid &g, int d) { return dim_bits(const_cast<pool::Grid &>(g), d); }
 int dim_value(const StyleLine &l, int d) {
-  switch (d) {
-  case kDimEnd:
-    return l.spec.n ? l.spec.end : -1;
-  case kDimN:
-    return static_cast<int>(std::ranges::find(pool::kCounts, l.spec.n) - std::begin(pool::kCounts));
-  case kDimRebal:
-    return l.spec.rebal;
-  case kDimWeight:
+  if (d == kDimWeight)
     return l.weight;
-  case kDimSt:
-    return l.spec.st;
-  case kDimBoard:
-    return l.spec.board;
-  case kDimMargin:
-    return l.spec.margin;
-  default:
-    return l.spec.filter >> (d - kDimFilter) & 1;
-  }
+  return d == pool::kDimEnd && !l.spec.keyed() ? -1 : l.spec.v[d];
 }
 // 维的取值 v 的色: 按网格勾选的取值排位分色 (两个 = 蓝 / 橙, 多个 = 色环等分); 不在网格 / 不起作用 = 灰
-ImVec4 dim_col(uint8_t bits, int v) {
+ImVec4 dim_col(uint16_t bits, int v) {
   if (v < 0 || !(bits >> v & 1))
     return kNoneCol;
   const int k = std::popcount(bits), pos = std::popcount(static_cast<unsigned>(bits & ((1u << v) - 1)));
@@ -228,8 +205,8 @@ void sort_lines(StyleUIState &s, const StyleResult &r, int sort) {
 
 // 一维的多选条 (位 i = names[i], 按下色 = 选; 至少留一位); tips 可空; idle 位 = 不起作用的取值 (字灰); lit = 上帧悬停在这一维
 // (按钮字色 = 各取值的线色). 返回本帧悬停在这一维
-bool toggles(StyleUIState &s, int d, const char *const names[], const char *const tips[], int n, uint8_t idle = 0) {
-  uint8_t &bits = dim_bits(s.grid, d);
+bool toggles(StyleUIState &s, int d, const char *const names[], const char *const tips[], int n, uint16_t idle = 0) {
+  uint16_t bits = dim_bits(s.grid, d);
   const bool lit = s.dim == d;
   ImGui::PushID(d);
   ImGui::BeginGroup();
@@ -243,7 +220,7 @@ bool toggles(StyleUIState &s, int d, const char *const names[], const char *cons
       ImGui::PushStyleColor(ImGuiCol_Text, lit ? dim_col(bits, i) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     ImGui::PushID(i);
     if (ImGui::SmallButton(names[i]) && !(on && bits == (1u << i)))
-      bits ^= static_cast<uint8_t>(1u << i);
+      bits ^= static_cast<uint16_t>(1u << i);
     ImGui::PopID();
     ImGui::PopStyleColor(on + (lit || grey));
     if (tips && ImGui::IsItemHovered())
@@ -251,58 +228,42 @@ bool toggles(StyleUIState &s, int d, const char *const names[], const char *cons
   }
   ImGui::EndGroup();
   ImGui::PopID();
+  set_bits(s.grid, d, bits);
   return ImGui::IsItemHovered();
 }
 
-// 网格条: 端 / 只数 / 周期 / 权重 一行, ST / 板块 / 融资 一行, 过滤表一行; 悬停的维 → s.dim (本帧图起按它着色)
+// 网格条: 端 / 只数 / 周期 / 权重 一行, ST / 板块 / 融资 一行, 次新 / 停牌 / 行业 / 预警 一行; 悬停的维 → s.dim (本帧图起按它着色)
 void grid_bar(StyleUIState &s) {
   int hov = -1;
-  const auto bar = [&](int d, const char *const names[], const char *const tips[], int n, uint8_t idle = 0) {
+  const auto bar = [&](int d, const char *const names[], const char *const tips[], int n, uint16_t idle = 0) {
     if (toggles(s, d, names, tips, n, idle))
       hov = d;
   };
-  // 取值表 defs 的一维 (第 0 个 = 全, 不起作用)
-  const auto table = [&](int d, const pool::DimValue *defs, int n) {
+  // 维表的一维 (取值 0 = 全 的维: 全字灰); 端名随打开的风格
+  const auto dim = [&](int d) {
+    const pool::DimDef &df = pool::kDimDefs[d];
     const char *names[8], *tips[8];
-    for (int i = 0; i < n; ++i)
-      names[i] = defs[i].name_cn, tips[i] = defs[i].tip;
-    bar(d, names, tips, n, 1);
+    assert(pool::dim_size(d) <= 8);
+    for (int i = 0; i < pool::dim_size(d); ++i)
+      names[i] = d == pool::kDimEnd && s.open >= 0 ? pool::kStyleDefs[s.open].end_cn[i] : df.values[i].name_cn, tips[i] = df.values[i].tip;
+    bar(d, names, tips, pool::dim_size(d), df.all0 ? 1 : 0);
   };
-  const pool::StyleDef *sd = s.open >= 0 ? &pool::kStyleDefs[s.open] : nullptr;
-  const char *end[pool::kEnds] = {sd ? sd->end_cn[0] : "低端", sd ? sd->end_cn[1] : "高端"};
-  const char *end_tip[pool::kEnds] = {"键的低端 (由小到大取前 N)", "键的高端 (由大到小取前 N)"};
-  bar(kDimEnd, end, end_tip, pool::kEnds);
-  ImGui::SameLine(0, 16);
-  std::string cn[pool::kNCounts];
-  const char *count[pool::kNCounts], *count_tip[pool::kNCounts];
-  for (int i = 0; i < pool::kNCounts; ++i) {
-    cn[i] = pool::kCounts[i] ? std::to_string(pool::kCounts[i]) : "全";
-    count[i] = cn[i].c_str();
-    count_tip[i] = pool::kCounts[i] ? "切片 (ST ∩ 板块 ∩ 融资 ∩ 过滤后) 内键的一端取前 N 只 (键覆盖率 < 80% 的行 = 全取)" : "切片内全选 (与风格 / 端无关)";
-  }
-  bar(kDimN, count, count_tip, pool::kNCounts, 1u << (pool::kNCounts - 1));
-  ImGui::SameLine(0, 16);
-  const char *rebal[pool::kRebals], *rebal_tip[pool::kRebals];
-  for (int i = 0; i < pool::kRebals; ++i)
-    rebal[i] = pool::kRebalDefs[i].name_cn, rebal_tip[i] = pool::kRebalDefs[i].tip;
-  bar(kDimRebal, rebal, rebal_tip, pool::kRebals);
-  ImGui::SameLine(0, 16);
-  const char *weight[kWeights] = {"等权", "加权"}, *weight_tip[kWeights] = {"成分等权", "成分按调仓行收盘总市值加权"};
-  bar(kDimWeight, weight, weight_tip, kWeights);
-  table(kDimSt, pool::kStDefs, pool::kSts);
-  ImGui::SameLine(0, 16);
-  table(kDimBoard, pool::kBoardDefs, pool::kBoards);
-  ImGui::SameLine(0, 16);
-  table(kDimMargin, pool::kMarginDefs, pool::kMargins);
-  ImGui::TextDisabled("过滤");
-  if (ImGui::IsItemHovered())
-    tip("过滤表 (all.bar 列 flt_*, 1 = 滤掉): 每个条件 留 / 剔 多选\n• 只勾剔 = 整个网格剔它; 都勾 = 留 / 剔两组都算; 剔的条件并起来剔");
-  for (int k = 0; k < pool::kFilters; ++k) {
-    ImGui::SameLine(0, k ? 16.0f : -1.0f);
-    const std::string t = std::string(pool::kFilterDefs[k].tip) + " (" + pool::kFilterDefs[k].code + " = 1)";
-    const char *names[2] = {"留", "剔"}, *tips[2] = {"不看这一条", t.c_str()};
-    bar(kDimFilter + k, names, tips, 2, 1);
-  }
+  const auto line = [&](std::initializer_list<int> ds) {
+    bool first = true;
+    for (const int d : ds) {
+      if (!first)
+        ImGui::SameLine(0, 16);
+      first = false;
+      if (d == kDimWeight) {
+        const char *weight[kWeights] = {"等权", "加权"}, *weight_tip[kWeights] = {"成分等权", "成分按源行收盘总市值加权"};
+        bar(kDimWeight, weight, weight_tip, kWeights);
+      } else
+        dim(d);
+    }
+  };
+  line({pool::kDimEnd, pool::kDimN, pool::kDimRebal, kDimWeight});
+  line({pool::kDimSt, pool::kDimBoard, pool::kDimMargin});
+  line({pool::kDimNew, pool::kDimSusp, pool::kDimInd, pool::kDimWarn});
   s.dim = hov;
 }
 
@@ -416,7 +377,7 @@ void name_text(const StyleLine &l, const ImVec4 &col) {
 // 一条线的绩效提示
 void line_tip(const StyleUIState &s, const StyleResult &r, size_t i) {
   const StyleLine &l = r.lines[i];
-  std::string t = s.names[i] + "  " + pool::code(l.spec) + "  · " + kMarkName[s.marks[i]] + "\n简称: " + pool::short_cn(l.spec) + "\n剔: " + pool::filter_cn(l.spec.filter);
+  std::string t = s.names[i] + "  " + pool::code(l.spec) + "  · " + kMarkName[s.marks[i]] + "\n简称: " + pool::short_cn(l.spec);
   for (int c = 0; c < kStyleCols; ++c) {
     char v[32];
     const double x = col_val(l, c);
@@ -475,7 +436,7 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
       }
   }
   const int hot = near >= 0 ? near : s.hot;
-  const uint8_t bits = s.dim >= 0 ? dim_bits(r.grid, s.dim) : 0;
+  const uint16_t bits = s.dim >= 0 ? dim_bits(r.grid, s.dim) : 0;
   const auto color = [&](size_t i, Mark m) {
     if (s.dim >= 0)
       return dim_col(bits, dim_value(r.lines[i], s.dim));
@@ -534,7 +495,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
                 : c == 1 ? "点风格 = 打开 (跑参数网格) / 收起; 有选池态的线恒在前\n名色: 蓝 = 落地, 橙 = 新选, 红 = 落地被去掉"
                          : kCols[c - kColBase].tip);
   }
-  const bool open_ok = r && r->style == s.open && r->lack.empty();
+  const bool open_ok = r && r->lack.empty();
   if (open_ok) {
     const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
     const int sort = ss && ss->SpecsCount > 0 ? ss->Specs[0].ColumnIndex * 2 + (ss->Specs[0].SortDirection == ImGuiSortDirection_Descending) : -1;
@@ -608,7 +569,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
       }
       case kRowNote:
         ImGui::Indent();
-        ImGui::TextDisabled("%s", r && r->style == s.open ? r->lack.c_str() : "计算中…");
+        ImGui::TextDisabled("%s", r ? r->lack.c_str() : "计算中…");
         ImGui::Unindent();
         break;
       case kRowBench:
@@ -665,8 +626,10 @@ void SyncStylePools(StyleUIState &ui) {
 void RenderTabStyle(StyleService &svc, StyleUIState &s) {
   const ImVec2 av = ImGui::GetContentRegionAvail();
   const float right = sheet_width(av.x), left = av.x - right - ImGui::GetStyle().ItemSpacing.x, h = av.y;
-  if (s.open >= 0 && !(s.sent.gen && s.sent.style == s.open && s.sent.grid == s.grid)) {
-    s.sent = {s.sent.gen + 1, static_cast<pool::Style>(s.open), s.grid};
+  if (s.open >= 0)
+    s.grid.bits[pool::kDimStyle] = static_cast<uint16_t>(1u << s.open);
+  if (s.open >= 0 && !(s.sent.gen && s.sent.grid == s.grid)) {
+    s.sent = {s.sent.gen + 1, s.grid};
     svc.Request(s.sent);
   }
   std::shared_ptr<const StyleResult> r;
@@ -674,7 +637,7 @@ void RenderTabStyle(StyleService &svc, StyleUIState &s) {
     std::lock_guard<std::mutex> lock(svc.mutex);
     r = svc.result;
   }
-  const bool mine = s.open >= 0 && r && r->style == s.open; // 本风格的 (网格改了时新的还在算, 先显旧的)
+  const bool mine = s.open >= 0 && r && r->grid.bits[pool::kDimStyle] == s.grid.bits[pool::kDimStyle]; // 本风格的 (网格改了时新的还在算, 先显旧的)
   const StyleResult *show = mine && r->lack.empty() ? r.get() : nullptr;
   if (show) {
     derive(s, *show);

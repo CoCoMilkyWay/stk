@@ -1,4 +1,4 @@
-// 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Broker, 上层 (gui/task_live) 只认这里的类型
+// 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Broker 并登记进 live/Clients.hpp, 上层 (gui/task_live) 只认这里的类型
 //   读: 持仓 / 当日成交 / 挂单 / 信用账户 由客户端重查后整份发布 (State, 不可变; ver 变 = 换了一份); 两融条款另拉 (pull_terms, 慢)
 //   写: 限价单 place (调用线程跑完, 逐步报进度); 一整批独占客户端 exclusive (批内连下, 其间不插刷新)
 //   刷新: request 要一轮 (不等) / sync 要一轮并等完 / every 定时 / kick 刚下过单 (隔几秒再刷); 有人在看 (touch / Watch) 才转
@@ -196,6 +196,8 @@ public:
   virtual Placed place(const OrderReq &o, const Step &step) = 0;                // 当前线程跑完; 失败 → Fail (停在当时那一步)
   virtual void exclusive(const char *who, const std::function<void()> &fn) = 0; // fn 期间独占客户端 (同一线程可重入)
   virtual Terms pull_terms(const Log &log, const Live &live) = 0;               // 客户端重查两融条款; 失败 → Fail
+
+  virtual void console() = 0; // GUI 线程每帧: 画该客户端自带的调试台 (Live 的 Client 页; ImGui, 占满当前区域)
 };
 
 // 后台事务期间有人在看

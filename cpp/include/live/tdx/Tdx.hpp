@@ -6,6 +6,7 @@
 //     起因: 有人要 (request / sync)、有人在看而还没刷过或距上轮满 every 秒、下单后的 kick 定点、
 //     客户端自己重查了持仓却与成交对不上 (交易端成交了). 失败不自动重试, 等下一个起因.
 //   界面自动化 (刷新 / 下单 / 两融条款 / 调仓) 一次一路 (ui::Gate).
+//   console 即调试台 (live/tdx/Console.hpp).
 #pragma once
 
 #include "live/Broker.hpp"

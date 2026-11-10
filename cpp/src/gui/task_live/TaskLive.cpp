@@ -1,7 +1,8 @@
-// Task Live - 实盘: 券商客户端的持仓、下单与一键调仓 (中枢 LiveHub 券商无关; 客户端适配在 live/<客户端>/, 现只有通达信)
+// Task Live - 实盘: 券商客户端的持仓、下单与一键调仓 (中枢 LiveHub 券商无关; 客户端适配在 live/<客户端>/, 登记在 live/Clients.hpp)
 //   Board: 连接 + 持仓表 (行内闪电下单) + 右栏选中持仓的行情图 (Market 的个股面板, 与 Database / Market 共用 QuoteHub)
 //   Rebal: 名单 / 配置 / 试算 / 执行调仓 / 日志
-//   行情走新浪 (LiveHub 一路), 不读客户端的行情; 页面可见时才盯客户端 (见 live/Broker.hpp 的 touch)
+//   Client: 已连客户端自带的调试台 (Broker::console), 不算有人在看持仓
+//   行情走新浪 (LiveHub 一路), 不读客户端的行情; Board / Rebal 可见时才盯客户端 (见 live/Broker.hpp 的 touch)
 #include "gui/task_live/TaskLive.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/quote/QuoteHub.hpp"
@@ -21,6 +22,7 @@ namespace GUI::Tasks {
 enum TabIdx {
   TAB_BOARD = 0,
   TAB_REBAL,
+  TAB_CLIENT,
   TAB_COUNT
 };
 
@@ -38,7 +40,7 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote) {
   TaskHandle handle;
   handle.name = "Live";
   handle.storage = state;
-  handle.tabs = {"Board", "Rebal"};
+  handle.tabs = {"Board", "Rebal", "Client"};
 
   handle.Init = [state](SharedData &) { state->hub = std::make_unique<Live::LiveHub>(); };
 
@@ -61,6 +63,8 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote) {
         return {TaskStatus::Kind::Error, "error"};
       return {TaskStatus::Kind::Muted, "live"};
     }
+    if (idx == TAB_CLIENT)
+      return {};
     const auto &t = h.task();
     if (!t)
       return {};
@@ -74,13 +78,18 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote) {
   handle.Draw = [state](SharedData &data, int idx) {
     assert(idx >= 0 && idx < TAB_COUNT);
     Live::LiveHub &h = *state->hub;
-    h.tick();
+    if (idx != TAB_CLIENT)
+      h.tick();
     ImGui::BeginChild("LiveTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     if (idx == TAB_BOARD)
       Live::RenderTabBoard(data, h, *state->quote, state->board);
-    else
+    else if (idx == TAB_REBAL)
       Live::RenderTabRebal(h, state->rebal);
+    else if (!h.connected())
+      ImGui::TextDisabled("先在 Board 连接客户端");
+    else
+      h.broker().console();
     ImGui::EndChild();
   };
 
