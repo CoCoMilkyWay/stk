@@ -1,24 +1,15 @@
 #include "disk/Sweep.hpp"
 #include "disk/Disk.hpp"
 
-#include "factor/Stat/Contract.hpp"           // hold_parse / hold_token
-#include "features/Storage/FeatureLevels.hpp" // TIER_IDS / has_level
-#include "features/Storage/FeatureLib.hpp"    // feature_pools
-#include "fundamental/Spec.hpp"               // SPECS
-#include "gui/engine/File.hpp"                // ValidFactorName
-#include "gui/engine/Table.hpp"               // kFactorLevels
-#include "gui/task_agent/Notes.hpp"           // kNoteKinds
-#include "gui/task_agent/Prompt.hpp"          // kMsgs
-#include "gui/task_agent/Tools.hpp"           // Tools
-
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstdlib>
 #include <iostream>
 #include <map>
-#include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,112 +25,56 @@ namespace {
   std::abort();
 }
 
-std::optional<TierId> tier_of(std::string_view name) {
-  for (const TierId t : TIER_IDS)
-    if (name == tier_name(t))
-      return t;
-  return std::nullopt;
-}
+// 子节点表: 父为 n 的节点 = kid[off[n], off[n + 1]), 按表序
+struct Tree {
+  std::array<std::uint16_t, kNodeCount + 1> off{};
+  std::array<Node, kNodeCount> kid{};
+};
+constexpr Tree kTree = [] {
+  Tree t;
+  for (int i = 1; i < kNodeCount; ++i)
+    ++t.off[kDefs[i].parent + 1];
+  for (int n = 0; n < kNodeCount; ++n)
+    t.off[n + 1] += t.off[n];
+  std::array<std::uint16_t, kNodeCount + 1> at = t.off;
+  for (int i = 1; i < kNodeCount; ++i)
+    t.kid[at[kDefs[i].parent]++] = static_cast<Node>(i);
+  return t;
+}();
+std::span<const Node> kids(Node n) { return {kTree.kid.data() + kTree.off[n], kTree.kid.data() + kTree.off[n + 1]}; }
 
-// <因子>_w<权重号>_top<N>_{log,snap}
-bool export_name(std::string_view s) {
-  const auto digits = [](std::string_view x) { return !x.empty() && std::all_of(x.begin(), x.end(), [](char c) { return c >= '0' && c <= '9'; }); };
-  for (const std::string_view tail : {"_log", "_snap"}) {
-    if (!s.ends_with(tail))
-      continue;
-    std::string_view r = s.substr(0, s.size() - tail.size());
-    const size_t top = r.rfind("_top"), w = top == std::string_view::npos ? top : r.rfind("_w", top);
-    return w != std::string_view::npos && digits(r.substr(top + 4)) && digits(r.substr(w + 2, top - w - 2)) && GUI::Engine::ValidFactorName(r.substr(0, w));
-  }
-  return false;
-}
+// 基石的整条路径全是字面: 布局位置唯一, 与键无关
+static_assert([] {
+  for (int i = 0; i < kNodeCount; ++i)
+    for (Node n = static_cast<Node>(i); kDefs[i].core && n != Root; n = kDefs[n].parent)
+      if (kDefs[n].seg != Seg::Lit)
+        return false;
+  return true;
+}());
 
-fundamental::Shape table_shape(Node n) {
-  switch (n) {
-  case FundShard:
-    return fundamental::Shape::Month;
-  case FundDaily:
-    return fundamental::Shape::Daily;
-  default:
-    return fundamental::Shape::Meta;
-  }
-}
-
-// 名字在真相表里 (写法已由 parse 验过)
-bool known(Node n, const Key &k) {
-  switch (def(n).seg) {
-  case Seg::Pool: {
-    const auto pools = feature_pools();
-    return std::any_of(pools.begin(), pools.end(), [&](const PoolDef &p) { return k.pool == p.name; });
-  }
-  case Seg::Tier:
-    return tier_of(k.tier).has_value();
-  case Seg::Lvl: {
-    const std::optional<TierId> t = tier_of(k.tier);
-    for (size_t l = 0; t && l < LEVEL_COUNT; ++l)
-      if (has_level(*t, l) && k.lvl == level_name(l))
-        return true;
-    return false;
-  }
-  case Seg::Level:
-    return std::any_of(GUI::Engine::kFactorLevels.begin(), GUI::Engine::kFactorLevels.end(), [&](const auto &l) { return k.level == l.name; });
-  case Seg::Hold: {
-    int h = 0;
-    return factor::stat::hold_parse(k.hold, h) && factor::stat::hold_token(h) == k.hold;
-  }
-  case Seg::Table:
-    return std::any_of(fundamental::SPECS.begin(), fundamental::SPECS.end(), [&](const fundamental::Spec &s) {
-      return s.name == k.name && (n == FundAuditSheet || s.shape == table_shape(n));
-    });
-  case Seg::Factor:
-  case Seg::Portfolio:
-    return GUI::Engine::ValidFactorName(k.name);
-  case Seg::Export:
-    return export_name(k.name);
-  case Seg::Tool: {
-    const auto tools = GUI::Agent::Tools();
-    return std::any_of(tools.begin(), tools.end(), [&](const GUI::Agent::ToolDef &t) { return k.name == t.name; });
-  }
-  case Seg::Note:
-    return std::any_of(std::begin(GUI::Agent::kNoteKinds), std::end(GUI::Agent::kNoteKinds), [&](const auto &d) { return k.name == d.id; });
-  case Seg::Prompt:
-    return std::any_of(std::begin(GUI::Agent::kMsgs), std::end(GUI::Agent::kMsgs), [&](const auto &d) { return k.name == d.id; });
-  default:
-    return true;
-  }
-}
-
-bool fits(Node n, const fs::path &p) { return def(n).kind == Kind::File ? fs::is_regular_file(p) : fs::is_directory(p); }
-
-// p 是 n 的哪个子节点 (写法 + 真相表); 不是 → kNodeCount
-Node child_of(Node n, const fs::path &p, Key &k) {
-  const std::string name = p.filename().string();
-  for (int i = 1; i < kNodeCount; ++i) {
-    const Node c = static_cast<Node>(i);
-    Key kk = k;
-    if (def(c).parent == n && fits(c, p) && parse(c, name, kk) && known(c, kk)) {
-      k = std::move(kk);
+// 名为 name 的一项 (dir = 盘上是目录) 是 n 的哪个子节点 (类 ∧ 写法 ∧ 值域), 段值记进 k; 不是 → kNodeCount
+Node child(Node n, std::string_view name, bool dir, Key &k) {
+  for (const Node c : kids(n))
+    if (is_dir(c) == dir && parse(c, name, k))
       return c;
-    }
-  }
   return kNodeCount;
 }
 
-// 残留: <子节点实例名>.tmp (文件) / <子目录实例名>.trash.<…>
-bool debris(Node n, const fs::path &p, const Key &k) {
-  const std::string name = p.filename().string();
-  const size_t grave = name.find(".trash.");
-  const bool tmp = name.ends_with(".tmp") && fs::is_regular_file(p), dir = grave != std::string::npos && fs::is_directory(p);
-  if (!tmp && !dir)
-    return false;
-  const std::string stem = tmp ? name.substr(0, name.size() - 4) : name.substr(0, grave);
+// 残留: <子文件实例名>.tmp / <子目录实例名>.trash.<…>
+bool debris(Node n, std::string_view name, bool dir, Key k) {
+  const size_t cut = dir ? name.find(".trash.") : name.ends_with(".tmp") ? name.size() - 4
+                                                                         : std::string_view::npos;
+  return cut != std::string_view::npos && child(n, name.substr(0, cut), dir, k) != kNodeCount;
+}
+
+// 放错地方的基石: 与基石节点同名同类, 且其布局位置空着 → 整个搬过去 (目录内部不合布局的, 搬后逐组再问)
+Node stray(std::string_view name, bool dir) {
   for (int i = 1; i < kNodeCount; ++i) {
     const Node c = static_cast<Node>(i);
-    Key kk = k;
-    if (def(c).parent == n && (def(c).kind == Kind::File) == tmp && parse(c, stem, kk))
-      return true;
+    if (def(c).core && is_dir(c) == dir && name == def(c).prefix && !fs::exists(path(c)))
+      return c;
   }
-  return false;
+  return kNodeCount;
 }
 
 struct Plan {
@@ -148,31 +83,22 @@ struct Plan {
   std::vector<std::pair<Node, fs::path>> foreign; // (所在目录的节点, 路径)
 };
 
-// p (不合布局) 是不是放错地方的基石: 与基石节点同名同类且该节点的布局位置空着 → 整个搬过去 (目录内部不合布局的, 搬后逐组再问)
-std::optional<fs::path> relocate(const fs::path &p, const Key &k) {
-  const std::string name = p.filename().string();
-  for (int i = 1; i < kNodeCount; ++i) {
-    const Node c = static_cast<Node>(i);
-    if (def(c).core && name == def(c).prefix && fits(c, p) && resolvable(c, k) && !fs::exists(path(c, k)))
-      return path(c, k);
-  }
-  return std::nullopt;
-}
-
-void walk(const fs::path &dir, Node n, const Key &k, Plan &plan) {
-  std::vector<fs::path> entries;
-  for (const fs::directory_entry &e : fs::directory_iterator(dir))
-    entries.push_back(e.path());
+// 每项一次分类: 布局内 (目录则下行) / 残留 / 放错地方的基石 / 不合布局
+void walk(const fs::path &at, Node n, const Key &k, Plan &plan) {
+  std::vector<fs::directory_entry> entries{fs::directory_iterator(at), fs::directory_iterator()};
   std::sort(entries.begin(), entries.end());
-  for (const fs::path &p : entries) {
+  for (const fs::directory_entry &e : entries) {
+    const fs::path &p = e.path();
+    const std::string name = p.filename().string();
+    const bool dir = e.is_directory();
     Key kk = k;
-    if (const Node c = child_of(n, p, kk); c != kNodeCount) {
+    if (const Node c = child(n, name, dir, kk); c != kNodeCount) {
       if (def(c).kind == Kind::Dir)
         walk(p, c, kk, plan);
-    } else if (debris(n, p, k)) {
+    } else if (debris(n, name, dir, k)) {
       plan.debris.push_back(p);
-    } else if (std::optional<fs::path> to = relocate(p, k)) {
-      plan.moves.emplace_back(p, std::move(*to));
+    } else if (const Node c = stray(name, dir); c != kNodeCount) {
+      plan.moves.emplace_back(p, path(c));
     } else {
       plan.foreign.emplace_back(n, p);
     }

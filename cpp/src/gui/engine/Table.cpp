@@ -123,7 +123,7 @@ std::string FactorDir::dir() const { return disk::path(disk::def(file).parent, k
 std::vector<std::string> FactorDir::files() const {
   std::vector<std::string> out;
   for (const disk::Key &k : disk::list(file, key))
-    out.push_back(k.name + ".json");
+    out.push_back(disk::name(file, k));
   return out;
 }
 

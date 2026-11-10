@@ -1,13 +1,25 @@
 #include "disk/Disk.hpp"
 #include "misc/cross_platform.hpp"
 
+#include "factor/Stat/Contract.hpp"           // hold_parse / hold_token
+#include "features/Storage/FeatureLevels.hpp" // TIER_IDS / has_level
+#include "features/Storage/FeatureLib.hpp"    // feature_pools
+#include "fundamental/Spec.hpp"               // SPECS
+#include "gui/engine/File.hpp"                // ValidFactorName
+#include "gui/engine/Table.hpp"               // kFactorLevels
+#include "gui/task_agent/Notes.hpp"           // kNoteKinds
+#include "gui/task_agent/Prompt.hpp"          // kMsgs
+#include "gui/task_agent/Tools.hpp"           // Tools
+
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
-#include <cstdio>
 #include <ctime>
 #include <fstream>
+#include <functional>
+#include <optional>
 
 namespace disk {
 
@@ -24,145 +36,238 @@ fs::path find_root() {
   return p;
 }
 
-// 根之下到 n 的节点链 (不含 Root)
-std::vector<Node> chain(Node n) {
-  std::vector<Node> c;
-  for (; n != Root; n = def(n).parent)
-    c.push_back(n);
-  std::reverse(c.begin(), c.end());
-  return c;
-}
+// ---- 写法 ----
 
-bool digits(std::string_view s, size_t n) {
-  return s.size() == n && std::all_of(s.begin(), s.end(), [](char c) { return c >= '0' && c <= '9'; });
-}
-int num(std::string_view s) {
-  int v = 0;
-  for (const char c : s)
-    v = v * 10 + (c - '0');
-  return v;
-}
-// 名字段: 非空, 只含 [A-Za-z0-9_]
-bool token(std::string_view s) {
-  return !s.empty() && std::all_of(s.begin(), s.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'; });
-}
-bool valid_ymd(int y, int m, int d) { return y >= 1900 && m >= 1 && m <= 12 && d >= 1 && d <= 31; }
+enum class Form : std::uint8_t { Lit,
+                                 Flag,
+                                 Date,
+                                 Shape,
+                                 Word,
+                                 Dotted };
 
-int year_of(misc::Ymd d) { return d / 10000; }
-int month_of(misc::Ymd d) { return d / 100 % 100; }
-int day_of(misc::Ymd d) { return d % 100; }
+struct SegDef {
+  Form form;
+  std::string_view pat;
+  std::string Key::*str; // Shape / Word / Dotted 的字段
+};
+constexpr SegDef kSegs[] = {
+#define DISK_SEG_DEF(id, form, pat, field) {Form::form, pat, field},
+    DISK_SEGS(DISK_SEG_DEF)
+#undef DISK_SEG_DEF
+};
+const SegDef &seg(Node n) { return kSegs[static_cast<size_t>(def(n).seg)]; }
 
-// 字符串段在 Key 里的字段
-template <class K>
-auto &field(K &k, Seg s) {
-  switch (s) {
-  case Seg::Pool:
-    return k.pool;
-  case Seg::Tier:
-    return k.tier;
-  case Seg::Lvl:
-    return k.lvl;
-  case Seg::Level:
-    return k.level;
-  case Seg::Hold:
-    return k.hold;
-  case Seg::Stamp:
-    return k.stamp;
-  default:
-    return k.name;
+bool digit(char c) { return c >= '0' && c <= '9'; }
+bool word(std::string_view s) {
+  return !s.empty() && std::all_of(s.begin(), s.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || digit(c) || c == '_'; });
+}
+bool dotted(std::string_view s) {
+  for (size_t i = 0, j = 0; i <= s.size(); j = ++i) {
+    i = std::min(s.find('.', i), s.size());
+    if (!word(s.substr(j, i - j)))
+      return false;
   }
+  return true;
+}
+// 模式串的一位: 日期分量 (年 0 / 月 1 / 日 2), 数字 (-1), 字面 (-2)
+int slot(char p) { return p == 'Y' ? 0 : p == 'M' ? 1
+                                     : p == 'D'   ? 2
+                                     : p == '#'   ? -1
+                                                  : -2; }
+bool shaped(std::string_view v, std::string_view pat) {
+  return v.size() == pat.size() && std::equal(v.begin(), v.end(), pat.begin(), [](char c, char p) { return slot(p) == -2 ? c == p : digit(c); });
 }
 
-// n 的段能否由 k 定
-bool resolved(Node n, const Key &k) {
-  switch (def(n).seg) {
-  case Seg::Lit:
-  case Seg::Mode:
+using Ymd3 = std::array<int, 3>; // [年, 月, 日]; 0 = 未定
+Ymd3 split(misc::Ymd d) { return {d / 10000, d / 100 % 100, d % 100}; }
+bool dated(const Ymd3 &v) { return v[0] >= 1900 && v[1] <= 12 && v[2] <= 31 && (v[2] == 0 || v[1] > 0); }
+
+// 段值由 k 定得出
+bool has(const SegDef &s, const Key &k) {
+  switch (s.form) {
+  case Form::Lit:
+  case Form::Flag:
     return true;
-  case Seg::Year:
-    return year_of(k.date) > 0;
-  case Seg::Month:
-    return month_of(k.date) > 0;
-  case Seg::Day:
-  case Seg::Ymd:
-  case Seg::Date:
-    return day_of(k.date) > 0;
-  case Seg::Ym:
-    return k.ym > 0 || day_of(k.date) > 0;
+  case Form::Date: {
+    const Ymd3 v = split(k.date);
+    return std::all_of(s.pat.begin(), s.pat.end(), [&](char p) { return slot(p) < 0 || v[slot(p)] > 0; });
+  }
   default:
-    return !field(k, def(n).seg).empty();
+    return !(k.*s.str).empty();
   }
 }
 
-std::string two(int v) {
-  char b[8];
-  std::snprintf(b, sizeof(b), "%02d", v);
-  return b;
+// 段值 → 写法
+std::string put(const SegDef &s, const Key &k) {
+  switch (s.form) {
+  case Form::Lit:
+    return {};
+  case Form::Flag:
+    return k.test ? "test" : "main";
+  case Form::Date: {
+    Ymd3 v = split(k.date);
+    std::string out(s.pat);
+    for (size_t i = out.size(); i-- > 0;)
+      if (const int a = slot(out[i]); a >= 0)
+        out[i] = static_cast<char>('0' + v[a] % 10), v[a] /= 10;
+    return out;
+  }
+  default:
+    return k.*s.str;
+  }
 }
 
-// n 在 k 下的名字 (段须已定且写法合法)
-std::string name_of(Node n, const Key &k) {
-  assert(resolved(n, k) && "路径段未定");
-  const Def &d = def(n);
-  std::string v;
-  switch (d.seg) {
-  case Seg::Lit:
+// 写法 → 段值, 记进 k
+bool take(const SegDef &s, std::string_view v, Key &k) {
+  switch (s.form) {
+  case Form::Lit:
+    return v.empty();
+  case Form::Flag:
+    if (v != "main" && v != "test")
+      return false;
+    k.test = v == "test";
+    return true;
+  case Form::Date: {
+    if (!shaped(v, s.pat))
+      return false;
+    Ymd3 got{}, had = split(k.date);
+    unsigned carried = 0;
+    for (size_t i = 0; i < v.size(); ++i)
+      if (const int a = slot(s.pat[i]); a >= 0)
+        got[a] = got[a] * 10 + (v[i] - '0'), carried |= 1u << a;
+    for (int a = 0; a < 3; ++a) {
+      if (!(carried >> a & 1))
+        continue;
+      if (got[a] == 0 || (had[a] && had[a] != got[a]))
+        return false;
+      had[a] = got[a];
+    }
+    if (!dated(had))
+      return false;
+    k.date = had[0] * 10000 + had[1] * 100 + had[2];
+    return true;
+  }
+  case Form::Shape:
+    if (!shaped(v, s.pat))
+      return false;
     break;
-  case Seg::Mode:
-    v = k.test ? "test" : "main";
+  case Form::Word:
+    if (!word(v))
+      return false;
     break;
-  case Seg::Year:
-    v = std::to_string(year_of(k.date));
-    break;
-  case Seg::Month:
-    v = two(month_of(k.date));
-    break;
-  case Seg::Day:
-    v = two(day_of(k.date));
-    break;
-  case Seg::Ymd:
-    v = misc::dense(k.date);
-    break;
-  case Seg::Date:
-    v = misc::dash(k.date);
-    break;
-  case Seg::Ym:
-    v = misc::dash_ym(k.ym ? k.ym : misc::ym_of(k.date));
-    break;
-  default:
-    v = field(k, d.seg);
+  case Form::Dotted:
+    if (!dotted(v))
+      return false;
     break;
   }
-  const std::string s = d.prefix + v + d.suffix;
-  [[maybe_unused]] Key probe = k;
-  assert(parse(n, s, probe) && "路径段写法不合布局");
-  return s;
+  k.*s.str = v;
+  return true;
 }
 
-void expand(const fs::path &at, const std::vector<Node> &c, size_t i, const Key &k, std::vector<Key> &out) {
-  if (i == c.size()) {
-    out.push_back(k);
+// ---- 值域 ----
+
+// <因子>_w<权重号>_top<N>_{log,snap}
+bool export_name(std::string_view s) {
+  const auto digits = [](std::string_view x) { return !x.empty() && std::all_of(x.begin(), x.end(), digit); };
+  for (const std::string_view tail : {"_log", "_snap"}) {
+    if (!s.ends_with(tail))
+      continue;
+    std::string_view r = s.substr(0, s.size() - tail.size());
+    const size_t top = r.rfind("_top"), w = top == std::string_view::npos ? top : r.rfind("_w", top);
+    return w != std::string_view::npos && digits(r.substr(top + 4)) && digits(r.substr(w + 2, top - w - 2)) && GUI::Engine::ValidFactorName(r.substr(0, w));
+  }
+  return false;
+}
+
+std::optional<TierId> tier_of(std::string_view name) {
+  for (const TierId t : TIER_IDS)
+    if (name == tier_name(t))
+      return t;
+  return std::nullopt;
+}
+
+fundamental::Shape table_shape(Node n) {
+  switch (n) {
+  case FundShard:
+    return fundamental::Shape::Month;
+  case FundDaily:
+    return fundamental::Shape::Daily;
+  default:
+    return fundamental::Shape::Meta;
+  }
+}
+
+// 段值在各模块的真相表里
+bool known(Node n, const Key &k) {
+  switch (def(n).seg) {
+  case Seg::Pool: {
+    const auto pools = feature_pools();
+    return std::any_of(pools.begin(), pools.end(), [&](const PoolDef &p) { return k.pool == p.name; });
+  }
+  case Seg::Tier:
+    return tier_of(k.tier).has_value();
+  case Seg::Lvl: {
+    const std::optional<TierId> t = tier_of(k.tier);
+    for (size_t l = 0; t && l < LEVEL_COUNT; ++l)
+      if (has_level(*t, l) && k.lvl == level_name(l))
+        return true;
+    return false;
+  }
+  case Seg::Level:
+    return std::any_of(GUI::Engine::kFactorLevels.begin(), GUI::Engine::kFactorLevels.end(), [&](const auto &l) { return k.level == l.name; });
+  case Seg::Hold: {
+    int h = 0;
+    return factor::stat::hold_parse(k.hold, h) && factor::stat::hold_token(h) == k.hold;
+  }
+  case Seg::Table:
+    return std::any_of(fundamental::SPECS.begin(), fundamental::SPECS.end(), [&](const fundamental::Spec &s) {
+      return s.name == k.name && (n == FundAuditSheet || s.shape == table_shape(n));
+    });
+  case Seg::Factor:
+  case Seg::Portfolio:
+    return GUI::Engine::ValidFactorName(k.name);
+  case Seg::Export:
+    return export_name(k.name);
+  case Seg::Tool: {
+    const auto tools = GUI::Agent::Tools();
+    return std::any_of(tools.begin(), tools.end(), [&](const GUI::Agent::ToolDef &t) { return k.name == t.name; });
+  }
+  case Seg::Note:
+    return std::any_of(std::begin(GUI::Agent::kNoteKinds), std::end(GUI::Agent::kNoteKinds), [&](const auto &d) { return k.name == d.id; });
+  case Seg::Prompt:
+    return std::any_of(std::begin(GUI::Agent::kMsgs), std::end(GUI::Agent::kMsgs), [&](const auto &d) { return k.name == d.id; });
+  default:
+    return true;
+  }
+}
+
+// ---- 盘 ----
+
+bool is(Node n, const fs::path &p) { return is_dir(n) ? fs::is_directory(p) : fs::is_regular_file(p); }
+bool is(Node n, const fs::directory_entry &e) { return is_dir(n) ? e.is_directory() : e.is_regular_file(); }
+
+// 盘上 n 的实例 (k 已定的段照用, 未定的逐级展开), 按路径序逐个交 f(键, 路径)
+using Visit = std::function<void(const Key &, const fs::path &)>;
+void each(Node n, const Key &k, const Visit &f) {
+  if (n == Root) {
+    f(k, root());
     return;
   }
-  const Node n = c[i];
-  const bool last = i + 1 == c.size();
-  const auto fits = [&](const fs::path &p) { return def(n).kind == Kind::File ? fs::is_regular_file(p) : fs::is_directory(p); };
-  if (resolved(n, k)) {
-    const fs::path p = at / name_of(n, k);
-    if (last ? fits(p) : fs::is_directory(p))
-      expand(p, c, i + 1, k, out);
-    return;
-  }
-  std::vector<fs::path> entries;
-  std::error_code ec; // 别的线程可能正把这层整个删掉: 读到哪算哪
-  for (fs::directory_iterator it(at, ec), end; !ec && it != end; it.increment(ec))
-    entries.push_back(it->path());
-  std::sort(entries.begin(), entries.end());
-  for (const fs::path &p : entries) {
-    Key kk = k;
-    if (fits(p) && parse(n, p.filename().string(), kk))
-      expand(p, c, i + 1, kk, out);
-  }
+  each(def(n).parent, k, [&](const Key &up, const fs::path &dir) {
+    if (has(seg(n), up)) {
+      if (const fs::path p = dir / name(n, up); is(n, p))
+        f(up, p);
+      return;
+    }
+    std::vector<fs::directory_entry> entries;
+    std::error_code ec; // 别的线程可能正把这层整个删掉: 读到哪算哪
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+      entries.push_back(*it);
+    std::sort(entries.begin(), entries.end());
+    for (const fs::directory_entry &e : entries)
+      if (Key kk = up; is(n, e) && parse(n, e.path().filename().string(), kk))
+        f(kk, e.path());
+  });
 }
 
 } // namespace
@@ -172,98 +277,30 @@ fs::path root() {
   return r;
 }
 
+std::string name(Node n, const Key &k) {
+  assert(has(seg(n), k) && "路径段未定");
+  const std::string s = def(n).prefix + put(seg(n), k) + def(n).suffix;
+  [[maybe_unused]] Key probe = k;
+  assert(parse(n, s, probe) && probe == k && "路径段不合布局 (写法 / 值域)");
+  return s;
+}
+
 bool parse(Node n, std::string_view name, Key &k) {
-  const Def &d = def(n);
-  const std::string_view pre = d.prefix, suf = d.suffix;
-  if (d.seg == Seg::Lit)
-    return name == pre;
-  if (name.size() <= pre.size() + suf.size() || !name.starts_with(pre) || !name.ends_with(suf))
+  const std::string_view pre = def(n).prefix, suf = def(n).suffix;
+  if (name.size() < pre.size() + suf.size() || !name.starts_with(pre) || !name.ends_with(suf))
     return false;
-  const std::string_view v = name.substr(pre.size(), name.size() - pre.size() - suf.size());
-  switch (d.seg) {
-  case Seg::Mode:
-    if (v != "main" && v != "test")
-      return false;
-    k.test = v == "test";
-    return true;
-  case Seg::Year:
-    if (!digits(v, 4) || num(v) < 1900)
-      return false;
-    k.date = num(v) * 10000;
-    return true;
-  case Seg::Month:
-    if (!digits(v, 2) || num(v) < 1 || num(v) > 12 || year_of(k.date) == 0)
-      return false;
-    k.date = year_of(k.date) * 10000 + num(v) * 100;
-    return true;
-  case Seg::Day:
-    if (!digits(v, 2) || num(v) < 1 || num(v) > 31 || month_of(k.date) == 0)
-      return false;
-    k.date = k.date / 100 * 100 + num(v);
-    return true;
-  case Seg::Ymd: {
-    if (!digits(v, 8))
-      return false;
-    const misc::Ymd x = num(v);
-    if (!valid_ymd(year_of(x), month_of(x), day_of(x)) || (year_of(k.date) && year_of(k.date) != year_of(x)) || (month_of(k.date) && month_of(k.date) != month_of(x)))
-      return false;
-    k.date = x;
-    return true;
-  }
-  case Seg::Date: {
-    if (v.size() != 10 || v[4] != '-' || v[7] != '-' || !digits(v.substr(0, 4), 4) || !digits(v.substr(5, 2), 2) || !digits(v.substr(8, 2), 2))
-      return false;
-    const misc::Ymd x = num(v.substr(0, 4)) * 10000 + num(v.substr(5, 2)) * 100 + num(v.substr(8, 2));
-    if (!valid_ymd(year_of(x), month_of(x), day_of(x)) || (k.ym && k.ym != misc::ym_of(x)))
-      return false;
-    k.date = x;
-    return true;
-  }
-  case Seg::Ym: {
-    if (v.size() != 7 || v[4] != '-' || !digits(v.substr(0, 4), 4) || !digits(v.substr(5, 2), 2))
-      return false;
-    const misc::Ym m = num(v.substr(0, 4)) * 100 + num(v.substr(5, 2));
-    if (m / 100 < 1900 || m % 100 < 1 || m % 100 > 12 || (day_of(k.date) && misc::ym_of(k.date) != m))
-      return false;
-    k.ym = m;
-    return true;
-  }
-  case Seg::Stamp:
-    if (v.size() != 15 || v[8] != '-' || !digits(v.substr(0, 8), 8) || !digits(v.substr(9, 6), 6))
-      return false;
-    k.stamp = v;
-    return true;
-  case Seg::Pool: // 池名 = all 或子池规范码 (点分各维, 见 features/Panel/PoolSpec.hpp)
-    for (size_t i = 0, j = 0; i <= v.size(); j = ++i) {
-      i = std::min(v.find('.', i), v.size());
-      if (!token(v.substr(j, i - j)))
-        return false;
-    }
-    k.pool = v;
-    return true;
-  default:
-    if (!token(v))
-      return false;
-    field(k, d.seg) = v;
-    return true;
-  }
+  Key kk = k;
+  if (!take(seg(n), name.substr(pre.size(), name.size() - pre.size() - suf.size()), kk) || !known(n, kk))
+    return false;
+  k = std::move(kk);
+  return true;
 }
 
-fs::path path(Node n, const Key &k) {
-  fs::path p = root();
-  for (const Node c : chain(n))
-    p /= name_of(c, k);
-  return p;
-}
-
-bool resolvable(Node n, const Key &k) {
-  const std::vector<Node> c = chain(n);
-  return std::all_of(c.begin(), c.end(), [&](Node x) { return resolved(x, k); });
-}
+fs::path path(Node n, const Key &k) { return n == Root ? root() : path(def(n).parent, k) / name(n, k); }
 
 std::vector<Key> list(Node n, const Key &k) {
   std::vector<Key> out;
-  expand(root(), chain(n), 0, k, out);
+  each(n, k, [&](const Key &kk, const fs::path &) { out.push_back(kk); });
   return out;
 }
 
@@ -275,10 +312,7 @@ std::string stamp_now() {
   return b;
 }
 
-bool exists(Node n, const Key &k) {
-  const fs::path p = path(n, k);
-  return def(n).kind == Kind::File ? fs::is_regular_file(p) : fs::is_directory(p);
-}
+bool exists(Node n, const Key &k) { return is(n, path(n, k)); }
 
 std::string read(Node n, const Key &k) {
   assert(def(n).kind == Kind::File);
@@ -338,7 +372,7 @@ void rename(Node n, const Key &from, const Key &to) {
 }
 
 fs::path ensure(Node n, const Key &k) {
-  assert(def(n).kind != Kind::File);
+  assert(is_dir(n));
   const fs::path p = path(n, k);
   fs::create_directories(p);
   return p;

@@ -60,7 +60,7 @@ fs::file_time_type local_at(Ymd d, int hour) {
 // name 的分片路径: ym > 0 → YYYY-MM/<name>.parquet; ym = 0 → _meta/<name>.parquet
 fs::path path(std::string_view name, Ym ym) {
   assert(ym >= 0);
-  return ym == 0 ? disk::path(disk::FundMetaShard, {.name = std::string(name)}) : disk::path(disk::FundShard, {.ym = ym, .name = std::string(name)});
+  return ym == 0 ? disk::path(disk::FundMetaShard, {.name = std::string(name)}) : disk::path(disk::FundShard, {.date = ym * 100, .name = std::string(name)});
 }
 
 // Daily 的日文件路径: YYYY-MM/<name>/YYYY-MM-DD.parquet
@@ -235,9 +235,9 @@ Catalog::Catalog() {
   for (const disk::Key &k : disk::list(disk::FundMetaShard))
     add(disk::FundMetaShard, k, 0, 0);
   for (const disk::Key &k : disk::list(disk::FundShard))
-    add(disk::FundShard, k, k.ym, 0);
+    add(disk::FundShard, k, misc::ym_of(k.date), 0);
   for (const disk::Key &k : disk::list(disk::FundDay))
-    add(disk::FundDay, k, k.ym, k.date);
+    add(disk::FundDay, k, misc::ym_of(k.date), k.date);
   for (auto &[name, v] : by_name_)
     std::sort(v.begin(), v.end(), [](const Shard &a, const Shard &b) { return std::pair(a.ym, a.day) < std::pair(b.ym, b.day); });
 }
