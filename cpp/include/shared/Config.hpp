@@ -12,15 +12,8 @@ struct Config {
   // 回测日历起点 (config.json 里存 "YYYY-MM-DD"); 末日由数据定 (Asset::Backtest = 末个 L2 日, Lob 库 = 末个已编码日)
   misc::Ymd start_date = 20250101;
 
-  // Paths
+  // L2 原始归档 (仓库外, 本机路径); 仓库内 output/ 与 config/ 的路径一律出自 disk/Disk.hpp
   std::string archive_dir = "/mnt/dev/sde/A_stock/L2";
-  std::string orders_dir = "../../../../output/orders";
-  std::string feature_dir = "../../../../output/features";
-  std::string factor_dir = "../../../../output/factors";
-  std::string portfolio_dir = "../../../../output/portfolio";
-  std::string export_dir = "../../../../output/export";
-  std::string log_dir = "../../../../output/log";
-  std::string config_dir = "../../../../config";
 
   // L2 Raw Data
   std::string csv_market_data = "行情.csv";
@@ -44,19 +37,12 @@ struct Config {
   //   原值进均值把期限结构净线整体砸穿 (过罚); 封顶后那些格最多扣这么多, 可执行性另议. 卖出侧不封. 默认 1%
   double max_impact = 0.01;
 
-  // Config file path
-  std::string filepath = "../../../../config/config.json";
+  // Config file path (config/local/config.json)
+  std::string filepath;
 
   // String buffers for GUI (max 512 chars for path)
   char start_date_buf[64] = "";
   char archive_dir_buf[512] = "";
-  char orders_dir_buf[512] = "";
-  char feature_dir_buf[512] = "";
-  char factor_dir_buf[512] = "";
-  char portfolio_dir_buf[512] = "";
-  char export_dir_buf[512] = "";
-  char log_dir_buf[512] = "";
-  char config_dir_buf[512] = "";
   char csv_market_data_buf[128] = "";
   char csv_market_trade_buf[128] = "";
   char csv_market_order_buf[128] = "";

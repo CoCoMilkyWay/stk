@@ -33,7 +33,6 @@
 #include "gui/engine/Table.hpp"       // FeatureTable / EvalStat / RowState
 
 #include <cstdint>
-#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -95,7 +94,7 @@ factor::search::Score RowScore(const FactorRow &r, int hold);
 
 // 一个因子文件 → 行 (每权重一行; 文件级问题一行 widx −1) 追加进 out; 解析 / 校验失败 → error (文件不动). 跨行查重 (dup_of) 不在这里.
 // RunService::scan 逐文件调; Portfolio 按 (文件, 具体规范串) 找回条目的权重也走它
-void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std::vector<FactorRow> &out);
+void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTable &ft, std::vector<FactorRow> &out);
 
 // 英文名 = 文件名主干: 非空, ≤64, 仅 [A-Za-z0-9_]
 bool ValidFactorName(std::string_view name);
@@ -103,17 +102,17 @@ bool ValidFactorName(std::string_view name);
 bool ValidFactorNameCn(std::string_view name);
 
 // 新因子文件: 两个名字合法 (调用方保证, 断言) 且模板合法 (parse 过 + root_frame 过) →
-// <factor_dir>/<name>.json = {"type": "alpha", "name_cn": …, "expr": canon, "note"?}.
+// <因子目录>/<name>.json = {"type": "alpha", "name_cn": …, "expr": canon, "note"?}.
 // 返回文件名; 表达式不合法 / 同名已存在 → 空串 + err. GUI 线程调 (随后 Request(evaluate=false) 重扫)
-std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view name, std::string_view name_cn,
+std::string AddFactorFile(const FactorDir &dir, const FeatureTable &feats, std::string_view name, std::string_view name_cn,
                           std::string_view expr_src, std::string_view note, std::string &err);
 
 // 编辑已有文件 (file = 表格里的文件名, 含 .json): expr 换成 canon (模板规范串变了 → 丢 weights: 都是旧模板的实例), name_cn / note 覆盖
 // (note 空 = 删键), 其他键保留 (BROKEN 非对象文件从空重建); new_name ≠ 主干 → 改名. 返回新文件名; 表达式不合法 / 改名目标已存在 → "" + err.
 // 删除: 直接删文件. 两者只在服务空闲时调 (evaluate 会写回文件)
-std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view file, std::string_view new_name,
+std::string UpdateFactorFile(const FactorDir &dir, const FeatureTable &feats, std::string_view file, std::string_view new_name,
                              std::string_view name_cn, std::string_view expr_src, std::string_view note, std::string &err);
-void DeleteFactorFile(const std::string &factor_dir, std::string_view file);
+void DeleteFactorFile(const FactorDir &dir, std::string_view file);
 
 // 参数搜索落盘 (SearchService worker 调, 服务空闲时): weights 里持有期 = mk.hold 的项换成 ws (每项 {hold, sign, expr}, 无 stat; 可空 = 清掉该 h),
 // search 里该 h 的项换成 mk; 不可搜档 (search_hold 假) 的项一并丢掉, 别的项原样留; fresh → 原有 weights / search 全丢, 只剩本趟的;
@@ -124,11 +123,11 @@ struct SearchWeight {
   int sign = 1;     // ±1
   std::string expr; // 具体规范串 (模板实例, 不含 sign)
 };
-void WriteFactorSearch(const std::string &factor_dir, std::string_view file, bool fresh, const SearchMark &mk, const std::vector<SearchWeight> &ws);
+void WriteFactorSearch(const FactorDir &dir, std::string_view file, bool fresh, const SearchMark &mk, const std::vector<SearchWeight> &ws);
 
 // Run 回写 (一个文件一次): rs = 该文件本轮评完的权重行 (同一 run 口径), 只动 stats[widx] + 顶层 run / 表头, 其他键 (expr / note / 人加的任何东西)
 // 原样保留. stats 与 weights 同长同序 (没评的位置 null); run / 表头与已有的不同 (换了区间 / 池 / 后端…) → 别的权重的 stat 不再对应 run,
 // 一并清成 null (下次 Run 重算). 手填权重 (文件无 weights, hold_src = 0) 首次回写时补出 weights = [{hold 0, expr}]
-void WriteFactorStats(const std::filesystem::path &path, const std::vector<const FactorRow *> &rs);
+void WriteFactorStats(const FactorDir &dir, const std::vector<const FactorRow *> &rs); // rs 同一文件
 
 } // namespace GUI::Engine

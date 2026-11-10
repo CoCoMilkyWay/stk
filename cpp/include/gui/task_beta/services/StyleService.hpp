@@ -17,8 +17,6 @@
 #include <string>
 #include <vector>
 
-struct Config;
-
 namespace GUI::Beta {
 
 struct StyleRequest {
@@ -57,7 +55,7 @@ class StyleService : public Service<StyleService, StyleRequest>, public Publishe
 
 public:
   static constexpr const char *kName = "StyleWorker";
-  explicit StyleService(const Config &cfg) : cfg_(cfg) { Start(); }
+  StyleService() { Start(); }
   ~StyleService() { Stop(); }
 
   std::shared_ptr<const StyleResult> result; // UI 持 mutex 读; 空 = 未算
@@ -77,7 +75,6 @@ private:
     std::shared_ptr<const pool::Ranks> rk;
   };
 
-  const Config &cfg_;
   misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
   pool::Tape tape_;                                               // 空 (A = 0) = 未装 / 装到一半被取消
   std::vector<Key> keys_;                                         // 新 → 旧 (随 tape_ 换代清空)

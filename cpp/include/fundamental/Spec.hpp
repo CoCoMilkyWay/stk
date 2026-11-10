@@ -42,9 +42,9 @@ inline constexpr int kLookbackDays = 7;
 inline constexpr int kDedupSeconds = 60 * 60;
 
 // 落盘形态
-//   Month: output/fundamental/YYYY-MM/<name>.parquet, 行按 vd 归月 (0 行月也落文件 = 拉过)
-//   Meta : output/fundamental/_meta/<name>.parquet 单文件整刷
-//   Daily: output/fundamental/YYYY-MM/<name>/YYYY-MM-DD.parquet, 一交易日一文件 (vd 为分钟时间戳, 单日即大表)
+//   Month: output/data/fundamental/YYYY-MM/<name>.parquet, 行按 vd 归月 (0 行月也落文件 = 拉过)
+//   Meta : output/data/fundamental/_meta/<name>.parquet 单文件整刷
+//   Daily: output/data/fundamental/YYYY-MM/<name>/YYYY-MM-DD.parquet, 一交易日一文件 (vd 为分钟时间戳, 单日即大表)
 enum class Shape { Month,
                    Meta,
                    Daily };

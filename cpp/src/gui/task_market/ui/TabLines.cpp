@@ -1,5 +1,6 @@
 // Market 行情页 Lines: 头 / 布局 / 三级缓存 — 见头文件; 主图 / 区间条 = LinesPlot.cpp, 右图例 = LinesSheet.cpp
 #include "gui/task_market/ui/TabLines.hpp"
+#include "disk/Disk.hpp"
 
 #include "gui/Tasks.hpp" // StatusColor
 #include "gui/task_market/ui/LinesCommon.hpp"
@@ -10,10 +11,9 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -139,12 +139,10 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesUISta
 
 } // namespace
 
-std::vector<std::string> LoadWatch(const std::string &path) {
-  if (!std::filesystem::exists(path))
+std::vector<std::string> LoadWatch() {
+  if (!disk::exists(disk::WatchFile))
     return {};
-  std::ifstream f(path);
-  assert(f.is_open() && "自选文件打不开");
-  const json j = json::parse(f, nullptr, /*allow_exceptions=*/false);
+  const json j = json::parse(disk::read(disk::WatchFile), nullptr, /*allow_exceptions=*/false);
   assert(!j.is_discarded() && j.is_object() && j.contains("watch") && j["watch"].is_array() && "自选文件: 顶层须是 {watch: [...]}");
   std::vector<std::string> w;
   for (const json &o : j["watch"]) {
@@ -155,28 +153,22 @@ std::vector<std::string> LoadWatch(const std::string &path) {
 }
 
 // 一条目一行 (人能直接读 / diff)
-void SaveWatch(const std::string &path, const std::vector<std::string> &watch) {
-  const std::filesystem::path p(path);
-  std::filesystem::create_directories(p.parent_path());
-  const std::filesystem::path tmp = p.string() + ".tmp";
+void SaveWatch(const std::vector<std::string> &watch) {
+  std::ostringstream f;
   {
-    std::ofstream f(tmp);
-    assert(f.is_open() && "自选文件: 临时文件打不开");
     f << "{\n  \"watch\": [";
     for (size_t i = 0; i < watch.size(); ++i)
       f << (i ? ",\n    " : "\n    ") << json(watch[i]).dump();
     f << (watch.empty() ? "]\n}\n" : "\n  ]\n}\n");
-    assert(f.good() && "自选文件: 写入失败");
   }
-  std::filesystem::rename(tmp, p);
+  disk::write(disk::WatchFile, {}, f.str());
 }
 
-void SyncLinesWatch(LinesUIState &ui, const std::string &config_dir) {
-  const std::string path = (std::filesystem::path(config_dir) / "watch.json").string();
-  if (ui.watch_path == path)
+void SyncLinesWatch(LinesUIState &ui) {
+  if (ui.watch_loaded)
     return;
-  ui.watch_path = path;
-  ui.watch = LoadWatch(path);
+  ui.watch_loaded = true;
+  ui.watch = LoadWatch();
 }
 
 int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const PortfolioUIState &pf, LinesUIState &ui, double fixed_impact,

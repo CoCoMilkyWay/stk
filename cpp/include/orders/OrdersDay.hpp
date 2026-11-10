@@ -33,7 +33,7 @@
 //
 // 两端互逆:
 //
-//   DayWriter(dir, date)                                   DayReader(dir, date)
+//   DayWriter(date)                                        DayReader(date)
 //   DayWriter::put(asset_id, FrameEncoder, View) → Ref     DayReader::get(Ref, FrameDecoder) → View     一帧
 //   DayWriter::adopt(DayReader, refs)                      DayReader::read_runs(refs, fn)               整段
 //   DayWriter::commit(DayIndex)                            DayReader::index() → DayIndex                账目 + 目录
@@ -49,8 +49,8 @@
 
 // 一天的源与产物, 路径成对:
 //   archive/YYYY/YYYYMM/YYYYMMDD.rar   一天的源 (编码读)
-//   orders/YYYY/MM/YYYYMMDD.bin        一天的产物 (编码写, 特征读)
-// orders_days 是 orders_day_path 的逆: 目录下全部日文件 (升序), 编码中的 .tmp 与
+//   output/data/orders/YYYY/MM/YYYYMMDD.bin   一天的产物 (编码写, 特征读; disk::OrdersDay)
+// orders_days 是 orders_day_path 的逆: 盘上全部日文件 (升序), 编码中的 .tmp 与
 // 放错位置的文件不认.
 //   misc/archive.cpp 的列表 / 流式解压命令行硬编码 unrar 语法 ("vt" 技术列表 /
 //   "p -inul" 抽取到 stdout), 解压工具与归档格式绑死, 不可切换.
@@ -58,8 +58,8 @@ inline constexpr const char *kArchiveExtension = ".rar";
 inline constexpr const char *kArchiveTool = "unrar";
 inline constexpr const char *kOrdersExtension = ".bin";
 std::string archive_day_path(const std::string &dir, misc::Ymd date);
-std::string orders_day_path(const std::string &dir, misc::Ymd date);
-std::vector<misc::Ymd> orders_days(const std::string &dir);
+std::string orders_day_path(misc::Ymd date);
+std::vector<misc::Ymd> orders_days();
 
 // 代码变更 (同一家公司换了证券代码): 归档目录名用当时的代码, 资产轴用现行代码.
 // A 股换代码极罕见 —— 重大资产重组通常也不换 —— 全库实测只有中航电测一例 (300114.SZ → 302132.SZ)
@@ -193,7 +193,7 @@ struct DayIndex {
 // 一个 reader 一个 fd, 多线程各持一个并发 pread, 无锁.
 class DayReader {
 public:
-  DayReader(const std::string &dir, misc::Ymd date);
+  explicit DayReader(misc::Ymd date);
   ~DayReader();
 
   DayReader(const DayReader &) = delete;
@@ -241,7 +241,7 @@ private:
 // 最终路径上的旧文件原样不动.
 class DayWriter {
 public:
-  DayWriter(const std::string &dir, misc::Ymd date);
+  explicit DayWriter(misc::Ymd date);
   ~DayWriter();
 
   DayWriter(const DayWriter &) = delete;
@@ -293,7 +293,7 @@ struct OrdersCatalog {
   OrdersCatalog(std::vector<misc::Ymd> days, size_t width);
 
   // 读第 didx 天的日文件账目 + 目录, 灌进那一行. 行与行不相交, 不同 didx 可并发.
-  void fill_day(size_t didx, const std::string &dir);
+  void fill_day(size_t didx);
 
   // 不存在返回 kNoDay (row / at 对它自然给空)
   size_t day_idx(misc::Ymd date) const;

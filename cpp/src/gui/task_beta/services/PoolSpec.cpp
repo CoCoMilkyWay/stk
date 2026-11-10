@@ -1,4 +1,5 @@
 #include "gui/task_beta/services/PoolSpec.hpp"
+#include "disk/Disk.hpp"
 
 #include "nlohmann/json.hpp"
 
@@ -6,10 +7,9 @@
 #include <bit>
 #include <cassert>
 #include <charconv>
-#include <filesystem>
-#include <fstream>
 #include <iterator>
 #include <set>
+#include <sstream>
 
 namespace pool {
 
@@ -137,12 +137,10 @@ std::vector<Spec> default_pools() {
   return v;
 }
 
-std::vector<Spec> load_pools(const std::string &path) {
-  if (!std::filesystem::exists(path))
+std::vector<Spec> load_pools() {
+  if (!disk::exists(disk::PoolsFile))
     return default_pools();
-  std::ifstream f(path);
-  assert(f.is_open() && "池表文件打不开");
-  const json j = json::parse(f, nullptr, /*allow_exceptions=*/false);
+  const json j = json::parse(disk::read(disk::PoolsFile), nullptr, /*allow_exceptions=*/false);
   assert(!j.is_discarded() && j.is_object() && j.contains("pools") && j["pools"].is_array() && "池表文件: 顶层须是 {pools: [...]}");
   std::vector<Spec> v;
   std::set<Spec> seen;
@@ -156,20 +154,15 @@ std::vector<Spec> load_pools(const std::string &path) {
 }
 
 // 一池一行 (人能直接读 / diff)
-void save_pools(const std::string &path, const std::vector<Spec> &pools) {
-  const std::filesystem::path p(path);
-  std::filesystem::create_directories(p.parent_path());
-  const std::filesystem::path tmp = p.string() + ".tmp";
+void save_pools(const std::vector<Spec> &pools) {
+  std::ostringstream f;
   {
-    std::ofstream f(tmp);
-    assert(f.is_open() && "池表文件: 临时文件打不开");
     f << "{\n  \"pools\": [";
     for (size_t i = 0; i < pools.size(); ++i)
       f << (i ? ",\n    " : "\n    ") << json(code(pools[i])).dump();
     f << (pools.empty() ? "]\n}\n" : "\n  ]\n}\n");
-    assert(f.good() && "池表文件: 写入失败");
   }
-  std::filesystem::rename(tmp, p);
+  disk::write(disk::PoolsFile, {}, f.str());
 }
 
 std::vector<Spec> specs_of(Style st, const Grid &g) {

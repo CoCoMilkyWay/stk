@@ -9,7 +9,7 @@
 //           特征 / 算子 (本层全部叶 / 全部算子, 逐行勾开放给 agent 的: 默认全开, 全选 / 全清只动过滤出的行; 会话中只读) / 工具 (发给 agent 的同一份表);
 //           这几页不必开会话: 数据取 Lab (会话中候选随评估实时更新; 无在跑会话时随作用域重绑) 与 Desk::notes
 //   Config  LLM 后端 / 直连或代理 / 模型 (嗅探), 评估后端, 入库门槛, 提示词模板 (查看 / 编辑 / 保存)
-//   选项 (作用域 + Config) 改了即写 kUiFile, 首次 Draw 读回; 与项目只经 gui/task_agent/Bridge.hpp; 配置 gui/task_agent/Config.hpp
+//   选项 (作用域 + Config) 改了即写 config/local/agent/ui.json, 首次 Draw 读回; 与项目只经 gui/task_agent/Bridge.hpp; 配置 gui/task_agent/Config.hpp
 // =============================================================================
 
 namespace GUI {

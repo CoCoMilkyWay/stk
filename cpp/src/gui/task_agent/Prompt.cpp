@@ -1,4 +1,5 @@
 #include "gui/task_agent/Prompt.hpp"
+#include "disk/Disk.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
 
@@ -7,9 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
+#include <sstream>
 #include <unordered_map>
 #include <utility>
 
@@ -23,8 +22,6 @@ using KV = std::vector<std::pair<std::string_view, std::string>>;
 
 constexpr size_t kTitleChars = 40; // 结果标题里每个参数值至多几字 (全文在 agent 自己的回复里)
 constexpr size_t kSurfBins = 6;    // 参数曲面: 每个参数至多分几段
-
-std::filesystem::path path_of(Msg m) { return std::filesystem::path(kPromptDir) / (std::string(def(m).id) + ".md"); }
 
 // {{键}} → 值; 模板里的键都须在 kv 里
 Message fill(Msg m, const KV &kv) {
@@ -170,8 +167,7 @@ struct Family {
 
 // 族卡文件: "# <族> <族名>" 起一节, 卡文到下一节
 std::vector<Family> families() {
-  std::ifstream f(kFamilyFile, std::ios::binary);
-  assert(f.is_open() && "族卡文件不在 kFamilyFile");
+  std::istringstream f(disk::read(disk::FamilyFile));
   std::vector<Family> out;
   for (std::string line; std::getline(f, line);) {
     if (line.starts_with("# ")) {
@@ -201,7 +197,7 @@ std::string leaves_text(const std::vector<Leaf> &leaves) {
   for (const std::string &k : order) {
     const auto f = std::find_if(fams.begin(), fams.end(), [&](const Family &x) { return x.key == k; });
     if (f == fams.end())
-      std::fprintf(stderr, "[agent] %s: 族 %s 没有卡\n", kFamilyFile, k.c_str());
+      std::fprintf(stderr, "[agent] %s: 族 %s 没有卡\n", disk::path(disk::FamilyFile).c_str(), k.c_str());
     assert(f != fams.end() && "特征族缺卡");
     std::vector<std::pair<std::string, std::vector<const Leaf *>>> groups;
     int n = 0;
@@ -298,17 +294,9 @@ std::string results_of(const std::vector<Act> &acts, int round) {
 
 } // namespace
 
-std::string LoadPrompt(Msg m) {
-  std::ifstream f(path_of(m), std::ios::binary);
-  assert(f.is_open() && "提示词模板不在 kPromptDir");
-  return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-}
+std::string LoadPrompt(Msg m) { return disk::read(disk::PromptFile, {.name = def(m).id}); }
 
-void SavePrompt(Msg m, const std::string &text) {
-  std::ofstream f(path_of(m), std::ios::binary | std::ios::trunc);
-  assert(f.is_open());
-  f << text;
-}
+void SavePrompt(Msg m, const std::string &text) { disk::write(disk::PromptFile, {.name = def(m).id}, text); }
 
 // ---- 结局文本 ----
 std::string Text(const Stat &s) {

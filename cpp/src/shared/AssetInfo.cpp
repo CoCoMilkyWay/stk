@@ -1,4 +1,4 @@
-// AssetInfo 构建 - output/fundamental/ parquet → AssetInfo (Sync 每轮同步之后调)
+// AssetInfo 构建 - output/data/fundamental/ parquet → AssetInfo (Sync 每轮同步之后调)
 //
 // 构建: 扫描 (并行, 表主序) → 落地 (串行, 产物主序)
 //   扫描: 一张源表 = 一个 Part, 全部登记进同一个 fundamental::Scan. id 空间 = A 轴 (+ 档案新见代码), 开扫前钉死,

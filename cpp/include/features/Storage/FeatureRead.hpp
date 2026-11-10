@@ -3,17 +3,13 @@
 #include "FeatureDay.hpp" // 稳定层: level_info / 日文件格式 (不依赖字段表, 增删特征不重编读端)
 #include "features/Storage/FeatureLib.hpp"
 #include "misc/profiler.hpp"
-#include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <cctype>
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <set>
-#include <string>
 #include <vector>
 
 // ============================================================================
@@ -23,7 +19,7 @@
 // A / axis_hash = 池 A 轴大小 / 指纹 (PoolAxis, 来自库清单, 见 FeatureLib.hpp):
 //   读端构造时带期望池轴 (A + hash), 逐文件精确比对, 不做兼容展宽.
 // 头不符分两类:
-//   格式版本 / 字段表指纹 = 旧库, 已无法解释 → 就地判废: 删掉整个 base_dir_ + 置 stale() + 拉起构建的取消旗
+//   格式版本 / 字段表指纹 = 旧库, 已无法解释 → 就地判废: 删掉整个库目录 + 置 stale() + 拉起构建的取消旗
 //     (构造时可传), 在跑的构建在既有取消检查点收工, 等用户点 compute 重算. 不断言: 改字段表是常规操作, 不该闪退.
 //   池轴 A / 指纹 = 本 reader 持的清单过期 (池已按新清单重算, 文件与新清单一致) → 只置 stale 空转, 不删库;
 //     请求方重读清单 (新请求 / 重建服务) 即自愈.
@@ -39,10 +35,10 @@ private:
     if (stale_.exchange(true, std::memory_order_relaxed))
       return;
     // 不用 Logger: 它未 init 时 std::exit(1), 而这里正是"进 Features 页" (compute 还没跑过) 的路径
-    std::cout << "[features] " << why << (wipe ? " → 删除特征库待重算: " : " → 本次读取作废: ") << base_dir_ << std::endl;
+    std::cout << "[features] " << why << (wipe ? " → 删除特征库待重算: " : " → 本次读取作废: ") << lib_dir(lib_) << std::endl;
     if (wipe) {
-      wipe_dir(base_dir_);
-      set_dir_stale(base_dir_, true);
+      disk::remove(disk::Lib, lib_key(lib_)); // 可能与 ComputeService 清库 / 别的 reader 判废并发
+      set_lib_stale(lib_, true);
     }
     if (abort_)
       abort_->store(true, std::memory_order_relaxed); // 复用取消信号: 构建循环的既有检查点即刻收工
@@ -52,40 +48,24 @@ public:
   // lib = 特征库 (档 / 期望 A 轴 / 目录, 与写端同一清单; 须已建库)
   // abort = 可选, 构建的取消旗 (StreamService::cancel_): 库判废时一并拉起, 在跑的构建就地收工
   explicit FeatureRead(const FeatureLib &lib, std::atomic<bool> *abort = nullptr)
-      : tier_(lib.tier()), base_dir_(lib.dir), axis_A_(lib.axis.size()), axis_hash_(lib.axis.hash), abort_(abort) {
+      : lib_(lib.id), tier_(lib.tier()), axis_A_(lib.axis.size()), axis_hash_(lib.axis.hash), abort_(abort) {
     assert(axis_A_ > 0 && "期望池轴为空 (库未建: 先 lib.ready())");
   }
 
-  // 删库. 多个 reader (各 service 每请求各一份, stale_ 不互通) 与 ComputeService 清库可能
-  // 同时删同一目录, 并发 remove_all 会撞上对方刚删掉的文件而抛异常. 先原子 rename 到唯一
-  // 墓碑名 (只有一方抢得到), 再删墓碑; rename 时目录已不在 = 别人删了.
-  static void wipe_dir(const std::string &dir) {
-    static std::atomic<std::uint64_t> seq{0};
-    const auto ns = std::chrono::system_clock::now().time_since_epoch().count();
-    const std::string trash = dir + ".trash." + std::to_string(ns) + "." + std::to_string(seq.fetch_add(1));
-    std::error_code ec;
-    std::filesystem::rename(dir, trash, ec);
-    if (ec) {
-      assert(ec == std::errc::no_such_file_or_directory && "删库 rename 失败");
-      return;
-    }
-    std::filesystem::remove_all(trash);
-  }
-
-  // 进程级判废登记 (按库目录): reader 头不符删库时登记, ComputeService 开始重算时撤销;
+  // 进程级判废登记 (按库): reader 头不符删库时登记, ComputeService 开始重算时撤销;
   // GUI 左栏 Compute 行据此提示 stale. reader 各自的 stale_ 随请求生灭, 不能给 UI 用.
-  static void set_dir_stale(const std::string &dir, bool stale) {
+  static void set_lib_stale(LibId lib, bool stale) {
     auto &r = stale_registry();
     std::lock_guard<std::mutex> lock(r.mutex);
     if (stale)
-      r.dirs.insert(dir);
+      r.libs.insert(lib);
     else
-      r.dirs.erase(dir);
+      r.libs.erase(lib);
   }
-  static bool dir_stale(const std::string &dir) {
+  static bool lib_stale(LibId lib) {
     auto &r = stale_registry();
     std::lock_guard<std::mutex> lock(r.mutex);
-    return r.dirs.count(dir) != 0;
+    return r.libs.count(lib) != 0;
   }
 
   // 字段表指纹不符 → 旧库已删, 本次构建产出无效 (调用方重算)
@@ -141,10 +121,10 @@ public:
     out.fields = feature_indices;
     if (stale_.load(std::memory_order_relaxed))
       return;
-    const FeatureDay::Status st = FeatureDay::read(feature_file(feature_day_dir(base_dir_, date), out.level), level_info(tier_, out.level),
+    const FeatureDay::Status st = FeatureDay::read(lib_day_file(lib_, date, out.level), level_info(tier_, out.level),
                                                    out.fields.data(), out.fields.size(), out.data.data(), out.A, axis_hash_, out.scratch);
     // 文件缺失 = 库被外部清除: 另一 reader 判废删库, 或 ComputeService 重算
-    // 前显式清库 (与读端并发; store 随即重建目录, 故 base_dir_ 是否存在不可
+    // 前显式清库 (与读端并发; store 随即重建目录, 故库目录是否存在不可
     // 作判据). 落盘侧 .tmp+rename 原子发布 + 末层 commit 标记 (has_date) 保证
     // 正常池不会"目录在文件缺" → 一律判废空转收工, 重扫/重算后 revive. 池轴不符 = 清单过期, 同样不删库.
     if (st == FeatureDay::Status::Missing || st == FeatureDay::Status::AxisSize || st == FeatureDay::Status::AxisHash)
@@ -158,45 +138,24 @@ public:
   // ========================================================================
 
   // 该日是否有特征文件 (以档内最后一层的日文件为准: IO worker 按层序落盘, 它在则全在)
-  static bool has_date(TierId tier, const std::string &base_dir, misc::Ymd date) {
+  static bool has_date(LibId lib, misc::Ymd date) {
     assert(date > 0);
-    return std::filesystem::exists(feature_file(feature_day_dir(base_dir, date), last_level(tier)));
+    return std::filesystem::exists(lib_day_file(lib, date, last_level(lib_tier(lib))));
   }
-  bool has_date(misc::Ymd date) const { return has_date(tier_, base_dir_, date); }
+  bool has_date(misc::Ymd date) const { return has_date(lib_, date); }
   TierId tier() const { return tier_; }
-
-  // 月 m 内已齐备落盘的日, 升序
-  std::vector<misc::Ymd> list_dates(misc::Ym m) const {
-    std::vector<misc::Ymd> dates;
-    const std::string dir = base_dir_ + "/" + misc::slash(misc::first_day(m)).substr(0, 7);
-
-    // 目录不在 / 遍历前被并发删库 (wipe_dir) → ec 置位, 迭代器即 end
-    std::error_code ec;
-    for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
-      if (entry.is_directory()) {
-        const std::string day = entry.path().filename().string();
-        const int dd = day.size() == 2 && std::isdigit(day[0]) && std::isdigit(day[1]) ? std::stoi(day) : 0;
-        const misc::Ymd date = dd ? m * 100 + dd : 0;
-        if (date && has_date(date))
-          dates.push_back(date);
-      }
-    }
-
-    std::sort(dates.begin(), dates.end());
-    return dates;
-  }
 
   struct StaleRegistry {
     std::mutex mutex;
-    std::set<std::string> dirs;
+    std::set<LibId> libs;
   };
   static StaleRegistry &stale_registry() {
     static StaleRegistry r;
     return r;
   }
 
+  LibId lib_;
   TierId tier_;
-  std::string base_dir_;
   size_t axis_A_;
   std::uint64_t axis_hash_;
   std::atomic<bool> *abort_ = nullptr;     // 可选取消旗 (不持有)

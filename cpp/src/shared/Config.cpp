@@ -1,12 +1,13 @@
 #include "shared/Config.hpp"
+#include "disk/Disk.hpp"
 #include "nlohmann/json.hpp"
 #include <cassert>
-#include <fstream>
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
 void Config::Initialize() {
+  filepath = disk::path(disk::SettingsFile).string();
   // Try to load existing file
   if (fs::exists(filepath)) {
     if (LoadFromFile()) {
@@ -39,13 +40,6 @@ void Config::MarkDirty() {
 void Config::SyncStringBuffers() {
   snprintf(start_date_buf, sizeof(start_date_buf), "%s", misc::dash(start_date).c_str());
   snprintf(archive_dir_buf, sizeof(archive_dir_buf), "%s", archive_dir.c_str());
-  snprintf(orders_dir_buf, sizeof(orders_dir_buf), "%s", orders_dir.c_str());
-  snprintf(feature_dir_buf, sizeof(feature_dir_buf), "%s", feature_dir.c_str());
-  snprintf(factor_dir_buf, sizeof(factor_dir_buf), "%s", factor_dir.c_str());
-  snprintf(portfolio_dir_buf, sizeof(portfolio_dir_buf), "%s", portfolio_dir.c_str());
-  snprintf(export_dir_buf, sizeof(export_dir_buf), "%s", export_dir.c_str());
-  snprintf(log_dir_buf, sizeof(log_dir_buf), "%s", log_dir.c_str());
-  snprintf(config_dir_buf, sizeof(config_dir_buf), "%s", config_dir.c_str());
   snprintf(csv_market_data_buf, sizeof(csv_market_data_buf), "%s", csv_market_data.c_str());
   snprintf(csv_market_trade_buf, sizeof(csv_market_trade_buf), "%s", csv_market_trade.c_str());
   snprintf(csv_market_order_buf, sizeof(csv_market_order_buf), "%s", csv_market_order.c_str());
@@ -82,25 +76,16 @@ void Config::AutoSync() {
 }
 
 bool Config::LoadFromFile() {
-  std::ifstream file(filepath);
-  if (!file.is_open()) {
+  if (!disk::exists(disk::SettingsFile)) {
     return false;
   }
 
-  json j;
-  file >> j;
+  const json j = json::parse(disk::read(disk::SettingsFile));
 
   // Parse JSON to Config with default values as fallback
   start_date = misc::parse_ymd(j.value("start_date", misc::dash(start_date)));
   assert(start_date && "config.json: start_date 须为 YYYY-MM-DD");
   archive_dir = j.value("archive_dir", archive_dir);
-  orders_dir = j.value("orders_dir", orders_dir);
-  feature_dir = j.value("feature_dir", feature_dir);
-  factor_dir = j.value("factor_dir", factor_dir);
-  portfolio_dir = j.value("portfolio_dir", portfolio_dir);
-  export_dir = j.value("export_dir", export_dir);
-  log_dir = j.value("log_dir", log_dir);
-  config_dir = j.value("config_dir", config_dir);
   csv_market_data = j.value("csv_market_data", csv_market_data);
   csv_market_trade = j.value("csv_market_trade", csv_market_trade);
   csv_market_order = j.value("csv_market_order", csv_market_order);
@@ -136,13 +121,6 @@ bool Config::SaveToFile() {
   // Convert Config to JSON
   j["start_date"] = misc::dash(start_date);
   j["archive_dir"] = archive_dir;
-  j["orders_dir"] = orders_dir;
-  j["feature_dir"] = feature_dir;
-  j["factor_dir"] = factor_dir;
-  j["portfolio_dir"] = portfolio_dir;
-  j["export_dir"] = export_dir;
-  j["log_dir"] = log_dir;
-  j["config_dir"] = config_dir;
   j["csv_market_data"] = csv_market_data;
   j["csv_market_trade"] = csv_market_trade;
   j["csv_market_order"] = csv_market_order;
@@ -152,15 +130,7 @@ bool Config::SaveToFile() {
   j["stamp"] = stamp;
   j["fixed_impact"] = fixed_impact;
   j["max_impact"] = max_impact;
-  std::ofstream file(filepath);
-  if (!file.is_open()) {
-    if (log_callback) {
-      log_callback("Failed to save config file: " + filepath);
-    }
-    return false;
-  }
-
-  file << j.dump(2); // Pretty print with 2 spaces indent
+  disk::write(disk::SettingsFile, {}, j.dump(2)); // Pretty print with 2 spaces indent
   if (log_callback) {
     log_callback("Config auto-saved to: " + filepath);
   }

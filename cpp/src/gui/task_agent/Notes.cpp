@@ -1,12 +1,11 @@
 // Notes — 见头文件
 #include "gui/task_agent/Notes.hpp"
-#include "gui/task_agent/Config.hpp"
+#include "disk/Disk.hpp"
 #include "gui/task_agent/Text.hpp"
 
 #include <algorithm>
 #include <cassert>
-#include <filesystem>
-#include <fstream>
+#include <sstream>
 #include <string_view>
 #include <utility>
 
@@ -14,7 +13,6 @@ namespace GUI::Agent {
 
 namespace {
 
-namespace fs = std::filesystem;
 using json = nlohmann::ordered_json;
 
 // 字段键 → 界面 / 结果里的标签 (四个提交工具的参数键, ref 除外)
@@ -27,8 +25,7 @@ const char *label(std::string_view key) {
   return it->second;
 }
 
-fs::path dir_of(bool test) { return test ? fs::path(kGlobalDir) / "test" : fs::path(kGlobalDir); }
-fs::path file_of(bool test, NoteKind k) { return dir_of(test) / (std::string(def(k).id) + ".jsonl"); }
+disk::Key key_of(bool test, NoteKind k) { return {.test = test, .name = def(k).id}; }
 
 bool matches(const Note &x, const std::vector<std::string> &ws) {
   std::string hay;
@@ -80,11 +77,9 @@ void Notes::load(bool test) {
     const NoteKind k = static_cast<NoteKind>(i);
     std::vector<Note> &v = notes_[i];
     v.clear();
-    const fs::path p = file_of(test, k);
-    if (!fs::exists(p))
+    if (!disk::exists(disk::AgentNoteFile, key_of(test, k)))
       continue;
-    std::ifstream f(p);
-    assert(f.is_open());
+    std::istringstream f(disk::read(disk::AgentNoteFile, key_of(test, k)));
     for (std::string line; std::getline(f, line);) {
       if (line.empty())
         continue;
@@ -128,10 +123,7 @@ const Note &Notes::add(const Call &c, std::string scope, std::string session, in
   x.fields.erase("ref");
   assert(x.ref.empty() || find(k, x.ref));
   const json j = {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"round", x.round}, {"ref", x.ref}, {"fields", x.fields}};
-  fs::create_directories(dir_of(test_));
-  std::ofstream f(file_of(test_, k), std::ios::app);
-  assert(f.is_open());
-  f << j.dump() << '\n';
+  disk::append(disk::AgentNoteFile, key_of(test_, k), j.dump());
   v.push_back(std::move(x));
   return v.back();
 }

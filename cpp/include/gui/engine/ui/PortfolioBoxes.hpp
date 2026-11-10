@@ -1,5 +1,5 @@
 // Alpha→Factors 页 1. 区右侧的两个组合小框 + 当前组合 (Market Lines 页的因子 / 策略两组读它).
-//   小框 1: 选组合 (<portfolio_dir>/<name>.json) / New / Rename / Del;  小框 2: 当前组合的条目 "(池, 持有期): 名", Add = 加入 Factors 表里高光的
+//   小框 1: 选组合 (output/portfolios/<name>.json) / New / Rename / Del;  小框 2: 当前组合的条目 "(池, 持有期): 名", Add = 加入 Factors 表里高光的
 //   权重 (持有期 = Factors 页 Hold), Del = 删选中条目; 失效条目 (因子文件里找不到该规范串等) 红. 组合选择在内存, 内容即文件.
 #pragma once
 
@@ -13,7 +13,7 @@
 namespace GUI::Engine {
 
 struct PortfolioUIState {
-  std::string dir;                     // names 对应的目录 (config.portfolio_dir 变 → 重列)
+  bool listed = false;                 // 列过组合目录
   std::vector<std::string> names;      // 目录下的组合 (主干名)
   std::string name;                    // 当前组合; 空 = 无
   std::vector<PortfolioEntry> entries; // 当前组合内容 (= 文件)
@@ -28,8 +28,8 @@ struct PortfolioUIState {
 
 // 条目标签 "(池, 持有期): 名"
 std::string EntryLabel(const PortfolioEntry &e);
-// GUI 线程每帧 (Alpha / Market 都调): 目录变 → 重列, 当前组合不在了 → 选第一个 (载入内容, content_gen +1)
-void SyncPortfolioDir(PortfolioUIState &ui, const std::string &dir);
+// GUI 线程每帧 (Alpha / Market 都调): 首次列组合目录, 选第一个 (载入内容, content_gen +1)
+void SyncPortfolioList(PortfolioUIState &ui);
 // Factors 页 1. 区右侧两框. view_row = Factors 表高光行 (nullptr = 无); (pool, lv, hold) = Factors 页当前池 / 层 / Hold
 void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, FactorLevelId lv, int hold);
 

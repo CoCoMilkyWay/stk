@@ -1,6 +1,7 @@
 #include "gui/task_settings/TaskSettings.hpp"
 #include "api/bigquant/client.hpp"
 #include "api/tushare/client.hpp"
+#include "disk/Disk.hpp"
 #include "fundamental/Spec.hpp"
 #include "gui/Tasks.hpp"
 #include "imgui.h"
@@ -17,11 +18,6 @@
 
 namespace GUI::Tasks {
 namespace {
-
-// Get current working directory
-static std::string GetCWD() {
-  return std::filesystem::current_path().string();
-}
 
 // Settings task - config management with auto-sync
 class SettingsTask {
@@ -364,17 +360,17 @@ private:
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
-        static std::string cwd = GetCWD();
+        static const std::string repo = disk::root().string();
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("Working Directory");
+        ImGui::Text("Repository");
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("当前工作目录 (相对路径基准)");
+          ImGui::SetTooltip("仓库根: 其下 output/ 与 config/ 的布局固定 (disk/Disk.hpp), 换盘用符号链接");
         }
         ImGui::TableNextColumn();
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.8f, 1.0f, 1.0f));
-        ImGui::TextWrapped("%s", cwd.c_str());
+        ImGui::TextWrapped("%s", repo.c_str());
         ImGui::PopStyleColor();
 
         auto draw_path_row = [&](const char *label, const char *tooltip, const char *input_id, char *buffer, size_t size, std::string &target) {
@@ -400,48 +396,6 @@ private:
                       cfg.archive_dir_buf,
                       sizeof(cfg.archive_dir_buf),
                       cfg.archive_dir);
-        draw_path_row("Orders Dir",
-                      "orders 目录: YYYY/MM/YYYYMMDD.bin (一天全市场一个文件, 委托+成交合并, 快照不落盘)",
-                      "##orders_dir",
-                      cfg.orders_dir_buf,
-                      sizeof(cfg.orders_dir_buf),
-                      cfg.orders_dir);
-        draw_path_row("Feature Dir",
-                      "特征张量库目录: YYYY/MM/DD/",
-                      "##feature_dir",
-                      cfg.feature_dir_buf,
-                      sizeof(cfg.feature_dir_buf),
-                      cfg.feature_dir);
-        draw_path_row("Factor Dir",
-                      "因子库目录: YYYY/MM/DD/",
-                      "##factor_dir",
-                      cfg.factor_dir_buf,
-                      sizeof(cfg.factor_dir_buf),
-                      cfg.factor_dir);
-        draw_path_row("Portfolio Dir",
-                      "因子组合目录: <name>.json",
-                      "##portfolio_dir",
-                      cfg.portfolio_dir_buf,
-                      sizeof(cfg.portfolio_dir_buf),
-                      cfg.portfolio_dir);
-        draw_path_row("Export Dir",
-                      "导出目录: <池>/<层>/<因子>_w<权重号>_top<N>_{log,snap}.csv",
-                      "##export_dir",
-                      cfg.export_dir_buf,
-                      sizeof(cfg.export_dir_buf),
-                      cfg.export_dir);
-        draw_path_row("Log Dir",
-                      "日志目录",
-                      "##log_dir",
-                      cfg.log_dir_buf,
-                      sizeof(cfg.log_dir_buf),
-                      cfg.log_dir);
-        draw_path_row("Config Dir",
-                      "配置目录",
-                      "##config_dir",
-                      cfg.config_dir_buf,
-                      sizeof(cfg.config_dir_buf),
-                      cfg.config_dir);
 
         ImGui::EndTable();
       }
@@ -518,7 +472,7 @@ private:
   bool DrawDatabaseSection(Config &cfg) {
     bool changed = false;
     if (ImGui::CollapsingHeader("数据库配置", ImGuiTreeNodeFlags_DefaultOpen)) {
-      ImGui::TextWrapped("encode 始终全市场日频, A 轴来自基本面股票全量 (注册表 output/fundamental/asset_axis.json);"
+      ImGui::TextWrapped("encode 始终全市场日频, A 轴来自基本面股票全量 (注册表 output/data/fundamental/asset_axis.json);"
                          " 特征库在 Beta → Compute (all.bar) 与 Alpha → Compute (all.lob / 各池) 页计算.");
       ImGui::Spacing();
 
@@ -550,7 +504,7 @@ private:
         draw_readonly_row("Tushare Port", "走 80, 省掉 SSL 依赖", tushare::kPort);
       });
 
-      // 同步参数 (落地 output/fundamental/YYYY-MM/*.parquet)
+      // 同步参数 (落地 output/data/fundamental/YYYY-MM/*.parquet)
       ImGui::SeparatorText("同步参数");
       readonly_table("db_sync_table", [] {
         draw_readonly_row("Sync Start", "数据同步起点, 与回测窗口语义不同, 不随其收窄", misc::dash(fundamental::kSyncStart));

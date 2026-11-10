@@ -1,5 +1,6 @@
 // Compute Service Implementation
 #include "gui/compute/services/ComputeService.hpp"
+#include "disk/Disk.hpp"
 #include "features/Panel/Fund.hpp"
 #include "features/Panel/Pool.hpp"
 #include "features/Storage/FeatureLib.hpp"
@@ -12,7 +13,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
-#include <filesystem>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -26,19 +26,18 @@ ComputeService::ComputeService(SharedData &data)
 }
 
 PerLib<LibPlan> plan_libs(const SharedData &data) {
-  const Config &cfg = data.config;
   PerTier<std::vector<misc::Ymd>> source;
   for (const TierId t : TIER_IDS)
     source[t] = tier_ops(t).source_dates(data);
   PerLib<LibPlan> out;
   for (const LibId l : lib_order()) {
     LibPlan &p = out[l];
-    p.lib = load_lib(cfg.feature_dir, l);
+    p.lib = load_lib(l);
     std::vector<misc::Ymd> landed; // 已落盘日 (升序)
     if (p.lib.ready()) {
-      std::ranges::copy_if(p.lib.dates, std::back_inserter(landed), [&](misc::Ymd d) { return FeatureRead::has_date(p.lib.tier(), p.lib.dir, d); });
+      std::ranges::copy_if(p.lib.dates, std::back_inserter(landed), [&](misc::Ymd d) { return FeatureRead::has_date(l, d); });
       p.done = landed.size();
-      p.resumable = resumable(cfg, p.lib);
+      p.resumable = resumable(p.lib);
     }
     p.plan = source[p.lib.tier()];
     if (const auto up = lib_parent(l)) {
@@ -54,26 +53,26 @@ PerLib<LibPlan> plan_libs(const SharedData &data) {
   return out;
 }
 
-bool resumable(const Config &cfg, const FeatureLib &lib) {
+bool resumable(const FeatureLib &lib) {
   if (!lib.ready())
     return false;
-  if (axis_lib(lib.id) != lib.id && !axis_within(lib.axis, load_lib(cfg.feature_dir, axis_lib(lib.id)).axis))
+  if (axis_lib(lib.id) != lib.id && !axis_within(lib.axis, load_lib(axis_lib(lib.id)).axis))
     return false;
-  return FeatureSnap::head(lib.dir) == tier_ops(lib.tier()).snap_header(lib, lib.dates.back());
+  return FeatureSnap::head(disk::path(disk::LibSnapshot, lib_key(lib.id)).string()) == tier_ops(lib.tier()).snap_header(lib, lib.dates.back());
 }
 
-LibRun lib_run(const Config &cfg, LibId id, std::vector<misc::Ymd> plan, bool resume) {
+LibRun lib_run(LibId id, std::vector<misc::Ymd> plan, bool resume) {
   assert(!plan.empty() && std::is_sorted(plan.begin(), plan.end()) && "规划日期轴为空 / 非升序");
   LibRun r;
-  r.lib = FeatureLib{.id = id, .dir = lib_dir(cfg.feature_dir, id), .dates = std::move(plan)};
+  r.lib = FeatureLib{.id = id, .dir = lib_dir(id), .dates = std::move(plan)};
   if (const auto up = lib_parent(id)) {
-    const FeatureLib u = load_lib(cfg.feature_dir, up->lib);
+    const FeatureLib u = load_lib(up->lib);
     assert(u.ready() && std::ranges::all_of(r.lib.dates, [&](misc::Ymd d) { return parent_covers(u.dates, up->prev, d); }) &&
            "日期轴越出上游库 (先把上游库算到这天)");
   }
   if (resume) {
-    r.old = load_lib(cfg.feature_dir, id);
-    assert(resumable(cfg, r.old) && "续算: 库没有对得上的续算点 (先全量)");
+    r.old = load_lib(id);
+    assert(resumable(r.old) && "续算: 库没有对得上的续算点 (先全量)");
     assert(r.lib.dates.size() > r.old.dates.size() && std::equal(r.old.dates.begin(), r.old.dates.end(), r.lib.dates.begin()) &&
            "续算: 库日期轴须是规划的真前缀");
     r.tail = std::min(r.old.dates.size(), tier_ops(r.lib.tier()).pend_days);
@@ -82,11 +81,11 @@ LibRun lib_run(const Config &cfg, LibId id, std::vector<misc::Ymd> plan, bool re
   return r;
 }
 
-void remove_lib(const Config &cfg, LibId id) {
-  const std::string dir = lib_dir(cfg.feature_dir, id);
-  FeatureRead::wipe_dir(dir); // 可能与 reader 判废删库并发
-  FeatureRead::set_dir_stale(dir, false);
-  std::cout << "[features] 删库 " << lib_name(id) << ": " << dir << std::endl;
+void remove_lib(LibId id) {
+  disk::remove(disk::Lib, lib_key(id)); // 可能与 reader 判废删库并发
+  disk::remove(disk::RunLib, lib_key(id));
+  FeatureRead::set_lib_stale(id, false);
+  std::cout << "[features] 删库 " << lib_name(id) << ": " << lib_dir(id) << std::endl;
 }
 
 void ComputeService::Request(ComputeConfig config) {
@@ -102,10 +101,9 @@ void ComputeService::Request(ComputeConfig config) {
 bool ComputeService::run(ComputeConfig &config) {
   // 写库清单 = 读端唯一来源 (见 FeatureLib.hpp); 张量/调度/落盘全按本库 A 轴, 需要 items/码表/基本面时经 axis.global() 映射.
   // 库集 = 本库 + 同池旁读档的库, 余档空
-  const Config &cfg = data_.config;
   const PoolId pool = lib_pool(config.lib);
   const TierId tier = lib_tier(config.lib);
-  LibRun r = lib_run(cfg, config.lib, std::move(config.dates), config.resume);
+  LibRun r = lib_run(config.lib, std::move(config.dates), config.resume);
 
   // Enable High Performance Mode: GUI low-refresh, compute owns cores
   data_.high_performance_mode = true;
@@ -117,13 +115,13 @@ bool ComputeService::run(ComputeConfig &config) {
   fund::Panel fund;
   fund.build(r.lib.dates);
   // 池面板 (本库 A 轴 × 管线日期轴逐日成员 + 轴外, 见 features/Panel/Pool.hpp)
-  const pool::Panel members = pool::Panel::build(r.lib.id, cfg.feature_dir, fund, r.dates, r.old);
+  const pool::Panel members = pool::Panel::build(r.lib.id, fund, r.dates, r.old);
   r.lib.axis = members.axis();
   r.lib.outside = members.outside();
   PerTier<FeatureLib> libs;
   for (const TierId s : TIER_IDS)
     if (tier_side(tier, s))
-      libs[s] = load_lib(cfg.feature_dir, lib_id(pool, s));
+      libs[s] = load_lib(lib_id(pool, s));
   FeatureLib &lib = libs[tier] = std::move(r.lib);
   std::cout << "Lib " << lib_name(lib.id) << ": " << lib.dir << " → " << lib.axis.size() << " / "
             << asset_axis().size() << " assets (轴外 " << lib.outside.size() << ")"
@@ -134,19 +132,15 @@ bool ComputeService::run(ComputeConfig &config) {
   // 别的库不碰 —— 按目录分片, 见 lib_dir), 随即落新清单 (读端此后按它读; 中途取消 = 清单在, 已落盘日是其子集).
   // 续算: 不清库, 跑完才落新清单 (中途取消 = 旧清单 + 旧续算点仍对得上, 再续即可; 已重落盘的尾窗日标签按新日结清, 再续同值重写)
   if (!config.resume) {
-    FeatureRead::wipe_dir(lib.dir); // 可能与 reader 判废删库并发
-    FeatureRead::set_dir_stale(lib.dir, false);
+    disk::remove(disk::Lib, lib_key(lib.id)); // 可能与 reader 判废删库并发
+    FeatureRead::set_lib_stale(lib.id, false);
     save_lib(lib);
   }
 
-  // 日志: 先关 (释放上一轮文件句柄), 清空重建 log_dir, 全部 worker 共用一个日志文件
-  namespace fs = std::filesystem;
+  // 日志: 先关 (释放上一轮文件句柄), 清空重建本库日志目录, 全部 worker 共用
   Logger::close();
-  fs::path log_path(cfg.log_dir);
-  if (fs::exists(log_path))
-    fs::remove_all(log_path);
-  fs::create_directories(log_path);
-  Logger::init(cfg.log_dir);
+  disk::remove(disk::RunLibLog, lib_key(lib.id));
+  Logger::init(disk::ensure(disk::RunLibLog, lib_key(lib.id)).string());
 
   // 已落盘天数镜像进进度面
   const PipelineArgs args{data_, libs, fund, members, r.dates, r.tail,

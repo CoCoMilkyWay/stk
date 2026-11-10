@@ -1,6 +1,7 @@
 // Beta→Style: 左 = 参数网格条 + 状态 / 选池改动 + 净值图, 右 = 风格表 (点开 = 跑该风格的网格, 其下列各组绩效与选池勾选) — 见头文件
 #include "gui/task_beta/ui/TabStyle.hpp"
 
+#include "disk/Disk.hpp"
 #include "gui/Tasks.hpp"      // StatusColor
 #include "gui/util/Chart.hpp" // 色 / sheet_width / draw_end_tags
 #include "gui/util/Tip.hpp"
@@ -13,7 +14,6 @@
 #include <bit>
 #include <cmath>
 #include <cstdio>
-#include <filesystem>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -340,7 +340,7 @@ void changes(StyleUIState &s) {
   if (add.empty() && del.empty()) {
     ImGui::TextDisabled("选池 %zu (= 落地)", s.landed.size());
     if (ImGui::IsItemHovered())
-      tip("落地 = %s", s.path.c_str());
+      tip("落地 = %s", disk::path(disk::PoolsFile).c_str());
   } else {
     ImGui::TextColored(kStratCol, "+%zu", add.size());
     ImGui::SameLine();
@@ -356,7 +356,7 @@ void changes(StyleUIState &s) {
   }
   if (!ImGui::BeginPopupModal(kModal, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     return;
-  ImGui::Text("写入 %s: 池表 %zu → %zu", s.path.c_str(), s.landed.size(), s.chosen.size());
+  ImGui::Text("写入 %s: 池表 %zu → %zu", disk::path(disk::PoolsFile).c_str(), s.landed.size(), s.chosen.size());
   const float lh = ImGui::GetTextLineHeightWithSpacing();
   ImGui::BeginChild("##style_diff", ImVec2(0, std::min(static_cast<float>(add.size() + del.size()) * lh + lh, 24.0f * lh)), ImGuiChildFlags_Borders);
   for (const Spec &p : add)
@@ -365,7 +365,7 @@ void changes(StyleUIState &s) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "− %s  %s", pool::name_cn(p).c_str(), pool::code(p).c_str());
   ImGui::EndChild();
   if (ImGui::Button("写入", ImVec2(90, 0))) {
-    pool::save_pools(s.path, s.chosen);
+    pool::save_pools(s.chosen);
     s.landed = s.chosen, ++s.pick_gen;
     ImGui::CloseCurrentPopup();
   }
@@ -630,12 +630,11 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
 
 } // namespace
 
-void SyncStylePools(StyleUIState &ui, const std::string &config_dir) {
-  const std::string path = (std::filesystem::path(config_dir) / "pools.json").string();
-  if (ui.path == path)
+void SyncStylePools(StyleUIState &ui) {
+  if (ui.loaded)
     return;
-  ui.path = path;
-  ui.landed = ui.chosen = pool::load_pools(path);
+  ui.loaded = true;
+  ui.landed = ui.chosen = pool::load_pools();
   ++ui.pick_gen;
 }
 

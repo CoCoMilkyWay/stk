@@ -25,7 +25,7 @@ void TransformService::RequestCompute(SharedData &data, const Transform::Params 
     cols.push_back(data.feature.ref(kAllBar, NEUTRAL_RANK_MCAP_LEVEL, TF_STR(NEUTRAL_RANK_MCAP)));
     cols.push_back(data.feature.ref(kAllBar, NEUTRAL_RANK_INDUSTRY_LEVEL, TF_STR(NEUTRAL_RANK_INDUSTRY)));
   }
-  if (!reader::read_request(data.config, data.feature, {.level = feat->level, .cols = std::move(cols)}, req.scope, req.spec.plan))
+  if (!reader::read_request(data.feature, {.level = feat->level, .cols = std::move(cols)}, req.scope, req.spec.plan))
     return;
   // 焦点按新 A 轴 clamp: UI 槽位可能来自上一个库 (切库后池轴大小已变)
   req.spec.focus = static_cast<uint32_t>(std::clamp<int>(focus, 0, static_cast<int>(req.scope.axis.size()) - 1));

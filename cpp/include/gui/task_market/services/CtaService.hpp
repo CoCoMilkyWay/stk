@@ -16,8 +16,6 @@
 #include <string>
 #include <vector>
 
-struct Config;
-
 namespace GUI::Market {
 
 using namespace Quote;
@@ -62,7 +60,7 @@ class CtaService : public Service<CtaService, CtaRequest>, public Published {
 
 public:
   static constexpr const char *kName = "CtaWorker";
-  explicit CtaService(const Config &cfg) : cfg_(cfg) { Start(); }
+  CtaService() { Start(); }
   ~CtaService() { Stop(); }
 
   std::shared_ptr<const CtaResult> result; // UI 持 mutex 读; 空 = 未算
@@ -85,7 +83,6 @@ private:
     std::shared_ptr<const cta::Series> se;
   };
 
-  const Config &cfg_;
   misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
   CtaLib lib_{cancel_, *this, pool_};
   std::vector<Kept> kept_; // 新 → 旧

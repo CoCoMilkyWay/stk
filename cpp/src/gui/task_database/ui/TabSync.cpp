@@ -1,6 +1,6 @@
 // Tab Sync - 数据源 (BigQuant / Tushare / 东财 / 新浪) 状态与同步入口
-// 数据落地 = output/fundamental/{YYYY-MM, _meta}/<表>.parquet + YYYY-MM/<表>/YYYY-MM-DD.parquet (Daily)
-//   (水位增量, 常量见 fundamental/Spec.hpp) + output/concept/YYYYMMDD.tsv + output/sina/live.bin;
+// 数据落地 = output/data/fundamental/{YYYY-MM, _meta}/<表>.parquet + YYYY-MM/<表>/YYYY-MM-DD.parquet (Daily)
+//   (水位增量, 常量见 fundamental/Spec.hpp) + output/data/concept/YYYYMMDD.tsv + output/data/quote/live.bin;
 // AssetInfo 由 SyncService 从 parquet 构建, 此处只渲染状态 + 回写按钮 flag.
 //
 // 一源一张分表 (BigQuant / Tushare / 东财 / 新浪), 列同形; 表头 = 源名 + 说明 + 各道同步状态
@@ -641,7 +641,7 @@ void RenderTabSync(
     ImGui::SameLine(0.0f, 6.0f);
     text_bytes(totals.bytes);
     ImGui::SameLine(0.0f, 24.0f);
-    ImGui::TextDisabled("output/fundamental/  (随每轮 Update 重扫)");
+    ImGui::TextDisabled("output/data/fundamental/  (随每轮 Update 重扫)");
   } else {
     ImGui::Text("在册 %zu 表", totals.listed);
     ImGui::SameLine(0.0f, 24.0f);
@@ -676,16 +676,16 @@ void RenderTabSync(
                   tushare ? nullptr : audit.find_table(spec.name), av, disable_audit, audit_table, repair_table, weekly);
   };
 
-  caption("BigQuant DAI", "日频表 + 分钟线, output/fundamental/");
+  caption("BigQuant DAI", "日频表 + 分钟线, output/data/fundamental/");
   lane_chip(state, kLaneBq);
   lane_chip(state, kLaneBar1m);
   table("FundBigQuantTables", [&] { spec_rows(false); });
 
-  caption("Tushare", "BigQuant 无等价表的事件型 fallback, output/fundamental/ (不参与 Audit)");
+  caption("Tushare", "BigQuant 无等价表的事件型 fallback, output/data/fundamental/ (不参与 Audit)");
   lane_chip(state, kLaneTu);
   table("FundTushareTables", [&] { spec_rows(true); });
 
-  caption("东财", "题材概念成分快照, output/concept/ (不参与 Audit)");
+  caption("东财", "题材概念成分快照, output/data/concept/ (不参与 Audit)");
   lane_chip(state, kLaneConcept);
   table("FundEastmoneyTables", [&] {
     table_row({kConceptTable, "-", "快照", "-", "题材概念板块成分 (一行一概念: 板块代码 / 名称 / 成分码), 一日一份"}, scanned,
@@ -693,7 +693,7 @@ void RenderTabSync(
               disable_audit, audit_table, repair_table, weekly);
   });
 
-  caption("新浪", "当日行情, output/sina/ (Market 任务起后常驻轮询, 不在 Update 内; 不参与 Audit)");
+  caption("新浪", "当日行情, output/data/quote/ (Market 任务起后常驻轮询, 不在 Update 内; 不参与 Audit)");
   sina_chip(sina);
   table("FundSinaTables", [&] {
     TableFileStat live;

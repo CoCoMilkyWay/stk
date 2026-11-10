@@ -1,13 +1,12 @@
 #include "shared/Concept.hpp"
 
+#include "disk/Disk.hpp"
 #include "fundamental/AssetAxis.hpp"
-#include "misc/fs.hpp"
 
 #include <algorithm>
 #include <cassert>
-#include <filesystem>
-#include <fstream>
 #include <iterator>
+#include <sstream>
 
 namespace {
 
@@ -37,8 +36,6 @@ std::uint64_t fnv_append(std::uint64_t h, std::string_view s) {
   return h * kFnvPrime;
 }
 
-std::filesystem::path file_of(misc::Ymd d) { return concept_dir() / (misc::dense(d) + ".tsv"); }
-
 // s 按 sep 切开逐段 fn
 template <class Fn>
 void split(std::string_view s, char sep, Fn &&fn) {
@@ -57,19 +54,9 @@ bool concept_theme(std::string_view name) {
   return std::none_of(std::begin(kDrop), std::end(kDrop), [&](std::string_view w) { return name.find(w) != std::string_view::npos; });
 }
 
-std::filesystem::path concept_dir() { return misc::git_root() / "output" / "concept"; }
-
 misc::Ymd concept_last() {
-  misc::Ymd last = 0;
-  if (!std::filesystem::exists(concept_dir()))
-    return last;
-  for (const std::filesystem::directory_entry &e : std::filesystem::directory_iterator(concept_dir()))
-    if (e.path().extension() == ".tsv") {
-      const misc::Ymd d = misc::parse_ymd(e.path().stem().string());
-      assert(d > 0 && "concept: 快照文件名不是 YYYYMMDD.tsv");
-      last = std::max(last, d);
-    }
-  return last;
+  const std::vector<disk::Key> days = disk::list(disk::ConceptDay);
+  return days.empty() ? 0 : days.back().date;
 }
 
 void save_concepts(misc::Ymd date, const std::vector<Concept> &list) {
@@ -83,7 +70,7 @@ void save_concepts(misc::Ymd date, const std::vector<Concept> &list) {
       (s += i ? "," : "") += c.syms[i];
     s += '\n';
   }
-  misc::atomic_write(file_of(date), s.data(), s.size());
+  disk::write(disk::ConceptDay, {.date = date}, s);
 }
 
 const ConceptTable &concepts() {
@@ -95,8 +82,7 @@ const ConceptTable &concepts() {
     o.hash = kFnvOffset;
     o.date = concept_last();
     if (o.date) {
-      std::ifstream f(file_of(o.date));
-      assert(f && "concept: 快照打不开");
+      std::istringstream f(disk::read(disk::ConceptDay, {.date = o.date}));
       for (std::string line; std::getline(f, line);) {
         std::vector<std::string_view> col;
         split(line, '\t', [&](std::string_view x) { col.push_back(x); });

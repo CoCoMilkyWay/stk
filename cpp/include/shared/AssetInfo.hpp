@@ -1,5 +1,5 @@
 // Asset Information - 全市场个股基本面快照 (BigQuant + Tushare) + 交易日历
-// 由 AssetInfo::build 从 output/fundamental/ parquet 构建 (Sync 每轮同步之后).
+// 由 AssetInfo::build 从 output/data/fundamental/ parquet 构建 (Sync 每轮同步之后).
 // 个股一律按全局 id (A 轴下标, fundamental/AssetAxis.hpp) 稠密存: 一对一 = vector, 一对多 = Csr.
 // 一律原生类型: 日期 Ymd (0 = 无), 数值 float (NaN = 无效); 格式化只在 UI.
 #pragma once

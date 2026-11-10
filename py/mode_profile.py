@@ -1,4 +1,4 @@
-"""Profile Mode - 特征计算 perf 采样 (落 output/profile/, 布局见 README)"""
+"""Profile Mode - 特征计算 perf 采样 (落 output/run/features/<池>/<档>/profile/, 布局见 README)"""
 
 import os
 import shutil
@@ -113,7 +113,7 @@ def _check_perf_or_exit() -> None:
 def run(binary_path, working_dir):
     """Run with feature-compute perf sampling."""
     print(f"\n{'='*80}")
-    print("Profile Mode - perf sampling feature compute → output/profile/")
+    print("Profile Mode - perf sampling feature compute → output/run/features/<pool>/<tier>/profile/")
     print(f"{'='*80}\n")
 
     _check_perf_or_exit()

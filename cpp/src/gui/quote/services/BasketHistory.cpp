@@ -1,21 +1,18 @@
 #include "gui/quote/services/BasketHistory.hpp"
 
+#include "disk/Disk.hpp"
 #include "features/Bar1mDay.hpp"
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "fundamental/Scan.hpp"
 #include "gui/quote/BasketRow.hpp"
-#include "misc/fs.hpp"
 #include "misc/snap.hpp"
 #include "shared/Basket.hpp" // basket_count / weight_of
-#include "shared/Config.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <fstream>
-#include <iterator>
 #include <memory>
 #include <utility>
 
@@ -24,7 +21,6 @@ namespace GUI::Quote {
 namespace {
 
 constexpr uint64_t kMagic = 0x314B534142544B53ULL; // "SKTBASK1" 小端
-constexpr const char *kFile = "/baskets.bin";
 
 // 定长元素的序列: 长度 + 逐个
 template <class Ar, class T>
@@ -65,7 +61,7 @@ void BasketHistory::Book::snap(Ar &ar) {
 }
 
 bool BasketHistory::run(HistoryRequest &req) {
-  const FeatureLib lib = load_lib(cfg_.feature_dir, kAllBar);
+  const FeatureLib lib = load_lib(kAllBar);
   if (!lib.ready())
     return publish(req, "指数 / 行业由 all.bar 特征库合成: 先在 Beta → Compute 算好 all 池的 Bar 库.");
   FeatureRead rd(lib, &cancel_);
@@ -83,8 +79,8 @@ bool BasketHistory::run(HistoryRequest &req) {
   };
   if (!fits(book_)) {
     book_ = {};
-    if (std::ifstream f(lib.dir + kFile, std::ios::binary); f) {
-      const std::vector<char> blob((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    if (disk::exists(disk::LibBaskets, lib_key(lib.id))) {
+      const std::string blob = disk::read(disk::LibBaskets, lib_key(lib.id));
       misc::snap::Load ar(std::as_bytes(std::span(blob)));
       ar(book_.head);
       if (book_.head == head) {
@@ -113,7 +109,7 @@ bool BasketHistory::run(HistoryRequest &req) {
     misc::snap::Save ar(blob);
     ar(book_.head);
     book_.snap(ar);
-    misc::atomic_write(lib.dir + kFile, reinterpret_cast<const char *>(blob.data()), blob.size());
+    disk::write(disk::LibBaskets, lib_key(lib.id), {reinterpret_cast<const char *>(blob.data()), blob.size()});
   }
 
   const PoolAxis &market = live_.axis();

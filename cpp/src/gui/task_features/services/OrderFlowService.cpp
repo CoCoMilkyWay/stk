@@ -309,7 +309,7 @@ bool OrderFlowService::make(const SharedData &data, RowReq &req, const LaneDef &
     req.spec.k0 = cols.size();
     req.spec.ts_price = ts_price_of(data.feature, lines);
     cols.insert(cols.end(), lines.begin(), lines.end());
-    return reader::read_request(data.config, data.feature,
+    return reader::read_request(data.feature,
                                 {.main = m,
                                  .days = reader::DayAxis::Union,
                                  .level = def.grid,
@@ -513,7 +513,7 @@ bool OrderFlowService::SecLane::run(RowReq &in) {
   L2::FrameView view;
   if (!ref.empty()) {
     TraceN("OF_Decode");
-    view = DayReader(data_.config.orders_dir, req.date).get(ref, res.decoder); // 解出来的在 decoder 缓冲里, fd 随即关掉
+    view = DayReader(req.date).get(ref, res.decoder); // 解出来的在 decoder 缓冲里, fd 随即关掉
   }
 
   if (view.head.count > 0) {

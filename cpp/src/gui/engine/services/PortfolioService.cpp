@@ -1,6 +1,7 @@
 // PortfolioService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/services/PortfolioService.hpp"
 
+#include "disk/Disk.hpp"
 #include "features/Storage/FeatureLib.hpp" // pool_def
 #include "gui/engine/Engine.hpp"           // with_backend / eval_job / eval_baskets / Probes / LinesP / group_abs
 #include "gui/engine/File.hpp"             // ValidFactorName / FactorRow / ScanFactorFile
@@ -13,9 +14,9 @@
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
-#include <fstream>
 #include <map>
 #include <numeric>
+#include <sstream>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -27,9 +28,9 @@ namespace {
 using json = nlohmann::json;
 using ojson = nlohmann::ordered_json;
 
-std::filesystem::path portfolio_path(const std::string &dir, const std::string &name) {
+disk::Key portfolio_key(const std::string &name) {
   assert(ValidFactorName(name) && "组合名: 仅 [A-Za-z0-9_]");
-  return std::filesystem::path(dir) / (name + ".json");
+  return {.name = name};
 }
 
 // 一张森林的组 = 同评估域: (层, 池, 所用库). 评估期 = 所用库落盘日交集, 所用库不同的因子不同组 (只用 bar 叶的不被 Lob 库截短)
@@ -48,20 +49,15 @@ std::tuple<FactorLevelId, std::string, LibMask> group_of(const FactorTask &t) {
 // 组合文件
 // ============================================================================
 
-std::vector<std::string> ListPortfolios(const std::string &dir) {
+std::vector<std::string> ListPortfolios() {
   std::vector<std::string> names;
-  if (std::filesystem::is_directory(dir))
-    for (const auto &ent : std::filesystem::directory_iterator(dir))
-      if (ent.is_regular_file() && ent.path().extension() == ".json" && ValidFactorName(ent.path().stem().string()))
-        names.push_back(ent.path().stem().string());
-  std::sort(names.begin(), names.end());
+  for (const disk::Key &k : disk::list(disk::PortfolioFile))
+    names.push_back(k.name);
   return names;
 }
 
-std::vector<PortfolioEntry> LoadPortfolio(const std::string &dir, const std::string &name) {
-  std::ifstream f(portfolio_path(dir, name));
-  assert(f.is_open() && "组合文件打不开");
-  const json j = json::parse(f, nullptr, /*allow_exceptions=*/false);
+std::vector<PortfolioEntry> LoadPortfolio(const std::string &name) {
+  const json j = json::parse(disk::read(disk::PortfolioFile, portfolio_key(name)), nullptr, /*allow_exceptions=*/false);
   assert(!j.is_discarded() && j.is_object() && j.contains("factors") && j["factors"].is_array() && "组合文件: 顶层须是 {factors: [...]}");
   std::vector<PortfolioEntry> es;
   for (const json &o : j["factors"]) {
@@ -81,13 +77,9 @@ std::vector<PortfolioEntry> LoadPortfolio(const std::string &dir, const std::str
 }
 
 // 一条目一行 (人能直接读 / diff)
-void SavePortfolio(const std::string &dir, const std::string &name, const std::vector<PortfolioEntry> &es) {
-  const std::filesystem::path path = portfolio_path(dir, name);
-  std::filesystem::create_directories(path.parent_path());
-  const std::filesystem::path tmp = path.string() + ".tmp";
+void SavePortfolio(const std::string &name, const std::vector<PortfolioEntry> &es) {
+  std::ostringstream f;
   {
-    std::ofstream f(tmp);
-    assert(f.is_open() && "组合文件: 临时文件打不开");
     f << "{\n  \"factors\": [";
     for (size_t i = 0; i < es.size(); ++i) {
       const PortfolioEntry &e = es[i];
@@ -101,20 +93,18 @@ void SavePortfolio(const std::string &dir, const std::string &name, const std::v
       f << (i ? ",\n    " : "\n    ") << o.dump();
     }
     f << (es.empty() ? "]\n}\n" : "\n  ]\n}\n");
-    assert(f.good() && "组合文件: 写入失败");
   }
-  std::filesystem::rename(tmp, path);
+  disk::write(disk::PortfolioFile, portfolio_key(name), f.str());
 }
 
-bool RenamePortfolio(const std::string &dir, const std::string &from, const std::string &to) {
-  const std::filesystem::path a = portfolio_path(dir, from), b = portfolio_path(dir, to);
-  if (std::filesystem::exists(b))
+bool RenamePortfolio(const std::string &from, const std::string &to) {
+  if (disk::exists(disk::PortfolioFile, portfolio_key(to)))
     return false;
-  std::filesystem::rename(a, b);
+  disk::rename(disk::PortfolioFile, portfolio_key(from), portfolio_key(to));
   return true;
 }
 
-void DeletePortfolio(const std::string &dir, const std::string &name) { std::filesystem::remove(portfolio_path(dir, name)); }
+void DeletePortfolio(const std::string &name) { disk::remove(disk::PortfolioFile, portfolio_key(name)); }
 
 // ============================================================================
 // 解析 / 请求
@@ -128,11 +118,12 @@ void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::
     it.e = e;
     it.name_en = std::filesystem::path(e.file).stem().string();
     const std::shared_ptr<const FeatureTable> ft = table_of(tables, data.feature, e.lv);
-    const std::filesystem::path p = std::filesystem::path(factor_dir_of(data, e.pool, e.lv)) / e.file;
+    const FactorDir dir = factor_dir_of(e.pool, e.lv);
+    const std::filesystem::path p = dir.path(e.file);
     const bool exists = std::filesystem::is_regular_file(p);
     auto [sit, fresh] = scanned.try_emplace(p.string());
     if (fresh && exists)
-      ScanFactorFile(p, *ft, sit->second);
+      ScanFactorFile(dir, e.file, *ft, sit->second);
     const auto rit = std::find_if(sit->second.begin(), sit->second.end(), [&](const FactorRow &r) { return r.expr == e.expr && r.sign == e.sign; });
     if (!exists) {
       it.missing = "因子文件不存在: " + p.string();

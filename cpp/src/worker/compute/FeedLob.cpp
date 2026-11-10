@@ -58,7 +58,7 @@ struct TierFeed<lob::Tier> {
     const std::span<const FrameRef> refs = orders.row(d);
     if (std::none_of(refs.begin(), refs.end(), [](const FrameRef &ref) { return !ref.empty(); }))
       return 0;
-    return DayReader(data.config.orders_dir, dates[d]).prefetch(refs);
+    return DayReader(dates[d]).prefetch(refs);
   }
 
   // 源格 = 日文件里本资产当日的帧引用 (空 = 缺帧)
@@ -85,7 +85,7 @@ struct TierFeed<lob::Tier> {
       {
         TraceN("DecodeOrders");
         if (!reader_ || reader_->date() != date)
-          reader_.emplace(feed_.data.config.orders_dir, date);
+          reader_.emplace(date);
         view = reader_->get(ref, decoder_);
       }
       const size_t order_num = view.head.count;

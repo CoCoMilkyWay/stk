@@ -10,7 +10,6 @@
 #include <vector>
 
 class FeatureRead;
-struct Config;
 struct Feature;
 
 // ============================================================================
@@ -41,7 +40,7 @@ struct ReadScope {
   Readers readers(const PerLib<const FeatureRead *> &fr) const; // fr: 库集各库 reader (LibReaders::ptr)
 };
 // 库集 = main + cols 所在库 (main = kAutoMain → 见上); assets 空 = A 轴取主库轴, 否则 = 这些全局 id (升序去重)
-ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets = {},
+ReadScope read_scope(LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets = {},
                      DayAxis days = DayAxis::Main);
 // A 轴 + 各库映射 (s.libs / s.main 已定; assets 空 = 主库轴, 主库同轴不映射)
 void map_axis(ReadScope &s, std::vector<uint32_t> assets);
@@ -86,7 +85,7 @@ struct ReadSpec {
   std::vector<uint32_t> assets; // 空 = 主库轴
 };
 // 统一请求构建 (= read_scope + read_plan): 库集未建 → false (请求方放弃)
-bool read_request(const Config &cfg, const Feature &feature, ReadSpec rs, ReadScope &scope, ReadPlan &plan);
+bool read_request(const Feature &feature, ReadSpec rs, ReadScope &scope, ReadPlan &plan);
 
 // ---- 段序 (全部读端唯一一份): 日轴 (enumerate_dates) 按 seg_days(level) 连续成段, 再排段 ----
 //   Shuffle:    固定种子洗牌取前 limit 段 —— 无偏, 首批即覆盖全区间 (Distribution / Preview / Correlation*)

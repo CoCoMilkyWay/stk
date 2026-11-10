@@ -1,3 +1,4 @@
+#include "disk/Sweep.hpp"
 #include "gui/Gui.hpp"
 #ifdef _WIN32
 #include <windows.h>
@@ -10,5 +11,6 @@ int main() {
   SetConsoleCP(CP_UTF8);
 #endif
 
+  disk::sweep();
   return GUI::RunGUI();
 }

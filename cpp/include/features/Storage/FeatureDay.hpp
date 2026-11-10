@@ -4,7 +4,6 @@
 #include "SparseCodec.hpp"
 #include "ZstdCodec.hpp" // IWYU pragma: keep
 #include "misc/cross_platform.hpp"
-#include "misc/date.hpp"
 #include "misc/profiler.hpp"
 #include <algorithm>
 #include <cassert>
@@ -15,7 +14,7 @@
 #include <vector>
 
 // ============================================================================
-// 特征日文件 — <base>/YYYY/MM/DD/features_<LVL>.bin, 一天一层一个
+// 特征日文件 — <库>/YYYY/MM/DD/features_<LVL>.bin (lib_day_file), 一天一层一个
 // ============================================================================
 //
 //   [FeatureFileHeader][ColSpan × F][列载荷 × F]
@@ -61,13 +60,6 @@ struct ColSpan {
   uint32_t delta; // 1 = 沿 T 轴 XOR 差分
 };
 static_assert(sizeof(ColSpan) == 16, "特征日文件目录项必须紧凑无填充");
-
-inline std::string feature_day_dir(const std::string &base, misc::Ymd date) {
-  return base + "/" + misc::slash(date);
-}
-inline std::string feature_file(const std::string &day_dir, size_t lvl) {
-  return day_dir + "/features_" + level_name(lvl) + ".bin";
-}
 
 // ============================================================================
 // 落盘编码选型: 两种实现同一 API (bound / encode / decode), 载荷不落自述信息,

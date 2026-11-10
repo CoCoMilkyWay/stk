@@ -1,5 +1,6 @@
 #include "gui/task_features/ui/TabNodeTime.hpp"
-#include "features/Storage/FeatureLib.hpp" // lib_dir / lib_name
+#include "disk/Disk.hpp"
+#include "features/Storage/FeatureLib.hpp" // lib_key / lib_name
 #include "gui/task_features/ui/Common.hpp" // 作用域条
 #include "shared/Feature.hpp"
 #include "shared/SharedData.hpp"
@@ -13,7 +14,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,7 +22,7 @@
 namespace GUI::Features {
 
 // ============================================================================
-// Node Time: 当前库 <库目录>/node_time.json (Rebuild / Append 时计时, 每轮覆盖) 按节点文件归并.
+// Node Time: 当前库 output/run/features/<池>/<档>/node_time.json (Rebuild / Append 时计时, 每轮覆盖) 按节点文件归并.
 //   时序 / 截面两段各自成 100% (不同 worker): 时序 = 抽样 asset-day 的节点 + 标签 + 写张量 + 源与调度; 截面 = 逐列 + 调度
 // ============================================================================
 
@@ -46,7 +46,8 @@ struct NodeTimeFile {
   std::vector<Col> cols;
 };
 
-static void load_node_time(NodeTimeFile &nt, const std::string &path) {
+static void load_node_time(NodeTimeFile &nt, LibId lib) {
+  const std::string path = disk::path(disk::RunLibNodeTime, lib_key(lib)).string();
   const double now = ImGui::GetTime();
   if (nt.path == path && now - nt.checked < 1.0)
     return;
@@ -60,9 +61,7 @@ static void load_node_time(NodeTimeFile &nt, const std::string &path) {
   const std::filesystem::file_time_type mtime = std::filesystem::last_write_time(path);
   if (same && nt.ok && mtime == nt.mtime)
     return;
-  std::ifstream f(path);
-  assert(f.is_open() && "node_time.json: 打不开");
-  const nlohmann::json j = nlohmann::json::parse(f);
+  const nlohmann::json j = nlohmann::json::parse(disk::read(disk::RunLibNodeTime, lib_key(lib)));
   nt.mtime = mtime;
   nt.ok = true;
   const nlohmann::json &ts = j.at("ts"), &cs = j.at("cs");
@@ -253,11 +252,11 @@ static void render_node_time_bar(const char *id, std::vector<NodeTimeRow> &rows,
 
 // 两段 (时序 / 截面) 各一条堆叠条, 各自成 100%. 全部 = 全档文件 + 非节点行 (合计 100%);
 // 只看本层 = 只留本层字段所在文件 / 本层截面列, 去掉非节点行 (占比仍按本段全量, 节点可能同时服务别的层, 各层视图不互斥)
-static void render_node_time(SharedData &data, const Feature &feature) {
+static void render_node_time(const Feature &feature) {
   static NodeTimeFile s_nt;
   static bool s_level_only = false;
   const LibId lib = feature.selection.lib();
-  load_node_time(s_nt, (std::filesystem::path(lib_dir(data.config.feature_dir, lib)) / "node_time.json").string());
+  load_node_time(s_nt, lib);
   if (!s_nt.ok) {
     ImGui::TextDisabled("%s 尚无用时: Rebuild / Append 跑完即有", lib_name(lib).c_str());
     return;
@@ -344,7 +343,7 @@ static void render_node_time(SharedData &data, const Feature &feature) {
 
 void RenderTabNodeTime(SharedData &data) {
   RenderScope(data.feature);
-  render_node_time(data, data.feature);
+  render_node_time(data.feature);
 }
 
 } // namespace GUI::Features

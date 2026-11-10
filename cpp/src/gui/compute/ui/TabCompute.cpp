@@ -329,7 +329,7 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
       const bool computing = is_running && state.config.lib == l;
       const ImU32 tint = ImGui::GetColorU32(computing ? kBusyTint : kTierTint[order_of(t)]);
       if (state.libs && on_side(side, l)) {
-        lib_cells(state, (*state.libs)[l], computing, FeatureRead::dir_stale(lib_dir(config.feature_dir, l)), busy, tint);
+        lib_cells(state, (*state.libs)[l], computing, FeatureRead::lib_stale(l), busy, tint);
         continue;
       }
       for (int c = 0; c < kLibColN; ++c) { // 他页的库 / 库表未扫 (重扫在下一帧)
@@ -680,7 +680,7 @@ void RenderTabCompute(ComputeHub &hub, SharedData &data, LibSide side) {
     ImGui::Spacing();
     ImGui::BeginDisabled(!ok);
     if (ImGui::Button("Remove", ImVec2(120, 0))) {
-      remove_lib(data.config, *state.confirm_remove);
+      remove_lib(*state.confirm_remove);
       state.confirm_remove.reset();
       state.libs_dirty = true;
       ImGui::CloseCurrentPopup();

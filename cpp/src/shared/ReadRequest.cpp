@@ -2,7 +2,6 @@
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/date.hpp"
 #include "misc/profiler.hpp"
-#include "shared/Config.hpp"
 #include "shared/Feature.hpp"
 
 #include <algorithm>
@@ -32,7 +31,7 @@ void map_axis(ReadScope &s, std::vector<uint32_t> assets) {
 }
 
 bool landed(const FeatureLib &lib, misc::Ymd d) {
-  return std::binary_search(lib.dates.begin(), lib.dates.end(), d) && FeatureRead::has_date(lib.tier(), lib.dir, d);
+  return std::binary_search(lib.dates.begin(), lib.dates.end(), d) && FeatureRead::has_date(lib.id, d);
 }
 
 namespace {
@@ -46,14 +45,14 @@ LibMask landed_mask(const ReadScope &s, misc::Ymd d) {
 }
 } // namespace
 
-ReadScope read_scope(const Config &cfg, LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets,
+ReadScope read_scope(LibId main, const std::vector<ColRef> &cols, std::vector<uint32_t> assets,
                      DayAxis days) {
   ReadScope s;
   bool ready = true;
   const auto add = [&](LibId l) {
     if (s.has(l))
       return;
-    s.libs[l] = load_lib(cfg.feature_dir, l);
+    s.libs[l] = load_lib(l);
     ready &= s.libs[l].ready();
   };
   if (main != kAutoMain)
@@ -109,8 +108,8 @@ Readers ReadScope::readers(const PerLib<const FeatureRead *> &fr) const {
   return rd;
 }
 
-bool read_request(const Config &cfg, const Feature &feature, ReadSpec rs, ReadScope &scope, ReadPlan &plan) {
-  scope = read_scope(cfg, rs.main, rs.cols, std::move(rs.assets), rs.days);
+bool read_request(const Feature &feature, ReadSpec rs, ReadScope &scope, ReadPlan &plan) {
+  scope = read_scope(rs.main, rs.cols, std::move(rs.assets), rs.days);
   if (scope.months.empty())
     return false;
   plan = read_plan(feature, rs.level, rs.rows, rs.carry, std::move(rs.cols));
@@ -145,7 +144,7 @@ DateList enumerate_dates(const ReadScope &s) {
       continue;
     const FeatureLib &lib = s.libs[l];
     for (auto it = std::lower_bound(lib.dates.begin(), lib.dates.end(), lo); it != lib.dates.end() && *it <= hi; ++it)
-      if (FeatureRead::has_date(lib.tier(), lib.dir, *it))
+      if (FeatureRead::has_date(lib.id, *it))
         axis.emplace_back(*it, lib_bit(l));
   }
   std::sort(axis.begin(), axis.end());
@@ -257,7 +256,7 @@ SegPlan plan_day(const ReadScope &scope, misc::Ymd date) {
       continue;
     const FeatureLib &lib = scope.libs[l];
     for (auto it = std::lower_bound(lib.dates.begin(), lib.dates.end(), date); it != lib.dates.begin() && *(it - 1) > prev && *(it - 1) >= lo; --it)
-      if (FeatureRead::has_date(lib.tier(), lib.dir, *(it - 1))) {
+      if (FeatureRead::has_date(lib.id, *(it - 1))) {
         prev = *(it - 1);
         break;
       }

@@ -4,6 +4,7 @@
 //   作用域 FactorScope + 请求 Request<Spec> / FactorRef; 评估结果 EvalStat (StatScope / HoldStat / CostTier / MiniPdf) + AlphaDist.
 #pragma once
 
+#include "disk/Disk.hpp"
 #include "factor/Expr.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "features/Storage/FeatureLib.hpp" // FeatureLib (请求的库清单)
@@ -33,7 +34,7 @@ enum class RowState : uint8_t { Pending,
                                 Done };
 
 // ---- 因子层 (唯一真相 FACTOR_LEVELS: 加层只加一行) ↔ 网格层 / 因子子目录 / K 线列 ----
-//   因子层 = 网格 (行 / d 的单位) = 所用特征的最细层; 分类 = 池 × 层 (任何池都能用任何层), 因子文件在 <config.factor_dir>/<池>/<name>/.
+//   因子层 = 网格 (行 / d 的单位) = 所用特征的最细层; 分类 = 池 × 层 (任何池都能用任何层), 因子文件在 output/factors/<池>/<层>/.
 //   标签库 (门控 ts / cs_valid + 标签 + K 线, 恒取网格层本层列, 同行) = 因子池的 Bar 库 (label_lib); 截面 = 该库 cs_valid
 //   (all: 当日活跃; 子池: 当日成员, 第 D 日 = all Bar 库 D−1 收盘行池列).
 //   特征叶写全名 档.层.列 (kLevelToken): bar.* / lob.* = 因子池的 Bar / Lob 库; 叶可来自任意不细于网格的层 (level_asof 投影).
@@ -106,12 +107,21 @@ struct PerFactorLevel {
 };
 // 叶名里的层段 (档.层.列 的中段), 下标 = FeatureLevel
 inline constexpr const char *kLevelToken[LEVEL_COUNT] = {"1s", "1m", "5m", "15m", "30m", "60m", "1d"};
-// 该层因子目录 = <config.factor_dir>/<pool>/<name>
-std::string factor_dir_of(const SharedData &data, const std::string &pool, FactorLevelId lv);
+// 因子目录: 一组因子文件 <名>.json (file 节点, 键定到目录) + 各自的 Search 日志 <名>.log (log 节点, 同键, 在 run/ 下同构位置).
+//   正式 = output/factors/<池>/<层>/; Agent 候选 = 会话作用域的 factors/ (gui/task_agent/Bridge.cpp)
+struct FactorDir {
+  disk::Node file = disk::FactorFile, log = disk::RunSearchLog;
+  disk::Key key;
+  disk::Key of(std::string_view name) const; // 文件名 (含 .json) → 该文件的键; 不合布局 → assert
+  std::filesystem::path path(std::string_view name) const { return disk::path(file, of(name)); }
+  std::filesystem::path log_path(std::string_view name) const { return disk::path(log, of(name)); }
+  std::string dir() const;                // 目录 (显示用)
+  std::vector<std::string> files() const; // 盘上的因子文件名, 名序
+  bool operator==(const FactorDir &) const = default;
+};
+FactorDir factor_dir_of(const std::string &pool, FactorLevelId lv);
 // 请求的库清单 (GUI 线程读): 因子池两档库 (Bar = 标签库 / bar.* 叶 / 日频原料; Lob = lob.* 叶 / 盘口段成本); 余库空. 未建库的清单 ready() == false
 PerLib<FeatureLib> factor_libs(const SharedData &data, const std::string &pool);
-// 因子目录下的因子文件 (*.json 普通文件, 不进子目录), 路径序; 目录不存在 = 空
-std::vector<std::filesystem::path> list_factor_files(const std::string &dir);
 
 // ---- 字段表视图 (GUI 线程从 Feature 建一次, 每层一份全部页共享, worker 只读; 与池无关) ----
 // 一列 = (档, 层, 列下标), 库随因子池定 (lib_id(池, 档)): 叶 / 门控 / 标签 / 成本 / K 线 / 日频原料同一个类型, 进读计划同一个 ref
@@ -213,7 +223,7 @@ std::string now_string();
 struct FactorScope {
   FactorLevelId lv = 0;                   // 因子层 (= ft->lv)
   std::string pool;                       // 因子池
-  std::string factor_dir;                 // factor_dir_of(pool, lv)
+  FactorDir dir;                          // factor_dir_of(pool, lv)
   std::shared_ptr<const FeatureTable> ft; // 该层字段表 (每层建一次, 各请求共享; worker 只读)
   PerLib<FeatureLib> libs;                // factor_libs
   double max_impact = 0.0;                // Config::max_impact (买入冲击封顶, 成本装载时生效)

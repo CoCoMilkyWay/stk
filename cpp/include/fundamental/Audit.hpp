@@ -112,7 +112,7 @@ std::vector<Task> repair(const Spec &s, const Round &r, const std::vector<std::s
 
 // ============================================================================
 // Book — 核对侧的本地账本 (与 Store 对仗: Store 存数据, Book 存核对结论)
-//   output/fundamental/_audit/<表>.tsv: 每月只留最近一次核对的结论; put 后整写该表一个文件 (tmp + rename)
+//   output/data/fundamental/_audit/<表>.tsv: 每月只留最近一次核对的结论; put 后整写该表一个文件 (tmp + rename)
 //   结论有效 ⇔ 记下的版本 = 当前该月冻结槽的版本 (各槽 mtime 之和):
 //     重拉 / 修复 / 增删日 ⇒ 版本变 ⇒ 自动作废, 无需手动遗忘; renative 还原 mtime ⇒ 换编码不作废
 //   单线程使用 (AuditService worker 独占)
@@ -141,10 +141,10 @@ public:
     std::vector<Row> rows;
   };
 
-  // output/fundamental/_audit/ (不放 output/log: 特征计算开跑会整删 log_dir)
+  // output/data/fundamental/_audit/: 与分片同域 (分片重写即作废), 不进 run/
   static std::filesystem::path dir();
 
-  // 读 dir 下全部 <表>.tsv (.tmp 残留不读); 不参与核对的表 / 格式不符的文件直接删, 该表视为未核
+  // 读全部 <表>.tsv; 不参与核对的表 / 格式不符的文件直接删, 该表视为未核
   Book();
 
   // 唯一写点 (与 Store::put 对仗): 覆盖 u 各月的结论 (at = 核对时刻) + 整写该表文件

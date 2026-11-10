@@ -38,7 +38,6 @@ static_assert(trade_sec(kAmClose - 1) == 8099 && trade_sec(kPmOpen) == 8100 && t
 
 struct ReplayRequest {
   std::shared_ptr<const OrdersCatalog> orders; // 帧目录快照 (Asset::catalog)
-  std::string dir;                             // 日文件目录 (Config::orders_dir)
   uint32_t asset = 0;                          // 全局资产下标
   L2::ExchangeType exchange = L2::ExchangeType::UNKNOWN;
   misc::Ymd date = 0;

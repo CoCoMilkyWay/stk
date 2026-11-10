@@ -33,8 +33,8 @@ struct EngineHub {
   void reset(); // 析构 Stop() join worker, 状态回初值
 };
 
-// 组合两端每帧都调 (Alpha 的 Factors / Inspect, Market 的行情页): 建服务 + 目录同步
-void EnsurePortfolio(const SharedData &data, EngineHub &e);
+// 组合两端每帧都调 (Alpha 的 Factors / Inspect, Market 的行情页): 建服务 + 首次列组合
+void EnsurePortfolio(EngineHub &e);
 // 组合: 内容变 / 因子文件变 → 重解析; 有效条目 / 池集合变 (或 reload) 才发请求, 不打断在跑的
 void SyncPortfolio(const SharedData &data, EngineHub &e, bool reload);
 

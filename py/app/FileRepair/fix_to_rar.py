@@ -9,9 +9,9 @@ that is not already a true RAR. Files of other names are never touched.
 Pipeline, strictly one archive at a time (parallel files only fight over
 the same USB bandwidth / CPU and multiply local disk usage):
 
-      7z x <source> -> output/fix_temp/<stem>/        (local disk)
-      rar a         -> <source dir>/.tmp_<stem>.rar   (written straight to
-                                                        the destination disk)
+      7z x <source> -> output/run/data/repair/temp/<stem>/  (local disk)
+      rar a         -> <source dir>/.tmp_<stem>.rar         (written straight to
+                                                              the destination disk)
       fsync, os.replace() -> <stem>.rar               (atomic rename)
       delete source (skip if source IS the final path, i.e. disguised .rar)
       rmtree extract dir
@@ -36,8 +36,8 @@ Interruption patterns:
     the same unwinding happens; subprocess.run kills the child.
   - SIGKILL / OOM / power loss: nothing can run; the child carries
     PR_SET_PDEATHSIG=SIGKILL so it dies with us. Leftovers (.tmp_ on the
-    destination, output/fix_temp/ locally) are swept at the next start.
-  - Concurrent runs: output/fix_temp/ is flock'ed, second instance refuses
+    destination, output/run/data/repair/temp/ locally) are swept at the next start.
+  - Concurrent runs: output/run/data/repair/temp/ is flock'ed, second instance refuses
     to start.
 
 Usage:
@@ -63,7 +63,7 @@ MAGIC_TO_FORMAT = {
 }
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-WORK_DIR = PROJECT_ROOT / "output" / "fix_temp"
+WORK_DIR = PROJECT_ROOT / "output" / "run" / "data" / "repair" / "temp"
 
 PR_SET_PDEATHSIG = 1
 

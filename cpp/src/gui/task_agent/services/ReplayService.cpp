@@ -72,7 +72,7 @@ bool ReplayService::run(ReplayRequest &req) {
   const FrameRef &ref = req.orders->at(didx, req.asset);
   L2::FrameView view;
   if (!ref.empty())
-    view = DayReader(req.dir, req.date).get(ref, R.decoder);
+    view = DayReader(req.date).get(ref, R.decoder);
   if (view.head.count == 0) {
     out.error = didx == OrdersCatalog::kNoDay ? "逐笔日文件里没有这一天 (非交易日, 或该日未编码)"
                 : ref.tombstone()             ? "当日该股逐笔为空 (停牌或没有委托)"

@@ -1,5 +1,6 @@
 // Docs — 见头文件
 #include "gui/task_agent/Docs.hpp"
+#include "disk/Disk.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
 
@@ -111,7 +112,7 @@ struct Lib {
 
 // tag_stat.md 的 "[按阶段]" 段: 阶段行 "L1_factor  因子构造  (828篇)", 流派行 "├── order_flow  订单流与订单簿  142 …"
 void names_of(Lib &L) {
-  std::istringstream in(slurp(fs::path(kDocDir) / "resources-tag" / "tag_stat.md"));
+  std::istringstream in(slurp(disk::path(disk::Doc) / "resources-tag" / "tag_stat.md"));
   bool on = false;
   for (std::string line; std::getline(in, line);) {
     if (line.starts_with("[按阶段]")) {
@@ -144,8 +145,8 @@ double stat_of(const json &v) { return v.is_null() ? NAN : v.get<double>(); }
 Lib load() {
   Lib L;
   names_of(L);
-  const fs::path root = fs::path(kDocDir) / "resources-tag" / "report";
-  assert(fs::is_directory(root) && "研报标注不在 kDocDir");
+  const fs::path root = disk::path(disk::Doc) / "resources-tag" / "report";
+  assert(fs::is_directory(root) && "研报标注不在 output/data/doc");
   std::vector<fs::path> files;
   for (const auto &e : fs::recursive_directory_iterator(root, fs::directory_options::follow_directory_symlink))
     if (e.is_regular_file() && e.path().extension() == ".json")
@@ -224,7 +225,7 @@ struct Text {
 };
 
 Text text_of(const Doc &d) {
-  std::istringstream in(slurp(fs::path(kDocDir) / "resources-proc" / "report" / d.dir / d.id / "report.md"));
+  std::istringstream in(slurp(disk::path(disk::Doc) / "resources-proc" / "report" / d.dir / d.id / "report.md"));
   Text t;
   t.at.push_back(0);
   bool blank = true;

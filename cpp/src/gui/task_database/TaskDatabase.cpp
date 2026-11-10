@@ -47,7 +47,6 @@ private:
   bool is_expanded_ = false;
   bool initialized_ = false;
   SharedData *data_ = nullptr; // Pointer to shared data
-  std::string config_dir_ = "../../config";
 
 public:
   explicit DatabaseTask(std::shared_ptr<const Quote::QuoteHub> quote) : quote_(std::move(quote)) {}

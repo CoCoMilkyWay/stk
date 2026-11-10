@@ -13,6 +13,7 @@
 #include "api/bigquant/client.hpp"
 #include "api/eastmoney/client.hpp"
 #include "api/tushare/client.hpp"
+#include "disk/Disk.hpp"
 #include "fundamental/Store.hpp"
 #include "fundamental/Sync.hpp"
 #include "gui/task_database/services/Drive.hpp"
@@ -84,13 +85,10 @@ TableFileStat stat_of(std::string name, const std::vector<fundamental::Shard> &s
 // 概念快照 YYYYMMDD.tsv 记成日分片
 TableFileStat concept_stat() {
   std::vector<fundamental::Shard> snaps;
-  if (std::filesystem::exists(concept_dir()))
-    for (const std::filesystem::directory_entry &e : std::filesystem::directory_iterator(concept_dir()))
-      if (e.path().extension() == ".tsv") {
-        const Ymd d = misc::parse_ymd(e.path().stem().string());
-        assert(d > 0 && "concept: 快照文件名不是 YYYYMMDD.tsv");
-        snaps.push_back({misc::ym_of(d), e.path(), e.file_size(), e.last_write_time(), d});
-      }
+  for (const disk::Key &k : disk::list(disk::ConceptDay)) {
+    const std::filesystem::path p = disk::path(disk::ConceptDay, k);
+    snaps.push_back({misc::ym_of(k.date), p, std::filesystem::file_size(p), std::filesystem::last_write_time(p), k.date});
+  }
   return stat_of(kConceptTable, snaps);
 }
 

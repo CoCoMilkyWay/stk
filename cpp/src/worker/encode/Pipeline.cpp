@@ -1,6 +1,7 @@
 #include "worker/encode/Pipeline.hpp"
 #include "shared/SharedData.hpp"
 
+#include "disk/Disk.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "misc/affinity.hpp"
 #include "misc/archive.hpp"
@@ -80,12 +81,12 @@ MemberFiles member_files(const Config &config) {
 // 增量新鲜度规则: 日文件存在且不老于归档 → 它的结局可信.
 //   - 原子落盘保证"存在即完整", 一次 stat 就够, 不需要读帧;
 //   - 归档被重下/修复过 → mtime 变新 → 日文件判过期, 整天重编覆盖.
-bool day_file_fresh(const std::string &orders_dir, const std::string &archive_path, misc::Ymd date) {
+bool day_file_fresh(const std::string &archive_path, misc::Ymd date) {
   std::error_code ec;
   std::filesystem::file_time_type archive_mtime = std::filesystem::last_write_time(archive_path, ec);
   if (ec)
     archive_mtime = {};
-  const auto day_mtime = std::filesystem::last_write_time(orders_day_path(orders_dir, date), ec);
+  const auto day_mtime = std::filesystem::last_write_time(orders_day_path(date), ec);
   return !ec && day_mtime >= archive_mtime;
 }
 
@@ -162,14 +163,12 @@ void encode_producer(SharedData &data,
 
     const std::string archive_path = archive_day_path(data.config.archive_dir, date);
 
-    const std::string &orders_dir = data.config.orders_dir;
-
     // 上一轮的日文件 (见 orders/OrdersDay.hpp), 新鲜才认 (新鲜 ⇒ 存在). 三处用它:
     // 整天快路径看 complete, 下面的逐资产过滤看目录里的帧与墓碑, 新日文件从它
     // adopt 旧帧.
     std::optional<DayReader> prev;
-    if (skip_existing && day_file_fresh(orders_dir, archive_path, date))
-      prev.emplace(orders_dir, date);
+    if (skip_existing && day_file_fresh(archive_path, date))
+      prev.emplace(date);
 
     // 整天快路径 — 必须在列举之前: 下面那次 unrar l 要走完整条包头链
     // (实测 0.2~2.5s), 光"确认无事可做"就是几秒一天.
@@ -262,7 +261,7 @@ void encode_producer(SharedData &data,
 
     // 新日文件: 先把旧日文件里搬得过来的帧整段拷进去 (就地改写目录项的
     // 偏移), worker 再往后追加新编的帧.
-    auto job = std::make_shared<DayJob>(orders_dir, date);
+    auto job = std::make_shared<DayJob>(date);
     job->index = std::move(day);
     if (prev)
       job->writer.adopt(*prev, job->index.refs);
@@ -686,8 +685,8 @@ bool encode_pipeline(const EncodeArgs &args) {
   const size_t days_corrupt = stats.days_corrupt.load();
   if (pairs_corrupt > 0 || days_corrupt > 0) {
     std::cout << "CORRUPT SOURCE: " << pairs_corrupt << " (asset, date) pairs + " << days_corrupt
-              << " whole days skipped — grep '[CORRUPT' in " << data.config.log_dir
-              << "/encoding.log, repair, then re-run incremental\n"
+              << " whole days skipped — grep '[CORRUPT' in "
+              << disk::path(disk::RunOrdersLogFile, {.name = "encoding"}).string() << ", repair, then re-run incremental\n"
               << std::endl;
   }
 
@@ -696,7 +695,7 @@ bool encode_pipeline(const EncodeArgs &args) {
   const size_t pairs_invalid = stats.run.count(L2::Outcome::Invalid);
   if (pairs_invalid > 0) {
     std::cout << "INVALID DATA: " << pairs_invalid << " (asset, date) pairs failed validation — grep '[INVALID' in "
-              << data.config.log_dir << "/encoding.log, check source, then re-run incremental\n"
+              << disk::path(disk::RunOrdersLogFile, {.name = "encoding"}).string() << ", check source, then re-run incremental\n"
               << std::endl;
   }
   return completed;

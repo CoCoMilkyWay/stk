@@ -19,7 +19,7 @@
 //   写回 [lo, 定稿线]: 有根写根, 无根清空, 全段标精确 (此后快照不写); lo 推到定稿线后.
 //   定稿线: 标号不晚于 "此刻 − kSettle" 的根不再变 (刚过去那根还会被修正); 行情日不是今天 (盘前看昨日 / 周末) → 整日定稿.
 //   行情日 ≤ fund_end (基本面 bar1m 已入库) 不取分钟 K (那天由 bar1m 给).
-//   落盘 kCache: 单文件存行情日全部 Track (Track::snap 一份清单读写) + 末轮快照时刻, 有变化时每 kSave 与析构各写一次.
+//   落盘 output/data/quote/live.bin: 单文件存行情日全部 Track (Track::snap 一份清单读写) + 末轮快照时刻, 有变化时每 kSave 与析构各写一次.
 //     换日 (含启动首轮) 先读同日缓存 —— 停机那段即一次断档, 照断档规则只补其间有成交的只; 收盘后重启零请求.
 //   全市场 = 构造时给定的全局轴子集 (PoolAxis; 对外一律全局 id, 内部下标 = sub, 新浪码由轴码派生); 前一交易日取自构造时给定的交易日历;
 //   线程: 快照 1 (每批一路并发) + 分钟 K kFillers, 随对象.
@@ -61,14 +61,13 @@ struct QuoteStatus {
 
 class QuoteService {
 public:
-  static constexpr int kTick = 3, kIdleTick = 30;                           // 快照间隔 [s]: 盘中 / 盘外
-  static constexpr int kSettle = 90;                                        // 定稿延迟 [s]
-  static constexpr int kLag = (kSettle + 59) / 60 + 1;                      // 此刻所在根 − 定稿线 的上界 [根]
-  static constexpr int kGap = 10;                                           // 断档判据: 两轮快照间连续竞价时长 [s]
-  static constexpr int kSave = 300;                                         // 落盘间隔 [s]
-  static constexpr int kFillers = 16;                                       // 分钟 K 并发 (再高新浪会 RST)
-  static constexpr uint32_t kFoldChunk = 256;                               // 篮子合成每段只数 (持 mu_ 的粒度)
-  static constexpr const char *kCache = "../../../../output/sina/live.bin"; // 当日分钟 K 缓存
+  static constexpr int kTick = 3, kIdleTick = 30;      // 快照间隔 [s]: 盘中 / 盘外
+  static constexpr int kSettle = 90;                   // 定稿延迟 [s]
+  static constexpr int kLag = (kSettle + 59) / 60 + 1; // 此刻所在根 − 定稿线 的上界 [根]
+  static constexpr int kGap = 10;                      // 断档判据: 两轮快照间连续竞价时长 [s]
+  static constexpr int kSave = 300;                    // 落盘间隔 [s]
+  static constexpr int kFillers = 16;                  // 分钟 K 并发 (再高新浪会 RST)
+  static constexpr uint32_t kFoldChunk = 256;          // 篮子合成每段只数 (持 mu_ 的粒度)
 
   QuoteService(PoolAxis axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading);
   ~QuoteService();

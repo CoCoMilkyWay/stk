@@ -3,7 +3,6 @@
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/date.hpp"
-#include "shared/Config.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -27,7 +26,7 @@ bool CtaService::publish(const CtaRequest &req, std::string lack, std::shared_pt
 bool CtaService::run(CtaRequest &req) {
   const CtaSpec &sp = req.spec;
   assert(sp.roll >= static_cast<int>(cta::kMinRoll));
-  const FeatureLib lib = load_lib(cfg_.feature_dir, kAllBar);
+  const FeatureLib lib = load_lib(kAllBar);
   if (!lib.ready())
     return publish(req, "CTA 价格由 all.bar 特征库合成: 先在 Beta → Compute 算好 all 池的 Bar 库.");
   FeatureRead rd(lib, &cancel_);

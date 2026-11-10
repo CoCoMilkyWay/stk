@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FeatureDay.hpp" // 续算尾窗读回 (seed)
+#include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureTier.hpp"
 #include "misc/exec.hpp"
 #include "misc/logging.hpp"
@@ -12,7 +13,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -264,7 +264,7 @@ private:
 
   // Config
   const std::uint64_t axis_hash_; // A 轴指纹 (PoolAxis::hash), 落进每个特征文件头
-  std::string output_dir_;
+  const LibId lib_;
 
   // 日环格 [cap]: 格号 0..P−1 已分配 (grow 逐格追加), 日 d 占 slots_[ring_.cell(d)]. 不需要 freelist / epoch / 状态枚举 (见文件头)
   std::vector<std::unique_ptr<Slot>> slots_;
@@ -284,13 +284,13 @@ public:
   // num_assets: 档 A 轴大小; axis_hash: PoolAxis::hash, 写进每个
   // 特征文件头锁定"列 → 资产"映射 (读端从同一 FeatureLib 推导同一轴比对).
   // slots = 初始格数 P, cap = 格数上限 (映射表长; 格数与内存预算由管线定, 见 worker/compute/Pipeline.hpp)
-  FeatureStore(size_t num_assets, std::uint64_t axis_hash, const std::string &output_dir, size_t slots, size_t cap)
+  FeatureStore(size_t num_assets, std::uint64_t axis_hash, LibId lib, size_t slots, size_t cap)
       : StoreRing(num_assets, slots, cap),
-        axis_hash_(axis_hash), output_dir_(output_dir), slots_(cap) {
-    assert(num_assets_ >= 1 && !output_dir_.empty() && "A 轴为空 / 无库目录");
+        axis_hash_(axis_hash), lib_(lib), slots_(cap) {
+    assert(num_assets_ >= 1 && "A 轴为空");
     // 只建目录, 不清库: 清库/重算是调用方的显式决定 (回测全量重算见
     // ComputeService), 构造副作用会让实盘复用 store 时误删历史特征.
-    std::filesystem::create_directories(output_dir_);
+    disk::ensure(disk::Lib, lib_key(lib_));
 
     const size_t bytes_per_day = Slot::bytes(num_assets);
     std::cout << "\n=== Feature Store Tensor Pool (" << tier_name(T::kId) << ") ===\n";
@@ -348,11 +348,10 @@ public:
     misc::exec::ForkJoin ex(misc::exec::fit(dates.size()));
     ex.tasks(static_cast<int>(dates.size()), [&](int d, int) {
       FeatureDay::Scratch s;
-      const std::string day_dir = feature_day_dir(output_dir_, dates[static_cast<size_t>(d)]);
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
         if (!T::has(lvl))
           continue;
-        const FeatureDay::Status st = FeatureDay::read_layer(feature_file(day_dir, lvl), T::LEVELS[lvl], slot(static_cast<size_t>(d)).data[lvl], num_assets_, axis_hash_, s);
+        const FeatureDay::Status st = FeatureDay::read_layer(lib_day_file(lib_, dates[static_cast<size_t>(d)], lvl), T::LEVELS[lvl], slot(static_cast<size_t>(d)).data[lvl], num_assets_, axis_hash_, s);
         assert(st == FeatureDay::Status::Ok && "续算: 尾窗日文件读不回");
         (void)st;
       }
@@ -457,7 +456,7 @@ public:
   }
 
   // ===== QUERY API =====
-  const std::string &query_dir() const { return output_dir_; } // 特征库目录 (日文件落在其下)
+  LibId query_lib() const { return lib_; }                     // 特征库 (日文件落在其目录下)
   std::uint64_t query_axis_hash() const { return axis_hash_; } // A 轴指纹 (落进每个日文件头)
 };
 

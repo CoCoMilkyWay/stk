@@ -1,12 +1,12 @@
 // Task Agent — 见头文件
 #include "gui/task_agent/TaskAgent.hpp"
+#include "disk/Disk.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Mine.hpp"
 #include "gui/task_agent/Text.hpp"
 
 #include "imgui.h"
-#include "misc/fs.hpp"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
@@ -17,7 +17,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <fstream>
 #include <future>
 #include <initializer_list>
 #include <memory>
@@ -49,7 +48,7 @@ constexpr ImVec4 kColHead(0.4f, 0.8f, 1.0f, 1.0f);
 
 bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
-// Mine / Config 页的选项 (kUiFile 读写同一份字段清单): 作用域 (含开放的叶 / 算子) / 连接 / 模型 / 评估后端 / 入库门槛 / 可否提问 (下次 New 生效) + Config 页在看的模板
+// Mine / Config 页的选项 (ui.json 读写同一份字段清单): 作用域 (含开放的叶 / 算子) / 连接 / 模型 / 评估后端 / 入库门槛 / 可否提问 (下次 New 生效) + Config 页在看的模板
 struct Options {
   Scope sc;
   int backend = 0;
@@ -113,7 +112,7 @@ struct Sniffer {
 struct State {
   std::unique_ptr<Mine> mine; // 首次 Draw 建 (Destroy 释放: 对话线程 / 评估 worker 与常驻块)
   Options opt;
-  std::string opt_saved; // kUiFile 当前内容; 选项序列化后与之不同才写
+  std::string opt_saved; // ui.json 当前内容; 选项序列化后与之不同才写
   Sniffer sniff;
   // Config 页提示词编辑
   std::string prompt_text;
@@ -123,7 +122,7 @@ struct State {
   Phase seen_phase = Phase::None; // 刚进 Choose: 切到过程页一次
   size_t flow_rounds = 0;         // 过程页上一帧画过的轮数
   std::string message;
-  // 本会话要求 (只随下次 New / Test 发, 不落 kUiFile); fold_remark = 刚开会话, 下一帧把它折起
+  // 本会话要求 (只随下次 New / Test 发, 不落 ui.json); fold_remark = 刚开会话, 下一帧把它折起
   std::string remark;
   bool fold_remark = false;
   // 过程页的跟随: pinned = 钉在底部跟新内容 (人往上滚 / 点开合即放开, 回到底部再钉); jump = 点了状态行, 跳到当前轮
@@ -159,14 +158,13 @@ bool model_ok(const State &s) {
   return !s.sniff.busy(b) && s.sniff.got[b].error.empty() && !s.opt.model.empty(); // 按当前连接方式嗅探成功且已选
 }
 
-// ---- 选项落盘 (kUiFile) ----
+// ---- 选项落盘 (config/local/agent/ui.json) ----
 // 无文件 / 读不出 / 字段对不上 / 取值越界 ⇒ 整份回默认值, 首次 save_ui 按当前字段清单重写
 // 池 / 层 / 持有期 / 模型失效由各自的选择逻辑回落; GPU 不在了回落 CPU
 void load_ui(State &s) {
-  std::ifstream f(kUiFile);
   bool ok = false;
-  if (f.is_open()) {
-    const nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
+  if (disk::exists(disk::AgentUiFile)) {
+    const nlohmann::json j = nlohmann::json::parse(disk::read(disk::AgentUiFile), nullptr, false);
     try {
       j.get_to(s.opt);
       ok = true;
@@ -186,7 +184,7 @@ void save_ui(State &s) {
   std::string text = nlohmann::ordered_json(s.opt).dump(2);
   if (text == s.opt_saved)
     return;
-  misc::atomic_write(kUiFile, text.data(), text.size());
+  disk::write(disk::AgentUiFile, {}, text);
   s.opt_saved = std::move(text);
 }
 
@@ -291,7 +289,7 @@ void session_row(const SharedData &data, State &s) {
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
   const bool can_new = !m.live() && !m.chat.busy() && !m.lab.busy() && keyed && model_ok(s) && has_hold && has_leaves && has_ops;
-  const char *why_not = !keyed                    ? "所选后端的 key 未填 (config/agent/keys.json)"
+  const char *why_not = !keyed                    ? "所选后端的 key 未填 (config/local/agent/keys.json)"
                         : !model_ok(s)            ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
                         : has_hold && !has_leaves ? "没有开放的特征叶 (本层无叶, 或特征页一个没勾)"
                         : has_hold && !has_ops    ? "没有开放的算子 (算子页一个没勾)"
@@ -1453,7 +1451,7 @@ void render_config(State &s) {
   if (has_key(o.backend))
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "key 已填");
   else
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "key 未填 (config/agent/keys.json)");
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "key 未填 (config/local/agent/keys.json)");
   ImGui::BeginDisabled(s.sniff.any());
   int via = o.via_proxy[o.backend];
   bool toggled = ImGui::RadioButton("直连", &via, 0);
@@ -1518,7 +1516,7 @@ void render_config(State &s) {
   ImGui::SameLine();
   ImGui::RadioButton("GPU", &o.gpu, 1);
   ImGui::EndDisabled();
-  ImGui::TextDisabled("会话目录 %s/<池>/<层>/<持有期>; 下次 New 生效", kWorkDir);
+  ImGui::TextDisabled("会话目录 %s/<池>/<层>/<持有期>; 下次 New 生效", disk::path(disk::AgentSessions, {}).c_str());
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "入库门槛");
@@ -1554,7 +1552,7 @@ void render_config(State &s) {
   if (ImGui::Button("Save"))
     SavePrompt(msg, s.prompt_text);
   ImGui::SameLine();
-  ImGui::TextDisabled("%s/%s.md ({{键}} 占位; 保存后, 下次组消息生效)", kPromptDir, def(msg).id);
+  ImGui::TextDisabled("%s ({{键}} 占位; 保存后, 下次组消息生效)", disk::path(disk::PromptFile, {.name = def(msg).id}).c_str());
   input_multiline("##prompt", s.prompt_text, ImVec2(-1, -1));
 }
 

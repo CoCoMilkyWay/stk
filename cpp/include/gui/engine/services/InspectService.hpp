@@ -76,7 +76,7 @@ inline std::string inspect_key(FactorLevelId lv, const std::string &pool, const 
   return std::string(factor_level(lv).name) + "|" + row + "|" + expr + (dir == factor::stat::kRev ? "|-" : "|+") + "|" + pool;
 }
 // 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表;
-// ex ≠ None = 带导出 (top_n ≥ 1; csv = <export_dir>/<池>/<层名>/<因子>_w<权重号>_top<N>_{log,snap}.csv)
+// ex ≠ None = 带导出 (top_n ≥ 1; csv = output/run/factors/<池>/<层>/export/<因子>_w<权重号>_top<N>_{log,snap}.csv)
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload, bool gpu,
                         InspectExport ex, int top_n, InspectRequest &req);
 

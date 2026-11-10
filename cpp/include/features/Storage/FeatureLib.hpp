@@ -1,6 +1,6 @@
 #pragma once
 
-// 特征库 = 池 × 档 + A 轴 + 目录 + 日期轴. 目录 <feature_dir>/<池>/<档> (lib_dir); 每池两档对称, 各自一库:
+// 特征库 = 池 × 档 + A 轴 + 目录 + 日期轴. 目录 output/features/<池>/<档> (lib_dir); 每池两档对称, 各自一库:
 //   Bar (bar1m + 基本面)  交易日 [fundamental::kSyncStart, min(末个 bar1m 日, fund::last_day)]
 //   Lob (逐笔 → 订单簿)   回测日历 ≤ 末个已编码日、止于首个待编码日之前, 落在同池 Bar 库日期轴上的日
 //   源缺尾日 → 库停在源齐处, 数据入盘后再追加 (追加不改已落盘行)
@@ -19,6 +19,7 @@
 //   all bar 轴 = 全部出现过的标的 (cs_valid = 在市), 其余库轴 = 本库日期段内进过池的标的. 不做跨池并集轴.
 //   一般只算一个库, 不为"多库一起算"做共享优化.
 
+#include "disk/Disk.hpp"
 #include "features/Storage/FeatureLevels.hpp" // TierId / PoolId / LibId
 #include "fundamental/AssetAxis.hpp"          // PoolAxis
 #include "misc/date.hpp"
@@ -84,7 +85,9 @@ inline std::vector<LibId> lib_order() {
       o.push_back(lib_id(p, t));
   return o;
 }
-// 库目录 <feature_dir>/<池>/<档>: 各库并存, 重算一个不清别的库; 写读两端唯一的路径入口
-std::string lib_dir(const std::string &feature_dir, LibId id);
-FeatureLib load_lib(const std::string &feature_dir, LibId id); // 读清单; 无清单 → 未建库 (id / dir 仍有效)
-void save_lib(const FeatureLib &lib);                          // 写清单 (tmp + rename)
+// 库目录 output/features/<池>/<档>: 各库并存, 重算一个不清别的库. 库内节点 (disk::Lib 之下) 的键都从 lib_key 起
+disk::Key lib_key(LibId id);
+std::string lib_dir(LibId id);
+std::string lib_day_file(LibId id, misc::Ymd d, size_t lvl); // <库>/YYYY/MM/DD/features_<LVL>.bin
+FeatureLib load_lib(LibId id);                               // 读清单; 无清单 → 未建库 (id / dir 仍有效)
+void save_lib(const FeatureLib &lib);                        // 写清单 (原子替换)

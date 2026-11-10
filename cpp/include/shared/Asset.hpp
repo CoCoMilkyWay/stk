@@ -208,7 +208,7 @@ struct Asset {
   // 四步同一形状: 只读本对象 (items / 上次扫描的两源缓存) + 只写 AssetScan, 批内并行走 ex.tasks,
   // 进度 begin(阶段, 总量) / publish(1). 产物由 GUI 帧首 adopt 整体换进 —— 中途页面看到的是上次扫描的完整结果.
   // ========================================
-  void scan_orders(AssetScan &out, const std::string &orders_dir, misc::exec::ForkJoin &ex, Progress &p) const;
+  void scan_orders(AssetScan &out, misc::exec::ForkJoin &ex, Progress &p) const;
   static void scan_archive(AssetScan &out, const std::string &archive_dir, const std::string &archive_extension,
                            misc::exec::ForkJoin &ex, Progress &p);
 

@@ -1,4 +1,5 @@
 #include "orders/OrdersDay.hpp"
+#include "disk/Disk.hpp"
 #include "misc/cross_platform.hpp"
 
 #include <algorithm>
@@ -33,34 +34,12 @@ std::string archive_day_path(const std::string &dir, misc::Ymd date) {
   return dir + "/" + d.substr(0, 4) + "/" + d.substr(0, 6) + "/" + d + kArchiveExtension;
 }
 
-std::string orders_day_path(const std::string &dir, misc::Ymd date) {
-  const std::string d = misc::dense(date);
-  return dir + "/" + d.substr(0, 4) + "/" + d.substr(4, 2) + "/" + d + kOrdersExtension;
-}
+std::string orders_day_path(misc::Ymd date) { return disk::path(disk::OrdersDay, {.date = date}).string(); }
 
-std::vector<misc::Ymd> orders_days(const std::string &dir) {
-  namespace fs = std::filesystem;
+std::vector<misc::Ymd> orders_days() {
   std::vector<misc::Ymd> days;
-  for (const auto &year_entry : fs::directory_iterator(dir)) {
-    if (!year_entry.is_directory())
-      continue;
-    for (const auto &month_entry : fs::directory_iterator(year_entry.path())) {
-      if (!month_entry.is_directory())
-        continue;
-      for (const auto &day_entry : fs::directory_iterator(month_entry.path())) {
-        if (!day_entry.is_regular_file() || day_entry.path().extension().string() != kOrdersExtension)
-          continue;
-        const std::string stem = day_entry.path().stem().string();
-        const misc::Ymd date = stem.size() == 8 ? misc::parse_ymd(stem) : 0;
-        // 只认 orders_day_path 给得出的位置: YYYY/MM 必须是这一天的年月
-        if (!date || year_entry.path().filename().string() != stem.substr(0, 4) ||
-            month_entry.path().filename().string() != stem.substr(4, 2))
-          continue;
-        days.push_back(date);
-      }
-    }
-  }
-  std::sort(days.begin(), days.end());
+  for (const disk::Key &k : disk::list(disk::OrdersDay))
+    days.push_back(k.date);
   return days;
 }
 
@@ -111,8 +90,8 @@ const FrameRef *DayIndex::find(size_t asset_id) const {
 // DayReader
 // ============================================================================
 
-DayReader::DayReader(const std::string &dir, misc::Ymd date)
-    : date_(date), fd_(file_open_read(orders_day_path(dir, date).c_str())) {
+DayReader::DayReader(misc::Ymd date)
+    : date_(date), fd_(file_open_read(orders_day_path(date).c_str())) {
   assert(fd_ >= 0 && "日文件打不开 (登记过却不存在: 扫描 / 增量判定之后有人在动 orders?)");
 }
 
@@ -201,8 +180,8 @@ size_t DayReader::prefetch(std::span<const FrameRef> refs) {
 // DayWriter
 // ============================================================================
 
-DayWriter::DayWriter(const std::string &dir, misc::Ymd date)
-    : path_(orders_day_path(dir, date)), tmp_path_(path_ + ".tmp"), end_(sizeof(DayFileHeader)) {
+DayWriter::DayWriter(misc::Ymd date)
+    : path_(orders_day_path(date)), tmp_path_(path_ + ".tmp"), end_(sizeof(DayFileHeader)) {
   std::filesystem::create_directories(std::filesystem::path(path_).parent_path());
   fd_ = file_open_trunc(tmp_path_.c_str());
   assert(fd_ >= 0 && "日文件 .tmp 建不出来");
@@ -282,9 +261,9 @@ void DayWriter::commit(DayIndex index) {
 OrdersCatalog::OrdersCatalog(std::vector<misc::Ymd> days_, size_t width_)
     : days(std::move(days_)), records(days.size()), width(width_), frames(days.size() * width_) {}
 
-void OrdersCatalog::fill_day(size_t didx, const std::string &dir) {
+void OrdersCatalog::fill_day(size_t didx) {
   assert(didx < days.size() && "OrdersCatalog::fill_day: 行越界");
-  DayReader reader(dir, days[didx]);
+  DayReader reader(days[didx]);
   const DayIndex &index = reader.index();
   records[didx] = index.rec;
   FrameRef *row = frames.data() + didx * width;

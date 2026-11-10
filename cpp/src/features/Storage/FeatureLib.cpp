@@ -4,27 +4,29 @@
 
 #include <algorithm>
 #include <cassert>
-#include <filesystem>
-#include <fstream>
 
 // ============================================================================
-// 特征库清单: <dir>/lib.json = {"tier", "dates": [YYYYMMDD...], "codes": ["CODE.EX"...], "outside": [...] (非空才有)}
+// 特征库清单: <库>/lib.json = {"tier", "dates": [YYYYMMDD...], "codes": ["CODE.EX"...], "outside": [...] (非空才有)}
 // ============================================================================
-namespace {
-std::string lib_manifest(const std::string &dir) { return dir + "/lib.json"; }
-} // namespace
+disk::Key lib_key(LibId id) { return {.pool = pool_def(lib_pool(id)).name, .tier = std::string(tier_name(lib_tier(id)))}; }
 
-std::string lib_dir(const std::string &feature_dir, LibId id) { return feature_dir + "/" + pool_def(lib_pool(id)).name + "/" + tier_name(lib_tier(id)); }
+std::string lib_dir(LibId id) { return disk::path(disk::Lib, lib_key(id)).string(); }
 
-FeatureLib load_lib(const std::string &feature_dir, LibId id) {
+std::string lib_day_file(LibId id, misc::Ymd d, size_t lvl) {
+  disk::Key k = lib_key(id);
+  k.lvl = level_name(lvl);
+  k.date = d;
+  return disk::path(disk::LibDayFile, k).string();
+}
+
+FeatureLib load_lib(LibId id) {
   FeatureLib lib;
   lib.id = id;
-  lib.dir = lib_dir(feature_dir, id);
-  std::ifstream file(lib_manifest(lib.dir));
-  if (!file.is_open())
+  lib.dir = lib_dir(id);
+  if (!disk::exists(disk::LibManifest, lib_key(id)))
     return lib; // 未建库
 
-  const nlohmann::json j = nlohmann::json::parse(file);
+  const nlohmann::json j = nlohmann::json::parse(disk::read(disk::LibManifest, lib_key(id)));
   assert(j.at("tier").get<std::string>() == tier_name(lib.tier()) && "库清单的档与目录不符");
   lib.dates = j.at("dates").get<std::vector<misc::Ymd>>();
   assert(!lib.dates.empty() && std::is_sorted(lib.dates.begin(), lib.dates.end()) && "库清单日期轴为空 / 非升序");
@@ -70,14 +72,5 @@ void save_lib(const FeatureLib &lib) {
     j["outside"] = outside;
   }
 
-  std::filesystem::create_directories(lib.dir);
-  const std::string path = lib_manifest(lib.dir);
-  const std::string tmp = path + ".tmp";
-  {
-    std::ofstream file(tmp);
-    assert(file.is_open() && "save_lib: 临时文件打不开");
-    file << j.dump(0);
-    assert(file.good() && "save_lib: 写入失败");
-  }
-  std::filesystem::rename(tmp, path); // 原子替换: 读端要么见旧清单要么见新清单
+  disk::write(disk::LibManifest, lib_key(lib.id), j.dump(0)); // 原子替换: 读端要么见旧清单要么见新清单
 }

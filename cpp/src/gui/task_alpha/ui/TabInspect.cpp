@@ -1575,7 +1575,7 @@ bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &
     const auto &labels = ctx.ft->y.labels;
     const int hold = labels.empty() ? 0 : labels[static_cast<size_t>(std::clamp(fui.hold_idx, 0, static_cast<int>(labels.size()) - 1))].key;
     std::lock_guard<std::mutex> lock(fsvc.mutex);
-    if (fsvc.current.scope.factor_dir == ctx.factor_dir) {
+    if (fsvc.current.scope.dir == ctx.dir) {
       const FactorRow *first = nullptr, *best = nullptr;
       for (const FactorRow &r : fsvc.rows) {
         if (!inspectable(r))

@@ -10,7 +10,7 @@
 //   分钟根 = 末 kMinuteDays 个落盘日的 L_1min, 按行 row_slot 并根 (与个股读 bar1m 同一路).
 //   各日文件互不相干 ⇒ 收盘行每批 2 × 线程数日在常驻线程池上一日一任务并行读.
 // 窗: 只留末 kDailyDays 个落盘日的日根 / 末 kMinuteDays 个落盘日的分钟根 (按日期截, 不按根数).
-// 续算: 全表 Book 常驻 worker, 落盘 <库目录>/baskets.bin (头 = 库 A 轴 + 概念表指纹 + 篮子数 + 根布局; 随库清库而没).
+// 续算: 全表 Book 常驻 worker, 落盘 <库>/cache/baskets.bin (头 = 库 A 轴 + 概念表指纹 + 篮子数 + 根布局; 随库清库而没).
 //   Book 的已合成日是此刻落盘日的前缀且头对得上 → 只合成其后的新日 (重读其末日收盘行定成员), 否则从库首日重合成;
 //   续算 ≡ 全量 (逐日同一份 Fold, 窗按日期截). 合成了新日才落盘.
 // 补日 (库末日之后至基本面 bar1d / bar1m 末日, 不落盘, 库末日 / 补日 / 点位不变即沿用): 成员 / 池 / 行业 / 股本冻结在库末日收盘行,
@@ -32,7 +32,6 @@
 #include <thread>
 #include <vector>
 
-struct Config;
 struct FeatureLib;
 class FeatureRead;
 
@@ -45,7 +44,7 @@ public:
   static constexpr const char *kName = "BasketHistory";
   static constexpr double kBase = 1000;
 
-  BasketHistory(const Config &cfg, QuoteService &live) : cfg_(cfg), live_(live) { Start(); }
+  explicit BasketHistory(QuoteService &live) : live_(live) { Start(); }
   ~BasketHistory() { Stop(); }
 
   const HistoryPub &published() const { return x_; }
@@ -86,7 +85,6 @@ private:
   // lack 空 → axis = 成员表的库轴 (成分的全局 id)
   bool publish(const HistoryRequest &req, const char *lack, const PoolAxis *axis = nullptr);
 
-  const Config &cfg_;
   QuoteService &live_;
   HistoryPub x_;
   Book book_; // worker 私有

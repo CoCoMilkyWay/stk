@@ -191,7 +191,7 @@ TaskHandle CreateFeaturesTask(std::shared_ptr<Compute::ComputeHub> compute) {
       state->tab_enabled[k] = !disable[k];
 
     // 预览每跑完一轮 (done 增长) 就把特征表 (元数据 + 账目/值域) 落地
-    // <当前库目录>/features.json: 中途取消/崩了也有当前精度的成品, 不必等全部轮次.
+    // <当前库>/cache/features.json: 中途取消/崩了也有当前精度的成品, 不必等全部轮次.
     // done 回退 (新请求 begin 清零) 不落, 避免写出空表; Done 那一帧补一次 (空库 0 轮也有文件)
     {
       const Features::Preview &pv = state->preview_service->target;

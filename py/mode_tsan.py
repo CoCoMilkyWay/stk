@@ -8,9 +8,9 @@ import time
 
 def run(binary_path, working_dir):
     """Run with ThreadSanitizer."""
-    log_dir = os.path.abspath("output/log")
-    os.makedirs(log_dir, exist_ok=True)
-    tsan_log = os.path.join(log_dir, "tsan_report.log")
+    app_dir = os.path.abspath("output/run/app")
+    os.makedirs(app_dir, exist_ok=True)
+    tsan_log = os.path.join(app_dir, "tsan_report.log")
 
     # Configure TSan: halt on first error
     env = os.environ.copy()

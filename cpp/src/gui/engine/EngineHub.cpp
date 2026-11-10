@@ -8,10 +8,10 @@ namespace GUI::Engine {
 
 void EngineHub::reset() { *this = EngineHub{}; }
 
-void EnsurePortfolio(const SharedData &data, EngineHub &e) {
+void EnsurePortfolio(EngineHub &e) {
   if (!e.portfolio_service)
     e.portfolio_service = std::make_unique<PortfolioService>();
-  SyncPortfolioDir(e.portfolio_ui, data.config.portfolio_dir);
+  SyncPortfolioList(e.portfolio_ui);
 }
 
 void SyncPortfolio(const SharedData &data, EngineHub &e, bool reload) {

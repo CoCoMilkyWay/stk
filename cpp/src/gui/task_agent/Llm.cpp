@@ -1,5 +1,5 @@
 #include "gui/task_agent/Llm.hpp"
-#include "misc/fs.hpp"
+#include "disk/Disk.hpp"
 #include "nlohmann/json.hpp"
 
 #include <boost/asio.hpp>
@@ -14,8 +14,6 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
-#include <filesystem>
-#include <fstream>
 #include <optional>
 #include <string_view>
 #include <thread>
@@ -355,17 +353,14 @@ static_assert(static_cast<int>(std::size(kModelsOf)) == kBackendCount);
 
 const std::string &key(Backend b) {
   static const std::array<std::string, kBackendCount> keys = [] {
-    if (!std::filesystem::exists(kKeyFile)) {
+    if (!disk::exists(disk::AgentKeyFile)) {
       json j;
       for (const BackendDef &d : kBackends)
         j[d.field] = d.fake;
-      const std::string text = j.dump(2) + "\n";
-      misc::atomic_write(kKeyFile, text.data(), text.size());
+      disk::write(disk::AgentKeyFile, {}, j.dump(2) + "\n");
     }
-    std::ifstream f(kKeyFile);
-    assert(f.is_open());
-    const json j = json::parse(f, nullptr, false);
-    assert(!j.is_discarded() && j.is_object() && "kKeyFile 须是 JSON 对象");
+    const json j = json::parse(disk::read(disk::AgentKeyFile), nullptr, false);
+    assert(!j.is_discarded() && j.is_object() && "config/local/agent/keys.json 须是 JSON 对象");
     std::array<std::string, kBackendCount> k;
     for (int i = 0; i < kBackendCount; ++i)
       if (std::string s = str_of(j, kBackends[i].field); s != kBackends[i].fake)
@@ -394,7 +389,7 @@ Models models(Backend b, const Net &net, const std::atomic<bool> &cancel) {
 
 Session::Session(Options o) : o_(std::move(o)), conv_(o_.backend == Backend::Zhipu ? Conv(Zhipu{}) : Conv(Cursor{})) {
   assert(valid(o_.net));
-  assert(!key(o_.backend).empty() && "kKeyFile 里该后端未填");
+  assert(!key(o_.backend).empty() && "config/local/agent/keys.json 里该后端未填");
   assert(!o_.model.empty());
 }
 

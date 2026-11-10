@@ -29,10 +29,8 @@
 // ============================================================================
 class AssetAxis {
 public:
-  // 落盘 output/fundamental/asset_axis.json — 与基本面同域, 因为轴由股票全量
-  // 派生, 且必须活过两级 cache 的任何清库 (FeatureStore 构造会 remove_all
-  // feature_dir; 轴丢了 append-only 保证就没了).
-  static constexpr const char *kFileName = "asset_axis.json";
+  // 落盘 output/data/fundamental/asset_axis.json — 与基本面同域, 因为轴由股票全量
+  // 派生, 且必须活过特征库的任何清库 (轴丢了 append-only 保证就没了).
   static constexpr int kVersion = 1;
 
   // 注册表 → 内存. 文件不存在 → 空轴 (首次建库);
@@ -61,7 +59,7 @@ private:
   std::vector<std::string> codes_;
   std::unordered_map<std::string, std::size_t> index_;
   std::vector<std::uint64_t> prefix_hash_; // size == codes_.size() + 1
-  std::string path_;
+  bool loaded_ = false;
   mutable bool dirty_ = false;
 };
 

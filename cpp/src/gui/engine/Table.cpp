@@ -8,7 +8,6 @@
 #include <cassert>
 #include <cstdio>
 #include <ctime>
-#include <filesystem>
 #include <set>
 #include <string_view>
 
@@ -112,27 +111,31 @@ FactorLevelId factor_level_of(std::string_view name) {
   __builtin_unreachable();
 }
 
-std::string factor_dir_of(const SharedData &data, const std::string &pool, FactorLevelId lv) {
-  return data.config.factor_dir + "/" + pool + "/" + factor_level(lv).name;
+disk::Key FactorDir::of(std::string_view name) const {
+  disk::Key k = key;
+  [[maybe_unused]] const bool ok = disk::parse(file, name, k);
+  assert(ok && "因子文件名不合布局 (<名>.json)");
+  return k;
 }
+
+std::string FactorDir::dir() const { return disk::path(disk::def(file).parent, key).string(); }
+
+std::vector<std::string> FactorDir::files() const {
+  std::vector<std::string> out;
+  for (const disk::Key &k : disk::list(file, key))
+    out.push_back(k.name + ".json");
+  return out;
+}
+
+FactorDir factor_dir_of(const std::string &pool, FactorLevelId lv) { return {.key = {.pool = pool, .level = factor_level(lv).name}}; }
 
 PerLib<FeatureLib> factor_libs(const SharedData &data, const std::string &pool) {
   PerLib<FeatureLib> libs;
   for (const TierId t : TIER_IDS) {
     const LibId l = lib_id(pool_id(pool), t);
-    libs[l] = load_lib(data.config.feature_dir, l);
+    libs[l] = load_lib(l);
   }
   return libs;
-}
-
-std::vector<std::filesystem::path> list_factor_files(const std::string &dir) {
-  std::vector<std::filesystem::path> files;
-  if (std::filesystem::is_directory(dir))
-    for (const auto &ent : std::filesystem::directory_iterator(dir))
-      if (ent.is_regular_file() && ent.path().extension() == ".json")
-        files.push_back(ent.path());
-  std::sort(files.begin(), files.end());
-  return files;
 }
 
 FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
@@ -268,7 +271,7 @@ bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable>
   sc = FactorScope{};
   sc.lv = lv;
   sc.pool = pool;
-  sc.factor_dir = factor_dir_of(data, pool, lv);
+  sc.dir = factor_dir_of(pool, lv);
   sc.ft = std::move(ft);
   sc.max_impact = data.config.max_impact;
   sc.gpu = gpu;

@@ -681,7 +681,7 @@ struct FixedCol {
   bool sortable;
 };
 // 列提示只写用户要知道的; 细节:
-//   name_en = 文件名主干 <factor_dir>/<pool>/<name_en>.json; name_cn 缺 / 不合 → BROKEN
+//   name_en = 文件名主干 <因子目录>/<name_en>.json; name_cn 缺 / 不合 → BROKEN
 //   *h: 父行 = 其代表权重的; 手填权重 = -
 //   frame: 标签取超额 (减截面均值); 只做多, 一组满仓 cap 只, 不足按只数/cap 建仓, 超出均分, 空组记 0; CS 根 = CsRank / CsNormRank / CsZ, TS 根 = TsRankRoll 5 日 (组可空 → long / flat)
 //   period: 结束 = 所用库最近落盘日; 用了 lob.* 的只有 Lob 库建库以来的几个月
@@ -1134,7 +1134,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   ImGui::Text("%s  级别 %s", ctx.pool.c_str(), factor_level(ctx.lv).name);
   // 作用域 = 池 × 因子层 (所用特征的最细层; 叶写全名 档.层.列); 评估期按因子定 = 所用特征库落盘日交集; 门控 / 标签在因子池的 Bar 库 (截面 = 该库 cs_valid)
   if (ImGui::IsItemHovered())
-    tip("因子目录 %s", ctx.factor_dir.c_str());
+    tip("因子目录 %s", ctx.dir.dir().c_str());
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
@@ -1594,7 +1594,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       ui.popup_msg = msg;
     } else {
       std::string err;
-      const std::string file = AddFactorFile(ctx.factor_dir, ft, ui.name_buf, ui.name_cn_buf, canon, ui.note_buf, err);
+      const std::string file = AddFactorFile(ctx.dir, ft, ui.name_buf, ui.name_cn_buf, canon, ui.note_buf, err);
       if (file.empty()) { // 查重已过仍失败 = 目录被外部改了 (agent 加文件), 重扫即可
         ui.popup = 3;
         ui.popup_msg = err + " (目录有外部改动, 已重扫)";
@@ -1891,11 +1891,11 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   ui.popup = 0;
 
   if (ImGui::BeginPopupModal("保存改动", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("覆盖 %s/%s:", ctx.factor_dir.c_str(), ui.edit_file.c_str());
+    ImGui::Text("覆盖 %s/%s:", ctx.dir.dir().c_str(), ui.edit_file.c_str());
     ImGui::TextUnformatted(ui.popup_msg.c_str());
     if (ImGui::Button("保存", ImVec2(80, 0))) {
       std::string err;
-      const std::string file = UpdateFactorFile(ctx.factor_dir, ft, ui.edit_file, ui.name_buf, ui.name_cn_buf, canon, ui.note_buf, err);
+      const std::string file = UpdateFactorFile(ctx.dir, ft, ui.edit_file, ui.name_buf, ui.name_cn_buf, canon, ui.note_buf, err);
       if (file.empty()) { // 查重已过仍失败 = 目录被外部改了, 重扫即可
         ui.add_msg = "失败: " + err;
       } else {
@@ -1912,10 +1912,10 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   }
 
   if (ImGui::BeginPopupModal("删除因子", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("删除 %s/%s ?", ctx.factor_dir.c_str(), ui.edit_file.c_str());
+    ImGui::Text("删除 %s/%s ?", ctx.dir.dir().c_str(), ui.edit_file.c_str());
     ImGui::TextDisabled("文件直接删, 不可恢复; 构建器内容保留 (可当模板再 Add)");
     if (ImGui::Button("删除", ImVec2(80, 0))) {
-      DeleteFactorFile(ctx.factor_dir, ui.edit_file);
+      DeleteFactorFile(ctx.dir, ui.edit_file);
       ui.add_msg = "已删 " + ui.edit_file;
       ui.edit_file.clear();
       action = 2;

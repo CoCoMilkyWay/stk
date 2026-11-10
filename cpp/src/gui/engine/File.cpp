@@ -9,8 +9,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <filesystem>
-#include <fstream>
 #include <iterator>
 #include <string_view>
 
@@ -140,26 +138,13 @@ std::string format_factor(const ojson &j) {
 }
 
 // 已扫描过的文件读回 (须是对象: 扫描时已解析过, 不该变)
-ojson read_json(const std::filesystem::path &path) {
-  std::ifstream f(path);
-  assert(f.is_open() && "因子文件不存在");
-  ojson j = ojson::parse(f, nullptr, /*allow_exceptions=*/false);
+ojson read_json(const FactorDir &dir, std::string_view file) {
+  ojson j = ojson::parse(disk::read(dir.file, dir.of(file)), nullptr, /*allow_exceptions=*/false);
   assert(j.is_object() && "因子文件扫描时已解析过, 不该变");
   return j;
 }
 
-// tmp + rename 原子落盘 (同 operators.json / features.json)
-void write_json(const std::filesystem::path &path, const ojson &j) {
-  std::filesystem::create_directories(path.parent_path());
-  const std::filesystem::path tmp = path.string() + ".tmp";
-  {
-    std::ofstream f(tmp);
-    assert(f.is_open() && "因子文件: 临时文件打不开");
-    f << format_factor(j);
-    assert(f.good() && "因子文件: 写入失败");
-  }
-  std::filesystem::rename(tmp, path);
-}
+void write_json(const FactorDir &dir, std::string_view file, const ojson &j) { disk::write(dir.file, dir.of(file), format_factor(j)); }
 
 // 模板源串 → 规范串 (parse + 格点 + root_frame 过); 不合法 → false + err
 bool parse_template(const FeatureTable &feats, std::string_view src, factor::expr::Expr &e, std::string &err) {
@@ -205,20 +190,17 @@ factor::search::Score RowScore(const FactorRow &r, int hold) {
 // 读: ScanFactorFile
 // ============================================================================
 
-void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std::vector<FactorRow> &out) {
+void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTable &ft, std::vector<FactorRow> &out) {
   const factor::expr::FeatureLookup fl = ft.lookup();
   const auto emit = [&](FactorRow &r) {
     r.key = row_key(r.file, r.widx);
     out.push_back(r);
   };
   FactorRow r;
-  r.file = p.filename().string();
-  r.name_en = p.stem().string();
+  r.file = std::string(file);
+  r.name_en = dir.of(file).name;
   r.status = RowState::Pending;
-  std::ifstream f(p);
-  json j(json::value_t::discarded);
-  if (f.is_open())
-    j = json::parse(f, nullptr, /*allow_exceptions=*/false);
+  const json j = json::parse(disk::read(dir.file, dir.of(file)), nullptr, /*allow_exceptions=*/false);
   if (j.is_discarded() || !j.is_object()) {
     r.error = "JSON 解析失败 / 顶层不是对象";
     emit(r);
@@ -349,15 +331,14 @@ void ScanFactorFile(const std::filesystem::path &p, const FeatureTable &ft, std:
 // 写: 构建器 Add / Update / Delete, Search WriteFactorSearch, Run WriteFactorStats
 // ============================================================================
 
-std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view name, std::string_view name_cn,
+std::string AddFactorFile(const FactorDir &dir, const FeatureTable &feats, std::string_view name, std::string_view name_cn,
                           std::string_view expr_src, std::string_view note, std::string &err) {
   assert(ValidFactorName(name) && ValidFactorNameCn(name_cn));
   factor::expr::Expr e;
   if (!parse_template(feats, expr_src, e, err))
     return "";
   const std::string file = std::string(name) + ".json";
-  const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
-  if (std::filesystem::exists(path)) {
+  if (disk::exists(dir.file, dir.of(file))) {
     err = "已存在 " + file;
     return "";
   }
@@ -367,31 +348,24 @@ std::string AddFactorFile(const std::string &factor_dir, const FeatureTable &fea
   j["expr"] = e.canon;
   if (!note.empty())
     j["note"] = std::string(note);
-  write_json(path, j);
+  write_json(dir, file, j);
   return file;
 }
 
-std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &feats, std::string_view file, std::string_view new_name,
+std::string UpdateFactorFile(const FactorDir &dir, const FeatureTable &feats, std::string_view file, std::string_view new_name,
                              std::string_view name_cn, std::string_view expr_src, std::string_view note, std::string &err) {
   assert(ValidFactorName(new_name) && ValidFactorNameCn(name_cn));
   factor::expr::Expr e;
   if (!parse_template(feats, expr_src, e, err))
     return "";
-  const std::filesystem::path from = std::filesystem::path(factor_dir) / file;
   const std::string new_file = std::string(new_name) + ".json";
-  const std::filesystem::path to = std::filesystem::path(factor_dir) / new_file;
-  assert(std::filesystem::exists(from));
-  if (to != from && std::filesystem::exists(to)) {
+  assert(disk::exists(dir.file, dir.of(file)));
+  if (new_file != file && disk::exists(dir.file, dir.of(new_file))) {
     err = "已存在 " + new_file;
     return "";
   }
   // 原文件可能是 BROKEN (非 JSON / 非对象): 那就从空对象重建; 否则保留人加的其他键
-  ojson j(ojson::value_t::discarded);
-  {
-    std::ifstream f(from);
-    assert(f.is_open());
-    j = ojson::parse(f, nullptr, /*allow_exceptions=*/false);
-  }
+  ojson j = ojson::parse(disk::read(dir.file, dir.of(file)), nullptr, /*allow_exceptions=*/false);
   if (!j.is_object())
     j = ojson::object();
   j["type"] = kind_name(FactorKind::Alpha); // 构建器只造 alpha
@@ -413,23 +387,21 @@ std::string UpdateFactorFile(const std::string &factor_dir, const FeatureTable &
     j.erase("search");
     erase_stats(j);
   }
-  write_json(from, j);
-  if (to != from)
-    std::filesystem::rename(from, to);
+  write_json(dir, file, j);
+  if (new_file != file)
+    disk::rename(dir.file, dir.of(file), dir.of(new_file));
   return new_file;
 }
 
-void DeleteFactorFile(const std::string &factor_dir, std::string_view file) {
-  const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
-  assert(std::filesystem::exists(path));
-  std::filesystem::remove(path);
+void DeleteFactorFile(const FactorDir &dir, std::string_view file) {
+  assert(disk::exists(dir.file, dir.of(file)));
+  disk::remove(dir.file, dir.of(file));
 }
 
-void WriteFactorSearch(const std::string &factor_dir, std::string_view file, bool fresh, const SearchMark &mk, const std::vector<SearchWeight> &ws) {
+void WriteFactorSearch(const FactorDir &dir, std::string_view file, bool fresh, const SearchMark &mk, const std::vector<SearchWeight> &ws) {
   const int hold = mk.hold;
   assert(mk.start_date && mk.end_date && mk.days > 0);
-  const std::filesystem::path path = std::filesystem::path(factor_dir) / file;
-  ojson j = read_json(path);
+  ojson j = read_json(dir, file);
   erase_stats(j);
   // 别的可搜档 (≠ hold) 的项留; 不合的 weights 项也留 (扫描时 BROKEN, 人处理), 不合的 search 项丢 (派生数据)
   const auto keep = [&](const ojson &o) {
@@ -462,13 +434,13 @@ void WriteFactorSearch(const std::string &factor_dir, std::string_view file, boo
     j.erase("weights");
   else
     j["weights"] = std::move(arr);
-  write_json(path, j);
+  write_json(dir, file, j);
 }
 
-void WriteFactorStats(const std::filesystem::path &path, const std::vector<const FactorRow *> &rs) {
+void WriteFactorStats(const FactorDir &dir, const std::vector<const FactorRow *> &rs) {
   assert(!rs.empty());
   const FactorRow &r0 = *rs.front();
-  ojson j = read_json(path);
+  ojson j = read_json(dir, r0.file);
   if (const auto wit = j.find("weights"); wit == j.end() || !wit->is_array() || wit->empty()) {
     assert(rs.size() == 1 && r0.widx == 0 && r0.hold_src == 0 && r0.sign == 1 && "无 weights 的文件只可能有手填权重 (widx 0, 正向)");
     ojson w = ojson::object();
@@ -496,7 +468,7 @@ void WriteFactorStats(const std::filesystem::path &path, const std::vector<const
   j["hold_cols"] = cols_json(hold_cols());
   j["acc_cols"] = cols_json(acc_cols());
   j["stats"] = std::move(stats);
-  write_json(path, j);
+  write_json(dir, r0.file, j);
 }
 
 } // namespace GUI::Engine

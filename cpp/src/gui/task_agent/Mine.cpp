@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <filesystem>
 #include <numeric>
 #include <utility>
 #include <vector>
@@ -14,8 +13,6 @@
 namespace GUI::Agent {
 
 namespace {
-
-namespace fs = std::filesystem;
 
 std::string net_name(const llm::Net &n) { return n.proxy ? "proxy " + n.host + ":" + std::to_string(n.port) : std::string("direct"); }
 
@@ -41,11 +38,13 @@ void Mine::open(const SharedData &data, Setup s) {
   assert(!ctx.leaves.empty() && !ctx.ops.empty() && "须有开放的叶与算子");
   setup.llm.system = SystemMessage(ctx, setup.gate, setup.ask, llm::def(setup.llm.backend).local).text;
   chat.open(setup.llm);
-  log.open((fs::path(catalog::dir(setup.sc, setup.test)) / "chat" / text::local("%Y%m%d-%H%M%S")).string(), setup.llm.system);
+  disk::Key chat = catalog::key(setup.sc, setup.test);
+  chat.stamp = disk::stamp_now();
+  log.open(disk::path(disk::AgentChat, chat).string(), setup.llm.system);
   std::vector<std::string> names;
   for (const ToolDef &d : Tools())
     names.push_back(d.name);
-  PruneToolOut(names);
+  PruneToolOut(setup.test, names);
   phase_ = Phase::Think;
   stop_ = done = reviewed = asked = evaled = false;
   cur_ = folded_ = 0;
@@ -289,7 +288,7 @@ void Mine::ended(Act &a) {
   if (!a.ok)
     add(Tally::fail(a.call.tool));
   clip(a.out);
-  KeepToolOut(def(a.call.tool).name, a.call.text() + (a.ok ? "" : " — 没做成"),
+  KeepToolOut(setup.test, def(a.call.tool).name, a.call.text() + (a.ok ? "" : " — 没做成"),
               "出处: " + log.dir() + " · 第 " + std::to_string(round()) + " 轮第 " + std::to_string(cur_ + 1) + " 个调用", a.out);
   log.event(Event::Result, {{"round", round()},
                             {"i", cur_ + 1},

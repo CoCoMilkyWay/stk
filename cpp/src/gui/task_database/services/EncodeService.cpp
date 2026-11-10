@@ -1,5 +1,6 @@
 // EncodeService Implementation
 #include "gui/task_database/services/EncodeService.hpp"
+#include "disk/Disk.hpp"
 #include "misc/cross_platform.hpp"
 #include "misc/logging.hpp"
 #include "shared/SharedData.hpp"
@@ -35,7 +36,7 @@ bool EncodeService::run(EncodeRequest &req) {
   begin(Phase::Running, target_dates);
 
   // Initialize logger for all encoding workers (shared log file)
-  Logger::init(data_.config.log_dir);
+  Logger::init(disk::ensure(disk::RunOrdersLog).string());
   Logger::reg("encoding");
 
   // 已完成天数镜像进进度面

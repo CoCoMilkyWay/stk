@@ -229,7 +229,7 @@ assert_partition(源表 SRC_ALL ${SRC_PARTS})
 set(MATH_FAST_FLAGS -ffast-math)
 set(MATH_PRECISE_FLAGS -fno-fast-math -fno-math-errno)
 
-# 两表同一段序 (shared → misc → api → fundamental → orders → features → worker → gui → factor → 入口), 段内按路径序; 某档无文件的段留空
+# 两表同一段序 (shared → misc → api → fundamental → orders → features → worker → live → gui → factor → 入口), 段内按路径序; 某档无文件的段留空
 set(MATH_FAST
     # shared
     shared/Asset.cpp
@@ -257,6 +257,7 @@ set(MATH_FAST
     worker/compute/StageIo.cpp
     worker/compute/TsTuner.cpp
     worker/encode/Pipeline.cpp
+    # live
     # gui
     gui/Gui.cpp
     gui/Run_OpenGL.cpp
@@ -289,10 +290,12 @@ set(MATH_PRECISE
     shared/AssetInfo.cpp
     shared/Config.cpp
     shared/ReadRequest.cpp
+    # disk
+    disk/Disk.cpp
+    disk/Sweep.cpp
     # misc
     misc/date.cpp
     misc/format.cpp
-    misc/fs.cpp
     misc/parquet.cpp
     # api
     api/bigquant/client.cpp
@@ -316,6 +319,19 @@ set(MATH_PRECISE
     # worker: compute 的 Bar 档管线 (TS: Fund 缺失值 / PoolKey 范围 / cs_valid 依赖 NaN 比较); 采样 meta.json (nlohmann 序列化 isfinite)
     worker/compute/FeedBar.cpp
     worker/compute/Profile.cpp
+    # live: 实盘 (nlohmann 落盘 / 回包 JSON; 行情与账户缺失 = 无)
+    live/Board.cpp
+    live/Book.cpp
+    live/Broker.cpp
+    live/Rebal.cpp
+    live/tdx/Credit.cpp
+    live/tdx/Flash.cpp
+    live/tdx/Mem.cpp
+    live/tdx/Proc.cpp
+    live/tdx/Shim.cpp
+    live/tdx/Tables.cpp
+    live/tdx/Tdx.cpp
+    live/tdx/Ui.cpp
     # gui
     gui/engine/ui/PortfolioBoxes.cpp
     gui/quote/BasketRow.cpp
@@ -344,6 +360,10 @@ set(MATH_PRECISE
     gui/task_features/ui/TabOrderFlow.cpp
     gui/task_features/ui/TabTable.cpp
     gui/task_features/ui/TabTransform.cpp
+    gui/task_live/LiveHub.cpp
+    gui/task_live/TaskLive.cpp
+    gui/task_live/ui/TabBoard.cpp
+    gui/task_live/ui/TabRebal.cpp
     gui/task_market/ui/CrossSectionAnalysis.cpp
     gui/task_market/ui/QuotesPanel.cpp
     gui/task_market/ui/TabAsset.cpp

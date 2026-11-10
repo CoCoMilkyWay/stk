@@ -1,4 +1,4 @@
-// Tab Encode - L2 归档 (CSV) → output/orders 编码面板
+// Tab Encode - L2 归档 (CSV) → output/data/orders 编码面板
 // 覆盖检查 / 文件核查 / 编码 (worker 数可调)
 #pragma once
 

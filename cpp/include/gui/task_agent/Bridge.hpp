@@ -23,6 +23,8 @@
 //   全部 GUI 线程调用; 正式因子目录 / 字段表 / 资产轴由项目定, agent 只给候选目录
 // =============================================================================
 
+#include "disk/Disk.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -415,7 +417,7 @@ std::string hold_desc(int hold, int level); // 开 / 清仓规则
 bool gpu();
 bool ready(const SharedData &data, const Scope &sc, bool gpu); // 资产轴就绪且标签库已建
 std::string label(const Scope &sc);                            // 池 / 层 / 持有期
-std::string dir(const Scope &sc, bool test);                   // 会话目录 kWorkDir/<池>/<层>/<持有期>; test = kGlobalDir/test/<池>/<层>/<持有期> (自检会话的候选与日志)
+disk::Key key(const Scope &sc, bool test);                     // 会话作用域 output/agent/<main|test>/sessions/<池>/<层>/<持有期> 的键 (disk::AgentScope; 候选 factors/ + 会话 chat/)
 } // namespace catalog
 
 class Lab {

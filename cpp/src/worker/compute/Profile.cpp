@@ -1,15 +1,14 @@
 // ComputeProfile —— 特征计算 perf 采样窗 + meta.json (产物布局见 Profile.hpp / misc/perf.hpp)
 #include "worker/compute/Profile.hpp"
 
+#include "disk/Disk.hpp"
 #include "features/Storage/FeatureStore.hpp"
 #include "misc/affinity.hpp"
-#include "misc/cross_platform.hpp"
 #include "misc/logging.hpp"
 #include "misc/perf.hpp"
 #include "nlohmann/json.hpp"
 
 #include <cassert>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
 
@@ -47,15 +46,6 @@ const char *work_unit(ComputeStage kind, const char *ts_unit) {
   return "";
 }
 
-// 本地墙钟 YYYYMMDD_HHMMSS (目录名: 字典序 = 时间序)
-std::string stamp_now() {
-  const std::time_t t = std::time(nullptr);
-  const std::tm tm = safe_localtime(&t);
-  char buf[32];
-  std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
-  return buf;
-}
-
 } // namespace
 
 ComputeProfile::ComputeProfile(ProfileSpec spec, const StageLayout &layout, const StoreRing &store, const ComputeStats &stats)
@@ -82,7 +72,7 @@ void ComputeProfile::tick() {
   if (!capture_) {
     if (store_.query_io_done() == 0)
       return;
-    dir_ = std::string(kProfileDir) + "/" + spec_.pool + "/" + tier_name(spec_.tier) + "/" + stamp_now();
+    dir_ = disk::ensure(disk::RunLibProfile, {.pool = spec_.pool, .tier = tier_name(spec_.tier), .stamp = disk::stamp_now()}).string();
     capture_ = std::make_unique<misc::perf::Capture>(dir_);
     start_ = snap();
     return;

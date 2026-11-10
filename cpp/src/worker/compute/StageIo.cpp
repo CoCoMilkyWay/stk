@@ -7,7 +7,6 @@
 
 #include <cassert>
 #include <cstdio>
-#include <filesystem>
 #include <string>
 
 // 本核发布槽 (单写者): work = 已落盘字节, idle_us = 累计等截面 close 微秒; 天数前沿 = store.query_io_done()
@@ -54,11 +53,12 @@ void io_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes) {
     {
       TraceN("FlushDay");
       TraceColor(C_Red);
-      const std::string day_dir = feature_day_dir(store.query_dir(), dates[date_idx]);
-      std::filesystem::create_directories(day_dir);
+      disk::Key day_key = lib_key(store.query_lib());
+      day_key.date = dates[date_idx];
+      disk::ensure(disk::LibDay, day_key);
       for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
         if (T::has(lvl))
-          flushed_bytes += FeatureDay::write(feature_file(day_dir, lvl), T::LEVELS[lvl], day.slot->data[lvl], day.A, store.query_axis_hash(), scratch);
+          flushed_bytes += FeatureDay::write(lib_day_file(store.query_lib(), dates[date_idx], lvl), T::LEVELS[lvl], day.slot->data[lvl], day.A, store.query_axis_hash(), scratch);
       store.io_close(day);
     }
 

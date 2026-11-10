@@ -81,8 +81,8 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
     }
     Engine::EngineHub &e = *state->engine;
     Market::LinesUIState &ui = state->lines_ui;
-    Engine::EnsurePortfolio(data, e);
-    Market::SyncLinesWatch(ui, data.config.config_dir);
+    Engine::EnsurePortfolio(e);
+    Market::SyncLinesWatch(ui);
     const Quote::QuoteHub *mk = nullptr;
     if (data.task_state.database.asset_info_ready) {
       state->quote->start(data);
@@ -96,7 +96,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
       mk = state->quote.get();
     }
     if (!state->cta_service)
-      state->cta_service = std::make_unique<Market::CtaService>(data.config);
+      state->cta_service = std::make_unique<Market::CtaService>();
     const int action = Market::RenderTabLines(idx - TAB_NAV, *e.portfolio_service, *state->cta_service, e.portfolio_ui, ui,
                                               data.config.fixed_impact, mk, data.asset_info.stocks);
     if (action == -1)

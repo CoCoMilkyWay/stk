@@ -1,4 +1,5 @@
 #include "shared/Asset.hpp"
+#include "disk/Disk.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "misc/exec.hpp"
 #include "shared/AssetInfo.hpp"
@@ -86,15 +87,13 @@ void Asset::adopt(AssetScan &&scan) {
 // Orders Scan
 // ============================================================================
 
-void Asset::scan_orders(AssetScan &out, const std::string &orders_dir, misc::exec::ForkJoin &ex, Progress &p) const {
-  namespace fs = std::filesystem;
-
+void Asset::scan_orders(AssetScan &out, misc::exec::ForkJoin &ex, Progress &p) const {
   // 整体重建帧目录, 不做增量 (见 OrdersCatalog); encoded_assets 由 compute_coverage_statistics 填
   Orders &ord = out.orders;
   ord = Orders{};
   ord.scanned = true;
-  ord.path = orders_dir;
-  ord.exists = fs::exists(orders_dir) && fs::is_directory(orders_dir);
+  ord.path = disk::path(disk::Orders).string();
+  ord.exists = disk::exists(disk::Orders);
   out.catalog = std::make_shared<const OrdersCatalog>();
   if (!ord.exists)
     return;
@@ -104,7 +103,7 @@ void Asset::scan_orders(AssetScan &out, const std::string &orders_dir, misc::exe
   //    自己那一行写 (不同天 = 不相交的连续段, 免锁免合并).
   // ------------------------------------------------------------------
   assert(items.size() == asset_axis().size() && "items 未与 A 轴对齐 (Asset::materialize 没跑?)");
-  auto cat = std::make_shared<OrdersCatalog>(orders_days(orders_dir), items.size());
+  auto cat = std::make_shared<OrdersCatalog>(orders_days(), items.size());
   const size_t n_days = cat->days.size();
 
   // ------------------------------------------------------------------
@@ -120,7 +119,7 @@ void Asset::scan_orders(AssetScan &out, const std::string &orders_dir, misc::exe
   p.begin(Phase::Scanning, n_days);
   ex.tasks(static_cast<int>(n_days), [&](int t, int) {
     const size_t d = static_cast<size_t>(t);
-    cat->fill_day(d, orders_dir);
+    cat->fill_day(d);
     DayOut &o = outs[d];
     for (const FrameRef &ref : cat->row(d)) {
       if (ref.empty())

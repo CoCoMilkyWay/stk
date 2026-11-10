@@ -87,7 +87,7 @@ void TickCompute(ComputeHub &hub, SharedData &data) {
   const PerLib<LibPlan> &libs = *state.libs;
   const std::vector<LibId> order = lib_order();
   const auto it = std::ranges::find_if(order, [&](LibId l) {
-    return libs[l].appendable() && !FeatureRead::dir_stale(lib_dir(config.feature_dir, l)) && std::ranges::find(state.auto_done, l) == state.auto_done.end();
+    return libs[l].appendable() && !FeatureRead::lib_stale(l) && std::ranges::find(state.auto_done, l) == state.auto_done.end();
   });
   if (it == order.end()) {
     state.auto_append = false;
@@ -103,7 +103,7 @@ TaskStatus ComputeStatus(const ComputeHub &hub, const SharedData &data, LibSide 
   const ComputeService *const service = hub.service.get();
   const bool running = service && service->busy();
   // 任一 reader 判废删了本页某个库 → 待重算 (该库开跑即撤销登记; 哪个库见库表)
-  const auto lib_stale = [&](LibId l) { return on_side(side, l) && FeatureRead::dir_stale(lib_dir(data.config.feature_dir, l)); };
+  const auto lib_stale = [&](LibId l) { return on_side(side, l) && FeatureRead::lib_stale(l); };
   if (!running && std::ranges::any_of(lib_ids(), lib_stale))
     return {TaskStatus::Kind::Warn, "pending"};
   if (!service || !on_side(side, hub.state.config.lib))

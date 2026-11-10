@@ -5,7 +5,7 @@
 //            取消在单元间生效 (在飞的 DoGet 不可中断)
 //   Repair : 一表的差异键 → audit::repair 任务 (整槽 Replace / 日·资产 Splice) → sync::run → 只复核这些月
 //            UI 不给取消 (Stop 时在步间退出); 改了盘, StateManager 收到交接后重建 AssetInfo
-// 结论落 audit::Book (output/fundamental/_audit/<表>.tsv, 每月只留最近一次; 分片重写 ⇒ 版本变 ⇒ 自动作废).
+// 结论落 audit::Book (output/data/fundamental/_audit/<表>.tsv, 每月只留最近一次; 分片重写 ⇒ 版本变 ⇒ 自动作废).
 // 循环骨架 = drive (Drive.hpp, 与 SyncService 同一份).
 // 线程模型 (gui/util/Service.hpp, 随对象): 进度面 = 自身 (Published, done/total = 步), state 持 mutex 读;
 //   账本 + 本轮视图 (Worker) worker 独占, 跨轮承接; 每轮收尾 handoff.post(请求代)
@@ -80,7 +80,7 @@ struct AuditState {
   std::int64_t quota_used = -1;
   std::int64_t quota_weekly = 0;
   std::vector<AuditTableStat> tables; // 表名升序; 空 = 尚未 load
-  std::string log_dir;                // output/fundamental/_audit/ (逐表状态, 含本地 / 远端原值)
+  std::string log_dir;                // output/data/fundamental/_audit/ (逐表状态, 含本地 / 远端原值)
 
   const AuditTableStat *find_table(const std::string &name) const;
 };

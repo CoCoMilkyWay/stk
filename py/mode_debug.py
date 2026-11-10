@@ -7,10 +7,10 @@ import time
 
 def run(binary_path, working_dir):
     """Run binary under gdb; on crash, dump all thread stacks to file."""
-    debug_dir = os.path.abspath("output/debug")
-    os.makedirs(debug_dir, exist_ok=True)
+    app_dir = os.path.abspath("output/run/app")
+    os.makedirs(app_dir, exist_ok=True)
 
-    stack_file = os.path.join(debug_dir, "crash_stacks.txt")
+    stack_file = os.path.join(app_dir, "crash_stacks.txt")
 
     print("Running under gdb (automatic crash stack capture)...")
     print(f"Crash stacks will be saved to: {stack_file}")

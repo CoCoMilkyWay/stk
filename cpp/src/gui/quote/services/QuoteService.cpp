@@ -1,7 +1,7 @@
 #include "gui/quote/services/QuoteService.hpp"
 
+#include "disk/Disk.hpp"
 #include "misc/exec.hpp"
-#include "misc/fs.hpp"
 #include "misc/profiler.hpp"
 #include "misc/snap.hpp"
 
@@ -13,7 +13,6 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
-#include <fstream>
 #include <iterator>
 #include <utility>
 
@@ -100,7 +99,7 @@ QuoteService::~QuoteService() {
     t.join();
   if (changed_) {
     const std::vector<std::byte> blob = serialize();
-    misc::atomic_write(kCache, reinterpret_cast<const char *>(blob.data()), blob.size());
+    disk::write(disk::QuoteLive, {}, {reinterpret_cast<const char *>(blob.data()), blob.size()});
   }
 }
 
@@ -306,7 +305,7 @@ void QuoteService::poll() {
     cv_.notify_all();
     fold();
     if (!blob.empty()) {
-      misc::atomic_write(kCache, reinterpret_cast<const char *>(blob.data()), blob.size());
+      disk::write(disk::QuoteLive, {}, {reinterpret_cast<const char *>(blob.data()), blob.size()});
       std::lock_guard<std::mutex> lock(mu_);
       bytes_ = blob.size(), saved_ = std::time(nullptr);
       blob.clear();
@@ -466,13 +465,12 @@ std::vector<std::byte> QuoteService::serialize() {
 }
 
 void QuoteService::load() {
-  std::ifstream f(kCache, std::ios::binary);
-  if (!f)
+  if (!disk::exists(disk::QuoteLive))
     return;
-  const std::vector<char> blob((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  const std::string blob = disk::read(disk::QuoteLive);
   bytes_ = blob.size();
   saved_ = std::chrono::system_clock::to_time_t(
-      std::chrono::clock_cast<std::chrono::system_clock>(std::filesystem::last_write_time(kCache)));
+      std::chrono::clock_cast<std::chrono::system_clock>(std::filesystem::last_write_time(disk::path(disk::QuoteLive))));
   misc::snap::Load ar(std::as_bytes(std::span(blob)));
   Head h;
   ar(h);

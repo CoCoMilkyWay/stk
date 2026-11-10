@@ -7,7 +7,6 @@
 #include "shared/SharedData.hpp"
 
 #include <cassert>
-#include <filesystem>
 #include <map>
 #include <tuple>
 
@@ -69,8 +68,8 @@ void RunService::scan(const RunRequest &req, std::vector<FactorRow> &out) {
   TraceN("FactorsScan");
   out.clear();
   const FeatureTable &ft = *req.scope.ft;
-  for (const std::filesystem::path &p : list_factor_files(req.scope.factor_dir))
-    ScanFactorFile(p, ft, out);
+  for (const std::string &file : req.scope.dir.files())
+    ScanFactorFile(req.scope.dir, file, ft, out);
   std::map<std::tuple<int, int, std::string>, std::string> seen; // (hold, 方向, 具体规范串) → 首行 key
   for (FactorRow &w : out) {
     if (w.expr.empty())
@@ -181,7 +180,7 @@ bool RunService::eval_file(const RunRequest &req, FactorFlow &F, E &eng, const s
     std::vector<const FactorRow *> out;
     for (const size_t e : fin)
       out.push_back(&rows[idx[e]]);
-    WriteFactorStats(std::filesystem::path(req.scope.factor_dir) / rows[idx.front()].file, out);
+    WriteFactorStats(req.scope.dir, out);
   }
   return true;
 }

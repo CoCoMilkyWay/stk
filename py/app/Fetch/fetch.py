@@ -6,11 +6,11 @@
 落盘结构 (脚本同目录下 ./data/):
     parquet (主):
         data/fundamental/_meta/<table>.parquet               # 静态/全量快照表
-        data/fundamental/<yyyy>-<mm>/<table>.parquet         # 每月每表一个 parquet (= 本地 output/fundamental)
+        data/fundamental/<yyyy>-<mm>/<table>.parquet         # 每月每表一个 parquet (= 本地 output/data/fundamental)
         data/fundamental/<yyyy>-<mm>/<local>/<yyyy-mm-dd>.parquet  # 分钟表: 每交易日一个 parquet (local = 本地表名)
     tar (PACK=True 时生成, 不再压缩; 成员路径相对 data/, mtime 原样保留):
         data/pack/<table>_<yyyy>.tar
-        tar -xf <table>_<yyyy>.tar -C <repo>/output/  → 直接覆盖本地分片, 之后本地增量 sync (月度表 / 分钟表同)
+        tar -xf <table>_<yyyy>.tar -C <repo>/output/data/  → 直接覆盖本地分片, 之后本地增量 sync (月度表 / 分钟表同)
         远端 pyarrow 的写者痕迹 (created_by / ARROW:schema) 由本地每轮开头的 renative 以本库重写抹掉
     json (可选, SPLIT_JSON=True 时同步生成):
         data/json/_meta/<table>.json                         # 静态表

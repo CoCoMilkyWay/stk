@@ -7,6 +7,7 @@
 #include "gui/task_beta/TaskBeta.hpp"
 #include "gui/task_database/TaskDatabase.hpp"
 #include "gui/task_features/TaskFeatures.hpp"
+#include "gui/task_live/TaskLive.hpp"
 #include "gui/task_market/TaskMarket.hpp"
 #include "gui/task_settings/TaskSettings.hpp"
 #include "gui/task_tools/TaskTools.hpp"
@@ -128,9 +129,9 @@ void TaskTree::Select(int task_idx, int tab_idx) {
 
 TaskTree CreateAllTasks(SharedData &data) {
   TaskTree tree;
-  tree.tasks.reserve(8);
+  tree.tasks.reserve(9);
 
-  // 跨任务共用的三个 Hub: 行情 (Database 的 Sync 页读状态, Market 各页用), 计算 (Beta / Alpha 两个 Compute 页, Features 读轮次),
+  // 跨任务共用的三个 Hub: 行情 (Database 的 Sync 页读状态, Market 各页 / Live 行情图用), 计算 (Beta / Alpha 两个 Compute 页, Features 读轮次),
   // 因子引擎 (Alpha 写因子 / 编辑组合, Market 画)
   const auto quote = std::make_shared<Quote::QuoteHub>();
   const auto compute = std::make_shared<Compute::ComputeHub>();
@@ -140,6 +141,7 @@ TaskTree CreateAllTasks(SharedData &data) {
   tree.tasks.push_back(Tasks::CreateBetaTask(compute));
   tree.tasks.push_back(Tasks::CreateAlphaTask(compute, engine));
   tree.tasks.push_back(Tasks::CreateMarketTask(quote, engine));
+  tree.tasks.push_back(Tasks::CreateLiveTask(quote));
   tree.tasks.push_back(Tasks::CreateFeaturesTask(compute));
   tree.tasks.push_back(Tasks::CreateAgentTask());
   tree.tasks.push_back(Tasks::CreateToolsTask());

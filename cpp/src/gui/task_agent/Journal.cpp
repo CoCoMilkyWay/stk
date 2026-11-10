@@ -1,5 +1,5 @@
 #include "gui/task_agent/Journal.hpp"
-#include "gui/task_agent/Config.hpp"
+#include "disk/Disk.hpp"
 #include "gui/task_agent/Text.hpp"
 
 #include <algorithm>
@@ -60,19 +60,14 @@ void Journal::report(const std::string &text) const {
   write_file(fs::path(dir_) / "report.md", text);
 }
 
-void KeepToolOut(const std::string &tool, const std::string &call, const std::string &from, const std::string &out) {
-  fs::create_directories(kToolOutDir);
-  write_file(fs::path(kToolOutDir) / (tool + ".md"), "# " + call + "\n\n" + from + "\n\n" + out);
+void KeepToolOut(bool test, const std::string &tool, const std::string &call, const std::string &from, const std::string &out) {
+  disk::write(disk::RunAgentToolFile, {.test = test, .name = tool}, "# " + call + "\n\n" + from + "\n\n" + out);
 }
 
-void PruneToolOut(const std::vector<std::string> &known) {
-  if (!fs::is_directory(kToolOutDir))
-    return;
-  for (const fs::directory_entry &e : fs::directory_iterator(kToolOutDir)) {
-    const fs::path &p = e.path();
-    if (!e.is_regular_file() || p.extension() != ".md" || std::find(known.begin(), known.end(), p.stem().string()) == known.end())
-      fs::remove_all(p);
-  }
+void PruneToolOut(bool test, const std::vector<std::string> &known) {
+  for (const disk::Key &k : disk::list(disk::RunAgentToolFile, {.test = test}))
+    if (std::find(known.begin(), known.end(), k.name) == known.end())
+      disk::remove(disk::RunAgentToolFile, k);
 }
 
 } // namespace GUI::Agent

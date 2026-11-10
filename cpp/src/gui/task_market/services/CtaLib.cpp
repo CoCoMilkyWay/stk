@@ -4,7 +4,6 @@
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "gui/quote/BasketRow.hpp"
-#include "misc/fs.hpp"
 #include "misc/snap.hpp"
 #include "shared/Basket.hpp" // basket_group / basket_count
 
@@ -12,7 +11,6 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <memory>
 #include <span>
 #include <tuple>
@@ -26,9 +24,9 @@ using Quote::kBasket;
 using Quote::kStock;
 using Quote::Side;
 
-constexpr uint64_t kMagic = 0x5850415443544B53ULL;                          // "SKTCTAPX" 小端
-constexpr size_t kSlots = Quote::kSlots, kCell = kSlots * CtaLib::kFields;  // 一行一日的值数
-constexpr const char *kFile[Quote::kSides] = {"/stock.bin", "/basket.bin"}; // [侧]
+constexpr uint64_t kMagic = 0x5850415443544B53ULL;                                   // "SKTCTAPX" 小端
+constexpr size_t kSlots = Quote::kSlots, kCell = kSlots * CtaLib::kFields;           // 一行一日的值数
+constexpr disk::Node kFile[Quote::kSides] = {disk::LibCtaStock, disk::LibCtaBasket}; // [侧]
 
 // 两侧的价: 个股 = 库存原价 (f16, 与库逐位一致), 篮子 = 日内点位 (f32)
 template <Side S>
@@ -99,8 +97,8 @@ void push(cta::Series &se, size_t t, const T *p, double f) {
 
 // 一侧第 row 行 (共 N 行) 的 D 日 → 有效根
 template <Side S>
-void load(const std::string &dir, size_t N, size_t D, size_t row, cta::Series &se) {
-  std::ifstream f(dir + kFile[S], std::ios::binary);
+void load(const disk::Key &lib, size_t N, size_t D, size_t row, cta::Series &se) {
+  std::ifstream f(disk::path(kFile[S], lib), std::ios::binary);
   Rec<S> r;
   for (size_t i = 0; i < D; ++i) {
     f.seekg(static_cast<std::streamoff>((i * N + row) * sizeof(Rec<S>)));
@@ -143,12 +141,12 @@ void CtaLib::save_head() {
   misc::snap::Save ar(blob);
   ar(head_);
   snap(ar);
-  misc::atomic_write(dir_ + "/head.bin", reinterpret_cast<const char *>(blob.data()), blob.size());
+  disk::write(disk::LibCtaHead, lib_, {reinterpret_cast<const char *>(blob.data()), blob.size()});
 }
 
 bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vector<misc::Ymd> &dates) {
   assert(dates.size() >= 2);
-  dir_ = lib.dir + "/cta";
+  lib_ = lib_key(lib.id);
   std::vector<uint32_t> lines;
   for (int g = 0; g < kBasketGroups; ++g)
     for (const size_t l : basket_group(static_cast<BasketGroup>(g)))
@@ -161,8 +159,8 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vecto
   };
   if (!fits()) {
     head_ = {}, keys_ = {}, dates_.clear(), link_ = {};
-    if (std::ifstream f(dir_ + "/head.bin", std::ios::binary); f) {
-      const std::vector<char> blob((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    if (disk::exists(disk::LibCtaHead, lib_)) {
+      const std::string blob = disk::read(disk::LibCtaHead, lib_);
       misc::snap::Load ar(std::as_bytes(std::span(blob)));
       ar(head_);
       if (head_ == want) {
@@ -174,23 +172,23 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vecto
     bool whole = fits();
     each_side([&]<Side S>() {
       std::error_code ec;
-      const uintmax_t have = std::filesystem::file_size(dir_ + kFile[S], ec);
+      const uintmax_t have = std::filesystem::file_size(disk::path(kFile[S], lib_), ec);
       whole = whole && !ec && have >= bytes<S>(keys_[S].size(), dates_.size());
     });
     if (!whole) {
       head_ = want, keys_ = keys, dates_ = {dates.front()};
-      std::filesystem::remove_all(dir_);
-      std::filesystem::create_directories(dir_);
+      disk::remove(disk::LibCta, lib_);
+      disk::ensure(disk::LibCta, lib_);
       each_side([&]<Side S>() {
         link_[S].assign(keys_[S].size(), Link{});
-        std::ofstream f(dir_ + kFile[S], std::ios::binary | std::ios::trunc);
+        std::ofstream f(disk::path(kFile[S], lib_), std::ios::binary | std::ios::trunc);
         const std::vector<Rec<S>> none(keys_[S].size(), Rec<S>{});
         f.write(reinterpret_cast<const char *>(none.data()), static_cast<std::streamsize>(none.size() * sizeof(Rec<S>)));
         assert(f && "cta/: 写失败");
       });
       save_head();
     }
-    each_side([&]<Side S>() { std::filesystem::resize_file(dir_ + kFile[S], bytes<S>(keys_[S].size(), dates_.size())); }); // 头之后写了一半的块
+    each_side([&]<Side S>() { std::filesystem::resize_file(disk::path(kFile[S], lib_), bytes<S>(keys_[S].size(), dates_.size())); }); // 头之后写了一半的块
   }
   if (dates_.size() == dates.size())
     return true;
@@ -200,7 +198,7 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const std::vecto
   for (size_t j = 0; j < NB; ++j)
     line[keys_[kBasket][j]] = static_cast<uint32_t>(j);
   Quote::PerSide<std::ofstream> f;
-  each_side([&]<Side S>() { f[S].open(dir_ + kFile[S], std::ios::binary | std::ios::app); });
+  each_side([&]<Side S>() { f[S].open(disk::path(kFile[S], lib_), std::ios::binary | std::ios::app); });
   const size_t NP = pool_count(), N = dates.size(), T = static_cast<size_t>(pool_.threads());
   const std::vector<size_t> dcols = Quote::row_cols(), mcols = Quote::minute_cols();
   std::vector<std::unique_ptr<Lane>> lanes;
@@ -297,7 +295,7 @@ bool CtaLib::series(Side side, uint32_t key, cta::Series &se) const {
   se = {};
   each_side([&]<Side S>() {
     if (S == side)
-      load<S>(dir_, ks.size(), dates_.size(), row, se);
+      load<S>(lib_, ks.size(), dates_.size(), row, se);
   });
   return true;
 }

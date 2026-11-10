@@ -3,7 +3,6 @@
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/date.hpp"
-#include "shared/Config.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -89,7 +88,7 @@ std::shared_ptr<const pool::Ranks> StyleService::ranks(const FeatureRead &rd, po
 }
 
 bool StyleService::run(StyleRequest &req) {
-  const FeatureLib lib = load_lib(cfg_.feature_dir, kAllBar);
+  const FeatureLib lib = load_lib(kAllBar);
   if (!lib.ready())
     return publish(req, "风格篮子由 all.bar 特征库选出: 先在 Beta → Compute 算好 all 池的 Bar 库.");
   FeatureRead rd(lib, &cancel_);

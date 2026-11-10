@@ -282,8 +282,7 @@ bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTab
     assert(top_n >= 1);
     req.spec.ex = ex;
     req.spec.top_n = top_n;
-    req.spec.csv = (std::filesystem::path(data.config.export_dir) / pool / factor_level(req.scope.lv).name /
-                    (row.name_en + "_w" + std::to_string(row.widx) + "_top" + std::to_string(top_n) + (ex == InspectExport::Log ? "_log" : "_snap") + ".csv"))
+    req.spec.csv = disk::path(disk::RunExportFile, {.pool = pool, .level = factor_level(req.scope.lv).name, .name = row.name_en + "_w" + std::to_string(row.widx) + "_top" + std::to_string(top_n) + (ex == InspectExport::Log ? "_log" : "_snap")})
                        .string();
     for (const AssetItem &it : data.asset.items)
       req.spec.codes.push_back(it.code_ex()), req.spec.names.push_back(it.asset_name);

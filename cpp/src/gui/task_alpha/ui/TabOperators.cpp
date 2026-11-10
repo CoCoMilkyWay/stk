@@ -1,5 +1,6 @@
 // Tab Operators — 见头文件
 #include "gui/task_alpha/ui/TabOperators.hpp"
+#include "disk/Disk.hpp"
 #include "factor/GpuRun.hpp"        // device_name: GPU 型号显示
 #include "factor/Stat/Contract.hpp" // hold_token: operand 的 ⟨h⟩
 #include "gui/Tasks.hpp"            // StatusColor: 全局色表, 行状态着色不自配颜色
@@ -15,10 +16,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <mutex>
 #include <numeric>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -612,15 +612,11 @@ nlohmann::ordered_json diff_json(const factor::check::Diff &d) {
 
 } // namespace
 
-void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc) {
+void SaveOperatorTableJson(OperatorsService &svc) {
   using json = nlohmann::json;
 
-  const std::filesystem::path path = std::filesystem::path(factor_dir) / "operators.json";
-  std::filesystem::create_directories(path.parent_path());
-  const std::filesystem::path tmp = path.string() + ".tmp";
+  std::ostringstream file;
   {
-    std::ofstream file(tmp);
-    assert(file.is_open() && "operators.json: 临时文件打不开");
 
     std::lock_guard<std::mutex> lock(svc.mutex);
     const OperatorsRequest &cur = svc.current;
@@ -675,9 +671,8 @@ void SaveOperatorTableJson(const std::string &factor_dir, OperatorsService &svc)
     }
     file << " ]\n";
     file << "}\n";
-    assert(file.good() && "operators.json: 写入失败");
   }
-  std::filesystem::rename(tmp, path); // 原子替换: 崩在中途不留半截文件 (同 features.json)
+  disk::write(disk::RunOperators, {}, file.str());
 }
 
 // ============================================================================
@@ -765,12 +760,11 @@ bool load_row(const nlohmann::json &j, OperatorRow &dst) {
 
 } // namespace
 
-bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc, OperatorsUIState &ui) {
+bool LoadOperatorTableJson(OperatorsService &svc, OperatorsUIState &ui) {
   assert(svc.phase.load() == Phase::Idle && "载入只在进页第一帧 (一轮都没跑过) 做");
-  const std::filesystem::path path = std::filesystem::path(factor_dir) / "operators.json";
-  std::ifstream file(path);
-  if (!file.is_open())
+  if (!disk::exists(disk::RunOperators))
     return false; // 没落过盘: 无文件可删, 调用方直接起算一轮
+  const std::string file = disk::read(disk::RunOperators);
 
   OperatorsRequest req;
   std::vector<OperatorRow> snap;
@@ -802,8 +796,7 @@ bool LoadOperatorTableJson(const std::string &factor_dir, OperatorsService &svc,
     return true;
   }();
   if (!ok) {
-    file.close();
-    std::filesystem::remove(path); // 不完整 / 与当前 OpTable 不一致: 删掉, 调用方重算后落新的
+    disk::remove(disk::RunOperators); // 不完整 / 与当前 OpTable 不一致: 删掉, 调用方重算后落新的
     return false;
   }
   svc.AdoptSnapshot(req, std::move(snap), failed);

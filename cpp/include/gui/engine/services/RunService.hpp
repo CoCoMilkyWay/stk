@@ -1,4 +1,4 @@
-// RunService — Alpha→Factors 表 (因子看板) 的单 worker: 扫 <factor_dir>/<pool>/*.json 因子文件 → 解析 / 校验模板与权重表达式
+// RunService — Alpha→Factors 表 (因子看板) 的单 worker: 扫 output/factors/<池>/<层>/*.json 因子文件 → 解析 / 校验模板与权重表达式
 // (factor/Expr.hpp) → (Run 时) 读特征库把因子输入 + 标签装成 [T = days·seg][A] 平面 (seg = 因子层, 见 FactorLevel) → 每权重 Expr → Dag →
 // CPU / GPU evaluator 算根平面 → Stat 评估 → 发布一行; 一个文件的森林走完 (未取消) 一次回写它全部权重的 stat (gui/engine/File WriteFactorStats).
 //

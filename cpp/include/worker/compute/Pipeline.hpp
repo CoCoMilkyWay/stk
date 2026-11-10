@@ -20,13 +20,12 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <future>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -82,18 +81,15 @@ inline bool node_clock_pick(size_t asset_id, size_t date_idx, size_t every) {
   return (h ^ (h >> 31)) % every == 0;
 }
 
-// 用时落盘 <库目录>/node_time.json (本轮, 覆盖上一轮), 时序 / 截面两段各自成 100% (不同 worker, 不互比):
+// 用时落盘 output/run/features/<池>/<档>/node_time.json (本轮, 覆盖上一轮), 时序 / 截面两段各自成 100% (不同 worker, 不互比):
 //   ts = 抽样 asset-day 的 {samples, total, label, write, nodes: [{node, file, cycles}]}
 //   cs = 全部截面日的 {days, total, cols: [{level, code, cycles}]} (本档各层 CS 列)
 // 特征面板 Node Time 按文件归并
 template <class T>
-void write_node_time(const std::string &dir, const graph::NodeClock &ts, const CsClock &cs) {
+void write_node_time(LibId lib, const graph::NodeClock &ts, const CsClock &cs) {
   using Dag = typename CoreOf<T>::Graph;
-  const std::filesystem::path path = std::filesystem::path(dir) / "node_time.json";
-  const std::filesystem::path tmp = path.string() + ".tmp";
+  std::ostringstream f;
   {
-    std::ofstream f(tmp);
-    assert(f.is_open() && "node_time.json: 临时文件打不开");
     f << "{\n \"ts\": {\"samples\": " << ts.samples << ", \"total\": " << ts.total << ", \"label\": " << ts.label << ", \"write\": " << ts.write
       << ", \"nodes\": [\n";
     for (size_t i = 0; i < Dag::kNodeCount; ++i)
@@ -108,9 +104,8 @@ void write_node_time(const std::string &dir, const graph::NodeClock &ts, const C
           sep = ",\n";
         }
     f << "\n ]}\n}\n";
-    assert(f.good() && "node_time.json: 写入失败");
   }
-  std::filesystem::rename(tmp, path);
+  disk::write(disk::RunLibNodeTime, lib_key(lib), f.str());
 }
 
 // 续算点头: 状态指纹 = kSnapSemver (snap 清单口径) + 各层字段表指纹 (张量口径) + 核布局 (sizeof Core)
@@ -517,7 +512,7 @@ bool pipeline(const PipelineArgs &args) {
             << " | Tail: " << tail << "\n"
             << std::endl;
 
-  FeatureStore<T> store(num_assets, lib.axis.hash, lib.dir, slots, cap);
+  FeatureStore<T> store(num_assets, lib.axis.hash, lib.id, slots, cap);
   feed.bind(store);
 
   // 续算: 尾窗日张量读回日环 + 续算点整读 (头须对上尾窗末日 / 本库轴 / 状态指纹), 尾窗日句柄给 TS 接回
@@ -525,7 +520,7 @@ bool pipeline(const PipelineArgs &args) {
   std::vector<typename FeatureStore<T>::Day> tail_days;
   if (tail > 0) {
     store.seed(std::span(dates).first(tail));
-    snap_in.emplace(lib.dir, snap_header<T>(lib, dates[tail - 1]));
+    snap_in.emplace(disk::path(disk::LibSnapshot, lib_key(lib.id)).string(), snap_header<T>(lib, dates[tail - 1]));
     for (size_t d = 0; d < tail; ++d)
       tail_days.push_back(store.ts_try_open(d));
   }
@@ -601,7 +596,7 @@ bool pipeline(const PipelineArgs &args) {
 
   const bool completed = !args.cancel.load(std::memory_order_relaxed);
   if (completed)
-    FeatureSnap::write(lib.dir, snap_header<T>(lib, dates.back()), snap_out);
+    FeatureSnap::write(disk::path(disk::LibSnapshot, lib_key(lib.id)).string(), snap_header<T>(lib, dates.back()), snap_out);
   graph::NodeClock ts_sum;
   for (const graph::NodeClock &c : clocks) {
     ts_sum.samples += c.samples;
@@ -622,7 +617,7 @@ bool pipeline(const PipelineArgs &args) {
     }
   }
   if (ts_sum.samples > 0 || cs_sum.days > 0)
-    write_node_time<T>(lib.dir, ts_sum, cs_sum);
+    write_node_time<T>(lib.id, ts_sum, cs_sum);
   std::cout << "\n=== Feature Computation (" << tier_name(T::kId) << ") " << (completed ? "Complete" : "Cancelled") << " ===\n"
             << "Processed: " << store.query_io_done() << "/" << dates.size() << " dates\n"
             << std::endl;

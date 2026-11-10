@@ -164,8 +164,8 @@ def main():
         print(f"    Current: {detected}")
         print(f"    Will add: {date}/")
 
-    print("\nFixed RAR files will be saved to: output/fix/")
-    print("Logs will be saved to: output/fix/logs/")
+    print("\nFixed RAR files will be saved to: output/run/data/repair/fix/")
+    print("Logs will be saved to: output/run/data/repair/fix/logs/")
     print("Original files will NOT be modified.")
     print()
 

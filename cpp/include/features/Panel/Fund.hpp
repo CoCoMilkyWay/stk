@@ -1,6 +1,6 @@
 // fund — 日频 PIT 基本面 (估值 / 因子 / filter 链路): Fund 节点的数据源 + 逐日推进方法
 //
-//   Panel    数据源. Compute 开跑前构建一次: 扫 output/fundamental/ 月度 parquet → 全交易日历 D 轴 × 全局 A 轴 (asset_axis, 全市场) 的
+//   Panel    数据源. Compute 开跑前构建一次: 扫 output/data/fundamental/ 月度 parquet → 全交易日历 D 轴 × 全局 A 轴 (asset_axis, 全市场) 的
 //           原始网格 (close/股本/涨跌停/状态/两融, cutoff 已套, ffill 已做) + per-A 事件链 (ttm/资产负债/年报/分红/预告/行业).
 //           网格只保留 [首回测日 − 15, 末] (trading_st 连续 15 日计数所需), 历史依赖全在事件链上; 只读, 全部 TS worker 共享.
 //           与库无关: 任一池任一档的库都 build 同一份全市场面板, 节点按全局 id 取行 (TS 不随池变).

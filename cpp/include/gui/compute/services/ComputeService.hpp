@@ -42,7 +42,7 @@ PerLib<LibPlan> plan_libs(const SharedData &data); // 按规划序 (lib_order, �
 
 // 可续算: 库清单末日的续算点在, 且对得上清单轴 + 当前状态指纹 (见 FeatureSnap.hpp); 随轴库另须清单轴 ⊆ 同池定轴库清单轴; 否则只能全量.
 // 续算 ≡ 同清单全量 (逐位一致): 轴随清单冻结 (轴外见 FeatureLib::outside), 日频面板按库首日起建, 尾窗日标签此轮结清后重落盘
-bool resumable(const Config &cfg, const FeatureLib &lib);
+bool resumable(const FeatureLib &lib);
 
 // 一轮的写端规划 (worker 线程; 请求 = 规划日期轴快照 + 全量 / 续算):
 //   lib   新清单 = 本库 + 规划日期轴 (A 轴 / 轴外由池面板定, 见 features/Panel/Pool.hpp)
@@ -54,10 +54,10 @@ struct LibRun {
   std::vector<misc::Ymd> dates;
   size_t tail = 0;
 };
-LibRun lib_run(const Config &cfg, LibId id, std::vector<misc::Ymd> plan, bool resume);
+LibRun lib_run(LibId id, std::vector<misc::Ymd> plan, bool resume);
 
-// 删库 (GUI 线程, 不在算时): 库目录整个删 (清单 / 日文件 / 续算点), 撤销判废登记 → 未建. 下游库不动 (本库重新落盘齐前它们不可算)
-void remove_lib(const Config &cfg, LibId id);
+// 删库 (GUI 线程, 不在算时): 库目录整个删 (清单 / 日文件 / 续算点 / 缓存) 连同其运行产物, 撤销判废登记 → 未建. 下游库不动 (本库重新落盘齐前它们不可算)
+void remove_lib(LibId id);
 
 // ============================================================================
 // Compute Config (= 请求)

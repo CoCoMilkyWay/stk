@@ -1,12 +1,10 @@
 #include "fundamental/AssetAxis.hpp"
 
-#include "misc/fs.hpp"
+#include "disk/Disk.hpp"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <cassert>
-#include <filesystem>
-#include <fstream>
 #include <functional>
 
 namespace {
@@ -27,19 +25,16 @@ std::uint64_t fnv_append(std::uint64_t h, const std::string &s) {
 } // namespace
 
 void AssetAxis::load() {
-  path_ = (misc::git_root() / "output" / "fundamental" / kFileName).string();
-
+  loaded_ = true;
   codes_.clear();
   index_.clear();
   prefix_hash_.assign(1, kFnvOffset);
   dirty_ = false;
 
-  if (!std::filesystem::exists(path_))
+  if (!disk::exists(disk::AssetAxisFile))
     return; // 首次建库, 空轴
 
-  std::ifstream file(path_);
-  assert(file.is_open() && "AssetAxis: 注册表存在但打不开");
-  nlohmann::json j = nlohmann::json::parse(file);
+  const nlohmann::json j = nlohmann::json::parse(disk::read(disk::AssetAxisFile));
 
   assert(j.at("version").get<int>() == kVersion && "AssetAxis: 注册表版本不认识");
 
@@ -85,7 +80,7 @@ std::size_t AssetAxis::intern(const std::string &code_ex) {
 void AssetAxis::save() const {
   if (!dirty_)
     return;
-  assert(!path_.empty() && "AssetAxis::save: 未 load, 无落盘路径");
+  assert(loaded_ && "AssetAxis::save: 未 load");
 
   nlohmann::json j;
   j["version"] = kVersion;
@@ -93,15 +88,7 @@ void AssetAxis::save() const {
   j["hash"] = prefix_hash_.back();
   j["assets"] = codes_;
 
-  std::filesystem::create_directories(std::filesystem::path(path_).parent_path());
-  const std::string tmp = path_ + ".tmp";
-  {
-    std::ofstream file(tmp);
-    assert(file.is_open() && "AssetAxis::save: 临时文件打不开");
-    file << j.dump(0);
-    assert(file.good() && "AssetAxis::save: 写入失败");
-  }
-  std::filesystem::rename(tmp, path_); // 原子替换: 崩在中途也不会留半截注册表
+  disk::write(disk::AssetAxisFile, {}, j.dump(0)); // 原子替换: 崩在中途也不会留半截注册表
   dirty_ = false;
 }
 

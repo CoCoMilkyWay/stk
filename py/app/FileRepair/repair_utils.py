@@ -14,13 +14,13 @@ def get_project_root() -> Path:
 
 
 def get_output_fix_dir() -> Path:
-    """Get the output/fix directory path."""
-    return get_project_root() / "output" / "fix"
+    """Get the output/run/data/repair/fix directory path."""
+    return get_project_root() / "output" / "run" / "data" / "repair" / "fix"
 
 
 def get_output_fix_temp_dir() -> Path:
-    """Get the output/fix_temp directory path."""
-    return get_project_root() / "output" / "fix_temp"
+    """Get the output/run/data/repair/temp directory path."""
+    return get_project_root() / "output" / "run" / "data" / "repair" / "temp"
 
 
 def setup_output_dirs() -> Tuple[Path, Path]:

@@ -10,7 +10,7 @@
 #include <vector>
 
 // ============================================================================
-// 续算点 — <库目录>/snapshot.bin, 一库一份: 库末日收盘后全部资产 TS 核的跨天态 (CoreTs::snap)
+// 续算点 — <库>/snapshot.bin (disk::LibSnapshot), 一库一份: 库末日收盘后全部资产 TS 核的跨天态 (CoreTs::snap)
 // ============================================================================
 //
 //   [SnapHeader][偏移 uint64 × (A + 1)][记录 × A]
@@ -39,22 +39,20 @@ static_assert(sizeof(SnapHeader) == 48, "续算点头必须定宽无填充");
 
 class FeatureSnap {
 public:
-  static std::string path(const std::string &dir) { return dir + "/snapshot.bin"; }
-
   // 头; 无文件 / 读不全 = 全零头 (与任何期望头都不等)
-  static SnapHeader head(const std::string &dir) {
+  static SnapHeader head(const std::string &path) {
     SnapHeader h;
-    return read_file_head(path(dir).c_str(), &h, sizeof(h)) == sizeof(h) ? h : SnapHeader{};
+    return read_file_head(path.c_str(), &h, sizeof(h)) == sizeof(h) ? h : SnapHeader{};
   }
 
-  static void write(const std::string &dir, const SnapHeader &h, std::span<const std::vector<std::byte>> records) {
+  static void write(const std::string &path, const SnapHeader &h, std::span<const std::vector<std::byte>> records) {
     assert(h.magic == SnapHeader::kMagic && records.size() == h.A && "续算点: 记录数须 = A");
     std::vector<uint64_t> off(records.size() + 1, 0);
     for (size_t a = 0; a < records.size(); ++a) {
       assert(!records[a].empty() && "续算点: 资产缺记录 (末日没走到?)");
       off[a + 1] = off[a] + records[a].size();
     }
-    const std::string final_path = path(dir), tmp_path = final_path + ".tmp";
+    const std::string tmp_path = path + ".tmp";
     const int fd = file_open_trunc(tmp_path.c_str());
     assert(fd >= 0 && "续算点 .tmp 建不出来");
     uint64_t at = 0;
@@ -69,12 +67,12 @@ public:
     for (const std::vector<std::byte> &r : records)
       put(r.data(), r.size());
     file_close(fd);
-    std::filesystem::rename(tmp_path, final_path);
+    std::filesystem::rename(tmp_path, path);
   }
 
   // 整读; 头须 == want (调用方已以 head 判过可续算)
-  FeatureSnap(const std::string &dir, const SnapHeader &want) {
-    const int fd = file_open_read(path(dir).c_str());
+  FeatureSnap(const std::string &path, const SnapHeader &want) {
+    const int fd = file_open_read(path.c_str());
     assert(fd >= 0 && "续算点不在");
     SnapHeader h;
     const size_t got = file_pread(fd, &h, sizeof(h), 0);

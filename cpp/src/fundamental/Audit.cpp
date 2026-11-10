@@ -1,8 +1,8 @@
 #include "fundamental/Audit.hpp"
 
+#include "disk/Disk.hpp"
 #include "fundamental/Remote.hpp"
 #include "misc/exec.hpp"
-#include "misc/fs.hpp"
 #include "misc/parquet.hpp"
 
 #include <arrow/array.h>
@@ -24,6 +24,7 @@
 #include <optional>
 #include <random>
 #include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -670,11 +671,8 @@ void save(const std::string &name, const Book::Sheet &t) {
     s.removed += std::max<std::int64_t>(0, n.first - n.second);
   }
 
-  const fs::path p = Book::dir() / (name + ".tsv");
-  const fs::path tmp = p.string() + ".tmp";
+  std::ostringstream out;
   {
-    std::ofstream out(tmp);
-    assert(out && "audit: 状态文件无法写入");
     out << "# " << name << "\n"
         << "# month\tym\taudited_at\tver\tlocal_rows\tlocal_days\tcols\tassets\tbad_days\tadded\tremoved\n"
         << "# diff\tgroup\tlocal_n\tremote_n\tcolumn\tcell\tlocal\tremote\n";
@@ -693,10 +691,8 @@ void save(const std::string &name, const Book::Sheet &t) {
     for (const Book::Row *r : rows)
       out << "diff\t" << r->group << '\t' << r->local_n << '\t' << r->remote_n << '\t' << r->column << '\t'
           << r->cell << '\t' << r->local << '\t' << r->remote << '\n';
-    out.flush();
-    assert(out && "audit: 状态文件写入失败");
   }
-  fs::rename(tmp, p);
+  disk::write(disk::FundAuditSheet, {.name = name}, out.str());
 }
 
 // 一个状态文件; 表不参与核对 (audited) / 任一行格式不符 / 差异月无结论 → nullopt
@@ -865,23 +861,18 @@ std::vector<Task> repair(const Spec &s, const Round &r, const std::vector<std::s
   return out;
 }
 
-fs::path Book::dir() {
-  const fs::path d = misc::git_root() / "output" / "fundamental" / "_audit";
-  fs::create_directories(d);
-  return d;
-}
+fs::path Book::dir() { return disk::ensure(disk::FundAudit); }
 
 Book::Book() {
-  for (const auto &e : fs::directory_iterator(dir())) {
-    if (e.path().extension() != ".tsv")
-      continue;
-    std::optional<Sheet> t = parse(e.path());
+  for (const disk::Key &k : disk::list(disk::FundAuditSheet)) {
+    const fs::path p = disk::path(disk::FundAuditSheet, k);
+    std::optional<Sheet> t = parse(p);
     if (!t) {
-      std::cout << "[bigquant.audit] 状态文件格式不符, 已删除: " << e.path().string() << std::endl;
-      fs::remove(e.path());
+      std::cout << "[bigquant.audit] 状态文件格式不符, 已删除: " << p.string() << std::endl;
+      disk::remove(disk::FundAuditSheet, k);
       continue;
     }
-    sheets_[e.path().stem().string()] = std::move(*t);
+    sheets_[k.name] = std::move(*t);
   }
 }
 

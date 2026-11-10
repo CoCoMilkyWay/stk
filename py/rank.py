@@ -9,7 +9,7 @@ import urllib.request
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FUND_DIR = REPO_ROOT / "output" / "fundamental"
+FUND_DIR = REPO_ROOT / "output" / "data" / "fundamental"
 
 START_DATE = "2026-05-01"
 MEDIAN_WINDOW = 5  # 滚动中位数窗口 (交易日): 滤除持续 <= (MEDIAN_WINDOW-1)//2 天的拉板/向上插针
@@ -65,7 +65,7 @@ def fetch_realtime_quotes(
 
 
 def load_local_kline(codes: list[str], start_date: str) -> pd.DataFrame:
-    """从本地 output/fundamental/<YYYY-MM>/cn_stock_real_bar1d.parquet 读取日线."""
+    """从本地 output/data/fundamental/<YYYY-MM>/cn_stock_real_bar1d.parquet 读取日线."""
     start_ym = start_date[:7]
     months = sorted(
         p.name

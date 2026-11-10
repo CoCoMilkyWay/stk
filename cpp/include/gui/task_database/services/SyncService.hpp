@@ -1,5 +1,5 @@
 // Sync Service - 基本面 + 分钟线数据同步 (BigQuant DAI + Tushare HTTP) + 概念快照 (东财 HTTP)
-// 数据落地 = output/fundamental/YYYY-MM/*.parquet + YYYY-MM/bar1m/YYYY-MM-DD.parquet; 概念 = output/concept/YYYYMMDD.tsv (shared/Concept.hpp)
+// 数据落地 = output/data/fundamental/YYYY-MM/*.parquet + YYYY-MM/bar1m/YYYY-MM-DD.parquet; 概念 = output/data/concept/YYYYMMDD.tsv (shared/Concept.hpp)
 // (fundamental/ 月度分片 + _meta 单文件 + Daily 日文件, 水位增量, 常量见 fundamental/Spec.hpp)
 // AssetInfo 从 parquet 构建 (按全局 id 稠密, 见 shared/AssetInfo.hpp).
 #pragma once
@@ -74,7 +74,7 @@ struct SyncState {
 
   // 逐表落盘状态 (构建失败也填 — 正是要看清哪张表缺)
   std::vector<TableFileStat> tables;
-  TableFileStat concept_files; // 概念快照 (output/concept, 一份 = 一个日分片); 无快照 → months 0
+  TableFileStat concept_files; // 概念快照 (output/data/concept, 一份 = 一个日分片); 无快照 → months 0
   LaneStat lanes[kLanes];
   std::string syncing; // 在拉的表 (spec.name / kConceptTable); 空 = 无
 

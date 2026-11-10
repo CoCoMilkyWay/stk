@@ -1,6 +1,6 @@
 // Bridge — 见头文件. task_agent/ 里唯一 include 项目因子 / 特征 / 服务头的 TU (CMake PRECISE: 因子契约头的消费者)
 #include "gui/task_agent/Bridge.hpp"
-#include "gui/task_agent/Config.hpp" // kMaxOps / kGoodOps / kWorkDir / kGlobalDir
+#include "gui/task_agent/Config.hpp" // kMaxOps / kGoodOps
 #include "gui/task_agent/Text.hpp"
 
 #include "factor/Expr.hpp"                 // kOps / operand_tex
@@ -25,14 +25,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <deque>
-#include <filesystem>
 #include <map>
 #include <mutex>
 #include <tuple>
 
 namespace GUI::Agent {
-
-namespace fs = std::filesystem;
 
 static_assert(kGroups == factor::stat::kGroups && kRankNone == factor::stat::kRankNone && kRankMax == factor::stat::kRankMax);
 static_assert(kTails == Engine::kTails && kTailOfGroup[0] == Engine::kTailOfGroup[0] && kTailOfGroup[1] == Engine::kTailOfGroup[1] && kTailOfGroup[2] == Engine::kTailOfGroup[2] &&
@@ -486,9 +483,10 @@ Top top_of(const Engine::SearchTop &t) {
 }
 
 // 一个因子文件 → 本持有期下的结果 (权重按 score 降序, 结局随之定; 可见性按此刻评估期与开放的叶 / 算子)
-Result result_of(const Engine::FeatureTable &ft, const std::optional<Engine::FactorScope> &fsc, const Opened &open, const fs::path &p, int hold, const Fails &fails) {
+Result result_of(const Engine::FeatureTable &ft, const std::optional<Engine::FactorScope> &fsc, const Opened &open, const Engine::FactorDir &dir, const std::string &file, int hold,
+                 const Fails &fails) {
   std::vector<Engine::FactorRow> rows;
-  Engine::ScanFactorFile(p, ft, rows);
+  Engine::ScanFactorFile(dir, file, ft, rows);
   assert(!rows.empty());
   const Engine::FactorRow &r0 = rows.front();
   Result r;
@@ -552,10 +550,10 @@ void sort_results(std::vector<Result> &v) {
   });
 }
 
-std::vector<Result> scan(const Engine::FeatureTable &ft, const std::optional<Engine::FactorScope> &fsc, const Opened &open, const std::string &dir, int hold, const Fails &fails) {
+std::vector<Result> scan(const Engine::FeatureTable &ft, const std::optional<Engine::FactorScope> &fsc, const Opened &open, const Engine::FactorDir &dir, int hold, const Fails &fails) {
   std::vector<Result> out;
-  for (const fs::path &p : Engine::list_factor_files(dir))
-    out.push_back(result_of(ft, fsc, open, p, hold, fails));
+  for (const std::string &file : dir.files())
+    out.push_back(result_of(ft, fsc, open, dir, file, hold, fails));
   sort_results(out);
   return out;
 }
@@ -648,7 +646,7 @@ Context context_of(const SharedData &data, const Scope &sc, const Opened &open) 
     c.all_ops.push_back(std::move(x));
   }
   c.kline = kline_of(*ft);
-  c.library = scan(*ft, fsc, open, Engine::factor_dir_of(data, sc.pool, level_id(sc.level)), sc.hold, {});
+  c.library = scan(*ft, fsc, open, Engine::factor_dir_of(sc.pool, level_id(sc.level)), sc.hold, {});
   return c;
 }
 
@@ -724,12 +722,16 @@ bool ready(const SharedData &data, const Scope &sc, bool gpu) {
 std::string label(const Scope &sc) {
   return sc.pool + " / " + Engine::factor_level(level_id(sc.level)).name + " / " + factor::stat::hold_name(sc.hold);
 }
-std::string dir(const Scope &sc, bool test) {
-  const fs::path base = test ? fs::path(kGlobalDir) / "test" : fs::path(kWorkDir);
-  return (base / sc.pool / Engine::factor_level(level_id(sc.level)).name / factor::stat::hold_name(sc.hold)).string();
+disk::Key key(const Scope &sc, bool test) {
+  return {.pool = sc.pool, .level = Engine::factor_level(level_id(sc.level)).name, .hold = factor::stat::hold_token(sc.hold), .test = test};
 }
 
 } // namespace catalog
+
+namespace {
+// 作用域的候选因子 factors/ (+ Search 日志, 在 run/agent/ 下同构位置)
+Engine::FactorDir candidates(const Scope &sc, bool test) { return {.file = disk::AgentFactorFile, .log = disk::RunAgentSearchLog, .key = catalog::key(sc, test)}; }
+} // namespace
 
 // ---- Lab ----
 struct Lab::Impl {
@@ -737,7 +739,7 @@ struct Lab::Impl {
   const SharedData *data = nullptr;
   Scope sc;
   bool test = false;
-  std::string dir; // 候选目录
+  Engine::FactorDir dir; // 候选目录
   Opened open;
   Context ctx;
   std::vector<Result> results;
@@ -804,7 +806,7 @@ struct Lab::Impl {
     gpu = s.gpu;
     file = std::move(s.file);
     std::vector<Engine::FactorRow> rows;
-    Engine::ScanFactorFile(fs::path(dir) / file, *ft(), rows);
+    Engine::ScanFactorFile(dir, file, *ft(), rows);
     assert(!rows.empty());
     row = std::move(rows.front());
     surf = {};
@@ -820,14 +822,14 @@ struct Lab::Impl {
     Engine::SearchRequest req;
     [[maybe_unused]] const bool ok = Engine::MakeSearchRequest(*data, ft(), sc.pool, row, sc.hold, /*fresh=*/true, gpu, req);
     assert(ok && "作用域须 ready");
-    req.scope.factor_dir = dir;
+    req.scope.dir = dir;
     return req;
   }
   Engine::RunRequest run_req() const {
     Engine::RunRequest req;
     [[maybe_unused]] const bool ok = Engine::MakeRunRequest(*data, ft(), sc.pool, /*evaluate=*/true, gpu, req);
     assert(ok && "作用域须 ready");
-    req.scope.factor_dir = dir;
+    req.scope.dir = dir;
     req.spec.only_file = file;
     return req;
   }
@@ -874,7 +876,6 @@ struct Lab::Impl {
     ReplayRequest req;
     req.orders = data->asset.catalog();
     assert(req.orders && "逐笔帧目录未扫描");
-    req.dir = data->config.orders_dir;
     req.asset = static_cast<uint32_t>(id);
     req.exchange = data->asset.items[id].exchange_type;
     req.date = s.date;
@@ -901,7 +902,7 @@ struct Lab::Impl {
   // 重扫一个文件, 结果表保序
   const Result &refresh(const std::string &f) {
     const auto find = [&] { return std::find_if(results.begin(), results.end(), [&](const Result &x) { return x.file == f; }); };
-    Result r = result_of(*ft(), fsc(), open, fs::path(dir) / f, sc.hold, fails);
+    Result r = result_of(*ft(), fsc(), open, dir, f, sc.hold, fails);
     if (const auto it = find(); it == results.end())
       results.push_back(std::move(r));
     else
@@ -1053,7 +1054,7 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   I.data = &data;
   I.sc = sc;
   I.test = test;
-  I.dir = (fs::path(catalog::dir(sc, test)) / "factors").string();
+  I.dir = candidates(sc, test);
   I.open = opened_of(*I.ft(), sc);
   I.ctx = context_of(data, sc, I.open);
   I.results = scan(*I.ft(), I.fsc(), I.open, I.dir, sc.hold, I.fails);
@@ -1100,15 +1101,13 @@ Adopted Lab::adopt(std::string name, const Gate &g) {
   s.error = GateMiss(g, *it);
   if (!s.ok())
     return s;
-  const fs::path to = fs::path(Engine::factor_dir_of(*I.data, I.sc.pool, level_id(I.sc.level))) / it->file;
-  if (fs::exists(to)) {
+  const Engine::FactorDir to = Engine::factor_dir_of(I.sc.pool, level_id(I.sc.level));
+  if (disk::exists(to.file, to.of(it->file))) {
     s.error = "正式目录已有 " + it->file;
     return s;
   }
-  if (!I.test) {
-    fs::create_directories(to.parent_path());
-    fs::copy_file(fs::path(I.dir) / it->file, to);
-  }
+  if (!I.test)
+    disk::write(to.file, to.of(it->file), disk::read(I.dir.file, I.dir.of(it->file)));
   return s;
 }
 

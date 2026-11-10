@@ -5,14 +5,15 @@
 //     篮子: 价 = 合成核 Quote::Fold 的日内点位 (前日收 = 1, f32), 前收 = 1
 //     因子同一条链: 自首个有根日 1 起, 逢前收 ≠ 参考价乘 参考价 / 前收, 参考价 = 末个收盘 (按前收滚动) ⇒ 个股 = 后复权, 篮子 = 点位逐日接续
 //   时间格: 有效根 t = 日下标 · kSlots + 槽, 日下标 = 库落盘日序 (首日只定成员, 无根); 无根 (无成员 / 无成交 / 末个有根的槽之后) 不收
-// 落盘 <库目录>/cta/ (日主序, 续算只追加; 库全量重算连目录一起删):
+// 落盘 <库>/cache/cta/ (日主序, 续算只追加; 库全量重算连目录一起删):
 //   head.bin   = Head + 两侧键表 [N] + dates [D] + 两侧链 [N] (末日因子 / 参考价)
 //   stock.bin  = [D][A] { f64 因子 (0 = 当日无根), f16 [kSlots][kFields] 原价 高 低 收 (无根 = NaN) }
 //   basket.bin = [D][B] { f64 因子 (0 = 当日无根), f32 [kSlots][kFields] 点位 高 低 收 (无根 = NaN) }
 //   Head 与键表对得上、两文件够长且已合成日是库落盘日的前缀 → 只合成其后的新日, 否则清目录从头; 每批落一次头 (取消不丢已合成的)
 #pragma once
 
-#include "cta/Model.hpp"       // Series
+#include "cta/Model.hpp" // Series
+#include "disk/Disk.hpp"
 #include "gui/quote/Quote.hpp" // Side / PerSide
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
@@ -20,7 +21,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <string>
 #include <vector>
 
 struct FeatureLib;
@@ -63,7 +63,7 @@ private:
   const std::atomic<bool> &cancel_;
   Progress &x_;
   misc::exec::ForkJoin &pool_;
-  std::string dir_;
+  disk::Key lib_; // 所在特征库
   Head head_;
   Quote::PerSide<std::vector<uint32_t>> keys_; // [侧][行] → 键 (个股 = 全局 id, 篮子 = basket_line)
   std::vector<misc::Ymd> dates_;               // [D] 已合成日 (首日只定成员, 其块无根)

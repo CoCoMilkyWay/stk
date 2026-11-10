@@ -51,7 +51,7 @@ __attribute__((format(printf, 1, 2))) std::string strf(const char *f, ...) {
   return s;
 }
 
-// 过程日志 <factor_dir>/log/<因子名>.log: 每次 Search 覆盖; 逐行即刷 (断言崩了也留得下); 行首 = 距开跑秒数.
+// 过程日志 (FactorDir::log_path, run/ 下与因子目录同构): 每次 Search 覆盖; 逐行即刷 (断言崩了也留得下); 行首 = 距开跑秒数.
 // 只记流程中间量 (分块 / 分位表 / 采样 / 曲面 / 峰 / 细化 / 相关), 终选结果看因子文件 weights
 struct RunLog {
   std::ofstream f;
@@ -66,11 +66,11 @@ struct RunLog {
   }
 };
 
-// 删 log/ 里因子文件已不存在的 log (删 / 改名后的残留)
-void prune_logs(const std::filesystem::path &factor_dir, const std::filesystem::path &log_dir) {
-  for (const auto &ent : std::filesystem::directory_iterator(log_dir))
-    if (ent.is_regular_file() && ent.path().extension() == ".log" && !std::filesystem::exists(factor_dir / (ent.path().stem().string() + ".json")))
-      std::filesystem::remove(ent.path());
+// 删因子文件已不存在的 log (删 / 改名后的残留)
+void prune_logs(const FactorDir &dir) {
+  for (const disk::Key &k : disk::list(dir.log, dir.key))
+    if (!disk::exists(dir.file, k))
+      disk::remove(dir.log, k);
 }
 
 // 槽在坐标 u 处的参数值 (整数槽按整数写)
@@ -195,10 +195,10 @@ struct SearchService::Searcher {
     }
     W.publish();
     lg.t0 = t_start;
-    const std::filesystem::path log_dir = std::filesystem::path(scope.factor_dir) / "log";
-    std::filesystem::create_directories(log_dir);
-    prune_logs(scope.factor_dir, log_dir);
-    lg.f.open(log_dir / (std::filesystem::path(sp.file).stem().string() + ".log"), std::ios::trunc);
+    prune_logs(scope.dir);
+    const std::filesystem::path log_path = scope.dir.log_path(sp.file);
+    std::filesystem::create_directories(log_path.parent_path());
+    lg.f.open(log_path, std::ios::trunc);
     assert(lg.f.is_open() && "Search log 打不开");
     const std::time_t now = std::time(nullptr);
     char ts[32];
@@ -696,7 +696,7 @@ struct SearchService::Searcher {
     }
     const std::vector<misc::Ymd> &dates = job.dm.dates;
     SearchMark mk{sp.hold, dates.front(), dates.back(), static_cast<int>(dates.size()), ws.empty() ? top_of() : std::nullopt};
-    WriteFactorSearch(scope.factor_dir, sp.file, sp.fresh, mk, ws); // 不写 stat; 因子表数据由随后的 Run 用同一份目标从 stat 算
+    WriteFactorSearch(scope.dir, sp.file, sp.fresh, mk, ws); // 不写 stat; 因子表数据由随后的 Run 用同一份目标从 stat 算
     res.wrote = true;
     res.n_weights = static_cast<int>(ws.size());
     if (mk.top)

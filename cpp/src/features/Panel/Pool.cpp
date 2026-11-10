@@ -69,7 +69,7 @@ std::vector<uint8_t> parent_bits(const FeatureLib &up, size_t col, std::span<con
 
 } // namespace
 
-Panel Panel::build(LibId lib, const std::string &feature_dir, const fund::Panel &fund, std::span<const misc::Ymd> dates, const FeatureLib &old) {
+Panel Panel::build(LibId lib, const fund::Panel &fund, std::span<const misc::Ymd> dates, const FeatureLib &old) {
   assert(!dates.empty() && std::is_sorted(dates.begin(), dates.end()));
   assert((!old.ready() || old.id == lib) && "旧清单不是本库");
   Panel p;
@@ -83,7 +83,7 @@ Panel Panel::build(LibId lib, const std::string &feature_dir, const fund::Panel 
   if (!parent)
     full = live_members(fund, dates, n);
   else {
-    up = load_lib(feature_dir, parent->lib);
+    up = load_lib(parent->lib);
     const size_t col = axis_lib(lib) != lib ? col_of(up.tier(), L_1day, "cs_valid") : pool_def(lib_pool(lib)).pool_col;
     const std::vector<uint8_t> bits = parent_bits(up, col, dates);
     const size_t As = up.axis.size();

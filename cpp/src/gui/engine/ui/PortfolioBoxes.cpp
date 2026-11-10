@@ -18,7 +18,7 @@ namespace GUI::Engine {
 namespace {
 
 void load_current(PortfolioUIState &ui) {
-  ui.entries = ui.name.empty() ? std::vector<PortfolioEntry>{} : LoadPortfolio(ui.dir, ui.name);
+  ui.entries = ui.name.empty() ? std::vector<PortfolioEntry>{} : LoadPortfolio(ui.name);
   ui.items.clear();
   ++ui.items_gen;
   ui.sel = -1;
@@ -26,14 +26,14 @@ void load_current(PortfolioUIState &ui) {
 }
 // 重列目录, 选 want (不在 → 第一个 / 无) 并载入
 void relist(PortfolioUIState &ui, const std::string &want) {
-  ui.names = ListPortfolios(ui.dir);
+  ui.names = ListPortfolios();
   ui.name = std::find(ui.names.begin(), ui.names.end(), want) != ui.names.end() ? want : ui.names.empty() ? std::string{}
                                                                                                           : ui.names.front();
   load_current(ui);
 }
 void save_current(PortfolioUIState &ui) {
   assert(!ui.name.empty());
-  SavePortfolio(ui.dir, ui.name, ui.entries);
+  SavePortfolio(ui.name, ui.entries);
   ui.items.clear();
   ++ui.items_gen;
   ++ui.content_gen;
@@ -45,10 +45,10 @@ std::string EntryLabel(const PortfolioEntry &e) {
   return "(" + e.pool + ", " + factor::stat::hold_name(e.hold) + "): " + std::filesystem::path(e.file).stem().string();
 }
 
-void SyncPortfolioDir(PortfolioUIState &ui, const std::string &dir) {
-  if (ui.dir == dir)
+void SyncPortfolioList(PortfolioUIState &ui) {
+  if (ui.listed)
     return;
-  ui.dir = dir;
+  ui.listed = true;
   relist(ui, ui.name);
 }
 
@@ -72,7 +72,7 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
       }
     ImGui::EndCombo();
   }
-  if (ImGui::IsItemHovered()) // 组合内容 = <dir>/<name>.json, 改了即存; 选哪个只在内存
+  if (ImGui::IsItemHovered()) // 组合内容 = output/portfolios/<name>.json, 改了即存; 选哪个只在内存
     tip("当前组合 (改动即存盘; Market → NAV 画它的曲线)");
   const std::string nm = ui.name_buf;
   const bool nm_ok = ValidFactorName(nm) && std::find(ui.names.begin(), ui.names.end(), nm) == ui.names.end();
@@ -81,7 +81,7 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
   ImGui::SameLine();
   ImGui::BeginDisabled(!nm_ok);
   if (ImGui::SmallButton("New")) {
-    SavePortfolio(ui.dir, nm, {});
+    SavePortfolio(nm, {});
     relist(ui, nm);
     ui.msg = "新建 " + nm;
     ui.name_buf[0] = '\0';
@@ -93,7 +93,7 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
   ImGui::BeginDisabled(!nm_ok || ui.name.empty());
   if (ImGui::SmallButton("Rename")) {
     const std::string old = ui.name;
-    const bool ok = RenamePortfolio(ui.dir, old, nm);
+    const bool ok = RenamePortfolio(old, nm);
     assert(ok && "重名已在按钮处排除");
     (void)ok;
     relist(ui, nm);
@@ -112,7 +112,7 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "删除 %s?", ui.name.c_str());
     ImGui::SameLine();
     if (ImGui::SmallButton("Yes")) {
-      DeletePortfolio(ui.dir, ui.name);
+      DeletePortfolio(ui.name);
       ui.msg = "已删除 " + ui.name;
       relist(ui, "");
       ui.confirm_delete = false;

@@ -1,7 +1,7 @@
 #include "fundamental/Store.hpp"
 
+#include "disk/Disk.hpp"
 #include "misc/cross_platform.hpp"
-#include "misc/fs.hpp"
 #include "misc/parquet.hpp"
 
 #include <arrow/array.h>
@@ -57,25 +57,16 @@ fs::file_time_type local_at(Ymd d, int hour) {
   return std::chrono::clock_cast<fs::file_time_type::clock>(std::chrono::system_clock::from_time_t(tt));
 }
 
-fs::path root() { return misc::git_root() / "output" / "fundamental"; }
-
 // name 的分片路径: ym > 0 → YYYY-MM/<name>.parquet; ym = 0 → _meta/<name>.parquet
 fs::path path(std::string_view name, Ym ym) {
   assert(ym >= 0);
-  return root() / (ym == 0 ? std::string("_meta") : misc::dash_ym(ym)) / (std::string(name) + ".parquet");
+  return ym == 0 ? disk::path(disk::FundMetaShard, {.name = std::string(name)}) : disk::path(disk::FundShard, {.ym = ym, .name = std::string(name)});
 }
 
 // Daily 的日文件路径: YYYY-MM/<name>/YYYY-MM-DD.parquet
 fs::path day_path(std::string_view name, Ymd d) {
   assert(d > 0);
-  return root() / misc::dash_ym(misc::ym_of(d)) / std::string(name) / (misc::dash(d) + ".parquet");
-}
-
-bool is_daily(std::string_view name) {
-  for (const Spec &s : SPECS)
-    if (s.shape == Shape::Daily && s.name == name)
-      return true;
-  return false;
+  return disk::path(disk::FundDay, {.date = d, .name = std::string(name)});
 }
 
 bool closed(Ym m, Ymd today) {
@@ -236,36 +227,17 @@ Now now() {
 }
 
 Catalog::Catalog() {
-  const fs::path r = root();
-  assert(fs::exists(r) && "output/fundamental 缺失");
-  for (const fs::directory_entry &d : fs::directory_iterator(r)) {
-    if (!d.is_directory())
-      continue;
-    const std::string dir = d.path().filename().string();
-    assert(!is_daily(dir) && "Catalog: Daily 表须在 YYYY-MM/<name>/ 下, 不能是顶层目录");
-    // 只有 "_meta" 和 "YYYY-MM" 两种目录; 再其余 (pool 等) 不是本流水线产物
-    const Ym m = dir == "_meta" ? 0 : misc::parse_ym(dir);
-    if (dir != "_meta" && m == 0)
-      continue;
-    for (const fs::directory_entry &f : fs::directory_iterator(d.path())) {
-      // Daily 表的子目录 YYYY-MM/<name>/YYYY-MM-DD.parquet
-      if (f.is_directory()) {
-        const std::string name = f.path().filename().string();
-        assert(m > 0 && is_daily(name) && "Catalog: 月目录下的子目录只应是 Daily 表");
-        for (const fs::directory_entry &g : fs::directory_iterator(f.path())) {
-          if (g.path().extension() != ".parquet")
-            continue;
-          const Ymd day = misc::parse_ymd(g.path().stem().string());
-          assert(day > 0 && misc::ym_of(day) == m && "Catalog: Daily 文件名须为所属月内的 YYYY-MM-DD");
-          by_name_[name].push_back({m, g.path(), g.file_size(), g.last_write_time(), day});
-        }
-        continue;
-      }
-      if (f.path().extension() != ".parquet")
-        continue;
-      by_name_[f.path().stem().string()].push_back({m, f.path(), f.file_size(), f.last_write_time()});
-    }
-  }
+  assert(disk::exists(disk::Fundamental) && "output/data/fundamental 缺失");
+  const auto add = [&](disk::Node n, const disk::Key &k, Ym m, Ymd day) {
+    const fs::path p = disk::path(n, k);
+    by_name_[k.name].push_back({m, p, fs::file_size(p), fs::last_write_time(p), day});
+  };
+  for (const disk::Key &k : disk::list(disk::FundMetaShard))
+    add(disk::FundMetaShard, k, 0, 0);
+  for (const disk::Key &k : disk::list(disk::FundShard))
+    add(disk::FundShard, k, k.ym, 0);
+  for (const disk::Key &k : disk::list(disk::FundDay))
+    add(disk::FundDay, k, k.ym, k.date);
   for (auto &[name, v] : by_name_)
     std::sort(v.begin(), v.end(), [](const Shard &a, const Shard &b) { return std::pair(a.ym, a.day) < std::pair(b.ym, b.day); });
 }

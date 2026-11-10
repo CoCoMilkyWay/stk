@@ -42,7 +42,6 @@ void StateManager::scan(ScanMode mode) {
   const bool cache_matches_config =
       data_.asset.orders.scanned &&
       data_.asset.archive.scanned &&
-      data_.asset.orders.path == data_.config.orders_dir &&
       data_.asset.archive.path == data_.config.archive_dir;
   if (mode == ScanMode::RecomputeCoverage && !cache_matches_config)
     mode = ScanMode::RescanStorage;

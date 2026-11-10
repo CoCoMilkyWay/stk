@@ -21,7 +21,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <string>
 #include <vector>
 
 struct FeatureLib;
@@ -35,7 +34,7 @@ class Panel {
 public:
   // 库 lib 在 dates (管线日期轴) 上的面板; old = 旧清单 (续算) 或未建库 (全量). fund 须已 build 覆盖 dates (all 定轴库的成员)
   // 上游未就绪 / D (子池定轴库: D−1) 不在上游日期轴或未落盘 / 上游判废 → assert; 自然轴为空 → assert; 随轴库的轴不在上游清单轴内 → assert
-  static Panel build(LibId lib, const std::string &feature_dir, const fund::Panel &fund, std::span<const misc::Ymd> dates, const FeatureLib &old);
+  static Panel build(LibId lib, const fund::Panel &fund, std::span<const misc::Ymd> dates, const FeatureLib &old);
 
   const PoolAxis &axis() const { return axis_; }
   const std::vector<uint32_t> &outside() const { return outside_; } // 轴外 (全局 id 升序)

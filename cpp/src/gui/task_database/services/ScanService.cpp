@@ -1,5 +1,6 @@
 // Scan Service Implementation
 #include "gui/task_database/services/ScanService.hpp"
+#include "disk/Disk.hpp"
 #include "shared/SharedData.hpp"
 
 #include <cassert>
@@ -35,8 +36,8 @@ bool ScanService::run(ScanRequest &req) {
   // ========================================
   // 两源目录
   // ========================================
-  const bool orders_exists = fs::exists(data_.config.orders_dir) &&
-                             !fs::is_empty(data_.config.orders_dir);
+  const bool orders_exists = disk::exists(disk::Orders) &&
+                             !fs::is_empty(disk::path(disk::Orders));
   const bool archive_exists = fs::exists(data_.config.archive_dir) &&
                               !fs::is_empty(data_.config.archive_dir);
 
@@ -53,7 +54,7 @@ bool ScanService::run(ScanRequest &req) {
   AssetScan &s = r.scan.emplace();
   if (req.mode == ScanMode::RescanStorage) {
     misc::exec::ForkJoin &io = misc::exec::ensure(io_ex_, misc::exec::fit(kScanThreads));
-    asset.scan_orders(s, data_.config.orders_dir, io, *this);
+    asset.scan_orders(s, io, *this);
     Asset::scan_archive(s, data_.config.archive_dir, kArchiveExtension, io, *this);
   } else {
     assert((asset.orders.scanned || asset.archive.scanned) &&

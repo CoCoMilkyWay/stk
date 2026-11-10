@@ -2,7 +2,7 @@
 //   两者同一种成品 = 账 PortfolioBook (线 × 行的逐行增量, 线键取线, 列 = 毛收益 / 建仓冲击 / 固定份数 / 增仓量, 另带估值):
 //   因子一本一线; 行情两侧 (Quote::Side) 各一本: 篮子一本 basket_count 线 (不扣成本 = 无冲击两列), 个股一本每只一线 (只毛收益一列).
 //
-// 组合文件 <config.portfolio_dir>/<name>.json (name = 主干, ValidFactorName):
+// 组合文件 output/portfolios/<name>.json (name = 主干, ValidFactorName):
 //   { "factors": [ { "pool": "all", "level": "5min", "file": "mom30.json", "hold": 30, "sign": -1, "expr": "<具体规范串>" }, … ] }
 //   条目 = 权重粒度: (池, 因子层, 因子文件, 具体规范串, 方向) 定位 Factors 表里的一个权重 (FactorRow::expr / sign; sign 缺 = +1); hold = 加入时 Factors 页的 Hold.
 //   因子文件里找不到该规范串 + 方向 (被 Search 重写 / 删了) → 条目失效 (UI 红, 不算). 组合内可混池混层.
@@ -58,11 +58,11 @@ struct PortfolioEntry {
     return pool + "|" + factor_level(lv).name + "|" + file + "|" + expr + "|" + std::to_string(sign) + "|" + std::to_string(hold);
   }
 };
-std::vector<std::string> ListPortfolios(const std::string &dir);                                            // 主干名, 字典序; 目录不存在 = 空
-std::vector<PortfolioEntry> LoadPortfolio(const std::string &dir, const std::string &name);                 // 格式不对 → assert (只本页写)
-void SavePortfolio(const std::string &dir, const std::string &name, const std::vector<PortfolioEntry> &es); // tmp + rename
-bool RenamePortfolio(const std::string &dir, const std::string &from, const std::string &to);               // to 已存在 → false
-void DeletePortfolio(const std::string &dir, const std::string &name);
+std::vector<std::string> ListPortfolios();                                          // 主干名, 字典序
+std::vector<PortfolioEntry> LoadPortfolio(const std::string &name);                 // 格式不对 → assert (只本页写)
+void SavePortfolio(const std::string &name, const std::vector<PortfolioEntry> &es); // 原子替换
+bool RenamePortfolio(const std::string &from, const std::string &to);               // to 已存在 → false
+void DeletePortfolio(const std::string &name);
 
 // ---- 解析 (GUI 线程): 条目 → 该 (池, 层) 目录下 ScanFactorFile 找回的权重行 (字段表取全页共享的 FeatureTables) ----
 struct PortfolioItem {

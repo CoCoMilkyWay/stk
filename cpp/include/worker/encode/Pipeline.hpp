@@ -66,7 +66,7 @@ struct EncodeTask {
 // worker 每销一个账就记一笔结局 —— 两边同一个 DayIndex::settle. 最后一个
 // 销账的 worker commit.
 struct DayJob {
-  DayJob(const std::string &dir, misc::Ymd date) : writer(dir, date) {}
+  explicit DayJob(misc::Ymd date) : writer(date) {}
 
   DayWriter writer;
   DayIndex index;

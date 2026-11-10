@@ -1,7 +1,7 @@
 // Task Beta - 风格择优: 先算全市场 all.bar 标签库, 再在其上回测风格篮子的参数网格, 选中的子池落 pools.json.
 //   Compute: 库表的 Beta 段 (只 all.bar; 见 ComputeHub.hpp). 计算服务全局一份 (ComputeHub), 输入就绪即建, Update 每帧推进 (自动续算不等进页);
 //     Alpha → Compute 管其余各库, Features 盯它的轮次作废缓存.
-//   Style: 风格篮子参数优选 (StyleService, 原料直接读 all.bar 库; 首次进页建), 选中落地 = <config_dir>/pools.json (只本页读; 计算的池表 = 编译期 feature_pools()).
+//   Style: 风格篮子参数优选 (StyleService, 原料直接读 all.bar 库; 首次进页建), 选中落地 = config/pools.json (只本页读; 计算的池表 = 编译期 feature_pools()).
 #include "gui/task_beta/TaskBeta.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/compute/ui/TabCompute.hpp"
@@ -56,9 +56,9 @@ TaskHandle CreateBetaTask(std::shared_ptr<Compute::ComputeHub> compute) {
     if (idx == TAB_COMPUTE) {
       Compute::RenderTabCompute(*state->compute, data, Compute::LibSide::Beta);
     } else {
-      Beta::SyncStylePools(state->style_ui, data.config.config_dir);
+      Beta::SyncStylePools(state->style_ui);
       if (!state->style_service)
-        state->style_service = std::make_unique<Beta::StyleService>(data.config);
+        state->style_service = std::make_unique<Beta::StyleService>();
       Beta::RenderTabStyle(*state->style_service, state->style_ui);
     }
     ImGui::EndChild();

@@ -1,6 +1,7 @@
 // Market 行情页右图例 (NAV / VAL / FLOW / CTA 同一骨架的右表) — 见 LinesCommon.hpp
 #include "gui/task_market/ui/LinesCommon.hpp"
 
+#include "disk/Disk.hpp"
 #include "gui/util/Chart.hpp" // tint / button_bar
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
@@ -53,7 +54,7 @@ void watch_flip(LinesUIState &ui, const std::string &w) {
     ui.watch.erase(it);
   else
     ui.watch.push_back(w);
-  SaveWatch(ui.watch_path, ui.watch);
+  SaveWatch(ui.watch);
 }
 // 星格: 先于行的 Selectable / TreeNode (跨全列) 交, 悬停归它
 void star_cell(LinesUIState &ui, const std::string &w) {
@@ -539,7 +540,7 @@ void watch_bar(LinesUIState &ui, size_t n, const std::vector<std::string> &lost)
     tip("自选 = 星列 / 名格右键加入的篮子行与成分行, 加入序\n"
         "• 全局一份 (%s), 与组合无关, 各页同一份\n"
         "• 与原行同一份选中 / 展开 (篮子行照样 ▸ 展开); 数值列底色 = 自选之间名次",
-        ui.watch_path.c_str());
+        disk::path(disk::WatchFile).string().c_str());
   if (lost.empty())
     return;
   ImGui::SameLine();
@@ -548,7 +549,7 @@ void watch_bar(LinesUIState &ui, size_t n, const std::vector<std::string> &lost)
     keys += "\n• " + w;
   if (ImGui::SmallButton(("移出失效 " + std::to_string(lost.size())).c_str())) {
     std::erase_if(ui.watch, [&](const std::string &w) { return std::ranges::find(lost, w) != lost.end(); });
-    SaveWatch(ui.watch_path, ui.watch);
+    SaveWatch(ui.watch);
   }
   if (ImGui::IsItemHovered())
     tip("找不到行的自选键 (概念换快照没了 / 代码不在资产轴), 点 = 一并移出:%s", keys.c_str());
