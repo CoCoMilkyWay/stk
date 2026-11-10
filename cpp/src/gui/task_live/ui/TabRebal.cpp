@@ -48,7 +48,7 @@ void config(LiveHub &hub, RebalState &st) {
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered())
-    tip("config/local/live/lists/<名>.csv, 名为字母数字下划线; 每行首列一个 6 位代码 (可有 code 表头), 行序即排名; 新在前\n选中即重读");
+    tip("output/config/live/lists/<名>.csv, 名为字母数字下划线; 每行首列一个 6 位代码 (可有 code 表头), 行序即排名; 新在前\n选中即重读");
   ImGui::SameLine();
   ImGui::TextDisabled("%zu 只", hub.codes().size());
   if (!hub.list_err().empty()) {

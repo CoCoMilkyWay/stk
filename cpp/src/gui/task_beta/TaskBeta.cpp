@@ -1,7 +1,7 @@
 // Task Beta - 风格择优: 先算全市场 all.bar 标签库, 再在其上回测风格篮子的参数网格, 选中的子池落 pools.json.
 //   Compute: 库表的 Beta 段 (只 all.bar; 见 ComputeHub.hpp). 计算服务全局一份 (ComputeHub), 输入就绪即建, Update 每帧推进 (自动续算不等进页);
 //     Alpha → Compute 管其余各库, Features 盯它的轮次作废缓存.
-//   Style: 风格篮子参数优选 (StyleService, 原料直接读 all.bar 库; 首次进页建), 选中落地 = config/pools.json (= 子池表, 进程启动时读进 feature_pools(), 重启生效).
+//   Style: 风格篮子参数优选 (StyleService, 原料直接读 all.bar 库; 首次进页建), 选中落地 = output/config/beta/pools.json (= 子池表, 进程启动时读进 feature_pools(), 重启生效).
 #include "gui/task_beta/TaskBeta.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/compute/ui/TabCompute.hpp"

@@ -33,7 +33,7 @@ inline constexpr int kBackendCount = static_cast<int>(std::size(kBackends));
 static_assert(kBackendCount == 2);
 inline const BackendDef &def(Backend b) { return kBackends[static_cast<int>(b)]; }
 
-// 该后端的 key (首次调用读 config/local/agent/keys.json, 之后不再读); 空 = 未填
+// 该后端的 key (首次调用读 output/config/agent/keys.json, 之后不再读); 空 = 未填
 const std::string &key(Backend b);
 
 struct Net {

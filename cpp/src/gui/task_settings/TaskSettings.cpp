@@ -366,7 +366,7 @@ private:
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Repository");
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("仓库根: 其下 output/ 与 config/ 的布局固定 (disk/Disk.hpp), 换盘用符号链接");
+          ImGui::SetTooltip("仓库根: 其下 output/ 的布局固定 (disk/Disk.hpp), 换盘用符号链接");
         }
         ImGui::TableNextColumn();
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.8f, 1.0f, 1.0f));
@@ -456,7 +456,7 @@ private:
 
   // 只读一行: 与 draw_xxx_row 同构 (Label/Tooltip/Value 三段), 只是 Value 用
   // TextDisabled 而不是 InputText —— 这些是编译期常量 (namespace config, 不
-  // 进 config.json), 标灰即表明"能看不能改".
+  // 进 settings.json), 标灰即表明"能看不能改".
   static void draw_readonly_row(const char *label, const char *tooltip, const std::string &value) {
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
@@ -513,7 +513,7 @@ private:
       });
 
       ImGui::Spacing();
-      ImGui::TextDisabled("以上均为编译期常量 (各数据源 client / fundamental/Spec.hpp), 不进 config.json");
+      ImGui::TextDisabled("以上均为编译期常量 (各数据源 client / fundamental/Spec.hpp), 不进 settings.json");
     }
     return changed;
   }

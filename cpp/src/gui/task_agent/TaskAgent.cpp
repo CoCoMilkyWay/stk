@@ -158,7 +158,7 @@ bool model_ok(const State &s) {
   return !s.sniff.busy(b) && s.sniff.got[b].error.empty() && !s.opt.model.empty(); // 按当前连接方式嗅探成功且已选
 }
 
-// ---- 选项落盘 (config/local/agent/ui.json) ----
+// ---- 选项落盘 (output/config/agent/ui.json) ----
 // 无文件 / 读不出 / 字段对不上 / 取值越界 ⇒ 整份回默认值, 首次 save_ui 按当前字段清单重写
 // 池 / 层 / 持有期 / 模型失效由各自的选择逻辑回落; GPU 不在了回落 CPU
 void load_ui(State &s) {
@@ -289,7 +289,7 @@ void session_row(const SharedData &data, State &s) {
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
   const bool can_new = !m.live() && !m.chat.busy() && !m.lab.busy() && keyed && model_ok(s) && has_hold && has_leaves && has_ops;
-  const char *why_not = !keyed                    ? "所选后端的 key 未填 (config/local/agent/keys.json)"
+  const char *why_not = !keyed                    ? "所选后端的 key 未填 (output/config/agent/keys.json)"
                         : !model_ok(s)            ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
                         : has_hold && !has_leaves ? "没有开放的特征叶 (本层无叶, 或特征页一个没勾)"
                         : has_hold && !has_ops    ? "没有开放的算子 (算子页一个没勾)"
@@ -1451,7 +1451,7 @@ void render_config(State &s) {
   if (has_key(o.backend))
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "key 已填");
   else
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "key 未填 (config/local/agent/keys.json)");
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "key 未填 (output/config/agent/keys.json)");
   ImGui::BeginDisabled(s.sniff.any());
   int via = o.via_proxy[o.backend];
   bool toggled = ImGui::RadioButton("直连", &via, 0);

@@ -729,7 +729,7 @@ def main():
     print("Clean Bookmap Visualizer")
     print("=" * 50)
     
-    data = "config/sample/sh600000_20250603.csv"
+    data = "output/data/sample/sh600000_20250603.csv"
     visualizer = CleanBookmapVisualizer(min_order_size=20)
     visualizer.process_file(data)
     

@@ -29,23 +29,14 @@ GUI布局:
   ③ 因子  因子引擎 (Run / Search) ─► output/factors/<pool>/<层> (一因子一文件); Agent 候选 output/agent ─(达门槛)─► 同上
   ④ 组合  因子 ─► output/portfolios (Market 组合)
   ⑤ 实盘  券商客户端 (live/<客户端>/, 现只有通达信) ─(Broker: 读持仓 / 成交 / 挂单 / 信用账户, 下单 / 重查两融条款)─► Live 持仓页 / 一键调仓;
-          行情走新浪 (不读客户端的), 当日两融条款落 output/live, 调仓名单 config/local/live/lists
-  各段的运行产物 (日志 / 用时 / 导出 / 采样) 落 output/run/ 下的同构位置; output/ 与 config/ 的布局唯一由 disk/Disk.hpp 定
+          行情走新浪 (不读客户端的), 当日两融条款落 output/live, 调仓名单 output/config/live/lists
+  人定的配置落 output/config/ (一任务一目录); 各段的运行产物 (日志 / 用时 / 导出 / 采样) 落 output/run/ 下的同构位置; output/ 的布局唯一由 disk/Disk.hpp 定
 ```
 
 ```
 stk/
 ├── AGENT.md                                            # 🤖 Agent 挖因子: 状态机 / 调用协议与工具表 / 会话流水字段
 ├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + CUDA 开关 → py/main.py
-├── config/                                             # ⚙️ 配置: 入 git 的共享部分 + local/ 本机部分 (整目录 gitignore)
-│   ├── pools.json                                      # ⚙️ 子池表: Beta → Style 选定的子池 (池名 = features/Panel/PoolSpec.hpp 规范串; 无文件 = 缺省池表); 启动时读, 重启生效
-│   ├── agent/                                          # ⚙️ Agent: prompt/<名>.md 提示词模板 (system / first / round / retry / review / test) · families.md 特征族卡
-│   ├── sample/                                         # ⚙️ 样例数据 (Level-1 / Level-2 / 财务报表); L2/README = 逐笔 CSV 字段格式
-│   └── local/                                          # ⚙️ 本机 (gitignore)
-│       ├── config.json                                 # ⚙️ 归档目录 / 回测日历起点 (末日随数据) / CSV 文件名 / 交易成本 / 同步开关
-│       ├── watch.json                                  # ⚙️ Market 自选: 篮子键 / 个股代码
-│       ├── agent/                                      # ⚙️ Agent: keys.json 后端 key · ui.json Mine / Config 页选项
-│       └── live/lists/<名>.csv                         # ⚙️ Live 调仓名单 (名 = 字母数字下划线): 每行首列一个 6 位代码, 行序即排名
 ├── py/                                                 # 🐍 Python 工具链
 │   ├── main.py                                         # 🐍 构建脚本 (调 CMake)
 │   ├── mode_*.py                                       # 🐍 模式开关: tsan / debug / profile / assert / production
@@ -127,7 +118,7 @@ stk/
 │   │   │       │                                       #    · 行时间代数: emit 全序 = (行末秒, 层, 盘后); level_asof(src, dst, t) = 不晚于 dst 行末的最近 src 行 (−1 = 前一交易日末行)
 │   │   │       │                                       #    · 收行判据 level_closes / for_each_close: 哪层在哪秒收行的唯一判据 (写端 CoreTs / CoreCs 同一路径)
 │   │   │       ├── FeatureLib.hpp                      # 🧮 特征库: 库 LibId = 池 × 档; 每库一份清单 lib.json (A 轴 / 日期轴 / 轴外; 写端规划后落, 读端只读)
-│   │   │       │                                       #    · 池表 feature_pools (启动时定): [0] = all (全市场); 其余 = 子池表 config/pools.json
+│   │   │       │                                       #    · 池表 feature_pools (启动时定): [0] = all (全市场); 其余 = 子池表 output/config/beta/pools.json
 │   │   │       │                                       #    · 库树 lib_parent: all.bar 为根 → 子池 Bar 库 → 同池 Lob 库; 计算序 lib_order = 上游先, 本库日须落在上游日期轴上
 │   │   │       ├── FeatureDay.hpp                      # 🧮 日文件格式: write ⇄ read 互逆 (逐列编码 + 列目录)
 │   │   │       ├── FeatureStore.hpp                    # 🧮 写端存储引擎: [T][F][A] Float16 日环; TS / CS / IO 三段 open-close 握手; 续算从盘上 seed 尾窗日
@@ -364,9 +355,9 @@ stk/
 │   │   │       ├── Mem.hpp / Tables.hpp                # 💹 /proc/<pid>/mem 扫表 (形 / 列 / 模式 / 索引四轴) + 各表规格
 │   │   │       ├── Shim.hpp / Proc.hpp                 # 💹 shim 编译注入 + TCP 控制通道 / 子进程
 │   │   │       └── Ui.hpp / Flash.hpp / Credit.hpp     # 💹 界面原语 / 闪电下单 / 两融全表与信用账户
-│   │   ├── disk/                                       # 💽 落盘: output/ 与 config/ 的唯一布局 + 唯一路径入口
+│   │   ├── disk/                                       # 💽 落盘: output/ 的唯一布局 + 唯一路径入口
 │   │   │   ├── Disk.hpp                                # 💽 布局表 DISK_LAYOUT (一行一节点) + 键 Key → path / list / read / write (原子) / append / remove (墓碑)
-│   │   │   └── Sweep.hpp                               # 💽 开机整理: 残留直接清 / 基石 (orders / fundamental / concept + config/local 下本机配置) 自动迁入布局 / 其余不合布局的按 (节点, 名字) 归组逐组问删
+│   │   │   └── Sweep.hpp                               # 💽 开机整理: 残留直接清 / 基石 (orders / fundamental / concept + output/config 下本机配置) 自动迁入布局 / 其余不合布局的按 (节点, 名字) 归组逐组问删
 │   │   └── misc/                                       # 🔧 通用工具库
 │   │       ├── logging.hpp / print.hpp                 # 🔧 日志 / STL 容器格式化打印
 │   │       ├── format.hpp                              # 🔧 定宽数值格式化
@@ -409,8 +400,16 @@ stk/
 │       ├── CMakeLists.txt                              # 🏗️ CMake (C++23, Clang); 按档扫描 Node/<Tier>/{TS,CS} → 拓扑排序 → 生成节点表 / 字段表
 │       ├── templates/                                  # 🏗️ 生成头模板: NodesGenerated / FieldsGenerated / FeatureCategoriesGenerated
 │       └── build/bin/app_main                          # 🎯 可执行文件
-└── output/                                             # 📁 运行时输出 (与 cpp/ 同级); 按产研流水线分段, run/ 是各段运行产物的同构镜像 (整删无损)
+└── output/                                             # 📁 落盘 (与 cpp/ 同级): config/ 人定的输入 + 按产研流水线分段的产物 + run/ 各段运行产物的同构镜像 (整删无损)
+    ├── config/                                         # ⚙️ 配置: 一任务一目录 (与左栏任务树对仗); 本机件 (不进仓库) 由 output/.gitignore 逐项列出
+    │   ├── settings/settings.json                      # ⚙️ 归档目录 / 回测日历起点 (末日随数据) / CSV 文件名 / 交易成本 / 同步开关 (本机)
+    │   ├── beta/pools.json                             # ⚙️ 子池表: Beta → Style 选定的子池 (池名 = features/Panel/PoolSpec.hpp 规范串; 无文件 = 缺省池表); 启动时读, 重启生效
+    │   ├── market/watch.json                           # ⚙️ Market 自选: 篮子键 / 个股代码 (本机)
+    │   ├── agent/                                      # ⚙️ Agent: prompt/<名>.md 提示词模板 (system / first / round / retry / review / test) · families.md 特征族卡
+    │   │                                               #    · keys.json 后端 key · ui.json Mine / Config 页选项 (本机)
+    │   └── live/lists/<名>.csv                         # ⚙️ Live 调仓名单 (名 = 字母数字下划线): 每行首列一个 6 位代码, 行序即排名 (本机)
     ├── data/                                           # ① 数据
+    │   ├── sample/                                     # 样例 (Level-1 / Level-2 / 财务报表); L2/README = 逐笔 CSV 字段格式
     │   ├── orders/YYYY/MM/YYYYMMDD.bin                 # Level-2 逐笔编码: 一天全市场一个文件, 每资产一个 zstd 帧 + 账目 + 尾部目录
     │   ├── fundamental/                                # 日频基本面
     │   │   ├── YYYY-MM/<表>.parquet                    # 月度分片 (每表一文件; 0 行月也落文件 = 拉过)
@@ -481,7 +480,7 @@ stk/
 #       · 行末源标: CS(<源档>, <层>, <源列>, Tf, Method); <层> 任意: 源行 = level_asof(源列, 本列, t)
 #         (粗层读已收的上一行; 落到前一交易日只许 TS / 元列, 区间首日 NaN)
 #   - 两档都要: 节点类放 Node/Common/<分类>/, 两档各写各的 NODE_ / FIELDS_ (列名跨档不许重名, FeatureMeta.cpp 编译期断言)
-#   - 新池:   不写节点; Beta → Style 勾选写 config/pools.json (重启生效), 每个子池两档各一库
+#   - 新池:   不写节点; Beta → Style 勾选写 output/config/beta/pools.json (重启生效), 每个子池两档各一库
 #       · 新风格 (排序键) = features/Panel/PoolSpec.hpp 风格表加一行 + PoolSelect.cpp 键表 kKeyDefs 对应一行
 #   - 其他文件一律不改: CMake 按档扫描生成 <Tier>/NodesGenerated.hpp + FieldsGenerated.hpp
 #

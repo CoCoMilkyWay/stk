@@ -3,7 +3,7 @@
 // =============================================================================
 // agent 配置 (自成一体, 不进 shared/Config.hpp)
 // =============================================================================
-//   LLM 两后端都走 HTTPS 443 (gui/task_agent/Llm.hpp), 端点 / key / 默认连接见后端表 kBackends; key 不进仓库, 放本地 config/local/agent/keys.json:
+//   LLM 两后端都走 HTTPS 443 (gui/task_agent/Llm.hpp), 端点 / key / 默认连接见后端表 kBackends; key 不进仓库, 放本机 output/config/agent/keys.json:
 //     智谱    对话补全 chat/completions; key = 开放平台 API Keys
 //     Cursor  Cloud Agents API; key = Dashboard → API Keys 的 user API key (无仓库 agent, 起 VM 分钟级)
 //   模型不写死: 各后端的模型表由 GET models 嗅探 (llm::models), Config 页从中选
@@ -72,9 +72,10 @@ inline constexpr double kGateRic = 0.03;  // rIC 均值
 //     tools/<工具名>.md                 各工具最近一次交给 agent 的结果 (跨会话互相覆盖; 开会话时删掉工具表里已没有的)
 //     sessions/<池>/<层>/<持有期>/search/ 候选的 Search 日志
 //   output/data/doc/resources-{tag,proc}/ 研报库: 标注 + tag_stat.md / 全文 (gui/task_agent/Docs.hpp, 只读)
-//   config/agent/prompt/<名>.md         提示词模板 ({{键}} 占位, gui/task_agent/Prompt.hpp)
-//   config/agent/families.md            特征族卡: 每族一节 "# <族> <族名>" + 卡文 (族 = 节点文件, 见 Leaf::family; 系统提示的特征表按族排)
-//   config/local/agent/keys.json        {<BackendDef::field>: key}; 无文件则按后端表填假 key 生成
-//   config/local/agent/ui.json          Mine / Config 页的选项: 改了即写, 首次 Draw 读回; 无文件 = 用上面的默认值
+//   output/config/agent/
+//     prompt/<名>.md                    提示词模板 ({{键}} 占位, gui/task_agent/Prompt.hpp)
+//     families.md                       特征族卡: 每族一节 "# <族> <族名>" + 卡文 (族 = 节点文件, 见 Leaf::family; 系统提示的特征表按族排)
+//     keys.json                         {<BackendDef::field>: key}; 无文件则按后端表填假 key 生成 (本机, 不进仓库)
+//     ui.json                           Mine / Config 页的选项: 改了即写, 首次 Draw 读回; 无文件 = 用上面的默认值 (本机)
 
 } // namespace GUI::Agent

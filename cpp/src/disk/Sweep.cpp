@@ -181,8 +181,7 @@ void walk(const fs::path &dir, Node n, const Key &k, Plan &plan) {
 
 Plan scan() {
   Plan plan;
-  for (const Node top : {Output, ConfigDir})
-    walk(ensure(top), top, {}, plan);
+  walk(ensure(Output), Output, {}, plan);
   return plan;
 }
 

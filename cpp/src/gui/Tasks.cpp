@@ -147,7 +147,7 @@ TaskTree CreateAllTasks(SharedData &data) {
   tree.tasks.push_back(Tasks::CreateToolsTask());
 
   // 按 push 顺序立即 Init 一遍 (与"选中才 Draw"解耦, 后台检查提前起):
-  // Settings 先把 config.json 落到内存, Database 才能在第一帧前拿到真实
+  // Settings 先把 settings.json 落到内存, Database 才能在第一帧前拿到真实
   // backtest range 去跑覆盖检查 —— 顺序即依赖, 不需要额外判断.
   // Update 也按此序: Beta 先推进计算面, Features 同帧读到.
   for (auto &handle : tree.tasks) {

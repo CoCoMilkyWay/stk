@@ -6,7 +6,7 @@
 #include <cassert>
 
 // ============================================================================
-// 池表 (FeatureLib.hpp 声明): [0] = all; 其余 = 子池表 (config/pools.json), 进程内首次用到时读一次
+// 池表 (FeatureLib.hpp 声明): [0] = all; 其余 = 子池表 (output/config/beta/pools.json), 进程内首次用到时读一次
 // ============================================================================
 namespace {
 const std::vector<PoolDef> &pools() {
@@ -48,7 +48,7 @@ PoolId pool_id(std::string_view name) {
   for (size_t i = 0; i < pools().size(); ++i)
     if (name == pools()[i].name)
       return static_cast<PoolId>(i);
-  assert(false && "不是池名 (all / 子池表 config/pools.json)");
+  assert(false && "不是池名 (all / 子池表 output/config/beta/pools.json)");
   return kAllPool;
 }
 

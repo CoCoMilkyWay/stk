@@ -4,7 +4,7 @@
 //     ST / 板块 / 融资 各自划分全部在市 A 股 (取值 全 = 不切); 过滤 = 过滤表的子集 (各条件 1 = 滤掉, 剔的条件并起来剔)
 //     切片 = ST ∩ 板块 ∩ 融资 ∩ 过滤后的在市资产; 只数 N > 0 = 切片内键的一端取前 N, N = 0 = 切片内全选 (与风格端无关, canon 归一)
 //   键 / 切片的原料全是 all.bar L_1day 的基础列 (行 D = D+1 盘前态, 见 Node/Common/Fund/Fund.hpp), 成员由 features/Panel/PoolSelect.hpp 现算 (选股表 Picks)
-//   子池表 = config/pools.json (Beta → Style 页确认后写; 无文件 = default_pools()); 计算与各页的池表 feature_pools() (features/Storage/FeatureLib.hpp)
+//   子池表 = output/config/beta/pools.json (Beta → Style 页确认后写; 无文件 = default_pools()); 计算与各页的池表 feature_pools() (features/Storage/FeatureLib.hpp)
 //     = all + 子池表, 进程启动时读一次 (改了重启生效)
 //
 //   池名 (库目录名) 与中文名都按维序以 "." 连, 每维一段:
@@ -164,7 +164,7 @@ std::string detail_cn(const Spec &s); // 全部参数 (悬停, 多行): 池名 /
 // 子池表各池的显示名: 简称, 同简称不止一个的按表序加 A / B / C … (过 Z 接 AA)
 std::vector<std::string> aliases(const std::vector<Spec> &pools);
 
-// 子池表 (config/pools.json, 池表序)
+// 子池表 (output/config/beta/pools.json, 池表序)
 std::vector<Spec> default_pools();
 std::vector<Spec> load_pools(); // 文件不存在 = default_pools(); 格式不对 / 重名 → assert
 void save_pools(const std::vector<Spec> &pools);

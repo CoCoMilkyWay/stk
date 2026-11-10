@@ -9,21 +9,21 @@
 #include <vector>
 
 // ============================================================================
-// 落盘 — 仓库下 output/ 与 config/ 的唯一布局 + 唯一路径入口
+// 落盘 — 仓库下 output/ 的唯一布局 + 唯一路径入口
 //
 // 布局表 DISK_LAYOUT (一行一节点): 拼路径 path / 列举 list / 整理 sweep (disk/Sweep.hpp) 同读这一张表, 盘上只许出现表里的节点.
 //   节点名 = 前缀 + 段 + 后缀. 段 Seg = 字面, 或键 Key 的一个字段 (池 / 档 / 层 / 日期 …); 键沿父链累积, 子节点可依赖祖先已定的字段.
 //   类 Kind: Dir 目录 (子节点逐个在表里) / File 文件 / Bundle 目录 (内部由写者自理, 不展开)
 //
-// output/ 按产研流水线分段; run/ 是各段运行产物的同构镜像, 整删无损:
-//   data/        ① 数据 ← 外部              run/data/       编码日志 / 归档修复
+// output/ = config/ 人定的输入 + 按产研流水线分段的产物 + run/ 各段运行产物的同构镜像 (整删无损):
+//   config/      配置: 一任务一目录 (settings / beta / market / agent / live, 与左栏任务树对仗); 本机件由 output/.gitignore 逐项列出
+//   data/        ① 数据 ← 外部 + 样例       run/data/       编码日志 / 归档修复
 //   features/    ② 特征 ← data              run/features/   计算日志 / 节点用时 / perf 采样 (同 <池>/<档>)
 //   factors/     ③ 因子 ← features          run/factors/    Search 日志 / Inspect 导出 (同 <池>/<层>) + 算子表
 //   portfolios/  ④ 组合 ← factors
 //   agent/       ③ 的旁路: 挖候选 → 入库      run/agent/      Search 日志 (同会话作用域) + 工具结果样本 (同 <main|test>)
 //   live/        实盘: 当日两融条款          run/live/       调仓事务日志
 //                                           run/app/        进程级: TSan 报告 / 崩溃栈
-// config/: 入 git 的共享配置 + local/ (本机, 整目录 gitignore); 对仗: agent/ ↔ local/agent/; local/live/ = 实盘调仓名单
 //
 // 读写: 小文件 (清单 / 配置 / 因子 / 记录行) 走 read / write / append; write = <正式名>.tmp → rename 原子替换.
 //   大块数据 (逐笔日文件 / 特征日文件 / 快照 / parquet / CTA 库 / 日志流 / Bundle 内部) 只从 path 取路径, 读写自理,
@@ -69,8 +69,26 @@ enum class Seg : std::uint8_t {
   /* ======== output/ ======== */                                                                        \
   X(Output,            Root,              Dir,    Lit,       "output",            "",         false)       \
   X(OutputIgnore,      Output,            File,   Lit,       ".gitignore",        "",         false)       \
+  /* 配置 (一任务一目录) */                                                                                \
+  X(Config,            Output,            Dir,    Lit,       "config",            "",         false)       \
+  X(ConfigSettings,    Config,            Dir,    Lit,       "settings",          "",         false)       \
+  X(SettingsFile,      ConfigSettings,    File,   Lit,       "settings.json",     "",         true)        \
+  X(ConfigBeta,        Config,            Dir,    Lit,       "beta",              "",         false)       \
+  X(PoolsFile,         ConfigBeta,        File,   Lit,       "pools.json",        "",         false)       \
+  X(ConfigMarket,      Config,            Dir,    Lit,       "market",            "",         false)       \
+  X(WatchFile,         ConfigMarket,      File,   Lit,       "watch.json",        "",         true)        \
+  X(ConfigAgent,       Config,            Dir,    Lit,       "agent",             "",         false)       \
+  X(PromptDir,         ConfigAgent,       Dir,    Lit,       "prompt",            "",         false)       \
+  X(PromptFile,        PromptDir,         File,   Prompt,    "",                  ".md",      false)       \
+  X(FamilyFile,        ConfigAgent,       File,   Lit,       "families.md",       "",         false)       \
+  X(AgentKeyFile,      ConfigAgent,       File,   Lit,       "keys.json",         "",         true)        \
+  X(AgentUiFile,       ConfigAgent,       File,   Lit,       "ui.json",           "",         true)        \
+  X(ConfigLive,        Config,            Dir,    Lit,       "live",              "",         false)       \
+  X(LiveLists,         ConfigLive,        Dir,    Lit,       "lists",             "",         true)        \
+  X(LiveListFile,      LiveLists,         File,   List,      "",                  ".csv",     false)       \
   /* ① 数据 */                                                                                            \
   X(Data,              Output,            Dir,    Lit,       "data",              "",         false)       \
+  X(Sample,            Data,              Bundle, Lit,       "sample",            "",         false)       \
   X(Orders,            Data,              Dir,    Lit,       "orders",            "",         true)        \
   X(OrdersYear,        Orders,            Dir,    Year,      "",                  "",         false)       \
   X(OrdersMonth,       OrdersYear,        Dir,    Month,     "",                  "",         false)       \
@@ -170,25 +188,7 @@ enum class Seg : std::uint8_t {
   X(RunLiveRebalLog,   RunLiveRebal,      File,   Stamp,     "",                  ".jsonl",   false)       \
   X(RunApp,            Run,               Dir,    Lit,       "app",               "",         false)       \
   X(RunAppTsan,        RunApp,            File,   Lit,       "tsan_report.log",   "",         false)       \
-  X(RunAppCrash,       RunApp,            File,   Lit,       "crash_stacks.txt",  "",         false)       \
-  /* ======== config/ ======== */                                                                        \
-  X(ConfigDir,         Root,              Dir,    Lit,       "config",            "",         false)       \
-  X(ConfigIgnore,      ConfigDir,         File,   Lit,       ".gitignore",        "",         false)       \
-  X(PoolsFile,         ConfigDir,         File,   Lit,       "pools.json",        "",         false)       \
-  X(AgentConfig,       ConfigDir,         Dir,    Lit,       "agent",             "",         false)       \
-  X(PromptDir,         AgentConfig,       Dir,    Lit,       "prompt",            "",         false)       \
-  X(PromptFile,        PromptDir,         File,   Prompt,    "",                  ".md",      false)       \
-  X(FamilyFile,        AgentConfig,       File,   Lit,       "families.md",       "",         false)       \
-  X(Sample,            ConfigDir,         Bundle, Lit,       "sample",            "",         false)       \
-  X(Local,             ConfigDir,         Dir,    Lit,       "local",             "",         false)       \
-  X(SettingsFile,      Local,             File,   Lit,       "config.json",       "",         true)        \
-  X(WatchFile,         Local,             File,   Lit,       "watch.json",        "",         true)        \
-  X(LocalAgent,        Local,             Dir,    Lit,       "agent",             "",         false)       \
-  X(AgentKeyFile,      LocalAgent,        File,   Lit,       "keys.json",         "",         true)        \
-  X(AgentUiFile,       LocalAgent,        File,   Lit,       "ui.json",           "",         true)        \
-  X(LocalLive,         Local,             Dir,    Lit,       "live",              "",         false)       \
-  X(LiveLists,         LocalLive,         Dir,    Lit,       "lists",             "",         true)        \
-  X(LiveListFile,      LiveLists,         File,   List,      "",                  ".csv",     false)
+  X(RunAppCrash,       RunApp,            File,   Lit,       "crash_stacks.txt",  "",         false)
 // clang-format on
 
 enum Node : std::uint16_t {

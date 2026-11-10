@@ -4,7 +4,7 @@
 #include <cassert>
 #include <cstring>
 
-// Data format reference: config/sample/L2/README
+// Data format reference: output/data/sample/L2/README
 
 namespace L2 {
 
@@ -289,7 +289,7 @@ static void parse_trade_line(std::string_view line, bool szse, std::vector<CSVTr
   trades.push_back(trade);
 }
 
-// 行情.csv 的字段布局 (表头见 config/sample/L2/README). 只取校验用得上的.
+// 行情.csv 的字段布局 (表头见 output/data/sample/L2/README). 只取校验用得上的.
 namespace {
 // 快照行的最小字段数. 取得比实际读到的列 (最低价, 下标 14) 宽得多 —— 它同时
 // 当作行完整性的门槛: 列数不足说明这行是截断的, 不该拿来当真值.

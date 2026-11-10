@@ -84,7 +84,7 @@ bool Config::LoadFromFile() {
 
   // Parse JSON to Config with default values as fallback
   start_date = misc::parse_ymd(j.value("start_date", misc::dash(start_date)));
-  assert(start_date && "config.json: start_date 须为 YYYY-MM-DD");
+  assert(start_date && "settings.json: start_date 须为 YYYY-MM-DD");
   archive_dir = j.value("archive_dir", archive_dir);
   csv_market_data = j.value("csv_market_data", csv_market_data);
   csv_market_trade = j.value("csv_market_trade", csv_market_trade);
