@@ -3,16 +3,15 @@
 #include "disk/Disk.hpp"
 #include "live/Broker.hpp"
 #include "live/tdx/Proc.hpp"
+#include "live/tdx/Until.hpp"
 
 #include <boost/beast/core/detail/sha1.hpp>
 
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
-#include <thread>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -187,12 +186,7 @@ void ensure(double timeout) {
   if (online())
     return;
   inject();
-  const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout);
-  while (!online()) {
-    if (std::chrono::steady_clock::now() >= end)
-      fail(strf("shim 注入后 %gs 无应答 (端口 %d)", timeout, port()));
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  }
+  until(said(strf("shim 注入后应答 (端口 %d)", port())), online, timeout, 0.1);
 }
 
 std::vector<nlohmann::json> call(const std::string &line, double timeout) {

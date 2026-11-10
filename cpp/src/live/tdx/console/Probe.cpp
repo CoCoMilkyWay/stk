@@ -176,10 +176,10 @@ struct Table {
   std::vector<std::string> lines;
 };
 
-std::string tables(int pid) {
+std::string tables(const mem::Heap &h) {
   std::vector<Table> seen;
   std::map<std::pair<std::string, std::string>, size_t> at;
-  mem::each_region(pid, [&](mem::Addr lo, std::string_view d) {
+  h.each([&](mem::Addr lo, std::string_view d) {
     for (size_t p = d.find("0|"); p != std::string_view::npos;) {
       size_t end = 0;
       const auto lines = table_at(d, p, end);
@@ -226,7 +226,7 @@ std::string tables(int pid) {
 
 // ---------- 文本 ----------
 
-std::string texts(int pid, const std::vector<std::string> &words) {
+std::string texts(const mem::Heap &h, const std::vector<std::string> &words) {
   struct Pat {
     std::string word;
     bool utf16;
@@ -238,7 +238,7 @@ std::string texts(int pid, const std::vector<std::string> &words) {
     pats.push_back({w, true, utf8_utf16(w)});
   }
   std::string out;
-  mem::each_region(pid, [&](mem::Addr lo, std::string_view d) {
+  h.each([&](mem::Addr lo, std::string_view d) {
     for (const Pat &p : pats)
       for (size_t i = d.find(p.bytes); i != std::string_view::npos; i = d.find(p.bytes, i + 1)) {
         const size_t a = std::max(i % 2, i < kContext ? 0 : i - kContext), b = std::min(d.size(), i + p.bytes.size() + kContext);
@@ -273,8 +273,8 @@ void run(const std::shared_ptr<Core> &cp, std::vector<std::string> words) {
   std::thread([cp, words = std::move(words)] {
     std::string out;
     try {
-      const int pid = mem::attach();
-      out = words.empty() ? tables(pid) : texts(pid, words);
+      const mem::HeapP h = mem::attach();
+      out = words.empty() ? tables(*h) : texts(*h, words);
     } catch (const Fail &f) {
       out = "✗ " + f.why;
     }

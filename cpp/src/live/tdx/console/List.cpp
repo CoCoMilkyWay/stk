@@ -22,7 +22,7 @@ std::vector<Row> rows_of(const View &v) {
   std::vector<Row> out;
   std::optional<int> hide_depth; // 折叠时跳过比它更深的
   for (size_t i = 0; i < t.nodes.size(); ++i) {
-    const ui::Node &n = t.nodes[i];
+    const win::Node &n = t.nodes[i];
     const bool kids = i + 1 < t.nodes.size() && t.nodes[i + 1].depth > n.depth;
     const bool folded = v.collapsed.contains(n.hwnd);
     if (f.text.empty()) {
@@ -116,7 +116,7 @@ void draw_list(Core &c, View &v) {
       };
       const ImU32 fg = ImGui::GetColorU32(ImGuiCol_Text);
       const std::string rect = strf("[%d,%d,%d,%d]", n.rect[0], n.rect[1], n.rect[2], n.rect[3]);
-      const std::string ttl = n.title.empty() ? "" : " \"" + cut(ui::squash(n.title), 60) + "\"";
+      const std::string ttl = n.title.empty() ? "" : " \"" + cut(win::squash(n.title), 60) + "\"";
       if (r.kids)
         dl->AddText(ImVec2(fold_x + (12 - ImGui::CalcTextSize(v.collapsed.contains(n.hwnd) ? "▸" : "▾").x) / 2, a.y), fade(kMut, al),
                     v.collapsed.contains(n.hwnd) ? "▸" : "▾");

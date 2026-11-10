@@ -33,7 +33,7 @@ std::string plain(const ojson &j) { return j.is_string() ? j.get<std::string>() 
 
 std::string win(const ojson &n) {
   const ojson &t = n.at("title");
-  return plain(n.at("hwnd")) + " " + plain(n.at("class")) + "#" + plain(n.at("id")) + "「" + (t.is_string() ? ui::squash(t.get<std::string>()) : "") + "」";
+  return plain(n.at("hwnd")) + " " + plain(n.at("class")) + "#" + plain(n.at("id")) + "「" + (t.is_string() ? win::squash(t.get<std::string>()) : "") + "」";
 }
 std::string hidden(const ojson &vis) { return truthy(vis) ? "" : " (隐藏)"; }
 
@@ -76,7 +76,7 @@ std::string body(const std::string &kind, const ojson &r) {
     std::string s;
     for (const ojson &t : r.at("texts"))
       s += (s.empty() ? "" : " | ") + t.get<std::string>();
-    return "gdi " + plain(r.at("hwnd")) + " " + plain(r.at("cls")) + "#" + plain(r.at("id")) + " | " + cut(ui::squash(s), 300);
+    return "gdi " + plain(r.at("hwnd")) + " " + plain(r.at("cls")) + "#" + plain(r.at("id")) + " | " + cut(win::squash(s), 300);
   }
   if (kind == "mark")
     return "===== " + plain(r.at("text")) + " =====";

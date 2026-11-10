@@ -5,7 +5,7 @@
 //     hwnd = 窗口#客户区左,上 (重画不变), host = 所画窗口, cls = "绘", rect 为屏幕坐标)
 #pragma once
 
-#include "live/tdx/Ui.hpp"
+#include "live/tdx/Win.hpp"
 
 #include "imgui.h"
 #include "nlohmann/json.hpp"
@@ -42,23 +42,23 @@ inline constexpr unsigned kStSel = 1, kStCheck = 2, kStKids = 4, kStOpen = 8, kS
 
 // 一棵窗口树 + 派生: hwnd → 下标、父子 (兄弟序即 z 序, 先 = 上层)
 struct Tree {
-  std::vector<ui::Node> nodes;
+  std::vector<win::Node> nodes;
   std::unordered_map<std::string, size_t> at;
   std::vector<std::vector<size_t>> kids;
   std::vector<size_t> roots;
   std::string err; // 拉树失败的原因 (nodes 空)
-  const ui::Node *find(const std::string &hwnd) const;
+  const win::Node *find(const std::string &hwnd) const;
 };
-std::shared_ptr<const Tree> make_tree(std::vector<ui::Node> nodes, std::string err = "");
+std::shared_ptr<const Tree> make_tree(std::vector<win::Node> nodes, std::string err = "");
 
-using Layers = std::map<std::string, ui::Layer>; // hwnd → detail 子项
+using Layers = std::map<std::string, win::Layer>; // hwnd → detail 子项
 struct Gdi {
-  ui::Layer layer;
+  win::Layer layer;
   Clock::time_point at; // 到达时刻
 };
 using Gdis = std::map<std::string, std::shared_ptr<const Gdi>>; // hwnd → 绘制层
 
-struct Pick : ui::Node {
+struct Pick : win::Node {
   std::string host; // 非空 = 绘制元素
 };
 
@@ -183,9 +183,9 @@ std::string trim(std::string_view s);            // 去头尾空白
 std::string cut(const std::string &s, size_t n); // 前 n 个码点
 std::string lower(std::string s);
 bool std_class(const std::string &cls);                    // 按类画的标准控件 (表外即自绘窗口)
-bool needs_detail(const ui::Node &n);                      // 可见、矩形非空、该类要拉 detail 子项
-const ui::Layer *gdi_of(const View &v, const ui::Node &n); // 绘制层开且该窗口有内容
-std::vector<Pick> elems_of(const View &v, const ui::Node &n);
+bool needs_detail(const win::Node &n);                      // 可见、矩形非空、该类要拉 detail 子项
+const win::Layer *gdi_of(const View &v, const win::Node &n); // 绘制层开且该窗口有内容
+std::vector<Pick> elems_of(const View &v, const win::Node &n);
 std::optional<Pick> pick_of(const View &v, const std::string &id);
 void select(View &v, const Pick &p);
 void act_sel(Core &c, View &v, const std::string &kind, const std::string &arg = ""); // 对选中的: 窗口经 shim, 绘制元素就地
@@ -194,8 +194,8 @@ void act_sel(Core &c, View &v, const std::string &kind, const std::string &arg =
 struct Filter {
   std::string text;
   bool only_vis, hide_zero;
-  bool match(const ui::Node &n) const;
-  bool keep(const ui::Node &n) const;
+  bool match(const win::Node &n) const;
+  bool keep(const win::Node &n) const;
 };
 Filter filter_of(const View &v);
 

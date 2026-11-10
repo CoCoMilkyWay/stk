@@ -57,15 +57,15 @@ std::optional<Kind> kind_of(const std::string &cls) {
   return std::nullopt;
 }
 
-int btn_type(const ui::Node &n) { return static_cast<int>(n.style & 0xf); } // BS_TYPEMASK
-bool check_like(const ui::Node &n) {                                        // 勾选 / 单选类, 非 BS_PUSHLIKE
+int btn_type(const win::Node &n) { return static_cast<int>(n.style & 0xf); } // BS_TYPEMASK
+bool check_like(const win::Node &n) {                                        // 勾选 / 单选类, 非 BS_PUSHLIKE
   const int t = btn_type(n);
   return (t == 2 || t == 3 || t == 4 || t == 5 || t == 6 || t == 9) && !(n.style & 0x1000);
 }
-bool is_web(const ui::Node &n) { return n.cls.starts_with("Chrome_") || n.cls.starts_with("Cef"); }
-bool on_map(const ui::Node &n) { return n.vis && n.rect[2] > n.rect[0] && n.rect[3] > n.rect[1]; } // IsWindowVisible 已含祖先
+bool is_web(const win::Node &n) { return n.cls.starts_with("Chrome_") || n.cls.starts_with("Cef"); }
+bool on_map(const win::Node &n) { return n.vis && n.rect[2] > n.rect[0] && n.rect[3] > n.rect[1]; } // IsWindowVisible 已含祖先
 
-Skin skin_of(const ui::Node &n, bool leaf) {
+Skin skin_of(const win::Node &n, bool leaf) {
   if (const std::optional<Kind> k = kind_of(n.cls))
     switch (*k) {
     case Kind::Button:
@@ -102,7 +102,7 @@ struct R {
   float l, t, r, b;
 };
 R rect_of(const int (&r)[4]) { return {static_cast<float>(r[0]), static_cast<float>(r[1]), static_cast<float>(r[2]), static_cast<float>(r[3])}; }
-R shift(const ui::Item &it, int ox, int oy) {
+R shift(const win::Item &it, int ox, int oy) {
   return {static_cast<float>(it.l + ox), static_cast<float>(it.t + oy), static_cast<float>(it.r + ox), static_cast<float>(it.b + oy)};
 }
 ImVec4 isect(const ImVec4 &a, const ImVec4 &b) { return {std::max(a.x, b.x), std::max(a.y, b.y), std::min(a.z, b.z), std::min(a.w, b.w)}; }
@@ -193,14 +193,14 @@ struct Ctx {
 
 // 子项已换到屏幕坐标: items 的 [l,t,r,b] + (ox, oy)
 struct Sub {
-  const std::vector<ui::Item> &items;
+  const std::vector<win::Item> &items;
   int ox, oy;
-  R at(const ui::Item &it) const { return shift(it, ox, oy); }
+  R at(const win::Item &it) const { return shift(it, ox, oy); }
 };
 
-void draw_button(const Painter &p, const ui::Node &n, const Sub &d) {
+void draw_button(const Painter &p, const win::Node &n, const Sub &d) {
   const unsigned st = d.items.empty() ? 0 : d.items[0].v;
-  const std::string text = mnem(ui::squash(n.title));
+  const std::string text = mnem(win::squash(n.title));
   const unsigned col = n.en ? kFg : kGray;
   const R box = rect_of(n.rect);
   if (btn_type(n) == 7) // 分组框
@@ -217,17 +217,17 @@ void draw_button(const Painter &p, const ui::Node &n, const Sub &d) {
   p.text_in(box, text, kMiddle, col);
 }
 
-void draw_combo(const Painter &p, const ui::Node &n) {
+void draw_combo(const Painter &p, const win::Node &n) {
   const R box = rect_of(n.rect);
   const float a = std::min(box.b - box.t, 18.f);
   p.box({box.r - a, box.t, box.r, box.b}, kBtnFace);
   p.text_in({box.r - a, box.t, box.r, box.b}, "▾", kMiddle);
-  p.text_in({box.l, box.t, box.r - a, box.b}, ui::squash(n.title), kStart, n.en ? kFg : kGray);
+  p.text_in({box.l, box.t, box.r - a, box.b}, win::squash(n.title), kStart, n.en ? kFg : kGray);
 }
 
 // ListBox / ComboLBox / SysListView32: 行 (kStRow) 先铺选中底色, 其后各格文字
 void draw_rows(const Painter &p, const Sub &d) {
-  for (const ui::Item &it : d.items) {
+  for (const win::Item &it : d.items) {
     const R r = d.at(it);
     if (it.v & kStSel)
       p.fill(r, rgb(kSelBar, p.a));
@@ -237,14 +237,14 @@ void draw_rows(const Painter &p, const Sub &d) {
 }
 
 void draw_header(const Painter &p, const Sub &d) {
-  for (const ui::Item &it : d.items) {
+  for (const win::Item &it : d.items) {
     p.box(d.at(it), kHdrItem);
     p.text_in(d.at(it), it.text.value_or(""));
   }
 }
 
-void draw_tree_items(const Painter &p, const ui::Node &n, const Sub &d) {
-  for (const ui::Item &it : d.items) {
+void draw_tree_items(const Painter &p, const win::Node &n, const Sub &d) {
+  for (const win::Item &it : d.items) {
     const R r = d.at(it);
     if (it.v & kStSel)
       p.fill(r, rgb(kSelBar, p.a));
@@ -255,7 +255,7 @@ void draw_tree_items(const Painter &p, const ui::Node &n, const Sub &d) {
 }
 
 void draw_menu(const Painter &p, const Sub &d) {
-  for (const ui::Item &it : d.items) {
+  for (const win::Item &it : d.items) {
     const R r = d.at(it);
     if (it.v & kStSep) {
       p.line(r.l + 2, (r.t + r.b) / 2, r.r - 2, (r.t + r.b) / 2, kSep);
@@ -276,35 +276,35 @@ void draw_menu(const Painter &p, const Sub &d) {
   }
 }
 
-void draw_other(const Painter &p, const ui::Node &n, bool leaf) {
+void draw_other(const Painter &p, const win::Node &n, bool leaf) {
   const R box = rect_of(n.rect);
   if (!leaf || box.r - box.l < 30 || box.b - box.t < 10)
     return;
   if (is_web(n))
     return p.text_in(box, "网页 (CEF)", kMiddle, kGray);
-  const std::string t = ui::squash(n.title);
+  const std::string t = win::squash(n.title);
   p.text_in({box.l, box.t, box.r, std::min(box.b, box.t + 12)}, t.empty() ? n.cls : t, kStart, kSelfLbl, 9);
 }
 
-void draw_static(const Painter &p, const ui::Node &n) {
+void draw_static(const Painter &p, const win::Node &n) {
   const unsigned a = n.style & 0x1f;
-  p.text_in(rect_of(n.rect), mnem(ui::squash(n.title)), a == 1 ? kMiddle : a == 2 ? kEnd
+  p.text_in(rect_of(n.rect), mnem(win::squash(n.title)), a == 1 ? kMiddle : a == 2 ? kEnd
                                                                                   : kStart,
             n.en ? kFg : kGray);
 }
 
-void draw_edit(const Painter &p, const ui::Node &n) {
+void draw_edit(const Painter &p, const win::Node &n) {
   std::string s;
   if (n.style & 0x20) // ES_PASSWORD
     for (size_t i = cps(n.title); i > 0; --i)
       s += "●";
   else
-    s = ui::squash(n.title);
+    s = win::squash(n.title);
   p.text_in(rect_of(n.rect), s);
 }
 
 // 一个窗口: 底板 (接命中) + 按类装饰 (有绘制层则由它代替); 绘制元素的命中框盖在其画面上
-void draw_node(Ctx &m, const ui::Node &n, bool leaf) {
+void draw_node(Ctx &m, const win::Node &n, bool leaf) {
   const Painter &p = m.p;
   const R box = rect_of(n.rect);
   const Skin sk = skin_of(n, leaf);
@@ -315,9 +315,9 @@ void draw_node(Ctx &m, const ui::Node &n, bool leaf) {
   }
   const ImVec4 clip = isect(p.screen(box), p.clip());
   m.hits.push_back({clip, n.hwnd});
-  const ui::Layer *g = gdi_of(m.v, n);
+  const win::Layer *g = gdi_of(m.v, n);
   if (!g) {
-    static const std::vector<ui::Item> kNoItems;
+    static const std::vector<win::Item> kNoItems;
     const auto d = m.v.detail->find(n.hwnd);
     const Sub sub = d == m.v.detail->end() ? Sub{kNoItems, 0, 0} : Sub{d->second.items, n.rect[0] + d->second.off[0], n.rect[1] + d->second.off[1]};
     const std::optional<Kind> k = kind_of(n.cls);
@@ -345,7 +345,7 @@ void draw_node(Ctx &m, const ui::Node &n, bool leaf) {
   }
   const int ox = n.rect[0] + g->off[0], oy = n.rect[1] + g->off[1];
   p.dl->PushClipRect(p.at(box.l, box.t), p.at(box.r, box.b), true);
-  for (const ui::Item &it : g->items) {
+  for (const win::Item &it : g->items) {
     const R r = shift(it, ox, oy);
     if (!it.text)
       p.fill(r, bgr(it.v, p.a));
@@ -354,13 +354,13 @@ void draw_node(Ctx &m, const ui::Node &n, bool leaf) {
   }
   p.dl->PopClipRect();
   if (n.vis && !std_class(n.cls))
-    for (const ui::Item &it : g->items)
+    for (const win::Item &it : g->items)
       if (it.text && !trim(*it.text).empty())
         m.hits.push_back({isect(p.screen(shift(it, ox, oy)), clip), strf("%s#%d,%d", n.hwnd.c_str(), it.l, it.t)});
 }
 
 void draw_tree(Ctx &m, const Tree &t, size_t i) {
-  const ui::Node &n = t.nodes[i];
+  const win::Node &n = t.nodes[i];
   if (!on_map(n))
     return;
   std::vector<size_t> sub;
@@ -436,7 +436,7 @@ void canvas(Core &c, View &v, const Tree &t, const std::vector<size_t> &tops, co
     v.hover_next = hit;
     v.hover_map_next = true;
     if (hp && hp->host.empty() && !v.held && !v.pan)
-      ImGui::SetTooltip("%s id=%ld %s \"%s\" [%d,%d,%d,%d]", hp->hwnd.c_str(), hp->id, hp->cls.c_str(), ui::squash(hp->title).c_str(), hp->rect[0], hp->rect[1],
+      ImGui::SetTooltip("%s id=%ld %s \"%s\" [%d,%d,%d,%d]", hp->hwnd.c_str(), hp->id, hp->cls.c_str(), win::squash(hp->title).c_str(), hp->rect[0], hp->rect[1],
                         hp->rect[2], hp->rect[3]);
   }
   const int wx = static_cast<int>(std::lround(world.l + (q.x - o.x) / s)), wy = static_cast<int>(std::lround(world.t + (q.y - o.y) / s));
@@ -509,27 +509,27 @@ void canvas(Core &c, View &v, const Tree &t, const std::vector<size_t> &tops, co
 
 bool std_class(const std::string &cls) { return kind_of(cls).has_value(); }
 
-bool needs_detail(const ui::Node &n) {
+bool needs_detail(const win::Node &n) {
   if (!on_map(n))
     return false;
   const std::optional<Kind> k = kind_of(n.cls);
   return k && (*k == Kind::Button ? check_like(n) : *k != Kind::Static && *k != Kind::Edit && *k != Kind::Combo);
 }
 
-const ui::Layer *gdi_of(const View &v, const ui::Node &n) {
+const win::Layer *gdi_of(const View &v, const win::Node &n) {
   if (!v.gdi_on)
     return nullptr;
   const auto g = v.gdi->find(n.hwnd);
   return g == v.gdi->end() || g->second->layer.items.empty() ? nullptr : &g->second->layer;
 }
 
-std::vector<Pick> elems_of(const View &v, const ui::Node &n) {
+std::vector<Pick> elems_of(const View &v, const win::Node &n) {
   std::vector<Pick> out;
-  const ui::Layer *g = n.vis && !std_class(n.cls) ? gdi_of(v, n) : nullptr;
+  const win::Layer *g = n.vis && !std_class(n.cls) ? gdi_of(v, n) : nullptr;
   if (!g)
     return out;
   const int ox = n.rect[0] + g->off[0], oy = n.rect[1] + g->off[1];
-  for (const ui::Item &it : g->items) {
+  for (const win::Item &it : g->items) {
     const std::string t = it.text ? trim(*it.text) : std::string();
     if (t.empty())
       continue;

@@ -57,7 +57,7 @@ void pull_tree(Core &c, std::string &tree_key, std::string &detail_key) {
   std::shared_ptr<const Tree> t;
   if (key != tree_key) {
     tree_key = std::move(key);
-    t = make_tree(ui::nodes_of(recs));
+    t = make_tree(win::nodes_of(recs));
     Lock lk(c.mu);
     c.tree = t;
     auto g = std::make_shared<Gdis>(*c.gdi);
@@ -69,12 +69,12 @@ void pull_tree(Core &c, std::string &tree_key, std::string &detail_key) {
   }
   json all = json::array();
   auto d = std::make_shared<Layers>();
-  for (const ui::Node &n : t->nodes) {
+  for (const win::Node &n : t->nodes) {
     if (!needs_detail(n))
       continue;
     try {
       const json r = shim::cmd("detail", n.hwnd).at(0);
-      d->emplace(n.hwnd, ui::layer_of(r));
+      d->emplace(n.hwnd, win::layer_of(r));
       all.push_back(r);
     } catch (const Fail &f) {
       all.push_back(f.why);
@@ -151,7 +151,7 @@ void watch_loop(const std::shared_ptr<Core> &cp, bool gdi) {
           return true;
         if (gdi) {
           auto g = std::make_shared<Gdis>(*c.gdi);
-          ui::Layer l = ui::layer_of(r);
+          win::Layer l = win::layer_of(r);
           std::string h = l.hwnd;
           (*g)[std::move(h)] = std::make_shared<const Gdi>(Gdi{std::move(l), Clock::now()});
           c.gdi = std::move(g);
@@ -221,7 +221,7 @@ void header(Core &c, View &v) {
     if (ImGui::Button("接入"))
       act(c, [&c] {
         try {
-          ui::attach();
+          win::attach();
           Lock lk(c.mu);
           c.status.clear();
         } catch (const Fail &f) {
@@ -256,19 +256,19 @@ void header(Core &c, View &v) {
 
 } // namespace
 
-const ui::Node *Tree::find(const std::string &hwnd) const {
+const win::Node *Tree::find(const std::string &hwnd) const {
   const auto i = at.find(hwnd);
   return i == at.end() ? nullptr : &nodes[i->second];
 }
 
-std::shared_ptr<const Tree> make_tree(std::vector<ui::Node> nodes, std::string err) {
+std::shared_ptr<const Tree> make_tree(std::vector<win::Node> nodes, std::string err) {
   auto t = std::make_shared<Tree>();
   t->nodes = std::move(nodes);
   t->err = std::move(err);
   t->kids.resize(t->nodes.size());
   std::vector<size_t> stack;
   for (size_t i = 0; i < t->nodes.size(); ++i) {
-    const ui::Node &n = t->nodes[i];
+    const win::Node &n = t->nodes[i];
     t->at.emplace(n.hwnd, i);
     while (!stack.empty() && t->nodes[stack.back()].depth >= n.depth)
       stack.pop_back();
@@ -355,19 +355,19 @@ std::string lower(std::string s) {
   return s;
 }
 
-bool Filter::match(const ui::Node &n) const {
+bool Filter::match(const win::Node &n) const {
   return text.empty() || lower(n.cls + " " + n.title + " " + n.hwnd + " " + std::to_string(n.id)).find(text) != std::string::npos;
 }
-bool Filter::keep(const ui::Node &n) const {
+bool Filter::keep(const win::Node &n) const {
   return !(only_vis && !n.vis) && !(hide_zero && (n.rect[0] == n.rect[2] || n.rect[1] == n.rect[3])) && match(n);
 }
-Filter filter_of(const View &v) { return {lower(ui::squash(v.filter)), v.only_vis, v.hide_zero}; }
+Filter filter_of(const View &v) { return {lower(win::squash(v.filter)), v.only_vis, v.hide_zero}; }
 
 std::optional<Pick> pick_of(const View &v, const std::string &id) {
   if (id.empty())
     return std::nullopt;
   const std::string host = id.substr(0, id.find('#'));
-  const ui::Node *n = v.tree->find(host);
+  const win::Node *n = v.tree->find(host);
   if (!n)
     return std::nullopt;
   if (host == id)

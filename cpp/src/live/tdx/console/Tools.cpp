@@ -49,7 +49,7 @@ void sel_desc(const View &v) {
   const std::string rect = strf("[%d,%d,%d,%d]", n.rect[0], n.rect[1], n.rect[2], n.rect[3]);
   if (!n.host.empty())
     return ImGui::TextWrapped("绘制元素 \"%s\" · 画在 %s · rect=%s", n.title.c_str(), n.host.c_str(), rect.c_str());
-  const std::string t = ui::squash(n.title);
+  const std::string t = win::squash(n.title);
   ImGui::TextWrapped("%s · id=%ld · class=%s", n.hwnd.c_str(), n.id, n.cls.c_str());
   ImGui::TextWrapped("title=%s · rect=%s · vis=%d en=%d", t.empty() ? "(空)" : t.c_str(), rect.c_str(), n.vis ? 1 : 0, n.en ? 1 : 0);
 }
@@ -147,7 +147,7 @@ void draw_tools(Core &c, View &v) {
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("定位")) { // 在当前树里选中该 hwnd, 消息填进原始消息栏
-      if (const ui::Node *n = v.tree->find(e.hwnd)) {
+      if (const win::Node *n = v.tree->find(e.hwnd)) {
         select(v, Pick{*n, ""});
         fill_msg(v, e);
       } else

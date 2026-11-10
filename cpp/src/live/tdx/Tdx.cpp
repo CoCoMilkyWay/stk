@@ -8,6 +8,7 @@
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/Tables.hpp"
 #include "live/tdx/Ui.hpp"
+#include "live/tdx/Win.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -34,28 +35,36 @@ constexpr auto kWatchLinger = 1s; // touch 之后算有人在看的时长
 using PosSnap = mem::Snap<tables::Positions>;
 using FillSnap = mem::Snap<tables::Fills>;
 
-const std::vector<std::string> kRefresh = {"成交", "持仓", "挂单", "信用账户"};
+// 盯着的一样 (被动换代的表): 表、当前快照、交易栏页签、发布到 State 的哪样、快照 → 发布值
+template <class S, class T>
+struct Watched {
+  using Snap = mem::Snap<S>;
+  using Value = T;
+  mem::Table<S> t;
+  std::optional<Snap> snap;
+  const char *tab;
+  Got<T> State::*got;
+  T (*view)(const Snap &);
+};
 
 // 两个后台线程与 Broker 接口共用; 线程各持一份 shared_ptr, Tdx 析构只置停 (在途的界面操作做完即退)
 struct Core {
   ui::Gate gate;
-  mem::Table<tables::Positions> pos_t;
-  mem::Table<tables::Fills> fills_t;
-  mem::Table<tables::Orders> orders_t;
-  credit::Tables credit_t;
 
-  // work: 快照与进程 (盯持仓的一步、刷新一轮的取数 / 并入都在其内); 序: work → mu
+  // work: 盯着的两样与进程堆 (盯持仓的一步、刷新一轮的取数 / 并入都在其内); 序: work → mu
   std::mutex work;
-  std::optional<PosSnap> pos;
-  std::optional<FillSnap> fills;
-  int pid = 0;
+  Watched<tables::Fills, Fills> fills{{}, {}, "成交", &State::fills, [](const FillSnap &s) { return Fills{s.rows, s.index}; }};
+  Watched<tables::Positions, Keyed<Position>> pos{{}, {}, "持仓", &State::pos, [](const PosSnap &s) { return s.index; }};
+  mem::Table<tables::Pendings> pendings;
+  credit::Tables credit;
+  mem::HeapP heap;
   Clock::time_point scan_at{};
 
   // mu: 发布的 State、进度、轮次与起因
   mutable std::mutex mu;
   std::condition_variable cv;
   std::shared_ptr<const State> st = std::make_shared<State>();
-  Refresh prog{.steps = kRefresh, .every = kEvery};
+  Refresh prog{.every = kEvery};
   bool lost = true; // 出过错: 下一步先接回客户端、全量重扫
   bool stop = false;
   uint64_t asked = 0, done = 0;
@@ -75,54 +84,60 @@ struct Core {
     edit(*s);
     st = std::move(s);
   }
-
-  // 客户端重查过的一样并进 State (须持 work); stamp = 记下读于几时 (全量扫不记)
-  void fresh_pos(PosSnap s, bool stamp) {
-    const bool changed = !pos || !(*pos == s);
-    if (changed)
-      pos = std::move(s);
-    std::lock_guard lk(mu);
-    if (changed)
-      publish([&](State &x) {
-        x.pos = std::make_shared<const Keyed<Position>>(pos->by_code);
-        x.who = strf("tdxw.exe pid %d", pos->pid);
-      });
-    if (stamp)
-      prog.at["持仓"] = clock_now();
+  // 一样并进 State (须持 mu): v 非空即换值; stamp = 客户端刚重查过, 记下读于几时
+  template <class T>
+  void put(Got<T> State::*g, std::shared_ptr<const T> v, bool stamp) {
+    if (!v && !stamp)
+      return;
+    publish([&](State &x) {
+      if (v)
+        (x.*g).v = std::move(v);
+      if (stamp)
+        (x.*g).at = clock_now();
+    });
   }
-  void fresh_fills(FillSnap s, bool stamp) {
-    const bool changed = !fills || !(*fills == s);
-    if (changed)
-      fills = std::move(s);
+  // 盯着的一样换上快照 s (须持 work): 换代了才换值
+  template <class W>
+  void fresh(W &w, typename W::Snap s, bool stamp) {
+    std::shared_ptr<const typename W::Value> v;
+    if (!w.snap || !(*w.snap == s)) {
+      v = std::make_shared<const typename W::Value>(w.view(s));
+      w.snap = std::move(s);
+    }
     std::lock_guard lk(mu);
-    if (changed)
-      publish([&](State &x) { x.fills = std::make_shared<const Fills>(Fills{fills->rows, fills->by_code}); });
-    if (stamp)
-      prog.at["成交"] = clock_now();
-  }
-  template <class F>
-  void fresh(const char *name, F &&edit) {
-    std::lock_guard lk(mu);
-    publish(edit);
-    prog.at[name] = clock_now();
+    put(w.got, std::move(v), stamp);
   }
   void note(std::string step) {
     std::lock_guard lk(mu);
     prog.step = std::move(step);
   }
 
-  // 一遍全量扫出持仓与成交 (并重找进程; 须持 work)
+  // 接上客户端进程堆 (须持 work): 没接过或进程换了即重开
+  const mem::HeapP &attach() {
+    if (!heap || heap->pid() != mem::find_pid()) {
+      heap = mem::attach();
+      std::lock_guard lk(mu);
+      publish([&](State &x) { x.who = strf("tdxw.exe pid %d", heap->pid()); });
+    }
+    return heap;
+  }
+  mem::HeapP attached() {
+    std::lock_guard wk(work);
+    return attach();
+  }
+
+  // 一遍全量扫出成交与持仓 (并重找进程; 须持 work)
   void scan() {
     scan_at = Clock::now();
-    pid = mem::attach();
-    const auto hits = mem::scan(pid, {&tables::Positions::kShape, &tables::Fills::kShape});
-    PosSnap p = pos_t.pick(pid, hits[0]);
-    FillSnap f = fills_t.pick(pid, hits[1]);
-    fresh_fills(std::move(f), false);
-    fresh_pos(std::move(p), false);
+    const mem::HeapP &h = attach();
+    const auto hits = h->scan({&tables::Fills::kShape, &tables::Positions::kShape});
+    FillSnap f = fills.t.pick(h, hits[0]);
+    PosSnap p = pos.t.pick(h, hits[1]);
+    fresh(fills, std::move(f), false);
+    fresh(pos, std::move(p), false);
   }
   void load() {
-    if (!pos)
+    if (!pos.snap)
       scan();
   }
 
@@ -139,19 +154,19 @@ struct Core {
     }
     std::lock_guard wk(work);
     if (was_lost) {
-      mem::attach(); // 客户端不在即 Fail, 不去空注入
+      attach(); // 客户端不在即 Fail, 不去空注入
       if (!shim::online())
-        ui::attach();
+        win::attach();
     }
-    if (was_lost || !pos || now - scan_at >= kFullEvery) {
+    if (was_lost || !pos.snap || now - scan_at >= kFullEvery) {
       scan();
       std::lock_guard lk(mu);
       lost = false;
       prog.down.clear();
     } else {
-      PosSnap p = pos_t.follow(*pos);
-      if (!(p == *pos))
-        fresh_pos(std::move(p), true);
+      PosSnap p = pos.t.follow(*pos.snap);
+      if (!(p == *pos.snap))
+        fresh(pos, std::move(p), true);
     }
   }
 
@@ -190,74 +205,67 @@ struct Core {
     }
     if (!last || (prog.every > 0 && now - *last >= std::chrono::duration<double>(prog.every)))
       return true;
-    return checked && st->pos && st->fills && st->pos != checked && !board::synced(*st->pos, *st->fills);
+    return checked && st->pos && st->fills && st->pos.v != checked && !board::synced(*st->pos, *st->fills);
   }
 
-  void refresh_fills() {
-    note("成交");
-    FillSnap old;
-    {
+  // 重查盯着的一样: 切到其页签点刷新, 等快照换代
+  template <class W>
+  void refresh(W &w) {
+    note(State::name(w.got));
+    const typename W::Snap old = [&] {
       std::lock_guard wk(work);
-      old = *fills;
-    }
-    ui::click_tool("成交");
+      return *w.snap;
+    }();
+    ui::click_tool(w.tab);
     ui::click_tool("刷新");
-    FillSnap n = fills_t.wait(old);
+    typename W::Snap n = w.t.wait(old);
     std::lock_guard wk(work);
-    fresh_fills(std::move(n), true);
-  }
-  void refresh_pos() {
-    note("持仓");
-    PosSnap old;
-    {
-      std::lock_guard wk(work);
-      old = *pos;
-    }
-    ui::click_tool("持仓");
-    ui::click_tool("刷新");
-    PosSnap n = pos_t.wait(old);
-    std::lock_guard wk(work);
-    fresh_pos(std::move(n), true);
+    fresh(w, std::move(n), true);
   }
   bool synced() {
     std::lock_guard lk(mu);
     return board::synced(*st->pos, *st->fills);
   }
 
-  // 一轮: 成交、持仓两次查询之间又有成交即对不上, 连查至多 kSyncTries 遍, 仍不对留给上层标出; 查完回持仓页
+  // 一轮: 成交、持仓两次查询之间又有成交即对不上, 连查至多 kSyncTries 遍, 仍不对留给上层标出;
+  // 挂单、信用资产、融资负债三问接成一串 (每问应答的那遍扫即下一问的问前); 查完回持仓页
   // (撤单页上另画着一个撤单动作键, 故切去时须在持仓页, 页签唯一)
   void round() {
     if (const std::string w = gate.who(); !w.empty())
       note("等界面 (" + w + ")");
     ui::Gate::Hold g(gate, "刷新");
-    int p;
+    mem::HeapP h;
     {
       std::lock_guard wk(work);
       load();
-      p = pid;
+      h = heap;
     }
     ui::show_bar();
     for (int i = 0; i < kSyncTries; ++i) {
-      refresh_fills();
-      refresh_pos();
+      refresh(fills);
+      refresh(pos);
       if (synced())
         break;
     }
-    note("挂单");
-    // 「撤单」页: 切页与刷新同在 ask 内 (切页自带一次查询, 其应答可能早于刷新)
-    auto orders = orders_t.ask(p, [] {
+    mem::Chain q(h, {&tables::Pendings::kShape, &tables::Assets::kShape, &tables::Debts::kShape});
+    note(State::name(&State::orders));
+    // 「撤单」页: 切页与刷新同在一问内 (切页自带一次查询, 其应答可能早于刷新)
+    auto orders = q.ask(pendings, [] {
       ui::click_tool("撤单");
       ui::click_tool("刷新");
     });
-    fresh("挂单", [&](State &x) { x.orders = std::make_shared<const std::vector<Pending>>(std::move(orders.rows)); });
-    note("信用账户");
     std::shared_ptr<const Keyed<Position>> held;
     {
       std::lock_guard lk(mu);
-      held = st->pos;
+      put(&State::orders, std::make_shared<const std::vector<Pending>>(std::move(orders.rows)), true);
+      held = st->pos.v;
     }
-    Account a = credit::account(credit_t, p, *held);
-    fresh("信用账户", [&](State &x) { x.acct = std::make_shared<const Account>(std::move(a)); });
+    note(State::name(&State::acct));
+    auto a = std::make_shared<const Account>(credit::account(credit, q, *held));
+    {
+      std::lock_guard lk(mu);
+      put(&State::acct, std::move(a), true);
+    }
     ui::click_tool("持仓");
   }
 
@@ -276,7 +284,7 @@ struct Core {
       msg = f.why;
     }
     std::lock_guard lk(mu);
-    checked = st->pos;
+    checked = st->pos.v;
     last = Clock::now();
     done = n;
     lost = lost || !msg.empty();
@@ -381,7 +389,7 @@ public:
   }
   Terms pull_terms(const Log &log, const Live &live) override {
     ui::Gate::Hold g(c_->gate, "两融条款");
-    return credit::pull(c_->credit_t, mem::attach(), log, live);
+    return credit::pull(c_->credit, c_->attached(), log, live);
   }
 
   void console() override {
