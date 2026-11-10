@@ -2,6 +2,7 @@
 //   标准控件按类 (kClasses) 画底板皮肤与装饰 (detail 子项: 列表行 / 表头 / 树项 / 菜单项 / 勾选态); 表外的类即自绘窗口,
 //   皮肤 web / self (叶子打斜纹) / frame, 有绘制层即按其色块与文字画 (字框宽是客户端按原字体量的: 文字横向压到同宽, 位置才对得上),
 //   其文字段即绘制元素 (可悬停 / 选中 / 点击)
+#include "live/Broker.hpp"
 #include "live/tdx/console/Model.hpp"
 
 #include <algorithm>

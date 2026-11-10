@@ -1,4 +1,5 @@
 // 工具: 对选中控件的操作、原始消息 post / send、Spy 抓消息 (行内可回放 / 定位)
+#include "live/Broker.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/console/Model.hpp"
 

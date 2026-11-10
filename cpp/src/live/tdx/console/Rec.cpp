@@ -4,6 +4,7 @@
 //   new / del / chg (窗口出现、消失、属性变化) / gdi (可见窗口绘制文字) / mark (打点) / err / stop.
 //   t 是取到的那一轮的时刻, 同一轮内只有 msg 之间保序. 页面留最近 kRecCap 条 (不含 tree), 各一行
 #include "disk/Disk.hpp"
+#include "live/Broker.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/console/Model.hpp"
 

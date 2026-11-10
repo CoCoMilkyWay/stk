@@ -1,5 +1,6 @@
 // 列表: 窗口树逐行 (先序, 缩进 = depth), 绘制元素排在所画窗口之后、子窗口之前, 随它折叠; 有过滤词时不折叠 (要能搜到深处).
 //   与布局图同一悬停 (金框) / 选中 (蓝底); 点 ▸/▾ 折叠, 点行选中, 双击选中并闪烁
+#include "live/Broker.hpp"
 #include "live/tdx/console/Model.hpp"
 
 #include <algorithm>
