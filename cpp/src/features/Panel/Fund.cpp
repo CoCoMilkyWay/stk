@@ -2245,7 +2245,7 @@ struct State {
 
 namespace {
 // 全史资产态掩码 [a · n_d + d] = d 日盘前态的 kLive (全系统唯一一次判定; 切片前调, 状态机沿全 D 轴只推事件 + 状态口)
-//   活跃 kLive = 非北交所 ∧ 已上市 ∧ 未退市 (delist_age 未定义) ∧ 过滤表 flt_new / flt_susp / flt_noind 皆 0 (非次新 ∧ 非停牌 ∧ 申万一级行业已知)
+//   活跃 kLive = 非北交所 ∧ 已上市 ∧ 未退市 (delist_age 未定义) ∧ 过滤表 flt_susp / flt_noind 皆 0 (非停牌 ∧ 申万一级行业已知); 次新照进 (剔不剔归子池过滤维)
 std::vector<std::uint8_t> univ_mask(const Data &data) {
   const int n_a = data.axes.n_a(), n_d = data.axes.n_d();
   assert(data.pit.g0 == 0 && data.pit.n_g == n_d && "univ_mask 须在切片前");
@@ -2260,8 +2260,7 @@ std::vector<std::uint8_t> univ_mask(const Data &data) {
       for (int d = 0; d < n_d; ++d) {
         s.step(d);
         s.emit_status(d, y);
-        const bool live = !bj && y[Fund::list_age] >= 0.0f && !(y[Fund::delist_age] >= 0.0f) && y[Fund::flt_new] == 0.0f && y[Fund::flt_susp] == 0.0f &&
-                          y[Fund::flt_noind] == 0.0f;
+        const bool live = !bj && y[Fund::list_age] >= 0.0f && !(y[Fund::delist_age] >= 0.0f) && y[Fund::flt_susp] == 0.0f && y[Fund::flt_noind] == 0.0f;
         row[d] = live ? kLive : 0;
       }
     }

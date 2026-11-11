@@ -169,7 +169,7 @@ public:
       : panel_(panel), date_(date), stream_(panel, global_id) {}
 
   // 资产态 (fund::Panel 全史判定一次, 判据见 Panel/Fund.cpp univ_mask; 行情派生截面 / all 池成员 (Panel::live) / 选股表切片全读这一份)
-  //   活跃 = 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌) ∧ 非次新 (上市满 fund::kNewListDays 日历日) ∧ 申万一级行业已知
+  //   活跃 = 在市 (非北交所 ∧ 已上市 ∧ 未退市 ∧ 非停牌) ∧ 申万一级行业已知 (含次新)
 
   // onSettle (收盘后): 状态机推进到次日 d+1, 写 y → 发布 = L_1day 行 D
   void compute() {

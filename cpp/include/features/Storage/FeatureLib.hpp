@@ -33,7 +33,7 @@
 #include <vector>
 
 inline constexpr const char *kAllPoolName = "all"; // 全市场池的池名 (= 目录名)
-inline constexpr const char *kAllPoolTip = "all = 全市场: 当日活跃 (在市 ∧ 上市满 365 日 ∧ 行业已知, 含 ST)";
+inline constexpr const char *kAllPoolTip = "all = 全市场: 当日活跃 (在市 ∧ 行业已知, 含 ST / 次新)";
 
 // 池表 (全部池唯一一份, 每进程代读一次: 子池表一落地即进程内重启): [0] = all, 其余 = 子池表 (pool::load_pools, 表序)
 struct PoolDef {
