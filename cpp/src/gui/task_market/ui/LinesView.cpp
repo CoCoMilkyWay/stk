@@ -28,7 +28,7 @@ namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // 有行情键的行 id (两侧各一个前缀): 篮子 = pf_ + 切片代码 + 权重后缀 [Weight] (概念换快照线号会变, 切片代码不变) / 个股 = stk_ + 全局 id
-constexpr const char *kWeightId[kWeights] = {"", "_cap"};
+constexpr const char *kWeightId[pool::kWeights] = {"", "_cap"};
 std::string basket_id(size_t line) { return "pf_" + cut_code(cut_of_line(line)) + kWeightId[weight_of(line)]; }
 std::string stock_id(uint32_t id) { return "stk_" + std::to_string(id); }
 
@@ -135,7 +135,7 @@ void paint(LinesDerived &d, const LinesDerived &o) {
   for (int g = 0; g < kRowGroups; ++g)
     if (kGroupDefs[g].paint)
       for (LinesRow &r : d.rows[g]) {
-        if (r.q.is(Quote::kBasket) && r.q.key == basket_line(0, kWeightCap))
+        if (r.q.is(Quote::kBasket) && r.q.key == basket_line(0, pool::kWeightCap))
           mkt = rs.size();
         rs.push_back(&r);
         key.rows.emplace_back(r.id, r.line[kIdeal].get());
@@ -518,9 +518,11 @@ LinesRow basket_row(size_t line) {
   r.id = basket_id(line);
   r.en = cut_code(cut_of_line(line));
   r.hover = r.en + "  " + basket_name(line);
-  r.cn = r.tag = clip_name(cut_name(cut_of_line(line))) + weight_suffix(weight_of(line));
+  const std::string name = basket_name(line), suf = pool::weight_suffix(weight_of(line));
+  assert(name.ends_with(suf));
+  r.cn = r.tag = clip_name(name.substr(0, name.size() - suf.size())) + suf;
   r.q = {Quote::kBasket, static_cast<uint32_t>(line)};
-  r.watch = r.en + weight_suffix(weight_of(line));
+  r.watch = r.en + suf;
   return r;
 }
 
@@ -645,7 +647,7 @@ void derive_books(const std::vector<const PortfolioItem *> &its, const std::stri
 std::vector<uint32_t> watch_stocks(const std::vector<std::string> &watch) {
   std::vector<uint32_t> o;
   for (const std::string &w : watch)
-    if (!w.ends_with(weight_suffix(kWeightEq)) && !w.ends_with(weight_suffix(kWeightCap)))
+    if (!w.ends_with(pool::weight_suffix(pool::kWeightEq)) && !w.ends_with(pool::weight_suffix(pool::kWeightCap)))
       if (const size_t id = asset_axis().find(w); id < asset_axis().size())
         o.push_back(static_cast<uint32_t>(id));
   return o;

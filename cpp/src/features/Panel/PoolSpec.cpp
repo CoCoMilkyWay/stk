@@ -30,6 +30,17 @@ std::string set_seg(int d, uint8_t m, bool cn) {
   return t;
 }
 
+// 简称主体 (不带权重后缀)
+std::string short_body(const Spec &s) {
+  if (s.keyed())
+    return kStyleDefs[s.style()].end_cn[s.end()] + std::to_string(s.n());
+  std::string c;
+  for (int d = kDimSt; d < kDims; ++d)
+    if (kDimDefs[d].kind == kKindPart && on(s, d))
+      c += set_seg(d, s.v[d], true);
+  return c.empty() ? "全选" : c;
+}
+
 } // namespace
 
 Spec canon(Spec s) {
@@ -38,6 +49,11 @@ Spec canon(Spec s) {
   for (int d = kDimSt; d < kDims; ++d)
     if (kDimDefs[d].kind == kKindPart && s.v[d] == full_mask(d))
       s.v[d] = 0;
+  return s;
+}
+
+Spec unweighted(Spec s) {
+  s.v[kDimWeight] = 0;
   return s;
 }
 
@@ -105,15 +121,7 @@ std::string name_cn(const Spec &s) {
   return c;
 }
 
-std::string short_cn(const Spec &s) {
-  if (s.keyed())
-    return kStyleDefs[s.style()].end_cn[s.end()] + std::to_string(s.n());
-  std::string c;
-  for (int d = kDimSt; d < kDims; ++d)
-    if (kDimDefs[d].kind == kKindPart && on(s, d))
-      c += set_seg(d, s.v[d], true);
-  return c.empty() ? "全选" : c;
-}
+std::string short_cn(const Spec &s) { return short_body(s) + weight_suffix(s.weight()); }
 
 std::string detail_cn(const Spec &s) {
   std::string t = code(s) + "\n" + name_cn(s);
@@ -123,6 +131,7 @@ std::string detail_cn(const Spec &s) {
   } else
     t += "\n• 切片内全选";
   t += std::string("\n• 调仓: ") + kRebalValues[s.rebal()].tip;
+  t += std::string("\n• 权重: ") + kWeightValues[s.weight()].tip;
   bool cut = false;
   for (int d = kDimSt; d < kDims; ++d)
     if (on(s, d)) {
@@ -140,12 +149,12 @@ std::vector<std::string> aliases(const std::vector<Spec> &pools) {
   std::map<std::string, int> total, seen;
   for (const Spec &s : pools)
     ++total[v.emplace_back(short_cn(s))];
-  for (std::string &x : v)
-    if (total[x] > 1) {
+  for (size_t i = 0; i < v.size(); ++i)
+    if (std::string &x = v[i]; total[x] > 1) {
       std::string suf;
       for (int k = seen[x]++ + 1; k > 0; k = (k - 1) / 26)
         suf.insert(suf.begin(), static_cast<char>('A' + (k - 1) % 26));
-      x += suf;
+      x = short_body(pools[i]) + suf + weight_suffix(pools[i].weight());
     }
   return v;
 }

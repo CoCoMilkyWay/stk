@@ -136,14 +136,25 @@ bool StyleService::run(StyleRequest &req) {
   std::erase_if(books_, [&](const auto &kv) { return kv.first.keyed() && kv.first.style() != style; });
 
   const std::vector<pool::Spec> specs = pool::specs_of(req.grid);
-  std::vector<std::shared_ptr<const pool::Book>> books(specs.size());
-  std::vector<size_t> todo; // 未留账的组
-  bool keyed = false;       // 待算的组里有要键的
-  for (size_t i = 0; i < specs.size(); ++i)
-    if (const auto it = books_.find(specs[i]); it != books_.end())
+  std::vector<pool::Spec> sets;             // 成员 (权重归 0, 首现序): 只差权重的组共用一本账
+  std::vector<size_t> set_of(specs.size()); // [组] 所属成员
+  {
+    std::map<pool::Spec, size_t> at;
+    for (size_t i = 0; i < specs.size(); ++i) {
+      const auto [it, fresh] = at.try_emplace(pool::unweighted(specs[i]), sets.size());
+      if (fresh)
+        sets.push_back(it->first);
+      set_of[i] = it->second;
+    }
+  }
+  std::vector<std::shared_ptr<const pool::Book>> books(sets.size());
+  std::vector<size_t> todo; // 未留账的成员
+  bool keyed = false;       // 待算的成员里有要键的
+  for (size_t i = 0; i < sets.size(); ++i)
+    if (const auto it = books_.find(sets[i]); it != books_.end())
       books[i] = it->second;
     else
-      todo.push_back(i), keyed |= specs[i].keyed();
+      todo.push_back(i), keyed |= sets[i].keyed();
   std::shared_ptr<const pool::Ranks> rk;
   if (keyed && !(rk = ranks(ab.lib, style)))
     return false;
@@ -157,15 +168,15 @@ bool StyleService::run(StyleRequest &req) {
       pool::run_book(*tape_, pool::kRebalDay, [&](size_t r, std::vector<uint32_t> &out) { pool::live_at(*tape_, r, out); }, *b), bench_ = std::move(b);
     else {
       const size_t i = todo[static_cast<size_t>(k)];
-      const pool::Selector sel(specs[i]);
-      pool::run_book(*tape_, specs[i].rebal(), [&](size_t r, std::vector<uint32_t> &out) { sel.at(pool::row_view(*tape_, rk.get(), r), out); }, *b);
+      const pool::Selector sel(sets[i]);
+      pool::run_book(*tape_, sets[i].rebal(), [&](size_t r, std::vector<uint32_t> &out) { sel.at(pool::row_view(*tape_, rk.get(), r), out); }, *b);
       books[i] = std::move(b);
     }
     Progress::publish(1);
   });
   for (const size_t i : todo) // 取消前算完的照留
     if (books[i])
-      books_.emplace(specs[i], books[i]);
+      books_.emplace(sets[i], books[i]);
   if (cancel_.load(std::memory_order_relaxed))
     return false;
 
@@ -180,28 +191,23 @@ bool StyleService::run(StyleRequest &req) {
   out->nav.assign(D, 1.0f);
   double nav = 1.0;
   for (size_t d = bb.first; d < D; ++d)
-    out->nav[d] = static_cast<float>(nav *= 1.0 + bb.ret[kWeightEq][d]);
-  for (int w = 0; w < kWeights; ++w) {
-    out->bench[w].weight = static_cast<Weight>(w);
+    out->nav[d] = static_cast<float>(nav *= 1.0 + bb.ret[pool::kWeightEq][d]);
+  for (int w = 0; w < pool::kWeights; ++w)
     fill(out->bench[w], dates, bb.ret[w], bb.buy[w], bb.first, d0, d1);
-  }
-  std::vector<size_t> src; // [线] 所属的组
+  std::vector<size_t> src; // [线] 所属成员
   for (size_t i = 0; i < specs.size(); ++i) {
-    if (books[i]->first >= dates.size()) {
+    if (books[set_of[i]]->first >= dates.size()) {
       ++out->empty;
       continue;
     }
-    for (int w = 0; w < kWeights; ++w)
-      if (req.grid.weight >> w & 1) {
-        StyleLine &l = out->lines.emplace_back();
-        l.spec = specs[i], l.weight = static_cast<Weight>(w);
-        src.push_back(i);
-      }
+    out->lines.emplace_back().spec = specs[i];
+    src.push_back(set_of[i]);
   }
   pool_.tasks(static_cast<int>(out->lines.size()), [&](int k, int) {
     StyleLine &l = out->lines[static_cast<size_t>(k)];
     const pool::Book &b = *books[src[static_cast<size_t>(k)]];
-    fill(l, dates, b.ret[l.weight], b.buy[l.weight], b.first, d0, d1);
+    const pool::Weight w = l.spec.weight();
+    fill(l, dates, b.ret[w], b.buy[w], b.first, d0, d1);
   });
   out->dates = dates;
   return publish(req, {}, std::move(out));

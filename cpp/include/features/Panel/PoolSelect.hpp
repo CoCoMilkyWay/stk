@@ -4,9 +4,9 @@
 //   持仓权 (篮子账 / 行情篮子同一份, Tape::omega): 源行的目标权 (等权 1 / 加权 收盘总市值) 随其后各日收益漂移; 日频 = 目标权
 //   交易日 d 的收益 = close_d / 前收 − 1 (前收 = 行 d−1 的 pre_close, 已除权; d 无成交 → 0): 后复权收盘价, 不看可成交 (与行情侧价格指数同口径)
 #include "features/Panel/PoolSpec.hpp"
+#include "features/Storage/FeatureLib.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
-#include "shared/Basket.hpp" // kWeights / kAllCuts
 
 #include <atomic>
 #include <cstddef>

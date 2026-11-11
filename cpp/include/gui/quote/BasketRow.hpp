@@ -27,10 +27,11 @@ void read_row(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &dc, R
 void minute_alloc(FeatureRead::DayColumns &mc, size_t A);
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc);
 
-// 交易日 d 的成员表 (下标 = 库轴, 篮子 = basket_line): 所属切片各进等权 / 加权线, 权 = Tape::omega (≤ 0 不进); 概念随全A (pk 与 axis 同为 all.bar 轴)
+// 交易日 d 的成员表 (下标 = 库轴, 篮子 = 线): 所属切片的各线 (shared/Basket.hpp, 线的权重), 权 = Tape::omega (≤ 0 不进); 概念随全A (pk 与 axis 同为 all.bar 轴);
+//   Members::cap = D−1 收盘总市值
 void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m);
 // 成员表 m 过交易日 prev → d (成员冻结, 库末日之后的补日): 各线按其切片的周期换源 (pool::rebal_at) → 等权回 1, 否则随价 × rel [库轴] (收 / 前收);
-//   加权恒 × rel (股本冻结 ⇒ 目标权即漂移后的权)
+//   加权恒 × rel (股本冻结 ⇒ 目标权即漂移后的权); Members::cap 恒 × rel
 void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel);
 // 一只一日的 L_1min (mc = read_minutes 的读) → 分钟根: 无成交的行不收 (与 bar1m 的 bars_of 同一并根)
 void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b);

@@ -1,6 +1,6 @@
 #include "gui/quote/BasketRow.hpp"
 
-#include "shared/Basket.hpp" // basket_line / cut_of / concept_cut / cut_rebal
+#include "shared/Basket.hpp" // first_line / weight_of / cut_of / concept_cut / cut_rebal
 
 #include <cassert>
 #include <cmath>
@@ -71,13 +71,14 @@ void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &
     if (const size_t r = pk.src(p, d); r != SIZE_MAX)
       in[p] = {pk.row(p, r), r};
   m.clear();
-  float om[kWeights];
+  float om[pool::kWeights];
   const auto put = [&](size_t cut) {
-    for (int w = 0; w < kWeights; ++w)
-      if (om[w] > 0)
-        m.add(static_cast<uint32_t>(basket_line(cut, static_cast<Weight>(w))), om[w]);
+    for (size_t l = first_line(cut); l < end_line(cut); ++l)
+      if (const float w = om[weight_of(l)]; w > 0)
+        m.add(static_cast<uint32_t>(l), w);
   };
   for (size_t a = 0; a < A; ++a) {
+    m.cap.push_back(q != SIZE_MAX ? t.mcap[q * A + a] : 0.f);
     if (q != SIZE_MAX && t.live[q * A + a]) {
       t.omega(q, q, a, om);
       put(0);
@@ -97,13 +98,15 @@ void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &
 }
 
 void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel) {
-  assert(rel.size() == m.assets());
+  assert(rel.size() == m.assets() && m.cap.size() == m.assets());
   bool reb[pool::kRebals];
   for (int k = 0; k < pool::kRebals; ++k)
     reb[k] = pool::rebal_at(static_cast<pool::Rebal>(k), prev, d);
-  for (size_t a = 0; a < m.assets(); ++a)
+  for (size_t a = 0; a < m.assets(); ++a) {
+    m.cap[a] *= rel[a];
     for (Members::Weight &w : m.of(a))
-      w.w = weight_of(w.basket) == kWeightEq && reb[cut_rebal(cut_of_line(w.basket))] ? 1.f : w.w * rel[a];
+      w.w = weight_of(w.basket) == pool::kWeightEq && reb[cut_rebal(cut_of_line(w.basket))] ? 1.f : w.w * rel[a];
+  }
 }
 
 void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b) {

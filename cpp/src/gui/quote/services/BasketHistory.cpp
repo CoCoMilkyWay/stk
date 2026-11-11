@@ -9,7 +9,7 @@
 #include "fundamental/Scan.hpp"
 #include "gui/quote/BasketRow.hpp"
 #include "misc/snap.hpp"
-#include "shared/Basket.hpp" // basket_count / weight_of
+#include "shared/Basket.hpp" // basket_count
 
 #include <algorithm>
 #include <cassert>
@@ -255,9 +255,10 @@ bool BasketHistory::publish(const HistoryRequest &req, const std::string &lack, 
     const misc::Ymd d_lo = nth_last(kDailyDays), m_lo = nth_last(kMinuteDays);
     out->basis = book_.dates.back();
     std::vector<uint32_t> n(basket_count());
-    std::vector<double> w(basket_count());
-    for (const Members::Weight &x : tail_.mem.ws)
-      ++n[x.basket], w[x.basket] += x.w;
+    std::vector<double> w(basket_count()), cap(basket_count());
+    for (size_t a = 0; a < tail_.mem.assets(); ++a)
+      for (const Members::Weight &x : tail_.mem.of(a))
+        ++n[x.basket], w[x.basket] += x.w, cap[x.basket] += tail_.mem.cap[a];
     const size_t K = req.keys.size();
     std::vector<size_t> at(basket_count(), K); // 篮子线 → keys 下标 (不在 = K)
     for (size_t k = 0; k < K; ++k)
@@ -285,7 +286,7 @@ bool BasketHistory::publish(const HistoryRequest &req, const std::string &lack, 
         out->overlap[i * K + j] = nn > 0 ? static_cast<float>(dot[i * K + j] / std::sqrt(nn)) : 0.f;
       }
     for (const uint32_t b : req.keys) {
-      out->members.push_back(n[b]), out->weight.push_back(w[b]);
+      out->members.push_back(n[b]), out->weight.push_back(w[b]), out->cap.push_back(cap[b]);
       assert(b < book_.list.size() && b < tail_.list.size());
       if (nt == 0) { // Book 已按同一个窗截过
         out->list.push_back(book_.list[b]);

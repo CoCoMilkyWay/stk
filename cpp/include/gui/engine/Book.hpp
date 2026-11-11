@@ -54,7 +54,7 @@ void compound(const R *r, size_t n, Put &&put) {
   }
 }
 
-// 篮子 (baskets; 全部池一趟, 各篮子同形): 篮子 = 切片 c ∈ [0, cut_count()) × 权重 w (shared/Basket.hpp), 三样一律以线 basket_line(c, w) 为键.
+// 篮子 (baskets; 全部池一趟, 各篮子同形): 篮子 = 切片 c ∈ [0, cut_count()) × 该切片的权重 (shared/Basket.hpp), 三样一律以线 (篮子下标) 为键.
 //   成分判据 = 成员位 (BPlanes::in): 池整体 = 含该池位, 行业 k = 含 kAllPool 位 ∧ ind_l1 = k (行业未知的只进全A),
 //   概念 = 含 kAllPool 位 ∧ 在该概念成分里 (BPlanes::cc, 全期同一份).
 //   价格指数 (不看可成交) 在行情侧 (Quote::BasketHistory, 同一张篮子表); 这里是可成交指数 + 增仓 + 估值.
@@ -78,7 +78,7 @@ struct Baskets {
 };
 // 池篮子输入 B (load_b) → 全部篮子的指数 / 增仓 / 估值 (Baskets 注)
 Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B);
-// 池整体等权线 (= 篮子 0 等权指数; 线 i = 持有期 y.hd.k[i]): 行 t 一批 = 行 t 标签有效格做多标签的等权平均. 任意层, 只吃 Y
+// 池整体等权线 (= 评估域池整体的等权指数; 线 i = 持有期 y.hd.k[i]): 行 t 一批 = 行 t 标签有效格做多标签的等权平均. 任意层, 只吃 Y
 BookLines pool_line(misc::exec::ForkJoin &ex, const YPlanes &y);
 
 } // namespace GUI::Engine

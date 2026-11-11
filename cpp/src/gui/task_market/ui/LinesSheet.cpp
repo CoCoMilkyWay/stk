@@ -6,7 +6,7 @@
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"  // TableFindByID (右表内容宽)
-#include "shared/Basket.hpp" // basket_line / cut_of_line
+#include "shared/Basket.hpp" // weight_of
 
 #include <algorithm>
 #include <array>
@@ -278,12 +278,12 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
 // ---- 当日四列 (TodayCol; NAV / FLOW 右表全四列, VAL 只数 / 总市值; 不随区间): 只数 / 总市值 / 换手不着色, 流入按正负着色; 换手 / 流入格悬停看分子分母金额 ----
 const SheetCol kTodayCols[kTodays] = {
     {"只数", "只数 = 成分只数\n"
-             "• 算法: 成员表的成分计数 (.等 / .加 同一份)\n"
+             "• 算法: 成员表的成分计数 (同切片 .等 / .加 同一份)\n"
              "• 数据: 成员表 = 历史末日收盘定 (= 当日 bind 给新浪行情的那份)\n"
              "• 显示: 整数, 不着色\n"
              "• 适用: 指数 / 行业 / 概念 / 自选; 成分行 -; 不随区间"},
     {"总市值", "总市值 = 成分总市值之和\n"
-               "• 算法: Σ 成分 末日收盘 × 总股本; 当日接上再 × 加权线当日涨跌 (今收 / 前收); 成分行 = 本只 (基本面末日总市值, 当日接上再 × 今收 / 前收)\n"
+               "• 算法: Σ 成分 末日收盘 × 总股本; 加权篮子当日接上再 × 当日涨跌 (今收 / 前收), 等权篮子停在末日; 成分行 = 本只 (基本面末日总市值, 当日接上再 × 今收 / 前收)\n"
                "• 数据: 成员表同只数; 总股本取末日适用\n"
                "• 显示: 亿 / 万亿, 不着色\n"
                "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 不随区间"},
@@ -338,18 +338,18 @@ RowSrc src_of(const LinesUIState &ui, const StockInfos &infos, const LinesDerive
     x.day = t;
   return x;
 }
-// 篮子行的当日 (SheetToday): 只数 / 总市值 = Tape::members / weight 的同切片等权线 / 加权线 (总市值当日接上 × 加权线当日涨跌);
+// 篮子行的当日 (SheetToday): 只数 / 总市值 = Tape::members / cap (加权线的总市值当日接上 × 当日涨跌 = 成员总市值的当日变化; 等权线停在末日收盘);
 // 成交额 / 流入 = 当日 Day (不看接续); 换手 = 成交额 / 总市值
 SheetToday basket_today(const Market::Feed &f, const RowSrc &x) {
   SheetToday o;
   if (!f.data || f.data->members.empty())
     return o;
-  const size_t c = cut_of_line(x.row->q.key), eq = basket_line(c, kWeightEq), cap = basket_line(c, kWeightCap);
-  assert(f.data->keys[eq] == eq && f.data->keys[cap] == cap && f.today && f.today->size() == f.data->list.size());
-  double w = f.data->weight[cap];
-  if (const Quote::Day &t = (*f.today)[cap]; Quote::joins(*f.data->list[cap], t))
+  const size_t l = x.row->q.key;
+  assert(f.data->keys[l] == l && f.today && f.today->size() == f.data->list.size());
+  double w = f.data->cap[l];
+  if (const Quote::Day &t = (*f.today)[l]; weight_of(l) == pool::kWeightCap && Quote::joins(*f.data->list[l], t))
     w *= t.candle.close / t.candle.ref;
-  o.v[kTodayMembers] = f.data->members[eq];
+  o.v[kTodayMembers] = f.data->members[l];
   o.v[kTodayCap] = w > 0 ? w : kNaN;
   if (x.day && x.day->candle.amount > 0)
     o.amount = x.day->candle.amount / 1e8, o.v[kTodayFlow] = x.day->flow / x.day->candle.amount;
@@ -369,7 +369,7 @@ SheetToday stock_today(const RowSrc &x) {
   o.v[kTodayTurn] = o.amount / o.v[kTodayCap];
   return o;
 }
-// 表行的当日: 按行情键 (篮子 = 篮子 Feed 的同切片两线 + 当日; 个股 = 档案 + 当日; 无 = 全不可算)
+// 表行的当日: 按行情键 (篮子 = 篮子 Feed 的该线 + 当日; 个股 = 档案 + 当日; 无 = 全不可算)
 SheetToday today_of(const Market::Feed &f, const RowSrc &x) {
   const LinesQuote &q = x.row->q;
   return q.is(Quote::kBasket) ? basket_today(f, x) : q.is(Quote::kStock) ? stock_today(x)
@@ -684,7 +684,7 @@ void legend_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, con
   ImGui::TextColored(kHead, "(点行 = 画)");
   if (ImGui::IsItemHovered())
     tip("点行 = 选中 / 取消, 选中 = 主图画该行两条线, 主图例默认只显理想列, 可成交列点图例显 (显隐变了自动重新 fit); 默认不选; 选中换组保留\n"
-        "• 指数 = 各池等权指数 (all 池拆 全A.等 / 全A.加); 行业 = 申万一级 (全A 内切, 总市值加权); 概念 = 东财题材概念 (全A 内切, 总市值加权):\n"
+        "• 指数 = 各池指数 (all 池拆 全A.等 / 全A.加, 子池按池参数的权重); 行业 = 申万一级 (全A 内切, 总市值加权); 概念 = 东财题材概念 (全A 内切, 总市值加权):\n"
         "    ◦ 可成交 = 标签指数 (收盘封板不建仓 / 平仓顺延, 与因子回测同口径)\n"
         "    ◦ 理想 = 价格指数 (Market 篮子历史同一份: 成员 / 权重取前一日收盘, 点位按前收合成, 不看可成交, 同中证 / 万得口径); 两者之差 = 可成交拖累\n"
         "• 因子 = 单因子各自的 G20 多头净值: 可成交列 = 有冲击 (它自己的冲击段: Lob 最小金额段 / Bar 固定冲击), 理想列 = 无冲击\n"
@@ -746,7 +746,7 @@ void legend_val(LinesUIState &ui, const LinesDerived &d, const LinesView &v, con
   ImGui::TextColored(kHead, "(单选)");
   if (ImGui::IsItemHovered())
     tip("类别条选一组 (指数 = 各池, 行业 = 申万一级, 概念 = 东财题材概念), 点行 / 成分行选一个: 主图画它的价格 + EP / BP / SP / CP / DY Band; 选中换组保留\n"
-        "• 价格: 全A.加 / 行业 / 概念 = 总市值加权指数 (全A 内切); 全A.等 / 其余池 = 等权指数 (同 NAV 池线); 成分股 = 后复权收盘\n"
+        "• 价格: 全A.加 / 行业 / 概念 = 总市值加权指数 (全A 内切); 全A.等 = 等权指数, 子池 = 池参数的权重 (同 NAV 池线); 成分股 = 后复权收盘\n"
         "• 行业成员 = 全A 成分按当日适用 (盘前已知) 的 SW2021 一级行业 (ind_l1) 切; 行业未知的只进全A\n"
         "• 概念成员 = 全A 成分 ∩ 最近一份东财概念快照的成分 (全史同一份)\n"
         "• 估值与价格同权重: 个股收益率 = 分子 / 总市值; 加权 = 整体法 Σ分子 / Σ总市值, 等权 = 成分个股收益率的算术平均 (= 等权组合每元的分子); 成分股 = 本只\n"
@@ -766,7 +766,7 @@ void legend_val(LinesUIState &ui, const LinesDerived &d, const LinesView &v, con
 //      列 = 中文名 (线色) | 当日四列 | 日轴各日 (MM-DD) 净流入占当日成交额 | 档内合计净流入 (亿) | 合计占比; 按正负着色, 悬停格看净流入 / 成交额; 表头点排序 (组内) ----
 // 列: 名 / 一日 (表头 = 该日 MM-DD, 拼在说明前) / 合计两列
 const SheetCol kFlowNameCol = {"名", "名 = 篮子名\n"
-                                     "• 算法: 切片名 + .等 (等权) / .加 (总市值加权); 资金流不分权重, 同切片两行同成分即同值\n"
+                                     "• 算法: 切片名 + .等 (等权) / .加 (总市值加权; 子池的权重是池参数的一维); 资金流不分权重, 全A 两行同成分即同值\n"
                                      "• 数据: 切片 = 全A / 池 / 申万一级行业 / 东财题材概念\n"
                                      "• 显示: 字色 = 线色 (同 NAV); 超长截断补 …, 悬停看全名\n"
                                      "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 与篮子行同一份选中\n"

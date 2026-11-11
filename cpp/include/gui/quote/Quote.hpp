@@ -175,9 +175,9 @@ struct Tape {
   std::vector<std::shared_ptr<const Kline>> list; // [keys] 只读, 与服务侧及前后几次发布共享 (不拷); 空 = 源未就绪
   std::string lack;                               // 源未就绪的原因 (只篮子有: all.bar 未建 / 落盘不足 2 日; 空 = 就绪)
   misc::Ymd basis = 0;                            // 篮子: 成员 / 池 / 行业 / 股本所取的库末日 (其后至 Kline::last 为基本面补日); 个股 0
-  // 篮子 [keys]: 历史末日收盘定的成员表 (= 当日 bind 给 Quote 的) 的成员只数 / Σ 权 (加权线 = 末日收盘总市值 [亿元]: 股本 total_shares 以亿股计); 个股空
+  // 篮子 [keys]: 历史末日收盘定的成员表 (= 当日 bind 给 Quote 的) 的成员只数 / Σ 权 / 成员总市值 [亿元] (末日收盘, 股本 total_shares 以亿股计); 个股空
   std::vector<uint32_t> members;
-  std::vector<double> weight;
+  std::vector<double> weight, cap;
   // 篮子 [keys]: 同一成员表各篮子的成分 (权降序); 个股空
   Csr<Constituent> cons;
   // 篮子 [keys × keys]: 同一成员表两篮子权重向量的余弦 (成员重合; 无成员 = 0); 个股空
@@ -196,8 +196,9 @@ struct Members {
   };
   std::vector<uint32_t> at{0}; // [资产数 + 1]
   std::vector<Weight> ws;
+  std::vector<float> cap; // [资产] 收盘总市值 [亿元], 与所属线的权无关 (线的成员总市值由此求和); 空 = 不记
 
-  void clear() { at.assign(1, 0), ws.clear(); }
+  void clear() { at.assign(1, 0), ws.clear(), cap.clear(); }
   void add(uint32_t basket, float w) { ws.push_back({basket, w}); }
   void next() { at.push_back(static_cast<uint32_t>(ws.size())); } // 收一只
   size_t assets() const { return at.size() - 1; }

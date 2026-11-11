@@ -2,6 +2,7 @@
 
 #include "features/Panel/Fund.hpp" // fund::Board
 #include "features/Storage/FeatureRead.hpp"
+#include "shared/Basket.hpp" // kAllCuts
 
 #include <algorithm>
 #include <cassert>

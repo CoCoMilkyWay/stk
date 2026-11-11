@@ -14,7 +14,7 @@
 //   成本按 Δw (契约【换手成本】), 取主段 (y_spec Segs::First: 首个盘口段, 无则固定段): 盘口段 = 增仓 Δw⁺ × 买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 固定段 =
 //   增仓量 / 平仓量各付 fixed_impact (固定量 UI 乘). 净值 / 聚合 (等权, 日并集轴) / 年化换手在 UI 现算.
 // 篮子: 全部篮子一个作业 (gui/engine/Engine eval_baskets, 与 eval_job 平级), 在 kBasketLevel 的 all 池评估域 (全轴; 不走森林): load_b 一趟读齐各池成员位 (all.bar 选股表) + T+1C 标签 + 原料 → baskets 一趟扫完
-//   (gui/engine/Book) → 一本 basket_count 线的账 (线 = basket_line, 与行情侧价格指数同一张篮子表): 两权重可成交指数日收益 (净值引擎 fold_book) + 逐日增仓量
+//   (gui/engine/Book) → 一本 basket_count 线的账 (线 = 篮子下标, 与行情侧价格指数同一张篮子表): 可成交指数日收益 (净值引擎 fold_book) + 逐日增仓量
 //   + 估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率; 滚动分位 band 在 UI 按可调窗长现算);
 //   同一趟另出一本个股账 (线 = all 池轴的每只: 后复权日收益 + 本只收益率); 两本按 Side 并列 (PortfolioResult::quotes), UI 的两侧同一套.
 // 缓存: 因子按 FactorTask::key 存, 账记算时的 sig (变了重算), 只算缺的 (加一个因子只算它); 请求外的 (换组合 / 删条目) 按上次被请求的先后留到总量上限
