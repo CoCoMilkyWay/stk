@@ -315,7 +315,7 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
 
 // ---- 当日四列 (TodayCol; NAV / FLOW 右表全四列, VAL 只数 / 总市值; 不随区间): 只数 / 总市值 / 换手不着色, 流入按正负着色; 换手 / 流入格悬停看分子分母金额 ----
 const SheetCol kTodayCols[kTodays] = {
-    {"只数", "只数 = 成分只数; 个股行 = 市场 (交易所.板块.行业, 如 SZ.主.电子)\n"
+    {"只数", "只数 = 成分只数; 个股行 = 交易所.板块.行业首字 (如 SH.主.电 = 沪市主板 电子)\n"
              "• 算法: 成员表的成分计数 (同切片 .等 / .加 同一份); 个股行: 板块按代码前缀, 行业 = 申万一级 (同 ASSET 的 Mkt / Ind 列)\n"
              "• 数据: 成员表 = 历史末日收盘定 (= 当日 bind 给新浪行情的那份); 行业 = cn_stock_industry_component 最新月度快照\n"
              "• 显示: 整数, 不着色; 个股行按板块排序\n"
@@ -395,7 +395,7 @@ SheetToday basket_today(const Market::Feed &f, const RowSrc &x) {
   return o;
 }
 // 个股行的当日 (SheetToday): 总市值 = 档案末日收盘总市值 (当日接上档案末日再 × 当日涨跌); 成交额 / 流入 = 当日 Day (本只分钟涨跌法);
-// 换手 = 成交额 / 总市值; 无只数 (只数格画市场, 见 market_cell)
+// 换手 = 成交额 / 总市值; 无只数 (只数格画板块, 见 board_cell)
 SheetToday stock_today(const RowSrc &x) {
   SheetToday o;
   double cap = x.info ? x.info->mcap : kNaN;
@@ -432,13 +432,16 @@ void today_cells(const SheetToday &t, SheetCell *out) {
   out[kTodayTurn] = sheet_cell(v[kTodayTurn], txt, "%.2f%%", 100.0 * v[kTodayTurn]);
   out[kTodayFlow] = signed_cell(v[kTodayFlow]);
 }
-// 个股行的只数格 = 市场 交易所.板块.行业 (同 ASSET 的 Mkt + Ind 列; 无档案 → 到板块止); 排序键 = 板块
-SheetCell market_cell(const RowSrc &x) {
+// 个股行的只数格 = 交易所.板块.行业首字 (同 ASSET 的 Mkt + Ind 列; 无档案 → 到板块止); 排序键 = 板块
+SheetCell board_cell(const RowSrc &x) {
   const BoardType b = GetBoardType(x.row->en);
   std::string s = MarketAbbr(b);
-  if (x.info && !x.info->ind_name.empty())
-    s += "." + x.info->ind_name;
-  assert(s.size() < sizeof(NumCell::s));
+  if (x.info && !x.info->ind_name.empty()) {
+    size_t n = 1; // UTF-8 首字的字节数
+    while (n < x.info->ind_name.size() && (static_cast<unsigned char>(x.info->ind_name[n]) & 0xC0) == 0x80)
+      ++n;
+    s += "." + x.info->ind_name.substr(0, n);
+  }
   return {num_cell(ImGui::GetStyleColorVec4(ImGuiCol_Text), "%s", s.c_str()), static_cast<double>(b)};
 }
 // 悬停四列第 k 列 (k 不在 [0, kTodays) = 别的列) → 换手 / 流入的分子分母
@@ -643,7 +646,7 @@ Seg today_seg(int n = kTodays) {
             SheetCell c[kTodays];
             today_cells(p.today[t], c);
             if (x.row->q.is(Quote::kStock))
-              c[kTodayMembers] = market_cell(x);
+              c[kTodayMembers] = board_cell(x);
             std::copy_n(c, n, out);
           },
           [](const LinesSheet &p, size_t t, int k) { today_tip(p.today[t], k); }};
