@@ -1,4 +1,4 @@
-// StyleService — Beta→Style 页的单 worker: 一个风格的参数网格 (features/Panel/PoolSpec.hpp Grid) 逐组选池 → 篮子的滚动一年绩效 (平均 / 中位) 与累计中位夏普
+// StyleService — Beta→Style 页的单 worker: 一个风格的参数网格 (features/Panel/PoolSpec.hpp Grid) 逐组选池 → 篮子的滚动一年绩效 (平均 / 中位) 与累计中位夏普 + 其逐日截面分位的平均 (打分)
 //   原料带 = 每进程代一份 (pool::tape, 与选股表共用; 新落盘日增量补); 风格的键序 (pool::rank) 按风格留最近 kKeep 份 (随原料带补行);
 //   篮子账按成员 (权重归 0, 两权重同一趟) 留 (全选池不分风格常留, 其余只留当前风格; 原料带换代清空): 改网格只算新出现的成员
 //   全A = 行情篮子同一条 (全A 成员 = cs_valid ∧ 收盘 > 0, 日频), 两权重
@@ -36,7 +36,8 @@ struct StyleStat {
   float ann = std::numeric_limits<float>::quiet_NaN();        // 各窗对数年化的平均, 换回简单收益 (≈ 区间年化复合)
   float ann_med = std::numeric_limits<float>::quiet_NaN();    // 各窗年化收益的中位
   float sharpe = std::numeric_limits<float>::quiet_NaN();     // 各窗夏普 (无风险 0) 的平均
-  float sharpe_med = std::numeric_limits<float>::quiet_NaN(); // 各窗夏普的中位 (= 累计中位夏普的末日值; 打分)
+  float sharpe_med = std::numeric_limits<float>::quiet_NaN(); // 各窗夏普的中位 (= 累计中位夏普的末日值)
+  float sharpe_pct = std::numeric_limits<float>::quiet_NaN(); // 累计中位夏普的逐日截面分位 (全部线中, 1 = 最高) 在区间内有值各日的平均 (打分)
   float mdd = std::numeric_limits<float>::quiet_NaN();        // 最大回撤 (≥ 0; 峰自基日起)
   float turn = std::numeric_limits<float>::quiet_NaN();       // 年化单边换手 (增仓量 / 年)
 };
@@ -78,6 +79,8 @@ private:
   Progress &board() { return *this; }
   bool run(StyleRequest &req);
   bool publish(const StyleRequest &req, std::string lack, std::shared_ptr<StyleResult> out = nullptr);
+  // 区间 [d0, d1) 内逐日: 有累计中位夏普的线按其截面排名 (并列取均秩) → 分位 (1 = 最高); 各线对有值的日取平均 → stat.sharpe_pct
+  void rank_pct(std::vector<StyleLine> &lines, size_t d0, size_t d1);
   // 风格 st 补到 tape_ 末行的键序 (提到最新); 取消 / 库判废 → nullptr
   std::shared_ptr<const pool::Orders> ranks(const FeatureLib &lib, pool::Style st, const pool::Tick &tick);
 

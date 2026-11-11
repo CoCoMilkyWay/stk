@@ -55,7 +55,8 @@ constexpr const char *kStyleTip =
     "• 名 = 风格端.只数.周期.权重.ST.板块.融资.过滤 (集合维的段 = 各类 / 项以 + 连; 灰段 = 不起作用, 与网格按钮的灰字同一判据); 全程切片为空的组不列\n"
     "• 风格池的键覆盖率 (切片内有键的占比) < 80% 的行不建仓: 键未到齐 (如 β 要 156 周历史, 早年财报缺) 时不按残缺截面选\n"
     "• 篮子 = 源行收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 全A = 行情页同一条 (当日活跃, 日频)\n"
-    "• 滚动窗 = 以每日收尾的满一年 (自建仓 / 区间起点满一年起): 年化 / 夏普 各取全部窗的平均与中位; 打分 = 中位夏普\n"
+    "• 滚动窗 = 以每日收尾的满一年 (自建仓 / 区间起点满一年起): 年化 / 夏普 各取全部窗的平均与中位\n"
+    "• 打分 = 夏普分位: 逐日把各线的累计中位夏普截面排名成分位, 区间内取平均 (一直靠前的高)\n"
     "  平均 ≈ 全程, 一时的极端行情照样记满; 中位只看多数窗, 吃老本的参数压不上来\n"
     "• 点表行 / 图上的线 = 选中 ↔ 去掉 (选中的行底色亮; 名色 落地蓝 / 新选橙 / 去掉红; 有选池态的恒在表前); [确认…] 弹窗列出改动, 写 pools.json 即落地并进程内重启, 计算 / 各页随即用新池表\n"
     "• 池表里的池名 = 简称 (高低端 + 风格 + 只数 + 权重, 如 低β200.等; 全选池 = 切片名 + 权重), 同简称按池表序加 A / B / C…; 悬停池名看全部参数\n"
@@ -114,6 +115,7 @@ enum StyleCol : int { kColAnn,
                       kColAnnMed,
                       kColSharpe,
                       kColSharpeMed,
+                      kColSharpePct,
                       kColMdd,
                       kColTurn,
                       kStyleCols };
@@ -127,7 +129,11 @@ constexpr ColDef kCols[kStyleCols] = {
     {"年化平均", "年化平均 = 各滚动窗对数年化 ln(收尾日净值 / 基日净值) / 年 的平均, 换回简单收益 (≈ 区间年化复合)", "%+.1f%%", 100.0, 1},
     {"年化中位", "年化中位 = 各滚动窗年化收益的中位", "%+.1f%%", 100.0, 1},
     {"夏普平均", "夏普平均 = 各滚动窗夏普的平均: 窗内日收益 均值 / 标准差 × √每年交易日 (无风险 0)", "%.2f", 1.0, 1},
-    {"夏普中位", "夏普中位 = 各滚动窗夏普的中位 (= 图上累计中位夏普的末日值)\n• 打分: 缺省按它降序; 线的缺省色 = 它的组内名次 (绿 = 好 → 红 = 差)", "%.2f", 1.0, 1},
+    {"夏普中位", "夏普中位 = 各滚动窗夏普的中位 (= 图上累计中位夏普的末日值)\n• 线的缺省色 = 它的组内名次 (绿 = 好 → 红 = 差)", "%.2f", 1.0, 1},
+    {"夏普分位",
+     "夏普分位 = 区间内逐日的截面分位的平均: 每日把各线 (全部组, 含晚起) 的累计中位夏普 (图上的线) 排名, 最高 = 100% / 最低 = 0%, 再对该线有值的日取平均\n"
+     "• 一直靠前的高, 只在末段冲上来的低; 区间条选近 N 年 = 看近 N 年是否一直靠前\n• 打分: 缺省按它降序",
+     "%.0f%%", 100.0, 1},
     {"最大回撤", "最大回撤 = 区间内净值自前高 (含区间起点) 的最大跌幅", "%.1f%%", 100.0, -1},
     {"年换手", "年换手 = 区间内年化单边换手 (倍/年): 每次调仓 Σ (目标权 − 漂移后的权)⁺ 累计 / 年\n• 建仓 (在区间内) 计 1; 日频每日回到目标权, 周频两次调仓之间权随价漂移",
      "%.1f", 1.0, -1},
@@ -135,7 +141,7 @@ constexpr ColDef kCols[kStyleCols] = {
 constexpr int kColBase = 1; // 表列 = 名 + 绩效列
 double col_val(const StyleLine &l, int c) {
   const StyleStat &t = l.stat;
-  const float v[kStyleCols] = {t.ann, t.ann_med, t.sharpe, t.sharpe_med, t.mdd, t.turn};
+  const float v[kStyleCols] = {t.ann, t.ann_med, t.sharpe, t.sharpe_med, t.sharpe_pct, t.mdd, t.turn};
   return v[c];
 }
 
@@ -586,7 +592,7 @@ void range(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
   s.hi = rg.d1 == D ? 0 : r.dates[static_cast<size_t>(rg.d1 - 1)];
 }
 
-// 右表: 风格行 (点 = 打开 / 收起) + 打开的风格之下 全A 两行 + 各线 (点行 = 选中 ↔ 去掉, 选中的行底色亮; 有选池态的在前; 底色 = 组内名次; 缺省中位夏普降序);
+// 右表: 风格行 (点 = 打开 / 收起) + 打开的风格之下 全A 两行 + 各线 (点行 = 选中 ↔ 去掉, 选中的行底色亮; 有选池态的在前; 底色 = 组内名次; 缺省夏普分位降序);
 // 各列逐帧按可见行的内容定宽 (不拉满, 超宽横滚), 行高 = 字高; 只画可见行. 返回悬停的线 (−1 = 无)
 int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV |
@@ -599,7 +605,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   ImGui::TableSetupScrollFreeze(kColBase, 1);
   ImGui::TableSetupColumn("风格 / 参数");
   for (int c = 0; c < kStyleCols; ++c)
-    ImGui::TableSetupColumn(kCols[c].name, c == kColSharpeMed ? ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending : 0);
+    ImGui::TableSetupColumn(kCols[c].name, c == kColSharpePct ? ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending : 0);
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
   for (int c = 0; c < kColBase + kStyleCols; ++c) {
     if (!ImGui::TableSetColumnIndex(c))

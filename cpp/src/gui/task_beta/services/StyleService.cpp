@@ -89,6 +89,38 @@ void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<floa
 
 } // namespace
 
+void StyleService::rank_pct(std::vector<StyleLine> &lines, size_t d0, size_t d1) {
+  const size_t L = lines.size(), nt = static_cast<size_t>(pool_.threads());
+  std::vector<std::vector<double>> sum(nt, std::vector<double>(L, 0.0)); // [线程][线] 分位和
+  std::vector<std::vector<uint32_t>> cnt(nt, std::vector<uint32_t>(L, 0)), ord(nt);
+  pool_.tasks(static_cast<int>(d1 - d0), [&](int k, int tid) {
+    const size_t t = d0 + static_cast<size_t>(k);
+    const auto med = [&](uint32_t i) { return lines[i].med[t]; };
+    std::vector<uint32_t> &o = ord[static_cast<size_t>(tid)];
+    o.clear();
+    for (uint32_t i = 0; i < L; ++i)
+      if (std::isfinite(med(i)))
+        o.push_back(i);
+    if (o.size() < 2)
+      return;
+    std::ranges::sort(o, {}, med);
+    for (size_t a = 0, b; a < o.size(); a = b) {
+      for (b = a + 1; b < o.size() && med(o[b]) == med(o[a]);)
+        ++b;
+      const double p = 0.5 * static_cast<double>(a + b - 1) / static_cast<double>(o.size() - 1);
+      for (size_t j = a; j < b; ++j)
+        sum[static_cast<size_t>(tid)][o[j]] += p, ++cnt[static_cast<size_t>(tid)][o[j]];
+    }
+  });
+  for (size_t i = 0; i < L; ++i) {
+    double s = 0.0;
+    uint32_t c = 0;
+    for (size_t k = 0; k < nt; ++k)
+      s += sum[k][i], c += cnt[k][i];
+    lines[i].stat.sharpe_pct = c ? static_cast<float>(s / c) : kNaN;
+  }
+}
+
 bool StyleService::publish(const StyleRequest &req, std::string lack, std::shared_ptr<StyleResult> out) {
   if (!out)
     out = std::make_shared<StyleResult>();
@@ -209,6 +241,7 @@ bool StyleService::run(StyleRequest &req) {
     const pool::Weight w = l.spec.weight();
     fill(l, dates, b.ret[w], b.buy[w], b.first, d0, d1);
   });
+  rank_pct(out->lines, d0, d1);
   out->dates = dates;
   return publish(req, {}, std::move(out));
 }
