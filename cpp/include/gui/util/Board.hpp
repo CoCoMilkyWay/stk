@@ -1,4 +1,4 @@
-// 板块口径 (代码前缀判定): GUI 各页的资产筛选 / 分组共用 (Encode 归档统计 / Market ASSET / 截面分析 / OrderFlow 候选)
+// 板块口径 (代码前缀判定): GUI 各页的资产筛选 / 分组共用 (Encode 归档统计 / Market ASSET / Lines 右表个股行 / 截面分析 / OrderFlow 候选)
 #pragma once
 
 #include <string>
@@ -33,6 +33,24 @@ inline const char *GetBoardName(BoardType type) {
     return "北交所";
   default:
     return "Unknown";
+  }
+}
+
+// 市场缩写 交易所.板块
+inline const char *MarketAbbr(BoardType b) {
+  switch (b) {
+  case BoardType::SH_Main:
+    return "SH.主";
+  case BoardType::STAR:
+    return "SH.科";
+  case BoardType::SZ_Main:
+    return "SZ.主";
+  case BoardType::ChiNext:
+    return "SZ.创";
+  case BoardType::BSE:
+    return "BJ.北";
+  default:
+    return "-";
   }
 }
 

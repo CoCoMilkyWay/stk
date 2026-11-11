@@ -161,24 +161,6 @@ Row MakeRow(const Asset &asset, const StockInfos &stock_info, const AssetToday &
   return {a, info, asset.asset_stats[id], info ? RecentOf(*info, today.day[id], today.prev) : Recent{}};
 }
 
-// 市场缩写 交易所.板块
-const char *MarketAbbr(BoardType b) {
-  switch (b) {
-  case BoardType::SH_Main:
-    return "SH.主";
-  case BoardType::STAR:
-    return "SH.科";
-  case BoardType::SZ_Main:
-    return "SZ.主";
-  case BoardType::ChiNext:
-    return "SZ.创";
-  case BoardType::BSE:
-    return "BJ.北";
-  default:
-    return "-";
-  }
-}
-
 // 文本 (只排序) / 分类 (饼图) / 数值 (分布 + 排名)
 enum class Kind { Text,
                   Category,
