@@ -134,7 +134,7 @@ bool StyleService::publish(const StyleRequest &req, std::string lack, std::share
 
 std::shared_ptr<const pool::Orders> StyleService::ranks(const FeatureLib &lib, pool::Style st, const pool::Tick &tick) {
   const auto hit = std::find_if(keys_.begin(), keys_.end(), [&](const Key &k) { return k.style == st; });
-  const Key k = hit != keys_.end() ? *hit : Key{st, std::make_shared<pool::Orders>(pool::Orders{.keyed = true})};
+  const Key k = hit != keys_.end() ? *hit : Key{st, std::make_shared<pool::Orders>()};
   if (hit != keys_.end())
     keys_.erase(hit);
   if (k.rk->rows() < tape_->days()) {
@@ -164,7 +164,7 @@ bool StyleService::run(StyleRequest &req) {
     tape_ = t;
   }
   const pool::Style style = req.grid.style();
-  std::erase_if(books_, [&](const auto &kv) { return kv.first.keyed() && kv.first.style() != style; });
+  std::erase_if(books_, [&](const auto &kv) { return kv.first.style() != style; });
 
   const std::vector<pool::Spec> specs = pool::specs_of(req.grid);
   std::vector<pool::Spec> sets;             // 成员 (权重归 0, 首现序): 只差权重的组共用一本账
@@ -180,14 +180,13 @@ bool StyleService::run(StyleRequest &req) {
   }
   std::vector<std::shared_ptr<const pool::Book>> books(sets.size());
   std::vector<size_t> todo; // 未留账的成员
-  bool keyed = false;       // 待算的成员里有要键的
   for (size_t i = 0; i < sets.size(); ++i)
     if (const auto it = books_.find(sets[i]); it != books_.end())
       books[i] = it->second;
     else
-      todo.push_back(i), keyed |= sets[i].keyed();
+      todo.push_back(i);
   std::shared_ptr<const pool::Orders> rk;
-  if (keyed && !(rk = ranks(ab.lib, style, tick)))
+  if (!todo.empty() && !(rk = ranks(ab.lib, style, tick)))
     return false;
   const bool bench = !bench_;
   begin(Phase::Running, todo.size() + bench);
@@ -200,8 +199,7 @@ bool StyleService::run(StyleRequest &req) {
     else {
       const size_t i = todo[static_cast<size_t>(k)];
       const pool::Selector sel(sets[i]);
-      const pool::Orders &os = sel.order() == pool::kAxis ? tape_->order : *rk;
-      pool::run_book(*tape_, sets[i].rebal(), [&](size_t r, std::vector<pool::Aid> &out) { sel.at(os.row(*tape_, r), out); }, *b);
+      pool::run_book(*tape_, sets[i].rebal(), [&](size_t r, std::vector<pool::Aid> &out) { sel.at(rk->row(*tape_, r), out); }, *b);
       books[i] = std::move(b);
     }
     Progress::publish(1);

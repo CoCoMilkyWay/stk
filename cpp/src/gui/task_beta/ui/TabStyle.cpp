@@ -41,29 +41,29 @@ constexpr float kTagScale = 0.85f;                                              
 constexpr float kHeadScale = 0.8f;                                                         // 右表表头字号 (表头常比数值宽, 定列宽)
 constexpr size_t kIdlePoints = 200000;                                                     // 未选线合计画点上限 (超了按等步长抽点; 有选池态 / 悬停的线画全点)
 constexpr float kRangeH = 90.0f;                                                           // 区间条高 (同 Market 行情页)
-constexpr size_t kLateDays = 21;                                                           // 晚起: 首个有仓日晚于区间起点与同次序最早建仓 这么多交易日 (一个月)
+constexpr size_t kLateDays = 21;                                                           // 晚起: 首个有仓日晚于区间起点与本风格最早建仓 这么多交易日 (一个月)
 
 constexpr const char *kStyleTip =
     "Style = 风格篮子的参数优选 (beta 收益): 选哪组参数做子池\n"
     "• 右表 = 风格 (一列排序键; 名后 = 落地 / 选中的池数), 点一行打开: 按左上参数网格逐组选池回测, 其下列各组的绩效\n"
-    "• 网格各维多选, 组 = 笛卡尔积: 只数 (键在端头取前 N) · 周期 (日 = 每日重选 / 周 = 按上周末重选, 权随价漂移) · 权重 (等权 / 总市值加权)\n"
-    "  · 划分维: 端 = 按风格键分低端 / 高端, ST / 板块 / 融资 = 各按一列把在市 A 股分成互斥的类; 勾选的类各自一组 + 勾选的并一组 + 全 (不切); 缺省全勾\n"
-    "    端 全 = 全选池: 切片内全选, 与风格 / 只数无关\n"
+    "• 网格各维多选, 组 = 笛卡尔积\n"
+    "  · 单选维 (每组取一个): 端 (按风格键取低端 / 高端) · 只数 (在端头取前 N) · 周期 (日 = 每日重选 / 周 = 按上周末重选, 权随价漂移) · 权重 (等权 / 总市值加权); 缺省全勾\n"
+    "  · 划分维: ST / 板块 / 融资 = 各按一列把在市 A 股分成互斥的类; 勾选的类各自一组 + 勾选的并一组 + 全 (不切); 缺省全勾\n"
     "  · 过滤维 (次新 / 预警, 不互斥; 下拉多选): 勾选的项各自一组 + 勾选的合一组 + 不剔; 缺省不勾\n"
-    "  · 切片 = ST / 板块 / 融资之交 − 过滤项; 在市固定剔次日停牌 / 申万一级行业未知\n"
-    "• 网格按钮: 按下色 = 勾, 灰字 = 不起作用的取值 (端不勾时的只数); 左键 = 翻转 (取值维至少留一个), 右键 = 只留它 (已只留它 = 该维全开)\n"
-    "• 名 = 风格端.只数.周期.权重.ST.板块.融资.过滤 (集合维的段 = 各类 / 项以 + 连; 灰段 = 不起作用, 与网格按钮的灰字同一判据); 全程切片为空的组不列\n"
-    "• 风格池的键覆盖率 (切片内有键的占比) < 80% 的行不建仓: 键未到齐 (如 β 要 156 周历史, 早年财报缺) 时不按残缺截面选\n"
+    "  · 切片 = 各划分维之交 − 过滤项; 在市固定剔次日停牌 / 申万一级行业未知\n"
+    "• 网格按钮: 按下色 = 勾; 左键 = 翻转 (单选维至少留一个), 右键 = 只留它 (已只留它 = 该维全开)\n"
+    "• 名 = 风格端.只数.周期.权重.ST.板块.融资.过滤 (集合维的段 = 各类 / 项以 + 连; 灰段 = 不起作用: 全 / 不剔); 全程切片为空的组不列\n"
+    "• 键覆盖率 (切片内有键的占比) < 80% 的行不建仓: 键未到齐 (如 β 要 156 周历史, 早年财报缺) 时不按残缺截面选\n"
     "• 篮子 = 源行收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 全A = 行情页同一条 (当日活跃, 日频)\n"
     "• 滚动窗 = 以每日收尾的满一年 (自建仓 / 区间起点满一年起): 年化 / 夏普 各取全部窗的平均与中位\n"
     "• 打分 = 夏普分位: 逐日把各线的累计中位夏普截面排名成分位, 区间内取平均 (一直靠前的高)\n"
     "  平均 ≈ 全程, 一时的极端行情照样记满; 中位只看多数窗, 吃老本的参数压不上来\n"
     "• 点表行 / 图上的线 = 选中 ↔ 去掉 (选中的行底色亮; 名色 落地蓝 / 新选橙 / 去掉红; 有选池态的恒在表前); [确认…] 弹窗列出改动, 写 pools.json 即落地并进程内重启, 计算 / 各页随即用新池表\n"
-    "• 池表里的池名 = 简称 (高低端 + 风格 + 只数 + 权重, 如 低β200.等; 全选池 = 切片名 + 权重), 同简称按池表序加 A / B / C…; 悬停池名看全部参数\n"
+    "• 池表里的池名 = 简称 (风格端 + 只数 + 权重, 如 低β200.等), 同简称按池表序加 A / B / C…; 悬停池名看全部参数\n"
     "• 主图 = 累计中位夏普: 每日 = 自首窗到该日各窗夏普的中位 (末日值 = 右表中位夏普), 任一日的截面 = 到该日为止的名次\n"
     "• 底部区间条 (同行情页) 选回测区间: 右表 / 主图只算区间内 (起点 = 1), 只重算绩效\n"
-    "• [含晚起]: 缺省不列首个有仓日晚于区间起点与同次序最早建仓一个月以上的组 (如纯科创板), 名次只在列出的线内排\n"
-    "  次序: 风格池比同风格的风格池 (键要历史时整个风格同晚, 如 β 156 周), 全选池比全A\n"
+    "• [含晚起]: 缺省不列首个有仓日晚于区间起点与本风格最早建仓一个月以上的组 (如纯科创板), 名次只在列出的线内排\n"
+    "  键要历史时整个风格同晚 (如 β 156 周), 不算晚起\n"
     "• 线色 = 中位夏普名次 (绿好 → 红差); 悬停网格条某一维 = 按该维取值着色 (按钮字色即图例), 看哪个取值整体占优; 悬停到某个取值 = 只亮该取值的线\n"
     "• 细线 = 未选, 粗线 = 落地 / 新选 / 去掉, 灰 = 全A; 悬停图上 / 表行 = 白粗线 + 绩效";
 
@@ -102,12 +102,9 @@ ImVec4 mark_col(Mark m) {
 }
 constexpr const char *kMarkName[] = {"未选", "落地 → 去掉 (待确认)", "落地", "新选 (待确认)"};
 
-// 风格 st 下的风格池数 / 全选池数
+// 风格 st 下的池数
 int count_of(const std::vector<Spec> &v, int st) {
-  return static_cast<int>(std::ranges::count_if(v, [&](const Spec &p) { return p.keyed() && p.style() == st; }));
-}
-int count_all(const std::vector<Spec> &v) {
-  return static_cast<int>(std::ranges::count_if(v, [](const Spec &p) { return !p.keyed(); }));
+  return static_cast<int>(std::ranges::count_if(v, [&](const Spec &p) { return p.style() == st; }));
 }
 
 // 绩效列 [StyleCol]: 表头 / 悬停 / 格式 / 显示倍数 / 好的方向 (+1 = 高好)
@@ -146,9 +143,9 @@ double col_val(const StyleLine &l, int c) {
 }
 
 // 网格维 = 池参数的维 pool::Dim (风格维由打开的风格定, 不上条); 线在该维的取值 = pool::slot, 网格下可能的取值 = Grid::slots
-// 取值槽 v 的色: 按网格展开的取值槽排位分色 (两个 = 蓝 / 橙, 多个 = 色环等分); 不在网格 / 不起作用 = 灰
+// 取值槽 v 的色: 按网格展开的取值槽排位分色 (两个 = 蓝 / 橙, 多个 = 色环等分); 不在网格 = 灰
 ImVec4 dim_col(uint16_t bits, int v) {
-  if (v < 0 || !(bits >> v & 1))
+  if (!(bits >> v & 1))
     return kNoneCol;
   const int k = std::popcount(bits), pos = std::popcount(static_cast<unsigned>(bits & ((1u << v) - 1)));
   return k == 2 ? kPairCol[pos] : oklch(kRowL, kRowC, static_cast<float>(pos) / static_cast<float>(k));
@@ -175,14 +172,12 @@ void derive(StyleUIState &s, const StyleResult &r) {
   }
   if (s.of_late != s.late) {
     s.of_late = s.late, s.of_sort = -2;
-    std::array<size_t, pool::kOrders> base; // [次序] 同次序的线 (轴序另含全A) 最早的首个有仓日
-    base.fill(r.dates.size());
-    base[pool::kAxis] = r.bench[pool::kWeightEq].first;
+    size_t base = r.dates.size(); // 各线 (同风格) 最早的首个有仓日
     for (const StyleLine &l : r.lines)
-      base[pool::order_of(l.spec)] = std::min(base[pool::order_of(l.spec)], l.first);
+      base = std::min(base, l.first);
     s.n_late = 0, s.shown.clear();
     for (size_t i = 0; i < n; ++i) {
-      const bool late = r.lines[i].first > std::max(r.d0 + 1, base[pool::order_of(r.lines[i].spec)]) + kLateDays;
+      const bool late = r.lines[i].first > std::max(r.d0 + 1, base) + kLateDays;
       s.n_late += late;
       if (s.late || !late)
         s.shown.push_back(static_cast<uint32_t>(i));
@@ -238,11 +233,11 @@ void sort_lines(StyleUIState &s, const StyleResult &r, int sort) {
   });
 }
 
-// 一维的多选条 (位 i = names[i], toggle_button 开 = 勾): 左键 = 翻转 (取值维至少留一位, 集合维可全不勾), 右键 = 只留它 (已只留它 = 全开); tips 可空;
-// 不起作用的取值字灰 (Grid::idle); lit = 上帧悬停在这一维 (按钮字色 = 各取值的线色). 返回本帧悬停在这一维; val = 悬停的取值 (不在任一取值上则不动)
+// 一维的多选条 (位 i = names[i], toggle_button 开 = 勾): 左键 = 翻转 (单选维至少留一位, 集合维可全不勾), 右键 = 只留它 (已只留它 = 全开); tips 可空;
+// lit = 上帧悬停在这一维 (按钮字色 = 各取值的线色). 返回本帧悬停在这一维; val = 悬停的取值 (不在任一取值上则不动)
 bool toggles(StyleUIState &s, int d, const char *const names[], const char *const tips[], int n, int &val) {
   uint16_t bits = s.grid.bits[d];
-  const uint16_t idle = s.grid.idle(d), hue = s.grid.slots(d), all = static_cast<uint16_t>((1u << n) - 1);
+  const uint16_t hue = s.grid.slots(d), all = static_cast<uint16_t>((1u << n) - 1);
   const bool lit = s.dim == d;
   ImGui::PushID(d);
   ImGui::BeginGroup();
@@ -252,16 +247,15 @@ bool toggles(StyleUIState &s, int d, const char *const names[], const char *cons
   for (int i = 0; i < n; ++i) {
     ImGui::SameLine(0, i ? 2.0f : -1.0f);
     const uint16_t b = static_cast<uint16_t>(1u << i);
-    const bool grey = !lit && (idle & b);
-    if (lit || grey)
-      ImGui::PushStyleColor(ImGuiCol_Text, lit ? dim_col(hue, i) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    if (lit)
+      ImGui::PushStyleColor(ImGuiCol_Text, dim_col(hue, i));
     ImGui::PushID(i);
     if (toggle_button(names[i], bits & b) && (bits != b || pool::is_set(d)))
       bits ^= b;
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
       bits = bits == b ? all : b;
     ImGui::PopID();
-    if (lit || grey)
+    if (lit)
       ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) {
       val = i;
@@ -626,12 +620,11 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
     sort_lines(s, *r, sort);
   }
 
-  // 平铺的表行: 风格行 / 打开风格之下 (提示 | 全A 两行 + 各线) / 末行
+  // 平铺的表行: 风格行 / 打开风格之下 (提示 | 全A 两行 + 各线)
   enum RowKind : uint8_t { kRowStyle,
                            kRowNote,
                            kRowBench,
-                           kRowLine,
-                           kRowFoot };
+                           kRowLine };
   struct Row {
     RowKind kind;
     uint32_t i;
@@ -651,7 +644,6 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
     for (const uint32_t i : s.order)
       rows.push_back({kRowLine, i});
   }
-  rows.push_back({kRowFoot, 0});
 
   // 图上悬停的线: 表滚到其行居中 (悬停起记下原位, 悬停止回原位)
   int jump = -1;
@@ -739,11 +731,6 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
         cells(l, s.ranks.data() + static_cast<size_t>(w.i) * kStyleCols);
         break;
       }
-      case kRowFoot:
-        ImGui::TextDisabled("全选池  (落地 %d · 选 %d)", count_all(s.landed), count_all(s.chosen));
-        if (ImGui::IsItemHovered())
-          tip("全选池 = 端 全 (不切), 不分风格: 切片内全选的池 (如 ST / *ST / 沪主板 / 融资); 各风格的网格恒带端 全, 一并列出");
-        break;
       }
       ImGui::PopID();
     }
@@ -794,7 +781,7 @@ bool RenderTabStyle(StyleService &svc, StyleUIState &s) {
     if (toggle_button(label, s.late))
       s.late = !s.late;
     if (ImGui::IsItemHovered())
-      tip("晚起 = 首个有仓日晚于区间起点与同次序最早建仓 (风格池比同风格, 全选池比全A) 一个月以上的组 (切片中途才有成分, 如纯科创板 / 融资): 起点不同, 绩效不可比\n"
+      tip("晚起 = 首个有仓日晚于区间起点与本风格最早建仓一个月以上的组 (切片中途才有成分, 如纯科创板 / 融资): 起点不同, 绩效不可比\n"
           "• 关 (缺省) = 表 / 图不列, 名次只在其余线内排; 开 = 一并列出");
   }
   ImGui::SameLine(0, 16);

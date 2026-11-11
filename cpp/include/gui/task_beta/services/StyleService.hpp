@@ -1,6 +1,6 @@
 // StyleService — Beta→Style 页的单 worker: 一个风格的参数网格 (features/Panel/PoolSpec.hpp Grid) 逐组选池 → 篮子的滚动一年绩效 (平均 / 中位) 与累计中位夏普 + 其逐日截面分位的平均 (打分)
-//   原料带 = 每进程代一份 (pool::tape, 与选股表共用; 新落盘日增量补); 风格的键序 (pool::rank) 按风格留最近 kKeep 份 (随原料带补行);
-//   篮子账按成员 (权重归 0, 两权重同一趟) 留 (全选池不分风格常留, 其余只留当前风格; 原料带换代清空): 改网格只算新出现的成员
+//   原料带 = 每进程代一份 (pool::tape, 与选股表共用; 新落盘日增量补); 风格的次序 (pool::rank) 按风格留最近 kKeep 份 (随原料带补行);
+//   篮子账按成员 (权重归 0, 两权重同一趟) 留 (只留当前风格; 原料带换代清空): 改网格只算新出现的成员
 //   全A = 行情篮子同一条 (全A 成员 = cs_valid ∧ 收盘 > 0, 日频), 两权重
 //   请求 = 网格 (风格维只勾打开的那一个) + 回测区间 (只改区间 = 账全在, 只重算绩效); 新请求覆盖旧的. 进度: Loading = 原料 / 键的行数, Running = 待算的篮子数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (shared_ptr 拷出即放锁)
@@ -75,13 +75,13 @@ public:
 
 private:
   static constexpr Phase kStart = Phase::Loading;
-  static constexpr size_t kKeep = 3; // 留在内存的风格键序数 (每份 ≈ [日 · A] 两份 uint16)
+  static constexpr size_t kKeep = 3; // 留在内存的风格次序数 (每份 ≈ [日 · A] 两份 uint16)
   Progress &board() { return *this; }
   bool run(StyleRequest &req);
   bool publish(const StyleRequest &req, std::string lack, std::shared_ptr<StyleResult> out = nullptr);
   // 区间 [d0, d1) 内逐日: 有累计中位夏普的线按其截面排名 (并列取均秩) → 分位 (1 = 最高); 各线对有值的日取平均 → stat.sharpe_pct
   void rank_pct(std::vector<StyleLine> &lines, size_t d0, size_t d1);
-  // 风格 st 补到 tape_ 末行的键序 (提到最新); 取消 / 库判废 → nullptr
+  // 风格 st 补到 tape_ 末行的次序 (提到最新); 取消 / 库判废 → nullptr
   std::shared_ptr<const pool::Orders> ranks(const FeatureLib &lib, pool::Style st, const pool::Tick &tick);
 
   struct Key {
