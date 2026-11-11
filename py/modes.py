@@ -18,6 +18,7 @@ TSAN_OPTIONS = (
 
 def _tsan(binary: Path, cwd: Path) -> int:
     report = RUN_DIR / "tsan_report.log"
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
     env = os.environ | {"TSAN_OPTIONS": TSAN_OPTIONS}
     print("expect 5-15x slowdown")
     with open(report, "w", encoding="utf-8") as f:
@@ -36,6 +37,7 @@ def _gdb_section(title: str, command: str) -> list[str]:
 
 def _debug(binary: Path, cwd: Path) -> int:
     stacks = RUN_DIR / "crash_stacks.txt"
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
     script = [
         "set pagination off",
         f"set logging file {stacks}",
@@ -131,7 +133,6 @@ def _banner(text: str) -> None:
 def launch(mode: str, binary: Path, cwd: Path) -> int:
     title, run = MODES[mode]
     assert binary.is_file(), f"binary not found: {binary}"
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
 
     _banner(f"{mode} - {title}")
     start = time.time()

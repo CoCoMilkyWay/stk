@@ -125,7 +125,7 @@ void fill_row(const FeatureRead::DayColumns &c, Tape &t, size_t r, float *pre, f
     int flt = 0;
     for (int f = 0; f < kFilters; ++f)
       flt |= flag(v(kColFilter0 + static_cast<size_t>(f))) << f;
-    const size_t id = ((static_cast<size_t>(st) * set_radix(1) + static_cast<size_t>(bd)) * set_radix(2) + static_cast<size_t>(flag(v(kColMargin)))) * set_radix(3) + static_cast<size_t>(flt);
+    const size_t id = ((static_cast<size_t>(st) * slice_radix(1) + static_cast<size_t>(bd)) * slice_radix(2) + static_cast<size_t>(flag(v(kColMargin)))) * slice_radix(3) + static_cast<size_t>(flt);
     t.cls[i] = static_cast<uint16_t>(id), ++cnt[id];
   }
   size_t at[kClasses];
@@ -214,8 +214,8 @@ AllBar all_bar(std::string_view what) {
 }
 
 bool covers(const Spec &s, size_t c) {
-  for (int k = kSets; k-- > 0;) {
-    const size_t r = set_radix(k), x = c % r;
+  for (int k = kSlices; k-- > 0;) {
+    const size_t r = slice_radix(k), x = c % r;
     c /= r;
     const uint8_t m = s.v[kDimSt + k];
     if (kDimDefs[kDimSt + k].kind == kKindFilter ? (m & x) != 0 : m && !(m >> x & 1))

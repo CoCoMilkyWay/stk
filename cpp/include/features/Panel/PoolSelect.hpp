@@ -65,12 +65,12 @@ struct AllBar {
 };
 AllBar all_bar(std::string_view what);
 
-// 资产类: 行 r 的在市资产 (见 PoolSpec.hpp; 各划分列有类) 按各集合维的类归一类 (混合进制, 末维最低位; 过滤维的类 = 中的项的位集); 切片 = 若干类的并
-inline constexpr size_t set_radix(int k) { return kDimDefs[kDimSt + k].kind == kKindFilter ? size_t{1} << dim_size(kDimSt + k) : static_cast<size_t>(dim_size(kDimSt + k)); }
+// 资产类: 行 r 的在市资产 (见 PoolSpec.hpp; 各划分列有类) 按各切片维的类归一类 (混合进制, 末维最低位; 过滤维的类 = 中的项的位集); 切片 = 若干类的并
+inline constexpr size_t slice_radix(int k) { return kDimDefs[kDimSt + k].kind == kKindFilter ? size_t{1} << dim_size(kDimSt + k) : static_cast<size_t>(dim_size(kDimSt + k)); }
 inline constexpr size_t kClasses = [] {
   size_t n = 1;
-  for (int k = 0; k < kSets; ++k)
-    n *= set_radix(k);
+  for (int k = 0; k < kSlices; ++k)
+    n *= slice_radix(k);
   return n;
 }();
 inline constexpr uint16_t kOut = static_cast<uint16_t>(kClasses); // 不在市

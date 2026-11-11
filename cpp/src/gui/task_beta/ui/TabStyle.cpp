@@ -46,11 +46,12 @@ constexpr size_t kLateDays = 21;                                                
 constexpr const char *kStyleTip =
     "Style = 风格篮子的参数优选 (beta 收益): 选哪组参数做子池\n"
     "• 右表 = 风格 (一列排序键; 名后 = 落地 / 选中的池数), 点一行打开: 按左上参数网格逐组选池回测, 其下列各组的绩效\n"
-    "• 网格各维多选, 组 = 笛卡尔积: 端 (键低端 / 高端) · 只数 (全 = 切片内全选, 与风格无关) · 周期 (日 = 每日重选 / 周 = 按上周末重选, 权随价漂移) · 权重 (等权 / 总市值加权)\n"
-    "  · 划分维 ST / 板块 / 融资: 各按一列把在市 A 股分成互斥的类; 勾选的类各自一组 + 勾选的并一组 + 全 (不切); 缺省全勾\n"
+    "• 网格各维多选, 组 = 笛卡尔积: 只数 (键在端头取前 N) · 周期 (日 = 每日重选 / 周 = 按上周末重选, 权随价漂移) · 权重 (等权 / 总市值加权)\n"
+    "  · 划分维: 端 = 按风格键分低端 / 高端, ST / 板块 / 融资 = 各按一列把在市 A 股分成互斥的类; 勾选的类各自一组 + 勾选的并一组 + 全 (不切); 缺省全勾\n"
+    "    端 全 = 全选池: 切片内全选, 与风格 / 只数无关\n"
     "  · 过滤维 (次新 / 预警, 不互斥; 下拉多选): 勾选的项各自一组 + 勾选的合一组 + 不剔; 缺省不勾\n"
-    "  · 切片 = 各划分维之交 − 过滤项; 在市固定剔次日停牌 / 申万一级行业未知\n"
-    "• 网格按钮: 按下色 = 勾, 灰字 = 不起作用的取值 (只数 全; 只数只勾全时的端); 左键 = 翻转 (取值维至少留一个), 右键 = 只留它 (已只留它 = 该维全开)\n"
+    "  · 切片 = ST / 板块 / 融资之交 − 过滤项; 在市固定剔次日停牌 / 申万一级行业未知\n"
+    "• 网格按钮: 按下色 = 勾, 灰字 = 不起作用的取值 (端不勾时的只数); 左键 = 翻转 (取值维至少留一个), 右键 = 只留它 (已只留它 = 该维全开)\n"
     "• 名 = 风格端.只数.周期.权重.ST.板块.融资.过滤 (集合维的段 = 各类 / 项以 + 连; 灰段 = 不起作用, 与网格按钮的灰字同一判据); 全程切片为空的组不列\n"
     "• 风格池的键覆盖率 (切片内有键的占比) < 80% 的行不建仓: 键未到齐 (如 β 要 156 周历史, 早年财报缺) 时不按残缺截面选\n"
     "• 篮子 = 源行收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 全A = 行情页同一条 (当日活跃, 日频)\n"
@@ -138,14 +139,14 @@ double col_val(const StyleLine &l, int c) {
 }
 
 // 网格维 = 池参数的维 pool::Dim (风格维由打开的风格定, 不上条)
-//   线在该维的取值: 取值维 = 下标 (−1 = 不起作用: 全选池的端); 集合维 n 个类 / 项 = 单一位 i → i, 多位 (勾选的并 / 合) → n, 0 (全 / 不剔) → n + 1
+//   线在该维的取值: 取值维 = 下标 (−1 = 不起作用: 全选池的只数); 集合维 n 个类 / 项 = 单一位 i → i, 多位 (勾选的并 / 合) → n, 0 (全 / 不剔) → n + 1
 int dim_value(const StyleLine &l, int d) {
   if (pool::is_set(d)) {
     const uint8_t m = l.spec.v[d];
     return !m ? pool::dim_size(d) + 1 : std::has_single_bit(m) ? std::countr_zero(m)
                                                                : pool::dim_size(d);
   }
-  return d == pool::kDimEnd && !l.spec.keyed() ? -1 : l.spec.v[d];
+  return pool::on(l.spec, d) ? l.spec.v[d] : -1;
 }
 // 网格下维 d 的线可能取的值 (位, 同 dim_value): 取值维 = 勾选位; 集合维另加 并 / 合 (勾选不止一个, 且划分维未全勾) 与 全 / 不剔
 uint16_t hue_bits(const pool::Grid &g, int d) {
@@ -244,14 +245,8 @@ void sort_lines(StyleUIState &s, const StyleResult &r, int sort) {
   });
 }
 
-// 维 d 在网格 g 下不起作用的取值 (位; 与线名灰段同一判据 pool::on): 只数 全; 只数只勾 全 时端的全部取值
-uint16_t idle_bits(const pool::Grid &g, int d) {
-  if (d == pool::kDimN)
-    return 1u << pool::kCountAll;
-  if (d == pool::kDimEnd && g.bits[pool::kDimN] == 1u << pool::kCountAll)
-    return pool::full_mask(d);
-  return 0;
-}
+// 维 d 在网格 g 下不起作用的取值 (位; 与线名灰段同一判据 pool::on): 端不勾 (只出全选池) 时只对风格池起作用的维的全部取值
+uint16_t idle_bits(const pool::Grid &g, int d) { return pool::key_dim(d) && !g.bits[pool::kDimEnd] ? pool::full_mask(d) : 0; }
 
 // 一维的多选条 (位 i = names[i], toggle_button 开 = 勾): 左键 = 翻转 (取值维至少留一位, 集合维可全不勾), 右键 = 只留它 (已只留它 = 全开); tips 可空;
 // 不起作用的取值字灰 (idle_bits); lit = 上帧悬停在这一维 (按钮字色 = 各取值的线色). 返回本帧悬停在这一维; val = 悬停的取值 (不在任一取值上则不动)
@@ -761,7 +756,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
       case kRowFoot:
         ImGui::TextDisabled("全选池  (落地 %d · 选 %d)", count_all(s.landed), count_all(s.chosen));
         if (ImGui::IsItemHovered())
-          tip("全选池 = 只数 = 全, 不分风格: 切片内全选的池 (如 ST / *ST / 沪主板 / 融资); 任一风格的网格勾 只数 = 全 即列出");
+          tip("全选池 = 端 全 (不切), 不分风格: 切片内全选的池 (如 ST / *ST / 沪主板 / 融资); 各风格的网格恒带端 全, 一并列出");
         break;
       }
       ImGui::PopID();

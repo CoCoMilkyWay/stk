@@ -1,13 +1,15 @@
 #pragma once
 // 池参数框架: 子池 = 一组参数 (各维一个取值); 一组参数一个池 (独立成员 / 独立库)
 //   维表 kDimDefs (维序): 风格 · 端 · 只数 · 周期 · 权重 · ST · 板块 · 融资 · 过滤; 池名 / 中文名 / 网格 / 资产类一律按维表走
-//     取值维 (风格 / 端 / 只数 / 周期 / 权重): Spec 存取值下标
-//       风格 = 排序键 (同风格的池共用一份次序); 端 = 键的低端 / 高端; 只数 N = 切片内键的一端取前 N (全 = 切片内全选: 风格 / 端不起作用, canon 归一)
+//     取值维 (风格 / 只数 / 周期 / 权重): Spec 存取值下标
+//       风格 = 排序键 (同风格的池共用一份次序); 只数 N = 切片内键在端头取前 N
 //       周期 = 调仓日历 (features/Panel/PoolSelect.hpp src_of); 权重 = 篮子成分的权 (等权 / 总市值加权, PoolSelect.hpp Tape::omega)
-//     集合维 (ST 起): Spec 存取值表的位集, 0 = 不起作用
-//       划分维 (ST / 板块 / 融资): 按 all.bar 一列把在市 A 股分成互斥的类, 池取若干类之并 (全部类 = 0, canon 归一)
-//       过滤维: 各项按 all.bar 一列剔掉一部分 (不互斥, 不是划分), 池剔若干项之并
-//       切片 = 各划分维之交 − 各过滤项
+//     集合维 (端 / ST 起): Spec 存取值表的位集, 0 = 不起作用
+//       划分维 (端 / ST / 板块 / 融资): 把在市 A 股分成互斥的类, 池取若干类之并 (全部类 = 0 = 不切, canon 归一)
+//         端 = 按风格键分低端 / 高端: 切 = 风格池 (取一端), 不切 = 全选池 (切片内全选: 风格 / 只数不起作用, canon 归 0)
+//         ST / 板块 / 融资 = 按 all.bar 一列分 (切片维)
+//       过滤维: 各项按 all.bar 一列剔掉一部分 (不互斥, 不是划分), 池剔若干项之并 (切片维)
+//       切片 = 各切片划分维之交 − 各过滤项
 //   在市 = 已上市 ∧ 未退市 ∧ 收盘总市值 > 0 ∧ 次日不停牌 ∧ 申万一级行业已知 (固定, 不进维)
 //   键 / 切片的原料全是 all.bar L_1day 的基础列 (行 D = D+1 盘前态, 见 Node/Common/Fund/Fund.hpp), 成员由 features/Panel/PoolSelect.hpp 现算 (选股表 Picks)
 //   子池表 = output/config/beta/pools.json (Beta → Style 页确认后写; 无文件 = default_pools()); 计算与各页的池表 feature_pools() (features/Storage/FeatureLib.hpp)
@@ -16,10 +18,11 @@
 //   池名 (库目录名) 按维序以 "." 连, 每维一段 (集合维 = 各位的取值码以 "+" 连, 位序); 中文名同序, 自端起 (端名已含风格):
 //     beta.low.200.day.eq.nost.all.all.nonew+nowarn       = 低β.200.日.等权.非ST.全.全.非次新+无预警
 //     all.all.all.week.cap.st+sst.sh_main+sz_main.margin.all = 全.全.周.加权.ST+*ST.沪主板+深主板.融资.全
-//   不起作用的段 (集合维 0 / 只数 全 / 全选池的风格端, 池名写 all) 见 on()
+//   不起作用的段 (集合维 0 / 全选池的风格只数, 池名写 all) 见 on()
 //   显示名 (各页) = 简称 short_cn = 主体 + 权重后缀 (.等 / .加): 风格池主体 = 端名 + 只数 (低β200.等); 全选池主体 = 起作用的划分维段名
 //     (ST / 沪主板 / 非ST融资; 都不切 = 全选); 同简称的池按池表序在主体后加 A / B / C … 区分 (aliases); 其余参数悬停见 detail_cn
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -44,18 +47,17 @@ enum Style : uint8_t { kStyleSize,
                        kStyleTrend,
                        kStylePrice };
 inline constexpr int kStyles = 14;
-// 端: 键的低端 / 高端
+// 端的类: 键的低端 / 高端
 enum End : uint8_t { kEndLow,
                      kEndHigh };
 inline constexpr int kEnds = 2;
-// 只数 (取值下标; 全 = 切片内全选)
-enum Count : uint8_t { kCountAll,
-                       kCount100,
+// 只数 (取值下标): 风格池在端头取前 N
+enum Count : uint8_t { kCount100,
                        kCount200,
                        kCount400,
                        kCount800 };
-inline constexpr int kNCounts = 5;
-inline constexpr int kCounts[kNCounts] = {0, 100, 200, 400, 800};
+inline constexpr int kNCounts = 4;
+inline constexpr int kCounts[kNCounts] = {100, 200, 400, 800};
 // 周期: 成员源行的日历 (PoolSelect.hpp src_of); 两次调仓之间成员不变, 篮子权随价漂移
 enum Rebal : uint8_t { kRebalDay,
                        kRebalWeek };
@@ -126,11 +128,10 @@ inline constexpr DimValue kEndValues[kEnds] = {
     {"high", "高端", "键的高端 (由大到小取前 N)"},
 };
 inline constexpr DimValue kCountValues[kNCounts] = {
-    {"all", "全", "切片内全选 (与风格 / 端无关)"},
-    {"100", "100", "切片内键的一端取前 N 只 (键覆盖率 < 80% 的行 = 全取)"},
-    {"200", "200", "切片内键的一端取前 N 只 (键覆盖率 < 80% 的行 = 全取)"},
-    {"400", "400", "切片内键的一端取前 N 只 (键覆盖率 < 80% 的行 = 全取)"},
-    {"800", "800", "切片内键的一端取前 N 只 (键覆盖率 < 80% 的行 = 全取)"},
+    {"100", "100", "切片内键在端头取前 N 只 (键覆盖率 < 80% 的行不建仓)"},
+    {"200", "200", "切片内键在端头取前 N 只 (键覆盖率 < 80% 的行不建仓)"},
+    {"400", "400", "切片内键在端头取前 N 只 (键覆盖率 < 80% 的行不建仓)"},
+    {"800", "800", "切片内键在端头取前 N 只 (键覆盖率 < 80% 的行不建仓)"},
 };
 inline constexpr DimValue kRebalValues[kRebals] = {
     {"day", "日", "每个交易日按前一交易日收盘重选, 篮子每日回到目标权"},
@@ -162,7 +163,7 @@ inline constexpr DimValue kFilterValues[kFilters] = {
     {"nowarn", "无预警", "剔 交易 / 预亏 / 营收 / 分红 四项预警任一 (flt_warn = 1)"},
 };
 
-// 维 (维序 = 池名段序); 集合维 = [kDimSt, kDims), 第 k 个集合维 = kDimSt + k
+// 维 (维序 = 池名段序); 切片维 = [kDimSt, kDims), 第 k 个切片维 = kDimSt + k
 enum Dim : uint8_t { kDimStyle,
                      kDimEnd,
                      kDimN,
@@ -173,7 +174,7 @@ enum Dim : uint8_t { kDimStyle,
                      kDimMargin,
                      kDimFilter };
 inline constexpr int kDims = 9;
-inline constexpr int kSets = kDims - kDimSt;
+inline constexpr int kSlices = kDims - kDimSt;
 // 维的种类: 取值 (Spec 存下标) / 划分 (存类的位集, 全部类归 0) / 过滤 (存项的位集)
 enum DimKind : uint8_t { kKindPick,
                          kKindPart,
@@ -185,7 +186,7 @@ struct DimDef {
 };
 inline constexpr DimDef kDimDefs[kDims] = {
     {"风格", kStyleValues, kKindPick},
-    {"端", kEndValues, kKindPick},
+    {"端", kEndValues, kKindPart},
     {"只数", kCountValues, kKindPick},
     {"周期", kRebalValues, kKindPick},
     {"权重", kWeightValues, kKindPick},
@@ -198,21 +199,28 @@ inline constexpr DimDef kDimDefs[kDims] = {
 constexpr int dim_size(int d) { return static_cast<int>(kDimDefs[d].values.size()); }
 constexpr bool is_set(int d) { return kDimDefs[d].kind != kKindPick; }
 constexpr uint16_t full_mask(int d) { return static_cast<uint16_t>((1u << dim_size(d)) - 1); }
-static_assert(dim_size(kDimSt) <= 8 && dim_size(kDimBoard) <= 8 && dim_size(kDimMargin) <= 8 && dim_size(kDimFilter) <= 8, "集合维的位集存进 uint8_t");
+constexpr bool key_dim(int d) { return d == kDimStyle || d == kDimN; } // 只对风格池起作用的维 (全选池归 0, 池名写 all)
+static_assert([] {
+  for (int d = 0; d < kDims; ++d)
+    if (is_set(d) && dim_size(d) > 8)
+      return false;
+  return true;
+}(),
+              "集合维的位集存进 uint8_t");
 
 struct Spec {
   std::array<uint8_t, kDims> v{}; // [维] 取值维 = 取值下标, 集合维 = 位集 (全 0 = 在市全选, 日频, 等权)
   Style style() const { return static_cast<Style>(v[kDimStyle]); }
-  End end() const { return static_cast<End>(v[kDimEnd]); }
-  int n() const { return kCounts[v[kDimN]]; } // 0 = 全选
+  End end() const { return static_cast<End>(std::countr_zero(v[kDimEnd])); } // 风格池的端
+  int n() const { return kCounts[v[kDimN]]; }
   Rebal rebal() const { return static_cast<Rebal>(v[kDimRebal]); }
   Weight weight() const { return static_cast<Weight>(v[kDimWeight]); }
-  bool keyed() const { return v[kDimN] != kCountAll; }
+  bool keyed() const { return v[kDimEnd] != 0; } // 风格池 (端切) / 全选池 (端不切)
   auto operator<=>(const Spec &) const = default;
 };
-Spec canon(Spec s);                // 全选 → 风格 / 端归 0; 划分维全部类 → 0 (同一池同一份)
+Spec canon(Spec s);                // 划分维全部类 → 0 (端全部 = 全选池); 全选池的风格 / 只数 → 0 (同一池同一份)
 Spec unweighted(Spec s);           // 权重归 0: 成员身份 (只差权重的池成员相同)
-bool on(const Spec &s, int d);     // 维 d 对 s 起作用 (集合维 0 / 只数 全 / 全选池的风格端 不起作用)
+bool on(const Spec &s, int d);     // 维 d 对 s 起作用 (集合维 0 / 全选池的风格只数 不起作用)
 std::string code(const Spec &s);   // 池名 (库目录名)
 Spec parse(std::string_view code); // 不是规范池名 → assert
 
@@ -236,7 +244,7 @@ void save_pools(const std::vector<Spec> &pools);
 
 // Style 页参数网格: [维] 勾选位集 (位 i = 该维取值表第 i 个)
 //   各维的取值: 取值维 = 勾选的各取值 (至少勾一个); 集合维 (勾选 S, 可空) = S 的各位单独 + S 整体 + 0 (划分维 = 全部类, 过滤维 = 不剔)
-//   网格 = 各维取值的笛卡尔积; 风格维由页面置为打开的那一个; 缺省划分维全勾, 过滤维不勾
+//   网格 = 各维取值的笛卡尔积; 风格维由页面置为打开的那一个; 缺省划分维全勾 (端 = 低端 / 高端 / 全选), 过滤维不勾
 struct Grid {
   std::array<uint16_t, kDims> bits = [] {
     std::array<uint16_t, kDims> b{};

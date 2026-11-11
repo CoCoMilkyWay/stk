@@ -16,38 +16,46 @@ namespace {
 
 using json = nlohmann::json;
 
-// 全选池的风格 / 端 (取值归 0, 池名写 all)
-bool inert(const Spec &s, int d) { return (d == kDimStyle || d == kDimEnd) && !s.keyed(); }
+// 全选池的风格 / 只数 (取值归 0, 池名写 all)
+bool inert(const Spec &s, int d) { return key_dim(d) && !s.keyed(); }
 
-// 集合维的段: 各位的码 / 中文名以 "+" 连 (位序); 0 → all / 全
-std::string set_seg(int d, uint8_t m, bool cn) {
-  if (!m)
+// 维 d 的段 (池名 / 中文名): 不起作用的取值维 / 集合维 0 → all / 全; 取值维 = 取值的码 / 中文名;
+// 集合维 = 各位的码 / 中文名以 "+" 连 (位序), 风格池端的中文名 = 风格端名
+std::string segment(const Spec &s, int d, bool cn) {
+  const uint8_t m = s.v[d];
+  if (inert(s, d) || (is_set(d) && !m))
     return cn ? "全" : "all";
+  const std::span<const DimValue> vs = kDimDefs[d].values;
+  if (!is_set(d))
+    return cn ? vs[m].name_cn : vs[m].code;
+  if (cn && d == kDimEnd)
+    return kStyleDefs[s.style()].end_cn[s.end()];
   std::string t;
   for (int i = 0; i < dim_size(d); ++i)
     if (m >> i & 1)
-      t += (t.empty() ? "" : "+") + std::string(cn ? kDimDefs[d].values[i].name_cn : kDimDefs[d].values[i].code);
+      t += (t.empty() ? "" : "+") + std::string(cn ? vs[i].name_cn : vs[i].code);
   return t;
 }
 
 // 简称主体 (不带权重后缀)
 std::string short_body(const Spec &s) {
   if (s.keyed())
-    return kStyleDefs[s.style()].end_cn[s.end()] + std::to_string(s.n());
+    return segment(s, kDimEnd, true) + std::to_string(s.n());
   std::string c;
-  for (int d = kDimSt; d < kDims; ++d)
+  for (int d = 0; d < kDims; ++d)
     if (kDimDefs[d].kind == kKindPart && on(s, d))
-      c += set_seg(d, s.v[d], true);
+      c += segment(s, d, true);
   return c.empty() ? "全选" : c;
 }
 
 } // namespace
 
 Spec canon(Spec s) {
-  if (!s.keyed())
-    s.v[kDimStyle] = 0, s.v[kDimEnd] = 0;
-  for (int d = kDimSt; d < kDims; ++d)
+  for (int d = 0; d < kDims; ++d)
     if (kDimDefs[d].kind == kKindPart && s.v[d] == full_mask(d))
+      s.v[d] = 0;
+  for (int d = 0; d < kDims; ++d)
+    if (inert(s, d))
       s.v[d] = 0;
   return s;
 }
@@ -57,13 +65,12 @@ Spec unweighted(Spec s) {
   return s;
 }
 
-bool on(const Spec &s, int d) { return !inert(s, d) && (is_set(d) ? s.v[d] != 0 : !(d == kDimN && !s.keyed())); }
+bool on(const Spec &s, int d) { return !inert(s, d) && (!is_set(d) || s.v[d] != 0); }
 
 std::string code(const Spec &s) {
   std::string c;
   for (int d = 0; d < kDims; ++d)
-    c += std::string(d ? "." : "") + (inert(s, d) ? "all" : is_set(d) ? set_seg(d, s.v[d], false)
-                                                                      : kDimDefs[d].values[s.v[d]].code);
+    c += (d ? "." : "") + segment(s, d, false);
   return c;
 }
 
@@ -82,7 +89,7 @@ Spec parse(std::string_view c) {
     const std::span<const DimValue> vs = kDimDefs[d].values;
     const auto find = [&](std::string_view x) {
       const auto it = std::ranges::find_if(vs, [&](const DimValue &v) { return x == v.code; });
-      assert((it != vs.end() || (seg[d] == "all" && (is_set(d) || d == kDimStyle || d == kDimEnd))) && "池名: 段不在该维取值表里");
+      assert((it != vs.end() || (seg[d] == "all" && (is_set(d) || key_dim(d)))) && "池名: 段不在该维取值表里");
       return it == vs.end() ? -1 : static_cast<int>(it - vs.begin());
     };
     if (!is_set(d)) {
@@ -106,11 +113,7 @@ Spec parse(std::string_view c) {
 std::array<Part, kParts> parts(const Spec &s) {
   std::array<Part, kParts> p;
   for (int d = kDimEnd; d < kDims; ++d)
-    p[d - kDimEnd] = {inert(s, d)    ? "全"
-                      : d == kDimEnd ? kStyleDefs[s.style()].end_cn[s.end()]
-                      : is_set(d)    ? set_seg(d, s.v[d], true)
-                                     : kDimDefs[d].values[s.v[d]].name_cn,
-                      on(s, d)};
+    p[d - kDimEnd] = {segment(s, d, true), on(s, d)};
   return p;
 }
 
@@ -135,7 +138,7 @@ std::string detail_cn(const Spec &s) {
   bool cut = false;
   for (int d = kDimSt; d < kDims; ++d)
     if (on(s, d)) {
-      t += std::string("\n• ") + kDimDefs[d].name_cn + " " + set_seg(d, s.v[d], true) + ":";
+      t += std::string("\n• ") + kDimDefs[d].name_cn + " " + segment(s, d, true) + ":";
       for (int i = 0; i < dim_size(d); ++i)
         if (s.v[d] >> i & 1)
           t += std::string("\n    ") + kDimDefs[d].values[i].name_cn + " = " + kDimDefs[d].values[i].tip;
@@ -169,7 +172,7 @@ std::vector<Spec> default_pools() {
   const auto two = [&](Style st, End sd, uint8_t mg = 0) {
     for (const Count n : {kCount400, kCount200}) {
       Spec s = base;
-      s.v[kDimStyle] = st, s.v[kDimEnd] = sd, s.v[kDimN] = n, s.v[kDimMargin] = mg;
+      s.v[kDimStyle] = st, s.v[kDimEnd] = bit(sd), s.v[kDimN] = n, s.v[kDimMargin] = mg;
       v.push_back(s);
     }
   };
