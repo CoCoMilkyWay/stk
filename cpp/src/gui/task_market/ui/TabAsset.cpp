@@ -276,7 +276,7 @@ const Column kCols[] = {
      Kind::Number, Good::Cheap, "%.1f", &Field<&StockInfo::pe_ttm>, nullptr, nullptr},
 
     {"PB", "PB(MRQ)",
-     "市净率 (PB MRQ)\npbMRQ = Price-to-Book Ratio (Most Recent Quarter)\n= 总市值 / 归属母公司股东权益MRQ\n= (收盘价 x 总股本) / total_equity_to_parent_shareholders\n\nMRQ = 最新报告期 (max report_date 的最新可见行)\n反映账面价值,通常>1,<1可能破净",
+     "市净率 (PB MRQ)\npbMRQ = Price-to-Book Ratio (Most Recent Quarter)\n= 总市值 / 归母普通股权益MRQ\n= (收盘价 x 总股本) / (total_equity_to_parent_shareholders - other_equity_instruments)\n其他权益工具 = 永续债 / 优先股, 不属普通股东\n\nMRQ = 最新报告期 (max report_date 的最新可见行)\n反映账面价值,通常>1,<1可能破净",
      Kind::Number, Good::Cheap, "%.2f", &Field<&StockInfo::pb_mrq>, nullptr, nullptr},
 
     {"PS", "PS(TTM)",

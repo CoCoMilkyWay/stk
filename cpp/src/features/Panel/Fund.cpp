@@ -1,7 +1,7 @@
 // fund — 日频 PIT 基本面实现
 //
 // 结构: Panel::build   parquet 月度分片 → 网格 (raw cutoff 单点应用, ffill, 切到 [首回测日−15, 末]) + per-A 事件链 (v 升序)
-//                     全部 15 张月度表登记进同一个 fundamental::Scan (列裁剪 + 字典键 + 跨表重段先跑)
+//                     全部 16 张月度表登记进同一个 fundamental::Scan (列裁剪 + 字典键 + 跨表重段先跑)
 //                     切片前另从全史网格扫出行情派生 (build_market: 长窗时序 + 全市场截面)
 //       Stream        per-A 沿 D 轴逐日推进的状态机 (估值分母 / 因子 raw / filter), 与按事件批量前扫逐日等价:
 //                       ttm/balance 取 latest (上市前事件丢弃), 年报 annuals, 分红按报告期取窗 (近 4 季 / 近 3 会计年度双阈值),
@@ -140,7 +140,7 @@ struct FinancialTtmEv {
 struct FinancialBalanceEv {
   std::int32_t v;
   std::int32_t report_date;
-  float total_equity_to_parent_shareholders;
+  float common_equity; // 归母普通股权益 = 归母权益 − 其他权益工具 (永续债 / 优先股; 缺 → 0)
   float total_assets;
   // MRQ 原始项 (Fund::bs_*); 合成项在读入时 NaN→0 求和, 全缺 → NaN
   float total_liabilities;
@@ -195,6 +195,10 @@ struct NonrecurEv { // cn_stock_financial_notes_shift (主记录): 非经常性�
 struct SharesEv { // total_shares 全史网格变点 (切片前抽取; shares_issued_yoy 回看 1 年)
   int d;
   float shares;
+};
+struct CapitalEv { // cn_stock_capital 股本结构变更: 境外上市股 (H 股等) = 总股本 − A 股 − B 股
+  std::int32_t v;
+  float foreign;
 };
 struct FinancialIncomeAnnualEv {
   std::int32_t v;
@@ -260,6 +264,7 @@ struct PitPool {
   std::vector<std::vector<YtdEv<CF_COUNT>>> cashflow_ytd;
   std::vector<std::vector<NonrecurEv>> nonrecur;
   std::vector<std::vector<DividendEv>> dividend;
+  std::vector<std::vector<CapitalEv>> capital;
   std::vector<std::vector<ForecastEv>> forecast;
   std::vector<std::vector<IndustryEv>> industry_component;
   std::vector<std::vector<IndustryEv>> industry_change;
@@ -1108,6 +1113,7 @@ struct EventScan {
   Part<Hits<YtdEv<CF_COUNT>>> cashflow;
   Part<Hits<NonrecurEv>> nonrecur;
   Part<Hits<DividendEv>> dividend;
+  Part<Hits<CapitalEv>> capital;
   Part<Hits<ForecastEv>> forecast;
   Part<Hits<IndustryEv>> component, change;
   void add(fundamental::Scan &scan, const Axes &axes);
@@ -1162,7 +1168,7 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
   // ---- cn_stock_financial_balance_general_pit (CUTOFF=-1; 全报告期入) ----
   scan.add(
       balance, spec("cn_stock_financial_balance_general_pit"),
-      {"report_date", "total_equity_to_parent_shareholders", "total_assets", "total_liabilities",
+      {"report_date", "total_equity_to_parent_shareholders", "other_equity_instruments", "total_assets", "total_liabilities",
        "total_noncurr_liabilities", "shortterm_borrowings", "noncurr_liabilities_due_within_1y",
        "longterm_borrowings", "bonds_payable", "total_current_assets", "total_current_liabilities",
        "moneytary_assets", "inventories", "accounts_receivable", "accounts_payable", "fixed_assets",
@@ -1170,7 +1176,7 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
        "goodwill", "minority_interests"},
       Hits<FinancialBalanceEv>{}, [&axes](const Rows &r, Hits<FinancialBalanceEv> &h) {
         const pq::Col rd = r.col("report_date");
-        const pq::Col tep = r.col("total_equity_to_parent_shareholders");
+        const pq::Col tep = r.col("total_equity_to_parent_shareholders"), oei = r.col("other_equity_instruments");
         const pq::Col ta = r.col("total_assets");
         const pq::Col tl = r.col("total_liabilities"), ncl = r.col("total_noncurr_liabilities");
         const pq::Col stb = r.col("shortterm_borrowings"), ncl1y = r.col("noncurr_liabilities_due_within_1y");
@@ -1192,7 +1198,7 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
           FinancialBalanceEv ev;
           ev.v = row;
           ev.report_date = p;
-          ev.total_equity_to_parent_shareholders = tep.f32(i);
+          ev.common_equity = tep.f32(i) - first_finite(oei.f32(i), 0.0f);
           ev.total_assets = ta.f32(i);
           ev.total_liabilities = tl.f32(i);
           ev.total_noncurr_liabilities = ncl.f32(i);
@@ -1324,6 +1330,21 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
              });
            });
 
+  // ---- cn_stock_capital (CUTOFF=-1; v ← max(公告日, 变更日): 两者都到才可知且已生效) ----
+  scan.add(capital, spec("cn_stock_capital"), {"change_date", "total_shares", "shares_a_total", "shares_b_total"},
+           Hits<CapitalEv>{}, [&axes](const Rows &r, Hits<CapitalEv> &h) {
+             const pq::Col cd = r.col("change_date"), ts = r.col("total_shares");
+             const pq::Col sa = r.col("shares_a_total"), sb = r.col("shares_b_total");
+             RowOf row_of(axes, Align::Floor, -1);
+             r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+               const float f = ts.f32(i) - sa.f32(i) - first_finite(sb.f32(i), 0.0f);
+               const int row = row_of(std::max(d, cd.yyyymmdd(i)));
+               if (row < 0 || !std::isfinite(f))
+                 return;
+               h.push({a, {row, std::max(f, 0.0f)}});
+             });
+           });
+
   // ---- forecast (Tushare, CUTOFF=-1; vd = ann_date, 键 = ts_code, "YYYYMMDD" string 列) ----
   scan.add(forecast, spec("forecast"), {"end_date", "type", "last_parent_net"}, Hits<ForecastEv>{},
            [&axes](const Rows &r, Hits<ForecastEv> &h) {
@@ -1385,6 +1406,7 @@ void EventScan::finish(int n_a, PitPool &p) && {
   p.cashflow_ytd = to_chains(std::move(cashflow).take(), n_a);
   p.nonrecur = to_chains(std::move(nonrecur).take(), n_a);
   p.dividend = to_chains(std::move(dividend).take(), n_a);
+  p.capital = to_chains(std::move(capital).take(), n_a);
   p.forecast = to_chains(std::move(forecast).take(), n_a);
   p.industry_component = to_chains(std::move(component).take(), n_a);
   p.industry_change = to_chains(std::move(change).take(), n_a);
@@ -1439,9 +1461,9 @@ inline std::int32_t quarter_end(int s) {
 //   TTM = YTD(R) + YTD(上年年报) − YTD(去年同期 R)  (年报即 YTD)
 //   LYR = YTD(≤ R 的最近年报)
 // R = 各表各自的最新报告期; 任一所需报告期缺失 → NaN.
-// 每资产只记 R 起往前 kSlots 个季末的 YTD (槽 k = R 前 k 季), 槽首次有值即定格:
-//   最新期的后到行 (源空值行 / 更正) 逐项合并, NaN 不盖有效值; 旧期的后到行 (下期报告附带的上年同期重述) 只补空槽
-//   ⇒ TTM 的上年部分 (上年年报 − 去年同期) 同属首次披露口径, 不与下期附带的重述错配.
+// 每资产只记 R 起往前 kSlots 个季末的 YTD (槽 k = R 前 k 季), 各槽取最新披露:
+//   后到行 (源空值行 / 更正 / 下期报告附带的上年同期重述) 逐项覆盖, NaN 不盖有效值
+//   ⇒ 去年同期取本期报告里追溯重述后的值 (同一控制下合并 / 反向收购后与本期同口径; 与 ttm_shift 同).
 //   各项各口径在 R 上算不出 (该项缺于 R 或所需同期) → 退回 R 的上一季末 (只退一季, 再旧即陈旧 → NaN).
 //   rd[i] = 该项 TTM 所用 R (0 = 无)
 template <std::size_t N>
@@ -1477,7 +1499,7 @@ struct YtdState {
       if (!o.has) {
         o.has = true;
         std::copy(std::begin(e.x), std::end(e.x), o.x);
-      } else if (k == 0)
+      } else
         for (std::size_t i = 0; i < N; ++i)
           if (std::isfinite(e.x[i]))
             o.x[i] = e.x[i];
@@ -1604,6 +1626,7 @@ constexpr Source kSources[] = {
     {"cn_stock_financial_cashflow_general_pit", false, Need::Eve},
     {"cn_stock_financial_notes_shift", false, Need::Eve},
     {"cn_stock_dividend", false, Need::Eve},
+    {"cn_stock_capital", false, Need::Eve},
     {"forecast", false, Need::Eve},
     {"cn_stock_industry_component", false, Need::Eve},
     {"cn_stock_industry_change", false, Need::Eve},
@@ -1693,7 +1716,7 @@ void Panel::build(const std::vector<Ymd> &dates) {
   for (int a = 0; a < n_a; ++a)
     meta.board[static_cast<std::size_t>(a)] = board_of(table.code(static_cast<std::size_t>(a)));
 
-  // ---- PIT 池: 静态 meta + 15 张月度表一次 Scan → 全 D 轴网格 + 事件链 ----
+  // ---- PIT 池: 静态 meta + 16 张月度表一次 Scan → 全 D 轴网格 + 事件链 ----
   std::vector<float> volume;
   {
     fundamental::Scan scan(cat, ids, static_cast<size_t>(misc::exec::hw()));
@@ -1804,6 +1827,9 @@ struct State {
   YtdState<CF_COUNT> cashflow;
   std::size_t nrp = 0;
   int last_nonrecur = -1;
+  // 股本结构: 最新一次变更的境外上市股 (无变更记录 → NaN)
+  std::size_t cap = 0;
+  float foreign = NaNF;
   // 分红: 近 4 季报告期累计 (dy) + 近 3 个会计年度累计 (dividend_st), 均按报告期取窗
   std::size_t div_hi = 0;
   int annual_y = 0; // 最新已披露年报的会计年度 (0 = 无)
@@ -1922,6 +1948,8 @@ struct State {
         ++nrp;
       }
     }
+    for (const auto &ev = p.capital[ai]; cap < ev.size() && ev[cap].v <= d; ++cap)
+      foreign = ev[cap].foreign;
     {
       // 公告入列 / 年报换年 → 两窗重算 (只看报告期, 与公告日先后无关, 每期恰计一次):
       //   dy:          报告期 ∈ (锚 − 1 年, 锚], 锚 = max(已公告分红的最新报告期, 最新年报期)
@@ -2085,12 +2113,12 @@ struct State {
     // -- 权益 MRQ / roe / roa (avg5 分母) --
     float eq = NaNF, roe = NaNF, roa = NaNF;
     if (!latest_by_rd.empty()) {
-      const float e = latest_by_rd.rbegin()->second.total_equity_to_parent_shareholders;
+      const float e = latest_by_rd.rbegin()->second.common_equity;
       eq = (std::isfinite(e) && e != 0.0f) ? e : NaNF;
       if (t) {
         const float n = t->net_profit_to_parent_shareholders_ttm;
         const float e5 = ttm_window_avg(t->report_date, latest_by_rd,
-                                        &FinancialBalanceEv::total_equity_to_parent_shareholders);
+                                        &FinancialBalanceEv::common_equity);
         roe = (std::isfinite(n) && std::isfinite(e5) && e5 > 0.0f) ? (n / e5) * 100.0f : NaNF;
         const float na = t->net_profit_ttm;
         const float a5 = ttm_window_avg(t->report_date, latest_by_rd, &FinancialBalanceEv::total_assets);
@@ -2103,6 +2131,9 @@ struct State {
     // 股本 / 估值分母 (亿单位)
     out[Fund::total_shares] = pos(p.at(p.total_shares, a, d)) * 1e-8f;
     out[Fund::float_shares] = pos(p.at(p.a_float_shares, a, d)) * 1e-8f;
+    // A+B 股本 = 总股本 − 境外上市股; 无股本结构记录 (多年无变更, A 股早已全流通) → A 股流通股本
+    out[Fund::ab_shares] =
+        pos(std::isfinite(foreign) ? p.at(p.total_shares, a, d) - foreign : p.at(p.a_float_shares, a, d)) * 1e-8f;
     out[Fund::net_profit_ttm] = sat(np * 1e-8f);
     out[Fund::equity_mrq] = sat(eq * 1e-8f);
     out[Fund::revenue_ttm] = sat(rev * 1e-8f);
@@ -2169,7 +2200,7 @@ struct State {
       out[Fund::bs_ap] = bs(&FinancialBalanceEv::accounts_payable);
       out[Fund::bs_fa_cip] = bs(&FinancialBalanceEv::fixed_cip);
       out[Fund::bs_intang_gw] = bs(&FinancialBalanceEv::intang_gw);
-      out[Fund::bs_eq] = bs(&FinancialBalanceEv::total_equity_to_parent_shareholders);
+      out[Fund::bs_eq] = bs(&FinancialBalanceEv::common_equity);
       out[Fund::bs_minority] = bs(&FinancialBalanceEv::minority_interests);
       // 总资产同比: 最近报告期 R 对 R − 1 年 (同报告期, 两端 > 0)
       float ta_yoy = NaNF;

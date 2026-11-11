@@ -398,7 +398,7 @@ void land_status(StockInfos &stocks, const PerId<Latest<Status>> &status) {
 
 // 估值快照 (MCAP/PE/PB/PS/PCF/DY) ← 最新 close × total_shares / 各分母
 //   口径与 L_5min 估值特征一致: 分子统一为总市值 mcap = close × total_shares
-//   (不复权真价); PE=mcap/归母净利TTM, PB=mcap/归母权益MRQ, PS=mcap/营业总收入TTM
+//   (不复权真价); PE=mcap/归母净利TTM, PB=mcap/归母普通股权益MRQ (扣其他权益工具), PS=mcap/营业总收入TTM
 //   (≤0脏值→空), PCF=mcap/经营现金流净额TTM; 亏损/负权益/烧钱保留负值.
 //   DY1/3/5 = 近 1/3/5 年税前分红总额年化后 / mcap; 静态快照的股本恒为最新
 //   快照, 故等价于 Σ每股分红/年数/close (L_1min dy_raw 用公告日当时股本, 窗口内
@@ -800,13 +800,13 @@ bool AssetInfo::build(const Catalog &cat, Progress &p, const std::function<void(
              });
            });
 
-  // ---- 权益 MRQ ← cn_stock_financial_balance_general_pit ----
+  // ---- 归母普通股权益 MRQ (归母权益 − 其他权益工具) ← cn_stock_financial_balance_general_pit ----
   //   max(report_date) 的最新可见行 (同 report_date 取 date 最大者)
   Part<BalAcc> bal_p;
   scan.add(bal_p, spec("cn_stock_financial_balance_general_pit"),
-           {"report_date", "total_equity_to_parent_shareholders"}, BalAcc(nid), [](const Rows &r, BalAcc &a) {
+           {"report_date", "total_equity_to_parent_shareholders", "other_equity_instruments"}, BalAcc(nid), [](const Rows &r, BalAcc &a) {
              const pq::Col rd = r.col("report_date");
-             const pq::Col eq = r.col("total_equity_to_parent_shareholders");
+             const pq::Col eq = r.col("total_equity_to_parent_shareholders"), oei = r.col("other_equity_instruments");
              r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
                // 先筛有效再定位: 无效行不参与 (report_date, date) 竞争, 否则停止披露公司
                // 最新那份空权益会盖掉上一期的真实值 —— 同 TTM 三列的处理.
@@ -814,7 +814,7 @@ bool AssetInfo::build(const Catalog &cat, Progress &p, const std::function<void(
                if (!p || eq.null(i) || eq.f32(i) == 0.0f)
                  return;
                const std::int64_t key = static_cast<std::int64_t>(p) << 32 | d;
-               a[id].offer(key, eq.f32(i));
+               a[id].offer(key, eq.f32(i) - (oei.null(i) ? 0.0f : oei.f32(i)));
              });
            });
 

@@ -22,6 +22,7 @@
 //     margin_trading_detail (余额 / 流量 / 两融标的)         T 盘后, T+1 盘前公布   −1       T ≤ D
 //     financial ttm / balance / income / cashflow / notes    公告日 T 盘后          −1       公告日 ≤ D
 //     dividend / forecast                                    公告日 T 盘后          −1       公告日 ≤ D
+//     capital (股本结构: 境外上市股)                          max(公告日, 变更日) T  −1       T ≤ D
 //     industry component / change                            T 盘后                 −1       T ≤ D
 //     日历派生 (list_age / delist_age / flt_new / days_since_report / shares_yoy 回看)   按 D+1 的日历日计
 //     行情派生 (ret_12_1 / ret_1m / turn / ivol / resvol / beta / trend; 全市场预计算, 见 Panel/Fund.hpp)   T 收盘后  −1   T ≤ D
@@ -43,7 +44,7 @@ public:
     total_shares,   // [亿股]
     float_shares,   // [亿股] A 股流通
     net_profit_ttm, // [亿元] 归母净利 TTM (可负)
-    equity_mrq,     // [亿元] 归母权益 MRQ (可负)
+    equity_mrq,     // [亿元] 归母普通股权益 MRQ = 归母权益 − 其他权益工具 (可负)
     revenue_ttm,    // [亿元] 营业总收入 TTM (>0; ≤0 为源脏值 → NaN)
     cffoa_ttm,      // [亿元] 经营现金流 TTM (可负)
     lim_up,         // [元] 次日适用涨停价 (无限制 → NaN; 盘中 back() = 当日适用)
@@ -80,6 +81,7 @@ public:
     rq_repay_vol,      // [万股] 融券偿还量
     days_since_report, // [日历日] 距最近财报公告日 (无财报 → NaN)
     shares_yoy,        // [ratio] 总股本同比 (回看 365 日历日)
+    ab_shares,         // [亿股] A+B 股本 = 总股本 − 境外上市股 (H 股等); 规模口径 (池 size 键)
     ta_yoy,            // [ratio] 总资产 MRQ 同比 (对去年同报告期)
     // ---- 资产态位 (fund::Panel 全史资产态掩码; 不落盘) ----
     live, // 0/1 活跃
@@ -104,7 +106,7 @@ public:
     bs_ap,        // 应付账款
     bs_fa_cip,    // 固定资产 + 在建工程
     bs_intang_gw, // 无形资产 + 商誉
-    bs_eq,        // 归母权益
+    bs_eq,        // 归母普通股权益 (归母权益 − 其他权益工具: 永续债 / 优先股)
     bs_minority,  // 少数股东权益
     // ---- 利润表 × {Q 单季, TTM, LYR} [亿元; eps 元] ----
     pl_rev_q,

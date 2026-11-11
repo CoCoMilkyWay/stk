@@ -96,11 +96,11 @@ struct StyleDef {
   const char *end_cn[kEnds]; // 风格端中文名
 };
 inline constexpr StyleDef kStyleDefs[kStyles] = {
-    {"size", "市值", "收盘总市值 = close × total_shares", {"小盘", "大盘"}},
+    {"size", "市值", "收盘 A+B 股市值 = close × ab_shares (不含 H 股等境外股)", {"小盘", "大盘"}},
     {"ep", "市盈", "EP = 归母净利 TTM / 收盘总市值 (亏损为负)", {"高市盈", "低市盈"}},
-    {"bp", "市净", "BP = 归母权益 MRQ / 收盘总市值 (负净资产为负)", {"高市净", "低市净"}},
+    {"bp", "市净", "BP = 归母普通股权益 MRQ (扣永续债 / 优先股) / 收盘总市值 (负净资产为负)", {"高市净", "低市净"}},
     {"dy", "股息", "股息率 TTM (近 4 季报告期税前分红 / 收盘总市值)", {"低息", "高息"}},
-    {"roe", "ROE", "单季归母净利 / 归母权益 MRQ (权益 ≤ 0 记缺)", {"低ROE", "高ROE"}},
+    {"roe", "ROE", "单季归母净利 / 归母普通股权益 MRQ (权益 ≤ 0 记缺)", {"低ROE", "高ROE"}},
     {"inv", "投资", "总资产 MRQ 同比", {"低投资", "高投资"}},
     {"mom", "动量", "12-1 月动量 P_{D−20} / P_{D−250} − 1 (后复权)", {"低动量", "高动量"}},
     {"rev", "反转", "20 日收益率 P_D / P_{D−20} − 1 (后复权)", {"输家", "赢家"}},
@@ -160,7 +160,7 @@ inline constexpr DimValue kMarginValues[kMargins] = {
 inline constexpr DimValue kFilterValues[kFilters] = {
     {"nonew", "非次新", "剔上市龄 < 365 日历日 (flt_new = 1)"},
     {"nowarn", "无预警", "剔 交易 / 预亏 / 营收 / 分红 四项预警任一 (flt_warn = 1)"},
-    {"pbpos", "PB>0", "剔 归母权益 MRQ ≤ 0 或缺 (bs_eq)"},
+    {"pbpos", "PB>0", "剔 归母普通股权益 MRQ ≤ 0 或缺 (bs_eq)"},
     {"pepos", "PE>0", "剔 归母净利 TTM ≤ 0 或缺 (pl_npp_ttm)"},
 };
 

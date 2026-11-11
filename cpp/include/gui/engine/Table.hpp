@@ -174,7 +174,7 @@ enum PoolVal : int { kValEp,
                      kValCp,
                      kValDy };
 inline constexpr int kPoolVals = 5;
-// 各口的日频输入列 (BCols::val 下标 = PoolVal): 归母净利 TTM / 归母权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM (DY 的分子 load_b 还原)
+// 各口的日频输入列 (BCols::val 下标 = PoolVal): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM (DY 的分子 load_b 还原)
 inline constexpr const char *kPoolValCols[kPoolVals] = {"pl_npp_ttm", "bs_eq", "pl_rev_ttm", "cf_ocf_ttm", "dy_ttm"};
 struct YCols {
   Col ts;                     // ts_valid (当日有成交)

@@ -76,7 +76,7 @@ struct KeyDef {
 constexpr float raw(float x, float, float) { return x; }
 constexpr float per_cap(float x, float, float mc) { return mc > 0.0f ? x / mc : kNaN; }
 constexpr KeyDef kKeyDefs[kStyles] = {
-    {{}, [](float, float, float mc) { return mc > 0.0f ? mc : kNaN; }},
+    {{"ab_shares", "close_day"}, [](float x, float y, float) { return x > 0.0f && y > 0.0f ? x * y : kNaN; }},
     {{"pl_npp_ttm"}, per_cap},
     {{"bs_eq"}, per_cap},
     {{"dy_ttm"}, raw},
