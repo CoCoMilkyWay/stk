@@ -46,6 +46,7 @@ public:
 // 窗内各和 = 前缀和之差; 一年前的边界随收尾日单调右移
 void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<float> &r, const std::vector<float> &buy, size_t first, size_t d0, size_t d1) {
   const size_t D = dates.size(), f = std::max(first, d0 + 1);
+  l.first = first;
   l.from = l.full = d1;
   l.med.assign(D, kNaN);
   l.stat = {};

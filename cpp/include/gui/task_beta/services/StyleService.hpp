@@ -48,6 +48,7 @@ struct StyleStat {
 struct StyleLine {
   pool::Spec spec;
   Weight weight = kWeightEq;
+  size_t first = 0;       // 首个有仓日 (全程; 无 → 日数)
   size_t from = 0;        // 首个计入的窗的收尾日 (= 起点 + kMinDays − 1; 无 → d1, 绩效全 NaN)
   size_t full = 0;        // 首个满一年的窗的收尾日 (图自此画; 前段样本少, 中位未收敛; 无 → d1)
   std::vector<float> med; // [日] 累计中位夏普: 收尾日 from … 该日 各窗夏普的中位 (区间内 from 前 / 区间外 NaN)

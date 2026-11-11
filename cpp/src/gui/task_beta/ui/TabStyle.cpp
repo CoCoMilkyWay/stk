@@ -19,7 +19,6 @@
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <numeric>
 #include <span>
 #include <string>
 #include <vector>
@@ -40,6 +39,7 @@ constexpr float kTagScale = 0.85f;                                              
 constexpr float kHeadScale = 0.8f;                                                         // 右表表头字号 (表头常比数值宽, 定列宽)
 constexpr size_t kIdlePoints = 200000;                                                     // 未选线合计画点上限 (超了按等步长抽点; 有选池态 / 悬停的线画全点)
 constexpr float kRangeH = 90.0f;                                                           // 区间条高 (同 Market 行情页)
+constexpr size_t kLateDays = 21;                                                           // 晚起: 首个有仓日晚于区间起点 (含全A 建仓) 这么多交易日 (一个月)
 
 constexpr const char *kStyleTip =
     "Style = 风格篮子的参数优选 (beta 收益): 选哪组参数做子池\n"
@@ -56,6 +56,7 @@ constexpr const char *kStyleTip =
     "• 池表里的池名 = 简称 (高低端 + 风格 + 只数, 如 低β200; 全选池 = 切片名), 同简称按池表序加 A / B / C…; 悬停池名看全部参数\n"
     "• 主图 = 累计中位夏普: 每日 = 自首窗到该日各窗夏普的中位 (末日值 = 右表中位夏普), 任一日的截面 = 到该日为止的名次; 满一年的窗起才画\n"
     "• 底部区间条 (同行情页) 选回测区间: 右表 / 主图只算区间内 (起点 = 1), 只重算绩效\n"
+    "• [含晚起]: 缺省不列首个有仓日晚于区间起点一个月以上的组 (如纯科创板), 名次只在列出的线内排\n"
     "• 线色 = 中位夏普名次 (绿好 → 红差); 悬停网格条某一维 = 按该维取值着色 (按钮字色即图例), 看哪个取值整体占优; 悬停到某个取值 = 只亮该取值的线\n"
     "• 细线 = 未选, 粗线 = 落地 / 新选 / 去掉, 灰 = 全A; 悬停图上 / 表行 = 白粗线 + 绩效";
 
@@ -165,27 +166,37 @@ int day_fmt(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
 
-// ---- 结果派生 (见 StyleUIState): 名 / 名次 / 画序随结果, 选池态随选中 ----
+// ---- 结果派生 (见 StyleUIState): 名随结果, 列出的线 / 名次 / 画序随 (结果, 晚起), 选池态随选中 ----
 void derive(StyleUIState &s, const StyleResult &r) {
   const size_t n = r.lines.size();
   if (s.of_gen != r.gen) {
-    s.of_gen = r.gen, s.of_pick = 0, s.of_sort = -2;
+    s.of_gen = r.gen, s.of_late = -1, s.of_pick = 0;
     s.names.resize(n);
     for (size_t i = 0; i < n; ++i)
       s.names[i] = pool::name_cn(r.lines[i].spec) + weight_suffix(r.lines[i].weight);
+  }
+  if (s.of_late != s.late) {
+    s.of_late = s.late, s.of_sort = -2;
+    const size_t due = std::max(r.d0 + 1, r.bench[kWeightEq].first) + kLateDays;
+    s.n_late = 0, s.shown.clear();
+    for (size_t i = 0; i < n; ++i) {
+      const bool late = r.lines[i].first > due;
+      s.n_late += late;
+      if (s.late || !late)
+        s.shown.push_back(static_cast<uint32_t>(i));
+    }
     s.ranks.assign(n * kStyleCols, std::numeric_limits<float>::quiet_NaN());
     std::vector<uint32_t> ok;
     for (int c = 0; c < kStyleCols; ++c) {
       ok.clear();
-      for (size_t i = 0; i < n; ++i)
+      for (const uint32_t i : s.shown)
         if (std::isfinite(col_val(r.lines[i], c)))
-          ok.push_back(static_cast<uint32_t>(i));
+          ok.push_back(i);
       std::ranges::sort(ok, [&](uint32_t a, uint32_t b) { return kCols[c].better * col_val(r.lines[a], c) > kCols[c].better * col_val(r.lines[b], c); });
       for (size_t k = 0; k < ok.size(); ++k)
         s.ranks[ok[k] * kStyleCols + c] = ok.size() > 1 ? static_cast<float>(k) / static_cast<float>(ok.size() - 1) : 0.5f;
     }
-    s.paint.resize(n);
-    std::iota(s.paint.begin(), s.paint.end(), 0u);
+    s.paint = s.shown;
     const auto worse = [&](uint32_t i) { const float u = s.ranks[i * kStyleCols + kColSharpeMed]; return std::isnan(u) ? 2.0f : u; };
     std::ranges::stable_sort(s.paint, [&](uint32_t a, uint32_t b) { return worse(a) > worse(b); });
   }
@@ -201,8 +212,7 @@ void sort_lines(StyleUIState &s, const StyleResult &r, int sort) {
   if (s.of_sort == sort)
     return;
   s.of_sort = sort;
-  s.order.resize(r.lines.size());
-  std::iota(s.order.begin(), s.order.end(), 0u);
+  s.order = s.shown;
   const int c = sort < 0 ? -1 : sort / 2 - kColBase;
   const bool desc = sort >= 0 && sort % 2;
   std::ranges::stable_sort(s.order, [&](uint32_t a, uint32_t b) {
@@ -458,7 +468,7 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
     const float my = ImGui::GetMousePos().y;
     float best = kNearPx;
     if (d >= 0 && d < static_cast<long>(E))
-      for (size_t i = 0; i < n; ++i) {
+      for (const uint32_t i : s.paint) {
         const StyleLine &l = r.lines[i];
         if (static_cast<size_t>(d) < l.full)
           continue;
@@ -481,7 +491,7 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
     return std::isnan(u) ? kNoneCol : band_col(u, 1.0f);
   };
   size_t idle = 0;
-  for (size_t i = 0; i < n; ++i)
+  for (const uint32_t i : s.paint)
     if (s.marks[i] == kMarkNone)
       idle += E - r.lines[i].full;
   const size_t step = std::max<size_t>(1, (idle + kIdlePoints - 1) / kIdlePoints);
@@ -597,6 +607,20 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   }
   rows.push_back({kRowFoot, 0});
 
+  // 图上悬停的线: 表滚到其行居中 (悬停起记下原位, 悬停止回原位)
+  int jump = -1;
+  if (plot_hot >= 0) {
+    if (s.back_y < 0.0f)
+      s.back_y = ImGui::GetScrollY();
+    const auto it = std::ranges::find_if(rows, [&](const Row &w) { return w.kind == kRowLine && static_cast<int>(w.i) == plot_hot; });
+    const int k = it != rows.end() ? static_cast<int>(it - rows.begin()) : -1;
+    if (k != s.synced)
+      jump = s.synced = k;
+  } else if (s.back_y >= 0.0f) {
+    ImGui::SetScrollY(s.back_y);
+    s.back_y = -1.0f, s.synced = -1;
+  }
+
   int hot = -1;
   const auto cells = [&](const StyleLine &l, const float *rk) {
     for (int c = 0; c < kStyleCols; ++c) {
@@ -614,12 +638,16 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   constexpr ImGuiTreeNodeFlags kNode = ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_NoTreePushOnOpen;
   ImGuiListClipper clip;
   clip.Begin(static_cast<int>(rows.size()));
+  if (jump >= 0)
+    clip.IncludeItemByIndex(jump);
   while (clip.Step())
     for (int k = clip.DisplayStart; k < clip.DisplayEnd; ++k) {
       const Row &w = rows[static_cast<size_t>(k)];
       ImGui::TableNextRow(ImGuiTableRowFlags_None, rh);
       ImGui::PushID(k);
       ImGui::TableSetColumnIndex(0);
+      if (k == jump)
+        ImGui::SetScrollHereY(0.5f);
       switch (w.kind) {
       case kRowStyle: {
         const int st = static_cast<int>(w.i);
@@ -713,6 +741,16 @@ void RenderTabStyle(StyleService &svc, StyleUIState &s) {
   grid_bar(s);
   status(svc, s, mine ? r.get() : nullptr, mine && r->gen == s.sent.gen);
   changes(s);
+  if (show) {
+    ImGui::SameLine(0, 16);
+    char label[32];
+    std::snprintf(label, sizeof(label), "含晚起 %zu###late", s.n_late);
+    if (toggle_button(label, s.late))
+      s.late = !s.late;
+    if (ImGui::IsItemHovered())
+      tip("晚起 = 首个有仓日晚于区间起点一个月以上的组 (切片中途才有成分, 如纯科创板 / 融资): 起点不同, 绩效不可比\n"
+          "• 关 (缺省) = 表 / 图不列, 名次只在其余线内排; 开 = 一并列出");
+  }
   ImGui::SameLine(0, 16);
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
