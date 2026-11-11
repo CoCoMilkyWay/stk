@@ -127,10 +127,10 @@ void sort_rows(std::vector<size_t> &order, const Name &name, const Num &num) {
     return desc ? x > y : x < y;
   });
 }
-// 名格悬停 (星列之后; 行 Selectable 跨全列, 只认本格) → 提示
-void name_tip(const std::string &s) {
+// 名格悬停 (星列之后; 行 Selectable 跨全列, 只认本格) → 行的悬停
+void name_tip(const LinesRow &r) {
   if (ImGui::IsItemHovered() && ImGui::TableGetHoveredColumn() == 1)
-    tip("%s", s.c_str());
+    row_tip(r);
 }
 
 // ---- 右表 (各页同一骨架 table): 列 = 星 + 名 + 各段 (Seg) 的列 (SheetCol), 格 = 文本 + 排序键 + 底色名次 (SheetCell);
@@ -248,7 +248,7 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
     }
     ImGui::PopStyleColor();
     const int hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 2 : -1; // 行跨全列: 悬停的数值列
-    name_tip(h.hover);
+    name_tip(h);
     if (!h.watch.empty() && ImGui::BeginPopupContextItem("##watch")) {
       if (ImGui::MenuItem(watched(ui, h.watch) ? "移出自选" : "加入自选"))
         watch_flip(ui, h.watch);

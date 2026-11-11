@@ -262,7 +262,7 @@ void plot_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, PlotF
     ImPlot::SetNextLineStyle(x.col, row_width(x.g));
     plot_slice(lb.c_str(), *x.s);
     if (ImPlot::IsLegendEntryHovered(lb.c_str()))
-      tip("%s", x.row->hover.c_str());
+      row_tip(*x.row);
     if (pf.item(lb.c_str())) {
       push_tag(pf.tags, pf.lim, *x.s, ImGui::ColorConvertFloat4ToU32(x.col), x.row->tag + kPairTag[pair_kind(*x.row)][x.l]);
       pf.lines.push_back(x.s);

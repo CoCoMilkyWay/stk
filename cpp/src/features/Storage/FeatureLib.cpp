@@ -17,10 +17,10 @@ struct PoolTable {
     const std::vector<pool::Spec> specs = pool::load_pools();
     assert(specs.size() + 1 <= kMaxPools && "子池表超出库号 / 库集位宽");
     const std::vector<std::string> cn = pool::aliases(specs);
-    defs.push_back({kAllPoolName, "全市场", "all = 全市场: 当日活跃 (在市 ∧ 上市满 365 日 ∧ 行业已知, 含 ST)", {}});
+    defs.push_back({kAllPoolName, "全市场", {}});
     for (size_t i = 0; i < specs.size(); ++i) {
       assert(pool::code(specs[i]) != kAllPoolName);
-      defs.push_back({pool::code(specs[i]), cn[i], pool::detail_cn(specs[i]), specs[i]});
+      defs.push_back({pool::code(specs[i]), cn[i], specs[i]});
     }
     for (const PoolDef &d : defs)
       for (const char c : d.name + '\0')

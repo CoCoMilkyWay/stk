@@ -118,22 +118,22 @@ std::string name_cn(const Spec &s) {
 
 std::string short_cn(const Spec &s) { return short_body(s) + weight_suffix(s.weight()); }
 
-std::string detail_cn(const Spec &s) {
-  const StyleDef &k = kStyleDefs[s.style()];
-  std::string t = code(s) + "\n" + name_cn(s);
-  t += std::string("\n• ") + k.name_cn + ": " + k.key + "\n• " + kEndValues[s.end()].name_cn + "前 " + std::to_string(s.n()) + " 只 (" + k.end_cn[s.end()] + ")";
-  t += std::string("\n• 调仓: ") + kRebalValues[s.rebal()].tip;
-  t += std::string("\n• 权重: ") + kWeightValues[s.weight()].tip;
-  bool cut = false;
-  for (int d = kDimSt; d < kDims; ++d)
-    if (on(s, d)) {
-      t += std::string("\n• ") + kDimDefs[d].name_cn + " " + segment(s, d, true) + ":";
+std::array<DimDetail, kDims> detail(const Spec &s) {
+  std::array<DimDetail, kDims> v;
+  for (int d = 0; d < kDims; ++d) {
+    const std::span<const DimValue> vs = kDimDefs[d].values;
+    std::string n;
+    if (!is_set(d))
+      n = vs[s.v[d]].tip;
+    else if (!s.v[d])
+      n = kDimDefs[d].kind == kKindFilter ? "不剔" : "不切 (全部类)";
+    else
       for (int i = 0; i < dim_size(d); ++i)
         if (s.v[d] >> i & 1)
-          t += std::string("\n    ") + kDimDefs[d].values[i].name_cn + " = " + kDimDefs[d].values[i].tip;
-      cut = true;
-    }
-  return cut ? t : t + "\n• 切片: 全部在市";
+          n += (n.empty() ? "" : "\n") + std::string(vs[i].name_cn) + " = " + vs[i].tip;
+    v[d] = {segment(s, d, true), std::move(n), on(s, d)};
+  }
+  return v;
 }
 
 std::vector<std::string> aliases(const std::vector<Spec> &pools) {

@@ -6,6 +6,8 @@
 
 #include "gui/task_market/ui/TabLines.hpp"
 #include "gui/util/Chart.hpp" // band_col / oklch / kStratCol / kHead / sheet_width
+#include "gui/util/PoolTip.hpp"
+#include "gui/util/Tip.hpp"
 #include "imgui.h"
 
 #include <cmath>
@@ -96,6 +98,14 @@ inline ImVec4 row_color(const LinesDerived &d, const LinesAt &a, int l) { return
 
 // 页 page 的行选中 (按页表的选中方式; NAV / FLOW 同一份)
 inline bool picked(const LinesUIState &ui, int page, const LinesRow &r) { return ui.pick.rows[kPageDefs[page].pick].contains(r.id); }
+
+// 行的悬停 (右表名格 / 主图例同一份): 子池篮子 = hover 起头 + 逐维拆解, 其余 = hover
+inline void row_tip(const LinesRow &r) {
+  if (r.pool != kAllPool)
+    pool_tip(pool_def(r.pool).spec, r.hover);
+  else
+    tip("%s", r.hover.c_str());
+}
 
 // ---- 图 (LinesPlot.cpp) ----
 // 主图 (size 贴边占满): nav → NAV 资金曲线 (选中行), 否则 VAL 标的 pin 的可成交线 + 估值 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字

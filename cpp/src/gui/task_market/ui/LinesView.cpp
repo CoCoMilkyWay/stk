@@ -518,6 +518,8 @@ LinesRow basket_row(size_t line) {
   r.id = basket_id(line);
   r.en = cut_code(cut_of_line(line));
   r.hover = r.en + "  " + basket_name(line);
+  if (pool_cut(cut_of_line(line)))
+    r.pool = cut_pool(cut_of_line(line));
   const std::string name = basket_name(line), suf = pool::weight_suffix(weight_of(line));
   assert(name.ends_with(suf));
   r.cn = r.tag = clip_name(name.substr(0, name.size() - suf.size())) + suf;

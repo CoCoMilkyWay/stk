@@ -24,6 +24,7 @@
 #include "gui/task_alpha/ui/TabOperators.hpp"
 #include "shared/SharedData.hpp" // 池 / 日期区间, feature.metadata, asset.items
 
+#include "gui/util/PoolTip.hpp"
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 
@@ -298,7 +299,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
             if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
               state->want_pool = p;
             if (ImGui::IsItemHovered())
-              tip("%s", d.tip.c_str());
+              pool_tip(p);
             ImGui::SameLine(cn_x);
             ImGui::TextDisabled("(%zu)", state->pool_files[p]);
             if (selected)

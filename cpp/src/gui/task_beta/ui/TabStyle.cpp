@@ -5,6 +5,7 @@
 #include "features/Storage/FeatureLevels.hpp" // kMaxPools
 #include "gui/Tasks.hpp"                      // StatusColor
 #include "gui/util/Chart.hpp"                 // 色 / sheet_width / toggle_button / draw_end_tags / range_bar
+#include "gui/util/PoolTip.hpp"
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "implot.h"
@@ -49,7 +50,7 @@ constexpr const char *kStyleTip =
     "• 网格各维多选, 组 = 笛卡尔积\n"
     "  · 单选维 (每组取一个): 端 (按风格键取低端 / 高端) · 只数 (在端头取前 N) · 周期 (日 = 每日重选 / 周 = 按上周末重选, 权随价漂移) · 权重 (等权 / 总市值加权); 缺省全勾\n"
     "  · 划分维: ST / 板块 / 融资 = 各按一列把在市 A 股分成互斥的类; 勾选的类各自一组 + 勾选的并一组 + 全 (不切); 缺省全勾\n"
-    "  · 过滤维 (次新 / 预警, 不互斥; 下拉多选): 勾选的项各自一组 + 勾选的合一组 + 不剔; 缺省不勾\n"
+    "  · 过滤维 (次新 / 预警, 不互斥; 下拉多选): 勾选的项各自一组 + 勾选的合一组 + 不剔; 缺省全勾\n"
     "  · 切片 = 各划分维之交 − 过滤项; 在市固定剔次日停牌 / 申万一级行业未知\n"
     "• 网格按钮: 按下色 = 勾; 左键 = 翻转 (单选维至少留一个), 右键 = 只留它 (已只留它 = 该维全开)\n"
     "• 名 = 风格端.只数.周期.权重.ST.板块.融资.过滤 (集合维的段 = 各类 / 项以 + 连; 灰段 = 不起作用: 全 / 不剔); 全程切片为空的组不列\n"
@@ -65,7 +66,7 @@ constexpr const char *kStyleTip =
     "• [含晚起]: 缺省不列首个有仓日晚于区间起点与本风格最早建仓一个月以上的组 (如纯科创板), 名次只在列出的线内排\n"
     "  键要历史时整个风格同晚 (如 β 156 周), 不算晚起\n"
     "• 线色 = 中位夏普名次 (绿好 → 红差); 悬停网格条某一维 = 按该维取值着色 (按钮字色即图例), 看哪个取值整体占优; 悬停到某个取值 = 只亮该取值的线\n"
-    "• 细线 = 未选, 粗线 = 落地 / 新选 / 去掉, 灰 = 全A; 悬停图上 / 表行 = 白粗线 + 绩效";
+    "• 细线 = 未选, 粗线 = 落地 / 新选 / 去掉, 灰 = 全A; 悬停图上 / 表行 = 白粗线 + 逐维拆解";
 
 bool has(const std::vector<Spec> &v, const Spec &p) { return std::ranges::find(v, p) != v.end(); }
 // 选中 ↔ 去掉 (点表行 / 图上的线同一份)
@@ -410,12 +411,12 @@ bool changes(StyleUIState &s) {
   for (const Spec &p : add) {
     ImGui::TextColored(kStratCol, "+ %s  %s", alias(s.chosen, now, p).c_str(), pool::code(p).c_str());
     if (ImGui::IsItemHovered())
-      tip("%s", pool::detail_cn(p).c_str());
+      pool_tip(p, alias(s.chosen, now, p) + "  " + pool::code(p));
   }
   for (const Spec &p : del) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "− %s  %s", alias(s.landed, was, p).c_str(), pool::code(p).c_str());
     if (ImGui::IsItemHovered())
-      tip("%s", pool::detail_cn(p).c_str());
+      pool_tip(p, alias(s.landed, was, p) + "  " + pool::code(p));
   }
   ImGui::EndChild();
   const bool fits = s.chosen.size() + 1 <= kMaxPools;
@@ -457,20 +458,10 @@ void name_text(const StyleLine &l, const ImVec4 &col, const std::array<float, po
   ImGui::EndGroup();
 }
 
-// 一条线的绩效提示
+// 一条线的提示: 简称 / 池名 / 选池态 + 逐维拆解
 void line_tip(const StyleUIState &s, const StyleResult &r, size_t i) {
-  const StyleLine &l = r.lines[i];
-  std::string t = s.names[i] + "  " + pool::code(l.spec) + "  · " + kMarkName[s.marks[i]] + "\n简称: " + pool::short_cn(l.spec);
-  for (int c = 0; c < kStyleCols; ++c) {
-    char v[32];
-    const double x = col_val(l, c);
-    if (std::isfinite(x))
-      std::snprintf(v, sizeof(v), kCols[c].fmt, kCols[c].scale * x);
-    else
-      std::snprintf(v, sizeof(v), "-");
-    t += std::string("\n") + kCols[c].name + "  " + v;
-  }
-  tip("%s", t.c_str());
+  const Spec &p = r.lines[i].spec;
+  pool_tip(p, pool::short_cn(p) + "  " + pool::code(p) + "  · " + kMarkName[s.marks[i]]);
 }
 
 // 累计中位夏普图 (回测区间内, 各线自首个满一年的窗起): 全A 灰; 线色 = 中位夏普名次 (悬停网格维 = 该维取值色, 悬停到取值 = 只亮该取值的线),
@@ -715,7 +706,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
         const StyleLine &l = r->lines[w.i];
         if (static_cast<int>(w.i) == plot_hot)
           ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImGuiCol_HeaderHovered));
-        // 整行可点 (先交, AllowOverlap 让名盖在上面); 名格悬停看绩效
+        // 整行可点 (先交, AllowOverlap 让名盖在上面); 名格悬停看逐维拆解
         const ImVec2 at = ImGui::GetCursorPos();
         if (ImGui::Selectable("##pick", has(s.chosen, l.spec), ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap, ImVec2(0, rh)))
           flip(s, l.spec);

@@ -93,6 +93,7 @@ struct LinesRow {
   std::string en, cn;                                  // 名 / 中文名 (超长截断)
   std::string tag;                                     // 线尾小字 (主图口径后缀另拼; 日内栏 / FLOW 图线名同此)
   std::string hover;                                   // 悬停 (en 起头 + 详情)
+  PoolId pool = kAllPool;                              // 子池篮子 = 其池 (悬停另列逐维拆解); 其余 kAllPool
   LineSrc src[kPairLines];                             // [PairLine] 线源
   std::shared_ptr<const Line> line[kPairLines];        // [PairLine] 线 (非空; 两线源相同 → 同一条)
   float hue = std::numeric_limits<float>::quiet_NaN(); // 色相 ∈ [0, 1) (见 LinesDerived::rows); NaN = 未定 (灰); 策略不取

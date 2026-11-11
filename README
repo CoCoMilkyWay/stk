@@ -156,7 +156,7 @@ stk/
 │   │   │   ├── Config.hpp                              # 🖥️ 颜色 / 字体 / 布局
 │   │   │   ├── Tasks.hpp                               # 🖥️ 任务树: 左栏选中 / 状态标签 / 生命周期
 │   │   │   ├── util/Service.hpp                        # 🖥️ 后台单线程服务骨架 GUI::Service<Derived, Req> (CRTP): 新请求覆盖旧请求; 全部 GUI 服务共用
-│   │   │   ├── util/                                   # 🖥️ 其余公共件: Chart (图表件) / Sparkline (格内迷你图) / Tip / Color / Board (板块口径) / AssetFilter (资产筛选栏) / Latex
+│   │   │   ├── util/                                   # 🖥️ 其余公共件: Chart (图表件) / Sparkline (格内迷你图) / Tip / PoolTip (子池悬停 = 逐维拆解, 各页同一份) / Color / Board (板块口径) / AssetFilter (资产筛选栏) / Latex
 │   │   │   ├── icon_bar/                               # 🖥️ 图标栏: 网络探测 (NetworkService) / FPS
 │   │   │   ├── compute/                                # 🖥️ 特征计算 (Beta / Alpha 的 Compute 页同一份)
 │   │   │   │   ├── ComputeHub.hpp                      # 🖥️ 计算面 ComputeHub (一个服务 + 一张库表; Beta 列 all.bar, Alpha 列其余); 数据换进后自动续算; 一轮收尾即进程内重启

@@ -5,6 +5,7 @@
 #include "fundamental/Spec.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/compute/services/ComputeService.hpp"
+#include "gui/util/PoolTip.hpp"
 #include "misc/affinity.hpp"
 #include "shared/SharedData.hpp"
 #include "worker/compute/Layout.hpp"  // StageLayout
@@ -322,10 +323,12 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(pd.name.c_str());
-    hover_tip("%s", pd.tip.c_str());
+    if (ImGui::IsItemHovered())
+      GUI::pool_tip(p);
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(pd.name_cn.c_str());
-    hover_tip("%s", pd.tip.c_str());
+    if (ImGui::IsItemHovered())
+      GUI::pool_tip(p);
     for (const TierId t : tiers) {
       const LibId l = lib_id(p, t);
       const bool computing = is_running && state.config.lib == l;

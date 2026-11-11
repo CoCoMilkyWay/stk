@@ -1,7 +1,7 @@
 #include "gui/task_features/ui/Common.hpp"
 #include "features/Storage/FeatureLib.hpp" // lib_name / pool_def
 #include "gui/Tasks.hpp"
-#include "gui/util/Tip.hpp"
+#include "gui/util/PoolTip.hpp"
 #include "shared/Feature.hpp"
 #include "shared/SharedData.hpp"
 
@@ -31,7 +31,7 @@ void RenderScope(Feature &feature) {
       if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
         sel.pool = p; // 选中是 ColRef (带库), 切池保留
       if (ImGui::IsItemHovered())
-        tip("%s", d.tip.c_str());
+        pool_tip(p);
       if (selected)
         ImGui::SetItemDefaultFocus();
     }

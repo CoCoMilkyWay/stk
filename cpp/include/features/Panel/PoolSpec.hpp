@@ -18,7 +18,7 @@
 //     size.high.400.week.cap.st+sst.sh_main+sz_main.margin.all = 大盘.400.周.加权.ST+*ST.沪主板+深主板.融资.不剔
 //   不起作用的段 (集合维 0) 见 on()
 //   显示名 (各页) = 简称 short_cn = 端名 + 只数 + 权重后缀 (.等 / .加) (低β200.等); 同简称的池按池表序在只数后加 A / B / C … 区分 (aliases);
-//     其余参数悬停见 detail_cn
+//     逐维拆解 (悬停) 见 detail
 #include <array>
 #include <cstdint>
 #include <span>
@@ -234,9 +234,14 @@ struct Part {
 };
 inline constexpr int kParts = kDims - kDimEnd;
 std::array<Part, kParts> parts(const Spec &s);
-std::string name_cn(const Spec &s);   // 各段以 "." 连 (Style 页线名)
-std::string short_cn(const Spec &s);  // 简称 (不带区分字母)
-std::string detail_cn(const Spec &s); // 全部参数 (悬停, 多行): 池名 / 中文名 / 键与端 / 调仓 / 权重 / 起作用的切片
+std::string name_cn(const Spec &s);  // 各段以 "." 连 (Style 页线名)
+std::string short_cn(const Spec &s); // 简称 (不带区分字母)
+// 逐维拆解 (各页悬停同一份, 维序): 取值 = 中文段; 说明 = 单选维取值的含义 (风格 = 键), 集合维各位 "名 = 含义" 逐行 (0 = 不切 / 不剔)
+struct DimDetail {
+  std::string val, note;
+  bool on;
+};
+std::array<DimDetail, kDims> detail(const Spec &s);
 // 子池表各池的显示名: 简称, 同简称不止一个的按表序加 A / B / C … (过 Z 接 AA)
 std::vector<std::string> aliases(const std::vector<Spec> &pools);
 
@@ -247,12 +252,12 @@ void save_pools(const std::vector<Spec> &pools);
 
 // Style 页参数网格: [维] 勾选位集 (位 i = 该维取值表第 i 个)
 //   各维的取值: 单选维 = 勾选的各取值 (至少勾一个); 集合维 (勾选 S, 可空) = S 的各位单独 + S 整体 + 0 (划分维 = 全部类, 过滤维 = 不剔)
-//   网格 = 各维取值的笛卡尔积; 风格维由页面置为打开的那一个; 缺省其余单选维与划分维全勾, 过滤维不勾
+//   网格 = 各维取值的笛卡尔积; 风格维由页面置为打开的那一个; 缺省其余各维全勾
 struct Grid {
   std::array<uint16_t, kDims> bits = [] {
     std::array<uint16_t, kDims> b{};
     for (int d = 0; d < kDims; ++d)
-      b[d] = kDimDefs[d].kind == kKindFilter ? 0 : full_mask(d);
+      b[d] = full_mask(d);
     b[kDimStyle] = 1;
     return b;
   }();

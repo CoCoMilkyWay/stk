@@ -33,13 +33,13 @@
 #include <vector>
 
 inline constexpr const char *kAllPoolName = "all"; // 全市场池的池名 (= 目录名)
+inline constexpr const char *kAllPoolTip = "all = 全市场: 当日活跃 (在市 ∧ 上市满 365 日 ∧ 行业已知, 含 ST)";
 
 // 池表 (全部池唯一一份, 每进程代读一次: 子池表一落地即进程内重启): [0] = all, 其余 = 子池表 (pool::load_pools, 表序)
 struct PoolDef {
   std::string name;    // 池名 = 目录名 (子池 = 规范串 pool::code)
   std::string name_cn; // 显示名 (all = 全市场; 子池 = pool::aliases)
-  std::string tip;     // 悬停: 全部参数 (子池 = pool::detail_cn)
-  pool::Spec spec;     // 子池参数 (all 不用)
+  pool::Spec spec;     // 子池参数 (all 不用; 悬停 = 逐维拆解 pool::detail)
 };
 std::span<const PoolDef> feature_pools(); // 下标 = PoolId
 const PoolDef &pool_def(PoolId pool);
