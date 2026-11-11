@@ -207,6 +207,13 @@ static_assert([] {
   return true;
 }(),
               "集合维的位集存进 uint8_t");
+// 取名 (线名 / 网格按钮 / 悬停同一套): 维 d 第 i 个取值的中文名 (端名随风格) / 集合维取 0 的中文名 (划分维 = 全, 过滤维 = 不剔)
+constexpr const char *value_cn(int d, int i, Style st) { return d == kDimEnd ? kStyleDefs[st].end_cn[i] : kDimDefs[d].values[i].name_cn; }
+constexpr const char *none_cn(int d) { return kDimDefs[d].kind == kKindFilter ? "不剔" : "全"; }
+// 取值槽 (网格展开 / 线的取值 / 着色同一套): 取值维 = 取值下标; 集合维 (n 个类 / 项) = 单一位 i → i, 多位 (勾选的并 / 合) → n, 0 (全 / 不剔) → n + 1
+constexpr int slot_union(int d) { return dim_size(d); }
+constexpr int slot_none(int d) { return dim_size(d) + 1; }
+static_assert(kStyles <= 16 && kNCounts <= 16, "取值槽存进 uint16_t");
 
 struct Spec {
   std::array<uint8_t, kDims> v{}; // [维] 取值维 = 取值下标, 集合维 = 位集 (全 0 = 在市全选, 日频, 等权)
@@ -221,6 +228,7 @@ struct Spec {
 Spec canon(Spec s);                // 划分维全部类 → 0 (端全部 = 全选池); 全选池的风格 / 只数 → 0 (同一池同一份)
 Spec unweighted(Spec s);           // 权重归 0: 成员身份 (只差权重的池成员相同)
 bool on(const Spec &s, int d);     // 维 d 对 s 起作用 (集合维 0 / 全选池的风格只数 不起作用)
+int slot(const Spec &s, int d);    // 维 d 的取值槽 (−1 = 全选池的风格 / 只数)
 std::string code(const Spec &s);   // 池名 (库目录名)
 Spec parse(std::string_view code); // 不是规范池名 → assert
 
@@ -253,9 +261,11 @@ struct Grid {
     b[kDimStyle] = 1;
     return b;
   }();
-  Style style() const; // 风格维须只勾一个
+  Style style() const;         // 风格维须只勾一个
+  uint16_t slots(int d) const; // 维 d 展开的取值槽 (位): 取值维 = 勾选的; 集合维 = 勾选的各位 + 并 / 合 (勾选不止一个, 划分维全勾的并即全) + 全 / 不剔
+  uint16_t idle(int d) const;  // 维 d 不起作用的取值 (位; 与 on 同一判据): 端不勾 (只出全选池) 时风格 / 只数的全部取值
   bool operator==(const Grid &) const = default;
 };
-std::vector<Spec> specs_of(const Grid &g); // canon 后去重, 维序 (末维最快)
+std::vector<Spec> specs_of(const Grid &g); // 各维的取值槽之积, canon 后去重, 维序 (末维最快)
 
 } // namespace pool

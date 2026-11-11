@@ -52,6 +52,7 @@
     "price.low.200.day.eq.nost.all.all.nonew+nowarn",
     "all.all.all.day.eq.all.star.all.nonew",
     "size.low.400.day.eq.nost.all.all.all",
-    "size.low.200.day.eq.nost.all.nonmargin.nowarn"
+    "size.low.200.day.eq.nost.all.nonmargin.nowarn",
+    "size.low.100.day.eq.nost.all.all.nowarn"
   ]
 }

@@ -19,21 +19,22 @@ using json = nlohmann::json;
 // 全选池的风格 / 只数 (取值归 0, 池名写 all)
 bool inert(const Spec &s, int d) { return key_dim(d) && !s.keyed(); }
 
-// 维 d 的段 (池名 / 中文名): 不起作用的取值维 / 集合维 0 → all / 全; 取值维 = 取值的码 / 中文名;
-// 集合维 = 各位的码 / 中文名以 "+" 连 (位序), 风格池端的中文名 = 风格端名
+// 维 d 的段 (池名 / 中文名): 全选池的风格 / 只数 → all / 全; 集合维 0 → all / none_cn; 取值维 = 取值的码 / value_cn;
+// 集合维 = 各位的码 / value_cn 以 "+" 连 (位序)
 std::string segment(const Spec &s, int d, bool cn) {
   const uint8_t m = s.v[d];
-  if (inert(s, d) || (is_set(d) && !m))
+  if (inert(s, d))
     return cn ? "全" : "all";
   const std::span<const DimValue> vs = kDimDefs[d].values;
+  const auto one = [&](int i) { return std::string(cn ? value_cn(d, i, s.style()) : vs[i].code); };
   if (!is_set(d))
-    return cn ? vs[m].name_cn : vs[m].code;
-  if (cn && d == kDimEnd)
-    return kStyleDefs[s.style()].end_cn[s.end()];
+    return one(m);
+  if (!m)
+    return cn ? none_cn(d) : "all";
   std::string t;
   for (int i = 0; i < dim_size(d); ++i)
     if (m >> i & 1)
-      t += (t.empty() ? "" : "+") + std::string(cn ? vs[i].name_cn : vs[i].code);
+      t += (t.empty() ? "" : "+") + one(i);
   return t;
 }
 
@@ -66,6 +67,16 @@ Spec unweighted(Spec s) {
 }
 
 bool on(const Spec &s, int d) { return !inert(s, d) && (!is_set(d) || s.v[d] != 0); }
+
+int slot(const Spec &s, int d) {
+  const uint8_t m = s.v[d];
+  if (inert(s, d))
+    return -1;
+  if (!is_set(d))
+    return m;
+  return !m ? slot_none(d) : std::has_single_bit(m) ? std::countr_zero(m)
+                                                    : slot_union(d);
+}
 
 std::string code(const Spec &s) {
   std::string c;
@@ -230,18 +241,27 @@ Style Grid::style() const {
   return static_cast<Style>(std::countr_zero(bits[kDimStyle]));
 }
 
+uint16_t Grid::slots(int d) const {
+  const uint16_t b = bits[d];
+  if (!is_set(d))
+    return b;
+  const bool many = std::popcount(b) > 1 && !(kDimDefs[d].kind == kKindPart && b == full_mask(d));
+  return static_cast<uint16_t>(b | (many ? 1u << slot_union(d) : 0u) | 1u << slot_none(d));
+}
+
+uint16_t Grid::idle(int d) const { return key_dim(d) && !bits[kDimEnd] ? full_mask(d) : 0; }
+
 std::vector<Spec> specs_of(const Grid &g) {
-  std::array<std::vector<uint8_t>, kDims> vals; // [维] 取值 (取值维 = 下标, 集合维 = 位集)
+  std::array<std::vector<uint8_t>, kDims> vals; // [维] 各取值槽的 Spec::v (取值维 = 下标, 集合维 = 位集)
   for (int d = 0; d < kDims; ++d) {
     const uint16_t b = g.bits[d];
     assert(b >> dim_size(d) == 0 && (b || is_set(d)) && "网格: 取值维至少勾一个, 不越取值表");
-    if (is_set(d))
-      vals[d].push_back(0);
-    for (int i = 0; i < dim_size(d); ++i)
-      if (b >> i & 1)
-        vals[d].push_back(static_cast<uint8_t>(is_set(d) ? 1u << i : i));
-    if (is_set(d) && std::popcount(b) > 1)
-      vals[d].push_back(static_cast<uint8_t>(b));
+    for (uint16_t k = g.slots(d); k; k &= static_cast<uint16_t>(k - 1)) {
+      const int i = std::countr_zero(k);
+      vals[d].push_back(static_cast<uint8_t>(!is_set(d) ? i : i < dim_size(d)  ? 1u << i
+                                                          : i == slot_union(d) ? b
+                                                                               : 0u));
+    }
   }
   std::vector<Spec> v;
   std::set<Spec> seen;
