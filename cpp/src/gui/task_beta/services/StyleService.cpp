@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <span>
@@ -18,40 +19,69 @@ namespace {
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
-// 日收益 r (对全A 同权重日收益 rb) / 日增仓量 buy 自 first 起的净值, 与各窗的绩效 (starts[W − 1] = 末 W 年的窗起).
-// 自末日倒推一趟: 窗左端 lo 每前移一日, 窗内各和 / 回撤随之累加, 到某窗的左端 max(窗起, first) 即记该窗
-void fill(StyleLine &l, std::span<const misc::Ymd> dates, std::span<const size_t> starts, const std::vector<float> &r, const std::vector<float> &rb,
-          const std::vector<float> &buy, size_t first) {
-  const size_t D = dates.size(), Ws = starts.size();
-  l.first = first;
-  l.nav.assign(D, 1.0f);
-  l.win.assign(Ws, {kNaN, kNaN, kNaN, kNaN, kNaN, kNaN});
-  if (first >= D)
-    return;
-  assert(first >= 1);
-  double nav = 1.0;
-  for (size_t d = first; d < D; ++d)
-    l.nav[d] = static_cast<float>(nav *= 1.0 + r[d]);
-  // 窗内 Σ ln(1 + r) / Σ r / Σ r² · 相对日收益 y 同三项 · Σ 增仓; low = 窗内净值最低, mdd = 峰在 [基日, 末日) 的最大回撤
-  double g = 0.0, s = 0.0, ss = 0.0, h = 0.0, e = 0.0, ee = 0.0, b = 0.0, mdd = 0.0;
-  float low = l.nav[D - 1];
-  size_t W = 0; // 待记的窗 (下标)
-  for (size_t lo = D - 1; lo >= first && W < Ws; --lo) {
-    const double x = r[lo], y = (1.0 + x) / (1.0 + rb[lo]) - 1.0;
-    g += std::log1p(x), s += x, ss += x * x, h += std::log1p(y), e += y, ee += y * y, b += buy[lo];
-    low = std::min(low, l.nav[lo]);
-    mdd = std::max(mdd, 1.0 - static_cast<double>(low) / l.nav[lo - 1]);
-    for (; W < Ws && std::max(starts[W], first) >= lo; ++W) {
-      const double years = static_cast<double>((misc::to_days(dates.back()) - misc::to_days(dates[lo - 1])).count()) / 365.25;
-      const double n = static_cast<double>(D - lo), ppy = n / years;
-      const auto ratio = [&](double m, double m2) {
-        const double sd = std::sqrt(std::max(m2 / n - (m / n) * (m / n), 0.0));
-        return sd > 0.0 ? static_cast<float>(m / n / sd * std::sqrt(ppy)) : kNaN;
-      };
-      l.win[W] = {static_cast<float>(std::expm1(g / years)), ratio(s, ss), static_cast<float>(mdd), static_cast<float>(std::expm1(h / years)),
-                  ratio(e, ee), static_cast<float>(b / years)};
+// 累计中位: 逐个 push, 随时取中位 (偶数个取中间两个的均值)
+class RunMedian {
+  std::vector<float> lo_, hi_; // 较小一半 (大顶堆) / 较大一半 (小顶堆); |lo| − |hi| ∈ {0, 1}
+
+public:
+  void push(float x) {
+    if (lo_.empty() || x <= lo_.front())
+      lo_.push_back(x), std::ranges::push_heap(lo_);
+    else
+      hi_.push_back(x), std::ranges::push_heap(hi_, std::greater{});
+    if (lo_.size() > hi_.size() + 1) {
+      std::ranges::pop_heap(lo_);
+      hi_.push_back(lo_.back()), lo_.pop_back();
+      std::ranges::push_heap(hi_, std::greater{});
+    } else if (hi_.size() > lo_.size()) {
+      std::ranges::pop_heap(hi_, std::greater{});
+      lo_.push_back(hi_.back()), hi_.pop_back();
+      std::ranges::push_heap(lo_);
     }
   }
+  float mid() const { return lo_.size() > hi_.size() ? lo_.front() : 0.5f * (lo_.front() + hi_.front()); }
+};
+
+// 日收益 r / 日增仓量 buy (首个有仓日 first) 在区间 [d0, d1) 内: 各滚动窗 (见 kMinDays) 的年化 / 夏普 → 平均 / 中位 + 累计中位夏普; 整段回撤 / 换手.
+// 窗内各和 = 前缀和之差; 一年前的边界随收尾日单调右移
+void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<float> &r, const std::vector<float> &buy, size_t first, size_t d0, size_t d1) {
+  const size_t D = dates.size(), f = std::max(first, d0 + 1);
+  l.from = l.full = d1;
+  l.med.assign(D, kNaN);
+  l.stat = {};
+  if (f + kMinDays - 1 >= d1)
+    return;
+  l.from = f + kMinDays - 1;
+  const auto years = [&](size_t base, size_t t) { return static_cast<double>((misc::to_days(dates[t]) - misc::to_days(dates[base])).count()) / 365.25; };
+  // 前缀和 (下标 = 日 + 1; 起点前为 0): Σ ln(1 + r) / Σ r / Σ r²; 整段回撤 (峰自基日 = 1 起) / 增仓
+  std::vector<double> G(d1 + 1, 0.0), S(d1 + 1, 0.0), SS(d1 + 1, 0.0);
+  double nav = 1.0, peak = 1.0, mdd = 0.0, b = 0.0;
+  for (size_t d = f; d < d1; ++d) {
+    const double x = r[d];
+    G[d + 1] = G[d] + std::log1p(x), S[d + 1] = S[d] + x, SS[d + 1] = SS[d] + x * x;
+    nav *= 1.0 + x, peak = std::max(peak, nav), mdd = std::max(mdd, 1.0 - nav / peak);
+    b += buy[d];
+  }
+  RunMedian ann_m, shp_m;
+  double ann_s = 0.0, shp_s = 0.0;
+  size_t ys = 0; // 首个晚于 dates[t] 前推一年的日
+  for (size_t t = l.from; t < d1; ++t) {
+    while (dates[ys] <= dates[t] - 10000)
+      ++ys;
+    if (ys >= f && l.full == d1)
+      l.full = t;
+    const size_t lo = std::max(ys, f);
+    assert(t + 1 - lo >= kMinDays);
+    const double n = static_cast<double>(t + 1 - lo), y = years(lo - 1, t);
+    const double m = (S[t + 1] - S[lo]) / n, sd = std::sqrt(std::max((SS[t + 1] - SS[lo]) / n - m * m, 0.0));
+    const float a = static_cast<float>(std::expm1((G[t + 1] - G[lo]) / y)), h = sd > 0.0 ? static_cast<float>(m / sd * std::sqrt(n / y)) : 0.0f;
+    ann_s += a, shp_s += h;
+    ann_m.push(a), shp_m.push(h);
+    l.med[t] = shp_m.mid();
+  }
+  const double k = static_cast<double>(d1 - l.from);
+  l.stat = {static_cast<float>(ann_s / k), ann_m.mid(), static_cast<float>(shp_s / k), l.med[d1 - 1], static_cast<float>(mdd),
+            static_cast<float>(b / years(f - 1, d1 - 1))};
 }
 
 } // namespace
@@ -138,14 +168,19 @@ bool StyleService::run(StyleRequest &req) {
 
   const std::vector<misc::Ymd> &dates = tape_->dates;
   auto out = std::make_shared<StyleResult>();
-  out->years = win_years(dates);
-  std::vector<size_t> starts(static_cast<size_t>(out->years));
-  for (int W = 1; W <= out->years; ++W)
-    starts[static_cast<size_t>(W - 1)] = win_start(dates, dates.size() - 1, W);
+  const size_t D = dates.size();
+  const size_t d0 = static_cast<size_t>(std::ranges::lower_bound(dates, req.lo) - dates.begin()),
+               d1 = req.hi ? static_cast<size_t>(std::ranges::upper_bound(dates, req.hi) - dates.begin()) : D;
+  assert(d0 < d1);
+  out->d0 = d0, out->d1 = d1;
   const pool::Book &bb = *bench_;
+  out->nav.assign(D, 1.0f);
+  double nav = 1.0;
+  for (size_t d = bb.first; d < D; ++d)
+    out->nav[d] = static_cast<float>(nav *= 1.0 + bb.ret[kWeightEq][d]);
   for (int w = 0; w < kWeights; ++w) {
     out->bench[w].weight = static_cast<Weight>(w);
-    fill(out->bench[w], dates, starts, bb.ret[w], bb.ret[w], bb.buy[w], bb.first);
+    fill(out->bench[w], dates, bb.ret[w], bb.buy[w], bb.first, d0, d1);
   }
   std::vector<size_t> src; // [线] 所属的组
   for (size_t i = 0; i < specs.size(); ++i) {
@@ -163,7 +198,7 @@ bool StyleService::run(StyleRequest &req) {
   pool_.tasks(static_cast<int>(out->lines.size()), [&](int k, int) {
     StyleLine &l = out->lines[static_cast<size_t>(k)];
     const pool::Book &b = *books[src[static_cast<size_t>(k)]];
-    fill(l, dates, starts, b.ret[l.weight], bb.ret[l.weight], b.buy[l.weight], b.first);
+    fill(l, dates, b.ret[l.weight], b.buy[l.weight], b.first, d0, d1);
   });
   out->dates = dates;
   return publish(req, {}, std::move(out));

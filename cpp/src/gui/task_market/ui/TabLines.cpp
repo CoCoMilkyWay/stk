@@ -117,7 +117,7 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesUISta
   ImGui::SameLine();
   if (ImGui::Button("Clear", ImVec2(60, 0))) {
     ui.pick = LinesPick{.of = pf.name};
-    ui.range = LinesRange{.d0 = 0, .d1 = static_cast<int>(d.dates.size())};
+    ui.range = LinesRange{{.d0 = 0, .d1 = static_cast<int>(d.dates.size())}};
     ui.log_y = false;
   }
   if (ImGui::IsItemHovered())
@@ -196,7 +196,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const Portf
                   MakeLinesDerived(pf.items, pf.name, res, ui.basket.feed.data, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks), ui.watch, infos,
                                    dv);
                   if (dv.dates != old) // 日轴变 → 区间回全段
-                    ui.range = LinesRange{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())};
+                    ui.range = LinesRange{{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())}};
                 });
   if (mk)
     SyncLinesCons(ui, *mk->quote);

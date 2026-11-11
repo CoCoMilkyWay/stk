@@ -1,14 +1,13 @@
-// Beta→Style: 左 = 参数网格条 + 状态 / 选池改动 + 净值图, 右 = 风格表 (点开 = 跑该风格的网格, 其下列各组绩效, 点行选池) — 见头文件
+// Beta→Style: 左 = 参数网格条 + 状态 / 选池改动 + 累计中位夏普图 + 区间条, 右 = 风格表 (点开 = 跑该风格的网格, 其下列各组绩效, 点行选池) — 见头文件
 #include "gui/task_beta/ui/TabStyle.hpp"
 
 #include "disk/Disk.hpp"
 #include "features/Storage/FeatureLib.hpp" // feature_pools (本进程池表) / kMaxPools
 #include "gui/Tasks.hpp"                   // StatusColor
-#include "gui/util/Chart.hpp"              // 色 / sheet_width / toggle_button / draw_end_tags
+#include "gui/util/Chart.hpp"              // 色 / sheet_width / toggle_button / draw_end_tags / range_bar
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "implot.h"
-#include "implot_internal.h" // ImPlotTicker / Locator_Default / Locator_Log10 (净值轴刻度)
 #include "misc/date.hpp"
 
 #include <algorithm>
@@ -39,6 +38,7 @@ constexpr float kCellA = 0.45f;                                                 
 constexpr float kNearPx = 8.0f;                                                            // 图上悬停: 离鼠标纵向这么近的线才算
 constexpr float kTagScale = 0.85f;                                                         // 线尾小字字号
 constexpr size_t kIdlePoints = 200000;                                                     // 未选线合计画点上限 (超了按等步长抽点; 有选池态 / 悬停的线画全点)
+constexpr float kRangeH = 90.0f;                                                           // 区间条高 (同 Market 行情页)
 
 constexpr const char *kStyleTip =
     "Style = 风格篮子的参数优选 (beta 收益): 选哪组参数做子池\n"
@@ -48,12 +48,14 @@ constexpr const char *kStyleTip =
     "  · 切片 = 各切片维之交\n"
     "• 网格按钮: 按下色 = 勾, 灰字 = 不起作用的取值 (全; 只数只勾全时的端); 左键 = 翻转 (至少留一个), 右键 = 只留它 (已只留它 = 该维全开)\n"
     "• 名 = 风格端.只数.周期.ST.板块.融资.次新.停牌.行业.预警 (灰段 = 不起作用, 与网格按钮的灰字同一判据); 全程切片为空的组不列\n"
-    "• 篮子 = 源行收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 超额 / IR 对全A (行情页同一条: 当日活跃, 日频, 同权重)\n"
-    "• 窗 (滑条, 整年; 缺省全程): 拖短到 W 年 = 右表绩效只算末 W 年 (名次 / 线色 / 表序随之), 图 = 滚动 W 年净值 (每日 = 该日净值 / W 年前净值;\n"
-    "  不足 W 年的前段自建仓起), 竖线 = 右表窗起; 早年的极端行情只在盖住它的窗里起作用\n"
+    "• 篮子 = 源行收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 全A = 行情页同一条 (当日活跃, 日频)\n"
+    "• 滚动窗 = 以每日收尾的一年 (前段自建仓起缩短, 至少一季度): 年化 / 夏普 各取全部窗的平均与中位; 打分 = 中位夏普\n"
+    "  平均 ≈ 全程, 一时的极端行情照样记满; 中位只看多数窗, 吃老本的参数压不上来\n"
     "• 点表行 / 图上的线 = 选中 ↔ 去掉 (选中的行底色亮; 名色 落地蓝 / 新选橙 / 去掉红; 有选池态的恒在表前); [确认…] 弹窗列出改动, 写 pools.json 即落地, 重启后计算 / 各页用新池表\n"
     "• 池表里的池名 = 简称 (高低端 + 风格 + 只数, 如 低β200; 全选池 = 切片名), 同简称按池表序加 A / B / C…; 悬停池名看全部参数\n"
-    "• 主图: 线色 = 夏普名次 (绿好 → 红差); 悬停网格条某一维 = 按该维取值着色 (按钮字色即图例), 看哪个取值整体占优; 悬停到某个取值 = 只亮该取值的线\n"
+    "• 主图 = 累计中位夏普: 每日 = 自首窗到该日各窗夏普的中位 (末日值 = 右表中位夏普), 任一日的截面 = 到该日为止的名次; 满一年的窗起才画\n"
+    "• 底部区间条 (同行情页) 选回测区间: 右表 / 主图只算区间内 (起点 = 1), 只重算绩效\n"
+    "• 线色 = 中位夏普名次 (绿好 → 红差); 悬停网格条某一维 = 按该维取值着色 (按钮字色即图例), 看哪个取值整体占优; 悬停到某个取值 = 只亮该取值的线\n"
     "• 细线 = 未选, 粗线 = 落地 / 新选 / 去掉, 灰 = 全A; 悬停图上 / 表行 = 白粗线 + 绩效";
 
 bool has(const std::vector<Spec> &v, const Spec &p) { return std::ranges::find(v, p) != v.end(); }
@@ -64,21 +66,6 @@ void flip(StyleUIState &s, const Spec &p) {
   else
     s.chosen.push_back(p);
   ++s.pick_gen;
-}
-
-// 净值轴 (log 态): 1 以下线性, 1 以上 ln (在 1 处与线性同斜率); 深亏的线只压在 1 以下的一小段
-double nav_fwd(double v, void *) { return v > 1.0 ? std::log(v) : v - 1.0; }
-double nav_inv(double s, void *) { return s > 0.0 ? std::exp(s) : s + 1.0; }
-// 刻度: 1 以下按线性取, 1 以上按对数取, 各按其所占像素
-void nav_ticks(ImPlotTicker &t, const ImPlotRange &r, float px, bool vertical, ImPlotFormatter f, void *fd) {
-  if (r.Max <= 1.0)
-    return ImPlot::Locator_Default(t, r, px, vertical, f, fd);
-  if (r.Min >= 1.0)
-    return ImPlot::Locator_Log10(t, r, px, vertical, f, fd);
-  const double lo = nav_fwd(r.Min, nullptr), hi = nav_fwd(r.Max, nullptr);
-  const float below = static_cast<float>(px * -lo / (hi - lo));
-  ImPlot::Locator_Default(t, ImPlotRange(r.Min, std::nextafter(1.0, 0.0)), below, vertical, f, fd); // 1 归对数段标
-  ImPlot::Locator_Log10(t, ImPlotRange(1.0, r.Max), px - below, vertical, f, fd);
 }
 
 // 池在选池表上的态
@@ -116,10 +103,10 @@ int count_all(const std::vector<Spec> &v) {
 
 // 绩效列 [StyleCol]: 表头 / 悬停 / 格式 / 显示倍数 / 好的方向 (+1 = 高好)
 enum StyleCol : int { kColAnn,
+                      kColAnnMed,
                       kColSharpe,
+                      kColSharpeMed,
                       kColMdd,
-                      kColExc,
-                      kColIr,
                       kColTurn,
                       kStyleCols };
 struct ColDef {
@@ -127,26 +114,22 @@ struct ColDef {
   double scale;
   int better;
 };
-// 各列只算窗内: 窗 = 末 W 年 (滑条; 全程 = 自首个建仓行起) 到末日, 窗起早于首个建仓行的自建仓行起; 年 = 基日 (窗起前一日) 到末日的日历跨度 / 365.25
+// 各列只算回测区间内; 滚动窗 = 以每日收尾的一年 (前段自起点缩短, 至少一季度); 年 = 基日 (窗起前一日) 到收尾日的日历跨度 / 365.25
 constexpr ColDef kCols[kStyleCols] = {
-    {"年化", "年化 = 窗内年化收益: (末日净值 / 基日净值)^(1/年) − 1", "%+.1f%%", 100.0, 1},
-    {"夏普", "夏普 = 窗内夏普比率: 日收益 均值 / 标准差 × √每年交易日 (无风险 0)\n• 缺省按它降序; 线的缺省色 = 它的组内名次 (绿 = 好 → 红 = 差)", "%.2f", 1.0,
-     1},
-    {"回撤", "回撤 = 窗内最大回撤: 净值自窗内前高 (含基日) 的最大跌幅", "%.1f%%", 100.0, -1},
-    {"超额", "超额 = 窗内对全A 的年化超额: 相对净值 Π (1 + r) / (1 + r_全A) 年化\n• 全A = 行情页同一条 (当日活跃), 日频, 与该线同权重", "%+.1f%%", 100.0, 1},
-    {"IR", "IR = 窗内信息比: 相对日收益 (1 + r) / (1 + r_全A) − 1 的 均值 / 标准差 × √每年交易日", "%.2f", 1.0, 1},
-    {"换手", "换手 = 窗内年化单边换手 (倍/年): 每次调仓 Σ (目标权 − 漂移后的权)⁺ 累计 / 年\n• 建仓 (在窗内) 计 1; 日频每日回到目标权, 周频两次调仓之间权随价漂移",
+    {"年化平均", "平均年化 = 各滚动窗年化收益的平均: 窗内 (收尾日净值 / 基日净值)^(1/年) − 1", "%+.1f%%", 100.0, 1},
+    {"年化中位", "中位年化 = 各滚动窗年化收益的中位", "%+.1f%%", 100.0, 1},
+    {"夏普平均", "平均夏普 = 各滚动窗夏普的平均: 窗内日收益 均值 / 标准差 × √每年交易日 (无风险 0)", "%.2f", 1.0, 1},
+    {"夏普中位", "中位夏普 = 各滚动窗夏普的中位 (= 图上累计中位夏普的末日值)\n• 打分: 缺省按它降序; 线的缺省色 = 它的组内名次 (绿 = 好 → 红 = 差)", "%.2f", 1.0, 1},
+    {"最大回撤", "最大回撤 = 区间内净值自前高 (含区间起点) 的最大跌幅", "%.1f%%", 100.0, -1},
+    {"年换手", "年换手 = 区间内年化单边换手 (倍/年): 每次调仓 Σ (目标权 − 漂移后的权)⁺ 累计 / 年\n• 建仓 (在区间内) 计 1; 日频每日回到目标权, 周频两次调仓之间权随价漂移",
      "%.1f", 1.0, -1},
 };
 constexpr int kColBase = 1; // 表列 = 名 + 绩效列
-// 线在当前窗 (s.of_win 年) 的列 c
-double col_val(const StyleUIState &s, const StyleLine &l, int c) {
-  const StyleStat &t = l.win[static_cast<size_t>(s.of_win - 1)];
-  const float v[kStyleCols] = {t.ann, t.sharpe, t.mdd, t.exc, t.ir, t.turn};
+double col_val(const StyleLine &l, int c) {
+  const StyleStat &t = l.stat;
+  const float v[kStyleCols] = {t.ann, t.ann_med, t.sharpe, t.sharpe_med, t.mdd, t.turn};
   return v[c];
 }
-// 生效的窗 (年)
-int win_of(const StyleUIState &s, const StyleResult &r) { return s.win ? std::min(s.win, r.years) : r.years; }
 
 // 网格维 = 池参数的维 pool::Dim (风格维由打开的风格定, 不上条) + 权重 (篮子的两条线, 不进池身份); 线在该维的取值 (−1 = 不起作用: 全选池的端)
 constexpr int kDimWeight = pool::kDims;
@@ -181,35 +164,29 @@ int day_fmt(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
 
-// ---- 结果派生 (见 StyleUIState): 名随结果, 名次 / 画序 / 基日随 (结果, 窗), 选池态随选中 ----
+// ---- 结果派生 (见 StyleUIState): 名 / 名次 / 画序随结果, 选池态随选中 ----
 void derive(StyleUIState &s, const StyleResult &r) {
-  const size_t n = r.lines.size(), D = r.dates.size();
+  const size_t n = r.lines.size();
   if (s.of_gen != r.gen) {
-    s.of_gen = r.gen, s.of_win = 0, s.of_pick = 0;
+    s.of_gen = r.gen, s.of_pick = 0, s.of_sort = -2;
     s.names.resize(n);
     for (size_t i = 0; i < n; ++i)
       s.names[i] = pool::name_cn(r.lines[i].spec) + weight_suffix(r.lines[i].weight);
-  }
-  if (const int W = win_of(s, r); s.of_win != W) {
-    s.of_win = W, s.of_sort = -2;
     s.ranks.assign(n * kStyleCols, std::numeric_limits<float>::quiet_NaN());
     std::vector<uint32_t> ok;
     for (int c = 0; c < kStyleCols; ++c) {
       ok.clear();
       for (size_t i = 0; i < n; ++i)
-        if (std::isfinite(col_val(s, r.lines[i], c)))
+        if (std::isfinite(col_val(r.lines[i], c)))
           ok.push_back(static_cast<uint32_t>(i));
-      std::ranges::sort(ok, [&](uint32_t a, uint32_t b) { return kCols[c].better * col_val(s, r.lines[a], c) > kCols[c].better * col_val(s, r.lines[b], c); });
+      std::ranges::sort(ok, [&](uint32_t a, uint32_t b) { return kCols[c].better * col_val(r.lines[a], c) > kCols[c].better * col_val(r.lines[b], c); });
       for (size_t k = 0; k < ok.size(); ++k)
         s.ranks[ok[k] * kStyleCols + c] = ok.size() > 1 ? static_cast<float>(k) / static_cast<float>(ok.size() - 1) : 0.5f;
     }
     s.paint.resize(n);
     std::iota(s.paint.begin(), s.paint.end(), 0u);
-    const auto worse = [&](uint32_t i) { const float u = s.ranks[i * kStyleCols + kColSharpe]; return std::isnan(u) ? 2.0f : u; };
+    const auto worse = [&](uint32_t i) { const float u = s.ranks[i * kStyleCols + kColSharpeMed]; return std::isnan(u) ? 2.0f : u; };
     std::ranges::stable_sort(s.paint, [&](uint32_t a, uint32_t b) { return worse(a) > worse(b); });
-    s.base.resize(D);
-    for (size_t t = 0; t < D; ++t)
-      s.base[t] = static_cast<int32_t>(win_start(r.dates, t, W)) - 1;
   }
   if (s.of_pick != s.pick_gen) {
     s.of_pick = s.pick_gen, s.of_sort = -2;
@@ -235,7 +212,7 @@ void sort_lines(StyleUIState &s, const StyleResult &r, int sort) {
       return false;
     if (c < 0)
       return desc ? s.names[a] > s.names[b] : s.names[a] < s.names[b];
-    const double x = col_val(s, r.lines[a], c), y = col_val(s, r.lines[b], c);
+    const double x = col_val(r.lines[a], c), y = col_val(r.lines[b], c);
     if (!std::isfinite(x) || !std::isfinite(y))
       return std::isfinite(x) && !std::isfinite(y);
     return desc ? x > y : x < y;
@@ -432,11 +409,10 @@ void name_text(const StyleLine &l, const ImVec4 &col) {
 // 一条线的绩效提示
 void line_tip(const StyleUIState &s, const StyleResult &r, size_t i) {
   const StyleLine &l = r.lines[i];
-  std::string t = s.names[i] + "  " + pool::code(l.spec) + "  · " + kMarkName[s.marks[i]] + "\n简称: " + pool::short_cn(l.spec) + "\n窗: " +
-                  (s.of_win == r.years ? std::string("全程") : "末 " + std::to_string(s.of_win) + " 年");
+  std::string t = s.names[i] + "  " + pool::code(l.spec) + "  · " + kMarkName[s.marks[i]] + "\n简称: " + pool::short_cn(l.spec);
   for (int c = 0; c < kStyleCols; ++c) {
     char v[32];
-    const double x = col_val(s, l, c);
+    const double x = col_val(l, c);
     if (std::isfinite(x))
       std::snprintf(v, sizeof(v), kCols[c].fmt, kCols[c].scale * x);
     else
@@ -446,57 +422,29 @@ void line_tip(const StyleUIState &s, const StyleResult &r, size_t i) {
   tip("%s", t.c_str());
 }
 
-// 滚动净值: 日 d 的净值 / 基日净值 (基日 = s.base[d]; −1 → 基 = 1)
-float roll(const StyleUIState &s, const StyleLine &l, size_t d) {
-  const int32_t b = s.base[d];
-  return b < 0 ? l.nav[d] : l.nav[d] / l.nav[static_cast<size_t>(b)];
-}
-// PlotLineG 取点: 线 l 自日 f 起每 step 日一点
-struct RollPts {
-  const StyleUIState *s;
-  const StyleLine *l;
-  size_t f, step;
-};
-ImPlotPoint roll_pt(int k, void *p) {
-  const RollPts &o = *static_cast<const RollPts *>(p);
-  const size_t d = o.f + static_cast<size_t>(k) * o.step;
-  return {static_cast<double>(d), roll(*o.s, *o.l, d)};
-}
-
-// 滚动净值图 (窗 = 全程即净值; 窗短于全程时竖线 = 右表窗的基日): 全A 灰; 线色 = 窗内夏普名次 (悬停网格维 = 该维取值色, 悬停到取值 = 只亮该取值的线),
+// 累计中位夏普图 (回测区间内, 各线自首个满一年的窗起): 全A 灰; 线色 = 中位夏普名次 (悬停网格维 = 该维取值色, 悬停到取值 = 只亮该取值的线),
 // 未选细线 (合计点数超上限按步长抽点), 有选池态的粗线, 悬停白粗线; 点悬停的线 = 选中 ↔ 去掉; 返回图上悬停的线 (−1 = 无)
 int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
-  const size_t D = r.dates.size(), n = r.lines.size();
+  const size_t E = r.d1, n = r.lines.size(); // E = 区间末日 + 1
   if (s.fit_gen != r.gen)
     ImPlot::SetNextAxesToFit();
-  else if (s.fit_win != s.of_win)
-    ImPlot::SetNextAxisToFit(ImAxis_Y1);
-  s.fit_gen = r.gen, s.fit_win = s.of_win;
-  if (!ImPlot::BeginPlot("##style_nav", size, ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
+  s.fit_gen = r.gen;
+  if (!ImPlot::BeginPlot("##style_med", size, ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
     return -1;
   ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_None);
-  if (s.log_y) {
-    ImPlot::SetupAxisScale(ImAxis_Y1, nav_fwd, nav_inv);
-    ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].Locator = nav_ticks;
-  }
   ImPlot::SetupAxisFormat(ImAxis_X1, day_fmt, const_cast<std::vector<misc::Ymd> *>(&r.dates));
   std::vector<EndTag> tags;
   char id[24];
-  // 线 l 自建仓行 (净值 1) 起每 step 日一点; tag = 线尾小字 (nullptr = 不标)
+  // 线 l 自首个满一年的窗 (full) 起到区间末日每 step 日一点; tag = 线尾小字 (nullptr = 不标)
   const auto draw = [&](const StyleLine &l, const ImVec4 &col, float w, size_t step, const std::string *tag) {
-    if (l.first >= D)
+    if (l.full >= E)
       return;
-    RollPts pts{&s, &l, l.first - 1, step};
     ImPlot::SetNextLineStyle(col, w);
-    ImPlot::PlotLineG(id, roll_pt, &pts, static_cast<int>((D - 1 - pts.f) / step + 1));
+    ImPlot::PlotLine(id, l.med.data() + l.full, static_cast<int>((E - 1 - l.full) / step + 1), static_cast<double>(step), static_cast<double>(l.full), 0, 0,
+                     static_cast<int>(step * sizeof(float)));
     if (tag)
-      tags.push_back({ImPlot::PlotToPixels(static_cast<double>(D - 1), roll(s, l, D - 1)), ImGui::ColorConvertFloat4ToU32(col), *tag});
+      tags.push_back({ImPlot::PlotToPixels(static_cast<double>(E - 1), l.med[E - 1]), ImGui::ColorConvertFloat4ToU32(col), *tag});
   };
-  if (s.of_win < r.years) {
-    const double x = static_cast<double>(s.base[D - 1]);
-    ImPlot::SetNextLineStyle(kBenchCol, 1.0f);
-    ImPlot::PlotInfLines("##win", &x, 1);
-  }
   for (int w = 0; w < kWeights; ++w)
     if (r.grid.weight >> w & 1) {
       const std::string name = basket_name(0, static_cast<Weight>(w));
@@ -508,12 +456,12 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
     const long d = std::lround(ImPlot::GetPlotMousePos().x);
     const float my = ImGui::GetMousePos().y;
     float best = kNearPx;
-    if (d >= 0 && d < static_cast<long>(D))
+    if (d >= 0 && d < static_cast<long>(E))
       for (size_t i = 0; i < n; ++i) {
         const StyleLine &l = r.lines[i];
-        if (l.first >= D || static_cast<size_t>(d) + 1 < l.first)
+        if (static_cast<size_t>(d) < l.full)
           continue;
-        if (const float dy = std::abs(ImPlot::PlotToPixels(static_cast<double>(d), roll(s, l, static_cast<size_t>(d))).y - my); dy < best)
+        if (const float dy = std::abs(ImPlot::PlotToPixels(static_cast<double>(d), l.med[static_cast<size_t>(d)]).y - my); dy < best)
           best = dy, near = static_cast<int>(i);
       }
   }
@@ -528,13 +476,13 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
       return dim_col(bits, dim_value(r.lines[i], s.dim));
     if (m != kMarkNone)
       return mark_col(m);
-    const float u = s.ranks[i * kStyleCols + kColSharpe];
+    const float u = s.ranks[i * kStyleCols + kColSharpeMed];
     return std::isnan(u) ? kNoneCol : band_col(u, 1.0f);
   };
   size_t idle = 0;
   for (size_t i = 0; i < n; ++i)
-    if (s.marks[i] == kMarkNone && r.lines[i].first < D)
-      idle += D - r.lines[i].first + 1;
+    if (s.marks[i] == kMarkNone)
+      idle += E - r.lines[i].full;
   const size_t step = std::max<size_t>(1, (idle + kIdlePoints - 1) / kIdlePoints);
   const int focus = s.dim >= 0 ? s.val : -1;
   const auto lit = [&](uint32_t i) { return focus >= 0 && dim_value(r.lines[i], s.dim) == focus; };
@@ -566,17 +514,38 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
   return near;
 }
 
-// 右表: 风格行 (点 = 打开 / 收起) + 打开的风格之下 全A 两行 + 各线 (点行 = 选中 ↔ 去掉, 选中的行底色亮; 有选池态的在前; 底色 = 组内名次; 缺省夏普降序);
+// 区间条 (range_bar): 底线 = 全A 等权全程净值 (log); 选段 = 回测区间 → s.lo / s.hi (全段 = 0 不限)
+void range(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
+  const int D = static_cast<int>(r.dates.size());
+  DayRange &rg = s.range;
+  rg.d0 = static_cast<int>(std::ranges::lower_bound(r.dates, s.lo) - r.dates.begin());
+  rg.d1 = s.hi ? static_cast<int>(std::ranges::upper_bound(r.dates, s.hi) - r.dates.begin()) : D;
+  if (!ImPlot::BeginPlot("##style_range", size,
+                         ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText))
+    return;
+  ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(D), ImPlotCond_Always);
+  ImPlot::SetupAxisFormat(ImAxis_X1, day_fmt, const_cast<std::vector<misc::Ymd> *>(&r.dates));
+  ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+  ImPlot::SetNextLineStyle(kBenchCol, 1.0f);
+  ImPlot::PlotLine("##style_range_nav", r.nav.data(), D);
+  range_bar(rg, r.dates, 1.0);
+  ImPlot::EndPlot();
+  s.lo = rg.d0 == 0 ? 0 : r.dates[static_cast<size_t>(rg.d0)];
+  s.hi = rg.d1 == D ? 0 : r.dates[static_cast<size_t>(rg.d1 - 1)];
+}
+
+// 右表: 风格行 (点 = 打开 / 收起) + 打开的风格之下 全A 两行 + 各线 (点行 = 选中 ↔ 去掉, 选中的行底色亮; 有选池态的在前; 底色 = 组内名次; 缺省中位夏普降序);
 // 只画可见行. 返回悬停的线 (−1 = 无)
 int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
-                                     ImGuiTableFlags_SortTristate;
+                                     ImGuiTableFlags_SortTristate | ImGuiTableFlags_NoSavedSettings;
   if (!ImGui::BeginTable("##pf_style_tbl", kColBase + kStyleCols, kFlags))
     return -1;
   ImGui::TableSetupScrollFreeze(kColBase, 1);
   ImGui::TableSetupColumn("风格 / 参数", ImGuiTableColumnFlags_WidthStretch);
   for (int c = 0; c < kStyleCols; ++c)
-    ImGui::TableSetupColumn(kCols[c].name, c == kColSharpe ? ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending : 0);
+    ImGui::TableSetupColumn(kCols[c].name, c == kColSharpeMed ? ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending : 0);
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
   for (int c = 0; c < kColBase + kStyleCols; ++c) {
     if (!ImGui::TableSetColumnIndex(c))
@@ -626,7 +595,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   const auto cells = [&](const StyleLine &l, const float *rk) {
     for (int c = 0; c < kStyleCols; ++c) {
       ImGui::TableSetColumnIndex(kColBase + c);
-      const double x = col_val(s, l, c);
+      const double x = col_val(l, c);
       if (rk && !std::isnan(rk[c]))
         ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(band_col(rk[c], kCellA)));
       if (std::isfinite(x))
@@ -717,8 +686,8 @@ void RenderTabStyle(StyleService &svc, StyleUIState &s) {
   const float right = sheet_width(av.x), left = av.x - right - ImGui::GetStyle().ItemSpacing.x, h = av.y;
   if (s.open >= 0)
     s.grid.bits[pool::kDimStyle] = static_cast<uint16_t>(1u << s.open);
-  if (s.open >= 0 && !(s.sent.gen && s.sent.grid == s.grid)) {
-    s.sent = {s.sent.gen + 1, s.grid};
+  if (s.open >= 0 && !(s.sent.gen && s.sent.grid == s.grid && s.sent.lo == s.lo && s.sent.hi == s.hi)) {
+    s.sent = {s.sent.gen + 1, s.grid, s.lo, s.hi};
     svc.Request(s.sent);
   }
   std::shared_ptr<const StyleResult> r;
@@ -739,30 +708,15 @@ void RenderTabStyle(StyleService &svc, StyleUIState &s) {
   status(svc, s, mine ? r.get() : nullptr, mine && r->gen == s.sent.gen);
   changes(s);
   ImGui::SameLine(0, 16);
-  if (toggle_button("log", s.log_y))
-    s.log_y = !s.log_y;
-  if (ImGui::IsItemHovered())
-    tip("y 轴 (净值) 1 以上切对数刻度; 1 以下恒为线性");
-  if (show) {
-    ImGui::SameLine(0, 16);
-    int w = win_of(s, *show);
-    ImGui::SetNextItemWidth(12.0f * ImGui::GetFontSize());
-    if (ImGui::SliderInt("##win", &w, 1, show->years, w == show->years ? "窗 全程" : "窗 末 %d 年", ImGuiSliderFlags_AlwaysClamp))
-      s.win = w == show->years ? 0 : w;
-    if (ImGui::IsItemHovered())
-      tip("窗 (整年, 缺省全程 = %d 年盖住整个回测期): 右表绩效 / 名次 / 线色 / 表序只算末 W 年, 图 = 滚动 W 年净值\n"
-          "• 图上每日 = 该日净值 / W 年前净值 (不足 W 年的前段自建仓起); 竖线 = 右表窗起\n"
-          "• 各窗绩效随结果一次算好, 拖动即时",
-          show->years);
-  }
-  ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
     tip("%s", kStyleTip);
   int plot_hot = -1;
   if (show) {
-    derive(s, *show); // 改动 (撤销 / 写入) / 窗可能刚变
-    plot_hot = plot(s, *show, ImGui::GetContentRegionAvail());
+    derive(s, *show); // 改动 (撤销 / 写入) 可能刚变
+    const ImVec2 pa = ImGui::GetContentRegionAvail();
+    plot_hot = plot(s, *show, ImVec2(pa.x, pa.y - kRangeH - ImGui::GetStyle().ItemSpacing.y));
+    range(s, *show, ImVec2(pa.x, kRangeH));
   }
   ImGui::EndChild();
   ImGui::SameLine();

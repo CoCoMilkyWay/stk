@@ -1,13 +1,16 @@
 #pragma once
 
-// 图表公共件 (ASSET 行情 / Market 净值 / Beta 风格表同一份): 涨跌色, 名次色, 色环, 右表宽, 开关按钮 / 档位按钮条, 线尾小字, 现价十字
+// 图表公共件 (ASSET 行情 / Market 净值 / Beta 风格表同一份): 涨跌色, 名次色, 色环, 右表宽, 开关按钮 / 档位按钮条, 线尾小字, 现价十字, 区间条
 
 #include "imgui.h"
 #include "implot.h"
+#include "misc/date.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <numbers>
 #include <string>
 #include <vector>
@@ -152,6 +155,111 @@ inline void draw_now_cross(const NowCross &c, float scale, float right) {
   label(c.y, right - bw, std::clamp(py - bh * 0.5f, top, bottom - bh));
   const float tw = font->CalcTextSizeA(fs, FLT_MAX, 0.f, c.x.c_str()).x + 2 * kCrossPad.x;
   label(c.x, std::clamp(px - tw * 0.5f, pos.x, pos.x + psz.x - tw), bottom - bh);
+  ImPlot::PopPlotClipRect();
+}
+
+// 区间条的日段 [d0, d1) (日轴下标) + 拖动态
+struct DayRange {
+  int d0 = 0, d1 = 0;
+  int drag = 0;                 // 拖动中: 0 无 / 1 左把手 / 2 右把手 / 3 段内平移
+  double grab_day = 0.0;        // 按下时鼠标所在日 (平移按与它的差算)
+  int grab_d0 = 0, grab_d1 = 0; // 按下时的 [d0, d1) (平移保持日数)
+};
+// 当前图内的区间条 (调用方已 BeginPlot / 设轴 / 画底线; x = 日下标 · day_w): 选段 [d0, d1), 拖动中即生效;
+//   左右边 = 竖把手 (拖改起止, 吸附到月初 = 每月首个交易日, 右边 = 下月月初 / 末尾; 双击拉到头); 段内拖 = 平移 (日数不变), 段内双击 = 回全段;
+//   悬停 / 拖动时把手旁标起止日
+inline void range_bar(DayRange &rg, const std::vector<misc::Ymd> &dates, double day_w) {
+  const int D = static_cast<int>(dates.size());
+  if (D == 0)
+    return;
+  std::vector<int> ms; // 吸附点 = 月初下标, 末尾补 D
+  for (int i = 0; i < D; ++i)
+    if (i == 0 || dates[i] / 100 != dates[i - 1] / 100)
+      ms.push_back(i);
+  ms.push_back(D);
+  const int K = static_cast<int>(ms.size()) - 1;
+  const auto near_k = [&](double day, int lo, int hi) { // ms[lo..hi] 里离 day 最近的那个的下标
+    int best = lo;
+    for (int k = lo + 1; k <= hi; ++k)
+      if (std::abs(ms[k] - day) < std::abs(ms[best] - day))
+        best = k;
+    return best;
+  };
+  const ImPlotRect lim = ImPlot::GetPlotLimits();
+  const auto px_of = [&](int day) { return ImPlot::PlotToPixels(day * day_w, lim.Y.Min).x; };
+  const ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize(), mp = ImGui::GetMousePos();
+  const double mday = ImPlot::GetPlotMousePos().x / day_w;
+  constexpr float kGrab = 7.0f; // 把手抓取半宽 (px)
+  int over = 0;                 // 鼠标下: 1 左把手 / 2 右把手 / 3 段内
+  if (mp.x >= pp.x && mp.x <= pp.x + ps.x && mp.y >= pp.y && mp.y <= pp.y + ps.y && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+    const float x0 = px_of(rg.d0), x1 = px_of(rg.d1);
+    over = std::abs(mp.x - x0) <= kGrab ? 1 : std::abs(mp.x - x1) <= kGrab ? 2
+                                          : (mp.x > x0 && mp.x < x1)       ? 3
+                                                                           : 0;
+  }
+  assert(0 <= rg.d0 && rg.d0 < rg.d1 && rg.d1 <= D);
+  if (over != 0 && ImGui::IsMouseDoubleClicked(0)) { // 左 / 右把手 = 该边拉到头, 段内 = 回全段
+    if (over != 2)
+      rg.d0 = 0;
+    if (over != 1)
+      rg.d1 = D;
+  } else if (rg.drag == 0 && over != 0 && ImGui::IsMouseClicked(0)) {
+    rg.drag = over, rg.grab_day = mday, rg.grab_d0 = rg.d0, rg.grab_d1 = rg.d1;
+  }
+  if (rg.drag != 0 && !ImGui::IsMouseDown(0))
+    rg.drag = 0;
+  if (rg.drag == 1) { // 左边取 < d1 的月初
+    const int hi = static_cast<int>(std::ranges::lower_bound(ms, rg.d1) - ms.begin()) - 1;
+    rg.d0 = ms[near_k(mday, 0, hi)];
+  } else if (rg.drag == 2) { // 右边取 > d0 的月初 / 末尾
+    const int lo = static_cast<int>(std::ranges::upper_bound(ms, rg.d0) - ms.begin());
+    rg.d1 = ms[near_k(mday, lo, K)];
+  } else if (rg.drag == 3) {
+    const int w = rg.grab_d1 - rg.grab_d0;
+    rg.d0 = std::clamp(rg.grab_d0 + static_cast<int>(std::lround(mday - rg.grab_day)), 0, D - w), rg.d1 = rg.d0 + w;
+  }
+  const int act = rg.drag != 0 ? rg.drag : over;
+  if (act == 1 || act == 2)
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+  else if (act == 3)
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+  // 画: 段外压暗 + 段内淡色 + 两边竖把手 (带握纹, 悬停 / 拖动高亮)
+  const float x0 = px_of(rg.d0), x1 = px_of(rg.d1), yb = pp.y + ps.y;
+  ImDrawList &dl = *ImPlot::GetPlotDrawList();
+  ImPlot::PushPlotClipRect();
+  dl.AddRectFilled(pp, ImVec2(x0, yb), IM_COL32(0, 0, 0, 120));
+  dl.AddRectFilled(ImVec2(x1, pp.y), ImVec2(pp.x + ps.x, yb), IM_COL32(0, 0, 0, 120));
+  dl.AddRectFilled(ImVec2(x0, pp.y), ImVec2(x1, yb), IM_COL32(102, 204, 255, 28));
+  const auto handle = [&](float x, bool hot) {
+    const ImU32 c = hot ? IM_COL32(190, 240, 255, 255) : IM_COL32(102, 204, 255, 255);
+    dl.AddLine(ImVec2(x, pp.y), ImVec2(x, yb), c, hot ? 3.0f : 2.0f);
+    constexpr float hw = 5.0f;
+    const float cx = std::clamp(x, pp.x + hw, pp.x + ps.x - hw), cy = pp.y + ps.y * 0.5f, hh = ps.y * 0.28f;
+    dl.AddRectFilled(ImVec2(cx - hw, cy - hh), ImVec2(cx + hw, cy + hh), c, 3.0f);
+    for (const float gx : {cx - 1.5f, cx + 1.5f})
+      dl.AddLine(ImVec2(gx, cy - hh * 0.5f), ImVec2(gx, cy + hh * 0.5f), IM_COL32(20, 50, 70, 255), 1.0f);
+  };
+  handle(x0, act == 1 || act == 3);
+  handle(x1, act == 2 || act == 3);
+  if (act != 0) { // 起止日贴把手外侧 (放不下改内侧)
+    char s0[16], s1[16];
+    const misc::Ymd a = dates[rg.d0], b = dates[rg.d1 - 1];
+    std::snprintf(s0, sizeof(s0), "%d/%02d/%02d", a / 10000, a / 100 % 100, a % 100);
+    std::snprintf(s1, sizeof(s1), "%d/%02d/%02d", b / 10000, b / 100 % 100, b % 100);
+    const ImVec2 t0 = ImGui::CalcTextSize(s0), t1 = ImGui::CalcTextSize(s1);
+    float lx = x0 - 9.0f - t0.x, rx = x1 + 9.0f;
+    if (lx < pp.x)
+      lx = x0 + 9.0f;
+    if (rx + t1.x > pp.x + ps.x)
+      rx = x1 - 9.0f - t1.x;
+    const auto label = [&](float tx, const char *s, const ImVec2 &ts) {
+      dl.AddRectFilled(ImVec2(tx - 3.0f, pp.y + 2.0f), ImVec2(tx + ts.x + 3.0f, pp.y + 4.0f + ts.y), IM_COL32(10, 20, 30, 220), 3.0f);
+      dl.AddText(ImVec2(tx, pp.y + 3.0f), IM_COL32(255, 255, 255, 255), s);
+    };
+    label(lx, s0, t0);
+    label(rx, s1, t1);
+  }
   ImPlot::PopPlotClipRect();
 }
 

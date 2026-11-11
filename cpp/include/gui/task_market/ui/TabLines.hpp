@@ -70,6 +70,7 @@
 #include "gui/task_market/services/CtaService.hpp" // CtaSpec / CtaRequest (CTA 页)
 #include "gui/task_market/ui/LinesView.hpp"        // 派生 → 滚动分位 / 末点分位 → 视图
 #include "gui/task_market/ui/QuotesPanel.hpp"      // BasketState / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
+#include "gui/util/Chart.hpp"                      // DayRange (区间条)
 #include "imgui.h"                                 // ImVec4 (右表格)
 #include "shared/Basket.hpp"                       // kGroupPool / kBasketGroups
 
@@ -96,14 +97,10 @@ struct LinesFitKey {
   bool operator==(const LinesFitKey &) const = default;
 };
 
-// 区间条: [d0, d1) (der.dates 下标; 把手吸附月初 / 末尾, VAL 主图框选任意日; 日轴变 → 全段) + 拖动态
-struct LinesRange {
-  int d0 = 0, d1 = 0;
-  int drag = 0;                 // 拖动中: 0 无 / 1 左把手 / 2 右把手 / 3 段内平移
-  double grab_day = 0.0;        // 按下时鼠标所在日 (平移按与它的差算)
-  int grab_d0 = 0, grab_d1 = 0; // 按下时的 [d0, d1) (平移保持日数)
-  bool zooming = false;         // VAL 主图横向框选中
-  double zoom_x = 0.0;          // 框选按下处的 x
+// 区间条: DayRange [d0, d1) (der.dates 下标; 把手吸附月初 / 末尾, VAL 主图框选任意日; 日轴变 → 全段) + VAL 框选态
+struct LinesRange : DayRange {
+  bool zooming = false; // VAL 主图横向框选中
+  double zoom_x = 0.0;  // 框选按下处的 x
 };
 
 // 行情页 (= Market 左栏 ASSET 之后的四个子页; 同一个右图例位; 类别条按页各一份; 页表 kPageDefs 见 LinesCommon.hpp)
