@@ -40,8 +40,10 @@ namespace fund {
 namespace {
 
 namespace pq = misc::pq;
+using fundamental::Announces;
 using fundamental::Append;
 using fundamental::Part;
+using fundamental::report_period;
 using fundamental::Rows;
 using fundamental::Sink;
 using misc::Ymd;
@@ -133,7 +135,7 @@ struct FinancialTtmEv {
   float net_profit_to_parent_shareholders_ttm;
   float net_profit_ttm; // 含少数 (roa 分子)
   float net_cffoa_ttm;
-  float net_cffoa_ttm_shift4;
+  float net_cffoa_ttm_ly; // 同一公告里的去年同期
 };
 struct FinancialBalanceEv {
   std::int32_t v;
@@ -185,7 +187,7 @@ struct YtdEv {
   std::int32_t report_date;
   float x[N];
 };
-struct NonrecurEv { // cn_stock_financial_notes_shift (shift=0): 非经常性损益 TTM (归母口径)
+struct NonrecurEv { // cn_stock_financial_notes_shift (主记录): 非经常性损益 TTM (归母口径)
   std::int32_t v;
   std::int32_t report_date;
   float nonrecurring_ttm;
@@ -1115,43 +1117,44 @@ struct EventScan {
 void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
   using fundamental::spec;
 
-  // ---- cn_stock_financial_ttm_shift (CUTOFF=-1; shift=0 主记录 + shift=4 配对) ----
+  // ---- cn_stock_financial_ttm_shift (CUTOFF=-1; 主记录 = 一次公告的最新报告期, 配同一公告里去年同期 (报告期 − 1 年) 的经营现金流 TTM) ----
   scan.add(ttm, spec("cn_stock_financial_ttm_shift"),
-           {"shift", "report_date", "total_operating_revenue_ttm", "net_profit_to_parent_shareholders_ttm",
+           {"report_date", "total_operating_revenue_ttm", "net_profit_to_parent_shareholders_ttm",
             "net_profit_ttm", "net_cffoa_ttm"},
            Hits<FinancialTtmEv>{}, [&axes](const Rows &r, Hits<FinancialTtmEv> &h) {
-             const pq::Col shift = r.col("shift"), rd = r.col("report_date");
+             const pq::Col rd = r.col("report_date");
              const pq::Col rev = r.col("total_operating_revenue_ttm");
              const pq::Col np = r.col("net_profit_to_parent_shareholders_ttm");
              const pq::Col npa = r.col("net_profit_ttm");
              const pq::Col cf = r.col("net_cffoa_ttm");
-             auto key_of = [&](Ymd d, std::uint32_t a) {
-               return static_cast<std::int64_t>(d) * (axes.n_a() + 1) + a;
-             };
+             const Announces an(r, rd);
 
-             std::unordered_map<std::int64_t, float> shift4_cf;
-             shift4_cf.reserve(static_cast<std::size_t>(r.size()) / 32 + 1);
+             std::unordered_map<std::int64_t, float> ly_cf;
+             ly_cf.reserve(static_cast<std::size_t>(r.size()) / 32 + 1);
              r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
-               if (shift.i32(i, -1) == 4)
-                 shift4_cf[key_of(d, a)] = cf.f32(i);
+               const std::int64_t k = Announces::key(d, a);
+               if (const Ymd p = report_period(rd, i, d); p && p == an.latest(k) - 10000)
+                 ly_cf[k] = cf.f32(i);
              });
 
              RowOf row_of(axes, Align::Floor, -1);
              r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
-               if (shift.i32(i, -1) != 0)
+               const std::int64_t k = Announces::key(d, a);
+               const Ymd p = report_period(rd, i, d);
+               if (!p || p != an.latest(k))
                  return;
                const int row = row_of(d);
                if (row < 0)
                  return;
                FinancialTtmEv ev;
                ev.v = row;
-               ev.report_date = rd.yyyymmdd(i);
+               ev.report_date = p;
                ev.total_operating_revenue_ttm = rev.f32(i);
                ev.net_profit_to_parent_shareholders_ttm = np.f32(i);
                ev.net_profit_ttm = npa.f32(i);
                ev.net_cffoa_ttm = cf.f32(i);
-               auto it = shift4_cf.find(key_of(d, a));
-               ev.net_cffoa_ttm_shift4 = (it != shift4_cf.end()) ? it->second : NaNF;
+               auto it = ly_cf.find(k);
+               ev.net_cffoa_ttm_ly = (it != ly_cf.end()) ? it->second : NaNF;
                h.push({a, ev});
              });
            });
@@ -1182,12 +1185,13 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
         const pq::Col mi = r.col("minority_interests");
         RowOf row_of(axes, Align::Floor, -1);
         r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+          const Ymd p = report_period(rd, i, d);
           const int row = row_of(d);
-          if (row < 0)
+          if (!p || row < 0)
             return;
           FinancialBalanceEv ev;
           ev.v = row;
-          ev.report_date = rd.yyyymmdd(i);
+          ev.report_date = p;
           ev.total_equity_to_parent_shareholders = tep.f32(i);
           ev.total_assets = ta.f32(i);
           ev.total_liabilities = tl.f32(i);
@@ -1221,12 +1225,13 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
         const pq::Col tax = r.col("income_tax_expense"), npa = r.col("net_profit"), eps = r.col("eps_basic");
         RowOf row_of(axes, Align::Floor, -1);
         r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+          const Ymd p = report_period(rd, i, d);
           const int row = row_of(d);
-          if (row < 0)
+          if (!p || row < 0)
             return;
           YtdEv<INC_COUNT> ev;
           ev.v = row;
-          ev.report_date = rd.yyyymmdd(i);
+          ev.report_date = p;
           const float interest = first_finite(fie.f32(i), fe.f32(i));
           ev.x[inc_rev] = rev.f32(i);
           ev.x[inc_cogs] = cogs.f32(i);
@@ -1239,7 +1244,6 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
           ev.x[inc_np_parent] = np.f32(i);
           ev.x[inc_eps] = eps.f32(i);
           h.ytd.push({a, ev});
-          // 年报 = 报告期 12-31 (源 fs_quarter_index 不可信: 2021 三季报大批标成 4)
           if (ev.report_date % 10000 == 1231)
             h.annual.push({a, {ev.v, ev.report_date, ev.x[inc_np_parent]}});
         });
@@ -1260,12 +1264,13 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
         const pq::Col am_ld = r.col("amortization_of_longterm_deferred_expenses");
         RowOf row_of(axes, Align::Floor, -1);
         r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
+          const Ymd p = report_period(rd, i, d);
           const int row = row_of(d);
-          if (row < 0)
+          if (!p || row < 0)
             return;
           YtdEv<CF_COUNT> ev;
           ev.v = row;
-          ev.report_date = rd.yyyymmdd(i);
+          ev.report_date = p;
           ev.x[cf_ocf] = ocf.f32(i);
           ev.x[cf_icf] = icf.f32(i);
           ev.x[cf_fin] = fcf.f32(i);
@@ -1277,21 +1282,23 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
         });
       });
 
-  // ---- cn_stock_financial_notes_shift (CUTOFF=-1; shift=0 非经常性损益 TTM) ----
+  // ---- cn_stock_financial_notes_shift (CUTOFF=-1; 主记录 = 一次公告的最新报告期: 非经常性损益 TTM) ----
   //   事件与 ttm_shift 一一对齐, 无附注数据的事件该列为 null: 丢弃, 否则顶掉同报告期的有效值
   scan.add(nonrecur, spec("cn_stock_financial_notes_shift"),
-           {"shift", "report_date", "nonrecurring_income_to_owner_ttm"}, Hits<NonrecurEv>{},
+           {"report_date", "nonrecurring_income_to_owner_ttm"}, Hits<NonrecurEv>{},
            [&axes](const Rows &r, Hits<NonrecurEv> &h) {
-             const pq::Col shift = r.col("shift"), rd = r.col("report_date");
+             const pq::Col rd = r.col("report_date");
              const pq::Col nr_owner = r.col("nonrecurring_income_to_owner_ttm");
+             const Announces an(r, rd);
              RowOf row_of(axes, Align::Floor, -1);
              r.each([&](std::int64_t i, std::uint32_t a, Ymd d) {
-               if (shift.i32(i, -1) != 0 || nr_owner.null(i))
+               const Ymd p = report_period(rd, i, d);
+               if (!p || p != an.latest(Announces::key(d, a)) || nr_owner.null(i))
                  return;
                const int row = row_of(d);
                if (row < 0)
                  return;
-               h.push({a, {row, rd.yyyymmdd(i), nr_owner.f32(i)}});
+               h.push({a, {row, p, nr_owner.f32(i)}});
              });
            });
 
@@ -2069,7 +2076,7 @@ struct State {
       np = (std::isfinite(n) && n != 0.0f) ? n : NaNF;
       const float c = t->net_cffoa_ttm;
       cf = (std::isfinite(c) && c != 0.0f) ? c : NaNF;
-      const float c0 = t->net_cffoa_ttm, c4 = t->net_cffoa_ttm_shift4;
+      const float c0 = t->net_cffoa_ttm, c4 = t->net_cffoa_ttm_ly;
       cf_chg = (std::isfinite(m) && m > 0.0f && std::isfinite(c0) && std::isfinite(c4))
                    ? std::tanh((c0 - c4) / m)
                    : NaNF;

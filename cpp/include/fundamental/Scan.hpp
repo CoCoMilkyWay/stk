@@ -188,6 +188,38 @@ private:
   Ymd day_ = 0; // 0 = 全部日
 };
 
+// ---------------------------------------------------------------------------
+// 财报期次: 唯一依据是报告期 (report_date 列); 源的期次标签 (fs_quarter_index / shift) 不可信, 不读
+// ---------------------------------------------------------------------------
+// 报告期; 不早于公告日 d → 0 (源脏行: 财报不会在期末前公告, 调用方跳过)
+inline Ymd report_period(const misc::pq::Col &rd, std::int64_t i, Ymd d) {
+  const Ymd p = rd.yyyymmdd(i);
+  return p < d ? p : 0;
+}
+
+// shift 表 (ttm_shift / notes_shift) 的公告分组: 一次公告 = 同 (公告日, 资产) 的一组行, 一行一个报告期; 主记录 = 组内最新报告期
+class Announces {
+public:
+  Announces(const Rows &r, const misc::pq::Col &rd) {
+    top_.reserve(static_cast<std::size_t>(r.size()) / 32 + 1);
+    r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
+      if (const Ymd p = report_period(rd, i, d)) {
+        Ymd &t = top_[key(d, id)];
+        t = std::max(t, p);
+      }
+    });
+  }
+  static std::int64_t key(Ymd d, std::uint32_t id) { return static_cast<std::int64_t>(d) << 32 | id; }
+  // 组 k 的最新报告期; 组内全是脏行 → 0
+  Ymd latest(std::int64_t k) const {
+    const auto it = top_.find(k);
+    return it == top_.end() ? 0 : it->second;
+  }
+
+private:
+  std::unordered_map<std::int64_t, Ymd> top_;
+};
+
 // 读侧暂存 (每线程一份): 当前分片的表 + 键字典映射 + 日期列
 //   open: 读分片 (只解 cols + vd + 资产键列; 键列以字典落地, 每文件只对字典项查一次 Ids) → 其上的 Rows
 //   snap = Snap::Day: 只留分片内最晚一天 (Pick::Last); 与写侧 Snap 同义 "每个分片只留一天"

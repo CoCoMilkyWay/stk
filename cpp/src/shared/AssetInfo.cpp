@@ -47,6 +47,7 @@
 namespace {
 
 namespace pq = misc::pq;
+using fundamental::Announces;
 using fundamental::Append;
 using fundamental::Catalog;
 using fundamental::Ids;
@@ -54,6 +55,7 @@ using fundamental::Latest;
 using fundamental::Part;
 using fundamental::PerId;
 using fundamental::Pick;
+using fundamental::report_period;
 using fundamental::Rows;
 using fundamental::Sink;
 using fundamental::spec;
@@ -228,7 +230,7 @@ struct DayText {
 // cn_stock_shares: 每股最新总股本 (<= 0 ⇒ 源脏值, 估值段跳过)
 using SharesAcc = PerId<Latest<float>>;
 
-// cn_stock_financial_ttm_shift: shift==0, 三个分母各自的最后一个有效期次
+// cn_stock_financial_ttm_shift: 各次公告的主记录 (Announces), 三个分母各自的最后一个有效期次
 // 有效判据就地对齐估值段的门 (np/cf != 0, rev > 0), 故下游只需看 has().
 struct Ttm {
   Latest<float> np, rev, cf;
@@ -770,17 +772,19 @@ bool AssetInfo::build(const Catalog &cat, Progress &p, const std::function<void(
     r.each([&](std::int64_t i, std::uint32_t id, Ymd d) { a[id].offer(d, ts.null(i) ? 0.0f : ts.f32(i)); });
   });
 
-  // ---- TTM 财务 ← cn_stock_financial_ttm_shift, shift==0 每股最新行 ----
+  // ---- TTM 财务 ← cn_stock_financial_ttm_shift, 主记录每股最新行 ----
   Part<TtmAcc> ttm_p;
   scan.add(ttm_p, spec("cn_stock_financial_ttm_shift"),
-           {"shift", "net_profit_to_parent_shareholders_ttm", "total_operating_revenue_ttm", "net_cffoa_ttm"},
+           {"report_date", "net_profit_to_parent_shareholders_ttm", "total_operating_revenue_ttm", "net_cffoa_ttm"},
            TtmAcc(nid), [](const Rows &r, TtmAcc &a) {
-             const pq::Col shift = r.col("shift");
+             const pq::Col rd = r.col("report_date");
              const pq::Col np = r.col("net_profit_to_parent_shareholders_ttm");
              const pq::Col rev = r.col("total_operating_revenue_ttm");
              const pq::Col cf = r.col("net_cffoa_ttm");
+             const Announces an(r, rd);
              r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
-               if (shift.i32(i, -1) != 0)
+               const Ymd p = report_period(rd, i, d);
+               if (!p || p != an.latest(Announces::key(d, id)))
                  return;
                Ttm &c = a[id];
                // 三个分母各自推进: 源里这三列 null 各约 10 万行, 且停止披露的公司最后几期
@@ -806,9 +810,10 @@ bool AssetInfo::build(const Catalog &cat, Progress &p, const std::function<void(
              r.each([&](std::int64_t i, std::uint32_t id, Ymd d) {
                // 先筛有效再定位: 无效行不参与 (report_date, date) 竞争, 否则停止披露公司
                // 最新那份空权益会盖掉上一期的真实值 —— 同 TTM 三列的处理.
-               if (eq.null(i) || eq.f32(i) == 0.0f)
+               const Ymd p = report_period(rd, i, d);
+               if (!p || eq.null(i) || eq.f32(i) == 0.0f)
                  return;
-               const std::int64_t key = static_cast<std::int64_t>(rd.yyyymmdd(i)) << 32 | d;
+               const std::int64_t key = static_cast<std::int64_t>(p) << 32 | d;
                a[id].offer(key, eq.f32(i));
              });
            });
