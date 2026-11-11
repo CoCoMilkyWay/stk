@@ -52,11 +52,16 @@ constexpr ColDef kDayColDefs[kDayCols] = {
     {"is_margin", ts::TfId::None},
     {"flt_new", ts::TfId::None},
     {"flt_warn", ts::TfId::None},
+    {"bs_eq", ts::TfId::None},
+    {"pl_npp_ttm", ts::TfId::None},
 };
-static_assert(kFltNew == 0 && kFltWarn == 1 && kFilters == 2, "过滤项 = kDayColDefs 末两列, 同序");
+static_assert(kFltNew == 0 && kFltWarn == 1 && kFltPb == 2 && kFltPe == 3 && kFilters == 4, "过滤项 = kDayColDefs 末四列, 同序");
 
 // 划分维的类: 列值 → 类 (−1 = 不在市)
 constexpr int flag(float x) { return x > 0.5f ? 1 : 0; }
+constexpr int non_pos(float x) { return x > 0.0f ? 0 : 1; } // 缺 (NaN) 亦剔
+// 过滤项 f 的剔法: 列值 → 1 = 剔
+constexpr int (*kFilterDrop[kFilters])(float) = {flag, flag, non_pos, non_pos};
 constexpr int st_cls(float x) { return x >= 0.0f && x < static_cast<float>(kSts) ? static_cast<int>(x) : -1; }               // st_level 0..3
 constexpr int board_cls(float x) { return x >= 1.0f && x < static_cast<float>(kBoards + 1) ? static_cast<int>(x) - 1 : -1; } // board 1..5
 static_assert(kBoardShMain + 1 == fund::kBoardShMain && kBoardSzMain + 1 == fund::kBoardSzMain && kBoardStar + 1 == fund::kBoardStar &&
@@ -144,7 +149,7 @@ void fill_row(const FeatureRead::DayColumns &c, Tape &t, size_t r, float *pre, f
       continue;
     int flt = 0;
     for (int f = 0; f < kFilters; ++f)
-      flt |= flag(v(kColFilter0 + static_cast<size_t>(f))) << f;
+      flt |= kFilterDrop[f](v(kColFilter0 + static_cast<size_t>(f))) << f;
     const size_t id = ((static_cast<size_t>(st) * slice_radix(1) + static_cast<size_t>(bd)) * slice_radix(2) + static_cast<size_t>(flag(v(kColMargin)))) * slice_radix(3) + static_cast<size_t>(flt);
     cls[a] = static_cast<uint16_t>(id);
     ++cnt[id];

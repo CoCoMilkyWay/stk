@@ -100,7 +100,7 @@ stk/
 │   │   │   ├── Method/                                 # 🧮 TS.hpp / CS.hpp 时序 / 截面归一方法 (字段表 SRC 列引用)
 │   │   │   ├── Panel/                                  # 🧮 日频面板 (TS / CS 的日频数据源, 两者对仗)
 │   │   │   │   ├── Fund.hpp                            # 🧮 fund::Panel 日频 PIT 基本面 (全市场): 全交易日历 × 全局 A 轴 + 逐资产事件链; 市场收益 / 长窗量预计算
-│   │   │   │   ├── PoolSpec.hpp                        # 🧮 池参数 = 维表 (一维一张取值表): 风格 × 端 × 只数 × 周期 × 权重 (单选维) × ST / 板块 / 融资 (划分维) × 过滤 (次新 / 预警)
+│   │   │   │   ├── PoolSpec.hpp                        # 🧮 池参数 = 维表 (一维一张取值表): 风格 × 端 × 只数 × 周期 × 权重 (单选维) × ST / 板块 / 融资 (划分维) × 过滤 (次新 / 预警 / PB>0 / PE>0)
 │   │   │   │   │                                       #    · Spec = 单选维的下标 + 集合维的位集 (划分维 = 类之并, 过滤维 = 剔的项); 在市固定剔次日停牌 / 行业未知
 │   │   │   │   │                                       #    · 池名 (目录名) = 各维段以 "." 连 (集合维各位以 "+" 连); 显示名 = 简称 + 权重后缀 (低β200.等), 同简称按池表序加 A / B / C…
 │   │   │   │   │                                       #    · Grid = 各维勾选位集 (Style 页参数网格), specs_of 展开成一组 Spec (集合维 = 各位单独 + 整体; 过滤维另加不剔, 划分维不另测全)
@@ -488,7 +488,7 @@ stk/
 #   - 两档都要: 节点类放 Node/Common/<分类>/, 两档各写各的 NODE_ / FIELDS_ (列名跨档不许重名, FeatureMeta.cpp 编译期断言)
 #   - 新池:   不写节点; Beta → Style 点选后确认写 output/config/beta/pools.json (即进程内重启, 新池随即可算), 每个子池两档各一库
 #       · 新风格 (排序键) = features/Panel/PoolSpec.hpp 风格表加一行 + PoolSelect.cpp 键表 kKeyDefs 对应一行
-#       · 新过滤项 = PoolSpec.hpp 过滤表 kFilterValues 加一项 + PoolSelect.cpp 日行列表 kDayColDefs 末尾加其列 (类号混合进制随之扩)
+#       · 新过滤项 = PoolSpec.hpp 过滤表 kFilterValues 加一项 + PoolSelect.cpp 日行列表 kDayColDefs 末尾加其列 + 剔法表 kFilterDrop 加一项 (类号混合进制随之扩)
 #       · 新划分维 = PoolSpec.hpp 维表加一张类表 + PoolSelect.cpp 日行列表 / fill_row 的类映射各加一项 + TabStyle 维条排进一行
 #   - 其他文件一律不改: CMake 按档扫描生成 <Tier>/NodesGenerated.hpp + FieldsGenerated.hpp
 #

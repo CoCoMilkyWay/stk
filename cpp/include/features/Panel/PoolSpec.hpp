@@ -82,10 +82,12 @@ inline constexpr int kBoards = 5;
 enum Margin : uint8_t { kMarginOff,
                         kMarginOn };
 inline constexpr int kMargins = 2;
-// 过滤项 (列 > 0.5 = 剔)
+// 过滤项 (各按 all.bar 一列剔, 剔法见 PoolSelect.cpp kFilterDrop)
 enum Filter : uint8_t { kFltNew,
-                        kFltWarn };
-inline constexpr int kFilters = 2;
+                        kFltWarn,
+                        kFltPb,
+                        kFltPe };
+inline constexpr int kFilters = 4;
 
 struct StyleDef {
   const char *code;          // 池名风格段
@@ -158,6 +160,8 @@ inline constexpr DimValue kMarginValues[kMargins] = {
 inline constexpr DimValue kFilterValues[kFilters] = {
     {"nonew", "非次新", "剔上市龄 < 365 日历日 (flt_new = 1)"},
     {"nowarn", "无预警", "剔 交易 / 预亏 / 营收 / 分红 四项预警任一 (flt_warn = 1)"},
+    {"pbpos", "PB>0", "剔 归母权益 MRQ ≤ 0 或缺 (bs_eq)"},
+    {"pepos", "PE>0", "剔 归母净利 TTM ≤ 0 或缺 (pl_npp_ttm)"},
 };
 
 // 维 (维序 = 池名段序); 切片维 = 集合维 = [kDimSt, kDims), 第 k 个切片维 = kDimSt + k
