@@ -912,8 +912,14 @@ void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string
   paint(d, o);
   derive_watch(watch, d);
   const bool axis = d.dates != o.dates || d.quotes != o.quotes;
+  const auto sizes = [](const LinesDerived &x) {
+    std::array<size_t, kRowGroups> n{};
+    for (int g = 0; g < kRowGroups; ++g)
+      n[static_cast<size_t>(g)] = x.rows[g].size();
+    return n;
+  };
   d.axis_gen = o.axis_gen + axis;
-  d.val_gen = o.val_gen + (axis || val_rows(d) != val_rows(o));
+  d.val_gen = o.val_gen + (axis || sizes(d) != sizes(o) || val_rows(d) != val_rows(o));
 }
 
 void MakeLinesRoll(const LinesDerived &d, const LinesLeg &lg, int years, LinesRolls &r) {

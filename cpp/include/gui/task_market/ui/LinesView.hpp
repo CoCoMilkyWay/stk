@@ -203,7 +203,7 @@ struct LinesDerived {
   std::vector<int32_t> val_at;                                 // [日并集轴] 两侧账的行 (估值的源下标; −1 = 账无该日 / 没算成)
   LinesPaintKey paint;                                         // 配色的来源
   uint64_t axis_gen = 0;                                       // 日并集轴 / 两侧账变的次数 (val_at 的来源; 滚动分位键)
-  uint64_t val_gen = 0;                                        // 估值行 (位置 + 估值腿) 或 axis_gen 变的次数 (末点分位键)
+  uint64_t val_gen = 0;                                        // 各组行数 / 估值行 (位置 + 估值腿) / axis_gen 变的次数 (末点分位键)
   LinesAt at(const std::string &id) const {
     const auto it = index.find(id);
     return it == index.end() ? LinesAt{} : it->second;
