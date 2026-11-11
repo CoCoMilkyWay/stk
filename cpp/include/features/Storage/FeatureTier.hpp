@@ -185,7 +185,7 @@ TIER_LEVELS(GENERATE_CHECK_LEVEL)
 //   L_1day 表另折入 kDaySemver: 日行口径变 (列名不变) 时 +1, 同理
 // ============================================================================
 constexpr uint64_t kLabelSemver = 1;
-constexpr uint64_t kDaySemver = 2;
+constexpr uint64_t kDaySemver = 3;
 constexpr uint64_t fnv1a_str(uint64_t h, const char *s) {
   for (; *s; ++s)
     h = (h ^ static_cast<uint8_t>(*s)) * 0x100000001b3ULL;

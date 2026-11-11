@@ -409,7 +409,8 @@ struct Eval {
 };
 
 namespace catalog {
-std::vector<Choice> pools(); // key = 池下标
+std::vector<Choice> pools();                        // key = 池下标
+void move_pool(SharedData &data, int from, int to); // 池表调序 (池下标; 写 pools.json 即进程内重启)
 std::string pool_cn(const std::string &pool);
 std::vector<Choice> levels();
 std::vector<Choice> holds(const SharedData &data, int level);

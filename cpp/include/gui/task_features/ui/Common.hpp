@@ -7,14 +7,13 @@
 
 #include <cstddef>
 
-struct Feature;
 struct ImVec4;
 struct SharedData;
 
 namespace GUI::Features {
 
-// ---- 作用域条 (Table / NodeTime 页顶): 池 × 档 = 库, 层 = 视图; Features 自持, 不与 Alpha 同步 ----
-void RenderScope(Feature &feature);
+// ---- 作用域条 (Table / NodeTime 页顶): 池 × 档 = 库, 层 = 视图; Features 自持, 不与 Alpha 同步; 池下拉可拖动调池表序 ----
+void RenderScope(SharedData &data);
 
 // ---- 状态面 (阶段名/颜色走 gui/Tasks.hpp TextPhase) ----
 // Row: Compute | (仅 L_1min) | Cancel | Status: xxx (unit done/total)

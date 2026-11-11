@@ -3,6 +3,7 @@
 
 #include "disk/Disk.hpp"
 #include "gui/util/Chart.hpp" // tint / toggle_button / button_bar
+#include "gui/util/Reorder.hpp"
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"  // TableFindByID (右表内容宽)
@@ -20,6 +21,7 @@
 #include <functional>
 #include <initializer_list>
 #include <map>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -44,7 +46,7 @@ constexpr const char *kStarOn = "\xef\x80\x85", *kStarOff = "\xef\x80\x86";
 constexpr ImVec4 kStarCol(1.0f, 0.8f, 0.2f, 1.0f);
 constexpr const char *kStarTip = "星 = 自选\n"
                                  "• 点星 = 加入 / 移出自选 (名格右键同); 实星 = 已在自选\n"
-                                 "• 自选 = 类别条 自选 组: 全局一份, 各页同一份, 加入序\n"
+                                 "• 自选 = 类别条 自选 组: 全局一份, 各页同一份; 新加的排末尾, 原序下拖动调序\n"
                                  "• 适用: 篮子行 + 成分行; 因子 / 策略无";
 bool watched(const LinesUIState &ui, const std::string &w) { return std::ranges::find(ui.watch, w) != ui.watch.end(); }
 // 加入 (排末尾) ↔ 移出
@@ -155,7 +157,8 @@ SheetCell ranked_cell(const Ranked &q, const char *fmt) {
 // 一张右表: 组 g 的行, 列 = 星 + cols (cols[0] = 名); order = 列出的组内行 (按表头排序重排后画); ps = 该组的格 (sheet_of);
 // on(t) = 选中 (高亮), 点行 → click(t) (t = 表行, 见 LinesSheet::at); 悬停表行 t 的数值列 k → hover(t, k).
 // 宽由外面定: 名列伸满余宽, 内容更宽 → 横滚 (星 / 名列钉住). 篮子行名前 ▸ 展开 / 收起 (ui.pick.open, 至多一行): 展开行钉在表头下,
-// 其下先列成分行 (缩进; 同列排序), 再列其余组内行; 字色 = 线色; 有自选键的行: 星格点 / 名格右键 = 加入 / 移出自选; 只画可见的行
+// 其下先列成分行 (缩进; 同列排序), 再列其余组内行; 字色 = 线色; 有自选键的行: 星格点 / 名格右键 = 加入 / 移出自选; 只画可见的行;
+// 原序下拖动调序 (Reorder): 自选组 = 改 ui.watch 即存, 指数组子池 = 交 ui.pool_move (改池表)
 template <class On, class Click, class Hover>
 void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, const LinesDerived &d, int g, std::vector<size_t> order,
            const LinesSheet &ps, const On &on, const Click &click, const Hover &hover) {
@@ -204,6 +207,11 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
         return rs[a].cn.compare(rs[b].cn);
       },
       num);
+  // 拖动调序: 原序 (无表头排序) 下的子池 / 自选行; 全A 两行 / 钉住的展开行 / 成分行不动
+  const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
+  const bool drag = (g == kGroupPool || g == kGroupWatch) && (!ss || ss->SpecsCount == 0);
+  const auto movable = [&](size_t t) { return drag && t < R && t != pin && (g != kGroupPool || rs[t].pool != kAllPool); };
+  Reorder rd((std::string(id) + "##order").c_str());
   std::vector<size_t> lines; // 钉行之下的画序: 钉行的成分行 t ≥ R, 再其余组内行 t < R
   if (pin != SIZE_MAX) {
     for (size_t t = R; t < ps.at.size(); ++t)
@@ -231,20 +239,25 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
       ImGui::Indent();
       ImGui::TreeNodeEx(label.c_str(), kNode | ImGuiTreeNodeFlags_Leaf | (on(t) ? ImGuiTreeNodeFlags_Selected : 0));
       ImGui::Unindent();
-      if (ImGui::IsItemClicked())
+      rd.item(static_cast<int>(t), false);
+      if (rd.tapped(static_cast<int>(t)))
         click(t);
     } else if (h.q.is(Quote::kBasket)) {
       const bool open = t == pin;
       ImGui::SetNextItemOpen(open, ImGuiCond_Always);
       ImGui::TreeNodeEx(label.c_str(), kNode | ImGuiTreeNodeFlags_OpenOnArrow | (on(t) ? ImGuiTreeNodeFlags_Selected : 0));
+      rd.item(static_cast<int>(t), movable(t));
       if (ImGui::IsItemToggledOpen()) {
         ui.pick.open = open ? std::string{} : h.id;
         ImGui::SetScrollY(0.f);
-      } else if (ImGui::IsItemClicked()) {
+      } else if (rd.tapped(static_cast<int>(t))) {
         click(t);
       }
-    } else if (ImGui::Selectable(label.c_str(), on(t), ImGuiSelectableFlags_SpanAllColumns)) {
-      click(t);
+    } else {
+      ImGui::Selectable(label.c_str(), on(t), ImGuiSelectableFlags_SpanAllColumns);
+      rd.item(static_cast<int>(t), movable(t));
+      if (rd.tapped(static_cast<int>(t)))
+        click(t);
     }
     ImGui::PopStyleColor();
     const int hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 2 : -1; // 行跨全列: 悬停的数值列
@@ -273,6 +286,19 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
     for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i)
       row(lines[static_cast<size_t>(i)]);
   ImGui::EndTable();
+  // 落定: 组内行 → 池表 / 自选键的移动 (行序与二者同序, 端点照搬即同一移动)
+  const std::optional<Move> m = rd.end();
+  if (!m)
+    return;
+  const LinesRow &a = rs[static_cast<size_t>(m->from)], &b = rs[static_cast<size_t>(m->to)];
+  if (g == kGroupPool) {
+    ui.pool_move = Move{a.pool, b.pool}; // 改池表 = 进程内重启, 交 TaskMarket 在本帧画完后做
+    return;
+  }
+  assert(g == kGroupWatch);
+  const auto index = [&](const std::string &w) { return static_cast<int>(std::ranges::find(ui.watch, w) - ui.watch.begin()); };
+  apply_move(ui.watch, {index(a.watch), index(b.watch)});
+  SaveWatch(ui.watch);
 }
 
 // ---- 当日四列 (TodayCol; NAV / FLOW 右表全四列, VAL 只数 / 总市值; 不随区间): 只数 / 总市值 / 换手不着色, 流入按正负着色; 换手 / 流入格悬停看分子分母金额 ----
@@ -532,7 +558,7 @@ const LinesSheet &sheet_of(LinesUIState &ui, const StockInfos &infos, const Line
 void watch_bar(LinesUIState &ui, size_t n, const std::vector<std::string> &lost) {
   ImGui::TextDisabled("%zu 项", n);
   if (ImGui::IsItemHovered())
-    tip("自选 = 星列 / 名格右键加入的篮子行与成分行, 加入序\n"
+    tip("自选 = 星列 / 名格右键加入的篮子行与成分行; 新加的排末尾, 原序下左键 / 中键拖动调序\n"
         "• 全局一份 (%s), 与组合无关, 各页同一份\n"
         "• 与原行同一份选中 / 展开 (篮子行照样 ▸ 展开); 数值列底色 = 自选之间名次",
         disk::path(disk::WatchFile).string().c_str());
@@ -694,7 +720,8 @@ void legend_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, con
         "• 指数 / 行业 / 概念表上过滤条 (各页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 已画 / 展开的行恒列\n"
         "• 指数 / 行业 / 概念行名前 ▸ = 展开成分股 (至多一行, 各页同一份): 该行钉在表头下, 成分接在其下 (列同篮子行, 不能算的 -);\n"
         "  成分行 = 后复权收盘 (两条同一条), 与组内行同一套: 点 = 选中 (主图 + 日内栏 / FLOW 图; 至多 64 只), 收起后选中的照画\n"
-        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
+        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)\n"
+        "• 原序下子池 / 自选行左键 / 中键拖动调序 (子池 = 改池表序 pools.json, 即进程内重启; 全A 两行钉首)");
   table(ui, infos, d, kPageNav, kNavName, {recent_seg(ui.basket.feed), today_seg(), num_seg(v)});
 }
 
@@ -758,7 +785,8 @@ void legend_val(LinesUIState &ui, const LinesDerived &d, const LinesView &v, con
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中 / 展开行恒列\n"
         "• 行名前 ▸ = 展开成分股 (至多一行, 各页同一份; 该行钉在表头下): 各口 = 该股本只的估值分位 (底色 = 成分之间名次); 点成分行 = 选该股\n"
-        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
+        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)\n"
+        "• 原序下子池 / 自选行左键 / 中键拖动调序 (子池 = 改池表序 pools.json, 即进程内重启; 全A 两行钉首)");
   table(ui, infos, d, kPageVal, kValName, {today_seg(kTodayTurn), num_seg(v), val_seg(v)});
 }
 
@@ -847,7 +875,8 @@ void legend_flow(LinesUIState &ui, const LinesDerived &d, const std::vector<misc
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |当日资金流入| 筛本组的行, 已画 / 展开的行恒列\n"
         "• 行名前 ▸ = 展开成分股 (至多一行, 各页同一份; 该行钉在表头下): 资金流只当日; 点成分行 = 选中, 左图画它 (个股历史 + 新浪当日, 跨日接续)\n"
-        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)");
+        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)\n"
+        "• 原序下子池 / 自选行左键 / 中键拖动调序 (子池 = 改池表序 pools.json, 即进程内重启; 全A 两行钉首)");
   table(ui, infos, d, kPageFlow, kFlowNameCol, {today_seg(), flow_seg(ui.basket, days)}, days, ui.basket.flow_ends);
 }
 
@@ -868,7 +897,8 @@ void legend_cta(LinesUIState &ui, const LinesDerived &d, const LinesView &v, con
         "• 两者首次打开本页一趟合成, 存在库目录 cta/ 下, 之后只补新日\n"
         "• 理想 / 夏普 = NAV 页同名列 (随 NAV 区间), 供挑标的参考; 悬停表头看算法\n"
         "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中 / 展开行恒列\n"
-        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序");
+        "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序\n"
+        "• 原序下子池 / 自选行左键 / 中键拖动调序 (子池 = 改池表序 pools.json, 即进程内重启; 全A 两行钉首)");
   table(ui, infos, d, kPageCta, kCtaName, {num_seg(v, {kNumIdeal, kNumSharpe})});
 }
 

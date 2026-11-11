@@ -9,6 +9,7 @@
 #include "implot.h"
 
 #include <cstdio>
+#include <optional>
 #include <string>
 
 namespace GUI::Features {
@@ -17,7 +18,8 @@ namespace GUI::Features {
 // 作用域条
 // ============================================================================
 
-void RenderScope(Feature &feature) {
+void RenderScope(SharedData &data) {
+  Feature &feature = data.feature;
   Feature::Selection &sel = feature.selection;
   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "1. Scope:");
   ImGui::SameLine();
@@ -25,16 +27,20 @@ void RenderScope(Feature &feature) {
   ImGui::SameLine();
   ImGui::SetNextItemWidth(140);
   if (ImGui::BeginCombo("##pool", pool_def(sel.pool).name_cn.c_str())) {
-    for (PoolId p = 0; p < pool_count(); ++p) {
+    Reorder rd("##pool_order");
+    for (const PoolId p : pool_ids()) {
       const PoolDef &d = pool_def(p);
       const bool selected = sel.pool == p;
       if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
         sel.pool = p; // 选中是 ColRef (带库), 切池保留
+      rd.item(p, p != kAllPool);
       if (ImGui::IsItemHovered())
         pool_tip(p);
       if (selected)
         ImGui::SetItemDefaultFocus();
     }
+    if (const std::optional<Move> m = rd.end())
+      move_pool(data, *m);
     ImGui::EndCombo();
   }
   ImGui::SameLine();

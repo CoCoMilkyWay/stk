@@ -11,6 +11,7 @@
 #include "gui/task_market/ui/QuotesPanel.hpp" // Sync
 #include "gui/task_market/ui/TabAsset.hpp"
 #include "gui/task_market/ui/TabLines.hpp"
+#include "gui/util/PoolTip.hpp"  // move_pool (右表指数组拖动)
 #include "shared/Basket.hpp"     // basket_count (篮子键集)
 #include "shared/SharedData.hpp" // config, asset, asset_info, task_state.database
 
@@ -20,6 +21,7 @@
 #include <cstdint>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -102,6 +104,8 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
     if (action == -1)
       e.portfolio_service->RequestCancel();
     Engine::SyncPortfolio(data, e, action == 1);
+    if (const std::optional<Move> m = std::exchange(ui.pool_move, std::nullopt))
+      move_pool(data, *m);
     ImGui::EndChild();
   };
 

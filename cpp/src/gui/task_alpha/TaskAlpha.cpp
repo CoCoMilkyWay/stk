@@ -293,11 +293,13 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           for (const PoolDef &d : feature_pools())
             cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name_cn.c_str()).x);
           cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
+          Reorder rd("##factor_pool_order");
           for (const PoolId p : pool_ids()) {
             const PoolDef &d = pool_def(p);
             const bool selected = state->want_pool == p;
             if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
               state->want_pool = p;
+            rd.item(p, p != kAllPool);
             if (ImGui::IsItemHovered())
               pool_tip(p);
             ImGui::SameLine(cn_x);
@@ -305,6 +307,8 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
             if (selected)
               ImGui::SetItemDefaultFocus();
           }
+          if (const std::optional<Move> m = rd.end())
+            move_pool(data, *m);
           ImGui::EndCombo();
         }
         ImGui::SameLine();

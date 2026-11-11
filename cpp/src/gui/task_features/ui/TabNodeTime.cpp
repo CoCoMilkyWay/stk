@@ -342,7 +342,7 @@ static void render_node_time(const Feature &feature) {
 }
 
 void RenderTabNodeTime(SharedData &data) {
-  RenderScope(data.feature);
+  RenderScope(data);
   render_node_time(data.feature);
 }
 

@@ -17,7 +17,8 @@
 #include "gui/engine/services/RunService.hpp"
 #include "gui/engine/services/SearchService.hpp"
 #include "gui/task_agent/services/ReplayService.hpp"
-#include "misc/date.hpp" // dash
+#include "gui/util/PoolTip.hpp" // move_pool
+#include "misc/date.hpp"        // dash
 #include "misc/epoch.hpp"
 #include "shared/SharedData.hpp"
 
@@ -698,6 +699,7 @@ std::vector<Choice> pools() {
     out.push_back({static_cast<int>(i), feature_pools()[i].name});
   return out;
 }
+void move_pool(SharedData &data, int from, int to) { GUI::move_pool(data, {from, to}); }
 std::string pool_cn(const std::string &pool) { return pool_def(pool).name_cn; }
 std::vector<Choice> levels() {
   std::vector<Choice> out;

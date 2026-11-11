@@ -14,10 +14,11 @@
 //       表头排序时按同列), 再列其余行; 成分行与篮子行同一种行 (LinesRow: 一对线 = 后复权收盘, 两条同一条; 行情键 = 个股; 估值腿 = 个股账),
 //       列同一张表, 能算的填 (近况 / 总市值 / 换手 / 流入 = 个股新浪当日 + 基本面; NAV 数值列 / VAL 各口名次在成分之间; FLOW 只当日), 其余 "-";
 //       名悬停看权占比 / 行业 / 估值; 点成分行 = 同篮子行的选中 (NAV 主图画线 + 日内栏 / FLOW 图叠加, 线色按 id 定色相; VAL 选为标的), 收起后选中的照画;
-//     自选 (各页类别条都有, 排在概念后): 篮子行 / 成分行可加, 全局一份 (output/config/market/watch.json, 加入序); 各页右表首列 = 星列 (点星 = 加入 / 移出),
+//     自选 (各页类别条都有, 排在概念后): 篮子行 / 成分行可加, 全局一份 (output/config/market/watch.json, 自选序); 各页右表首列 = 星列 (点星 = 加入 / 移出),
 //       名格右键同; 自选组的行 = 原行的副本 (选中 / 展开同一份, 篮子行照样 ▸ 展开), 数值列名次在自选之间; 找不到的键 (概念换快照没了) 在表上一行计数, 可一键移出;
 //     表头悬停 = 该列说明 (同一格式: 列名 = 全称 + 算法 / 数据 / 显示 / 适用 四行);
-//     其余数值列底色 = 同组同列截面名次 (好绿 → 差红: 年化 / 夏普高好, 年换手低好; 同 VAL 配色); 表头点排序 (组内, 升 → 降 → 原序; 名列按色相; VAL 表同)
+//     其余数值列底色 = 同组同列截面名次 (好绿 → 差红: 年化 / 夏普高好, 年换手低好; 同 VAL 配色); 表头点排序 (组内, 升 → 降 → 原序; 名列按色相; VAL 表同);
+//     原序下子池 / 自选行左键 / 中键拖动调序 (子池 = 改池表序 pools.json, 即进程内重启; 全A 两行钉首)
 //   NAV 日内栏 (类别条旁 "日内" 开关, 默认开): 主图上方占左栏 1/3 高 (日内 : 主图 = 1 : 2), 选中的篮子行 / 成分行同主图线色叠加日内收盘线
 //     (Market::RenderBasketIntraday: Market 篮子历史同一份, 当日由新浪快照合成; 对首日前收的涨跌幅, 横网格 (含 0 轴) 涨跌幅小字内标在右壁,
 //      线名中文小字贴线尾, 读数看十字光标); 只一条 = 同一张图改画分钟蜡烛 + 现价十字 (标涨跌幅 / 时刻)
@@ -71,6 +72,7 @@
 #include "gui/task_market/ui/LinesView.hpp"        // 派生 → 滚动分位 / 末点分位 → 视图
 #include "gui/task_market/ui/QuotesPanel.hpp"      // BasketState / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
 #include "gui/util/Chart.hpp"                      // DayRange (区间条)
+#include "gui/util/Reorder.hpp"                    // Move (右表拖动调序)
 #include "imgui.h"                                 // ImVec4 (右表格)
 #include "shared/Basket.hpp"                       // kGroupPool / kBasketGroups
 
@@ -79,6 +81,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -223,9 +226,10 @@ struct LinesUIState {
   LinesStage<LinesSheetKey, LinesSheet> sheet[kPages]; // [LinesPage] 右表格
   LinesRange range;
   LinesPick pick;
-  bool watch_loaded = false;      // 读过自选文件
-  std::vector<std::string> watch; // 自选键 (= 文件, 加入序; 改了即存)
-  int band_years = kBandYearsDef; // VAL 滚动窗 N (年; 右图例滑条)
+  bool watch_loaded = false;          // 读过自选文件
+  std::vector<std::string> watch;     // 自选键 (= 文件, 自选序; 改了即存)
+  std::optional<GUI::Move> pool_move; // 右表指数组拖定的池表移动 (PoolId; 改池表 = 进程内重启, 由 TaskMarket 在本帧画完后做)
+  int band_years = kBandYearsDef;     // VAL 滚动窗 N (年; 右图例滑条)
   bool log_y = false;
   std::set<std::string> reveal;                                              // 待在主图例里回默认显隐的线 ID (行刚选中; 画到时消费; 理想列显, 可成交列隐)
   std::string shown_key;                                                     // 上帧主图各线显隐 (进 fit 键)
@@ -239,7 +243,7 @@ struct LinesUIState {
 };
 
 // 自选文件 output/config/market/watch.json (GUI 线程读写; NAV 右表星列 / 右键增删): { "watch": [ "sw01.加", "BK0493.加", "600512.SH", … ] }
-//   条目 = 自选键 (LinesRow::watch), 文件序 = 加入序; 与组合无关, 全局一份
+//   条目 = 自选键 (LinesRow::watch), 文件序 = 自选序 (新加的排末尾, 右表自选组原序下可拖动调); 与组合无关, 全局一份
 std::vector<std::string> LoadWatch();                  // 文件不存在 = 空; 格式不对 → assert
 void SaveWatch(const std::vector<std::string> &watch); // 原子替换
 

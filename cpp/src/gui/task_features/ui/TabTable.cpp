@@ -902,7 +902,7 @@ static void render_filter_dropdown(const char *label, bool &show_dropdown, std::
 void RenderTabTable(SharedData &data, const Preview &pv, TableUIState &ui_state) {
   Feature &feature = data.feature;
   Feature::Selection &sel = feature.selection;
-  RenderScope(feature);
+  RenderScope(data);
 
   // ==========================================================================
   // Section 2: Filters

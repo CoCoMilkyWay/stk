@@ -5,6 +5,7 @@
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Mine.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/util/Reorder.hpp"
 
 #include "imgui.h"
 #include "nlohmann/json.hpp"
@@ -225,18 +226,22 @@ void tip_long(const std::string &s) {
 }
 
 // ---- Mine ----
-void scope_row(const SharedData &data, State &s, bool locked) {
+void scope_row(SharedData &data, State &s, bool locked) {
   Scope &o = s.opt.sc;
   ImGui::TextColored(kColHead, "1. Scope:");
   ImGui::SameLine();
   ImGui::BeginDisabled(locked);
   ImGui::SetNextItemWidth(160);
   if (ImGui::BeginCombo("##pool", o.pool.c_str())) {
+    Reorder rd("##pool_order");
     for (const Choice &p : catalog::pools()) {
       const std::string label = p.name + "  " + catalog::pool_cn(p.name);
       if (ImGui::Selectable(label.c_str(), p.name == o.pool))
         o.pool = p.name;
+      rd.item(p.key, p.key != 0);
     }
+    if (const std::optional<Move> m = rd.end())
+      catalog::move_pool(data, m->from, m->to);
     ImGui::EndCombo();
   }
   const std::vector<Choice> lvs = catalog::levels();
@@ -1386,7 +1391,7 @@ void remark_panel(State &s, const Mine &m) {
 }
 
 // 过程 (本会话要求 + 全宽时间线) / 候选表 / 特征表 / 算子表 (这三页不必开会话, 随作用域) / 工具表 (固定); 刚进 Choose 切回过程并滚到底 (问题在那)
-void render_mine(const SharedData &data, State &s) {
+void render_mine(SharedData &data, State &s) {
   Mine &m = *s.mine;
   scope_row(data, s, m.live());
   session_row(data, s);

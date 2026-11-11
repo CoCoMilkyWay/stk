@@ -1,16 +1,22 @@
 #pragma once
 
-// 池的悬停 (Beta Style / Compute, Market, 各页池下拉同一份): 子池 = 首行 head, 其下逐维一行 维 | 取值 | 说明 (pool::detail; 不起作用的维灰)
-//   列位与窗尺寸都按本帧内容现算 (不用表格 / 不等自适应): 切换悬停的池时窗当帧就是终尺寸, 不跳
+// 池列表公共件 (Beta Style / Compute, Market, 各页池下拉同一份):
+//   悬停: 子池 = 首行 head, 其下逐维一行 维 | 取值 | 说明 (pool::detail; 不起作用的维灰)
+//     列位与窗尺寸都按本帧内容现算 (不用表格 / 不等自适应): 切换悬停的池时窗当帧就是终尺寸, 不跳
+//   调序: 各池列表拖动 (gui/util/Reorder.hpp) 落定 → move_pool 改池表序
 
 #include "features/Panel/PoolSpec.hpp"
 #include "features/Storage/FeatureLib.hpp" // pool_def / kAllPoolTip
+#include "gui/util/Reorder.hpp"
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
+#include "shared/SharedData.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <string>
+#include <vector>
 
 namespace GUI {
 
@@ -59,6 +65,18 @@ inline void pool_tip(PoolId p) {
     tip("%s", kAllPoolTip);
   else
     pool_tip(d.spec, d.name_cn + "  " + d.name);
+}
+
+// 池表按 m 移一池 (下标 = PoolId; all 钉在表首不动) → 写 pools.json, 进程内重启 (各页按新池表重建, 同 Beta → Style 落地)
+inline void move_pool(SharedData &data, const Move &m) {
+  assert(m.from != kAllPool && m.to != kAllPool && "all 钉在池表首");
+  std::vector<pool::Spec> v;
+  for (const PoolId p : pool_ids())
+    if (p != kAllPool)
+      v.push_back(pool_def(p).spec);
+  apply_move(v, {m.from - 1, m.to - 1});
+  pool::save_pools(v);
+  data.reinit = {.requested = true, .online = false};
 }
 
 } // namespace GUI

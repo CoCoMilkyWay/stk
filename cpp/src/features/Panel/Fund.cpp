@@ -1209,11 +1209,11 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
   // ---- cn_stock_financial_income_general_pit (CUTOFF=-1; 年报链 ni_raw + 全报告期 YTD 链) ----
   scan.add(
       income, spec("cn_stock_financial_income_general_pit"),
-      {"fs_quarter_index", "report_date", "net_profit_to_parent_shareholders", "total_operating_revenue",
+      {"report_date", "net_profit_to_parent_shareholders", "total_operating_revenue",
        "operating_costs", "total_operating_costs", "operating_profit", "total_profit", "fin_interest_expense",
        "finance_expense", "income_tax_expense", "net_profit", "eps_basic"},
       IncomeHits{}, [&axes](const Rows &r, IncomeHits &h) {
-        const pq::Col fqi = r.col("fs_quarter_index"), rd = r.col("report_date");
+        const pq::Col rd = r.col("report_date");
         const pq::Col np = r.col("net_profit_to_parent_shareholders");
         const pq::Col rev = r.col("total_operating_revenue"), cogs = r.col("operating_costs");
         const pq::Col cost = r.col("total_operating_costs"), op = r.col("operating_profit");
@@ -1239,7 +1239,8 @@ void EventScan::add(fundamental::Scan &scan, const Axes &axes) {
           ev.x[inc_np_parent] = np.f32(i);
           ev.x[inc_eps] = eps.f32(i);
           h.ytd.push({a, ev});
-          if (fqi.i32(i, -1) == 4)
+          // 年报 = 报告期 12-31 (源 fs_quarter_index 不可信: 2021 三季报大批标成 4)
+          if (ev.report_date % 10000 == 1231)
             h.annual.push({a, {ev.v, ev.report_date, ev.x[inc_np_parent]}});
         });
       });

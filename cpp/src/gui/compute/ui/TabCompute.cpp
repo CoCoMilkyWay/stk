@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -239,7 +240,7 @@ static bool side_pool(LibSide side, PoolId p) {
 }
 
 // 库表: 一行一池, 本页各档一组同构子列 (他页的库格留空)
-static void render_libraries(ComputeState &state, const SharedData &data, bool is_running, LibSide side) {
+static void render_libraries(ComputeState &state, SharedData &data, bool is_running, LibSide side) {
   const Config &config = data.config;
   const char *const busy = busy_reason(state, data);
   const std::vector<TierId> tiers = side_tiers(side);
@@ -268,6 +269,7 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
             "• Rebuild = 全量重建 (清库, 按规划重建资产轴从头算; 先弹窗确认)\n"
             "• Append = 从库末日续算新日 (沿用库资产轴, 与同轴全量逐位一致)\n"
             "• Remove = 删库 (清单 / 日文件 / 续算点; 先弹窗确认); 下游库保留, 本库重新落盘齐前不可算\n"
+            "• 池列左键 / 中键拖动 = 调池表序 (all 钉首; 写 pools.json 即进程内重启, 各页按新序)\n"
             "\n"
             "• Beta 页 = all.bar (全市场根库: Style 调优与 Market 的源); Alpha 页 = all.lob + 子池各档 (因子的张量库)",
             misc::dash(fundamental::kSyncStart).c_str(), misc::dash(config.start_date).c_str());
@@ -316,13 +318,15 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
   }
   ImGui::TableHeadersRow();
 
+  Reorder rd("##lib_pool_order");
   for (const PoolId p : pool_ids()) {
     if (!shown(p))
       continue;
     const PoolDef &pd = pool_def(p);
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(pd.name.c_str());
+    ImGui::Selectable(pd.name.c_str());
+    rd.item(p, p != kAllPool);
     if (ImGui::IsItemHovered())
       GUI::pool_tip(p);
     ImGui::TableNextColumn();
@@ -348,6 +352,8 @@ static void render_libraries(ComputeState &state, const SharedData &data, bool i
     }
   }
   ImGui::EndTable();
+  if (const std::optional<Move> m = rd.end())
+    move_pool(data, *m);
 }
 
 // 一档的核布局: 物理核拓扑 + 按档预取 / 截面 / 落盘核数推导, TS worker 数不可配 (见 StageLayout)

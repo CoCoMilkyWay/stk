@@ -156,7 +156,7 @@ stk/
 │   │   │   ├── Config.hpp                              # 🖥️ 颜色 / 字体 / 布局
 │   │   │   ├── Tasks.hpp                               # 🖥️ 任务树: 左栏选中 / 状态标签 / 生命周期
 │   │   │   ├── util/Service.hpp                        # 🖥️ 后台单线程服务骨架 GUI::Service<Derived, Req> (CRTP): 新请求覆盖旧请求; 全部 GUI 服务共用
-│   │   │   ├── util/                                   # 🖥️ 其余公共件: Chart (图表件) / Sparkline (格内迷你图) / Tip / PoolTip (子池悬停 = 逐维拆解, 各页同一份) / Color / Board (板块口径) / AssetFilter (资产筛选栏) / Latex
+│   │   │   ├── util/                                   # 🖥️ 其余公共件: Chart (图表件) / Sparkline (格内迷你图) / Tip / PoolTip (池列表公共件: 子池悬停 = 逐维拆解 + 拖动调池表序, 各页同一份) / Reorder (列表拖动调序: 子池 / 自选) / Color / Board (板块口径) / AssetFilter (资产筛选栏) / Latex
 │   │   │   ├── icon_bar/                               # 🖥️ 图标栏: 网络探测 (NetworkService) / FPS
 │   │   │   ├── compute/                                # 🖥️ 特征计算 (Beta / Alpha 的 Compute 页同一份)
 │   │   │   │   ├── ComputeHub.hpp                      # 🖥️ 计算面 ComputeHub (一个服务 + 一张库表; Beta 列 all.bar, Alpha 列其余); 数据换进后自动续算; 一轮收尾即进程内重启
@@ -407,8 +407,8 @@ stk/
 └── output/                                             # 📁 落盘 (与 cpp/ 同级): config/ 人定的输入 + 按产研流水线分段的产物 + run/ 各段运行产物的同构镜像 (整删无损)
     ├── config/                                         # ⚙️ 配置: 一任务一目录 (与左栏任务树对仗); 本机件 (不进仓库) 由 output/.gitignore 逐项列出
     │   ├── settings/settings.json                      # ⚙️ 归档目录 / 回测日历起点 (末日随数据) / CSV 文件名 / 交易成本 / 同步开关 (本机)
-    │   ├── beta/pools.json                             # ⚙️ 子池表: Beta → Style 选定的子池 (池名 = features/Panel/PoolSpec.hpp 规范串; 无文件 = 缺省池表); 写入即进程内重启生效
-    │   ├── market/watch.json                           # ⚙️ Market 自选: 篮子键 / 个股代码 (本机)
+    │   ├── beta/pools.json                             # ⚙️ 子池表: Beta → Style 选定的子池 (池名 = features/Panel/PoolSpec.hpp 规范串; 无文件 = 缺省池表; 文件序 = 池表序, 各页池列表左键 / 中键拖动可调); 写入即进程内重启生效
+    │   ├── market/watch.json                           # ⚙️ Market 自选: 篮子键 / 个股代码 (本机; 文件序 = 自选序, 右表自选组拖动可调)
     │   ├── agent/                                      # ⚙️ Agent: prompt/<名>.md 提示词模板 (system / first / round / retry / review / test) · families.md 特征族卡
     │   │                                               #    · keys.json 后端 key · ui.json Mine / Config 页选项 (本机)
     │   └── live/                                       # ⚙️ Live: lists/<名>.csv 调仓名单 (名 = 字母数字下划线; 每行首列一个 6 位代码, 行序即排名)
