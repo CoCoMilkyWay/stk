@@ -536,14 +536,17 @@ void range(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
 }
 
 // 右表: 风格行 (点 = 打开 / 收起) + 打开的风格之下 全A 两行 + 各线 (点行 = 选中 ↔ 去掉, 选中的行底色亮; 有选池态的在前; 底色 = 组内名次; 缺省中位夏普降序);
-// 只画可见行. 返回悬停的线 (−1 = 无)
+// 各列逐帧按可见行的内容定宽 (不拉满, 超宽横滚), 行高 = 字高; 只画可见行. 返回悬停的线 (−1 = 无)
 int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
-  constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
-                                     ImGuiTableFlags_SortTristate | ImGuiTableFlags_NoSavedSettings;
-  if (!ImGui::BeginTable("##pf_style_tbl", kColBase + kStyleCols, kFlags))
+  constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV |
+                                     ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate | ImGuiTableFlags_NoSavedSettings;
+  ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(ImGui::GetStyle().CellPadding.x, 1.0f));
+  const bool began = ImGui::BeginTable("##pf_style_tbl", kColBase + kStyleCols, kFlags);
+  ImGui::PopStyleVar();
+  if (!began)
     return -1;
   ImGui::TableSetupScrollFreeze(kColBase, 1);
-  ImGui::TableSetupColumn("风格 / 参数", ImGuiTableColumnFlags_WidthStretch);
+  ImGui::TableSetupColumn("风格 / 参数");
   for (int c = 0; c < kStyleCols; ++c)
     ImGui::TableSetupColumn(kCols[c].name, c == kColSharpeMed ? ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending : 0);
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
@@ -604,7 +607,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
         ImGui::TextDisabled("-");
     }
   };
-  const float rh = ImGui::GetFrameHeight();
+  const float rh = ImGui::GetTextLineHeight();
   constexpr ImGuiTreeNodeFlags kNode = ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_NoTreePushOnOpen;
   ImGuiListClipper clip;
   clip.Begin(static_cast<int>(rows.size()));
@@ -660,9 +663,9 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
         break;
       }
       case kRowFoot:
-        ImGui::TextDisabled("全选池 (只数 = 全, 不分风格)  落地 %d · 选 %d", count_all(s.landed), count_all(s.chosen));
+        ImGui::TextDisabled("全选池  (落地 %d · 选 %d)", count_all(s.landed), count_all(s.chosen));
         if (ImGui::IsItemHovered())
-          tip("切片内全选的池 (如 ST / *ST / 沪主板 / 融资): 任一风格的网格勾 只数 = 全 即列出");
+          tip("全选池 = 只数 = 全, 不分风格: 切片内全选的池 (如 ST / *ST / 沪主板 / 融资); 任一风格的网格勾 只数 = 全 即列出");
         break;
       }
       ImGui::PopID();
