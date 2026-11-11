@@ -65,7 +65,7 @@ inline std::uint8_t sw2021_l1_name_to_id(std::string_view name) {
 // 覆盖上市初期连板炒作与 6 / 12 个月限售解禁窗口
 inline constexpr float kNewListDays = 365.0f;
 
-// 板块 (代码判定, 静态): 落盘列 board 的取值域; 北交所不活跃 (不进任何池), 其余 (B 股等) 记未知
+// 板块 (代码判定, 静态): 落盘列 board 的取值域; 其余 (B 股等) 记未知
 enum Board : std::uint8_t { kBoardUnknown,
                             kBoardShMain,  // 沪市主板 600 / 601 / 603 / 605
                             kBoardSzMain,  // 深市主板 000 / 001 / 002 / 003 / 004
