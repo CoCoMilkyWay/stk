@@ -37,6 +37,7 @@ constexpr float kFadeA = 0.12f;                                                 
 constexpr float kCellA = 0.45f;                                                            // 名次底色的不透明度
 constexpr float kNearPx = 8.0f;                                                            // 图上悬停: 离鼠标纵向这么近的线才算
 constexpr float kTagScale = 0.85f;                                                         // 线尾小字字号
+constexpr float kHeadScale = 0.8f;                                                         // 右表表头字号 (表头常比数值宽, 定列宽)
 constexpr size_t kIdlePoints = 200000;                                                     // 未选线合计画点上限 (超了按等步长抽点; 有选池态 / 悬停的线画全点)
 constexpr float kRangeH = 90.0f;                                                           // 区间条高 (同 Market 行情页)
 
@@ -553,7 +554,9 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   for (int c = 0; c < kColBase + kStyleCols; ++c) {
     if (!ImGui::TableSetColumnIndex(c))
       continue;
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * kHeadScale);
     ImGui::TableHeader(c == 0 ? "风格 / 参数" : kCols[c - kColBase].name);
+    ImGui::PopFont();
     if (ImGui::IsItemHovered())
       tip("%s", c == 0 ? "点风格行 = 打开 (跑参数网格) / 收起\n"
                          "点参数行 = 选为子池 ↔ 去掉 (图上点线同一份; 同一组参数的两种权重同一个池); 选中的行底色亮, 有选池态的线恒在前\n"
