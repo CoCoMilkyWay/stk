@@ -1,7 +1,8 @@
 {
   "pools": [
-    "ep.high.200.day.eq.all.sh_main+sz_main+star+chinext.all.all",
+    "size.low.100.day.eq.nost.sh_main+sz_main+star+chinext.all.nowarn",
     "ep.low.200.day.eq.all.sh_main+sz_main+star+chinext.all.all",
+    "ep.high.200.day.eq.all.sh_main+sz_main+star+chinext.all.all",
     "bp.high.200.day.eq.all.sh_main+sz_main+star+chinext.all.all",
     "bp.low.200.day.eq.all.sh_main+sz_main+star+chinext.all.all",
     "dy.high.200.day.eq.all.sh_main+sz_main+star+chinext.all.all",
@@ -27,7 +28,6 @@
     "price.low.200.day.eq.all.sh_main+sz_main+star+chinext.all.all",
     "price.high.200.day.eq.all.sh_main+sz_main+star+chinext.all.all",
     "size.high.200.day.eq.all.sh_main+sz_main+star+chinext.all.all",
-    "size.low.100.day.eq.nost.sh_main+sz_main+star+chinext.all.nowarn",
     "size.low.400.day.eq.nost.sh_main+sz_main+star+chinext.all.nowarn"
   ]
 }

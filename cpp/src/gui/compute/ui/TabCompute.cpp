@@ -319,14 +319,16 @@ static void render_libraries(ComputeState &state, SharedData &data, bool is_runn
   ImGui::TableHeadersRow();
 
   Reorder rd("##lib_pool_order");
-  for (const PoolId p : pool_ids()) {
+  const std::vector<PoolId> &po = GUI::pool_order();
+  for (int i = 0; i < static_cast<int>(po.size()); ++i) {
+    const PoolId p = po[i];
     if (!shown(p))
       continue;
     const PoolDef &pd = pool_def(p);
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::Selectable(pd.name.c_str());
-    rd.item(p, p != kAllPool);
+    rd.item(i, p != kAllPool);
     if (ImGui::IsItemHovered())
       GUI::pool_tip(p);
     ImGui::TableNextColumn();

@@ -228,7 +228,7 @@ struct LinesUIState {
   LinesPick pick;
   bool watch_loaded = false;          // 读过自选文件
   std::vector<std::string> watch;     // 自选键 (= 文件, 自选序; 改了即存)
-  std::optional<GUI::Move> pool_move; // 右表指数组拖定的池表移动 (PoolId; 改池表 = 进程内重启, 由 TaskMarket 在本帧画完后做)
+  std::optional<GUI::Move> pool_move; // 右表指数组拖定的池表移动 (pool_order 的位置; 由 TaskMarket 交 move_pool)
   int band_years = kBandYearsDef;     // VAL 滚动窗 N (年; 右图例滑条)
   bool log_y = false;
   std::set<std::string> reveal;                                              // 待在主图例里回默认显隐的线 ID (行刚选中; 画到时消费; 理想列显, 可成交列隐)

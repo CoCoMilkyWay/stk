@@ -28,12 +28,14 @@ void RenderScope(SharedData &data) {
   ImGui::SetNextItemWidth(140);
   if (ImGui::BeginCombo("##pool", pool_def(sel.pool).name_cn.c_str())) {
     Reorder rd("##pool_order");
-    for (const PoolId p : pool_ids()) {
+    const std::vector<PoolId> &po = pool_order();
+    for (int i = 0; i < static_cast<int>(po.size()); ++i) {
+      const PoolId p = po[i];
       const PoolDef &d = pool_def(p);
       const bool selected = sel.pool == p;
       if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
         sel.pool = p; // 选中是 ColRef (带库), 切池保留
-      rd.item(p, p != kAllPool);
+      rd.item(i, p != kAllPool);
       if (ImGui::IsItemHovered())
         pool_tip(p);
       if (selected)

@@ -9,11 +9,12 @@
 #include <atomic>
 
 // 进程内重启 (主循环帧首 GUI::ReinitAllTasks): 任务 / 服务 / SharedData / 进程级缓存 (misc::Epochal) 全部按盘重建.
-//   起因 = 盘上状态变了: 配置保存 / 子池表落地 / 一轮特征计算收尾 / 删库. 后两项随重建带过去, 新一代首次用掉即复位
+//   起因 = 盘上状态变了: 配置保存 / 子池表落地 / 池表调序 / 一轮特征计算收尾 / 删库. online / append 随重建带过去, 新一代首次用掉即复位
 struct Reinit {
   bool requested = false;
-  bool online = true; // 重建后首轮基本面同步按配置联网 (false = 只本地构建)
-  bool append = true; // 重建后数据就绪即自动续算 (false = 上一轮被取消)
+  bool on_leave = false; // 盘上已变, 左栏换页时才重启 (池表调序: 连拖不打断, 本代内各池列表按 GUI::pool_order 画)
+  bool online = true;    // 重建后首轮基本面同步按配置联网 (false = 只本地构建)
+  bool append = true;    // 重建后数据就绪即自动续算 (false = 上一轮被取消)
 };
 
 struct SharedData {

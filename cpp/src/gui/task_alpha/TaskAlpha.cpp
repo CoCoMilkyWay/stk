@@ -294,12 +294,14 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
             cn_x = std::max(cn_x, ImGui::CalcTextSize(d.name_cn.c_str()).x);
           cn_x += ImGui::GetCursorPosX() + 2.0f * ImGui::GetStyle().ItemSpacing.x;
           Reorder rd("##factor_pool_order");
-          for (const PoolId p : pool_ids()) {
+          const std::vector<PoolId> &po = pool_order();
+          for (int i = 0; i < static_cast<int>(po.size()); ++i) {
+            const PoolId p = po[i];
             const PoolDef &d = pool_def(p);
             const bool selected = state->want_pool == p;
             if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
               state->want_pool = p;
-            rd.item(p, p != kAllPool);
+            rd.item(i, p != kAllPool);
             if (ImGui::IsItemHovered())
               pool_tip(p);
             ImGui::SameLine(cn_x);

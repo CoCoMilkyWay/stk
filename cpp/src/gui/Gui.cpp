@@ -36,6 +36,7 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
 
   // Task tree (leave minimal space for compact icon bar)
   ImGui::BeginChild("TaskList", ImVec2(0, -ImGui::GetTextLineHeightWithSpacing() * 1.2f), false);
+  const int task0 = tree.selected, tab0 = tree.tasks[task0].selected_tab;
 
   for (int i = 0; i < (int)tree.tasks.size(); i++) {
     TaskHandle &t = tree.tasks[i];
@@ -87,6 +88,8 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
       }
     }
   }
+  if (data.reinit.on_leave && (tree.selected != task0 || tree.tasks[tree.selected].selected_tab != tab0))
+    data.reinit.requested = true; // 下一帧首重启, 留在新选中的页
 
   ImGui::EndChild();
 

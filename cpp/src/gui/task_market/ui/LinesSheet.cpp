@@ -21,6 +21,7 @@
 #include <functional>
 #include <initializer_list>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -158,13 +159,23 @@ SheetCell ranked_cell(const Ranked &q, const char *fmt) {
 // on(t) = 选中 (高亮), 点行 → click(t) (t = 表行, 见 LinesSheet::at); 悬停表行 t 的数值列 k → hover(t, k).
 // 宽由外面定: 名列伸满余宽, 内容更宽 → 横滚 (星 / 名列钉住). 篮子行名前 ▸ 展开 / 收起 (ui.pick.open, 至多一行): 展开行钉在表头下,
 // 其下先列成分行 (缩进; 同列排序), 再列其余组内行; 字色 = 线色; 有自选键的行: 星格点 / 名格右键 = 加入 / 移出自选; 只画可见的行;
-// 原序下拖动调序 (Reorder): 自选组 = 改 ui.watch 即存, 指数组子池 = 交 ui.pool_move (改池表)
+// 原序 = 指数组按池表待生效序 (pool_order; 全A 两行在首), 其余组按行号; 原序下拖动调序 (Reorder): 自选组 = 改 ui.watch 即存,
+// 指数组子池 = 交 ui.pool_move (改池表)
 template <class On, class Click, class Hover>
 void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, const LinesDerived &d, int g, std::vector<size_t> order,
            const LinesSheet &ps, const On &on, const Click &click, const Hover &hover) {
   const std::vector<LinesRow> &rs = d.rows[g];
   const size_t nc = cols.size() - 1, R = rs.size(); // 名之后的列 / 组内行
   assert(ps.nc == nc && ps.R == R && ps.cells.size() == ps.at.size() * nc);
+  std::vector<size_t> by(R); // 原序位 → 组内行
+  std::iota(by.begin(), by.end(), size_t{0});
+  if (g == kGroupPool)
+    std::ranges::stable_sort(by, {}, [&](size_t r) { return pool_rank(rs[r].pool); });
+  std::vector<int> pos(R); // 组内行 → 原序位 (= 拖动下标; 成分行 t ≥ R 不动, 下标取 t)
+  for (size_t k = 0; k < R; ++k)
+    pos[by[k]] = static_cast<int>(k);
+  std::ranges::sort(order, {}, [&](size_t r) { return pos[r]; });
+  const auto key = [&](size_t t) { return t < R ? pos[t] : static_cast<int>(t); };
   const auto pin_at = std::ranges::find_if(order, [&](size_t r) { return rs[r].id == ui.pick.open; });
   const size_t pin = pin_at == order.end() ? SIZE_MAX : *pin_at; // 钉住的展开行
   if (pin != SIZE_MAX)
@@ -239,24 +250,24 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
       ImGui::Indent();
       ImGui::TreeNodeEx(label.c_str(), kNode | ImGuiTreeNodeFlags_Leaf | (on(t) ? ImGuiTreeNodeFlags_Selected : 0));
       ImGui::Unindent();
-      rd.item(static_cast<int>(t), false);
-      if (rd.tapped(static_cast<int>(t)))
+      rd.item(key(t), false);
+      if (rd.tapped(key(t)))
         click(t);
     } else if (h.q.is(Quote::kBasket)) {
       const bool open = t == pin;
       ImGui::SetNextItemOpen(open, ImGuiCond_Always);
       ImGui::TreeNodeEx(label.c_str(), kNode | ImGuiTreeNodeFlags_OpenOnArrow | (on(t) ? ImGuiTreeNodeFlags_Selected : 0));
-      rd.item(static_cast<int>(t), movable(t));
+      rd.item(key(t), movable(t));
       if (ImGui::IsItemToggledOpen()) {
         ui.pick.open = open ? std::string{} : h.id;
         ImGui::SetScrollY(0.f);
-      } else if (rd.tapped(static_cast<int>(t))) {
+      } else if (rd.tapped(key(t))) {
         click(t);
       }
     } else {
       ImGui::Selectable(label.c_str(), on(t), ImGuiSelectableFlags_SpanAllColumns);
-      rd.item(static_cast<int>(t), movable(t));
-      if (rd.tapped(static_cast<int>(t)))
+      rd.item(key(t), movable(t));
+      if (rd.tapped(key(t)))
         click(t);
     }
     ImGui::PopStyleColor();
@@ -286,13 +297,13 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
     for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i)
       row(lines[static_cast<size_t>(i)]);
   ImGui::EndTable();
-  // 落定: 组内行 → 池表 / 自选键的移动 (行序与二者同序, 端点照搬即同一移动)
+  // 落定: 原序位 → 池表待生效序 / 自选键的移动 (原序与二者同序, 端点照搬即同一移动)
   const std::optional<Move> m = rd.end();
   if (!m)
     return;
-  const LinesRow &a = rs[static_cast<size_t>(m->from)], &b = rs[static_cast<size_t>(m->to)];
+  const LinesRow &a = rs[by[static_cast<size_t>(m->from)]], &b = rs[by[static_cast<size_t>(m->to)]];
   if (g == kGroupPool) {
-    ui.pool_move = Move{a.pool, b.pool}; // 改池表 = 进程内重启, 交 TaskMarket 在本帧画完后做
+    ui.pool_move = Move{pool_rank(a.pool), pool_rank(b.pool)};
     return;
   }
   assert(g == kGroupWatch);

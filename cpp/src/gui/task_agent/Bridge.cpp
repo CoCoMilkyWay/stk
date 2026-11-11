@@ -17,7 +17,7 @@
 #include "gui/engine/services/RunService.hpp"
 #include "gui/engine/services/SearchService.hpp"
 #include "gui/task_agent/services/ReplayService.hpp"
-#include "gui/util/PoolTip.hpp" // move_pool
+#include "gui/util/PoolTip.hpp" // pool_order / move_pool
 #include "misc/date.hpp"        // dash
 #include "misc/epoch.hpp"
 #include "shared/SharedData.hpp"
@@ -695,8 +695,9 @@ namespace catalog {
 
 std::vector<Choice> pools() {
   std::vector<Choice> out;
-  for (size_t i = 0; i < feature_pools().size(); ++i)
-    out.push_back({static_cast<int>(i), feature_pools()[i].name});
+  const std::vector<PoolId> &po = GUI::pool_order();
+  for (size_t i = 0; i < po.size(); ++i)
+    out.push_back({static_cast<int>(i), pool_def(po[i]).name});
   return out;
 }
 void move_pool(SharedData &data, int from, int to) { GUI::move_pool(data, {from, to}); }
