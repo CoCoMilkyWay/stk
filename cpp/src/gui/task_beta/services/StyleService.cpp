@@ -100,15 +100,14 @@ bool StyleService::publish(const StyleRequest &req, std::string lack, std::share
   return true;
 }
 
-std::shared_ptr<const pool::Ranks> StyleService::ranks(const FeatureLib &lib, pool::Style st) {
+std::shared_ptr<const pool::Orders> StyleService::ranks(const FeatureLib &lib, pool::Style st, const pool::Tick &tick) {
   const auto hit = std::find_if(keys_.begin(), keys_.end(), [&](const Key &k) { return k.style == st; });
-  const Key k = hit != keys_.end() ? *hit : Key{st, std::make_shared<pool::Ranks>()};
+  const Key k = hit != keys_.end() ? *hit : Key{st, std::make_shared<pool::Orders>(pool::Orders{.keyed = true})};
   if (hit != keys_.end())
     keys_.erase(hit);
   if (k.rk->rows() < tape_->days()) {
-    auto rk = std::make_shared<pool::Ranks>(*k.rk);
-    begin(Phase::Loading, tape_->days() - rk->rows());
-    if (!pool::rank_rows(lib, *tape_, st, pool_, cancel_, [this] { Progress::publish(1); }, *rk))
+    auto rk = std::make_shared<pool::Orders>(*k.rk);
+    if (!pool::rank(lib, *tape_, st, pool_, &cancel_, tick, *rk))
       return nullptr;
     keys_.insert(keys_.begin(), Key{st, std::move(rk)});
   } else
@@ -122,12 +121,12 @@ bool StyleService::run(StyleRequest &req) {
   const pool::AllBar ab = pool::all_bar("风格篮子由 all.bar 特征库选出");
   if (!ab.lack.empty())
     return publish(req, ab.lack);
-  begin(Phase::Loading, ab.dates.size() - (tape_ && tape_->axis == ab.lib.axis.hash && pool::extends(tape_->dates, ab.dates) ? tape_->days() : 0));
-  const std::shared_ptr<const pool::Tape> t = pool::tape(ab.lib, &cancel_, [this] { Progress::publish(1); });
+  const pool::Tick tick{[this](size_t n) { begin(Phase::Loading, n); }, [this] { Progress::publish(1); }};
+  const std::shared_ptr<const pool::Tape> t = pool::tape(ab.lib, &cancel_, tick);
   if (!t)
     return false;
   if (t != tape_) {
-    if (!(tape_ && tape_->axis == t->axis && pool::extends(tape_->dates, t->dates)))
+    if (!(tape_ && tape_->line == t->line))
       keys_.clear();
     books_.clear(), bench_ = nullptr;
     tape_ = t;
@@ -155,8 +154,8 @@ bool StyleService::run(StyleRequest &req) {
       books[i] = it->second;
     else
       todo.push_back(i), keyed |= sets[i].keyed();
-  std::shared_ptr<const pool::Ranks> rk;
-  if (keyed && !(rk = ranks(ab.lib, style)))
+  std::shared_ptr<const pool::Orders> rk;
+  if (keyed && !(rk = ranks(ab.lib, style, tick)))
     return false;
   const bool bench = !bench_;
   begin(Phase::Running, todo.size() + bench);
@@ -165,11 +164,12 @@ bool StyleService::run(StyleRequest &req) {
       return;
     auto b = std::make_shared<pool::Book>();
     if (static_cast<size_t>(k) == todo.size())
-      pool::run_book(*tape_, pool::kRebalDay, [&](size_t r, std::vector<uint32_t> &out) { pool::live_at(*tape_, r, out); }, *b), bench_ = std::move(b);
+      pool::run_book(*tape_, pool::kRebalDay, [&](size_t r, std::vector<pool::Aid> &out) { pool::live_at(*tape_, r, out); }, *b), bench_ = std::move(b);
     else {
       const size_t i = todo[static_cast<size_t>(k)];
       const pool::Selector sel(sets[i]);
-      pool::run_book(*tape_, sets[i].rebal(), [&](size_t r, std::vector<uint32_t> &out) { sel.at(pool::row_view(*tape_, rk.get(), r), out); }, *b);
+      const pool::Orders &os = sel.order() == pool::kAxis ? tape_->order : *rk;
+      pool::run_book(*tape_, sets[i].rebal(), [&](size_t r, std::vector<pool::Aid> &out) { sel.at(os.row(*tape_, r), out); }, *b);
       books[i] = std::move(b);
     }
     Progress::publish(1);
