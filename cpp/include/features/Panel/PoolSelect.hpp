@@ -23,7 +23,7 @@ namespace pool {
 // all.bar 层 level 里 code 的列下标 (落盘变换须是 tf)
 size_t bar_col(size_t level, std::string_view code, ts::TfId tf = ts::TfId::None);
 
-// all.bar L_1day 日行 (原料带 / 行情篮子合成同一张列表): 列序 = DayCol; 行情篮子的日根只读前 kQuoteCols 列; 切片维 k 的列 = kColSlice0 + k
+// all.bar L_1day 日行 (原料带 / 行情篮子合成同一张列表): 列序 = DayCol; 行情篮子的日根只读前 kQuoteCols 列; 过滤项 f 的列 = kColFilter0 + f
 enum DayCol : size_t { kColTs,
                        kColOpen,
                        kColHigh,
@@ -37,8 +37,12 @@ enum DayCol : size_t { kColTs,
                        kColInd,
                        kColListAge,
                        kColDelistAge,
-                       kColSlice0,
-                       kDayCols = kColSlice0 + kSlices };
+                       kColSusp,
+                       kColSt,
+                       kColBoard,
+                       kColMargin,
+                       kColFilter0,
+                       kDayCols = kColFilter0 + kFilters };
 std::vector<size_t> day_cols(size_t n = kDayCols); // 前 n 列的库列下标
 
 // 周序号 (周一起)
@@ -61,12 +65,12 @@ struct AllBar {
 };
 AllBar all_bar(std::string_view what);
 
-// 资产类: 行 r 的在市资产 (已上市 ∧ 未退市 ∧ 收盘总市值 > 0 ∧ 各切片列有类) 按各切片维的类归一类 (混合进制, 末维最低位); 切片 = 若干类的并
-inline constexpr size_t slice_radix(int k) { return static_cast<size_t>(dim_size(kDimSt + k) - 1); }
+// 资产类: 行 r 的在市资产 (见 PoolSpec.hpp; 各划分列有类) 按各集合维的类归一类 (混合进制, 末维最低位; 过滤维的类 = 中的项的位集); 切片 = 若干类的并
+inline constexpr size_t set_radix(int k) { return kDimDefs[kDimSt + k].kind == kKindFilter ? size_t{1} << dim_size(kDimSt + k) : static_cast<size_t>(dim_size(kDimSt + k)); }
 inline constexpr size_t kClasses = [] {
   size_t n = 1;
-  for (int k = 0; k < kSlices; ++k)
-    n *= slice_radix(k);
+  for (int k = 0; k < kSets; ++k)
+    n *= set_radix(k);
   return n;
 }();
 inline constexpr uint16_t kOut = static_cast<uint16_t>(kClasses); // 不在市
@@ -117,7 +121,7 @@ struct RowView {
 };
 RowView row_view(const Tape &t, const Ranks *rk, size_t r); // rk 可空 (只给全选池用)
 
-// 选股: 行内切片; 风格池: 键覆盖率 (有限 / 切片内) < kCover → 切片内全选 (键未到齐时不按残缺截面截两端),
+// 选股: 行内切片; 风格池: 键覆盖率 (有限 / 切片内) < kCover → 空 (键未到齐时不按残缺截面截两端, 不建仓),
 //   否则有限键取低端 / 高端前 N (次序两头往里取: 并列时低端取下标小的, 高端取下标大的; 有限不足 N 则全取); 全选池 = 切片内全选
 //   取法按代价二选一 (结果相同): 宽切片沿 A 轴 / 次序扫, 窄切片按类段收拢 (byc / rbc)
 inline constexpr float kCover = 0.8f;

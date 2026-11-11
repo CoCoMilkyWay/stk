@@ -121,7 +121,7 @@
 - 坑: 日内不变, 单独作根输入只给日间排序; 规模类量 (总资产、净利润) 与市值强相关.
 
 # Bar/TS/Fund/Valuation 实时估值 (5 分钟箱末)
-- `mcap` / `fmcap` (亿元), `pe_ttm` / `pb_mrq` / `ps_ttm` / `pcf_ttm` (市值 / 财务量, 亏损为负), `is_limit_up` / `is_limit_dn` (箱末价在涨 / 跌停), `is_low_px` (< 1 元), `is_low_mcap`.
+- `mcap` / `fmcap` (亿元), `pe_ttm` / `pb_mrq` / `ps_ttm` / `pcf_ttm` (市值 / 财务量, 亏损为负), `is_limit_up` / `is_limit_dn` (箱末价在涨 / 跌停), `is_low_px` (< 1 元).
 - 坑: 比率在分母近 0 时极端 (用倒数口径的 `*_cs` 更稳); 标记列是 0/1.
 
 # Bar/CS/Basic/Kline 股价截面分位

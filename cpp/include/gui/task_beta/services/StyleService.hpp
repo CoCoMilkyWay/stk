@@ -30,13 +30,11 @@ struct StyleRequest {
 };
 
 // 区间 [d0, d1) 内: 起点 = max(首个有仓日, d0 + 1) (基日 d0 = 区间首日, 净值 1);
-// 滚动窗: 以日 t 收尾 = [max(首个晚于 dates[t] 前推一年的日, 起点), t] (前段自起点自然缩短), 基日 = 窗起 − 1;
-// 窗至少 kMinDays 个交易日才计 (更短的年化 / 夏普无意义). 年 = 基日到 t 的日历跨度 / 365.25
-constexpr size_t kMinDays = 61; // 一季度
-
+// 滚动窗: 以日 t 收尾 = [首个晚于 dates[t] 前推一年的日, t], 基日 = 窗起 − 1; 只计满一年的窗 (基日不早于起点 − 1).
+// 年 = 基日到 t 的日历跨度 / 365.25
 // 一条线在区间内的绩效: 年化 / 夏普 = 各滚动窗的平均与中位; 回撤 / 换手 = 整段 (自起点)
 struct StyleStat {
-  float ann = std::numeric_limits<float>::quiet_NaN();        // 各窗年化收益的平均
+  float ann = std::numeric_limits<float>::quiet_NaN();        // 各窗对数年化的平均, 换回简单收益 (≈ 区间年化复合)
   float ann_med = std::numeric_limits<float>::quiet_NaN();    // 各窗年化收益的中位
   float sharpe = std::numeric_limits<float>::quiet_NaN();     // 各窗夏普 (无风险 0) 的平均
   float sharpe_med = std::numeric_limits<float>::quiet_NaN(); // 各窗夏普的中位 (= 累计中位夏普的末日值; 打分)
@@ -49,9 +47,8 @@ struct StyleLine {
   pool::Spec spec;
   Weight weight = kWeightEq;
   size_t first = 0;       // 首个有仓日 (全程; 无 → 日数)
-  size_t from = 0;        // 首个计入的窗的收尾日 (= 起点 + kMinDays − 1; 无 → d1, 绩效全 NaN)
-  size_t full = 0;        // 首个满一年的窗的收尾日 (图自此画; 前段样本少, 中位未收敛; 无 → d1)
-  std::vector<float> med; // [日] 累计中位夏普: 收尾日 from … 该日 各窗夏普的中位 (区间内 from 前 / 区间外 NaN)
+  size_t from = 0;        // 首个满一年的窗的收尾日 (无 → d1, 年化 / 夏普 NaN)
+  std::vector<float> med; // [日] 累计中位夏普: 收尾日 from … 该日 各窗夏普的中位 (from 前 / 区间外 NaN)
   StyleStat stat;
 };
 

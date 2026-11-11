@@ -19,20 +19,35 @@ using json = nlohmann::json;
 // 全选池的风格 / 端 (取值归 0, 池名写 all)
 bool inert(const Spec &s, int d) { return (d == kDimStyle || d == kDimEnd) && !s.keyed(); }
 
+// 集合维的段: 各位的码 / 中文名以 "+" 连 (位序); 0 → all / 全
+std::string set_seg(int d, uint8_t m, bool cn) {
+  if (!m)
+    return cn ? "全" : "all";
+  std::string t;
+  for (int i = 0; i < dim_size(d); ++i)
+    if (m >> i & 1)
+      t += (t.empty() ? "" : "+") + std::string(cn ? kDimDefs[d].values[i].name_cn : kDimDefs[d].values[i].code);
+  return t;
+}
+
 } // namespace
 
 Spec canon(Spec s) {
   if (!s.keyed())
     s.v[kDimStyle] = 0, s.v[kDimEnd] = 0;
+  for (int d = kDimSt; d < kDims; ++d)
+    if (kDimDefs[d].kind == kKindPart && s.v[d] == full_mask(d))
+      s.v[d] = 0;
   return s;
 }
 
-bool on(const Spec &s, int d) { return !inert(s, d) && !(kDimDefs[d].all0 && s.v[d] == 0); }
+bool on(const Spec &s, int d) { return !inert(s, d) && (is_set(d) ? s.v[d] != 0 : !(d == kDimN && !s.keyed())); }
 
 std::string code(const Spec &s) {
   std::string c;
   for (int d = 0; d < kDims; ++d)
-    c += std::string(d ? "." : "") + (inert(s, d) ? "all" : kDimDefs[d].values[s.v[d]].code);
+    c += std::string(d ? "." : "") + (inert(s, d) ? "all" : is_set(d) ? set_seg(d, s.v[d], false)
+                                                                      : kDimDefs[d].values[s.v[d]].code);
   return c;
 }
 
@@ -49,11 +64,26 @@ Spec parse(std::string_view c) {
   Spec s;
   for (int d = 0; d < kDims; ++d) {
     const std::span<const DimValue> vs = kDimDefs[d].values;
-    const auto it = std::ranges::find_if(vs, [&](const DimValue &x) { return seg[d] == x.code; });
-    assert((it != vs.end() || ((d == kDimStyle || d == kDimEnd) && seg[d] == "all")) && "池名: 段不在该维取值表里");
-    s.v[d] = it == vs.end() ? 0 : static_cast<uint8_t>(it - vs.begin());
+    const auto find = [&](std::string_view x) {
+      const auto it = std::ranges::find_if(vs, [&](const DimValue &v) { return x == v.code; });
+      assert((it != vs.end() || (seg[d] == "all" && (is_set(d) || d == kDimStyle || d == kDimEnd))) && "池名: 段不在该维取值表里");
+      return it == vs.end() ? -1 : static_cast<int>(it - vs.begin());
+    };
+    if (!is_set(d)) {
+      s.v[d] = static_cast<uint8_t>(std::max(find(seg[d]), 0));
+      continue;
+    }
+    if (seg[d] == "all")
+      continue;
+    for (size_t i = 0;;) {
+      const size_t j = seg[d].find('+', i);
+      s.v[d] |= static_cast<uint8_t>(1u << find(seg[d].substr(i, j - i)));
+      if (j == std::string_view::npos)
+        break;
+      i = j + 1;
+    }
   }
-  assert(code(s) == c && "池名: 不是规范拼法");
+  assert(code(s) == c && canon(s) == s && "池名: 不是规范拼法");
   return s;
 }
 
@@ -62,6 +92,7 @@ std::array<Part, kParts> parts(const Spec &s) {
   for (int d = kDimEnd; d < kDims; ++d)
     p[d - kDimEnd] = {inert(s, d)    ? "全"
                       : d == kDimEnd ? kStyleDefs[s.style()].end_cn[s.end()]
+                      : is_set(d)    ? set_seg(d, s.v[d], true)
                                      : kDimDefs[d].values[s.v[d]].name_cn,
                       on(s, d)};
   return p;
@@ -78,9 +109,9 @@ std::string short_cn(const Spec &s) {
   if (s.keyed())
     return kStyleDefs[s.style()].end_cn[s.end()] + std::to_string(s.n());
   std::string c;
-  for (int d = kDimSt; d < kDimNew; ++d)
-    if (on(s, d))
-      c += kDimDefs[d].values[s.v[d]].name_cn;
+  for (int d = kDimSt; d < kDims; ++d)
+    if (kDimDefs[d].kind == kKindPart && on(s, d))
+      c += set_seg(d, s.v[d], true);
   return c.empty() ? "全选" : c;
 }
 
@@ -95,8 +126,10 @@ std::string detail_cn(const Spec &s) {
   bool cut = false;
   for (int d = kDimSt; d < kDims; ++d)
     if (on(s, d)) {
-      const DimValue &v = kDimDefs[d].values[s.v[d]];
-      t += std::string("\n• ") + kDimDefs[d].name_cn + " " + v.name_cn + ": " + v.tip;
+      t += std::string("\n• ") + kDimDefs[d].name_cn + " " + set_seg(d, s.v[d], true) + ":";
+      for (int i = 0; i < dim_size(d); ++i)
+        if (s.v[d] >> i & 1)
+          t += std::string("\n    ") + kDimDefs[d].values[i].name_cn + " = " + kDimDefs[d].values[i].tip;
       cut = true;
     }
   return cut ? t : t + "\n• 切片: 全部在市";
@@ -118,35 +151,36 @@ std::vector<std::string> aliases(const std::vector<Spec> &pools) {
 }
 
 std::vector<Spec> default_pools() {
-  Spec live; // 剔次新 / 停牌 / 行业未知
-  live.v[kDimNew] = live.v[kDimSusp] = live.v[kDimInd] = kFlagOff;
+  const auto bit = [](int i) { return static_cast<uint8_t>(1u << i); };
+  Spec live; // 剔次新
+  live.v[kDimFilter] = bit(kFltNew);
   Spec base = live; // 非ST, 再剔预警
-  base.v[kDimSt] = kStNone, base.v[kDimWarn] = kFlagOff;
+  base.v[kDimSt] = bit(kStNone), base.v[kDimFilter] |= bit(kFltWarn);
   std::vector<Spec> v;
-  const auto two = [&](Style st, End sd, Flag mg = kFlagAll) {
+  const auto two = [&](Style st, End sd, uint8_t mg = 0) {
     for (const Count n : {kCount400, kCount200}) {
       Spec s = base;
       s.v[kDimStyle] = st, s.v[kDimEnd] = sd, s.v[kDimN] = n, s.v[kDimMargin] = mg;
       v.push_back(s);
     }
   };
-  two(kStyleSize, kEndLow), two(kStyleSize, kEndHigh), two(kStyleSize, kEndLow, kFlagOn);
+  two(kStyleSize, kEndLow), two(kStyleSize, kEndHigh), two(kStyleSize, kEndLow, bit(kMarginOn));
   two(kStyleEp, kEndHigh), two(kStyleEp, kEndLow), two(kStyleBp, kEndHigh), two(kStyleBp, kEndLow), two(kStyleDy, kEndHigh);
   two(kStyleRoe, kEndHigh), two(kStyleRoe, kEndLow), two(kStyleInv, kEndLow), two(kStyleInv, kEndHigh);
   two(kStyleMom, kEndHigh), two(kStyleMom, kEndLow), two(kStyleRev, kEndLow), two(kStyleRev, kEndHigh);
   two(kStyleTurn, kEndLow), two(kStyleTurn, kEndHigh), two(kStyleIvol, kEndLow), two(kStyleIvol, kEndHigh);
   two(kStyleResvol, kEndLow), two(kStyleResvol, kEndHigh), two(kStyleBeta, kEndLow), two(kStyleBeta, kEndHigh);
   two(kStyleTrend, kEndHigh), two(kStyleTrend, kEndLow), two(kStylePrice, kEndHigh), two(kStylePrice, kEndLow);
-  const auto cut = [&](Dim d, uint8_t x) {
+  const auto cut = [&](Dim d, int x) {
     Spec s = live;
-    s.v[d] = x;
+    s.v[d] = bit(x);
     v.push_back(s);
   };
   for (const St st : {kStSt, kStSst})
     cut(kDimSt, st);
   for (const Board bd : {kBoardShMain, kBoardSzMain, kBoardStar, kBoardChiNext})
     cut(kDimBoard, bd);
-  for (const Flag mg : {kFlagOn, kFlagOff})
+  for (const Margin mg : {kMarginOn, kMarginOff})
     cut(kDimMargin, mg);
   return v;
 }
@@ -185,26 +219,30 @@ Style Grid::style() const {
 }
 
 std::vector<Spec> specs_of(const Grid &g) {
-  for (int d = 0; d < kDims; ++d)
-    assert(g.bits[d] && g.bits[d] >> dim_size(d) == 0 && "网格: 每维至少勾一个, 不越取值表");
+  std::array<std::vector<uint8_t>, kDims> vals; // [维] 取值 (取值维 = 下标, 集合维 = 位集)
+  for (int d = 0; d < kDims; ++d) {
+    const uint16_t b = g.bits[d];
+    assert(b >> dim_size(d) == 0 && (b || is_set(d)) && "网格: 取值维至少勾一个, 不越取值表");
+    if (is_set(d))
+      vals[d].push_back(0);
+    for (int i = 0; i < dim_size(d); ++i)
+      if (b >> i & 1)
+        vals[d].push_back(static_cast<uint8_t>(is_set(d) ? 1u << i : i));
+    if (is_set(d) && std::popcount(b) > 1)
+      vals[d].push_back(static_cast<uint8_t>(b));
+  }
   std::vector<Spec> v;
   std::set<Spec> seen;
-  Spec s;
-  const auto first = [&](int d) { s.v[d] = static_cast<uint8_t>(std::countr_zero(g.bits[d])); };
-  for (int d = 0; d < kDims; ++d)
-    first(d);
+  std::array<size_t, kDims> k{};
   for (;;) {
+    Spec s;
+    for (int d = 0; d < kDims; ++d)
+      s.v[d] = vals[d][k[d]];
     if (const Spec c = canon(s); seen.insert(c).second)
       v.push_back(c);
     int d = kDims - 1;
-    for (; d >= 0; --d) {
-      const unsigned rest = g.bits[d] >> (s.v[d] + 1u);
-      if (rest) {
-        s.v[d] = static_cast<uint8_t>(s.v[d] + 1 + std::countr_zero(rest));
-        break;
-      }
-      first(d);
-    }
+    for (; d >= 0 && ++k[d] == vals[d].size(); --d)
+      k[d] = 0;
     if (d < 0)
       return v;
   }

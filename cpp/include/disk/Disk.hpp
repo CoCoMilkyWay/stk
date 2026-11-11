@@ -48,7 +48,7 @@ struct Key {
 };
 
 // 写法: Lit 字面 (前缀即全名) / Flag Key::test ⇄ main / test / Date 模式串, Y M D 位载 Key::date 的年 / 月 / 日, 其余字面
-//       / Shape 模式串, # 位为数字 / Word [A-Za-z0-9_]+ / Dotted 以 "." 连的 Word
+//       / Shape 模式串, # 位为数字 / Word [A-Za-z0-9_]+ / Dotted 以 "." / "+" 连的 Word
 //   日期段只细化不改写: 段载的分量须与键里已定的相符, 月须有年, 日须有月
 // clang-format off
 #define DISK_SEGS(X)                                                                                     \

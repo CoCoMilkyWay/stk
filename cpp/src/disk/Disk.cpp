@@ -63,7 +63,7 @@ bool word(std::string_view s) {
 }
 bool dotted(std::string_view s) {
   for (size_t i = 0, j = 0; i <= s.size(); j = ++i) {
-    i = std::min(s.find('.', i), s.size());
+    i = std::min(s.find_first_of(".+", i), s.size());
     if (!word(s.substr(j, i - j)))
       return false;
   }

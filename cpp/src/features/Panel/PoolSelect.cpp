@@ -34,30 +34,22 @@ constexpr ColDef kDayColDefs[kDayCols] = {
     {"ind_l1", ts::TfId::None},
     {"list_age", ts::TfId::None},
     {"delist_age", ts::TfId::None},
+    {"flt_susp", ts::TfId::None},
     {"st_level", ts::TfId::None},
     {"board", ts::TfId::None},
     {"is_margin", ts::TfId::None},
     {"flt_new", ts::TfId::None},
-    {"flt_susp", ts::TfId::None},
-    {"flt_noind", ts::TfId::None},
     {"flt_warn", ts::TfId::None},
 };
+static_assert(kFltNew == 0 && kFltWarn == 1 && kFilters == 2, "过滤项 = kDayColDefs 末两列, 同序");
 
-// 切片维 k 的类: 列值 → 类 (−1 = 不在市); 取值 v > 0 的切片 = 类 v − 1
-using SliceCls = int (*)(float);
+// 划分维的类: 列值 → 类 (−1 = 不在市)
 constexpr int flag(float x) { return x > 0.5f ? 1 : 0; }
-constexpr SliceCls kSliceCls[kSlices] = {
-    [](float x) { return x >= 0.0f && x < static_cast<float>(kSts - 1) ? static_cast<int>(x) : -1; },    // st_level 0..3
-    [](float x) { return x >= 1.0f && x < static_cast<float>(kBoards) ? static_cast<int>(x) - 1 : -1; }, // board 1..5
-    flag,
-    flag,
-    flag,
-    flag,
-    flag,
-};
-static_assert(int{kBoardShMain} == fund::kBoardShMain && int{kBoardSzMain} == fund::kBoardSzMain && int{kBoardStar} == fund::kBoardStar &&
-              int{kBoardChiNext} == fund::kBoardChiNext && int{kBoardBj} == fund::kBoardBj && kBoards == fund::kBoardBj + 1);
-static_assert(slice_radix(kDimMargin - kDimSt) == 2 && slice_radix(kDimWarn - kDimSt) == 2, "二值切片 = 否 / 是两类");
+constexpr int st_cls(float x) { return x >= 0.0f && x < static_cast<float>(kSts) ? static_cast<int>(x) : -1; }               // st_level 0..3
+constexpr int board_cls(float x) { return x >= 1.0f && x < static_cast<float>(kBoards + 1) ? static_cast<int>(x) - 1 : -1; } // board 1..5
+static_assert(kBoardShMain + 1 == fund::kBoardShMain && kBoardSzMain + 1 == fund::kBoardSzMain && kBoardStar + 1 == fund::kBoardStar &&
+              kBoardChiNext + 1 == fund::kBoardChiNext && kBoardBj + 1 == fund::kBoardBj && kBoards == fund::kBoardBj);
+static_assert(kDimSt + 1 == kDimBoard && kDimBoard + 1 == kDimMargin && kDimMargin + 1 == kDimFilter && kDimFilter + 1 == kDims, "资产类的进制按此维序");
 
 // 风格键 = f(列 0, 列 1, 收盘总市值); 列空 = 不读库 (只用原料带)
 struct KeyDef {
@@ -124,18 +116,16 @@ void fill_row(const FeatureRead::DayColumns &c, Tape &t, size_t r, float *pre, f
     pre[a] = v(kColPre) > 0.0f ? v(kColPre) : 0.0f;
     close[a] = v(kColTs) > 0.5f && px > 0.0f ? px : 0.0f;
     t.cls[i] = kOut;
-    if (!(mc > 0.0f && v(kColListAge) >= 0.0f && !(v(kColDelistAge) >= 0.0f)))
+    if (!(mc > 0.0f && v(kColListAge) >= 0.0f && !(v(kColDelistAge) >= 0.0f) && !flag(v(kColSusp)) && t.ind[i]))
       continue;
-    size_t id = 0;
-    int k = 0;
-    for (; k < kSlices; ++k) {
-      const int x = kSliceCls[k](v(kColSlice0 + static_cast<size_t>(k)));
-      if (x < 0)
-        break;
-      id = id * slice_radix(k) + static_cast<size_t>(x);
-    }
-    if (k == kSlices)
-      t.cls[i] = static_cast<uint16_t>(id), ++cnt[id];
+    const int st = st_cls(v(kColSt)), bd = board_cls(v(kColBoard));
+    if (st < 0 || bd < 0)
+      continue;
+    int flt = 0;
+    for (int f = 0; f < kFilters; ++f)
+      flt |= flag(v(kColFilter0 + static_cast<size_t>(f))) << f;
+    const size_t id = ((static_cast<size_t>(st) * set_radix(1) + static_cast<size_t>(bd)) * set_radix(2) + static_cast<size_t>(flag(v(kColMargin)))) * set_radix(3) + static_cast<size_t>(flt);
+    t.cls[i] = static_cast<uint16_t>(id), ++cnt[id];
   }
   size_t at[kClasses];
   seg_starts(cnt, at);
@@ -223,10 +213,11 @@ AllBar all_bar(std::string_view what) {
 }
 
 bool covers(const Spec &s, size_t c) {
-  for (int k = kSlices; k-- > 0;) {
-    const size_t r = slice_radix(k), x = c % r;
+  for (int k = kSets; k-- > 0;) {
+    const size_t r = set_radix(k), x = c % r;
     c /= r;
-    if (const uint8_t v = s.v[kDimSt + k]; v && v - 1u != x)
+    const uint8_t m = s.v[kDimSt + k];
+    if (kDimDefs[kDimSt + k].kind == kKindFilter ? (m & x) != 0 : m && !(m >> x & 1))
       return false;
   }
   return true;
@@ -371,7 +362,9 @@ void Selector::at(const RowView &r, std::vector<uint32_t> &out) const {
   const auto in = [&](uint32_t a) { return in_[r.cls[a]] != 0; };
   assert((!s_.keyed() || r.fin) && "风格池须有键次序");
   const size_t n_fin = s_.keyed() ? sum(r.fin) : 0;
-  if (!s_.keyed() || static_cast<float>(n_fin) < kCover * static_cast<float>(n_in)) {
+  if (s_.keyed() && static_cast<float>(n_fin) < kCover * static_cast<float>(n_in))
+    return;
+  if (!s_.keyed()) {
     if (n_in * kSparse < A) {
       gather(r.cnt, r.byc);
       std::ranges::sort(out);

@@ -42,17 +42,16 @@ public:
   float mid() const { return lo_.size() > hi_.size() ? lo_.front() : 0.5f * (lo_.front() + hi_.front()); }
 };
 
-// 日收益 r / 日增仓量 buy (首个有仓日 first) 在区间 [d0, d1) 内: 各滚动窗 (见 kMinDays) 的年化 / 夏普 → 平均 / 中位 + 累计中位夏普; 整段回撤 / 换手.
-// 窗内各和 = 前缀和之差; 一年前的边界随收尾日单调右移
+// 日收益 r / 日增仓量 buy (首个有仓日 first) 在区间 [d0, d1) 内: 各满一年的滚动窗的年化 / 夏普 → 平均 / 中位 + 累计中位夏普; 整段回撤 / 换手.
+// 年化在对数空间平均 / 取中位再换回简单收益; 窗内各和 = 前缀和之差; 一年前的边界随收尾日单调右移
 void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<float> &r, const std::vector<float> &buy, size_t first, size_t d0, size_t d1) {
   const size_t D = dates.size(), f = std::max(first, d0 + 1);
   l.first = first;
-  l.from = l.full = d1;
+  l.from = d1;
   l.med.assign(D, kNaN);
   l.stat = {};
-  if (f + kMinDays - 1 >= d1)
+  if (f >= d1)
     return;
-  l.from = f + kMinDays - 1;
   const auto years = [&](size_t base, size_t t) { return static_cast<double>((misc::to_days(dates[t]) - misc::to_days(dates[base])).count()) / 365.25; };
   // 前缀和 (下标 = 日 + 1; 起点前为 0): Σ ln(1 + r) / Σ r / Σ r²; 整段回撤 (峰自基日 = 1 起) / 增仓
   std::vector<double> G(d1 + 1, 0.0), S(d1 + 1, 0.0), SS(d1 + 1, 0.0);
@@ -63,26 +62,29 @@ void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<floa
     nav *= 1.0 + x, peak = std::max(peak, nav), mdd = std::max(mdd, 1.0 - nav / peak);
     b += buy[d];
   }
-  RunMedian ann_m, shp_m;
+  l.stat.mdd = static_cast<float>(mdd), l.stat.turn = static_cast<float>(b / years(f - 1, d1 - 1));
+  RunMedian ann_m, shp_m; // 年化 = 对数年化
   double ann_s = 0.0, shp_s = 0.0;
-  size_t ys = 0; // 首个晚于 dates[t] 前推一年的日
-  for (size_t t = l.from; t < d1; ++t) {
+  size_t ys = 0; // 首个晚于 dates[t] 前推一年的日 = 窗起
+  for (size_t t = f; t < d1; ++t) {
     while (dates[ys] <= dates[t] - 10000)
       ++ys;
-    if (ys >= f && l.full == d1)
-      l.full = t;
-    const size_t lo = std::max(ys, f);
-    assert(t + 1 - lo >= kMinDays);
-    const double n = static_cast<double>(t + 1 - lo), y = years(lo - 1, t);
-    const double m = (S[t + 1] - S[lo]) / n, sd = std::sqrt(std::max((SS[t + 1] - SS[lo]) / n - m * m, 0.0));
-    const float a = static_cast<float>(std::expm1((G[t + 1] - G[lo]) / y)), h = sd > 0.0 ? static_cast<float>(m / sd * std::sqrt(n / y)) : 0.0f;
+    if (ys < f)
+      continue;
+    if (l.from == d1)
+      l.from = t;
+    const double n = static_cast<double>(t + 1 - ys), y = years(ys - 1, t);
+    const double m = (S[t + 1] - S[ys]) / n, sd = std::sqrt(std::max((SS[t + 1] - SS[ys]) / n - m * m, 0.0));
+    const float a = static_cast<float>((G[t + 1] - G[ys]) / y), h = sd > 0.0 ? static_cast<float>(m / sd * std::sqrt(n / y)) : 0.0f;
     ann_s += a, shp_s += h;
     ann_m.push(a), shp_m.push(h);
     l.med[t] = shp_m.mid();
   }
+  if (l.from == d1)
+    return;
   const double k = static_cast<double>(d1 - l.from);
-  l.stat = {static_cast<float>(ann_s / k), ann_m.mid(), static_cast<float>(shp_s / k), l.med[d1 - 1], static_cast<float>(mdd),
-            static_cast<float>(b / years(f - 1, d1 - 1))};
+  l.stat.ann = static_cast<float>(std::expm1(ann_s / k)), l.stat.ann_med = std::expm1(ann_m.mid());
+  l.stat.sharpe = static_cast<float>(shp_s / k), l.stat.sharpe_med = l.med[d1 - 1];
 }
 
 } // namespace

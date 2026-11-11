@@ -2101,7 +2101,6 @@ struct State {
     out[Fund::cffoa_ttm] = sat(cf * 1e-8f);
     out[Fund::lim_up] = pos(p.at(p.lim_up, a, d));
     out[Fund::lim_dn] = pos(p.at(p.lim_dn, a, d));
-    out[Fund::low_mc_thr] = mb ? 5.0f : 3.0f;
 
     // 日频因子 raw
     out[Fund::roe_ttm] = sat(roe);

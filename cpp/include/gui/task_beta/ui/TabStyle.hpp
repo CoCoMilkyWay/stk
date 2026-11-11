@@ -1,12 +1,12 @@
 // Beta→Style: 风格篮子的参数优选 (StyleService; 原料 = all.bar 库), 选定的子池写 output/config/beta/pools.json.
 //   右表 = 风格 (features/Panel/PoolSpec.hpp kStyleDefs, 名后计 落地 / 选中 的池数),
-//     点一行 = 打开 (至多一个) = 按左上参数网格 (端 / 只数 / 周期 / 权重 / 各切片维 各维多选, 笛卡尔积) 逐组选池回测,
+//     点一行 = 打开 (至多一个) = 按左上参数网格 (端 / 只数 / 周期 / 权重 / 划分维 / 过滤维 各维多选, 笛卡尔积; 集合维见 PoolSpec.hpp Grid) 逐组选池回测,
 //     其下列全A 两条 (行情页同一条) + 各组 × 权重的线 (全程切片为空的组不列):
 //     中文名 (各段按维, 不起作用的段灰; 落地蓝 / 新选橙 / 去掉红) | 平均年化 | 中位年化 | 平均夏普 | 中位夏普 (滚动一年窗) | 最大回撤 | 年换手 (区间整段), 底色 = 组内名次;
 //     点行 = 选中 ↔ 去掉 (选中的行底色亮; 图上点线同一份); 有选池态 (落地 / 新选 / 去掉) 的线恒在前, 各自按表头排序 (缺省中位夏普降序); 只画可见行;
 //   左 = 网格条 (开关按钮: 左键翻转 / 右键只留它; 不起作用的取值字灰, 与线名灰段同一判据) + 状态 + 改动 (+新 / −去) [确认…] 弹窗列出改动,
 //     写 output/config/beta/pools.json = 落地 / [撤销] 回落地; 中 = 各线累计中位夏普 (每日 = 自首窗到该日 各滚动一年窗夏普的中位; 末日值 = 右表中位夏普):
-//     任一日的截面 = 到该日为止的名次; 一时的极端行情只占少数窗, 压不动中位; 满一年的窗起才画 (前段样本少, 中位未收敛);
+//     任一日的截面 = 到该日为止的名次; 一时的极端行情只占少数窗, 压不动中位; 只计满一年的窗 (年化平均在对数空间平均);
 //     底 = 区间条 (同 Market 行情页; 底线 = 全A 等权全程净值): 选回测区间, 右表 / 图只算区间内 (只重算绩效, 篮子账不重跑);
 //     [含晚起] 开关: 缺省不列区间起点后一个月仍未建仓的组 (切片中途才有成分, 如纯科创板), 名次只在列出的线内排;
 //     线色 = 中位夏普组内名次 (绿好 → 红差; 好的画在上), 悬停网格条某一维 = 按该维取值着色 (两值 = 蓝 / 橙, 多值 = 色环等分; 按钮字色即图例),
@@ -21,6 +21,7 @@
 #include "gui/util/Chart.hpp"                      // DayRange
 #include "misc/date.hpp"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -45,18 +46,19 @@ struct StyleUIState {
   DayRange range;                 // 区间条 (d0 / d1 每帧由 lo / hi 在结果日轴上换算) + 拖动态
   bool late = false;              // 列晚起的组 (区间起点后一个月仍未建仓, 如纯科创板; 缺省不列: 起点不同, 绩效不可比)
   uint32_t fit_gen = 0;           // 上次 fit 的结果 (gen)
-  // 结果派生: 名随结果, 列出的线 / 名次 / 画序随 (结果, 晚起), 选池态随选中, 表序随以上 + 表头排序
-  uint32_t of_gen = 0;            // 派生所属的结果 (gen)
-  int of_late = -1;               // 列出的线所属的 late (−1 = 未派生)
-  uint64_t of_pick = 0;           // 选池态所属的选中 (pick_gen)
-  int of_sort = -2;               // 表序所属的排序: 列 · 2 + 降序 (−1 = 原序; −2 = 未排)
-  std::vector<std::string> names; // [线] 中文名
-  std::vector<uint8_t> marks;     // [线] 选池态
-  size_t n_late = 0;              // 晚起的线数
-  std::vector<uint32_t> shown;    // 列出的线 (表 / 图只看这些; late 关 = 去掉晚起的)
-  std::vector<float> ranks;       // [线 · 绩效列] 列出的线内的名次 (0 = 最好 → 1 = 最差; NaN = 不可算 / 未列)
-  std::vector<uint32_t> paint;    // 画序 (列出的线, 中位夏普升序: 好的画在上)
-  std::vector<uint32_t> order;    // 右表行序 (列出的线; 有选池态的在前, 其余按表头排序)
+  // 结果派生: 名随结果, 列出的线 / 名段宽 / 名次 / 画序随 (结果, 晚起), 选池态随选中, 表序随以上 + 表头排序
+  uint32_t of_gen = 0;                     // 派生所属的结果 (gen)
+  int of_late = -1;                        // 列出的线所属的 late (−1 = 未派生)
+  uint64_t of_pick = 0;                    // 选池态所属的选中 (pick_gen)
+  int of_sort = -2;                        // 表序所属的排序: 列 · 2 + 降序 (−1 = 原序; −2 = 未排)
+  std::vector<std::string> names;          // [线] 中文名
+  std::vector<uint8_t> marks;              // [线] 选池态
+  size_t n_late = 0;                       // 晚起的线数
+  std::vector<uint32_t> shown;             // 列出的线 (表 / 图只看这些; late 关 = 去掉晚起的)
+  std::array<float, pool::kParts> slots{}; // [名段] 列出的线里该段最宽 (字号倍数): 表里线名各段占此宽, 上下对齐
+  std::vector<float> ranks;                // [线 · 绩效列] 列出的线内的名次 (0 = 最好 → 1 = 最差; NaN = 不可算 / 未列)
+  std::vector<uint32_t> paint;             // 画序 (列出的线, 中位夏普升序: 好的画在上)
+  std::vector<uint32_t> order;             // 右表行序 (列出的线; 有选池态的在前, 其余按表头排序)
 };
 
 // GUI 线程每帧: 首次读 output/config/beta/pools.json (落地 = 选中)
