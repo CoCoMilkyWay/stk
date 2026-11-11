@@ -47,7 +47,7 @@ constexpr const char *kStyleTip =
     "• 右表 = 风格 (一列排序键; 名后 = 落地 / 选中的池数), 点一行打开: 按左上参数网格逐组选池回测, 其下列各组 × 权重的绩效\n"
     "• 网格各维多选, 组 = 笛卡尔积: 端 (键低端 / 高端) · 只数 (全 = 切片内全选, 与风格无关) · 周期 (日 = 每日重选 / 周 = 按上周末重选, 权随价漂移) · 权重 (等权 / 总市值加权)\n"
     "  · 划分维 ST / 板块 / 融资: 各按一列把在市 A 股分成互斥的类; 勾选的类各自一组 + 勾选的并一组 + 全 (不切); 缺省全勾\n"
-    "  · 过滤维 (次新 / 预警, 不互斥): 勾选的项各自一组 + 勾选的合一组 + 不剔; 缺省不勾\n"
+    "  · 过滤维 (次新 / 预警, 不互斥; 下拉多选): 勾选的项各自一组 + 勾选的合一组 + 不剔; 缺省不勾\n"
     "  · 切片 = 各划分维之交 − 过滤项; 在市固定剔次日停牌 / 申万一级行业未知\n"
     "• 网格按钮: 按下色 = 勾, 灰字 = 不起作用的取值 (只数 全; 只数只勾全时的端); 左键 = 翻转 (取值维至少留一个), 右键 = 只留它 (已只留它 = 该维全开)\n"
     "• 名 = 风格端.只数.周期.ST.板块.融资.过滤 (集合维的段 = 各类 / 项以 + 连; 灰段 = 不起作用, 与网格按钮的灰字同一判据); 全程切片为空的组不列\n"
@@ -301,7 +301,51 @@ bool toggles(StyleUIState &s, int d, const char *const names[], const char *cons
   return ImGui::IsItemHovered();
 }
 
-// 网格条: 端 / 只数 / 周期 / 权重 一行, ST / 板块 / 融资 / 过滤 一行; 悬停的维 / 取值 → s.dim / s.val (本帧图起按它着色 / 提亮)
+// 过滤维的下拉多选 (一项一个勾选框, 可全不勾; 点 = 翻转, 不收起); 框内 = 勾选的项以 + 连 (都不勾 = 不剔); lit / 返回值 / val 同 toggles
+bool dropdown(StyleUIState &s, int d, int &val) {
+  assert(pool::kDimDefs[d].kind == pool::kKindFilter);
+  const std::span<const pool::DimValue> vs = pool::kDimDefs[d].values;
+  uint16_t bits = dim_bits(s.grid, d);
+  const uint16_t hue = hue_bits(s.grid, d);
+  const bool lit = s.dim == d;
+  std::string shown, every;
+  for (size_t i = 0; i < vs.size(); ++i) {
+    if (bits >> i & 1)
+      shown += (shown.empty() ? "" : "+") + std::string(vs[i].name_cn);
+    every += (i ? "+" : "") + std::string(vs[i].name_cn);
+  }
+  ImGui::PushID(d);
+  ImGui::BeginGroup();
+  ImGui::TextDisabled("%s", dim_name(d));
+  if (ImGui::IsItemHovered())
+    tip("勾选的项各自一组 + 勾选的合一组 + 不剔");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(ImGui::CalcTextSize(every.c_str()).x + ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f);
+  bool pop = false;
+  if (ImGui::BeginCombo("##dd", shown.empty() ? "不剔" : shown.c_str())) {
+    for (size_t i = 0; i < vs.size(); ++i) {
+      const uint16_t b = static_cast<uint16_t>(1u << i);
+      if (lit)
+        ImGui::PushStyleColor(ImGuiCol_Text, dim_col(hue, static_cast<int>(i)));
+      if (bool on = bits & b; ImGui::Checkbox(vs[i].name_cn, &on))
+        bits ^= b;
+      if (lit)
+        ImGui::PopStyleColor();
+      if (ImGui::IsItemHovered()) {
+        val = static_cast<int>(i);
+        tip("%s", vs[i].tip);
+      }
+    }
+    pop = ImGui::IsWindowHovered();
+    ImGui::EndCombo();
+  }
+  ImGui::EndGroup();
+  ImGui::PopID();
+  set_bits(s.grid, d, bits);
+  return pop || ImGui::IsItemHovered();
+}
+
+// 网格条: 端 / 只数 / 周期 / 权重 / 融资 一行, ST / 板块 / 过滤 (下拉) 一行; 悬停的维 / 取值 → s.dim / s.val (本帧图起按它着色 / 提亮)
 void grid_bar(StyleUIState &s) {
   int hov = -1, val = -1;
   const auto bar = [&](int d, const char *const names[], const char *const tips[], int n) {
@@ -312,6 +356,12 @@ void grid_bar(StyleUIState &s) {
   // 维表的一维; 端名随打开的风格
   const auto dim = [&](int d) {
     const pool::DimDef &df = pool::kDimDefs[d];
+    if (df.kind == pool::kKindFilter) {
+      int v = -1;
+      if (dropdown(s, d, v))
+        hov = d, val = v;
+      return;
+    }
     const char *names[8], *tips[8];
     assert(pool::dim_size(d) <= 8);
     for (int i = 0; i < pool::dim_size(d); ++i)
@@ -331,8 +381,8 @@ void grid_bar(StyleUIState &s) {
         dim(d);
     }
   };
-  line({pool::kDimEnd, pool::kDimN, pool::kDimRebal, kDimWeight});
-  line({pool::kDimSt, pool::kDimBoard, pool::kDimMargin, pool::kDimFilter});
+  line({pool::kDimEnd, pool::kDimN, pool::kDimRebal, kDimWeight, pool::kDimMargin});
+  line({pool::kDimSt, pool::kDimBoard, pool::kDimFilter});
   s.dim = hov, s.val = val;
 }
 
