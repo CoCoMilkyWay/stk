@@ -251,7 +251,8 @@ std::vector<Spec> load_pools(); // 文件不存在 = default_pools(); 格式不�
 void save_pools(const std::vector<Spec> &pools);
 
 // Style 页参数网格: [维] 勾选位集 (位 i = 该维取值表第 i 个)
-//   各维的取值: 单选维 = 勾选的各取值 (至少勾一个); 集合维 (勾选 S, 可空) = S 的各位单独 + S 整体 + 0 (划分维 = 全部类, 过滤维 = 不剔)
+//   各维的取值: 单选维 = 勾选的各取值 (至少勾一个); 集合维 (勾选 S, 可空) = S 的各位单独 + S 整体, 外加:
+//     划分维 = 不另测全 (S 全勾时 S 整体即全, S 空 = 只有全); 过滤维 = 加 0 (不剔)
 //   网格 = 各维取值的笛卡尔积; 风格维由页面置为打开的那一个; 缺省其余各维全勾
 struct Grid {
   std::array<uint16_t, kDims> bits = [] {
@@ -262,7 +263,7 @@ struct Grid {
     return b;
   }();
   Style style() const;         // 风格维须只勾一个
-  uint16_t slots(int d) const; // 维 d 展开的取值槽 (位): 单选维 = 勾选的; 集合维 = 勾选的各位 + 并 / 合 (勾选不止一个, 划分维全勾的并即全) + 全 / 不剔
+  uint16_t slots(int d) const; // 维 d 展开的取值槽 (位): 单选维 = 勾选的; 集合维 = 勾选的各位 + 并 / 合 (勾选不止一个, 划分维全勾的并即全) + 不剔 (过滤维) / 全 (划分维全勾或全不勾)
   bool operator==(const Grid &) const = default;
 };
 std::vector<Spec> specs_of(const Grid &g); // 各维的取值槽之积, canon 后去重, 维序 (末维最快)

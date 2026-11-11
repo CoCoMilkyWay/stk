@@ -49,7 +49,7 @@ constexpr const char *kStyleTip =
     "• 右表 = 风格 (一列排序键; 名后 = 落地 / 选中的池数), 点一行打开: 按左上参数网格逐组选池回测, 其下列各组的绩效\n"
     "• 网格各维多选, 组 = 笛卡尔积\n"
     "  · 单选维 (每组取一个): 端 (按风格键取低端 / 高端) · 只数 (在端头取前 N) · 周期 (日 = 每日重选 / 周 = 按上周末重选, 权随价漂移) · 权重 (等权 / 总市值加权); 缺省全勾\n"
-    "  · 划分维: ST / 板块 / 融资 = 各按一列把在市 A 股分成互斥的类; 勾选的类各自一组 + 勾选的并一组 + 全 (不切); 缺省全勾\n"
+    "  · 划分维: ST / 板块 / 融资 = 各按一列把在市 A 股分成互斥的类; 勾选的类各自一组 + 勾选的并一组 (全勾时即全, 不切; 不另测全, 未勾的类始终剔除); 缺省全勾\n"
     "  · 过滤维 (次新 / 预警, 不互斥; 下拉多选): 勾选的项各自一组 + 勾选的合一组 + 不剔; 缺省全勾\n"
     "  · 切片 = 各划分维之交 − 过滤项; 在市固定剔次日停牌 / 申万一级行业未知\n"
     "• 网格按钮: 按下色 = 勾; 左键 = 翻转 (单选维至少留一个), 右键 = 只留它 (已只留它 = 该维全开)\n"
@@ -244,7 +244,7 @@ bool toggles(StyleUIState &s, int d, const char *const names[], const char *cons
   ImGui::BeginGroup();
   ImGui::TextDisabled("%s", pool::kDimDefs[d].name_cn);
   if (pool::is_set(d) && ImGui::IsItemHovered())
-    tip(pool::kDimDefs[d].kind == pool::kKindPart ? "勾选的类各自一组 + 勾选的并一组 + 全 (不切)" : "勾选的项各自一组 + 勾选的合一组 + 不剔");
+    tip(pool::kDimDefs[d].kind == pool::kKindPart ? "勾选的类各自一组 + 勾选的并一组 (全勾 = 全, 不切)" : "勾选的项各自一组 + 勾选的合一组 + 不剔");
   for (int i = 0; i < n; ++i) {
     ImGui::SameLine(0, i ? 2.0f : -1.0f);
     const uint16_t b = static_cast<uint16_t>(1u << i);

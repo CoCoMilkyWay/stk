@@ -41,6 +41,7 @@ struct TaskMarketState {
   std::unique_ptr<Market::CtaService> cta_service;
   Market::AssetState asset_state;
   Market::LinesUIState lines_ui; // 缓存键含 portfolio_service 的结果代 / portfolio_ui 的解析代
+  std::vector<uint32_t> lines;   // 全部篮子线 (篮子表随进程代变, 本状态每代新建)
 };
 
 TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_ptr<Engine::EngineHub> engine) {
@@ -86,12 +87,11 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
     const Quote::QuoteHub *mk = nullptr;
     if (data.task_state.database.asset_info_ready) {
       state->quote->start(data);
-      static const std::vector<uint32_t> lines = [] { // 全部篮子线
-        std::vector<uint32_t> k(basket_count());
-        std::iota(k.begin(), k.end(), 0u);
-        return k;
-      }();
-      Market::Sync(*state->quote, Quote::kBasket, lines, ui.basket.feed);
+      if (state->lines.empty()) {
+        state->lines.resize(basket_count());
+        std::iota(state->lines.begin(), state->lines.end(), 0u);
+      }
+      Market::Sync(*state->quote, Quote::kBasket, state->lines, ui.basket.feed);
       Market::Sync(*state->quote, Quote::kStock, ui.pick.stocks(Market::kPickMany), ui.basket.stocks);
       mk = state->quote.get();
     }

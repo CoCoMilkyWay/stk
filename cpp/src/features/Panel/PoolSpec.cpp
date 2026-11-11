@@ -210,8 +210,9 @@ uint16_t Grid::slots(int d) const {
   const uint16_t b = bits[d];
   if (!is_set(d))
     return b;
-  const bool many = std::popcount(b) > 1 && !(kDimDefs[d].kind == kKindPart && b == full_mask(d));
-  return static_cast<uint16_t>(b | (many ? 1u << slot_union(d) : 0u) | 1u << slot_none(d));
+  const bool part = kDimDefs[d].kind == kKindPart, full = part && b == full_mask(d);
+  const bool many = std::popcount(b) > 1 && !full, none = !part || !b || full;
+  return static_cast<uint16_t>(b | (many ? 1u << slot_union(d) : 0u) | (none ? 1u << slot_none(d) : 0u));
 }
 
 std::vector<Spec> specs_of(const Grid &g) {
