@@ -63,7 +63,7 @@ private:
   mutable bool dirty_ = false;
 };
 
-// 进程内唯一 A 轴实例, 首次访问自动 load + 自校验.
+// 进程内唯一 A 轴实例, 每进程代首次访问自动 load + 自校验 (misc::Epochal; 改动随 intern 方 save 落盘).
 //
 // 不放进 SharedData: 轴是跨模块的全局真理 — encode 按它过滤资产, 特征
 // 计算按它定列序, FeatureRead 按它验文件指纹. 两份实例就是两套列序, 所以

@@ -97,7 +97,7 @@ TaskTree CreateAllTasks(SharedData &data);
 // Cleanup tasks
 void CleanupAllTasks(TaskTree &tree);
 
-// Reinitialize all tasks (cleanup + recreate)
+// 进程内重启: 全部任务 + SharedData + 进程级缓存按盘重建, 留在原选中页 (见 SharedData.hpp Reinit)
 void ReinitAllTasks(TaskTree &tree, SharedData &data);
 
 } // namespace GUI

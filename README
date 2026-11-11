@@ -44,7 +44,7 @@ stk/
 ├── cpp/
 │   ├── include/
 │   │   ├── shared/                                     # 📦 跨模块数据层 (GUI 任务与 worker 共享的状态)
-│   │   │   ├── SharedData.hpp                          # 📦 顶层数据容器
+│   │   │   ├── SharedData.hpp                          # 📦 顶层数据容器 + 进程内重启请求 Reinit (配置 / 池表 / 特征库变了 → 全部按盘重建)
 │   │   │   ├── Config.hpp                              # 📦 配置数据结构
 │   │   │   ├── TaskState.hpp                           # 📦 任务状态
 │   │   │   ├── Asset.hpp / AssetInfo.hpp               # 📦 资产定义 / 元数据 (按全局 id 稠密: 一对一 vector, 一对多 Csr)
@@ -158,7 +158,7 @@ stk/
 │   │   │   ├── util/                                   # 🖥️ 其余公共件: Chart (图表件) / Sparkline (格内迷你图) / Tip / Color / Board (板块口径) / AssetFilter (资产筛选栏) / Latex
 │   │   │   ├── icon_bar/                               # 🖥️ 图标栏: 网络探测 (NetworkService) / FPS
 │   │   │   ├── compute/                                # 🖥️ 特征计算 (Beta / Alpha 的 Compute 页同一份)
-│   │   │   │   ├── ComputeHub.hpp                      # 🖥️ 计算面 ComputeHub (一个服务 + 一张库表; Beta 列 all.bar, Alpha 列其余); 轮次 rounds 供 Features 作废缓存; 数据换进后自动续算
+│   │   │   │   ├── ComputeHub.hpp                      # 🖥️ 计算面 ComputeHub (一个服务 + 一张库表; Beta 列 all.bar, Alpha 列其余); 数据换进后自动续算; 一轮收尾即进程内重启
 │   │   │   │   ├── services/ComputeService.hpp         # 🖥️ 请求 = 库; 每库 fund::Panel → pool::Panel → pipeline<T> (tier_ops 分发)
 │   │   │   │   │                                       #    · 规划 plan_libs → 每库 LibPlan (清单 / 已落盘 / 规划日期轴; 上游未落盘齐 = blocked)
 │   │   │   │   │                                       #    · 全量 (清库重建) / 续算 (A 轴冻结, 只算库末之后的新日; 快照与清单 / 字段表对得上才可续)
@@ -245,7 +245,7 @@ stk/
 │   │   │   │       ├── QuotesPanel.hpp                 # 🖥️ 行情图: 个股 (日内 + 日线) / 篮子 (日内叠加) / 资金流 同一 Feed + Sync
 │   │   │   │       └── CrossSectionAnalysis.hpp        # 🖥️ 截面分析 (ASSET Statistics)
 │   │   │   ├── task_features/                          # 🖥️ 特征面板与调试工具
-│   │   │   │   ├── TaskFeatures.hpp                    # 🖥️ 特征任务主界面; 计算面轮次变 → 预览 / 矩阵 / 订单流作废
+│   │   │   │   ├── TaskFeatures.hpp                    # 🖥️ 特征任务主界面; 计算在飞时锁其它页
 │   │   │   │   ├── services/
 │   │   │   │   │   ├── Analysis.hpp                               # 🖥️ 流式分析公共骨架 (目标 = Spec + Snap; 进度 / epoch / 锁)
 │   │   │   │   │   ├── StreamService.hpp                          # 🖥️ 流式分析服务骨架 (CRTP, 派生自 Service)
@@ -368,6 +368,7 @@ stk/
 │   │       ├── progress_{single,parallel}.hpp          # 🔧 单行 / 多线程进度条
 │   │       ├── snap.hpp                                # 🔧 快照归档 Save ⇄ Load: 每类型一份成员清单, 两向同一份
 │   │       ├── exec.hpp                                # 🔧 执行器 (全仓唯一批内并行抽象): Serial / ForkJoin 逐位一致
+│   │       ├── epoch.hpp                               # 🔧 进程代 + Epochal<T>: 读盘派生的进程级缓存每代重建 (进程内重启换代)
 │   │       ├── affinity.hpp                            # 🔧 CPU 亲和性 / 线程命名
 │   │       ├── archive.hpp / parquet.hpp               # 🔧 归档操作 / Parquet 读写
 │   │       ├── file_check.hpp / file_repair.hpp        # 🔧 归档核查 ⇄ 修复: 同一份问题分类, 可修项重打包为非固实 RAR 原地原子替换
@@ -405,7 +406,7 @@ stk/
 └── output/                                             # 📁 落盘 (与 cpp/ 同级): config/ 人定的输入 + 按产研流水线分段的产物 + run/ 各段运行产物的同构镜像 (整删无损)
     ├── config/                                         # ⚙️ 配置: 一任务一目录 (与左栏任务树对仗); 本机件 (不进仓库) 由 output/.gitignore 逐项列出
     │   ├── settings/settings.json                      # ⚙️ 归档目录 / 回测日历起点 (末日随数据) / CSV 文件名 / 交易成本 / 同步开关 (本机)
-    │   ├── beta/pools.json                             # ⚙️ 子池表: Beta → Style 选定的子池 (池名 = features/Panel/PoolSpec.hpp 规范串; 无文件 = 缺省池表); 启动时读, 重启生效
+    │   ├── beta/pools.json                             # ⚙️ 子池表: Beta → Style 选定的子池 (池名 = features/Panel/PoolSpec.hpp 规范串; 无文件 = 缺省池表); 写入即进程内重启生效
     │   ├── market/watch.json                           # ⚙️ Market 自选: 篮子键 / 个股代码 (本机)
     │   ├── agent/                                      # ⚙️ Agent: prompt/<名>.md 提示词模板 (system / first / round / retry / review / test) · families.md 特征族卡
     │   │                                               #    · keys.json 后端 key · ui.json Mine / Config 页选项 (本机)
@@ -484,7 +485,7 @@ stk/
 #       · 行末源标: CS(<源档>, <层>, <源列>, Tf, Method); <层> 任意: 源行 = level_asof(源列, 本列, t)
 #         (粗层读已收的上一行; 落到前一交易日只许 TS / 元列, 区间首日 NaN)
 #   - 两档都要: 节点类放 Node/Common/<分类>/, 两档各写各的 NODE_ / FIELDS_ (列名跨档不许重名, FeatureMeta.cpp 编译期断言)
-#   - 新池:   不写节点; Beta → Style 点选后确认写 output/config/beta/pools.json (重启生效), 每个子池两档各一库
+#   - 新池:   不写节点; Beta → Style 点选后确认写 output/config/beta/pools.json (即进程内重启, 新池随即可算), 每个子池两档各一库
 #       · 新风格 (排序键) = features/Panel/PoolSpec.hpp 风格表加一行 + PoolSelect.cpp 键表 kKeyDefs 对应一行
 #       · 新过滤项 = PoolSpec.hpp 过滤表 kFilterValues 加一项 + PoolSelect.cpp 日行列表 kDayColDefs 末尾加其列 (类号混合进制随之扩)
 #       · 新划分维 = PoolSpec.hpp 维表加一张类表 + PoolSelect.cpp 日行列表 / fill_row 的类映射各加一项 + TabStyle 维条排进一行

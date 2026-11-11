@@ -31,7 +31,7 @@ int RunGUI() {
 
   // Setup config reinit callback
   data.config.reinit_callback = [&data]() {
-    data.request_reinit = true;
+    data.reinit.requested = true;
   };
 
   // Create GUI tasks (Init 在其中按顺序立即触发, 后台检查无需等待手动打开页面;
@@ -155,9 +155,9 @@ int RunGUI() {
     double frame_start = 0.0;
     const double frame_time = data.high_performance_mode ? COMPUTE_FRAME_TIME : FRAME_TIME;
 
-    // Check for reinit request (triggered by config save)
-    if (data.request_reinit) {
-      std::cout << "=== Reinitializing GUI (config changed) ===" << std::endl;
+    // 进程内重启 (配置 / 池表 / 特征库变了)
+    if (data.reinit.requested) {
+      std::cout << "=== Reinitializing GUI ===" << std::endl;
 
       // Cleanup and recreate all tasks and state
       GUI::ReinitAllTasks(tree, data);

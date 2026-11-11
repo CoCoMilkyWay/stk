@@ -215,11 +215,11 @@ static void render_status(ComputeService &service, const ComputeState &state, bo
     TextPhase(service.phase.load(std::memory_order_acquire));
   ImGui::SameLine();
   if (state.auto_append)
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "自动续算中 (已续 %zu 库)", state.auto_done.size());
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "自动续算中");
   else
     ImGui::TextDisabled("自动续算: 待数据换进");
-  hover_tip("同步 / 编码换进数据后, 空闲时按规划序 (上游在前: all 先于子池, 每池 bar 先于 lob) 依次 Append 可续算且未判废的库,\n"
-            "每库一轮至多一次; 无可续算 / 取消即止");
+  hover_tip("同步 / 编码换进数据后, 空闲时按规划序 (上游在前: all 先于子池, 每池 bar 先于 lob) 依次 Append 可续算且未判废的库;\n"
+            "每轮收尾即进程内重启 (各页按新库重建) 再找下一个; 无可续算 / 取消即止");
 }
 
 // 档在 TIER_ORDER 中的位次 (档组配色下标)
@@ -684,7 +684,7 @@ void RenderTabCompute(ComputeHub &hub, SharedData &data, LibSide side) {
     if (ImGui::Button("Remove", ImVec2(120, 0))) {
       remove_lib(*state.confirm_remove);
       state.confirm_remove.reset();
-      state.libs_dirty = true;
+      data.reinit = {.requested = true, .online = false, .append = false}; // 库变了: 进程内重启, 不顺手起续算
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndDisabled();

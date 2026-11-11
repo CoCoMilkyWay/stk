@@ -2,6 +2,7 @@
 
 #include "disk/Disk.hpp"
 #include "fundamental/AssetAxis.hpp"
+#include "misc/epoch.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -77,7 +78,7 @@ void save_concepts(misc::Ymd date, const std::vector<Concept> &list) {
 }
 
 const ConceptTable &concepts() {
-  static const ConceptTable t = [] {
+  static const auto load = [] {
     ConceptTable o;
     AssetAxis &ax = asset_axis();
     const size_t G = ax.size();
@@ -108,6 +109,10 @@ const ConceptTable &concepts() {
       o.of.insert(o.of.end(), by[g].begin(), by[g].end());
     }
     return o;
-  }();
-  return t;
+  };
+  struct Loaded : ConceptTable {
+    Loaded() : ConceptTable(load()) {}
+  };
+  static misc::Epochal<Loaded> t;
+  return t.get();
 }

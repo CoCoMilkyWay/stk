@@ -58,16 +58,16 @@ struct AggregatedState {
 
 class StateManager {
 public:
-  // 构造即发首批请求: 核对 Load + refresh
+  // 构造即发首批请求: 核对 Load + refresh (进程内重启带 online = false → 首轮不联网)
   StateManager(SharedData &data, SyncService &sync, ScanService &scan, EncodeService &enc,
                AuditService &audit);
 
   // 每帧帧首 (GUI 线程): 收交接 → 换进共享状态 → 推下一站 → 刷解锁 + task_state.database
   void tick();
 
-  // 唯一刷新链入口: 基本面 / 分钟线同步 (联网按 config.sync_fundamental / sync_bar1m) → AssetInfo/items 重建 → L2 覆盖扫描.
+  // 唯一刷新链入口: 基本面 / 分钟线同步 (online 时联网按 config.sync_fundamental / sync_bar1m) → AssetInfo/items 重建 → L2 覆盖扫描.
   // GUI 启动、Sync 页 Update、修复收尾都走这里, 不各写一份流程.
-  void refresh();
+  void refresh(bool online = true);
   // 编码 / 核对请求 (调用方按 can_encode / auditing 使能)
   void encode(int workers, bool skip_existing);
   void audit(AuditOp op, std::string table, bool incremental);

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace GUI::Compute {
@@ -28,11 +29,6 @@ void TickCompute(ComputeHub &hub, SharedData &data) {
   ComputeService &service = *hub.service;
   ComputeState &state = hub.state;
   const bool inputs_ready = hub.inputs_ready;
-  const Phase phase = service.phase.load(std::memory_order_acquire);
-  if (hub.prev_phase == Phase::Running && (phase == Phase::Done || phase == Phase::Cancelled))
-    ++hub.rounds;
-  hub.prev_phase = phase;
-
   const Config &config = data.config;
   const bool is_running = service.busy();
 
@@ -52,13 +48,9 @@ void TickCompute(ComputeHub &hub, SharedData &data) {
       state.ui_state = ComputeUIState::Computing;
     break;
   case ComputeUIState::Computing:
-    if (!is_running) {
-      state.ui_state = ComputeUIState::Idle;
-      state.popup_frame_count = 0;
-      state.libs_dirty = true;
-      if (service.phase.load(std::memory_order_acquire) == Phase::Cancelled)
-        state.auto_append = false;
-    }
+    // 一轮收尾 = 库变了: 进程内重启, 各页与进程级缓存按盘上新库重建 (状态机停在 Computing, 冻结到重建); 取消 → 重建后不自动续算
+    if (!is_running)
+      data.reinit = {.requested = true, .online = false, .append = service.phase.load(std::memory_order_acquire) != Phase::Cancelled};
     break;
   }
   // 点下 Rebuild / Append 起到一轮收尾 (弹窗状态机非 Idle): 共享数据冻结
@@ -66,34 +58,30 @@ void TickCompute(ComputeHub &hub, SharedData &data) {
   if (!inputs_ready)
     return;
 
-  // ---- 库表: 数据换进 (同步 / 编码收尾都以扫描换进结束) 即重扫, 数据末日 / 未落盘随之前移; 并起一轮自动续算 ----
+  // ---- 库表: 数据换进 (同步 / 编码收尾都以扫描换进结束) 即重扫, 数据末日 / 未落盘随之前移; 并起自动续算 (重建后首次随重启请求) ----
   if (state.generation != data.asset.generation) {
     state.generation = data.asset.generation;
     state.libs_dirty = true;
-    state.auto_append = true;
-    state.auto_done.clear();
+    state.auto_append = std::exchange(data.reinit.append, true);
   }
   if (state.libs_dirty && !is_running) {
     state.libs_dirty = false;
     state.libs = plan_libs(data);
   }
 
-  // ---- 自动续算: 空闲 (无在算 / 无全量确认 / 无编码在飞) 时依次 Append 可续算且未判废的库, 每库一轮至多一次;
-  //      规划序上游在前, 它算完重扫, 下游的规划随之前移再轮到; 无可续算 / 取消即止 ----
+  // ---- 自动续算: 空闲 (无在算 / 无全量确认 / 无编码在飞) 时按规划序 Append 首个可续算且未判废的库;
+  //      一轮收尾即重建, 上游在前, 它落盘后下游的规划随之前移再轮到; 无可续算 / 取消即止 ----
   if (!state.auto_append || state.ui_state != ComputeUIState::Idle || is_running || state.libs_dirty || state.confirm || state.confirm_remove ||
       data.task_state.database.encode_inflight)
     return;
   assert(state.libs && "库表未扫");
   const PerLib<LibPlan> &libs = *state.libs;
   const std::vector<LibId> order = lib_order();
-  const auto it = std::ranges::find_if(order, [&](LibId l) {
-    return libs[l].appendable() && !FeatureRead::lib_stale(l) && std::ranges::find(state.auto_done, l) == state.auto_done.end();
-  });
+  const auto it = std::ranges::find_if(order, [&](LibId l) { return libs[l].appendable() && !FeatureRead::lib_stale(l); });
   if (it == order.end()) {
     state.auto_append = false;
     return;
   }
-  state.auto_done.push_back(*it);
   state.begin(libs[*it], true);
 }
 

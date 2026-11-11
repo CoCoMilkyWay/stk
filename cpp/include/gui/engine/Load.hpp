@@ -10,6 +10,7 @@
 #include "factor/Stat/Contract.hpp"
 #include "features/Panel/PoolSpec.hpp" // kRebals
 #include "gui/engine/Scope.hpp"        // Domain / Chunk / Rc
+#include "misc/epoch.hpp"
 #include "misc/exec.hpp"
 #include "shared/Progress.hpp" // Progress
 
@@ -212,7 +213,7 @@ struct Block {
 // Dag 叶的平面视图 (下标 = Dag::feats 下标); 全部须在块上
 std::vector<const factor::check::Plane *> leaves(const Block &c, const std::vector<std::string> &feats);
 
-// ---- Store: 进程唯一的计算面 (GUI 各因子服务 + agent 同一份) ----
+// ---- Store: 进程唯一的计算面 (GUI 各因子服务 + agent 同一份; 每进程代重建, 库与缓存随盘) ----
 //   线程池 ex / 已开的库 lr / 平面缓存 / 计算权, 四者同归一个持有者: 计算权在手才可碰其余三样 (assert 持有线程).
 //   计算权: 同时只一个作业持有; 交互 (Inspect / Lens / Portfolio) 先于批 (Run / Search), 批在文件 / 趟边界让位 (Engine Lease).
 //   平面缓存: 键 = 层 | Domain::key | 日段 | 角色 (门控 / 标签组 / 金额段 / 标签秩 / 叶), 与请求方无关 (跨服务命中);
@@ -239,6 +240,7 @@ public:
   void clear();
 
 private:
+  friend class misc::Epochal<Store>;
   Store();
   struct Entry {
     std::shared_ptr<const void> p;

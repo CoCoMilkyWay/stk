@@ -1,4 +1,4 @@
-// ComputeHub: 特征计算面 (一个 ComputeService + 一张库表), Beta / Alpha 两个 Compute 页同一份; 读库方 (Features) 看 rounds 作废缓存.
+// ComputeHub: 特征计算面 (一个 ComputeService + 一张库表), Beta / Alpha 两个 Compute 页同一份; 一轮收尾即进程内重启, 读库方随之按新库重建.
 // 一张库表分两页: Beta → Compute = all.bar (全市场根库, 算完即可 Style 调优 / 看 Market);
 //                 Alpha → Compute = 其余全部库 (all.lob + 子池各档: 因子挖掘的张量)
 #pragma once
@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <vector>
 
 struct SharedData;
 
@@ -44,9 +43,8 @@ struct ComputeState {
   uint64_t generation = 0;   // 对应的 Asset::generation (数据换进即重扫)
   char pool_filter[32] = {}; // 库表行过滤 (池名 / 中文名子串; 空 = 全部)
 
-  // 自动续算: 数据换进即起一轮, 依次 Append 可续算且未判废的库; 无可续算 / 取消即止
+  // 自动续算: 数据换进即起, 依次 Append 可续算且未判废的库 (一轮收尾即进程内重启, 新一代接着找); 无可续算 / 取消即止
   bool auto_append = false;
-  std::vector<LibId> auto_done; // 本轮已自动 Append 过的库 (每库至多一次)
 
   // 起一轮 (弹窗状态机从 ShowingPopup 走)
   void begin(const LibPlan &s, bool resume);
@@ -57,11 +55,9 @@ struct ComputeHub {
   std::unique_ptr<ComputeService> service; // 输入就绪即建 (自动续算不等进页)
   ComputeState state;
   bool inputs_ready = false; // 数据库扫描完 + 回测日历就绪 (帧首 TickCompute 写)
-  uint64_t rounds = 0;       // 已收尾的轮数 (Running → Done / Cancelled): 新库落盘, 读库方的预览 / 矩阵 / 清单随之作废
-  Phase prev_phase = Phase::Idle;
 };
 
-// 每帧 (Beta Update, 不论 Compute 页画没画): 建服务 + 弹窗状态机 + 库表重扫 + 自动续算 + task_state.compute. 输入未就绪 → 只走状态机
+// 每帧 (Beta Update, 不论 Compute 页画没画): 建服务 + 弹窗状态机 (一轮收尾 → 请求进程内重启) + 库表重扫 + 自动续算 + task_state.compute. 输入未就绪 → 只走状态机
 void TickCompute(ComputeHub &hub, SharedData &data);
 
 // 左栏 Compute 子行标签 (本页库集): 有库被读端判废 → pending; 在算 / 刚算完的库在本页 → 进度

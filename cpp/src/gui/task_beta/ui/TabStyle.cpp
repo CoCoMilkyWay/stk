@@ -2,9 +2,9 @@
 #include "gui/task_beta/ui/TabStyle.hpp"
 
 #include "disk/Disk.hpp"
-#include "features/Storage/FeatureLib.hpp" // feature_pools (本进程池表) / kMaxPools
-#include "gui/Tasks.hpp"                   // StatusColor
-#include "gui/util/Chart.hpp"              // 色 / sheet_width / toggle_button / draw_end_tags / range_bar
+#include "features/Storage/FeatureLevels.hpp" // kMaxPools
+#include "gui/Tasks.hpp"                      // StatusColor
+#include "gui/util/Chart.hpp"                 // 色 / sheet_width / toggle_button / draw_end_tags / range_bar
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "implot.h"
@@ -57,7 +57,7 @@ constexpr const char *kStyleTip =
     "• 篮子 = 源行收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 全A = 行情页同一条 (当日活跃, 日频)\n"
     "• 滚动窗 = 以每日收尾的满一年 (自建仓 / 区间起点满一年起): 年化 / 夏普 各取全部窗的平均与中位; 打分 = 中位夏普\n"
     "  平均 ≈ 全程, 一时的极端行情照样记满; 中位只看多数窗, 吃老本的参数压不上来\n"
-    "• 点表行 / 图上的线 = 选中 ↔ 去掉 (选中的行底色亮; 名色 落地蓝 / 新选橙 / 去掉红; 有选池态的恒在表前); [确认…] 弹窗列出改动, 写 pools.json 即落地, 重启后计算 / 各页用新池表\n"
+    "• 点表行 / 图上的线 = 选中 ↔ 去掉 (选中的行底色亮; 名色 落地蓝 / 新选橙 / 去掉红; 有选池态的恒在表前); [确认…] 弹窗列出改动, 写 pools.json 即落地并进程内重启, 计算 / 各页随即用新池表\n"
     "• 池表里的池名 = 简称 (高低端 + 风格 + 只数 + 权重, 如 低β200.等; 全选池 = 切片名 + 权重), 同简称按池表序加 A / B / C…; 悬停池名看全部参数\n"
     "• 主图 = 累计中位夏普: 每日 = 自首窗到该日各窗夏普的中位 (末日值 = 右表中位夏普), 任一日的截面 = 到该日为止的名次\n"
     "• 底部区间条 (同行情页) 选回测区间: 右表 / 主图只算区间内 (起点 = 1), 只重算绩效\n"
@@ -386,8 +386,8 @@ void status(const StyleService &svc, const StyleUIState &s, const StyleResult *r
     tip("首次读 all.bar 全部已落盘日的选池原料 (资产态 / 收益 / 市值) 常驻; 换风格只补读该风格的键并逐行排序, 改网格只算新出现的组");
 }
 
-// 改动: +新 / −去 [确认…] (弹窗列出改动, 写 pools.json) [撤销]
-void changes(StyleUIState &s) {
+// 改动: +新 / −去 [确认…] (弹窗列出改动, 写 pools.json) [撤销]; 返回 本帧落地了新池表
+bool changes(StyleUIState &s) {
   std::vector<Spec> add, del;
   for (const Spec &p : s.chosen)
     if (!has(s.landed, p))
@@ -401,13 +401,6 @@ void changes(StyleUIState &s) {
     ImGui::TextDisabled("选池 %zu (= 落地)", s.landed.size());
     if (ImGui::IsItemHovered())
       tip("落地 = %s", disk::path(disk::PoolsFile).c_str());
-    const std::span<const PoolDef> run = feature_pools();
-    if (!std::ranges::equal(run.subspan(1), s.landed, {}, &PoolDef::spec)) {
-      ImGui::SameLine();
-      ImGui::TextColored(kStratCol, "重启生效");
-      if (ImGui::IsItemHovered())
-        tip("本进程的池表 (计算 / 各页) 启动时读一次, 落地的新池表重启后才用上");
-    }
   } else {
     ImGui::TextColored(kStratCol, "+%zu", add.size());
     ImGui::SameLine();
@@ -422,8 +415,8 @@ void changes(StyleUIState &s) {
       tip("选中回到落地");
   }
   if (!ImGui::BeginPopupModal(kModal, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    return;
-  ImGui::Text("写入 %s: 池表 %zu → %zu (重启生效)", disk::path(disk::PoolsFile).c_str(), s.landed.size(), s.chosen.size());
+    return false;
+  ImGui::Text("写入 %s: 池表 %zu → %zu (随即进程内重启, 计算 / 各页换用新池表)", disk::path(disk::PoolsFile).c_str(), s.landed.size(), s.chosen.size());
   // 池名 = 新池表序的简称 (同简称加 A/B/C…); 去掉的按旧池表序
   const std::vector<std::string> now = pool::aliases(s.chosen), was = pool::aliases(s.landed);
   const auto alias = [](const std::vector<Spec> &t, const std::vector<std::string> &a, const Spec &p) { return a[static_cast<size_t>(std::ranges::find(t, p) - t.begin())]; };
@@ -444,7 +437,8 @@ void changes(StyleUIState &s) {
   if (!fits)
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "子池至多 %zu 个 (库号 = 池 × 档 是 8 位)", kMaxPools - 1);
   ImGui::BeginDisabled(!fits);
-  if (ImGui::Button("写入", ImVec2(90, 0))) {
+  const bool landed = ImGui::Button("写入", ImVec2(90, 0));
+  if (landed) {
     pool::save_pools(s.chosen);
     s.landed = s.chosen, ++s.pick_gen;
     ImGui::CloseCurrentPopup();
@@ -454,6 +448,7 @@ void changes(StyleUIState &s) {
   if (ImGui::Button("取消", ImVec2(90, 0)))
     ImGui::CloseCurrentPopup();
   ImGui::EndPopup();
+  return landed;
 }
 
 // 线名: 各段占 slots 宽 (字号倍数) 后 "." 连, 上下行对齐; 不起作用的段灰, 其余 = col
@@ -775,7 +770,7 @@ void SyncStylePools(StyleUIState &ui) {
   ++ui.pick_gen;
 }
 
-void RenderTabStyle(StyleService &svc, StyleUIState &s) {
+bool RenderTabStyle(StyleService &svc, StyleUIState &s) {
   const ImVec2 av = ImGui::GetContentRegionAvail();
   const float right = sheet_width(av.x), left = av.x - right - ImGui::GetStyle().ItemSpacing.x, h = av.y;
   if (s.open >= 0)
@@ -800,7 +795,7 @@ void RenderTabStyle(StyleService &svc, StyleUIState &s) {
   ImGui::BeginChild("##style_left", ImVec2(left, h));
   grid_bar(s);
   status(svc, s, mine ? r.get() : nullptr, mine && r->gen == s.sent.gen);
-  changes(s);
+  const bool landed = changes(s);
   if (show) {
     ImGui::SameLine(0, 16);
     char label[32];
@@ -828,6 +823,7 @@ void RenderTabStyle(StyleService &svc, StyleUIState &s) {
   const int row_hot = sheet(s, mine ? r.get() : nullptr, plot_hot);
   ImGui::EndChild();
   s.hot = row_hot;
+  return landed;
 }
 
 } // namespace GUI::Beta

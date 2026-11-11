@@ -1,5 +1,5 @@
 #pragma once
-// 选池引擎: all.bar L_1day 日行 → 原料带 Tape (进程内一份) → 逐行成员 (features/Panel/PoolSpec.hpp 的一组参数) → 篮子净值账 (Style 页) / 选股表 Picks (池表各子池)
+// 选池引擎: all.bar L_1day 日行 → 原料带 Tape (每进程代一份) → 逐行成员 (features/Panel/PoolSpec.hpp 的一组参数) → 篮子净值账 (Style 页) / 选股表 Picks (池表各子池)
 //   行 r = all.bar 第 r 个已落盘日; 行 r 的键 / 资产态 = L_1day 行 r (= r+1 盘前态); 交易日 d 的成员 = 源行 src_of(周期, d) 选出的, 无前视
 //   持仓权 (篮子账 / 行情篮子同一份, Tape::omega): 源行的目标权 (等权 1 / 加权 收盘总市值) 随其后各日收益漂移; 日频 = 目标权
 //   交易日 d 的收益 = close_d / 前收 − 1 (前收 = 行 d−1 的 pre_close, 已除权; d 无成交 → 0): 后复权收盘价, 不看可成交 (与行情侧价格指数同口径)
@@ -95,7 +95,7 @@ struct Tape {
   // 资产 a 在行 q 收盘的持仓权 [Weight] = 源行 r 的目标权 (等权 1 / 加权 mcap) × Π_{r < k ≤ q} (1 + ret) (r ≤ q; r = q → 目标权)
   void omega(size_t r, size_t q, size_t a, float om[kWeights]) const;
 };
-// all.bar 库 lib 的原料带: 进程内一份, 已落盘日多出的行增量补 (轴变 / 旧行不再是前缀 → 重建), 每读完一行调 tick; 取消 / 库判废 → nullptr
+// all.bar 库 lib 的原料带: 每进程代一份, 已落盘日多出的行增量补 (轴变 / 旧行不再是前缀 → 重建), 每读完一行调 tick; 取消 / 库判废 → nullptr
 std::shared_ptr<const Tape> tape(const FeatureLib &lib, const Cancel *cancel = nullptr, const Tick &tick = {});
 // 行 r 的全A 成员 (资产下标升序)
 void live_at(const Tape &t, size_t r, std::vector<uint32_t> &out);
@@ -156,7 +156,7 @@ struct Picks {
   std::span<const uint16_t> row(PoolId p, size_t r) const;
   std::span<const uint16_t> of(PoolId p, misc::Ymd d) const;
 };
-// all.bar 库 lib 的选股表: 进程内一份, 随原料带增量补行 (原料带重建 → 重建); 取消 / 库判废 → nullptr
+// all.bar 库 lib 的选股表: 每进程代一份, 随原料带增量补行 (原料带重建 → 重建); 取消 / 库判废 → nullptr
 std::shared_ptr<const Picks> picks(const FeatureLib &lib, const Cancel *cancel = nullptr, const Tick &tick = {});
 
 } // namespace pool

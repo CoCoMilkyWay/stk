@@ -18,11 +18,11 @@ StateManager::StateManager(SharedData &data, SyncService &sync, ScanService &sca
     : data_(data), sync_(sync), scan_(scan), enc_(enc), audit_(audit) {
   // 上次核对结果: 读逐表状态 (零网络)
   this->audit(AuditOp::Load, {}, false);
-  refresh();
+  refresh(std::exchange(data_.reinit.online, true));
 }
 
-void StateManager::refresh() {
-  sync_.Request({sync_ch_.next(), data_.config.sync_fundamental, data_.config.sync_bar1m});
+void StateManager::refresh(bool online) {
+  sync_.Request({sync_ch_.next(), online && data_.config.sync_fundamental, online && data_.config.sync_bar1m});
 }
 
 bool StateManager::frozen() const { return data_.task_state.compute.computing; }

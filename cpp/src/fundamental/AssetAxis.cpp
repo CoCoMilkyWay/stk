@@ -1,6 +1,7 @@
 #include "fundamental/AssetAxis.hpp"
 
 #include "disk/Disk.hpp"
+#include "misc/epoch.hpp"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
@@ -108,12 +109,11 @@ std::size_t AssetAxis::find(const std::string &code_ex) const {
 }
 
 AssetAxis &asset_axis() {
-  static AssetAxis instance = [] {
-    AssetAxis a;
-    a.load();
-    return a;
-  }();
-  return instance;
+  struct Loaded : AssetAxis {
+    Loaded() { load(); }
+  };
+  static misc::Epochal<Loaded> instance;
+  return instance.get();
 }
 
 PoolAxis pool_axis(std::vector<uint32_t> ids) {

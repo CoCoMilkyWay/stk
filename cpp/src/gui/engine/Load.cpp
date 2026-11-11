@@ -566,8 +566,8 @@ std::vector<const factor::check::Plane *> leaves(const Block &c, const std::vect
 Store::Store() : ex(misc::exec::hw()) {}
 
 Store &Store::get() {
-  static Store s;
-  return s;
+  static misc::Epochal<Store> s;
+  return s.get();
 }
 
 bool Store::acquire(Prio p, const std::atomic<bool> &cancel) {

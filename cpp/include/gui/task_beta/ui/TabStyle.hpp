@@ -63,7 +63,8 @@ struct StyleUIState {
 
 // GUI 线程每帧: 首次读 output/config/beta/pools.json (落地 = 选中)
 void SyncStylePools(StyleUIState &ui);
-// 整页 (左 = 网格条 / 状态 / 改动 + 累计中位夏普图 + 区间条, 右 = 风格表); 打开的风格 / 网格变 → 发请求
-void RenderTabStyle(StyleService &svc, StyleUIState &s);
+// 整页 (左 = 网格条 / 状态 / 改动 + 累计中位夏普图 + 区间条, 右 = 风格表); 打开的风格 / 网格变 → 发请求.
+// 返回 本帧写了 pools.json (调用方请求进程内重启)
+bool RenderTabStyle(StyleService &svc, StyleUIState &s);
 
 } // namespace GUI::Beta

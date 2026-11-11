@@ -2,12 +2,14 @@
 
 #include "features/Panel/Fund.hpp" // fund::Board
 #include "features/Storage/FeatureRead.hpp"
+#include "misc/epoch.hpp"
 #include "shared/Basket.hpp" // kAllCuts
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <mutex>
 
 namespace pool {
@@ -16,6 +18,13 @@ namespace {
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 constexpr size_t kSparse = 16; // 切片全选: 切片内数 × kSparse < A → 按类段收拢再排 (否则沿 A 轴扫)
+
+// 进程级成品 (原料带 / 选股表): 每进程代一份, 代内增量补
+template <class T>
+struct Shelf {
+  std::mutex mu;
+  std::shared_ptr<const T> cur;
+};
 
 // 日行各列: 代码 / 落盘变换
 struct ColDef {
@@ -234,8 +243,8 @@ void Tape::omega(size_t r, size_t q, size_t a, float om[kWeights]) const {
 
 std::shared_ptr<const Tape> tape(const FeatureLib &lib, const Cancel *cancel, const Tick &tick) {
   assert(lib.id == kAllBar && lib.ready() && "原料带的源 = 已建的 all.bar 库");
-  static std::mutex mu;
-  static std::shared_ptr<const Tape> cur;
+  static misc::Epochal<Shelf<Tape>> shelf;
+  auto &[mu, cur] = shelf.get();
   const std::lock_guard<std::mutex> lock(mu);
   std::vector<misc::Ymd> rows = landed(lib);
   const bool keep = cur && cur->axis == lib.axis.hash && extends(cur->dates, rows);
@@ -470,8 +479,8 @@ std::span<const uint16_t> Picks::of(PoolId p, misc::Ymd d) const {
 }
 
 std::shared_ptr<const Picks> picks(const FeatureLib &lib, const Cancel *cancel, const Tick &tick) {
-  static std::mutex mu;
-  static std::shared_ptr<const Picks> cur;
+  static misc::Epochal<Shelf<Picks>> shelf;
+  auto &[mu, cur] = shelf.get();
   const std::lock_guard<std::mutex> lock(mu);
   std::shared_ptr<const Tape> t = tape(lib, cancel, tick);
   if (!t)

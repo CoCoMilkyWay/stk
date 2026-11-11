@@ -13,7 +13,7 @@
 //   在市 = 已上市 ∧ 未退市 ∧ 收盘总市值 > 0 ∧ 次日不停牌 ∧ 申万一级行业已知 (固定, 不进维)
 //   键 / 切片的原料全是 all.bar L_1day 的基础列 (行 D = D+1 盘前态, 见 Node/Common/Fund/Fund.hpp), 成员由 features/Panel/PoolSelect.hpp 现算 (选股表 Picks)
 //   子池表 = output/config/beta/pools.json (Beta → Style 页确认后写; 无文件 = default_pools()); 计算与各页的池表 feature_pools() (features/Storage/FeatureLib.hpp)
-//     = all + 子池表, 进程启动时读一次 (改了重启生效)
+//     = all + 子池表, 每进程代读一次 (Style 页落地即进程内重启)
 //
 //   池名 (库目录名) 按维序以 "." 连, 每维一段 (集合维 = 各位的取值码以 "+" 连, 位序); 中文名同序, 自端起 (端名已含风格):
 //     beta.low.200.day.eq.nost.all.all.nonew+nowarn       = 低β.200.日.等权.非ST.全.全.非次新+无预警

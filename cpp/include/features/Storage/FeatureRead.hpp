@@ -2,6 +2,7 @@
 
 #include "FeatureDay.hpp" // 稳定层: level_info / 日文件格式 (不依赖字段表, 增删特征不重编读端)
 #include "features/Storage/FeatureLib.hpp"
+#include "misc/epoch.hpp"
 #include "misc/profiler.hpp"
 #include <atomic>
 #include <cassert>
@@ -149,9 +150,9 @@ public:
     std::mutex mutex;
     std::set<LibId> libs;
   };
-  static StaleRegistry &stale_registry() {
-    static StaleRegistry r;
-    return r;
+  static StaleRegistry &stale_registry() { // 每进程代一份 (库号随池表)
+    static misc::Epochal<StaleRegistry> r;
+    return r.get();
   }
 
   LibId lib_;

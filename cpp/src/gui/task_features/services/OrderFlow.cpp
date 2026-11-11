@@ -607,7 +607,6 @@ void OrderFlow::clear() {
   event_marks.clear();
   missing_days.clear();
   ui.clear();
-  needs_rescan.store(false, std::memory_order_relaxed);
 }
 
 } // namespace GUI::Features

@@ -34,7 +34,7 @@
 
 inline constexpr const char *kAllPoolName = "all"; // 全市场池的池名 (= 目录名)
 
-// 池表 (全部池唯一一份, 进程启动时定): [0] = all, 其余 = 子池表 (pool::load_pools, 表序)
+// 池表 (全部池唯一一份, 每进程代读一次: 子池表一落地即进程内重启): [0] = all, 其余 = 子池表 (pool::load_pools, 表序)
 struct PoolDef {
   std::string name;    // 池名 = 目录名 (子池 = 规范串 pool::code)
   std::string name_cn; // 显示名 (all = 全市场; 子池 = pool::aliases)

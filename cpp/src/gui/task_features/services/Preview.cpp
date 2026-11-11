@@ -197,7 +197,6 @@ void Preview::reset(ReadScope scope, Spec sp) {
 
   scope_ = std::move(scope);
   spec = std::move(sp);
-  reset_gen_ = gen_;
 
   const auto kept = kept_.find(scope_.main);
   from_kept_ = kept != kept_.end();
@@ -331,8 +330,7 @@ bool Preview::build(const PerLib<const FeatureRead *> &fr, const std::atomic<boo
 
 void Preview::keep(size_t rounds) {
   std::lock_guard<std::mutex> lock(mutex);
-  if (reset_gen_ == gen_)
-    kept_[scope_.main] = Kept{snap, rounds};
+  kept_[scope_.main] = Kept{snap, rounds};
 }
 
 // ============================================================================
@@ -528,11 +526,4 @@ void Preview::clear() {
   scope_ = ReadScope{};
   idle();
 }
-
-void Preview::forget() {
-  std::lock_guard<std::mutex> lock(mutex);
-  kept_.clear();
-  ++gen_;
-}
-
 } // namespace GUI::Features

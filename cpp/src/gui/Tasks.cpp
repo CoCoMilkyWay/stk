@@ -12,6 +12,7 @@
 #include "gui/task_settings/TaskSettings.hpp"
 #include "gui/task_tools/TaskTools.hpp"
 #include "imgui.h"
+#include "misc/epoch.hpp"
 #include "shared/SharedData.hpp"
 
 #include <cassert>
@@ -191,20 +192,26 @@ void ReinitAllTasks(TaskTree &tree, SharedData &data) {
   // 百毫秒量级, 不值得为省它把七个字段搬出来再搬回去 (帧目录与 items 必须同生
   // 同死, 漏一个就是无主下标).
 
-  // Step 1: Cleanup existing tasks
+  const Reinit carry = data.reinit;
+  const int task = tree.selected, tab = tree.tasks[task].selected_tab;
+
+  // Step 1: Cleanup existing tasks (全部服务 Stop + join)
   CleanupAllTasks(tree);
 
-  // Step 2: Completely rebuild SharedData by placement new (destroys all state)
+  // Step 2: Completely rebuild SharedData by placement new (destroys all state); 进程级缓存换代, 各自下次用到时按盘重读
   data.~SharedData();
+  misc::next_epoch();
   new (&data) SharedData();
+  data.reinit = {.online = carry.online, .append = carry.append};
 
   // Step 3: Restore config reinit callback
   data.config.reinit_callback = [&data]() {
-    data.request_reinit = true;
+    data.reinit.requested = true;
   };
 
-  // Step 4: Recreate all tasks (Init 按顺序立即触发, 默认选中并展开首个任务)
+  // Step 4: Recreate all tasks (Init 按顺序立即触发), 回到原先选中的页 (未就绪的页先显示占位)
   tree = CreateAllTasks(data);
+  tree.Select(task, tab);
 }
 
 } // namespace GUI

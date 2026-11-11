@@ -99,7 +99,7 @@ struct RowRead {
   Readers rd; // ids 指向 scope.to: scope 须活过本代 (lane 存在 cur_ 里)
   Stream<RowPlane> stream;
 
-  // 换代: 按范围开库 (新请求 = 重读库: 重算后新库已落地, 判废解除; 判废拉起 abort), 按计划 × 批段数备容量
+  // 换代: 按范围开库 (新请求 = 重读库; 判废拉起 abort), 按计划 × 批段数备容量
   void reset(const reader::ReadScope &scope, const ReadPlan &plan, size_t segs, std::atomic<bool> *abort) {
     libs.open(scope.libs, abort);
     rd = scope.readers(libs.ptr);
@@ -388,7 +388,7 @@ bool OrderFlowService::MinLane::run(RowReq &req) {
   }
 
   // 批与批之间可被新代打断; 特征库被判废删除 (字段表改了) 经 abort 同样拉起 cancel_: 停流, 别把空转的陈旧列喂进 K 线;
-  // 重算后 needs_rescan 自愈
+  // 重算收尾即进程内重启, 自愈
   out.begin(Phase::Running, days_.size());
   return read_.stream.run(
       days_.size(), kDaysPerBatch, cancel_, read_.load(sp.plan, days_, cancel_),

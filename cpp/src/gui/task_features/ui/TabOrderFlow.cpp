@@ -883,7 +883,7 @@ static void RenderMinPlot(SharedData &data, OrderFlow &of, const Preview &pv, fl
   const OrderFlow::Min::Prefix pre = mn.prefix(ui.min.gen);
 
   // 换代在途 (拖动资产): 照画空图, 轴与视野原样留着 —— 撤掉整张图会闪.
-  // 只有 dates 正在重扫 (rescan / 首帧) 时连 X 域和刻度都读不出来, 才出提示
+  // 只有 dates 正在重扫 (库集变了 / 首帧) 时连 X 域和刻度都读不出来, 才出提示
   if (!pre.ready && (ui.min_rescan_pending || ui.min_x_max <= 0.0)) {
     ImGui::TextDisabled("Preparing K-line stream...");
     return;
@@ -1267,7 +1267,7 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data, const Previ
   const auto &sel = data.feature.selection;
   const size_t asset_idx = static_cast<size_t>(ui.selected_asset_idx);
 
-  // 主库 = 选中列所在的唯一库 (无选中 = all Bar): 图1 VWAP / 候选轴; 选中跨库 → 不画, 提示重选 (先于消费 needs_rescan)
+  // 主库 = 选中列所在的唯一库 (无选中 = all Bar): 图1 VWAP / 候选轴; 选中跨库 → 不画, 提示重选
   LibMask picked_libs = 0;
   for (const ColRef &c : sel.picked)
     picked_libs |= lib_bit(c.lib);
@@ -1281,7 +1281,6 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data, const Previ
   }
   // 主库变了 = SecKey / PickKey 变了 → 图1 / Pick 自然重发
   const LibId main_lib = picked_libs ? lib_first(picked_libs) : kAllBar;
-  const bool rescan = of.needs_rescan.exchange(false, std::memory_order_relaxed);
 
   // 两图同一组选中列 (跨层跨档), 各截到图的网格 (图2 = L_1min, 图1 = L_sec; 细于网格的列不进), 各点尾部对齐.
   // 图2 日轴 = 库集 (all Bar 日 K 底图 + overlay 各库) 落盘日的并集: 库集变了 = 日轴变了 → 重扫
@@ -1290,14 +1289,10 @@ void RenderTabOrderFlow(OrderFlowService *service, SharedData &data, const Previ
   for (const ColRef &c : min_feats)
     min_libs |= lib_bit(c.lib);
   const bool repool = !ui.min.key || ui.min.key->libs != min_libs;
-  if (ui.min.set({asset_idx, min_feats, min_libs}, rescan)) {
+  if (ui.min.set({asset_idx, min_feats, min_libs})) {
     ui.min_last_pub_days = SIZE_MAX; // 换代: 重置轴管理
     // dates 会被重扫 (或首次建) → 期间不可读; 粘到新代落定 (重扫请求可能被后一请求覆盖, 后者须照带)
-    ui.min_rescan_pending |= rescan || repool || ui.min_x_max <= 0.0;
-    if (rescan) { // 库重算 / 日轴可能变了: 锚点日先在新日轴上核对, 落定后图1 / Pick 重发
-      ui.sec.reset();
-      ui.pick.reset();
-    }
+    ui.min_rescan_pending |= repool || ui.min_x_max <= 0.0;
     service->Request(data, ui.min.gen, *ui.min.key, ui.min_rescan_pending);
   }
 

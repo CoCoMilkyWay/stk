@@ -1,7 +1,7 @@
 // Task Beta - 风格择优: 先算全市场 all.bar 标签库, 再在其上回测风格篮子的参数网格, 选中的子池落 pools.json.
 //   Compute: 库表的 Beta 段 (只 all.bar; 见 ComputeHub.hpp). 计算服务全局一份 (ComputeHub), 输入就绪即建, Update 每帧推进 (自动续算不等进页);
-//     Alpha → Compute 管其余各库, Features 盯它的轮次作废缓存.
-//   Style: 风格篮子参数优选 (StyleService, 原料直接读 all.bar 库; 首次进页建), 选中落地 = output/config/beta/pools.json (= 子池表, 进程启动时读进 feature_pools(), 重启生效).
+//     Alpha → Compute 管其余各库; 一轮收尾即进程内重启, 各页按新库重建.
+//   Style: 风格篮子参数优选 (StyleService, 原料直接读 all.bar 库; 首次进页建), 选中落地 = output/config/beta/pools.json (= 子池表 feature_pools()), 落地即进程内重启.
 #include "gui/task_beta/TaskBeta.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/compute/ui/TabCompute.hpp"
@@ -59,7 +59,8 @@ TaskHandle CreateBetaTask(std::shared_ptr<Compute::ComputeHub> compute) {
       Beta::SyncStylePools(state->style_ui);
       if (!state->style_service)
         state->style_service = std::make_unique<Beta::StyleService>();
-      Beta::RenderTabStyle(*state->style_service, state->style_ui);
+      if (Beta::RenderTabStyle(*state->style_service, state->style_ui))
+        data.reinit = {.requested = true, .online = false}; // 池表变了: 进程内重启, 库表 / 各页按新池表重建
     }
     ImGui::EndChild();
   };

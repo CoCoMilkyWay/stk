@@ -18,6 +18,7 @@
 #include "gui/engine/services/SearchService.hpp"
 #include "gui/task_agent/services/ReplayService.hpp"
 #include "misc/date.hpp" // dash
+#include "misc/epoch.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -51,10 +52,10 @@ Engine::FactorLevelId level_id(int level) {
   return static_cast<Engine::FactorLevelId>(level);
 }
 
-// 字段表视图: 每层建一次 (GUI 线程独占)
+// 字段表视图: 每进程代每层建一次 (GUI 线程独占)
 std::shared_ptr<const Engine::FeatureTable> table(const SharedData &data, int level) {
-  static Engine::FeatureTables tables;
-  return Engine::table_of(tables, data.feature, level_id(level));
+  static misc::Epochal<Engine::FeatureTables> tables;
+  return Engine::table_of(tables.get(), data.feature, level_id(level));
 }
 
 // 表达式的算子节点数 (解析不了 = 0, 由落文件报原因)

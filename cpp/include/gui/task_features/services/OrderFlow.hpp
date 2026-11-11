@@ -115,8 +115,8 @@ template <class K>
 struct Want {
   std::optional<K> key;
   uint32_t gen = 0;
-  bool set(const K &k, bool force = false) {
-    if (!force && key == k)
+  bool set(const K &k) {
+    if (key == k)
       return false;
     key = k;
     ++gen;
@@ -460,9 +460,6 @@ struct OrderFlow {
 
     void clear();
   } ui;
-
-  // 特征重算完成 → 重扫日期 + 整体重拉 (TaskFeatures 置位, tab 消费)
-  std::atomic<bool> needs_rescan{false};
 
   void clear();
 };

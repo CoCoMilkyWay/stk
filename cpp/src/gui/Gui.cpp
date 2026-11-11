@@ -109,7 +109,10 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
     if (!t.tabs.empty() && (idx < 0 || idx >= (int)t.tabs.size()))
       idx = 0;
     assert(t.Draw && "task must provide Draw");
-    t.Draw(data, idx);
+    if (t.Enabled && !t.Enabled(data, idx)) // 选中后才变不可用 (进程内重启回到原页, 输入还没就绪)
+      ImGui::TextDisabled("Tab not ready");
+    else
+      t.Draw(data, idx);
   }
 
   ImGui::End();

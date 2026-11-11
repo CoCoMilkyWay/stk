@@ -1,6 +1,6 @@
 // Task Features - 特征面板与调试工具: 特征表 / 分布 / 变换 / 相关 / 订单流 / 节点用时.
 //   作用域 (池 / 档 / 层) 在 Table 页自选 (Feature::Selection, 与 Alpha 页顶条互不相干); 库由 Beta / Alpha → Compute 算,
-//   本任务盯计算面的轮次 (ComputeHub::rounds) 作废预览 / 矩阵 / 订单流清单, 计算在飞时锁住其它页.
+//   库一变 (计算收尾 / 删库) 即进程内重启, 本任务随之按新库重建; 计算在飞时锁住其它页.
 #include "gui/task_features/TaskFeatures.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/compute/ComputeHub.hpp"
@@ -19,7 +19,6 @@
 
 #include "imgui.h"
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -47,7 +46,6 @@ enum TabIdx {
 
 struct TaskFeaturesState {
   std::shared_ptr<Compute::ComputeHub> compute; // 与 Beta / Alpha 共用
-  uint64_t rounds = 0;                          // 已处理的计算轮次 (ComputeHub::rounds)
 
   // Services (各自持有发布面: service->target; 随任务建, 线程按需 Start)
   std::unique_ptr<Features::OrderFlowService> orderflow_service;
@@ -79,7 +77,7 @@ struct TaskFeaturesState {
   bool streams_started = false;
   // Auto-compute tracking (Distribution / Transform 共用): 主特征 (库/层/列) 变了即重算 (无论当前在哪个 tab)
   std::optional<ColRef> prev_primary;
-  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 库变了自动请求 (快照做变更检测; 跑完过的库换回成品), 库重算收尾另起
+  // Preview (特征表内联 PDF/PSD 迷你图): 不依赖选中特征; 库变了自动请求 (快照做变更检测; 跑完过的库换回成品)
   LibId preview_lib = kAllBar;
   // 预览进度检测 (每跑完一轮 + → Done 那一帧把特征表落地 features.json)
   Phase prev_preview_phase = Phase::Idle;
@@ -150,17 +148,6 @@ TaskHandle CreateFeaturesTask(std::shared_ptr<Compute::ComputeHub> compute) {
     const bool has_selection = data.feature.selection.primary() != nullptr;
     data.task_state.features.has_selection = has_selection;
 
-    // 一轮收尾 (池表重扫在 TickCompute): 新库落盘 → OrderFlow 按新清单重建 + 重扫, 预览成品作废并重抽, 相关矩阵作废 (没建 / 没起的首次 Draw 自然按新库)
-    if (hub.rounds != state->rounds) {
-      state->rounds = hub.rounds;
-      state->preview_service->target.forget();
-      state->orderflow_service->Stop(); // 下帧 Start 按新库清单建 worker
-      state->orderflow_service->target.needs_rescan.store(true, std::memory_order_relaxed);
-      if (state->streams_started) {
-        state->preview_service->RequestCompute(data);
-        Features::InvalidateCorrelationRequests(state->correlation_ui_state);
-      }
-    }
     const bool compute_busy = hub.service && hub.service->busy();
 
     // Tab 锁定: 计算期间锁住其它 tab (Distribution/Transform 是流式构建, 切走即取消, 不参与锁)

@@ -17,7 +17,7 @@
 //     背槽 worker 写前等 GUI ack (限时睡轮询, 等待中可被新请求打断)
 //
 // 生命周期: 进 OrderFlow tab Start (幂等, 建三个 worker); 切 tab 不停 (流式继续, 回来即全);
-//           切出 Features 任务 Destroy → Stop (析构 join). 库重算后 Stop + 重扫 (TaskFeatures), 下帧 Start 按新库建 worker;
+//           切出 Features 任务 Destroy → Stop (析构 join). 库一变即进程内重启, 随任务按新库重建;
 //           target (发布面 + GUI 态) 随服务对象常驻, 不随 worker 重建
 // 主库 (图1 VWAP / 候选轴) 随请求: GUI 按选中列定 (无选中 = all Bar, 单库 = 该库); 主库未建 → 退回 all Bar 并丢 overlay (三路同一条)
 //   (逐笔重放按 orders 日文件, 与主库无关; 退回后无 VWAP / overlay)
@@ -46,7 +46,7 @@ public:
   void Stop();
 
   // GUI 线程: 期望态键 (最新覆盖旧请求; gen 调用方 Want 自持, 与发布面配对). 库集未建 → 不提交 (算完库后服务重起再来)
-  //   Min:  key.feats 只收 ≥ L_1min 的列; rescan = 重扫日轴 (特征重算后 / 库集变了; 事件, 不入键)
+  //   Min:  key.feats 只收 ≥ L_1min 的列; rescan = 重扫日轴 (库集变了 / 首次; 事件, 不入键)
   //   Sec:  key.main = 主库 (VWAP 尾挂)
   //   Pick: key.main = 主库 (候选轴)
   void Request(const SharedData &data, uint32_t gen, const OrderFlow::MinKey &key, bool rescan);
@@ -65,7 +65,7 @@ private:
     ReadPlan plan;
     size_t k0 = 0;         // overlay 起点 (= 固定列数)
     uint32_t ts_price = 0; // 第 i 位 = overlay 线 i 是其层 ts_valid (展示幅值 = micro price)
-    bool rescan = false;   // Min: 重扫日轴 (特征重算后 / 库集变了)
+    bool rescan = false;   // Min: 重扫日轴 (库集变了 / 首次)
   };
   using RowReq = reader::Request<RowSpec>;
 
