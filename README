@@ -245,7 +245,7 @@ stk/
 │   │   │   │   ├── services/
 │   │   │   │   │   ├── MinuteLib.hpp                   # 🖥️ 分钟价格库: 全部个股 + 篮子线的全史 1 分钟价 (篮子 = BasketRow Lane), 续算只补新日; NAV / CTA 共用
 │   │   │   │   │   │                                   #    · 两个 worker 同一套: open (开库 / 续算 → 缺键 + 日轴 + 戳) → each (逐日 mmap 读一标的) → Kept<T> (按 (键, 戳) 的 LRU)
-│   │   │   │   │   ├── MinuteService.hpp               # 🖥️ NAV 分钟线: 选中的篮子 / 成分股 → 逐日分钟收盘 (理想线按它画到分钟)
+│   │   │   │   │   ├── MinuteService.hpp               # 🖥️ NAV / VAL 分钟线: 选中的篮子 / 成分股 → 逐日分钟收盘 (两条线都按它画到分钟)
 │   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 → cta/Trace 滚动调参轨迹
 │   │   │   │   └── ui/
 │   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / FLOW / CTA (一行一对线 Line, 四页同一份派生 / 选中 / 区间)

@@ -41,7 +41,7 @@
 //       / SW2021 一级, 总市值加权 / 东财题材概念 (全A 内切, 成分按最近一份快照倒推全史), 总市值加权):
 //       日轴 = 篮子账日 ∪ 因子日: 首日开盘前一点 (前收) + 每日收盘一点; 每条成对 = 可成交 (T+1C 标签: 封板不建仓 / 平仓顺延) + 理想 (价格指数, 不看可成交:
 //       Market 篮子历史同一份), 两者之差 = 可成交拖累; 年换手 = 篮子账的增仓量同式 (成分再平衡 + 进出; 指数线本身不扣成本)
-//     分钟线: 选中的篮子行 / 成分行的理想线画到分钟 (MinuteService: 全史逐日分钟收盘, 分钟价格库与 CTA 共用; 各日以当日收盘为锚, 日末点 = 日线,
+//     分钟线: 选中的篮子行 / 成分行 (及 VAL 标的) 的两条线画到分钟 (MinuteService: 全史逐日分钟收盘, 分钟价格库与 CTA 共用; 各日以当日收盘为锚, 日末点 = 日线,
 //       年化 / 夏普 / 配色照读日末视图); 画线按像素列抽稀 (首 / 低 / 高 / 末), 与逐点画逐像素一致
 //     单因子线: 该因子单独的 G20 多头净值, 成对 = 有冲击 (它自己的冲击段) + 无冲击, 年换手 = 它自己的
 //     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手吸附到月初 / 段内按日平移, 拖动中即生效, 把手旁标起止日; 双击段内回全段;
@@ -53,9 +53,9 @@
 //     (全A 内按上一行 ind_l1 切) / 概念 / 展开行的成分股 (再点 = 取消); 默认不选 (空图); 列 = 中文名 (悬停看名) | 只数 | 总市值 | 可成交 | 理想 | 夏普 | 年换手 (同 NAV)
 //     | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位,
 //     底色 = 该分位在同组同口内的截面名次, 便宜绿 → 贵红),
-//     主图 = 标的可成交线 P (篮子 = 可成交指数: 行业 / 概念 = 总市值加权, 子池 (含全A) = 池参数的权重; 成分股 = 后复权收盘; 区间起点 = 1, 与 NAV 同一切片)
+//     主图 = 标的理想线 P (篮子 = 价格指数: 行业 / 概念 = 总市值加权, 子池 (含全A) = 池参数的权重; 成分股 = 后复权收盘; 区间起点 = 1, 与 NAV 同一切片; 同 NAV 画到分钟)
 //     + 同口径的滚动 EP / BP / SP / CP / DY Band (篮子 = 同权重, 成分股 = 本只; 篮子与个股同一套: 两本账同一作业出, 见 LinesView.hpp)
-//     (默认只开 BP): 价格 band y_t = P_t · v_t / q_j(t), v = 收益率 (高 = 便宜), q_j(t) = 过去 N 年窗内 v 按贵度 (−v) 的 kBandQs 分位
+//     (默认只开 BP; band / 等值线只在 P 的日末点上): 价格 band y_t = P_t · v_t / q_j(t), v = 收益率 (高 = 便宜), q_j(t) = 过去 N 年窗内 v 按贵度 (−v) 的 kBandQs 分位
 //     (N = 右图例滑条, 即时重算; 正值窗内 ≡ 倍数口径 P · m_q / m); band 间填色 (最便宜档以下绿 → 最贵档以上红, 低 alpha 渐变), 指数线在上;
 //     不可算 / v ≤ 0 / 窗内有 v ≤ 0 的点断开, q_j ≤ 0 的档单独断开;
 //     绝对估值等值线 (默认关; 很淡的灰, 不进 fit): 倍数 m = 1 / v (PE / PB / PS / PCF / P/D), y_t = P_t · v_t · m,
@@ -77,7 +77,7 @@
 #include "gui/engine/ui/PortfolioBoxes.hpp" // PortfolioUIState (当前组合)
 #include "gui/quote/QuoteHub.hpp"
 #include "gui/task_market/services/CtaService.hpp"    // CtaSpec / CtaRequest (CTA 页)
-#include "gui/task_market/services/MinuteService.hpp" // MinuteRequest / MinuteResult (NAV 主图的分钟线)
+#include "gui/task_market/services/MinuteService.hpp" // MinuteRequest / MinuteResult (NAV / VAL 主图的分钟线)
 #include "gui/task_market/ui/LinesView.hpp"           // 派生 → 滚动分位 / 末点分位 → 视图
 #include "gui/task_market/ui/QuotesPanel.hpp"         // OverlayState / Source / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
 #include "gui/util/Chart.hpp"                         // DayRange (区间条)
@@ -241,7 +241,7 @@ void SaveWatch(const std::vector<std::string> &watch); // 原子替换
 // GUI 线程每帧: 首次读自选文件
 void SyncLinesWatch(LinesState &ui);
 // 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (已起, ui.overlay 两路 Feed 本帧已 Sync; nullptr = AssetInfo 未建,
-// 日内栏 / 指数行业近况 / 成分行当日空着); infos = 基本面档案 (成分行名 / 近况 / 估值); minute = NAV 主图分钟线的服务, cta = CTA 页的服务.
+// 日内栏 / 指数行业近况 / 成分行当日空着); infos = 基本面档案 (成分行名 / 近况 / 估值); minute = NAV / VAL 主图分钟线的服务, cta = CTA 页的服务.
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
 int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaService &cta, const PortfolioUIState &pf, LinesState &ui,
                    double fixed_impact, const Quote::QuoteHub *mk, const StockInfos &infos);

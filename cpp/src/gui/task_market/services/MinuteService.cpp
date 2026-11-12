@@ -28,7 +28,7 @@ bool MinuteService::publish(const MinuteRequest &req, std::shared_ptr<MinuteResu
 
 bool MinuteService::run(MinuteRequest &req) {
   auto out = std::make_shared<MinuteResult>();
-  const std::optional<MinuteOpen> lib = lib_.open("NAV 分钟线由 all.bar 特征库合成", cancel_, *this, pool_);
+  const std::optional<MinuteOpen> lib = lib_.open("NAV / VAL 分钟线由 all.bar 特征库合成", cancel_, *this, pool_);
   if (!lib)
     return false;
   if (!lib->lack.empty()) {

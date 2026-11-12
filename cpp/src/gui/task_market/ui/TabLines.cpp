@@ -176,11 +176,12 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
   //      → 视图 (派生 gen + 二级两份 gen + 标的): 上级重算 → 下级自动重算 ----
   if (ui.pick.of != pf.name) // 换组合 → 选中清掉
     ui.pick = LinesPick{.of = pf.name};
-  if (pd.work == kWorkMinute) { // 多选的有行情键的行 → 分钟价请求 (标的集变才发; 首次 = 先备价格库)
+  if (pd.work == kWorkMinute) { // 选中的有行情键的行 (NAV 多选 ∪ VAL 标的; 两页同一份请求) → 分钟价请求 (标的集变才发; 首次 = 先备价格库)
     MinuteRequest rq;
-    for (const auto &[id, ref] : ui.pick.rows[kPickMany])
-      if (ref.ok())
-        rq.refs.push_back(ref);
+    for (const std::map<std::string, Quote::Ref> &rows : ui.pick.rows)
+      for (const auto &[id, ref] : rows)
+        if (ref.ok() && std::ranges::find(rq.refs, ref) == rq.refs.end())
+          rq.refs.push_back(ref);
     ui.minute_sent.send(minute, std::move(rq));
   }
   ui.minutes = latest(minute);

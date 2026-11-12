@@ -370,6 +370,11 @@ void push_tag(std::vector<EndTag> &tags, const ImPlotRect &lim, size_t n, const 
 }
 
 ImPlotPoint slice_pt(const LinesSlice &s, size_t i) { return {s.x(i), s.y(i)}; }
+// 线的日末视图点 (PlotLineG; p = Line, 共 e.size() 点): 0 = 起点 (前收), i = 活跃日 f + i − 1 的末点 (x = 该日末根)
+ImPlotPoint day_end_pt(int i, void *p) {
+  const Line &c = *static_cast<const Line *>(p);
+  return i == 0 ? ImPlotPoint(c.x[0], c.y[0]) : ImPlotPoint(x_of(static_cast<size_t>(c.f + i - 1), kClose), c.e[static_cast<size_t>(i)]);
+}
 void push_tag(std::vector<EndTag> &tags, const ImPlotRect &lim, const LinesSlice &s, ImU32 col, std::string text) {
   push_tag(tags, lim, s.size(), [&](size_t i) { return slice_pt(s, i); }, col, std::move(text));
 }
@@ -633,7 +638,7 @@ LgHover val_legend(const LinesView &v, int years) {
 }
 
 // VAL 悬停等值线: 鼠标 x 处 (相邻两点插值) 各开着的口里离鼠标最近的一档, kContourHit px 内 → 高亮 (最上层) + 提示数据; 鼠标在图例矩阵上不算
-void hover_contour(const LinesDerived &d, const LinesView &v, const LinesSlice &sl, const bool *on, const ImRect &legend) {
+void hover_contour(const LinesDerived &d, const LinesView &v, const bool *on, const ImRect &legend) {
   const double *bx = v.band_x.data();
   const size_t n = v.band_x.size();
   if (!ImPlot::IsPlotHovered() || legend.Contains(ImGui::GetMousePos()))
@@ -659,7 +664,7 @@ void hover_contour(const LinesDerived &d, const LinesView &v, const LinesSlice &
   }
   if (hb < 0)
     return;
-  const double px = lerp(sl.y(j - 1), sl.y(j)), now = px / hu;
+  const double px = lerp(v.band_p[j - 1], v.band_p[j]), now = px / hu;
   ContourLine l{bx, v.band[hb].unit.data(), m};
   ImPlot::SetNextLineStyle(kContourHotCol, 1.5f);
   ImPlot::PlotLineG("##pf_contour_hot", contour_pt, &l, static_cast<int>(n), ImPlotItemFlags_NoFit | ImPlotItemFlags_NoLegend);
@@ -695,12 +700,12 @@ void zoom_x(LinesRange &rg, int D, const ImRect &legend) {
   rg.d1 = std::clamp(day(hi) + 1, rg.d0 + 1, D);
 }
 
-// ---- VAL 主图: 标的各口滚动 band (填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
-//      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的可成交线 (常显) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
+// ---- VAL 主图: 标的各口滚动 band (日末点; 填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
+//      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的理想线 (常显; 有分钟价则画到分钟) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
 //      只价格线进 fit (y 上下各留 kValHeadroom), band / 等值线都不进 ----
 void plot_val(LinesState &ui, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf) {
   static LgHover s_hl; // 上帧图例矩阵
-  const LinesSlice &sl = v.slice[pin.g][pin.r][kTrade];
+  const LinesSlice &sl = v.slice[pin.g][pin.r][kIdeal];
   const double *bx = v.band_x.data();
   const int bn = static_cast<int>(v.band_x.size());
   for (int b = 0; b < kPoolVals; ++b) {
@@ -771,7 +776,7 @@ void plot_val(LinesState &ui, const LinesDerived &d, const LinesView &v, const L
         pf.marks.push_back({ImPlot::PlotToPixels(p.x, p.y * (1.0 + m.r)), ImGui::ColorConvertFloat4ToU32(band_col(m.u, kBandTagA)), t});
       }
   }
-  hover_contour(d, v, sl, on, s_hl.box);
+  hover_contour(d, v, on, s_hl.box);
   s_hl = val_legend(v, ui.roll.key.years);
   zoom_x(ui.range, static_cast<int>(d.dates.size()), s_hl.box);
 }
@@ -842,7 +847,7 @@ void RenderLinesPlot(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 
   ImPlot::PopStyleVar(2);
 }
 
-// ---- 区间条 (range_bar): 底线 = 全段组合 (有冲击) / VAL 标的可成交线 (可成交指数 / 后复权收盘); VAL 主图横向框选同改它 (任意日) ----
+// ---- 区间条 (range_bar): 底线 = 全段组合 (有冲击) / VAL 标的理想线 (价格指数 / 后复权收盘), 只画日末视图; VAL 主图横向框选同改它 (任意日) ----
 void RenderLinesRange(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 &size) {
   const LinesDerived &d = ui.der.val;
   const int D = static_cast<int>(d.dates.size());
@@ -856,10 +861,10 @@ void RenderLinesRange(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2
   if (ui.log_y)
     ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
   const Line none;
-  const Line &rc = nav ? *d.rows[kGroupStrat][0].line[kTrade] : pin.g >= 0 ? *d.row(pin).line[kTrade]
+  const Line &rc = nav ? *d.rows[kGroupStrat][0].line[kTrade] : pin.g >= 0 ? *d.row(pin).line[kIdeal]
                                                                            : none;
   ImPlot::SetNextLineStyle(nav || pin.g < 0 ? kStratCol : row_color(d, pin, kTrade), 1.0f);
-  ImPlot::PlotLine("##pf_range_line", rc.x.data(), rc.y.data(), static_cast<int>(rc.x.size()));
+  ImPlot::PlotLineG("##pf_range_line", day_end_pt, const_cast<Line *>(&rc), static_cast<int>(rc.e.size()));
   range_bar(ui.range, d.dates, static_cast<double>(kDayW));
   ImPlot::EndPlot();
 }

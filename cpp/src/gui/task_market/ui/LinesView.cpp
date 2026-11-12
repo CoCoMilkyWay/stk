@@ -628,8 +628,8 @@ LinesRow strat_row(const std::string &name) {
 }
 
 // 有行情键的行 r (已取名) 进组 g: 腿 / 估值腿 = 该侧账的键线; 可成交 = 腿扣成本合成 (两侧账都无成本列 ⇒ 不扣);
-// 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘, 无日内形时与可成交同一条);
-//   带该键的日内形 (有则)
+// 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘, 与可成交同一条);
+//   两条都带该键的日内形 (有则)
 void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const Reuse &ru) {
   r.val = leg_of(d.quotes[r.ref.side], r.ref.key);
   r.src[kTrade] = mix_src(legs_of(r.val), true, fixed_impact);
@@ -640,7 +640,8 @@ void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const R
     r.src[kIdeal].price = d.prices->list[r.ref.key].get();
   }
   if (d.minutes)
-    r.src[kIdeal].minutes = d.minutes->of(r.ref);
+    for (LineSrc &s : r.src)
+      s.minutes = d.minutes->of(r.ref);
   push(d, g, std::move(r), ru);
 }
 // 无行情键的行 r (已取名) 进组 g: 可成交 / 理想 = 腿集 legs 扣 / 不扣成本合成
@@ -999,19 +1000,20 @@ void MakeLinesView(const LinesDerived &d, int d0, int d1, const LinesAt &pin, co
       rank_col(n, -1, [&](size_t i) -> Ranked & { return v.pct[g][i][b]; });
   }
 
-  // ---- VAL 标的各口 band: 标的可成交线的同一切片, y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画);
+  // ---- VAL 标的各口 band: 标的理想线切片的日末点 (起点 + 各日末点), y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画);
   //      等值线单位点位 unit = P · v (只看当日, 不看滚动分位; v ≤ 0 → 断开), 档 = 二级的全史倍数档 ----
-  v.band_x.clear();
+  v.band_x.clear(), v.band_p.clear();
   for (LinesBand &bd : v.band)
     bd = {};
   if (pin.g < 0 || !d.row(pin).val.b)
     return;
   const LinesLeg &lg = d.row(pin).val;
-  const LinesSlice &sl = v.slice[pin.g][pin.r][kTrade];
-  const size_t n = sl.size();
-  std::vector<int> day(n); // [切片点] 点位所属日 (日并集轴; −1 = 轴外)
-  for (size_t i = 0; i < n; ++i)
-    v.band_x.push_back(sl.x(i)), day[i] = sl.c->day(sl.j0 + i);
+  const LinesSlice &sl = v.slice[pin.g][pin.r][kIdeal];
+  std::vector<int> day; // [日末点] 所属日 (日并集轴; −1 = 轴外)
+  for (size_t i = 0; i < sl.size(); ++i)
+    if (const int k = sl.c->day(sl.j0 + i); i + 1 == sl.size() || sl.c->day(sl.j0 + i + 1) != k)
+      v.band_x.push_back(sl.x(i)), v.band_p.push_back(sl.y(i)), day.push_back(k);
+  const size_t n = day.size();
   for (int b = 0; b < kPoolVals; ++b) {
     const LinesRoll &r = roll[b];
     assert(r.pct.size() == d.dates.size());
@@ -1027,7 +1029,7 @@ void MakeLinesView(const LinesDerived &d, int d0, int d1, const LinesAt &pin, co
       const int32_t t = k >= 0 ? d.val_at[static_cast<size_t>(k)] : -1;
       const double x = t >= 0 ? hv[t] : kNaN;
       if (x > 0.0)
-        bd.unit[i] = sl.y(i) * x;
+        bd.unit[i] = v.band_p[i] * x;
       if (t < 0 || !std::isfinite(r.pct[static_cast<size_t>(k)]))
         continue;
       last = k;
@@ -1035,7 +1037,7 @@ void MakeLinesView(const LinesDerived &d, int d0, int d1, const LinesAt &pin, co
         continue;
       for (int q = 0; q < kBandQ; ++q)
         if (const float qk = r.q[q][static_cast<size_t>(k)]; qk > 0.f)
-          bd.y[q][i] = sl.y(i) * x / qk;
+          bd.y[q][i] = v.band_p[i] * x / qk;
       if (!(r.q[kBandQ - 1][static_cast<size_t>(k)] > 0.f)) // q 降序: 最贵档 > 0 ⇔ 各档全可画 (填色只画全有限段)
         continue;
       const int ii = static_cast<int>(i);

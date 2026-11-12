@@ -68,7 +68,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 每条成对: 可成交 (篮子 = 标签指数, 收盘封板不建仓 / 平仓顺延; 因子 / 策略 = 扣换手冲击) + 理想 (篮子 = 后复权收盘价指数; 因子 / 策略 = 无冲击; 同色淡线)\n"
      "• 成分股 (篮子行 ▸ 展开, 权降序): 后复权收盘, 两条同一条; 与篮子行同一套 (点选中 = 画线 + 日内叠加; 收起后选中的照画)\n"
      "• 默认不画 (空图); 右侧类别条选一组 (指数 / 行业 / 概念 / 自选 / 因子 / 策略), 点行选中 = 画该行两条, 默认只显理想; 显隐变了自动重新 fit\n"
-     "• 选中的指数 / 行业 / 概念 / 成分股的理想线画到分钟 (全史 1 分钟价, 与 CTA 同一份库; 各日以收盘对齐日线, 年化 / 夏普照日末算); 首次选中时合成库\n"
+     "• 选中的指数 / 行业 / 概念 / 成分股的两条线都画到分钟 (全史 1 分钟价, 与 CTA 同一份库; 各日以收盘对齐日线, 年化 / 夏普照日末算); 首次选中时合成库\n"
      "• 主图左上图例矩阵 (同 VAL): 行 = 选中行, 列 = 可成交 / 夏普 / 理想 / 夏普 (区间年化 / 夏普) / 年换手; 点色块开关一条, 点名 / 列头开关整行 / 整列\n"
      "• 自选 = 星列 / 右键加的篮子与成分股 (全局一份, 各页同一份)\n"
      "• 日内 (右侧开关, 默认开): 主图上方画选中的指数 / 行业 / 概念 / 成分股的日内行情 (多行 = 同主图线色叠加; 一行 = 蜡烛 + 现价十字)\n"
@@ -111,7 +111,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
     {"VAL",
      "VAL = 估值 (Valuation)\n"
      "• 右侧单选一个池 / 申万一级行业 / 概念 / 自选 / 成分股 (▸ 展开行): 主图 = 它的指数 (成分股 = 后复权收盘) + 估值 Band\n"
-     "  (行业 / 概念 = 总市值加权, 子池 (含全A) = 池参数的权重; 成分股 = 本只)\n"
+     "  (行业 / 概念 = 总市值加权, 子池 (含全A) = 池参数的权重; 成分股 = 本只); 指数同 NAV 画到分钟, Band 落在各日收盘点上\n"
      "• EP 盈利收益率 (1/PE) / BP 账面市值比 (1/PB) / SP 营收市值比 (1/PS) / CP 现金流收益率 (1/PCF) / DY 股息率\n"
      "  (收益率口径, 与指数同权重: 加权 = 整体法, 等权 = 个股均值, 成分股 = 本只分子 / 总市值; 高 = 便宜, 亏损照计为负, 过 0 连续)\n"
      "• 主图左上图例矩阵: 行 = 口, 列 = 当前收益率 / 倍数 / N 年分位 / Band / 等值线; 点色块开关, 点行头 / 列头开关整行 / 整列\n"
@@ -151,7 +151,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
      kOverlayNone,
      true,
      false,
-     kWorkPortfolio,
+     kWorkMinute,
      kWorkPortfolio},
     {"FLOW",
      "FLOW = 资金流 (Money Flow): 指数 / 行业 / 概念 / 自选的日内净流入, 当日随新浪快照实时动\n"
@@ -257,9 +257,9 @@ inline void row_tip(const LinesRow &r) {
 // ---- 图 (LinesPlot.cpp) ----
 // 默认区间 = 主图左上角档位 1月 (日轴变 / Clear 回它); 日轴空 → 空段
 LinesRange DefaultLinesRange(const std::vector<misc::Ymd> &dates);
-// 主图 (size 贴边占满): nav → NAV 资金曲线 (选中行), 否则 VAL 标的 pin 的可成交线 + 估值 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
+// 主图 (size 贴边占满): nav → NAV 资金曲线 (选中行), 否则 VAL 标的 pin 的理想线 + 估值 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
 void RenderLinesPlot(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 &size);
-// 区间条 (size): 全段策略线 (nav) / VAL 标的可成交线上拖选 ui.range
+// 区间条 (size): 全段策略线 (nav) / VAL 标的理想线上拖选 ui.range
 void RenderLinesRange(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 &size);
 
 // ---- CTA 页 (LinesCta.cpp) ----

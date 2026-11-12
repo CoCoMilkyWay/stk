@@ -68,7 +68,7 @@ struct LinesLeg {
   bool operator==(const LinesLeg &) const = default;
 };
 // 线源 (线的身份): 腿集合成 legs (cost = 扣成本: 毛 − 冲击 − 固定份数 · impact; 腿账都无成本列 → 恒不扣) / 价格指数 price (legs 空); 都空 = 空线.
-//   minutes = 日内形 (该标的逐日分钟收盘; 只理想线带, 见 LinesDerived::rows): 有该日的日子按它画到分钟
+//   minutes = 日内形 (该标的逐日分钟收盘; 有行情键的行两条都带, 见 LinesDerived::rows): 有该日的日子按它画到分钟
 // 源对象由 LinesDerived 持有, 地址活过下一次派生 ⇒ 按地址比即按对象比; 日轴不变时同线源的线沿用上一份
 struct LineSrc {
   std::vector<LinesLeg> legs;
@@ -169,12 +169,12 @@ struct LinesDerived {
   std::vector<LinesRow> rows[kRowGroups];                      // [RowGroup][行]:
                                                                //   组             | 行情键    | 可成交 / 有冲击线           | 理想 / 无冲击线         | 估值腿
                                                                //   指数/行业/概念 | 篮子线    | 篮子账该线合成 (不扣成本)   | 价格指数 (篮子历史该线) | 篮子账该线
-                                                               //   成分           | 个股 id   | 个股账该只合成 (后复权收盘) | 同可成交 (无日内形同一条) | 个股账该只
+                                                               //   成分           | 个股 id   | 个股账该只合成 (后复权收盘) | 同可成交 (同一条)       | 个股账该只
                                                                //   因子           | -         | 该因子账扣成本合成          | 同腿不扣                | -
                                                                //   策略           | -         | 全部因子账扣成本合成        | 同腿不扣                | -
                                                                //   自选           | 同原行    | 同原行                      | 同原行                  | 同原行
                                                                //   篮子三组 / 成分 = 有行情键的行 (腿 = quotes[side] 的键线); 因子 / 策略 = 无行情键的行 (腿集 = 因子账)
-                                                               //   有行情键的行的理想线带日内形 = minutes 里该键的分钟收盘 (NAV 选中的才有)
+                                                               //   有行情键的行两条线都带日内形 = minutes 里该键的分钟收盘 (NAV 选中的 / VAL 标的才有)
                                                                //   指数 / 行业 / 概念 = [篮子表段内序] (源没算成也列, 线空); en = BasketTable::code, cn = tag = 切片名 (超长截断) + .等 / .加, hover = en + 全名;
                                                                //   成分 = 展开的篮子行的成分 (Tape::cons, 权降序; 前 n_cons 行, 右表挂在展开行下) + 其余选中 / 自选的个股 (收起后照画, 升序);
                                                                //     en | cn = 代码 | 简称, hover = 代码 + 权占比 + 行业 / 估值
@@ -193,7 +193,7 @@ struct LinesDerived {
   std::vector<std::shared_ptr<const PortfolioBook>> books;     // [因子行] 因子账 (因子 / 策略行的腿)
   Quote::PerSide<std::shared_ptr<const PortfolioBook>> quotes; // [Side] 行情两侧的账 (有行情键的行的腿 / 估值腿; 同有同无, 同日轴; 没算成 = 空)
   std::shared_ptr<const Quote::Tape> prices;                   // 篮子理想线 / 成分表的源 (篮子历史 [篮子下标]; 未到 / 源未就绪 = 空)
-  std::shared_ptr<const MinuteResult> minutes;                 // 理想线日内形的源 (MinuteService 在用的发布; 空 = 无)
+  std::shared_ptr<const MinuteResult> minutes;                 // 日内形的源 (MinuteService 在用的发布; 空 = 无)
   std::vector<int32_t> val_at;                                 // [日并集轴] 两侧账的行 (估值的源下标; −1 = 账无该日 / 没算成)
   LinesPaintKey paint;                                         // 配色的来源
   uint64_t axis_gen = 0;                                       // 日并集轴 / 两侧账变的次数 (val_at 的来源; 滚动分位键)
@@ -248,7 +248,7 @@ struct Ranked {
   double x = std::numeric_limits<double>::quiet_NaN();    // NaN = 不可算
   double rank = std::numeric_limits<double>::quiet_NaN(); // ∈ [0, 1]: 0 = 好 (NAV 见 kNavGood; VAL = 便宜), 并列取中, 组内只一个 = 0.5; NaN = 不可算
 };
-// VAL 标的的一口 band (PoolVal): 标的可成交线的切片上, x = LinesView::band_x
+// VAL 标的的一口 band (PoolVal): 标的理想线切片的日末点上, x = LinesView::band_x
 struct LinesBand {
   bool ok = false;                       // 区间内有分位点 (否则其余空)
   std::vector<double> y[kBandQ];         // P · v / q_j (v = 当日收益率; v ≤ 0 / q_j ≤ 0 / 无分位 = NaN), 升序 = 便宜 → 贵
@@ -261,7 +261,7 @@ struct LinesView {
   std::vector<std::array<LinesSlice, kPairLines>> slice[kRowGroups]; // [RowGroup][行][PairLine]
   std::vector<std::array<Ranked, kNavNums>> num[kRowGroups];         // [RowGroup][行][NavNum] NAV 右表数值列
   std::vector<std::array<Ranked, kPoolVals>> pct[kRowGroups];        // [RowGroup][行][PoolVal] VAL 表格: 区间末个可算日的估值分位 (%, 高 = 贵)
-  std::vector<double> band_x;                                        // VAL 标的可成交线切片的 x (各口 band 共用; 未选 → 空)
+  std::vector<double> band_x, band_p;                                // VAL 标的理想线切片的日末点 x / 点位 (各口 band 共用; 未选 → 空)
   LinesBand band[kPoolVals];                                         // [PoolVal] VAL 标的的
 };
 

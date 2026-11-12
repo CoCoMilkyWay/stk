@@ -1,4 +1,4 @@
-// MinuteService — Market→NAV 主图的分钟价 worker: NAV 选中的有行情键的行 (篮子 / 成分股) → 各自的全史逐日分钟收盘 (MinuteCloses)
+// MinuteService — Market→NAV / VAL 主图的分钟价 worker: NAV 选中的 / VAL 标的有行情键的行 (篮子 / 成分股) → 各自的全史逐日分钟收盘 (MinuteCloses)
 //   价格源 = MinuteLib (与 CtaService 同一段开场 open, 同一种沿用 Kept); 序列按标的留最近 kKeep 个
 //   请求 = 标的集 (空 = 只备价格库); 新请求覆盖旧的. 进度: Loading = 合成天
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (latest)
