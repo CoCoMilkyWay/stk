@@ -710,7 +710,7 @@ void zoom_x(LinesRange &rg, int D, const ImRect &legend) {
 
 // ---- VAL 主图: 标的各口滚动 band (日末点; 填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
 //      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的理想线 (常显; 有分钟价则画到分钟) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
-//      只价格线进 fit, band / 等值线都不进; 框选改 rg ----
+//      价格线 + 开着的 band 线进 fit, band 填色 (到图顶 / 底) / 等值线不进; 框选改 rg ----
 void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf) {
   static LgHover s_hl; // 上帧图例矩阵
   const LinesSlice &sl = v.slice[pin.g][pin.r][kIdeal];
@@ -739,7 +739,7 @@ void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const Lines
     }
     for (int j = 0; j < kBandQ; ++j) {
       ImPlot::SetNextLineStyle(band_col((j + 0.5) / kBandQ, kBandLineA), (j == kBandQ / 2 ? 1.5f : 1.0f) * hw);
-      ImPlot::PlotLine(lb, bx, bd.y[j].data(), bn, ImPlotLineFlags{ImPlotLineFlags_SkipNaN} | ImPlotItemFlags_NoFit);
+      ImPlot::PlotLine(lb, bx, bd.y[j].data(), bn, ImPlotLineFlags_SkipNaN);
     }
   }
   // 等值线: 每档一条 (同一 item; 无档也登记)
