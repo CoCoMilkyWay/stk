@@ -402,8 +402,9 @@ set(MATH_PRECISE
     gui/task_beta/services/StyleService.cpp
     gui/task_beta/ui/TabStyle.cpp
     gui/task_market/TaskMarket.cpp
-    gui/task_market/services/CtaLib.cpp
     gui/task_market/services/CtaService.cpp
+    gui/task_market/services/MinuteLib.cpp
+    gui/task_market/services/MinuteService.cpp
     gui/task_market/ui/LinesCta.cpp
     gui/task_market/ui/LinesPlot.cpp
     gui/task_market/ui/LinesSheet.cpp

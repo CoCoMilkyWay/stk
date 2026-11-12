@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -208,12 +209,7 @@ void push_tag(std::vector<EndTag> &tags, const ImPlotRect &lim, size_t n, const 
     tags.push_back({ImPlot::PlotToPixels(p), col, std::move(text)});
 }
 
-// ---- 切片画线 (零拷贝: ImPlot 按下标回调取点) ----
 ImPlotPoint slice_pt(const LinesSlice &s, size_t i) { return {s.x(i), s.y(i)}; }
-ImPlotPoint slice_getter(int i, void *s) { return slice_pt(*static_cast<const LinesSlice *>(s), static_cast<size_t>(i)); }
-void plot_slice(const char *label, const LinesSlice &s, ImPlotLineFlags flags = 0) {
-  ImPlot::PlotLineG(label, slice_getter, const_cast<LinesSlice *>(&s), static_cast<int>(s.size()), flags);
-}
 void push_tag(std::vector<EndTag> &tags, const ImPlotRect &lim, const LinesSlice &s, ImU32 col, std::string text) {
   push_tag(tags, lim, s.size(), [&](size_t i) { return slice_pt(s, i); }, col, std::move(text));
 }
@@ -250,6 +246,7 @@ struct PlotFrame {
   std::vector<EndTag> marks;
   std::vector<const LinesSlice *> lines;
   std::string shown;
+  uint64_t view = 0; // 视图 gen (切片的身份随它)
   // 图例项 label 的显隐记进 shown; 显示 → 该项 (Color = 实际线色), 否则 nullptr
   const ImPlotItem *item(const char *label) {
     const ImPlotItem *it = ImPlot::GetItem(label);
@@ -258,6 +255,59 @@ struct PlotFrame {
     return it->Show ? it : nullptr;
   }
 };
+
+// ---- 切片画线: 按像素列抽稀 (每列留 首 / 低 / 高 / 末, 与逐点画逐像素一致; 分钟线全史数十万点), 一列至多 4 点的段即原样;
+//      x 段 = 视野 (fit 帧 = 切片全段: 极值都在, fit 不偏), 段外各留一点接线. 抽好的点按 label 留到下帧, (视图, 切片, x 段, 图宽) 同 → 复用 ----
+struct Thinned {
+  uint64_t view = 0;
+  const LinesSlice *s = nullptr;
+  double x0 = 0, x1 = 0;
+  float w = 0;
+  int frame = 0; // 末次画到的帧
+  std::vector<double> x, y;
+};
+std::map<std::string, Thinned> s_thin;
+void thin(const LinesSlice &s, double x0, double x1, float w, Thinned &t) {
+  t.x.clear(), t.y.clear();
+  const size_t n = s.size();
+  const auto r = std::views::iota(size_t{0}, n);
+  size_t i = static_cast<size_t>(std::ranges::partition_point(r, [&](size_t k) { return s.x(k) < x0; }) - r.begin());
+  size_t e = static_cast<size_t>(std::ranges::partition_point(r, [&](size_t k) { return s.x(k) <= x1; }) - r.begin());
+  i = i > 0 ? i - 1 : 0, e = std::min(e + 1, n);
+  const double bw = x1 > x0 ? (x1 - x0) / static_cast<double>(w) : 0.0;
+  while (i < e) {
+    size_t j = i + 1, lo = i, hi = i;
+    if (bw > 0)
+      for (const double b = std::floor((s.x(i) - x0) / bw); j < e && std::floor((s.x(j) - x0) / bw) == b; ++j) {
+        if (s.y(j) < s.y(lo))
+          lo = j;
+        if (s.y(j) > s.y(hi))
+          hi = j;
+      }
+    std::array<size_t, 4> k{i, lo, hi, j - 1};
+    std::sort(k.begin(), k.end());
+    for (size_t q = 0; q < k.size(); ++q)
+      if (q == 0 || k[q] != k[q - 1])
+        t.x.push_back(s.x(k[q])), t.y.push_back(s.y(k[q]));
+    i = j;
+  }
+}
+void plot_slice(const PlotFrame &pf, const char *label, const LinesSlice &s, ImPlotLineFlags flags = 0) {
+  const bool fit = ImPlot::FitThisFrame() && s.size() > 0;
+  const double x0 = fit ? s.x(0) : pf.lim.X.Min, x1 = fit ? s.x(s.size() - 1) : pf.lim.X.Max;
+  const float w = std::max(1.0f, ImPlot::GetPlotSize().x);
+  Thinned &t = s_thin[label];
+  if (t.view != pf.view || t.s != &s || t.x0 != x0 || t.x1 != x1 || t.w != w) {
+    t.view = pf.view, t.s = &s, t.x0 = x0, t.x1 = x1, t.w = w;
+    thin(s, x0, x1, w, t);
+  }
+  t.frame = ImGui::GetFrameCount();
+  ImPlot::PlotLine(label, t.x.data(), t.y.data(), static_cast<int>(t.x.size()), flags);
+}
+// 本帧没画到的 label 的抽稀点丢掉
+void thin_prune() {
+  std::erase_if(s_thin, [](const auto &kv) { return kv.second.frame != ImGui::GetFrameCount(); });
+}
 // 现价十字 (同日内栏): 只显示一条线时, 其视野内末点; 读数 = 区间涨跌 (切片起点 = 1), 时刻 = 该点所在日. 无 → false
 bool now_cross(const PlotFrame &pf, const std::vector<misc::Ymd> &dates, NowCross &c) {
   if (pf.lines.size() != 1)
@@ -432,7 +482,7 @@ void plot_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, PlotF
       if (ui.reveal.erase(line_id(*x.row, l)))
         ImPlot::HideNextItem(l == kTrade, ImPlotCond_Always);
       ImPlot::SetNextLineStyle(x.col[l], row_width(x.g));
-      plot_slice(lb, *x.s[l]);
+      plot_slice(pf, lb, *x.s[l]);
       if (pf.item(lb)) {
         push_tag(pf.tags, pf.lim, *x.s[l], ImGui::ColorConvertFloat4ToU32(x.col[l]), x.row->tag + kPairTag[pair_kind(*x.row)][l]);
         pf.lines.push_back(x.s[l]);
@@ -454,7 +504,7 @@ void plot_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, PlotF
       char id[24];
       std::snprintf(id, sizeof(id), "##pf_hot%zu", j);
       ImPlot::SetNextLineStyle(kHotCol, kHotW);
-      plot_slice(id, *on[j].s, ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit);
+      plot_slice(pf, id, *on[j].s, ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit);
     }
   s_box = nav_legend(ui, rows);
 }
@@ -721,7 +771,7 @@ void plot_val(LinesUIState &ui, const LinesDerived &d, const LinesView &v, const
     on[b] = it->Show;
   }
   ImPlot::SetNextLineStyle(row_color(d, pin, kTrade), 2.0f);
-  plot_slice("##pf_val_px", sl);
+  plot_slice(pf, "##pf_val_px", sl);
   if (ImPlot::FitThisFrame()) {
     double hi = -HUGE_VAL;
     for (size_t i = 0; i < sl.size(); ++i)
@@ -775,11 +825,12 @@ void RenderLinesPlot(LinesUIState &ui, const LinesAt &pin, bool nav, const ImVec
       ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].SetMin(0.0, /*force=*/true);
     // fit 帧的视野还是上帧的 (区间刚变时可能整段在外): 小字不按视野筛, 全收来量留白宽度
     const ImPlotRect cur = ImPlot::GetPlotLimits(); // 先锁 setup, FitThisFrame 才定
-    PlotFrame pf{ImPlot::FitThisFrame() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}};
+    PlotFrame pf{ImPlot::FitThisFrame() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}, ui.view.gen};
     if (nav)
       plot_nav(ui, d, v, pf);
     else if (pin.g >= 0)
       plot_val(ui, d, v, pin, pf);
+    thin_prune();
     ui.shown_key = std::move(pf.shown);
     NowCross cross{};
     const bool crossed = now_cross(pf, d.dates, cross);

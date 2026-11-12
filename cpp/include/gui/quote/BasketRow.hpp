@@ -1,11 +1,11 @@
-// 篮子合成件 (BasketHistory 价格指数 / Market → CTA 的库同一份): 成员 × 源 → Lane (Fold 一日一份) → 各篮子一日; 普查 census 出发布的成员统计.
+// 篮子合成件 (BasketHistory 价格指数 / Market 的分钟价格库同一份): 成员 × 源 → Lane (Fold 一日一份) → 各篮子一日; 普查 census 出发布的成员统计.
 //   成员 (谁 × 权) 两步对仗: members = 选股表 → 交易日 D 的成员表 (判据 = shared/Basket.hpp BasketTable::each, 权 = Tape::omega)
 //                             drift   = 成员冻结, 过一个交易日 (库末日之后的补日: 随价漂移, 逢换源回目标权)
 //   源 (每只一日的 Leg) 两种对仗: LibDay  = all.bar L_1day 日行 (基准 = D−1 行 pre_close) + L_1min 分钟根
 //                                 FundDay = 基本面 bar1d 行 (基准 = 当行 pre_close) + bar1m 分钟根
 //   两源同一个形 (date / assets / minutes / leg), Lane::run 不分源; 当日 (新浪快照) 的增量合成在 QuoteService (Fold 增量).
 //   库段一趟 lib_pass: 各日的合成互不相干 (前日 = 1) ⇒ 按线程一日一件并行, 日间接续 (点位 / 因子链) 归调用方按日序串行;
-//     BasketHistory 的 Book 与 CtaLib 的价格库是同一趟的两个接收方, 续算件的盘上头 + 体同一读写 (snap_read / snap_write).
+//     BasketHistory 的 Book 与 MinuteLib 的分钟价格库是同一趟的两个接收方, 续算件的盘上头 + 体同一读写 (snap_read / snap_write).
 #pragma once
 
 #include "disk/Disk.hpp"

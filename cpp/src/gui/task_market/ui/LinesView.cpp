@@ -402,21 +402,55 @@ Line project(const std::vector<misc::Ymd> &axis, const Levels &s) {
   return c;
 }
 
-// 线源 s → 日并集轴 axis 上的线: 价格指数 = 点位直投; 腿集 = mix 合成后投 (带年换手); 无源 / 日轴空 → 空线
+// 线 c (日末视图已建) 的点换成日内形 m: 各日以当日末点为锚, 锚 = 末点所在分钟及以前的末个有根槽, 该日各有根槽 (至锚) 的点位 = 末点 × 收 / 锚处收;
+// m 无该日 / 锚前无根 → 该日照留原点. 起点 (前收) 与各日末点不动 ⇒ 日末视图不变, 切片的 base 仍落在点上
+void intraday(const std::vector<misc::Ymd> &axis, const MinuteCloses &m, Line &c) {
+  if (c.x.size() < 2)
+    return;
+  std::vector<double> x{c.x[0]}, y{c.y[0]};
+  for (size_t j = 1, e = 1; j < c.x.size(); j = e) {
+    const int k = c.day(j);
+    while (e < c.x.size() && c.day(e) == k)
+      ++e;
+    const float *p = m.on(axis[static_cast<size_t>(k)]);
+    const int top = static_cast<int>(c.x[e - 1] - x_of(static_cast<size_t>(k), 0.0)) - static_cast<int>(OPEN_BIN_MINUTES);
+    int a = p ? std::min(top, Quote::kSlots - 1) : -1;
+    while (a >= 0 && !(p[a] > 0))
+      --a;
+    if (a < 0) {
+      x.insert(x.end(), c.x.begin() + static_cast<std::ptrdiff_t>(j), c.x.begin() + static_cast<std::ptrdiff_t>(e));
+      y.insert(y.end(), c.y.begin() + static_cast<std::ptrdiff_t>(j), c.y.begin() + static_cast<std::ptrdiff_t>(e));
+      continue;
+    }
+    const double ly = c.y[e - 1];
+    for (int s = 0; s <= a; ++s)
+      if (p[s] > 0)
+        x.push_back(x_of(static_cast<size_t>(k), static_cast<double>(OPEN_BIN_MINUTES + static_cast<size_t>(s)))),
+            y.push_back(ly * (static_cast<double>(p[s]) / static_cast<double>(p[a])));
+  }
+  c.x = std::move(x), c.y = std::move(y);
+}
+
+// 线源 s → 日并集轴 axis 上的线: 价格指数 = 点位直投; 腿集 = mix 合成后投 (带年换手); 带日内形 → 各日换成分钟 (intraday); 无源 / 日轴空 → 空线
 Line build_line(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
   if (axis.empty() || (!s.price && s.legs.empty()))
     return {};
-  if (s.price)
-    return project(axis, levels(*s.price));
-  const Mix m = mix(axis, s);
-  Line c = project(axis, m.lv);
-  c.turn = m.turn;
+  Line c;
+  if (s.price) {
+    c = project(axis, levels(*s.price));
+  } else {
+    const Mix m = mix(axis, s);
+    c = project(axis, m.lv);
+    c.turn = m.turn;
+  }
+  if (s.minutes)
+    intraday(axis, *s.minutes, c);
   return c;
 }
 // 腿集合成的线源: cost = 扣成本; 腿账都无成本列 → 不扣 (扣与不扣同一线源 ⇒ 两条线共用一份)
 LineSrc mix_src(std::vector<LinesLeg> legs, bool cost, double fixed_impact) {
   cost = cost && std::ranges::any_of(legs, [](const LinesLeg &lg) { return lg.b->col[kBookImp].n > 0; });
-  return {std::move(legs), cost, cost ? fixed_impact : 0.0, nullptr};
+  return {std::move(legs), cost, cost ? fixed_impact : 0.0, nullptr, nullptr};
 }
 // 账 b 线键 key 的腿; 账空 / 不在 → 空腿
 LinesLeg leg_of(const std::shared_ptr<const PortfolioBook> &b, uint32_t key) {
@@ -593,7 +627,8 @@ LinesRow strat_row(const std::string &name) {
 }
 
 // 有行情键的行 r (已取名) 进组 g: 腿 / 估值腿 = 该侧账的键线; 可成交 = 腿扣成本合成 (两侧账都无成本列 ⇒ 不扣);
-// 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘, 与可成交同一条)
+// 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘, 无日内形时与可成交同一条);
+//   带该键的日内形 (有则)
 void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const Reuse &ru) {
   r.val = leg_of(d.quotes[r.ref.side], r.ref.key);
   r.src[kTrade] = mix_src(legs_of(r.val), true, fixed_impact);
@@ -603,6 +638,8 @@ void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const R
     assert(d.prices->keys[r.ref.key] == r.ref.key);
     r.src[kIdeal].price = d.prices->list[r.ref.key].get();
   }
+  if (d.minutes)
+    r.src[kIdeal].minutes = d.minutes->of(r.ref);
   push(d, g, std::move(r), ru);
 }
 // 无行情键的行 r (已取名) 进组 g: 可成交 / 理想 = 腿集 legs 扣 / 不扣成本合成
@@ -884,12 +921,14 @@ void rank_col(size_t n, int good, const At &at) {
 } // namespace
 
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
-                      const std::shared_ptr<const Quote::Tape> &prices, double fixed_impact, const std::string &open,
-                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos, LinesDerived &d) {
+                      const std::shared_ptr<const Quote::Tape> &prices, const std::shared_ptr<const MinuteResult> &minutes, double fixed_impact,
+                      const std::string &open, const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos,
+                      LinesDerived &d) {
   LinesDerived o = std::move(d);
   d = LinesDerived{};
   const std::vector<const PortfolioItem *> its = ready_of(items, res, d);
   bind_quotes(res, prices, d);
+  d.minutes = minutes;
   const Reuse ru(o, d.dates);
   std::vector<uint32_t> kids = watch_stocks(watch);
   kids.insert(kids.end(), stocks.begin(), stocks.end());

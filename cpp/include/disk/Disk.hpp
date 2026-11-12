@@ -145,10 +145,10 @@ enum class Seg : std::uint8_t {
   X(LibCache,          Lib,               Dir,    Lit,       "cache",             "",         false)       \
   X(LibPreview,        LibCache,          File,   Lit,       "features.json",     "",         false)       \
   X(LibBaskets,        LibCache,          File,   Lit,       "baskets.bin",       "",         false)       \
-  X(LibCta,            LibCache,          Dir,    Lit,       "cta",               "",         false)       \
-  X(LibCtaHead,        LibCta,            File,   Lit,       "head.bin",          "",         false)       \
-  X(LibCtaStock,       LibCta,            File,   Lit,       "stock.bin",         "",         false)       \
-  X(LibCtaBasket,      LibCta,            File,   Lit,       "basket.bin",        "",         false)       \
+  X(LibMinute,         LibCache,          Dir,    Lit,       "minute",            "",         false)       \
+  X(LibMinuteHead,     LibMinute,         File,   Lit,       "head.bin",          "",         false)       \
+  X(LibMinuteStock,    LibMinute,         File,   Lit,       "stock.bin",         "",         false)       \
+  X(LibMinuteBasket,   LibMinute,         File,   Lit,       "basket.bin",        "",         false)       \
   /* ③ 因子 */                                                                                            \
   X(Factors,           Output,            Dir,    Lit,       "factors",           "",         false)       \
   X(FactorPool,        Factors,           Dir,    Pool,      "",                  "",         false)       \

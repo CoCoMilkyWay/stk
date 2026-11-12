@@ -156,8 +156,8 @@ void SyncLinesWatch(LinesUIState &ui) {
   ui.watch = LoadWatch();
 }
 
-int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const PortfolioUIState &pf, LinesUIState &ui, double fixed_impact,
-                   const Quote::QuoteHub *mk, const StockInfos &infos) {
+int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaService &cta, const PortfolioUIState &pf, LinesUIState &ui,
+                   double fixed_impact, const Quote::QuoteHub *mk, const StockInfos &infos) {
   assert(page >= 0 && page < kPages);
   PortfolioResult res;
   uint64_t gen = 0;
@@ -174,11 +174,26 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const Portf
   //      → 视图 (派生 gen + 二级两份 gen + 标的): 上级重算 → 下级自动重算 ----
   if (ui.pick.of != pf.name) // 换组合 → 选中清掉
     ui.pick = LinesPick{.of = pf.name};
-  ui.der.update(LinesDerKey{gen, pf.items_gen, ui.overlay.baskets.shown, fixed_impact, infos.size(), ui.pick.open, ui.pick.stocks(kPicks), ui.watch},
+  if (page == kPageNav) { // NAV 选中的有行情键的行 → 分钟价请求 (标的集变才发)
+    std::vector<Quote::Ref> refs;
+    for (const auto &[id, ref] : ui.pick.rows[kPickMany])
+      if (ref.ok())
+        refs.push_back(ref);
+    if (refs != ui.minute_sent.refs) {
+      ui.minute_sent = {ui.minute_sent.gen + 1, std::move(refs)};
+      minute.Request(ui.minute_sent);
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(minute.mutex);
+    ui.minutes = minute.result;
+  }
+  ui.der.update(LinesDerKey{gen, pf.items_gen, ui.overlay.baskets.shown, ui.minutes ? ui.minutes->gen : 0, fixed_impact, infos.size(), ui.pick.open,
+                            ui.pick.stocks(kPicks), ui.watch},
                 [&](LinesDerived &dv) {
                   const std::vector<misc::Ymd> old = dv.dates;
-                  MakeLinesDerived(pf.items, pf.name, res, ui.overlay.baskets.data, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks), ui.watch, infos,
-                                   dv);
+                  MakeLinesDerived(pf.items, pf.name, res, ui.overlay.baskets.data, ui.minutes, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks),
+                                   ui.watch, infos, dv);
                   if (dv.dates != old) // 日轴变 → 区间回全段
                     ui.range = LinesRange{{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())}};
                 });

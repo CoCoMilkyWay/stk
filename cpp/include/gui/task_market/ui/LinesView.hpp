@@ -10,9 +10,10 @@
 
 #include "features/TimeIndex.hpp" // TRADE_MINUTES_PER_DAY (横轴每日跨度)
 #include "gui/engine/services/PortfolioService.hpp"
-#include "gui/quote/Quote.hpp"  // Tape / Side (价格指数 / 行情键)
-#include "shared/AssetInfo.hpp" // StockInfos (成分行名 / 悬停)
-#include "shared/Basket.hpp"    // kGroupPool / kBasketGroups
+#include "gui/quote/Quote.hpp"                        // Tape / Side (价格指数 / 行情键)
+#include "gui/task_market/services/MinuteService.hpp" // MinuteResult / MinuteCloses (理想线的日内形)
+#include "shared/AssetInfo.hpp"                       // StockInfos (成分行名 / 悬停)
+#include "shared/Basket.hpp"                          // kGroupPool / kBasketGroups
 
 #include <algorithm>
 #include <array>
@@ -38,7 +39,8 @@ constexpr size_t x_at(size_t di, size_t minute) { return di * kDayW + minute; }
 constexpr double x_of(size_t di, double minute) { return static_cast<double>(di * kDayW) + minute; }
 
 // 一条线 (全段原值: 净值 / 点位; 归一只在切片): 画图点 + 日并集轴上的日末视图 (年化 / 夏普 / 近况 / 配色同读它) + 年换手
-//   点: x 严格升序, 首点 = 首个活跃日开盘前 kStartDx 格的起点 (前收 = 前一日末), 其后各点在所在日的行末分钟
+//   点: x 严格升序, 首点 = 首个活跃日开盘前 kStartDx 格的起点 (前收 = 前一日末), 其后各点在所在日的行末分钟;
+//   带日内形的线 (LineSrc::minutes) 各日换成该日各分钟 (锚 = 当日末点, 末点不变 ⇒ 日末视图同不带)
 //   日末视图: 活跃日 [f, l] (起点所在日 ~ 末点所在日); end(k) = 第 k − 1 日末点位 (k = f 为前收; 活跃日内无点的日持平, l 之后持平),
 //   s1 / s2 = 活跃日的日收益 / 平方的前缀和 (下标同 e)
 struct Line {
@@ -68,12 +70,14 @@ struct LinesLeg {
   bool operator==(const LinesLeg &) const = default;
 };
 // 线源 (线的身份): 腿集合成 legs (cost = 扣成本: 毛 − 冲击 − 固定份数 · impact; 腿账都无成本列 → 恒不扣) / 价格指数 price (legs 空); 都空 = 空线.
+//   minutes = 日内形 (该标的逐日分钟收盘; 只理想线带, 见 LinesDerived::rows): 有该日的日子按它画到分钟
 // 源对象由 LinesDerived 持有, 地址活过下一次派生 ⇒ 按地址比即按对象比; 日轴不变时同线源的线沿用上一份
 struct LineSrc {
   std::vector<LinesLeg> legs;
   bool cost = false;
   double impact = 0.0; // fixed_impact (cost 才有)
   const Quote::Kline *price = nullptr;
+  const MinuteCloses *minutes = nullptr;
   bool operator==(const LineSrc &) const = default;
 };
 // 一行 = 一对线, 全段 (右表一行). 主图例列 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (补空格对齐);
@@ -167,11 +171,12 @@ struct LinesDerived {
   std::vector<LinesRow> rows[kRowGroups];                      // [RowGroup][行]:
                                                                //   组             | 行情键    | 可成交 / 有冲击线           | 理想 / 无冲击线         | 估值腿
                                                                //   指数/行业/概念 | 篮子线    | 篮子账该线合成 (不扣成本)   | 价格指数 (篮子历史该线) | 篮子账该线
-                                                               //   成分           | 个股 id   | 个股账该只合成 (后复权收盘) | 同可成交 (同一条)       | 个股账该只
+                                                               //   成分           | 个股 id   | 个股账该只合成 (后复权收盘) | 同可成交 (无日内形同一条) | 个股账该只
                                                                //   因子           | -         | 该因子账扣成本合成          | 同腿不扣                | -
                                                                //   策略           | -         | 全部因子账扣成本合成        | 同腿不扣                | -
                                                                //   自选           | 同原行    | 同原行                      | 同原行                  | 同原行
                                                                //   篮子三组 / 成分 = 有行情键的行 (腿 = quotes[side] 的键线); 因子 / 策略 = 无行情键的行 (腿集 = 因子账)
+                                                               //   有行情键的行的理想线带日内形 = minutes 里该键的分钟收盘 (NAV 选中的才有)
                                                                //   指数 / 行业 / 概念 = [篮子表段内序] (源没算成也列, 线空); en = BasketTable::code, cn = tag = 切片名 (超长截断) + .等 / .加, hover = en + 全名;
                                                                //   成分 = 展开的篮子行的成分 (Tape::cons, 权降序; 前 n_cons 行, 右表挂在展开行下) + 其余选中 / 自选的个股 (收起后照画, 升序);
                                                                //     en | cn = 代码 | 简称, hover = 代码 + 权占比 + 行业 / 估值
@@ -190,6 +195,7 @@ struct LinesDerived {
   std::vector<std::shared_ptr<const PortfolioBook>> books;     // [因子行] 因子账 (因子 / 策略行的腿)
   Quote::PerSide<std::shared_ptr<const PortfolioBook>> quotes; // [Side] 行情两侧的账 (有行情键的行的腿 / 估值腿; 同有同无, 同日轴; 没算成 = 空)
   std::shared_ptr<const Quote::Tape> prices;                   // 篮子理想线 / 成分表的源 (篮子历史 [篮子下标]; 未到 / 源未就绪 = 空)
+  std::shared_ptr<const MinuteResult> minutes;                 // 理想线日内形的源 (MinuteService 在用的发布; 空 = 无)
   std::vector<int32_t> val_at;                                 // [日并集轴] 两侧账的行 (估值的源下标; −1 = 账无该日 / 没算成)
   LinesPaintKey paint;                                         // 配色的来源
   uint64_t axis_gen = 0;                                       // 日并集轴 / 两侧账变的次数 (val_at 的来源; 滚动分位键)
@@ -280,6 +286,7 @@ struct LinesStage {
 struct LinesDerKey {
   uint64_t gen = 0, items = 0;    // PortfolioService::result_gen / PortfolioUIState::items_gen
   uint32_t prices = 0;            // 价格指数在画的发布代 (OverlayState baskets.shown)
+  uint32_t minutes = 0;           // 日内形在用的发布代 (MinuteResult::gen)
   double impact = 0.0;            // fixed_impact
   size_t infos = 0;               // 基本面档案数 (成分行名 / 悬停; 首次载入)
   std::string open;               // 展开的篮子行
@@ -306,11 +313,12 @@ struct LinesViewKey {
   bool operator==(const LinesViewKey &) const = default;
 };
 
-// 一级: items / name = 当前组合, prices = 篮子历史在画的发布 (OverlayState baskets.data); open / stocks = 展开的篮子行 / 选中的个股 (成分组);
-// watch = 自选键 (自选组; 其中的个股也进成分组); d = 上一份 (按线源沿用) → 本份
+// 一级: items / name = 当前组合, prices = 篮子历史在画的发布 (OverlayState baskets.data), minutes = 日内形的发布 (空 = 无);
+// open / stocks = 展开的篮子行 / 选中的个股 (成分组); watch = 自选键 (自选组; 其中的个股也进成分组); d = 上一份 (按线源沿用) → 本份
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
-                      const std::shared_ptr<const Quote::Tape> &prices, double fixed_impact, const std::string &open,
-                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos, LinesDerived &d);
+                      const std::shared_ptr<const Quote::Tape> &prices, const std::shared_ptr<const MinuteResult> &minutes, double fixed_impact,
+                      const std::string &open, const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos,
+                      LinesDerived &d);
 // 二级: VAL 标的的估值腿 lg 各口 [PoolVal], 窗长 years; 空腿 → 空
 void MakeLinesRoll(const LinesDerived &d, const LinesLeg &lg, int years, LinesRolls &r);
 // 二级: 区间末 d1 (日并集轴下标) 之前各估值行各口的末个可算日, 窗长 years

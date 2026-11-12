@@ -34,7 +34,7 @@ bool CtaService::run(CtaRequest &req) {
   const FeatureLib &lib = ab.lib;
   FeatureRead rd(lib, &cancel_);
   const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &cancel_);
-  if (!pk || !lib_.sync(lib, rd, *pk))
+  if (!pk || !lib_.sync(lib, rd, *pk, cancel_, *this, pool_))
     return false;
   std::vector<misc::Ymd> dates = pk->tape->dates; // 已落盘日 (清单日期轴可能还在算)
   if (!req.ref.ok())

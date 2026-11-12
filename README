@@ -198,7 +198,7 @@ stk/
 │   │   │   │   ├── QuoteHub.hpp                        # 🖥️ QuoteService + StockHistory + BasketHistory 一份; 首次用到才起 (之前不碰网络)
 │   │   │   │   ├── Quote.hpp                           # 🖥️ 行情公共件: 个股 / 篮子 × 历史 / 当日 四路同一套类型 (请求 / Tape / 分钟根 Bars)
 │   │   │   │   │                                       #    · 篮子合成核 Fold (历史 / 当日同一份): 成员表 (CSR) → 点位 + 分钟净流入
-│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成件 (BasketHistory / CtaLib 同一份): 成员 members (选股表 → 成员表, 权 = Tape::omega) ⇄ drift (冻结, 随价漂移, 逢换源回目标权);
+│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成件 (BasketHistory / MinuteLib 同一份): 成员 members (选股表 → 成员表, 权 = Tape::omega) ⇄ drift (冻结, 随价漂移, 逢换源回目标权);
 │   │   │   │   │                                       #    源 LibDay (all.bar 日行 + L_1min) ⇄ FundDay (bar1d + bar1m); 一日合成件 Lane<源>; 普查 census (只数 / 权 / 成分 / 重合)
 │   │   │   │   └── services/
 │   │   │   │       ├── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin; 篮子当日按 BasketHistory 交接的成员表增量合成
@@ -240,7 +240,8 @@ stk/
 │   │   │   │   │                                       #    · ASSET = 个股表 + 行情; NAV / VAL / FLOW / CTA = 篮子 (池指数 / 行业 / 概念) + 因子组合 + 个股的 净值 / 估值 / 资金流 / 择时
 │   │   │   │   ├── TaskMarket.hpp                      # 🖥️ Market 任务主界面
 │   │   │   │   ├── services/
-│   │   │   │   │   ├── CtaLib.hpp                      # 🖥️ CTA 价格库: 全部个股 + 篮子线的 1 分钟价 (篮子 = BasketRow Lane), 续算只补新日
+│   │   │   │   │   ├── MinuteLib.hpp                   # 🖥️ 分钟价格库: 全部个股 + 篮子线的全史 1 分钟价 (篮子 = BasketRow Lane), 续算只补新日; NAV / CTA 共用
+│   │   │   │   │   ├── MinuteService.hpp               # 🖥️ NAV 分钟线: 选中的篮子 / 成分股 → 逐日分钟收盘 (理想线按它画到分钟)
 │   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 → cta/Trace 滚动调参轨迹
 │   │   │   │   └── ui/
 │   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / FLOW / CTA (一行一对线 Line, 四页同一份派生 / 选中 / 区间)
@@ -435,7 +436,7 @@ stk/
     │   ├── snapshot.bin                                # 续算快照 (末日各资产时序状态); 库跑完才落
     │   ├── YYYY/MM/DD/features_L_*.bin                 # 日文件, 一层一个 (Lob: L_sec / L_1min; Bar: L_1min / 分钟箱 / L_1day): 头 + 列目录 + 逐列载荷 [T×A]
     │   └── cache/                                      # 由库派生 (库重算即随之清): features.json 特征表预览 / baskets.bin 篮子价格指数账本 (BasketHistory)
-    │                                                   #    / cta/ CTA 价格库 (CtaLib): head.bin 键表 + 已合成日 + 因子链 / stock.bin [D][A] / basket.bin [D][B]
+    │                                                   #    / minute/ 分钟价格库 (MinuteLib): head.bin 键表 + 已合成日 + 因子链 / stock.bin [D][A] / basket.bin [D][B]
     ├── factors/<pool>/<层>/*.json                      # ③ 因子文件 (一因子一文件, 可手写); <层> = min / 5min / 15min / 30min / 60min / day
     │                                                   #    · 必填: type / name_cn / expr (模板, 自由参数用裸键名)
     │                                                   #    · 可选: note / run / hold_cols / acc_cols

@@ -41,6 +41,8 @@
 //       / SW2021 一级, 总市值加权 / 东财题材概念 (全A 内切, 成分按最近一份快照倒推全史), 总市值加权):
 //       日轴 = 篮子账日 ∪ 因子日: 首日开盘前一点 (前收) + 每日收盘一点; 每条成对 = 可成交 (T+1C 标签: 封板不建仓 / 平仓顺延) + 理想 (价格指数, 不看可成交:
 //       Market 篮子历史同一份), 两者之差 = 可成交拖累; 年换手 = 篮子账的增仓量同式 (成分再平衡 + 进出; 指数线本身不扣成本)
+//     分钟线: 选中的篮子行 / 成分行的理想线画到分钟 (MinuteService: 全史逐日分钟收盘, 分钟价格库与 CTA 共用; 各日以当日收盘为锚, 日末点 = 日线,
+//       年化 / 夏普 / 配色照读日末视图); 画线按像素列抽稀 (首 / 低 / 高 / 末), 与逐点画逐像素一致
 //     单因子线: 该因子单独的 G20 多头净值, 成对 = 有冲击 (它自己的冲击段) + 无冲击, 年换手 = 它自己的
 //     y = 净值 (线性下限钉 0; 可切 log, log 下正常缩放); 底部区间条选日段 [d0, d1) (两边竖把手吸附到月初 / 段内按日平移, 拖动中即生效, 把手旁标起止日; 双击段内回全段;
 //       主图左上角档位 1周 / 1月 / 1年 / 10年 (对仗日内栏档位, 图例矩阵在其下) = 末日往前推该段, 当前区间正是某档则该钮按下), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
@@ -74,14 +76,15 @@
 #include "gui/engine/services/PortfolioService.hpp"
 #include "gui/engine/ui/PortfolioBoxes.hpp" // PortfolioUIState (当前组合)
 #include "gui/quote/QuoteHub.hpp"
-#include "gui/task_market/services/CtaService.hpp" // CtaSpec / CtaRequest (CTA 页)
-#include "gui/task_market/ui/LinesView.hpp"        // 派生 → 滚动分位 / 末点分位 → 视图
-#include "gui/task_market/ui/QuotesPanel.hpp"      // OverlayState / Source / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
-#include "gui/util/Chart.hpp"                      // DayRange (区间条)
-#include "gui/util/HoverSync.hpp"                  // 图 ↔ 右表悬停联动
-#include "gui/util/Reorder.hpp"                    // Move (右表拖动调序)
-#include "imgui.h"                                 // ImVec4 (右表格)
-#include "shared/Basket.hpp"                       // kGroupPool / kBasketGroups
+#include "gui/task_market/services/CtaService.hpp"    // CtaSpec / CtaRequest (CTA 页)
+#include "gui/task_market/services/MinuteService.hpp" // MinuteRequest / MinuteResult (NAV 主图的分钟线)
+#include "gui/task_market/ui/LinesView.hpp"           // 派生 → 滚动分位 / 末点分位 → 视图
+#include "gui/task_market/ui/QuotesPanel.hpp"         // OverlayState / Source / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
+#include "gui/util/Chart.hpp"                         // DayRange (区间条)
+#include "gui/util/HoverSync.hpp"                     // 图 ↔ 右表悬停联动
+#include "gui/util/Reorder.hpp"                       // Move (右表拖动调序)
+#include "imgui.h"                                    // ImVec4 (右表格)
+#include "shared/Basket.hpp"                          // kGroupPool / kBasketGroups
 
 #include <algorithm>
 #include <cstdint>
@@ -238,6 +241,8 @@ struct LinesUIState {
   BasketFilter filter[kBasketGroups] = {{}, {}, {.n_hi = 500, .flow = 5.f}}; // [BasketGroup] 默认: 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%
   bool intraday = true;                                                      // NAV 日内栏
   Market::OverlayState overlay;                                              // 篮子 + 选中的个股 + 成分当日 (日内栏 / FLOW / 近况 / 当日四列 / 成分)
+  MinuteRequest minute_sent;                                                 // 上次发出的分钟价请求 (gen 0 = 未发)
+  std::shared_ptr<const MinuteResult> minutes;                               // 分钟价在用的发布 (派生的日内形源)
   CtaUIState cta;
 };
 
@@ -249,9 +254,9 @@ void SaveWatch(const std::vector<std::string> &watch); // 原子替换
 // GUI 线程每帧: 首次读自选文件
 void SyncLinesWatch(LinesUIState &ui);
 // 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (已起, ui.overlay 两路 Feed 本帧已 Sync; nullptr = AssetInfo 未建,
-// 日内栏 / 指数行业近况 / 成分行当日空着); infos = 基本面档案 (成分行名 / 近况 / 估值); cta = CTA 页的服务.
+// 日内栏 / 指数行业近况 / 成分行当日空着); infos = 基本面档案 (成分行名 / 近况 / 估值); minute = NAV 主图分钟线的服务, cta = CTA 页的服务.
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
-int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const PortfolioUIState &pf, LinesUIState &ui, double fixed_impact,
-                   const Quote::QuoteHub *mk, const StockInfos &infos);
+int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaService &cta, const PortfolioUIState &pf, LinesUIState &ui,
+                   double fixed_impact, const Quote::QuoteHub *mk, const StockInfos &infos);
 
 } // namespace GUI::Market

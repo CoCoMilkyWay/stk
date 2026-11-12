@@ -8,7 +8,7 @@
 //               分钟根 = 末 kMinuteDays 个落盘日的 L_1min, 按行 row_slot 并根, 与个股读 bar1m 同一路)
 //   补日  成员 = 库末日之后冻结 (池 / 行业 / 股本), 逐日过 drift (随价漂移, 逢换源回目标权)
 //         源 = FundDay (日根 / 基准 = bar1d open … close / amount / pre_close, 分钟根 = bar1m)
-// 库段 = BasketRow lib_pass (与 CtaLib 的价格库同一趟): 各日的合成互不相干 (前日 = 1), 每批线程数日在常驻线程池上一日一任务;
+// 库段 = BasketRow lib_pass (与 Market 的分钟价格库 MinuteLib 同一趟): 各日的合成互不相干 (前日 = 1), 每批线程数日在常驻线程池上一日一任务;
 //   点位自库首个落盘日 kBase 起按日序 rebase 接续 (补日段同一步).
 // 窗: 只留末 kDailyDays 个落盘日的日根 / 末 kMinuteDays 个落盘日的分钟根 (按日期截, 不按根数).
 // 续算: 全表 Book 常驻 worker, 落盘 <库>/cache/baskets.bin (snap_read / snap_write; 头 = 库 A 轴 + 篮子表指纹 + 篮子数 + 根布局; 随库清库而没).

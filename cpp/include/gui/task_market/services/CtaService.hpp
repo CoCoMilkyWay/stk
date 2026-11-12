@@ -1,12 +1,12 @@
 // CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产多空 band 模型的滚动调参全期轨迹 (cta/Trace.hpp)
-//   价格源 = CtaLib (篮子与个股一趟合成落盘, 每次请求先补到库末日); 有效根序列按标的留最近 kKeep 个 (只改设定不重读)
+//   价格源 = MinuteLib (Market 任务持有, 与 NAV 的 MinuteService 共用; 每次请求先补到库末日); 有效根序列按标的留最近 kKeep 个 (只改设定不重读)
 //   请求 = 标的 + CtaSpec (无标的 = 只备价格库); 新请求覆盖旧的 (换标的 / 改设定即重算). 进度: Loading = 合成天, Running = 选参日数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (shared_ptr 拷出即放锁)
 #pragma once
 
 #include "cta/Trace.hpp"
 #include "gui/quote/Quote.hpp" // Side
-#include "gui/task_market/services/CtaLib.hpp"
+#include "gui/task_market/services/MinuteLib.hpp"
 #include "gui/util/Service.hpp"
 #include "misc/exec.hpp"
 #include "shared/Progress.hpp"
@@ -56,7 +56,7 @@ class CtaService : public Service<CtaService, CtaRequest>, public Published {
 
 public:
   static constexpr const char *kName = "CtaWorker";
-  CtaService() { Start(); }
+  explicit CtaService(MinuteLib &lib) : lib_(lib) { Start(); }
   ~CtaService() { Stop(); }
 
   std::shared_ptr<const CtaResult> result; // UI 持 mutex 读; 空 = 未算
@@ -78,8 +78,8 @@ private:
     std::shared_ptr<const cta::Series> se;
   };
 
+  MinuteLib &lib_;
   misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
-  CtaLib lib_{cancel_, *this, pool_};
   std::vector<Kept> kept_; // 新 → 旧
 };
 
