@@ -1,5 +1,6 @@
 #include "features/Panel/PoolSelect.hpp"
 
+#include "define/Members.hpp"
 #include "features/Panel/Fund.hpp" // fund::Board / SW2021_L1_COUNT
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/epoch.hpp"
@@ -449,53 +450,39 @@ void run_book(const Tape &t, Rebal rb, const Pick &pick, Book &b) {
   for (int w = 0; w < kWeights; ++w)
     b.ret[w].assign(D, 0.0f), b.buy[w].assign(D, 0.0f);
   b.first = D;
-  std::vector<Aid> mem, nx; // 当前 / 新选的成员 (资产下标升序)
-  // [Weight][成员] 底 = 归一目标权 / grow_源行 (行 q 收盘持仓额 = 底 × grow_q, 即 Tape::omega 归一) / 新底; [Weight] 前一日收盘持仓总额
-  std::vector<double> base[kWeights], nb[kWeights];
-  double val[kWeights] = {};
+  std::vector<Aid> nx; // 新选的成员 (资产下标升序)
+  Members mem, to;     // [键 = Weight] 持仓 (随价漂移到前一日收盘) / 新源行的目标权 (源行 = 前一日)
   size_t src = SIZE_MAX;
   for (size_t d = 1; d < D; ++d) {
     if (const size_t r = src_of(rb, t.dates, t.dates[d]); r != src) {
       src = r;
       pick(r, nx);
-      const size_t n = nx.size();
-      const float *gr = t.grow.data() + r * A, *gp = t.grow.data() + (d - 1) * A;
-      double tot[kWeights] = {}, buy[kWeights] = {}, v0[kWeights] = {};
-      for (int w = 0; w < kWeights; ++w)
-        nb[w].resize(n);
-      for (size_t i = 0; i < n; ++i) {
+      to.clear();
+      for (const Aid a : nx) {
         float om[kWeights];
-        t.omega(r, r, nx[i], om);
+        t.omega(r, r, a, om);
         for (int w = 0; w < kWeights; ++w)
-          nb[w][i] = om[w], tot[w] += om[w];
+          if (om[w] > 0.0f)
+            to.add(static_cast<uint32_t>(w), om[w]);
+        to.next(a);
       }
-      for (size_t i = 0, j = 0; i < n; ++i) {
-        while (j < mem.size() && mem[j] < nx[i])
-          ++j;
-        const bool held = j < mem.size() && mem[j] == nx[i];
-        for (int w = 0; w < kWeights; ++w) {
-          const double tw = tot[w] > 0.0 ? nb[w][i] / tot[w] : 0.0;
-          buy[w] += std::max(tw - (held ? base[w][j] * gp[mem[j]] / val[w] : 0.0), 0.0);
-          nb[w][i] = tw / gr[nx[i]], v0[w] += nb[w][i] * gp[nx[i]];
-        }
-      }
+      double buy[kWeights] = {};
+      to.turnover(mem, buy);
       for (int w = 0; w < kWeights; ++w)
-        base[w].swap(nb[w]), val[w] = v0[w], b.buy[w][d] = static_cast<float>(buy[w]);
-      mem.swap(nx);
-      if (b.first == D && !mem.empty())
+        b.buy[w][d] = static_cast<float>(buy[w]);
+      std::swap(mem, to);
+      if (b.first == D && mem.size())
         b.first = d;
     }
-    if (mem.empty())
+    if (!mem.size())
       continue;
-    const float *g = t.grow.data() + d * A;
-    double v[kWeights] = {};
-    for (size_t i = 0; i < mem.size(); ++i) {
-      const double gi = g[mem[i]];
-      for (int w = 0; w < kWeights; ++w)
-        v[w] += base[w][i] * gi;
-    }
+    const float *g = t.grow.data() + d * A, *g0 = g - A;
+    const auto rel = [&](uint32_t a) { return g[a] / g0[a]; };
+    double s[kWeights] = {}, n[kWeights] = {};
+    mem.scatter(rel, s, n);
     for (int w = 0; w < kWeights; ++w)
-      b.ret[w][d] = static_cast<float>(v[w] / val[w] - 1.0), val[w] = v[w];
+      b.ret[w][d] = n[w] > 0.0 ? static_cast<float>(s[w] / n[w] - 1.0) : 0.0f;
+    mem.scale(rel);
   }
 }
 

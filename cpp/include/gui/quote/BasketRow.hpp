@@ -1,9 +1,9 @@
 // 篮子合成件 (BasketHistory 价格指数 / Market → CTA 的库同一份): 成员 × 源 → Lane (Fold 一日一份) → 各篮子一日; 普查 census 出发布的成员统计.
-//   成员 (谁 × 权) 两步对仗: members = 选股表 → 交易日 D 的成员表 (判据 = shared/Basket.hpp BasketTable::each, 权 = Tape::omega; 与 Style 页篮子账同一份)
-//                             drift   = 成员冻结, 过一个交易日 (库末日之后的补日: 换源回目标权, 否则随价漂移)
+//   成员 (谁 × 权) 两步对仗: members = 选股表 → 交易日 D 的成员表 (判据 = shared/Basket.hpp BasketTable::each, 权 = Tape::omega)
+//                             drift   = 成员冻结, 过一个交易日 (库末日之后的补日: 随价漂移, 逢换源回目标权)
 //   源 (每只一日的 Leg) 两种对仗: LibDay  = all.bar L_1day 日行 (基准 = D−1 行 pre_close) + L_1min 分钟根
 //                                 FundDay = 基本面 bar1d 行 (基准 = 当行 pre_close) + bar1m 分钟根
-//   两源同一个形 (date / minutes / leg), Lane::run 不分源; 当日 (新浪快照) 的增量合成在 QuoteService (Fold 增量).
+//   两源同一个形 (date / assets / minutes / leg), Lane::run 不分源; 当日 (新浪快照) 的增量合成在 QuoteService (Fold 增量).
 #pragma once
 
 #include "features/Panel/PoolSelect.hpp" // pool::Picks / day_cols
@@ -11,6 +11,7 @@
 #include "fundamental/AssetAxis.hpp"
 #include "gui/quote/Quote.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -32,21 +33,21 @@ void read_row(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &dc, R
 void minute_alloc(FeatureRead::DayColumns &mc, size_t A);
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc);
 
-// 交易日 d 的成员表 (下标 = 库轴): 当日所在的池 (子池 = 选股表 d 的成员) 过 BasketTable::each, 权 = Tape::omega 取该篮的权重 (≤ 0 不进);
-//   行业 / 概念随母集 (pk 与 axis 同为 all.bar 轴); Members::cap = D−1 收盘总市值
+// 交易日 d 的成员表 (资产 = 库轴): 事实 = 当日所在的池 (子池 = 选股表 d 的成员) + 成员源行 (D−1) 的行业, 过 BasketTable::each,
+//   权 = Tape::omega 取该篮的权重 (源 = 该篮所依的池 BasketTable::base 的源行; ≤ 0 不进); pk 与 axis 同为 all.bar 轴; Members::cap = D−1 收盘总市值
 void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m);
-// 成员表 m 过交易日 prev → d (成员冻结): 各篮子按其周期换源 (pool::rebal_at) → 等权回 1, 否则随价 × rel [库轴] (收 / 前收);
-//   加权恒 × rel (股本冻结 ⇒ 目标权即漂移后的权); Members::cap 恒 × rel
+// 成员表 m 过交易日 prev → d (成员冻结): 权与 cap 随价 × rel [库轴] (收 / 前收); 篮子逢其周期换源 (pool::rebal_at) 回目标权 pool::omega (加权 = 漂移后的 cap)
 void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel);
 // 一只一日的 L_1min (mc = read_minutes 的读) → 分钟根: 无成交的行不收 (与 bar1m 的 bars_of 同一并根)
 void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b);
 
-// 源 (两种同形): date = 交易日; minutes() = 合成分钟; leg(a, c, b) = 一只的 Leg (c / b = 调用方给的格, Leg 可指向它们)
+// 源 (两种同形): date = 交易日; assets() = 库轴长; minutes() = 合成分钟; leg(a, c, b) = 一只的 Leg (c / b = 调用方给的格, Leg 可指向它们)
 // all.bar 库源: 基准 = 前一行 prev 的 pre_close, 日根 = 当日行 cur, 分钟根 = mc 的 L_1min (nullptr = 只合日根)
 struct LibDay {
   misc::Ymd date;
   const Row &prev, &cur;
   const FeatureRead::DayColumns *mc;
+  size_t assets() const { return cur.trade.size(); }
   bool minutes() const { return mc != nullptr; }
   Leg leg(size_t a, Cell &c, Bars &b) const;
 };
@@ -55,6 +56,7 @@ struct FundDay {
   misc::Ymd date;
   std::span<const Candle> px;
   const Bar1mDay &bd;
+  size_t assets() const { return px.size(); }
   bool minutes() const { return true; }
   Leg leg(size_t a, Cell &c, Bars &b) const;
 };
@@ -81,11 +83,12 @@ private:
 template <class Src, class Each>
 void Lane::run(const Src &src, misc::Ymd prev, std::span<const double> level, Each &&each) {
   fold.open(src.minutes() ? kSlots : 0);
-  for (size_t a = 0; a < mem.assets(); ++a) {
+  assert(mem.id.empty() || mem.id.back() < src.assets());
+  for (size_t a = 0, k = 0; a < src.assets(); ++a) {
     const Leg g = src.leg(a, cell_, bars_);
     each(a, g);
-    if (const std::span<const Members::Weight> ws = mem.of(a); !ws.empty())
-      fold.add(g, ws);
+    if (k < mem.size() && mem.id[k] == a)
+      fold.add(g, mem.of(k++));
   }
   fold.finish(src.date, prev, level, day);
 }

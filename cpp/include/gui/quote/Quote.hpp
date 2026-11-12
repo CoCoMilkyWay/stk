@@ -14,7 +14,8 @@
 // 窗口: 两份历史同为最近 kDailyDays 个交易日的日线 + 最近 kMinuteDays 个交易日的分钟.
 // 接续: 当日接在历史之后 ⇔ 当日的前一交易日 = 历史末日 (joins); 否则 (历史落后) 不接.
 //
-// 篮子合成 (Fold, 历史逐日 / 当日同一份): 点位 = 前日点位 × Σ w · 价 / 基准 / Σ w; 开 / 高 / 低 / 收各自如此
+// 篮子合成 (Fold, 历史逐日 / 当日同一份) = 成员表 (define/Members.hpp) 带日内路径的合 (收盘一格即 Members::scatter 的 收 / 基准):
+//   点位 = 前日点位 × Σ w · 价 / 基准 / Σ w; 开 / 高 / 低 / 收各自如此
 //   (高 / 低 = 成员高低的加权, 是真实路径的外包); 额 = 成员之和, 量不合成.
 //   净流入 (只合成分钟的日) = 成员各自分钟涨跌法之和 (不加权): 一只逐个有成交的分钟, 收 > 上一分钟收 (首个对基准) → 该分钟额记入,
 //   < → 记出, 平 → 随上一分钟的方向 (之前无方向 = 不计; 方向判据 tick_dir); 逐根记 (Bars::net), 全日之和 = Day::flow.
@@ -28,6 +29,7 @@
 #pragma once
 
 #include "define/Csr.hpp"
+#include "define/Members.hpp" // 篮子成员表: 资产 = 源的轴 (all.bar 库轴 / 新浪全市场), 键 = 篮子, cap [亿元]
 #include "features/TimeIndex.hpp"
 #include "misc/date.hpp"
 #include "shared/Progress.hpp"
@@ -188,24 +190,6 @@ struct HistoryPub : Published {
   std::shared_ptr<const Tape> data;
 };
 
-// 篮子成员表, 资产主序 (CSR): 资产 a 的所属篮子 = of(a); 下标 a = 源的轴 (all.bar 库轴 / 新浪全市场)
-struct Members {
-  struct Weight {
-    uint32_t basket;
-    float w;
-  };
-  std::vector<uint32_t> at{0}; // [资产数 + 1]
-  std::vector<Weight> ws;
-  std::vector<float> cap; // [资产] 收盘总市值 [亿元], 与所属线的权无关 (线的成员总市值由此求和); 空 = 不记
-
-  void clear() { at.assign(1, 0), ws.clear(), cap.clear(); }
-  void add(uint32_t basket, float w) { ws.push_back({basket, w}); }
-  void next() { at.push_back(static_cast<uint32_t>(ws.size())); } // 收一只
-  size_t assets() const { return at.size() - 1; }
-  std::span<const Weight> of(size_t a) const { return {ws.data() + at[a], ws.data() + at[a + 1]}; }
-  std::span<Weight> of(size_t a) { return {ws.data() + at[a], ws.data() + at[a + 1]}; }
-};
-
 // 一只一日 (合成的输入), 两源各自填
 struct Leg {
   float base = 0;             // 基准 (当日前收); 0 = 不计
@@ -213,7 +197,7 @@ struct Leg {
   const Bars *bars = nullptr; // 分钟根; 合成分钟的日必给
 };
 
-// 篮子合成核: open (一日开始) → 逐资产 add → finish (× 前日点位 / Σ w 落到各篮子的 Day)
+// 篮子合成核: open (一日开始) → 逐成员 add (ws = 成员表一行) → finish (× 前日点位 / Σ w 落到各篮子的 Day)
 //   增量 (当日跨轮): open(from, freeze, slots), 槽 [0, from) 是上一轮冻结的 (累加保留), 本轮只合日根与槽 [from, slots), 冻结线推进到 freeze
 class Fold {
 public:

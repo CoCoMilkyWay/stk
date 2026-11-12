@@ -77,32 +77,31 @@ void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &
   m.clear();
   float om[pool::kWeights];
   for (size_t a = 0; a < A; ++a) {
-    m.cap.push_back(q != SIZE_MAX ? t.mcap[q * A + a] : 0.f);
     const bool base = in[a] & pool_bit(kBasketBase);
-    const uint8_t ind = base ? t.ind[src[kBasketBase] * A + a] : uint8_t{0};
-    assert((!base || ind > 0) && "母集成员的行业已知");
-    PoolId at = kAllPool; // om 所属的池
-    bt.each(in[a], ind, ct.concepts_of(axis.global(a)), [&](size_t b, PoolId p, uint8_t) {
-      if (p != at)
+    const Fact f{in[a], base ? t.ind[q * A + a] : uint8_t{0}};
+    assert((!base || f.ind > 0) && "母集成员的行业已知");
+    PoolId at = kAllPool; // om 所依的池
+    bt.each(f, ct.concepts_of(axis.global(a)), [&](size_t b) {
+      if (const PoolId p = bt.base(b); p != at)
         t.omega(src[p], q, a, om), at = p;
       if (const float w = om[bt.weight(b)]; w > 0)
         m.add(static_cast<uint32_t>(b), w);
     });
-    m.next();
+    m.next(static_cast<uint32_t>(a), q != SIZE_MAX ? t.mcap[q * A + a] : 0.f);
   }
 }
 
 void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel) {
-  assert(rel.size() == m.assets() && m.cap.size() == m.assets());
+  assert(m.id.empty() || m.id.back() < rel.size());
   const BasketTable &bt = basket_table();
   bool reb[pool::kRebals];
   for (int k = 0; k < pool::kRebals; ++k)
     reb[k] = pool::rebal_at(static_cast<pool::Rebal>(k), prev, d);
-  for (size_t a = 0; a < m.assets(); ++a) {
-    m.cap[a] *= rel[a];
-    for (Members::Weight &w : m.of(a))
-      w.w = bt.weight(w.basket) == pool::kWeightEq && reb[bt.rebal(w.basket)] ? 1.f : w.w * rel[a];
-  }
+  m.scale([&](uint32_t a) { return rel[a]; });
+  for (size_t k = 0; k < m.size(); ++k)
+    for (Members::Weight &w : m.of(k))
+      if (reb[bt.rebal(w.key)])
+        w.w = static_cast<float>(pool::omega(bt.weight(w.key), m.cap[k], 1.0));
 }
 
 void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b) {
@@ -130,7 +129,7 @@ Leg FundDay::leg(size_t a, Cell &, Bars &b) const {
 }
 
 void census(const Members &m, const PoolAxis &axis, std::span<const uint32_t> keys, Tape &t) {
-  assert(axis.size() == m.assets() && m.cap.size() == m.assets());
+  assert(m.id.empty() || m.id.back() < axis.size());
   const size_t K = keys.size();
   std::vector<size_t> at(basket_table().size(), K); // 篮子 → keys 下标 (不在 = K)
   for (size_t k = 0; k < K; ++k)
@@ -139,13 +138,13 @@ void census(const Members &m, const PoolAxis &axis, std::span<const uint32_t> ke
   std::vector<double> dot(K * K);
   std::vector<std::pair<size_t, double>> on;      // 一只所属的在键集里的篮子 (keys 下标, 权)
   std::vector<std::pair<size_t, Constituent>> cs; // (keys 下标, 成分)
-  for (size_t a = 0; a < m.assets(); ++a) {
+  for (size_t r = 0; r < m.size(); ++r) {
     on.clear();
-    for (const Members::Weight &x : m.of(a))
-      if (const size_t k = at[x.basket]; k < K) {
-        ++t.members[k], t.weight[k] += x.w, t.cap[k] += m.cap[a];
+    for (const Members::Weight &x : m.of(r))
+      if (const size_t k = at[x.key]; k < K) {
+        ++t.members[k], t.weight[k] += x.w, t.cap[k] += m.cap[r];
         on.emplace_back(k, x.w);
-        cs.push_back({k, {axis.global(a), x.w}});
+        cs.push_back({k, {axis.global(m.id[r]), x.w}});
       }
     for (const auto &[i, wi] : on)
       for (const auto &[j, wj] : on)

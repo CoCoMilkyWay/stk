@@ -115,12 +115,15 @@ bool BasketHistory::run(HistoryRequest &req) {
   }
 
   const PoolAxis &market = live_.axis();
-  Members live; // 下标 = 全市场
+  std::vector<uint32_t> row(lib.axis.size(), UINT32_MAX); // [库轴] mem 的行
+  for (size_t k = 0; k < mem.size(); ++k)
+    row[mem.id[k]] = static_cast<uint32_t>(k);
+  Members live; // 资产 = 全市场
   for (size_t q = 0; q < market.size(); ++q) {
-    if (const size_t a = lib.axis.sub_of(market.global(q)); a < lib.axis.size())
-      for (const Members::Weight &w : mem.of(a))
-        live.add(w.basket, w.w);
-    live.next();
+    if (const size_t a = lib.axis.sub_of(market.global(q)); a < lib.axis.size() && row[a] != UINT32_MAX)
+      for (const Members::Weight &w : mem.of(row[a]))
+        live.add(w.key, w.w);
+    live.next(static_cast<uint32_t>(q));
   }
   live_.bind(std::move(live), tail_.level);
   return publish(req, {}, &lib.axis);
@@ -239,7 +242,7 @@ bool BasketHistory::publish(const HistoryRequest &req, const std::string &lack, 
   out->keys = req.keys;
   out->lack = lack;
   if (lack.empty()) {
-    assert(axis && axis->size() == tail_.mem.assets());
+    assert(axis && (tail_.mem.id.empty() || tail_.mem.id.back() < axis->size()));
     // 窗按 Book 落盘日 + 补日截: 自末往前第 n 日
     const size_t nb = book_.dates.size(), nt = tail_.dates.size();
     const auto nth_last = [&](size_t n) { return n <= nt ? tail_.dates[nt - n] : book_.dates[nb - std::min(nb, n - nt)]; };

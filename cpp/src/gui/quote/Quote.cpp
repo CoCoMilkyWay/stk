@@ -125,8 +125,8 @@ bool Fold::add(const Leg &g, std::span<const Members::Weight> ws, Carry &k) {
   r[5] = net;
   const size_t j0 = (1 + static_cast<size_t>(from_)) * kQ, n = cells() * kQ;
   for (const Members::Weight &w : ws) {
-    sw_[w.basket] += w.w;
-    double *a = acc_.data() + static_cast<size_t>(w.basket) * kCells * kQ;
+    sw_[w.key] += w.w;
+    double *a = acc_.data() + static_cast<size_t>(w.key) * kCells * kQ;
     const auto put = [&](size_t j) {
       for (size_t i = 0; i < 4; ++i)
         a[j + i] += w.w * r[j + i];

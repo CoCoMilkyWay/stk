@@ -6,7 +6,7 @@
 //   库段  成员 = members (选股表 D 的成员过 BasketTable::each, 权 = Tape::omega 漂移到 D−1 收盘; 与 Style 页篮子账同一份)
 //         源 = LibDay (日根 = L_1day open_day … amount_day, 基准 = D−1 行 pre_close = 次日除权后前收, 与新浪昨收同一个量;
 //               分钟根 = 末 kMinuteDays 个落盘日的 L_1min, 按行 row_slot 并根, 与个股读 bar1m 同一路)
-//   补日  成员 = 库末日之后冻结 (池 / 行业 / 股本), 逐日过 drift (加权随价, 等权逢换源回 1, 否则随价)
+//   补日  成员 = 库末日之后冻结 (池 / 行业 / 股本), 逐日过 drift (随价漂移, 逢换源回目标权)
 //         源 = FundDay (日根 / 基准 = bar1d open … close / amount / pre_close, 分钟根 = bar1m)
 // 点位自库首个落盘日 kBase 起逐日接续 (按日序串行); 各日文件互不相干 ⇒ 库段日根行每批 2 × 线程数日在常驻线程池上一日一任务并行读.
 // 窗: 只留末 kDailyDays 个落盘日的日根 / 末 kMinuteDays 个落盘日的分钟根 (按日期截, 不按根数).

@@ -68,7 +68,7 @@ public:
   static constexpr int kLag = (kSettle + 59) / 60 + 1; // 此刻所在根 − 定稿线 的上界 [根]
   static constexpr int kGap = 10;                      // 断档判据: 两轮快照间连续竞价时长 [s]
   static constexpr int kFillers = 16;                  // 分钟 K 并发 (再高新浪会 RST)
-  static constexpr uint32_t kFoldChunk = 256;          // 篮子合成每段只数 (持 mu_ 的粒度)
+  static constexpr uint32_t kFoldChunk = 256;          // 篮子合成每段成员只数 (持 mu_ 的粒度)
 
   QuoteService(PoolAxis axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading);
   ~QuoteService();
@@ -79,7 +79,7 @@ public:
   std::span<const misc::Ymd> trading() const { return trading_; } // 交易日升序 (构造后不变, 任意线程)
   void select(uint32_t id);                                       // GUI: 选中标的 (全局 id; ~0u = 无)
   QuoteStatus status() const;
-  // 篮子成员表 (下标 = axis() 的 sub) + 各篮子前日点位; 当场合成一次, 此后当日有变的每轮快照后一次 (BasketHistory 跑完调)
+  // 篮子成员表 (资产 = axis() 的 sub) + 各篮子前日点位; 当场合成一次, 此后当日有变的每轮快照后一次 (BasketHistory 跑完调)
   void bind(Members m, std::vector<double> level);
   // GUI: 键集的当日 (只读), [k] ↔ keys[k]; 个股不在全市场 / 当日无成交、篮子未合成 / 成员无成交 → candle.date 0.
   //   篮子键集须是全表 (keys[k] = k): 给末次合成的那份, 不拷
@@ -117,7 +117,7 @@ private:
     std::shared_ptr<const Basis> basis;
     misc::Ymd date = 0;
     std::unique_ptr<Fold> fold;
-    std::vector<Fold::Carry> carry; // [sub] 冻结线处的接续
+    std::vector<Fold::Carry> carry; // [成员表行] 冻结线处的接续
     int frozen = 0;
   };
 

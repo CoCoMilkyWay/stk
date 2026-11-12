@@ -3,13 +3,14 @@
 // 篮子表 (行情价格指数 Quote::BasketHistory / CTA 价格库 / 回测 Engine::baskets 同一张): 篮子 = 切片 × 该切片的权重 (pool::Weight), 一切片一个篮子
 //   三段, 段序 = 目录组序 = 下标序: 子池 (池表序, 首两池 = 全A 等权 / 加权) | 申万一级行业 (ind_l1 序) | 概念 (概念表序)
 //   子池的成员 / 权重 / 周期 = 池参数; 行业 / 概念 = 母集 (全A 等权池) 内切, 加权, 日频
-//   下标 b = 篮子号: 两边一切按篮子的量 (点位 / 收益 / 估值 / 换手 / 成员权) 都以 b 为键, 序 / 名同此
-//   逐篮子的属性建表时定 (热循环只查数组); 成员判据只此一处 (each)
+//   下标 b = 篮子号: 两边一切按篮子的量 (点位 / 收益 / 估值 / 换手 / 成员权) 都以 b 为键, 序 / 名同此; 一日的持仓 = 成员表 (define/Members.hpp, 键 = b)
+//   逐篮子的属性建表时定 (热循环只查数组); 成员判据只此一处 (each ⇄ holds)
 #include "features/Panel/Fund.hpp"         // SW2021_L1_COUNT / NAMES
 #include "features/Storage/FeatureLib.hpp" // pool_count / pool_def / kAllAPool / PoolMask
 #include "misc/epoch.hpp"
 #include "shared/Concept.hpp" // concepts
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -28,6 +29,12 @@ enum BasketGroup : int { kGroupPool,
 inline constexpr int kBasketGroups = 3;
 inline constexpr size_t kIndBaskets = fund::SW2021_L1_COUNT - 1;  // ind_l1 1..; 0 = 未知 (不在市)
 inline constexpr PoolId kBasketBase = kAllAPool[pool::kWeightEq]; // 行业 / 概念篮子的母集
+
+// 一只一日的事实 (判据的当日输入, 同取成员源行 = D−1 收盘, 整日常量); 所属概念是资产常量, 另给
+struct Fact {
+  PoolMask in = 0; // 当日所在的池 (位 kAllPool 不看)
+  uint8_t ind = 0; // 申万一级 (0 = 未知)
+};
 
 class BasketTable {
 public:
@@ -61,6 +68,8 @@ public:
     assert(group(b) == kGroupPool);
     return static_cast<PoolId>(b + 1);
   }
+  // 权所依的池: 子池 = 本池, 行业 / 概念 = 母集
+  PoolId base(size_t b) const { return group(b) == kGroupPool ? pool_of(b) : kBasketBase; }
 
   // 逐篮子的属性: 权重 / 调仓周期 (子池 = 池参数, 其余日频: 成员源 = 前一交易日收盘, 见 features/Panel/PoolSelect.hpp src_of)
   //   / 代码 (子池 = 池名, 行业 = sw<ID>, 概念 = 板块代码) / 名 = 主干 (切片名) + 权重后缀
@@ -70,21 +79,28 @@ public:
   const std::string &stem(size_t b) const { return stem_[b]; }
   std::string name(size_t b) const { return stem_[b] + pool::weight_suffix(weight_[b]); }
 
-  // 一只一日所属的篮子 (价格指数的成员表 Quote::members / 回测的成员位 Engine::baskets 同出于此):
-  //   m = 当日所在的池 (位 kAllPool 不看): 子池 p ∈ m → 篮子 at_pool(p); 含母集 → 再进行业 i (ind_l1; 0 = 未知, 不进) 与各概念 cs.
-  //   fn(b, p, i): p = 该篮的成员所依的池 (子池 = 本池, 行业 / 概念 = 母集); i = 行业篮的行业号 (其余 0)
+  // 成员判据两向 (价格指数的成员表 Quote::members / 回测池篮子 Engine::baskets / 仓位链同出于此): 一只一日的事实 f + 所属概念 cs (概念表下标升序)
+  //   子池 p: f.in 含 p; 行业 k: f.in 含母集 ∧ f.ind = k; 概念 k: f.in 含母集 ∧ k ∈ cs
+  //   each 枚举所属的篮子 fn(b) (b 升序) ⇄ holds 测是否在篮子 b
   template <class Fn>
-  void each(PoolMask m, uint8_t i, std::span<const uint16_t> cs, Fn &&fn) const {
-    for (PoolMask r = m & ~pool_bit(kAllPool); r; r &= r - 1) {
-      const PoolId p = pool_first(r);
-      fn(at_pool(p), p, uint8_t{0});
-    }
-    if (!(m & pool_bit(kBasketBase)))
+  void each(const Fact &f, std::span<const uint16_t> cs, Fn &&fn) const {
+    for (PoolMask r = f.in & ~pool_bit(kAllPool); r; r &= r - 1)
+      fn(at_pool(pool_first(r)));
+    if (!(f.in & pool_bit(kBasketBase)))
       return;
-    if (i > 0)
-      fn(at_ind(i), kBasketBase, i);
+    if (f.ind > 0)
+      fn(at_ind(f.ind));
     for (const uint16_t k : cs)
-      fn(at_concept(k), kBasketBase, uint8_t{0});
+      fn(at_concept(k));
+  }
+  bool holds(size_t b, const Fact &f, std::span<const uint16_t> cs) const {
+    const BasketGroup g = group(b);
+    if (g == kGroupPool)
+      return (f.in & pool_bit(pool_of(b))) != 0;
+    if (!(f.in & pool_bit(kBasketBase)))
+      return false;
+    const size_t k = b - lo_[g];
+    return g == kGroupInd ? static_cast<size_t>(f.ind) == k + 1 : std::ranges::binary_search(cs, static_cast<uint16_t>(k));
   }
 
 private:

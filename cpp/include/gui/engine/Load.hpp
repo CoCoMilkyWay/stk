@@ -12,6 +12,7 @@
 #include "gui/engine/Scope.hpp"        // Domain / Chunk / Rc
 #include "misc/epoch.hpp"
 #include "misc/exec.hpp"
+#include "shared/Basket.hpp"   // Fact
 #include "shared/Progress.hpp" // Progress
 
 #include <algorithm>
@@ -90,8 +91,8 @@ struct BlockSpec {
 // 每格平面字节 (check::Plane: float + u8)
 inline constexpr double kPlaneBytes = 5.0;
 // B 装载 + 篮子期峰值 (字节 / 格): 池成员位 8 + 标签两侧 (lv, sv, m) 5 + 建仓可成交码 1 + close 5 + 价 4 + 权重 4 + 复权 4
-// + 估值 (股本 / 净利 / 权益 / 营收 / 经营现金流 / 股息率) 24 + 行业 1 + 上一有效 close 行 4 + 补价副本 4 + 全A 内行业码 1 (baskets)
-inline constexpr double kBasketCellBytes = 8.0 + kPlaneBytes + 1.0 + kPlaneBytes + 4.0 + 4.0 + 4.0 + 24.0 + 1.0 + 4.0 + 4.0 + 1.0;
+// + 估值 (股本 / 净利 / 权益 / 营收 / 经营现金流 / 股息率) 24 + 行业 1 + 上一有效 close 行 4 + 补价副本 4 (baskets)
+inline constexpr double kBasketCellBytes = 8.0 + kPlaneBytes + 1.0 + kPlaneBytes + 4.0 + 4.0 + 4.0 + 24.0 + 1.0 + 4.0 + 4.0;
 // 宿主装载量 (字节 / 格): X = 叶 kPlaneBytes · nx; Y = 门控 1 + 建仓可成交码 1 + 标签两侧 (lv, sv, m) 5 · hd
 // + 盘口段买入冲击 (无 m) 2 · 段数 (固定段无平面)
 double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx);
@@ -153,9 +154,11 @@ struct BPlanes {
   std::vector<uint32_t> from[pool::kRebals]; // [Rebal][T] 行 t 所在调仓期的首行 (pool::rebal_at 换源之日; 期首在块前 → 0)
   std::vector<float> px, shares;             // 本行有成交的 close (不复权; 否则 0) / 总股本 (缺 → NaN)
   std::vector<float> val[kPoolVals];         // [PoolVal] 估值输入 (BCols::val 原值; 缺 → NaN)
-  std::vector<uint8_t> ind;                  // 行业 ID (SW2021 一级; 0 = 未知 / 缺 / 越界)
+  std::vector<uint8_t> ind;                  // 行业 ID (SW2021 一级, as-of = 前一交易日收盘, 与成员位同取成员源行; 0 = 未知 / 缺 / 越界)
   std::vector<uint32_t> cc_at;               // [A + 1] 资产 a 所属概念 = cc[cc_at[a], cc_at[a + 1]) (概念表下标, 全期同一份)
   std::vector<uint16_t> cc;
+  // 篮子判据的两份输入 (BasketTable::each / holds): 格 i 的事实 ⇄ 资产 a 的概念
+  Fact fact(size_t i) const { return {in[i], ind[i]}; }
   std::span<const uint16_t> concepts_of(size_t a) const { return {cc.data() + cc_at[a], cc_at[a + 1] - cc_at[a]}; }
 };
 // 标签的契约视图 (ry = YPlanes::ry: CPU 会话的块钉了标签秩; GPU 的块不钉, stat_open 在显存里自己预处理; cap = n_full)

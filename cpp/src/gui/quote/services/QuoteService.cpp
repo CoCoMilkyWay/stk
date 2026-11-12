@@ -150,7 +150,7 @@ QuoteStatus QuoteService::status() const {
 }
 
 void QuoteService::bind(Members m, std::vector<double> level) {
-  assert(m.assets() == axis_.size() && !level.empty());
+  assert((m.id.empty() || m.id.back() < axis_.size()) && !level.empty());
   {
     std::lock_guard<std::mutex> lock(mu_);
     basis_ = std::make_shared<const Basis>(Basis{std::move(m), std::move(level)});
@@ -221,7 +221,8 @@ void QuoteService::fold() {
           freeze = std::min(freeze, t.lo);
     touched = std::exchange(touched_, kSlots);
   }
-  const uint32_t n = static_cast<uint32_t>(syms_.size());
+  const Members &M = b->members;
+  const uint32_t n = static_cast<uint32_t>(M.size());
   Folding &g = folding_;
   if (g.basis != b || g.date != date)
     g = {b, date, std::make_unique<Fold>(b->level.size()), std::vector<Fold::Carry>(n), 0};
@@ -232,14 +233,15 @@ void QuoteService::fold() {
          kGone };
   const auto pass = [&](int from) {
     g.fold->open(from, freeze, slots);
-    for (uint32_t i0 = 0; i0 < n; i0 += kFoldChunk) {
+    for (uint32_t k0 = 0; k0 < n; k0 += kFoldChunk) {
       std::lock_guard<std::mutex> lock(mu_);
       if (date_ != date)
         return kGone;
-      for (uint32_t i = i0, i1 = std::min(i0 + kFoldChunk, n); i < i1; ++i) {
+      for (uint32_t k = k0, k1 = std::min(k0 + kFoldChunk, n); k < k1; ++k) {
+        const uint32_t i = M.id[k];
         const sina::Quote &q = last_[i];
-        const Cell k = candle_of(q);
-        if (!g.fold->add({q.last_close, traded(q) ? &k : nullptr, &tracks_[i].bars}, b->members.of(i), g.carry[i]))
+        const Cell c = candle_of(q);
+        if (!g.fold->add({q.last_close, traded(q) ? &c : nullptr, &tracks_[i].bars}, M.of(k), g.carry[k]))
           return kRebase;
       }
     }
