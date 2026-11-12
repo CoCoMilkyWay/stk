@@ -34,8 +34,7 @@ enum DayCol : size_t { kColTs,
                        kColAmount, // 落盘 Log
                        kColPre,
                        kQuoteCols,
-                       kColCs = kQuoteCols,
-                       kColShares,
+                       kColShares = kQuoteCols,
                        kColInd,
                        kColListAge,
                        kColDelistAge,
@@ -88,7 +87,7 @@ struct Tick {
 using Aid = uint16_t; // all.bar 轴下标
 
 // 一行的次序: seq [len] = 有限键资产按 (键, 下标) 升序 + 在市者在 seq 里的位置 pos 按 (类, 位置) 升序 (类段长 n [kClasses])
-//   cnt = 类内在市数 (原料带的, 覆盖率的分母)
+//   cnt = 类内在市数 (原料带的, 覆盖率的分母); 全市场只读 cls (Tape::row)
 struct Order {
   const uint16_t *cls = nullptr; // [A] 类号
   const uint16_t *cnt = nullptr; // [kClasses]
@@ -96,6 +95,7 @@ struct Order {
   size_t len = 0;
   const uint16_t *n = nullptr; // [kClasses]
   const Aid *pos = nullptr;    // [Σ n]
+  size_t A = 0;
 };
 
 struct Tape;
@@ -112,30 +112,29 @@ struct Orders {
 
 // 原料带: all.bar 全轴 × 已落盘日
 struct Tape {
-  std::vector<misc::Ymd> dates;   // 行 = 已落盘日 (升序)
-  size_t A = 0;                   // all.bar 轴长
-  uint64_t axis = 0;              // 轴指纹
-  uint64_t line = 0;              // 谱系: 同谱系 = 同轴且日轴互为前缀 (增量补行沿用, 重建换新)
-  std::vector<uint16_t> cls;      // [行 · A] 类号 (不在市 = kOut)
-  std::vector<uint16_t> cnt;      // [行 · kClasses] 类内在市数
-  std::vector<uint8_t> live, ind; // [行 · A] 全A 成员 (cs_valid ∧ 收盘 > 0) / 申万一级 (0 = 未知)
-  std::vector<float> mcap;        // [行 · A] 收盘总市值 = close_day × total_shares (缺 → 0)
-  std::vector<float> grow;        // [行 · A] 累计增长 Π_{0 < k ≤ 行} (1 + 日收益) (首行 1)
-  std::vector<float> pre;         // [A] 末行前收 (续行的收益)
+  std::vector<misc::Ymd> dates; // 行 = 已落盘日 (升序)
+  size_t A = 0;                 // all.bar 轴长
+  uint64_t axis = 0;            // 轴指纹
+  uint64_t line = 0;            // 谱系: 同谱系 = 同轴且日轴互为前缀 (增量补行沿用, 重建换新)
+  std::vector<uint16_t> cls;    // [行 · A] 类号 (不在市 = kOut)
+  std::vector<uint16_t> cnt;    // [行 · kClasses] 类内在市数
+  std::vector<uint8_t> ind;     // [行 · A] 申万一级 (0 = 未知; 在市者已知)
+  std::vector<float> mcap;      // [行 · A] 收盘总市值 = close_day × total_shares (缺 → 0)
+  std::vector<float> grow;      // [行 · A] 累计增长 Π_{0 < k ≤ 行} (1 + 日收益) (首行 1)
+  std::vector<float> pre;       // [A] 末行前收 (续行的收益)
   size_t days() const { return dates.size(); }
+  Order row(size_t r) const; // 行 r 的类号 (无次序: 只够全市场选)
   // 资产 a 在行 q 收盘的持仓权 [Weight] = 源行 r 的目标权 (等权 1 / 加权 mcap) × grow_q / grow_r (r ≤ q; r = q → 目标权)
   void omega(size_t r, size_t q, size_t a, float om[kWeights]) const;
 };
 // all.bar 库 lib 的原料带: 每进程代一份, 已落盘日多出的行增量补 (轴变 / 旧行不再是前缀 → 重建); 取消 / 库判废 → nullptr
 std::shared_ptr<const Tape> tape(const FeatureLib &lib, const Cancel *cancel = nullptr, const Tick &tick = {});
-// 行 r 的全A 成员 (资产下标升序)
-void live_at(const Tape &t, size_t r, std::vector<Aid> &out);
 // 风格 st 的次序 rk 补到 t 的末行 (rk 已排的行 = t 的同谱系前缀行; 只用原料带的风格不读库); 取消 / 库判废 → false (rk 不变)
 bool rank(const FeatureLib &lib, const Tape &t, Style st, misc::exec::ForkJoin &ex, const Cancel *cancel, const Tick &tick, Orders &rk);
 
 // 选股: 次序 = s 的风格的; 行内切片, 有限键覆盖率 (次序内 / 切片内在市) < kCover → 空 (键未到齐时不按残缺截面截两端, 不建仓);
 //   否则自次序的一端往里取前 N: 低端 / 高端 (并列时低端取下标小的, 高端取下标大的; 不足 N 则全取)
-//   取法按代价二选一 (结果相同): 沿次序扫 / 按类段收拢 (pos)
+//   取法按代价二选一 (结果相同): 沿次序扫 / 按类段收拢 (pos); 全市场 = 切片内在市全取 (不看次序)
 inline constexpr float kCover = 0.8f;
 class Selector {
 public:

@@ -103,7 +103,7 @@ enum BookCol : int { kBookRet,   // 毛收益 (因子 = G20 多头; 篮子 = 可
                      kBookBuy }; // 增仓量 Δw⁺ (UI 折年化单边换手)
 inline constexpr int kBookCols = 4;
 // 一本账 (因子 / 篮子 / 个股同形): 线 × 行 = [线][T = 日 · S], 线键 keys 升序 (line_of 统一取线): 因子一线 (键 0, 该 hold),
-// 篮子 basket_count 线 (键 = basket_line, shared/Basket.hpp), 个股 = all 池轴的每只一线 (键 = 全局 id; 只毛收益一列 + 估值);
+// 篮子 basket_count 线 (键 = 篮子下标, shared/Basket.hpp), 个股 = all 池轴的每只一线 (键 = 全局 id; 只毛收益一列 + 估值);
 // 行情两侧的线键 = 该侧的行情键 (Quote::Side 路的键)
 struct PortfolioBook {
   std::string sig;              // 算时的任务签名 (FactorTask / BasketTask::sig)

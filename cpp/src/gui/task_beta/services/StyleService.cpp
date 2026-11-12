@@ -194,9 +194,10 @@ bool StyleService::run(StyleRequest &req) {
     if (cancel_.load(std::memory_order_relaxed))
       return;
     auto b = std::make_shared<pool::Book>();
-    if (static_cast<size_t>(k) == todo.size())
-      pool::run_book(*tape_, pool::kRebalDay, [&](size_t r, std::vector<pool::Aid> &out) { pool::live_at(*tape_, r, out); }, *b), bench_ = std::move(b);
-    else {
+    if (static_cast<size_t>(k) == todo.size()) {
+      const pool::Selector all(pool::all_a(pool::kWeightEq));
+      pool::run_book(*tape_, pool::kRebalDay, [&](size_t r, std::vector<pool::Aid> &out) { all.at(tape_->row(r), out); }, *b), bench_ = std::move(b);
+    } else {
       const size_t i = todo[static_cast<size_t>(k)];
       const pool::Selector sel(sets[i]);
       pool::run_book(*tape_, sets[i].rebal(), [&](size_t r, std::vector<pool::Aid> &out) { sel.at(rk->row(*tape_, r), out); }, *b);

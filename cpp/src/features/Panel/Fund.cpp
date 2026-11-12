@@ -1461,6 +1461,7 @@ inline std::int32_t quarter_end(int s) {
 //   TTM = YTD(R) + YTD(上年年报) − YTD(去年同期 R)  (年报即 YTD)
 //   LYR = YTD(≤ R 的最近年报)
 // R = 各表各自的最新报告期; 任一所需报告期缺失 → NaN.
+// 上市前的披露 (招股书 / 上市前定期报告) 同样入链 ⇒ 次新的上年年报 / 去年同期齐备.
 // 每资产只记 R 起往前 kSlots 个季末的 YTD (槽 k = R 前 k 季), 各槽取最新披露:
 //   后到行 (源空值行 / 更正 / 下期报告附带的上年同期重述) 逐项覆盖, NaN 不盖有效值
 //   ⇒ 去年同期取本期报告里追溯重述后的值 (同一控制下合并 / 反向收购后与本期同口径; 与 ttm_shift 同).
@@ -1476,14 +1477,13 @@ struct YtdState {
   Slot slot[kSlots];
   int top = -1; // R 的季序号 (−1 = 无)
   std::size_t p = 0;
-  int last_v = -1; // 最近一次公告 row (上市前事件丢弃)
+  int last_v = -1; // 上市后最近一次公告 row
 
   void absorb(const std::vector<YtdEv<N>> &ev, int d, int list_d) {
     while (p < ev.size() && ev[p].v <= d) {
       const YtdEv<N> &e = ev[p++];
-      if (e.v < list_d)
-        continue;
-      last_v = e.v;
+      if (e.v >= list_d)
+        last_v = e.v;
       assert(quarter_of(e.report_date) && "利润表 / 现金流量表报告期须为季末");
       const int s = quarter_seq(e.report_date);
       if (s > top) {

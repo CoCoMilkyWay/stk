@@ -1,6 +1,6 @@
 #include "gui/quote/BasketRow.hpp"
 
-#include "shared/Basket.hpp" // first_line / weight_of / cut_of / concept_cut / cut_rebal
+#include "shared/Basket.hpp" // weight_of / cut_of / ind_cut / concept_cut / cut_rebal
 
 #include <cassert>
 #include <cmath>
@@ -72,26 +72,22 @@ void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &
       in[p] = {pk.row(p, r), r};
   m.clear();
   float om[pool::kWeights];
-  const auto put = [&](size_t cut) {
-    for (size_t l = first_line(cut); l < end_line(cut); ++l)
-      if (const float w = om[weight_of(l)]; w > 0)
-        m.add(static_cast<uint32_t>(l), w);
+  const auto put = [&](size_t c) {
+    if (const float w = om[weight_of(c)]; w > 0)
+      m.add(static_cast<uint32_t>(c), w);
   };
   for (size_t a = 0; a < A; ++a) {
     m.cap.push_back(q != SIZE_MAX ? t.mcap[q * A + a] : 0.f);
-    if (q != SIZE_MAX && t.live[q * A + a]) {
-      t.omega(q, q, a, om);
-      put(0);
-      if (const uint8_t k = t.ind[q * A + a])
-        put(k);
-      for (const uint16_t k : ct.concepts_of(axis.global(a)))
-        put(concept_cut(k));
-    }
     for (PoolId p = 1; p < NP; ++p)
       if (!in[p].ids.empty() && in[p].ids.front() == a) {
         in[p].ids = in[p].ids.subspan(1);
         t.omega(in[p].r, q, a, om);
         put(cut_of(p));
+        if (p == kAllAPool[pool::kWeightEq]) {
+          put(ind_cut(t.ind[in[p].r * A + a]));
+          for (const uint16_t k : ct.concepts_of(axis.global(a)))
+            put(concept_cut(k));
+        }
       }
     m.next();
   }
@@ -105,7 +101,7 @@ void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel) 
   for (size_t a = 0; a < m.assets(); ++a) {
     m.cap[a] *= rel[a];
     for (Members::Weight &w : m.of(a))
-      w.w = weight_of(w.basket) == pool::kWeightEq && reb[cut_rebal(cut_of_line(w.basket))] ? 1.f : w.w * rel[a];
+      w.w = weight_of(w.basket) == pool::kWeightEq && reb[cut_rebal(w.basket)] ? 1.f : w.w * rel[a];
   }
 }
 

@@ -176,7 +176,7 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Pick
     return true;
 
   // dates[i] (i ≥ 已合成日数) 逐日: 按线程一日一件 (读 D−1 / D 日根行 + D 的 L_1min, 两侧同出) → 按日序过链落盘, 每批落一次头
-  std::vector<uint32_t> line(basket_count(), static_cast<uint32_t>(NB)); // basket_line → 篮子行 (NB = 不在)
+  std::vector<uint32_t> line(basket_count(), static_cast<uint32_t>(NB)); // 篮子下标 → 篮子行 (NB = 不在)
   for (size_t j = 0; j < NB; ++j)
     line[keys_[kBasket][j]] = static_cast<uint32_t>(j);
   Quote::PerSide<std::ofstream> f;

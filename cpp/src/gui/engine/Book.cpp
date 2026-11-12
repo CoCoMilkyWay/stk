@@ -2,7 +2,7 @@
 #include "gui/engine/Book.hpp"
 
 #include "factor/Stat/Host.hpp" // h2f
-#include "shared/Basket.hpp"    // basket_count / first_line / cut_of / concept_cut / cut_rebal / weight_of
+#include "shared/Basket.hpp"    // basket_count / cut_of / ind_cut / concept_cut / cut_rebal / weight_of
 
 #include <algorithm>
 #include <cassert>
@@ -56,31 +56,30 @@ struct BasketRows {
   std::vector<double> r, w;
 };
 
-constexpr PoolMask kAllBit = PoolMask{1} << kAllPool;
+constexpr PoolMask kAllABit = pool_bit(kAllAPool[pool::kWeightEq]);
 
-// 成员位 m + 行业 ind + 所属概念 cs → 所属篮子逐个 fn(b, bit, k): 池整体 = 成员位含 bit (k = 0); all 内行业 k = 含 kAllBit ∧ ind = k (行业未知的只进篮子 0);
-//   all 内概念 = 含 kAllBit (k = 0: 概念成分全期不变, 同篮子即同在 all)
+// 成员位 m + 行业 ind + 所属概念 cs → 所属篮子逐个 fn(b, bit, k): 子池 = 成员位含 bit (k = 0); 行业 k = 含 kAllABit ∧ ind = k (行业未知的不进行业);
+//   概念 = 含 kAllABit (k = 0: 概念成分全期不变, 同篮子即同在全A)
 template <class Fn>
 void each_basket(PoolMask m, uint8_t ind, std::span<const uint16_t> cs, Fn &&fn) {
-  if (m & kAllBit) {
-    fn(size_t{0}, kAllBit, uint8_t{0});
-    if (ind > 0)
-      fn(static_cast<size_t>(ind), kAllBit, ind);
-    for (const uint16_t k : cs)
-      fn(concept_cut(k), kAllBit, uint8_t{0});
-  }
-  for (PoolMask r = m & ~kAllBit; r; r &= r - 1) {
+  for (PoolMask r = m & ~pool_bit(kAllPool); r; r &= r - 1) {
     const PoolId p = pool_first(r);
     fn(cut_of(p), pool_bit(p), uint8_t{0});
   }
+  if (m & kAllABit) {
+    if (ind > 0)
+      fn(ind_cut(ind), kAllABit, ind);
+    for (const uint16_t k : cs)
+      fn(concept_cut(k), kAllABit, uint8_t{0});
+  }
 }
 
-// 格的持仓权: 格 i (行 q, 资产 a) 在线 l 的权 = 调仓期首行 r = B.from[l 所属切片的周期][q] 的目标权 (l 的权重: 等权 1 / 加权 mcap) × 后复权 close_q / close_r
-//   (r = q 或两头缺有效 close → 行 q 的目标权) ⇒ 日频切片恒 = 目标权, 周频池一周内随价漂移 (与选股表 Tape::omega 同式, 晚一行建仓)
+// 格的持仓权: 格 i (行 q, 资产 a) 在篮子 l 的权 = 调仓期首行 r = B.from[l 的周期][q] 的目标权 (l 的权重: 等权 1 / 加权 mcap) × 后复权 close_q / close_r
+//   (r = q 或两头缺有效 close → 行 q 的目标权) ⇒ 日频篮子恒 = 目标权, 周频池一周内随价漂移 (与选股表 Tape::omega 同式, 晚一行建仓)
 struct Omega {
   explicit Omega(const BPlanes &B) : B(B), rb(basket_count()), wt(basket_count()) {
     for (size_t l = 0; l < rb.size(); ++l)
-      rb[l] = cut_rebal(cut_of_line(l)), wt[l] = weight_of(l);
+      rb[l] = cut_rebal(l), wt[l] = weight_of(l);
   }
   double operator()(size_t i, size_t l) const {
     const size_t A = static_cast<size_t>(B.sh.A), q = i / A, j = B.from[rb[l]][q] * A + i % A;
@@ -89,7 +88,7 @@ struct Omega {
     return (wt[l] == pool::kWeightEq ? 1.0 : static_cast<double>(B.mcap[s])) * (drift ? static_cast<double>(B.close.v[i]) / B.close.v[j] : 1.0);
   }
   const BPlanes &B;
-  std::vector<pool::Rebal> rb;  // [线] 所属切片的调仓周期
+  std::vector<pool::Rebal> rb;  // [线] 调仓周期
   std::vector<pool::Weight> wt; // [线] 权重
 };
 
@@ -196,12 +195,10 @@ void basket_rows(misc::exec::ForkJoin &ex, const BPlanes &B, const Omega &om, co
           const double r = close.v[i] / close.v[p] - 1.0;
           o.stock.v[a * nT + t] = static_cast<float>(r);
           if (in[p])
-            each_basket(in[p], ind[p], B.concepts_of(a), [&](size_t b, PoolMask, uint8_t) {
-              for (size_t l = first_line(b); l < end_line(b); ++l) {
-                const double x = om(p, l);
-                double *e = xq(l);
-                e[0] += x * r, e[1] += x;
-              }
+            each_basket(in[p], ind[p], B.concepts_of(a), [&](size_t l, PoolMask, uint8_t) {
+              const double x = om(p, l);
+              double *e = xq(l);
+              e[0] += x * r, e[1] += x;
             });
         }
         const double mc = static_cast<double>(px[i]) * sh[i];
@@ -217,13 +214,12 @@ void basket_rows(misc::exec::ForkJoin &ex, const BPlanes &B, const Omega &om, co
         if (t == 0 || !in[i - nA])
           continue;
         const double vw[pool::kWeights] = {1.0, mc};
-        each_basket(in[i - nA], ind[i], B.concepts_of(a), [&](size_t b, PoolMask, uint8_t) {
+        each_basket(in[i - nA], ind[i], B.concepts_of(a), [&](size_t l, PoolMask, uint8_t) {
           for (int m = 0; m < kPoolVals; ++m)
-            if (std::isfinite(num[m]))
-              for (size_t l = first_line(b); l < end_line(b); ++l) {
-                double *e = vq(l, m);
-                e[0] += vw[om.wt[l]] * (num[m] / mc), e[1] += vw[om.wt[l]];
-              }
+            if (std::isfinite(num[m])) {
+              double *e = vq(l, m);
+              e[0] += vw[om.wt[l]] * (num[m] / mc), e[1] += vw[om.wt[l]];
+            }
         });
       }
       for (size_t l = 0; l < nl; ++l) {
@@ -274,30 +270,27 @@ void basket_buy(misc::exec::ForkJoin &ex, const BPlanes &B, const Omega &om, con
           continue;
         ++stamp;
         if (const size_t c1 = t > 0 ? cell(t - 1, a) : SIZE_MAX; c1 != SIZE_MAX)
-          each_basket(in[c1], ind[c1], B.concepts_of(a), [&](size_t b, PoolMask, uint8_t) {
-            for (size_t l = first_line(b); l < end_line(b); ++l)
-              if (rows.w[l * nT + t - 1] > 0.0)
-                mark[l] = stamp, dw[l] = drift(t - 1, a, c1, l, om(c1, l));
+          each_basket(in[c1], ind[c1], B.concepts_of(a), [&](size_t l, PoolMask, uint8_t) {
+            if (rows.w[l * nT + t - 1] > 0.0)
+              mark[l] = stamp, dw[l] = drift(t - 1, a, c1, l, om(c1, l));
           });
-        // 更早的成分行 p: 本资产在 p 是线 l (切片 b) 的成分 → 漂移权, 否则 0
-        const auto held = [&](size_t p, size_t b, size_t l) {
+        // 更早的成分行 p: 本资产在 p 是篮子 l 的成分 → 漂移权, 否则 0
+        const auto held = [&](size_t p, size_t l) {
           const size_t cp = cell(p, a);
           bool hit = false;
           if (cp != SIZE_MAX)
-            each_basket(in[cp], ind[cp], B.concepts_of(a), [&](size_t x, PoolMask, uint8_t) { hit |= x == b; });
+            each_basket(in[cp], ind[cp], B.concepts_of(a), [&](size_t x, PoolMask, uint8_t) { hit |= x == l; });
           return hit ? drift(p, a, cp, l, om(cp, l)) : 0.0;
         };
-        each_basket(in[c], ind[c], B.concepts_of(a), [&](size_t b, PoolMask, uint8_t) {
-          for (size_t l = first_line(b); l < end_line(b); ++l) {
-            const size_t at = l * nT + t;
-            if (!(rows.w[at] > 0.0))
-              continue;
-            const int32_t p = pm[at];
-            const double d = p < 0                             ? 0.0
-                             : static_cast<size_t>(p) == t - 1 ? (mark[l] == stamp ? dw[l] : 0.0)
-                                                               : held(static_cast<size_t>(p), b, l);
-            buy.v[at] += static_cast<float>(std::max(0.0, om(c, l) / rows.w[at] - d));
-          }
+        each_basket(in[c], ind[c], B.concepts_of(a), [&](size_t l, PoolMask, uint8_t) {
+          const size_t at = l * nT + t;
+          if (!(rows.w[at] > 0.0))
+            return;
+          const int32_t p = pm[at];
+          const double d = p < 0                             ? 0.0
+                           : static_cast<size_t>(p) == t - 1 ? (mark[l] == stamp ? dw[l] : 0.0)
+                                                             : held(static_cast<size_t>(p), l);
+          buy.v[at] += static_cast<float>(std::max(0.0, om(c, l) / rows.w[at] - d));
         });
       }
   });
@@ -309,23 +302,22 @@ Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B) {
   const size_t n = B.sh.n(), A = static_cast<size_t>(B.sh.A);
   assert(B.in.size() == n && B.eo.size() == n && B.lab.m.size() == n && B.close.v.size() == n && "B 未装 (load_b)");
   Baskets o;
-  // 指数的成员码: 池整体 / 概念 = 成员位本身; 行业 = all 内行业码 ind0 (含 kAllBit 才是 ind_l1, 否则 0)
+  // 指数的成员码: 子池 / 概念 = 成员位本身; 行业 = 全A 内行业码 ind0 (含 kAllABit 才是 ind_l1, 否则 0)
   std::vector<uint8_t> ind0(n);
   ex.rows(B.sh.T, [&](int t0, int t1, int) {
     for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i)
-      ind0[i] = (B.in[i] & kAllBit) ? B.ind[i] : uint8_t{0};
+      ind0[i] = (B.in[i] & kAllABit) ? B.ind[i] : uint8_t{0};
   });
   const PoolMask *in = B.in.data();
   const Holds hd = keys_of<Holds>(std::vector<int>{factor::stat::hold_close(1)});
   const LegPlane *const lab = &B.lab;
   const Omega om(B);
   o.index = index_rows(ex, B.sh, hd, &lab, B.eo.data(), basket_count(), [&](size_t, size_t i, auto &&put) {
-    each_basket(in[i], ind0[i], B.concepts_of(i % A), [&](size_t b, PoolMask bit, uint8_t k) {
-      for (size_t l = first_line(b); l < end_line(b); ++l)
-        if (k > 0)
-          put(l, ind0.data() + i, [k](uint8_t v) { return v == k; }, om(i, l));
-        else
-          put(l, in + i, [bit](PoolMask v) { return (v & bit) != 0; }, om(i, l));
+    each_basket(in[i], ind0[i], B.concepts_of(i % A), [&](size_t l, PoolMask bit, uint8_t k) {
+      if (k > 0)
+        put(l, ind0.data() + i, [k](uint8_t v) { return v == k; }, om(i, l));
+      else
+        put(l, in + i, [bit](PoolMask v) { return (v & bit) != 0; }, om(i, l));
     });
   });
   const std::vector<int32_t> prev = prev_rows(ex, B.close, B.sh.T, B.sh.A);

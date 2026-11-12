@@ -1,9 +1,8 @@
 #include "features/Panel/PoolSelect.hpp"
 
-#include "features/Panel/Fund.hpp" // fund::Board
+#include "features/Panel/Fund.hpp" // fund::Board / SW2021_L1_COUNT
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/epoch.hpp"
-#include "shared/Basket.hpp" // kAllCuts
 
 #include <algorithm>
 #include <atomic>
@@ -41,7 +40,6 @@ constexpr ColDef kDayColDefs[kDayCols] = {
     {"close_day", ts::TfId::None},
     {"amount_day", ts::TfId::Log},
     {"pre_close", ts::TfId::None},
-    {"cs_valid", ts::TfId::None},
     {"total_shares", ts::TfId::None},
     {"ind_l1", ts::TfId::None},
     {"list_age", ts::TfId::None},
@@ -68,7 +66,7 @@ static_assert(kBoardShMain + 1 == fund::kBoardShMain && kBoardSzMain + 1 == fund
               kBoardChiNext + 1 == fund::kBoardChiNext && kBoardBj + 1 == fund::kBoardBj && kBoards == fund::kBoardBj);
 static_assert(kDimSt + 1 == kDimBoard && kDimBoard + 1 == kDimMargin && kDimMargin + 1 == kDimFilter && kDimFilter + 1 == kDims, "资产类的进制按此维序");
 
-// 风格键 = f(列 0, 列 1, 收盘总市值); 列空 = 不读库 (只用原料带)
+// 风格键 = f(列 0, 列 1, 收盘总市值); 列空 = 不读库 (只用原料带); 全市场无键 (次序空, Selector 整片取)
 struct KeyDef {
   const char *col[2];
   float (*f)(float x, float y, float mc);
@@ -90,6 +88,7 @@ constexpr KeyDef kKeyDefs[kStyles] = {
     {{"beta"}, raw},
     {{"trend"}, raw},
     {{"close_day"}, raw},
+    {{}, [](float, float, float) { return kNaN; }},
 };
 
 // 一组风格的键列 (同列只读一次)
@@ -137,8 +136,7 @@ void fill_row(const FeatureRead::DayColumns &c, Tape &t, size_t r, float *pre, f
     const size_t i = r * A + a;
     const float px = v(kColClose), sh = v(kColShares), mc = px > 0.0f && sh > 0.0f ? px * sh : 0.0f, ind = v(kColInd);
     t.mcap[i] = mc;
-    t.live[i] = v(kColCs) > 0.5f && px > 0.0f;
-    t.ind[i] = ind >= 1.0f && ind < static_cast<float>(kAllCuts) ? static_cast<uint8_t>(ind + 0.5f) : 0;
+    t.ind[i] = ind >= 1.0f && ind < static_cast<float>(fund::SW2021_L1_COUNT) ? static_cast<uint8_t>(ind + 0.5f) : 0;
     pre[a] = v(kColPre) > 0.0f ? v(kColPre) : 0.0f;
     close[a] = v(kColTs) > 0.5f && px > 0.0f ? px : 0.0f;
     cls[a] = kOut;
@@ -230,7 +228,7 @@ bool sweep(const FeatureLib &lib, const Tape &t, size_t lo, std::span<const Styl
       rd.load_day_columns(t.dates[r], kc.cols, l.dc);
     for (const Style st : sts) {
       kc.row(st, l.dc, t.mcap.data() + r * A, A, l.key.data());
-      const Order o{t.cls.data() + r * A, t.cnt.data() + r * kClasses, l.seq.data(), sort_keys(l.key.data(), A, l.seq.data(), l.a.data(), l.b.data()), l.n.data(), l.pos.data()};
+      const Order o{t.cls.data() + r * A, t.cnt.data() + r * kClasses, l.seq.data(), sort_keys(l.key.data(), A, l.seq.data(), l.a.data(), l.b.data()), l.n.data(), l.pos.data(), A};
       order_row(o.cls, o.seq, o.len, l.n.data(), l.pos.data());
       visit(r, st, o, tid);
     }
@@ -310,7 +308,12 @@ void Orders::resize(size_t R, size_t A) { seq.resize(R * A), len.resize(R), n.re
 Order Orders::row(const Tape &t, size_t r) const {
   const size_t A = t.A;
   assert(r < rows() && r < t.days());
-  return {t.cls.data() + r * A, t.cnt.data() + r * kClasses, seq.data() + r * A, len[r], n.data() + r * kClasses, pos.data() + r * A};
+  return {t.cls.data() + r * A, t.cnt.data() + r * kClasses, seq.data() + r * A, len[r], n.data() + r * kClasses, pos.data() + r * A, A};
+}
+
+Order Tape::row(size_t r) const {
+  assert(r < days());
+  return {cls.data() + r * A, cnt.data() + r * kClasses, nullptr, 0, nullptr, nullptr, A};
 }
 
 void Tape::omega(size_t r, size_t q, size_t a, float om[kWeights]) const {
@@ -335,7 +338,7 @@ std::shared_ptr<const Tape> tape(const FeatureLib &lib, const Cancel *cancel, co
   t->dates = std::move(rows), t->A = A, t->axis = lib.axis.hash;
   if (!keep)
     t->line = ++lines;
-  t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->live.resize(R * A), t->ind.resize(R * A), t->mcap.resize(R * A), t->grow.resize(R * A);
+  t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->ind.resize(R * A), t->mcap.resize(R * A), t->grow.resize(R * A);
   t->pre.resize(A);
   std::vector<float> pre((R - lo) * A), close((R - lo) * A); // [新行 · A]
   const FeatureRead rd(lib);
@@ -371,14 +374,6 @@ std::shared_ptr<const Tape> tape(const FeatureLib &lib, const Cancel *cancel, co
   return cur;
 }
 
-void live_at(const Tape &t, size_t r, std::vector<Aid> &out) {
-  out.clear();
-  const uint8_t *l = t.live.data() + r * t.A;
-  for (size_t a = 0; a < t.A; ++a)
-    if (l[a])
-      out.push_back(static_cast<Aid>(a));
-}
-
 bool rank(const FeatureLib &lib, const Tape &t, Style st, misc::exec::ForkJoin &ex, const Cancel *cancel, const Tick &tick, Orders &rk) {
   const size_t lo = rk.rows(), A = t.A;
   rk.resize(t.days(), A);
@@ -401,6 +396,12 @@ Selector::Selector(const Spec &s) : s_(s), in_(kClasses + 1, 0) {
 
 void Selector::at(const Order &o, std::vector<Aid> &out) const {
   out.clear();
+  if (s_.style() == kStyleMkt) {
+    for (size_t a = 0; a < o.A; ++a)
+      if (in_[o.cls[a]])
+        out.push_back(static_cast<Aid>(a));
+    return;
+  }
   const auto sum = [&](const uint16_t *p) {
     size_t n = 0;
     for (const uint16_t c : cls_)

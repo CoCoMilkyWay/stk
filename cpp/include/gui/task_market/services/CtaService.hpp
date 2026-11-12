@@ -40,7 +40,7 @@ inline constexpr uint32_t kCtaNone = UINT32_MAX; // 请求的 key: 无标的, �
 struct CtaRequest {
   uint32_t gen = 0;
   Quote::Side side = Quote::kBasket;
-  uint32_t key = 0; // 篮子 = basket_line, 个股 = 全局 id; kCtaNone = 只备价格库
+  uint32_t key = 0; // 篮子 = 篮子下标, 个股 = 全局 id; kCtaNone = 只备价格库
   CtaSpec spec;
 };
 

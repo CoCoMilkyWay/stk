@@ -22,6 +22,8 @@ struct PoolTable {
       assert(pool::code(specs[i]) != kAllPoolName);
       defs.push_back({pool::code(specs[i]), cn[i], specs[i]});
     }
+    for (const pool::Weight w : {pool::kWeightEq, pool::kWeightCap})
+      assert(defs.size() > kAllAPool[w] && defs[kAllAPool[w]].spec == pool::all_a(w) && "子池表须以全A 等权 / 加权起头");
     for (const PoolDef &d : defs)
       for (const char c : d.name + '\0')
         hash = (hash ^ static_cast<uint8_t>(c)) * 0x100000001b3ULL;

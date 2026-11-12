@@ -1,6 +1,6 @@
 // 篮子合成的 all.bar 源 (BasketHistory 价格指数 / Market → CTA 的库同一份): 选股表 → 交易日 D 的成员表, L_1day 日行 → 基准 / 日根, L_1min → 分钟根.
-//   成员 / 权一律出自选股表与其原料带 (features/Panel/PoolSelect.hpp, 与 Style 页篮子账同一份): 全A / 行业 / 概念 = 前一行 (D−1) 的全A 成员,
-//   子池 = 选股表 D 的成员; 权 = Tape::omega (源行的目标权随价漂移; 日频 = D−1 收盘的目标权). 基准 = D−1 行 pre_close; 合成核 = Quote.hpp Fold (Lane 一日一份).
+//   成员 / 权一律出自选股表与其原料带 (features/Panel/PoolSelect.hpp, 与 Style 页篮子账同一份): 子池 = 选股表 D 的成员,
+//   行业 / 概念 = 全A 等权池 (kAllAPool) 在 D 的成员按行业 / 概念切; 权 = Tape::omega (源行的目标权随价漂移; 日频 = D−1 收盘的目标权). 基准 = D−1 行 pre_close; 合成核 = Quote.hpp Fold (Lane 一日一份).
 #pragma once
 
 #include "features/Panel/PoolSelect.hpp" // pool::Picks / day_cols
@@ -27,7 +27,7 @@ void read_row(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &dc, R
 void minute_alloc(FeatureRead::DayColumns &mc, size_t A);
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc);
 
-// 交易日 d 的成员表 (下标 = 库轴, 篮子 = 线): 所属切片的各线 (shared/Basket.hpp, 线的权重), 权 = Tape::omega (≤ 0 不进); 概念随全A (pk 与 axis 同为 all.bar 轴);
+// 交易日 d 的成员表 (下标 = 库轴, 篮子 = 线): 所属切片的各线 (shared/Basket.hpp, 线的权重), 权 = Tape::omega (≤ 0 不进); 行业 / 概念随全A (pk 与 axis 同为 all.bar 轴);
 //   Members::cap = D−1 收盘总市值
 void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m);
 // 成员表 m 过交易日 prev → d (成员冻结, 库末日之后的补日): 各线按其切片的周期换源 (pool::rebal_at) → 等权回 1, 否则随价 × rel [库轴] (收 / 前收);
@@ -37,7 +37,7 @@ void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel);
 void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b);
 
 // 一日合成件 (BasketHistory 历史 / CtaLib 价格库同一份; 逐日复用): 成员表 mem × 前一行 prev (基准 = 前收) × 当日行 cur (日根) × 分钟读 mc → Fold → day [合成线]
-//   slot = basket_line → 合成线 (空 = 原线; ≥ 线数 = 不合)
+//   slot = 篮子下标 → 合成线 (空 = 原线; ≥ 线数 = 不合)
 struct Lane {
   Lane(size_t A, size_t lines, std::vector<uint32_t> slot = {});
   FeatureRead::DayColumns dc, mc; // 日根行 / 分钟的读

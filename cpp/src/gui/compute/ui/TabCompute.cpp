@@ -328,7 +328,7 @@ static void render_libraries(ComputeState &state, SharedData &data, bool is_runn
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::Selectable(pd.name.c_str());
-    rd.item(i, p != kAllPool);
+    rd.item(i, p >= kPinnedPools);
     if (ImGui::IsItemHovered())
       GUI::pool_tip(p);
     ImGui::TableNextColumn();

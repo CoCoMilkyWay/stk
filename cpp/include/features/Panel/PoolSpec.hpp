@@ -1,8 +1,9 @@
 #pragma once
 // 池参数框架: 子池 = 一组参数 (各维一个取值); 一组参数一个池 (独立成员 / 独立库)
 //   维表 kDimDefs (维序): 风格 · 端 · 只数 · 周期 · 权重 · ST · 板块 · 融资 · 过滤; 池名 / 中文名 / 网格 / 资产类一律按维表走
-//     单选维 (风格 / 端 / 只数 / 周期 / 权重): Spec 存取值下标, 恒起作用
+//     单选维 (风格 / 端 / 只数 / 周期 / 权重): Spec 存取值下标, 恒起作用 (全市场风格的端 / 只数除外)
 //       风格 = 排序键 (同风格的池共用一份次序); 端 = 键的低端 / 高端; 只数 N = 切片内键在端头取前 N
+//       全市场 (mkt) = 无键: 切片内在市全取, 端 / 只数不起作用 (canon 归 0, 池名段 "-"); 全A / 板块等指数即此
 //       周期 = 调仓日历 (features/Panel/PoolSelect.hpp src_of); 权重 = 篮子成分的权 (等权 / 总市值加权, PoolSelect.hpp Tape::omega)
 //     集合维 (ST 起, 切片维): Spec 存取值表的位集, 0 = 不起作用
 //       划分维 (ST / 板块 / 融资): 按 all.bar 一列把在市 A 股分成互斥的类, 池取若干类之并 (全部类 = 0 = 不切, canon 归一)
@@ -12,12 +13,15 @@
 //   键 / 切片的原料全是 all.bar L_1day 的基础列 (行 D = D+1 盘前态, 见 Node/Common/Fund/Fund.hpp), 成员由 features/Panel/PoolSelect.hpp 现算 (选股表 Picks)
 //   子池表 = output/config/beta/pools.json (Beta → Style 页确认后写; 无文件 = default_pools()); 计算与各页的池表 feature_pools() (features/Storage/FeatureLib.hpp)
 //     = all + 子池表, 每进程代读一次 (Style 页落地即进程内重启)
+//     子池表恒以全A 等权 / 加权两池 (all_a) 起头: 读 / 写都把它们搬到表首 (缺则补), 各页的基准与行业 / 概念篮子的母集即此
 //
-//   池名 (库目录名) 按维序以 "." 连, 每维一段 (集合维 = 各位的取值码以 "+" 连, 位序; 0 = all); 中文名同序, 自端起 (端名已含风格):
+//   池名 (库目录名) 按维序以 "." 连, 每维一段 (集合维 = 各位的取值码以 "+" 连, 位序; 0 = all; 不起作用的单选维 = "-"); 中文名同序, 自端起 (端名已含风格):
 //     beta.low.200.day.eq.nost.all.all.nonew+nowarn            = 低β.200.日.等权.非ST.全.全.非次新+无预警
 //     size.high.400.week.cap.st+sst.sh_main+sz_main.margin.all = 大盘.400.周.加权.ST+*ST.沪主板+深主板.融资.不剔
-//   不起作用的段 (集合维 0) 见 on()
-//   显示名 (各页) = 简称 short_cn = 端名 + 只数 + 权重后缀 (.等 / .加) (低β200.等); 同简称的池按池表序在只数后加 A / B / C … 区分 (aliases);
+//     mkt.-.-.day.eq.all.sh_main.all.all                       = 全市场.全部.日.等权.全.沪主板.全.不剔
+//   不起作用的段 (集合维 0 / 全市场的端与只数) 见 on()
+//   显示名 (各页) = 简称 short_cn = 端名 + 只数 + 权重后缀 (.等 / .加) (低β200.等; 全市场 = 起作用的切片段, 无则 全A: 沪主板.等 / 全A.加);
+//     同简称的池按池表序在只数后加 A / B / C … 区分 (aliases);
 //     逐维拆解 (悬停) 见 detail
 #include <array>
 #include <cstdint>
@@ -42,8 +46,9 @@ enum Style : uint8_t { kStyleSize,
                        kStyleResvol,
                        kStyleBeta,
                        kStyleTrend,
-                       kStylePrice };
-inline constexpr int kStyles = 14;
+                       kStylePrice,
+                       kStyleMkt };
+inline constexpr int kStyles = 15;
 // 端: 键的低端 / 高端
 enum End : uint8_t { kEndLow,
                      kEndHigh };
@@ -110,6 +115,7 @@ inline constexpr StyleDef kStyleDefs[kStyles] = {
     {"beta", "β", "近 156 周周收益对等权市场的 β", {"低β", "高β"}},
     {"trend", "趋势", "均线截面回归的预期 20 日收益", {"低趋势", "高趋势"}},
     {"price", "股价", "收盘价 (元, 不复权)", {"低价", "高价"}},
+    {"mkt", "全市场", "无键: 切片内在市全取 (端 / 只数不起作用)", {"全市场", "全市场"}},
 };
 
 // 一维的一个取值: 池名段 / 中文段 / 悬停
@@ -224,9 +230,10 @@ struct Spec {
   Weight weight() const { return static_cast<Weight>(v[kDimWeight]); }
   auto operator<=>(const Spec &) const = default;
 };
-Spec canon(Spec s);                // 划分维全部类 → 0 (同一池同一份)
+Spec canon(Spec s);                // 划分维全部类 → 0, 全市场的端 / 只数 → 0 (同一池同一份)
 Spec unweighted(Spec s);           // 权重归 0: 成员身份 (只差权重的池成员相同)
-bool on(const Spec &s, int d);     // 维 d 对 s 起作用 (集合维 0 不起作用)
+Spec all_a(Weight w);              // 全A: 全市场 × 日 × w, 各切片维全
+bool on(const Spec &s, int d);     // 维 d 对 s 起作用 (集合维 0 / 全市场的端与只数不起作用)
 int slot(const Spec &s, int d);    // 维 d 的取值槽
 std::string code(const Spec &s);   // 池名 (库目录名)
 Spec parse(std::string_view code); // 不是规范池名 → assert
@@ -249,10 +256,10 @@ std::array<DimDetail, kDims> detail(const Spec &s);
 // 子池表各池的显示名: 简称, 同简称不止一个的按表序加 A / B / C … (过 Z 接 AA)
 std::vector<std::string> aliases(const std::vector<Spec> &pools);
 
-// 子池表 (output/config/beta/pools.json, 池表序)
+// 子池表 (output/config/beta/pools.json, 池表序); 读 / 写 / 缺省都恒以 all_a(等权), all_a(加权) 起头 (别处的同名池搬来, 缺则补)
 std::vector<Spec> default_pools();
 std::vector<Spec> load_pools(); // 文件不存在 = default_pools(); 格式不对 / 重名 → assert
-void save_pools(const std::vector<Spec> &pools);
+void save_pools(std::vector<Spec> pools);
 
 // Style 页参数网格: [维] 勾选位集 (位 i = 该维取值表第 i 个)
 //   各维的取值: 单选维 = 勾选的各取值 (至少勾一个); 集合维 (勾选 S, 可空) = S 的各位单独 + S 整体, 外加:

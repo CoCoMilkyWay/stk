@@ -700,6 +700,7 @@ std::vector<Choice> pools() {
     out.push_back({static_cast<int>(i), pool_def(po[i]).name});
   return out;
 }
+bool pool_movable(int at) { return at >= kPinnedPools; }
 void move_pool(SharedData &data, int from, int to) { GUI::move_pool(data, {from, to}); }
 std::string pool_cn(const std::string &pool) { return pool_def(pool).name_cn; }
 std::vector<Choice> levels() {

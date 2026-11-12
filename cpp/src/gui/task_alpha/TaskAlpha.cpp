@@ -301,7 +301,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
             const bool selected = state->want_pool == p;
             if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
               state->want_pool = p;
-            rd.item(i, p != kAllPool);
+            rd.item(i, p >= kPinnedPools);
             if (ImGui::IsItemHovered())
               pool_tip(p);
             ImGui::SameLine(cn_x);

@@ -54,20 +54,20 @@ void compound(const R *r, size_t n, Put &&put) {
   }
 }
 
-// 篮子 (baskets; 全部池一趟, 各篮子同形): 篮子 = 切片 c ∈ [0, cut_count()) × 该切片的权重 (shared/Basket.hpp), 三样一律以线 (篮子下标) 为键.
-//   成分判据 = 成员位 (BPlanes::in): 池整体 = 含该池位, 行业 k = 含 kAllPool 位 ∧ ind_l1 = k (行业未知的只进全A),
-//   概念 = 含 kAllPool 位 ∧ 在该概念成分里 (BPlanes::cc, 全期同一份).
+// 篮子 (baskets; 全部池一趟, 各篮子同形): 篮子 = 切片 c ∈ [0, basket_count()) × 该切片的权重 (shared/Basket.hpp), 三样一律以线 (篮子下标) 为键.
+//   成分判据 = 成员位 (BPlanes::in): 子池 = 含该池位, 行业 k = 含全A 位 (kAllAPool) ∧ ind_l1 = k,
+//   概念 = 含全A 位 ∧ 在该概念成分里 (BPlanes::cc, 全期同一份).
 //   价格指数 (不看可成交) 在行情侧 (Quote::BasketHistory, 同一张篮子表); 这里是可成交指数 + 增仓 + 估值.
 //   个股 = 单只的篮子 (线 = 池轴资产): 收益 / 估值与篮子的个股项同一份输入同一式, 不看成员位
 struct Baskets {
-  BookLines index;                         // [basket_line][T] 可成交指数的逐行收益 (stride 1; 净值 = compound, 调用方) = fold_book: 行 t 一批 = 成分 (行 t 成员位合判据 ∧ T+1C
+  BookLines index;                         // [线][T] 可成交指数的逐行收益 (stride 1; 净值 = compound, 调用方) = fold_book: 行 t 一批 = 成分 (行 t 成员位合判据 ∧ T+1C
                                            //   标签有效) 做多标签按持仓权 ω 平均 (调仓期首行的目标权: 等权 1 / 总市值 close × total_shares 不复权, 缺股本 0;
-                                           //   随后复权 close 漂移到行 t; 日频切片 = 行 t 的目标权), 平仓行实现 1/h̄. T+1C = C(行) → C(D+1) 复权, 顺延在标签里,
+                                           //   随后复权 close 漂移到行 t; 日频篮子 = 行 t 的目标权), 平仓行实现 1/h̄. T+1C = C(行) → C(D+1) 复权, 顺延在标签里,
                                            //   建仓 / 续持仓位感知 (Stat 契约)
-  BookLines buy;                           // [basket_line][T] 逐行增仓量 Σ (w_t − w̃)⁺: 成分行 t 的权 w_t = ω / Σω (ω 同 index) 对上一成分行漂移后的权
+  BookLines buy;                           // [线][T] 逐行增仓量 Σ (w_t − w̃)⁺: 成分行 t 的权 w_t = ω / Σω (ω 同 index) 对上一成分行漂移后的权
                                            //   w̃ = w (1 + r) / (1 + R) (成分 = 上一有效 close 行成员位合判据; 停牌 = 移出 / 复牌 = 移回; 首个成分行 = 建仓 1); 非成分行 0.
                                            //   两边满仓 ⇒ = 单边 ½ Σ|w_t − w̃| (再平衡 + 成分进出); 与因子账的增仓量同一列 (UI 折年化换手同一式)
-  std::vector<float> val[kPoolVals];       // [PoolVal][basket_line · T] 估值: 行 t 成分 = 上一行成员位合判据 (行业按本行); 市值 = 本行收盘价 (停牌带上一有效价) × 本行总股本;
+  std::vector<float> val[kPoolVals];       // [PoolVal][线 · T] 估值: 行 t 成分 = 上一行成员位合判据 (行业按本行); 市值 = 本行收盘价 (停牌带上一有效价) × 本行总股本;
                                            //   个股收益率 = 分子 / 市值, 按权平均: 等权 = 算术平均 (= 等权组合每元的分子) / 加权 (权 = 市值) = 整体法 Σ分子 / Σ市值;
                                            //   分子: EP = 归母净利TTM, BP = 归母普通股权益MRQ, SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 分红,
                                            //   分红 = 本行 dy_ttm × 前一交易日末行收盘价 × 该行总股本 (= Fund 的收盘市值分母还原近 4 季报告期税前分红额; 评估期首日无 → NaN);

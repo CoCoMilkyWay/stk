@@ -90,7 +90,7 @@ struct BlockSpec {
 // 每格平面字节 (check::Plane: float + u8)
 inline constexpr double kPlaneBytes = 5.0;
 // B 装载 + 篮子期峰值 (字节 / 格): 池成员位 8 + 标签两侧 (lv, sv, m) 5 + 建仓可成交码 1 + close 5 + 价 4 + 权重 4 + 复权 4
-// + 估值 (股本 / 净利 / 权益 / 营收 / 经营现金流 / 股息率) 24 + 行业 1 + 上一有效 close 行 4 + 补价副本 4 + all 内行业码 1 (baskets)
+// + 估值 (股本 / 净利 / 权益 / 营收 / 经营现金流 / 股息率) 24 + 行业 1 + 上一有效 close 行 4 + 补价副本 4 + 全A 内行业码 1 (baskets)
 inline constexpr double kBasketCellBytes = 8.0 + kPlaneBytes + 1.0 + kPlaneBytes + 4.0 + 4.0 + 4.0 + 24.0 + 1.0 + 4.0 + 4.0 + 1.0;
 // 宿主装载量 (字节 / 格): X = 叶 kPlaneBytes · nx; Y = 门控 1 + 建仓可成交码 1 + 标签两侧 (lv, sv, m) 5 · hd
 // + 盘口段买入冲击 (无 m) 2 · 段数 (固定段无平面)

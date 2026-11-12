@@ -1,7 +1,7 @@
 // StyleService — Beta→Style 页的单 worker: 一个风格的参数网格 (features/Panel/PoolSpec.hpp Grid) 逐组选池 → 篮子的滚动一年绩效 (平均 / 中位) 与累计中位夏普 + 其逐日截面分位的平均 (打分)
 //   原料带 = 每进程代一份 (pool::tape, 与选股表共用; 新落盘日增量补); 风格的次序 (pool::rank) 按风格留最近 kKeep 份 (随原料带补行);
 //   篮子账按成员 (权重归 0, 两权重同一趟) 留 (只留当前风格; 原料带换代清空): 改网格只算新出现的成员
-//   全A = 行情篮子同一条 (全A 成员 = cs_valid ∧ 收盘 > 0, 日频), 两权重
+//   全A = 池表首两池 (pool::all_a, 行情篮子同一条; 切片内在市全取, 日频), 两权重
 //   请求 = 网格 (风格维只勾打开的那一个) + 回测区间 (只改区间 = 账全在, 只重算绩效); 新请求覆盖旧的. 进度: Loading = 原料 / 键的行数, Running = 待算的篮子数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (shared_ptr 拷出即放锁)
 #pragma once

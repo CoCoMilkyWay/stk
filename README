@@ -49,7 +49,7 @@ stk/
 │   │   │   ├── TaskState.hpp                           # 📦 任务状态
 │   │   │   ├── Asset.hpp / AssetInfo.hpp               # 📦 资产定义 / 元数据 (按全局 id 稠密: 一对一 vector, 一对多 Csr)
 │   │   │   ├── AssetEvent.hpp                          # 📦 个股历史事件 (AssetInfo 内)
-│   │   │   ├── Basket.hpp                              # 📦 篮子表 = 切片 (全A / 申万一级 / 各子池 / 概念) × 该切片的权重 (全A 等权 + 市值加权, 行业 / 概念 市值加权, 子池 = 池参数); 行情价格指数与因子可成交指数同一张
+│   │   │   ├── Basket.hpp                              # 📦 篮子表 = 切片 (申万一级 / 各子池 / 概念) × 该切片的权重 (行业 / 概念 = 全A 内切, 市值加权; 子池 = 池参数, 全A 等权 / 加权两池起头); 行情价格指数与因子可成交指数同一张
 │   │   │   ├── Concept.hpp                             # 📦 东财概念成分快照 (进程内唯一 = 最近一份)
 │   │   │   ├── Feature.hpp                             # 📦 特征元数据 + 多选 picked = set<ColRef> (跨库跨层); 当前库 = (池, 档)
 │   │   │   ├── Progress.hpp                            # 📦 后台计算进度面 (原子量, UI 免锁读) + 单调前缀发布 PrefixPub
@@ -100,7 +100,7 @@ stk/
 │   │   │   ├── Method/                                 # 🧮 TS.hpp / CS.hpp 时序 / 截面归一方法 (字段表 SRC 列引用)
 │   │   │   ├── Panel/                                  # 🧮 日频面板 (TS / CS 的日频数据源, 两者对仗)
 │   │   │   │   ├── Fund.hpp                            # 🧮 fund::Panel 日频 PIT 基本面 (全市场): 全交易日历 × 全局 A 轴 + 逐资产事件链; 市场收益 / 长窗量预计算
-│   │   │   │   ├── PoolSpec.hpp                        # 🧮 池参数 = 维表 (一维一张取值表): 风格 × 端 × 只数 × 周期 × 权重 (单选维) × ST / 板块 / 融资 (划分维) × 过滤 (次新 / 预警 / PB>0 / PE>0)
+│   │   │   │   ├── PoolSpec.hpp                        # 🧮 池参数 = 维表 (一维一张取值表): 风格 (含全市场 = 切片内全取) × 端 × 只数 × 周期 × 权重 (单选维) × ST / 板块 / 融资 (划分维) × 过滤 (次新 / 预警 / PB>0 / PE>0); 池表恒以全A 两池起头
 │   │   │   │   │                                       #    · Spec = 单选维的下标 + 集合维的位集 (划分维 = 类之并, 过滤维 = 剔的项); 在市固定剔次日停牌 / 行业未知
 │   │   │   │   │                                       #    · 池名 (目录名) = 各维段以 "." 连 (集合维各位以 "+" 连); 显示名 = 简称 + 权重后缀 (低β200.等), 同简称按池表序加 A / B / C…
 │   │   │   │   │                                       #    · Grid = 各维勾选位集 (Style 页参数网格), specs_of 展开成一组 Spec (集合维 = 各位单独 + 整体; 过滤维另加不剔, 划分维不另测全)
@@ -220,7 +220,7 @@ stk/
 │   │   │   │       └── TabCalendar.hpp                 # 🖥️ 交易日历格: 除权除息 / 节假日 / 回测区间 / L2 覆盖
 │   │   │   ├── task_beta/                              # 🖥️ Beta 任务 (风格择优)
 │   │   │   │   ├── TaskBeta.hpp                        # 🖥️ Beta 任务主界面: Compute (只 all.bar) / Style
-│   │   │   │   ├── services/StyleService.hpp           # 🖥️ 一个风格的参数网格 (pool::Grid) 逐组选池 (PoolSelect) → 滚动一年绩效 (平均 / 中位) + 累计中位夏普 (全A = 行情侧同名线)
+│   │   │   │   ├── services/StyleService.hpp           # 🖥️ 一个风格的参数网格 (pool::Grid) 逐组选池 (PoolSelect) → 滚动一年绩效 (平均 / 中位) + 累计中位夏普 (全A = 池表首两池, 行情侧同名线)
 │   │   │   │   └── ui/TabStyle.hpp                     # 🖥️ 风格 × 参数网格回测 (维条按维表生成; 图 = 累计中位夏普, 打分 = 其逐日截面分位的平均; 区间条选回测区间), 选定的子池写 pools.json
 │   │   │   ├── task_alpha/                             # 🖥️ Alpha 任务 (因子挖掘, factor/ 的 GUI)
 │   │   │   │   ├── TaskAlpha.hpp                       # 🖥️ Alpha 任务主界面: Compute (all.lob + 子池各库) / Operators / Factors / Inspect; 页顶条选 池 + 因子层

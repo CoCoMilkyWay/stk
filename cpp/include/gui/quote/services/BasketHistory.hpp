@@ -1,9 +1,9 @@
 // 篮子 (指数 / 行业 / 概念) 的历史一路 (见 Quote.hpp): 源 = all Bar 特征库 (请求即重读库清单, 见 features/Storage/FeatureLib.hpp); 与 StockHistory 对仗.
 //
-// 篮子 = shared/Basket.hpp 的篮子表 (切片 × 该切片的权重, 与 PortfolioService 可成交指数同一张): 切片 = 全A / 申万一级行业 (全A 内按 ind_l1 切) / 各子池 (池表 feature_pools)
+// 篮子 = shared/Basket.hpp 的篮子表 (切片 × 该切片的权重, 与 PortfolioService 可成交指数同一张): 切片 = 申万一级行业 (全A 内按 ind_l1 切) / 各子池 (池表 feature_pools, 全A 两池起头)
 //   / 概念 (全A 内按概念表切, shared/Concept.hpp). 这里是价格指数 (不看可成交): NAV 日内栏 / 理想线 / 近况同出于此.
 // 交易日 D 的成员 / 权重出自选股表与其原料带 (gui/quote/BasketRow.hpp members, 与 Style 页篮子账同一份), 基准取库内前一交易日 (D−1) 的 L_1day 行:
-//   成员: 全A = D−1 行 cs_valid ∧ 收盘价 > 0, 行业 = 全A ∧ ind_l1 = k, 概念 = 全A ∧ 在概念表该概念成分里, 子池 = 选股表 D 的成员 (features/Panel/PoolSelect.hpp Picks);
+//   成员: 子池 = 选股表 D 的成员 (features/Panel/PoolSelect.hpp Picks; 全A = 全市场不切), 行业 = 全A ∧ ind_l1 = k, 概念 = 全A ∧ 在概念表该概念成分里;
 //   权 = 源行目标权 (等权 1 / 加权 收盘价 × total_shares; 缺股本 → 只进等权) 随价漂移到 D−1 收盘 (日频 = D−1 的目标权; 周频子池一周内漂移).
 //   基准 = D−1 行 pre_close (该列行值 = 次日除权后前收, 与新浪昨收同一个量).
 // 日根 = L_1day open_day / high_day / low_day / close_day / amount_day; 点位自库首个落盘日 kBase 起逐日接续 (一日合成 = BasketRow Lane, 按日序串行);
@@ -16,7 +16,7 @@
 // 补日 (库末日之后至基本面 bar1d / bar1m 末日, 不落盘, 库末日 / 补日 / 点位不变即沿用): 成员 / 池 / 行业 / 股本冻结在库末日,
 //   日根 / 基准 = bar1d open … close / amount / pre_close, 分钟根 = bar1m; 权逐日过 BasketRow drift (加权随价, 等权逢换源回 1, 否则随价).
 // 历史末日 = 末个补日 (无补日 = 库末个落盘日). 当日 (之后的行情日): 跑完把末日的成员表 (下标 = QuoteService 全市场) 与各篮子末日点位
-//   bind 给 QuoteService, 由它每轮快照合成 (基准 = 新浪昨收); 先 bind 后发布. 发布 = 请求键集 (basket_line) 的子表 (Book + 补日)
+//   bind 给 QuoteService, 由它每轮快照合成 (基准 = 新浪昨收); 先 bind 后发布. 发布 = 请求键集 (篮子下标) 的子表 (Book + 补日)
 //   + 该成员表各篮子的只数 / Σ 权 / 成员总市值 (Tape::members / weight / cap) / 成分 (Tape::cons, NAV 右表展开) + 键集两两的成员重合 (Tape::overlap).
 //   无补日 → 子表与 Book 共享各篮子的 Kline (不拷; Book 改前先独占, 见 own); 有补日 → 逐篮子拼一份.
 #pragma once

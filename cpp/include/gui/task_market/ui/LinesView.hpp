@@ -76,7 +76,7 @@ struct LineSrc {
   const Quote::Kline *price = nullptr;
   bool operator==(const LineSrc &) const = default;
 };
-// 行情键 (Quote::Side 路的键): 篮子 = basket_line / 个股 = 全局 id; 因子 / 策略 = 无
+// 行情键 (Quote::Side 路的键): 篮子 = 篮子下标 / 个股 = 全局 id; 因子 / 策略 = 无
 struct LinesQuote {
   static constexpr uint32_t kNone = std::numeric_limits<uint32_t>::max();
   Quote::Side side = Quote::kBasket;
@@ -199,7 +199,7 @@ struct LinesDerived {
   std::vector<std::string> watch_lost;                         // 找不到行的自选键 (自选序)
   std::vector<std::shared_ptr<const PortfolioBook>> books;     // [因子行] 因子账 (因子 / 策略行的腿)
   Quote::PerSide<std::shared_ptr<const PortfolioBook>> quotes; // [Side] 行情两侧的账 (有行情键的行的腿 / 估值腿; 同有同无, 同日轴; 没算成 = 空)
-  std::shared_ptr<const Quote::Tape> prices;                   // 篮子理想线 / 成分表的源 (篮子历史 [basket_line]; 未到 / 源未就绪 = 空)
+  std::shared_ptr<const Quote::Tape> prices;                   // 篮子理想线 / 成分表的源 (篮子历史 [篮子下标]; 未到 / 源未就绪 = 空)
   std::vector<int32_t> val_at;                                 // [日并集轴] 两侧账的行 (估值的源下标; −1 = 账无该日 / 没算成)
   LinesPaintKey paint;                                         // 配色的来源
   uint64_t axis_gen = 0;                                       // 日并集轴 / 两侧账变的次数 (val_at 的来源; 滚动分位键)

@@ -34,8 +34,11 @@
 
 inline constexpr const char *kAllPoolName = "all"; // 全市场池的池名 (= 目录名)
 inline constexpr const char *kAllPoolTip = "all = 全市场: 当日活跃 (在市 ∧ 行业已知, 含 ST / 次新 / 北交所)";
+// 全A 两池 (子池表表首 pool::all_a, 按权重): 各页的基准, 行业 / 概念篮子的母集; [0, kPinnedPools) 钉在池表首, 不随调序动
+inline constexpr PoolId kAllAPool[pool::kWeights] = {1, 2};
+inline constexpr PoolId kPinnedPools = 3;
 
-// 池表 (全部池唯一一份, 每进程代读一次: 子池表一落地即进程内重启): [0] = all, 其余 = 子池表 (pool::load_pools, 表序)
+// 池表 (全部池唯一一份, 每进程代读一次: 子池表一落地即进程内重启): [0] = all, 其余 = 子池表 (pool::load_pools, 表序; 首两池 = kAllAPool)
 struct PoolDef {
   std::string name;    // 池名 = 目录名 (子池 = 规范串 pool::code)
   std::string name_cn; // 显示名 (all = 全市场; 子池 = pool::aliases)

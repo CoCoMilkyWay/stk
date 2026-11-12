@@ -65,7 +65,7 @@ struct StockState {
 };
 
 struct BasketState {
-  Feed feed;              // 键集 = 全部篮子线 (下标 = basket_line)
+  Feed feed;              // 键集 = 全部篮子线 (下标 = 篮子下标)
   Feed stocks;            // 键集 = 叠加的个股 (全局 id; 与 ASSET 同一路个股历史)
   int intraday = 0;       // 日内档 (日内 / 2日 … 5日)
   int flow = 0;           // 资金流档 (同日内档)
@@ -73,7 +73,7 @@ struct BasketState {
   bool flow_ends = false; // 资金流计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价)
 };
 
-// 叠加的一条: 篮子 (key = basket_line, 源 = BasketState::feed) / 个股 (key = 全局 id, 源 = BasketState::stocks) + 线色 (ImU32) + 线名
+// 叠加的一条: 篮子 (key = 篮子下标, 源 = BasketState::feed) / 个股 (key = 全局 id, 源 = BasketState::stocks) + 线色 (ImU32) + 线名
 struct OverlayPick {
   Side side;
   uint32_t key;

@@ -410,6 +410,7 @@ struct Eval {
 
 namespace catalog {
 std::vector<Choice> pools();                        // 池表待生效序, key = 位置
+bool pool_movable(int at);                          // 位置 at 的池可调序 (all / 全A 钉在表首)
 void move_pool(SharedData &data, int from, int to); // 池表调序 (位置; 写 pools.json, 换页时进程内重启)
 std::string pool_cn(const std::string &pool);
 std::vector<Choice> levels();

@@ -68,7 +68,7 @@ inline void pool_tip(PoolId p) {
     pool_tip(d.spec, d.name_cn + "  " + d.name);
 }
 
-// 池表的待生效序 (PoolId 列, all 恒在首): 调序即写 pools.json, 新序到换页的进程内重启才生效 (PoolId / 库号 / 篮子线随之重排);
+// 池表的待生效序 (PoolId 列, [0, kPinnedPools) = all / 全A 两池恒在首): 调序即写 pools.json, 新序到换页的进程内重启才生效 (PoolId / 库号 / 篮子线随之重排);
 // 本代内各池列表按它画, 拖动下标 = 它的位置
 struct PoolOrder {
   std::vector<PoolId> ids;
@@ -86,9 +86,9 @@ inline int pool_rank(PoolId p) {
   return static_cast<int>(std::ranges::find(o, p) - o.begin());
 }
 
-// 待生效序按 m 移一池 (下标 = pool_order 的位置; all 钉在表首不动) → 写 pools.json; 进程内重启推迟到换页 (排回原序则不重启)
+// 待生效序按 m 移一池 (下标 = pool_order 的位置; 钉住的池在表首不动) → 写 pools.json; 进程内重启推迟到换页 (排回原序则不重启)
 inline void move_pool(SharedData &data, const Move &m) {
-  assert(m.from != 0 && m.to != 0 && "all 钉在池表首");
+  assert(m.from >= kPinnedPools && m.to >= kPinnedPools && "all / 全A 钉在池表首");
   std::vector<PoolId> &o = pool_order();
   apply_move(o, m);
   std::vector<pool::Spec> v;

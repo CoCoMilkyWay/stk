@@ -35,7 +35,7 @@ void RenderScope(SharedData &data) {
       const bool selected = sel.pool == p;
       if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
         sel.pool = p; // 选中是 ColRef (带库), 切池保留
-      rd.item(i, p != kAllPool);
+      rd.item(i, p >= kPinnedPools);
       if (ImGui::IsItemHovered())
         pool_tip(p);
       if (selected)

@@ -16,11 +16,17 @@ namespace {
 
 using json = nlohmann::json;
 
-// 维 d 的段 (池名 / 中文名): 单选维 = 取值的码 / value_cn; 集合维 = 各位的码 / value_cn 以 "+" 连 (位序), 0 → all / none_cn
+// 全市场无键: 端 / 只数不起作用
+bool dead(const Spec &s, int d) { return s.style() == kStyleMkt && (d == kDimEnd || d == kDimN); }
+
+// 维 d 的段 (池名 / 中文名): 单选维 = 取值的码 / value_cn; 集合维 = 各位的码 / value_cn 以 "+" 连 (位序), 0 → all / none_cn; 不起作用的单选维 → "-" / 全市场 / 全部
 std::string segment(const Spec &s, int d, bool cn) {
   const uint8_t m = s.v[d];
   const std::span<const DimValue> vs = kDimDefs[d].values;
   const auto one = [&](int i) { return std::string(cn ? value_cn(d, i, s.style()) : vs[i].code); };
+  if (dead(s, d))
+    return !cn ? "-" : d == kDimEnd ? value_cn(d, 0, s.style())
+                                    : "全部";
   if (!is_set(d))
     return one(m);
   if (!m)
@@ -32,14 +38,30 @@ std::string segment(const Spec &s, int d, bool cn) {
   return t;
 }
 
-// 简称主体 (不带权重后缀) = 端名 + 只数
-std::string short_body(const Spec &s) { return segment(s, kDimEnd, true) + std::to_string(s.n()); }
+// 简称主体 (不带权重后缀) = 端名 + 只数; 全市场 = 起作用的切片段以 "." 连, 无则 全A
+std::string short_body(const Spec &s) {
+  if (s.style() != kStyleMkt)
+    return segment(s, kDimEnd, true) + std::to_string(s.n());
+  std::string b;
+  for (int d = kDimSt; d < kDims; ++d)
+    if (s.v[d])
+      b += (b.empty() ? "" : ".") + segment(s, d, true);
+  return b.empty() ? "全A" : b;
+}
+
+// 全A 两池搬到表首 (缺则补), 余者保序
+std::vector<Spec> pinned(std::vector<Spec> v) {
+  const Spec a[kWeights] = {all_a(kWeightEq), all_a(kWeightCap)};
+  std::erase_if(v, [&](const Spec &s) { return s == a[kWeightEq] || s == a[kWeightCap]; });
+  v.insert(v.begin(), std::begin(a), std::end(a));
+  return v;
+}
 
 } // namespace
 
 Spec canon(Spec s) {
   for (int d = 0; d < kDims; ++d)
-    if (kDimDefs[d].kind == kKindPart && s.v[d] == full_mask(d))
+    if ((kDimDefs[d].kind == kKindPart && s.v[d] == full_mask(d)) || dead(s, d))
       s.v[d] = 0;
   return s;
 }
@@ -49,7 +71,13 @@ Spec unweighted(Spec s) {
   return s;
 }
 
-bool on(const Spec &s, int d) { return !is_set(d) || s.v[d] != 0; }
+Spec all_a(Weight w) {
+  Spec s;
+  s.v[kDimStyle] = kStyleMkt, s.v[kDimWeight] = w;
+  return s;
+}
+
+bool on(const Spec &s, int d) { return !dead(s, d) && (!is_set(d) || s.v[d] != 0); }
 
 int slot(const Spec &s, int d) {
   const uint8_t m = s.v[d];
@@ -85,7 +113,8 @@ Spec parse(std::string_view c) {
       return static_cast<int>(it - vs.begin());
     };
     if (!is_set(d)) {
-      s.v[d] = static_cast<uint8_t>(find(seg[d]));
+      if (seg[d] != "-")
+        s.v[d] = static_cast<uint8_t>(find(seg[d]));
       continue;
     }
     if (seg[d] == "all")
@@ -123,7 +152,9 @@ std::array<DimDetail, kDims> detail(const Spec &s) {
   for (int d = 0; d < kDims; ++d) {
     const std::span<const DimValue> vs = kDimDefs[d].values;
     std::string n;
-    if (!is_set(d))
+    if (dead(s, d))
+      n = "不起作用 (全市场整片取)";
+    else if (!is_set(d))
       n = vs[s.v[d]].tip;
     else if (!s.v[d])
       n = kDimDefs[d].kind == kKindFilter ? "不剔" : "不切 (全部类)";
@@ -170,7 +201,12 @@ std::vector<Spec> default_pools() {
   two(kStyleTurn, kEndLow), two(kStyleTurn, kEndHigh), two(kStyleIvol, kEndLow), two(kStyleIvol, kEndHigh);
   two(kStyleResvol, kEndLow), two(kStyleResvol, kEndHigh), two(kStyleBeta, kEndLow), two(kStyleBeta, kEndHigh);
   two(kStyleTrend, kEndHigh), two(kStyleTrend, kEndLow), two(kStylePrice, kEndHigh), two(kStylePrice, kEndLow);
-  return v;
+  for (int b = 0; b < kBoards; ++b) {
+    Spec s = all_a(kWeightEq);
+    s.v[kDimBoard] = bit(b);
+    v.push_back(s);
+  }
+  return pinned(std::move(v));
 }
 
 std::vector<Spec> load_pools() {
@@ -186,11 +222,12 @@ std::vector<Spec> load_pools() {
     assert(seen.insert(s).second && "池表文件: 池重复");
     v.push_back(s);
   }
-  return v;
+  return pinned(std::move(v));
 }
 
 // 一池一行 (人能直接读 / diff)
-void save_pools(const std::vector<Spec> &pools) {
+void save_pools(std::vector<Spec> pools) {
+  pools = pinned(std::move(pools));
   std::ostringstream f;
   {
     f << "{\n  \"pools\": [";

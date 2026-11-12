@@ -354,7 +354,7 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
 }
 
 // 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 行情两侧的账同发布 (PortfolioResult::quotes, 同日轴):
-// 篮子 basket_count 线 (键 = basket_line; 不扣成本: 只毛收益 / 增仓量两列) ↔ 个股 all 池轴每只一线 (键 = 全局 id = 评估域池轴; 只毛收益一列); 各带估值
+// 篮子 basket_count 线 (键 = 篮子下标; 不扣成本: 只毛收益 / 增仓量两列) ↔ 个股 all 池轴每只一线 (键 = 全局 id = 评估域池轴; 只毛收益一列); 各带估值
 bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   TraceN("PortfolioBaskets");
   assert(t.scope.ft->lv == kBasketLevel && "篮子账按日");

@@ -45,7 +45,7 @@ public:
 
   // 价格库补到选股表 pk 的日轴 (= 库已落盘日, 升序, ≥ 2 日); false = 取消 / 判废
   bool sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk);
-  // 标的 (个股 = 全局 id / 篮子 = basket_line) 的有效根 (sync 之后); 不在该侧键表 (库轴外 / 三组线外) → false
+  // 标的 (个股 = 全局 id / 篮子 = 篮子下标) 的有效根 (sync 之后); 不在该侧键表 (库轴外 / 三组线外) → false
   bool series(Quote::Side side, uint32_t key, cta::Series &se) const;
 
 private:
@@ -68,7 +68,7 @@ private:
   misc::exec::ForkJoin &pool_;
   disk::Key lib_; // 所在特征库
   Head head_;
-  Quote::PerSide<std::vector<uint32_t>> keys_; // [侧][行] → 键 (个股 = 全局 id, 篮子 = basket_line)
+  Quote::PerSide<std::vector<uint32_t>> keys_; // [侧][行] → 键 (个股 = 全局 id, 篮子 = 篮子下标)
   std::vector<misc::Ymd> dates_;               // [D] 已合成日 (首日只定成员, 其块无根)
   Quote::PerSide<std::vector<Link>> link_;     // [侧][行]
 };

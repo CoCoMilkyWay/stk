@@ -238,7 +238,7 @@ void scope_row(SharedData &data, State &s, bool locked) {
       const std::string label = p.name + "  " + catalog::pool_cn(p.name);
       if (ImGui::Selectable(label.c_str(), p.name == o.pool))
         o.pool = p.name;
-      rd.item(p.key, p.key != 0);
+      rd.item(p.key, catalog::pool_movable(p.key));
     }
     if (const std::optional<Move> m = rd.end())
       catalog::move_pool(data, m->from, m->to);

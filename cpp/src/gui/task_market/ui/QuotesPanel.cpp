@@ -895,7 +895,7 @@ bool basket_note(const Tape &d, const Kline &kl, const Day &today, const QuoteSt
   return gap;
 }
 
-// 叠加一条的源: 篮子 = 篮子历史 [basket_line] + 当日; 个股 = 叠加个股的历史 + 当日 (未到 → kl 空)
+// 叠加一条的源: 篮子 = 篮子历史 [篮子下标] + 当日; 个股 = 叠加个股的历史 + 当日 (未到 → kl 空)
 struct Source {
   const Kline *kl = nullptr;
   const Day *today = nullptr;

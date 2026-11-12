@@ -3,6 +3,7 @@
 
 #include "disk/Disk.hpp"
 #include "features/Storage/FeatureLevels.hpp" // kMaxPools
+#include "features/Storage/FeatureLib.hpp"    // pool_def / kAllAPool (全A 基准)
 #include "gui/Tasks.hpp"                      // StatusColor
 #include "gui/util/Chart.hpp"                 // 色 / sheet_width / toggle_button / draw_end_tags / range_bar
 #include "gui/util/PoolTip.hpp"
@@ -10,8 +11,6 @@
 #include "imgui.h"
 #include "implot.h"
 #include "misc/date.hpp"
-#include "shared/Basket.hpp" // basket_name / basket_line (全A 基准)
-
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -55,7 +54,8 @@ constexpr const char *kStyleTip =
     "• 网格按钮: 按下色 = 勾; 左键 = 翻转 (单选维至少留一个), 右键 = 只留它 (已只留它 = 该维全开)\n"
     "• 名 = 风格端.只数.周期.权重.ST.板块.融资.过滤 (集合维的段 = 各类 / 项以 + 连; 灰段 = 不起作用: 全 / 不剔); 全程切片为空的组不列\n"
     "• 键覆盖率 (切片内有键的占比) < 80% 的行不建仓: 键未到齐 (如 β 要 156 周历史, 早年财报缺) 时不按残缺截面选\n"
-    "• 篮子 = 源行收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交; 全A = 行情页同一条 (当日活跃, 日频)\n"
+    "• 篮子 = 源行收盘按键选成员, 持有于其后交易日 (无前视); 收益 = 后复权收盘, 不看可成交\n"
+    "• 全市场 = 无键, 切片内在市全取 (端 / 只数不起作用), 板块等指数即此; 全A = 全市场不切 (等权 / 加权两池, 行情页同一条), 钉在池表首, 点选不动\n"
     "• 滚动窗 = 以每日收尾的满一年 (自建仓 / 区间起点满一年起): 年化 / 夏普 各取全部窗的平均与中位\n"
     "• 打分 = 夏普分位: 逐日把各线的累计中位夏普截面排名成分位, 区间内取平均 (一直靠前的高)\n"
     "  平均 ≈ 全程, 一时的极端行情照样记满; 中位只看多数窗, 吃老本的参数压不上来\n"
@@ -69,8 +69,10 @@ constexpr const char *kStyleTip =
     "• 细线 = 未选, 粗线 = 落地 / 新选 / 去掉, 灰 = 全A; 悬停图上 / 表行 = 白粗线 + 逐维拆解";
 
 bool has(const std::vector<Spec> &v, const Spec &p) { return std::ranges::find(v, p) != v.end(); }
-// 选中 ↔ 去掉 (点表行 / 图上的线同一份)
+// 选中 ↔ 去掉 (点表行 / 图上的线同一份); 全A 两池钉住不动
 void flip(StyleUIState &s, const Spec &p) {
+  if (p == pool::all_a(pool::kWeightEq) || p == pool::all_a(pool::kWeightCap))
+    return;
   if (has(s.chosen, p))
     std::erase(s.chosen, p);
   else
@@ -489,7 +491,7 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
   };
   for (int w = 0; w < pool::kWeights; ++w)
     if (r.grid.bits[pool::kDimWeight] >> w & 1) {
-      const std::string name = basket_name(basket_line(0, static_cast<pool::Weight>(w)));
+      const std::string name = pool_def(kAllAPool[w]).name_cn;
       std::snprintf(id, sizeof(id), "##bench%d", w);
       draw(r.bench[w], kBenchCol, 1.5f, 1, &name);
     }
@@ -698,7 +700,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
         break;
       case kRowBench:
         ImGui::Indent();
-        ImGui::TextColored(kBenchCol, "%s", basket_name(basket_line(0, static_cast<pool::Weight>(w.i))).c_str());
+        ImGui::TextColored(kBenchCol, "%s", pool_def(kAllAPool[w.i]).name_cn.c_str());
         ImGui::Unindent();
         cells(r->bench[w.i], nullptr);
         break;
