@@ -201,7 +201,7 @@ stk/
 │   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成件 (BasketHistory / CtaLib 同一份): 成员 members (选股表 → 成员表, 权 = Tape::omega) ⇄ drift (冻结, 随价漂移, 逢换源回目标权);
 │   │   │   │   │                                       #    源 LibDay (all.bar 日行 + L_1min) ⇄ FundDay (bar1d + bar1m); 一日合成件 Lane<源>; 普查 census (只数 / 权 / 成分 / 重合)
 │   │   │   │   └── services/
-│   │   │   │       ├── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin; 篮子当日按 BasketHistory 交接的成员表增量合成
+│   │   │   │       ├── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K + 各根五档委比, 落 output/data/quote/live.bin; 篮子当日按 BasketHistory 交接的成员表增量合成
 │   │   │   │       ├── StockHistory.hpp                # 🖥️ 个股历史: 基本面日线 + bar1m 分钟 (LRU)
 │   │   │   │       └── BasketHistory.hpp               # 🖥️ 篮子价格指数: 源 = all.bar 库 (D 日成员 / 权取选股表与原料带, 基准取 D−1 行), 账本只折新日; 库末日之后由基本面补日 (权随价漂移)
 │   │   │   ├── task_settings/TaskSettings.hpp          # 🖥️ 设置: 配置管理

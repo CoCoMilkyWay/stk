@@ -3,6 +3,7 @@
 #include "gui/Tasks.hpp"      // StatusColor (补分钟进度条 = 进行中色)
 #include "gui/util/Chart.hpp" // kUp / kDn / tint / toggle_button / button_bar / EndTag
 #include "gui/util/HoverSync.hpp"
+#include "shared/Basket.hpp" // 委比副图的默认标的 (全A.等)
 
 #include "imgui.h"
 #include "implot.h"
@@ -704,6 +705,16 @@ struct Overlay {
   int now = 0;
 };
 
+// 叠加图 / 委比副图同一套竖网格: nd 日各整点 (grid) + 日界 (seps)
+void day_grid(int nd, std::vector<double> &grid, std::vector<double> &seps) {
+  for (int k = 0; k < nd; ++k) {
+    for (int h = 0; h < 5; ++h)
+      grid.push_back(k * kSlots + h * 60 - 0.5);
+    if (k)
+      seps.push_back(k * kSlots - 0.5);
+  }
+}
+
 // 一条的蜡烛
 void candles(const Overlay &l) {
   if (!ImPlot::BeginItem("##k", ImPlotItemFlags_NoLegend))
@@ -747,12 +758,7 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   for (double k = std::ceil(ylo / step); k * step <= yhi; ++k)
     yt.push_back(k * step);
   std::vector<double> grid, seps;
-  for (int k = 0; k < nd; ++k) {
-    for (int h = 0; h < 5; ++h)
-      grid.push_back(k * kSlots + h * 60 - 0.5);
-    if (k)
-      seps.push_back(k * kSlots - 0.5);
-  }
+  day_grid(nd, grid, seps);
   ImVec2 corner(-1, -1);
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(1, 1));
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(0, 0));
@@ -867,6 +873,83 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   }
   ImPlot::PopStyleVar(3);
   return corner;
+}
+
+// 委比副图 (叠加图正下方, 同一 x 视野 / 竖网格, 刻度区全空): today 各根委比 [%] 落在日轴末日 (行情日), 红绿柱 (≥ 0 红 / < 0 绿);
+//   y 对称贴合 (至少 ±kBookMin); 左上小字 = "委比 · 名" + 末根读数, 右壁标柱的最大幅度; 悬停 = 竖线 + 时刻 / 读数
+constexpr double kBookMin = 5;      // [%]
+constexpr float kBookShare = 0.25f; // 委比副图占日内栏的高
+void plot_book(const Day *today, const std::string &name, int nd, const ImVec2 &size) {
+  std::vector<double> x, y;
+  if (today)
+    for (int s = 0; s < kSlots; ++s)
+      if (const float v = today->book[static_cast<size_t>(s)]; !std::isnan(v))
+        x.push_back(static_cast<double>((nd - 1) * kSlots + s)), y.push_back(v * 100.0);
+  double top = kBookMin;
+  for (const double v : y)
+    top = std::max(top, std::abs(v));
+  std::vector<double> grid, seps;
+  day_grid(nd, grid, seps);
+  ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(1, 1));
+  ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(0, 0));
+  ImPlot::PushStyleVar(ImPlotStyleVar_PlotBorderSize, 0.f);
+  if (ImPlot::BeginPlot("##book", size, ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
+    ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks);
+    ImPlot::SetupAxisLimits(ImAxis_X1, -0.5, nd * kSlots - 0.5, ImPlotCond_Always);
+    ImPlot::SetupAxisTicks(ImAxis_X1, grid.data(), static_cast<int>(grid.size()));
+    ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks | ImPlotAxisFlags_NoGridLines);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, -top * 1.1, top * 1.1, ImPlotCond_Always);
+    ImPlot::SetupFinish();
+    if (!seps.empty()) {
+      ImPlot::SetNextLineStyle(kRule, 1.f);
+      ImPlot::PlotInfLines("##sep", seps.data(), static_cast<int>(seps.size()));
+    }
+    const double zero = 0;
+    ImPlot::SetNextLineStyle(kRule, 1.f);
+    ImPlot::PlotInfLines("##zero", &zero, 1, ImPlotInfLinesFlags_Horizontal);
+    if (!x.empty() && ImPlot::BeginItem("##b", ImPlotItemFlags_NoLegend)) {
+      ImDrawList *dl = ImPlot::GetPlotDrawList();
+      for (size_t i = 0; i < x.size(); ++i) {
+        const ImVec2 p0 = ImPlot::PlotToPixels(x[i] - kBody, y[i]), p1 = ImPlot::PlotToPixels(x[i] + kBody, 0.0);
+        const ImVec4 c = y[i] >= 0 ? kUp : kDn;
+        dl->AddRectFilled(ImVec2(p0.x, std::min(p0.y, p1.y)), ImVec2(std::max(p1.x, p0.x + 1.f), std::max(p0.y, p1.y)),
+                          ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.75f)));
+      }
+      ImPlot::EndItem();
+    }
+    {
+      ImDrawList *dl = ImPlot::GetPlotDrawList();
+      ImFont *font = ImGui::GetFont();
+      const ImVec2 pos = ImPlot::GetPlotPos(), psz = ImPlot::GetPlotSize();
+      const float fs = ImGui::GetFontSize() * kTagScale, right = pos.x + psz.x - 2.f;
+      const ImU32 col = ImGui::ColorConvertFloat4ToU32(kGridTag);
+      const std::string head = "委比 · " + name;
+      dl->AddText(font, fs, ImVec2(pos.x + 4.f, pos.y + 2.f), col, head.c_str());
+      if (!y.empty()) {
+        char now[16];
+        std::snprintf(now, sizeof(now), "%+.1f%%", y.back());
+        const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.f, head.c_str()).x;
+        dl->AddText(font, fs, ImVec2(pos.x + 4.f + w + 6.f, pos.y + 2.f), ImGui::ColorConvertFloat4ToU32(tint(y.back(), 0)), now);
+      }
+      char hi[16], lo[16];
+      std::snprintf(hi, sizeof(hi), "+%.0f%%", top);
+      std::snprintf(lo, sizeof(lo), "-%.0f%%", top);
+      const ImVec2 hs = font->CalcTextSizeA(fs, FLT_MAX, 0.f, hi), ls = font->CalcTextSizeA(fs, FLT_MAX, 0.f, lo);
+      dl->AddText(font, fs, ImVec2(right - hs.x, ImPlot::PlotToPixels(0.0, top).y), col, hi);
+      dl->AddText(font, fs, ImVec2(right - ls.x, ImPlot::PlotToPixels(0.0, -top).y - ls.y), col, lo);
+    }
+    if (ImPlot::IsPlotHovered()) {
+      const double cx = std::clamp(std::round(ImPlot::GetPlotMousePos().x), 0.0, nd * kSlots - 1.0);
+      ImPlot::SetNextLineStyle(kCrossLine, 1.f);
+      ImPlot::PlotInfLines("##cx", &cx, 1);
+      const auto it = std::lower_bound(x.begin(), x.end(), cx);
+      const int mn = slot_label(static_cast<int>(cx) % kSlots);
+      if (it != x.end() && *it == cx)
+        ImGui::SetTooltip("%02d:%02d  委比 %+.2f%%", mn / 60, mn % 60, y[static_cast<size_t>(it - x.begin())]);
+    }
+    ImPlot::EndPlot();
+  }
+  ImPlot::PopStyleVar(3);
 }
 
 // 收历史发布: 末次请求的发布到齐 → 整体换上; 到齐前照留在画的. 返回 = 发布代新于末次请求 (被别的 Feed 覆盖)
@@ -1089,9 +1172,15 @@ int RenderIntraday(const QuoteHub &mk, OverlayState &st, const std::vector<Overl
     for (const Candle &c : s.bars)
       l.y.push_back(pct(c.close));
   }
+  // 委比副图的标的: 只一条 = 它, 否则全A.等
+  const size_t all_eq = basket_table().at_pool(kBasketBase);
+  const Ref bk = picks.size() == 1 ? picks.front().ref : Ref{kBasket, static_cast<uint32_t>(all_eq)};
+  const std::string bk_name = picks.size() == 1 ? picks.front().name : basket_table().name(all_eq);
+  const float bh = std::floor(avail.y * kBookShare);
   ImGui::PushID("intraday");
   int near = -1;
-  const ImVec2 corner = plot_overlay(ls, days, avail, "%", hot, near);
+  const ImVec2 corner = plot_overlay(ls, days, ImVec2(avail.x, avail.y - bh - ImGui::GetStyle().ItemSpacing.y), "%", hot, near);
+  plot_book(SourceOf(st, bk).today, bk_name, nd, ImVec2(avail.x, bh));
   overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
                                                                                                 : nullptr,
                 qs, [&] { button_bar(kIntraName, kIntras, st.intraday); });

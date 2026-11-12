@@ -7,12 +7,13 @@
 #include "imgui.h"
 #include "implot.h"
 #include "implot_internal.h" // GetItem (主图例显隐 / 线色), ButtonBehavior (图例矩阵)
-#include "misc/date.hpp"     // dash (现价十字时刻)
+#include "misc/date.hpp"     // dash (现价十字时刻) / 日历日运算 (区间档位)
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -142,6 +143,54 @@ void lg_flip(int R, int C, int r0, int c0, const Item &item) {
         item(r, c)->Show = !any;
 }
 
+// 主图左上角 (对仗日内栏): 区间档位条贴绘图区左上 (内缩 kBarPad), 图例矩阵接在其下 (lg_origin)
+constexpr float kBarPad = 4.0f;
+ImVec2 lg_origin() {
+  const ImVec2 p = ImPlot::GetPlotPos();
+  return ImVec2(p.x + kBarPad, p.y + 2.f * kBarPad + ImGui::GetTextLineHeight());
+}
+// 图例矩阵的字 (NAV / VAL 同一套): 字号 = 字体 × kLgScale, 行高 = 字号; 框内边距 kLgPad
+constexpr float kLgScale = 0.8f;
+constexpr ImVec2 kLgPad(4.f, 2.f);
+struct LgFont {
+  ImFont *font = ImGui::GetFont();
+  float fs = ImGui::GetFontSize() * kLgScale;
+  float w(const char *s) const { return font->CalcTextSizeA(fs, FLT_MAX, 0.f, s).x; }
+  void text(ImDrawList &dl, const ImVec2 &at, ImU32 col, const char *s) const { dl.AddText(font, fs, at, col, s); }
+};
+
+// 区间档位 (主图左上角): 区间 = 日并集轴末日往前推一档 (days 日 + months 月, 月末不足取当月末日) 之后的交易日 ~ 末日 (区间条同一份);
+//   当前区间正是某档 → 该钮按下
+struct Span {
+  const char *name;
+  int days, months;
+};
+constexpr Span kSpans[] = {{"1周", 7, 0}, {"1月", 0, 1}, {"1年", 0, 12}, {"10年", 0, 120}};
+// 档 s 的区间起点 (dates 非空): 推到的那日之后的首个交易日 (起点前收 = 那日及之前的末个交易日); 日轴不够长 → 0, 至多末日
+int span_d0(const std::vector<misc::Ymd> &dates, const Span &s) {
+  namespace ch = std::chrono;
+  ch::year_month_day y{misc::to_days(misc::add_days(dates.back(), -s.days))};
+  y -= ch::months{s.months};
+  if (!y.ok())
+    y = y.year() / y.month() / ch::last;
+  const misc::Ymd from = misc::from_days(ch::sys_days{y});
+  return std::min(static_cast<int>(std::ranges::upper_bound(dates, from) - dates.begin()), static_cast<int>(dates.size()) - 1);
+}
+void span_bar(LinesRange &rg, const std::vector<misc::Ymd> &dates) {
+  const int D = static_cast<int>(dates.size());
+  ImGui::BeginDisabled(D == 0);
+  for (const Span &s : kSpans) {
+    if (&s != kSpans)
+      ImGui::SameLine(0, 2);
+    const int d0 = D > 0 ? span_d0(dates, s) : 0;
+    if (toggle_button(s.name, D > 0 && rg.d0 == d0 && rg.d1 == D))
+      rg.d0 = d0, rg.d1 = D;
+    if (D > 0 && ImGui::IsItemHovered())
+      tip("区间 = 近%s: %s ~ %s (区间条同步; 双击区间条段内回全段)", s.name, misc::dash(dates[d0]).c_str(), misc::dash(dates.back()).c_str());
+  }
+  ImGui::EndDisabled();
+}
+
 // n 点线 (pt(i) = 第 i 点, x 升序) 视野内末点; 无 (或不可算) → false
 template <class Pt>
 bool end_point(const ImPlotRect &lim, size_t n, const Pt &pt, ImPlotPoint &p) {
@@ -239,9 +288,9 @@ ImRect nav_legend(LinesUIState &ui, const std::vector<NavRow> &rows) {
     return {};
   constexpr int kCols = 2 * kPairLines + 1; // 线 l: 2l = 年化 (带色块), 2l + 1 = 夏普; 末列 = 年换手
   const auto line_of = [](int c) { return c < kCols - 1 ? c / 2 : -1; };
-  const ImPlotStyle &ps = ImPlot::GetStyle();
-  const ImVec2 inner = ps.LegendInnerPadding;
-  const float th = ImGui::GetTextLineHeight(), sw = th * 0.7f, gx = 2.f * ImGui::GetStyle().ItemSpacing.x, sg = ImGui::GetStyle().ItemInnerSpacing.x;
+  const LgFont lf;
+  const ImVec2 inner = kLgPad;
+  const float th = lf.fs, sw = th * 0.7f, gx = ImGui::GetStyle().ItemSpacing.x, sg = 0.3f * th;
   const char *head[kCols] = {kPairName[0][kTrade], "夏普", kPairName[0][kIdeal], "夏普", "年换手"};
   const int n = static_cast<int>(rows.size());
   std::vector<std::array<std::string, kCols>> txt(rows.size());
@@ -260,14 +309,14 @@ ImRect nav_legend(LinesUIState &ui, const std::vector<NavRow> &rows) {
   }
   float w_head = 0.f, w[kCols], xc[kCols];
   for (const NavRow &r : rows)
-    w_head = std::max(w_head, ImGui::CalcTextSize(r.row->cn.c_str()).x);
-  const ImVec2 p0 = ImPlot::GetPlotPos(), o(p0.x + ps.LegendPadding.x, p0.y + ps.LegendPadding.y);
+    w_head = std::max(w_head, lf.w(r.row->cn.c_str()));
+  const ImVec2 o = lg_origin();
   float x = o.x + inner.x + w_head;
   for (int c = 0; c < kCols; ++c) {
     const float sq = line_of(c) >= 0 && c % 2 == 0 ? sw + sg : 0.f; // 线格左缘的色块
-    w[c] = ImGui::CalcTextSize(head[c]).x;
+    w[c] = lf.w(head[c]);
     for (const auto &t : txt)
-      w[c] = std::max(w[c], sq + ImGui::CalcTextSize(t[static_cast<size_t>(c)].c_str()).x);
+      w[c] = std::max(w[c], sq + lf.w(t[static_cast<size_t>(c)].c_str()));
     xc[c] = x + gx;
     x = xc[c] + w[c];
   }
@@ -288,11 +337,10 @@ ImRect nav_legend(LinesUIState &ui, const std::vector<NavRow> &rows) {
               c_hov = ImGui::GetColorU32(ImGuiCol_PlotLinesHovered);
   char id[32];
   for (int c = 0; c < kCols; ++c) { // 列头右对齐 (同数值); 线列头可点
-    const float tw = ImGui::CalcTextSize(head[c]).x;
-    const ImVec2 at(xc[c] + w[c] - tw, y_row(-1));
+    const ImVec2 at(xc[c] + w[c] - lf.w(head[c]), y_row(-1));
     const int l = c % 2 == 0 ? line_of(c) : -1;
     if (l < 0) {
-      dl.AddText(at, c_dis, head[c]);
+      lf.text(dl, at, c_dis, head[c]);
       continue;
     }
     std::snprintf(id, sizeof(id), "##nav_lg_c%d", l);
@@ -301,9 +349,9 @@ ImRect nav_legend(LinesUIState &ui, const std::vector<NavRow> &rows) {
       lg_flip(n, kPairLines, -1, l, item_of);
     if (hov)
       tip("%s线 (因子 / 策略行 = %s): 色块 = 显隐, 数 = 区间年化\n点 = 整列开关", kPairName[0][l], kPairName[1][l]);
-    dl.AddText(at, hov ? c_hov : lg_any(n, kPairLines, -1, l, item_of) ? c_txt
-                                                                       : c_dis,
-               head[c]);
+    lf.text(dl, at, hov ? c_hov : lg_any(n, kPairLines, -1, l, item_of) ? c_txt
+                                                                        : c_dis,
+            head[c]);
   }
   int hot = -1; // 悬停的行
   for (int i = 0; i < n; ++i) {
@@ -317,9 +365,9 @@ ImRect nav_legend(LinesUIState &ui, const std::vector<NavRow> &rows) {
         lg_flip(n, kPairLines, i, -1, item_of);
       if (hov)
         hot = i, row_tip(*r.row);
-      dl.AddText(rr.Min, hov ? c_hov : lg_any(n, kPairLines, i, -1, item_of) ? ImGui::ColorConvertFloat4ToU32(r.col[kTrade])
-                                                                             : c_dis,
-                 r.row->cn.c_str());
+      lf.text(dl, rr.Min, hov ? c_hov : lg_any(n, kPairLines, i, -1, item_of) ? ImGui::ColorConvertFloat4ToU32(r.col[kTrade])
+                                                                              : c_dis,
+              r.row->cn.c_str());
     }
     for (int l = 0; l < kPairLines; ++l) { // 线格: 整格可点, 色块贴左缘
       const float xq = xc[2 * l];
@@ -343,7 +391,7 @@ ImRect nav_legend(LinesUIState &ui, const std::vector<NavRow> &rows) {
       const int l = line_of(c);
       const bool on = l < 0 ? lg_any(n, kPairLines, i, -1, item_of) : item_of(i, l)->Show;
       const std::string &t = txt[static_cast<size_t>(i)][static_cast<size_t>(c)];
-      dl.AddText(ImVec2(xc[c] + w[c] - ImGui::CalcTextSize(t.c_str()).x, yi), on ? c_txt : c_dis, t.c_str());
+      lf.text(dl, ImVec2(xc[c] + w[c] - lf.w(t.c_str()), yi), on ? c_txt : c_dis, t.c_str());
     }
   }
   ImPlot::PopPlotClipRect();
@@ -432,9 +480,9 @@ std::string val_item(int c, int b) {
 
 void val_legend(const LinesView &v, int years, ValLegendHl &hl) {
   constexpr int kTexts = 3, kCols = kTexts + kLgToggles;
-  const ImPlotStyle &ps = ImPlot::GetStyle();
-  const ImVec2 inner = ps.LegendInnerPadding;
-  const float th = ImGui::GetTextLineHeight(), sw = th * 0.7f, gx = 2.f * ImGui::GetStyle().ItemSpacing.x;
+  const LgFont lf;
+  const ImVec2 inner = kLgPad;
+  const float th = lf.fs, sw = th * 0.7f, gx = ImGui::GetStyle().ItemSpacing.x;
   char yrs[24];
   std::snprintf(yrs, sizeof(yrs), "%d年分位", years);
   const char *head[kCols] = {"当前", "倍数", yrs, "Band", "等值线"};
@@ -452,14 +500,14 @@ void val_legend(const LinesView &v, int years, ValLegendHl &hl) {
   }
   float w_head = 0.f, w[kCols], xc[kCols];
   for (const ValMeta &vm : kVal)
-    w_head = std::max(w_head, ImGui::CalcTextSize(vm.name).x);
-  const ImVec2 p0 = ImPlot::GetPlotPos(), o(p0.x + ps.LegendPadding.x, p0.y + ps.LegendPadding.y);
+    w_head = std::max(w_head, lf.w(vm.name));
+  const ImVec2 o = lg_origin();
   float x = o.x + inner.x + w_head;
   for (int c = 0; c < kCols; ++c) {
-    w[c] = std::max(ImGui::CalcTextSize(head[c]).x, c < kTexts ? 0.f : sw);
+    w[c] = std::max(lf.w(head[c]), c < kTexts ? 0.f : sw);
     if (c < kTexts)
       for (const auto &r : txt)
-        w[c] = std::max(w[c], ImGui::CalcTextSize(r[static_cast<size_t>(c)].c_str()).x);
+        w[c] = std::max(w[c], lf.w(r[static_cast<size_t>(c)].c_str()));
     xc[c] = x + gx;
     x = xc[c] + w[c];
   }
@@ -485,10 +533,10 @@ void val_legend(const LinesView &v, int years, ValLegendHl &hl) {
   char id[32];
   for (int c = 0; c < kCols; ++c) { // 列头 (开关列可点)
     const ImRect r(ImVec2(xc[c], y_row(-1)), ImVec2(xc[c] + w[c], y_row(-1) + th));
-    const float tw = ImGui::CalcTextSize(head[c]).x;
+    const float tw = lf.w(head[c]);
     const ImVec2 at(c < kTexts ? r.Max.x - tw : r.Min.x + (w[c] - tw) * 0.5f, r.Min.y);
     if (c < kTexts) {
-      dl.AddText(at, c_dis, head[c]);
+      lf.text(dl, at, c_dis, head[c]);
       continue;
     }
     std::snprintf(id, sizeof(id), "##pf_lg_c%d", c);
@@ -497,9 +545,9 @@ void val_legend(const LinesView &v, int years, ValLegendHl &hl) {
       toggle_set(-1, c - kTexts);
     if (hov)
       nx.on = true, nx.b = -1, nx.c = c - kTexts;
-    dl.AddText(at, hov ? c_hov : any_shown(-1, c - kTexts) ? c_txt
-                                                           : c_dis,
-               head[c]);
+    lf.text(dl, at, hov ? c_hov : any_shown(-1, c - kTexts) ? c_txt
+                                                            : c_dis,
+            head[c]);
   }
   for (int b = 0; b < kPoolVals; ++b) {
     const float yb = y_row(b);
@@ -511,16 +559,16 @@ void val_legend(const LinesView &v, int years, ValLegendHl &hl) {
         toggle_set(b, -1);
       if (hov)
         nx.on = true, nx.b = b, nx.c = -1;
-      dl.AddText(r.Min, hov ? c_hov : any_shown(b, -1) ? c_txt
-                                                       : c_dis,
-                 kVal[b].name);
+      lf.text(dl, r.Min, hov ? c_hov : any_shown(b, -1) ? c_txt
+                                                        : c_dis,
+              kVal[b].name);
     }
     const LinesBand &bd = v.band[b];
     for (int c = 0; c < kTexts; ++c) { // 数值列右对齐; 分位按便宜绿 → 贵红着色
       const std::string &t = txt[static_cast<size_t>(b)][static_cast<size_t>(c)];
       const ImU32 col = !bd.ok ? c_dis : c == 2 ? ImGui::ColorConvertFloat4ToU32(band_col(bd.pct / 100.0, 1.0f))
                                                 : c_txt;
-      dl.AddText(ImVec2(xc[c] + w[c] - ImGui::CalcTextSize(t.c_str()).x, yb), col, t.c_str());
+      lf.text(dl, ImVec2(xc[c] + w[c] - lf.w(t.c_str()), yb), col, t.c_str());
     }
     for (int c = 0; c < kLgToggles; ++c) {
       const float xq = xc[kTexts + c], wq = w[kTexts + c];
@@ -701,7 +749,7 @@ void plot_val(LinesUIState &ui, const LinesDerived &d, const LinesView &v, const
 } // namespace
 
 // ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) 同一框: 贴边 (窄内边距, 不标轴名); NAV = fit 键变 → 本帧 fit, VAL = 恒贴合 (不平移 / 缩放, 视野只随区间);
-//      x 右端留出线尾小字 / 刻度 / 十字标签 ----
+//      x 右端留出线尾小字 / 刻度 / 十字标签; 左上角 = 区间档位条 (span_bar) + 其下图例矩阵 ----
 void RenderLinesPlot(LinesUIState &ui, const LinesAt &pin, bool nav, const ImVec2 &size) {
   const LinesDerived &d = ui.der.val;
   const LinesView &v = ui.view.val;
@@ -747,7 +795,12 @@ void RenderLinesPlot(LinesUIState &ui, const LinesAt &pin, bool nav, const ImVec
     draw_marks(pf.marks, tags_right() - cw);
     if (crossed)
       draw_now_cross(cross, kTagScale, tags_right());
+    const ImVec2 corner = ImPlot::GetPlotPos();
     ImPlot::EndPlot();
+    const ImVec2 next = ImGui::GetCursorScreenPos(); // 档位条叠在图上 (图之后提交, 抢得到悬停), 画完光标回图下
+    ImGui::SetCursorScreenPos(ImVec2(corner.x + kBarPad, corner.y + kBarPad));
+    span_bar(ui.range, d.dates);
+    ImGui::SetCursorScreenPos(next);
   }
   ImPlot::PopStyleVar(2);
 }
