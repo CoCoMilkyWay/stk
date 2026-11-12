@@ -336,7 +336,7 @@ stk/
 │   │   │   ├── Engine.hpp                              # 📈 执行: 逐根链 drive (策略 / 买入持有同一条); 仓位层 (波动率定仓) + 五项成本
 │   │   │   ├── Tune.hpp                                # 📈 中线调参: 优化目标 (有效多空 − 翻转成本) + 参数网格 Grid + 岭回归曲面
 │   │   │   ├── Metrics.hpp                             # 📈 指标: 收益统计 / 择时捕获 / 在场段; 一本账 Book
-│   │   │   └── Trace.hpp                               # 📈 滚动调参全期轨迹: 逐日以此前窗口拟曲面选中线 → 分层沿拼好的中线跑出 Cuts → 策略 / 买入持有两本账
+│   │   │   └── Trace.hpp                               # 📈 滚动调参全期轨迹: 逐日以此前窗口拟曲面取连续最高点 → 5 日阻尼 → 变参中线 (状态接续) → 分层跑出 Cuts → 策略 / 买入持有两本账
 │   │   ├── math/                                       # 📐 数学工具
 │   │   │   ├── Step.hpp                                # 📐 变换步元数据 / 定义 (编译期注册)
 │   │   │   ├── distribution/                           # 📐 分位 / 矩: DailyQuantile · KLLcache · RetMoments · SizeThresholds · PdfSnap (KLL 成品快照)

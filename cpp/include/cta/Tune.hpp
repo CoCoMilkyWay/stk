@@ -5,13 +5,15 @@
 //   网格 = 中心周围各轴 m 个相邻格点的全部组合 (配置数可配, 由各多值轴轮流分得 m); 一点在网格内 = 各轴下标 At
 //   每日重拟: 窗 = 此前至多 W 日 (不足 = 自首日起, expanding); 最高点落在网格边上 → 以它为中心移网格再拟 (Trace.hpp)
 //   岭回归曲面 (网格上): 特征 = 各多值参数轴的网格内下标坐标 u ∈ [−1, 1] 的二次项 (u, u² (≥ 3 值的轴), 两两 u · u'), 去均值 → X [n][d];
-//     ŷ = ȳ + X (XᵀX + λ · n · I)⁻¹ Xᵀ (y − ȳ) = ȳ + X Z y (X 去均值 ⇒ Z · 1 = 0); Z [d][n] 只看网格, 预先算好; 拟合最高点 = 平原顶
+//     ŷ = ȳ + X (XᵀX + λ · n · I)⁻¹ Xᵀ (y − ȳ) = ȳ + X Z y (X 去均值 ⇒ Z · 1 = 0); Z [d][n] 只看网格, 预先算好
+//   最高点 = 曲面在网格坐标上的连续最高点 (平原顶; Ridge::peak), 参数取小数格点号处的值 (相邻格点间对数插值; Grid::values)
 #include "cta/Engine.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <iterator>
+#include <utility>
 #include <vector>
 
 namespace cta {
@@ -119,34 +121,58 @@ inline void solve(std::vector<double> &A, std::vector<double> &B, size_t d, size
   }
 }
 
-// 岭回归曲面: ŷ − ȳ = X (Z y)
+inline constexpr size_t kPeak = 64; // 曲面最高点: 各多值轴 [−1, 1] 的细分份数
+
+// 特征 (去均值前): 各多值轴坐标 u 的 u, u² (sq = ≥ 3 值的轴), 两两 u · u'
+inline void feats(const std::vector<char> &sq, const double *u, std::vector<double> &f) {
+  f.clear();
+  for (size_t i = 0; i < sq.size(); ++i) {
+    f.push_back(u[i]);
+    if (sq[i])
+      f.push_back(u[i] * u[i]);
+    for (size_t j = 0; j < i; ++j)
+      f.push_back(u[i] * u[j]);
+  }
+}
+
+// 岭回归曲面: ŷ − ȳ = (特征 − 均值) · (Z y)
 struct Ridge {
   size_t n = 0, d = 0;
-  std::vector<double> X; // [n][d] 去均值特征
-  std::vector<double> Z; // [d][n] (XᵀX + λ · n · I)⁻¹ Xᵀ
+  std::vector<char> sq;   // [多值轴] 有平方项
+  std::vector<double> mu; // [d] 特征均值
+  std::vector<double> X;  // [n][d] 去均值特征
+  std::vector<double> Z;  // [d][n] (XᵀX + λ · n · I)⁻¹ Xᵀ
 
-  // 拟合值 ŷ = ȳ + X (Z y) [n]
-  std::vector<double> fit(const std::vector<double> &y) const {
+  // 曲面系数 z = Z y [d]
+  std::vector<double> coef(const std::vector<double> &y) const {
     assert(y.size() == n && "岭回归: 样本数");
-    double m = 0;
-    for (const double v : y) {
-      assert(std::isfinite(v) && "岭回归: 目标值");
-      m += v;
-    }
-    m /= static_cast<double>(n);
-    std::vector<double> z(d, 0), o(n, m);
-    for (size_t k = 0; k < d; ++k)
-      for (size_t j = 0; j < n; ++j)
-        z[k] += Z[k * n + j] * y[j];
-    for (size_t i = 0; i < n; ++i)
+    std::vector<double> z(d, 0);
+    for (size_t j = 0; j < n; ++j) {
+      assert(std::isfinite(y[j]) && "岭回归: 目标值");
       for (size_t k = 0; k < d; ++k)
-        o[i] += X[i * d + k] * z[k];
-    return o;
+        z[k] += Z[k * n + j] * y[j];
+    }
+    return z;
   }
-  // 拟合最高点 argmax ŷ
-  size_t best(const std::vector<double> &y) const {
-    const std::vector<double> f = fit(y);
-    return static_cast<size_t>(std::max_element(f.begin(), f.end()) - f.begin());
+  // 曲面最高点 (连续): 各多值轴坐标 u ∈ [−1, 1] (轴序), 每轴 kPeak 等分的细格上取最大, 同值取离网格中心近的; 无多值轴 = 空
+  std::vector<double> peak(const std::vector<double> &y) const {
+    const std::vector<double> z = coef(y);
+    const size_t a = sq.size();
+    std::vector<double> u(a), best(a, 0), f;
+    std::vector<size_t> at(a, 0);
+    double top = -INFINITY, r2 = INFINITY;
+    if (a)
+      do {
+        double r = 0, v = 0;
+        for (size_t k = 0; k < a; ++k)
+          u[k] = 2.0 * static_cast<double>(at[k]) / kPeak - 1, r += u[k] * u[k];
+        feats(sq, u.data(), f);
+        for (size_t k = 0; k < d; ++k)
+          v += z[k] * (f[k] - mu[k]);
+        if (v > top + 1e-12 || (v >= top - 1e-12 && r < r2))
+          top = v, r2 = r, best = u;
+      } while (tick(at, [](size_t) { return kPeak + 1; }));
+    return best;
   }
 };
 
@@ -154,31 +180,28 @@ struct Ridge {
 inline Ridge ridge_of(const std::vector<size_t> &m, const std::vector<At> &at) {
   assert(!at.empty() && "岭回归: 空网格");
   const size_t n = at.size();
+  std::vector<char> sq;
+  for (const size_t k : m)
+    if (k > 1)
+      sq.push_back(k > 2);
   std::vector<std::vector<double>> X(n);
   for (size_t s = 0; s < n; ++s) {
     std::vector<double> u;
-    std::vector<char> sq;
     for (size_t x = 0; x < m.size(); ++x)
       if (m[x] > 1)
-        u.push_back(2.0 * static_cast<double>(at[s][x]) / static_cast<double>(m[x] - 1) - 1), sq.push_back(m[x] > 2);
-    for (size_t i = 0; i < u.size(); ++i) {
-      X[s].push_back(u[i]);
-      if (sq[i])
-        X[s].push_back(u[i] * u[i]);
-      for (size_t j = 0; j < i; ++j)
-        X[s].push_back(u[i] * u[j]);
-    }
+        u.push_back(2.0 * static_cast<double>(at[s][x]) / static_cast<double>(m[x] - 1) - 1);
+    feats(sq, u.data(), X[s]);
   }
   const size_t d = X[0].size();
+  std::vector<double> mu(d, 0);
   for (size_t c = 0; c < d; ++c) {
-    double m = 0;
     for (const std::vector<double> &r : X)
-      m += r[c];
-    m /= static_cast<double>(n);
+      mu[c] += r[c];
+    mu[c] /= static_cast<double>(n);
     for (std::vector<double> &r : X)
-      r[c] -= m;
+      r[c] -= mu[c];
   }
-  Ridge rg{n, d, std::vector<double>(n * d), std::vector<double>(d * n)};
+  Ridge rg{n, d, std::move(sq), std::move(mu), std::vector<double>(n * d), std::vector<double>(d * n)};
   std::vector<double> A(d * d, 0);
   for (size_t i = 0; i < d; ++i) {
     for (size_t j = 0; j < d; ++j)
@@ -234,12 +257,36 @@ struct Grid {
     }
     return false;
   }
+  // 轴 a 小数格点号 f 的值: 相邻两格点间按对数插值, 收进硬边界
+  double value_at(size_t a, double f) const {
+    f = std::clamp(f, static_cast<double>(lo[a]), static_cast<double>(hi[a]));
+    const int q = std::min(static_cast<int>(std::floor(f)), std::max(lo[a], hi[a] - 1));
+    const double w = f - q;
+    return w > 0 ? std::exp(std::log(value(a, q)) * (1 - w) + std::log(value(a, q + 1)) * w) : value(a, q);
+  }
+  // 中心 c 的网格上的连续点 u (Ridge::peak) → 各轴参数 (轴的单位); q = 最近的格点
+  std::vector<double> values(const Q &c, const std::vector<double> &u, Q &q) const {
+    std::vector<double> v(ax.size());
+    q.assign(ax.size(), 0);
+    for (size_t a = 0, j = 0; a < ax.size(); ++a) {
+      const double f = base(c, a) + (m[a] > 1 ? (u[j++] + 1) / 2 * static_cast<double>(m[a] - 1) : 0);
+      v[a] = value_at(a, f), q[a] = static_cast<int>(std::lround(f));
+    }
+    return v;
+  }
+  // 参数 v (轴的单位) → 以根计
+  P bars(const std::vector<double> &v) const {
+    P o;
+    for (size_t a = 0; a < ax.size(); ++a)
+      o.push_back(static_cast<float>(v[a] * (ax[a]->day ? static_cast<double>(S) : 1.0)));
+    return o;
+  }
   // 配置 q 的参数 (以根计)
   P p(const Q &q) const {
-    P v;
+    std::vector<double> v;
     for (size_t a = 0; a < ax.size(); ++a)
-      v.push_back(static_cast<float>(value(a, q[a]) * (ax[a]->day ? static_cast<double>(S) : 1.0)));
-    return v;
+      v.push_back(value(a, q[a]));
+    return bars(v);
   }
   // 配置 q 的中线 (取进 Tape, 串行)
   const Col &mid(Tape &t, const Q &q) const { return center(t, kind, p(q)); }

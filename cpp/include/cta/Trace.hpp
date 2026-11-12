@@ -2,15 +2,19 @@
 
 // 单资产的滚动调参全期轨迹 (只用本资产, 不用未来信息): 中线逐日选参, 分层 (固定) 沿拼好的中线跑一遍
 //   打分 (格点首次进网格时, 一批): 取中线列 (串行, 写 Tape) → 目标项日前缀 goal_of 全期一遍 (并行, 只读 Tape)
-//   选参 (逐日): 以此前至多 W 日 (不足 W 日 = 自首日起全部, expanding) 网格各配置的目标值拟岭回归曲面 (Tune.hpp), 最高点配置用到当日;
-//         最高点落在网格边上 (未到硬边界) → 以它为中心移网格, 补打新格点再拟, 当日至多 kHops 次; 中心留到次日 (各日只读当日之前的窗)
+//   选参 (逐日): 以此前至多 W 日 (不足 W 日 = 自首日起全部, expanding) 网格各配置的目标值拟岭回归曲面 (Tune.hpp), 取连续最高点的参数 (小数);
+//         最近的格点落在网格边上 (未到硬边界) → 以它为中心移网格, 补打新格点再拟, 当日至多 kHops 次; 中心留到次日 (各日只读当日之前的窗)
 //         (首日 / 窗内根数不足窗长一半 / 窗内各配置的中线都未就绪 = 未选参, 买入持有, 与基准同口径)
-//   拼接遍 (串行, 逐根): 当日选中配置的中线 + 层距 kSpace · ATR → 分层 Ladder (状态跨日接续; 未选参日 = Hold, 分层复位), 刀写进轨迹列 Cuts, 档线栈随之交给 Cuts
+//         阻尼: 所用参数 (对数) 每日朝最高点走 1 / kDamp, 用到当日
+//   拼接遍 (串行, 逐根): 变参中线 center_path (逐日所用参数, 状态接续) + 层距 kSpace · ATR → 分层 Ladder (状态跨日接续; 未选参日 = Hold, 分层复位),
+//         刀写进轨迹列 Cuts, 档线栈随之交给 Cuts
 //   两本账: drive (Cuts → Pnl) = 策略 (调仓计成本, 成本分项见 Engine.hpp) ↔ drive (Hold → Pnl, 仓位层不调) = 买入持有 (满仓不动, 无越线差)
 #include "cta/Metrics.hpp"
 #include "cta/Tune.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -20,14 +24,15 @@
 
 namespace cta {
 
-inline constexpr int kHops = 8; // 一日内最多移网格几次
+inline constexpr int kHops = 8;    // 一日内最多移网格几次
+inline constexpr double kDamp = 5; // 参数阻尼 (日): 所用参数 (对数) 每日朝曲面最高点走 1 / kDamp
 
 struct Track {
-  Grid grid;                               // 所选中线模型的格点 + 网格 + 曲面
-  std::vector<Q> pts;                      // [配置] 打过分的格点, 按首次进网格的先后
-  std::vector<std::pair<size_t, int>> seg; // 选参段: (起根, pts 下标; −1 = 未选参), 起根升序
-  Cuts cut;                                // [根] 分层的刀 + 档线栈 (未选参日 = Hold: 无档线 / 仓 1)
-  Book strat, hold;                        // 策略 / 买入持有
+  Grid grid;                                 // 所选中线模型的格点 + 网格 + 曲面
+  Days days;                                 // 日轴 (days_of)
+  std::vector<std::vector<double>> raw, use; // [日][轴] 曲面最高点的参数 / 阻尼后所用的参数 (轴的单位; 空 = 未选参)
+  Cuts cut;                                  // [根] 分层的刀 + 档线栈 (未选参日 = Hold: 无档线 / 仓 1)
+  Book strat, hold;                          // 策略 / 买入持有
 };
 
 // se = 有效根 (t = 日下标 · grid.S + 槽), 须跨 2 日以上; grid = 所选中线模型的网格; goal = 优化目标 (kGoals 下标); dir = 方向 (kDirs 下标)
@@ -35,7 +40,7 @@ struct Track {
 template <class Exec, class Stop, class Tick>
 bool trace(const Series &se, Grid grid, size_t goal, size_t dir, size_t W, const Setup &u, Exec &ex, Track &out, Stop stop, Tick tick) {
   const size_t S = grid.S;
-  const Days days = days_of(se, S);
+  Days days = days_of(se, S);
   const size_t n = se.c.size(), nd = days.size();
   assert(n > 1 && W >= kMinRoll && W <= kMaxRoll && nd > 1 && "样本须跨 2 日以上");
   assert(dir < std::size(kDirs) && "方向");
@@ -63,8 +68,9 @@ bool trace(const Series &se, Grid grid, size_t goal, size_t dir, size_t W, const
     });
   };
 
-  std::vector<int> pick(nd, -1); // [日] 所用配置 (pts 下标; −1 = 未选参)
-  Q c = grid.home();
+  std::vector<std::vector<double>> raw(nd), use(nd);
+  std::vector<double> th; // 阻尼状态: 所用参数的对数 (空 = 未起)
+  Q c = grid.home(), q;
   std::vector<double> y(grid.at.size());
   for (size_t d = 1; d < nd; ++d) {
     tick();
@@ -82,31 +88,49 @@ bool trace(const Series &se, Grid grid, size_t goal, size_t dir, size_t W, const
         }
         if (!live)
           break;
-        const Q &q = g[grid.ridge.best(y)];
+        std::vector<double> v = grid.values(c, grid.ridge.peak(y), q);
         if (hop < kHops && grid.edge(c, q)) {
           c = q;
           continue;
         }
-        pick[d] = static_cast<int>(index.at(q));
+        raw[d] = std::move(v);
         break;
       }
+    if (raw[d].empty())
+      continue;
+    if (th.empty())
+      for (const double v : raw[d])
+        th.push_back(std::log(v));
+    else
+      for (size_t a = 0; a < th.size(); ++a)
+        th[a] += (std::log(raw[d][a]) - th[a]) / kDamp;
+    for (const double v : th)
+      use[d].push_back(std::exp(v));
   }
 
+  // 变参中线: 首个选参日之前沿用其参数, 未选参日沿用上一日的
+  Col path;
+  if (const auto first = std::ranges::find_if(use, [](const std::vector<double> &v) { return !v.empty(); }); first != use.end()) {
+    std::vector<P> pd(nd);
+    const std::vector<double> *v = &*first;
+    for (size_t d = 0; d < nd; ++d) {
+      if (!use[d].empty())
+        v = &use[d];
+      pd[d] = grid.bars(*v);
+    }
+    path = center_path(t, days, grid.kind, pd);
+  }
   Cuts cut(n);
   Ladder lad{s};
   for (size_t d = 0; d < nd; ++d) {
-    const int x = pick[d];
-    if (x < 0)
+    const bool on = !use[d].empty();
+    if (!on)
       lad.reset();
     for (size_t i = days.off[d]; i < days.off[d + 1]; ++i)
-      cut.put(i, x < 0 ? Hold{}(i) : lad(t.c[i], (*mid[static_cast<size_t>(x)])[i], kSpace * t.atr[i]));
+      cut.put(i, on ? lad(t.c[i], path[i], kSpace * t.atr[i]) : Hold{}(i));
   }
   cut.rungs = std::move(lad.rungs), cut.s = s;
 
-  out.seg.clear();
-  for (size_t d = 0; d < nd; ++d)
-    if (days.off[d] < days.off[d + 1] && (out.seg.empty() || out.seg.back().second != pick[d]))
-      out.seg.emplace_back(days.off[d], pick[d]);
   Pnl strat(t), hold(t);
   drive(t, u.rates, Size(t, u.sizing, u.bpy), cut, strat);
   drive(t, u.rates, Size(t, {}, u.bpy), Hold{}, hold);
@@ -114,7 +138,8 @@ bool trace(const Series &se, Grid grid, size_t goal, size_t dir, size_t W, const
   out.hold = book_of(t, std::move(hold.run), u.bpy);
   out.cut = std::move(cut);
   out.grid = std::move(grid);
-  out.pts = std::move(pts);
+  out.days = std::move(days);
+  out.raw = std::move(raw), out.use = std::move(use);
   return true;
 }
 

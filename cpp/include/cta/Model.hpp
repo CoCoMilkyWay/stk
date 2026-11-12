@@ -5,7 +5,7 @@
 //   列 = 逐根一个量, 因果 ([i] 只看 ≤ i 的根); 窗口一律以根计 (日线 / 分钟同一套)
 //   未就绪 = NaN: 比较恒假, 预热期不入也不出
 //   指标列 = 算子作用于源列: 窗算子 ema / rms / top / bot / kama, 逐点算子 mean; 原料列 = 高 / 低 / 收 / 对数收益 / ATR (日频)
-//   中线 (ema / kama / mid, 各有自己的参数, 按开关口径滚动调参): 满仓时带着档线走
+//   中线 (ema / kama / mid, 各有自己的参数, 按开关口径滚动调参): 调参打分用定参中线 center, 实盘用变参中线 center_path (参数逐日变, 状态接续); 满仓时带着档线走
 //   分层 (参数固定, 不调): 满仓档线挂在中线逆向侧; 减过仓后以上一笔成交为基准, 逆向每走一层减一份, 顺向回到上一条冻结档线加一份, 加满才重新随中线;
 //     层距 h = kSpace · ATR, 一份 = 1 / kUnits
 //   列只在两端: 指标列 (取齐后 Tape 只读) → 逐根链 (源 → 仓位层 → 成交 → 汇) → 轨迹列 Cuts; 分层的状态 (份数 / 档线栈) 只在拼接遍里
@@ -278,6 +278,73 @@ inline const Col &center(Tape &t, size_t kind, const P &p) {
     return t.kama(t.c, k, len(p[1]));
   case kMid:
     return t.mean(t.top(t.h, k), t.bot(t.l, k));
+  }
+  assert(false && "中线模型");
+  std::unreachable();
+}
+
+// 变参中线: 日 d 用参数 pd[d] (以根计, 可为小数), 状态逐根接续 (参数变只改跟随的快慢, 不在几条定参中线之间换线)
+//   ema: α = 2 / (k + 1); kama: 效率比窗 round(k), α_slow 按 L; mid: 窗 round(k) (窗一变区间即可能跳; 各日自窗首重扫)
+//   自首根起满当日窗长才就绪, 之前 = NaN
+inline Col center_path(const Tape &t, const Days &days, size_t kind, const std::vector<P> &pd) {
+  assert(pd.size() == days.size() && days.off.back() == t.n && "逐日参数");
+  const Col &x = t.c;
+  Col o(t.n, kNaN);
+  switch (kind) {
+  case kEma: {
+    double v = 0;
+    for (size_t d = 0; d < days.size(); ++d) {
+      const double k = pd[d][0], a = 2 / (k + 1);
+      for (size_t i = days.off[d]; i < days.off[d + 1]; ++i) {
+        v = i ? v + a * (x[i] - v) : x[i];
+        if (static_cast<double>(i + 1) >= k)
+          o[i] = static_cast<float>(v);
+      }
+    }
+    return o;
+  }
+  case kKama: {
+    std::vector<double> cum(t.n, 0); // Σ|Δx| 前缀
+    for (size_t i = 1; i < t.n; ++i)
+      cum[i] = cum[i - 1] + std::fabs(x[i] - x[i - 1]);
+    double v = x[0];
+    for (size_t d = 0; d < days.size(); ++d) {
+      const size_t k = len(pd[d][0]);
+      const double as = std::sqrt(2 / (static_cast<double>(pd[d][1]) + 1));
+      assert(k > 0 && pd[d][1] > 3 && "kama 窗口 / 震荡跨度");
+      for (size_t i = days.off[d]; i < days.off[d + 1]; ++i) {
+        if (i < k) {
+          v = x[i];
+          continue;
+        }
+        const double sum = cum[i] - cum[i - k], er = sum > 0 ? std::fabs(x[i] - x[i - k]) / sum : 0, sc = er * (2 / 3.0 - as) + as;
+        o[i] = static_cast<float>(v += sc * sc * (x[i] - v));
+      }
+    }
+    return o;
+  }
+  case kMid: {
+    std::vector<size_t> qh(t.n), ql(t.n); // 单调队列: 窗内最高 / 最低
+    for (size_t d = 0; d < days.size(); ++d) {
+      const size_t k = len(pd[d][0]), b = days.off[d], e = days.off[d + 1];
+      assert(k > 0 && "唐奇安窗口");
+      size_t hb = 0, he = 0, lb = 0, le = 0;
+      for (size_t i = b + 1 >= k ? b + 1 - k : 0; i < e; ++i) {
+        while (he > hb && t.h[qh[he - 1]] <= t.h[i])
+          --he;
+        while (le > lb && t.l[ql[le - 1]] >= t.l[i])
+          --le;
+        qh[he++] = i, ql[le++] = i;
+        if (qh[hb] + k <= i)
+          ++hb;
+        if (ql[lb] + k <= i)
+          ++lb;
+        if (i >= b && i + 1 >= k)
+          o[i] = (t.h[qh[hb]] + t.l[ql[lb]]) / 2;
+      }
+    }
+    return o;
+  }
   }
   assert(false && "中线模型");
   std::unreachable();

@@ -72,12 +72,8 @@ std::vector<size_t> sample(size_t n, double x0, double x1, size_t step) {
   return o;
 }
 
-// 有效根 i 所在的选参段: pts 下标 (−1 = 未选参) + 段起根
-std::pair<int, size_t> seg_at(const cta::Track &tr, size_t i) {
-  const auto it = std::upper_bound(tr.seg.begin(), tr.seg.end(), i, [](size_t v, const std::pair<size_t, int> &s) { return v < s.first; });
-  assert(it != tr.seg.begin());
-  return {std::prev(it)->second, std::prev(it)->first};
-}
+// 有效根 i 所在日 (下标同 Track::days)
+size_t dix(const CtaResult &r, size_t i) { return r.se->t[i] / kS - r.se->t[0] / kS; }
 
 // ---- 两图: 上 = 仓位色 (多 = 收盘线以上, 空 = 以下, 越满越浓) + 收盘 + 中线 + 档线 (分层的 kUnits 份各一条, 分层时另有起点一条) + 买 / 卖标记 (每点合成);
 //      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换). x 同一视野 (链到 ui), 每像素取末根; 光标 = 可拖竖线 (两图同一条)
@@ -387,13 +383,13 @@ void stat_table(const CtaResult &r) {
   ImGui::EndTable();
 }
 
-// 光标处 (−1 = 末根) 所在选参段 → q = 所用配置的格点号 (未选参 = nullptr); 返回段说明
-std::string cursor_at(const CtaResult &r, int cursor, const cta::Q *&q) {
+// 光标处 (−1 = 末根) 所在日 → v = 当日所用参数 (阻尼后, 轴的单位; 未选参 = nullptr); 返回说明
+std::string cursor_at(const CtaResult &r, int cursor, const std::vector<double> *&v) {
   const size_t n = r.se->c.size(), i = cursor >= 0 ? static_cast<size_t>(cursor) : n - 1;
-  const auto [x, from] = seg_at(r.tr, i);
+  const std::vector<double> &u = r.tr.use[dix(r, i)];
   const std::string head = cursor >= 0 ? "光标 " + when(r, i) : "末根";
-  q = x < 0 ? nullptr : &r.tr.pts[static_cast<size_t>(x)];
-  return head + (x < 0 ? ": 买入持有 (首日 / 窗内数据不足 / 中线未就绪, 未选参)" : ": 自 " + misc::dash(day_of(r, from)) + " 起用");
+  v = u.empty() ? nullptr : &u;
+  return head + (u.empty() ? ": 买入持有 (首日 / 窗内数据不足 / 中线未就绪, 未选参)" : ": 当日所用 (阻尼后)");
 }
 
 // 模型下拉: 选项 xs (各有 name / tip) 的下标 cur; 悬停 = head + 各模型说明
@@ -413,15 +409,15 @@ void model_combo(const char *id, const Xs &xs, size_t &cur, const std::string &h
   }
 }
 
-// ---- 参数轨迹: 各选参段所用配置的各轴参数 ÷ 首个选参段的值 (都从 1 起, log 轴; 只看相对变化, 跳 = 岭回归选参不稳);
-//      x 链到两图 (同一视野, 双击回全段), 未选参段断开; 光标 = 橙色竖线; 悬停看该段参数 ----
+// ---- 参数轨迹: 逐日各轴参数 ÷ 首个选参日的值 (都从 1 起, log 轴; 只看相对变化): 实线 = 阻尼后所用, 淡线 = 曲面最高点 (跳 = 岭回归选参不稳);
+//      x 链到两图 (同一视野, 双击回全段), 未选参日断开; 光标 = 橙色竖线; 悬停看当日参数 ----
 
-// 配置 q 的参数: 中线 模型  轴 = 值 …
-std::string params_of(const cta::Grid &g, const cta::Q &q) {
+// 参数 v (轴的单位): 中线 模型  轴 = 值 …
+std::string params_of(const cta::Grid &g, const std::vector<double> &v) {
   std::string s = std::string("中线 ") + cta::kCenters[g.kind].name;
   for (size_t a = 0; a < g.ax.size(); ++a) {
     char b[48];
-    std::snprintf(b, sizeof(b), "  %s = %.3g%s", g.ax[a]->name, g.value(a, q[a]), g.ax[a]->day ? " 日" : "");
+    std::snprintf(b, sizeof(b), "  %s = %.3g%s", g.ax[a]->name, v[a], g.ax[a]->day ? " 日" : "");
     s += b;
   }
   return s;
@@ -431,25 +427,28 @@ void path(CtaState &c, const CtaResult &r) {
   const cta::Track &tr = r.tr;
   const cta::Grid &g = tr.grid;
   const size_t n = r.se->c.size(), na = g.ax.size();
-  const auto first = std::ranges::find_if(tr.seg, [](const std::pair<size_t, int> &s) { return s.second >= 0; });
-  if (first == tr.seg.end()) {
+  const auto first = std::ranges::find_if(tr.use, [](const std::vector<double> &v) { return !v.empty(); });
+  if (first == tr.use.end()) {
     ImGui::TextDisabled("全期未选参 (买入持有)");
     return;
   }
-  const cta::Q &q0 = tr.pts[static_cast<size_t>(first->second)];
-  // 阶梯: 每段两点 (起根, 段末根), 段间的竖跳 = 换参; 未选参段 = NaN 断开
+  const std::vector<double> &v0 = *first;
+  // 阶梯: 每日两点 (首根, 末根), 日间的竖跳 = 换参; 未选参日 = NaN 断开
   std::vector<double> xs;
-  std::vector<std::vector<double>> ys(na);
-  for (size_t k = 0; k < tr.seg.size(); ++k) {
-    const auto [b, x] = tr.seg[k];
-    const size_t e = k + 1 < tr.seg.size() ? tr.seg[k + 1].first : n;
+  std::vector<std::vector<double>> ys(2 * na); // [轴] 所用 / [na + 轴] 最高点
+  for (size_t d = 0; d < tr.days.size(); ++d) {
+    const size_t b = tr.days.off[d], e = tr.days.off[d + 1];
+    if (b == e)
+      continue;
     for (const size_t i : {b, e - 1}) {
       xs.push_back(static_cast<double>(i));
-      for (size_t a = 0; a < na; ++a)
-        ys[a].push_back(x < 0 ? cta::kNaN : g.value(a, tr.pts[static_cast<size_t>(x)][a]) / g.value(a, q0[a]));
+      for (size_t a = 0; a < na; ++a) {
+        ys[a].push_back(tr.use[d].empty() ? cta::kNaN : tr.use[d][a] / v0[a]);
+        ys[na + a].push_back(tr.raw[d].empty() ? cta::kNaN : tr.raw[d][a] / v0[a]);
+      }
     }
   }
-  // y 范围 = 视野内各段 (与视野相交) 的 log 跨度, 上下各留 20%; 跨度为 0 按一格 (kStep) 计
+  // y 范围 = 视野内各日 (与视野相交) 的 log 跨度, 上下各留 20%; 跨度为 0 按一格 (kStep) 计
   double lo = INFINITY, hi = -INFINITY;
   for (size_t k = 0; k + 1 < xs.size(); k += 2)
     if (xs[k] <= c.x1 && xs[k + 1] >= c.x0)
@@ -469,22 +468,29 @@ void path(CtaState &c, const CtaResult &r) {
     ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
     ImPlot::SetupAxisLimits(ImAxis_Y1, std::pow(10.0, lo - 0.2 * span), std::pow(10.0, hi + 0.2 * span), ImPlotCond_Always);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_Horizontal);
-    for (size_t a = 0; a < na; ++a)
+    for (size_t a = 0; a < na; ++a) {
+      const ImVec4 col = ImPlot::GetColormapColor(static_cast<int>(a));
+      const std::string top = std::string(g.ax[a]->name) + " 最高点";
+      ImPlot::SetNextLineStyle(ImVec4(col.x, col.y, col.z, 0.35f), 1.0f);
+      ImPlot::PlotLine(top.c_str(), xs.data(), ys[na + a].data(), static_cast<int>(xs.size()));
+      ImPlot::SetNextLineStyle(col, 1.5f);
       ImPlot::PlotLine(g.ax[a]->name, xs.data(), ys[a].data(), static_cast<int>(xs.size()));
+    }
     if (c.cursor >= 0) {
       const double x = c.cursor;
       ImPlot::SetNextLineStyle(kPinCol, 2.0f);
       ImPlot::PlotInfLines("##cta_path_pin", &x, 1);
     }
     if (ImPlot::IsPlotHovered()) {
-      const size_t i = static_cast<size_t>(std::clamp(std::lround(ImPlot::GetPlotMousePos().x), 0L, static_cast<long>(n - 1)));
-      const auto [x, from] = seg_at(tr, i);
-      tip("%s\n%s", when(r, i).c_str(),
-          x < 0 ? "未选参 (买入持有)" : (params_of(g, tr.pts[static_cast<size_t>(x)]) + "\n自 " + misc::dash(day_of(r, from)) + " 起用").c_str());
+      const size_t i = static_cast<size_t>(std::clamp(std::lround(ImPlot::GetPlotMousePos().x), 0L, static_cast<long>(n - 1))), d = dix(r, i);
+      if (tr.use[d].empty())
+        tip("%s\n未选参 (买入持有)", misc::dash(day_of(r, i)).c_str());
+      else
+        tip("%s\n所用 (阻尼后): %s\n最高点: %s", misc::dash(day_of(r, i)).c_str(), params_of(g, tr.use[d]).c_str(), params_of(g, tr.raw[d]).c_str());
     }
     ImPlot::EndPlot();
   }
-  ImGui::TextDisabled("首个选参段: %s", params_of(g, q0).c_str());
+  ImGui::TextDisabled("首个选参日: %s", params_of(g, v0).c_str());
 }
 
 void panel(const CtaService &svc, CtaState &c, const cta::Rates &rates, const CtaResult *r, const std::string &lack) {
@@ -542,18 +548,20 @@ void panel(const CtaService &svc, CtaState &c, const cta::Rates &rates, const Ct
   if (ImGui::IsItemHovered())
     tip("参数轴 = 自 v0 向两侧铺的格点, 相邻之比 %.3g, 间距不小于各轴基本单位 (小值处退成等差), 收进各轴硬边界\n"
         "网格 = 以当前最优为中点、各多值轴 m 个相邻格点的全部组合 (碰到硬边界则整格平移进界); 各轴的 m 轮流分得 (每次给格点最少的轴加一个), 积不超过此数\n"
-        "每日最高点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日\n"
+        "每日取曲面的连续最高点 (参数可为小数, 相邻格点间对数插值); 最近的格点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日\n"
         "• 编辑完生效",
         cta::kStep, cta::kHops);
-  hint("中线只选模型, 参数每日以此前至多 W 日的网格曲面最高点选出, 网格随最高点移动");
+  hint("中线只选模型, 参数每日以此前至多 W 日的网格曲面最高点选出, 网格随最高点移动; 所用参数 = 最高点的 5 日阻尼, 中线按所用参数逐根递推 (换参不跳线)");
   c.path_open = r && ImGui::CollapsingHeader("参数轨迹");
   if (r && ImGui::IsItemHovered())
-    tip("各选参段所用的参数随时间, 每轴 ÷ 首个选参段的值 (都从 1 起, log 轴): 只看相对变化, 竖跳 = 换参, 跳得频 / 跳得大 = 岭回归选参不稳\n"
-        "• x 与左侧两图同一视野; 展开时左图出现光标 (橙色竖线), 中栏参数看光标所在日");
+    tip("逐日参数, 每轴 ÷ 首个选参日的值 (都从 1 起, log 轴), 只看相对变化: 实线 = 阻尼后所用, 淡线 = 曲面最高点; 淡线跳得频 / 跳得大 = 岭回归选参不稳\n"
+        "• 阻尼: 所用参数 (对数) 每日朝最高点走 1 / %.0f\n"
+        "• x 与左侧两图同一视野; 展开时左图出现光标 (橙色竖线), 中栏参数看光标所在日",
+        cta::kDamp);
   if (c.path_open)
     path(c, *r);
 
-  const cta::Q *at = nullptr;
+  const std::vector<double> *at = nullptr;
   const std::string where = r ? cursor_at(*r, c.path_open ? c.cursor : -1, at) : std::string{};
   ImGui::SeparatorText("中线");
   label("模型");
@@ -566,7 +574,7 @@ void panel(const CtaService &svc, CtaState &c, const cta::Rates &rates, const Ct
     ImGui::TextUnformatted(s);
     ImGui::SameLine(x0 + lw);
     if (at)
-      ImGui::TextDisabled("%.3g", r->tr.grid.value(a, (*at)[a]));
+      ImGui::TextDisabled("%.3g", (*at)[a]);
     else
       ImGui::TextDisabled("-");
   }
