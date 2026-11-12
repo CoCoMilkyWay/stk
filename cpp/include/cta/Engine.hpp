@@ -23,6 +23,7 @@ struct Rates {
   double commission = 0; // 佣金率 (买卖各一次)
   double stamp = 0;      // 印花税率 (卖出单边)
   double impact = 0;     // 冲击率 (买卖各一次)
+  bool operator==(const Rates &) const = default;
 };
 
 // 仓位层设定; 默认 = 不调 (买入持有)

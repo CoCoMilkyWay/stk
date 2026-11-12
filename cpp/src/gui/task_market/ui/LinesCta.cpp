@@ -80,7 +80,7 @@ std::pair<int, size_t> seg_at(const cta::Track &tr, size_t i) {
   return {std::prev(it)->second, std::prev(it)->first};
 }
 
-// ---- 两图: 上 = 仓位色 (多 = 收盘线以上, 空 = 以下, 越满越浓) + 收盘 + 中线 + 档线 (分层的 kUnits 份各一条) + 逐根时的买 / 卖标记;
+// ---- 两图: 上 = 仓位色 (多 = 收盘线以上, 空 = 以下, 越满越浓) + 收盘 + 中线 + 档线 (分层的 kUnits 份各一条, 分层时另有起点一条) + 逐根时的买 / 卖标记;
 //      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换). x 同一视野 (链到 ui), 每像素取末根; 光标 = 可拖竖线 (两图同一条)
 //      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 双击回全段;
 //      光标 = 橙色竖线 (同 OrderFlow 锚线): 参数点云展开时才出现 (初放视野正中), 只能拖动, 标注时刻 ----
@@ -181,8 +181,8 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const ImVec2 &size
       ImPlot::PopPlotClipRect();
       dl->Flags = keep_flags;
     }
-    { // 档线: 自中线一侧起逐份一条 (Cuts::rungs_at); 满仓 = 随中线走, 中线以下 = 已减份的冻结 + 持有份的随 ATR 伸缩
-      std::vector<std::vector<double>> y(cta::kUnits, std::vector<double>(xs.size(), cta::kNaN));
+    { // 档线: 自中线一侧起逐条 (Cuts::rungs_at); 满仓 = 随中线走, 分层 = 已减份的冻结 + 起点 + 持有份的随 ATR 伸缩
+      std::vector<std::vector<double>> y(cta::kUnits + 1, std::vector<double>(xs.size(), cta::kNaN));
       for (size_t k = 0; k < at.size(); ++k)
         tr.cut.rungs_at(at[k], [&](int j, float p) { y[static_cast<size_t>(j)][k] = p; });
       for (const std::vector<double> &v : y) {
@@ -564,7 +564,7 @@ void cloud(CtaState &c, const CtaResult &r) {
   right(b, true);
 }
 
-void panel(const CtaService &svc, CtaState &c, const CtaResult *r, const std::string &lack) {
+void panel(const CtaService &svc, CtaState &c, const cta::Rates &rates, const CtaResult *r, const std::string &lack) {
   // 状态: 进度 / 算不了的原因 / 全期跨度
   const Phase ph = svc.phase.load(std::memory_order_acquire);
   const size_t done = svc.done.load(std::memory_order_relaxed), total = svc.total.load(std::memory_order_relaxed);
@@ -586,7 +586,7 @@ void panel(const CtaService &svc, CtaState &c, const CtaResult *r, const std::st
   CtaSpec &sp = c.spec;
   const float x0 = ImGui::GetCursorPosX();
   float lw = 0.0f; // 名列宽 (控件 / 灰显参数都从这里起)
-  for (const char *s : {"滚动窗 (日)", "网格配置数", "模型", "方向", "佣金 (bp)", "印花税 (bp)", "冲击 (bp)", "目标年化波动", "不交易带"})
+  for (const char *s : {"滚动窗 (日)", "网格配置数", "模型", "方向", "费率 (bp)", "目标年化波动", "不交易带"})
     lw = std::max(lw, ImGui::CalcTextSize(s).x);
   lw += ImGui::GetStyle().ItemSpacing.x;
   const auto label = [&](const char *s) {
@@ -657,11 +657,12 @@ void panel(const CtaService &svc, CtaState &c, const CtaResult *r, const std::st
                   cta::kSpace, 100.0 / cta::kUnits);
     hint(s);
     if (ImGui::IsItemHovered())
-      tip("中线顺向侧满仓 (回到顺向侧 = 缺的份按收盘一次补满), 档线随中线走; 逆向侧: 刚穿过中线时以中线为基准, 之后基准 = 上一笔成交的档线\n"
-          "• 逆向走到 基准 − 层距 减一份, 该价冻结成一条档线; 顺向回到上一条冻结档线加一份 (起点之上 = 基准 + 层距)\n"
-          "• 一根越过几档成交几档, 份数到 0 / 满后基准照移 (跌透之后反弹一档即加回)\n"
-          "• 图上: 已减份的档线横住 (宽度 = 各自成交时的层距), 持有份的档线挂在基准下方, 宽度随当日 ATR 变; 重新满仓后回到随中线走\n"
-          "• ATR = 海龟 N: 日真实波幅的 %zu 日平滑, 盘中用前一交易日收盘时的值; 中线 / ATR 未就绪 = 空仓",
+      tip("只认档线: 满仓时档线 = 中线 − j × 层距, 随中线走; 逆向走到 中线 − 层距 时冻结当根中线作起点, 之后基准 = 上一笔成交的档线\n"
+          "• 逆向走到 基准 − 层距 减一份, 该价冻结成一条档线; 顺向回到上一条冻结档线加一份, 最后一份在起点加回\n"
+          "• 加满之前中线不起作用 (价格回到中线以上也不一次补满); 加满后档线重新随中线走\n"
+          "• 一根越过几档成交几档, 份数到 0 后基准照移 (跌透之后反弹一档即加回)\n"
+          "• 图上: 已减份的档线与起点横住 (宽度 = 各自成交时的层距), 持有份的档线挂在基准下方, 宽度随当日 ATR 变\n"
+          "• ATR = 海龟 N: 日真实波幅的 %zu 日平滑, 盘中用前一交易日收盘时的值; 中线 / ATR 未就绪 = 空仓, 就绪首根按满仓起点落到对应档",
           cta::kAtrDays);
   }
 
@@ -679,18 +680,14 @@ void panel(const CtaService &svc, CtaState &c, const CtaResult *r, const std::st
     if (ImGui::IsItemHovered())
       tip("%s", s.c_str());
   }
-  const auto bp = [&](const char *name, const char *id, float &v, const char *s) {
-    label(name);
-    ImGui::InputFloat(id, &v, 0.5f, 1.0f, "%.1f");
-    v = std::max(v, 0.0f);
-    c.editing |= ImGui::IsItemActive();
-    if (ImGui::IsItemHovered())
-      tip("%s; 编辑完生效", s);
-  };
-  bp("佣金 (bp)", "##cta_commission", sp.commission_bp, "佣金 = 佣金率 × |Δ仓位|, 买卖各一次");
-  bp("印花税 (bp)", "##cta_stamp", sp.stamp_bp, "印花税 = 印花税率 × 卖出量 (多头减仓 / 融券卖出), 买入不收");
-  bp("冲击 (bp)", "##cta_impact", sp.impact_bp,
-     "冲击 = 冲击率 × |Δ仓位|, 固定, 不按金额变\n• 震荡 / 跳空另计: 分层按收盘成交比按档线价成交多付的差; 最近那档的差 = 震荡, 一根越过几档多出的部分 = 跳空");
+  label("费率 (bp)");
+  ImGui::TextDisabled("佣金 %.3g / 印花税 %.3g / 冲击 %.3g", rates.commission * 1e4, rates.stamp * 1e4, rates.impact * 1e4);
+  if (ImGui::IsItemHovered())
+    tip("系统设置的税佣与固定冲击 (Settings), 各页同一份; 改了即重算\n"
+        "• 佣金 = 佣金率 × |Δ仓位|, 买卖各一次\n"
+        "• 印花税 = 印花税率 × 卖出量 (多头减仓 / 融券卖出), 买入不收\n"
+        "• 冲击 = 固定冲击 × |Δ仓位|, 买卖各一次, 不按金额变\n"
+        "• 震荡 / 跳空另计: 分层按收盘成交比按档线价成交多付的差; 最近那档的差 = 震荡, 一根越过几档多出的部分 = 跳空");
   label("目标年化波动");
   ImGui::InputFloat("##cta_vol", &sp.vol, 0.05f, 0.1f, "%.2f");
   sp.vol = std::max(sp.vol, 0.0f);
@@ -711,12 +708,12 @@ void panel(const CtaService &svc, CtaState &c, const CtaResult *r, const std::st
 
 } // namespace
 
-void RenderLinesCta(CtaService &svc, LinesState &ui, const char *name, const ImVec2 &plots_size, float panel_w) {
+void RenderLinesCta(CtaService &svc, LinesState &ui, const cta::Rates &rates, const char *name, const ImVec2 &plots_size, float panel_w) {
   CtaState &c = ui.cta;
   const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
   const Quote::Ref q = one.empty() ? Quote::Ref{} : one.begin()->second;
   if (q.ok() ? !c.editing : !c.sent.req.gen) // 首次打开未选标的 = 先备价格库
-    c.sent.send(svc, {.ref = q, .spec = c.spec});
+    c.sent.send(svc, {.ref = q, .spec = c.spec, .rates = rates});
   const std::shared_ptr<const CtaResult> r = latest(svc);
   const bool mine = q.ok() && r && r->ref == q; // 本标的的 (设定改了时新的还在算, 先显旧的)
   const CtaResult *show = mine && r->lack.empty() ? r.get() : nullptr;
@@ -733,7 +730,7 @@ void RenderLinesCta(CtaService &svc, LinesState &ui, const char *name, const ImV
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginChild("##cta_panel", ImVec2(panel_w, plots_size.y), ImGuiChildFlags_Borders);
-  panel(svc, c, show, mine ? r->lack : std::string{});
+  panel(svc, c, rates, show, mine ? r->lack : std::string{});
   ImGui::EndChild();
 }
 

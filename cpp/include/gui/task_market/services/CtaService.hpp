@@ -27,9 +27,6 @@ struct CtaSpec {
   int dir = cta::kLong;                       // 方向 (cta::kDirs 下标)
   int roll = static_cast<int>(cta::kMinRoll); // 滚动窗 (日, ≥ kMinRoll)
   int grid = 9;                               // 网格配置数上限 (各多值轴轮流分格点)
-  float commission_bp = 1;                    // 佣金率 [bp] (买卖各一次)
-  float stamp_bp = 5;                         // 印花税率 [bp] (卖出单边)
-  float impact_bp = 5;                        // 冲击率 [bp] (买卖各一次)
   float vol = 0;                              // 目标年化波动 (0 = 不调)
   float buffer = 0;                           // 不交易带宽
   bool operator==(const CtaSpec &) const = default;
@@ -39,6 +36,7 @@ struct CtaRequest {
   uint32_t gen = 0;
   Quote::Ref ref; // 标的; 无 = 只备价格库
   CtaSpec spec;
+  cta::Rates rates; // 成本率 = 系统配置 (Config::commission / stamp / fixed_impact)
   bool operator==(const CtaRequest &) const = default;
 };
 

@@ -159,7 +159,7 @@ void SyncLinesWatch(LinesState &ui) {
 }
 
 int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaService &cta, const PortfolioUIState &pf, LinesState &ui,
-                   double fixed_impact, const Quote::QuoteHub *mk, const StockInfos &infos) {
+                   double fixed_impact, const cta::Rates &rates, const Quote::QuoteHub *mk, const StockInfos &infos) {
   assert(page >= 0 && page < kPages);
   const PageDef &pd = kPageDefs[page];
   PortfolioResult res;
@@ -261,7 +261,7 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
     break;
   case kLayoutCta: {
     const float pw = std::floor((lw - st.ItemSpacing.x) / 2.0f);
-    RenderLinesCta(cta, ui, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y), pw);
+    RenderLinesCta(cta, ui, rates, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y), pw);
     sw = lw - pw - st.ItemSpacing.x;
     break;
   }

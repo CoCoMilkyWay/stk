@@ -68,9 +68,9 @@
 //     右表 = 类别条 (指数 / 行业 / 概念 / 自选) + 过滤条 + 点行选中; 列 = 中文名 | 只数 | 总市值 | 换手 | 资金流入 (同 NAV) | 日轴各日净流入占当日成交额 | 档内合计净流入 | 合计占比 (按正负着色, 悬停格看金额)
 //   页 CTA = 单标的 中线 + 分层 模型的滚动调参回测 (CtaService; 不看区间条): 标的 = 右表单选 (与 VAL 同一份选中: 篮子行 / 成分行), 价格 = all.bar 库合成落盘的 1 分钟价;
 //     右栏 = 中栏 + 右表各半; 右表列 = 中文名 | 理想 | 夏普 (同 NAV 数值列);
-//     中栏 = 设定 (优化目标 / 中线模型 / 滚动窗 / 方向 / 费率 / 目标波动 / 不交易带; 改了即重算; 分层固定) + 光标处所用参数 + 全期指标 (策略 vs 买入持有);
+//     中栏 = 设定 (优化目标 / 中线模型 / 滚动窗 / 方向 / 目标波动 / 不交易带; 改了即重算; 分层固定, 费率 = 系统设置) + 光标处所用参数 + 全期指标 (策略 vs 买入持有);
 //     左 = 上下两图共一条 x (有效根下标, 无隔夜空档; 刻度标日, 放大到几日内标时刻; 每像素取末根): 上 = 仓位色 (多 = 收盘线以上 / 空 = 以下, 越满越浓) + 收盘
-//     + 中线 + 档线 (满仓随中线走; 中线以下 = 已减份冻结 + 持有份随 ATR 伸缩) + 逐根时的买 / 卖标记; 下 = 策略 / 持有净值 (log); 悬停 = 光标 (中栏参数跟着走)
+//     + 中线 + 档线 (满仓随中线走; 分层 = 已减份冻结 + 持有份随 ATR 伸缩, 加满才重新随中线) + 逐根时的买 / 卖标记; 下 = 策略 / 持有净值 (log); 悬停 = 光标 (中栏参数跟着走)
 #pragma once
 
 #include "gui/engine/services/PortfolioService.hpp"
@@ -244,6 +244,6 @@ void SyncLinesWatch(LinesState &ui);
 // 日内栏 / 指数行业近况 / 成分行当日空着); infos = 基本面档案 (成分行名 / 近况 / 估值); minute = NAV / VAL 主图分钟线的服务, cta = CTA 页的服务.
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
 int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaService &cta, const PortfolioUIState &pf, LinesState &ui,
-                   double fixed_impact, const Quote::QuoteHub *mk, const StockInfos &infos);
+                   double fixed_impact, const cta::Rates &rates, const Quote::QuoteHub *mk, const StockInfos &infos);
 
 } // namespace GUI::Market

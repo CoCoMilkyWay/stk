@@ -1,12 +1,13 @@
 #pragma once
 
 // 单资产 中线 + 分层 模型: 有效根 → 指标列 (Tape 缓存, 同资产各配置共用) → 中线 (调参) → 分层 Ladder 逐根出一刀 Cut (档线 + 目标仓位, 按本根收盘价调到)
-//   方向 kDirs: long = 中线以上满多 / short = 中线以下满空; 顺向 = 方向所押的一侧, 逆向 = 另一侧
+//   方向 kDirs: long = 满多起步 / short = 满空起步; 顺向 = 方向所押的一侧, 逆向 = 另一侧
 //   列 = 逐根一个量, 因果 ([i] 只看 ≤ i 的根); 窗口一律以根计 (日线 / 分钟同一套)
 //   未就绪 = NaN: 比较恒假, 预热期不入也不出
 //   指标列 = 算子作用于源列: 窗算子 ema / rms / top / bot / kama, 逐点算子 mean; 原料列 = 高 / 低 / 收 / 对数收益 / ATR (日频)
-//   中线 (ema / kama / mid, 各有自己的参数, 滚动调参) 只当开关: 顺向侧满仓, 逆向侧交给分层
-//   分层 (参数固定, 不调): 逆向侧以上一笔成交为基准的网格, 逆向每走一层减一份, 顺向每走一层加一份; 层距 h = kSpace · ATR, 一份 = 1 / kUnits
+//   中线 (ema / kama / mid, 各有自己的参数, 按开关口径滚动调参): 满仓时带着档线走
+//   分层 (参数固定, 不调): 满仓档线挂在中线逆向侧; 减过仓后以上一笔成交为基准, 逆向每走一层减一份, 顺向回到上一条冻结档线加一份, 加满才重新随中线;
+//     层距 h = kSpace · ATR, 一份 = 1 / kUnits
 //   列只在两端: 指标列 (取齐后 Tape 只读) → 逐根链 (源 → 仓位层 → 成交 → 汇) → 轨迹列 Cuts; 分层的状态 (份数 / 档线栈) 只在拼接遍里
 //   源 = 逐根出刀的可调用 Cut(i): Cuts (拼好的轨迹) / Hold (买入持有)
 //   成交 / 仓位层 / 成本 / 逐根链归 Engine
@@ -286,13 +287,13 @@ inline const Col &center(Tape &t, size_t kind, const P &p) {
 
 inline constexpr uint32_t kNone = UINT32_MAX;
 
-// 档线栈 (持久, 各根共用): 一个节点 = 一条冻结的档线 (价) + 上一条 (更靠中线的那条; kNone = 栈底 = 进中线以下时的起点, 不算档线)
+// 档线栈 (持久, 各根共用): 一个节点 = 一条冻结的档线 (价) + 上一条 (更靠中线的那条; kNone = 栈底 = 满仓转入分层时的中线, 最后一份在此加回)
 struct Rungs {
   std::vector<float> px;
   std::vector<uint32_t> up;
 };
 
-// 一刀 = 一根的信号: 中线 + 层距 h (未就绪 = NaN) + 基准档 top (档线栈顶; kNone = 中线以上 / 未就绪) + 目标仓位 w
+// 一刀 = 一根的信号: 中线 + 层距 h (未就绪 = NaN) + 基准档 top (档线栈顶; kNone = 满仓随中线 / 未就绪) + 目标仓位 w
 //   + 越线差 (占净值, 按本根分层调仓量 |Δw| 计): 分层按收盘成交比按档线价成交多付的差; 震荡 = 各份都按离收盘最近那档计, 跳空 = 远处各档多出的部分
 struct Cut {
   float mid = kNaN, h = kNaN, w = 0, chop = 0, gap = 0;
@@ -310,23 +311,25 @@ struct Cuts {
   void put(size_t i, const Cut &x) { mid[i] = x.mid, h[i] = x.h, w[i] = x.w, chop[i] = x.chop, gap[i] = x.gap, top[i] = x.top; }
   Cut operator()(size_t i) const { return {mid[i], h[i], w[i], chop[i], gap[i], top[i]}; }
 
-  // 根 i 的档线 f(j, 价), j 自中线一侧起逐份 (至多 kUnits 条); 未就绪 = 无
-  //   中线以上 (满仓): 中线 − j · h, 随中线走
-  //   中线以下: 已减份的冻结档线 (栈里自中线往基准, 至多 kUnits − 持有份数) + 持有份的减仓线 (基准 − j · h, 随当日 ATR 伸缩)
+  // 根 i 的档线 f(j, 价), j ∈ [0, kUnits] 自中线一侧起; 未就绪 = 无
+  //   满仓: j ≥ 1 = 中线 − j · h, 随中线走 (j = 0 即中线本身, 不出)
+  //   分层: 冻结档线 (栈里自基准往上 kUnits − 持有份数 条 + 基准; j = 0 = 涨回即满仓那条) + 持有份的减仓线 (基准 − j · h, 随当日 ATR 伸缩)
   template <class F>
   void rungs_at(size_t i, F f) const {
     if (!(h[i] > 0))
       return;
     if (top[i] == kNone) {
       for (int j = 1; j <= kUnits; ++j)
-        f(j - 1, mid[i] - s * static_cast<float>(j) * h[i]);
+        f(j, mid[i] - s * static_cast<float>(j) * h[i]);
       return;
     }
     const int k = static_cast<int>(std::lround(std::fabs(w[i]) * kUnits));
-    uint32_t fz[kUnits];
+    uint32_t fz[kUnits + 1];
     int nf = 0;
-    for (uint32_t r = top[i]; rungs.up[r] != kNone && nf < kUnits - k; r = rungs.up[r])
+    for (uint32_t r = top[i]; nf <= kUnits - k; r = rungs.up[r]) {
+      assert(r != kNone);
       fz[nf++] = r;
+    }
     int j = 0;
     while (nf > 0)
       f(j++, rungs.px[fz[--nf]]);
@@ -342,23 +345,24 @@ struct Dir {
   const char *name, *tip;
   float s;
 };
-inline constexpr Dir kDirs[] = {{"long", "只做多: 中线以上满多, 中线以下按分层减仓 / 加回", 1},
-                                {"short", "只做空: 中线以下满空, 中线以上按分层减仓 / 加回", -1}};
+inline constexpr Dir kDirs[] = {{"long", "只做多: 满多, 跌破中线下方档线按分层减仓 / 加回", 1},
+                                {"short", "只做空: 满空, 涨过中线上方档线按分层减仓 / 加回", -1}};
 
 // ---- 分层 (逐根, 有状态) ----
-//   顺向坐标 x = s · 价 (多 = 价, 空 = −价); 下文的涨 / 跌 / 以上 / 以下都按 x
-//   x ≥ 中线: 满仓 (缺的份按收盘补满, 档线 = 中线), 无基准
-//   x < 中线: 基准 = 档线栈顶 (刚穿到中线以下 = 当根中线, 作栈底); 档线 = 成交时定下的价, 定下即冻结
-//     跌到 基准 − h: 减一份, 该价压栈作新基准; 涨到栈里上一条档线 (栈底之上 = 基准 + h): 加一份, 回到那条作基准
-//     一根越过几档成交几档; 份数到 0 / 满之后不再成交, 基准照样移 (跌透之后反弹一档即加回)
-//   中线 / 层距未就绪 = 空仓, 状态复位 (之后首根就绪: 中线以上满仓, 以下自空仓起, 栈底 = 中线)
+//   顺向坐标 x = s · 价 (多 = 价, 空 = −价); 下文的涨 / 跌 / 以上 / 以下都按 x; 只认档线, 中线只在满仓时带着档线走
+//   满仓 (无基准): 档线 = 中线 − j · h 随中线走; 跌到 中线 − h: 当根中线压栈作栈底, 转入分层
+//   分层: 基准 = 档线栈顶; 档线 = 成交时定下的价, 定下即冻结
+//     跌到 基准 − h: 减一份, 该价压栈作新基准; 涨到栈里上一条档线: 加一份, 回到那条作基准; 加满 = 回到满仓 (最后一份在栈底加回)
+//     一根越过几档成交几档; 份数到 0 之后基准照样下移 (跌透之后反弹一档即加回)
+//   中线 / 层距未就绪 = 空仓, 状态复位; 之后首根就绪 = 按满仓起点就位 (在 中线 − h 以下则直接落到对应档), 按收盘建仓, 不计越线差
 struct Ladder {
   float s;              // 顺向 (kDirs)
   Rungs rungs;          // 档线栈 (只增)
   int k = 0;            // 持有份数
-  uint32_t top = kNone; // 基准档 (kNone = 中线以上 / 复位)
+  uint32_t top = kNone; // 基准档 (kNone = 满仓 / 复位)
+  bool on = false;      // 已就位 (复位后首根就绪时就位)
 
-  void reset() { k = 0, top = kNone; }
+  void reset() { k = 0, top = kNone, on = false; }
   double at(uint32_t r) const { return s * rungs.px[r]; } // 档线 r 的顺向坐标
   uint32_t push(double L, uint32_t up) {
     rungs.px.push_back(static_cast<float>(s * L)), rungs.up.push_back(up);
@@ -373,33 +377,30 @@ struct Ladder {
       return o;
     }
     const double x = s * c, q = s * m, u = 1.0 / kUnits;
-    int n = 0;                               // 本根成交份数
-    double near = 0, sum = 0;                // 离收盘最近那档的越线差 / 各份越线差之和
-    const auto fill = [&](double L, int j) { // 档线 L 上成交 j 份
+    const bool cold = !on;
+    if (cold)
+      on = true, k = kUnits;
+    int n = 0;                        // 本根成交份数
+    double near = 0, sum = 0;         // 离收盘最近那档的越线差 / 各份越线差之和
+    const auto fill = [&](double L) { // 档线 L 上成交一份
+      if (cold)
+        return;
       const double e = std::fabs(x / L - 1);
-      near = n ? std::min(near, e) : e, sum += j * e, n += j;
+      near = n ? std::min(near, e) : e, sum += e, ++n;
     };
-    if (x >= q) {
-      if (k < kUnits)
-        fill(q, kUnits - k);
-      k = kUnits, top = kNone;
-    } else {
-      if (top == kNone)
-        top = push(q, kNone);
-      const auto above = [&] { return rungs.up[top] != kNone ? at(rungs.up[top]) : at(top) + h; };
+    if (top == kNone && x <= q - h)
+      top = push(q, kNone);
+    if (top != kNone) {
       if (x <= at(top) - h)
         do {
           const double L = at(top) - h;
           if (k > 0)
-            fill(L, 1), --k;
+            fill(L), --k;
           top = push(L, top);
         } while (x <= at(top) - h);
       else
-        for (double L; x >= (L = above());) {
-          if (k < kUnits)
-            fill(L, 1), ++k;
-          top = rungs.up[top] != kNone ? rungs.up[top] : push(L, kNone);
-        }
+        for (double L; top != kNone && x >= (L = at(rungs.up[top]));)
+          fill(L), top = ++k < kUnits ? rungs.up[top] : kNone;
     }
     o.h = static_cast<float>(h), o.top = top;
     o.w = static_cast<float>(s * u * k), o.chop = static_cast<float>(u * n * near), o.gap = static_cast<float>(u * (sum - n * near));
