@@ -2,6 +2,7 @@
 #include "gui/task_market/ui/LinesCommon.hpp"
 
 #include "gui/util/Chart.hpp" // tint / EndTag / NowCross / range_bar
+#include "gui/util/HoverSync.hpp"
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "implot.h"
@@ -16,6 +17,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <iterator>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <vector>
@@ -164,8 +166,8 @@ void push_tag(std::vector<EndTag> &tags, const ImPlotRect &lim, size_t n, const 
 // ---- 切片画线 (零拷贝: ImPlot 按下标回调取点) ----
 ImPlotPoint slice_pt(const LinesSlice &s, size_t i) { return {s.x(i), s.y(i)}; }
 ImPlotPoint slice_getter(int i, void *s) { return slice_pt(*static_cast<const LinesSlice *>(s), static_cast<size_t>(i)); }
-void plot_slice(const char *label, const LinesSlice &s) {
-  ImPlot::PlotLineG(label, slice_getter, const_cast<LinesSlice *>(&s), static_cast<int>(s.size()));
+void plot_slice(const char *label, const LinesSlice &s, ImPlotLineFlags flags = 0) {
+  ImPlot::PlotLineG(label, slice_getter, const_cast<LinesSlice *>(&s), static_cast<int>(s.size()), flags);
 }
 void push_tag(std::vector<EndTag> &tags, const ImPlotRect &lim, const LinesSlice &s, ImU32 col, std::string text) {
   push_tag(tags, lim, s.size(), [&](size_t i) { return slice_pt(s, i); }, col, std::move(text));
@@ -227,7 +229,8 @@ bool now_cross(const PlotFrame &pf, const std::vector<misc::Ymd> &dates, NowCros
 }
 
 // ---- NAV 主图: 画选中行的两条线, 按组表画层 (for_each_layer; 策略在最上层). 主图例 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (align_cols; 悬停一项看 hover), ###线 ID 定 ID (数值变了不换 item);
-//      点图例单独隐 / 显一条 (行刚选中 → ui.reveal 强制回默认显隐一次: 理想列显, 可成交列隐) ----
+//      点图例单独隐 / 显一条 (行刚选中 → ui.reveal 强制回默认显隐一次: 理想列显, 可成交列隐);
+//      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示), hot 行显示的线白粗线画在最上 ----
 void plot_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf) {
   struct Draw {
     int g, l;
@@ -254,6 +257,8 @@ void plot_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, PlotF
     rows.push_back({x.row->cn, kPairName[pair_kind(*x.row)][x.l], ann, shp, turn});
   }
   const std::vector<std::string> texts = align_cols(rows);
+  std::vector<const Draw *> on; // 显示的线
+  bool legend = false;          // 悬停在图例上 (不另找线)
   for (size_t i = 0; i < ds.size(); ++i) {
     const Draw &x = ds[i];
     const std::string id = line_id(*x.row, x.l), lb = texts[i] + "###" + id;
@@ -262,12 +267,30 @@ void plot_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, PlotF
     ImPlot::SetNextLineStyle(x.col, row_width(x.g));
     plot_slice(lb.c_str(), *x.s);
     if (ImPlot::IsLegendEntryHovered(lb.c_str()))
-      row_tip(*x.row);
+      row_tip(*x.row), legend = true;
     if (pf.item(lb.c_str())) {
       push_tag(pf.tags, pf.lim, *x.s, ImGui::ColorConvertFloat4ToU32(x.col), x.row->tag + kPairTag[pair_kind(*x.row)][x.l]);
       pf.lines.push_back(x.s);
+      on.push_back(&x);
     }
   }
+  const int k = legend ? -1 : near_line(on.size(), [&](size_t j, double x) {
+    const LinesSlice &s = *on[j]->s;
+    return line_at(s.size(), x, [&](size_t i) { return slice_pt(s, i); });
+  });
+  if (k >= 0) {
+    const LinesRow &r = *on[static_cast<size_t>(k)]->row;
+    ui.hover.plot = r.id;
+    row_tip(r);
+  }
+  const std::optional<std::string> &hot = ui.hover.hot();
+  for (size_t j = 0; j < on.size(); ++j)
+    if (on[j]->row->id == hot) {
+      char id[24];
+      std::snprintf(id, sizeof(id), "##pf_hot%zu", j);
+      ImPlot::SetNextLineStyle(kHotCol, kHotW);
+      plot_slice(id, *on[j]->s, ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit);
+    }
 }
 
 // ---- VAL 主图例 = 自绘矩阵 (对仗 Inspect 期限结构图例), 绘图区左上: 行 = 口 (EP / BP / SP / CP / DY), 列 = 当前收益率 | 当前倍数 | N 年估值分位 | Band | 等值线;

@@ -100,10 +100,11 @@ Recent RecentOf(const StockInfo &info, const Candle &today, misc::Ymd prev);
 
 // title = 在画标的的标题 (简称 + 代码)
 void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &title);
-// picks 各条的日内叠加图 (一条 = 蜡烛), 占满当前区域 (日轴止于行情日, 当日未接上 → 当日空 + 提示); 篮子源未就绪 / 读取中 → 提示; 个股历史未到的条不画
-void RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks);
+// picks 各条的日内叠加图 (一条 = 蜡烛), 占满当前区域 (日轴止于行情日, 当日未接上 → 当日空 + 提示); 篮子源未就绪 / 读取中 → 提示; 个股历史未到的条不画;
+// hot = 白粗线画在最上的条 (picks 下标, −1 = 无; gui/util/HoverSync.hpp). 返回图上悬停的条 (鼠标 x 处纵向最近; −1 = 无)
+int RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks, int hot);
 // picks 各条的累计净流入叠加图 (日轴 = FlowDays, 跨日接续; 档位 / 口径 / 开收盘开关叠在左上角), 其余同 RenderBasketIntraday
-void RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks);
+int RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks, int hot);
 // 资金流档的日轴: 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
 std::vector<misc::Ymd> FlowDays(const QuoteHub &mk, const BasketState &st);
 // 一段的资金流 [元]: 净流入 (分钟涨跌法, 见 Fold) / 成交额; amount 0 = 无根

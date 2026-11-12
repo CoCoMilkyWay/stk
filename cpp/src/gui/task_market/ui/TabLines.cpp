@@ -8,11 +8,13 @@
 #include "imgui.h"
 #include "nlohmann/json.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -221,21 +223,28 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const Portf
   const float ph = av.y - kBarH - st.ItemSpacing.y;
   const float ih = nav && ui.intraday ? std::floor((ph - st.ItemSpacing.y) / 3.0f) : 0.0f;
   // 选中的有行情键的行 (篮子 / 成分) 的行情叠加图 (日内栏 / FLOW 同一份选中, 线色 = 主图的), 贴边占满 size
+  // 悬停联动 (ui.hover): 各图 (日内栏 / FLOW 图的条按行 id 对上) → 右表
+  ui.hover.begin();
   const auto basket_child = [&](const char *id, const ImVec2 &size, bool flow) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::BeginChild(id, size);
     ImGui::PopStyleVar();
     if (mk) {
       std::vector<Market::OverlayPick> picks;
+      std::vector<const std::string *> ids; // [picks] 行 id
       for_each_layer([&](int g) {
         for (size_t r = 0; r < d.rows[g].size(); ++r)
-          if (const LinesRow &h = d.rows[g][r]; h.q.ok() && picked(ui, page, h))
+          if (const LinesRow &h = d.rows[g][r]; h.q.ok() && picked(ui, page, h)) {
             picks.push_back({h.q.side, h.q.key, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag});
+            ids.push_back(&h.id);
+          }
       });
-      if (flow)
-        Market::RenderBasketFlow(*mk, ui.basket, picks);
-      else
-        Market::RenderBasketIntraday(*mk, ui.basket, picks);
+      const std::optional<std::string> &hot = ui.hover.hot();
+      const auto at = std::ranges::find_if(ids, [&](const std::string *x) { return *x == hot; });
+      const int hi = at != ids.end() ? static_cast<int>(at - ids.begin()) : -1;
+      const int near = flow ? Market::RenderBasketFlow(*mk, ui.basket, picks, hi) : Market::RenderBasketIntraday(*mk, ui.basket, picks, hi);
+      if (near >= 0)
+        ui.hover.plot = *ids[static_cast<size_t>(near)];
     } else {
       ImGui::TextDisabled("行情等基本面就绪…");
     }

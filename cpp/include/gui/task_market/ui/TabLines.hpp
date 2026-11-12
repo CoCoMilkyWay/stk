@@ -23,6 +23,8 @@
 //     (Market::RenderBasketIntraday: Market 篮子历史同一份, 当日由新浪快照合成; 对首日前收的涨跌幅, 横网格 (含 0 轴) 涨跌幅小字内标在右壁,
 //      线名中文小字贴线尾, 读数看十字光标); 只一条 = 同一张图改画分钟蜡烛 + 现价十字 (标涨跌幅 / 时刻)
 //   主图 / 日内栏贴边 (窄内边距, 不标轴名), 图区让给线
+//   悬停联动 (NAV 主图 / 日内栏 / FLOW 图 ↔ 右表, 同 Beta→Style: gui/util/HoverSync.hpp): 图上悬停最近一条线 = 右表该行底色亮并滚到居中
+//     (悬停止回原位; 主图另出行的悬停提示); 右表悬停一行 = 图上该行的线白粗线画在最上; 主图与日内栏互相跟着亮
 //   主图例只列画出的线 (同列, 补空格对齐; 悬停一条看名), 点图例单独隐 / 显一条
 //     组合策略线 (有冲击 / 无冲击两条) = 各因子独立回测 (PortfolioService 的账 PortfolioBook,
 //     各自的层, 净值引擎 fold_book: 每行开 1/h̄ 一批 (全日平均满仓), 收益在平仓行实现; 可成交 / 顺延在标签里) 的逐行增量等权聚合: 每个交易日在当日有数据的 n 个因子间等分 (按实现日),
@@ -72,6 +74,7 @@
 #include "gui/task_market/ui/LinesView.hpp"        // 派生 → 滚动分位 / 末点分位 → 视图
 #include "gui/task_market/ui/QuotesPanel.hpp"      // BasketState / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
 #include "gui/util/Chart.hpp"                      // DayRange (区间条)
+#include "gui/util/HoverSync.hpp"                  // 图 ↔ 右表悬停联动
 #include "gui/util/Reorder.hpp"                    // Move (右表拖动调序)
 #include "imgui.h"                                 // ImVec4 (右表格)
 #include "shared/Basket.hpp"                       // kGroupPool / kBasketGroups
@@ -226,6 +229,7 @@ struct LinesUIState {
   LinesStage<LinesSheetKey, LinesSheet> sheet[kPages]; // [LinesPage] 右表格
   LinesRange range;
   LinesPick pick;
+  HoverSync<std::string> hover;       // NAV 主图 / 日内栏 / FLOW 图 ↔ 右表的悬停联动 (键 = LinesRow::id)
   bool watch_loaded = false;          // 读过自选文件
   std::vector<std::string> watch;     // 自选键 (= 文件, 自选序; 改了即存)
   std::optional<GUI::Move> pool_move; // 右表指数组拖定的池表移动 (pool_order 的位置; 由 TaskMarket 交 move_pool)

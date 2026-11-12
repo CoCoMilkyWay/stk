@@ -6,6 +6,7 @@
 #include "features/Storage/FeatureLib.hpp"    // pool_def / kAllAPool (全A 基准)
 #include "gui/Tasks.hpp"                      // StatusColor
 #include "gui/util/Chart.hpp"                 // 色 / sheet_width / toggle_button / draw_end_tags / range_bar
+#include "gui/util/HoverSync.hpp"
 #include "gui/util/PoolTip.hpp"
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
@@ -21,6 +22,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -31,12 +33,11 @@ namespace {
 
 using pool::Spec;
 
-constexpr ImVec4 kBenchCol(0.6f, 0.6f, 0.6f, 1.0f), kHotCol(1.0f, 1.0f, 1.0f, 1.0f), kNoneCol(0.5f, 0.5f, 0.5f, 1.0f);
+constexpr ImVec4 kBenchCol(0.6f, 0.6f, 0.6f, 1.0f), kNoneCol(0.5f, 0.5f, 0.5f, 1.0f);
 constexpr ImVec4 kPairCol[2] = {{0.30f, 0.65f, 1.00f, 1.0f}, {1.00f, 0.55f, 0.15f, 1.0f}}; // 二元维的两色
 constexpr float kIdleA = 0.4f;                                                             // 未选线的不透明度
 constexpr float kFadeA = 0.12f;                                                            // 悬停网格取值时, 其余线的不透明度
 constexpr float kCellA = 0.45f;                                                            // 名次底色的不透明度
-constexpr float kNearPx = 8.0f;                                                            // 图上悬停: 离鼠标纵向这么近的线才算
 constexpr float kTagScale = 0.85f;                                                         // 线尾小字字号
 constexpr float kHeadScale = 0.8f;                                                         // 右表表头字号 (表头常比数值宽, 定列宽)
 constexpr size_t kIdlePoints = 200000;                                                     // 未选线合计画点上限 (超了按等步长抽点; 有选池态 / 悬停的线画全点)
@@ -467,14 +468,14 @@ void line_tip(const StyleUIState &s, const StyleResult &r, size_t i) {
 }
 
 // 累计中位夏普图 (回测区间内, 各线自首个满一年的窗起): 全A 灰; 线色 = 中位夏普名次 (悬停网格维 = 该维取值色, 悬停到取值 = 只亮该取值的线),
-// 未选细线 (合计点数超上限按步长抽点), 有选池态的粗线, 悬停白粗线; 点悬停的线 = 选中 ↔ 去掉; 返回图上悬停的线 (−1 = 无)
-int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
+// 未选细线 (合计点数超上限按步长抽点), 有选池态的粗线, 悬停白粗线; 点悬停的线 = 选中 ↔ 去掉; 图上悬停的线 → s.sync.plot
+void plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
   const size_t E = r.d1, n = r.lines.size(); // E = 区间末日 + 1
   if (s.fit_gen != r.gen)
     ImPlot::SetNextAxesToFit();
   s.fit_gen = r.gen;
   if (!ImPlot::BeginPlot("##style_med", size, ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
-    return -1;
+    return;
   ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_None);
   ImPlot::SetupAxisFormat(ImAxis_X1, day_fmt, const_cast<std::vector<misc::Ymd> *>(&r.dates));
   std::vector<EndTag> tags;
@@ -495,25 +496,20 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
       std::snprintf(id, sizeof(id), "##bench%d", w);
       draw(r.bench[w], kBenchCol, 1.5f, 1, &name);
     }
-  int near = -1;
-  if (ImPlot::IsPlotHovered()) {
-    const long d = std::lround(ImPlot::GetPlotMousePos().x);
-    const float my = ImGui::GetMousePos().y;
-    float best = kNearPx;
-    if (d >= 0 && d < static_cast<long>(E))
-      for (const uint32_t i : s.paint) {
-        const StyleLine &l = r.lines[i];
-        if (static_cast<size_t>(d) < l.from)
-          continue;
-        if (const float dy = std::abs(ImPlot::PlotToPixels(static_cast<double>(d), l.med[static_cast<size_t>(d)]).y - my); dy < best)
-          best = dy, near = static_cast<int>(i);
-      }
-  }
+  const int k = near_line(s.paint.size(), [&](size_t j, double x) {
+    const StyleLine &l = r.lines[s.paint[j]];
+    const long d = std::lround(x);
+    return d >= static_cast<long>(l.from) && d < static_cast<long>(E) ? static_cast<double>(l.med[static_cast<size_t>(d)])
+                                                                      : std::numeric_limits<double>::quiet_NaN();
+  });
+  const int near = k >= 0 ? static_cast<int>(s.paint[static_cast<size_t>(k)]) : -1;
   const ImGuiIO &io = ImGui::GetIO(); // 松手且没拖过 = 点 (拖动归平移)
   if (near >= 0 && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
       io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < io.MouseDragThreshold * io.MouseDragThreshold)
     flip(s, r.lines[static_cast<size_t>(near)].spec);
-  const int hot = near >= 0 ? near : s.hot;
+  if (near >= 0)
+    s.sync.plot = static_cast<uint32_t>(near);
+  const int hot = s.sync.hot() ? static_cast<int>(*s.sync.hot()) : -1;
   const uint16_t bits = s.dim >= 0 ? r.grid.slots(s.dim) : 0;
   const auto color = [&](size_t i, Mark m) {
     if (s.dim >= 0)
@@ -549,13 +545,12 @@ int plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
     }
   if (hot >= 0 && hot < static_cast<int>(n)) {
     std::snprintf(id, sizeof(id), "##hot");
-    draw(r.lines[static_cast<size_t>(hot)], kHotCol, 3.0f, 1, &s.names[static_cast<size_t>(hot)]);
+    draw(r.lines[static_cast<size_t>(hot)], kHotCol, kHotW, 1, &s.names[static_cast<size_t>(hot)]);
   }
   draw_end_tags(tags, kTagScale, ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x);
   if (near >= 0)
     line_tip(s, r, static_cast<size_t>(near));
   ImPlot::EndPlot();
-  return near;
 }
 
 // 区间条 (range_bar): 底线 = 全A 等权全程净值 (log); 选段 = 回测区间 → s.lo / s.hi (全段 = 0 不限)
@@ -580,15 +575,15 @@ void range(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
 }
 
 // 右表: 风格行 (点 = 打开 / 收起) + 打开的风格之下 全A 两行 + 各线 (点行 = 选中 ↔ 去掉, 选中的行底色亮; 有选池态的在前; 底色 = 组内名次; 缺省夏普分位降序);
-// 各列逐帧按可见行的内容定宽 (不拉满, 超宽横滚), 行高 = 字高; 只画可见行. 返回悬停的线 (−1 = 无)
-int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
+// 各列逐帧按可见行的内容定宽 (不拉满, 超宽横滚), 行高 = 字高; 只画可见行. 悬停的线 → s.sync.row
+void sheet(StyleUIState &s, const StyleResult *r) {
   constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV |
                                      ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate | ImGuiTableFlags_NoSavedSettings;
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(ImGui::GetStyle().CellPadding.x, 1.0f));
   const bool began = ImGui::BeginTable("##pf_style_tbl", kColBase + kStyleCols, kFlags);
   ImGui::PopStyleVar();
   if (!began)
-    return -1;
+    return;
   ImGui::TableSetupScrollFreeze(kColBase, 1);
   ImGui::TableSetupColumn("风格 / 参数");
   for (int c = 0; c < kStyleCols; ++c)
@@ -639,20 +634,11 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
   }
 
   // 图上悬停的线: 表滚到其行居中 (悬停起记下原位, 悬停止回原位)
-  int jump = -1;
-  if (plot_hot >= 0) {
-    if (s.back_y < 0.0f)
-      s.back_y = ImGui::GetScrollY();
-    const auto it = std::ranges::find_if(rows, [&](const Row &w) { return w.kind == kRowLine && static_cast<int>(w.i) == plot_hot; });
-    const int k = it != rows.end() ? static_cast<int>(it - rows.begin()) : -1;
-    if (k != s.synced)
-      jump = s.synced = k;
-  } else if (s.back_y >= 0.0f) {
-    ImGui::SetScrollY(s.back_y);
-    s.back_y = -1.0f, s.synced = -1;
-  }
+  const std::optional<uint32_t> &plot_hot = s.sync.plot;
+  const auto it = std::ranges::find_if(rows, [&](const Row &w) { return w.kind == kRowLine && w.i == plot_hot; });
+  const int jump = s.sync.follow(it != rows.end() ? static_cast<int>(it - rows.begin()) : -1);
 
-  int hot = -1;
+  std::optional<uint32_t> hot;
   const auto cells = [&](const StyleLine &l, const float *rk) {
     for (int c = 0; c < kStyleCols; ++c) {
       ImGui::TableSetColumnIndex(kColBase + c);
@@ -706,14 +692,14 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
         break;
       case kRowLine: {
         const StyleLine &l = r->lines[w.i];
-        if (static_cast<int>(w.i) == plot_hot)
-          ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImGuiCol_HeaderHovered));
+        if (w.i == plot_hot)
+          hot_row();
         // 整行可点 (先交, AllowOverlap 让名盖在上面); 名格悬停看逐维拆解
         const ImVec2 at = ImGui::GetCursorPos();
         if (ImGui::Selectable("##pick", has(s.chosen, l.spec), ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap, ImVec2(0, rh)))
           flip(s, l.spec);
         if (ImGui::IsItemHovered()) {
-          hot = static_cast<int>(w.i);
+          hot = w.i;
           if (ImGui::TableGetHoveredColumn() == 0)
             line_tip(s, *r, w.i);
         }
@@ -728,7 +714,7 @@ int sheet(StyleUIState &s, const StyleResult *r, int plot_hot) {
       ImGui::PopID();
     }
   ImGui::EndTable();
-  return hot;
+  s.sync.row = hot;
 }
 
 } // namespace
@@ -757,11 +743,9 @@ bool RenderTabStyle(StyleService &svc, StyleUIState &s) {
   }
   const bool mine = s.open >= 0 && r && r->grid.bits[pool::kDimStyle] == s.grid.bits[pool::kDimStyle]; // 本风格的 (网格改了时新的还在算, 先显旧的)
   const StyleResult *show = mine && r->lack.empty() ? r.get() : nullptr;
-  if (show) {
+  if (show)
     derive(s, *show);
-    if (s.hot >= static_cast<int>(show->lines.size()))
-      s.hot = -1;
-  }
+  s.sync.begin();
 
   ImGui::BeginChild("##style_left", ImVec2(left, h));
   grid_bar(s);
@@ -781,19 +765,17 @@ bool RenderTabStyle(StyleService &svc, StyleUIState &s) {
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
     tip("%s", kStyleTip);
-  int plot_hot = -1;
   if (show) {
     derive(s, *show); // 改动 (撤销 / 写入) 可能刚变
     const ImVec2 pa = ImGui::GetContentRegionAvail();
-    plot_hot = plot(s, *show, ImVec2(pa.x, pa.y - kRangeH - ImGui::GetStyle().ItemSpacing.y));
+    plot(s, *show, ImVec2(pa.x, pa.y - kRangeH - ImGui::GetStyle().ItemSpacing.y));
     range(s, *show, ImVec2(pa.x, kRangeH));
   }
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginChild("##style_right", ImVec2(right, h), ImGuiChildFlags_Borders);
-  const int row_hot = sheet(s, mine ? r.get() : nullptr, plot_hot);
+  sheet(s, mine ? r.get() : nullptr);
   ImGui::EndChild();
-  s.hot = row_hot;
   return landed;
 }
 

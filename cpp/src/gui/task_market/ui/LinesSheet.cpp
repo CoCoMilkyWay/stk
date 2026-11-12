@@ -4,6 +4,7 @@
 #include "disk/Disk.hpp"
 #include "gui/util/Board.hpp" // GetBoardType / MarketAbbr
 #include "gui/util/Chart.hpp" // tint / toggle_button / button_bar
+#include "gui/util/HoverSync.hpp"
 #include "gui/util/Reorder.hpp"
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
@@ -161,7 +162,7 @@ SheetCell ranked_cell(const Ranked &q, const char *fmt) {
 // 宽由外面定: 名列伸满余宽, 内容更宽 → 横滚 (星 / 名列钉住). 篮子行名前 ▸ 展开 / 收起 (ui.pick.open, 至多一行): 展开行钉在表头下,
 // 其下先列成分行 (缩进; 同列排序), 再列其余组内行; 字色 = 线色; 有自选键的行: 星格点 / 名格右键 = 加入 / 移出自选; 只画可见的行;
 // 原序 = 指数组按池表待生效序 (pool_order; 全A 两行在首), 其余组按行号; 原序下拖动调序 (Reorder): 自选组 = 改 ui.watch 即存,
-// 指数组子池 = 交 ui.pool_move (改池表)
+// 指数组子池 = 交 ui.pool_move (改池表); 悬停联动 (ui.hover): 图上悬停的行底色亮 + 滚到居中, 本表悬停的行 → ui.hover.row
 template <class On, class Click, class Hover>
 void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, const LinesDerived &d, int g, std::vector<size_t> order,
            const LinesSheet &ps, const On &on, const Click &click, const Hover &hover) {
@@ -236,12 +237,21 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
   for (const size_t t : lines)
     for (size_t k = 0; k < nc; ++k)
       cw[k] = std::max(cw[k], at(t)[k].text.w);
+  // 图上悬停的行: 滚到其行居中 (钉住的展开行不滚)
+  const std::optional<std::string> &plot_hot = ui.hover.plot;
+  const auto lit = std::ranges::find_if(lines, [&](size_t t) { return row_of(t).id == plot_hot; });
+  const int jump = ui.hover.follow(lit != lines.end() ? static_cast<int>(lit - lines.begin()) : -1);
+  std::optional<std::string> hot;
   constexpr ImGuiTreeNodeFlags kNode = ImGuiTreeNodeFlags_SpanAllColumns | ImGuiTreeNodeFlags_NoTreePushOnOpen;
   const auto row = [&](size_t t) {
     ImGui::TableNextRow();
     ImGui::PushID(static_cast<int>(t)); // 自选组里同一只可既是自选行又是展开行的成分行
     const LinesRow &h = row_of(t);
+    if (h.id == plot_hot)
+      hot_row();
     ImGui::TableSetColumnIndex(0);
+    if (jump >= 0 && t == lines[static_cast<size_t>(jump)])
+      ImGui::SetScrollHereY(0.5f);
     if (!h.watch.empty())
       star_cell(ui, h.watch);
     ImGui::TableSetColumnIndex(1);
@@ -273,6 +283,8 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
     }
     ImGui::PopStyleColor();
     const int hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 2 : -1; // 行跨全列: 悬停的数值列
+    if (ImGui::IsItemHovered())
+      hot = h.id;
     name_tip(h);
     if (!h.watch.empty() && ImGui::BeginPopupContextItem("##watch")) {
       if (ImGui::MenuItem(watched(ui, h.watch) ? "移出自选" : "加入自选"))
@@ -294,10 +306,13 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
     row(pin);
   ImGuiListClipper clip;
   clip.Begin(static_cast<int>(lines.size()));
+  if (jump >= 0)
+    clip.IncludeItemByIndex(jump);
   while (clip.Step())
     for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i)
       row(lines[static_cast<size_t>(i)]);
   ImGui::EndTable();
+  ui.hover.row = hot;
   // 落定: 原序位 → 池表待生效序 / 自选键的移动 (原序与二者同序, 端点照搬即同一移动)
   const std::optional<Move> m = rd.end();
   if (!m)

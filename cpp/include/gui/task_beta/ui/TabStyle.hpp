@@ -12,13 +12,14 @@
 //     线色 = 中位夏普组内名次 (绿好 → 红差; 好的画在上), 悬停网格条某一维 = 按该维取值着色 (两值 = 蓝 / 橙, 多值 = 色环等分; 按钮字色即图例),
 //       悬停到其中一个取值 = 该取值的线提到最上 (不透明加粗), 其余淡出;
 //     细线 = 未选 (合计点数超上限按步长抽点), 粗线 = 有选池态 (缺省按态着色), 灰 = 全A, 悬停 (图上最近一条 / 表行) = 白粗线 + 逐维拆解提示 (gui/util/PoolTip.hpp) + 表行亮, 粗线 / 悬停线尾标名;
-//       图上悬停时右表滚到该行居中, 悬停止回原位
+//       图上悬停时右表滚到该行居中, 悬停止回原位 (gui/util/HoverSync.hpp)
 //   右表与 Market 各页同宽 (sheet_width)
 #pragma once
 
 #include "features/Panel/PoolSpec.hpp"             // Spec / Grid
 #include "gui/task_beta/services/StyleService.hpp" // StyleRequest
 #include "gui/util/Chart.hpp"                      // DayRange
+#include "gui/util/HoverSync.hpp"
 #include "misc/date.hpp"
 
 #include <array>
@@ -37,9 +38,7 @@ struct StyleUIState {
   std::vector<pool::Spec> landed; // = 文件 (池表序)
   std::vector<pool::Spec> chosen; // 改动中的选中 (落地序, 新选的接在后; 确认 = 写文件)
   uint64_t pick_gen = 1;          // landed / chosen 每改一次 +1
-  int hot = -1;                   // 上帧悬停的线 (StyleResult::lines 下标): 右表行 / 图上最近一条
-  int synced = -1;                // 右表已滚到的行 (表行下标; 图上悬停的线, 换线 / 行序变才再滚)
-  float back_y = -1.0f;           // 图上悬停起时右表的滚动位置 (悬停止回到它; −1 = 未在悬停)
+  HoverSync<uint32_t> sync;       // 图 ↔ 右表的悬停联动 (键 = StyleResult::lines 下标)
   int dim = -1;                   // 上帧悬停的网格维 (−1 = 无): 线按该维的取值着色
   int val = -1;                   // 上帧悬停的该维取值 (−1 = 无): 该取值的线提到最上, 其余淡出
   misc::Ymd lo = 0, hi = 0;       // 回测区间 [lo, hi] (0 = 不限; 进请求)

@@ -2,6 +2,7 @@
 #include "fundamental/AssetAxis.hpp"
 #include "gui/Tasks.hpp"      // StatusColor (补分钟进度条 = 进行中色)
 #include "gui/util/Chart.hpp" // kUp / kDn / tint / toggle_button / button_bar / EndTag
+#include "gui/util/HoverSync.hpp"
 
 #include "imgui.h"
 #include "implot.h"
@@ -695,6 +696,7 @@ void charts(const char *name, Series &intra, Series &daily, uint64_t id, ChartSt
 //   g = 0: 收盘线; g ≥ 1: 蜡烛 (每根并 g 槽; 实体 = 上一根收 → 本根收, 首根起于首日前收 = 0, 根根首尾相接; open = 实体起点,
 //     high / low 同 y 口径并包住实体), 另带现价十字: chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x
 struct Overlay {
+  size_t pick = 0; // picks 下标
   std::string name;
   ImVec4 col;
   std::vector<double> x, y;
@@ -718,8 +720,10 @@ void candles(const Overlay &l) {
 //   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格 y 值 (带单位 unit) 以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
 //   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠.
 //   蜡烛条另画现价十字: 过末根的横 / 竖虚线 (当日涨跌色), 右壁标末根涨跌幅 (同 y 口径), 底壁标时刻 (色底黑字).
-//   十字光标: 竖线吸附到分钟 (蜡烛 = 吸附到根), 横线随鼠标; 提示 = 时刻 + 光标处 y + 该处各条读数 (高 → 低). 画完返回图区左上角
-ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size, const char *unit) {
+//   十字光标: 竖线吸附到分钟 (蜡烛 = 吸附到根), 横线随鼠标; 提示 = 时刻 + 光标处 y + 该处各条读数 (高 → 低).
+//   悬停联动 (HoverSync): hot = 白粗线画在最上的条 (pick; −1 = 无), near = 图上悬停的条 (pick; −1 = 无). 画完返回图区左上角
+ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size, const char *unit, int hot, int &near) {
+  near = -1;
   const int nd = std::max(1, static_cast<int>(days.size()));
   const Overlay *one = nullptr; // 蜡烛条
   double lo = 0, hi = 0;
@@ -781,6 +785,17 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
       }
       ImGui::PopID();
     }
+    const int k = near_line(ls.size(), [&](size_t i, double x) {
+      const Overlay &l = ls[i];
+      return line_at(l.x.size(), x, [&](size_t j) { return ImPlotPoint(l.x[j], l.y[j]); });
+    });
+    if (k >= 0)
+      near = static_cast<int>(ls[static_cast<size_t>(k)].pick);
+    for (const Overlay &l : ls)
+      if (static_cast<int>(l.pick) == hot && !l.g) {
+        ImPlot::SetNextLineStyle(kHotCol, kHotW);
+        ImPlot::PlotLine("##hot", l.x.data(), l.y.data(), static_cast<int>(l.x.size()));
+      }
     { // 内标小字 (压在线上方): 横网格涨跌幅贴右内壁; 现价十字; 线名贴线尾, 右缘不过刻度字列
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       ImFont *font = ImGui::GetFont();
@@ -1014,10 +1029,10 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
   charts("stock", is, ds, static_cast<uint64_t>(f.shown) << 32, st.chart, mk.quote->book(id), qs.date);
 }
 
-void RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks) {
+int RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks, int hot) {
   Feed &f = st.feed;
   if (!basket_ready(mk, f))
-    return;
+    return -1;
   const QuoteStatus qs = mk.quote->status();
   const Tape &d = *f.data;
   // 日轴 = 行情日及其前 n − 1 个交易日; 各条按日落位, 某条缺的日留空 (当日未接上 → 当日空)
@@ -1027,7 +1042,8 @@ void RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector
   std::vector<Overlay> ls;
   char note[160] = "";
   bool gap = false;
-  for (const OverlayPick &p : picks) {
+  for (size_t i = 0; i < picks.size(); ++i) {
+    const OverlayPick &p = picks[i];
     const Source src = source_of(st, p);
     if (!src.kl)
       continue;
@@ -1042,7 +1058,7 @@ void RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector
     const double base = s.bars.front().ref;
     const auto pct = [&](double v) { return (v / base - 1.0) * 100.0; };
     Overlay &l = ls.emplace_back();
-    l.name = p.name, l.col = ImGui::ColorConvertU32ToFloat4(p.col);
+    l.pick = i, l.name = p.name, l.col = ImGui::ColorConvertU32ToFloat4(p.col);
     if (picks.size() == 1) { // 单条: 蜡烛 + 现价十字
       const Candle &e = s.bars.back();
       l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
@@ -1060,17 +1076,19 @@ void RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector
       l.y.push_back(pct(c.close));
   }
   ImGui::PushID("basket");
-  const ImVec2 corner = plot_overlay(ls, days, avail, "%");
+  int near = -1;
+  const ImVec2 corner = plot_overlay(ls, days, avail, "%", hot, near);
   overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
                                                                                                 : nullptr,
                 qs, [&] { button_bar(kIntraName, kIntras, st.intraday); });
   ImGui::PopID();
+  return near;
 }
 
-void RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks) {
+int RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks, int hot) {
   Feed &f = st.feed;
   if (!basket_ready(mk, f))
-    return;
+    return -1;
   const QuoteStatus qs = mk.quote->status();
   const Tape &d = *f.data;
   const std::vector<misc::Ymd> days = FlowDays(mk, st);
@@ -1078,7 +1096,8 @@ void RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<Ove
   std::vector<Overlay> ls;
   char note[160] = "";
   bool gap = false;
-  for (const OverlayPick &p : picks) {
+  for (size_t i = 0; i < picks.size(); ++i) {
+    const OverlayPick &p = picks[i];
     const Source src = source_of(st, p);
     if (!src.kl)
       continue;
@@ -1090,7 +1109,7 @@ void RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<Ove
     if (!(unit > 0))
       continue;
     Overlay l;
-    l.name = p.name, l.col = ImGui::ColorConvertU32ToFloat4(p.col);
+    l.pick = i, l.name = p.name, l.col = ImGui::ColorConvertU32ToFloat4(p.col);
     double net = 0;
     for (size_t k = 0; k < days.size(); ++k)
       if (const Bars *b = bars_on(kl, today, days[k]))
@@ -1104,7 +1123,8 @@ void RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<Ove
       ls.push_back(std::move(l));
   }
   ImGui::PushID("flow");
-  const ImVec2 corner = plot_overlay(ls, days, ImGui::GetContentRegionAvail(), share ? "%" : "亿");
+  int near = -1;
+  const ImVec2 corner = plot_overlay(ls, days, ImGui::GetContentRegionAvail(), share ? "%" : "亿", hot, near);
   overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
                                                                                                 : nullptr,
                 qs, [&] {
@@ -1122,6 +1142,7 @@ void RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<Ove
                                       "• 占比 = 累计净流入 / 近 5 日日均成交额 (不含当日, 盘前已定: 开盘即稳, 跨篮子可比)");
                 });
   ImGui::PopID();
+  return near;
 }
 
 std::vector<misc::Ymd> FlowDays(const QuoteHub &mk, const BasketState &st) {

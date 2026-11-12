@@ -160,7 +160,7 @@ stk/
 │   │   │   ├── Config.hpp                              # 🖥️ 颜色 / 字体 / 布局
 │   │   │   ├── Tasks.hpp                               # 🖥️ 任务树: 左栏选中 / 状态标签 / 生命周期
 │   │   │   ├── util/Service.hpp                        # 🖥️ 后台单线程服务骨架 GUI::Service<Derived, Req> (CRTP): 新请求覆盖旧请求; 全部 GUI 服务共用
-│   │   │   ├── util/                                   # 🖥️ 其余公共件: Chart (图表件) / Sparkline (格内迷你图) / Tip / PoolTip (池列表公共件: 子池悬停 = 逐维拆解 + 拖动调池表序, 各页同一份) / Reorder (列表拖动调序: 子池 / 自选) / Color / Board (板块口径) / AssetFilter (资产筛选栏) / Latex
+│   │   │   ├── util/                                   # 🖥️ 其余公共件: Chart (图表件) / Sparkline (格内迷你图) / Tip / PoolTip (池列表公共件: 子池悬停 = 逐维拆解 + 拖动调池表序, 各页同一份) / HoverSync (图 ↔ 右表悬停联动: 图上最近的线 → 表行亮并滚到居中, 表行 → 图上白粗线; Beta Style / Market NAV · 日内栏 · FLOW 同一份) / Reorder (列表拖动调序: 子池 / 自选) / Color / Board (板块口径) / AssetFilter (资产筛选栏) / Latex
 │   │   │   ├── icon_bar/                               # 🖥️ 图标栏: 网络探测 (NetworkService) / FPS
 │   │   │   ├── compute/                                # 🖥️ 特征计算 (Beta / Alpha 的 Compute 页同一份)
 │   │   │   │   ├── ComputeHub.hpp                      # 🖥️ 计算面 ComputeHub (一个服务 + 一张库表; Beta 列 all.bar, Alpha 列其余); 数据换进后自动续算; 一轮收尾即进程内重启
