@@ -1,11 +1,13 @@
-// Tab Asset - 资产表 (列定义一张表: 取值 / 排序 / 截面色 / 截面分析同源) + 右栏 Quotes / Statistics
-//   近况列 (当日涨幅 / Δ5日线) = NAV 表同一核 RecentOf: 新浪当日接上 bar1d 最近几个有成交日
-//   截面色 / 表头排序 = 各表同一口径 (GUI::rank_by / sort_less); 估值列 (PE / PB / PS / PCF) 显示倍数, 键 = 倒数的收益率 (同 DY 高为好)
+// Tab Asset - 资产表 (列定义一张表: 格 / 排序 / 名次底色 / 截面分析同源) + 右栏 Quotes / Statistics
+//   近况列 (涨幅 / Δ5日线) = Lines 右表同一核 RecentOf: 新浪当日接上 bar1d 最近几个有成交日
+//   列 / 格 / 名次底色 / 表头排序 = 各表同一套 (gui/util/Sheet.hpp, GUI::rank_by / sort_less); 估值列 (PE / PB / PS / PCF) 显示倍数, 键 = 倒数的收益率 (同股息高为好)
 
 #pragma once
 
 #include "gui/task_market/ui/QuotesPanel.hpp"
 #include "gui/util/Board.hpp"
+#include "gui/util/Sheet.hpp"
+#include "gui/util/Stage.hpp"
 #include "shared/Asset.hpp"
 #include "shared/AssetInfo.hpp"
 
@@ -28,34 +30,31 @@ struct AssetFilter {
   bool operator==(const AssetFilter &) const = default;
 };
 
-// 视图的输入: 任一变 → 重建
-struct AssetViewKey {
+// 格的输入: 任一变 → 重填
+struct AssetCellsKey {
   uint64_t generation = 0; // Asset::generation
   size_t assets = 0;       // Asset::items.size()
   size_t infos = 0;        // stock_info.size() (基本面首次载入)
-  uint64_t today = ~0ull;  // AssetState::today 的版本 (近况列随快照重排)
+  uint64_t today = ~0ull;  // AssetState::today 的版本 (近况列随快照变)
+  AssetFilter filter;
+  float font = 0.f;        // 字号 (格宽)
+  uint32_t ink = 0;        // 字色 (主题)
+  bool operator==(const AssetCellsKey &) const = default;
+};
+// 过滤后的行与全部格 (表格与截面分析共用; 每帧只画可见行): 名次 = 过滤后 pool 内, 只能跟行一起重填.
+//   逐帧重填是帧时间杀手: 几千行 × 二十列的格 + 九列名次排序; 行统计 (交易日 / 逐笔) 要遍历帧目录整列,
+//   取自扫描一次算好的 Asset::asset_stats. 只缓存格的文本 / 键, 不缓存 StockInfo 指针 (基本面可能整体重载)
+struct AssetCells {
+  std::vector<size_t> ids;      // [行] asset_id (过滤后, 资产序)
+  std::vector<SheetCell> cells; // [行][列]
+  std::vector<float> cw;        // [列] 各格 (含表头) 最宽
+};
+// 显示序的输入: 格 (Stage gen) + 排序列
+struct AssetOrderKey {
+  uint64_t cells = 0;
   int sort_column = -1;
   bool sort_ascending = true;
-  AssetFilter filter;
-  bool operator==(const AssetViewKey &) const = default;
-};
-
-// 表格视图 = 过滤 + 排序后的 asset_id 列表 + 截面色 (表格与横截面面板共用).
-//
-// 逐帧重建的代价: 几千行的排序; 而 Orders / Order% / Miss_O 三列的行统计要遍历该资产在
-// 帧目录里的整列 —— 资产数 × 交易日数是五百万量级, 逐帧重算会把帧时间拖到几百
-// 毫秒 (见 Asset::AssetStats 处的同一个坑). 行统计因此取自 Asset::asset_stats,
-// 顺序取自本视图, 两者都只在 key 变化时重算.
-//
-// 注意: 这里只缓存顺序, 不缓存 StockInfo 的值和指针 —— 基本面可能整体重载
-// (指针会失效), 所以显示时每帧按 asset_id 重新查活数据.
-struct AssetView {
-  bool built = false;
-  AssetViewKey key;
-  std::vector<size_t> rows; // asset_id, 已过滤已排序
-  // [列][rows 位置] 截面渐进色 ImU32 (红→黄→绿); 0 = 该行在该列没有可比的值 (退回默认色); 不着色的列空.
-  // 分位是"过滤后 pool 内"的名次, 所以只能跟 rows 一起重建: 逐帧给几千行做 9 列排序和 rows 本身一样是帧时间杀手.
-  std::vector<std::vector<uint32_t>> cs;
+  bool operator==(const AssetOrderKey &) const = default;
 };
 
 struct AssetState {
@@ -75,8 +74,9 @@ struct AssetState {
   float table_split_ratio = 0.65f; // 左右分栏比 (0-1)
   StockState stock;
 
-  Today<Candle> today; // 新浪当日日根 (近况列的当日段; 键集 = 全部资产, [asset_id])
-  AssetView view;
+  Today<Candle> today;                             // 新浪当日日根 (近况列的当日段; 键集 = 全部资产, [asset_id])
+  Stage<AssetCellsKey, AssetCells> cells;          // 格
+  Stage<AssetOrderKey, std::vector<size_t>> order; // [显示位] 行 (cells 的行下标)
 };
 
 void RenderTabAsset(

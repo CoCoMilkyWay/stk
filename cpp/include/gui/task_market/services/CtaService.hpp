@@ -1,7 +1,7 @@
 // CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产多空 band 模型的滚动调参全期轨迹 (cta/Trace.hpp)
-//   价格源 = MinuteLib (Market 任务持有, 与 NAV 的 MinuteService 共用; 每次请求先补到库末日); 有效根序列按标的留最近 kKeep 个 (只改设定不重读)
+//   价格源 = MinuteLib (与 MinuteService 同一段开场 open, 同一种沿用 Kept); 有效根序列按标的留最近 kKeep 个 (只改设定不重读)
 //   请求 = 标的 + CtaSpec (无标的 = 只备价格库); 新请求覆盖旧的 (换标的 / 改设定即重算). 进度: Loading = 合成天, Running = 选参日数
-// 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (shared_ptr 拷出即放锁)
+// 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (latest)
 #pragma once
 
 #include "cta/Trace.hpp"
@@ -39,6 +39,7 @@ struct CtaRequest {
   uint32_t gen = 0;
   Quote::Ref ref; // 标的; 无 = 只备价格库
   CtaSpec spec;
+  bool operator==(const CtaRequest &) const = default;
 };
 
 struct CtaResult {
@@ -69,18 +70,9 @@ private:
   bool run(CtaRequest &req);
   bool publish(const CtaRequest &req, std::string lack, std::shared_ptr<CtaResult> out = nullptr);
 
-  // 一个标的的有效根 (库轴 hash + 日轴末日 / 日数对得上才用)
-  struct Kept {
-    Quote::Ref ref;
-    uint64_t axis;
-    misc::Ymd last;
-    size_t days;
-    std::shared_ptr<const cta::Series> se;
-  };
-
   MinuteLib &lib_;
   misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
-  std::vector<Kept> kept_; // 新 → 旧
+  Kept<cta::Series> kept_{kKeep};
 };
 
 } // namespace GUI::Market

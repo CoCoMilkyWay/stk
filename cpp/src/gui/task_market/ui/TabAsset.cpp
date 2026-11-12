@@ -1,11 +1,13 @@
 // Tab Asset - 资产表 + 右栏 Quotes (选中标的行情) / Statistics (选中列的截面分析)
-//   列定义一张表 (kCols): 表头 / 悬停 / 取值 / 文本 / 画格; 排序 / 截面色 / 截面分析都只读它
+//   列定义一张表 (kCols): 列 (表头 + 说明) / 取值 / 文本 / 格 / 悬停; 格 / 排序 / 名次底色 / 截面分析都只读它
 
 #include "gui/task_market/ui/TabAsset.hpp"
 #include "gui/task_market/ui/CrossSectionAnalysis.hpp"
 #include "gui/util/AssetFilter.hpp" // 筛选控件 (与 OrderFlow 共用)
 #include "gui/util/Board.hpp"
 #include "gui/util/Chart.hpp" // tint / band_col / rank_by / sort_less
+#include "gui/util/Sheet.hpp" // SheetCol / SheetCell / sheet_head / draw_cell
+#include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "imgui_internal.h" // TableGetHoveredRow / TableGetRowIndex
 #include "implot.h"
@@ -14,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -30,8 +33,8 @@ namespace {
 
 constexpr ImVec4 kShCol(0.0f, 0.4f, 0.8f, 1.0f), kSzCol(0.0f, 0.6f, 0.5f, 1.0f), kBjCol(0.8f, 0.5f, 0.1f, 1.0f); // 交易所色
 constexpr ImVec4 kStCol(0.95f, 0.3f, 0.3f, 1.0f);                                                                // ST 标
-constexpr ImVec4 kDimCol(0.6f, 0.6f, 0.6f, 1.0f);                                                                // "-" / 退市标
-constexpr ImVec4 kHoverCol(0.3f, 0.3f, 0.4f, 0.3f);                                                              // 悬停列的格底
+constexpr ImVec4 kDimCol(0.6f, 0.6f, 0.6f, 1.0f);                                                                // 退市标
+constexpr ImVec4 kHoverCol(0.3f, 0.3f, 0.4f, 0.3f);                                                              // 悬停列的格底 (Statistics 页)
 constexpr ImVec4 kPickCol(0.26f, 0.59f, 0.98f, 0.35f);                                                           // 选中行的行底
 constexpr ImVec4 kSecCol(0.4f, 0.7f, 1.0f, 1.0f);                                                                // 截面分析的节标题
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -129,43 +132,29 @@ Row make_row(const Asset &asset, const StockInfos &stock_info, const Today<Candl
   return {a, info, asset.asset_stats[id], info ? RecentOf(*info, (*today.day)[id], today.prev) : Recent{}};
 }
 
-// 文本 (只排序) / 分类 (饼图) / 数值 (分布 + 排名)
+// 文本 (只排序, 左对齐) / 分类 (饼图, 左对齐) / 数值 (分布 + 排名, 右对齐)
 enum class Kind { Text,
                   Category,
                   Number };
-// 一列: num = 排序 / 截面色 / 统计同一个键 (数值升序; NaN = 无可比值, 排序恒末, 不着色);
-//   good = 截面色口径 (GUI::rank_by: +1 = 高为好, −1 = 低为好, 0 = 不着色)
+// 一列: num = 排序 / 名次 / 统计同一个键 (数值升序; NaN = 无可比值, 排序恒末, 不铺底色); 无 num = 按格文本排;
+//   good = 名次底色口径 (GUI::rank_by: +1 = 高为好, −1 = 低为好, 0 = 不铺)
 struct Column {
-  const char *head; // 表头
-  const char *name; // Statistics 标题
-  const char *tip;  // 表头悬停
+  SheetCol col; // 表头 / 说明 (首行 = Statistics 标题)
   Kind kind;
   int good;
-  const char *fmt;                               // Number 的默认画格格式
-  double (*num)(const Row &);                    // 键; 空 = 按 text 排
-  std::string_view (*text)(const Row &);         // Text / Category 的文本 ("-" = 无)
-  void (*cell)(const Row &, double v, ImU32 cs); // 画格 (v = num, cs = 截面色 / 0); 空 = Number 按 fmt, 其余按 text
+  const char *fmt;                        // Number 的默认格式
+  double (*num)(const Row &);             // 键
+  std::string_view (*text)(const Row &);  // Text / Category 的文本 ("-" = 无)
+  NumCell (*cell)(const Row &, double v); // 格文本 (v = num); 空 = Number 按 fmt, 其余按 text
+  void (*hover)(const Row &);             // 悬停格的补充; 空 = 无
 };
 
 template <float StockInfo::*F>
 double field(const Row &r) { return r.info ? r.info->*F : kNaN; }
 
-// cs 非 0 → 文字着截面色
-template <class F>
-void tinted(ImU32 cs, F &&draw) {
-  if (cs)
-    ImGui::PushStyleColor(ImGuiCol_Text, cs);
-  draw();
-  if (cs)
-    ImGui::PopStyleColor();
-}
-void dash_cell() { ImGui::TextColored(kDimCol, "-"); }
+const ImVec4 &ink() { return ImGui::GetStyleColorVec4(ImGuiCol_Text); }
 // 近况格: v [%], 按涨跌着色
-void pct_cell(const Row &, double v, ImU32) {
-  if (std::isnan(v))
-    return dash_cell();
-  ImGui::TextColored(tint(v, 0.0), "%+.2f%%", v);
-}
+NumCell pct_cell(const Row &, double v) { return std::isnan(v) ? num_none() : num_cell(tint(v, 0.0), "%+.2f%%", v); }
 // 估值列 (PE / PB / PS / PCF) 的键 = 倍数 F 的倒数 (收益率 %): 便宜 → 高, 亏损为负 (越亏越低); 倍数 0 / 无 → NaN.
 //   升序 = 亏得多 → 亏得少 → 贵 → 便宜, 与 DY 列同向 (高为好)
 template <float StockInfo::*F>
@@ -173,261 +162,292 @@ double yield(const Row &r) {
   const float m = r.info ? r.info->*F : 0.f;
   return m != 0.f && std::isfinite(m) ? 100.0 / m : kNaN;
 }
-// 估值格: 照画倍数 (P 位小数), 字着截面色
+// 估值格: 照画倍数 (P 位小数)
 template <float StockInfo::*F, int P>
-void multiple_cell(const Row &r, double v, ImU32 cs) {
-  if (std::isnan(v))
-    return dash_cell();
-  tinted(cs, [&] { ImGui::Text("%.*f", P, r.info->*F); });
-}
+NumCell multiple_cell(const Row &r, double v) { return std::isnan(v) ? num_none() : num_cell(ink(), "%.*f", P, static_cast<double>(r.info->*F)); }
 
 const Column kCols[] = {
-    {"Code", "Code",
-     "证券代码 (Code)\n股票的唯一标识符\n格式:6位数字(如600000、000001、688001)",
+    {{"代码", "代码 = 证券代码\n"
+              "• 算法: 6 位数字 (如 600000 / 000001 / 688001)\n"
+              "• 数据: 资产轴 (帧目录扫出)\n"
+              "• 显示: 原样, 按字典序排\n"
+              "• 适用: 全部资产"},
      Kind::Text, 0, nullptr, nullptr,
-     [](const Row &r) -> std::string_view { return r.a.asset_code; }, nullptr},
+     [](const Row &r) -> std::string_view { return r.a.asset_code; }, nullptr, nullptr},
 
-    {"Name", "Name",
-     "股票名称 (Name)\n公司在交易所的简称 (逐日 PIT)\n来源: cn_stock_instruments 最新交易日\n\n退市股回落到 cn_stock_basic_info 的最后简称",
+    {{"简称", "简称 = 公司在交易所的简称\n"
+              "• 算法: 逐日 PIT 取最新交易日; 退市股回落到最后简称\n"
+              "• 数据: cn_stock_instruments 最新交易日 / cn_stock_basic_info\n"
+              "• 显示: 原样, 按字典序排; 简称前缀与 ST 列同源同日\n"
+              "• 适用: 有基本面的资产"},
      Kind::Text, 0, nullptr, nullptr,
-     [](const Row &r) -> std::string_view {
-       if (r.info && !r.info->name.empty())
-         return r.info->name;
-       return "-";
-     },
-     nullptr},
+     [](const Row &r) -> std::string_view { return r.info && !r.info->name.empty() ? std::string_view(r.info->name) : "-"; },
+     nullptr, nullptr},
 
-    {"Mkt", "Market",
-     "市场 = 交易所.板块 (板块按代码前缀, 色按交易所)\nSH.主 = 沪市主板 (600/601/603/605)\nSH.科 = 科创板 (688/689)\nSZ.主 = 深市主板 (000/001/002/003/004)\nSZ.创 = 创业板 (300/301/302/309)\nBJ.北 = 北交所 (43/83/87/88/92)",
+    {{"板块", "板块 = 交易所.板块\n"
+              "• 算法: 板块按代码前缀: SH.主 = 沪市主板 (600/601/603/605), SH.科 = 科创板 (688/689), SZ.主 = 深市主板 (000/001/002/003/004),\n"
+              "  SZ.创 = 创业板 (300/301/302/309), BJ.北 = 北交所 (43/83/87/88/92)\n"
+              "• 数据: 证券代码 + 交易所\n"
+              "• 显示: 字色按交易所 (沪蓝 / 深青 / 北橙); 按板块排\n"
+              "• 适用: 全部资产"},
      Kind::Category, 0, nullptr,
      [](const Row &r) { return static_cast<double>(GetBoardType(r.a.asset_code)); },
      [](const Row &r) -> std::string_view { return MarketAbbr(GetBoardType(r.a.asset_code)); },
-     [](const Row &r, double, ImU32) {
+     [](const Row &r, double) {
        const char *t = MarketAbbr(GetBoardType(r.a.asset_code));
-       if (t[0] == '-')
-         return dash_cell();
-       ImGui::TextColored(r.a.exchange == "SH" ? kShCol : r.a.exchange == "SZ" ? kSzCol
-                                                                               : kBjCol,
-                          "%s", t);
-     }},
-
-    {"Chg", "当日涨幅 (%)",
-     "当日涨幅 = 最新一日收 / 前收 − 1\n\n最新一日: 新浪当日接得上 (其前一交易日 = 本只 bar1d 水位) 取新浪快照, 否则取 bar1d 最新有成交日\n与 Lines NAV 表的近况列同一核; 随快照刷新",
-     Kind::Number, 0, nullptr, [](const Row &r) { return 100.0 * r.rc.chg; }, nullptr, &pct_cell},
-
-    {"ΔMA5", "Δ5日线 (%)",
-     "Δ5日线 = 最新收 / MA5 − 1\nMA5 = 最近 5 个有成交日的收盘均值 (含最新一日)\n\n取数同 Chg (新浪当日接上 bar1d 最近几个有成交日); 不复权, 窗内除权的跳空照算",
-     Kind::Number, 0, nullptr, [](const Row &r) { return 100.0 * r.rc.ma5; }, nullptr, &pct_cell},
-
-    {"Ind", "Industry",
-     "行业 (Industry)\n申万一级行业名称 (industry_level1_name)\n来源: cn_stock_industry_component 最新月度快照\n\nhover 单元格可看行业代码 (ind_code)",
-     Kind::Category, 0, nullptr, nullptr, // 按展示名排, 与列内容一致
-     [](const Row &r) -> std::string_view {
-       if (r.info && !industry_name(*r.info).empty())
-         return industry_name(*r.info);
-       return "-";
+       return t[0] == '-' ? num_none() : num_cell(r.a.exchange == "SH" ? kShCol : r.a.exchange == "SZ" ? kSzCol : kBjCol, "%s", t);
      },
-     [](const Row &r, double, ImU32) {
-       if (!r.info || industry_name(*r.info).empty())
-         return dash_cell();
-       ImGui::TextUnformatted(industry_name(*r.info).c_str());
-       if (ImGui::IsItemHovered() && !r.info->ind_code.empty())
-         ImGui::SetTooltip("%s", r.info->ind_code.c_str());
+     nullptr},
+
+    {{"涨幅", "涨幅 = 当日涨跌幅\n"
+              "• 算法: 最新一日收盘 / 前收 − 1\n"
+              "• 数据: 新浪当日接得上 (其前一交易日 = 本只 bar1d 水位) 取新浪快照, 否则 bar1d 最新有成交日; 与 Lines 右表近况列同一核\n"
+              "• 显示: 百分比两位, 按正负着色; 随快照刷新\n"
+              "• 适用: 有基本面的资产"},
+     Kind::Number, 0, nullptr, [](const Row &r) { return 100.0 * r.rc.chg; }, nullptr, &pct_cell, nullptr},
+
+    {{"Δ5日线", "Δ5日线 = 对 5 日均线的偏离\n"
+                "• 算法: 最新一日收盘 / MA5 − 1, MA5 = 最近 5 个有成交日的收盘均值 (含最新一日)\n"
+                "• 数据: 同涨幅列 (新浪当日接上 bar1d 最近几个有成交日); 不复权, 窗内除权的跳空照算\n"
+                "• 显示: 百分比两位, 按正负着色\n"
+                "• 适用: 有基本面的资产"},
+     Kind::Number, 0, nullptr, [](const Row &r) { return 100.0 * r.rc.ma5; }, nullptr, &pct_cell, nullptr},
+
+    {{"行业", "行业 = 申万一级行业\n"
+              "• 算法: industry_level1_name, 缺名回落到行业代码\n"
+              "• 数据: cn_stock_industry_component 最新月度快照\n"
+              "• 显示: 原样, 按名排; 悬停格看行业代码 (ind_code)\n"
+              "• 适用: 有基本面的资产"},
+     Kind::Category, 0, nullptr, nullptr,
+     [](const Row &r) -> std::string_view { return r.info && !industry_name(*r.info).empty() ? std::string_view(industry_name(*r.info)) : "-"; },
+     nullptr,
+     [](const Row &r) {
+       if (r.info && !r.info->ind_code.empty())
+         tip("%s", r.info->ind_code.c_str());
      }},
 
-    {"PE", "EP = 1/PE(TTM) (%)",
-     "滚动市盈率 (PE TTM)\npeTTM = Trailing Twelve Months P/E Ratio\n= 股票收盘价 / 每股盈余TTM\n= (收盘价 x 总股本) / 归属母公司股东净利润TTM\n\nTTM = 过去12个月滚动数据\n反映公司盈利能力,数值越低估值越便宜\n\n排序 / 截面色 / 统计按倒数 (收益率 %): 高 = 便宜, 亏损为负排最差一端, 0 → 不可比",
-     Kind::Number, 1, nullptr, &yield<&StockInfo::pe_ttm>, nullptr, &multiple_cell<&StockInfo::pe_ttm, 1>},
+    {{"PE", "PE = 滚动市盈率 (TTM); 键 = EP = 1/PE (%)\n"
+            "• 算法: 总市值 / 归母净利润TTM; 排序 / 名次 / 统计按倒数 EP: 高 = 便宜, 亏损为负排最差一端\n"
+            "• 数据: 总市值同总市值列; 净利取当日可见的最新财务\n"
+            "• 显示: 倍数一位小数, 底色 = 过滤后截面名次 (EP 高绿 → 低红); 0 → -\n"
+            "• 适用: 有基本面的资产"},
+     Kind::Number, 1, nullptr, &yield<&StockInfo::pe_ttm>, nullptr, &multiple_cell<&StockInfo::pe_ttm, 1>, nullptr},
 
-    {"PB", "BP = 1/PB(MRQ) (%)",
-     "市净率 (PB MRQ)\npbMRQ = Price-to-Book Ratio (Most Recent Quarter)\n= 总市值 / 归母普通股权益MRQ\n= (收盘价 x 总股本) / (total_equity_to_parent_shareholders - other_equity_instruments)\n其他权益工具 = 永续债 / 优先股, 不属普通股东\n\nMRQ = 最新报告期 (max report_date 的最新可见行)\n反映账面价值,通常>1,<1可能破净\n\n排序 / 截面色 / 统计按倒数 (收益率 %): 高 = 便宜, 亏损为负排最差一端, 0 → 不可比",
-     Kind::Number, 1, nullptr, &yield<&StockInfo::pb_mrq>, nullptr, &multiple_cell<&StockInfo::pb_mrq, 2>},
+    {{"PB", "PB = 市净率 (MRQ); 键 = BP = 1/PB (%)\n"
+            "• 算法: 总市值 / 归母普通股权益MRQ (total_equity_to_parent_shareholders − other_equity_instruments: 永续债 / 优先股不属普通股东);\n"
+            "  排序 / 名次 / 统计按倒数 BP: 高 = 便宜, 负权益为负排最差一端\n"
+            "• 数据: MRQ = 最新报告期 (max report_date 的最新可见行); 总市值同总市值列\n"
+            "• 显示: 倍数两位小数, 底色 = 过滤后截面名次 (BP 高绿 → 低红); < 1 = 破净; 0 → -\n"
+            "• 适用: 有基本面的资产"},
+     Kind::Number, 1, nullptr, &yield<&StockInfo::pb_mrq>, nullptr, &multiple_cell<&StockInfo::pb_mrq, 2>, nullptr},
 
-    {"PS", "SP = 1/PS(TTM) (%)",
-     "滚动市销率 (PS TTM)\npsTTM = Price-to-Sales Ratio (TTM)\n= 股票收盘价 / 每股销售额\n= (收盘价 x 总股本) / 营业总收入TTM\n\n反映每单位营收对应的市值\n适用于尚未盈利但有营收的公司\n\n排序 / 截面色 / 统计按倒数 (收益率 %): 高 = 便宜, 亏损为负排最差一端, 0 → 不可比",
-     Kind::Number, 1, nullptr, &yield<&StockInfo::ps_ttm>, nullptr, &multiple_cell<&StockInfo::ps_ttm, 2>},
+    {{"PS", "PS = 滚动市销率 (TTM); 键 = SP = 1/PS (%)\n"
+            "• 算法: 总市值 / 营业总收入TTM; 排序 / 名次 / 统计按倒数 SP: 高 = 便宜\n"
+            "• 数据: 营收取当日可见的最新财务; 总市值同总市值列\n"
+            "• 显示: 倍数两位小数, 底色 = 过滤后截面名次 (SP 高绿 → 低红); 0 → -\n"
+            "• 适用: 有基本面的资产; 未盈利但有营收的公司照样可比"},
+     Kind::Number, 1, nullptr, &yield<&StockInfo::ps_ttm>, nullptr, &multiple_cell<&StockInfo::ps_ttm, 2>, nullptr},
 
-    {"PCF", "CP = 1/PCF (%)",
-     "滚动市现率 (PCF TTM)\npcfNcfTTM = Price-to-Cash-Flow Ratio (TTM)\n= 总市值 / 经营活动现金流量净额TTM\n= (收盘价 x 总股本) / net_cffoa_ttm\n\n注意分母是经营现金流, 不是现金及现金等价物净增加额\n烧钱(经营现金流为负) 保留负值, 不置空\n\n反映现金流创造能力\n比PE更难以通过会计手段操纵\n\n排序 / 截面色 / 统计按倒数 (收益率 %): 高 = 便宜, 亏损为负排最差一端, 0 → 不可比",
-     Kind::Number, 1, nullptr, &yield<&StockInfo::pcf_ttm>, nullptr, &multiple_cell<&StockInfo::pcf_ttm, 1>},
+    {{"PCF", "PCF = 滚动市现率 (TTM); 键 = CP = 1/PCF (%)\n"
+             "• 算法: 总市值 / 经营活动现金流量净额TTM (net_cffoa_ttm, 非现金净增加额); 排序 / 名次 / 统计按倒数 CP: 高 = 便宜, 经营现金流为负保留负值排最差一端\n"
+             "• 数据: 现金流取当日可见的最新财务; 总市值同总市值列\n"
+             "• 显示: 倍数一位小数, 底色 = 过滤后截面名次 (CP 高绿 → 低红); 0 → -\n"
+             "• 适用: 有基本面的资产"},
+     Kind::Number, 1, nullptr, &yield<&StockInfo::pcf_ttm>, nullptr, &multiple_cell<&StockInfo::pcf_ttm, 1>, nullptr},
 
-    {"DY1", "DY 近1年 (年化 %)",
-     "股息率 近1年 (Dividend Yield, 年化)\n= 近365日税前分红总额 / 总市值 x 100%\n\n说明:\n- 单位: %\n- 窗口以分红公告日 (publish_date) 锚定, 非除权日\n- 口径与 L_1min 特征 dy_raw 一致\n- 0.00 = 窗口内确实没有分红公告 (非缺失)",
-     Kind::Number, 1, "%.2f", &field<&StockInfo::dy1y>, nullptr, nullptr},
+    {{"股息1年", "股息1年 = 近 1 年股息率 (%)\n"
+                 "• 算法: 近 365 日税前分红总额 / 总市值; 窗口以分红公告日 (publish_date) 锚定, 非除权日\n"
+                 "• 数据: 分红公告 + 总市值 (同总市值列); 口径同 L_1min 特征 dy_raw\n"
+                 "• 显示: 两位小数, 底色 = 过滤后截面名次 (高绿 → 低红); 0.00 = 窗口内确无分红公告 (非缺失)\n"
+                 "• 适用: 有基本面的资产"},
+     Kind::Number, 1, "%.2f", &field<&StockInfo::dy1y>, nullptr, nullptr, nullptr},
 
-    {"DY3", "DY 近3年 (年化 %)",
-     "股息率 近3年 (年化平均)\n= 近3年(1095日)税前分红总额 / 年数 / 总市值 x 100%\n\n说明:\n- 已年化, 可与 DY1 / DY5 直接横向比较\n- 上市不足3年的按实际上市年数年化, 不被系统性摊薄\n- 上市不足一个季度 → 留空 (年化无意义)\n- DY3 明显低于 DY1 = 近年才开始分红",
-     Kind::Number, 1, "%.2f", &field<&StockInfo::dy3y>, nullptr, nullptr},
+    {{"股息3年", "股息3年 = 近 3 年股息率 (年化平均 %)\n"
+                 "• 算法: 近 3 年 (1095 日) 税前分红总额 / 年数 / 总市值; 上市不足 3 年按实际上市年数年化 (不被摊薄), 不足一季 → -\n"
+                 "• 数据: 同股息1年\n"
+                 "• 显示: 两位小数, 底色 = 过滤后截面名次 (高绿 → 低红); 明显低于股息1年 = 近年才开始分红\n"
+                 "• 适用: 有基本面的资产"},
+     Kind::Number, 1, "%.2f", &field<&StockInfo::dy3y>, nullptr, nullptr, nullptr},
 
-    {"DY5", "DY 近5年 (年化 %)",
-     "股息率 近5年 (年化平均)\n= 近5年(1825日)税前分红总额 / 年数 / 总市值 x 100%\n\n说明:\n- 已年化, 可与 DY1 / DY3 直接横向比较\n- 上市不足5年的按实际上市年数年化\n- DY1 ≈ DY3 ≈ DY5 = 长期稳定分红",
-     Kind::Number, 1, "%.2f", &field<&StockInfo::dy5y>, nullptr, nullptr},
+    {{"股息5年", "股息5年 = 近 5 年股息率 (年化平均 %)\n"
+                 "• 算法: 近 5 年 (1825 日) 税前分红总额 / 年数 / 总市值; 上市不足 5 年按实际上市年数年化\n"
+                 "• 数据: 同股息1年\n"
+                 "• 显示: 两位小数, 底色 = 过滤后截面名次 (高绿 → 低红); 股息1年 ≈ 3年 ≈ 5年 = 长期稳定分红\n"
+                 "• 适用: 有基本面的资产"},
+     Kind::Number, 1, "%.2f", &field<&StockInfo::dy5y>, nullptr, nullptr, nullptr},
 
-    {"Cap", "Market Cap (亿元)",
-     "总市值 (Market Cap)\n= 收盘价 x 总股本 / 1亿\n= close x total_shares (不复权真价)\n\n说明:\n- 单位: 亿元\n- 与 PE/PB/PS/PCF/DY 的分子同源\n- 数据来自 cn_stock_real_bar1d.close + cn_stock_shares.total_shares",
+    {{"总市值", "总市值 = 收盘价 × 总股本 (亿元)\n"
+                "• 算法: close × total_shares / 1亿 (不复权真价); 即估值 / 股息各列的分母\n"
+                "• 数据: cn_stock_real_bar1d.close + cn_stock_shares.total_shares\n"
+                "• 显示: 一位小数, 底色 = 过滤后截面名次 (大绿 → 小红); 缺收盘价或股本 → - (不是市值为零)\n"
+                "• 适用: 有基本面的资产"},
      Kind::Number, 1, "%.1f",
-     [](const Row &r) { return r.info && r.info->mcap > 0 ? static_cast<double>(r.info->mcap) : kNaN; }, // 0 / NaN = 缺收盘价或股本, 不是"市值为零"
-     nullptr, nullptr},
+     [](const Row &r) { return r.info && r.info->mcap > 0 ? static_cast<double>(r.info->mcap) : kNaN; },
+     nullptr, nullptr, nullptr},
 
-    {"ST", "ST",
-     "ST股 (Special Treatment)\n来源: cn_stock_status.st_status (逐日)\n\nST  = 特别处理 (连续两年亏损等), 涨跌幅限制 ±5%\n*ST = 退市风险警示 (风险更高一级)\n-   = 正常\n\n与 Name 列同源同日 (简称前缀 ↔ 本列取值 严格一致)",
+    {{"ST", "ST = 风险警示\n"
+            "• 算法: ST = 特别处理 (连续两年亏损等, 涨跌幅限制 ±5%), *ST = 退市风险警示 (高一级)\n"
+            "• 数据: cn_stock_status.st_status (逐日); 与简称列同源同日 (简称前缀 ↔ 本列严格一致)\n"
+            "• 显示: ST / *ST 红字, 正常 -; 按 正常 < ST < *ST 排\n"
+            "• 适用: 有基本面的资产"},
      Kind::Category, 0, nullptr,
-     [](const Row &r) { return static_cast<double>(st_level(r.info)); }, // 正常 < ST < *ST
+     [](const Row &r) { return static_cast<double>(st_level(r.info)); },
      [](const Row &r) -> std::string_view {
        const int level = st_level(r.info);
        return level == 2 ? "*ST" : level == 1 ? "ST"
                                               : "正常";
      },
-     [](const Row &, double v, ImU32) {
-       if (v > 0)
-         ImGui::TextColored(kStCol, "%s", v == 2 ? "*ST" : "ST");
-       else
-         ImGui::TextUnformatted("-");
-     }},
+     [](const Row &, double v) { return v > 0 ? num_cell(kStCol, "%s", v == 2 ? "*ST" : "ST") : num_none(); },
+     nullptr},
 
-    {"DL", "DL",
-     "退市 (Delisted)\n是否已退市或处于退市状态\nDL = 已退市\nhover 单元格可看退市日期",
+    {{"退市", "退市 = 已退市\n"
+              "• 算法: 退市日 (out_date) 非 0\n"
+              "• 数据: cn_stock_basic_info\n"
+              "• 显示: 已退市 = 灰字 退市, 在市 -; 悬停格看退市日\n"
+              "• 适用: 有基本面的资产"},
      Kind::Category, 0, nullptr,
      [](const Row &r) { return r.info && r.info->out_date ? 1.0 : 0.0; },
      [](const Row &r) -> std::string_view { return r.info && r.info->out_date ? "退市" : "在市"; },
-     [](const Row &r, double v, ImU32) {
-       if (!(v > 0)) {
-         ImGui::TextUnformatted("-");
-         return;
-       }
-       ImGui::TextColored(kDimCol, "DL");
-       if (ImGui::IsItemHovered())
-         ImGui::SetTooltip("Delisted: %s", misc::dash(r.info->out_date).c_str());
+     [](const Row &, double v) { return v > 0 ? num_cell(kDimCol, "退市") : num_none(); },
+     [](const Row &r) {
+       if (r.info && r.info->out_date)
+         tip("退市 %s", misc::dash(r.info->out_date).c_str());
      }},
 
-    {"Listed", "Listed Days (在市总天数)",
-     "在市时间 (Listed Duration)\n紧凑格式 年/月/日 — 如 11/02/06 = 11年2个月6天\n\n区间: 上市日 → 退市日 (退市股截到退市日) 或今天\nhover 单元格可看起止日期与在市总天数\n排序与横截面分析口径为在市总天数",
+    {{"在市", "在市 = 在市时长\n"
+              "• 算法: 上市日 → 退市日 (退市股截到退市日) 或今天; 排序 / 名次 / 统计按在市总天数\n"
+              "• 数据: 上市日 ipo_date / 退市日 out_date\n"
+              "• 显示: 年/月/日 (11/02/06 = 11 年 2 个月 6 天), 底色 = 过滤后截面名次 (久绿 → 短红); 悬停格看起止日期与总天数\n"
+              "• 适用: 有基本面的资产"},
      Kind::Number, 1, nullptr,
      [](const Row &r) {
        const ListedSpan span = r.info ? listed_span(*r.info) : ListedSpan{};
        return span.valid ? static_cast<double>(span.total_days) : kNaN;
      },
      nullptr,
-     [](const Row &r, double v, ImU32 cs) {
+     [](const Row &r, double v) {
        if (std::isnan(v))
-         return dash_cell();
+         return num_none();
        const ListedSpan span = listed_span(*r.info);
-       tinted(cs, [&] { ImGui::Text("%02d/%02d/%02d", span.years, span.months, span.days); });
-       if (ImGui::IsItemHovered())
-         ImGui::SetTooltip("上市 %s → %s\n在市 %d 年 %d 月 %d 天 (共 %d 天)",
-                           misc::dash(r.info->ipo_date).c_str(),
-                           r.info->out_date ? misc::dash(r.info->out_date).c_str() : "至今",
-                           span.years, span.months, span.days, span.total_days);
-     }},
-
-    {"Days", "Trading Days",
-     "交易日数 (Trading Days)\n该股票在数据库中有数据的总交易日数\n= 帧目录中已编码的天数\n可用于判断数据完整性",
-     Kind::Number, 0, "%.0f",
-     [](const Row &r) { return static_cast<double>(r.s.total_days); }, nullptr, nullptr},
-
-    {"Orders/Day", "Avg Orders / Day",
-     "日均逐笔数 (Average Orders per Trading Day)\n所有已有逐笔数据交易日的平均记录数量 (委托+成交合并后)\n= Σ order_count / 有逐笔数据的交易日数\n\n说明:\n- 单位:条记录/日\n- 显示格式:>1M用M(百万), >1K用K(千)\n- 条数取自日文件目录, 扫描时一并读到",
-     Kind::Number, 0, nullptr,
-     [](const Row &r) {
-       return r.s.total_days > 0 ? static_cast<double>(r.s.total_orders) / static_cast<double>(r.s.total_days) : kNaN;
+       return num_cell(ink(), "%02d/%02d/%02d", span.years, span.months, span.days);
      },
-     nullptr,
-     [](const Row &, double v, ImU32) {
-       if (std::isnan(v))
-         dash_cell();
-       else if (v > 1000000.0)
-         ImGui::Text("%.2fM", v / 1000000.0);
-       else if (v > 1000.0)
-         ImGui::Text("%.1fK", v / 1000.0);
-       else
-         ImGui::Text("%.0f", v);
+     [](const Row &r) {
+       const ListedSpan span = r.info ? listed_span(*r.info) : ListedSpan{};
+       if (span.valid)
+         tip("上市 %s → %s\n在市 %d 年 %d 月 %d 天 (共 %d 天)", misc::dash(r.info->ipo_date).c_str(),
+             r.info->out_date ? misc::dash(r.info->out_date).c_str() : "至今", span.years, span.months, span.days, span.total_days);
      }},
 
-    // expected_days == 0 = 该资产在回测区间内本就不该有数据 (北交所 / 尚未上市 / 已退市), 那不是缺口, 留空而不是 0%
-    {"Orders%", "Orders % (回测区间完整性)",
-     "逐笔完整性 (Orders Coverage)\n回测区间内已编码的交易日占比\n= (应有天数 - 缺失天数) / 应有天数\n\n分母是该资产\"本该有逐笔\"的交易日:\n已上市未退市, 且排除当日全天停牌\n(北交所不在 L2 覆盖范围, 整体留空)\n\n与 Calendar 页的完整性、Encode 页的缺失表同源\nhover 单元格可看缺失天数",
+    {{"交易日", "交易日 = 有数据的交易日数\n"
+                "• 算法: 帧目录里已编码的天数\n"
+                "• 数据: 帧目录 (扫描时一并读到)\n"
+                "• 显示: 整数, 不着色; 看数据完整性\n"
+                "• 适用: 全部资产"},
+     Kind::Number, 0, "%.0f",
+     [](const Row &r) { return static_cast<double>(r.s.total_days); }, nullptr, nullptr, nullptr},
+
+    {{"日均笔数", "日均笔数 = 日均逐笔记录数\n"
+                  "• 算法: Σ 逐笔条数 (委托 + 成交合并后) / 有数据的交易日数\n"
+                  "• 数据: 日文件目录的条数 (扫描时一并读到)\n"
+                  "• 显示: > 1M 按 M (百万), > 1K 按 K (千), 不着色\n"
+                  "• 适用: 有逐笔数据的资产"},
+     Kind::Number, 0, nullptr,
+     [](const Row &r) { return r.s.total_days > 0 ? static_cast<double>(r.s.total_orders) / static_cast<double>(r.s.total_days) : kNaN; },
+     nullptr,
+     [](const Row &, double v) {
+       if (std::isnan(v))
+         return num_none();
+       return v > 1e6 ? num_cell(ink(), "%.2fM", v / 1e6) : v > 1e3 ? num_cell(ink(), "%.1fK", v / 1e3)
+                                                                    : num_cell(ink(), "%.0f", v);
+     },
+     nullptr},
+
+    {{"逐笔完整", "逐笔完整 = 回测区间内逐笔的完整度\n"
+                  "• 算法: (应有天数 − 缺失天数) / 应有天数; 应有 = 已上市未退市且非全天停牌的交易日\n"
+                  "• 数据: 帧目录; 与 Calendar 页的完整性、Encode 页的缺失表同源\n"
+                  "• 显示: 百分比一位: ≥ 99.9% 绿 / ≥ 95% 黄 / 其余橙; 悬停格看缺失天数; 区间内本不该有数据 (北交所 / 未上市 / 已退市) → - (不是缺口)\n"
+                  "• 适用: L2 覆盖的资产 (北交所整体 -)"},
      Kind::Number, 0, nullptr,
      [](const Row &r) { return r.s.expected_days > 0 ? static_cast<double>(r.s.orders_coverage_percent()) : kNaN; },
      nullptr,
-     [](const Row &r, double v, ImU32) {
+     [](const Row &, double v) {
        if (std::isnan(v))
-         return dash_cell();
+         return num_none();
        const ImVec4 color = v >= 99.9   ? ImVec4(0.3f, 0.95f, 0.4f, 1.0f)
                             : v >= 95.0 ? ImVec4(1.0f, 1.0f, 0.0f, 1.0f)
                                         : ImVec4(1.0f, 0.5f, 0.0f, 1.0f);
-       ImGui::TextColored(color, "%.1f%%", v);
-       if (ImGui::IsItemHovered())
-         ImGui::SetTooltip("Missing %zu of %zu trading days", r.s.orders_missing, r.s.expected_days);
+       return num_cell(color, "%.1f%%", v);
+     },
+     [](const Row &r) {
+       if (r.s.expected_days > 0)
+         tip("缺 %zu / 应有 %zu 个交易日", r.s.orders_missing, r.s.expected_days);
      }},
 };
 constexpr int kNumCols = static_cast<int>(std::size(kCols));
 
-void draw_cell(const Column &c, const Row &r, ImU32 cs) {
+// 列 c 在行 r 的格: 文本 = c.cell / Number 按 fmt / 其余按 text; 键 = c.num
+SheetCell cell_of(const Column &c, const Row &r) {
   const double v = c.num ? c.num(r) : kNaN;
   if (c.cell)
-    return c.cell(r, v, cs);
+    return {c.cell(r, v), v};
   if (c.kind == Kind::Number) {
     assert(c.num && c.fmt);
-    if (std::isnan(v))
-      return dash_cell();
-    return tinted(cs, [&] { ImGui::Text(c.fmt, v); });
+    return sheet_cell(v, ink(), c.fmt, v);
   }
   const std::string_view t = c.text(r);
-  if (t == "-")
-    return dash_cell();
-  ImGui::TextUnformatted(t.data(), t.data() + t.size());
+  return {t == "-" ? num_none() : num_cell(ink(), "%.*s", static_cast<int>(t.size()), t.data()), v};
 }
 
-// 视图 = 过滤 + 排序 (sort_less: NaN 恒末) + 截面色: 过滤后 pool 内的名次 (GUI::rank_by, 并列取中) → band_col.
-//   用名次而非数值归一化: 估值 / 市值重尾, min-max 染色会被几个极端值压成一片同色; 并列取中: DY 成片的 0 不被摊成渐变
-void rebuild_view(AssetView &view, const Asset &asset, const StockInfos &stock_info, const Today<Candle> &today, const AssetViewKey &key) {
-  const size_t count = asset.items.size();
-  assert(asset.asset_stats.size() == count);
-  const auto row = [&](size_t id) { return make_row(asset, stock_info, today, id); };
-
-  view.rows.clear();
-  for (size_t id = 0; id < count; ++id)
-    if (shown(asset.items[id], find_info(asset.items[id], stock_info), key.filter))
-      view.rows.push_back(id);
-
-  if (key.sort_column >= 0) {
-    assert(key.sort_column < kNumCols);
-    const Column &c = kCols[key.sort_column];
-    const bool desc = !key.sort_ascending;
-    if (c.num) {
-      std::vector<double> v(count, kNaN);
-      for (const size_t id : view.rows)
-        v[id] = c.num(row(id));
-      std::stable_sort(view.rows.begin(), view.rows.end(), [&](size_t a, size_t b) { return sort_less(v[a], v[b], desc); });
-    } else {
-      std::vector<std::string_view> t(count);
-      for (const size_t id : view.rows)
-        t[id] = c.text(row(id));
-      std::stable_sort(view.rows.begin(), view.rows.end(), [&](size_t a, size_t b) { return desc ? t[b] < t[a] : t[a] < t[b]; });
-    }
+// 格: 过滤 (资产序) → 逐行逐列填格 → 各列名次 (过滤后 pool 内, GUI::rank_by, 并列取中) → 各列最宽.
+//   用名次而非数值归一化: 估值 / 市值重尾, min-max 染色会被几个极端值压成一片同色; 并列取中: 股息成片的 0 不被摊成渐变
+void fill_cells(AssetCells &o, const Asset &asset, const StockInfos &stock_info, const Today<Candle> &today, const AssetFilter &filter) {
+  assert(asset.asset_stats.size() == asset.items.size());
+  o.ids.clear();
+  for (size_t id = 0; id < asset.items.size(); ++id)
+    if (shown(asset.items[id], find_info(asset.items[id], stock_info), filter))
+      o.ids.push_back(id);
+  const size_t n = o.ids.size(), nc = static_cast<size_t>(kNumCols);
+  o.cells.assign(n * nc, {});
+  for (size_t i = 0; i < n; ++i) {
+    const Row r = make_row(asset, stock_info, today, o.ids[i]);
+    for (size_t c = 0; c < nc; ++c)
+      o.cells[i * nc + c] = cell_of(kCols[c], r);
   }
-
-  view.cs.assign(kNumCols, {});
-  for (int ci = 0; ci < kNumCols; ++ci) {
-    const Column &c = kCols[ci];
-    if (c.good == 0)
-      continue;
-    std::vector<uint32_t> &cs = view.cs[ci];
-    cs.assign(view.rows.size(), 0);
-    rank_by(
-        view.rows.size(), c.good, [&](size_t pos) { return c.num(row(view.rows[pos])); },
-        [&](size_t pos, double u) { cs[pos] = ImGui::ColorConvertFloat4ToU32(band_col(u, 1.f)); });
+  o.cw.assign(nc, 0.f);
+  for (size_t c = 0; c < nc; ++c) {
+    if (kCols[c].good != 0)
+      rank_by(n, kCols[c].good, [&](size_t i) { return o.cells[i * nc + c].key; }, [&](size_t i, double u) { o.cells[i * nc + c].rank = u; });
+    o.cw[c] = ImGui::CalcTextSize(kCols[c].col.name.c_str()).x;
+    for (size_t i = 0; i < n; ++i)
+      o.cw[c] = std::max(o.cw[c], o.cells[i * nc + c].text.w);
   }
-
-  view.key = key;
-  view.built = true;
 }
 
-// 视图过期就重建 (表格与截面分析共用 state.view)
+// 显示序: 排序列有键 → 按键 (sort_less: NaN 恒末), 否则按格文本; 无排序列 = 资产序
+void fill_order(std::vector<size_t> &o, const AssetCells &cs, int sort_column, bool ascending) {
+  o.resize(cs.ids.size());
+  std::iota(o.begin(), o.end(), size_t{0});
+  if (sort_column < 0)
+    return;
+  assert(sort_column < kNumCols);
+  const bool desc = !ascending;
+  const auto at = [&](size_t i) -> const SheetCell & { return cs.cells[i * kNumCols + static_cast<size_t>(sort_column)]; };
+  if (kCols[sort_column].num)
+    std::ranges::stable_sort(o, [&](size_t a, size_t b) { return sort_less(at(a).key, at(b).key, desc); });
+  else
+    std::ranges::stable_sort(o, [&](size_t a, size_t b) {
+      const int r = std::strcmp(at(a).text.s, at(b).text.s);
+      return desc ? r > 0 : r < 0;
+    });
+}
+
+// 格 → 显示序 (两级: 排序只重排, 不重填格; 表格与截面分析共用)
 void sync_view(AssetState &state, const Asset &asset, const StockInfos &stock_info) {
-  const AssetViewKey key{asset.generation, asset.items.size(), stock_info.size(), state.today.ver, state.sort_column, state.sort_ascending, state.filter};
-  if (!state.view.built || !(state.view.key == key))
-    rebuild_view(state.view, asset, stock_info, state.today, key);
+  state.cells.update(AssetCellsKey{asset.generation, asset.items.size(), stock_info.size(), state.today.ver, state.filter, ImGui::GetFontSize(),
+                                   ImGui::GetColorU32(ImGuiCol_Text)},
+                     [&](AssetCells &o) { fill_cells(o, asset, stock_info, state.today, state.filter); });
+  state.order.update(AssetOrderKey{state.cells.gen, state.sort_column, state.sort_ascending},
+                     [&](std::vector<size_t> &o) { fill_order(o, state.cells.val, state.sort_column, state.sort_ascending); });
 }
 
 // 新浪当日日根: 键集 = 全部资产 (Today 照版本取)
@@ -466,7 +486,7 @@ void filter_bar(AssetState &state, const std::vector<AssetItem> &assets, const S
   GUI::Filter::MultiSelectCombo("Industry##IndFilter", 150.0f, state.industries, state.filter.industry);
 
   ImGui::SameLine();
-  ImGui::Text("Showing:%zu/%zu", state.view.rows.size(), assets.size());
+  ImGui::Text("Showing:%zu/%zu", state.cells.val.ids.size(), assets.size());
 
   ImGui::SameLine();
   ImGui::BeginGroup();
@@ -476,17 +496,11 @@ void filter_bar(AssetState &state, const std::vector<AssetItem> &assets, const S
   ImGui::SameLine(0, 0);
   ImGui::TextColored(band_col(1.0, 1.f), "■");
   ImGui::EndGroup();
-  if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip(
-        "截面色 (Listed / PE / PB / PS / PCF / DY1 / DY3 / DY5 / Cap)\n"
-        "绿 = 好, 红 = 差; 取的是当前 filter 后 pool 内的名次分位\n"
-        "  Listed: 在市越久越绿\n"
-        "  PE/PB/PS/PCF: 倒数 (收益率) 越高越绿 (亏损的负值排在最差一端)\n"
-        "  DY1/DY3/DY5: 分红越多越绿\n"
-        "  Cap: 市值越大越绿\n\n"
-        "用名次分位而非数值归一化: 估值/市值是重尾分布,\n"
-        "按 min-max 染色会被几个极端值压成一片同色");
-  }
+  if (ImGui::IsItemHovered())
+    tip("名次底色 (PE / PB / PS / PCF / 股息 / 总市值 / 在市; 同 Lines 右表): 绿 = 好, 红 = 差, 取当前过滤后 pool 内的名次分位\n"
+        "• PE / PB / PS / PCF: 倒数 (收益率) 越高越绿, 亏损的负值排在最差一端\n"
+        "• 股息: 分红越多越绿; 总市值: 越大越绿; 在市: 越久越绿\n"
+        "• 用名次分位而非数值归一化: 估值 / 市值重尾, min-max 染色会被几个极端值压成一片同色");
 
   ImGui::SameLine();
   if (ImGui::SmallButton(state.show_right_panel ? "Hide" : "Show"))
@@ -504,23 +518,11 @@ void data_table(const Asset &asset_data, const StockInfos &stock_info, AssetStat
     return;
 
   for (int ci = 0; ci < kNumCols; ++ci)
-    ImGui::TableSetupColumn(kCols[ci].head, ci == 0 ? ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortAscending : 0);
+    ImGui::TableSetupColumn(kCols[ci].col.name.c_str(), ci == 0 ? ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortAscending : 0);
   ImGui::TableSetupScrollFreeze(0, 1);
+  sheet_head(kNumCols, [](int c) -> const SheetCol & { return kCols[c].col; });
 
-  ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-  for (int ci = 0; ci < kNumCols; ++ci) {
-    ImGui::TableSetColumnIndex(ci);
-    ImGui::PushID(ci);
-    ImGui::TableHeader(kCols[ci].head);
-    if (ImGui::IsItemHovered()) {
-      ImGui::BeginTooltip();
-      ImGui::TextUnformatted(kCols[ci].tip);
-      ImGui::EndTooltip();
-    }
-    ImGui::PopID();
-  }
-
-  // 排序规则的变化由 SpecsDirty 告知; 重排在 rebuild_view 里, 只在键变时做一次 (见 AssetView)
+  // 排序规则的变化由 SpecsDirty 告知; 重排在 fill_order 里, 只在键变时做一次
   if (ImGuiTableSortSpecs *sort_specs = ImGui::TableGetSortSpecs()) {
     if (sort_specs->SpecsDirty && sort_specs->SpecsCount > 0) {
       const auto &spec = sort_specs->Specs[0];
@@ -531,27 +533,30 @@ void data_table(const Asset &asset_data, const StockInfos &stock_info, AssetStat
   }
 
   sync_view(asset_state, asset_data, stock_info);
-  const AssetView &view = asset_state.view;
+  const AssetCells &cs = asset_state.cells.val;
+  const std::vector<size_t> &order = asset_state.order.val;
   const int hovered_col = ImGui::TableGetHoveredColumn();
   const int hovered_row = ImGui::TableGetHoveredRow(); // 上帧的表行号 (0 = 表头; clipper 下 = 本帧第几个交的行)
-  size_t hit = SIZE_MAX;                               // 悬停行的 rows 位置
+  size_t hit = SIZE_MAX;                               // 悬停行 (cells 的行下标)
   ImGuiListClipper clip;
-  clip.Begin(static_cast<int>(view.rows.size()));
+  clip.Begin(static_cast<int>(order.size()));
   while (clip.Step())
     for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
-      const size_t pos = static_cast<size_t>(i), id = view.rows[pos];
-      // StockInfo 每帧现查 (基本面可能整体重载, 缓存指针会失效)
-      const Row r = make_row(asset_data, stock_info, asset_state.today, id);
+      const size_t at = order[static_cast<size_t>(i)], id = cs.ids[at];
       ImGui::TableNextRow();
       if (ImGui::TableGetRowIndex() == hovered_row)
-        hit = pos;
+        hit = at;
       if (asset_state.selected_asset == static_cast<int>(id))
         ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(kPickCol));
       for (int ci = 0; ci < kNumCols; ++ci) {
         ImGui::TableSetColumnIndex(ci);
-        if (hovered_col == ci)
+        const Column &c = kCols[ci];
+        const SheetCell &x = cs.cells[at * kNumCols + static_cast<size_t>(ci)];
+        draw_cell(x, c.kind == Kind::Number ? cs.cw[static_cast<size_t>(ci)] : x.text.w);
+        if (!asset_state.quotes_page && hovered_col == ci) // 点格切截面分析的列: 盖过名次底色
           ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(kHoverCol));
-        draw_cell(kCols[ci], r, view.cs[ci].empty() ? 0 : view.cs[ci][pos]);
+        if (c.hover && ImGui::IsItemHovered()) // StockInfo 现查 (基本面可能整体重载, 不缓存指针)
+          c.hover(make_row(asset_data, stock_info, asset_state.today, id));
       }
     }
 
@@ -559,7 +564,7 @@ void data_table(const Asset &asset_data, const StockInfos &stock_info, AssetStat
   const ImRect inner = ImGui::GetCurrentWindow()->InnerClipRect;
   if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered() && inner.Contains(ImGui::GetMousePos()) && hit != SIZE_MAX &&
       hovered_col >= 0 && hovered_col < kNumCols) {
-    asset_state.selected_asset = static_cast<int>(view.rows[hit]);
+    asset_state.selected_asset = static_cast<int>(cs.ids[hit]);
     asset_state.show_right_panel = true;
     if (!asset_state.quotes_page)
       asset_state.selected_column_idx = asset_state.selected_column_idx == hovered_col ? -1 : hovered_col;
@@ -573,7 +578,7 @@ void numeric_analysis(const Asset &asset_data, const StockInfos &stock_info, con
   std::vector<std::string> names;
   std::vector<float> values;
   std::vector<std::string> codes;
-  for (const size_t id : asset_state.view.rows) {
+  for (const size_t id : asset_state.cells.val.ids) {
     const Row r = make_row(asset_data, stock_info, asset_state.today, id);
     const double v = col.num(r);
     if (std::isnan(v))
@@ -693,7 +698,7 @@ void pie(const char *id, const std::vector<CategoryCount> &cs, float height, dou
 // 分类列的截面分析: 全体饼图 + 分板块饼图 (两列). 行 = 表格的视图
 void category_analysis(const Asset &asset_data, const StockInfos &stock_info, const AssetState &asset_state, const Column &col) {
   std::vector<std::string> categories, codes;
-  for (const size_t id : asset_state.view.rows) {
+  for (const size_t id : asset_state.cells.val.ids) {
     const Row r = make_row(asset_data, stock_info, asset_state.today, id);
     categories.emplace_back(col.text(r));
     codes.push_back(r.a.asset_code);
@@ -730,7 +735,9 @@ void cross_section(const Asset &asset_data, const StockInfos &stock_info, const 
   }
   assert(ci < kNumCols);
   const Column &col = kCols[ci];
-  ImGui::Text("Column: %s", col.name);
+  const std::string &t = col.col.tip;
+  assert(t.find('\n') != std::string::npos);
+  ImGui::TextUnformatted(t.c_str(), t.c_str() + t.find('\n'));
   ImGui::Separator();
   switch (col.kind) {
   case Kind::Text:

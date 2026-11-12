@@ -229,11 +229,11 @@ std::vector<size_t> days_on(const std::vector<misc::Ymd> &axis, const std::vecto
 }
 
 // ---- 线的来路 (两种线源: 腿集合成 mix / 价格指数 levels): 源 → 点位 Levels → project (日并集轴) → Line ----
-// 源点位: 点 i 在日 date[i] 的日内分钟 min[i], 点位 lv[i]; 首点 = 首日开盘前 kStartDx 格的起点 (前收)
+// 源点位: 点 i 在日 date[i] 的槽 slot[i], 点位 lv[i]; 首点 = 首日首根前 kStartDx 格的起点 (前收)
 struct Levels {
   std::vector<misc::Ymd> date;
-  std::vector<double> min, lv;
-  void push(misc::Ymd d, double m, double v) { date.push_back(d), min.push_back(m), lv.push_back(v); }
+  std::vector<double> slot, lv;
+  void push(misc::Ymd d, double s, double v) { date.push_back(d), slot.push_back(s), lv.push_back(v); }
 };
 
 // 腿 (fold_book 已实现口径, 与池指数对齐): 行 t 的增量 (cost: 毛 − 冲击 − 固定份数 · fixed_impact; 否则 = 毛; 账无成本列 → 恒 = 毛) /
@@ -252,10 +252,10 @@ struct BookLine {
   double buy(size_t t) const { return c[kBookBuy] ? c[kBookBuy][t] : 0.0; }
 };
 
-// 腿集合成 (线源 s 的 legs): 稠密格 [日并集轴][M] (M = 各腿层的行末分钟之并), 腿的行 t 落进 (所在日, 行末分钟) 的格;
+// 腿集合成 (线源 s 的 legs): 稠密格 [日并集轴][M] (M = 各腿层的行末槽之并; 行末分钟经 row_slot, 竞价段并入首根), 腿的行 t 落进 (所在日, 行末槽) 的格;
 //   腿的日在轴范围外 → 弃, 范围内而轴上没有 → 整日并进下一个轴上的日的该腿首格 (同 project: 收益并进下一个轴上的日);
 //   同格同腿复利, 跨腿按份额 1 / 当日有数据的腿数加和 ⇒ 一腿 = 该账线自身逐行复利
-// 点位 = 首个有增量的格所在日开盘前的起点 1 + 有增量的格逐格复利; 年换手 = 增仓量同份额累加到日, 自首个有增仓的日起在有腿的日上的日均 × 每年交易日
+// 点位 = 首个有增量的格所在日首根前的起点 1 + 有增量的格逐格复利; 年换手 = 增仓量同份额累加到日, 自首个有增仓的日起在有腿的日上的日均 × 每年交易日
 struct Mix {
   Levels lv;
   double turn = kNaN; // 倍/年; 无增仓 = NaN
@@ -264,18 +264,20 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
   const std::vector<LinesLeg> &legs = s.legs;
   const size_t D = axis.size();
   assert(D > 0);
-  std::array<int, kDayW> slot; // [日内分钟] 槽 (−1 = 无腿在此收行)
-  slot.fill(-1);
+  // 腿层 g 的行 ts → 槽
+  const auto slot_of = [](const factor::Geo &g, int ts) { return static_cast<size_t>(row_slot(static_cast<size_t>(g.minute(ts)))); };
+  std::array<int, kDayW> col; // [槽] 格列 (−1 = 无腿在此收行)
+  col.fill(-1);
   for (const LinesLeg &lg : legs) {
     const factor::Geo g = factor_level(lg.b->lv).geo();
     for (int ts = 0; ts < g.S; ++ts)
-      slot[static_cast<size_t>(g.minute(ts))] = 0;
+      col[slot_of(g, ts)] = 0;
   }
-  std::vector<int> mins; // [槽] 日内分钟
+  std::vector<int> slots; // [格列] 槽
   for (size_t m = 0; m < kDayW; ++m)
-    if (slot[m] == 0)
-      slot[m] = static_cast<int>(mins.size()), mins.push_back(static_cast<int>(m));
-  const size_t M = mins.size(), X = D * M;
+    if (col[m] == 0)
+      col[m] = static_cast<int>(slots.size()), slots.push_back(static_cast<int>(m));
+  const size_t M = slots.size(), X = D * M;
   std::vector<std::vector<size_t>> dix(legs.size()); // [腿][腿的日] → 并入的轴日 (SIZE_MAX = 范围外)
   std::vector<int> n_act(D, 0);                      // [轴日] 当日有数据的腿数
   for (size_t q = 0; q < legs.size(); ++q) {
@@ -315,7 +317,7 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
         continue;
       const bool on = axis[d] == b.dates[i];
       for (size_t ts = 0; ts < S; ++ts) {
-        const size_t t = i * S + ts, c = d * M + static_cast<size_t>(slot[static_cast<size_t>(g.minute(on ? static_cast<int>(ts) : 0))]);
+        const size_t t = i * S + ts, c = d * M + static_cast<size_t>(col[slot_of(g, on ? static_cast<int>(ts) : 0)]);
         if (c != at) {
           flush();
           at = c, k = 1.0 / n_act[d];
@@ -337,7 +339,7 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
     for (size_t i = 0; i < xs.size(); ++i)
       r[i] = acc[xs[i]];
     o.lv.push(axis[xs.front() / M], -kStartDx, 1.0);
-    compound(r.data(), xs.size(), [&](size_t i, double v) { o.lv.push(axis[xs[i] / M], static_cast<double>(mins[xs[i] % M]), v); });
+    compound(r.data(), xs.size(), [&](size_t i, double v) { o.lv.push(axis[xs[i] / M], static_cast<double>(slots[xs[i] % M]), v); });
   }
   size_t d0 = 0;
   while (d0 < D && !(buy[d0] > 0))
@@ -363,7 +365,7 @@ Levels levels(const Quote::Kline &k) {
   return s;
 }
 
-// 点位 s → 日并集轴 axis 上的线 (见 Line): 只取 axis 范围内的点; 首个取到的点不是起点 → 补其前一点为起点 (所在日开盘前);
+// 点位 s → 日并集轴 axis 上的线 (见 Line): 只取 axis 范围内的点; 首个取到的点不是起点 → 补其前一点为起点 (所在日首根前);
 // 不在轴上的日只差点位, 收益自然并进下一个轴上的日. 同时建日末视图
 Line project(const std::vector<misc::Ymd> &axis, const Levels &s) {
   Line c;
@@ -377,12 +379,12 @@ Line project(const std::vector<misc::Ymd> &axis, const Levels &s) {
   for (size_t i = 0; i < s.date.size(); ++i) {
     if (s.date[i] < axis.front() || s.date[i] > axis.back())
       continue;
-    if (c.x.empty() && s.min[i] >= 0) {
+    if (c.x.empty() && s.slot[i] >= 0) {
       assert(i > 0);
       push(di[i], -kStartDx, i - 1);
     }
     if (axis[di[i]] == s.date[i])
-      push(di[i], s.min[i], i);
+      push(di[i], s.slot[i], i);
   }
   if (c.x.empty())
     return c;
@@ -402,7 +404,7 @@ Line project(const std::vector<misc::Ymd> &axis, const Levels &s) {
   return c;
 }
 
-// 线 c (日末视图已建) 的点换成日内形 m: 各日以当日末点为锚, 锚 = 末点所在分钟及以前的末个有根槽, 该日各有根槽 (至锚) 的点位 = 末点 × 收 / 锚处收;
+// 线 c (日末视图已建) 的点换成日内形 m: 各日以当日末点为锚, 锚 = 末点所在槽及以前的末个有根槽, 该日各有根槽 (至锚) 的点位 = 末点 × 收 / 锚处收;
 // m 无该日 / 锚前无根 → 该日照留原点. 起点 (前收) 与各日末点不动 ⇒ 日末视图不变, 切片的 base 仍落在点上
 void intraday(const std::vector<misc::Ymd> &axis, const MinuteCloses &m, Line &c) {
   if (c.x.size() < 2)
@@ -413,8 +415,7 @@ void intraday(const std::vector<misc::Ymd> &axis, const MinuteCloses &m, Line &c
     while (e < c.x.size() && c.day(e) == k)
       ++e;
     const float *p = m.on(axis[static_cast<size_t>(k)]);
-    const int top = static_cast<int>(c.x[e - 1] - x_of(static_cast<size_t>(k), 0.0)) - static_cast<int>(OPEN_BIN_MINUTES);
-    int a = p ? std::min(top, Quote::kSlots - 1) : -1;
+    int a = p ? static_cast<int>(c.x[e - 1] - x_of(static_cast<size_t>(k), 0.0)) : -1;
     while (a >= 0 && !(p[a] > 0))
       --a;
     if (a < 0) {
@@ -425,7 +426,7 @@ void intraday(const std::vector<misc::Ymd> &axis, const MinuteCloses &m, Line &c
     const double ly = c.y[e - 1];
     for (int s = 0; s <= a; ++s)
       if (p[s] > 0)
-        x.push_back(x_of(static_cast<size_t>(k), static_cast<double>(OPEN_BIN_MINUTES + static_cast<size_t>(s)))),
+        x.push_back(x_of(static_cast<size_t>(k), static_cast<double>(s))),
             y.push_back(ly * (static_cast<double>(p[s]) / static_cast<double>(p[a])));
   }
   c.x = std::move(x), c.y = std::move(y);

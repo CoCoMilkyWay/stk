@@ -160,6 +160,9 @@ stk/
 │   │   │   ├── Config.hpp                              # 🖥️ 颜色 / 字体 / 布局
 │   │   │   ├── Tasks.hpp                               # 🖥️ 任务树: 左栏选中 / 状态标签 / 生命周期
 │   │   │   ├── util/Service.hpp                        # 🖥️ 后台单线程服务骨架 GUI::Service<Derived, Req> (CRTP): 新请求覆盖旧请求; 全部 GUI 服务共用
+│   │   │   │                                           #    · UI 侧两件: latest (持锁取结果) / Sent<Req> (内容变才发, 代 +1)
+│   │   │   ├── util/Stage.hpp                          # 🖥️ 键控缓存 Stage<Key, Val>: 键变才重算, gen 计重算次数 (下级把上级 gen 放进键即级联失效)
+│   │   │   ├── util/Sheet.hpp                          # 🖥️ 表格的列与格 (Lines 右表 / ASSET 资产表同一套): 列 = 表头 + 四行说明, 格 = 文本 + 排序键 + 名次底色
 │   │   │   ├── util/                                   # 🖥️ 其余公共件: Chart (图表件) / Sparkline (格内迷你图) / Tip / PoolTip (池列表公共件: 子池悬停 = 逐维拆解 + 拖动调池表序, 各页同一份) / HoverSync (图 ↔ 右表悬停联动: 图上最近的线 → 表行亮并滚到居中, 表行 → 图上白粗线; Beta Style / Market NAV · 日内栏 · FLOW 同一份) / Reorder (列表拖动调序: 子池 / 自选) / Color / Board (板块口径) / AssetFilter (资产筛选栏) / Latex
 │   │   │   ├── icon_bar/                               # 🖥️ 图标栏: 网络探测 (NetworkService) / FPS
 │   │   │   ├── compute/                                # 🖥️ 特征计算 (Beta / Alpha 的 Compute 页同一份)
@@ -241,15 +244,20 @@ stk/
 │   │   │   │   ├── TaskMarket.hpp                      # 🖥️ Market 任务主界面
 │   │   │   │   ├── services/
 │   │   │   │   │   ├── MinuteLib.hpp                   # 🖥️ 分钟价格库: 全部个股 + 篮子线的全史 1 分钟价 (篮子 = BasketRow Lane), 续算只补新日; NAV / CTA 共用
+│   │   │   │   │   │                                   #    · 两个 worker 同一套: open (开库 / 续算 → 缺键 + 日轴 + 戳) → each (逐日 mmap 读一标的) → Kept<T> (按 (键, 戳) 的 LRU)
 │   │   │   │   │   ├── MinuteService.hpp               # 🖥️ NAV 分钟线: 选中的篮子 / 成分股 → 逐日分钟收盘 (理想线按它画到分钟)
 │   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 → cta/Trace 滚动调参轨迹
 │   │   │   │   └── ui/
 │   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / FLOW / CTA (一行一对线 Line, 四页同一份派生 / 选中 / 区间)
 │   │   │   │       │                                   #    · 右表 = 指数 / 行业 / 概念 / 自选 / 因子 / 策略 行 (篮子行可展开成分股); 左 = 主图 + 日内栏 + 区间条
+│   │   │   │       │                                   #    · 横轴 = 槽 (日 × 240 + 分钟槽; 集合竞价并入首槽): 日线 / 分钟线同一轴
 │   │   │   │       ├── LinesView.hpp                   # 🖥️ 行情页纯计算层 (无 ImGui): 账 → 线 (腿集合成 mix / 价格指数) → 日并集轴 → 估值分位 → 视图; 行一种 LinesRow
 │   │   │   │       ├── LinesCommon.hpp                 # 🖥️ 行情页内部件; 实现分 LinesPlot.cpp (主图) / LinesSheet.cpp (右表) / LinesCta.cpp (CTA 页)
-│   │   │   │       ├── TabAsset.hpp                    # 🖥️ ASSET 页: 个股表 (列定义一张表 kCols) + Quotes / Statistics
-│   │   │   │       ├── QuotesPanel.hpp                 # 🖥️ 行情图: 个股 (日内 + 日线) / 篮子 (日内叠加) / 资金流 同一 Feed + Sync
+│   │   │   │       │                                   #    · 页表 kPageDefs = 页的一切差异: 右表段 (近况 / 当日 / 数值 / 估值分位 / 资金流) / 页件 / 布局 / 叠加图 / 头 / 状态的 worker
+│   │   │   │       │                                   #    · 主图例矩阵 (NAV / VAL 同一件, 只填行列表) / 右表 (各页同一条 RenderLinesSheet)
+│   │   │   │       ├── TabAsset.hpp                    # 🖥️ ASSET 页: 个股表 (列定义一张表 kCols; 格 / 名次底色同 Lines 右表) + Quotes / Statistics
+│   │   │   │       ├── QuotesPanel.hpp                 # 🖥️ 行情图: 个股 (日内 + 日线) / 篮子叠加 / 资金流 同一 Feed + Sync
+│   │   │   │       │                                   #    · 叠加图两种 (涨跌幅 = NAV 日内栏 / 累计净流入 = FLOW) 同一入口 RenderOverlay(kind) + 同一份档位条 / 工具角
 │   │   │   │       └── CrossSectionAnalysis.hpp        # 🖥️ 截面分析 (ASSET Statistics)
 │   │   │   ├── task_features/                          # 🖥️ 特征面板与调试工具
 │   │   │   │   ├── TaskFeatures.hpp                    # 🖥️ 特征任务主界面; 计算在飞时锁其它页

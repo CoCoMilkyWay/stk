@@ -96,7 +96,7 @@ struct Asset {
   std::vector<DateGap> date_gaps; // 与 backtest.days 逐行对齐; 空 = 待重算
 
   // ========================================
-  // 按资产统计 (Encode 缺失表 / Table 的 Days·Orders·Orders%)
+  // 按资产统计 (Encode 缺失表 / ASSET 的 交易日·日均笔数·逐笔完整 列)
   // ========================================
   // 全库编完之后帧目录是满的 (资产数 × 交易日数, 五百万量级), 在 GUI
   // 里逐帧重算这些计数会把帧时间拖到几百毫秒. 与 date_stats 同一趟扫描算好, 随产物换进.
@@ -216,7 +216,7 @@ struct Asset {
   // 几百个日期, 单线程. 区间内的条数/体积 (要遍历帧目录) 归 compute_coverage_statistics 那趟一起算.
   static void compute_backtest_coverage(AssetScan &out, misc::Ymd start, const AssetInfo &asset_info);
 
-  // 按日统计 (Calendar 完整性 / ASSET 的 Orders% / Encode 的缺失表,
+  // 按日统计 (Calendar 完整性 / ASSET 的逐笔完整列 / Encode 的缺失表,
   // 同一份统计一次算完)
   //
   // 分母 = 当日"本该有逐笔"的资产: 已上市未退市, 且排除

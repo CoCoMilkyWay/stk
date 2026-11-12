@@ -1,5 +1,6 @@
 #include "gui/task_market/services/MinuteLib.hpp"
 
+#include "features/Panel/PoolSelect.hpp" // all_bar / picks
 #include "features/Storage/FeatureLevels.hpp" // feature_storage_t
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
@@ -7,8 +8,14 @@
 #include "misc/snap.hpp"
 #include "shared/Basket.hpp" // basket_table
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
@@ -53,7 +60,7 @@ using misc::snap::items;
 // 一行一日的价 ← 分钟根 (无根的槽 = NaN)
 template <Side S>
 void put(Rec<S> &r, const Quote::Bars &b) {
-  std::fill(r.x, r.x + kCell, static_cast<Px<S>>(cta::kNaN));
+  std::fill(r.x, r.x + kCell, static_cast<Px<S>>(NAN));
   for (size_t s = 0; s < kSlots; ++s)
     if (b.has[s]) {
       const Quote::Cell &c = b.cell[s];
@@ -76,40 +83,32 @@ struct Out {
   }
 };
 
-// 一根 (高 低 收) × 因子 f → 有效根: 收 ≤ 0 / NaN 不收; 高 / 低缺 → 收, 且包住收
-template <class T>
-void push(cta::Series &se, size_t t, const T *p, double f) {
-  const float c = static_cast<float>(p[MinuteLib::kClose]);
-  if (!(c > 0))
+// 一侧第 row 行 (共 N 行) 的 D 日逐个有根日 f(日下标, 因子, 价): 整文件只读映射, 逐日跨 N 行取一条
+template <Side S>
+void scan(const disk::Key &lib, size_t N, size_t D, size_t row, const MinuteLib::Each &f) {
+  const size_t n = bytes<S>(N, D);
+  if (n == 0)
     return;
-  const float h = static_cast<float>(p[MinuteLib::kHigh]), l = static_cast<float>(p[MinuteLib::kLow]);
-  const auto at = [f](float v) { return static_cast<float>(v * f); };
-  se.c.push_back(at(c));
-  se.h.push_back(at(h > 0 ? std::max(h, c) : c));
-  se.l.push_back(at(l > 0 ? std::min(l, c) : c));
-  se.t.push_back(static_cast<uint32_t>(t));
-}
-
-// 一侧第 row 行 (共 N 行) 的 D 日逐个有根日 f(日下标, 记录)
-template <Side S, class F>
-void scan(const disk::Key &lib, size_t N, size_t D, size_t row, F &&f) {
-  std::ifstream in(disk::path(kFile[S], lib), std::ios::binary);
-  Rec<S> r;
-  for (size_t i = 0; i < D; ++i) {
-    in.seekg(static_cast<std::streamoff>((i * N + row) * sizeof(Rec<S>)));
-    in.read(reinterpret_cast<char *>(&r), sizeof(Rec<S>));
-    assert(in && "minute/: 短于头");
-    if (r.f > 0)
-      f(i, r);
-  }
+  const int fd = ::open(disk::path(kFile[S], lib).c_str(), O_RDONLY);
+  assert(fd >= 0 && "minute/: 打不开");
+  struct stat sb {};
+  const int st = ::fstat(fd, &sb);
+  assert(st == 0 && static_cast<size_t>(sb.st_size) >= n && "minute/: 短于头");
+  void *m = ::mmap(nullptr, n, PROT_READ, MAP_SHARED, fd, 0);
+  ::close(fd);
+  assert(m != MAP_FAILED && "minute/: 映射失败");
+  const Rec<S> *rec = static_cast<const Rec<S> *>(m);
+  float px[kCell];
+  for (size_t i = 0; i < D; ++i)
+    if (const Rec<S> &r = rec[i * N + row]; r.f > 0) {
+      for (size_t k = 0; k < kCell; ++k)
+        px[k] = static_cast<float>(r.x[k]);
+      f(i, r.f, px);
+    }
+  ::munmap(m, n);
 }
 
 } // namespace
-
-const float *MinuteCloses::on(misc::Ymd d) const {
-  const auto it = std::lower_bound(dates.begin(), dates.end(), d);
-  return it != dates.end() && *it == d ? close.data() + static_cast<size_t>(it - dates.begin()) * kSlots : nullptr;
-}
 
 template <class Ar>
 void MinuteLib::snap(Ar &ar) {
@@ -220,35 +219,27 @@ bool MinuteLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::P
   return false;
 }
 
-bool MinuteLib::series(Quote::Ref ref, cta::Series &se) const {
-  std::lock_guard<std::mutex> lock(mu_);
-  const size_t row = row_of(ref), N = keys_[ref.side].size();
-  if (row == N)
-    return false;
-  se = {};
-  each_side([&]<Side S>() {
-    if (S == ref.side)
-      scan<S>(lib_, N, dates_.size(), row, [&](size_t i, const Rec<S> &r) {
-        for (size_t s = 0; s < kSlots; ++s)
-          push(se, i * kSlots + s, r.x + s * kFields, r.f);
-      });
-  });
-  return true;
+std::optional<MinuteOpen> MinuteLib::open(std::string_view what, const std::atomic<bool> &cancel, Progress &x, misc::exec::ForkJoin &pool) {
+  const pool::AllBar ab = pool::all_bar(what);
+  if (!ab.lack.empty())
+    return MinuteOpen{.lack = ab.lack};
+  const FeatureLib &lib = ab.lib;
+  FeatureRead rd(lib, &cancel);
+  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &cancel);
+  if (!pk || !sync(lib, rd, *pk, cancel, x, pool))
+    return std::nullopt;
+  const std::vector<misc::Ymd> &dates = pk->tape->dates; // 已落盘日 (清单日期轴可能还在算)
+  return MinuteOpen{.dates = dates, .stamp = {lib.axis.hash, dates.back(), dates.size()}};
 }
 
-bool MinuteLib::closes(Quote::Ref ref, MinuteCloses &mc) const {
+bool MinuteLib::each(Quote::Ref ref, const Each &f) const {
   std::lock_guard<std::mutex> lock(mu_);
   const size_t row = row_of(ref), N = keys_[ref.side].size();
   if (row == N)
     return false;
-  mc = {};
   each_side([&]<Side S>() {
     if (S == ref.side)
-      scan<S>(lib_, N, dates_.size(), row, [&](size_t i, const Rec<S> &r) {
-        mc.dates.push_back(dates_[i]);
-        for (size_t s = 0; s < kSlots; ++s)
-          mc.close.push_back(static_cast<float>(r.x[s * kFields + kClose]));
-      });
+      scan<S>(lib_, N, dates_.size(), row, f);
   });
   return true;
 }

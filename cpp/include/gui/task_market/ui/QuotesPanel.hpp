@@ -2,11 +2,11 @@
 //   当日一份 Today (键集 → 当日, 版本变才重取): Feed 的当日 / 成分行的当日 / ASSET 表的日根三处同一种;
 //   一个标的的源 Source (历史 + 当日): 叠加图与 Lines 右表同一查法 SourceOf, 其上 RecentOf / FlowOf 两侧通用
 //   个股 = ASSET 右栏 (Live 持仓页右栏同一面板): 键集 {选中标的}, 日内 (右挂盘口: 当日最新快照五档) + 日线;
-//   叠加 (OverlayState) = NAV 日内栏: 条 = 篮子线 / 个股 (NAV 右表点中的成分股: 个股历史 + 新浪当日), 同一画法;
-//     叠加图 (对首日前收的涨跌幅, 刻度区全空: 横网格 (含 0 轴) 涨跌幅小字内标在右壁, 线名小字贴线尾;
-//     不画量, 读数看十字光标); 多条 = 收盘线, 单条 = 分钟蜡烛 (窄了按 kSlots 的因子并根) + 现价十字 (虚线, 标涨跌幅 / 时刻), 版面不变;
-//     0 轴上叠每分钟净流入 (Bars::net) 半透明红绿柱 (日轴各日, 柱高自成比例), 当日此刻所在根随快照动, 标的 = 只一条时它, 否则全A.等;
-//     FLOW 页 = 同一叠加图, y = 自日轴首日开盘起逐分钟累计的净流入 (Bars::net; 占近 5 日日均成交额 % / 金额 亿元);
+//   叠加图 (OverlayState; 两种 OverlayKind 同一入口 RenderOverlay, 同一份选中 / 档位条 / 工具角): 条 = 篮子线 / 个股 (右表点中的成分股: 个股历史 + 新浪当日);
+//     刻度区全空: 横网格 (含 0 轴) y 值小字内标在右壁, 线名小字贴线尾; 不画量, 读数看十字光标;
+//     涨跌幅 (NAV 日内栏) = 对首日前收的涨跌幅; 多条 = 收盘线, 单条 = 分钟蜡烛 (窄了按 kSlots 的因子并根) + 现价十字 (虚线, 标涨跌幅 / 时刻), 版面不变;
+//       0 轴上叠每分钟净流入 (Bars::net) 半透明红绿柱 (日轴各日, 柱高自成比例), 当日此刻所在根随快照动, 标的 = 只一条时它, 否则全A.等;
+//     累计净流入 (FLOW 页) = 自日轴首日首根起逐槽累计的净流入 (Bars::net; 占近 5 日日均成交额 % / 金额 亿元);
 //   近况 (Recent): 一个标的的近况两列 (NAV 右表 / ASSET 表). 以下为个股图:
 //   日内多日 (个股 / 篮子同一份) 按前收链前复权到末日 (末日真价; 篮子点位本已接续);
 //   价 = 实心蜡烛 (实体 = 上一根收 → 本根收, 首根起于前收, 根根首尾相接; 量柱同色), 日内按视野宽并根 (同篮子);
@@ -78,15 +78,20 @@ struct StockState {
   ChartState chart;
 };
 
-// 叠加图 / Lines 右表的行情: 篮子 Feed + 叠加个股 Feed (历史) + 成分当日 (只当日) + 两图的档位
+// 叠加图两种
+enum OverlayKind : int { kOverlayNone = -1,
+                         kOverlayIntra, // 涨跌幅 (NAV 日内栏)
+                         kOverlayFlow,  // 累计净流入 (FLOW 页)
+                         kOverlays };
+
+// 叠加图 / Lines 右表的行情: 篮子 Feed + 叠加个股 Feed (历史) + 成分当日 (只当日) + 两种图的档位
 struct OverlayState {
-  Feed baskets;           // 键集 = 全部篮子线 (下标 = 篮子下标)
-  Feed stocks;            // 键集 = 叠加的个股 (全局 id; 与 ASSET 同一路个股历史)
-  Today<Day> cons;        // 成分组的个股 (全局 id, 升序) 的当日
-  int intraday = 0;       // 日内档 (日内 / 2日 … 5日)
-  int flow = 0;           // 资金流档 (同日内档)
-  int flow_unit = 0;      // 资金流 y: 0 = 占近 5 日日均成交额 [%], 1 = 金额 [亿元]
-  bool flow_ends = false; // 资金流计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价)
+  Feed baskets;               // 键集 = 全部篮子线 (下标 = 篮子下标)
+  Feed stocks;                // 键集 = 叠加的个股 (全局 id; 与 ASSET 同一路个股历史)
+  Today<Day> cons;            // 成分组的个股 (全局 id, 升序) 的当日
+  int span[kOverlays] = {};   // [OverlayKind] 日轴档 (日内 / 2日 … 5日)
+  int flow_unit = 0;          // 资金流 y: 0 = 占近 5 日日均成交额 [%], 1 = 金额 [亿元]
+  bool flow_ends = false;     // 资金流计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价)
 };
 
 // 一个标的的源: 历史 (无 = nullptr) + 当日 (未取 = nullptr; 当日无成交 = candle.date 0)
@@ -123,13 +128,11 @@ Recent RecentOf(const StockInfo &info, const Candle &today, misc::Ymd prev);
 
 // title = 在画标的的标题 (简称 + 代码)
 void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &title);
-// picks 各条的日内叠加图 (一条 = 蜡烛), 占满当前区域 (日轴止于行情日, 当日未接上 → 当日空 + 提示); 篮子源未就绪 / 读取中 → 提示; 无历史的条不画;
+// picks 各条的 kind 叠加图, 占满当前区域 (日轴 = OverlayDays, 当日未接上 → 当日空 + 提示; 档位条等工具叠在左上角); 篮子源未就绪 / 读取中 → 提示; 无历史的条不画;
 // hot = 白粗线画在最上的条 (picks 下标, −1 = 无; gui/util/HoverSync.hpp). 返回图上悬停的条 (鼠标 x 处纵向最近; −1 = 无)
-int RenderIntraday(const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot);
-// picks 各条的累计净流入叠加图 (日轴 = FlowDays, 跨日接续; 档位 / 口径 / 开收盘开关叠在左上角), 其余同 RenderIntraday
-int RenderFlow(const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot);
-// 资金流档的日轴: 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
-std::vector<misc::Ymd> FlowDays(const QuoteHub &mk, const OverlayState &st);
+int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot);
+// kind 档的日轴: 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
+std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const OverlayState &st);
 // 一段的资金流 [元]: 净流入 (分钟涨跌法, 见 Fold) / 成交额; amount 0 = 无根
 struct Flow {
   double net = 0, amount = 0;

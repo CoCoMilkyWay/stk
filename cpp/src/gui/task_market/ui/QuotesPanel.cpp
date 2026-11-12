@@ -1013,6 +1013,83 @@ void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *
   }
 }
 
+// ---- 叠加图两种 (OverlayKind): 同一条路 RenderOverlay, 差异只在 kOverlayDefs ----
+// 一张叠加图的公共输入: 日轴 (各条按日落位, 某条缺的日留空; 当日未接上 → 当日空) / 只一条 / 图宽 [px]
+struct OverlayCtx {
+  const OverlayState &st;
+  std::span<const misc::Ymd> days;
+  bool one;
+  float px;
+};
+
+// 涨跌幅: y = 收对本条在日轴内首日前收的涨跌幅 [%]; 只一条 = 蜡烛 + 现价十字
+bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Overlay &l) {
+  Series s;
+  intraday(src, cx.days, p.ref.is(kBasket), s);
+  if (s.bars.empty() || !(s.bars.front().ref > 0))
+    return false;
+  const double base = s.bars.front().ref;
+  const auto pct = [&](double v) { return (v / base - 1.0) * 100.0; };
+  if (cx.one) {
+    const Candle &e = s.bars.back();
+    l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
+    l.now = static_cast<int>(s.x.back());
+    l.g = merge(s, std::max<size_t>(1, cx.days.size()) * kSlots, cx.px);
+    double prev = 0;
+    for (const Candle &c : s.bars) {
+      const double y = pct(c.close);
+      l.open.push_back(prev), l.high.push_back(std::max({pct(c.high), prev, y})), l.low.push_back(std::min({pct(c.low), prev, y}));
+      prev = y;
+    }
+  }
+  l.x = s.x;
+  for (const Candle &c : s.bars)
+    l.y.push_back(pct(c.close));
+  return true;
+}
+// 累计净流入: 自日轴首日首根起逐槽累计, 跨日接续; y = 累计 / 单位 (占比 = 近 5 日日均成交额 %, 金额 = 亿元)
+bool flow_line(const OverlayCtx &cx, const OverlayPick &, const Source &src, Overlay &l) {
+  const double unit = cx.st.flow_unit == 0 ? flow_ref(*src.kl) / 100.0 : 1e8;
+  if (!(unit > 0))
+    return false;
+  double net = 0;
+  for (size_t k = 0; k < cx.days.size(); ++k)
+    if (const Bars *b = bars_on(src, cx.days[k]))
+      for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
+        if (flow_slot(*b, j, cx.st.flow_ends)) {
+          net += b->net[j];
+          l.x.push_back(static_cast<double>(k * kSlots + j));
+          l.y.push_back(net / unit);
+        }
+  return !l.x.empty();
+}
+// 资金流的口径条 (接在档位条后)
+void flow_tools(OverlayState &st) {
+  ImGui::SameLine(0, 8);
+  button_bar(kFlowUnitName, 2, st.flow_unit);
+  ImGui::SameLine(0, 8);
+  if (toggle_button("开收盘", st.flow_ends))
+    st.flow_ends = !st.flow_ends;
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("计入开盘 / 收盘的资金流 (默认不计; 图与右表同一开关)\n"
+                      "• 开盘 = 首根 09:31 (集合竞价并入, 与 09:30 那分钟分不开)\n"
+                      "• 收盘 = 末根 15:00 (收盘集合竞价)\n"
+                      "• 两根成交额大、方向只看对前一价的涨跌, 易把全日累计带偏 (关 = 曲线自开盘贴 0 轴起步)\n"
+                      "• 占比 = 累计净流入 / 近 5 日日均成交额 (不含当日, 盘前已定: 开盘即稳, 跨篮子可比)");
+}
+
+struct OverlayDef {
+  const char *id;
+  bool net;                                                                          // 0 轴叠净流入柱
+  const char *(*unit)(const OverlayState &);                                         // y 单位
+  bool (*line)(const OverlayCtx &, const OverlayPick &, const Source &, Overlay &); // 一条 (false = 不画)
+  void (*tools)(OverlayState &);                                                     // 档位条之后的工具 (nullptr = 无)
+};
+constexpr OverlayDef kOverlayDefs[kOverlays] = {
+    {"intraday", true, [](const OverlayState &) { return "%"; }, pct_line, nullptr},
+    {"flow", false, [](const OverlayState &s) { return s.flow_unit == 0 ? "%" : "亿"; }, flow_line, flow_tools},
+};
+
 } // namespace
 
 template <class T>
@@ -1109,16 +1186,16 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
   charts("stock", is, ds, static_cast<uint64_t>(f.shown) << 32, st.chart, mk.quote->book(id), qs.date);
 }
 
-int RenderIntraday(const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot) {
+int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot) {
+  const OverlayDef &def = kOverlayDefs[kind];
   Feed &f = st.baskets;
   if (!basket_ready(mk, f))
     return -1;
   const QuoteStatus qs = mk.quote->status();
   const Tape &d = *f.data;
-  // 日轴 = 行情日及其前 n − 1 个交易日; 各条按日落位, 某条缺的日留空 (当日未接上 → 当日空)
-  const std::vector<misc::Ymd> days = day_axis(mk.quote->trading(), qs.date, kIntraDays[st.intraday]);
-  const int nd = std::max(1, static_cast<int>(days.size()));
+  const std::vector<misc::Ymd> days = OverlayDays(kind, mk, st);
   const ImVec2 avail = ImGui::GetContentRegionAvail();
+  const OverlayCtx cx{st, days, picks.size() == 1, avail.x};
   std::vector<Overlay> ls;
   char note[160] = "";
   bool gap = false;
@@ -1129,104 +1206,32 @@ int RenderIntraday(const QuoteHub &mk, OverlayState &st, const std::vector<Overl
       continue;
     if (!note[0] && p.ref.is(kBasket))
       gap = basket_note(d, *src.kl, *src.today, qs, note, sizeof(note));
-    Series s;
-    intraday(src, days, p.ref.is(kBasket), s);
-    if (s.bars.empty() || !(s.bars.front().ref > 0))
-      continue;
-    const double base = s.bars.front().ref;
-    const auto pct = [&](double v) { return (v / base - 1.0) * 100.0; };
-    Overlay &l = ls.emplace_back();
-    l.pick = i, l.name = p.name, l.col = ImGui::ColorConvertU32ToFloat4(p.col);
-    if (picks.size() == 1) { // 单条: 蜡烛 + 现价十字
-      const Candle &e = s.bars.back();
-      l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
-      l.now = static_cast<int>(s.x.back());
-      l.g = merge(s, nd * kSlots, avail.x);
-      double prev = 0;
-      for (const Candle &c : s.bars) {
-        const double y = pct(c.close);
-        l.open.push_back(prev), l.high.push_back(std::max({pct(c.high), prev, y})), l.low.push_back(std::min({pct(c.low), prev, y}));
-        prev = y;
-      }
-    }
-    l.x = s.x;
-    for (const Candle &c : s.bars)
-      l.y.push_back(pct(c.close));
-  }
-  // 0 轴净流入柱的标的: 只一条 = 它, 否则全A.等
-  const size_t all_eq = basket_table().at_pool(kBasketBase);
-  const Ref nk = picks.size() == 1 ? picks.front().ref : Ref{kBasket, static_cast<uint32_t>(all_eq)};
-  const NetBars net = net_bars(SourceOf(st, nk), picks.size() == 1 ? picks.front().name : basket_table().name(all_eq), days);
-  ImGui::PushID("intraday");
-  int near = -1;
-  const ImVec2 corner = plot_overlay(ls, days, avail, "%", hot, near, &net);
-  overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
-                                                                                                : nullptr,
-                qs, [&] { button_bar(kIntraName, kIntras, st.intraday); });
-  ImGui::PopID();
-  return near;
-}
-
-int RenderFlow(const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot) {
-  Feed &f = st.baskets;
-  if (!basket_ready(mk, f))
-    return -1;
-  const QuoteStatus qs = mk.quote->status();
-  const Tape &d = *f.data;
-  const std::vector<misc::Ymd> days = FlowDays(mk, st);
-  const bool share = st.flow_unit == 0;
-  std::vector<Overlay> ls;
-  char note[160] = "";
-  bool gap = false;
-  for (size_t i = 0; i < picks.size(); ++i) {
-    const OverlayPick &p = picks[i];
-    const Source src = SourceOf(st, p.ref);
-    if (!src.kl)
-      continue;
-    if (!note[0] && p.ref.is(kBasket))
-      gap = basket_note(d, *src.kl, *src.today, qs, note, sizeof(note));
-    const double unit = share ? flow_ref(*src.kl) / 100.0 : 1e8; // y = 累计净流入 / unit
-    if (!(unit > 0))
-      continue;
-    Overlay l;
-    l.pick = i, l.name = p.name, l.col = ImGui::ColorConvertU32ToFloat4(p.col);
-    double net = 0;
-    for (size_t k = 0; k < days.size(); ++k)
-      if (const Bars *b = bars_on(src, days[k]))
-        for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
-          if (flow_slot(*b, j, st.flow_ends)) {
-            net += b->net[j];
-            l.x.push_back(static_cast<double>(k * kSlots + j));
-            l.y.push_back(net / unit);
-          }
-    if (!l.x.empty())
+    Overlay l{.pick = i, .name = p.name, .col = ImGui::ColorConvertU32ToFloat4(p.col)};
+    if (def.line(cx, p, src, l))
       ls.push_back(std::move(l));
   }
-  ImGui::PushID("flow");
+  NetBars net;
+  if (def.net) { // 0 轴净流入柱的标的: 只一条 = 它, 否则全A.等
+    const size_t all_eq = basket_table().at_pool(kBasketBase);
+    const Ref nk = cx.one ? picks.front().ref : Ref{kBasket, static_cast<uint32_t>(all_eq)};
+    net = net_bars(SourceOf(st, nk), cx.one ? picks.front().name : basket_table().name(all_eq), days);
+  }
+  ImGui::PushID(def.id);
   int near = -1;
-  const ImVec2 corner = plot_overlay(ls, days, ImGui::GetContentRegionAvail(), share ? "%" : "亿", hot, near);
+  const ImVec2 corner = plot_overlay(ls, days, avail, def.unit(st), hot, near, def.net ? &net : nullptr);
   overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
                                                                                                 : nullptr,
                 qs, [&] {
-                  button_bar(kIntraName, kIntras, st.flow);
-                  ImGui::SameLine(0, 8);
-                  button_bar(kFlowUnitName, 2, st.flow_unit);
-                  ImGui::SameLine(0, 8);
-                  if (toggle_button("开收盘", st.flow_ends))
-                    st.flow_ends = !st.flow_ends;
-                  if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("计入开盘 / 收盘的资金流 (默认不计; 图与右表同一开关)\n"
-                                      "• 开盘 = 首根 09:31 (集合竞价并入, 与 09:30 那分钟分不开)\n"
-                                      "• 收盘 = 末根 15:00 (收盘集合竞价)\n"
-                                      "• 两根成交额大、方向只看对前一价的涨跌, 易把全日累计带偏 (关 = 曲线自开盘贴 0 轴起步)\n"
-                                      "• 占比 = 累计净流入 / 近 5 日日均成交额 (不含当日, 盘前已定: 开盘即稳, 跨篮子可比)");
+                  button_bar(kIntraName, kIntras, st.span[kind]);
+                  if (def.tools)
+                    def.tools(st);
                 });
   ImGui::PopID();
   return near;
 }
 
-std::vector<misc::Ymd> FlowDays(const QuoteHub &mk, const OverlayState &st) {
-  return day_axis(mk.quote->trading(), mk.quote->status().date, kIntraDays[st.flow]);
+std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const OverlayState &st) {
+  return day_axis(mk.quote->trading(), mk.quote->status().date, kIntraDays[st.span[kind]]);
 }
 
 Flow FlowOf(const Bars &b, bool ends) {

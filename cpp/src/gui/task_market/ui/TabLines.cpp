@@ -25,12 +25,13 @@ using json = nlohmann::json;
 
 namespace {
 
-// ---- 头: [NAV: 组合 / 成本] [NAV / VAL: log] Recompute / Cancel / 状态 / Clear (选择与图回默认) / 页说明 + [NAV: 失效 / 失败条目原因].
+// ---- 头: [folio: 组合 / 成本] [log] Recompute / Cancel / 状态 / Clear (选择与图回默认) / 页说明 + [folio: 失效 / 失败条目原因].
 //      返回 1 = Recompute, -1 = Cancel, 0 = 无 ----
-int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesUIState &ui, const LinesDerived &d, const PortfolioResult &res, const std::string &message,
+int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState &ui, const LinesDerived &d, const PortfolioResult &res, const std::string &message,
          double fixed_impact) {
+  const PageDef &pd = kPageDefs[page];
   int action = 0;
-  if (page == kPageNav) {
+  if (pd.folio) {
     ImGui::TextColored(kHead, "Portfolio:");
     ImGui::SameLine();
     if (pf.name.empty()) {
@@ -67,7 +68,7 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesUISta
           fixed_impact * 1e4, fixed_impact * 1e4);
     ImGui::SameLine();
   }
-  if (page == kPageNav || page == kPageVal) {
+  if (pd.log) {
     if (toggle_button("log", ui.log_y))
       ui.log_y = !ui.log_y;
     if (ImGui::IsItemHovered())
@@ -109,8 +110,8 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesUISta
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
-    tip("%s", kPageDefs[page].tip);
-  if (page != kPageNav)
+    tip("%s", pd.tip);
+  if (!pd.folio)
     return action;
   for (const PortfolioItem &it : pf.items) {
     const auto f = res.factors.find(it.e.key());
@@ -149,16 +150,17 @@ void SaveWatch(const std::vector<std::string> &watch) {
   disk::write(disk::WatchFile, {}, f.str());
 }
 
-void SyncLinesWatch(LinesUIState &ui) {
+void SyncLinesWatch(LinesState &ui) {
   if (ui.watch_loaded)
     return;
   ui.watch_loaded = true;
   ui.watch = LoadWatch();
 }
 
-int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaService &cta, const PortfolioUIState &pf, LinesUIState &ui,
+int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaService &cta, const PortfolioUIState &pf, LinesState &ui,
                    double fixed_impact, const Quote::QuoteHub *mk, const StockInfos &infos) {
   assert(page >= 0 && page < kPages);
+  const PageDef &pd = kPageDefs[page];
   PortfolioResult res;
   uint64_t gen = 0;
   std::string message;
@@ -174,20 +176,14 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
   //      → 视图 (派生 gen + 二级两份 gen + 标的): 上级重算 → 下级自动重算 ----
   if (ui.pick.of != pf.name) // 换组合 → 选中清掉
     ui.pick = LinesPick{.of = pf.name};
-  if (page == kPageNav) { // NAV 选中的有行情键的行 → 分钟价请求 (标的集变才发)
-    std::vector<Quote::Ref> refs;
+  if (pd.work == kWorkMinute) { // 多选的有行情键的行 → 分钟价请求 (标的集变才发; 首次 = 先备价格库)
+    MinuteRequest rq;
     for (const auto &[id, ref] : ui.pick.rows[kPickMany])
       if (ref.ok())
-        refs.push_back(ref);
-    if (refs != ui.minute_sent.refs) {
-      ui.minute_sent = {ui.minute_sent.gen + 1, std::move(refs)};
-      minute.Request(ui.minute_sent);
-    }
+        rq.refs.push_back(ref);
+    ui.minute_sent.send(minute, std::move(rq));
   }
-  {
-    std::lock_guard<std::mutex> lock(minute.mutex);
-    ui.minutes = minute.result;
-  }
+  ui.minutes = latest(minute);
   ui.der.update(LinesDerKey{gen, pf.items_gen, ui.overlay.baskets.shown, ui.minutes ? ui.minutes->gen : 0, fixed_impact, infos.size(), ui.pick.open,
                             ui.pick.stocks(kPicks), ui.watch},
                 [&](LinesDerived &dv) {
@@ -210,7 +206,7 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
   const int action = head(page, svc, pf, ui, d, res, message, fixed_impact);
   const bool nav = page == kPageNav;
 
-  // ---- 布局: 左 = 日内 (NAV 开日内, 切 1/3 高) / 主图 (NAV ↔ VAL) / 区间条 自上而下, FLOW = 只一张资金流图, CTA = 只两图;
+  // ---- 布局 (PageLayout): 左 = [日内栏 (开日内, 切 1/3 高)] / 主图 (NAV ↔ VAL) / 区间条 自上而下 | 只一张叠加图 | CTA 两图 + 中栏;
   //      最右 = 右图例 (各页同宽 sheet_width; CTA = 中栏与右表各半) ----
   constexpr float kBarH = 90.0f;
   const ImGuiStyle &st = ImGui::GetStyle();
@@ -218,16 +214,16 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
   const float lw = sheet_width(av.x);
   const float left = av.x - lw - st.ItemSpacing.x;
   const float ph = av.y - kBarH - st.ItemSpacing.y;
-  const float ih = nav && ui.intraday ? std::floor((ph - st.ItemSpacing.y) / 3.0f) : 0.0f;
+  const float ih = pd.overlay != kOverlayNone && ui.intraday ? std::floor((ph - st.ItemSpacing.y) / 3.0f) : 0.0f;
   // 选中的有行情键的行 (篮子 / 成分) 的行情叠加图 (日内栏 / FLOW 同一份选中, 线色 = 主图的), 贴边占满 size
   // 悬停联动 (ui.hover): 各图 (日内栏 / FLOW 图的条按行 id 对上) → 右表
   ui.hover.begin();
-  const auto overlay_child = [&](const char *id, const ImVec2 &size, bool flow) {
+  const auto overlay_child = [&](const char *id, const ImVec2 &size, OverlayKind kind) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::BeginChild(id, size);
     ImGui::PopStyleVar();
     if (mk) {
-      std::vector<Market::OverlayPick> picks;
+      std::vector<OverlayPick> picks;
       std::vector<const std::string *> ids; // [picks] 行 id
       for_each_layer([&](int g) {
         for (size_t r = 0; r < d.rows[g].size(); ++r)
@@ -239,7 +235,7 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
       const std::optional<std::string> &hot = ui.hover.hot();
       const auto at = std::ranges::find_if(ids, [&](const std::string *x) { return *x == hot; });
       const int hi = at != ids.end() ? static_cast<int>(at - ids.begin()) : -1;
-      const int near = flow ? Market::RenderFlow(*mk, ui.overlay, picks, hi) : Market::RenderIntraday(*mk, ui.overlay, picks, hi);
+      const int near = RenderOverlay(kind, *mk, ui.overlay, picks, hi);
       if (near >= 0)
         ui.hover.plot = *ids[static_cast<size_t>(near)];
     } else {
@@ -247,32 +243,29 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
     }
     ImGui::EndChild();
   };
-  if (page == kPageFlow) {
-    overlay_child("##pf_flow", ImVec2(left, av.y), true);
-    ImGui::SameLine();
-    ImGui::BeginChild("##pf_flegend", ImVec2(lw, av.y), ImGuiChildFlags_Borders);
-    RenderLinesSheet(ui, page, mk ? Market::FlowDays(*mk, ui.overlay) : std::vector<misc::Ymd>{}, infos);
-    ImGui::EndChild();
-    return action;
-  }
-  if (page == kPageCta) {
+  float sw = lw; // 右表宽
+  switch (pd.layout) {
+  case kLayoutPlot:
+    ImGui::BeginGroup();
+    if (ih > 0.0f)
+      overlay_child("##pf_overlay", ImVec2(left, ih), pd.overlay);
+    RenderLinesPlot(ui, pin, nav, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph)); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
+    RenderLinesRange(ui, pin, nav, ImVec2(left, kBarH));
+    ImGui::EndGroup();
+    break;
+  case kLayoutOverlay:
+    overlay_child("##pf_overlay", ImVec2(left, av.y), pd.overlay);
+    break;
+  case kLayoutCta: {
     const float pw = std::floor((lw - st.ItemSpacing.x) / 2.0f);
     RenderLinesCta(cta, ui, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y), pw);
-    ImGui::SameLine();
-    ImGui::BeginChild("##pf_flegend", ImVec2(lw - pw - st.ItemSpacing.x, av.y), ImGuiChildFlags_Borders);
-    RenderLinesSheet(ui, page, {}, infos);
-    ImGui::EndChild();
-    return action;
+    sw = lw - pw - st.ItemSpacing.x;
+    break;
   }
-  ImGui::BeginGroup();
-  if (ih > 0.0f)
-    overlay_child("##pf_intra", ImVec2(left, ih), false);
-  RenderLinesPlot(ui, pin, nav, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph)); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
-  RenderLinesRange(ui, pin, nav, ImVec2(left, kBarH));
-  ImGui::EndGroup();
+  }
   ImGui::SameLine();
-  ImGui::BeginChild("##pf_flegend", ImVec2(lw, av.y), ImGuiChildFlags_Borders);
-  RenderLinesSheet(ui, page, {}, infos);
+  ImGui::BeginChild("##pf_flegend", ImVec2(sw, av.y), ImGuiChildFlags_Borders);
+  RenderLinesSheet(ui, page, mk, infos);
   ImGui::EndChild();
   return action;
 }

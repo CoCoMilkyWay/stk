@@ -18,7 +18,6 @@
 #include <iterator>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -102,7 +101,7 @@ std::pair<int, size_t> seg_at(const cta::Track &tr, size_t i) {
 //      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换). x 同一视野 (链到 ui), 每像素取末根; 光标 = 可拖竖线 (两图同一条)
 //      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 双击回全段;
 //      光标 = 橙色竖线 (同 OrderFlow 锚线): 参数点云展开时才出现 (初放视野正中), 只能拖动, 标注时刻 ----
-void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &size) {
+void plots(CtaState &c, const CtaResult &r, const char *name, const ImVec2 &size) {
   const cta::Series &se = *r.se;
   const cta::Track &tr = r.tr;
   const size_t n = se.c.size();
@@ -446,7 +445,7 @@ std::string params_of(const cta::Grid &g, const cta::Q &q) {
   return s;
 }
 
-void cloud(CtaUIState &c, const CtaResult &r) {
+void cloud(CtaState &c, const CtaResult &r) {
   const cta::Track &tr = r.tr;
   const size_t n = r.se->c.size();
   const size_t i = c.cursor >= 0 ? static_cast<size_t>(c.cursor) : n - 1, d = r.se->t[i] / kS - r.se->t[0] / kS;
@@ -599,7 +598,7 @@ void cloud(CtaUIState &c, const CtaResult &r) {
   right(b, true);
 }
 
-void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::string &lack) {
+void panel(const CtaService &svc, CtaState &c, const CtaResult *r, const std::string &lack) {
   // 状态: 进度 / 算不了的原因 / 全期跨度
   const Phase ph = svc.phase.load(std::memory_order_acquire);
   const size_t done = svc.done.load(std::memory_order_relaxed), total = svc.total.load(std::memory_order_relaxed);
@@ -734,22 +733,13 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
 
 } // namespace
 
-void RenderLinesCta(CtaService &svc, LinesUIState &ui, const char *name, const ImVec2 &plots_size, float panel_w) {
-  CtaUIState &c = ui.cta;
+void RenderLinesCta(CtaService &svc, LinesState &ui, const char *name, const ImVec2 &plots_size, float panel_w) {
+  CtaState &c = ui.cta;
   const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
   const Quote::Ref q = one.empty() ? Quote::Ref{} : one.begin()->second;
-  if (q.ok() && !c.editing && !(c.sent.gen && c.sent.ref == q && c.sent.spec == c.spec)) {
-    c.sent = {c.sent.gen + 1, q, c.spec};
-    svc.Request(c.sent);
-  } else if (!q.ok() && !c.sent.gen) { // 首次打开未选标的: 先备价格库
-    c.sent = {1, {}, c.spec};
-    svc.Request(c.sent);
-  }
-  std::shared_ptr<const CtaResult> r;
-  {
-    std::lock_guard<std::mutex> lock(svc.mutex);
-    r = svc.result;
-  }
+  if (q.ok() ? !c.editing : !c.sent.req.gen) // 首次打开未选标的 = 先备价格库
+    c.sent.send(svc, {.ref = q, .spec = c.spec});
+  const std::shared_ptr<const CtaResult> r = latest(svc);
   const bool mine = q.ok() && r && r->ref == q; // 本标的的 (设定改了时新的还在算, 先显旧的)
   const CtaResult *show = mine && r->lack.empty() ? r.get() : nullptr;
 
@@ -760,7 +750,7 @@ void RenderLinesCta(CtaService &svc, LinesUIState &ui, const char *name, const I
     ImGui::TextDisabled("右表单选一个指数 / 行业 / 概念 / 成分股 (与 VAL 同一份选中)");
   else if (show)
     plots(c, *show, name, ImGui::GetContentRegionAvail());
-  else if (!mine || r->gen != c.sent.gen)
+  else if (!mine || r->gen != c.sent.req.gen)
     ImGui::TextDisabled("计算中…");
   ImGui::EndChild();
   ImGui::SameLine();

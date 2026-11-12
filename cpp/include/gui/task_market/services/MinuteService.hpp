@@ -1,7 +1,7 @@
-// MinuteService — Market→NAV 主图的分钟价 worker: NAV 选中的有行情键的行 (篮子 / 成分股) → 各自的全史逐日分钟收盘 (MinuteLib::closes)
-//   价格源 = MinuteLib (与 CtaService 共用; 每次请求先补到库末日); 序列按标的沿用上一份 (库轴 hash + 日轴末日 / 日数对得上), 只读新加的标的
-//   请求 = 标的集; 新请求覆盖旧的. 进度: Loading = 合成天
-// 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (shared_ptr 拷出即放锁)
+// MinuteService — Market→NAV 主图的分钟价 worker: NAV 选中的有行情键的行 (篮子 / 成分股) → 各自的全史逐日分钟收盘 (MinuteCloses)
+//   价格源 = MinuteLib (与 CtaService 同一段开场 open, 同一种沿用 Kept); 序列按标的留最近 kKeep 个
+//   请求 = 标的集 (空 = 只备价格库); 新请求覆盖旧的. 进度: Loading = 合成天
+// 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (latest)
 #pragma once
 
 #include "gui/quote/Quote.hpp" // Ref
@@ -17,9 +17,18 @@
 
 namespace GUI::Market {
 
+// 一个标的的逐日分钟收盘 (有根的日; 价 = 库存原价 / 日内比, 只看同日之比, 不乘因子)
+struct MinuteCloses {
+  std::vector<misc::Ymd> dates; // 升序
+  std::vector<float> close;     // [dates][kSlots] (无根 = NaN)
+  // 日 d 的 kSlots 格; 无 → nullptr
+  const float *on(misc::Ymd d) const;
+};
+
 struct MinuteRequest {
   uint32_t gen = 0;
   std::vector<Quote::Ref> refs;
+  bool operator==(const MinuteRequest &) const = default;
 };
 
 struct MinuteResult {
@@ -43,23 +52,15 @@ public:
 
 private:
   static constexpr Phase kStart = Phase::Loading;
-  static constexpr int kThreads = 8; // 合成线程 (同 CtaService)
+  static constexpr size_t kKeep = 32; // 留在内存的标的序列数
+  static constexpr int kThreads = 8;  // 合成线程 (同 CtaService)
   Progress &board() { return *this; }
   bool run(MinuteRequest &req);
-  bool publish(std::shared_ptr<MinuteResult> out);
-
-  // 一个标的的分钟收盘 (库轴 hash + 日轴末日 / 日数对得上才沿用)
-  struct Kept {
-    Quote::Ref ref;
-    uint64_t axis;
-    misc::Ymd last;
-    size_t days;
-    std::shared_ptr<const MinuteCloses> mc;
-  };
+  bool publish(const MinuteRequest &req, std::shared_ptr<MinuteResult> out);
 
   MinuteLib &lib_;
   misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
-  std::vector<Kept> kept_; // = 上一份发布的
+  Kept<MinuteCloses> kept_{kKeep};
 };
 
 } // namespace GUI::Market

@@ -1,16 +1,15 @@
 // Market 行情页 (NAV / VAL / FLOW / CTA) 的派生层 (GUI 线程, 只算不画): PortfolioService 的账 + 行情侧价格指数 → 三级缓存, TabLines 只读末级画
 //   派生 LinesDerived (结果 / 内容 / fixed_impact / 成分组变) → 二级两份: 滚动分位 LinesRolls (VAL 标的 / 窗长变)
 //   + 末点分位 LinesPct (窗长 / 区间末 / 估值行变; 不随区间起点) → 区间视图 LinesView (区间变)
-//   各级一个入口 MakeLines{Derived, Roll, Pct, View}; 各级的键 = 它读的东西 (上级的部分以 gen 代表; LinesStage): 来源变 → 本级重算
+//   各级一个入口 MakeLines{Derived, Roll, Pct, View}; 各级的键 = 它读的东西 (上级的部分以 gen 代表; gui/util/Stage.hpp): 来源变 → 本级重算
 //   行只一种 LinesRow (篮子 / 因子 / 策略 / 成分股): 两条线 + 可选的行情键 (近况 / 当日 / 资金流 / 日内叠加) + 可选的估值腿 (估值分位 / band);
 //     构造只两种, 互为对仗: 有行情键 (篮子 / 成分: 腿 = 该侧账 quotes[side] 的键线, 理想 = 该侧价格线) ↔ 无行情键 (因子 / 策略: 腿集扣 / 不扣成本)
 //   线的来路只两种 (LineSrc): 腿集合成 (腿 = 账的一线) / 价格指数 → 点位 → 投到日并集轴 → Line; 按线源逐线沿用
 //   组的属性只在组表 kGroupDefs
 #pragma once
 
-#include "features/TimeIndex.hpp" // TRADE_MINUTES_PER_DAY (横轴每日跨度)
 #include "gui/engine/services/PortfolioService.hpp"
-#include "gui/quote/Quote.hpp"                        // Tape / Side (价格指数 / 行情键)
+#include "gui/quote/Quote.hpp"                        // Tape / Side / 槽代数 (价格指数 / 行情键 / 横轴)
 #include "gui/task_market/services/MinuteService.hpp" // MinuteResult / MinuteCloses (理想线的日内形)
 #include "shared/AssetInfo.hpp"                       // StockInfos (成分行名 / 悬停)
 #include "shared/Basket.hpp"                          // kGroupPool / kBasketGroups
@@ -31,16 +30,15 @@ namespace GUI::Market {
 using namespace Engine;
 using namespace Quote;
 
-// 横轴格 x = 日下标 · kDayW + 日内分钟 (同 OrderFlow 图 2); 横轴编码只在这里
-inline constexpr size_t kDayW = TRADE_MINUTES_PER_DAY;
-inline constexpr size_t kOpen = 0, kClose = kDayW - 1; // 日内分钟: 开盘 / 收盘
-inline constexpr double kStartDx = 0.5;                // 线的起点 (前收) 在首日开盘前几格: 首行可在开盘点就有增量 (L_1min 行 0 末分钟 = 开盘)
-constexpr size_t x_at(size_t di, size_t minute) { return di * kDayW + minute; }
-constexpr double x_of(size_t di, double minute) { return static_cast<double>(di * kDayW) + minute; }
+// 横轴格 x = 日下标 · kDayW + 分钟槽 (同叠加图 / CTA / 分钟价格库; 竞价并入首根); 横轴编码只在这里
+inline constexpr size_t kDayW = static_cast<size_t>(kSlots);
+inline constexpr size_t kOpen = 0, kClose = kDayW - 1; // 槽: 首根 / 末根
+inline constexpr double kStartDx = 0.5;                // 线的起点 (前收) 在首日首根前几格: 首行可在首根就有增量
+constexpr double x_of(size_t di, double slot) { return static_cast<double>(di * kDayW) + slot; }
 
 // 一条线 (全段原值: 净值 / 点位; 归一只在切片): 画图点 + 日并集轴上的日末视图 (年化 / 夏普 / 近况 / 配色同读它) + 年换手
-//   点: x 严格升序, 首点 = 首个活跃日开盘前 kStartDx 格的起点 (前收 = 前一日末), 其后各点在所在日的行末分钟;
-//   带日内形的线 (LineSrc::minutes) 各日换成该日各分钟 (锚 = 当日末点, 末点不变 ⇒ 日末视图同不带)
+//   点: x 严格升序, 首点 = 首个活跃日首根前 kStartDx 格的起点 (前收 = 前一日末), 其后各点在所在日的行末槽;
+//   带日内形的线 (LineSrc::minutes) 各日换成该日各槽 (锚 = 当日末点, 末点不变 ⇒ 日末视图同不带)
 //   日末视图: 活跃日 [f, l] (起点所在日 ~ 末点所在日); end(k) = 第 k − 1 日末点位 (k = f 为前收; 活跃日内无点的日持平, l 之后持平),
 //   s1 / s2 = 活跃日的日收益 / 平方的前缀和 (下标同 e)
 struct Line {
@@ -267,22 +265,7 @@ struct LinesView {
   LinesBand band[kPoolVals];                                         // [PoolVal] VAL 标的的
 };
 
-// 一级派生缓存: 键带上级的 gen → 上级重算, 本级自动失效
-template <class Key, class Val>
-struct LinesStage {
-  Key key{};
-  uint64_t gen = 0; // 本级重算次数 (0 = 未算)
-  Val val{};
-  // 首次 / 键变 → f(val) 重算, gen +1
-  template <class F>
-  void update(const Key &k, F &&f) {
-    if (gen > 0 && k == key)
-      return;
-    key = k;
-    f(val);
-    ++gen;
-  }
-};
+// 各级缓存 (Stage) 的键
 struct LinesDerKey {
   uint64_t gen = 0, items = 0;    // PortfolioService::result_gen / PortfolioUIState::items_gen
   uint32_t prices = 0;            // 价格指数在画的发布代 (OverlayState baskets.shown)

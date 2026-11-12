@@ -98,4 +98,26 @@ private:
   std::atomic<bool> stop_{false};
 };
 
+// ---- GUI 侧两件 (发布 = Published + shared_ptr result 的服务) ----
+// 最新发布: 持锁拷 shared_ptr 即放锁 (不拷内容)
+template <class Svc>
+auto latest(Svc &svc) {
+  std::lock_guard<std::mutex> lock(svc.mutex);
+  return svc.result;
+}
+// 上次发出的请求: 内容 (除 gen) 变或从未发过才发, gen +1 (结果的 gen 对上 = 是它的)
+template <class Req>
+struct Sent {
+  Req req{};
+  template <class Svc>
+  void send(Svc &svc, Req r) {
+    r.gen = req.gen;
+    if (req.gen && r == req)
+      return;
+    r.gen = req.gen + 1;
+    req = r;
+    svc.Request(std::move(r));
+  }
+};
+
 } // namespace GUI

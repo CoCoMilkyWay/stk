@@ -1,9 +1,5 @@
 #include "gui/task_market/services/MinuteService.hpp"
 
-#include "features/Panel/PoolSelect.hpp"
-#include "features/Storage/FeatureLib.hpp"
-#include "features/Storage/FeatureRead.hpp"
-
 #include <algorithm>
 #include <memory>
 #include <mutex>
@@ -11,12 +7,19 @@
 
 namespace GUI::Market {
 
+const float *MinuteCloses::on(misc::Ymd d) const {
+  const auto it = std::lower_bound(dates.begin(), dates.end(), d);
+  return it != dates.end() && *it == d ? close.data() + static_cast<size_t>(it - dates.begin()) * kSlots : nullptr;
+}
+
 const MinuteCloses *MinuteResult::of(Quote::Ref ref) const {
   const auto it = std::find(refs.begin(), refs.end(), ref);
   return it == refs.end() ? nullptr : list[static_cast<size_t>(it - refs.begin())].get();
 }
 
-bool MinuteService::publish(std::shared_ptr<MinuteResult> out) {
+bool MinuteService::publish(const MinuteRequest &req, std::shared_ptr<MinuteResult> out) {
+  out->gen = req.gen, out->refs = req.refs;
+  out->list.resize(req.refs.size());
   std::lock_guard<std::mutex> lock(mutex);
   result = std::move(out);
   Progress::publish();
@@ -25,38 +28,25 @@ bool MinuteService::publish(std::shared_ptr<MinuteResult> out) {
 
 bool MinuteService::run(MinuteRequest &req) {
   auto out = std::make_shared<MinuteResult>();
-  out->gen = req.gen, out->refs = req.refs;
-  out->list.resize(req.refs.size());
-  const pool::AllBar ab = pool::all_bar("NAV 分钟线由 all.bar 特征库合成");
-  if (!ab.lack.empty()) {
-    out->lack = ab.lack;
-    return publish(std::move(out));
-  }
-  const FeatureLib &lib = ab.lib;
-  FeatureRead rd(lib, &cancel_);
-  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &cancel_);
-  if (!pk || !lib_.sync(lib, rd, *pk, cancel_, *this, pool_))
+  const std::optional<MinuteOpen> lib = lib_.open("NAV 分钟线由 all.bar 特征库合成", cancel_, *this, pool_);
+  if (!lib)
     return false;
-  const std::vector<misc::Ymd> &dates = pk->tape->dates;
-  std::vector<Kept> kept;
-  for (size_t i = 0; i < req.refs.size(); ++i) {
+  if (!lib->lack.empty()) {
+    out->lack = lib->lack;
+    return publish(req, std::move(out));
+  }
+  for (const Quote::Ref ref : req.refs) {
     if (cancel_.load(std::memory_order_relaxed))
       return false;
-    const Quote::Ref ref = req.refs[i];
-    const auto hit = std::find_if(kept_.begin(), kept_.end(), [&](const Kept &k) {
-      return k.ref == ref && k.axis == lib.axis.hash && k.last == dates.back() && k.days == dates.size();
-    });
-    std::shared_ptr<const MinuteCloses> mc;
-    if (hit != kept_.end()) {
-      mc = hit->mc;
-    } else if (auto c = std::make_shared<MinuteCloses>(); lib_.closes(ref, *c)) {
-      mc = std::move(c);
-    }
-    out->list[i] = mc;
-    kept.push_back({ref, lib.axis.hash, dates.back(), dates.size(), std::move(mc)});
+    out->list.push_back(kept_.get(ref, lib->stamp, [&](MinuteCloses &mc) {
+      return lib_.each(ref, [&](size_t i, double, const float *px) {
+        mc.dates.push_back(lib->dates[i]);
+        for (size_t s = 0; s < kSlots; ++s)
+          mc.close.push_back(px[s * MinuteLib::kFields + MinuteLib::kClose]);
+      });
+    }));
   }
-  kept_ = std::move(kept);
-  return publish(std::move(out));
+  return publish(req, std::move(out));
 }
 
 } // namespace GUI::Market

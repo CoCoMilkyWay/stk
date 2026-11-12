@@ -10,7 +10,7 @@
 #include "gui/quote/QuoteHub.hpp"
 #include "gui/task_market/services/CtaService.hpp"
 #include "gui/task_market/services/MinuteService.hpp"
-#include "gui/task_market/ui/LinesCommon.hpp" // kPageDefs (页名)
+#include "gui/task_market/ui/LinesCommon.hpp" // kPageDefs (页名 / 状态的 worker)
 #include "gui/task_market/ui/QuotesPanel.hpp" // Sync
 #include "gui/task_market/ui/TabAsset.hpp"
 #include "gui/task_market/ui/TabLines.hpp"
@@ -40,8 +40,8 @@ struct TaskMarketState {
   std::unique_ptr<Market::MinuteService> minute_service;
   std::unique_ptr<Market::CtaService> cta_service;
   Market::AssetState asset_state;
-  Market::LinesUIState lines_ui; // 缓存键含 portfolio_service 的结果代 / portfolio_ui 的解析代
-  std::vector<uint32_t> lines;   // 全部篮子线 (篮子表随进程代变, 本状态每代新建)
+  Market::LinesState lines_state;            // 缓存键含 portfolio_service 的结果代 / portfolio_ui 的解析代
+  std::vector<uint32_t> lines;               // 全部篮子线 (篮子表随进程代变, 本状态每代新建)
 };
 
 TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_ptr<Engine::EngineHub> engine) {
@@ -66,12 +66,22 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
     assert(idx >= 0 && idx < kTabs);
     if (idx == kTabAsset) // 新浪行情起了即常驻 (背景常态, 灰色)
       return state->quote->quote ? TaskStatus{TaskStatus::Kind::Muted, "live"} : TaskStatus{};
-    if (idx - kTabLines == Market::kPageCta)
-      return state->cta_service ? ProgressStatus(*state->cta_service) : TaskStatus{};
-    if (idx - kTabLines == Market::kPageNav && state->minute_service && state->minute_service->busy()) // 分钟价格库合成中
-      return ProgressStatus(*state->minute_service);
-    const auto &ps = state->engine->portfolio_service;
-    return ps ? ProgressStatus(*ps) : TaskStatus{};
+    const auto of = [&](Market::PageWork w) -> const Progress * {
+      switch (w) {
+      case Market::kWorkPortfolio:
+        return state->engine->portfolio_service.get();
+      case Market::kWorkMinute:
+        return state->minute_service.get();
+      case Market::kWorkCta:
+        return state->cta_service.get();
+      }
+      assert(false && "未知 worker");
+      return nullptr;
+    };
+    const Market::PageDef &p = Market::kPageDefs[idx - kTabLines];
+    const Progress *w = of(p.work);
+    const Progress *s = w && w->busy() ? w : of(p.rest);
+    return s ? ProgressStatus(*s) : TaskStatus{};
   };
 
   handle.Draw = [state](SharedData &data, int idx) {
@@ -85,7 +95,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
       return;
     }
     Engine::EngineHub &e = *state->engine;
-    Market::LinesUIState &ui = state->lines_ui;
+    Market::LinesState &ui = state->lines_state;
     Engine::EnsurePortfolio(e);
     Market::SyncLinesWatch(ui);
     const Quote::QuoteHub *mk = nullptr;
@@ -116,7 +126,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
   handle.Destroy = [state]() {
     state->cta_service.reset(); // 析构 Stop() join worker
     state->minute_service.reset();
-    state->lines_ui = Market::LinesUIState{};
+    state->lines_state = Market::LinesState{};
   };
 
   return handle;
