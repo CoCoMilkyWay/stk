@@ -15,7 +15,7 @@
     "bp.high.200.week.cap.nost.all.all.pbpos",
     "bp.low.200.week.cap.nost.all.all.pbpos",
     "dy.low.200.day.eq.nost.all.all.all",
-    "dy.high.200.day.eq.nost.all.all.all",
+    "dy.high.200.day.cap.nost.all.all.all",
     "roe.low.200.day.eq.nost.all.all.all",
     "roe.high.200.day.eq.nost.all.all.all",
     "inv.low.200.day.eq.nost.all.all.all",
