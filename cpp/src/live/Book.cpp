@@ -6,15 +6,6 @@ namespace live {
 
 namespace {
 
-// 卖一 / 买一按对手量加权; 任一侧空盘 → 无
-std::optional<double> micro(const Quote &q) {
-  const auto &ask = q.book(kBuy), &bid = q.book(kSell);
-  if (ask.empty() || bid.empty())
-    return std::nullopt;
-  const Level a = ask[0], b = bid[0];
-  return (a.px * b.vol + b.px * a.vol) / (a.vol + b.vol);
-}
-
 // 按档累计吃 notional 元, 恰好吃满的那档价; 吃不满取最后一档
 double reach(const std::vector<Level> &side, double notional) {
   double spent = 0;
@@ -59,14 +50,7 @@ bool auction(const Quote &q) {
   return !ask.empty() && !bid.empty() && ask[0].px <= bid[0].px;
 }
 
-std::optional<double> ref(const Quote &q) {
-  if (const auto m = micro(q); m && *m)
-    return m;
-  for (const double x : {q.price, q.last_close})
-    if (x > 0)
-      return x;
-  return std::nullopt;
-}
+std::optional<double> ref(const Quote &q) { return q.price > 0 ? std::optional<double>(q.price) : std::nullopt; }
 
 std::optional<double> order_px(const Quote &q, int s, PxMode mode, double notional) {
   const bool opp = mode != PxMode::Own, sweep = mode == PxMode::Sweep;

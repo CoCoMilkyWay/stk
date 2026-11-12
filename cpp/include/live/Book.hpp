@@ -23,7 +23,7 @@ struct Quote {
   std::string sym; // 新浪码
   misc::Ymd date = 0;
   int sec = 0;      // 行情时刻: 当日秒
-  double price = 0; // 现价; 未开盘 / 停牌取昨收
+  double price = 0; // 现价 (micro price, 见 sina::Quote); 未开盘 / 停牌取昨收
   double last_close = 0, open = 0, high = 0, low = 0, volume = 0;
   std::vector<Level> side[2];
   const std::vector<Level> &book(int s) const { return side[s < 0]; }
@@ -55,7 +55,7 @@ struct Slip {
 };
 
 bool auction(const Quote &q);              // 集合竞价: 盘口只给虚拟撮合价, 卖一 ≤ 买一 (锁定 / 交叉), 此时滑点无意义
-std::optional<double> ref(const Quote &q); // 参考价: micro price → 现价 → 昨收, 取首个可用
+std::optional<double> ref(const Quote &q); // 参考价 = 现价 (含昨收兜底); 都无 → 无
 // 方向 s 做 notional 元按 mode 定委托价 (未舍入); 竞价中或该侧空盘 → 无
 std::optional<double> order_px(const Quote &q, int s, PxMode mode, double notional);
 std::pair<int, int> lot(const std::string &code); // (起买股数, 递增步长): 科创板起 200 零股递增, 北交所起 100 零股递增, 其余整手

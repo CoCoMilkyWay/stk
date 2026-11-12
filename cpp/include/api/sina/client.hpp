@@ -24,6 +24,7 @@ inline constexpr int kTimeoutSeconds = 5;                              // 单次
 
 // 一只的实时快照 (hq.sinajs.cn 一行; 名称 GBK 不取)
 //   价 [元], 0 = 未开盘 / 停牌; 量 [股]、额 [元] 为当日累计; 盘口 0 = 空档
+//   现价 price = micro price (卖一 / 买一按对手量加权); 任一侧空档 (涨跌停 / 未开盘 / 停牌) 取成交价
 struct Quote {
   std::string sym;
   misc::Ymd date = 0;

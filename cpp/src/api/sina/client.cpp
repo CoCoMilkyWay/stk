@@ -153,6 +153,8 @@ std::vector<Quote> Client::quotes(const std::vector<std::string> &syms) {
       q.ask_vol[i] = num(f[20 + 2 * i]);
       q.ask[i] = static_cast<float>(num(f[21 + 2 * i]));
     }
+    if (q.bid[0] > 0 && q.bid_vol[0] > 0 && q.ask[0] > 0 && q.ask_vol[0] > 0)
+      q.price = static_cast<float>((q.ask[0] * q.bid_vol[0] + q.bid[0] * q.ask_vol[0]) / (q.ask_vol[0] + q.bid_vol[0]));
     q.date = misc::parse_ymd(f[30]);
     assert(q.date > 0 && "sina: 快照日期不符");
     q.sec = clock_sec(f[31]);
