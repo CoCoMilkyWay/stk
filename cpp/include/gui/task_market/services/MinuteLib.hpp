@@ -68,9 +68,9 @@ public:
   // 一行一日的有根块: i = 日下标, f = 因子, px = [槽][高 低 收] 价 (无根 = NaN)
   using Each = std::function<void(size_t i, double f, const float *px)>;
 
-  // all.bar 库 + 选股表 + 补到其日轴末日; what = 用处 (lack 开头); cancel / x / pool = 宿主服务的 (取消 / 进度面 Loading 天 / 线程池)
+  // all.bar 库 + 选股表 + 补到其日轴末日; what = 用处 (lack 开头); cancel / x / pool = 宿主服务的 (取消: 库判废时读端一并拉起 / 进度面 Loading 天 / 线程池)
   //   nullopt = 取消 / 判废
-  std::optional<MinuteOpen> open(std::string_view what, const std::atomic<bool> &cancel, Progress &x, misc::exec::ForkJoin &pool);
+  std::optional<MinuteOpen> open(std::string_view what, std::atomic<bool> &cancel, Progress &x, misc::exec::ForkJoin &pool);
   // 读 open 之后的库: ref 逐个有根日 f(…); 不在该侧键表 (库轴外) → false
   bool each(Quote::Ref ref, const Each &f) const;
 

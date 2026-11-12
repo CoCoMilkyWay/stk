@@ -219,7 +219,7 @@ bool MinuteLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::P
   return false;
 }
 
-std::optional<MinuteOpen> MinuteLib::open(std::string_view what, const std::atomic<bool> &cancel, Progress &x, misc::exec::ForkJoin &pool) {
+std::optional<MinuteOpen> MinuteLib::open(std::string_view what, std::atomic<bool> &cancel, Progress &x, misc::exec::ForkJoin &pool) {
   const pool::AllBar ab = pool::all_bar(what);
   if (!ab.lack.empty())
     return MinuteOpen{.lack = ab.lack};
