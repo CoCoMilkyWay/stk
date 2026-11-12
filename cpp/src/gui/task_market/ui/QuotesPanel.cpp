@@ -742,14 +742,14 @@ void fmt_signed(char *buf, int size, double a) {
   fmt_amount(buf + 1, size - 1, std::abs(a));
 }
 
-// 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 / 蜡烛 (含零线); 刻度区全空 (图框不变), 不画图例:
+// 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 / 蜡烛 (含零线; center = 0 轴居中: 上下取两侧较大者对称); 刻度区全空 (图框不变), 不画图例:
 //   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格 y 值 (带单位 unit) 以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
 //   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠.
 //   蜡烛条另画现价十字: 过末根的横 / 竖虚线 (当日涨跌色), 右壁标末根涨跌幅 (同 y 口径), 底壁标时刻 (色底黑字).
 //   十字光标: 竖线吸附到分钟 (蜡烛 = 吸附到根), 横线随鼠标; 提示 = 时刻 + 光标处 y + 该处各条读数 (高 → 低).
 //   悬停联动 (HoverSync): hot = 白粗线画在最上的条 (pick; −1 = 无), near = 图上悬停的条 (pick; −1 = 无).
 //   net = 0 轴上的净流入柱 (nullptr = 不画): 左下角小字 "净流入 · 名" + 末根读数, 提示另列光标处的净流入. 画完返回图区左上角
-ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size, const char *unit, int hot, int &near,
+ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size, const char *unit, bool center, int hot, int &near,
                     const NetBars *net = nullptr) {
   near = -1;
   const int nd = std::max(1, static_cast<int>(days.size()));
@@ -765,6 +765,8 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     for (const double y : l.high)
       hi = std::max(hi, y);
   }
+  if (center)
+    hi = std::max(hi, -lo), lo = -hi;
   const double pad = std::max(hi - lo, 0.2) * 0.04, ylo = lo - pad, yhi = hi + pad;
   const double raw = (yhi - ylo) / std::max(2.0, std::floor(static_cast<double>(size.y / kGridPx))), e = std::floor(std::log10(raw)), m = raw / std::pow(10.0, e);
   const double nice = m <= 1 ? 1 : m <= 2 ? 2
@@ -1081,13 +1083,14 @@ void flow_tools(OverlayState &st) {
 struct OverlayDef {
   const char *id;
   bool net;                                                                         // 0 轴叠净流入柱
+  bool center;                                                                      // y 以 0 轴居中
   const char *(*unit)(const OverlayState &);                                        // y 单位
   bool (*line)(const OverlayCtx &, const OverlayPick &, const Source &, Overlay &); // 一条 (false = 不画)
   void (*tools)(OverlayState &);                                                    // 档位条之后的工具 (nullptr = 无)
 };
 constexpr OverlayDef kOverlayDefs[kOverlays] = {
-    {"intraday", true, [](const OverlayState &) { return "%"; }, pct_line, nullptr},
-    {"flow", false, [](const OverlayState &s) { return s.flow_unit == 0 ? "%" : "亿"; }, flow_line, flow_tools},
+    {"intraday", true, true, [](const OverlayState &) { return "%"; }, pct_line, nullptr},
+    {"flow", false, false, [](const OverlayState &s) { return s.flow_unit == 0 ? "%" : "亿"; }, flow_line, flow_tools},
 };
 
 } // namespace
@@ -1218,7 +1221,7 @@ int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const 
   }
   ImGui::PushID(def.id);
   int near = -1;
-  const ImVec2 corner = plot_overlay(ls, days, avail, def.unit(st), hot, near, def.net ? &net : nullptr);
+  const ImVec2 corner = plot_overlay(ls, days, avail, def.unit(st), def.center, hot, near, def.net ? &net : nullptr);
   overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
                                                                                                 : nullptr,
                 qs, [&] {

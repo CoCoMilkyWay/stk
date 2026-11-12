@@ -119,7 +119,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 等值线 = 绝对估值: 倍数 (PE / PB / PS / PCF / P/D = 1 / 收益率) 的价格线, 档 = 该标的全史倍数区间 (两头各剔 2% 极端) 20 档等分;\n"
      "  默认关, 悬停一条 = 高亮 + 看该档倍数 / 当日倍数 / 指数到该线还差多少\n"
      "• 线尾刻度 = 指数末点 +10% / -5% / -10% / -20% / -30% 的点位: 对照 Band 线看还要涨跌多少到哪档; 末点另画现价十字 (同 NAV)\n"
-     "• y 只贴合指数 (上限 = 区间内最高点 + 20%), 高出的 Band 不撑图\n"
+     "• y 只贴合指数 (区间内最低点 − 20% ~ 最高点 + 20%), 超出的 Band 不撑图\n"
      "• 主图左键横向框选 = 放大到该段 (区间条同步), 双击 = 回全段; 区间 (含左上角档位) / log 与 NAV 页共用",
      kGroupFactor,
      kPickOne,
@@ -255,6 +255,8 @@ inline void row_tip(const LinesRow &r) {
 }
 
 // ---- 图 (LinesPlot.cpp) ----
+// 默认区间 = 主图左上角档位 1月 (日轴变 / Clear 回它); 日轴空 → 空段
+LinesRange DefaultLinesRange(const std::vector<misc::Ymd> &dates);
 // 主图 (size 贴边占满): nav → NAV 资金曲线 (选中行), 否则 VAL 标的 pin 的可成交线 + 估值 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
 void RenderLinesPlot(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 &size);
 // 区间条 (size): 全段策略线 (nav) / VAL 标的可成交线上拖选 ui.range

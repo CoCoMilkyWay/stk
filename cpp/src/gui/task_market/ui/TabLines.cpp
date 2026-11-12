@@ -102,11 +102,11 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState
   ImGui::SameLine();
   if (ImGui::Button("Clear", ImVec2(60, 0))) {
     ui.pick = LinesPick{.of = pf.name};
-    ui.range = LinesRange{{.d0 = 0, .d1 = static_cast<int>(d.dates.size())}};
+    ui.range = DefaultLinesRange(d.dates);
     ui.log_y = false;
   }
   if (ImGui::IsItemHovered())
-    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL / CTA 标的 / 展开的行 / 叠加的成分股 / 区间 (回全段) / log 关");
+    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL / CTA 标的 / 展开的行 / 叠加的成分股 / 区间 (回近 1 月) / log 关");
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
@@ -190,8 +190,8 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
                   const std::vector<misc::Ymd> old = dv.dates;
                   MakeLinesDerived(pf.items, pf.name, res, ui.overlay.baskets.data, ui.minutes, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks),
                                    ui.watch, infos, dv);
-                  if (dv.dates != old) // 日轴变 → 区间回全段
-                    ui.range = LinesRange{{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())}};
+                  if (dv.dates != old) // 日轴变 → 区间回默认
+                    ui.range = DefaultLinesRange(dv.dates);
                 });
   if (mk)
     SyncLinesCons(ui, *mk->quote);

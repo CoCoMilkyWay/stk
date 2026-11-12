@@ -91,7 +91,7 @@ int pair_kind(const LinesRow &r) { return !r.ref.ok(); }
 
 // VAL 线表 (标的线色 = 该行的 row_color): band 填色 / 线 / 线尾刻度的 alpha
 constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f, kBandTagA = 0.9f;
-// VAL 主图 y 上限 = 价格线最高点 × (1 + kValHeadroom) (band 不进 fit)
+// VAL 主图 y = 价格线 [最低点 × (1 − kValHeadroom), 最高点 × (1 + kValHeadroom)] (band 不进 fit)
 constexpr double kValHeadroom = 0.2;
 // VAL 线尾刻度: 价格线末点 × (1 + r) 的点位 (对照 band 线看离各档还差多少); 色 = band_col(u) (涨绿, 跌越多越红)
 struct ValMark {
@@ -326,6 +326,7 @@ struct Span {
   int days, months;
 };
 constexpr Span kSpans[] = {{"1周", 7, 0}, {"1月", 0, 1}, {"1年", 0, 12}, {"10年", 0, 120}};
+constexpr int kSpanDef = 1; // 默认档 (1月)
 // 档 s 的区间起点 (dates 非空): 推到的那日之后的首个交易日 (起点前收 = 那日及之前的末个交易日); 日轴不够长 → 0, 至多末日
 int span_d0(const std::vector<misc::Ymd> &dates, const Span &s) {
   namespace ch = std::chrono;
@@ -696,7 +697,7 @@ void zoom_x(LinesRange &rg, int D, const ImRect &legend) {
 
 // ---- VAL 主图: 标的各口滚动 band (填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
 //      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的可成交线 (常显) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
-//      只价格线进 fit (y 上限另抬 kValHeadroom), band / 等值线都不进 ----
+//      只价格线进 fit (y 上下各留 kValHeadroom), band / 等值线都不进 ----
 void plot_val(LinesState &ui, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf) {
   static LgHover s_hl; // 上帧图例矩阵
   const LinesSlice &sl = v.slice[pin.g][pin.r][kTrade];
@@ -750,12 +751,14 @@ void plot_val(LinesState &ui, const LinesDerived &d, const LinesView &v, const L
   ImPlot::SetNextLineStyle(row_color(d, pin, kTrade), 2.0f);
   plot_slice(pf, "##pf_val_px", sl);
   if (ImPlot::FitThisFrame()) {
-    double hi = -HUGE_VAL;
+    double lo = HUGE_VAL, hi = -HUGE_VAL;
     for (size_t i = 0; i < sl.size(); ++i)
       if (const double y = sl.y(i); std::isfinite(y))
-        hi = std::max(hi, y);
-    if (std::isfinite(hi))
+        lo = std::min(lo, y), hi = std::max(hi, y);
+    if (std::isfinite(hi)) {
+      ImPlot::FitPointY(lo * (1.0 - kValHeadroom));
       ImPlot::FitPointY(hi * (1.0 + kValHeadroom));
+    }
   }
   if (const ImPlotItem *it = pf.item("##pf_val_px")) {
     push_tag(pf.tags, pf.lim, sl, it->Color, d.row(pin).tag);
@@ -775,6 +778,11 @@ void plot_val(LinesState &ui, const LinesDerived &d, const LinesView &v, const L
 
 } // namespace
 
+LinesRange DefaultLinesRange(const std::vector<misc::Ymd> &dates) {
+  const int D = static_cast<int>(dates.size());
+  return LinesRange{{.d0 = D > 0 ? span_d0(dates, kSpans[kSpanDef]) : 0, .d1 = D}};
+}
+
 // ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) 同一框: 贴边 (窄内边距, 不标轴名); NAV = fit 键变 → 本帧 fit, VAL = 恒贴合 (不平移 / 缩放, 视野只随区间);
 //      x 右端留出线尾小字 / 刻度 / 十字标签; 左上角 = 区间档位条 (span_bar) + 其下图例矩阵 ----
 void RenderLinesPlot(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 &size) {
@@ -792,13 +800,14 @@ void RenderLinesPlot(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 
     ImPlot::SetNextAxesToFit();
   if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", size, ImPlotFlags_NoLegend | (nav ? ImPlotFlags_None : ImPlotFlags_NoBoxSelect))) {
     ui.fit_key = fk;
-    // 线性: y 下限钉在 0 (净值 / 点位恒正), fit / 缩放只动上限; log: 正常
+    // NAV 线性: y 下限钉在 0 (净值恒正), fit / 缩放只动上限; VAL / log: 正常
+    const bool pin0 = nav && !ui.log_y;
     const ImPlotAxisFlags fit = nav ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
-    ImPlot::SetupAxes(nullptr, nullptr, fit, fit | (ui.log_y ? ImPlotAxisFlags_None : ImPlotAxisFlags_LockMin));
+    ImPlot::SetupAxes(nullptr, nullptr, fit, fit | (pin0 ? ImPlotAxisFlags_LockMin : ImPlotAxisFlags_None));
     setup_day_axis(d.dates);
     if (ui.log_y)
       ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-    else
+    if (pin0)
       ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].SetMin(0.0, /*force=*/true);
     // fit 帧的视野还是上帧的 (区间刚变时可能整段在外): 小字不按视野筛, 全收来量留白宽度
     const ImPlotRect cur = ImPlot::GetPlotLimits(); // 先锁 setup, FitThisFrame 才定
