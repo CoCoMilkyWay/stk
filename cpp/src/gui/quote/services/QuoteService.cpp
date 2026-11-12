@@ -323,11 +323,14 @@ void QuoteService::poll() {
         if (q.date != date_) // 停牌等: 只留快照
           continue;
         sec_ = std::max(sec_, q.sec);
+        const bool first = tracks_[i].vol < 0;
         if (tracks_[i].absorb(q, gap)) {
+          if (first)
+            put(i, 0);
           put(i, sec_slot(q.sec));
           put(i);
           dirty_ = true;
-          touched_ = std::min(touched_, sec_slot(q.sec));
+          touched_ = std::min(touched_, first ? 0 : sec_slot(q.sec));
         }
       }
       std::atomic_ref<int32_t>(file_rec(map_).sec).store(sec_, std::memory_order_release); // 本轮各只落定之后
@@ -344,10 +347,16 @@ void QuoteService::poll() {
 }
 
 bool QuoteService::Track::absorb(const sina::Quote &q, int gap) {
-  if (vol < 0) { // 首快照: 基线. 已有成交 ⇒ 所在根及以前快照没盯住
+  if (vol < 0) { // 首快照: 基线. 已有成交 ⇒ 所在根及以前快照没盯住; 补到前先暂写已知的两价 (首根 = 今开, 所在根 = 现价, 量 0), 其间沿用今开
     vol = q.volume, amt = q.amount, high = q.high, low = q.low;
-    if (q.volume > 0)
-      mark(0, sec_slot(q.sec));
+    if (q.volume > 0) {
+      const int s = sec_slot(q.sec);
+      mark(0, s);
+      if (q.open > 0)
+        bars.add(0, {q.open, q.open, q.open, q.open, 0, 0});
+      if (q.price > 0)
+        bars.add(s, {q.price, q.price, q.price, q.price, 0, 0});
+    }
     return true;
   }
   const double dv = q.volume - vol, da = q.amount - amt;

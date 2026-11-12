@@ -3,7 +3,7 @@
 #include "gui/Tasks.hpp"      // StatusColor (补分钟进度条 = 进行中色)
 #include "gui/util/Chart.hpp" // kUp / kDn / tint / toggle_button / button_bar / EndTag
 #include "gui/util/HoverSync.hpp"
-#include "shared/Basket.hpp" // 净流入副图的默认标的 (全A.等)
+#include "shared/Basket.hpp" // 0 轴净流入柱的默认标的 (全A.等)
 
 #include "imgui.h"
 #include "implot.h"
@@ -705,16 +705,6 @@ struct Overlay {
   int now = 0;
 };
 
-// 叠加图 / 净流入副图同一套竖网格: nd 日各整点 (grid) + 日界 (seps)
-void day_grid(int nd, std::vector<double> &grid, std::vector<double> &seps) {
-  for (int k = 0; k < nd; ++k) {
-    for (int h = 0; h < 5; ++h)
-      grid.push_back(k * kSlots + h * 60 - 0.5);
-    if (k)
-      seps.push_back(k * kSlots - 0.5);
-  }
-}
-
 // 一条的蜡烛
 void candles(const Overlay &l) {
   if (!ImPlot::BeginItem("##k", ImPlotItemFlags_NoLegend))
@@ -725,13 +715,42 @@ void candles(const Overlay &l) {
   ImPlot::EndItem();
 }
 
+// 叠加图 0 轴上的净流入柱: 标的在日轴各日的每分钟净流入 (Bars::net, 分钟涨跌法) [元], x 同叠加图;
+//   历史日 = 历史分钟根, 当日 = 快照合成的根 (此刻所在根随快照动, 走完即与分钟 K 同值).
+//   柱高按像素, 不进 y 贴合: top (首 / 末根集合竞价之外的最大幅度) ↔ 图高 × kNetH, 首末根截在 kNetCap 倍; 半透明, 压在线下
+constexpr float kNetH = 0.2f, kNetCap = 1.5f, kNetAlpha = 0.3f;
+struct NetBars {
+  std::string name;
+  std::vector<double> x, v;
+  double top = 0;
+};
+NetBars net_bars(const Source &src, std::string name, std::span<const misc::Ymd> days) {
+  NetBars n{std::move(name), {}, {}, 0};
+  for (size_t k = 0; k < days.size(); ++k)
+    if (const Bars *b = bars_on(src, days[k]))
+      for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
+        if (b->has[j]) {
+          n.x.push_back(static_cast<double>(k * kSlots + j)), n.v.push_back(b->net[j]);
+          if (j != 0 && j != static_cast<size_t>(kSlots) - 1)
+            n.top = std::max(n.top, std::abs(b->net[j]));
+        }
+  return n;
+}
+// 金额带符号: "+1.23亿" / "-456万"
+void fmt_signed(char *buf, int size, double a) {
+  buf[0] = a < 0 ? '-' : '+';
+  fmt_amount(buf + 1, size - 1, std::abs(a));
+}
+
 // 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 / 蜡烛 (含零线); 刻度区全空 (图框不变), 不画图例:
 //   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格 y 值 (带单位 unit) 以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
 //   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠.
 //   蜡烛条另画现价十字: 过末根的横 / 竖虚线 (当日涨跌色), 右壁标末根涨跌幅 (同 y 口径), 底壁标时刻 (色底黑字).
 //   十字光标: 竖线吸附到分钟 (蜡烛 = 吸附到根), 横线随鼠标; 提示 = 时刻 + 光标处 y + 该处各条读数 (高 → 低).
-//   悬停联动 (HoverSync): hot = 白粗线画在最上的条 (pick; −1 = 无), near = 图上悬停的条 (pick; −1 = 无). 画完返回图区左上角
-ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size, const char *unit, int hot, int &near) {
+//   悬停联动 (HoverSync): hot = 白粗线画在最上的条 (pick; −1 = 无), near = 图上悬停的条 (pick; −1 = 无).
+//   net = 0 轴上的净流入柱 (nullptr = 不画): 左下角小字 "净流入 · 名" + 末根读数, 提示另列光标处的净流入. 画完返回图区左上角
+ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size, const char *unit, int hot, int &near,
+                    const NetBars *net = nullptr) {
   near = -1;
   const int nd = std::max(1, static_cast<int>(days.size()));
   const Overlay *one = nullptr; // 蜡烛条
@@ -758,7 +777,12 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   for (double k = std::ceil(ylo / step); k * step <= yhi; ++k)
     yt.push_back(k * step);
   std::vector<double> grid, seps;
-  day_grid(nd, grid, seps);
+  for (int k = 0; k < nd; ++k) {
+    for (int h = 0; h < 5; ++h)
+      grid.push_back(k * kSlots + h * 60 - 0.5);
+    if (k)
+      seps.push_back(k * kSlots - 0.5);
+  }
   ImVec2 corner(-1, -1);
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(1, 1));
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(0, 0));
@@ -779,6 +803,17 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     const double zero = 0;
     ImPlot::SetNextLineStyle(kRule, 1.f);
     ImPlot::PlotInfLines("##ref", &zero, 1, ImPlotInfLinesFlags_Horizontal);
+    if (net && net->top > 0 && ImPlot::BeginItem("##net", ImPlotItemFlags_NoLegend)) {
+      ImDrawList *dl = ImPlot::GetPlotDrawList();
+      const float h = ImPlot::GetPlotSize().y * kNetH, y0 = ImPlot::PlotToPixels(0.0, 0.0).y;
+      for (size_t i = 0; i < net->x.size(); ++i) {
+        const float d = std::clamp(static_cast<float>(net->v[i] / net->top) * h, -h * kNetCap, h * kNetCap);
+        const float x0 = ImPlot::PlotToPixels(net->x[i] - kBody, 0.0).x, x1 = std::max(ImPlot::PlotToPixels(net->x[i] + kBody, 0.0).x, x0 + 1.f);
+        const ImVec4 c = net->v[i] >= 0 ? kUp : kDn;
+        dl->AddRectFilled(ImVec2(x0, std::min(y0, y0 - d)), ImVec2(x1, std::max(y0, y0 - d)), ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, kNetAlpha)));
+      }
+      ImPlot::EndItem();
+    }
     for (size_t i = 0; i < ls.size(); ++i) {
       ImGui::PushID(static_cast<int>(i));
       if (ls[i].g) {
@@ -835,6 +870,17 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         if (!l.x.empty())
           tags.push_back({ImPlot::PlotToPixels(l.x.back(), l.y.back()), ImGui::ColorConvertFloat4ToU32(l.col), l.name});
       draw_end_tags(tags, kTagScale, right - tw - 6.f);
+      if (net) {
+        const std::string head = "净流入 · " + net->name;
+        const ImVec2 hs = font->CalcTextSizeA(fs, FLT_MAX, 0.f, head.c_str());
+        const ImVec2 at(pos.x + 4.f, pos.y + psz.y - hs.y - 2.f);
+        dl->AddText(font, fs, at, col, head.c_str());
+        if (!net->v.empty()) {
+          char now[24];
+          fmt_signed(now, sizeof(now), net->v.back());
+          dl->AddText(font, fs, ImVec2(at.x + hs.x + 6.f, at.y), ImGui::ColorConvertFloat4ToU32(tint(net->v.back(), 0)), now);
+        }
+      }
     }
     if (ImPlot::IsPlotHovered()) {
       const ImPlotPoint m = ImPlot::GetPlotMousePos();
@@ -867,100 +913,24 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         if (l->g)
           ImGui::Text("前 %+.2f%%  高 %+.2f%%\n低 %+.2f%%  收 %+.2f%%", l->open[j], l->high[j], l->low[j], y);
       }
+      if (net) { // 光标所在组 [grp · g, grp · g + g) 的净流入之和
+        const auto b = std::lower_bound(net->x.begin(), net->x.end(), static_cast<double>(grp * g));
+        const auto e = std::lower_bound(b, net->x.end(), static_cast<double>(grp * g + g));
+        if (b != e) {
+          double v = 0;
+          for (auto it = b; it != e; ++it)
+            v += net->v[static_cast<size_t>(it - net->x.begin())];
+          char amt[24];
+          fmt_signed(amt, sizeof(amt), v);
+          ImGui::TextColored(tint(v, 0), "净流入 · %s %s", net->name.c_str(), amt);
+        }
+      }
       ImGui::EndTooltip();
     }
     ImPlot::EndPlot();
   }
   ImPlot::PopStyleVar(3);
   return corner;
-}
-
-// 净流入副图 (叠加图正下方, 同一 x 视野 / 竖网格, 刻度区全空): src 在日轴各日的每分钟净流入 (Bars::net, 分钟涨跌法) [元] 红绿柱
-//   (≥ 0 红 / < 0 绿); 历史日 = 历史分钟根, 当日 = 快照合成的根 (此刻所在根随快照动, 走完即与分钟 K 同值).
-//   y 对称贴合, 首根 / 末根 (集合竞价) 不参与贴合 (超出截在边上); 左上小字 = "净流入 · 名" + 末根读数, 右壁标贴合幅度; 悬停 = 竖线 + 时刻 / 读数
-constexpr float kNetShare = 0.25f; // 净流入副图占日内栏的高
-void plot_net(const Source &src, const std::string &name, const std::vector<misc::Ymd> &days, const ImVec2 &size) {
-  const int nd = std::max(1, static_cast<int>(days.size()));
-  std::vector<double> x, y;
-  double top = 0;
-  for (size_t k = 0; k < days.size(); ++k)
-    if (const Bars *b = bars_on(src, days[k]))
-      for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
-        if (b->has[j]) {
-          x.push_back(static_cast<double>(k * kSlots + j)), y.push_back(b->net[j]);
-          if (j != 0 && j != static_cast<size_t>(kSlots) - 1)
-            top = std::max(top, std::abs(b->net[j]));
-        }
-  if (!(top > 0))
-    top = 1e4;
-  std::vector<double> grid, seps;
-  day_grid(nd, grid, seps);
-  ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(1, 1));
-  ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(0, 0));
-  ImPlot::PushStyleVar(ImPlotStyleVar_PlotBorderSize, 0.f);
-  if (ImPlot::BeginPlot("##net", size, ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
-    ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks);
-    ImPlot::SetupAxisLimits(ImAxis_X1, -0.5, nd * kSlots - 0.5, ImPlotCond_Always);
-    ImPlot::SetupAxisTicks(ImAxis_X1, grid.data(), static_cast<int>(grid.size()));
-    ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks | ImPlotAxisFlags_NoGridLines);
-    ImPlot::SetupAxisLimits(ImAxis_Y1, -top * 1.1, top * 1.1, ImPlotCond_Always);
-    ImPlot::SetupFinish();
-    if (!seps.empty()) {
-      ImPlot::SetNextLineStyle(kRule, 1.f);
-      ImPlot::PlotInfLines("##sep", seps.data(), static_cast<int>(seps.size()));
-    }
-    const double zero = 0;
-    ImPlot::SetNextLineStyle(kRule, 1.f);
-    ImPlot::PlotInfLines("##zero", &zero, 1, ImPlotInfLinesFlags_Horizontal);
-    if (!x.empty() && ImPlot::BeginItem("##b", ImPlotItemFlags_NoLegend)) {
-      ImDrawList *dl = ImPlot::GetPlotDrawList();
-      for (size_t i = 0; i < x.size(); ++i) {
-        const ImVec2 p0 = ImPlot::PlotToPixels(x[i] - kBody, y[i]), p1 = ImPlot::PlotToPixels(x[i] + kBody, 0.0);
-        const ImVec4 c = y[i] >= 0 ? kUp : kDn;
-        dl->AddRectFilled(ImVec2(p0.x, std::min(p0.y, p1.y)), ImVec2(std::max(p1.x, p0.x + 1.f), std::max(p0.y, p1.y)),
-                          ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.75f)));
-      }
-      ImPlot::EndItem();
-    }
-    {
-      ImDrawList *dl = ImPlot::GetPlotDrawList();
-      ImFont *font = ImGui::GetFont();
-      const ImVec2 pos = ImPlot::GetPlotPos(), psz = ImPlot::GetPlotSize();
-      const float fs = ImGui::GetFontSize() * kTagScale, right = pos.x + psz.x - 2.f;
-      const ImU32 col = ImGui::ColorConvertFloat4ToU32(kGridTag);
-      const std::string head = "净流入 · " + name;
-      dl->AddText(font, fs, ImVec2(pos.x + 4.f, pos.y + 2.f), col, head.c_str());
-      if (!y.empty()) {
-        char now[24];
-        now[0] = y.back() < 0 ? '-' : '+';
-        fmt_amount(now + 1, sizeof(now) - 1, std::abs(y.back()));
-        const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.f, head.c_str()).x;
-        dl->AddText(font, fs, ImVec2(pos.x + 4.f + w + 6.f, pos.y + 2.f), ImGui::ColorConvertFloat4ToU32(tint(y.back(), 0)), now);
-      }
-      char hi[24] = "+", lo[24] = "-";
-      fmt_amount(hi + 1, sizeof(hi) - 1, top);
-      fmt_amount(lo + 1, sizeof(lo) - 1, top);
-      const ImVec2 hs = font->CalcTextSizeA(fs, FLT_MAX, 0.f, hi), ls = font->CalcTextSizeA(fs, FLT_MAX, 0.f, lo);
-      dl->AddText(font, fs, ImVec2(right - hs.x, ImPlot::PlotToPixels(0.0, top).y), col, hi);
-      dl->AddText(font, fs, ImVec2(right - ls.x, ImPlot::PlotToPixels(0.0, -top).y - ls.y), col, lo);
-    }
-    if (ImPlot::IsPlotHovered()) {
-      const double cx = std::clamp(std::round(ImPlot::GetPlotMousePos().x), 0.0, nd * kSlots - 1.0);
-      ImPlot::SetNextLineStyle(kCrossLine, 1.f);
-      ImPlot::PlotInfLines("##cx", &cx, 1);
-      const auto it = std::lower_bound(x.begin(), x.end(), cx);
-      const int k = static_cast<int>(cx) / kSlots, mn = slot_label(static_cast<int>(cx) % kSlots);
-      if (it != x.end() && *it == cx && static_cast<size_t>(k) < days.size()) {
-        const double v = y[static_cast<size_t>(it - x.begin())];
-        char amt[24];
-        fmt_amount(amt, sizeof(amt), std::abs(v));
-        ImGui::SetTooltip("%02d-%02d %02d:%02d  净流入 %s%s", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60,
-                          mn % 60, v < 0 ? "-" : "+", amt);
-      }
-    }
-    ImPlot::EndPlot();
-  }
-  ImPlot::PopStyleVar(3);
 }
 
 // 收历史发布: 末次请求的发布到齐 → 整体换上; 到齐前照留在画的. 返回 = 发布代新于末次请求 (被别的 Feed 覆盖)
@@ -1019,7 +989,7 @@ void fill_chip(const QuoteStatus &qs) {
     ImGui::TextDisabled("待补 %zu 只", qs.gaps);
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("当日分钟补取中: 在取 %zu 根 / 已取 %zu, %zu 只待补 (含等定稿的)\n未补齐的分钟暂按前收持平, 曲线随补取更新", qs.pending,
+    ImGui::SetTooltip("当日分钟补取中: 在取 %zu 根 / 已取 %zu, %zu 只待补 (含等定稿的)\n未补齐的分钟暂沿用上一个已知价 (今开 / 现价), 曲线随补取更新", qs.pending,
                       qs.fetched, qs.gaps);
 }
 
@@ -1183,15 +1153,13 @@ int RenderIntraday(const QuoteHub &mk, OverlayState &st, const std::vector<Overl
     for (const Candle &c : s.bars)
       l.y.push_back(pct(c.close));
   }
-  // 净流入副图的标的: 只一条 = 它, 否则全A.等
+  // 0 轴净流入柱的标的: 只一条 = 它, 否则全A.等
   const size_t all_eq = basket_table().at_pool(kBasketBase);
   const Ref nk = picks.size() == 1 ? picks.front().ref : Ref{kBasket, static_cast<uint32_t>(all_eq)};
-  const std::string nk_name = picks.size() == 1 ? picks.front().name : basket_table().name(all_eq);
-  const float bh = std::floor(avail.y * kNetShare);
+  const NetBars net = net_bars(SourceOf(st, nk), picks.size() == 1 ? picks.front().name : basket_table().name(all_eq), days);
   ImGui::PushID("intraday");
   int near = -1;
-  const ImVec2 corner = plot_overlay(ls, days, ImVec2(avail.x, avail.y - bh - ImGui::GetStyle().ItemSpacing.y), "%", hot, near);
-  plot_net(SourceOf(st, nk), nk_name, days, ImVec2(avail.x, bh));
+  const ImVec2 corner = plot_overlay(ls, days, avail, "%", hot, near, &net);
   overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
                                                                                                 : nullptr,
                 qs, [&] { button_bar(kIntraName, kIntras, st.intraday); });
