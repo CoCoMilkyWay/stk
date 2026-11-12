@@ -11,11 +11,11 @@
 //     量 / 额 / 收精确 (快照边界上的量可能落到相邻根); 开 = 本根首个成交快照的现价; 高 / 低 = 采样现价, 日内新高 / 新低落在本根时恰为该值.
 //   分钟 K (quotes.sina.cn 一只一请求 ~170ms, kFillers 路并发) 只补快照没盯住的根. 每只一个待补区间 [lo, hi] (多段取并包), 三个来源:
 //     启动: 首快照累计量 > 0 (盘中 / 盘后启动) ⇒ [0, 首快照所在根];
-//     断档: 相邻两轮快照之间的连续竞价时长 > kGap (网络卡 / 休眠) ⇒ 其间有成交的只 [上轮所在根, 本轮所在根];
+//     断档: 相邻两轮快照跨根且其间连续竞价时长 > kGap (网络卡 / 休眠) ⇒ 其间有成交的只 [上轮所在根, 本轮所在根];
+//       同根内的停顿不算 (量 / 额 / 收照样精确, 只少几个现价采样);
 //     选中: 定稿线以内首个非精确根起 ⇒ [该根, 定稿线] (选中标的已定稿部分恒精确, 每越过一根定稿线补一根).
 //   取: 新浪只给 "最近 n 根", n = 此刻所在根 − lo + 2 (根数上界, 恰好盖到 lo) —— 缺几根取几根, 全天缺即整日.
-//     时机: 区间整段定稿 (hi ≤ 定稿线) 即取; 定稿段已长过未定稿的尾巴 (lo + kLag ≤ 定稿线, 启动 / 长断档) 先取定稿段,
-//       尾巴等整段定稿再取 (每段至多两次); 选中标的定稿部分一有就取, 插队. 一只同时至多一个请求.
+//     时机: 区间整段定稿 (hi ≤ 定稿线) 才取, 每段一次; 选中标的定稿部分一有就取, 插队. 一只同时至多一个请求.
 //   写回 [lo, 定稿线]: 有根写根, 无根清空, 全段标精确 (此后快照不写); lo 推到定稿线后.
 //   定稿线: 标号不晚于 "此刻 − kSettle" 的根不再变 (刚过去那根还会被修正); 行情日不是今天 (盘前看昨日 / 周末) → 整日定稿.
 //   行情日 ≤ fund_end (基本面 bar1m 已入库) 不取分钟 K (那天由 bar1m 给).
@@ -64,12 +64,11 @@ struct QuoteStatus {
 
 class QuoteService {
 public:
-  static constexpr int kTick = 3, kIdleTick = 30;      // 快照间隔 [s]: 盘中 / 盘外
-  static constexpr int kSettle = 90;                   // 定稿延迟 [s]
-  static constexpr int kLag = (kSettle + 59) / 60 + 1; // 此刻所在根 − 定稿线 的上界 [根]
-  static constexpr int kGap = 10;                      // 断档判据: 两轮快照间连续竞价时长 [s]
-  static constexpr int kFillers = 16;                  // 分钟 K 并发 (再高新浪会 RST)
-  static constexpr uint32_t kFoldChunk = 256;          // 篮子合成每段成员只数 (持 mu_ 的粒度)
+  static constexpr int kTick = 3, kIdleTick = 30; // 快照间隔 [s]: 盘中 / 盘外
+  static constexpr int kSettle = 90;              // 定稿延迟 [s]
+  static constexpr int kGap = 10;                 // 断档判据: 两轮快照跨根时其间连续竞价时长 [s]
+  static constexpr int kFillers = 16;             // 分钟 K 并发 (再高新浪会 RST)
+  static constexpr uint32_t kFoldChunk = 256;     // 篮子合成每段成员只数 (持 mu_ 的粒度)
 
   QuoteService(PoolAxis axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading);
   ~QuoteService();

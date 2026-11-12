@@ -316,7 +316,7 @@ void QuoteService::poll() {
       for (const sina::Quote &q : qs)
         if (q.date == date_)
           cur = std::max(cur, q.sec);
-      const int gap = sec_ > 0 && trading_sec(cur) - trading_sec(sec_) > kGap ? sec_slot(sec_) : -1;
+      const int gap = sec_ > 0 && sec_slot(cur) != sec_slot(sec_) && trading_sec(cur) - trading_sec(sec_) > kGap ? sec_slot(sec_) : -1;
       for (const sina::Quote &q : qs) {
         const uint32_t i = index_.at(q.sym);
         last_[i] = q;
@@ -406,7 +406,7 @@ void QuoteService::schedule() {
   }
   for (uint32_t i = 0; i < tracks_.size(); ++i) {
     Track &t = tracks_[i];
-    if (t.fill == Fill::Idle && t.lo <= t.hi && (i == sel_ ? t.lo <= st : t.hi <= st || t.lo + kLag <= st)) {
+    if (t.fill == Fill::Idle && t.lo <= t.hi && (i == sel_ ? t.lo <= st : t.hi <= st)) {
       t.fill = Fill::Queued;
       i == sel_ ? todo_.push_front(i) : todo_.push_back(i);
     }
