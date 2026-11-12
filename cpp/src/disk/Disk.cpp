@@ -16,10 +16,19 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <fstream>
 #include <functional>
 #include <optional>
+
+// 断言 c; 不成立时先把现场 ctx (仅此时求值) 打到 stderr
+#ifdef NDEBUG
+#define DISK_ASSERT(c, msg, ctx) ((void)0)
+#else
+#define DISK_ASSERT(c, msg, ctx) \
+  ((c) ? (void)0 : (std::fprintf(stderr, "[disk] %s | %s\n", msg, std::string(ctx).c_str()), std::fflush(stderr), assert(!msg)))
+#endif
 
 namespace disk {
 
@@ -30,11 +39,31 @@ namespace {
 fs::path find_root() {
   fs::path p = fs::current_path();
   while (!fs::exists(p / ".git")) {
-    assert(p != p.parent_path() && "仓库根找不到 (cwd 之上无 .git)");
+    DISK_ASSERT(p != p.parent_path(), "仓库根找不到 (cwd 之上无 .git)", "cwd=" + fs::current_path().string());
     p = p.parent_path();
   }
   return p;
 }
+
+// 键的已定段, 供断言现场
+[[maybe_unused]] std::string dump(const Key &k) {
+  std::string s;
+  const auto field = [&](const char *f, const std::string &v) {
+    if (!v.empty())
+      s += std::string(s.empty() ? "" : " ") + f + "=\"" + v + "\"";
+  };
+  field("pool", k.pool);
+  field("tier", k.tier);
+  field("lvl", k.lvl);
+  field("level", k.level);
+  field("hold", k.hold);
+  field("test", k.test ? "1" : "");
+  field("date", k.date ? std::to_string(k.date) : "");
+  field("stamp", k.stamp);
+  field("name", k.name);
+  return "{" + s + "}";
+}
+[[maybe_unused]] std::string where(Node n, const Key &k) { return std::string("节点 ") + def(n).id + " 键 " + dump(k); }
 
 // ---- 写法 ----
 
@@ -64,7 +93,7 @@ bool word(std::string_view s) {
 bool dotted(std::string_view s) {
   for (size_t i = 0, j = 0; i <= s.size(); j = ++i) {
     i = std::min(s.find_first_of(".+", i), s.size());
-    if (!word(s.substr(j, i - j)))
+    if (const std::string_view w = s.substr(j, i - j); w != "-" && !word(w))
       return false;
   }
   return true;
@@ -278,11 +307,13 @@ fs::path root() {
 }
 
 std::string name(Node n, const Key &k) {
-  assert(has(seg(n), k) && "路径段未定");
-  const std::string s = def(n).prefix + put(seg(n), k) + def(n).suffix;
+  DISK_ASSERT(has(seg(n), k), "路径段未定", where(n, k));
+  const std::string v = put(seg(n), k);
   [[maybe_unused]] Key probe = k;
-  assert(parse(n, s, probe) && probe == k && "路径段不合布局 (写法 / 值域)");
-  return s;
+  DISK_ASSERT(take(seg(n), v, probe), "路径段写法不合模式", where(n, k) + " 段=\"" + v + "\" 模式=\"" + std::string(seg(n).pat) + "\"");
+  DISK_ASSERT(known(n, probe), "路径段值域外", where(n, k) + " 段=\"" + v + "\"");
+  DISK_ASSERT(probe == k, "路径段写回后变了", where(n, k) + " 写回 " + dump(probe));
+  return def(n).prefix + v + def(n).suffix;
 }
 
 bool parse(Node n, std::string_view name, Key &k) {
@@ -315,35 +346,36 @@ std::string stamp_now() {
 bool exists(Node n, const Key &k) { return is(n, path(n, k)); }
 
 std::string read(Node n, const Key &k) {
-  assert(def(n).kind == Kind::File);
-  std::ifstream f(path(n, k), std::ios::binary);
-  assert(f.is_open() && "disk::read: 文件不在");
+  DISK_ASSERT(def(n).kind == Kind::File, "disk::read: 节点不是文件", where(n, k));
+  const fs::path p = path(n, k);
+  std::ifstream f(p, std::ios::binary);
+  DISK_ASSERT(f.is_open(), "disk::read: 文件不在", p.string());
   return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
 
 void write(Node n, const Key &k, std::string_view bytes) {
-  assert(def(n).kind == Kind::File);
+  DISK_ASSERT(def(n).kind == Kind::File, "disk::write: 节点不是文件", where(n, k));
   const fs::path p = path(n, k);
   fs::create_directories(p.parent_path());
   fs::path tmp = p;
   tmp += ".tmp";
   {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-    assert(f.is_open() && "disk::write: 临时文件建不出来");
+    DISK_ASSERT(f.is_open(), "disk::write: 临时文件建不出来", tmp.string());
     f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    assert(f.good() && "disk::write: 写入失败");
+    DISK_ASSERT(f.good(), "disk::write: 写入失败", tmp.string() + " (" + std::to_string(bytes.size()) + " 字节)");
   }
   fs::rename(tmp, p);
 }
 
 void append(Node n, const Key &k, std::string_view line) {
-  assert(def(n).kind == Kind::File);
+  DISK_ASSERT(def(n).kind == Kind::File, "disk::append: 节点不是文件", where(n, k));
   const fs::path p = path(n, k);
   fs::create_directories(p.parent_path());
   std::ofstream f(p, std::ios::binary | std::ios::app);
-  assert(f.is_open() && "disk::append: 文件打不开");
+  DISK_ASSERT(f.is_open(), "disk::append: 文件打不开", p.string());
   f << line << '\n';
-  assert(f.good() && "disk::append: 写入失败");
+  DISK_ASSERT(f.good(), "disk::append: 写入失败", p.string());
 }
 
 void remove(Node n, const Key &k) {
@@ -358,7 +390,7 @@ void remove(Node n, const Key &k) {
   std::error_code ec;
   fs::rename(p, grave, ec);
   if (ec) {
-    assert(ec == std::errc::no_such_file_or_directory && "disk::remove: rename 成墓碑失败");
+    DISK_ASSERT(ec == std::errc::no_such_file_or_directory, "disk::remove: rename 成墓碑失败", p.string() + " → " + grave.string() + ": " + ec.message());
     return;
   }
   fs::remove_all(grave);
@@ -366,13 +398,14 @@ void remove(Node n, const Key &k) {
 
 void rename(Node n, const Key &from, const Key &to) {
   const fs::path a = path(n, from), b = path(n, to);
-  assert(fs::exists(a) && !fs::exists(b) && "disk::rename: 源须在, 目标须不在");
+  DISK_ASSERT(fs::exists(a), "disk::rename: 源不在", a.string());
+  DISK_ASSERT(!fs::exists(b), "disk::rename: 目标已在", b.string());
   fs::create_directories(b.parent_path());
   fs::rename(a, b);
 }
 
 fs::path ensure(Node n, const Key &k) {
-  assert(is_dir(n));
+  DISK_ASSERT(is_dir(n), "disk::ensure: 节点不是目录", where(n, k));
   const fs::path p = path(n, k);
   fs::create_directories(p);
   return p;
