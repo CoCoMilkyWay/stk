@@ -17,7 +17,7 @@ namespace GUI::Market {
 bool CtaService::publish(const CtaRequest &req, std::string lack, std::shared_ptr<CtaResult> out) {
   if (!out)
     out = std::make_shared<CtaResult>();
-  out->gen = req.gen, out->side = req.side, out->key = req.key, out->spec = req.spec;
+  out->gen = req.gen, out->ref = req.ref, out->spec = req.spec;
   out->lack = std::move(lack);
   std::lock_guard<std::mutex> lock(mutex);
   result = std::move(out);
@@ -37,11 +37,11 @@ bool CtaService::run(CtaRequest &req) {
   if (!pk || !lib_.sync(lib, rd, *pk))
     return false;
   std::vector<misc::Ymd> dates = pk->tape->dates; // 已落盘日 (清单日期轴可能还在算)
-  if (req.key == kCtaNone)
+  if (!req.ref.ok())
     return publish(req, {});
 
   const auto hit = std::find_if(kept_.begin(), kept_.end(), [&](const Kept &k) {
-    return k.side == req.side && k.key == req.key && k.axis == lib.axis.hash && k.last == dates.back() && k.days == dates.size();
+    return k.ref == req.ref && k.axis == lib.axis.hash && k.last == dates.back() && k.days == dates.size();
   });
   std::shared_ptr<const cta::Series> se;
   if (hit != kept_.end()) {
@@ -49,13 +49,13 @@ bool CtaService::run(CtaRequest &req) {
     kept_.erase(hit);
   } else {
     auto s = std::make_shared<cta::Series>();
-    if (!lib_.series(req.side, req.key, *s)) {
-      assert(req.side == Quote::kStock && "CTA 篮子 = 篮子目录三组的线");
+    if (!lib_.series(req.ref, *s)) {
+      assert(req.ref.side == Quote::kStock && "CTA 篮子 = 篮子目录三组的线");
       return publish(req, "该股不在 all.bar 库轴上 (库建成之后上市 / 进池; 全量重算 all.bar 即并入).");
     }
     se = std::move(s);
   }
-  kept_.insert(kept_.begin(), Kept{req.side, req.key, lib.axis.hash, dates.back(), dates.size(), se});
+  kept_.insert(kept_.begin(), Kept{req.ref, lib.axis.hash, dates.back(), dates.size(), se});
   if (kept_.size() > kKeep)
     kept_.pop_back();
 

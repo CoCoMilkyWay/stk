@@ -68,12 +68,26 @@ void ratio(const Cell *c, double inv, double at, double *q) {
   q[5] = 0;
 }
 
-// 一格 (比 × 权之和) → 一根 (× f = 前日点位 / Σ w)
+// 一格 (比 × 权之和) → 一根 (× f = 1 / Σ w)
 Cell scaled(const double *a, double f) {
   return {static_cast<float>(a[0] * f), static_cast<float>(a[1] * f), static_cast<float>(a[2] * f), static_cast<float>(a[3] * f), 0, a[4]};
 }
 
+void scale(Cell &c, double f) {
+  c.open = static_cast<float>(c.open * f), c.high = static_cast<float>(c.high * f);
+  c.low = static_cast<float>(c.low * f), c.close = static_cast<float>(c.close * f);
+}
+
 } // namespace
+
+void rebase(Day &y, double level) {
+  assert(y.candle.date != 0 && level > 0);
+  scale(y.candle, level);
+  y.candle.ref = static_cast<float>(level);
+  for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
+    if (y.bars.has[s])
+      scale(y.bars.cell[s], level);
+}
 
 Fold::Fold(size_t baskets) : sw_(baskets), acc_(baskets * kCells * kQ) {}
 
@@ -139,18 +153,18 @@ bool Fold::add(const Leg &g, std::span<const Members::Weight> ws, Carry &k) {
   return true;
 }
 
-void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<const double> level, std::span<Day> out) {
-  assert(level.size() == sw_.size() && out.size() == sw_.size());
+void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<Day> out) {
+  assert(out.size() == sw_.size());
   for (size_t b = 0; b < sw_.size(); ++b) {
     Day &o = out[b];
     const double *a = acc_.data() + b * kCells * kQ;
-    if (!(sw_[b] > 0 && a[4] > 0 && level[b] > 0)) {
+    if (!(sw_[b] > 0 && a[4] > 0)) {
       o.candle.date = 0;
       continue;
     }
-    const double f = level[b] / sw_[b];
+    const double f = 1.0 / sw_[b];
     o.prev = prev;
-    o.candle = {scaled(a, f), d, static_cast<float>(level[b])};
+    o.candle = {scaled(a, f), d, 1.f};
     o.flow = a[5];
     o.bars.date = d;
     o.bars.has.reset();

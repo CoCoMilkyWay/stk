@@ -18,6 +18,7 @@
 #include <limits>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -43,8 +44,6 @@ constexpr double kBody = 0.35; // 蜡烛 / 量柱半宽 [槽]
 constexpr float kMinPx = 3.f;  // 日内蜡烛每根最窄 [px] (窄了并根)
 constexpr double kMinSpan = 5; // 视野至少几根 (框选 / 滚轮)
 constexpr double kWheel = 0.8; // 滚轮一格视野宽 × kWheel (向前 = 放大)
-constexpr float kDragPx = 4.f; // 框选生效的最小拖动 [px]
-constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr ImVec4 kRefTag(0.55f, 0.55f, 0.55f, 1.f);
 constexpr ImVec4 kGridTag(0.62f, 0.62f, 0.62f, 0.8f);                                     // 叠加图横网格的内标小字
 constexpr float kTagScale = 0.8f, kGridPx = 28.f;                                         // 叠加图内标小字字号 (× 字体) / 横网格约每格像素
@@ -203,7 +202,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
   const bool reset = v.key != key;
   if (reset) {
     v.key = key;
-    v.lo = win_lo, v.hi = win_hi, v.drag = kNaN;
+    v.lo = win_lo, v.hi = win_hi, v.zoom.cancel();
   }
   if (s.intraday)
     s.g = merge(s, v.hi - v.lo, size.x);
@@ -267,21 +266,16 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
       hov = true;
       ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, ImPlot::GetCurrentPlot()->ID);
     }
-    if (std::isnan(v.drag)) {
-      if ((here || v.cross) && n > 0) {
-        const double x = s.x[static_cast<size_t>(nearest(s, ImPlot::GetPlotMousePos().x))];
-        ImPlot::SetNextLineStyle(kCrossLine, 1.f);
-        ImPlot::PlotInfLines("##cx", &x, 1);
-      }
-      return here;
+    if (v.zoom.on()) {
+      v.zoom.draw(clamped);
+      return false;
     }
-    const ImVec2 pos = ImPlot::GetPlotPos(), sz = ImPlot::GetPlotSize();
-    const float a = ImPlot::PlotToPixels(v.drag, 0.0).x, b = ImPlot::PlotToPixels(clamped, 0.0).x;
-    const ImVec2 p0(std::min(a, b), pos.y), p1(std::max(a, b), pos.y + sz.y);
-    ImDrawList *dl = ImPlot::GetPlotDrawList();
-    dl->AddRectFilled(p0, p1, IM_COL32(86, 156, 214, 40));
-    dl->AddRect(p0, p1, IM_COL32(86, 156, 214, 160));
-    return false;
+    if ((here || v.cross) && n > 0) {
+      const double x = s.x[static_cast<size_t>(nearest(s, ImPlot::GetPlotMousePos().x))];
+      ImPlot::SetNextLineStyle(kCrossLine, 1.f);
+      ImPlot::PlotInfLines("##cx", &x, 1);
+    }
+    return here;
   };
   const auto cross_y = [](double y) {
     ImPlot::SetNextLineStyle(kCrossLine, 1.f);
@@ -402,7 +396,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
       cross_y(y);
       ImPlot::TagY(y, kCross, false);
     }
-    if (std::isnan(v.drag) && (hov || v.cross) && n > 0) { // 十字竖线落在底轴的时刻
+    if (!v.zoom.on() && (hov || v.cross) && n > 0) { // 十字竖线落在底轴的时刻
       const size_t i = static_cast<size_t>(nearest(s, ImPlot::GetPlotMousePos().x));
       char when[32];
       fmt_when(when, sizeof(when), s, i);
@@ -416,17 +410,11 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
 
   const ImGuiIO &io = ImGui::GetIO();
   if (hov && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-    v.lo = win_lo, v.hi = win_hi, v.drag = kNaN;
+    v.lo = win_lo, v.hi = win_hi, v.zoom.cancel();
   else if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-    v.drag = mx, v.drag_px = io.MousePos.x;
-  if (!std::isnan(v.drag)) {
-    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); // 盖掉 ImPlot 的 "不可拖动" 光标
-    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-      if (std::abs(io.MousePos.x - v.drag_px) > kDragPx && std::abs(mx - v.drag) >= kMinSpan)
-        v.lo = std::min(v.drag, mx), v.hi = std::max(v.drag, mx);
-      v.drag = kNaN;
-    }
-  }
+    v.zoom.begin(mx);
+  if (double lo, hi; v.zoom.end(mx, lo, hi) && hi - lo >= kMinSpan)
+    v.lo = lo, v.hi = hi;
   if (wheel && hov && io.MouseWheel != 0) {
     const double w = std::clamp((v.hi - v.lo) * std::pow(kWheel, io.MouseWheel), kMinSpan, std::max(win_hi - win_lo, n + 1.0));
     v.lo = win_hi - w, v.hi = win_hi;
@@ -541,18 +529,35 @@ void render_book(const sina::Quote &q, misc::Ymd date) {
   ImGui::PopStyleVar();
 }
 
-// 最新一根: 当日接上取当日, 否则日线末根; 日线空 → nullptr
-const Candle *last(const Kline &kl, const Day &today) {
-  return joins(kl, today) ? &today.candle : kl.daily.empty() ? nullptr
-                                                             : &kl.daily.back();
+// 源的当日接得上: 有历史 → joins; 只当日 → 当日有成交
+bool joined(const Source &s) { return s.today && (s.kl ? joins(*s.kl, *s.today) : s.today->candle.date != 0); }
+
+// 最新一根: 当日接上取当日, 否则日线末根; 无 → nullptr
+const Candle *last(const Source &s) {
+  return joined(s) ? &s.today->candle : s.kl && !s.kl->daily.empty() ? &s.kl->daily.back()
+                                                                     : nullptr;
 }
 
-// d 日的日根: 当日 (joins) / 历史; 无 → nullptr
-const Candle *candle_on(const Kline &kl, const Day &today, misc::Ymd d) {
-  if (joins(kl, today) && today.candle.date == d)
-    return &today.candle;
-  const auto it = std::lower_bound(kl.daily.begin(), kl.daily.end(), d, [](const Candle &c, misc::Ymd x) { return c.date < x; });
-  return it != kl.daily.end() && it->date == d ? &*it : nullptr;
+// d 日的日根: 当日 (joined) / 历史; 无 → nullptr
+const Candle *candle_on(const Source &s, misc::Ymd d) {
+  if (joined(s) && s.today->candle.date == d)
+    return &s.today->candle;
+  if (!s.kl)
+    return nullptr;
+  const std::vector<Candle> &v = s.kl->daily;
+  const auto it = std::lower_bound(v.begin(), v.end(), d, [](const Candle &c, misc::Ymd x) { return c.date < x; });
+  return it != v.end() && it->date == d ? &*it : nullptr;
+}
+
+// d 日的分钟根: 当日 (joined 且有根) / 历史; 无 → nullptr
+const Bars *bars_on(const Source &s, misc::Ymd d) {
+  if (joined(s) && s.today->bars.has.any() && s.today->bars.date == d)
+    return &s.today->bars;
+  if (!s.kl)
+    return nullptr;
+  const std::vector<Bars> &v = s.kl->minutes;
+  const auto it = std::lower_bound(v.begin(), v.end(), d, [](const Bars &m, misc::Ymd x) { return m.date < x; });
+  return it != v.end() && it->date == d ? &*it : nullptr;
 }
 
 // 一根的价 × a (量 / 额不动)
@@ -562,13 +567,14 @@ Cell scaled(Cell c, double a) {
   return c;
 }
 
-// 日线的根 = 历史 + 当日 (joins 才接); 涨跌基准 = 末根前收
-void daily(const Kline &kl, const Day &today, bool money, Series &s) {
+// 日线的根 = 历史 + 当日 (joined 才接); 涨跌基准 = 末根前收
+void daily(const Source &src, bool money, Series &s) {
   s.money = money;
-  for (const Candle &c : kl.daily)
-    s.push(c, static_cast<double>(s.bars.size()));
-  if (joins(kl, today))
-    s.push(today.candle, static_cast<double>(s.bars.size()));
+  if (src.kl)
+    for (const Candle &c : src.kl->daily)
+      s.push(c, static_cast<double>(s.bars.size()));
+  if (joined(src))
+    s.push(src.today->candle, static_cast<double>(s.bars.size()));
   if (!s.bars.empty())
     s.ref = s.bars.back().ref;
 }
@@ -581,14 +587,6 @@ std::vector<misc::Ymd> day_axis(std::span<const misc::Ymd> trading, misc::Ymd da
   std::vector<misc::Ymd> days(end - std::min<std::ptrdiff_t>(n - 1, end - trading.begin()), end);
   days.push_back(date);
   return days;
-}
-
-// d 日的分钟根: 当日 (joins 且有根) / 历史; 无 → nullptr
-const Bars *bars_on(const Kline &kl, const Day &today, misc::Ymd d) {
-  if (joins(kl, today) && today.bars.has.any() && today.bars.date == d)
-    return &today.bars;
-  const auto it = std::lower_bound(kl.minutes.begin(), kl.minutes.end(), d, [](const Bars &m, misc::Ymd x) { return m.date < x; });
-  return it != kl.minutes.end() && it->date == d ? &*it : nullptr;
 }
 
 // 资金流计入槽 j: 有根, 且首根 (开盘集合竞价并入) / 末根 (收盘集合竞价) 只在 ends 时计
@@ -604,10 +602,10 @@ double flow_ref(const Kline &kl) {
   return n ? s / static_cast<double>(n) : 0.0;
 }
 
-// 日内的根 = 日轴各日的分钟 (历史 + 当日, joins 才接; 某日无源 → 留空), x = 第 k 日 · kSlots + 槽;
+// 日内的根 = 日轴各日的分钟 (历史 + 当日, joined 才接; 某日无源 → 留空), x = 第 k 日 · kSlots + 槽;
 //   价按前收链前复权到末个有根日 (末日真价): 相邻日根逐个 × 上一日根收 / 本日前收 (篮子点位本已接续 ⇒ 恒 1);
 //   分钟根的前收 = 同日日根的 (同乘); 涨跌基准 = 末个有根日的前收
-void intraday(const Kline &kl, const Day &today, std::span<const misc::Ymd> days, bool money, Series &s) {
+void intraday(const Source &src, std::span<const misc::Ymd> days, bool money, Series &s) {
   s.intraday = true;
   s.money = money;
   s.days.assign(days.begin(), days.end());
@@ -617,7 +615,7 @@ void intraday(const Kline &kl, const Day &today, std::span<const misc::Ymd> days
   std::vector<double> f(nd, 0.0); // 后复权比: 日轴内首个日根 = 1
   double end = 0;                 // 末个有根日的 f
   for (size_t k = 0, p = SIZE_MAX; k < nd; ++k) {
-    cs[k] = candle_on(kl, today, days[k]), bs[k] = bars_on(kl, today, days[k]);
+    cs[k] = candle_on(src, days[k]), bs[k] = bars_on(src, days[k]);
     assert((!bs[k] || cs[k]) && "有分钟根的日必有日根");
     if (!cs[k])
       continue;
@@ -650,9 +648,9 @@ bool gap_note(const Kline &kl, const Day &today, char *buf, size_t size) {
 }
 
 // 标题行 (标题 · 最新价 / 涨跌) + 注行: 恒两行, 图区起点不随内容动 (注行末可再 SameLine 一个 SmallButton, 同高)
-void header(const char *title, const Kline &kl, const Day &today, const char *note) {
+void header(const char *title, const Source &src, const char *note) {
   ImGui::TextUnformatted(title);
-  if (const Candle *k = last(kl, today); k && k->ref > 0) {
+  if (const Candle *k = last(src); k && k->ref > 0) {
     ImGui::SameLine();
     ImGui::TextColored(tint(k->close, k->ref), "%.2f  %+.2f  %+.2f%%", k->close, k->close - k->ref, (k->close / k->ref - 1.0) * 100.0);
   }
@@ -871,11 +869,11 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   return corner;
 }
 
-// 收历史发布: 末次请求的发布到齐 → 整体换上, 当日待重拷; 到齐前照留在画的. 返回 = 发布代新于末次请求 (被别的 Feed 覆盖)
+// 收历史发布: 末次请求的发布到齐 → 整体换上; 到齐前照留在画的. 返回 = 发布代新于末次请求 (被别的 Feed 覆盖)
 bool pull(const HistoryPub &x, Feed &f) {
   std::lock_guard<std::mutex> lock(x.mutex);
   if (x.gen == f.gen && x.data != f.data)
-    f.data = x.data, f.shown = f.gen, f.ver = ~0ull;
+    f.data = x.data, f.shown = f.gen;
   return x.gen > f.gen;
 }
 
@@ -892,7 +890,7 @@ bool basket_ready(const QuoteHub &mk, Feed &f) {
     ImGui::TextDisabled("读取 all.bar 特征库… %zu / %zu 日", x.done.load(std::memory_order_relaxed), x.total.load(std::memory_order_relaxed));
     return false;
   }
-  assert(f.today && f.today->size() == f.data->list.size());
+  assert(f.today.day && f.today.day->size() == f.data->list.size());
   return true;
 }
 
@@ -908,28 +906,6 @@ bool basket_note(const Tape &d, const Kline &kl, const Day &today, const QuoteSt
   if (n > 0 && d.basis < kl.last)
     std::snprintf(note + n, size - static_cast<size_t>(n), " · 其后至 %02d-%02d 由 bar1d / bar1m 补", kl.last / 100 % 100, kl.last % 100);
   return gap;
-}
-
-// 叠加一条的源: 篮子 = 篮子历史 [篮子下标] + 当日; 个股 = 叠加个股的历史 + 当日 (未到 → kl 空)
-struct Source {
-  const Kline *kl = nullptr;
-  const Day *today = nullptr;
-};
-Source source_of(const BasketState &st, const OverlayPick &p) {
-  if (p.side == kBasket) {
-    const Tape &d = *st.feed.data;
-    assert(p.key < d.list.size() && d.keys[p.key] == p.key);
-    return {d.list[p.key].get(), &(*st.feed.today)[p.key]};
-  }
-  const Feed &f = st.stocks;
-  if (!f.data || !f.today)
-    return {};
-  const auto it = std::find(f.data->keys.begin(), f.data->keys.end(), p.key);
-  if (it == f.data->keys.end())
-    return {};
-  const size_t k = static_cast<size_t>(it - f.data->keys.begin());
-  assert(f.today->size() == f.data->keys.size());
-  return {f.data->list[k].get(), &(*f.today)[k]};
 }
 
 // 新浪补当日分钟 K 的进度, 接在上一项行尾 (无事不画): 在取 → 进行中色进度条 "新浪补分钟 已取 / 共" (随补取动);
@@ -975,6 +951,50 @@ void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *
 
 } // namespace
 
+template <class T>
+void Sync(const QuoteService &q, Side s, std::span<const uint32_t> keys, Today<T> &t) {
+  constexpr bool kDay = std::is_same_v<T, Day>;
+  static_assert(kDay || std::is_same_v<T, Candle>);
+  const QuoteStatus qs = q.status();
+  const uint64_t ver = kDay ? qs.ver[s] : static_cast<uint64_t>(qs.date) * 86400 + static_cast<uint64_t>(qs.sec);
+  if (ver == t.ver && std::ranges::equal(keys, t.keys))
+    return;
+  t.keys.assign(keys.begin(), keys.end());
+  t.prev = qs.prev, t.ver = ver;
+  if (keys.empty())
+    t.day = nullptr;
+  else if constexpr (kDay)
+    t.day = q.today(s, keys);
+  else {
+    assert(s == kStock);
+    t.day = q.candles(keys);
+  }
+}
+template void Sync<Day>(const QuoteService &, Side, std::span<const uint32_t>, Today<Day> &);
+template void Sync<Candle>(const QuoteService &, Side, std::span<const uint32_t>, Today<Candle> &);
+
+Source SourceOf(const OverlayState &st, Ref ref) {
+  assert(ref.ok());
+  if (ref.side == kBasket) {
+    const Feed &f = st.baskets;
+    if (!f.data || ref.key >= f.data->list.size())
+      return {};
+    assert(f.data->keys[ref.key] == ref.key && f.today.day && f.today.day->size() == f.data->list.size());
+    return {f.data->list[ref.key].get(), &(*f.today.day)[ref.key]};
+  }
+  if (const Feed &f = st.stocks; f.data && f.today.day)
+    if (const auto it = std::ranges::find(f.data->keys, ref.key); it != f.data->keys.end()) {
+      const size_t k = static_cast<size_t>(it - f.data->keys.begin());
+      assert(f.today.day->size() == f.data->keys.size());
+      return {f.data->list[k].get(), &(*f.today.day)[k]};
+    }
+  const Today<Day> &c = st.cons;
+  if (!c.day)
+    return {};
+  const auto it = std::ranges::lower_bound(c.keys, ref.key);
+  return it != c.keys.end() && *it == ref.key ? Source{nullptr, &(*c.day)[static_cast<size_t>(it - c.keys.begin())]} : Source{};
+}
+
 void Sync(QuoteHub &mk, Side s, std::span<const uint32_t> want, Feed &f) {
   const bool lost = pull(mk.history(s), f) && !f.want.empty(); // 空键集被覆盖不必重发
   if (lost || f.reload || !std::ranges::equal(want, f.want)) {
@@ -985,13 +1005,8 @@ void Sync(QuoteHub &mk, Side s, std::span<const uint32_t> want, Feed &f) {
     if (s == kStock)
       mk.quote->select(f.want.empty() ? ~0u : f.want.front());
   }
-  if (!f.data || f.data->list.empty())
-    return;
-  const uint64_t ver = mk.quote->status().ver[s];
-  if (ver == f.ver)
-    return;
-  f.ver = ver;
-  f.today = mk.quote->today(s, f.data->keys);
+  if (f.data && !f.data->list.empty())
+    Sync(*mk.quote, s, f.data->keys, f.today);
 }
 
 void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &title) {
@@ -1010,13 +1025,14 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
     ImGui::TextWrapped(f.want.empty() ? "点表格中的一行查看行情." : "读取历史…");
     return;
   }
-  assert(f.today && f.today->size() == 1);
+  assert(f.today.day && f.today.day->size() == 1);
   const uint32_t id = f.data->keys.front();
   const Kline &kl = *f.data->list.front();
-  const Day &today = f.today->front();
+  const Day &today = f.today.day->front();
+  const Source src{&kl, &today};
   Series is, ds;
-  intraday(kl, today, day_axis(mk.quote->trading(), qs.date, kIntraDays[st.chart.intraday]), false, is);
-  daily(kl, today, false, ds);
+  intraday(src, day_axis(mk.quote->trading(), qs.date, kIntraDays[st.chart.intraday]), false, is);
+  daily(src, false, ds);
 
   if (!f.want.empty() && f.want.front() != id)
     std::snprintf(note, sizeof(note), "读取 %s 历史…", asset_axis().code(f.want.front()).c_str());
@@ -1024,13 +1040,13 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
     std::snprintf(note, sizeof(note), "不在新浪全市场");
   else
     gap_note(kl, today, note, sizeof(note));
-  header(title.c_str(), kl, today, note);
+  header(title.c_str(), src, note);
   fill_chip(qs);
   charts("stock", is, ds, static_cast<uint64_t>(f.shown) << 32, st.chart, mk.quote->book(id), qs.date);
 }
 
-int RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks, int hot) {
-  Feed &f = st.feed;
+int RenderIntraday(const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot) {
+  Feed &f = st.baskets;
   if (!basket_ready(mk, f))
     return -1;
   const QuoteStatus qs = mk.quote->status();
@@ -1044,15 +1060,13 @@ int RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector<
   bool gap = false;
   for (size_t i = 0; i < picks.size(); ++i) {
     const OverlayPick &p = picks[i];
-    const Source src = source_of(st, p);
+    const Source src = SourceOf(st, p.ref);
     if (!src.kl)
       continue;
-    const Kline &kl = *src.kl;
-    const Day &today = *src.today;
-    if (!note[0] && p.side == kBasket)
-      gap = basket_note(d, kl, today, qs, note, sizeof(note));
+    if (!note[0] && p.ref.is(kBasket))
+      gap = basket_note(d, *src.kl, *src.today, qs, note, sizeof(note));
     Series s;
-    intraday(kl, today, days, p.side == kBasket, s);
+    intraday(src, days, p.ref.is(kBasket), s);
     if (s.bars.empty() || !(s.bars.front().ref > 0))
       continue;
     const double base = s.bars.front().ref;
@@ -1075,7 +1089,7 @@ int RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector<
     for (const Candle &c : s.bars)
       l.y.push_back(pct(c.close));
   }
-  ImGui::PushID("basket");
+  ImGui::PushID("intraday");
   int near = -1;
   const ImVec2 corner = plot_overlay(ls, days, avail, "%", hot, near);
   overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
@@ -1085,8 +1099,8 @@ int RenderBasketIntraday(const QuoteHub &mk, BasketState &st, const std::vector<
   return near;
 }
 
-int RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<OverlayPick> &picks, int hot) {
-  Feed &f = st.feed;
+int RenderFlow(const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot) {
+  Feed &f = st.baskets;
   if (!basket_ready(mk, f))
     return -1;
   const QuoteStatus qs = mk.quote->status();
@@ -1098,21 +1112,19 @@ int RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<Over
   bool gap = false;
   for (size_t i = 0; i < picks.size(); ++i) {
     const OverlayPick &p = picks[i];
-    const Source src = source_of(st, p);
+    const Source src = SourceOf(st, p.ref);
     if (!src.kl)
       continue;
-    const Kline &kl = *src.kl;
-    const Day &today = *src.today;
-    if (!note[0] && p.side == kBasket)
-      gap = basket_note(d, kl, today, qs, note, sizeof(note));
-    const double unit = share ? flow_ref(kl) / 100.0 : 1e8; // y = 累计净流入 / unit
+    if (!note[0] && p.ref.is(kBasket))
+      gap = basket_note(d, *src.kl, *src.today, qs, note, sizeof(note));
+    const double unit = share ? flow_ref(*src.kl) / 100.0 : 1e8; // y = 累计净流入 / unit
     if (!(unit > 0))
       continue;
     Overlay l;
     l.pick = i, l.name = p.name, l.col = ImGui::ColorConvertU32ToFloat4(p.col);
     double net = 0;
     for (size_t k = 0; k < days.size(); ++k)
-      if (const Bars *b = bars_on(kl, today, days[k]))
+      if (const Bars *b = bars_on(src, days[k]))
         for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
           if (flow_slot(*b, j, st.flow_ends)) {
             net += b->net[j];
@@ -1145,7 +1157,7 @@ int RenderBasketFlow(const QuoteHub &mk, BasketState &st, const std::vector<Over
   return near;
 }
 
-std::vector<misc::Ymd> FlowDays(const QuoteHub &mk, const BasketState &st) {
+std::vector<misc::Ymd> FlowDays(const QuoteHub &mk, const OverlayState &st) {
   return day_axis(mk.quote->trading(), mk.quote->status().date, kIntraDays[st.flow]);
 }
 
@@ -1157,15 +1169,11 @@ Flow FlowOf(const Bars &b, bool ends) {
   return o;
 }
 
-std::vector<Flow> FlowOf(const BasketState &st, size_t k, std::span<const misc::Ymd> days) {
-  const Feed &f = st.feed;
-  if (!f.data || k >= f.data->list.size())
-    return {};
-  assert(f.today && f.today->size() == f.data->list.size());
+std::vector<Flow> FlowOf(const Source &src, std::span<const misc::Ymd> days, bool ends) {
   std::vector<Flow> o(days.size());
   for (size_t i = 0; i < days.size(); ++i)
-    if (const Bars *b = bars_on(*f.data->list[k], (*f.today)[k], days[i]))
-      o[i] = FlowOf(*b, st.flow_ends);
+    if (const Bars *b = bars_on(src, days[i]))
+      o[i] = FlowOf(*b, ends);
   return o;
 }
 
@@ -1185,19 +1193,15 @@ Recent RecentOf(std::span<const Mark> m) {
   return r;
 }
 
-Recent RecentOf(const Feed &f, size_t k) {
-  if (!f.data || k >= f.data->list.size())
-    return {};
-  assert(f.today && f.today->size() == f.data->list.size());
-  const Kline &kl = *f.data->list[k];
-  const Day &today = (*f.today)[k];
+Recent RecentOf(const Source &src) {
   Mark m[kMarks];
   size_t n = 0;
   const auto put = [&](const Candle &c) { m[n++] = {c.close, c.ref}; };
-  if (joins(kl, today))
-    put(today.candle);
-  for (auto it = kl.daily.rbegin(); it != kl.daily.rend() && n < kMarks; ++it)
-    put(*it);
+  if (joined(src))
+    put(src.today->candle);
+  if (src.kl)
+    for (auto it = src.kl->daily.rbegin(); it != src.kl->daily.rend() && n < kMarks; ++it)
+      put(*it);
   return RecentOf({m, n});
 }
 

@@ -122,7 +122,7 @@ void RenderLinesCta(CtaService &svc, LinesUIState &ui, const char *name, const I
 // ---- 右表 (LinesSheet.cpp) ----
 // 页 page 的右图例 (类别条 + 表): NAV / VAL / FLOW / CTA; flow_days = FLOW 日轴 (其余页不看); infos = 成分行的近况 / 当日
 void RenderLinesSheet(LinesUIState &ui, int page, const std::vector<misc::Ymd> &flow_days, const StockInfos &infos);
-// 成分行在新浪当日的根 (ui.cons): 成分集 / 行情日 · 快照时刻变了才重取
+// 成分行的当日 (ui.overlay.cons, Market::Today): 成分集 / 个股当日版本变了才重取
 void SyncLinesCons(LinesUIState &ui, const Quote::QuoteService &q);
 
 } // namespace GUI::Market

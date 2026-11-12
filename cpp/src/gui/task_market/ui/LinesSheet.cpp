@@ -90,14 +90,14 @@ void draw_cell(const NumCell &c, float col_w) {
 // 页 page 点行: 选中 ↔ 取消 (单选 = 换掉原选中); 多选里个股满 StockHistory::kKeep 只不再加, 刚选中 → 其线在主图例里回默认显隐 (理想列显, 可成交列隐)
 void pick(LinesUIState &ui, int page, const LinesRow &r) {
   const int m = kPageDefs[page].pick;
-  std::map<std::string, LinesQuote> &s = ui.pick.rows[m];
+  std::map<std::string, Quote::Ref> &s = ui.pick.rows[m];
   if (s.erase(r.id))
     return;
   if (m == kPickOne)
     s.clear();
-  else if (r.q.is(Quote::kStock) && ui.pick.stocks(m).size() >= Quote::StockHistory::kKeep)
+  else if (r.ref.is(Quote::kStock) && ui.pick.stocks(m).size() >= Quote::StockHistory::kKeep)
     return;
-  s.emplace(r.id, r.q);
+  s.emplace(r.id, r.ref);
   if (m == kPickMany)
     for (int l = 0; l < kPairLines; ++l)
       ui.reveal.insert(line_id(r, l));
@@ -126,10 +126,7 @@ void sort_rows(std::vector<size_t> &order, const Name &name, const Num &num) {
       const int r = name(a, b);
       return desc ? r > 0 : r < 0;
     }
-    const double x = num(a, c), y = num(b, c);
-    if (!std::isfinite(x) || !std::isfinite(y))
-      return std::isfinite(x) && !std::isfinite(y);
-    return desc ? x > y : x < y;
+    return sort_less(num(a, c), num(b, c), desc);
   });
 }
 // 名格悬停 (星列之后; 行 Selectable 跨全列, 只认本格) → 行的悬停
@@ -264,7 +261,7 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesUIState &ui, 
       rd.item(key(t), false);
       if (rd.tapped(key(t)))
         click(t);
-    } else if (h.q.is(Quote::kBasket)) {
+    } else if (h.ref.is(Quote::kBasket)) {
       const bool open = t == pin;
       ImGui::SetNextItemOpen(open, ImGuiCond_Always);
       ImGui::TreeNodeEx(label.c_str(), kNode | ImGuiTreeNodeFlags_OpenOnArrow | (on(t) ? ImGuiTreeNodeFlags_Selected : 0));
@@ -365,43 +362,38 @@ std::string yi_text(double y, bool sign = false) {
                   pm, a);
   return s;
 }
-// 表行的源: 位置 / 行 + 行情键的源 (基本面档案: 个股才有, 无 → nullptr; 当日 Day: 篮子 = 篮子 Feed 的该线 / 个股 = 新浪当日,
-// 未取 / 当日无成交 → nullptr)
+// 表行的源: 位置 / 行 + 基本面档案 (个股才有, 无 → nullptr) + 行情源 (Market::SourceOf, 与叠加图同一查法; 无行情键 = 空)
+// + 当日 (源的当日有成交才有, 否则 nullptr)
 struct RowSrc {
   LinesAt at;
   const LinesRow *row = nullptr;
   const StockInfo *info = nullptr;
+  Market::Source src;
   const Quote::Day *day = nullptr;
 };
 RowSrc src_of(const LinesUIState &ui, const StockInfos &infos, const LinesDerived &d, const LinesAt &a) {
   RowSrc x{a, &d.row(a)};
-  const LinesQuote &q = x.row->q;
-  const Quote::Day *t = nullptr;
-  if (const Market::Feed &f = ui.basket.feed; q.is(Quote::kBasket) && f.data && f.today) {
-    assert(f.today->size() == f.data->list.size());
-    t = &(*f.today)[q.key];
-  } else if (q.is(Quote::kStock)) {
-    if (q.key < infos.size() && infos[q.key].known)
-      x.info = &infos[q.key];
-    const auto it = std::ranges::lower_bound(ui.cons.ids, q.key);
-    if (ui.cons.day && it != ui.cons.ids.end() && *it == q.key)
-      t = &(*ui.cons.day)[static_cast<size_t>(it - ui.cons.ids.begin())];
-  }
-  if (t && t->candle.date != 0)
-    x.day = t;
+  const Quote::Ref q = x.row->ref;
+  if (!q.ok())
+    return x;
+  if (q.is(Quote::kStock) && q.key < infos.size() && infos[q.key].known)
+    x.info = &infos[q.key];
+  x.src = Market::SourceOf(ui.overlay, q);
+  if (x.src.today && x.src.today->candle.date != 0)
+    x.day = x.src.today;
   return x;
 }
 // 篮子行的当日 (SheetToday): 只数 / 总市值 = Tape::members / cap (加权线的总市值当日接上 × 当日涨跌 = 成员总市值的当日变化; 等权线停在末日收盘);
 // 成交额 / 流入 = 当日 Day (不看接续); 换手 = 成交额 / 总市值
 SheetToday basket_today(const Market::Feed &f, const RowSrc &x) {
   SheetToday o;
-  if (!f.data || f.data->members.empty())
+  if (!x.src.kl || f.data->members.empty())
     return o;
-  const size_t l = x.row->q.key;
-  assert(f.data->keys[l] == l && f.today && f.today->size() == f.data->list.size());
+  const size_t l = x.row->ref.key;
+  assert(f.data->keys[l] == l && x.src.kl == f.data->list[l].get());
   double w = f.data->cap[l];
-  if (const Quote::Day &t = (*f.today)[l]; basket_table().weight(l) == pool::kWeightCap && Quote::joins(*f.data->list[l], t))
-    w *= t.candle.close / t.candle.ref;
+  if (basket_table().weight(l) == pool::kWeightCap && x.day && Quote::joins(*x.src.kl, *x.day))
+    w *= x.day->candle.close / x.day->candle.ref;
   o.v[kTodayMembers] = f.data->members[l];
   o.v[kTodayCap] = w > 0 ? w : kNaN;
   if (x.day && x.day->candle.amount > 0)
@@ -424,15 +416,15 @@ SheetToday stock_today(const RowSrc &x) {
 }
 // 表行的当日: 按行情键 (篮子 = 篮子 Feed 的该线 + 当日; 个股 = 档案 + 当日; 无 = 全不可算)
 SheetToday today_of(const Market::Feed &f, const RowSrc &x) {
-  const LinesQuote &q = x.row->q;
+  const Quote::Ref q = x.row->ref;
   return q.is(Quote::kBasket) ? basket_today(f, x) : q.is(Quote::kStock) ? stock_today(x)
                                                                          : SheetToday{};
 }
-// 表行的近况 (Market::RecentOf 同一核): 篮子 = Market 篮子历史同一份; 个股 = ASSET 个股同一份 (无档案 → 不可算); 无行情键 = 可成交线日末
-Market::Recent recent_row(const Market::Feed &f, const RowSrc &x) {
-  const LinesQuote &q = x.row->q;
+// 表行的近况 (Market::RecentOf 同一核): 篮子 = 行情源 (Market 篮子历史同一份); 个股 = ASSET 个股同一份 (无档案 → 不可算); 无行情键 = 可成交线日末
+Market::Recent recent_row(const RowSrc &x) {
+  const Quote::Ref q = x.row->ref;
   if (q.is(Quote::kBasket))
-    return Market::RecentOf(f, q.key);
+    return Market::RecentOf(x.src);
   if (q.is(Quote::kStock))
     return !x.info ? Market::Recent{} : x.day ? Market::RecentOf(*x.info, x.day->candle, x.day->prev)
                                               : Market::RecentOf(*x.info, Quote::Candle{}, 0);
@@ -567,9 +559,10 @@ std::vector<SheetCol> cols_of(const SheetCol &name, const std::vector<Seg> &segs
 // (成分组前 n_cons 行); 逐表行: 源 → 当日 + 各段依次填格
 const LinesSheet &sheet_of(LinesUIState &ui, const StockInfos &infos, const LinesDerived &d, int page, int g, const std::vector<Seg> &segs,
                            std::vector<misc::Ymd> days, bool ends) {
-  const Market::Feed &f = ui.basket.feed;
-  const LinesSheetKey k{g, ui.view.gen, f.data, f.today, ui.cons.day, infos.size(), std::move(days), ends, ImGui::GetFontSize(),
-                        ImGui::GetColorU32(ImGuiCol_Text)};
+  const Market::OverlayState &o = ui.overlay;
+  const Market::Feed &f = o.baskets;
+  const LinesSheetKey k{g, ui.view.gen, f.data, o.stocks.data, f.today.day, o.stocks.today.day, o.cons.day, infos.size(), std::move(days), ends,
+                        ImGui::GetFontSize(), ImGui::GetColorU32(ImGuiCol_Text)};
   ui.sheet[page].update(k, [&](LinesSheet &ps) {
     ps.nc = cols_in(segs);
     ps.R = d.rows[g].size();
@@ -660,7 +653,7 @@ Seg today_seg(int n = kTodays) {
           [n](const RowSrc &x, size_t t, LinesSheet &p, SheetCell *out) {
             SheetCell c[kTodays];
             today_cells(p.today[t], c);
-            if (x.row->q.is(Quote::kStock))
+            if (x.row->ref.is(Quote::kStock))
               c[kTodayMembers] = board_cell(x);
             std::copy_n(c, n, out);
           },
@@ -719,9 +712,9 @@ const SheetCol kNavName = {"名", "名 = 行名\n"
                                  "• 适用: 全部组; 成分行只指数 / 行业 / 概念 / 自选 (篮子行展开)"};
 void recent_cells(const Market::Recent &x, SheetCell *out) { out[kRecentChg] = signed_cell(x.chg), out[kRecentMa5] = signed_cell(x.ma5); }
 // 段: 近况 (recent_row)
-Seg recent_seg(const Market::Feed &f) {
+Seg recent_seg() {
   return {{std::begin(kRecentCols), std::end(kRecentCols)},
-          [&f](const RowSrc &x, size_t, LinesSheet &, SheetCell *out) { recent_cells(recent_row(f, x), out); },
+          [](const RowSrc &x, size_t, LinesSheet &, SheetCell *out) { recent_cells(recent_row(x), out); },
           {}};
 }
 // 段: NAV 数值列 (LinesView::num) 里的 ks 列 (NAV / VAL = 全部, CTA = 理想 / 夏普)
@@ -763,7 +756,7 @@ void legend_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, con
         "  成分行 = 后复权收盘 (两条同一条), 与组内行同一套: 点 = 选中 (主图 + 日内栏 / FLOW 图; 至多 64 只), 收起后选中的照画\n"
         "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)\n"
         "• 原序下子池 / 自选行左键 / 中键拖动调序 (子池 = 改池表序 pools.json, 即进程内重启; 全A 两行钉首)");
-  table(ui, infos, d, kPageNav, kNavName, {recent_seg(ui.basket.feed), today_seg(), num_seg(v)});
+  table(ui, infos, d, kPageNav, kNavName, {recent_seg(), today_seg(), num_seg(v)});
 }
 
 // ---- VAL 右图例: 滚动窗长 + 类别条 (指数 / 行业 / 概念 / 自选, 一次看一组) + 篮子单选表格; 列 = 中文名 (悬停看名) | 只数 | 总市值 | 可成交 | 理想 | 夏普 | 年换手 | 各口;
@@ -845,23 +838,23 @@ const std::string kFlowDayTip = " = 该日资金流入占成交额\n"
                                 "• 数据: 当日 = 新浪快照合成 (实时); 历史日 = all.bar 库 L_1min (其后至基本面末日 = bar1m) 合成; 成分之和不加权;\n"
                                 "  首根 09:31 (开盘集合竞价) / 末根 15:00 (收盘集合竞价) 按图左上角 开收盘 开关计入 (默认不计)\n"
                                 "• 显示: 百分比两位, 按正负着色; 悬停格看净流入 / 成交额; 该日无分钟根 → -\n"
-                                "• 适用: 指数 / 行业 / 概念 / 自选; 成分行只当日 (历史日 -, 看左图叠加); 随档位 (日内 / 2日 … 5日)";
+                                "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行 (选中的 = 个股历史各日齐; 其余只当日, 历史日 -); 随档位 (日内 / 2日 … 5日)";
 const SheetCol kFlowSumCols[2] = {
     {"净流入", "净流入 = 档内合计净流入\n"
                "• 算法: 日轴各日净流入之和 (各日同上列)\n"
                "• 数据: 同各日列\n"
                "• 显示: 亿 / 万亿带符号, 按正负着色; 悬停格看成交额\n"
-               "• 适用: 指数 / 行业 / 概念 / 自选; 成分行只档位 = 日内; 随档位"},
+               "• 适用: 指数 / 行业 / 概念 / 自选; 成分行同各日列 (未选中的只档位 = 日内); 随档位"},
     {"占比", "占比 = 档内合计净流入占合计成交额\n"
              "• 算法: Σ 各日净流入 / Σ 各日成交额 (左图占比的分母是近 5 日日均成交额, 两者不同)\n"
              "• 数据: 同各日列\n"
              "• 显示: 百分比两位, 按正负着色; 悬停格看净流入 / 成交额\n"
-             "• 适用: 指数 / 行业 / 概念 / 自选; 成分行只档位 = 日内; 随档位"},
+             "• 适用: 指数 / 行业 / 概念 / 自选; 成分行同各日列 (未选中的只档位 = 日内); 随档位"},
 };
 // 一段的净流入占成交额 (无根 → NaN)
 double flow_pct(const Market::Flow &x) { return x.amount > 0 ? x.net / x.amount : kNaN; }
-// 段: 日轴各日净流入占比 + 档内合计两列 (按行情键: 篮子 = Market 篮子历史同一份; 个股只当日); 各行流水记进 p.flow[行] (末项 = 合计; 悬停看金额)
-Seg flow_seg(const Market::BasketState &bs, const std::vector<misc::Ymd> &days) {
+// 段: 日轴各日净流入占比 + 档内合计两列 (行情源 Market::FlowOf, 篮子 / 个股同一条); 各行流水记进 p.flow[行] (末项 = 合计; 悬停看金额)
+Seg flow_seg(bool ends, const std::vector<misc::Ymd> &days) {
   const size_t nd = days.size();
   Seg s;
   for (const misc::Ymd day : days) {
@@ -872,7 +865,7 @@ Seg flow_seg(const Market::BasketState &bs, const std::vector<misc::Ymd> &days) 
   s.cols.insert(s.cols.end(), std::begin(kFlowSumCols), std::end(kFlowSumCols));
   // 行 row 的各日资金流 x (日轴同序; whole = 各日齐全才有合计) → p.flow[row] + 格
   const auto fill = [nd](std::vector<Market::Flow> x, bool whole, size_t row, LinesSheet &p, SheetCell *out) {
-    x.resize(nd);
+    assert(x.size() == nd);
     Market::Flow sum;
     if (whole)
       for (const Market::Flow &y : x)
@@ -885,18 +878,11 @@ Seg flow_seg(const Market::BasketState &bs, const std::vector<misc::Ymd> &days) 
     out[nd + 1] = signed_cell(flow_pct(sum));
     p.flow[row] = std::move(x);
   };
-  s.cell = [&bs, &days, fill, nd](const RowSrc &x, size_t t, LinesSheet &p, SheetCell *out) {
-    const LinesQuote &q = x.row->q;
-    assert(q.ok() && "FLOW 表行都有行情键");
-    if (q.is(Quote::kBasket))
-      return fill(Market::FlowOf(bs, q.key, days), true, t, p, out);
-    std::vector<Market::Flow> fl(nd);
-    bool whole = true;
-    for (size_t k = 0; k < nd; ++k)
-      if (x.day && x.day->candle.date == days[k])
-        fl[k] = Market::FlowOf(x.day->bars, bs.flow_ends);
-      else
-        whole = false;
+  // 有历史 → 无根的日即无成交 (合计照算); 只当日 → 各日都有根才算合计
+  s.cell = [ends, &days, fill](const RowSrc &x, size_t t, LinesSheet &p, SheetCell *out) {
+    assert(x.row->ref.ok() && "FLOW 表行都有行情键");
+    std::vector<Market::Flow> fl = Market::FlowOf(x.src, days, ends);
+    const bool whole = x.src.kl || std::ranges::all_of(fl, [](const Market::Flow &y) { return y.amount > 0; });
     fill(std::move(fl), whole, t, p, out);
   };
   s.tip = [nd](const LinesSheet &p, size_t row, int k) {
@@ -915,10 +901,10 @@ void legend_flow(LinesUIState &ui, const LinesDerived &d, const std::vector<misc
         "• 指数 = 各子池 (全A.等 / 全A.加 起头); 行业 = 申万一级; 概念 = 东财题材概念 (全A 内切)\n"
         "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
         "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |当日资金流入| 筛本组的行, 已画 / 展开的行恒列\n"
-        "• 行名前 ▸ = 展开成分股 (至多一行, 各页同一份; 该行钉在表头下): 资金流只当日; 点成分行 = 选中, 左图画它 (个股历史 + 新浪当日, 跨日接续)\n"
+        "• 行名前 ▸ = 展开成分股 (至多一行, 各页同一份; 该行钉在表头下): 点成分行 = 选中, 左图画它 (个股历史 + 新浪当日, 跨日接续), 表里各日随之齐; 未选中的资金流只当日\n"
         "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)\n"
         "• 原序下子池 / 自选行左键 / 中键拖动调序 (子池 = 改池表序 pools.json, 即进程内重启; 全A 两行钉首)");
-  table(ui, infos, d, kPageFlow, kFlowNameCol, {today_seg(), flow_seg(ui.basket, days)}, days, ui.basket.flow_ends);
+  table(ui, infos, d, kPageFlow, kFlowNameCol, {today_seg(), flow_seg(ui.overlay.flow_ends, days)}, days, ui.overlay.flow_ends);
 }
 
 // ---- CTA 右图例: 类别条 (指数 / 行业 / 概念 / 自选) + 过滤条; 表 = 该组一行一篮子, 点行 = 选为回测标的 (与 VAL 同一份单选). 列 = 中文名 | 理想 | 夏普 (同 NAV) ----
@@ -961,15 +947,9 @@ void RenderLinesSheet(LinesUIState &ui, int page, const std::vector<misc::Ymd> &
 void SyncLinesCons(LinesUIState &ui, const Quote::QuoteService &q) {
   std::vector<uint32_t> ids;
   for (const LinesRow &r : ui.der.val.rows[kGroupKid])
-    ids.push_back(r.q.key);
+    ids.push_back(r.ref.key);
   std::ranges::sort(ids);
-  const Quote::QuoteStatus st = q.status();
-  const int64_t at = static_cast<int64_t>(st.date) * 86400 + st.sec;
-  if (ids == ui.cons.ids && at == ui.cons.at && (ui.cons.day || ids.empty()))
-    return;
-  ui.cons.day = ids.empty() ? nullptr : q.today(Quote::kStock, ids);
-  ui.cons.ids = std::move(ids);
-  ui.cons.at = at;
+  Sync(q, Quote::kStock, ids, ui.overlay.cons);
 }
 
 } // namespace GUI::Market

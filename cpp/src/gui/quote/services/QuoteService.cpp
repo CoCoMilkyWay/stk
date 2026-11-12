@@ -146,7 +146,7 @@ QuoteStatus QuoteService::status() const {
   std::lock_guard<std::mutex> lock(mu_);
   const bool fill = date_ > fund_end_;
   const size_t gaps = fill ? static_cast<size_t>(std::ranges::count_if(tracks_, [](const Track &t) { return t.lo <= t.hi; })) : 0;
-  return {date_, sec_, todo_.size() + inflight_, fetched_, gaps, fill, ver_, bytes_, saved_};
+  return {date_, prev_, sec_, todo_.size() + inflight_, fetched_, gaps, fill, ver_, bytes_, saved_};
 }
 
 void QuoteService::bind(Members m, std::vector<double> level) {
@@ -184,14 +184,15 @@ std::shared_ptr<const std::vector<Day>> QuoteService::today(Side s, std::span<co
   return out;
 }
 
-misc::Ymd QuoteService::candles(std::span<const uint32_t> keys, std::span<Candle> out) const {
-  assert(keys.size() == out.size());
+std::shared_ptr<const std::vector<Candle>> QuoteService::candles(std::span<const uint32_t> keys) const {
+  auto out = std::make_shared<std::vector<Candle>>(keys.size());
   std::lock_guard<std::mutex> lock(mu_);
   for (size_t k = 0; k < keys.size(); ++k) {
     const size_t i = axis_.sub_of(keys[k]);
-    out[k] = i == axis_.size() || !traded(last_[i]) ? Candle{} : Candle{candle_of(last_[i]), date_, last_[i].last_close};
+    if (i != axis_.size() && traded(last_[i]))
+      (*out)[k] = {candle_of(last_[i]), date_, last_[i].last_close};
   }
-  return prev_;
+  return out;
 }
 
 sina::Quote QuoteService::book(uint32_t id) const {
@@ -257,7 +258,10 @@ void QuoteService::fold() {
   assert(r == kDone);
   g.frozen = freeze;
   auto out = std::make_shared<std::vector<Day>>(b->level.size());
-  g.fold->finish(date, prev, b->level, *out);
+  g.fold->finish(date, prev, *out);
+  for (size_t k = 0; k < out->size(); ++k)
+    if (Day &y = (*out)[k]; y.candle.date)
+      rebase(y, b->level[k]);
   std::lock_guard<std::mutex> lock(mu_);
   if (date_ != date || basis_ != b)
     return;

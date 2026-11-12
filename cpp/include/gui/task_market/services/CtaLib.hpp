@@ -1,9 +1,9 @@
 // CtaLib — CTA 页的分钟价格库 (CtaService worker 私有): 两侧 (个股 = 库轴全部个股 / 篮子 = 篮子表全部, 行 = 篮子下标) 一趟过日合成落盘, 之后只补新日
 //   源 = all.bar 特征库: 交易日 D 的成员 / 权 = 选股表 (Quote::members), 源 = Quote::LibDay (基准 = D−1 行前收, D 的日根 + L_1min 分钟根);
-//   一日一件 Quote::Lane (与 BasketHistory 同一份), 两侧共用
+//   库段一趟 Quote::lib_pass (与 BasketHistory 同一趟, 一日一件 Lane), 两侧同出
 //   两侧同一种记录 (一行一日 = 因子 + 分钟价), 有效根 = 价 × 因子:
 //     个股: 价 = 库存原价 (f16, 与库逐位一致), 前收 = D−1 行的前收
-//     篮子: 价 = Lane 的日内点位 (前日收 = 1, f32), 前收 = 1
+//     篮子: 价 = Lane 的日内比 (前日 = 1, f32), 前收 = 1
 //     因子同一条链: 自首个有根日 1 起, 逢前收 ≠ 参考价乘 参考价 / 前收, 参考价 = 末个收盘 (按前收滚动) ⇒ 个股 = 后复权, 篮子 = 点位逐日接续
 //   时间格: 有效根 t = 日下标 · kSlots + 槽, 日下标 = 库落盘日序 (首日只定成员, 无根); 无根 (无成员 / 无成交 / 末个有根的槽之后) 不收
 // 落盘 <库>/cache/cta/ (日主序, 续算只追加; 库全量重算连目录一起删):
@@ -46,8 +46,8 @@ public:
 
   // 价格库补到选股表 pk 的日轴 (= 库已落盘日, 升序, ≥ 2 日); false = 取消 / 判废
   bool sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk);
-  // 标的 (个股 = 全局 id / 篮子 = 篮子下标) 的有效根 (sync 之后); 不在该侧键表 (库轴外) → false
-  bool series(Quote::Side side, uint32_t key, cta::Series &se) const;
+  // 标的的有效根 (sync 之后); 不在该侧键表 (库轴外) → false
+  bool series(Quote::Ref ref, cta::Series &se) const;
 
 private:
   struct Head {

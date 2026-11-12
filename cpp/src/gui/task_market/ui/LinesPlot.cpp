@@ -84,7 +84,7 @@ float row_width(int g) { return kGroupDefs[g].accent ? 2.0f : 1.0f; }
 // 成对线表 [口径][PairLine] (口径 = pair_kind: 0 = 有行情键 (篮子 / 成分), 1 = 因子 / 策略): 主图例口径列 / 线尾小字后缀
 constexpr const char *kPairName[2][kPairLines] = {{"可成交", "理想"}, {"有冲击", "无冲击"}};
 constexpr const char *kPairTag[2][kPairLines] = {{" 可成交", " 理想"}, {"", " 无冲击"}};
-int pair_kind(const LinesRow &r) { return !r.q.ok(); }
+int pair_kind(const LinesRow &r) { return !r.ref.ok(); }
 
 // VAL 线表 (标的线色 = 该行的 row_color): band 填色 / 线 / 线尾刻度的 alpha
 constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f, kBandTagA = 0.9f;
@@ -499,40 +499,25 @@ void hover_contour(const LinesDerived &d, const LinesView &v, const LinesSlice &
       vm.name, vm.inv, m, vm.name, y_line, day / 10000, day / 100 % 100, day % 100, hu * m, px, vm.inv, now, vm.name, y_now, 100.0 * (m / now - 1.0));
 }
 
-// VAL 横向框选: 左键拖出一段 x (竖带示意) → 松手 = 区间改成该段覆盖的日 [d0, d1) (区间条同一份, 主图随之贴合); 双击 = 区间回全段; 图例矩阵上不起
-constexpr float kZoomMin = 4.0f; // 框选生效的最小宽 (px)
+// VAL 横向框选 (XZoom): 左键拖出一段 x → 松手 = 区间改成该段覆盖的日 [d0, d1) (区间条同一份, 主图随之贴合); 双击 = 区间回全段; 图例矩阵上不起
 void zoom_x(LinesRange &rg, int D, const ImRect &legend) {
   assert(D > 0);
-  const ImVec2 mp = ImGui::GetMousePos();
-  if (ImPlot::IsPlotHovered() && !legend.Contains(mp)) {
-    if (ImGui::IsMouseDoubleClicked(0)) {
-      rg.d0 = 0, rg.d1 = D, rg.zooming = false;
+  const double x = plot_mouse_x();
+  if (ImPlot::IsPlotHovered() && !legend.Contains(ImGui::GetMousePos())) {
+    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+      rg.d0 = 0, rg.d1 = D;
+      rg.zoom.cancel();
       return;
     }
-    if (ImGui::IsMouseClicked(0))
-      rg.zooming = true, rg.zoom_x = ImPlot::GetPlotMousePos().x;
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+      rg.zoom.begin(x);
   }
-  if (!rg.zooming)
+  double lo, hi;
+  if (!rg.zoom.track(x, lo, hi))
     return;
-  const ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize();
-  const float p0 = ImPlot::PlotToPixels(ImPlotPoint(rg.zoom_x, 1.0)).x;
-  const float a = std::clamp(std::min(p0, mp.x), pp.x, pp.x + ps.x), b = std::clamp(std::max(p0, mp.x), pp.x, pp.x + ps.x);
-  if (ImGui::IsMouseDown(0)) {
-    ImDrawList &dl = *ImPlot::GetPlotDrawList();
-    ImPlot::PushPlotClipRect();
-    dl.AddRectFilled(ImVec2(a, pp.y), ImVec2(b, pp.y + ps.y), IM_COL32(102, 204, 255, 40));
-    for (const float x : {a, b})
-      dl.AddLine(ImVec2(x, pp.y), ImVec2(x, pp.y + ps.y), IM_COL32(102, 204, 255, 160));
-    ImPlot::PopPlotClipRect();
-    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-    return;
-  }
-  rg.zooming = false;
-  if (b - a < kZoomMin)
-    return;
-  const auto day = [&](float px) { return static_cast<int>(std::floor(ImPlot::PixelsToPlot(px, pp.y).x / static_cast<double>(kDayW))); };
-  rg.d0 = std::clamp(day(a), 0, D - 1);
-  rg.d1 = std::clamp(day(b) + 1, rg.d0 + 1, D);
+  const auto day = [](double v) { return static_cast<int>(std::floor(v / static_cast<double>(kDayW))); };
+  rg.d0 = std::clamp(day(lo), 0, D - 1);
+  rg.d1 = std::clamp(day(hi) + 1, rg.d0 + 1, D);
 }
 
 // ---- VAL 主图: 标的各口滚动 band (填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)

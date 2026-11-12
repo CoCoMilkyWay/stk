@@ -8,9 +8,10 @@
 //               分钟根 = 末 kMinuteDays 个落盘日的 L_1min, 按行 row_slot 并根, 与个股读 bar1m 同一路)
 //   补日  成员 = 库末日之后冻结 (池 / 行业 / 股本), 逐日过 drift (随价漂移, 逢换源回目标权)
 //         源 = FundDay (日根 / 基准 = bar1d open … close / amount / pre_close, 分钟根 = bar1m)
-// 点位自库首个落盘日 kBase 起逐日接续 (按日序串行); 各日文件互不相干 ⇒ 库段日根行每批 2 × 线程数日在常驻线程池上一日一任务并行读.
+// 库段 = BasketRow lib_pass (与 CtaLib 的价格库同一趟): 各日的合成互不相干 (前日 = 1), 每批线程数日在常驻线程池上一日一任务;
+//   点位自库首个落盘日 kBase 起按日序 rebase 接续 (补日段同一步).
 // 窗: 只留末 kDailyDays 个落盘日的日根 / 末 kMinuteDays 个落盘日的分钟根 (按日期截, 不按根数).
-// 续算: 全表 Book 常驻 worker, 落盘 <库>/cache/baskets.bin (头 = 库 A 轴 + 篮子表指纹 + 篮子数 + 根布局; 随库清库而没).
+// 续算: 全表 Book 常驻 worker, 落盘 <库>/cache/baskets.bin (snap_read / snap_write; 头 = 库 A 轴 + 篮子表指纹 + 篮子数 + 根布局; 随库清库而没).
 //   Book 的已合成日是选股表日轴的前缀 (pool::extends) 且头对得上 → 只合成其后的新日 (重读其末日的行取基准), 否则从库首日重合成;
 //   续算 ≡ 全量 (逐日同一份 Lane, 窗按日期截). 合成了新日才落盘.
 // 补日段 (库末日之后至基本面 bar1d / bar1m 末日) 不落盘, 库末日 / 补日 / 点位不变即沿用.

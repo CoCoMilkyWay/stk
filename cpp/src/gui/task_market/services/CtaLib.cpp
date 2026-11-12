@@ -11,10 +11,7 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
-#include <memory>
 #include <numeric>
-#include <span>
-#include <tuple>
 #include <type_traits>
 
 namespace GUI::Market {
@@ -44,14 +41,6 @@ struct Rec {
 template <Side S>
 size_t bytes(size_t N, size_t days) { return days * N * sizeof(Rec<S>); }
 
-// 一侧一日的合成: 记录 (因子按日序补) + 前收 / 收盘
-template <Side S>
-struct Out {
-  std::vector<Rec<S>> rec;      // [N]
-  std::vector<float> pre, last; // [N] D 的前收 / 收盘 (0 = 当日无根)
-};
-using DayOut = std::tuple<Out<kStock>, Out<kBasket>>; // [侧]
-
 // 两侧逐个: f.template operator()<侧>()
 template <class F>
 void each_side(F &&f) {
@@ -72,6 +61,20 @@ void put(Rec<S> &r, const Quote::Bars &b) {
       p[CtaLib::kHigh] = static_cast<Px<S>>(c.high), p[CtaLib::kLow] = static_cast<Px<S>>(c.low), p[CtaLib::kClose] = static_cast<Px<S>>(c.close);
     }
 }
+
+// 一侧一日的合成: 记录 (因子按日序补) + 收盘
+template <Side S>
+struct Out {
+  explicit Out(size_t N) : rec(N), last(N) {}
+  std::vector<Rec<S>> rec; // [N]
+  std::vector<float> last; // [N] D 的收盘 (0 = 当日无根)
+  // 第 r 行 ← 一日: c = 收盘 (0 = 当日无根), b = 分钟根 (c > 0 必给)
+  void set(size_t r, float c, const Quote::Bars *b) {
+    rec[r] = {}, last[r] = c;
+    if (c > 0)
+      put(rec[r], *b);
+  }
+};
 
 // 一根 (高 低 收) × 因子 f → 有效根: 收 ≤ 0 / NaN 不收; 高 / 低缺 → 收, 且包住收
 template <class T>
@@ -102,17 +105,6 @@ void load(const disk::Key &lib, size_t N, size_t D, size_t row, cta::Series &se)
   }
 }
 
-// 一个线程的合成件 (逐日复用): 一日合成件 + D−1 / D 日根行 + 读件
-struct Work {
-  Work(size_t A, size_t B) : lane(B) {
-    Quote::row_alloc(dc, A);
-    Quote::minute_alloc(mc, A);
-  }
-  Quote::Lane lane;
-  Quote::Row prev, cur;
-  FeatureRead::DayColumns dc, mc; // 日根行 / 分钟的读
-};
-
 } // namespace
 
 template <class Ar>
@@ -125,11 +117,7 @@ void CtaLib::snap(Ar &ar) {
 }
 
 void CtaLib::save_head() {
-  std::vector<std::byte> blob;
-  misc::snap::Save ar(blob);
-  ar(head_);
-  snap(ar);
-  disk::write(disk::LibCtaHead, lib_, {reinterpret_cast<const char *>(blob.data()), blob.size()});
+  Quote::snap_write(disk::LibCtaHead, lib_, head_, [&](auto &ar) { snap(ar); });
 }
 
 bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk) {
@@ -145,15 +133,9 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Pick
   const auto fits = [&] { return head_ == want && keys_ == keys && pool::extends(dates_, dates); };
   if (!fits()) {
     head_ = {}, keys_ = {}, dates_.clear(), link_ = {};
-    if (disk::exists(disk::LibCtaHead, lib_)) {
-      const std::string blob = disk::read(disk::LibCtaHead, lib_);
-      misc::snap::Load ar(std::as_bytes(std::span(blob)));
-      ar(head_);
-      if (head_ == want) {
-        snap(ar);
-        assert(ar.done() && "cta/head.bin: 文件尾有多余字节");
-        assert(link_[kStock].size() == keys_[kStock].size() && link_[kBasket].size() == keys_[kBasket].size() && "cta/head.bin: 链长与键表不符");
-      }
+    if (Quote::snap_read(disk::LibCtaHead, lib_, want, [&](auto &ar) { snap(ar); })) {
+      head_ = want;
+      assert(link_[kStock].size() == keys_[kStock].size() && link_[kBasket].size() == keys_[kBasket].size() && "cta/head.bin: 链长与键表不符");
     }
     bool whole = fits();
     each_side([&]<Side S>() {
@@ -179,91 +161,62 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Pick
   if (dates_.size() == dates.size())
     return true;
 
-  // dates[i] (i ≥ 已合成日数) 逐日: 按线程一日一件 (读 D−1 / D 日根行 + D 的 L_1min, 两侧同出) → 按日序过链落盘, 每批落一次头
+  // 库段一趟 (Quote::lib_pass, 与 BasketHistory 同一趟): 个股的记录在并行段逐只备 (批内第 k 件一份), 篮子的在串行段取 Lane 的;
+  //   按日序过链落盘, 每批落一次头
   Quote::PerSide<std::ofstream> f;
   each_side([&]<Side S>() { f[S].open(disk::path(kFile[S], lib_), std::ios::binary | std::ios::app); });
-  const size_t N = dates.size(), T = static_cast<size_t>(pool_.threads());
-  std::vector<std::unique_ptr<Work>> works;
-  for (size_t t = 0; t < T; ++t)
-    works.push_back(std::make_unique<Work>(NA, NB));
-  std::vector<DayOut> out(T);
-  const std::vector<double> one(NB, 1.0);
-  x_.begin(Phase::Loading, N - dates_.size());
-  for (size_t i0 = dates_.size(); i0 < N; i0 += T) {
-    if (cancel_.load(std::memory_order_relaxed) || rd.stale())
-      break;
-    const size_t n = std::min(T, N - i0);
-    pool_.tasks(static_cast<int>(n), [&](int k, int tid) {
-      Work &w = *works[static_cast<size_t>(tid)];
-      Quote::Lane &L = w.lane;
-      auto &[so, bo] = out[static_cast<size_t>(k)];
-      const size_t i = i0 + static_cast<size_t>(k);
-      const misc::Ymd d = dates[i];
-      Quote::read_row(rd, dates[i - 1], w.dc, w.prev);
-      Quote::read_row(rd, d, w.dc, w.cur);
-      Quote::read_minutes(rd, d, w.mc);
-      Quote::members(pk, lib.axis, d, L.mem);
-      so.rec.assign(NA, {});
-      so.pre.assign(w.prev.pre.begin(), w.prev.pre.end());
-      so.last.assign(NA, 0.f);
-      L.run(Quote::LibDay{d, w.prev, w.cur, &w.mc}, dates[i - 1], one, [&](size_t a, const Quote::Leg &g) {
-        if (g.day && g.bars->has.any()) {
-          so.last[a] = g.day->close;
-          put(so.rec[a], *g.bars);
-        }
-      });
-      bo.rec.assign(NB, {});
-      bo.pre.assign(NB, 1.f);
-      bo.last.assign(NB, 0.f);
-      for (size_t b = 0; b < NB; ++b)
-        if (const Quote::Day &y = L.day[b]; y.candle.date) {
-          bo.last[b] = y.candle.close;
-          put(bo.rec[b], y.bars);
-        }
-    });
-    if (rd.stale())
-      break;
-    for (size_t k = 0; k < n; ++k) {
-      each_side([&]<Side S>() {
-        Out<S> &o = std::get<S>(out[k]);
-        std::vector<Link> &ln = link_[S];
-        for (size_t r = 0; r < o.rec.size(); ++r) {
-          Link &z = ln[r];
-          if (const float p = o.pre[r]; z.ref > 0 && p > 0)
-            z.f *= z.ref / p, z.ref = p;
-          if (o.last[r] > 0) {
-            if (!(z.f > 0))
-              z.f = 1.0;
-            z.ref = o.last[r];
-            o.rec[r].f = z.f;
-          }
-        }
-        f[S].write(reinterpret_cast<const char *>(o.rec.data()), static_cast<std::streamsize>(o.rec.size() * sizeof(Rec<S>)));
-      });
-      dates_.push_back(dates[i0 + k]);
-      x_.publish(1);
+  const size_t T = static_cast<size_t>(pool_.threads());
+  std::vector<Out<kStock>> so(T, Out<kStock>(NA));
+  Out<kBasket> bo(NB);
+  const auto each = [&](size_t k, size_t a, const Quote::Leg &g) {
+    so[k].set(a, g.day && g.bars->has.any() ? g.day->close : 0.f, g.bars);
+  };
+  const auto chain = [&](size_t i, size_t k, Quote::LibWork &w) {
+    for (size_t b = 0; b < NB; ++b) {
+      const Quote::Day &y = w.lane.day[b];
+      bo.set(b, y.candle.date ? y.candle.close : 0.f, &y.bars);
     }
+    each_side([&]<Side S>() {
+      Out<S> &o = [&]() -> Out<S> & { if constexpr (S == kStock) return so[k]; else return bo; }();
+      std::vector<Link> &ln = link_[S];
+      for (size_t r = 0; r < o.rec.size(); ++r) {
+        Link &z = ln[r];
+        if (const float p = S == kStock ? w.prev.pre[r] : 1.f; z.ref > 0 && p > 0)
+          z.f *= z.ref / p, z.ref = p;
+        if (o.last[r] > 0) {
+          if (!(z.f > 0))
+            z.f = 1.0;
+          z.ref = o.last[r];
+          o.rec[r].f = z.f;
+        }
+      }
+      f[S].write(reinterpret_cast<const char *>(o.rec.data()), static_cast<std::streamsize>(o.rec.size() * sizeof(Rec<S>)));
+    });
+    dates_.push_back(dates[i]);
+  };
+  const auto batch = [&] {
     each_side([&]<Side S>() {
       f[S].flush();
       assert(f[S] && "cta/: 写失败");
     });
     save_head();
-  }
-  if (dates_.size() == N)
+  };
+  if (Quote::lib_pass(lib.axis, rd, pk, dates_.size(), dates_.size(), pool_, cancel_, x_, each, chain, batch))
     return true;
   if (rd.stale()) // 库在重算: 下次从头核对
     head_ = {};
   return false;
 }
 
-bool CtaLib::series(Side side, uint32_t key, cta::Series &se) const {
-  const std::vector<uint32_t> &ks = keys_[side];
-  const size_t row = static_cast<size_t>(std::find(ks.begin(), ks.end(), key) - ks.begin());
+bool CtaLib::series(Quote::Ref ref, cta::Series &se) const {
+  assert(ref.ok());
+  const std::vector<uint32_t> &ks = keys_[ref.side];
+  const size_t row = static_cast<size_t>(std::find(ks.begin(), ks.end(), ref.key) - ks.begin());
   if (row == ks.size())
     return false;
   se = {};
   each_side([&]<Side S>() {
-    if (S == side)
+    if (S == ref.side)
       load<S>(lib_, ks.size(), dates_.size(), row, se);
   });
   return true;

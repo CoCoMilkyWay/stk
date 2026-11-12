@@ -1,6 +1,6 @@
 // CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产多空 band 模型的滚动调参全期轨迹 (cta/Trace.hpp)
 //   价格源 = CtaLib (篮子与个股一趟合成落盘, 每次请求先补到库末日); 有效根序列按标的留最近 kKeep 个 (只改设定不重读)
-//   请求 = 标的 + CtaSpec (或 kCtaNone = 只备价格库); 新请求覆盖旧的 (换标的 / 改设定即重算). 进度: Loading = 合成天, Running = 选参日数
+//   请求 = 标的 + CtaSpec (无标的 = 只备价格库); 新请求覆盖旧的 (换标的 / 改设定即重算). 进度: Loading = 合成天, Running = 选参日数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (shared_ptr 拷出即放锁)
 #pragma once
 
@@ -35,19 +35,15 @@ struct CtaSpec {
   bool operator==(const CtaSpec &) const = default;
 };
 
-inline constexpr uint32_t kCtaNone = UINT32_MAX; // 请求的 key: 无标的, 只备价格库
-
 struct CtaRequest {
   uint32_t gen = 0;
-  Quote::Side side = Quote::kBasket;
-  uint32_t key = 0; // 篮子 = 篮子下标, 个股 = 全局 id; kCtaNone = 只备价格库
+  Quote::Ref ref; // 标的; 无 = 只备价格库
   CtaSpec spec;
 };
 
 struct CtaResult {
   uint32_t gen = 0; // = 请求的
-  Quote::Side side = Quote::kBasket;
-  uint32_t key = 0;
+  Quote::Ref ref;
   CtaSpec spec;
   std::string lack;                      // 算不了的原因 (空 = 有轨迹)
   std::vector<misc::Ymd> dates;          // 日轴: 有效根的日下标 = t / kSlots
@@ -75,8 +71,7 @@ private:
 
   // 一个标的的有效根 (库轴 hash + 日轴末日 / 日数对得上才用)
   struct Kept {
-    Quote::Side side;
-    uint32_t key;
+    Quote::Ref ref;
     uint64_t axis;
     misc::Ymd last;
     size_t days;

@@ -31,13 +31,14 @@ Kline &own(std::shared_ptr<Kline> &p) {
   return *p;
 }
 
-// 一日合成的各篮子接到各自的根上 (当日无根的篮子不动): kl(b) = 篮子 b 的 Kline; level [篮子] 推到当日收盘
+// 一日合成的各篮子 (前日 = 1) 接到各自的点位上 (当日无根的篮子不动): kl(b) = 篮子 b 的 Kline; level [篮子] 推到当日收盘
 template <class Kl>
-void append(const std::vector<Day> &day, bool minutes, std::vector<double> &level, Kl &&kl) {
+void append(std::vector<Day> &day, bool minutes, std::vector<double> &level, Kl &&kl) {
   for (size_t b = 0; b < day.size(); ++b) {
-    const Day &y = day[b];
+    Day &y = day[b];
     if (!y.candle.date)
       continue;
+    rebase(y, level[b]);
     Kline &k = kl(b);
     k.daily.push_back(y.candle);
     if (minutes)
@@ -81,15 +82,8 @@ bool BasketHistory::run(HistoryRequest &req) {
   const auto fits = [&](const Book &b) { return b.head == head && pool::extends(b.dates, dates); };
   if (!fits(book_)) {
     book_ = {};
-    if (disk::exists(disk::LibBaskets, lib_key(lib.id))) {
-      const std::string blob = disk::read(disk::LibBaskets, lib_key(lib.id));
-      misc::snap::Load ar(std::as_bytes(std::span(blob)));
-      ar(book_.head);
-      if (book_.head == head) {
-        book_.snap(ar);
-        assert(ar.done() && "baskets.bin: 文件尾有多余字节");
-      }
-    }
+    if (snap_read(disk::LibBaskets, lib_key(lib.id), head, [&](auto &ar) { book_.snap(ar); }))
+      book_.head = head;
     if (!fits(book_)) {
       book_ = {head, {dates.front()}, std::vector<double>(head.baskets, kBase), {}};
       for (uint32_t b = 0; b < head.baskets; ++b)
@@ -106,13 +100,8 @@ bool BasketHistory::run(HistoryRequest &req) {
   }
   if (!fill(lib, mem))
     return false;
-  if (book_.dates.size() > done) {
-    std::vector<std::byte> blob;
-    misc::snap::Save ar(blob);
-    ar(book_.head);
-    book_.snap(ar);
-    disk::write(disk::LibBaskets, lib_key(lib.id), {reinterpret_cast<const char *>(blob.data()), blob.size()});
-  }
+  if (book_.dates.size() > done)
+    snap_write(disk::LibBaskets, lib_key(lib.id), book_.head, [&](auto &ar) { book_.snap(ar); });
 
   const PoolAxis &market = live_.axis();
   std::vector<uint32_t> row(lib.axis.size(), UINT32_MAX); // [库轴] mem 的行
@@ -167,7 +156,7 @@ bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
     const misc::Ymd d = dates[k];
     const std::span<const Candle> row(px.data() + k * A, A);
     bd.load(cat, ids, xs, d);
-    L.run(FundDay{d, row, bd}, k ? dates[k - 1] : from, tail_.level);
+    L.run(FundDay{d, row, bd}, k ? dates[k - 1] : from);
     append(L.day, true, tail_.level, [&](size_t b) -> Kline & { return tail_.list[b]; });
     for (size_t a = 0; a < A; ++a)
       rel[a] = row[a].ref > 0 && row[a].close > 0 ? static_cast<float>(row[a].close / row[a].ref) : 1.f;
@@ -182,45 +171,13 @@ bool BasketHistory::fill(const FeatureLib &lib, Members &mem) {
 
 bool BasketHistory::extend(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk, Members &mem) {
   const std::vector<misc::Ymd> &dates = pk.tape->dates;
-  const size_t A = lib.axis.size(), N = dates.size(), i_lo = book_.dates.size();
-  const size_t T = static_cast<size_t>(pool_.threads()), batch = 2 * T;
-  std::vector<FeatureRead::DayColumns> dc(T); // 按线程
-  for (FeatureRead::DayColumns &c : dc)
-    row_alloc(c, A);
-  FeatureRead::DayColumns mc;
-  minute_alloc(mc, A);
-  Lane L(book_.level.size());
-
-  std::vector<Row> rows(batch + 1); // [0] = 上一批末日, [1 + k] = 本批第 k 日
-  const auto read = [&](size_t i, Row &r, size_t tid) {
-    read_row(rd, dates[i], dc[tid], r);
-    x_.publish(1);
+  const size_t N = dates.size(), i_lo = book_.dates.size();
+  const auto chain = [&](size_t i, size_t, LibWork &w) {
+    append(w.lane.day, w.minutes, book_.level, [&](size_t b) -> Kline & { return own(book_.list[b]); });
+    book_.dates.push_back(dates[i]);
   };
-  x_.begin(Phase::Loading, N - i_lo + 1);
-  read(i_lo - 1, rows[0], 0);
-  for (size_t i0 = i_lo; i0 < N; i0 += batch) {
-    if (cancel_.load(std::memory_order_relaxed) || rd.stale())
-      return false;
-    const size_t n = std::min(batch, N - i0);
-    pool_.tasks(static_cast<int>(n), [&](int k, int tid) { read(i0 + static_cast<size_t>(k), rows[1 + static_cast<size_t>(k)], static_cast<size_t>(tid)); });
-    if (rd.stale())
-      return false;
-    for (size_t k = 0; k < n; ++k) {
-      const size_t i = i0 + k;
-      const misc::Ymd d = dates[i];
-      const bool minutes = i + kMinuteDays >= N;
-      if (minutes) {
-        read_minutes(rd, d, mc);
-        if (rd.stale())
-          return false;
-      }
-      members(pk, lib.axis, d, L.mem);
-      L.run(LibDay{d, rows[k], rows[1 + k], minutes ? &mc : nullptr}, dates[i - 1], book_.level);
-      append(L.day, minutes, book_.level, [&](size_t b) -> Kline & { return own(book_.list[b]); });
-      book_.dates.push_back(d);
-    }
-    std::swap(rows[0], rows[n]);
-  }
+  if (!lib_pass(lib.axis, rd, pk, i_lo, N > kMinuteDays ? N - kMinuteDays : 0, pool_, cancel_, x_, [](size_t, size_t, const Leg &) {}, chain, [] {}))
+    return false;
 
   const misc::Ymd d_lo = dates[N > kDailyDays ? N - kDailyDays : 0], m_lo = dates[N > kMinuteDays ? N - kMinuteDays : 0];
   if (i_lo < N) // 无新日 → 窗与末日不变, 不动 (免得复制发布还持有着的)

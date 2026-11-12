@@ -1,6 +1,6 @@
 #pragma once
 
-// 图表公共件 (ASSET 行情 / Market 净值 / Beta 风格表同一份): 涨跌色, 名次色, 色环, 右表宽, 开关按钮 / 档位按钮条, 线尾小字, 现价十字, 区间条
+// 图表公共件 (ASSET 行情 / Market 净值 / Beta 风格表同一份): 涨跌色, 名次色 + 截面名次 + 表头排序口径, 横向框选, 色环, 右表宽, 开关按钮 / 档位按钮条, 线尾小字, 现价十字, 区间条
 
 #include "imgui.h"
 #include "implot.h"
@@ -11,8 +11,10 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <numbers>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace GUI {
@@ -30,6 +32,32 @@ inline ImVec4 band_col(double u, float a) {
   ImVec4 c(0.f, 0.f, 0.f, a);
   ImGui::ColorConvertHSVtoRGB(0.33f * static_cast<float>(1.0 - u), 0.8f, 0.9f, c.x, c.y, c.z);
   return c;
+}
+
+// 截面名次 (各表的名次底色 / 截面色同一核): n 个值 x(i) 在有限值里排名 → put(i, u), u ∈ [0, 1] (0 = 最好, 即 band_col 的绿端;
+//   并列取中, 只一个 = 0.5); good = +1 → x 高为好, −1 → x 低为好; 非有限的不排 (不 put). 排序一遍 O(n log n)
+template <class X, class Put>
+void rank_by(size_t n, int good, const X &x, const Put &put) {
+  std::vector<std::pair<double, size_t>> v; // (−good · x, i)
+  for (size_t i = 0; i < n; ++i)
+    if (const double y = x(i); std::isfinite(y))
+      v.push_back({-good * y, i});
+  std::sort(v.begin(), v.end());
+  const size_t m = v.size();
+  for (size_t a = 0, b = 0; a < m; a = b) {
+    while (b < m && v[b].first == v[a].first)
+      ++b;
+    const double u = m > 1 ? (static_cast<double>(a) + 0.5 * static_cast<double>(b - a - 1)) / static_cast<double>(m - 1) : 0.5;
+    for (size_t k = a; k < b; ++k)
+      put(v[k].second, u);
+  }
+}
+
+// 表头排序的比较 (各表同一口径): 非有限值恒在末, 其余按 desc 降 / 升
+inline bool sort_less(double x, double y, bool desc) {
+  if (!std::isfinite(x) || !std::isfinite(y))
+    return std::isfinite(x) && !std::isfinite(y);
+  return desc ? x > y : x < y;
 }
 
 // OKLCH (感知均匀: 同 L / C 的色环上两色的感知距离 = OKLab 弦长, 小角度 ∝ 色相差) → sRGB; 分量截到 [0, 1] 只吸收舍入
@@ -156,6 +184,54 @@ inline void draw_now_cross(const NowCross &c, float scale, float right) {
   const float tw = font->CalcTextSizeA(fs, FLT_MAX, 0.f, c.x.c_str()).x + 2 * kCrossPad.x;
   label(c.x, std::clamp(px - tw * 0.5f, pos.x, pos.x + psz.x - tw), bottom - bh);
   ImPlot::PopPlotClipRect();
+}
+
+// 横向框选 (ASSET 行情两图 / VAL 主图 / CTA 净值图同一种): 左键在图上按下 begin(x) 起拖, 拖动中各图 draw(x) 画竖带;
+//   松手 end(x) 落定: 屏上拖过 ≥ kPx 才算, 给出选段 [lo, hi] (轴坐标). x = 鼠标 x 截到图区 (轴坐标), 调用方给
+struct XZoom {
+  static constexpr float kPx = 4.f;                       // 生效的最小拖动 [px]
+  double from = std::numeric_limits<double>::quiet_NaN(); // 起点 x; NaN = 未在框选
+  float from_px = 0;                                      // 起点屏幕 x
+  bool on() const { return !std::isnan(from); }
+  void begin(double x) { from = x, from_px = ImGui::GetMousePos().x; }
+  void cancel() { from = std::numeric_limits<double>::quiet_NaN(); }
+  // 当前图里画 from → x 的竖带 (BeginPlot 之后)
+  void draw(double x) const {
+    assert(on());
+    const ImVec2 pos = ImPlot::GetPlotPos(), sz = ImPlot::GetPlotSize();
+    const float a = ImPlot::PlotToPixels(std::min(from, x), 0.0).x, b = ImPlot::PlotToPixels(std::max(from, x), 0.0).x;
+    ImDrawList *dl = ImPlot::GetPlotDrawList();
+    ImPlot::PushPlotClipRect();
+    dl->AddRectFilled(ImVec2(a, pos.y), ImVec2(b, pos.y + sz.y), IM_COL32(86, 156, 214, 40));
+    for (const float e : {a, b})
+      dl->AddLine(ImVec2(e, pos.y), ImVec2(e, pos.y + sz.y), IM_COL32(86, 156, 214, 160));
+    ImPlot::PopPlotClipRect();
+  }
+  // 框选中每帧调 (图之后亦可: 光标盖掉 ImPlot 的); 左键松开 → 结束, 拖够了返回 true (lo ≤ hi)
+  bool end(double x, double &lo, double &hi) {
+    if (!on())
+      return false;
+    if (!ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+      ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+      return false;
+    }
+    const bool ok = std::abs(ImGui::GetMousePos().x - from_px) >= kPx;
+    lo = std::min(from, x), hi = std::max(from, x);
+    cancel();
+    return ok;
+  }
+  // 单图: draw + end
+  bool track(double x, double &lo, double &hi) {
+    if (!on())
+      return false;
+    draw(x);
+    return end(x, lo, hi);
+  }
+};
+// 当前图里鼠标 x 截到 x 视野 (轴坐标; XZoom 的 x)
+inline double plot_mouse_x() {
+  const ImPlotRange r = ImPlot::GetPlotLimits().X;
+  return std::clamp(ImPlot::GetPlotMousePos().x, r.Min, r.Max);
 }
 
 // 区间条的日段 [d0, d1) (日轴下标) + 拖动态

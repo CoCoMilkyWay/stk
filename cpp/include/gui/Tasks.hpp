@@ -35,9 +35,11 @@ ImVec4 StatusColor(TaskStatus::Kind kind);
 //   PhaseKind:      Idle / Cancelled 灰 / 忙 紫 / Done 绿
 //   ProgressStatus: 行标签 = 阶段名 (+ 有总量时百分比); Idle 无标签. 带业务结论的 Done (broken / failed) 由调用方先判
 //   TextPhase:      tab 内一段彩色阶段名
+//   TextProgress:   同 TextPhase, 忙且有总量时接 done/total
 TaskStatus::Kind PhaseKind(Phase p);
 TaskStatus ProgressStatus(const Progress &p);
 void TextPhase(Phase p);
+void TextProgress(const Progress &p);
 
 // ============================================================================
 // 任务节点: 左栏一行 (tabs 空 = 任务本身是叶子) 或一个可展开父节点 (tabs = 子叶子).

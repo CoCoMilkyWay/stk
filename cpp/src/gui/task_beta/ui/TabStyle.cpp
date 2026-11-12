@@ -193,16 +193,8 @@ void derive(StyleUIState &s, const StyleResult &r) {
         s.slots[p] = std::max(s.slots[p], ImGui::CalcTextSize(ps[p].cn.c_str()).x / ImGui::GetFontSize());
     }
     s.ranks.assign(n * kStyleCols, std::numeric_limits<float>::quiet_NaN());
-    std::vector<uint32_t> ok;
-    for (int c = 0; c < kStyleCols; ++c) {
-      ok.clear();
-      for (const uint32_t i : s.shown)
-        if (std::isfinite(col_val(r.lines[i], c)))
-          ok.push_back(i);
-      std::ranges::sort(ok, [&](uint32_t a, uint32_t b) { return kCols[c].better * col_val(r.lines[a], c) > kCols[c].better * col_val(r.lines[b], c); });
-      for (size_t k = 0; k < ok.size(); ++k)
-        s.ranks[ok[k] * kStyleCols + c] = ok.size() > 1 ? static_cast<float>(k) / static_cast<float>(ok.size() - 1) : 0.5f;
-    }
+    for (int c = 0; c < kStyleCols; ++c)
+      rank_by(s.shown.size(), kCols[c].better, [&](size_t k) { return col_val(r.lines[s.shown[k]], c); }, [&](size_t k, double u) { s.ranks[s.shown[k] * kStyleCols + c] = static_cast<float>(u); });
     s.paint = s.shown;
     const auto worse = [&](uint32_t i) { const float u = s.ranks[i * kStyleCols + kColSharpeMed]; return std::isnan(u) ? 2.0f : u; };
     std::ranges::stable_sort(s.paint, [&](uint32_t a, uint32_t b) { return worse(a) > worse(b); });
@@ -230,10 +222,7 @@ void sort_lines(StyleUIState &s, const StyleResult &r, int sort) {
       return false;
     if (c < 0)
       return desc ? s.names[a] > s.names[b] : s.names[a] < s.names[b];
-    const double x = col_val(r.lines[a], c), y = col_val(r.lines[b], c);
-    if (!std::isfinite(x) || !std::isfinite(y))
-      return std::isfinite(x) && !std::isfinite(y);
-    return desc ? x > y : x < y;
+    return sort_less(col_val(r.lines[a], c), col_val(r.lines[b], c), desc);
   });
 }
 

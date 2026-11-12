@@ -70,6 +70,15 @@ TaskStatus ProgressStatus(const Progress &p) {
 
 void TextPhase(Phase p) { ImGui::TextColored(StatusColor(PhaseKind(p)), "%s", PhaseName(p)); }
 
+void TextProgress(const Progress &p) {
+  const Phase ph = p.phase.load(std::memory_order_acquire);
+  const size_t total = p.total.load(std::memory_order_relaxed);
+  if (p.busy() && total > 0)
+    ImGui::TextColored(StatusColor(PhaseKind(ph)), "%s %zu/%zu", PhaseName(ph), p.done.load(std::memory_order_relaxed), total);
+  else
+    TextPhase(ph);
+}
+
 namespace {
 int rank(TaskStatus::Kind k) {
   switch (k) {

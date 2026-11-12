@@ -8,6 +8,7 @@
 #include "gui/engine/EngineHub.hpp"
 #include "gui/quote/QuoteHub.hpp"
 #include "gui/task_market/services/CtaService.hpp"
+#include "gui/task_market/ui/LinesCommon.hpp" // kPageDefs (页名)
 #include "gui/task_market/ui/QuotesPanel.hpp" // Sync
 #include "gui/task_market/ui/TabAsset.hpp"
 #include "gui/task_market/ui/TabLines.hpp"
@@ -27,15 +28,8 @@
 
 namespace GUI::Tasks {
 
-enum TabIdx {
-  TAB_ASSET = 0,
-  TAB_NAV,
-  TAB_VAL,
-  TAB_FLOW,
-  TAB_CTA,
-  TAB_COUNT
-};
-static_assert(TAB_COUNT - TAB_NAV == Market::kPages);
+// 左栏子行: ASSET + 行情页 (idx = kTabLines + LinesPage)
+constexpr int kTabAsset = 0, kTabLines = 1, kTabs = kTabLines + Market::kPages;
 
 struct TaskMarketState {
   std::shared_ptr<Quote::QuoteHub> quote;    // 与 Database 任务共用 (首次画本任务才起)
@@ -54,29 +48,31 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
   TaskHandle handle;
   handle.name = "Market";
   handle.storage = state;
-  handle.tabs = {"ASSET", "NAV", "VAL", "FLOW", "CTA"};
+  handle.tabs = {"ASSET"};
+  for (const Market::PageDef &p : Market::kPageDefs)
+    handle.tabs.emplace_back(p.name);
 
   handle.Enabled = [](const SharedData &data, int idx) {
-    if (idx != TAB_ASSET)
+    if (idx != kTabAsset)
       return true;
     return data.task_state.database.asset_info_ready && data.task_state.database.scanned;
   };
 
   handle.Status = [state](const SharedData & /*data*/, int idx) -> TaskStatus {
-    assert(idx >= 0 && idx < TAB_COUNT);
-    if (idx == TAB_ASSET) // 新浪行情起了即常驻 (背景常态, 灰色)
+    assert(idx >= 0 && idx < kTabs);
+    if (idx == kTabAsset) // 新浪行情起了即常驻 (背景常态, 灰色)
       return state->quote->quote ? TaskStatus{TaskStatus::Kind::Muted, "live"} : TaskStatus{};
-    if (idx == TAB_CTA)
+    if (idx - kTabLines == Market::kPageCta)
       return state->cta_service ? ProgressStatus(*state->cta_service) : TaskStatus{};
     const auto &ps = state->engine->portfolio_service;
     return ps ? ProgressStatus(*ps) : TaskStatus{};
   };
 
   handle.Draw = [state](SharedData &data, int idx) {
-    assert(idx >= 0 && idx < TAB_COUNT);
+    assert(idx >= 0 && idx < kTabs);
     ImGui::BeginChild("MarketTab", ImVec2(0, 0), false);
     ImGui::Spacing();
-    if (idx == TAB_ASSET) {
+    if (idx == kTabAsset) {
       state->quote->start(data);
       Market::RenderTabAsset(data.asset, data.asset_info.stocks, state->asset_state, *state->quote);
       ImGui::EndChild();
@@ -93,13 +89,13 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
         state->lines.resize(basket_table().size());
         std::iota(state->lines.begin(), state->lines.end(), 0u);
       }
-      Market::Sync(*state->quote, Quote::kBasket, state->lines, ui.basket.feed);
-      Market::Sync(*state->quote, Quote::kStock, ui.pick.stocks(Market::kPickMany), ui.basket.stocks);
+      Market::Sync(*state->quote, Quote::kBasket, state->lines, ui.overlay.baskets);
+      Market::Sync(*state->quote, Quote::kStock, ui.pick.stocks(Market::kPickMany), ui.overlay.stocks);
       mk = state->quote.get();
     }
     if (!state->cta_service)
       state->cta_service = std::make_unique<Market::CtaService>();
-    const int action = Market::RenderTabLines(idx - TAB_NAV, *e.portfolio_service, *state->cta_service, e.portfolio_ui, ui,
+    const int action = Market::RenderTabLines(idx - kTabLines, *e.portfolio_service, *state->cta_service, e.portfolio_ui, ui,
                                               data.config.fixed_impact, mk, data.asset_info.stocks);
     if (action == -1)
       e.portfolio_service->RequestCancel();

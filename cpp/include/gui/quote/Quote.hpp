@@ -15,8 +15,9 @@
 // 接续: 当日接在历史之后 ⇔ 当日的前一交易日 = 历史末日 (joins); 否则 (历史落后) 不接.
 //
 // 篮子合成 (Fold, 历史逐日 / 当日同一份) = 成员表 (define/Members.hpp) 带日内路径的合 (收盘一格即 Members::scatter 的 收 / 基准):
-//   点位 = 前日点位 × Σ w · 价 / 基准 / Σ w; 开 / 高 / 低 / 收各自如此
+//   比 = Σ w · 价 / 基准 / Σ w (前日 = 1); 开 / 高 / 低 / 收各自如此
 //   (高 / 低 = 成员高低的加权, 是真实路径的外包); 额 = 成员之和, 量不合成.
+//   点位 = 比接到前日点位上 (rebase); 日间接续只此一步 ⇒ 各日的合成互不相干.
 //   净流入 (只合成分钟的日) = 成员各自分钟涨跌法之和 (不加权): 一只逐个有成交的分钟, 收 > 上一分钟收 (首个对基准) → 该分钟额记入,
 //   < → 记出, 平 → 随上一分钟的方向 (之前无方向 = 不计; 方向判据 tick_dir); 逐根记 (Bars::net), 全日之和 = Day::flow.
 //   个股的净流入 = 本只的分钟涨跌法 (net_flow, 同一判据), 历史 / 当日都带.
@@ -40,6 +41,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -145,6 +147,9 @@ struct Day {
 
 inline bool joins(const Kline &k, const Day &d) { return d.candle.date != 0 && d.prev == k.last; }
 
+// 合成的一日 (Fold: 前日 = 1, candle.date ≠ 0) 接到前日点位 level 上: 各根价 × level, ref = level
+void rebase(Day &y, double level);
+
 // ---- 基本面源 ----
 inline constexpr const char *kBar1d = "cn_stock_real_bar1d", *kBar1m = "bar1m";
 // 历史末日 = bar1d 水位 (末个非空月分片; 0 行月也落文件) ∧ bar1m 末日; 未同步 → assert
@@ -161,6 +166,16 @@ enum Side : int { kStock,
 inline constexpr int kSides = 2;
 template <class X>
 using PerSide = std::array<X, kSides>;
+
+// 一个标的 (各处同一个身份): 篮子 = 篮子下标, 个股 = 全局 id; key = kNone 即无
+struct Ref {
+  static constexpr uint32_t kNone = std::numeric_limits<uint32_t>::max();
+  Side side = kBasket;
+  uint32_t key = kNone;
+  bool ok() const { return key != kNone; }
+  bool is(Side s) const { return ok() && side == s; }
+  bool operator==(const Ref &) const = default;
+};
 
 // 一路历史的请求 / 发布 (两种同形): 键集 → 各键的历史, 同序
 struct HistoryRequest {
@@ -197,7 +212,7 @@ struct Leg {
   const Bars *bars = nullptr; // 分钟根; 合成分钟的日必给
 };
 
-// 篮子合成核: open (一日开始) → 逐成员 add (ws = 成员表一行) → finish (× 前日点位 / Σ w 落到各篮子的 Day)
+// 篮子合成核: open (一日开始) → 逐成员 add (ws = 成员表一行) → finish (/ Σ w 落到各篮子的 Day, 前日 = 1)
 //   增量 (当日跨轮): open(from, freeze, slots), 槽 [0, from) 是上一轮冻结的 (累加保留), 本轮只合日根与槽 [from, slots), 冻结线推进到 freeze
 class Fold {
 public:
@@ -221,8 +236,8 @@ public:
   // k = 本只在冻结线处的接续: 入 = 上一轮 freeze 处 (from = 0 不看), 出 = 本轮 freeze 处.
   // false = 冻结段所用的基准与本轮的不符 (本只未计; 调用方须 from = 0 重合)
   bool add(const Leg &g, std::span<const Members::Weight> ws, Carry &k);
-  // level[b] = 前日点位; 无成员 / 无成交 / 无点位的篮子 out[b].candle.date = 0; out[b].flow / bars.net = 全日 / 各根净流入 (只合日根 = 0)
-  void finish(misc::Ymd d, misc::Ymd prev, std::span<const double> level, std::span<Day> out);
+  // 无成员 / 无成交的篮子 out[b].candle.date = 0; out[b].flow / bars.net = 全日 / 各根净流入 (只合日根 = 0)
+  void finish(misc::Ymd d, misc::Ymd prev, std::span<Day> out);
 
 private:
   // 一格 = 开 高 低 收 (比 × 权) / 额 / 净流入; 格 0 = 日根, 格 1 + s = 槽 s

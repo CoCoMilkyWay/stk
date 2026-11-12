@@ -76,16 +76,6 @@ struct LineSrc {
   const Quote::Kline *price = nullptr;
   bool operator==(const LineSrc &) const = default;
 };
-// 行情键 (Quote::Side 路的键): 篮子 = 篮子下标 / 个股 = 全局 id; 因子 / 策略 = 无
-struct LinesQuote {
-  static constexpr uint32_t kNone = std::numeric_limits<uint32_t>::max();
-  Quote::Side side = Quote::kBasket;
-  uint32_t key = kNone;
-  bool ok() const { return key != kNone; }
-  bool is(Quote::Side s) const { return ok() && side == s; }
-  bool operator==(const LinesQuote &) const = default;
-};
-
 // 一行 = 一对线, 全段 (右表一行). 主图例列 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (补空格对齐);
 // NAV 右表 = cn | 近况两列 + 当日四列 | 两条年化 | 可成交列夏普 | 年换手; en 只在悬停时显示; 排版 / 近况 / 年化 / 夏普在渲染时拼
 struct LinesRow {
@@ -97,7 +87,7 @@ struct LinesRow {
   LineSrc src[kPairLines];                             // [PairLine] 线源
   std::shared_ptr<const Line> line[kPairLines];        // [PairLine] 线 (非空; 两线源相同 → 同一条)
   float hue = std::numeric_limits<float>::quiet_NaN(); // 色相 ∈ [0, 1) (见 LinesDerived::rows); NaN = 未定 (灰); 策略不取
-  LinesQuote q;                                        // 行情键
+  Quote::Ref ref;                                      // 行情键 (篮子 / 成分); 因子 / 策略 = 无
   LinesLeg val;                                        // 估值腿 (篮子账 / 个股账的一线)
   std::string watch;                                   // 自选键: 篮子 = 切片代码 + .等 / .加, 个股 = 代码; 因子 / 策略 = 空 (不可自选)
 };
@@ -289,7 +279,7 @@ struct LinesStage {
 };
 struct LinesDerKey {
   uint64_t gen = 0, items = 0;    // PortfolioService::result_gen / PortfolioUIState::items_gen
-  uint32_t prices = 0;            // 价格指数在画的发布代 (BasketState feed.shown)
+  uint32_t prices = 0;            // 价格指数在画的发布代 (OverlayState baskets.shown)
   double impact = 0.0;            // fixed_impact
   size_t infos = 0;               // 基本面档案数 (成分行名 / 悬停; 首次载入)
   std::string open;               // 展开的篮子行
@@ -316,7 +306,7 @@ struct LinesViewKey {
   bool operator==(const LinesViewKey &) const = default;
 };
 
-// 一级: items / name = 当前组合, prices = 篮子历史在画的发布 (BasketState feed.data); open / stocks = 展开的篮子行 / 选中的个股 (成分组);
+// 一级: items / name = 当前组合, prices = 篮子历史在画的发布 (OverlayState baskets.data); open / stocks = 展开的篮子行 / 选中的个股 (成分组);
 // watch = 自选键 (自选组; 其中的个股也进成分组); d = 上一份 (按线源沿用) → 本份
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
                       const std::shared_ptr<const Quote::Tape> &prices, double fixed_impact, const std::string &open,

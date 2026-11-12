@@ -3,6 +3,7 @@
 
 #include "fundamental/AssetAxis.hpp" // asset_axis (成分行代码)
 #include "gui/engine/Hold.hpp"       // hold_desc
+#include "gui/util/Chart.hpp"        // rank_by
 #include "misc/date.hpp"             // to_days (滚动窗权重按日历天)
 #include "shared/Basket.hpp"         // basket_table
 
@@ -135,7 +136,7 @@ void paint(LinesDerived &d, const LinesDerived &o) {
   for (int g = 0; g < kRowGroups; ++g)
     if (kGroupDefs[g].paint)
       for (LinesRow &r : d.rows[g]) {
-        if (r.q.is(Quote::kBasket) && r.q.key == basket_table().at_pool(kAllAPool[pool::kWeightCap]))
+        if (r.ref.is(Quote::kBasket) && r.ref.key == basket_table().at_pool(kAllAPool[pool::kWeightCap]))
           mkt = rs.size();
         rs.push_back(&r);
         key.rows.emplace_back(r.id, r.line[kIdeal].get());
@@ -167,7 +168,7 @@ void paint(LinesDerived &d, const LinesDerived &o) {
   for (size_t i = 0; i < n; ++i)
     for (size_t j = i + 1; j < n; ++j) {
       double s = corr(res[i], res[j]);
-      if (const LinesQuote &a = rs[i]->q, &b = rs[j]->q; a.is(Quote::kBasket) && b.is(Quote::kBasket))
+      if (const Quote::Ref &a = rs[i]->ref, &b = rs[j]->ref; a.is(Quote::kBasket) && b.is(Quote::kBasket))
         s = std::max(s, static_cast<double>(d.prices->overlap[a.key * K + b.key]));
       far[i * n + j] = far[j * n + i] = 1.0 - s;
     }
@@ -523,7 +524,7 @@ LinesRow basket_row(size_t b) {
   if (bt.group(b) == kGroupPool)
     r.pool = bt.pool_of(b);
   r.cn = r.tag = clip_name(bt.stem(b)) + suf;
-  r.q = {Quote::kBasket, static_cast<uint32_t>(b)};
+  r.ref = {Quote::kBasket, static_cast<uint32_t>(b)};
   r.watch = r.en + suf;
   return r;
 }
@@ -567,7 +568,7 @@ LinesRow stock_row(const StockInfos &infos, uint32_t id, double share) {
   r.cn = clip_name(r.tag);
   r.hover = stock_hover(infos, id, share);
   r.hue = stock_hue(id);
-  r.q = {Quote::kStock, id};
+  r.ref = {Quote::kStock, id};
   r.watch = r.en;
   return r;
 }
@@ -594,13 +595,13 @@ LinesRow strat_row(const std::string &name) {
 // 有行情键的行 r (已取名) 进组 g: 腿 / 估值腿 = 该侧账的键线; 可成交 = 腿扣成本合成 (两侧账都无成本列 ⇒ 不扣);
 // 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘, 与可成交同一条)
 void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const Reuse &ru) {
-  r.val = leg_of(d.quotes[r.q.side], r.q.key);
+  r.val = leg_of(d.quotes[r.ref.side], r.ref.key);
   r.src[kTrade] = mix_src(legs_of(r.val), true, fixed_impact);
-  if (r.q.is(Quote::kStock))
+  if (r.ref.is(Quote::kStock))
     r.src[kIdeal] = mix_src(legs_of(r.val), false, 0.0);
   else if (d.prices) {
-    assert(d.prices->keys[r.q.key] == r.q.key);
-    r.src[kIdeal].price = d.prices->list[r.q.key].get();
+    assert(d.prices->keys[r.ref.key] == r.ref.key);
+    r.src[kIdeal].price = d.prices->list[r.ref.key].get();
   }
   push(d, g, std::move(r), ru);
 }
@@ -620,7 +621,7 @@ void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, c
   std::vector<std::pair<uint32_t, double>> ks; // (全局 id, 权占比)
   if (const LinesAt o = d.at(open); o.g >= 0 && d.prices && d.prices->lack.empty()) {
     assert(o.g < kBasketGroups);
-    const uint32_t line = d.row(o).q.key;
+    const uint32_t line = d.row(o).ref.key;
     for (const Quote::Constituent &c : d.prices->cons[line])
       ks.emplace_back(c.id, c.w / d.prices->weight[line]);
   }
@@ -874,23 +875,10 @@ LinesLastPct last_pct(const ValSeries &s, const std::vector<int32_t> &at, int k1
   return {};
 }
 
-// 截面名次 (NAV 数值列 / VAL 格同一份): 组内 n 格 at(i) 的 x 在有限值里排名 → rank ∈ [0, 1] (并列取中; 只一个 = 0.5);
-// good = +1 → x 高为 0 (好), −1 → x 低为 0; 不可算的不排. 排序一遍 O(n log n)
+// 截面名次 (NAV 数值列 / VAL 格同一份): 组内 n 格 at(i) 的 x → rank (GUI::rank_by)
 template <class At>
 void rank_col(size_t n, int good, const At &at) {
-  std::vector<std::pair<double, size_t>> v; // (−good · x, 格)
-  for (size_t i = 0; i < n; ++i)
-    if (const Ranked &c = at(i); std::isfinite(c.x))
-      v.push_back({-good * c.x, i});
-  std::sort(v.begin(), v.end());
-  const size_t m = v.size();
-  for (size_t a = 0, b = 0; a < m; a = b) {
-    while (b < m && v[b].first == v[a].first)
-      ++b;
-    const double r = m > 1 ? (static_cast<double>(a) + 0.5 * static_cast<double>(b - a - 1)) / static_cast<double>(m - 1) : 0.5;
-    for (size_t k = a; k < b; ++k)
-      at(v[k].second).rank = r;
-  }
+  rank_by(n, good, [&](size_t i) { return at(i).x; }, [&](size_t i, double u) { at(i).rank = u; });
 }
 
 } // namespace

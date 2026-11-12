@@ -106,8 +106,8 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
   const cta::Series &se = *r.se;
   const cta::Track &tr = r.tr;
   const size_t n = se.c.size();
-  if (c.fit_side != r.side || c.fit_key != r.key) { // 换标的: 回全段, 光标回末根
-    c.fit_side = r.side, c.fit_key = r.key;
+  if (c.fit != r.ref) { // 换标的: 回全段, 光标回末根
+    c.fit = r.ref;
     c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true, c.cursor = -1;
   }
   const size_t step = std::max<size_t>(1, static_cast<size_t>((c.x1 - c.x0) / std::max(1.0f, size.x)));
@@ -171,7 +171,7 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     if (c.cloud_open)
       pinned |= ImPlot::DragLineX(id, &pin, kPinCol, 2.0f, ImPlotDragToolFlags_NoFit);
   };
-  const ImPlotInputMap keep = ImPlot::GetInputMap(); // 本页两图: 左键框选 / 右键平移, 画完还原
+  const ImPlotInputMap keep = ImPlot::GetInputMap(); // 本页两图: 右键平移; 左键 = 价格图框选 (x + y) / 净值图横向框选 (XZoom); 画完还原
   ImPlot::MapInputReverse();
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2));
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2, 1));
@@ -248,7 +248,9 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     ImPlot::EndPlot();
   }
   ImVec2 corner(-1, -1); // 净值图右上角 (轴切换按钮)
-  if (ImPlot::BeginPlot("##cta_nav", ImVec2(size.x, ph - h1), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus)) {
+  double zlo = 0, zhi = 0;
+  bool zoomed = false; // 净值图框选落定 (x 视野在 EndPlot 回写链接之后改)
+  if (ImPlot::BeginPlot("##cta_nav", ImVec2(size.x, ph - h1), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect)) {
     setup_x(ImPlotAxisFlags_None);
     ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
     ImPlot::SetupAxisScale(ImAxis_Y1, c.nav_log ? ImPlotScale_Log10 : ImPlotScale_Linear);
@@ -289,6 +291,10 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
     ImPlot::SetNextLineStyle(ImGui::GetStyleColorVec4(ImGuiCol_Text), 1.5f);
     ImPlot::PlotLine("策略净值", xs.data(), nav.data(), static_cast<int>(xs.size()));
     track(1);
+    const double zx = plot_mouse_x();
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemActive()) // 拖光标时不起
+      c.zoom.begin(zx);
+    zoomed = c.zoom.track(zx, zlo, zhi) && zhi > zlo;
     if (band >= 0) {
       const cta::CostItem &ci = cta::kCosts[band];
       const size_t j = static_cast<size_t>(band);
@@ -313,8 +319,12 @@ void plots(CtaUIState &c, const CtaResult &r, const char *name, const ImVec2 &si
   ImPlot::GetInputMap() = keep;
   if (pinned)
     c.cursor = static_cast<int>(std::clamp(std::lround(pin), 0L, static_cast<long>(n - 1)));
-  if (reset)
+  if (zoomed)
+    c.x0 = zlo, c.x1 = zhi;
+  if (reset) {
     c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true;
+    c.zoom.cancel();
+  }
 }
 
 // ---- 中栏: 状态 + 设定 (改了下帧即重发) + 光标处所用参数 + 全期指标 ----
@@ -726,13 +736,13 @@ void panel(const CtaService &svc, CtaUIState &c, const CtaResult *r, const std::
 
 void RenderLinesCta(CtaService &svc, LinesUIState &ui, const char *name, const ImVec2 &plots_size, float panel_w) {
   CtaUIState &c = ui.cta;
-  const std::map<std::string, LinesQuote> &one = ui.pick.rows[kPickOne];
-  const LinesQuote q = one.empty() ? LinesQuote{} : one.begin()->second;
-  if (q.ok() && !c.editing && !(c.sent.gen && c.sent.side == q.side && c.sent.key == q.key && c.sent.spec == c.spec)) {
-    c.sent = {c.sent.gen + 1, q.side, q.key, c.spec};
+  const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
+  const Quote::Ref q = one.empty() ? Quote::Ref{} : one.begin()->second;
+  if (q.ok() && !c.editing && !(c.sent.gen && c.sent.ref == q && c.sent.spec == c.spec)) {
+    c.sent = {c.sent.gen + 1, q, c.spec};
     svc.Request(c.sent);
   } else if (!q.ok() && !c.sent.gen) { // 首次打开未选标的: 先备价格库
-    c.sent = {1, Quote::kBasket, kCtaNone, c.spec};
+    c.sent = {1, {}, c.spec};
     svc.Request(c.sent);
   }
   std::shared_ptr<const CtaResult> r;
@@ -740,7 +750,7 @@ void RenderLinesCta(CtaService &svc, LinesUIState &ui, const char *name, const I
     std::lock_guard<std::mutex> lock(svc.mutex);
     r = svc.result;
   }
-  const bool mine = q.ok() && r && r->side == q.side && r->key == q.key; // 本标的的 (设定改了时新的还在算, 先显旧的)
+  const bool mine = q.ok() && r && r->ref == q; // 本标的的 (设定改了时新的还在算, 先显旧的)
   const CtaResult *show = mine && r->lack.empty() ? r.get() : nullptr;
 
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));

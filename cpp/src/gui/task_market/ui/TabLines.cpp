@@ -88,30 +88,12 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesUISta
     action = -1;
   ImGui::EndDisabled();
   ImGui::SameLine();
-  {
-    const Phase ph = svc.phase.load(std::memory_order_acquire);
-    const int jd = svc.jobs_done.load(std::memory_order_relaxed), jt = svc.jobs_total.load(std::memory_order_relaxed);
-    const int done = static_cast<int>(svc.done.load(std::memory_order_relaxed)), total = static_cast<int>(svc.total.load(std::memory_order_relaxed));
-    const ImVec4 bc = StatusColor(TaskStatus::Kind::Busy);
-    switch (ph) {
-    case Phase::Idle:
-    case Phase::Scanning:
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "idle");
-      break;
-    case Phase::Loading:
-      ImGui::TextColored(bc, "[%d/%d] loading %d/%d days", jd + 1, jt, done, total);
-      break;
-    case Phase::Running:
-      ImGui::TextColored(bc, "[%d/%d] running %d/%d", jd + 1, jt, done, total);
-      break;
-    case Phase::Done:
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "done");
-      break;
-    case Phase::Cancelled:
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "cancelled %d/%d", jd, jt);
-      break;
-    }
+  if (busy) { // 第几个作业 (因子 / 篮子) 接在阶段前
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "[%d/%d]", svc.jobs_done.load(std::memory_order_relaxed) + 1,
+                       svc.jobs_total.load(std::memory_order_relaxed));
+    ImGui::SameLine(0, 4);
   }
+  TextProgress(svc);
   if (!message.empty()) {
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
@@ -192,17 +174,17 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const Portf
   //      → 视图 (派生 gen + 二级两份 gen + 标的): 上级重算 → 下级自动重算 ----
   if (ui.pick.of != pf.name) // 换组合 → 选中清掉
     ui.pick = LinesPick{.of = pf.name};
-  ui.der.update(LinesDerKey{gen, pf.items_gen, ui.basket.feed.shown, fixed_impact, infos.size(), ui.pick.open, ui.pick.stocks(kPicks), ui.watch},
+  ui.der.update(LinesDerKey{gen, pf.items_gen, ui.overlay.baskets.shown, fixed_impact, infos.size(), ui.pick.open, ui.pick.stocks(kPicks), ui.watch},
                 [&](LinesDerived &dv) {
                   const std::vector<misc::Ymd> old = dv.dates;
-                  MakeLinesDerived(pf.items, pf.name, res, ui.basket.feed.data, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks), ui.watch, infos,
+                  MakeLinesDerived(pf.items, pf.name, res, ui.overlay.baskets.data, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks), ui.watch, infos,
                                    dv);
                   if (dv.dates != old) // 日轴变 → 区间回全段
                     ui.range = LinesRange{{.d0 = 0, .d1 = static_cast<int>(dv.dates.size())}};
                 });
   if (mk)
     SyncLinesCons(ui, *mk->quote);
-  const std::map<std::string, LinesQuote> &one = ui.pick.rows[kPickOne];
+  const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
   const LinesAt pin = one.empty() ? LinesAt{} : d.at(one.begin()->first); // VAL 标的
   const LinesLeg lg = pin.g >= 0 ? d.row(pin).val : LinesLeg{};           // 其估值腿
   ui.roll.update(LinesRollKey{d.axis_gen, lg, ui.band_years}, [&](LinesRolls &r) { MakeLinesRoll(d, lg, ui.band_years, r); });
@@ -225,7 +207,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const Portf
   // 选中的有行情键的行 (篮子 / 成分) 的行情叠加图 (日内栏 / FLOW 同一份选中, 线色 = 主图的), 贴边占满 size
   // 悬停联动 (ui.hover): 各图 (日内栏 / FLOW 图的条按行 id 对上) → 右表
   ui.hover.begin();
-  const auto basket_child = [&](const char *id, const ImVec2 &size, bool flow) {
+  const auto overlay_child = [&](const char *id, const ImVec2 &size, bool flow) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::BeginChild(id, size);
     ImGui::PopStyleVar();
@@ -234,15 +216,15 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const Portf
       std::vector<const std::string *> ids; // [picks] 行 id
       for_each_layer([&](int g) {
         for (size_t r = 0; r < d.rows[g].size(); ++r)
-          if (const LinesRow &h = d.rows[g][r]; h.q.ok() && picked(ui, page, h)) {
-            picks.push_back({h.q.side, h.q.key, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag});
+          if (const LinesRow &h = d.rows[g][r]; h.ref.ok() && picked(ui, page, h)) {
+            picks.push_back({h.ref, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag});
             ids.push_back(&h.id);
           }
       });
       const std::optional<std::string> &hot = ui.hover.hot();
       const auto at = std::ranges::find_if(ids, [&](const std::string *x) { return *x == hot; });
       const int hi = at != ids.end() ? static_cast<int>(at - ids.begin()) : -1;
-      const int near = flow ? Market::RenderBasketFlow(*mk, ui.basket, picks, hi) : Market::RenderBasketIntraday(*mk, ui.basket, picks, hi);
+      const int near = flow ? Market::RenderFlow(*mk, ui.overlay, picks, hi) : Market::RenderIntraday(*mk, ui.overlay, picks, hi);
       if (near >= 0)
         ui.hover.plot = *ids[static_cast<size_t>(near)];
     } else {
@@ -251,10 +233,10 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const Portf
     ImGui::EndChild();
   };
   if (page == kPageFlow) {
-    basket_child("##pf_flow", ImVec2(left, av.y), true);
+    overlay_child("##pf_flow", ImVec2(left, av.y), true);
     ImGui::SameLine();
     ImGui::BeginChild("##pf_flegend", ImVec2(lw, av.y), ImGuiChildFlags_Borders);
-    RenderLinesSheet(ui, page, mk ? Market::FlowDays(*mk, ui.basket) : std::vector<misc::Ymd>{}, infos);
+    RenderLinesSheet(ui, page, mk ? Market::FlowDays(*mk, ui.overlay) : std::vector<misc::Ymd>{}, infos);
     ImGui::EndChild();
     return action;
   }
@@ -269,7 +251,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService &cta, const Portf
   }
   ImGui::BeginGroup();
   if (ih > 0.0f)
-    basket_child("##pf_intra", ImVec2(left, ih), false);
+    overlay_child("##pf_intra", ImVec2(left, ih), false);
   RenderLinesPlot(ui, pin, nav, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph)); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
   RenderLinesRange(ui, pin, nav, ImVec2(left, kBarH));
   ImGui::EndGroup();

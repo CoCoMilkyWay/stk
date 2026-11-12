@@ -4,17 +4,28 @@
 //   源 (每只一日的 Leg) 两种对仗: LibDay  = all.bar L_1day 日行 (基准 = D−1 行 pre_close) + L_1min 分钟根
 //                                 FundDay = 基本面 bar1d 行 (基准 = 当行 pre_close) + bar1m 分钟根
 //   两源同一个形 (date / assets / minutes / leg), Lane::run 不分源; 当日 (新浪快照) 的增量合成在 QuoteService (Fold 增量).
+//   库段一趟 lib_pass: 各日的合成互不相干 (前日 = 1) ⇒ 按线程一日一件并行, 日间接续 (点位 / 因子链) 归调用方按日序串行;
+//     BasketHistory 的 Book 与 CtaLib 的价格库是同一趟的两个接收方, 续算件的盘上头 + 体同一读写 (snap_read / snap_write).
 #pragma once
 
+#include "disk/Disk.hpp"
 #include "features/Panel/PoolSelect.hpp" // pool::Picks / day_cols
 #include "features/Storage/FeatureRead.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/quote/Quote.hpp"
+#include "misc/exec.hpp"
+#include "misc/snap.hpp"
+#include "shared/Basket.hpp" // basket_table
+#include "shared/Progress.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 struct Bar1mDay;
@@ -66,13 +77,13 @@ struct Lane {
   explicit Lane(size_t baskets) : fold(baskets), day(baskets) {}
   Members mem; // 交易日 src.date 的成员表
   Fold fold;
-  std::vector<Day> day; // [篮子]
-  // 合成源 src 的一日 (前一交易日 prev; level [篮子] = 前日点位); each(a, Leg) 逐只 (含非成员)
+  std::vector<Day> day; // [篮子] 前日 = 1 (rebase 接到点位上)
+  // 合成源 src 的一日 (前一交易日 prev); each(a, Leg) 逐只 (含非成员)
   template <class Src, class Each>
-  void run(const Src &src, misc::Ymd prev, std::span<const double> level, Each &&each);
+  void run(const Src &src, misc::Ymd prev, Each &&each);
   template <class Src>
-  void run(const Src &src, misc::Ymd prev, std::span<const double> level) {
-    run(src, prev, level, [](size_t, const Leg &) {});
+  void run(const Src &src, misc::Ymd prev) {
+    run(src, prev, [](size_t, const Leg &) {});
   }
 
 private:
@@ -81,7 +92,7 @@ private:
 };
 
 template <class Src, class Each>
-void Lane::run(const Src &src, misc::Ymd prev, std::span<const double> level, Each &&each) {
+void Lane::run(const Src &src, misc::Ymd prev, Each &&each) {
   fold.open(src.minutes() ? kSlots : 0);
   assert(mem.id.empty() || mem.id.back() < src.assets());
   for (size_t a = 0, k = 0; a < src.assets(); ++a) {
@@ -90,7 +101,84 @@ void Lane::run(const Src &src, misc::Ymd prev, std::span<const double> level, Ea
     if (k < mem.size() && mem.id[k] == a)
       fold.add(g, mem.of(k++));
   }
-  fold.finish(src.date, prev, level, day);
+  fold.finish(src.date, prev, day);
+}
+
+// 库段一趟的一件 (逐日复用): D−1 / D 日根行 + 读件 + 一日合成件; minutes = 本日合了分钟
+struct LibWork {
+  LibWork(size_t A, size_t B) : lane(B) {
+    row_alloc(dc, A);
+    minute_alloc(mc, A);
+  }
+  Lane lane;
+  Row prev, cur;
+  FeatureRead::DayColumns dc, mc; // 日根行 / 分钟的读
+  bool minutes = false;
+};
+
+// 库段一趟: 选股表 pk 的日轴 dates [from, N) (from ≥ 1; pk 与 axis 同为 all.bar 轴), 每批 T = 线程数日:
+//   并行  一日一件 (批内第 k 件): 读 D−1 / D 日根行 (+ D 的 L_1min, i ≥ minutes_from) → members → Lane::run; each(k, a, Leg) 逐只
+//   串行  按日序 chain(i, k, LibWork &) (日间接续: 点位 / 因子链), 批末 batch()
+//   调用方按 k 备批内的输出槽 (至多 T 个); x 记 Loading 天; false = 取消 / 判废 (rd.stale)
+template <class Each, class Chain, class Batch>
+bool lib_pass(const PoolAxis &axis, const FeatureRead &rd, const pool::Picks &pk, size_t from, size_t minutes_from, misc::exec::ForkJoin &pool,
+              const std::atomic<bool> &cancel, Progress &x, Each &&each, Chain &&chain, Batch &&batch) {
+  const std::vector<misc::Ymd> &dates = pk.tape->dates;
+  const size_t N = dates.size(), T = static_cast<size_t>(pool.threads());
+  assert(from >= 1 && from <= N);
+  std::vector<std::unique_ptr<LibWork>> works;
+  for (size_t k = 0; k < std::min(T, N - from); ++k)
+    works.push_back(std::make_unique<LibWork>(axis.size(), basket_table().size()));
+  x.begin(Phase::Loading, N - from);
+  for (size_t i0 = from; i0 < N; i0 += T) {
+    if (cancel.load(std::memory_order_relaxed) || rd.stale())
+      return false;
+    const size_t n = std::min(T, N - i0);
+    pool.tasks(static_cast<int>(n), [&](int kk, int) {
+      const size_t k = static_cast<size_t>(kk), i = i0 + k;
+      LibWork &w = *works[k];
+      const misc::Ymd d = dates[i];
+      w.minutes = i >= minutes_from;
+      read_row(rd, dates[i - 1], w.dc, w.prev);
+      read_row(rd, d, w.dc, w.cur);
+      if (w.minutes)
+        read_minutes(rd, d, w.mc);
+      members(pk, axis, d, w.lane.mem);
+      w.lane.run(LibDay{d, w.prev, w.cur, w.minutes ? &w.mc : nullptr}, dates[i - 1], [&](size_t a, const Leg &g) { each(k, a, g); });
+    });
+    if (rd.stale())
+      return false;
+    for (size_t k = 0; k < n; ++k) {
+      chain(i0 + k, k, *works[k]);
+      x.publish(1);
+    }
+    batch();
+  }
+  return true;
+}
+
+// 续算件的盘上一份 = 头 + 体 (体 = body(ar)): 读 = 有文件且头 == want 才读体, 返回 = 读了体
+template <class Head, class Body>
+bool snap_read(disk::Node n, const disk::Key &k, const Head &want, Body &&body) {
+  if (!disk::exists(n, k))
+    return false;
+  const std::string blob = disk::read(n, k);
+  misc::snap::Load ar(std::as_bytes(std::span(blob)));
+  Head h;
+  ar(h);
+  if (!(h == want))
+    return false;
+  body(ar);
+  assert(ar.done() && "续算件: 文件尾有多余字节");
+  return true;
+}
+template <class Head, class Body>
+void snap_write(disk::Node n, const disk::Key &k, const Head &head, Body &&body) {
+  std::vector<std::byte> blob;
+  misc::snap::Save ar(blob);
+  ar(head);
+  body(ar);
+  disk::write(n, k, {reinterpret_cast<const char *>(blob.data()), blob.size()});
 }
 
 // 普查: 成员表 m (库轴 axis) 在键集 keys (篮子) 上 → t 的 members / weight / cap / cons / overlap (见 Tape)
