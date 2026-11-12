@@ -332,7 +332,7 @@ stk/
 │   │   │       └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU (复用 Stat 行核) / GPU 后端 + 对拍
 │   │   ├── cta/                                        # 📈 CTA 单资产 中线 + 分层 择时 (header-only 纯计算; Market → CTA 页的模型层)
 │   │   │   │                                           #    中线 (调参, 开关) ─拼接→ 分层 Ladder (固定: 层距 = 20 日 ATR / 2, 一份 5%) ─刀 Cut→ 仓位层 Size ─→ 成交 Fill (+ 成本) → 损益 Pnl
-│   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 指标列缓存 Tape (含海龟 N) → 中线表 kCenters; 分层 Ladder (以上一笔成交为基准的网格) 逐根出刀 Cut
+│   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 指标列缓存 Tape (含海龟 N) → 中线表 kCenters; 分层 Ladder (成交即冻结档线的网格, 档线栈) 逐根出刀 Cut
 │   │   │   ├── Engine.hpp                              # 📈 执行: 逐根链 drive (策略 / 买入持有同一条); 仓位层 (波动率定仓) + 五项成本
 │   │   │   ├── Tune.hpp                                # 📈 中线调参: 优化目标 (有效多空 − 翻转成本) + 参数网格 Grid + 岭回归曲面
 │   │   │   ├── Metrics.hpp                             # 📈 指标: 收益统计 / 择时捕获 / 在场段; 一本账 Book

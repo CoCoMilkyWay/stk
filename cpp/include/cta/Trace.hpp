@@ -6,7 +6,7 @@
 //         最高点落在网格边上 (未到硬边界) → 以它为中心移网格, 补打新格点再拟, 当日至多 kHops 次; 中心留到次日 (各日只读当日之前的窗)
 //         (首日 / 窗内根数不足窗长一半 / 窗内各配置的中线都未就绪 = 未选参, 买入持有, 与基准同口径)
 //         各配置的目标项日前缀留作 acc (参数点云: 至某日打过分的全部配置在其选参窗内的逐日目标值 → 行为坐标 cloud_of; 当日网格着色 = 窗内目标值, 其余 = 历史点)
-//   拼接遍 (串行, 逐根): 当日选中配置的中线 + 层距 kSpace · ATR → 分层 Ladder (状态跨日接续; 未选参日 = Hold, 分层复位), 刀写进轨迹列 Cuts
+//   拼接遍 (串行, 逐根): 当日选中配置的中线 + 层距 kSpace · ATR → 分层 Ladder (状态跨日接续; 未选参日 = Hold, 分层复位), 刀写进轨迹列 Cuts, 档线栈随之交给 Cuts
 //   两本账: drive (Cuts → Pnl) = 策略 (调仓计成本, 成本分项见 Engine.hpp) ↔ drive (Hold → Pnl, 仓位层不调) = 买入持有 (满仓不动, 无越线差)
 #include "cta/Metrics.hpp"
 #include "cta/Tune.hpp"
@@ -48,7 +48,7 @@ struct Track {
   std::vector<Terms> acc;                  // [配置] 目标项日前缀
   std::vector<Pick> pick;                  // [日] 日下标同 days_of
   std::vector<std::pair<size_t, int>> seg; // 选参段: (起根, pts 下标; −1 = 未选参), 起根升序
-  Cuts cut;                                // [根] 分层的刀 (未选参日 = Hold: 线 NaN / 仓 1)
+  Cuts cut;                                // [根] 分层的刀 + 档线栈 (未选参日 = Hold: 无档线 / 仓 1)
   Book strat, hold;                        // 策略 / 买入持有
 };
 
@@ -204,10 +204,11 @@ bool trace(const Series &se, Grid grid, size_t goal, size_t dir, size_t W, const
   for (size_t d = 0; d < nd; ++d) {
     const int x = pick[d].pt;
     if (x < 0)
-      lad = Ladder{s};
+      lad.reset();
     for (size_t i = days.off[d]; i < days.off[d + 1]; ++i)
       cut.put(i, x < 0 ? Hold{}(i) : lad(t.c[i], (*mid[static_cast<size_t>(x)])[i], kSpace * t.atr[i]));
   }
+  cut.rungs = std::move(lad.rungs), cut.s = s;
 
   out.seg.clear();
   for (size_t d = 0; d < nd; ++d)

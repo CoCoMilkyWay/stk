@@ -1,4 +1,4 @@
-// Market→CTA 页: 左 = 两图 (价格与中线 / 触发线, 底色 = 仓位 / 净值, 共一条 x), 其右 = 中栏 (设定 / 参数点云 / 光标处参数 / 全期指标; 与右表分右栏) — 见 TabLines.hpp
+// Market→CTA 页: 左 = 两图 (价格与中线 / 档线, 底色 = 仓位 / 净值, 共一条 x), 其右 = 中栏 (设定 / 参数点云 / 光标处参数 / 全期指标; 与右表分右栏) — 见 TabLines.hpp
 #include "gui/task_market/ui/LinesCommon.hpp"
 
 #include "gui/Tasks.hpp"      // StatusColor
@@ -80,7 +80,7 @@ std::pair<int, size_t> seg_at(const cta::Track &tr, size_t i) {
   return {std::prev(it)->second, std::prev(it)->first};
 }
 
-// ---- 两图: 上 = 仓位色 (多 = 收盘线以上, 空 = 以下, 越满越浓) + 收盘 + 中线 + 加仓线 / 减仓线 (分层下一笔的触发价) + 逐根时的买 / 卖标记;
+// ---- 两图: 上 = 仓位色 (多 = 收盘线以上, 空 = 以下, 越满越浓) + 收盘 + 中线 + 档线 (分层的 kUnits 份各一条) + 逐根时的买 / 卖标记;
 //      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换). x 同一视野 (链到 ui), 每像素取末根; 光标 = 可拖竖线 (两图同一条)
 //      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 双击回全段;
 //      光标 = 橙色竖线 (同 OrderFlow 锚线): 参数点云展开时才出现 (初放视野正中), 只能拖动, 标注时刻 ----
@@ -104,8 +104,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const ImVec2 &size
   for (size_t k = 0; k < at.size(); ++k)
     xs[k] = static_cast<double>(at[k]);
   const cta::Col &w = tr.strat.run.w;
-  const std::vector<double> close = take(se.c), up = take(tr.cut.up), mid = take(tr.cut.mid), dn = take(tr.cut.dn), nav = take(tr.strat.nav),
-                            hold = take(tr.hold.nav);
+  const std::vector<double> close = take(se.c), mid = take(tr.cut.mid), nav = take(tr.strat.nav), hold = take(tr.hold.nav);
   std::vector<double> wm(at.size(), 0); // wm[k] = 点 k → k + 1 这段所持的平均仓位 (根 at[k] .. at[k + 1] − 1 收盘调到的)
   for (size_t k = 0; k + 1 < at.size(); ++k) {
     for (size_t i = at[k]; i < at[k + 1]; ++i)
@@ -182,13 +181,17 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const ImVec2 &size
       ImPlot::PopPlotClipRect();
       dl->Flags = keep_flags;
     }
-    const bool lng = cta::kDirs[r.spec.dir].s > 0; // 多: 上线 = 加仓 / 下线 = 减仓; 空反之
+    { // 档线: 自中线一侧起逐份一条 (Cuts::rungs_at); 满仓 = 随中线走, 中线以下 = 已减份的冻结 + 持有份的随 ATR 伸缩
+      std::vector<std::vector<double>> y(cta::kUnits, std::vector<double>(xs.size(), cta::kNaN));
+      for (size_t k = 0; k < at.size(); ++k)
+        tr.cut.rungs_at(at[k], [&](int j, float p) { y[static_cast<size_t>(j)][k] = p; });
+      for (const std::vector<double> &v : y) {
+        ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.35f), 1.0f);
+        ImPlot::PlotLine("档线", xs.data(), v.data(), static_cast<int>(xs.size()));
+      }
+    }
     ImPlot::SetNextLineStyle(kMidCol, 1.2f);
     ImPlot::PlotLine("中线", xs.data(), mid.data(), static_cast<int>(xs.size()));
-    ImPlot::SetNextLineStyle(kDn, 1.0f);
-    ImPlot::PlotLine(lng ? "减仓线" : "加仓线", xs.data(), dn.data(), static_cast<int>(xs.size()));
-    ImPlot::SetNextLineStyle(kUp, 1.0f);
-    ImPlot::PlotLine(lng ? "加仓线" : "减仓线", xs.data(), up.data(), static_cast<int>(xs.size()));
     ImPlot::SetNextLineStyle(ImGui::GetStyleColorVec4(ImGuiCol_Text), 1.2f);
     ImPlot::PlotLine("收盘", xs.data(), close.data(), static_cast<int>(xs.size()));
     if (step == 1) { // 买 ▲ (收盘下方) / 卖 ▼ (上方), 边长 ∝ |Δw| (翻向截到 1), 细描边
@@ -654,8 +657,10 @@ void panel(const CtaService &svc, CtaState &c, const CtaResult *r, const std::st
                   cta::kSpace, 100.0 / cta::kUnits);
     hint(s);
     if (ImGui::IsItemHovered())
-      tip("中线顺向侧满仓 (回到顺向侧 = 缺的份按收盘一次补满); 逆向侧: 刚穿过中线时以中线为基准, 之后基准 = 上一笔成交的档线\n"
-          "• 逆向走到 基准 − 层距 减一份, 顺向走到 基准 + 层距 加一份; 一根越过几档成交几档, 份数到 0 / 满后基准照移 (跌透之后反弹一层即加回)\n"
+      tip("中线顺向侧满仓 (回到顺向侧 = 缺的份按收盘一次补满), 档线随中线走; 逆向侧: 刚穿过中线时以中线为基准, 之后基准 = 上一笔成交的档线\n"
+          "• 逆向走到 基准 − 层距 减一份, 该价冻结成一条档线; 顺向回到上一条冻结档线加一份 (起点之上 = 基准 + 层距)\n"
+          "• 一根越过几档成交几档, 份数到 0 / 满后基准照移 (跌透之后反弹一档即加回)\n"
+          "• 图上: 已减份的档线横住 (宽度 = 各自成交时的层距), 持有份的档线挂在基准下方, 宽度随当日 ATR 变; 重新满仓后回到随中线走\n"
           "• ATR = 海龟 N: 日真实波幅的 %zu 日平滑, 盘中用前一交易日收盘时的值; 中线 / ATR 未就绪 = 空仓",
           cta::kAtrDays);
   }

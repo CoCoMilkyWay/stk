@@ -1,13 +1,13 @@
 #pragma once
 
-// 单资产 中线 + 分层 模型: 有效根 → 指标列 (Tape 缓存, 同资产各配置共用) → 中线 (调参) → 分层 Ladder 逐根出一刀 Cut (触发线 + 目标仓位, 按本根收盘价调到)
+// 单资产 中线 + 分层 模型: 有效根 → 指标列 (Tape 缓存, 同资产各配置共用) → 中线 (调参) → 分层 Ladder 逐根出一刀 Cut (档线 + 目标仓位, 按本根收盘价调到)
 //   方向 kDirs: long = 中线以上满多 / short = 中线以下满空; 顺向 = 方向所押的一侧, 逆向 = 另一侧
 //   列 = 逐根一个量, 因果 ([i] 只看 ≤ i 的根); 窗口一律以根计 (日线 / 分钟同一套)
 //   未就绪 = NaN: 比较恒假, 预热期不入也不出
 //   指标列 = 算子作用于源列: 窗算子 ema / rms / top / bot / kama, 逐点算子 mean; 原料列 = 高 / 低 / 收 / 对数收益 / ATR (日频)
 //   中线 (ema / kama / mid, 各有自己的参数, 滚动调参) 只当开关: 顺向侧满仓, 逆向侧交给分层
 //   分层 (参数固定, 不调): 逆向侧以上一笔成交为基准的网格, 逆向每走一层减一份, 顺向每走一层加一份; 层距 h = kSpace · ATR, 一份 = 1 / kUnits
-//   列只在两端: 指标列 (取齐后 Tape 只读) → 逐根链 (源 → 仓位层 → 成交 → 汇) → 轨迹列 Cuts; 分层的状态 (份数 / 基准) 只在拼接遍里
+//   列只在两端: 指标列 (取齐后 Tape 只读) → 逐根链 (源 → 仓位层 → 成交 → 汇) → 轨迹列 Cuts; 分层的状态 (份数 / 档线栈) 只在拼接遍里
 //   源 = 逐根出刀的可调用 Cut(i): Cuts (拼好的轨迹) / Hold (买入持有)
 //   成交 / 仓位层 / 成本 / 逐根链归 Engine
 #include <algorithm>
@@ -284,19 +284,55 @@ inline const Col &center(Tape &t, size_t kind, const P &p) {
 
 // ---- 刀 ----
 
-// 一刀 = 一根的信号: 中线 + 下一笔的两条触发线 (上线 = 收涨到此成交 / 下线 = 收跌到此成交; 无 = NaN) + 目标仓位 w
-//   + 越线差 (占净值, 按本根分层调仓量 |Δw| 计): 分层按收盘成交比按档线价成交多付的差; 震荡 = 各份都按离收盘最近那档计, 跳空 = 远处各档多出的部分
-struct Cut {
-  float up = kNaN, mid = kNaN, dn = kNaN, w = 0, chop = 0, gap = 0;
+inline constexpr uint32_t kNone = UINT32_MAX;
+
+// 档线栈 (持久, 各根共用): 一个节点 = 一条冻结的档线 (价) + 上一条 (更靠中线的那条; kNone = 栈底 = 进中线以下时的起点, 不算档线)
+struct Rungs {
+  std::vector<float> px;
+  std::vector<uint32_t> up;
 };
 
-// 一条轨迹的刀 (列, 与 Cut 同字段); 本身是源: 逐根读回
+// 一刀 = 一根的信号: 中线 + 层距 h (未就绪 = NaN) + 基准档 top (档线栈顶; kNone = 中线以上 / 未就绪) + 目标仓位 w
+//   + 越线差 (占净值, 按本根分层调仓量 |Δw| 计): 分层按收盘成交比按档线价成交多付的差; 震荡 = 各份都按离收盘最近那档计, 跳空 = 远处各档多出的部分
+struct Cut {
+  float mid = kNaN, h = kNaN, w = 0, chop = 0, gap = 0;
+  uint32_t top = kNone;
+};
+
+// 一条轨迹的刀 (列, 与 Cut 同字段) + 档线栈; 本身是源: 逐根读回
 struct Cuts {
-  Col up, mid, dn, w, chop, gap;
+  Col mid, h, w, chop, gap;
+  std::vector<uint32_t> top;
+  Rungs rungs;
+  float s = 1; // 顺向 (kDirs)
   Cuts() = default;
-  explicit Cuts(size_t n) : up(n, kNaN), mid(n, kNaN), dn(n, kNaN), w(n, 0), chop(n, 0), gap(n, 0) {}
-  void put(size_t i, const Cut &x) { up[i] = x.up, mid[i] = x.mid, dn[i] = x.dn, w[i] = x.w, chop[i] = x.chop, gap[i] = x.gap; }
-  Cut operator()(size_t i) const { return {up[i], mid[i], dn[i], w[i], chop[i], gap[i]}; }
+  explicit Cuts(size_t n) : mid(n, kNaN), h(n, kNaN), w(n, 0), chop(n, 0), gap(n, 0), top(n, kNone) {}
+  void put(size_t i, const Cut &x) { mid[i] = x.mid, h[i] = x.h, w[i] = x.w, chop[i] = x.chop, gap[i] = x.gap, top[i] = x.top; }
+  Cut operator()(size_t i) const { return {mid[i], h[i], w[i], chop[i], gap[i], top[i]}; }
+
+  // 根 i 的档线 f(j, 价), j 自中线一侧起逐份 (至多 kUnits 条); 未就绪 = 无
+  //   中线以上 (满仓): 中线 − j · h, 随中线走
+  //   中线以下: 已减份的冻结档线 (栈里自中线往基准, 至多 kUnits − 持有份数) + 持有份的减仓线 (基准 − j · h, 随当日 ATR 伸缩)
+  template <class F>
+  void rungs_at(size_t i, F f) const {
+    if (!(h[i] > 0))
+      return;
+    if (top[i] == kNone) {
+      for (int j = 1; j <= kUnits; ++j)
+        f(j - 1, mid[i] - s * static_cast<float>(j) * h[i]);
+      return;
+    }
+    const int k = static_cast<int>(std::lround(std::fabs(w[i]) * kUnits));
+    uint32_t fz[kUnits];
+    int nf = 0;
+    for (uint32_t r = top[i]; rungs.up[r] != kNone && nf < kUnits - k; r = rungs.up[r])
+      fz[nf++] = r;
+    int j = 0;
+    while (nf > 0)
+      f(j++, rungs.px[fz[--nf]]);
+    for (int b = 1; b <= k; ++b)
+      f(j++, rungs.px[top[i]] - s * static_cast<float>(b) * h[i]);
+  }
 };
 
 // 方向: s = 顺向 (+1 = 多 / −1 = 空)
@@ -312,19 +348,28 @@ inline constexpr Dir kDirs[] = {{"long", "只做多: 中线以上满多, 中线�
 // ---- 分层 (逐根, 有状态) ----
 //   顺向坐标 x = s · 价 (多 = 价, 空 = −价); 下文的涨 / 跌 / 以上 / 以下都按 x
 //   x ≥ 中线: 满仓 (缺的份按收盘补满, 档线 = 中线), 无基准
-//   x < 中线: 基准 = 上一笔成交的档线 (刚穿到中线以下 = 当根中线); 跌到 基准 − h 减一份, 涨到 基准 + h 加一份;
-//     一根越过几档成交几档; 份数到 0 / 满之后不再成交, 基准照样移到最后越过的档 (跌透之后反弹一层即加回)
-//   中线 / 层距未就绪 = 空仓, 状态复位 (之后首根就绪: 中线以上满仓, 以下自空仓起, 基准 = 中线)
+//   x < 中线: 基准 = 档线栈顶 (刚穿到中线以下 = 当根中线, 作栈底); 档线 = 成交时定下的价, 定下即冻结
+//     跌到 基准 − h: 减一份, 该价压栈作新基准; 涨到栈里上一条档线 (栈底之上 = 基准 + h): 加一份, 回到那条作基准
+//     一根越过几档成交几档; 份数到 0 / 满之后不再成交, 基准照样移 (跌透之后反弹一档即加回)
+//   中线 / 层距未就绪 = 空仓, 状态复位 (之后首根就绪: 中线以上满仓, 以下自空仓起, 栈底 = 中线)
 struct Ladder {
-  float s;           // 顺向 (kDirs)
-  int k = 0;         // 持有份数
-  double ref = kNaN; // 基准 (顺向坐标; NaN = 中线以上 / 复位)
+  float s;              // 顺向 (kDirs)
+  Rungs rungs;          // 档线栈 (只增)
+  int k = 0;            // 持有份数
+  uint32_t top = kNone; // 基准档 (kNone = 中线以上 / 复位)
+
+  void reset() { k = 0, top = kNone; }
+  double at(uint32_t r) const { return s * rungs.px[r]; } // 档线 r 的顺向坐标
+  uint32_t push(double L, uint32_t up) {
+    rungs.px.push_back(static_cast<float>(s * L)), rungs.up.push_back(up);
+    return static_cast<uint32_t>(rungs.px.size() - 1);
+  }
 
   // 本根收 c, 中线 m, 层距 h → 一刀
   Cut operator()(float c, float m, double h) {
     Cut o{.mid = m};
     if (!(m > 0 && h > 0)) {
-      k = 0, ref = kNaN;
+      reset();
       return o;
     }
     const double x = s * c, q = s * m, u = 1.0 / kUnits;
@@ -337,37 +382,34 @@ struct Ladder {
     if (x >= q) {
       if (k < kUnits)
         fill(q, kUnits - k);
-      k = kUnits, ref = kNaN;
+      k = kUnits, top = kNone;
     } else {
-      if (std::isnan(ref))
-        ref = q;
-      if (x <= ref - h) {
-        const double j = std::floor((ref - x) / h);
-        const int d = static_cast<int>(std::min<double>(j, k));
-        for (int i = 1; i <= d; ++i)
-          fill(ref - i * h, 1);
-        k -= d, ref -= j * h;
-      } else if (x >= ref + h) {
-        const double j = std::floor((x - ref) / h);
-        const int d = static_cast<int>(std::min<double>(j, kUnits - k));
-        for (int i = 1; i <= d; ++i)
-          fill(ref + i * h, 1);
-        k += d, ref += j * h;
-      }
+      if (top == kNone)
+        top = push(q, kNone);
+      const auto above = [&] { return rungs.up[top] != kNone ? at(rungs.up[top]) : at(top) + h; };
+      if (x <= at(top) - h)
+        do {
+          const double L = at(top) - h;
+          if (k > 0)
+            fill(L, 1), --k;
+          top = push(L, top);
+        } while (x <= at(top) - h);
+      else
+        for (double L; x >= (L = above());) {
+          if (k < kUnits)
+            fill(L, 1), ++k;
+          top = rungs.up[top] != kNone ? rungs.up[top] : push(L, kNone);
+        }
     }
+    o.h = static_cast<float>(h), o.top = top;
     o.w = static_cast<float>(s * u * k), o.chop = static_cast<float>(u * n * near), o.gap = static_cast<float>(u * (sum - n * near));
-    // 下一笔: 减 = 中线以上 → 中线 − h / 以下 → 基准 − h (有份可减); 加 = 基准 + h 与中线取近 (未满)
-    const double cut = std::isnan(ref) ? q - h : k ? ref - h
-                                                   : kNaN,
-                 add = std::isnan(ref) || k == kUnits ? kNaN : std::min(ref + h, q);
-    (s > 0 ? o.dn : o.up) = static_cast<float>(s * cut), (s > 0 ? o.up : o.dn) = static_cast<float>(s * add);
     return o;
   }
 };
 
 // ---- 源 (逐根出刀) ----
 
-// 买入持有: 无触发线, 恒满多
+// 买入持有: 无档线, 恒满多
 struct Hold {
   Cut operator()(size_t) const { return {.w = 1}; }
 };
