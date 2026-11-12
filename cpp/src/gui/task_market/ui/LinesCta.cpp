@@ -80,7 +80,7 @@ std::pair<int, size_t> seg_at(const cta::Track &tr, size_t i) {
   return {std::prev(it)->second, std::prev(it)->first};
 }
 
-// ---- 两图: 上 = 仓位色 (多 = 收盘线以上, 空 = 以下, 越满越浓) + 收盘 + 中线 + 档线 (分层的 kUnits 份各一条, 分层时另有起点一条) + 逐根时的买 / 卖标记;
+// ---- 两图: 上 = 仓位色 (多 = 收盘线以上, 空 = 以下, 越满越浓) + 收盘 + 中线 + 档线 (分层的 kUnits 份各一条, 分层时另有起点一条) + 买 / 卖标记 (每点合成);
 //      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换). x 同一视野 (链到 ui), 每像素取末根; 光标 = 可拖竖线 (两图同一条)
 //      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 双击回全段;
 //      光标 = 橙色竖线 (同 OrderFlow 锚线): 参数点云展开时才出现 (初放视野正中), 只能拖动, 标注时刻 ----
@@ -112,14 +112,33 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const ImVec2 &size
     wm[k] /= static_cast<double>(at[k + 1] - at[k]);
   }
 
-  // 视野内逐根的买 / 卖 (只 step = 1 标)
+  // 买 / 卖标记: 每点 (根 at[k] / step · step .. at[k]) 的买 / 卖各合成一个 = 合计 |Δw|, 标在其中最大一笔那根 (逐根 = 各根本身); 次数 = 视野内逐根计
   const size_t lo = static_cast<size_t>(std::clamp(std::ceil(c.x0), 0.0, static_cast<double>(n - 1)));
   const size_t hi = static_cast<size_t>(std::clamp(std::floor(c.x1), 0.0, static_cast<double>(n - 1)));
   const auto dw = [&](size_t i) { return w[i] - (i ? w[i - 1] : 0.0f); };
+  struct Mark {
+    size_t i = 0;
+    float d = 0, top = 0; // 合计 Δw / 最大一笔 |Δw|
+  };
+  std::vector<Mark> marks;
   int buys = 0, sells = 0;
-  if (step == 1)
-    for (size_t i = lo; i <= hi; ++i)
-      buys += dw(i) > 1e-6f, sells += dw(i) < -1e-6f;
+  for (const size_t e : at) {
+    Mark m[2]; // 买 / 卖
+    for (size_t i = e / step * step; i <= e; ++i) {
+      const float d = dw(i);
+      if (std::fabs(d) <= 1e-6f)
+        continue;
+      Mark &x = m[d < 0];
+      x.d += d;
+      if (std::fabs(d) > x.top)
+        x.top = std::fabs(d), x.i = i;
+      if (i >= lo && i <= hi)
+        ++(d > 0 ? buys : sells);
+    }
+    for (const Mark &x : m)
+      if (x.top > 0)
+        marks.push_back(x);
+  }
 
   // 标题: 标的 (高亮) · 模型 · 窗 · 视野 · 粒度
   const std::string model = std::string(cta::kCenters[r.spec.kind].name) + " / " + cta::kDirs[r.spec.dir].name;
@@ -127,7 +146,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const ImVec2 &size
   if (step == 1)
     std::snprintf(gran, sizeof(gran), "逐根, 买 %d 次 / 卖 %d 次", buys, sells);
   else
-    std::snprintf(gran, sizeof(gran), "每点 %zu 根 (放大到逐根看买卖)", step);
+    std::snprintf(gran, sizeof(gran), "每点 %zu 根 (买 / 卖各合成一个), 买 %d 次 / 卖 %d 次", step, buys, sells);
   ImGui::TextColored(kHead, "%s", name ? name : "");
   ImGui::SameLine();
   ImGui::TextDisabled("%s  ·  W %d 日  ·  %s ~ %s  ·  %s", model.c_str(), r.spec.roll, misc::dash(day_of(r, lo)).c_str(),
@@ -194,16 +213,14 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const ImVec2 &size
     ImPlot::PlotLine("中线", xs.data(), mid.data(), static_cast<int>(xs.size()));
     ImPlot::SetNextLineStyle(ImGui::GetStyleColorVec4(ImGuiCol_Text), 1.2f);
     ImPlot::PlotLine("收盘", xs.data(), close.data(), static_cast<int>(xs.size()));
-    if (step == 1) { // 买 ▲ (收盘下方) / 卖 ▼ (上方), 边长 ∝ |Δw| (翻向截到 1), 细描边
+    { // 买 ▲ (收盘下方) / 卖 ▼ (上方), 边长 ∝ 合计 |Δw| (截到 1), 细描边
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       ImPlot::PushPlotClipRect();
       const float sc = ImGui::GetFontSize() / 13.0f;
-      for (size_t i = lo; i <= hi; ++i) {
-        const float d = dw(i);
-        if (std::fabs(d) <= 1e-6f)
-          continue;
-        const ImVec2 p = ImPlot::PlotToPixels(static_cast<double>(i), se.c[i]);
-        const float s = (7.0f + 14.0f * std::min(1.0f, std::fabs(d))) * sc / 2, y = d > 0 ? p.y + s * 1.2f : p.y - s * 1.2f, t = d > 0 ? -s : s;
+      for (const Mark &m : marks) {
+        const float d = m.d;
+        const ImVec2 p = ImPlot::PlotToPixels(static_cast<double>(m.i), se.c[m.i]);
+        const float s = (5.0f + 14.0f * std::min(1.0f, std::fabs(d))) * sc / 2, y = d > 0 ? p.y + s * 1.2f : p.y - s * 1.2f, t = d > 0 ? -s : s;
         const ImVec2 a(p.x, y + t), b(p.x - s, y - t), e(p.x + s, y - t);
         dl->AddTriangleFilled(a, b, e, ImGui::GetColorU32(d > 0 ? kUp : kDn));
         dl->AddTriangle(a, b, e, IM_COL32(0, 0, 0, 160), 1.0f);
