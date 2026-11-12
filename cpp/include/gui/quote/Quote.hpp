@@ -137,19 +137,12 @@ struct Kline {
   std::vector<Bars> minutes; // 日升序, 无成交的日不收
 };
 
-inline constexpr std::array<float, kSlots> kNoBook = [] {
-  std::array<float, kSlots> a{};
-  a.fill(std::numeric_limits<float>::quiet_NaN());
-  return a;
-}();
-
 // 一个标的一个交易日 (当日 / 合成的一日); candle.date 0 = 无
 struct Day {
-  misc::Ymd prev = 0;                       // 前一交易日
-  Candle candle;                            // 日根 (ref = 前收)
-  Bars bars;                                // 分钟根
-  double flow = 0;                          // 净流入 [元] (分钟涨跌法) = Σ bars.net
-  std::array<float, kSlots> book = kNoBook; // 各根委比 (QuoteService: 根内快照均值, 篮子 = 成员按权平均); NaN = 无 (只当日有)
+  misc::Ymd prev = 0; // 前一交易日
+  Candle candle;      // 日根 (ref = 前收)
+  Bars bars;          // 分钟根
+  double flow = 0;    // 净流入 [元] (分钟涨跌法) = Σ bars.net
 };
 
 inline bool joins(const Kline &k, const Day &d) { return d.candle.date != 0 && d.prev == k.last; }

@@ -28,9 +28,6 @@
 //   全市场 = 构造时给定的全局轴子集 (PoolAxis; 对外一律全局 id, 内部下标 = sub, 新浪码由轴码派生); 前一交易日取自构造时给定的交易日历;
 //   线程: 快照 1 (每批一路并发) + 分钟 K kFillers, 随对象.
 // 当日的 Day: 有成交才有 (个股 = 本只当日有成交, 篮子 = 成员有成交); 基准 = 新浪昨收; 个股的净流入 = 本只分钟涨跌法 (net_flow).
-// 委比 (Day::book): 一只一张快照 r = (Σ 五档买挂单额 − Σ 卖) / (买 + 卖) ∈ [−1, 1], 双边皆空不计; 只取连续竞价 (集合竞价的盘口是虚拟撮合),
-//   每张新快照 (时刻前进) 计入所在根的均值 (此刻所在根随每轮快照动); 只来自快照, 分钟 K 不补, 随 Track 落盘.
-//   篮子 = 成员表按权平均 Σ w · r / Σ w (该根有委比的成员), 与篮子合成同一趟 (fold): 同一条冻结线, 只合冻结线之后的几槽.
 #pragma once
 
 #include "api/sina/client.hpp"
@@ -38,7 +35,6 @@
 #include "gui/quote/Quote.hpp"
 #include "misc/date.hpp"
 
-#include <array>
 #include <bitset>
 #include <condition_variable>
 #include <cstddef>
@@ -100,21 +96,17 @@ private:
   enum class Fill : uint8_t { Idle,
                               Queued,
                               Busy };
-  // 一只的当日: 快照合成 + 分钟 K 补的根, 待补区间, 快照累计基线, 各根委比
+  // 一只的当日: 快照合成 + 分钟 K 补的根, 待补区间, 快照累计基线
   struct Track {
-    Bars bars;                            // 当日的根
-    std::bitset<kSlots> exact;            // 来自分钟 K 的根 (含确认无成交的); 快照不写
-    int lo = kSlots, hi = -1;             // 待补区间 (lo > hi = 无)
-    double vol = -1, amt = 0;             // 上一快照累计 (vol < 0 = 尚无快照)
-    float high = 0, low = 0;              // 上一快照日内高 / 低
-    std::array<float, kSlots> book{};     // 各根委比的快照均值
-    std::array<uint16_t, kSlots> nbook{}; // 各根计入委比的快照数 (0 = 无)
-    int bsec = -1;                        // 末张计入委比的快照时刻 (运行态, 不落盘)
-    Fill fill = Fill::Idle;               // 运行态, 不落盘
+    Bars bars;                 // 当日的根
+    std::bitset<kSlots> exact; // 来自分钟 K 的根 (含确认无成交的); 快照不写
+    int lo = kSlots, hi = -1;  // 待补区间 (lo > hi = 无)
+    double vol = -1, amt = 0;  // 上一快照累计 (vol < 0 = 尚无快照)
+    float high = 0, low = 0;   // 上一快照日内高 / 低
+    Fill fill = Fill::Idle;    // 运行态, 不落盘
 
     void mark(int l, int h) { lo = std::min(lo, l), hi = std::max(hi, h); }
     bool absorb(const sina::Quote &q, int gap); // 同日快照; gap = 断档起始根 (-1 = 无); 返回 = 有变化
-    bool sample(const sina::Quote &q);          // 同日快照的委比计入所在根; 返回 = 计入
     // 分钟 K 写回: [l, settled] 定稿, 其后待补区间内取时 (此刻所在根 live) 已走完的根暂写; 返回写到的末根
     int merge(int l, int settled, int live, misc::Ymd date, const std::vector<sina::Bar> &got);
   };
@@ -131,7 +123,6 @@ private:
     std::unique_ptr<Fold> fold;
     std::vector<Fold::Carry> carry; // [成员表行] 冻结线处的接续
     int frozen = 0;
-    std::vector<double> book; // [篮子][kSlots][2] 委比 Σ w · r / Σ w
   };
 
   void poll();

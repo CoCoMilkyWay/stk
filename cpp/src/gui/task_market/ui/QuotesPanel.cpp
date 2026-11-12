@@ -3,7 +3,7 @@
 #include "gui/Tasks.hpp"      // StatusColor (补分钟进度条 = 进行中色)
 #include "gui/util/Chart.hpp" // kUp / kDn / tint / toggle_button / button_bar / EndTag
 #include "gui/util/HoverSync.hpp"
-#include "shared/Basket.hpp" // 委比副图的默认标的 (全A.等)
+#include "shared/Basket.hpp" // 净流入副图的默认标的 (全A.等)
 
 #include "imgui.h"
 #include "implot.h"
@@ -705,7 +705,7 @@ struct Overlay {
   int now = 0;
 };
 
-// 叠加图 / 委比副图同一套竖网格: nd 日各整点 (grid) + 日界 (seps)
+// 叠加图 / 净流入副图同一套竖网格: nd 日各整点 (grid) + 日界 (seps)
 void day_grid(int nd, std::vector<double> &grid, std::vector<double> &seps) {
   for (int k = 0; k < nd; ++k) {
     for (int h = 0; h < 5; ++h)
@@ -875,25 +875,30 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   return corner;
 }
 
-// 委比副图 (叠加图正下方, 同一 x 视野 / 竖网格, 刻度区全空): today 各根委比 [%] 落在日轴末日 (行情日), 红绿柱 (≥ 0 红 / < 0 绿);
-//   y 对称贴合 (至少 ±kBookMin); 左上小字 = "委比 · 名" + 末根读数, 右壁标柱的最大幅度; 悬停 = 竖线 + 时刻 / 读数
-constexpr double kBookMin = 5;      // [%]
-constexpr float kBookShare = 0.25f; // 委比副图占日内栏的高
-void plot_book(const Day *today, const std::string &name, int nd, const ImVec2 &size) {
+// 净流入副图 (叠加图正下方, 同一 x 视野 / 竖网格, 刻度区全空): src 在日轴各日的每分钟净流入 (Bars::net, 分钟涨跌法) [元] 红绿柱
+//   (≥ 0 红 / < 0 绿); 历史日 = 历史分钟根, 当日 = 快照合成的根 (此刻所在根随快照动, 走完即与分钟 K 同值).
+//   y 对称贴合, 首根 / 末根 (集合竞价) 不参与贴合 (超出截在边上); 左上小字 = "净流入 · 名" + 末根读数, 右壁标贴合幅度; 悬停 = 竖线 + 时刻 / 读数
+constexpr float kNetShare = 0.25f; // 净流入副图占日内栏的高
+void plot_net(const Source &src, const std::string &name, const std::vector<misc::Ymd> &days, const ImVec2 &size) {
+  const int nd = std::max(1, static_cast<int>(days.size()));
   std::vector<double> x, y;
-  if (today)
-    for (int s = 0; s < kSlots; ++s)
-      if (const float v = today->book[static_cast<size_t>(s)]; !std::isnan(v))
-        x.push_back(static_cast<double>((nd - 1) * kSlots + s)), y.push_back(v * 100.0);
-  double top = kBookMin;
-  for (const double v : y)
-    top = std::max(top, std::abs(v));
+  double top = 0;
+  for (size_t k = 0; k < days.size(); ++k)
+    if (const Bars *b = bars_on(src, days[k]))
+      for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
+        if (b->has[j]) {
+          x.push_back(static_cast<double>(k * kSlots + j)), y.push_back(b->net[j]);
+          if (j != 0 && j != static_cast<size_t>(kSlots) - 1)
+            top = std::max(top, std::abs(b->net[j]));
+        }
+  if (!(top > 0))
+    top = 1e4;
   std::vector<double> grid, seps;
   day_grid(nd, grid, seps);
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(1, 1));
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(0, 0));
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotBorderSize, 0.f);
-  if (ImPlot::BeginPlot("##book", size, ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
+  if (ImPlot::BeginPlot("##net", size, ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
     ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks);
     ImPlot::SetupAxisLimits(ImAxis_X1, -0.5, nd * kSlots - 0.5, ImPlotCond_Always);
     ImPlot::SetupAxisTicks(ImAxis_X1, grid.data(), static_cast<int>(grid.size()));
@@ -923,17 +928,18 @@ void plot_book(const Day *today, const std::string &name, int nd, const ImVec2 &
       const ImVec2 pos = ImPlot::GetPlotPos(), psz = ImPlot::GetPlotSize();
       const float fs = ImGui::GetFontSize() * kTagScale, right = pos.x + psz.x - 2.f;
       const ImU32 col = ImGui::ColorConvertFloat4ToU32(kGridTag);
-      const std::string head = "委比 · " + name;
+      const std::string head = "净流入 · " + name;
       dl->AddText(font, fs, ImVec2(pos.x + 4.f, pos.y + 2.f), col, head.c_str());
       if (!y.empty()) {
-        char now[16];
-        std::snprintf(now, sizeof(now), "%+.1f%%", y.back());
+        char now[24];
+        now[0] = y.back() < 0 ? '-' : '+';
+        fmt_amount(now + 1, sizeof(now) - 1, std::abs(y.back()));
         const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.f, head.c_str()).x;
         dl->AddText(font, fs, ImVec2(pos.x + 4.f + w + 6.f, pos.y + 2.f), ImGui::ColorConvertFloat4ToU32(tint(y.back(), 0)), now);
       }
-      char hi[16], lo[16];
-      std::snprintf(hi, sizeof(hi), "+%.0f%%", top);
-      std::snprintf(lo, sizeof(lo), "-%.0f%%", top);
+      char hi[24] = "+", lo[24] = "-";
+      fmt_amount(hi + 1, sizeof(hi) - 1, top);
+      fmt_amount(lo + 1, sizeof(lo) - 1, top);
       const ImVec2 hs = font->CalcTextSizeA(fs, FLT_MAX, 0.f, hi), ls = font->CalcTextSizeA(fs, FLT_MAX, 0.f, lo);
       dl->AddText(font, fs, ImVec2(right - hs.x, ImPlot::PlotToPixels(0.0, top).y), col, hi);
       dl->AddText(font, fs, ImVec2(right - ls.x, ImPlot::PlotToPixels(0.0, -top).y - ls.y), col, lo);
@@ -943,9 +949,14 @@ void plot_book(const Day *today, const std::string &name, int nd, const ImVec2 &
       ImPlot::SetNextLineStyle(kCrossLine, 1.f);
       ImPlot::PlotInfLines("##cx", &cx, 1);
       const auto it = std::lower_bound(x.begin(), x.end(), cx);
-      const int mn = slot_label(static_cast<int>(cx) % kSlots);
-      if (it != x.end() && *it == cx)
-        ImGui::SetTooltip("%02d:%02d  委比 %+.2f%%", mn / 60, mn % 60, y[static_cast<size_t>(it - x.begin())]);
+      const int k = static_cast<int>(cx) / kSlots, mn = slot_label(static_cast<int>(cx) % kSlots);
+      if (it != x.end() && *it == cx && static_cast<size_t>(k) < days.size()) {
+        const double v = y[static_cast<size_t>(it - x.begin())];
+        char amt[24];
+        fmt_amount(amt, sizeof(amt), std::abs(v));
+        ImGui::SetTooltip("%02d-%02d %02d:%02d  净流入 %s%s", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60,
+                          mn % 60, v < 0 ? "-" : "+", amt);
+      }
     }
     ImPlot::EndPlot();
   }
@@ -1172,15 +1183,15 @@ int RenderIntraday(const QuoteHub &mk, OverlayState &st, const std::vector<Overl
     for (const Candle &c : s.bars)
       l.y.push_back(pct(c.close));
   }
-  // 委比副图的标的: 只一条 = 它, 否则全A.等
+  // 净流入副图的标的: 只一条 = 它, 否则全A.等
   const size_t all_eq = basket_table().at_pool(kBasketBase);
-  const Ref bk = picks.size() == 1 ? picks.front().ref : Ref{kBasket, static_cast<uint32_t>(all_eq)};
-  const std::string bk_name = picks.size() == 1 ? picks.front().name : basket_table().name(all_eq);
-  const float bh = std::floor(avail.y * kBookShare);
+  const Ref nk = picks.size() == 1 ? picks.front().ref : Ref{kBasket, static_cast<uint32_t>(all_eq)};
+  const std::string nk_name = picks.size() == 1 ? picks.front().name : basket_table().name(all_eq);
+  const float bh = std::floor(avail.y * kNetShare);
   ImGui::PushID("intraday");
   int near = -1;
   const ImVec2 corner = plot_overlay(ls, days, ImVec2(avail.x, avail.y - bh - ImGui::GetStyle().ItemSpacing.y), "%", hot, near);
-  plot_book(SourceOf(st, bk).today, bk_name, nd, ImVec2(avail.x, bh));
+  plot_net(SourceOf(st, nk), nk_name, days, ImVec2(avail.x, bh));
   overlay_tools(corner, f, note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : gap ? note
                                                                                                 : nullptr,
                 qs, [&] { button_bar(kIntraName, kIntras, st.intraday); });

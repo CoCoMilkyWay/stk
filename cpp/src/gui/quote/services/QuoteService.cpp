@@ -46,11 +46,6 @@ int trading_sec(int sec) {
          std::clamp(sec, 13 * 3600, 15 * 3600) - 13 * 3600;
 }
 
-// 连续竞价时段 (委比只取这段)
-bool continuous(int sec) {
-  return (sec >= 9 * 3600 + 30 * 60 && sec <= 11 * 3600 + 30 * 60) || (sec >= 13 * 3600 && sec < 14 * 3600 + 57 * 60);
-}
-
 // 交易所出新快照的时段 (竞价起, 收盘后留余量收尾)
 bool in_session(const Clock &c) {
   return c.weekday < 5 && ((c.sec >= 9 * 3600 + 14 * 60 + 30 && c.sec < 11 * 3600 + 31 * 60) ||
@@ -59,7 +54,7 @@ bool in_session(const Clock &c) {
 
 // 缓存文件 = FileRec + n × AssetRec + n × kSlots × SlotRec (定长, 本机字节序); 头不符 = 别的格式 / 别的行情日, 弃.
 //   AssetRec / SlotRec 各是一个原子条目: 整条写入, busy 先置后清 —— 读回 busy 的 = 写到一半进程没了
-constexpr uint32_t kMagic = 0x59414451; // "QDAY"
+constexpr uint32_t kMagic = 0x56494C51; // "QLIV"
 struct FileRec {
   uint32_t magic;
   misc::Ymd date;
@@ -75,8 +70,6 @@ struct AssetRec {
 };
 struct SlotRec {
   Cell bar;
-  float book;
-  uint16_t nbook;
   uint8_t has, exact, busy;
 };
 
@@ -184,13 +177,9 @@ std::shared_ptr<const std::vector<Day>> QuoteService::today(Side s, std::span<co
       continue;
     o.prev = prev_;
     o.candle = {candle_of(last_[i]), date_, last_[i].last_close};
-    const Track &t = tracks_[i];
-    o.bars = t.bars;
+    o.bars = tracks_[i].bars;
     o.bars.date = date_;
     o.flow = net_flow(o.bars, o.candle.ref);
-    for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
-      if (t.nbook[s])
-        o.book[s] = t.book[s];
   }
   return out;
 }
@@ -235,10 +224,9 @@ void QuoteService::fold() {
   }
   const Members &M = b->members;
   const uint32_t n = static_cast<uint32_t>(M.size());
-  const size_t nb = b->level.size();
   Folding &g = folding_;
   if (g.basis != b || g.date != date)
-    g = {b, date, std::make_unique<Fold>(nb), std::vector<Fold::Carry>(n), 0, std::vector<double>(nb * kSlots * 2)};
+    g = {b, date, std::make_unique<Fold>(b->level.size()), std::vector<Fold::Carry>(n), 0};
   if (touched < g.frozen || freeze < g.frozen)
     g.frozen = 0;
   enum { kDone,
@@ -246,9 +234,6 @@ void QuoteService::fold() {
          kGone };
   const auto pass = [&](int from) {
     g.fold->open(from, freeze, slots);
-    for (size_t k = 0; k < nb; ++k)
-      std::fill(g.book.begin() + static_cast<ptrdiff_t>((k * kSlots + static_cast<size_t>(from)) * 2),
-                g.book.begin() + static_cast<ptrdiff_t>((k * kSlots + static_cast<size_t>(slots)) * 2), 0.0);
     for (uint32_t k0 = 0; k0 < n; k0 += kFoldChunk) {
       std::lock_guard<std::mutex> lock(mu_);
       if (date_ != date)
@@ -256,16 +241,9 @@ void QuoteService::fold() {
       for (uint32_t k = k0, k1 = std::min(k0 + kFoldChunk, n); k < k1; ++k) {
         const uint32_t i = M.id[k];
         const sina::Quote &q = last_[i];
-        const Track &t = tracks_[i];
         const Cell c = candle_of(q);
-        if (!g.fold->add({q.last_close, traded(q) ? &c : nullptr, &t.bars}, M.of(k), g.carry[k]))
+        if (!g.fold->add({q.last_close, traded(q) ? &c : nullptr, &tracks_[i].bars}, M.of(k), g.carry[k]))
           return kRebase;
-        for (const Members::Weight &w : M.of(k)) {
-          double *a = g.book.data() + static_cast<size_t>(w.key) * kSlots * 2;
-          for (int s = from; s < slots; ++s)
-            if (t.nbook[static_cast<size_t>(s)])
-              a[2 * s] += w.w * t.book[static_cast<size_t>(s)], a[2 * s + 1] += w.w;
-        }
       }
     }
     return kDone;
@@ -279,17 +257,11 @@ void QuoteService::fold() {
   }
   assert(r == kDone);
   g.frozen = freeze;
-  auto out = std::make_shared<std::vector<Day>>(nb);
+  auto out = std::make_shared<std::vector<Day>>(b->level.size());
   g.fold->finish(date, prev, *out);
-  for (size_t k = 0; k < nb; ++k) {
-    Day &y = (*out)[k];
-    const double *a = g.book.data() + k * kSlots * 2;
-    for (int s = 0; s < slots; ++s)
-      if (a[2 * s + 1] > 0)
-        y.book[static_cast<size_t>(s)] = static_cast<float>(a[2 * s] / a[2 * s + 1]);
-    if (y.candle.date)
+  for (size_t k = 0; k < out->size(); ++k)
+    if (Day &y = (*out)[k]; y.candle.date)
       rebase(y, b->level[k]);
-  }
   std::lock_guard<std::mutex> lock(mu_);
   if (date_ != date || basis_ != b)
     return;
@@ -351,12 +323,9 @@ void QuoteService::poll() {
         if (q.date != date_) // 停牌等: 只留快照
           continue;
         sec_ = std::max(sec_, q.sec);
-        Track &t = tracks_[i];
-        const bool moved = t.absorb(q, gap), booked = t.sample(q);
-        if (moved)
-          put(i);
-        if (moved || booked) {
+        if (tracks_[i].absorb(q, gap)) {
           put(i, sec_slot(q.sec));
+          put(i);
           dirty_ = true;
           touched_ = std::min(touched_, sec_slot(q.sec));
         }
@@ -397,21 +366,6 @@ bool QuoteService::Track::absorb(const sina::Quote &q, int gap) {
   }
   vol = q.volume, amt = q.amount, high = q.high, low = q.low;
   return dv != 0;
-}
-
-bool QuoteService::Track::sample(const sina::Quote &q) {
-  if (q.sec <= bsec || !continuous(q.sec))
-    return false;
-  bsec = q.sec;
-  double bid = 0, ask = 0;
-  for (int k = 0; k < sina::kLevels; ++k)
-    bid += q.bid[k] * q.bid_vol[k], ask += q.ask[k] * q.ask_vol[k];
-  if (!(bid + ask > 0))
-    return false;
-  const size_t s = static_cast<size_t>(sec_slot(q.sec));
-  const float r = static_cast<float>((bid - ask) / (bid + ask));
-  book[s] += (r - book[s]) / ++nbook[s];
-  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -539,7 +493,7 @@ void QuoteService::put(uint32_t i) {
 void QuoteService::put(uint32_t i, int s) {
   const Track &t = tracks_[i];
   const size_t k = static_cast<size_t>(s);
-  store(slot_rec(map_, tracks_.size(), i, s), SlotRec{t.bars.cell[k], t.book[k], t.nbook[k], t.bars.has[k], t.exact[k], 0});
+  store(slot_rec(map_, tracks_.size(), i, s), SlotRec{t.bars.cell[k], t.bars.has[k], t.exact[k], 0});
 }
 
 void QuoteService::load() {
@@ -570,8 +524,6 @@ void QuoteService::load() {
           t.bars.has[static_cast<size_t>(s)] = r.has;
           t.bars.cell[static_cast<size_t>(s)] = r.bar;
           t.exact[static_cast<size_t>(s)] = r.exact;
-          t.book[static_cast<size_t>(s)] = r.book;
-          t.nbook[static_cast<size_t>(s)] = r.nbook;
         }
       }
       sec_ = f.sec;
