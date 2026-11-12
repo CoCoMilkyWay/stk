@@ -180,11 +180,11 @@ struct LinesSheetKey {
   bool operator==(const LinesSheetKey &) const = default;
 };
 struct LinesSheet {
-  size_t nc = 0, R = 0;                        // 名之后的列数 / 组内行数
-  std::vector<LinesAt> at;                     // [表行] 行: 组内行 [0, R) + 展开行在本组时其下的成分行 (成分组前 n_cons 行)
-  std::vector<SheetCell> cells;                // [表行][nc]
-  std::vector<SheetToday> today;               // [表行] 当日 (过滤条 / 悬停)
-  std::vector<std::vector<Flow>> flow;         // 资金流段: [表行][日轴各日 + 合计] (悬停)
+  size_t nc = 0, R = 0;                // 名之后的列数 / 组内行数
+  std::vector<LinesAt> at;             // [表行] 行: 组内行 [0, R) + 展开行在本组时其下的成分行 (成分组前 n_cons 行)
+  std::vector<SheetCell> cells;        // [表行][nc]
+  std::vector<SheetToday> today;       // [表行] 当日 (过滤条 / 悬停)
+  std::vector<std::vector<Flow>> flow; // 资金流段: [表行][日轴各日 + 合计] (悬停)
 };
 
 // 行选中 (LinesRow::id → 行情键; 默认空): 属于组合 of, 换组合 → 整份清空
@@ -215,11 +215,11 @@ struct LinesState {
   Stage<LinesSheetKey, LinesSheet> sheet[kPages]; // [LinesPage] 右表格
   LinesRange range;
   LinesPick pick;
-  HoverSync<std::string> hover;       // NAV 主图 / 日内栏 / FLOW 图 ↔ 右表的悬停联动 (键 = LinesRow::id)
-  bool watch_loaded = false;          // 读过自选文件
-  std::vector<std::string> watch;     // 自选键 (= 文件, 自选序; 改了即存)
-  std::optional<Move> pool_move;      // 右表指数组拖定的池表移动 (pool_order 的位置; 由 TaskMarket 交 move_pool)
-  int band_years = kBandYearsDef;     // VAL 滚动窗 N (年; 右图例滑条)
+  HoverSync<std::string> hover;   // NAV 主图 / 日内栏 / FLOW 图 ↔ 右表的悬停联动 (键 = LinesRow::id)
+  bool watch_loaded = false;      // 读过自选文件
+  std::vector<std::string> watch; // 自选键 (= 文件, 自选序; 改了即存)
+  std::optional<Move> pool_move;  // 右表指数组拖定的池表移动 (pool_order 的位置; 由 TaskMarket 交 move_pool)
+  int band_years = kBandYearsDef; // VAL 滚动窗 N (年; 右图例滑条)
   bool log_y = false;
   std::set<std::string> reveal;                                              // 待在主图例里回默认显隐的线 ID (行刚选中; 画到时消费; 理想列显, 可成交列隐)
   std::string shown_key;                                                     // 上帧主图各线显隐 (进 fit 键)

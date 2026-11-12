@@ -86,12 +86,12 @@ enum OverlayKind : int { kOverlayNone = -1,
 
 // 叠加图 / Lines 右表的行情: 篮子 Feed + 叠加个股 Feed (历史) + 成分当日 (只当日) + 两种图的档位
 struct OverlayState {
-  Feed baskets;               // 键集 = 全部篮子线 (下标 = 篮子下标)
-  Feed stocks;                // 键集 = 叠加的个股 (全局 id; 与 ASSET 同一路个股历史)
-  Today<Day> cons;            // 成分组的个股 (全局 id, 升序) 的当日
-  int span[kOverlays] = {};   // [OverlayKind] 日轴档 (日内 / 2日 … 5日)
-  int flow_unit = 0;          // 资金流 y: 0 = 占近 5 日日均成交额 [%], 1 = 金额 [亿元]
-  bool flow_ends = false;     // 资金流计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价)
+  Feed baskets;             // 键集 = 全部篮子线 (下标 = 篮子下标)
+  Feed stocks;              // 键集 = 叠加的个股 (全局 id; 与 ASSET 同一路个股历史)
+  Today<Day> cons;          // 成分组的个股 (全局 id, 升序) 的当日
+  int span[kOverlays] = {}; // [OverlayKind] 日轴档 (日内 / 2日 … 5日)
+  int flow_unit = 0;        // 资金流 y: 0 = 占近 5 日日均成交额 [%], 1 = 金额 [亿元]
+  bool flow_ends = false;   // 资金流计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价)
 };
 
 // 一个标的的源: 历史 (无 = nullptr) + 当日 (未取 = nullptr; 当日无成交 = candle.date 0)

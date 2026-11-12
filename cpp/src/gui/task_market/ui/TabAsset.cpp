@@ -172,17 +172,26 @@ const Column kCols[] = {
               "• 数据: 资产轴 (帧目录扫出)\n"
               "• 显示: 原样, 按字典序排\n"
               "• 适用: 全部资产"},
-     Kind::Text, 0, nullptr, nullptr,
-     [](const Row &r) -> std::string_view { return r.a.asset_code; }, nullptr, nullptr},
+     Kind::Text,
+     0,
+     nullptr,
+     nullptr,
+     [](const Row &r) -> std::string_view { return r.a.asset_code; },
+     nullptr,
+     nullptr},
 
     {{"简称", "简称 = 公司在交易所的简称\n"
               "• 算法: 逐日 PIT 取最新交易日; 退市股回落到最后简称\n"
               "• 数据: cn_stock_instruments 最新交易日 / cn_stock_basic_info\n"
               "• 显示: 原样, 按字典序排; 简称前缀与 ST 列同源同日\n"
               "• 适用: 有基本面的资产"},
-     Kind::Text, 0, nullptr, nullptr,
+     Kind::Text,
+     0,
+     nullptr,
+     nullptr,
      [](const Row &r) -> std::string_view { return r.info && !r.info->name.empty() ? std::string_view(r.info->name) : "-"; },
-     nullptr, nullptr},
+     nullptr,
+     nullptr},
 
     {{"板块", "板块 = 交易所.板块\n"
               "• 算法: 板块按代码前缀: SH.主 = 沪市主板 (600/601/603/605), SH.科 = 科创板 (688/689), SZ.主 = 深市主板 (000/001/002/003/004),\n"
@@ -190,12 +199,16 @@ const Column kCols[] = {
               "• 数据: 证券代码 + 交易所\n"
               "• 显示: 字色按交易所 (沪蓝 / 深青 / 北橙); 按板块排\n"
               "• 适用: 全部资产"},
-     Kind::Category, 0, nullptr,
+     Kind::Category,
+     0,
+     nullptr,
      [](const Row &r) { return static_cast<double>(GetBoardType(r.a.asset_code)); },
      [](const Row &r) -> std::string_view { return MarketAbbr(GetBoardType(r.a.asset_code)); },
      [](const Row &r, double) {
        const char *t = MarketAbbr(GetBoardType(r.a.asset_code));
-       return t[0] == '-' ? num_none() : num_cell(r.a.exchange == "SH" ? kShCol : r.a.exchange == "SZ" ? kSzCol : kBjCol, "%s", t);
+       return t[0] == '-' ? num_none() : num_cell(r.a.exchange == "SH" ? kShCol : r.a.exchange == "SZ" ? kSzCol
+                                                                                                       : kBjCol,
+                                                  "%s", t);
      },
      nullptr},
 
@@ -204,21 +217,36 @@ const Column kCols[] = {
               "• 数据: 新浪当日接得上 (其前一交易日 = 本只 bar1d 水位) 取新浪快照, 否则 bar1d 最新有成交日; 与 Lines 右表近况列同一核\n"
               "• 显示: 百分比两位, 按正负着色; 随快照刷新\n"
               "• 适用: 有基本面的资产"},
-     Kind::Number, 0, nullptr, [](const Row &r) { return 100.0 * r.rc.chg; }, nullptr, &pct_cell, nullptr},
+     Kind::Number,
+     0,
+     nullptr,
+     [](const Row &r) { return 100.0 * r.rc.chg; },
+     nullptr,
+     &pct_cell,
+     nullptr},
 
     {{"Δ5日线", "Δ5日线 = 对 5 日均线的偏离\n"
                 "• 算法: 最新一日收盘 / MA5 − 1, MA5 = 最近 5 个有成交日的收盘均值 (含最新一日)\n"
                 "• 数据: 同涨幅列 (新浪当日接上 bar1d 最近几个有成交日); 不复权, 窗内除权的跳空照算\n"
                 "• 显示: 百分比两位, 按正负着色\n"
                 "• 适用: 有基本面的资产"},
-     Kind::Number, 0, nullptr, [](const Row &r) { return 100.0 * r.rc.ma5; }, nullptr, &pct_cell, nullptr},
+     Kind::Number,
+     0,
+     nullptr,
+     [](const Row &r) { return 100.0 * r.rc.ma5; },
+     nullptr,
+     &pct_cell,
+     nullptr},
 
     {{"行业", "行业 = 申万一级行业\n"
               "• 算法: industry_level1_name, 缺名回落到行业代码\n"
               "• 数据: cn_stock_industry_component 最新月度快照\n"
               "• 显示: 原样, 按名排; 悬停格看行业代码 (ind_code)\n"
               "• 适用: 有基本面的资产"},
-     Kind::Category, 0, nullptr, nullptr,
+     Kind::Category,
+     0,
+     nullptr,
+     nullptr,
      [](const Row &r) -> std::string_view { return r.info && !industry_name(*r.info).empty() ? std::string_view(industry_name(*r.info)) : "-"; },
      nullptr,
      [](const Row &r) {
@@ -231,7 +259,13 @@ const Column kCols[] = {
             "• 数据: 总市值同总市值列; 净利取当日可见的最新财务\n"
             "• 显示: 倍数一位小数, 底色 = 过滤后截面名次 (EP 高绿 → 低红); 0 → -\n"
             "• 适用: 有基本面的资产"},
-     Kind::Number, 1, nullptr, &yield<&StockInfo::pe_ttm>, nullptr, &multiple_cell<&StockInfo::pe_ttm, 1>, nullptr},
+     Kind::Number,
+     1,
+     nullptr,
+     &yield<&StockInfo::pe_ttm>,
+     nullptr,
+     &multiple_cell<&StockInfo::pe_ttm, 1>,
+     nullptr},
 
     {{"PB", "PB = 市净率 (MRQ); 键 = BP = 1/PB (%)\n"
             "• 算法: 总市值 / 归母普通股权益MRQ (total_equity_to_parent_shareholders − other_equity_instruments: 永续债 / 优先股不属普通股东);\n"
@@ -239,58 +273,100 @@ const Column kCols[] = {
             "• 数据: MRQ = 最新报告期 (max report_date 的最新可见行); 总市值同总市值列\n"
             "• 显示: 倍数两位小数, 底色 = 过滤后截面名次 (BP 高绿 → 低红); < 1 = 破净; 0 → -\n"
             "• 适用: 有基本面的资产"},
-     Kind::Number, 1, nullptr, &yield<&StockInfo::pb_mrq>, nullptr, &multiple_cell<&StockInfo::pb_mrq, 2>, nullptr},
+     Kind::Number,
+     1,
+     nullptr,
+     &yield<&StockInfo::pb_mrq>,
+     nullptr,
+     &multiple_cell<&StockInfo::pb_mrq, 2>,
+     nullptr},
 
     {{"PS", "PS = 滚动市销率 (TTM); 键 = SP = 1/PS (%)\n"
             "• 算法: 总市值 / 营业总收入TTM; 排序 / 名次 / 统计按倒数 SP: 高 = 便宜\n"
             "• 数据: 营收取当日可见的最新财务; 总市值同总市值列\n"
             "• 显示: 倍数两位小数, 底色 = 过滤后截面名次 (SP 高绿 → 低红); 0 → -\n"
             "• 适用: 有基本面的资产; 未盈利但有营收的公司照样可比"},
-     Kind::Number, 1, nullptr, &yield<&StockInfo::ps_ttm>, nullptr, &multiple_cell<&StockInfo::ps_ttm, 2>, nullptr},
+     Kind::Number,
+     1,
+     nullptr,
+     &yield<&StockInfo::ps_ttm>,
+     nullptr,
+     &multiple_cell<&StockInfo::ps_ttm, 2>,
+     nullptr},
 
     {{"PCF", "PCF = 滚动市现率 (TTM); 键 = CP = 1/PCF (%)\n"
              "• 算法: 总市值 / 经营活动现金流量净额TTM (net_cffoa_ttm, 非现金净增加额); 排序 / 名次 / 统计按倒数 CP: 高 = 便宜, 经营现金流为负保留负值排最差一端\n"
              "• 数据: 现金流取当日可见的最新财务; 总市值同总市值列\n"
              "• 显示: 倍数一位小数, 底色 = 过滤后截面名次 (CP 高绿 → 低红); 0 → -\n"
              "• 适用: 有基本面的资产"},
-     Kind::Number, 1, nullptr, &yield<&StockInfo::pcf_ttm>, nullptr, &multiple_cell<&StockInfo::pcf_ttm, 1>, nullptr},
+     Kind::Number,
+     1,
+     nullptr,
+     &yield<&StockInfo::pcf_ttm>,
+     nullptr,
+     &multiple_cell<&StockInfo::pcf_ttm, 1>,
+     nullptr},
 
     {{"股息1年", "股息1年 = 近 1 年股息率 (%)\n"
                  "• 算法: 近 365 日税前分红总额 / 总市值; 窗口以分红公告日 (publish_date) 锚定, 非除权日\n"
                  "• 数据: 分红公告 + 总市值 (同总市值列); 口径同 L_1min 特征 dy_raw\n"
                  "• 显示: 两位小数, 底色 = 过滤后截面名次 (高绿 → 低红); 0.00 = 窗口内确无分红公告 (非缺失)\n"
                  "• 适用: 有基本面的资产"},
-     Kind::Number, 1, "%.2f", &field<&StockInfo::dy1y>, nullptr, nullptr, nullptr},
+     Kind::Number,
+     1,
+     "%.2f",
+     &field<&StockInfo::dy1y>,
+     nullptr,
+     nullptr,
+     nullptr},
 
     {{"股息3年", "股息3年 = 近 3 年股息率 (年化平均 %)\n"
                  "• 算法: 近 3 年 (1095 日) 税前分红总额 / 年数 / 总市值; 上市不足 3 年按实际上市年数年化 (不被摊薄), 不足一季 → -\n"
                  "• 数据: 同股息1年\n"
                  "• 显示: 两位小数, 底色 = 过滤后截面名次 (高绿 → 低红); 明显低于股息1年 = 近年才开始分红\n"
                  "• 适用: 有基本面的资产"},
-     Kind::Number, 1, "%.2f", &field<&StockInfo::dy3y>, nullptr, nullptr, nullptr},
+     Kind::Number,
+     1,
+     "%.2f",
+     &field<&StockInfo::dy3y>,
+     nullptr,
+     nullptr,
+     nullptr},
 
     {{"股息5年", "股息5年 = 近 5 年股息率 (年化平均 %)\n"
                  "• 算法: 近 5 年 (1825 日) 税前分红总额 / 年数 / 总市值; 上市不足 5 年按实际上市年数年化\n"
                  "• 数据: 同股息1年\n"
                  "• 显示: 两位小数, 底色 = 过滤后截面名次 (高绿 → 低红); 股息1年 ≈ 3年 ≈ 5年 = 长期稳定分红\n"
                  "• 适用: 有基本面的资产"},
-     Kind::Number, 1, "%.2f", &field<&StockInfo::dy5y>, nullptr, nullptr, nullptr},
+     Kind::Number,
+     1,
+     "%.2f",
+     &field<&StockInfo::dy5y>,
+     nullptr,
+     nullptr,
+     nullptr},
 
     {{"总市值", "总市值 = 收盘价 × 总股本 (亿元)\n"
                 "• 算法: close × total_shares / 1亿 (不复权真价); 即估值 / 股息各列的分母\n"
                 "• 数据: cn_stock_real_bar1d.close + cn_stock_shares.total_shares\n"
                 "• 显示: 一位小数, 底色 = 过滤后截面名次 (大绿 → 小红); 缺收盘价或股本 → - (不是市值为零)\n"
                 "• 适用: 有基本面的资产"},
-     Kind::Number, 1, "%.1f",
+     Kind::Number,
+     1,
+     "%.1f",
      [](const Row &r) { return r.info && r.info->mcap > 0 ? static_cast<double>(r.info->mcap) : kNaN; },
-     nullptr, nullptr, nullptr},
+     nullptr,
+     nullptr,
+     nullptr},
 
     {{"ST", "ST = 风险警示\n"
             "• 算法: ST = 特别处理 (连续两年亏损等, 涨跌幅限制 ±5%), *ST = 退市风险警示 (高一级)\n"
             "• 数据: cn_stock_status.st_status (逐日); 与简称列同源同日 (简称前缀 ↔ 本列严格一致)\n"
             "• 显示: ST / *ST 红字, 正常 -; 按 正常 < ST < *ST 排\n"
             "• 适用: 有基本面的资产"},
-     Kind::Category, 0, nullptr,
+     Kind::Category,
+     0,
+     nullptr,
      [](const Row &r) { return static_cast<double>(st_level(r.info)); },
      [](const Row &r) -> std::string_view {
        const int level = st_level(r.info);
@@ -305,7 +381,9 @@ const Column kCols[] = {
               "• 数据: cn_stock_basic_info\n"
               "• 显示: 已退市 = 灰字 退市, 在市 -; 悬停格看退市日\n"
               "• 适用: 有基本面的资产"},
-     Kind::Category, 0, nullptr,
+     Kind::Category,
+     0,
+     nullptr,
      [](const Row &r) { return r.info && r.info->out_date ? 1.0 : 0.0; },
      [](const Row &r) -> std::string_view { return r.info && r.info->out_date ? "退市" : "在市"; },
      [](const Row &, double v) { return v > 0 ? num_cell(kDimCol, "退市") : num_none(); },
@@ -319,7 +397,9 @@ const Column kCols[] = {
               "• 数据: 上市日 ipo_date / 退市日 out_date\n"
               "• 显示: 年/月/日 (11/02/06 = 11 年 2 个月 6 天), 底色 = 过滤后截面名次 (久绿 → 短红); 悬停格看起止日期与总天数\n"
               "• 适用: 有基本面的资产"},
-     Kind::Number, 1, nullptr,
+     Kind::Number,
+     1,
+     nullptr,
      [](const Row &r) {
        const ListedSpan span = r.info ? listed_span(*r.info) : ListedSpan{};
        return span.valid ? static_cast<double>(span.total_days) : kNaN;
@@ -343,15 +423,22 @@ const Column kCols[] = {
                 "• 数据: 帧目录 (扫描时一并读到)\n"
                 "• 显示: 整数, 不着色; 看数据完整性\n"
                 "• 适用: 全部资产"},
-     Kind::Number, 0, "%.0f",
-     [](const Row &r) { return static_cast<double>(r.s.total_days); }, nullptr, nullptr, nullptr},
+     Kind::Number,
+     0,
+     "%.0f",
+     [](const Row &r) { return static_cast<double>(r.s.total_days); },
+     nullptr,
+     nullptr,
+     nullptr},
 
     {{"日均笔数", "日均笔数 = 日均逐笔记录数\n"
                   "• 算法: Σ 逐笔条数 (委托 + 成交合并后) / 有数据的交易日数\n"
                   "• 数据: 日文件目录的条数 (扫描时一并读到)\n"
                   "• 显示: > 1M 按 M (百万), > 1K 按 K (千), 不着色\n"
                   "• 适用: 有逐笔数据的资产"},
-     Kind::Number, 0, nullptr,
+     Kind::Number,
+     0,
+     nullptr,
      [](const Row &r) { return r.s.total_days > 0 ? static_cast<double>(r.s.total_orders) / static_cast<double>(r.s.total_days) : kNaN; },
      nullptr,
      [](const Row &, double v) {
@@ -367,7 +454,9 @@ const Column kCols[] = {
                   "• 数据: 帧目录; 与 Calendar 页的完整性、Encode 页的缺失表同源\n"
                   "• 显示: 百分比一位: ≥ 99.9% 绿 / ≥ 95% 黄 / 其余橙; 悬停格看缺失天数; 区间内本不该有数据 (北交所 / 未上市 / 已退市) → - (不是缺口)\n"
                   "• 适用: L2 覆盖的资产 (北交所整体 -)"},
-     Kind::Number, 0, nullptr,
+     Kind::Number,
+     0,
+     nullptr,
      [](const Row &r) { return r.s.expected_days > 0 ? static_cast<double>(r.s.orders_coverage_percent()) : kNaN; },
      nullptr,
      [](const Row &, double v) {

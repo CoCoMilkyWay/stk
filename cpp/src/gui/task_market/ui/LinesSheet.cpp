@@ -86,7 +86,7 @@ void pick(LinesState &ui, int page, const LinesRow &r) {
 
 // 净值线的近况 (RecentOf 同一核): 日末视图自末个活跃日往前 (起点 = 首日前一日的日末), 前收 = 前一日末
 Recent recent_of(const Line &c) {
-Mark m[kMarks]; // 新 → 旧
+  Mark m[kMarks]; // 新 → 旧
   size_t n = 0;
   for (int k = c.e.empty() ? c.f - 1 : c.l + 1; k >= c.f && n < std::size(m); --k)
     m[n++] = {c.end(k), k > c.f ? c.end(k - 1) : kNaN};
@@ -328,7 +328,7 @@ struct RowSrc {
   LinesAt at;
   const LinesRow *row = nullptr;
   const StockInfo *info = nullptr;
-Source src;
+  Source src;
   const Quote::Day *day = nullptr;
 };
 RowSrc src_of(const LinesState &ui, const StockInfos &infos, const LinesDerived &d, const LinesAt &a) {
@@ -387,7 +387,7 @@ Recent recent_row(const RowSrc &x) {
     return RecentOf(x.src);
   if (q.is(Quote::kStock))
     return !x.info ? Recent{} : x.day ? RecentOf(*x.info, x.day->candle, x.day->prev)
-                                              : RecentOf(*x.info, Quote::Candle{}, 0);
+                                      : RecentOf(*x.info, Quote::Candle{}, 0);
   return recent_of(*x.row->line[kTrade]);
 }
 // 四列 → out[0, kTodays)
@@ -748,7 +748,7 @@ Seg flow_seg(bool ends, std::vector<misc::Ymd> days) {
   // 行 row 的各日资金流 x (日轴同序; whole = 各日齐全才有合计) → p.flow[row] + 格
   const auto fill = [nd](std::vector<Flow> x, bool whole, size_t row, LinesSheet &p, SheetCell *out) {
     assert(x.size() == nd);
-Flow sum;
+    Flow sum;
     if (whole)
       for (const Flow &y : x)
         sum.net += y.net, sum.amount += y.amount;

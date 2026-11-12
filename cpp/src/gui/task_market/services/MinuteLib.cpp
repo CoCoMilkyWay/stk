@@ -1,6 +1,6 @@
 #include "gui/task_market/services/MinuteLib.hpp"
 
-#include "features/Panel/PoolSelect.hpp" // all_bar / picks
+#include "features/Panel/PoolSelect.hpp"      // all_bar / picks
 #include "features/Storage/FeatureLevels.hpp" // feature_storage_t
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
@@ -91,7 +91,7 @@ void scan(const disk::Key &lib, size_t N, size_t D, size_t row, const MinuteLib:
     return;
   const int fd = ::open(disk::path(kFile[S], lib).c_str(), O_RDONLY);
   assert(fd >= 0 && "minute/: 打不开");
-  struct stat sb {};
+  struct stat sb{};
   const int st = ::fstat(fd, &sb);
   assert(st == 0 && static_cast<size_t>(sb.st_size) >= n && "minute/: 短于头");
   void *m = ::mmap(nullptr, n, PROT_READ, MAP_SHARED, fd, 0);

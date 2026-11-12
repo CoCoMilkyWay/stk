@@ -1080,10 +1080,10 @@ void flow_tools(OverlayState &st) {
 
 struct OverlayDef {
   const char *id;
-  bool net;                                                                          // 0 轴叠净流入柱
-  const char *(*unit)(const OverlayState &);                                         // y 单位
+  bool net;                                                                         // 0 轴叠净流入柱
+  const char *(*unit)(const OverlayState &);                                        // y 单位
   bool (*line)(const OverlayCtx &, const OverlayPick &, const Source &, Overlay &); // 一条 (false = 不画)
-  void (*tools)(OverlayState &);                                                     // 档位条之后的工具 (nullptr = 无)
+  void (*tools)(OverlayState &);                                                    // 档位条之后的工具 (nullptr = 无)
 };
 constexpr OverlayDef kOverlayDefs[kOverlays] = {
     {"intraday", true, [](const OverlayState &) { return "%"; }, pct_line, nullptr},

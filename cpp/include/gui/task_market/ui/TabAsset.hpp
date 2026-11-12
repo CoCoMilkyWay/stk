@@ -37,8 +37,8 @@ struct AssetCellsKey {
   size_t infos = 0;        // stock_info.size() (基本面首次载入)
   uint64_t today = ~0ull;  // AssetState::today 的版本 (近况列随快照变)
   AssetFilter filter;
-  float font = 0.f;        // 字号 (格宽)
-  uint32_t ink = 0;        // 字色 (主题)
+  float font = 0.f; // 字号 (格宽)
+  uint32_t ink = 0; // 字色 (主题)
   bool operator==(const AssetCellsKey &) const = default;
 };
 // 过滤后的行与全部格 (表格与截面分析共用; 每帧只画可见行): 名次 = 过滤后 pool 内, 只能跟行一起重填.

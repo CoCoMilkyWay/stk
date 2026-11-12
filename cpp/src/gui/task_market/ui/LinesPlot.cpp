@@ -211,7 +211,9 @@ LgHover legend(const char *id, std::span<const LgCol> cols, std::span<const LgRo
     for (int r = 0; r < R; ++r) {
       const LgCell &e = cell(r, c);
       bare[k] &= e.text.empty();
-      w[k] = std::max(w[k], (cols[k].toggle < 0 ? 0.f : e.text.empty() ? sw : sw + sg) + lf.w(e.text.c_str()));
+      w[k] = std::max(w[k], (cols[k].toggle < 0 ? 0.f : e.text.empty() ? sw
+                                                                       : sw + sg) +
+                                lf.w(e.text.c_str()));
     }
     xc[k] = x + gx;
     x = xc[k] + w[k];
@@ -290,7 +292,7 @@ LgHover legend(const char *id, std::span<const LgCol> cols, std::span<const LgRo
       }
       if (!e.text.empty())
         lf.text(dl, ImVec2(xc[k] + w[k] - lf.w(e.text.c_str()), y), e.col ? e.col : on ? c_txt
-                                                                                        : c_dis,
+                                                                                       : c_dis,
                 e.text.c_str());
     }
     ImGui::PopID();

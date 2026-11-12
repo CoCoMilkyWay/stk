@@ -40,8 +40,8 @@ struct TaskMarketState {
   std::unique_ptr<Market::MinuteService> minute_service;
   std::unique_ptr<Market::CtaService> cta_service;
   Market::AssetState asset_state;
-  Market::LinesState lines_state;            // 缓存键含 portfolio_service 的结果代 / portfolio_ui 的解析代
-  std::vector<uint32_t> lines;               // 全部篮子线 (篮子表随进程代变, 本状态每代新建)
+  Market::LinesState lines_state; // 缓存键含 portfolio_service 的结果代 / portfolio_ui 的解析代
+  std::vector<uint32_t> lines;    // 全部篮子线 (篮子表随进程代变, 本状态每代新建)
 };
 
 TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_ptr<Engine::EngineHub> engine) {

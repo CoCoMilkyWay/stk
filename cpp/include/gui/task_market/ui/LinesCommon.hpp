@@ -46,18 +46,18 @@ enum PageWork : int { kWorkPortfolio,
 
 // 页表 [LinesPage]: 页的一切差异只在这里
 struct PageDef {
-  const char *name, *tip;      // 页名 / 页说明 (头行 (?) 悬停)
-  int groups;                  // 右表类别条的组数 (前 groups 个 RowGroup)
-  PickMode pick;               // 行选中方式
-  const char *table;           // 右表 ID
-  const char *hint;            // 类别条旁选中方式 (点行 = 画 / 单选) 的悬停
-  const char *name_tip;        // 右表名列说明
-  SegDef segs[kSegsMax];       // 右表名列之后的段
-  PageTool tool;               // 类别条旁的页件
-  PageLayout layout;           // 左栏布局
-  OverlayKind overlay;         // 叠加图: kLayoutPlot = 日内栏, kLayoutOverlay = 整张
-  bool log, folio;             // 头: log 开关 / 组合 (名 + 失效 / 失败条目)
-  PageWork work, rest;         // Tab 状态: work 在忙 → 它, 否则 rest; 页发 work 的请求
+  const char *name, *tip; // 页名 / 页说明 (头行 (?) 悬停)
+  int groups;             // 右表类别条的组数 (前 groups 个 RowGroup)
+  PickMode pick;          // 行选中方式
+  const char *table;      // 右表 ID
+  const char *hint;       // 类别条旁选中方式 (点行 = 画 / 单选) 的悬停
+  const char *name_tip;   // 右表名列说明
+  SegDef segs[kSegsMax];  // 右表名列之后的段
+  PageTool tool;          // 类别条旁的页件
+  PageLayout layout;      // 左栏布局
+  OverlayKind overlay;    // 叠加图: kLayoutPlot = 日内栏, kLayoutOverlay = 整张
+  bool log, folio;        // 头: log 开关 / 组合 (名 + 失效 / 失败条目)
+  PageWork work, rest;    // Tab 状态: work 在忙 → 它, 否则 rest; 页发 work 的请求
 };
 inline constexpr PageDef kPageDefs[kPages] = {
     {"NAV",
@@ -77,7 +77,9 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 只显示一条线: 视野内末点画现价十字 (同日内栏; 右壁标区间涨跌, 底壁标日期)\n"
      "• 悬停联动 (同 Beta → Style): 主图 / 日内栏上悬停最近一条线 (或图例矩阵一行) = 右表该行底色亮并滚到居中 (悬停止回原位); 悬停右表一行 = 两图上该行的线白粗线\n"
      "• 底部区间条选日段 (主图左上角档位 1周 / 1月 / 1年 / 10年 = 末日往前推该段, 区间条同步): 各线在区间起点归一 = 1, 年化按区间复利",
-     kGroupKid, kPickMany, "##pf_nav_tbl",
+     kGroupKid,
+     kPickMany,
+     "##pf_nav_tbl",
      "点行 = 选中 / 取消, 选中 = 主图画该行两条线, 主图例默认只显理想列, 可成交列点图例显 (显隐变了自动重新 fit); 默认不选; 选中换组保留\n"
      "• 指数 = 各子池指数 (全A.等 / 全A.加 起头, 按池参数的权重); 行业 = 申万一级 (全A 内切, 总市值加权); 概念 = 东财题材概念 (全A 内切, 总市值加权):\n"
      "    ◦ 可成交 = 标签指数 (收盘封板不建仓 / 平仓顺延, 与因子回测同口径)\n"
@@ -99,7 +101,13 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "  与组内行同一套: 点 = 选中 (主图画线 + 日内叠加), 字色 = 线色\n"
      "• 适用: 全部组; 成分行只指数 / 行业 / 概念 / 自选 (篮子行展开)",
      {{kSegRecent}, {kSegToday, kTodays}, {kSegNum, kNumAll}},
-     kToolIntraday, kLayoutPlot, kOverlayIntra, true, true, kWorkMinute, kWorkPortfolio},
+     kToolIntraday,
+     kLayoutPlot,
+     kOverlayIntra,
+     true,
+     true,
+     kWorkMinute,
+     kWorkPortfolio},
     {"VAL",
      "VAL = 估值 (Valuation)\n"
      "• 右侧单选一个池 / 申万一级行业 / 概念 / 自选 / 成分股 (▸ 展开行): 主图 = 它的指数 (成分股 = 后复权收盘) + 估值 Band\n"
@@ -113,7 +121,9 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 线尾刻度 = 指数末点 +10% / -5% / -10% / -20% / -30% 的点位: 对照 Band 线看还要涨跌多少到哪档; 末点另画现价十字 (同 NAV)\n"
      "• y 只贴合指数 (上限 = 区间内最高点 + 20%), 高出的 Band 不撑图\n"
      "• 主图左键横向框选 = 放大到该段 (区间条同步), 双击 = 回全段; 区间 (含左上角档位) / log 与 NAV 页共用",
-     kGroupFactor, kPickOne, "##pf_val_tbl",
+     kGroupFactor,
+     kPickOne,
+     "##pf_val_tbl",
      "类别条选一组 (指数 = 各池, 行业 = 申万一级, 概念 = 东财题材概念), 点行 / 成分行选一个: 主图画它的价格 + EP / BP / SP / CP / DY Band; 选中换组保留\n"
      "• 价格: 行业 / 概念 = 总市值加权指数 (全A 内切); 子池 (含全A) = 池参数的权重 (同 NAV 池线); 成分股 = 后复权收盘\n"
      "• 行业成员 = 全A 成分按当日适用 (盘前已知) 的 SW2021 一级行业 (ind_l1) 切\n"
@@ -136,7 +146,13 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 与篮子行同一个单选\n"
      "• 适用: 指数 / 行业 / 概念 / 自选",
      {{kSegToday, kTodayTurn}, {kSegNum, kNumAll}, {kSegVal}},
-     kToolBandYears, kLayoutPlot, kOverlayNone, true, false, kWorkPortfolio, kWorkPortfolio},
+     kToolBandYears,
+     kLayoutPlot,
+     kOverlayNone,
+     true,
+     false,
+     kWorkPortfolio,
+     kWorkPortfolio},
     {"FLOW",
      "FLOW = 资金流 (Money Flow): 指数 / 行业 / 概念 / 自选的日内净流入, 当日随新浪快照实时动\n"
      "• 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟; 成分之和不加权, 分不出大单\n"
@@ -146,7 +162,9 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 右表: 日轴各日的净流入占当日成交额 + 档内合计; 过滤条各页同一份\n"
      "• 悬停联动 (同 NAV): 图上悬停最近一条线 = 右表该行底色亮并滚到居中 (悬停止回原位); 悬停右表一行 = 图上该行的线白粗线\n"
      "• 历史日 = all.bar 库 L_1min (其后至基本面末日 = bar1m) 合成, 当日 = 新浪快照合成; 不看区间条",
-     kGroupFactor, kPickMany, "##pf_flow_tbl",
+     kGroupFactor,
+     kPickMany,
+     "##pf_flow_tbl",
      "点行 = 选中 / 取消, 选中 = 左图画该篮子的累计净流入 (与 NAV 页同一份选中: 这里选的 NAV 主图 / 日内栏也画); 选中换组保留\n"
      "• 指数 = 各子池 (全A.等 / 全A.加 起头); 行业 = 申万一级; 概念 = 东财题材概念 (全A 内切)\n"
      "• 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
@@ -161,7 +179,13 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 与篮子行同一份选中\n"
      "• 适用: 指数 / 行业 / 概念 / 自选",
      {{kSegToday, kTodays}, {kSegFlow}},
-     kToolNone, kLayoutOverlay, kOverlayFlow, false, false, kWorkPortfolio, kWorkPortfolio},
+     kToolNone,
+     kLayoutOverlay,
+     kOverlayFlow,
+     false,
+     false,
+     kWorkPortfolio,
+     kWorkPortfolio},
     {"CTA",
      "CTA = 单标的 band 择时 (方向 long / short / longshort), 参数滚动调优\n"
      "• 右侧单选一个指数 / 行业 / 概念 / 自选 / 成分股 (与 VAL 同一份选中); 价格 = all.bar 库合成落盘的 1 分钟价 (篮子 = 同 NAV 日内栏口径的点位, 个股 = 后复权价; 首次打开一趟备齐)\n"
@@ -172,7 +196,9 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 中栏 = 设定 + 参数点云 + 光标处所用参数 + 全期指标 (策略 vs 买入持有); 左图 上 = 价格与带 (底色 = 仓位, 越满越浓), 下 = 复利净值 + 叠在策略净值之上的各项成本带 (悬停看是哪项); 不看区间条\n"
      "• 左键框选放大 / 右键拖动平移 / 滚轮缩放 / 双击回全段; 换标的回全段, 只改设定保留缩放\n"
      "• 光标 = 橙色竖线: 参数点云展开时才出现 (初放视野正中), 左键拖动, 松手停住; 中栏参数与参数点云都看光标所在日 (收起 = 末根)",
-     kGroupFactor, kPickOne, "##pf_cta_tbl",
+     kGroupFactor,
+     kPickOne,
+     "##pf_cta_tbl",
      "类别条选一组 (指数 = 各池, 行业 = 申万一级, 概念 = 东财题材概念), 点行 / 成分行选一个 = 左图回测它 (与 VAL 页同一份选中); 再点 = 取消\n"
      "• 篮子价格 = all.bar 库逐日合成 (成员 / 权重 / 基准取前一日收盘, 同 Market 篮子历史); 成分股价格 = 库存原价 × 后复权因子\n"
      "• 两者首次打开本页一趟合成, 存在库目录 cache/minute/ 下 (与 NAV 分钟线同一份), 之后只补新日\n"
@@ -187,7 +213,13 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 点成分行 = 回测该股 (后复权 1 分钟价)\n"
      "• 适用: 指数 / 行业 / 概念 / 自选",
      {{kSegNum, (1 << kNumIdeal) | (1 << kNumSharpe)}},
-     kToolNone, kLayoutCta, kOverlayNone, false, false, kWorkCta, kWorkCta},
+     kToolNone,
+     kLayoutCta,
+     kOverlayNone,
+     false,
+     false,
+     kWorkCta,
+     kWorkCta},
 };
 
 // 线 ID 后缀 [PairLine]: 线的 ImGui ID = 行 id + 后缀 (主图例显隐 / 行刚选中回默认显隐同一份)
