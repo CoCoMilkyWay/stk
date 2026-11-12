@@ -150,18 +150,29 @@ std::string_view table_of(const fundamental::Task &t) { return t.spec->name; }
 std::string_view table_of(const ConceptTask &) { return kConceptTable; }
 
 // 板块名单 (名称 → 代码) + 全 A 个股所属概念 (名称) 反排成各板块成分, 题材且够数的收; 返回收进快照的概念数
+//   东财网络不通 → 不落盘, 沿用已有快照 (概念非必需), 返回 0
 std::int64_t sync_concepts(Job &job, const ConceptTask &t) {
+  const auto unreachable = [] {
+    std::cerr << "[eastmoney] 网络不通, 沿用概念快照 " << concept_last() << std::endl;
+    return std::int64_t{0};
+  };
   eastmoney::Client em;
   job.set_message("同步 eastmoney.concept: 板块名单");
-  std::vector<eastmoney::Board> boards = em.concepts();
+  std::optional<std::vector<eastmoney::Board>> got = em.concepts();
+  if (!got)
+    return unreachable();
+  std::vector<eastmoney::Board> &boards = *got;
   std::unordered_map<std::string_view, std::size_t> by_name;
   for (std::size_t k = 0; k < boards.size(); ++k) {
     const bool fresh = by_name.emplace(boards[k].name, k).second;
     assert(fresh && "eastmoney: 板块名称重复");
   }
   job.set_message("同步 eastmoney.concept: 个股所属概念");
+  const std::optional<std::vector<eastmoney::Stock>> stocks = em.stocks();
+  if (!stocks)
+    return unreachable();
   std::vector<std::vector<std::string>> syms(boards.size());
-  for (const eastmoney::Stock &s : em.stocks())
+  for (const eastmoney::Stock &s : *stocks)
     for (const std::string &c : s.concepts) {
       const auto it = by_name.find(c);
       assert(it != by_name.end() && "eastmoney: 个股所属概念不在板块名单");

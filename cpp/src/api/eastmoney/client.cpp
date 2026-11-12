@@ -61,15 +61,17 @@ size_t page(const std::string &body, const char *text, std::vector<Item> &out) {
   return total;
 }
 
-// fs 列表全部条目: 按代码升序逐页拉到 total 条
+// fs 列表全部条目: 按代码升序逐页拉到 total 条; 任一页网络不通 → nullopt
 template <class Get>
-std::vector<Item> list(Get &&get, std::string_view fs, const char *text) {
+std::optional<std::vector<Item>> list(Get &&get, std::string_view fs, const char *text) {
   std::vector<Item> out;
   for (int pn = 1;; ++pn) {
     const size_t had = out.size();
-    const size_t total = page(get("/api/qt/clist/get?pn=" + std::to_string(pn) + "&pz=" + std::to_string(kPage) +
-                                  "&po=0&np=1&fltt=2&invt=2&fid=f12&fs=" + std::string(fs) + "&fields=f12,f13," + text),
-                              text, out);
+    const std::optional<std::string> body = get("/api/qt/clist/get?pn=" + std::to_string(pn) + "&pz=" + std::to_string(kPage) +
+                                                "&po=0&np=1&fltt=2&invt=2&fid=f12&fs=" + std::string(fs) + "&fields=f12,f13," + text);
+    if (!body)
+      return std::nullopt;
+    const size_t total = page(*body, text, out);
     if (out.size() >= total)
       break;
     assert(out.size() > had && "eastmoney: 翻页没有新条目");
@@ -84,7 +86,7 @@ std::vector<Item> list(Get &&get, std::string_view fs, const char *text) {
 
 Client::Client() = default;
 
-std::string Client::get(const std::string &target) {
+std::optional<std::string> Client::get(const std::string &target) {
   for (int attempt = 0;; ++attempt) {
     try {
       const auto now = std::chrono::steady_clock::now();
@@ -115,24 +117,31 @@ std::string Client::get(const std::string &target) {
       stream_.reset();
       std::cerr << "[eastmoney] transient error (attempt " << (attempt + 1) << "/" << (kRetryMax + 1)
                 << "): " << e.what() << std::endl;
-      assert(attempt < kRetryMax);
+      if (attempt == kRetryMax)
+        return std::nullopt;
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   }
 }
 
-std::vector<Board> Client::concepts() {
+std::optional<std::vector<Board>> Client::concepts() {
+  std::optional<std::vector<Item>> items = list([this](const std::string &t) { return get(t); }, "m:90+t:3+f:!50", "f14");
+  if (!items)
+    return std::nullopt;
   std::vector<Board> out;
-  for (Item &x : list([this](const std::string &t) { return get(t); }, "m:90+t:3+f:!50", "f14")) {
+  for (Item &x : *items) {
     assert(x.code.starts_with("BK") && "eastmoney: 板块代码不是 BKxxxx");
     out.push_back({std::move(x.code), std::move(x.text)});
   }
   return out;
 }
 
-std::vector<Stock> Client::stocks() {
+std::optional<std::vector<Stock>> Client::stocks() {
+  const std::optional<std::vector<Item>> items = list([this](const std::string &t) { return get(t); }, kAllA, "f103");
+  if (!items)
+    return std::nullopt;
   std::vector<Stock> out;
-  for (const Item &x : list([this](const std::string &t) { return get(t); }, kAllA, "f103")) {
+  for (const Item &x : *items) {
     assert(x.code.size() == 6 && (x.market == 0 || x.market == 1) && "eastmoney: 个股代码 / 市场不符");
     const char *ex = x.market == 1 ? ".SH" : (x.code[0] == '4' || x.code[0] == '8' || x.code[0] == '9') ? ".BJ"
                                                                                                         : ".SZ";
