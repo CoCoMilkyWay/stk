@@ -102,11 +102,12 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState
   ImGui::SameLine();
   if (ImGui::Button("Clear", ImVec2(60, 0))) {
     ui.pick = LinesPick{.of = pf.name};
-    ui.range = DefaultLinesRange(d.dates);
+    for (int p = 0; p < kPages; ++p)
+      ui.range[p] = DefaultLinesRange(p, d.dates);
     ui.log_y = false;
   }
   if (ImGui::IsItemHovered())
-    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL / CTA 标的 / 展开的行 / 叠加的成分股 / 区间 (回近 1 月) / log 关");
+    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL / CTA 标的 / 展开的行 / 叠加的成分股 / 区间 (NAV 回近 1 月, VAL 回近 10 年) / log 关");
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
@@ -191,8 +192,9 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
                   const std::vector<misc::Ymd> old = dv.dates;
                   MakeLinesDerived(pf.items, pf.name, res, ui.overlay.baskets.data, ui.minutes, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks),
                                    ui.watch, infos, dv);
-                  if (dv.dates != old) // 日轴变 → 区间回默认
-                    ui.range = DefaultLinesRange(dv.dates);
+                  if (dv.dates != old) // 日轴变 → 各页区间回默认
+                    for (int p = 0; p < kPages; ++p)
+                      ui.range[p] = DefaultLinesRange(p, dv.dates);
                 });
   if (mk)
     SyncLinesCons(ui, *mk->quote);
@@ -200,12 +202,12 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
   const LinesAt pin = one.empty() ? LinesAt{} : d.at(one.begin()->first); // VAL 标的
   const LinesLeg lg = pin.g >= 0 ? d.row(pin).val : LinesLeg{};           // 其估值腿
   ui.roll.update(LinesRollKey{d.axis_gen, lg, ui.band_years}, [&](LinesRolls &r) { MakeLinesRoll(d, lg, ui.band_years, r); });
-  ui.pct.update(LinesPctKey{d.val_gen, ui.band_years, ui.range.d1}, [&](LinesPct &p) { MakeLinesPct(d, ui.range.d1, ui.band_years, p); });
-  ui.view.update(LinesViewKey{ui.der.gen, ui.roll.gen, ui.pct.gen, pin, ui.range.d0, ui.range.d1},
-                 [&](LinesView &vw) { MakeLinesView(d, ui.range.d0, ui.range.d1, pin, ui.roll.val, ui.pct.val, vw); });
+  const LinesRange &rg = ui.range[page];
+  ui.pct.update(LinesPctKey{d.val_gen, ui.band_years, rg.d1}, [&](LinesPct &p) { MakeLinesPct(d, rg.d1, ui.band_years, p); });
+  ui.view.update(LinesViewKey{ui.der.gen, ui.roll.gen, ui.pct.gen, pin, rg.d0, rg.d1},
+                 [&](LinesView &vw) { MakeLinesView(d, rg.d0, rg.d1, pin, ui.roll.val, ui.pct.val, vw); });
 
   const int action = head(page, svc, pf, ui, d, res, message, fixed_impact);
-  const bool nav = page == kPageNav;
 
   // ---- 布局 (PageLayout): 左 = [日内栏 (开日内, 切 1/3 高)] / 主图 (NAV ↔ VAL) / 区间条 自上而下 | 只一张叠加图 | CTA 两图 + 中栏;
   //      最右 = 右图例 (各页同宽 sheet_width; CTA = 中栏与右表各半) ----
@@ -250,8 +252,8 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
     ImGui::BeginGroup();
     if (ih > 0.0f)
       overlay_child("##pf_overlay", ImVec2(left, ih), pd.overlay);
-    RenderLinesPlot(ui, pin, nav, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph)); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
-    RenderLinesRange(ui, pin, nav, ImVec2(left, kBarH));
+    RenderLinesPlot(ui, page, pin, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph)); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
+    RenderLinesRange(ui, page, pin, ImVec2(left, kBarH));
     ImGui::EndGroup();
     break;
   case kLayoutOverlay:

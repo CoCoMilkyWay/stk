@@ -82,6 +82,23 @@ void setup_day_axis(const std::vector<misc::Ymd> &dates) {
   ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].Locator = day_locator;
 }
 
+// 主图 y 恒贴合视野内进 fit 的线 (AutoFit | RangeFit), 上下各留跨度 × kFitMargin (log 轴按对数跨度)
+constexpr double kFitMargin = 0.2;
+// 本帧 x 在 fit (切片画全段 / 小字不按视野筛)
+bool fit_x() { return ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].FitThisFrame; }
+// y 的留白: 须在本帧进 fit 的 item 都画完之后
+void fit_margin(bool log) {
+  const ImPlotRange &e = ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].FitExtents;
+  if (!(e.Min < e.Max))
+    return;
+  assert(!log || e.Min > 0.0);
+  const auto f = [&](double v) { return log ? std::log10(v) : v; };
+  const auto g = [&](double t) { return log ? std::pow(10.0, t) : t; };
+  const double a = f(e.Min), b = f(e.Max), m = kFitMargin * (b - a);
+  ImPlot::FitPointY(g(a - m));
+  ImPlot::FitPointY(g(b + m));
+}
+
 // 组线宽: 强调组 (kGroupDefs::accent) 加粗
 float row_width(int g) { return kGroupDefs[g].accent ? 2.0f : 1.0f; }
 // 成对线表 [口径][PairLine] (口径 = pair_kind: 0 = 有行情键 (篮子 / 成分), 1 = 因子 / 策略): 主图例口径列 / 线尾小字后缀
@@ -91,8 +108,6 @@ int pair_kind(const LinesRow &r) { return !r.ref.ok(); }
 
 // VAL 线表 (标的线色 = 该行的 row_color): band 填色 / 线 / 线尾刻度的 alpha
 constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f, kBandTagA = 0.9f;
-// VAL 主图 y = 价格线 [最低点 × (1 − kValHeadroom), 最高点 × (1 + kValHeadroom)] (band 不进 fit)
-constexpr double kValHeadroom = 0.2;
 // VAL 线尾刻度: 价格线末点 × (1 + r) 的点位 (对照 band 线看离各档还差多少); 色 = band_col(u) (涨绿, 跌越多越红)
 struct ValMark {
   double r, u;
@@ -319,16 +334,8 @@ std::string lg_num(const char *fmt, double v) {
   return s;
 }
 
-// 区间档位 (主图左上角): 区间 = 日并集轴末日往前推一档 (days 日 + months 月, 月末不足取当月末日) 之后的交易日 ~ 末日 (区间条同一份);
-//   当前区间正是某档 → 该钮按下
-struct Span {
-  const char *name;
-  int days, months;
-};
-constexpr Span kSpans[] = {{"1周", 7, 0}, {"1月", 0, 1}, {"1年", 0, 12}, {"10年", 0, 120}};
-constexpr int kSpanDef = 1; // 默认档 (1月)
-// 档 s 的区间起点 (dates 非空): 推到的那日之后的首个交易日 (起点前收 = 那日及之前的末个交易日); 日轴不够长 → 0, 至多末日
-int span_d0(const std::vector<misc::Ymd> &dates, const Span &s) {
+// 档 s (kSpanDefs) 的区间起点 (dates 非空): 推到的那日之后的首个交易日 (起点前收 = 那日及之前的末个交易日); 日轴不够长 → 0, 至多末日
+int span_d0(const std::vector<misc::Ymd> &dates, const SpanDef &s) {
   namespace ch = std::chrono;
   ch::year_month_day y{misc::to_days(misc::add_days(dates.back(), -s.days))};
   y -= ch::months{s.months};
@@ -337,11 +344,12 @@ int span_d0(const std::vector<misc::Ymd> &dates, const Span &s) {
   const misc::Ymd from = misc::from_days(ch::sys_days{y});
   return std::min(static_cast<int>(std::ranges::upper_bound(dates, from) - dates.begin()), static_cast<int>(dates.size()) - 1);
 }
+// 档位条: 当前区间正是某档 → 该钮按下
 void span_bar(LinesRange &rg, const std::vector<misc::Ymd> &dates) {
   const int D = static_cast<int>(dates.size());
   ImGui::BeginDisabled(D == 0);
-  for (const Span &s : kSpans) {
-    if (&s != kSpans)
+  for (const SpanDef &s : kSpanDefs) {
+    if (&s != kSpanDefs)
       ImGui::SameLine(0, 2);
     const int d0 = D > 0 ? span_d0(dates, s) : 0;
     if (toggle_button(s.name, D > 0 && rg.d0 == d0 && rg.d1 == D))
@@ -458,7 +466,7 @@ void thin(const LinesSlice &s, double x0, double x1, float w, Thinned &t) {
   }
 }
 void plot_slice(const PlotFrame &pf, const char *label, const LinesSlice &s, ImPlotLineFlags flags = 0) {
-  const bool fit = ImPlot::FitThisFrame() && s.size() > 0;
+  const bool fit = fit_x() && s.size() > 0;
   const double x0 = fit ? s.x(0) : pf.lim.X.Min, x1 = fit ? s.x(s.size() - 1) : pf.lim.X.Max;
   const float w = std::max(1.0f, ImPlot::GetPlotSize().x);
   Thinned &t = s_thin[label];
@@ -702,8 +710,8 @@ void zoom_x(LinesRange &rg, int D, const ImRect &legend) {
 
 // ---- VAL 主图: 标的各口滚动 band (日末点; 填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
 //      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的理想线 (常显; 有分钟价则画到分钟) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
-//      只价格线进 fit (y 上下各留 kValHeadroom), band / 等值线都不进 ----
-void plot_val(LinesState &ui, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf) {
+//      只价格线进 fit, band / 等值线都不进; 框选改 rg ----
+void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf) {
   static LgHover s_hl; // 上帧图例矩阵
   const LinesSlice &sl = v.slice[pin.g][pin.r][kIdeal];
   const double *bx = v.band_x.data();
@@ -755,16 +763,6 @@ void plot_val(LinesState &ui, const LinesDerived &d, const LinesView &v, const L
   }
   ImPlot::SetNextLineStyle(row_color(d, pin, kTrade), 2.0f);
   plot_slice(pf, "##pf_val_px", sl);
-  if (ImPlot::FitThisFrame()) {
-    double lo = HUGE_VAL, hi = -HUGE_VAL;
-    for (size_t i = 0; i < sl.size(); ++i)
-      if (const double y = sl.y(i); std::isfinite(y))
-        lo = std::min(lo, y), hi = std::max(hi, y);
-    if (std::isfinite(hi)) {
-      ImPlot::FitPointY(lo * (1.0 - kValHeadroom));
-      ImPlot::FitPointY(hi * (1.0 + kValHeadroom));
-    }
-  }
   if (const ImPlotItem *it = pf.item("##pf_val_px")) {
     push_tag(pf.tags, pf.lim, sl, it->Color, d.row(pin).tag);
     pf.lines.push_back(&sl);
@@ -778,22 +776,26 @@ void plot_val(LinesState &ui, const LinesDerived &d, const LinesView &v, const L
   }
   hover_contour(d, v, on, s_hl.box);
   s_hl = val_legend(v, ui.roll.key.years);
-  zoom_x(ui.range, static_cast<int>(d.dates.size()), s_hl.box);
+  zoom_x(rg, static_cast<int>(d.dates.size()), s_hl.box);
 }
 
 } // namespace
 
-LinesRange DefaultLinesRange(const std::vector<misc::Ymd> &dates) {
+LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates) {
   const int D = static_cast<int>(dates.size());
-  return LinesRange{{.d0 = D > 0 ? span_d0(dates, kSpans[kSpanDef]) : 0, .d1 = D}};
+  const SpanId s = kPageDefs[page].span;
+  return LinesRange{{.d0 = D > 0 && s != kSpanAll ? span_d0(dates, kSpanDefs[s]) : 0, .d1 = D}};
 }
 
-// ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) 同一框: 贴边 (窄内边距, 不标轴名); NAV = fit 键变 → 本帧 fit, VAL = 恒贴合 (不平移 / 缩放, 视野只随区间);
-//      x 右端留出线尾小字 / 刻度 / 十字标签; 左上角 = 区间档位条 (span_bar) + 其下图例矩阵 ----
-void RenderLinesPlot(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 &size) {
+// ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) 同一框: 贴边 (窄内边距, 不标轴名); y 恒贴合 + 留白 (fit_margin);
+//      x: NAV = fit 键变 → 本帧 fit (可平移 / 缩放), VAL = 恒贴合 (视野只随区间); x 右端留出线尾小字 / 刻度 / 十字标签;
+//      左上角 = 区间档位条 (span_bar) + 其下图例矩阵 ----
+void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size) {
   const LinesDerived &d = ui.der.val;
   const LinesView &v = ui.view.val;
-  const LinesRange rg = ui.range;                                 // 视图所切的区间 (VAL 框选本帧改 ui.range, 下帧才进视图)
+  const bool nav = page == kPageNav;
+  LinesRange &range = ui.range[page];
+  const LinesRange rg = range;                                    // 视图所切的区间 (VAL 框选本帧改 range, 下帧才进视图)
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2)); // 贴边: 图区让给线
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2, 1));
   LinesFitKey fk{ui.view.gen, nav, ui.log_y, {}, ui.shown_key};
@@ -805,29 +807,25 @@ void RenderLinesPlot(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 
     ImPlot::SetNextAxesToFit();
   if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", size, ImPlotFlags_NoLegend | (nav ? ImPlotFlags_None : ImPlotFlags_NoBoxSelect))) {
     ui.fit_key = fk;
-    // NAV 线性: y 下限钉在 0 (净值恒正), fit / 缩放只动上限; VAL / log: 正常
-    const bool pin0 = nav && !ui.log_y;
-    const ImPlotAxisFlags fit = nav ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
-    ImPlot::SetupAxes(nullptr, nullptr, fit, fit | (pin0 ? ImPlotAxisFlags_LockMin : ImPlotAxisFlags_None));
+    ImPlot::SetupAxes(nullptr, nullptr, nav ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
     setup_day_axis(d.dates);
     if (ui.log_y)
       ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-    if (pin0)
-      ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].SetMin(0.0, /*force=*/true);
-    // fit 帧的视野还是上帧的 (区间刚变时可能整段在外): 小字不按视野筛, 全收来量留白宽度
+    // x fit 帧的视野还是上帧的 (区间刚变时可能整段在外): 小字不按视野筛, 全收来量留白宽度
     const ImPlotRect cur = ImPlot::GetPlotLimits(); // 先锁 setup, FitThisFrame 才定
-    PlotFrame pf{ImPlot::FitThisFrame() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}, ui.view.gen};
+    PlotFrame pf{fit_x() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}, ui.view.gen};
     if (nav)
       plot_nav(ui, d, v, pf);
     else if (pin.g >= 0)
-      plot_val(ui, d, v, pin, pf);
+      plot_val(ui, range, d, v, pin, pf);
+    fit_margin(ui.log_y);
     thin_prune();
     ui.shown_key = std::move(pf.shown);
     NowCross cross{};
     const bool crossed = now_cross(pf, d.dates, cross);
     const float cw = crossed ? now_cross_width(cross, kTagScale) + kTagGap : 0.0f; // 十字右壁标签占的宽 (小字 / 刻度让开)
-    // 本帧 fit (自动 / 双击): x 右端再扩一段, 让区间末点右侧留出线尾小字 / 刻度 (同贴末点, 取宽者) + 十字标签的宽度
-    if (ImPlot::FitThisFrame() && !pf.tags.empty() && rg.d1 > rg.d0) {
+    // 本帧 x fit (自动 / 双击): x 右端再扩一段, 让区间末点右侧留出线尾小字 / 刻度 (同贴末点, 取宽者) + 十字标签的宽度
+    if (fit_x() && !pf.tags.empty() && rg.d1 > rg.d0) {
       const float tw = std::max(end_tags_width(pf.tags, kTagScale), marks_width(pf.marks)) + cw, W = ImPlot::GetPlotSize().x;
       const double x0 = x_of(static_cast<size_t>(rg.d0), kOpen), x1 = x_of(static_cast<size_t>(rg.d1), kOpen);
       if (W > 2.0f * tw)
@@ -841,15 +839,16 @@ void RenderLinesPlot(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 
     ImPlot::EndPlot();
     const ImVec2 next = ImGui::GetCursorScreenPos(); // 档位条叠在图上 (图之后提交, 抢得到悬停), 画完光标回图下
     ImGui::SetCursorScreenPos(ImVec2(corner.x + kBarPad, corner.y + kBarPad));
-    span_bar(ui.range, d.dates);
+    span_bar(range, d.dates);
     ImGui::SetCursorScreenPos(next);
   }
   ImPlot::PopStyleVar(2);
 }
 
 // ---- 区间条 (range_bar): 底线 = 全段组合 (有冲击) / VAL 标的理想线 (价格指数 / 后复权收盘), 只画日末视图; VAL 主图横向框选同改它 (任意日) ----
-void RenderLinesRange(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2 &size) {
+void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size) {
   const LinesDerived &d = ui.der.val;
+  const bool nav = page == kPageNav;
   const int D = static_cast<int>(d.dates.size());
   if (!ImPlot::BeginPlot("##pf_range", size,
                          ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText))
@@ -865,7 +864,7 @@ void RenderLinesRange(LinesState &ui, const LinesAt &pin, bool nav, const ImVec2
                                                                            : none;
   ImPlot::SetNextLineStyle(nav || pin.g < 0 ? kStratCol : row_color(d, pin, kTrade), 1.0f);
   ImPlot::PlotLineG("##pf_range_line", day_end_pt, const_cast<Line *>(&rc), static_cast<int>(rc.e.size()));
-  range_bar(ui.range, d.dates, static_cast<double>(kDayW));
+  range_bar(ui.range[page], d.dates, static_cast<double>(kDayW));
   ImPlot::EndPlot();
 }
 
