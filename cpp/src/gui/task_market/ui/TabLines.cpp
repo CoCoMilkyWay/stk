@@ -6,10 +6,12 @@
 #include "gui/task_market/ui/LinesCommon.hpp"
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
+#include "misc/date.hpp"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <map>
@@ -25,7 +27,39 @@ using json = nlohmann::json;
 
 namespace {
 
-// ---- 头: [NAV: 组合 / 成本] [NAV / VAL: log] Recompute / Cancel / 状态 / Clear (选择与图回默认) / 页说明 + [NAV: 失效 / 失败条目原因].
+// 区间快捷档 (头行): 区间 = 日并集轴末日往前推一档 (days 日 + months 月, 月末不足取当月末日) 之后的交易日 ~ 末日 (区间条同一份);
+//   当前区间正是某档 → 该钮按下
+struct Span {
+  const char *name;
+  int days, months;
+};
+constexpr Span kSpans[] = {{"1周", 7, 0}, {"1月", 0, 1}, {"1年", 0, 12}, {"10年", 0, 120}};
+// 档 s 的区间起点 (dates 非空): 推到的那日之后的首个交易日 (起点前收 = 那日及之前的末个交易日); 日轴不够长 → 0, 至多末日
+int span_d0(const std::vector<misc::Ymd> &dates, const Span &s) {
+  namespace ch = std::chrono;
+  ch::year_month_day y{misc::to_days(misc::add_days(dates.back(), -s.days))};
+  y -= ch::months{s.months};
+  if (!y.ok())
+    y = y.year() / y.month() / ch::last;
+  const misc::Ymd from = misc::from_days(ch::sys_days{y});
+  return std::min(static_cast<int>(std::ranges::upper_bound(dates, from) - dates.begin()), static_cast<int>(dates.size()) - 1);
+}
+void span_bar(LinesRange &rg, const std::vector<misc::Ymd> &dates) {
+  const int D = static_cast<int>(dates.size());
+  ImGui::BeginDisabled(D == 0);
+  for (const Span &s : kSpans) {
+    if (&s != kSpans)
+      ImGui::SameLine(0, 2);
+    const int d0 = D > 0 ? span_d0(dates, s) : 0;
+    if (toggle_button(s.name, D > 0 && rg.d0 == d0 && rg.d1 == D))
+      rg.d0 = d0, rg.d1 = D;
+    if (D > 0 && ImGui::IsItemHovered())
+      tip("区间 = 近%s: %s ~ %s (区间条同步; 双击区间条段内回全段)", s.name, misc::dash(dates[d0]).c_str(), misc::dash(dates.back()).c_str());
+  }
+  ImGui::EndDisabled();
+}
+
+// ---- 头: [NAV: 组合 / 成本] [NAV / VAL: log / 区间快捷档] Recompute / Cancel / 状态 / Clear (选择与图回默认) / 页说明 + [NAV: 失效 / 失败条目原因].
 //      返回 1 = Recompute, -1 = Cancel, 0 = 无 ----
 int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesUIState &ui, const LinesDerived &d, const PortfolioResult &res, const std::string &message,
          double fixed_impact) {
@@ -72,6 +106,8 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesUISta
       ui.log_y = !ui.log_y;
     if (ImGui::IsItemHovered())
       tip("y 轴 (净值) 切对数刻度");
+    ImGui::SameLine();
+    span_bar(ui.range, d.dates);
     ImGui::SameLine();
   }
   const bool busy = svc.busy();

@@ -117,33 +117,29 @@ ImPlotPoint contour_pt(int i, void *p) {
   return {l.x[i], l.u[i] * l.m};
 }
 
-// 右补空格到 px 宽 (等宽字体, 中文占两格: 按实测像素补, 列对齐)
-std::string pad_to(const char *s, float px) {
-  const float w = ImGui::CalcTextSize(s).x, sp = ImGui::CalcTextSize(" ").x;
-  return s + std::string(static_cast<size_t>(std::lround(std::max(0.f, px - w) / sp)), ' ');
+// 图例矩阵 (NAV / VAL 同一套, 自绘在绘图区左上) 的格按钮: 叠在图上 (AllowOverlap), 按下即触发; hov = 悬停
+bool lg_button(const ImRect &r, const char *id, bool &hov) {
+  bool held = false;
+  const ImGuiID gid = ImGui::GetID(id);
+  ImGui::KeepAliveID(gid);
+  return ImGui::ButtonBehavior(r, gid, &hov, &held, ImGuiButtonFlags_AllowOverlap | ImGuiButtonFlags_PressedOnClick);
 }
-// NAV 主图例多列排版: 第 c 列起点 = 前 c 列各自全行最宽之和 + 列间隔; 按已拼前缀的实测宽补空格 (取整误差不跨列累积); 空格子不补
-template <size_t N>
-std::vector<std::string> align_cols(const std::vector<std::array<std::string, N>> &rows) {
-  float w[N] = {};
-  for (const std::array<std::string, N> &r : rows)
-    for (size_t c = 0; c < N; ++c)
-      w[c] = std::max(w[c], ImGui::CalcTextSize(r[c].c_str()).x);
-  const float gap = ImGui::CalcTextSize("  ").x;
-  std::vector<std::string> out;
-  out.reserve(rows.size());
-  for (const std::array<std::string, N> &r : rows) {
-    std::string s;
-    float x = 0.f;
-    for (size_t c = 0; c < N; ++c) {
-      if (c > 0)
-        x += w[c - 1] + gap;
-      if (!r[c].empty())
-        s = pad_to(s.c_str(), x) + r[c];
-    }
-    out.push_back(std::move(s));
-  }
-  return out;
+// 图例矩阵的开关格: R 行 × C 列, item(r, c) = 该格的 item; 整行 / 整列 (r0 / c0 = −1 = 不限): 集合里有显示的 → 全隐, 否则全显
+template <class Item>
+bool lg_any(int R, int C, int r0, int c0, const Item &item) {
+  for (int r = 0; r < R; ++r)
+    for (int c = 0; c < C; ++c)
+      if ((r0 < 0 || r == r0) && (c0 < 0 || c == c0) && item(r, c)->Show)
+        return true;
+  return false;
+}
+template <class Item>
+void lg_flip(int R, int C, int r0, int c0, const Item &item) {
+  const bool any = lg_any(R, C, r0, c0, item);
+  for (int r = 0; r < R; ++r)
+    for (int c = 0; c < C; ++c)
+      if ((r0 < 0 || r == r0) && (c0 < 0 || c == c0))
+        item(r, c)->Show = !any;
 }
 
 // n 点线 (pt(i) = 第 i 点, x 升序) 视野内末点; 无 (或不可算) → false
@@ -228,69 +224,191 @@ bool now_cross(const PlotFrame &pf, const std::vector<misc::Ymd> &dates, NowCros
   return true;
 }
 
-// ---- NAV 主图: 画选中行的两条线, 按组表画层 (for_each_layer; 策略在最上层). 主图例 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (align_cols; 悬停一项看 hover), ###线 ID 定 ID (数值变了不换 item);
-//      点图例单独隐 / 显一条 (行刚选中 → ui.reveal 强制回默认显隐一次: 理想列显, 可成交列隐);
-//      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示), hot 行显示的线白粗线画在最上 ----
-void plot_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf) {
-  struct Draw {
-    int g, l;
-    const LinesRow *row;
-    const LinesSlice *s;
-    ImVec4 col;
-  };
-  std::vector<Draw> ds; // 画序, 只含选中行的
-  for_each_layer([&](int g) {
-    for (size_t r = 0; r < d.rows[g].size(); ++r)
-      if (picked(ui, kPageNav, d.rows[g][r]))
-        for (int l = 0; l < kPairLines; ++l)
-          ds.push_back({g, l, &d.rows[g][r], &v.slice[g][r][l], row_color(d, g, r, l)});
-  });
-  std::vector<std::array<std::string, 5>> rows;
-  for (const Draw &x : ds) {
-    char ann[48] = "", shp[48] = "", turn[48] = "";
-    if (std::isfinite(x.s->ann))
-      std::snprintf(ann, sizeof(ann), "(年化=%+5.1f%%)", x.s->ann);
-    if (std::isfinite(x.s->sharpe))
-      std::snprintf(shp, sizeof(shp), "(夏普=%+5.2f)", x.s->sharpe);
-    if (const double t = x.row->line[kTrade]->turn; std::isfinite(t))
-      std::snprintf(turn, sizeof(turn), "(年换手=%5.1f倍)", t);
-    rows.push_back({x.row->cn, kPairName[pair_kind(*x.row)][x.l], ann, shp, turn});
+// ---- NAV 主图例 = 自绘矩阵 (同 VAL 图例矩阵), 绘图区左上: 行 = 选中行 (名 = 线色), 列 = 可成交 | 夏普 | 理想 | 夏普 | 年换手
+//      (因子 / 策略行的两条 = 有冲击 / 无冲击; 年化 / 夏普按线随区间, 年换手按行); 线格 = 色块 (实心 = 显示, 空框 = 隐) + 区间年化, 隐的线数值灰;
+//      点线格切该线, 点名 / 线列头切整行 / 整列 (有显示的 → 全隐, 否则全显); 悬停一行 = 联动 (ui.hover), 名格另出行的悬停提示; 返回矩阵框 ----
+struct NavRow {
+  int g;
+  const LinesRow *row;
+  const LinesSlice *s[kPairLines];
+  ImVec4 col[kPairLines];
+  std::string lb[kPairLines]; // 各线 item label (须有可显示的名, 同 val_item; ###线 ID 定 ID)
+};
+ImRect nav_legend(LinesUIState &ui, const std::vector<NavRow> &rows) {
+  if (rows.empty())
+    return {};
+  constexpr int kCols = 2 * kPairLines + 1; // 线 l: 2l = 年化 (带色块), 2l + 1 = 夏普; 末列 = 年换手
+  const auto line_of = [](int c) { return c < kCols - 1 ? c / 2 : -1; };
+  const ImPlotStyle &ps = ImPlot::GetStyle();
+  const ImVec2 inner = ps.LegendInnerPadding;
+  const float th = ImGui::GetTextLineHeight(), sw = th * 0.7f, gx = 2.f * ImGui::GetStyle().ItemSpacing.x, sg = ImGui::GetStyle().ItemInnerSpacing.x;
+  const char *head[kCols] = {kPairName[0][kTrade], "夏普", kPairName[0][kIdeal], "夏普", "年换手"};
+  const int n = static_cast<int>(rows.size());
+  std::vector<std::array<std::string, kCols>> txt(rows.size());
+  for (size_t i = 0; i < rows.size(); ++i) {
+    char s[24];
+    txt[i].fill("-");
+    for (int l = 0; l < kPairLines; ++l) {
+      const LinesSlice &sl = *rows[i].s[l];
+      if (std::isfinite(sl.ann))
+        std::snprintf(s, sizeof(s), "%+.1f%%", sl.ann), txt[i][2 * l] = s;
+      if (std::isfinite(sl.sharpe))
+        std::snprintf(s, sizeof(s), "%+.2f", sl.sharpe), txt[i][2 * l + 1] = s;
+    }
+    if (const double t = rows[i].row->line[kTrade]->turn; std::isfinite(t))
+      std::snprintf(s, sizeof(s), "%.1f倍", t), txt[i][kCols - 1] = s;
   }
-  const std::vector<std::string> texts = align_cols(rows);
-  std::vector<const Draw *> on; // 显示的线
-  bool legend = false;          // 悬停在图例上 (不另找线)
-  for (size_t i = 0; i < ds.size(); ++i) {
-    const Draw &x = ds[i];
-    const std::string id = line_id(*x.row, x.l), lb = texts[i] + "###" + id;
-    if (ui.reveal.erase(id))
-      ImPlot::HideNextItem(x.l == kTrade, ImPlotCond_Always);
-    ImPlot::SetNextLineStyle(x.col, row_width(x.g));
-    plot_slice(lb.c_str(), *x.s);
-    if (ImPlot::IsLegendEntryHovered(lb.c_str()))
-      row_tip(*x.row), legend = true;
-    if (pf.item(lb.c_str())) {
-      push_tag(pf.tags, pf.lim, *x.s, ImGui::ColorConvertFloat4ToU32(x.col), x.row->tag + kPairTag[pair_kind(*x.row)][x.l]);
-      pf.lines.push_back(x.s);
-      on.push_back(&x);
+  float w_head = 0.f, w[kCols], xc[kCols];
+  for (const NavRow &r : rows)
+    w_head = std::max(w_head, ImGui::CalcTextSize(r.row->cn.c_str()).x);
+  const ImVec2 p0 = ImPlot::GetPlotPos(), o(p0.x + ps.LegendPadding.x, p0.y + ps.LegendPadding.y);
+  float x = o.x + inner.x + w_head;
+  for (int c = 0; c < kCols; ++c) {
+    const float sq = line_of(c) >= 0 && c % 2 == 0 ? sw + sg : 0.f; // 线格左缘的色块
+    w[c] = ImGui::CalcTextSize(head[c]).x;
+    for (const auto &t : txt)
+      w[c] = std::max(w[c], sq + ImGui::CalcTextSize(t[static_cast<size_t>(c)].c_str()).x);
+    xc[c] = x + gx;
+    x = xc[c] + w[c];
+  }
+  const ImRect box(o, ImVec2(x + inner.x, o.y + 2.f * inner.y + static_cast<float>(n + 1) * th));
+  const auto y_row = [&](int i) { return box.Min.y + inner.y + static_cast<float>(i + 1) * th; }; // i = −1 → 列头行
+  const auto item_of = [&](int i, int l) {
+    ImPlotItem *it = ImPlot::GetItem(rows[static_cast<size_t>(i)].lb[l].c_str()); // 本帧刚 Plot 过, 必在池里
+    assert(it);
+    return it;
+  };
+  bool bg_hov = false;
+  lg_button(box, "##nav_legend", bg_hov);
+  ImDrawList &dl = *ImPlot::GetPlotDrawList();
+  ImPlot::PushPlotClipRect();
+  dl.AddRectFilled(box.Min, box.Max, ImPlot::GetStyleColorU32(ImPlotCol_LegendBg));
+  dl.AddRect(box.Min, box.Max, ImPlot::GetStyleColorU32(ImPlotCol_LegendBorder));
+  const ImU32 c_txt = ImGui::GetColorU32(ImGuiCol_Text), c_dis = ImGui::GetColorU32(ImGuiCol_TextDisabled),
+              c_hov = ImGui::GetColorU32(ImGuiCol_PlotLinesHovered);
+  char id[32];
+  for (int c = 0; c < kCols; ++c) { // 列头右对齐 (同数值); 线列头可点
+    const float tw = ImGui::CalcTextSize(head[c]).x;
+    const ImVec2 at(xc[c] + w[c] - tw, y_row(-1));
+    const int l = c % 2 == 0 ? line_of(c) : -1;
+    if (l < 0) {
+      dl.AddText(at, c_dis, head[c]);
+      continue;
+    }
+    std::snprintf(id, sizeof(id), "##nav_lg_c%d", l);
+    bool hov = false;
+    if (lg_button(ImRect(ImVec2(xc[c], at.y), ImVec2(xc[c] + w[c], at.y + th)), id, hov))
+      lg_flip(n, kPairLines, -1, l, item_of);
+    if (hov)
+      tip("%s线 (因子 / 策略行 = %s): 色块 = 显隐, 数 = 区间年化\n点 = 整列开关", kPairName[0][l], kPairName[1][l]);
+    dl.AddText(at, hov ? c_hov : lg_any(n, kPairLines, -1, l, item_of) ? c_txt
+                                                                       : c_dis,
+               head[c]);
+  }
+  int hot = -1; // 悬停的行
+  for (int i = 0; i < n; ++i) {
+    const NavRow &r = rows[static_cast<size_t>(i)];
+    const float yi = y_row(i);
+    { // 行头 = 名
+      const ImRect rr(ImVec2(box.Min.x + inner.x, yi), ImVec2(box.Min.x + inner.x + w_head, yi + th));
+      std::snprintf(id, sizeof(id), "##nav_lg_r%d", i);
+      bool hov = false;
+      if (lg_button(rr, id, hov))
+        lg_flip(n, kPairLines, i, -1, item_of);
+      if (hov)
+        hot = i, row_tip(*r.row);
+      dl.AddText(rr.Min, hov ? c_hov : lg_any(n, kPairLines, i, -1, item_of) ? ImGui::ColorConvertFloat4ToU32(r.col[kTrade])
+                                                                             : c_dis,
+                 r.row->cn.c_str());
+    }
+    for (int l = 0; l < kPairLines; ++l) { // 线格: 整格可点, 色块贴左缘
+      const float xq = xc[2 * l];
+      const ImVec2 s0(xq, yi + (th - sw) * 0.5f), s1(s0.x + sw, s0.y + sw);
+      std::snprintf(id, sizeof(id), "##nav_lg_%d_%d", i, l);
+      bool hov = false;
+      ImPlotItem *it = item_of(i, l);
+      if (lg_button(ImRect(ImVec2(xq, yi), ImVec2(xq + w[2 * l], yi + th)), id, hov))
+        it->Show = !it->Show;
+      if (hov)
+        hot = i, tip("%s %s: 点 = 显 / 隐", r.row->cn.c_str(), kPairName[pair_kind(*r.row)][l]);
+      if (!it->Show) {
+        dl.AddRect(s0, s1, hov ? c_txt : c_dis);
+      } else {
+        ImVec4 col = r.col[l];
+        col.w *= hov ? 0.75f : 1.f;
+        dl.AddRectFilled(s0, s1, ImGui::ColorConvertFloat4ToU32(col));
+      }
+    }
+    for (int c = 0; c < kCols; ++c) { // 数值右对齐
+      const int l = line_of(c);
+      const bool on = l < 0 ? lg_any(n, kPairLines, i, -1, item_of) : item_of(i, l)->Show;
+      const std::string &t = txt[static_cast<size_t>(i)][static_cast<size_t>(c)];
+      dl.AddText(ImVec2(xc[c] + w[c] - ImGui::CalcTextSize(t.c_str()).x, yi), on ? c_txt : c_dis, t.c_str());
     }
   }
-  const int k = legend ? -1 : near_line(on.size(), [&](size_t j, double x) {
-    const LinesSlice &s = *on[j]->s;
+  ImPlot::PopPlotClipRect();
+  if (hot < 0 && bg_hov)
+    if (const int i = static_cast<int>(std::floor((ImGui::GetMousePos().y - y_row(0)) / th)); i >= 0 && i < n)
+      hot = i;
+  if (hot >= 0)
+    ui.hover.plot = rows[static_cast<size_t>(hot)].row->id;
+  return box;
+}
+
+// ---- NAV 主图: 画选中行的两条线, 按组表画层 (for_each_layer; 策略在最上层) + 图例矩阵 (最上层, nav_legend);
+//      行刚选中 → ui.reveal 强制回默认显隐一次 (理想列显, 可成交列隐);
+//      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示; 鼠标在图例矩阵上不算), hot 行显示的线白粗线画在最上 ----
+void plot_nav(LinesUIState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf) {
+  static ImRect s_box;      // 上帧图例矩阵 (悬停找线避开)
+  std::vector<NavRow> rows; // 画序, 只含选中行的
+  for_each_layer([&](int g) {
+    for (size_t r = 0; r < d.rows[g].size(); ++r)
+      if (const LinesRow &row = d.rows[g][r]; picked(ui, kPageNav, row)) {
+        NavRow x{g, &row, {}, {}, {}};
+        for (int l = 0; l < kPairLines; ++l) {
+          x.s[l] = &v.slice[g][r][l];
+          x.col[l] = row_color(d, g, r, l);
+          x.lb[l] = row.cn + " " + kPairName[pair_kind(row)][l] + "###" + line_id(row, l);
+        }
+        rows.push_back(std::move(x));
+      }
+  });
+  struct On {
+    const LinesRow *row;
+    const LinesSlice *s;
+  };
+  std::vector<On> on; // 显示的线
+  for (const NavRow &x : rows)
+    for (int l = 0; l < kPairLines; ++l) {
+      const char *lb = x.lb[l].c_str();
+      if (ui.reveal.erase(line_id(*x.row, l)))
+        ImPlot::HideNextItem(l == kTrade, ImPlotCond_Always);
+      ImPlot::SetNextLineStyle(x.col[l], row_width(x.g));
+      plot_slice(lb, *x.s[l]);
+      if (pf.item(lb)) {
+        push_tag(pf.tags, pf.lim, *x.s[l], ImGui::ColorConvertFloat4ToU32(x.col[l]), x.row->tag + kPairTag[pair_kind(*x.row)][l]);
+        pf.lines.push_back(x.s[l]);
+        on.push_back({x.row, x.s[l]});
+      }
+    }
+  const int k = s_box.Contains(ImGui::GetMousePos()) ? -1 : near_line(on.size(), [&](size_t j, double x) {
+    const LinesSlice &s = *on[j].s;
     return line_at(s.size(), x, [&](size_t i) { return slice_pt(s, i); });
   });
   if (k >= 0) {
-    const LinesRow &r = *on[static_cast<size_t>(k)]->row;
+    const LinesRow &r = *on[static_cast<size_t>(k)].row;
     ui.hover.plot = r.id;
     row_tip(r);
   }
   const std::optional<std::string> &hot = ui.hover.hot();
   for (size_t j = 0; j < on.size(); ++j)
-    if (on[j]->row->id == hot) {
+    if (on[j].row->id == hot) {
       char id[24];
       std::snprintf(id, sizeof(id), "##pf_hot%zu", j);
       ImPlot::SetNextLineStyle(kHotCol, kHotW);
-      plot_slice(id, *on[j]->s, ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit);
+      plot_slice(id, *on[j].s, ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit);
     }
+  s_box = nav_legend(ui, rows);
 }
 
 // ---- VAL 主图例 = 自绘矩阵 (对仗 Inspect 期限结构图例), 绘图区左上: 行 = 口 (EP / BP / SP / CP / DY), 列 = 当前收益率 | 当前倍数 | N 年估值分位 | Band | 等值线;
@@ -347,34 +465,15 @@ void val_legend(const LinesView &v, int years, ValLegendHl &hl) {
   }
   const ImRect box(o, ImVec2(x + inner.x, o.y + 2.f * inner.y + static_cast<float>(kPoolVals + 1) * th));
   const auto y_row = [&](int b) { return box.Min.y + inner.y + static_cast<float>(b + 1) * th; }; // b = −1 → 列头行
-  const auto button = [&](const ImRect &r, const char *id, bool &hov) {
-    bool held = false;
-    const ImGuiID gid = ImGui::GetID(id);
-    ImGui::KeepAliveID(gid);
-    return ImGui::ButtonBehavior(r, gid, &hov, &held, ImGuiButtonFlags_AllowOverlap | ImGuiButtonFlags_PressedOnClick);
-  };
-  const auto item_of = [&](int c, int b) {
+  const auto item_of = [&](int b, int c) {
     ImPlotItem *it = ImPlot::GetItem(val_item(c, b).c_str()); // 本帧刚 Plot 过, 必在池里
     assert(it);
     return it;
   };
-  // 整行 / 整列: 集合里有显示的 → 全隐, 否则全显 (b0 / c0 = −1 = 不限)
-  const auto any_shown = [&](int b0, int c0) {
-    for (int b = 0; b < kPoolVals; ++b)
-      for (int c = 0; c < kLgToggles; ++c)
-        if ((b0 < 0 || b == b0) && (c0 < 0 || c == c0) && item_of(c, b)->Show)
-          return true;
-    return false;
-  };
-  const auto toggle_set = [&](int b0, int c0) {
-    const bool any = any_shown(b0, c0);
-    for (int b = 0; b < kPoolVals; ++b)
-      for (int c = 0; c < kLgToggles; ++c)
-        if ((b0 < 0 || b == b0) && (c0 < 0 || c == c0))
-          item_of(c, b)->Show = !any;
-  };
+  const auto any_shown = [&](int b0, int c0) { return lg_any(kPoolVals, kLgToggles, b0, c0, item_of); };
+  const auto toggle_set = [&](int b0, int c0) { lg_flip(kPoolVals, kLgToggles, b0, c0, item_of); };
   bool bg_hov = false;
-  button(box, "##pf_val_legend", bg_hov);
+  lg_button(box, "##pf_val_legend", bg_hov);
   ImDrawList &dl = *ImPlot::GetPlotDrawList();
   ImPlot::PushPlotClipRect();
   dl.AddRectFilled(box.Min, box.Max, ImPlot::GetStyleColorU32(ImPlotCol_LegendBg));
@@ -394,7 +493,7 @@ void val_legend(const LinesView &v, int years, ValLegendHl &hl) {
     }
     std::snprintf(id, sizeof(id), "##pf_lg_c%d", c);
     bool hov = false;
-    if (button(r, id, hov))
+    if (lg_button(r, id, hov))
       toggle_set(-1, c - kTexts);
     if (hov)
       nx.on = true, nx.b = -1, nx.c = c - kTexts;
@@ -408,7 +507,7 @@ void val_legend(const LinesView &v, int years, ValLegendHl &hl) {
       const ImRect r(ImVec2(box.Min.x + inner.x, yb), ImVec2(box.Min.x + inner.x + w_head, yb + th));
       std::snprintf(id, sizeof(id), "##pf_lg_r%d", b);
       bool hov = false;
-      if (button(r, id, hov))
+      if (lg_button(r, id, hov))
         toggle_set(b, -1);
       if (hov)
         nx.on = true, nx.b = b, nx.c = -1;
@@ -429,8 +528,8 @@ void val_legend(const LinesView &v, int years, ValLegendHl &hl) {
       const ImVec2 s0(xq + (wq - sw) * 0.5f, yb + (th - sw) * 0.5f), s1(s0.x + sw, s0.y + sw);
       std::snprintf(id, sizeof(id), "##pf_lg_%d_%d", b, c);
       bool hov = false;
-      ImPlotItem *it = item_of(c, b);
-      if (button(r, id, hov))
+      ImPlotItem *it = item_of(b, c);
+      if (lg_button(r, id, hov))
         it->Show = !it->Show;
       if (hov) {
         nx.on = true, nx.b = b, nx.c = c;
@@ -616,7 +715,7 @@ void RenderLinesPlot(LinesUIState &ui, const LinesAt &pin, bool nav, const ImVec
         fk.rows += picked(ui, kPageNav, r) ? '1' : '0';
   if (fk != ui.fit_key)
     ImPlot::SetNextAxesToFit();
-  if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", size, nav ? ImPlotFlags_None : ImPlotFlags_NoLegend | ImPlotFlags_NoBoxSelect)) {
+  if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", size, ImPlotFlags_NoLegend | (nav ? ImPlotFlags_None : ImPlotFlags_NoBoxSelect))) {
     ui.fit_key = fk;
     // 线性: y 下限钉在 0 (净值 / 点位恒正), fit / 缩放只动上限; log: 正常
     const ImPlotAxisFlags fit = nav ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
@@ -626,7 +725,6 @@ void RenderLinesPlot(LinesUIState &ui, const LinesAt &pin, bool nav, const ImVec
       ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
     else
       ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].SetMin(0.0, /*force=*/true);
-    ImPlot::SetupLegend(ImPlotLocation_NorthWest);
     // fit 帧的视野还是上帧的 (区间刚变时可能整段在外): 小字不按视野筛, 全收来量留白宽度
     const ImPlotRect cur = ImPlot::GetPlotLimits(); // 先锁 setup, FitThisFrame 才定
     PlotFrame pf{ImPlot::FitThisFrame() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}};
