@@ -1,6 +1,6 @@
 // PortfolioService — Market 各页 (NAV / VAL / FLOW / CTA) 的单 worker: 因子组合 (一组合一文件) 里每个因子**独立**回测 + 全部篮子的可成交指数 / 增仓 / 估值.
 //   两者同一种成品 = 账 PortfolioBook (线 × 行的逐行增量, 线键取线, 列 = 毛收益 / 建仓冲击 / 固定份数 / 增仓量, 另带估值):
-//   因子一本一线; 行情两侧 (Quote::Side) 各一本: 篮子一本 basket_count 线 (不扣成本 = 无冲击两列), 个股一本每只一线 (只毛收益一列).
+//   因子一本一线; 行情两侧 (Quote::Side) 各一本: 篮子一本每篮一线 (不扣成本 = 无冲击两列), 个股一本每只一线 (只毛收益一列).
 //
 // 组合文件 output/portfolios/<name>.json (name = 主干, ValidFactorName):
 //   { "factors": [ { "pool": "all", "level": "5min", "file": "mom30.json", "hold": 30, "sign": -1, "expr": "<具体规范串>" }, … ] }
@@ -14,7 +14,7 @@
 //   成本按 Δw (契约【换手成本】), 取主段 (y_spec Segs::First: 首个盘口段, 无则固定段): 盘口段 = 增仓 Δw⁺ × 买入冲击 (封顶 max_impact) + 平仓量 × Config::fixed_impact; 固定段 =
 //   增仓量 / 平仓量各付 fixed_impact (固定量 UI 乘). 净值 / 聚合 (等权, 日并集轴) / 年化换手在 UI 现算.
 // 篮子: 全部篮子一个作业 (gui/engine/Engine eval_baskets, 与 eval_job 平级), 在 kBasketLevel 的 all 池评估域 (全轴; 不走森林): load_b 一趟读齐各池成员位 (all.bar 选股表) + T+1C 标签 + 原料 → baskets 一趟扫完
-//   (gui/engine/Book) → 一本 basket_count 线的账 (线 = 篮子下标, 与行情侧价格指数同一张篮子表): 可成交指数日收益 (净值引擎 fold_book) + 逐日增仓量
+//   (gui/engine/Book) → 一本每篮一线的账 (线 = 篮子下标, 与行情侧价格指数同一张篮子表): 可成交指数日收益 (净值引擎 fold_book) + 逐日增仓量
 //   + 估值 EP / BP / SP / CP / DY (等权 = 个股收益率均值, 加权 = 整体法收益率; 滚动分位 band 在 UI 按可调窗长现算);
 //   同一趟另出一本个股账 (线 = all 池轴的每只: 后复权日收益 + 本只收益率); 两本按 Side 并列 (PortfolioResult::quotes), UI 的两侧同一套.
 // 缓存: 因子按 FactorTask::key 存, 账记算时的 sig (变了重算), 只算缺的 (加一个因子只算它); 请求外的 (换组合 / 删条目) 按上次被请求的先后留到总量上限
@@ -103,7 +103,7 @@ enum BookCol : int { kBookRet,   // 毛收益 (因子 = G20 多头; 篮子 = 可
                      kBookBuy }; // 增仓量 Δw⁺ (UI 折年化单边换手)
 inline constexpr int kBookCols = 4;
 // 一本账 (因子 / 篮子 / 个股同形): 线 × 行 = [线][T = 日 · S], 线键 keys 升序 (line_of 统一取线): 因子一线 (键 0, 该 hold),
-// 篮子 basket_count 线 (键 = 篮子下标, shared/Basket.hpp), 个股 = all 池轴的每只一线 (键 = 全局 id; 只毛收益一列 + 估值);
+// 篮子每篮一线 (键 = 篮子下标, shared/Basket.hpp), 个股 = all 池轴的每只一线 (键 = 全局 id; 只毛收益一列 + 估值);
 // 行情两侧的线键 = 该侧的行情键 (Quote::Side 路的键)
 struct PortfolioBook {
   std::string sig;              // 算时的任务签名 (FactorTask / BasketTask::sig)

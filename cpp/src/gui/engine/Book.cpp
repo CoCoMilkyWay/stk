@@ -2,13 +2,12 @@
 #include "gui/engine/Book.hpp"
 
 #include "factor/Stat/Host.hpp" // h2f
-#include "shared/Basket.hpp"    // basket_count / cut_of / ind_cut / concept_cut / cut_rebal / weight_of
+#include "shared/Basket.hpp"    // basket_table
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <limits>
-#include <span>
 
 namespace GUI::Engine {
 
@@ -48,48 +47,25 @@ namespace {
 // 篮子 (Baskets::index / buy / val / stock*; pool_line = 单池篮子 0 等权): 成员位行 = 当日池 (D−1 收盘定, 盘中 as-of, 整日常量), 行 t 的收益按上一有效 close 行的成员.
 //   B 的日频盘后列 (复权因子 / 股本 / 财务 / 行业) 经 as-of 已是当日适用值, 与本行 close 配对.
 //   index_rows 出指数 (fold_book, 标签; 顺延在标签里, 建仓 / 续持按 Stat 契约【仓位感知】); basket_rows 出估值 + 各篮子线的逐行收益 / 权和 (BasketRows,
-//   只给增仓漂移; 停牌行不更新 ⇒ 权带到复牌); basket_buy 用它算增仓. 收益成分两者同一份 prev_rows + each_basket (成分格 = 上一有效 close 行合判据),
-//   权三者同一份 Omega. 全部篮子同一遍 A 轴: 每格按成员位逐个进它所属的篮子 (each_basket)
+//   只给增仓漂移; 停牌行不更新 ⇒ 权带到复牌); basket_buy 用它算增仓. 收益成分两者同一份 prev_rows + BasketTable::each (成分格 = 上一有效 close 行合判据),
+//   权三者同一份 Omega. 全部篮子同一遍 A 轴: 每格按成员位逐个进它所属的篮子 (BasketTable::each)
 
 // 各篮子逐行 [篮子线 · T]: 成分收益 R = Σ权·r / Σ权 (无成分 0) / 权和 Σ权 (等权 = 成分数; 0 = 非成分行)
 struct BasketRows {
   std::vector<double> r, w;
 };
 
-constexpr PoolMask kAllABit = pool_bit(kAllAPool[pool::kWeightEq]);
-
-// 成员位 m + 行业 ind + 所属概念 cs → 所属篮子逐个 fn(b, bit, k): 子池 = 成员位含 bit (k = 0); 行业 k = 含 kAllABit ∧ ind = k (行业未知的不进行业);
-//   概念 = 含 kAllABit (k = 0: 概念成分全期不变, 同篮子即同在全A)
-template <class Fn>
-void each_basket(PoolMask m, uint8_t ind, std::span<const uint16_t> cs, Fn &&fn) {
-  for (PoolMask r = m & ~pool_bit(kAllPool); r; r &= r - 1) {
-    const PoolId p = pool_first(r);
-    fn(cut_of(p), pool_bit(p), uint8_t{0});
-  }
-  if (m & kAllABit) {
-    if (ind > 0)
-      fn(ind_cut(ind), kAllABit, ind);
-    for (const uint16_t k : cs)
-      fn(concept_cut(k), kAllABit, uint8_t{0});
-  }
-}
-
-// 格的持仓权: 格 i (行 q, 资产 a) 在篮子 l 的权 = 调仓期首行 r = B.from[l 的周期][q] 的目标权 (l 的权重: 等权 1 / 加权 mcap) × 后复权 close_q / close_r
+// 格的持仓权: 格 i (行 q, 资产 a) 在篮子 l 的权 = pool::omega (调仓期首行 r = B.from[l 的周期][q] 的目标权, 后复权 close_q / close_r)
 //   (r = q 或两头缺有效 close → 行 q 的目标权) ⇒ 日频篮子恒 = 目标权, 周频池一周内随价漂移 (与选股表 Tape::omega 同式, 晚一行建仓)
 struct Omega {
-  explicit Omega(const BPlanes &B) : B(B), rb(basket_count()), wt(basket_count()) {
-    for (size_t l = 0; l < rb.size(); ++l)
-      rb[l] = cut_rebal(l), wt[l] = weight_of(l);
-  }
+  Omega(const BPlanes &B, const BasketTable &bt) : B(B), bt(bt) {}
   double operator()(size_t i, size_t l) const {
-    const size_t A = static_cast<size_t>(B.sh.A), q = i / A, j = B.from[rb[l]][q] * A + i % A;
+    const size_t A = static_cast<size_t>(B.sh.A), q = i / A, j = B.from[bt.rebal(l)][q] * A + i % A;
     const bool drift = j != i && B.close.m[j] && B.close.m[i];
-    const size_t s = drift ? j : i;
-    return (wt[l] == pool::kWeightEq ? 1.0 : static_cast<double>(B.mcap[s])) * (drift ? static_cast<double>(B.close.v[i]) / B.close.v[j] : 1.0);
+    return pool::omega(bt.weight(l), B.mcap[drift ? j : i], drift ? static_cast<double>(B.close.v[i]) / B.close.v[j] : 1.0);
   }
   const BPlanes &B;
-  std::vector<pool::Rebal> rb;  // [线] 调仓周期
-  std::vector<pool::Weight> wt; // [线] 权重
+  const BasketTable &bt;
 };
 
 // 每格的上一有效 close 行 [T][A] (有效 = close.m ∧ close > 0; −1 = 无 / 本格无效): 资产条带并行沿 t 推 (跨日, 停牌带着)
@@ -162,7 +138,8 @@ void basket_rows(misc::exec::ForkJoin &ex, const BPlanes &B, const Omega &om, co
   const uint8_t *ind = B.ind.data();
   std::vector<float> pxv = B.px;
   float *px = pxv.data();
-  const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A), S = static_cast<size_t>(B.sh.seg), nl = basket_count();
+  const BasketTable &bt = om.bt;
+  const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A), S = static_cast<size_t>(B.sh.seg), nl = bt.size();
   ex.rows(B.sh.A, [&](int a0, int a1, int) {
     std::vector<float> lp(static_cast<size_t>(a1 - a0), 0.f);
     for (size_t t = 0; t < nT; ++t)
@@ -195,7 +172,7 @@ void basket_rows(misc::exec::ForkJoin &ex, const BPlanes &B, const Omega &om, co
           const double r = close.v[i] / close.v[p] - 1.0;
           o.stock.v[a * nT + t] = static_cast<float>(r);
           if (in[p])
-            each_basket(in[p], ind[p], B.concepts_of(a), [&](size_t l, PoolMask, uint8_t) {
+            bt.each(in[p], ind[p], B.concepts_of(a), [&](size_t l, PoolId, uint8_t) {
               const double x = om(p, l);
               double *e = xq(l);
               e[0] += x * r, e[1] += x;
@@ -214,11 +191,12 @@ void basket_rows(misc::exec::ForkJoin &ex, const BPlanes &B, const Omega &om, co
         if (t == 0 || !in[i - nA])
           continue;
         const double vw[pool::kWeights] = {1.0, mc};
-        each_basket(in[i - nA], ind[i], B.concepts_of(a), [&](size_t l, PoolMask, uint8_t) {
+        bt.each(in[i - nA], ind[i], B.concepts_of(a), [&](size_t l, PoolId, uint8_t) {
+          const double w = vw[bt.weight(l)];
           for (int m = 0; m < kPoolVals; ++m)
             if (std::isfinite(num[m])) {
               double *e = vq(l, m);
-              e[0] += vw[om.wt[l]] * (num[m] / mc), e[1] += vw[om.wt[l]];
+              e[0] += w * (num[m] / mc), e[1] += w;
             }
         });
       }
@@ -239,7 +217,8 @@ void basket_buy(misc::exec::ForkJoin &ex, const BPlanes &B, const Omega &om, con
   const factor::check::Plane &close = B.close;
   const PoolMask *in = B.in.data();
   const uint8_t *ind = B.ind.data();
-  const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A), nl = basket_count();
+  const BasketTable &bt = om.bt;
+  const size_t nT = static_cast<size_t>(B.sh.T), nA = static_cast<size_t>(B.sh.A), nl = bt.size();
   std::vector<int32_t> pm(nl * nT, -1); // [篮子线 · T] 上一成分行 (−1 = 无)
   for (size_t l = 0; l < nl; ++l)
     for (size_t t = 1; t < nT; ++t) {
@@ -270,7 +249,7 @@ void basket_buy(misc::exec::ForkJoin &ex, const BPlanes &B, const Omega &om, con
           continue;
         ++stamp;
         if (const size_t c1 = t > 0 ? cell(t - 1, a) : SIZE_MAX; c1 != SIZE_MAX)
-          each_basket(in[c1], ind[c1], B.concepts_of(a), [&](size_t l, PoolMask, uint8_t) {
+          bt.each(in[c1], ind[c1], B.concepts_of(a), [&](size_t l, PoolId, uint8_t) {
             if (rows.w[l * nT + t - 1] > 0.0)
               mark[l] = stamp, dw[l] = drift(t - 1, a, c1, l, om(c1, l));
           });
@@ -279,10 +258,10 @@ void basket_buy(misc::exec::ForkJoin &ex, const BPlanes &B, const Omega &om, con
           const size_t cp = cell(p, a);
           bool hit = false;
           if (cp != SIZE_MAX)
-            each_basket(in[cp], ind[cp], B.concepts_of(a), [&](size_t x, PoolMask, uint8_t) { hit |= x == l; });
+            bt.each(in[cp], ind[cp], B.concepts_of(a), [&](size_t x, PoolId, uint8_t) { hit |= x == l; });
           return hit ? drift(p, a, cp, l, om(cp, l)) : 0.0;
         };
-        each_basket(in[c], ind[c], B.concepts_of(a), [&](size_t l, PoolMask, uint8_t) {
+        bt.each(in[c], ind[c], B.concepts_of(a), [&](size_t l, PoolId, uint8_t) {
           const size_t at = l * nT + t;
           if (!(rows.w[at] > 0.0))
             return;
@@ -302,22 +281,24 @@ Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B) {
   const size_t n = B.sh.n(), A = static_cast<size_t>(B.sh.A);
   assert(B.in.size() == n && B.eo.size() == n && B.lab.m.size() == n && B.close.v.size() == n && "B 未装 (load_b)");
   Baskets o;
-  // 指数的成员码: 子池 / 概念 = 成员位本身; 行业 = 全A 内行业码 ind0 (含 kAllABit 才是 ind_l1, 否则 0)
+  // 指数的成员码: 子池 / 概念 = 成员位本身 (判所依池的位); 行业 = 母集内行业码 ind0 (含母集位才是 ind_l1, 否则 0)
+  constexpr PoolMask kBaseBit = pool_bit(kBasketBase);
   std::vector<uint8_t> ind0(n);
   ex.rows(B.sh.T, [&](int t0, int t1, int) {
     for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i)
-      ind0[i] = (B.in[i] & kAllABit) ? B.ind[i] : uint8_t{0};
+      ind0[i] = (B.in[i] & kBaseBit) ? B.ind[i] : uint8_t{0};
   });
   const PoolMask *in = B.in.data();
   const Holds hd = keys_of<Holds>(std::vector<int>{factor::stat::hold_close(1)});
   const LegPlane *const lab = &B.lab;
-  const Omega om(B);
-  o.index = index_rows(ex, B.sh, hd, &lab, B.eo.data(), basket_count(), [&](size_t, size_t i, auto &&put) {
-    each_basket(in[i], ind0[i], B.concepts_of(i % A), [&](size_t l, PoolMask bit, uint8_t k) {
+  const BasketTable &bt = basket_table();
+  const Omega om(B, bt);
+  o.index = index_rows(ex, B.sh, hd, &lab, B.eo.data(), bt.size(), [&](size_t, size_t i, auto &&put) {
+    bt.each(in[i], ind0[i], B.concepts_of(i % A), [&](size_t l, PoolId p, uint8_t k) {
       if (k > 0)
         put(l, ind0.data() + i, [k](uint8_t v) { return v == k; }, om(i, l));
       else
-        put(l, in + i, [bit](PoolMask v) { return (v & bit) != 0; }, om(i, l));
+        put(l, in + i, [bit = pool_bit(p)](PoolMask v) { return (v & bit) != 0; }, om(i, l));
     });
   });
   const std::vector<int32_t> prev = prev_rows(ex, B.close, B.sh.T, B.sh.A);

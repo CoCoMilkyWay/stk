@@ -318,8 +318,9 @@ Order Tape::row(size_t r) const {
 
 void Tape::omega(size_t r, size_t q, size_t a, float om[kWeights]) const {
   assert(r <= q && q < days());
-  const float g = grow[q * A + a] / grow[r * A + a];
-  om[kWeightEq] = g, om[kWeightCap] = mcap[r * A + a] * g;
+  const double g = static_cast<double>(grow[q * A + a]) / grow[r * A + a];
+  for (int w = 0; w < kWeights; ++w)
+    om[w] = static_cast<float>(pool::omega(static_cast<Weight>(w), mcap[r * A + a], g));
 }
 
 std::shared_ptr<const Tape> tape(const FeatureLib &lib, const Cancel *cancel, const Tick &tick) {

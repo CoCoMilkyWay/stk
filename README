@@ -49,7 +49,8 @@ stk/
 │   │   │   ├── TaskState.hpp                           # 📦 任务状态
 │   │   │   ├── Asset.hpp / AssetInfo.hpp               # 📦 资产定义 / 元数据 (按全局 id 稠密: 一对一 vector, 一对多 Csr)
 │   │   │   ├── AssetEvent.hpp                          # 📦 个股历史事件 (AssetInfo 内)
-│   │   │   ├── Basket.hpp                              # 📦 篮子表 = 切片 (申万一级 / 各子池 / 概念) × 该切片的权重 (行业 / 概念 = 全A 内切, 市值加权; 子池 = 池参数, 全A 等权 / 加权两池起头); 行情价格指数与因子可成交指数同一张
+│   │   │   ├── Basket.hpp                              # 📦 篮子表 BasketTable = 切片 × 该切片的权重; 三段 (段序 = 目录组序 = 下标序): 各子池 (池参数, 全A 等权 / 加权两池起头) | 申万一级 | 概念 (行业 / 概念 = 全A 内切, 市值加权)
+│   │   │   │                                           #    · 逐篮子属性 (权重 / 周期 / 代码 / 名) 建表时定; 成员判据唯一一份 each (池集位 + 行业 + 概念 → 所属篮子); 行情价格指数 / CTA / 因子可成交指数同一张
 │   │   │   ├── Concept.hpp                             # 📦 东财概念成分快照 (进程内唯一 = 最近一份)
 │   │   │   ├── Feature.hpp                             # 📦 特征元数据 + 多选 picked = set<ColRef> (跨库跨层); 当前库 = (池, 档)
 │   │   │   ├── Progress.hpp                            # 📦 后台计算进度面 (原子量, UI 免锁读) + 单调前缀发布 PrefixPub
@@ -194,7 +195,8 @@ stk/
 │   │   │   │   ├── QuoteHub.hpp                        # 🖥️ QuoteService + StockHistory + BasketHistory 一份; 首次用到才起 (之前不碰网络)
 │   │   │   │   ├── Quote.hpp                           # 🖥️ 行情公共件: 个股 / 篮子 × 历史 / 当日 四路同一套类型 (请求 / Tape / 分钟根 Bars)
 │   │   │   │   │                                       #    · 篮子合成核 Fold (历史 / 当日同一份): 成员表 (CSR) → 点位 + 分钟净流入
-│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成的 all.bar 源: 选股表 → 成员表 (权 = Tape::omega) + 一日合成件 Lane (BasketHistory / CtaLib 同一份)
+│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成件 (BasketHistory / CtaLib 同一份): 成员 members (选股表 → 成员表, 权 = Tape::omega) ⇄ drift (冻结随价);
+│   │   │   │   │                                       #    源 LibDay (all.bar 日行 + L_1min) ⇄ FundDay (bar1d + bar1m); 一日合成件 Lane<源>; 普查 census (只数 / 权 / 成分 / 重合)
 │   │   │   │   └── services/
 │   │   │   │       ├── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin; 篮子当日按 BasketHistory 交接的成员表增量合成
 │   │   │   │       ├── StockHistory.hpp                # 🖥️ 个股历史: 基本面日线 + bar1m 分钟 (LRU)

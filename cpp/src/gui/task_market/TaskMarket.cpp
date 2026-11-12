@@ -12,7 +12,7 @@
 #include "gui/task_market/ui/TabAsset.hpp"
 #include "gui/task_market/ui/TabLines.hpp"
 #include "gui/util/PoolTip.hpp"  // move_pool (右表指数组拖动)
-#include "shared/Basket.hpp"     // basket_count (篮子键集)
+#include "shared/Basket.hpp"     // basket_table (篮子键集)
 #include "shared/SharedData.hpp" // config, asset, asset_info, task_state.database
 
 #include "imgui.h"
@@ -90,7 +90,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
     if (data.task_state.database.asset_info_ready) {
       state->quote->start(data);
       if (state->lines.empty()) {
-        state->lines.resize(basket_count());
+        state->lines.resize(basket_table().size());
         std::iota(state->lines.begin(), state->lines.end(), 0u);
       }
       Market::Sync(*state->quote, Quote::kBasket, state->lines, ui.basket.feed);

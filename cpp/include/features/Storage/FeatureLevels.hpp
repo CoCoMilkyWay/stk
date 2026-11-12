@@ -118,6 +118,20 @@ inline constexpr LibId lib_first(LibMask m) { // 最低位的库
     w += 64;
   return static_cast<LibId>(w + std::countr_zero(static_cast<uint64_t>(m >> w)));
 }
+// 池集位 (位 = PoolId; 与库集位对仗): 一格当日所在的池 (篮子成员判据 shared/Basket.hpp BasketTable::each); 位宽 = 库集位宽 / 档数
+inline constexpr int kPoolBits = kLibBits / static_cast<int>(TIER_COUNT);
+using PoolMask = unsigned _BitInt(kPoolBits);
+inline constexpr PoolMask pool_bit(PoolId p) {
+  assert(p < kPoolBits && "池表超出 PoolMask 位宽");
+  return PoolMask{1} << p;
+}
+inline constexpr PoolId pool_first(PoolMask m) { // 最低位的池
+  assert(m != 0);
+  int w = 0;
+  while (static_cast<uint64_t>(m >> w) == 0)
+    w += 64;
+  return static_cast<PoolId>(w + std::countr_zero(static_cast<uint64_t>(m >> w)));
+}
 
 // 档间旁读 (TIER_SIDES 的运行时版): main 档可旁读同池 side 档 (写端截面; 读端不受它约束, 列读自己的库)
 namespace tier_of {

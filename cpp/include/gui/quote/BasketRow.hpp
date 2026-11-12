@@ -1,6 +1,9 @@
-// 篮子合成的 all.bar 源 (BasketHistory 价格指数 / Market → CTA 的库同一份): 选股表 → 交易日 D 的成员表, L_1day 日行 → 基准 / 日根, L_1min → 分钟根.
-//   成员 / 权一律出自选股表与其原料带 (features/Panel/PoolSelect.hpp, 与 Style 页篮子账同一份): 子池 = 选股表 D 的成员,
-//   行业 / 概念 = 全A 等权池 (kAllAPool) 在 D 的成员按行业 / 概念切; 权 = Tape::omega (源行的目标权随价漂移; 日频 = D−1 收盘的目标权). 基准 = D−1 行 pre_close; 合成核 = Quote.hpp Fold (Lane 一日一份).
+// 篮子合成件 (BasketHistory 价格指数 / Market → CTA 的库同一份): 成员 × 源 → Lane (Fold 一日一份) → 各篮子一日; 普查 census 出发布的成员统计.
+//   成员 (谁 × 权) 两步对仗: members = 选股表 → 交易日 D 的成员表 (判据 = shared/Basket.hpp BasketTable::each, 权 = Tape::omega; 与 Style 页篮子账同一份)
+//                             drift   = 成员冻结, 过一个交易日 (库末日之后的补日: 换源回目标权, 否则随价漂移)
+//   源 (每只一日的 Leg) 两种对仗: LibDay  = all.bar L_1day 日行 (基准 = D−1 行 pre_close) + L_1min 分钟根
+//                                 FundDay = 基本面 bar1d 行 (基准 = 当行 pre_close) + bar1m 分钟根
+//   两源同一个形 (date / minutes / leg), Lane::run 不分源; 当日 (新浪快照) 的增量合成在 QuoteService (Fold 增量).
 #pragma once
 
 #include "features/Panel/PoolSelect.hpp" // pool::Picks / day_cols
@@ -12,6 +15,8 @@
 #include <cstdint>
 #include <span>
 #include <vector>
+
+struct Bar1mDay;
 
 namespace GUI::Quote {
 
@@ -27,57 +32,65 @@ void read_row(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &dc, R
 void minute_alloc(FeatureRead::DayColumns &mc, size_t A);
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc);
 
-// 交易日 d 的成员表 (下标 = 库轴, 篮子 = 线): 所属切片的各线 (shared/Basket.hpp, 线的权重), 权 = Tape::omega (≤ 0 不进); 行业 / 概念随全A (pk 与 axis 同为 all.bar 轴);
-//   Members::cap = D−1 收盘总市值
+// 交易日 d 的成员表 (下标 = 库轴): 当日所在的池 (子池 = 选股表 d 的成员) 过 BasketTable::each, 权 = Tape::omega 取该篮的权重 (≤ 0 不进);
+//   行业 / 概念随母集 (pk 与 axis 同为 all.bar 轴); Members::cap = D−1 收盘总市值
 void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m);
-// 成员表 m 过交易日 prev → d (成员冻结, 库末日之后的补日): 各线按其切片的周期换源 (pool::rebal_at) → 等权回 1, 否则随价 × rel [库轴] (收 / 前收);
+// 成员表 m 过交易日 prev → d (成员冻结): 各篮子按其周期换源 (pool::rebal_at) → 等权回 1, 否则随价 × rel [库轴] (收 / 前收);
 //   加权恒 × rel (股本冻结 ⇒ 目标权即漂移后的权); Members::cap 恒 × rel
 void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel);
 // 一只一日的 L_1min (mc = read_minutes 的读) → 分钟根: 无成交的行不收 (与 bar1m 的 bars_of 同一并根)
 void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b);
 
-// 一日合成件 (BasketHistory 历史 / CtaLib 价格库同一份; 逐日复用): 成员表 mem × 前一行 prev (基准 = 前收) × 当日行 cur (日根) × 分钟读 mc → Fold → day [合成线]
-//   slot = 篮子下标 → 合成线 (空 = 原线; ≥ 线数 = 不合)
-struct Lane {
-  Lane(size_t A, size_t lines, std::vector<uint32_t> slot = {});
-  FeatureRead::DayColumns dc, mc; // 日根行 / 分钟的读
-  Members mem;                    // 交易日 d 的成员表
-  Fold fold;
-  std::vector<Day> day; // [合成线]
-  Bars bars;            // 一只一日的分钟根
-  // 合成交易日 d (前一交易日 prev_d): minutes → mc 已读 d; level [合成线] = 前日点位;
-  //   each(a, 日根 (无成交 = nullptr), 分钟根 (只在 minutes 时有)) 逐只
-  template <class Each>
-  void run(const Row &prev, const Row &cur, misc::Ymd d, misc::Ymd prev_d, bool minutes, std::span<const double> level, Each &&each);
-
-private:
-  std::vector<uint32_t> slot_;
-  std::vector<Members::Weight> ws_; // 一只滤到合成线的所属线
+// 源 (两种同形): date = 交易日; minutes() = 合成分钟; leg(a, c, b) = 一只的 Leg (c / b = 调用方给的格, Leg 可指向它们)
+// all.bar 库源: 基准 = 前一行 prev 的 pre_close, 日根 = 当日行 cur, 分钟根 = mc 的 L_1min (nullptr = 只合日根)
+struct LibDay {
+  misc::Ymd date;
+  const Row &prev, &cur;
+  const FeatureRead::DayColumns *mc;
+  bool minutes() const { return mc != nullptr; }
+  Leg leg(size_t a, Cell &c, Bars &b) const;
+};
+// 基本面源: 基准 / 日根 = bar1d 行 px [库轴] (ref = pre_close; 无行 → 收 0), 分钟根 = bar1m (bd 已载 date)
+struct FundDay {
+  misc::Ymd date;
+  std::span<const Candle> px;
+  const Bar1mDay &bd;
+  bool minutes() const { return true; }
+  Leg leg(size_t a, Cell &c, Bars &b) const;
 };
 
-template <class Each>
-void Lane::run(const Row &prev, const Row &cur, misc::Ymd d, misc::Ymd prev_d, bool minutes, std::span<const double> level, Each &&each) {
-  fold.open(minutes ? kSlots : 0);
-  bars.has.reset();
-  for (size_t a = 0; a < mem.assets(); ++a) {
-    const float x = cur.px[3][a];
-    const Cell c = cell(cur.px[0][a], cur.px[1][a], cur.px[2][a], x, 0, cur.amount[a]);
-    const Cell *on = cur.trade[a] && x > 0 ? &c : nullptr;
-    if (minutes)
-      bars_of(mc, a, d, bars);
-    each(a, on, bars);
-    std::span<const Members::Weight> ws = mem.of(a);
-    if (!slot_.empty()) {
-      ws_.clear();
-      for (const Members::Weight &w : ws)
-        if (const uint32_t j = slot_[w.basket]; j < day.size())
-          ws_.push_back({j, w.w});
-      ws = ws_;
-    }
-    if (!ws.empty())
-      fold.add({prev.pre[a], on, minutes ? &bars : nullptr}, ws);
+// 一日合成件 (逐日复用): 成员表 mem × 源 → Fold → day [篮子]
+struct Lane {
+  explicit Lane(size_t baskets) : fold(baskets), day(baskets) {}
+  Members mem; // 交易日 src.date 的成员表
+  Fold fold;
+  std::vector<Day> day; // [篮子]
+  // 合成源 src 的一日 (前一交易日 prev; level [篮子] = 前日点位); each(a, Leg) 逐只 (含非成员)
+  template <class Src, class Each>
+  void run(const Src &src, misc::Ymd prev, std::span<const double> level, Each &&each);
+  template <class Src>
+  void run(const Src &src, misc::Ymd prev, std::span<const double> level) {
+    run(src, prev, level, [](size_t, const Leg &) {});
   }
-  fold.finish(d, prev_d, level, day);
+
+private:
+  Cell cell_;
+  Bars bars_;
+};
+
+template <class Src, class Each>
+void Lane::run(const Src &src, misc::Ymd prev, std::span<const double> level, Each &&each) {
+  fold.open(src.minutes() ? kSlots : 0);
+  for (size_t a = 0; a < mem.assets(); ++a) {
+    const Leg g = src.leg(a, cell_, bars_);
+    each(a, g);
+    if (const std::span<const Members::Weight> ws = mem.of(a); !ws.empty())
+      fold.add(g, ws);
+  }
+  fold.finish(src.date, prev, level, day);
 }
+
+// 普查: 成员表 m (库轴 axis) 在键集 keys (篮子) 上 → t 的 members / weight / cap / cons / overlap (见 Tape)
+void census(const Members &m, const PoolAxis &axis, std::span<const uint32_t> keys, Tape &t);
 
 } // namespace GUI::Quote

@@ -4,7 +4,7 @@
 #include "fundamental/AssetAxis.hpp" // asset_axis (成分行代码)
 #include "gui/engine/Hold.hpp"       // hold_desc
 #include "misc/date.hpp"             // to_days (滚动窗权重按日历天)
-#include "shared/Basket.hpp"         // basket_group / basket_name / cut_code
+#include "shared/Basket.hpp"         // basket_table
 
 #include <algorithm>
 #include <array>
@@ -29,7 +29,7 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // 有行情键的行 id (两侧各一个前缀): 篮子 = pf_ + 切片代码 + 权重后缀 [Weight] (概念换快照线号会变, 切片代码不变) / 个股 = stk_ + 全局 id
 constexpr const char *kWeightId[pool::kWeights] = {"", "_cap"};
-std::string basket_id(size_t c) { return "pf_" + cut_code(c) + kWeightId[weight_of(c)]; }
+std::string basket_id(size_t b) { return "pf_" + basket_table().code(b) + kWeightId[basket_table().weight(b)]; }
 std::string stock_id(uint32_t id) { return "stk_" + std::to_string(id); }
 
 // 行名主体的显示宽上限 (格: ASCII 1, 其余 2): 超出 → 截到 kNameCells − 2 格补 "…" (表 / 图例 / 线尾同用; 全名进悬停)
@@ -135,7 +135,7 @@ void paint(LinesDerived &d, const LinesDerived &o) {
   for (int g = 0; g < kRowGroups; ++g)
     if (kGroupDefs[g].paint)
       for (LinesRow &r : d.rows[g]) {
-        if (r.q.is(Quote::kBasket) && r.q.key == cut_of(kAllAPool[pool::kWeightCap]))
+        if (r.q.is(Quote::kBasket) && r.q.key == basket_table().at_pool(kAllAPool[pool::kWeightCap]))
           mkt = rs.size();
         rs.push_back(&r);
         key.rows.emplace_back(r.id, r.line[kIdeal].get());
@@ -513,17 +513,17 @@ void bind_quotes(const PortfolioResult &res, const std::shared_ptr<const Quote::
 }
 
 // ---- 各组的取名 (名 + 行情键; 见头文件): 篮子线 ↔ 个股, 因子条目 ↔ 组合 ----
-LinesRow basket_row(size_t c) {
+LinesRow basket_row(size_t b) {
+  const BasketTable &bt = basket_table();
+  const std::string suf = pool::weight_suffix(bt.weight(b));
   LinesRow r;
-  r.id = basket_id(c);
-  r.en = cut_code(c);
-  r.hover = r.en + "  " + basket_name(c);
-  if (pool_cut(c))
-    r.pool = cut_pool(c);
-  const std::string name = basket_name(c), suf = pool::weight_suffix(weight_of(c));
-  assert(name.ends_with(suf));
-  r.cn = r.tag = clip_name(name.substr(0, name.size() - suf.size())) + suf;
-  r.q = {Quote::kBasket, static_cast<uint32_t>(c)};
+  r.id = basket_id(b);
+  r.en = bt.code(b);
+  r.hover = r.en + "  " + bt.name(b);
+  if (bt.group(b) == kGroupPool)
+    r.pool = bt.pool_of(b);
+  r.cn = r.tag = clip_name(bt.stem(b)) + suf;
+  r.q = {Quote::kBasket, static_cast<uint32_t>(b)};
   r.watch = r.en + suf;
   return r;
 }
@@ -611,12 +611,12 @@ void push_book(LinesDerived &d, int g, LinesRow r, std::vector<LinesLeg> legs, d
   push(d, g, std::move(r), ru);
 }
 
-// 有行情键的行: 篮子三组 = [basket_group 序]; 成分 = 展开的篮子行的成分 (Tape::cons, 权降序) + 其余个股 kids (升序)
+// 有行情键的行: 篮子三组 = 篮子表三段 (段内序); 成分 = 展开的篮子行的成分 (Tape::cons, 权降序) + 其余个股 kids (升序)
 void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, const StockInfos &infos, double fixed_impact, const Reuse &ru,
                    LinesDerived &d) {
   for (int g = 0; g < kBasketGroups; ++g)
-    for (const size_t line : basket_group(static_cast<BasketGroup>(g)))
-      push_quote(d, g, basket_row(line), fixed_impact, ru);
+    for (const size_t b : basket_table().of(static_cast<BasketGroup>(g)))
+      push_quote(d, g, basket_row(b), fixed_impact, ru);
   std::vector<std::pair<uint32_t, double>> ks; // (全局 id, 权占比)
   if (const LinesAt o = d.at(open); o.g >= 0 && d.prices && d.prices->lack.empty()) {
     assert(o.g < kBasketGroups);

@@ -8,7 +8,7 @@
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"  // TableFindByID (右表内容宽)
-#include "shared/Basket.hpp" // weight_of
+#include "shared/Basket.hpp" // basket_table
 
 #include <algorithm>
 #include <array>
@@ -385,7 +385,7 @@ SheetToday basket_today(const Market::Feed &f, const RowSrc &x) {
   const size_t l = x.row->q.key;
   assert(f.data->keys[l] == l && f.today && f.today->size() == f.data->list.size());
   double w = f.data->cap[l];
-  if (const Quote::Day &t = (*f.today)[l]; weight_of(l) == pool::kWeightCap && Quote::joins(*f.data->list[l], t))
+  if (const Quote::Day &t = (*f.today)[l]; basket_table().weight(l) == pool::kWeightCap && Quote::joins(*f.data->list[l], t))
     w *= t.candle.close / t.candle.ref;
   o.v[kTodayMembers] = f.data->members[l];
   o.v[kTodayCap] = w > 0 ? w : kNaN;

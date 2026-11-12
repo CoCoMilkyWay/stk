@@ -6,7 +6,7 @@
 #include "gui/engine/Engine.hpp"           // with_backend / eval_job / eval_baskets / Probes / LinesP / group_abs
 #include "gui/engine/File.hpp"             // ValidFactorName / FactorRow / ScanFactorFile
 #include "misc/profiler.hpp"
-#include "shared/Basket.hpp" // basket_count
+#include "shared/Basket.hpp" // basket_table
 #include "shared/SharedData.hpp"
 
 #include "nlohmann/json.hpp"
@@ -354,7 +354,7 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
 }
 
 // 篮子 (管线 eval_baskets: all 池评估域, 整期装不下截最近的日, 一趟扫完) → 行情两侧的账同发布 (PortfolioResult::quotes, 同日轴):
-// 篮子 basket_count 线 (键 = 篮子下标; 不扣成本: 只毛收益 / 增仓量两列) ↔ 个股 all 池轴每只一线 (键 = 全局 id = 评估域池轴; 只毛收益一列); 各带估值
+// 篮子表每篮一线 (键 = 篮子下标; 不扣成本: 只毛收益 / 增仓量两列) ↔ 个股 all 池轴每只一线 (键 = 全局 id = 评估域池轴; 只毛收益一列); 各带估值
 bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   TraceN("PortfolioBaskets");
   assert(t.scope.ft->lv == kBasketLevel && "篮子账按日");
@@ -376,10 +376,10 @@ bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   if (rc == Rc::Ok) {
     PortfolioBook &b = *q[Quote::kBasket], &s = *q[Quote::kStock];
     const int D = static_cast<int>(j.dm.dates.size());
-    assert(bs.index.n == static_cast<int>(basket_count()) && bs.index.P == D);
+    assert(bs.index.n == static_cast<int>(basket_table().size()) && bs.index.P == D);
     assert(bs.buy.n == bs.index.n && bs.buy.P == D);
     assert(bs.stock.n == static_cast<int>(j.dm.rs.axis.size()) && bs.stock.P == D);
-    b.keys.resize(basket_count());
+    b.keys.resize(basket_table().size());
     std::iota(b.keys.begin(), b.keys.end(), 0u);
     s.keys = j.dm.rs.axis.ids;
     assert(std::ranges::is_sorted(s.keys) && "池轴 sub → 全局 id 升序 (line_of 二分)");

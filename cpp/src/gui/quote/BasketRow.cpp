@@ -1,10 +1,13 @@
 #include "gui/quote/BasketRow.hpp"
 
-#include "shared/Basket.hpp" // weight_of / cut_of / ind_cut / concept_cut / cut_rebal
+#include "features/Bar1mDay.hpp"
+#include "shared/Basket.hpp" // basket_table
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace GUI::Quote {
@@ -59,49 +62,46 @@ void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &m
 
 void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m) {
   const pool::Tape &t = *pk.tape;
+  const BasketTable &bt = basket_table();
   const ConceptTable &ct = concepts();
   const size_t A = axis.size(), NP = pool_count(), q = pool::src_of(pool::kRebalDay, t.dates, d);
   assert(t.axis == axis.hash && t.A == A && "选股表与库轴不符");
-  struct In {
-    std::span<const uint16_t> ids; // 未扫到的成员 (升序, 随资产下标推进)
-    size_t r;                      // 源行
-  };
-  std::vector<In> in(NP); // [子池]
-  for (PoolId p = 1; p < NP && q != SIZE_MAX; ++p)
-    if (const size_t r = pk.src(p, d); r != SIZE_MAX)
-      in[p] = {pk.row(p, r), r};
+  std::vector<size_t> src(NP, SIZE_MAX); // [池] 源行
+  std::vector<PoolMask> in(A, 0);        // [库轴] 当日所在的池
+  for (PoolId p = 1; p < NP && q != SIZE_MAX; ++p) {
+    src[p] = pk.src(p, d);
+    if (src[p] != SIZE_MAX)
+      for (const pool::Aid a : pk.row(p, src[p]))
+        in[a] |= pool_bit(p);
+  }
   m.clear();
   float om[pool::kWeights];
-  const auto put = [&](size_t c) {
-    if (const float w = om[weight_of(c)]; w > 0)
-      m.add(static_cast<uint32_t>(c), w);
-  };
   for (size_t a = 0; a < A; ++a) {
     m.cap.push_back(q != SIZE_MAX ? t.mcap[q * A + a] : 0.f);
-    for (PoolId p = 1; p < NP; ++p)
-      if (!in[p].ids.empty() && in[p].ids.front() == a) {
-        in[p].ids = in[p].ids.subspan(1);
-        t.omega(in[p].r, q, a, om);
-        put(cut_of(p));
-        if (p == kAllAPool[pool::kWeightEq]) {
-          put(ind_cut(t.ind[in[p].r * A + a]));
-          for (const uint16_t k : ct.concepts_of(axis.global(a)))
-            put(concept_cut(k));
-        }
-      }
+    const bool base = in[a] & pool_bit(kBasketBase);
+    const uint8_t ind = base ? t.ind[src[kBasketBase] * A + a] : uint8_t{0};
+    assert((!base || ind > 0) && "母集成员的行业已知");
+    PoolId at = kAllPool; // om 所属的池
+    bt.each(in[a], ind, ct.concepts_of(axis.global(a)), [&](size_t b, PoolId p, uint8_t) {
+      if (p != at)
+        t.omega(src[p], q, a, om), at = p;
+      if (const float w = om[bt.weight(b)]; w > 0)
+        m.add(static_cast<uint32_t>(b), w);
+    });
     m.next();
   }
 }
 
 void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel) {
   assert(rel.size() == m.assets() && m.cap.size() == m.assets());
+  const BasketTable &bt = basket_table();
   bool reb[pool::kRebals];
   for (int k = 0; k < pool::kRebals; ++k)
     reb[k] = pool::rebal_at(static_cast<pool::Rebal>(k), prev, d);
   for (size_t a = 0; a < m.assets(); ++a) {
     m.cap[a] *= rel[a];
     for (Members::Weight &w : m.of(a))
-      w.w = weight_of(w.basket) == pool::kWeightEq && reb[cut_rebal(w.basket)] ? 1.f : w.w * rel[a];
+      w.w = bt.weight(w.basket) == pool::kWeightEq && reb[bt.rebal(w.basket)] ? 1.f : w.w * rel[a];
   }
 }
 
@@ -115,9 +115,50 @@ void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b) 
   }
 }
 
-Lane::Lane(size_t A, size_t lines, std::vector<uint32_t> slot) : fold(lines), day(lines), slot_(std::move(slot)) {
-  row_alloc(dc, A);
-  minute_alloc(mc, A);
+Leg LibDay::leg(size_t a, Cell &c, Bars &b) const {
+  const float x = cur.px[3][a];
+  c = cell(cur.px[0][a], cur.px[1][a], cur.px[2][a], x, 0, cur.amount[a]);
+  if (mc)
+    bars_of(*mc, a, date, b);
+  return {prev.pre[a], cur.trade[a] && x > 0 ? &c : nullptr, mc ? &b : nullptr};
+}
+
+Leg FundDay::leg(size_t a, Cell &, Bars &b) const {
+  const Candle &c = px[a];
+  bars_of(bd.asset(a), date, b);
+  return {c.ref, traded(c) ? &c : nullptr, &b};
+}
+
+void census(const Members &m, const PoolAxis &axis, std::span<const uint32_t> keys, Tape &t) {
+  assert(axis.size() == m.assets() && m.cap.size() == m.assets());
+  const size_t K = keys.size();
+  std::vector<size_t> at(basket_table().size(), K); // 篮子 → keys 下标 (不在 = K)
+  for (size_t k = 0; k < K; ++k)
+    at[keys[k]] = k;
+  t.members.assign(K, 0), t.weight.assign(K, 0.0), t.cap.assign(K, 0.0);
+  std::vector<double> dot(K * K);
+  std::vector<std::pair<size_t, double>> on;      // 一只所属的在键集里的篮子 (keys 下标, 权)
+  std::vector<std::pair<size_t, Constituent>> cs; // (keys 下标, 成分)
+  for (size_t a = 0; a < m.assets(); ++a) {
+    on.clear();
+    for (const Members::Weight &x : m.of(a))
+      if (const size_t k = at[x.basket]; k < K) {
+        ++t.members[k], t.weight[k] += x.w, t.cap[k] += m.cap[a];
+        on.emplace_back(k, x.w);
+        cs.push_back({k, {axis.global(a), x.w}});
+      }
+    for (const auto &[i, wi] : on)
+      for (const auto &[j, wj] : on)
+        dot[i * K + j] += wi * wj;
+  }
+  std::stable_sort(cs.begin(), cs.end(), [](const auto &p, const auto &q) { return p.second.w > q.second.w; });
+  t.cons = bucket(K, cs, [](const auto &p) { return p.first; }, [](const auto &p) { return p.second; });
+  t.overlap.resize(K * K);
+  for (size_t i = 0; i < K; ++i)
+    for (size_t j = 0; j < K; ++j) {
+      const double nn = dot[i * K + i] * dot[j * K + j];
+      t.overlap[i * K + j] = nn > 0 ? static_cast<float>(dot[i * K + j] / std::sqrt(nn)) : 0.f;
+    }
 }
 
 } // namespace GUI::Quote

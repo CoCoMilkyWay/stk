@@ -70,6 +70,8 @@ enum Weight : uint8_t { kWeightEq,
 inline constexpr int kWeights = 2;
 // 权重后缀 (简称 / 篮子名的尾)
 constexpr const char *weight_suffix(Weight w) { return w == kWeightEq ? ".等" : ".加"; }
+// 持仓权 (选股表 / 篮子账 / 行情篮子 / 回测池篮子同一式): 源行的目标权 (等权 1 / 加权 源行收盘总市值 cap) × 源行至今的价格路径比 path
+constexpr double omega(Weight w, double cap, double path) { return (w == kWeightEq ? 1.0 : cap) * path; }
 // ST 的类 (行 D 的 st_level)
 enum St : uint8_t { kStNone,
                     kStSt,

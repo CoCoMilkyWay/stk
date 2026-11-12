@@ -5,13 +5,14 @@
 #include "features/Storage/FeatureRead.hpp"
 #include "gui/quote/BasketRow.hpp"
 #include "misc/snap.hpp"
-#include "shared/Basket.hpp" // basket_group / basket_count
+#include "shared/Basket.hpp" // basket_table
 
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <numeric>
 #include <span>
 #include <tuple>
 #include <type_traits>
@@ -101,11 +102,15 @@ void load(const disk::Key &lib, size_t N, size_t D, size_t row, cta::Series &se)
   }
 }
 
-// 一个线程的合成件 (逐日复用): 一日合成件 (篮子行 = 合成线) + D−1 / D 日根行
+// 一个线程的合成件 (逐日复用): 一日合成件 + D−1 / D 日根行 + 读件
 struct Work {
-  Work(size_t A, size_t B, const std::vector<uint32_t> &slot) : lane(A, B, slot) {}
+  Work(size_t A, size_t B) : lane(B) {
+    Quote::row_alloc(dc, A);
+    Quote::minute_alloc(mc, A);
+  }
   Quote::Lane lane;
   Quote::Row prev, cur;
+  FeatureRead::DayColumns dc, mc; // 日根行 / 分钟的读
 };
 
 } // namespace
@@ -131,13 +136,12 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Pick
   const std::vector<misc::Ymd> &dates = pk.tape->dates;
   assert(dates.size() >= 2);
   lib_ = lib_key(lib.id);
-  std::vector<uint32_t> lines;
-  for (int g = 0; g < kBasketGroups; ++g)
-    for (const size_t l : basket_group(static_cast<BasketGroup>(g)))
-      lines.push_back(static_cast<uint32_t>(l));
-  const Quote::PerSide<std::vector<uint32_t>> keys{lib.axis.ids, std::move(lines)};
+  const BasketTable &bt = basket_table();
+  std::vector<uint32_t> baskets(bt.size());
+  std::iota(baskets.begin(), baskets.end(), 0u);
+  const Quote::PerSide<std::vector<uint32_t>> keys{lib.axis.ids, std::move(baskets)};
   const size_t NA = keys[kStock].size(), NB = keys[kBasket].size();
-  const Head want{kMagic, concepts().hash, pool_hash(), dates.front()};
+  const Head want{kMagic, bt.hash(), dates.front()};
   const auto fits = [&] { return head_ == want && keys_ == keys && pool::extends(dates_, dates); };
   if (!fits()) {
     head_ = {}, keys_ = {}, dates_.clear(), link_ = {};
@@ -176,15 +180,12 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Pick
     return true;
 
   // dates[i] (i ≥ 已合成日数) 逐日: 按线程一日一件 (读 D−1 / D 日根行 + D 的 L_1min, 两侧同出) → 按日序过链落盘, 每批落一次头
-  std::vector<uint32_t> line(basket_count(), static_cast<uint32_t>(NB)); // 篮子下标 → 篮子行 (NB = 不在)
-  for (size_t j = 0; j < NB; ++j)
-    line[keys_[kBasket][j]] = static_cast<uint32_t>(j);
   Quote::PerSide<std::ofstream> f;
   each_side([&]<Side S>() { f[S].open(disk::path(kFile[S], lib_), std::ios::binary | std::ios::app); });
   const size_t N = dates.size(), T = static_cast<size_t>(pool_.threads());
   std::vector<std::unique_ptr<Work>> works;
   for (size_t t = 0; t < T; ++t)
-    works.push_back(std::make_unique<Work>(NA, NB, line));
+    works.push_back(std::make_unique<Work>(NA, NB));
   std::vector<DayOut> out(T);
   const std::vector<double> one(NB, 1.0);
   x_.begin(Phase::Loading, N - dates_.size());
@@ -198,17 +199,17 @@ bool CtaLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Pick
       auto &[so, bo] = out[static_cast<size_t>(k)];
       const size_t i = i0 + static_cast<size_t>(k);
       const misc::Ymd d = dates[i];
-      Quote::read_row(rd, dates[i - 1], L.dc, w.prev);
-      Quote::read_row(rd, d, L.dc, w.cur);
-      Quote::read_minutes(rd, d, L.mc);
+      Quote::read_row(rd, dates[i - 1], w.dc, w.prev);
+      Quote::read_row(rd, d, w.dc, w.cur);
+      Quote::read_minutes(rd, d, w.mc);
       Quote::members(pk, lib.axis, d, L.mem);
       so.rec.assign(NA, {});
       so.pre.assign(w.prev.pre.begin(), w.prev.pre.end());
       so.last.assign(NA, 0.f);
-      L.run(w.prev, w.cur, d, dates[i - 1], true, one, [&](size_t a, const Quote::Cell *on, const Quote::Bars &bars) {
-        if (on && bars.has.any()) {
-          so.last[a] = on->close;
-          put(so.rec[a], bars);
+      L.run(Quote::LibDay{d, w.prev, w.cur, &w.mc}, dates[i - 1], one, [&](size_t a, const Quote::Leg &g) {
+        if (g.day && g.bars->has.any()) {
+          so.last[a] = g.day->close;
+          put(so.rec[a], *g.bars);
         }
       });
       bo.rec.assign(NB, {});
