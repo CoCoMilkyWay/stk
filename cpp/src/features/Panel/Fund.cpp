@@ -1938,6 +1938,7 @@ struct State {
         }
       }
     }
+    const int income_top0 = income.top;
     income.absorb(p.income_ytd[ai], d, list_d);
     cashflow.absorb(p.cashflow_ytd[ai], d, list_d);
     {
@@ -1951,21 +1952,19 @@ struct State {
     for (const auto &ev = p.capital[ai]; cap < ev.size() && ev[cap].v <= d; ++cap)
       foreign = ev[cap].foreign;
     {
-      // 公告入列 / 年报换年 → 两窗重算 (只看报告期, 与公告日先后无关, 每期恰计一次):
-      //   dy:          报告期 ∈ (锚 − 1 年, 锚], 锚 = max(已公告分红的最新报告期, 最新年报期)
+      // 公告入列 / 定期报告换期 / 年报换年 → 两窗重算 (只看报告期, 与公告日先后无关, 每期恰计一次):
+      //   dy:          报告期 ∈ (锚 − 1 年, 锚], 锚 = 最新已披露定期报告的报告期 (无 → 空窗)
       //   dividend_st: 报告年 ∈ [annual_y − 2, annual_y]
       const auto &divs = p.dividend[ai];
-      bool moved = annual_y != annual_y0;
+      bool moved = annual_y != annual_y0 || income.top != income_top0;
       for (; div_hi < divs.size() && divs[div_hi].v <= d; ++div_hi)
         moved = true;
       if (moved) {
-        std::int32_t anchor = annual_y ? annual_y * 10000 + 1231 : 0;
-        for (std::size_t j = 0; j < div_hi; ++j)
-          anchor = std::max(anchor, divs[j].report_date);
+        const std::int32_t anchor = income.top >= 0 ? quarter_end(income.top) : 0;
         cash_sum = sum_3y = 0.0f;
         for (std::size_t j = 0; j < div_hi; ++j) {
           const auto &e = divs[j];
-          if (e.report_date > anchor - 10000)
+          if (e.report_date > anchor - 10000 && e.report_date <= anchor)
             cash_sum += e.amt_pre;
           const int py = year_of(e.report_date);
           if (py >= annual_y - 2 && py <= annual_y && std::isfinite(e.amt_after))
