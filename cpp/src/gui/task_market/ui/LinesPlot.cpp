@@ -194,6 +194,11 @@ LgHover legend(const char *id, std::span<const LgCol> cols, std::span<const LgRo
   if (R == 0)
     return h;
   const int T = static_cast<int>(std::ranges::count_if(cols, [](const LgCol &k) { return k.toggle >= 0; }));
+  std::vector<ImPlotItem *> its(static_cast<size_t>(R * T)); // 先于下面的 PushID 取齐: item 的 ID 随当前 ID 栈 (须同画线处)
+  for (int r = 0; r < R; ++r)
+    for (int t = 0; t < T; ++t)
+      its[static_cast<size_t>(r * T + t)] = item(r, t);
+  const auto item_at = [&](int r, int t) { return its[static_cast<size_t>(r * T + t)]; };
   const auto cell = [&](int r, int c) -> const LgCell & { return cells[static_cast<size_t>(r * C + c)]; };
   const LgFont lf;
   const float th = lf.fs, sw = th * 0.7f, gx = ImGui::GetStyle().ItemSpacing.x, sg = 0.3f * th;
@@ -220,7 +225,7 @@ LgHover legend(const char *id, std::span<const LgCol> cols, std::span<const LgRo
   }
   h.box = ImRect(o, ImVec2(x + kLgPad.x, o.y + 2.f * kLgPad.y + static_cast<float>(R + 1) * th));
   const auto y_row = [&](int r) { return h.box.Min.y + kLgPad.y + static_cast<float>(r + 1) * th; }; // r = −1 → 列头行
-  const auto any = [&](int r0, int t0) { return lg_any(R, T, r0, t0, item); };
+  const auto any = [&](int r0, int t0) { return lg_any(R, T, r0, t0, item_at); };
   const auto hover = [&](int r, int t) { h.on = true, h.r = r, h.t = t; };
   ImGui::PushID(id);
   bool bg = false;
@@ -244,7 +249,7 @@ LgHover legend(const char *id, std::span<const LgCol> cols, std::span<const LgRo
     ImGui::PushID(c);
     bool hov = false;
     if (lg_button(rc, "##c", hov))
-      lg_flip(R, T, -1, col.toggle, item);
+      lg_flip(R, T, -1, col.toggle, item_at);
     ImGui::PopID();
     if (hov)
       hover(-1, col.toggle);
@@ -259,7 +264,7 @@ LgHover legend(const char *id, std::span<const LgCol> cols, std::span<const LgRo
       const ImRect rr(ImVec2(h.box.Min.x + kLgPad.x, y), ImVec2(h.box.Min.x + kLgPad.x + w_head, y + th));
       bool hov = false;
       if (lg_button(rr, "##r", hov))
-        lg_flip(R, T, r, -1, item);
+        lg_flip(R, T, r, -1, item_at);
       if (hov)
         hover(r, -1);
       lf.text(dl, rr.Min, hov ? c_hov : any(r, -1) ? rows[static_cast<size_t>(r)].col
@@ -271,7 +276,7 @@ LgHover legend(const char *id, std::span<const LgCol> cols, std::span<const LgRo
       const LgCell &e = cell(r, c);
       bool on = cols[k].toggle < 0 && any(r, -1);
       if (const int t = cols[k].toggle; t >= 0) { // 整格可点
-        ImPlotItem *it = item(r, t);
+        ImPlotItem *it = item_at(r, t);
         ImGui::PushID(c);
         bool hov = false;
         if (lg_button(ImRect(ImVec2(xc[k], y), ImVec2(xc[k] + w[k], y + th)), "##t", hov))
