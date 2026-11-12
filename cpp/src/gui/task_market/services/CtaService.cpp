@@ -69,10 +69,10 @@ bool CtaService::run(CtaRequest &req) {
   out->se = se;
   const double years = static_cast<double>((misc::to_days(out->dates.back()) - misc::to_days(out->dates.front())).count() + 1) / 365.25;
   const cta::Setup u{{sp.commission_bp * 1e-4, sp.stamp_bp * 1e-4, sp.impact_bp * 1e-4}, {sp.vol, sp.buffer}, static_cast<double>(out->dates.size() * S) / years};
-  cta::Grid grid = cta::grid_of(S, sp.kind, static_cast<size_t>(sp.dir), static_cast<size_t>(sp.grid));
+  cta::Grid grid = cta::grid_of(S, sp.kind, static_cast<size_t>(sp.grid));
   begin(Phase::Running, nd - 1);
   const bool done = cta::trace(
-      *se, std::move(grid), sp.goal, W, u, pool_, out->tr, [&] { return cancel_.load(std::memory_order_relaxed); },
+      *se, std::move(grid), sp.goal, static_cast<size_t>(sp.dir), W, u, pool_, out->tr, [&] { return cancel_.load(std::memory_order_relaxed); },
       [&] { Progress::publish(1); });
   return done && publish(req, {}, std::move(out));
 }

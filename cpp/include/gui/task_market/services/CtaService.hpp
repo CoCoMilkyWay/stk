@@ -1,4 +1,4 @@
-// CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产多空 band 模型的滚动调参全期轨迹 (cta/Trace.hpp)
+// CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产 中线 + 分层 模型的滚动调参全期轨迹 (cta/Trace.hpp)
 //   价格源 = MinuteLib (与 MinuteService 同一段开场 open, 同一种沿用 Kept); 有效根序列按标的留最近 kKeep 个 (只改设定不重读)
 //   请求 = 标的 + CtaSpec (无标的 = 只备价格库); 新请求覆盖旧的 (换标的 / 改设定即重算). 进度: Loading = 合成天, Running = 选参日数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (latest)
@@ -22,11 +22,11 @@ using namespace Quote;
 
 // 模型与回测设定 (UI 编辑, 进请求)
 struct CtaSpec {
-  size_t goal = cta::kSplit;                  // 优化目标 (cta::kGoals 下标)
-  cta::Kinds kind{};                          // [部件] 所选模型 (cta::kParts[j].kinds 下标)
+  size_t goal = cta::kCapture;                // 优化目标 (cta::kGoals 下标)
+  size_t kind = cta::kEma;                    // 中线模型 (cta::kCenters 下标)
   int dir = cta::kLong;                       // 方向 (cta::kDirs 下标)
   int roll = static_cast<int>(cta::kMinRoll); // 滚动窗 (日, ≥ kMinRoll)
-  int grid = 50;                              // 网格配置数上限 (各多值轴轮流分格点)
+  int grid = 9;                               // 网格配置数上限 (各多值轴轮流分格点)
   float commission_bp = 1;                    // 佣金率 [bp] (买卖各一次)
   float stamp_bp = 5;                         // 印花税率 [bp] (卖出单边)
   float impact_bp = 5;                        // 冲击率 [bp] (买卖各一次)

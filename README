@@ -246,7 +246,7 @@ stk/
 │   │   │   │   │   ├── MinuteLib.hpp                   # 🖥️ 分钟价格库: 全部个股 + 篮子线的全史 1 分钟价 (篮子 = BasketRow Lane), 续算只补新日; NAV / CTA 共用
 │   │   │   │   │   │                                   #    · 两个 worker 同一套: open (开库 / 续算 → 缺键 + 日轴 + 戳) → each (逐日 mmap 读一标的) → Kept<T> (按 (键, 戳) 的 LRU)
 │   │   │   │   │   ├── MinuteService.hpp               # 🖥️ NAV / VAL 分钟线: 选中的篮子 / 成分股 → 逐日分钟收盘 (两条线都按它画到分钟)
-│   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 → cta/Trace 滚动调参轨迹
+│   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 → cta/Trace 滚动调参轨迹 (中线 + 分层)
 │   │   │   │   └── ui/
 │   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / FLOW / CTA (一行一对线 Line, 四页同一份派生 / 选中 / 区间)
 │   │   │   │       │                                   #    · 右表 = 指数 / 行业 / 概念 / 自选 / 因子 / 策略 行 (篮子行可展开成分股); 左 = 主图 + 日内栏 + 区间条
@@ -330,13 +330,13 @@ stk/
 │   │   │       ├── Space.hpp                           # 🧬 参数空间: 可搜槽 → 单调坐标 + 区间 → 低差异采样
 │   │   │       ├── Surface.hpp                         # 🧬 曲面: 已评点 → 高斯过程 → 后验 / 峰
 │   │   │       └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU (复用 Stat 行核) / GPU 后端 + 对拍
-│   │   ├── cta/                                        # 📈 CTA 单资产 band 择时 (header-only 纯计算; Market → CTA 页的模型层)
-│   │   │   │                                           #    源 (Signal / Cuts / Hold) ─刀 Cut→ 仓位层 Size ─→ 成交 Fill (+ 成本) → 汇: 目标 Split (评分) ↔ 损益 Pnl (回测)
-│   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 指标列缓存 Tape → 信号核 Signal 逐根出刀 Cut; 部件表 kParts (中线 / 带宽 / 分层)
-│   │   │   ├── Engine.hpp                              # 📈 执行: 逐根链 drive (评分 / 回测 / 买入持有同一条); 仓位层 (波动率定仓) + 五项成本
-│   │   │   ├── Tune.hpp                                # 📈 调参: 优化目标 (行情分割质量) + 参数网格 Grid + 岭回归曲面
+│   │   ├── cta/                                        # 📈 CTA 单资产 中线 + 分层 择时 (header-only 纯计算; Market → CTA 页的模型层)
+│   │   │   │                                           #    中线 (调参, 开关) ─拼接→ 分层 Ladder (固定: 层距 = 20 日 ATR / 2, 一份 5%) ─刀 Cut→ 仓位层 Size ─→ 成交 Fill (+ 成本) → 损益 Pnl
+│   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 指标列缓存 Tape (含海龟 N) → 中线表 kCenters; 分层 Ladder (以上一笔成交为基准的网格) 逐根出刀 Cut
+│   │   │   ├── Engine.hpp                              # 📈 执行: 逐根链 drive (策略 / 买入持有同一条); 仓位层 (波动率定仓) + 五项成本
+│   │   │   ├── Tune.hpp                                # 📈 中线调参: 优化目标 (有效多空 − 翻转成本) + 参数网格 Grid + 岭回归曲面
 │   │   │   ├── Metrics.hpp                             # 📈 指标: 收益统计 / 择时捕获 / 在场段; 一本账 Book
-│   │   │   └── Trace.hpp                               # 📈 滚动调参全期轨迹: 逐日以此前窗口拟曲面选参 → 拼接 Cuts → 策略 / 买入持有两本账
+│   │   │   └── Trace.hpp                               # 📈 滚动调参全期轨迹: 逐日以此前窗口拟曲面选中线 → 分层沿拼好的中线跑出 Cuts → 策略 / 买入持有两本账
 │   │   ├── math/                                       # 📐 数学工具
 │   │   │   ├── Step.hpp                                # 📐 变换步元数据 / 定义 (编译期注册)
 │   │   │   ├── distribution/                           # 📐 分位 / 矩: DailyQuantile · KLLcache · RetMoments · SizeThresholds · PdfSnap (KLL 成品快照)
