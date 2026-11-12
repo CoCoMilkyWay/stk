@@ -449,14 +449,25 @@ void path(CtaState &c, const CtaResult &r) {
         ys[a].push_back(x < 0 ? cta::kNaN : g.value(a, tr.pts[static_cast<size_t>(x)][a]) / g.value(a, q0[a]));
     }
   }
+  // y 范围 = 视野内各段 (与视野相交) 的 log 跨度, 上下各留 20%; 跨度为 0 按一格 (kStep) 计
+  double lo = INFINITY, hi = -INFINITY;
+  for (size_t k = 0; k + 1 < xs.size(); k += 2)
+    if (xs[k] <= c.x1 && xs[k + 1] >= c.x0)
+      for (const std::vector<double> &y : ys)
+        if (std::isfinite(y[k]))
+          lo = std::min(lo, std::log10(y[k])), hi = std::max(hi, std::log10(y[k]));
+  if (!(lo <= hi))
+    lo = hi = 0;
+  const double span = hi > lo ? hi - lo : std::log10(cta::kStep);
   const float w = ImGui::GetContentRegionAvail().x;
   XFmt fmt{&r, c.x1 - c.x0 < 3.0 * kS};
   if (ImPlot::BeginPlot("##cta_path", ImVec2(w, std::floor(w * 0.6f)), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect)) {
     ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_None);
     ImPlot::SetupAxisLinks(ImAxis_X1, &c.x0, &c.x1);
     ImPlot::SetupAxisFormat(ImAxis_X1, x_formatter, &fmt);
-    ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
+    ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_None);
     ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, std::pow(10.0, lo - 0.2 * span), std::pow(10.0, hi + 0.2 * span), ImPlotCond_Always);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_Horizontal);
     for (size_t a = 0; a < na; ++a)
       ImPlot::PlotLine(g.ax[a]->name, xs.data(), ys[a].data(), static_cast<int>(xs.size()));
@@ -516,14 +527,14 @@ void panel(const CtaService &svc, CtaState &c, const cta::Rates &rates, const Ct
   label("模型");
   model_combo("##cta_goal", cta::kGoals, sp.goal, "优化目标: 滚动选参所最大化的分数");
   label("滚动窗 (日)");
-  ImGui::InputInt("##cta_roll", &sp.roll, 50, 250);
-  sp.roll = std::max(sp.roll, static_cast<int>(cta::kMinRoll));
+  ImGui::SliderInt("##cta_roll", &sp.roll, static_cast<int>(cta::kMinRoll), static_cast<int>(cta::kMaxRoll), "%d", ImGuiSliderFlags_Logarithmic);
+  sp.roll = std::clamp(sp.roll, static_cast<int>(cta::kMinRoll), static_cast<int>(cta::kMaxRoll));
   c.editing = ImGui::IsItemActive();
   if (ImGui::IsItemHovered())
-    tip("每日以此前至多 W 日 (≥ %zu; 不足 W 日 = 自首日起全部, expanding) 网格各配置的目标值拟岭回归曲面, 取最高点 (平原顶) 用到当日; "
+    tip("每日以此前至多 W 日 (%zu ~ %zu, 对数滑条; 不足 W 日 = 自首日起全部, expanding) 网格各配置的目标值拟岭回归曲面, 取最高点 (平原顶) 用到当日; "
         "首日 / 窗内根数不足窗长一半 / 窗内各配置的中线都未就绪 = 买入持有 (与基准同口径)\n"
-        "• 编辑完生效",
-        cta::kMinRoll);
+        "• 松手生效 (Ctrl + 点击可直接输入)",
+        cta::kMinRoll, cta::kMaxRoll);
   label("网格配置数");
   ImGui::InputInt("##cta_grid", &sp.grid, 10, 50);
   sp.grid = std::clamp(sp.grid, 3, 1000);

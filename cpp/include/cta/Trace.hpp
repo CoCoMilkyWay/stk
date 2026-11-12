@@ -31,13 +31,13 @@ struct Track {
 };
 
 // se = 有效根 (t = 日下标 · grid.S + 槽), 须跨 2 日以上; grid = 所选中线模型的网格; goal = 优化目标 (kGoals 下标); dir = 方向 (kDirs 下标)
-// W = 滚动窗上限 (日, ≥ kMinRoll); ex = 执行器 (tasks); stop() → true = 放弃 (返回 false), 由并行任务调用; tick() 选参每过一日 (共 days_of(se, grid.S).size() − 1 日)
+// W = 滚动窗上限 (日, kMinRoll ~ kMaxRoll); ex = 执行器 (tasks); stop() → true = 放弃 (返回 false), 由并行任务调用; tick() 选参每过一日 (共 days_of(se, grid.S).size() − 1 日)
 template <class Exec, class Stop, class Tick>
 bool trace(const Series &se, Grid grid, size_t goal, size_t dir, size_t W, const Setup &u, Exec &ex, Track &out, Stop stop, Tick tick) {
   const size_t S = grid.S;
   const Days days = days_of(se, S);
   const size_t n = se.c.size(), nd = days.size();
-  assert(n > 1 && W >= kMinRoll && nd > 1 && "样本须跨 2 日以上");
+  assert(n > 1 && W >= kMinRoll && W <= kMaxRoll && nd > 1 && "样本须跨 2 日以上");
   assert(dir < std::size(kDirs) && "方向");
   const float s = kDirs[dir].s;
   Tape t(se, S);

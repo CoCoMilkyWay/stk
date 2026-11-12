@@ -16,8 +16,10 @@
 
 namespace cta {
 
-inline constexpr size_t kMinRoll = 250; // 滚动调参窗下限 (日) = 一年
-inline constexpr double kRidge = 1;     // 岭罚 λ (相对样本数; 坐标方差 ~0.4, 高次项方差更小、压得更狠)
+inline constexpr size_t kMinRoll = 20;   // 滚动调参窗下限 (日) = 一月
+inline constexpr size_t kMaxRoll = 2500; // 滚动调参窗上限 (日) = 十年
+inline constexpr size_t kRoll = 250;     // 滚动调参窗默认 (日) = 一年
+inline constexpr double kRidge = 1;      // 岭罚 λ (相对样本数; 坐标方差 ~0.4, 高次项方差更小、压得更狠)
 
 // 优化目标: 选一个模型 (下标同 kGoals), 逐根出两项 [a, b], 一段的分数 = Σa / Σb
 enum : size_t { kCapture };

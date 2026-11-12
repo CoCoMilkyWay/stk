@@ -22,13 +22,13 @@ using namespace Quote;
 
 // 模型与回测设定 (UI 编辑, 进请求)
 struct CtaSpec {
-  size_t goal = cta::kCapture;                // 优化目标 (cta::kGoals 下标)
-  size_t kind = cta::kEma;                    // 中线模型 (cta::kCenters 下标)
-  int dir = cta::kLong;                       // 方向 (cta::kDirs 下标)
-  int roll = static_cast<int>(cta::kMinRoll); // 滚动窗 (日, ≥ kMinRoll)
-  int grid = 9;                               // 网格配置数上限 (各多值轴轮流分格点)
-  float vol = 0;                              // 目标年化波动 (0 = 不调)
-  float buffer = 0;                           // 不交易带宽
+  size_t goal = cta::kCapture;             // 优化目标 (cta::kGoals 下标)
+  size_t kind = cta::kEma;                 // 中线模型 (cta::kCenters 下标)
+  int dir = cta::kLong;                    // 方向 (cta::kDirs 下标)
+  int roll = static_cast<int>(cta::kRoll); // 滚动窗 (日, kMinRoll ~ kMaxRoll)
+  int grid = 9;                            // 网格配置数上限 (各多值轴轮流分格点)
+  float vol = 0;                           // 目标年化波动 (0 = 不调)
+  float buffer = 0;                        // 不交易带宽
   bool operator==(const CtaSpec &) const = default;
 };
 

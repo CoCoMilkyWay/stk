@@ -41,7 +41,7 @@ bool CtaService::publish(const CtaRequest &req, std::string lack, std::shared_pt
 
 bool CtaService::run(CtaRequest &req) {
   const CtaSpec &sp = req.spec;
-  assert(sp.roll >= static_cast<int>(cta::kMinRoll));
+  assert(sp.roll >= static_cast<int>(cta::kMinRoll) && sp.roll <= static_cast<int>(cta::kMaxRoll));
   std::optional<MinuteOpen> lib = lib_.open("CTA 价格由 all.bar 特征库合成", cancel_, *this, pool_);
   if (!lib)
     return false;
