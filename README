@@ -28,8 +28,9 @@ GUI布局:
           特征库 ─(读端 Source: 选列读 + level_asof 行映射)─► Features 分析 / Alpha 因子引擎 / Market 篮子与组合 / Beta 选池 / Agent
   ③ 因子  因子引擎 (Run / Search) ─► output/factors/<pool>/<层> (一因子一文件); Agent 候选 output/agent ─(达门槛)─► 同上
   ④ 组合  因子 ─► output/portfolios (Market 组合)
-  ⑤ 实盘  券商客户端 (live/<客户端>/, 登记于 live/Clients.hpp, 现只有通达信) ─(Broker: 读持仓 / 成交 / 挂单 / 信用账户, 下单 / 重查两融条款)─► Live 持仓页 / 一键调仓;
+  ⑤ 实盘  券商客户端 (live/<客户端>/, 登记于 live/Clients.hpp, 现只有通达信) ─(Broker: 读持仓 / 成交 / 挂单 / 信用账户, 下单 / 重查两融条款 / 资金流水)─► Live 持仓页 / 一键调仓;
           客户端适配自带调试台 (Live 的 Client 页); 行情走新浪 (不读客户端的), 两融条款缓存落 output/live (个股另经本地库核), 调仓名单 output/config/live/lists
+          资金流水 (每天自动补一次) ─► output/live/flows.csv ─(account/ 回放 × 本地 bar1d / 新浪日 K)─► Market 自选首行「账户」(时间加权净值)
   人定的配置落 output/config/ (一任务一目录); 各段的运行产物 (日志 / 用时 / 导出 / 采样) 落 output/run/ 下的同构位置; output/ 的布局唯一由 disk/Disk.hpp 定
 ```
 
@@ -281,10 +282,11 @@ stk/
 │   │   │   │       ├── TabOrderFlow.hpp                # 🖥️ 订单流
 │   │   │   │       └── TabNodeTime.hpp                 # 🖥️ 节点用时: 当前库 node_time.json 按节点文件归并成堆叠条
 │   │   │   ├── task_live/                              # 💹 Live 任务 (实盘): 中枢券商无关, 客户端适配在 live/
-│   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board / Client (所连客户端的调试台)
-│   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 新浪行情一路 + 两融条款 (券商缓存合本地库) + 下单 / 事务 (拉条款 / 执行调仓, 日志落 output/run/live)
+│   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board / Client (所连客户端的调试台); 连上后每天交账户中枢补一次资金流水
+│   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 新浪行情一路 + 两融条款 (券商缓存合本地库) + 下单 / 事务 (拉条款 / 执行调仓 / 别处交来的 job, 日志落 output/run/live)
 │   │   │   │   └── ui/
 │   │   │   │       └── TabBoard.hpp                    # 💹 持仓 · 调仓页: 数据 / 下单 / 调仓 (试算表) / 账户 现 · 调仓后 · 变动% (好红坏绿); 各表随栏宽收格距贴合 + 持仓表 (表头排序; 仓位 / 市值字色按截面仓位轻重由灰淡到亮; 行内闪电下单, 按钮即滑点色块; 卖出滑杆; 调仓名单并入: 名单里未持有的列在表末, 金额列 现金买,融资买/卖 W 买红卖绿; 合计行窄写不撑列, 当日净资产收益率落在当日% 列) + 日志 + 右栏行情图
+│   │   │   ├── account/AccountHub.hpp                  # 💹 账户净值中枢 (Live 与 Market 共用): 事务道上拉资金流水并账 / 后台回放 / 拼 Market 自选的账户线 (末根 = 信用账户净资产)
 │   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge; 协议见 AGENT.md)
 │   │   │       ├── TaskAgent.hpp                       # 🤖 Agent 任务: Mine (作用域 / 会话 / 时间线 / 候选 / 开放的特征与算子) / Config
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 / 入库门槛默认值 / 各目录
@@ -351,7 +353,7 @@ stk/
 │   │   ├── api/                                        # 🌐 数据源 API: 纯传输, 不知 Spec / 资产轴
 │   │   │   ├── bigquant/client.hpp                     # 🌐 BigQuant DAI: query → arrow::Table / quota
 │   │   │   ├── tushare/client.hpp                      # 🌐 Tushare HTTP: query → arrow::Table
-│   │   │   ├── sina/client.hpp                         # 🌐 新浪行情: 批量快照 (含五档) / 1 分钟 K
+│   │   │   ├── sina/client.hpp                         # 🌐 新浪行情: 批量快照 (含五档) / 1 分钟 K / 日 K
 │   │   │   └── eastmoney/client.hpp                    # 🌐 东财: 概念板块名单 / 个股所属概念
 │   │   ├── fundamental/                                # 📊 日频基本面数据集: 两数据源同一套; 只单向依赖 api
 │   │   │   ├── Spec.hpp                                # 📊 表定义 SPECS: Shape × snap × src (Bq / Tu)
@@ -363,7 +365,7 @@ stk/
 │   │   │   └── Audit.hpp                               # 📊 核对: 远端指纹 ↔ 本地指纹
 │   │   ├── mining/                                     # ⛏️ 数据挖掘设计文档 (特征 → 因子): README.md 方法论 / COPULA.md
 │   │   ├── live/                                       # 💹 实盘: 券商无关的一层 + 各客户端适配; 外部结局 Fail 收在各轮 / 各事务边界, 自身不变式 assert
-│   │   │   ├── Broker.hpp                              # 💹 统一类型 (持仓 / 成交 / 挂单 / 信用账户 / 两融条款 / 限价单) + Broker 接口 (读 / 刷新 / 下单 / 独占 / 调试台)
+│   │   │   ├── Broker.hpp                              # 💹 统一类型 (持仓 / 成交 / 挂单 / 信用账户 / 两融条款 / 资金流水 / 限价单) + Broker 接口 (读 / 刷新 / 下单 / 独占 / 调试台)
 │   │   │   ├── Clients.hpp                             # 💹 客户端登记表: 名称 + 建 Broker
 │   │   │   ├── Book.hpp                                # 💹 5 档盘口: 参考价 / 滑点 / 委托价 / 整手规则
 │   │   │   ├── Board.hpp                               # 💹 持仓页一帧: 持仓 × 当日成交 × 行情 按代码对齐 (纯函数)
@@ -374,8 +376,9 @@ stk/
 │   │   │       ├── Shim.hpp / Proc.hpp / Until.hpp     # 💹 shim 编译注入 + TCP 控制通道 / 子进程 / 轮询原语 (poll · until)
 │   │   │       ├── Trace.hpp                           # 💹 交互日志: shim 命令 / 读内存 / 外部进程 / Broker 流程按段一行一事件; 适配里的 fail 先在当时的段下记一行
 │   │   │       ├── Win.hpp / Ui.hpp                    # 💹 通用 Win32 (窗口 · 图层 · 消息 · 控件) / 通达信界面 (主窗 · 交易栏 · 查询页 · 弹框)
-│   │   │       ├── Flash.hpp / Credit.hpp              # 💹 闪电下单 / 两融全表与信用账户
+│   │   │       ├── Flash.hpp / Credit.hpp / Flow.hpp   # 💹 闪电下单 / 两融全表与信用账户 / 资金流水 (按 30 天窗逐窗查)
 │   │   │       └── Console.hpp / console/              # 💹 调试台 (纯 ImGui): 布局图 (按类 + 绘制层还原界面, 可直接操作) / 窗口树 / 消息工具与 Spy / 录制器 / 探内存
+│   │   ├── account/Ledger.hpp                          # 💹 账户净值 (券商无关, 只认 live/Broker.hpp 的类型): 资金流水账本 合并 / 核持仓 / 逐交易日回放 → 时间加权指数
 │   │   ├── disk/                                       # 💽 落盘: output/ 的唯一布局 + 唯一路径入口
 │   │   │   ├── Disk.hpp                                # 💽 段表 DISK_SEGS (字段 × 写法 × 值域) × 布局表 DISK_LAYOUT (一行一节点); name ⇄ parse / path ⇄ list / read ⇄ write (原子) / ensure ⇄ remove (墓碑)
 │   │   │   └── Sweep.hpp                               # 💽 开机整理: 残留 (含空目录) 直接清 / 基石 (orders / fundamental / concept + output/config 下本机配置) 自动迁入布局 / 其余不合布局的按 (节点, 名字) 归组逐组问删
@@ -463,6 +466,7 @@ stk/
     │   │   └── chat/<YYYYMMDD-HHMMSS>/                 # 一段会话: system.md + 逐轮 md + events.jsonl + report.md
     │   └── notes/{feature,tool,insight,issue}.jsonl    # 全局记录, 一类一个文件
     ├── live/terms.csv                                  # ⑤ 两融条款缓存 (券商原样, 一份, 原子替换): 首行拉于哪天; 代码 / 名称 / 市场 / 保证金比例 / 融资标的 / 折算率 / 担保状态
+    ├── live/flows.csv                                  # ⑤ 资金流水账本 (券商原样, 原子替换): 首行拉于哪天 + 融资年利率; 日期 / 代码 / 名称 / 价 / 股数 / 业务 / 发生金额 / 剩余金额 (截至拉的前一日)
     └── run/                                            # 运行产物
         ├── data/orders/log/*.log                       # 编码日志
         ├── data/repair/                                # 归档修复的解包暂存 (Encode → File Check → Repair, 修完即清)
@@ -471,7 +475,7 @@ stk/
         │   ├── operators.json                          # 算子表快照 (对拍 + 耗时), 与当前 OpTable 不符则重算
         │   └── <pool>/<层>/                            # search/<name>.log Search 过程日志 (每次覆盖) / export/ Inspect 导出 <因子>_w<权重号>_top<N>_{log,snap}.csv
         ├── agent/<main|test>/                          # Agent: tools/<工具名>.md 各工具最近一次交给 agent 的结果 / sessions/<pool>/<层>/<持有期>/search/<name>.log
-        ├── live/task/<YYYYMMDD-HHMMSS>.jsonl           # Live 事务日志 (拉两融条款 / 执行调仓; 一事务一文件, 一行一步, 留最近 100 个)
+        ├── live/task/<YYYYMMDD-HHMMSS>.jsonl           # Live 事务日志 (拉两融条款 / 执行调仓 / 更新资金流水; 一事务一文件, 一行一步, 留最近 100 个)
         ├── live/tdx/                                   # 通达信适配: shim/ 注入件构建产物 (shim_<源码哈希>.dll / inject.exe) / rec/<YYYYMMDD-HHMMSS>.jsonl 调试台录制
         │                                               #    / log/<YYYYMMDD-HHMMSS>.jsonl 交互日志 (一次启动一个, 留最近 20 个)
         └── app/                                        # 进程级: tsan_report.log (TSAN 模式) / crash_stacks.txt (DEBUG 模式)

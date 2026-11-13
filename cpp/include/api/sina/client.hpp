@@ -18,7 +18,7 @@ inline constexpr int kLevels = 5;     // 盘口档数
 inline constexpr int kQuoteMax = 800; // 一次批量快照至多几只 (实测 1000 只 URL 超长回 431)
 
 inline constexpr const char *kQuoteHost = "hq.sinajs.cn";              // 批量快照 /list=
-inline constexpr const char *kBarHost = "quotes.sina.cn";              // 1 分钟 K getKLineData
+inline constexpr const char *kBarHost = "quotes.sina.cn";              // 1 分钟 K / 日 K getKLineData
 inline constexpr const char *kReferer = "https://finance.sina.com.cn"; // 明文 GET 须带 Referer
 inline constexpr int kTimeoutSeconds = 5;                              // 单次连接 + 读写整体时长
 
