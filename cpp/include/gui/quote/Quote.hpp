@@ -34,6 +34,7 @@
 #include "define/Csr.hpp"
 #include "define/Members.hpp" // 篮子成员表: 资产 = 源的轴 (all.bar 库轴 / 新浪全市场), 键 = 篮子, cap [亿元]
 #include "features/TimeIndex.hpp"
+#include "fundamental/AssetAxis.hpp" // PoolAxis (Live 的个股轴)
 #include "misc/date.hpp"
 
 #include <algorithm>
@@ -48,7 +49,6 @@
 #include <vector>
 
 struct Bar1m;
-struct PoolAxis;
 namespace sina {
 struct Quote;
 }

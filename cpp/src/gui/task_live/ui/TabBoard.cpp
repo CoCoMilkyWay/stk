@@ -214,8 +214,6 @@ void order_ctl(LiveHub &hub, BoardState &st) {
     st.margin = true;
   if (ImGui::IsItemHovered())
     tip("买入方式只管持仓行买入, 卖出一律担保品卖出");
-  ImGui::SameLine(0, ImGui::GetFontSize());
-  ImGui::Checkbox("解锁买卖", &st.armed);
 }
 
 void rebal_ctl(LiveHub &hub, BoardState &st) {
@@ -781,6 +779,14 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
   for (int c = 0; c < C_COUNT; ++c) {
     ImGui::TableSetColumnIndex(c);
+    if (c == C_ORDER) {
+      ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+      ImGui::Checkbox("##armed", &st.armed);
+      ImGui::PopStyleVar();
+      if (ImGui::IsItemHovered())
+        tip("解锁买卖: 勾上才下得了单");
+      ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+    }
     ImGui::TableHeader(kHeads[c]);
     if (ImGui::IsItemHovered())
       head_tip(c, f);
