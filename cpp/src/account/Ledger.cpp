@@ -203,6 +203,21 @@ double growth(double nav0, double nav, double flow) {
   return base > 0 ? 1 + (nav - nav0 - flow) / base : 1;
 }
 
+void intraday(const Day &d, double nav0, double idx0, const std::function<std::span<const float>(const std::string &)> &path, std::span<double> out) {
+  assert(!out.empty());
+  std::ranges::fill(out, d.nav);
+  for (const auto &[code, q] : d.hold)
+    if (const std::span<const float> p = path(code); !p.empty()) {
+      assert(p.size() == out.size());
+      for (size_t s = 0; s < out.size(); ++s)
+        out[s] += q * (p[s] - p.back());
+    }
+  for (double &x : out)
+    x = idx0 * growth(nav0, x, d.flow);
+}
+
+std::string asset_code(const std::string &code) { return code + live::kMktSuffix[static_cast<int>(live::market_of(code))]; }
+
 std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const std::vector<misc::Ymd> &days, const Closes &px, const Spot &spot) {
   std::vector<Day> out;
   if (rows.empty())

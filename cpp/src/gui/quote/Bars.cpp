@@ -2,19 +2,18 @@
 
 namespace GUI::Quote {
 
-double net_flow(const Bars &b, float base, std::span<double, kSlots> net) {
+void net_flow(const Bars &b, float base, std::span<double, kSlots> net) {
   std::ranges::fill(net, 0.0);
   if (!(base > 0))
-    return 0;
-  double px = base, sum = 0;
+    return;
+  double px = base;
   int dir = 0;
   for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
     if (b.has[s]) {
       const Cell &c = b.cell[s];
       dir = tick_dir(c.close, px, dir);
-      net[s] = dir * c.amount, sum += net[s], px = c.close;
+      net[s] = dir * c.amount, px = c.close;
     }
-  return sum;
 }
 
 DayFlow day_flow(const Bars &b, std::span<const double, kSlots> net) {

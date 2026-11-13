@@ -1,8 +1,8 @@
 // 篮子合成核 Fold (历史逐日 / 当日增量同一份): 成员表 (define/Members.hpp) 带日内路径的合 (收盘一格即 Members::scatter 的 收 / 基准)
 //   比 = Σ w · 价 / 基准 / Σ w (前日 = 1); 开 / 高 / 低 / 收各自如此
-//   (高 / 低 = 成员高低的加权, 是真实路径的外包); 额 = 成员之和, 量不合成.
+//   (高 / 低 = 成员高低的加权, 是真实路径的外包); 额 = 成员之和.
 //   点位 = 比接到前日点位上 (rebase); 日间接续只此一步 ⇒ 各日的合成互不相干.
-//   净流入 (只合成分钟的日) = 成员各自分钟涨跌法之和 (Bars.hpp; 不加权); 逐根记 (Bars::net), 全日之和 = Day::flow.
+//   净流入 (只合成分钟的日) = 成员各自分钟涨跌法之和 (Bars.hpp; 不加权); 逐根记 (Bars::net), 日摘要随日根 (Candle::flow).
 //   基准 = 成员当日前收 (历史 = D−1 行 pre_close, 当日 = 新浪昨收; 同一个交易所前收), 无基准的成员不计;
 //   当日无成交的成员比 1; 分钟缺根沿用其上根收盘, 首根前 = 基准; 计入的成员有一只在某根是缺口 (Bars::hole) → 篮子该根也是缺口.
 //   逐资产一遍 (资产主序): 一只的分钟根只读一次, 比 × 权散进所属各篮子.
@@ -28,10 +28,8 @@ namespace GUI::Quote {
 
 // 一个标的一个交易日 (当日 / 合成的一日); candle.date 0 = 无
 struct Day {
-  misc::Ymd prev = 0; // 前一交易日
-  Candle candle;      // 日根 (ref = 前收)
-  Bars bars;          // 分钟根
-  double flow = 0;    // 净流入 [元] (分钟涨跌法) = Σ bars.net
+  Candle candle; // 日根 (ref = 前收; flow = bars 的摘要)
+  Bars bars;     // 分钟根
 };
 
 // 合成的一日 (前日 = 1, candle.date ≠ 0) 接到前日点位 level 上: 各根价 × level, ref = level
@@ -48,10 +46,10 @@ class Fold {
 public:
   // 一只的冻结段: 槽 [0, at) 已并入冻结累加; 其后接着合所需的接续
   struct Carry {
-    float base = 0;                // 冻结段所用的基准 (0 = 该只不计)
-    int at = 0;                    // 冻结线
-    int dir = 0;                   // 冻结段末个有成交根的涨跌方向
-    double c = 1, px = 0, net = 0; // 冻结段末根的比 (之前无根 = 1) / 末根收盘 (之前无根 = 基准) / 冻结段净流入
+    float base = 0;       // 冻结段所用的基准 (0 = 该只不计)
+    int at = 0;           // 冻结线
+    int dir = 0;          // 冻结段末个有成交根的涨跌方向
+    double c = 1, px = 0; // 冻结段末根的比 (之前无根 = 1) / 末根收盘 (之前无根 = 基准)
   };
 
   explicit Fold(size_t baskets);
@@ -73,8 +71,8 @@ public:
   //   was / now [m 行] = 各行冻结段 入 / 出 (now 由该行首键所在的段写). false = 同 add
   template <class LegOf, class FreezeOf>
   bool add(misc::exec::ForkJoin &ex, const Members &m, LegOf &&leg, FreezeOf &&freeze, std::span<const Carry> was, std::span<Carry> now);
-  // 无成员 / 无成交的篮子 out[b].candle.date = 0; out[b].flow / bars.net = 全日 / 各根净流入 (只合日根 = 0)
-  void finish(misc::Ymd d, misc::Ymd prev, std::span<Day> out);
+  // 交易日 d 的各篮子: 无成员 / 无成交的 out[b].candle.date = 0; bars.net = 各根净流入 (只合日根 = 0)
+  void finish(misc::Ymd d, std::span<Day> out);
 
 private:
   // 一格 = 开 高 低 收 (比 × 权) / 额 / 净流入 / 缺口成员数; 格 0 = 日根, 格 1 + s = 槽 s

@@ -17,7 +17,7 @@ void ratio(const Cell *c, double inv, double at, double *q) {
 
 // 一格 (比 × 权之和) → 一根 (× f = 1 / Σ w)
 Cell weighed(const double *a, double f) {
-  return {static_cast<float>(a[0] * f), static_cast<float>(a[1] * f), static_cast<float>(a[2] * f), static_cast<float>(a[3] * f), 0, a[4]};
+  return {static_cast<float>(a[0] * f), static_cast<float>(a[1] * f), static_cast<float>(a[2] * f), static_cast<float>(a[3] * f), a[4]};
 }
 
 } // namespace
@@ -61,7 +61,7 @@ int Fold::row(const Leg &g, float base, int freeze, Carry &k, Row &r, int &end, 
   assert((g.bars != nullptr) == (slots_ > 0) && "Fold: 合成分钟的日每只都给分钟根");
   assert(k.at <= freeze && freeze <= slots_);
   if (k.at == 0)
-    k = {base, 0, 0, 1, base, 0};
+    k = {base, 0, 0, 1, base};
   else if (k.base != base)
     return -1;
   if (!(base > 0)) {
@@ -70,11 +70,11 @@ int Fold::row(const Leg &g, float base, int freeze, Carry &k, Row &r, int &end, 
   }
   const double inv = 1.0 / base;
   ratio(g.day, inv, 1, r.data());
-  double c = k.c, px = k.px, net = k.net;
+  double c = k.c, px = k.px;
   int dir = k.dir;
   for (int s = k.at; s < slots_; ++s) {
     if (s == freeze)
-      k = {base, freeze, dir, c, px, net};
+      k = {base, freeze, dir, c, px};
     const Cell *b = g.bars->has[static_cast<size_t>(s)] ? &g.bars->cell[static_cast<size_t>(s)] : nullptr;
     double *q = r.data() + (1 + static_cast<size_t>(s)) * kQ;
     ratio(b, inv, c, q);
@@ -84,12 +84,11 @@ int Fold::row(const Leg &g, float base, int freeze, Carry &k, Row &r, int &end, 
       if (s < freeze)
         fend = std::max(fend, s);
       dir = tick_dir(b->close, px, dir);
-      q[5] = dir * b->amount, net += q[5], px = b->close;
+      q[5] = dir * b->amount, px = b->close;
     }
   }
   if (freeze == slots_)
-    k = {base, freeze, dir, c, px, net};
-  r[5] = net;
+    k = {base, freeze, dir, c, px};
   return 1;
 }
 
@@ -108,7 +107,7 @@ void Fold::put(const Row &r, int from, int freeze, std::span<const Members::Weig
   }
 }
 
-void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<Day> out) {
+void Fold::finish(misc::Ymd d, std::span<Day> out) {
   assert(out.size() == sw_.size());
   for (size_t b = 0; b < sw_.size(); ++b) {
     Day &o = out[b];
@@ -118,10 +117,7 @@ void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<Day> out) {
       continue;
     }
     const double w = 1.0 / sw_[b];
-    o.prev = prev;
     o.candle = {weighed(l, w), d, 1.f};
-    o.flow = l[5];
-    o.bars.date = d;
     o.bars.has.reset(), o.bars.hole.reset();
     o.bars.net.fill(0);
     for (int s = 0; s <= end_; ++s) {
@@ -136,6 +132,7 @@ void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<Day> out) {
       o.bars.add(s, weighed(q, w));
       o.bars.net[static_cast<size_t>(s)] = q[5];
     }
+    o.candle.flow = day_flow(o.bars);
   }
 }
 

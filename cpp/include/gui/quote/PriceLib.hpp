@@ -165,7 +165,7 @@ private:
   size_t row_of(Ref ref) const; // 不在 → 该侧键数
   // 一行全史 (minute = 连分钟根); ref 不在该侧键表 → false
   bool series(Ref ref, bool minute, Series &s) const;
-  void rebuild();               // 库变了: 日脊 / 篮子全表 (+ 普查) / 个股日脊末段
+  void rebuild();                                          // 库变了: 日脊 / 篮子全表 (+ 普查) / 个股日脊末段
   void replay(uint64_t ledger, const account::Spot &spot); // 账本 × 本戳日脊 (+ 券商现价) → book_
 
   const std::shared_ptr<const Calendar> cal_;

@@ -88,7 +88,7 @@ void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &
       if (const float w = om[bt.weight(b)]; w > 0)
         m.add(static_cast<uint32_t>(b), w);
     });
-    m.next(static_cast<uint32_t>(a), q != SIZE_MAX ? t.mcap[q * A + a] : 0.f);
+    m.next(axis.global(a), q != SIZE_MAX ? t.mcap[q * A + a] : 0.f);
   }
 }
 
@@ -105,60 +105,57 @@ void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel) 
         w.w = static_cast<float>(pool::omega(bt.weight(w.key), m.cap[k], 1.0));
 }
 
-void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b) {
-  b.date = d;
+void bars_of(const FeatureRead::DayColumns &mc, size_t a, Bars &b) {
   b.has.reset();
-  for (size_t t = 0; t < level_valid_rows(L_1min); ++t) {
-    const float x = val(mc, t, kMinClose, a);
-    if (val(mc, t, kMinTs, a) > 0.5f && x > 0)
-      b.add(row_slot(t), cell(val(mc, t, kMinOpen, a), val(mc, t, kMinHigh, a), val(mc, t, kMinLow, a), x, 0, std::expm1(val(mc, t, kMinAmount, a))));
-  }
+  for (size_t t = 0; t < level_valid_rows(L_1min); ++t)
+    if (val(mc, t, kMinTs, a) > 0.5f)
+      if (const Cell c = cell(val(mc, t, kMinOpen, a), val(mc, t, kMinHigh, a), val(mc, t, kMinLow, a), val(mc, t, kMinClose, a), std::expm1(val(mc, t, kMinAmount, a)));
+          traded(c))
+        b.add(row_slot(t), c);
 }
 
 void each_daily(fundamental::Scratch &xs, const fundamental::Shard &sh, const fundamental::Ids &ids,
                 const std::function<void(uint32_t, const Candle &)> &f) {
   static const fundamental::Spec &kDaily = fundamental::spec(kBar1d);
-  static const std::vector<std::string> kCols = {"open", "high", "low", "close", "volume", "amount", "pre_close"};
+  static const std::vector<std::string> kCols = {"open", "high", "low", "close", "amount", "pre_close"};
   const fundamental::Rows r = xs.open(sh, kDaily, kCols, ids);
-  misc::pq::Col c[7];
+  misc::pq::Col c[6];
   for (size_t j = 0; j < kCols.size(); ++j)
     c[j] = r.col(kCols[j]);
   r.each([&](std::int64_t i, std::uint32_t id, misc::Ymd d) {
-    f(id, {cell(c[0].f32(i), c[1].f32(i), c[2].f32(i), c[3].f32(i), c[4].f32(i), c[5].f32(i)), d, c[6].f32(i)});
+    f(id, {cell(c[0].f32(i), c[1].f32(i), c[2].f32(i), c[3].f32(i), c[4].f32(i)), d, c[5].f32(i)});
   });
 }
 
-void bars_of(const Bar1m *m, misc::Ymd d, Bars &b) {
-  b.date = d;
+void bars_of(const Bar1m *m, Bars &b) {
   b.has.reset();
   if (!m)
     return;
   for (size_t t = 0; t < TRADE_MINUTES_PER_DAY; ++t)
-    if (m[t].volume > 0 && m[t].close > 0)
-      b.add(row_slot(t), cell(m[t].open, m[t].high, m[t].low, m[t].close, m[t].volume, m[t].amount));
+    if (const Cell c = cell(m[t].open, m[t].high, m[t].low, m[t].close, m[t].amount); traded(c))
+      b.add(row_slot(t), c);
 }
 
-Leg LibDay::leg(size_t a, Cell &c, Bars &b) const {
-  const float x = cur.px[3][a];
-  c = cell(cur.px[0][a], cur.px[1][a], cur.px[2][a], x, 0, cur.amount[a]);
+Leg LibDay::leg(size_t j, Cell &c, Bars &b) const {
+  const float x = cur.px[3][j];
+  c = cell(cur.px[0][j], cur.px[1][j], cur.px[2][j], x, cur.amount[j]);
   if (mc)
-    bars_of(*mc, a, date, b);
-  return {prev.pre[a], cur.trade[a] && x > 0 ? &c : nullptr, mc ? &b : nullptr};
+    bars_of(*mc, j, b);
+  return {prev.pre[j], cur.trade[j] && x > 0 ? &c : nullptr, mc ? &b : nullptr};
 }
 
-Leg FundDay::leg(size_t a, Cell &, Bars &b) const {
-  const Candle &c = px[a];
-  bars_of(bd.asset(a), date, b);
+Leg FundDay::leg(size_t j, Cell &, Bars &b) const {
+  const Candle &c = px[j];
+  bars_of(bd.asset(j), b);
   return {c.ref, traded(c) ? &c : nullptr, &b};
 }
 
-Leg SinaDay::leg(size_t a, Cell &, Bars &) const {
-  const Candle &c = px[a];
-  return {c.ref, traded(c) ? &c : nullptr, &bars[a]};
+Leg SinaDay::leg(size_t j, Cell &, Bars &) const {
+  const Candle &c = px[j];
+  return {c.ref, traded(c) ? &c : nullptr, &bars[j]};
 }
 
-void census(const Members &m, const PoolAxis &axis, std::span<const uint32_t> keys, Tape &t) {
-  assert(m.id.empty() || m.id.back() < axis.size());
+void census(const Members &m, std::span<const uint32_t> keys, Tape &t) {
   const size_t K = keys.size();
   std::vector<size_t> at(basket_table().size(), K); // 篮子 → keys 下标 (不在 = K)
   for (size_t k = 0; k < K; ++k)
@@ -173,7 +170,7 @@ void census(const Members &m, const PoolAxis &axis, std::span<const uint32_t> ke
       if (const size_t k = at[x.key]; k < K) {
         ++t.members[k], t.weight[k] += x.w, t.cap[k] += m.cap[r];
         on.emplace_back(k, x.w);
-        cs.push_back({k, {axis.global(m.id[r]), x.w}});
+        cs.push_back({k, {m.id[r], x.w}});
       }
     for (const auto &[i, wi] : on)
       for (const auto &[j, wj] : on)

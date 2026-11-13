@@ -25,18 +25,15 @@ size_t Series::find(misc::Ymd d) const {
 
 bool Series::bars(size_t i, Bars &b) const {
   const float *p = slots(i);
-  b.date = daily[i].date;
   b.has.reset(), b.hole.reset();
   b.net.fill(0);
-  float prev = daily[i].ref;
   for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s) {
     const float *q = p + s * kFields;
     if (!(q[kClose] > 0))
       continue;
-    b.cell[s] = cell(prev, q[kHigh], q[kLow], q[kClose], 0, q[kAmount]);
+    b.cell[s] = {q[kOpen], q[kHigh], q[kLow], q[kClose], q[kAmount]};
     b.net[s] = q[kNet];
     b.has.set(s);
-    prev = q[kClose];
   }
   return b.has.any();
 }
@@ -54,14 +51,12 @@ const Candle *Source::candle(misc::Ymd d) const {
 }
 
 Flow Source::flow_of(misc::Ymd d, bool ends) const {
-  if (joined && today->candle.date == d)
-    return day_flow(today->bars).of(ends);
-  const auto it = std::ranges::lower_bound(daily, d, {}, &Candle::date);
-  return it != daily.end() && it->date == d ? flow[static_cast<size_t>(it - daily.begin())].of(ends) : Flow{};
+  const Candle *c = candle(d);
+  return c ? c->flow.of(ends) : Flow{};
 }
 
 bool Source::bars(misc::Ymd d, Bars &b) const {
-  if (joined && today->bars.has.any() && today->bars.date == d) {
+  if (joined && today->bars.has.any() && today->candle.date == d) {
     b = today->bars;
     return true;
   }
@@ -97,16 +92,11 @@ bool PriceView::covers(Ref r, bool minute) const {
 
 const Day *Live::at(Ref r) const {
   assert(r.ok());
-  if (r.side == kBasket)
-    return r.key < baskets.size() ? baskets[r.key].get() : nullptr;
-  const size_t s = axis->sub_of(r.key);
-  return s < stocks.size() ? stocks[s].get() : nullptr;
+  const Days *x = days[r.side].get();
+  return x && r.key < x->size() ? (*x)[r.key].get() : nullptr;
 }
 
-const sina::Quote *Live::quote(uint32_t id) const {
-  const size_t s = axis->sub_of(id);
-  return quotes && s < quotes->size() ? &(*quotes)[s] : nullptr;
-}
+const sina::Quote *Live::quote(uint32_t id) const { return quotes && id < quotes->size() ? (*quotes)[id].get() : nullptr; }
 
 const sina::Quote *Live::watched(std::string_view sym) const {
   if (!watch)
@@ -118,7 +108,8 @@ const sina::Quote *Live::watched(std::string_view sym) const {
 const Tape *Joint::tape() const { return view && view->lack.empty() ? view->tape[side].get() : nullptr; }
 
 misc::Ymd Joint::today() const {
-  const bool has = live && (side == kStock || std::ranges::any_of(live->baskets, [](const auto &y) { return y != nullptr; }));
+  const Days *x = live ? live->days[side].get() : nullptr;
+  const bool has = x && (side == kStock || std::ranges::any_of(*x, [](const auto &y) { return y != nullptr; }));
   return has && view && view->joins(live->prev) ? live->date : 0;
 }
 
@@ -127,13 +118,13 @@ Source Joint::of(uint32_t key) const {
   o.today = live ? live->at({side, key}) : nullptr;
   if (const Tape *t = tape()) {
     if ((o.se = t->line(key))) {
-      o.daily = o.se->daily, o.flow = o.se->flow;
+      o.daily = o.se->daily;
     } else if (t->tails) {
       if (const size_t k = t->tails->find(key); k < t->tails->ids.size())
-        o.daily = t->tails->daily[k], o.flow = t->tails->flow[k];
+        o.daily = t->tails->daily[k];
     }
   }
-  o.joined = o.today && (o.daily.empty() || view->joins(o.today->prev));
+  o.joined = o.today && (o.daily.empty() || view->joins(live->prev));
   return o;
 }
 
