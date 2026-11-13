@@ -237,7 +237,9 @@ struct PriceFiles {
   }
 };
 
-PriceLib::PriceLib(std::vector<misc::Ymd> trading) : trading_(std::move(trading)) { assert(!trading_.empty()); }
+PriceLib::PriceLib(std::vector<misc::Ymd> trading, std::function<void(const Handoff &)> bind) : trading_(std::move(trading)), bind_(std::move(bind)) {
+  assert(!trading_.empty() && bind_);
+}
 PriceLib::~PriceLib() = default;
 
 template <class Ar>
@@ -360,6 +362,7 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
   if (!fill(*pk, cat, tail, !fresh, cancel, x))
     return false;
   at_ = stamp();
+  bind_(Handoff{axis_, mem_, level_});
   return true;
 }
 

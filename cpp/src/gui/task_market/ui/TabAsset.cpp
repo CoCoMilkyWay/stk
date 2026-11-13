@@ -540,12 +540,12 @@ void sync_view(AssetState &state, const Asset &asset, const StockInfos &stock_in
 }
 
 // 新浪当日日根: 键集 = 全部资产 (Today 照版本取)
-void sync_today(Today<Candles> &t, const QuoteService &q, const Asset &asset) {
+void sync_today(Today<Candles> &t, const QuoteHub &mk, const Asset &asset) {
   std::vector<uint32_t> keys;
   keys.reserve(asset.items.size());
   for (const AssetItem &a : asset.items)
     keys.push_back(static_cast<uint32_t>(a.asset_id));
-  Sync(q, kStock, keys, t);
+  Sync(mk, kStock, keys, t);
 }
 
 // 过滤条: 搜索 / ST / 在市 / 板块 / 行业 + 列出数 + 截面色图例 + 右栏开关
@@ -851,7 +851,7 @@ void RenderTabAsset(Asset &asset, const StockInfos &stock_info, AssetState &asse
     return;
   }
   assert(mk.quote);
-  sync_today(asset_state.today, *mk.quote, asset);
+  sync_today(asset_state.today, mk, asset);
   sync_view(asset_state, asset, stock_info); // 过滤条的列出数也读它
 
   // 左 = 过滤条 + 资产表, 右 = Quotes / Statistics

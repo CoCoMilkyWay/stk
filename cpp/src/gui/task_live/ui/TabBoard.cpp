@@ -914,7 +914,7 @@ void journal(LiveHub &hub, bool priv) {
 void chart(SharedData &data, Quote::QuoteHub &quote, BoardState &st, const live::board::Frame *f, bool priv) {
   if (!data.task_state.database.asset_info_ready)
     return ImGui::TextDisabled("行情图要本地资产库就绪 (见 Database)");
-  quote.start(data);
+  quote.frame(data);
   const std::vector<std::string> &codes = data.asset_info.codes;
   if (st.ids.size() != codes.size()) {
     st.ids.clear();

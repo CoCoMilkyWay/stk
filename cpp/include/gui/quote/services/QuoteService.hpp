@@ -1,5 +1,6 @@
 // 行情的当日一路 (见 Quote.hpp): 新浪全市场内存缓存当天, 个股 / 篮子的当日同出于此 (today(Side, 键集)).
-//   个股当日 = 本只的根 (五档另取 book); 篮子当日 = bind 的成员表在快照线程合成 (Fold, 只合到此刻所在根), 当日有变才合.
+//   个股当日 = 本只的根 (五档另取 book); 篮子当日 = 交接 (PriceLib 每次定下即 bind) 的成员表合成 (Fold, 只合到此刻所在根), 当日有变才合:
+//     每轮快照之后合一次; 其间补根改了当日 → 距上次合成满 kFoldGap 即合, 不等下一轮快照.
 //   增量合成: 冻结线 = min(定稿线 + 1, 各只待补区间起点) 之前的槽不会再变, 只合一次 (Folding 跨轮持有累加与各只接续);
 //     每轮只合日根与冻结线之后的几槽. 冻结段被改写 (快照 / 补根落在冻结线前) 或冻结线回退 (新标待补) → 从头合一次.
 //   合成不持 mu_ 整趟: 成员表是不可变快照 (Basis), 逐 kFoldChunk 只持 mu_ 读一段, 末了持 mu_ 换上 (其间换日 / 重 bind → 弃).
@@ -56,6 +57,8 @@
 
 namespace GUI::Quote {
 
+struct Handoff;
+
 struct QuoteStatus {
   misc::Ymd date = 0;         // 行情日
   misc::Ymd prev = 0;         // 行情日的前一交易日
@@ -77,6 +80,7 @@ public:
   static constexpr int kLag = (kSettle + 59) / 60 + 1; // 此刻所在根 − 定稿线 的上界 [根]
   static constexpr int kGap = 10;                      // 断档判据: 两轮快照跨根时其间连续竞价时长 [s]
   static constexpr int kFillers = 16;                  // 分钟 K 并发 (再高新浪会 RST)
+  static constexpr int kFoldGap = 1;                   // 补根后篮子合成的最小间隔 [s]
   static constexpr uint32_t kFoldChunk = 256;          // 篮子合成每段成员只数 (持 mu_ 的粒度)
 
   QuoteService(PoolAxis axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading);
@@ -88,8 +92,8 @@ public:
   std::span<const misc::Ymd> trading() const { return trading_; } // 交易日升序 (构造后不变, 任意线程)
   void select(uint32_t id);                                       // GUI: 选中标的 (全局 id; ~0u = 无)
   QuoteStatus status() const;
-  // 篮子成员表 (资产 = axis() 的 sub) + 各篮子前日点位; 当场合成一次, 此后当日有变的每轮快照后一次 (篮子 History 跑完调)
-  void bind(Members m, std::vector<double> level);
+  // 交接 (成员表下标: 库轴 → 全市场) 换上, 当场合成一次 (PriceLib 定下交接即调)
+  void bind(const Handoff &h);
   // GUI: 键集的当日 (只读), [k] ↔ keys[k]; 个股不在全市场 / 当日无成交、篮子未合成 / 成员无成交 → nullptr.
   //   篮子键集须是全表 (keys[k] = k): 给末次合成的那份, 不拷
   std::shared_ptr<const Days> today(Side s, std::span<const uint32_t> keys) const;
@@ -139,6 +143,7 @@ private:
   void fill();
   void fold(); // 篮子当日合成 → baskets_; 不持 mu_ 调
   // 以下须持 mu_
+  bool foldable() const { return dirty_ && basis_ && date_ != 0; }
   void schedule();
   int settled() const;
   int live_slot() const;
@@ -165,7 +170,8 @@ private:
   std::unordered_map<std::string, uint32_t> index_; // 新浪码 → sub
 
   mutable std::mutex mu_;
-  std::condition_variable cv_;
+  std::condition_variable cv_;   // 分钟 K 线程: 待取 / 停
+  std::condition_variable wake_; // 快照线程: 当日有变待合成 / 停
   bool stop_ = false;
   misc::Ymd date_ = 0, prev_ = 0; // 行情日 / 其前一交易日
   uint64_t gen_ = 0;              // 换日 +1: 在取的分钟 K 作废

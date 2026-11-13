@@ -287,6 +287,6 @@ void RenderLinesCta(CtaService &svc, LinesState &ui, const cta::Rates &rates, co
 // 页 page 的右图例 (各页同一条, 按页表): 类别条 + 页件 + 表 (名 + 页的段); mk = 行情 (资金流段的日轴; nullptr = 未起); infos = 成分行的近况 / 当日
 void RenderLinesSheet(LinesState &ui, int page, const Quote::QuoteHub *mk, const StockInfos &infos);
 // 成分行的当日 (ui.overlay.cons, Today): 成分集 / 个股当日版本变了才重取
-void SyncLinesCons(LinesState &ui, const Quote::QuoteService &q);
+void SyncLinesCons(LinesState &ui, const Quote::QuoteHub &mk);
 
 } // namespace GUI::Market

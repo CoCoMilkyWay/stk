@@ -57,6 +57,43 @@ double net_flow(Bars &b, float base) {
   return sum;
 }
 
+const Candle *Source::last() const {
+  return joined ? &today->candle : kl && !kl->daily.empty() ? &kl->daily.back()
+                                                            : nullptr;
+}
+
+const Candle *Source::candle(misc::Ymd d) const {
+  if (joined && today->candle.date == d)
+    return &today->candle;
+  if (!kl)
+    return nullptr;
+  const auto it = std::ranges::lower_bound(kl->daily, d, {}, &Candle::date);
+  return it != kl->daily.end() && it->date == d ? &*it : nullptr;
+}
+
+const Bars *Source::bars(misc::Ymd d) const {
+  if (joined && today->bars.has.any() && today->bars.date == d)
+    return &today->bars;
+  if (!kl)
+    return nullptr;
+  const auto it = std::ranges::lower_bound(kl->minutes, d, {}, &Bars::date);
+  return it != kl->minutes.end() && it->date == d ? &*it : nullptr;
+}
+
+Source Joint::at(size_t k) const {
+  assert(tape && k < tape->keys.size() && (!today || today->size() == tape->keys.size()));
+  const Kline *kl = tape->list[k].get();
+  const Day *y = today ? (*today)[k].get() : nullptr;
+  return {kl, y, y && (!kl || tape->joins(y->prev))};
+}
+
+Source Joint::of(uint32_t key) const {
+  if (!tape)
+    return {};
+  const size_t k = tape->find(key);
+  return k < tape->keys.size() ? at(k) : Source{};
+}
+
 namespace {
 
 // 一根 → 一格的比 (价 / 基准) + 额, 净流入 / 缺口待填 0; 无根 → 平于 at, 额 0

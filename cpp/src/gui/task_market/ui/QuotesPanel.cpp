@@ -529,34 +529,6 @@ void render_book(const sina::Quote &q, misc::Ymd date) {
   ImGui::PopStyleVar();
 }
 
-// 最新一根: 当日接上取当日, 否则日线末根; 无 → nullptr
-const Candle *last(const Source &s) {
-  return s.joined ? &s.today->candle : s.kl && !s.kl->daily.empty() ? &s.kl->daily.back()
-                                                                    : nullptr;
-}
-
-// d 日的日根: 当日 (joined) / 历史; 无 → nullptr
-const Candle *candle_on(const Source &s, misc::Ymd d) {
-  if (s.joined && s.today->candle.date == d)
-    return &s.today->candle;
-  if (!s.kl)
-    return nullptr;
-  const std::vector<Candle> &v = s.kl->daily;
-  const auto it = std::lower_bound(v.begin(), v.end(), d, [](const Candle &c, misc::Ymd x) { return c.date < x; });
-  return it != v.end() && it->date == d ? &*it : nullptr;
-}
-
-// d 日的分钟根: 当日 (joined 且有根) / 历史; 无 → nullptr
-const Bars *bars_on(const Source &s, misc::Ymd d) {
-  if (s.joined && s.today->bars.has.any() && s.today->bars.date == d)
-    return &s.today->bars;
-  if (!s.kl)
-    return nullptr;
-  const std::vector<Bars> &v = s.kl->minutes;
-  const auto it = std::lower_bound(v.begin(), v.end(), d, [](const Bars &m, misc::Ymd x) { return m.date < x; });
-  return it != v.end() && it->date == d ? &*it : nullptr;
-}
-
 // 一根的价 × a (量 / 额不动)
 Cell scaled(Cell c, double a) {
   c.open = static_cast<float>(c.open * a), c.high = static_cast<float>(c.high * a);
@@ -612,7 +584,7 @@ void intraday(const Source &src, std::span<const misc::Ymd> days, Series &s) {
   std::vector<double> f(nd, 0.0); // 后复权比: 日轴内首个日根 = 1
   double end = 0;                 // 末个有根日的 f
   for (size_t k = 0, p = SIZE_MAX; k < nd; ++k) {
-    cs[k] = candle_on(src, days[k]), bs[k] = bars_on(src, days[k]);
+    cs[k] = src.candle(days[k]), bs[k] = src.bars(days[k]);
     assert((!bs[k] || cs[k]) && "有分钟根的日必有日根");
     if (!cs[k])
       continue;
@@ -649,7 +621,7 @@ bool coverage(const Tape &t, const QuoteStatus &qs, char *buf, size_t size) {
     std::snprintf(buf + at(), size - at(), " · 新浪: 等待首轮快照…");
     return false;
   }
-  if (d > b && qs.prev != b) {
+  if (d > b && !t.joins(qs.prev)) {
     std::snprintf(buf + at(), size - at(), " · 历史落后, 未接当日 %02d-%02d", d / 100 % 100, d % 100);
     return true;
   }
@@ -661,7 +633,7 @@ bool coverage(const Tape &t, const QuoteStatus &qs, char *buf, size_t size) {
 // 标题行 (标题 · 最新价 / 涨跌) + 注行: 恒两行, 图区起点不随内容动 (注行末可再 SameLine 一个 SmallButton, 同高)
 void header(const char *title, const Source &src, const char *note) {
   ImGui::TextUnformatted(title);
-  if (const Candle *k = last(src); k && k->ref > 0) {
+  if (const Candle *k = src.last(); k && k->ref > 0) {
     ImGui::SameLine();
     ImGui::TextColored(tint(k->close, k->ref), "%.2f  %+.2f  %+.2f%%", k->close, k->close - k->ref, (k->close / k->ref - 1.0) * 100.0);
   }
@@ -725,7 +697,7 @@ struct NetBars {
 NetBars net_bars(const Source &src, std::string name, std::span<const misc::Ymd> days) {
   NetBars n{std::move(name), {}, {}, 0};
   for (size_t k = 0; k < days.size(); ++k)
-    if (const Bars *b = bars_on(src, days[k]))
+    if (const Bars *b = src.bars(days[k]))
       for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
         if (b->has[j]) {
           n.x.push_back(static_cast<double>(k * kSlots + j)), n.v.push_back(b->net[j]);
@@ -917,11 +889,11 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   return corner;
 }
 
-// 收历史发布: 末次请求的发布到齐 → 整体换上; 到齐前照留在画的. 返回 = 发布代新于末次请求 (被别的 Feed 覆盖)
+// 收历史发布: 末次请求的发布到齐 → 整体换上, 当日待重取; 到齐前照留在画的. 返回 = 发布代新于末次请求 (被别的 Feed 覆盖)
 bool pull(const HistoryPub &x, Feed &f) {
   std::lock_guard<std::mutex> lock(x.mutex);
   if (x.gen == f.gen && x.data != f.data)
-    f.data = x.data, f.shown = f.gen;
+    f.data = x.data, f.shown = f.gen, f.today.ver = ~0ull;
   return x.gen > f.gen;
 }
 
@@ -1027,7 +999,7 @@ bool flow_line(const OverlayCtx &cx, const OverlayPick &, const Source &src, Ove
     return false;
   double net = 0;
   for (size_t k = 0; k < cx.days.size(); ++k)
-    if (const Bars *b = bars_on(src, cx.days[k]))
+    if (const Bars *b = src.bars(cx.days[k]))
       for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j) {
         if (b->hole[j])
           return !l.x.empty();
@@ -1070,45 +1042,39 @@ constexpr OverlayDef kOverlayDefs[kOverlays] = {
 } // namespace
 
 template <class T>
-void Sync(const QuoteService &q, Side s, std::span<const uint32_t> keys, Today<T> &t) {
+void Sync(const QuoteHub &mk, Side s, std::span<const uint32_t> keys, Today<T> &t) {
   constexpr bool kDay = std::is_same_v<T, Days>;
   static_assert(kDay || std::is_same_v<T, Candles>);
-  const QuoteStatus qs = q.status();
+  const QuoteStatus &qs = mk.status;
   const uint64_t ver = kDay ? qs.ver[s] : static_cast<uint64_t>(qs.date) * 86400 + static_cast<uint64_t>(qs.sec);
-  if (ver == t.ver && std::ranges::equal(keys, t.keys))
+  const bool same = std::ranges::equal(keys, t.keys);
+  if (ver == t.ver && same)
     return;
-  t.keys.assign(keys.begin(), keys.end());
   t.prev = qs.prev, t.ver = ver;
-  if (keys.empty())
-    t.day = nullptr;
-  else if constexpr (kDay)
-    t.day = q.today(s, keys);
-  else {
-    assert(s == kStock);
-    t.day = q.candles(keys);
+  std::shared_ptr<const T> day;
+  if (!keys.empty()) {
+    if constexpr (kDay) {
+      day = mk.quote->today(s, keys);
+    } else {
+      assert(s == kStock);
+      day = mk.quote->candles(keys);
+    }
   }
+  if constexpr (kDay)
+    if (same && day && t.day && *day == *t.day)
+      return;
+  t.keys.assign(keys.begin(), keys.end());
+  t.day = std::move(day);
 }
-template void Sync<Days>(const QuoteService &, Side, std::span<const uint32_t>, Today<Days> &);
-template void Sync<Candles>(const QuoteService &, Side, std::span<const uint32_t>, Today<Candles> &);
+template void Sync<Days>(const QuoteHub &, Side, std::span<const uint32_t>, Today<Days> &);
+template void Sync<Candles>(const QuoteHub &, Side, std::span<const uint32_t>, Today<Candles> &);
 
 Source SourceOf(const OverlayState &st, Ref ref) {
   assert(ref.ok());
-  const auto of = [](const Feed &f, size_t k) {
-    assert(f.today.day && f.today.day->size() == f.data->keys.size());
-    const Kline *kl = f.data->list[k].get();
-    const Day *y = (*f.today.day)[k].get();
-    return Source{kl, y, y && (!kl || joins(*f.data, *y))};
-  };
-  if (ref.side == kBasket) {
-    const Feed &f = st.baskets;
-    if (!f.data || ref.key >= f.data->keys.size())
-      return {};
-    assert(f.data->keys[ref.key] == ref.key);
-    return of(f, ref.key);
-  }
-  if (const Feed &f = st.stocks; f.data && f.today.day)
-    if (const auto it = std::ranges::find(f.data->keys, ref.key); it != f.data->keys.end())
-      return of(f, static_cast<size_t>(it - f.data->keys.begin()));
+  if (ref.side == kBasket)
+    return st.baskets.joint().of(ref.key);
+  if (const Source s = st.stocks.joint().of(ref.key); s.kl || s.today)
+    return s;
   const Today<Days> &c = st.cons;
   if (!c.day)
     return {};
@@ -1130,11 +1096,11 @@ void Sync(QuoteHub &mk, Side s, std::span<const uint32_t> want, Feed &f) {
       mk.quote->select(f.want.empty() ? ~0u : f.want.front());
   }
   if (f.data && !f.data->keys.empty())
-    Sync(*mk.quote, s, f.data->keys, f.today);
+    Sync(mk, s, f.data->keys, f.today);
 }
 
 void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &title) {
-  const QuoteStatus qs = mk.quote->status();
+  const QuoteStatus &qs = mk.status;
   const Feed &f = st.feed;
   if (!f.data || f.data->keys.empty()) {
     if (qs.date == 0)
@@ -1147,9 +1113,7 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
   }
   assert(f.today.day && f.today.day->size() == 1);
   const uint32_t id = f.data->keys.front();
-  const Kline *kl = f.data->list.front().get();
-  const Day *today = f.today.day->front().get();
-  const Source src{kl, today, today && (!kl || joins(*f.data, *today))};
+  const Source src = f.joint().at(0);
   Series is, ds;
   intraday(src, day_axis(mk.quote->trading(), qs.date, kIntraDays[st.chart.intraday]), is);
   daily(src, ds);
@@ -1161,7 +1125,7 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
     std::snprintf(note, sizeof(note), "只画当日 · %s", f.data->lack.c_str());
   else {
     coverage(*f.data, qs, note, sizeof(note));
-    if (!kl)
+    if (!src.kl)
       std::snprintf(note + std::strlen(note), sizeof(note) - std::strlen(note), " · 本只不在 all.bar 库轴, 只画当日 (全量重算 all.bar 即并入)");
   }
   if (mk.quote->axis().sub_of(id) == mk.quote->axis().size())
@@ -1176,7 +1140,7 @@ int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const 
   Feed &f = st.baskets;
   if (!basket_ready(mk, f))
     return -1;
-  const QuoteStatus qs = mk.quote->status();
+  const QuoteStatus &qs = mk.status;
   const Tape &d = *f.data;
   const std::vector<misc::Ymd> days = OverlayDays(kind, mk, st);
   const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -1187,7 +1151,7 @@ int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const 
   for (size_t i = 0; i < picks.size(); ++i) {
     const OverlayPick &p = picks[i];
     const Source src = SourceOf(st, p.ref);
-    if (!src.kl && !src.joined)
+    if (!src.any())
       continue;
     Overlay l{.pick = i, .name = p.name, .col = ImGui::ColorConvertU32ToFloat4(p.col)};
     if (def.line(cx, p, src, l))
@@ -1214,7 +1178,7 @@ int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const 
 }
 
 std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const OverlayState &st) {
-  return day_axis(mk.quote->trading(), mk.quote->status().date, kIntraDays[st.span[kind]]);
+  return day_axis(mk.quote->trading(), mk.status.date, kIntraDays[st.span[kind]]);
 }
 
 Flow FlowOf(const Bars &b, bool ends) {
@@ -1228,7 +1192,7 @@ Flow FlowOf(const Bars &b, bool ends) {
 std::vector<Flow> FlowOf(const Source &src, std::span<const misc::Ymd> days, bool ends) {
   std::vector<Flow> o(days.size());
   for (size_t i = 0; i < days.size(); ++i)
-    if (const Bars *b = bars_on(src, days[i]))
+    if (const Bars *b = src.bars(days[i]))
       o[i] = FlowOf(*b, ends);
   return o;
 }

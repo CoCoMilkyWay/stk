@@ -8,27 +8,10 @@
 #include <mutex>
 #include <optional>
 #include <utility>
-#include <vector>
 
 namespace GUI::Quote {
 
-History::History(Side s, PriceLib &lib, QuoteService &live)
-    : side_(s), lib_(lib), live_(live), kept_(s == kStock ? kKeep : basket_table().size()) { Start(); }
-
-void History::bind(const Handoff &h) {
-  const PoolAxis &market = live_.axis();
-  std::vector<uint32_t> row(h.axis.size(), UINT32_MAX); // [库轴] mem 的行
-  for (size_t k = 0; k < h.mem.size(); ++k)
-    row[h.mem.id[k]] = static_cast<uint32_t>(k);
-  Members m; // 资产 = 全市场
-  for (size_t q = 0; q < market.size(); ++q) {
-    if (const size_t a = h.axis.sub_of(market.global(q)); a < h.axis.size() && row[a] != UINT32_MAX)
-      for (const Members::Weight &w : h.mem.of(row[a]))
-        m.add(w.key, w.w);
-    m.next(static_cast<uint32_t>(q));
-  }
-  live_.bind(std::move(m), h.level);
-}
+History::History(Side s, PriceLib &lib) : side_(s), lib_(lib), kept_(s == kStock ? kKeep : basket_table().size()) { Start(); }
 
 bool History::run(HistoryRequest &req) {
   assert(side_ == kBasket || req.keys.size() <= kKeep);
@@ -55,7 +38,6 @@ bool History::run(HistoryRequest &req) {
       break;
     if (const std::optional<Handoff> h = lib_.handoff(o->stamp)) {
       census(h->mem, h->axis, req.keys, *out);
-      bind(*h);
       break;
     }
   }

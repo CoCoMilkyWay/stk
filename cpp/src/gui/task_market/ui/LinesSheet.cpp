@@ -841,12 +841,12 @@ void RenderLinesSheet(LinesState &ui, int page, const Quote::QuoteHub *mk, const
   table(ui, infos, ui.der.val, page, {"名", pd.name_tip}, segs);
 }
 
-void SyncLinesCons(LinesState &ui, const Quote::QuoteService &q) {
+void SyncLinesCons(LinesState &ui, const Quote::QuoteHub &mk) {
   std::vector<uint32_t> ids;
   for (const LinesRow &r : ui.der.val.rows[kGroupKid])
     ids.push_back(r.ref.key);
   std::ranges::sort(ids);
-  Sync(q, Quote::kStock, ids, ui.overlay.cons);
+  Sync(mk, Quote::kStock, ids, ui.overlay.cons);
 }
 
 } // namespace GUI::Market

@@ -5,7 +5,8 @@
 //     一趟 lib_pass (BasketRow.hpp, 一日一件 Lane), 两侧同出
 //   补段 [L, D) = 库末日之后至基本面末日 (fund_last) 的交易日: 成员 = 库末日之后冻结, 逐日过 drift; 源 = FundDay (bar1d 行 + bar1m 分钟根);
 //     库段 / 补段日变才重算
-//   两段同一个 Lane, 同一条因子链; 末了留交接 (handoff): 末个历史日之后那个交易日的成员表 (库轴) + 各篮子末日点位, 当日合成接着它
+//   两段同一个 Lane, 同一条因子链; 末了留交接 (handoff): 末个历史日之后那个交易日的成员表 (库轴) + 各篮子末日点位, 当日合成接着它;
+//   交接一变即交给当日 (构造时给的 bind, 在 open 返回之前 ⇒ 读端拿到新库时当日已换上新交接)
 // 有效价 = 存价 × 因子 (因子 > 0 ⇔ 当日有日根):
 //   个股: 存价 = 原价 (库段 = 库存 f16, 与特征 / 标签逐位一致; 补段 = bar1d / bar1m 落成 f16), 因子 = 后复权 (自首个有根日 1 起, 逢前收 ≠ 参考价乘 参考价 / 前收)
 //   篮子: 存价 = Lane 的比 (前日 = 1, f32), 因子 = 前日点位 (自 kBase 起, 逐日 × 前日比收)
@@ -86,7 +87,8 @@ public:
     float ref = 0;
   };
 
-  explicit PriceLib(std::vector<misc::Ymd> trading);
+  // bind = 交接的去处 (QuoteService::bind; 持 PriceLib 的锁调)
+  PriceLib(std::vector<misc::Ymd> trading, std::function<void(const Handoff &)> bind);
   ~PriceLib();
   PriceLib(const PriceLib &) = delete;
   PriceLib &operator=(const PriceLib &) = delete;
@@ -124,6 +126,7 @@ private:
   size_t row_of(Ref ref) const; // 不在 → 该侧键数
 
   const std::vector<misc::Ymd> trading_; // 交易日升序
+  const std::function<void(const Handoff &)> bind_;
   mutable std::mutex mu_;
   disk::Key lib_; // 所在特征库
   PoolAxis axis_; // 库轴

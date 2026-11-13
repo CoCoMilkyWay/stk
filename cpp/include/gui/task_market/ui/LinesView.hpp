@@ -40,7 +40,7 @@ constexpr double x_of(size_t di, double slot) { return static_cast<double>(di * 
 // 一条线 (全段原值: 净值 / 点位; 归一只在切片): 画图点 + 日并集轴上的日末视图 (年化 / 夏普 / 近况 / 配色同读它) + 年换手
 //   点: x 严格升序, 首点 = 首个活跃日首根前 kStartDx 格的起点 (前收 = 前一日末), 其后各点在所在日的行末槽;
 //   带日内形的线 (LineSrc::minutes) 各日换成该日各槽 (锚 = 当日末点, 末点不变 ⇒ 日末视图同不带);
-//   接当日的线 (LineSrc::live) 末尾另有轴末日的点: 带日内形 = 各有根槽, 否则此刻一点
+//   接当日的线 (LineSrc::live) 末尾另有当日的点: 带日内形 = 各有根槽, 否则此刻一点
 //   日末视图: 活跃日 [f, l] (起点所在日 ~ 末点所在日); end(k) = 第 k − 1 日末点位 (k = f 为前收; 活跃日内无点的日持平, l 之后持平),
 //   s1 / s2 = 活跃日的日收益 / 平方的前缀和 (下标同 e)
 struct Line {
@@ -176,15 +176,11 @@ struct LinesPaintKey {
 };
 
 // 行情侧的源 (OverlayState 两路 Feed 在画的): [Side] 历史发布 + 其键集的当日; 空 = 未到 / 未取
-struct LinesQuotes {
-  Quote::PerSide<std::shared_ptr<const Quote::Tape>> tape;
-  Quote::PerSide<std::shared_ptr<const Quote::Days>> today;
-  bool operator==(const LinesQuotes &) const = default;
-};
+using LinesQuotes = Quote::PerSide<Quote::Joint>;
 
 // 一级: 派生 (结果 / 内容 / fixed_impact / 成分组 / 行情变才重算): 全段. 各线按线源沿用上一份 (LineSrc), 色按配色来源沿用 (LinesPaintKey)
 struct LinesDerived {
-  std::vector<misc::Ymd> dates;                                // 日并集轴 (横轴 day 下标) = 各账日 ∪ 日脊 ∪ 当日 (有接得上日脊的才并, 恒在末)
+  std::vector<misc::Ymd> dates;                                // 日并集轴 (横轴 day 下标) = 各账日 ∪ 日脊 ∪ 当日 (各侧有接在日脊之后的才并)
   std::vector<LinesRow> rows[kRowGroups];                      // [RowGroup][行]:
                                                                //   组             | 行情键    | 可成交 / 有冲击线           | 理想 / 无冲击线         | 估值腿
                                                                //   指数/行业/概念 | 篮子线    | 篮子账该线合成 (不扣成本)   | 价格指数 (篮子历史该线) | 篮子账该线
@@ -293,7 +289,7 @@ struct LinesView {
 // 各级缓存 (Stage) 的键
 struct LinesDerKey {
   uint64_t gen = 0, items = 0;    // PortfolioService::result_gen / PortfolioUIState::items_gen
-  LinesQuotes market;             // 行情侧在画的历史 + 当日 (当日每轮快照换一份)
+  LinesQuotes market;             // 行情侧在画的历史 + 当日 (当日有只变了才换一份)
   uint32_t minutes = 0;           // 日内形在用的发布代 (MinuteResult::gen)
   double impact = 0.0;            // fixed_impact
   size_t infos = 0;               // 基本面档案数 (成分行名 / 悬停; 首次载入)

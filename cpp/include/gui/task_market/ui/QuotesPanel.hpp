@@ -1,6 +1,6 @@
-// 行情图, 数据 = 历史 Kline + 当日 Day (见 Quote.hpp); 个股 / 篮子同一个 Feed + Sync (键集 → 历史发布 + 当日)
-//   当日一份 Today (键集 → 当日, 版本变才重取): Feed 的当日 / 成分行的当日 / ASSET 表的日根三处同一种;
-//   一个标的的源 Source (历史 + 当日): 叠加图与 Lines 右表同一查法 SourceOf, 其上 RecentOf / FlowOf 两侧通用
+// 行情图, 数据 = 历史 Kline + 当日 Day (见 Quote.hpp); 个股 / 篮子同一个 Feed + Sync (键集 → 历史发布 + 当日 = Joint)
+//   当日一份 Today (键集 → 当日, 版本变才重取, 各只都没换则沿用原份 ⇒ 下游缓存键不动): Feed 的当日 / 成分行的当日 / ASSET 表的日根三处同一种;
+//   一个标的的源 Source (Quote.hpp): 叠加图与 Lines 右表同一查法 SourceOf, 其上 RecentOf / FlowOf 两侧通用
 //   个股 = ASSET 右栏 (Live 持仓页右栏同一面板): 键集 {选中标的}, 日内 (右挂盘口: 当日最新快照五档) + 日线;
 //   叠加图 (OverlayState; 两种 OverlayKind 同一入口 RenderOverlay, 同一份选中 / 档位条 / 工具角): 条 = 篮子线 / 个股 (右表点中的成分股: 个股历史 + 新浪当日);
 //     刻度区全空: 横网格 (含 0 轴) y 值小字内标在右壁, 线名小字贴线尾; 不画量, 读数看十字光标;
@@ -50,8 +50,8 @@ struct ChartState {
   QuotesView iv, dv; // 日内 / 日线 视野
 };
 
-// 当日一份: 键集 → 当日 [keys]; 键集变 / 版本变才重取. T = Days (QuoteService::today, 版本 = QuoteStatus::ver[side])
-//   / Candles (个股日根 QuoteService::candles, 版本 = 行情日 · 快照时刻: 补分钟根不动日根)
+// 当日一份: 键集 → 当日 [keys]; 键集变 / 版本变才重取 (本帧 QuoteHub::status). T = Days (QuoteService::today, 版本 = QuoteStatus::ver[side];
+//   各只的 Day 都没换 → 沿用原份) / Candles (个股日根 QuoteService::candles, 版本 = 行情日 · 快照时刻: 补分钟根不动日根)
 template <class T>
 struct Today {
   std::vector<uint32_t> keys;   // 已取的键集
@@ -60,7 +60,7 @@ struct Today {
   uint64_t ver = ~0ull;         // 已取的版本; ~0 = 待取
 };
 template <class T>
-void Sync(const QuoteService &q, Side s, std::span<const uint32_t> keys, Today<T> &t);
+void Sync(const QuoteHub &mk, Side s, std::span<const uint32_t> keys, Today<T> &t);
 
 // 一路行情的 UI 端 (个股 / 篮子同形): 键集 → 历史发布 + 当日
 struct Feed {
@@ -70,8 +70,10 @@ struct Feed {
   uint32_t shown = 0;               // 在画的发布的请求代 (视野复位键)
   std::shared_ptr<const Tape> data; // 在画的历史 (末次请求的到齐才换; keys = 在画的键集)
   Today<Days> today;                // [data->keys] 当日
+  Joint joint() const { return {data, today.day}; }
 };
-// 每帧: 键集变 / reload / 被同路别的 Feed 覆盖 → 发请求 (个股另 select 给新浪); 末次请求的发布到齐 → 整体换上; 当日照 Today 取
+// 每帧: 键集变 / reload / 被同路别的 Feed 覆盖 → 发请求 (个股另 select 给新浪); 末次请求的发布到齐 → 整体换上, 当日随之重取
+//   (交接先于发布换上 ⇒ 新历史配新当日); 其余照 Today 取
 void Sync(QuoteHub &mk, Side s, std::span<const uint32_t> want, Feed &f);
 
 struct StockState {
@@ -95,14 +97,7 @@ struct OverlayState {
   bool flow_ends = false;   // 资金流计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价)
 };
 
-// 一个标的的源: 历史 (无 = nullptr) + 当日 (未取 / 无 = nullptr) + 当日接得上 (有历史 = joins 所在发布的日脊, 只当日 = 有当日);
-//   当日只在 joined 时用, 各处不再自判
-struct Source {
-  const Kline *kl = nullptr;
-  const Day *today = nullptr;
-  bool joined = false;
-};
-// 篮子 = 篮子 Feed 的该线; 个股 = 叠加个股 Feed (历史 + 当日), 不在其中 → 成分当日 (只当日)
+// 一个标的的源: 篮子 = 篮子 Feed 的该线; 个股 = 叠加个股 Feed (历史 + 当日), 不在其中 → 成分当日 (只当日)
 Source SourceOf(const OverlayState &st, Ref ref);
 
 // 叠加的一条: 标的 + 线色 (ImU32) + 线名

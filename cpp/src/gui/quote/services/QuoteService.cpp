@@ -1,6 +1,7 @@
 #include "gui/quote/services/QuoteService.hpp"
 
 #include "disk/Disk.hpp"
+#include "gui/quote/PriceLib.hpp" // Handoff
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
 
@@ -125,6 +126,7 @@ QuoteService::~QuoteService() {
     stop_ = true;
   }
   cv_.notify_all();
+  wake_.notify_all();
   poll_.join();
   for (std::thread &t : fillers_)
     t.join();
@@ -153,11 +155,21 @@ void QuoteService::recount() {
   holes_ = static_cast<size_t>(std::ranges::count_if(tracks_, [](const Track &t) { return t.bars.hole.any(); }));
 }
 
-void QuoteService::bind(Members m, std::vector<double> level) {
-  assert((m.id.empty() || m.id.back() < axis_.size()) && !level.empty());
+void QuoteService::bind(const Handoff &h) {
+  assert(!h.level.empty());
+  std::vector<uint32_t> row(h.axis.size(), UINT32_MAX); // [库轴] h.mem 的行
+  for (size_t k = 0; k < h.mem.size(); ++k)
+    row[h.mem.id[k]] = static_cast<uint32_t>(k);
+  Members m; // 资产 = 全市场
+  for (size_t q = 0; q < axis_.size(); ++q) {
+    if (const size_t a = h.axis.sub_of(axis_.global(q)); a < h.axis.size() && row[a] != UINT32_MAX)
+      for (const Members::Weight &w : h.mem.of(row[a]))
+        m.add(w.key, w.w);
+    m.next(static_cast<uint32_t>(q));
+  }
   {
     std::lock_guard<std::mutex> lock(mu_);
-    basis_ = std::make_shared<const Basis>(Basis{std::move(m), std::move(level)});
+    basis_ = std::make_shared<const Basis>(Basis{std::move(m), h.level});
     dirty_ = true;
   }
   fold();
@@ -219,7 +231,7 @@ void QuoteService::fold() {
   int slots, freeze, touched;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (!basis_ || date_ == 0 || !dirty_)
+    if (!foldable())
       return;
     dirty_ = false;
     b = basis_, date = date_, prev = prev_;
@@ -354,10 +366,21 @@ void QuoteService::poll() {
     }
     cv_.notify_all();
     fold();
+    // 到下一轮快照之前: 补根改了当日 → 距上次合成满 kFoldGap 即合
+    const auto due = t0 + std::chrono::seconds(in_session(clock_now()) ? kTick : kIdleTick);
     std::unique_lock<std::mutex> lock(mu_);
-    cv_.wait_until(lock, t0 + std::chrono::seconds(in_session(clock_now()) ? kTick : kIdleTick), [&] { return stop_; });
-    if (stop_)
-      return;
+    while (true) {
+      wake_.wait_until(lock, std::min(due, std::chrono::steady_clock::now() + std::chrono::seconds(kFoldGap)), [&] { return stop_; });
+      if (stop_)
+        return;
+      if (!wake_.wait_until(lock, due, [&] { return stop_ || foldable(); }))
+        break;
+      if (stop_)
+        return;
+      lock.unlock();
+      fold();
+      lock.lock();
+    }
   }
 }
 
@@ -495,6 +518,7 @@ void QuoteService::fill() {
     ++ver_[kStock];
     dirty_ = true;
     touched_ = std::min(touched_, lo);
+    wake_.notify_one();
   }
 }
 

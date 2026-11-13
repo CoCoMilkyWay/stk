@@ -461,7 +461,7 @@ Line build_line(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
     intraday(axis, *s.minutes, c);
   return c;
 }
-// 历史段 c 接当日 y 于轴末日 k (y 接得上日脊 ⇒ c 止于 k 之前): 锚 = 末点, 点位 = 锚 × 收 / 前收; minutes = 各有根槽一点 (同日内形),
+// 历史段 c 接当日 y 于日轴第 k 日 (y 接得上日脊 ⇒ c 止于 k 之前): 锚 = 末点, 点位 = 锚 × 收 / 前收; minutes = 各有根槽一点 (同日内形),
 // 否则此刻 (末个有根槽; 无根 = 末根) 一点; 日末视图接到 k (其间持平). 空线 / 无前收 → 原样
 Line live_line(const Line &c, size_t k, const Quote::Day &y, bool minutes) {
   Line o = c;
@@ -539,8 +539,9 @@ void push(LinesDerived &d, int g, LinesRow r, const Reuse &ru) {
       r.base[l] = std::make_shared<const Line>(build_line(d.dates, s));
     r.line[l] = s.live ? ru.take(r.id, s, true) : r.base[l];
     if (!r.line[l]) {
-      assert(d.dates.back() == s.live->candle.date);
-      r.line[l] = std::make_shared<const Line>(live_line(*r.base[l], d.dates.size() - 1, *s.live, s.minutes != nullptr));
+      const auto k = std::ranges::lower_bound(d.dates, s.live->candle.date);
+      assert(k != d.dates.end() && *k == s.live->candle.date && "当日已并进日轴");
+      r.line[l] = std::make_shared<const Line>(live_line(*r.base[l], static_cast<size_t>(k - d.dates.begin()), *s.live, s.minutes != nullptr));
     }
   }
   d.index[r.id] = {g, d.rows[g].size()};
@@ -572,32 +573,17 @@ std::vector<const PortfolioItem *> ready_of(const std::vector<PortfolioItem> &it
   return its;
 }
 
-// 有行情键 ref 在行情侧的价格历史 + 当日 (接得上所在发布的日脊才给); 源未就绪 / 个股不在叠加键集 → 都无
-std::pair<const Quote::Kline *, const Quote::Day *> market_of(const LinesQuotes &m, Quote::Ref ref) {
-  const Quote::Tape *t = m.tape[ref.side].get();
-  if (!t || !t->lack.empty())
-    return {};
-  assert(ref.side == Quote::kStock || ref.key < t->keys.size());
-  const auto it = ref.side == Quote::kBasket ? t->keys.begin() + ref.key : std::ranges::find(t->keys, ref.key);
-  if (it == t->keys.end())
-    return {};
-  assert(*it == ref.key);
-  const size_t k = static_cast<size_t>(it - t->keys.begin());
-  const Quote::Kline *kl = t->list[k].get();
-  const Quote::Days *days = m.today[ref.side].get();
-  assert(!days || days->size() == t->keys.size());
-  const Quote::Day *y = kl && days ? (*days)[k].get() : nullptr;
-  return {kl, y && Quote::joins(*t, *y) ? y : nullptr};
-}
+// 有行情键的行接在价格历史之后的当日: 有历史且接得上 (Source::joined) 才给
+const Quote::Day *live_of(const Quote::Source &s) { return s.kl && s.joined ? s.today : nullptr; }
 
 // 行情两侧的账 (同有同无, 同日轴; 没算成 → 空) + 价格指数 (源未就绪 → 空) + 行情侧的源 → d;
-// 日轴并入账日与日脊, 有接得上的当日再并当日 (轴末); 日轴 → 两侧账的行 (val_at)
+// 日轴并入账日与日脊, 各侧有接在日脊之后的当日再并其日; 日轴 → 两侧账的行 (val_at)
 void bind_quotes(const PortfolioResult &res, const LinesQuotes &market, LinesDerived &d) {
   const PortfolioBook *s = res.quotes[Quote::kStock].get(), *b = res.quotes[Quote::kBasket].get();
   assert(!s == !b && (!b || (s->error == b->error && s->dates == b->dates)));
   if (b && b->error.empty())
     d.quotes = res.quotes;
-  const std::shared_ptr<const Quote::Tape> &prices = market.tape[Quote::kBasket];
+  const std::shared_ptr<const Quote::Tape> &prices = market[Quote::kBasket].tape;
   d.prices = prices && prices->lack.empty() ? prices : nullptr;
   d.market = market;
   const auto join = [&](const std::vector<misc::Ymd> &ds) {
@@ -607,21 +593,15 @@ void bind_quotes(const PortfolioResult &res, const LinesQuotes &market, LinesDer
   };
   if (d.quotes[Quote::kBasket])
     join(b->dates);
-  misc::Ymd live = 0;
-  for (const Quote::Side sd : {Quote::kBasket, Quote::kStock})
-    if (const Quote::Tape *t = market.tape[sd].get(); t && t->lack.empty()) {
-      join(t->dates);
-      if (const Quote::Days *days = market.today[sd].get(); days && !live)
-        for (const std::shared_ptr<const Quote::Day> &y : *days)
-          if (y && Quote::joins(*t, *y)) {
-            live = y->candle.date;
-            break;
-          }
+  for (const Quote::Joint &j : market)
+    if (j.tape && j.tape->lack.empty()) {
+      join(j.tape->dates);
+      for (size_t k = 0; k < j.tape->keys.size(); ++k)
+        if (const Quote::Day *y = live_of(j.at(k))) {
+          join({y->candle.date});
+          break;
+        }
     }
-  if (live) {
-    join({live});
-    assert(d.dates.back() == live);
-  }
   d.val_at.assign(d.dates.size(), -1);
   if (d.quotes[Quote::kBasket]) {
     const std::vector<misc::Ymd> &hd = b->dates;
@@ -719,7 +699,8 @@ void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const R
   r.src[kTrade] = mix_src(legs_of(r.val), true, fixed_impact);
   if (r.ref.is(Quote::kStock))
     r.src[kIdeal] = mix_src(legs_of(r.val), false, 0.0);
-  std::tie(r.src[kIdeal].price, r.src[kIdeal].live) = market_of(d.market, r.ref);
+  const Quote::Source q = d.market[r.ref.side].of(r.ref.key);
+  r.src[kIdeal].price = q.kl, r.src[kIdeal].live = live_of(q);
   if (d.minutes)
     for (LineSrc &s : r.src)
       s.minutes = d.minutes->of(r.ref);

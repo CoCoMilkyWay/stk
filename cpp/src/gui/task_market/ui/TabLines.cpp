@@ -191,7 +191,7 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService *minute, CtaSe
   }
   ui.minutes = minute ? latest(*minute) : nullptr;
   const OverlayState &ov = ui.overlay;
-  const LinesQuotes market{{ov.stocks.data, ov.baskets.data}, {ov.stocks.today.day, ov.baskets.today.day}};
+  const LinesQuotes market{ov.stocks.joint(), ov.baskets.joint()};
   ui.der.update(LinesDerKey{gen, pf.items_gen, market, ui.minutes ? ui.minutes->gen : 0, fixed_impact, infos.size(), ui.pick.open, ui.pick.stocks(kPicks),
                             ui.watch},
                 [&](LinesDerived &dv) {
@@ -202,7 +202,7 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService *minute, CtaSe
                       ui.range[p] = DefaultLinesRange(p, dv.dates);
                 });
   if (mk)
-    SyncLinesCons(ui, *mk->quote);
+    SyncLinesCons(ui, *mk);
   const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
   const LinesAt pin = one.empty() ? LinesAt{} : d.at(one.begin()->first); // VAL 标的
   const LinesLeg lg = pin.g >= 0 ? d.row(pin).val : LinesLeg{};           // 其估值腿

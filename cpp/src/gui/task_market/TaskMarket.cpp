@@ -88,7 +88,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
     ImGui::BeginChild("MarketTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     if (idx == kTabAsset) {
-      state->quote->start(data);
+      state->quote->frame(data);
       Market::RenderTabAsset(data.asset, data.asset_info.stocks, state->asset_state, *state->quote);
       ImGui::EndChild();
       return;
@@ -99,7 +99,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
     Market::SyncLinesWatch(ui);
     const Quote::QuoteHub *mk = nullptr;
     if (data.task_state.database.asset_info_ready) {
-      state->quote->start(data);
+      state->quote->frame(data);
       if (state->lines.empty()) {
         state->lines.resize(basket_table().size());
         std::iota(state->lines.begin(), state->lines.end(), 0u);
