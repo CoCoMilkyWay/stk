@@ -74,7 +74,8 @@ std::map<std::string, Hwnd> ctls(const Hwnd &h, const std::vector<std::pair<std:
 // 点对话框 dlg 上 id 为 cid 的按钮: 向 dlg 投 WM_COMMAND(cid, 按钮)
 void command(const Hwnd &dlg, long cid);
 // 在 cls / title (非空才比) 匹配的可见窗口的绘制层里找文字恰为 text 的项, 向该窗口投递其中心点的左键单击
-// (自绘控件谁画谁处理点击); 须唯一命中
+// (自绘控件谁画谁处理点击); 须唯一命中. 一处没有 = 窗口正重绘 (绘制层刚清), 至多等 kRedraw 秒画回来
+inline constexpr double kRedraw = 2;
 void click_text(const std::string &cls, const std::string &title, const std::string &text);
 
 // ---------- 文字 ----------

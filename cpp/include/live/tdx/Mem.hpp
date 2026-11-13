@@ -541,7 +541,7 @@ public:
           return s.mark.empty() ? std::nullopt : std::optional<Snap<S>>(std::move(s));
         },
         timeout, 0));
-    trace::ev("ask", {{"tab", S::kShape.name}, {"rows", got.rows.size()}, {"at", addrs(got.mark)}, {"ms", trace::ms_since(t0)}});
+    trace::ev("ask", {{"tab", S::kShape.name}, {"rows", got.rows.size()}, {"addr", addrs(got.mark)}, {"ms", trace::ms_since(t0)}});
     return got;
   }
 

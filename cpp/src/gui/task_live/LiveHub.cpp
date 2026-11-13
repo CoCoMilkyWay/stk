@@ -314,7 +314,7 @@ OrderJob exec(Core &c, uint64_t id, const live::Sec &sec, int side, double qty, 
   }
 }
 
-// ---------- 调仓事务 ----------
+// ---------- 事务 ----------
 
 std::string by_code(const nlohmann::json &want, const nlohmann::json &got) {
   std::string s;
@@ -374,7 +374,7 @@ void note(Core &c, const char *kind, const nlohmann::json &kw) {
   }
   nlohmann::json line = {{"t", std::round(t * 100) / 100}, {"kind", kind}};
   line.update(kw);
-  disk::append(disk::RunLiveRebalLog, {.stamp = stamp}, line.dump());
+  disk::append(disk::RunLiveTaskLog, {.stamp = stamp}, line.dump());
   std::string text = describe(kind, kw);
   Lock lk(c.mu);
   c.task->log.push_back({t, kind, std::move(text)});
@@ -531,8 +531,11 @@ void start(const std::shared_ptr<Core> &c, const char *name, void (*fn)(Core &))
       return;
     c->task_stamp = disk::stamp_now();
     c->task_t0 = mono();
-    c->task = Task{.name = name, .t = live::clock_now(), .file = disk::path(disk::RunLiveRebalLog, {.stamp = c->task_stamp}).string()};
+    c->task = Task{.name = name, .t = live::clock_now(), .file = disk::path(disk::RunLiveTaskLog, {.stamp = c->task_stamp}).string()};
   }
+  const std::vector<disk::Key> old = disk::list(disk::RunLiveTaskLog);
+  for (size_t i = 0; i + kTaskKeep <= old.size(); ++i)
+    disk::remove(disk::RunLiveTaskLog, old[i]);
   std::thread([c, fn] {
     Lease lease(*c);
     JobSt st = JobSt::Ok;

@@ -11,8 +11,8 @@
 //     shim {cmd, ms, ret 应答记录 | n 条数 + kb (应答大于 kRetCap 字节)}   run {argv, rc, ms, err / out 尾部}   外部进程
 //     build {dll, cc} / inject {dll, port, proc} / online {port}           shim 编译、注入、注入后上线
 //     attach {pid} / ptrace {scope}      接进程堆、放开 ptrace             torn {tab, n}  连读 n 次才一致
-//     gen {tab, rows, at}                盯着的表换代 (at = 选中各块的地址)
-//     wait {tab, ms, by: gen | full}     等客户端重查后的换代              ask {tab, rows, at, ms}  act 后等到新应答
+//     gen {tab, rows, addr}              盯着的表换代 (addr = 选中各块的地址)
+//     wait {tab, ms, by: gen | full}     等客户端重查后的换代              ask {tab, rows, addr, ms}  act 后等到新应答
 //     rows {n, got}                      两融整表拼表 (页上条数 / 内存行数) 每变一次
 //     texts {wins, seen}                 点文字不恰一处: 候选窗口数、各候选窗口上画着的文字
 //     popup {title, hwnd}                等到的弹框                        form {px, dflt, unit, cap0, cap, n}  填单的价、默认价、单位、最大量、股数

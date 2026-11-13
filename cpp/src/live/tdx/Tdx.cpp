@@ -101,7 +101,7 @@ struct Core {
   void fresh(W &w, typename W::Snap s, bool stamp) {
     std::shared_ptr<const typename W::Value> v;
     if (!w.snap || !(*w.snap == s)) {
-      trace::ev("gen", {{"tab", State::name(w.got)}, {"rows", s.rows.size()}, {"at", mem::addrs(s.mark)}});
+      trace::ev("gen", {{"tab", State::name(w.got)}, {"rows", s.rows.size()}, {"addr", mem::addrs(s.mark)}});
       v = std::make_shared<const typename W::Value>(w.view(s));
       w.snap = std::move(s);
     }
@@ -122,9 +122,18 @@ struct Core {
     }
     return heap;
   }
-  mem::HeapP attached() {
+  // 接上进程堆与 shim (须持 work): 客户端不在即 Fail, 不去空注入; 动界面的事务开头各调一次
+  const mem::HeapP &connect() {
+    attach();
+    if (!shim::online()) {
+      trace::Span attaching("接入");
+      win::attach();
+    }
+    return heap;
+  }
+  mem::HeapP connected() {
     std::lock_guard wk(work);
-    return attach();
+    return connect();
   }
 
   // 一遍全量扫出成交与持仓 (并重找进程; 须持 work)
@@ -156,13 +165,8 @@ struct Core {
     }
     trace::Span span("盯持仓", trace::Kw::object(), loud);
     std::lock_guard wk(work);
-    if (was_lost) {
-      attach(); // 客户端不在即 Fail, 不去空注入
-      if (!shim::online()) {
-        trace::Span attaching("接入");
-        win::attach();
-      }
-    }
+    if (was_lost)
+      connect();
     if (was_lost || !pos.snap || now - scan_at >= kFullEvery) {
       scan();
       std::lock_guard lk(mu);
@@ -262,8 +266,8 @@ struct Core {
     mem::HeapP h;
     {
       std::lock_guard wk(work);
+      h = connect();
       load();
-      h = heap;
     }
     ui::show_bar();
     for (int i = 0; i < kSyncTries; ++i) {
@@ -426,6 +430,7 @@ public:
   Placed place(const OrderReq &o, const Step &step) override {
     trace::Span span("下单", {{"code", o.sec.code}, {"name", o.sec.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}, {"size", o.size}});
     ui::Gate::Hold g(c_->gate, "下单");
+    c_->connected();
     Placed p = flash::place(o, step);
     trace::ev("placed", {{"qty", p.qty}, {"px", p.px}, {"msg", p.msg}});
     return p;
@@ -433,12 +438,13 @@ public:
   void exclusive(const char *who, const std::function<void()> &fn) override {
     trace::Span span(who);
     ui::Gate::Hold g(c_->gate, who);
+    c_->connected();
     fn();
   }
   Terms pull_terms(const Log &log, const Live &live) override {
     trace::Span span("两融条款");
     ui::Gate::Hold g(c_->gate, "两融条款");
-    Terms t = credit::pull(c_->credit, c_->attached(), log, live);
+    Terms t = credit::pull(c_->credit, c_->connected(), log, live);
     trace::ev("terms", {{"n", t.size()}});
     return t;
   }

@@ -4,8 +4,8 @@
 //   条款: 只认当日的, 落盘 output/live/terms/<日>.csv (只留当日); 跨日即换成当日落盘的; 持仓页打开时当日还没有即后台拉
 //     (每天自动至多一次, 失败了等人点)
 //   下单: 一次一单, 留最近 kOrderCap 单; 步骤 = 「行情」(按新取的盘口定委托价) + broker 的各步; 持仓页的单成功后 kick 定点刷新
-//   调仓: 后台事务一次一件 (拉条款 / 执行), 日志落 output/run/live/rebal/<时刻>.jsonl, 留尾巴给页面.
-//     执行 = 当日条款还没有即先拉 → 刷新 → 还有挂单即停 (免得重复下单、冻结的钱券没算进试算) → 试算 →
+//   事务: 后台一次一件 (拉条款 / 执行调仓), 日志落 output/run/live/task/<时刻>.jsonl (留最近 kTaskKeep 个), 留尾巴给页面.
+//     执行调仓 = 当日条款还没有即先拉 → 刷新 → 还有挂单即停 (免得重复下单、冻结的钱券没算进试算) → 试算 →
 //     卖单逐只卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 → 买单逐只 (融资在前) → 刷新.
 //     任一步失败即停 (已下的单不撤); 卖单、买单各一整批独占界面连下, 其间不插刷新
 //   GUI 线程每帧 tick 取一份快照, 持仓帧 / 试算按其输入 (State 版本 / 行情 / 配置 / 条款 / 读时现价) 变了才重算
@@ -25,10 +25,19 @@
 
 namespace GUI::Live {
 
-inline constexpr size_t kOrderCap = 5;  // 留最近几单
-inline constexpr size_t kLogTail = 200; // 调仓日志留给页面的条数
+inline constexpr size_t kOrderCap = 5;   // 留最近几单
+inline constexpr size_t kLogTail = 200;  // 事务日志留给页面的条数
+inline constexpr size_t kTaskKeep = 100; // 事务日志留几个文件
 
-inline std::string wan(double v) { return live::strf("%.2fW", v / 1e4); }
+// 万为单位, 至多一位小数、去尾零: 1W / 1.5W / 12.3W; sign 带正负号
+inline std::string wan(double v, bool sign = false) {
+  std::string s = live::strf(sign ? "%+.1f" : "%.1f", v / 1e4);
+  while (s.back() == '0')
+    s.pop_back();
+  if (s.back() == '.')
+    s.pop_back();
+  return s + "W";
+}
 inline constexpr const char *kMask = "****"; // 隐私下遮住的一段 (见 LiveHub::priv)
 
 enum class JobSt : uint8_t { Run,

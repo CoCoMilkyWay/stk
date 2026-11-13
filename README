@@ -279,9 +279,9 @@ stk/
 │   │   │   │       └── TabNodeTime.hpp                 # 🖥️ 节点用时: 当前库 node_time.json 按节点文件归并成堆叠条
 │   │   │   ├── task_live/                              # 💹 Live 任务 (实盘): 中枢券商无关, 客户端适配在 live/
 │   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board / Client (所连客户端的调试台)
-│   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 新浪行情一路 + 当日两融条款 + 下单 / 调仓事务 (日志落 output/run/live)
+│   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 新浪行情一路 + 当日两融条款 + 下单 / 事务 (拉条款 / 执行调仓, 日志落 output/run/live)
 │   │   │   │   └── ui/
-│   │   │   │       └── TabBoard.hpp                    # 💹 持仓 · 调仓页: 数据 / 下单 / 调仓 / 账户 现 · 调仓后 + 持仓表 (行内闪电下单, 按钮即滑点色块; 卖出滑杆) + 调仓名单 + 日志 + 右栏行情图
+│   │   │   │       └── TabBoard.hpp                    # 💹 持仓 · 调仓页: 数据 / 下单 / 调仓 / 账户 现 · 调仓后 + 持仓表 (表头排序; 行内闪电下单, 按钮即滑点色块; 卖出滑杆; 合计带当日净资产收益率) + 调仓名单 + 日志 + 右栏行情图
 │   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge; 协议见 AGENT.md)
 │   │   │       ├── TaskAgent.hpp                       # 🤖 Agent 任务: Mine (作用域 / 会话 / 时间线 / 候选 / 开放的特征与算子) / Config
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 / 入库门槛默认值 / 各目录
@@ -466,7 +466,7 @@ stk/
         │   ├── operators.json                          # 算子表快照 (对拍 + 耗时), 与当前 OpTable 不符则重算
         │   └── <pool>/<层>/                            # search/<name>.log Search 过程日志 (每次覆盖) / export/ Inspect 导出 <因子>_w<权重号>_top<N>_{log,snap}.csv
         ├── agent/<main|test>/                          # Agent: tools/<工具名>.md 各工具最近一次交给 agent 的结果 / sessions/<pool>/<层>/<持有期>/search/<name>.log
-        ├── live/rebal/<YYYYMMDD-HHMMSS>.jsonl          # Live 调仓事务日志 (一事务一文件, 一行一步)
+        ├── live/task/<YYYYMMDD-HHMMSS>.jsonl           # Live 事务日志 (拉两融条款 / 执行调仓; 一事务一文件, 一行一步, 留最近 100 个)
         ├── live/tdx/                                   # 通达信适配: shim/ 注入件构建产物 (shim_<源码哈希>.dll / inject.exe) / rec/<YYYYMMDD-HHMMSS>.jsonl 调试台录制
         │                                               #    / log/<YYYYMMDD-HHMMSS>.jsonl 交互日志 (一次启动一个, 留最近 20 个)
         └── app/                                        # 进程级: tsan_report.log (TSAN 模式) / crash_stacks.txt (DEBUG 模式)

@@ -40,7 +40,7 @@ std::optional<ImVec4> slip_col(const std::optional<double> &v) {
 }
 bool quick(const live::Slip &x) { return x.full && x.pct && *x.pct < kSlipOk; }
 
-std::string wan_pnl(double v) { return strf("%+.2fW", v / 1e4); }
+std::string wan_pnl(double v) { return wan(v, true); }
 
 void text_col(const ImVec4 &c, const std::string &s) { ImGui::TextColored(c, "%s", s.c_str()); }
 void text_opt(const std::optional<double> &v, const char *fmt) {
@@ -60,7 +60,7 @@ void bar(const std::optional<double> &v, double mv, const ImVec4 &col) {
     return;
   const float f = static_cast<float>(std::clamp(*v / mv, 0.0, 1.0));
   ImGui::PushStyleColor(ImGuiCol_PlotHistogram, col);
-  ImGui::ProgressBar(f, ImVec2(ImGui::GetFontSize() * 4, ImGui::GetTextLineHeight()), "");
+  ImGui::ProgressBar(f, ImVec2(ImGui::GetFontSize() * 2.5f, ImGui::GetTextLineHeight()), "");
   ImGui::PopStyleColor();
   if (ImGui::IsItemHovered())
     tip("%s · %.0f%%", wan(*v).c_str(), f * 100);
@@ -265,7 +265,7 @@ void sheet(const live::rebal::Plan *p, bool priv) {
   constexpr const char *kHeads[] = {"", "总资产", "净资产", "负债", "现金", "可用保证金", "可融余量", "杠杆", "维持担保"};
   const auto cells = [](const live::rebal::Sheet &s) {
     const auto opt = [](const std::optional<double> &v, auto f) { return v ? f(*v) : std::string(); };
-    return std::array<std::string, 8>{wan(s.assets), wan(s.net), wan(s.debt), wan(s.cash), opt(s.X, wan), wan(s.L), strf("%.2f", s.lev),
+    return std::array<std::string, 8>{wan(s.assets), wan(s.net), wan(s.debt), wan(s.cash), opt(s.X, [](double x) { return wan(x); }), wan(s.L), strf("%.2f", s.lev),
                                       opt(s.maint, [](double m) { return strf("%.0f%%", m * 100); })};
   };
   if (!ImGui::BeginTable("##sheet", 9, kFlags))
@@ -428,10 +428,11 @@ void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool ca
     return t;
   };
   ImGui::BeginDisabled(!can);
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetFontSize() * 0.12f, ImGui::GetStyle().FramePadding.y));
   for (size_t i = 0; i < live::kSlipCols.size(); ++i) {
     const live::Col c = live::kSlipCols[i];
     if (i)
-      ImGui::SameLine(0, i == live::kSlipCols.size() / 2 ? ImGui::GetFontSize() * 0.6f : 2);
+      ImGui::SameLine(0, i == live::kSlipCols.size() / 2 ? ImGui::GetFontSize() * 0.3f : 1);
     const live::Slip x = r.slips ? (*r.slips)[i] : live::Slip{};
     const std::optional<ImVec4> fill = slip_col(x.pct);
     ImGui::PushStyleColor(ImGuiCol_Text, side_col(c.s));
@@ -453,6 +454,7 @@ void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool ca
       ask = true;
     }
   }
+  ImGui::PopStyleVar();
   ImGui::EndDisabled();
 }
 
@@ -534,6 +536,76 @@ enum Column {
 constexpr const char *kHeads[C_COUNT] = {"代码", "仓位%", "名称", "状态", "融", "买 / 卖", "当日%", "当日", "盈亏%",
                                          "盈亏", "市值", "融资", "可卖", "卖出", "面值", "成本", "折算率"};
 
+ImGuiTableColumnFlags col_flags(int c) {
+  switch (c) {
+  case C_CODE:
+  case C_NAME:
+    return 0;
+  case C_FLOW:
+  case C_FIN:
+  case C_ORDER:
+  case C_SELL:
+  case C_FACE:
+  case C_COST:
+    return ImGuiTableColumnFlags_NoSort;
+  default:
+    return ImGuiTableColumnFlags_PreferSortDescending;
+  }
+}
+
+// 数值列的排序键; 融资 / 可卖按占总市值
+std::optional<double> sort_key(const live::board::Row &r, int c) {
+  const auto share = [&](const std::optional<double> &v) { return v && r.market_value.value_or(0) > 0 ? std::optional<double>(*v / *r.market_value) : std::nullopt; };
+  switch (c) {
+  case C_POS_PCT:
+    return r.position_pct;
+  case C_DAY_PCT:
+    return r.day_pnl_pct;
+  case C_DAY:
+    return r.day_pnl;
+  case C_PNL_PCT:
+    return r.pnl_pct;
+  case C_PNL:
+    return r.pnl;
+  case C_MV:
+    return r.market_value;
+  case C_MARGIN:
+    return share(r.margin_value);
+  case C_SELLABLE:
+    return share(r.sellable_value);
+  case C_COLLAT:
+    return r.collateral;
+  default:
+    assert(false);
+    return std::nullopt;
+  }
+}
+
+// 表头点选排序 (三态, 不排 = 帧序); 今日清仓恒在后, 空值恒在有值后
+std::vector<const live::board::Row *> sorted(const live::board::Frame &f) {
+  std::vector<const live::board::Row *> rows;
+  for (const live::board::Row &r : f.rows)
+    rows.push_back(&r);
+  const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
+  if (!ss || !ss->SpecsCount)
+    return rows;
+  const int c = ss->Specs[0].ColumnIndex;
+  const bool desc = ss->Specs[0].SortDirection == ImGuiSortDirection_Descending;
+  std::stable_sort(rows.begin(), rows.end(), [&](const live::board::Row *a, const live::board::Row *b) {
+    if (a->closed != b->closed)
+      return b->closed;
+    if (c == C_CODE || c == C_NAME) {
+      const std::string &x = c == C_CODE ? a->code : a->name, &y = c == C_CODE ? b->code : b->name;
+      return desc ? y < x : x < y;
+    }
+    const std::optional<double> x = sort_key(*a, c), y = sort_key(*b, c);
+    if (!x || !y)
+      return x && !y;
+    return desc ? *y < *x : *x < *y;
+  });
+  return rows;
+}
+
 void head_tip(int c, const live::board::Frame &f) {
   switch (c) {
   case C_NAME:
@@ -550,7 +622,8 @@ void head_tip(int c, const live::board::Frame &f) {
   }
   case C_DAY:
   case C_DAY_PCT:
-    return tip("当日盈亏: 按成交价自算 (毛, 不扣费); 与持仓的今买 / 今卖对不上即空");
+    return tip("当日盈亏: 按成交价自算 (毛, 不扣费); 与持仓的今买 / 今卖对不上即空\n"
+               "合计括号 = 当日盈亏 / 昨净资产 (现金 + 总市值 − 负债 − 当日盈亏, 信用账户未读即无)");
   case C_PNL:
   case C_PNL_PCT:
     return tip("持仓盈亏: 券商口径, 随现价平移");
@@ -585,7 +658,7 @@ void sell_cells(LiveHub &hub, const live::rebal::Hold &h, Sells &sum) {
   int n = std::min(i == hub.cfg().sells.end() ? 0 : i->second, h.avail);
   ImGui::TableSetColumnIndex(C_SELL);
   ImGui::BeginDisabled(snap(h, unit, h.avail) == 0 || hub.busy());
-  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4);
   if (ImGui::SliderInt("##sell", &n, 0, h.avail, ""))
     hub.set_sell(h.code, snap(h, unit, n));
   ImGui::EndDisabled();
@@ -614,10 +687,15 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
   if (hub.plan().plan)
     for (const live::rebal::Hold &h : hub.plan().plan->holds)
       holds.emplace(h.code, &h);
-  if (!ImGui::BeginTable("##pos", C_COUNT, kFlags))
+  const ImVec2 pad0 = ImGui::GetStyle().CellPadding;
+  const float pad = st.pos_w > 0 ? std::clamp((ImGui::GetContentRegionAvail().x - st.pos_w) / (2 * C_COUNT), 1.0f, pad0.x) : pad0.x;
+  ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(pad, pad0.y));
+  const bool began = ImGui::BeginTable("##pos", C_COUNT, kFlags | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate);
+  ImGui::PopStyleVar();
+  if (!began)
     return;
   for (int c = 0; c < C_COUNT; ++c)
-    ImGui::TableSetupColumn(kHeads[c]);
+    ImGui::TableSetupColumn(kHeads[c], col_flags(c));
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
   for (int c = 0; c < C_COUNT; ++c) {
     ImGui::TableSetColumnIndex(c);
@@ -629,7 +707,8 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
   int held = 0, fin = 0;
   double pos_pct = 0, margin = 0, sellable = 0;
   Sells sells;
-  for (const live::board::Row &r : f.rows) {
+  for (const live::board::Row *p : sorted(f)) {
+    const live::board::Row &r = *p;
     ImGui::TableNextRow();
     ImGui::PushID(r.code.c_str());
     held += !r.closed;
@@ -704,10 +783,12 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
   if (hub.plan().plan)
     ImGui::Text("R%d", fin);
   ImGui::TableSetColumnIndex(C_DAY);
-  if (priv)
+  const auto &acct = hub.state()->acct;
+  if (f.synced) {
+    const std::string ret = acct ? strf(" (%+.2f%%)", f.day_pnl / (acct->cash + f.market_value - acct->debt - f.day_pnl) * 100) : "";
+    text_col(tint(f.day_pnl, 0), (priv ? std::string(kMask) : wan_pnl(f.day_pnl)) + ret);
+  } else if (priv)
     masked();
-  else if (f.synced)
-    text_col(tint(f.day_pnl, 0), wan_pnl(f.day_pnl));
   else {
     text_col(kRed, "不全");
     if (ImGui::IsItemHovered())
@@ -736,6 +817,7 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     ImGui::Text("%.0f", sells.cost);
   }
   ImGui::EndTable();
+  st.pos_w = ImGui::GetItemRectSize().x - 2 * C_COUNT * pad;
 }
 
 // 名单行: 排名、可买与否、条款、补多少、融资 / 现金两腿
@@ -798,7 +880,7 @@ void journal(LiveHub &hub, bool priv) {
   const auto &t = hub.task();
   if (!t)
     return;
-  if (!ImGui::CollapsingHeader("调仓日志"))
+  if (!ImGui::CollapsingHeader("事务日志"))
     return;
   ImGui::TextDisabled("%s", t->file.c_str());
   ImGui::BeginChild("##log", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 12), ImGuiChildFlags_Borders);
