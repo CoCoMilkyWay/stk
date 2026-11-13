@@ -1,6 +1,7 @@
 #include "gui/quote/BasketRow.hpp"
 
 #include "features/Bar1mDay.hpp"
+#include "fundamental/Scan.hpp"
 #include "shared/Basket.hpp" // basket_table
 
 #include <algorithm>
@@ -112,6 +113,29 @@ void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b) 
     if (val(mc, t, kMinTs, a) > 0.5f && x > 0)
       b.add(row_slot(t), cell(val(mc, t, kMinOpen, a), val(mc, t, kMinHigh, a), val(mc, t, kMinLow, a), x, 0, std::expm1(val(mc, t, kMinAmount, a))));
   }
+}
+
+void each_daily(fundamental::Scratch &xs, const fundamental::Shard &sh, const fundamental::Ids &ids,
+                const std::function<void(uint32_t, const Candle &)> &f) {
+  static const fundamental::Spec &kDaily = fundamental::spec(kBar1d);
+  static const std::vector<std::string> kCols = {"open", "high", "low", "close", "volume", "amount", "pre_close"};
+  const fundamental::Rows r = xs.open(sh, kDaily, kCols, ids);
+  misc::pq::Col c[7];
+  for (size_t j = 0; j < kCols.size(); ++j)
+    c[j] = r.col(kCols[j]);
+  r.each([&](std::int64_t i, std::uint32_t id, misc::Ymd d) {
+    f(id, {cell(c[0].f32(i), c[1].f32(i), c[2].f32(i), c[3].f32(i), c[4].f32(i), c[5].f32(i)), d, c[6].f32(i)});
+  });
+}
+
+void bars_of(const Bar1m *m, misc::Ymd d, Bars &b) {
+  b.date = d;
+  b.has.reset();
+  if (!m)
+    return;
+  for (size_t t = 0; t < TRADE_MINUTES_PER_DAY; ++t)
+    if (m[t].volume > 0 && m[t].close > 0)
+      b.add(row_slot(t), cell(m[t].open, m[t].high, m[t].low, m[t].close, m[t].volume, m[t].amount));
 }
 
 Leg LibDay::leg(size_t a, Cell &c, Bars &b) const {

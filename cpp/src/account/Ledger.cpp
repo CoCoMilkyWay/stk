@@ -3,6 +3,7 @@
 #include "disk/Disk.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <iterator>
@@ -21,6 +22,8 @@ constexpr const char *kRate = "rate";
 constexpr const char *kHead = "date,code,name,price,qty,kind,amount,balance";
 constexpr double kCent = 0.005; // 余额链容差 [元]
 constexpr double kShare = 0.5;  // 股数相等的容差 [股]
+
+std::atomic<uint64_t> gen{1};
 
 // 带股数的业务: 计入持仓 / 不计 (新股申购途中的配号、中签与回冲, 股份以「新股入账」为准)
 const std::set<std::string> kHolds = {"证券买入", "证券卖出", "融资买入", "担保品划入", "新股入账"};
@@ -108,7 +111,10 @@ void save(const Ledger &l) {
               r.balance);
   }
   disk::write(disk::LiveFlowsFile, {}, s);
+  gen.fetch_add(1, std::memory_order_release);
 }
+
+uint64_t generation() { return gen.load(std::memory_order_acquire); }
 
 std::vector<CashFlow> merge(const std::vector<CashFlow> &old, misc::Ymd from, std::vector<CashFlow> fresh) {
   for (const CashFlow &r : fresh)
@@ -191,17 +197,19 @@ std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const st
         flow += r.qty * close_on(px, r.code, d).value_or(r.price);
     }
     double mv = 0;
+    std::vector<std::pair<std::string, double>> held;
     for (const auto &[code, q] : hold) {
       if (std::fabs(q) < kShare)
         continue;
       if (const std::optional<double> c = close_on(px, code, d))
         last[code] = *c;
       mv += q * last.at(code);
+      held.emplace_back(code, q);
     }
     const double nav = cash + mv - owe - acc;
     if (prev && nav0 > 0)
       idx *= (nav - flow) / nav0;
-    out.push_back({d, nav, flow, idx});
+    out.push_back({d, nav, flow, idx, std::move(held)});
     prev = d;
     nav0 = nav;
   }

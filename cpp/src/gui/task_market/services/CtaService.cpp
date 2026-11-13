@@ -14,12 +14,12 @@ namespace GUI::Market {
 
 namespace {
 
-// 一根 (高 低 收) × 因子 f → 有效根: 收 ≤ 0 / NaN 不收; 高 / 低缺 → 收, 且包住收
+// 一根 (高 低 收) × 复权倍数 f → 有效根: 收 ≤ 0 / NaN 不收; 高 / 低缺 → 收, 且包住收
 void push(cta::Series &se, size_t t, const float *p, double f) {
-  const float c = p[Minutes::kClose];
+  const float c = p[Quote::Series::kClose];
   if (!(c > 0))
     return;
-  const float h = p[Minutes::kHigh], l = p[Minutes::kLow];
+  const float h = p[Quote::Series::kHigh], l = p[Quote::Series::kLow];
   const auto at = [f](float v) { return static_cast<float>(v * f); };
   se.c.push_back(at(c));
   se.h.push_back(at(h > 0 ? std::max(h, c) : c));
@@ -43,17 +43,18 @@ bool CtaService::publish(const CtaRequest &req, std::string lack, std::shared_pt
 bool CtaService::run(CtaRequest &req) {
   const CtaSpec &sp = req.spec;
   assert(sp.roll >= static_cast<int>(cta::kMinRoll) && sp.roll <= static_cast<int>(cta::kMaxRoll));
-  assert(req.ref.ok() && req.dates && req.minutes && "CTA 请求须有标的与其分钟价");
-  constexpr size_t S = Quote::kSlots, F = Minutes::kFields;
+  assert(req.ref.ok() && req.dates && req.series && req.series->minute && "CTA 请求须有标的与其连分钟的全史");
+  constexpr size_t S = Quote::kSlots, F = Quote::Series::kFields;
   const std::vector<misc::Ymd> &spine = *req.dates;
   const std::shared_ptr<const cta::Series> se = kept_.get(req.ref, req.stamp, [&](cta::Series &s) {
-    const Minutes &m = *req.minutes;
-    for (size_t j = 0, i = 0; j < m.dates.size(); ++j, ++i) { // 有根的日 ⊂ 日脊: 同向走
-      while (spine[i] < m.dates[j])
+    const Quote::Series &m = *req.series;
+    for (size_t j = 0, i = 0; j < m.daily.size(); ++j, ++i) { // 有根的日 ⊂ 日脊: 同向走
+      while (spine[i] < m.daily[j].date)
         ++i;
-      assert(spine[i] == m.dates[j] && "分钟价的日不在日脊上");
+      assert(spine[i] == m.daily[j].date && "全史的日不在日脊上");
+      const float *p = m.slots(j);
       for (size_t k = 0; k < S; ++k)
-        push(s, i * S + k, m.px.data() + (j * S + k) * F, m.f[j]);
+        push(s, i * S + k, p + k * F, m.adj[j]);
     }
     return true;
   });

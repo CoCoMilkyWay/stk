@@ -651,10 +651,11 @@ void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, 
   const Quote::Ref q = one.empty() ? Quote::Ref{} : one.begin()->second;
   const Quote::PriceView *v = mk.view.get();
   const bool ready = v && v->lack.empty();
-  const std::shared_ptr<const Quote::Minutes> m = ready && q.ok() ? v->minute(q) : nullptr;
-  const bool off = ready && q.ok() && !m && v->covers(q); // 个股在库轴外 (篮子恒在)
+  const Quote::Series *se = ready && q.ok() ? v->series(q) : nullptr;
+  const std::shared_ptr<const Quote::Series> m = se && se->minute ? std::shared_ptr<const Quote::Series>(mk.view, se) : nullptr;
+  const bool off = ready && q.ok() && !se && v->covers(q, true); // 个股在库轴外 (篮子恒在)
   if (m && !c.editing)
-    c.sent.send(svc, {.ref = q, .spec = c.spec, .rates = rates, .stamp = v->stamp, .dates = v->dates, .minutes = m});
+    c.sent.send(svc, {.ref = q, .spec = c.spec, .rates = rates, .stamp = v->stamp, .dates = v->dates, .series = m});
   const std::shared_ptr<const CtaResult> r = latest(svc);
   const bool mine = q.ok() && r && r->ref == q; // 本标的的 (设定改了时新的还在算, 先显旧的)
   const CtaResult *show = mine && r->lack.empty() ? r.get() : nullptr;

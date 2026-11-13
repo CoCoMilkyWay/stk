@@ -1,11 +1,13 @@
 #include "gui/quote/QuoteHub.hpp"
 
+#include "account/Ledger.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "imgui.h"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <tuple>
 #include <vector>
 
 namespace GUI::Quote {
@@ -22,12 +24,13 @@ void QuoteHub::frame(const SharedData &data) {
     for (uint32_t id = 0; id < stocks.size(); ++id)
       if (stocks[id].known && !stocks[id].out_date)
         ids.push_back(id);
-    std::vector<misc::Ymd> trading;
+    auto cal = std::make_shared<Calendar>();
     for (const CalendarDay &d : data.asset_info.days)
       if (d.trading)
-        trading.push_back(d.date);
-    quote_ = std::make_unique<QuoteService>(std::make_shared<const PoolAxis>(pool_axis(std::move(ids))), mark, trading);
-    price_ = std::make_unique<PriceLib>(std::move(trading), [q = quote_.get()](const Handoff &h) { q->bind(h); });
+        cal->days.push_back(d.date);
+    cal_ = std::move(cal);
+    quote_ = std::make_unique<QuoteService>(std::make_shared<const PoolAxis>(pool_axis(std::move(ids))), mark, cal_);
+    price_ = std::make_unique<PriceLib>(cal_, [q = quote_.get()](const Handoff &h) { q->bind(h); });
     mark_ = mark;
   }
   if (mark != mark_) {
@@ -36,25 +39,24 @@ void QuoteHub::frame(const SharedData &data) {
   }
   status = quote_->status();
   live = quote_->live();
-  std::ranges::sort(want_.stocks);
-  want_.stocks.erase(std::ranges::unique(want_.stocks).begin(), want_.stocks.end());
-  std::ranges::sort(want_.minutes, {}, [](Ref r) { return std::pair(r.side, r.key); });
-  want_.minutes.erase(std::ranges::unique(want_.minutes).begin(), want_.minutes.end());
+  std::vector<Want> &ws = want_.wants;
+  std::ranges::sort(ws, {}, [](const Want &w) { return std::tuple(w.ref.side, w.ref.key, !w.minute); });
+  ws.erase(std::ranges::unique(ws, {}, &Want::ref).begin(), ws.end());
   want_.mark = mark;
   want_.live = status.date;
+  want_.ledger = account::generation();
   if (!sent_ || !(*sent_ == want_)) {
     sent_ = want_;
     price_->Request(want_);
   }
-  want_.stocks.clear(), want_.minutes.clear();
+  ws.clear();
   view = latest(*price_);
 }
 
-void QuoteHub::want_kline(uint32_t id) { want_.stocks.push_back(id); }
-
-void QuoteHub::want_minutes(Ref r) {
+void QuoteHub::want(Ref r, bool minute) {
   assert(r.ok());
-  want_.minutes.push_back(r);
+  if (minute || r.side == kStock)
+    want_.wants.push_back({r, minute});
 }
 
 } // namespace GUI::Quote

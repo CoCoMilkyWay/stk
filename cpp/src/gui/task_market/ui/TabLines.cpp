@@ -218,26 +218,27 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
     SavePick(ui.pick);
   }
   const std::vector<uint32_t> stocks = ui.pick.stocks(kPicks);
-  if (mk) { // 选中的个股 → 全历史; 有行情键的选中行 → 分钟价: 分钟线页 = NAV 多选 ∪ VAL 标的 (两页同一份), CTA 页 = 其标的
+  if (mk) { // 选中的个股 → 全史; 有行情键的选中行 → 连分钟: 分钟线页 = NAV 多选 ∪ VAL 标的 (两页同一份), CTA 页 = 其标的
     for (const uint32_t id : stocks)
-      mk->want_kline(id);
+      mk->want({Quote::kStock, id}, false);
     for (int m = 0; m < kPicks; ++m)
       if (pd.work == kWorkPrice || (pd.work == kWorkCta && m == kPickOne))
         for (const auto &[id, ref] : ui.pick.rows[m])
           if (ref.ok())
-            mk->want_minutes(ref);
+            mk->want(ref, true);
   }
   const std::shared_ptr<const Quote::PriceView> view = mk ? mk->view : nullptr;
   const std::shared_ptr<const Quote::Live> live = mk ? mk->live : nullptr;
   const misc::Ymd today = mk ? mk->joint(Quote::kBasket).today() : 0;
-  ui.der.update(LinesDerKey{gen, pf.items_gen, view, today, fixed_impact, infos.size(), ui.pick.open, stocks, ui.watch, account}, [&](LinesDerived &dv) {
-    const std::vector<misc::Ymd> old = dv.dates;
-    MakeLinesDerived(pf.items, pf.name, res, view, today, fixed_impact, ui.pick.open, stocks, ui.watch, account, infos, dv);
-    if (dv.dates != old) // 日轴变 → 各页区间回默认
-      for (int p = 0; p < kPages; ++p)
-        ui.range[p] = DefaultLinesRange(p, dv.dates);
-  });
-  ui.live.update(LinesLiveKey{ui.der.gen, live}, [&](LinesLive &t) { MakeLinesLive(d, live.get(), t); });
+  ui.der.update(LinesDerKey{gen, pf.items_gen, view, today, fixed_impact, infos.size(), ui.pick.open, stocks, ui.watch, account.se, account.hover},
+                [&](LinesDerived &dv) {
+                  const std::vector<misc::Ymd> old = dv.dates;
+                  MakeLinesDerived(pf.items, pf.name, res, view, today, fixed_impact, ui.pick.open, stocks, ui.watch, account, infos, dv);
+                  if (dv.dates != old) // 日轴变 → 各页区间回默认
+                    for (int p = 0; p < kPages; ++p)
+                      ui.range[p] = DefaultLinesRange(p, dv.dates);
+                });
+  ui.live.update(LinesLiveKey{ui.der.gen, live, account.today}, [&](LinesLive &t) { MakeLinesLive(d, live.get(), account.today.get(), t); });
   const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
   const LinesAt pin = one.empty() ? LinesAt{} : d.at(one.begin()->first); // VAL 标的
   const LinesLeg lg = pin.g >= 0 ? d.row(pin).val : LinesLeg{};           // 其估值腿

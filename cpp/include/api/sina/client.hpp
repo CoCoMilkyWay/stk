@@ -5,6 +5,8 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 
+#include <cassert>
+#include <cctype>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -21,6 +23,17 @@ inline constexpr const char *kQuoteHost = "hq.sinajs.cn";              // 批量
 inline constexpr const char *kBarHost = "quotes.sina.cn";              // 1 分钟 K / 日 K getKLineData
 inline constexpr const char *kReferer = "https://finance.sina.com.cn"; // 明文 GET 须带 Referer
 inline constexpr int kTimeoutSeconds = 5;                              // 单次连接 + 读写整体时长
+
+// 全局轴码 "600000.SH" → "sh600000"
+inline std::string sym_of(std::string_view code) {
+  const size_t dot = code.find('.');
+  assert(dot != std::string_view::npos && "sina: 轴码缺后缀");
+  std::string s(code.substr(dot + 1));
+  s += code.substr(0, dot);
+  for (char &c : s)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return s;
+}
 
 // 一只的实时快照 (hq.sinajs.cn 一行; 名称 GBK 不取)
 //   价 [元], 0 = 未开盘 / 停牌; 量 [股]、额 [元] 为当日累计; 盘口 0 = 空档

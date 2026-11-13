@@ -14,13 +14,15 @@
 //   个股: 存价 = 原价 (库段 = 库存 f16, 与特征 / 标签逐位一致; 补段 = 源价落成 f16), 因子 = 后复权 (自首个有根日 1 起, 逢前收 ≠ 参考价乘 参考价 / 前收)
 //   篮子: 存价 = Lane 的比 (前日 = 1, f32), 因子 = 前日点位 (自 kBase 起, 逐日 × 前日比收)
 //   分钟根: 个股 = 高 低 收 (f16) + log1p(额) (f16, 库的额口径); 篮子 = 高 低 收 额 净流入 (f32); 无根 = NaN. 无量 (库不存)
+//   日根带当日资金流摘要 (DayFlow; 个股 = 本只分钟涨跌法, 篮子 = 成员之和): 大范围按日读, 不碰分钟根
 // 落盘 <库>/cache/price/ (块主序: 每 kBlock 日一块, 块内按行连续 ⇒ 一行全史 = 每块一段连续读; 续算只写新日, 库全量重算连目录一起删):
 //   head.bin = Head + 两侧键表 + 日脊 + L + F + 两侧库段末的链 (末日因子 / 参考价)
 //   <侧>_day.bin = [块][行][kBlock] DayRec, <侧>_min.bin = [块][行][kBlock] 分钟根
 //   头对得上、四文件够长且库段是选股表日轴的前缀 (pool::extends) → 补段截到留着的日, 只合成库段新日再续算补段; 否则清目录从头. 每批落一次头 (取消不丢已合成的)
-// 读: kline = 一行日脊末 n 日的日根 + 末 m 日的分钟根 (有效价; 带净流入); Minutes = 一行逐个有分钟根的日的 高 低 收 + 因子 (CTA / 价格指数)
-// 服务 (gui/util/Service.hpp, 随对象): 请求 = 要的个股全历史 + 分钟价 + 基本面段末日 + 行情日 (QuoteHub 每帧并成; 两者变了即补);
-//   每趟: 补库 (只析构中断, 新请求不打断) → 库变了重建日脊 / 篮子全表 (+ 交接的普查) / 个股日脊末段 → 读要的 (按 (标的, 戳) 沿用; 新请求打断)
+// 读: series = 一行全史 (日根 + 资金流摘要 + 复权倍数; minute 连分钟根, 个股的净流入读时按分钟涨跌法补)
+// 账户 (Book): 资金流水账本 × 个股日根回放 (account::replay), 分钟 = 当日收后持仓 × 分钟收盘; 账本代或戳变了重算
+// 服务 (gui/util/Service.hpp, 随对象): 请求 = 要的全史 (标的 × 连不连分钟) + 基本面段末日 + 行情日 + 账本代 (QuoteHub 每帧并成; 变了即补);
+//   每趟: 补库 (只析构中断, 新请求不打断) → 库变了重建日脊 / 篮子全表 (+ 交接的普查) / 个股日脊末段 → 账户 → 读要的 (按 (标的, 戳) 沿用; 新请求打断)
 //   → 发布 PriceView (与上份同则不发). 进度: Loading = 合成天
 // 线程: 库只 worker 读写, 外面只经 PriceView 读; 合成线程池随对象 (库段 / 补段按日并行, 篮子全表按篮子并行读)
 #pragma once
@@ -28,7 +30,7 @@
 #include "define/Members.hpp"
 #include "disk/Disk.hpp"
 #include "fundamental/AssetAxis.hpp" // PoolAxis
-#include "gui/quote/Quote.hpp"       // Side / PerSide / Kline / Tape / PriceView
+#include "gui/quote/Quote.hpp"       // Side / PerSide / Series / Tape / PriceView
 #include "gui/util/Service.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
@@ -51,12 +53,18 @@ struct Picks;
 
 namespace GUI::Quote {
 
+// 要一个标的的全史 (篮子不连分钟的恒在, 不必要)
+struct Want {
+  Ref ref;
+  bool minute = false;
+  bool operator==(const Want &) const = default;
+};
 // 一次请求 (QuoteHub 每帧并成)
 struct PriceRequest {
-  std::vector<uint32_t> stocks; // 要全历史的个股 (全局 id 升序)
-  std::vector<Ref> minutes;     // 要分钟价的标的
-  misc::Ymd mark = 0;           // 基本面段末日 (AssetInfo::quote_end)
-  misc::Ymd live = 0;           // 新浪行情日 (换日 = 可能多一份归档)
+  std::vector<Want> wants; // (侧, 键) 升序, 一个标的一项 (连分钟的盖过不连的)
+  misc::Ymd mark = 0;      // 基本面段末日 (AssetInfo::quote_end)
+  misc::Ymd live = 0;      // 新浪行情日 (换日 = 可能多一份归档)
+  uint64_t ledger = 0;     // 账本代 (account::generation)
   bool operator==(const PriceRequest &) const = default;
 };
 
@@ -113,7 +121,7 @@ class PriceLib : public Service<PriceLib, PriceRequest>, public Published {
 
 public:
   static constexpr const char *kName = "PriceLib";
-  static constexpr size_t kKeep = 64, kKeepMinutes = 32; // 留在内存的个股全历史 / 分钟价数 (请求的上限)
+  static constexpr size_t kKeep = 64, kKeepMinutes = 32; // 留在内存的个股日根全史 / 连分钟的全史数 (请求的上限)
   static constexpr size_t kBlock = 64;
   static constexpr int kThreads = 8; // 合成线程 (每线程一日的日根 / 分钟读 + 篮子累加, 数十 MB)
   static constexpr double kBase = 1000;
@@ -124,7 +132,7 @@ public:
   };
 
   // bind = 交接的去处 (QuoteService::bind; worker 线程调)
-  PriceLib(std::vector<misc::Ymd> trading, std::function<void(const Handoff &)> bind);
+  PriceLib(std::shared_ptr<const Calendar> cal, std::function<void(const Handoff &)> bind);
   ~PriceLib();
 
   std::shared_ptr<const PriceView> result; // 持 mutex 读 (latest); 空 = 未发布
@@ -144,7 +152,6 @@ private:
   void snap(Ar &ar);
   void save_head();
   PriceStamp stamp() const;
-  misc::Ymd next(misc::Ymd d) const; // d 的次交易日
   // 头 / 文件对不上 → 清目录从头 (只留库首日)
   void reopen(const FeatureLib &lib, const std::vector<misc::Ymd> &dates);
   // 库段补到 dates, 补段补到基本面段末日 mark 及其后接连的新浪归档, 再定交接; false = 中断 / 判废
@@ -154,12 +161,12 @@ private:
   // 第 i 日 (已写好日根) 各行过链 z (就地推进), 填因子
   void chain(size_t i, PerSide<std::vector<Link>> &z);
   size_t row_of(Ref ref) const; // 不在 → 该侧键数
-  // 日脊末 daily 日的日根 + 末 minutes 日的分钟根 (有效价; 无根的日不收); ref 不在该侧键表 → false
-  bool kline(Ref ref, size_t daily, size_t minutes, Kline &k) const;
-  bool rows(Ref ref, Minutes &m) const; // 同上
-  void rebuild();                       // 库变了: 日脊 / 篮子全表 (+ 普查) / 个股日脊末段
+  // 一行全史 (minute = 连分钟根); ref 不在该侧键表 → false
+  bool series(Ref ref, bool minute, Series &s) const;
+  void rebuild();               // 库变了: 日脊 / 篮子全表 (+ 普查) / 个股日脊末段
+  void replay(uint64_t ledger); // 账本 × 本戳日脊 → book_
 
-  const std::vector<misc::Ymd> trading_; // 交易日升序
+  const std::shared_ptr<const Calendar> cal_;
   const std::function<void(const Handoff &)> bind_;
   std::atomic<bool> quit_{false}; // 补库只认它 (析构)
   disk::Key lib_;                 // 所在特征库
@@ -175,13 +182,14 @@ private:
   Members mem_;               // 交接: 成员表 (库轴)
   std::vector<double> level_; // 交接: [篮子] 末日点位
   misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
-  // worker 私有: 本戳 (built_) 的日脊 / 篮子全表 / 个股日脊末段 + 沿用的读
+  // worker 私有: 本戳 (built_) 的日脊 / 篮子全表 / 个股日脊末段 / 账户 + 沿用的读
   PriceStamp built_;
   std::shared_ptr<const std::vector<misc::Ymd>> spine_;
   std::shared_ptr<const Tape> baskets_;
   std::shared_ptr<const Tails> tails_;
-  Kept<Kline> klines_{kKeep};
-  Kept<Minutes> minutes_{kKeepMinutes};
+  std::shared_ptr<const Book> book_;  // 空 = 本戳未回放
+  Kept<Series> daily_{kKeep};         // 个股日根全史
+  Kept<Series> minute_{kKeepMinutes}; // 连分钟的全史 (两侧)
 };
 
 } // namespace GUI::Quote

@@ -1,5 +1,6 @@
 #include "gui/quote/PriceLib.hpp"
 
+#include "account/Ledger.hpp"
 #include "features/Bar1mDay.hpp"
 #include "features/Panel/PoolSelect.hpp"      // all_bar / picks / extends
 #include "features/Storage/FeatureLevels.hpp" // feature_storage_t
@@ -8,6 +9,7 @@
 #include "fundamental/Scan.hpp"
 #include "gui/quote/BasketRow.hpp"
 #include "gui/quote/services/QuoteService.hpp" // 新浪归档
+#include "live/Broker.hpp"                     // kMktSuffix / market_of
 #include "misc/snap.hpp"
 #include "shared/Basket.hpp" // basket_table
 
@@ -22,13 +24,15 @@
 #include <filesystem>
 #include <mutex>
 #include <numeric>
+#include <string>
 #include <type_traits>
+#include <unordered_map>
 
 namespace GUI::Quote {
 
 namespace {
 
-constexpr uint64_t kMagic = 0x3245434952504B53ULL; // "SKPRICE2" 小端
+constexpr uint64_t kMagic = 0x3345434952504B53ULL; // "SKPRICE3" 小端
 constexpr size_t kB = PriceLib::kBlock;
 constexpr disk::Node kDayFile[kSides] = {disk::LibPriceStockDay, disk::LibPriceBasketDay}; // [侧]
 constexpr disk::Node kMinFile[kSides] = {disk::LibPriceStockMin, disk::LibPriceBasketMin};
@@ -36,16 +40,15 @@ constexpr disk::Node kMinFile[kSides] = {disk::LibPriceStockMin, disk::LibPriceB
 // 两侧的存价: 个股 = 原价 (f16, 与库逐位一致), 篮子 = 比 (f32)
 template <Side S>
 using Px = std::conditional_t<S == kStock, feature_storage_t, float>;
-// 分钟根一槽的格: 高 低 收 额 (+ 篮子的净流入)
-enum : size_t { kAmount = Minutes::kFields,
-                kNet };
+// 分钟根一槽的格 (Series::Field 的前缀): 高 低 收 额 (+ 篮子的净流入)
 template <Side S>
-constexpr size_t kCells = S == kStock ? kAmount + 1 : kNet + 1;
+constexpr size_t kCells = S == kStock ? Series::kAmount + 1 : Series::kNet + 1;
 
-// 一行一日的日根: f = 因子 (0 = 无日根), 价 = 存价, ref = 前收 (存价口径: 个股 = 交易所前收, 篮子 = 1)
+// 一行一日的日根: f = 因子 (0 = 无日根), 价 = 存价, ref = 前收 (存价口径: 个股 = 交易所前收, 篮子 = 1), flow = 资金流摘要
 struct DayRec {
   double f, amount;
   float open, high, low, close, ref;
+  DayFlow flow;
 };
 // 一行一日的分钟根: [槽][kCells] (无根 = NaN; 个股的额 = log1p)
 template <Side S>
@@ -131,19 +134,19 @@ void put(MinRec<S> &r, const Bars *b) {
     if (b->has[s]) {
       const Cell &c = b->cell[s];
       Px<S> *p = r.x + s * C;
-      p[Minutes::kHigh] = static_cast<Px<S>>(c.high), p[Minutes::kLow] = static_cast<Px<S>>(c.low), p[Minutes::kClose] = static_cast<Px<S>>(c.close);
+      p[Series::kHigh] = static_cast<Px<S>>(c.high), p[Series::kLow] = static_cast<Px<S>>(c.low), p[Series::kClose] = static_cast<Px<S>>(c.close);
       if constexpr (S == kStock)
-        p[kAmount] = static_cast<Px<S>>(static_cast<float>(std::log1p(c.amount)));
+        p[Series::kAmount] = static_cast<Px<S>>(static_cast<float>(std::log1p(c.amount)));
       else
-        p[kAmount] = static_cast<float>(c.amount), p[kNet] = static_cast<float>(b->net[s]);
+        p[Series::kAmount] = static_cast<float>(c.amount), p[Series::kNet] = static_cast<float>(b->net[s]);
     }
 }
 
 // 一日根 → 一行一日 (因子待过链: 有日根先记 1); ref = 存价口径的前收
-DayRec day_rec(const Cell *c, float ref) {
+DayRec day_rec(const Cell *c, float ref, DayFlow flow = {}) {
   if (!c)
-    return {0, 0, 0, 0, 0, 0, ref};
-  return {1, c->amount, c->open, c->high, c->low, c->close, ref};
+    return {0, 0, 0, 0, 0, 0, ref, {}};
+  return {1, c->amount, c->open, c->high, c->low, c->close, ref, flow};
 }
 // 一行一日的 收 / 前收 (无日根 1): 成员过日的漂移比
 float rel_of(const DayRec &r) { return r.f > 0 && r.ref > 0 ? r.close / r.ref : 1.f; }
@@ -181,31 +184,32 @@ Candle candle_of(const DayRec &r, misc::Ymd d) {
   return {{at(r.open), at(r.high), at(r.low), at(r.close), 0, r.amount}, d, at(r.ref)};
 }
 
-// 一行一日 → 分钟根 (有效价; 开 = 上一根收, 首根 = 前收; 个股的净流入 = 本只分钟涨跌法). 返回 = 有根
+// 一行一日 → 一日分钟格 o [kSlots][Series::kFields] (价 = 有效价; 个股的净流入 = 本只分钟涨跌法, 首根对前收)
 template <Side S>
-bool bars_of(const MinRec<S> &m, const DayRec &r, misc::Ymd d, Bars &b) {
-  constexpr size_t C = kCells<S>;
+void slots_of(const MinRec<S> &m, const DayRec &r, float *o) {
+  constexpr size_t C = kCells<S>, F = Series::kFields;
   const double a = scale_of<S>(r);
-  b.date = d;
-  b.has.reset(), b.hole.reset();
-  b.net.fill(0);
-  float prev = static_cast<float>(r.ref * a);
+  double px = r.ref;
+  int dir = 0;
   for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s) {
     const Px<S> *p = m.x + s * C;
-    const float c = static_cast<float>(p[Minutes::kClose]);
-    if (!(c > 0))
+    float *q = o + s * F;
+    const float c = static_cast<float>(p[Series::kClose]);
+    if (!(c > 0)) {
+      std::fill_n(q, F, NAN);
       continue;
-    const float px = static_cast<float>(c * a);
-    const double amt = S == kStock ? std::expm1(static_cast<double>(static_cast<float>(p[kAmount]))) : static_cast<double>(static_cast<float>(p[kAmount]));
-    b.cell[s] = cell(prev, static_cast<float>(static_cast<float>(p[Minutes::kHigh]) * a), static_cast<float>(static_cast<float>(p[Minutes::kLow]) * a), px, 0, amt);
-    b.has.set(s);
-    prev = px;
-    if constexpr (S == kBasket)
-      b.net[s] = static_cast<float>(p[kNet]);
+    }
+    q[Series::kHigh] = static_cast<float>(static_cast<float>(p[Series::kHigh]) * a);
+    q[Series::kLow] = static_cast<float>(static_cast<float>(p[Series::kLow]) * a);
+    q[Series::kClose] = static_cast<float>(c * a);
+    if constexpr (S == kStock) {
+      const double amt = std::expm1(static_cast<double>(static_cast<float>(p[Series::kAmount])));
+      dir = tick_dir(c, px, dir), px = c;
+      q[Series::kAmount] = static_cast<float>(amt), q[Series::kNet] = static_cast<float>(dir * amt);
+    } else {
+      q[Series::kAmount] = p[Series::kAmount], q[Series::kNet] = p[Series::kNet];
+    }
   }
-  if constexpr (S == kStock)
-    net_flow(b, r.ref);
-  return b.has.any();
 }
 
 } // namespace
@@ -238,21 +242,29 @@ struct PriceFiles {
   }
   // 第 i 日个股一行 ← 源的一只
   void put_stock(size_t i, size_t a, const Leg &g) {
-    day[kStock].at(i, a) = day_rec(g.day, g.base);
-    put<kStock>(stock.at(i, a), g.day ? g.bars : nullptr);
+    const Bars *b = g.day ? g.bars : nullptr;
+    DayFlow fl;
+    if (b) {
+      std::array<double, kSlots> net;
+      net_flow(*b, g.base, net);
+      fl = day_flow(*b, net);
+    }
+    day[kStock].at(i, a) = day_rec(g.day, g.base, fl);
+    put<kStock>(stock.at(i, a), b);
   }
   // 第 i 日篮子各行 ← Lane 的一日 (前日 = 1)
   void put_baskets(size_t i, std::span<const Day> ys) {
     for (size_t b = 0; b < ys.size(); ++b) {
       const Day &y = ys[b];
-      day[kBasket].at(i, b) = day_rec(y.candle.date ? &y.candle : nullptr, 1.f);
-      put<kBasket>(basket.at(i, b), y.candle.date ? &y.bars : nullptr);
+      const bool on = y.candle.date != 0;
+      day[kBasket].at(i, b) = day_rec(on ? &y.candle : nullptr, 1.f, on ? day_flow(y.bars) : DayFlow{});
+      put<kBasket>(basket.at(i, b), on ? &y.bars : nullptr);
     }
   }
 };
 
-PriceLib::PriceLib(std::vector<misc::Ymd> trading, std::function<void(const Handoff &)> bind) : trading_(std::move(trading)), bind_(std::move(bind)) {
-  assert(!trading_.empty() && bind_);
+PriceLib::PriceLib(std::shared_ptr<const Calendar> cal, std::function<void(const Handoff &)> bind) : cal_(std::move(cal)), bind_(std::move(bind)) {
+  assert(cal_ && !cal_->days.empty() && bind_);
   Start();
 }
 PriceLib::~PriceLib() {
@@ -285,12 +297,6 @@ size_t PriceLib::row_of(Ref ref) const {
 }
 
 PriceStamp PriceLib::stamp() const { return {axis_.hash, dates_.back(), dates_.size(), lib_days_, fund_days_}; }
-
-misc::Ymd PriceLib::next(misc::Ymd d) const {
-  const auto it = std::upper_bound(trading_.begin(), trading_.end(), d);
-  assert(it != trading_.end() && "交易日历缺历史日的次交易日");
-  return *it;
-}
 
 void PriceLib::reopen(const FeatureLib &lib, const std::vector<misc::Ymd> &dates) {
   lib_ = lib_key(lib.id);
@@ -344,10 +350,11 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
   assert(dates.size() >= 2 && mark > 0);
   reopen(lib, dates);
   const fundamental::Catalog cat;
-  const auto lo = std::upper_bound(trading_.begin(), trading_.end(), dates.back());
-  const auto mid = std::max(lo, std::upper_bound(trading_.begin(), trading_.end(), mark));
+  const std::vector<misc::Ymd> &trading = cal_->days;
+  const auto lo = std::upper_bound(trading.begin(), trading.end(), dates.back());
+  const auto mid = std::max(lo, std::upper_bound(trading.begin(), trading.end(), mark));
   auto hi = mid;
-  while (hi != trading_.end() && disk::exists(disk::QuoteDay, {.date = *hi}))
+  while (hi != trading.end() && disk::exists(disk::QuoteDay, {.date = *hi}))
     ++hi;
   const std::vector<misc::Ymd> tail(lo, hi);
   const size_t F = static_cast<size_t>(mid - lo);
@@ -400,7 +407,7 @@ bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, cons
   const size_t A = keys_[kStock].size(), NB = keys_[kBasket].size(), T = tail.size(), L = lib_days_;
   assert(F <= T && keep <= T && dates_.size() == L + keep);
   Members mem;
-  members(pk, axis_, next(dates_[L - 1]), mem);
+  members(pk, axis_, cal_->next(dates_[L - 1]), mem);
   level_.resize(NB);
   for (size_t b = 0; b < NB; ++b) {
     const Link &z = link_[kBasket][b];
@@ -420,7 +427,7 @@ bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, cons
     settle(i);
     for (size_t a = 0; a < A; ++a)
       rel[a] = rel_of(files_->day[kStock].at(i, a));
-    drift(mem, tail[k], next(tail[k]), rel);
+    drift(mem, tail[k], cal_->next(tail[k]), rel);
   }
   if (keep < T) {
     files_->map(lib_, {A, NB}, L + T);
@@ -470,7 +477,7 @@ bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, cons
         const std::span<const Candle> c = day_px(k, w);
         for (size_t a = 0; a < A; ++a)
           rel[a] = rel_of(day_rec(traded(c[a]) ? &c[a] : nullptr, c[a].ref));
-        drift(mem, tail[k], next(tail[k]), rel);
+        drift(mem, tail[k], cal_->next(tail[k]), rel);
       }
       pool_.tasks(static_cast<int>(n), [&](int j, int) {
         const size_t k = k0 + static_cast<size_t>(j), i = L + k;
@@ -497,7 +504,8 @@ bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, cons
 }
 
 bool PriceLib::run(PriceRequest &req) {
-  assert(req.stocks.size() <= kKeep && req.minutes.size() <= kKeepMinutes && "请求超出留存");
+  assert(std::ranges::count(req.wants, false, &Want::minute) <= static_cast<ptrdiff_t>(kKeep) &&
+         std::ranges::count(req.wants, true, &Want::minute) <= static_cast<ptrdiff_t>(kKeepMinutes) && "请求超出留存");
   const pool::AllBar ab = pool::all_bar("行情历史由 all.bar 特征库合成");
   if (!ab.lack.empty()) {
     if (!result || result->lack != ab.lack)
@@ -508,38 +516,45 @@ bool PriceLib::run(PriceRequest &req) {
     return false;
   if (!(built_ == at_))
     rebuild();
-  for (const uint32_t id : req.stocks) {
+  if (!book_ || book_->ledger != req.ledger)
+    replay(req.ledger);
+  for (const Want &w : req.wants) {
     if (cancel_.load(std::memory_order_relaxed))
       return false;
-    const Ref ref{kStock, id};
-    klines_.get(ref, at_, [&](Kline &k) { return kline(ref, kDailyDays, kMinuteDays, k); });
+    if (w.minute)
+      minute_.get(w.ref, at_, [&](Series &s) { return series(w.ref, true, s); });
+    else if (w.ref.side == kStock)
+      daily_.get(w.ref, at_, [&](Series &s) { return series(w.ref, false, s); });
   }
-  for (const Ref ref : req.minutes) {
-    if (cancel_.load(std::memory_order_relaxed))
-      return false;
-    minutes_.get(ref, at_, [&](Minutes &m) { return rows(ref, m); });
-  }
-  // 发布 = 本戳留着的全部 (不只本次要的: 切页不闪), 键升序
+  // 发布 = 本戳留着的全部 (不只本次要的: 切页不闪), 键升序; 连分钟的盖过不连的
+  using Item = std::pair<uint32_t, std::shared_ptr<const Series>>;
+  std::vector<Item> ks, bm;
+  minute_.each(at_, [&](Ref r, const std::shared_ptr<const Series> &s) { (r.side == kStock ? ks : bm).emplace_back(r.key, s); });
+  daily_.each(at_, [&](Ref r, const std::shared_ptr<const Series> &s) { ks.emplace_back(r.key, s); });
+  std::ranges::stable_sort(ks, {}, &Item::first);
+  ks.erase(std::ranges::unique(ks, {}, &Item::first).begin(), ks.end());
   auto v = std::make_shared<PriceView>();
   v->stamp = at_;
   v->dates = spine_;
-  v->tape[kBasket] = baskets_;
-  std::vector<std::pair<uint32_t, std::shared_ptr<const Kline>>> ks;
-  klines_.each(at_, [&](Ref r, const std::shared_ptr<const Kline> &k) { ks.emplace_back(r.key, k); });
-  std::ranges::sort(ks, {}, [](const auto &p) { return p.first; });
+  v->book = book_;
   auto st = std::make_shared<Tape>();
   st->tails = tails_;
-  for (auto &[k, l] : ks)
-    st->keys.push_back(k), st->list.push_back(std::move(l));
+  for (auto &[k, s] : ks)
+    st->keys.push_back(k), st->list.push_back(std::move(s));
+  std::shared_ptr<const Tape> bt = baskets_;
+  if (!bm.empty()) {
+    auto t = std::make_shared<Tape>(*baskets_);
+    for (auto &[k, s] : bm)
+      if (const size_t j = t->find(k); s && j < t->keys.size())
+        t->list[j] = std::move(s);
+    bt = std::move(t);
+  }
   const PriceView *o = result && result->lack.empty() && result->stamp == at_ ? result.get() : nullptr;
   const bool same_stocks = o && o->tape[kStock]->keys == st->keys && o->tape[kStock]->list == st->list;
+  const bool same_baskets = o && o->tape[kBasket]->list == bt->list;
   v->tape[kStock] = same_stocks ? o->tape[kStock] : std::move(st);
-  std::vector<std::pair<Ref, std::shared_ptr<const Minutes>>> ms;
-  minutes_.each(at_, [&](Ref r, const std::shared_ptr<const Minutes> &m) { ms.emplace_back(r, m); });
-  std::ranges::sort(ms, {}, [](const auto &p) { return std::pair(p.first.side, p.first.key); });
-  for (auto &[r, m] : ms)
-    v->refs.push_back(r), v->minutes.push_back(std::move(m));
-  if (o && same_stocks && o->tape[kBasket] == v->tape[kBasket] && o->refs == v->refs && o->minutes == v->minutes)
+  v->tape[kBasket] = same_baskets ? o->tape[kBasket] : std::move(bt);
+  if (o && same_stocks && same_baskets && o->book == v->book)
     return true;
   put(std::move(v));
   return true;
@@ -553,95 +568,139 @@ void PriceLib::put(std::shared_ptr<const PriceView> v) {
 
 void PriceLib::rebuild() {
   built_ = at_;
+  book_ = nullptr;
   spine_ = std::make_shared<const std::vector<misc::Ymd>>(dates_);
   const size_t D = dates_.size();
   auto t = std::make_shared<Tails>();
   t->ids = keys_[kStock];
   const Blocks<DayRec> &sd = files_->day[kStock];
   Candle c[kTailDays];
+  DayFlow fl[kTailDays];
   for (size_t r = 0; r < t->ids.size(); ++r) {
     size_t n = 0;
     for (size_t i = D; i-- > 0 && n < kTailDays;)
       if (const DayRec &x = sd.at(i, r); x.f > 0)
-        c[n++] = candle_of<kStock>(x, dates_[i]);
+        c[n] = candle_of<kStock>(x, dates_[i]), fl[n++] = x.flow;
     for (size_t k = n; k-- > 0;)
-      t->daily.v.push_back(c[k]);
+      t->daily.v.push_back(c[k]), t->flow.v.push_back(fl[k]);
     t->daily.off.push_back(static_cast<uint32_t>(t->daily.v.size()));
+    t->flow.off.push_back(static_cast<uint32_t>(t->flow.v.size()));
   }
   tails_ = std::move(t);
   auto b = std::make_shared<Tape>();
   b->keys = keys_[kBasket];
   b->list.resize(b->keys.size());
   pool_.tasks(static_cast<int>(b->keys.size()), [&](int j, int) {
-    auto kl = std::make_shared<Kline>();
-    kline({kBasket, b->keys[static_cast<size_t>(j)]}, kDailyDays, kMinuteDays, *kl);
-    b->list[static_cast<size_t>(j)] = std::move(kl);
+    auto s = std::make_shared<Series>();
+    series({kBasket, b->keys[static_cast<size_t>(j)]}, false, *s);
+    b->list[static_cast<size_t>(j)] = std::move(s);
   });
   census(mem_, axis_, b->keys, *b);
   baskets_ = std::move(b);
 }
 
-bool PriceLib::rows(Ref ref, Minutes &out) const {
+bool PriceLib::series(Ref ref, bool minute, Series &out) const {
   const size_t row = row_of(ref), D = dates_.size();
   if (row == keys_[ref.side].size())
     return false;
+  out.minute = minute;
   each_side([&]<Side S>() {
     if (S != ref.side)
       return;
-    constexpr size_t C = kCells<S>, F = Minutes::kFields, W = static_cast<size_t>(kSlots) * F;
+    constexpr size_t W = static_cast<size_t>(kSlots) * Series::kFields;
     const Blocks<DayRec> &dr = files_->day[S];
     const auto &mr = files_->min<S>();
     dr.will(row, 0, D);
-    mr.will(row, 0, D);
-    out.px.reserve(D * W);
+    if (minute) {
+      mr.will(row, 0, D);
+      out.px.reserve(D * W);
+    }
     for (size_t i = 0; i < D; ++i) {
       const DayRec &r = dr.at(i, row);
       if (!(r.f > 0))
         continue;
-      const MinRec<S> &m = mr.at(i, row);
-      const size_t at = out.px.size();
-      out.px.resize(at + W);
-      float *px = out.px.data() + at;
-      bool any = false;
-      for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s) {
-        for (size_t k = 0; k < F; ++k)
-          px[s * F + k] = static_cast<float>(m.x[s * C + k]);
-        any = any || px[s * F + Minutes::kClose] > 0;
+      out.daily.push_back(candle_of<S>(r, dates_[i]));
+      out.flow.push_back(r.flow);
+      out.adj.push_back(S == kStock ? r.f : 1.0);
+      if (minute) {
+        out.px.resize(out.px.size() + W);
+        slots_of<S>(mr.at(i, row), r, out.px.data() + out.px.size() - W);
       }
-      if (!any) {
-        out.px.resize(at);
-        continue;
-      }
-      out.dates.push_back(dates_[i]);
-      out.f.push_back(r.f);
     }
   });
   out.px.shrink_to_fit();
   return true;
 }
 
-bool PriceLib::kline(Ref ref, size_t daily, size_t minutes, Kline &k) const {
-  const size_t row = row_of(ref), D = dates_.size();
-  if (row == keys_[ref.side].size())
-    return false;
-  const size_t d0 = D - std::min(D, daily), m0 = D - std::min(D, minutes);
-  each_side([&]<Side S>() {
-    if (S != ref.side)
-      return;
-    const Blocks<DayRec> &dr = files_->day[S];
-    const auto &mr = files_->min<S>();
-    dr.will(row, d0, D);
-    mr.will(row, m0, D);
-    k.daily.clear(), k.minutes.clear();
-    for (size_t i = d0; i < D; ++i)
-      if (const DayRec &r = dr.at(i, row); r.f > 0)
-        k.daily.push_back(candle_of<S>(r, dates_[i]));
-    Bars b;
-    for (size_t i = m0; i < D; ++i)
-      if (const DayRec &r = dr.at(i, row); r.f > 0 && bars_of<S>(mr.at(i, row), r, dates_[i], b))
-        k.minutes.push_back(b);
-  });
-  return true;
+void PriceLib::replay(uint64_t ledger) {
+  auto bk = std::make_shared<Book>();
+  bk->ledger = ledger;
+  const account::Ledger l = account::load();
+  const size_t D = dates_.size();
+  const size_t i0 = l.rows.empty() ? D : static_cast<size_t>(std::ranges::lower_bound(dates_, l.rows.front().date) - dates_.begin());
+  if (i0 < D) {
+    const AssetAxis &ax = asset_axis();
+    std::unordered_map<std::string, size_t> row; // 代码 → 个股行 (库轴外的不在)
+    for (const std::string &s : account::securities(l.rows))
+      if (const size_t id = ax.find(s + live::kMktSuffix[static_cast<int>(live::market_of(s))]); id < ax.size())
+        if (const size_t r = row_of({kStock, static_cast<uint32_t>(id)}); r < keys_[kStock].size())
+          row.emplace(s, r);
+    const Blocks<DayRec> &sd = files_->day[kStock];
+    account::Closes px;
+    for (const auto &[s, r] : row)
+      for (size_t i = i0; i < D; ++i)
+        if (const DayRec &x = sd.at(i, r); x.f > 0)
+          px[s][dates_[i]] = x.close;
+    const std::vector<account::Day> ds = account::replay(l.rows, l.rate, std::vector<misc::Ymd>(dates_.begin() + static_cast<ptrdiff_t>(i0), dates_.end()), px);
+    assert(ds.size() == D - i0 && "账户回放: 日数与日脊不符");
+    auto se = std::make_shared<Series>();
+    se->minute = true;
+    se->px.resize(ds.size() * kSlots * Series::kFields);
+    constexpr size_t C = kCells<kStock>;
+    std::array<double, kSlots> nav;
+    for (size_t k = 0; k < ds.size(); ++k) {
+      const size_t i = i0 + k;
+      const account::Day &d = ds[k];
+      // 当日收后持仓按分钟收盘计价, 末槽对齐当日净值: nav_s = nav + Σ 股 × (分钟收_s − 末槽收)
+      nav.fill(d.nav);
+      for (const auto &[code, q] : d.hold) {
+        const auto it = row.find(code);
+        if (it == row.end())
+          continue;
+        const DayRec &x = sd.at(i, it->second);
+        if (!(x.f > 0))
+          continue;
+        const MinRec<kStock> &m = files_->stock.at(i, it->second);
+        std::array<float, kSlots> c;
+        float at = x.ref;
+        for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s) {
+          if (const float v = static_cast<float>(m.x[s * C + Series::kClose]); v > 0)
+            at = v;
+          c[s] = at;
+        }
+        for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
+          nav[s] += q * (c[s] - c[kSlots - 1]);
+      }
+      const double ref = k > 0 ? ds[k - 1].index : 1.0, nav0 = k > 0 ? ds[k - 1].nav : 0.0;
+      float hi = static_cast<float>(ref), lo = hi;
+      float *p = se->px.data() + k * kSlots * Series::kFields;
+      for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s) {
+        const float x = static_cast<float>(nav0 > 0 ? ref * (nav[s] - d.flow) / nav0 : d.index);
+        float *q = p + s * Series::kFields;
+        q[Series::kHigh] = q[Series::kLow] = q[Series::kClose] = x;
+        q[Series::kAmount] = q[Series::kNet] = 0;
+        hi = std::max(hi, x), lo = std::min(lo, x);
+      }
+      const float r = static_cast<float>(ref), x = static_cast<float>(d.index);
+      se->daily.push_back({cell(r, std::max(hi, x), std::min(lo, x), x, 0, 0), dates_[i], r});
+      se->flow.push_back({});
+      se->adj.push_back(1.0);
+    }
+    bk->se = std::move(se);
+    bk->nav = ds.back().nav;
+    bk->after = account::flow_after(l.rows, ds.back().date);
+  }
+  book_ = std::move(bk);
 }
 
 } // namespace GUI::Quote

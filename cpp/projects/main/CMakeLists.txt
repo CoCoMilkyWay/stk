@@ -351,7 +351,9 @@ set(MATH_PRECISE
     # gui
     gui/account/AccountHub.cpp
     gui/engine/ui/PortfolioBoxes.cpp
+    gui/quote/Bars.cpp
     gui/quote/BasketRow.cpp
+    gui/quote/Fold.cpp
     gui/quote/PriceLib.cpp
     gui/quote/Quote.cpp
     gui/quote/QuoteHub.cpp

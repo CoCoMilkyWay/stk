@@ -24,12 +24,19 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
+struct Bar1m;
 struct Bar1mDay;
+namespace fundamental {
+class Ids;
+class Scratch;
+struct Shard;
+} // namespace fundamental
 
 namespace GUI::Quote {
 
@@ -52,6 +59,14 @@ void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &
 void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel);
 // 一只一日的 L_1min (mc = read_minutes 的读) → 分钟根: 无成交的行不收 (与 bar1m 的 bars_of 同一并根)
 void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b);
+
+// 基本面源 (补段两侧同一读法): 日根 = bar1d 行 (ref = pre_close), 分钟根 = bar1m 行按 row_slot 并根; 基本面段末日 = AssetInfo::quote_end
+inline constexpr const char *kBar1d = "cn_stock_real_bar1d";
+// bar1d 一张月分片逐行 f(id, 日根): ref = pre_close; 无成交的行照给 (traded 判)
+void each_daily(fundamental::Scratch &xs, const fundamental::Shard &sh, const fundamental::Ids &ids,
+                const std::function<void(uint32_t, const Candle &)> &f);
+// bar1m 一只一日 (Bar1mDay::asset; nullptr = 无 bar) → 分钟根: 无成交的行不收
+void bars_of(const Bar1m *m, misc::Ymd d, Bars &b);
 
 // 源 (三种同形): date = 交易日; assets() = 库轴长; minutes() = 合成分钟; leg(a, c, b) = 一只的 Leg (c / b = 调用方给的格, Leg 可指向它们)
 // all.bar 库源: 基准 = 前一行 prev 的 pre_close, 日根 = 当日行 cur, 分钟根 = mc 的 L_1min (nullptr = 只合日根)

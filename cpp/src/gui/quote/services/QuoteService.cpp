@@ -13,12 +13,13 @@
 #include <array>
 #include <atomic>
 #include <cassert>
-#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <iterator>
+#include <string_view>
+#include <tuple>
 #include <utility>
 
 namespace GUI::Quote {
@@ -132,28 +133,19 @@ void store(R &dst, R src) {
   std::atomic_ref<uint8_t>(dst.busy).store(0, std::memory_order_release);
 }
 
-// 全局轴码 "600000.SH" → 新浪 "sh600000"
-std::string sina_sym(const std::string &code) {
-  const size_t dot = code.find('.');
-  assert(dot != std::string::npos);
-  std::string s = code.substr(dot + 1) + code.substr(0, dot);
-  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return s;
-}
-
 // 快照的日根
 Cell candle_of(const sina::Quote &q) { return cell(q.open, q.high, q.low, q.price, q.volume, q.amount); }
 
 } // namespace
 
-QuoteService::QuoteService(std::shared_ptr<const PoolAxis> axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading)
-    : axis_(std::move(axis)), trading_(std::move(trading)), fund_end_(fund_end), tracks_(axis_->size()),
+QuoteService::QuoteService(std::shared_ptr<const PoolAxis> axis, misc::Ymd fund_end, std::shared_ptr<const Calendar> cal)
+    : axis_(std::move(axis)), cal_(std::move(cal)), fund_end_(fund_end), tracks_(axis_->size()),
       last_(std::make_shared<const std::vector<sina::Quote>>(axis_->size())) {
-  assert(axis_->size() > 0 && !trading_.empty());
+  assert(axis_->size() > 0 && cal_ && !cal_->days.empty());
   syms_.reserve(axis_->size());
   index_.reserve(axis_->size());
   for (uint32_t i = 0; i < axis_->size(); ++i) {
-    syms_.push_back(sina_sym(asset_axis().code(axis_->global(i))));
+    syms_.push_back(sina::sym_of(asset_axis().code(axis_->global(i))));
     [[maybe_unused]] const bool fresh = index_.emplace(syms_[i], i).second;
     assert(fresh && "QuoteService: 新浪码重复");
   }
@@ -198,6 +190,19 @@ void QuoteService::set_fund_end(misc::Ymd e) {
     post();
   }
   cv_.notify_all();
+}
+
+void QuoteService::watch(std::vector<std::string> syms) {
+  std::ranges::sort(syms);
+  syms.erase(std::ranges::unique(syms).begin(), syms.end());
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (syms == watch_)
+      return;
+    watch_ = std::move(syms);
+    rewatch_ = true;
+  }
+  wake_.notify_all();
 }
 
 QuoteStatus QuoteService::status() const {
@@ -245,13 +250,14 @@ void QuoteService::publish() {
   std::lock_guard<std::mutex> hold(fold_mu_);
   auto y = std::make_shared<Live>();
   std::shared_ptr<const Basis> b;
-  int slots = 0, freeze = 0, touched = kSlots;
+  int slots = 0;
+  std::vector<int> freeze, touched; // [sub]
   {
     std::lock_guard<std::mutex> lock(mu_);
     if (!stale())
       return;
     dirty_ = false;
-    y->date = date_, y->prev = prev_, y->sec = sec_, y->axis = axis_, y->quotes = last_;
+    y->date = date_, y->prev = prev_, y->sec = sec_, y->axis = axis_, y->quotes = last_, y->watch = seen_;
     std::vector<uint32_t> redo; // 有成交而当日快照待建的只
     for (uint32_t i = 0; i < tracks_.size(); ++i)
       if (traded((*last_)[i]) && !tracks_[i].day)
@@ -271,15 +277,16 @@ void QuoteService::publish() {
     for (size_t i = 0; i < tracks_.size(); ++i)
       if (traded((*last_)[i]))
         y->stocks[i] = tracks_[i].day;
-    touched = std::exchange(touched_, kSlots);
+    freeze.resize(tracks_.size()), touched.resize(tracks_.size());
     if ((b = basis_)) {
       slots = std::max(live_slot(), sec_slot(sec_)) + 1;
-      freeze = std::min(settled() + 1, slots);
-      if (date_ > fund_end_) // 待补的根还会被分钟 K 改写
-        for (const Track &t : tracks_)
-          if (t.lo <= t.hi)
-            freeze = std::min(freeze, t.lo);
+      const int fz = std::min(settled() + 1, slots);
+      const bool fill = date_ > fund_end_; // 待补的根还会被分钟 K 改写
+      for (size_t i = 0; i < tracks_.size(); ++i)
+        freeze[i] = fill && tracks_[i].gap() ? std::min(fz, tracks_[i].lo) : fz;
     }
+    for (size_t i = 0; i < tracks_.size(); ++i)
+      touched[i] = std::exchange(tracks_[i].touched, kSlots);
   }
   if (b)
     fold(*y, b, slots, freeze, touched);
@@ -288,30 +295,38 @@ void QuoteService::publish() {
   live_ = std::move(y);
 }
 
-void QuoteService::fold(Live &y, const std::shared_ptr<const Basis> &b, int slots, int freeze, int touched) {
+void QuoteService::fold(Live &y, const std::shared_ptr<const Basis> &b, int slots, std::span<const int> freeze, std::span<const int> touched) {
   static const Bars kNoBars{};
   const Members &M = b->members;
   const std::vector<sina::Quote> &qs = *y.quotes;
   Folding &g = folding_;
   if (g.basis != b || g.date != y.date)
-    g = {b, y.date, std::make_unique<Fold>(b->level.size()), std::vector<Fold::Carry>(M.size()), 0};
-  if (touched < g.frozen || freeze < g.frozen)
-    g.frozen = 0;
+    g = {b, y.date, std::make_unique<Fold>(b->level.size()), std::vector<Fold::Carry>(M.size())};
+  const auto restart = [&] {
+    g.fold->reset();
+    std::ranges::fill(g.carry, Fold::Carry{});
+  };
+  for (size_t k = 0; k < M.size(); ++k) // 有一只的冻结段被改写 / 冻结线回退 → 从头
+    if (const uint32_t i = M.id[k]; touched[i] < g.carry[k].at || freeze[i] < g.carry[k].at) {
+      restart();
+      break;
+    }
   // 第 k 行: 有成交 = 其当日 Day 的日根 + 分钟根, 否则无根
   const auto leg = [&](size_t k) {
     const uint32_t i = M.id[k];
     const Day *s = y.stocks[i].get();
     return Leg{qs[i].last_close, s ? &s->candle : nullptr, s ? &s->bars : &kNoBars};
   };
+  const auto fz = [&](size_t k) { return freeze[M.id[k]]; };
   std::vector<Fold::Carry> carry(M.size());
-  g.fold->open(g.frozen, freeze, slots);
-  if (!g.fold->add(pool_, M, leg, g.carry, carry)) { // 冻结段所用的基准变了 → 从头
-    g.fold->open(0, freeze, slots);
-    [[maybe_unused]] const bool ok = g.fold->add(pool_, M, leg, g.carry, carry);
+  g.fold->open(slots);
+  if (!g.fold->add(pool_, M, leg, fz, g.carry, carry)) { // 冻结段所用的基准变了 → 从头
+    restart();
+    g.fold->open(slots);
+    [[maybe_unused]] const bool ok = g.fold->add(pool_, M, leg, fz, g.carry, carry);
     assert(ok);
   }
   g.carry = std::move(carry);
-  g.frozen = freeze;
   auto day = std::make_shared<std::vector<Day>>(b->level.size());
   g.fold->finish(y.date, y.prev, *day);
   y.baskets.resize(day->size());
@@ -332,18 +347,33 @@ void QuoteService::poll() {
     chunks.emplace_back(syms_.begin() + static_cast<ptrdiff_t>(a),
                         syms_.begin() + static_cast<ptrdiff_t>(std::min(syms_.size(), a + sina::kQuoteMax)));
   const int batches = static_cast<int>(chunks.size());
+  chunks.emplace_back(); // 末批 = 订阅码中全市场外的
   std::deque<sina::Client> clients;
-  for (int k = 0; k < batches; ++k)
+  for (int k = 0; k <= batches; ++k)
     clients.emplace_back(sina::kQuoteHost);
-  misc::exec::ForkJoin ex(batches);
+  misc::exec::ForkJoin ex(batches + 1);
   std::vector<std::vector<sina::Quote>> parts(chunks.size());
   std::vector<sina::Quote> qs;
   while (true) {
     const auto t0 = std::chrono::steady_clock::now();
-    ex.tasks(batches, [&](int k, int) { parts[static_cast<size_t>(k)] = clients[static_cast<size_t>(k)].quotes(chunks[static_cast<size_t>(k)]); });
+    std::vector<std::string> watch;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      watch = watch_;
+      rewatch_ = false;
+    }
+    chunks.back().clear();
+    for (const std::string &s : watch)
+      if (!index_.contains(s))
+        chunks.back().push_back(s);
+    assert(chunks.back().size() <= static_cast<size_t>(sina::kQuoteMax) && "订阅码超出一批");
+    const int n = batches + !chunks.back().empty();
+    parts.back().clear();
+    ex.tasks(n, [&](int k, int) { parts[static_cast<size_t>(k)] = clients[static_cast<size_t>(k)].quotes(chunks[static_cast<size_t>(k)]); });
+    std::vector<sina::Quote> outside = std::move(parts.back());
     qs.clear();
-    for (std::vector<sina::Quote> &part : parts)
-      std::move(part.begin(), part.end(), std::back_inserter(qs));
+    for (size_t k = 0; k < static_cast<size_t>(batches); ++k)
+      std::move(parts[k].begin(), parts[k].end(), std::back_inserter(qs));
     misc::Ymd d = 0;
     for (const sina::Quote &q : qs)
       d = std::max(d, q.date);
@@ -353,10 +383,8 @@ void QuoteService::poll() {
       if (stop_)
         return;
       if (d > date_) { // 换日 (含启动首轮): 从零, 盘上有同日缓存则续上
-        const auto p = std::lower_bound(trading_.begin(), trading_.end(), d);
-        assert(p != trading_.begin() && "交易日历不早于行情日");
         date_ = d;
-        prev_ = *std::prev(p);
+        prev_ = cal_->prev(d);
         ++gen_;
         for (Track &t : tracks_)
           t = Track{};
@@ -389,10 +417,23 @@ void QuoteService::poll() {
             put(i, k);
           put(i);
           dirty_ = true;
-          touched_ = std::min(touched_, from);
+          tracks_[i].touched = std::min(tracks_[i].touched, from);
         }
       }
       last_ = std::move(last);
+      std::ranges::sort(outside, {}, &sina::Quote::sym);
+      auto seen = std::make_shared<std::vector<sina::Quote>>();
+      for (const std::string &s : watch) {
+        if (const auto it = index_.find(s); it != index_.end()) {
+          if (const sina::Quote &q = (*last_)[it->second]; !q.sym.empty())
+            seen->push_back(q);
+        } else if (const auto jt = std::ranges::lower_bound(outside, s, {}, &sina::Quote::sym); jt != outside.end() && jt->sym == s) {
+          seen->push_back(std::move(*jt));
+        }
+      }
+      const auto key = [](const sina::Quote &q) { return std::tuple(std::string_view(q.sym), q.date, q.sec); };
+      dirty_ = dirty_ || !seen_ || !std::ranges::equal(*seen, *seen_, {}, key, key);
+      seen_ = std::move(seen);
       std::atomic_ref<int32_t>(file_rec(map_).sec).store(sec_, std::memory_order_release); // 本轮各只落定之后
       schedule();
       post();
@@ -406,10 +447,12 @@ void QuoteService::poll() {
       wake_.wait_until(lock, std::min(due, std::chrono::steady_clock::now() + std::chrono::seconds(kFoldGap)), [&] { return stop_; });
       if (stop_)
         return;
-      if (!wake_.wait_until(lock, due, [&] { return stop_ || stale(); }))
+      if (!wake_.wait_until(lock, due, [&] { return stop_ || stale() || rewatch_; }))
         break;
       if (stop_)
         return;
+      if (rewatch_)
+        break;
       lock.unlock();
       publish();
       lock.lock();
@@ -552,7 +595,7 @@ void QuoteService::fill() {
     put(i);
     ++fetched_;
     dirty_ = true;
-    touched_ = std::min(touched_, lo);
+    tracks_[i].touched = std::min(tracks_[i].touched, lo);
     post();
     wake_.notify_one();
   }
@@ -657,7 +700,7 @@ void archived_day(misc::Ymd d, const PoolAxis &axis, std::vector<Candle> &px, st
   assert(c.date() == d && "新浪归档: 头与文件名不符");
   std::unordered_map<std::string, uint32_t> at; // 新浪码 → axis 下标
   for (uint32_t a = 0; a < axis.size(); ++a)
-    at.emplace(sina_sym(asset_axis().code(axis.global(a))), a);
+    at.emplace(sina::sym_of(asset_axis().code(axis.global(a))), a);
   px.assign(axis.size(), Candle{});
   bars.resize(axis.size());
   for (Bars &b : bars)

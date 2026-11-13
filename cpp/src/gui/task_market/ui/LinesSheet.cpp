@@ -355,10 +355,10 @@ RowSrc src_of(const Quote::QuoteHub *mk, const StockInfos &infos, const LinesDer
 // 成交额 / 流入 = 当日 Day (不看接续); 换手 = 成交额 / 总市值
 SheetToday basket_today(const Quote::Tape &t, const RowSrc &x) {
   SheetToday o;
-  if (!x.src.kl || t.members.empty())
+  if (!x.src.se || t.members.empty())
     return o;
   const size_t l = x.row->ref.key;
-  assert(t.keys[l] == l && x.src.kl == t.list[l].get());
+  assert(t.keys[l] == l && x.src.se == t.list[l].get());
   double w = t.cap[l];
   if (basket_table().weight(l) == pool::kWeightCap && x.src.joined)
     w *= x.day->candle.close / x.day->candle.ref;
@@ -769,7 +769,7 @@ Seg flow_seg(bool ends, std::vector<misc::Ymd> days) {
     if (!x.row->ref.ok())
       return fill(std::vector<Flow>(days.size()), false, t, p, out);
     std::vector<Flow> fl = FlowOf(x.src, days, ends);
-    const bool whole = x.src.kl || std::ranges::all_of(fl, [](const Flow &y) { return y.amount > 0; });
+    const bool whole = x.src.se || std::ranges::all_of(fl, [](const Flow &y) { return y.amount > 0; });
     fill(std::move(fl), whole, t, p, out);
   };
   s.tip = [nd](const LinesSheet &p, size_t row, int k) {

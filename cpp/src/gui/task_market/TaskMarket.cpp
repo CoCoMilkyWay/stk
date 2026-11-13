@@ -100,7 +100,8 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
       mk = state->quote.get();
       if (!state->cta_service)
         state->cta_service = std::make_unique<Market::CtaService>();
-      acct.kline = state->account->line(data.asset_info.quote_end, mk->joint(Quote::kBasket).today());
+      const Account::Line l = state->account->line(mk->view, mk->live);
+      acct.se = l.se, acct.today = l.today;
       acct.hover = state->account->note();
     }
     const int action = Market::RenderTabLines(idx - kTabLines, *e.portfolio_service, state->cta_service.get(), e.portfolio_ui, ui, data.config.fixed_impact,

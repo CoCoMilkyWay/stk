@@ -40,7 +40,7 @@ struct CtaRequest {
   cta::Rates rates;                                    // 成本率 = 系统配置 (Config::commission / stamp / fixed_impact)
   Quote::PriceStamp stamp;                             // 价格库发布的戳
   std::shared_ptr<const std::vector<misc::Ymd>> dates; // 该戳的日脊
-  std::shared_ptr<const Quote::Minutes> minutes;       // 标的在该戳的分钟价
+  std::shared_ptr<const Quote::Series> series;         // 标的在该戳的全史 (连分钟)
   bool operator==(const CtaRequest &) const = default;
 };
 

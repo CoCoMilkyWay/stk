@@ -14,9 +14,11 @@
 #include "live/Broker.hpp"
 #include "misc/date.hpp"
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace account {
@@ -31,6 +33,7 @@ struct Ledger {
 
 Ledger load(); // 没有账本 → 空
 void save(const Ledger &l);
+uint64_t generation(); // 账本代: 本进程起于 1, save 一次 +1 (任意线程)
 
 // 账本并入一次重查 (重查覆盖 from 日起): 账本 from 日起的各行须恰为重查的开头几行; 并后余额链断开 / 有不认识的带股数业务 → Fail
 std::vector<CashFlow> merge(const std::vector<CashFlow> &old, misc::Ymd from, std::vector<CashFlow> fresh);
@@ -46,7 +49,8 @@ using Closes = std::unordered_map<std::string, std::map<misc::Ymd, double>>; // 
 
 struct Day {
   misc::Ymd date = 0;
-  double nav = 0, flow = 0, index = 1; // 净值 / 外部进出 / 指数
+  double nav = 0, flow = 0, index = 1;              // 净值 / 外部进出 / 指数
+  std::vector<std::pair<std::string, double>> hold; // 当日收后持仓 (代码, 股; 代码升序)
 };
 // 在交易日 days (升序) 上回放, 自首条流水所在日 (之后首个交易日) 起; 晚于 days 末日的流水不记
 std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const std::vector<misc::Ymd> &days, const Closes &px);
