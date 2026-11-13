@@ -29,7 +29,7 @@
 // 账户: 资金流水账本 × 个股的根回放 (account::replay), 分钟 = 当日收后持仓 × 分钟收 (account::intraday); 账本代 / 券商现价 / 戳变了重算
 // 服务 (gui/util/Service.hpp, 随对象): 请求 = 要的全史 (标的 × 连不连分钟) + 基本面段末日 + 行情日 + 账本代 + 券商现价 (QuoteHub 每帧并成; 变了即补);
 //   每趟: 补库 (只析构中断, 新请求不打断) → 库变了重建日脊 / 篮子全表 (+ 交接的普查) / 个股日脊末段 → 账户 → 读要的 (按 (标的, 戳) 沿用; 新请求打断)
-//   → 发布 PriceView (与上份同则不发). 进度: Loading = 合成天
+//   → 发布 PriceView (与上份同则不发). 进度: Loading = 合成天 (库段 + 补段 + 篮子侧, 一趟一次 begin)
 // 线程: 库只 worker 读写, 外面只经 PriceView 读; 合成线程池随对象 (两侧按日并行合成, 篮子全表按篮子并行读)
 #pragma once
 
@@ -203,12 +203,14 @@ private:
   Members mem_;               // 交接: 成员表
   std::vector<double> level_; // 交接: [篮子] 末日点位
   misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
-  // worker 私有: 本戳 (built_) 的日脊 / 篮子全表 / 个股日脊末段 / 账户 + 沿用的读
+  // worker 私有: 本戳 (built_) 的日脊 / 篮子全表 / 个股日脊末段 / 普查 / 账户 + 沿用的读
   PriceStamp built_;
   std::shared_ptr<const std::vector<misc::Ymd>> spine_;
   std::shared_ptr<const Tape> baskets_;
   std::shared_ptr<const Tails> tails_;
+  std::shared_ptr<const Census> census_;
   std::shared_ptr<const Tape> account_; // 空 = 本戳未回放
+  Equity equity_;                       // account_ 的摘要
   uint64_t ledger_ = 0;                 // account_ 所依的账本代
   account::Spot spot_;                  // account_ 所依的券商现价
   Kept<Series> daily_{kKeep};           // 个股日根全史

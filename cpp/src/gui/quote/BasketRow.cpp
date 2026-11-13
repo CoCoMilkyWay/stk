@@ -154,26 +154,20 @@ Leg SinaDay::leg(size_t j, Cell &, Bars &) const {
   return {c.ref, traded(c) ? &c : nullptr, &bars[j]};
 }
 
-void census(const Members &m, std::span<const uint32_t> keys, Tape &t) {
-  const size_t K = keys.size();
-  std::vector<size_t> at(basket_table().size(), K); // 篮子 → keys 下标 (不在 = K)
-  for (size_t k = 0; k < K; ++k)
-    at[keys[k]] = k;
+Census census(const Members &m, size_t K) {
+  Census t;
   t.members.assign(K, 0), t.weight.assign(K, 0.0), t.cap.assign(K, 0.0);
   std::vector<double> dot(K * K);
-  std::vector<std::pair<size_t, double>> on;      // 一只所属的在键集里的篮子 (keys 下标, 权)
-  std::vector<std::pair<size_t, Constituent>> cs; // (keys 下标, 成分)
+  std::vector<std::pair<size_t, Constituent>> cs; // (篮子, 成分)
   for (size_t r = 0; r < m.size(); ++r) {
-    on.clear();
-    for (const Members::Weight &x : m.of(r))
-      if (const size_t k = at[x.key]; k < K) {
-        ++t.members[k], t.weight[k] += x.w, t.cap[k] += m.cap[r];
-        on.emplace_back(k, x.w);
-        cs.push_back({k, {m.id[r], x.w}});
-      }
-    for (const auto &[i, wi] : on)
-      for (const auto &[j, wj] : on)
-        dot[i * K + j] += wi * wj;
+    const std::span<const Members::Weight> ws = m.of(r);
+    for (const Members::Weight &x : ws) {
+      assert(x.key < K);
+      ++t.members[x.key], t.weight[x.key] += x.w, t.cap[x.key] += m.cap[r];
+      cs.push_back({x.key, {m.id[r], x.w}});
+      for (const Members::Weight &y : ws)
+        dot[x.key * K + y.key] += static_cast<double>(x.w) * y.w;
+    }
   }
   std::stable_sort(cs.begin(), cs.end(), [](const auto &p, const auto &q) { return p.second.w > q.second.w; });
   t.cons = bucket(K, cs, [](const auto &p) { return p.first; }, [](const auto &p) { return p.second; });
@@ -183,6 +177,7 @@ void census(const Members &m, std::span<const uint32_t> keys, Tape &t) {
       const double nn = dot[i * K + i] * dot[j * K + j];
       t.overlap[i * K + j] = nn > 0 ? static_cast<float>(dot[i * K + j] / std::sqrt(nn)) : 0.f;
     }
+  return t;
 }
 
 } // namespace GUI::Quote

@@ -418,6 +418,17 @@ struct FoldWork {
   DayBuild b;
 };
 
+// 一侧盘上第 i 日的根照样过链 z (留着的日: 只重放链, 不动段)
+template <Side S>
+void rechain(const PriceStore &st, size_t i, std::vector<PriceLib::Link> &z) {
+  const auto [sg, j] = st.at(S, i);
+  for (const RowAt &r : sg->rows())
+    if (r.day >> j & 1) {
+      const DayRec &x = sg->day(r, j);
+      step(z[r.key], x.ref, x.close, origin<S>());
+    }
+}
+
 // 一侧的首日 (只定成员, 无根): 空段
 std::unique_ptr<Seg> first_day(Side s, const disk::Key &lib, misc::Ymd d) {
   disk::ensure(kSideDir[s], lib);
@@ -609,6 +620,8 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
     return false;
   if (dates_.size() > lib_days_ + keep)
     cut(lib_days_ + keep);
+  // 进度一次定总量: 个股库段新日 + 补段要算的日 + 篮子侧要合成的日 (日脊终长 = 库日轴 + 补段)
+  begin(Phase::Loading, (grow ? dates.size() - lib_days_ : 0) + (tail.size() - keep) + (dates.size() + tail.size() - bdays_));
 
   // 个股库段一趟 (lib_pass): 各日的件在并行段各自填, 串行段按日序过链落盘; 每批落一次头 (满块即封)
   if (grow) {
@@ -618,13 +631,14 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
     const auto chain = [&](size_t i, size_t k) {
       assert(dates_.size() == i);
       commit<kStock>(dates[i], bs[k], link_[kStock]);
+      publish(1);
     };
     const auto batch = [&] {
       lib_days_ = dates_.size();
       seal<kStock>();
       save_head();
     };
-    if (!lib_pass(lib.axis, rd, dates, lib_days_, pool_, quit_, *this, each, chain, batch)) {
+    if (!lib_pass(lib.axis, rd, dates, lib_days_, pool_, quit_, each, chain, batch)) {
       if (rd.stale()) // 库在重算: 下次从头核对
         head_ = {};
       return false;
@@ -642,16 +656,9 @@ bool PriceLib::fill(const fundamental::Catalog &cat, const std::vector<misc::Ymd
   const size_t N = rows(kStock), T = tail.size(), L = lib_days_;
   assert(F <= T && keep <= T && dates_.size() == L + keep);
   std::vector<Link> z = link_[kStock];
-  for (size_t i = L; i < L + keep; ++i) { // 留着的日: 链照盘上的根重放
-    const auto [sg, j] = store_->at(kStock, i);
-    for (const RowAt &r : sg->rows())
-      if (r.day >> j & 1) {
-        const DayRec &x = sg->day(r, j);
-        step(z[r.key], x.ref, x.close, origin<kStock>());
-      }
-  }
+  for (size_t i = L; i < L + keep; ++i) // 留着的日: 链照盘上的根重放
+    rechain<kStock>(*store_, i, z);
   if (keep < T) {
-    begin(Phase::Loading, T - keep);
     fundamental::Ids ids(fundamental::Ids::Cover::Part); // 资产轴前 N 条, 下标 = 全局 id
     for (size_t a = 0; a < N; ++a)
       ids.add(asset_axis().code(a));
@@ -717,16 +724,10 @@ bool PriceLib::fold(const pool::Picks &pk) {
   };
   std::vector<Link> z = link_[kBasket]; // 补段的链 (库段的链落在 link_)
   for (size_t i = L; i < bdays_; ++i) { // 留着的补段日: 链 / 成员照盘上的根重放
-    const auto [sg, j] = store_->at(kBasket, i);
-    for (const RowAt &r : sg->rows())
-      if (r.day >> j & 1) {
-        const DayRec &x = sg->day(r, j);
-        step(z[r.key], x.ref, x.close, origin<kBasket>());
-      }
+    rechain<kBasket>(*store_, i, z);
     pass(i);
   }
   if (bdays_ < D) {
-    begin(Phase::Loading, D - bdays_);
     const size_t W = std::min(static_cast<size_t>(pool_.threads()), D - bdays_);
     std::vector<std::unique_ptr<FoldWork>> works;
     for (size_t j = 0; j < W; ++j)
@@ -803,8 +804,8 @@ bool PriceLib::run(PriceRequest &req) {
   auto v = std::make_shared<PriceView>();
   v->stamp = at_;
   v->dates = spine_;
+  v->tails = tails_, v->census = census_, v->equity = equity_;
   auto st = std::make_shared<Tape>();
-  st->tails = tails_;
   for (auto &[k, s] : ks)
     st->keys.push_back(k), st->list.push_back(std::move(s));
   std::shared_ptr<const Tape> bt = baskets_;
@@ -821,7 +822,7 @@ bool PriceLib::run(PriceRequest &req) {
   v->tape[kStock] = same_stocks ? o->tape[kStock] : std::move(st);
   v->tape[kBasket] = same_baskets ? o->tape[kBasket] : std::move(bt);
   v->tape[kAccount] = account_;
-  if (o && same_stocks && same_baskets && o->tape[kAccount] == account_)
+  if (o && same_stocks && same_baskets && o->tape[kAccount] == account_ && o->tails == tails_ && o->census == census_)
     return true;
   put(std::move(v));
   return true;
@@ -868,8 +869,8 @@ void PriceLib::rebuild() {
     if (auto s = std::make_shared<Series>(); series({kBasket, b->keys[static_cast<size_t>(j)]}, false, *s))
       b->list[static_cast<size_t>(j)] = std::move(s);
   });
-  census(mem_, b->keys, *b);
   baskets_ = std::move(b);
+  census_ = std::make_shared<const Census>(census(mem_, rows(kBasket)));
 }
 
 bool PriceLib::series(Ref ref, bool minute, Series &out, size_t from) const {
@@ -909,7 +910,7 @@ bool PriceLib::series(Ref ref, bool minute, Series &out, size_t from) const {
 }
 
 void PriceLib::replay(uint64_t ledger, const account::Spot &spot) {
-  ledger_ = ledger, spot_ = spot;
+  ledger_ = ledger, spot_ = spot, equity_ = {};
   auto t = std::make_shared<Tape>();
   t->keys = {0};
   t->list = {nullptr};
@@ -932,52 +933,36 @@ void PriceLib::replay(uint64_t ledger, const account::Spot &spot) {
     assert(ds.size() == D - i0 && "账户回放: 日数与日脊不符");
     auto se = std::make_shared<Series>();
     se->minute = true;
-    se->px.resize(ds.size() * kSlots * Series::kFields);
+    se->daily.reserve(ds.size()), se->adj.reserve(ds.size()), se->px.reserve(ds.size() * kSlots * Series::kFields);
+    Bars b;
     std::array<float, kSlots> path;
     std::array<double, kSlots> idx;
     for (size_t k = 0; k < ds.size(); ++k) {
       const misc::Ymd date = dates_[i0 + k];
       const account::Day &d = ds[k];
-      // 一只当日的逐槽收 (无根沿用上一根, 首根前 = 前收); 当日无分钟 → 空
+      // 一只当日的逐槽收 (closes; 历史 / 当日同一份); 当日无分钟 → 空
       const auto path_of = [&](const std::string &code) -> std::span<const float> {
         const auto it = held.find(code);
         if (it == held.end())
           return {};
         const Series &h = it->second;
         const size_t j = h.find(date);
-        if (j == h.daily.size())
+        if (j == h.daily.size() || !h.bars(j, b))
           return {};
-        float at = h.daily[j].ref;
-        const float *p = h.slots(j);
-        for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s) {
-          if (const float c = p[s * Series::kFields + Series::kClose]; c > 0)
-            at = c;
-          path[s] = at;
-        }
+        closes(b, h.daily[j].ref, path);
         return path;
       };
       if (k > 0)
         account::intraday(d, ds[k - 1].nav, ds[k - 1].index, path_of, idx);
       else
         idx.fill(d.index);
-      const float ref = static_cast<float>(k > 0 ? ds[k - 1].index : 1.0), x = static_cast<float>(d.index);
-      float hi = std::max(ref, x), lo = std::min(ref, x), prev = ref;
-      float *p = se->px.data() + k * kSlots * Series::kFields;
-      for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s) {
-        const float v = static_cast<float>(idx[s]);
-        float *q = p + s * Series::kFields;
-        q[Series::kOpen] = prev, q[Series::kHigh] = std::max(prev, v), q[Series::kLow] = std::min(prev, v), q[Series::kClose] = v;
-        q[Series::kAmount] = q[Series::kNet] = 0;
-        hi = std::max(hi, v), lo = std::min(lo, v), prev = v;
-      }
-      se->daily.push_back({cell(ref, hi, lo, x, 0), date, ref, {}});
-      se->adj.push_back(1.0);
+      se->push(path_day(date, static_cast<float>(k > 0 ? ds[k - 1].index : 1.0), idx), 1.0);
     }
     t->list[0] = std::move(se);
-    t->nav = ds.back().nav;
-    t->after = account::flow_after(l.rows, ds.back().date);
+    equity_.nav = ds.back().nav;
+    equity_.after = account::flow_after(l.rows, ds.back().date);
     for (const account::Day &d : ds)
-      t->in += d.flow;
+      equity_.in += d.flow;
   }
   account_ = std::move(t);
 }

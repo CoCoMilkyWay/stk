@@ -98,6 +98,18 @@ struct Bars {
   }
 };
 
+// 一个标的一个交易日 (当日 / 合成的一日 / 账户的一日); candle.date 0 = 无
+struct Day {
+  Candle candle; // 日根 (ref = 前收; flow = bars 的摘要)
+  Bars bars;     // 分钟根
+};
+
+// 逐槽收 out[s] (槽 [0, out.size())): 有根取收, 无根沿用上一根, 首根前 = ref (账户按持仓计价的路径; 历史 / 当日同一份)
+void closes(const Bars &b, float ref, std::span<float> out);
+// 一条逐槽点位 v (槽 [0, v.size()), 前收 ref) 成一日: 各根 开 = 上一槽 (首槽 = ref), 收 = 本槽, 高 / 低 = 两者之极, 额 0;
+//   日根 = ref 起、包住全路径 (账户的指数日; 历史回放 / 当日同一份)
+Day path_day(misc::Ymd d, float ref, std::span<const double> v);
+
 // 分钟涨跌法的方向: 收 > 上一价 → +1, < → −1, 平 → 随上一方向 dir (之前无方向 = 0, 不计)
 constexpr int tick_dir(double close, double px, int dir) {
   return close > px ? 1 : close < px ? -1

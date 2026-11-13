@@ -149,8 +149,8 @@ void paint(LinesDerived &d, const LinesDerived &o) {
       }
   const size_t n = rs.size(), D = d.dates.size();
   assert(mkt < n);
-  const Quote::Tape *bt = d.baskets();
-  key.prices = bt;
+  const Quote::Census *bt = d.census();
+  key.census = bt;
   key.ready = d.n_wait == 0 && bt && D >= 2;
   if (key == o.paint) {
     for (LinesRow *r : rs)
@@ -168,7 +168,7 @@ void paint(LinesDerived &d, const LinesDerived &o) {
     residual(res[i], m);
   }
   std::fill(res[mkt].begin(), res[mkt].end(), kNaN); // 自身对自身回归无残差
-  const size_t K = bt->keys.size();
+  const size_t K = bt->members.size();
   assert(bt->overlap.size() == K * K);
   std::vector<double> far(n * n, 0.0); // [行 × 行] 1 − s
   for (size_t i = 0; i < n; ++i)
@@ -604,7 +604,7 @@ void bind_quotes(const PortfolioResult &res, const std::shared_ptr<const Quote::
   };
   if (d.quotes[Quote::kBasket])
     join(b->dates);
-  if (d.baskets())
+  if (d.view && d.view->lack.empty())
     join(*d.view->dates);
   if (live)
     join({live});
@@ -738,16 +738,16 @@ void push_book(LinesDerived &d, int g, LinesRow r, std::vector<LinesLeg> legs, d
   push(d, g, std::move(r), ru);
 }
 
-// 有行情键的行: 篮子三组 = 篮子表三段 (段内序); 成分 = 展开的篮子行的成分 (Tape::cons, 权降序) + 其余个股 kids (升序)
+// 有行情键的行: 篮子三组 = 篮子表三段 (段内序); 成分 = 展开的篮子行的成分 (Census::cons, 权降序) + 其余个股 kids (升序)
 void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, const StockInfos &infos, double fixed_impact, const Reuse &ru,
                    LinesDerived &d) {
   for (int g = 0; g < kBasketGroups; ++g)
     for (const size_t b : basket_table().of(static_cast<BasketGroup>(g)))
       push_quote(d, g, basket_row(b), fixed_impact, ru);
   std::vector<std::pair<uint32_t, double>> ks; // (全局 id, 权占比)
-  if (const LinesAt o = d.at(open); o.g >= 0 && d.baskets()) {
+  if (const LinesAt o = d.at(open); o.g >= 0 && d.census()) {
     assert(o.g < kBasketGroups);
-    const Quote::Tape &bt = *d.baskets();
+    const Quote::Census &bt = *d.census();
     const uint32_t line = d.row(o).ref.key;
     for (const Quote::Constituent &c : bt.cons[line])
       ks.emplace_back(c.id, c.w / bt.weight[line]);

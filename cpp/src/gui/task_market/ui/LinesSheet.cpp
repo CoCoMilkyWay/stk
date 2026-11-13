@@ -353,14 +353,14 @@ RowSrc src_of(const Quote::QuoteHub *mk, const StockInfos &infos, const LinesDer
   x.prev = x.day ? mk->live->prev : 0;
   return x;
 }
-// 篮子行的当日 (SheetToday): 只数 / 总市值 = Tape::members / cap (加权线的总市值当日接上 × 当日涨跌 = 成员总市值的当日变化; 等权线停在末日收盘);
+// 篮子行的当日 (SheetToday): 只数 / 总市值 = Census::members / cap (加权线的总市值当日接上 × 当日涨跌 = 成员总市值的当日变化; 等权线停在末日收盘);
 // 成交额 / 流入 = 当日 Day (不看接续); 换手 = 成交额 / 总市值
-SheetToday basket_today(const Quote::Tape &t, const RowSrc &x) {
+SheetToday basket_today(const Quote::Census &t, const RowSrc &x) {
   SheetToday o;
   if (!x.src.se || t.members.empty())
     return o;
   const size_t l = x.row->ref.key;
-  assert(t.keys[l] == l && x.src.se == t.list[l].get());
+  assert(l < t.members.size());
   double w = t.cap[l];
   if (basket_table().weight(l) == pool::kWeightCap && x.src.joined)
     w *= x.day->candle.close / x.day->candle.ref;
@@ -385,7 +385,7 @@ SheetToday stock_today(const RowSrc &x) {
   return o;
 }
 // 表行的当日: 按行情键 (篮子 = 价格库篮子史的该线 + 当日; 个股 = 档案 + 当日; 无 / 篮子史未到 = 全不可算)
-SheetToday today_of(const Quote::Tape *bt, const RowSrc &x) {
+SheetToday today_of(const Quote::Census *bt, const RowSrc &x) {
   const Quote::Ref q = x.row->ref;
   return q.is(Quote::kBasket) ? bt ? basket_today(*bt, x) : SheetToday{} : q.is(Quote::kStock) ? stock_today(x)
                                                                                                : SheetToday{};
@@ -530,7 +530,7 @@ const LinesSheet &sheet_of(LinesState &ui, const Quote::QuoteHub *mk, const Stoc
   for (const Seg &s : segs)
     in.insert(in.end(), s.key.begin(), s.key.end());
   const LinesSheetKey k{g, ui.view.gen, infos.size(), std::move(in), ImGui::GetFontSize(), ImGui::GetColorU32(ImGuiCol_Text)};
-  const Quote::Tape *bt = mk ? mk->tape(Quote::kBasket) : nullptr;
+  const Quote::Census *bt = mk && mk->view ? mk->view->census.get() : nullptr;
   ui.sheet[page].update(k, [&](LinesSheet &ps) {
     ps.nc = cols_in(segs);
     ps.R = d.rows[g].size();

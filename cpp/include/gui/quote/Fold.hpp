@@ -26,12 +26,6 @@
 
 namespace GUI::Quote {
 
-// 一个标的一个交易日 (当日 / 合成的一日); candle.date 0 = 无
-struct Day {
-  Candle candle; // 日根 (ref = 前收; flow = bars 的摘要)
-  Bars bars;     // 分钟根
-};
-
 // 合成的一日 (前日 = 1, candle.date ≠ 0) 接到前日点位 level 上: 各根价 × level, ref = level
 void rebase(Day &y, double level);
 

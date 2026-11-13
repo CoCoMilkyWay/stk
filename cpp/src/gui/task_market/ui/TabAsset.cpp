@@ -553,8 +553,7 @@ void fill_order(std::vector<size_t> &o, const AssetCells &cs, int sort_column, b
 // 格 → 显示序 (三级: 快照只重填行情列, 排序只重排, 都不重填其余格; 表格与截面分析共用)
 void sync_view(AssetState &state, const Asset &asset, const StockInfos &stock_info) {
   const Joint &q = state.quotes;
-  const Tape *t = q.tape();
-  const AssetQuoteKey qk{t ? t->tails : nullptr, q.live ? static_cast<uint64_t>(q.live->date) * 86400 + static_cast<uint64_t>(q.live->sec) : 0};
+  const AssetQuoteKey qk{q.view ? q.view->tails : nullptr, q.live ? static_cast<uint64_t>(q.live->date) * 86400 + static_cast<uint64_t>(q.live->sec) : 0};
   state.cells.update(AssetCellsKey{asset.generation, asset.items.size(), stock_info.size(), state.filter, ImGui::GetFontSize(), ImGui::GetColorU32(ImGuiCol_Text)},
                      [&](AssetCells &o) {
                        fill_cells(o, asset, stock_info, q, state.filter);

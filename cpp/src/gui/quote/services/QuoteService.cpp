@@ -263,19 +263,20 @@ void QuoteService::publish() {
       d->candle.flow = day_flow(d->bars);
       tracks_[i].day = std::move(d);
     });
-    for (size_t i = 0; i < tracks_.size(); ++i)
-      if (traded(qs[i].get()))
-        (*stocks)[i] = tracks_[i].day;
-    freeze.resize(tracks_.size()), touched.resize(tracks_.size());
+    int fz = 0;
     if ((b = basis_)) {
       slots = std::max(live_slot(), sec_slot(sec_)) + 1;
-      const int fz = std::min(settled() + 1, slots);
-      const bool fill = date_ > fund_end_; // 待补的根还会被分钟 K 改写
-      for (size_t i = 0; i < tracks_.size(); ++i)
-        freeze[i] = fill && tracks_[i].gap() ? std::min(fz, tracks_[i].lo) : fz;
+      fz = std::min(settled() + 1, slots);
     }
-    for (size_t i = 0; i < tracks_.size(); ++i)
-      touched[i] = std::exchange(tracks_[i].touched, kSlots);
+    const bool fill = date_ > fund_end_; // 待补的根还会被分钟 K 改写
+    freeze.resize(tracks_.size()), touched.resize(tracks_.size());
+    for (size_t i = 0; i < tracks_.size(); ++i) {
+      Track &t = tracks_[i];
+      if (traded(qs[i].get()))
+        (*stocks)[i] = t.day;
+      freeze[i] = fill && t.gap() ? std::min(fz, t.lo) : fz;
+      touched[i] = std::exchange(t.touched, kSlots);
+    }
   }
   if (b)
     fold(*y, *stocks, b, slots, freeze, touched);

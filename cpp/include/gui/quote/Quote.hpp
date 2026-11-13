@@ -16,7 +16,6 @@
 
 #include "define/Csr.hpp"
 #include "gui/quote/Bars.hpp"
-#include "gui/quote/Fold.hpp"
 #include "misc/date.hpp"
 
 #include <algorithm>
@@ -90,6 +89,8 @@ struct Series {
   }
   // 第 i 日 → 分钟根; 无根 → false
   bool bars(size_t i, Bars &b) const;
+  // 接一日 y (日升序; 复权倍数 f): 日根 + (minute) 分钟根, 无根槽 NaN (bars 的逆)
+  void push(const Day &y, double f);
 };
 
 // 篮子的一个成分: 全局 id + 权 (等权 = 1, 加权 = 末日收盘总市值 [亿元])
@@ -103,26 +104,27 @@ struct Tails {
   Csr<Candle> daily;              // [ids] 日升序
   size_t find(uint32_t id) const; // 不在 → ids.size()
 };
-// 一侧的历史 (PriceView 给; 不可变): 键集 (升序) → 各键的全史, 同序; 日脊在 PriceView (各侧同一条)
+// 一侧的历史 (PriceView 给; 不可变; 三侧同形): 键集 (升序) → 各键的全史, 同序; 日脊在 PriceView (各侧同一条)
 struct Tape {
   std::vector<uint32_t> keys;                      // 篮子 = 全表; 个股 = 价格库留着的; 账户 = {0}
   std::vector<std::shared_ptr<const Series>> list; // [keys] 只读, 与价格库及前后几次发布共享 (不拷); nullptr = 无历史 (个股日脊上无成交 / 无账本)
-  std::shared_ptr<const Tails> tails;              // 个股; 其余空
   // 键 → 下标; 不在 → keys.size()
   size_t find(uint32_t key) const {
     const auto it = std::ranges::lower_bound(keys, key);
     return it != keys.end() && *it == key ? static_cast<size_t>(it - keys.begin()) : keys.size();
   }
   const Series *line(uint32_t key) const; // 键的全史; 不在 / 无 → nullptr
-  // 篮子 [keys]: 历史末日收盘定的成员表 (= 当日 bind 给 Quote 的) 的成员只数 / Σ 权 / 成员总市值 [亿元] (末日收盘, 股本 total_shares 以亿股计); 个股空
-  std::vector<uint32_t> members;
-  std::vector<double> weight, cap;
-  // 篮子 [keys]: 同一成员表各篮子的成分 (权降序); 个股空
-  Csr<Constituent> cons;
-  // 篮子 [keys × keys]: 同一成员表两篮子权重向量的余弦 (成员重合; 无成员 = 0); 个股空
-  std::vector<float> overlap;
-  // 账户 (时间加权指数, 前收 = 前一日指数, 全史恒带分钟): 回放末日净值 / 其后账本里的外部进出 / 回放各日外部进出之和 (累计净转入);
-  //   当日 = 末日指数 × growth(nav, 净资产_s, after) (account::intraday); 其余侧 0
+};
+// 篮子的普查 (PriceView 给; 不可变, 一戳一份): 历史末日收盘定的成员表 (= 当日 bind 给 Quote 的) 在篮子全表上 [篮子]
+struct Census {
+  std::vector<uint32_t> members;   // 成员只数
+  std::vector<double> weight, cap; // Σ 权 / 成员总市值 [亿元] (末日收盘, 股本 total_shares 以亿股计)
+  Csr<Constituent> cons;           // 成分 (权降序)
+  std::vector<float> overlap;      // [篮子 × 篮子] 两篮子权重向量的余弦 (成员重合; 无成员 = 0)
+};
+// 账户回放的摘要 (PriceView 给; 随账户侧的 Tape 一并换): 回放末日净值 / 其后账本里的外部进出 / 回放各日外部进出之和 (累计净转入);
+//   账户全史 = 时间加权指数 (前收 = 前一日指数, 恒带分钟); 当日 = 末日指数 × growth(nav, 净资产_s, after) (account::intraday)
+struct Equity {
   double nav = 0, after = 0, in = 0;
 };
 // 价格库的戳 = 日脊的摘要: 库轴指纹 + 篮子表指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用)
@@ -137,7 +139,10 @@ struct PriceView {
   std::string lack;
   PriceStamp stamp;
   std::shared_ptr<const std::vector<misc::Ymd>> dates; // 日脊 (各侧同一条; 一戳一份): 库段 [0, stamp.lib) + 基本面段 + 新浪段
-  PerSide<std::shared_ptr<const Tape>> tape;           // 个股 = 留着的全史 + 日脊末段; 篮子 = 全表 + 交接的普查; 账户 = 账本的回放
+  PerSide<std::shared_ptr<const Tape>> tape;           // 个股 = 留着的全史; 篮子 = 全表; 账户 = 账本的回放
+  std::shared_ptr<const Tails> tails;                  // 个股: 日脊末段 (全部个股; 一戳一份)
+  std::shared_ptr<const Census> census;                // 篮子: 交接成员表的普查 (一戳一份)
+  Equity equity;                                       // 账户: 回放的摘要 (无账本 = 全 0)
   misc::Ymd last() const { return stamp.last; }
   misc::Ymd lib_last() const { return (*dates)[stamp.lib - 1]; }               // 库末日 (篮子的成员 / 池 / 行业 / 股本所取)
   misc::Ymd fund_last() const { return (*dates)[stamp.lib + stamp.fund - 1]; } // 基本面段末日 (无该段 = 库末日)

@@ -180,10 +180,10 @@ struct LinesAt {
   size_t r = 0;
   bool operator==(const LinesAt &) const = default;
 };
-// 配色的来源: 配色组各行的 (id, 理想线) + 成员重合 (篮子全表) + 可否定色; 与上一份同 → 色相照搬
+// 配色的来源: 配色组各行的 (id, 理想线) + 成员重合 (篮子普查) + 可否定色; 与上一份同 → 色相照搬
 struct LinesPaintKey {
   std::vector<std::pair<std::string, const Line *>> rows;
-  const Quote::Tape *prices = nullptr;
+  const Quote::Census *census = nullptr;
   bool ready = false;
   bool operator==(const LinesPaintKey &) const = default;
 };
@@ -204,7 +204,7 @@ struct LinesDerived {
                                                                  //   个股历史只价格库留着的个股有 (选中的; 其余成分的理想线 = 可成交线, 同一条);
                                                                  //     理想线的当日尾 = LinesLive
                                                                  //   指数 / 行业 / 概念 = [篮子表段内序] (源没算成也列, 线空); en = BasketTable::code, cn = tag = 切片名 (超长截断) + .等 / .加, hover = en + 全名;
-                                                                 //   成分 = 展开的篮子行的成分 (Tape::cons, 权降序; 前 n_cons 行, 右表挂在展开行下) + 其余选中 / 自选的个股 (收起后照画, 升序);
+                                                                 //   成分 = 展开的篮子行的成分 (Census::cons, 权降序; 前 n_cons 行, 右表挂在展开行下) + 其余选中 / 自选的个股 (收起后照画, 升序);
                                                                  //     en | cn = 代码 | 简称, hover = 代码 + 权占比 + 行业 / 估值
                                                                  //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头; id = PortfolioEntry::key,
                                                                  //     en | cn = 因子文件主干 | 中文名 (超长截断), hover = en + 全名 + 池 层 持有期 冲击段 规范串
@@ -214,7 +214,7 @@ struct LinesDerived {
                                                                  //     主图只画原行); 名次在自选之间 (视图按组排); 找不到的键 (概念换快照没了 / 代码不在资产轴) 记 watch_lost
                                                                  //   色: 配色组 (指数 / 行业 / 概念 / 因子) 的行一起按相似度 s = max(成员重合, 残差相关) 建 Ward 树, 叶序相邻两行色相差 ∝ 树上分开处两侧平均 1 − s
                                                                  //     (OKLCH 定亮定艳色环); 因子没到齐 / 价格指数未就绪 → 全灰. 右表名列排序 = 色相序 (相似的挨着)
-                                                                 //     成员重合 = Tape::overlap (只篮子之间), 残差相关 = 理想线末段日收益对全A.加回归的残差相关; 成分 = 按全局 id 黄金角散开
+                                                                 //     成员重合 = Census::overlap (只篮子之间), 残差相关 = 理想线末段日收益对全A.加回归的残差相关; 成分 = 按全局 id 黄金角散开
   std::map<std::string, LinesAt> index;                          // 行 id → 位置 (选中解析)
   int n_ready = 0, n_error = 0, n_wait = 0;                      // 已算成 / 算失败 / 未到的因子数
   size_t n_cons = 0;                                             // 成分组前 n_cons 行 = 展开行的成分
@@ -233,8 +233,8 @@ struct LinesDerived {
     return it == index.end() ? LinesAt{} : it->second;
   }
   const LinesRow &row(const LinesAt &a) const { return rows[a.g][a.r]; }
-  // 篮子全表 (价格指数 / 成分 / 成员重合); 价格库用不了 / 未发布 → nullptr
-  const Quote::Tape *baskets() const { return view ? view->tape[Quote::kBasket].get() : nullptr; }
+  // 篮子全表的普查 (成分 / 成员重合); 价格库用不了 / 未发布 → nullptr
+  const Quote::Census *census() const { return view ? view->census.get() : nullptr; }
   // 有行情键的行 r 的日内形未到 (价格库未发布 / 发布里没有该键的结论): 其线此时只有日线, 主图等它到了一次画成分钟线
   bool minute_wait(const LinesRow &r) const { return r.ref.ok() && !(view && view->covers(r.ref, true)); }
 };

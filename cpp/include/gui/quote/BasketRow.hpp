@@ -15,10 +15,10 @@
 #include "features/Panel/PoolSelect.hpp" // pool::Picks / day_cols
 #include "features/Storage/FeatureRead.hpp"
 #include "fundamental/AssetAxis.hpp"
+#include "gui/quote/Fold.hpp"
 #include "gui/quote/Quote.hpp"
 #include "misc/exec.hpp"
 #include "misc/snap.hpp"
-#include "shared/Progress.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -142,17 +142,16 @@ struct LibWork {
 
 // 库段一趟 (个股): 库日轴 dates [from, N) (from ≥ 1), 每批 T = 线程数日:
 //   并行  一日一件 (批内第 k 件): 读 D−1 / D 日根行 + D 的 L_1min → each(k, LibDay) (各日互不相干)
-//   串行  按日序 chain(i, k) (因子链), 批末 batch()
-//   x 记 Loading 天; false = 取消 / 判废 (rd.stale)
+//   串行  按日序 chain(i, k) (因子链; 进度归它), 批末 batch()
+//   false = 取消 / 判废 (rd.stale)
 template <class Each, class Chain, class Batch>
 bool lib_pass(const PoolAxis &axis, const FeatureRead &rd, std::span<const misc::Ymd> dates, size_t from, misc::exec::ForkJoin &pool,
-              const std::atomic<bool> &cancel, Progress &x, Each &&each, Chain &&chain, Batch &&batch) {
+              const std::atomic<bool> &cancel, Each &&each, Chain &&chain, Batch &&batch) {
   const size_t N = dates.size(), T = static_cast<size_t>(pool.threads());
   assert(from >= 1 && from <= N);
   std::vector<std::unique_ptr<LibWork>> works;
   for (size_t k = 0; k < std::min(T, N - from); ++k)
     works.push_back(std::make_unique<LibWork>(axis.size()));
-  x.begin(Phase::Loading, N - from);
   for (size_t i0 = from; i0 < N; i0 += T) {
     if (cancel.load(std::memory_order_relaxed) || rd.stale())
       return false;
@@ -167,10 +166,8 @@ bool lib_pass(const PoolAxis &axis, const FeatureRead &rd, std::span<const misc:
     });
     if (rd.stale())
       return false;
-    for (size_t k = 0; k < n; ++k) {
+    for (size_t k = 0; k < n; ++k)
       chain(i0 + k, k);
-      x.publish(1);
-    }
     batch();
   }
   return true;
@@ -200,7 +197,7 @@ void snap_write(disk::Node n, const disk::Key &k, const Head &head, Body &&body)
   disk::write(n, k, {reinterpret_cast<const char *>(blob.data()), blob.size()});
 }
 
-// 普查: 成员表 m 在键集 keys (篮子) 上 → t 的 members / weight / cap / cons / overlap (见 Tape)
-void census(const Members &m, std::span<const uint32_t> keys, Tape &t);
+// 普查: 成员表 m 在篮子全表 [0, K) 上 (见 Census)
+Census census(const Members &m, size_t K);
 
 } // namespace GUI::Quote

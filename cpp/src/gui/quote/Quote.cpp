@@ -3,6 +3,7 @@
 #include "api/sina/client.hpp"
 
 #include <cassert>
+#include <cmath>
 
 namespace GUI::Quote {
 
@@ -36,6 +37,23 @@ bool Series::bars(size_t i, Bars &b) const {
     b.has.set(s);
   }
   return b.has.any();
+}
+
+void Series::push(const Day &y, double f) {
+  assert(daily.empty() || daily.back().date < y.candle.date);
+  daily.push_back(y.candle);
+  adj.push_back(f);
+  if (!minute)
+    return;
+  px.resize(px.size() + static_cast<size_t>(kSlots) * kFields, NAN);
+  float *p = px.data() + px.size() - static_cast<size_t>(kSlots) * kFields;
+  for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
+    if (y.bars.has[s]) {
+      const Cell &c = y.bars.cell[s];
+      float *q = p + s * kFields;
+      q[kOpen] = c.open, q[kHigh] = c.high, q[kLow] = c.low, q[kClose] = c.close;
+      q[kAmount] = static_cast<float>(c.amount), q[kNet] = static_cast<float>(y.bars.net[s]);
+    }
 }
 
 const Candle *Source::last() const {
@@ -119,9 +137,9 @@ Source Joint::of(uint32_t key) const {
   if (const Tape *t = tape()) {
     if ((o.se = t->line(key))) {
       o.daily = o.se->daily;
-    } else if (t->tails) {
-      if (const size_t k = t->tails->find(key); k < t->tails->ids.size())
-        o.daily = t->tails->daily[k];
+    } else if (const Tails *tl = side == kStock ? view->tails.get() : nullptr) {
+      if (const size_t k = tl->find(key); k < tl->ids.size())
+        o.daily = tl->daily[k];
     }
   }
   o.joined = o.today && (o.daily.empty() || view->joins(live->prev));

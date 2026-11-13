@@ -1,6 +1,28 @@
 #include "gui/quote/Bars.hpp"
 
+#include <cassert>
+
 namespace GUI::Quote {
+
+void closes(const Bars &b, float ref, std::span<float> out) {
+  assert(out.size() <= static_cast<size_t>(kSlots));
+  float c = ref;
+  for (size_t s = 0; s < out.size(); ++s)
+    out[s] = c = b.has[s] ? b.cell[s].close : c;
+}
+
+Day path_day(misc::Ymd d, float ref, std::span<const double> v) {
+  assert(v.size() <= static_cast<size_t>(kSlots));
+  Day y;
+  float prev = ref, hi = ref, lo = ref;
+  for (size_t s = 0; s < v.size(); ++s) {
+    const float x = static_cast<float>(v[s]);
+    y.bars.add(static_cast<int>(s), cell(prev, std::max(prev, x), std::min(prev, x), x, 0));
+    hi = std::max(hi, x), lo = std::min(lo, x), prev = x;
+  }
+  y.candle = {cell(ref, hi, lo, prev, 0), d, ref, {}};
+  return y;
+}
 
 void net_flow(const Bars &b, float base, std::span<double, kSlots> net) {
   std::ranges::fill(net, 0.0);

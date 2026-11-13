@@ -41,6 +41,7 @@
 #pragma once
 
 #include "api/sina/client.hpp"
+#include "gui/quote/Fold.hpp"
 #include "gui/quote/Quote.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
