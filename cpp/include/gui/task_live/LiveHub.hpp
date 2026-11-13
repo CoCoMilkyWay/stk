@@ -29,15 +29,8 @@ inline constexpr size_t kOrderCap = 5;   // 留最近几单
 inline constexpr size_t kLogTail = 200;  // 事务日志留给页面的条数
 inline constexpr size_t kTaskKeep = 100; // 事务日志留几个文件
 
-// 万为单位, 至多一位小数、去尾零: 1W / 1.5W / 12.3W; sign 带正负号
-inline std::string wan(double v, bool sign = false) {
-  std::string s = live::strf(sign ? "%+.1f" : "%.1f", v / 1e4);
-  while (s.back() == '0')
-    s.pop_back();
-  if (s.back() == '.')
-    s.pop_back();
-  return s + "W";
-}
+// 万为单位, 定一位小数 (表里按位对齐); sign 带正负号
+inline std::string wan(double v, bool sign = false) { return live::strf(sign ? "%+.1fW" : "%.1fW", v / 1e4); }
 inline constexpr const char *kMask = "****"; // 隐私下遮住的一段 (见 LiveHub::priv)
 
 enum class JobSt : uint8_t { Run,

@@ -13,6 +13,7 @@
 //     attach {pid} / ptrace {scope}      接进程堆、放开 ptrace             torn {tab, n}  连读 n 次才一致
 //     gen {tab, rows, addr}              盯着的表换代 (addr = 选中各块的地址)
 //     wait {tab, ms, by: gen | full}     等客户端重查后的换代              ask {tab, rows, addr, ms}  act 后等到新应答
+//     reask {tab, try, hits}             没等到新应答, 再 act (hits = 此刻该表命中各块的地址)
 //     rows {n, got}                      两融整表拼表 (页上条数 / 内存行数) 每变一次
 //     texts {wins, seen}                 点文字不恰一处: 候选窗口数、各候选窗口上画着的文字
 //     popup {title, hwnd}                等到的弹框                        form {px, dflt, unit, cap0, cap, n}  填单的价、默认价、单位、最大量、股数

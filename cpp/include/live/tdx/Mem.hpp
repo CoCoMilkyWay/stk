@@ -461,7 +461,8 @@ public:
   using Snap = mem::Snap<S>;
   using Mode = typename S::Mode;
 
-  Snap pick(const HeapP &heap, const std::vector<Hit> &hits) {
+  // 选中的块在复读前全被释放 (客户端正在重查) → 无
+  std::optional<Snap> try_pick(const HeapP &heap, const std::vector<Hit> &hits) {
     std::vector<Hit> chosen;
     {
       std::lock_guard lk(mu_);
@@ -475,13 +476,19 @@ public:
         mark.push_back(std::move(m));
       }
     if (mark.empty() && !chosen.empty())
-      fail(strf("%s选中的 %zu 块在复读前全被释放, 客户端正在重查", S::kShape.name, chosen.size()));
+      return std::nullopt;
     std::vector<std::vector<Row>> parts;
     for (const Hit &h : mark)
       parts.push_back(parse<S>(h.body));
     Snap s{heap, std::move(mark), Mode::template merge<S>(std::move(parts)), {}};
     s.index = S::Index::build(S::kShape, s.rows);
     return s;
+  }
+  Snap pick(const HeapP &heap, const std::vector<Hit> &hits) {
+    std::optional<Snap> s = try_pick(heap, hits);
+    if (!s)
+      fail(strf("%s选中的块在复读前全被释放, 客户端正在重查", S::kShape.name));
+    return std::move(*s);
   }
   Snap read(const HeapP &heap) { return pick(heap, scan_of<S>(*heap)); }
 
@@ -525,24 +532,33 @@ class Chain {
 public:
   Chain(HeapP heap, std::vector<const Shape *> shapes) : heap_(std::move(heap)), shapes_(std::move(shapes)), last_(heap_->scan(shapes_)) {}
 
-  // act 让客户端重查 t 一次, 等新冒出的块; timeout 秒内没有 → Fail
+  // act 让客户端重查 t 一次, 等新冒出的块 (冒出即被释放的不算). 空表的应答与留在堆里的旧空表逐字节相同,
+  // 落回同址即认不出, 故 wait 秒没等到即再 act, 共 tries 次仍没有 → Fail
   template <class S>
-  Snap<S> ask(Table<S> &t, const std::function<void()> &act, double timeout = 5) {
+  Snap<S> ask(Table<S> &t, const std::function<void()> &act, int tries = 3, double wait = 2) {
     const size_t at = static_cast<size_t>(std::find(shapes_.begin(), shapes_.end(), &S::kShape) - shapes_.begin());
     assert(at < shapes_.size());
     t.arm(last_[at]);
     const Clock::time_point t0 = Clock::now();
-    act();
-    Snap<S> got = std::move(*until(
-        said(strf("%s的新应答", S::kShape.name)),
-        [&]() -> std::optional<Snap<S>> {
-          last_ = heap_->scan(shapes_);
-          Snap<S> s = t.pick(heap_, last_[at]);
-          return s.mark.empty() ? std::nullopt : std::optional<Snap<S>>(std::move(s));
-        },
-        timeout, 0));
-    trace::ev("ask", {{"tab", S::kShape.name}, {"rows", got.rows.size()}, {"addr", addrs(got.mark)}, {"ms", trace::ms_since(t0)}});
-    return got;
+    for (int i = 0; i < tries; ++i) {
+      if (i)
+        trace::ev("reask", {{"tab", S::kShape.name}, {"try", i + 1}, {"hits", addrs(last_[at])}});
+      act();
+      std::optional<Snap<S>> got = poll(
+          [&]() -> std::optional<Snap<S>> {
+            last_ = heap_->scan(shapes_);
+            std::optional<Snap<S>> s = t.try_pick(heap_, last_[at]);
+            if (!s || s->mark.empty())
+              return std::nullopt;
+            return s;
+          },
+          wait, 0);
+      if (got) {
+        trace::ev("ask", {{"tab", S::kShape.name}, {"rows", got->rows.size()}, {"addr", addrs(got->mark)}, {"ms", trace::ms_since(t0)}});
+        return std::move(*got);
+      }
+    }
+    fail(strf("%s重查 %d 次都没等到新应答", S::kShape.name, tries));
   }
 
 private:

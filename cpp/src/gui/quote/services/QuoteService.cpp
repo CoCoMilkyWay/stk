@@ -54,7 +54,7 @@ bool in_session(const Clock &c) {
 
 // 缓存文件 = FileRec + n × AssetRec + n × kSlots × SlotRec (定长, 本机字节序); 头不符 = 别的格式 / 别的行情日, 弃.
 //   AssetRec / SlotRec 各是一个原子条目: 整条写入, busy 先置后清 —— 读回 busy 的 = 写到一半进程没了
-constexpr uint32_t kMagic = 0x56494C51; // "QLIV"
+constexpr uint32_t kMagic = 0x484C5651; // "QVLH"
 struct FileRec {
   uint32_t magic;
   misc::Ymd date;
@@ -70,7 +70,7 @@ struct AssetRec {
 };
 struct SlotRec {
   Cell bar;
-  uint8_t has, exact, busy;
+  uint8_t has, exact, hole, busy;
 };
 
 size_t file_bytes(size_t n) { return sizeof(FileRec) + n * (sizeof(AssetRec) + kSlots * sizeof(SlotRec)); }
@@ -146,7 +146,8 @@ QuoteStatus QuoteService::status() const {
   std::lock_guard<std::mutex> lock(mu_);
   const bool fill = date_ > fund_end_;
   const size_t gaps = fill ? static_cast<size_t>(std::ranges::count_if(tracks_, [](const Track &t) { return t.lo <= t.hi; })) : 0;
-  return {date_, prev_, sec_, todo_.size() + inflight_, fetched_, gaps, fill, ver_, bytes_, saved_};
+  const size_t holes = fill ? static_cast<size_t>(std::ranges::count_if(tracks_, [](const Track &t) { return t.bars.hole.any(); })) : 0;
+  return {date_, prev_, sec_, todo_.size() + inflight_, fetched_, gaps, holes, fill, ver_, bytes_, saved_};
 }
 
 void QuoteService::bind(Members m, std::vector<double> level) {
@@ -325,12 +326,12 @@ void QuoteService::poll() {
         sec_ = std::max(sec_, q.sec);
         const bool first = tracks_[i].vol < 0;
         if (tracks_[i].absorb(q, gap)) {
-          if (first)
-            put(i, 0);
-          put(i, sec_slot(q.sec));
+          const int s = sec_slot(q.sec), from = first ? 0 : gap >= 0 ? gap : s; // 改到的根: 首快照 / 断档的缺口起
+          for (int k = from; k <= s; ++k)
+            put(i, k);
           put(i);
           dirty_ = true;
-          touched_ = std::min(touched_, first ? 0 : sec_slot(q.sec));
+          touched_ = std::min(touched_, from);
         }
       }
       std::atomic_ref<int32_t>(file_rec(map_).sec).store(sec_, std::memory_order_release); // 本轮各只落定之后
@@ -346,25 +347,41 @@ void QuoteService::poll() {
   }
 }
 
+void QuoteService::Track::hole(int l, int h) {
+  if (l > h)
+    return;
+  mark(l, h);
+  for (int s = l; s <= h; ++s)
+    if (!exact[static_cast<size_t>(s)])
+      bars.hole.set(static_cast<size_t>(s)), bars.has.reset(static_cast<size_t>(s));
+}
+
+bool QuoteService::Track::holed(int done) const {
+  for (int s = lo; s <= std::min(hi, done); ++s)
+    if (bars.hole[static_cast<size_t>(s)])
+      return true;
+  return false;
+}
+
 bool QuoteService::Track::absorb(const sina::Quote &q, int gap) {
-  if (vol < 0) { // 首快照: 基线. 已有成交 ⇒ 所在根及以前快照没盯住; 补到前先暂写已知的两价 (首根 = 今开, 所在根 = 现价, 量 0), 其间沿用今开
+  const int s = sec_slot(q.sec);
+  if (vol < 0) { // 首快照: 基线. 已有成交 ⇒ 所在根以前快照没盯住 (缺口); 所在根暂写现价 (量 0)
     vol = q.volume, amt = q.amount, high = q.high, low = q.low;
     if (q.volume > 0) {
-      const int s = sec_slot(q.sec);
       mark(0, s);
-      if (q.open > 0)
-        bars.add(0, {q.open, q.open, q.open, q.open, 0, 0});
+      hole(0, s - 1);
       if (q.price > 0)
         bars.add(s, {q.price, q.price, q.price, q.price, 0, 0});
     }
     return true;
   }
   const double dv = q.volume - vol, da = q.amount - amt;
-  if (dv > 0 && gap >= 0)
-    mark(gap, sec_slot(q.sec));
+  if (dv > 0 && gap >= 0) {
+    mark(gap, s);
+    hole(gap + 1, s - 1);
+  }
   if (dv > 0 && q.price > 0 && q.sec <= kCloseSec) {
-    const int s = sec_slot(q.sec);
-    if (!exact[static_cast<size_t>(s)]) {
+    if (!exact[static_cast<size_t>(s)] && !bars.hole[static_cast<size_t>(s)]) {
       float h = q.price, l = q.price;
       if (q.high > high)
         h = std::max(h, q.high);
@@ -398,8 +415,8 @@ int QuoteService::live_slot() const {
 void QuoteService::schedule() {
   if (date_ <= fund_end_)
     return;
-  const int st = settled();
-  if (sel_ != ~0u && tracks_[sel_].vol >= 0) { // 选中: 定稿部分补成精确, 插队
+  const int st = settled(), dn = done();
+  if (sel_ != ~0u && tracks_[sel_].vol >= 0) { // 选中: 定稿部分补成精确
     Track &t = tracks_[sel_];
     int s = 0;
     while (s <= st && t.exact[s])
@@ -408,17 +425,20 @@ void QuoteService::schedule() {
       t.mark(s, st);
       put(sel_);
     }
-    if (t.fill == Fill::Queued && todo_.front() != sel_) {
-      todo_.erase(std::find(todo_.begin(), todo_.end(), sel_));
-      todo_.push_front(sel_);
+  }
+  for (uint32_t i = 0; i < tracks_.size(); ++i) { // 有缺口的排在补精确的之前
+    Track &t = tracks_[i];
+    if (t.fill != Fill::Idle || t.lo > t.hi)
+      continue;
+    const bool holed = t.holed(dn);
+    if (holed || (i == sel_ ? t.lo <= st : t.hi <= st || t.lo + kLag <= st)) {
+      t.fill = Fill::Queued;
+      holed ? todo_.push_front(i) : todo_.push_back(i);
     }
   }
-  for (uint32_t i = 0; i < tracks_.size(); ++i) {
-    Track &t = tracks_[i];
-    if (t.fill == Fill::Idle && t.lo <= t.hi && (i == sel_ ? t.lo <= st : t.hi <= st || t.lo + kLag <= st)) {
-      t.fill = Fill::Queued;
-      i == sel_ ? todo_.push_front(i) : todo_.push_back(i);
-    }
+  if (sel_ != ~0u && tracks_[sel_].fill == Fill::Queued && todo_.front() != sel_) { // 选中插队
+    todo_.erase(std::find(todo_.begin(), todo_.end(), sel_));
+    todo_.push_front(sel_);
   }
 }
 
@@ -465,10 +485,9 @@ void QuoteService::fill() {
 }
 
 int QuoteService::Track::merge(int l, int settled, int live, misc::Ymd date, const std::vector<sina::Bar> &got) {
-  assert(l <= settled);
-  const int end = std::max(settled, std::min(hi, live) - 1); // 暂写段 (settled, end]: 待补区间内取时已走完的根
+  const int end = std::max(settled, std::min(hi, live - 1)); // 暂写段 (settled, end]: 待补区间内取时已走完的根 (l > settled = 全段暂写)
   for (int s = l; s <= end; ++s)
-    bars.has.reset(static_cast<size_t>(s));
+    bars.has.reset(static_cast<size_t>(s)), bars.hole.reset(static_cast<size_t>(s));
   for (int s = l; s <= settled; ++s)
     exact.set(static_cast<size_t>(s));
   for (const sina::Bar &b : got) {
@@ -480,7 +499,7 @@ int QuoteService::Track::merge(int l, int settled, int live, misc::Ymd date, con
       bars.add(s, {b.open, b.high, b.low, b.close, b.volume, b.amount});
   }
   if (lo >= l)
-    lo = settled + 1;
+    lo = std::max(lo, settled + 1);
   if (lo > hi)
     lo = kSlots, hi = -1;
   return end;
@@ -502,7 +521,7 @@ void QuoteService::put(uint32_t i) {
 void QuoteService::put(uint32_t i, int s) {
   const Track &t = tracks_[i];
   const size_t k = static_cast<size_t>(s);
-  store(slot_rec(map_, tracks_.size(), i, s), SlotRec{t.bars.cell[k], t.bars.has[k], t.exact[k], 0});
+  store(slot_rec(map_, tracks_.size(), i, s), SlotRec{t.bars.cell[k], t.bars.has[k], t.exact[k], t.bars.hole[k], 0});
 }
 
 void QuoteService::load() {
@@ -526,8 +545,8 @@ void QuoteService::load() {
         for (int s = 0; s < kSlots; ++s) {
           SlotRec r;
           std::memcpy(&r, ss + (static_cast<size_t>(k) * kSlots + static_cast<size_t>(s)) * sizeof(r), sizeof(r));
-          if (r.busy) {
-            t.mark(s, s);
+          if (r.busy || r.hole) { // 缺口照并入待补 (格先于状态落盘, 状态里的区间可能还没盖到它)
+            t.hole(s, s);
             continue;
           }
           t.bars.has[static_cast<size_t>(s)] = r.has;

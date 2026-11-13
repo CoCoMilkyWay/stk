@@ -6,6 +6,7 @@
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
+#include "imgui_internal.h"
 
 #include <algorithm>
 #include <array>
@@ -41,17 +42,26 @@ std::optional<ImVec4> slip_col(const std::optional<double> &v) {
 bool quick(const live::Slip &x) { return x.full && x.pct && *x.pct < kSlipOk; }
 
 std::string wan_pnl(double v) { return wan(v, true); }
+std::string size_txt(double n) { return strf("%.0fW", n / 1e4); } // 下单额 (整万)
 
 void text_col(const ImVec4 &c, const std::string &s) { ImGui::TextColored(c, "%s", s.c_str()); }
+// 数字格右对齐; 列宽仍按文字本身量
+void right(const ImVec4 &c, const std::string &s) {
+  ImGui::PushStyleColor(ImGuiCol_Text, c);
+  ImGui::TextAligned(1, 0, "%s", s.c_str());
+  ImGui::PopStyleColor();
+}
+void right(const std::string &s) { right(ImGui::GetStyleColorVec4(ImGuiCol_Text), s); }
 void text_opt(const std::optional<double> &v, const char *fmt) {
   if (v)
-    ImGui::Text(fmt, *v);
+    right(strf(fmt, *v));
 }
 void pnl_opt(const std::optional<double> &v, const std::string &s) {
   if (v)
-    text_col(tint(*v, 0), s);
+    right(tint(*v, 0), s);
 }
 void masked() { ImGui::TextDisabled("%s", kMask); } // 隐私下遮住的格: 不出悬停提示
+void masked_num() { right(grey(), kMask); }
 std::string sec_txt(const live::Sec &s, bool priv) { return priv ? kMask : s.code + " " + s.name; }
 
 // 占总市值的比例条; 悬停看金额与占比
@@ -284,11 +294,11 @@ void sheet(const live::rebal::Plan *p, bool priv) {
       const std::string &v = (r ? exp : now)[c];
       const std::string &shown = priv ? kMask : v;
       if (v.empty())
-        ImGui::TextDisabled("—");
+        right(grey(), "—");
       else if (r && v != now[c])
-        text_col(kHot, shown);
+        right(kHot, shown);
       else
-        ImGui::TextUnformatted(shown.c_str());
+        right(shown);
     }
   }
   ImGui::EndTable();
@@ -414,7 +424,7 @@ void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool ca
     if (r.slips) {
       for (size_t i = 0; i < live::kSlipCols.size(); ++i)
         if (live::kSlipCols[i].s == s)
-          t += " " + wan(live::kSlipCols[i].n) + " " + slip_txt((*r.slips)[i].pct, (*r.slips)[i].full);
+          t += " " + size_txt(live::kSlipCols[i].n) + " " + slip_txt((*r.slips)[i].pct, (*r.slips)[i].full);
     } else
       t += r.auction ? " 竞价中" : " 无行情";
     if (r.levels) {
@@ -438,7 +448,7 @@ void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool ca
     ImGui::PushStyleColor(ImGuiCol_Text, side_col(c.s));
     if (fill)
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(fill->x, fill->y, fill->z, 0.45f));
-    const bool hit = ImGui::SmallButton(strf("%s##o%zu", wan(c.n).c_str(), i).c_str());
+    const bool hit = ImGui::SmallButton(strf("%s##o%zu", size_txt(c.n).c_str(), i).c_str());
     ImGui::PopStyleColor(fill ? 2 : 1);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       tip("%s", side_tip(c.s).c_str());
@@ -466,7 +476,7 @@ void confirm(LiveHub &hub, BoardState &st, bool open) {
   assert(st.ask);
   const BoardState::Ask &a = *st.ask;
   ImGui::Text("%s%s %s %s, 滑点 %s, 确认下单?", live::side_name(a.side), a.side > 0 ? strf(" (%s)", live::credit_name(a.credit)).c_str() : "",
-              wan(a.size).c_str(), sec_txt({a.code, a.name}, hub.priv()).c_str(), a.slip.c_str());
+              size_txt(a.size).c_str(), sec_txt({a.code, a.name}, hub.priv()).c_str(), a.slip.c_str());
   const bool can = !hub.ordering() && !hub.busy();
   ImGui::BeginDisabled(!can);
   if (ImGui::Button("下单")) {
@@ -617,7 +627,7 @@ void head_tip(int c, const live::board::Frame &f) {
   case C_ORDER: {
     std::string s;
     for (size_t i = 0; i < live::kSlipCols.size(); ++i)
-      s += strf("%s%s%s %s", s.empty() ? "" : " · ", live::side_name(live::kSlipCols[i].s), wan(live::kSlipCols[i].n).c_str(), slip_txt(f.slips[i]).c_str());
+      s += strf("%s%s%s %s", s.empty() ? "" : " · ", live::side_name(live::kSlipCols[i].s), size_txt(live::kSlipCols[i].n).c_str(), slip_txt(f.slips[i]).c_str());
     return tip("滑点 p = 万分之一, 正 = 成本; 按钮填充 绿 < %.0fp ≤ 黄 < %.0fp ≤ 红, 非绿的点了先确认\n持仓按占比加权 %s", kSlipOk, kSlipHi, s.c_str());
   }
   case C_DAY:
@@ -665,12 +675,12 @@ void sell_cells(LiveHub &hub, const live::rebal::Hold &h, Sells &sum) {
   if (!n)
     return;
   ImGui::TableSetColumnIndex(C_FACE);
-  ImGui::Text("%s%s", n == h.avail ? "全 " : "", wan(n * h.px).c_str());
+  right(strf("%s%s", n == h.avail ? "全 " : "", wan(n * h.px).c_str()));
   ImGui::TableSetColumnIndex(C_COST);
   if (n != std::min(h.sell, h.avail))
-    ImGui::TextDisabled("…");
+    right(grey(), "…");
   else if (h.order) {
-    ImGui::Text("%.0f", h.order->slip + h.order->fee);
+    right(strf("%.0f", h.order->slip + h.order->fee));
     if (ImGui::IsItemHovered())
       tip("滑点 %.0f 元 · 费 %.0f 元", h.order->slip, h.order->fee);
     sum.amount += h.order->amount;
@@ -745,7 +755,7 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     const auto pnl_cell = [&](int c, const std::optional<double> &v, const std::string &s) {
       ImGui::TableSetColumnIndex(c);
       if (priv && v)
-        masked();
+        masked_num();
       else
         pnl_opt(v, s);
     };
@@ -755,9 +765,9 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     pnl_cell(C_PNL, r.pnl, r.pnl ? wan_pnl(*r.pnl) : "");
     ImGui::TableSetColumnIndex(C_MV);
     if (r.market_value && priv)
-      masked();
+      masked_num();
     else if (r.market_value)
-      ImGui::TextUnformatted(wan(mv).c_str());
+      right(wan(mv));
     ImGui::TableSetColumnIndex(C_MARGIN);
     bar(r.margin_value, mv, kHot);
     ImGui::TableSetColumnIndex(C_SELLABLE);
@@ -772,7 +782,7 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
   ImGui::TableSetColumnIndex(C_CODE);
   ImGui::Text("合计 %d 只", held);
   ImGui::TableSetColumnIndex(C_POS_PCT);
-  ImGui::Text("%.2f", pos_pct);
+  right(strf("%.2f", pos_pct));
   ImGui::TableSetColumnIndex(C_FLOW);
   if (priv)
     masked();
@@ -786,9 +796,9 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
   const auto &acct = hub.state()->acct;
   if (f.synced) {
     const std::string ret = acct ? strf(" (%+.2f%%)", f.day_pnl / (acct->cash + f.market_value - acct->debt - f.day_pnl) * 100) : "";
-    text_col(tint(f.day_pnl, 0), (priv ? std::string(kMask) : wan_pnl(f.day_pnl)) + ret);
+    right(tint(f.day_pnl, 0), (priv ? std::string(kMask) : wan_pnl(f.day_pnl)) + ret);
   } else if (priv)
-    masked();
+    masked_num();
   else {
     text_col(kRed, "不全");
     if (ImGui::IsItemHovered())
@@ -796,14 +806,14 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
   }
   ImGui::TableSetColumnIndex(C_PNL);
   if (priv)
-    masked();
+    masked_num();
   else
-    text_col(tint(f.pnl, 0), wan_pnl(f.pnl));
+    right(tint(f.pnl, 0), wan_pnl(f.pnl));
   ImGui::TableSetColumnIndex(C_MV);
   if (priv)
-    masked();
+    masked_num();
   else
-    ImGui::TextUnformatted(wan(f.market_value).c_str());
+    right(wan(f.market_value));
   ImGui::TableSetColumnIndex(C_MARGIN);
   bar(margin, f.market_value, kHot);
   ImGui::TableSetColumnIndex(C_SELLABLE);
@@ -812,9 +822,9 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     ImGui::TableSetColumnIndex(C_SELL);
     ImGui::Text("卖 %d 单", sells.orders);
     ImGui::TableSetColumnIndex(C_FACE);
-    ImGui::TextUnformatted(wan(sells.amount).c_str());
+    right(wan(sells.amount));
     ImGui::TableSetColumnIndex(C_COST);
-    ImGui::Text("%.0f", sells.cost);
+    right(strf("%.0f", sells.cost));
   }
   ImGui::EndTable();
   st.pos_w = ImGui::GetItemRectSize().x - 2 * C_COUNT * pad;

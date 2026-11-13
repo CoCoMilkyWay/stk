@@ -22,7 +22,7 @@
 //   < → 记出, 平 → 随上一分钟的方向 (之前无方向 = 不计; 方向判据 tick_dir); 逐根记 (Bars::net), 全日之和 = Day::flow.
 //   个股的净流入 = 本只的分钟涨跌法 (net_flow, 同一判据), 历史 / 当日都带.
 //   基准 = 成员当日前收 (历史 = D−1 行 pre_close, 当日 = 新浪昨收; 同一个交易所前收), 无基准的成员不计;
-//   当日无成交的成员比 1; 分钟缺根沿用其上根收盘, 首根前 = 基准.
+//   当日无成交的成员比 1; 分钟缺根沿用其上根收盘, 首根前 = 基准; 计入的成员有一只在某根是缺口 (Bars::hole) → 篮子该根也是缺口.
 //   逐资产一遍 (资产主序): 一只的分钟根只读一次, 比 × 权散进所属各篮子.
 //   当日增量: 各量对资产线性可加 ⇒ 冻结线之前的槽 (已定稿) 只合一次, 累加跨轮保留, 各资产在冻结线处的接续 (Fold::Carry) 由调用方逐只持有;
 //   每轮只合日根与冻结线之后的槽, 与每轮从头合逐位一致.
@@ -99,10 +99,10 @@ struct Candle : Cell {
   float ref = 0;
 };
 
-// 一个标的一日的分钟根: kSlots 格稠密, has = 有成交的根
+// 一个标的一日的分钟根: kSlots 格稠密, has = 有成交的根, hole = 缺口 (当日: 快照没盯住、分钟 K 尚未补到; 有无成交未知, 不画; 恒无 has)
 struct Bars {
   misc::Ymd date = 0;
-  std::bitset<kSlots> has;
+  std::bitset<kSlots> has, hole;
   std::array<Cell, kSlots> cell;
   std::array<double, kSlots> net{}; // 各根净流入 [元] (分钟涨跌法): 篮子 = 成员之和 (Fold), 个股 = 本只 (net_flow)
 
@@ -240,8 +240,8 @@ public:
   void finish(misc::Ymd d, misc::Ymd prev, std::span<Day> out);
 
 private:
-  // 一格 = 开 高 低 收 (比 × 权) / 额 / 净流入; 格 0 = 日根, 格 1 + s = 槽 s
-  static constexpr size_t kQ = 6, kCells = 1 + kSlots;
+  // 一格 = 开 高 低 收 (比 × 权) / 额 / 净流入 / 缺口成员数; 格 0 = 日根, 格 1 + s = 槽 s
+  static constexpr size_t kQ = 7, kCells = 1 + kSlots;
   size_t cells() const { return 1 + static_cast<size_t>(slots_); }
   int from_ = 0, freeze_ = 0, slots_ = 0;
   int end_ = -1, fend_ = -1; // 有根的末槽: 全部 / 冻结段 [0, freeze)

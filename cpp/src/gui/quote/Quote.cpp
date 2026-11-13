@@ -59,13 +59,13 @@ double net_flow(Bars &b, float base) {
 
 namespace {
 
-// 一根 → 一格的比 (价 / 基准) + 额, 净流入待填 0; 无根 → 平于 at, 额 0
+// 一根 → 一格的比 (价 / 基准) + 额, 净流入 / 缺口待填 0; 无根 → 平于 at, 额 0
 void ratio(const Cell *c, double inv, double at, double *q) {
   if (c)
     q[0] = c->open * inv, q[1] = c->high * inv, q[2] = c->low * inv, q[3] = c->close * inv, q[4] = c->amount;
   else
     q[0] = q[1] = q[2] = q[3] = at, q[4] = 0;
-  q[5] = 0;
+  q[5] = q[6] = 0;
 }
 
 // 一格 (比 × 权之和) → 一根 (× f = 1 / Σ w)
@@ -126,6 +126,7 @@ bool Fold::add(const Leg &g, std::span<const Members::Weight> ws, Carry &k) {
     const Cell *b = g.bars->has[static_cast<size_t>(s)] ? &g.bars->cell[static_cast<size_t>(s)] : nullptr;
     double *q = r.data() + (1 + static_cast<size_t>(s)) * kQ;
     ratio(b, inv, c, q);
+    q[6] = g.bars->hole[static_cast<size_t>(s)];
     if (b) {
       c = q[3], end_ = std::max(end_, s);
       if (s < freeze_)
@@ -144,7 +145,7 @@ bool Fold::add(const Leg &g, std::span<const Members::Weight> ws, Carry &k) {
     const auto put = [&](size_t j) {
       for (size_t i = 0; i < 4; ++i)
         a[j + i] += w.w * r[j + i];
-      a[j + 4] += r[j + 4], a[j + 5] += r[j + 5];
+      a[j + 4] += r[j + 4], a[j + 5] += r[j + 5], a[j + 6] += r[j + 6];
     };
     put(0);
     for (size_t j = j0; j < n; j += kQ)
@@ -167,9 +168,13 @@ void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<Day> out) {
     o.candle = {scaled(a, f), d, 1.f};
     o.flow = a[5];
     o.bars.date = d;
-    o.bars.has.reset();
+    o.bars.has.reset(), o.bars.hole.reset();
     for (int s = 0; s <= end_; ++s) {
       const double *q = a + (1 + static_cast<size_t>(s)) * kQ;
+      if (q[6] > 0) {
+        o.bars.hole.set(static_cast<size_t>(s));
+        continue;
+      }
       o.bars.add(s, scaled(q, f));
       o.bars.net[static_cast<size_t>(s)] = q[5];
     }

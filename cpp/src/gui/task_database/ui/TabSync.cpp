@@ -366,7 +366,8 @@ void sina_chip(const Quote::QuoteStatus *q) {
   const TaskStatus st = q->pending > 0 ? TaskStatus{TaskStatus::Kind::Busy, "syncing"}
                                        : TaskStatus{TaskStatus::Kind::Muted, "live"};
   const std::string round = !q->fill ? "只快照 (行情日已入 bar1m)"
-                                     : std::to_string(q->fetched) + "/" + std::to_string(q->fetched + q->pending) + " · 分钟 K 补根";
+                                     : (q->holes ? "缺口 " + std::to_string(q->holes) + " 只 · " : std::string()) + std::to_string(q->fetched) + "/" +
+                                           std::to_string(q->fetched + q->pending) + " · 分钟 K 补根";
   char time[32] = "";
   if (q->date)
     std::snprintf(time, sizeof(time), "%02d-%02d %02d:%02d", q->date / 100 % 100, q->date % 100, q->sec / 3600,

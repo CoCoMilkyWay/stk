@@ -95,6 +95,7 @@ struct Series {
   bool money = false; // 量柱 = 成交额 (篮子: 量不合成)
   std::vector<Candle> bars;
   std::vector<double> x;
+  std::vector<double> cut;     // 日内缺口槽的 x (升序; Bars::hole): 不画根, 线在此断开, 并根时含缺口的组整组不画
   std::vector<misc::Ymd> days; // 日内各日
   double ref = 0;              // 涨跌幅轴基准 (末日前收); 0 = 无
   int g = 1;
@@ -163,17 +164,22 @@ void candle(ImDrawList *dl, double x, double half, double from, double high, dou
 }
 
 // 日内蜡烛并根: g = span 槽在 px 宽里每根不窄于 kMinPx 的最小 kSlots 因子;
-//   同日每 g 槽并一根 (开取先, 高 / 低取极, 收取后, 量 / 额相加), x = 组中点. 返回 g
+//   同日每 g 槽并一根 (开取先, 高 / 低取极, 收取后, 量 / 额相加), x = 组中点; 含缺口的组整组不画. 返回 g
 int merge(Series &s, double span, float px) {
   int g = 1;
   while (g < kSlots && (kSlots % g || px * g < kMinPx * span))
     ++g;
   if (g == 1)
     return g;
+  std::vector<long> holed; // 含缺口的组 (升序)
+  for (const double c : s.cut)
+    holed.push_back(static_cast<long>(c) / g);
   size_t n = 0;
   long key = -1;
   for (size_t i = 0; i < s.bars.size(); ++i) {
     const long k = static_cast<long>(s.x[i]) / g;
+    if (std::ranges::binary_search(holed, k))
+      continue;
     if (n && k == key) {
       Candle &b = s.bars[n - 1];
       const Candle &c = s.bars[i];
@@ -603,7 +609,7 @@ double flow_ref(const Kline &kl) {
   return n ? s / static_cast<double>(n) : 0.0;
 }
 
-// 日内的根 = 日轴各日的分钟 (历史 + 当日, joined 才接; 某日无源 → 留空), x = 第 k 日 · kSlots + 槽;
+// 日内的根 = 日轴各日的分钟 (历史 + 当日, joined 才接; 某日无源 → 留空; 缺口记进 cut), x = 第 k 日 · kSlots + 槽;
 //   价按前收链前复权到末个有根日 (末日真价): 相邻日根逐个 × 上一日根收 / 本日前收 (篮子点位本已接续 ⇒ 恒 1);
 //   分钟根的前收 = 同日日根的 (同乘); 涨跌基准 = 末个有根日的前收
 void intraday(const Source &src, std::span<const misc::Ymd> days, bool money, Series &s) {
@@ -636,6 +642,8 @@ void intraday(const Source &src, std::span<const misc::Ymd> days, bool money, Se
     for (int j = 0; j < kSlots; ++j)
       if (b->has[static_cast<size_t>(j)])
         s.push({scaled(b->cell[static_cast<size_t>(j)], a), b->date, ref}, static_cast<double>(k) * kSlots + j);
+      else if (b->hole[static_cast<size_t>(j)])
+        s.cut.push_back(static_cast<double>(k) * kSlots + j);
   }
 }
 
@@ -692,7 +700,7 @@ void charts(const char *name, Series &intra, Series &daily, uint64_t id, ChartSt
 }
 
 // 篮子日内叠加的一条: x = 日轴第 k 日 · kSlots + 槽 (并根 = 组中点), y = 收对本条在日轴内首日前收 (base) 的涨跌幅 [%] (各条同一零点, 跨日接续)
-//   g = 0: 收盘线; g ≥ 1: 蜡烛 (每根并 g 槽; 实体 = 上一根收 → 本根收, 首根起于首日前收 = 0, 根根首尾相接; open = 实体起点,
+//   g = 0: 收盘线 (缺口处一点 y = NaN, 线断开); g ≥ 1: 蜡烛 (每根并 g 槽; 实体 = 上一根收 → 本根收, 首根起于首日前收 = 0, 根根首尾相接; open = 实体起点,
 //     high / low 同 y 口径并包住实体), 另带现价十字: chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x
 struct Overlay {
   size_t pick = 0; // picks 下标
@@ -896,7 +904,7 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
       std::vector<std::pair<size_t, const Overlay *>> at;
       for (const Overlay &l : ls) {
         const auto it = std::lower_bound(l.x.begin(), l.x.end(), x);
-        if (it != l.x.end() && *it == x)
+        if (it != l.x.end() && *it == x && std::isfinite(l.y[static_cast<size_t>(it - l.x.begin())]))
           at.emplace_back(static_cast<size_t>(it - l.x.begin()), &l);
       }
       std::sort(at.begin(), at.end(), [](const auto &a, const auto &b) { return a.second->y[a.first] > b.second->y[b.first]; });
@@ -974,25 +982,30 @@ bool basket_note(const Tape &d, const Kline &kl, const Day &today, const QuoteSt
   return gap;
 }
 
-// 新浪补当日分钟 K 的进度, 接在上一项行尾 (无事不画): 在取 → 进行中色进度条 "新浪补分钟 已取 / 共" (随补取动);
-// 只剩等定稿的缺根 → 灰字待补只数; 悬停看说明
+// 当日分钟的完整度, 接在上一项行尾 (完整且无事不画): 有缺口 → 警示色进度条 "缺口 N 只 · 补分钟 已取 / 共";
+// 无缺口在取 → 进行中色进度条 "新浪补分钟 已取 / 共"; 只剩等定稿的 → 灰字只数; 悬停看说明
 void fill_chip(const QuoteStatus &qs) {
   if (qs.pending == 0 && qs.gaps == 0)
     return;
   ImGui::SameLine(0, 8);
-  if (qs.pending > 0) {
+  if (qs.pending > 0 || qs.holes > 0) {
     const size_t n = qs.fetched + qs.pending;
-    char s[64];
-    std::snprintf(s, sizeof(s), "新浪补分钟 %zu / %zu", qs.fetched, n);
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, StatusColor(TaskStatus::Kind::Busy));
-    ImGui::ProgressBar(static_cast<float>(qs.fetched) / static_cast<float>(n), ImVec2(ImGui::CalcTextSize(s).x + 16, ImGui::GetTextLineHeight()), s);
+    char s[96];
+    if (qs.holes > 0)
+      std::snprintf(s, sizeof(s), "缺口 %zu 只 · 补分钟 %zu / %zu", qs.holes, qs.fetched, n);
+    else
+      std::snprintf(s, sizeof(s), "新浪补分钟 %zu / %zu", qs.fetched, n);
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, StatusColor(qs.holes > 0 ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy));
+    ImGui::ProgressBar(n > 0 ? static_cast<float>(qs.fetched) / static_cast<float>(n) : 0.f, ImVec2(ImGui::CalcTextSize(s).x + 16, ImGui::GetTextLineHeight()), s);
     ImGui::PopStyleColor();
   } else {
-    ImGui::TextDisabled("待补 %zu 只", qs.gaps);
+    ImGui::TextDisabled("待定稿 %zu 只", qs.gaps);
   }
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("当日分钟补取中: 在取 %zu 根 / 已取 %zu, %zu 只待补 (含等定稿的)\n未补齐的分钟暂沿用上一个已知价 (今开 / 现价), 曲线随补取更新", qs.pending,
-                      qs.fetched, qs.gaps);
+    ImGui::SetTooltip("当日分钟补取: 在取 %zu 只 / 已取 %zu; 待补 %zu 只, 其中有缺口 %zu 只\n"
+                      "• 缺口 = 快照没盯住的分钟 (启动 / 断网 / 停机重启), 有无成交未知: 个股与含它的篮子该分钟不画 (线断开), 立即补取, 补到即画\n"
+                      "• 待定稿 = 已有图, 等新浪那根分钟 K 不再变 (约 %d 秒) 后再取一次补成精确",
+                      qs.pending, qs.fetched, qs.gaps, qs.holes, QuoteService::kSettle);
 }
 
 // 叠加图左上角 (corner; < 0 = 图没起来): bars() 画档位条, 再 "重载" (悬停看 note), 行尾新浪补分钟进度 (fill_chip);
@@ -1024,7 +1037,7 @@ struct OverlayCtx {
   float px;
 };
 
-// 涨跌幅: y = 收对本条在日轴内首日前收的涨跌幅 [%]; 只一条 = 蜡烛 + 现价十字
+// 涨跌幅: y = 收对本条在日轴内首日前收的涨跌幅 [%]; 只一条 = 蜡烛 (含缺口的组不画) + 现价十字, 多条 = 收盘线 (缺口处插 NaN 断开)
 bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Overlay &l) {
   Series s;
   intraday(src, cx.days, p.ref.is(kBasket), s);
@@ -1037,19 +1050,30 @@ bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Ove
     l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
     l.now = static_cast<int>(s.x.back());
     l.g = merge(s, std::max<size_t>(1, cx.days.size()) * kSlots, cx.px);
+    if (s.bars.empty())
+      return false;
     double prev = 0;
     for (const Candle &c : s.bars) {
       const double y = pct(c.close);
       l.open.push_back(prev), l.high.push_back(std::max({pct(c.high), prev, y})), l.low.push_back(std::min({pct(c.low), prev, y}));
       prev = y;
     }
+    l.x = s.x;
+    for (const Candle &c : s.bars)
+      l.y.push_back(pct(c.close));
+    return true;
   }
-  l.x = s.x;
-  for (const Candle &c : s.bars)
-    l.y.push_back(pct(c.close));
+  for (size_t i = 0, c = 0; i < s.bars.size(); ++i) {
+    const bool cut = c < s.cut.size() && s.cut[c] < s.x[i];
+    if (cut && i > 0)
+      l.x.push_back(s.cut[c]), l.y.push_back(std::numeric_limits<double>::quiet_NaN());
+    while (c < s.cut.size() && s.cut[c] < s.x[i])
+      ++c;
+    l.x.push_back(s.x[i]), l.y.push_back(pct(s.bars[i].close));
+  }
   return true;
 }
-// 累计净流入: 自日轴首日首根起逐槽累计, 跨日接续; y = 累计 / 单位 (占比 = 近 5 日日均成交额 %, 金额 = 亿元)
+// 累计净流入: 自日轴首日首根起逐槽累计, 跨日接续; y = 累计 / 单位 (占比 = 近 5 日日均成交额 %, 金额 = 亿元); 止于首个缺口 (其后的累计不可知)
 bool flow_line(const OverlayCtx &cx, const OverlayPick &, const Source &src, Overlay &l) {
   const double unit = cx.st.flow_unit == 0 ? flow_ref(*src.kl) / 100.0 : 1e8;
   if (!(unit > 0))
@@ -1057,12 +1081,15 @@ bool flow_line(const OverlayCtx &cx, const OverlayPick &, const Source &src, Ove
   double net = 0;
   for (size_t k = 0; k < cx.days.size(); ++k)
     if (const Bars *b = bars_on(src, cx.days[k]))
-      for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
+      for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j) {
+        if (b->hole[j])
+          return !l.x.empty();
         if (flow_slot(*b, j, cx.st.flow_ends)) {
           net += b->net[j];
           l.x.push_back(static_cast<double>(k * kSlots + j));
           l.y.push_back(net / unit);
         }
+      }
   return !l.x.empty();
 }
 // 资金流的口径条 (接在档位条后)
