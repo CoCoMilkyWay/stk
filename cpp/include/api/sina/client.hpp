@@ -35,8 +35,8 @@ struct Quote {
   double bid_vol[kLevels] = {}, ask_vol[kLevels] = {};
 };
 
-// 1 分钟 K (quotes.sina.cn getKLineData scale=1). 标号 = bar 结束分钟 (09:31 … 11:30, 13:01 … 15:00);
-// 首根含开盘集合竞价, 无成交的分钟没有这根
+// K 线一根 (quotes.sina.cn getKLineData). 1 分钟 K (scale=1): 标号 = bar 结束分钟 (09:31 … 11:30, 13:01 … 15:00),
+// 首根含开盘集合竞价, 无成交的分钟没有这根; 日 K (scale=240): 标号 15:00
 struct Bar {
   misc::Ymd date = 0;
   int minute = 0; // 标号: hh · 60 + mm
@@ -56,9 +56,12 @@ public:
 
   // sym 最近 n 根 1 分钟 K, 旧在前 (可跨日)
   std::vector<Bar> kline(std::string_view sym, int n);
+  // sym 最近 n 根日 K (不复权, 标号 15:00), 旧在前
+  std::vector<Bar> daily(std::string_view sym, int n);
 
 private:
   std::string get(const std::string &target);
+  std::vector<Bar> bars(std::string_view sym, int scale, int n);
 
   std::string host_;
   boost::asio::io_context ioc_;

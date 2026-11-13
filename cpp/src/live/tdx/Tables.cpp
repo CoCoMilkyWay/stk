@@ -31,4 +31,6 @@ void Margins::check(const Shape &t, const Row &r) { mem::need_row(t, r.ratio > 0
 
 void Collats::check(const Shape &t, const Row &r) { mem::need_row(t, 0 <= r.rate && r.rate <= 1, r.code, "担保折算率不在 [0, 1]"); }
 
+void CashFlows::check(const Shape &t, const Row &r) { mem::need_row(t, r.qty == 0 || !r.code.empty(), misc::dense(r.date) + " " + r.kind, "带股数却没有代码"); }
+
 } // namespace live::tdx::tables

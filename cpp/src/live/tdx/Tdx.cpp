@@ -4,6 +4,7 @@
 #include "live/tdx/Console.hpp"
 #include "live/tdx/Credit.hpp"
 #include "live/tdx/Flash.hpp"
+#include "live/tdx/Flow.hpp"
 #include "live/tdx/Mem.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/Tables.hpp"
@@ -57,6 +58,7 @@ struct Core {
   Watched<tables::Positions, Keyed<Position>> pos{{}, {}, "持仓", &State::pos, [](const PosSnap &s) { return s.index; }};
   mem::Table<tables::Pendings> pendings;
   credit::Tables credit;
+  mem::Table<tables::CashFlows> flows;
   mem::HeapP heap;
   Clock::time_point scan_at{};
 
@@ -447,6 +449,13 @@ public:
     Terms t = credit::pull(c_->credit, c_->connected(), log, live);
     trace::ev("terms", {{"n", t.size()}});
     return t;
+  }
+  std::vector<CashFlow> pull_flows(misc::Ymd from, const Log &log, const Live &live) override {
+    trace::Span span("资金流水", {{"from", from}});
+    ui::Gate::Hold g(c_->gate, "资金流水");
+    std::vector<CashFlow> f = flow::pull(c_->flows, c_->connected(), from, log, live);
+    trace::ev("flows", {{"n", f.size()}});
+    return f;
   }
 
   void console() override {

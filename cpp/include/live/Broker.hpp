@@ -1,5 +1,5 @@
 // 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Broker 并登记进 live/Clients.hpp, 上层 (gui/task_live) 只认这里的类型
-//   读: 持仓 / 当日成交 / 挂单 / 信用账户 由客户端重查后整份发布 (State, 不可变; ver 变 = 换了一份); 两融条款另拉 (pull_terms, 慢)
+//   读: 持仓 / 当日成交 / 挂单 / 信用账户 由客户端重查后整份发布 (State, 不可变; ver 变 = 换了一份); 两融条款 / 资金流水另拉 (pull_terms / pull_flows, 慢)
 //   写: 限价单 place (调用线程跑完, 逐步报进度); 一整批独占客户端 exclusive (批内连下, 其间不插刷新)
 //   刷新: request 要一轮 (不等) / sync 要一轮并等完 / every 定时 / kick 刚下过单 (隔几秒再刷); 有人在看 (touch / Watch) 才转
 //   客户端状态与预期不符 (界面没弹出 / 内存正被改写 / 回报失败) 是外部结局, 不是本程序的错: fail 抛 Fail, 在各轮 / 各事务的边界收成原因文本;
@@ -7,6 +7,7 @@
 // 编码: 方向 买 +1 / 卖 −1 (BySide 下标 s < 0); 市场由代码前缀定 (market_of), 新浪码 = 前缀 + 代码, AssetInfo 码 = 代码 + 后缀
 #pragma once
 
+#include "misc/date.hpp"
 #include "nlohmann/json.hpp"
 
 #include <cstdint>
@@ -116,6 +117,7 @@ struct Fills {
 struct Account {
   double assets = 0, line = 0, debt = 0, net = 0;         // 担保资产 / 可融额度余量 (最高融资额度 − 融资负债含费用) / 负债总额 / 净资产
   double avail = 0, cash = 0;                             // 可用保证金 / 现金
+  double rate = 0;                                        // 融资年利率
   std::map<std::string, std::pair<double, double>> debts; // 代码 → (负债数量 [股], 负债金额 [元])
   std::map<std::string, double> bal;                      // 同一轮持仓 代码 → 股
 };
@@ -133,6 +135,16 @@ struct Term {
 };
 using Terms = std::map<std::string, Term>;
 
+// 资金流水一行 (券商口径, 截至上一交易日): 日期升序、同日按发生序; balance = 记账后的资金余额,
+//   发生金额 0 的行 (申购配号等) 不动资金、其 balance 不算数; 股数为本行带的证券变动 (买卖 / 划入 / 入账等, 无 = 0)
+struct CashFlow {
+  misc::Ymd date = 0;
+  std::string code, name; // 无证券的行 (利息 / 转账) 为空
+  double price = 0, qty = 0;
+  std::string kind; // 业务名称
+  double amount = 0, balance = 0;
+  bool operator==(const CashFlow &) const = default;
+};
 // 读到的一样: v 值 (nullptr = 还没读过), at 客户端重查后读于 HH:MM:SS (空 = 只经被动扫描读过)
 template <class T>
 struct Got {
@@ -216,6 +228,8 @@ public:
   virtual Placed place(const OrderReq &o, const Step &step) = 0;                // 当前线程跑完; 失败 → Fail (停在当时那一步)
   virtual void exclusive(const char *who, const std::function<void()> &fn) = 0; // fn 期间独占客户端 (同一线程可重入)
   virtual Terms pull_terms(const Log &log, const Live &live) = 0;               // 客户端重查两融条款; 失败 → Fail
+  // 客户端重查 from 日起 (含; 0 = 开户起) 至昨日的资金流水; 失败 → Fail
+  virtual std::vector<CashFlow> pull_flows(misc::Ymd from, const Log &log, const Live &live) = 0;
 
   virtual void console() = 0; // GUI 线程每帧: 画该客户端自带的调试台 (Live 的 Client 页; ImGui, 占满当前区域)
 };

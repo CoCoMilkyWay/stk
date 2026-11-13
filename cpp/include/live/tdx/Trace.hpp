@@ -6,7 +6,7 @@
 //   同一线程相邻几条除 ms 外全同的事件只记首条, 其后记一行 rep {n 又几次, ms 首条到末条}
 //   适配里的 fail / need 经此 (遮住 live::fail): 先在当时的段路径下记一行 fail {why}, 再抛 live::Fail
 //   段: 刷新 {why 起因, n 轮号} › 成交 / 持仓 / 挂单 / 信用账户;  盯持仓 › 接入;  下单 {委托} › 切换 / 开窗 / 填单 / 确认 / 回报;
-//     两融条款 › <功能名> (另一线程 <功能名>条数标签);  <独占者> (调仓整批等);  界面件: 点「文字」/ 功能树「项」/ 开页「功能」{col} / 弹框 {titles}
+//     两融条款 › <功能名> (另一线程 <功能名>条数标签);  资金流水 {from} › 窗 {lo, hi};  <独占者> (调仓整批等);  界面件: 点「文字」/ 功能树「项」/ 开页「功能」{col} / 弹框 {titles}
 //   种类:
 //     shim {cmd, ms, ret 应答记录 | n 条数 + kb (应答大于 kRetCap 字节)}   run {argv, rc, ms, err / out 尾部}   外部进程
 //     build {dll, cc} / inject {dll, port, proc} / online {port}           shim 编译、注入、注入后上线
@@ -19,6 +19,7 @@
 //     popup {title, hwnd}                等到的弹框                        form {px, dflt, unit, cap0, cap, n}  填单的价、默认价、单位、最大量、股数
 //     gate {by, ms}                      界面锁被 by 占着, 等了 ms         unsynced {try}  持仓与成交对不上
 //     put {what, …}                      发布信用账户                      placed {qty, px, msg}  委托回报    terms {n}  两融条款只数
+//     count {n}                          资金流水一窗的条数标签            flows {n}  资金流水总条数
 //     back {down} / down {why}           盯持仓: 接回客户端 / 掉线期间原因变了 (原因不变的重试不记)
 #pragma once
 

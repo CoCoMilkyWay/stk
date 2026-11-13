@@ -15,6 +15,7 @@
 // 担保品    Whole  同上: 分页块 0||<该页行数>||P<定位串>| (n > 0, 不认), 整块 0||0||P<末页定位串>|、不带总数,
 //                  收齐与否由调用方对页上条数.
 //                  两表整块可能留着几份 (每查全部一次一份); 代码跨市场会重 (沪市债券与深市基金同号), 以 (市场, 代码) 为键.
+// 资金流水  Ask    「资金流水」页按起止日查, 0||<n>||P|, 行首为 8 位日期; 一次只许查 30 天. 空应答认不出, 由调用方先看条数标签.
 #pragma once
 
 #include "live/Broker.hpp"
@@ -183,6 +184,25 @@ struct Collats {
   };
   using Index = mem::Unique<&mem::sym>;
   static void check(const Shape &t, const Row &r); // 折算率在 [0, 1]
+};
+
+struct CashFlows {
+  using Row = CashFlow;
+  static constexpr Shape kShape{"资金流水", "0||{n}||P|", "{d8}|..."};
+  using Mode = mem::Ask;
+  static constexpr std::array<int, 1> kViews{14};
+  static constexpr auto kCols = std::tuple{
+      col<&Row::date, as::ymd>(0),
+      col<&Row::code, as::text>(1),
+      col<&Row::name, as::text>(3), // 列 2 是简称
+      col<&Row::price, as::num>(4),
+      col<&Row::qty, as::num>(5),
+      col<&Row::kind, as::name>(6),
+      col<&Row::amount, as::num>(7),
+      col<&Row::balance, as::num>(8),
+  };
+  using Index = mem::Plain;
+  static void check(const Shape &t, const Row &r); // 带股数的行有代码
 };
 
 } // namespace live::tdx::tables

@@ -22,6 +22,8 @@ using tcp = boost::asio::ip::tcp;
 namespace {
 
 constexpr auto kIdle = std::chrono::seconds(10);
+constexpr int kDayScale = 240;        // getKLineData 的日 K 档
+constexpr int kCloseMinute = 15 * 60; // 日 K 的标号 = 收盘分钟
 
 std::string gunzip(const std::string &in) {
   z_stream zs{};
@@ -163,11 +165,15 @@ std::vector<Quote> Client::quotes(const std::vector<std::string> &syms) {
   return out;
 }
 
-// JSON 列表 [{day:"YYYY-MM-DD HH:MM:SS", open, high, low, close, volume, amount}] (值皆字符串); 查无 → null
-std::vector<Bar> Client::kline(std::string_view sym, int n) {
+std::vector<Bar> Client::kline(std::string_view sym, int n) { return bars(sym, 1, n); }
+
+std::vector<Bar> Client::daily(std::string_view sym, int n) { return bars(sym, kDayScale, n); }
+
+// JSON 列表 [{day, open, high, low, close, volume, amount}] (值皆字符串; day 分钟 K "YYYY-MM-DD HH:MM:SS" / 日 K "YYYY-MM-DD"); 查无 → null
+std::vector<Bar> Client::bars(std::string_view sym, int scale, int n) {
   assert(n > 0);
   const std::string body = get("/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=" + std::string(sym) +
-                               "&scale=1&ma=no&datalen=" + std::to_string(n));
+                               "&scale=" + std::to_string(scale) + "&ma=no&datalen=" + std::to_string(n));
   yyjson_doc *doc = yyjson_read(body.data(), body.size(), 0);
   assert(doc && "sina: K 线回包不是 JSON");
   yyjson_val *root = yyjson_doc_get_root(doc);
@@ -178,11 +184,11 @@ std::vector<Bar> Client::kline(std::string_view sym, int n) {
     yyjson_val *o;
     yyjson_arr_foreach(root, i, m, o) {
       const std::string_view day = json_str(o, "day");
-      assert(day.size() == 19 && "sina: K 线标号不是 YYYY-MM-DD HH:MM:SS");
+      assert(day.size() == (scale == kDayScale ? 10u : 19u) && "sina: K 线标号不是 YYYY-MM-DD[ HH:MM:SS]");
       Bar b;
       b.date = misc::parse_ymd(day.substr(0, 10));
       assert(b.date > 0);
-      b.minute = clock_sec(day.substr(11)) / 60;
+      b.minute = scale == kDayScale ? kCloseMinute : clock_sec(day.substr(11)) / 60;
       b.open = static_cast<float>(num(json_str(o, "open")));
       b.high = static_cast<float>(num(json_str(o, "high")));
       b.low = static_cast<float>(num(json_str(o, "low")));

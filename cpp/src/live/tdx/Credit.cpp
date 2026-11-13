@@ -170,6 +170,7 @@ Account account(Tables &t, mem::Chain &q, const Keyed<Position> &pos) {
   a.net = value(c, "净资产");
   a.avail = value(c, "可用保证金");
   a.cash = value(c, "现金资产");
+  a.rate = value(c, "融资年利率");
   for (const tables::Debt &r : d.list)
     a.debts[r.code] = {r.qty, r.amount};
   a.bal = balances(pos);

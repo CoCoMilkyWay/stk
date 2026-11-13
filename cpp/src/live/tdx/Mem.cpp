@@ -543,6 +543,14 @@ std::string clock::get(const Shape &t, const Fields &f, int c) {
   return std::string(s);
 }
 
+misc::Ymd ymd::get(const Shape &t, const Fields &f, int c) {
+  const std::string_view s = field(f, c);
+  const misc::Ymd d = s.size() == 8 ? misc::parse_ymd(s) : 0;
+  if (!d)
+    fail(strf("%s日期「%.*s」不认识", t.name, static_cast<int>(s.size()), s.data()));
+  return d;
+}
+
 double num::get(const Shape &t, const Fields &f, int c) {
   const std::string z(field(f, c));
   char *e = nullptr;

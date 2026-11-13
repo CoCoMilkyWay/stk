@@ -14,7 +14,7 @@
 //       被动换代          Live   活动块              Union  当日副本并集      → follow / wait
 //       act 驱动          Ask    act 后新冒出的块     Whole  整块拼到齐        → arm + act + read (Chain::ask)
 //     "见过的": Live 记扫到过的各块, Ask 记 act 前那一遍 (arm). 取最新一份即至多一块; 取累积即各块合并.
-//   索引 Index  Unique<键> 键不重 → Keyed<行> / Tally 成交按代码合计 → Keyed<Flow> / Pairs 名称不重 → 名称 → 数值原文
+//   索引 Index  Unique<键> 键不重 → Keyed<行> / Tally 成交按代码合计 → Keyed<Flow> / Pairs 名称不重 → 名称 → 数值原文 / Plain 无键 → 行原序
 // 一张表的流程: 扫 Heap::scan → 选 Mode::choose → 按址连读一致 stable → 解析校验 parse → 合并 Mode::merge → 索引 → Snap
 // 客户端正改写 / 刚释放 / 进程没了 都是外部结局 → Fail
 #pragma once
@@ -131,6 +131,9 @@ struct code { // 6 位数字
 struct clock { // HH:MM:SS
   static std::string get(const Shape &t, const Fields &f, int c);
 };
+struct ymd { // YYYYMMDD
+  static misc::Ymd get(const Shape &t, const Fields &f, int c);
+};
 struct num {
   static double get(const Shape &t, const Fields &f, int c);
 };
@@ -243,6 +246,14 @@ struct Pairs {
           fail(strf("%s名称「%s」有重复", t.name, k.c_str()));
     return out;
   }
+};
+
+struct Plain {
+  template <class Row>
+  using Out = std::vector<Row>;
+
+  template <class Row>
+  static std::vector<Row> build(const Shape &, const std::vector<Row> &rows) { return rows; }
 };
 
 template <class S>

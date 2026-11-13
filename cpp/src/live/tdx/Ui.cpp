@@ -32,13 +32,13 @@ std::vector<Node> func_trees() {
   return out;
 }
 
-// 可见的查询页 (条数标签所在的对话框)
-std::vector<Hwnd> pages(double timeout) {
+// 可见的查询页 (id 为 count 的条数标签所在的对话框)
+std::vector<Hwnd> pages(long count, double timeout) {
   const std::vector<Node> nodes = win::tree("", timeout);
   std::vector<Hwnd> out;
   for (size_t i = 0; i < nodes.size(); ++i) {
     const Node &n = nodes[i];
-    if (!(n.vis && n.cls == "Static" && n.id == kPageCount))
+    if (!(n.vis && n.cls == "Static" && n.id == count))
       continue;
     size_t j = i;
     while (nodes[j].depth >= n.depth) {
@@ -136,13 +136,13 @@ void click_func(const std::string &name) {
 
 // ---------- 查询页 ----------
 
-Hwnd open_page(const std::string &func, const std::string &col, double timeout) {
+Hwnd open_page(const std::string &func, const std::string &col, long count, double timeout) {
   trace::Span span("开页「" + func + "」", {{"col", col}});
   click_func(func);
   return *until(
       said("「" + func + "」页 (表头含「" + col + "」)"),
       [&]() -> std::optional<Hwnd> {
-        for (const Hwnd &d : pages(timeout)) {
+        for (const Hwnd &d : pages(count, timeout)) {
           const std::vector<std::string> c = cols(d, timeout);
           if (std::find(c.begin(), c.end(), col) != c.end())
             return d;
@@ -152,7 +152,7 @@ Hwnd open_page(const std::string &func, const std::string &col, double timeout) 
       timeout);
 }
 
-Hwnd count_label(const Hwnd &dlg) { return win::ctls(dlg, {{"n", kPageCount}}).at("n"); }
+Hwnd count_label(const Hwnd &dlg, long count) { return win::ctls(dlg, {{"n", count}}).at("n"); }
 
 std::optional<int> page_count(const Hwnd &lbl, double timeout) {
   const std::string t = win::text(lbl, timeout);

@@ -47,9 +47,10 @@ void click_func(const std::string &name); // 点交易功能树上的 name: 树�
 
 // ---------- 查询页 ----------
 
-// 功能树点 func, 等表头含 col 的查询页出来 → 其 hwnd; 页一开客户端即重查 (大表要卡一阵), 故等得长
-win::Hwnd open_page(const std::string &func, const std::string &col, double timeout = 180);
-win::Hwnd count_label(const win::Hwnd &dlg); // 查询页的条数标签 (客户端卡着时 enum 也读不到, 须事先取好)
+// 功能树点 func, 等表头含 col 的查询页出来 → 其 hwnd; 页一开客户端即重查 (大表要卡一阵), 故等得长.
+// count = 条数标签的控件 id (各查询页多为 kPageCount, 按日查的页另有其号)
+win::Hwnd open_page(const std::string &func, const std::string &col, long count = kPageCount, double timeout = 180);
+win::Hwnd count_label(const win::Hwnd &dlg, long count = kPageCount); // 查询页的条数标签 (客户端卡着时 enum 也读不到, 须事先取好)
 // 条数标签上的列表条数, 重查中标签清空 → 无; 客户端卡着时 gettext 一直等到它缓过来
 std::optional<int> page_count(const win::Hwnd &lbl, double timeout = 5);
 
