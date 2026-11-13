@@ -606,19 +606,22 @@ void intraday(const Source &src, std::span<const misc::Ymd> days, Series &s) {
   }
 }
 
-// 来源注 (个股 / 篮子同一行): all.bar 库末日 · 补段末日 · 新浪快照时刻 (y = 当日; nullptr = 未到); 行情日在日脊之后却接不上 (历史落后) → 注明, 返回 true
-bool coverage(const Tape &t, const Live *y, char *buf, size_t size) {
+// 来源注 (个股 / 篮子同一行): all.bar 库末日 · 基本面段末日 · 新浪归档末日 · 新浪快照时刻 (y = 当日; nullptr = 未到);
+//   行情日在日脊之后却接不上 (历史落后) → 注明, 返回 true
+bool coverage(const PriceView &v, const Live *y, char *buf, size_t size) {
   assert(size >= 160);
-  const misc::Ymd a = t.lib_last(), b = t.last(), d = y ? y->date : 0;
+  const misc::Ymd a = v.lib_last(), f = v.fund_last(), b = v.last(), d = y ? y->date : 0;
   const auto at = [&] { return static_cast<size_t>(std::strlen(buf)); };
   std::snprintf(buf, size, "all.bar 至 %02d-%02d", a / 100 % 100, a % 100);
-  if (b > a)
-    std::snprintf(buf + at(), size - at(), " · 其后至 %02d-%02d 由 bar1d / bar1m 补", b / 100 % 100, b % 100);
+  if (f > a)
+    std::snprintf(buf + at(), size - at(), " · bar1d / bar1m 补至 %02d-%02d", f / 100 % 100, f % 100);
+  if (b > f)
+    std::snprintf(buf + at(), size - at(), " · 新浪归档补至 %02d-%02d", b / 100 % 100, b % 100);
   if (d == 0) {
     std::snprintf(buf + at(), size - at(), " · 新浪: 等待首轮快照…");
     return false;
   }
-  if (d > b && !t.joins(y->prev)) {
+  if (d > b && !v.joins(y->prev)) {
     std::snprintf(buf + at(), size - at(), " · 历史落后, 未接当日 %02d-%02d", d / 100 % 100, d % 100);
     return true;
   }
@@ -886,17 +889,17 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   return corner;
 }
 
-// 篮子图的前置: 价格库用不了 / 未发布 → 画提示, nullptr
-const Tape *basket_ready(const QuoteHub &mk) {
+// 篮子图的前置: 价格库用不了 / 未发布 → 画提示, false
+bool basket_ready(const QuoteHub &mk) {
   if (!mk.view) {
-    ImGui::TextDisabled("备价格库 (all.bar 特征库 + 基本面补段)… %zu / %zu", mk.price->done.load(std::memory_order_relaxed), mk.price->total.load(std::memory_order_relaxed));
-    return nullptr;
+    ImGui::TextDisabled("备价格库 (all.bar 特征库 + 补段)… %zu / %zu", mk.progress().done.load(std::memory_order_relaxed), mk.progress().total.load(std::memory_order_relaxed));
+    return false;
   }
   if (!mk.view->lack.empty()) {
     ImGui::TextWrapped("%s (建好即自动接上)", mk.view->lack.c_str());
-    return nullptr;
+    return false;
   }
-  return mk.tape(kBasket);
+  return true;
 }
 
 // 当日分钟的完整度, 接在上一项行尾 (完整且无事不画): 有缺口 → 警示色进度条 "缺口 N 只 · 补分钟 已取 / 共";
@@ -1027,7 +1030,8 @@ constexpr OverlayDef kOverlayDefs[kOverlays] = {
 
 // 个股图的根: 键 = 源 (个股历史 / 当日) + 标的 + 日内档
 struct StockSeries {
-  std::shared_ptr<const Tape> tape;
+  std::shared_ptr<const PriceView> view; // 持着 tape
+  const Tape *tape = nullptr;
   std::shared_ptr<const Live> live;
   uint32_t id = Ref::kNone;
   int span = 0;
@@ -1051,7 +1055,7 @@ struct OverlayCache {
 void Want(QuoteHub &mk, StockState &st, uint32_t id) {
   if (id != st.want) {
     st.want = id;
-    mk.quote->select(id);
+    mk.select(id);
   }
   if (id == Ref::kNone) {
     st.shown = Ref::kNone;
@@ -1074,8 +1078,8 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
     if (st.want == Ref::kNone)
       ImGui::TextWrapped("点表格中的一行查看行情.");
     else if (!mk.view)
-      ImGui::TextWrapped("读取历史… 备价格库 (all.bar 特征库 + 基本面补段) %zu / %zu", mk.price->done.load(std::memory_order_relaxed),
-                         mk.price->total.load(std::memory_order_relaxed));
+      ImGui::TextWrapped("读取历史… 备价格库 (all.bar 特征库 + 补段) %zu / %zu", mk.progress().done.load(std::memory_order_relaxed),
+                         mk.progress().total.load(std::memory_order_relaxed));
     else
       ImGui::TextWrapped("读取历史…");
     return;
@@ -1086,9 +1090,9 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
   if (!st.series)
     st.series = std::make_shared<StockSeries>();
   StockSeries &c = *st.series;
-  if (c.tape != j.tape || c.live != j.live || c.id != id || c.span != st.chart.intraday) {
-    c = {j.tape, j.live, id, st.chart.intraday, {}, {}};
-    intraday(src, day_axis(mk.quote->trading(), j.live ? j.live->date : 0, kIntraDays[st.chart.intraday]), c.intra);
+  if (c.tape != j.tape() || c.live != j.live || c.id != id || c.span != st.chart.intraday) {
+    c = {j.view, j.tape(), j.live, id, st.chart.intraday, {}, {}};
+    intraday(src, day_axis(mk.trading(), j.live ? j.live->date : 0, kIntraDays[st.chart.intraday]), c.intra);
     daily(src, c.daily);
   }
   Series is = c.intra; // 按视野宽就地并根
@@ -1096,14 +1100,14 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
   char note[256];
   if (st.want != id)
     std::snprintf(note, sizeof(note), "读取 %s 历史…", asset_axis().code(st.want).c_str());
-  else if (!j.tape)
+  else if (!j.tape())
     std::snprintf(note, sizeof(note), "只画当日 · %s", mk.view->lack.c_str());
   else {
-    coverage(*j.tape, j.live.get(), note, sizeof(note));
+    coverage(*j.view, j.live.get(), note, sizeof(note));
     if (!src.kl)
       std::snprintf(note + std::strlen(note), sizeof(note) - std::strlen(note), " · 本只不在 all.bar 库轴, 只画当日 (全量重算 all.bar 即并入)");
   }
-  if (mk.quote->axis().sub_of(id) == mk.quote->axis().size())
+  if (!mk.listed(id))
     std::snprintf(note + std::strlen(note), sizeof(note) - std::strlen(note), " · 不在新浪全市场");
   header(title.c_str(), src, note);
   fill_chip(qs);
@@ -1112,8 +1116,7 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
 
 int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot) {
   const OverlayDef &def = kOverlayDefs[kind];
-  const Tape *bt = basket_ready(mk);
-  if (!bt)
+  if (!basket_ready(mk))
     return -1;
   if (!st.cache[kind])
     st.cache[kind] = std::make_shared<OverlayCache>();
@@ -1121,7 +1124,7 @@ int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const 
   if (c.view != mk.view || c.live != mk.live || c.picks != picks || c.span != st.span[kind] || c.unit != st.flow_unit || c.ends != st.flow_ends) {
     c.view = mk.view, c.live = mk.live, c.picks = picks, c.span = st.span[kind], c.unit = st.flow_unit, c.ends = st.flow_ends;
     c.days = OverlayDays(kind, mk, st);
-    c.gap = coverage(*bt, mk.live.get(), c.note, sizeof(c.note));
+    c.gap = coverage(*mk.view, mk.live.get(), c.note, sizeof(c.note));
     const OverlayCtx cx{st, c.days, picks.size() == 1};
     c.ls.clear();
     for (size_t i = 0; i < picks.size(); ++i) {
@@ -1155,7 +1158,7 @@ int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const 
 }
 
 std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const OverlayState &st) {
-  return day_axis(mk.quote->trading(), mk.live ? mk.live->date : 0, kIntraDays[st.span[kind]]);
+  return day_axis(mk.trading(), mk.live ? mk.live->date : 0, kIntraDays[st.span[kind]]);
 }
 
 Flow FlowOf(const Bars &b, bool ends) {

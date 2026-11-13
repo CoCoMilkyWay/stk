@@ -365,7 +365,7 @@ void sina_chip(const Quote::QuoteStatus *q) {
   }
   const TaskStatus st = q->pending > 0 ? TaskStatus{TaskStatus::Kind::Busy, "syncing"}
                                        : TaskStatus{TaskStatus::Kind::Muted, "live"};
-  const std::string round = !q->fill ? "只快照 (行情日已入 bar1m)"
+  const std::string round = !q->fill ? "只快照 (行情日已入基本面)"
                                      : (q->holes ? "缺口 " + std::to_string(q->holes) + " 只 · " : std::string()) + std::to_string(q->fetched) + "/" +
                                            std::to_string(q->fetched + q->pending) + " · 分钟 K 补根";
   char time[32] = "";

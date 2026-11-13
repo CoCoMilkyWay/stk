@@ -14,7 +14,8 @@
 //     land_factors    factors   ← cn_stock_real_bar1d.adjust_factor 变点
 //     land_events     events    ← 种类表各源表 (shared/AssetEvent.hpp): 单点 = 档案 + 涨跌停 + kPoints 逐行; 区间 = 逐日标记按交易日连段
 //     land_suspended  suspended ← cn_stock_status 逐日停牌标记
-//   days ← all_trading_days 全日历; bar1m_end ← bar1m 末个分片日; pit_end ← fund::last_day (Bar 档源末日 = min(两者))
+//   days ← all_trading_days 全日历; bar1m_end ← bar1m 末个分片日; quote_end ← bar1d 水位 ∧ bar1m_end (行情的基本面段);
+//   pit_end ← fund::last_day (Bar 档源末日 = min(bar1m_end, pit_end))
 #include "shared/AssetInfo.hpp"
 
 #include "define/Csr.hpp"
@@ -590,6 +591,11 @@ bool AssetInfo::build(const Catalog &cat, Progress &p, const std::function<void(
   out.days = calendar_of(trading);
   const std::vector<fundamental::Shard> &bar1m = cat.shards("bar1m");
   out.bar1m_end = bar1m.empty() ? 0 : bar1m.back().day;
+  const std::vector<fundamental::Shard> &bar1d = cat.shards("cn_stock_real_bar1d");
+  Ymd bar1d_end = 0;
+  for (size_t k = bar1d.size(); k-- > 0 && bar1d_end == 0;)
+    bar1d_end = fundamental::mark(spec("cn_stock_real_bar1d"), bar1d[k]);
+  out.quote_end = std::min(bar1d_end, out.bar1m_end);
   out.pit_end = fund::last_day(cat, trading);
 
   // ======================== 扫描 (并行) ========================

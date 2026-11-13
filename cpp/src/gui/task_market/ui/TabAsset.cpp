@@ -532,7 +532,8 @@ void fill_order(std::vector<size_t> &o, const AssetCells &cs, int sort_column, b
 void sync_view(AssetState &state, const Asset &asset, const StockInfos &stock_info) {
   const Joint &q = state.quotes;
   const uint64_t today = q.live ? static_cast<uint64_t>(q.live->date) * 86400 + static_cast<uint64_t>(q.live->sec) : 0;
-  state.cells.update(AssetCellsKey{asset.generation, asset.items.size(), stock_info.size(), q.tape ? q.tape->tails : nullptr, today, state.filter,
+  const Tape *t = q.tape();
+  state.cells.update(AssetCellsKey{asset.generation, asset.items.size(), stock_info.size(), t ? t->tails : nullptr, today, state.filter,
                                    ImGui::GetFontSize(), ImGui::GetColorU32(ImGuiCol_Text)},
                      [&](AssetCells &o) { fill_cells(o, asset, stock_info, q, state.filter); });
   state.order.update(AssetOrderKey{state.cells.gen, state.sort_column, state.sort_ascending},
@@ -841,7 +842,7 @@ void RenderTabAsset(Asset &asset, const StockInfos &stock_info, AssetState &asse
     ImGui::TextDisabled("Waiting for database scan...");
     return;
   }
-  assert(mk.quote);
+  assert(mk.started());
   asset_state.quotes = mk.joint(kStock);
   sync_view(asset_state, asset, stock_info); // 过滤条的列出数也读它
 

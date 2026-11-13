@@ -1,9 +1,10 @@
 // 篮子合成件 (PriceLib 的库段 / 补段同一份): 成员 × 源 → Lane (Fold 一日一份) → 各篮子一日; 普查 census 出发布的成员统计.
 //   成员 (谁 × 权) 两步对仗: members = 选股表 → 交易日 D 的成员表 (判据 = shared/Basket.hpp BasketTable::each, 权 = Tape::omega)
 //                             drift   = 成员冻结, 过一个交易日 (库末日之后的补段: 随价漂移, 逢换源回目标权)
-//   源 (每只一日的 Leg) 两种对仗: LibDay  = all.bar L_1day 日行 (基准 = D−1 行 pre_close) + L_1min 分钟根
+//   源 (每只一日的 Leg) 三种对仗: LibDay  = all.bar L_1day 日行 (基准 = D−1 行 pre_close) + L_1min 分钟根
 //                                 FundDay = 基本面 bar1d 行 (基准 = 当行 pre_close) + bar1m 分钟根
-//   两源同一个形 (date / assets / minutes / leg), Lane::run 不分源; 当日 (新浪快照) 的增量合成在 QuoteService (Fold 增量).
+//                                 SinaDay = 新浪归档的末快照 (基准 = 昨收) + 分钟根
+//   各源同一个形 (date / assets / minutes / leg), Lane::run 不分源; 当日 (新浪快照) 的增量合成在 QuoteService (Fold 增量).
 //   库段一趟 lib_pass: 各日的合成互不相干 (前日 = 1) ⇒ 按线程一日一件并行, 日间接续 (点位 / 因子链) 归调用方按日序串行;
 //     续算件的盘上头 + 体同一读写 (snap_read / snap_write).
 #pragma once
@@ -52,7 +53,7 @@ void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel);
 // 一只一日的 L_1min (mc = read_minutes 的读) → 分钟根: 无成交的行不收 (与 bar1m 的 bars_of 同一并根)
 void bars_of(const FeatureRead::DayColumns &mc, size_t a, misc::Ymd d, Bars &b);
 
-// 源 (两种同形): date = 交易日; assets() = 库轴长; minutes() = 合成分钟; leg(a, c, b) = 一只的 Leg (c / b = 调用方给的格, Leg 可指向它们)
+// 源 (三种同形): date = 交易日; assets() = 库轴长; minutes() = 合成分钟; leg(a, c, b) = 一只的 Leg (c / b = 调用方给的格, Leg 可指向它们)
 // all.bar 库源: 基准 = 前一行 prev 的 pre_close, 日根 = 当日行 cur, 分钟根 = mc 的 L_1min (nullptr = 只合日根)
 struct LibDay {
   misc::Ymd date;
@@ -67,6 +68,15 @@ struct FundDay {
   misc::Ymd date;
   std::span<const Candle> px;
   const Bar1mDay &bd;
+  size_t assets() const { return px.size(); }
+  bool minutes() const { return true; }
+  Leg leg(size_t a, Cell &c, Bars &b) const;
+};
+// 新浪归档源 (archived_day 的读): 基准 / 日根 = 末快照 px [库轴] (ref = 昨收; 归档无该只 → 收 0), 分钟根 = bars [库轴]
+struct SinaDay {
+  misc::Ymd date;
+  std::span<const Candle> px;
+  std::span<const Bars> bars;
   size_t assets() const { return px.size(); }
   bool minutes() const { return true; }
   Leg leg(size_t a, Cell &c, Bars &b) const;

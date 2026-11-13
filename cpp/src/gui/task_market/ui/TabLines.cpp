@@ -102,6 +102,7 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState
   ImGui::SameLine();
   if (ImGui::Button("Clear", ImVec2(60, 0))) {
     ui.pick = LinesPick{.of = pf.name};
+    SavePick(ui.pick);
     for (int p = 0; p < kPages; ++p)
       ui.range[p] = DefaultLinesRange(p, d.dates);
     ui.log_y = false;
@@ -151,6 +152,32 @@ void SaveWatch(const std::vector<std::string> &watch) {
   disk::write(disk::WatchFile, {}, f.str());
 }
 
+LinesPick LoadPick() {
+  if (!disk::exists(disk::MarketUiFile))
+    return {};
+  const json j = json::parse(disk::read(disk::MarketUiFile), nullptr, /*allow_exceptions=*/false);
+  assert(!j.is_discarded() && j.is_object() && j.contains("portfolio") && j["portfolio"].is_string() && j.contains("nav") && j["nav"].is_array() &&
+         "选中文件: 顶层须是 {portfolio: \"\", nav: [...]}");
+  LinesPick p{.of = j["portfolio"].get<std::string>()};
+  for (const json &o : j["nav"]) {
+    assert(o.is_string() && "选中文件: 条目须是字符串");
+    const std::string id = o.get<std::string>();
+    p.rows[kPickMany].emplace(id, RowRef(id));
+  }
+  return p;
+}
+
+// 一条目一行 (同自选文件)
+void SavePick(const LinesPick &pick) {
+  std::ostringstream f;
+  f << "{\n  \"portfolio\": " << json(pick.of).dump() << ",\n  \"nav\": [";
+  const std::map<std::string, Quote::Ref> &rows = pick.rows[kPickMany];
+  for (auto it = rows.begin(); it != rows.end(); ++it)
+    f << (it == rows.begin() ? "\n    " : ",\n    ") << json(it->first).dump();
+  f << (rows.empty() ? "]\n}\n" : "\n  ]\n}\n");
+  disk::write(disk::MarketUiFile, {}, f.str());
+}
+
 void SyncLinesWatch(LinesState &ui) {
   if (ui.watch_loaded)
     return;
@@ -179,22 +206,30 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
 
   // ---- 三级缓存, 各级的键 = 它读的东西: 派生 (键含成分组: 展开行 / 选中的个股; 价格库发布 + 接得上的当日) → 当日尾 (派生 gen + 当日)
   //      / 滚动分位 (日轴代 + 标的估值腿) / 末点分位 (估值代) → 视图 (派生 gen + 当日尾 gen + 二级两份 gen + 标的): 上级重算 → 下级自动重算 ----
-  if (ui.pick.of != pf.name) // 换组合 → 选中清掉
+  if (!ui.pick_loaded) { // 首帧: 读选中文件, 读回的行回默认显隐
+    ui.pick_loaded = true;
+    ui.pick = LoadPick();
+    for (const auto &[id, ref] : ui.pick.rows[kPickMany])
+      for (const char *suf : kPairId)
+        ui.reveal.insert(id + suf);
+  }
+  if (ui.pick.of != pf.name) { // 换组合 → 选中清掉
     ui.pick = LinesPick{.of = pf.name};
+    SavePick(ui.pick);
+  }
   const std::vector<uint32_t> stocks = ui.pick.stocks(kPicks);
-  if (mk) { // 选中的个股 → 全历史; 分钟线页: 选中的有行情键的行 (NAV 多选 ∪ VAL 标的; 两页同一份) → 分钟收盘
+  if (mk) { // 选中的个股 → 全历史; 有行情键的选中行 → 分钟价: 分钟线页 = NAV 多选 ∪ VAL 标的 (两页同一份), CTA 页 = 其标的
     for (const uint32_t id : stocks)
       mk->want_kline(id);
-    if (pd.work == kWorkPrice)
-      for (const std::map<std::string, Quote::Ref> &rows : ui.pick.rows)
-        for (const auto &[id, ref] : rows)
+    for (int m = 0; m < kPicks; ++m)
+      if (pd.work == kWorkPrice || (pd.work == kWorkCta && m == kPickOne))
+        for (const auto &[id, ref] : ui.pick.rows[m])
           if (ref.ok())
             mk->want_minutes(ref);
   }
   const std::shared_ptr<const Quote::PriceView> view = mk ? mk->view : nullptr;
   const std::shared_ptr<const Quote::Live> live = mk ? mk->live : nullptr;
-  const Quote::Tape *bt = mk ? mk->tape(Quote::kBasket) : nullptr;
-  const misc::Ymd today = live && bt && bt->joins(live->prev) && std::ranges::any_of(live->baskets, [](const auto &y) { return y != nullptr; }) ? live->date : 0;
+  const misc::Ymd today = mk ? mk->joint(Quote::kBasket).today() : 0;
   ui.der.update(LinesDerKey{gen, pf.items_gen, view, today, fixed_impact, infos.size(), ui.pick.open, stocks, ui.watch}, [&](LinesDerived &dv) {
     const std::vector<misc::Ymd> old = dv.dates;
     MakeLinesDerived(pf.items, pf.name, res, view, today, fixed_impact, ui.pick.open, stocks, ui.watch, infos, dv);

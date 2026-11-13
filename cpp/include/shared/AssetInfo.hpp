@@ -78,6 +78,7 @@ struct AssetInfo {
   std::vector<CalendarDay> days;  // 全日历 (含周末/节假日, 首末交易日之间逐日), date 升序
   Csr<std::uint32_t> suspended;   // [days 下标] → 当日全天停牌的全局 id (升序)
   misc::Ymd bar1m_end = 0;        // 末个 bar1m 分片日 (0 = 未同步); 缺日由同步保证不出现
+  misc::Ymd quote_end = 0;        // 行情的基本面段末日 = bar1d 水位 (末个非空月分片; 0 行月也落文件) ∧ bar1m_end (0 = 未同步)
   misc::Ymd pit_end = 0;          // 基本面齐备的末个库日 (fund::last_day; 0 = 无)
 
   // 档案里没有 (!known) → nullptr

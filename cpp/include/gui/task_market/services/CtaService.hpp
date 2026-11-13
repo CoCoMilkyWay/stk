@@ -1,7 +1,7 @@
 // CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产 中线 + 分层 模型的滚动调参全期轨迹 (cta/Trace.hpp)
-//   价格源 = Quote::PriceLib (QuoteHub 的): 请求带价格库发布的戳, 只读那一份库 (其后库又变了 → 本轮作废, 等带新戳的请求);
-//     有效根序列按 (标的, 戳) 留最近 kKeep 个 (只改设定不重读)
-//   请求 = 标的 + CtaSpec + 戳; 新请求覆盖旧的 (换标的 / 改设定 / 库变即重算). 进度: Loading = 读分钟价, Running = 选参日数
+//   价格源 = 价格库发布的 PriceView (QuoteHub 的): 请求带该份的日脊 + 标的的分钟价 (不可变, 只拷指针) + 戳;
+//     有效根序列按 (标的, 戳) 留最近 kKeep 个 (只改设定不重算)
+//   请求 = 标的 + CtaSpec + 价; 新请求覆盖旧的 (换标的 / 改设定 / 库变即重算). 进度: Running = 选参日数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (latest)
 #pragma once
 
@@ -37,8 +37,10 @@ struct CtaRequest {
   uint32_t gen = 0;
   Quote::Ref ref; // 标的
   CtaSpec spec;
-  cta::Rates rates;        // 成本率 = 系统配置 (Config::commission / stamp / fixed_impact)
-  Quote::PriceStamp stamp; // 价格库发布的戳
+  cta::Rates rates;                                    // 成本率 = 系统配置 (Config::commission / stamp / fixed_impact)
+  Quote::PriceStamp stamp;                             // 价格库发布的戳
+  std::shared_ptr<const std::vector<misc::Ymd>> dates; // 该戳的日脊
+  std::shared_ptr<const Quote::Minutes> minutes;       // 标的在该戳的分钟价
   bool operator==(const CtaRequest &) const = default;
 };
 
@@ -57,20 +59,19 @@ class CtaService : public Service<CtaService, CtaRequest>, public Published {
 
 public:
   static constexpr const char *kName = "CtaWorker";
-  explicit CtaService(PriceLib &lib) : lib_(lib) { Start(); }
+  CtaService() { Start(); }
   ~CtaService() { Stop(); }
 
   std::shared_ptr<const CtaResult> result; // UI 持 mutex 读; 空 = 未算
 
 private:
-  static constexpr Phase kStart = Phase::Loading;
+  static constexpr Phase kStart = Phase::Running;
   static constexpr size_t kKeep = 4; // 留在内存的标的序列数
   static constexpr int kThreads = 8; // 网格线程 (每线程一个配置的几条根列)
   Progress &board() { return *this; }
   bool run(CtaRequest &req);
   bool publish(const CtaRequest &req, std::string lack, std::shared_ptr<CtaResult> out = nullptr);
 
-  PriceLib &lib_;
   misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
   Kept<cta::Series> kept_{kKeep};
 };

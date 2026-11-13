@@ -501,8 +501,6 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   const bool syncing = lib.phase.load(std::memory_order_acquire) == Phase::Loading && lib_total > 0;
   if (syncing)
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "合成价格 %zu/%zu 日", lib.done.load(std::memory_order_relaxed), lib_total);
-  else if (ph == Phase::Loading)
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "读取分钟价…");
   else if (ph == Phase::Running)
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "滚动选参 %zu/%zu 日", done, total);
   else if (!lack.empty())
@@ -513,7 +511,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   } else
     ImGui::TextDisabled("未算");
   if (syncing && ImGui::IsItemHovered())
-    tip("首次一趟合成全部篮子线与个股的 1 分钟价, 存在 all.bar 库目录 cache/price/ 下 (十年全市场约 30 GB); 之后只补新日, 退出不丢已合成的");
+    tip("首次一趟合成全部篮子线与个股的 1 分钟价, 存在 all.bar 库目录 cache/price/ 下 (十年全市场约 40 GB); 之后只补新日, 退出不丢已合成的");
 
   // 设定: 分组 (优化目标 / 中线 / 分层 / 引擎), 组内一行一项, 名左值右
   CtaSpec &sp = c.spec;
@@ -653,8 +651,10 @@ void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, 
   const Quote::Ref q = one.empty() ? Quote::Ref{} : one.begin()->second;
   const Quote::PriceView *v = mk.view.get();
   const bool ready = v && v->lack.empty();
-  if (q.ok() && ready && !c.editing)
-    c.sent.send(svc, {.ref = q, .spec = c.spec, .rates = rates, .stamp = v->stamp});
+  const std::shared_ptr<const Quote::Minutes> m = ready && q.ok() ? v->minute(q) : nullptr;
+  const bool off = ready && q.ok() && !m && v->covers(q); // 个股在库轴外 (篮子恒在)
+  if (m && !c.editing)
+    c.sent.send(svc, {.ref = q, .spec = c.spec, .rates = rates, .stamp = v->stamp, .dates = v->dates, .minutes = m});
   const std::shared_ptr<const CtaResult> r = latest(svc);
   const bool mine = q.ok() && r && r->ref == q; // 本标的的 (设定改了时新的还在算, 先显旧的)
   const CtaResult *show = mine && r->lack.empty() ? r.get() : nullptr;
@@ -668,13 +668,18 @@ void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, 
     plots(c, *show, name, ImGui::GetContentRegionAvail());
   else if (!ready)
     ImGui::TextDisabled("等价格库…");
-  else if (!mine || r->gen != c.sent.req.gen)
+  else if (!m && !off)
+    ImGui::TextDisabled("读分钟价…");
+  else if (m && (!mine || r->gen != c.sent.req.gen))
     ImGui::TextDisabled("计算中…");
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginChild("##cta_panel", ImVec2(panel_w, plots_size.y), ImGuiChildFlags_Borders);
-  panel(svc, *mk.price, c, rates, show, v && !v->lack.empty() ? v->lack : mine ? r->lack
-                                                                               : std::string{});
+  const std::string lack = v && !v->lack.empty() ? v->lack
+                           : off                 ? "该股不在 all.bar 库轴上 (库建成之后上市 / 进池; 全量重算 all.bar 即并入)."
+                           : mine                ? r->lack
+                                                 : std::string{};
+  panel(svc, mk.progress(), c, rates, show, lack);
   ImGui::EndChild();
 }
 

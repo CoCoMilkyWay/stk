@@ -19,6 +19,8 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -31,8 +33,9 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // 有行情键的行 id (两侧各一个前缀): 篮子 = pf_ + 切片代码 + 权重后缀 [Weight] (概念换快照线号会变, 切片代码不变) / 个股 = stk_ + 全局 id
 constexpr const char *kWeightId[pool::kWeights] = {"", "_cap"};
+constexpr std::string_view kStockId = "stk_";
 std::string basket_id(size_t b) { return "pf_" + basket_table().code(b) + kWeightId[basket_table().weight(b)]; }
-std::string stock_id(uint32_t id) { return "stk_" + std::to_string(id); }
+std::string stock_id(uint32_t id) { return std::string(kStockId) + std::to_string(id); }
 
 // 行名主体的显示宽上限 (格: ASCII 1, 其余 2): 超出 → 截到 kNameCells − 2 格补 "…" (表 / 图例 / 线尾同用; 全名进悬停)
 constexpr int kNameCells = 14;
@@ -417,7 +420,9 @@ Line project(const std::vector<misc::Ymd> &axis, const Levels &s) {
 
 // 线 c (日末视图已建) 的点换成日内形 m: 各日以当日末点为锚, 锚 = 末点所在槽及以前的末个有根槽, 该日各有根槽 (至锚) 的点位 = 末点 × 收 / 锚处收;
 // m 无该日 / 锚前无根 → 该日照留原点. 起点 (前收) 与各日末点不动 ⇒ 日末视图不变, 切片的 base 仍落在点上
-void intraday(const std::vector<misc::Ymd> &axis, const Quote::MinuteCloses &m, Line &c) {
+void intraday(const std::vector<misc::Ymd> &axis, const Quote::Minutes &m, Line &c) {
+  constexpr size_t F = Quote::Minutes::kFields, C = Quote::Minutes::kClose;
+  const auto close = [&](const float *p, int s) { return p[static_cast<size_t>(s) * F + C]; };
   if (c.x.size() < 2)
     return;
   std::vector<double> x{c.x[0]}, y{c.y[0]};
@@ -427,7 +432,7 @@ void intraday(const std::vector<misc::Ymd> &axis, const Quote::MinuteCloses &m, 
       ++e;
     const float *p = m.on(axis[static_cast<size_t>(k)]);
     int a = p ? static_cast<int>(c.x[e - 1] - x_of(static_cast<size_t>(k), 0.0)) : -1;
-    while (a >= 0 && !(p[a] > 0))
+    while (a >= 0 && !(close(p, a) > 0))
       --a;
     if (a < 0) {
       x.insert(x.end(), c.x.begin() + static_cast<std::ptrdiff_t>(j), c.x.begin() + static_cast<std::ptrdiff_t>(e));
@@ -436,9 +441,9 @@ void intraday(const std::vector<misc::Ymd> &axis, const Quote::MinuteCloses &m, 
     }
     const double ly = c.y[e - 1];
     for (int s = 0; s <= a; ++s)
-      if (p[s] > 0)
+      if (close(p, s) > 0)
         x.push_back(x_of(static_cast<size_t>(k), static_cast<double>(s))),
-            y.push_back(ly * (static_cast<double>(p[s]) / static_cast<double>(p[a])));
+            y.push_back(ly * (static_cast<double>(close(p, s)) / static_cast<double>(close(p, a))));
   }
   c.x = std::move(x), c.y = std::move(y);
 }
@@ -580,8 +585,8 @@ void bind_quotes(const PortfolioResult &res, const std::shared_ptr<const Quote::
   };
   if (d.quotes[Quote::kBasket])
     join(b->dates);
-  if (const Quote::Tape *t = d.baskets())
-    join(t->dates);
+  if (d.baskets())
+    join(*d.view->dates);
   if (live)
     join({live});
   d.val_at.assign(d.dates.size(), -1);
@@ -685,7 +690,7 @@ void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const R
     const Quote::Tape *t = d.view->tape[r.ref.side].get();
     r.src[kIdeal].price = t ? t->line(r.ref.key) : nullptr;
     for (LineSrc &s : r.src)
-      s.minutes = d.view->minute(r.ref);
+      s.minutes = d.view->minute(r.ref).get();
   }
   push(d, g, std::move(r), ru);
 }
@@ -970,6 +975,15 @@ void rank_col(size_t n, int good, const At &at) {
 }
 
 } // namespace
+
+Quote::Ref RowRef(const std::string &id) {
+  if (id.starts_with(kStockId))
+    return {Quote::kStock, static_cast<uint32_t>(std::stoul(id.substr(kStockId.size())))};
+  for (size_t b = 0; b < basket_table().size(); ++b)
+    if (basket_id(b) == id)
+      return {Quote::kBasket, static_cast<uint32_t>(b)};
+  return {};
+}
 
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
                       const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, double fixed_impact, const std::string &open,

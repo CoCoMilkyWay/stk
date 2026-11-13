@@ -91,7 +91,6 @@
 #include <cstdint>
 #include <limits>
 #include <map>
-#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -183,7 +182,7 @@ struct LinesSheet {
   std::vector<std::vector<Flow>> flow; // 资金流段: [表行][日轴各日 + 合计] (悬停)
 };
 
-// 行选中 (LinesRow::id → 行情键; 默认空): 属于组合 of, 换组合 → 整份清空
+// 行选中 (LinesRow::id → 行情键; 默认空): 属于组合 of, 换组合 → 整份清空; 多选 (NAV / FLOW) = 选中文件, 改了即存
 struct LinesPick {
   std::string of;
   std::map<std::string, Quote::Ref> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个; 多选的个股至多 PriceLib::kKeep − 1 只: 两种合起来不过价格库留的个股全历史)
@@ -212,6 +211,7 @@ struct LinesState {
   Stage<LinesSheetKey, LinesSheet> sheet[kPages]; // [LinesPage] 右表格
   LinesRange range[kPages];                       // [LinesPage] 区间 (各页一份; 视图按当前页的切)
   LinesPick pick;
+  bool pick_loaded = false;       // 读过选中文件
   HoverSync<std::string> hover;   // NAV 主图 / 日内栏 / FLOW 图 ↔ 右表的悬停联动 (键 = LinesRow::id)
   bool watch_loaded = false;      // 读过自选文件
   std::vector<std::string> watch; // 自选键 (= 文件, 自选序; 改了即存)
@@ -233,10 +233,15 @@ struct LinesState {
 std::vector<std::string> LoadWatch();                  // 文件不存在 = 空; 格式不对 → assert
 void SaveWatch(const std::vector<std::string> &watch); // 原子替换
 
+// 选中文件 output/config/market/ui.json (GUI 线程读写; NAV / FLOW 点行 / Clear / 换组合即存): { "portfolio": "<组合>", "nav": [ "pf_sw01_cap", "stk_123", … ] }
+//   portfolio = LinesPick::of, nav = 多选的行 id (行情键读时由 RowRef 还原); 单选 / 展开不存
+LinesPick LoadPick();                 // 文件不存在 = 空; 格式不对 → assert
+void SavePick(const LinesPick &pick); // 原子替换
+
 // GUI 线程每帧: 首次读自选文件 (有自选 → 各页右表类别条先选自选)
 void SyncLinesWatch(LinesState &ui);
 // 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (本帧已 frame; nullptr = AssetInfo 未建, 日内栏 / 指数行业近况 / 成分行当日空着;
-// 本页要的个股全历史 / 分钟收盘登记给它); infos = 基本面档案 (成分行名 / 估值); cta = CTA 页的服务 (读 mk 的价格库, mk 空时同空).
+// 本页要的个股全历史 / 分钟价登记给它); infos = 基本面档案 (成分行名 / 估值); cta = CTA 页的服务 (算 mk 价格库发布的分钟价, mk 空时同空).
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
                    const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos);

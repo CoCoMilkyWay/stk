@@ -55,7 +55,7 @@ bool in_session(const Clock &c) {
 
 // 缓存文件 = FileRec + n × AssetRec + n × kSlots × SlotRec (定长, 本机字节序); 头不符 = 别的格式 / 别的行情日, 弃.
 //   AssetRec / SlotRec 各是一个原子条目: 整条写入, busy 先置后清 —— 读回 busy 的 = 写到一半进程没了
-constexpr uint32_t kMagic = 0x484C5651; // "QVLH"
+constexpr uint32_t kMagic = 0x444C5651; // "QVLD"
 struct FileRec {
   uint32_t magic;
   misc::Ymd date;
@@ -66,7 +66,7 @@ struct AssetRec {
   std::array<char, 12> sym;
   int32_t lo, hi;
   double vol, amt;
-  float high, low;
+  float high, low, open, close, ref;
   uint8_t busy;
 };
 struct SlotRec {
@@ -80,6 +80,48 @@ AssetRec &asset_rec(std::byte *m, uint32_t i) { return reinterpret_cast<AssetRec
 SlotRec &slot_rec(std::byte *m, size_t n, uint32_t i, int s) {
   return reinterpret_cast<SlotRec *>(m + sizeof(FileRec) + n * sizeof(AssetRec))[static_cast<size_t>(i) * kSlots + static_cast<size_t>(s)];
 }
+
+// 一份盘上缓存的读 (条目逐条拷出: 文件里不对齐); 别的格式 → date() = 0
+class Cache {
+public:
+  explicit Cache(std::string blob) : blob_(std::move(blob)) {
+    std::memcpy(&f_, blob_.data(), std::min(blob_.size(), sizeof(f_)));
+    if (f_.magic != kMagic)
+      f_ = {};
+    assert((f_.magic != kMagic || blob_.size() == file_bytes(f_.n)) && "sina 缓存: 文件长度与只数不符");
+  }
+  misc::Ymd date() const { return f_.date; }
+  int sec() const { return f_.sec; }
+  uint32_t size() const { return f_.n; }
+  AssetRec asset(uint32_t k) const { return at<AssetRec>(sizeof(FileRec) + k * sizeof(AssetRec)); }
+  SlotRec slot(uint32_t k, int s) const {
+    return at<SlotRec>(sizeof(FileRec) + f_.n * sizeof(AssetRec) + (static_cast<size_t>(k) * kSlots + static_cast<size_t>(s)) * sizeof(SlotRec));
+  }
+  std::string sym(const AssetRec &a) const { return {a.sym.data(), strnlen(a.sym.data(), a.sym.size())}; }
+  // 收完了: 收盘后的快照 ∧ 各只无待补区间 ∧ 无缺口 / 写到一半的条目
+  bool whole() const {
+    if (f_.sec < 15 * 3600)
+      return false;
+    for (uint32_t k = 0; k < f_.n; ++k) {
+      if (const AssetRec a = asset(k); a.busy || a.lo <= a.hi)
+        return false;
+      for (int s = 0; s < kSlots; ++s)
+        if (const SlotRec r = slot(k, s); r.busy || r.hole)
+          return false;
+    }
+    return true;
+  }
+
+private:
+  template <class R>
+  R at(size_t off) const {
+    R r;
+    std::memcpy(&r, blob_.data() + off, sizeof(r));
+    return r;
+  }
+  std::string blob_;
+  FileRec f_{};
+};
 
 template <class R>
 void store(R &dst, R src) {
@@ -406,7 +448,7 @@ bool QuoteService::Track::holed(int done) const {
 bool QuoteService::Track::absorb(const sina::Quote &q, int gap) {
   const int s = sec_slot(q.sec);
   if (vol < 0) { // 首快照: 基线. 已有成交 ⇒ 所在根以前快照没盯住 (缺口); 所在根暂写现价 (量 0)
-    vol = q.volume, amt = q.amount, high = q.high, low = q.low;
+    vol = q.volume, amt = q.amount, high = q.high, low = q.low, open = q.open, close = q.price, ref = q.last_close;
     if (q.volume > 0) {
       mark(0, s);
       hole(0, s - 1);
@@ -430,7 +472,7 @@ bool QuoteService::Track::absorb(const sina::Quote &q, int gap) {
       bars.add(s, {q.price, h, l, q.price, dv, da});
     }
   }
-  vol = q.volume, amt = q.amount, high = q.high, low = q.low;
+  vol = q.volume, amt = q.amount, high = q.high, low = q.low, open = q.open, close = q.price, ref = q.last_close;
   return dv != 0;
 }
 
@@ -557,7 +599,7 @@ void QuoteService::put(uint32_t i) {
   AssetRec a{};
   assert(syms_[i].size() < a.sym.size());
   std::copy(syms_[i].begin(), syms_[i].end(), a.sym.begin());
-  a.lo = t.lo, a.hi = t.hi, a.vol = t.vol, a.amt = t.amt, a.high = t.high, a.low = t.low;
+  a.lo = t.lo, a.hi = t.hi, a.vol = t.vol, a.amt = t.amt, a.high = t.high, a.low = t.low, a.open = t.open, a.close = t.close, a.ref = t.ref;
   store(asset_rec(map_, i), a);
   saved_ = std::time(nullptr);
 }
@@ -571,24 +613,19 @@ void QuoteService::put(uint32_t i, int s) {
 void QuoteService::load() {
   if (map_)
     munmap(map_, bytes_);
+  const std::filesystem::path p = disk::path(disk::QuoteLive);
   if (disk::exists(disk::QuoteLive)) {
-    const std::string blob = disk::read(disk::QuoteLive);
-    FileRec f{};
-    std::memcpy(&f, blob.data(), std::min(blob.size(), sizeof(f)));
-    if (f.magic == kMagic && f.date == date_) {
-      assert(blob.size() == file_bytes(f.n) && "sina 缓存: 文件长度与只数不符");
-      const char *as = blob.data() + sizeof(FileRec), *ss = as + f.n * sizeof(AssetRec);
-      for (uint32_t k = 0; k < f.n; ++k) {
-        AssetRec a;
-        std::memcpy(&a, as + k * sizeof(a), sizeof(a));
-        const auto it = index_.find(std::string(a.sym.data(), strnlen(a.sym.data(), a.sym.size())));
+    const Cache c(disk::read(disk::QuoteLive));
+    if (c.date() == date_) {
+      for (uint32_t k = 0; k < c.size(); ++k) {
+        const AssetRec a = c.asset(k);
+        const auto it = index_.find(c.sym(a));
         if (a.busy || it == index_.end()) // 写到一半 (该只从零) / 不在本次全市场 (已退市)
           continue;
         Track &t = tracks_[it->second];
-        t.lo = a.lo, t.hi = a.hi, t.vol = a.vol, t.amt = a.amt, t.high = a.high, t.low = a.low;
+        t.lo = a.lo, t.hi = a.hi, t.vol = a.vol, t.amt = a.amt, t.high = a.high, t.low = a.low, t.open = a.open, t.close = a.close, t.ref = a.ref;
         for (int s = 0; s < kSlots; ++s) {
-          SlotRec r;
-          std::memcpy(&r, ss + (static_cast<size_t>(k) * kSlots + static_cast<size_t>(s)) * sizeof(r), sizeof(r));
+          const SlotRec r = c.slot(k, s);
           if (r.busy || r.hole) { // 缺口照并入待补 (格先于状态落盘, 状态里的区间可能还没盖到它)
             t.hole(s, s);
             continue;
@@ -598,14 +635,15 @@ void QuoteService::load() {
           t.exact[static_cast<size_t>(s)] = r.exact;
         }
       }
-      sec_ = f.sec;
+      sec_ = c.sec();
+    } else if (c.date() != 0 && c.date() < date_ && c.whole()) { // 往日收完了: 转作归档
+      std::filesystem::rename(p, disk::path(disk::QuoteDay, {.date = c.date()}));
     }
   }
   recount();
   // 重写成本次布局: 临时文件建满再 rename, 映射随 inode 留用
   const uint32_t n = static_cast<uint32_t>(tracks_.size());
   bytes_ = file_bytes(n);
-  const std::filesystem::path p = disk::path(disk::QuoteLive);
   std::filesystem::path tmp = p;
   tmp += ".tmp";
   std::filesystem::create_directories(p.parent_path());
@@ -624,6 +662,35 @@ void QuoteService::load() {
     put(i);
   }
   std::filesystem::rename(tmp, p);
+}
+
+void archived_day(misc::Ymd d, const PoolAxis &axis, std::vector<Candle> &px, std::vector<Bars> &bars) {
+  const Cache c(disk::read(disk::QuoteDay, {.date = d}));
+  assert(c.date() == d && "新浪归档: 头与文件名不符");
+  std::unordered_map<std::string, uint32_t> at; // 新浪码 → axis 下标
+  for (uint32_t a = 0; a < axis.size(); ++a)
+    at.emplace(sina_sym(asset_axis().code(axis.global(a))), a);
+  px.assign(axis.size(), Candle{});
+  bars.resize(axis.size());
+  for (Bars &b : bars)
+    b.date = d, b.has.reset(), b.hole.reset();
+  for (uint32_t k = 0; k < c.size(); ++k) {
+    const AssetRec r = c.asset(k);
+    const auto it = at.find(c.sym(r));
+    if (it == at.end() || r.vol < 0)
+      continue;
+    px[it->second] = {cell(r.open, r.high, r.low, r.close, r.vol, r.amt), d, r.ref};
+    Bars &b = bars[it->second];
+    for (int s = 0; s < kSlots; ++s)
+      if (const SlotRec x = c.slot(k, s); x.has)
+        b.has.set(static_cast<size_t>(s)), b.cell[static_cast<size_t>(s)] = x.bar;
+  }
+}
+
+void drop_archived(misc::Ymd upto) {
+  for (const disk::Key &k : disk::list(disk::QuoteDay))
+    if (k.date <= upto)
+      disk::remove(disk::QuoteDay, k);
 }
 
 } // namespace GUI::Quote

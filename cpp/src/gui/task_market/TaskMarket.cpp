@@ -55,13 +55,13 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
   handle.Status = [state](const SharedData & /*data*/, int idx) -> TaskStatus {
     assert(idx >= 0 && idx < kTabs);
     if (idx == kTabAsset) // 新浪行情起了即常驻 (背景常态, 灰色)
-      return state->quote->quote ? TaskStatus{TaskStatus::Kind::Muted, "live"} : TaskStatus{};
+      return state->quote->started() ? TaskStatus{TaskStatus::Kind::Muted, "live"} : TaskStatus{};
     const auto of = [&](Market::PageWork w) -> const Progress * {
       switch (w) {
       case Market::kWorkPortfolio:
         return state->engine->portfolio_service.get();
       case Market::kWorkPrice:
-        return state->quote->price.get();
+        return state->quote->started() ? &state->quote->progress() : nullptr;
       case Market::kWorkCta:
         return state->cta_service.get();
       }
@@ -93,7 +93,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
       state->quote->frame(data);
       mk = state->quote.get();
       if (!state->cta_service)
-        state->cta_service = std::make_unique<Market::CtaService>(*mk->price);
+        state->cta_service = std::make_unique<Market::CtaService>();
     }
     const int action = Market::RenderTabLines(idx - kTabLines, *e.portfolio_service, state->cta_service.get(), e.portfolio_ui, ui, data.config.fixed_impact,
                                               {data.config.commission, data.config.stamp, data.config.fixed_impact}, mk, data.asset_info.stocks);

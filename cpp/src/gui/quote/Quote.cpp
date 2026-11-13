@@ -3,22 +3,13 @@
 #include "api/sina/client.hpp"
 #include "features/Bar1mDay.hpp"
 #include "fundamental/Scan.hpp"
+#include "gui/quote/PriceLib.hpp"
 
 #include <cassert>
 #include <string>
 #include <vector>
 
 namespace GUI::Quote {
-
-misc::Ymd fund_last(const fundamental::Catalog &cat) {
-  static const fundamental::Spec &kDaily = fundamental::spec(kBar1d);
-  const std::vector<fundamental::Shard> &months = cat.shards(kBar1d), &days = cat.shards(kBar1m);
-  assert(!months.empty() && !days.empty() && "基本面未同步日线 / 分钟");
-  misc::Ymd mark = 0;
-  for (size_t k = months.size(); k-- > 0 && mark == 0;)
-    mark = fundamental::mark(kDaily, months[k]);
-  return std::min(mark, days.back().day);
-}
 
 void each_daily(fundamental::Scratch &xs, const fundamental::Shard &sh, const fundamental::Ids &ids,
                 const std::function<void(uint32_t, const Candle &)> &f) {
@@ -102,15 +93,22 @@ const sina::Quote *Live::quote(uint32_t id) const {
   return quotes && s < quotes->size() ? &(*quotes)[s] : nullptr;
 }
 
+const Tape *Joint::tape() const { return view ? view->tape[side].get() : nullptr; }
+
+misc::Ymd Joint::today() const {
+  const bool has = live && (side == kStock || std::ranges::any_of(live->baskets, [](const auto &y) { return y != nullptr; }));
+  return has && view && view->joins(live->prev) ? live->date : 0;
+}
+
 Source Joint::of(uint32_t key) const {
   Source o;
   o.today = live ? live->at({side, key}) : nullptr;
-  if (tape) {
-    o.kl = tape->line(key);
-    o.daily = o.kl ? std::span<const Candle>(o.kl->daily) : tape->tails ? tape->tails->of(key)
-                                                                        : std::span<const Candle>{};
+  if (const Tape *t = tape()) {
+    o.kl = t->line(key);
+    o.daily = o.kl ? std::span<const Candle>(o.kl->daily) : t->tails ? t->tails->of(key)
+                                                                     : std::span<const Candle>{};
   }
-  o.joined = o.today && (o.daily.empty() || tape->joins(o.today->prev));
+  o.joined = o.today && (o.daily.empty() || view->joins(o.today->prev));
   return o;
 }
 

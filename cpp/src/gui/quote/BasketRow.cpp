@@ -128,6 +128,11 @@ Leg FundDay::leg(size_t a, Cell &, Bars &b) const {
   return {c.ref, traded(c) ? &c : nullptr, &b};
 }
 
+Leg SinaDay::leg(size_t a, Cell &, Bars &) const {
+  const Candle &c = px[a];
+  return {c.ref, traded(c) ? &c : nullptr, &bars[a]};
+}
+
 void census(const Members &m, const PoolAxis &axis, std::span<const uint32_t> keys, Tape &t) {
   assert(m.id.empty() || m.id.back() < axis.size());
   const size_t K = keys.size();

@@ -265,7 +265,7 @@ private:
     const bool auditing = state_mgr_->auditing();
     const bool disable_audit = busy || auditing || !(data_->config.sync_fundamental || data_->config.sync_bar1m);
     const TaskStatus fstatus = SyncStatus();
-    const Quote::QuoteStatus sina = quote_->quote ? quote_->quote->status() : Quote::QuoteStatus{};
+    const Quote::QuoteStatus sina = quote_->started() ? quote_->sina() : Quote::QuoteStatus{};
 
     {
       // 展示字段持锁读 (worker 只短锁写)
@@ -274,7 +274,7 @@ private:
           sync_svc_->state,
           *sync_svc_,
           fstatus,
-          quote_->quote ? &sina : nullptr,
+          quote_->started() ? &sina : nullptr,
           &update_clicked,
           &update_cancel_clicked,
           busy || auditing,

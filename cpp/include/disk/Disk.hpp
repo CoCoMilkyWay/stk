@@ -99,6 +99,7 @@ enum class Seg : std::uint8_t {
   X(PoolsFile,         ConfigBeta,        File,   Lit,       "pools.json",        "",         false)       \
   X(ConfigMarket,      Config,            Dir,    Lit,       "market",            "",         false)       \
   X(WatchFile,         ConfigMarket,      File,   Lit,       "watch.json",        "",         true)        \
+  X(MarketUiFile,      ConfigMarket,      File,   Lit,       "ui.json",           "",         true)        \
   X(ConfigAgent,       Config,            Dir,    Lit,       "agent",             "",         false)       \
   X(PromptDir,         ConfigAgent,       Dir,    Lit,       "prompt",            "",         false)       \
   X(PromptFile,        PromptDir,         File,   Prompt,    "",                  ".md",      false)       \
@@ -131,6 +132,7 @@ enum class Seg : std::uint8_t {
   X(ConceptDay,        Concept,           File,   Ymd,       "",                  ".tsv",     false)       \
   X(Quote,             Data,              Dir,    Lit,       "quote",             "",         false)       \
   X(QuoteLive,         Quote,             File,   Lit,       "live.bin",          "",         false)       \
+  X(QuoteDay,          Quote,             File,   Ymd,       "",                  ".bin",     false)       \
   X(Doc,               Data,              Bundle, Lit,       "doc",               "",         false)       \
   /* ② 特征 */                                                                                            \
   X(Features,          Output,            Dir,    Lit,       "features",          "",         false)       \

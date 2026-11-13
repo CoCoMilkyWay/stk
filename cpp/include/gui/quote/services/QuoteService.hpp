@@ -25,11 +25,13 @@
 //   写回 [lo, 定稿线]: 有根写根, 无根清空, 全段标精确 (此后快照不写); lo 推到定稿线后.
 //     同一回包里尾巴上取时已走完的根 (定稿线, min(hi, 取时所在根)) 先暂写 (不标精确, 仍待补), 不等定稿也有图; 再取时整段覆盖.
 //   定稿线: 标号不晚于 "此刻 − kSettle" 的根不再变 (刚过去那根还会被修正); 行情日不是今天 (盘前看昨日 / 周末) → 整日定稿.
-//   行情日 ≤ fund_end (基本面 bar1m 已入库; 随基本面同步推进) 不取分钟 K (那天由 bar1m 给).
+//   行情日 ≤ fund_end (基本面段末日 AssetInfo::quote_end; 随基本面同步推进) 不取分钟 K (那天由基本面给).
 //   落盘 output/data/quote/live.bin: 行情日全部 Track + 末轮快照时刻, 定长文件整份 MAP_SHARED 映射; 原子粒度 = 一只的状态 / 一格 (只, 分钟),
 //     改一处当场写一处 (进程被杀 / 崩溃不丢; 写到一半的条目读回当作没有: 状态 → 该只从零, 格 → 该格成缺口待补).
 //     换日 (含启动首轮) 先读同日缓存 (按新浪码对上本次全市场) 再重写成本次布局 —— 停机那段即一次断档, 照断档规则只补其间有成交的只;
 //     收盘后重启零请求.
+//   往日归档 output/data/quote/YYYYMMDD.bin: 换日时缓存是更早的行情日且收完了 (收盘后的快照 ∧ 无待补区间 / 缺口 / 写到一半的条目) → 原样转作归档,
+//     否则弃; 不可变. PriceLib 读作补段的新浪段 (archived_day), 基本面段盖住即删 (drop_archived).
 //   全市场 = 构造时给定的全局轴子集 (PoolAxis; 对外一律全局 id, 内部下标 = sub, 新浪码由轴码派生); 前一交易日取自构造时给定的交易日历;
 //   线程: 快照 1 (每批一路并发) + 分钟 K kFillers, 随对象.
 // 当日的 Day: 有成交才有 (个股 = 本只当日有成交, 篮子 = 成员有成交); 基准 = 新浪昨收; 个股的净流入 = 本只分钟涨跌法 (net_flow).
@@ -90,7 +92,7 @@ public:
   const PoolAxis &axis() const { return *axis_; }                 // 全市场 (构造后不变, 任意线程)
   std::span<const misc::Ymd> trading() const { return trading_; } // 交易日升序 (构造后不变, 任意线程)
   void select(uint32_t id);                                       // GUI: 选中标的 (全局 id; ~0u = 无)
-  void set_fund_end(misc::Ymd e);                                 // GUI: 基本面 bar1m 水位推进
+  void set_fund_end(misc::Ymd e);                                 // GUI: 基本面段末日推进
   QuoteStatus status() const;
   std::shared_ptr<const Live> live() const; // 末份当日; 空 = 尚未发布
   // 交接 (成员表下标: 库轴 → 全市场) 换上, 当场发布一次 (PriceLib 定下交接即调)
@@ -107,6 +109,8 @@ private:
     int lo = kSlots, hi = -1;       // 待补区间 (lo > hi = 无)
     double vol = -1, amt = 0;       // 上一快照累计 (vol < 0 = 尚无快照)
     float high = 0, low = 0;        // 上一快照日内高 / 低
+    float open = 0, close = 0;      // 上一快照今开 / 现价
+    float ref = 0;                  // 昨收
     Fill fill = Fill::Idle;         // 运行态, 不落盘
     std::shared_ptr<const Day> day; // 当日快照 (发布时建; 空 = 待建)
 
@@ -195,5 +199,10 @@ private:
   std::thread poll_;
   std::vector<std::thread> fillers_;
 };
+
+// 归档日 d (须在) 在库轴 axis 上: px [axis] 日根 (末快照, ref = 昨收; 归档无该只 → 收 0) / bars [axis] 分钟根
+void archived_day(misc::Ymd d, const PoolAxis &axis, std::vector<Candle> &px, std::vector<Bars> &bars);
+// 删 ≤ upto 的归档
+void drop_archived(misc::Ymd upto);
 
 } // namespace GUI::Quote

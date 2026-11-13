@@ -10,7 +10,7 @@
 #pragma once
 
 #include "gui/engine/services/PortfolioService.hpp"
-#include "gui/quote/PriceLib.hpp" // PriceView / MinuteCloses (价格指数 / 理想线的日内形)
+#include "gui/quote/PriceLib.hpp" // PriceView / Minutes (价格指数 / 理想线的日内形)
 #include "gui/quote/Quote.hpp"    // Tape / Live / Side / 槽代数 (行情键 / 横轴)
 #include "shared/AssetInfo.hpp"   // StockInfos (成分行名 / 悬停)
 #include "shared/Basket.hpp"      // kGroupPool / kBasketGroups
@@ -99,7 +99,7 @@ struct LineSrc {
   bool cost = false;
   double impact = 0.0; // fixed_impact (cost 才有)
   const Quote::Kline *price = nullptr;
-  const Quote::MinuteCloses *minutes = nullptr;
+  const Quote::Minutes *minutes = nullptr;
   bool operator==(const LineSrc &) const = default;
 };
 // 一行 = 一对线, 全段 (右表一行). 主图例列 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (补空格对齐);
@@ -343,6 +343,8 @@ struct LinesViewKey {
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
                       const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, double fixed_impact, const std::string &open,
                       const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos, LinesDerived &d);
+// 行 id → 行情键 (同 LinesRow::ref): 篮子 = 篮子表里同 id 的, 个股 = id 里的全局 id; 因子 / 策略 / 找不到 → 无
+Quote::Ref RowRef(const std::string &id);
 // 旁支: 当日 y (日期 = d.live; 空 / d.live = 0 → 全无尾) 各行理想线的当日尾
 void MakeLinesLive(const LinesDerived &d, const Quote::Live *y, LinesLive &t);
 // 二级: VAL 标的的估值腿 lg 各口 [PoolVal], 窗长 years; 空腿 → 空

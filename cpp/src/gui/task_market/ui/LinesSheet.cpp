@@ -72,16 +72,21 @@ void star_cell(LinesState &ui, const std::string &w) {
 void pick(LinesState &ui, int page, const LinesRow &r) {
   const int m = kPageDefs[page].pick;
   std::map<std::string, Quote::Ref> &s = ui.pick.rows[m];
-  if (s.erase(r.id))
+  if (s.erase(r.id)) {
+    if (m == kPickMany)
+      SavePick(ui.pick);
     return;
+  }
   if (m == kPickOne)
     s.clear();
   else if (r.ref.is(Quote::kStock) && ui.pick.stocks(m).size() + 1 >= Quote::PriceLib::kKeep)
     return;
   s.emplace(r.id, r.ref);
-  if (m == kPickMany)
+  if (m == kPickMany) {
     for (int l = 0; l < kPairLines; ++l)
       ui.reveal.insert(line_id(r, l));
+    SavePick(ui.pick);
+  }
 }
 
 // 净值线的近况 (RecentOf 同一核): 日末视图自末个活跃日往前 (起点 = 首日前一日的日末), 前收 = 前一日末
