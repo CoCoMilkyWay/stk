@@ -719,7 +719,7 @@ void zoom_x(LinesRange &rg, int D, const ImRect &legend) {
 
 // 滚轮缩放 (NAV / VAL 同一份; 主图 x 恒 = 区间, ImPlot 自带的缩放不起): 右端钉在区间末 d1 (默认 = 末日), 只挪左端;
 // 一格 = 日数 × (1 + kWheelRate)^∓1 (上滚 = 放大), 至少挪一日, 至少留一日; 改的是区间本身 ⇒ 区间条 / 档位条同步
-constexpr double kWheelRate = 0.15;
+constexpr double kWheelRate = 0.05;
 void wheel_x(LinesRange &rg) {
   if (!ImPlot::IsPlotHovered())
     return;
