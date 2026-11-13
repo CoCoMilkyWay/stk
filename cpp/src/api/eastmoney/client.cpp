@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cassert>
 #include <iostream>
+#include <random>
 #include <set>
 #include <string>
 #include <string_view>
@@ -84,7 +85,11 @@ std::optional<std::vector<Item>> list(Get &&get, std::string_view fs, const char
 
 } // namespace
 
-Client::Client() = default;
+Client::Client() : cookie_("nid=") {
+  std::random_device rd;
+  for (int i = 0; i < 32; ++i)
+    cookie_ += "0123456789abcdef"[rd() & 15];
+}
 
 std::optional<std::string> Client::get(const std::string &target) {
   for (int attempt = 0;; ++attempt) {
@@ -98,6 +103,7 @@ std::optional<std::string> Client::get(const std::string &target) {
       http::request<http::empty_body> req{http::verb::get, target, 11};
       req.set(http::field::host, kHost);
       req.set(http::field::user_agent, "Mozilla/5.0");
+      req.set(http::field::cookie, cookie_);
       req.keep_alive(true);
       stream_->expires_after(std::chrono::seconds(kTimeoutSeconds));
       http::write(*stream_, req);

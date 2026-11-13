@@ -26,7 +26,8 @@ inline constexpr int kTimeoutSeconds = 10;                  // 单次连接 + �
 inline constexpr int kRetryMax = 3;                         // 额外重试次数
 
 // 东方财富行情列表 HTTP 客户端 (push2 /api/qt/clist/get) — 与 sina::Client 对仗: 纯传输, 不知资产轴与缓存.
-//   一个对象 = 一条 keep-alive 连接 (单线程用). 闲置超 kIdle 先重建; 列表按代码升序分页 (每页 ≤ kPage), 页数按回包 total 定,
+//   一个对象 = 一条 keep-alive 连接 (单线程用) + 一个随机访客 cookie nid (无 nid 的 clist 请求多被服务端直接断连).
+//   闲置超 kIdle 先重建; 列表按代码升序分页 (每页 ≤ kPage), 页数按回包 total 定,
 //   拼齐条数须恰 = total 且代码不重. 网络瞬抖重建连接重试 (预算 kRetryMax), 用尽 → nullopt (东财按 IP 限流时整段断连);
 //   回包不符 → assert.
 class Client {
@@ -43,6 +44,7 @@ private:
   std::optional<std::string> get(const std::string &target);
 
   boost::asio::io_context ioc_;
+  std::string cookie_; // "nid=<32 hex>"
   std::optional<boost::beast::tcp_stream> stream_;
   std::chrono::steady_clock::time_point used_{};
 };
