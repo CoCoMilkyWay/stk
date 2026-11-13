@@ -15,10 +15,10 @@ namespace {
 
 // 一根 (高 低 收) × 因子 f → 有效根: 收 ≤ 0 / NaN 不收; 高 / 低缺 → 收, 且包住收
 void push(cta::Series &se, size_t t, const float *p, double f) {
-  const float c = p[MinuteLib::kClose];
+  const float c = p[PriceLib::kClose];
   if (!(c > 0))
     return;
-  const float h = p[MinuteLib::kHigh], l = p[MinuteLib::kLow];
+  const float h = p[PriceLib::kHigh], l = p[PriceLib::kLow];
   const auto at = [f](float v) { return static_cast<float>(v * f); };
   se.c.push_back(at(c));
   se.h.push_back(at(h > 0 ? std::max(h, c) : c));
@@ -42,7 +42,7 @@ bool CtaService::publish(const CtaRequest &req, std::string lack, std::shared_pt
 bool CtaService::run(CtaRequest &req) {
   const CtaSpec &sp = req.spec;
   assert(sp.roll >= static_cast<int>(cta::kMinRoll) && sp.roll <= static_cast<int>(cta::kMaxRoll));
-  std::optional<MinuteOpen> lib = lib_.open("CTA 价格由 all.bar 特征库合成", cancel_, *this, pool_);
+  std::optional<PriceOpen> lib = lib_.open("CTA 价格由 all.bar 特征库合成", cancel_, *this);
   if (!lib)
     return false;
   if (!lib->lack.empty())
@@ -54,7 +54,7 @@ bool CtaService::run(CtaRequest &req) {
   const std::shared_ptr<const cta::Series> se = kept_.get(req.ref, lib->stamp, [&](cta::Series &s) {
     return lib_.each(req.ref, [&](size_t i, double f, const float *px) {
       for (size_t k = 0; k < S; ++k)
-        push(s, i * S + k, px + k * MinuteLib::kFields, f);
+        push(s, i * S + k, px + k * PriceLib::kFields, f);
     });
   });
   if (!se) {

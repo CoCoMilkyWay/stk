@@ -2,8 +2,8 @@
 //   ASSET: 资产表 + 右栏 Quotes / Statistics (见 TabAsset.hpp), AssetInfo 建好且扫描过才可进.
 //   NAV / VAL / FLOW: 篮子账 (all 标签库建好即算) + 因子 / 策略两组 (Alpha → Factors 页编辑的组合, 无组合时只少这两组),
 //     走 EngineHub 的 PortfolioService (见 gui/engine/EngineHub.hpp); 日内栏 / 近况列取 QuoteHub 行情 (新浪当日 + 篮子历史 + 叠加的成分股), AssetInfo 建好才起.
-//   分钟价格库 MinuteLib (本任务持有, 由 all.bar 库合成, 不经 QuoteHub) 两个用处各一个 worker (首次画行情页建):
-//     NAV 主图的分钟线 = MinuteService, CTA 单标的回测 = CtaService.
+//   QuoteHub 的历史价格库 (PriceLib) 另有两个用处各一个 worker (行情起了, 首次画行情页建):
+//     NAV / VAL 主图的分钟线 = MinuteService, CTA 单标的回测 = CtaService.
 #include "gui/task_market/TaskMarket.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/engine/EngineHub.hpp"
@@ -34,10 +34,9 @@ namespace GUI::Tasks {
 constexpr int kTabAsset = 0, kTabLines = 1, kTabs = kTabLines + Market::kPages;
 
 struct TaskMarketState {
-  std::shared_ptr<Quote::QuoteHub> quote;    // 与 Database 任务共用 (首次画本任务才起)
-  std::shared_ptr<Engine::EngineHub> engine; // 与 Alpha 任务共用
-  Market::MinuteLib minute_lib;              // 两个 worker 共用 (先于它们构造, 后于它们析构)
-  std::unique_ptr<Market::MinuteService> minute_service;
+  std::shared_ptr<Quote::QuoteHub> quote;                // 与 Database 任务共用 (首次画本任务才起)
+  std::shared_ptr<Engine::EngineHub> engine;             // 与 Alpha 任务共用
+  std::unique_ptr<Market::MinuteService> minute_service; // 读 quote 的价格库 (先于它析构)
   std::unique_ptr<Market::CtaService> cta_service;
   Market::AssetState asset_state;
   Market::LinesState lines_state; // 缓存键含 portfolio_service 的结果代 / portfolio_ui 的解析代
@@ -106,14 +105,14 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
         std::iota(state->lines.begin(), state->lines.end(), 0u);
       }
       Market::Sync(*state->quote, Quote::kBasket, state->lines, ui.overlay.baskets);
-      Market::Sync(*state->quote, Quote::kStock, ui.pick.stocks(Market::kPickMany), ui.overlay.stocks);
+      Market::Sync(*state->quote, Quote::kStock, ui.pick.stocks(Market::kPicks), ui.overlay.stocks);
       mk = state->quote.get();
+      if (!state->cta_service) {
+        state->minute_service = std::make_unique<Market::MinuteService>(*mk->price);
+        state->cta_service = std::make_unique<Market::CtaService>(*mk->price);
+      }
     }
-    if (!state->cta_service) {
-      state->minute_service = std::make_unique<Market::MinuteService>(state->minute_lib);
-      state->cta_service = std::make_unique<Market::CtaService>(state->minute_lib);
-    }
-    const int action = Market::RenderTabLines(idx - kTabLines, *e.portfolio_service, *state->minute_service, *state->cta_service, e.portfolio_ui,
+    const int action = Market::RenderTabLines(idx - kTabLines, *e.portfolio_service, state->minute_service.get(), state->cta_service.get(), e.portfolio_ui,
                                               ui, data.config.fixed_impact,
                                               {data.config.commission, data.config.stamp, data.config.fixed_impact}, mk, data.asset_info.stocks);
     if (action == -1)

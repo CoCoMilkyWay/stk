@@ -3,13 +3,14 @@
 #include <algorithm>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <utility>
 
 namespace GUI::Market {
 
 const float *MinuteCloses::on(misc::Ymd d) const {
   const auto it = std::lower_bound(dates.begin(), dates.end(), d);
-  return it != dates.end() && *it == d ? close.data() + static_cast<size_t>(it - dates.begin()) * kSlots : nullptr;
+  return it != dates.end() && *it == d ? close.data() + static_cast<size_t>(it - dates.begin()) * Quote::kSlots : nullptr;
 }
 
 const MinuteCloses *MinuteResult::of(Quote::Ref ref) const {
@@ -30,7 +31,7 @@ bool MinuteService::publish(const MinuteRequest &req, std::shared_ptr<MinuteResu
 
 bool MinuteService::run(MinuteRequest &req) {
   auto out = std::make_shared<MinuteResult>();
-  const std::optional<MinuteOpen> lib = lib_.open("NAV / VAL 分钟线由 all.bar 特征库合成", cancel_, *this, pool_);
+  const std::optional<Quote::PriceOpen> lib = lib_.open("NAV / VAL 分钟线由 all.bar 特征库合成", cancel_, *this);
   if (!lib)
     return false;
   if (!lib->lack.empty()) {
@@ -43,8 +44,8 @@ bool MinuteService::run(MinuteRequest &req) {
     out->list.push_back(kept_.get(ref, lib->stamp, [&](MinuteCloses &mc) {
       return lib_.each(ref, [&](size_t i, double, const float *px) {
         mc.dates.push_back(lib->dates[i]);
-        for (size_t s = 0; s < kSlots; ++s)
-          mc.close.push_back(px[s * MinuteLib::kFields + MinuteLib::kClose]);
+        for (size_t s = 0; s < static_cast<size_t>(Quote::kSlots); ++s)
+          mc.close.push_back(px[s * Quote::PriceLib::kFields + Quote::PriceLib::kClose]);
       });
     }));
   }

@@ -24,7 +24,7 @@
 //   factors/     ③ 因子 ← features          run/factors/    Search 日志 / Inspect 导出 (同 <池>/<层>) + 算子表
 //   portfolios/  ④ 组合 ← factors
 //   agent/       ③ 的旁路: 挖候选 → 入库      run/agent/      Search 日志 (同会话作用域) + 工具结果样本 (同 <main|test>)
-//   live/        实盘: 当日两融条款          run/live/       事务日志 + 客户端适配的运行产物 (<客户端>/: 注入件构建 / 录制 / 交互日志)
+//   live/        实盘: 两融条款缓存          run/live/       事务日志 + 客户端适配的运行产物 (<客户端>/: 注入件构建 / 录制 / 交互日志)
 //                                           run/app/        进程级: TSan 报告 / 崩溃栈
 //
 // 读写: 小文件 (清单 / 配置 / 因子 / 记录行) 走 read / write / append; write = <正式名>.tmp → rename 原子替换.
@@ -144,11 +144,12 @@ enum class Seg : std::uint8_t {
   X(LibDayFile,        LibDay,            File,   Lvl,       "features_",         ".bin",     false)       \
   X(LibCache,          Lib,               Dir,    Lit,       "cache",             "",         false)       \
   X(LibPreview,        LibCache,          File,   Lit,       "features.json",     "",         false)       \
-  X(LibBaskets,        LibCache,          File,   Lit,       "baskets.bin",       "",         false)       \
-  X(LibMinute,         LibCache,          Dir,    Lit,       "minute",            "",         false)       \
-  X(LibMinuteHead,     LibMinute,         File,   Lit,       "head.bin",          "",         false)       \
-  X(LibMinuteStock,    LibMinute,         File,   Lit,       "stock.bin",         "",         false)       \
-  X(LibMinuteBasket,   LibMinute,         File,   Lit,       "basket.bin",        "",         false)       \
+  X(LibPrice,          LibCache,          Dir,    Lit,       "price",             "",         false)       \
+  X(LibPriceHead,      LibPrice,          File,   Lit,       "head.bin",          "",         false)       \
+  X(LibPriceStockDay,  LibPrice,          File,   Lit,       "stock_day.bin",     "",         false)       \
+  X(LibPriceStockMin,  LibPrice,          File,   Lit,       "stock_min.bin",     "",         false)       \
+  X(LibPriceBasketDay, LibPrice,          File,   Lit,       "basket_day.bin",    "",         false)       \
+  X(LibPriceBasketMin, LibPrice,          File,   Lit,       "basket_min.bin",    "",         false)       \
   /* ③ 因子 */                                                                                            \
   X(Factors,           Output,            Dir,    Lit,       "factors",           "",         false)       \
   X(FactorPool,        Factors,           Dir,    Pool,      "",                  "",         false)       \
@@ -172,8 +173,7 @@ enum class Seg : std::uint8_t {
   X(AgentNoteFile,     AgentNotes,        File,   Note,      "",                  ".jsonl",   false)       \
   /* 实盘 */                                                                                              \
   X(Live,              Output,            Dir,    Lit,       "live",              "",         false)       \
-  X(LiveTerms,         Live,              Dir,    Lit,       "terms",             "",         false)       \
-  X(LiveTermsDay,      LiveTerms,         File,   Ymd,       "",                  ".csv",     false)       \
+  X(LiveTermsFile,     Live,              File,   Lit,       "terms.csv",         "",         false)       \
   /* 运行产物 (各段的同构镜像) */                                                                           \
   X(Run,               Output,            Dir,    Lit,       "run",               "",         false)       \
   X(RunData,           Run,               Dir,    Lit,       "data",              "",         false)       \

@@ -57,7 +57,7 @@ void compound(const R *r, size_t n, Put &&put) {
 // 篮子 (baskets; 全部池一趟, 各篮子同形): 篮子表 shared/Basket.hpp (切片 × 该切片的权重), 三样一律以线 (篮子下标) 为键.
 //   成分判据 = 格的事实 (BPlanes::fact: 成员位 + 行业, 同取成员源行) + 概念 (BPlanes::cc, 全期同一份) 过 BasketTable::each / holds:
 //   子池 = 含该池位, 行业 k = 含母集位 ∧ ind_l1 = k, 概念 = 含母集位 ∧ 在该概念成分里.
-//   价格指数 (不看可成交) 在行情侧 (Quote::BasketHistory, 同一张篮子表); 这里是可成交指数 + 增仓 + 估值.
+//   价格指数 (不看可成交) 在行情侧 (Quote::PriceLib 的篮子侧, 同一张篮子表); 这里是可成交指数 + 增仓 + 估值.
 //   个股 = 单只的篮子 (线 = 池轴资产): 收益 / 估值与篮子的个股项同一份输入同一式, 不看成员位
 struct Baskets {
   BookLines index;                         // [线][T] 可成交指数的逐行收益 (stride 1; 净值 = compound, 调用方) = fold_book: 行 t 一批 = 成分 (行 t 成员位合判据 ∧ T+1C

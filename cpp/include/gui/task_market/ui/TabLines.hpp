@@ -166,12 +166,12 @@ struct SheetToday {
 struct LinesSheetKey {
   int g = -1;                                                                   // 组
   uint64_t view = 0;                                                            // 视图 gen (含派生: 行 / NAV 数值列 / VAL 估值分位)
-  std::shared_ptr<const Quote::Tape> baskets, stocks;                           // 两路历史在画的发布 (OverlayState; 近况 / 只数 / 总市值 / 资金流历史日 / 成分)
-  std::shared_ptr<const std::vector<Quote::Day>> baskets_day, stocks_day, cons; // 三份当日 (近况 / 当日四列 / 资金流当日)
-  size_t infos = 0;                                                             // 基本面档案数 (首次载入)
-  std::vector<int64_t> segs;                                                    // 各段自报的输入 (资金流段 = 日轴各日 + 开收盘)
-  float font = 0.f;                                                             // 字号 (格宽)
-  uint32_t ink = 0;                                                             // 字色 (主题)
+  std::shared_ptr<const Quote::Tape> baskets, stocks;               // 两路历史在画的发布 (OverlayState; 近况 / 只数 / 总市值 / 资金流历史日 / 成分)
+  std::shared_ptr<const Quote::Days> baskets_day, stocks_day, cons; // 三份当日 (近况 / 当日四列 / 资金流当日)
+  size_t infos = 0;                                                 // 基本面档案数 (首次载入)
+  std::vector<int64_t> segs;                                        // 各段自报的输入 (资金流段 = 日轴各日 + 开收盘)
+  float font = 0.f;                                                 // 字号 (格宽)
+  uint32_t ink = 0;                                                 // 字色 (主题)
   bool operator==(const LinesSheetKey &) const = default;
 };
 struct LinesSheet {
@@ -185,7 +185,7 @@ struct LinesSheet {
 // 行选中 (LinesRow::id → 行情键; 默认空): 属于组合 of, 换组合 → 整份清空
 struct LinesPick {
   std::string of;
-  std::map<std::string, Quote::Ref> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个; 多选的个股至多 StockHistory::kKeep 只)
+  std::map<std::string, Quote::Ref> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个; 多选的个股至多 History::kKeep − 1 只: 两种合起来不过一路个股历史)
   std::string open;                               // 展开的篮子行 (至多一行, 各页同一份; 空 = 无)
   // 方式 m (kPicks = 全部) 选中的个股 (全局 id, 升序)
   std::vector<uint32_t> stocks(int m) const {
@@ -236,9 +236,9 @@ void SaveWatch(const std::vector<std::string> &watch); // 原子替换
 // GUI 线程每帧: 首次读自选文件 (有自选 → 各页右表类别条先选自选)
 void SyncLinesWatch(LinesState &ui);
 // 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (已起, ui.overlay 两路 Feed 本帧已 Sync; nullptr = AssetInfo 未建,
-// 日内栏 / 指数行业近况 / 成分行当日空着); infos = 基本面档案 (成分行名 / 近况 / 估值); minute = NAV / VAL 主图分钟线的服务, cta = CTA 页的服务.
-// 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
-int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaService &cta, const PortfolioUIState &pf, LinesState &ui,
+// 日内栏 / 指数行业近况 / 成分行当日空着); infos = 基本面档案 (成分行名 / 近况 / 估值); minute = NAV / VAL 主图分钟线的服务, cta = CTA 页的服务
+// (两者读 mk 的价格库, mk 空时同空). 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
+int RenderTabLines(int page, PortfolioService &svc, MinuteService *minute, CtaService *cta, const PortfolioUIState &pf, LinesState &ui,
                    double fixed_impact, const cta::Rates &rates, const Quote::QuoteHub *mk, const StockInfos &infos);
 
 } // namespace GUI::Market

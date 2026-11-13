@@ -69,7 +69,7 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote) {
     assert(idx >= 0 && idx < TAB_COUNT);
     Live::LiveHub &h = *state->hub;
     if (idx != TAB_CLIENT)
-      h.tick();
+      h.tick(data.asset_info);
     ImGui::BeginChild("LiveTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     if (idx == TAB_BOARD)

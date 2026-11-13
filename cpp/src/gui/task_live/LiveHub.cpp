@@ -3,23 +3,36 @@
 #include "api/sina/client.hpp"
 #include "disk/Disk.hpp"
 #include "live/Clients.hpp"
-#include "misc/date.hpp"
+#include "misc/parquet.hpp"
+#include "shared/AssetInfo.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <filesystem>
 #include <functional>
 #include <iterator>
 #include <mutex>
 #include <sstream>
 #include <thread>
+#include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace GUI::Live {
 
 using live::strf;
+
+// 本地库的一只个股
+struct Stock {
+  std::string name;
+  live::Mkt mkt = live::Mkt::SZ;
+  bool listed = false; // 在市
+  bool margin = false; // 两融明细最新一日有它 (交易所两融标的)
+};
+using Local = std::unordered_map<std::string, Stock>; // 代码 → 个股
 
 struct LiveHub::Core {
   std::mutex mu;
@@ -36,8 +49,10 @@ struct LiveHub::Core {
   std::shared_ptr<const live::rebal::Prices> px0;
   uint64_t px_ver = 0;
 
-  misc::Ymd day = 0, auto_day = 0; // terms 是 day 那天的; auto_day = 上次自动拉条款的日子
-  std::shared_ptr<const live::Terms> terms;
+  std::shared_ptr<const live::Terms> raw;   // 券商的条款 (缓存); 还没拉过 = 空
+  misc::Ymd raw_day = 0, auto_day = 0;      // raw 拉于哪天; auto_day = 上次自动拉条款的日子
+  std::shared_ptr<const Local> local;       // 本地库的个股
+  std::shared_ptr<const live::Terms> terms; // raw 合 local; raw 空 = 空
   uint64_t terms_ver = 0;
 
   live::rebal::Cfg cfg;
@@ -67,9 +82,12 @@ constexpr double kFillWait = 120, kFillGap = 2; // 等卖单成交: 最长秒数
 
 double mono() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
-// ---------- 两融条款落盘 ----------
+// ---------- 两融条款 ----------
 
+// 缓存: 首行 "pulled,<拉于 YYYYMMDD>", 次行表头, 其后一行一只
+constexpr const char *kTermsPulled = "pulled,";
 constexpr const char *kTermsHead = "code,name,mkt,ratio,financeable,rate,pledgeable";
+constexpr const char *kMarginTable = "cn_stock_margin_trading_detail";
 
 std::vector<std::string> fields(const std::string &s) {
   std::vector<std::string> f(1);
@@ -90,11 +108,16 @@ live::Mkt mkt_of_text(const std::string &s) {
   return live::Mkt::SZ;
 }
 
-std::shared_ptr<const live::Terms> load_terms(misc::Ymd day) {
-  if (!disk::exists(disk::LiveTermsDay, {.date = day}))
-    return nullptr;
-  std::istringstream in(disk::read(disk::LiveTermsDay, {.date = day}));
+// 缓存 → (条款, 拉于哪天); 没有缓存 → (空, 0)
+std::pair<std::shared_ptr<const live::Terms>, misc::Ymd> load_terms() {
+  if (!disk::exists(disk::LiveTermsFile))
+    return {nullptr, 0};
+  std::istringstream in(disk::read(disk::LiveTermsFile));
   std::string line;
+  std::getline(in, line);
+  assert(line.starts_with(kTermsPulled) && "条款缓存: 首行");
+  const misc::Ymd day = misc::parse_ymd(std::string_view(line).substr(std::string_view(kTermsPulled).size()));
+  assert(day > 0 && "条款缓存: 拉于");
   std::getline(in, line);
   assert(line == kTermsHead);
   auto t = std::make_shared<live::Terms>();
@@ -110,31 +133,96 @@ std::shared_ptr<const live::Terms> load_terms(misc::Ymd day) {
     x.rate = std::stod(f[5]);
     x.pledgeable = f[6] == "1";
   }
-  return t;
+  return {t, day};
 }
 
 void save_terms(const live::Terms &terms, misc::Ymd day) {
-  std::string s = std::string(kTermsHead) + "\n";
+  std::string s = kTermsPulled + misc::dense(day) + "\n" + kTermsHead + "\n";
   for (const auto &[code, t] : terms) {
     live::need(t.name.find(',') == std::string::npos, code + " 名称含逗号");
     s += strf("%s,%s,%s,%s,%d,%.10g,%d\n", code.c_str(), t.name.c_str(), live::kMktSuffix[static_cast<int>(t.mkt)] + 1,
               t.ratio ? strf("%.10g", *t.ratio).c_str() : "", t.financeable, t.rate, t.pledgeable);
   }
-  disk::write(disk::LiveTermsDay, {.date = day}, s);
-  for (const disk::Key &k : disk::list(disk::LiveTermsDay))
-    if (k.date != day)
-      disk::remove(disk::LiveTermsDay, k);
+  disk::write(disk::LiveTermsFile, {}, s);
+}
+
+// 本地两融明细最新一日的代码 ("000001.SZ"): T 日盘后余额 T+1 盘前公布, 最新一日即上个交易日的交易所两融标的
+std::unordered_set<std::string> margin_codes() {
+  const std::vector<disk::Key> ks = disk::list(disk::FundShard, {.name = kMarginTable});
+  for (auto k = ks.rbegin(); k != ks.rend(); ++k) {
+    const std::filesystem::path p = disk::path(disk::FundShard, *k);
+    const misc::Ymd last = misc::pq::max_yyyymmdd(p, "date");
+    if (!last)
+      continue;
+    const misc::pq::TableView t(misc::pq::read_table(p, {"date", "instrument"}));
+    const misc::pq::Col d = t.col("date"), ins = t.col("instrument");
+    std::unordered_set<std::string> out;
+    for (std::int64_t i = 0; i < t.rows(); ++i)
+      if (d.yyyymmdd(i) == last)
+        out.emplace(ins.str(i));
+    return out;
+  }
+  assert(false && "本地库没有两融明细, 先在 Database 同步");
+  return {};
+}
+
+// AssetInfo + 两融明细 → 本地库的个股; AssetInfo 还没建 → 空
+std::shared_ptr<const Local> local_of(const AssetInfo &info) {
+  auto out = std::make_shared<Local>();
+  if (info.codes.empty())
+    return out;
+  const std::unordered_set<std::string> margin = margin_codes();
+  for (size_t id = 0; id < info.codes.size(); ++id) {
+    const StockInfo *s = info.find(id);
+    if (!s)
+      continue;
+    const std::string &c = info.codes[id];
+    assert(c.size() == 9 && c[6] == '.');
+    (*out)[c.substr(0, 6)] = {s->name, mkt_of_text(c.substr(7)), s->out_date == 0, margin.contains(c)};
+  }
+  return out;
+}
+
+// 券商条款合本地库: 本地库有的个股名称 / 市场照本地, 融资标的 / 担保品两边都认才算; 本地库没有的照用券商的
+live::Terms merged(const live::Terms &raw, const Local &local) {
+  live::Terms out = raw;
+  for (auto &[code, t] : out) {
+    const auto i = local.find(code);
+    if (i == local.end())
+      continue;
+    const Stock &s = i->second;
+    t.name = s.name;
+    t.mkt = s.mkt;
+    t.financeable = t.financeable && s.margin;
+    t.pledgeable = t.pledgeable && s.listed;
+  }
+  return out;
+}
+
+// 要用条款而缓存里没有的代码 (名单 / 持仓 / 负债); 本地库认得且北交所或已退市的本就不在券商表里, 不算
+bool missing(const live::Terms &terms, const Local &local, const std::vector<std::string> &codes, const live::State *st) {
+  const auto miss = [&](const std::string &code) {
+    if (terms.contains(code))
+      return false;
+    const auto i = local.find(code);
+    return i == local.end() || (i->second.listed && i->second.mkt != live::Mkt::BJ);
+  };
+  if (std::any_of(codes.begin(), codes.end(), miss))
+    return true;
+  if (st && st->pos && std::any_of(st->pos->list.begin(), st->pos->list.end(), [&](const live::Position &p) { return miss(p.code); }))
+    return true;
+  if (st && st->acct)
+    for (const auto &[code, d] : st->acct->debts)
+      if (miss(code))
+        return true;
+  return false;
 }
 
 // 以下带 _locked 的须持 c.mu
 void rebuy_locked(Core &c) { c.buy = c.terms ? live::rebal::buyable(c.codes, *c.terms) : std::vector<live::Sec>{}; }
 
-void today_locked(Core &c) {
-  const misc::Ymd d = misc::today_ymd();
-  if (d == c.day)
-    return;
-  c.day = d;
-  c.terms = load_terms(d);
+void merge_locked(Core &c) {
+  c.terms = c.raw ? std::make_shared<const live::Terms>(merged(*c.raw, *c.local)) : nullptr;
   ++c.terms_ver;
   rebuy_locked(c);
 }
@@ -400,13 +488,13 @@ void pull_terms(Core &c) {
     pl += x.pledgeable;
   }
   note(c, "terms", {{"n", t.size()}, {"financeable", fin}, {"pledgeable", pl}});
+  const misc::Ymd d = misc::today_ymd();
+  save_terms(t, d);
   Lock lk(c.mu);
   c.task->live.clear();
-  today_locked(c);
-  save_terms(t, c.day);
-  c.terms = std::make_shared<const live::Terms>(t);
-  ++c.terms_ver;
-  rebuy_locked(c);
+  c.raw = std::make_shared<const live::Terms>(t);
+  c.raw_day = d;
+  merge_locked(c);
 }
 
 // 刷新一轮 (成交、持仓、挂单、信用账户), 记下账户
@@ -429,7 +517,7 @@ live::rebal::Plan plan_now(Core &c, sina::Client &cl) {
   std::vector<std::string> codes;
   {
     Lock lk(c.mu);
-    live::need(c.terms != nullptr, "当日两融条款还没拉");
+    live::need(c.terms != nullptr, "两融条款还没拉过");
     live::need(c.px_acct == st->acct.v, "账户各只的行情没取齐");
     terms = c.terms;
     px0 = c.px0;
@@ -479,8 +567,7 @@ void run_rebal(Core &c) {
   bool have;
   {
     Lock lk(c.mu);
-    today_locked(c);
-    have = c.terms != nullptr;
+    have = c.raw != nullptr;
   }
   if (!have)
     pull_terms(c);
@@ -560,7 +647,9 @@ void start(const std::shared_ptr<Core> &c, const char *name, void (*fn)(Core &))
 LiveHub::LiveHub() : c_(std::make_shared<Core>()) {
   {
     Lock lk(c_->mu);
-    today_locked(*c_);
+    std::tie(c_->raw, c_->raw_day) = load_terms();
+    c_->local = std::make_shared<const Local>();
+    merge_locked(*c_);
   }
   const std::vector<std::string> names = live::rebal::lists();
   if (!names.empty())
@@ -604,9 +693,17 @@ void LiveHub::peek() {
     prog_ = c.broker->refresh();
 }
 
-void LiveHub::tick() {
+void LiveHub::tick(const AssetInfo &info) {
   peek();
   Core &c = *c_;
+  const std::array<int64_t, 3> ik = {info.pit_end, info.bar1m_end, static_cast<int64_t>(info.codes.size())};
+  if (ik != info_key_) {
+    info_key_ = ik;
+    std::shared_ptr<const Local> l = local_of(info);
+    Lock lk(c.mu);
+    c.local = std::move(l);
+    merge_locked(c);
+  }
   std::shared_ptr<const live::Quotes> q;
   std::shared_ptr<const live::Terms> terms;
   std::shared_ptr<const live::rebal::Prices> px0;
@@ -614,7 +711,6 @@ void LiveHub::tick() {
   uint64_t qv, tv, cv, pv;
   {
     Lock lk(c.mu);
-    today_locked(c);
     c.seen = mono();
     q = c.quotes;
     qv = c.quotes_ver;
@@ -629,6 +725,7 @@ void LiveHub::tick() {
     codes_ = c.codes;
     list_err_ = c.list_err;
     terms_n_ = terms ? std::optional<size_t>(terms->size()) : std::nullopt;
+    terms_day_ = c.raw_day;
   }
   if (!c.broker) {
     board_ = BoardView{.wait = "未连接"};
@@ -660,7 +757,7 @@ void LiveHub::tick() {
     std::copy(key, key + 5, plan_key_);
     plan_ = PlanView{};
     if (!terms)
-      plan_.wait = "当日两融条款还没拉 (更新两融名单)";
+      plan_.wait = "两融条款还没拉过 (更新两融名单)";
     else if (!st.pos || !st.acct)
       plan_.wait = "还没读到信用账户 (等刷新)";
     else if (px_acct != st.acct.v || !q)
@@ -761,11 +858,14 @@ void LiveHub::run() {
 void LiveHub::auto_pull() {
   if (!connected())
     return;
+  const misc::Ymd d = misc::today_ymd();
   {
     Lock lk(c_->mu);
-    if (c_->terms || c_->auto_day == c_->day || (c_->task && c_->task->st == JobSt::Run))
+    if (c_->auto_day == d || (c_->task && c_->task->st == JobSt::Run))
       return;
-    c_->auto_day = c_->day;
+    if (c_->raw && misc::add_days(c_->raw_day, kTermsAge) > d && !missing(*c_->raw, *c_->local, c_->codes, st_.get()))
+      return;
+    c_->auto_day = d;
   }
   pull();
 }

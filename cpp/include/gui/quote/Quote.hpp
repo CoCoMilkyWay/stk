@@ -1,18 +1,19 @@
 // 行情公共件: 个股 / 篮子 (Side) × 历史 (Kline) / 当日 (Day) 四路同一套类型 + 槽代数 + 篮子合成核
 //
-//            历史 (后台读, 带缓存) → Kline                           当日 (新浪, 快照线程每轮) → Day
-//   个股     StockHistory: bar1d 行 + bar1m 行 (Bar1mDay)            QuoteService::today(kStock): 本只的根
-//   篮子     BasketHistory: all.bar L_1day 行 + L_1min 行 → Fold     QuoteService::today(kBasket): bind 的成员表 → Fold
-//            (库末日之后: 冻结的成员表 + bar1d / bar1m → Fold)
-//   个股 / 篮子只差 Fold 一步, 历史 / 当日只差源.
+//   三段 × 两侧, 同一个形 (日根 + 240 槽分钟根):
+//            库段 (all.bar)                 补段 (基本面)                     当日 (新浪, 快照线程每轮)
+//   个股     L_1day 行 + L_1min 行          bar1d 行 + bar1m 行 (Bar1mDay)    本只的根
+//   篮子     选股表成员 → Fold              冻结的成员表 → Fold                bind 的成员表 → Fold (增量)
+//   库段 + 补段 = 日脊, 一趟合成落盘在 PriceLib (两侧同一条日脊); 两路 History 只读它; 当日在 QuoteService.
+//   个股 / 篮子只差 Fold 一步, 三段只差源.
 // 键: 个股 = 全局 id (AssetAxis 下标), 篮子 = 篮子下标 (shared/Basket.hpp). 两路历史同一个请求 (键集) / 发布 (Tape),
-//   当日同一个 today (键集 → Day), 版本各一个 (QuoteStatus::ver).
+//   当日同一个 today (键集 → Days), 版本各一个 (QuoteStatus::ver).
 //
 // 分钟槽: 一交易日 kSlots = 240 根, 槽 s 的标号 (bar 结束分钟) = 09:31 … 11:30, 13:01 … 15:00 (新浪 / bar1m / L_1min 同一标号);
 //   开盘集合竞价并入首根. 时间坐标 → 槽只经槽代数 (label_slot / sec_slot / row_slot); 各源按时间序 add ⇒ 竞价先于首根.
 // 前收: 日根自带 ref (个股 = 交易所前收, 篮子 = 前日点位), 分钟根取同日日根的; 涨跌一律对 ref.
-// 窗口: 两份历史同为最近 kDailyDays 个交易日的日线 + 最近 kMinuteDays 个交易日的分钟.
-// 接续: 当日接在历史之后 ⇔ 当日的前一交易日 = 历史末日 (joins); 否则 (历史落后) 不接.
+// 窗口: 两份历史同为日脊末 kDailyDays 日的日线 + 末 kMinuteDays 日的分钟 (按日期截, 不按根数).
+// 接续: 当日接在历史之后 ⇔ 当日的前一交易日 = 日脊末日 (joins; 两侧同一判据); 否则 (历史落后) 不接.
 //
 // 篮子合成 (Fold, 历史逐日 / 当日同一份) = 成员表 (define/Members.hpp) 带日内路径的合 (收盘一格即 Members::scatter 的 收 / 基准):
 //   比 = Σ w · 价 / 基准 / Σ w (前日 = 1); 开 / 高 / 低 / 收各自如此
@@ -26,7 +27,7 @@
 //   逐资产一遍 (资产主序): 一只的分钟根只读一次, 比 × 权散进所属各篮子.
 //   当日增量: 各量对资产线性可加 ⇒ 冻结线之前的槽 (已定稿) 只合一次, 累加跨轮保留, 各资产在冻结线处的接续 (Fold::Carry) 由调用方逐只持有;
 //   每轮只合日根与冻结线之后的槽, 与每轮从头合逐位一致.
-// 基本面源 (个股历史 / 篮子补日同一读法): 日根 = bar1d 行 (ref = pre_close), 分钟根 = bar1m 行按 row_slot 并根; 历史末日 = 两表水位之小.
+// 基本面源 (补段两侧同一读法): 日根 = bar1d 行 (ref = pre_close), 分钟根 = bar1m 行按 row_slot 并根; 补段末日 = 两表水位之小.
 #pragma once
 
 #include "define/Csr.hpp"
@@ -130,11 +131,10 @@ constexpr int tick_dir(double close, double px, int dir) {
 // 个股一日的净流入: 逐个有成交的根 b.net = 方向 × 该根额 (首根对基准 base = 当日前收), 返回全日之和; base ≤ 0 → 全 0
 double net_flow(Bars &b, float base);
 
-// 一个标的的历史
+// 一个标的的历史 (日脊上的; 日脊末日见 Tape)
 struct Kline {
-  misc::Ymd last = 0;        // 历史末日 (数据水位, 不看本标的当日有无成交)
-  std::vector<Candle> daily; // 日升序
-  std::vector<Bars> minutes; // 日升序, 无成交的日不收
+  std::vector<Candle> daily; // 日升序, 无成交的日不收
+  std::vector<Bars> minutes; // 日升序, 无根的日不收
 };
 
 // 一个标的一个交易日 (当日 / 合成的一日); candle.date 0 = 无
@@ -144,15 +144,16 @@ struct Day {
   Bars bars;          // 分钟根
   double flow = 0;    // 净流入 [元] (分钟涨跌法) = Σ bars.net
 };
-
-inline bool joins(const Kline &k, const Day &d) { return d.candle.date != 0 && d.prev == k.last; }
+// 键集的当日 [keys]: 各只不可变, 与服务侧共享 (只拷指针); nullptr = 无 (个股不在全市场 / 当日无成交, 篮子未合成 / 成员无成交)
+using Days = std::vector<std::shared_ptr<const Day>>;
+using Candles = std::vector<Candle>; // 个股键集的当日日根 [keys]; date 0 = 无
 
 // 合成的一日 (Fold: 前日 = 1, candle.date ≠ 0) 接到前日点位 level 上: 各根价 × level, ref = level
 void rebase(Day &y, double level);
 
 // ---- 基本面源 ----
 inline constexpr const char *kBar1d = "cn_stock_real_bar1d", *kBar1m = "bar1m";
-// 历史末日 = bar1d 水位 (末个非空月分片; 0 行月也落文件) ∧ bar1m 末日; 未同步 → assert
+// 补段末日 = bar1d 水位 (末个非空月分片; 0 行月也落文件) ∧ bar1m 末日; 未同步 → assert
 misc::Ymd fund_last(const fundamental::Catalog &cat);
 // bar1d 一张月分片逐行 f(id, 日根): ref = pre_close; 无成交的行照给 (traded 判)
 void each_daily(fundamental::Scratch &xs, const fundamental::Shard &sh, const fundamental::Ids &ids,
@@ -189,9 +190,12 @@ struct Constituent {
 };
 struct Tape {
   std::vector<uint32_t> keys;
-  std::vector<std::shared_ptr<const Kline>> list; // [keys] 只读, 与服务侧及前后几次发布共享 (不拷); 空 = 源未就绪
-  std::string lack;                               // 源未就绪的原因 (只篮子有: all.bar 未建 / 落盘不足 2 日; 空 = 就绪)
-  misc::Ymd basis = 0;                            // 篮子: 成员 / 池 / 行业 / 股本所取的库末日 (其后至 Kline::last 为基本面补日); 个股 0
+  std::vector<std::shared_ptr<const Kline>> list; // [keys] 只读, 与服务侧及前后几次发布共享 (不拷); nullptr = 无历史 (源未就绪 / 个股在库轴外)
+  std::string lack;                               // 源未就绪的原因 (all.bar 未建 / 落盘不足 2 日; 空 = 就绪)
+  std::vector<misc::Ymd> dates;                   // 日脊 (PriceLib; 两侧同一条): 库段 [0, lib) + 补段 (基本面); 源未就绪空
+  size_t lib = 0;                                 // 库段日数: dates[lib − 1] = 库末日 (篮子的成员 / 池 / 行业 / 股本所取)
+  misc::Ymd last() const { return dates.empty() ? 0 : dates.back(); }
+  misc::Ymd lib_last() const { return lib ? dates[lib - 1] : 0; }
   // 篮子 [keys]: 历史末日收盘定的成员表 (= 当日 bind 给 Quote 的) 的成员只数 / Σ 权 / 成员总市值 [亿元] (末日收盘, 股本 total_shares 以亿股计); 个股空
   std::vector<uint32_t> members;
   std::vector<double> weight, cap;
@@ -204,6 +208,8 @@ struct HistoryPub : Published {
   uint32_t gen = 0;
   std::shared_ptr<const Tape> data;
 };
+// 当日 d 接在发布 t 的日脊之后
+inline bool joins(const Tape &t, const Day &d) { return d.candle.date != 0 && d.prev == t.last(); }
 
 // 一只一日 (合成的输入), 两源各自填
 struct Leg {

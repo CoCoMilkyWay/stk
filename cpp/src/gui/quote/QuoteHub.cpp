@@ -21,9 +21,10 @@ void QuoteHub::start(const SharedData &data) {
   for (const CalendarDay &d : data.asset_info.days)
     if (d.trading)
       trading.push_back(d.date);
+  price = std::make_unique<PriceLib>(trading);
   quote = std::make_unique<QuoteService>(pool_axis(std::move(ids)), data.asset_info.bar1m_end, std::move(trading));
-  stock = std::make_unique<StockHistory>();
-  basket = std::make_unique<BasketHistory>(*quote);
+  for (const Side s : {kStock, kBasket})
+    hist[s] = std::make_unique<History>(s, *price, *quote);
 }
 
 } // namespace GUI::Quote

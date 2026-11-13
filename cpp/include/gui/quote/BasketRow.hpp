@@ -1,11 +1,11 @@
-// 篮子合成件 (BasketHistory 价格指数 / Market 的分钟价格库同一份): 成员 × 源 → Lane (Fold 一日一份) → 各篮子一日; 普查 census 出发布的成员统计.
+// 篮子合成件 (PriceLib 的库段 / 补段同一份): 成员 × 源 → Lane (Fold 一日一份) → 各篮子一日; 普查 census 出发布的成员统计.
 //   成员 (谁 × 权) 两步对仗: members = 选股表 → 交易日 D 的成员表 (判据 = shared/Basket.hpp BasketTable::each, 权 = Tape::omega)
-//                             drift   = 成员冻结, 过一个交易日 (库末日之后的补日: 随价漂移, 逢换源回目标权)
+//                             drift   = 成员冻结, 过一个交易日 (库末日之后的补段: 随价漂移, 逢换源回目标权)
 //   源 (每只一日的 Leg) 两种对仗: LibDay  = all.bar L_1day 日行 (基准 = D−1 行 pre_close) + L_1min 分钟根
 //                                 FundDay = 基本面 bar1d 行 (基准 = 当行 pre_close) + bar1m 分钟根
 //   两源同一个形 (date / assets / minutes / leg), Lane::run 不分源; 当日 (新浪快照) 的增量合成在 QuoteService (Fold 增量).
 //   库段一趟 lib_pass: 各日的合成互不相干 (前日 = 1) ⇒ 按线程一日一件并行, 日间接续 (点位 / 因子链) 归调用方按日序串行;
-//     BasketHistory 的 Book 与 MinuteLib 的分钟价格库是同一趟的两个接收方, 续算件的盘上头 + 体同一读写 (snap_read / snap_write).
+//     续算件的盘上头 + 体同一读写 (snap_read / snap_write).
 #pragma once
 
 #include "disk/Disk.hpp"
@@ -117,9 +117,9 @@ struct LibWork {
 };
 
 // 库段一趟: 选股表 pk 的日轴 dates [from, N) (from ≥ 1; pk 与 axis 同为 all.bar 轴), 每批 T = 线程数日:
-//   并行  一日一件 (批内第 k 件): 读 D−1 / D 日根行 (+ D 的 L_1min, i ≥ minutes_from) → members → Lane::run; each(k, a, Leg) 逐只
+//   并行  一日一件 (批内第 k 件): 读 D−1 / D 日根行 (+ D 的 L_1min, i ≥ minutes_from) → members → Lane::run; each(i, a, Leg) 逐只 (各日各只互不相干)
 //   串行  按日序 chain(i, k, LibWork &) (日间接续: 点位 / 因子链), 批末 batch()
-//   调用方按 k 备批内的输出槽 (至多 T 个); x 记 Loading 天; false = 取消 / 判废 (rd.stale)
+//   x 记 Loading 天; false = 取消 / 判废 (rd.stale)
 template <class Each, class Chain, class Batch>
 bool lib_pass(const PoolAxis &axis, const FeatureRead &rd, const pool::Picks &pk, size_t from, size_t minutes_from, misc::exec::ForkJoin &pool,
               const std::atomic<bool> &cancel, Progress &x, Each &&each, Chain &&chain, Batch &&batch) {
@@ -144,7 +144,7 @@ bool lib_pass(const PoolAxis &axis, const FeatureRead &rd, const pool::Picks &pk
       if (w.minutes)
         read_minutes(rd, d, w.mc);
       members(pk, axis, d, w.lane.mem);
-      w.lane.run(LibDay{d, w.prev, w.cur, w.minutes ? &w.mc : nullptr}, dates[i - 1], [&](size_t a, const Leg &g) { each(k, a, g); });
+      w.lane.run(LibDay{d, w.prev, w.cur, w.minutes ? &w.mc : nullptr}, dates[i - 1], [&](size_t a, const Leg &g) { each(i, a, g); });
     });
     if (rd.stale())
       return false;

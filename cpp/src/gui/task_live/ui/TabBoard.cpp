@@ -170,12 +170,17 @@ void data_ctl(LiveHub &hub, BoardState &st) {
     hub.pull();
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip("客户端重查融资标的与担保品两张全表 (慢, 期间独占客户端界面); 当日落盘, 当日内不必重拉\n本页打开时当日还没有即后台自动拉 (每天至多一次)");
+    tip("客户端重查融资标的与担保品两张全表 (慢, 期间独占客户端界面), 整份换掉缓存 output/live/terms.csv\n"
+        "平时只用缓存; 本页打开时缓存缺、满 %d 天、或名单 / 持仓 / 负债里有缓存没有的代码即后台自动拉 (每天至多一次)\n"
+        "个股的名称、融资标的、担保品另经本地库核 (Database 同步的两融明细 / 在市)",
+        kTermsAge);
   ImGui::SameLine();
   if (hub.terms())
-    ImGui::Text("✓ 今日 %zu 只", *hub.terms());
+    ImGui::Text("✓ %s · %zu 只", misc::dash(hub.terms_day()).substr(5).c_str(), *hub.terms());
   else
-    text_col(kRed, "今日未拉");
+    text_col(kRed, "未拉过");
+  if (ImGui::IsItemHovered())
+    tip("两融条款缓存拉于哪天 · 只数");
   ImGui::SameLine(0, ImGui::GetFontSize());
   bool priv = hub.priv();
   if (ImGui::Checkbox("隐私", &priv))
@@ -624,7 +629,7 @@ void head_tip(int c, const live::board::Frame &f) {
   case C_FLOW:
     return tip("● 今日成交 · ○ 挂单, 买绿卖红; 悬停看逐笔");
   case C_FIN:
-    return tip("R = 融资标的且融资状态正常 (取自当日两融条款, 试算未出即空)");
+    return tip("R = 融资标的且融资状态正常 (两融条款缓存 ∧ 本地两融明细, 试算未出即空)");
   case C_ORDER: {
     std::string s;
     for (size_t i = 0; i < live::kSlipCols.size(); ++i)

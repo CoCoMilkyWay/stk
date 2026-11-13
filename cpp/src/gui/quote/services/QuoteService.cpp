@@ -145,9 +145,12 @@ void QuoteService::select(uint32_t id) {
 QuoteStatus QuoteService::status() const {
   std::lock_guard<std::mutex> lock(mu_);
   const bool fill = date_ > fund_end_;
-  const size_t gaps = fill ? static_cast<size_t>(std::ranges::count_if(tracks_, [](const Track &t) { return t.lo <= t.hi; })) : 0;
-  const size_t holes = fill ? static_cast<size_t>(std::ranges::count_if(tracks_, [](const Track &t) { return t.bars.hole.any(); })) : 0;
-  return {date_, prev_, sec_, todo_.size() + inflight_, fetched_, gaps, holes, fill, ver_, bytes_, saved_};
+  return {date_, prev_, sec_, todo_.size() + inflight_, fetched_, fill ? gaps_ : 0, fill ? holes_ : 0, fill, ver_, bytes_, saved_};
+}
+
+void QuoteService::recount() {
+  gaps_ = static_cast<size_t>(std::ranges::count_if(tracks_, [](const Track &t) { return t.gap(); }));
+  holes_ = static_cast<size_t>(std::ranges::count_if(tracks_, [](const Track &t) { return t.bars.hole.any(); }));
 }
 
 void QuoteService::bind(Members m, std::vector<double> level) {
@@ -160,33 +163,38 @@ void QuoteService::bind(Members m, std::vector<double> level) {
   fold();
 }
 
-std::shared_ptr<const std::vector<Day>> QuoteService::today(Side s, std::span<const uint32_t> keys) const {
+std::shared_ptr<const Days> QuoteService::today(Side s, std::span<const uint32_t> keys) const {
   std::lock_guard<std::mutex> lock(mu_);
   if (s == kBasket) {
     for (size_t k = 0; k < keys.size(); ++k)
       assert(keys[k] == k && "QuoteService::today: 篮子键集须是全表");
     if (!baskets_)
-      return std::make_shared<const std::vector<Day>>(keys.size());
+      return std::make_shared<const Days>(keys.size());
     assert(baskets_->size() == keys.size() && "QuoteService::today: 篮子键集与成员表的篮子数不符");
     return baskets_;
   }
-  auto out = std::make_shared<std::vector<Day>>(keys.size());
+  auto out = std::make_shared<Days>(keys.size());
   for (size_t k = 0; k < keys.size(); ++k) {
-    Day &o = (*out)[k];
     const size_t i = axis_.sub_of(keys[k]);
     if (i == axis_.size() || !traded(last_[i]))
       continue;
-    o.prev = prev_;
-    o.candle = {candle_of(last_[i]), date_, last_[i].last_close};
-    o.bars = tracks_[i].bars;
-    o.bars.date = date_;
-    o.flow = net_flow(o.bars, o.candle.ref);
+    const Track &t = tracks_[i];
+    if (!t.day) {
+      auto y = std::make_shared<Day>();
+      y->prev = prev_;
+      y->candle = {candle_of(last_[i]), date_, last_[i].last_close};
+      y->bars = t.bars;
+      y->bars.date = date_;
+      y->flow = net_flow(y->bars, y->candle.ref);
+      t.day = std::move(y);
+    }
+    (*out)[k] = t.day;
   }
   return out;
 }
 
-std::shared_ptr<const std::vector<Candle>> QuoteService::candles(std::span<const uint32_t> keys) const {
-  auto out = std::make_shared<std::vector<Candle>>(keys.size());
+std::shared_ptr<const Candles> QuoteService::candles(std::span<const uint32_t> keys) const {
+  auto out = std::make_shared<Candles>(keys.size());
   std::lock_guard<std::mutex> lock(mu_);
   for (size_t k = 0; k < keys.size(); ++k) {
     const size_t i = axis_.sub_of(keys[k]);
@@ -258,11 +266,14 @@ void QuoteService::fold() {
   }
   assert(r == kDone);
   g.frozen = freeze;
-  auto out = std::make_shared<std::vector<Day>>(b->level.size());
-  g.fold->finish(date, prev, *out);
-  for (size_t k = 0; k < out->size(); ++k)
-    if (Day &y = (*out)[k]; y.candle.date)
+  auto day = std::make_shared<std::vector<Day>>(b->level.size());
+  g.fold->finish(date, prev, *day);
+  auto out = std::make_shared<Days>(day->size());
+  for (size_t k = 0; k < day->size(); ++k)
+    if (Day &y = (*day)[k]; y.candle.date) {
       rebase(y, b->level[k]);
+      (*out)[k] = std::shared_ptr<const Day>(day, &y);
+    }
   std::lock_guard<std::mutex> lock(mu_);
   if (date_ != date || basis_ != b)
     return;
@@ -325,7 +336,9 @@ void QuoteService::poll() {
           continue;
         sec_ = std::max(sec_, q.sec);
         const bool first = tracks_[i].vol < 0;
-        if (tracks_[i].absorb(q, gap)) {
+        bool changed = false;
+        touch(i, [&](Track &t) { return changed = t.absorb(q, gap); });
+        if (changed) {
           const int s = sec_slot(q.sec), from = first ? 0 : gap >= 0 ? gap
                                                                      : s; // 改到的根: 首快照 / 断档的缺口起
           for (int k = from; k <= s; ++k)
@@ -418,12 +431,12 @@ void QuoteService::schedule() {
     return;
   const int st = settled(), dn = done();
   if (sel_ != ~0u && tracks_[sel_].vol >= 0) { // 选中: 定稿部分补成精确
-    Track &t = tracks_[sel_];
+    const Track &t = tracks_[sel_];
     int s = 0;
     while (s <= st && t.exact[s])
       ++s;
     if (s <= st) {
-      t.mark(s, st);
+      touch(sel_, [&](Track &u) { return u.mark(s, st), false; });
       put(sel_);
     }
   }
@@ -471,10 +484,10 @@ void QuoteService::fill() {
     --inflight_;
     if (gen != gen_) // 取的途中换了日 (Track 已重置)
       continue;
-    Track &t = tracks_[i];
-    t.fill = Fill::Idle;
+    tracks_[i].fill = Fill::Idle;
     const int st = settled();
-    const int end = t.merge(lo, st, live, date_, bars);
+    int end = 0;
+    touch(i, [&](Track &t) { return end = t.merge(lo, st, live, date_, bars), true; });
     for (int s = lo; s <= end; ++s)
       put(i, s);
     put(i);
@@ -558,6 +571,7 @@ void QuoteService::load() {
       sec_ = f.sec;
     }
   }
+  recount();
   // 重写成本次布局: 临时文件建满再 rename, 映射随 inode 留用
   const uint32_t n = static_cast<uint32_t>(tracks_.size());
   bytes_ = file_bytes(n);

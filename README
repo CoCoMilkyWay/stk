@@ -29,7 +29,7 @@ GUI布局:
   ③ 因子  因子引擎 (Run / Search) ─► output/factors/<pool>/<层> (一因子一文件); Agent 候选 output/agent ─(达门槛)─► 同上
   ④ 组合  因子 ─► output/portfolios (Market 组合)
   ⑤ 实盘  券商客户端 (live/<客户端>/, 登记于 live/Clients.hpp, 现只有通达信) ─(Broker: 读持仓 / 成交 / 挂单 / 信用账户, 下单 / 重查两融条款)─► Live 持仓页 / 一键调仓;
-          客户端适配自带调试台 (Live 的 Client 页); 行情走新浪 (不读客户端的), 当日两融条款落 output/live, 调仓名单 output/config/live/lists
+          客户端适配自带调试台 (Live 的 Client 页); 行情走新浪 (不读客户端的), 两融条款缓存落 output/live (个股另经本地库核), 调仓名单 output/config/live/lists
   人定的配置落 output/config/ (一任务一目录); 各段的运行产物 (日志 / 用时 / 导出 / 采样) 落 output/run/ 下的同构位置; output/ 的布局唯一由 disk/Disk.hpp 定
 ```
 
@@ -279,7 +279,7 @@ stk/
 │   │   │   │       └── TabNodeTime.hpp                 # 🖥️ 节点用时: 当前库 node_time.json 按节点文件归并成堆叠条
 │   │   │   ├── task_live/                              # 💹 Live 任务 (实盘): 中枢券商无关, 客户端适配在 live/
 │   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board / Client (所连客户端的调试台)
-│   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 新浪行情一路 + 当日两融条款 + 下单 / 事务 (拉条款 / 执行调仓, 日志落 output/run/live)
+│   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 新浪行情一路 + 两融条款 (券商缓存合本地库) + 下单 / 事务 (拉条款 / 执行调仓, 日志落 output/run/live)
 │   │   │   │   └── ui/
 │   │   │   │       └── TabBoard.hpp                    # 💹 持仓 · 调仓页: 数据 / 下单 / 调仓 / 账户 现 · 调仓后 + 持仓表 (表头排序; 行内闪电下单, 按钮即滑点色块; 卖出滑杆; 合计带当日净资产收益率) + 调仓名单 + 日志 + 右栏行情图
 │   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge; 协议见 AGENT.md)
@@ -457,7 +457,7 @@ stk/
     │   │   ├── factors/*.json                          # 候选因子文件 (与正式因子同格式); 提交且达门槛的拷进 factors/<pool>/<层>/
     │   │   └── chat/<YYYYMMDD-HHMMSS>/                 # 一段会话: system.md + 逐轮 md + events.jsonl + report.md
     │   └── notes/{feature,tool,insight,issue}.jsonl    # 全局记录, 一类一个文件
-    ├── live/terms/YYYYMMDD.csv                         # ⑤ 当日两融条款 (只留当日): 代码 / 名称 / 市场 / 保证金比例 / 融资标的 / 折算率 / 担保状态
+    ├── live/terms.csv                                  # ⑤ 两融条款缓存 (券商原样, 一份, 原子替换): 首行拉于哪天; 代码 / 名称 / 市场 / 保证金比例 / 融资标的 / 折算率 / 担保状态
     └── run/                                            # 运行产物
         ├── data/orders/log/*.log                       # 编码日志
         ├── data/repair/                                # 归档修复的解包暂存 (Encode → File Check → Repair, 修完即清)

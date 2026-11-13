@@ -68,7 +68,7 @@ void star_cell(LinesState &ui, const std::string &w) {
   ImGui::PopStyleColor(2);
 }
 
-// 页 page 点行: 选中 ↔ 取消 (单选 = 换掉原选中); 多选里个股满 StockHistory::kKeep 只不再加, 刚选中 → 其线在主图例里回默认显隐 (理想列显, 可成交列隐)
+// 页 page 点行: 选中 ↔ 取消 (单选 = 换掉原选中); 多选里个股满 History::kKeep − 1 只不再加 (留一只给单选), 刚选中 → 其线在主图例里回默认显隐 (理想列显, 可成交列隐)
 void pick(LinesState &ui, int page, const LinesRow &r) {
   const int m = kPageDefs[page].pick;
   std::map<std::string, Quote::Ref> &s = ui.pick.rows[m];
@@ -76,7 +76,7 @@ void pick(LinesState &ui, int page, const LinesRow &r) {
     return;
   if (m == kPickOne)
     s.clear();
-  else if (r.ref.is(Quote::kStock) && ui.pick.stocks(m).size() >= Quote::StockHistory::kKeep)
+  else if (r.ref.is(Quote::kStock) && ui.pick.stocks(m).size() + 1 >= Quote::History::kKeep)
     return;
   s.emplace(r.id, r.ref);
   if (m == kPickMany)
@@ -339,8 +339,7 @@ RowSrc src_of(const LinesState &ui, const StockInfos &infos, const LinesDerived 
   if (q.is(Quote::kStock) && q.key < infos.size() && infos[q.key].known)
     x.info = &infos[q.key];
   x.src = SourceOf(ui.overlay, q);
-  if (x.src.today && x.src.today->candle.date != 0)
-    x.day = x.src.today;
+  x.day = x.src.today;
   return x;
 }
 // 篮子行的当日 (SheetToday): 只数 / 总市值 = Tape::members / cap (加权线的总市值当日接上 × 当日涨跌 = 成员总市值的当日变化; 等权线停在末日收盘);
@@ -352,7 +351,7 @@ SheetToday basket_today(const Feed &f, const RowSrc &x) {
   const size_t l = x.row->ref.key;
   assert(f.data->keys[l] == l && x.src.kl == f.data->list[l].get());
   double w = f.data->cap[l];
-  if (basket_table().weight(l) == pool::kWeightCap && x.day && Quote::joins(*x.src.kl, *x.day))
+  if (basket_table().weight(l) == pool::kWeightCap && x.src.joined)
     w *= x.day->candle.close / x.day->candle.ref;
   o.v[kTodayMembers] = f.data->members[l];
   o.v[kTodayCap] = w > 0 ? w : kNaN;

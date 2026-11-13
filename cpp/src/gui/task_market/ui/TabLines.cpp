@@ -162,7 +162,7 @@ void SyncLinesWatch(LinesState &ui) {
         ui.cat[p] = kGroupWatch;
 }
 
-int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaService &cta, const PortfolioUIState &pf, LinesState &ui,
+int RenderTabLines(int page, PortfolioService &svc, MinuteService *minute, CtaService *cta, const PortfolioUIState &pf, LinesState &ui,
                    double fixed_impact, const cta::Rates &rates, const Quote::QuoteHub *mk, const StockInfos &infos) {
   assert(page >= 0 && page < kPages);
   const PageDef &pd = kPageDefs[page];
@@ -181,15 +181,15 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
   //      → 视图 (派生 gen + 二级两份 gen + 标的): 上级重算 → 下级自动重算 ----
   if (ui.pick.of != pf.name) // 换组合 → 选中清掉
     ui.pick = LinesPick{.of = pf.name};
-  if (pd.work == kWorkMinute) { // 选中的有行情键的行 (NAV 多选 ∪ VAL 标的; 两页同一份请求) → 分钟价请求 (标的集变才发; 首次 = 先备价格库)
+  if (minute && pd.work == kWorkMinute) { // 选中的有行情键的行 (NAV 多选 ∪ VAL 标的; 两页同一份请求) → 分钟价请求 (标的集变才发; 首次 = 先备价格库)
     MinuteRequest rq;
     for (const std::map<std::string, Quote::Ref> &rows : ui.pick.rows)
       for (const auto &[id, ref] : rows)
         if (ref.ok() && std::ranges::find(rq.refs, ref) == rq.refs.end())
           rq.refs.push_back(ref);
-    ui.minute_sent.send(minute, std::move(rq));
+    ui.minute_sent.send(*minute, std::move(rq));
   }
-  ui.minutes = latest(minute);
+  ui.minutes = minute ? latest(*minute) : nullptr;
   ui.der.update(LinesDerKey{gen, pf.items_gen, ui.overlay.baskets.shown, ui.minutes ? ui.minutes->gen : 0, fixed_impact, infos.size(), ui.pick.open,
                             ui.pick.stocks(kPicks), ui.watch},
                 [&](LinesDerived &dv) {
@@ -265,7 +265,13 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaSe
     break;
   case kLayoutCta: {
     const float pw = std::floor((lw - st.ItemSpacing.x) / 2.0f);
-    RenderLinesCta(cta, ui, rates, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y), pw);
+    if (cta)
+      RenderLinesCta(*cta, ui, rates, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y), pw);
+    else {
+      ImGui::BeginChild("##cta_wait", ImVec2(left, av.y));
+      ImGui::TextDisabled("行情等基本面就绪…");
+      ImGui::EndChild();
+    }
     sw = lw - pw - st.ItemSpacing.x;
     break;
   }

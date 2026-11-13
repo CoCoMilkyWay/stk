@@ -125,7 +125,7 @@ struct Row {
   Recent rc;
 };
 
-Row make_row(const Asset &asset, const StockInfos &stock_info, const Today<Candle> &today, size_t id) {
+Row make_row(const Asset &asset, const StockInfos &stock_info, const Today<Candles> &today, size_t id) {
   assert(today.day && id < today.day->size());
   const AssetItem &a = asset.items[id];
   const StockInfo *info = find_info(a, stock_info);
@@ -489,7 +489,7 @@ SheetCell cell_of(const Column &c, const Row &r) {
 
 // 格: 过滤 (资产序) → 逐行逐列填格 → 各列名次 (过滤后 pool 内, GUI::rank_by, 并列取中) → 各列最宽.
 //   用名次而非数值归一化: 估值 / 市值重尾, min-max 染色会被几个极端值压成一片同色; 并列取中: 股息成片的 0 不被摊成渐变
-void fill_cells(AssetCells &o, const Asset &asset, const StockInfos &stock_info, const Today<Candle> &today, const AssetFilter &filter) {
+void fill_cells(AssetCells &o, const Asset &asset, const StockInfos &stock_info, const Today<Candles> &today, const AssetFilter &filter) {
   assert(asset.asset_stats.size() == asset.items.size());
   o.ids.clear();
   for (size_t id = 0; id < asset.items.size(); ++id)
@@ -540,7 +540,7 @@ void sync_view(AssetState &state, const Asset &asset, const StockInfos &stock_in
 }
 
 // 新浪当日日根: 键集 = 全部资产 (Today 照版本取)
-void sync_today(Today<Candle> &t, const QuoteService &q, const Asset &asset) {
+void sync_today(Today<Candles> &t, const QuoteService &q, const Asset &asset) {
   std::vector<uint32_t> keys;
   keys.reserve(asset.items.size());
   for (const AssetItem &a : asset.items)
