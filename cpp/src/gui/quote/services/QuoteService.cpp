@@ -444,7 +444,7 @@ void QuoteService::poll() {
     const auto due = t0 + std::chrono::seconds(in_session(clock_now()) ? kTick : kIdleTick);
     std::unique_lock<std::mutex> lock(mu_);
     while (true) {
-      wake_.wait_until(lock, std::min(due, std::chrono::steady_clock::now() + std::chrono::seconds(kFoldGap)), [&] { return stop_; });
+      wake_.wait_until(lock, std::min(due, std::chrono::steady_clock::now() + std::chrono::seconds(kFoldGap)), [&] { return stop_ || rewatch_; });
       if (stop_)
         return;
       if (!wake_.wait_until(lock, due, [&] { return stop_ || stale() || rewatch_; }))

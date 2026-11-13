@@ -1,6 +1,6 @@
 // Live 任务的中枢: 一个 Broker (客户端适配表 live/Clients.hpp 里选一个, 点「连接」才建) + 新浪行情 + 两融条款 + 下单 / 调仓事务, 券商无关
-//   行情: 只此一路 (持仓、今日清仓、负债、调仓名单里可买的), 有人在看才转, 每 kQuoteEvery 取一次, 要的码多了即补取;
-//     盘口列同帧复用其 5 档. 账户读到后头一次取齐其各只的行情记作读时现价 (可用保证金按它校准, 见 live/Rebal.hpp)
+//   行情: 要的码 (持仓、今日清仓、负债、调仓名单里可买的) 每帧订阅给 QuoteHub (与 Market 同一路新浪轮询, 改了即提前一轮), 随 Live 的版本取用;
+//     事务 (试算 / 下单) 另现取此刻的. 盘口列同帧复用其 5 档. 账户读到后头一次取齐其各只的行情记作读时现价 (可用保证金按它校准, 见 live/Rebal.hpp)
 //   条款: 券商的两融条款缓存一份 output/live/terms.csv (原子替换), 不论哪天拉的启动即用; 后台拉到新的即整份换掉.
 //     与本地库合: 本地库有的个股名称 / 市场取本地 (AssetInfo), 融资标的 = 券商融资状态正常 ∧ 本地两融明细最新一日有它,
 //     担保品 = 券商担保状态正常 ∧ 本地在市; 保证金比例 / 折算率只有券商有; 本地库没有的 (ETF / 债券) 照用券商的整行.
@@ -11,7 +11,7 @@
 //     卖单逐只卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 → 买单逐只 (融资在前) → 刷新.
 //     任一步失败即停 (已下的单不撤); 卖单、买单各一整批独占界面连下, 其间不插刷新
 //   GUI 线程每帧 tick 取一份快照, 持仓帧 / 试算按其输入 (State 版本 / 行情 / 配置 / 条款 / 读时现价) 变了才重算; AssetInfo 换了即重合条款
-//   后台线程各持核心的 shared_ptr, 析构只置停 (在途的客户端操作做完即退)
+//   后台线程各持核心的 shared_ptr (在途的客户端操作做完即退)
 #pragma once
 
 #include "live/Board.hpp"
@@ -29,6 +29,9 @@
 #include <vector>
 
 struct AssetInfo;
+namespace GUI::Quote {
+struct QuoteHub;
+}
 
 namespace GUI::Live {
 
@@ -95,13 +98,14 @@ public:
 
   // ---------- 以下皆 GUI 线程 ----------
   bool connected() const;
-  void connect(size_t client); // 按 live::clients() 的下标建 broker, 起行情线程
+  void connect(size_t client); // 按 live::clients() 的下标建 broker
   live::Broker &broker();
   // 隐私: 遮住代码、名称与账户金额 (连同其悬停提示), 比例、只数与下单照显; 落盘 output/config/live/ui.json
   bool priv() const { return priv_; }
   void set_priv(bool on);
-  void peek();                      // 每帧: 取单 / 事务 / 刷新进度 (左栏标签用), 不算有人在看
-  void tick(const AssetInfo &info); // 每帧 (页面可见时): peek + 有人在看 + 其余快照, 输入变了即重算持仓帧 / 试算
+  void peek(); // 每帧: 取单 / 事务 / 刷新进度 (左栏标签用), 不算有人在看
+  // 每帧 (页面可见时; quote 本帧已 frame): peek + 有人在看 + 订阅行情 + 其余快照, 输入变了即重算持仓帧 / 试算
+  void tick(const AssetInfo &info, Quote::QuoteHub &quote);
 
   // peek / tick 取的快照
   const std::shared_ptr<const live::State> &state() const { return st_; }
@@ -152,6 +156,8 @@ private:
   std::array<int64_t, 3> info_key_ = {-1, -1, -1}; // AssetInfo 的 (pit_end, bar1m_end, 代码数): 变了即重合条款
   std::vector<OrderJob> jobs_;
   std::optional<Task> task_;
+  std::vector<std::string> watch_;                             // 订阅给 QuoteHub 的码 (变了才交: 交要过服务的锁)
+  uint64_t live_ver_ = 0;                                      // 取用过的 Live 版本
   uint64_t board_key_[2] = {~0ull, ~0ull};                     // State 版本, 行情版本
   uint64_t plan_key_[5] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull}; // + 配置, 条款, 读时现价
 };

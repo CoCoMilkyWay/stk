@@ -182,10 +182,12 @@ struct LinesSheet {
   std::vector<std::vector<Flow>> flow; // 资金流段: [表行][日轴各日 + 合计] (悬停)
 };
 
+// 多选里带行情键的行至多几行: 各连分钟全史, 价格库留的另四份给单选标的 / 两处个股面板 (ASSET / Live) / 日内栏 0 轴的全A.等
+inline constexpr size_t kQuotedPicks = Quote::PriceLib::kKeepMinutes - 4;
 // 行选中 (LinesRow::id → 行情键; 默认空): 属于组合 of, 换组合 → 整份清空; 多选 (NAV / FLOW) = 选中文件, 改了即存
 struct LinesPick {
   std::string of;
-  std::map<std::string, Quote::Ref> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个; 多选的个股至多 PriceLib::kKeep − 1 只: 两种合起来不过价格库留的个股全历史)
+  std::map<std::string, Quote::Ref> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个; 多选里带行情键的至多 kQuotedPicks 行)
   std::string open;                               // 展开的篮子行 (至多一行, 各页同一份; 空 = 无)
   // 方式 m (kPicks = 全部) 选中的个股 (全局 id, 升序)
   std::vector<uint32_t> stocks(int m) const {

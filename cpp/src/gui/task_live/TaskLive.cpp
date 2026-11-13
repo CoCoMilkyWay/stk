@@ -2,7 +2,7 @@
 //   Board: 连接 + 持仓 · 调仓一页 (控件分组 / 持仓表行内闪电下单与卖出滑杆, 并调仓名单 / 日志) + 右栏选中行的行情图
 //     (Market 的个股面板, 与 Database / Market 共用 QuoteHub)
 //   Client: 已连客户端自带的调试台 (Broker::console), 不算有人在看持仓
-//   行情走新浪 (LiveHub 一路), 不读客户端的行情; Board 可见时才盯客户端 (见 live/Broker.hpp 的 touch)
+//   行情走新浪 (LiveHub 把要的码订阅给 QuoteHub, 本地资产库就绪才有), 不读客户端的行情; Board 可见时才盯客户端 (见 live/Broker.hpp 的 touch)
 //   账户净值 (gui/account): 每帧交信用账户, 连上后每天在事务道上补一次资金流水
 #include "gui/task_live/TaskLive.hpp"
 #include "gui/Tasks.hpp"
@@ -84,8 +84,10 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
   handle.Draw = [state](SharedData &data, int idx) {
     assert(idx >= 0 && idx < TAB_COUNT);
     Live::LiveHub &h = *state->hub;
+    if (data.task_state.database.asset_info_ready)
+      state->quote->frame(data);
     if (idx != TAB_CLIENT)
-      h.tick(data.asset_info);
+      h.tick(data.asset_info, *state->quote);
     ImGui::BeginChild("LiveTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     if (idx == TAB_BOARD)

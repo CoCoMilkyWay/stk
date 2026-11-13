@@ -2,6 +2,7 @@
 
 #include "api/sina/client.hpp"
 #include "disk/Disk.hpp"
+#include "gui/quote/QuoteHub.hpp"
 #include "live/Clients.hpp"
 #include "misc/parquet.hpp"
 #include "shared/AssetInfo.hpp"
@@ -10,7 +11,6 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <filesystem>
 #include <functional>
 #include <iterator>
@@ -36,11 +36,7 @@ using Local = std::unordered_map<std::string, Stock>; // 代码 → 个股
 
 struct LiveHub::Core {
   std::mutex mu;
-  std::condition_variable cv;
-  bool stop = false;
   std::unique_ptr<live::Broker> broker; // connect 时建一次, 之后只读
-  double seen = -1e9;                   // GUI 上次 tick
-  int holds = 0;                        // 在途事务数
 
   std::shared_ptr<const live::Quotes> quotes;
   uint64_t quotes_ver = 0;
@@ -73,11 +69,7 @@ namespace {
 
 using Core = LiveHub::Core;
 using Lock = std::lock_guard<std::mutex>;
-using namespace std::chrono_literals;
 
-constexpr auto kTick = 100ms;
-constexpr double kQuoteEvery = 1.5;             // 行情周期 [s] (新浪每 3s 一帧)
-constexpr double kSeen = 1;                     // 页面多久没画即算没人在看 [s]
 constexpr double kFillWait = 120, kFillGap = 2; // 等卖单成交: 最长秒数、每轮间隔
 
 double mono() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -252,18 +244,8 @@ std::vector<live::Sec> watch_set(Core &c, const live::State &st) {
   return v;
 }
 
-// 取 secs 的行情整份发布; 账户是新读到的且其各只都有了即记作读时现价
-void fetch(Core &c, sina::Client &cl, const live::State &st, const std::vector<live::Sec> &secs) {
-  auto q = std::make_shared<live::Quotes>();
-  std::vector<std::string> syms;
-  for (size_t i = 0; i < secs.size(); ++i) {
-    syms.push_back(live::sina_sym(secs[i].mkt, secs[i].code));
-    if (syms.size() == static_cast<size_t>(sina::kQuoteMax) || i + 1 == secs.size()) {
-      for (const sina::Quote &x : cl.quotes(syms))
-        (*q)[x.sym.substr(2)] = live::quote_of(x);
-      syms.clear();
-    }
-  }
+// 行情 q 整份发布; 账户是新读到的且其各只都有了即记作读时现价
+void take(Core &c, const live::State &st, std::shared_ptr<const live::Quotes> q) {
   std::string at;
   for (const auto &[code, x] : *q)
     at = std::max(at, live::quote_time(x));
@@ -286,7 +268,7 @@ void fetch(Core &c, sina::Client &cl, const live::State &st, const std::vector<l
       px = nullptr;
   }
   Lock lk(c.mu);
-  c.quotes = q;
+  c.quotes = std::move(q);
   ++c.quotes_ver;
   c.quote_at = at;
   if (px && st.acct.v != c.px_acct) {
@@ -296,51 +278,20 @@ void fetch(Core &c, sina::Client &cl, const live::State &st, const std::vector<l
   }
 }
 
-void quote_loop(const std::shared_ptr<Core> &c) {
-  sina::Client cl(sina::kQuoteHost);
-  double last = -1e9;
-  std::unordered_set<std::string> asked;
-  for (;;) {
-    bool on;
-    {
-      std::unique_lock lk(c->mu);
-      if (c->cv.wait_for(lk, kTick, [&] { return c->stop; }))
-        return;
-      on = c->holds > 0 || mono() - c->seen < kSeen;
+// 现取 secs 的行情 (事务要此刻的价, 不等订阅那一路) 发布
+void fetch(Core &c, sina::Client &cl, const live::State &st, const std::vector<live::Sec> &secs) {
+  auto q = std::make_shared<live::Quotes>();
+  std::vector<std::string> syms;
+  for (size_t i = 0; i < secs.size(); ++i) {
+    syms.push_back(live::sina_sym(secs[i].mkt, secs[i].code));
+    if (syms.size() == static_cast<size_t>(sina::kQuoteMax) || i + 1 == secs.size()) {
+      for (const sina::Quote &x : cl.quotes(syms))
+        (*q)[x.sym.substr(2)] = live::quote_of(x);
+      syms.clear();
     }
-    if (!on)
-      continue;
-    const auto st = c->broker->state();
-    const std::vector<live::Sec> secs = watch_set(*c, *st);
-    const bool more = std::any_of(secs.begin(), secs.end(), [&](const live::Sec &s) { return !asked.count(s.code); });
-    if (secs.empty() || (!more && mono() - last < kQuoteEvery))
-      continue;
-    asked.clear();
-    for (const live::Sec &s : secs)
-      asked.insert(s.code);
-    last = mono();
-    fetch(*c, cl, *st, secs);
   }
+  take(c, st, std::move(q));
 }
-
-// 后台事务期间有人在看 (客户端刷新与行情都转着)
-class Lease {
-public:
-  explicit Lease(Core &c) : c_(c), w_(*c.broker) {
-    Lock lk(c_.mu);
-    ++c_.holds;
-  }
-  ~Lease() {
-    Lock lk(c_.mu);
-    --c_.holds;
-  }
-  Lease(const Lease &) = delete;
-  Lease &operator=(const Lease &) = delete;
-
-private:
-  Core &c_;
-  live::Watch w_;
-};
 
 // ---------- 下单 ----------
 
@@ -636,7 +587,7 @@ bool start(const std::shared_ptr<Core> &c, const char *name, std::function<void(
   for (size_t i = 0; i + kTaskKeep <= old.size(); ++i)
     disk::remove(disk::RunLiveTaskLog, old[i]);
   std::thread([c, fn = std::move(fn)] {
-    Lease lease(*c);
+    live::Watch w(*c->broker);
     JobSt st = JobSt::Ok;
     std::string msg;
     try {
@@ -671,18 +622,13 @@ LiveHub::LiveHub() : c_(std::make_shared<Core>()) {
     priv_ = nlohmann::json::parse(disk::read(disk::LiveUiFile)).at("priv").get<bool>();
 }
 
-LiveHub::~LiveHub() {
-  Lock lk(c_->mu);
-  c_->stop = true;
-  c_->cv.notify_all();
-}
+LiveHub::~LiveHub() = default;
 
 bool LiveHub::connected() const { return c_->broker != nullptr; }
 
 void LiveHub::connect(size_t client) {
   assert(!connected() && client < live::clients().size());
   c_->broker = live::clients()[client].make();
-  std::thread([c = c_] { quote_loop(c); }).detach();
 }
 
 void LiveHub::set_priv(bool on) {
@@ -706,7 +652,7 @@ void LiveHub::peek() {
     prog_ = c.broker->refresh();
 }
 
-void LiveHub::tick(const AssetInfo &info) {
+void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
   peek();
   Core &c = *c_;
   const std::array<int64_t, 3> ik = {info.pit_end, info.bar1m_end, static_cast<int64_t>(info.codes.size())};
@@ -717,6 +663,25 @@ void LiveHub::tick(const AssetInfo &info) {
     c.local = std::move(l);
     merge_locked(c);
   }
+  if (c.broker) {
+    c.broker->touch();
+    st_ = c.broker->state();
+    if (quote.started()) {
+      const std::vector<live::Sec> secs = watch_set(c, *st_);
+      std::vector<std::string> syms;
+      for (const live::Sec &s : secs)
+        syms.push_back(live::sina_sym(s.mkt, s.code));
+      if (syms != watch_)
+        quote.watch(watch_ = std::move(syms));
+      if (const std::shared_ptr<const Quote::Live> &y = quote.live; y && y->watch && y->ver != live_ver_) {
+        live_ver_ = y->ver;
+        auto q = std::make_shared<live::Quotes>();
+        for (const sina::Quote &x : *y->watch)
+          (*q)[x.sym.substr(2)] = live::quote_of(x);
+        take(c, *st_, std::move(q));
+      }
+    }
+  }
   std::shared_ptr<const live::Quotes> q;
   std::shared_ptr<const live::Terms> terms;
   std::shared_ptr<const live::rebal::Prices> px0;
@@ -724,7 +689,6 @@ void LiveHub::tick(const AssetInfo &info) {
   uint64_t qv, tv, cv, pv;
   {
     Lock lk(c.mu);
-    c.seen = mono();
     q = c.quotes;
     qv = c.quotes_ver;
     terms = c.terms;
@@ -745,8 +709,6 @@ void LiveHub::tick(const AssetInfo &info) {
     plan_ = PlanView{.wait = "未连接"};
     return;
   }
-  c.broker->touch();
-  st_ = c.broker->state();
   const live::State &st = *st_;
 
   if (board_key_[0] != st.ver || board_key_[1] != qv) {
@@ -852,7 +814,7 @@ void LiveHub::submit(const std::string &code, int side, double size, live::Credi
   if (!id)
     return;
   std::thread([c = c_, id, s = *sec, side, size, credit, mode = cfg_.px] {
-    Lease lease(*c);
+    live::Watch w(*c->broker);
     if (exec(*c, id, s, side, 0, size, credit, mode).st == JobSt::Ok)
       c->broker->kick();
   }).detach();

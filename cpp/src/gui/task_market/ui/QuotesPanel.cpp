@@ -34,15 +34,13 @@ constexpr ImVec4 kMaCol[] = {ImVec4(0.843f, 0.729f, 0.490f, 1.f), ImVec4(0.306f,
 constexpr int kIntras = 5;
 constexpr int kIntraDays[kIntras] = {1, 2, 3, 4, 5};
 constexpr const char *kIntraName[kIntras] = {"日内", "2日", "3日", "4日", "5日"};
-static_assert(kIntraDays[kIntras - 1] <= static_cast<int>(kMinuteDays));
 constexpr const char *kFlowUnitName[] = {"占比", "金额"};
-constexpr int kDailySpan[] = {5, 22, 250, 2500}; // 交易日
-constexpr const char *kDailyName[] = {"周", "月", "年", "10年"};
-static_assert(kDailySpan[3] <= static_cast<int>(kDailyDays));
+constexpr int kKSpan[] = {5, 22, 250, 2500}; // K 线档 [交易日]
+constexpr const char *kKName[] = {"周", "月", "年", "10年"};
 constexpr const char *kHours[] = {"09:30", "10:30", "11:30/13:00", "14:00", "15:00"};
 constexpr double kBody = 0.35; // 蜡烛 / 额柱半宽 [槽]
-constexpr float kMinPx = 3.f;  // 日内蜡烛每根最窄 [px] (窄了并根)
-constexpr double kMinSpan = 5; // 视野至少几根 (框选 / 滚轮)
+constexpr float kMinPx = 3.f;  // 蜡烛每根最窄 [px] (窄了并根)
+constexpr double kMinSpan = 5; // 视野至少几槽 (框选 / 滚轮)
 constexpr double kWheel = 0.8; // 滚轮一格视野宽 × kWheel (向前 = 放大)
 constexpr ImVec4 kRefTag(0.55f, 0.55f, 0.55f, 1.f);
 constexpr ImVec4 kGridTag(0.62f, 0.62f, 0.62f, 0.8f);                                     // 叠加图横网格的内标小字
@@ -87,13 +85,13 @@ void pin_axes(bool x) {
     pin(ImAxis_X1, {"00-00 00:00", "0000-00-00"});
 }
 
-// 一张图的根: 日内 x = 第 k 日 · kSlots + 槽 (无成交的槽留空; 并根 = 组中点, 每根 g 槽); 日线 x = 下标
+// 一张图的根: x = 第 k 日 · kSlots + 槽 (日内 = 日轴各日, K 线 = 全史各日; 无成交的槽留空; 并根 = 组中点, 每根 g 槽, g ≥ kSlots = 几日一根)
 struct Series {
   bool intraday = false;
   std::vector<Candle> bars;
   std::vector<double> x;
-  std::vector<double> cut;     // 日内缺口槽的 x (升序; Bars::hole): 不画根, 线在此断开, 并根时含缺口的组整组不画
-  std::vector<misc::Ymd> days; // 日内各日
+  std::vector<double> cut;     // 缺口槽的 x (升序; Bars::hole): 不画根, 线在此断开, 并根时含缺口的组整组不画
+  std::vector<misc::Ymd> days; // [k]
   double ref = 0;              // 涨跌幅轴基准 (末日前收); 0 = 无
   int g = 1;
   void push(const Candle &b, double at) {
@@ -105,12 +103,19 @@ struct Series {
                                                                                : bars[0].open; }
 };
 
-int day_tick(double v, char *buf, int size, void *ud) {
+// K 线底轴: 分钟根 "MM-DD HH:MM", 日根 "MM-DD", 月以上一根 "YYYY-MM"
+int k_tick(double v, char *buf, int size, void *ud) {
   const Series &s = *static_cast<const Series *>(ud);
-  const long i = std::lround(v);
-  if (i < 0 || i >= static_cast<long>(s.bars.size()))
+  const long k = static_cast<long>(std::floor((v + 0.5) / kSlots));
+  if (k < 0 || k >= static_cast<long>(s.days.size()))
     return std::snprintf(buf, size, " ");
-  const misc::Ymd d = s.bars[static_cast<size_t>(i)].date;
+  const misc::Ymd d = s.days[static_cast<size_t>(k)];
+  if (s.g < kSlots) {
+    const int m = slot_label(std::clamp(static_cast<int>(std::lround(v) - k * kSlots), 0, kSlots - 1));
+    return std::snprintf(buf, size, "%02d-%02d %02d:%02d", d / 100 % 100, d % 100, m / 60, m % 60);
+  }
+  if (s.g >= 20 * kSlots)
+    return std::snprintf(buf, size, "%04d-%02d", d / 10000, d / 100 % 100);
   return std::snprintf(buf, size, "%02d-%02d", d / 100 % 100, d % 100);
 }
 
@@ -122,10 +127,10 @@ int nearest(const Series &s, double at) {
   return i;
 }
 
-// 第 i 根的时刻: 日内 "MM-DD HH:MM" (槽 = 组末槽除 kSlots 的余), 日线 "YYYY-MM-DD"
+// 第 i 根的时刻: 分钟根 "MM-DD HH:MM" (槽 = 组末槽除 kSlots 的余), 日根 "YYYY-MM-DD" (几日一根 = 组首日)
 void fmt_when(char *buf, int size, const Series &s, size_t i) {
   const misc::Ymd d = s.bars[i].date;
-  if (s.intraday) {
+  if (s.g < kSlots) {
     const int m = slot_label(static_cast<int>(s.x[i] + (s.g - 1) * 0.5) % kSlots);
     std::snprintf(buf, size, "%02d-%02d %02d:%02d", d / 100 % 100, d % 100, m / 60, m % 60);
   } else {
@@ -154,14 +159,21 @@ void candle(ImDrawList *dl, double x, double half, double from, double high, dou
   dl->AddRectFilled(ImVec2(std::min(x0, cx - 0.5f), y0), ImVec2(std::max(x1, cx + 0.5f), y1), col);
 }
 
-// 日内蜡烛并根: g = span 槽在 px 宽里每根不窄于 kMinPx 的最小 kSlots 因子;
-//   同日每 g 槽并一根 (开取先, 高 / 低取极, 收取后, 量 / 额相加), x = 组中点; 含缺口的组整组不画. 返回 g
-int merge(Series &s, double span, float px) {
+// 并根的槽数: span 槽在 px 宽里每根不窄于 kMinPx 的最小 kSlots 因子; days → 不够再取 kSlots 的整数倍 (几日一根)
+int lod(double span, float px, bool days) {
   int g = 1;
   while (g < kSlots && (kSlots % g || px * g < kMinPx * span))
     ++g;
+  while (days && px * g < kMinPx * span)
+    g += kSlots;
+  return g;
+}
+
+// 每 g 槽并一根 (开取先, 高 / 低取极, 收取后, 量 / 额相加; 日 / 前收取组首根), x = 组中点; 含缺口的组整组不画
+void merge(Series &s, int g) {
+  s.g = g;
   if (g == 1)
-    return g;
+    return;
   std::vector<long> holed; // 含缺口的组 (升序)
   for (const double c : s.cut)
     holed.push_back(static_cast<long>(c) / g);
@@ -188,22 +200,22 @@ int merge(Series &s, double span, float px) {
   }
   s.bars.resize(n);
   s.x.resize(n);
-  return g;
 }
 
-// 价 (蜡烛 + 前收 / 现价线, 日线另叠均线; 右轴涨跌幅) 叠 额, x 联动. 日内按视野宽并根 (merge). key 变 / 双击 → 视野复位到档窗口 [win_lo, win_hi];
-//   左键拖动 = 框选 x 段放大; wheel → 滚轮只缩放 x, 右端锚在 win_hi (最新一根); y 恒随视野内的根贴合.
+// 复位键变 → 视野回档窗口 [lo, hi]
+void reset(QuotesView &v, uint64_t key, double lo, double hi) {
+  if (v.key == key)
+    return;
+  v.key = key;
+  v.lo = lo, v.hi = hi, v.zoom.cancel();
+}
+
+// 价 (蜡烛 + 前收 / 现价线, K 线另叠均线; 右轴涨跌幅) 叠 额, x 联动; s = 视野 v 的根 (已并好). 双击 → 视野复位到档窗口 [win_lo, win_hi];
+//   左键拖动 = 框选 x 段放大; wheel > 0 → 滚轮只缩放 x (至多 wheel 宽), 右端锚在 win_hi (最新一根); y 恒随视野内的根贴合.
 //   视野的改动在下一帧生效 (本帧已设给 ImPlot).
 // 档位按钮叠在价图左上角 (在图之后提交, 抢得到悬停). 画完光标停在按钮处, 调用方显式定位下一块
-void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_t key, QuotesView &v, const ImVec2 &size,
-                const char *const ranges[], int nr, int &cur, bool wheel) {
-  const bool reset = v.key != key;
-  if (reset) {
-    v.key = key;
-    v.lo = win_lo, v.hi = win_hi, v.zoom.cancel();
-  }
-  if (s.intraday)
-    s.g = merge(s, v.hi - v.lo, size.x);
+void plot_chart(const char *id, const Series &s, double win_lo, double win_hi, QuotesView &v, const ImVec2 &size,
+                const char *const ranges[], int nr, int &cur, double wheel) {
   const int n = static_cast<int>(s.bars.size());
   const int w0 = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), v.lo) - s.x.begin());
   const int w1 = static_cast<int>(std::upper_bound(s.x.begin(), s.x.end(), v.hi) - s.x.begin());
@@ -245,7 +257,7 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
     if (s.intraday)
       ImPlot::SetupAxisTicks(ImAxis_X1, tick_x.data(), static_cast<int>(tick_x.size()), tick_p.data());
     else
-      ImPlot::SetupAxisFormat(ImAxis_X1, day_tick, &s);
+      ImPlot::SetupAxisFormat(ImAxis_X1, k_tick, const_cast<Series *>(&s));
   };
   const auto visible = [&](const ImPlotRect &lim, int &a, int &b) {
     a = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), lim.X.Min - s.g) - s.x.begin());
@@ -413,8 +425,8 @@ void plot_chart(const char *id, Series &s, double win_lo, double win_hi, uint64_
     v.zoom.begin(mx);
   if (double lo, hi; v.zoom.end(mx, lo, hi) && hi - lo >= kMinSpan)
     v.lo = lo, v.hi = hi;
-  if (wheel && hov && io.MouseWheel != 0) {
-    const double w = std::clamp((v.hi - v.lo) * std::pow(kWheel, io.MouseWheel), kMinSpan, std::max(win_hi - win_lo, n + 1.0));
+  if (wheel > 0 && hov && io.MouseWheel != 0) {
+    const double w = std::clamp((v.hi - v.lo) * std::pow(kWheel, io.MouseWheel), kMinSpan, std::max(win_hi - win_lo, wheel));
     v.lo = win_hi - w, v.hi = win_hi;
   }
   if (corner.x >= 0) {
@@ -528,21 +540,45 @@ void render_book(const sina::Quote *p, misc::Ymd date) {
   ImGui::PopStyleVar();
 }
 
-// 一根的价 × a (量 / 额不动)
-Cell scaled(Cell c, double a) {
-  c.open = static_cast<float>(c.open * a), c.high = static_cast<float>(c.high * a);
-  c.low = static_cast<float>(c.low * a), c.close = static_cast<float>(c.close * a);
-  return c;
+// K 线的日根 = 历史 + 当日 (joined 才接)
+std::vector<Candle> k_days(const Source &src) {
+  std::vector<Candle> o(src.daily.begin(), src.daily.end());
+  if (src.joined)
+    o.push_back(src.today->candle);
+  return o;
 }
 
-// 日线的根 = 历史 + 当日 (joined 才接); 涨跌基准 = 末根前收
-void daily(const Source &src, Series &s) {
-  for (const Candle &c : src.daily)
-    s.push(c, static_cast<double>(s.bars.size()));
-  if (src.joined)
-    s.push(src.today->candle, static_cast<double>(s.bars.size()));
-  if (!s.bars.empty())
-    s.ref = s.bars.back().ref;
+// K 线视野 [lo, hi] 的根 (px = 图宽; days = k_days, 分钟根读 src): g = lod (可几日一根); 涨跌基准 = 末根前收.
+//   g < kSlots → 各日的分钟根 (该日无分钟 → 空), 否则日根; 视野左侧多取 kMaN 末项根 (均线起得来), 再按 g 并根
+void k_bars(std::span<const Candle> days, const Source &src, double lo, double hi, float px, Series &s) {
+  s = {};
+  const int g = lod(hi - lo, px, true);
+  const long nd = static_cast<long>(days.size());
+  long k0 = std::clamp(static_cast<long>(std::floor((lo - static_cast<double>(kMaN[2]) * g) / kSlots)), 0L, nd);
+  const long k1 = std::clamp(static_cast<long>(std::floor(hi / kSlots)) + 1, k0, nd);
+  if (g > kSlots)
+    k0 -= k0 % (g / kSlots);
+  for (const Candle &c : days)
+    s.days.push_back(c.date);
+  if (nd)
+    s.ref = days.back().ref;
+  Bars b;
+  for (long k = k0; k < k1; ++k) {
+    const Candle &d = days[static_cast<size_t>(k)];
+    const double x0 = static_cast<double>(k) * kSlots;
+    if (g >= kSlots) {
+      s.push(d, x0 + (kSlots - 1) * 0.5);
+      continue;
+    }
+    if (!src.bars(d.date, b))
+      continue;
+    for (int j = 0; j < kSlots; ++j)
+      if (b.has[static_cast<size_t>(j)])
+        s.push({b.cell[static_cast<size_t>(j)], d.date, d.ref}, x0 + j);
+      else if (b.hole[static_cast<size_t>(j)])
+        s.cut.push_back(x0 + j);
+  }
+  merge(s, g);
 }
 
 // 日内日轴 = 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
@@ -577,31 +613,32 @@ void intraday(const Source &src, std::span<const misc::Ymd> days, Series &s) {
   s.days.assign(days.begin(), days.end());
   const size_t nd = days.size();
   std::vector<const Candle *> cs(nd);
-  std::vector<const Bars *> bs(nd);
+  std::vector<Bars> bs(nd);
+  std::vector<bool> has(nd);
   std::vector<double> f(nd, 0.0); // 后复权比: 日轴内首个日根 = 1
   double end = 0;                 // 末个有根日的 f
   for (size_t k = 0, p = SIZE_MAX; k < nd; ++k) {
-    cs[k] = src.candle(days[k]), bs[k] = src.bars(days[k]);
-    assert((!bs[k] || cs[k]) && "有分钟根的日必有日根");
+    cs[k] = src.candle(days[k]), has[k] = src.bars(days[k], bs[k]);
+    assert((!has[k] || cs[k]) && "有分钟根的日必有日根");
     if (!cs[k])
       continue;
     assert((p == SIZE_MAX || cs[k]->ref > 0) && "前收链: 接续的日根须有前收");
     f[k] = p == SIZE_MAX ? 1.0 : f[p] * cs[p]->close / cs[k]->ref;
     p = k;
-    if (bs[k])
+    if (has[k])
       end = f[k];
   }
   for (size_t k = 0; k < nd; ++k) {
-    const Bars *b = bs[k];
-    if (!b)
+    if (!has[k])
       continue;
+    const Bars &b = bs[k];
     const double a = f[k] / end;
     const float ref = static_cast<float>(cs[k]->ref * a);
     s.ref = ref;
     for (int j = 0; j < kSlots; ++j)
-      if (b->has[static_cast<size_t>(j)])
-        s.push({scaled(b->cell[static_cast<size_t>(j)], a), b->date, ref}, static_cast<double>(k) * kSlots + j);
-      else if (b->hole[static_cast<size_t>(j)])
+      if (b.has[static_cast<size_t>(j)])
+        s.push({scaled(b.cell[static_cast<size_t>(j)], a), b.date, ref}, static_cast<double>(k) * kSlots + j);
+      else if (b.hole[static_cast<size_t>(j)])
         s.cut.push_back(static_cast<double>(k) * kSlots + j);
   }
 }
@@ -640,28 +677,54 @@ void header(const char *title, const Source &src, const char *note) {
   ImGui::TextDisabled("%s", note);
 }
 
-// 两图: id = 标的的复位键高位, 档 / 根数拼进低位
-void plot_intraday(const char *name, Series &s, uint64_t id, ChartState &st, const ImVec2 &size) {
-  const int nd = static_cast<int>(s.days.size());
-  const uint64_t key = id | static_cast<uint64_t>(st.intraday) << 16 | static_cast<uint64_t>(nd);
-  plot_chart(name, s, -0.5, std::max(1, nd) * kSlots - 0.5, key, st.iv, size, kIntraName, kIntras, st.intraday, false);
+} // namespace
+
+// 个股图的根: 键 = 源 (个股历史 / 当日) + 标的 + 日内档
+struct StockSeries {
+  std::shared_ptr<const PriceView> view; // 持着 tape 与 src 的全史
+  const Tape *tape = nullptr;
+  std::shared_ptr<const Live> live; // 持着 src 的当日
+  uint32_t id = Ref::kNone;
+  int span = 0;
+  Source src;
+  Series intra;             // 日内 (未并根)
+  std::vector<Candle> days; // K 线的日根 [k]
+  Series k;                 // K 线视野的根 (视野 / 图宽变才重建)
+  double klo = 0, khi = 0;
+  float kpx = 0;
+};
+
+namespace {
+
+// 两图: id = 标的的复位键高位, 档 / 日数拼进低位
+void plot_intraday(const char *name, const Series &intra, uint64_t id, ChartState &st, const ImVec2 &size) {
+  const int nd = static_cast<int>(intra.days.size());
+  const double hi = std::max(1, nd) * kSlots - 0.5;
+  reset(st.iv, id | static_cast<uint64_t>(st.intraday) << 16 | static_cast<uint64_t>(nd), -0.5, hi);
+  Series s = intra;
+  merge(s, lod(st.iv.hi - st.iv.lo, size.x, false));
+  plot_chart(name, s, -0.5, hi, st.iv, size, kIntraName, kIntras, st.intraday, 0);
 }
-// 日线档窗口右端 = 最新一根; 不足一档的历史靠右, 左侧留空
-void plot_daily(const char *name, Series &s, uint64_t id, ChartState &st, const ImVec2 &size) {
-  const int n = static_cast<int>(s.bars.size()), span = kDailySpan[st.daily];
-  const uint64_t key = id | static_cast<uint64_t>(st.daily) << 24 | static_cast<uint64_t>(n);
-  plot_chart(name, s, n - span - 0.5, n - 0.5, key, st.dv, size, kDailyName, 4, st.daily, true);
+// K 线档窗口右端 = 最新一日; 不足一档的历史靠右, 左侧留空
+void plot_k(const char *name, StockSeries &c, uint64_t id, ChartState &st, const ImVec2 &size) {
+  const double end = static_cast<double>(c.days.size()) * kSlots, lo = end - kKSpan[st.kline] * kSlots - 0.5, hi = end - 0.5;
+  reset(st.kv, id | static_cast<uint64_t>(st.kline) << 24 | static_cast<uint64_t>(c.days.size()), lo, hi);
+  if (c.klo != st.kv.lo || c.khi != st.kv.hi || c.kpx != size.x) {
+    c.klo = st.kv.lo, c.khi = st.kv.hi, c.kpx = size.x;
+    k_bars(c.days, c.src, c.klo, c.khi, c.kpx, c.k);
+  }
+  plot_chart(name, c.k, lo, hi, st.kv, size, kKName, 4, st.kline, end + 1.0);
 }
 
-// 个股行情的图区: 上 日内 (右挂 1/3 宽五档; 上下 6 : 4) / 下 日线.
+// 个股行情的图区: 上 日内 (右挂 1/3 宽五档; 上下 6 : 4) / 下 K 线.
 //   显式定位 (档位按钮叠在图上, 画完光标不在流式位置)
-void charts(const char *name, Series &intra, Series &daily, uint64_t id, ChartState &st, const sina::Quote *book, misc::Ymd date) {
+void charts(const char *name, StockSeries &c, uint64_t id, ChartState &st, const sina::Quote *book, misc::Ymd date) {
   ImGui::PushID(name);
   const float gap = 4.f;
   const ImVec2 p0 = ImGui::GetCursorScreenPos(), avail = ImGui::GetContentRegionAvail();
   const float bw = std::floor((avail.x - gap) / 3.f), iw = avail.x - bw - gap;
   const float top_h = std::floor((avail.y - gap) * 0.6f);
-  plot_intraday("##ichart", intra, id, st, ImVec2(iw, top_h));
+  plot_intraday("##ichart", c.intra, id, st, ImVec2(iw, top_h));
   ImGui::SetCursorScreenPos(ImVec2(p0.x + iw + gap, p0.y));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   ImGui::BeginChild("##book", ImVec2(bw, top_h), false);
@@ -669,7 +732,7 @@ void charts(const char *name, Series &intra, Series &daily, uint64_t id, ChartSt
   ImGui::EndChild();
   ImGui::PopStyleVar();
   ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + top_h + gap));
-  plot_daily("##dchart", daily, id, st, ImVec2(avail.x, avail.y - top_h - gap));
+  plot_k("##kchart", c, id, st, ImVec2(avail.x, avail.y - top_h - gap));
   ImGui::PopID();
 }
 
@@ -696,13 +759,14 @@ struct NetBars {
 };
 NetBars net_bars(const Source &src, std::string name, std::span<const misc::Ymd> days) {
   NetBars n{std::move(name), {}, {}, 0};
+  Bars b;
   for (size_t k = 0; k < days.size(); ++k)
-    if (const Bars *b = src.bars(days[k]))
+    if (src.bars(days[k], b))
       for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
-        if (b->has[j]) {
-          n.x.push_back(static_cast<double>(k * kSlots + j)), n.v.push_back(b->net[j]);
+        if (b.has[j]) {
+          n.x.push_back(static_cast<double>(k * kSlots + j)), n.v.push_back(b.net[j]);
           if (j != 0 && j != static_cast<size_t>(kSlots) - 1)
-            n.top = std::max(n.top, std::abs(b->net[j]));
+            n.top = std::max(n.top, std::abs(b.net[j]));
         }
   return n;
 }
@@ -985,13 +1049,14 @@ bool flow_line(const OverlayCtx &cx, const OverlayPick &, const Source &src, Ove
   if (!(unit > 0))
     return false;
   double net = 0;
+  Bars b;
   for (size_t k = 0; k < cx.days.size(); ++k)
-    if (const Bars *b = src.bars(cx.days[k]))
+    if (src.bars(cx.days[k], b))
       for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j) {
-        if (b->hole[j])
+        if (b.hole[j])
           return !l.x.empty();
-        if (flow_slot(*b, j, cx.st.flow_ends)) {
-          net += b->net[j];
+        if (flow_slot(b, j, cx.st.flow_ends)) {
+          net += b.net[j];
           l.x.push_back(static_cast<double>(k * kSlots + j));
           l.y.push_back(net / unit);
         }
@@ -1028,16 +1093,6 @@ constexpr OverlayDef kOverlayDefs[kOverlays] = {
 
 } // namespace
 
-// 个股图的根: 键 = 源 (个股历史 / 当日) + 标的 + 日内档
-struct StockSeries {
-  std::shared_ptr<const PriceView> view; // 持着 tape
-  const Tape *tape = nullptr;
-  std::shared_ptr<const Live> live;
-  uint32_t id = Ref::kNone;
-  int span = 0;
-  Series intra, daily;
-};
-
 // 叠加图的线: 键 = 源 (价格库 / 当日) + 选中 + 档
 struct OverlayCache {
   std::shared_ptr<const PriceView> view;
@@ -1061,9 +1116,9 @@ void Want(QuoteHub &mk, StockState &st, uint32_t id) {
     st.shown = Ref::kNone;
     return;
   }
-  mk.want_kline(id);
-  const Tape *t = mk.tape(kStock);
-  if ((mk.view && !mk.view->lack.empty()) || (t && t->find(id) < t->keys.size()))
+  const Ref r{kStock, id};
+  mk.want(r, true);
+  if (mk.view && mk.view->covers(r, true))
     st.shown = id;
 }
 
@@ -1091,11 +1146,9 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
     st.series = std::make_shared<StockSeries>();
   StockSeries &c = *st.series;
   if (c.tape != j.tape() || c.live != j.live || c.id != id || c.span != st.chart.intraday) {
-    c = {j.view, j.tape(), j.live, id, st.chart.intraday, {}, {}};
-    intraday(src, day_axis(mk.trading(), j.live ? j.live->date : 0, kIntraDays[st.chart.intraday]), c.intra);
-    daily(src, c.daily);
+    c = {.view = j.view, .tape = j.tape(), .live = j.live, .id = id, .span = st.chart.intraday, .src = src, .days = k_days(src)};
+    intraday(src, day_axis(mk.calendar().days, j.live ? j.live->date : 0, kIntraDays[st.chart.intraday]), c.intra);
   }
-  Series is = c.intra; // 按视野宽就地并根
 
   char note[256];
   if (st.want != id)
@@ -1104,18 +1157,23 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
     std::snprintf(note, sizeof(note), "只画当日 · %s", mk.view->lack.c_str());
   else {
     coverage(*j.view, j.live.get(), note, sizeof(note));
-    if (!src.kl)
+    if (!src.se)
       std::snprintf(note + std::strlen(note), sizeof(note) - std::strlen(note), " · 本只不在 all.bar 库轴, 只画当日 (全量重算 all.bar 即并入)");
   }
   if (!mk.listed(id))
     std::snprintf(note + std::strlen(note), sizeof(note) - std::strlen(note), " · 不在新浪全市场");
   header(title.c_str(), src, note);
   fill_chip(qs);
-  charts("stock", is, c.daily, static_cast<uint64_t>(id) << 32, st.chart, j.live ? j.live->quote(id) : nullptr, j.live ? j.live->date : 0);
+  charts("stock", c, static_cast<uint64_t>(id) << 32, st.chart, j.live ? j.live->quote(id) : nullptr, j.live ? j.live->date : 0);
 }
 
-int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot) {
+int RenderOverlay(OverlayKind kind, QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot) {
   const OverlayDef &def = kOverlayDefs[kind];
+  const size_t all_eq = basket_table().at_pool(kBasketBase);
+  for (const OverlayPick &p : picks)
+    mk.want(p.ref, true);
+  if (def.net && picks.size() != 1)
+    mk.want({kBasket, static_cast<uint32_t>(all_eq)}, true);
   if (!basket_ready(mk))
     return -1;
   if (!st.cache[kind])
@@ -1138,7 +1196,6 @@ int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const 
     }
     c.net = {};
     if (def.net) { // 0 轴净流入柱的标的: 只一条 = 它, 否则全A.等
-      const size_t all_eq = basket_table().at_pool(kBasketBase);
       const Ref nk = cx.one ? picks.front().ref : Ref{kBasket, static_cast<uint32_t>(all_eq)};
       c.net = net_bars(mk.of(nk), cx.one ? picks.front().name : basket_table().name(all_eq), c.days);
     }
@@ -1158,23 +1215,7 @@ int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const 
 }
 
 std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const OverlayState &st) {
-  return day_axis(mk.trading(), mk.live ? mk.live->date : 0, kIntraDays[st.span[kind]]);
-}
-
-Flow FlowOf(const Bars &b, bool ends) {
-  Flow o;
-  for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
-    if (flow_slot(b, j, ends))
-      o.net += b.net[j], o.amount += b.cell[j].amount;
-  return o;
-}
-
-std::vector<Flow> FlowOf(const Source &src, std::span<const misc::Ymd> days, bool ends) {
-  std::vector<Flow> o(days.size());
-  for (size_t i = 0; i < days.size(); ++i)
-    if (const Bars *b = src.bars(days[i]))
-      o[i] = FlowOf(*b, ends);
-  return o;
+  return day_axis(mk.calendar().days, mk.live ? mk.live->date : 0, kIntraDays[st.span[kind]]);
 }
 
 Recent RecentOf(std::span<const Mark> m) {

@@ -29,8 +29,8 @@ GUI布局:
   ③ 因子  因子引擎 (Run / Search) ─► output/factors/<pool>/<层> (一因子一文件); Agent 候选 output/agent ─(达门槛)─► 同上
   ④ 组合  因子 ─► output/portfolios (Market 组合)
   ⑤ 实盘  券商客户端 (live/<客户端>/, 登记于 live/Clients.hpp, 现只有通达信) ─(Broker: 读持仓 / 成交 / 挂单 / 信用账户, 下单 / 重查两融条款 / 资金流水)─► Live 持仓页 / 一键调仓;
-          客户端适配自带调试台 (Live 的 Client 页); 行情走新浪 (不读客户端的), 两融条款缓存落 output/live (个股另经本地库核), 调仓名单 output/config/live/lists
-          资金流水 (每天自动补一次) ─► output/live/flows.csv ─(account/ 回放 × 本地 bar1d / 新浪日 K)─► Market 自选首行「账户」(时间加权净值)
+          客户端适配自带调试台 (Live 的 Client 页); 行情走新浪 (订阅进 QuoteService 同一路, 不读客户端的), 两融条款缓存落 output/live (个股另经本地库核), 调仓名单 output/config/live/lists
+          资金流水 (每天自动补一次) ─► output/live/flows.csv ─(PriceLib 按 account/ 回放 × 日脊个股日根 / 分钟根; 当日 × 新浪分钟收)─► Market 自选首行「账户」(时间加权净值, 分钟频)
   人定的配置落 output/config/ (一任务一目录); 各段的运行产物 (日志 / 用时 / 导出 / 采样) 落 output/run/ 下的同构位置; output/ 的布局唯一由 disk/Disk.hpp 定
 ```
 
@@ -198,22 +198,26 @@ stk/
 │   │   │   │   │   ├── LensService.hpp                 # 🖥️ 观察 worker: 一组根 + 特征原值在评估期上整期一块 (不写文件; 与 Inspect 同一条管线)
 │   │   │   │   │   └── PortfolioService.hpp            # 🖥️ 组合: 因子 / 篮子 / 个股 → 账 PortfolioBook (线 × [毛收益 / 冲击 / 固定 / 增仓量] × 行)
 │   │   │   │   └── ui/PortfolioBoxes.hpp               # 🖥️ Alpha → Factors 的组合小框 + 当前组合 (Lines 页因子 / 策略两组的来源)
-│   │   │   ├── quote/                                  # 🖥️ 行情: Market 各页与 Database Sync 页共用
-│   │   │   │   ├── QuoteHub.hpp                        # 🖥️ QuoteService + PriceLib 一份; 首次用到才起 (之前不碰网络); 一帧一份 (frame): 新浪状态 / 当日 Live / 历史 PriceView
-│   │   │   │   │                                       #    · 各处每帧登记要的历史 (个股全历史 / 分钟价), 下帧并成一个价格库请求 (连同基本面段末日 AssetInfo::quote_end + 行情日), 变了才发; GUI 从不等锁
-│   │   │   │   ├── Quote.hpp                           # 🖥️ 行情公共件: 个股 / 篮子 × 历史 (Kline) / 当日 (Day) 四路同一套类型 (Tape / Tails / Live / 分钟根 Bars)
+│   │   │   ├── quote/                                  # 🖥️ 行情: Market 各页 / Live 持仓页 / Database Sync 页共用
+│   │   │   │   ├── QuoteHub.hpp                        # 🖥️ QuoteService + PriceLib 一份 + 交易日历一份; 首次用到才起 (之前不碰网络); 一帧一份 (frame): 新浪状态 / 当日 Live / 历史 PriceView
+│   │   │   │   │                                       #    · 各处每帧登记要的全史 want(标的, 连不连分钟), 下帧并成一个价格库请求 (连同基本面段末日 AssetInfo::quote_end + 行情日 + 账本代), 变了才发; GUI 从不等锁
+│   │   │   │   ├── Bars.hpp                            # 🖥️ 行情的根: 槽代数 (一日 240 槽) / Cell / Candle / 一日分钟根 Bars / 分钟涨跌法资金流 + 日摘要 DayFlow
+│   │   │   │   ├── Fold.hpp                            # 🖥️ 篮子合成核 (历史 / 当日同一份): 成员表 (CSR) → 点位 + 分钟净流入; 当日逐成员冻结线, 只重算各成员改到的槽
+│   │   │   │   ├── Quote.hpp                           # 🖥️ 行情公共件: 个股 / 篮子 × 全史 (Series) / 当日 (Day) 四路同一套类型 (Tape / Tails / Book / Live)
 │   │   │   │   │                                       #    · 三段 × 两侧同一个形: 库段 (all.bar) + 补段 (基本面 → 新浪归档) = 日脊, 当日 (新浪) 接得上日脊才接 (PriceView::joins)
-│   │   │   │   │                                       #    · 一侧 = Joint (PriceView + 当日 Live), 一个标的 = Source (日根 + 当日 + 接不接): 各处只经这两个读, 接续只在 Joint 判 (of / today)
-│   │   │   │   │                                       #    · 篮子合成核 Fold (历史 / 当日同一份): 成员表 (CSR) → 点位 + 分钟净流入
-│   │   │   │   ├── PriceLib.hpp                        # 🖥️ 历史价格库 (自带 worker): 两侧 (库轴全部个股 / 篮子表全部) × 日根 / 分钟根, 一趟合成落盘, 水位 / 归档一变自动续算 (只补新日);
+│   │   │   │   │                                       #    · Series = 日根 + 逐日资金流摘要 (恒在; 大范围按日算) + 分钟全史 (只读要的; 展示一律分钟频)
+│   │   │   │   │                                       #    · 一侧 = Joint (PriceView + 当日 Live), 一个标的 = Source (全史 + 当日 + 接不接): 各处只经这两个读, 接续只在 Joint 判 (of / today)
+│   │   │   │   ├── PriceLib.hpp                        # 🖥️ 历史价格库 (自带 worker): 两侧 (库轴全部个股 / 篮子表全部) × 日根 (带资金流摘要) / 分钟根, 一趟合成落盘, 水位 / 归档一变自动续算 (只补新日);
 │   │   │   │   │                                       #    · 个股库段 = 库存 f16 原价 (与特征 / 标签逐位一致) × 后复权因子; 篮子 = Lane 的比 × 前日点位
-│   │   │   │   │                                       #    · 发布 PriceView (库戳 + 日脊 + 两侧 Tape: 篮子全部 + 普查, 个股 = 要过的全历史 + 全市场末 5 日 Tails; 分钟价 Minutes); 内容不变不重发
+│   │   │   │   │                                       #    · 发布 PriceView (库戳 + 日脊 + 两侧 Tape: 篮子全部 + 普查, 个股 = 要过的全史 + 全市场末 5 日 Tails; 账户 Book); 内容不变不重发
+│   │   │   │   │                                       #    · 账户: 资金流水账本按日脊个股日根回放 (account/Ledger.hpp) → 时间加权指数, 分钟 = 当日收盘后持仓 × 各只分钟收; 账本代变 / 换戳才重放
 │   │   │   │   │                                       #    · 库只 worker 碰, 外面 (行情各页 / CTA) 只读发布; 交接 (下一交易日成员表 + 末日点位) 一变即直交当日合成 (QuoteService::bind)
 │   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成件 (PriceLib 库段 / 补段同一份): 成员 members (选股表 → 成员表, 权 = Tape::omega) ⇄ drift (冻结, 随价漂移, 逢换源回目标权);
 │   │   │   │   │                                       #    源 LibDay (all.bar 日行 + L_1min) / FundDay (bar1d + bar1m) / SinaDay (新浪归档); 一日合成件 Lane<源>; 普查 census (只数 / 权 / 成分 / 重合)
 │   │   │   │   └── services/
 │   │   │   │       └── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin (收完的往日转作归档); 篮子当日按交接的成员表增量合成;
-│   │   │   │                                           #    一轮发布一份不可变 Live (全部个股 / 篮子的 Day + 快照; GUI 只拷指针), 状态计数增量维护 (O(1)); 分钟 K 补到即唤醒合成 (≥ 1 秒一趟)
+│   │   │   │                                           #    一轮发布一份不可变 Live (全部个股 / 篮子的 Day + 快照 + 订阅码的快照; GUI 只拷指针), 状态计数增量维护 (O(1)); 分钟 K 补到即唤醒合成 (≥ 1 秒一趟);
+│   │   │   │                                           #    订阅码 (全市场内外皆可, 如 Live 的 ETF / LOF) 并在同一轮取, 改了即提前一轮
 │   │   │   ├── task_settings/TaskSettings.hpp          # 🖥️ 设置: 配置管理
 │   │   │   ├── task_tools/                             # 🖥️ 工具: LaTeX 渲染 / 系统监控
 │   │   │   ├── task_database/                          # 🖥️ 数据库管理
@@ -250,7 +254,7 @@ stk/
 │   │   │   │   │                                       #    · ASSET = 个股表 + 行情; NAV / VAL / FLOW / CTA = 篮子 (池指数 / 行业 / 概念) + 因子组合 + 个股的 净值 / 估值 / 资金流 / 择时
 │   │   │   │   ├── TaskMarket.hpp                      # 🖥️ Market 任务主界面
 │   │   │   │   ├── services/
-│   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 (价格库发布的 Minutes) → cta/Trace 滚动调参轨迹 (中线 + 分层)
+│   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 (价格库发布的连分钟全史) → cta/Trace 滚动调参轨迹 (中线 + 分层)
 │   │   │   │   └── ui/
 │   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / FLOW / CTA (一行一对线 Line, 四页同一份派生 / 选中 / 区间)
 │   │   │   │       │                                   #    · 右表 = 指数 / 行业 / 概念 / 自选 / 因子 / 策略 行 (篮子行可展开成分股); 左 = 主图 + 日内栏 + 区间条
@@ -260,7 +264,7 @@ stk/
 │   │   │   │       │                                   #    · 页表 kPageDefs = 页的一切差异: 右表段 (近况 / 当日 / 数值 / 估值分位 / 资金流) / 页件 / 布局 / 叠加图 / 头 / 状态的 worker
 │   │   │   │       │                                   #    · 主图例矩阵 (NAV / VAL 同一件, 只填行列表) / 右表 (各页同一条 RenderLinesSheet)
 │   │   │   │       ├── TabAsset.hpp                    # 🖥️ ASSET 页: 个股表 (列定义一张表 kCols; 格 / 名次底色同 Lines 右表) + Quotes / Statistics
-│   │   │   │       ├── QuotesPanel.hpp                 # 🖥️ 行情图: 个股 (日内 + 日线) / 篮子叠加 / 资金流 同一查法 QuoteHub::of (序列按 (发布, 当日) 缓存, 都没换 → 不重算)
+│   │   │   │       ├── QuotesPanel.hpp                 # 🖥️ 行情图: 个股 (日内 + 全史分钟 K, 按视野宽并根, 宽到不足一日一根转日根) / 篮子叠加 / 资金流 同一查法 QuoteHub::of (序列按 (发布, 当日) 缓存, 都没换 → 不重算)
 │   │   │   │       │                                   #    · 叠加图两种 (涨跌幅 = NAV 日内栏 / 累计净流入 = FLOW) 同一入口 RenderOverlay(kind) + 同一份档位条 / 工具角
 │   │   │   │       └── CrossSectionAnalysis.hpp        # 🖥️ 截面分析 (ASSET Statistics)
 │   │   │   ├── task_features/                          # 🖥️ 特征面板与调试工具
@@ -283,10 +287,10 @@ stk/
 │   │   │   │       └── TabNodeTime.hpp                 # 🖥️ 节点用时: 当前库 node_time.json 按节点文件归并成堆叠条
 │   │   │   ├── task_live/                              # 💹 Live 任务 (实盘): 中枢券商无关, 客户端适配在 live/
 │   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board / Client (所连客户端的调试台); 连上后每天交账户中枢补一次资金流水
-│   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 新浪行情一路 + 两融条款 (券商缓存合本地库) + 下单 / 事务 (拉条款 / 执行调仓 / 别处交来的 job, 日志落 output/run/live)
+│   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 行情 (要的码订阅给 QuoteHub) + 两融条款 (券商缓存合本地库) + 下单 / 事务 (拉条款 / 执行调仓 / 别处交来的 job, 日志落 output/run/live)
 │   │   │   │   └── ui/
 │   │   │   │       └── TabBoard.hpp                    # 💹 持仓 · 调仓页: 数据 / 下单 / 调仓 (试算表) / 账户 现 · 调仓后 · 变动% (好红坏绿); 各表随栏宽收格距贴合 + 持仓表 (表头排序; 仓位 / 市值字色按截面仓位轻重由灰淡到亮; 行内闪电下单, 按钮即滑点色块; 卖出滑杆; 调仓名单并入: 名单里未持有的列在表末, 金额列 现金买,融资买/卖 W 买红卖绿; 合计行窄写不撑列, 当日净资产收益率落在当日% 列) + 日志 + 右栏行情图
-│   │   │   ├── account/AccountHub.hpp                  # 💹 账户净值中枢 (Live 与 Market 共用): 事务道上拉资金流水并账 / 后台回放 / 拼 Market 自选的账户线 (末根 = 信用账户净资产)
+│   │   │   ├── account/AccountHub.hpp                  # 💹 账户净值中枢 (Live 与 Market 共用): 事务道上拉资金流水并账 (存盘即进账本代) / 拼 Market 自选的账户线 (历史 = 价格库的 Book; 当日 = 信用账户净资产 + 持仓 × 新浪分钟收)
 │   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge; 协议见 AGENT.md)
 │   │   │       ├── TaskAgent.hpp                       # 🤖 Agent 任务: Mine (作用域 / 会话 / 时间线 / 候选 / 开放的特征与算子) / Config
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 / 入库门槛默认值 / 各目录

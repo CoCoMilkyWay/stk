@@ -68,7 +68,7 @@ void star_cell(LinesState &ui, const std::string &w) {
   ImGui::PopStyleColor(2);
 }
 
-// 页 page 点行: 选中 ↔ 取消 (单选 = 换掉原选中); 多选里个股满 PriceLib::kKeep − 1 只不再加 (留一只给单选), 刚选中 → 其线在主图例里回默认显隐 (理想列显, 可成交列隐)
+// 页 page 点行: 选中 ↔ 取消 (单选 = 换掉原选中); 多选里带行情键的行满 kQuotedPicks 不再加, 刚选中 → 其线在主图例里回默认显隐 (理想列显, 可成交列隐)
 void pick(LinesState &ui, int page, const LinesRow &r) {
   const int m = kPageDefs[page].pick;
   std::map<std::string, Quote::Ref> &s = ui.pick.rows[m];
@@ -79,7 +79,7 @@ void pick(LinesState &ui, int page, const LinesRow &r) {
   }
   if (m == kPickOne)
     s.clear();
-  else if (r.ref.is(Quote::kStock) && ui.pick.stocks(m).size() + 1 >= Quote::PriceLib::kKeep)
+  else if (r.ref.ok() && std::ranges::count_if(s, [](const auto &x) { return x.second.ok(); }) >= static_cast<ptrdiff_t>(kQuotedPicks))
     return;
   s.emplace(r.id, r.ref);
   if (m == kPickMany) {
@@ -737,7 +737,7 @@ const SheetCol kFlowSumCols[2] = {
 };
 // 一段的净流入占成交额 (无根 → NaN)
 double flow_pct(const Flow &x) { return x.amount > 0 ? x.net / x.amount : kNaN; }
-// 段: 日轴各日净流入占比 + 档内合计两列 (行情源 FlowOf, 篮子 / 个股同一条); 各行流水记进 p.flow[行] (末项 = 合计; 悬停看金额)
+// 段: 日轴各日净流入占比 + 档内合计两列 (Source::flow_of, 篮子 / 个股同一条); 各行流水记进 p.flow[行] (末项 = 合计; 悬停看金额)
 Seg flow_seg(bool ends, std::vector<misc::Ymd> days) {
   const size_t nd = days.size();
   Seg s;
@@ -768,7 +768,9 @@ Seg flow_seg(bool ends, std::vector<misc::Ymd> days) {
   s.cell = [ends, days = std::move(days), fill](const RowSrc &x, size_t t, LinesSheet &p, SheetCell *out) {
     if (!x.row->ref.ok())
       return fill(std::vector<Flow>(days.size()), false, t, p, out);
-    std::vector<Flow> fl = FlowOf(x.src, days, ends);
+    std::vector<Flow> fl;
+    for (const misc::Ymd d : days)
+      fl.push_back(x.src.flow_of(d, ends));
     const bool whole = x.src.se || std::ranges::all_of(fl, [](const Flow &y) { return y.amount > 0; });
     fill(std::move(fl), whole, t, p, out);
   };
