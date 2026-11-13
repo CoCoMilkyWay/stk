@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <cfloat>
 #include <cmath>
 #include <cstdlib>
 #include <map>
@@ -46,11 +45,13 @@ std::string wan_pnl(double v) { return wan(v, true); }
 std::string size_txt(double n) { return strf("%.0fW", n / 1e4); } // 下单额 (整万)
 
 void text_col(const ImVec4 &c, const std::string &s) { ImGui::TextColored(c, "%s", s.c_str()); }
-// 数字格右对齐; 列宽仍按文字本身量
+// 数字格右对齐, 不出省略号; 列宽按文字本身量, 取整到上一像素 (表把列宽截成整像素, 不取整则最宽的格差零点几像素)
 void right(const ImVec4 &c, const std::string &s) {
-  ImGui::PushStyleColor(ImGuiCol_Text, c);
-  ImGui::TextAligned(1, -FLT_MIN, "%s", s.c_str());
-  ImGui::PopStyleColor();
+  ImGuiWindow *win = ImGui::GetCurrentWindow();
+  const float w = ImGui::CalcTextSize(s.c_str()).x, x0 = win->DC.CursorPos.x, max0 = win->DC.CursorMaxPos.x;
+  ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - w));
+  ImGui::TextColored(c, "%s", s.c_str());
+  win->DC.CursorMaxPos.x = std::max(max0, x0 + std::ceil(w));
 }
 void right(const std::string &s) { right(ImGui::GetStyleColorVec4(ImGuiCol_Text), s); }
 void text_opt(const std::optional<double> &v, const char *fmt) {
@@ -300,6 +301,15 @@ void end_fit(std::span<const char *const> heads, Fit &f) {
     f.body[c] = std::max(col.ContentMaxXFrozen, col.ContentMaxXUnfrozen) - col.WorkMinX;
     f.extra[c] = std::max(0.0f, col.ContentMaxXHeadersIdeal - col.WorkMinX - head_w(heads[c], f.wrap));
   }
+}
+// 可排序表的表头格: 列宽只量列名, 排序箭头的位只给正在排的列 (ImGui 给每个可排列都留)
+void sort_head(const char *label) {
+  ImGuiTable *t = ImGui::GetCurrentTable();
+  ImGuiTableColumn &col = t->Columns[t->CurrentColumn];
+  const float x = ImGui::GetCursorScreenPos().x;
+  ImGui::TableHeader(label);
+  if (col.SortOrder == -1)
+    col.ContentMaxXHeadersIdeal = x + std::ceil(ImGui::CalcTextSize(label, nullptr, true).x);
 }
 // 表头一行 (各列名按折行与否)
 void fit_heads(std::span<const char *const> heads, const Fit &f) {
@@ -806,17 +816,25 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
   ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
   for (int c = 0; c < C_COUNT; ++c) {
     ImGui::TableSetColumnIndex(c);
-    if (c == C_ORDER) {
-      ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-      ImGui::Checkbox("##armed", &st.armed);
-      ImGui::PopStyleVar();
+    if (c != C_ORDER) {
+      sort_head(kHeads[c]);
       if (ImGui::IsItemHovered())
-        tip("解锁买卖: 勾上才下得了单");
-      ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+        head_tip(c, f);
+      continue;
     }
-    ImGui::TableHeader(kHeads[c]);
+    // 表头只铺底与悬停, 列名与解锁框另画在上面 (TableHeader 之后不能 SameLine)
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::TableHeader("##order");
     if (ImGui::IsItemHovered())
       head_tip(c, f);
+    ImGui::SetCursorScreenPos(at);
+    ImGui::TextUnformatted(kHeads[c]);
+    ImGui::SameLine();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+    ImGui::Checkbox("解锁", &st.armed);
+    ImGui::PopStyleVar();
+    if (ImGui::IsItemHovered())
+      tip("勾上才下得了单");
   }
   const bool priv = hub.priv();
   double top = 0;
