@@ -74,7 +74,7 @@ struct AssetState {
   float table_split_ratio = 0.65f; // 左右分栏比 (0-1)
   StockState stock;
 
-  Today<Candles> today;                             // 新浪当日日根 (近况列的当日段; 键集 = 全部资产, [asset_id])
+  Today<Candles> today;                            // 新浪当日日根 (近况列的当日段; 键集 = 全部资产, [asset_id])
   Stage<AssetCellsKey, AssetCells> cells;          // 格
   Stage<AssetOrderKey, std::vector<size_t>> order; // [显示位] 行 (cells 的行下标)
 };

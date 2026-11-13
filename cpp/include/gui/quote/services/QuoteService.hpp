@@ -104,12 +104,12 @@ private:
                               Busy };
   // 一只的当日: 快照合成 + 分钟 K 补的根, 待补区间, 快照累计基线
   struct Track {
-    Bars bars;                 // 当日的根 (含缺口)
-    std::bitset<kSlots> exact; // 来自分钟 K 的根 (含确认无成交的); 快照不写
-    int lo = kSlots, hi = -1;  // 待补区间 (lo > hi = 无)
-    double vol = -1, amt = 0;  // 上一快照累计 (vol < 0 = 尚无快照)
-    float high = 0, low = 0;   // 上一快照日内高 / 低
-    Fill fill = Fill::Idle;    // 运行态, 不落盘
+    Bars bars;                              // 当日的根 (含缺口)
+    std::bitset<kSlots> exact;              // 来自分钟 K 的根 (含确认无成交的); 快照不写
+    int lo = kSlots, hi = -1;               // 待补区间 (lo > hi = 无)
+    double vol = -1, amt = 0;               // 上一快照累计 (vol < 0 = 尚无快照)
+    float high = 0, low = 0;                // 上一快照日内高 / 低
+    Fill fill = Fill::Idle;                 // 运行态, 不落盘
     mutable std::shared_ptr<const Day> day; // 当日快照 (today 按需建; 空 = 待建)
 
     bool gap() const { return lo <= hi; }
@@ -175,14 +175,14 @@ private:
   uint32_t sel_ = ~0u;
   size_t inflight_ = 0, fetched_ = 0;
   size_t gaps_ = 0, holes_ = 0; // 有待补区间 / 有缺口的只 (QuoteStatus::gaps / holes)
-  int sec_ = 0;              // 行情日最新快照时刻 (断档判据的上轮时刻)
-  std::byte *map_ = nullptr; // 盘上缓存的映射 (bytes_ 字节; 空 = 尚无行情日)
-  size_t bytes_ = 0;         // QuoteStatus::bytes / saved
+  int sec_ = 0;                 // 行情日最新快照时刻 (断档判据的上轮时刻)
+  std::byte *map_ = nullptr;    // 盘上缓存的映射 (bytes_ 字节; 空 = 尚无行情日)
+  size_t bytes_ = 0;            // QuoteStatus::bytes / saved
   std::time_t saved_ = 0;
-  std::shared_ptr<const Basis> basis_; // 空 = 未 bind
+  std::shared_ptr<const Basis> basis_;  // 空 = 未 bind
   std::shared_ptr<const Days> baskets_; // [篮子] 当日 (末次合成, 整份不可变; 空 = 未合成)
-  bool dirty_ = false;                 // 上次合成后当日有变 (快照 / 补根 / 换日 / bind)
-  int touched_ = kSlots;               // 上次合成后改写过根的最早槽
+  bool dirty_ = false;                  // 上次合成后当日有变 (快照 / 补根 / 换日 / bind)
+  int touched_ = kSlots;                // 上次合成后改写过根的最早槽
   PerSide<uint64_t> ver_ = {};
   std::mutex fold_mu_; // 合成一次一趟 (快照线程 / bind 的调用方)
   Folding folding_;    // fold_mu_

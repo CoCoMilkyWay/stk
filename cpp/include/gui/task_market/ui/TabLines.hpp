@@ -168,8 +168,8 @@ struct SheetToday {
 };
 // 一页右表一组的格 (每帧只过滤 / 排序 / 画): 键 = 格的全部来源, 变了才整组重填 (过滤 / 排序 / 选中不在键里)
 struct LinesSheetKey {
-  int g = -1;                                                                   // 组
-  uint64_t view = 0;                                                            // 视图 gen (含派生: 行 / NAV 数值列 / VAL 估值分位)
+  int g = -1;                                                       // 组
+  uint64_t view = 0;                                                // 视图 gen (含派生: 行 / NAV 数值列 / VAL 估值分位)
   std::shared_ptr<const Quote::Tape> baskets, stocks;               // 两路历史在画的发布 (OverlayState; 近况 / 只数 / 总市值 / 资金流历史日 / 成分)
   std::shared_ptr<const Quote::Days> baskets_day, stocks_day, cons; // 三份当日 (近况 / 当日四列 / 资金流当日)
   size_t infos = 0;                                                 // 基本面档案数 (首次载入)
