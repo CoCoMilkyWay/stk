@@ -17,13 +17,16 @@
 
 namespace GUI::Account {
 
+// 流水代码的一只持仓 (全局 id 在资产轴上查, 不在 = Ref::kNone)
+Quote::Holding holding(const std::string &code, double qty, double px);
+
 // 一只当日的根 (日根 ref = 前收 + 分钟根; 指针用到下次调用为止); nullptr = 无 (该只不动)
 using DayOf = std::function<const Quote::Day *(const std::string &code)>;
 
 // 账户一日 d (前一日净值 nav0 / 指数 idx0 = 本日前收) 的槽 [0, n): 持仓 d.hold 按 of 的分钟收计价, 点位 = idx0 × growth(nav0, nav_s, d.flow)
 Quote::Day day_of(const account::Day &d, double nav0, double idx0, size_t n, const DayOf &of);
 
-// 账本的回放: 账户全史 (日脊上自首条流水所在日起; 首日平于 1) + 摘要; 无账本 / 日脊上无日 → se 空
+// 账本的回放: 账户全史 (日脊上自首条流水所在日起; 首日平于 1) + 摘要 (含末日收后持仓); 无账本 / 日脊上无日 → se 空
 struct Replay {
   std::shared_ptr<const Quote::Series> se;
   Quote::Equity eq;

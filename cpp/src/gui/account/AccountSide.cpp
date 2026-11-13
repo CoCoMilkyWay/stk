@@ -37,6 +37,12 @@ Quote::Day path_day(misc::Ymd d, float ref, std::span<const double> v) {
 
 } // namespace
 
+Quote::Holding holding(const std::string &code, double qty, double px) {
+  const AssetAxis &ax = asset_axis();
+  const size_t id = ax.find(account::asset_code(code));
+  return {code, id < ax.size() ? static_cast<uint32_t>(id) : Quote::Ref::kNone, qty, px};
+}
+
 Quote::Day day_of(const account::Day &d, double nav0, double idx0, size_t n, const DayOf &of) {
   assert(n >= 1 && n <= static_cast<size_t>(kSlots));
   std::array<float, kSlots> p;
@@ -100,9 +106,11 @@ Replay replay(const account::Ledger &l, const std::vector<misc::Ymd> &dates, con
   }
   se->hold = {block};
   o.se = std::move(se);
-  o.eq = {ds.back().nav, account::flow_after(l.rows, ds.back().date), 0};
+  o.eq = {ds.back().nav, account::flow_after(l.rows, ds.back().date), 0, {}};
   for (const account::Day &d : ds)
     o.eq.in += d.flow;
+  for (const account::Hold &h : ds.back().hold)
+    o.eq.hold.push_back(holding(h.code, h.qty, h.px));
   return o;
 }
 

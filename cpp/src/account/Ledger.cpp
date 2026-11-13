@@ -206,11 +206,11 @@ double growth(double nav0, double nav, double flow) {
 void intraday(const Day &d, double nav0, double idx0, const std::function<std::span<const float>(const std::string &)> &path, std::span<double> out) {
   assert(!out.empty());
   std::ranges::fill(out, d.nav);
-  for (const auto &[code, q] : d.hold)
-    if (const std::span<const float> p = path(code); !p.empty()) {
+  for (const Hold &h : d.hold)
+    if (const std::span<const float> p = path(h.code); !p.empty()) {
       assert(p.size() == out.size());
       for (size_t s = 0; s < out.size(); ++s)
-        out[s] += q * (p[s] - p.back());
+        out[s] += h.qty * (p[s] - p.back());
     }
   for (double &x : out)
     x = idx0 * growth(nav0, x, d.flow);
@@ -256,14 +256,14 @@ std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const st
         flow += r.qty * price_on(r.code, d).value_or(r.price);
     }
     double mv = 0;
-    std::vector<std::pair<std::string, double>> held;
+    std::vector<Hold> held;
     for (const auto &[code, q] : hold) {
       if (std::fabs(q) < kShare)
         continue;
       if (const std::optional<double> c = price_on(code, d))
         last[code] = *c;
       mv += q * last.at(code);
-      held.emplace_back(code, q);
+      held.push_back({code, q, last.at(code)});
     }
     const double nav = cash + mv - owe - acc;
     if (prev)

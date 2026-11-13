@@ -637,8 +637,8 @@ std::string stock_name(const StockInfos &infos, uint32_t id) {
     return infos[id].name;
   return asset_axis().code(id);
 }
-// 成分行的悬停: 名 + 代码 / 权占比 (share; NaN = 不在展开的篮子里) / 行业 / 估值
-std::string stock_hover(const StockInfos &infos, uint32_t id, double share) {
+// 成分行的悬停: 名 + 代码 / 权占比 (share, 名 label: 篮子 = 权占比, 账户 = 仓位; NaN = 不在展开行里) / 行业 / 估值
+std::string stock_hover(const StockInfos &infos, uint32_t id, double share, const char *label) {
   const auto num = [](const char *label, double v, const char *fmt) {
     char s[48];
     if (std::isfinite(v))
@@ -647,7 +647,7 @@ std::string stock_hover(const StockInfos &infos, uint32_t id, double share) {
       std::snprintf(s, sizeof(s), "%s -", label);
     return std::string(s);
   };
-  std::string h = stock_name(infos, id) + " " + asset_axis().code(id) + "\n• " + num("权占比", 100.0 * share, "%s %.2f%%");
+  std::string h = stock_name(infos, id) + " " + asset_axis().code(id) + "\n• " + num(label, 100.0 * share, "%s %.2f%%");
   if (id < infos.size() && infos[id].known) {
     const StockInfo &s = infos[id];
     h += "\n• 行业 " + (s.ind_name.empty() ? std::string("-") : s.ind_name) + (s.st ? " · ST" : "");
@@ -661,14 +661,14 @@ float stock_hue(uint32_t id) {
   const double h = static_cast<double>(id) * 0.6180339887498949;
   return static_cast<float>(h - std::floor(h));
 }
-// 个股 id 的行; share = 在展开的篮子里的权占比 (NaN = 不在)
-LinesRow stock_row(const StockInfos &infos, uint32_t id, double share) {
+// 个股 id 的行; share = 在展开行里的权占比 (名 label; NaN = 不在)
+LinesRow stock_row(const StockInfos &infos, uint32_t id, double share, const char *label) {
   LinesRow r;
   r.id = stock_id(id);
   r.en = asset_axis().code(id);
   r.tag = stock_name(infos, id);
   r.cn = clip_name(r.tag);
-  r.hover = stock_hover(infos, id, share);
+  r.hover = stock_hover(infos, id, share, label);
   r.hue = stock_hue(id);
   r.ref = {Quote::kStock, id};
   r.watch = r.en;
@@ -735,19 +735,25 @@ void push_book(LinesDerived &d, int g, LinesRow r, std::vector<LinesLeg> legs, d
   push(d, g, std::move(r), ru);
 }
 
-// 有行情键的行: 篮子三组 = 篮子表三段 (段内序); 成分 = 展开的篮子行的成分 (Census::cons, 权降序) + 其余个股 kids (升序)
+// 有行情键的行: 篮子三组 = 篮子表三段 (段内序); 成分 = 展开行的成分 (篮子 = Census::cons, 权降序; 账户 = 持仓 d.hold 里资产轴上的, 市值降序)
+// + 其余个股 kids (升序)
 void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, const StockInfos &infos, double fixed_impact, const Reuse &ru,
                    LinesDerived &d) {
   for (int g = 0; g < kBasketGroups; ++g)
     for (const size_t b : basket_table().of(static_cast<BasketGroup>(g)))
       push_quote(d, g, basket_row(b), fixed_impact, ru);
   std::vector<std::pair<uint32_t, double>> ks; // (全局 id, 权占比)
+  const bool account = open == kAccountId;
   if (const LinesAt o = d.at(open); o.g >= 0 && d.census()) {
     assert(o.g < kBasketGroups);
     const Quote::Census &bt = *d.census();
     const uint32_t line = d.row(o).ref.key;
     for (const Quote::Constituent &c : bt.cons[line])
       ks.emplace_back(c.id, c.w / bt.weight[line]);
+  } else if (account && d.hold) {
+    for (const Quote::Holding &h : d.hold->list)
+      if (h.id != Quote::Ref::kNone)
+        ks.emplace_back(h.id, d.hold->weight(h));
   }
   d.n_cons = ks.size();
   std::vector<uint32_t> cons(ks.size());
@@ -757,7 +763,7 @@ void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, c
     if (!std::ranges::binary_search(cons, id))
       ks.emplace_back(id, kNaN);
   for (const auto &[id, share] : ks)
-    push_quote(d, kGroupKid, stock_row(infos, id, share), fixed_impact, ru);
+    push_quote(d, kGroupKid, stock_row(infos, id, share, account ? "仓位" : "权占比"), fixed_impact, ru);
 }
 // 无行情键的行: 因子 = [算成的条目序] 各自账的线 (键 0); 策略 = 全部因子的线
 void derive_books(const std::vector<const PortfolioItem *> &its, const std::string &name, double fixed_impact, const Reuse &ru, LinesDerived &d) {
@@ -1024,12 +1030,13 @@ Quote::Ref RowRef(const std::string &id) {
 
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
                       const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, double fixed_impact, const std::string &open,
-                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const std::string &account, const StockInfos &infos,
-                      LinesDerived &d) {
+                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const std::string &account,
+                      const std::shared_ptr<const Quote::Holdings> &hold, const StockInfos &infos, LinesDerived &d) {
   LinesDerived o = std::move(d);
   d = LinesDerived{};
   const std::vector<const PortfolioItem *> its = ready_of(items, res, d);
   bind_quotes(res, view, live, d);
+  d.hold = hold;
   const Reuse ru(o, d.dates);
   std::vector<uint32_t> kids = watch_stocks(watch);
   kids.insert(kids.end(), stocks.begin(), stocks.end());

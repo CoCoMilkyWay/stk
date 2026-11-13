@@ -717,6 +717,23 @@ void zoom_x(LinesRange &rg, int D, const ImRect &legend) {
   rg.d1 = std::clamp(day(hi) + 1, rg.d0 + 1, D);
 }
 
+// 滚轮缩放 (NAV / VAL 同一份; 主图 x 恒 = 区间, ImPlot 自带的缩放不起): 右端钉在区间末 d1 (默认 = 末日), 只挪左端;
+// 一格 = 日数 × (1 + kWheelRate)^∓1 (上滚 = 放大), 至少挪一日, 至少留一日; 改的是区间本身 ⇒ 区间条 / 档位条同步
+constexpr double kWheelRate = 0.15;
+void wheel_x(LinesRange &rg) {
+  if (!ImPlot::IsPlotHovered())
+    return;
+  ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, ImPlot::GetCurrentPlot()->ID); // 占住滚轮 (不滚外层窗口)
+  const float w = ImGui::GetIO().MouseWheel;
+  if (w == 0.0f || rg.d1 <= 0)
+    return;
+  const int n = rg.d1 - rg.d0;
+  int m = static_cast<int>(std::lround(n * std::pow(1.0 + kWheelRate, -w)));
+  if (m == n)
+    m += w > 0 ? -1 : 1;
+  rg.d0 = rg.d1 - std::clamp(m, 1, rg.d1);
+}
+
 // ---- VAL 主图: 标的各口滚动 band (日末点; 填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
 //      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的理想线 (常显; 有分钟价则画到分钟) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
 //      标的日内形未到 (minute_wait) 整图不画, 到了一次画成;
@@ -798,7 +815,7 @@ LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates) {
 }
 
 // ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) 同一框: 贴边 (窄内边距, 不标轴名); y 恒贴合 + 留白 (fit_margin);
-//      x: NAV = fit 键变 → 本帧 fit (可平移 / 缩放), VAL = 恒贴合 (视野只随区间); x 右端留出线尾小字 / 刻度 / 十字标签;
+//      x: 恒贴合 (视野只随区间; 滚轮 = 钉住右端缩放区间, wheel_x); x 右端留出线尾小字 / 刻度 / 十字标签;
 //      左上角 = 区间档位条 (span_bar) + 其下图例矩阵 ----
 void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size) {
   const LinesDerived &d = ui.der.val;
@@ -819,9 +836,9 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
       }
   if (fk != ui.fit_key)
     ImPlot::SetNextAxesToFit();
-  if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", size, ImPlotFlags_NoLegend | (nav ? ImPlotFlags_None : ImPlotFlags_NoBoxSelect))) {
+  if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", size, ImPlotFlags_NoLegend | ImPlotFlags_NoBoxSelect)) {
     ui.fit_key = fk;
-    ImPlot::SetupAxes(nullptr, nullptr, nav ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
+    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
     setup_day_axis(d.dates);
     if (ui.log_y)
       ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
@@ -832,6 +849,7 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
       plot_nav(ui, d, v, pf);
     else if (pin.g >= 0 && !wait)
       plot_val(ui, range, d, v, pin, pf);
+    wheel_x(range);
     if (wait)
       plot_hint("分钟线载入中…");
     fit_margin(ui.log_y);

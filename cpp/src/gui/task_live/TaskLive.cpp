@@ -3,7 +3,7 @@
 //     (Market 的个股面板, 与 Database / Market 共用 QuoteHub)
 //   Client: 已连客户端自带的调试台 (Broker::console), 不算有人在看持仓
 //   行情走新浪 (LiveHub 把要的码订阅给 QuoteHub, 本地资产库就绪才有), 不读客户端的行情; Board 可见时才盯客户端 (见 live/Broker.hpp 的 touch)
-//   账户净值 (gui/account): 每帧交信用账户 (其库外持仓的现价转给价格库回放), 连上后每天在事务道上补一次资金流水
+//   账户净值 (gui/account): 每帧交信用账户 + 今日成交 (其库外持仓的现价转给价格库回放), 连上后每天在事务道上补一次资金流水
 #include "gui/task_live/TaskLive.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/account/AccountHub.hpp"
@@ -54,7 +54,7 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
     if (!s || !s->acct)
       return;
     Account::AccountHub &a = *state->account;
-    a.feed(s->acct);
+    a.feed(s->acct, s->fills);
     state->quote->spot(a.spot());
     if (a.due() && h.job("更新资金流水", [p = state->account](live::Broker &b, const live::Log &log, const live::Live &live) { p->pull(b, log, live); }))
       a.tried();

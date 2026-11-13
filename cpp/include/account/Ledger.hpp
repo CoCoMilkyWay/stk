@@ -21,7 +21,6 @@
 #include <span>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace account {
@@ -50,10 +49,15 @@ std::string reconcile(const std::vector<CashFlow> &rows, const live::Keyed<live:
 std::vector<std::string> securities(const std::vector<CashFlow> &rows);
 using Closes = std::unordered_map<std::string, std::map<misc::Ymd, double>>; // 代码 → 日 → 收盘
 
+// 一只持仓: 代码 / 股 / 计价 (回放 = 当日收盘, 无收盘沿用上一收盘)
+struct Hold {
+  std::string code;
+  double qty = 0, px = 0;
+};
 struct Day {
   misc::Ymd date = 0;
-  double nav = 0, flow = 0, index = 1;              // 净值 / 外部进出 / 指数
-  std::vector<std::pair<std::string, double>> hold; // 当日收后持仓 (代码, 股; 代码升序)
+  double nav = 0, flow = 0, index = 1; // 净值 / 外部进出 / 指数
+  std::vector<Hold> hold;              // 当日收后持仓 (回放 = 代码升序)
 };
 // 一段的净值增长倍数: 盈亏 (nav − nav0 − flow) / 基数; 段内进出时点不知, 入金计段初、出金计段末 (段内在场的资金都进基数); 基数 ≤ 0 → 1
 double growth(double nav0, double nav, double flow);

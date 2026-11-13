@@ -231,7 +231,7 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesState &ui, co
       rd.item(key(t), false);
       if (rd.tapped(key(t)))
         click(t);
-    } else if (h.ref.is(Quote::kBasket)) {
+    } else if (h.opens()) {
       const bool open = t == pin;
       ImGui::SetNextItemOpen(open, ImGuiCond_Always);
       ImGui::TreeNodeEx(label.c_str(), kNode | ImGuiTreeNodeFlags_OpenOnArrow | (on(t) ? ImGuiTreeNodeFlags_Selected : 0));
@@ -298,21 +298,25 @@ const SheetCol kTodayCols[kTodays] = {
              "• 算法: 成员表的成分计数 (同切片 .等 / .加 同一份); 个股行: 板块按代码前缀, 行业 = 申万一级 (同 ASSET 的 板块 / 行业 列)\n"
              "• 数据: 成员表 = 历史末日收盘定 (= 当日 bind 给新浪行情的那份); 行业 = cn_stock_industry_component 最新月度快照\n"
              "• 显示: 整数, 不着色; 个股行按板块排序\n"
+             "• 账户行: 持仓只数 (券商实时持仓, 未连券商 = 回放末日收后持仓; 含库轴外的 ETF / LOF)\n"
              "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 不随区间"},
     {"总市值", "总市值 = 成分总市值之和\n"
                "• 算法: Σ 成分 末日收盘 × 总股本; 加权篮子当日接上再 × 当日涨跌 (今收 / 前收), 等权篮子停在末日; 成分行 = 本只 (基本面末日总市值, 当日接上再 × 今收 / 前收)\n"
                "• 数据: 成员表同只数; 总股本取末日适用\n"
                "• 显示: 亿 / 万亿, 不着色\n"
+               "• 账户行: 此刻净资产 = 净资产 (券商 / 回放末日) + Σ 持仓 股 × (新浪当日收 − 计价)\n"
                "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 不随区间"},
     {"换手", "换手 = 当日换手率\n"
              "• 算法: 成交额 / 总市值; 成交额 = Σ 成分 当日成交额 (成分行 = 本只), 总市值同上列 (总股本口径, 非流通)\n"
              "• 数据: 新浪行情日 (盘后 / 重启照样全天); 无新浪行情日 / 当日无成交 → -\n"
              "• 显示: 百分比两位, 不着色; 悬停格看成交额 / 总市值\n"
+             "• 账户行: 今日成交额 (券商成交, 买 + 卖) / 此刻净资产; 未连券商 → -\n"
              "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 不随区间"},
     {"流入", "流入 = 当日资金流入占成交额\n"
              "• 算法: 净流入 / 成交额; 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法; 成分行 = 本只): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟\n"
              "• 数据: 新浪行情日分钟根 (快照合成 + 分钟 K 补), 含开收盘集合竞价; 成分之和不加权, 分不出大单\n"
              "• 显示: 百分比两位, 按正负着色; 悬停格看净流入 / 成交额\n"
+             "• 账户行: (今日买入额 − 卖出额) / 今日成交额 (券商成交); 未连券商 / 今日无成交 → -\n"
              "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 不随区间"},
 };
 // 金额 y [亿元] 的显示: ≥ 1 万亿按万亿, 其余按亿 (越大小数越少); 带符号 sign
@@ -384,11 +388,29 @@ SheetToday stock_today(const RowSrc &x) {
   o.v[kTodayTurn] = o.amount / o.v[kTodayCap];
   return o;
 }
-// 表行的当日: 按行情键 (篮子 = 价格库篮子史的该线 + 当日; 个股 = 档案 + 当日; 无 / 篮子史未到 = 全不可算)
-SheetToday today_of(const Quote::Census *bt, const RowSrc &x) {
+// 账户行的当日 (SheetToday, 账户自身口径): 只数 = 持仓只数; 总市值 = 此刻净资产 (Holdings::now, y = 当日);
+// 成交额 = 今日券商成交 (未连券商 → 换手 / 流入不可算), 换手 = 成交额 / 净资产, 流入 = (买入 − 卖出) / 成交额
+SheetToday account_today(const Quote::Holdings &h, const Quote::Live *y) {
+  SheetToday o;
+  const double net = h.now(y) / 1e8;
+  o.v[kTodayMembers] = static_cast<double>(h.list.size());
+  o.v[kTodayCap] = net > 0 ? net : kNaN;
+  if (!h.broker)
+    return o;
+  o.amount = h.amount / 1e8;
+  o.v[kTodayTurn] = o.amount / o.v[kTodayCap];
+  if (h.amount > 0)
+    o.v[kTodayFlow] = (2.0 * h.buy - h.amount) / h.amount;
+  return o;
+}
+// 表行的当日: 按行情键 (篮子 = 价格库篮子史的该线 + 当日; 个股 = 档案 + 当日; 账户 = 持仓 hold + 当日 y; 无 / 篮子史未到 / 无持仓 = 全不可算)
+SheetToday today_of(const Quote::Census *bt, const Quote::Holdings *hold, const Quote::Live *y, const RowSrc &x) {
   const Quote::Ref q = x.row->ref;
-  return q.is(Quote::kBasket) ? bt ? basket_today(*bt, x) : SheetToday{} : q.is(Quote::kStock) ? stock_today(x)
-                                                                                               : SheetToday{};
+  if (q.is(Quote::kBasket))
+    return bt ? basket_today(*bt, x) : SheetToday{};
+  if (q.is(Quote::kStock))
+    return stock_today(x);
+  return q.is(Quote::kAccount) && hold ? account_today(*hold, y) : SheetToday{};
 }
 // 表行的近况 (RecentOf 同一核): 有行情键 = 行情源 (篮子 / 个股同 ASSET 一查法); 无 = 可成交线日末
 Recent recent_row(const RowSrc &x) {
@@ -546,7 +568,7 @@ const LinesSheet &sheet_of(LinesState &ui, const Quote::QuoteHub *mk, const Stoc
     ps.cells.assign(n * ps.nc, {});
     for (size_t t = 0; t < n; ++t) {
       const RowSrc x = src_of(mk, infos, d, ps.at[t]);
-      ps.today.push_back(today_of(bt, x));
+      ps.today.push_back(today_of(bt, d.hold.get(), mk ? mk->live.get() : nullptr, x));
       SheetCell *out = ps.cells.data() + t * ps.nc;
       for (const Seg &s : segs)
         s.cell(x, t, ps, out), out += s.cols.size();

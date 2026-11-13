@@ -104,17 +104,18 @@ struct LineSrc {
 // 一行 = 一对线, 全段 (右表一行). 主图例列 = cn | 口径 | 区间年化 | 区间夏普 | 年换手 (补空格对齐);
 // NAV 右表 = cn | 近况两列 + 当日四列 | 两条年化 | 可成交列夏普 | 年换手; en 只在悬停时显示; 排版 / 近况 / 年化 / 夏普在渲染时拼
 struct LinesRow {
-  std::string id;                                      // 选中键 (LinesPick); 线的 ImGui ID = id + 线后缀
-  std::string en, cn;                                  // 名 / 中文名 (超长截断)
-  std::string tag;                                     // 线尾小字 (主图口径后缀另拼; 日内栏 / FLOW 图线名同此)
-  std::string hover;                                   // 悬停 (en 起头 + 详情)
-  PoolId pool = kAllPool;                              // 子池篮子 = 其池 (悬停另列逐维拆解); 其余 kAllPool
-  LineSrc src[kPairLines];                             // [PairLine] 线源
-  std::shared_ptr<const Line> line[kPairLines];        // [PairLine] 线 (非空; 不含当日尾; 两线源相同 → 同一条)
-  float hue = std::numeric_limits<float>::quiet_NaN(); // 色相 ∈ [0, 1) (见 LinesDerived::rows); NaN = 未定 (灰); 策略不取
-  Quote::Ref ref;                                      // 行情键 (篮子 / 成分 / 账户); 因子 / 策略 = 无
-  LinesLeg val;                                        // 估值腿 (篮子账 / 个股账的一线)
-  std::string watch;                                   // 自选键: 篮子 = 切片代码 + .等 / .加, 个股 = 代码; 因子 / 策略 / 账户 = 空 (不可自选)
+  std::string id;                                                                  // 选中键 (LinesPick); 线的 ImGui ID = id + 线后缀
+  std::string en, cn;                                                              // 名 / 中文名 (超长截断)
+  std::string tag;                                                                 // 线尾小字 (主图口径后缀另拼; 日内栏 / FLOW 图线名同此)
+  std::string hover;                                                               // 悬停 (en 起头 + 详情)
+  PoolId pool = kAllPool;                                                          // 子池篮子 = 其池 (悬停另列逐维拆解); 其余 kAllPool
+  LineSrc src[kPairLines];                                                         // [PairLine] 线源
+  std::shared_ptr<const Line> line[kPairLines];                                    // [PairLine] 线 (非空; 不含当日尾; 两线源相同 → 同一条)
+  float hue = std::numeric_limits<float>::quiet_NaN();                             // 色相 ∈ [0, 1) (见 LinesDerived::rows); NaN = 未定 (灰); 策略不取
+  Quote::Ref ref;                                                                  // 行情键 (篮子 / 成分 / 账户); 因子 / 策略 = 无
+  LinesLeg val;                                                                    // 估值腿 (篮子账 / 个股账的一线)
+  std::string watch;                                                               // 自选键: 篮子 = 切片代码 + .等 / .加, 个股 = 代码; 因子 / 策略 / 账户 = 空 (不可自选)
+  bool opens() const { return ref.is(Quote::kBasket) || ref.is(Quote::kAccount); } // 可展开成分 (篮子 = 成员, 账户 = 持仓)
 };
 
 // 行组 (右表类别条 = 前 PageDef::groups 组; 成分行只挂在展开的篮子行下): 前 kBasketGroups 组 = 篮子目录三组 (BasketGroup), 其后 自选 / 因子 / 策略 / 成分 / 账户
@@ -204,12 +205,12 @@ struct LinesDerived {
                                                                  //   个股历史只价格库留着的个股有 (选中的; 其余成分的理想线 = 可成交线, 同一条);
                                                                  //     理想线的当日尾 = LinesLive
                                                                  //   指数 / 行业 / 概念 = [篮子表段内序] (源没算成也列, 线空); en = BasketTable::code, cn = tag = 切片名 (超长截断) + .等 / .加, hover = en + 全名;
-                                                                 //   成分 = 展开的篮子行的成分 (Census::cons, 权降序; 前 n_cons 行, 右表挂在展开行下) + 其余选中 / 自选的个股 (收起后照画, 升序);
-                                                                 //     en | cn = 代码 | 简称, hover = 代码 + 权占比 + 行业 / 估值
+                                                                 //   成分 = 展开行的成分 (前 n_cons 行, 右表挂在展开行下: 篮子 = Census::cons, 权降序; 账户 = 持仓里资产轴上的, 市值降序)
+                                                                 //     + 其余选中 / 自选的个股 (收起后照画, 升序); en | cn = 代码 | 简称, hover = 代码 + 权占比 (账户 = 仓位) + 行业 / 估值
                                                                  //   因子 = [items 序, 只含算成的] 该因子单独的 G20 多头; id = PortfolioEntry::key,
                                                                  //     en | cn = 因子文件主干 | 中文名 (超长截断), hover = en + 全名 + 池 层 持有期 冲击段 规范串
                                                                  //   策略 = 一行, 组合 G20 多头; en | cn = 组合名 | G20 多头
-                                                                 //   账户 = 价格库有账户全史才一行 (时间加权净值指数, 带日内形; 当日尾同别的行情键); 色相固定
+                                                                 //   账户 = 价格库有账户全史才一行 (时间加权净值指数, 带日内形; 当日尾同别的行情键; 可展开 = 持仓); 色相固定
                                                                  //   自选 = 账户行 (有则钉首) + [自选键序] 可自选组里同自选键行的副本 (同 id: 选中 / 展开与原行同一份; 线 / 色共用; 不进 index,
                                                                  //     主图只画原行); 名次在自选之间 (视图按组排); 找不到的键 (概念换快照没了 / 代码不在资产轴) 记 watch_lost
                                                                  //   色: 配色组 (指数 / 行业 / 概念 / 因子) 的行一起按相似度 s = max(成员重合, 残差相关) 建 Ward 树, 叶序相邻两行色相差 ∝ 树上分开处两侧平均 1 − s
@@ -222,6 +223,7 @@ struct LinesDerived {
   std::vector<std::shared_ptr<const PortfolioBook>> books;       // [因子行] 因子账 (因子 / 策略行的腿)
   Quote::PerMarket<std::shared_ptr<const PortfolioBook>> quotes; // [Side] 行情两侧的账 (有行情键的行的腿 / 估值腿; 同有同无, 同日轴; 没算成 = 空)
   std::shared_ptr<const Quote::PriceView> view;                  // 理想线的价格历史 / 日内形 / 成分表的源 (价格库在用的发布; 空 = 未发布)
+  std::shared_ptr<const Quote::Holdings> hold;                   // 账户的持仓 (账户行的成分 / 当日四列; 空 = 无)
   misc::Ymd live = 0;                                            // 当日 (接得上日脊才有; 已并进日轴)
   std::vector<int32_t> val_at;                                   // [日并集轴] 两侧账的行 (估值的源下标; −1 = 账无该日 / 没算成)
   LinesPaintKey paint;                                           // 配色的来源
@@ -312,10 +314,11 @@ struct LinesDerKey {
   misc::Ymd live = 0;                           // 当日 (接得上日脊才有)
   double impact = 0.0;                          // fixed_impact
   size_t infos = 0;                             // 基本面档案数 (成分行名 / 悬停; 首次载入)
-  std::string open;                             // 展开的篮子行
+  std::string open;                             // 展开行 (篮子 / 账户)
   std::vector<uint32_t> stocks;                 // 选中的个股 (升序)
   std::vector<std::string> watch;               // 自选键 (自选序)
   std::string account;                          // 账户行的悬停
+  std::shared_ptr<const Quote::Holdings> hold;  // 账户的持仓
   bool operator==(const LinesDerKey &) const = default;
 };
 struct LinesLiveKey {
@@ -343,12 +346,12 @@ struct LinesViewKey {
 };
 
 // 一级: items / name = 当前组合, view = 价格库在用的发布 (空 = 未发布), live = 当日 (接得上日脊才有, 否则 0);
-// open / stocks = 展开的篮子行 / 选中的个股 (成分组); watch = 自选键 (自选组; 其中的个股也进成分组); account = 账户行的悬停;
+// open / stocks = 展开行 (篮子 / 账户) / 选中的个股 (成分组); watch = 自选键 (自选组; 其中的个股也进成分组); account / hold = 账户行的悬停 / 持仓;
 // d = 上一份 (按线源沿用) → 本份
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
                       const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, double fixed_impact, const std::string &open,
-                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const std::string &account, const StockInfos &infos,
-                      LinesDerived &d);
+                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const std::string &account,
+                      const std::shared_ptr<const Quote::Holdings> &hold, const StockInfos &infos, LinesDerived &d);
 // 行 id → 行情键 (同 LinesRow::ref): 篮子 = 篮子表里同 id 的, 个股 = id 里的全局 id, 账户 = 账户 0; 因子 / 策略 / 找不到 → 无
 Quote::Ref RowRef(const std::string &id);
 // 旁支: 当日 y (日期 = d.live; 空 / d.live = 0 → 全无尾) 各行理想线的当日尾

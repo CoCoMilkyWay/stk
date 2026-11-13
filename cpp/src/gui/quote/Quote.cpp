@@ -128,6 +128,15 @@ const sina::Quote *Live::watched(std::string_view sym) const {
   return it != watch->end() && it->sym == sym ? &*it : nullptr;
 }
 
+double Holdings::now(const Live *y) const {
+  double v = net;
+  if (y)
+    for (const Holding &h : list)
+      if (const Day *d = h.id != Ref::kNone ? y->at({kStock, h.id}) : nullptr)
+        v += h.qty * (d->candle.close - h.px);
+  return v;
+}
+
 const Tape *Joint::tape() const { return view && view->lack.empty() ? view->tape[side].get() : nullptr; }
 
 misc::Ymd Joint::today() const {

@@ -6,12 +6,13 @@
 //     近况两列 (Recent; 篮子行 = Market 篮子历史的日线 + 新浪当日, 因子 / 策略 = 净值日末点) 按涨跌着色, 不随区间;
 //     只数 / 总市值 (只篮子行) = 当日成员表 (Census::members / cap): 成员只数 / 末日收盘成员总市值 (加权线当日接上 × 当日涨跌), 不着色;
 //     换手 / 资金流入 (只篮子行) = 新浪当日 成交额占总市值 / 净流入占成交额 (Day::flow, 分钟涨跌法), 流入按正负着色, 悬停格看分子分母金额;
+//     账户行四列 = 账户自身: 持仓只数 / 此刻净资产 (Holdings::now) / 今日成交额 ÷ 净资产 / (买入 − 卖出) ÷ 成交额 (券商成交; 未连券商 → -);
 //     篮子组 (指数 / 行业 / 概念) 表上一行过滤条 (BasketFilter, 各页共用): 只数 / 总市值区间 + |流入| 下限, 一项一个按钮 (名 + 当前条件摘要, 设了 = 按下色),
 //       点开 = 预设 (点即设) + 精确输入; 选中 / 展开行恒列;
 //     右栏定宽 (各页同宽, 不随内容): 各页右表同一骨架 (sheet), 列宽按内容最紧 (数值右对齐不补宽, 表头取短名, 名超 kNameCells 格截断补 …),
 //       名列伸满余宽, 内容超宽 → 横滚 (名列钉住);
-//     篮子行可展开 (名前 ▸, 至多一行, 各页同一份): 展开行钉在表头下 (不随滚动), 其下先列成分行 = 历史末日收盘定的成员表 (Census::cons, 默认权降序,
-//       表头排序时按同列), 再列其余行; 成分行与篮子行同一种行 (LinesRow: 一对线 = 后复权收盘, 两条同一条; 行情键 = 个股; 估值腿 = 个股账),
+//     篮子行 / 账户行可展开 (名前 ▸, 至多一行, 各页同一份): 展开行钉在表头下 (不随滚动), 其下先列成分行 = 历史末日收盘定的成员表 (Census::cons, 默认权降序;
+//       账户 = 持仓 Holdings 里资产轴上的个股, 默认市值降序; 表头排序时按同列), 再列其余行; 成分行与篮子行同一种行 (LinesRow: 一对线 = 后复权收盘, 两条同一条; 行情键 = 个股; 估值腿 = 个股账),
 //       列同一张表, 能算的填 (近况 = 个股新浪当日 + 价格库日脊末段; 总市值 / 换手 / 流入 = 个股新浪当日 + 基本面; NAV 数值列 / VAL 各口名次在成分之间;
 //       FLOW = 与篮子行同一查法 QuoteHub::of: 选中的有个股历史各日齐, 其余只当日), 其余 "-";
 //       名悬停看权占比 / 行业 / 估值; 点成分行 = 同篮子行的选中 (NAV 主图画线 + 日内栏 / FLOW 图叠加, 线色按 id 定色相; VAL 选为标的), 收起后选中的照画;
@@ -47,6 +48,7 @@
 //     单因子线: 该因子单独的 G20 多头净值, 成对 = 有冲击 (它自己的冲击段) + 无冲击, 年换手 = 它自己的
 //     y = 净值 (恒贴合视野内的线, 上下各留跨度的 20%; 可切 log, 按对数跨度留); 底部区间条选日段 [d0, d1) (各页一份, 默认 NAV 近 1 月 / VAL 近 10 年; 两边竖把手吸附到月初 / 段内按日平移, 拖动中即生效, 把手旁标起止日; 双击段内回全段;
 //       主图左上角档位 1周 / 1月 / 1年 / 10年 (对仗日内栏档位, 图例矩阵在其下) = 末日往前推该段, 当前区间正是某档则该钮按下), 各线在区间起点归一 (起点 = 1), 年化按区间复利折算;
+//     主图 x 恒 = 区间 (NAV / VAL 同): 主图上滚轮 = 右端钉在区间末日 (默认 = 最新一日) 只挪左端缩放区间, 区间条 / 档位条同步; 不拖动平移 (平移在区间条段内拖);
 //     年化 / 夏普只数该线在区间内的活跃日 (日末净值, 活跃日内无点的日收益 0): 夏普 = 日收益 mean / sd × √每年交易日;
 //     主图内容的历史部分 (新结果到 / 区间 / VAL 选中 / 滚动窗; 当日随快照动不算) / 页 / log / 主图例显隐 / 右表选中 任一变 → 重新 fit (LinesFitKey); 每条可见线在视野内的末点右侧标小字名;
 //     只显示一条线时 (VAL = 价格线) 同日内栏画现价十字: 过视野内末点的横 / 竖虚线 (区间涨跌色), 右壁标区间涨跌, 底壁标日期
@@ -62,7 +64,7 @@
 //     绝对估值等值线 (默认关; 很淡的灰, 不进 fit): 倍数 m = 1 / v (PE / PB / PS / PCF / P/D), y_t = P_t · v_t · m,
 //     档 = 该标的全史倍数区间 (两头剔极端分位) 20 档等分, 不随区间 / 视野变; v ≤ 0 断开; 悬停最近一条高亮 + 提示该档倍数 / 当日倍数 / 指数到该线的涨跌;
 //     主图例 = 左上自绘矩阵 (对仗 Inspect 期限结构): 行 = 口, 列 = 当前收益率 | 当前倍数 | N 年分位 | Band | 等值线, 点色块 / 行头 / 列头开关, 悬停高亮;
-//     主图恒贴合: x = 区间, y 看价格线 + 开着的 band 线 (同 NAV 留白; 等值线不撑); 不平移 / 缩放, 左键横向框选 = 区间改成该段 (任意日, 区间条同一份), 双击 = 回全段
+//     主图恒贴合: x = 区间, y 看价格线 + 开着的 band 线 (同 NAV 留白; 等值线不撑); 滚轮同 NAV, 左键横向框选 = 区间改成该段 (任意日, 区间条同一份), 双击 = 回全段
 //   页 FLOW = 篮子日内资金流 (只这一张图, 不看区间): 左 = 选中的篮子行 / 成分行 (NAV 同一份选中) 的累计净流入叠加 (RenderOverlay 累计净流入, 与日内栏同一张图:
 //     日轴 = 行情日及其前 n − 1 个交易日, n = 档 日内 / 2日 … 5日; 自首日开盘逐分钟累计, 跨日接续; y = 占近 5 日日均成交额 % (默认; 分母盘前已定) / 金额 亿元;
 //     开收盘开关 (默认关) = 计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价), 图与右表同一份; 当日随新浪快照动);
@@ -91,6 +93,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -188,7 +191,7 @@ inline constexpr size_t kQuotedPicks = Quote::PriceLib::kKeepMinutes - 4;
 struct LinesPick {
   std::string of;
   std::map<std::string, Quote::Ref> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个; 多选里带行情键的至多 kQuotedPicks 行)
-  std::string open;                               // 展开的篮子行 (至多一行, 各页同一份; 空 = 无)
+  std::string open;                               // 展开行 (篮子 / 账户; 至多一行, 各页同一份; 空 = 无)
   // 方式 m (kPicks = 全部) 选中的个股 (全局 id, 升序)
   std::vector<uint32_t> stocks(int m) const {
     std::vector<uint32_t> o;
@@ -244,9 +247,10 @@ void SavePick(const LinesPick &pick); // 原子替换
 void SyncLinesWatch(LinesState &ui);
 // 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (本帧已 frame; nullptr = AssetInfo 未建, 日内栏 / 指数行业近况 / 成分行当日空着;
 // 本页要的个股全历史 / 分钟价登记给它); infos = 基本面档案 (成分行名 / 估值); cta = CTA 页的服务 (算 mk 价格库发布的分钟价, mk 空时同空);
-// account = 账户行的悬停 (账户的全史 / 当日走 mk).
+// account / hold = 账户行的悬停 / 持仓 (成分 + 当日四列; 账户的全史 / 当日走 mk).
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
-                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account);
+                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
+                   const std::shared_ptr<const Quote::Holdings> &hold);
 
 } // namespace GUI::Market

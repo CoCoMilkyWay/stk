@@ -3,7 +3,7 @@
 //   NAV / VAL / FLOW: 篮子账 (all 标签库建好即算) + 因子 / 策略两组 (Alpha → Factors 页编辑的组合, 无组合时只少这两组),
 //     走 EngineHub 的 PortfolioService (见 gui/engine/EngineHub.hpp); 日内栏 / 近况列 / 分钟线取 QuoteHub 行情 (新浪当日 + 价格库), AssetInfo 建好才起.
 //   CTA 单标的回测 = CtaService (读 QuoteHub 的价格库; 行情起了, 首次画行情页建).
-//   自选首行 = 账户 (行情的账户一侧: 价格库回放 + gui/account 拼的当日; 悬停取自 gui/account).
+//   自选首行 = 账户 (行情的账户一侧: 价格库回放 + gui/account 拼的当日; 悬停 / 持仓取自 gui/account).
 #include "gui/task_market/TaskMarket.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/account/AccountHub.hpp"
@@ -102,7 +102,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
     }
     const int action = Market::RenderTabLines(idx - kTabLines, *e.portfolio_service, state->cta_service.get(), e.portfolio_ui, ui, data.config.fixed_impact,
                                               {data.config.commission, data.config.stamp, data.config.fixed_impact}, mk, data.asset_info.stocks,
-                                              state->account->note());
+                                              state->account->note(), state->account->holdings());
     if (action == -1)
       e.portfolio_service->RequestCancel();
     Engine::SyncPortfolio(data, e, action == 1);

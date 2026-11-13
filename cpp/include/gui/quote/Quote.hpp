@@ -4,7 +4,7 @@
 //            库段 (all.bar)            补段: 基本面 → 新浪归档                                  当日 (新浪, 快照线程每轮)
 //   个股     L_1day 行 + L_1min 行     bar1d 行 + bar1m 行 (Bar1mDay) / 归档的末快照 + 分钟根       本只的根
 //   篮子     选股表成员 → Fold         冻结的成员表 → Fold                                        bind 的成员表 → Fold (增量)
-//   账户     资金流水账本 × 个股的根回放 (gui/account/AccountSide.hpp; 库段 / 补段同一条)              净资产 × 持仓分钟收 (同一核)
+//   账户     资金流水账本 × 个股的根回放 (gui/account/AccountSide.hpp; 库段 / 补段同一条)              持仓 (Holdings) × 分钟收 (同一核)
 //   库段 + 补段 = 日脊, 一趟合成落盘在 PriceLib (各侧同一条日脊), 其 worker 每趟发布一份 PriceView (日脊 + 各侧一 Tape); 当日在 QuoteService, 每轮发布一份 Live.
 //   篮子 = 成员 × 个股的根过 Fold (历史取个股侧落盘的根), 个股各段只差源 (BasketRow: LibDay / FundDay / SinaDay); 账户不落盘 (账本一变整条重放).
 // 键: 个股 = 全局 id (AssetAxis 下标; 历史 / 当日 / 快照同一下标), 篮子 = 篮子下标 (shared/Basket.hpp), 账户 = 0; 各侧同一种 Tape (历史) / Days (当日).
@@ -68,6 +68,13 @@ struct Ref {
   bool is(Side s) const { return ok() && side == s; }
   bool operator==(const Ref &) const = default;
 };
+// 账户的一只持仓: 流水代码 / 全局 id (Ref::kNone = 资产轴外, 如 ETF / LOF) / 股 / 计价 (券商现价 / 回放末日收盘)
+struct Holding {
+  std::string code;
+  uint32_t id = Ref::kNone;
+  double qty = 0, px = 0;
+  bool operator==(const Holding &) const = default;
+};
 
 // 一个标的在日脊上的全史 (价格库读出; 不可变, 与前后几份发布共享). 价 = 个股原价 / 篮子点位 / 账户指数; 价 × adj = 复权价 (跨日连续)
 //   分钟 = 各日紧凑根 (Packed) 的视图, 读时解码: 个股 / 篮子指进价格库段的映射, 账户指进自持的块; 所指的存储由 hold 保活
@@ -125,10 +132,11 @@ struct Census {
   Csr<Constituent> cons;           // 成分 (权降序)
   std::vector<float> overlap;      // [篮子 × 篮子] 两篮子权重向量的余弦 (成员重合; 无成员 = 0)
 };
-// 账户回放的摘要 (PriceView 给; 随账户侧的 Tape 一并换): 回放末日净值 / 其后账本里的外部进出 / 回放各日外部进出之和 (累计净转入);
-//   账户全史 = 时间加权指数 (前收 = 前一日指数, 恒带分钟); 当日 = 末日指数 × growth(nav, 净资产_s, after) (account::intraday)
+// 账户回放的摘要 (PriceView 给; 随账户侧的 Tape 一并换): 回放末日净值 / 其后账本里的外部进出 / 回放各日外部进出之和 (累计净转入) / 末日收后持仓;
+//   账户全史 = 时间加权指数 (前收 = 前一日指数, 恒带分钟); 当日 = 末日指数 × growth(nav, 净资产_s, 进出) (account::intraday)
 struct Equity {
   double nav = 0, after = 0, in = 0;
+  std::vector<Holding> hold; // 计价 = 末日收盘
 };
 // 价格库的戳 = 日脊的摘要: 库轴指纹 + 篮子表指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用)
 struct PriceStamp {
@@ -168,6 +176,17 @@ struct Live {
   const Day *at(Ref r) const;                             // 无 (不在全市场 / 无成交 / 未合成) → nullptr
   const sina::Quote *quote(uint32_t id) const;            // 个股的末快照; 不在全市场 / 未到 → nullptr
   const sina::Quote *watched(std::string_view sym) const; // 订阅码的末快照; 未订阅 / 未到 → nullptr
+};
+// 账户的持仓 (AccountHub 给; 不可变, 持仓 / 成交一变才换): 券商实时持仓 (信用账户读到) 优先, 否则回放末日收后持仓 (Equity::hold);
+//   净资产 net 计于各只的计价 px; 此刻 = net + 资产轴上有当日的各只 股 × (当日收 − px) (行情的账户当日 / Market 账户行同一份)
+struct Holdings {
+  bool broker = false;
+  double net = 0;                                                      // > 0
+  std::vector<Holding> list;                                           // 市值 (股 × 计价) 降序
+  double amount = 0, buy = 0;                                          // 今日成交额 / 其中买入 [元] (券商成交; 回放 = 0)
+  double weight(const Holding &h) const { return h.qty * h.px / net; } // 仓位 = 市值 / 净资产 (融资可合计超 1)
+  double now(const Live *y) const;                                     // 此刻净资产; y 空 = net
+  bool operator==(const Holdings &) const = default;
 };
 
 // 一个标的的源 (Joint 给): 日序列 = 日线 + 接得上的当日 (末项); 各处只经它读 (下标 / 分钟根 / 复权同一口径), 接续不再自判
