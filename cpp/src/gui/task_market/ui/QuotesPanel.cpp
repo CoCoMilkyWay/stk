@@ -308,7 +308,7 @@ void plot_chart(const char *id, const Series &s, double win_lo, double win_hi, Q
     ImPlot::SetupAxisFormat(ImAxis_Y1, "%.2f");
     ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault);
     ImPlot::SetupAxisLimits(ImAxis_Y2, s.ref > 0 ? pct(ylo) : 0.0, s.ref > 0 ? pct(yhi) : 1.0, ImPlotCond_Always);
-    ImPlot::SetupAxisFormat(ImAxis_Y2, pct_tick, &s.ref);
+    ImPlot::SetupAxisFormat(ImAxis_Y2, pct_tick, const_cast<double *>(&s.ref));
     pin_axes(false);
     ImPlot::SetupFinish();
     corner = ImPlot::GetPlotPos();
