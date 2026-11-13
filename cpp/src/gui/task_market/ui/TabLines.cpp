@@ -156,6 +156,10 @@ void SyncLinesWatch(LinesState &ui) {
     return;
   ui.watch_loaded = true;
   ui.watch = LoadWatch();
+  if (!ui.watch.empty()) // 有自选: 各页右表先停在自选
+    for (int p = 0; p < kPages; ++p)
+      if (kPageDefs[p].groups > kGroupWatch)
+        ui.cat[p] = kGroupWatch;
 }
 
 int RenderTabLines(int page, PortfolioService &svc, MinuteService &minute, CtaService &cta, const PortfolioUIState &pf, LinesState &ui,

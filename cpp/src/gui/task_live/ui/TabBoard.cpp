@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cfloat>
 #include <cmath>
 #include <cstdlib>
 #include <map>
@@ -48,7 +49,7 @@ void text_col(const ImVec4 &c, const std::string &s) { ImGui::TextColored(c, "%s
 // 数字格右对齐; 列宽仍按文字本身量
 void right(const ImVec4 &c, const std::string &s) {
   ImGui::PushStyleColor(ImGuiCol_Text, c);
-  ImGui::TextAligned(1, 0, "%s", s.c_str());
+  ImGui::TextAligned(1, -FLT_MIN, "%s", s.c_str());
   ImGui::PopStyleColor();
 }
 void right(const std::string &s) { right(ImGui::GetStyleColorVec4(ImGuiCol_Text), s); }

@@ -699,29 +699,17 @@ void charts(const char *name, Series &intra, Series &daily, uint64_t id, ChartSt
   ImGui::PopID();
 }
 
-// 篮子日内叠加的一条: x = 日轴第 k 日 · kSlots + 槽 (并根 = 组中点), y = 收对本条在日轴内首日前收 (base) 的涨跌幅 [%] (各条同一零点, 跨日接续)
-//   g = 0: 收盘线 (缺口处一点 y = NaN, 线断开); g ≥ 1: 蜡烛 (每根并 g 槽; 实体 = 上一根收 → 本根收, 首根起于首日前收 = 0, 根根首尾相接; open = 实体起点,
-//     high / low 同 y 口径并包住实体), 另带现价十字: chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x
+// 篮子日内叠加的一条 (线): x = 日轴第 k 日 · kSlots + 槽, y = 收对本条在日轴内首日前收 (base) 的涨跌幅 [%] (各条同一零点, 跨日接续);
+//   缺口处一点 y = NaN, 线断开. cross = 带现价十字 (只一条时): chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x
 struct Overlay {
   size_t pick = 0; // picks 下标
   std::string name;
   ImVec4 col;
   std::vector<double> x, y;
-  int g = 0;
-  std::vector<double> open, high, low;
+  bool cross = false;
   double chg = 0;
   int now = 0;
 };
-
-// 一条的蜡烛
-void candles(const Overlay &l) {
-  if (!ImPlot::BeginItem("##k", ImPlotItemFlags_NoLegend))
-    return;
-  ImDrawList *dl = ImPlot::GetPlotDrawList();
-  for (size_t i = 0; i < l.x.size(); ++i)
-    candle(dl, l.x[i], kBody * l.g, l.open[i], l.high[i], l.low[i], l.y[i]);
-  ImPlot::EndItem();
-}
 
 // 叠加图 0 轴上的净流入柱: 标的在日轴各日的每分钟净流入 (Bars::net, 分钟涨跌法) [元], x 同叠加图;
 //   历史日 = 历史分钟根, 当日 = 快照合成的根 (此刻所在根随快照动, 走完即与分钟 K 同值).
@@ -750,28 +738,24 @@ void fmt_signed(char *buf, int size, double a) {
   fmt_amount(buf + 1, size - 1, std::abs(a));
 }
 
-// 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 / 蜡烛 (含零线; center = 0 轴居中: 上下取两侧较大者对称); 刻度区全空 (图框不变), 不画图例:
+// 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线 (含零线; center = 0 轴居中: 上下取两侧较大者对称); 刻度区全空 (图框不变), 不画图例:
 //   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格 y 值 (带单位 unit) 以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
 //   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠.
-//   蜡烛条另画现价十字: 过末根的横 / 竖虚线 (当日涨跌色), 右壁标末根涨跌幅 (同 y 口径), 底壁标时刻 (色底黑字).
-//   十字光标: 竖线吸附到分钟 (蜡烛 = 吸附到根), 横线随鼠标; 提示 = 时刻 + 光标处 y + 该处各条读数 (高 → 低).
+//   带 cross 的线另画现价十字: 过末点的横 / 竖虚线 (当日涨跌色), 右壁标末点涨跌幅 (同 y 口径), 底壁标时刻 (色底黑字).
+//   十字光标: 竖线吸附到分钟, 横线随鼠标; 提示 = 时刻 + 光标处 y + 该处各条读数 (高 → 低).
 //   悬停联动 (HoverSync): hot = 白粗线画在最上的条 (pick; −1 = 无), near = 图上悬停的条 (pick; −1 = 无).
 //   net = 0 轴上的净流入柱 (nullptr = 不画): 左下角小字 "净流入 · 名" + 末根读数, 提示另列光标处的净流入. 画完返回图区左上角
 ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size, const char *unit, bool center, int hot, int &near,
                     const NetBars *net = nullptr) {
   near = -1;
   const int nd = std::max(1, static_cast<int>(days.size()));
-  const Overlay *one = nullptr; // 蜡烛条
+  const Overlay *one = nullptr; // 带现价十字的线
   double lo = 0, hi = 0;
   for (const Overlay &l : ls) {
-    if (l.g)
+    if (l.cross)
       one = &l;
     for (const double y : l.y)
       lo = std::min(lo, y), hi = std::max(hi, y);
-    for (const double y : l.low)
-      lo = std::min(lo, y);
-    for (const double y : l.high)
-      hi = std::max(hi, y);
   }
   if (center)
     hi = std::max(hi, -lo), lo = -hi;
@@ -826,12 +810,8 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     }
     for (size_t i = 0; i < ls.size(); ++i) {
       ImGui::PushID(static_cast<int>(i));
-      if (ls[i].g) {
-        candles(ls[i]);
-      } else {
-        ImPlot::SetNextLineStyle(ls[i].col, 1.5f);
-        ImPlot::PlotLine("##l", ls[i].x.data(), ls[i].y.data(), static_cast<int>(ls[i].x.size()));
-      }
+      ImPlot::SetNextLineStyle(ls[i].col, 1.5f);
+      ImPlot::PlotLine("##l", ls[i].x.data(), ls[i].y.data(), static_cast<int>(ls[i].x.size()));
       ImGui::PopID();
     }
     const int k = near_line(ls.size(), [&](size_t i, double x) {
@@ -841,7 +821,7 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     if (k >= 0)
       near = static_cast<int>(ls[static_cast<size_t>(k)].pick);
     for (const Overlay &l : ls)
-      if (static_cast<int>(l.pick) == hot && !l.g) {
+      if (static_cast<int>(l.pick) == hot) {
         ImPlot::SetNextLineStyle(kHotCol, kHotW);
         ImPlot::PlotLine("##hot", l.x.data(), l.y.data(), static_cast<int>(l.x.size()));
       }
@@ -894,13 +874,13 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     }
     if (ImPlot::IsPlotHovered()) {
       const ImPlotPoint m = ImPlot::GetPlotMousePos();
-      const int g = one ? one->g : 1, grp = static_cast<int>(std::clamp(std::round(m.x), 0.0, nd * kSlots - 1.0)) / g;
-      const double x = static_cast<double>(grp * g) + (g - 1) * 0.5; // 同 merge 的组中点
+      const int slot = static_cast<int>(std::clamp(std::round(m.x), 0.0, nd * kSlots - 1.0));
+      const double x = static_cast<double>(slot);
       ImPlot::SetNextLineStyle(kCrossLine, 1.f);
       ImPlot::PlotInfLines("##cx", &x, 1);
       ImPlot::SetNextLineStyle(kCrossLine, 1.f);
       ImPlot::PlotInfLines("##cy", &m.y, 1, ImPlotInfLinesFlags_Horizontal);
-      const int end = grp * g + g - 1, k = end / kSlots, mn = slot_label(end % kSlots);
+      const int k = slot / kSlots, mn = slot_label(slot % kSlots);
       std::vector<std::pair<size_t, const Overlay *>> at;
       for (const Overlay &l : ls) {
         const auto it = std::lower_bound(l.x.begin(), l.x.end(), x);
@@ -908,28 +888,20 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
           at.emplace_back(static_cast<size_t>(it - l.x.begin()), &l);
       }
       std::sort(at.begin(), at.end(), [](const auto &a, const auto &b) { return a.second->y[a.first] > b.second->y[b.first]; });
-      char per[16] = "";
-      if (g > 1)
-        std::snprintf(per, sizeof(per), " (%d分)", g);
       ImGui::BeginTooltip();
       if (static_cast<size_t>(k) < days.size())
-        ImGui::Text("%02d-%02d %02d:%02d%s", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60, mn % 60, per);
+        ImGui::Text("%02d-%02d %02d:%02d", days[static_cast<size_t>(k)] / 100 % 100, days[static_cast<size_t>(k)] % 100, mn / 60, mn % 60);
       ImGui::TextDisabled("光标 %+.2f%s", m.y, unit);
       for (const auto &[j, l] : at) {
         const double y = l->y[j];
         ImGui::TextColored(l->col, "%s", l->name.c_str());
         ImGui::SameLine();
         ImGui::TextColored(tint(y, 0), "%+.2f%s", y, unit);
-        if (l->g)
-          ImGui::Text("前 %+.2f%%  高 %+.2f%%\n低 %+.2f%%  收 %+.2f%%", l->open[j], l->high[j], l->low[j], y);
       }
-      if (net) { // 光标所在组 [grp · g, grp · g + g) 的净流入之和
-        const auto b = std::lower_bound(net->x.begin(), net->x.end(), static_cast<double>(grp * g));
-        const auto e = std::lower_bound(b, net->x.end(), static_cast<double>(grp * g + g));
-        if (b != e) {
-          double v = 0;
-          for (auto it = b; it != e; ++it)
-            v += net->v[static_cast<size_t>(it - net->x.begin())];
+      if (net) { // 光标所在分钟的净流入
+        const auto it = std::lower_bound(net->x.begin(), net->x.end(), x);
+        if (it != net->x.end() && *it == x) {
+          const double v = net->v[static_cast<size_t>(it - net->x.begin())];
           char amt[24];
           fmt_signed(amt, sizeof(amt), v);
           ImGui::TextColored(tint(v, 0), "净流入 · %s %s", net->name.c_str(), amt);
@@ -1029,15 +1001,14 @@ void overlay_tools(const ImVec2 &corner, Feed &f, const char *note, const char *
 }
 
 // ---- 叠加图两种 (OverlayKind): 同一条路 RenderOverlay, 差异只在 kOverlayDefs ----
-// 一张叠加图的公共输入: 日轴 (各条按日落位, 某条缺的日留空; 当日未接上 → 当日空) / 只一条 / 图宽 [px]
+// 一张叠加图的公共输入: 日轴 (各条按日落位, 某条缺的日留空; 当日未接上 → 当日空) / 只一条
 struct OverlayCtx {
   const OverlayState &st;
   std::span<const misc::Ymd> days;
   bool one;
-  float px;
 };
 
-// 涨跌幅: y = 收对本条在日轴内首日前收的涨跌幅 [%]; 只一条 = 蜡烛 (含缺口的组不画) + 现价十字, 多条 = 收盘线 (缺口处插 NaN 断开)
+// 涨跌幅: y = 收对本条在日轴内首日前收的涨跌幅 [%] (收盘线, 缺口处插 NaN 断开); 只一条另带现价十字
 bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Overlay &l) {
   Series s;
   intraday(src, cx.days, p.ref.is(kBasket), s);
@@ -1047,21 +1018,9 @@ bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Ove
   const auto pct = [&](double v) { return (v / base - 1.0) * 100.0; };
   if (cx.one) {
     const Candle &e = s.bars.back();
+    l.cross = true;
     l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
     l.now = static_cast<int>(s.x.back());
-    l.g = merge(s, std::max<size_t>(1, cx.days.size()) * kSlots, cx.px);
-    if (s.bars.empty())
-      return false;
-    double prev = 0;
-    for (const Candle &c : s.bars) {
-      const double y = pct(c.close);
-      l.open.push_back(prev), l.high.push_back(std::max({pct(c.high), prev, y})), l.low.push_back(std::min({pct(c.low), prev, y}));
-      prev = y;
-    }
-    l.x = s.x;
-    for (const Candle &c : s.bars)
-      l.y.push_back(pct(c.close));
-    return true;
   }
   for (size_t i = 0, c = 0; i < s.bars.size(); ++i) {
     const bool cut = c < s.cut.size() && s.cut[c] < s.x[i];
@@ -1225,7 +1184,7 @@ int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const 
   const Tape &d = *f.data;
   const std::vector<misc::Ymd> days = OverlayDays(kind, mk, st);
   const ImVec2 avail = ImGui::GetContentRegionAvail();
-  const OverlayCtx cx{st, days, picks.size() == 1, avail.x};
+  const OverlayCtx cx{st, days, picks.size() == 1};
   std::vector<Overlay> ls;
   char note[160] = "";
   bool gap = false;

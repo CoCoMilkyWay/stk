@@ -22,7 +22,7 @@
 //     原序下子池 / 自选行左键 / 中键拖动调序 (子池 = 改池表序 pools.json, 即进程内重启; 全A 两行钉首)
 //   NAV 日内栏 (类别条旁 "日内" 开关, 默认开): 主图上方占左栏 1/3 高 (日内 : 主图 = 1 : 2), 选中的篮子行 / 成分行同主图线色叠加日内收盘线
 //     (RenderOverlay 涨跌幅: Market 篮子历史同一份, 当日由新浪快照合成; 对首日前收的涨跌幅, 横网格 (含 0 轴) 涨跌幅小字内标在右壁,
-//      线名中文小字贴线尾, 读数看十字光标); 只一条 = 同一张图改画分钟蜡烛 + 现价十字 (标涨跌幅 / 时刻);
+//      线名中文小字贴线尾, 读数看十字光标); 只一条另带现价十字 (标涨跌幅 / 时刻);
 //     0 轴上叠每分钟净流入半透明红绿柱 (日轴各日, 同 FLOW 口径; 只选一条看它, 否则看全A.等)
 //   主图 / 日内栏贴边 (窄内边距, 不标轴名), 图区让给线
 //   悬停联动 (NAV 主图 / 日内栏 / FLOW 图 ↔ 右表, 同 Beta→Style: gui/util/HoverSync.hpp): 图上悬停最近一条线 = 右表该行底色亮并滚到居中
@@ -233,7 +233,7 @@ struct LinesState {
 std::vector<std::string> LoadWatch();                  // 文件不存在 = 空; 格式不对 → assert
 void SaveWatch(const std::vector<std::string> &watch); // 原子替换
 
-// GUI 线程每帧: 首次读自选文件
+// GUI 线程每帧: 首次读自选文件 (有自选 → 各页右表类别条先选自选)
 void SyncLinesWatch(LinesState &ui);
 // 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (已起, ui.overlay 两路 Feed 本帧已 Sync; nullptr = AssetInfo 未建,
 // 日内栏 / 指数行业近况 / 成分行当日空着); infos = 基本面档案 (成分行名 / 近况 / 估值); minute = NAV / VAL 主图分钟线的服务, cta = CTA 页的服务.
