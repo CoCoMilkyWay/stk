@@ -259,18 +259,53 @@ void rebal_ctl(LiveHub &hub, BoardState &st) {
   ImGui::EndDisabled();
 }
 
-// 窄表: 可用宽不够时按上帧量得的内容宽 w 收格内边距 (至多收到 1px), 表宽随之贴合; 配 end_fit
-bool begin_fit(const char *id, int n, ImGuiTableFlags flags, float w, float &pad) {
+// 表头: '|' 处可折行, wrap 即折成两行, 否则去掉
+std::string head(const char *h, bool wrap) {
+  std::string s = h;
+  if (const size_t i = s.find('|'); i != std::string::npos)
+    s.replace(i, 1, wrap ? "\n" : "");
+  return s;
+}
+float head_w(const char *h, bool wrap) { return ImGui::CalcTextSize(head(h, wrap).c_str(), nullptr, true).x; }
+
+// 自适应表: 放不下先收格内边距 (至多收到 1px), 仍放不下则表头折行; 按上帧量度 (Fit) 定, 表宽随之贴合. 配 end_fit
+//   量的是各列内容宽, 不是表宽: 放不下时表已被挤窄 (格里出 ...), 量表宽收不动
+bool begin_fit(const char *id, std::span<const char *const> heads, ImGuiTableFlags flags, Fit &f) {
+  const int n = static_cast<int>(heads.size());
   const ImVec2 pad0 = ImGui::GetStyle().CellPadding;
-  pad = w > 0 ? std::clamp((ImGui::GetContentRegionAvail().x - w) / (2 * n), 1.0f, pad0.x) : pad0.x;
+  float pad = pad0.x;
+  if (f.body.size() == heads.size()) {
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const auto need = [&](bool wrap) {
+      float w = n + 1.0f; // 竖线与外沿
+      for (int c = 0; c < n; ++c)
+        w += std::max(f.body[c], f.extra[c] + head_w(heads[c], wrap));
+      return w;
+    };
+    f.wrap = avail - need(false) < 2 * n;
+    pad = std::clamp((avail - need(f.wrap)) / (2 * n), 1.0f, pad0.x);
+  }
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(pad, pad0.y));
   const bool began = ImGui::BeginTable(id, n, flags);
   ImGui::PopStyleVar();
   return began;
 }
-void end_fit(int n, float pad, float &w) {
+void end_fit(std::span<const char *const> heads, Fit &f) {
+  ImGuiTable *t = ImGui::GetCurrentTable();
   ImGui::EndTable();
-  w = ImGui::GetItemRectSize().x - 2 * n * pad;
+  f.body.resize(heads.size());
+  f.extra.resize(heads.size());
+  for (size_t c = 0; c < heads.size(); ++c) {
+    const ImGuiTableColumn &col = t->Columns[static_cast<int>(c)];
+    f.body[c] = std::max(col.ContentMaxXFrozen, col.ContentMaxXUnfrozen) - col.WorkMinX;
+    f.extra[c] = std::max(0.0f, col.ContentMaxXHeadersIdeal - col.WorkMinX - head_w(heads[c], f.wrap));
+  }
+}
+// 表头一行 (各列名按折行与否)
+void fit_heads(std::span<const char *const> heads, const Fit &f) {
+  for (const char *h : heads)
+    ImGui::TableSetupColumn(head(h, f.wrap).c_str());
+  ImGui::TableHeadersRow();
 }
 
 // 试算: 状态一行 (出错 / 等什么 / 试算时刻) + 购买力与行使一表; 未出即空格
@@ -283,18 +318,15 @@ void plan_sheet(LiveHub &hub, BoardState &st) {
   else
     ImGui::TextDisabled("试算于 %s", v.plan->time.c_str());
   constexpr int kN = 8;
-  constexpr const char *kHeads[kN] = {"购买力", "本次行使", "其中融资", "成本", "入选", "每只目标", "卖后现金", "卖后保证金"};
-  float pad;
-  if (!begin_fit("##plan", kN, kFlags, st.plan_w, pad))
+  constexpr const char *kHeads[kN] = {"购买力", "本次|行使", "其中|融资", "成本", "入选", "每只|目标", "卖后|现金", "卖后|保证金"};
+  if (!begin_fit("##plan", kHeads, kFlags, st.plan_fit))
     return;
-  for (const char *h : kHeads)
-    ImGui::TableSetupColumn(h);
-  ImGui::TableHeadersRow();
+  fit_heads(kHeads, st.plan_fit);
   ImGui::TableNextRow();
   if (v.plan) {
     const live::rebal::Plan &p = *v.plan;
     const auto w = [&](double x) { return hub.priv() ? std::string(kMask) : wan(x); };
-    const std::array<std::string, kN> cells{w(p.power), w(p.use), w(p.financed), strf("%.0f", p.cost), strf("%d / %d", p.picked, p.buyable), w(p.V), w(p.C), w(p.X)};
+    const std::array<std::string, kN> cells{w(p.power), w(p.use), w(p.financed), strf("%.0f", p.cost), strf("%d/%d", p.picked, p.buyable), w(p.V), w(p.C), w(p.X)};
     for (int c = 0; c < kN; ++c) {
       ImGui::TableSetColumnIndex(c);
       right(cells[c]);
@@ -308,7 +340,7 @@ void plan_sheet(LiveHub &hub, BoardState &st) {
       ImGui::TableSetColumnIndex(c);
       right(grey(), "—");
     }
-  end_fit(kN, pad, st.plan_w);
+  end_fit(kHeads, st.plan_fit);
 }
 
 // 事务一行: 时刻 名称 · 状态 · 实时进度 结果
@@ -322,21 +354,17 @@ void task_line(LiveHub &hub) {
 }
 
 // 账户对照: 现 / 调仓后 / 变动%, 调仓后与现不同的格标色; 变动按该列好坏着色 (好红坏绿)
-void sheet(const live::rebal::Plan *p, bool priv, float &w) {
+void sheet(const live::rebal::Plan *p, bool priv, Fit &fit) {
   constexpr int kN = 8;
-  constexpr const char *kHeads[kN] = {"总资产", "净资产", "负债", "现金", "可用保证金", "可融余量", "杠杆", "维持担保"};
+  constexpr const char *kHeads[kN + 1] = {"", "总资产", "净资产", "负债", "现金", "可用|保证金", "可融|余量", "杠杆", "维持|担保"};
   constexpr int kGood[kN] = {1, 1, -1, 1, 1, 1, -1, 1}; // 涨为好 1 / 跌为好 -1
   using Vals = std::array<std::optional<double>, kN>;
   const auto vals = [](const live::rebal::Sheet &s) { return Vals{s.assets, s.net, s.debt, s.cash, s.X, s.L, s.lev, s.maint}; };
   const auto txt = [](int c, double v) { return c == 6 ? strf("%.2f", v) : c == 7 ? strf("%.0f%%", v * 100)
                                                                                   : wan(v); };
-  float pad;
-  if (!begin_fit("##sheet", kN + 1, kFlags, w, pad))
+  if (!begin_fit("##sheet", kHeads, kFlags, fit))
     return;
-  ImGui::TableSetupColumn("");
-  for (const char *h : kHeads)
-    ImGui::TableSetupColumn(h);
-  ImGui::TableHeadersRow();
+  fit_heads(kHeads, fit);
   const Vals now = p ? vals(p->now) : Vals{}, exp = p ? vals(p->exp) : Vals{};
   for (int r = 0; r < 2; ++r) {
     ImGui::TableNextRow();
@@ -371,7 +399,7 @@ void sheet(const live::rebal::Plan *p, bool priv, float &w) {
     else
       right(tint(d * kGood[c], 0), s);
   }
-  end_fit(kN + 1, pad, w);
+  end_fit(kHeads, fit);
 }
 
 // 控件分组: 一行一组, 左格组名, 右格控件行与定高的状态行
@@ -404,7 +432,7 @@ void groups(LiveHub &hub, BoardState &st) {
   task_line(hub);
   row("账户");
   const auto &p = hub.plan().plan;
-  sheet(p ? &*p : nullptr, hub.priv(), st.acct_w);
+  sheet(p ? &*p : nullptr, hub.priv(), st.acct_fit);
   ImGui::EndTable();
 }
 
@@ -771,8 +799,7 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
   if (hub.plan().plan)
     for (const live::rebal::Hold &h : hub.plan().plan->holds)
       holds.emplace(h.code, &h);
-  float pad;
-  if (!begin_fit("##pos", C_COUNT, kFlags | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate, st.pos_w, pad))
+  if (!begin_fit("##pos", kHeads, kFlags | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate, st.pos_fit))
     return;
   for (int c = 0; c < C_COUNT; ++c)
     ImGui::TableSetupColumn(kHeads[c], col_flags(c));
@@ -915,7 +942,7 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     ImGui::TableSetColumnIndex(C_COST);
     right(strf("%.0f", sells.cost));
   }
-  end_fit(C_COUNT, pad, st.pos_w);
+  end_fit(kHeads, st.pos_fit);
 }
 
 // 名单行: 排名、可买与否、条款、补多少、融资 / 现金两腿

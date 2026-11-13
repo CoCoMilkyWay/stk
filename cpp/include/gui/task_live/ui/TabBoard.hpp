@@ -1,5 +1,5 @@
 // Tab Board - 持仓 · 调仓页: 连接 (客户端适配表 live/Clients.hpp 一行一个按钮) / 左栏 控件分组 + 持仓表 + 调仓名单 + 事务日志 / 右栏选中持仓的行情图
-//   左栏小一号字 (kFontScale)、紧凑间距, 一屏放下持仓与调仓两面; 各表格内边距随栏宽收放 (放得下用满, 放不下压到 1px)
+//   左栏小一号字 (kFontScale)、紧凑间距, 一屏放下持仓与调仓两面; 各表格内边距随栏宽收放 (放得下用满, 放不下压到 1px, 仍放不下则长表头折两行)
 //   控件分组一行一组, 状态行定高 (不随内容增减, 免得持仓表的按钮在手底下挪):
 //     数据: 刷新 / 定时 / 两融条款 / 隐私, 刷新进度; 下单: 委托价 / 买入方式, 最近两单的步骤条;
 //     调仓: 名单 / 最小单元 / 行使比例 / 执行, 试算状态 + 试算表与事务;
@@ -26,6 +26,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 struct SharedData;
 
@@ -33,6 +34,12 @@ namespace GUI::Live {
 
 inline constexpr double kSlipOk = 10, kSlipHi = 20; // [万分之一]
 inline constexpr float kFontScale = 0.85f;          // 左栏字号 / 基准字号
+
+// 自适应表的上帧量度: 各列格内容宽 (不含表头), 表头除字宽外的占宽 (排序箭头 / 表头内控件); 表头是否折行
+struct Fit {
+  std::vector<float> body, extra;
+  bool wrap = false;
+};
 
 struct BoardState {
   std::string sel;            // 选中的代码 (行情图看它)
@@ -51,7 +58,7 @@ struct BoardState {
   Market::StockState stock;
   std::unordered_map<std::string, uint32_t> ids; // "000001.SZ" → 全局 id
   float split = 0.66f;                           // 左右分栏比
-  float pos_w = 0, acct_w = 0, plan_w = 0;       // 持仓 / 账户 / 试算表除去格内边距的宽 (上一帧量得; 0 = 未量)
+  Fit pos_fit, acct_fit, plan_fit;               // 持仓 / 账户 / 试算表
 };
 
 void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, BoardState &st);
