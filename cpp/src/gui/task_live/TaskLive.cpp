@@ -1,5 +1,5 @@
 // Task Live - 实盘: 券商客户端的持仓、下单与一键调仓 (中枢 LiveHub 券商无关; 客户端适配在 live/<客户端>/, 登记在 live/Clients.hpp)
-//   Board: 连接 + 持仓 · 调仓一页 (控件分组 / 持仓表行内闪电下单与卖出滑杆 / 调仓名单 / 日志) + 右栏选中持仓的行情图
+//   Board: 连接 + 持仓 · 调仓一页 (控件分组 / 持仓表行内闪电下单与卖出滑杆, 并调仓名单 / 日志) + 右栏选中行的行情图
 //     (Market 的个股面板, 与 Database / Market 共用 QuoteHub)
 //   Client: 已连客户端自带的调试台 (Broker::console), 不算有人在看持仓
 //   行情走新浪 (LiveHub 一路), 不读客户端的行情; Board 可见时才盯客户端 (见 live/Broker.hpp 的 touch)
