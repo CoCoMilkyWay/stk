@@ -150,7 +150,7 @@ struct LibWork {
 };
 
 // 库段一趟: 选股表 pk 的日轴 dates [from, N) (from ≥ 1; pk 与 axis 同为 all.bar 轴), 每批 T = 线程数日:
-//   并行  一日一件 (批内第 k 件): 读 D−1 / D 日根行 (+ D 的 L_1min, i ≥ minutes_from) → members → Lane::run; each(i, id, Leg) 逐只 (各日各只互不相干)
+//   并行  一日一件 (批内第 k 件): 读 D−1 / D 日根行 (+ D 的 L_1min, i ≥ minutes_from) → members → Lane::run; each(k, id, Leg) 逐只 (各日各只互不相干)
 //   串行  按日序 chain(i, k, LibWork &) (日间接续: 点位 / 因子链), 批末 batch()
 //   x 记 Loading 天; false = 取消 / 判废 (rd.stale)
 template <class Each, class Chain, class Batch>
@@ -177,7 +177,7 @@ bool lib_pass(const PoolAxis &axis, const FeatureRead &rd, const pool::Picks &pk
       if (w.minutes)
         read_minutes(rd, d, w.mc);
       members(pk, axis, d, w.lane.mem);
-      w.lane.run(LibDay{d, axis, w.prev, w.cur, w.minutes ? &w.mc : nullptr}, [&](uint32_t id, const Leg &g) { each(i, id, g); });
+      w.lane.run(LibDay{d, axis, w.prev, w.cur, w.minutes ? &w.mc : nullptr}, [&](uint32_t id, const Leg &g) { each(k, id, g); });
     });
     if (rd.stale())
       return false;

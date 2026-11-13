@@ -696,28 +696,30 @@ LinesRow strat_row(const std::string &name) {
   r.tag = r.hover = name;
   return r;
 }
-// 账户行: 两条线同一条 = 账户的全史 (带日内形)
+// 账户行 (账户 0)
 constexpr float kAccountHue = 0.15f;
 constexpr const char *kAccountId = "account";
-LinesRow account_row(const LinesAccount &a) {
+LinesRow account_row(const std::string &hover) {
   LinesRow r;
   r.id = kAccountId;
   r.en = "account", r.cn = r.tag = "账户";
-  r.hover = a.hover;
+  r.hover = hover;
   r.hue = kAccountHue;
-  for (LineSrc &s : r.src)
-    s.price = s.minutes = a.se.get();
+  r.ref = {Quote::kAccount, 0};
   return r;
 }
 
 // 有行情键的行 r (已取名) 进组 g: 腿 / 估值腿 = 该侧账的键线; 可成交 = 腿扣成本合成 (两侧账都无成本列 ⇒ 不扣);
-// 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘) 再接个股全史 (价格库留着的才有; 无则与可成交同一条);
+// 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘) 再接个股全史 (价格库留着的才有; 无则与可成交同一条)
+//   / 账户 = 账户全史 (无账, 可成交同理想);
 //   两条都带该键的日内形 (全史连分钟才有)
 void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const Reuse &ru) {
-  r.val = leg_of(d.quotes[r.ref.side], r.ref.key);
-  r.src[kTrade] = mix_src(legs_of(r.val), true, fixed_impact);
-  if (r.ref.is(Quote::kStock))
-    r.src[kIdeal] = mix_src(legs_of(r.val), false, 0.0);
+  if (r.ref.side < Quote::kMarkets) {
+    r.val = leg_of(d.quotes[r.ref.side], r.ref.key);
+    r.src[kTrade] = mix_src(legs_of(r.val), true, fixed_impact);
+    if (r.ref.is(Quote::kStock))
+      r.src[kIdeal] = mix_src(legs_of(r.val), false, 0.0);
+  }
   if (d.view) {
     const Quote::Series *se = d.view->series(r.ref);
     r.src[kIdeal].price = se;
@@ -725,6 +727,8 @@ void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const R
       for (LineSrc &s : r.src)
         s.minutes = se;
   }
+  if (r.ref.is(Quote::kAccount))
+    r.src[kTrade] = r.src[kIdeal];
   push(d, g, std::move(r), ru);
 }
 // 无行情键的行 r (已取名) 进组 g: 可成交 / 理想 = 腿集 legs 扣 / 不扣成本合成
@@ -1011,6 +1015,8 @@ void rank_col(size_t n, int good, const At &at) {
 } // namespace
 
 Quote::Ref RowRef(const std::string &id) {
+  if (id == kAccountId)
+    return {Quote::kAccount, 0};
   if (id.starts_with(kStockId))
     return {Quote::kStock, static_cast<uint32_t>(std::stoul(id.substr(kStockId.size())))};
   for (size_t b = 0; b < basket_table().size(); ++b)
@@ -1021,13 +1027,12 @@ Quote::Ref RowRef(const std::string &id) {
 
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
                       const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, double fixed_impact, const std::string &open,
-                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const LinesAccount &account, const StockInfos &infos,
+                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const std::string &account, const StockInfos &infos,
                       LinesDerived &d) {
   LinesDerived o = std::move(d);
   d = LinesDerived{};
   const std::vector<const PortfolioItem *> its = ready_of(items, res, d);
   bind_quotes(res, view, live, d);
-  d.account = account;
   const Reuse ru(o, d.dates);
   std::vector<uint32_t> kids = watch_stocks(watch);
   kids.insert(kids.end(), stocks.begin(), stocks.end());
@@ -1035,8 +1040,8 @@ void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string
   kids.erase(std::unique(kids.begin(), kids.end()), kids.end());
   derive_quotes(open, kids, infos, fixed_impact, ru, d);
   derive_books(its, name, fixed_impact, ru, d);
-  if (account.se)
-    push(d, kGroupAccount, account_row(account), ru);
+  if (d.view && d.view->series({Quote::kAccount, 0}))
+    push_quote(d, kGroupAccount, account_row(account), fixed_impact, ru);
   build_lines(d);
   paint(d, o);
   derive_watch(watch, d);
@@ -1060,7 +1065,7 @@ void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string
   d.val_gen = o.val_gen + (axis || sizes(d) != sizes(o) || val_rows(d) != val_rows(o));
 }
 
-void MakeLinesLive(const LinesDerived &d, const Quote::Live *y, const Quote::Day *account, LinesLive &t) {
+void MakeLinesLive(const LinesDerived &d, const Quote::Live *y, LinesLive &t) {
   for (int g = 0; g < kRowGroups; ++g)
     t.tail[g].assign(d.rows[g].size(), {});
   if (!y || !d.live)
@@ -1074,8 +1079,7 @@ void MakeLinesLive(const LinesDerived &d, const Quote::Live *y, const Quote::Day
       const LinesRow &w = d.rows[g][r];
       if (!w.src[kIdeal].price)
         continue;
-      if (const Quote::Day *day = w.ref.ok() ? y->at(w.ref) : w.id == kAccountId ? account
-                                                                                 : nullptr) {
+      if (const Quote::Day *day = w.ref.ok() ? y->at(w.ref) : nullptr) {
         assert(day->candle.date == d.live);
         t.tail[g][r] = tail_of(*w.line[kIdeal], di, *day, w.src[kIdeal].minutes != nullptr);
       }

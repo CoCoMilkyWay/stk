@@ -29,18 +29,18 @@
 //   行情日 ≤ fund_end (基本面段末日 AssetInfo::quote_end; 随基本面同步推进) 不取分钟 K (那天由基本面给).
 //   落盘 output/data/quote/live.bin: 行情日全部 Track + 末轮快照时刻, 定长文件整份 MAP_SHARED 映射; 原子粒度 = 一只的状态 / 一格 (只, 分钟),
 //     改一处当场写一处 (进程被杀 / 崩溃不丢; 写到一半的条目读回当作没有: 状态 → 该只从零, 格 → 该格成缺口待补).
-//     换日 (含启动首轮) 先读同日缓存 (按新浪码对上本次全市场) 再重写成本次布局 —— 停机那段即一次断档, 照断档规则只补其间有成交的只;
-//     收盘后重启零请求.
+//     条目按全局 id 排 (头记只数 + 资产轴前缀指纹); 换日 (含启动首轮) 先读同日缓存 (指纹对得上才认, 全市场外的不收) 再重写成本次布局 ——
+//     停机那段即一次断档, 照断档规则只补其间有成交的只; 收盘后重启零请求.
 //   往日归档 output/data/quote/YYYYMMDD.bin: 换日时缓存是更早的行情日且收完了 (收盘后的快照 ∧ 无待补区间 / 缺口 / 写到一半的条目) → 原样转作归档,
 //     否则弃; 不可变. PriceLib 读作补段的新浪段 (archived_day), 基本面段盖住即删 (drop_archived).
-//   全市场 = 构造时给定的全局轴子集 (PoolAxis; 对外一律全局 id, 内部下标 = sub, 新浪码 = sina::sym_of(轴码)); 前一交易日取自交易日历;
+//   全市场 = 构造时给定的全局 id (在市股); 各只一律按全局 id 下标 (资产轴前 N 条, 全市场外的空着), 新浪码 = sina::sym_of(轴码); 前一交易日取自交易日历;
 //   订阅码 (watch; 实盘的持仓 / 名单, 含全市场外的 ETF / LOF): 只要快照, 全市场外的另成一批随同一轮取, 末快照进 Live::watch; 换了即提前一轮.
+//   末快照每轮只换变了的只 (Quotes 逐只共享), 发布只拷指针.
 //   线程: 快照 1 (每批一路并发) + 分钟 K kFillers, 随对象.
 // 当日的 Day: 有成交才有 (个股 = 本只当日有成交, 篮子 = 成员有成交); 基准 = 新浪昨收; 个股的净流入 = 本只分钟涨跌法 (net_flow).
 #pragma once
 
 #include "api/sina/client.hpp"
-#include "fundamental/AssetAxis.hpp" // PoolAxis
 #include "gui/quote/Quote.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
@@ -87,18 +87,19 @@ public:
   static constexpr int kFoldGap = 1;                   // 补根后发布的最小间隔 [s]
   static constexpr int kFoldThreads = 8;               // 发布的并行 (重建个股 Day / 篮子按段合成)
 
-  QuoteService(std::shared_ptr<const PoolAxis> axis, misc::Ymd fund_end, std::shared_ptr<const Calendar> cal);
+  // ids = 全市场 (全局 id)
+  QuoteService(const std::vector<uint32_t> &ids, misc::Ymd fund_end, std::shared_ptr<const Calendar> cal);
   ~QuoteService();
   QuoteService(const QuoteService &) = delete;
   QuoteService &operator=(const QuoteService &) = delete;
 
-  const PoolAxis &axis() const { return *axis_; } // 全市场 (构造后不变, 任意线程)
-  void select(uint32_t id);                       // GUI: 选中标的 (全局 id; ~0u = 无)
-  void set_fund_end(misc::Ymd e);                 // GUI: 基本面段末日推进
-  void watch(std::vector<std::string> syms);      // 任意线程: 订阅码 (新浪码) 整份换上
+  bool listed(uint32_t id) const { return id < syms_.size() && !syms_[id].empty(); } // 在全市场 (构造后不变, 任意线程)
+  void select(uint32_t id);                                                          // GUI: 选中标的 (全局 id; ~0u = 无)
+  void set_fund_end(misc::Ymd e);                                                    // GUI: 基本面段末日推进
+  void watch(std::vector<std::string> syms);                                         // 任意线程: 订阅码 (新浪码) 整份换上
   QuoteStatus status() const;
   std::shared_ptr<const Live> live() const; // 末份当日; 空 = 尚未发布
-  // 交接 (成员表下标: 库轴 → 全市场) 换上, 当场发布一次 (PriceLib 定下交接即调)
+  // 交接换上, 当场发布一次 (PriceLib 定下交接即调)
   void bind(const Handoff &h);
 
 private:
@@ -143,8 +144,8 @@ private:
   void poll();
   void fill();
   void publish(); // 当日有变 → 一份 Live; 不持 mu_ 调
-  // 篮子当日合成到 y.baskets (源 = y.stocks; 槽 [0, slots)); [sub] 本轮冻结线 freeze / 上次发布后改写过的最早槽 touched
-  void fold(Live &y, const std::shared_ptr<const Basis> &b, int slots, std::span<const int> freeze, std::span<const int> touched);
+  // 篮子当日合成到 y.days[kBasket] (源 = 个股的当日 stocks; 槽 [0, slots)); [全局 id] 本轮冻结线 freeze / 上次发布后改写过的最早槽 touched
+  void fold(Live &y, const Days &stocks, const std::shared_ptr<const Basis> &b, int slots, std::span<const int> freeze, std::span<const int> touched);
   // 以下须持 mu_
   bool stale() const { return dirty_ && date_ != 0; }
   void post(); // 状态副本 → status_
@@ -152,7 +153,7 @@ private:
   int settled() const;
   int live_slot() const;
   int done() const { return std::max(settled(), live_slot() - 1); } // 已走完的末根 (分钟 K 取得到)
-  bool traded(const sina::Quote &q) const { return q.date == date_ && q.volume > 0 && q.price > 0; }
+  bool traded(const sina::Quote *q) const { return q && q->date == date_ && q->volume > 0 && q->price > 0; }
   // 改 tracks_[i] (f(Track &) → 根有变) 的唯一入口: 计数增量跟上, 根有变 → 作废其当日快照
   template <class F>
   void touch(uint32_t i, F &&f) {
@@ -167,20 +168,19 @@ private:
   void put(uint32_t i);        // tracks_[i] 的状态 → 映射
   void put(uint32_t i, int s); // tracks_[i] 的格 s → 映射
 
-  const std::shared_ptr<const PoolAxis> axis_;
   const std::shared_ptr<const Calendar> cal_;
-  std::vector<std::string> syms_;                   // [sub] 新浪码
-  std::unordered_map<std::string, uint32_t> index_; // 新浪码 → sub
+  std::vector<std::string> syms_;                   // [全局 id] 新浪码 (全市场外空)
+  std::unordered_map<std::string, uint32_t> index_; // 新浪码 → 全局 id
 
   mutable std::mutex mu_;
   std::condition_variable cv_;   // 分钟 K 线程: 待取 / 停
   std::condition_variable wake_; // 快照线程: 当日有变待发布 / 停
   bool stop_ = false;
   misc::Ymd fund_end_;
-  misc::Ymd date_ = 0, prev_ = 0; // 行情日 / 其前一交易日
-  uint64_t gen_ = 0;              // 换日 +1: 在取的分钟 K 作废
-  std::vector<Track> tracks_;
-  std::shared_ptr<const std::vector<sina::Quote>> last_; // [sub] 末快照 (每轮整份换)
+  misc::Ymd date_ = 0, prev_ = 0;                        // 行情日 / 其前一交易日
+  uint64_t gen_ = 0;                                     // 换日 +1: 在取的分钟 K 作废
+  std::vector<Track> tracks_;                            // [全局 id]
+  std::shared_ptr<const Quotes> last_;                   // 末快照 (每轮换变了的只)
   std::vector<std::string> watch_;                       // 订阅码 (升序)
   bool rewatch_ = false;                                 // 订阅码换了, 未取
   std::shared_ptr<const std::vector<sina::Quote>> seen_; // 订阅码的末快照 (Live::watch)
@@ -206,8 +206,8 @@ private:
   std::vector<std::thread> fillers_;
 };
 
-// 归档日 d (须在) 在库轴 axis 上: px [axis] 日根 (末快照, ref = 昨收; 归档无该只 → 收 0) / bars [axis] 分钟根
-void archived_day(misc::Ymd d, const PoolAxis &axis, std::vector<Candle> &px, std::vector<Bars> &bars);
+// 归档日 d (须在) 在资产轴前 N 条上: px [全局 id] 日根 (末快照, ref = 昨收; 归档无该只 → 收 0) / bars [全局 id] 分钟根
+void archived_day(misc::Ymd d, size_t N, std::vector<Candle> &px, std::vector<Bars> &bars);
 // 删 ≤ upto 的归档
 void drop_archived(misc::Ymd upto);
 

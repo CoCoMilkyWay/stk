@@ -148,10 +148,12 @@ enum class Seg : std::uint8_t {
   X(LibPreview,        LibCache,          File,   Lit,       "features.json",     "",         false)       \
   X(LibPrice,          LibCache,          Dir,    Lit,       "price",             "",         false)       \
   X(LibPriceHead,      LibPrice,          File,   Lit,       "head.bin",          "",         false)       \
-  X(LibPriceStockDay,  LibPrice,          File,   Lit,       "stock_day.bin",     "",         false)       \
-  X(LibPriceStockMin,  LibPrice,          File,   Lit,       "stock_min.bin",     "",         false)       \
-  X(LibPriceBasketDay, LibPrice,          File,   Lit,       "basket_day.bin",    "",         false)       \
-  X(LibPriceBasketMin, LibPrice,          File,   Lit,       "basket_min.bin",    "",         false)       \
+  X(LibPriceStock,     LibPrice,          Dir,    Lit,       "stock",             "",         false)       \
+  X(LibPriceStockBlock, LibPriceStock,    File,   Ymd,       "b",                 ".bin",     false)       \
+  X(LibPriceStockDay,  LibPriceStock,     File,   Ymd,       "d",                 ".bin",     false)       \
+  X(LibPriceBasket,    LibPrice,          Dir,    Lit,       "basket",            "",         false)       \
+  X(LibPriceBasketBlock, LibPriceBasket,  File,   Ymd,       "b",                 ".bin",     false)       \
+  X(LibPriceBasketDay, LibPriceBasket,    File,   Ymd,       "d",                 ".bin",     false)       \
   /* ③ 因子 */                                                                                            \
   X(Factors,           Output,            Dir,    Lit,       "factors",           "",         false)       \
   X(FactorPool,        Factors,           Dir,    Pool,      "",                  "",         false)       \

@@ -364,7 +364,7 @@ bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
   const Rc rc = eval_baskets(F, t.scope, j, bs);
   if (!settle(rc))
     return false;
-  Quote::PerSide<std::shared_ptr<PortfolioBook>> q;
+  Quote::PerMarket<std::shared_ptr<PortfolioBook>> q;
   for (std::shared_ptr<PortfolioBook> &x : q) {
     x = std::make_shared<PortfolioBook>();
     x->sig = t.sig(), x->lv = kBasketLevel;
@@ -393,7 +393,7 @@ bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
     }
   }
   put([&](PortfolioResult &r) {
-    for (int k = 0; k < Quote::kSides; ++k)
+    for (int k = 0; k < Quote::kMarkets; ++k)
       r.quotes[k] = std::move(q[k]);
   });
   return true;

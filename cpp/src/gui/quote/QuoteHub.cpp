@@ -1,7 +1,6 @@
 #include "gui/quote/QuoteHub.hpp"
 
 #include "account/Ledger.hpp"
-#include "fundamental/AssetAxis.hpp"
 #include "imgui.h"
 #include "shared/SharedData.hpp"
 
@@ -29,7 +28,7 @@ void QuoteHub::frame(const SharedData &data) {
       if (d.trading)
         cal->days.push_back(d.date);
     cal_ = std::move(cal);
-    quote_ = std::make_unique<QuoteService>(std::make_shared<const PoolAxis>(pool_axis(std::move(ids))), mark, cal_);
+    quote_ = std::make_unique<QuoteService>(ids, mark, cal_);
     price_ = std::make_unique<PriceLib>(cal_, [q = quote_.get()](const Handoff &h) { q->bind(h); });
     mark_ = mark;
   }
@@ -38,7 +37,6 @@ void QuoteHub::frame(const SharedData &data) {
     quote_->set_fund_end(mark);
   }
   status = quote_->status();
-  live = quote_->live();
   std::vector<Want> &ws = want_.wants;
   std::ranges::sort(ws, {}, [](const Want &w) { return std::tuple(w.ref.side, w.ref.key, !w.minute); });
   ws.erase(std::ranges::unique(ws, {}, &Want::ref).begin(), ws.end());
@@ -51,11 +49,23 @@ void QuoteHub::frame(const SharedData &data) {
   }
   ws.clear();
   view = latest(*price_);
+  const std::shared_ptr<const Live> y = quote_->live();
+  std::shared_ptr<const Day> a = today_(view, y);
+  if (y != sina_ || a != account_) {
+    sina_ = y, account_ = std::move(a);
+    if (y && account_) {
+      auto j = std::make_shared<Live>(*y);
+      j->days[kAccount] = std::make_shared<const Days>(Days{account_});
+      live = std::move(j);
+    } else {
+      live = y;
+    }
+  }
 }
 
 void QuoteHub::want(Ref r, bool minute) {
   assert(r.ok());
-  if (minute || r.side == kStock)
+  if (r.side != kAccount && (minute || r.side == kStock))
     want_.wants.push_back({r, minute});
 }
 

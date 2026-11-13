@@ -190,7 +190,7 @@ void SyncLinesWatch(LinesState &ui) {
 }
 
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
-                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const LinesAccount &account) {
+                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account) {
   assert(page >= 0 && page < kPages);
   const PageDef &pd = kPageDefs[page];
   PortfolioResult res;
@@ -230,7 +230,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
   const std::shared_ptr<const Quote::PriceView> view = mk ? mk->view : nullptr;
   const std::shared_ptr<const Quote::Live> live = mk ? mk->live : nullptr;
   const misc::Ymd today = mk ? mk->joint(Quote::kBasket).today() : 0;
-  ui.der.update(LinesDerKey{gen, pf.items_gen, view, today, fixed_impact, infos.size(), ui.pick.open, stocks, ui.watch, account.se, account.hover},
+  ui.der.update(LinesDerKey{gen, pf.items_gen, view, today, fixed_impact, infos.size(), ui.pick.open, stocks, ui.watch, account},
                 [&](LinesDerived &dv) {
                   const std::vector<misc::Ymd> old = dv.dates;
                   MakeLinesDerived(pf.items, pf.name, res, view, today, fixed_impact, ui.pick.open, stocks, ui.watch, account, infos, dv);
@@ -238,7 +238,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
                     for (int p = 0; p < kPages; ++p)
                       ui.range[p] = DefaultLinesRange(p, dv.dates);
                 });
-  ui.live.update(LinesLiveKey{ui.der.gen, live, account.today}, [&](LinesLive &t) { MakeLinesLive(d, live.get(), account.today.get(), t); });
+  ui.live.update(LinesLiveKey{ui.der.gen, live}, [&](LinesLive &t) { MakeLinesLive(d, live.get(), t); });
   const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
   const LinesAt pin = one.empty() ? LinesAt{} : d.at(one.begin()->first); // VAL 标的
   const LinesLeg lg = pin.g >= 0 ? d.row(pin).val : LinesLeg{};           // 其估值腿
@@ -259,7 +259,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
   const float left = av.x - lw - st.ItemSpacing.x;
   const float ph = av.y - kBarH - st.ItemSpacing.y;
   const float ih = pd.overlay != kOverlayNone && ui.intraday ? std::floor((ph - st.ItemSpacing.y) / 3.0f) : 0.0f;
-  // 选中的有行情键的行 (篮子 / 成分) 的行情叠加图 (日内栏 / FLOW 同一份选中, 线色 = 主图的), 贴边占满 size
+  // 选中的有行情键的行 (篮子 / 成分 / 账户) 的行情叠加图 (日内栏 / FLOW 同一份选中, 线色 = 主图的), 贴边占满 size
   // 悬停联动 (ui.hover): 各图 (日内栏 / FLOW 图的条按行 id 对上) → 右表
   ui.hover.begin();
   const auto overlay_child = [&](const char *id, const ImVec2 &size, OverlayKind kind) {

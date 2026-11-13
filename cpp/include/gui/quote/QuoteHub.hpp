@@ -2,6 +2,7 @@
 //   Database 的 Sync 页只读新浪状态. CreateAllTasks 建, 各任务各持一个 shared_ptr.
 //   首次用到才起 (之前不碰网络); 价格库的交接交给新浪 ⇒ 依赖者后建先拆 (成员序即析构序)
 //   一帧一份 (frame 取, 各处只读): 新浪状态 / 当日 (Live) / 历史 (PriceView); 读行情只经 joint / of (接续判据只此一处)
+//   账户当日由 today 给 (AccountHub), 并进 Live::days[kAccount]: 与新浪的那份或账户当日有一变才另拼一份
 //   要的全史各处每帧登记 (want), 下帧首并成一个价格库请求 (连同基本面段末日 / 行情日 / 账本代 / 券商现价), 变了才发;
 //     价格库发布的是它留着的全部 (不只本帧要的), 切页不闪
 //   交易日历一份 (AssetInfo 的交易日), 新浪与价格库共用
@@ -11,6 +12,7 @@
 #include "gui/quote/services/QuoteService.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -22,6 +24,10 @@ struct SharedData;
 namespace GUI::Quote {
 
 struct QuoteHub {
+  // 账户当日: (本帧历史, 新浪的当日; 皆可空) → 账户的当日 Day (空 = 无)
+  using Today = std::function<std::shared_ptr<const Day>(const std::shared_ptr<const PriceView> &, const std::shared_ptr<const Live> &)>;
+  explicit QuoteHub(Today today) : today_(std::move(today)) {}
+
   // 本帧 (GUI 线程, frame 取)
   QuoteStatus status;
   std::shared_ptr<const Live> live;      // 空 = 新浪未到
@@ -38,14 +44,17 @@ struct QuoteHub {
 
   // 服务 (任意时刻; 以下除 started 须已起)
   bool started() const { return quote_ != nullptr; }
-  QuoteStatus sina() const { return quote_->status(); }                                        // 新浪此刻的状态 (不等 frame)
-  const Progress &progress() const { return *price_; }                                         // 价格库的进度
-  const Calendar &calendar() const { return *cal_; }                                           // 交易日历
-  bool listed(uint32_t id) const { return quote_->axis().sub_of(id) < quote_->axis().size(); } // 在新浪全市场
-  void select(uint32_t id) { quote_->select(id); }                                             // 选中标的 (~0u = 无): 新浪先补它的分钟 K
-  void watch(std::vector<std::string> syms) { quote_->watch(std::move(syms)); }                // 订阅码 (新浪码): 快照进 Live::watch
+  QuoteStatus sina() const { return quote_->status(); }                         // 新浪此刻的状态 (不等 frame)
+  const Progress &progress() const { return *price_; }                          // 价格库的进度
+  const Calendar &calendar() const { return *cal_; }                            // 交易日历
+  bool listed(uint32_t id) const { return quote_->listed(id); }                 // 在新浪全市场
+  void select(uint32_t id) { quote_->select(id); }                              // 选中标的 (~0u = 无): 新浪先补它的分钟 K
+  void watch(std::vector<std::string> syms) { quote_->watch(std::move(syms)); } // 订阅码 (新浪码): 快照进 Live::watch
 
 private:
+  const Today today_;
+  std::shared_ptr<const Live> sina_;   // 新浪的当日 (live 由它 + 账户当日拼成)
+  std::shared_ptr<const Day> account_; // 账户的当日
   std::shared_ptr<const Calendar> cal_;
   std::unique_ptr<QuoteService> quote_;
   std::unique_ptr<PriceLib> price_;

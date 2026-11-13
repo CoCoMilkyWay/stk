@@ -30,6 +30,10 @@ MODE = "assert"
 # op_check 与 app_main (Alpha→Operators 页 GPU 列) 一并链 cudart; OFF 链 stub, GPU 列显示 n/a.
 ENABLE_CUDA = True
 
+# 同步 GitHub 的通道: "" 直连 (无视环境变量里的代理), 否则为代理地址, 如 "http://127.0.0.1:7890"
+GIT_PROXY = ""
+GIT_PROXY = "http://127.0.0.1:10808"
+
 REPO_ROOT = Path(__file__).resolve().parent
 PROJECT_DIR = REPO_ROOT / "cpp" / "projects" / APP_NAME
 BUILD_DIR = PROJECT_DIR / "build"
@@ -39,7 +43,7 @@ BINARY = BUILD_DIR / "bin" / f"app_{APP_NAME}"
 def _start_fetch():
     """Fetch upstream in background; overlaps network latency with cleanup/format."""
     env = os.environ | {"GIT_TERMINAL_PROMPT": "0"}
-    return subprocess.Popen(["git", "fetch", "--quiet"], env=env)
+    return subprocess.Popen(["git", "-c", f"http.proxy={GIT_PROXY}", "fetch", "--quiet"], env=env)
 
 
 def _git(*args):

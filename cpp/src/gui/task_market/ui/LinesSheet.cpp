@@ -330,13 +330,14 @@ std::string yi_text(double y, bool sign = false) {
   return s;
 }
 // 表行的源: 位置 / 行 + 基本面档案 (个股才有, 无 → nullptr) + 行情源 (QuoteHub::of, 与叠加图同一查法; 无行情键 / 行情未起 = 空)
-// + 当日 (源的当日有成交才有, 否则 nullptr)
+// + 当日 (源的当日有成交才有, 否则 nullptr) 及其前一交易日
 struct RowSrc {
   LinesAt at;
   const LinesRow *row = nullptr;
   const StockInfo *info = nullptr;
   Source src;
   const Quote::Day *day = nullptr;
+  misc::Ymd prev = 0;
 };
 RowSrc src_of(const Quote::QuoteHub *mk, const StockInfos &infos, const LinesDerived &d, const LinesAt &a) {
   RowSrc x{a, &d.row(a)};
@@ -349,6 +350,7 @@ RowSrc src_of(const Quote::QuoteHub *mk, const StockInfos &infos, const LinesDer
     return x;
   x.src = mk->of(q);
   x.day = x.src.today;
+  x.prev = x.day ? mk->live->prev : 0;
   return x;
 }
 // 篮子行的当日 (SheetToday): 只数 / 总市值 = Tape::members / cap (加权线的总市值当日接上 × 当日涨跌 = 成员总市值的当日变化; 等权线停在末日收盘);
@@ -365,7 +367,7 @@ SheetToday basket_today(const Quote::Tape &t, const RowSrc &x) {
   o.v[kTodayMembers] = t.members[l];
   o.v[kTodayCap] = w > 0 ? w : kNaN;
   if (x.day && x.day->candle.amount > 0)
-    o.amount = x.day->candle.amount / 1e8, o.v[kTodayFlow] = x.day->flow / x.day->candle.amount;
+    o.amount = x.day->candle.amount / 1e8, o.v[kTodayFlow] = x.day->candle.flow.net / x.day->candle.amount;
   o.v[kTodayTurn] = o.amount / o.v[kTodayCap];
   return o;
 }
@@ -374,11 +376,11 @@ SheetToday basket_today(const Quote::Tape &t, const RowSrc &x) {
 SheetToday stock_today(const RowSrc &x) {
   SheetToday o;
   double cap = x.info ? x.info->mcap : kNaN;
-  if (x.info && x.day && x.day->prev == x.info->update_date && x.day->candle.ref > 0)
+  if (x.info && x.day && x.prev == x.info->update_date && x.day->candle.ref > 0)
     cap *= x.day->candle.close / x.day->candle.ref;
   o.v[kTodayCap] = cap > 0 ? cap : kNaN;
   if (x.day && x.day->candle.amount > 0)
-    o.amount = x.day->candle.amount / 1e8, o.v[kTodayFlow] = x.day->flow / x.day->candle.amount;
+    o.amount = x.day->candle.amount / 1e8, o.v[kTodayFlow] = x.day->candle.flow.net / x.day->candle.amount;
   o.v[kTodayTurn] = o.amount / o.v[kTodayCap];
   return o;
 }

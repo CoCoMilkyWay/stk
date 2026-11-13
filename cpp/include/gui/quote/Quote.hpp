@@ -125,7 +125,7 @@ struct Tape {
   //   当日 = 末日指数 × growth(nav, 净资产_s, after) (account::intraday); 其余侧 0
   double nav = 0, after = 0, in = 0;
 };
-// 价格库的戳 = 日脊的摘要: 资产轴前缀指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用)
+// 价格库的戳 = 日脊的摘要: 库轴指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用)
 struct PriceStamp {
   uint64_t axis = 0;
   misc::Ymd last = 0;

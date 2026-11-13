@@ -169,7 +169,7 @@ int lod(double span, float px, bool days) {
   return g;
 }
 
-// 每 g 槽并一根 (开取先, 高 / 低取极, 收取后, 量 / 额相加; 日 / 前收取组首根), x = 组中点; 含缺口的组整组不画
+// 每 g 槽并一根 (开取先, 高 / 低取极, 收取后, 额相加; 日 / 前收取组首根), x = 组中点; 含缺口的组整组不画
 void merge(Series &s, int g) {
   s.g = g;
   if (g == 1)
@@ -189,7 +189,6 @@ void merge(Series &s, int g) {
       b.high = std::max(b.high, c.high);
       b.low = std::min(b.low, c.low);
       b.close = c.close;
-      b.volume += c.volume;
       b.amount += c.amount;
       continue;
     }
@@ -637,7 +636,7 @@ void intraday(const Source &src, std::span<const misc::Ymd> days, Series &s) {
     s.ref = ref;
     for (int j = 0; j < kSlots; ++j)
       if (b.has[static_cast<size_t>(j)])
-        s.push({scaled(b.cell[static_cast<size_t>(j)], a), b.date, ref}, static_cast<double>(k) * kSlots + j);
+        s.push({scaled(b.cell[static_cast<size_t>(j)], a), days[k], ref}, static_cast<double>(k) * kSlots + j);
       else if (b.hole[static_cast<size_t>(j)])
         s.cut.push_back(static_cast<double>(k) * kSlots + j);
   }
@@ -1158,7 +1157,7 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
   else {
     coverage(*j.view, j.live.get(), note, sizeof(note));
     if (!src.se)
-      std::snprintf(note + std::strlen(note), sizeof(note) - std::strlen(note), " · 本只不在 all.bar 库轴, 只画当日 (全量重算 all.bar 即并入)");
+      std::snprintf(note + std::strlen(note), sizeof(note) - std::strlen(note), " · 本只无历史, 只画当日");
   }
   if (!mk.listed(id))
     std::snprintf(note + std::strlen(note), sizeof(note) - std::strlen(note), " · 不在新浪全市场");

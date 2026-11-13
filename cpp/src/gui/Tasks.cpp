@@ -143,11 +143,11 @@ TaskTree CreateAllTasks(SharedData &data) {
   tree.tasks.reserve(9);
 
   // 跨任务共用的四个 Hub: 行情 (Database 的 Sync 页读状态, Market 各页 / Live 行情图用), 计算 (Beta / Alpha 两个 Compute 页, Features 读轮次),
-  // 因子引擎 (Alpha 写因子 / 编辑组合, Market 画), 账户净值 (Live 拉资金流水, Market 画)
-  const auto quote = std::make_shared<Quote::QuoteHub>();
+  // 因子引擎 (Alpha 写因子 / 编辑组合, Market 画), 账户净值 (Live 拉资金流水; 当日由行情并进 Live, Market 画)
+  const auto account = std::make_shared<Account::AccountHub>();
+  const auto quote = std::make_shared<Quote::QuoteHub>([account](const auto &view, const auto &live) { return account->today(view, live); });
   const auto compute = std::make_shared<Compute::ComputeHub>();
   const auto engine = std::make_shared<Engine::EngineHub>();
-  const auto account = std::make_shared<Account::AccountHub>();
   tree.tasks.push_back(Tasks::CreateSettingsTask());
   tree.tasks.push_back(Tasks::CreateDatabaseTask(quote));
   tree.tasks.push_back(Tasks::CreateBetaTask(compute));

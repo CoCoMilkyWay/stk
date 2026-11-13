@@ -28,7 +28,7 @@
 #include "gui/engine/Book.hpp"   // BookLines / compound
 #include "gui/engine/Table.hpp"  // FactorScope / FactorRef / kPoolVals
 #include "gui/engine/Worker.hpp" // FactorWorker
-#include "gui/quote/Quote.hpp"   // PerSide (行情两侧的账)
+#include "gui/quote/Quote.hpp"   // PerMarket (行情两侧的账)
 
 #include <algorithm>
 #include <atomic>
@@ -131,7 +131,7 @@ struct PortfolioBook {
 };
 struct PortfolioResult {
   std::map<std::string, std::shared_ptr<const PortfolioBook>> factors; // FactorTask::key →
-  Quote::PerSide<std::shared_ptr<const PortfolioBook>> quotes;         // [Side] 同一 BasketTask 的两本 (同有同无, 同日轴); 空 = 未算
+  Quote::PerMarket<std::shared_ptr<const PortfolioBook>> quotes;       // [Side] 同一 BasketTask 的两本 (同有同无, 同日轴); 空 = 未算
 };
 
 class PortfolioService : public FactorWorker<PortfolioService, PortfolioRequest> {
