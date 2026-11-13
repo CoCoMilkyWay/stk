@@ -516,8 +516,8 @@ bool PriceLib::run(PriceRequest &req) {
     return false;
   if (!(built_ == at_))
     rebuild();
-  if (!book_ || book_->ledger != req.ledger)
-    replay(req.ledger);
+  if (!book_ || book_->ledger != req.ledger || !(spot_ == req.spot))
+    replay(req.ledger, req.spot);
   for (const Want &w : req.wants) {
     if (cancel_.load(std::memory_order_relaxed))
       return false;
@@ -632,9 +632,10 @@ bool PriceLib::series(Ref ref, bool minute, Series &out) const {
   return true;
 }
 
-void PriceLib::replay(uint64_t ledger) {
+void PriceLib::replay(uint64_t ledger, const account::Spot &spot) {
   auto bk = std::make_shared<Book>();
   bk->ledger = ledger;
+  spot_ = spot;
   const account::Ledger l = account::load();
   const size_t D = dates_.size();
   const size_t i0 = l.rows.empty() ? D : static_cast<size_t>(std::ranges::lower_bound(dates_, l.rows.front().date) - dates_.begin());
@@ -651,7 +652,8 @@ void PriceLib::replay(uint64_t ledger) {
       for (size_t i = i0; i < D; ++i)
         if (const DayRec &x = sd.at(i, r); x.f > 0)
           px[s][dates_[i]] = x.close;
-    const std::vector<account::Day> ds = account::replay(l.rows, l.rate, std::vector<misc::Ymd>(dates_.begin() + static_cast<ptrdiff_t>(i0), dates_.end()), px);
+    const std::vector<account::Day> ds =
+        account::replay(l.rows, l.rate, std::vector<misc::Ymd>(dates_.begin() + static_cast<ptrdiff_t>(i0), dates_.end()), px, spot);
     assert(ds.size() == D - i0 && "账户回放: 日数与日脊不符");
     auto se = std::make_shared<Series>();
     se->minute = true;
@@ -685,7 +687,7 @@ void PriceLib::replay(uint64_t ledger) {
       float hi = static_cast<float>(ref), lo = hi;
       float *p = se->px.data() + k * kSlots * Series::kFields;
       for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s) {
-        const float x = static_cast<float>(nav0 > 0 ? ref * (nav[s] - d.flow) / nav0 : d.index);
+        const float x = static_cast<float>(k > 0 ? ref * account::growth(nav0, nav[s], d.flow) : d.index);
         float *q = p + s * Series::kFields;
         q[Series::kHigh] = q[Series::kLow] = q[Series::kClose] = x;
         q[Series::kAmount] = q[Series::kNet] = 0;
@@ -699,6 +701,8 @@ void PriceLib::replay(uint64_t ledger) {
     bk->se = std::move(se);
     bk->nav = ds.back().nav;
     bk->after = account::flow_after(l.rows, ds.back().date);
+    for (const account::Day &d : ds)
+      bk->in += d.flow;
   }
   book_ = std::move(bk);
 }

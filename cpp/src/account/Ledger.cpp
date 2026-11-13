@@ -76,6 +76,40 @@ std::optional<double> close_on(const Closes &px, const std::string &code, misc::
   return it == c->second.end() ? std::nullopt : std::optional<double>(it->second);
 }
 
+// px 里全无收盘的证券在 days 上的估价: 各日成交按股数加权的均价 + 券商现价为观测点, 相邻两点间按自然日线性插值, 末点之后持平, 首点之前无
+Closes marks(const std::vector<CashFlow> &rows, const std::vector<misc::Ymd> &days, const Closes &px, const Spot &spot) {
+  std::map<std::string, std::map<misc::Ymd, std::pair<double, double>>> obs; // 代码 → 日 → (Σ 股 × 价, Σ 股)
+  for (const CashFlow &r : rows)
+    if (holds(r) && r.price > 0 && r.qty != 0 && !px.contains(r.code)) {
+      auto &[v, q] = obs[r.code][r.date];
+      v += std::fabs(r.qty) * r.price, q += std::fabs(r.qty);
+    }
+  for (auto &[code, o] : obs)
+    if (const auto it = spot.px.find(code); it != spot.px.end() && it->second > 0 && spot.date > o.rbegin()->first)
+      o[spot.date] = {it->second, 1};
+  const auto avg = [](const auto &o) { return o.second.first / o.second.second; };
+  Closes out;
+  for (const auto &[code, o] : obs) {
+    std::map<misc::Ymd, double> &m = out[code];
+    auto at = o.begin(); // 不晚于 d 的末个观测点
+    for (const misc::Ymd d : days) {
+      if (d < o.begin()->first)
+        continue;
+      while (std::next(at) != o.end() && std::next(at)->first <= d)
+        ++at;
+      const auto nx = std::next(at);
+      if (nx == o.end()) {
+        m[d] = avg(*at);
+        continue;
+      }
+      const double w = static_cast<double>((misc::to_days(d) - misc::to_days(at->first)).count()) /
+                       static_cast<double>((misc::to_days(nx->first) - misc::to_days(at->first)).count());
+      m[d] = avg(*at) + (avg(*nx) - avg(*at)) * w;
+    }
+  }
+  return out;
+}
+
 } // namespace
 
 Ledger load() {
@@ -164,10 +198,20 @@ std::vector<std::string> securities(const std::vector<CashFlow> &rows) {
   return {s.begin(), s.end()};
 }
 
-std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const std::vector<misc::Ymd> &days, const Closes &px) {
+double growth(double nav0, double nav, double flow) {
+  const double base = nav0 + std::max(flow, 0.0);
+  return base > 0 ? 1 + (nav - nav0 - flow) / base : 1;
+}
+
+std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const std::vector<misc::Ymd> &days, const Closes &px, const Spot &spot) {
   std::vector<Day> out;
   if (rows.empty())
     return out;
+  const Closes mk = marks(rows, days, px, spot);
+  const auto price_on = [&](const std::string &code, misc::Ymd d) {
+    const std::optional<double> c = close_on(px, code, d);
+    return c ? c : close_on(mk, code, d);
+  };
   std::map<std::string, double> hold;
   std::unordered_map<std::string, double> last; // 代码 → 上一收盘 (起于入账价)
   double cash = 0, owe = 0, acc = 0, idx = 1, nav0 = 0;
@@ -194,21 +238,21 @@ std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const st
       if (kBank.contains(r.kind))
         flow += r.amount;
       if (r.kind == kPledge)
-        flow += r.qty * close_on(px, r.code, d).value_or(r.price);
+        flow += r.qty * price_on(r.code, d).value_or(r.price);
     }
     double mv = 0;
     std::vector<std::pair<std::string, double>> held;
     for (const auto &[code, q] : hold) {
       if (std::fabs(q) < kShare)
         continue;
-      if (const std::optional<double> c = close_on(px, code, d))
+      if (const std::optional<double> c = price_on(code, d))
         last[code] = *c;
       mv += q * last.at(code);
       held.emplace_back(code, q);
     }
     const double nav = cash + mv - owe - acc;
-    if (prev && nav0 > 0)
-      idx *= (nav - flow) / nav0;
+    if (prev)
+      idx *= growth(nav0, nav, flow);
     out.push_back({d, nav, flow, idx, std::move(held)});
     prev = d;
     nav0 = nav;

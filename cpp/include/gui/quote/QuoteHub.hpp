@@ -2,7 +2,7 @@
 //   Database 的 Sync 页只读新浪状态. CreateAllTasks 建, 各任务各持一个 shared_ptr.
 //   首次用到才起 (之前不碰网络); 价格库的交接交给新浪 ⇒ 依赖者后建先拆 (成员序即析构序)
 //   一帧一份 (frame 取, 各处只读): 新浪状态 / 当日 (Live) / 历史 (PriceView); 读行情只经 joint / of (接续判据只此一处)
-//   要的全史各处每帧登记 (want), 下帧首并成一个价格库请求 (连同基本面段末日 / 行情日 / 账本代), 变了才发;
+//   要的全史各处每帧登记 (want), 下帧首并成一个价格库请求 (连同基本面段末日 / 行情日 / 账本代 / 券商现价), 变了才发;
 //     价格库发布的是它留着的全部 (不只本帧要的), 切页不闪
 //   交易日历一份 (AssetInfo 的交易日), 新浪与价格库共用
 #pragma once
@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct SharedData;
@@ -28,7 +29,8 @@ struct QuoteHub {
   // 每帧用前调 (AssetInfo 已建, task_state.database.asset_info_ready; 一帧多调只首次生效): 首次起全部服务 (全市场 = 在市股);
   //   上帧登记的要求 + 基本面段末日 + 行情日 → 价格库请求; 基本面段末日 → 新浪; 取本帧三份
   void frame(const SharedData &data);
-  void want(Ref r, bool minute); // 本帧要 r 的全史 (minute = 连分钟)
+  void want(Ref r, bool minute);                            // 本帧要 r 的全史 (minute = 连分钟)
+  void spot(account::Spot s) { want_.spot = std::move(s); } // 账户回放用的券商现价 (留到下次给)
 
   Joint joint(Side s) const { return {s, view, live}; }
   Source of(Ref r) const { return joint(r.side).of(r.key); }

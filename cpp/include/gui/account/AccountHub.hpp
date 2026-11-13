@@ -1,11 +1,12 @@
 // 账户净值的中枢 (gui/Tasks.cpp 建, Live 与 Market 共用): 资金流水账本 (account/Ledger.hpp) → Market 自选里的「账户」行
 //   拉: Live 连上客户端、读到信用账户后每天自动一次, 走 Live 的事务道 (LiveHub::job): 重查账本末日起的资金流水并入账本,
 //     流水累计的持仓 + 今日成交对上券商持仓才落盘 (账本代 +1)
-//   历史: 价格库按账本在日脊上回放 (PriceView::book; 时间加权指数, 分钟频)
-//   当日: 接在回放末日之后才有; 一根分钟线 = 末日指数 × (净值_s − 末日之后账本里的外部进出) / 末日净值,
+//   历史: 价格库按账本在日脊上回放 (PriceView::book; 时间加权指数, 分钟频); 库轴外的持仓以券商现价为今日的观测点 (spot → QuoteHub)
+//   当日: 接在回放末日之后才有; 一根分钟线 = 末日指数 × growth(末日净值, 净值_s, 末日之后账本里的外部进出),
 //     净值_s = 信用账户净资产 + Σ 持仓 × (当日分钟收_s − 现价) (全市场外的持仓不动; 当日的外部进出不计)
 #pragma once
 
+#include "account/Ledger.hpp" // Spot
 #include "gui/quote/Quote.hpp"
 #include "live/Broker.hpp"
 #include "misc/date.hpp"
@@ -32,10 +33,11 @@ public:
   void tried();                                                             // GUI 线程: 今天的已交给事务道
   void pull(live::Broker &b, const live::Log &log, const live::Live &live); // 事务线程: 拉 → 并 → 核 → 落盘; 失败 → Fail
   void feed(const live::Got<live::Account> &a);                             // GUI 线程每帧: 信用账户 (当日的源)
+  account::Spot spot() const;                                               // 库轴外持仓 (ETF / LOF) 的券商现价, 记于今日 (无账户 → 空)
 
   // ---------- Market 侧 (GUI 线程每帧) ----------
   Line line(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live);
-  const std::string &note() const { return note_; } // 线的悬停 (不含金额)
+  const std::string &note() const { return note_; } // 线的悬停 (口径 + 累计盈亏)
 
 private:
   misc::Ymd pulled_ = 0; // 账本拉于 (含今天已交出的)

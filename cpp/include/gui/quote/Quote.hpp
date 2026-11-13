@@ -128,11 +128,12 @@ struct PriceStamp {
   bool operator==(const PriceStamp &) const = default;
 };
 // 账户的历史 (价格库按资金流水账本 × 库轴个股的根在日脊上回放, account/Ledger.hpp): 时间加权指数, 前收 = 前一日指数, 全史恒带分钟
-//   (分钟 = 当日收盘后的持仓按各只分钟收盘计价; 库轴外的持仓 (ETF / LOF) 按入账价不动)
+//   (分钟 = 当日收盘后的持仓按各只分钟收盘计价; 库轴外的持仓 (ETF / LOF) 日内不动, 逐日按成交价 / 券商现价插值)
 struct Book {
   uint64_t ledger = 0;              // 所依的账本代
   std::shared_ptr<const Series> se; // 空 = 回放为空
-  double nav = 0, after = 0;        // 末日净值 / 末日之后账本里的外部进出 (当日 = 末日指数 × (净资产 − after) / nav)
+  double nav = 0, after = 0;        // 末日净值 / 末日之后账本里的外部进出 (当日 = 末日指数 × growth(nav, 净资产, after))
+  double in = 0;                    // 回放各日外部进出之和 (累计净转入)
 };
 // 价格库的一份发布 (PriceLib 每趟发布; 不可变, 只拷指针): lack 非空 = 用不了 (以用处开头; 其余空)
 struct PriceView {

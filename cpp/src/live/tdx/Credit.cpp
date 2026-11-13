@@ -174,6 +174,8 @@ Account account(Tables &t, mem::Chain &q, const Keyed<Position> &pos) {
   for (const tables::Debt &r : d.list)
     a.debts[r.code] = {r.qty, r.amount};
   a.bal = balances(pos);
+  for (const Position &p : pos.list)
+    a.px[p.code] = p.price;
   return a;
 }
 

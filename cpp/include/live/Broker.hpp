@@ -120,6 +120,7 @@ struct Account {
   double rate = 0;                                        // 融资年利率
   std::map<std::string, std::pair<double, double>> debts; // 代码 → (负债数量 [股], 负债金额 [元])
   std::map<std::string, double> bal;                      // 同一轮持仓 代码 → 股
+  std::map<std::string, double> px;                       // 同一轮持仓 代码 → 现价
 };
 // 持仓 → 代码 → 股 (含余额 0 的行)
 std::map<std::string, double> balances(const Keyed<Position> &pos);

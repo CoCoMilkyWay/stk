@@ -20,13 +20,14 @@
 //   <侧>_day.bin = [块][行][kBlock] DayRec, <侧>_min.bin = [块][行][kBlock] 分钟根
 //   头对得上、四文件够长且库段是选股表日轴的前缀 (pool::extends) → 补段截到留着的日, 只合成库段新日再续算补段; 否则清目录从头. 每批落一次头 (取消不丢已合成的)
 // 读: series = 一行全史 (日根 + 资金流摘要 + 复权倍数; minute 连分钟根, 个股的净流入读时按分钟涨跌法补)
-// 账户 (Book): 资金流水账本 × 个股日根回放 (account::replay), 分钟 = 当日收后持仓 × 分钟收盘; 账本代或戳变了重算
-// 服务 (gui/util/Service.hpp, 随对象): 请求 = 要的全史 (标的 × 连不连分钟) + 基本面段末日 + 行情日 + 账本代 (QuoteHub 每帧并成; 变了即补);
+// 账户 (Book): 资金流水账本 × 个股日根回放 (account::replay), 分钟 = 当日收后持仓 × 分钟收盘; 账本代 / 券商现价 / 戳变了重算
+// 服务 (gui/util/Service.hpp, 随对象): 请求 = 要的全史 (标的 × 连不连分钟) + 基本面段末日 + 行情日 + 账本代 + 券商现价 (QuoteHub 每帧并成; 变了即补);
 //   每趟: 补库 (只析构中断, 新请求不打断) → 库变了重建日脊 / 篮子全表 (+ 交接的普查) / 个股日脊末段 → 账户 → 读要的 (按 (标的, 戳) 沿用; 新请求打断)
 //   → 发布 PriceView (与上份同则不发). 进度: Loading = 合成天
 // 线程: 库只 worker 读写, 外面只经 PriceView 读; 合成线程池随对象 (库段 / 补段按日并行, 篮子全表按篮子并行读)
 #pragma once
 
+#include "account/Ledger.hpp" // Spot
 #include "define/Members.hpp"
 #include "disk/Disk.hpp"
 #include "fundamental/AssetAxis.hpp" // PoolAxis
@@ -65,6 +66,7 @@ struct PriceRequest {
   misc::Ymd mark = 0;      // 基本面段末日 (AssetInfo::quote_end)
   misc::Ymd live = 0;      // 新浪行情日 (换日 = 可能多一份归档)
   uint64_t ledger = 0;     // 账本代 (account::generation)
+  account::Spot spot;      // 库外持仓的券商现价 (AccountHub::spot)
   bool operator==(const PriceRequest &) const = default;
 };
 
@@ -164,7 +166,7 @@ private:
   // 一行全史 (minute = 连分钟根); ref 不在该侧键表 → false
   bool series(Ref ref, bool minute, Series &s) const;
   void rebuild();               // 库变了: 日脊 / 篮子全表 (+ 普查) / 个股日脊末段
-  void replay(uint64_t ledger); // 账本 × 本戳日脊 → book_
+  void replay(uint64_t ledger, const account::Spot &spot); // 账本 × 本戳日脊 (+ 券商现价) → book_
 
   const std::shared_ptr<const Calendar> cal_;
   const std::function<void(const Handoff &)> bind_;
@@ -188,6 +190,7 @@ private:
   std::shared_ptr<const Tape> baskets_;
   std::shared_ptr<const Tails> tails_;
   std::shared_ptr<const Book> book_;  // 空 = 本戳未回放
+  account::Spot spot_;                // book_ 所依的券商现价
   Kept<Series> daily_{kKeep};         // 个股日根全史
   Kept<Series> minute_{kKeepMinutes}; // 连分钟的全史 (两侧)
 };

@@ -36,7 +36,7 @@ std::shared_ptr<const Quote::Day> today_of(const Quote::Book &bk, const live::Ac
   o->bars.date = y.date;
   float hi = e.close, lo = e.close, x = e.close;
   for (int s = 0; s <= cur; ++s) {
-    x = static_cast<float>(e.close * (nav[static_cast<size_t>(s)] - bk.after) / bk.nav);
+    x = static_cast<float>(e.close * account::growth(bk.nav, nav[static_cast<size_t>(s)], bk.after));
     o->bars.add(s, {x, x, x, x, 0, 0});
     hi = std::max(hi, x), lo = std::min(lo, x);
   }
@@ -72,6 +72,18 @@ void AccountHub::pull(live::Broker &b, const live::Log &log, const live::Live &l
 
 void AccountHub::feed(const live::Got<live::Account> &a) { acct_ = a; }
 
+account::Spot AccountHub::spot() const {
+  account::Spot s;
+  if (!acct_)
+    return s;
+  s.date = misc::today_ymd();
+  const AssetAxis &ax = asset_axis();
+  for (const auto &[code, p] : acct_->px)
+    if (ax.find(code + live::kMktSuffix[static_cast<int>(live::market_of(code))]) >= ax.size())
+      s.px[code] = p;
+  return s;
+}
+
 Line AccountHub::line(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live) {
   const std::shared_ptr<const Quote::Book> bk = view ? view->book : nullptr;
   const uint64_t ver = live ? live->ver : 0;
@@ -84,11 +96,15 @@ Line AccountHub::line(const std::shared_ptr<const Quote::PriceView> &view, const
     return line_;
   line_.se = bk->se;
   const std::vector<Quote::Candle> &d = bk->se->daily;
-  note_ = strf("账户\n资金流水逐日回放 %s ~ %s, 时间加权 (银证转账 / 担保品划入不计收益)", misc::dash(d.front().date).c_str(), misc::dash(d.back().date).c_str());
+  note_ = strf("账户\n资金流水逐日回放 %s ~ %s, 时间加权 (银证转账 / 担保品划入不计收益; 入金计日初, 出金计日末)", misc::dash(d.front().date).c_str(),
+               misc::dash(d.back().date).c_str());
+  double net = bk->nav, in = bk->in;
   if (live && acct_ && acct_->net > 0 && bk->nav > 0 && view->joins(live->prev)) {
     line_.today = today_of(*bk, *acct_, *live);
     note_ += "\n当日 = 信用账户净资产 × 持仓分钟收盘";
+    net = acct_->net, in += bk->after;
   }
+  note_ += strf("\n累计盈亏 %+.0f = 净资产 %.0f − 累计净转入 %.0f", net - in, net, in);
   return line_;
 }
 
