@@ -1,5 +1,5 @@
 // Tab Asset - 资产表 (列定义一张表: 格 / 排序 / 名次底色 / 截面分析同源) + 右栏 Quotes / Statistics
-//   近况列 (涨幅 / Δ5日线) = Lines 右表同一核 RecentOf: 新浪当日接上 bar1d 最近几个有成交日
+//   近况列 (涨幅 / Δ5日线) = Lines 右表同一核 RecentOf: 新浪当日接上价格库的日脊末段
 //   列 / 格 / 名次底色 / 表头排序 = 各表同一套 (gui/util/Sheet.hpp, GUI::rank_by / sort_less); 估值列 (PE / PB / PS / PCF) 显示倍数, 键 = 倒数的收益率 (同股息高为好)
 
 #pragma once
@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -32,10 +33,11 @@ struct AssetFilter {
 
 // 格的输入: 任一变 → 重填
 struct AssetCellsKey {
-  uint64_t generation = 0; // Asset::generation
-  size_t assets = 0;       // Asset::items.size()
-  size_t infos = 0;        // stock_info.size() (基本面首次载入)
-  uint64_t today = ~0ull;  // AssetState::today 的版本 (近况列随快照变)
+  uint64_t generation = 0;            // Asset::generation
+  size_t assets = 0;                  // Asset::items.size()
+  size_t infos = 0;                   // stock_info.size() (基本面首次载入)
+  std::shared_ptr<const Tails> tails; // 个股的日脊末段 (近况列; 价格库变才换)
+  uint64_t today = ~0ull;             // 当日日根的版本 = 行情日 · 快照时刻 (近况列随快照变; 补分钟根不动日根)
   AssetFilter filter;
   float font = 0.f; // 字号 (格宽)
   uint32_t ink = 0; // 字色 (主题)
@@ -74,7 +76,7 @@ struct AssetState {
   float table_split_ratio = 0.65f; // 左右分栏比 (0-1)
   StockState stock;
 
-  Today<Candles> today;                            // 新浪当日日根 (近况列的当日段; 键集 = 全部资产, [asset_id])
+  Joint quotes;                                    // 本帧的个股行情 (近况列的源)
   Stage<AssetCellsKey, AssetCells> cells;          // 格
   Stage<AssetOrderKey, std::vector<size_t>> order; // [显示位] 行 (cells 的行下标)
 };

@@ -140,13 +140,14 @@ void paint(LinesDerived &d, const LinesDerived &o) {
         if (r.ref.is(Quote::kBasket) && r.ref.key == basket_table().at_pool(kAllAPool[pool::kWeightCap]))
           mkt = rs.size();
         rs.push_back(&r);
-        key.rows.emplace_back(r.id, r.base[kIdeal].get());
+        key.rows.emplace_back(r.id, r.line[kIdeal].get());
         r.hue = std::numeric_limits<float>::quiet_NaN();
       }
   const size_t n = rs.size(), D = d.dates.size();
   assert(mkt < n);
-  key.prices = d.prices.get();
-  key.ready = d.n_wait == 0 && d.prices && D >= 2;
+  const Quote::Tape *bt = d.baskets();
+  key.prices = bt;
+  key.ready = d.n_wait == 0 && bt && D >= 2;
   if (key == o.paint) {
     for (LinesRow *r : rs)
       r->hue = o.row(o.at(r->id)).hue;
@@ -156,21 +157,21 @@ void paint(LinesDerived &d, const LinesDerived &o) {
     return;
 
   const size_t T = std::min(kSimDays, D - 1), lo = D - T;
-  const std::vector<double> m = rets_of(*rs[mkt]->base[kIdeal], lo, T);
+  const std::vector<double> m = rets_of(*rs[mkt]->line[kIdeal], lo, T);
   std::vector<std::vector<double>> res(n); // [行] 残差日收益
   for (size_t i = 0; i < n; ++i) {
-    res[i] = rets_of(*rs[i]->base[kIdeal], lo, T);
+    res[i] = rets_of(*rs[i]->line[kIdeal], lo, T);
     residual(res[i], m);
   }
   std::fill(res[mkt].begin(), res[mkt].end(), kNaN); // 自身对自身回归无残差
-  const size_t K = d.prices->keys.size();
-  assert(d.prices->overlap.size() == K * K);
+  const size_t K = bt->keys.size();
+  assert(bt->overlap.size() == K * K);
   std::vector<double> far(n * n, 0.0); // [行 × 行] 1 − s
   for (size_t i = 0; i < n; ++i)
     for (size_t j = i + 1; j < n; ++j) {
       double s = corr(res[i], res[j]);
       if (const Quote::Ref &a = rs[i]->ref, &b = rs[j]->ref; a.is(Quote::kBasket) && b.is(Quote::kBasket))
-        s = std::max(s, static_cast<double>(d.prices->overlap[a.key * K + b.key]));
+        s = std::max(s, static_cast<double>(bt->overlap[a.key * K + b.key]));
       far[i * n + j] = far[j * n + i] = 1.0 - s;
     }
 
@@ -416,7 +417,7 @@ Line project(const std::vector<misc::Ymd> &axis, const Levels &s) {
 
 // 线 c (日末视图已建) 的点换成日内形 m: 各日以当日末点为锚, 锚 = 末点所在槽及以前的末个有根槽, 该日各有根槽 (至锚) 的点位 = 末点 × 收 / 锚处收;
 // m 无该日 / 锚前无根 → 该日照留原点. 起点 (前收) 与各日末点不动 ⇒ 日末视图不变, 切片的 base 仍落在点上
-void intraday(const std::vector<misc::Ymd> &axis, const MinuteCloses &m, Line &c) {
+void intraday(const std::vector<misc::Ymd> &axis, const Quote::MinuteCloses &m, Line &c) {
   if (c.x.size() < 2)
     return;
   std::vector<double> x{c.x[0]}, y{c.y[0]};
@@ -461,14 +462,15 @@ Line build_line(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
     intraday(axis, *s.minutes, c);
   return c;
 }
-// 历史段 c 接当日 y 于日轴第 k 日 (y 接得上日脊 ⇒ c 止于 k 之前): 锚 = 末点, 点位 = 锚 × 收 / 前收; minutes = 各有根槽一点 (同日内形),
-// 否则此刻 (末个有根槽; 无根 = 末根) 一点; 日末视图接到 k (其间持平). 空线 / 无前收 → 原样
-Line live_line(const Line &c, size_t k, const Quote::Day &y, bool minutes) {
-  Line o = c;
-  if (o.e.empty() || !(y.candle.ref > 0))
+// 线 c 接当日 y 于日轴第 k 日 (y 接得上日脊 ⇒ c 止于 k 之前) 的尾: 锚 = 末点, 点位 = 锚 × 收 / 前收; minutes = 各有根槽一点 (同日内形),
+// 否则此刻 (末个有根槽; 无根 = 末根) 一点. 空线 / 无前收 → 无尾
+LineTail tail_of(const Line &c, size_t k, const Quote::Day &y, bool minutes) {
+  LineTail o;
+  if (c.e.empty() || !(y.candle.ref > 0))
     return o;
-  assert(o.l < static_cast<int>(k));
-  const double a = o.y.back() / y.candle.ref;
+  assert(c.l < static_cast<int>(k));
+  o.k = static_cast<int>(k);
+  const double a = c.y.back() / y.candle.ref;
   const Quote::Bars &b = y.bars;
   int last = static_cast<int>(kClose);
   while (last >= 0 && !b.has[static_cast<size_t>(last)])
@@ -480,12 +482,7 @@ Line live_line(const Line &c, size_t k, const Quote::Day &y, bool minutes) {
   } else {
     o.x.push_back(x_of(k, last >= 0 ? last : static_cast<double>(kClose))), o.y.push_back(a * y.candle.close);
   }
-  for (int d = o.l + 1; d <= static_cast<int>(k); ++d) {
-    const double p = o.e.back(), v = d == static_cast<int>(k) ? o.y.back() : p;
-    const double r = p > 0 ? v / p - 1.0 : 0.0;
-    o.e.push_back(v), o.s1.push_back(o.s1.back() + r), o.s2.push_back(o.s2.back() + r * r);
-  }
-  o.l = static_cast<int>(k);
+  o.r = c.e.back() > 0 ? o.y.back() / c.e.back() - 1.0 : 0.0;
   return o;
 }
 // 腿集合成的线源: cost = 扣成本; 腿账都无成本列 → 不扣 (扣与不扣同一线源 ⇒ 两条线共用一份)
@@ -514,35 +511,29 @@ struct Reuse {
       for (const LinesRow &r : g)
         rows[r.id] = &r;
   }
-  // 日轴不变且上一份同 id 行有线源同 s 的线 → 它 (live = 连当日都同 → 线; 否则历史段同 → 历史段); 否则空
-  std::shared_ptr<const Line> take(const std::string &id, const LineSrc &s, bool live) const {
+  // 日轴不变且上一份同 id 行有线源同 s 的线 → 它; 否则空
+  std::shared_ptr<const Line> take(const std::string &id, const LineSrc &s) const {
     const auto it = rows.find(id);
     if (!axis || it == rows.end())
       return nullptr;
     for (int l = 0; l < kPairLines; ++l)
-      if (const LineSrc &o = it->second->src[l]; live ? o == s : o.hist() == s.hist())
-        return live ? it->second->line[l] : it->second->base[l];
+      if (it->second->src[l] == s)
+        return it->second->line[l];
     return nullptr;
   }
 };
 
-// 行 r 进组 g (线源已定): 各线 = 同行前一线源同 → 共用, 否则历史段 / 线各自沿用上一份或现算 (当日变只重接线末); 登记 index
+// 行 r 进组 g (线源已定): 各线 = 同行前一线源同 → 共用, 否则沿用上一份或现算; 登记 index
 void push(LinesDerived &d, int g, LinesRow r, const Reuse &ru) {
   for (int l = 0; l < kPairLines; ++l) {
     const LineSrc &s = r.src[l];
     if (l > 0 && s == r.src[l - 1]) {
-      r.base[l] = r.base[l - 1], r.line[l] = r.line[l - 1];
+      r.line[l] = r.line[l - 1];
       continue;
     }
-    r.base[l] = ru.take(r.id, s, false);
-    if (!r.base[l])
-      r.base[l] = std::make_shared<const Line>(build_line(d.dates, s));
-    r.line[l] = s.live ? ru.take(r.id, s, true) : r.base[l];
-    if (!r.line[l]) {
-      const auto k = std::ranges::lower_bound(d.dates, s.live->candle.date);
-      assert(k != d.dates.end() && *k == s.live->candle.date && "当日已并进日轴");
-      r.line[l] = std::make_shared<const Line>(live_line(*r.base[l], static_cast<size_t>(k - d.dates.begin()), *s.live, s.minutes != nullptr));
-    }
+    r.line[l] = ru.take(r.id, s);
+    if (!r.line[l])
+      r.line[l] = std::make_shared<const Line>(build_line(d.dates, s));
   }
   d.index[r.id] = {g, d.rows[g].size()};
   d.rows[g].push_back(std::move(r));
@@ -573,19 +564,15 @@ std::vector<const PortfolioItem *> ready_of(const std::vector<PortfolioItem> &it
   return its;
 }
 
-// 有行情键的行接在价格历史之后的当日: 有历史且接得上 (Source::joined) 才给
-const Quote::Day *live_of(const Quote::Source &s) { return s.kl && s.joined ? s.today : nullptr; }
-
-// 行情两侧的账 (同有同无, 同日轴; 没算成 → 空) + 价格指数 (源未就绪 → 空) + 行情侧的源 → d;
-// 日轴并入账日与日脊, 各侧有接在日脊之后的当日再并其日; 日轴 → 两侧账的行 (val_at)
-void bind_quotes(const PortfolioResult &res, const LinesQuotes &market, LinesDerived &d) {
+// 行情两侧的账 (同有同无, 同日轴; 没算成 → 空) + 价格库的发布 + 当日 → d;
+// 日轴并入账日与日脊 (两侧同一条), 当日 (接得上日脊才给) 再并其日; 日轴 → 两侧账的行 (val_at)
+void bind_quotes(const PortfolioResult &res, const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, LinesDerived &d) {
   const PortfolioBook *s = res.quotes[Quote::kStock].get(), *b = res.quotes[Quote::kBasket].get();
   assert(!s == !b && (!b || (s->error == b->error && s->dates == b->dates)));
   if (b && b->error.empty())
     d.quotes = res.quotes;
-  const std::shared_ptr<const Quote::Tape> &prices = market[Quote::kBasket].tape;
-  d.prices = prices && prices->lack.empty() ? prices : nullptr;
-  d.market = market;
+  d.view = view;
+  d.live = live;
   const auto join = [&](const std::vector<misc::Ymd> &ds) {
     std::vector<misc::Ymd> u;
     std::ranges::set_union(d.dates, ds, std::back_inserter(u));
@@ -593,15 +580,10 @@ void bind_quotes(const PortfolioResult &res, const LinesQuotes &market, LinesDer
   };
   if (d.quotes[Quote::kBasket])
     join(b->dates);
-  for (const Quote::Joint &j : market)
-    if (j.tape && j.tape->lack.empty()) {
-      join(j.tape->dates);
-      for (size_t k = 0; k < j.tape->keys.size(); ++k)
-        if (const Quote::Day *y = live_of(j.at(k))) {
-          join({y->candle.date});
-          break;
-        }
-    }
+  if (const Quote::Tape *t = d.baskets())
+    join(t->dates);
+  if (live)
+    join({live});
   d.val_at.assign(d.dates.size(), -1);
   if (d.quotes[Quote::kBasket]) {
     const std::vector<misc::Ymd> &hd = b->dates;
@@ -692,18 +674,19 @@ LinesRow strat_row(const std::string &name) {
 }
 
 // 有行情键的行 r (已取名) 进组 g: 腿 / 估值腿 = 该侧账的键线; 可成交 = 腿扣成本合成 (两侧账都无成本列 ⇒ 不扣);
-// 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘) 再接个股历史 (叠加的才有; 无则与可成交同一条),
-//   接得上的当日接在线末; 两条都带该键的日内形 (有则)
+// 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘) 再接个股历史 (价格库留着的才有; 无则与可成交同一条);
+//   两条都带该键的日内形 (有则)
 void push_quote(LinesDerived &d, int g, LinesRow r, double fixed_impact, const Reuse &ru) {
   r.val = leg_of(d.quotes[r.ref.side], r.ref.key);
   r.src[kTrade] = mix_src(legs_of(r.val), true, fixed_impact);
   if (r.ref.is(Quote::kStock))
     r.src[kIdeal] = mix_src(legs_of(r.val), false, 0.0);
-  const Quote::Source q = d.market[r.ref.side].of(r.ref.key);
-  r.src[kIdeal].price = q.kl, r.src[kIdeal].live = live_of(q);
-  if (d.minutes)
+  if (d.view) {
+    const Quote::Tape *t = d.view->tape[r.ref.side].get();
+    r.src[kIdeal].price = t ? t->line(r.ref.key) : nullptr;
     for (LineSrc &s : r.src)
-      s.minutes = d.minutes->of(r.ref);
+      s.minutes = d.view->minute(r.ref);
+  }
   push(d, g, std::move(r), ru);
 }
 // 无行情键的行 r (已取名) 进组 g: 可成交 / 理想 = 腿集 legs 扣 / 不扣成本合成
@@ -720,11 +703,12 @@ void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, c
     for (const size_t b : basket_table().of(static_cast<BasketGroup>(g)))
       push_quote(d, g, basket_row(b), fixed_impact, ru);
   std::vector<std::pair<uint32_t, double>> ks; // (全局 id, 权占比)
-  if (const LinesAt o = d.at(open); o.g >= 0 && d.prices) {
+  if (const LinesAt o = d.at(open); o.g >= 0 && d.baskets()) {
     assert(o.g < kBasketGroups);
+    const Quote::Tape &bt = *d.baskets();
     const uint32_t line = d.row(o).ref.key;
-    for (const Quote::Constituent &c : d.prices->cons[line])
-      ks.emplace_back(c.id, c.w / d.prices->weight[line]);
+    for (const Quote::Constituent &c : bt.cons[line])
+      ks.emplace_back(c.id, c.w / bt.weight[line]);
   }
   d.n_cons = ks.size();
   std::vector<uint32_t> cons(ks.size());
@@ -780,26 +764,29 @@ std::vector<std::pair<LinesAt, LinesLeg>> val_rows(const LinesDerived &d) {
   return o;
 }
 
-// 线 c 在日段 [d0, d1) 的切片 (见 LinesSlice); 整条在区间外 → 空. 年化 / 夏普只读日末视图: 有效日段 [a, b) = [d0, d1) ∩ [f, l + 1),
+// 线 c (+ 尾) 的点里首个 x ≥ v 的下标
+size_t lower(const LineRef &c, double v) {
+  const size_t n = c.c->x.size(), i = static_cast<size_t>(std::ranges::lower_bound(c.c->x, v) - c.c->x.begin());
+  return i < n || !c.tail() ? i : n + static_cast<size_t>(std::ranges::lower_bound(c.t->x, v) - c.t->x.begin());
+}
+// 线 c (+ 尾) 在日段 [d0, d1) 的切片 (见 LinesSlice); 整条在区间外 → 空. 年化 / 夏普只读日末视图: 有效日段 [a, b) = [d0, d1) ∩ [f, l + 1),
 // 年化 = end(b) / end(a) 按 b − a 个交易日复利折年 (%); 夏普 = 同段日收益的 mean / sd (ddof = 1) × √每年交易日
-LinesSlice slice_of(const Line &c, int d0, int d1) {
+LinesSlice slice_of(const LineRef &c, int d0, int d1) {
   LinesSlice s;
   const double x0 = x_of(static_cast<size_t>(d0), kOpen), x1 = x_of(static_cast<size_t>(d1), kOpen);
-  s.c = &c, s.x0 = x0;
-  const size_t i0 = static_cast<size_t>(std::lower_bound(c.x.begin(), c.x.end(), x0) - c.x.begin());
-  const size_t i1 = static_cast<size_t>(std::lower_bound(c.x.begin(), c.x.end(), x1) - c.x.begin());
-  if (i0 == c.x.size() || i1 == 0)
+  s.c = c, s.x0 = x0;
+  const size_t i0 = lower(c, x0), i1 = lower(c, x1);
+  if (i0 == c.size() || i1 == 0)
     return s;
   s.j0 = i0 > 0 ? i0 - 1 : 0, s.j1 = i1;
-  const int a = std::max(d0, c.f), b = std::min(d1, c.l + 1);
+  const int a = std::max(d0, c.c->f), b = std::min(d1, c.l() + 1);
   s.base = c.end(a);
-  assert(s.base == c.y[s.j0]);
+  assert(s.base == c.y(s.j0));
   if (b <= a)
     return s;
   const double n = b - a;
   s.ann = static_cast<float>(100.0 * factor::stat::ann_geo(c.end(b) / s.base, n));
-  const size_t ia = static_cast<size_t>(a - c.f), ib = static_cast<size_t>(b - c.f);
-  const double s1 = c.s1[ib] - c.s1[ia], s2 = c.s2[ib] - c.s2[ia];
+  const double s1 = c.s1(b) - c.s1(a), s2 = c.s2(b) - c.s2(a);
   const double var = n >= 2.0 ? (s2 - s1 * s1 / n) / (n - 1.0) : 0.0;
   if (var > 0.0)
     s.sharpe = static_cast<float>(s1 / n / std::sqrt(var) * std::sqrt(static_cast<double>(factor::stat::kDaysPerYear)));
@@ -985,14 +972,12 @@ void rank_col(size_t n, int good, const At &at) {
 } // namespace
 
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
-                      const LinesQuotes &market, const std::shared_ptr<const MinuteResult> &minutes, double fixed_impact,
-                      const std::string &open, const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos,
-                      LinesDerived &d) {
+                      const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, double fixed_impact, const std::string &open,
+                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos, LinesDerived &d) {
   LinesDerived o = std::move(d);
   d = LinesDerived{};
   const std::vector<const PortfolioItem *> its = ready_of(items, res, d);
-  bind_quotes(res, market, d);
-  d.minutes = minutes;
+  bind_quotes(res, view, live, d);
   const Reuse ru(o, d.dates);
   std::vector<uint32_t> kids = watch_stocks(watch);
   kids.insert(kids.end(), stocks.begin(), stocks.end());
@@ -1009,17 +994,36 @@ void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string
       n[static_cast<size_t>(g)] = x.rows[g].size();
     return n;
   };
-  const auto bases = [](const LinesDerived &x) {
+  const auto lines = [](const LinesDerived &x) {
     std::vector<const Line *> v;
     for (const std::vector<LinesRow> &rs : x.rows)
       for (const LinesRow &r : rs)
-        for (const std::shared_ptr<const Line> &c : r.base)
+        for (const std::shared_ptr<const Line> &c : r.line)
           v.push_back(c.get());
     return v;
   };
-  d.hist_gen = o.hist_gen + (bases(d) != bases(o));
+  d.hist_gen = o.hist_gen + (lines(d) != lines(o));
   d.axis_gen = o.axis_gen + axis;
   d.val_gen = o.val_gen + (axis || sizes(d) != sizes(o) || val_rows(d) != val_rows(o));
+}
+
+void MakeLinesLive(const LinesDerived &d, const Quote::Live *y, LinesLive &t) {
+  for (int g = 0; g < kRowGroups; ++g)
+    t.tail[g].assign(d.rows[g].size(), {});
+  if (!y || !d.live)
+    return;
+  assert(y->date == d.live);
+  const auto k = std::ranges::lower_bound(d.dates, d.live);
+  assert(k != d.dates.end() && *k == d.live && "当日已并进日轴");
+  const size_t di = static_cast<size_t>(k - d.dates.begin());
+  for (int g = 0; g < kRowGroups; ++g)
+    for (size_t r = 0; r < d.rows[g].size(); ++r) {
+      const LinesRow &w = d.rows[g][r];
+      if (!w.ref.ok() || !w.src[kIdeal].price)
+        continue;
+      if (const Quote::Day *day = y->at(w.ref))
+        t.tail[g][r] = tail_of(*w.line[kIdeal], di, *day, w.src[kIdeal].minutes != nullptr);
+    }
 }
 
 void MakeLinesRoll(const LinesDerived &d, const LinesLeg &lg, int years, LinesRolls &r) {
@@ -1044,19 +1048,19 @@ void MakeLinesPct(const LinesDerived &d, int d1, int years, LinesPct &p) {
       p.rows[at.g][at.r][b] = last_pct(ValSeries(ax, lg, b, years), d.val_at, d1, rw);
 }
 
-void MakeLinesView(const LinesDerived &d, int d0, int d1, const LinesAt &pin, const LinesRolls &roll, const LinesPct &pct,
+void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, const LinesAt &pin, const LinesRolls &roll, const LinesPct &pct,
                    LinesView &v) {
   // ---- 各组同一套: 各线切片 + NAV 数值列 + VAL 各口区间内末个可算日的估值分位 (= 区间末之前的末个可算日落在区间内, 含区间起点的前收日);
   //      各列同组同列名次 (VAL: 分位低 = 便宜 = 好) ----
   for (int g = 0; g < kRowGroups; ++g) {
     const size_t n = d.rows[g].size();
-    assert(pct.rows[g].size() == n);
+    assert(pct.rows[g].size() == n && t.tail[g].size() == n);
     v.slice[g].clear();
     v.num[g].assign(n, {});
     v.pct[g].assign(n, {});
     for (size_t i = 0; i < n; ++i) {
       const LinesRow &r = d.rows[g][i];
-      v.slice[g].push_back({slice_of(*r.line[kTrade], d0, d1), slice_of(*r.line[kIdeal], d0, d1)});
+      v.slice[g].push_back({slice_of({r.line[kTrade].get(), nullptr}, d0, d1), slice_of({r.line[kIdeal].get(), &t.tail[g][i]}, d0, d1)});
       const std::array<LinesSlice, kPairLines> &s = v.slice[g].back();
       std::array<Ranked, kNavNums> &c = v.num[g][i];
       c[kNumTrade].x = s[kTrade].ann, c[kNumIdeal].x = s[kIdeal].ann;
@@ -1082,7 +1086,7 @@ void MakeLinesView(const LinesDerived &d, int d0, int d1, const LinesAt &pin, co
   const LinesSlice &sl = v.slice[pin.g][pin.r][kIdeal];
   std::vector<int> day; // [日末点] 所属日 (日并集轴; −1 = 轴外)
   for (size_t i = 0; i < sl.size(); ++i)
-    if (const int k = sl.c->day(sl.j0 + i); i + 1 == sl.size() || sl.c->day(sl.j0 + i + 1) != k)
+    if (const int k = sl.day(i); i + 1 == sl.size() || sl.day(i + 1) != k)
       v.band_x.push_back(sl.x(i)), v.band_p.push_back(sl.y(i)), day.push_back(k);
   const size_t n = day.size();
   for (int b = 0; b < kPoolVals; ++b) {

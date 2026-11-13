@@ -41,7 +41,7 @@ enum PageTool : int { kToolNone,
                       kToolBandYears };
 // 页的 worker (Tab 状态)
 enum PageWork : int { kWorkPortfolio,
-                      kWorkMinute,
+                      kWorkPrice, // 价格库 (合成 / 读分钟价)
                       kWorkCta };
 // 区间档位 (主图左上角; LinesPlot.cpp): 区间 = 日并集轴末日往前推一档 (days 日 + months 月, 月末不足取当月末日) 之后的交易日 ~ 末日 (区间条同一份)
 enum SpanId : int { kSpanAll = -1, // 全段
@@ -81,7 +81,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 每条成对: 可成交 (篮子 = 标签指数, 收盘封板不建仓 / 平仓顺延; 因子 / 策略 = 扣换手冲击) + 理想 (篮子 = 后复权收盘价指数; 因子 / 策略 = 无冲击; 同色淡线)\n"
      "• 成分股 (篮子行 ▸ 展开, 权降序): 后复权收盘, 两条同一条; 与篮子行同一套 (点选中 = 画线 + 日内叠加; 收起后选中的照画)\n"
      "• 默认不画 (空图); 右侧类别条选一组 (指数 / 行业 / 概念 / 自选 / 因子 / 策略), 点行选中 = 画该行两条, 默认只显理想; 显隐变了自动重新 fit\n"
-     "• 选中的指数 / 行业 / 概念 / 成分股的两条线都画到分钟 (全史 1 分钟价, 与 CTA 同一份库; 各日以收盘对齐日线, 年化 / 夏普照日末算); 首次选中时合成库\n"
+     "• 选中的指数 / 行业 / 概念 / 成分股的两条线都画到分钟 (全史 1 分钟价, 与 CTA 同一份库; 各日以收盘对齐日线, 年化 / 夏普照日末算); 价格库随行情起即备 (首次一趟合成)\n"
      "• 主图左上图例矩阵 (同 VAL): 行 = 选中行, 列 = 可成交 / 夏普 / 理想 / 夏普 (区间年化 / 夏普) / 年换手; 点色块开关一条, 点名 / 列头开关整行 / 整列\n"
      "• 自选 = 星列 / 右键加的篮子与成分股 (全局一份, 各页同一份)\n"
      "• 日内 (右侧开关, 默认开): 主图上方画选中的指数 / 行业 / 概念 / 成分股的日内行情 (收盘线, 同主图线色叠加; 一行另带现价十字)\n"
@@ -120,7 +120,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
      kOverlayIntra,
      true,
      true,
-     kWorkMinute,
+     kWorkPrice,
      kWorkPortfolio},
     {"VAL",
      "VAL = 估值 (Valuation)\n"
@@ -166,7 +166,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
      kOverlayNone,
      true,
      false,
-     kWorkMinute,
+     kWorkPrice,
      kWorkPortfolio},
     {"FLOW",
      "FLOW = 资金流 (Money Flow): 指数 / 行业 / 概念 / 自选的日内净流入, 当日随新浪快照实时动\n"
@@ -204,7 +204,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
      kWorkPortfolio},
     {"CTA",
      "CTA = 单标的 中线 + 分层 择时 (方向 long / short), 中线参数滚动调优\n"
-     "• 右侧单选一个指数 / 行业 / 概念 / 自选 / 成分股 (与 VAL 同一份选中); 价格 = all.bar 库合成落盘的 1 分钟价 (篮子 = 同 NAV 日内栏口径的点位, 个股 = 后复权价; 首次打开一趟备齐)\n"
+     "• 右侧单选一个指数 / 行业 / 概念 / 自选 / 成分股 (与 VAL 同一份选中); 价格 = all.bar 库合成落盘的 1 分钟价 (篮子 = 同 NAV 日内栏口径的点位, 个股 = 后复权价; 价格库随行情起即备)\n"
      "• 中线 (ema / kama / mid) 当开关: 顺向侧满仓; 优化目标 capture = 有效多空 (开关顺向 − 翻转成本) / 总振幅, 不含分层\n"
      "• 分层 (固定) = 以上一笔成交为基准的网格: 层距 = 20 日 ATR / 2, 一份 = 5%; 满仓时档线挂在中线逆向侧随中线走, 逆向每走一层减一份 (该价冻结成档线), 顺向回到上一条冻结档线加一份, 加满才重新随中线\n"
      "• 中线只选模型, 参数滚动选出: 每日以此前至多 W 日 (不足 W 日 = 自首日起, expanding) 参数网格 (对数格点, 间距不小于参数的基本单位; 中心周围的配置数可配, 默认 9, 各参数轮流分格点) 的目标值拟岭回归曲面, 取连续最高点 (参数可为小数), 在网格边上则以它为中心移网格再拟; 所用参数 = 最高点的 5 日阻尼, 中线按所用参数逐根递推 (换参不跳线); 首日 / 中线都未就绪 = 买入持有 (与基准同口径)\n"
@@ -281,12 +281,11 @@ void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2
 
 // ---- CTA 页 (LinesCta.cpp) ----
 // 标的 (kPickOne) / 设定 / 成本率 (系统配置) 变 → 发请求; 画两图 (plots_size) + 其右中栏 (宽 panel_w, 同高: 设定 + 光标处参数 + 指标); name = 标的行名 (nullptr = 未选)
-void RenderLinesCta(CtaService &svc, LinesState &ui, const cta::Rates &rates, const char *name, const ImVec2 &plots_size, float panel_w);
+void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, const cta::Rates &rates, const char *name, const ImVec2 &plots_size,
+                    float panel_w);
 
 // ---- 右表 (LinesSheet.cpp) ----
 // 页 page 的右图例 (各页同一条, 按页表): 类别条 + 页件 + 表 (名 + 页的段); mk = 行情 (资金流段的日轴; nullptr = 未起); infos = 成分行的近况 / 当日
 void RenderLinesSheet(LinesState &ui, int page, const Quote::QuoteHub *mk, const StockInfos &infos);
-// 成分行的当日 (ui.overlay.cons, Today): 成分集 / 个股当日版本变了才重取
-void SyncLinesCons(LinesState &ui, const Quote::QuoteHub &mk);
 
 } // namespace GUI::Market

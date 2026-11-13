@@ -12,8 +12,8 @@
 //       名列伸满余宽, 内容超宽 → 横滚 (名列钉住);
 //     篮子行可展开 (名前 ▸, 至多一行, 各页同一份): 展开行钉在表头下 (不随滚动), 其下先列成分行 = 历史末日收盘定的成员表 (Tape::cons, 默认权降序,
 //       表头排序时按同列), 再列其余行; 成分行与篮子行同一种行 (LinesRow: 一对线 = 后复权收盘, 两条同一条; 行情键 = 个股; 估值腿 = 个股账),
-//       列同一张表, 能算的填 (近况 / 总市值 / 换手 / 流入 = 个股新浪当日 + 基本面; NAV 数值列 / VAL 各口名次在成分之间;
-//       FLOW = 与篮子行同一查法 SourceOf: 选中的有个股历史各日齐, 其余只当日), 其余 "-";
+//       列同一张表, 能算的填 (近况 = 个股新浪当日 + 价格库日脊末段; 总市值 / 换手 / 流入 = 个股新浪当日 + 基本面; NAV 数值列 / VAL 各口名次在成分之间;
+//       FLOW = 与篮子行同一查法 QuoteHub::of: 选中的有个股历史各日齐, 其余只当日), 其余 "-";
 //       名悬停看权占比 / 行业 / 估值; 点成分行 = 同篮子行的选中 (NAV 主图画线 + 日内栏 / FLOW 图叠加, 线色按 id 定色相; VAL 选为标的), 收起后选中的照画;
 //     自选 (各页类别条都有, 排在概念后): 篮子行 / 成分行可加, 全局一份 (output/config/market/watch.json, 自选序); 各页右表首列 = 星列 (点星 = 加入 / 移出),
 //       名格右键同; 自选组的行 = 原行的副本 (选中 / 展开同一份, 篮子行照样 ▸ 展开), 数值列名次在自选之间; 找不到的键 (概念换快照没了) 在表上一行计数, 可一键移出;
@@ -42,7 +42,7 @@
 //       日轴 = 篮子账日 ∪ 因子日 ∪ 日脊 (价格库: all.bar 库段 + 基本面补段) ∪ 当日 (接得上日脊才并): 首日开盘前一点 (前收) + 每日收盘一点;
 //       每条成对 = 可成交 (T+1C 标签: 封板不建仓 / 平仓顺延; 止于标签库末日) + 理想 (价格指数, 不看可成交: Market 篮子历史同一份, 画到此刻:
 //       补段各日 + 当日随新浪快照接在线末; 成分行 = 后复权收盘, 叠加的个股同样补到此刻), 两者之差 = 可成交拖累; 年换手 = 篮子账的增仓量同式 (成分再平衡 + 进出; 指数线本身不扣成本)
-//     分钟线: 选中的篮子行 / 成分行 (及 VAL 标的) 的两条线画到分钟 (MinuteService: 日脊逐日分钟收盘, 价格库与 CTA 共用; 当日 = 新浪分钟根; 各日以当日收盘为锚, 日末点 = 日线,
+//     分钟线: 选中的篮子行 / 成分行 (及 VAL 标的) 的两条线画到分钟 (价格库的日脊逐日分钟收盘, 与 CTA 同一份库; 当日 = 新浪分钟根; 各日以当日收盘为锚, 日末点 = 日线,
 //       年化 / 夏普 / 配色照读日末视图); 该行分钟价未到时主图不画它 (VAL 整图不画), 到了一次画成分钟线; 画线按像素列抽稀 (首 / 低 / 高 / 末), 与逐点画逐像素一致
 //     单因子线: 该因子单独的 G20 多头净值, 成对 = 有冲击 (它自己的冲击段) + 无冲击, 年换手 = 它自己的
 //     y = 净值 (恒贴合视野内的线, 上下各留跨度的 20%; 可切 log, 按对数跨度留); 底部区间条选日段 [d0, d1) (各页一份, 默认 NAV 近 1 月 / VAL 近 10 年; 两边竖把手吸附到月初 / 段内按日平移, 拖动中即生效, 把手旁标起止日; 双击段内回全段;
@@ -77,16 +77,15 @@
 #include "gui/engine/services/PortfolioService.hpp"
 #include "gui/engine/ui/PortfolioBoxes.hpp" // PortfolioUIState (当前组合)
 #include "gui/quote/QuoteHub.hpp"
-#include "gui/task_market/services/CtaService.hpp"    // CtaSpec / CtaRequest (CTA 页)
-#include "gui/task_market/services/MinuteService.hpp" // MinuteRequest / MinuteResult (NAV / VAL 主图的分钟线)
-#include "gui/task_market/ui/LinesView.hpp"           // 派生 → 滚动分位 / 末点分位 → 视图
-#include "gui/task_market/ui/QuotesPanel.hpp"         // OverlayState / Source / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
-#include "gui/util/Chart.hpp"                         // DayRange (区间条)
-#include "gui/util/HoverSync.hpp"                     // 图 ↔ 右表悬停联动
-#include "gui/util/Reorder.hpp"                       // Move (右表拖动调序)
-#include "gui/util/Sheet.hpp"                         // SheetCell (右表格)
-#include "gui/util/Stage.hpp"                         // 各级缓存
-#include "shared/Basket.hpp"                          // kGroupPool / kBasketGroups
+#include "gui/task_market/services/CtaService.hpp" // CtaSpec / CtaRequest (CTA 页)
+#include "gui/task_market/ui/LinesView.hpp"        // 派生 → 当日尾 / 滚动分位 / 末点分位 → 视图
+#include "gui/task_market/ui/QuotesPanel.hpp"      // OverlayState / Source / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
+#include "gui/util/Chart.hpp"                      // DayRange (区间条)
+#include "gui/util/HoverSync.hpp"                  // 图 ↔ 右表悬停联动
+#include "gui/util/Reorder.hpp"                    // Move (右表拖动调序)
+#include "gui/util/Sheet.hpp"                      // SheetCell (右表格)
+#include "gui/util/Stage.hpp"                      // 各级缓存
+#include "shared/Basket.hpp"                       // kGroupPool / kBasketGroups
 
 #include <algorithm>
 #include <cstdint>
@@ -103,7 +102,7 @@ namespace GUI::Market {
 using namespace Engine;
 using namespace Quote;
 
-// 主图 fit 键: 主图画的全部内容的历史部分 (各线历史段 / 滚动分位 / 末点分位 / 标的 / 区间; 当日随快照动不算) + 页 + log + NAV 右表选中
+// 主图 fit 键: 主图画的全部内容的历史部分 (各线 / 滚动分位 / 末点分位 / 标的 / 区间; 当日尾随快照动不算) + 页 + log + NAV 右表选中
 // + 上帧主图例各线显隐; 与上次 fit 的不同 → 本帧 fit
 struct LinesFitKey {
   uint64_t hist = 0, roll = 0, pct = 0; // LinesDerived::hist_gen / 二级两份 gen
@@ -168,14 +167,12 @@ struct SheetToday {
 };
 // 一页右表一组的格 (每帧只过滤 / 排序 / 画): 键 = 格的全部来源, 变了才整组重填 (过滤 / 排序 / 选中不在键里)
 struct LinesSheetKey {
-  int g = -1;                                                       // 组
-  uint64_t view = 0;                                                // 视图 gen (含派生: 行 / NAV 数值列 / VAL 估值分位)
-  std::shared_ptr<const Quote::Tape> baskets, stocks;               // 两路历史在画的发布 (OverlayState; 近况 / 只数 / 总市值 / 资金流历史日 / 成分)
-  std::shared_ptr<const Quote::Days> baskets_day, stocks_day, cons; // 三份当日 (近况 / 当日四列 / 资金流当日)
-  size_t infos = 0;                                                 // 基本面档案数 (首次载入)
-  std::vector<int64_t> segs;                                        // 各段自报的输入 (资金流段 = 日轴各日 + 开收盘)
-  float font = 0.f;                                                 // 字号 (格宽)
-  uint32_t ink = 0;                                                 // 字色 (主题)
+  int g = -1;                // 组
+  uint64_t view = 0;         // 视图 gen (含派生 = 价格库发布: 行 / 近况 / 只数 / 总市值 / 成分 / 资金流历史日; 含当日尾 = 当日: 近况 / 当日四列 / 资金流当日)
+  size_t infos = 0;          // 基本面档案数 (首次载入)
+  std::vector<int64_t> segs; // 各段自报的输入 (资金流段 = 日轴各日 + 开收盘)
+  float font = 0.f;          // 字号 (格宽)
+  uint32_t ink = 0;          // 字色 (主题)
   bool operator==(const LinesSheetKey &) const = default;
 };
 struct LinesSheet {
@@ -189,7 +186,7 @@ struct LinesSheet {
 // 行选中 (LinesRow::id → 行情键; 默认空): 属于组合 of, 换组合 → 整份清空
 struct LinesPick {
   std::string of;
-  std::map<std::string, Quote::Ref> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个; 多选的个股至多 History::kKeep − 1 只: 两种合起来不过一路个股历史)
+  std::map<std::string, Quote::Ref> rows[kPicks]; // [PickMode] 选中行 (kPickOne 至多一个; 多选的个股至多 PriceLib::kKeep − 1 只: 两种合起来不过价格库留的个股全历史)
   std::string open;                               // 展开的篮子行 (至多一行, 各页同一份; 空 = 无)
   // 方式 m (kPicks = 全部) 选中的个股 (全局 id, 升序)
   std::vector<uint32_t> stocks(int m) const {
@@ -205,9 +202,10 @@ struct LinesPick {
   }
 };
 
-// 行情页 (四页共用) 的 UI 态: 三级缓存 + 选中 / 区间 / 显隐 + 自选 + 篮子行情 + CTA 设定
+// 行情页 (四页共用) 的 UI 态: 三级缓存 + 选中 / 区间 / 显隐 + 自选 + 叠加图档位 + CTA 设定
 struct LinesState {
   Stage<LinesDerKey, LinesDerived> der;
+  Stage<LinesLiveKey, LinesLive> live;  // 理想线的当日尾
   Stage<LinesRollKey, LinesRolls> roll; // VAL 标的的滚动分位
   Stage<LinesPctKey, LinesPct> pct;     // VAL 表格各格的末点
   Stage<LinesViewKey, LinesView> view;
@@ -226,9 +224,7 @@ struct LinesState {
   int cat[kPages] = {kGroupPool, kGroupPool, kGroupPool, kGroupPool};        // [LinesPage] 右表类别条选中组 (RowGroup)
   BasketFilter filter[kBasketGroups] = {{}, {}, {.n_hi = 500, .flow = 5.f}}; // [BasketGroup] 默认: 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%
   bool intraday = true;                                                      // NAV 日内栏
-  OverlayState overlay;                                                      // 篮子 + 选中的个股 + 成分当日 (日内栏 / FLOW / 近况 / 当日四列 / 成分)
-  Sent<MinuteRequest> minute_sent;                                           // 上次发出的分钟价请求
-  std::shared_ptr<const MinuteResult> minutes;                               // 分钟价在用的发布 (派生的日内形源)
+  OverlayState overlay;                                                      // 叠加图 (日内栏 / FLOW) 与资金流段的档位
   CtaState cta;
 };
 
@@ -239,10 +235,10 @@ void SaveWatch(const std::vector<std::string> &watch); // 原子替换
 
 // GUI 线程每帧: 首次读自选文件 (有自选 → 各页右表类别条先选自选)
 void SyncLinesWatch(LinesState &ui);
-// 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (已起, ui.overlay 两路 Feed 本帧已 Sync; nullptr = AssetInfo 未建,
-// 日内栏 / 指数行业近况 / 成分行当日空着); infos = 基本面档案 (成分行名 / 近况 / 估值); minute = NAV / VAL 主图分钟线的服务, cta = CTA 页的服务
-// (两者读 mk 的价格库, mk 空时同空). 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
-int RenderTabLines(int page, PortfolioService &svc, MinuteService *minute, CtaService *cta, const PortfolioUIState &pf, LinesState &ui,
-                   double fixed_impact, const cta::Rates &rates, const Quote::QuoteHub *mk, const StockInfos &infos);
+// 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (本帧已 frame; nullptr = AssetInfo 未建, 日内栏 / 指数行业近况 / 成分行当日空着;
+// 本页要的个股全历史 / 分钟收盘登记给它); infos = 基本面档案 (成分行名 / 估值); cta = CTA 页的服务 (读 mk 的价格库, mk 空时同空).
+// 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
+int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
+                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos);
 
 } // namespace GUI::Market

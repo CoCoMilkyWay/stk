@@ -162,8 +162,8 @@ void SyncLinesWatch(LinesState &ui) {
         ui.cat[p] = kGroupWatch;
 }
 
-int RenderTabLines(int page, PortfolioService &svc, MinuteService *minute, CtaService *cta, const PortfolioUIState &pf, LinesState &ui,
-                   double fixed_impact, const cta::Rates &rates, const Quote::QuoteHub *mk, const StockInfos &infos) {
+int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
+                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos) {
   assert(page >= 0 && page < kPages);
   const PageDef &pd = kPageDefs[page];
   PortfolioResult res;
@@ -177,40 +177,40 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService *minute, CtaSe
   }
   LinesDerived &d = ui.der.val;
 
-  // ---- 三级缓存, 各级的键 = 它读的东西: 派生 (键含成分组: 展开行 / 选中的个股) → 滚动分位 (日轴代 + 标的估值腿) / 末点分位 (估值代)
-  //      → 视图 (派生 gen + 二级两份 gen + 标的): 上级重算 → 下级自动重算 ----
+  // ---- 三级缓存, 各级的键 = 它读的东西: 派生 (键含成分组: 展开行 / 选中的个股; 价格库发布 + 接得上的当日) → 当日尾 (派生 gen + 当日)
+  //      / 滚动分位 (日轴代 + 标的估值腿) / 末点分位 (估值代) → 视图 (派生 gen + 当日尾 gen + 二级两份 gen + 标的): 上级重算 → 下级自动重算 ----
   if (ui.pick.of != pf.name) // 换组合 → 选中清掉
     ui.pick = LinesPick{.of = pf.name};
-  if (minute && pd.work == kWorkMinute) { // 选中的有行情键的行 (NAV 多选 ∪ VAL 标的; 两页同一份请求) → 分钟价请求 (标的集变才发; 首次 = 先备价格库)
-    MinuteRequest rq;
-    for (const std::map<std::string, Quote::Ref> &rows : ui.pick.rows)
-      for (const auto &[id, ref] : rows)
-        if (ref.ok() && std::ranges::find(rq.refs, ref) == rq.refs.end())
-          rq.refs.push_back(ref);
-    ui.minute_sent.send(*minute, std::move(rq));
+  const std::vector<uint32_t> stocks = ui.pick.stocks(kPicks);
+  if (mk) { // 选中的个股 → 全历史; 分钟线页: 选中的有行情键的行 (NAV 多选 ∪ VAL 标的; 两页同一份) → 分钟收盘
+    for (const uint32_t id : stocks)
+      mk->want_kline(id);
+    if (pd.work == kWorkPrice)
+      for (const std::map<std::string, Quote::Ref> &rows : ui.pick.rows)
+        for (const auto &[id, ref] : rows)
+          if (ref.ok())
+            mk->want_minutes(ref);
   }
-  ui.minutes = minute ? latest(*minute) : nullptr;
-  const OverlayState &ov = ui.overlay;
-  const LinesQuotes market{ov.stocks.joint(), ov.baskets.joint()};
-  ui.der.update(LinesDerKey{gen, pf.items_gen, market, ui.minutes ? ui.minutes->gen : 0, fixed_impact, infos.size(), ui.pick.open, ui.pick.stocks(kPicks),
-                            ui.watch},
-                [&](LinesDerived &dv) {
-                  const std::vector<misc::Ymd> old = dv.dates;
-                  MakeLinesDerived(pf.items, pf.name, res, market, ui.minutes, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks), ui.watch, infos, dv);
-                  if (dv.dates != old) // 日轴变 → 各页区间回默认
-                    for (int p = 0; p < kPages; ++p)
-                      ui.range[p] = DefaultLinesRange(p, dv.dates);
-                });
-  if (mk)
-    SyncLinesCons(ui, *mk);
+  const std::shared_ptr<const Quote::PriceView> view = mk ? mk->view : nullptr;
+  const std::shared_ptr<const Quote::Live> live = mk ? mk->live : nullptr;
+  const Quote::Tape *bt = mk ? mk->tape(Quote::kBasket) : nullptr;
+  const misc::Ymd today = live && bt && bt->joins(live->prev) && std::ranges::any_of(live->baskets, [](const auto &y) { return y != nullptr; }) ? live->date : 0;
+  ui.der.update(LinesDerKey{gen, pf.items_gen, view, today, fixed_impact, infos.size(), ui.pick.open, stocks, ui.watch}, [&](LinesDerived &dv) {
+    const std::vector<misc::Ymd> old = dv.dates;
+    MakeLinesDerived(pf.items, pf.name, res, view, today, fixed_impact, ui.pick.open, stocks, ui.watch, infos, dv);
+    if (dv.dates != old) // 日轴变 → 各页区间回默认
+      for (int p = 0; p < kPages; ++p)
+        ui.range[p] = DefaultLinesRange(p, dv.dates);
+  });
+  ui.live.update(LinesLiveKey{ui.der.gen, live}, [&](LinesLive &t) { MakeLinesLive(d, live.get(), t); });
   const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
   const LinesAt pin = one.empty() ? LinesAt{} : d.at(one.begin()->first); // VAL 标的
   const LinesLeg lg = pin.g >= 0 ? d.row(pin).val : LinesLeg{};           // 其估值腿
   ui.roll.update(LinesRollKey{d.axis_gen, lg, ui.band_years}, [&](LinesRolls &r) { MakeLinesRoll(d, lg, ui.band_years, r); });
   const LinesRange &rg = ui.range[page];
   ui.pct.update(LinesPctKey{d.val_gen, ui.band_years, rg.d1}, [&](LinesPct &p) { MakeLinesPct(d, rg.d1, ui.band_years, p); });
-  ui.view.update(LinesViewKey{ui.der.gen, ui.roll.gen, ui.pct.gen, pin, rg.d0, rg.d1},
-                 [&](LinesView &vw) { MakeLinesView(d, rg.d0, rg.d1, pin, ui.roll.val, ui.pct.val, vw); });
+  ui.view.update(LinesViewKey{ui.der.gen, ui.live.gen, ui.roll.gen, ui.pct.gen, pin, rg.d0, rg.d1},
+                 [&](LinesView &vw) { MakeLinesView(d, ui.live.val, rg.d0, rg.d1, pin, ui.roll.val, ui.pct.val, vw); });
 
   const int action = head(page, svc, pf, ui, d, res, message, fixed_impact);
 
@@ -267,7 +267,7 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService *minute, CtaSe
   case kLayoutCta: {
     const float pw = std::floor((lw - st.ItemSpacing.x) / 2.0f);
     if (cta)
-      RenderLinesCta(*cta, ui, rates, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y), pw);
+      RenderLinesCta(*cta, *mk, ui, rates, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y), pw);
     else {
       ImGui::BeginChild("##cta_wait", ImVec2(left, av.y));
       ImGui::TextDisabled("行情等基本面就绪…");

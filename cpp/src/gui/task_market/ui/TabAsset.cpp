@@ -125,11 +125,9 @@ struct Row {
   Recent rc;
 };
 
-Row make_row(const Asset &asset, const StockInfos &stock_info, const Today<Candles> &today, size_t id) {
-  assert(today.day && id < today.day->size());
+Row make_row(const Asset &asset, const StockInfos &stock_info, const Joint &quotes, size_t id) {
   const AssetItem &a = asset.items[id];
-  const StockInfo *info = find_info(a, stock_info);
-  return {a, info, asset.asset_stats[id], info ? RecentOf(*info, (*today.day)[id], today.prev) : Recent{}};
+  return {a, find_info(a, stock_info), asset.asset_stats[id], RecentOf(quotes.of(static_cast<uint32_t>(a.asset_id)))};
 }
 
 // 文本 (只排序, 左对齐) / 分类 (饼图, 左对齐) / 数值 (分布 + 排名, 右对齐)
@@ -489,7 +487,7 @@ SheetCell cell_of(const Column &c, const Row &r) {
 
 // 格: 过滤 (资产序) → 逐行逐列填格 → 各列名次 (过滤后 pool 内, GUI::rank_by, 并列取中) → 各列最宽.
 //   用名次而非数值归一化: 估值 / 市值重尾, min-max 染色会被几个极端值压成一片同色; 并列取中: 股息成片的 0 不被摊成渐变
-void fill_cells(AssetCells &o, const Asset &asset, const StockInfos &stock_info, const Today<Candles> &today, const AssetFilter &filter) {
+void fill_cells(AssetCells &o, const Asset &asset, const StockInfos &stock_info, const Joint &quotes, const AssetFilter &filter) {
   assert(asset.asset_stats.size() == asset.items.size());
   o.ids.clear();
   for (size_t id = 0; id < asset.items.size(); ++id)
@@ -498,7 +496,7 @@ void fill_cells(AssetCells &o, const Asset &asset, const StockInfos &stock_info,
   const size_t n = o.ids.size(), nc = static_cast<size_t>(kNumCols);
   o.cells.assign(n * nc, {});
   for (size_t i = 0; i < n; ++i) {
-    const Row r = make_row(asset, stock_info, today, o.ids[i]);
+    const Row r = make_row(asset, stock_info, quotes, o.ids[i]);
     for (size_t c = 0; c < nc; ++c)
       o.cells[i * nc + c] = cell_of(kCols[c], r);
   }
@@ -532,20 +530,13 @@ void fill_order(std::vector<size_t> &o, const AssetCells &cs, int sort_column, b
 
 // 格 → 显示序 (两级: 排序只重排, 不重填格; 表格与截面分析共用)
 void sync_view(AssetState &state, const Asset &asset, const StockInfos &stock_info) {
-  state.cells.update(AssetCellsKey{asset.generation, asset.items.size(), stock_info.size(), state.today.ver, state.filter, ImGui::GetFontSize(),
-                                   ImGui::GetColorU32(ImGuiCol_Text)},
-                     [&](AssetCells &o) { fill_cells(o, asset, stock_info, state.today, state.filter); });
+  const Joint &q = state.quotes;
+  const uint64_t today = q.live ? static_cast<uint64_t>(q.live->date) * 86400 + static_cast<uint64_t>(q.live->sec) : 0;
+  state.cells.update(AssetCellsKey{asset.generation, asset.items.size(), stock_info.size(), q.tape ? q.tape->tails : nullptr, today, state.filter,
+                                   ImGui::GetFontSize(), ImGui::GetColorU32(ImGuiCol_Text)},
+                     [&](AssetCells &o) { fill_cells(o, asset, stock_info, q, state.filter); });
   state.order.update(AssetOrderKey{state.cells.gen, state.sort_column, state.sort_ascending},
                      [&](std::vector<size_t> &o) { fill_order(o, state.cells.val, state.sort_column, state.sort_ascending); });
-}
-
-// 新浪当日日根: 键集 = 全部资产 (Today 照版本取)
-void sync_today(Today<Candles> &t, const QuoteHub &mk, const Asset &asset) {
-  std::vector<uint32_t> keys;
-  keys.reserve(asset.items.size());
-  for (const AssetItem &a : asset.items)
-    keys.push_back(static_cast<uint32_t>(a.asset_id));
-  Sync(mk, kStock, keys, t);
 }
 
 // 过滤条: 搜索 / ST / 在市 / 板块 / 行业 + 列出数 + 截面色图例 + 右栏开关
@@ -645,7 +636,7 @@ void data_table(const Asset &asset_data, const StockInfos &stock_info, AssetStat
         if (!asset_state.quotes_page && hovered_col == ci) // 点格切截面分析的列: 盖过名次底色
           ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::GetColorU32(kHoverCol));
         if (c.hover && ImGui::IsItemHovered()) // StockInfo 现查 (基本面可能整体重载, 不缓存指针)
-          c.hover(make_row(asset_data, stock_info, asset_state.today, id));
+          c.hover(make_row(asset_data, stock_info, asset_state.quotes, id));
       }
     }
 
@@ -668,7 +659,7 @@ void numeric_analysis(const Asset &asset_data, const StockInfos &stock_info, con
   std::vector<float> values;
   std::vector<std::string> codes;
   for (const size_t id : asset_state.cells.val.ids) {
-    const Row r = make_row(asset_data, stock_info, asset_state.today, id);
+    const Row r = make_row(asset_data, stock_info, asset_state.quotes, id);
     const double v = col.num(r);
     if (std::isnan(v))
       continue;
@@ -788,7 +779,7 @@ void pie(const char *id, const std::vector<CategoryCount> &cs, float height, dou
 void category_analysis(const Asset &asset_data, const StockInfos &stock_info, const AssetState &asset_state, const Column &col) {
   std::vector<std::string> categories, codes;
   for (const size_t id : asset_state.cells.val.ids) {
-    const Row r = make_row(asset_data, stock_info, asset_state.today, id);
+    const Row r = make_row(asset_data, stock_info, asset_state.quotes, id);
     categories.emplace_back(col.text(r));
     codes.push_back(r.a.asset_code);
   }
@@ -851,7 +842,7 @@ void RenderTabAsset(Asset &asset, const StockInfos &stock_info, AssetState &asse
     return;
   }
   assert(mk.quote);
-  sync_today(asset_state.today, mk, asset);
+  asset_state.quotes = mk.joint(kStock);
   sync_view(asset_state, asset, stock_info); // 过滤条的列出数也读它
 
   // 左 = 过滤条 + 资产表, 右 = Quotes / Statistics
@@ -871,15 +862,12 @@ void RenderTabAsset(Asset &asset, const StockInfos &stock_info, AssetState &asse
     if (ImGui::BeginTabBar("##RightPanel")) {
       if (ImGui::BeginTabItem("Quotes")) {
         asset_state.quotes_page = true;
-        // 键 = asset_id (== 全局 id); 未选 = 空键集
-        const uint32_t id = static_cast<uint32_t>(asset_state.selected_asset);
-        Sync(mk, kStock, asset_state.selected_asset >= 0 ? std::span<const uint32_t>(&id, 1) : std::span<const uint32_t>(),
-             asset_state.stock.feed);
-        const Feed &f = asset_state.stock.feed;
+        // 键 = asset_id (== 全局 id)
+        Want(mk, asset_state.stock, asset_state.selected_asset >= 0 ? static_cast<uint32_t>(asset_state.selected_asset) : Ref::kNone);
         std::string title;
-        if (f.data && !f.data->keys.empty()) {
-          assert(f.data->keys.front() < assets.size());
-          const AssetItem &a = assets[f.data->keys.front()];
+        if (const uint32_t k = asset_state.stock.shown; k != Ref::kNone) {
+          assert(k < assets.size());
+          const AssetItem &a = assets[k];
           const StockInfo *info = find_info(a, stock_info);
           title = (info && !info->name.empty() ? info->name : std::string("-")) + "  " + a.code_ex();
         }

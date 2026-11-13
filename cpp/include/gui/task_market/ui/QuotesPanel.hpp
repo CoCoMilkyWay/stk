@@ -1,7 +1,6 @@
-// 行情图, 数据 = 历史 Kline + 当日 Day (见 Quote.hpp); 个股 / 篮子同一个 Feed + Sync (键集 → 历史发布 + 当日 = Joint)
-//   当日一份 Today (键集 → 当日, 版本变才重取, 各只都没换则沿用原份 ⇒ 下游缓存键不动): Feed 的当日 / 成分行的当日 / ASSET 表的日根三处同一种;
-//   一个标的的源 Source (Quote.hpp): 叠加图与 Lines 右表同一查法 SourceOf, 其上 RecentOf / FlowOf 两侧通用
-//   个股 = ASSET 右栏 (Live 持仓页右栏同一面板): 键集 {选中标的}, 日内 (右挂盘口: 当日最新快照五档) + 日线;
+// 行情图, 数据 = 历史 Kline + 当日 Day (见 Quote.hpp); 一个标的的源 Source 只经 QuoteHub::of 取 (叠加图 / Lines 右表 / ASSET 表同一查法),
+//   其上 RecentOf / FlowOf 两侧通用
+//   个股 = ASSET 右栏 (Live 持仓页右栏同一面板): 选中标的 (Want), 日内 (右挂盘口: 当日最新快照五档) + 日线;
 //   叠加图 (OverlayState; 两种 OverlayKind 同一入口 RenderOverlay, 同一份选中 / 档位条 / 工具角): 条 = 篮子线 / 个股 (右表点中的成分股: 个股历史 + 新浪当日);
 //     刻度区全空: 横网格 (含 0 轴) y 值小字内标在右壁, 线名小字贴线尾; 不画量, 读数看十字光标;
 //     涨跌幅 (NAV 日内栏) = 对首日前收的涨跌幅, y 以 0 轴居中 (上下对称); 恒画收盘线, 单条另带现价十字 (虚线, 标涨跌幅 / 时刻);
@@ -16,12 +15,11 @@
 //   两图各一份视野: 换标的 / 换档 / 根数变 / 双击 → 复位到该档窗口; 左键拖动 = 框选 x 段放大; y 恒随视野内的根贴合
 //     日线滚轮 = 只缩放 x, 右端恒锚在最新一根; 日内不滚. 现价线左标价 / 右标当日涨跌幅, 日内另有前收线 (左价 / 右 0%)
 //   版面恒定: 标题 / 注恒两行, 各轴刻度区按最大标签框定尺 (右轴无基准也留, 标签随出随没不撑), 图框只随窗口变; 换标的 = 新历史到齐才整体换上, 其间照画旧的
-// 每帧先 Sync (键集变 → 发请求 / 收发布 / 当日版本变了才拷), 再画
+// 图的根 / 叠加图的线按源缓存 (历史 / 当日 / 选中 / 档 变才重建), 每帧只画
 #pragma once
 
 #include "gui/quote/QuoteHub.hpp"
-#include "gui/util/Chart.hpp"   // XZoom
-#include "shared/AssetInfo.hpp" // StockInfo (个股近况)
+#include "gui/util/Chart.hpp" // XZoom
 
 #include <cstdint>
 #include <limits>
@@ -50,36 +48,15 @@ struct ChartState {
   QuotesView iv, dv; // 日内 / 日线 视野
 };
 
-// 当日一份: 键集 → 当日 [keys]; 键集变 / 版本变才重取 (本帧 QuoteHub::status). T = Days (QuoteService::today, 版本 = QuoteStatus::ver[side];
-//   各只的 Day 都没换 → 沿用原份) / Candles (个股日根 QuoteService::candles, 版本 = 行情日 · 快照时刻: 补分钟根不动日根)
-template <class T>
-struct Today {
-  std::vector<uint32_t> keys;   // 已取的键集
-  std::shared_ptr<const T> day; // [keys] (只读); 空 = 未取 / 键集空
-  misc::Ymd prev = 0;           // 行情日的前一交易日
-  uint64_t ver = ~0ull;         // 已取的版本; ~0 = 待取
-};
-template <class T>
-void Sync(const QuoteHub &mk, Side s, std::span<const uint32_t> keys, Today<T> &t);
-
-// 一路行情的 UI 端 (个股 / 篮子同形): 键集 → 历史发布 + 当日
-struct Feed {
-  std::vector<uint32_t> want;       // 末次请求的键集
-  bool reload = false;              // 下帧照原键集重发
-  uint32_t gen = 0;                 // 末次请求代
-  uint32_t shown = 0;               // 在画的发布的请求代 (视野复位键)
-  std::shared_ptr<const Tape> data; // 在画的历史 (末次请求的到齐才换; keys = 在画的键集)
-  Today<Days> today;                // [data->keys] 当日
-  Joint joint() const { return {data, today.day}; }
-};
-// 每帧: 键集变 / reload / 被同路别的 Feed 覆盖 → 发请求 (个股另 select 给新浪); 末次请求的发布到齐 → 整体换上, 当日随之重取
-//   (交接先于发布换上 ⇒ 新历史配新当日); 其余照 Today 取
-void Sync(QuoteHub &mk, Side s, std::span<const uint32_t> want, Feed &f);
-
+struct StockSeries; // 图的根 (QuotesPanel.cpp)
 struct StockState {
-  Feed feed; // 键集 = {选中标的} / 空
+  uint32_t want = Ref::kNone;  // 要画的标的 (全局 id)
+  uint32_t shown = Ref::kNone; // 在画的: want 的全历史到齐 (价格库用不了 = 只画当日) 才换上
   ChartState chart;
+  std::shared_ptr<StockSeries> series; // 在画的根
 };
+// 每帧: 要画 id (Ref::kNone = 无) → 登记全历史 (QuoteHub::want_kline), 换了即告诉新浪 (选中标的优先补分钟); 到齐才换上, 其间照画旧的
+void Want(QuoteHub &mk, StockState &st, uint32_t id);
 
 // 叠加图两种
 enum OverlayKind : int { kOverlayNone = -1,
@@ -87,24 +64,21 @@ enum OverlayKind : int { kOverlayNone = -1,
                          kOverlayFlow,  // 累计净流入 (FLOW 页)
                          kOverlays };
 
-// 叠加图 / Lines 右表的行情: 篮子 Feed + 叠加个股 Feed (历史) + 成分当日 (只当日) + 两种图的档位
+struct OverlayCache; // 在画的线 (QuotesPanel.cpp)
+// 叠加图两种的档位 (Lines 右表的资金流段同一份)
 struct OverlayState {
-  Feed baskets;             // 键集 = 全部篮子线 (下标 = 篮子下标)
-  Feed stocks;              // 键集 = 叠加的个股 (全局 id; 与 ASSET 同一路个股历史)
-  Today<Days> cons;         // 成分组的个股 (全局 id, 升序) 的当日
   int span[kOverlays] = {}; // [OverlayKind] 日轴档 (日内 / 2日 … 5日)
   int flow_unit = 0;        // 资金流 y: 0 = 占近 5 日日均成交额 [%], 1 = 金额 [亿元]
   bool flow_ends = false;   // 资金流计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价)
+  std::shared_ptr<OverlayCache> cache[kOverlays];
 };
-
-// 一个标的的源: 篮子 = 篮子 Feed 的该线; 个股 = 叠加个股 Feed (历史 + 当日), 不在其中 → 成分当日 (只当日)
-Source SourceOf(const OverlayState &st, Ref ref);
 
 // 叠加的一条: 标的 + 线色 (ImU32) + 线名
 struct OverlayPick {
   Ref ref;
   uint32_t col;
   std::string name;
+  bool operator==(const OverlayPick &) const = default;
 };
 
 // 近况: 最新一根对前收 / 最新收对 MA5 (含最新一根; 各日收按前收链前复权到最新一日), 各 − 1; 不可算 = NaN
@@ -117,19 +91,18 @@ struct Mark {
   double close, ref;
 };
 inline constexpr size_t kMarks = 5;
+static_assert(kMarks <= kTailDays, "近况: 未接当日时日脊末段也须够");
 // 近况核 (标的 / 净值线同一份): m = 新 → 旧, 至多用前 kMarks 日
 Recent RecentOf(std::span<const Mark> m);
-// 源的近况: 当日接上取当日, 再接日线末根起 (不足的列 NaN)
+// 源的近况: 当日接上取当日, 再接日线末根起 (个股没留全历史 = 日脊末段; 不足的列 NaN)
 Recent RecentOf(const Source &src);
-// 个股近况 (不读历史): 新浪当日日根接得上 (其前一交易日 prev = 本只 bar1d 水位) 取当日, 再接 bar1d 最近几个有成交日 (StockInfo::closes)
-Recent RecentOf(const StockInfo &info, const Candle &today, misc::Ymd prev);
 
 // title = 在画标的的标题 (简称 + 代码)
 void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &title);
 // picks 各条的 kind 叠加图, 占满当前区域 (日轴 = OverlayDays, 当日未接上 → 当日空 + 提示; 档位条等工具叠在左上角); 篮子源未就绪 / 读取中 → 提示; 无历史又无当日的条不画;
 // hot = 白粗线画在最上的条 (picks 下标, −1 = 无; gui/util/HoverSync.hpp). 返回图上悬停的条 (鼠标 x 处纵向最近; −1 = 无)
 int RenderOverlay(OverlayKind kind, const QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot);
-// kind 档的日轴: 行情日及其前 n − 1 个交易日 (升序); 行情日未知 (首轮快照前) → 空
+// kind 档的日轴: 行情日及其前 n − 1 个交易日 (升序); 当日未到 (首份 Live 前) → 空
 std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const OverlayState &st);
 // 一段的资金流 [元]: 净流入 (分钟涨跌法, 见 Fold) / 成交额; amount 0 = 无根
 struct Flow {
@@ -137,7 +110,7 @@ struct Flow {
 };
 // 一日分钟根的资金流 (首 / 末根按 ends)
 Flow FlowOf(const Bars &b, bool ends);
-// 源在 days 各日的资金流 (当日接上取当日, 否则历史分钟根; 无根的日 amount 0)
+// 源在 days 各日的资金流 (当日接上取当日, 否则全历史的分钟根; 无根的日 amount 0)
 std::vector<Flow> FlowOf(const Source &src, std::span<const misc::Ymd> days, bool ends);
 
 } // namespace GUI::Market

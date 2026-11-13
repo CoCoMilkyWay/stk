@@ -493,12 +493,16 @@ void path(CtaState &c, const CtaResult &r) {
   ImGui::TextDisabled("首个选参日: %s", params_of(g, v0).c_str());
 }
 
-void panel(const CtaService &svc, CtaState &c, const cta::Rates &rates, const CtaResult *r, const std::string &lack) {
-  // 状态: 进度 / 算不了的原因 / 全期跨度
+void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::Rates &rates, const CtaResult *r, const std::string &lack) {
+  // 状态: 价格库合成 / 进度 / 算不了的原因 / 全期跨度
   const Phase ph = svc.phase.load(std::memory_order_acquire);
   const size_t done = svc.done.load(std::memory_order_relaxed), total = svc.total.load(std::memory_order_relaxed);
-  if (ph == Phase::Loading)
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "合成价格 %zu/%zu 日", done, total);
+  const size_t lib_total = lib.total.load(std::memory_order_relaxed);
+  const bool syncing = lib.phase.load(std::memory_order_acquire) == Phase::Loading && lib_total > 0;
+  if (syncing)
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "合成价格 %zu/%zu 日", lib.done.load(std::memory_order_relaxed), lib_total);
+  else if (ph == Phase::Loading)
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "读取分钟价…");
   else if (ph == Phase::Running)
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "滚动选参 %zu/%zu 日", done, total);
   else if (!lack.empty())
@@ -508,8 +512,8 @@ void panel(const CtaService &svc, CtaState &c, const cta::Rates &rates, const Ct
     ImGui::TextDisabled("%s ~ %s  ·  %zu 根", misc::dash(day_of(*r, 0)).c_str(), misc::dash(day_of(*r, n - 1)).c_str(), n);
   } else
     ImGui::TextDisabled("未算");
-  if (ph == Phase::Loading && ImGui::IsItemHovered())
-    tip("首次一趟合成全部篮子线与个股的 1 分钟价, 存在 all.bar 库目录 cta/ 下 (十年全市场约 30 GB); 之后只补新日, 取消不丢已合成的");
+  if (syncing && ImGui::IsItemHovered())
+    tip("首次一趟合成全部篮子线与个股的 1 分钟价, 存在 all.bar 库目录 cache/price/ 下 (十年全市场约 30 GB); 之后只补新日, 退出不丢已合成的");
 
   // 设定: 分组 (优化目标 / 中线 / 分层 / 引擎), 组内一行一项, 名左值右
   CtaSpec &sp = c.spec;
@@ -642,12 +646,15 @@ void panel(const CtaService &svc, CtaState &c, const cta::Rates &rates, const Ct
 
 } // namespace
 
-void RenderLinesCta(CtaService &svc, LinesState &ui, const cta::Rates &rates, const char *name, const ImVec2 &plots_size, float panel_w) {
+void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, const cta::Rates &rates, const char *name, const ImVec2 &plots_size,
+                    float panel_w) {
   CtaState &c = ui.cta;
   const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
   const Quote::Ref q = one.empty() ? Quote::Ref{} : one.begin()->second;
-  if (q.ok() ? !c.editing : !c.sent.req.gen) // 首次打开未选标的 = 先备价格库
-    c.sent.send(svc, {.ref = q, .spec = c.spec, .rates = rates});
+  const Quote::PriceView *v = mk.view.get();
+  const bool ready = v && v->lack.empty();
+  if (q.ok() && ready && !c.editing)
+    c.sent.send(svc, {.ref = q, .spec = c.spec, .rates = rates, .stamp = v->stamp});
   const std::shared_ptr<const CtaResult> r = latest(svc);
   const bool mine = q.ok() && r && r->ref == q; // 本标的的 (设定改了时新的还在算, 先显旧的)
   const CtaResult *show = mine && r->lack.empty() ? r.get() : nullptr;
@@ -659,12 +666,15 @@ void RenderLinesCta(CtaService &svc, LinesState &ui, const cta::Rates &rates, co
     ImGui::TextDisabled("右表单选一个指数 / 行业 / 概念 / 成分股 (与 VAL 同一份选中)");
   else if (show)
     plots(c, *show, name, ImGui::GetContentRegionAvail());
+  else if (!ready)
+    ImGui::TextDisabled("等价格库…");
   else if (!mine || r->gen != c.sent.req.gen)
     ImGui::TextDisabled("计算中…");
   ImGui::EndChild();
   ImGui::SameLine();
   ImGui::BeginChild("##cta_panel", ImVec2(panel_w, plots_size.y), ImGuiChildFlags_Borders);
-  panel(svc, c, rates, show, mine ? r->lack : std::string{});
+  panel(svc, *mk.price, c, rates, show, v && !v->lack.empty() ? v->lack : mine ? r->lack
+                                                                               : std::string{});
   ImGui::EndChild();
 }
 

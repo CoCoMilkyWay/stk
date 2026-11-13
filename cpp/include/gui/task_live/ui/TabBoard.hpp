@@ -50,7 +50,7 @@ struct BoardState {
   Market::StockState stock;
   std::unordered_map<std::string, uint32_t> ids; // "000001.SZ" → 全局 id
   float split = 0.66f;                           // 左右分栏比
-  float pos_w = 0;                               // 持仓表除去格内边距的宽 (上一帧量得; 0 = 未量)
+  float pos_w = 0, acct_w = 0, plan_w = 0;       // 持仓 / 账户 / 试算表除去格内边距的宽 (上一帧量得; 0 = 未量)
 };
 
 void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, BoardState &st);

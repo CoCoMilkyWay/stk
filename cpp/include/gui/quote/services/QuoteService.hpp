@@ -1,12 +1,12 @@
-// 行情的当日一路 (见 Quote.hpp): 新浪全市场内存缓存当天, 个股 / 篮子的当日同出于此 (today(Side, 键集)).
-//   个股当日 = 本只的根 (五档另取 book); 篮子当日 = 交接 (PriceLib 每次定下即 bind) 的成员表合成 (Fold, 只合到此刻所在根), 当日有变才合:
-//     每轮快照之后合一次; 其间补根改了当日 → 距上次合成满 kFoldGap 即合, 不等下一轮快照.
+// 行情的当日一路 (见 Quote.hpp): 新浪全市场内存缓存当天, 个股 / 篮子的当日同出于此, 当日有变才发布一份 Live (live()):
+//     每轮快照之后发布一次; 其间补根改了当日 → 距上次发布满 kFoldGap 即发布, 不等下一轮快照.
+//   个股当日 = 本只的根 (+ 末快照的五档); 篮子当日 = 交接 (PriceLib 每次定下即 bind) 的成员表合成 (Fold, 只合到此刻所在根).
 //   增量合成: 冻结线 = min(定稿线 + 1, 各只待补区间起点) 之前的槽不会再变, 只合一次 (Folding 跨轮持有累加与各只接续);
 //     每轮只合日根与冻结线之后的几槽. 冻结段被改写 (快照 / 补根落在冻结线前) 或冻结线回退 (新标待补) → 从头合一次.
-//   合成不持 mu_ 整趟: 成员表是不可变快照 (Basis), 逐 kFoldChunk 只持 mu_ 读一段, 末了持 mu_ 换上 (其间换日 / 重 bind → 弃).
-//   两张当日表各一个版本号 (QuoteStatus::ver); 当日一只一份不可变 Day, GUI 只拷指针:
-//     个股 = Track 上按需建的快照 (该只的根 / 快照有变即作废, 下次取时重建), 篮子 = 末次合成的整份 (各篮子指进同一块).
-//   状态计数 (待补 / 缺口只数) 随改动增量维护: 改 Track 只经 touch, 取状态 O(1).
+//   发布不持 mu_ 整趟: 个股持 mu_ 只重建有变的 Day; 篮子的成员表是不可变快照 (Basis), 逐 kFoldChunk 只持 mu_ 读一段 (其间换日 → 弃);
+//     末了持 pub_mu_ 换上. 当日一只一份不可变 Day, GUI 只拷指针:
+//     个股 = Track 上的快照 (该只的根有变即作废, 下次发布重建), 篮子 = 每次合成的整份 (各篮子指进同一块).
+//   状态 (QuoteStatus) 随改动持 mu_ 写一份副本 (pub_mu_), GUI 取状态 / 发布都不碰 mu_; 待补 / 缺口只数增量维护: 改 Track 只经 touch.
 //
 // 当日 1 分钟 K, 两路取数 (见 api/sina/client.hpp):
 //   快照 (hq.sinajs.cn 一次 800 只, 全市场 ~8 批, 一批一条连接并发): 盘中每 kTick 一轮 (交易所快照 3s 一档), 盘外每 kIdleTick.
@@ -25,7 +25,7 @@
 //   写回 [lo, 定稿线]: 有根写根, 无根清空, 全段标精确 (此后快照不写); lo 推到定稿线后.
 //     同一回包里尾巴上取时已走完的根 (定稿线, min(hi, 取时所在根)) 先暂写 (不标精确, 仍待补), 不等定稿也有图; 再取时整段覆盖.
 //   定稿线: 标号不晚于 "此刻 − kSettle" 的根不再变 (刚过去那根还会被修正); 行情日不是今天 (盘前看昨日 / 周末) → 整日定稿.
-//   行情日 ≤ fund_end (基本面 bar1m 已入库) 不取分钟 K (那天由 bar1m 给).
+//   行情日 ≤ fund_end (基本面 bar1m 已入库; 随基本面同步推进) 不取分钟 K (那天由 bar1m 给).
 //   落盘 output/data/quote/live.bin: 行情日全部 Track + 末轮快照时刻, 定长文件整份 MAP_SHARED 映射; 原子粒度 = 一只的状态 / 一格 (只, 分钟),
 //     改一处当场写一处 (进程被杀 / 崩溃不丢; 写到一半的条目读回当作没有: 状态 → 该只从零, 格 → 该格成缺口待补).
 //     换日 (含启动首轮) 先读同日缓存 (按新浪码对上本次全市场) 再重写成本次布局 —— 停机那段即一次断档, 照断档规则只补其间有成交的只;
@@ -60,17 +60,16 @@ namespace GUI::Quote {
 struct Handoff;
 
 struct QuoteStatus {
-  misc::Ymd date = 0;         // 行情日
-  misc::Ymd prev = 0;         // 行情日的前一交易日
-  int sec = 0;                // 全市场最新快照时刻
-  size_t pending = 0;         // 待取 / 在取的分钟 K
-  size_t fetched = 0;         // 已取的分钟 K
-  size_t gaps = 0;            // 有待补区间的只 (含等定稿的); 不取分钟 K 的日恒 0
-  size_t holes = 0;           // 其中有缺口的只 (缺口不画, 补到即画); 不取分钟 K 的日恒 0
-  bool fill = false;          // 行情日 > fund_end (取分钟 K)
-  PerSide<uint64_t> ver = {}; // 当日表版本: 个股 (每轮快照 / 每次补根 +1) / 篮子 (每次合成 +1)
-  size_t bytes = 0;           // 盘上缓存字节; 0 = 未建 (尚无行情日)
-  std::time_t saved = 0;      // 盘上缓存的末次写入时刻
+  misc::Ymd date = 0;    // 行情日
+  misc::Ymd prev = 0;    // 行情日的前一交易日
+  int sec = 0;           // 全市场最新快照时刻
+  size_t pending = 0;    // 待取 / 在取的分钟 K
+  size_t fetched = 0;    // 已取的分钟 K
+  size_t gaps = 0;       // 有待补区间的只 (含等定稿的); 不取分钟 K 的日恒 0
+  size_t holes = 0;      // 其中有缺口的只 (缺口不画, 补到即画); 不取分钟 K 的日恒 0
+  bool fill = false;     // 行情日 > fund_end (取分钟 K)
+  size_t bytes = 0;      // 盘上缓存字节; 0 = 未建 (尚无行情日)
+  std::time_t saved = 0; // 盘上缓存的末次写入时刻
 };
 
 class QuoteService {
@@ -80,27 +79,22 @@ public:
   static constexpr int kLag = (kSettle + 59) / 60 + 1; // 此刻所在根 − 定稿线 的上界 [根]
   static constexpr int kGap = 10;                      // 断档判据: 两轮快照跨根时其间连续竞价时长 [s]
   static constexpr int kFillers = 16;                  // 分钟 K 并发 (再高新浪会 RST)
-  static constexpr int kFoldGap = 1;                   // 补根后篮子合成的最小间隔 [s]
+  static constexpr int kFoldGap = 1;                   // 补根后发布的最小间隔 [s]
   static constexpr uint32_t kFoldChunk = 256;          // 篮子合成每段成员只数 (持 mu_ 的粒度)
 
-  QuoteService(PoolAxis axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading);
+  QuoteService(std::shared_ptr<const PoolAxis> axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading);
   ~QuoteService();
   QuoteService(const QuoteService &) = delete;
   QuoteService &operator=(const QuoteService &) = delete;
 
-  const PoolAxis &axis() const { return axis_; }                  // 全市场 (构造后不变, 任意线程)
+  const PoolAxis &axis() const { return *axis_; }                 // 全市场 (构造后不变, 任意线程)
   std::span<const misc::Ymd> trading() const { return trading_; } // 交易日升序 (构造后不变, 任意线程)
   void select(uint32_t id);                                       // GUI: 选中标的 (全局 id; ~0u = 无)
+  void set_fund_end(misc::Ymd e);                                 // GUI: 基本面 bar1m 水位推进
   QuoteStatus status() const;
-  // 交接 (成员表下标: 库轴 → 全市场) 换上, 当场合成一次 (PriceLib 定下交接即调)
+  std::shared_ptr<const Live> live() const; // 末份当日; 空 = 尚未发布
+  // 交接 (成员表下标: 库轴 → 全市场) 换上, 当场发布一次 (PriceLib 定下交接即调)
   void bind(const Handoff &h);
-  // GUI: 键集的当日 (只读), [k] ↔ keys[k]; 个股不在全市场 / 当日无成交、篮子未合成 / 成员无成交 → nullptr.
-  //   篮子键集须是全表 (keys[k] = k): 给末次合成的那份, 不拷
-  std::shared_ptr<const Days> today(Side s, std::span<const uint32_t> keys) const;
-  // GUI: 个股键集的当日日根 (不带分钟根), [k] ↔ keys[k], 无 → date 0
-  std::shared_ptr<const Candles> candles(std::span<const uint32_t> keys) const;
-  // GUI: 个股 id 的最新快照 (五档); 不在全市场 / 未收到 → sym 空
-  sina::Quote book(uint32_t id) const;
 
 private:
   enum class Fill : uint8_t { Idle,
@@ -108,13 +102,13 @@ private:
                               Busy };
   // 一只的当日: 快照合成 + 分钟 K 补的根, 待补区间, 快照累计基线
   struct Track {
-    Bars bars;                              // 当日的根 (含缺口)
-    std::bitset<kSlots> exact;              // 来自分钟 K 的根 (含确认无成交的); 快照不写
-    int lo = kSlots, hi = -1;               // 待补区间 (lo > hi = 无)
-    double vol = -1, amt = 0;               // 上一快照累计 (vol < 0 = 尚无快照)
-    float high = 0, low = 0;                // 上一快照日内高 / 低
-    Fill fill = Fill::Idle;                 // 运行态, 不落盘
-    mutable std::shared_ptr<const Day> day; // 当日快照 (today 按需建; 空 = 待建)
+    Bars bars;                      // 当日的根 (含缺口)
+    std::bitset<kSlots> exact;      // 来自分钟 K 的根 (含确认无成交的); 快照不写
+    int lo = kSlots, hi = -1;       // 待补区间 (lo > hi = 无)
+    double vol = -1, amt = 0;       // 上一快照累计 (vol < 0 = 尚无快照)
+    float high = 0, low = 0;        // 上一快照日内高 / 低
+    Fill fill = Fill::Idle;         // 运行态, 不落盘
+    std::shared_ptr<const Day> day; // 当日快照 (发布时建; 空 = 待建)
 
     bool gap() const { return lo <= hi; }
     void mark(int l, int h) { lo = std::min(lo, l), hi = std::max(hi, h); }
@@ -141,9 +135,12 @@ private:
 
   void poll();
   void fill();
-  void fold(); // 篮子当日合成 → baskets_; 不持 mu_ 调
+  void publish(); // 当日有变 → 一份 Live; 不持 mu_ 调
+  // 篮子当日合成到 y.baskets (槽 [0, slots), 冻结线 freeze; 上次发布后改写过的最早槽 touched); false = 其间换日
+  bool fold(Live &y, const std::shared_ptr<const Basis> &b, int slots, int freeze, int touched);
   // 以下须持 mu_
-  bool foldable() const { return dirty_ && basis_ && date_ != 0; }
+  bool stale() const { return dirty_ && date_ != 0; }
+  void post(); // 状态副本 → status_
   void schedule();
   int settled() const;
   int live_slot() const;
@@ -163,20 +160,20 @@ private:
   void put(uint32_t i);        // tracks_[i] 的状态 → 映射
   void put(uint32_t i, int s); // tracks_[i] 的格 s → 映射
 
-  const PoolAxis axis_;
-  const misc::Ymd fund_end_;
+  const std::shared_ptr<const PoolAxis> axis_;
   const std::vector<misc::Ymd> trading_;            // 交易日升序
   std::vector<std::string> syms_;                   // [sub] 新浪码
   std::unordered_map<std::string, uint32_t> index_; // 新浪码 → sub
 
   mutable std::mutex mu_;
   std::condition_variable cv_;   // 分钟 K 线程: 待取 / 停
-  std::condition_variable wake_; // 快照线程: 当日有变待合成 / 停
+  std::condition_variable wake_; // 快照线程: 当日有变待发布 / 停
   bool stop_ = false;
+  misc::Ymd fund_end_;
   misc::Ymd date_ = 0, prev_ = 0; // 行情日 / 其前一交易日
   uint64_t gen_ = 0;              // 换日 +1: 在取的分钟 K 作废
   std::vector<Track> tracks_;
-  std::vector<sina::Quote> last_;
+  std::shared_ptr<const std::vector<sina::Quote>> last_; // [sub] 末快照 (每轮整份换)
   std::deque<uint32_t> todo_;
   uint32_t sel_ = ~0u;
   size_t inflight_ = 0, fetched_ = 0;
@@ -185,13 +182,15 @@ private:
   std::byte *map_ = nullptr;    // 盘上缓存的映射 (bytes_ 字节; 空 = 尚无行情日)
   size_t bytes_ = 0;            // QuoteStatus::bytes / saved
   std::time_t saved_ = 0;
-  std::shared_ptr<const Basis> basis_;  // 空 = 未 bind
-  std::shared_ptr<const Days> baskets_; // [篮子] 当日 (末次合成, 整份不可变; 空 = 未合成)
-  bool dirty_ = false;                  // 上次合成后当日有变 (快照 / 补根 / 换日 / bind)
-  int touched_ = kSlots;                // 上次合成后改写过根的最早槽
-  PerSide<uint64_t> ver_ = {};
-  std::mutex fold_mu_; // 合成一次一趟 (快照线程 / bind 的调用方)
-  Folding folding_;    // fold_mu_
+  std::shared_ptr<const Basis> basis_; // 空 = 未 bind
+  bool dirty_ = false;                 // 上次发布后当日有变 (快照 / 补根 / 换日 / bind)
+  int touched_ = kSlots;               // 上次发布后改写过根的最早槽
+  std::mutex fold_mu_;                 // 发布一次一趟 (快照线程 / bind 的调用方)
+  Folding folding_;                    // fold_mu_
+  mutable std::mutex pub_mu_;          // 以下: GUI 取
+  QuoteStatus status_;
+  std::shared_ptr<const Live> live_;
+  uint64_t ver_ = 0;
 
   std::thread poll_;
   std::vector<std::thread> fillers_;

@@ -68,7 +68,7 @@ void star_cell(LinesState &ui, const std::string &w) {
   ImGui::PopStyleColor(2);
 }
 
-// 页 page 点行: 选中 ↔ 取消 (单选 = 换掉原选中); 多选里个股满 History::kKeep − 1 只不再加 (留一只给单选), 刚选中 → 其线在主图例里回默认显隐 (理想列显, 可成交列隐)
+// 页 page 点行: 选中 ↔ 取消 (单选 = 换掉原选中); 多选里个股满 PriceLib::kKeep − 1 只不再加 (留一只给单选), 刚选中 → 其线在主图例里回默认显隐 (理想列显, 可成交列隐)
 void pick(LinesState &ui, int page, const LinesRow &r) {
   const int m = kPageDefs[page].pick;
   std::map<std::string, Quote::Ref> &s = ui.pick.rows[m];
@@ -76,7 +76,7 @@ void pick(LinesState &ui, int page, const LinesRow &r) {
     return;
   if (m == kPickOne)
     s.clear();
-  else if (r.ref.is(Quote::kStock) && ui.pick.stocks(m).size() + 1 >= Quote::History::kKeep)
+  else if (r.ref.is(Quote::kStock) && ui.pick.stocks(m).size() + 1 >= Quote::PriceLib::kKeep)
     return;
   s.emplace(r.id, r.ref);
   if (m == kPickMany)
@@ -322,7 +322,7 @@ std::string yi_text(double y, bool sign = false) {
                   pm, a);
   return s;
 }
-// 表行的源: 位置 / 行 + 基本面档案 (个股才有, 无 → nullptr) + 行情源 (SourceOf, 与叠加图同一查法; 无行情键 = 空)
+// 表行的源: 位置 / 行 + 基本面档案 (个股才有, 无 → nullptr) + 行情源 (QuoteHub::of, 与叠加图同一查法; 无行情键 / 行情未起 = 空)
 // + 当日 (源的当日有成交才有, 否则 nullptr)
 struct RowSrc {
   LinesAt at;
@@ -331,29 +331,31 @@ struct RowSrc {
   Source src;
   const Quote::Day *day = nullptr;
 };
-RowSrc src_of(const LinesState &ui, const StockInfos &infos, const LinesDerived &d, const LinesAt &a) {
+RowSrc src_of(const Quote::QuoteHub *mk, const StockInfos &infos, const LinesDerived &d, const LinesAt &a) {
   RowSrc x{a, &d.row(a)};
   const Quote::Ref q = x.row->ref;
   if (!q.ok())
     return x;
   if (q.is(Quote::kStock) && q.key < infos.size() && infos[q.key].known)
     x.info = &infos[q.key];
-  x.src = SourceOf(ui.overlay, q);
+  if (!mk)
+    return x;
+  x.src = mk->of(q);
   x.day = x.src.today;
   return x;
 }
 // 篮子行的当日 (SheetToday): 只数 / 总市值 = Tape::members / cap (加权线的总市值当日接上 × 当日涨跌 = 成员总市值的当日变化; 等权线停在末日收盘);
 // 成交额 / 流入 = 当日 Day (不看接续); 换手 = 成交额 / 总市值
-SheetToday basket_today(const Feed &f, const RowSrc &x) {
+SheetToday basket_today(const Quote::Tape &t, const RowSrc &x) {
   SheetToday o;
-  if (!x.src.kl || f.data->members.empty())
+  if (!x.src.kl || t.members.empty())
     return o;
   const size_t l = x.row->ref.key;
-  assert(f.data->keys[l] == l && x.src.kl == f.data->list[l].get());
-  double w = f.data->cap[l];
+  assert(t.keys[l] == l && x.src.kl == t.list[l].get());
+  double w = t.cap[l];
   if (basket_table().weight(l) == pool::kWeightCap && x.src.joined)
     w *= x.day->candle.close / x.day->candle.ref;
-  o.v[kTodayMembers] = f.data->members[l];
+  o.v[kTodayMembers] = t.members[l];
   o.v[kTodayCap] = w > 0 ? w : kNaN;
   if (x.day && x.day->candle.amount > 0)
     o.amount = x.day->candle.amount / 1e8, o.v[kTodayFlow] = x.day->flow / x.day->candle.amount;
@@ -373,20 +375,16 @@ SheetToday stock_today(const RowSrc &x) {
   o.v[kTodayTurn] = o.amount / o.v[kTodayCap];
   return o;
 }
-// 表行的当日: 按行情键 (篮子 = 篮子 Feed 的该线 + 当日; 个股 = 档案 + 当日; 无 = 全不可算)
-SheetToday today_of(const Feed &f, const RowSrc &x) {
+// 表行的当日: 按行情键 (篮子 = 价格库篮子史的该线 + 当日; 个股 = 档案 + 当日; 无 / 篮子史未到 = 全不可算)
+SheetToday today_of(const Quote::Tape *bt, const RowSrc &x) {
   const Quote::Ref q = x.row->ref;
-  return q.is(Quote::kBasket) ? basket_today(f, x) : q.is(Quote::kStock) ? stock_today(x)
-                                                                         : SheetToday{};
+  return q.is(Quote::kBasket) ? bt ? basket_today(*bt, x) : SheetToday{} : q.is(Quote::kStock) ? stock_today(x)
+                                                                                               : SheetToday{};
 }
-// 表行的近况 (RecentOf 同一核): 篮子 = 行情源 (Market 篮子历史同一份); 个股 = ASSET 个股同一份 (无档案 → 不可算); 无行情键 = 可成交线日末
+// 表行的近况 (RecentOf 同一核): 有行情键 = 行情源 (篮子 / 个股同 ASSET 一查法); 无 = 可成交线日末
 Recent recent_row(const RowSrc &x) {
-  const Quote::Ref q = x.row->ref;
-  if (q.is(Quote::kBasket))
+  if (x.row->ref.ok())
     return RecentOf(x.src);
-  if (q.is(Quote::kStock))
-    return !x.info ? Recent{} : x.day ? RecentOf(*x.info, x.day->candle, x.day->prev)
-                                      : RecentOf(*x.info, Quote::Candle{}, 0);
   return recent_of(*x.row->line[kTrade]);
 }
 // 四列 → out[0, kTodays)
@@ -517,14 +515,13 @@ std::vector<SheetCol> cols_of(const SheetCol &name, const std::vector<Seg> &segs
 }
 // 页 page 组 g 的格 (ui.sheet[page]): 键 (公共来源 + 各段的输入) 变 → 全部表行重填: 表行 = 组内行 + 展开行在本组时其下的成分行
 // (成分组前 n_cons 行); 逐表行: 源 → 当日 + 各段依次填格
-const LinesSheet &sheet_of(LinesState &ui, const StockInfos &infos, const LinesDerived &d, int page, int g, const std::vector<Seg> &segs) {
-  const OverlayState &o = ui.overlay;
-  const Feed &f = o.baskets;
+const LinesSheet &sheet_of(LinesState &ui, const Quote::QuoteHub *mk, const StockInfos &infos, const LinesDerived &d, int page, int g,
+                           const std::vector<Seg> &segs) {
   std::vector<int64_t> in;
   for (const Seg &s : segs)
     in.insert(in.end(), s.key.begin(), s.key.end());
-  const LinesSheetKey k{g, ui.view.gen, f.data, o.stocks.data, f.today.day, o.stocks.today.day, o.cons.day, infos.size(), std::move(in),
-                        ImGui::GetFontSize(), ImGui::GetColorU32(ImGuiCol_Text)};
+  const LinesSheetKey k{g, ui.view.gen, infos.size(), std::move(in), ImGui::GetFontSize(), ImGui::GetColorU32(ImGuiCol_Text)};
+  const Quote::Tape *bt = mk ? mk->tape(Quote::kBasket) : nullptr;
   ui.sheet[page].update(k, [&](LinesSheet &ps) {
     ps.nc = cols_in(segs);
     ps.R = d.rows[g].size();
@@ -539,8 +536,8 @@ const LinesSheet &sheet_of(LinesState &ui, const StockInfos &infos, const LinesD
     ps.flow.assign(n, {});
     ps.cells.assign(n * ps.nc, {});
     for (size_t t = 0; t < n; ++t) {
-      const RowSrc x = src_of(ui, infos, d, ps.at[t]);
-      ps.today.push_back(today_of(f, x));
+      const RowSrc x = src_of(mk, infos, d, ps.at[t]);
+      ps.today.push_back(today_of(bt, x));
       SheetCell *out = ps.cells.data() + t * ps.nc;
       for (const Seg &s : segs)
         s.cell(x, t, ps, out), out += s.cols.size();
@@ -587,9 +584,10 @@ std::vector<size_t> listing(LinesState &ui, const LinesSheet &ps, const LinesDer
 }
 // 页 page 的右表 (各页同一条; 组 = 类别条选中的): 格 (sheet_of) → 列出 (listing) → 画 (sheet: 点表行 = 按页的选中方式选 / 取消,
 // 悬停数值格 → 所在段的 tip)
-void table(LinesState &ui, const StockInfos &infos, const LinesDerived &d, int page, const SheetCol &name, const std::vector<Seg> &segs) {
+void table(LinesState &ui, const Quote::QuoteHub *mk, const StockInfos &infos, const LinesDerived &d, int page, const SheetCol &name,
+           const std::vector<Seg> &segs) {
   const int g = ui.cat[page];
-  const LinesSheet &ps = sheet_of(ui, infos, d, page, g, segs);
+  const LinesSheet &ps = sheet_of(ui, mk, infos, d, page, g, segs);
   const auto on = [&](size_t t) { return picked(ui, page, d.row(ps.at[t])); };
   const std::vector<size_t> order = listing(ui, ps, d, g, on);
   ImGui::PushID(static_cast<int>(ps.nc)); // 列数可变 (资金流段随档位)
@@ -629,12 +627,12 @@ constexpr int kRecents = 2;
 const SheetCol kRecentCols[kRecents] = {
     {"涨幅", "涨幅 = 当日涨跌幅\n"
              "• 算法: 最新一日收盘 / 前收 − 1\n"
-             "• 数据: 篮子 = Market 篮子历史 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 成分行 = ASSET 个股同一份 (新浪当日接上 bar1d); 因子 / 策略 = 净值末点\n"
+             "• 数据: 篮子 = Market 篮子历史 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 成分行 = 个股同一查法 (价格库日脊末段 + 新浪当日); 因子 / 策略 = 净值末点\n"
              "• 显示: 百分比两位, 按正负着色\n"
              "• 适用: 全部组 + 成分行; 不随区间"},
     {"Δ5日线", "Δ5日线 = 对 5 日均线的偏离\n"
                "• 算法: 最新一日收盘 / MA5 (含当日) − 1\n"
-               "• 数据: 篮子 = Market 篮子历史 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 成分行 = ASSET 个股同一份; 因子 / 策略 = 净值末 5 点\n"
+               "• 数据: 篮子 = Market 篮子历史 (当日接上 = 新浪快照合成, 否则 all.bar 末日); 成分行 = 个股同一查法; 因子 / 策略 = 净值末 5 点\n"
                "• 显示: 百分比两位, 按正负着色\n"
                "• 适用: 全部组 + 成分行; 不随区间"},
 };
@@ -838,15 +836,7 @@ void RenderLinesSheet(LinesState &ui, int page, const Quote::QuoteHub *mk, const
   for (const SegDef &s : pd.segs)
     if (s.kind != kSegNone)
       segs.push_back(seg_of(s, ui, ui.view.val, mk));
-  table(ui, infos, ui.der.val, page, {"名", pd.name_tip}, segs);
-}
-
-void SyncLinesCons(LinesState &ui, const Quote::QuoteHub &mk) {
-  std::vector<uint32_t> ids;
-  for (const LinesRow &r : ui.der.val.rows[kGroupKid])
-    ids.push_back(r.ref.key);
-  std::ranges::sort(ids);
-  Sync(mk, Quote::kStock, ids, ui.overlay.cons);
+  table(ui, mk, infos, ui.der.val, page, {"名", pd.name_tip}, segs);
 }
 
 } // namespace GUI::Market

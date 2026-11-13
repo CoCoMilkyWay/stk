@@ -1,6 +1,7 @@
 // CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产 中线 + 分层 模型的滚动调参全期轨迹 (cta/Trace.hpp)
-//   价格源 = Quote::PriceLib (QuoteHub 的; 与 MinuteService / 两路历史同一段开场 open, 同一种沿用 Kept); 有效根序列按标的留最近 kKeep 个 (只改设定不重读)
-//   请求 = 标的 + CtaSpec (无标的 = 只备价格库); 新请求覆盖旧的 (换标的 / 改设定即重算). 进度: Loading = 合成天, Running = 选参日数
+//   价格源 = Quote::PriceLib (QuoteHub 的): 请求带价格库发布的戳, 只读那一份库 (其后库又变了 → 本轮作废, 等带新戳的请求);
+//     有效根序列按 (标的, 戳) 留最近 kKeep 个 (只改设定不重读)
+//   请求 = 标的 + CtaSpec + 戳; 新请求覆盖旧的 (换标的 / 改设定 / 库变即重算). 进度: Loading = 读分钟价, Running = 选参日数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (latest)
 #pragma once
 
@@ -34,9 +35,10 @@ struct CtaSpec {
 
 struct CtaRequest {
   uint32_t gen = 0;
-  Quote::Ref ref; // 标的; 无 = 只备价格库
+  Quote::Ref ref; // 标的
   CtaSpec spec;
-  cta::Rates rates; // 成本率 = 系统配置 (Config::commission / stamp / fixed_impact)
+  cta::Rates rates;        // 成本率 = 系统配置 (Config::commission / stamp / fixed_impact)
+  Quote::PriceStamp stamp; // 价格库发布的戳
   bool operator==(const CtaRequest &) const = default;
 };
 

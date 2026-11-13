@@ -1,5 +1,6 @@
 #include "gui/quote/Quote.hpp"
 
+#include "api/sina/client.hpp"
 #include "features/Bar1mDay.hpp"
 #include "fundamental/Scan.hpp"
 
@@ -58,17 +59,15 @@ double net_flow(Bars &b, float base) {
 }
 
 const Candle *Source::last() const {
-  return joined ? &today->candle : kl && !kl->daily.empty() ? &kl->daily.back()
-                                                            : nullptr;
+  return joined ? &today->candle : !daily.empty() ? &daily.back()
+                                                  : nullptr;
 }
 
 const Candle *Source::candle(misc::Ymd d) const {
   if (joined && today->candle.date == d)
     return &today->candle;
-  if (!kl)
-    return nullptr;
-  const auto it = std::ranges::lower_bound(kl->daily, d, {}, &Candle::date);
-  return it != kl->daily.end() && it->date == d ? &*it : nullptr;
+  const auto it = std::ranges::lower_bound(daily, d, {}, &Candle::date);
+  return it != daily.end() && it->date == d ? &*it : nullptr;
 }
 
 const Bars *Source::bars(misc::Ymd d) const {
@@ -80,18 +79,39 @@ const Bars *Source::bars(misc::Ymd d) const {
   return it != kl->minutes.end() && it->date == d ? &*it : nullptr;
 }
 
-Source Joint::at(size_t k) const {
-  assert(tape && k < tape->keys.size() && (!today || today->size() == tape->keys.size()));
-  const Kline *kl = tape->list[k].get();
-  const Day *y = today ? (*today)[k].get() : nullptr;
-  return {kl, y, y && (!kl || tape->joins(y->prev))};
+std::span<const Candle> Tails::of(uint32_t id) const {
+  const auto it = std::ranges::lower_bound(ids, id);
+  return it != ids.end() && *it == id ? daily[static_cast<size_t>(it - ids.begin())] : std::span<const Candle>{};
+}
+
+const Kline *Tape::line(uint32_t key) const {
+  const size_t k = find(key);
+  return k < keys.size() ? list[k].get() : nullptr;
+}
+
+const Day *Live::at(Ref r) const {
+  assert(r.ok());
+  if (r.side == kBasket)
+    return r.key < baskets.size() ? baskets[r.key].get() : nullptr;
+  const size_t s = axis->sub_of(r.key);
+  return s < stocks.size() ? stocks[s].get() : nullptr;
+}
+
+const sina::Quote *Live::quote(uint32_t id) const {
+  const size_t s = axis->sub_of(id);
+  return quotes && s < quotes->size() ? &(*quotes)[s] : nullptr;
 }
 
 Source Joint::of(uint32_t key) const {
-  if (!tape)
-    return {};
-  const size_t k = tape->find(key);
-  return k < tape->keys.size() ? at(k) : Source{};
+  Source o;
+  o.today = live ? live->at({side, key}) : nullptr;
+  if (tape) {
+    o.kl = tape->line(key);
+    o.daily = o.kl ? std::span<const Candle>(o.kl->daily) : tape->tails ? tape->tails->of(key)
+                                                                        : std::span<const Candle>{};
+  }
+  o.joined = o.today && (o.daily.empty() || tape->joins(o.today->prev));
+  return o;
 }
 
 namespace {

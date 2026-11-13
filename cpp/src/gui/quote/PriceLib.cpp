@@ -237,10 +237,26 @@ struct PriceFiles {
   }
 };
 
+const float *MinuteCloses::on(misc::Ymd d) const {
+  const auto it = std::ranges::lower_bound(dates, d);
+  return it != dates.end() && *it == d ? close.data() + static_cast<size_t>(it - dates.begin()) * kSlots : nullptr;
+}
+
+const MinuteCloses *PriceView::minute(Ref r) const {
+  const auto it = std::ranges::find(refs, r);
+  return it == refs.end() ? nullptr : minutes[static_cast<size_t>(it - refs.begin())].get();
+}
+
+bool PriceView::covers(Ref r) const { return std::ranges::find(refs, r) != refs.end(); }
+
 PriceLib::PriceLib(std::vector<misc::Ymd> trading, std::function<void(const Handoff &)> bind) : trading_(std::move(trading)), bind_(std::move(bind)) {
   assert(!trading_.empty() && bind_);
+  Start();
 }
-PriceLib::~PriceLib() = default;
+PriceLib::~PriceLib() {
+  quit_.store(true, std::memory_order_relaxed);
+  Stop();
+}
 
 template <class Ar>
 void PriceLib::snap(Ar &ar) {
@@ -321,7 +337,7 @@ void PriceLib::chain(size_t i, PerSide<std::vector<Link>> &z) {
   });
 }
 
-bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, std::atomic<bool> &cancel, Progress &x) {
+bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates) {
   assert(dates.size() >= 2);
   reopen(lib, dates);
   const fundamental::Catalog cat;
@@ -331,8 +347,9 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
   const bool fresh = !grow && std::ranges::equal(std::span(dates_).subspan(lib_days_), tail);
   if (fresh && at_ == stamp())
     return true;
-  FeatureRead rd(lib, &cancel);
-  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &cancel);
+  at_ = {};
+  FeatureRead rd(lib, &quit_);
+  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &quit_);
   if (!pk)
     return false;
   if (!fresh && dates_.size() > lib_days_) { // 补段先截去 (盘上的头先不认它, 再改写其块)
@@ -353,21 +370,20 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
       lib_days_ = dates_.size();
       save_head();
     };
-    if (!lib_pass(lib.axis, rd, *pk, lib_days_, lib_days_, pool_, cancel, x, each, chain, batch)) {
+    if (!lib_pass(lib.axis, rd, *pk, lib_days_, lib_days_, pool_, quit_, *this, each, chain, batch)) {
       if (rd.stale()) // 库在重算: 下次从头核对
         head_ = {};
       return false;
     }
   }
-  if (!fill(*pk, cat, tail, !fresh, cancel, x))
+  if (!fill(*pk, cat, tail, !fresh))
     return false;
   at_ = stamp();
   bind_(Handoff{axis_, mem_, level_});
   return true;
 }
 
-bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, const std::vector<misc::Ymd> &tail, bool write, std::atomic<bool> &cancel,
-                    Progress &x) {
+bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, const std::vector<misc::Ymd> &tail, bool write) {
   const size_t A = keys_[kStock].size(), NB = keys_[kBasket].size(), T = tail.size(), L = lib_days_;
   assert(dates_.size() == (write ? L : L + T));
   Lane lane(NB);
@@ -397,11 +413,11 @@ bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, cons
           px[static_cast<size_t>(it - tail.begin()) * A + a] = c;
       });
     }
-    x.begin(Phase::Loading, T);
+    begin(Phase::Loading, T);
   }
   std::vector<float> rel(A); // [库轴] 当日 收 / 前收 (无日根 1)
   for (size_t k = 0; k < T; ++k) {
-    if (cancel.load(std::memory_order_relaxed))
+    if (quit_.load(std::memory_order_relaxed))
       return false;
     const size_t i = L + k;
     const misc::Ymd d = tail[k];
@@ -411,7 +427,7 @@ bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, cons
       files_->put_baskets(i, lane.day);
       chain(i, z);
       dates_.push_back(d);
-      x.publish(1);
+      publish(1);
     }
     for (size_t a = 0; a < A; ++a) {
       const DayRec &r = files_->day[kStock].at(i, a);
@@ -428,25 +444,110 @@ bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, cons
   return true;
 }
 
-std::optional<PriceOpen> PriceLib::open(std::string_view what, std::atomic<bool> &cancel, Progress &x) {
-  const pool::AllBar ab = pool::all_bar(what);
-  if (!ab.lack.empty())
-    return PriceOpen{.lack = ab.lack};
-  std::lock_guard<std::mutex> lock(mu_);
-  if (!sync(ab.lib, ab.dates, cancel, x))
-    return std::nullopt;
-  return PriceOpen{.dates = dates_, .lib = lib_days_, .stamp = at_};
+bool PriceLib::run(PriceRequest &req) {
+  assert(req.stocks.size() <= kKeep && req.minutes.size() <= kKeepMinutes && "请求超出留存");
+  const pool::AllBar ab = pool::all_bar("行情历史由 all.bar 特征库合成");
+  if (!ab.lack.empty()) {
+    if (!result || result->lack != ab.lack)
+      put(std::make_shared<PriceView>(PriceView{.lack = ab.lack}));
+    return true;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!sync(ab.lib, ab.dates))
+      return false;
+  }
+  if (!(built_ == at_))
+    rebuild();
+  for (const uint32_t id : req.stocks) {
+    if (cancel_.load(std::memory_order_relaxed))
+      return false;
+    const Ref ref{kStock, id};
+    klines_.get(ref, at_, [&](Kline &k) { return kline(ref, kDailyDays, kMinuteDays, k); });
+  }
+  for (const Ref ref : req.minutes) {
+    if (cancel_.load(std::memory_order_relaxed))
+      return false;
+    minutes_.get(ref, at_, [&](MinuteCloses &mc) {
+      return rows(ref, [&](size_t i, double, const float *px) {
+        mc.dates.push_back(dates_[i]);
+        for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
+          mc.close.push_back(px[s * kFields + kClose]);
+      });
+    });
+  }
+  // 发布 = 本戳留着的全部 (不只本次要的: 切页不闪), 键升序
+  auto v = std::make_shared<PriceView>();
+  v->stamp = at_;
+  v->tape[kBasket] = baskets_;
+  std::vector<std::pair<uint32_t, std::shared_ptr<const Kline>>> ks;
+  klines_.each(at_, [&](Ref r, const std::shared_ptr<const Kline> &k) { ks.emplace_back(r.key, k); });
+  std::ranges::sort(ks, {}, [](const auto &p) { return p.first; });
+  auto st = std::make_shared<Tape>();
+  st->side = kStock, st->dates = dates_, st->lib = lib_days_, st->tails = tails_;
+  for (auto &[k, l] : ks)
+    st->keys.push_back(k), st->list.push_back(std::move(l));
+  const PriceView *o = result && result->lack.empty() && result->stamp == at_ ? result.get() : nullptr;
+  const bool same_stocks = o && o->tape[kStock]->keys == st->keys && o->tape[kStock]->list == st->list;
+  v->tape[kStock] = same_stocks ? o->tape[kStock] : std::move(st);
+  std::vector<std::pair<Ref, std::shared_ptr<const MinuteCloses>>> ms;
+  minutes_.each(at_, [&](Ref r, const std::shared_ptr<const MinuteCloses> &m) { ms.emplace_back(r, m); });
+  std::ranges::sort(ms, {}, [](const auto &p) { return std::pair(p.first.side, p.first.key); });
+  for (auto &[r, m] : ms)
+    v->refs.push_back(r), v->minutes.push_back(std::move(m));
+  if (o && same_stocks && o->tape[kBasket] == v->tape[kBasket] && o->refs == v->refs && o->minutes == v->minutes)
+    return true;
+  put(std::move(v));
+  return true;
 }
 
-std::optional<Handoff> PriceLib::handoff(const PriceStamp &st) const {
+void PriceLib::put(std::shared_ptr<const PriceView> v) {
+  std::lock_guard<std::mutex> lock(mutex);
+  result = std::move(v);
+  Progress::publish();
+}
+
+void PriceLib::rebuild() {
+  built_ = at_;
+  const size_t D = dates_.size();
+  auto t = std::make_shared<Tails>();
+  t->ids = keys_[kStock];
+  const Blocks<DayRec> &sd = files_->day[kStock];
+  Candle c[kTailDays];
+  for (size_t r = 0; r < t->ids.size(); ++r) {
+    size_t n = 0;
+    for (size_t i = D; i-- > 0 && n < kTailDays;)
+      if (const DayRec &x = sd.at(i, r); x.f > 0)
+        c[n++] = candle_of<kStock>(x, dates_[i]);
+    for (size_t k = n; k-- > 0;)
+      t->daily.v.push_back(c[k]);
+    t->daily.off.push_back(static_cast<uint32_t>(t->daily.v.size()));
+  }
+  tails_ = std::move(t);
+  auto b = std::make_shared<Tape>();
+  b->side = kBasket, b->keys = keys_[kBasket], b->dates = dates_, b->lib = lib_days_;
+  for (const uint32_t k : b->keys) {
+    auto kl = std::make_shared<Kline>();
+    kline({kBasket, k}, kDailyDays, kMinuteDays, *kl);
+    b->list.push_back(std::move(kl));
+  }
+  census(mem_, axis_, b->keys, *b);
+  baskets_ = std::move(b);
+}
+
+std::optional<std::vector<misc::Ymd>> PriceLib::dates(const PriceStamp &st) const {
   std::lock_guard<std::mutex> lock(mu_);
   if (!(at_ == st))
     return std::nullopt;
-  return Handoff{axis_, mem_, level_};
+  return dates_;
 }
 
-bool PriceLib::each(Ref ref, const Each &f) const {
+bool PriceLib::each(Ref ref, const PriceStamp &st, const Each &f) const {
   std::lock_guard<std::mutex> lock(mu_);
+  return at_ == st && rows(ref, f);
+}
+
+bool PriceLib::rows(Ref ref, const Each &f) const {
   const size_t row = row_of(ref), D = dates_.size();
   if (row == keys_[ref.side].size())
     return false;
@@ -478,7 +579,6 @@ bool PriceLib::each(Ref ref, const Each &f) const {
 }
 
 bool PriceLib::kline(Ref ref, size_t daily, size_t minutes, Kline &k) const {
-  std::lock_guard<std::mutex> lock(mu_);
   const size_t row = row_of(ref), D = dates_.size();
   if (row == keys_[ref.side].size())
     return false;

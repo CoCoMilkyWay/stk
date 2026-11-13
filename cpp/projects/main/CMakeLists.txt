@@ -350,7 +350,6 @@ set(MATH_PRECISE
     gui/quote/PriceLib.cpp
     gui/quote/Quote.cpp
     gui/quote/QuoteHub.cpp
-    gui/quote/services/History.cpp
     gui/quote/services/QuoteService.cpp
     gui/task_database/TaskDatabase.cpp
     gui/task_database/services/ScanService.cpp
@@ -403,7 +402,6 @@ set(MATH_PRECISE
     gui/task_beta/ui/TabStyle.cpp
     gui/task_market/TaskMarket.cpp
     gui/task_market/services/CtaService.cpp
-    gui/task_market/services/MinuteService.cpp
     gui/task_market/ui/LinesCta.cpp
     gui/task_market/ui/LinesPlot.cpp
     gui/task_market/ui/LinesSheet.cpp

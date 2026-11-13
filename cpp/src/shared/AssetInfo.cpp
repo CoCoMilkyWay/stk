@@ -7,7 +7,7 @@
 //   落地: 一个产物 (或 StockInfo 的一组字段) = 一个 land_*, 写集互不相交:
 //     land_basic      known / name / ipo / out / ind_*  ← cn_stock_basic_info (_meta) + cn_stock_instruments 最新日 (PIT 简称)
 //                                                         + cn_stock_industry_component 最新日
-//     land_quote      update_date / volume / amount / turn / closes ← cn_stock_real_bar1d 最新行 + 最近几个有效报价行
+//     land_quote      update_date / volume / amount / turn ← cn_stock_real_bar1d 最新行 + 最新有效报价行
 //     land_status     st / suspended                    ← cn_stock_status 最新行
 //     land_valuation  mcap / pe / pb / ps / pcf / dy    ← close × total_shares / 财务分母 (cn_stock_shares / financial_ttm_shift /
 //                                                         balance_general_pit) + cn_stock_dividend 近 1/3/5 年
@@ -125,35 +125,14 @@ struct Quote {
   float close = 0, volume = 0, amount = 0, turn = 0;
 };
 
-// 最近 kCloses 个有效报价行, 日降序 (同日只一行; 段间 merge 与段内 offer 同一判据)
-struct Closes {
-  std::array<StockInfo::DayClose, StockInfo::kCloses> v{};
-  void offer(const StockInfo::DayClose &c) {
-    if (c.date <= v.back().date)
-      return;
-    auto at = std::find_if(v.begin(), v.end(), [&](const StockInfo::DayClose &x) { return x.date <= c.date; });
-    if (at->date == c.date)
-      return;
-    std::move_backward(at, v.end() - 1, v.end());
-    *at = c;
-  }
-  void merge(Closes &&o) {
-    for (const StockInfo::DayClose &c : o.v)
-      if (c.date)
-        offer(c);
-  }
-};
-
 struct BarId {
   Ymd date = 0;    // 最新行, 含停牌日 → update_date
   Latest<Quote> q; // 最新有效报价行 (key = qdate); !has() ⇒ 全区间无成交
-  Closes closes;   // 最近几个有效报价行的收 / 前收
   // date 与 qdate 各自独立取最大 —— 最新行和最新有效报价行可能落在不同段
   // (长停股尾部整月全是停牌行), 整体替换会把靠后段的空报价盖上去.
   void merge(BarId &&o) {
     date = std::max(date, o.date);
     q.merge(std::move(o.q));
-    closes.merge(std::move(o.closes));
   }
 };
 
@@ -381,7 +360,6 @@ void land_quote(StockInfos &stocks, const PerId<BarId> &bar) {
     s.volume = b.q.v.volume;
     s.amount = b.q.v.amount;
     s.turn = b.q.v.turn;
-    s.closes = b.closes.v;
   }
 }
 
@@ -641,17 +619,16 @@ bool AssetInfo::build(const Catalog &cat, Progress &p, const std::function<void(
              r.each([&](std::int64_t i, std::uint32_t id, Ymd) { industry[id] = {std::string(code.str(i)), std::string(name.str(i))}; }); }, Pick::Last);
 
   // ---- 日频行情 + 复权因子 ← cn_stock_real_bar1d ----
-  //   最新行 → update_date; 最新有效报价行 → volume/amount/turn/close; 最近几个有效报价行 → closes;
+  //   最新行 → update_date; 最新有效报价行 → volume/amount/turn/close;
   //   adjust_factor → 文件内变点压缩 (分红/拆分事件日, TabCalendar 用)
   Part<BarAcc> bar_p;
-  scan.add(bar_p, spec("cn_stock_real_bar1d"), {"adjust_factor", "volume", "amount", "turn", "close", "pre_close"}, BarAcc(nid),
+  scan.add(bar_p, spec("cn_stock_real_bar1d"), {"adjust_factor", "volume", "amount", "turn", "close"}, BarAcc(nid),
            [nid](const Rows &r, BarAcc &a) {
              const pq::Col af = r.col("adjust_factor");
              const pq::Col vol = r.col("volume");
              const pq::Col amt = r.col("amount");
              const pq::Col turn = r.col("turn");
              const pq::Col close = r.col("close");
-             const pq::Col pre = r.col("pre_close");
 
              // 该文件的不同 date. 行按日成块 (DAI 返回顺序, 块间不保证升序), 所以只在
              // 块首做一次线性查重 ⇒ 全文件只走 K 次 find.
@@ -686,13 +663,11 @@ bool AssetInfo::build(const Catalog &cat, Progress &p, const std::function<void(
                BarId &b = a.latest[id];
                b.date = std::max(b.date, d);
                // amount 在有效成交行上仍有极少数 null (67/1158万), 落 0 而不是让 NaN 流进估值.
-               if (d > b.closes.v.back().date && !close.null(i)) {
+               if (!close.null(i)) {
                  const float c = close.f32(i);
-                 if (c > 0.0f) {
+                 if (c > 0.0f)
                    b.q.offer(d, {c, vol.null(i) ? 0.0f : vol.f32(i), amt.null(i) ? 0.0f : amt.f32(i),
                                  turn.null(i) ? 0.0f : turn.f32(i)});
-                   b.closes.offer({d, c, pre.null(i) ? 0.0f : pre.f32(i)});
-                 }
                }
                const float f = af.f32(i);
                if (!af.null(i) && f > 0.0f) {
