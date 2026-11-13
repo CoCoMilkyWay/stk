@@ -326,7 +326,8 @@ void QuoteService::poll() {
         sec_ = std::max(sec_, q.sec);
         const bool first = tracks_[i].vol < 0;
         if (tracks_[i].absorb(q, gap)) {
-          const int s = sec_slot(q.sec), from = first ? 0 : gap >= 0 ? gap : s; // 改到的根: 首快照 / 断档的缺口起
+          const int s = sec_slot(q.sec), from = first ? 0 : gap >= 0 ? gap
+                                                                     : s; // 改到的根: 首快照 / 断档的缺口起
           for (int k = from; k <= s; ++k)
             put(i, k);
           put(i);

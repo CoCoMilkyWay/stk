@@ -110,8 +110,8 @@ private:
     Fill fill = Fill::Idle;    // 运行态, 不落盘
 
     void mark(int l, int h) { lo = std::min(lo, l), hi = std::max(hi, h); }
-    void hole(int l, int h);     // [l, h] 成缺口 (精确根不动) 并入待补; l > h = 无
-    bool holed(int done) const;  // 槽 ≤ done (已走完, 取得到) 里有缺口
+    void hole(int l, int h);                    // [l, h] 成缺口 (精确根不动) 并入待补; l > h = 无
+    bool holed(int done) const;                 // 槽 ≤ done (已走完, 取得到) 里有缺口
     bool absorb(const sina::Quote &q, int gap); // 同日快照; gap = 断档起始根 (-1 = 无); 返回 = 有变化
     // 分钟 K 写回: [l, settled] 定稿, 其后待补区间内取时 (此刻所在根 live) 已走完的根暂写, 写到的缺口当场补上; 返回写到的末根
     int merge(int l, int settled, int live, misc::Ymd date, const std::vector<sina::Bar> &got);
