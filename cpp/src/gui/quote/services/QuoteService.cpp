@@ -252,23 +252,25 @@ void QuoteService::publish() {
       return;
     dirty_ = false;
     y->date = date_, y->prev = prev_, y->sec = sec_, y->axis = axis_, y->quotes = last_;
-    y->stocks.resize(tracks_.size());
-    for (size_t i = 0; i < tracks_.size(); ++i) {
+    std::vector<uint32_t> redo; // 有成交而当日快照待建的只
+    for (uint32_t i = 0; i < tracks_.size(); ++i)
+      if (traded((*last_)[i]) && !tracks_[i].day)
+        redo.push_back(i);
+    pool_.tasks(static_cast<int>(redo.size()), [&](int j, int) {
+      const uint32_t i = redo[static_cast<size_t>(j)];
       const sina::Quote &q = (*last_)[i];
-      if (!traded(q))
-        continue;
-      Track &t = tracks_[i];
-      if (!t.day) {
-        auto d = std::make_shared<Day>();
-        d->prev = prev_;
-        d->candle = {candle_of(q), date_, q.last_close};
-        d->bars = t.bars;
-        d->bars.date = date_;
-        d->flow = net_flow(d->bars, d->candle.ref);
-        t.day = std::move(d);
-      }
-      y->stocks[i] = t.day;
-    }
+      auto d = std::make_shared<Day>();
+      d->prev = prev_;
+      d->candle = {candle_of(q), date_, q.last_close};
+      d->bars = tracks_[i].bars;
+      d->bars.date = date_;
+      d->flow = net_flow(d->bars, d->candle.ref);
+      tracks_[i].day = std::move(d);
+    });
+    y->stocks.resize(tracks_.size());
+    for (size_t i = 0; i < tracks_.size(); ++i)
+      if (traded((*last_)[i]))
+        y->stocks[i] = tracks_[i].day;
     touched = std::exchange(touched_, kSlots);
     if ((b = basis_)) {
       slots = std::max(live_slot(), sec_slot(sec_)) + 1;
@@ -279,49 +281,36 @@ void QuoteService::publish() {
             freeze = std::min(freeze, t.lo);
     }
   }
-  if (b && !fold(*y, b, slots, freeze, touched))
-    return;
+  if (b)
+    fold(*y, b, slots, freeze, touched);
   std::lock_guard<std::mutex> lock(pub_mu_);
   y->ver = ++ver_;
   live_ = std::move(y);
 }
 
-bool QuoteService::fold(Live &y, const std::shared_ptr<const Basis> &b, int slots, int freeze, int touched) {
+void QuoteService::fold(Live &y, const std::shared_ptr<const Basis> &b, int slots, int freeze, int touched) {
+  static const Bars kNoBars{};
   const Members &M = b->members;
-  const uint32_t n = static_cast<uint32_t>(M.size());
   const std::vector<sina::Quote> &qs = *y.quotes;
   Folding &g = folding_;
   if (g.basis != b || g.date != y.date)
-    g = {b, y.date, std::make_unique<Fold>(b->level.size()), std::vector<Fold::Carry>(n), 0};
+    g = {b, y.date, std::make_unique<Fold>(b->level.size()), std::vector<Fold::Carry>(M.size()), 0};
   if (touched < g.frozen || freeze < g.frozen)
     g.frozen = 0;
-  enum { kDone,
-         kRebase,
-         kGone };
-  const auto pass = [&](int from) {
-    g.fold->open(from, freeze, slots);
-    for (uint32_t k0 = 0; k0 < n; k0 += kFoldChunk) {
-      std::lock_guard<std::mutex> lock(mu_);
-      if (date_ != y.date)
-        return kGone;
-      for (uint32_t k = k0, k1 = std::min(k0 + kFoldChunk, n); k < k1; ++k) {
-        const uint32_t i = M.id[k];
-        const sina::Quote &q = qs[i];
-        const Cell c = candle_of(q);
-        if (!g.fold->add({q.last_close, traded(q) ? &c : nullptr, &tracks_[i].bars}, M.of(k), g.carry[k]))
-          return kRebase;
-      }
-    }
-    return kDone;
+  // 第 k 行: 有成交 = 其当日 Day 的日根 + 分钟根, 否则无根
+  const auto leg = [&](size_t k) {
+    const uint32_t i = M.id[k];
+    const Day *s = y.stocks[i].get();
+    return Leg{qs[i].last_close, s ? &s->candle : nullptr, s ? &s->bars : &kNoBars};
   };
-  auto r = pass(g.frozen);
-  if (r == kRebase)
-    r = pass(0);
-  if (r == kGone) {
-    g = {};
-    return false;
+  std::vector<Fold::Carry> carry(M.size());
+  g.fold->open(g.frozen, freeze, slots);
+  if (!g.fold->add(pool_, M, leg, g.carry, carry)) { // 冻结段所用的基准变了 → 从头
+    g.fold->open(0, freeze, slots);
+    [[maybe_unused]] const bool ok = g.fold->add(pool_, M, leg, g.carry, carry);
+    assert(ok);
   }
-  assert(r == kDone);
+  g.carry = std::move(carry);
   g.frozen = freeze;
   auto day = std::make_shared<std::vector<Day>>(b->level.size());
   g.fold->finish(y.date, y.prev, *day);
@@ -331,7 +320,6 @@ bool QuoteService::fold(Live &y, const std::shared_ptr<const Basis> &b, int slot
       rebase(d, b->level[k]);
       y.baskets[k] = std::shared_ptr<const Day>(day, &d);
     }
-  return true;
 }
 
 // ---------------------------------------------------------------------------

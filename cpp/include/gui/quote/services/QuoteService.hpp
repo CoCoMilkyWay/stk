@@ -3,8 +3,8 @@
 //   个股当日 = 本只的根 (+ 末快照的五档); 篮子当日 = 交接 (PriceLib 每次定下即 bind) 的成员表合成 (Fold, 只合到此刻所在根).
 //   增量合成: 冻结线 = min(定稿线 + 1, 各只待补区间起点) 之前的槽不会再变, 只合一次 (Folding 跨轮持有累加与各只接续);
 //     每轮只合日根与冻结线之后的几槽. 冻结段被改写 (快照 / 补根落在冻结线前) 或冻结线回退 (新标待补) → 从头合一次.
-//   发布不持 mu_ 整趟: 个股持 mu_ 只重建有变的 Day; 篮子的成员表是不可变快照 (Basis), 逐 kFoldChunk 只持 mu_ 读一段 (其间换日 → 弃);
-//     末了持 pub_mu_ 换上. 当日一只一份不可变 Day, GUI 只拷指针:
+//   发布只在重建个股 Day 时持 mu_ (有变的各只并行重建); 篮子不持 mu_: 源 = 本份的个股 Day + 成员表 (Basis), 都是不可变快照,
+//     按篮子切段并行合成 (Fold, 逐位同逐只); 末了持 pub_mu_ 换上. 当日一只一份不可变 Day, GUI 只拷指针:
 //     个股 = Track 上的快照 (该只的根有变即作废, 下次发布重建), 篮子 = 每次合成的整份 (各篮子指进同一块).
 //   状态 (QuoteStatus) 随改动持 mu_ 写一份副本 (pub_mu_), GUI 取状态 / 发布都不碰 mu_; 待补 / 缺口只数增量维护: 改 Track 只经 touch.
 //
@@ -41,6 +41,7 @@
 #include "fundamental/AssetAxis.hpp" // PoolAxis
 #include "gui/quote/Quote.hpp"
 #include "misc/date.hpp"
+#include "misc/exec.hpp"
 
 #include <algorithm>
 #include <bitset>
@@ -82,7 +83,7 @@ public:
   static constexpr int kGap = 10;                      // 断档判据: 两轮快照跨根时其间连续竞价时长 [s]
   static constexpr int kFillers = 16;                  // 分钟 K 并发 (再高新浪会 RST)
   static constexpr int kFoldGap = 1;                   // 补根后发布的最小间隔 [s]
-  static constexpr uint32_t kFoldChunk = 256;          // 篮子合成每段成员只数 (持 mu_ 的粒度)
+  static constexpr int kFoldThreads = 8;               // 发布的并行 (重建个股 Day / 篮子按段合成)
 
   QuoteService(std::shared_ptr<const PoolAxis> axis, misc::Ymd fund_end, std::vector<misc::Ymd> trading);
   ~QuoteService();
@@ -140,8 +141,8 @@ private:
   void poll();
   void fill();
   void publish(); // 当日有变 → 一份 Live; 不持 mu_ 调
-  // 篮子当日合成到 y.baskets (槽 [0, slots), 冻结线 freeze; 上次发布后改写过的最早槽 touched); false = 其间换日
-  bool fold(Live &y, const std::shared_ptr<const Basis> &b, int slots, int freeze, int touched);
+  // 篮子当日合成到 y.baskets (源 = y.stocks; 槽 [0, slots), 冻结线 freeze; 上次发布后改写过的最早槽 touched)
+  void fold(Live &y, const std::shared_ptr<const Basis> &b, int slots, int freeze, int touched);
   // 以下须持 mu_
   bool stale() const { return dirty_ && date_ != 0; }
   void post(); // 状态副本 → status_
@@ -186,12 +187,13 @@ private:
   std::byte *map_ = nullptr;    // 盘上缓存的映射 (bytes_ 字节; 空 = 尚无行情日)
   size_t bytes_ = 0;            // QuoteStatus::bytes / saved
   std::time_t saved_ = 0;
-  std::shared_ptr<const Basis> basis_; // 空 = 未 bind
-  bool dirty_ = false;                 // 上次发布后当日有变 (快照 / 补根 / 换日 / bind)
-  int touched_ = kSlots;               // 上次发布后改写过根的最早槽
-  std::mutex fold_mu_;                 // 发布一次一趟 (快照线程 / bind 的调用方)
-  Folding folding_;                    // fold_mu_
-  mutable std::mutex pub_mu_;          // 以下: GUI 取
+  std::shared_ptr<const Basis> basis_;                       // 空 = 未 bind
+  bool dirty_ = false;                                       // 上次发布后当日有变 (快照 / 补根 / 换日 / bind)
+  int touched_ = kSlots;                                     // 上次发布后改写过根的最早槽
+  std::mutex fold_mu_;                                       // 发布一次一趟 (快照线程 / bind 的调用方)
+  Folding folding_;                                          // fold_mu_
+  misc::exec::ForkJoin pool_{misc::exec::fit(kFoldThreads)}; // fold_mu_
+  mutable std::mutex pub_mu_;                                // 以下: GUI 取
   QuoteStatus status_;
   std::shared_ptr<const Live> live_;
   uint64_t ver_ = 0;

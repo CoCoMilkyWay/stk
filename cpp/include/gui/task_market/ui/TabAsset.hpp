@@ -1,5 +1,5 @@
 // Tab Asset - 资产表 (列定义一张表: 格 / 排序 / 名次底色 / 截面分析同源) + 右栏 Quotes / Statistics
-//   近况列 (涨幅 / Δ5日线) = Lines 右表同一核 RecentOf: 新浪当日接上价格库的日脊末段
+//   近况列 (涨幅 / Δ5日线) = Lines 右表同一核 RecentOf: 新浪当日接上价格库的日脊末段; 快照 / 价格库发布只重填这两列 (行与其余列不动)
 //   列 / 格 / 名次底色 / 表头排序 = 各表同一套 (gui/util/Sheet.hpp, GUI::rank_by / sort_less); 估值列 (PE / PB / PS / PCF) 显示倍数, 键 = 倒数的收益率 (同股息高为好)
 
 #pragma once
@@ -31,17 +31,21 @@ struct AssetFilter {
   bool operator==(const AssetFilter &) const = default;
 };
 
-// 格的输入: 任一变 → 重填
+// 格的输入: 任一变 → 整表重填
 struct AssetCellsKey {
-  uint64_t generation = 0;            // Asset::generation
-  size_t assets = 0;                  // Asset::items.size()
-  size_t infos = 0;                   // stock_info.size() (基本面首次载入)
-  std::shared_ptr<const Tails> tails; // 个股的日脊末段 (近况列; 价格库变才换)
-  uint64_t today = ~0ull;             // 当日日根的版本 = 行情日 · 快照时刻 (近况列随快照变; 补分钟根不动日根)
+  uint64_t generation = 0; // Asset::generation
+  size_t assets = 0;       // Asset::items.size()
+  size_t infos = 0;        // stock_info.size() (基本面首次载入)
   AssetFilter filter;
   float font = 0.f; // 字号 (格宽)
   uint32_t ink = 0; // 字色 (主题)
   bool operator==(const AssetCellsKey &) const = default;
+};
+// 行情列 (近况) 的输入: 变 → 只重填行情列 (行与其余列不动)
+struct AssetQuoteKey {
+  std::shared_ptr<const Tails> tails; // 个股的日脊末段 (价格库变才换)
+  uint64_t today = 0;                 // 当日日根的版本 = 行情日 · 快照时刻 (随快照变; 补分钟根不动日根)
+  bool operator==(const AssetQuoteKey &) const = default;
 };
 // 过滤后的行与全部格 (表格与截面分析共用; 每帧只画可见行): 名次 = 过滤后 pool 内, 只能跟行一起重填.
 //   逐帧重填是帧时间杀手: 几千行 × 二十列的格 + 九列名次排序; 行统计 (交易日 / 逐笔) 要遍历帧目录整列,
@@ -50,10 +54,12 @@ struct AssetCells {
   std::vector<size_t> ids;      // [行] asset_id (过滤后, 资产序)
   std::vector<SheetCell> cells; // [行][列]
   std::vector<float> cw;        // [列] 各格 (含表头) 最宽
+  AssetQuoteKey quote;          // 行情列所填的源
+  uint64_t quote_gen = 0;       // 行情列重填次数
 };
-// 显示序的输入: 格 (Stage gen) + 排序列
+// 显示序的输入: 格 (Stage gen + 行情列重填次数) + 排序列
 struct AssetOrderKey {
-  uint64_t cells = 0;
+  uint64_t cells = 0, quote = 0;
   int sort_column = -1;
   bool sort_ascending = true;
   bool operator==(const AssetOrderKey &) const = default;

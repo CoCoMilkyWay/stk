@@ -5,6 +5,7 @@
 #include "gui/engine/Hold.hpp"       // hold_desc
 #include "gui/util/Chart.hpp"        // rank_by
 #include "misc/date.hpp"             // to_days (滚动窗权重按日历天)
+#include "misc/exec.hpp"             // ForkJoin (缺的线并行现算)
 #include "shared/Basket.hpp"         // basket_table
 
 #include <algorithm>
@@ -528,20 +529,37 @@ struct Reuse {
   }
 };
 
-// 行 r 进组 g (线源已定): 各线 = 同行前一线源同 → 共用, 否则沿用上一份或现算; 登记 index
+// 行 r 进组 g (线源已定): 各线沿用上一份 (同行前一线源同的留给 build_lines 共用); 登记 index
 void push(LinesDerived &d, int g, LinesRow r, const Reuse &ru) {
-  for (int l = 0; l < kPairLines; ++l) {
-    const LineSrc &s = r.src[l];
-    if (l > 0 && s == r.src[l - 1]) {
-      r.line[l] = r.line[l - 1];
-      continue;
-    }
-    r.line[l] = ru.take(r.id, s);
-    if (!r.line[l])
-      r.line[l] = std::make_shared<const Line>(build_line(d.dates, s));
-  }
+  for (int l = 0; l < kPairLines; ++l)
+    if (l == 0 || !(r.src[l] == r.src[l - 1]))
+      r.line[l] = ru.take(r.id, r.src[l]);
   d.index[r.id] = {g, d.rows[g].size()};
   d.rows[g].push_back(std::move(r));
+}
+
+// 建线的池 (只在派生里用; 派生只在界面线程 ⇒ 不重入)
+misc::exec::ForkJoin &line_pool() {
+  static misc::exec::ForkJoin p(misc::exec::hw());
+  return p;
+}
+// 各行没沿用上的线并行现算 (各线互不相干), 再让同行线源同前一线的共用
+void build_lines(LinesDerived &d) {
+  std::vector<std::pair<LinesRow *, int>> todo;
+  for (std::vector<LinesRow> &rs : d.rows)
+    for (LinesRow &r : rs)
+      for (int l = 0; l < kPairLines; ++l)
+        if (!r.line[l] && (l == 0 || !(r.src[l] == r.src[l - 1])))
+          todo.emplace_back(&r, l);
+  line_pool().tasks(static_cast<int>(todo.size()), [&](int i, int) {
+    const auto [r, l] = todo[static_cast<size_t>(i)];
+    r->line[l] = std::make_shared<const Line>(build_line(d.dates, r->src[l]));
+  });
+  for (std::vector<LinesRow> &rs : d.rows)
+    for (LinesRow &r : rs)
+      for (int l = 1; l < kPairLines; ++l)
+        if (r.src[l] == r.src[l - 1])
+          r.line[l] = r.line[l - 1];
 }
 
 // 算成的因子 [items 序] 的条目; 其账进 d.books (同序), 计数与日并集轴 (各账日的并) 写进 d
@@ -999,6 +1017,7 @@ void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string
   kids.erase(std::unique(kids.begin(), kids.end()), kids.end());
   derive_quotes(open, kids, infos, fixed_impact, ru, d);
   derive_books(its, name, fixed_impact, ru, d);
+  build_lines(d);
   paint(d, o);
   derive_watch(watch, d);
   const bool axis = d.dates != o.dates || d.quotes != o.quotes;

@@ -145,6 +145,18 @@ DayRec day_rec(const Cell *c, float ref) {
     return {0, 0, 0, 0, 0, 0, ref};
   return {1, c->amount, c->open, c->high, c->low, c->close, ref};
 }
+// 一行一日的 收 / 前收 (无日根 1): 成员过日的漂移比
+float rel_of(const DayRec &r) { return r.f > 0 && r.ref > 0 ? r.close / r.ref : 1.f; }
+
+// 补段一日的件 (逐批复用): 合成件 + 源的读 (基本面段 = bar1m, 新浪段 = 归档的日根 / 分钟根 [库轴])
+struct TailWork {
+  explicit TailWork(size_t baskets) : lane(baskets) {}
+  Lane lane;
+  Bar1mDay bd;
+  fundamental::Scratch xs;
+  std::vector<Candle> spx;
+  std::vector<Bars> sbars;
+};
 
 // 一行一日过链 z: base = 当日前收 (存价口径), close = 当日收 (0 = 无日根); origin = 首个有根日的因子. 返回当日因子 (0 = 无日根)
 double step(PriceLib::Link &z, float base, float close, double origin) {
@@ -352,7 +364,11 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
   const std::vector<misc::Ymd> tail(lo, hi);
   const size_t F = static_cast<size_t>(mid - lo);
   const bool grow = lib_days_ < dates.size();
-  const bool fresh = !grow && fund_days_ == F && std::ranges::equal(std::span(dates_).subspan(lib_days_), tail);
+  size_t keep = 0; // 补段留着的日: 库段没长时, 打头 (日, 截) 都不变的
+  if (!grow)
+    while (keep < std::min(dates_.size() - lib_days_, tail.size()) && dates_[lib_days_ + keep] == tail[keep] && (keep < fund_days_) == (keep < F))
+      ++keep;
+  const bool fresh = !grow && keep == tail.size() && dates_.size() == lib_days_ + keep;
   if (fresh && at_ == stamp())
     return true;
   at_ = {};
@@ -360,8 +376,8 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
   const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &quit_);
   if (!pk)
     return false;
-  if (!fresh && dates_.size() > lib_days_) { // 补段先截去 (盘上的头先不认它, 再改写其块)
-    dates_.resize(lib_days_), fund_days_ = 0;
+  if (dates_.size() > lib_days_ + keep) { // 补段截到留着的日 (盘上的头先不认截去的, 再改写其块)
+    dates_.resize(lib_days_ + keep), fund_days_ = std::min(fund_days_, keep);
     save_head();
   }
 
@@ -384,7 +400,7 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
       return false;
     }
   }
-  if (!fill(*pk, cat, tail, F, !fresh))
+  if (!fill(*pk, cat, tail, F, keep))
     return false;
   drop_archived(dates_[lib_days_ + fund_days_ - 1]);
   at_ = stamp();
@@ -392,76 +408,103 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
   return true;
 }
 
-bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, const std::vector<misc::Ymd> &tail, size_t F, bool write) {
+bool PriceLib::fill(const pool::Picks &pk, const fundamental::Catalog &cat, const std::vector<misc::Ymd> &tail, size_t F, size_t keep) {
   const size_t A = keys_[kStock].size(), NB = keys_[kBasket].size(), T = tail.size(), L = lib_days_;
-  assert(F <= T && dates_.size() == (write ? L : L + T));
-  Lane lane(NB);
-  members(pk, axis_, next(dates_[L - 1]), lane.mem);
+  assert(F <= T && keep <= T && dates_.size() == L + keep);
+  Members mem;
+  members(pk, axis_, next(dates_[L - 1]), mem);
   level_.resize(NB);
   for (size_t b = 0; b < NB; ++b) {
     const Link &z = link_[kBasket][b];
     level_[b] = z.f > 0 ? z.f * z.ref : kBase;
   }
-  // 基本面段的源: bar1d 行 [日][库轴] (无行 → 收 0) + 逐日 bar1m; 新浪段的源: 逐日归档
-  fundamental::Ids ids(fundamental::Ids::Cover::Part);
-  fundamental::Scratch xs;
-  std::vector<Candle> px, spx;
-  std::vector<Bars> sbars;
-  Bar1mDay bd;
   PerSide<std::vector<Link>> z = link_;
-  if (write && T > 0) {
-    files_->map(lib_, {A, NB}, L + T);
-    begin(Phase::Loading, T);
-  }
-  if (write && F > 0) {
-    for (size_t a = 0; a < A; ++a)
-      ids.add(asset_axis().code(axis_.global(a)));
-    px.resize(F * A);
-    const auto fend = tail.begin() + static_cast<std::ptrdiff_t>(F);
-    for (const fundamental::Shard &sh : cat.shards(kBar1d)) {
-      if (sh.ym < misc::ym_of(tail.front()) || sh.ym > misc::ym_of(tail[F - 1]))
-        continue;
-      each_daily(xs, sh, ids, [&](uint32_t a, const Candle &c) {
-        const auto it = std::lower_bound(tail.begin(), fend, c.date);
-        if (it != fend && *it == c.date)
-          px[static_cast<size_t>(it - tail.begin()) * A + a] = c;
-      });
-    }
-  }
   std::vector<float> rel(A); // [库轴] 当日 收 / 前收 (无日根 1)
-  for (size_t k = 0; k < T; ++k) {
-    if (quit_.load(std::memory_order_relaxed))
-      return false;
-    const size_t i = L + k;
-    const misc::Ymd d = tail[k];
-    if (write) {
-      const auto put = [&](size_t a, const Leg &g) { files_->put_stock(i, a, g); };
-      if (k < F) {
-        bd.load(cat, ids, xs, d);
-        lane.run(FundDay{d, std::span<const Candle>(px.data() + k * A, A), bd}, dates_[i - 1], put);
-      } else {
-        archived_day(d, axis_, spx, sbars);
-        lane.run(SinaDay{d, spx, sbars}, dates_[i - 1], put);
-      }
-      files_->put_baskets(i, lane.day);
-      chain(i, z);
-      dates_.push_back(d);
-      publish(1);
-    }
-    for (size_t a = 0; a < A; ++a) {
-      const DayRec &r = files_->day[kStock].at(i, a);
-      rel[a] = r.f > 0 && r.ref > 0 ? r.close / r.ref : 1.f;
-    }
+  // 第 i 日 (根已落盘) 过链, 篮子末日点位跟上
+  const auto settle = [&](size_t i) {
+    chain(i, z);
     for (size_t b = 0; b < NB; ++b)
       if (const DayRec &r = files_->day[kBasket].at(i, b); r.f > 0)
         level_[b] = r.f * r.close;
-    drift(lane.mem, d, next(d), rel);
+  };
+  for (size_t k = 0; k < keep; ++k) { // 留着的日: 链 / 成员照盘上的根重放
+    const size_t i = L + k;
+    settle(i);
+    for (size_t a = 0; a < A; ++a)
+      rel[a] = rel_of(files_->day[kStock].at(i, a));
+    drift(mem, tail[k], next(tail[k]), rel);
   }
-  if (write) {
+  if (keep < T) {
+    files_->map(lib_, {A, NB}, L + T);
+    begin(Phase::Loading, T - keep);
+    fundamental::Ids ids(fundamental::Ids::Cover::Part);
+    for (size_t a = 0; a < A; ++a)
+      ids.add(asset_axis().code(axis_.global(a)));
+    // 基本面段要算的日的日根: bar1d 行 [日 − keep][库轴] (无行 → 收 0)
+    std::vector<Candle> px(F > keep ? (F - keep) * A : 0);
+    if (F > keep) {
+      fundamental::Scratch xs;
+      const auto f0 = tail.begin() + static_cast<std::ptrdiff_t>(keep), f1 = tail.begin() + static_cast<std::ptrdiff_t>(F);
+      for (const fundamental::Shard &sh : cat.shards(kBar1d)) {
+        if (sh.ym < misc::ym_of(*f0) || sh.ym > misc::ym_of(f1[-1]))
+          continue;
+        each_daily(xs, sh, ids, [&](uint32_t a, const Candle &c) {
+          const auto it = std::lower_bound(f0, f1, c.date);
+          if (it != f1 && *it == c.date)
+            px[static_cast<size_t>(it - f0) * A + a] = c;
+        });
+      }
+    }
+    const size_t W = std::min(static_cast<size_t>(pool_.threads()), T - keep);
+    std::vector<std::unique_ptr<TailWork>> works;
+    for (size_t j = 0; j < W; ++j)
+      works.push_back(std::make_unique<TailWork>(NB));
+    const auto day_px = [&](size_t k, const TailWork &w) {
+      return k < F ? std::span<const Candle>(px.data() + (k - keep) * A, A) : std::span<const Candle>(w.spx);
+    };
+    // 每批 W 日: 并行读源 → 串行接成员 (只看日根) → 并行合成落盘 → 串行过链
+    for (size_t k0 = keep; k0 < T; k0 += W) {
+      if (quit_.load(std::memory_order_relaxed))
+        return false;
+      const size_t n = std::min(W, T - k0);
+      pool_.tasks(static_cast<int>(n), [&](int j, int) {
+        const size_t k = k0 + static_cast<size_t>(j);
+        TailWork &w = *works[static_cast<size_t>(j)];
+        if (k < F)
+          w.bd.load(cat, ids, w.xs, tail[k]);
+        else
+          archived_day(tail[k], axis_, w.spx, w.sbars);
+      });
+      for (size_t j = 0; j < n; ++j) {
+        const size_t k = k0 + j;
+        TailWork &w = *works[j];
+        w.lane.mem = mem;
+        const std::span<const Candle> c = day_px(k, w);
+        for (size_t a = 0; a < A; ++a)
+          rel[a] = rel_of(day_rec(traded(c[a]) ? &c[a] : nullptr, c[a].ref));
+        drift(mem, tail[k], next(tail[k]), rel);
+      }
+      pool_.tasks(static_cast<int>(n), [&](int j, int) {
+        const size_t k = k0 + static_cast<size_t>(j), i = L + k;
+        TailWork &w = *works[static_cast<size_t>(j)];
+        const misc::Ymd prev = k > 0 ? tail[k - 1] : dates_[L - 1];
+        const auto put = [&](size_t a, const Leg &g) { files_->put_stock(i, a, g); };
+        if (k < F)
+          w.lane.run(FundDay{tail[k], day_px(k, w), w.bd}, prev, put);
+        else
+          w.lane.run(SinaDay{tail[k], w.spx, w.sbars}, prev, put);
+        files_->put_baskets(i, w.lane.day);
+      });
+      for (size_t j = 0; j < n; ++j) {
+        settle(L + k0 + j);
+        dates_.push_back(tail[k0 + j]);
+        publish(1);
+      }
+    }
     fund_days_ = F;
     save_head();
   }
-  mem_ = std::move(lane.mem);
+  mem_ = std::move(mem);
   return true;
 }
 
@@ -540,11 +583,12 @@ void PriceLib::rebuild() {
   tails_ = std::move(t);
   auto b = std::make_shared<Tape>();
   b->keys = keys_[kBasket];
-  for (const uint32_t k : b->keys) {
+  b->list.resize(b->keys.size());
+  pool_.tasks(static_cast<int>(b->keys.size()), [&](int j, int) {
     auto kl = std::make_shared<Kline>();
-    kline({kBasket, k}, kDailyDays, kMinuteDays, *kl);
-    b->list.push_back(std::move(kl));
-  }
+    kline({kBasket, b->keys[static_cast<size_t>(j)]}, kDailyDays, kMinuteDays, *kl);
+    b->list[static_cast<size_t>(j)] = std::move(kl);
+  });
   census(mem_, axis_, b->keys, *b);
   baskets_ = std::move(b);
 }

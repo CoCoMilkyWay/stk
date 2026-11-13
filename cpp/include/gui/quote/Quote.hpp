@@ -26,6 +26,7 @@
 //   基准 = 成员当日前收 (历史 = D−1 行 pre_close, 当日 = 新浪昨收; 同一个交易所前收), 无基准的成员不计;
 //   当日无成交的成员比 1; 分钟缺根沿用其上根收盘, 首根前 = 基准; 计入的成员有一只在某根是缺口 (Bars::hole) → 篮子该根也是缺口.
 //   逐资产一遍 (资产主序): 一只的分钟根只读一次, 比 × 权散进所属各篮子.
+//   整表并行: 篮子按权数切段, 各线程扫全部成员、只累加本段的篮子 ⇒ 各篮子的累加序同逐只, 逐位一致 (篮子段的累加格常驻本核缓存).
 //   当日增量: 各量对资产线性可加 ⇒ 冻结线之前的槽 (已定稿) 只合一次, 累加跨轮保留, 各资产在冻结线处的接续 (Fold::Carry) 由调用方逐只持有;
 //   每轮只合日根与冻结线之后的槽, 与每轮从头合逐位一致.
 // 基本面源 (补段两侧同一读法): 日根 = bar1d 行 (ref = pre_close), 分钟根 = bar1m 行按 row_slot 并根; 基本面段末日 = AssetInfo::quote_end.
@@ -36,10 +37,13 @@
 #include "features/TimeIndex.hpp"
 #include "fundamental/AssetAxis.hpp" // PoolAxis (Live 的个股轴)
 #include "misc/date.hpp"
+#include "misc/exec.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bitset>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -274,17 +278,68 @@ public:
   // k = 本只在冻结线处的接续: 入 = 上一轮 freeze 处 (from = 0 不看), 出 = 本轮 freeze 处.
   // false = 冻结段所用的基准与本轮的不符 (本只未计; 调用方须 from = 0 重合)
   bool add(const Leg &g, std::span<const Members::Weight> ws, Carry &k);
+  // 整张成员表 m 一趟 (同逐行 add, 逐位一致; 整表并行见文件头): leg(k) = 第 k 行的 Leg;
+  //   was / now [m 行] = 各行冻结线处的接续 入 / 出 (now 由该行首键所在的段写). false = 同 add
+  template <class LegOf>
+  bool add(misc::exec::ForkJoin &ex, const Members &m, LegOf &&leg, std::span<const Carry> was, std::span<Carry> now);
   // 无成员 / 无成交的篮子 out[b].candle.date = 0; out[b].flow / bars.net = 全日 / 各根净流入 (只合日根 = 0)
   void finish(misc::Ymd d, misc::Ymd prev, std::span<Day> out);
 
 private:
   // 一格 = 开 高 低 收 (比 × 权) / 额 / 净流入 / 缺口成员数; 格 0 = 日根, 格 1 + s = 槽 s
   static constexpr size_t kQ = 7, kCells = 1 + kSlots;
+  using Row = std::array<double, kCells * kQ>; // 一只的各格 (比未乘权)
   size_t cells() const { return 1 + static_cast<size_t>(slots_); }
+  // 一只 (基准 base, 0 = 不计) 的格 r: 日根 + 槽 [from, slots); k 同 add; end / fend 取有根末槽 (全部 / 冻结段) 之极.
+  //   返回 −1 = 冻结段所用的基准不符, 0 = 不计 (r 未填), 1 = r 已填
+  int row(const Leg &g, float base, Carry &k, Row &r, int &end, int &fend) const;
+  // r 按 ws 各键的权累加
+  void put(const Row &r, std::span<const Members::Weight> ws);
   int from_ = 0, freeze_ = 0, slots_ = 0;
   int end_ = -1, fend_ = -1; // 有根的末槽: 全部 / 冻结段 [0, freeze)
   std::vector<double> sw_;   // [篮子] Σ w
   std::vector<double> acc_;  // [篮子][kCells][kQ]
 };
+
+template <class LegOf>
+bool Fold::add(misc::exec::ForkJoin &ex, const Members &m, LegOf &&leg, std::span<const Carry> was, std::span<Carry> now) {
+  assert(was.size() == m.size() && now.size() == m.size());
+  const size_t T = static_cast<size_t>(ex.threads()), B = sw_.size();
+  std::vector<size_t> cum(B + 1, 0); // [键] 键更小的权数
+  for (const Members::Weight &w : m.ws)
+    ++cum[w.key + 1];
+  for (size_t b = 0; b < B; ++b)
+    cum[b + 1] += cum[b];
+  std::vector<uint32_t> cut(T + 1, static_cast<uint32_t>(B)); // 段 t = 键 [cut[t], cut[t + 1])
+  cut[0] = 0;
+  for (size_t t = 1; t < T; ++t)
+    cut[t] = static_cast<uint32_t>(std::lower_bound(cum.begin(), cum.end(), cum[B] * t / T) - cum.begin());
+  std::vector<int> end(T, end_), fend(T, fend_);
+  std::atomic<bool> ok{true};
+  ex.tasks(static_cast<int>(T), [&](int ti, int) {
+    const size_t t = static_cast<size_t>(ti);
+    Row r;
+    for (size_t k = 0; k < m.size() && ok.load(std::memory_order_relaxed); ++k) {
+      const std::span<const Members::Weight> ws = m.of(k);
+      const auto lo = std::ranges::lower_bound(ws, cut[t], {}, &Members::Weight::key);
+      const auto hi = std::ranges::lower_bound(lo, ws.end(), cut[t + 1], {}, &Members::Weight::key);
+      if (lo == hi)
+        continue;
+      const Leg g = leg(k);
+      Carry c = was[k];
+      const int x = row(g, g.base > 0 ? g.base : 0.f, c, r, end[t], fend[t]);
+      if (x < 0) {
+        ok.store(false, std::memory_order_relaxed);
+        return;
+      }
+      if (lo == ws.begin())
+        now[k] = c;
+      if (x > 0)
+        put(r, {lo, hi});
+    }
+  });
+  end_ = *std::ranges::max_element(end), fend_ = *std::ranges::max_element(fend);
+  return ok.load(std::memory_order_relaxed);
+}
 
 } // namespace GUI::Quote

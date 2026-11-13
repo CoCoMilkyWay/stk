@@ -162,16 +162,22 @@ void Fold::open(int from, int freeze, int slots) {
 }
 
 bool Fold::add(const Leg &g, std::span<const Members::Weight> ws, Carry &k) {
+  Row r;
+  const int x = row(g, ws.empty() || !(g.base > 0) ? 0.f : g.base, k, r, end_, fend_);
+  if (x > 0)
+    put(r, ws);
+  return x >= 0;
+}
+
+int Fold::row(const Leg &g, float base, Carry &k, Row &r, int &end, int &fend) const {
   assert((g.bars != nullptr) == (slots_ > 0) && "Fold: 合成分钟的日每只都给分钟根");
-  const float base = ws.empty() || !(g.base > 0) ? 0.f : g.base;
   if (from_ == 0)
     k = {base, 0, 1, base, 0};
   else if (k.base != base)
-    return false;
+    return -1;
   if (!(base > 0))
-    return true;
+    return 0;
   const double inv = 1.0 / base;
-  std::array<double, kCells * kQ> r;
   ratio(g.day, inv, 1, r.data());
   double c = k.c, px = k.px, net = k.net;
   int dir = k.dir;
@@ -183,9 +189,9 @@ bool Fold::add(const Leg &g, std::span<const Members::Weight> ws, Carry &k) {
     ratio(b, inv, c, q);
     q[6] = g.bars->hole[static_cast<size_t>(s)];
     if (b) {
-      c = q[3], end_ = std::max(end_, s);
+      c = q[3], end = std::max(end, s);
       if (s < freeze_)
-        fend_ = std::max(fend_, s);
+        fend = std::max(fend, s);
       dir = tick_dir(b->close, px, dir);
       q[5] = dir * b->amount, net += q[5], px = b->close;
     }
@@ -193,20 +199,23 @@ bool Fold::add(const Leg &g, std::span<const Members::Weight> ws, Carry &k) {
   if (freeze_ == slots_)
     k = {base, dir, c, px, net};
   r[5] = net;
+  return 1;
+}
+
+void Fold::put(const Row &r, std::span<const Members::Weight> ws) {
   const size_t j0 = (1 + static_cast<size_t>(from_)) * kQ, n = cells() * kQ;
   for (const Members::Weight &w : ws) {
     sw_[w.key] += w.w;
     double *a = acc_.data() + static_cast<size_t>(w.key) * kCells * kQ;
-    const auto put = [&](size_t j) {
+    const auto at = [&](size_t j) {
       for (size_t i = 0; i < 4; ++i)
         a[j + i] += w.w * r[j + i];
       a[j + 4] += r[j + 4], a[j + 5] += r[j + 5], a[j + 6] += r[j + 6];
     };
-    put(0);
+    at(0);
     for (size_t j = j0; j < n; j += kQ)
-      put(j);
+      at(j);
   }
-  return true;
 }
 
 void Fold::finish(misc::Ymd d, misc::Ymd prev, std::span<Day> out) {

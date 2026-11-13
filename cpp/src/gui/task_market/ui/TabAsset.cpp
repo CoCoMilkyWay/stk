@@ -145,6 +145,7 @@ struct Column {
   std::string_view (*text)(const Row &);  // Text / Category 的文本 ("-" = 无)
   NumCell (*cell)(const Row &, double v); // 格文本 (v = num); 空 = Number 按 fmt, 其余按 text
   void (*hover)(const Row &);             // 悬停格的补充; 空 = 无
+  bool quote = false;                     // 行情列: 只读近况 (随快照 / 价格库发布重填)
 };
 
 template <float StockInfo::*F>
@@ -221,7 +222,8 @@ const Column kCols[] = {
      [](const Row &r) { return 100.0 * r.rc.chg; },
      nullptr,
      &pct_cell,
-     nullptr},
+     nullptr,
+     true},
 
     {{"Δ5日线", "Δ5日线 = 对 5 日均线的偏离\n"
                 "• 算法: 最新一日收盘 / MA5 − 1, MA5 = 最近 5 个有成交日的收盘均值 (含最新一日)\n"
@@ -234,7 +236,8 @@ const Column kCols[] = {
      [](const Row &r) { return 100.0 * r.rc.ma5; },
      nullptr,
      &pct_cell,
-     nullptr},
+     nullptr,
+     true},
 
     {{"行业", "行业 = 申万一级行业\n"
               "• 算法: industry_level1_name, 缺名回落到行业代码\n"
@@ -485,8 +488,18 @@ SheetCell cell_of(const Column &c, const Row &r) {
   return {t == "-" ? num_none() : num_cell(ink(), "%.*s", static_cast<int>(t.size()), t.data()), v};
 }
 
-// 格: 过滤 (资产序) → 逐行逐列填格 → 各列名次 (过滤后 pool 内, GUI::rank_by, 并列取中) → 各列最宽.
+// 列 c (格已填) 的名次 (过滤后 pool 内, GUI::rank_by, 并列取中) + 最宽.
 //   用名次而非数值归一化: 估值 / 市值重尾, min-max 染色会被几个极端值压成一片同色; 并列取中: 股息成片的 0 不被摊成渐变
+void rank_col(AssetCells &o, size_t c) {
+  const size_t n = o.ids.size(), nc = static_cast<size_t>(kNumCols);
+  if (kCols[c].good != 0)
+    rank_by(n, kCols[c].good, [&](size_t i) { return o.cells[i * nc + c].key; }, [&](size_t i, double u) { o.cells[i * nc + c].rank = u; });
+  o.cw[c] = ImGui::CalcTextSize(kCols[c].col.name.c_str()).x;
+  for (size_t i = 0; i < n; ++i)
+    o.cw[c] = std::max(o.cw[c], o.cells[i * nc + c].text.w);
+}
+
+// 格: 过滤 (资产序) → 逐行逐列填格 → 各列名次 / 最宽
 void fill_cells(AssetCells &o, const Asset &asset, const StockInfos &stock_info, const Joint &quotes, const AssetFilter &filter) {
   assert(asset.asset_stats.size() == asset.items.size());
   o.ids.clear();
@@ -501,13 +514,22 @@ void fill_cells(AssetCells &o, const Asset &asset, const StockInfos &stock_info,
       o.cells[i * nc + c] = cell_of(kCols[c], r);
   }
   o.cw.assign(nc, 0.f);
-  for (size_t c = 0; c < nc; ++c) {
-    if (kCols[c].good != 0)
-      rank_by(n, kCols[c].good, [&](size_t i) { return o.cells[i * nc + c].key; }, [&](size_t i, double u) { o.cells[i * nc + c].rank = u; });
-    o.cw[c] = ImGui::CalcTextSize(kCols[c].col.name.c_str()).x;
-    for (size_t i = 0; i < n; ++i)
-      o.cw[c] = std::max(o.cw[c], o.cells[i * nc + c].text.w);
+  for (size_t c = 0; c < nc; ++c)
+    rank_col(o, c);
+}
+
+// 只重填行情列 (行 / 其余列不动)
+void fill_quote(AssetCells &o, const Asset &asset, const StockInfos &stock_info, const Joint &quotes) {
+  const size_t nc = static_cast<size_t>(kNumCols);
+  for (size_t i = 0; i < o.ids.size(); ++i) {
+    const Row r = make_row(asset, stock_info, quotes, o.ids[i]);
+    for (size_t c = 0; c < nc; ++c)
+      if (kCols[c].quote)
+        o.cells[i * nc + c] = cell_of(kCols[c], r);
   }
+  for (size_t c = 0; c < nc; ++c)
+    if (kCols[c].quote)
+      rank_col(o, c);
 }
 
 // 显示序: 排序列有键 → 按键 (sort_less: NaN 恒末), 否则按格文本; 无排序列 = 资产序
@@ -528,15 +550,22 @@ void fill_order(std::vector<size_t> &o, const AssetCells &cs, int sort_column, b
     });
 }
 
-// 格 → 显示序 (两级: 排序只重排, 不重填格; 表格与截面分析共用)
+// 格 → 显示序 (三级: 快照只重填行情列, 排序只重排, 都不重填其余格; 表格与截面分析共用)
 void sync_view(AssetState &state, const Asset &asset, const StockInfos &stock_info) {
   const Joint &q = state.quotes;
-  const uint64_t today = q.live ? static_cast<uint64_t>(q.live->date) * 86400 + static_cast<uint64_t>(q.live->sec) : 0;
   const Tape *t = q.tape();
-  state.cells.update(AssetCellsKey{asset.generation, asset.items.size(), stock_info.size(), t ? t->tails : nullptr, today, state.filter,
-                                   ImGui::GetFontSize(), ImGui::GetColorU32(ImGuiCol_Text)},
-                     [&](AssetCells &o) { fill_cells(o, asset, stock_info, q, state.filter); });
-  state.order.update(AssetOrderKey{state.cells.gen, state.sort_column, state.sort_ascending},
+  const AssetQuoteKey qk{t ? t->tails : nullptr, q.live ? static_cast<uint64_t>(q.live->date) * 86400 + static_cast<uint64_t>(q.live->sec) : 0};
+  state.cells.update(AssetCellsKey{asset.generation, asset.items.size(), stock_info.size(), state.filter, ImGui::GetFontSize(), ImGui::GetColorU32(ImGuiCol_Text)},
+                     [&](AssetCells &o) {
+                       fill_cells(o, asset, stock_info, q, state.filter);
+                       o.quote = qk;
+                     });
+  if (AssetCells &o = state.cells.val; !(o.quote == qk)) {
+    fill_quote(o, asset, stock_info, q);
+    o.quote = qk;
+    ++o.quote_gen;
+  }
+  state.order.update(AssetOrderKey{state.cells.gen, state.cells.val.quote_gen, state.sort_column, state.sort_ascending},
                      [&](std::vector<size_t> &o) { fill_order(o, state.cells.val, state.sort_column, state.sort_ascending); });
 }
 
