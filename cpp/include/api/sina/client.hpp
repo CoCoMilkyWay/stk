@@ -41,7 +41,7 @@ struct Bar {
   misc::Ymd date = 0;
   int minute = 0; // 标号: hh · 60 + mm
   float open = 0, high = 0, low = 0, close = 0;
-  double volume = 0, amount = 0; // [股] [元]
+  double volume = 0, amount = 0; // [股] [元]; 日 K 无额 (0)
 };
 
 // 新浪行情 HTTP 客户端 — 与 bigquant / tushare::Client 对仗: 纯传输, 不知资产轴与缓存.

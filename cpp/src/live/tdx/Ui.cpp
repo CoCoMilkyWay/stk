@@ -21,6 +21,7 @@ constexpr const char *kMainWnd = "class=TdxW_MainFrame_Class";
 // 交易栏左侧功能树 (查询 / 资产分析 / …), 右侧为所选功能的页; 树项只认真实光标处的点击, clickat 会钉光标
 const std::string kFuncTreeClass = "SysTreeView32";
 constexpr long kFuncTreeId = 59653;
+constexpr double kReclick = 3; // 开页: 别的页一直挡着这么久 [s] 即再点一次功能树
 
 int half(int a, int b) { return (a + b) >= 0 ? (a + b) / 2 : -((-(a + b) + 1) / 2); } // 向下取整
 
@@ -139,6 +140,7 @@ void click_func(const std::string &name) {
 Hwnd open_page(const std::string &func, const std::string &col, long count, double timeout) {
   trace::Span span("开页「" + func + "」", {{"col", col}});
   click_func(func);
+  Clock::time_point at = Clock::now();
   return *until(
       said("「" + func + "」页 (表头含「" + col + "」)"),
       [&]() -> std::optional<Hwnd> {
@@ -146,6 +148,10 @@ Hwnd open_page(const std::string &func, const std::string &col, long count, doub
           const std::vector<std::string> c = cols(d, timeout);
           if (std::find(c.begin(), c.end(), col) != c.end())
             return d;
+        }
+        if (Clock::now() - at >= Secs(kReclick)) { // 排在前头还没处理完的点击 (如上一轮刚点的「持仓」) 会把页切回去
+          click_func(func);
+          at = Clock::now();
         }
         return std::nullopt;
       },

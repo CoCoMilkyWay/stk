@@ -169,7 +169,7 @@ std::vector<Bar> Client::kline(std::string_view sym, int n) { return bars(sym, 1
 
 std::vector<Bar> Client::daily(std::string_view sym, int n) { return bars(sym, kDayScale, n); }
 
-// JSON 列表 [{day, open, high, low, close, volume, amount}] (值皆字符串; day 分钟 K "YYYY-MM-DD HH:MM:SS" / 日 K "YYYY-MM-DD"); 查无 → null
+// JSON 列表 [{day, open, high, low, close, volume, amount}] (值皆字符串; day 分钟 K "YYYY-MM-DD HH:MM:SS" / 日 K "YYYY-MM-DD", 日 K 无 amount); 查无 → null
 std::vector<Bar> Client::bars(std::string_view sym, int scale, int n) {
   assert(n > 0);
   const std::string body = get("/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=" + std::string(sym) +
@@ -194,7 +194,8 @@ std::vector<Bar> Client::bars(std::string_view sym, int scale, int n) {
       b.low = static_cast<float>(num(json_str(o, "low")));
       b.close = static_cast<float>(num(json_str(o, "close")));
       b.volume = num(json_str(o, "volume"));
-      b.amount = num(json_str(o, "amount"));
+      if (scale != kDayScale)
+        b.amount = num(json_str(o, "amount"));
       out.push_back(b);
     }
   } else {
