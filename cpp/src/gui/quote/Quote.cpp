@@ -3,7 +3,6 @@
 #include "api/sina/client.hpp"
 #include "features/Bar1mDay.hpp"
 #include "fundamental/Scan.hpp"
-#include "gui/quote/PriceLib.hpp"
 
 #include <cassert>
 #include <string>
@@ -92,6 +91,18 @@ const sina::Quote *Live::quote(uint32_t id) const {
   const size_t s = axis->sub_of(id);
   return quotes && s < quotes->size() ? &(*quotes)[s] : nullptr;
 }
+
+const float *Minutes::on(misc::Ymd d) const {
+  const auto it = std::ranges::lower_bound(dates, d);
+  return it != dates.end() && *it == d ? px.data() + static_cast<size_t>(it - dates.begin()) * kSlots * kFields : nullptr;
+}
+
+std::shared_ptr<const Minutes> PriceView::minute(Ref r) const {
+  const auto it = std::ranges::find(refs, r);
+  return it == refs.end() ? nullptr : minutes[static_cast<size_t>(it - refs.begin())];
+}
+
+bool PriceView::covers(Ref r) const { return std::ranges::find(refs, r) != refs.end(); }
 
 const Tape *Joint::tape() const { return view ? view->tape[side].get() : nullptr; }
 

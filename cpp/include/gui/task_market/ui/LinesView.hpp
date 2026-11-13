@@ -10,10 +10,9 @@
 #pragma once
 
 #include "gui/engine/services/PortfolioService.hpp"
-#include "gui/quote/PriceLib.hpp" // PriceView / Minutes (价格指数 / 理想线的日内形)
-#include "gui/quote/Quote.hpp"    // Tape / Live / Side / 槽代数 (行情键 / 横轴)
-#include "shared/AssetInfo.hpp"   // StockInfos (成分行名 / 悬停)
-#include "shared/Basket.hpp"      // kGroupPool / kBasketGroups
+#include "gui/quote/Quote.hpp"  // PriceView / Minutes / Tape / Live / Side / 槽代数 (价格指数 / 日内形 / 行情键 / 横轴)
+#include "shared/AssetInfo.hpp" // StockInfos (成分行名 / 悬停)
+#include "shared/Basket.hpp"    // kGroupPool / kBasketGroups
 
 #include <algorithm>
 #include <array>

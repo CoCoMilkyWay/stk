@@ -251,18 +251,6 @@ struct PriceFiles {
   }
 };
 
-const float *Minutes::on(misc::Ymd d) const {
-  const auto it = std::ranges::lower_bound(dates, d);
-  return it != dates.end() && *it == d ? px.data() + static_cast<size_t>(it - dates.begin()) * kSlots * kFields : nullptr;
-}
-
-std::shared_ptr<const Minutes> PriceView::minute(Ref r) const {
-  const auto it = std::ranges::find(refs, r);
-  return it == refs.end() ? nullptr : minutes[static_cast<size_t>(it - refs.begin())];
-}
-
-bool PriceView::covers(Ref r) const { return std::ranges::find(refs, r) != refs.end(); }
-
 PriceLib::PriceLib(std::vector<misc::Ymd> trading, std::function<void(const Handoff &)> bind) : trading_(std::move(trading)), bind_(std::move(bind)) {
   assert(!trading_.empty() && bind_);
   Start();

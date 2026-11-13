@@ -28,7 +28,7 @@
 #include "define/Members.hpp"
 #include "disk/Disk.hpp"
 #include "fundamental/AssetAxis.hpp" // PoolAxis
-#include "gui/quote/Quote.hpp"       // Side / PerSide / Kline / Tape
+#include "gui/quote/Quote.hpp"       // Side / PerSide / Kline / Tape / PriceView
 #include "gui/util/Service.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
@@ -39,7 +39,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <string>
 #include <vector>
 
 struct FeatureLib;
@@ -52,28 +51,6 @@ struct Picks;
 
 namespace GUI::Quote {
 
-// 库的戳 = 日脊的摘要: 库轴指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用)
-struct PriceStamp {
-  uint64_t axis = 0;
-  misc::Ymd last = 0;
-  size_t days = 0, lib = 0, fund = 0;
-  bool operator==(const PriceStamp &) const = default;
-};
-
-// 一个标的逐个有分钟根的日: 存价 (个股 = 原价, 篮子 = 日内比) × 当日因子 = 有效价; 同日之比可直接用存价
-struct Minutes {
-  // 一槽的格 (落盘的分钟根同序打头)
-  enum Field : size_t { kHigh,
-                        kLow,
-                        kClose,
-                        kFields };
-  std::vector<misc::Ymd> dates; // 升序
-  std::vector<double> f;        // [dates] 因子
-  std::vector<float> px;        // [dates][kSlots][kFields] 存价 (无根 = NaN)
-  // 日 d 的 [kSlots][kFields]; 无 → nullptr
-  const float *on(misc::Ymd d) const;
-};
-
 // 一次请求 (QuoteHub 每帧并成)
 struct PriceRequest {
   std::vector<uint32_t> stocks; // 要全历史的个股 (全局 id 升序)
@@ -81,23 +58,6 @@ struct PriceRequest {
   misc::Ymd mark = 0;           // 基本面段末日 (AssetInfo::quote_end)
   misc::Ymd live = 0;           // 新浪行情日 (换日 = 可能多一份归档)
   bool operator==(const PriceRequest &) const = default;
-};
-
-// 一份发布 (不可变, 只拷指针): lack 非空 = 用不了 (以用处开头; 其余空)
-struct PriceView {
-  std::string lack;
-  PriceStamp stamp;
-  std::shared_ptr<const std::vector<misc::Ymd>> dates; // 日脊 (两侧同一条; 一戳一份): 库段 [0, stamp.lib) + 基本面段 + 新浪段
-  PerSide<std::shared_ptr<const Tape>> tape;           // 个股 = 留着的全历史 + 库轴的日脊末段; 篮子 = 全表 + 交接的普查
-  std::vector<Ref> refs;                               // 留着的分钟价 (本戳)
-  std::vector<std::shared_ptr<const Minutes>> minutes; // [refs]; nullptr = 不在库轴 (库建成之后上市 / 进池)
-  misc::Ymd last() const { return stamp.last; }
-  misc::Ymd lib_last() const { return (*dates)[stamp.lib - 1]; }               // 库末日 (篮子的成员 / 池 / 行业 / 股本所取)
-  misc::Ymd fund_last() const { return (*dates)[stamp.lib + stamp.fund - 1]; } // 基本面段末日 (无该段 = 库末日)
-  // 前一交易日为 prev 的当日接在日脊之后
-  bool joins(misc::Ymd prev) const { return lack.empty() && prev == stamp.last; }
-  std::shared_ptr<const Minutes> minute(Ref r) const; // 无 → nullptr
-  bool covers(Ref r) const;                           // 有结论 (有分钟价或确定没有)
 };
 
 // 当日合成的交接 (库轴): 末个历史日之后那个交易日的成员表 + 各篮子末日点位
