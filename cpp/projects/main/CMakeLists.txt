@@ -350,6 +350,7 @@ set(MATH_PRECISE
     account/Ledger.cpp
     # gui
     gui/account/AccountHub.cpp
+    gui/account/AccountSide.cpp
     gui/engine/ui/PortfolioBoxes.cpp
     gui/quote/Bars.cpp
     gui/quote/BasketRow.cpp

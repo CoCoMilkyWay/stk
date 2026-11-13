@@ -78,6 +78,16 @@ struct QuoteStatus {
   std::time_t saved = 0; // 盘上缓存的末次写入时刻
 };
 
+// 一只当日落盘的状态 (live.bin 一条原子条目, 内存里即 Track 的头): 待补区间 + 上一快照累计基线; busy = 写到一半 (内存里恒 0)
+struct TrackRec {
+  int32_t lo = kSlots, hi = -1; // 待补区间 (lo > hi = 无)
+  double vol = -1, amt = 0;     // 上一快照累计 (vol < 0 = 尚无快照)
+  float high = 0, low = 0;      // 上一快照日内高 / 低
+  float open = 0, close = 0;    // 上一快照今开 / 现价
+  float ref = 0;                // 昨收
+  uint8_t busy = 0;
+};
+
 class QuoteService {
 public:
   static constexpr int kTick = 3, kIdleTick = 30;      // 快照间隔 [s]: 盘中 / 盘外
@@ -107,15 +117,10 @@ private:
   enum class Fill : uint8_t { Idle,
                               Queued,
                               Busy };
-  // 一只的当日: 快照合成 + 分钟 K 补的根, 待补区间, 快照累计基线
-  struct Track {
+  // 一只的当日: 落盘的状态 (TrackRec: 待补区间 + 快照累计基线) + 快照合成 + 分钟 K 补的根
+  struct Track : TrackRec {
     Bars bars;                      // 当日的根 (含缺口)
     std::bitset<kSlots> exact;      // 来自分钟 K 的根 (含确认无成交的); 快照不写
-    int lo = kSlots, hi = -1;       // 待补区间 (lo > hi = 无)
-    double vol = -1, amt = 0;       // 上一快照累计 (vol < 0 = 尚无快照)
-    float high = 0, low = 0;        // 上一快照日内高 / 低
-    float open = 0, close = 0;      // 上一快照今开 / 现价
-    float ref = 0;                  // 昨收
     Fill fill = Fill::Idle;         // 以下运行态, 不落盘
     int touched = kSlots;           // 上次发布后改写过根的最早槽
     std::shared_ptr<const Day> day; // 当日快照 (发布时建; 空 = 待建)

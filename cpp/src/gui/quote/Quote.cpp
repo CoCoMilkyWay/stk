@@ -3,7 +3,6 @@
 #include "api/sina/client.hpp"
 
 #include <cassert>
-#include <cmath>
 
 namespace GUI::Quote {
 
@@ -24,64 +23,70 @@ size_t Series::find(misc::Ymd d) const {
   return it != daily.end() && it->date == d ? static_cast<size_t>(it - daily.begin()) : daily.size();
 }
 
+float Series::close(size_t i, int s) const {
+  assert(has(i));
+  const Mins &m = mins[i];
+  const Slot &x = m.p->s[static_cast<size_t>(s)];
+  return x.c == kNoBar ? 0.f : unpack(x, m.k, m.a).close;
+}
+
+bool Series::bar(size_t i, int s, Cell &c) const {
+  assert(has(i));
+  const Mins &m = mins[i];
+  const Slot &x = m.p->s[static_cast<size_t>(s)];
+  if (x.c == kNoBar)
+    return false;
+  c = unpack(x, m.k, m.a);
+  return true;
+}
+
 bool Series::bars(size_t i, Bars &b) const {
-  const float *p = slots(i);
   b.has.reset(), b.hole.reset();
   b.net.fill(0);
-  for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s) {
-    const float *q = p + s * kFields;
-    if (!(q[kClose] > 0))
-      continue;
-    b.cell[s] = {q[kOpen], q[kHigh], q[kLow], q[kClose], q[kAmount]};
-    b.net[s] = q[kNet];
-    b.has.set(s);
-  }
+  if (!has(i))
+    return false;
+  const Mins &m = mins[i];
+  for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
+    if (const Slot &x = m.p->s[s]; x.c != kNoBar) {
+      b.cell[s] = unpack(x, m.k, m.a);
+      b.net[s] = unpack_net(x);
+      b.has.set(s);
+    }
   return b.has.any();
 }
 
-void Series::push(const Day &y, double f) {
-  assert(daily.empty() || daily.back().date < y.candle.date);
-  daily.push_back(y.candle);
-  adj.push_back(f);
-  if (!minute)
-    return;
-  px.resize(px.size() + static_cast<size_t>(kSlots) * kFields, NAN);
-  float *p = px.data() + px.size() - static_cast<size_t>(kSlots) * kFields;
-  for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
-    if (y.bars.has[s]) {
-      const Cell &c = y.bars.cell[s];
-      float *q = p + s * kFields;
-      q[kOpen] = c.open, q[kHigh] = c.high, q[kLow] = c.low, q[kClose] = c.close;
-      q[kAmount] = static_cast<float>(c.amount), q[kNet] = static_cast<float>(y.bars.net[s]);
-    }
-}
-
-const Candle *Source::last() const {
-  return joined ? &today->candle : !daily.empty() ? &daily.back()
-                                                  : nullptr;
-}
-
-const Candle *Source::candle(misc::Ymd d) const {
-  if (joined && today->candle.date == d)
-    return &today->candle;
+size_t Source::find(misc::Ymd d) const {
   const auto it = std::ranges::lower_bound(daily, d, {}, &Candle::date);
-  return it != daily.end() && it->date == d ? &*it : nullptr;
+  if (it != daily.end() && it->date == d)
+    return static_cast<size_t>(it - daily.begin());
+  return joined && today->candle.date == d ? daily.size() : size();
+}
+
+bool Source::bars(size_t i, Bars &b) const {
+  if (i >= size())
+    return false;
+  if (i == daily.size()) {
+    b = today->bars;
+    return b.has.any();
+  }
+  return se && se->minute && se->bars(i, b);
+}
+
+double Source::adj(size_t i) const {
+  assert(i < size());
+  if (se && i < daily.size())
+    return se->adj[i];
+  size_t k = se ? daily.size() - 1 : 0;
+  double f = se ? se->adj[k] : 1.0;
+  for (; k < i; ++k)
+    if (const Candle &c = candle(k + 1); c.ref > 0)
+      f *= candle(k).close / c.ref;
+  return f;
 }
 
 Flow Source::flow_of(misc::Ymd d, bool ends) const {
-  const Candle *c = candle(d);
-  return c ? c->flow.of(ends) : Flow{};
-}
-
-bool Source::bars(misc::Ymd d, Bars &b) const {
-  if (joined && today->bars.has.any() && today->candle.date == d) {
-    b = today->bars;
-    return true;
-  }
-  if (!se || !se->minute)
-    return false;
-  const size_t i = se->find(d);
-  return i < se->daily.size() && se->bars(i, b);
+  const size_t i = find(d);
+  return i < size() ? candle(i).flow.of(ends) : Flow{};
 }
 
 size_t Tails::find(uint32_t id) const {

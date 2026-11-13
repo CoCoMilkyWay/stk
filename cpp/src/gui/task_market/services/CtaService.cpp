@@ -14,12 +14,11 @@ namespace GUI::Market {
 
 namespace {
 
-// 一根 (高 低 收) × 复权倍数 f → 有效根: 收 ≤ 0 / NaN 不收; 高 / 低缺 → 收, 且包住收
-void push(cta::Series &se, size_t t, const float *p, double f) {
-  const float c = p[Quote::Series::kClose];
+// 一根 (高 低 收) × 复权倍数 f → 有效根: 收 ≤ 0 不收; 高 / 低缺 → 收, 且包住收
+void push(cta::Series &se, size_t t, const Quote::Cell &b, double f) {
+  const float c = b.close, h = b.high, l = b.low;
   if (!(c > 0))
     return;
-  const float h = p[Quote::Series::kHigh], l = p[Quote::Series::kLow];
   const auto at = [f](float v) { return static_cast<float>(v * f); };
   se.c.push_back(at(c));
   se.h.push_back(at(h > 0 ? std::max(h, c) : c));
@@ -44,17 +43,19 @@ bool CtaService::run(CtaRequest &req) {
   const CtaSpec &sp = req.spec;
   assert(sp.roll >= static_cast<int>(cta::kMinRoll) && sp.roll <= static_cast<int>(cta::kMaxRoll));
   assert(req.ref.ok() && req.dates && req.series && req.series->minute && "CTA 请求须有标的与其连分钟的全史");
-  constexpr size_t S = Quote::kSlots, F = Quote::Series::kFields;
+  constexpr size_t S = Quote::kSlots;
   const std::vector<misc::Ymd> &spine = *req.dates;
   const std::shared_ptr<const cta::Series> se = kept_.get(req.ref, req.stamp, [&](cta::Series &s) {
     const Quote::Series &m = *req.series;
+    Quote::Cell b;
     for (size_t j = 0, i = 0; j < m.daily.size(); ++j, ++i) { // 有根的日 ⊂ 日脊: 同向走
       while (spine[i] < m.daily[j].date)
         ++i;
       assert(spine[i] == m.daily[j].date && "全史的日不在日脊上");
-      const float *p = m.slots(j);
-      for (size_t k = 0; k < S; ++k)
-        push(s, i * S + k, p + k * F, m.adj[j]);
+      if (m.has(j))
+        for (size_t k = 0; k < S; ++k)
+          if (m.bar(j, static_cast<int>(k), b))
+            push(s, i * S + k, b, m.adj[j]);
     }
     return true;
   });

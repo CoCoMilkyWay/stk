@@ -4,12 +4,13 @@
 //            库段 (all.bar)            补段: 基本面 → 新浪归档                                  当日 (新浪, 快照线程每轮)
 //   个股     L_1day 行 + L_1min 行     bar1d 行 + bar1m 行 (Bar1mDay) / 归档的末快照 + 分钟根       本只的根
 //   篮子     选股表成员 → Fold         冻结的成员表 → Fold                                        bind 的成员表 → Fold (增量)
-//   账户     资金流水账本 × 个股的根回放 (account/Ledger.hpp; 库段 / 补段同一条)                      净资产 × 持仓分钟收 (gui/account)
+//   账户     资金流水账本 × 个股的根回放 (gui/account/AccountSide.hpp; 库段 / 补段同一条)              净资产 × 持仓分钟收 (同一核)
 //   库段 + 补段 = 日脊, 一趟合成落盘在 PriceLib (各侧同一条日脊), 其 worker 每趟发布一份 PriceView (日脊 + 各侧一 Tape); 当日在 QuoteService, 每轮发布一份 Live.
 //   篮子 = 成员 × 个股的根过 Fold (历史取个股侧落盘的根), 个股各段只差源 (BasketRow: LibDay / FundDay / SinaDay); 账户不落盘 (账本一变整条重放).
 // 键: 个股 = 全局 id (AssetAxis 下标; 历史 / 当日 / 快照同一下标), 篮子 = 篮子下标 (shared/Basket.hpp), 账户 = 0; 各侧同一种 Tape (历史) / Days (当日).
-// 一侧 = Joint (PriceView + Live), 一个标的 = Source (历史 + 日脊末段 + 当日 + 接不接): 行情各处只经这两个读, 接续只在 Joint 判 (of 逐只 / today 整侧).
-// 历史一律全史 (Series): 日根 (带资金流摘要) 恒在 (大范围按日算); 分钟全史只读要的 (画图 / 选中的线; 展示一律分钟频).
+// 一侧 = Joint (PriceView + Live), 一个标的 = Source (日序列 = 日线 + 接得上的当日; 下标 / 分钟根 / 复权同一口径):
+//   行情各处只经这两个读, 接续只在 Joint 判 (of 逐只 / today 整侧).
+// 历史一律全史 (Series): 日根 (带资金流摘要) 恒在 (大范围按日算); 分钟全史只读要的 (画图 / 选中的线; 展示一律分钟频), 是紧凑根的视图 (不解码不拷).
 //   个股另带全部个股的日脊末段 (Tails: 各自末 kTailDays 个有成交日的日根; 近况 / 资金流分母).
 // 接续: 当日接在历史之后 ⇔ 当日的前一交易日 = 日脊末日 (PriceView::joins; 各侧同一判据); 否则 (历史落后) 不接.
 #pragma once
@@ -69,28 +70,30 @@ struct Ref {
 };
 
 // 一个标的在日脊上的全史 (价格库读出; 不可变, 与前后几份发布共享). 价 = 个股原价 / 篮子点位 / 账户指数; 价 × adj = 复权价 (跨日连续)
+//   分钟 = 各日紧凑根 (Packed) 的视图, 读时解码: 个股 / 篮子指进价格库段的映射, 账户指进自持的块; 所指的存储由 hold 保活
 struct Series {
-  // 分钟一槽的格 (= Bars 的一根; 无根 = NaN)
-  enum Field : size_t { kOpen,
-                        kHigh,
-                        kLow,
-                        kClose,
-                        kAmount, // [元]
-                        kNet,    // 净流入 [元]
-                        kFields };
-  std::vector<Candle> daily;      // 日升序, 无成交的日不收
-  std::vector<double> adj;        // [daily] 复权倍数 (个股 = 后复权因子, 篮子 / 账户 = 1)
-  bool minute = false;            // 带分钟全史
-  std::vector<float> px;          // [daily][kSlots][kFields] (minute; 无分钟根的日全 NaN)
-  size_t find(misc::Ymd d) const; // d 在 daily 的下标; 无 → daily.size()
-  const float *slots(size_t i) const {
+  // 一日的分钟根: p = nullptr 即该日无分钟根; 价 = 紧凑价 × a (存价 → 价: 篮子 = 因子, 其余 1)
+  struct Mins {
+    const Packed *p = nullptr;
+    Scale k;
+    double a = 1;
+  };
+  std::vector<Candle> daily;                     // 日升序, 无成交的日不收
+  std::vector<double> adj;                       // [daily] 复权倍数 (个股 = 后复权因子, 篮子 / 账户 = 1)
+  bool minute = false;                           // 带分钟全史
+  std::vector<Mins> mins;                        // [daily] (minute)
+  std::vector<std::shared_ptr<const void>> hold; // mins 所指的存储
+  size_t find(misc::Ymd d) const;                // d 在 daily 的下标; 无 → daily.size()
+  // 第 i 日有分钟根
+  bool has(size_t i) const {
     assert(minute && i < daily.size());
-    return px.data() + i * kSlots * kFields;
+    return mins[i].p != nullptr;
   }
-  // 第 i 日 → 分钟根; 无根 → false
+  // 第 i 日 (须 has) 槽 s 的收 (无根 = 0) / 根 (无根 → false)
+  float close(size_t i, int s) const;
+  bool bar(size_t i, int s, Cell &c) const;
+  // 第 i 日 → 分钟根 (含各根净流入); 无根 → false
   bool bars(size_t i, Bars &b) const;
-  // 接一日 y (日升序; 复权倍数 f): 日根 + (minute) 分钟根, 无根槽 NaN (bars 的逆)
-  void push(const Day &y, double f);
 };
 
 // 篮子的一个成分: 全局 id + 权 (等权 = 1, 加权 = 末日收盘总市值 [亿元])
@@ -167,18 +170,24 @@ struct Live {
   const sina::Quote *watched(std::string_view sym) const; // 订阅码的末快照; 未订阅 / 未到 → nullptr
 };
 
-// 一个标的的源 (全史 + 日脊末段 + 当日; Joint 给): 当日只在 joined 时接着画, 各处不再自判
+// 一个标的的源 (Joint 给): 日序列 = 日线 + 接得上的当日 (末项); 各处只经它读 (下标 / 分钟根 / 复权同一口径), 接续不再自判
 struct Source {
   const Series *se = nullptr;    // 全史 (价格库留着的); nullptr = 无
   std::span<const Candle> daily; // 日线: 有全史 = se->daily, 否则个股的日脊末段 (Tails)
   const Day *today = nullptr;    // 当日 (有成交才有; 当日列不看接续)
-  bool joined = false;           // 当日接得上: 有历史 = 接在日脊之后, 无历史 = 有当日 (只画当日)
+  bool joined = false;           // 当日接得上 (= 日序列末项): 有日线 = 接在日脊之后, 无日线 = 有当日 (只画当日)
   bool any() const { return se || joined; }
-  const Candle *last() const;                 // 最新一根: 接上取当日, 否则日线末根; 无 → nullptr
-  const Candle *candle(misc::Ymd d) const;    // d 日的日根 (接上的当日 / 日线); 无 → nullptr
-  Flow flow_of(misc::Ymd d, bool ends) const; // d 日的资金流 (= candle(d)->flow); 无 → amount 0
-  // d 日的分钟根 (当日有根 / 全史带分钟) 填进 b; 无 → false
-  bool bars(misc::Ymd d, Bars &b) const;
+  // 日序列 [0, size()): 日线各根 + (joined) 当日
+  size_t size() const { return daily.size() + joined; }
+  const Candle &candle(size_t i) const { return i < daily.size() ? daily[i] : today->candle; }
+  const Candle *last() const { return size() ? &candle(size() - 1) : nullptr; } // 最新一根; 无 → nullptr
+  size_t find(misc::Ymd d) const;                                               // d 在日序列的下标; 无 → size()
+  // 第 i 项 (≥ size() = 无) 的分钟根 (当日有根 / 全史带分钟) 填进 b; 无 → false
+  bool bars(size_t i, Bars &b) const;
+  // 第 i 项的复权倍数 (价 × adj 跨日连续; 前复权到末项 = adj(i) / adj(size() − 1)): 全史 = Series::adj, 日脊末段自首项 1 起;
+  //   其后逐项 × 上一项收 / 本项前收 (前收缺 → 不变; 接上的当日同此)
+  double adj(size_t i) const;
+  Flow flow_of(misc::Ymd d, bool ends) const; // d 日的资金流 (= 该项日根的 flow); 无 → amount 0
 };
 // 一侧行情的一份 (都不可变, 只拷指针): 历史 + 当日
 struct Joint {

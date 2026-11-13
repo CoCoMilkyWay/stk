@@ -2,9 +2,9 @@
 
 #include "account/Ledger.hpp"
 #include "fundamental/AssetAxis.hpp"
+#include "gui/account/AccountSide.hpp"
 
 #include <algorithm>
-#include <span>
 #include <vector>
 
 namespace GUI::Account {
@@ -13,23 +13,15 @@ namespace {
 
 using live::strf;
 
-// 当日: 回放末日 (指数 idx0, 回放摘要 e) 之后, 净资产 a.net × 持仓 a.bal 按 y 的分钟收盘 (与历史回放同一份 closes / intraday / path_day)
+// 当日: 回放末日 (指数 idx0, 回放摘要 e) 之后, 净资产 a.net × 持仓 a.bal 按 y 的分钟收盘 (与历史回放同一核 day_of)
 std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, const live::Account &a, const Quote::Live &y) {
   const size_t n = static_cast<size_t>(std::clamp(Quote::sec_slot(y.sec), 0, Quote::kSlots - 1)) + 1;
   const account::Day d{y.date, a.net, e.after, 1, {a.bal.begin(), a.bal.end()}};
   const AssetAxis &ax = asset_axis();
-  std::vector<float> p(n);
-  const auto path = [&](const std::string &code) -> std::span<const float> {
+  return std::make_shared<const Quote::Day>(day_of(d, e.nav, idx0, n, [&](const std::string &code) -> const Quote::Day * {
     const size_t id = ax.find(account::asset_code(code));
-    const Quote::Day *s = id < ax.size() ? y.at({Quote::kStock, static_cast<uint32_t>(id)}) : nullptr;
-    if (!s)
-      return {};
-    Quote::closes(s->bars, s->candle.ref, p);
-    return p;
-  };
-  std::vector<double> idx(n);
-  account::intraday(d, e.nav, idx0, path, idx);
-  return std::make_shared<const Quote::Day>(Quote::path_day(y.date, idx0, idx));
+    return id < ax.size() ? y.at({Quote::kStock, static_cast<uint32_t>(id)}) : nullptr;
+  }));
 }
 
 } // namespace

@@ -86,7 +86,7 @@ void pin_axes(bool x) {
 }
 
 // 一张图的根: x = 第 k 日 · kSlots + 槽 (日内 = 日轴各日, K 线 = 全史各日; 无成交的槽留空; 并根 = 组中点, 每根 g 槽, g ≥ kSlots = 几日一根)
-struct Series {
+struct PlotBars {
   bool intraday = false;
   std::vector<Candle> bars;
   std::vector<double> x;
@@ -105,7 +105,7 @@ struct Series {
 
 // K 线底轴: 分钟根 "MM-DD HH:MM", 日根 "MM-DD", 月以上一根 "YYYY-MM"
 int k_tick(double v, char *buf, int size, void *ud) {
-  const Series &s = *static_cast<const Series *>(ud);
+  const PlotBars &s = *static_cast<const PlotBars *>(ud);
   const long k = static_cast<long>(std::floor((v + 0.5) / kSlots));
   if (k < 0 || k >= static_cast<long>(s.days.size()))
     return std::snprintf(buf, size, " ");
@@ -119,7 +119,7 @@ int k_tick(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, size, "%02d-%02d", d / 100 % 100, d % 100);
 }
 
-int nearest(const Series &s, double at) {
+int nearest(const PlotBars &s, double at) {
   const int n = static_cast<int>(s.x.size());
   int i = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), at) - s.x.begin());
   if (i > 0 && (i == n || s.x[i] - at > at - s.x[i - 1]))
@@ -128,7 +128,7 @@ int nearest(const Series &s, double at) {
 }
 
 // 第 i 根的时刻: 分钟根 "MM-DD HH:MM" (槽 = 组末槽除 kSlots 的余), 日根 "YYYY-MM-DD" (几日一根 = 组首日)
-void fmt_when(char *buf, int size, const Series &s, size_t i) {
+void fmt_when(char *buf, int size, const PlotBars &s, size_t i) {
   const misc::Ymd d = s.bars[i].date;
   if (s.g < kSlots) {
     const int m = slot_label(static_cast<int>(s.x[i] + (s.g - 1) * 0.5) % kSlots);
@@ -138,7 +138,7 @@ void fmt_when(char *buf, int size, const Series &s, size_t i) {
   }
 }
 
-void tooltip(const Series &s, int i) {
+void tooltip(const PlotBars &s, int i) {
   const Candle &b = s.bars[static_cast<size_t>(i)];
   char when[32], amt[32], chg[48] = "";
   fmt_when(when, sizeof(when), s, static_cast<size_t>(i));
@@ -170,7 +170,7 @@ int lod(double span, float px, bool days) {
 }
 
 // 每 g 槽并一根 (开取先, 高 / 低取极, 收取后, 额相加; 日 / 前收取组首根), x = 组中点; 含缺口的组整组不画
-void merge(Series &s, int g) {
+void merge(PlotBars &s, int g) {
   s.g = g;
   if (g == 1)
     return;
@@ -213,7 +213,7 @@ void reset(QuotesView &v, uint64_t key, double lo, double hi) {
 //   左键拖动 = 框选 x 段放大; wheel > 0 → 滚轮只缩放 x (至多 wheel 宽), 右端锚在 win_hi (最新一根); y 恒随视野内的根贴合.
 //   视野的改动在下一帧生效 (本帧已设给 ImPlot).
 // 档位按钮叠在价图左上角 (在图之后提交, 抢得到悬停). 画完光标停在按钮处, 调用方显式定位下一块
-void plot_chart(const char *id, const Series &s, double win_lo, double win_hi, QuotesView &v, const ImVec2 &size,
+void plot_chart(const char *id, const PlotBars &s, double win_lo, double win_hi, QuotesView &v, const ImVec2 &size,
                 const char *const ranges[], int nr, int &cur, double wheel) {
   const int n = static_cast<int>(s.bars.size());
   const int w0 = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), v.lo) - s.x.begin());
@@ -256,7 +256,7 @@ void plot_chart(const char *id, const Series &s, double win_lo, double win_hi, Q
     if (s.intraday)
       ImPlot::SetupAxisTicks(ImAxis_X1, tick_x.data(), static_cast<int>(tick_x.size()), tick_p.data());
     else
-      ImPlot::SetupAxisFormat(ImAxis_X1, k_tick, const_cast<Series *>(&s));
+      ImPlot::SetupAxisFormat(ImAxis_X1, k_tick, const_cast<PlotBars *>(&s));
   };
   const auto visible = [&](const ImPlotRect &lim, int &a, int &b) {
     a = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), lim.X.Min - s.g) - s.x.begin());
@@ -539,17 +539,17 @@ void render_book(const sina::Quote *p, misc::Ymd date) {
   ImGui::PopStyleVar();
 }
 
-// K 线的日根 = 历史 + 当日 (joined 才接)
+// K 线的日根 = 源的日序列
 std::vector<Candle> k_days(const Source &src) {
-  std::vector<Candle> o(src.daily.begin(), src.daily.end());
-  if (src.joined)
-    o.push_back(src.today->candle);
+  std::vector<Candle> o(src.size());
+  for (size_t i = 0; i < o.size(); ++i)
+    o[i] = src.candle(i);
   return o;
 }
 
-// K 线视野 [lo, hi] 的根 (px = 图宽; days = k_days, 分钟根读 src): g = lod (可几日一根); 涨跌基准 = 末根前收.
+// K 线视野 [lo, hi] 的根 (px = 图宽; days = k_days, 分钟根读 src 同下标): g = lod (可几日一根); 涨跌基准 = 末根前收.
 //   g < kSlots → 各日的分钟根 (该日无分钟 → 空), 否则日根; 视野左侧多取 kMaN 末项根 (均线起得来), 再按 g 并根
-void k_bars(std::span<const Candle> days, const Source &src, double lo, double hi, float px, Series &s) {
+void k_bars(std::span<const Candle> days, const Source &src, double lo, double hi, float px, PlotBars &s) {
   s = {};
   const int g = lod(hi - lo, px, true);
   const long nd = static_cast<long>(days.size());
@@ -569,7 +569,7 @@ void k_bars(std::span<const Candle> days, const Source &src, double lo, double h
       s.push(d, x0 + (kSlots - 1) * 0.5);
       continue;
     }
-    if (!src.bars(d.date, b))
+    if (!src.bars(static_cast<size_t>(k), b))
       continue;
     for (int j = 0; j < kSlots; ++j)
       if (b.has[static_cast<size_t>(j)])
@@ -604,35 +604,27 @@ double flow_ref(const Source &src) {
   return d.empty() ? 0.0 : s / static_cast<double>(d.size());
 }
 
-// 日内的根 = 日轴各日的分钟 (历史 + 当日, joined 才接; 某日无源 → 留空; 缺口记进 cut), x = 第 k 日 · kSlots + 槽;
-//   价按前收链前复权到末个有根日 (末日真价): 相邻日根逐个 × 上一日根收 / 本日前收 (篮子点位本已接续 ⇒ 恒 1);
-//   分钟根的前收 = 同日日根的 (同乘); 涨跌基准 = 末个有根日的前收
-void intraday(const Source &src, std::span<const misc::Ymd> days, Series &s) {
+// 日内的根 = 日轴各日的分钟 (源的日序列; 某日无源 → 留空; 缺口记进 cut), x = 第 k 日 · kSlots + 槽;
+//   价前复权到末个有根日 (末日真价; Source::adj); 分钟根的前收 = 同日日根的 (同乘); 涨跌基准 = 末个有根日的前收
+void intraday(const Source &src, std::span<const misc::Ymd> days, PlotBars &s) {
   s.intraday = true;
   s.days.assign(days.begin(), days.end());
   const size_t nd = days.size();
-  std::vector<const Candle *> cs(nd);
+  std::vector<size_t> at(nd); // [k] 日序列下标
   std::vector<Bars> bs(nd);
   std::vector<bool> has(nd);
-  std::vector<double> f(nd, 0.0); // 后复权比: 日轴内首个日根 = 1
-  double end = 0;                 // 末个有根日的 f
-  for (size_t k = 0, p = SIZE_MAX; k < nd; ++k) {
-    cs[k] = src.candle(days[k]), has[k] = src.bars(days[k], bs[k]);
-    assert((!has[k] || cs[k]) && "有分钟根的日必有日根");
-    if (!cs[k])
-      continue;
-    assert((p == SIZE_MAX || cs[k]->ref > 0) && "前收链: 接续的日根须有前收");
-    f[k] = p == SIZE_MAX ? 1.0 : f[p] * cs[p]->close / cs[k]->ref;
-    p = k;
+  double end = 0; // 末个有根日的复权倍数
+  for (size_t k = 0; k < nd; ++k) {
+    at[k] = src.find(days[k]), has[k] = src.bars(at[k], bs[k]);
     if (has[k])
-      end = f[k];
+      end = src.adj(at[k]);
   }
   for (size_t k = 0; k < nd; ++k) {
     if (!has[k])
       continue;
     const Bars &b = bs[k];
-    const double a = f[k] / end;
-    const float ref = static_cast<float>(cs[k]->ref * a);
+    const double a = src.adj(at[k]) / end;
+    const float ref = static_cast<float>(src.candle(at[k]).ref * a);
     s.ref = ref;
     for (int j = 0; j < kSlots; ++j)
       if (b.has[static_cast<size_t>(j)])
@@ -686,9 +678,9 @@ struct StockSeries {
   uint32_t id = Ref::kNone;
   int span = 0;
   Source src;
-  Series intra;             // 日内 (未并根)
-  std::vector<Candle> days; // K 线的日根 [k]
-  Series k;                 // K 线视野的根 (视野 / 图宽变才重建)
+  PlotBars intra;           // 日内 (未并根)
+  std::vector<Candle> days; // K 线的日根 [k] (= 源的日序列)
+  PlotBars k;               // K 线视野的根 (视野 / 图宽变才重建)
   double klo = 0, khi = 0;
   float kpx = 0;
 };
@@ -696,11 +688,11 @@ struct StockSeries {
 namespace {
 
 // 两图: id = 标的的复位键高位, 档 / 日数拼进低位
-void plot_intraday(const char *name, const Series &intra, uint64_t id, ChartState &st, const ImVec2 &size) {
+void plot_intraday(const char *name, const PlotBars &intra, uint64_t id, ChartState &st, const ImVec2 &size) {
   const int nd = static_cast<int>(intra.days.size());
   const double hi = std::max(1, nd) * kSlots - 0.5;
   reset(st.iv, id | static_cast<uint64_t>(st.intraday) << 16 | static_cast<uint64_t>(nd), -0.5, hi);
-  Series s = intra;
+  PlotBars s = intra;
   merge(s, lod(st.iv.hi - st.iv.lo, size.x, false));
   plot_chart(name, s, -0.5, hi, st.iv, size, kIntraName, kIntras, st.intraday, 0);
 }
@@ -760,7 +752,7 @@ NetBars net_bars(const Source &src, std::string name, std::span<const misc::Ymd>
   NetBars n{std::move(name), {}, {}, 0};
   Bars b;
   for (size_t k = 0; k < days.size(); ++k)
-    if (src.bars(days[k], b))
+    if (src.bars(src.find(days[k]), b))
       for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j)
         if (b.has[j]) {
           n.x.push_back(static_cast<double>(k * kSlots + j)), n.v.push_back(b.net[j]);
@@ -1020,7 +1012,7 @@ struct OverlayCtx {
 
 // 涨跌幅: y = 收对本条在日轴内首日前收的涨跌幅 [%] (收盘线, 缺口处插 NaN 断开); 只一条另带现价十字
 bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Overlay &l) {
-  Series s;
+  PlotBars s;
   intraday(src, cx.days, s);
   if (s.bars.empty() || !(s.bars.front().ref > 0))
     return false;
@@ -1050,7 +1042,7 @@ bool flow_line(const OverlayCtx &cx, const OverlayPick &, const Source &src, Ove
   double net = 0;
   Bars b;
   for (size_t k = 0; k < cx.days.size(); ++k)
-    if (src.bars(cx.days[k], b))
+    if (src.bars(src.find(cx.days[k]), b))
       for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j) {
         if (b.hole[j])
           return !l.x.empty();
@@ -1236,11 +1228,8 @@ Recent RecentOf(std::span<const Mark> m) {
 Recent RecentOf(const Source &src) {
   Mark m[kMarks];
   size_t n = 0;
-  const auto put = [&](const Candle &c) { m[n++] = {c.close, c.ref}; };
-  if (src.joined)
-    put(src.today->candle);
-  for (auto it = src.daily.rbegin(); it != src.daily.rend() && n < kMarks; ++it)
-    put(*it);
+  for (size_t i = src.size(); i-- > 0 && n < kMarks;)
+    m[n++] = {src.candle(i).close, src.candle(i).ref};
   return RecentOf({m, n});
 }
 

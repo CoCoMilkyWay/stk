@@ -422,8 +422,6 @@ Line project(const std::vector<misc::Ymd> &axis, const Levels &s) {
 // 线 c (日末视图已建) 的点换成日内形 m: 各日以当日末点为锚, 锚 = 末点所在槽及以前的末个有根槽, 该日各有根槽 (至锚) 的点位 = 末点 × 收 / 锚处收;
 // m 无该日 / 锚前无根 → 该日照留原点. 起点 (前收) 与各日末点不动 ⇒ 日末视图不变, 切片的 base 仍落在点上
 void intraday(const std::vector<misc::Ymd> &axis, const Quote::Series &m, Line &c) {
-  constexpr size_t F = Quote::Series::kFields, C = Quote::Series::kClose;
-  const auto close = [&](const float *p, int s) { return p[static_cast<size_t>(s) * F + C]; };
   if (c.x.size() < 2)
     return;
   std::vector<double> x{c.x[0]}, y{c.y[0]};
@@ -432,20 +430,19 @@ void intraday(const std::vector<misc::Ymd> &axis, const Quote::Series &m, Line &
     while (e < c.x.size() && c.day(e) == k)
       ++e;
     const size_t i = m.find(axis[static_cast<size_t>(k)]);
-    const float *p = i < m.daily.size() ? m.slots(i) : nullptr;
-    int a = p ? static_cast<int>(c.x[e - 1] - x_of(static_cast<size_t>(k), 0.0)) : -1;
-    while (a >= 0 && !(close(p, a) > 0))
+    const auto close = [&](int s) { return m.close(i, s); };
+    int a = i < m.daily.size() && m.has(i) ? static_cast<int>(c.x[e - 1] - x_of(static_cast<size_t>(k), 0.0)) : -1;
+    while (a >= 0 && !(close(a) > 0))
       --a;
     if (a < 0) {
       x.insert(x.end(), c.x.begin() + static_cast<std::ptrdiff_t>(j), c.x.begin() + static_cast<std::ptrdiff_t>(e));
       y.insert(y.end(), c.y.begin() + static_cast<std::ptrdiff_t>(j), c.y.begin() + static_cast<std::ptrdiff_t>(e));
       continue;
     }
-    const double ly = c.y[e - 1];
+    const double ly = c.y[e - 1], la = close(a);
     for (int s = 0; s <= a; ++s)
-      if (close(p, s) > 0)
-        x.push_back(x_of(static_cast<size_t>(k), static_cast<double>(s))),
-            y.push_back(ly * (static_cast<double>(close(p, s)) / static_cast<double>(close(p, a))));
+      if (const double v = close(s); v > 0)
+        x.push_back(x_of(static_cast<size_t>(k), static_cast<double>(s))), y.push_back(ly * (v / la));
   }
   c.x = std::move(x), c.y = std::move(y);
 }

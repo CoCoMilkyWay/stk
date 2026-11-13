@@ -1,4 +1,4 @@
-// 行情的根: 槽代数 + 一根 (Cell / Candle) + 一日分钟根 (Bars) + 分钟涨跌法的资金流 (各处同一份)
+// 行情的根: 槽代数 + 一根 (Cell / Candle) + 一日分钟根 (Bars) 及其紧凑形 (Packed) + 分钟涨跌法的资金流 (各处同一份)
 //
 // 分钟槽: 一交易日 kSlots = 240 根, 槽 s 的标号 (bar 结束分钟) = 09:31 … 11:30, 13:01 … 15:00 (新浪 / bar1m / L_1min 同一标号);
 //   开盘集合竞价并入首根. 时间坐标 → 槽只经槽代数 (label_slot / sec_slot / row_slot); 各源按时间序 add ⇒ 竞价先于首根.
@@ -7,6 +7,9 @@
 // 资金流 (分钟涨跌法): 一只逐个有成交的分钟, 收 > 上一分钟收 (首个对前收) → 该分钟额记入, < → 记出, 平 → 随上一分钟的方向
 //   (之前无方向 = 不计; tick_dir). 篮子 = 成员之和 (不加权, 见 Fold.hpp). 首 / 末根 (开收盘集合竞价) 单列, 计不计由用处定 (DayFlow::of);
 //   日摘要 DayFlow 随日根 (Candle::flow) 走, 历史 / 当日同一字段.
+// 紧凑形 (价格库落盘 / 全史 Series 的分钟同一格式, 读时解码): 一槽 = 开 高 低 收 (u16: 当日价基 lo + q × 步长 step) + log1p(额) × 2048 (u16)
+//   + 净流入 / 额 × 32767 (i16); 收 = kNoBar 即无根. 步长: f16 口径 (个股) = 价基的 f16 步长, 容不下当日振幅则倍之 ⇒ f16 价逐位还原
+//   (库段与特征 / 标签一致); 否则 = 振幅 / 65534 (篮子 / 账户)
 #pragma once
 
 #include "features/TimeIndex.hpp"
@@ -16,6 +19,7 @@
 #include <array>
 #include <bitset>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 namespace GUI::Quote {
@@ -104,11 +108,25 @@ struct Day {
   Bars bars;     // 分钟根
 };
 
-// 逐槽收 out[s] (槽 [0, out.size())): 有根取收, 无根沿用上一根, 首根前 = ref (账户按持仓计价的路径; 历史 / 当日同一份)
-void closes(const Bars &b, float ref, std::span<float> out);
-// 一条逐槽点位 v (槽 [0, v.size()), 前收 ref) 成一日: 各根 开 = 上一槽 (首槽 = ref), 收 = 本槽, 高 / 低 = 两者之极, 额 0;
-//   日根 = ref 起、包住全路径 (账户的指数日; 历史回放 / 当日同一份)
-Day path_day(misc::Ymd d, float ref, std::span<const double> v);
+// ---- 紧凑形 (见文件头) ----
+struct Slot {
+  uint16_t o, h, l, c, a;
+  int16_t n;
+};
+inline constexpr uint16_t kNoBar = 0xFFFF;
+// 一日的紧凑分钟根
+struct Packed {
+  Slot s[kSlots];
+};
+// 一日的价基 / 步长
+struct Scale {
+  float lo = 0, step = 0;
+};
+// b (各根净流入 net) → m; half = f16 口径 (个股). 返回价基 / 步长
+Scale pack(const Bars &b, std::span<const double, kSlots> net, bool half, Packed &m);
+// 一槽 (须有根) → 一根, 价 × a / 净流入 [元]
+Cell unpack(const Slot &x, Scale k, double a);
+double unpack_net(const Slot &x);
 
 // 分钟涨跌法的方向: 收 > 上一价 → +1, < → −1, 平 → 随上一方向 dir (之前无方向 = 0, 不计)
 constexpr int tick_dir(double close, double px, int dir) {

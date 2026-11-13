@@ -2,8 +2,8 @@
 //   拉: Live 连上客户端、读到信用账户后每天自动一次, 走 Live 的事务道 (LiveHub::job): 重查账本末日起的资金流水并入账本,
 //     流水累计的持仓 + 今日成交对上券商持仓才落盘 (账本代 +1)
 //   历史: 价格库按账本在日脊上回放 (PriceView::tape[kAccount]; 时间加权指数, 分钟频); 库轴外的持仓以券商现价为今日的观测点 (spot → QuoteHub)
-//   当日: 接在回放末日之后才有 (QuoteHub 每帧取, 并进 Live::days[kAccount]); 分钟 = account::intraday (当日收后持仓 = 券商持仓,
-//     末槽 = 信用账户净资产, 外部进出 = 末日之后账本里的; 全市场外的持仓不动; 当日的外部进出不计)
+//   当日: 接在回放末日之后才有 (QuoteHub 每帧取, 并进 Live::days[kAccount]); 与历史同一核 (AccountSide.hpp day_of): 当日收后持仓 = 券商持仓,
+//     末槽 = 信用账户净资产, 外部进出 = 末日之后账本里的; 全市场外的持仓不动; 当日的外部进出不计
 #pragma once
 
 #include "account/Ledger.hpp" // Spot

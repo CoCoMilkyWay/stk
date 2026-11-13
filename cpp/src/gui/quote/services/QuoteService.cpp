@@ -55,7 +55,7 @@ bool in_session(const Clock &c) {
 }
 
 // 缓存文件 = FileRec + n × AssetRec + n × kSlots × SlotRec (定长, 本机字节序; 条目 = 全局 id [0, n)); 头不符 = 别的格式 / 别的行情日, 弃.
-//   AssetRec / SlotRec 各是一个原子条目: 整条写入, busy 先置后清 —— 读回 busy 的 = 写到一半进程没了
+//   AssetRec (= Track 的落盘头 TrackRec) / SlotRec 各是一个原子条目: 整条写入, busy 先置后清 —— 读回 busy 的 = 写到一半进程没了
 constexpr uint32_t kMagic = 0x44495651; // "QVID"
 struct FileRec {
   uint32_t magic;
@@ -64,12 +64,7 @@ struct FileRec {
   uint32_t n;
   uint64_t hash; // 资产轴前 n 条的指纹
 };
-struct AssetRec {
-  int32_t lo, hi;
-  double vol, amt;
-  float high, low, open, close, ref;
-  uint8_t busy;
-};
+using AssetRec = TrackRec;
 struct SlotRec {
   Cell bar;
   uint8_t has, exact, hole, busy;
@@ -625,10 +620,7 @@ int QuoteService::Track::merge(int l, int settled, int live, misc::Ymd date, con
 // 落盘
 // ---------------------------------------------------------------------------
 void QuoteService::put(uint32_t i) {
-  const Track &t = tracks_[i];
-  AssetRec a{};
-  a.lo = t.lo, a.hi = t.hi, a.vol = t.vol, a.amt = t.amt, a.high = t.high, a.low = t.low, a.open = t.open, a.close = t.close, a.ref = t.ref;
-  store(asset_rec(map_, i), a);
+  store(asset_rec(map_, i), static_cast<const AssetRec &>(tracks_[i]));
   saved_ = std::time(nullptr);
 }
 
@@ -650,7 +642,7 @@ void QuoteService::load() {
         if (a.busy || !listed(k)) // 写到一半 (该只从零) / 不在本次全市场 (已退市)
           continue;
         Track &t = tracks_[k];
-        t.lo = a.lo, t.hi = a.hi, t.vol = a.vol, t.amt = a.amt, t.high = a.high, t.low = a.low, t.open = a.open, t.close = a.close, t.ref = a.ref;
+        static_cast<AssetRec &>(t) = a;
         for (int s = 0; s < kSlots; ++s) {
           const SlotRec r = c.slot(k, s);
           if (r.busy || r.hole) { // 缺口照并入待补 (格先于状态落盘, 状态里的区间可能还没盖到它)
