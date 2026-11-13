@@ -6,7 +6,7 @@
 //   篮子     选股表成员 → Fold         冻结的成员表 → Fold                                        bind 的成员表 → Fold (增量)
 //   账户     资金流水账本 × 个股的根回放 (account/Ledger.hpp; 库段 / 补段同一条)                      净资产 × 持仓分钟收 (gui/account)
 //   库段 + 补段 = 日脊, 一趟合成落盘在 PriceLib (各侧同一条日脊), 其 worker 每趟发布一份 PriceView (日脊 + 各侧一 Tape); 当日在 QuoteService, 每轮发布一份 Live.
-//   个股 / 篮子只差 Fold 一步, 各段只差源 (BasketRow: LibDay / FundDay / SinaDay); 账户不落盘 (账本一变整条重放).
+//   篮子 = 成员 × 个股的根过 Fold (历史取个股侧落盘的根), 个股各段只差源 (BasketRow: LibDay / FundDay / SinaDay); 账户不落盘 (账本一变整条重放).
 // 键: 个股 = 全局 id (AssetAxis 下标; 历史 / 当日 / 快照同一下标), 篮子 = 篮子下标 (shared/Basket.hpp), 账户 = 0; 各侧同一种 Tape (历史) / Days (当日).
 // 一侧 = Joint (PriceView + Live), 一个标的 = Source (历史 + 日脊末段 + 当日 + 接不接): 行情各处只经这两个读, 接续只在 Joint 判 (of 逐只 / today 整侧).
 // 历史一律全史 (Series): 日根 (带资金流摘要) 恒在 (大范围按日算); 分钟全史只读要的 (画图 / 选中的线; 展示一律分钟频).
@@ -125,9 +125,9 @@ struct Tape {
   //   当日 = 末日指数 × growth(nav, 净资产_s, after) (account::intraday); 其余侧 0
   double nav = 0, after = 0, in = 0;
 };
-// 价格库的戳 = 日脊的摘要: 库轴指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用)
+// 价格库的戳 = 日脊的摘要: 库轴指纹 + 篮子表指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用)
 struct PriceStamp {
-  uint64_t axis = 0;
+  uint64_t axis = 0, table = 0;
   misc::Ymd last = 0;
   size_t days = 0, lib = 0, fund = 0;
   bool operator==(const PriceStamp &) const = default;

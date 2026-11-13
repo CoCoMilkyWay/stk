@@ -210,13 +210,13 @@ stk/
 │   │   │   │   │                                       #    · Series = 日根 (带资金流摘要; 大范围按日算) + 分钟全史 (只读要的; 展示一律分钟频)
 │   │   │   │   │                                       #    · 一侧 = Joint (PriceView + 当日 Live), 一个标的 = Source (全史 + 当日 + 接不接): 各处只经这两个读, 接续只在 Joint 判 (of / today)
 │   │   │   │   ├── PriceLib.hpp                        # 🖥️ 历史价格库 (自带 worker): 两侧 (资产轴全部个股 / 篮子表全部) × 日根 (带资金流摘要) / 分钟根, 一趟合成落盘, 水位 / 归档一变自动续算 (只补新日);
-│   │   │   │   │                                       #    · 个股库段 = 库存 f16 原价 (与特征 / 标签逐位一致) × 后复权因子; 篮子 = Lane 的比 × 前日点位
+│   │   │   │   │                                       #    · 个股库段 = 库存 f16 原价 (与特征 / 标签逐位一致) × 后复权因子; 篮子 = 个股侧落盘的根过 Lane 的比 × 前日点位 (篮子表一变只重算篮子侧)
 │   │   │   │   │                                       #    · 稀疏段落盘: 只存有根的行日, 分钟一槽 u16 (当日价基 + 步长; 个股步长 = f16 步长 ⇒ 逐位还原); 库段满 64 日并一块
 │   │   │   │   │                                       #    · 发布 PriceView (库戳 + 日脊 + 三侧 Tape: 篮子全部 + 普查, 个股 = 要过的全史 + 全市场末 5 日 Tails, 账户 = 回放); 内容不变不重发
 │   │   │   │   │                                       #    · 账户: 资金流水账本按日脊个股的根回放 (account/Ledger.hpp) → 时间加权指数, 分钟 = account::intraday (当日同一份); 账本代变 / 换戳才重放
 │   │   │   │   │                                       #    · 库只 worker 碰, 外面 (行情各页 / CTA) 只读发布; 交接 (下一交易日成员表 + 末日点位) 一变即直交当日合成 (QuoteService::bind)
-│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成件 (PriceLib 库段 / 补段同一份): 成员 members (选股表 → 成员表, 权 = Tape::omega) ⇄ drift (冻结, 随价漂移, 逢换源回目标权);
-│   │   │   │   │                                       #    源 LibDay (all.bar 日行 + L_1min) / FundDay (bar1d + bar1m) / SinaDay (新浪归档); 一日合成件 Lane<源>; 普查 census (只数 / 权 / 成分 / 重合)
+│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 价格库合成件: 成员 members (选股表 → 成员表, 权 = Tape::omega) ⇄ drift (冻结, 随价漂移, 逢换源回目标权);
+│   │   │   │   │                                       #    个股源 LibDay (all.bar 日行 + L_1min) / FundDay (bar1d + bar1m) / SinaDay (新浪归档); 一日合成件 Lane<源> (篮子源 = 个股侧的段); 普查 census (只数 / 权 / 成分 / 重合)
 │   │   │   │   └── services/
 │   │   │   │       └── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin (收完的往日转作归档); 篮子当日按交接的成员表增量合成;
 │   │   │   │                                           #    各只按全局 id 下标 (live.bin 头记资产轴前缀指纹); 一轮发布一份不可变 Live (个股 / 篮子的 Day + 逐只共享的快照 (只换变了的) + 订阅码的快照;
@@ -460,7 +460,7 @@ stk/
     │   ├── snapshot.bin                                # 续算快照 (末日各资产时序状态); 库跑完才落
     │   ├── YYYY/MM/DD/features_L_*.bin                 # 日文件, 一层一个 (Lob: L_sec / L_1min; Bar: L_1min / 分钟箱 / L_1day): 头 + 列目录 + 逐列载荷 [T×A]
     │   └── cache/                                      # 由库派生 (库重算即随之清): features.json 特征表预览
-    │                                                   #    / price/ 历史价格库 (PriceLib): head.bin 日脊 + 库段 / 基本面段日数 + 封块数 + 因子链 / <侧>/b<日>.bin 64 日一块 · <侧>/d<日>.bin 单日段
+    │                                                   #    / price/ 历史价格库 (PriceLib): head.bin 日脊 + 库段 / 基本面段 / 篮子侧日数 + 篮子表指纹 + 两侧封块数 + 因子链 / <侧>/b<日>.bin 64 日一块 · <侧>/d<日>.bin 单日段
     │                                                   #      (段 = 行表 (键升序) + 日根 + 分钟根, 只存有根的行日)
     ├── factors/<pool>/<层>/*.json                      # ③ 因子文件 (一因子一文件, 可手写); <层> = min / 5min / 15min / 30min / 60min / day
     │                                                   #    · 必填: type / name_cn / expr (模板, 自由参数用裸键名)

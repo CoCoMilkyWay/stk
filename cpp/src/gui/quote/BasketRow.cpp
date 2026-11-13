@@ -139,9 +139,8 @@ void bars_of(const Bar1m *m, Bars &b) {
 Leg LibDay::leg(size_t j, Cell &c, Bars &b) const {
   const float x = cur.px[3][j];
   c = cell(cur.px[0][j], cur.px[1][j], cur.px[2][j], x, cur.amount[j]);
-  if (mc)
-    bars_of(*mc, j, b);
-  return {prev.pre[j], cur.trade[j] && x > 0 ? &c : nullptr, mc ? &b : nullptr};
+  bars_of(mc, j, b);
+  return {prev.pre[j], cur.trade[j] && x > 0 ? &c : nullptr, &b};
 }
 
 Leg FundDay::leg(size_t j, Cell &, Bars &b) const {
