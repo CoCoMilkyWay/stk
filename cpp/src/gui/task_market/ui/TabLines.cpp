@@ -190,12 +190,13 @@ int RenderTabLines(int page, PortfolioService &svc, MinuteService *minute, CtaSe
     ui.minute_sent.send(*minute, std::move(rq));
   }
   ui.minutes = minute ? latest(*minute) : nullptr;
-  ui.der.update(LinesDerKey{gen, pf.items_gen, ui.overlay.baskets.shown, ui.minutes ? ui.minutes->gen : 0, fixed_impact, infos.size(), ui.pick.open,
-                            ui.pick.stocks(kPicks), ui.watch},
+  const OverlayState &ov = ui.overlay;
+  const LinesQuotes market{{ov.stocks.data, ov.baskets.data}, {ov.stocks.today.day, ov.baskets.today.day}};
+  ui.der.update(LinesDerKey{gen, pf.items_gen, market, ui.minutes ? ui.minutes->gen : 0, fixed_impact, infos.size(), ui.pick.open, ui.pick.stocks(kPicks),
+                            ui.watch},
                 [&](LinesDerived &dv) {
                   const std::vector<misc::Ymd> old = dv.dates;
-                  MakeLinesDerived(pf.items, pf.name, res, ui.overlay.baskets.data, ui.minutes, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks),
-                                   ui.watch, infos, dv);
+                  MakeLinesDerived(pf.items, pf.name, res, market, ui.minutes, fixed_impact, ui.pick.open, ui.pick.stocks(kPicks), ui.watch, infos, dv);
                   if (dv.dates != old) // 日轴变 → 各页区间回默认
                     for (int p = 0; p < kPages; ++p)
                       ui.range[p] = DefaultLinesRange(p, dv.dates);

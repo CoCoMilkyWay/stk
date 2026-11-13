@@ -198,15 +198,19 @@ stk/
 │   │   │   │   │   └── PortfolioService.hpp            # 🖥️ 组合: 因子 / 篮子 / 个股 → 账 PortfolioBook (线 × [毛收益 / 冲击 / 固定 / 增仓量] × 行)
 │   │   │   │   └── ui/PortfolioBoxes.hpp               # 🖥️ Alpha → Factors 的组合小框 + 当前组合 (Lines 页因子 / 策略两组的来源)
 │   │   │   ├── quote/                                  # 🖥️ 行情: Market 各页与 Database Sync 页共用
-│   │   │   │   ├── QuoteHub.hpp                        # 🖥️ QuoteService + StockHistory + BasketHistory 一份; 首次用到才起 (之前不碰网络)
-│   │   │   │   ├── Quote.hpp                           # 🖥️ 行情公共件: 个股 / 篮子 × 历史 / 当日 四路同一套类型 (请求 / Tape / 分钟根 Bars)
+│   │   │   │   ├── QuoteHub.hpp                        # 🖥️ QuoteService + PriceLib + 两路 History (个股 / 篮子) 一份; 首次用到才起 (之前不碰网络)
+│   │   │   │   ├── Quote.hpp                           # 🖥️ 行情公共件: 个股 / 篮子 × 历史 (Kline) / 当日 (Day) 四路同一套类型 (请求 / Tape / 分钟根 Bars)
+│   │   │   │   │                                       #    · 三段 × 两侧同一个形: 库段 (all.bar) + 补段 (基本面) = 日脊, 当日 (新浪) 接得上日脊才接 (joins)
 │   │   │   │   │                                       #    · 篮子合成核 Fold (历史 / 当日同一份): 成员表 (CSR) → 点位 + 分钟净流入
-│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成件 (BasketHistory / MinuteLib 同一份): 成员 members (选股表 → 成员表, 权 = Tape::omega) ⇄ drift (冻结, 随价漂移, 逢换源回目标权);
+│   │   │   │   ├── PriceLib.hpp                        # 🖥️ 历史价格库: 两侧 (库轴全部个股 / 篮子表全部) × 日根 / 分钟根, 一趟合成落盘, 续算只补新日;
+│   │   │   │   │                                       #    · 个股库段 = 库存 f16 原价 (与特征 / 标签逐位一致) × 后复权因子; 篮子 = Lane 的比 × 前日点位
+│   │   │   │   │                                       #    · 读: kline (日脊末段日根 + 分钟根) / each (逐日分钟); 交接 handoff (下一交易日成员表 + 末日点位) 给当日合成
+│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 篮子合成件 (PriceLib 库段 / 补段同一份): 成员 members (选股表 → 成员表, 权 = Tape::omega) ⇄ drift (冻结, 随价漂移, 逢换源回目标权);
 │   │   │   │   │                                       #    源 LibDay (all.bar 日行 + L_1min) ⇄ FundDay (bar1d + bar1m); 一日合成件 Lane<源>; 普查 census (只数 / 权 / 成分 / 重合)
 │   │   │   │   └── services/
-│   │   │   │       ├── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin; 篮子当日按 BasketHistory 交接的成员表增量合成
-│   │   │   │       ├── StockHistory.hpp                # 🖥️ 个股历史: 基本面日线 + bar1m 分钟 (LRU)
-│   │   │   │       └── BasketHistory.hpp               # 🖥️ 篮子价格指数: 源 = all.bar 库 (D 日成员 / 权取选股表与原料带, 基准取 D−1 行), 账本只折新日; 库末日之后由基本面补日 (权随价漂移)
+│   │   │   │       ├── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin; 篮子当日按交接的成员表增量合成;
+│   │   │   │       │                                   #    当日一只一份不可变 Day (GUI 只拷指针), 状态计数增量维护 (O(1))
+│   │   │   │       └── History.hpp                     # 🖥️ 历史一路 (个股 / 篮子同一骨架): 键集 → 各键日脊末段 Tape (读 PriceLib, 按 (键, 库戳) 沿用); 篮子另带普查 + bind 当日
 │   │   │   ├── task_settings/TaskSettings.hpp          # 🖥️ 设置: 配置管理
 │   │   │   ├── task_tools/                             # 🖥️ 工具: LaTeX 渲染 / 系统监控
 │   │   │   ├── task_database/                          # 🖥️ 数据库管理
@@ -243,10 +247,8 @@ stk/
 │   │   │   │   │                                       #    · ASSET = 个股表 + 行情; NAV / VAL / FLOW / CTA = 篮子 (池指数 / 行业 / 概念) + 因子组合 + 个股的 净值 / 估值 / 资金流 / 择时
 │   │   │   │   ├── TaskMarket.hpp                      # 🖥️ Market 任务主界面
 │   │   │   │   ├── services/
-│   │   │   │   │   ├── MinuteLib.hpp                   # 🖥️ 分钟价格库: 全部个股 + 篮子线的全史 1 分钟价 (篮子 = BasketRow Lane), 续算只补新日; NAV / CTA 共用
-│   │   │   │   │   │                                   #    · 两个 worker 同一套: open (开库 / 续算 → 缺键 + 日轴 + 戳) → each (逐日 mmap 读一标的) → Kept<T> (按 (键, 戳) 的 LRU)
-│   │   │   │   │   ├── MinuteService.hpp               # 🖥️ NAV / VAL 分钟线: 选中的篮子 / 成分股 → 逐日分钟收盘 (两条线都按它画到分钟)
-│   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 → cta/Trace 滚动调参轨迹 (中线 + 分层)
+│   │   │   │   │   ├── MinuteService.hpp               # 🖥️ NAV / VAL 分钟线: 选中的篮子 / 成分股 → 逐日分钟收盘 (读 PriceLib::each; 两条线都按它画到分钟)
+│   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 (读 PriceLib::each) → cta/Trace 滚动调参轨迹 (中线 + 分层)
 │   │   │   │   └── ui/
 │   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / FLOW / CTA (一行一对线 Line, 四页同一份派生 / 选中 / 区间)
 │   │   │   │       │                                   #    · 右表 = 指数 / 行业 / 概念 / 自选 / 因子 / 策略 行 (篮子行可展开成分股); 左 = 主图 + 日内栏 + 区间条
@@ -443,8 +445,8 @@ stk/
     │   ├── lib.json                                    # 库清单 (档 / A 轴 / 日期轴 / 轴外资产); 无清单 = 未建库
     │   ├── snapshot.bin                                # 续算快照 (末日各资产时序状态); 库跑完才落
     │   ├── YYYY/MM/DD/features_L_*.bin                 # 日文件, 一层一个 (Lob: L_sec / L_1min; Bar: L_1min / 分钟箱 / L_1day): 头 + 列目录 + 逐列载荷 [T×A]
-    │   └── cache/                                      # 由库派生 (库重算即随之清): features.json 特征表预览 / baskets.bin 篮子价格指数账本 (BasketHistory)
-    │                                                   #    / minute/ 分钟价格库 (MinuteLib): head.bin 键表 + 已合成日 + 因子链 / stock.bin [D][A] / basket.bin [D][B]
+    │   └── cache/                                      # 由库派生 (库重算即随之清): features.json 特征表预览
+    │                                                   #    / price/ 历史价格库 (PriceLib): head.bin 键表 + 日脊 + 库段日数 + 因子链 / <侧>_day.bin 日根 / <侧>_min.bin 分钟根 ([块][行][kBlock])
     ├── factors/<pool>/<层>/*.json                      # ③ 因子文件 (一因子一文件, 可手写); <层> = min / 5min / 15min / 30min / 60min / day
     │                                                   #    · 必填: type / name_cn / expr (模板, 自由参数用裸键名)
     │                                                   #    · 可选: note / run / hold_cols / acc_cols

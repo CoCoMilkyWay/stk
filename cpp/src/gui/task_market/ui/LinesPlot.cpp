@@ -808,7 +808,7 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
   const LinesRange rg = range;                                    // 视图所切的区间 (VAL 框选本帧改 range, 下帧才进视图)
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2)); // 贴边: 图区让给线
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2, 1));
-  LinesFitKey fk{ui.view.gen, nav, ui.log_y, {}, ui.shown_key};
+  LinesFitKey fk{d.hist_gen, ui.roll.gen, ui.pct.gen, pin, rg.d0, rg.d1, nav, ui.log_y, {}, ui.shown_key};
   bool wait = !nav && pin.g >= 0 && d.minute_wait(d.row(pin)); // 有线在等日内形
   if (nav)
     for (const std::vector<LinesRow> &rs : d.rows)
