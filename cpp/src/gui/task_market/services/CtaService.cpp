@@ -66,7 +66,7 @@ bool CtaService::run(CtaRequest &req) {
   out->dates = spine;
   out->se = se;
   const double years = static_cast<double>((misc::to_days(out->dates.back()) - misc::to_days(out->dates.front())).count() + 1) / 365.25;
-  const cta::Setup u{req.rates, {sp.vol, sp.buffer}, static_cast<double>(out->dates.size() * S) / years};
+  const cta::Setup u{req.rates, {sp.vol, sp.buffer}, static_cast<double>(out->dates.size() * S) / years, {sp.swing, static_cast<size_t>(sp.days), sp.stop, sp.trail, sp.units}};
   cta::Grid grid = cta::grid_of(S, sp.kind, static_cast<size_t>(sp.grid));
   begin(Phase::Running, nd - 1);
   const bool done = cta::trace(

@@ -32,7 +32,7 @@ ENABLE_CUDA = True
 
 # 同步 GitHub 的通道: "" 直连 (无视环境变量里的代理), 否则为代理地址
 GIT_PROXY = ""
-# GIT_PROXY = "http://127.0.0.1:10808"
+GIT_PROXY = "http://127.0.0.1:10808"
 
 REPO_ROOT = Path(__file__).resolve().parent
 PROJECT_DIR = REPO_ROOT / "cpp" / "projects" / APP_NAME

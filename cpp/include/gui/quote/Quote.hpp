@@ -42,7 +42,7 @@ inline constexpr size_t kTailDays = 5;
 // 交易日历 (AssetInfo 的交易日; 各服务共用一份)
 struct Calendar {
   std::vector<misc::Ymd> days;       // 升序
-  misc::Ymd next(misc::Ymd d) const; // d 之后首个交易日 (须有)
+  misc::Ymd next(misc::Ymd d) const; // d 之后首个交易日; 超出日历 = 次个工作日 (节假日待日历同步后纠正)
   misc::Ymd prev(misc::Ymd d) const; // d 之前末个交易日 (须有)
 };
 

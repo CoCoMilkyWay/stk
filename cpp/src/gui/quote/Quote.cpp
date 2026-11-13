@@ -7,9 +7,13 @@
 namespace GUI::Quote {
 
 misc::Ymd Calendar::next(misc::Ymd d) const {
-  const auto it = std::ranges::upper_bound(days, d);
-  assert(it != days.end() && "交易日历缺次交易日");
-  return *it;
+  assert(!days.empty());
+  if (const auto it = std::ranges::upper_bound(days, d); it != days.end())
+    return *it;
+  misc::Ymd o = misc::add_days(d, 1);
+  while (misc::weekday_of(o) >= 5)
+    o = misc::add_days(o, 1);
+  return o;
 }
 
 misc::Ymd Calendar::prev(misc::Ymd d) const {

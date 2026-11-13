@@ -36,6 +36,7 @@ struct Setup {
   Rates rates;
   Sizing sizing;
   double bpy = 244; // 每年根数
+  Band band;        // 分层设定
 };
 
 // 成本分项 (占净值比例): 一根 / 累计同一形
