@@ -241,9 +241,10 @@ void SavePick(const LinesPick &pick); // 原子替换
 // GUI 线程每帧: 首次读自选文件 (有自选 → 各页右表类别条先选自选)
 void SyncLinesWatch(LinesState &ui);
 // 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (本帧已 frame; nullptr = AssetInfo 未建, 日内栏 / 指数行业近况 / 成分行当日空着;
-// 本页要的个股全历史 / 分钟价登记给它); infos = 基本面档案 (成分行名 / 估值); cta = CTA 页的服务 (算 mk 价格库发布的分钟价, mk 空时同空).
+// 本页要的个股全历史 / 分钟价登记给它); infos = 基本面档案 (成分行名 / 估值); cta = CTA 页的服务 (算 mk 价格库发布的分钟价, mk 空时同空);
+// account = 账户行的源 (当日一根须与 mk 的当日同日).
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
-                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos);
+                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const LinesAccount &account);
 
 } // namespace GUI::Market

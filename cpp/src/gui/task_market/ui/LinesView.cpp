@@ -695,6 +695,17 @@ LinesRow strat_row(const std::string &name) {
   r.tag = r.hover = name;
   return r;
 }
+// 账户行: 两条线同一条 = 账户的价格历史
+constexpr float kAccountHue = 0.15f;
+LinesRow account_row(const LinesAccount &a) {
+  LinesRow r;
+  r.id = "account";
+  r.en = "account", r.cn = r.tag = "账户";
+  r.hover = a.hover;
+  r.hue = kAccountHue;
+  r.src[kTrade].price = r.src[kIdeal].price = a.kline.get();
+  return r;
+}
 
 // 有行情键的行 r (已取名) 进组 g: 腿 / 估值腿 = 该侧账的键线; 可成交 = 腿扣成本合成 (两侧账都无成本列 ⇒ 不扣);
 // 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘) 再接个股历史 (价格库留着的才有; 无则与可成交同一条);
@@ -763,8 +774,9 @@ std::vector<uint32_t> watch_stocks(const std::vector<std::string> &watch) {
         o.push_back(static_cast<uint32_t>(id));
   return o;
 }
-// 自选行 (见头文件): 可自选组 (kGroupDefs::watch) 同自选键行的副本, 不登记 index (选中 / 展开按 id 落回原行)
+// 自选行 (见头文件): 账户行 + 可自选组 (kGroupDefs::watch) 同自选键行的副本, 不登记 index (选中 / 展开按 id 落回原行)
 void derive_watch(const std::vector<std::string> &watch, LinesDerived &d) {
+  d.rows[kGroupWatch] = d.rows[kGroupAccount];
   std::map<std::string, LinesAt> at;
   for (int g = 0; g < kRowGroups; ++g)
     if (kGroupDefs[g].watch)
@@ -1005,11 +1017,13 @@ Quote::Ref RowRef(const std::string &id) {
 
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
                       const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, double fixed_impact, const std::string &open,
-                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const StockInfos &infos, LinesDerived &d) {
+                      const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const LinesAccount &account, const StockInfos &infos,
+                      LinesDerived &d) {
   LinesDerived o = std::move(d);
   d = LinesDerived{};
   const std::vector<const PortfolioItem *> its = ready_of(items, res, d);
   bind_quotes(res, view, live, d);
+  d.account = account;
   const Reuse ru(o, d.dates);
   std::vector<uint32_t> kids = watch_stocks(watch);
   kids.insert(kids.end(), stocks.begin(), stocks.end());
@@ -1017,6 +1031,8 @@ void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string
   kids.erase(std::unique(kids.begin(), kids.end()), kids.end());
   derive_quotes(open, kids, infos, fixed_impact, ru, d);
   derive_books(its, name, fixed_impact, ru, d);
+  if (account.kline)
+    push(d, kGroupAccount, account_row(account), ru);
   build_lines(d);
   paint(d, o);
   derive_watch(watch, d);

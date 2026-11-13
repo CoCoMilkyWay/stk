@@ -6,7 +6,7 @@
 //     担保品 = 券商担保状态正常 ∧ 本地在市; 保证金比例 / 折算率只有券商有; 本地库没有的 (ETF / 债券) 照用券商的整行.
 //     持仓页打开时缓存缺、满 kTermsAge 天、或名单 / 持仓 / 负债里有缓存没有的代码 → 后台拉 (每天自动至多一次, 失败了等人点)
 //   下单: 一次一单, 留最近 kOrderCap 单; 步骤 = 「行情」(按新取的盘口定委托价) + broker 的各步; 持仓页的单成功后 kick 定点刷新
-//   事务: 后台一次一件 (拉条款 / 执行调仓), 日志落 output/run/live/task/<时刻>.jsonl (留最近 kTaskKeep 个), 留尾巴给页面.
+//   事务: 后台一次一件 (拉条款 / 执行调仓 / 别处交来的 job), 日志落 output/run/live/task/<时刻>.jsonl (留最近 kTaskKeep 个), 留尾巴给页面.
 //     执行调仓 = 条款缓存还没有即先拉 → 刷新 → 还有挂单即停 (免得重复下单、冻结的钱券没算进试算) → 试算 →
 //     卖单逐只卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 → 买单逐只 (融资在前) → 刷新.
 //     任一步失败即停 (已下的单不撤); 卖单、买单各一整批独占界面连下, 其间不插刷新
@@ -22,6 +22,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -131,6 +132,9 @@ public:
   void pull();      // 后台拉两融条款
   void run();       // 后台执行调仓
   void auto_pull(); // 持仓页打开时: 缓存缺 / 满 kTermsAge 天 / 有要用的代码缓存没有, 且今天还没自动拉过、没有事务在跑 → 拉
+  // 别处的事务走同一条道 (日志 / 进度同上): fn(broker, 记一条, 实时进度) 在后台跑, 失败 → Fail; 已有事务在跑 → 不收, false
+  using Job = std::function<void(live::Broker &, const live::Log &, const live::Live &)>;
+  bool job(const char *name, Job fn);
 
 private:
   std::shared_ptr<Core> c_;

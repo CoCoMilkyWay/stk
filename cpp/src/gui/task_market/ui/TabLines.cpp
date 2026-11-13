@@ -190,7 +190,7 @@ void SyncLinesWatch(LinesState &ui) {
 }
 
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
-                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos) {
+                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const LinesAccount &account) {
   assert(page >= 0 && page < kPages);
   const PageDef &pd = kPageDefs[page];
   PortfolioResult res;
@@ -230,9 +230,9 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
   const std::shared_ptr<const Quote::PriceView> view = mk ? mk->view : nullptr;
   const std::shared_ptr<const Quote::Live> live = mk ? mk->live : nullptr;
   const misc::Ymd today = mk ? mk->joint(Quote::kBasket).today() : 0;
-  ui.der.update(LinesDerKey{gen, pf.items_gen, view, today, fixed_impact, infos.size(), ui.pick.open, stocks, ui.watch}, [&](LinesDerived &dv) {
+  ui.der.update(LinesDerKey{gen, pf.items_gen, view, today, fixed_impact, infos.size(), ui.pick.open, stocks, ui.watch, account}, [&](LinesDerived &dv) {
     const std::vector<misc::Ymd> old = dv.dates;
-    MakeLinesDerived(pf.items, pf.name, res, view, today, fixed_impact, ui.pick.open, stocks, ui.watch, infos, dv);
+    MakeLinesDerived(pf.items, pf.name, res, view, today, fixed_impact, ui.pick.open, stocks, ui.watch, account, infos, dv);
     if (dv.dates != old) // 日轴变 → 各页区间回默认
       for (int p = 0; p < kPages; ++p)
         ui.range[p] = DefaultLinesRange(p, dv.dates);

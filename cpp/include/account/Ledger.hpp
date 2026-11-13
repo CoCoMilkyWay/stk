@@ -40,7 +40,7 @@ std::map<std::string, double> holdings(const std::vector<CashFlow> &rows);
 // 流水累计的持仓 + 今日成交 对 券商持仓: 对不上的各只 "代码 流水/券商" (对上 → 空)
 std::string reconcile(const std::vector<CashFlow> &rows, const live::Keyed<live::Position> &pos, const live::Fills &fills);
 
-// 回放要计价的证券 (带股数业务的代码, 升序)
+// 回放要计价的证券 (计入持仓的各行的代码, 升序)
 std::vector<std::string> securities(const std::vector<CashFlow> &rows);
 using Closes = std::unordered_map<std::string, std::map<misc::Ymd, double>>; // 代码 → 日 → 收盘
 

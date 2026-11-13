@@ -1,4 +1,5 @@
 #include "gui/Tasks.hpp"
+#include "gui/account/AccountHub.hpp"
 #include "gui/compute/ComputeHub.hpp"
 #include "gui/engine/EngineHub.hpp"
 #include "gui/quote/QuoteHub.hpp"
@@ -141,17 +142,18 @@ TaskTree CreateAllTasks(SharedData &data) {
   TaskTree tree;
   tree.tasks.reserve(9);
 
-  // 跨任务共用的三个 Hub: 行情 (Database 的 Sync 页读状态, Market 各页 / Live 行情图用), 计算 (Beta / Alpha 两个 Compute 页, Features 读轮次),
-  // 因子引擎 (Alpha 写因子 / 编辑组合, Market 画)
+  // 跨任务共用的四个 Hub: 行情 (Database 的 Sync 页读状态, Market 各页 / Live 行情图用), 计算 (Beta / Alpha 两个 Compute 页, Features 读轮次),
+  // 因子引擎 (Alpha 写因子 / 编辑组合, Market 画), 账户净值 (Live 拉资金流水, Market 画)
   const auto quote = std::make_shared<Quote::QuoteHub>();
   const auto compute = std::make_shared<Compute::ComputeHub>();
   const auto engine = std::make_shared<Engine::EngineHub>();
+  const auto account = std::make_shared<Account::AccountHub>();
   tree.tasks.push_back(Tasks::CreateSettingsTask());
   tree.tasks.push_back(Tasks::CreateDatabaseTask(quote));
   tree.tasks.push_back(Tasks::CreateBetaTask(compute));
   tree.tasks.push_back(Tasks::CreateAlphaTask(compute, engine));
-  tree.tasks.push_back(Tasks::CreateMarketTask(quote, engine));
-  tree.tasks.push_back(Tasks::CreateLiveTask(quote));
+  tree.tasks.push_back(Tasks::CreateMarketTask(quote, engine, account));
+  tree.tasks.push_back(Tasks::CreateLiveTask(quote, account));
   tree.tasks.push_back(Tasks::CreateFeaturesTask(compute));
   tree.tasks.push_back(Tasks::CreateAgentTask());
   tree.tasks.push_back(Tasks::CreateToolsTask());

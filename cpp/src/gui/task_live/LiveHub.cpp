@@ -444,6 +444,10 @@ std::string describe(const std::string &k, const nlohmann::json &r) {
     return strf("「%s」内存 %d / 页上 %s 行", r["func"].get<std::string>().c_str(), r["got"].get<int>(), r["n"].is_null() ? "—" : r["n"].dump().c_str());
   if (k == "terms")
     return strf("条款 %d 只 (融资标的 %d · 担保品 %d)", r["n"].get<int>(), r["financeable"].get<int>(), r["pledgeable"].get<int>());
+  if (k == "window")
+    return strf("资金流水 %d ~ %d: %d 条", r["lo"].get<int>(), r["hi"].get<int>(), r["n"].get<int>());
+  if (k == "flows")
+    return strf("资金流水账本 %d 条 (%d 起重查 %d 条), 持仓对上", r["rows"].get<int>(), r["from"].get<int>(), r["fresh"].get<int>());
   if (k == "err")
     return r["err"].get<std::string>();
   if (k == "ok")
@@ -475,13 +479,20 @@ nlohmann::json job_json(const OrderJob &j) {
   return {{"state", job_name(j.st)}, {"detail", j.detail}, {"msg", j.msg}, {"qty", j.qty}, {"px", j.px}};
 }
 
+// 事务的日志 / 实时进度 (交给 broker 的长操作)
+live::Log log_of(Core &c) {
+  return [&c](const char *k, nlohmann::json kw) { note(c, k, kw); };
+}
+live::Live live_of(Core &c) {
+  return [&c](std::string line) {
+    Lock lk(c.mu);
+    c.task->live = std::move(line);
+  };
+}
+
 void pull_terms(Core &c) {
   note(c, "pull", kNone);
-  const live::Terms t = c.broker->pull_terms([&](const char *k, nlohmann::json kw) { note(c, k, kw); },
-                                             [&](std::string line) {
-                                               Lock lk(c.mu);
-                                               c.task->live = std::move(line);
-                                             });
+  const live::Terms t = c.broker->pull_terms(log_of(c), live_of(c));
   int fin = 0, pl = 0;
   for (const auto &[code, x] : t) {
     fin += x.financeable;
@@ -611,11 +622,12 @@ void run_rebal(Core &c) {
   sync(c);
 }
 
-void start(const std::shared_ptr<Core> &c, const char *name, void (*fn)(Core &)) {
+// 后台起一件事务; 已有事务在跑 → false
+bool start(const std::shared_ptr<Core> &c, const char *name, std::function<void(Core &)> fn) {
   {
     Lock lk(c->mu);
     if (c->task && c->task->st == JobSt::Run)
-      return;
+      return false;
     c->task_stamp = disk::stamp_now();
     c->task_t0 = mono();
     c->task = Task{.name = name, .t = live::clock_now(), .file = disk::path(disk::RunLiveTaskLog, {.stamp = c->task_stamp}).string()};
@@ -623,7 +635,7 @@ void start(const std::shared_ptr<Core> &c, const char *name, void (*fn)(Core &))
   const std::vector<disk::Key> old = disk::list(disk::RunLiveTaskLog);
   for (size_t i = 0; i + kTaskKeep <= old.size(); ++i)
     disk::remove(disk::RunLiveTaskLog, old[i]);
-  std::thread([c, fn] {
+  std::thread([c, fn = std::move(fn)] {
     Lease lease(*c);
     JobSt st = JobSt::Ok;
     std::string msg;
@@ -640,6 +652,7 @@ void start(const std::shared_ptr<Core> &c, const char *name, void (*fn)(Core &))
     c->task->msg = std::move(msg);
     c->task->live.clear();
   }).detach();
+  return true;
 }
 
 } // namespace
@@ -853,6 +866,11 @@ void LiveHub::pull() {
 void LiveHub::run() {
   assert(connected());
   start(c_, "执行调仓", run_rebal);
+}
+
+bool LiveHub::job(const char *name, Job fn) {
+  assert(connected());
+  return start(c_, name, [fn = std::move(fn)](Core &c) { fn(*c.broker, log_of(c), live_of(c)); });
 }
 
 void LiveHub::auto_pull() {

@@ -3,8 +3,10 @@
 //   NAV / VAL / FLOW: 篮子账 (all 标签库建好即算) + 因子 / 策略两组 (Alpha → Factors 页编辑的组合, 无组合时只少这两组),
 //     走 EngineHub 的 PortfolioService (见 gui/engine/EngineHub.hpp); 日内栏 / 近况列 / 分钟线取 QuoteHub 行情 (新浪当日 + 价格库), AssetInfo 建好才起.
 //   CTA 单标的回测 = CtaService (读 QuoteHub 的价格库; 行情起了, 首次画行情页建).
+//   自选首行 = 账户 (gui/account 的净值线, AssetInfo 建好才取).
 #include "gui/task_market/TaskMarket.hpp"
 #include "gui/Tasks.hpp"
+#include "gui/account/AccountHub.hpp"
 #include "gui/engine/EngineHub.hpp"
 #include "gui/quote/QuoteHub.hpp"
 #include "gui/task_market/services/CtaService.hpp"
@@ -29,15 +31,18 @@ constexpr int kTabAsset = 0, kTabLines = 1, kTabs = kTabLines + Market::kPages;
 struct TaskMarketState {
   std::shared_ptr<Quote::QuoteHub> quote;          // 与 Database 任务共用 (首次画本任务才起)
   std::shared_ptr<Engine::EngineHub> engine;       // 与 Alpha 任务共用
+  std::shared_ptr<Account::AccountHub> account;    // 与 Live 任务共用
   std::unique_ptr<Market::CtaService> cta_service; // 读 quote 的价格库 (先于它析构)
   Market::AssetState asset_state;
   Market::LinesState lines_state; // 缓存键含 portfolio_service 的结果代 / portfolio_ui 的解析代
 };
 
-TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_ptr<Engine::EngineHub> engine) {
+TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_ptr<Engine::EngineHub> engine,
+                            std::shared_ptr<Account::AccountHub> account) {
   auto state = std::make_shared<TaskMarketState>();
   state->quote = std::move(quote);
   state->engine = std::move(engine);
+  state->account = std::move(account);
 
   TaskHandle handle;
   handle.name = "Market";
@@ -89,14 +94,17 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
     Engine::EnsurePortfolio(e);
     Market::SyncLinesWatch(ui);
     Quote::QuoteHub *mk = nullptr;
+    Market::LinesAccount acct;
     if (data.task_state.database.asset_info_ready) {
       state->quote->frame(data);
       mk = state->quote.get();
       if (!state->cta_service)
         state->cta_service = std::make_unique<Market::CtaService>();
+      acct.kline = state->account->line(data.asset_info.quote_end, mk->joint(Quote::kBasket).today());
+      acct.hover = state->account->note();
     }
     const int action = Market::RenderTabLines(idx - kTabLines, *e.portfolio_service, state->cta_service.get(), e.portfolio_ui, ui, data.config.fixed_impact,
-                                              {data.config.commission, data.config.stamp, data.config.fixed_impact}, mk, data.asset_info.stocks);
+                                              {data.config.commission, data.config.stamp, data.config.fixed_impact}, mk, data.asset_info.stocks, acct);
     if (action == -1)
       e.portfolio_service->RequestCancel();
     Engine::SyncPortfolio(data, e, action == 1);

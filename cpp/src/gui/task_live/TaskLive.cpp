@@ -3,8 +3,10 @@
 //     (Market 的个股面板, 与 Database / Market 共用 QuoteHub)
 //   Client: 已连客户端自带的调试台 (Broker::console), 不算有人在看持仓
 //   行情走新浪 (LiveHub 一路), 不读客户端的行情; Board 可见时才盯客户端 (见 live/Broker.hpp 的 touch)
+//   账户净值 (gui/account): 每帧交信用账户, 连上后每天在事务道上补一次资金流水
 #include "gui/task_live/TaskLive.hpp"
 #include "gui/Tasks.hpp"
+#include "gui/account/AccountHub.hpp"
 #include "gui/quote/QuoteHub.hpp"
 #include "gui/task_live/LiveHub.hpp"
 #include "gui/task_live/ui/TabBoard.hpp"
@@ -25,14 +27,16 @@ enum TabIdx {
 };
 
 struct TaskLiveState {
-  std::shared_ptr<Quote::QuoteHub> quote; // 与 Database / Market 任务共用
+  std::shared_ptr<Quote::QuoteHub> quote;       // 与 Database / Market 任务共用
+  std::shared_ptr<Account::AccountHub> account; // 与 Market 任务共用
   std::unique_ptr<Live::LiveHub> hub;
   Live::BoardState board;
 };
 
-TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote) {
+TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_ptr<Account::AccountHub> account) {
   auto state = std::make_shared<TaskLiveState>();
   state->quote = std::move(quote);
+  state->account = std::move(account);
 
   TaskHandle handle;
   handle.name = "Live";
@@ -41,7 +45,19 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote) {
 
   handle.Init = [state](SharedData &) { state->hub = std::make_unique<Live::LiveHub>(); };
 
-  handle.Update = [state](SharedData &) { state->hub->peek(); };
+  handle.Update = [state](SharedData &) {
+    Live::LiveHub &h = *state->hub;
+    h.peek();
+    if (!h.connected())
+      return;
+    const std::shared_ptr<const live::State> s = h.broker().state();
+    if (!s || !s->acct)
+      return;
+    Account::AccountHub &a = *state->account;
+    a.feed(s->acct);
+    if (a.due() && h.job("更新资金流水", [p = state->account](live::Broker &b, const live::Log &log, const live::Live &live) { p->pull(b, log, live); }))
+      a.tried();
+  };
 
   handle.Status = [state](const SharedData &, int idx) -> TaskStatus {
     assert(idx >= 0 && idx < TAB_COUNT);

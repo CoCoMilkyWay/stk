@@ -32,41 +32,44 @@ struct AccountReq {
 // 一次回放
 struct History {
   uint64_t gen = 0;
-  misc::Ymd pulled = 0;
   std::vector<account::Day> days;
   double after = 0; // 回放末日之后账本里的外部进出
 };
 
 class AccountHub : public Service<AccountHub, AccountReq>, public Published {
-public:
-  static constexpr const char *kName = "account";
-  static constexpr Phase kStart = Phase::Loading;
+  friend Service<AccountHub, AccountReq>;
 
-  AccountHub();
+public:
+  static constexpr const char *kName = "AccountWorker";
+  AccountHub(); // 末尾 Start
   ~AccountHub() { Stop(); }
-  Progress &board() { return *this; }
-  bool run(AccountReq &req);
-  std::shared_ptr<const History> result; // 持 mutex 读写
+
+  std::shared_ptr<const History> result; // 持 mutex 读写; 空 = 未算
 
   // ---------- Live 侧 ----------
   bool due() const;                                                         // GUI 线程: 今天还没拉过
-  void tried();                                                             // GUI 线程: 今天的已发出
+  void tried();                                                             // GUI 线程: 今天的已交给事务道
   void pull(live::Broker &b, const live::Log &log, const live::Live &live); // 事务线程: 拉 → 并 → 核 → 落盘; 失败 → Fail
   void feed(const live::Got<live::Account> &a);                             // GUI 线程每帧: 信用账户 (当日一根的源)
 
   // ---------- Market 侧 (GUI 线程每帧) ----------
   // fund = 日线水位 (0 = 未同步, 不算), live = 行情当日 (0 = 无) → 线; 空 = 还没有账本 / 还没算完 / 回放为空
   std::shared_ptr<const Quote::Kline> line(misc::Ymd fund, misc::Ymd live);
-  const std::string &note() const { return note_; } // 线的悬停
+  const std::string &note() const { return note_; } // 线的悬停 (不含金额)
 
 private:
+  static constexpr Phase kStart = Phase::Loading;
+  Progress &board() { return *this; }
+  bool run(AccountReq &req);
+
   std::atomic<uint64_t> ledger_{1};
-  misc::Ymd pulled_ = 0; // 账本拉于 (含今天发出了的)
+  misc::Ymd pulled_ = 0; // 账本拉于 (含今天已交出的)
   Sent<AccountReq> sent_;
   live::Got<live::Account> acct_;
-  std::shared_ptr<const History> hist_; // line_ 由这几样拼成
-  std::shared_ptr<const live::Account> acct_used_;
-  misc::Ymd live_used_ = 0;
+  // 线由这三样拼成, 变了才重拼
+  std::shared_ptr<const History> hist_;
+  double net_ = 0;
+  misc::Ymd live_ = 0;
   std::shared_ptr<const Quote::Kline> line_;
   std::string note_;
 };

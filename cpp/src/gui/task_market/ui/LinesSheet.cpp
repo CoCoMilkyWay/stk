@@ -185,10 +185,12 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesState &ui, co
         return rs[a].cn.compare(rs[b].cn);
       },
       num);
-  // 拖动调序: 原序 (无表头排序) 下的子池 / 自选行; 全A 两行 / 钉住的展开行 / 成分行不动
+  // 拖动调序: 原序 (无表头排序) 下的子池 / 自选行; 全A 两行 / 自选里的账户行 / 钉住的展开行 / 成分行不动
   const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
   const bool drag = (g == kGroupPool || g == kGroupWatch) && (!ss || ss->SpecsCount == 0);
-  const auto movable = [&](size_t t) { return drag && t < R && t != pin && (g != kGroupPool || rs[t].pool >= kPinnedPools); };
+  const auto movable = [&](size_t t) {
+    return drag && t < R && t != pin && (g != kGroupPool || rs[t].pool >= kPinnedPools) && (g != kGroupWatch || !rs[t].watch.empty());
+  };
   Reorder rd((std::string(id) + "##order").c_str());
   std::vector<size_t> lines; // 钉行之下的画序: 钉行的成分行 t ≥ R, 再其余组内行 t < R
   if (pin != SIZE_MAX) {
@@ -762,9 +764,10 @@ Seg flow_seg(bool ends, std::vector<misc::Ymd> days) {
     out[nd + 1] = signed_cell(flow_pct(sum));
     p.flow[row] = std::move(x);
   };
-  // 有历史 → 无根的日即无成交 (合计照算); 只当日 → 各日都有根才算合计
+  // 有历史 → 无根的日即无成交 (合计照算); 只当日 → 各日都有根才算合计; 无行情键的行 (自选里的账户行) 全空
   s.cell = [ends, days = std::move(days), fill](const RowSrc &x, size_t t, LinesSheet &p, SheetCell *out) {
-    assert(x.row->ref.ok() && "FLOW 表行都有行情键");
+    if (!x.row->ref.ok())
+      return fill(std::vector<Flow>(days.size()), false, t, p, out);
     std::vector<Flow> fl = FlowOf(x.src, days, ends);
     const bool whole = x.src.kl || std::ranges::all_of(fl, [](const Flow &y) { return y.amount > 0; });
     fill(std::move(fl), whole, t, p, out);

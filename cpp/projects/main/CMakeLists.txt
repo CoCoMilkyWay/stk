@@ -231,7 +231,7 @@ assert_partition(源表 SRC_ALL ${SRC_PARTS})
 set(MATH_FAST_FLAGS -ffast-math)
 set(MATH_PRECISE_FLAGS -fno-fast-math -fno-math-errno)
 
-# 两表同一段序 (shared → misc → api → fundamental → orders → features → worker → live → gui → factor → 入口), 段内按路径序; 某档无文件的段留空
+# 两表同一段序 (shared → misc → api → fundamental → orders → features → worker → live → account → gui → factor → 入口), 段内按路径序; 某档无文件的段留空
 set(MATH_FAST
     # shared
     shared/Asset.cpp
@@ -260,6 +260,7 @@ set(MATH_FAST
     worker/compute/TsTuner.cpp
     worker/encode/Pipeline.cpp
     # live
+    # account
     # gui
     gui/Gui.cpp
     gui/Run_OpenGL.cpp
@@ -330,6 +331,7 @@ set(MATH_PRECISE
     live/Rebal.cpp
     live/tdx/Credit.cpp
     live/tdx/Flash.cpp
+    live/tdx/Flow.cpp
     live/tdx/Mem.cpp
     live/tdx/Proc.cpp
     live/tdx/Shim.cpp
@@ -344,7 +346,10 @@ set(MATH_PRECISE
     live/tdx/console/Probe.cpp
     live/tdx/console/Rec.cpp
     live/tdx/console/Tools.cpp
+    # account: 账户净值 (资金流水回放)
+    account/Ledger.cpp
     # gui
+    gui/account/AccountHub.cpp
     gui/engine/ui/PortfolioBoxes.cpp
     gui/quote/BasketRow.cpp
     gui/quote/PriceLib.cpp
