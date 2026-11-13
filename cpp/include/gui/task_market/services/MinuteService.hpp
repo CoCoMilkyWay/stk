@@ -38,6 +38,8 @@ struct MinuteResult {
   std::string lack;                                      // 库未就绪的原因 (空 = 就绪)
   // ref 的分钟收盘; 无 → nullptr
   const MinuteCloses *of(Quote::Ref ref) const;
+  // ref 在请求里 (有结论: 有分钟收盘或确定没有)
+  bool covers(Quote::Ref ref) const;
 };
 
 class MinuteService : public Service<MinuteService, MinuteRequest>, public Published {

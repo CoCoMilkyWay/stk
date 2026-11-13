@@ -7,7 +7,7 @@
 //     篮子: 价 = Lane 的日内比 (前日 = 1, f32), 前收 = 1
 //     因子同一条链: 自首个有根日 1 起, 逢前收 ≠ 参考价乘 参考价 / 前收, 参考价 = 末个收盘 (按前收滚动) ⇒ 个股 = 后复权, 篮子 = 点位逐日接续
 //   时间格: 有效根 t = 日下标 · kSlots + 槽, 日下标 = 库落盘日序 (首日只定成员, 无根); 无根 (无成员 / 无成交 / 末个有根的槽之后) 不收
-//   宿主服务同一段开场 open (库 + 选股表 + 补到末日) → 戳 Stamp; 读一种 each = 一行逐个有根日的块 (宿主各取所需: CTA = 有效根, NAV = 逐日收盘)
+//   宿主服务同一段开场 open (库落盘日 + 补到末日; 已是末日则不碰选股表) → 戳 Stamp; 读一种 each = 一行逐个有根日的块 (宿主各取所需: CTA = 有效根, NAV = 逐日收盘)
 //   宿主按 (标的, 戳) 沿用读出的序列 (Kept)
 //   线程: 补与读同一把锁, 两个宿主服务各自的 worker 先 open 再读
 // 落盘 <库>/cache/minute/ (日主序, 续算只追加; 库全量重算连目录一起删):
@@ -35,10 +35,6 @@
 #include <vector>
 
 struct FeatureLib;
-class FeatureRead;
-namespace pool {
-struct Picks;
-}
 
 namespace GUI::Market {
 
@@ -68,7 +64,7 @@ public:
   // 一行一日的有根块: i = 日下标, f = 因子, px = [槽][高 低 收] 价 (无根 = NaN)
   using Each = std::function<void(size_t i, double f, const float *px)>;
 
-  // all.bar 库 + 选股表 + 补到其日轴末日; what = 用处 (lack 开头); cancel / x / pool = 宿主服务的 (取消: 库判废时读端一并拉起 / 进度面 Loading 天 / 线程池)
+  // all.bar 库 + 补到其落盘末日; what = 用处 (lack 开头); cancel / x / pool = 宿主服务的 (取消: 库判废时读端一并拉起 / 进度面 Loading 天 / 线程池)
   //   nullopt = 取消 / 判废
   std::optional<MinuteOpen> open(std::string_view what, std::atomic<bool> &cancel, Progress &x, misc::exec::ForkJoin &pool);
   // 读 open 之后的库: ref 逐个有根日 f(…); 不在该侧键表 (库轴外) → false
@@ -88,8 +84,8 @@ private:
   template <class Ar>
   void snap(Ar &ar);
   void save_head();
-  // 价格库补到选股表 pk 的日轴 (= 库已落盘日); false = 取消 / 判废
-  bool sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk, const std::atomic<bool> &cancel, Progress &x, misc::exec::ForkJoin &pool);
+  // 价格库补到库落盘日 dates; 有新日才建选股表 (成员 / 权的源); false = 取消 / 判废
+  bool sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, std::atomic<bool> &cancel, Progress &x, misc::exec::ForkJoin &pool);
   size_t row_of(Quote::Ref ref) const; // 不在 → 该侧键数
 
   mutable std::mutex mu_;

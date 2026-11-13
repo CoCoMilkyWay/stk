@@ -203,6 +203,8 @@ struct LinesDerived {
     return it == index.end() ? LinesAt{} : it->second;
   }
   const LinesRow &row(const LinesAt &a) const { return rows[a.g][a.r]; }
+  // 有行情键的行 r 的日内形未到 (minutes 空 / 不含该键): 其线此时只有日线, 主图等它到了一次画成分钟线
+  bool minute_wait(const LinesRow &r) const { return r.ref.ok() && !(minutes && minutes->covers(r.ref)); }
 };
 
 // 二级: VAL 标的的滚动分位 (只随标的 / 窗长). 每口收益率 v (EP / BP / SP / CP / DY) 按贵度 −v (升 = 贵) 逐日在过去 N 自然年

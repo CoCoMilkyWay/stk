@@ -99,6 +99,14 @@ void fit_margin(bool log) {
   ImPlot::FitPointY(g(b + m));
 }
 
+// 绘图区正中的灰字
+void plot_hint(const char *s) {
+  const ImVec2 p = ImPlot::GetPlotPos(), sz = ImPlot::GetPlotSize(), t = ImGui::CalcTextSize(s);
+  ImPlot::PushPlotClipRect();
+  ImPlot::GetPlotDrawList()->AddText(ImVec2(p.x + 0.5f * (sz.x - t.x), p.y + 0.5f * (sz.y - t.y)), ImGui::GetColorU32(ImGuiCol_TextDisabled), s);
+  ImPlot::PopPlotClipRect();
+}
+
 // 组线宽: 强调组 (kGroupDefs::accent) 加粗
 float row_width(int g) { return kGroupDefs[g].accent ? 2.0f : 1.0f; }
 // 成对线表 [口径][PairLine] (口径 = pair_kind: 0 = 有行情键 (篮子 / 成分), 1 = 因子 / 策略): 主图例口径列 / 线尾小字后缀
@@ -534,6 +542,7 @@ ImRect nav_legend(LinesState &ui, const std::vector<NavRow> &rows) {
 }
 
 // ---- NAV 主图: 画选中行的两条线, 按组表画层 (for_each_layer; 策略在最上层) + 图例矩阵 (最上层, nav_legend);
+//      日内形未到的行 (minute_wait) 整行不画、不进图例, 到了一次画成分钟线;
 //      行刚选中 → ui.reveal 强制回默认显隐一次 (理想列显, 可成交列隐);
 //      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示; 鼠标在图例矩阵上不算), hot 行显示的线白粗线画在最上 ----
 void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf) {
@@ -541,7 +550,7 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
   std::vector<NavRow> rows; // 画序, 只含选中行的
   for_each_layer([&](int g) {
     for (size_t r = 0; r < d.rows[g].size(); ++r)
-      if (const LinesRow &row = d.rows[g][r]; picked(ui, kPageNav, row)) {
+      if (const LinesRow &row = d.rows[g][r]; picked(ui, kPageNav, row) && !d.minute_wait(row)) {
         NavRow x{g, &row, {}, {}, {}};
         for (int l = 0; l < kPairLines; ++l) {
           x.s[l] = &v.slice[g][r][l];
@@ -710,6 +719,7 @@ void zoom_x(LinesRange &rg, int D, const ImRect &legend) {
 
 // ---- VAL 主图: 标的各口滚动 band (日末点; 填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
 //      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的理想线 (常显; 有分钟价则画到分钟) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
+//      标的日内形未到 (minute_wait) 整图不画, 到了一次画成;
 //      价格线 + 开着的 band 线进 fit, band 填色 (到图顶 / 底) / 等值线不进; 框选改 rg ----
 void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf) {
   static LgHover s_hl; // 上帧图例矩阵
@@ -799,10 +809,14 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2)); // 贴边: 图区让给线
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2, 1));
   LinesFitKey fk{ui.view.gen, nav, ui.log_y, {}, ui.shown_key};
+  bool wait = !nav && pin.g >= 0 && d.minute_wait(d.row(pin)); // 有线在等日内形
   if (nav)
     for (const std::vector<LinesRow> &rs : d.rows)
-      for (const LinesRow &r : rs)
-        fk.rows += picked(ui, kPageNav, r) ? '1' : '0';
+      for (const LinesRow &r : rs) {
+        const bool p = picked(ui, kPageNav, r);
+        fk.rows += p ? '1' : '0';
+        wait = wait || (p && d.minute_wait(r));
+      }
   if (fk != ui.fit_key)
     ImPlot::SetNextAxesToFit();
   if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", size, ImPlotFlags_NoLegend | (nav ? ImPlotFlags_None : ImPlotFlags_NoBoxSelect))) {
@@ -816,8 +830,10 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
     PlotFrame pf{fit_x() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}, ui.view.gen};
     if (nav)
       plot_nav(ui, d, v, pf);
-    else if (pin.g >= 0)
+    else if (pin.g >= 0 && !wait)
       plot_val(ui, range, d, v, pin, pf);
+    if (wait)
+      plot_hint("分钟线载入中…");
     fit_margin(ui.log_y);
     thin_prune();
     ui.shown_key = std::move(pf.shown);

@@ -17,6 +17,8 @@ const MinuteCloses *MinuteResult::of(Quote::Ref ref) const {
   return it == refs.end() ? nullptr : list[static_cast<size_t>(it - refs.begin())].get();
 }
 
+bool MinuteResult::covers(Quote::Ref ref) const { return std::ranges::find(refs, ref) != refs.end(); }
+
 bool MinuteService::publish(const MinuteRequest &req, std::shared_ptr<MinuteResult> out) {
   out->gen = req.gen, out->refs = req.refs;
   out->list.resize(req.refs.size());

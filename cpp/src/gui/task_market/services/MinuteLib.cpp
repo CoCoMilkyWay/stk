@@ -83,7 +83,8 @@ struct Out {
   }
 };
 
-// 一侧第 row 行 (共 N 行) 的 D 日逐个有根日 f(日下标, 因子, 价): 整文件只读映射, 逐日跨 N 行取一条
+// 一侧第 row 行 (共 N 行) 的 D 日逐个有根日 f(日下标, 因子, 价): 整文件只读映射, 逐日跨 N 行取一条;
+//   各日一条相隔整日 (N 条), 缺页不预读邻近, 先把 D 条的读一并发出 (盘上并发) 再逐条取
 template <Side S>
 void scan(const disk::Key &lib, size_t N, size_t D, size_t row, const MinuteLib::Each &f) {
   const size_t n = bytes<S>(N, D);
@@ -97,6 +98,12 @@ void scan(const disk::Key &lib, size_t N, size_t D, size_t row, const MinuteLib:
   void *m = ::mmap(nullptr, n, PROT_READ, MAP_SHARED, fd, 0);
   ::close(fd);
   assert(m != MAP_FAILED && "minute/: 映射失败");
+  ::madvise(m, n, MADV_RANDOM);
+  const size_t pg = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+  for (size_t i = 0; i < D; ++i) {
+    const size_t o = (i * N + row) * sizeof(Rec<S>), a = o / pg * pg;
+    ::madvise(static_cast<char *>(m) + a, o + sizeof(Rec<S>) - a, MADV_WILLNEED);
+  }
   const Rec<S> *rec = static_cast<const Rec<S> *>(m);
   float px[kCell];
   for (size_t i = 0; i < D; ++i)
@@ -129,10 +136,8 @@ size_t MinuteLib::row_of(Quote::Ref ref) const {
   return static_cast<size_t>(std::find(ks.begin(), ks.end(), ref.key) - ks.begin());
 }
 
-bool MinuteLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::Picks &pk, const std::atomic<bool> &cancel, Progress &x,
-                     misc::exec::ForkJoin &pool) {
+bool MinuteLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, std::atomic<bool> &cancel, Progress &x, misc::exec::ForkJoin &pool) {
   std::lock_guard<std::mutex> lock(mu_);
-  const std::vector<misc::Ymd> &dates = pk.tape->dates;
   assert(dates.size() >= 2);
   lib_ = lib_key(lib.id);
   const BasketTable &bt = basket_table();
@@ -171,6 +176,10 @@ bool MinuteLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::P
   }
   if (dates_.size() == dates.size())
     return true;
+  FeatureRead rd(lib, &cancel);
+  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &cancel);
+  if (!pk)
+    return false;
 
   // 库段一趟 (Quote::lib_pass, 与 BasketHistory 同一趟): 个股的记录在并行段逐只备 (批内第 k 件一份), 篮子的在串行段取 Lane 的;
   //   按日序过链落盘, 每批落一次头
@@ -203,7 +212,7 @@ bool MinuteLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::P
       }
       f[S].write(reinterpret_cast<const char *>(o.rec.data()), static_cast<std::streamsize>(o.rec.size() * sizeof(Rec<S>)));
     });
-    dates_.push_back(dates[i]);
+    dates_.push_back(pk->tape->dates[i]);
   };
   const auto batch = [&] {
     each_side([&]<Side S>() {
@@ -212,7 +221,7 @@ bool MinuteLib::sync(const FeatureLib &lib, const FeatureRead &rd, const pool::P
     });
     save_head();
   };
-  if (Quote::lib_pass(lib.axis, rd, pk, dates_.size(), dates_.size(), pool, cancel, x, each, chain, batch))
+  if (Quote::lib_pass(lib.axis, rd, *pk, dates_.size(), dates_.size(), pool, cancel, x, each, chain, batch))
     return true;
   if (rd.stale()) // 库在重算: 下次从头核对
     head_ = {};
@@ -223,13 +232,10 @@ std::optional<MinuteOpen> MinuteLib::open(std::string_view what, std::atomic<boo
   const pool::AllBar ab = pool::all_bar(what);
   if (!ab.lack.empty())
     return MinuteOpen{.lack = ab.lack};
-  const FeatureLib &lib = ab.lib;
-  FeatureRead rd(lib, &cancel);
-  const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &cancel);
-  if (!pk || !sync(lib, rd, *pk, cancel, x, pool))
+  if (!sync(ab.lib, ab.dates, cancel, x, pool))
     return std::nullopt;
-  const std::vector<misc::Ymd> &dates = pk->tape->dates; // 已落盘日 (清单日期轴可能还在算)
-  return MinuteOpen{.dates = dates, .stamp = {lib.axis.hash, dates.back(), dates.size()}};
+  std::lock_guard<std::mutex> lock(mu_);
+  return MinuteOpen{.dates = dates_, .stamp = {ab.lib.axis.hash, dates_.back(), dates_.size()}};
 }
 
 bool MinuteLib::each(Quote::Ref ref, const Each &f) const {
