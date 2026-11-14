@@ -40,7 +40,7 @@ bool CtaService::publish(const CtaRequest &req, std::string lack, std::shared_pt
 }
 
 bool CtaService::run(CtaRequest &req) {
-  const CtaSpec &sp = req.spec;
+  const cta::Spec &sp = req.spec;
   assert(sp.roll >= static_cast<int>(cta::kMinRoll) && sp.roll <= static_cast<int>(cta::kMaxRoll));
   assert(req.ref.ok() && req.dates && req.series && req.series->minute && "CTA 请求须有标的与其连分钟的全史");
   constexpr size_t S = Quote::kSlots;
@@ -59,19 +59,17 @@ bool CtaService::run(CtaRequest &req) {
     }
     return true;
   });
-  const size_t W = static_cast<size_t>(sp.roll), nd = cta::days_of(*se, S).size();
+  const size_t nd = cta::days_of(*se, S).size();
   if (nd < 2)
     return publish(req, "有效根只跨 " + std::to_string(nd) + " 日, 至少 2 日.");
   auto out = std::make_shared<CtaResult>();
   out->dates = spine;
   out->se = se;
   const double years = static_cast<double>((misc::to_days(out->dates.back()) - misc::to_days(out->dates.front())).count() + 1) / 365.25;
-  const cta::Setup u{req.rates, {sp.vol, sp.buffer}, static_cast<double>(out->dates.size() * S) / years, {sp.swing, static_cast<size_t>(sp.days), sp.stop, sp.trail, sp.units}};
-  cta::Grid grid = cta::grid_of(S, sp.kind, static_cast<size_t>(sp.grid));
+  const double bpy = static_cast<double>(out->dates.size() * S) / years;
   begin(Phase::Running, nd - 1);
   const bool done = cta::trace(
-      *se, std::move(grid), sp.goal, static_cast<size_t>(sp.dir), W, u, pool_, out->tr, [&] { return cancel_.load(std::memory_order_relaxed); },
-      [&] { Progress::publish(1); });
+      *se, S, sp, req.rates, bpy, pool_, out->tr, [&] { return cancel_.load(std::memory_order_relaxed); }, [&] { Progress::publish(1); });
   return done && publish(req, {}, std::move(out));
 }
 

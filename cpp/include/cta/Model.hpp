@@ -1,40 +1,40 @@
 #pragma once
 
-// 单资产 中线 + 分层 模型: 有效根 → 指标列 (Tape 缓存, 同资产各配置共用) → 中线 (调参) → 分层 Ladder 逐根出一刀 Cut (档线 + 目标仓位, 按本根收盘价调到)
+// 单资产 中线 + 分层 模型: 有效根 → 原料带 Tape (只读, 同资产各配置共用) → 中线核 (逐日换参, 逐根出值) → 分层 Ladder 逐根出一刀 Cut (档线 + 目标仓位, 按本根收盘价调到)
 //   方向 kDirs: long = 满多起步 / short = 满空起步; 顺向 = 方向所押的一侧, 逆向 = 另一侧
 //   列 = 逐根一个量, 因果 ([i] 只看 ≤ i 的根); 窗口一律以根计 (日线 / 分钟同一套)
 //   窗不满 = 用自首个有效值起的部分窗 (增量窗); 仍无值 = NaN: 比较恒假, 不入也不出
-//   指标列 = 算子作用于源列: 窗算子 ema / rms / top / bot / kama, 逐点算子 mean; 原料列 = 高 / 低 / 收 / 对数收益 / 日 K; 分层波动 (ATR / dev, 日频)
-//   中线 (ema / kama / mid / chand / sar / price, 各有自己的参数, 按开关口径滚动调参): 调参打分用定参中线 center, 实盘用变参中线 center_path (参数逐日变, 状态接续); 满仓时带着档线走
+//   原料带 = 高 / 低 / 收 / 收益 / 对数收益 / 累计路程 / 每根波动 + 日 K; 分层波动 (ATR / dev, 日频) 由它算
+//   中线 (ema / kama / mid / chand / sar / price, 各有自己的参数): 一个模型一个核, 日首 day(d, p) 换参, 逐根 bar(i) 出值, 状态逐根接续;
+//     定参 (调参打分) = 各日同参, 变参 (实盘) = 逐日所用参数, 同一个核; 满仓时带着档线走
 //   分层 (参数固定, 不调): 减仓线链 (链顶锚定上一个触发点, 往下每条隔当日间距; 满仓随中线, 中线上穿链顶即回到随中线) + 各份加仓线;
 //     卖出即挂加仓线于成交价外 stop · 间距 (止损), 买回后链顶 = 买入价 − stop · 间距; 加仓线每日收盘跟随 trail · 间距 (减仓线不跟随); 一份 = 1 / 份数
-//   列只在两端: 指标列 (取齐后 Tape 只读) → 逐根链 (源 → 仓位层 → 成交 → 汇) → 轨迹列 Cuts; 分层的状态 (各份档线) 只在拼接遍里
-//   源 = 逐根出刀的可调用 Cut(i): Cuts (拼好的轨迹) / Hold (买入持有)
+//   列只在两端: 原料带 (只读) → 逐根链 (源 → 仓位层 → 成交 → 汇) → 轨迹列 Cuts; 中线核 / 分层的状态 (各份档线) 只在源里
+//   源 = 日首 day(d) + 逐根出刀 Cut(i): Hold (买入持有) / Switch (中线当开关, 调参; Tune.hpp) / Laddered (中线 + 分层, 策略; Trace.hpp)
 //   成交 / 仓位层 / 成本 / 逐根链归 Engine
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
+#include <deque>
 #include <limits>
-#include <map>
 #include <utility>
 #include <vector>
 
 namespace cta {
 
 using Col = std::vector<float>;
-using P = std::vector<float>; // 一个中线模型的参数 (轴序, 以根计)
 
 inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 inline constexpr size_t kVolSpan = 60;
-inline constexpr size_t kSwingDays = 250; // 分层波动窗默认 (日; Band::days)
+inline constexpr size_t kSwingDays = 250; // 分层波动窗默认 (日; Spec::days)
 inline constexpr float kSwingDamp = 0.1f; // 分层波动阻尼: 所用值每日相对变化上限
 inline constexpr double kSpace = 1;       // 减仓线间距 = kSpace · 波动 (满仓随中线 / 锚定时的初始档线)
-inline constexpr int kUnits = 20;         // 满仓份数默认 (Band::units)
-inline constexpr double kStop = 0.1;      // 止损距默认 (Band::stop)
-inline constexpr double kTrail = 0.1;     // 跟随距默认 (Band::trail)
+inline constexpr int kUnits = 20;         // 满仓份数默认 (Rule::units)
+inline constexpr float kStop = 0.1f;      // 止损距默认 (Rule::stop)
+inline constexpr float kTrail = 0.1f;     // 跟随距默认 (Rule::trail)
 
 // 分层波动度量 (下标同 kSwings); 价格单位, 日频: 日 d 盘中用前一交易日收盘时的值
 enum : size_t { kAtr,
@@ -69,8 +69,6 @@ inline Days days_of(const Series &se, size_t S) {
   return o;
 }
 
-// ---- 窗算子 (近 k 根, 含本根) ----
-
 // 指数均线, 跨度 k: 第 m 个有效值的平滑系数 = max(2 / (k + 1), 1 / m) (前段 = 已有值的均值, 增量窗), NaN 跳过; 首个有效值前 NaN
 inline Col ema_of(const Col &x, size_t k) {
   assert(k > 0 && "均线跨度");
@@ -98,84 +96,28 @@ inline Col rms_of(const Col &x, size_t k) {
   return o;
 }
 
-// 极值: 单调队列 (不足 k 根 = 自首根起的部分窗)
-template <class Keep>
-Col roll_of(const Col &x, size_t k) {
-  assert(k > 0 && "极值窗口");
-  Col o(x.size(), kNaN);
-  std::vector<size_t> q(x.size());
-  size_t b = 0, e = 0;
-  for (size_t i = 0; i < x.size(); ++i) {
-    while (e > b && !Keep{}(x[q[e - 1]], x[i]))
-      --e;
-    q[e++] = i;
-    if (q[b] + k <= i)
-      ++b;
-    o[i] = x[q[b]];
-  }
-  return o;
-}
+// ---- 原料带 ----
 
-// 考夫曼自适应均线: 效率比 ER = |x − k 根前 x| / 近 k 根 Σ|Δx|; 平滑系数 (ER · (2/3 − α_slow) + α_slow)²
-//   α_slow = √(2 / (L + 1)): 震荡 (ER → 0) 时等效 EMA 跨度 L, 趋势 (ER → 1) 时贴近价格; 不足 k 根 = 自首根起的部分窗
-inline Col kama_of(const Col &x, size_t k, size_t L) {
-  assert(k > 0 && L > 3 && "kama 窗口 / 震荡跨度");
-  const double as = std::sqrt(2 / (static_cast<double>(L) + 1));
-  Col o(x.size(), kNaN);
-  if (x.empty())
-    return o;
-  double sum = 0, v = x[0];
-  o[0] = x[0];
-  for (size_t i = 1; i < x.size(); ++i) {
-    sum += std::fabs(x[i] - x[i - 1]);
-    if (i > k)
-      sum -= std::fabs(x[i - k] - x[i - k - 1]);
-    const double er = sum > 0 ? std::fabs(x[i] - x[i - std::min(k, i)]) / sum : 0, sc = er * (2 / 3.0 - as) + as;
-    o[i] = static_cast<float>(v += sc * sc * (x[i] - v));
-  }
-  return o;
-}
+// 一个资产: 有效根 + 逐根列 + 日 K; 建好即只读, 多线程共用
+struct Tape {
+  const size_t n;
+  const Col &h, &l, &c;           // 高 / 低 / 收
+  const Col a;                    // 逐根收益 (根 0 = 0)
+  const Col lr;                   // 对数收益 ln(收 / 前收) (根 0 = NaN)
+  const std::vector<double> trip; // 累计路程 Σ|Δ收| (根 0 = 0)
+  const Col vol;                  // 每根波动 σ̂ (近 kVolSpan 根日内对数收益均方根; 每日首根的隔夜跳空不计)
+  const size_t S;                 // 每日根数 (时间格 t / S = 日下标)
+  const Days days;                // 日轴 (days_of)
+  const Col dh, dl, dc;           // [日] 日高 / 日低 / 日收 (当日各根合成; 无根的日 = NaN)
 
-// ---- 指标列 ----
+  Tape(const Series &s, size_t S)
+      : n(s.c.size()), h(s.h), l(s.l), c(s.c), a(returns(c)), lr(logs(c)), trip(trips(c)), vol(rms_of(intraday(lr, s.t, S), kVolSpan)), S(S),
+        days(days_of(s, S)), dh(daily(h, [](float p, float q) { return std::max(p, q); })), dl(daily(l, [](float p, float q) { return std::min(p, q); })),
+        dc(daily(c, [](float, float q) { return q; })) {}
+  Tape(const Tape &) = delete;
+  Tape &operator=(const Tape &) = delete;
 
-// 一个资产: 有效根 + 原料列 + 指标列缓存 (键 = 算子 + 源列 + 窗, 首次取时算)
-//   列一律按引用给出, 地址随 Tape 终生不变 (可作别的列的源); 取齐所需的列后 Tape 只读, 可多线程共用
-class Tape {
-  enum class Op : uint8_t { Ema,
-                            Rms,
-                            Top,
-                            Bot,
-                            Kama,
-                            Mean,
-                            Band,
-                            Path };
-  struct Key {
-    Op op;
-    uintptr_t x = 0, y = 0; // 源列地址 (无 = 0)
-    size_t k = 0, L = 0;    // 窗 / 模型 (无 = 0)
-    float a = 0, b = 0;     // 小数参数 (无 = 0)
-    auto operator<=>(const Key &) const = default;
-  };
-  std::map<Key, Col> memo_;
-
-  static uintptr_t id(const Col &x) { return reinterpret_cast<uintptr_t>(&x); }
-  template <class F>
-  const Col &memo(const Key &key, F make) {
-    if (const auto it = memo_.find(key); it != memo_.end())
-      return it->second;
-    Col v = make();
-    assert(v.size() == n);
-    return memo_.emplace(key, std::move(v)).first->second;
-  }
-
-  template <class F>
-  Col zip(const Col &x, const Col &y, F f) const {
-    Col o(n);
-    for (size_t i = 0; i < n; ++i)
-      o[i] = f(x[i], y[i]);
-    return o;
-  }
-
+private:
   static Col returns(const Col &c) {
     Col o(c.size(), 0);
     for (size_t i = 1; i < c.size(); ++i)
@@ -186,6 +128,12 @@ class Tape {
     Col o(c.size(), kNaN);
     for (size_t i = 1; i < c.size(); ++i)
       o[i] = static_cast<float>(std::log(static_cast<double>(c[i]) / c[i - 1]));
+    return o;
+  }
+  static std::vector<double> trips(const Col &c) {
+    std::vector<double> o(c.size(), 0);
+    for (size_t i = 1; i < c.size(); ++i)
+      o[i] = o[i - 1] + std::fabs(c[i] - c[i - 1]);
     return o;
   }
   static Col intraday(const Col &lr, const std::vector<uint32_t> &t, size_t S) { // 每日首根 (隔夜跳空) = NaN
@@ -204,117 +152,67 @@ class Tape {
         o[d] = i == days.off[d] ? x[i] : f(o[d], x[i]);
     return o;
   }
-  // 日涨跌标准差 [日]: 日 d 盘中所用 = 此前 k 个日涨跌 (收 − 前收) 的样本标准差; 不足 k 个 = 已有的 (≥ 2 个), 再少 = NaN
-  Col dev_days(size_t k) const {
-    assert(k > 1 && "dev 窗");
-    Col o(days.size(), kNaN);
-    std::vector<double> q;
-    double s = 0, s2 = 0, pc = kNaN;
-    for (size_t d = 0; d < days.size(); ++d) {
-      if (const double w = static_cast<double>(std::min(q.size(), k)); w >= 2)
-        o[d] = static_cast<float>(std::sqrt(std::max(0.0, (s2 - s * s / w) / (w - 1))));
-      if (std::isnan(dc[d]))
-        continue;
-      if (!std::isnan(pc)) {
-        const double x = dc[d] - pc;
-        q.push_back(x), s += x, s2 += x * x;
-        if (q.size() > k) {
-          const double y = q[q.size() - 1 - k];
-          s -= y, s2 -= y * y;
-        }
-      }
-      pc = dc[d];
-    }
+};
+
+// 海龟 N 递推 (日频): 日真实波幅 TR = max(日高, 前收) − min(日低, 前收) (首日无前收 = 日高 − 日低); 日 d 的窗 k 日 (逐日可变),
+//   不足 k 日 = 已有各日 TR 的均值, 之后 N += (TR − N) / k; step(d) 返回日 d 盘中所用 = 前一交易日收盘时的 N (首个有根的日 = NaN), 再收进日 d
+struct Atr {
+  double N = 0, pc = 0;
+  size_t m = 0; // 已收日数
+  float step(const Tape &t, size_t d, size_t k) {
+    assert(k > 0 && "ATR 窗");
+    const float o = m ? static_cast<float>(N) : kNaN;
+    if (std::isnan(t.dc[d]))
+      return o;
+    const double tr = m ? std::max<double>(t.dh[d], pc) - std::min<double>(t.dl[d], pc) : t.dh[d] - t.dl[d];
+    N += (tr - N) / static_cast<double>(m < k ? m + 1 : k);
+    ++m, pc = t.dc[d];
     return o;
-  }
-
-public:
-  const size_t n;
-  const Col &h, &l, &c; // 高 / 低 / 收
-  const Col a;          // 逐根收益 (根 0 = 0)
-  const Col lr;         // 对数收益 ln(收 / 前收) (根 0 = NaN)
-  const Col vol;        // 每根波动 σ̂ (近 kVolSpan 根日内对数收益均方根; 每日首根的隔夜跳空不计)
-  const size_t S;       // 每日根数 (时间格 t / S = 日下标)
-  const Days days;      // 日轴 (days_of)
-  const Col dh, dl, dc; // [日] 日高 / 日低 / 日收 (当日各根合成; 无根的日 = NaN)
-
-  Tape(const Series &s, size_t S)
-      : n(s.c.size()), h(s.h), l(s.l), c(s.c), a(returns(c)), lr(logs(c)), vol(rms_of(intraday(lr, s.t, S), kVolSpan)), S(S), days(days_of(s, S)),
-        dh(daily(h, [](float p, float q) { return std::max(p, q); })), dl(daily(l, [](float p, float q) { return std::min(p, q); })),
-        dc(daily(c, [](float, float q) { return q; })) {}
-  Tape(const Tape &) = delete;
-  Tape &operator=(const Tape &) = delete;
-
-  // 日值 [日] → 逐根 (日 d 的根都取 dv[d])
-  Col bars_of(const Col &dv) const {
-    Col o(n);
-    for (size_t d = 0; d < days.size(); ++d)
-      std::fill(o.begin() + static_cast<std::ptrdiff_t>(days.off[d]), o.begin() + static_cast<std::ptrdiff_t>(days.off[d + 1]), dv[d]);
-    return o;
-  }
-  // 海龟 N [日]: 日真实波幅 TR = max(日高, 前收) − min(日低, 前收) (首日无前收 = 日高 − 日低); 日 d 的窗 k(d) 日,
-  //   不足 k 日 = 已有各日 TR 的均值, 之后 N += (TR − N) / k; 日 d 盘中所用 = 前一交易日收盘时的 N, 首个有根的日 = NaN
-  template <class K>
-  Col atr_days(K k) const {
-    Col o(days.size(), kNaN);
-    double N = 0, pc = 0;
-    size_t m = 0; // 已收日数
-    for (size_t d = 0; d < days.size(); ++d) {
-      const size_t kd = k(d);
-      assert(kd > 0 && "ATR 窗");
-      if (m)
-        o[d] = static_cast<float>(N);
-      if (std::isnan(dc[d]))
-        continue;
-      const double tr = m ? std::max<double>(dh[d], pc) - std::min<double>(dl[d], pc) : dh[d] - dl[d];
-      N += (tr - N) / static_cast<double>(m < kd ? m + 1 : kd);
-      ++m, pc = dc[d];
-    }
-    return o;
-  }
-
-  // 分层波动 (逐根, 价格单位): kSwings[kind], 窗 k 日; 阻尼: 所用值每日只朝新估计走, 相对变化 ≤ kSwingDamp (首个有值的日 = 估计本身)
-  const Col &band(size_t kind, size_t k) {
-    return memo({.op = Op::Band, .k = kind, .L = k}, [&] {
-      Col v = kind == kAtr ? atr_days([k](size_t) { return k; }) : dev_days(k);
-      for (size_t d = 1; d < v.size(); ++d)
-        if (!std::isnan(v[d - 1]))
-          v[d] = std::isnan(v[d]) ? v[d - 1] : std::clamp(v[d], v[d - 1] * (1 - kSwingDamp), v[d - 1] * (1 + kSwingDamp));
-      return bars_of(v);
-    });
-  }
-  // 中线模型 kind 定参 p 的列 (make 首次取时算)
-  template <class F>
-  const Col &path(size_t kind, const P &p, F make) {
-    return memo({.op = Op::Path, .k = kind, .a = p[0], .b = p.size() > 1 ? p[1] : 0}, make);
-  }
-
-  // 窗算子
-  const Col &ema(const Col &x, size_t k) {
-    return memo({.op = Op::Ema, .x = id(x), .k = k}, [&] { return ema_of(x, k); });
-  }
-  const Col &rms(const Col &x, size_t k) {
-    return memo({.op = Op::Rms, .x = id(x), .k = k}, [&] { return rms_of(x, k); });
-  }
-  const Col &top(const Col &x, size_t k) {
-    return memo({.op = Op::Top, .x = id(x), .k = k}, [&] { return roll_of<std::greater<float>>(x, k); });
-  }
-  const Col &bot(const Col &x, size_t k) {
-    return memo({.op = Op::Bot, .x = id(x), .k = k}, [&] { return roll_of<std::less<float>>(x, k); });
-  }
-  const Col &kama(const Col &x, size_t k, size_t L) {
-    return memo({.op = Op::Kama, .x = id(x), .k = k, .L = L}, [&] { return kama_of(x, k, L); });
-  }
-
-  // 逐点算子
-  const Col &mean(const Col &x, const Col &y) {
-    return memo({.op = Op::Mean, .x = id(x), .y = id(y)}, [&] { return zip(x, y, [](float p, float q) { return (p + q) / 2; }); });
   }
 };
 
+// 日涨跌标准差 [日]: 日 d 盘中所用 = 此前 k 个日涨跌 (收 − 前收) 的样本标准差; 不足 k 个 = 已有的 (≥ 2 个), 再少 = NaN
+inline Col dev_of(const Tape &t, size_t k) {
+  assert(k > 1 && "dev 窗");
+  Col o(t.days.size(), kNaN);
+  std::vector<double> q;
+  double s = 0, s2 = 0, pc = kNaN;
+  for (size_t d = 0; d < t.days.size(); ++d) {
+    if (const double w = static_cast<double>(std::min(q.size(), k)); w >= 2)
+      o[d] = static_cast<float>(std::sqrt(std::max(0.0, (s2 - s * s / w) / (w - 1))));
+    if (std::isnan(t.dc[d]))
+      continue;
+    if (!std::isnan(pc)) {
+      const double x = t.dc[d] - pc;
+      q.push_back(x), s += x, s2 += x * x;
+      if (q.size() > k) {
+        const double y = q[q.size() - 1 - k];
+        s -= y, s2 -= y * y;
+      }
+    }
+    pc = t.dc[d];
+  }
+  return o;
+}
+
+// 分层波动 [日] (价格单位): kSwings[kind], 窗 k 日; 阻尼: 所用值每日只朝新估计走, 相对变化 ≤ kSwingDamp (首个有值的日 = 估计本身)
+inline Col swing_of(const Tape &t, size_t kind, size_t k) {
+  Col v(t.days.size());
+  if (kind == kAtr) {
+    Atr x;
+    for (size_t d = 0; d < v.size(); ++d)
+      v[d] = x.step(t, d, k);
+  } else
+    v = dev_of(t, k);
+  for (size_t d = 1; d < v.size(); ++d)
+    if (!std::isnan(v[d - 1]))
+      v[d] = std::isnan(v[d]) ? v[d - 1] : std::clamp(v[d], v[d - 1] * (1 - kSwingDamp), v[d - 1] * (1 + kSwingDamp));
+  return v;
+}
+
 // ---- 中线 ----
 //   中线模型表 kCenters; 各模型自带参数轴: 格点自 v0 (q = 0) 向两侧铺, 相邻之比 kStep (Tune.hpp), 间距不小于轴的基本单位 u
-//   (大值处等比, 小值处退成等差 u), 限在硬边界 [lo, hi] 内; 以日计的轴乘每日根数 (Grid::p), 模型拿到的都是根
+//   (大值处等比, 小值处退成等差 u), 限在硬边界 [lo, hi] 内; 以日计的轴乘每日根数 (Grid::bars), 模型拿到的都是根
 
 // 中线模型 (下标同 kCenters)
 enum : size_t { kEma,
@@ -346,130 +244,169 @@ inline const Kind kCenters[] = {
     {"sar", "抛物线 SAR (日线, 自带翻转): 每日收盘更新, 盘中用前一交易日的值; af = 加速步长, max = 加速上限", {{"af", 0.02f, 0.002f, 0.2f, 0.002f}, {"max", 0.2f, 0.02f, 1, 0.02f}}},
     {"price", "价格本身: 中线 = 收盘价, 无参数 (满仓随中线时首条减仓线贴着收盘, 档线由止损 / 跟随推着走)", {}}};
 
-// 近 k 根最高 / 最低 (日 d 的窗 round(pd[d][0]), 不足 k 根 = 自首根起; 窗一变区间即可能跳, 各日自窗首重扫): 逐根 f(i, d, 最高, 最低)
-template <class F>
-void hilo_path(const Tape &t, const Days &days, const std::vector<P> &pd, F f) {
-  std::vector<size_t> qh(t.n), ql(t.n); // 单调队列: 窗内最高 / 最低
-  for (size_t d = 0; d < days.size(); ++d) {
-    const size_t k = len(pd[d][0]), b = days.off[d], e = days.off[d + 1];
-    assert(k > 0 && "最高 / 最低窗口");
-    size_t hb = 0, he = 0, lb = 0, le = 0;
-    for (size_t i = b + 1 >= k ? b + 1 - k : 0; i < e; ++i) {
-      while (he > hb && t.h[qh[he - 1]] <= t.h[i])
-        --he;
-      while (le > lb && t.l[ql[le - 1]] >= t.l[i])
-        --le;
-      qh[he++] = i, ql[le++] = i;
-      if (qh[hb] + k <= i)
-        ++hb;
-      if (ql[lb] + k <= i)
-        ++lb;
-      if (i >= b)
-        f(i, d, t.h[qh[hb]], t.l[ql[lb]]);
-    }
-  }
-}
+inline constexpr size_t kAxes = 2; // 参数轴数上限
+template <class T>
+using Ax = std::array<T, kAxes>; // 各轴一个量 (轴序; 模型轴数之外 = 0)
+using P = Ax<float>;             // 一个中线模型的参数 (以根计)
 
-// 变参中线: 日 d 用参数 pd[d] (以根计, 可为小数), 状态逐根接续 (参数变只改跟随的快慢, 不在几条定参中线之间换线)
-//   ema: α = 2 / (k + 1); kama: 效率比窗 round(k), α_slow 按 L; mid: 窗 round(k) (hilo_path)
-//   chand: 窗 round(k) 的最高 / 最低 ∓ m · ATR (ATR 窗 = max(1, round(k / 每日根数)) 日); 多头线 / 空头线, 收盘穿过当前那条即翻转, 起于多头
-//   sar: 日线, 日 d 收盘按 pd[d] 更新, 日 d + 1 盘中用; 首个有根的日起于多头 (SAR = 日低, EP = 日高), 次日起有值;
-//     未翻转: 创新极值则 EP 换新、af += 步长 (≤ 上限), SAR += af · (EP − SAR); 日低 (多) / 日高 (空) 穿过 SAR = 翻转, SAR = 原 EP, af 复位;
-//     SAR 不越过当日与前一日的低 (多) / 高 (空)
-//   price: 收盘价本身
-//   窗不满 = 自首根起的部分窗 (ema 前段 = 已有值的均值; kama 效率比按已有的根)
-inline Col center_path(const Tape &t, const Days &days, size_t kind, const std::vector<P> &pd) {
-  assert(pd.size() == days.size() && days.off.back() == t.n && "逐日参数");
-  const Col &x = t.c;
-  Col o(t.n, kNaN);
+// ---- 中线核 ----
+//   日首 day(d, p): 日 d 用参数 p (以根计, 可为小数); 逐根 bar(i) → 中线 (NaN = 未就绪); 日 d 的根之前先 day(d) (无根的日也调), 根按序逐个
+//   状态逐根接续: 参数变只改跟随的快慢, 不在几条定参中线之间换线; 窗不满 = 自首根起的部分窗
+
+// ema: α = 2 / (k + 1); 第 i 根的平滑系数 = max(α, 1 / (i + 1)) (前段 = 已有值的均值)
+struct Ema {
+  const Tape &t;
+  double a = 0, v = 0;
+  void day(size_t, const P &p) {
+    assert(p[0] > 0 && "均线跨度");
+    a = 2 / (static_cast<double>(p[0]) + 1);
+  }
+  float bar(size_t i) { return static_cast<float>(v += std::max(a, 1.0 / static_cast<double>(i + 1)) * (t.c[i] - v)); }
+};
+
+// kama: 效率比 ER = |收 − w 根前收| / 近 w 根路程 (w = min(round(n), i)); 平滑系数 (ER · (2/3 − α_slow) + α_slow)², α_slow = √(2 / (L + 1)):
+//   震荡 (ER → 0) 时等效 EMA 跨度 L, 趋势 (ER → 1) 时贴近价格
+struct Kama {
+  const Tape &t;
+  size_t k = 0;
+  double as = 0, v = t.c[0];
+  void day(size_t, const P &p) {
+    k = len(p[0]), as = std::sqrt(2 / (static_cast<double>(p[1]) + 1));
+    assert(k > 0 && p[1] > 3 && "kama 窗口 / 震荡跨度");
+  }
+  float bar(size_t i) {
+    const size_t w = std::min(k, i);
+    const double sum = t.trip[i] - t.trip[i - w], er = sum > 0 ? std::fabs(t.c[i] - t.c[i - w]) / sum : 0, sc = er * (2 / 3.0 - as) + as;
+    return static_cast<float>(v += sc * sc * (t.c[i] - v));
+  }
+};
+
+// 近 k 根最高 / 最低 (单调队列; 不足 k 根 = 自首根起): 日首 window(d, k) 定窗 (窗一变区间即可能跳, 自新窗首重扫), 逐根 push(i) 后读 hi / lo
+struct Hilo {
+  const Tape &t;
+  size_t k = 0;
+  std::deque<uint32_t> qh, ql; // 窗内最高 / 最低的候选 (下标升序)
+  void push(size_t i) {
+    while (!qh.empty() && t.h[qh.back()] <= t.h[i])
+      qh.pop_back();
+    while (!ql.empty() && t.l[ql.back()] >= t.l[i])
+      ql.pop_back();
+    qh.push_back(static_cast<uint32_t>(i)), ql.push_back(static_cast<uint32_t>(i));
+    if (qh.front() + k <= i)
+      qh.pop_front();
+    if (ql.front() + k <= i)
+      ql.pop_front();
+  }
+  void window(size_t d, size_t w) {
+    assert(w > 0 && "最高 / 最低窗口");
+    if (w == k)
+      return;
+    k = w, qh.clear(), ql.clear();
+    const size_t b = t.days.off[d];
+    for (size_t i = b + 1 >= k ? b + 1 - k : 0; i < b; ++i)
+      push(i);
+  }
+  float hi() const { return t.h[qh.front()]; }
+  float lo() const { return t.l[ql.front()]; }
+};
+
+// mid: 唐奇安中线 = 窗 round(n) 的 (最高 + 最低) / 2
+struct Mid {
+  const Tape &t;
+  Hilo x{t};
+  void day(size_t d, const P &p) { x.window(d, len(p[0])); }
+  float bar(size_t i) {
+    x.push(i);
+    return (x.hi() + x.lo()) / 2;
+  }
+};
+
+// chand: 窗 round(n) 的最高 / 最低 ∓ m · ATR (ATR 窗 = max(1, round(n / 每日根数)) 日); 多头线 / 空头线, 收盘穿过当前那条即翻转, 起于多头
+struct Chand {
+  const Tape &t;
+  Hilo x{t};
+  Atr atr;
+  float n = kNaN, m = 0; // 当日所用 ATR / 倍数
+  bool up = true;
+  void day(size_t d, const P &p) {
+    x.window(d, len(p[0])), m = p[1];
+    n = atr.step(t, d, std::max<size_t>(1, len(p[0] / static_cast<float>(t.S))));
+  }
+  float bar(size_t i) {
+    x.push(i);
+    if (std::isnan(n))
+      return kNaN;
+    const float L = x.hi() - m * n, H = x.lo() + m * n;
+    if (up ? t.c[i] < L : t.c[i] > H)
+      up = !up;
+    return up ? L : H;
+  }
+};
+
+// sar: 日线, 日 d 收盘按当日参数 (af 步长, max 上限) 更新, 日 d + 1 盘中用; 首个有根的日起于多头 (SAR = 日低, EP = 日高), 次日起有值;
+//   未翻转: 创新极值则 EP 换新、af += 步长 (≤ 上限), SAR += af · (EP − SAR); 日低 (多) / 日高 (空) 穿过 SAR = 翻转, SAR = 原 EP, af 复位;
+//   SAR 不越过当日与前一日的低 (多) / 高 (空)
+struct Sar {
+  const Tape &t;
+  bool on = false, up = true;
+  double sar = 0, ep = 0, af = 0, ph = 0, pl = 0; // SAR / 极值 / 加速 / 前一日的高低
+  float v = kNaN;                                 // 当日盘中所用
+  void day(size_t d, const P &p) {
+    v = on ? static_cast<float>(sar) : kNaN;
+    if (std::isnan(t.dc[d]))
+      return;
+    const double hi = t.dh[d], lo = t.dl[d], st = p[0], mx = std::max(p[0], p[1]);
+    assert(st > 0 && "SAR 步长");
+    if (!on)
+      on = true, sar = lo, ep = hi, af = st, ph = hi, pl = lo;
+    else if (up ? lo < sar : hi > sar)
+      up = !up, sar = ep, ep = up ? hi : lo, af = st;
+    else {
+      if (up ? hi > ep : lo < ep)
+        ep = up ? hi : lo, af = std::min(af + st, mx);
+      sar += af * (ep - sar);
+    }
+    sar = up ? std::min({sar, lo, pl}) : std::max({sar, hi, ph});
+    ph = hi, pl = lo;
+  }
+  float bar(size_t) const { return v; }
+};
+
+// price: 收盘价本身
+struct Price {
+  const Tape &t;
+  void day(size_t, const P &) {}
+  float bar(size_t i) const { return t.c[i]; }
+};
+
+// 中线模型 kind 的核 (新起状态) 交给 f(核): 每个配置分派一次, 逐根无分派
+template <class F>
+void with_center(size_t kind, const Tape &t, F &&f) {
   switch (kind) {
   case kEma: {
-    double v = 0;
-    for (size_t d = 0; d < days.size(); ++d) {
-      const double a = 2 / (static_cast<double>(pd[d][0]) + 1);
-      for (size_t i = days.off[d]; i < days.off[d + 1]; ++i)
-        o[i] = static_cast<float>(v += std::max(a, 1.0 / static_cast<double>(i + 1)) * (x[i] - v));
-    }
-    return o;
+    Ema k{t};
+    return f(k);
   }
   case kKama: {
-    std::vector<double> cum(t.n, 0); // Σ|Δx| 前缀
-    for (size_t i = 1; i < t.n; ++i)
-      cum[i] = cum[i - 1] + std::fabs(x[i] - x[i - 1]);
-    double v = x[0];
-    for (size_t d = 0; d < days.size(); ++d) {
-      const size_t k = len(pd[d][0]);
-      const double as = std::sqrt(2 / (static_cast<double>(pd[d][1]) + 1));
-      assert(k > 0 && pd[d][1] > 3 && "kama 窗口 / 震荡跨度");
-      for (size_t i = days.off[d]; i < days.off[d + 1]; ++i) {
-        const size_t w = std::min(k, i);
-        const double sum = cum[i] - cum[i - w], er = sum > 0 ? std::fabs(x[i] - x[i - w]) / sum : 0, sc = er * (2 / 3.0 - as) + as;
-        o[i] = static_cast<float>(v += sc * sc * (x[i] - v));
-      }
-    }
-    return o;
+    Kama k{t};
+    return f(k);
   }
-  case kMid:
-    hilo_path(t, days, pd, [&](size_t i, size_t, float hi, float lo) { o[i] = (hi + lo) / 2; });
-    return o;
+  case kMid: {
+    Mid k{t};
+    return f(k);
+  }
   case kChand: {
-    const Col atr = t.bars_of(t.atr_days([&](size_t d) { return std::max<size_t>(1, len(pd[d][0] / static_cast<float>(t.S))); }));
-    bool up = true;
-    hilo_path(t, days, pd, [&](size_t i, size_t d, float hi, float lo) {
-      if (std::isnan(atr[i]))
-        return;
-      const float m = pd[d][1], L = hi - m * atr[i], H = lo + m * atr[i];
-      if (up ? x[i] < L : x[i] > H)
-        up = !up;
-      o[i] = up ? L : H;
-    });
-    return o;
+    Chand k{t};
+    return f(k);
   }
-  case kPrice:
-    return x;
   case kSar: {
-    bool on = false, up = true;
-    double sar = 0, ep = 0, af = 0, ph = 0, pl = 0; // SAR / 极值 / 加速 / 前一日的高低
-    for (size_t d = 0; d < days.size(); ++d) {
-      if (on)
-        std::fill(o.begin() + static_cast<std::ptrdiff_t>(days.off[d]), o.begin() + static_cast<std::ptrdiff_t>(days.off[d + 1]), static_cast<float>(sar));
-      if (std::isnan(t.dc[d]))
-        continue;
-      const double hi = t.dh[d], lo = t.dl[d], st = pd[d][0], mx = std::max(pd[d][0], pd[d][1]);
-      assert(st > 0 && "SAR 步长");
-      if (!on)
-        on = true, sar = lo, ep = hi, af = st, ph = hi, pl = lo;
-      else if (up ? lo < sar : hi > sar)
-        up = !up, sar = ep, ep = up ? hi : lo, af = st;
-      else {
-        if (up ? hi > ep : lo < ep)
-          ep = up ? hi : lo, af = std::min(af + st, mx);
-        sar += af * (ep - sar);
-      }
-      sar = up ? std::min({sar, lo, pl}) : std::max({sar, hi, ph});
-      ph = hi, pl = lo;
-    }
-    return o;
+    Sar k{t};
+    return f(k);
   }
+  case kPrice: {
+    Price k{t};
+    return f(k);
   }
-  assert(false && "中线模型");
-  std::unreachable();
-}
-
-// 定参中线 (周期 k 根): ema (跟得最匀) / kama (k = ER 窗, L = 震荡跨度) / mid (唐奇安中线, 区间内呈台阶) / chand / sar (= 各日同参的变参中线) / price (收盘价)
-inline const Col &center(Tape &t, size_t kind, const P &p) {
-  switch (kind) {
-  case kEma:
-    return t.ema(t.c, len(p[0]));
-  case kKama:
-    return t.kama(t.c, len(p[0]), len(p[1]));
-  case kMid:
-    return t.mean(t.top(t.h, len(p[0])), t.bot(t.l, len(p[0])));
-  case kPrice:
-    return t.c;
-  case kChand:
-  case kSar:
-    return t.path(kind, p, [&] { return center_path(t, t.days, kind, std::vector<P>(t.days.size(), p)); });
   }
   assert(false && "中线模型");
   std::unreachable();
@@ -495,7 +432,7 @@ struct Cut {
   uint32_t snap = kNone;
 };
 
-// 一条轨迹的刀 (列, 与 Cut 同字段) + 档线快照; 本身是源: 逐根读回
+// 一条轨迹的刀 (列, 与 Cut 同字段; 逐根链里录下, Engine.hpp Record) + 档线快照
 struct Cuts {
   Col mid, h, w, chop, gap;
   std::vector<uint32_t> snap;
@@ -505,7 +442,6 @@ struct Cuts {
   Cuts() = default;
   explicit Cuts(size_t n) : mid(n, kNaN), h(n, kNaN), w(n, 0), chop(n, 0), gap(n, 0), snap(n, kNone) {}
   void put(size_t i, const Cut &x) { mid[i] = x.mid, h[i] = x.h, w[i] = x.w, chop[i] = x.chop, gap[i] = x.gap, snap[i] = x.snap; }
-  Cut operator()(size_t i) const { return {mid[i], h[i], w[i], chop[i], gap[i], snap[i]}; }
 
   // 根 i 的档线 f(j, 价, 加仓线), 份 j ∈ [0, units) (一份一条, 成交换极性); 未就绪 = 无
   template <class F>
@@ -532,13 +468,12 @@ struct Dir {
 inline constexpr Dir kDirs[] = {{"long", "只做多: 满多, 跌破中线下方档线按分层减仓 / 加回", 1},
                                 {"short", "只做空: 满空, 涨过中线上方档线按分层减仓 / 加回", -1}};
 
-// 分层设定: 波动 (度量 + 窗; 定档线间距) + 止损 / 跟随 (以间距计)
-struct Band {
-  size_t swing = kDev;      // 波动度量 (kSwings 下标)
-  size_t days = kSwingDays; // 波动窗 (日; dev ≥ 2)
-  double stop = kStop;      // 成交一份, 该份换极性并往反向偏 stop · 间距 (≥ 0)
-  double trail = kTrail;    // 加仓线每日收盘朝价格移 trail · 间距 (≥ 0)
-  int units = kUnits;       // 满仓份数 (一份 = 1 / units; ≥ 1)
+// 分层规则: 止损 / 跟随 (以间距计) + 份数; 间距 = kSpace · 分层波动 (度量与窗在 Spec)
+struct Rule {
+  float stop = kStop;   // 成交一份, 该份换极性并往反向偏 stop · 间距 (≥ 0)
+  float trail = kTrail; // 加仓线每日收盘朝价格移 trail · 间距 (≥ 0)
+  int units = kUnits;   // 满仓份数 (一份 = 1 / units; ≥ 1)
+  bool operator==(const Rule &) const = default;
 };
 
 // ---- 分层 (逐根, 有状态) ----
@@ -552,7 +487,7 @@ struct Band {
 //   中线 / 波动无值 = 未就绪的刀 (h = NaN; 轨迹按买入持有), 状态复位; 之后首根有值 = 满仓随中线起步 (已在链顶以下则逐条卖到对应档), 按收盘建仓, 不计越线差
 struct Ladder {
   float s;                        // 顺向 (kDirs)
-  Band z;                         // 分层设定 (用 stop / trail / units)
+  Rule z;                         // 分层规则
   Bands bands;                    // 档线快照 (只增)
   std::vector<double> b;          // [份] 加仓线的顺向坐标 (持有 = NaN)
   std::vector<uint32_t> ord;      // 持有的份按链序自底到顶 (末 = 链顶; 卖出取链顶, 买回的份成新链顶)
@@ -563,7 +498,7 @@ struct Ladder {
 
   void reset() { k = 0, on = false, cur = kNone; }
 
-  // 本根收 c, 中线 m, 波动 N (Band 所选), eod = 当日末根 → 一刀
+  // 本根收 c, 中线 m, 波动 N (当日所用), eod = 当日末根 → 一刀
   Cut operator()(float c, float m, double N, bool eod) {
     Cut o{.mid = m};
     if (!(m > 0 && N > 0)) {
@@ -630,10 +565,11 @@ struct Ladder {
   }
 };
 
-// ---- 源 (逐根出刀) ----
+// ---- 源 (日首 day(d) + 逐根出刀) ----
 
 // 买入持有: 无档线, 恒满多
 struct Hold {
+  void day(size_t) {}
   Cut operator()(size_t) const { return {.w = 1}; }
 };
 

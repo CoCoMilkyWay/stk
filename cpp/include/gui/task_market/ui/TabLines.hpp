@@ -79,7 +79,7 @@
 #include "gui/engine/services/PortfolioService.hpp"
 #include "gui/engine/ui/PortfolioBoxes.hpp" // PortfolioUIState (当前组合)
 #include "gui/quote/QuoteHub.hpp"
-#include "gui/task_market/services/CtaService.hpp" // CtaSpec / CtaRequest (CTA 页)
+#include "gui/task_market/services/CtaService.hpp" // cta::Spec / CtaRequest (CTA 页)
 #include "gui/task_market/ui/LinesView.hpp"        // 派生 → 当日尾 / 滚动分位 / 末点分位 → 视图
 #include "gui/task_market/ui/QuotesPanel.hpp"      // OverlayState / Source / Recent / Flow (NAV 日内栏 + 近况列 / FLOW 页)
 #include "gui/util/Chart.hpp"                      // DayRange (区间条)
@@ -134,7 +134,7 @@ inline constexpr int kPicks = 2;
 
 // CTA 页: 设定 (进请求; 标的 = kPickOne 那一行) + 两图同一 x 视野 + 光标
 struct CtaState {
-  CtaSpec spec;
+  cta::Spec spec;
   Sent<CtaRequest> sent;  // 上次发出的
   bool editing = false;   // 数值框编辑中 (spec 未定, 不发请求)
   Quote::Ref fit;         // x 视野所属的标的: 换标的即回全段, 只改设定保留缩放

@@ -110,15 +110,15 @@ inline Book book_of(const Tape &t, Run run, double bpy) {
   double v = 1;
   for (size_t i = 0; i < t.n; ++i)
     b.nav[i] = v *= 1 + b.run.r[i];
-  for (size_t j = 0; j < kNC; ++j) {
-    std::vector<double> &o = b.lift[j];
+  std::array<double, kNC> x;
+  x.fill(1);
+  for (std::vector<double> &o : b.lift)
     o.resize(t.n);
-    double x = 1;
-    for (size_t i = 0; i < t.n; ++i) {
-      double r = b.run.r[i];
-      for (size_t q = 0; q <= j; ++q)
-        r += b.run.k[i].*kCosts[q].f;
-      o[i] = x *= 1 + r;
+  for (size_t i = 0; i < t.n; ++i) {
+    double r = b.run.r[i];
+    for (size_t j = 0; j < kNC; ++j) {
+      r += b.run.k[i].*kCosts[j].f;
+      b.lift[j][i] = x[j] *= 1 + r;
     }
   }
   return b;

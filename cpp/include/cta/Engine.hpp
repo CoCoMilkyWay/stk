@@ -1,7 +1,9 @@
 #pragma once
 
-// 单资产执行: 逐根链 drive = 源 (逐根出刀) → 仓位层 Size (目标仓位 → 实际仓位) → 成交 Fill (前根 / 本根仓位 + 成本) → 汇 (损益 Pnl); 仓位按本根收盘价调到
-//   核 (源 / Size / 成本) 无状态, 前根的刀与实际仓位只在 drive 里记; 汇只读 Fill + Tape
+// 单资产执行: 逐根链 drive (日 × 根) = 源 (日首 day(d), 逐根出刀) → 仓位层 Size (目标仓位 → 实际仓位) → 成交 Fill (前根 / 本根仓位 + 成本 + 本根的刀) → 汇 (逐根收 Fill, 日末 close(d));
+//   仓位按本根收盘价调到; 调参 / 策略 / 买入持有同一条链, 只换源与汇:
+//     调参 = Switch → Capture (日前缀两项, Tune.hpp); 策略 = Laddered → Pnl + Record (录刀, Trace.hpp); 买入持有 = Hold → Pnl
+//   Size / 成本无状态, 前根的刀与实际仓位只在 drive 里记; 汇只读 Fill + Tape
 //   仓位 w ∈ [−1, 1]: 正 = 多, 负 = 空
 //   仓位层: 波动率定仓 w · min(1, 目标 / σ̂) → 不交易带 (前后同向持仓且 |Δw| < 带宽 不调)
 //   损益: 实际按本根收盘成交, 净 r = p · a − 佣金 − 印花税 − 冲击; p = 前根收盘调到的仓位, w = 本根收盘调到的, a = 资产本根收益
@@ -12,7 +14,9 @@
 #include "cta/Model.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <iterator>
 #include <vector>
 
@@ -28,15 +32,9 @@ struct Rates {
 
 // 仓位层设定; 默认 = 不调 (买入持有)
 struct Sizing {
-  double vol = 0;    // 目标年化波动 (0 = 不调)
-  double buffer = 0; // 不交易带宽
-};
-
-struct Setup {
-  Rates rates;
-  Sizing sizing;
-  double bpy = 244; // 每年根数
-  Band band;        // 分层设定
+  float vol = 0;    // 目标年化波动 (0 = 不调)
+  float buffer = 0; // 不交易带宽
+  bool operator==(const Sizing &) const = default;
 };
 
 // 成本分项 (占净值比例): 一根 / 累计同一形
@@ -69,11 +67,12 @@ inline Costs costs_of(const Rates &u, const Cut &z, const Cut &x, float p, float
   return k;
 }
 
-// 仓位层核: 目标仓位 w + 前根实际仓位 p → 本根实际仓位
+// 仓位层核: 目标仓位 w + 前根实际仓位 p → 本根实际仓位; Size{t} = 不调
 struct Size {
   const Tape &t;
-  const double target, buffer; // 每根目标波动 (0 = 不调) / 不交易带宽
-  Size(const Tape &t, const Sizing &z, double bpy) : t(t), target(z.vol / std::sqrt(bpy)), buffer(z.buffer) {}
+  double target = 0, buffer = 0; // 每根目标波动 (0 = 不调) / 不交易带宽
+  // 设定 z, bpy = 每年根数
+  static Size of(const Tape &t, const Sizing &z, double bpy) { return {t, z.vol / std::sqrt(bpy), z.buffer}; }
   float operator()(size_t i, float w, float p) const {
     if (target > 0 && t.vol[i] > 0)
       w *= static_cast<float>(std::min(1.0, target / t.vol[i]));
@@ -81,24 +80,30 @@ struct Size {
   }
 };
 
-// 一根成交: 实际仓位 p (前根) / w (本根) + 本根成本 k
+// 一根成交: 实际仓位 p (前根) / w (本根) + 本根成本 k + 本根的刀 x
 struct Fill {
   size_t i = 0;
   float p = 0, w = 0;
   Costs k;
+  Cut x;
 };
 
-// 逐根链: 源 src (Cuts / Hold) 逐根出刀 → 仓位层 size → 成交 (成本按费率 u + 刀的越线差) → 汇 sink (Pnl)
+// 逐根链: 逐日 src.day(d) → 逐根 src 出刀 → 仓位层 size → 成交 (成本按费率 u + 刀的越线差) → 汇 sink; 日末 sink.close(d)
 //   前根起始 = 空刀 + 空仓
 template <class Source, class Sink>
-void drive(const Tape &t, const Rates &u, const Size &size, const Source &src, Sink &sink) {
+void drive(const Tape &t, const Rates &u, const Size &size, Source &&src, Sink &&sink) {
+  assert(t.days.off.back() == t.n && "日轴覆盖全部根");
   Cut z;
   float p = 0;
-  for (size_t i = 0; i < t.n; ++i) {
-    const Cut x = src(i);
-    const float w = size(i, x.w, p);
-    sink(Fill{i, p, w, costs_of(u, z, x, p, w)});
-    z = x, p = w;
+  for (size_t d = 0; d < t.days.size(); ++d) {
+    src.day(d);
+    for (size_t i = t.days.off[d]; i < t.days.off[d + 1]; ++i) {
+      const Cut x = src(i);
+      const float w = size(i, x.w, p);
+      sink(Fill{i, p, w, costs_of(u, z, x, p, w), x});
+      z = x, p = w;
+    }
+    sink.close(d);
   }
 }
 
@@ -120,6 +125,23 @@ struct Pnl {
     run.w[i] = f.w, run.g[i] = f.p * t.a[i] + f.k.chop + f.k.gap, run.r[i] = run.g[i] - f.k.sum(), run.k[i] = f.k;
     run.turn += std::fabs(f.w - f.p), run.cost += f.k;
   }
+  void close(size_t) {}
+};
+
+// 录刀汇: 逐根的刀写进轨迹列
+struct Record {
+  Cuts &cut;
+  void operator()(const Fill &f) { cut.put(f.i, f.x); }
+  void close(size_t) {}
+};
+
+// 并联两汇: 同一条链同时交给 a / b
+template <class A, class B>
+struct Tee {
+  A &a;
+  B &b;
+  void operator()(const Fill &f) { a(f), b(f); }
+  void close(size_t d) { a.close(d), b.close(d); }
 };
 
 } // namespace cta

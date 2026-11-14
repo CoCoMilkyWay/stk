@@ -1,7 +1,8 @@
 #pragma once
 
 // 中线调参 (分层固定, 不参与): 优化目标 (模型表 kGoals; 逐根两项累成日前缀取窗) + 参数网格 Grid (格点 + 中心可移的网格 + 其上的岭回归曲面)
-//   参数轴 = 自 v0 向两侧铺的格点 (相邻之比 kStep; 间距不小于轴的基本单位), 一个配置 = 各轴格点号 Q, 以根计的参数由它查 (Grid::p)
+//   目标 = 一条逐根链 (Engine.hpp drive): 源 Switch (定参中线核当开关) → 仓位层不调 → 汇 Capture (日前缀); 成本与回测同一份 costs_of; 只读 Tape, 一个配置一个任务
+//   参数轴 = 自 v0 向两侧铺的格点 (相邻之比 kStep; 间距不小于轴的基本单位), 一个配置 = 各轴格点号 Q, 以根计的参数由它查 (Grid::p); 各轴量定长 Ax (轴数之外不用)
 //   网格 = 中心周围各轴 m 个相邻格点的全部组合 (配置数可配, 由各多值轴轮流分得 m); 一点在网格内 = 各轴下标 At
 //   每日重拟: 窗 = 此前至多 W 日 (不足 = 自首日起, expanding); 最高点落在网格边上 → 以它为中心移网格再拟 (Trace.hpp)
 //   岭回归曲面 (网格上): 特征 = 各多值参数轴的网格内下标坐标 u ∈ [−1, 1] 的二次项 (u, u² (≥ 3 值的轴), 两两 u · u'), 去均值 → X [n][d];
@@ -45,46 +46,57 @@ struct Terms {
   bool live(size_t d0, size_t d1) const { return b[d1] > b[d0]; } // 段内有中线就绪的根
 };
 
-// capture = 有效多空: 中线 mid 当开关, 仓位 g = s (顺向侧: s · (收 − 中线) ≥ 0) / 0 (逆向侧 / 中线未就绪); 逐根两项 [a, b], 对数价 (≈ 满仓收益) 单位
-//   a = 开关顺向 − 翻转成本 = 前根 g · 对数涨跌 − (佣金 + 冲击) · |Δg| − 印花税 · 卖出量 max(前根 g − g, 0) (费率同回测 Rates)
-//   b = 振幅 |对数涨跌| (前根与本根中线都就绪才计)
-inline Terms capture_of(const Tape &t, const Days &days, const Col &mid, float s, const Rates &u) {
-  assert(days.off.back() == t.n && "日轴覆盖全部根");
-  Terms o;
-  o.a.reserve(days.size() + 1), o.b.reserve(days.size() + 1);
-  o.a.push_back(0), o.b.push_back(0);
-  float g = 0;
-  for (size_t d = 0; d < days.size(); ++d) {
-    double a = 0, b = 0;
-    for (size_t i = days.off[d]; i < days.off[d + 1]; ++i) {
-      const float w = s * (t.c[i] - mid[i]) >= 0 ? s : 0;
-      if (i) {
-        const double r = t.lr[i];
-        a += g * r;
-        if (mid[i - 1] > 0 && mid[i] > 0)
-          b += std::fabs(r);
-      }
-      a -= (u.commission + u.impact) * std::fabs(w - g) + u.stamp * std::max(0.0f, g - w);
-      g = w;
-    }
-    o.a.push_back(o.a.back() + a), o.b.push_back(o.b.back() + b);
+// 调参源: 中线当开关, 仓位 g = s (顺向侧: s · (收 − 中线) ≥ 0) / 0 (逆向侧 / 中线未就绪); 中线核 c 各日同参 p (以根计)
+template <class K>
+struct Switch {
+  K &c;
+  const Tape &t;
+  P p;
+  float s;
+  void day(size_t d) { c.day(d, p); }
+  Cut operator()(size_t i) {
+    const float m = c.bar(i);
+    return {.mid = m, .w = s * (t.c[i] - m) >= 0 ? s : 0};
   }
-  return o;
-}
+};
 
-// 优化目标 goal 的日前缀: 中线 mid, 顺向 s, 费率 u
-inline Terms goal_of(size_t goal, const Tape &t, const Days &days, const Col &mid, float s, const Rates &u) {
+// capture 汇 = 有效多空: 逐根两项 [a, b] 累成日前缀 o, 对数价 (≈ 满仓收益) 单位
+//   a = 开关顺向 − 翻转成本 = 前根 g · 对数涨跌 − 本根成本 (佣金 + 印花税 + 冲击; 开关无越线差)
+//   b = 振幅 |对数涨跌| (前根与本根中线都就绪才计)
+struct Capture {
+  const Tape &t;
+  Terms o;
+  double a = 0, b = 0; // 当日累计
+  float pm = kNaN;     // 前根中线
+  void operator()(const Fill &f) {
+    if (f.i) {
+      const double r = t.lr[f.i];
+      a += f.p * r;
+      if (pm > 0 && f.x.mid > 0)
+        b += std::fabs(r);
+    }
+    a -= f.k.sum(), pm = f.x.mid;
+  }
+  void close(size_t) { o.a.push_back(o.a.back() + a), o.b.push_back(o.b.back() + b), a = b = 0; }
+};
+
+// 优化目标 goal 的日前缀: 中线模型 kind 定参 p (以根计), 顺向 s, 费率 u
+inline Terms goal_of(size_t goal, const Tape &t, size_t kind, const P &p, float s, const Rates &u) {
   assert(goal == kCapture && "优化目标");
-  return capture_of(t, days, mid, s, u);
+  Capture sink{t};
+  sink.o.a.reserve(t.days.size() + 1), sink.o.b.reserve(t.days.size() + 1);
+  sink.o.a.push_back(0), sink.o.b.push_back(0);
+  with_center(kind, t, [&]<class K>(K &k) { drive(t, u, Size{t}, Switch<K>{k, t, p, s}, sink); });
+  return std::move(sink.o);
 }
 
 // 网格的一点: 各轴网格内下标
-using At = std::vector<size_t>;
+using At = Ax<size_t>;
 
-// 里程表进一格: at[i] ∈ [0, size(i)); 转满一圈 → false
+// 里程表进一格: 前 n 轴 at[i] ∈ [0, size(i)); 转满一圈 → false
 template <class A, class F>
-bool tick(A &at, F size) {
-  for (size_t i = 0; i < at.size(); ++i) {
+bool tick(A &at, size_t n, F size) {
+  for (size_t i = 0; i < n; ++i) {
     if (++at[i] < size(i))
       return true;
     at[i] = 0;
@@ -154,12 +166,13 @@ struct Ridge {
     }
     return z;
   }
-  // 曲面最高点 (连续): 各多值轴坐标 u ∈ [−1, 1] (轴序), 每轴 kPeak 等分的细格上取最大, 同值取离网格中心近的; 无多值轴 = 空
-  std::vector<double> peak(const std::vector<double> &y) const {
+  // 曲面最高点 (连续): 各多值轴坐标 u ∈ [−1, 1] (前 sq.size() 个, 轴序), 每轴 kPeak 等分的细格上取最大, 同值取离网格中心近的; 无多值轴 = 全 0
+  Ax<double> peak(const std::vector<double> &y) const {
     const std::vector<double> z = coef(y);
     const size_t a = sq.size();
-    std::vector<double> u(a), best(a, 0), f;
-    std::vector<size_t> at(a, 0);
+    Ax<double> u{}, best{};
+    std::vector<double> f;
+    At at{};
     double top = -INFINITY, r2 = INFINITY;
     if (a)
       do {
@@ -171,13 +184,13 @@ struct Ridge {
           v += z[k] * (f[k] - mu[k]);
         if (v > top + 1e-12 || (v >= top - 1e-12 && r < r2))
           top = v, r2 = r, best = u;
-      } while (tick(at, [](size_t) { return kPeak + 1; }));
+      } while (tick(at, a, [](size_t) { return kPeak + 1; }));
     return best;
   }
 };
 
-// m = 各轴网格格点数, at = 网格 (各轴网格内下标)
-inline Ridge ridge_of(const std::vector<size_t> &m, const std::vector<At> &at) {
+// m = 各轴网格格点数 (轴数之外 = 1), at = 网格 (各轴网格内下标)
+inline Ridge ridge_of(const At &m, const std::vector<At> &at) {
   assert(!at.empty() && "岭回归: 空网格");
   const size_t n = at.size();
   std::vector<char> sq;
@@ -216,32 +229,35 @@ inline Ridge ridge_of(const std::vector<size_t> &m, const std::vector<At> &at) {
 }
 
 // 一个配置 = 各轴的格点号 q (q = 0 = v0), 参数值查轴的格点表 (Grid::value)
-using Q = std::vector<int>;
+using Q = Ax<int>;
+// 一组参数, 轴的单位 (以日计的轴 = 日)
+using V = Ax<double>;
 
 inline constexpr double kStep = 1.41421356; // 相邻格点之比 (大值处; 小值处退成等差 u)
 
 // 一个中线模型的格点 + 中心可移的网格 + 网格上的岭回归曲面
 //   网格 = 中心 c 周围各轴 m 个相邻格点的全部组合 (收进硬边界); 岭回归只看网格内下标, 与中心无关, 预先算好
 struct Grid {
-  size_t kind = kEma;                   // 中线模型 (kCenters 下标)
-  size_t S = 0;                         // 每日根数 (以日计的轴 × S)
-  std::vector<const Axis *> ax;         // [轴]
-  std::vector<int> lo, hi;              // [轴] 格点号的硬边界
-  std::vector<std::vector<double>> val; // [轴][q − lo] 格点值
-  std::vector<size_t> m;                // [轴] 网格格点数 (各轴之积 ≤ 配置数)
-  std::vector<At> at;                   // [网格配置] 各轴网格内下标 ∈ [0, m)
+  size_t kind = kEma;          // 中线模型 (kCenters 下标)
+  size_t S = 0;                // 每日根数 (以日计的轴 × S)
+  size_t na = 0;               // 轴数 (≤ kAxes)
+  Ax<const Axis *> ax{};       // [轴]
+  Q lo{}, hi{};                // [轴] 格点号的硬边界
+  Ax<std::vector<double>> val; // [轴][q − lo] 格点值
+  At m{};                      // [轴] 网格格点数 (各轴之积 ≤ 配置数; 轴数之外 = 1)
+  std::vector<At> at;          // [网格配置] 各轴网格内下标 ∈ [0, m)
   Ridge ridge;
 
   // 轴 a 格点 q 的值 (轴的单位; 以日计的轴 = 日)
   double value(size_t a, int q) const { return val[a][static_cast<size_t>(q - lo[a])]; }
   // 初始中心
-  Q home() const { return Q(ax.size(), 0); }
+  Q home() const { return {}; }
   // 中心 c 的网格在轴 a 上的首个格点号 (整格收进硬边界)
   int base(const Q &c, size_t a) const { return std::clamp(c[a] - static_cast<int>(m[a] - 1) / 2, lo[a], hi[a] - static_cast<int>(m[a]) + 1); }
   // 中心 c 的网格 (序同 at)
   std::vector<Q> around(const Q &c) const {
-    std::vector<Q> o(at.size(), Q(ax.size()));
-    for (size_t a = 0; a < ax.size(); ++a) {
+    std::vector<Q> o(at.size());
+    for (size_t a = 0; a < na; ++a) {
       const int b = base(c, a);
       for (size_t x = 0; x < at.size(); ++x)
         o[x][a] = b + static_cast<int>(at[x][a]);
@@ -250,7 +266,7 @@ struct Grid {
   }
   // q 落在中心 c 的网格边上, 且网格还能往那边移 (未到硬边界)
   bool edge(const Q &c, const Q &q) const {
-    for (size_t a = 0; a < ax.size(); ++a) {
+    for (size_t a = 0; a < na; ++a) {
       const int b = base(c, a), e = b + static_cast<int>(m[a]) - 1;
       if ((q[a] == b && b > lo[a]) || (q[a] == e && e < hi[a]))
         return true;
@@ -265,68 +281,67 @@ struct Grid {
     return w > 0 ? std::exp(std::log(value(a, q)) * (1 - w) + std::log(value(a, q + 1)) * w) : value(a, q);
   }
   // 中心 c 的网格上的连续点 u (Ridge::peak) → 各轴参数 (轴的单位); q = 最近的格点
-  std::vector<double> values(const Q &c, const std::vector<double> &u, Q &q) const {
-    std::vector<double> v(ax.size());
-    q.assign(ax.size(), 0);
-    for (size_t a = 0, j = 0; a < ax.size(); ++a) {
+  V values(const Q &c, const Ax<double> &u, Q &q) const {
+    V v{};
+    q = {};
+    for (size_t a = 0, j = 0; a < na; ++a) {
       const double f = base(c, a) + (m[a] > 1 ? (u[j++] + 1) / 2 * static_cast<double>(m[a] - 1) : 0);
       v[a] = value_at(a, f), q[a] = static_cast<int>(std::lround(f));
     }
     return v;
   }
   // 参数 v (轴的单位) → 以根计
-  P bars(const std::vector<double> &v) const {
-    P o;
-    for (size_t a = 0; a < ax.size(); ++a)
-      o.push_back(static_cast<float>(v[a] * (ax[a]->day ? static_cast<double>(S) : 1.0)));
+  P bars(const V &v) const {
+    P o{};
+    for (size_t a = 0; a < na; ++a)
+      o[a] = static_cast<float>(v[a] * (ax[a]->day ? static_cast<double>(S) : 1.0));
     return o;
   }
   // 配置 q 的参数 (以根计)
   P p(const Q &q) const {
-    std::vector<double> v;
-    for (size_t a = 0; a < ax.size(); ++a)
-      v.push_back(value(a, q[a]));
+    V v{};
+    for (size_t a = 0; a < na; ++a)
+      v[a] = value(a, q[a]);
     return bars(v);
   }
-  // 配置 q 的中线 (取进 Tape, 串行)
-  const Col &mid(Tape &t, const Q &q) const { return center(t, kind, p(q)); }
 };
 
 // S = 每日根数, kind = 中线模型, n = 网格配置数上限 (≥ 1)
 inline Grid grid_of(size_t S, size_t kind, size_t n) {
   assert(n >= 1 && "网格配置数");
   assert(kind < std::size(kCenters) && "中线模型");
-  Grid g{.kind = kind, .S = S};
-  for (const Axis &a : kCenters[kind].axes)
-    g.ax.push_back(&a);
-  for (const Axis *a : g.ax) {
+  const std::vector<Axis> &axes = kCenters[kind].axes;
+  assert(axes.size() <= kAxes && "参数轴数");
+  Grid g{.kind = kind, .S = S, .na = axes.size()};
+  g.m.fill(1);
+  for (size_t k = 0; k < g.na; ++k) {
+    const Axis *a = g.ax[k] = &axes[k];
     assert(a->lo <= a->v0 && a->v0 <= a->hi && a->u > 0 && "参数轴: 中心在边界内, 单位为正");
     std::vector<double> dn, up; // 自 v0 向下 / 向上
     for (double v = a->v0, w; (w = std::min(v / kStep, v - a->u)) >= a->lo * (1 - 1e-9);)
       dn.push_back(v = w);
     for (double v = a->v0, w; (w = std::max(v * kStep, v + a->u)) <= a->hi * (1 + 1e-9);)
       up.push_back(v = w);
-    g.lo.push_back(-static_cast<int>(dn.size()));
-    g.hi.push_back(static_cast<int>(up.size()));
-    std::vector<double> &t = g.val.emplace_back(dn.rbegin(), dn.rend());
+    g.lo[k] = -static_cast<int>(dn.size()), g.hi[k] = static_cast<int>(up.size());
+    std::vector<double> &t = g.val[k];
+    t.assign(dn.rbegin(), dn.rend());
     t.push_back(a->v0);
     t.insert(t.end(), up.begin(), up.end());
   }
   // 配置数分到各轴: 每次给格点最少 (未铺满整轴) 的轴加一个, 积不超过 n
-  g.m.assign(g.ax.size(), 1);
   for (size_t prod = 1;;) {
-    size_t a = g.ax.size();
-    for (size_t b = 0; b < g.ax.size(); ++b)
-      if (g.m[b] < static_cast<size_t>(g.hi[b] - g.lo[b] + 1) && (a == g.ax.size() || g.m[b] < g.m[a]))
+    size_t a = g.na;
+    for (size_t b = 0; b < g.na; ++b)
+      if (g.m[b] < static_cast<size_t>(g.hi[b] - g.lo[b] + 1) && (a == g.na || g.m[b] < g.m[a]))
         a = b;
-    if (a == g.ax.size() || prod / g.m[a] * (g.m[a] + 1) > n)
+    if (a == g.na || prod / g.m[a] * (g.m[a] + 1) > n)
       break;
     prod = prod / g.m[a] * (g.m[a] + 1), ++g.m[a];
   }
-  At at(g.ax.size(), 0);
+  At at{};
   do
     g.at.push_back(at);
-  while (tick(at, [&](size_t i) { return g.m[i]; }));
+  while (tick(at, g.na, [&](size_t i) { return g.m[i]; }));
   g.ridge = ridge_of(g.m, g.at);
   return g;
 }

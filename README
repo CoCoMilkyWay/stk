@@ -351,11 +351,12 @@ stk/
 │   │   │       └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU (复用 Stat 行核) / GPU 后端 + 对拍
 │   │   ├── cta/                                        # 📈 CTA 单资产 中线 + 分层 择时 (header-only 纯计算; Market → CTA 页的模型层)
 │   │   │   │                                           #    中线 (调参, 开关) ─拼接→ 分层 Ladder (减仓线链: 链顶锚定上一个触发点, 往下每条隔每日 1 波动 (dev / ATR, 窗可设, 默认一年, 每日变化 ≤ 10%); 满仓随中线, 中线上穿链顶即回到随中线; 份数默认 20 (可调); 卖出即挂加仓线止损, 加仓线每日跟随 (以间距计, 默认 0.1 / 0.1, 可调)) ─刀 Cut→ 仓位层 Size ─→ 成交 Fill (+ 成本) → 损益 Pnl
-│   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 指标列缓存 Tape (含日 K / 分层波动) → 中线表 kCenters (ema / kama / mid / chand / sar / price; 窗不满用部分窗); 分层 Ladder (减仓线链 + 各份加仓线止损与跟随, 档线快照) 逐根出刀 Cut
-│   │   │   ├── Engine.hpp                              # 📈 执行: 逐根链 drive (策略 / 买入持有同一条); 仓位层 (波动率定仓) + 五项成本
-│   │   │   ├── Tune.hpp                                # 📈 中线调参: 优化目标 (有效多空 − 翻转成本) + 参数网格 Grid + 岭回归曲面
+│   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 只读原料带 Tape (含日 K) / 分层波动 swing_of; 中线表 kCenters 一模型一核 (ema / kama / mid / chand / sar / price;
+│   │   │   │                                           #    日首换参 + 逐根出值, 定参 = 各日同参, 窗不满用部分窗); 分层 Ladder (减仓线链 + 各份加仓线止损与跟随, 档线快照) 逐根出刀 Cut
+│   │   │   ├── Engine.hpp                              # 📈 执行: 唯一一条逐根链 drive (日 × 根: 源 → 仓位层 → 成交 → 汇); 调参 / 策略 / 买入持有只换源与汇; 仓位层 (波动率定仓) + 五项成本
+│   │   │   ├── Tune.hpp                                # 📈 中线调参: 优化目标 (Switch 源 → Capture 汇: 有效多空 − 翻转成本, 日前缀) + 参数网格 Grid + 岭回归曲面
 │   │   │   ├── Metrics.hpp                             # 📈 指标: 收益统计 / 择时捕获 / 在场段; 一本账 Book
-│   │   │   └── Trace.hpp                               # 📈 滚动调参全期轨迹: 逐日以此前窗口拟曲面取连续最高点 → 5 日阻尼 → 变参中线 (状态接续) → 分层跑出 Cuts → 策略 / 买入持有两本账
+│   │   │   └── Trace.hpp                               # 📈 设定 Spec + 滚动调参全期轨迹: 格点并行打分 → 逐日以此前窗口拟曲面取连续最高点 → 5 日阻尼 → 变参中线核 + 分层一遍跑出 Cuts 与策略账 ↔ 买入持有账
 │   │   ├── math/                                       # 📐 数学工具
 │   │   │   ├── Step.hpp                                # 📐 变换步元数据 / 定义 (编译期注册)
 │   │   │   ├── distribution/                           # 📐 分位 / 矩: DailyQuantile · KLLcache · RetMoments · SizeThresholds · PdfSnap (KLL 成品快照)

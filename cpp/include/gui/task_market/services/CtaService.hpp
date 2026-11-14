@@ -1,7 +1,7 @@
 // CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产 中线 + 分层 模型的滚动调参全期轨迹 (cta/Trace.hpp)
 //   价格源 = 价格库发布的 PriceView (QuoteHub 的): 请求带该份的日脊 + 标的的分钟价 (不可变, 只拷指针) + 戳;
 //     有效根序列按 (标的, 戳) 留最近 kKeep 个 (只改设定不重算)
-//   请求 = 标的 + CtaSpec + 价; 新请求覆盖旧的 (换标的 / 改设定 / 库变即重算). 进度: Running = 选参日数
+//   请求 = 标的 + cta::Spec + 价; 新请求覆盖旧的 (换标的 / 改设定 / 库变即重算). 进度: Running = 选参日数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (latest)
 #pragma once
 
@@ -21,27 +21,10 @@ namespace GUI::Market {
 
 using namespace Quote;
 
-// 模型与回测设定 (UI 编辑, 进请求)
-struct CtaSpec {
-  size_t goal = cta::kCapture;                  // 优化目标 (cta::kGoals 下标)
-  size_t kind = cta::kKama;                     // 中线模型 (cta::kCenters 下标)
-  int dir = cta::kLong;                         // 方向 (cta::kDirs 下标)
-  int roll = static_cast<int>(cta::kRoll);      // 滚动窗 (日, kMinRoll ~ kMaxRoll)
-  int grid = 9;                                 // 网格配置数上限 (各多值轴轮流分格点)
-  float vol = 0;                                // 目标年化波动 (0 = 不调)
-  float buffer = 0;                             // 不交易带宽
-  size_t swing = cta::kDev;                     // 分层波动度量 (cta::kSwings 下标)
-  int days = static_cast<int>(cta::kSwingDays); // 分层波动窗 (日)
-  float stop = cta::kStop;                      // 止损距 (间距)
-  float trail = cta::kTrail;                    // 跟随距 (间距)
-  int units = cta::kUnits;                      // 满仓份数 (档线条数)
-  bool operator==(const CtaSpec &) const = default;
-};
-
 struct CtaRequest {
   uint32_t gen = 0;
-  Quote::Ref ref; // 标的
-  CtaSpec spec;
+  Quote::Ref ref;                                      // 标的
+  cta::Spec spec;                                      // 模型与回测设定 (UI 编辑)
   cta::Rates rates;                                    // 成本率 = 系统配置 (Config::commission / stamp / fixed_impact)
   Quote::PriceStamp stamp;                             // 价格库发布的戳
   std::shared_ptr<const std::vector<misc::Ymd>> dates; // 该戳的日脊
@@ -52,7 +35,7 @@ struct CtaRequest {
 struct CtaResult {
   uint32_t gen = 0; // = 请求的
   Quote::Ref ref;
-  CtaSpec spec;
+  cta::Spec spec;
   std::string lack;                      // 算不了的原因 (空 = 有轨迹)
   std::vector<misc::Ymd> dates;          // 日轴: 有效根的日下标 = t / kSlots
   std::shared_ptr<const cta::Series> se; // 有效根
@@ -72,7 +55,7 @@ public:
 private:
   static constexpr Phase kStart = Phase::Running;
   static constexpr size_t kKeep = 4; // 留在内存的标的序列数
-  static constexpr int kThreads = 8; // 网格线程 (每线程一个配置的几条根列)
+  static constexpr int kThreads = 8; // 网格线程 (一个配置一个任务)
   Progress &board() { return *this; }
   bool run(CtaRequest &req);
   bool publish(const CtaRequest &req, std::string lack, std::shared_ptr<CtaResult> out = nullptr);
