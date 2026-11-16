@@ -40,9 +40,7 @@ struct MsgDef {
   const char *id, *cn;
 };
 inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"review", "复盘"}, {"retry", "重发"}, {"test", "自检"}};
-inline constexpr int kMsgCount = static_cast<int>(std::size(kMsgs));
-static_assert(kMsgCount == static_cast<int>(Msg::Test) + 1);
-inline const MsgDef &def(Msg m) { return kMsgs[static_cast<int>(m)]; }
+AGENT_ROWS(Msg, kMsgs, Test);
 struct Message {
   Msg kind;
   std::string text;

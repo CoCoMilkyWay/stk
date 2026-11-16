@@ -196,7 +196,7 @@ stk/
 │   │   │   │   │   ├── RunService.hpp                  # 🖥️ 因子表 Run: 逐文件一张共享 DAG → 分层 / 多空 / 换手成本统计 → 回写 stats
 │   │   │   │   │   ├── SearchService.hpp               # 🖥️ 参数搜索: 采样 → 曲面取峰 → 细化 → 挑显著且不冗余的 → 回写 weights (目标见 factor/Search)
 │   │   │   │   │   ├── InspectService.hpp              # 🖥️ 单因子深看 (不写文件)
-│   │   │   │   │   ├── LensService.hpp                 # 🖥️ 观察 worker: 一组根 + 特征原值在观察窗 (评估期最近一段, 会话首次观察按内存定) 上整期一块 (不写文件; 与 Inspect 同一条管线)
+│   │   │   │   │   ├── LensService.hpp                 # 🖥️ 观察 worker: 一组根 + 特征原值在评估期 (与回测同一段) 上整期一块 (不写文件; 与 Inspect 同一条管线)
 │   │   │   │   │   └── PortfolioService.hpp            # 🖥️ 组合: 因子 / 篮子 / 个股 → 账 PortfolioBook (线 × [毛收益 / 冲击 / 固定 / 增仓量] × 行)
 │   │   │   │   └── ui/PortfolioBoxes.hpp               # 🖥️ Alpha → Factors 的组合小框 + 当前组合 (Lines 页因子 / 策略两组的来源)
 │   │   │   ├── quote/                                  # 🖥️ 行情: Market 各页 / Live 持仓页 / Database Sync 页共用
@@ -307,7 +307,9 @@ stk/
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 / 入库门槛默认值 / 各目录
 │   │   │       ├── Llm.hpp                             # 🤖 对话客户端 Session (纯传输, HTTPS, 不留对话态): Zhipu / Cursor 两后端同一个 send (每次整份), 结局归一 End
 │   │   │       ├── Chat.hpp                            # 🤖 对话的后台单线程: ask (整份上下文) → poll 取 Tick
-│   │   │       ├── Tree.hpp                            # 🤖 上下文 = 时间线的纯函数: 首条 + 研究树 (按假设节点 / 结果类型收起) + 上一轮回复 + 本条
+│   │   │       ├── Timeline.hpp                        # 🤖 时间线 (全会话唯一真相) 的纯函数: 状态 StateOf (调用收尾逐个 Apply: 假设板 / 查过的叶 / 入库) / 计数 TallyOf / 流程旗 FlagsOf
+│   │   │       ├── Tree.hpp                            # 🤖 上下文 = 时间线的纯函数 TurnsOf: 首条 + 研究树 (按假设节点 / 结果类型收起) + 上一轮回复 + 本条
+│   │   │       ├── Enum.hpp                            # 🤖 枚举表 (一个枚举一行 AGENT_ROWS): def 取行 / kNum 个数 / IdOf 按 id 反查; 带 id 的枚举 JSON 一律写 id
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 / 数的写法 / 检索
 │   │   │       ├── Journal.hpp                         # 🤖 会话日志目录 (system.md / 逐轮 md / events.jsonl / report.md / session.json 存档) + 工具样本
 │   │   │       ├── Tools.hpp                           # 🤖 工具表 → 系统提示工具节 / 回复解析 ParseCalls / 参数校验; 执行记录 Act
@@ -321,7 +323,7 @@ stk/
 │   │   │       │                                       #    · 四道 Search / Run / Lens (LensService) / Replay (ReplayService), 平面经 Store 与 GUI 服务共用
 │   │   │       ├── Acts.hpp                            # 🤖 一个调用的执行, 按执行方分派; 回复级约束 RuleMiss
 │   │   │       ├── services/ReplayService.hpp          # 🤖 盘口重放 worker: 一 (资产, 日) 逐笔进订单簿 → 逐秒盘口 / 大单事件 / 全簿 (view_book)
-│   │   │       └── Mine.hpp                            # 🤖 挖掘会话状态机 (AGENT.md 状态图): 每帧 poll Chat / Lab 两 worker; 时间线 = 全会话唯一真相; 停 / 续 / 回退 (状态快照); 存档与载入在 Save.cpp
+│   │   │       └── Mine.hpp                            # 🤖 挖掘会话状态机 (AGENT.md 状态图): 每帧 poll Chat / Lab 两 worker; 停 / 续 / 回退 (截时间线, 状态照它重算); 存档与载入在 Save.cpp (成对 to_json / from_json)
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                           #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)

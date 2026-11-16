@@ -12,11 +12,11 @@
 // 工具结果样本 (不随会话, output/run/agent/<main|test>/tools/): KeepToolOut 每个工具留最近一份 <工具名>.md; PruneToolOut 删掉 known 以外的
 // =============================================================================
 
+#include "gui/task_agent/Enum.hpp"
 #include "gui/task_agent/Llm.hpp"
 #include "nlohmann/json.hpp"
 
 #include <cstdint>
-#include <iterator>
 #include <string>
 #include <vector>
 
@@ -50,8 +50,7 @@ struct EventDef {
   const char *id;
 };
 inline constexpr EventDef kEvents[] = {{"open"}, {"load"}, {"resume"}, {"ask"}, {"memo"}, {"reply"}, {"parse_fail"}, {"calls"}, {"call"}, {"result"}, {"stage"}, {"eval"}, {"submit"}, {"note"}, {"hyp"}, {"judge"}, {"questions"}, {"pick"}, {"answer"}, {"stop"}, {"cancel"}, {"rewind"}, {"pause"}};
-static_assert(std::size(kEvents) == static_cast<size_t>(Event::Pause) + 1);
-inline const EventDef &def(Event e) { return kEvents[static_cast<int>(e)]; }
+AGENT_ROWS(Event, kEvents, Pause);
 
 class Journal {
 public:

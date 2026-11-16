@@ -16,6 +16,7 @@
 #include "gui/Tasks.hpp"
 #include "gui/compute/ui/TabCompute.hpp"
 #include "gui/engine/EngineHub.hpp"
+#include "gui/engine/Scope.hpp" // year_cap (页顶年数上限)
 #include "gui/engine/services/InspectService.hpp"
 #include "gui/engine/services/RunService.hpp"
 #include "gui/engine/services/SearchService.hpp"
@@ -360,9 +361,30 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
         ImGui::TextUnformatted("Period:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(90);
-        if (int y = state->want_years; ImGui::InputInt("年##eval_years", &y) && std::max(y, 1) != state->want_years) {
-          state->want_years = std::max(y, 1);
-          save_years(state->want_years);
+        // 年数封顶于 Engine::year_cap (Inspect 整期装不下时记下): 刚碰到上限 → 降到上限; 往上加到顶 → 不动 + warning
+        const std::string &cap_pool = pool_def(state->want_pool).name;
+        const int cap = Engine::year_cap(cap_pool, state->want_lv);
+        if (cap > 0 && state->want_years > cap) {
+          std::fprintf(stderr, "[alpha] %s / %s: 评估年数 %d → %d 年 (整期装不下内存 / 显存预算)\n", cap_pool.c_str(), Engine::factor_level(state->want_lv).name,
+                       state->want_years, cap);
+          state->want_years = cap;
+          save_years(cap);
+        }
+        if (int y = state->want_years; ImGui::InputInt("年##eval_years", &y)) {
+          if (cap > 0 && y > cap)
+            std::fprintf(stderr, "[alpha] %s / %s: 评估年数已到上限 %d 年 (整期装不下内存 / 显存预算), 不能再加\n", cap_pool.c_str(),
+                         Engine::factor_level(state->want_lv).name, cap);
+          y = std::max(y, 1);
+          if (cap > 0)
+            y = std::min(y, cap);
+          if (y != state->want_years) {
+            state->want_years = y;
+            save_years(y);
+          }
+        }
+        if (cap > 0) {
+          ImGui::SameLine();
+          ImGui::TextDisabled("(上限 %d 年)", cap);
         }
         ImGui::EndGroup();
         // 因子层 = 所用特征的最细层 (叶写全名 档.层.列); 门控 / 标签在因子池的 Bar 库 (截面 = 该库 cs_valid);
@@ -372,7 +394,8 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
               "• 窗长 d 等参数按本层行数计\n"
               "• 评估期 = 所用特征库落盘日交集的最近 N 年 (Run / Search / Inspect 同一段; Market 组合恒用全期),\n"
               "  其前另装 10%% 预热日只给回看, 不计统计;\n"
-              "  表里按别的年数算的统计标灰, 重跑才换成本段的\n"
+              "  表里按别的年数算的统计标灰, 重跑才换成本段的;\n"
+              "  Inspect 整期一次装进内存, 装不下时年数封顶于装得下的最多年数 (本次运行内, 按池 + 层)\n"
               "• 有计算在跑时, 先取消, 停下后切过去");
       }
       {

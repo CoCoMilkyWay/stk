@@ -35,22 +35,6 @@ bool matches(const Note &x, const std::vector<std::string> &ws) {
   return std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return hay.find(w) != std::string::npos; });
 }
 
-NoteKind kind_of(const std::string &id) {
-  for (size_t i = 0; i < kNoteKindCount; ++i)
-    if (id == kNoteKinds[i].id)
-      return static_cast<NoteKind>(i);
-  assert(false && "没有这类记录");
-  return NoteKind::Feature;
-}
-
-NoteState state_of(const std::string &id) {
-  for (size_t i = 0; i < kNoteStateCount; ++i)
-    if (id == kNoteStates[i].id)
-      return static_cast<NoteState>(i);
-  assert(false && "没有这种处理");
-  return NoteState::Open;
-}
-
 // 附议关系: 附议了哪条 / 有几条附议它
 std::string relation(const Notes &notes, const Note &x) {
   std::string s;
@@ -75,7 +59,7 @@ json line_of(const Note &x) {
 } // namespace
 
 NoteKind NoteOf(Tool t) {
-  for (size_t i = 0; i < kNoteKindCount; ++i)
+  for (size_t i = 0; i < kNum<NoteKind>; ++i)
     if (kNoteKinds[i].tool == t)
       return static_cast<NoteKind>(i);
   assert(false && "不是提交记录的工具");
@@ -92,7 +76,7 @@ std::string Note::body() const {
 
 void Notes::load(bool test) {
   test_ = static_cast<int>(test);
-  for (size_t i = 0; i < kNoteKindCount; ++i) {
+  for (size_t i = 0; i < kNum<NoteKind>; ++i) {
     const NoteKind k = static_cast<NoteKind>(i);
     std::vector<Note> &v = notes_[i];
     v.clear();
@@ -110,7 +94,7 @@ void Notes::load(bool test) {
                    .session = j.at("session").get<std::string>(),
                    .ref = j.at("ref").get<std::string>(),
                    .round = j.at("round").get<int>(),
-                   .state = state_of(j.value("state", std::string(def(NoteState::Open).id))),
+                   .state = IdOf<NoteState>(j.value("state", std::string(def(NoteState::Open).id))),
                    .reply = j.value("reply", std::string()),
                    .fields = j.at("fields")});
       assert(v.back().fields.contains("title"));
@@ -172,16 +156,18 @@ void Notes::set(NoteKind k, const std::string &id, NoteState s, std::string repl
   rewrite(k);
 }
 
-int Notes::count(const std::string &session, int from) const {
-  int n = 0;
+std::vector<const Note *> Notes::filed(const std::string &session, int from) const {
+  std::vector<const Note *> out;
   for (const std::vector<Note> &v : notes_)
-    n += static_cast<int>(std::count_if(v.begin(), v.end(), [&](const Note &x) { return x.session == session && x.round >= from; }));
-  return n;
+    for (const Note &x : v)
+      if (x.session == session && x.round >= from)
+        out.push_back(&x);
+  return out;
 }
 
 void Notes::drop(const std::string &session, int from) {
   assert(test_ >= 0 && "先 load");
-  for (size_t i = 0; i < kNoteKindCount; ++i)
+  for (size_t i = 0; i < kNum<NoteKind>; ++i)
     if (std::erase_if(notes_[i], [&](const Note &x) { return x.session == session && x.round >= from; }) > 0)
       rewrite(static_cast<NoteKind>(i));
 }
@@ -203,7 +189,7 @@ std::string NotesText(const Notes &notes, const std::string &kind, const std::st
   };
   std::string s;
   if (kind.empty()) {
-    for (size_t i = 0; i < kNoteKindCount; ++i) {
+    for (size_t i = 0; i < kNum<NoteKind>; ++i) {
       const NoteKind k = static_cast<NoteKind>(i);
       const std::vector<const Note *> h = hits(k);
       s += head(k, h.size());
@@ -213,7 +199,7 @@ std::string NotesText(const Notes &notes, const std::string &kind, const std::st
     }
     return s + "要看全文就给 kind\n";
   }
-  const NoteKind k = kind_of(kind);
+  const NoteKind k = IdOf<NoteKind>(kind);
   const std::vector<const Note *> h = hits(k);
   s += head(k, h.size());
   if (h.empty())
@@ -232,7 +218,7 @@ std::string NotesText(const Notes &notes, const std::string &kind, const std::st
 
 std::string NotesBrief(const Notes &notes, const std::string &scope) {
   std::string s;
-  for (size_t i = 0; i < kNoteKindCount; ++i) {
+  for (size_t i = 0; i < kNum<NoteKind>; ++i) {
     const NoteKind k = static_cast<NoteKind>(i);
     const std::vector<Note> &v = notes.of(k);
     s += (i ? " · " : "") + std::string(def(k).cn) + " " + std::to_string(v.size()) + " (待办 " + std::to_string(notes.open(k));

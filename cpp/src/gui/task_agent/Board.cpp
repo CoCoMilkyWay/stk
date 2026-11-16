@@ -9,12 +9,6 @@
 
 namespace GUI::Agent {
 
-Stance StanceOf(std::string_view id) {
-  const auto it = std::find_if(std::begin(kStances), std::end(kStances), [&](const StanceDef &d) { return id == d.id; });
-  assert(it != std::end(kStances) && "verdict 已按参数表校验");
-  return static_cast<Stance>(it - std::begin(kStances));
-}
-
 bool RefOf(std::string_view s, Ref &r) {
   const size_t hash = s.find('#');
   if (s.size() < 4 || s[0] != 'R' || hash == std::string_view::npos)
@@ -28,16 +22,32 @@ bool RefOf(std::string_view s, Ref &r) {
 
 std::string RefText(Ref r) { return "R" + std::to_string(r.round) + "#" + std::to_string(r.call); }
 
-const Hyp &Board::add(const Call &c, Ref at) {
+void Board::add(const Call &c, Ref at) {
   assert(c.tool == Tool::Hypothesize);
-  Hyp h{.id = "H" + std::to_string(hyps_.size() + 1), .fields = c.args, .at = at};
-  hyps_.push_back(std::move(h));
-  return hyps_.back();
+  hyps_.push_back({.id = next(), .fields = c.args, .at = at});
 }
 
-Hyp *Board::find(const std::string &id) {
+void Board::judge(const Call &c, Ref at) {
+  assert(c.tool == Tool::Judge);
+  Hyp &h = hyp(c.str("hyp"));
+  h.stance = IdOf<Stance>(c.str("verdict")), h.judged = at, h.verdict = c.args, h.pending = 0;
+}
+
+void Board::vary(const Call &c, bool knob, Ref at) {
+  assert(c.tool == Tool::EvalFactor);
+  Hyp &h = hyp(c.str("hyp"));
+  ++h.evals, h.knobs += knob, h.pending = at.round;
+}
+
+const Hyp *Board::find(const std::string &id) const {
   const auto it = std::find_if(hyps_.begin(), hyps_.end(), [&](const Hyp &h) { return h.id == id; });
   return it == hyps_.end() ? nullptr : &*it;
+}
+
+Hyp &Board::hyp(const std::string &id) {
+  const auto it = std::find_if(hyps_.begin(), hyps_.end(), [&](const Hyp &h) { return h.id == id; });
+  assert(it != hyps_.end() && "假设已在板上");
+  return *it;
 }
 
 std::string Board::text() const {

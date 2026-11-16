@@ -10,6 +10,9 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <map>
+#include <mutex>
+#include <utility>
 
 namespace GUI::Engine {
 
@@ -123,6 +126,25 @@ double vram_budget() {
   size_t vfree = 0, vtotal = 0;
   factor::gpu::mem_info(&vfree, &vtotal);
   return kVramFrac * static_cast<double>(vfree);
+}
+
+namespace {
+std::mutex g_caps_mu;
+std::map<std::pair<std::string, FactorLevelId>, int> g_caps; // (池, 因子层) → 年数上限
+} // namespace
+
+void cap_years(const std::string &pool, FactorLevelId lv, int years) {
+  assert(years >= 1);
+  std::lock_guard<std::mutex> lock(g_caps_mu);
+  const auto [it, fresh] = g_caps.try_emplace({pool, lv}, years);
+  if (!fresh)
+    it->second = std::min(it->second, years);
+}
+
+int year_cap(const std::string &pool, FactorLevelId lv) {
+  std::lock_guard<std::mutex> lock(g_caps_mu);
+  const auto it = g_caps.find({pool, lv});
+  return it == g_caps.end() ? 0 : it->second;
 }
 
 int Plan::max_days() const {

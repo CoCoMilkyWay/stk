@@ -24,6 +24,7 @@
 // =============================================================================
 
 #include "disk/Disk.hpp"
+#include "gui/task_agent/Enum.hpp"
 
 #include <algorithm>
 #include <array>
@@ -50,9 +51,7 @@ struct SrcDef {
   const char *name;
 };
 inline constexpr SrcDef kSrcs[] = {{"bar"}, {"lob"}};
-inline constexpr size_t kSrcCount = std::size(kSrcs);
-static_assert(kSrcCount == static_cast<size_t>(Src::Lob) + 1);
-inline const SrcDef &def(Src s) { return kSrcs[static_cast<int>(s)]; }
+AGENT_ROWS(Src, kSrcs, Lob);
 inline constexpr uint8_t src_bit(Src s) { return static_cast<uint8_t>(1u << static_cast<int>(s)); }
 
 // 人开放给 agent 的一类 (特征叶 / 算子): all = 全开 (此后新加的也开); 否则只开 on 里的 (此后新加的不开)
@@ -81,6 +80,8 @@ struct Scope {
   }
   bool operator==(const Scope &) const = default;
 };
+// 本作用域 (池 × 层) 的评估年数上限: 观察整期装不下时记下的装得下的最多年数 (本次运行内只降不升; 0 = 没碰到过), Mine 页的年数封顶于它
+int YearCap(const Scope &sc);
 
 struct Choice {
   int key = 0;
@@ -135,8 +136,7 @@ struct RepDef {
   const char *cn;
 };
 inline constexpr RepDef kReps[] = {{"过门槛的峰"}, {"过门槛的点里曲面估计最高的"}, {"mono 最高的点"}};
-static_assert(std::size(kReps) == static_cast<size_t>(Rep::Mono) + 1);
-inline const RepDef &def(Rep r) { return kReps[static_cast<int>(r)]; }
+AGENT_ROWS(Rep, kReps, Mono);
 struct Top {
   std::string expr;
   int sign = 1;                 // 方向 (−1 = 取反后才是这组统计)
@@ -156,9 +156,7 @@ struct VerdictDef {
   const char *cn;
 };
 inline constexpr VerdictDef kVerdicts[] = {{"未落文件"}, {"BROKEN"}, {"有参数组"}, {"无显著"}, {"未评估"}};
-inline constexpr size_t kVerdictCount = std::size(kVerdicts);
-static_assert(kVerdictCount == static_cast<size_t>(Verdict::Pending) + 1);
-inline const VerdictDef &def(Verdict v) { return kVerdicts[static_cast<int>(v)]; }
+AGENT_ROWS(Verdict, kVerdicts, Pending);
 // Search 评过的一个点: 各自由参数的取值 + 定向统计
 struct Probe {
   std::vector<double> v; // 与 Surface::slots 对齐
@@ -211,8 +209,7 @@ struct Context {
   bool has_lob = false;           // 本层有 lob 叶 (不论开放与否)
   int years = 0;                  // 评估期只留最近几年 (= Scope::years)
   std::string window;             // 评估期 = 标签库与开放的叶所在库落盘日交集的最近 years 年 ("未就绪" = 作用域未就绪或无共同落盘日)
-  int first = 0, last = 0;        // 评估期首末日 YYYYMMDD (未就绪 0)
-  int look_from = 0;              // 观察窗 [look_from, last] = 评估期的最近一段: 本会话首次观察时按内存定 (0 = 还没定), 此后观察都在这段上
+  int first = 0, last = 0;        // 评估期首末日 YYYYMMDD (未就绪 0); 观察与回测同在这一段
   int seg = 0;                    // 本层每日行数 (d 的单位)
   int open = 0;                   // 每日开头属集合竞价段 [09:15, 09:30) 的行数 (日层 0)
   std::vector<std::string> clock; // [seg] 行的收盘时刻 HH:MM
@@ -227,7 +224,7 @@ struct Context {
   std::vector<Result> library;  // 正式因子库, 按 score 降序 (含不可见的, 由用方滤)
 };
 
-// ---- 观察 (LookSpec → Look): 观察窗 (Context::look_from) 上整期一块的原料; 平面 = [T = 天 · seg][A] 行主序, 格 k = Look::at(t, a) ----
+// ---- 观察 (LookSpec → Look): 评估期 [Context::first, last] 上整期一块的原料; 平面 = [T = 天 · seg][A] 行主序, 格 k = Look::at(t, a) ----
 template <class X>
 using Plane = std::vector<X>;
 inline constexpr int kGroups = 20;            // 截面分组数 (= Stat 契约, Bridge.cpp 核对)
@@ -282,9 +279,8 @@ struct LookFeat {
   Plane<float> v;    // 特征式的值 (无效 NaN; 没取 = 空)
 };
 struct Look {
-  std::string error;              // 非空 = 没算成 (评估域不成 / 资产不在池轴 / 全部根坏), 其余字段空
-  bool fresh = false;             // 观察窗是本次定下的 (Context::look_from)
-  std::vector<int> dates;         // [天] YYYYMMDD: 观察窗与叶的落盘日之交, 再装不下内存则截最近的日
+  std::string error;              // 非空 = 没算成 (评估域不成 / 整期装不下 / 资产不在池轴 / 全部根坏), 其余字段空
+  std::vector<int> dates;         // [天] YYYYMMDD: 评估期 (所用叶的落盘日更短则随之)
   int seg = 0;                    // 每日行数
   int open = 0;                   // = Context::open
   std::vector<std::string> clock; // [seg] 行的收盘时刻 HH:MM
@@ -327,9 +323,7 @@ struct BookKindDef {
   const char *cn;
 };
 inline constexpr BookKindDef kBookKinds[] = {{"新挂"}, {"撤单"}, {"被吃完"}, {"扫单"}};
-inline constexpr size_t kBookKindCount = std::size(kBookKinds);
-static_assert(kBookKindCount == static_cast<size_t>(BookKind::Sweep) + 1);
-inline const BookKindDef &def(BookKind k) { return kBookKinds[static_cast<int>(k)]; }
+AGENT_ROWS(BookKind, kBookKinds, Sweep);
 struct BookEvent {
   int clock = 0, cs = 0; // 钟面秒 + 10ms
   BookKind kind = BookKind::New;
@@ -402,8 +396,7 @@ struct ChangeDef {
   bool knob, bad; // 旋钮类 / 直接退回
 };
 inline constexpr ChangeDef kChanges[] = {{"新起", false, false}, {"同式", false, true}, {"只改参数", false, true}, {"改了多处", false, true}, {"换平滑", true, false}, {"换压缩", true, false}, {"换口径", true, false}, {"换原料", false, false}, {"加变换", false, false}, {"去变换", false, false}, {"加项", false, false}, {"条件化", false, false}, {"减项", false, false}, {"改结构", false, false}, {"解析不了", false, false}};
-static_assert(std::size(kChanges) == static_cast<size_t>(Change::Unparsed) + 1);
-inline const ChangeDef &def(Change c) { return kChanges[static_cast<int>(c)]; }
+AGENT_ROWS(Change, kChanges, Unparsed);
 struct Delta {
   Change kind = Change::New;
   std::string what; // 差异处: `旧子式` → `新子式` (多处时逐处列)
@@ -421,7 +414,15 @@ struct Eval {
 };
 
 namespace catalog {
-std::vector<Choice> pools();                        // 池表待生效序, key = 位置
+std::vector<Choice> pools(); // 池表待生效序, key = 位置
+// 池下拉的一行 (同 pools 序): 各来源的库已建否 (Src 序) / 正式因子目录在该层的因子数
+struct PoolRow {
+  int key = 0;
+  std::string name, name_cn;
+  std::array<bool, std::size(kSrcs)> built{};
+  size_t factors = 0;
+};
+std::vector<PoolRow> pool_rows(int level);          // 读各库清单与正式目录 (打开下拉时扫一次)
 bool pool_movable(int at);                          // 位置 at 的池可调序 (all / 全A 钉在表首)
 void move_pool(SharedData &data, int from, int to); // 池表调序 (位置; 写 pools.json, 换页时进程内重启)
 std::string pool_cn(const std::string &pool);
@@ -470,7 +471,6 @@ public:
   void discard(const std::string &file);                 // 删掉一个候选文件与它的 Search 日志 (回退 / 取消; 须不忙); 正式目录不动
   const Result *tried(const std::string &name) const;    // 可见的已试候选; 没有 = nullptr
   std::string search_log(const std::string &file) const; // 候选的 Search 日志全文 (没有 = 空)
-  void look_at(int from);                                // 观察窗首日钉回 (续接一段会话: 与当初定下的同)
 
   // 候选的模板 (只查字段表与候选目录, 不碰数据); expr 解析不了的由 stage 报, 这里放行
   // 相对已试候选 base (英文名, 须可见) 的改动; base 空 = 新起: 依次比可见的已试候选, 与某个同式 / 只差参数 / 只差一处旋钮的按它当 base (Delta::base 回填其名)

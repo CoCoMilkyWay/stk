@@ -89,7 +89,8 @@ Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
   if (!open_job(F, sc, {}, j))
     return Rc::Empty;
   const auto bud = [] { return Budget{.load = kBasketCellBytes}; };
-  fit_recent(F, sc, j, bud);
+  if (!fit_years(F, sc, j, bud))
+    return Rc::Empty;
   F.S.room(bud().host(cells_of(j.dm, j.ft->seg)));
   BPlanes B;
   if (const Rc rc = rc_of(load_b(j.io(F), j.whole(), B), F.S.lr); rc != Rc::Ok)

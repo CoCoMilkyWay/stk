@@ -14,11 +14,11 @@
 // =============================================================================
 
 #include "gui/task_agent/Config.hpp"
+#include "gui/task_agent/Enum.hpp"
 
 #include <atomic>
 #include <cstdint>
 #include <functional>
-#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,9 +27,7 @@ namespace GUI::Agent::llm {
 
 enum class Backend : uint8_t { Zhipu,
                                Cursor }; // 下标 = kBackends
-inline constexpr int kBackendCount = static_cast<int>(std::size(kBackends));
-static_assert(kBackendCount == 2);
-inline const BackendDef &def(Backend b) { return kBackends[static_cast<int>(b)]; }
+AGENT_ROWS(Backend, kBackends, Cursor);
 
 // 该后端的 key (首次调用读 output/config/agent/keys.json, 之后不再读); 空 = 未填
 const std::string &key(Backend b);
@@ -86,8 +84,7 @@ struct EndDef {
   const char *id;
 };
 inline constexpr EndDef kEnds[] = {{"ok"}, {"cut"}, {"error"}, {"cancelled"}};
-static_assert(std::size(kEnds) == static_cast<size_t>(End::Cancelled) + 1);
-inline const EndDef &def(End e) { return kEnds[static_cast<int>(e)]; }
+AGENT_ROWS(End, kEnds, Cancelled);
 
 // 一轮回复: 在收 (增量累积) 与收齐同形
 struct Reply {

@@ -347,33 +347,33 @@ std::vector<Model> cursor_models(const json &j) {
   return out;
 }
 constexpr std::vector<Model> (*kModelsOf[])(const json &) = {zhipu_models, cursor_models};
-static_assert(static_cast<int>(std::size(kModelsOf)) == kBackendCount);
+static_assert(std::size(kModelsOf) == kNum<Backend>);
 
 } // namespace
 
 const std::string &key(Backend b) {
-  static const std::array<std::string, kBackendCount> keys = [] {
+  static const std::array<std::string, kNum<Backend>> keys = [] {
     if (!disk::exists(disk::AgentKeyFile)) {
       json j;
       for (const BackendDef &d : kBackends)
-        j[d.field] = d.fake;
+        j[d.id] = d.fake;
       disk::write(disk::AgentKeyFile, {}, j.dump(2) + "\n");
     }
     const json j = json::parse(disk::read(disk::AgentKeyFile), nullptr, false);
     assert(!j.is_discarded() && j.is_object() && "output/config/agent/keys.json 须是 JSON 对象");
-    std::array<std::string, kBackendCount> k;
-    for (int i = 0; i < kBackendCount; ++i)
-      if (std::string s = str_of(j, kBackends[i].field); s != kBackends[i].fake)
+    std::array<std::string, kNum<Backend>> k;
+    for (size_t i = 0; i < k.size(); ++i)
+      if (std::string s = str_of(j, kBackends[i].id); s != kBackends[i].fake)
         k[i] = std::move(s);
     return k;
   }();
-  return keys[static_cast<int>(b)];
+  return keys[static_cast<size_t>(b)];
 }
 
 Models models(Backend b, const Net &net, const std::atomic<bool> &cancel) {
   assert(!key(b).empty() && valid(net));
   const char *target = def(b).models;
-  const std::string what = std::string(def(b).field) + " models";
+  const std::string what = std::string(def(b).id) + " models";
   Models out;
   try {
     const std::optional<Resp> r = retried(what.c_str(), Resend::Any, cancel, [&](int) { return request(b, net, http::verb::get, target, "", {}, nullptr, &cancel); }, never);

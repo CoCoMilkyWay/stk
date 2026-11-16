@@ -11,7 +11,7 @@
 // (gui/engine/Book.hpp, 与 Portfolio / 池线同一份):
 //   S  块       gui/engine/Load Block = Store::pin 钉住的平面 (键 = 层 | Domain::key | 日段 | 角色)
 //               → Y = 截面门控, 毛标签 [H], 成本 [C]; X = 本因子的特征平面. 池等权线 (pool_line, 每持有期一条) 随 Y 的代算一次
-//               (块钩子, whole: 整期一块; 装不下内存预算 → 评估期只留最近的日, fit_recent)
+//               (块钩子, whole: 整期一块; 装不下内存预算 → 不评, 报最多几年, 页顶年数随之封顶: fit_years)
 //   Y  标签     随 S                                       → 毛标签秩: 块上钉的标签秩 (Store 首次 prep_label, 随缓存常驻); 没有净标签集
 //   X  因子                                                → 缺的特征补读 (Store::pin) → Backend<Cpu>::walk (run_node, 全核) → 根平面 (HostPool, 租约内)
 //   R  rank_x (引擎)                                       → RxP 落 InspectPlanes::rx (随结果发布: 右上资产轴 / K 线着色);

@@ -3,17 +3,18 @@
 // =============================================================================
 // Acts — 一个调用的执行 (按 Run 分派; 状态机见 task_agent/Mine)
 // =============================================================================
-//   一生: begin → (等 Lab: enter 每进一道, settle 收结果成文 / 等人: answer) → Mine::ended
-//   Now    当场: search_leaves (列出的叶组整组记进 Desk::seen) / list_tried / list_library / list_notes / submit_factor /
+//   一生: begin → (等 Lab: enter 每进一道, settle 收结果成文 / 等人: answer) → Mine::ended (落进状态: task_agent/Timeline Apply)
+//   这里只成文与做外部的事 (落候选 / 入库 / 记全局记录 / 交实验台), 只读会话状态 Desk::st; 状态的变化全在 Apply
+//   Now    当场: search_leaves (列出的叶组记进 Shown) / list_tried / list_library / list_notes / submit_factor /
 //                request_feature · request_tool · note_insight · report_issue (记进 Desk::notes; ref 对不上同类已有的一条则不记) /
-//                hypothesize (记上 Desk::board) / judge (证据的调用编号须成立才改判定) / finish
+//                hypothesize / judge (证据的调用编号须成立才算做成) / finish
 //   Human  ask_human: 起问题 → 等人交答案
-//   Eval   eval_factor: 叶都在 Desk::seen, 假设判为支持且有配额, base 可见, 改动归类不退回, 功能块覆盖模板 → 落文件 → 交 EvalSpec;
+//   Eval   eval_factor: 叶都查过, 假设判为支持且有配额, base 可见, 改动归类不退回, 功能块覆盖模板 → 落文件 → 交 EvalSpec;
 //          Search / Run 两段记进 Trial; 没落成当场做完
 //   Look   观察: Views Spec → 交 LookSpec → Views Render; 参数不成当场做完
 //   Book   重放: 同上 (BookSpec)
 //   Docs   研报库: 当场
-//   调用读写会话只经 Desk (两个 worker / 设定 / 日志 / 全局记录 / 假设板 / 计数)
+//   调用读写会话只经 Desk (两个 worker / 设定 / 日志 / 全局记录 / 状态 / 流程旗)
 // =============================================================================
 
 #include "gui/task_agent/Bridge.hpp"

@@ -14,9 +14,7 @@
 
 #include <array>
 #include <cstdint>
-#include <iterator>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace GUI::Agent {
@@ -35,9 +33,7 @@ inline constexpr NoteKindDef kNoteKinds[] = {{"feature", "特征申请", 'F', To
                                              {"tool", "工具申请", 'T', Tool::RequestTool},
                                              {"insight", "发现", 'I', Tool::NoteInsight},
                                              {"issue", "建议与 bug", 'R', Tool::ReportIssue}};
-inline constexpr size_t kNoteKindCount = std::size(kNoteKinds);
-static_assert(kNoteKindCount == static_cast<size_t>(NoteKind::Issue) + 1);
-inline const NoteKindDef &def(NoteKind k) { return kNoteKinds[static_cast<size_t>(k)]; }
+AGENT_ROWS(NoteKind, kNoteKinds, Issue);
 NoteKind NoteOf(Tool t); // 提交工具 → 类 (须是四个提交工具之一)
 
 // 研究员的处理 (下标 = NoteState): id = 文件里的 state; cn = 界面 / 给 agent 的名字
@@ -49,9 +45,7 @@ struct NoteStateDef {
   const char *id, *cn;
 };
 inline constexpr NoteStateDef kNoteStates[] = {{"open", "待办"}, {"done", "已做"}, {"rejected", "不做"}, {"parked", "搁置"}};
-inline constexpr size_t kNoteStateCount = std::size(kNoteStates);
-static_assert(kNoteStateCount == static_cast<size_t>(NoteState::Parked) + 1);
-inline const NoteStateDef &def(NoteState s) { return kNoteStates[static_cast<size_t>(s)]; }
+AGENT_ROWS(NoteState, kNoteStates, Parked);
 
 struct Note {
   NoteKind kind;
@@ -74,14 +68,14 @@ public:
   int open(NoteKind k) const;       // 待办的条数
   // 记一条 (落盘 + 进表): c = 该类的提交工具的调用, ref 须为空或 find 得到; scope = 作用域名, session = 会话目录
   const Note &add(const Call &c, std::string scope, std::string session, int round);
-  void set(NoteKind k, const std::string &id, NoteState s, std::string reply); // 研究员处理一条 (改写该类文件)
-  int count(const std::string &session, int from) const;                       // 会话 session 第 from 轮起提的条数
-  void drop(const std::string &session, int from);                             // 删掉它们 (改写涉及的类文件)
+  void set(NoteKind k, const std::string &id, NoteState s, std::string reply);     // 研究员处理一条 (改写该类文件)
+  std::vector<const Note *> filed(const std::string &session, int from = 1) const; // 会话 session 第 from 轮起提的, 按类再按时序
+  void drop(const std::string &session, int from);                                 // 删掉它们 (改写涉及的类文件)
 
 private:
   void rewrite(NoteKind k) const;
   int test_ = -1;
-  std::array<std::vector<Note>, kNoteKindCount> notes_;
+  std::array<std::vector<Note>, kNum<NoteKind>> notes_;
 };
 
 // list_notes: kind 空 = 各类条数 + 每类最近 n 条的标题; 否则该类命中的最近 n 条全文. scope 非空 = 只看该作用域提的; query 同 search_leaves 的写法

@@ -612,7 +612,7 @@ Context context_of(const SharedData &data, const Scope &sc, const Opened &open) 
   c.hold_key = factor::stat::hold_token(sc.hold);
   c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
   const std::optional<Engine::FactorScope> fsc = fscope_of(data, ft, sc);
-  std::array<bool, kSrcCount> has{}, on{}; // [Src] 本层有可作输入的叶 / 有开放的叶
+  std::array<bool, kNum<Src>> has{}, on{}; // [Src] 本层有可作输入的叶 / 有开放的叶
   std::vector<Engine::LeafId> opened;      // 开放的叶
   for (size_t i = 0; i < ft->x.leaves.size(); ++i) {
     const Engine::FeatCol &l = ft->x.leaves[i];
@@ -632,7 +632,7 @@ Context context_of(const SharedData &data, const Scope &sc, const Opened &open) 
     }
     c.all_leaves.push_back(std::move(x));
   }
-  for (size_t s = 0; s < kSrcCount; ++s)
+  for (size_t s = 0; s < kNum<Src>; ++s)
     if (on[s])
       c.srcs += (c.srcs.empty() ? "" : " / ") + std::string(kSrcs[s].name);
   c.has_lob = has[static_cast<size_t>(Src::Lob)];
@@ -704,6 +704,19 @@ std::vector<Choice> pools() {
   const std::vector<PoolId> &po = GUI::pool_order();
   for (size_t i = 0; i < po.size(); ++i)
     out.push_back({static_cast<int>(i), pool_def(po[i]).name});
+  return out;
+}
+std::vector<PoolRow> pool_rows(int level) {
+  std::vector<PoolRow> out;
+  const std::vector<PoolId> &po = GUI::pool_order();
+  for (size_t i = 0; i < po.size(); ++i) {
+    const PoolDef &d = pool_def(po[i]);
+    PoolRow r{.key = static_cast<int>(i), .name = d.name, .name_cn = d.name_cn};
+    for (const Src s : {Src::Bar, Src::Lob})
+      r.built[static_cast<size_t>(s)] = load_lib(lib_id(po[i], s == Src::Lob ? TierId::Lob : TierId::Bar)).ready();
+    r.factors = Engine::factor_dir_of(d.name, level_id(level)).files().size();
+    out.push_back(std::move(r));
+  }
   return out;
 }
 bool pool_movable(int at) { return at >= kPinnedPools; }
@@ -851,7 +864,6 @@ struct Lab::Impl {
     [[maybe_unused]] const bool ok = Engine::MakeFactorScope(*data, ft(), sc.pool, sc.years, /*gpu=*/false, req.scope);
     assert(ok && "作用域须 ready");
     req.spec.hold = sc.hold;
-    req.spec.from = ctx.look_from;
     labels.clear();
     for (const LookFactor &f : s.factors) {
       req.spec.roots.push_back({f.expr, f.ts ? factor::stat::Frame::TS : factor::stat::Frame::CS, factor::stat::dir_of(f.sign)});
@@ -936,14 +948,9 @@ struct Lab::Impl {
     assert(ok && "代表点是 Search 评过的具体式");
     enter<Step::Lens>(lens_req({.factors = {std::move(f)}}));
   }
-  // Look: 观察本身, 或在评那个的代表点; 本会话首次观察定下观察窗 (不早于评估期首日)
+  // Look: 观察本身, 或在评那个的代表点
   void looked() {
-    Engine::LensResult r = lane<Step::Lens>().take();
-    const bool fresh = !ctx.look_from && r.from && r.error.empty();
-    if (fresh)
-      ctx.look_from = std::max(static_cast<int>(r.from), ctx.first);
-    Look l = look_of(std::move(r), *ft(), labels, std::move(feat_err), bars, ctx.kline);
-    l.fresh = fresh;
+    Look l = look_of(lane<Step::Lens>().take(), *ft(), labels, std::move(feat_err), bars, ctx.kline);
     if (!graded)
       return close(std::move(l));
     graded->rep = std::move(l);
@@ -1142,7 +1149,7 @@ std::string Lab::search_log(const std::string &file) const {
   return disk::exists(I.dir.log, I.dir.of(file)) ? disk::read(I.dir.log, I.dir.of(file)) : std::string();
 }
 
-void Lab::look_at(int from) { p_->ctx.look_from = from; }
+int YearCap(const Scope &sc) { return Engine::year_cap(sc.pool, level_id(sc.level)); }
 
 const Result *Lab::tried(const std::string &name) const {
   const std::vector<Result> &rs = p_->results;

@@ -431,6 +431,7 @@ set(MATH_PRECISE
     gui/task_agent/Prompt.cpp
     gui/task_agent/Save.cpp
     gui/task_agent/TaskAgent.cpp
+    gui/task_agent/Timeline.cpp
     gui/task_agent/Tools.cpp
     gui/task_agent/Tree.cpp
     gui/task_agent/Views.cpp

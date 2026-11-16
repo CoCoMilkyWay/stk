@@ -200,15 +200,12 @@ bool rows_in(const char *key, const std::string &s, const std::vector<std::strin
   return true;
 }
 
-// 观察窗本次才定且短于评估期 → 报窗; 本观察的日段与观察窗 [look_from, last] 不同 (叶落盘日更短 / 装不下内存截了最近的日) → 报日段
+// 本观察的日段与评估期 [first, last] 不同 (用到的叶落盘日更短) → 报日段
 std::string head(const Look &L, const Context &ctx) {
-  std::string s;
-  if (L.fresh && ctx.look_from > ctx.first)
-    s += "观察窗定为 " + date_of(ctx.look_from) + " ~ " + date_of(ctx.last) + ": 评估期整段装不下内存, 本会话的观察都只算这最近一段 (回测仍在整个评估期上), 观察之间可比\n\n";
-  if (L.dates.front() != ctx.look_from || L.dates.back() != ctx.last)
-    s += "注意: 本观察的日段为 " + date_of(L.dates.front()) + " ~ " + date_of(L.dates.back()) + " (" + str(L.dates.size()) +
-         " 天), 与观察窗不同 (用到的叶落盘日更短, 或装不下内存只算了最近的日), 与别的观察不可直接比\n\n";
-  return s;
+  if (L.dates.front() == ctx.first && L.dates.back() == ctx.last)
+    return {};
+  return "注意: 本观察的日段为 " + date_of(L.dates.front()) + " ~ " + date_of(L.dates.back()) + " (" + str(L.dates.size()) +
+         " 天), 与评估期不同 (用到的叶落盘日更短), 与别的观察不可直接比\n\n";
 }
 
 // ---- K 线取值 (没有 / 没算成的叶 → NaN) ----
@@ -1894,8 +1891,8 @@ bool Render(const Call &c, const Book &b, const Context &, std::string &out) {
   }
 
   // 大单事件: 计数 (分侧) + 额最大的 n 起按时序
-  int cnt[kBookKindCount][2] = {};
-  double amt[kBookKindCount][2] = {}, lv[2] = {};
+  int cnt[kNum<BookKind>][2] = {};
+  double amt[kNum<BookKind>][2] = {}, lv[2] = {};
   std::vector<double> life[2];
   for (const BookEvent &e : b.events) {
     const size_t k = static_cast<size_t>(e.kind);
@@ -1906,7 +1903,7 @@ bool Render(const Call &c, const Book &b, const Context &, std::string &out) {
       life[e.side].push_back(e.life);
   }
   s += "\n大单事件 (窗口内共 " + str(b.events.size()) + " 起; 侧 = 委托所在侧, 扫单 = 主动方; 寿命 = 挂出到撤 / 吃完的交易秒):\n";
-  for (size_t k = 0; k < kBookKindCount; ++k) {
+  for (size_t k = 0; k < kNum<BookKind>; ++k) {
     s += "- " + std::string(kBookKinds[k].cn) + ": 买 " + std::to_string(cnt[k][0]) + " 起 " + w4(amt[k][0]) + " / 卖 " + std::to_string(cnt[k][1]) + " 起 " + w4(amt[k][1]);
     if (static_cast<BookKind>(k) == BookKind::Sweep && cnt[k][0] + cnt[k][1] > 0)
       s += " · 平均吃 买 " + (cnt[k][0] ? fmt("%.1f", lv[0] / cnt[k][0]) : std::string("—")) + " / 卖 " + (cnt[k][1] ? fmt("%.1f", lv[1] / cnt[k][1]) : std::string("—")) + " 价位";

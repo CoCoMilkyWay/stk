@@ -19,7 +19,7 @@ namespace GUI::Agent {
 //   proxy: 默认连接 (Config 页可改); Cursor 的部分模型按出口地区限售, 默认走代理
 struct BackendDef {
   const char *name;   // 显示名 (Config 页 / 会话日志)
-  const char *field;  // keys.json 里的字段
+  const char *id;     // keys.json 里的字段 = 会话存档里的写法
   const char *fake;   // 假 key
   const char *host;   // HTTPS 443
   const char *models; // GET 模型表
@@ -74,7 +74,7 @@ inline constexpr double kGateRic = 0.03;  // rIC 均值
 //   output/config/agent/
 //     prompt/<名>.md                    提示词模板 ({{键}} 占位, gui/task_agent/Prompt.hpp)
 //     families.md                       特征族卡: 每族一节 "# <族> <族名>" + 卡文 (族 = 节点文件, 见 Leaf::family; 系统提示的特征表按族排)
-//     keys.json                         {<BackendDef::field>: key}; 无文件则按后端表填假 key 生成 (本机, 不进仓库)
+//     keys.json                         {<BackendDef::id>: key}; 无文件则按后端表填假 key 生成 (本机, 不进仓库)
 //     ui.json                           Mine / Config 页的选项: 改了即写, 首次 Draw 读回; 无文件 = 用上面的默认值 (本机)
 
 } // namespace GUI::Agent

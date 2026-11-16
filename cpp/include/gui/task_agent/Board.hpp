@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Board — 假设板: 一段会话里 agent 提出的机制假设与它们的判定 (只 GUI 线程读写)
+// Board — 假设板: 一段会话里 agent 提出的机制假设与它们的判定 (会话状态的一部分, 只经 Apply 改; 见 task_agent/Timeline)
 // =============================================================================
 //   hypothesize 记一条 (编号 H1, H2 …, 待检验) → 观察检验 → judge 判 (支持 / 落空 / 不清, 证据 = 调用编号) → 支持的才能挂 eval_factor 变体
 //   一个假设至多 kHypEvals 个落了文件的变体, 其中旋钮类 (换平滑 / 换压缩 / 换口径) 至多 kHypKnobs 个;
@@ -10,14 +10,13 @@
 //   每条结果消息附整张板 (text); 研究树 (task_agent/Tree) 按板分节; 执行见 task_agent/Acts, 回复级约束见 RuleMiss
 // =============================================================================
 
+#include "gui/task_agent/Enum.hpp"
 #include "gui/task_agent/Tools.hpp"
 #include "nlohmann/json.hpp"
 
 #include <cstdint>
-#include <iterator>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace GUI::Agent {
@@ -31,9 +30,7 @@ struct StanceDef {
   const char *id, *cn;
 };
 inline constexpr StanceDef kStances[] = {{"open", "待检验"}, {"supported", "支持"}, {"refuted", "落空"}, {"unclear", "不清"}};
-static_assert(std::size(kStances) == static_cast<size_t>(Stance::Unclear) + 1);
-inline const StanceDef &def(Stance s) { return kStances[static_cast<int>(s)]; }
-Stance StanceOf(std::string_view id); // 须是 kStances 里的 id
+AGENT_ROWS(Stance, kStances, Unclear);
 
 struct Ref {
   int round = 0, call = 0; // round 0 = 无
@@ -56,15 +53,18 @@ struct Hyp {
 
 class Board {
 public:
-  void clear() { hyps_.clear(); }
-  void assign(std::vector<Hyp> hs) { hyps_ = std::move(hs); } // 整张换 (载入)
-  const Hyp &add(const Call &c, Ref at);                      // c = hypothesize 的调用
-  Hyp *find(const std::string &id);
+  // 三种落板, 调用 c 在 at 处做成 (Apply): 提 (hypothesize) / 判 (judge, 证据已核) / 挂变体 (eval_factor 落了文件; knob = 旋钮类)
+  void add(const Call &c, Ref at);
+  void judge(const Call &c, Ref at);
+  void vary(const Call &c, bool knob, Ref at);
+  std::string next() const { return "H" + std::to_string(hyps_.size() + 1); } // 下一个提出的编号
+  const Hyp *find(const std::string &id) const;
   const std::vector<Hyp> &all() const { return hyps_; }
   std::string text() const;   // 整张板 (结果消息附): 每个假设一行 + 待判的
   std::string report() const; // 停下报告的一节: 每个假设的预测与最终判定
 
 private:
+  Hyp &hyp(const std::string &id);
   std::vector<Hyp> hyps_;
 };
 

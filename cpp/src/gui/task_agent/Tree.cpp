@@ -15,8 +15,6 @@ namespace GUI::Agent {
 
 namespace {
 
-using Rounds = std::span<const Desk::Round>;
-
 constexpr size_t kWhyChars = 80; // 没做成的调用在树里留原因首行的前几字
 
 // 挂在列表项下的续行: 每行缩进两格 (空行略去)
@@ -51,7 +49,7 @@ struct Step {
 // 假设的判定 / 配额取第 m 条发出时的板 (= 前 m−1 轮执行完)
 std::string tree_of(Rounds msgs) {
   const Rounds done = msgs.first(msgs.size() - 1);
-  const Board &board = msgs.back().before.board;
+  const Board board = StateOf(done).board;
   std::vector<Step> steps;
   for (size_t i = 0; i < done.size(); ++i)
     for (size_t k = 0; k < done[i].acts.size(); ++k)
@@ -90,7 +88,7 @@ std::string tree_of(Rounds msgs) {
           const Act *x = RefOf(e, r) ? act_at(r) : nullptr;
           ev += (ev.empty() ? "" : "; ") + (x ? CallTitle(*x, r) : e);
         }
-        hyps += "- [" + RefText(s.at) + "] 判 " + def(StanceOf(a.call.str("verdict"))).cn + " · 证据 " + ev + "\n";
+        hyps += "- [" + RefText(s.at) + "] 判 " + def(IdOf<Stance>(a.call.str("verdict"))).cn + " · 证据 " + ev + "\n";
         if (!closed || last)
           hyps += fields(a.call.args, {"result", "insight"});
         if (!closed && last)
@@ -114,7 +112,7 @@ std::string tree_of(Rounds msgs) {
         continue;
       if (!a.ok)
         rest += "- " + CallTitle(a, s.at) + ": " + why_of(a) + "\n";
-      else if (def(a.call.tool).fold == Fold::Keep)
+      else if (def(a.call.tool).keep)
         notes += "- " + CallTitle(a, s.at) + "\n" + under(a.out);
       else if (!cited.contains(s.at))
         rest += "- " + CallTitle(a, s.at) + "\n";
@@ -137,7 +135,7 @@ std::string tree_of(Rounds msgs) {
 
 } // namespace
 
-std::string TextOf(const Desk::Round &rd) { return rd.memo.empty() ? rd.user : rd.user + MemoText(rd.memo); }
+std::string TextOf(const Round &rd) { return rd.memo.empty() ? rd.user : rd.user + MemoText(rd.memo); }
 
 llm::Turns TurnsOf(Rounds rs) {
   assert(!rs.empty());
@@ -150,7 +148,7 @@ llm::Turns TurnsOf(Rounds rs) {
   if (j == 0) {
     t.push_back({true, TextOf(rs[0])});
   } else {
-    const Desk::Round &p = rs[j - 1];
+    const Round &p = rs[j - 1];
     assert(p.reply.ok() && !p.acts.empty() && "本条前一轮的回复合格且执行了");
     const std::string tree = tree_of(rs.first(j));
     t.push_back({true, TextOf(rs[0]) + (tree.empty() ? "" : "\n---\n\n" + tree)});

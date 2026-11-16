@@ -47,6 +47,10 @@ inline constexpr double kHostFrac = 0.8;
 inline constexpr double kVramFrac = 0.85;
 double host_budget();
 double vram_budget();
+// 评估年数上限 (池 × 因子层; 本次运行内只降不升): 整期一块的作业 (Inspect / 观察 / 池篮子) 装不下时 fit_years 记下装得下的最多年数, 页顶 / Mine 页的年数封顶于它.
+// 两者线程安全; year_cap 0 = 没碰到过上限
+void cap_years(const std::string &pool, FactorLevelId lv, int years);
+int year_cap(const std::string &pool, FactorLevelId lv);
 
 // ---- 计划: 预算 → 分块 (全部服务同一份口径) ----
 // 一块 = 评估域日 [d0, d1), 前带 [d0, s0) 只给回看 / lag / 交接链, 统计日 [s0, s1), 后带 [s1, d1) 只给续持;
@@ -74,7 +78,7 @@ struct Plan {
   int max_days() const; // 最长一块的日数 (含前带)
   double max_cells() const { return max_days() * per_day; }
 };
-// 前后带日数 (Engine bands_of); front < 0 → 整期一块 (评估期已按宿主 / 显存预算截过: Engine fit_recent)
+// 前后带日数 (Engine bands_of); front < 0 → 整期一块 (评估期整段已核过装得下宿主 / 显存预算: Engine fit_years)
 struct Bands {
   int front = -1, back = 0;
 };
@@ -84,7 +88,7 @@ Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double ho
 
 // ---- 评估结局 (装载 / 评估 / 全部服务同一个) ----
 enum class Rc : uint8_t { Ok,
-                          Empty,  // 评估域不成 (所用库未建 / 无共同落盘日), why
+                          Empty,  // 评估域不成 (所用库未建 / 无共同落盘日 / 整期一块装不下), why
                           Broken, // 特征叶值域越界 (全部根), why
                           Cancel,
                           Stale }; // 库判废 (FactorWorker::settle 弃平面缓存 + 置 kStaleMsg)

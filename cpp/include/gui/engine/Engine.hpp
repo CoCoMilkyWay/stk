@@ -16,7 +16,7 @@
 //   管线 (全部服务同一份): Job (评估域 / 规格 / 计划) — prepare (open_job 评估域 → 开库 → Y 规格 y_spec (作业的持有期 + 探针 Ps::segs)
 //   → 前后带 → 预算 budget_of → plan_chunks 分块) → pass (一趟: 逐块 load_block (Store::pin, 块视图只活这一块) → hk.block → 逐批 plant → plan_forest
 //   (值域逐根归因, 坏根跨块粘住) → hk.plan → eval (hk.node / hk.done); 末块根即 finish).
-//   eval_job = prepare + 一趟 (Run / Inspect / Portfolio / Lens; 根集 RootSet 一张森林, 种一次各块共用; 钩子 whole → 整期一块 (装不下截最近的日), 否则按预算分块)
+//   eval_job = prepare + 一趟 (Run / Inspect / Portfolio / Lens; 根集 RootSet 一张森林, 种一次各块共用; 钩子 whole → 整期一块 (装不下不评, 报最多几年), 否则按预算分块)
 //   + 条目收尾 (每条目恰一个 hk.fail / hk.post); Search 一次 prepare, 每趟一次 pass (逐块逐批现种). eval_baskets = 池篮子作业 (不走森林).
 //   租约粒度: Run 每文件 / Search 每趟 / 交互服务每请求; 中断结局统一 FactorWorker::settle.
 // 只给服务 .cpp include (EvalCpu → TS / CS Cpu.hpp, 受控浮点: CMake MATH_PRECISE 源).
@@ -29,7 +29,6 @@
 #include "factor/Search/Space.hpp"    // lookback
 #include "gui/engine/Probe.hpp"
 #include "gui/engine/Worker.hpp" // FactorWorker (成员定义在此)
-#include "misc/date.hpp"
 #include "misc/exec.hpp"
 
 #include <algorithm>
@@ -601,8 +600,7 @@ bool FactorWorker<D, Req>::settle(Rc rc) {
 }
 // 一次作业 (全部服务同一份): 调用方填 who → prepare (评估域 dm + 规格 spec + 前后带 bands + 预算 b → 计划 P) → pass
 struct Job {
-  const char *who = "";             // 整期截近期时的消息
-  misc::Ymd from = 0;               // 评估期只留此日起 (调用方定; 0 = 整期)
+  const char *who = "";             // 整期装不下时的消息
   BlockSpec spec;                   // 块两侧: x = 叶 / y = y_spec / ry = E::kRanks (prepare 定)
   Bands bands;                      // 前后带日 (front < 0 = 整期一块; prepare 定)
   Budget b;                         // 作业预算 (prepare 定)
@@ -610,7 +608,7 @@ struct Job {
   Domain dm;
   Plan P;
   double n_full = 0.0; // 满仓只数 (首块 pin 出; 各块同一个)
-  std::string why;     // Rc::Empty (所用库未建 / 无共同落盘日) / Rc::Broken (首个坏根: 特征叶值域越界) 的原因
+  std::string why;     // Rc::Empty (所用库未建 / 无共同落盘日 / 整期装不下) / Rc::Broken (首个坏根: 特征叶值域越界) 的原因
   Io io(FactorFlow &F) const { return F.io(*ft, dm); }
   Chunk whole() const { return {0, dm.warm, dm.days.size(), dm.days.size()}; } // 整期 (前带 = 预热)
   // 块之外的宿主预留 (字节): 引擎 + 探针 = 最长一块 × work + fixed (Store::pin 腾地用)
@@ -630,49 +628,45 @@ struct JobOut {
   }
   StatScope scope(const FactorScope &sc) const { return stat_scope(sc, job.dm, job.ft->seg, job.n_full, backend); } // 结果的作用域头
 };
-// 评估域 (叶 feats 所用库 + 评估期, j.from 起; 其前预热) → 开库; j.spec.x = feats 的 LeafId. false = 评估域不成 (j.why; 正常输入)
+// 评估域 (叶 feats 所用库 + 评估期; 其前预热) → 开库; j.spec.x = feats 的 LeafId. false = 评估域不成 (j.why; 正常输入)
 inline bool open_job(FactorFlow &F, const FactorScope &sc, const std::vector<std::string> &feats, Job &j) {
   assert(sc.ft && sc.lv == sc.ft->lv && "作用域层与字段表层不符");
   j.ft = sc.ft.get();
   j.spec.x = sc.ft->x.ids(feats);
   if (!domain_of(*sc.ft, sc, j.spec.x, SIZE_MAX, j.dm, j.why))
     return false;
-  if (j.from) {
-    const std::vector<misc::Ymd> &ds = j.dm.dates;
-    const auto keep = std::min(j.dm.stat_days(), static_cast<size_t>(ds.end() - std::lower_bound(ds.begin(), ds.end(), j.from)));
-    if (keep == 0) {
-      j.why = "所用特征库的落盘日都在 " + misc::dash(j.from) + " 之前";
-      return false;
-    }
-    [[maybe_unused]] const bool ok = keep == j.dm.stat_days() || domain_of(*sc.ft, sc, j.spec.x, keep, j.dm, j.why);
-    assert(ok && "近期子期是整期的后缀, 评估域必成");
-  }
   open_libs(sc, F.S.lr);
   return true;
 }
-// 整期一块 (j.bands.front < 0) 装不下宿主 / 显存预算 → 评估期只留最近的日 (按超出比例缩, 重解析评估域 (预热随之), 至放得下; 单日都放不下 → assert).
+// 整期一块 (j.bands.front < 0) 须整个评估期 (最近 sc.years 年 + 预热) 装得下宿主 / 显存预算. 装不下 → false: 不评, 逐年往下找装得下的最多年数 M
+// (记进 cap_years, 页顶 / Mine 页的年数封顶于它) + j.why + warning; 1 年都装不下 / 全期 (sc.years = 0) 装不下 → assert.
 // bud() = 当前评估域的作业预算. 宿主按 Store::budget (缓存全可让); 显存按空闲量 (引擎须已 release)
 template <class B>
-void fit_recent(FactorFlow &F, const FactorScope &sc, Job &j, B &&bud) {
-  const size_t all = j.dm.stat_days();
+bool fit_years(FactorFlow &F, const FactorScope &sc, Job &j, B &&bud) {
   const double host = F.S.budget();
   const double vram = bud().dev > 0.0 ? vram_budget() : 0.0;
-  for (;;) {
+  const auto fits = [&] {
     const Budget b = bud();
-    const double n_cells = cells_of(j.dm, j.ft->seg);
-    const double fit = std::min(host / b.host(n_cells), b.dev > 0.0 ? vram / b.vram(n_cells) : 1.0);
-    if (fit >= 1.0)
-      break;
-    const size_t n = j.dm.stat_days();
-    assert(n > 1 && "单日的整张量装载都放不下内存 / 显存 (因子层太细)");
-    const size_t keep = std::clamp(static_cast<size_t>(static_cast<double>(n) * fit), size_t{1}, n - 1);
+    const double n = cells_of(j.dm, j.ft->seg);
+    return b.host(n) <= host && (b.dev <= 0.0 || b.vram(n) <= vram);
+  };
+  if (fits())
+    return true;
+  assert(sc.years > 0 && "全期整期一块装不下内存 / 显存预算");
+  const size_t days = j.dm.stat_days();
+  FactorScope s = sc;
+  for (s.years = sc.years - 1; s.years >= 1; --s.years) {
     std::string why;
-    const bool ok = domain_of(*sc.ft, sc, j.spec.x, keep, j.dm, why);
+    [[maybe_unused]] const bool ok = domain_of(*sc.ft, s, j.spec.x, SIZE_MAX, j.dm, why);
     assert(ok && "近期子期是整期的后缀, 评估域必成");
+    if (fits())
+      break;
   }
-  if (j.dm.stat_days() < all)
-    std::fprintf(stderr, "[factors] %s: 整期 %zu 天装不下内存 / 显存预算, 只评最近 %zu 天 (%d - %d)\n", j.who, all, j.dm.stat_days(), j.dm.first(),
-                 j.dm.dates.back());
+  assert(s.years >= 1 && "1 年的整期装载都放不下内存 / 显存 (因子层太细)");
+  cap_years(sc.pool, sc.lv, s.years);
+  j.why = "评估期近 " + std::to_string(sc.years) + " 年 (" + std::to_string(days) + " 天) 整段装不下内存 / 显存预算, 本作用域最多 " + std::to_string(s.years) + " 年";
+  std::fprintf(stderr, "[factors] %s: %s, 评估年数封顶 %d 年\n", j.who, j.why.c_str(), s.years);
+  return false;
 }
 // 作业预算 (字节 / 格): load = 块两侧 (nx 个叶 + Y) + 引擎挂在块上的 (E::budget 的 load); work / dev = 引擎 (d = 一张森林 / 批核的一个候选);
 // fixed = 探针 (常驻 Ps::bytes × R 个同时在评的根 + 暂存 Ps::scratch 一份; H 个持有期)
@@ -694,7 +688,7 @@ inline Rc load_block(FactorFlow &F, Job &j, size_t k, Block &c) {
   return rc;
 }
 // 作业前半 (eval_job / Search 同一份; 之后一趟或多趟 pass; 须持租约): open_job → 块规格 y = y_spec (持有期 hd, 成本段 Ps::segs) / ry = E::kRanks
-// → 前后带 (look < 0 = 整期一块, 装不下则评估期截最近的日 fit_recent; 否则 bands_of 按预算分块) → 预算 j.b (budget_of: d = 一张森林 / 批核的一个候选,
+// → 前后带 (look < 0 = 整期一块, 须装得下 fit_years; 否则 bands_of 按预算分块) → 预算 j.b (budget_of: d = 一张森林 / 批核的一个候选,
 // hd.n 个持有期, R 个根的探针同时在, X = 本森林的叶) → plan_chunks (宿主 = Store::budget). 调用方先填 j.who. Ok / Empty (j.why)
 template <class E, class Ps>
 Rc prepare(E &eng, FactorFlow &F, const FactorScope &sc, const factor::Dag &d, int look, const Holds &hd, int R, Job &j) {
@@ -706,8 +700,8 @@ Rc prepare(E &eng, FactorFlow &F, const FactorScope &sc, const factor::Dag &d, i
     j.bands = bands_of(look, hd, j.ft->seg);
   const auto bud = [&] { return budget_of<E, Ps>(j, d, j.spec.x.size(), hd.n, R); };
   eng.release();
-  if (j.bands.front < 0)
-    fit_recent(F, sc, j, bud);
+  if (j.bands.front < 0 && !fit_years(F, sc, j, bud))
+    return Rc::Empty;
   j.b = bud();
   j.P = plan_chunks(j.dm, j.ft->seg, j.b, j.bands, F.S.budget());
   return Rc::Ok;
@@ -723,7 +717,7 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, 
 //   node(b0, Fr, i, ms)      走完节点 i (ms = 算子耗时, 叶 0)
 //   done(k, last)            根 k 本块的探针钩子走完 (每块一次; last = 末块, 已含 finish); k = roots 下标
 //   fail(e, why) / post(e, k) (eval_job) 条目 e 的终局, 每条目恰一个 (中断不发): 没算成 (根坏 / 评估域不成 / 全部根坏) / 根 k 评完
-//   whole()                  eval_job 只整期一块 (块钩子 / alpha 分布要整期; 装不下截最近的日)
+//   whole()                  eval_job 只整期一块 (块钩子 / alpha 分布要整期; 装不下不评, fit_years)
 struct HookBase {
   static constexpr bool whole() { return false; }
   void block(const Block &, size_t, double) {}
@@ -821,7 +815,7 @@ struct JobHooks : HookBase {
   }
 };
 // 一次作业 = 一趟, 根集 rs (非空) 全进一张森林, 种一次各块共用 (Run / Inspect / Portfolio / Lens; 须持租约): prepare (Y 持有期 = rs.hd; H::whole() → 整期一块,
-// 装不下截最近的日; 否则前后带 = 根的最长回看, 按预算分块) → pass (根 k ↔ ps[k]; 钩子 hk 外包 JobHooks) → 条目终局: 每条目恰一个 hk.fail / hk.post (中断不发).
+// 装不下 → Empty; 否则前后带 = 根的最长回看, 按预算分块) → pass (根 k ↔ ps[k]; 钩子 hk 外包 JobHooks) → 条目终局: 每条目恰一个 hk.fail / hk.post (中断不发).
 // o 须新建, 调用方先填 o.job.who. 进度: Loading 期 = 天; Running 期 (每块) = 好根的算子节点 + 好根数.
 // 结局 Ok / Empty / Broken (全部根坏) / Cancel / Stale (Empty / Broken: o.job.why)
 template <class E, class Ps, class H>
@@ -853,8 +847,8 @@ Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const RootSet &rs, std
     }
   return rc;
 }
-// 池篮子作业 (Portfolio; 与 eval_job 平级, 不走森林, B 不进缓存; 须持租约): open_job (sc = all 池作用域, 无叶) → 整期一块, 装不下截最近的日
-// (fit_recent, 预算 kBasketCellBytes / 格) → 腾地 (Store::room) → load_b 一趟读齐 → baskets 一趟扫完 → out. 调用方先填 j.who.
+// 池篮子作业 (Portfolio; 与 eval_job 平级, 不走森林, B 不进缓存; 须持租约): open_job (sc = all 池作用域, 无叶) → 整期一块, 须装得下
+// (fit_years, 预算 kBasketCellBytes / 格; 全期装不下 → assert) → 腾地 (Store::room) → load_b 一趟读齐 → baskets 一趟扫完 → out. 调用方先填 j.who.
 // 结局 Ok / Empty (j.why) / Cancel / Stale
 Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out);
 

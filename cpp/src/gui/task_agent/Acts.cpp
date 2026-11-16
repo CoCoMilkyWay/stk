@@ -44,7 +44,7 @@ std::string evidence_miss(const Call &c, const Hyp &h, Ref me, const Desk &d) {
     look = look || def(x.call.tool).cat == Cat::Look;
     fresh = fresh || h.judged < r;
   }
-  if (StanceOf(c.str("verdict")) == Stance::Supported && !look) {
+  if (IdOf<Stance>(c.str("verdict")) == Stance::Supported && !look) {
     std::string near; // 本条排在前面、做成了的观察 (可直接补进 evidence)
     const std::vector<Act> &acts = d.timeline.back().acts;
     for (int i = 1; i < me.call; ++i)
@@ -58,15 +58,13 @@ std::string evidence_miss(const Call &c, const Hyp &h, Ref me, const Desk &d) {
   return {};
 }
 
+// 当场做: 成文 + 外部的副作用 (入库 / 全局记录); 会话状态等收尾时 Apply
 Wait now(Act &a, Desk &d) {
   const Call &c = a.call;
   switch (c.tool) {
-  case Tool::SearchLeaves: {
-    std::vector<std::string> shown;
-    a.out = LeavesText(d.lab.ctx().leaves, c.str("query"), c.num("n"), shown);
-    d.seen.insert(shown.begin(), shown.end());
+  case Tool::SearchLeaves:
+    a.out = LeavesText(d.lab.ctx().leaves, c.str("query"), c.num("n"), a.got.emplace<Shown>().leaves);
     break;
-  }
   case Tool::ListTried:
     a.out = TriedText(d.lab.results(), c.num("skip"), c.num("top"), d.setup.gate);
     break;
@@ -76,12 +74,9 @@ Wait now(Act &a, Desk &d) {
   case Tool::SubmitFactor: {
     const Adopted x = d.lab.adopt(c.str("name"), d.setup.gate);
     a.ok = x.ok();
-    if (a.ok && !d.setup.test)
-      d.adopted.insert(x.name);
     a.out = !a.ok ? "未入库: " + x.error : d.setup.test ? "达门槛 (自检会话, 不拷进正式库)"
                                                         : "已入库";
     d.log.event(Event::Submit, {{"round", d.round()}, {"name", x.name}, {"result", a.ok ? std::string("入库") : x.error}});
-    d.add({.adopted = a.ok});
     break;
   }
   case Tool::ListNotes:
@@ -103,31 +98,27 @@ Wait now(Act &a, Desk &d) {
     break;
   }
   case Tool::Hypothesize: {
-    const Hyp &h = d.board.add(c, here(a, d));
-    a.out = "已记为 " + h.id + " (待检验): 用观察按 expect / refute 检验它, 再 judge; 判为支持才能挂 eval_factor 的变体";
-    d.log.event(Event::Hyp, {{"round", d.round()}, {"id", h.id}, {"title", h.title()}});
+    const std::string id = d.st.board.next();
+    a.out = "已记为 " + id + " (待检验): 用观察按 expect / refute 检验它, 再 judge; 判为支持才能挂 eval_factor 的变体";
+    d.log.event(Event::Hyp, {{"round", d.round()}, {"id", id}, {"title", c.str("title")}});
     break;
   }
   case Tool::Judge: {
-    Hyp *h = d.board.find(c.str("hyp"));
-    const Ref me = here(a, d);
-    const std::string miss = h ? evidence_miss(c, *h, me, d) : "假设板上没有 " + c.str("hyp");
+    const Hyp *h = d.st.board.find(c.str("hyp"));
+    const std::string miss = h ? evidence_miss(c, *h, here(a, d), d) : "假设板上没有 " + c.str("hyp");
     if (!miss.empty()) {
       a.ok = false;
       a.out = miss + "; 判定没改";
       break;
     }
-    h->stance = StanceOf(c.str("verdict")), h->judged = me, h->verdict = c.args, h->pending = 0;
-    a.out = "已判 " + h->id + ": " + def(h->stance).cn + " (变体 " + std::to_string(h->evals) + "/" + std::to_string(kHypEvals) + ")" +
-            (h->stance == Stance::Supported ? (h->evals < kHypEvals ? "; 可以挂变体" : "; 变体已用完, 接着做须提新假设") : "; 不能再挂变体, 接着做须提新假设或带新证据再判");
-    d.log.event(Event::Judge, {{"round", d.round()}, {"hyp", h->id}, {"verdict", def(h->stance).id}, {"evidence", c.args.at("evidence")}});
+    const Stance s = IdOf<Stance>(c.str("verdict"));
+    a.out = "已判 " + h->id + ": " + def(s).cn + " (变体 " + std::to_string(h->evals) + "/" + std::to_string(kHypEvals) + ")" +
+            (s == Stance::Supported ? (h->evals < kHypEvals ? "; 可以挂变体" : "; 变体已用完, 接着做须提新假设") : "; 不能再挂变体, 接着做须提新假设或带新证据再判");
+    d.log.event(Event::Judge, {{"round", d.round()}, {"hyp", h->id}, {"verdict", s}, {"evidence", c.args.at("evidence")}});
     break;
   }
   case Tool::Finish:
-    if (d.setup.test || d.reviewed)
-      d.done = true, a.out = "本条回复的调用做完后会话结束";
-    else
-      d.reviewed = true, a.out = "先复盘: 本条回复的调用做完后系统发复盘清单; 处理完再 finish 即结束";
+    a.out = d.flags().reviewed ? "本条回复的调用做完后会话结束" : "先复盘: 本条回复的调用做完后系统发复盘清单; 处理完再 finish 即结束";
     break;
   default:
     assert(false && "不是当场做的工具");
@@ -137,7 +128,6 @@ Wait now(Act &a, Desk &d) {
 
 Wait human(Act &a, Desk &d) {
   const Asked &q = a.got.emplace<Asked>(QuestionsOf(a.call));
-  d.asked = true;
   d.log.event(Event::Questions, {{"round", d.round()}, {"n", q.qs.size()}});
   return Wait::Human;
 }
@@ -146,15 +136,15 @@ Wait human(Act &a, Desk &d) {
 std::string unseen(const std::string &expr, const Desk &d) {
   std::string out;
   for (const std::string &l : d.lab.leaves_of(expr))
-    if (!d.seen.contains(l))
+    if (!d.st.seen.contains(l))
       out += (out.empty() ? "" : ", ") + l;
   return out;
 }
 
 // eval_factor 落文件前的会话检查: 假设 (判为支持 / 没有待判 / 有配额) → base (可见) → 改动 (不退回; 旋钮类须 base 达门槛且有配额) → 功能块; 成立 = 空.
 // 新起 (base 空) 也比对全部已试候选 (Lab::delta), 比上的按它当 base 归类
-std::string eval_miss(const Call &c, Desk &d, Delta &dl) {
-  const Hyp *h = d.board.find(c.str("hyp"));
+std::string eval_miss(const Call &c, const Desk &d, Delta &dl) {
+  const Hyp *h = d.st.board.find(c.str("hyp"));
   if (!h)
     return "假设板上没有 " + c.str("hyp") + ": 先 hypothesize, 用观察检验并 judge 为支持, 再挂变体";
   if (h->stance != Stance::Supported)
@@ -207,16 +197,14 @@ Wait eval(Act &a, Desk &d) {
     miss = "用了本会话没查过定义的叶 " + miss + ": 先 search_leaves 查清它记的是谁的什么行为 (主动方还是被动方、侧是谁的方向、大小按什么分), 再写进式子";
   else
     miss = eval_miss(c, d, dl);
-  Hyp *h = d.board.find(c.str("hyp"));
   if (!miss.empty()) {
     k.st.cand = {c.str("name"), c.str("name_cn"), c.str("expr"), ""};
     k.st.res.error = std::move(miss);
     k.st.res.verdict = Verdict::Unstaged;
   } else {
     k.change = change_of(dl) + (dl.base.empty() ? "" : ": " + dl.what);
-    k.st = d.lab.stage({c.str("name"), c.str("name_cn"), c.str("expr"), note_of(c, *h, dl)});
-    if (k.st.ok())
-      k.knob = def(dl.kind).knob, ++h->evals, h->knobs += k.knob, h->pending = d.round();
+    k.st = d.lab.stage({c.str("name"), c.str("name_cn"), c.str("expr"), note_of(c, *d.st.board.find(c.str("hyp")), dl)});
+    k.knob = k.st.ok() && def(dl.kind).knob;
   }
   d.log.event(Event::Stage, {{"round", d.round()},
                              {"name", k.st.cand.name},
@@ -225,7 +213,6 @@ Wait eval(Act &a, Desk &d) {
                              {"result", k.st.ok() ? "落文件 " + k.st.file : Brief(k.st.res)}});
   if (!k.st.ok()) {
     a.out = TrialText(k, d.setup.gate), a.ok = false;
-    d.add(Desk::Tally::of(Verdict::Unstaged));
     return Wait::None;
   }
   d.lab.send(EvalSpec{k.st.file, d.setup.gpu});
@@ -250,7 +237,7 @@ Wait docs(Act &a, Desk &) {
 }
 
 constexpr Wait (*kBegin[])(Act &, Desk &) = {now, human, eval, view<LookSpec>, view<BookSpec>, docs}; // 下标 = Run
-static_assert(std::size(kBegin) == kRunCount);
+static_assert(std::size(kBegin) == kNum<Run>);
 
 // 回测换上定论, 无显著另接代表点的分层摘要
 void settled(Act &a, Eval &&e, Desk &d) {
@@ -260,7 +247,6 @@ void settled(Act &a, Eval &&e, Desk &d) {
   a.out = TrialText(k, d.setup.gate, e.rep ? RepText(*e.rep) : "");
   a.ok = k.st.res.verdict != Verdict::Broken;
   d.log.event(Event::Eval, {{"name", k.st.cand.name}, {"result", Brief(k.st.res)}});
-  d.add(Desk::Tally::of(k.st.res.verdict));
 }
 void settled(Act &a, Look &&l, Desk &d) { a.ok = Render(a.call, l, d.lab.ctx(), a.out); }
 void settled(Act &a, Book &&b, Desk &d) { a.ok = Render(a.call, b, d.lab.ctx(), a.out); }
@@ -299,10 +285,10 @@ void answer(Act &a, Desk &d) {
 }
 
 std::string RuleMiss(const std::vector<Call> &cs, const Desk &d) {
-  if (d.evaled && std::any_of(cs.begin(), cs.end(), [](const Call &c) { return c.tool == Tool::EvalFactor; }))
+  if (d.flags().evaled && std::any_of(cs.begin(), cs.end(), [](const Call &c) { return c.tool == Tool::EvalFactor; }))
     return "上一条回复有落了文件的回测, 这一条不能再回测: 先读本批结果 —— 用观察诊断变体为什么好 / 为什么差, 对挂了变体的假设 judge; 回测留到下一条";
   std::string owe;
-  for (const Hyp &h : d.board.all())
+  for (const Hyp &h : d.st.board.all())
     if (h.pending && std::none_of(cs.begin(), cs.end(), [&](const Call &c) { return c.tool == Tool::Judge && c.str("hyp") == h.id; }))
       owe += (owe.empty() ? "" : ", ") + h.id;
   if (!owe.empty())
