@@ -157,6 +157,10 @@ void progress(LiveHub &hub) {
     sep();
     text_col(kHot, "刷新中: " + g.step + "…");
   }
+  if (g.user) {
+    sep();
+    ImGui::TextDisabled("客户端有人操作, 定时刷新推后");
+  }
   if (!g.err.empty()) {
     sep();
     text_col(kRed, "✗ 上轮刷新失败");
@@ -170,7 +174,7 @@ void progress(LiveHub &hub) {
 void data_ctl(LiveHub &hub, BoardState &st) {
   live::Broker &b = hub.broker();
   if (ImGui::SmallButton("刷新"))
-    b.request();
+    b.request(live::Part::All);
   if (ImGui::IsItemHovered())
     tip("客户端依次重查当日成交、持仓、挂单、信用资产与融资负债, 各样查完即更新");
   ImGui::SameLine();
@@ -185,7 +189,7 @@ void data_ctl(LiveHub &hub, BoardState &st) {
   if (!ImGui::IsItemActive())
     st.every.reset();
   if (ImGui::IsItemHovered())
-    tip("定时刷新周期 [s], 0 = 不定时; 回车或点别处生效");
+    tip("定时刷新周期 [s], 0 = 不定时; 回车或点别处生效. 有人在操作客户端时定时的推后");
   ImGui::SameLine(0, ImGui::GetFontSize());
   ImGui::BeginDisabled(hub.busy());
   if (ImGui::SmallButton("更新两融名单"))
@@ -315,14 +319,18 @@ void end_fit(std::span<const char *const> heads, Fit &f) {
     f.extra[c] = std::max(0.0f, col.ContentMaxXHeadersIdeal - col.WorkMinX - head_w(heads[c], f.wrap));
   }
 }
-// 可排序表的表头格: 列宽只量列名, 排序箭头的位只给正在排的列 (ImGui 给每个可排列都留)
+// 可排序表的表头格: 排序箭头的位只给正在排的列 (ImGui 给每个可排列都留, 且按留了箭头截列名)
+//   TableHeader 只铺底、管点击与画箭头, 列名自画, 截断只让正在排的列的箭头
 void sort_head(const char *label) {
   ImGuiTable *t = ImGui::GetCurrentTable();
   ImGuiTableColumn &col = t->Columns[t->CurrentColumn];
-  const float x = ImGui::GetCursorScreenPos().x;
-  ImGui::TableHeader(label);
-  if (col.SortOrder == -1)
-    col.ContentMaxXHeadersIdeal = x + std::ceil(ImGui::CalcTextSize(label, nullptr, true).x);
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  ImGui::TableHeader((std::string("##") + label).c_str());
+  const float arrow = col.SortOrder == -1 ? 0 : col.ContentMaxXHeadersIdeal - at.x; // 箭头与序号
+  const ImVec2 sz = ImGui::CalcTextSize(label);
+  col.ContentMaxXHeadersIdeal = at.x + std::ceil(sz.x) + arrow;
+  const float r = std::max(ImGui::TableGetCellBgRect(t, t->CurrentColumn).Max.x - arrow, at.x);
+  ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), at, ImVec2(r, at.y + sz.y), r, label, nullptr, &sz);
 }
 // 表头一行 (各列名按折行与否)
 void fit_heads(std::span<const char *const> heads, const Fit &f) {
@@ -906,6 +914,8 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
     ImGui::Checkbox("解锁", &st.armed);
     ImGui::PopStyleVar();
+    ImGuiTableColumn &col = ImGui::GetCurrentTable()->Columns[c];
+    col.ContentMaxXHeadersIdeal = std::max(col.ContentMaxXHeadersIdeal, ImGui::GetItemRectMax().x);
     if (ImGui::IsItemHovered())
       tip("勾上才下得了单");
   }

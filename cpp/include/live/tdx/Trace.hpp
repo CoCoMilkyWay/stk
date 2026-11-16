@@ -5,15 +5,20 @@
 //     段外不记 (调试台的轮询、推送与手动操作都在段外)
 //   同一线程相邻几条除 ms 外全同的事件只记首条, 其后记一行 rep {n 又几次, ms 首条到末条}
 //   适配里的 fail / need 经此 (遮住 live::fail): 先在当时的段路径下记一行 fail {why}, 再抛 live::Fail
-//   段: 刷新 {why 起因, n 轮号} › 成交 / 持仓 / 挂单 / 信用账户;  盯持仓 › 接入;  下单 {委托} › 切换 / 开窗 / 填单 / 确认 / 回报;
-//     两融条款 › <功能名> (另一线程 <功能名>条数标签);  资金流水 {from} › 窗 {lo, hi};  <独占者> (调仓整批等);  界面件: 点「文字」/ 功能树「项」/ 开页「功能」{col} / 弹框 {titles}
+//   段: 刷新 {why 起因, n 轮号} › 成交 / 持仓 / 挂单 / 信用账户 (只刷成交的一轮只有成交);  刷新推后 {why} (有人在操作客户端);
+//     盯持仓 › 接入;  下单 {委托} › 切换 / 开窗 / 填单 / 确认 / 回报;
+//     两融条款 › <功能名> (另一线程 <功能名>条数标签);  资金流水 {from} › 窗 {lo, hi};  <独占者> (调仓整批等);
+//     界面件: 点「文字」/ 功能树「项」/ 页签「页签」/ 开页「功能」{col} / 弹框 {titles}
 //   种类:
 //     shim {cmd, ms, ret 应答记录 | n 条数 + kb (应答大于 kRetCap 字节)}   run {argv, rc, ms, err / out 尾部}   外部进程
 //     build {dll, cc} / inject {dll, port, proc} / online {port}           shim 编译、注入、注入后上线
 //     attach {pid} / ptrace {scope}      接进程堆、放开 ptrace             torn {tab, n}  连读 n 次才一致
 //     gen {tab, rows, addr}              盯着的表换代 (addr = 选中各块的地址)
-//     wait {tab, ms, by: gen | full}     等客户端重查后的换代              ask {tab, rows, addr, ms}  act 后等到新应答
+//     wait {tab, ms, by: gen | count | full, n, rows}  等客户端重查后的换代 (count = 条数标签写回且行数相符; n / rows 有标签才记)
+//     ask {tab, rows, addr, ms, by: new | empty}       act 后等到新应答 (empty = 条数标签写回 0 条, 空表认不出新块)
 //     reask {tab, try, hits}             没等到新应答, 再 act (hits = 此刻该表命中各块的地址)
+//     tab {known, mark, page, count, shown, looks}     页签认页 / 认不出 / 没等到页 / 重找条数标签
+//     yield {ms}                         刷新一轮把界面锁让给在等的那路, 让了 ms     user {quiet}  有人在操作客户端, 定时刷新推后
 //     rows {n, got}                      两融整表拼表 (页上条数 / 内存行数) 每变一次
 //     texts {wins, seen}                 点文字不恰一处: 候选窗口数、各候选窗口上画着的文字
 //     popup {title, hwnd}                等到的弹框                        form {px, dflt, unit, cap0, cap, n}  填单的价、默认价、单位、最大量、股数

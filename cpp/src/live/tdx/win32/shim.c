@@ -8,8 +8,9 @@
 //   treewatch                     长连接，窗口树变更即推 {gen}（不收尾）
 //   enum [target]                 节点记录，只展开一层
 //   tree [target]                 节点记录，递归展开
-//   find class=<cls> [title=<t>]  命中则一条节点记录
+//   find class=<cls> [id=<n>] [title=<t>]  全树里相符的各节点记录（先序）
 //   rect <target>                 一条节点记录
+//   idle                          {ms}  距最近一次真实键鼠输入（投递的不算）
 //   gettext <target>              {text}
 //   settext <target> <utf8>       {ret}
 //   post <target> <msg> <wp> <lp> {ret}  PostMessageW
@@ -39,7 +40,8 @@
 //   req on / off / clear / drain  交易请求对象追踪（只记录，不改参数）
 //   req attach <hwnd> [offset]     从 MFC 窗口对象接入宿主请求接口；offset
 //   缺省自动找 {cmds}
-// 节点记录：{depth,hwnd,id,class,title,rect:[l,t,r,b],style,exstyle,vis,en}
+// 节点记录：{depth,hwnd,parent,id,class,title,rect:[l,t,r,b],style,exstyle,vis,en}
+//   parent 顶层为 0x00000000。
 // 图层记录：{hwnd,off:[客户区相对窗口左上],items:[[l,t,r,b,v]|[l,t,r,b,v,"文字"]]}
 //   客户区坐标，后出的在上；v 在 gdi 为色 0x00BBGGRR，在 detail 为 st 位。
 // 长连接（treewatch / gdiwatch）：无变更 1s 推一次心跳 null。
@@ -515,8 +517,12 @@ static void emit_node(struct out *o, HWND h, int depth) {
   ttl_get(h, cls, ttl, sizeof(ttl));
   RECT r = {0, 0, 0, 0};
   GetWindowRect(h, &r);
-  emit(o, "{\"depth\":%d,\"hwnd\":\"0x%08x\",\"id\":%d,\"class\":", depth,
-       HX(h), GetDlgCtrlID(h));
+  HWND p = GetAncestor(h, GA_PARENT);
+  if (p == GetDesktopWindow())
+    p = NULL;
+  emit(o, "{\"depth\":%d,\"hwnd\":\"0x%08x\",\"parent\":\"0x%08x\",\"id\":%d,"
+          "\"class\":",
+       depth, HX(h), HX(p), GetDlgCtrlID(h));
   emit_str(o, cls);
   emit(o, ",\"title\":");
   emit_str(o, ttl);
@@ -568,20 +574,78 @@ static const char *cmd_tree(struct out *o, HWND h, char *a) {
   return NULL;
 }
 
-// find class=<cls> [title=<ttl>]：title 取到行尾（可含空格）。
+// find 的条件：类名恰为 cls，且（给了才比）控件 id、标题恰为所给。
+struct match {
+  struct out *o;
+  wchar_t cls[256];
+  int has_id, id;
+  const char *ttl; // UTF-8；NULL = 不比
+};
+
+// 先序：只取类名 / id（不发消息），相符的再取标题比对、出节点记录。
+static void match_walk(struct match *m, HWND h, int depth) {
+  wchar_t c[256] = {0};
+  GetClassNameW(h, c, 256);
+  if (!wcscmp(c, m->cls) && (!m->has_id || GetDlgCtrlID(h) == m->id)) {
+    char cls[CLS_CAP], ttl[TTL_CAP];
+    if (m->ttl) {
+      cls_get(h, cls, sizeof(cls));
+      ttl_get(h, cls, ttl, sizeof(ttl));
+    }
+    if (!m->ttl || !strcmp(ttl, m->ttl))
+      emit_node(m->o, h, depth);
+  }
+  for (HWND k = GetWindow(h, GW_CHILD); k; k = GetWindow(k, GW_HWNDNEXT))
+    match_walk(m, k, depth + 1);
+}
+
+static int match_root(HWND h, void *ctx) {
+  match_walk((struct match *)ctx, h, 0);
+  return 1;
+}
+
+// find class=<cls> [id=<n>] [title=<t>]：本进程全部窗口（顶层及其子孙）里
+// 相符的各节点，depth 为在其顶层窗口树里的深度；title 取到行尾（可含空格）。
+// 不比的节点只取类名 / id，故比整棵 tree 省得多（不读标题、不发消息）。
 static const char *cmd_find(struct out *o, HWND h, char *a) {
   if (strncmp(a, "class=", 6))
     return "expected class=<cls>";
-  char *cls = a + 6, *ttl = strstr(cls, " title=");
-  if (ttl) {
-    *ttl = 0;
-    ttl += 7;
+  char *cls = a + 6, *p = cls + strcspn(cls, " ");
+  if (*p)
+    *p++ = 0;
+  if (!*cls || strlen(cls) >= 256)
+    return "class empty or too long";
+  struct match m;
+  memset(&m, 0, sizeof(m));
+  m.o = o;
+  u2w(cls, m.cls, 256);
+  if (!strncmp(p, "id=", 3)) {
+    m.has_id = 1;
+    m.id = (int)strtol(p + 3, &p, 0);
+    while (*p == ' ')
+      p++;
   }
-  if (strlen(cls) >= 256 || (ttl && strlen(ttl) >= 512))
-    return "class/title too long";
-  HWND f = find_window(cls, ttl);
-  if (f)
-    emit_node(o, f, 0);
+  if (!strncmp(p, "title=", 6)) {
+    m.ttl = p + 6;
+    if (strlen(m.ttl) >= 512)
+      return "title too long";
+    p += strlen(p);
+  }
+  if (*p)
+    return "usage: find class=<cls> [id=<n>] [title=<t>]";
+  each_window(match_root, &m);
+  return NULL;
+}
+
+// idle：距最近一次真实键鼠输入的毫秒数。GetLastInputInfo 只记硬件输入，
+// 本 shim 的 click / clickat / mouse / key / char 一律 PostMessage，不算在内。
+static const char *cmd_idle(struct out *o, HWND h, char *a) {
+  LASTINPUTINFO li;
+  li.cbSize = sizeof(li);
+  li.dwTime = 0;
+  if (!GetLastInputInfo(&li))
+    return "GetLastInputInfo failed";
+  emit(o, "{\"ms\":%lu}\n", (unsigned long)(GetTickCount() - li.dwTime));
   return NULL;
 }
 
@@ -2723,6 +2787,7 @@ static const struct cmd CMDS[] = {
     {"enum", cmd_enum, ARG_OPT},
     {"tree", cmd_tree, ARG_OPT},
     {"find", cmd_find, ARG_NONE},
+    {"idle", cmd_idle, ARG_NONE},
     {"rect", cmd_rect, ARG_REQ},
     {"gettext", cmd_gettext, ARG_REQ},
     {"settext", cmd_settext, ARG_REQ},

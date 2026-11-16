@@ -5,6 +5,7 @@
 #include "live/tdx/Trace.hpp"
 #include "live/tdx/Until.hpp"
 
+#include <cassert>
 #include <cctype>
 
 using nlohmann::json;
@@ -33,6 +34,7 @@ Node node_of(const json &j) {
   Node n;
   n.depth = j.at("depth").get<int>();
   n.hwnd = j.at("hwnd").get<std::string>();
+  n.parent = j.at("parent").get<std::string>();
   n.id = j.at("id").get<long>();
   n.cls = j.at("class").get<std::string>();
   n.title = j.at("title").get<std::string>();
@@ -87,7 +89,17 @@ std::vector<Node> tree(const Hwnd &target, double timeout) {
   return nodes_of(target.empty() ? shim::cmd_wait(timeout, "tree") : shim::cmd_wait(timeout, "tree", target));
 }
 
-std::vector<Node> find_wnd(const std::string &query) { return nodes_of(shim::cmd("find", query)); }
+std::vector<Node> find(const std::string &cls, std::optional<long> id, const std::string &title) {
+  assert(!cls.empty() && cls.find(' ') == std::string::npos);
+  std::string line = "find class=" + cls;
+  if (id)
+    line += " id=" + std::to_string(*id);
+  if (!title.empty())
+    line += " title=" + title;
+  return nodes_of(shim::call(line));
+}
+
+Node node(const Hwnd &h) { return node_of(shim::cmd("rect", h).at(0)); }
 
 Tops tops() {
   Tops out;
@@ -103,6 +115,8 @@ std::vector<Layer> layers(const Hwnd &target) {
     out.push_back(layer_of(d));
   return out;
 }
+
+double idle() { return shim::cmd("idle").at(0).at("ms").get<double>() / 1000; }
 
 // ---------- 消息 ----------
 
@@ -164,8 +178,8 @@ void click_text(const std::string &cls, const std::string &ttl, const std::strin
         wins.clear();
         hits.clear();
         seen = trace::Kw::object();
-        for (Node &n : tree())
-          if (n.vis && (cls.empty() || n.cls == cls) && (ttl.empty() || n.title == ttl))
+        for (Node &n : find(cls, std::nullopt, ttl))
+          if (n.vis)
             wins.emplace(n.hwnd, std::move(n));
         for (const Layer &l : layers(wins.size() == 1 ? wins.begin()->first : "")) {
           const auto w = wins.find(l.hwnd);

@@ -3,10 +3,13 @@
 
 #include "live/tdx/Win.hpp"
 
+#include <atomic>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace live::tdx::ui {
@@ -21,6 +24,9 @@ public:
     ~Hold();
     Hold(const Hold &) = delete;
     Hold &operator=(const Hold &) = delete;
+    // 有别路在等即先让它占、做完再接着占 (刷新一轮在两步之间让下单等先走); 只许最外层调.
+    // 让出期间界面任人改, 接着的一步须自己切到要的页
+    void yield();
 
   private:
     Gate &g_;
@@ -32,6 +38,8 @@ private:
   std::recursive_mutex mu_;
   mutable std::mutex who_mu_;
   std::string who_;
+  std::atomic<int> waiting_{0};      // 在等的路数
+  std::atomic<uint64_t> granted_{0}; // 等过才占到的次数
 };
 
 inline constexpr int kPageCount = 166, kPageAll = 454; // 查询页: 列表上方「第1--N条」/「共N条」、「查询全部」按钮
@@ -45,6 +53,16 @@ void click_tool(const std::string &text); // 点交易栏上画着 text 的按�
 void show_bar();                          // 交易栏收起了即点顶栏「交易」, 等功能树出来; 用交易栏的事务开头各调一次
 void click_func(const std::string &name); // 点交易功能树上的 name: 树只给可见项, 滚到顶后逐页往下找, 翻不动即到底
 
+// 交易栏页签 (「成交」「持仓」「撤单」) 的页: page = 页 (对话框), count = 页上「共N条」/「第1--N条」的条数标签 (有才给)
+struct Tab {
+  win::Hwnd page;
+  std::optional<win::Hwnd> count;
+};
+// 切到页签 tab (已在该页即不点) 并等页出来, 好让随后的「刷新」落在这页上. 认页: 页上可见的列表 (持仓 / 成交 = 表头含某列,
+// 撤单 = 委托列表控件); 头一回认出即记下 (页 / 条数标签, 客户端重开即重认), 认不出的页签此后只点不等.
+// 没等到页 → 无 (调用方照点「刷新」)
+std::optional<Tab> open_tab(const std::string &tab);
+
 // ---------- 查询页 ----------
 
 // 功能树点 func, 等表头含 col 的查询页出来 → 其 hwnd; 页一开客户端即重查 (大表要卡一阵), 故等得长.
@@ -53,6 +71,7 @@ win::Hwnd open_page(const std::string &func, const std::string &col, long count 
 win::Hwnd count_label(const win::Hwnd &dlg, long count = kPageCount); // 查询页的条数标签 (客户端卡着时 enum 也读不到, 须事先取好)
 // 条数标签上的列表条数, 重查中标签清空 → 无; 客户端卡着时 gettext 一直等到它缓过来
 std::optional<int> page_count(const win::Hwnd &lbl, double timeout = 5);
+std::optional<int> count_in(std::string_view text); // 「第1--N条」/「共N条」→ N; 不是这形 → 无
 
 // ---------- 弹框 ----------
 

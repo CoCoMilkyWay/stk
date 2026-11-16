@@ -70,7 +70,7 @@ namespace {
 using Core = LiveHub::Core;
 using Lock = std::lock_guard<std::mutex>;
 
-constexpr double kFillWait = 120, kFillGap = 2; // 等卖单成交: 最长秒数、每轮间隔
+constexpr double kFillWait = 120, kFillGap = 1; // 等卖单成交: 最长秒数、两次只刷成交之间隔几秒
 
 double mono() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
@@ -461,7 +461,7 @@ void pull_terms(Core &c) {
 
 // 刷新一轮 (成交、持仓、挂单、信用账户), 记下账户
 std::shared_ptr<const live::State> sync(Core &c) {
-  c.broker->sync();
+  c.broker->sync(live::Part::All);
   auto st = c.broker->state();
   assert(st->pos && st->fills && st->orders && st->acct);
   const live::Account &a = *st->acct;
@@ -508,11 +508,12 @@ double sold(const live::State &st, const std::string &code) {
   return f ? f->traded[live::kSell] : 0;
 }
 
-// 刷新到成交表里各只卖量到 want [股]
+// 只刷成交, 到成交表里各只卖量到 want [股]
 void wait_fills(Core &c, const std::map<std::string, double> &want) {
   const double end = mono() + kFillWait;
   for (;;) {
-    const auto st = sync(c);
+    c.broker->sync(live::Part::Fills);
+    const auto st = c.broker->state();
     std::map<std::string, double> got;
     for (const auto &[code, n] : want)
       got[code] = sold(*st, code);
@@ -557,6 +558,7 @@ void run_rebal(Core &c) {
         want[o.code] += place_one(c, o, mode).qty;
     });
     wait_fills(c, want);
+    sync(c);
     {
       Lock lk(c.mu);
       c.cfg.sells.clear();

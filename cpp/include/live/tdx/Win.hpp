@@ -13,6 +13,7 @@
 namespace live::tdx::win {
 
 using Hwnd = std::string;
+inline const Hwnd kNoWnd = "0x00000000";
 
 inline constexpr unsigned kWmVscroll = 0x115, kWmCommand = 0x111;
 inline constexpr int kSbPagedown = 3, kSbTop = 6;
@@ -20,7 +21,7 @@ inline constexpr int kSbPagedown = 3, kSbTop = 6;
 // 节点记录 (enum / tree / find / rect): 先序, depth 定父子, 兄弟序即 z 序 (先 = 上层); rect 为屏幕坐标
 struct Node {
   int depth = 0;
-  Hwnd hwnd;
+  Hwnd hwnd, parent; // parent: 顶层为 kNoWnd
   long id = 0;
   std::string cls, title;
   int rect[4] = {};
@@ -52,10 +53,13 @@ void attach();
 
 std::vector<Node> enum_(const Hwnd &target = ""); // 只展开一层; 空 = 本进程全部顶层窗口
 std::vector<Node> tree(const Hwnd &target = "", double timeout = 5);
-std::vector<Node> find_wnd(const std::string &query); // class=<类名> [title=<标题>]
+// 本进程全部窗口里类名为 cls (id / title 给了才比) 的各节点, 先序; 不读别的节点的标题、不经界面线程, 比整棵 tree 省得多
+std::vector<Node> find(const std::string &cls, std::optional<long> id = std::nullopt, const std::string &title = "");
+Node node(const Hwnd &h); // 一个窗口的节点记录 (窗口已销毁: 类名为空、不可见)
 using Tops = std::map<Hwnd, Node>;
 Tops tops();                                        // 可见顶层窗口
 std::vector<Layer> layers(const Hwnd &target = ""); // 绘制层; 空 = 全部窗口
+double idle();                                      // 距客户端最近一次真实键鼠输入 [s] (shim 投递的不算)
 
 // ---------- 消息 ----------
 
@@ -73,7 +77,7 @@ void clickat(const Hwnd &h, int x, int y);
 std::map<std::string, Hwnd> ctls(const Hwnd &h, const std::vector<std::pair<std::string, long>> &ids);
 // 点对话框 dlg 上 id 为 cid 的按钮: 向 dlg 投 WM_COMMAND(cid, 按钮)
 void command(const Hwnd &dlg, long cid);
-// 在 cls / title (非空才比) 匹配的可见窗口的绘制层里找文字恰为 text 的项, 向该窗口投递其中心点的左键单击
+// 在类名为 cls (title 非空才比) 的可见窗口的绘制层里找文字恰为 text 的项, 向该窗口投递其中心点的左键单击
 // (自绘控件谁画谁处理点击); 须唯一命中. 一处没有 = 窗口正重绘 (绘制层刚清), 至多等 kRedraw 秒画回来
 inline constexpr double kRedraw = 2;
 void click_text(const std::string &cls, const std::string &title, const std::string &text);

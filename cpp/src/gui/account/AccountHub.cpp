@@ -70,7 +70,7 @@ void AccountHub::pull(live::Broker &b, const live::Log &log, const live::Live &l
   const size_t n = fresh.size();
   l.rows = account::merge(l.rows, from, std::move(fresh));
   live("刷新持仓, 核对资金流水…");
-  b.sync();
+  b.sync(live::Part::All);
   const std::shared_ptr<const live::State> s = b.state();
   live::need(s->pos && s->fills && s->acct, "持仓 / 成交 / 信用账户没读到");
   const std::string off = account::reconcile(l.rows, *s->pos, *s->fills);
