@@ -27,6 +27,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -147,6 +149,12 @@ struct Ui {
   std::optional<Ref> go;
   Ref flash;
   double flash_t = -1.0;
+  // 过程页各轮展开着的 "agent 看到的上下文" (收起即丢): 键 = 轮; sig = 算它时的样子 (轮数 / 这轮发出时刻 / 消息与插话字节数), 变了重算
+  struct Ctx {
+    std::tuple<size_t, double, size_t, size_t> sig;
+    std::string body;
+  };
+  std::unordered_map<size_t, Ctx> ctx;
   // 回退确认框: 回到第 k 轮; loss = 会丢的; open = 下一帧打开
   struct Rewind {
     int k = 0;
@@ -473,14 +481,78 @@ void copy_button(const char *id, const std::string &s) {
 }
 constexpr float kThinkLines = 12.0f, kBoxLines = 20.0f; // 思考 / 在收正文框 · 其余文本框的最大行高
 
+// 文本框的排版 (按框的 id 缓存): 按段 ('\n' 切) 记折行后的高, 每帧只画看得见的段 (长文 = 首条 / 结果 / 上下文 / 思考, 整篇每帧量不起).
+// 键 (框内宽 / 字号 / 最大高) 不变且文本没变 → 原样; 只在末尾追加 (在收的思考 / 正文) → 从末段起续排; 否则整篇重排. 高过最大高就让出滚动条的宽排
+struct Layout {
+  float w = 0.0f, font = 0.0f, cap = 0.0f; // 键: 框内宽 (不计滚动条) / 字号 / 文本的最大高
+  size_t n = 0, hash = 0;                  // 排过的文本: 字节数 / 散列
+  bool scroll = false;                     // 高过 cap: 按让出滚动条的宽 lw 排
+  float lw = 0.0f;                         // 实排的宽
+  std::vector<size_t> at;                  // 各段起点
+  std::vector<float> y{0.0f};              // 各段顶, 末项 = 总高
+  int used = 0;                            // 末次用到的帧 (久不用的丢)
+};
+constexpr int kLayoutFrames = 600;
+std::unordered_map<ImGuiID, Layout> layouts;
+
+// 从段起点 a 排到文末 (at / y 已截到 a 之前)
+void lay(Layout &L, std::string_view s, size_t a) {
+  for (;;) {
+    const size_t e = std::min(s.find('\n', a), s.size());
+    L.at.push_back(a);
+    L.y.push_back(L.y.back() + ImGui::CalcTextSize(s.data() + a, s.data() + e, false, L.lw).y);
+    if (e == s.size())
+      return;
+    a = e + 1;
+  }
+}
+void relay(Layout &L, std::string_view s) {
+  L.lw = L.scroll ? L.w - ImGui::GetStyle().ScrollbarSize : L.w;
+  L.at.clear(), L.y.assign(1, 0.0f);
+  lay(L, s, 0);
+}
+const Layout &layout_of(ImGuiID id, std::string_view s, float w, float cap) {
+  const int frame = ImGui::GetFrameCount();
+  if (frame % kLayoutFrames == 0)
+    std::erase_if(layouts, [&](const auto &kv) { return frame - kv.second.used > kLayoutFrames; });
+  Layout &L = layouts[id];
+  L.used = frame;
+  const float font = ImGui::GetFontSize();
+  const std::hash<std::string_view> hash;
+  if (!L.at.empty() && L.w == w && L.font == font && L.cap == cap && s.size() >= L.n && hash(s.substr(0, L.n)) == L.hash) {
+    if (s.size() == L.n)
+      return L;
+    const size_t a = L.at.back();
+    L.at.pop_back(), L.y.pop_back();
+    lay(L, s, a);
+  } else {
+    L.w = w, L.font = font, L.cap = cap, L.scroll = false;
+    relay(L, s);
+  }
+  if (!L.scroll && L.y.back() > cap) {
+    L.scroll = true;
+    relay(L, s);
+  }
+  L.n = s.size(), L.hash = hash(s);
+  return L;
+}
+
 // 文本框: 全文, 高过 lines 行就在框内滚 (不把时间线顶走); tail = 停在底部时跟着新内容走 (初开即在底部)
 void box(const std::string &body, bool dim, float lines, bool tail) {
   const ImGuiStyle &st = ImGui::GetStyle();
-  const float w = ImGui::GetContentRegionAvail().x - 2.0f * st.WindowPadding.x;
-  const float h = ImGui::CalcTextSize(body.c_str(), body.c_str() + body.size(), false, w).y + 2.0f * st.WindowPadding.y + 2.0f;
-  ImGui::BeginChild("##box", ImVec2(-1, std::min(h, lines * ImGui::GetTextLineHeightWithSpacing())), ImGuiChildFlags_Borders);
+  const float pad = 2.0f * st.WindowPadding.y + 2.0f, cap = lines * ImGui::GetTextLineHeightWithSpacing();
+  const Layout &L = layout_of(ImGui::GetID("##box"), body, ImGui::GetContentRegionAvail().x - 2.0f * st.WindowPadding.x, cap - pad);
+  ImGui::BeginChild("##box", ImVec2(0, std::min(L.y.back() + pad, cap)), ImGuiChildFlags_Borders, L.scroll ? ImGuiWindowFlags_AlwaysVerticalScrollbar : ImGuiWindowFlags_None);
   const bool follow = tail && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 2.0f;
-  dim ? wrapped_dim(body) : wrapped(body);
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  const float top = dl->GetClipRectMin().y - o.y, bot = dl->GetClipRectMax().y - o.y;
+  const ImU32 col = ImGui::GetColorU32(dim ? ImGuiCol_TextDisabled : ImGuiCol_Text);
+  for (size_t k = static_cast<size_t>(std::upper_bound(L.y.begin() + 1, L.y.end(), top) - L.y.begin()) - 1; k < L.at.size() && L.y[k] < bot; ++k) {
+    const size_t e = k + 1 < L.at.size() ? L.at[k + 1] - 1 : body.size();
+    dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(o.x, o.y + L.y[k]), col, body.data() + L.at[k], body.data() + e, L.lw);
+  }
+  ImGui::Dummy(ImVec2(L.lw, L.y.back()));
   if (follow)
     ImGui::SetScrollHereY(1.0f);
   ImGui::EndChild();
@@ -1186,14 +1258,20 @@ std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Ki
   return h;
 }
 
-// agent 在第 i 轮看到的整份上下文 (system 之外): 照时间线现算, 展开时才算
-void context_block(const Mine &m, size_t i) {
+// agent 在第 i 轮看到的整份上下文 (system 之外): 照时间线现算, 展开时算一次 (时间线变了重算)
+void context_block(Ui &s, const Mine &m, size_t i) {
   const bool open = ImGui::TreeNodeEx("context", ImGuiTreeNodeFlags_None, "agent 看到的上下文 (首条 + 研究树 + 上一轮的回复 + 本条; system 之外)");
-  if (!open)
+  if (!open) {
+    s.ctx.erase(i);
     return;
-  const std::string body = llm::Flat(TurnsOf(Rounds(m.timeline).first(i + 1)));
-  copy_button("复制##context", body);
-  box(body, false, kBoxLines, false);
+  }
+  const Round &rd = m.timeline[i];
+  const auto sig = std::tuple(m.timeline.size(), rd.span.t0, rd.user.size(), rd.memo.size());
+  Ui::Ctx &c = s.ctx[i];
+  if (c.body.empty() || c.sig != sig)
+    c = {sig, llm::Flat(TurnsOf(Rounds(m.timeline).first(i + 1)))};
+  copy_button("复制##context", c.body);
+  box(c.body, false, kBoxLines, false);
   ImGui::TreePop();
 }
 
@@ -1233,7 +1311,7 @@ bool round_block(Ui &s, Mine &m, size_t i, const Flow &f, bool fresh) {
   }
   const std::string sent = TextOf(rd);
   fold("send", ImGuiTreeNodeFlags_None, (rd.span.began() ? "发出 " : "待发 ") + chars(sent) + (rd.memo.empty() ? "" : " · 附插话"), sent, false, kBoxLines, false);
-  context_block(m, i);
+  context_block(s, m, i);
   if (receiving && f.stage == Flow::Wait)
     ImGui::TextColored(color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), "%s", doing(f).c_str());
   if (!r.thinking.empty()) {
