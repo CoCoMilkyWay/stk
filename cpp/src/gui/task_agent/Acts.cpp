@@ -44,8 +44,15 @@ std::string evidence_miss(const Call &c, const Hyp &h, Ref me, const Desk &d) {
     look = look || def(x.call.tool).cat == Cat::Look;
     fresh = fresh || h.judged < r;
   }
-  if (StanceOf(c.str("verdict")) == Stance::Supported && !look)
-    return "判支持须有观察调用 (view_*) 作证据: 回测只说好不好, 观察才说机制是否成立. 同一条回复里把观察排在 judge 前面, 就能引用它们";
+  if (StanceOf(c.str("verdict")) == Stance::Supported && !look) {
+    std::string near; // 本条排在前面、做成了的观察 (可直接补进 evidence)
+    const std::vector<Act> &acts = d.timeline.back().acts;
+    for (int i = 1; i < me.call; ++i)
+      if (const Act &x = acts[static_cast<size_t>(i) - 1]; def(x.call.tool).cat == Cat::Look && x.span.ended() && x.ok && h.at < Ref{me.round, i})
+        near += (near.empty() ? "" : ", ") + RefText({me.round, i});
+    return "判支持须有观察调用 (view_*) 作证据: 回测只说好不好, 观察才说机制是否成立. 同一条回复里把观察排在 judge 前面, 就能引用它们" +
+           (near.empty() ? std::string() : "; 本条排在前面做成了的观察: " + near + ", 补进 evidence 即可");
+  }
   if (h.judged.round && !fresh)
     return "再判 " + h.id + " 须至少一个证据在上次判定 (" + RefText(h.judged) + ") 之后";
   return {};

@@ -508,7 +508,7 @@ stk/
 #        - 累计降频型:   Node/Lob/TS/OrderFlow/Flow.hpp
 #        - 盘口时间加权: Node/Lob/TS/Book/Book.hpp
 #        - 分钟采样型:   Node/Common/Basic/Kline.hpp + Node/{Lob,Bar}/TS/Basic/Kline.hpp
-#        - 回看型:       同域 = 消费方自持窗口 (Node/Bar/TS/Basic/Momentum.hpp); 跨域 = 上游声明 kHist, 下游接 Up.hist() (见 DataDefine.hpp)
+#        - 回看型:       同域 = 消费方自持窗口 (Node/Bar/TS/Basic/MovingAverage.hpp); 跨域 = 上游声明 kHist, 下游接 Up.hist() (见 DataDefine.hpp)
 #        - 日频型:       Node/Common/Fund/Fund.hpp + Node/Bar/TS/Fund/Fund.hpp (onSettle; 输出口跨天保留, 盘中读到的 = 当日适用值)
 #                        (Lob 档的 Fund 节点只供盘中节点取前收 / 涨跌停, 不落盘)
 #                        全市场截面 / 长窗的日频量 (市场收益 → ivol / β, 趋势回归, 12−1 动量) 在 fund::Panel 预计算 (Panel/Fund.cpp build_market), 经 Fund 口进 TS

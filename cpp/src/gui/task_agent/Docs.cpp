@@ -381,6 +381,8 @@ std::string conditions(const Call &c) {
 
 // 零命中: 各条件单独的命中数 (共 n 项)
 std::string alone(const text::Filter &f, size_t n) { return "各条件单独命中: " + f.alone(n) + "\n去掉命中少的条件或换个词再查\n"; }
+// 放宽: 没有同时含全部 query 词的, 列含任一词的
+std::string loosened(const text::Filter &f, size_t n) { return "没有同时含全部 query 词的, 下列含其中任一词 (各条件单独命中: " + f.alone(n) + ")\n"; }
 
 // ---- 三个工具 ----
 bool search_docs(const Call &c, std::string &out) {
@@ -409,12 +411,12 @@ bool search_docs(const Call &c, std::string &out) {
   if (!genre.empty())
     f.add("genre=" + genre, [&](size_t i) { return L.docs[i].genre == genre; });
   f.add(ws, "query 词 ", hay);
-  std::vector<size_t> hit;
+  bool loose = false;
+  std::vector<size_t> hit = f.hits(L.docs.size(), loose);
   std::vector<int> hits(L.docs.size(), 0);
-  for (size_t i = 0; i < L.docs.size(); ++i)
-    if (f(i))
-      hits[i] = ws.empty() ? 1 : count_in(hay(i), ws), hit.push_back(i);
-  out = "命中 " + std::to_string(hit.size()) + " 篇 " + conditions(c) + "\n";
+  for (const size_t i : hit)
+    hits[i] = ws.empty() ? 1 : count_in(hay(i), ws);
+  out = "命中 " + std::to_string(hit.size()) + " 篇 " + conditions(c) + "\n" + (loose ? loosened(f, L.docs.size()) : "");
   if (hit.empty()) {
     out += alone(f, L.docs.size());
     return true;
@@ -443,7 +445,7 @@ bool search_docs(const Call &c, std::string &out) {
     const size_t i = hit[r];
     out += doc_row(L.docs[i], text ? " · 命中 " + std::to_string(hits[i]) + " 处" : "");
     if (text)
-      out += snippets(texts()[i], ws[0]);
+      out += snippets(texts()[i], *std::find_if(ws.begin(), ws.end(), [&](const std::string &w) { return texts()[i].low.find(w) != std::string::npos; }));
   }
   return true;
 }
@@ -469,10 +471,8 @@ bool search_factors(const Call &c, std::string &out) {
   if (!asset.empty())
     f.add("asset=" + asset, [&](size_t i) { return has(doc(i).asset, asset); });
   f.add(ws, "query 词 ", [&](size_t i) -> const std::string & { return L.factors[i].hay; });
-  std::vector<size_t> hit;
-  for (size_t i = 0; i < L.factors.size(); ++i)
-    if (f(i))
-      hit.push_back(i);
+  bool loose = false;
+  std::vector<size_t> hit = f.hits(L.factors.size(), loose);
   Count docs, family_n, ap_n;
   for (const size_t i : hit) {
     const Factor &f = L.factors[i];
@@ -480,7 +480,7 @@ bool search_factors(const Call &c, std::string &out) {
     for (const std::string &a : L.docs[f.doc].l1)
       ++ap_n[named(L, a)];
   }
-  out = "命中 " + std::to_string(hit.size()) + " 个因子 (出自 " + std::to_string(docs.size()) + " 篇) " + conditions(c) + "\n";
+  out = "命中 " + std::to_string(hit.size()) + " 个因子 (出自 " + std::to_string(docs.size()) + " 篇) " + conditions(c) + "\n" + (loose ? loosened(f, L.factors.size()) : "");
   if (hit.empty()) {
     out += alone(f, L.factors.size());
     return true;

@@ -22,6 +22,8 @@ using KV = std::vector<std::pair<std::string_view, std::string>>;
 
 constexpr size_t kTitleChars = 40; // 结果标题里每个参数值至多几字 (全文在 agent 自己的回复里)
 constexpr size_t kSurfBins = 6;    // 参数曲面: 每个参数至多分几段
+constexpr size_t kSurfSlots = 3;   // 参数曲面: 自由参数至多几个时逐参数分段; 再多改列最好的点
+constexpr size_t kSurfTop = 12;    // 参数曲面: 改列最好的点时列几个
 
 // {{键}} → 值; 模板里的键都须在 kv 里
 Message fill(Msg m, const KV &kv) {
@@ -233,13 +235,34 @@ std::string bp_spark(const std::vector<double> &v) {
 // 参数值: 整数不带小数
 std::string param(double v) { return v == std::round(v) ? fmt("%.0f", v) : fmt("%.4g", v); }
 
-// 参数曲面: 每个参数按取值分至多 kSurfBins 段 (等点数, 同值不拆), 段内取最好的点 (mono 最高, 同 mono 取目标高的), 列出它的全部参数
+// 参数曲面: 每个参数按取值分至多 kSurfBins 段 (等点数, 同值不拆), 段内取最好的点 (mono 最高, 同 mono 取目标高的), 列出它的全部参数;
+// 参数多于 kSurfSlots 个 (N 元的 w) 时逐参数分段表会重复列同几个点, 改为一张表列最好的 kSurfTop 个不同点
 std::string surface_text(const Surface &sf) {
   if (sf.slots.empty() || sf.pts.size() < 2)
     return "";
   const size_t n = sf.pts.size(), per = (n + kSurfBins - 1) / kSurfBins;
   const auto g = [](const Stat &st) { return std::max(st.mono, 0.0) * std::max(st.mono, 0.0) * st.ls * st.ric; };
   const auto better = [&](const Stat &x, const Stat &y) { return x.mono != y.mono ? x.mono > y.mono : g(x) > g(y); };
+  const auto stats = [](const Stat &st) { return fmt("%.3f", st.mono) + " | " + fmt("%+.2f", st.ls * 1e4) + " | " + fmt("%.4f", st.ric) + " |\n"; };
+  if (sf.slots.size() > kSurfSlots) {
+    std::vector<const Probe *> ps;
+    for (const Probe &p : sf.pts)
+      ps.push_back(&p);
+    std::stable_sort(ps.begin(), ps.end(), [&](const Probe *a, const Probe *b) { return better(a->st, b->st); });
+    ps.erase(std::unique(ps.begin(), ps.end(), [](const Probe *a, const Probe *b) { return a->v == b->v; }), ps.end());
+    ps.resize(std::min(ps.size(), kSurfTop));
+    std::string s = "- 参数曲面 (Search 评过 " + std::to_string(n) + " 个点; 参数多, 只列最好的 " + std::to_string(ps.size()) + " 个不同点: mono 最高, 同 mono 取目标高的):\n\n|", rule = "|";
+    for (const std::string &slot : sf.slots)
+      s += " " + slot + " |", rule += "---|";
+    s += " mono | 每期毛多空 bp | rIC |\n" + rule + "---|---|---|\n";
+    for (const Probe *p : ps) {
+      s += "|";
+      for (const double x : p->v)
+        s += " " + param(x) + " |";
+      s += " " + stats(p->st);
+    }
+    return s;
+  }
   std::string s = "- 参数曲面 (Search 评过 " + std::to_string(n) + " 个点; 每个参数按取值分段, 段内取最好的点: mono 最高, 同 mono 取目标高的):\n";
   for (size_t j = 0; j < sf.slots.size(); ++j) {
     std::vector<size_t> ix(n);
@@ -260,8 +283,7 @@ std::string surface_text(const Surface &sf) {
       std::string at;
       for (size_t q = 0; q < sf.slots.size(); ++q)
         at += (q ? ", " : "") + (sf.slots.size() > 1 ? sf.slots[q] + "=" : std::string()) + param(p.v[q]);
-      s += "| " + (v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1))) + " | " + at + " | " + fmt("%.3f", p.st.mono) + " | " +
-           fmt("%+.2f", p.st.ls * 1e4) + " | " + fmt("%.4f", p.st.ric) + " |\n";
+      s += "| " + (v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1))) + " | " + at + " | " + stats(p.st);
       a = b;
     }
   }
@@ -399,12 +421,12 @@ std::string TrialText(const Trial &k, const Gate &g, const std::string &rep) {
 std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n, std::vector<std::string> &shown) {
   text::Filter f;
   f.add(text::words(query), "", [&](size_t i) -> const std::string & { return leaves[i].hay; });
+  bool loose = false;
   std::vector<const Leaf *> hits, all;
-  for (size_t i = 0; i < leaves.size(); ++i) {
-    all.push_back(&leaves[i]);
-    if (f(i))
-      hits.push_back(&leaves[i]);
-  }
+  for (const size_t i : f.hits(leaves.size(), loose))
+    hits.push_back(&leaves[i]);
+  for (const Leaf &l : leaves)
+    all.push_back(&l);
   const size_t hit = hits.size();
   if (!hit)
     return "(无命中; 各词单独命中: " + f.alone(leaves.size()) + "; 换个写法或少给几个词)\n";
@@ -422,7 +444,8 @@ std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query
     const std::string name = kin.size() == 1 ? l.code : LeafWords(l.code).first + "." + kin_name(kin) + " (" + std::to_string(kin.size()) + " 个; 下列按 " + col_of(l.code) + ")";
     rows += "| " + name + " | " + cell(l.name_cn) + " | " + cell(l.formula) + " | " + cell(l.desc) + " | " + (l.tf.empty() ? "x" : l.tf_def) + " |\n";
   }
-  return "命中 " + std::to_string(hit) + " 个叶, 在 " + std::to_string(gs.size()) + " 组里" + (gs.size() > static_cast<size_t>(n) ? ", 列前 " + std::to_string(n) + " 组" : std::string()) +
+  return (loose ? "没有同时含全部词的叶, 下列含其中任一词 (各词单独命中: " + f.alone(leaves.size()) + "). " : std::string()) + "命中 " + std::to_string(hit) + " 个叶, 在 " +
+         std::to_string(gs.size()) + " 组里" + (gs.size() > static_cast<size_t>(n) ? ", 列前 " + std::to_string(n) + " 组" : std::string()) +
          ". 同组的叶只差计量 (amt 额 / vol 量 / n 笔) 或阈值 / 窗口 (带数字的词), 列出整组; 公式与说明按组内首个命中的写, 其余照族卡换词; 列出的组整组算查过\n\n"
          "| 叶 | 中文名 | 公式 (原量 x) | 说明 | 落盘值 |\n|---|---|---|---|---|\n" +
          rows;
@@ -452,6 +475,7 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                             {"seg", std::to_string(c.seg)},
                             {"rows", rows_of(c)},
                             {"hold", c.hold},
+                            {"hold_key", c.hold_key},
                             {"hold_desc", c.hold_desc},
                             {"window", c.window},
                             {"srcs", c.srcs},
@@ -513,8 +537,11 @@ Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board
            "- **料**: 有没有更直接捕捉这一现象的特征\n"
            "- **缺**: 想刻画的维度现有叶没有或只能近似 → request_feature; 想看的现有工具看不到 → request_tool; 规则或工具可以更好 → report_issue (idea); 都在本条提\n"
            "- **记**: 值得跨会话留下的认识用 note_insight 记\n\n";
+    const bool open = std::ranges::any_of(board.all(), [](const Hyp &h) { return h.stance == Stance::Supported && h.evals < kHypEvals; });
+    const std::string done = "研究透了就按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish (系统先发复盘清单).";
     next += evaled ? "本条只诊断 (上一条有落了文件的回测, 本条不能回测): 用观察查本批变体的结果说明了什么 (与 expect 哪里不符、为什么), 再对挂了变体的假设 judge; 观察排在 judge 前面, 判支持才引用得到."
-                   : "本条可回测: 只挂判为支持的假设 (至多 " + batch + " 个 eval_factor, 各写清 base / change / expect / parts), 每个变体检验一个问题; 研究透了就按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish (系统先发复盘清单).";
+            : open ? "本条可回测: 只挂判为支持的假设 (至多 " + batch + " 个 eval_factor, 各写清 base / change / expect / parts), 每个变体检验一个问题; " + done
+                   : "假设板上还没有能挂变体的假设 (判为支持且变体有余): 本条用观察检验假设并 judge, 或提新假设; 同条里判为支持的, 排在 judge 后面的 eval_factor 即可挂它; " + done;
   }
   return fill(Msg::Round, {{"results", s}, {"board", board.text()}, {"next", next}});
 }

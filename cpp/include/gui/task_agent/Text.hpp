@@ -4,7 +4,8 @@
 // Text — agent 成文的公共件: 字 (UTF-8 码点) / 检索词 / 时刻 / 数的写法 / 火花线
 // =============================================================================
 //   字数一律按码点算 (结果上限 kOutChars / 标题截断 / 研报片段都是字, 不是字节); 截断只落在码点边界; 短句上限 (功能块说明) 按 solid
-//   检索 (search_leaves / search_docs / search_factors / list_notes) 同一套: 词空白隔开、ASCII 小写, 条件全中才命中, 零命中报各条件单独的命中数
+//   检索 (search_leaves / search_docs / search_factors / list_notes) 同一套: 词空白隔开、ASCII 小写, 条件全中才命中;
+//   全中的没有且词 ≥ 2 个时放宽为含任一词 (search_* 三个; list_notes 不放宽), 仍零命中报各条件单独的命中数
 // =============================================================================
 
 #include <algorithm>
@@ -76,22 +77,41 @@ inline std::vector<std::string> words(std::string_view q) {
   }
   return ws;
 }
-// 具名条件的合取: 第 i 项满足全部条件才命中
+// 具名条件的合取: 第 i 项满足全部条件才命中; 检索词另可放宽为析取 (hits)
 struct Filter {
   struct Cond {
     std::string name; // 写法 (零命中时报)
     std::function<bool(size_t)> pass;
+    bool word = false; // 检索词 (放宽时只须含其一)
   };
   std::vector<Cond> conds;
-  void add(std::string name, std::function<bool(size_t)> pass) { conds.push_back({std::move(name), std::move(pass)}); }
+  void add(std::string name, std::function<bool(size_t)> pass, bool word = false) { conds.push_back({std::move(name), std::move(pass), word}); }
   // hay(i) (已小写) 含词 w, 一词一条
   template <class Hay>
   void add(const std::vector<std::string> &ws, const std::string &prefix, Hay hay) {
     for (const std::string &w : ws)
-      add(prefix + w, [hay, w](size_t i) { return std::string_view(hay(i)).find(w) != std::string_view::npos; });
+      add(prefix + w, [hay, w](size_t i) { return std::string_view(hay(i)).find(w) != std::string_view::npos; }, true);
   }
   bool operator()(size_t i) const {
     return std::all_of(conds.begin(), conds.end(), [&](const Cond &c) { return c.pass(i); });
+  }
+  // 非词条件全满足, 且含任一检索词
+  bool loose(size_t i) const {
+    return std::all_of(conds.begin(), conds.end(), [&](const Cond &c) { return c.word || c.pass(i); }) &&
+           std::any_of(conds.begin(), conds.end(), [&](const Cond &c) { return c.word && c.pass(i); });
+  }
+  // 共 n 项的命中 (升序): 全部条件都满足的; 没有且检索词 ≥ 2 个 → 放宽为含任一词 (loosened = true)
+  std::vector<size_t> hits(size_t n, bool &loosened) const {
+    std::vector<size_t> o;
+    for (size_t i = 0; i < n; ++i)
+      if ((*this)(i))
+        o.push_back(i);
+    loosened = o.empty() && std::count_if(conds.begin(), conds.end(), [](const Cond &c) { return c.word; }) >= 2;
+    if (loosened)
+      for (size_t i = 0; i < n; ++i)
+        if (loose(i))
+          o.push_back(i);
+    return o;
   }
   // 共 n 项时各条件单独的命中数 "名 k · 名 k"
   std::string alone(size_t n) const {

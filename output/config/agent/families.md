@@ -101,9 +101,6 @@
 # Bar/TS/Basic/Noise 白噪声对照
 - `noise_gauss`: 每行独立的噪声, 不含信息, 只作对照.
 
-# Bar/TS/Basic/Momentum 日频动量
-- `ret_20d`: 后复权 20 日收益.
-
 # Bar/TS/Basic/Intraday 日内位置与短窗收益
 - bar.1m `ret_lag{5,15,30}`: 现价相对 5 / 15 / 30 分钟前 (早于当日首行的基准 = 前收); `ret_open` 开盘至今; `gap_open` 隔夜缺口 (开盘后日内恒定).
 - `pos_intra` 现价在当日至今高低区间的位置 (0 = 低点, 1 = 高点); `rebound_intra` 离日内低点涨幅 (≥ 0); `pullback_intra` 离日内高点跌幅 (≤ 0).

@@ -605,6 +605,7 @@ Context context_of(const SharedData &data, const Scope &sc, const Opened &open) 
   c.pool_cn = catalog::pool_cn(sc.pool);
   c.level = Engine::factor_level(level_id(sc.level)).name;
   c.hold = factor::stat::hold_name(sc.hold);
+  c.hold_key = factor::stat::hold_token(sc.hold);
   c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
   const std::optional<Engine::FactorScope> fsc = fscope_of(data, ft, sc.pool);
   std::array<bool, kSrcCount> has{}, on{}; // [Src] 本层有可作输入的叶 / 有开放的叶
@@ -1150,7 +1151,7 @@ std::vector<std::string> Lab::leaves_of(const std::string &expr) const {
   std::vector<std::string> out;
   if (p_->parse(expr, e))
     for (const fx::Node &x : e.nodes)
-      if (x.op < 0 && std::find(out.begin(), out.end(), x.feat) == out.end())
+      if (x.op < 0 && !x.target && std::find(out.begin(), out.end(), x.feat) == out.end())
         out.push_back(x.feat);
   return out;
 }

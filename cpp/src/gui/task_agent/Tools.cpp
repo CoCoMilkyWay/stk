@@ -71,7 +71,7 @@ constexpr ArgDef kBookArgs[] = {
     {"at", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 全簿剖面的时刻 HH:MM:SS (取该秒末的簿, 须在窗口内); 空 = 窗口最后一秒"},
     {"big", Arg::Int, "0", 0, 100000, nullptr, "大单门槛 (万元, 按委托额); 0 = 当日全部新挂单额的 99 分位"},
     {"n", Arg::Int, "20", 1, 40, nullptr, "大单事件列几条 (按额取最大的, 再按时序列)"}};
-constexpr ArgDef kLeavesArgs[] = {{"query", Arg::Str, nullptr, 0, 0, nullptr, "关键词, 查叶名 / 中文名 / 公式 / 说明; 空格隔开的几个须同时出现 (英文不分大小写)"},
+constexpr ArgDef kLeavesArgs[] = {{"query", Arg::Str, nullptr, 0, 0, nullptr, "关键词, 查叶名 / 中文名 / 公式 / 说明; 空格隔开的几个须同时出现 (英文不分大小写), 都含的没有则列含任一词的 (几个叶名一次查清)"},
                                   {"n", Arg::Int, "30", 1, 60, nullptr, "列几组 (同组 = 只差计量 / 阈值的叶)"}};
 // 研报库的词表 (标注体系的 code)
 constexpr const char *kStages = "L0_data|L1_factor|L2_process|L3_alpha|L4_risk|L5_portfolio|L6_evaluation|L7_execution|L8_timing";
@@ -79,7 +79,7 @@ constexpr const char *kAssets = "stock_cn|stock_hk|stock_us|future_index|future_
 constexpr const char *kFamilies =
     "size|value|growth|quality|dividend|carry|analyst|momentum|reversal|volatility|liquidity|microstructure|sentiment|relation|institution|event|composite|other";
 constexpr const char *kPeriods = "second|intraday|daily|weekly|monthly|quarterly|event|na";
-constexpr const char *kQueryDesc = "关键词, 空格隔开的几个须同时出现 (英文不分大小写); 空 = 不限";
+constexpr const char *kQueryDesc = "关键词, 空格隔开的几个须同时出现 (英文不分大小写), 都含的没有则列含任一词的; 空 = 不限";
 
 constexpr ArgDef kDocsArgs[] = {
     {"query", Arg::Str, "\"\"", 0, 0, nullptr, kQueryDesc},
@@ -92,7 +92,7 @@ constexpr ArgDef kDocsArgs[] = {
      "体裁: framework 体系搭建 / research 原创研究 / handbook 因子全集测试 / review 综述与文献解读; 空 = 不限"},
     {"n", Arg::Int, "10", 1, 40, nullptr, "列几篇"}};
 constexpr ArgDef kFactorsArgs[] = {
-    {"query", Arg::Str, "\"\"", 0, 0, nullptr, "关键词, 查因子名 / 公式 / 定义摘录; 空格隔开的几个须同时出现 (英文不分大小写); 空 = 不限"},
+    {"query", Arg::Str, "\"\"", 0, 0, nullptr, "关键词, 查因子名 / 公式 / 定义摘录; 空格隔开的几个须同时出现 (英文不分大小写), 都含的没有则列含任一词的; 空 = 不限"},
     {"family", Arg::Str, "\"\"", 0, 0, kFamilies, "风格桶 (microstructure = 订单流 / 订单簿 / 日内结构); 空 = 不限"},
     {"period", Arg::Str, "\"\"", 0, 0, kPeriods, "构造所用原始数据的周期含它 (second 逐笔 / 快照, intraday 分钟); 空 = 不限"},
     {"horizon", Arg::Str, "\"\"", 0, 0, kPeriods, "预测期; 空 = 不限"},

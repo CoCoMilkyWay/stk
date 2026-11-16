@@ -252,13 +252,14 @@ inline void free_value(const OpInfo &o, std::string_view key, Param &p, int seg)
 
 // 签名 LaTeX (GUI Operators 表 operand 列 / operators.json operand 键), 从表列生成:
 //   序列元 x, y, z 按 in 值域, 相邻同域合并 ("x, y \in ℝ"); 再参数 d{=}⟨d⟩ ∈ ℤ₊ / k{=}⟨k⟩ ∈ k域 (TOD 整段自带 k, k2);
-//   N 元写 x_1, \dots, x_N; 末加 h{=}⟨h⟩ (回归) / w{=}⟨w⟩ (定权); 元与参数间 ";\; ", 占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ ⟨h⟩ ⟨w⟩ 由 GUI 换成本轮实际值
+//   N 元写 x_1, \dots, x_N 并注元数 2..kLrN; 末加 h{=}⟨h⟩ (回归) / w{=}⟨w⟩ (定权); 元与参数间 ";\; ", 占位符 ⟨d⟩ ⟨k⟩ ⟨k2⟩ ⟨h⟩ ⟨w⟩ 由 GUI 换成本轮实际值
 inline std::string operand_tex(const OpInfo &o) {
   static constexpr const char *kVar[3] = {"x", "y", "z"};
   std::string s;
   if (nary(o)) {
     s += R"tex(x_1, \dots, x_N \in )tex";
     s += dom_tex(o.in[0]);
+    s += R"tex(\; (2 \le N \le )tex" + std::to_string(kLrN) + ")";
   }
   for (int i = 0; i < o.arity;) {
     int j = i + 1;

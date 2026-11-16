@@ -198,6 +198,7 @@ struct PerBar {
 };
 struct Context {
   std::string pool, pool_cn, level, hold, hold_desc;
+  std::string hold_key;           // 持有期的标签列名 token (N 元回归的 h 写它)
   std::string srcs;               // 有开放叶的来源 ("bar / lob")
   bool has_lob = false;           // 本层有 lob 叶 (不论开放与否)
   std::string window;             // 评估期 = 标签库与开放的叶所在库落盘日交集 ("未就绪" = 作用域未就绪或无共同落盘日)
@@ -460,7 +461,7 @@ public:
   // 候选的模板 (只查字段表与候选目录, 不碰数据); expr 解析不了的由 stage 报, 这里放行
   // 相对已试候选 base (英文名, 须可见) 的改动; base 空 = 新起: 依次比可见的已试候选, 与某个同式 / 只差参数 / 只差一处旋钮的按它当 base (Delta::base 回填其名)
   Delta delta(const std::string &base, const std::string &expr) const;
-  std::vector<std::string> leaves_of(const std::string &expr) const; // 用到的叶, 出现序去重
+  std::vector<std::string> leaves_of(const std::string &expr) const; // 用到的特征叶, 出现序去重 (N 元回归的目标叶解析时补, 不计)
   // 功能块须是 expr 的子式, 且覆盖根的输入与每个多元算子的非叶元; 覆盖 = 空, 否则 = 缺在哪
   std::string parts_miss(const std::string &expr, const std::vector<Part> &parts) const;
 
