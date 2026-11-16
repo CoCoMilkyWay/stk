@@ -177,7 +177,7 @@ std::string PortfolioRequest::sig() const {
 
 namespace {
 
-// G20 多头的账 [hold][kBookCols][rows_all] (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; fold_book stride 1 = 逐行):
+// G20 多头的账 [hold][kBookCols][rows_stat] (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; fold_book stride 1 = 逐行):
 //   ret = 行的 G20 (所评方向的高端组; 行已定向) 绝对收益, 平仓行实现; imp = 买入冲击, fix = 固定量 (CostBook::fix), 建仓行即付 (不交接批的平仓量一并); buy = 增仓量, 记在建仓行
 struct BookP : LinesP<kBookCols> {
   static constexpr uint8_t need = kNeedRows | kNeedEc;
@@ -300,16 +300,18 @@ bool PortfolioService::run(PortfolioRequest &req) {
   return !todo_b || eval(*req.baskets, F);
 }
 
-// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径, 方向), 根的 hd = 其条目的 hold 之并; 落账 BookP (G20 多头), 根评完即逐条发布
+// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径, 方向), 各根同评全部条目的 hold 之并; 落账 BookP (G20 多头), 根评完即逐条发布
 bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlow &F) {
   TraceN("PortfolioForest");
   const FactorScope &sc = ts.front()->scope;
   RootSet rs; // 条目 i ↔ ts[i]
-  for (const FactorTask *t : ts)
-    rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir, keys_of<Holds>(std::vector<int>{t->hold}));
+  for (const FactorTask *t : ts) {
+    rs.hd = keys_union(rs.hd, keys_of<Holds>(std::vector<int>{t->hold}));
+    rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir);
+  }
   std::vector<PortfolioProbes> ps(rs.size());
 
-  // ---- 管线 eval_job: Y = 各根 hold 之并 + 首个金额段 (BookP) ----
+  // ---- 管线 eval_job: Y = 条目 hold 之并 + 首个金额段 (BookP) ----
   JobOut o;
   o.job.who = "Portfolio";
   struct Hooks : HookBase {
@@ -333,9 +335,9 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
     void post(int e, int k) {
       const PortfolioProbes &p = ps[static_cast<size_t>(k)];
       auto b = book(e, "");
-      const int hi = factor::stat::hold_index(o.fr.r[static_cast<size_t>(k)].hd, ts[static_cast<size_t>(e)]->hold);
+      const int hi = factor::stat::hold_index(o.job.spec.y.hd, ts[static_cast<size_t>(e)]->hold);
       assert(hi >= 0);
-      b->dates = o.job.dm.dates;
+      b->dates = o.job.dm.stat_dates();
       b->amt = o.job.spec.y.ad.k[0];
       b->keys = {0};
       for (int c = 0; c < kBookCols; ++c)
@@ -344,7 +346,7 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
     }
   };
   const Rc rc = F.with_backend<PortfolioProbes>(sc.gpu, [&](auto &eng) {
-    return eval_job(eng, F, sc, rs, [&](int k) -> PortfolioProbes & { return ps[static_cast<size_t>(k)]; }, o, Hooks{{}, *this, ts, ps, o});
+    return eval_job(eng, F, sc, rs, std::span(ps), o, Hooks{{}, *this, ts, ps, o});
   });
   return settle(rc);
 }

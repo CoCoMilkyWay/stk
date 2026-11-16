@@ -69,8 +69,7 @@ std::string handled(const Note &x) {
 }
 
 json line_of(const Note &x) {
-  return {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"round", x.round}, {"ref", x.ref},
-          {"state", def(x.state).id}, {"reply", x.reply}, {"fields", x.fields}};
+  return {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"round", x.round}, {"ref", x.ref}, {"state", def(x.state).id}, {"reply", x.reply}, {"fields", x.fields}};
 }
 
 } // namespace

@@ -61,7 +61,7 @@ struct LensP : ProbeBase {
   const Land *land = nullptr;
   bool as_root = false, as_feat = false;
   const uint8_t *m0 = nullptr;
-  int d = st::kFwd, A = 0, lo = 0, T = 0; // lo = 预热行数 (块行 lo 起 = 落地行 0), T = 落地行数
+  int d = st::kFwd, A = 0, t0 = 0, T = 0; // 块内行 t ↔ 落地行 t + t0 (land0) / 落地行数 (rows_stat)
   double cap = 0.0;
   LensRoot r;
   LensFeat f;
@@ -72,9 +72,9 @@ struct LensP : ProbeBase {
   Ext ext() const { return {{m0, d, {}}, {kTailThr.v, cap, d}}; }
   void open(const Ctx &c) {
     const st::Span s = c.s();
-    assert(s.t0_abs == 0 && s.t_back == 0 && s.T == c.c.rows_all() && "整期一块 (前带 = 预热)");
+    assert(s.t0_abs == 0 && s.t_back == 0 && s.t_hi() - s.t_lo == c.c.rows_stat() && "整期一块 (前带 = 预热)");
     assert(c.L.hd.n == 1 && "单持有期");
-    m0 = c.L.l[0].m, d = c.d, A = s.A, cap = c.L.cap, lo = s.t_lo, T = s.t_hi() - s.t_lo;
+    m0 = c.L.l[0].m, d = c.d, A = s.A, cap = c.L.cap, t0 = c.c.land0(), T = c.c.rows_stat();
     if (as_root) {
       r.rows.assign(static_cast<size_t>(T), st::Row{});
       r.tails.assign(static_cast<size_t>(T), TailRow{});
@@ -84,23 +84,23 @@ struct LensP : ProbeBase {
   void row(int, int t, const st::Row &w, const Ext &e) {
     if (!as_root)
       return;
-    const size_t base = static_cast<size_t>(t) * A, u = static_cast<size_t>(t - lo);
+    const size_t base = static_cast<size_t>(t) * A, u = static_cast<size_t>(t + t0);
     r.rows[u] = w;
     e.tails.finish(w, r.tails[u]);
     for (const EndsExt::Got &g : e.ends.got) {
       assert(g.k >= base && g.k < base + static_cast<size_t>(A) && "格不在本行");
       if (const int a = land->col_of[g.k - base]; a >= 0)
-        by_row[u].push_back({t - lo, a, g.e, g.ret});
+        by_row[u].push_back({t + t0, a, g.e, g.ret});
     }
   }
   void root(const Ctx &c, const RootView &v) {
     const size_t n = land->cols.size();
     if (as_root) {
       r.rx.resize(static_cast<size_t>(T) * n);
-      c.ex.rows(T, [&](int t0, int t1, int) {
-        for (int t = t0; t < t1; ++t)
+      c.ex.rows(T, [&](int u0, int u1, int) {
+        for (int u = u0; u < u1; ++u)
           for (size_t j = 0; j < n; ++j)
-            r.rx[static_cast<size_t>(t) * n + j] = st::oriented(v.rx[static_cast<size_t>(t + lo) * A + static_cast<size_t>(land->cols[j])], d);
+            r.rx[static_cast<size_t>(u) * n + j] = st::oriented(v.rx[static_cast<size_t>(u - t0) * A + static_cast<size_t>(land->cols[j])], d);
       });
       for (const std::vector<LensCell> &b : by_row)
         r.cells.insert(r.cells.end(), b.begin(), b.end());
@@ -108,11 +108,11 @@ struct LensP : ProbeBase {
     }
     if (as_feat) {
       f.v.resize(static_cast<size_t>(T) * n);
-      c.ex.rows(T, [&](int t0, int t1, int) {
-        for (int t = t0; t < t1; ++t)
+      c.ex.rows(T, [&](int u0, int u1, int) {
+        for (int u = u0; u < u1; ++u)
           for (size_t j = 0; j < n; ++j) {
-            const size_t k = static_cast<size_t>(t + lo) * A + static_cast<size_t>(land->cols[j]);
-            f.v[static_cast<size_t>(t) * n + j] = v.alpha.m[k] ? v.alpha.v[k] : kNaN;
+            const size_t k = static_cast<size_t>(u - t0) * A + static_cast<size_t>(land->cols[j]);
+            f.v[static_cast<size_t>(u) * n + j] = v.alpha.m[k] ? v.alpha.v[k] : kNaN;
           }
       });
     }
@@ -128,9 +128,8 @@ struct LensHooks : HookBase {
   Land &land;
   LensResult &res;
   std::vector<std::string> &why;               // [条目]
-  void block(const Block &c, size_t, double) { // 落地只取评估期行 [t_lo, T) (前带 = 预热)
-    const st::Span s = c.span();
-    const size_t lo = static_cast<size_t>(s.t_lo), T = static_cast<size_t>(s.t_hi() - s.t_lo), A = static_cast<size_t>(s.A);
+  void block(const Block &c, size_t, double) { // 落地行 u ↔ 块内行 u − land0 (整期一块: 评估期行 [t_lo, T), 前带 = 预热)
+    const size_t lo = static_cast<size_t>(-c.land0()), T = static_cast<size_t>(c.rows_stat()), A = static_cast<size_t>(c.y.sh.A);
     const PoolAxis &ax = o.job.dm.rs.axis;
     assert(ax.size() == A && "块 A 轴 = 评估域池轴");
     assert(c.y.hd.n == 1 && c.y.hd.k[0] == sp.hold && "Y 只装会话持有期");
@@ -216,12 +215,11 @@ bool LensService::eval(const LensRequest &req, FactorFlow &F, LensResult &res) {
   const FactorScope &sc = req.scope;
   const LensSpec &sp = req.spec;
   assert(!sp.roots.empty() || !sp.feats.empty());
-  const Holds hd = keys_of<Holds>(std::vector<int>{sp.hold});
-  RootSet rs;
+  RootSet rs{.hd = keys_of<Holds>(std::vector<int>{sp.hold})};
   for (const FactorRef &f : sp.roots)
-    rs.add(*sc.ft, f.expr, f.frame, f.dir, hd);
+    rs.add(*sc.ft, f.expr, f.frame, f.dir);
   for (const FactorRef &f : sp.feats)
-    rs.add(*sc.ft, f.expr, f.frame, f.dir, hd);
+    rs.add(*sc.ft, f.expr, f.frame, f.dir);
   const size_t n_roots = sp.roots.size();
   Land land;
   std::vector<LensProbes> ps(rs.size());
@@ -234,9 +232,7 @@ bool LensService::eval(const LensRequest &req, FactorFlow &F, LensResult &res) {
   o.job.who = "Lens";
   o.job.from = sp.from ? sp.from : window_from(sc, F.S.budget());
   std::vector<std::string> why(rs.of.size());
-  const Rc rc = F.with_backend<LensProbes>(false, [&](auto &eng) {
-    return eval_job(eng, F, sc, rs, [&](int k) -> LensProbes & { return ps[static_cast<size_t>(k)]; }, o, LensHooks{{}, sp, o, land, res, why});
-  });
+  const Rc rc = F.with_backend<LensProbes>(false, [&](auto &eng) { return eval_job(eng, F, sc, rs, std::span(ps), o, LensHooks{{}, sp, o, land, res, why}); });
   if (!settle(rc))
     return false;
   res.from = o.job.from;

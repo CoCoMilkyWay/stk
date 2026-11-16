@@ -26,15 +26,6 @@ struct BookLines {
     o.v.assign(at(i0), at(i0) + static_cast<size_t>(m) * static_cast<size_t>(P));
     return o;
   }
-  // 各线去掉前 p0 点 (预热段)
-  BookLines from(int p0) const {
-    assert(p0 >= 0 && p0 < P);
-    BookLines o;
-    o.n = n, o.P = P - p0;
-    for (int i = 0; i < n; ++i)
-      o.v.insert(o.v.end(), at(i) + p0, at(i) + P);
-    return o;
-  }
 };
 // 逐行批收益 (fold_book 入): x [n][T] = 线 i 行 t 这一批的收益 (占这批资金; 不 ok 记 0); hold[i] = 线 i 的持有期键 (各线可不同: 多持有期一次折完);
 // at_exit[i]: 1 = 收益 (平仓行 hold_exit_row 实现, 平仓越过 T 的批不计) / 0 = 成本 (建仓行即付)
@@ -87,7 +78,8 @@ struct Baskets {
 };
 // 池篮子输入 B (load_b) → 全部篮子的指数 / 增仓 / 估值 (Baskets 注)
 Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B);
-// 池整体等权线 (= 评估域池整体的等权指数; 线 i = 持有期 y.hd.k[i]): 行 t 一批 = 行 t 标签有效格做多标签的等权平均. 任意层, 只吃 Y
-BookLines pool_line(misc::exec::ForkJoin &ex, const YPlanes &y);
+// 池整体等权线 (= 评估域池整体的等权指数; 线 i = 持有期 y.hd.k[i]): 块 c 的统计行 t 一批 = 行 t 标签有效格做多标签的等权平均 (与因子的落地线同轴同起点:
+// 预热行不建仓; 点 = 统计行). 任意层, 只吃 Y
+BookLines pool_line(misc::exec::ForkJoin &ex, const Block &c);
 
 } // namespace GUI::Engine

@@ -68,12 +68,17 @@ struct NavP : LinesP<kNavLines> {
       at(hi, i, t) = static_cast<float>(nav_value(r, tr, i, cap));
   }
 };
-// 逐行 rIC 落地 [hd.n][rows_all] (非 ok / 预热行 = NaN): IC 时序
-struct RicP : LandRowsP<float> {
-  void open(const Ctx &c) { LandRowsP::open(c, std::numeric_limits<float>::quiet_NaN()); }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
-    if (r.ok)
-      at(hi, t) = r.ric;
+// 逐行 rIC 落地 [hd.n][rows_stat] (非 ok = NaN): IC 时序
+struct RicP : RowsP<RicP, float> {
+  std::vector<float> *dst = nullptr;
+  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(H) * sh.T; }
+  static float of(const factor::stat::Row &r) { return ric_of(r); }
+  void open(const Ctx &c) {
+    RowsP::open(c);
+    land_open(*dst, static_cast<size_t>(c.L.hd.n) * c.c.rows_stat(), c.s(), std::numeric_limits<float>::quiet_NaN());
+  }
+  void fold(const Ctx &c, int hi, int u0, std::span<const float> g) {
+    std::copy(g.begin(), g.end(), dst->begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(hi) * c.c.rows_stat() + u0));
   }
 };
 // 各级尾部 LS 线两端的换手量 acc[j][hi] (Stat 契约【换手成本】的 Δw, cost_rows 走一个固定段; 顶底线 = CostP 的段 0):
@@ -107,24 +112,24 @@ void orient_rx(misc::exec::ForkJoin &ex, uint16_t *rx, int T, int A, int d) {
       rx[k] = factor::stat::oriented(rx[k], d);
   });
 }
-// 池内秩 rx 落地 [rows_all][A] (统计行; 右上资产轴 / K 线着色)
+// 池内秩 rx 落地 [rows_stat][A] (右上资产轴 / K 线着色)
 struct RxP : LandCellsP<uint16_t> {
   static constexpr uint8_t need = kNeedRx;
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
-    std::copy(v.rx + static_cast<size_t>(s.t_lo) * s.A, v.rx + static_cast<size_t>(s.t_hi()) * s.A, stat_at(s));
-    orient_rx(c.ex, stat_at(s), s.t_hi() - s.t_lo, s.A, c.d);
+    std::copy(v.rx + static_cast<size_t>(s.t_lo) * s.A, v.rx + static_cast<size_t>(s.t_hi()) * s.A, at(c));
+    orient_rx(c.ex, at(c), s.t_hi() - s.t_lo, s.A, c.d);
   }
 };
-// 不看池的秩 (g = xm) 落地 [rows_all][A] (统计行; 只给 K 线显示池外段, 评估不用)
+// 不看池的秩 (g = xm) 落地 [rows_stat][A] (只给 K 线显示池外段, 评估不用)
 struct RxAllP : LandCellsP<uint16_t> {
   static constexpr uint8_t need = kNeedMask | kNeedX;
   void root(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
     const size_t o = static_cast<size_t>(s.t_lo) * s.A;
     const factor::stat::Plane x{v.x.v + o, v.x.m + o};
-    factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, factor::stat::Span{s.t_hi() - s.t_lo, s.A, s.g}, stat_at(s), *c.w);
-    orient_rx(c.ex, stat_at(s), s.t_hi() - s.t_lo, s.A, c.d);
+    factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, factor::stat::Span{s.t_hi() - s.t_lo, s.A, s.g}, at(c), *c.w);
+    orient_rx(c.ex, at(c), s.t_hi() - s.t_lo, s.A, c.d);
   }
 };
 using InspectProbes = EvalProbes<RxP, RxAllP, RicP, NavP, TurnP>;
@@ -314,14 +319,15 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
 
   // ---- 管线 eval_job (与 Run / Portfolio 同一份): 一个根, 探针 InspectProbes; 块钩子 = 池等权线 (随 Y 的代) ----
   //   Y = 全部持有期 + 全部金额段; X = 本因子的叶 (平面经 Store 缓存, 缺的补读)
-  RootSet rs;
-  rs.add(*sc.ft, f.expr, f.frame, f.dir, keys_of<Holds>(sc.ft->y.labels));
+  RootSet rs{.hd = keys_of<Holds>(sc.ft->y.labels)};
+  rs.add(*sc.ft, f.expr, f.frame, f.dir);
   JobOut o;
   o.job.who = "Inspect";
-  InspectProbes ps;
-  ps.at<RxP>().dst = &pl_.rx;
-  ps.at<RxAllP>().dst = &pl_.rx_all;
-  ps.at<RicP>().dst = &pl_.ric;
+  std::vector<InspectProbes> ps(1);
+  InspectProbes &p = ps[0];
+  p.at<RxP>().dst = &pl_.rx;
+  p.at<RxAllP>().dst = &pl_.rx_all;
+  p.at<RicP>().dst = &pl_.ric;
   struct Hooks : HookBase {
     static constexpr bool whole() { return true; } // 池等权线 / alpha 分布要整期
     InspectService &W;
@@ -329,12 +335,12 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
     void block(const Block &c, size_t, double) {
       if (W.pool_gen_ == c.gen)
         return;
-      W.pool_ = pool_line(F.S.ex, c.y), W.pool_gen_ = c.gen;
-      assert(W.pool_.P == c.y.sh.T && W.pool_.n == c.y.hd.n);
+      W.pool_ = pool_line(F.S.ex, c), W.pool_gen_ = c.gen;
+      assert(W.pool_.P == c.rows_stat() && W.pool_.n == c.y.hd.n);
     }
   };
   const Rc rc = F.with_backend<InspectProbes>(sc.gpu, [&](auto &eng) {
-    return eval_job(eng, F, sc, rs, [&](int) -> InspectProbes & { return ps; }, o, Hooks{{}, *this, F});
+    return eval_job(eng, F, sc, rs, std::span(ps), o, Hooks{{}, *this, F});
   });
   if (!settle(rc))
     return false;
@@ -364,18 +370,12 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
     publish_result();
     return true;
   }
-  // 逐行 / 逐日的落地都去掉预热段 (前 warm 日): 结果的行轴 = 评估期
+  // 落地 / 净值线 / 池线的行轴都 = 评估期 (Block::rows_stat)
   const Domain &dm = o.job.dm;
-  const int seg = sc.ft->seg, A = static_cast<int>(dm.rs.axis.size()), days = static_cast<int>(dm.stat_days());
-  const size_t lo = dm.warm * static_cast<size_t>(seg), T = static_cast<size_t>(days) * static_cast<size_t>(seg), T_all = lo + T;
-  pl_.rx.erase(pl_.rx.begin(), pl_.rx.begin() + static_cast<std::ptrdiff_t>(lo * static_cast<size_t>(A)));
-  pl_.rx_all.erase(pl_.rx_all.begin(), pl_.rx_all.begin() + static_cast<std::ptrdiff_t>(lo * static_cast<size_t>(A)));
-  for (int hi = 0; hi < o.job.spec.y.hd.n; ++hi) // [hd.n][T_all] → [hd.n][T], 就地前移
-    std::copy_n(pl_.ric.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(hi) * T_all + lo), T, pl_.ric.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(hi) * T));
-  pl_.ric.resize(static_cast<size_t>(o.job.spec.y.hd.n) * T);
+  const int seg = sc.ft->seg, A = static_cast<int>(dm.rs.axis.size()), days = static_cast<int>(dm.stat_days()), T = days * seg;
   res.dates = dm.stat_dates();
   res.read_scope = dm.rs;
-  res.pool_index = pool_.from(static_cast<int>(lo));
+  res.pool_index = pool_;
   for (int hi = 0; hi < res.pool_index.n; ++hi) { // 逐行收益 (每批 1/h̄, 平仓行实现) 评估期之和 = 算术总收益, 按日折年 (与期限结构 × span_per_year 同口径)
     const float *v = res.pool_index.at(hi);
     double s = 0.0;
@@ -384,15 +384,15 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
     res.pool_ann[hi] = static_cast<float>(s / days * factor::stat::kDaysPerYear);
   }
   res.hd = o.job.spec.y.hd;
-  fill_eval(ps, o.scope(sc), o.eval_ms(0), dm.dates, res);
-  res.alpha_dist = std::move(ps.at<AlphaP>().d);
-  std::copy_n(ps.at<IcPdfP>().pdf, res.hd.n, res.ic_agg);
-  res.nav = ps.at<NavP>().out.from(static_cast<int>(dm.warm));
+  fill_eval(p, o.scope(sc), o.eval_ms(0), res.dates, res);
+  res.alpha_dist = std::move(p.at<AlphaP>().d);
+  std::copy_n(p.at<IcPdfP>().pdf, res.hd.n, res.ic_agg);
+  res.nav = std::move(p.at<NavP>().out);
   for (int j = 0; j < kTails; ++j)
-    std::copy_n(ps.at<TurnP>().acc[j], res.hd.n, res.ls_turn[j]);
+    std::copy_n(p.at<TurnP>().acc[j], res.hd.n, res.ls_turn[j]);
   std::vector<Leg> legs;
   if (req.spec.ex != InspectExport::None) {
-    legs = top_legs(pl_.rx, static_cast<int>(T), A, req.spec.top_n);
+    legs = top_legs(pl_.rx, T, A, req.spec.top_n);
     if (req.spec.ex == InspectExport::Snap)
       std::erase_if(legs, [](const Leg &l) { return l.t_out >= 0; });
   }

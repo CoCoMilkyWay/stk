@@ -58,6 +58,7 @@ inline constexpr int kStockRows = 40;      // view_stock_day 逐行时段一次�
 inline constexpr int kBookMins = 30;       // view_book 一次重放的窗口至多几分钟 (交易时段内)
 inline constexpr int kBookRows = 30;       // view_book 逐时表至多几行 (每行 step 秒; 表要与事件 / 剖面一起装进 kOutChars)
 inline constexpr int kKeepRounds = 3;      // 会话历史里原样留着的最近 user 消息 kKeepRounds..2·kKeepRounds 条; 攒满即把更早的结果消息成批换成折叠版 (只智谱: 本地留历史; 提示词 {{history}})
+inline constexpr int kMaxRetries = 5;      // 连续这么多条回复不合协议即停下, 等研究员 (多半是模型或提示词出了问题)
 
 // 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重全部达到才拷进正式因子库
 inline constexpr double kGateMono = 0.95; // 分层单调性

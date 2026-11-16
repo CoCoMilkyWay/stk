@@ -561,7 +561,7 @@ Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board
 }
 
 Message ReviewMessage(const std::vector<Act> &acts, int round, const Board &board, const std::vector<std::pair<Ref, const Call *>> &judges,
-                      const std::vector<const Note *> &filed) {
+                      const std::vector<const Note *> &filed, const std::string &budget) {
   std::string gaps;
   for (const auto &[at, c] : judges)
     gaps += "- [" + RefText(at) + "] " + c->str("hyp") + " 判 " + c->str("verdict") + "\n  - better_feature: " + c->str("better_feature") + "\n  - next: " + c->str("next") + "\n";
@@ -569,6 +569,7 @@ Message ReviewMessage(const std::vector<Act> &acts, int round, const Board &boar
   for (const Note *n : filed)
     notes += "- " + std::string(def(n->kind).cn) + " " + n->id + (n->ref.empty() ? "" : " (附议 " + n->ref + ")") + ": " + n->title() + "\n";
   return fill(Msg::Review, {{"results", results_of(acts, round)},
+                            {"lead", budget.empty() ? "" : "研究员给这一段定的预算用完了 (" + budget + "): 先收尾, 处理完下面的复盘清单就 finish; 不 finish 则下一条结果时会话停下, 等研究员.\n\n"},
                             {"board", board.text()},
                             {"gaps", or_none(gaps, "(本会话没有成立的 judge)\n")},
                             {"filed", or_none(notes, "(无)\n")}});
@@ -596,5 +597,9 @@ std::string FoldedText(const std::vector<Act> &acts, int round) {
 }
 
 Message RetryMessage(const std::string &error) { return fill(Msg::Retry, {{"error", error}}); }
+
+std::string MemoText(const std::string &memo) {
+  return "\n# 研究员插话\n\n" + memo + "\n\n这是研究员在会话中途给的意见: 与上文的做法冲突处以它为准, 回复协议与会话约束照旧.\n";
+}
 
 } // namespace GUI::Agent

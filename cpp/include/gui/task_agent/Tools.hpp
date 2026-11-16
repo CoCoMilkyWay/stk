@@ -110,7 +110,7 @@ struct ToolDef {
 };
 std::span<const ToolDef> Tools(); // 下标 = Tool
 const ToolDef &def(Tool t);
-Tool ToolOf(std::string_view name); // 调用名 → 工具 (须在表里)
+Tool ToolOf(std::string_view name);   // 调用名 → 工具 (须在表里)
 std::string ToolText(const char *s);  // 工具说明 (desc / out) 的占位填实: {batch} → kBatch, {stock_days} → kStockDays, {stock_rows} / {book_rows} / {book_mins} 同理
 std::string ArgType(const ArgDef &a); // 参数的类型与取值 (可选值 / 范围 / 个数)
 std::string ArgText(const ArgDef &a); // 参数一行: `键` (类型, 缺省 / 必填): 说明 (工具节与界面同一份)

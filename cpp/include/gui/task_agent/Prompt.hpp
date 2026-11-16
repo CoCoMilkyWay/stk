@@ -9,8 +9,9 @@
 //     first   首条 user: 已试候选 / 正式库 / 全局记录的规模 (用 list_tried / list_library / list_notes 看) + 能否提问 + 开工 (+ 研究员对本会话的要求)
 //     test    自检会话的首条 (代替 first): 把每个工具都调一遍, 对照说明查结果, 问题记 report_issue, 末了总评再 finish (+ 研究员对本会话的要求)
 //     round   每条回复的调用结果, 按调用序 (调用编号 + 调用一行 + 结果) + 假设板 (不折叠) + 下一步 (挖掘 / 自检各一种); 较早的在会话历史里成批换成折叠版 (FoldedText)
-//     review  首次 finish 的那条回复的结果 (同 round) + 假设板 + 复盘清单 (本会话各 judge 的 better_feature / next + 本会话已提的全局记录); 再 finish 才结束
+//     review  首次 finish (或本段预算用完) 的那条回复的结果 (同 round) + 假设板 + 复盘清单 (本会话各 judge 的 better_feature / next + 本会话已提的全局记录); 再 finish 才结束
 //     retry   回复不合协议: 原因 + 按协议重发
+//   研究员的插话 (MemoText) 附在随后发出的那条消息末尾, 与本会话要求同一写法
 //   回复的解析 / 工具表见 gui/task_agent/Tools.hpp; 观察工具的成文见 gui/task_agent/Views.hpp
 //   结局文本两档: Brief 一行 (流水 / 界面标题) ↔ Detail 多行 (工具结果 / 界面展开); 五种结局 (Verdict) 一处写全
 // =============================================================================
@@ -75,10 +76,12 @@ Message FirstMessage(const Context &c, int tried, const std::string &notes, bool
 Message TestMessage(bool ask, const std::string &remark);
 // 一条回复的全部调用, 按序 (标题带调用编号 R<round>#<序>) + 假设板 + 下一步; evaled = 这条回复有落了文件的回测 (下一条不能回测); test = 自检会话
 Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool evaled, bool test);
-// 首次 finish 的那条回复: 结果同 round + 假设板 + 复盘清单; judges = 本会话判定成立的 judge (调用编号 + 调用), filed = 本会话提的全局记录
+// 首次 finish 的那条回复: 结果同 round + 假设板 + 复盘清单; judges = 本会话判定成立的 judge (调用编号 + 调用), filed = 本会话提的全局记录;
+// budget 非空 = 不是 agent 宣布挖完, 而是本段预算用完了 (写用了多少)
 Message ReviewMessage(const std::vector<Act> &acts, int round, const Board &board, const std::vector<std::pair<Ref, const Call *>> &judges,
-                      const std::vector<const Note *> &filed);
+                      const std::vector<const Note *> &filed, const std::string &budget);
 Message RetryMessage(const std::string &error);
+std::string MemoText(const std::string &memo); // 插话一节 (附在消息末尾)
 // round 的折叠版 (会话历史里换掉原文): 观察 / 查询只留标题, 回测留一行结局, 其余 (提交 / 问答 / 判定 / 没做成的原因) 原样
 std::string FoldedText(const std::vector<Act> &acts, int round);
 

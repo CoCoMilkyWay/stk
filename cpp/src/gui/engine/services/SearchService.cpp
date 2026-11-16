@@ -136,7 +136,6 @@ using SearchProbes = Probes<HoldP, SampleP>;
 struct Entry {
   std::vector<double> u;
   factor::expr::Expr e;
-  SearchProbes ps; // 跨块续攒 (每趟开头重置)
   Score sc;
   std::vector<uint16_t> r16; // 抽样行 r16 [行][A] (评时落, 截面相关用)
   int pass = -1;             // 评过的趟; -1 = 待评
@@ -488,14 +487,14 @@ struct SearchService::Searcher {
     W.pass_.store(pass, std::memory_order_relaxed);
     W.chunk_.store(0, std::memory_order_relaxed);
     std::vector<Root> roots;
-    for (int id : ids) {
-      Entry &en = ents[static_cast<size_t>(id)];
+    std::vector<SearchProbes> ps(ids.size()); // [k] ↔ ids[k], 跨块续攒
+    for (size_t k = 0; k < ids.size(); ++k) {
+      Entry &en = ents[static_cast<size_t>(ids[k])];
       assert(en.pass < 0 && "每个候选只评一次");
-      en.ps = SearchProbes{};
       en.r16.assign(static_cast<size_t>(R) * A, fs::kRankNone);
-      en.ps.at<SampleP>().dst = &en.r16; // ents 本趟不再增 → 地址稳
-      en.ps.at<SampleP>().stride = stride;
-      roots.push_back({&en.e, sp.frame, fs::kFwd, hd});
+      ps[k].at<SampleP>().dst = &en.r16; // ents 本趟不再增 → 地址稳
+      ps[k].at<SampleP>().stride = stride;
+      roots.push_back({&en.e, sp.frame, fs::kFwd});
     }
     const Clock::time_point t_pass = Clock::now();
     // 进度: Running 期 = 候选 × 块 (每块重开, 前面的块已评完)
@@ -517,18 +516,18 @@ struct SearchService::Searcher {
       fr = eng.template plant<SearchProbes>(std::span<const Root>(roots).subspan(b0), batch, C);
       return fr;
     };
-    const Rc rc = GUI::Engine::pass(eng, F, job, roots.size(), plant, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[static_cast<size_t>(k)])].ps; }, hooks);
+    const Rc rc = GUI::Engine::pass(eng, F, job, plant, std::span(ps), hooks);
     const double load_s = hooks.load_s;
     if (rc != Rc::Ok)
       return rc;
     W.chunk_.store(n_chunks, std::memory_order_relaxed);
-    for (int id : ids) {
-      Entry &en = ents[static_cast<size_t>(id)];
-      const HoldP &hp = en.ps.at<HoldP>();
+    for (size_t k = 0; k < ids.size(); ++k) {
+      Entry &en = ents[static_cast<size_t>(ids[k])];
+      const HoldP &hp = ps[k].at<HoldP>();
       en.pass = pass;
       if (hp.n_hold == 0) // 坏根: 没 finish
         continue;
-      assert(en.ps.at<SampleP>().off == R && "各块抽样行须拼满");
+      assert(ps[k].at<SampleP>().off == R && "各块抽样行须拼满");
       assert(hp.n_hold == 1);
       en.sc = factor::search::score_signed(hp.acc[0], hp.hold[0].hold, hp.hold[0].seg);
     }

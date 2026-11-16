@@ -48,8 +48,7 @@ enum class Event : uint8_t { Open,      // 按 New
 struct EventDef {
   const char *id;
 };
-inline constexpr EventDef kEvents[] = {{"open"}, {"load"}, {"resume"}, {"ask"}, {"memo"}, {"reply"}, {"parse_fail"}, {"calls"}, {"call"}, {"result"}, {"stage"}, {"eval"},
-                                       {"submit"}, {"note"}, {"hyp"}, {"judge"}, {"questions"}, {"pick"}, {"answer"}, {"stop"}, {"cancel"}, {"rewind"}, {"pause"}};
+inline constexpr EventDef kEvents[] = {{"open"}, {"load"}, {"resume"}, {"ask"}, {"memo"}, {"reply"}, {"parse_fail"}, {"calls"}, {"call"}, {"result"}, {"stage"}, {"eval"}, {"submit"}, {"note"}, {"hyp"}, {"judge"}, {"questions"}, {"pick"}, {"answer"}, {"stop"}, {"cancel"}, {"rewind"}, {"pause"}};
 static_assert(std::size(kEvents) == static_cast<size_t>(Event::Pause) + 1);
 inline const EventDef &def(Event e) { return kEvents[static_cast<int>(e)]; }
 

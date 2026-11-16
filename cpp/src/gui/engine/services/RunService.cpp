@@ -121,10 +121,9 @@ template <class E>
 bool RunService::eval_file(const RunRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx) {
   TraceN("FactorsEvaluateFile");
   // 该文件的权重 (条目 e ↔ 行 idx[e]) → 根集 (同式同口径共根, 只评一次; 全部持有期) → 一张共享森林. rows 只本 worker 写, 读不用锁
-  const Holds hd = keys_of<Holds>(req.scope.ft->y.labels);
-  RootSet rs;
+  RootSet rs{.hd = keys_of<Holds>(req.scope.ft->y.labels)};
   for (const size_t i : idx)
-    rs.add(*req.scope.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign), hd);
+    rs.add(*req.scope.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign));
   // Y = 全部持有期 + 全部金额段; X = 本文件的叶 (平面经 Store 缓存跨文件 / 跨服务复用)
   JobOut o;
   o.job.who = "Run";
@@ -157,7 +156,7 @@ bool RunService::eval_file(const RunRequest &req, FactorFlow &F, E &eng, const s
     void post(int e, int k) {
       if (k != k_st) {
         st = EvalStat{};
-        fill_eval(ps[static_cast<size_t>(k)], o.scope(sc), o.eval_ms(k), o.job.dm.dates, st);
+        fill_eval(ps[static_cast<size_t>(k)], o.scope(sc), o.eval_ms(k), o.job.dm.stat_dates(), st);
         k_st = k;
       }
       {
@@ -172,7 +171,7 @@ bool RunService::eval_file(const RunRequest &req, FactorFlow &F, E &eng, const s
       W.publish();
     }
   };
-  const Rc rc = eval_job(eng, F, req.scope, rs, [&](int k) -> RunProbes & { return ps[static_cast<size_t>(k)]; }, o, Hooks{{}, *this, req.scope, idx, ps, o, fin});
+  const Rc rc = eval_job(eng, F, req.scope, rs, std::span(ps), o, Hooks{{}, *this, req.scope, idx, ps, o, fin});
   if (!settle(rc))
     return false;
   if (rc == Rc::Ok && !fin.empty()) { // 回写在锁外

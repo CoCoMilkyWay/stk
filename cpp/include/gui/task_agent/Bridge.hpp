@@ -465,10 +465,10 @@ public:
   const Context &ctx() const;
   const std::vector<Result> &results() const; // 候选目录全部文件, 本持有期 score 降序
 
-  Staged stage(Cand c);                               // 名字 / 模板不合法, 用了未开放的叶 / 算子, 算子超 kMaxOps 或同名已在 → Unstaged
-  Adopted adopt(std::string name, const Gate &g);     // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → error; 否则拷进正式目录 (test 不拷)
-  void discard(const std::string &file);              // 删掉一个候选文件与它的 Search 日志 (回退 / 取消; 须不忙); 正式目录不动
-  const Result *tried(const std::string &name) const; // 可见的已试候选; 没有 = nullptr
+  Staged stage(Cand c);                                  // 名字 / 模板不合法, 用了未开放的叶 / 算子, 算子超 kMaxOps 或同名已在 → Unstaged
+  Adopted adopt(std::string name, const Gate &g);        // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → error; 否则拷进正式目录 (test 不拷)
+  void discard(const std::string &file);                 // 删掉一个候选文件与它的 Search 日志 (回退 / 取消; 须不忙); 正式目录不动
+  const Result *tried(const std::string &name) const;    // 可见的已试候选; 没有 = nullptr
   std::string search_log(const std::string &file) const; // 候选的 Search 日志全文 (没有 = 空)
   void look_at(int from);                                // 观察窗首日钉回 (续接一段会话: 与当初定下的同)
 

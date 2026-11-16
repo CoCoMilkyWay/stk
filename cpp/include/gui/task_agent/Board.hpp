@@ -17,6 +17,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace GUI::Agent {
@@ -56,11 +57,12 @@ struct Hyp {
 class Board {
 public:
   void clear() { hyps_.clear(); }
-  const Hyp &add(const Call &c, Ref at); // c = hypothesize 的调用
+  void assign(std::vector<Hyp> hs) { hyps_ = std::move(hs); } // 整张换 (载入)
+  const Hyp &add(const Call &c, Ref at);                      // c = hypothesize 的调用
   Hyp *find(const std::string &id);
   const std::vector<Hyp> &all() const { return hyps_; }
   std::string text() const;   // 整张板 (结果消息附): 每个假设一行 + 待判的
-  std::string report() const; // 结束报告的一节: 每个假设的预测与最终判定
+  std::string report() const; // 停下报告的一节: 每个假设的预测与最终判定
 
 private:
   std::vector<Hyp> hyps_;

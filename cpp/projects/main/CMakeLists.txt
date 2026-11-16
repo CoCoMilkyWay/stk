@@ -429,6 +429,7 @@ set(MATH_PRECISE
     gui/task_agent/Mine.cpp
     gui/task_agent/Notes.cpp
     gui/task_agent/Prompt.cpp
+    gui/task_agent/Save.cpp
     gui/task_agent/TaskAgent.cpp
     gui/task_agent/Tools.cpp
     gui/task_agent/Views.cpp

@@ -542,27 +542,6 @@ factor::stat::Labels labels_of(const YPlanes &y) {
   return out;
 }
 
-Pick pick_of(const Holds &all, const Holds &want) {
-  Pick p;
-  p.n = want.n;
-  for (int i = 0; i < want.n; ++i) {
-    p.at[i] = factor::stat::hold_index(all, want.k[i]);
-    assert(p.at[i] >= 0 && "所评持有期不在 Y 的标签组里");
-  }
-  return p;
-}
-
-factor::stat::Labels labels_pick(const factor::stat::Labels &L, const Pick &p) {
-  factor::stat::Labels out;
-  out.hd.n = p.n;
-  out.cap = L.cap;
-  for (int i = 0; i < p.n; ++i) {
-    out.hd.k[i] = L.hd.k[p.at[i]];
-    out.l[i] = L.l[p.at[i]];
-  }
-  return out;
-}
-
 std::vector<const factor::check::Plane *> leaves(const Block &c, const std::vector<std::string> &feats) {
   assert(c.ft && "先 Store::pin");
   std::vector<const factor::check::Plane *> in;
@@ -685,7 +664,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   const Shape sh = shape_of(io, k);
   const double n = static_cast<double>(sh.n());
   c = Block{};
-  c.d0 = k.d0, c.d1 = k.d1, c.nd = io.dm.days.size();
+  c.d0 = k.d0, c.d1 = k.d1, c.nd = io.dm.days.size(), c.warm = io.dm.warm;
   c.t_lo = static_cast<int>(k.s0 - k.d0) * ft.seg, c.t_back = static_cast<int>(k.d1 - k.s1) * ft.seg;
   c.gen = std::hash<std::string>{}(base + s.y.key() + "#" + std::to_string(epoch_));
   c.ft = &ft;

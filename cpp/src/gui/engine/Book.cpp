@@ -82,21 +82,22 @@ std::vector<int32_t> prev_rows(misc::exec::ForkJoin &ex, const factor::check::Pl
   return prev;
 }
 
-// 篮子指数 (Baskets::index / pool_line) = fold_book, 全部持有期一遍: 行 t 一批 = 篮子线 l 的成分 (该持有期标签有效 ∧ 篮子判据) 里做多侧真持有的格
-//   (Stat 契约【仓位感知】: 沿交接链看同一篮子), 收益按续持取名义值, 按权平均 (Σ权 ≤ 0 → 0) → 线 nl · hi + l 逐行收益 (stride 1).
+// 篮子指数 (Baskets::index / pool_line) = fold_book, 全部持有期一遍: 行 t ∈ [r0, r1) 一批 = 篮子线 l 的成分 (该持有期标签有效 ∧ 篮子判据) 里做多侧真持有的格
+//   (Stat 契约【仓位感知】: 沿交接链看同一篮子, 链可回看 r0 之前的行), 收益按续持取名义值, 按权平均 (Σ权 ≤ 0 → 0) → 线 nl · hi + l 逐行收益 (stride 1, 点 = 行 r0 起).
 //   each(hi, i, put): 标签有效格 i 所属的篮子线逐个 put(l, code, in, om): code = 成员码平面 (已偏到本格), in(code) = 是否同一篮子, om = 本格在线 l 的权
 template <class Each>
-BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd, const LegPlane *const *labels, const uint8_t *eo, size_t nl, Each &&each) {
-  assert(hd.n >= 1);
+BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, int r0, int r1, const Holds &hd, const LegPlane *const *labels, const uint8_t *eo, size_t nl,
+                     Each &&each) {
+  assert(hd.n >= 1 && 0 <= r0 && r0 < r1 && r1 <= sh.T);
   const factor::stat::Span sp{sh.T, sh.A, factor::geo_of(sh.seg)};
-  const size_t nT = static_cast<size_t>(sh.T), nA = static_cast<size_t>(sh.A), H = static_cast<size_t>(hd.n);
-  RowLines x; // [hold][篮子线][T] 行 t 这一批的篮子收益
-  x.reset(static_cast<int>(H * nl), sh.T);
+  const size_t nT = static_cast<size_t>(r1 - r0), nA = static_cast<size_t>(sh.A), H = static_cast<size_t>(hd.n);
+  RowLines x; // [hold][篮子线][r1 − r0] 行 r0 + u 这一批的篮子收益
+  x.reset(static_cast<int>(H * nl), r1 - r0);
   for (size_t i = 0; i < H * nl; ++i)
     x.hold[i] = hd.k[i / nl];
-  ex.rows(sh.T, [&](int t0, int t1, int) {
+  ex.rows(r1 - r0, [&](int u0, int u1, int) {
     std::vector<double> s(2 * H * nl); // [hold][篮子线][Σ权·r, Σ权]
-    for (size_t t = static_cast<size_t>(t0); t < static_cast<size_t>(t1); ++t) {
+    for (size_t t = static_cast<size_t>(r0 + u0); t < static_cast<size_t>(r0 + u1); ++t) {
       std::fill(s.begin(), s.end(), 0.0);
       for (size_t a = 0; a < nA; ++a) {
         const size_t i = t * nA + a;
@@ -117,7 +118,7 @@ BookLines index_rows(misc::exec::ForkJoin &ex, const Shape &sh, const Holds &hd,
       }
       for (size_t l = 0; l < H * nl; ++l)
         if (s[2 * l + 1] > 0.0)
-          x.x[l * nT + t] = static_cast<float>(s[2 * l] / s[2 * l + 1]);
+          x.x[l * nT + (t - static_cast<size_t>(r0))] = static_cast<float>(s[2 * l] / s[2 * l + 1]);
     }
   });
   return fold_book(ex, sh.seg, x, 1);
@@ -237,7 +238,7 @@ Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B) {
   const BasketTable &bt = basket_table();
   const Omega om(B, bt);
   // 成员码 = 成员位平面; 仓位链上格 j 是否同一篮子 = holds(l, 格 j 的事实): 谓词收元素引用, 按址还原格号 j
-  o.index = index_rows(ex, B.sh, hd, &lab, B.eo.data(), bt.size(), [&](size_t, size_t i, auto &&put) {
+  o.index = index_rows(ex, B.sh, 0, B.sh.T, hd, &lab, B.eo.data(), bt.size(), [&](size_t, size_t i, auto &&put) {
     const std::span<const uint16_t> cs = B.concepts_of(i % A);
     bt.each(B.fact(i), cs, [&](size_t l) {
       put(l, in + i, [&, l](const PoolMask &v) { return bt.holds(l, B.fact(static_cast<size_t>(&v - in)), cs); }, om(i, l));
@@ -247,9 +248,11 @@ Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B) {
   return o;
 }
 
-BookLines pool_line(misc::exec::ForkJoin &ex, const YPlanes &y) {
+BookLines pool_line(misc::exec::ForkJoin &ex, const Block &c) {
+  const YPlanes &y = c.y;
   assert(y.eo && "Y 未钉");
-  return index_rows(ex, y.sh, y.hd, y.labels, y.eo, 1,
+  const factor::stat::Span s = c.span();
+  return index_rows(ex, y.sh, s.t_lo, s.t_hi(), y.hd, y.labels, y.eo, 1,
                     [&](size_t hi, size_t i, auto &&put) { put(size_t{0}, y.labels[hi]->m.data() + i, [](uint8_t v) { return v != 0; }, 1.0); });
 }
 

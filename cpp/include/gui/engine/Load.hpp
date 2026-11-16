@@ -2,7 +2,7 @@
 //   X ↔ Y ↔ B 三侧同一份逐天并行骨架 (read_days, 环境 Io): 叶 LeafId → Leaf (因子输入叶) / Y → YCore (截面门控 + 建仓可成交码) + 标签两侧平面 [hold] /
 //   买入冲击 [amt] / 池篮子 → BPlanes (全部池成员位 + T+1C 标签 + close / 复权 / 股本 / 估值 / 行业 / 概念, 一趟装齐, 不缓存); n_full_of 只扫门控出满仓只数;
 //   Store = 进程唯一的计算面 (线程池 / 库 / 平面缓存 / 计算权): 平面按 (层, 评估域, 日段, 角色) 逐张缓存, 块 Block = 钉住一组平面的视图 (Store::pin);
-//   y_spec = Y 规格 (持有期 + 探针要的成本段 Segs); labels_of / labels_pick 标签的契约视图 (ry = 块上钉的标签秩, 只 CPU 要; cap = n_full);
+//   y_spec = Y 规格 (持有期 + 探针要的成本段 Segs); labels_of 标签的契约视图 (ry = 块上钉的标签秩, 只 CPU 要; cap = n_full);
 //   stat_scope = 结果的作用域头.
 #pragma once
 
@@ -163,15 +163,6 @@ struct BPlanes {
 };
 // 标签的契约视图 (ry = YPlanes::ry: CPU 会话的块钉了标签秩; GPU 的块不钉, stat_open 在显存里自己预处理; cap = n_full)
 factor::stat::Labels labels_of(const YPlanes &y);
-// 所评持有期在 Y 全部持有期里的下标: at[i] = want.k[i] 在 all 里的位置 (探针 hi → 会话 / 标签组下标; want 的键须都在 all 里).
-// 根打开时定一次 (BackendBase::roots), 两后端同一份
-struct Pick {
-  int n = 0;
-  int at[factor::stat::kMaxHold] = {};
-};
-Pick pick_of(const Holds &all, const Holds &want);
-// L 里按 p 取那几组 (L.hd = 取前的全部持有期), 预处理位跟着走
-factor::stat::Labels labels_pick(const factor::stat::Labels &L, const Pick &p);
 
 // 装载环境 (三侧装载 / 门控预扫同一份; lr / ex 取自 Store): 字段表 / 评估域 / 已开的库 (按 dm.rs.libs 开好) / 线程池 / 取消旗 / 进度
 struct Io {
@@ -200,9 +191,10 @@ bool n_full_of(const Io &io, const Chunk &k, double &out);
 
 // ---- 块 = 评估域日 [d0, d1) 的一组钉住的平面 (Store::pin 建; 视图 x / y 指向 pins) ----
 //   行 [0, T); 统计行 [t_lo, T − t_back) (前带只给回看 / lag / 交接链, 后带只给续持; Search 契约【分块流式】)
+//   落地行轴 = 评估期 [0, rows_stat) (不含预热; 各服务跨块的落地平面 / 净值线 / 分年同一轴): 块内行 t ↔ 落地行 t + land0 (统计行恒 ≥ 0)
 struct Block {
   size_t d0 = 0, d1 = 0;
-  size_t nd = 0;                    // 评估域总日数 (跨块落地平面的行轴 = nd · seg)
+  size_t nd = 0, warm = 0;          // 评估域总日数 / 预热日数 (Domain::warm)
   int t_lo = 0, t_back = 0;         // 前带 / 后带行数
   uint64_t gen = 0;                 // Y 视图的代 = (层, 评估域, 日段, YSpec, 缓存代) 的散列: 同代 = 同一份 Y (引擎据此判会话作废 / 块钩子据此复用)
   bool fresh = false;               // 本次 pin 真读了库 (否则全中缓存)
@@ -211,7 +203,8 @@ struct Block {
   YPlanes y;
   std::vector<std::shared_ptr<const void>> pins; // 钉住的平面 (块活着, 缓存就不淘汰它们)
   factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), static_cast<int>(d0) * y.sh.seg, t_lo, t_back}; }
-  int rows_all() const { return static_cast<int>(nd) * y.sh.seg; }
+  int rows_stat() const { return static_cast<int>(nd - warm) * y.sh.seg; }
+  int land0() const { return (static_cast<int>(d0) - static_cast<int>(warm)) * y.sh.seg; }
 };
 // Dag 叶的平面视图 (下标 = Dag::feats 下标); 全部须在块上
 std::vector<const factor::check::Plane *> leaves(const Block &c, const std::vector<std::string> &feats);

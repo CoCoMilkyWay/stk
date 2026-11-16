@@ -1,7 +1,7 @@
 // Probe — 探针层 (一个根的一种输出; 引擎 Engine 按 need 备原料, 逐钩子调): 装载层 (Load) / 净值引擎 (Book) 之上, 引擎之下.
 //   原料 RootView / 上下文 Ctx / 抽样行 Ranks 两后端同形; Probes<P...> 逐钩子折叠;
 //   通用探针 Hold / Cost / Cover / Alpha / IcPdf / Year 各服务共用, 服务私有探针 (Search 抽样 / Inspect 净值线 / 秩 / 尾部换手 / Portfolio 出参线)
-//   在各自 .cpp; 落地探针的三种形 LandRowsP (逐行) / LandCellsP (逐格) / LinesP (净值线: 逐行批收益 → finish 折成 BookLines);
+//   在各自 .cpp; 落地探针的三种形 (行轴 = 评估期) RowsP (逐行暂存 → 折) / LandCellsP (逐格) / LinesP (净值线: 逐行批收益 → finish 折成 BookLines);
 //   根上的统计核: cover_rows 有效率 / 可秩率 (一遍, 块间可加); 换手成本直接走 Stat cost_rows (CostP / TurnP / BookP 平级); alpha_dist alpha 分布
 //   (Inspect 大图与因子表小图同一份); group_abs 组的绝对持仓收益 (Inspect 分层 / LS 绝对 / Portfolio 曲线);
 //   尾部分层的阈值 / 端码 / 逐格扩展 TailExt (Inspect 净值线与尾部换手 / Lens 逐行同一份).
@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -117,15 +118,15 @@ struct TailExt {
 
 // ---- 探针 (一个根的一种输出; 钩子同形, Probes<P...> 逐钩子折叠) ----
 //   need / need_last  原料位: 每块要的 / 只末块另要的 (引擎据此算 / 拷回; 本块给 Probes::need_at(last))
-//   segs              要装的成本段 (Segs; Probes 取各探针之最, 管线据此定 YSpec::ad); 持有期在根上 (Root::hd)
+//   segs              要装的成本段 (Segs; Probes 取各探针之最, 管线据此定 YSpec::ad); 持有期 = 块 Y 的全部持有期 (作业定, 各根同一组)
 //   Ext ext()         行的逐格扩展 (accum_rows 的 label_row 逐格; NoExt = 无; 有则只 CPU)
 //   open(c)           本块评前 (单线程; 落地平面在评估域首块定形)
-//   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内统计行 ∈ [t_lo, t_hi), hi = 根的 hd 下标); r 已按根的方向定向 (oriented)
+//   row(hi, t, r, e)  一级行 (accum_rows 线程内并发, 行不相交; t = 块内统计行 ∈ [t_lo, t_hi), hi = Y 的 hd 下标); r 已按根的方向定向 (oriented)
 //   root(c, v)        本块原料就绪 (全核); v.acc / v.ec 已按根的方向, v.rx 是原值的秩 (按 c.d 自取)
 //   finish(c, v)      末块 root 之后 (c / v 同 root, v 另有 need_last)
 //   bytes(sh, H)      宿主常驻 (字节; 每根一份, 留到 finish; 预算按同时在评的根数计)
 //   scratch(sh, H)    宿主暂存 (字节; 一个根 open → root 内, 根间不共存; 预算计一份)
-// 小输出存成员 (调用方 at<P>() 取), 大平面落调用方给的缓冲 (指针; 跨块按绝对行 t0_abs + t)
+// 小输出存成员 (调用方 at<P>() 取), 大平面落调用方给的缓冲 (指针; 跨块按落地行 land0 + t)
 enum Need : uint8_t {
   kNeedRows = 1,   // 一级 Row 进 row 钩子
   kNeedRx = 2,     // r16(x) [T][A]
@@ -159,12 +160,12 @@ struct RootView {
 struct Ctx {
   misc::exec::ForkJoin &ex;
   const Block &c;
-  const factor::stat::Labels &L;             // 根所评持有期 (Root::hd) 的标签 + cap (引擎会话那份: CPU 的 ry 指块上的标签秩)
+  const factor::stat::Labels &L;             // 块 Y 全部持有期的标签 + cap (引擎会话那份: CPU 的 ry 指块上的标签秩)
   factor::cpu::stat::Workspace *w = nullptr; // Stat 宿主工作区 (CPU / GPU 逐根时有; 批核空)
   factor::stat::Dir d = factor::stat::kFwd;  // 根的方向 (Root::d)
   factor::stat::Span s() const { return c.span(); }
 };
-// 落地平面: 评估域首块 (t0_abs = 0) 定形填 fill, 其后各块按绝对行写
+// 落地平面: 评估域首块 (t0_abs = 0) 定形填 fill, 其后各块按落地行写
 template <class T>
 void land_open(std::vector<T> &v, size_t n, const factor::stat::Span &s, T fill = T{}) {
   if (s.t0_abs == 0)
@@ -282,88 +283,122 @@ struct AlphaP : ProbeBase {
     alpha_dist(c.ex, v.alpha.v + o, v.alpha.m + o, v.rx + o, s.t_hi() - s.t_lo, s.A, c.d, d);
   }
 };
-// 逐行 rIC 分布 (ok 行; 每持有期一份 KLL, 块间续攒) → 因子表小图 / Inspect 左下左半 (同一份成品; n < 3 与 Accum::finish 同口径: 不画)
-struct IcPdfP : ProbeBase {
+// 落地探针的三种形 (探针基类; 行轴 = 评估期 Block::rows_stat, 块内行 t ↔ 落地行 t + land0; 跨块的落地在评估域首块定形, 其后各块按落地行写):
+//   RowsP<D, Got>  逐行 (CRTP; IcPdfP / YearP / Inspect RicP): row 钩子把统计行 D::of(r) 记进本块暂存 [hd.n][统计行] (线程内并发, 行不相交),
+//                  root 逐持有期交 D::fold(c, hi, u0, g) (单线程; g[i] = 落地行 u0 + i 的那份, 本块全部统计行), 折完即放
+//   LandCellsP<V>  逐格 [rows_stat][A] 进 dst (Inspect RxP / RxAllP): at(c) = 本块统计首行的首格
+//   LinesP<K>      净值线 (Book RowLines, 线 hi · K + k; Inspect NavP / Portfolio BookP): at(hi, k, t) = 块内行 t 这一批的收益;
+//                  finish 折成 out (fold_book; stride / at_exit 由派生 open 定: 缺省逐行 / 全收益)
+template <class D, class Got>
+struct RowsP : ProbeBase {
   static constexpr uint8_t need = kNeedRows;
-  int T = 0;
-  std::vector<float> ric;    // 本块 [hi][T] (非 ok = NaN), root 收进 kll 即放
+  int t_lo = 0, n = 0;  // 本块统计首行 / 统计行数
+  std::vector<Got> got; // 本块 [hi][n]
+  static double scratch(const Shape &sh, int H) { return sizeof(Got) * static_cast<double>(H) * sh.T; }
+  void open(const Ctx &c) {
+    const factor::stat::Span s = c.s();
+    t_lo = s.t_lo, n = s.t_hi() - s.t_lo;
+    got.assign(static_cast<size_t>(c.L.hd.n) * n, Got{});
+  }
+  void row(int hi, int t, const factor::stat::Row &r, const Ext &) { got[static_cast<size_t>(hi) * n + (t - t_lo)] = D::of(r); }
+  void root(const Ctx &c, const RootView &) {
+    const int u0 = c.c.land0() + t_lo;
+    for (int hi = 0; hi < c.L.hd.n; ++hi)
+      static_cast<D &>(*this).fold(c, hi, u0, std::span<const Got>(got).subspan(static_cast<size_t>(hi) * n, static_cast<size_t>(n)));
+    got = {};
+  }
+};
+template <class V>
+struct LandCellsP : ProbeBase {
+  std::vector<V> *dst = nullptr;
+  static double bytes(const Shape &sh, int) { return sizeof(V) * static_cast<double>(sh.n()); }
+  void open(const Ctx &c) { land_open(*dst, static_cast<size_t>(c.c.rows_stat()) * c.s().A, c.s()); }
+  V *at(const Ctx &c) const { return dst->data() + static_cast<size_t>(c.c.land0() + c.c.t_lo) * c.s().A; }
+};
+template <int K>
+struct LinesP : ProbeBase {
+  static constexpr uint8_t need = kNeedRows;
+  RowLines x;
+  BookLines out;
+  int stride = 1, t0 = 0; // 折点行数 / 块内行 0 的落地行 (land0)
+  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(K) * H * sh.T; }
+  void open(const Ctx &c) {
+    if (c.s().t0_abs == 0) {
+      x.reset(c.L.hd.n * K, c.c.rows_stat());
+      for (int i = 0; i < x.n; ++i)
+        x.hold[static_cast<size_t>(i)] = c.L.hd.k[i / K];
+    }
+    assert(x.n == c.L.hd.n * K && x.T == c.c.rows_stat() && "净值线与作用域不符");
+    t0 = c.c.land0();
+  }
+  float &at(int hi, int k, int t) { return x.x[static_cast<size_t>(hi * K + k) * x.T + static_cast<size_t>(t0 + t)]; }
+  void finish(const Ctx &c, const RootView &) {
+    out = fold_book(c.ex, c.c.y.sh.seg, x, stride);
+    x = {};
+  }
+};
+// 行的 rIC (非 ok = NaN; IcPdfP / RicP 同一份)
+inline float ric_of(const factor::stat::Row &r) { return r.ok ? r.ric : std::numeric_limits<float>::quiet_NaN(); }
+// 逐行 rIC 分布 (ok 行; 每持有期一份 KLL, 块间续攒) → 因子表小图 / Inspect 左下左半 (同一份成品; n < 3 与 Accum::finish 同口径: 不画)
+struct IcPdfP : RowsP<IcPdfP, float> {
   std::vector<KLLcache> kll; // [hi]
   AggPdf pdf[factor::stat::kMaxHold];
-  static double scratch(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(H) * sh.T; }
-  void open(const Ctx &c) {
-    T = c.s().T;
-    ric.assign(static_cast<size_t>(c.L.hd.n) * T, std::numeric_limits<float>::quiet_NaN());
-    while (kll.size() < static_cast<size_t>(c.L.hd.n))
+  static float of(const factor::stat::Row &r) { return ric_of(r); }
+  void fold(const Ctx &, int hi, int, std::span<const float> g) {
+    while (kll.size() <= static_cast<size_t>(hi))
       kll.emplace_back(kAggKllCapacity, kAggKllResolution);
-  }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
-    if (r.ok)
-      ric[static_cast<size_t>(hi) * T + t] = r.ric;
-  }
-  void root(const Ctx &c, const RootView &) {
     std::vector<float> ok;
-    ok.reserve(static_cast<size_t>(T));
-    for (int i = 0; i < c.L.hd.n; ++i) {
-      ok.clear();
-      for (int t = 0; t < T; ++t)
-        if (const float v = ric[static_cast<size_t>(i) * T + t]; !std::isnan(v))
-          ok.push_back(v);
-      kll[static_cast<size_t>(i)].addBatch(ok);
-    }
-    ric = {};
+    ok.reserve(g.size());
+    for (const float v : g)
+      if (!std::isnan(v))
+        ok.push_back(v);
+    kll[static_cast<size_t>(hi)].addBatch(ok);
   }
   void finish(const Ctx &c, const RootView &) {
     for (int i = 0; i < c.L.hd.n; ++i)
       pdf[i].fill(kll[static_cast<size_t>(i)], 3);
   }
 };
-// 分年的分层统计 (每持有期): row 钩子把统计行记进本块暂存 (行不相交, 无竞争), root 按日折进逐日累加 (块间续攒), fill_eval 按年合 (要评估域的日期)
-struct YearP : ProbeBase {
-  static constexpr uint8_t need = kNeedRows;
+// 一个统计行的分年原料 (YearP 的行缓冲)
+struct YearRow {
+  bool ok = false;
+  float ric = 0.f, ls = 0.f, g[factor::stat::kGroups] = {};
+};
+// 分年的分层统计 (每持有期): 统计行按落地日折进逐日累加 (日轴 = 评估期, 块间续攒), fill_eval 按年合 (要评估期日期)
+struct YearP : RowsP<YearP, YearRow> {
   struct Day { // 一日的统计行之和: 全部行 / ok 行 + ok 行的 rIC / 多空 / 组收益
     int n_all = 0, n = 0;
     double ric = 0.0, ls = 0.0, g[factor::stat::kGroups] = {};
   };
-  struct Got { // 一个统计行 (row 钩子收)
-    uint8_t ok = 0;
-    float ric = 0.f, ls = 0.f, g[factor::stat::kGroups] = {};
-  };
-  int T = 0, seg = 0, d0 = 0;
-  std::vector<Got> got;              // 本块 [hi][T], root 折完即放
-  std::vector<std::vector<Day>> day; // [hi][评估域日]
+  int seg = 0;
+  std::vector<std::vector<Day>> day; // [hi][评估期日]
   static double bytes(const Shape &sh, int H) { return sizeof(Day) * static_cast<double>(H) * sh.days; }
-  static double scratch(const Shape &sh, int H) { return sizeof(Got) * static_cast<double>(H) * sh.T; }
-  void open(const Ctx &c) {
-    T = c.s().T, seg = c.c.y.sh.seg, d0 = static_cast<int>(c.c.d0);
-    got.assign(static_cast<size_t>(c.L.hd.n) * T, Got{});
-    day.resize(static_cast<size_t>(c.L.hd.n), std::vector<Day>(c.c.nd));
-  }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
-    Got &x = got[static_cast<size_t>(hi) * T + t];
-    x.ok = 1 + r.ok; // 1 = 统计行 (不 ok), 2 = ok
-    x.ric = r.ric, x.ls = factor::stat::ls_row(r);
+  static YearRow of(const factor::stat::Row &r) {
+    YearRow x{r.ok != 0, r.ric, factor::stat::ls_row(r), {}};
     std::copy_n(r.grp, factor::stat::kGroups, x.g);
+    return x;
   }
-  void root(const Ctx &c, const RootView &) {
-    for (int i = 0; i < c.L.hd.n; ++i)
-      for (int t = 0; t < T; ++t) {
-        const Got &x = got[static_cast<size_t>(i) * T + t];
-        if (!x.ok)
-          continue;
-        Day &d = day[static_cast<size_t>(i)][static_cast<size_t>(d0 + t / seg)];
-        ++d.n_all;
-        if (x.ok < 2)
-          continue;
-        ++d.n, d.ric += x.ric, d.ls += x.ls;
-        for (int k = 0; k < factor::stat::kGroups; ++k)
-          d.g[k] += x.g[k];
-      }
-    got = {};
+  void open(const Ctx &c) {
+    RowsP::open(c);
+    seg = c.c.y.sh.seg;
+    day.resize(static_cast<size_t>(c.L.hd.n), std::vector<Day>(static_cast<size_t>(c.c.rows_stat() / seg)));
   }
-  // 持有期 hi 按年合 (dates = 评估域日期, 与 day 对齐)
+  void fold(const Ctx &, int hi, int u0, std::span<const YearRow> g) {
+    for (size_t i = 0; i < g.size(); ++i) {
+      const YearRow &x = g[i];
+      Day &d = day[static_cast<size_t>(hi)][static_cast<size_t>((u0 + static_cast<int>(i)) / seg)];
+      ++d.n_all;
+      if (!x.ok)
+        continue;
+      ++d.n, d.ric += x.ric, d.ls += x.ls;
+      for (int k = 0; k < factor::stat::kGroups; ++k)
+        d.g[k] += x.g[k];
+    }
+  }
+  // 持有期 hi 按年合 (dates = 评估期日期, 与 day 对齐)
   std::vector<YearStat> years(int hi, const std::vector<misc::Ymd> &dates) const {
     const std::vector<Day> &ds = day[static_cast<size_t>(hi)];
-    assert(ds.size() == dates.size() && "逐日累加与评估域日期不齐");
+    assert(ds.size() == dates.size() && "逐日累加与评估期日期不齐");
     std::vector<YearStat> out;
     for (size_t a = 0; a < ds.size();) {
       const int y = dates[a] / 10000;
@@ -382,58 +417,10 @@ struct YearP : ProbeBase {
     return out;
   }
 };
-// 落地探针的三种形 (探针基类; open 在评估域首块定形, 其后各块按绝对行写):
-//   LandRowsP<R>  逐行 [hd.n][rows_all] 进 dst (调用方的缓冲; Inspect RicP): at(hi, t) = 块内行 t 的格
-//   LandCellsP<V> 逐格 [rows_all][A] 进 dst (Inspect RxP / RxAllP): stat_at(s) = 本块统计首行的首格
-//   LinesP<K>     净值线 (Book RowLines, 线 hi · K + k; Inspect NavP / Portfolio BookP): at(hi, k, t) = 块内行 t 这一批的收益;
-//                 finish 折成 out (fold_book; stride / at_exit 由派生 open 定: 缺省逐行 / 全收益)
-template <class R>
-struct LandRowsP : ProbeBase {
-  static constexpr uint8_t need = kNeedRows;
-  std::vector<R> *dst = nullptr;
-  int T = 0, t0 = 0; // 行轴 rows_all / 本块绝对首行
-  static double bytes(const Shape &sh, int H) { return sizeof(R) * static_cast<double>(H) * sh.T; }
-  void open(const Ctx &c, R fill = R{}) {
-    const factor::stat::Span s = c.s();
-    T = c.c.rows_all(), t0 = s.t0_abs;
-    land_open(*dst, static_cast<size_t>(c.L.hd.n) * T, s, fill);
-  }
-  R &at(int hi, int t) const { return (*dst)[static_cast<size_t>(hi) * T + t0 + t]; }
-};
-template <class V>
-struct LandCellsP : ProbeBase {
-  std::vector<V> *dst = nullptr;
-  static double bytes(const Shape &sh, int) { return sizeof(V) * static_cast<double>(sh.n()); }
-  void open(const Ctx &c) { land_open(*dst, static_cast<size_t>(c.c.rows_all()) * c.s().A, c.s()); }
-  V *stat_at(const factor::stat::Span &s) const { return dst->data() + static_cast<size_t>(s.t0_abs + s.t_lo) * s.A; }
-};
-template <int K>
-struct LinesP : ProbeBase {
-  static constexpr uint8_t need = kNeedRows;
-  RowLines x;
-  BookLines out;
-  int stride = 1, t0 = 0; // 折点行数 / 本块绝对首行
-  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(K) * H * sh.T; }
-  void open(const Ctx &c) {
-    const factor::stat::Span s = c.s();
-    if (s.t0_abs == 0) {
-      x.reset(c.L.hd.n * K, c.c.rows_all());
-      for (int i = 0; i < x.n; ++i)
-        x.hold[static_cast<size_t>(i)] = c.L.hd.k[i / K];
-    }
-    assert(x.n == c.L.hd.n * K && x.T == c.c.rows_all() && "净值线与作用域不符");
-    t0 = s.t0_abs;
-  }
-  float &at(int hi, int k, int t) { return x.x[static_cast<size_t>(hi * K + k) * x.T + t0 + t]; }
-  void finish(const Ctx &c, const RootView &) {
-    out = fold_book(c.ex, c.c.y.sh.seg, x, stride);
-    x = {};
-  }
-};
 // EvalStat 的探针组 (Run 行 / Inspect 结果同一份): 通用六探针在前, X = 服务私有探针
 template <class... X>
 using EvalProbes = Probes<HoldP, CostP, CoverP, AlphaP, IcPdfP, YearP, X...>;
-// 作用域头 / 耗时 / 二级 / 换手成本 / 有效率 / 可秩率 / 小图 / 分年 → EvalStat (EvalProbes 的成品); dates = 评估域日期 (分年用)
+// 作用域头 / 耗时 / 二级 / 换手成本 / 有效率 / 可秩率 / 小图 / 分年 → EvalStat (EvalProbes 的成品); dates = 评估期日期 (分年用, Domain::stat_dates)
 template <class Ps>
 void fill_eval(const Ps &p, const StatScope &scope, double eval_ms, const std::vector<misc::Ymd> &dates, EvalStat &st) {
   const HoldP &h = p.template at<HoldP>();

@@ -180,10 +180,11 @@ stk/
 │   │   │   │   │                                       #    · 门控 / 标签取因子池 Bar 库, 盘口成本取同池 Lob 库
 │   │   │   │   │                                       #    · Store = 进程唯一计算面: 线程池 + 已开的库 + 平面 LRU 缓存 (跨服务命中) + 计算权优先级队列
 │   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层: 一个根的一种输出 (Hold / Cost / Cover / Alpha / IcPdf / Year 通用); EvalProbes → EvalStat
+│   │   │   │   │                                       #    · 落地三形 RowsP (逐行暂存 → 折) / LandCellsP (逐格) / LinesP (净值线), 行轴 = 评估期 (Block::rows_stat, 不含预热)
 │   │   │   │   ├── Book.hpp                            # 🖥️ 净值引擎 (唯一): 逐行批收益 RowLines → fold_book → 复利; 分层 / 因子线 / 池篮子同一份
 │   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎 Backend<Cpu | Gpu> 同一接口; FactorFlow = 服务 worker 的计算句柄
 │   │   │   │   │                                       #    · 管线 (全部服务同一份): Job → prepare (评估域 + 开库 → 持有期 / 成本段 → 预算 → 分块)
-│   │   │   │   │                                       #      → pass (逐块装载 → 种森林 → eval); Run / Inspect / Portfolio 走 eval_job (根去重, 一张森林)
+│   │   │   │   │                                       #      → pass (逐块装载 → 种森林 → eval; 根 k ↔ 探针 ps[k], 各根同评作业的全部持有期); Run / Inspect / Portfolio / Lens 走 eval_job (根去重, 一张森林)
 │   │   │   │   │                                       #      Search 每趟一次 pass; 池篮子走 eval_baskets (不走森林)
 │   │   │   │   │                                       #    · 钩子 HookBase = 一趟的事件 ↔ 探针 = 一个根的输出; 各服务的差别只在探针元组
 │   │   │   │   │                                       #    · 评估期 span_of = 标签库与叶所在库的落盘日交集的最近 N 年 (Alpha 页顶 / Agent Mine 页各设, 默认 1; Market 组合全期), 其前另装 10% 预热日 (Domain::warm, 只给回看); 计算全在计算权租约 Lease 内
@@ -302,24 +303,25 @@ stk/
 │   │   │   │   ├── AccountHub.hpp                      # 💹 账户净值中枢 (Live 与 Market 共用): 事务道上拉资金流水并账 (存盘即进账本代) / 拼账户的持仓 (券商实时持仓优先, 否则回放末日; Market 账户行的成分 / 当日四列) 与当日交给 QuoteHub (历史 = 价格库的账户侧; 当日 = 持仓 × 新浪分钟收)
 │   │   │   │   └── AccountSide.hpp                     # 💹 行情的账户一侧: 一日 day_of (持仓 × 分钟收 → 时间加权指数的逐槽点位 → 一日; 历史回放 / 当日同一核) + 账本回放 replay (价格库 worker 上调; 全史 = 紧凑形, 恒带分钟)
 │   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge; 协议见 AGENT.md)
-│   │   │       ├── TaskAgent.hpp                       # 🤖 Agent 任务: Mine (作用域 / 会话 / 时间线 / 候选 / 开放的特征与算子) / Config
+│   │   │       ├── TaskAgent.hpp                       # 🤖 Agent 任务: Mine (作用域 / 会话: 载入 · 继续 · 回退 · 插话 / 时间线 / 假设板 / 候选 / 记录的处理 / 开放的特征与算子) / Config
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 / 入库门槛默认值 / 各目录
 │   │   │       ├── Llm.hpp                             # 🤖 对话客户端 Session (纯传输, HTTPS): Zhipu / Cursor 两后端同一个 send, 结局归一 End
 │   │   │       ├── Chat.hpp                            # 🤖 一段对话的后台单线程: ask → poll 取 Tick
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 / 数的写法 / 检索
-│   │   │       ├── Journal.hpp                         # 🤖 会话日志目录 (system.md / 逐轮 md / events.jsonl / report.md) + 工具样本
+│   │   │       ├── Journal.hpp                         # 🤖 会话日志目录 (system.md / 逐轮 md / events.jsonl / report.md / session.json 存档) + 工具样本
 │   │   │       ├── Tools.hpp                           # 🤖 工具表 → 系统提示工具节 / 回复解析 ParseCalls / 参数校验; 执行记录 Act
 │   │   │       ├── Views.hpp                           # 🤖 观察工具: Spec (经 Lab 校验) ↔ Render → markdown; 视图表 kViews
 │   │   │       ├── Docs.hpp                            # 🤖 研报库工具 (只读 output/data/doc): search_docs / search_factors / read_doc
 │   │   │       ├── Prompt.hpp                          # 🤖 提示词模板填充 + 工具结果文本
 │   │   │       ├── Board.hpp                           # 🤖 假设板: 机制假设与判定; 判为支持的假设才能挂变体
-│   │   │       ├── Notes.hpp                           # 🤖 全局记录 (特征申请 / 工具申请 / 发现 / 建议与 bug): 一类一个 jsonl, 跨会话累积
+│   │   │       ├── Notes.hpp                           # 🤖 全局记录 (特征申请 / 工具申请 / 发现 / 建议与 bug): 一类一个 jsonl, 跨会话累积; 研究员逐条标处理
 │   │   │       ├── Bridge.hpp                          # 🤖 与项目的唯一接口面: catalog (作用域: 池 / 层 / 持有期) + Lab (作用域工作区)
 │   │   │       │                                       #    · 候选的一生 Cand ─stage→ 候选文件 ─eval→ Result ─adopt (过门槛)→ 正式因子目录
 │   │   │       │                                       #    · 四道 Search / Run / Lens (LensService) / Replay (ReplayService), 平面经 Store 与 GUI 服务共用
 │   │   │       ├── Acts.hpp                            # 🤖 一个调用的执行, 按执行方分派; 回复级约束 RuleMiss
 │   │   │       ├── services/ReplayService.hpp          # 🤖 盘口重放 worker: 一 (资产, 日) 逐笔进订单簿 → 逐秒盘口 / 大单事件 / 全簿 (view_book)
-│   │   │       └── Mine.hpp                            # 🤖 挖掘会话状态机 (AGENT.md 状态图): 每帧 poll Chat / Lab 两 worker; 时间线 = 全会话唯一真相
+│   │   │       ├── Json.hpp                            # 🤖 落盘 JSON 的字段清单 (作用域 / 门槛 / 预算; ui.json 与 session.json 同一份)
+│   │   │       └── Mine.hpp                            # 🤖 挖掘会话状态机 (AGENT.md 状态图): 每帧 poll Chat / Lab 两 worker; 时间线 = 全会话唯一真相; 停 / 续 / 回退 (状态快照); 存档与载入在 Save.cpp
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                           #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)
@@ -478,7 +480,7 @@ stk/
     ├── agent/<main|test>/                              # ③ 的旁路: Agent 挖候选 (test = 自检会话, 不拷进正式库)
     │   ├── sessions/<pool>/<层>/<持有期>/              # 会话作用域 (池 × 因子层 × 持有期)
     │   │   ├── factors/*.json                          # 候选因子文件 (与正式因子同格式); 提交且达门槛的拷进 factors/<pool>/<层>/
-    │   │   └── chat/<YYYYMMDD-HHMMSS>/                 # 一段会话: system.md + 逐轮 md + events.jsonl + report.md
+    │   │   └── chat/<YYYYMMDD-HHMMSS>/                 # 一段会话: system.md + 逐轮 md + events.jsonl + report.md + session.json (存档, 载入 / 回退照它) + brief.json (载入菜单的一行)
     │   └── notes/{feature,tool,insight,issue}.jsonl    # 全局记录, 一类一个文件
     ├── live/terms.csv                                  # ⑤ 两融条款缓存 (券商原样, 一份, 原子替换): 首行拉于哪天; 代码 / 名称 / 市场 / 保证金比例 / 融资标的 / 折算率 / 担保状态
     ├── live/flows.csv                                  # ⑤ 资金流水账本 (券商原样, 原子替换): 首行拉于哪天 + 融资年利率; 日期 / 代码 / 名称 / 价 / 股数 / 业务 / 发生金额 / 剩余金额 (截至拉的前一日)

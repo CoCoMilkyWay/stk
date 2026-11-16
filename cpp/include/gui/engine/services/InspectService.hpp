@@ -143,7 +143,7 @@ private:
 
   // worker 私有 (跨请求存活)
   InspectPlanes pl_;      // 一级平面, 发布时与 result.pl 交换
-  BookLines pool_;        // 池等权线 (pool_line, 含预热段), 随 Y 的代
+  BookLines pool_;        // 池等权线 (pool_line, 评估期行), 随 Y 的代
   uint64_t pool_gen_ = 0; // pool_ 算时的 c.gen
 };
 
