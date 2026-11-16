@@ -431,30 +431,7 @@ int RunGUI() {
   ImGuiIO &io = ImGui::GetIO();
   io.DisplaySize = ImVec2((float)fb_width, (float)fb_height);
   io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
-  io.Fonts->Clear();
-
-  // Font configuration with RasterizerDensity for crisp rendering
-  const char *font_path = "fonts/MapleMonoNormal-NF-CN-Regular.ttf";
-  float base_font_size = 16.0f;
-  float font_size = base_font_size * dpi_scale;
-
-  assert(std::ifstream(font_path).good() && "Font file not found!");
-
-  // Log font configuration
-  char config_msg[256];
-  snprintf(config_msg, sizeof(config_msg), "Font: %.1fpx (base: %.1f, DPI: %.2f, physical pixels)",
-           font_size, base_font_size, dpi_scale);
-  std::cout << config_msg << std::endl;
-
-  // Load font with RasterizerDensity
-  ImFontConfig config;
-  config.MergeMode = false;
-  config.PixelSnapH = false; // Better for CJK
-  config.OversampleH = 1;
-  config.OversampleV = 1;
-  config.RasterizerDensity = dpi_scale; // Key: high-res font rendering
-
-  io.Fonts->AddFontFromFileTTF(font_path, font_size, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+  LoadFonts(dpi_scale);
 
   // Setup Platform/Renderer backends
   ImGui_ImplGlfw_InitForVulkan(window, true);

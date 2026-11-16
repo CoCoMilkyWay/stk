@@ -4,6 +4,8 @@
 #include "imgui.h"
 #include "shared/SharedData.hpp"
 #include <cassert>
+#include <cstdio>
+#include <fstream>
 
 namespace GUI {
 
@@ -14,6 +16,30 @@ static void DrawRowStatus(const SharedData &data, const TaskHandle &t, int idx) 
     return;
   ImGui::SameLine();
   ImGui::TextColored(StatusColor(s.kind), "[%s]", s.text.c_str());
+}
+
+void LoadFonts(float dpi_scale) {
+  const char *main_path = "fonts/MapleMonoNormal-NF-CN-Regular.ttf";
+  const char *fallback_path = "fonts/DroidSansFallbackFull.ttf";
+  assert(std::ifstream(main_path).good() && "Font file not found!");
+  assert(std::ifstream(fallback_path).good() && "Fallback font file not found!");
+
+  const float base_font_size = 16.0f;
+  const float font_size = base_font_size * dpi_scale;
+  std::printf("Font: %.1fpx (base: %.1f, DPI: %.2f, physical pixels)\n", font_size, base_font_size, dpi_scale);
+
+  ImGuiIO &io = ImGui::GetIO();
+  io.Fonts->Clear();
+  ImFontConfig config;
+  config.PixelSnapH = false; // Better for CJK
+  config.OversampleH = 1;
+  config.OversampleV = 1;
+  config.RasterizerDensity = dpi_scale; // Key: high-res font rendering
+  [[maybe_unused]] const ImFont *font = io.Fonts->AddFontFromFileTTF(main_path, font_size, &config);
+  assert(font);
+  config.MergeMode = true;
+  font = io.Fonts->AddFontFromFileTTF(fallback_path, font_size, &config);
+  assert(font);
 }
 
 // Shared business logic: Draw GUI layout (called by both OpenGL and Vulkan pipelines)

@@ -64,8 +64,7 @@ using misc::Ymd;
 
 // 全角 ASCII 拉回半角. 源里 cn_stock_instruments 的 A 股简称尾巴用的是全角 Ａ (U+FF21) ——
 // 深振业Ａ / 京东方Ａ / 张裕Ａ 一类, 共二十余只; 而 cn_stock_basic_info 同一批股票写的是半角 A.
-// 界面字体 (MapleMono-NF-CN) 的全角块只覆盖标点, 全角字母一律落到豆腐块, 所以源文本一律取半角:
-// 既能显示, 也让搜索框敲 "深振业A" 命中, 顺带抹平两张表的口径差.
+// 源文本一律取半角: 让搜索框敲 "深振业A" 命中, 顺带抹平两张表的口径差.
 std::string halfwidth_ascii(std::string_view text) {
   std::string out;
   out.reserve(text.size());
