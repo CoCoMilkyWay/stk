@@ -3,9 +3,9 @@
 // =============================================================================
 // Chat — 一段 LLM 对话的后台单线程 (agent 自带; 不落盘, 会话日志见 gui/task_agent/Journal.hpp)
 // =============================================================================
-//   GUI 线程: open 开对话 (换后端 / 模型 / 系统提示; 可带此前各轮续接) → ask 投一条 user → worker 里 Session::send 阻塞收齐 → poll 逐个取走 Tick.
+//   GUI 线程: open 定后端 / 模型 / 系统提示 → ask 投整份对话 (task_agent/Context) → worker 里 Session::send 阻塞收齐 → poll 逐个取走 Tick.
 //   worker 协议 (与 gui/task_agent/Bridge.hpp 的 Lab 对仗): 交一件事 (ask ↔ eval) → poll 逐个取走 Tick, 末个 = End → live 看在收那轮 → busy / cancel
-//   不留历史: 收齐的轮随 End 归调用方; 在收那轮 live 增量同步进调用方的镜像 (与收齐同形)
+//   不留历史: 每次 ask 都是整份; 收齐的轮随 End 归调用方; 在收那轮 live 增量同步进调用方的镜像 (与收齐同形)
 // =============================================================================
 
 #include "gui/task_agent/Llm.hpp"
@@ -17,7 +17,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <string>
 #include <thread>
 
 namespace GUI::Agent {
@@ -44,9 +43,8 @@ public:
   Chat(const Chat &) = delete;
   Chat &operator=(const Chat &) = delete;
 
-  void open(llm::Options o, llm::History h);                          // 须不忙; 未取走的 Tick 作废
-  void ask(std::string user);                                         // 须已 open 且不忙; 未取走的 Tick 作废
-  void fold(size_t turn, std::string text);                           // 同上; 见 llm::Session::fold
+  void open(llm::Options o);                                          // 须不忙; 未取走的 Tick 作废
+  void ask(llm::Turns t);                                             // 须已 open 且不忙; 未取走的 Tick 作废
   void cancel();                                                      // 在收那轮断流; 它收尾即 End (Cancelled)
   bool busy() const { return busy_.load(std::memory_order_acquire); } // ask 起, 到 End 入队
   std::optional<Tick> poll();
@@ -60,7 +58,7 @@ private:
   std::thread thread_;
   mutable std::mutex mutex_;
   std::condition_variable cv_;
-  std::optional<std::string> pending_;
+  std::optional<llm::Turns> pending_;
   llm::Reply live_;  // 在收那轮的增量
   uint64_t gen_ = 0; // live_ 换一轮 (ask / 重来 / 收齐) 加一
   std::deque<Tick> ticks_;

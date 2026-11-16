@@ -61,6 +61,11 @@ std::string Journal::system() const {
   return s.str();
 }
 
+void Journal::context(int n, const std::string &text) const {
+  assert(!dir_.empty());
+  write_file((fs::path(dir_) / stem_of(n)).string() + ".context.md", text);
+}
+
 void Journal::turn(int n, const std::string &user, const llm::Reply &r) const {
   assert(!dir_.empty());
   const fs::path base = fs::path(dir_) / stem_of(n);
@@ -75,7 +80,7 @@ void Journal::turn(int n, const std::string &user, const llm::Reply &r) const {
 void Journal::drop(int from, int to) const {
   assert(!dir_.empty());
   for (int n = from; n <= to; ++n)
-    for (const char *ext : {".user.md", ".reply.md", ".thinking.md"})
+    for (const char *ext : {".context.md", ".user.md", ".reply.md", ".thinking.md"})
       fs::remove((fs::path(dir_) / stem_of(n)).string() + ext);
 }
 

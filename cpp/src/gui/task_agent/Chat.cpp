@@ -18,15 +18,15 @@ Chat::~Chat() {
   thread_.join();
 }
 
-void Chat::open(llm::Options o, llm::History h) {
+void Chat::open(llm::Options o) {
   assert(!busy() && "对话在收, 先取消");
-  sess_ = std::make_unique<llm::Session>(std::move(o), std::move(h));
+  sess_ = std::make_unique<llm::Session>(std::move(o));
   std::lock_guard<std::mutex> lock(mutex_);
   live_ = {}, ++gen_;
   ticks_.clear();
 }
 
-void Chat::ask(std::string user) {
+void Chat::ask(llm::Turns t) {
   assert(sess_ && !busy());
   busy_.store(true, std::memory_order_release);
   cancel_.store(false, std::memory_order_relaxed);
@@ -34,14 +34,9 @@ void Chat::ask(std::string user) {
     std::lock_guard<std::mutex> lock(mutex_);
     live_ = {}, ++gen_;
     ticks_.clear(); // 不忙时还没取走的只能是上一轮 (已被放下的) 的
-    pending_ = std::move(user);
+    pending_ = std::move(t);
   }
   cv_.notify_all();
-}
-
-void Chat::fold(size_t turn, std::string text) {
-  assert(sess_ && !busy());
-  sess_->fold(turn, std::move(text));
 }
 
 void Chat::cancel() { cancel_.store(true, std::memory_order_relaxed); }
@@ -67,13 +62,13 @@ void Chat::live(Live &l) const {
 
 void Chat::loop() {
   for (;;) {
-    std::string user;
+    llm::Turns turns;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       cv_.wait(lock, [&] { return stop_ || pending_.has_value(); });
       if (stop_)
         return;
-      user = std::move(*pending_);
+      turns = std::move(*pending_);
       pending_.reset();
     }
     const auto on_delta = [&](llm::Part part, std::string_view chunk) {
@@ -88,8 +83,8 @@ void Chat::loop() {
         ticks_.push_back({part == llm::Part::Text ? Step::Write : Step::Think, {}});
       to.append(chunk);
     };
-    llm::Reply r = sess_->send(user, on_delta, cancel_);
-    // 先落 busy 再交 End (同一把锁内): 取走 End 的线程随即 ask / fold 不撞忙
+    llm::Reply r = sess_->send(turns, on_delta, cancel_);
+    // 先落 busy 再交 End (同一把锁内): 取走 End 的线程随即 ask 不撞忙
     std::lock_guard<std::mutex> lock(mutex_);
     busy_.store(false, std::memory_order_release);
     live_ = {}, ++gen_;

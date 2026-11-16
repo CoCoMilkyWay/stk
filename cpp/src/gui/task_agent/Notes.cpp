@@ -61,9 +61,9 @@ std::string relation(const Notes &notes, const Note &x) {
   return s;
 }
 
-// 研究员的处理 (待办不写): " · 研究员: 已做 (回复)"
+// 研究员的处理 (没回复的待办不写): " · 研究员: 已做 (回复)"
 std::string handled(const Note &x) {
-  if (x.state == NoteState::Open)
+  if (x.state == NoteState::Open && x.reply.empty())
     return "";
   return " · 研究员: " + std::string(def(x.state).cn) + (x.reply.empty() ? "" : " (" + x.reply + ")");
 }

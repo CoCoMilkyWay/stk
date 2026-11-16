@@ -432,6 +432,7 @@ set(MATH_PRECISE
     gui/task_agent/Save.cpp
     gui/task_agent/TaskAgent.cpp
     gui/task_agent/Tools.cpp
+    gui/task_agent/Tree.cpp
     gui/task_agent/Views.cpp
     gui/task_agent/services/ReplayService.cpp
     # factor: 因子契约头的消费者 = op_check 本体与 GPU 后端

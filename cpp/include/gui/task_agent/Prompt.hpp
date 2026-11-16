@@ -8,7 +8,7 @@
 //             工具表 / 特征叶 (按族分节: 族卡 (output/config/agent/families.md) + 按 档.层 分组的 列名 + 中文名 + 落盘变换, 同组叶 (LeafKin) 合一行写成花括号式; 公式与说明经 search_leaves) / 算子表
 //     first   首条 user: 已试候选 / 正式库 / 全局记录的规模 (用 list_tried / list_library / list_notes 看) + 能否提问 + 开工 (+ 研究员对本会话的要求)
 //     test    自检会话的首条 (代替 first): 把每个工具都调一遍, 对照说明查结果, 问题记 report_issue, 末了总评再 finish (+ 研究员对本会话的要求)
-//     round   每条回复的调用结果, 按调用序 (调用编号 + 调用一行 + 结果) + 假设板 (不折叠) + 下一步 (挖掘 / 自检各一种); 较早的在会话历史里成批换成折叠版 (FoldedText)
+//     round   每条回复的调用结果, 按调用序 (调用编号 + 调用一行 + 结果) + 假设板 + 下一步 (挖掘 / 自检各一种); 只在本条给原文, 此后收进研究树 (task_agent/Tree)
 //     review  首次 finish (或本段预算用完) 的那条回复的结果 (同 round) + 假设板 + 复盘清单 (本会话各 judge 的 better_feature / next + 本会话已提的全局记录); 再 finish 才结束
 //     retry   回复不合协议: 原因 + 按协议重发
 //   研究员的插话 (MemoText) 附在随后发出的那条消息末尾, 与本会话要求同一写法
@@ -60,6 +60,7 @@ std::string Brief(const Result &r);  // 一行: 结局 + 原因 / 最佳权重 /
 std::string Detail(const Result &r); // 多行 ("- " 起): 结局 + 原因 / 每个权重 (自由参数的取值) / 落选原因与代表点; 不可见的只说不可比
 
 // ---- 工具结果 (当场 / 回测 / 问答; 观察的在 task_agent/Views) ----
+std::string CallTitle(const Act &a, Ref r); // 结果标题: [调用编号] 调用一行 (长参数只写开头) (+ 没做成)
 // 列表跳过可见的前 skip 个, 列 top 个; 没列完的末尾给总数与接着看的 skip
 std::string TriedText(const std::vector<Result> &tried, int skip, int top, const Gate &g); // list_tried: 每个另标是否达入库门槛
 std::string LibraryText(const std::vector<Result> &lib, int skip, int top);                // list_library: 只列本持有期有统计的, 其余报个数
@@ -70,7 +71,7 @@ std::string AnswerText(const Asked &a); // ask_human: 每题的选择 (没照推
 std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n, std::vector<std::string> &shown);
 
 // ---- 发 ----
-Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold); // fold = 会话历史折叠旧结果 (task_agent/Mine)
+Message SystemMessage(const Context &c, const Gate &g, bool ask);
 // tried = 可见的已试候选数; notes = 全局记录的条数 (NotesBrief); remark = 本会话要求 (非空则成末尾一节)
 Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark);
 Message TestMessage(bool ask, const std::string &remark);
@@ -82,7 +83,5 @@ Message ReviewMessage(const std::vector<Act> &acts, int round, const Board &boar
                       const std::vector<const Note *> &filed, const std::string &budget);
 Message RetryMessage(const std::string &error);
 std::string MemoText(const std::string &memo); // 插话一节 (附在消息末尾)
-// round 的折叠版 (会话历史里换掉原文): 观察 / 查询只留标题, 回测留一行结局, 其余 (提交 / 问答 / 判定 / 没做成的原因) 原样
-std::string FoldedText(const std::vector<Act> &acts, int round);
 
 } // namespace GUI::Agent

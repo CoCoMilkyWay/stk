@@ -3,6 +3,7 @@
 #include "gui/task_agent/Acts.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/Tree.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -59,8 +60,8 @@ void Mine::open(const SharedData &data, Setup s) {
   notes.load(setup.test);
   const Context &ctx = lab.ctx();
   assert(!ctx.leaves.empty() && !ctx.ops.empty() && "须有开放的叶与算子");
-  setup.llm.system = SystemMessage(ctx, setup.gate, setup.ask, llm::def(setup.llm.backend).local).text;
-  chat.open(setup.llm, {});
+  setup.llm.system = SystemMessage(ctx, setup.gate, setup.ask).text;
+  chat.open(setup.llm);
   disk::Key key = catalog::key(setup.sc, setup.test);
   key.stamp = disk::stamp_now();
   log.open(disk::path(disk::AgentChat, key).string(), setup.llm.system);
@@ -70,8 +71,8 @@ void Mine::open(const SharedData &data, Setup s) {
   PruneToolOut(setup.test, names);
   timeline.clear();
   restore({});
-  memo.clear(), draft.reset(), reason.clear(), report.clear();
-  cur_ = 0, retries_ = 0, stop_ = false, stale_ = false, agent_.clear();
+  memo.clear(), reason.clear(), report.clear();
+  cur_ = 0, retries_ = 0, stop_ = false;
   t0 = Clock::now(), t_end = -1;
   retally();
   leg_ = {};
@@ -94,34 +95,19 @@ void Mine::open(const SharedData &data, Setup s) {
                           {"tried", tried},
                           {"remark", setup.remark},
                           {"budget", {{"rounds", setup.budget.rounds}, {"minutes", setup.budget.minutes}, {"ktokens", setup.budget.ktokens}}}});
-  ask(setup.test ? TestMessage(setup.ask, setup.remark) : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask, setup.remark));
+  post(setup.test ? TestMessage(setup.ask, setup.remark) : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask, setup.remark));
 }
 
-// 接着停下处: 待发的消息 / 重发没收成回复的那条 / 重发要求 / 余下的调用 (等人时停的重问) / 下一条
+// 接着停下处: 重发末条 (回退后待发 / 回复没收成) / 重发要求 / 余下的调用 (等人时停的重问) / 下一条
 void Mine::resume(const SharedData &data, llm::Options llm, bool gpu, Budget budget) {
-  assert(phase_ == Phase::Pause && idle());
+  assert(phase_ == Phase::Pause && idle() && !timeline.empty());
   flush();
   llm.system = setup.llm.system;
-  if (llm.backend != setup.llm.backend || llm.model != setup.llm.model)
-    agent_.clear(), stale_ = true;
-  if (!(llm.net == setup.llm.net))
-    stale_ = true;
   setup.llm = std::move(llm), setup.gpu = gpu, setup.budget = budget;
   assert(catalog::ready(data, setup.sc, setup.gpu));
-  assert(draft || !timeline.empty());
-  std::optional<Message> send;
-  if (draft) {
-    send = std::move(*draft), draft.reset();
-  } else if (!timeline.back().reply.ok()) {
-    send = Message{timeline.back().kind, std::move(timeline.back().user)};
-    timeline.pop_back();
-    log.drop(round() + 1, round() + 1);
-    retally();
-  } else if (timeline.back().acts.empty()) {
-    send = RetryMessage(timeline.back().error);
-  }
-  if (stale_)
-    reopen();
+  chat.open(setup.llm);
+  if (!timeline.back().reply.ok())
+    unsend();
   t0 = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(t_end)), t_end = -1;
   stop_ = false, retries_ = 0;
   reason.clear();
@@ -132,11 +118,15 @@ void Mine::resume(const SharedData &data, llm::Options llm, bool gpu, Budget bud
                             {"net", net_name(setup.llm.net)},
                             {"eval", setup.gpu ? "GPU" : "CPU"},
                             {"budget", {{"rounds", budget.rounds}, {"minutes", budget.minutes}, {"ktokens", budget.ktokens}}}});
-  if (send) {
-    phase_ = Phase::Think;
-    return ask(std::move(*send));
-  }
   Round &rd = timeline.back();
+  if (!rd.span.began()) {
+    phase_ = Phase::Think;
+    return send();
+  }
+  if (rd.acts.empty()) {
+    phase_ = Phase::Think;
+    return post(RetryMessage(rd.error));
+  }
   if (cur_ < rd.acts.size()) {
     if (Act &a = rd.acts[cur_]; a.span.began())
       a = Act{.call = a.call};
@@ -202,9 +192,9 @@ std::string Mine::unqueue() {
 }
 
 // ---- 回退 ----
-Mine::Loss Mine::loss(int k, bool keep) const {
+Mine::Loss Mine::loss(int k) const {
   assert(phase_ == Phase::Pause && k >= 1 && k <= round());
-  Loss l{.rounds = round() - k + !keep};
+  Loss l{.rounds = round() - k + 1};
   for (size_t i = static_cast<size_t>(k) - 1; i < timeline.size(); ++i)
     for (const Act &a : timeline[i].acts)
       if (const Trial *t = std::get_if<Trial>(&a.got); t && t->st.ok())
@@ -213,59 +203,30 @@ Mine::Loss Mine::loss(int k, bool keep) const {
   return l;
 }
 
-void Mine::redo_send(int k, std::string user) {
+// 丢第 k 轮起的产出, 时间线截到第 k 轮, 状态回到第 k 条发出时; 它随附的插话退回排队 (排在已排的前面), 继续时可撤回改写
+void Mine::rewind(int k) {
   assert(phase_ == Phase::Pause && idle() && k >= 1 && k <= round());
   flush();
   discard(k);
-  const size_t i = static_cast<size_t>(k) - 1;
-  const Msg kind = timeline[i].kind;
-  const Snap s = timeline[i].before;
-  log.event(Event::Rewind, {{"round", k}, {"keep", false}, {"dropped", round() - k + 1}});
+  log.event(Event::Rewind, {{"round", k}, {"dropped", round() - k + 1}});
   log.drop(k, round());
-  timeline.resize(i);
-  restore(s);
-  draft = Message{kind, std::move(user)};
-  cur_ = timeline.empty() ? 0 : timeline.back().acts.size();
-  retries_ = 0, stale_ = true, agent_.clear();
-  retally();
-  reason = "回退到第 " + std::to_string(k) + " 条发出前, 改了它待发";
+  timeline.resize(static_cast<size_t>(k));
+  Round &rd = timeline.back();
+  if (!rd.memo.empty())
+    memo = rd.memo + (memo.empty() ? "" : "\n\n" + memo), rd.memo.clear();
+  unsend();
+  restore(rd.before);
+  cur_ = 0, retries_ = 0;
+  reason = "回退到第 " + std::to_string(k) + " 条发出前, 继续即重发";
   report = report_of(reason);
   log.report(report);
   save();
 }
 
-bool Mine::redo_exec(int k, std::string reply, std::string &error) {
-  assert(phase_ == Phase::Pause && idle() && k >= 1 && k <= round());
-  const size_t i = static_cast<size_t>(k) - 1;
-  const Snap now_s = snap();
-  restore(timeline[i].before);
-  std::vector<Call> cs;
-  if (!ParseCalls(reply, setup.ask && !asked, cs, error) || !(error = RuleMiss(cs, *this)).empty()) {
-    restore(now_s);
-    return false;
-  }
-  flush();
-  discard(k);
-  log.event(Event::Rewind, {{"round", k}, {"keep", true}, {"dropped", round() - k}});
-  log.drop(k + 1, round());
-  timeline.resize(i + 1);
+void Mine::unsend() {
   Round &rd = timeline.back();
-  rd.reply.text = std::move(reply), rd.reply.thinking.clear();
-  rd.reply.end = llm::End::Ok, rd.reply.error.clear();
-  rd.error.clear(), rd.edited = true;
-  rd.acts.clear();
-  for (Call &c : cs)
-    rd.acts.push_back({.call = std::move(c)});
-  if (llm::def(setup.llm.backend).local)
-    folded = folds(i, folded);
-  log.turn(k, rd.user, rd.reply);
-  cur_ = 0, retries_ = 0, stale_ = true, agent_.clear();
+  rd = Round{.kind = rd.kind, .user = std::move(rd.user), .memo = std::move(rd.memo), .before = std::move(rd.before)};
   retally();
-  reason = "第 " + std::to_string(k) + " 轮的回复改写了, 待重新执行";
-  report = report_of(reason);
-  log.report(report);
-  save();
-  return true;
 }
 
 // 丢的轮里落了文件的候选 (连同 Search 日志) + 本会话这些轮提的全局记录
@@ -289,12 +250,11 @@ double Desk::now() const { return t_end >= 0 ? t_end : std::chrono::duration<dou
 
 void Desk::add(const Tally &d) { timeline.back().tally += d, total.tally += d; }
 
-Desk::Snap Desk::snap() const { return {board, seen, adopted, evaled, done, reviewed, asked, folded, lab.ctx().look_from}; }
+Desk::Snap Desk::snap() const { return {board, seen, adopted, evaled, done, reviewed, asked, lab.ctx().look_from}; }
 
 void Desk::restore(const Snap &s) {
   board = s.board, seen = s.seen, adopted = s.adopted;
   evaled = s.evaled, done = s.done, reviewed = s.reviewed, asked = s.asked;
-  folded = s.folded;
   lab.look_at(s.look_from);
 }
 
@@ -366,9 +326,9 @@ std::string Mine::hint() const {
   if (phase_ != Phase::Pause)
     return {};
   const std::string n = std::to_string(round());
-  if (draft)
-    return "发出待发的第 " + std::to_string(round() + 1) + " 条消息";
   const Round &rd = timeline.back();
+  if (!rd.span.began())
+    return "发出待发的第 " + n + " 条消息";
   if (!rd.reply.ok())
     return "重发第 " + n + " 条消息 (它的回复没收成)";
   if (rd.acts.empty())
@@ -428,7 +388,7 @@ void Mine::replied(llm::Reply r) {
   rd.reply = std::move(r);
   const llm::Reply &x = rd.reply;
   total.llm_s += rd.span.len(now()), total.usage += x.usage;
-  log.turn(round(), rd.user, x);
+  log.turn(round(), TextOf(rd), x);
   log.event(Event::Reply, {{"round", round()},
                            {"end", llm::def(x.end).id},
                            {"error", x.error},
@@ -444,7 +404,6 @@ void Mine::replied(llm::Reply r) {
     rd.error = "回复失败 (" + std::string(llm::def(x.end).id) + (x.error.empty() ? "" : ": " + x.error) + ")";
     return pause(rd.error);
   }
-  agent_ = x.agent;
   std::vector<Call> cs;
   std::string error;
   if (!ParseCalls(x.text, setup.ask && !asked, cs, error) || !(error = RuleMiss(cs, *this)).empty()) {
@@ -453,7 +412,7 @@ void Mine::replied(llm::Reply r) {
     if (++retries_ >= kMaxRetries)
       return pause("连续 " + std::to_string(kMaxRetries) + " 条回复不合协议");
     if (go(Phase::Think))
-      ask(RetryMessage(error));
+      post(RetryMessage(error));
     return;
   }
   retries_ = 0;
@@ -518,7 +477,7 @@ void Mine::next(bool more) {
     reviewed = true;
   }
   if (!fin && budget.empty())
-    return ask(RoundMessage(rd.acts, round(), board, evaled, setup.test));
+    return post(RoundMessage(rd.acts, round(), board, evaled, setup.test));
   std::vector<std::pair<Ref, const Call *>> judges;
   for (size_t i = 0; i < timeline.size(); ++i)
     for (size_t j = 0; j < timeline[i].acts.size(); ++j)
@@ -529,7 +488,7 @@ void Mine::next(bool more) {
     for (const Note &n : notes.of(static_cast<NoteKind>(k)))
       if (n.session == log.dir())
         filed.push_back(&n);
-  ask(ReviewMessage(rd.acts, round(), board, judges, filed, budget));
+  post(ReviewMessage(rd.acts, round(), board, judges, filed, budget));
 }
 
 void Mine::ended(Act &a) {
@@ -582,45 +541,26 @@ bool Mine::go(Phase next) {
   return true;
 }
 
-size_t Mine::folds(size_t n, size_t f) {
-  const size_t keep = static_cast<size_t>(kKeepRounds);
-  return n - f >= 2 * keep ? n - keep + 1 : f;
+void Mine::post(Message m) {
+  timeline.push_back({.kind = m.kind, .user = std::move(m.text), .before = snap()});
+  send();
 }
 
-// 发第 n + 1 条前, 未折叠的条数 (连同这条) 将超 2·kKeepRounds 时成批折叠到只剩最近 kKeepRounds 条: 其间的结果消息在会话历史里换成折叠版 (它的调用在前一轮);
-// 成批折叠让历史前缀多数轮不变 (远端的前缀缓存接得上). 此前各轮的回复都收齐了, 条序 = 会话的轮序. 快照记在折叠前 (回退后重发时照样再折)
-void Mine::ask(Message m) {
-  const Snap before = snap();
-  if (const size_t n = timeline.size(), f = folds(n, folded); llm::def(setup.llm.backend).local && f != folded) {
-    for (size_t j = folded; j < f; ++j)
-      if (timeline[j].kind == Msg::Round || timeline[j].kind == Msg::Review)
-        chat.fold(j, FoldedText(timeline[j - 1].acts, static_cast<int>(j)));
-    folded = f;
-  }
+void Mine::send() {
+  Round &rd = timeline.back();
+  assert(!rd.span.began());
   if (!memo.empty()) {
-    m.text += MemoText(memo);
-    log.event(Event::Memo, {{"round", round() + 1}, {"chars", memo.size()}});
+    log.event(Event::Memo, {{"round", round()}, {"chars", memo.size()}});
+    rd.memo += (rd.memo.empty() ? "" : "\n\n") + memo;
     memo.clear();
   }
-  log.event(Event::Ask, {{"round", round() + 1}, {"kind", def(m.kind).id}, {"chars", m.text.size()}});
-  timeline.push_back({.kind = m.kind, .user = std::move(m.text), .before = before, .span = {.t0 = now()}});
-  chat.ask(timeline.back().user);
+  rd.span.begin(now());
+  llm::Turns t = TurnsOf(timeline);
+  const std::string flat = llm::Flat(t);
+  log.event(Event::Ask, {{"round", round()}, {"kind", def(rd.kind).id}, {"chars", t.back().text.size()}, {"turns", t.size()}, {"context_chars", flat.size()}});
+  log.context(round(), flat);
+  chat.ask(std::move(t));
   save();
-}
-
-// 智谱: 此前各轮照原文重发, 已折叠的换折叠版; Cursor: agent_ 在则接着它, 否则新建并回放 (最近 kKeepRounds 条之前的结果消息用折叠版)
-void Mine::reopen() {
-  const bool local = llm::def(setup.llm.backend).local;
-  llm::History h{.agent = local ? std::string() : agent_};
-  const size_t n = timeline.size();
-  for (size_t j = 0; j < n; ++j) {
-    const Round &rd = timeline[j];
-    assert(rd.reply.ok() && "历史各轮都已收齐");
-    const bool fold = (rd.kind == Msg::Round || rd.kind == Msg::Review) && (local ? j < folded : j + static_cast<size_t>(kKeepRounds) < n);
-    h.turns.push_back({fold ? FoldedText(timeline[j - 1].acts, static_cast<int>(j)) : rd.user, rd.reply.text});
-  }
-  chat.open(setup.llm, std::move(h));
-  stale_ = false;
 }
 
 std::string Mine::over() const {
@@ -640,8 +580,6 @@ void Mine::pause(std::string why) {
   assert(live());
   chat.cancel();
   lab.cancel();
-  if (!timeline.empty() && !timeline.back().reply.ok())
-    stale_ = true, agent_.clear();
   t_end = now();
   reason = std::move(why);
   retally();

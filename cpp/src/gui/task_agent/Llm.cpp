@@ -387,28 +387,30 @@ Models models(Backend b, const Net &net, const std::atomic<bool> &cancel) {
   return out;
 }
 
-Session::Session(Options o, History h) : o_(std::move(o)) {
+std::string Flat(const Turns &t) {
+  assert(!t.empty() && t.front().user && t.back().user);
+  if (t.size() == 1)
+    return t.front().text;
+  std::string s;
+  for (size_t i = 0; i + 1 < t.size(); ++i)
+    s += std::string(t[i].user ? "# 消息" : "# 你的回复") + "\n\n" + t[i].text + "\n\n";
+  return s + "# 本条消息\n\n" + t.back().text;
+}
+
+Session::Session(Options o) : o_(std::move(o)) {
   assert(valid(o_.net));
   assert(!key(o_.backend).empty() && "output/config/agent/keys.json 里该后端未填");
   assert(!o_.model.empty());
-  if (o_.backend == Backend::Zhipu) {
-    Zhipu z;
-    for (auto &[user, reply] : h.turns)
-      z.msgs.emplace_back("user", std::move(user)), z.msgs.emplace_back("assistant", std::move(reply));
-    conv_ = std::move(z);
-  } else {
-    Cursor c{std::move(h.agent), {}};
-    if (c.agent.empty())
-      c.replay = std::move(h.turns);
-    conv_ = std::move(c);
-  }
 }
 
-Reply Session::send(const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
+Reply Session::send(const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
+  assert(!t.empty() && t.front().user && t.back().user);
+  for (size_t i = 1; i < t.size(); ++i)
+    assert(t[i].user != t[i - 1].user && "user / assistant 交替");
   const Clock::time_point t0 = Clock::now();
   Reply r;
   try {
-    r = std::visit([&](auto &c) { return send(c, user, on_delta, cancel); }, conv_);
+    r = o_.backend == Backend::Zhipu ? zhipu(t, on_delta, cancel) : cursor(t, on_delta, cancel);
   } catch (const Fail &f) {
     r = Reply{.end = End::Error, .error = f.error};
   } catch (const boost::system::system_error &e) { // 非幂等 POST 发出后遇网络错 (不重发)
@@ -418,19 +420,12 @@ Reply Session::send(const std::string &user, const Delta &on_delta, const std::a
   return r;
 }
 
-void Session::fold(size_t turn, std::string text) {
-  Zhipu &c = std::get<Zhipu>(conv_);
-  assert(2 * turn + 1 < c.msgs.size() && c.msgs[2 * turn].first == "user");
-  c.msgs[2 * turn].second = std::move(text);
-}
-
-Reply Session::send(Zhipu &c, const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
+Reply Session::zhipu(const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
   json msgs = json::array();
   if (!o_.system.empty())
     msgs.push_back({{"role", "system"}, {"content", o_.system}});
-  for (const auto &[role, content] : c.msgs)
-    msgs.push_back({{"role", role}, {"content", content}});
-  msgs.push_back({{"role", "user"}, {"content", user}});
+  for (const Turn &x : t)
+    msgs.push_back({{"role", x.user ? "user" : "assistant"}, {"content", x.text}});
   json body;
   body["model"] = o_.model;
   body["messages"] = std::move(msgs);
@@ -485,47 +480,29 @@ Reply Session::send(Zhipu &c, const std::string &user, const Delta &on_delta, co
   if (finish.empty())
     throw Fail{"智谱流结束却没有 finish_reason"};
   r.end = finish == "stop" ? End::Ok : End::Cut;
-  if (!r.ok()) {
+  if (!r.ok())
     r.error = finish;
-    return r;
-  }
-  c.msgs.emplace_back("user", user);
-  c.msgs.emplace_back("assistant", r.text);
   return r;
 }
 
-Reply Session::send(Cursor &c, const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
+Reply Session::cursor(const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
   json body;
-  std::string head; // 新建 agent: system + 此前各轮的回放
-  if (c.agent.empty()) {
-    if (!o_.system.empty())
-      head = o_.system + "\n\n---\n\n";
-    if (!c.replay.empty()) {
-      head += "# 此前的对话 (回放: 这段对话里已经走过的各轮, 按序; 接着最后一轮往下)\n\n";
-      for (size_t i = 0; i < c.replay.size(); ++i)
-        head += "## 第 " + std::to_string(i + 1) + " 条消息\n\n" + c.replay[i].first + "\n\n## 你的第 " + std::to_string(i + 1) + " 条回复\n\n" + c.replay[i].second + "\n\n";
-      head += "---\n\n# 本条消息\n\n";
-    }
-  }
-  body["prompt"]["text"] = head + user;
-  if (c.agent.empty() && o_.model != "default")
+  body["prompt"]["text"] = (o_.system.empty() ? std::string() : o_.system + "\n\n---\n\n") + Flat(t);
+  if (o_.model != "default")
     body["model"]["id"] = o_.model;
-  const std::string target = c.agent.empty() ? std::string("/v1/agents") : "/v1/agents/" + c.agent + "/runs";
   const std::string payload = body.dump();
   const std::optional<Resp> made = retried(
-      "cursor", Resend::Unsent, cancel, [&](int) { return request(Backend::Cursor, o_.net, http::verb::post, target, payload, {}, nullptr, &cancel); }, never);
+      "cursor", Resend::Unsent, cancel, [&](int) { return request(Backend::Cursor, o_.net, http::verb::post, "/v1/agents", payload, {}, nullptr, &cancel); }, never);
   if (!made)
     return Reply{.end = End::Cancelled};
   expect_2xx("cursor", *made);
   const json j = parse_json(made->body);
-  assert(j.contains("run") && (!c.agent.empty() || j.contains("agent")));
-  if (c.agent.empty())
-    c.agent = str_of(j["agent"], "id"), c.replay.clear();
+  assert(j.contains("run") && j.contains("agent"));
+  const std::string agent = str_of(j["agent"], "id");
   Reply r;
   r.id = str_of(j["run"], "id");
-  r.agent = c.agent;
-  assert(!c.agent.empty() && !r.id.empty());
-  const std::string run = "/v1/agents/" + c.agent + "/runs/" + r.id;
+  assert(!agent.empty() && !r.id.empty());
+  const std::string run = "/v1/agents/" + agent + "/runs/" + r.id;
 
   std::string last_id, status, error; // 断线续流游标 (Last-Event-ID) / result 终态 / 流里的错误
   bool done = false;

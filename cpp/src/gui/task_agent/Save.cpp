@@ -1,8 +1,7 @@
 // Mine 的落盘与载入 (会话目录的 session.json / brief.json) — 见 Mine.hpp
-//   session.json = 设定 + 时间线 (每轮: 消息 / 发出时的快照 / 时段 / 回复 / 各调用的参数 · 结果 · 回测或问答) + 此刻的状态 / 插话 / 待发 / 停下原因;
-//   回测的统计不存, 载入时按候选文件名从候选目录重扫; 问答只存人的选择 (题目从调用参数重解析)
+//   session.json = 设定 + 时间线 (每轮: 消息 / 随附的插话 / 发出时的快照 / 时段 (未开 = 待发) / 回复 / 各调用的参数 · 结果 · 回测或问答) + 此刻的状态 / 排队的插话 / 停下原因;
+//   上下文不存 (发出时照时间线重算); 回测的统计不存, 载入时按候选文件名从候选目录重扫; 问答只存人的选择 (题目从调用参数重解析)
 #include "disk/Disk.hpp"
-#include "gui/task_agent/Json.hpp"
 #include "gui/task_agent/Mine.hpp"
 
 #include <algorithm>
@@ -51,7 +50,7 @@ json snap_j(const Desk::Snap &s) {
                   {"evals", h.evals},
                   {"knobs", h.knobs},
                   {"pending", h.pending}});
-  return {{"board", hs}, {"seen", s.seen}, {"adopted", s.adopted}, {"evaled", s.evaled}, {"done", s.done}, {"reviewed", s.reviewed}, {"asked", s.asked}, {"folded", s.folded}, {"look_from", s.look_from}};
+  return {{"board", hs}, {"seen", s.seen}, {"adopted", s.adopted}, {"evaled", s.evaled}, {"done", s.done}, {"reviewed", s.reviewed}, {"asked", s.asked}, {"look_from", s.look_from}};
 }
 
 Desk::Snap snap_of(const json &j) {
@@ -74,7 +73,6 @@ Desk::Snap snap_of(const json &j) {
   s.done = j.at("done").get<bool>();
   s.reviewed = j.at("reviewed").get<bool>();
   s.asked = j.at("asked").get<bool>();
-  s.folded = j.at("folded").get<size_t>();
   s.look_from = j.at("look_from").get<int>();
   return s;
 }
@@ -86,7 +84,6 @@ json reply_j(const llm::Reply &r) {
           {"error", r.error},
           {"usage", {{"prompt", r.usage.prompt}, {"cached", r.usage.cached}, {"completion", r.usage.completion}}},
           {"id", r.id},
-          {"agent", r.agent},
           {"seconds", r.seconds}};
 }
 
@@ -98,7 +95,6 @@ llm::Reply reply_of(const json &j) {
           .error = j.at("error").get<std::string>(),
           .usage = {u.at("prompt").get<int>(), u.at("cached").get<int>(), u.at("completion").get<int>()},
           .id = j.at("id").get<std::string>(),
-          .agent = j.at("agent").get<std::string>(),
           .seconds = j.at("seconds").get<double>()};
 }
 
@@ -160,19 +156,19 @@ json round_j(const Desk::Round &rd) {
   json acts = json::array();
   for (const Act &a : rd.acts)
     acts.push_back(act_j(a));
-  return {{"kind", def(rd.kind).id}, {"user", rd.user}, {"before", snap_j(rd.before)}, {"span", span_j(rd.span)}, {"think", span_j(rd.think)}, {"write", span_j(rd.write)}, {"reply", reply_j(rd.reply)}, {"error", rd.error}, {"edited", rd.edited}, {"acts", acts}};
+  return {{"kind", def(rd.kind).id}, {"user", rd.user}, {"memo", rd.memo}, {"before", snap_j(rd.before)}, {"span", span_j(rd.span)}, {"think", span_j(rd.think)}, {"write", span_j(rd.write)}, {"reply", reply_j(rd.reply)}, {"error", rd.error}, {"acts", acts}};
 }
 
 Desk::Round round_of(const json &j, const Lab &lab) {
   Desk::Round rd{.kind = static_cast<Msg>(index_of(kMsgs, j.at("kind").get<std::string>())),
                  .user = j.at("user").get<std::string>(),
+                 .memo = j.at("memo").get<std::string>(),
                  .before = snap_of(j.at("before")),
                  .span = span_of(j.at("span")),
                  .think = span_of(j.at("think")),
                  .write = span_of(j.at("write")),
                  .reply = reply_of(j.at("reply")),
-                 .error = j.at("error").get<std::string>(),
-                 .edited = j.at("edited").get<bool>()};
+                 .error = j.at("error").get<std::string>()};
   for (const json &a : j.at("acts"))
     rd.acts.push_back(act_of(a, lab));
   return rd;
@@ -220,8 +216,6 @@ void Mine::save() const {
                         {"cur", cur_},
                         {"state", snap_j(snap())},
                         {"memo", memo},
-                        {"draft", draft ? json{{"kind", def(draft->kind).id}, {"text", draft->text}} : json()},
-                        {"agent", agent_},
                         {"reason", reason},
                         {"report", report},
                         {"timeline", std::move(rounds)}};
@@ -241,7 +235,7 @@ void Mine::save() const {
   log.save(session, brief);
 }
 
-// 干净的 (停着 / 等人时存的) 照存的续; 中途的 (没停稳就退了): 在走的回复作废, 末轮的执行整轮作废 (删它落的候选与提的记录), 回到它发出时
+// 干净的 (停着 / 等人时存的) 照存的续; 中途的 (没停稳就退了): 在收的回复作废 (末条待发), 或末轮的执行整轮作废 (删它落的候选与提的记录), 回到它发出时
 void Mine::load(const SharedData &data, const std::string &dir) {
   assert(!live() && idle());
   flush();
@@ -256,29 +250,21 @@ void Mine::load(const SharedData &data, const std::string &dir) {
   timeline.clear();
   for (const json &r : j.at("timeline"))
     timeline.push_back(round_of(r, lab));
+  assert(!timeline.empty() && "开会话即发首条");
   restore(snap_of(j.at("state")));
   cur_ = j.at("cur").get<size_t>();
   memo = j.at("memo").get<std::string>();
-  draft.reset();
-  if (const json &d = j.at("draft"); !d.is_null())
-    draft = Message{static_cast<Msg>(index_of(kMsgs, d.at("kind").get<std::string>())), d.at("text").get<std::string>()};
-  agent_ = j.at("agent").get<std::string>();
   reason = j.at("reason").get<std::string>();
   t_end = j.at("elapsed").get<double>();
-  stop_ = false, retries_ = 0, stale_ = true;
+  stop_ = false, retries_ = 0;
   const bool clean = j.at("clean").get<bool>();
-  if (!clean && !draft && !timeline.empty()) {
+  if (!clean) {
     Round &rd = timeline.back();
     if (!rd.span.ended()) {
-      rd.think.end(t_end), rd.write.end(t_end), rd.span.end(t_end);
-      rd.error = "没收齐就退出了";
-      agent_.clear();
+      unsend();
     } else if (cur_ < rd.acts.size()) {
-      const int k = round();
-      discard(k);
+      discard(round());
       restore(rd.before);
-      if (llm::def(setup.llm.backend).local)
-        folded = folds(timeline.size() - 1, folded);
       for (Act &a : rd.acts)
         a = Act{.call = a.call};
       cur_ = 0;

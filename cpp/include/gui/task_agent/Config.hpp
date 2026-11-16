@@ -5,7 +5,7 @@
 // =============================================================================
 //   LLM 两后端都走 HTTPS 443 (gui/task_agent/Llm.hpp), 端点 / key / 默认连接见后端表 kBackends; key 不进仓库, 放本机 output/config/agent/keys.json:
 //     智谱    对话补全 chat/completions; key = 开放平台 API Keys
-//     Cursor  Cloud Agents API; key = Dashboard → API Keys 的 user API key (无仓库 agent, 起 VM 分钟级)
+//     Cursor  Cloud Agents API; key = Dashboard → API Keys 的 user API key (每轮新建无仓库 agent, 起 VM 分钟级)
 //   模型不写死: 各后端的模型表由 GET models 嗅探 (llm::models), Config 页从中选
 //   读超时 = 流里两次增量之间的最长静默 (思考期也有思考增量 / 心跳); 重试 = 网络瞬抖 + 智谱限流 (429 1302 / 1305), 不限次数
 //   退出: 任务 Destroy 置取消旗, 全部请求 / 重试等待 1 秒内收手 (只剩 Cursor 远端取消, 限时 kCancelTimeoutSeconds)
@@ -24,11 +24,10 @@ struct BackendDef {
   const char *host;   // HTTPS 443
   const char *models; // GET 模型表
   bool proxy;         // 默认经 HTTP 代理 (CONNECT)
-  bool local;         // 对话历史留在本地每轮重发 (旧消息可换成折叠版); 否则在远端
 };
 inline constexpr BackendDef kBackends[] = {
-    {"Zhipu", "zhipu", "00000000000000000000000000000000.0000000000000000", "open.bigmodel.cn", "/api/paas/v4/models", false, true},
-    {"Cursor", "cursor", "crsr_0000000000000000000000000000000000000000000000000000000000000000", "api.cursor.com", "/v1/models", true, false},
+    {"Zhipu", "zhipu", "00000000000000000000000000000000.0000000000000000", "open.bigmodel.cn", "/api/paas/v4/models", false},
+    {"Cursor", "cursor", "crsr_0000000000000000000000000000000000000000000000000000000000000000", "api.cursor.com", "/v1/models", true},
 };
 inline constexpr const char *kZhipuChat = "/api/paas/v4/chat/completions";
 inline constexpr const char *kZhipuEffort = "high"; // reasoning_effort
@@ -57,7 +56,6 @@ inline constexpr int kStockDays = 60;      // view_stock_days 一次至多看几
 inline constexpr int kStockRows = 40;      // view_stock_day 逐行时段一次至多几行 (逐行表要装进 kOutChars)
 inline constexpr int kBookMins = 30;       // view_book 一次重放的窗口至多几分钟 (交易时段内)
 inline constexpr int kBookRows = 30;       // view_book 逐时表至多几行 (每行 step 秒; 表要与事件 / 剖面一起装进 kOutChars)
-inline constexpr int kKeepRounds = 3;      // 会话历史里原样留着的最近 user 消息 kKeepRounds..2·kKeepRounds 条; 攒满即把更早的结果消息成批换成折叠版 (只智谱: 本地留历史; 提示词 {{history}})
 inline constexpr int kMaxRetries = 5;      // 连续这么多条回复不合协议即停下, 等研究员 (多半是模型或提示词出了问题)
 
 // 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重全部达到才拷进正式因子库

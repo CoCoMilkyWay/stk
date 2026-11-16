@@ -1,17 +1,16 @@
 #pragma once
 
 // =============================================================================
-// LLM 对话客户端: 纯传输, 不知因子. 一个 Session = 一段多轮对话, send 阻塞到整轮收齐
+// LLM 对话客户端: 纯传输, 不知因子, 不留对话态. send 每次交整份对话 (Turns), 阻塞到整轮收齐
 // =============================================================================
-//   两后端同一个 send, 各持各的对话态 (Session::Zhipu / Cursor); 结局在边界归一成 End
-//   Zhipu   chat/completions: 本地留全部 messages 每轮重发 (调用方可把旧的 user 换成折叠版: fold); stream=true (思考可达数分钟, 非流式会读超时);
+//   两后端同一个 send, 都当通用接口: 上下文由调用方每次整份给 (task_agent/Context), 远端不留历史; 结局在边界归一成 End
+//   Zhipu   chat/completions: system + Turns 逐条作 messages; stream=true (思考可达数分钟, 非流式会读超时);
 //           JSON 模式 (response_format json_object) + 思考 (thinking enabled, reasoning_effort); system 逐字节不变 → 平台隐式缓存
-//   Cursor  Cloud Agents API: 首轮 POST /v1/agents 建无仓库 agent (无 system 角色: system 拼在首条 prompt 前), 之后 POST runs 续同一段对话;
+//   Cursor  Cloud Agents API: 每次 POST /v1/agents 建一个无仓库 agent, prompt = system + 摊平的 Turns (Flat), 只跑这一轮;
 //           回复走 run 的 SSE 流 (assistant / thinking 增量, result 收尾; 断线按 Last-Event-ID 续); 无 JSON 模式, 靠提示词约束
-//   续接 History: 开 Session 时交此前各轮 —— Zhipu 照它们重发; Cursor 给 agent id 即接着远端那段, 不给则新建 agent, 首条 prompt 里回放各轮
 //   HTTPS: asio ssl::stream (OpenSSL) 上跑 beast http, 校验证书链与主机名 (SNI); 全部连接共用一个 TLS 上下文
 //   连接: 直连 / 经 HTTP 代理 (CONNECT 隧道, TLS 仍端到端到目标主机); 每个请求按调用方给的 Net 走
-//   重试: 网络瞬抖 / 智谱限流按 Config 一直重试; 非幂等的 POST (Cursor 建 agent / run) 只重发未发出的 (连接 / 代理隧道 / TLS 握手)
+//   重试: 网络瞬抖 / 智谱限流按 Config 一直重试; 非幂等的 POST (Cursor 建 agent) 只重发未发出的 (连接 / 代理隧道 / TLS 握手)
 // =============================================================================
 
 #include "gui/task_agent/Config.hpp"
@@ -22,8 +21,6 @@
 #include <iterator>
 #include <string>
 #include <string_view>
-#include <utility>
-#include <variant>
 #include <vector>
 
 namespace GUI::Agent::llm {
@@ -62,12 +59,14 @@ struct Options {
   std::string system; // 静态前缀
 };
 
-// 此前的对话 (续接用): turns = 各轮 (user, assistant) 原文, 按序 (旧的 user 可已是折叠版);
-// agent = Cursor 远端 agent id: 非空 = 接着它 (turns 不用); 空 = 新建 agent, 首条 prompt 里回放 turns
-struct History {
-  std::vector<std::pair<std::string, std::string>> turns;
-  std::string agent;
+// 一次请求的对话 (system 之外): user / assistant 按序交替, 首末都是 user
+struct Turn {
+  bool user;
+  std::string text;
 };
+using Turns = std::vector<Turn>;
+// 摊成一段文本 (Cursor 的 prompt / 会话日志): 只一条 = 原文; 多条 = 逐条标明谁说的, 末条 = 本条消息
+std::string Flat(const Turns &t);
 
 struct Usage {
   int prompt = 0, cached = 0, completion = 0; // Cursor 流里不报 (0)
@@ -96,8 +95,7 @@ struct Reply {
   End end = End::Error;
   std::string error; // 非 Ok 的原因: Cut = 平台原话 (Zhipu finish_reason / Cursor 终态); Error = HTTP 非 2xx / 代理拒绝 / 流异常收尾 / 流里的错误 / POST 发出后断网
   Usage usage;
-  std::string id;    // 对账: Zhipu 响应 id / Cursor run id
-  std::string agent; // Cursor: 这轮所在的远端 agent id (续接用); Zhipu 空
+  std::string id; // 对账: Zhipu 响应 id / Cursor run id
   double seconds = 0.0;
   bool ok() const { return end == End::Ok; }
 };
@@ -110,29 +108,17 @@ using Delta = std::function<void(Part part, std::string_view chunk)>;
 
 class Session {
 public:
-  Session(Options o, History h); // 该后端的 key 为空 → assert
+  explicit Session(Options o); // 该后端的 key 为空 → assert
 
-  // 发一条 user 消息, 阻塞到整轮收齐. cancel 置位 → 1 秒内断流, End::Cancelled (Zhipu: 本轮不进上下文;
-  // Cursor: 已拿到 run id 则远端 run 一并取消, 建 run 的 POST 途中取消则远端那轮不管). 失败不抛, End::Error + error (stderr 另打响应体)
-  Reply send(const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel);
-  // 第 turn 轮 (从 0 起, 只数收齐的) 的 user 换成 text, 下一轮起照它重发; 只 BackendDef::local 的后端
-  void fold(size_t turn, std::string text);
+  // 发整份对话 t, 阻塞到整轮收齐. cancel 置位 → 1 秒内断流, End::Cancelled (Cursor: 已拿到 run id 则远端 run 一并取消,
+  // 建 agent 的 POST 途中取消则远端那轮不管). 失败不抛, End::Error + error (stderr 另打响应体)
+  Reply send(const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel);
 
 private:
-  struct Zhipu {
-    std::vector<std::pair<std::string, std::string>> msgs; // (role, content), 不含 system; 只收 Ok 的轮
-  };
-  struct Cursor {
-    std::string agent;                                       // 远端 agent id (空 = 首轮新建)
-    std::vector<std::pair<std::string, std::string>> replay; // 新建时在首条里回放的此前各轮
-  };
-  using Conv = std::variant<Zhipu, Cursor>; // 下标 = Backend
-
-  Reply send(Zhipu &c, const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel);
-  Reply send(Cursor &c, const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel);
+  Reply zhipu(const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel);
+  Reply cursor(const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel);
 
   Options o_;
-  Conv conv_;
 };
 
 } // namespace GUI::Agent::llm

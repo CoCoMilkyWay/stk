@@ -5,6 +5,7 @@
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Mine.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/Tree.hpp"
 #include "gui/util/Reorder.hpp"
 #include "misc/date.hpp"
 
@@ -24,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -144,14 +146,12 @@ struct State {
   std::optional<Ref> go;
   Ref flash;
   double flash_t = -1.0;
-  // 回退确认框: 第 k 轮, keep = 改回复重执行 (否则改消息重答); text = 在改的原文; open = 下一帧打开
-  struct Redo {
+  // 回退确认框: 回到第 k 轮; loss = 会丢的; open = 下一帧打开
+  struct Rewind {
     int k = 0;
-    bool keep = false;
-    std::string text, error;
     Mine::Loss loss;
     bool open = false;
-  } redo;
+  } rewind;
   // 候选页: 选中的候选文件与它的 Search 日志 (换了选中才重读); staged = 本会话落了文件的候选 (英文名, 每帧重算)
   std::string pick, pick_log, pick_log_of;
   std::set<std::string> staged;
@@ -433,14 +433,8 @@ void copy_button(const char *id, const std::string &s) {
 }
 constexpr float kThinkLines = 12.0f, kBoxLines = 20.0f; // 思考 / 在收正文框 · 其余文本框的最大行高
 
-// 可折叠的文本块: 标题行 + 复制; 展开 = 全文, 高过 lines 行就在框内滚 (不把时间线顶走); tail = 停在底部时跟着新内容走 (初开即在底部).
-// 返回 = 人点了开合
-bool fold(const char *id, ImGuiTreeNodeFlags flags, const std::string &label, const std::string &body, bool dim, float lines, bool tail) {
-  const bool open = ImGui::TreeNodeEx(id, flags, "%s", label.c_str());
-  const bool toggled = ImGui::IsItemToggledOpen();
-  copy_button((std::string("复制##") + id).c_str(), body);
-  if (!open)
-    return toggled;
+// 文本框: 全文, 高过 lines 行就在框内滚 (不把时间线顶走); tail = 停在底部时跟着新内容走 (初开即在底部)
+void box(const std::string &body, bool dim, float lines, bool tail) {
   const ImGuiStyle &st = ImGui::GetStyle();
   const float w = ImGui::GetContentRegionAvail().x - 2.0f * st.WindowPadding.x;
   const float h = ImGui::CalcTextSize(body.c_str(), body.c_str() + body.size(), false, w).y + 2.0f * st.WindowPadding.y + 2.0f;
@@ -450,6 +444,15 @@ bool fold(const char *id, ImGuiTreeNodeFlags flags, const std::string &label, co
   if (follow)
     ImGui::SetScrollHereY(1.0f);
   ImGui::EndChild();
+}
+// 可折叠的文本块: 标题行 + 复制; 展开 = 文本框 (box). 返回 = 人点了开合
+bool fold(const char *id, ImGuiTreeNodeFlags flags, const std::string &label, const std::string &body, bool dim, float lines, bool tail) {
+  const bool open = ImGui::TreeNodeEx(id, flags, "%s", label.c_str());
+  const bool toggled = ImGui::IsItemToggledOpen();
+  copy_button((std::string("复制##") + id).c_str(), body);
+  if (!open)
+    return toggled;
+  box(body, dim, lines, tail);
   ImGui::TreePop();
   return toggled;
 }
@@ -1102,8 +1105,13 @@ bool act_block(State &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
 // 一轮的标题 (折起来也看得出这轮干了什么)
 std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Kind &kind) {
   const Mine::Round &rd = m.timeline[i];
-  std::string h = "第 " + std::to_string(i + 1) + " 轮 · " + def(rd.kind).cn + " · +" + dur(rd.span.t0);
+  std::string h = "第 " + std::to_string(i + 1) + " 轮 · " + def(rd.kind).cn;
   kind = TaskStatus::Kind::None;
+  if (!rd.span.began()) {
+    kind = TaskStatus::Kind::Warn;
+    return h + " · 待发 (按 继续 发出)";
+  }
+  h += " · +" + dur(rd.span.t0);
   if (live) {
     kind = live->stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy;
     return h + " · " + doing(*live) + (live->topic.empty() ? "" : " · " + live->topic);
@@ -1111,8 +1119,6 @@ std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Ki
   const bool replied = rd.span.ended();
   if (replied)
     h += " · 回复 " + dur(rd.span.len(m.now()));
-  if (rd.edited)
-    h += " · 回复已改写";
   if (!rd.error.empty()) {
     kind = TaskStatus::Kind::Error;
     return h + (rd.reply.ok() ? " · 不合协议" : " · 没收成");
@@ -1144,19 +1150,24 @@ std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Ki
   return h;
 }
 
-// 回退确认框的起点 (第 k 轮; keep = 改回复重执行, 否则改消息重答): 预填原文, 算好会丢的
-void open_redo(State &s, const Mine &m, int k, bool keep) {
-  const Mine::Round &rd = m.timeline[static_cast<size_t>(k) - 1];
-  s.redo = {.k = k, .keep = keep, .text = keep ? rd.reply.text : rd.user, .error = {}, .loss = m.loss(k, keep), .open = true};
+// agent 在第 i 轮看到的整份上下文 (system 之外): 照时间线现算, 展开时才算
+void context_block(const Mine &m, size_t i) {
+  const bool open = ImGui::TreeNodeEx("context", ImGuiTreeNodeFlags_None, "agent 看到的上下文 (首条 + 研究树 + 上一轮的回复 + 本条; system 之外)");
+  if (!open)
+    return;
+  const std::string body = llm::Flat(TurnsOf(std::span<const Mine::Round>(m.timeline).first(i + 1)));
+  copy_button("复制##context", body);
+  box(body, false, kBoxLines, false);
+  ImGui::TreePop();
 }
 
-// 一轮: 发出 → 思考 → 回复 (逐个调用 + 原文); 在收的一轮画 live. fresh = 新一轮刚来 (重定开合); s.jump = 末轮展开并滚到它; s.go 在这轮 = 展开.
+// 一轮: 发出 → 思考 → 回复 (逐个调用 + 原文); 在收的一轮画 live; 待发的只有消息. fresh = 新一轮刚来 (重定开合); s.jump = 末轮展开并滚到它; s.go 在这轮 = 展开.
 // 停着时标题右键回退. 返回 = 按了交答案
 bool round_block(State &s, Mine &m, size_t i, const Flow &f, bool fresh) {
   Mine::Round &rd = m.timeline[i];
   const bool replied = rd.span.ended(), last = i + 1 == m.timeline.size();
-  const llm::Reply &r = replied ? rd.reply : s.chat_live.reply;
-  const bool receiving = !replied && f.stage != Flow::Idle;
+  const llm::Reply &r = replied || !rd.span.began() ? rd.reply : s.chat_live.reply;
+  const bool receiving = rd.span.running() && f.stage != Flow::Idle;
   const int k = static_cast<int>(i) + 1;
 
   TaskStatus::Kind kind = TaskStatus::Kind::None;
@@ -1170,14 +1181,12 @@ bool round_block(State &s, Mine &m, size_t i, const Flow &f, bool fresh) {
   const bool open = ImGui::TreeNodeEx("round", kNode, "%s", head.c_str());
   ImGui::PopStyleColor();
   const bool editable = m.phase() == Phase::Pause && m.idle();
-  if (editable && ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##redo_menu"))
-    ImGui::SetTooltip("右键: 回退到这轮 (改它的消息重答 / 改它的回复重新执行)");
-  if (editable && ImGui::BeginPopupContextItem("##redo_menu")) {
-    ImGui::TextDisabled("第 %d 轮 · 回退 (丢它之后的各轮与其产出)", k);
-    if (ImGui::MenuItem(("改第 " + std::to_string(k) + " 条消息, 让 agent 重答…").c_str()))
-      open_redo(s, m, k, false);
-    if (ImGui::MenuItem(("改第 " + std::to_string(k) + " 轮的回复, 重新执行…").c_str()))
-      open_redo(s, m, k, true);
+  if (editable && ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##rewind_menu"))
+    ImGui::SetTooltip("右键: 从这轮重来 (丢这轮的回复与执行及其后各轮, 继续即重发这条)");
+  if (editable && ImGui::BeginPopupContextItem("##rewind_menu")) {
+    ImGui::TextDisabled("第 %d 轮 · 回退", k);
+    if (ImGui::MenuItem(("从第 " + std::to_string(k) + " 轮重来…").c_str()))
+      s.rewind = {.k = k, .loss = m.loss(k), .open = true};
     ImGui::EndPopup();
   }
   if (s.jump && last)
@@ -1186,7 +1195,9 @@ bool round_block(State &s, Mine &m, size_t i, const Flow &f, bool fresh) {
     ImGui::PopID();
     return false;
   }
-  fold("send", ImGuiTreeNodeFlags_None, "发出 " + chars(rd.user), rd.user, false, kBoxLines, false);
+  const std::string sent = TextOf(rd);
+  fold("send", ImGuiTreeNodeFlags_None, (rd.span.began() ? "发出 " : "待发 ") + chars(sent) + (rd.memo.empty() ? "" : " · 附插话"), sent, false, kBoxLines, false);
+  context_block(m, i);
   if (receiving && f.stage == Flow::Wait)
     ImGui::TextColored(color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), "%s", doing(f).c_str());
   if (!r.thinking.empty()) {
@@ -1213,8 +1224,6 @@ bool round_block(State &s, Mine &m, size_t i, const Flow &f, bool fresh) {
     if (r.usage.prompt > 0)
       line += " · token 输入 " + kilo(r.usage.prompt) + " (缓存 " + kilo(r.usage.cached) + ") / 输出 " + kilo(r.usage.completion);
     ImGui::TextColored(color(r.ok() ? TaskStatus::Kind::None : TaskStatus::Kind::Error), "%s", line.c_str());
-    if (rd.edited)
-      ImGui::TextColored(color(TaskStatus::Kind::Warn), "回复是研究员改写的 (原回复与思考已丢)");
     if (!rd.error.empty())
       wrapped(color(TaskStatus::Kind::Error), (r.ok() ? "不合协议: " : "") + rd.error);
     for (size_t j = 0; j < rd.acts.size(); ++j)
@@ -1271,16 +1280,7 @@ void summary_block(const Mine &m) {
   fold("report", ImGuiTreeNodeFlags_None, "停下报告", m.report, false, kBoxLines, false);
 }
 
-// 停着时待发的消息 (回退后): 可直接改, 按继续发出; 改完即存盘
-void draft_block(Mine &m) {
-  ImGui::SeparatorText("待发出");
-  ImGui::TextColored(color(TaskStatus::Kind::Warn), "第 %d 条 (%s) · 按 继续 发出; 可直接改", m.round() + 1, def(m.draft->kind).cn);
-  input_multiline("##draft", m.draft->text, ImVec2(-1, ImGui::GetTextLineHeightWithSpacing() * kBoxLines));
-  if (ImGui::IsItemDeactivatedAfterEdit())
-    m.save();
-}
-
-// 过程: 全会话 (分组 → 逐轮) + 待发的消息 + 停下汇总. 钉在底部时跟新内容走; 放开后右下角给 "回到最新"; s.go = 跳到某个调用 (展开它所在的组 / 轮, 滚过去).
+// 过程: 全会话 (分组 → 逐轮) + 停下汇总. 钉在底部时跟新内容走; 放开后右下角给 "回到最新"; s.go = 跳到某个调用 (展开它所在的组 / 轮, 滚过去).
 // s.flow_rounds = 上一帧画过的轮数 (变了 = 新一轮来, 重定开合); bottom = 底下留给插话栏的高
 void timeline_panel(State &s, Mine &m, const Flow &f, bool to_end, float bottom) {
   ImGui::BeginChild("##flow", ImVec2(0, -bottom), false);
@@ -1328,8 +1328,6 @@ void timeline_panel(State &s, Mine &m, const Flow &f, bool to_end, float bottom)
     m.start();
     s.pinned = true;
   }
-  if (m.phase() == Phase::Pause && m.draft)
-    draft_block(m);
   if (m.phase() == Phase::Pause)
     summary_block(m);
   if (going)
@@ -1698,13 +1696,13 @@ void memo_bar(State &s, Mine &m) {
   tip("给 agent 的意见: 排队, 随下一条发出的消息附上 (不打断在收的回复与在跑的调用; 停着时随继续发出)");
 }
 
-// 回退确认框: 原文可改; 写明会丢的轮数 / 候选文件 / 全局记录; 改回复的不合协议 / 违会话约束就地说原因
-void redo_modal(State &s, Mine &m) {
-  State::Redo &r = s.redo;
+// 回退确认框: 写明会丢的轮数 / 候选文件 / 全局记录
+void rewind_modal(State &s, Mine &m) {
+  State::Rewind &r = s.rewind;
   if (r.open)
-    ImGui::OpenPopup("回退###redo"), r.open = false;
-  ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 64.0f, ImGui::GetFontSize() * 40.0f), ImGuiCond_Appearing);
-  if (!ImGui::BeginPopupModal("回退###redo"))
+    ImGui::OpenPopup("回退###rewind"), r.open = false;
+  ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 48.0f, ImGui::GetFontSize() * 12.0f), ImGuiCond_Appearing);
+  if (!ImGui::BeginPopupModal("回退###rewind"))
     return;
   if (m.phase() != Phase::Pause || r.k < 1 || r.k > m.round()) {
     ImGui::CloseCurrentPopup();
@@ -1713,21 +1711,15 @@ void redo_modal(State &s, Mine &m) {
   }
   const std::string k = std::to_string(r.k);
   const Mine::Loss &l = r.loss;
-  ImGui::TextColored(kColHead, "%s", (r.keep ? "改第 " + k + " 轮的回复, 重新执行" : "改第 " + k + " 条消息, 让 agent 重答").c_str());
-  wrapped_dim(r.keep ? "下面是这轮的回复 (调用 JSON). 确定后状态回到第 " + k + " 条发出时, 按 继续 从第一个调用起执行; 改的须合协议与会话约束 (不合就在这里说)"
-                     : "下面是第 " + k + " 条消息. 确定后状态回到它发出前, 按 继续 发出, agent 重答 (也可在过程页底的待发框里再改)");
-  wrapped(color(TaskStatus::Kind::Warn), "将丢弃: " + (r.keep ? "第 " + k + " 轮的执行" + (l.rounds ? " 与其后 " + std::to_string(l.rounds) + " 轮" : std::string()) : "第 " + k + " 轮起 " + std::to_string(l.rounds) + " 轮") +
-                                             " · 候选文件 " + std::to_string(l.files) + " 个 (连同 Search 日志) · 本会话的全局记录 " + std::to_string(l.notes) + " 条; 已入正式库的不动; 不可撤销");
-  input_multiline("##redo_text", r.text, ImVec2(-1, -ImGui::GetFrameHeightWithSpacing() * (r.error.empty() ? 1.4f : 3.4f)));
-  if (!r.error.empty())
-    wrapped(color(TaskStatus::Kind::Error), r.error);
+  ImGui::TextColored(kColHead, "%s", ("从第 " + k + " 轮重来").c_str());
+  wrapped_dim("状态回到第 " + k + " 条发出时, 按 继续 重发它, agent 重答; 它随附的插话退回排队 (可撤回改写), 要改方向就再插话");
+  wrapped(color(TaskStatus::Kind::Warn), "将丢弃: 第 " + k + " 轮起 " + std::to_string(l.rounds) + " 轮的回复与执行 · 候选文件 " + std::to_string(l.files) + " 个 (连同 Search 日志) · 本会话的全局记录 " +
+                                             std::to_string(l.notes) + " 条; 已入正式库的不动; 不可撤销");
   ImGui::BeginDisabled(!m.idle());
   if (ImGui::Button("确定", ImVec2(100, 0))) {
-    const bool done = r.keep ? m.redo_exec(r.k, r.text, r.error) : (m.redo_send(r.k, r.text), true);
-    if (done) {
-      ImGui::CloseCurrentPopup();
-      s.flow_rounds = 0, s.pinned = true;
-    }
+    m.rewind(r.k);
+    ImGui::CloseCurrentPopup();
+    s.flow_rounds = 0, s.pinned = true;
   }
   ImGui::EndDisabled();
   ImGui::SameLine();
@@ -1985,7 +1977,7 @@ void render_mine(SharedData &data, State &s) {
     ImGui::EndTabItem();
   }
   ImGui::EndTabBar();
-  redo_modal(s, m);
+  rewind_modal(s, m);
 }
 
 // ---- Config ----

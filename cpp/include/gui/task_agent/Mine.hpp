@@ -10,22 +10,22 @@
 //                                      全部做完: 首次 finish → 发 review (结果 + 复盘清单) → Think; 复盘后再 finish (自检会话首次即是) → Pause;
 //                                      没有 finish: 本段预算用完 → 发 review (已复盘过 / 自检 → Pause), 否则发 round (各调用的结果) → Think
 //   Choose   人      start             交答案: 作 ask_human 的结果 → Act (接着执行余下的调用)
-//   Pause    人      resume            停着 (停下报告已写). 继续 = 接着停下处: 待发的消息 / 重发没收成回复的那条 / 重发要求 / 余下的调用 /
-//                                      下一条 (agent 挖完后继续 = 照常发结果, 让它接着挖); 也可回退 (redo_*) / 关闭 / New
+//   Pause    人      resume            停着 (停下报告已写). 继续 = 接着停下处: 重发末条 (回退后待发 / 回复没收成) / 重发要求 / 余下的调用 /
+//                                      下一条 (agent 挖完后继续 = 照常发结果, 让它接着挖); 也可回退 (rewind) / 关闭 / New
 //   一问一答对仗: Think (agent 发调用) ↔ Act (系统给结果); 工具表见 gui/task_agent/Tools.hpp, 执行见 gui/task_agent/Acts.hpp
 //   两个 worker 对仗: chat (ask → Think / Write / End 带 Reply) ↔ lab (send → Search / Run / Lens / Replay / End 带 Got); update 每帧同样 poll, 各步时刻记进时间线的 Span;
 //                    End 一个收一个: replied (解析成调用) ↔ settled (该调用成文); 不在等它们时到的 (被放下的那件) 不收
 //   停下: 回复失败 / agent 挖完 / 本段预算 / 连续不合协议 / stop = 在做的调用做完即停 (转移唯一入口 go 处兑现; Choose 中立即) /
 //         cancel = 立即: 在收的回复作废; 在跑的调用作废 (结果标取消, 落了文件的回测在实验台停稳后删掉候选, 假设的配额退回)
-//   回退: 每条消息发出时记一份状态快照 (Snap). 回退到第 k 轮 = 丢第 k 轮的执行 (改回复重执行) 或连同第 k 条 (改消息重答) 及其后各轮,
-//         删掉丢的轮里落的候选文件与提的全局记录 (正式库不动), 状态恢复成第 k 条发出时的快照; 停在 Pause, 继续时照它走
-//   对话历史: 载入 / 回退 / 回复没收成 / 换了后端或模型之后对不上时间线 (stale), 继续前照时间线重开 (reopen; Cursor 对得上则接着原 agent)
+//   回退 (rewind, 以轮为单位): 每条消息发出时记一份状态快照 (Snap). 回退到第 k 轮 = 丢第 k 轮的回复与执行及其后各轮,
+//         删掉丢的轮里落的候选文件与提的全局记录 (正式库不动), 状态恢复成第 k 条发出时的快照, 第 k 条待发 (它随附的插话退回排队); 停在 Pause, 继续即重发
+//   上下文: 每次发出都照时间线整份重算 (task_agent/Tree TurnsOf), 对话不留在 Chat 或远端; 载入 / 回退 / 换后端或模型之后无须对账
 //   落盘 (task_agent/Save): session.json 在发出消息 / 收齐回复 / 等实验台或人 / 调用收尾 / 停下 / 回退时整份重写; 停着或等人时存的 = 干净 (照存的续),
-//         其余 = 中途 (载入时末轮在走的回复作废、执行整轮作废重来)
-//   插话 memo: 排队, 随下一条发出的消息附上 (Prompt MemoText)
-//   GUI 线程: open / load / resume / start / stop / cancel / redo_* / close / queue = 人的操作, update 每帧推进 (含会话日志)
+//         其余 = 中途 (载入时末轮在走的回复作废待重发、执行整轮作废重来)
+//   插话 memo: 排队, 随下一条发出的消息附上 (记在那轮的 Round::memo; 成文 Prompt MemoText)
+//   GUI 线程: open / load / resume / start / stop / cancel / rewind / close / queue = 人的操作, update 每帧推进 (含会话日志)
 //   Desk = 会话状态 (调用经它读写); Mine = Desk + 转移
-//   timeline = 全会话唯一真相 (每条发出的消息一轮: 原文 / 回复 / 回复里每个调用的执行); UI 只读, 除 Choose 中在问那个调用的 Asked (picks / note) 与停着时的 draft
+//   timeline = 全会话唯一真相 (每条发出的消息一轮: 原文 / 插话 / 回复 / 回复里每个调用的执行); UI 只读, 除 Choose 中在问那个调用的 Asked (picks / note)
 //   total = timeline 的累计: 计数随事件即加 (调用开始即计其工具); 用时 / token 一段收尾才加 (在走那段由其 Span 现算); 载入 / 回退 / 停下时按 timeline 重算 (retally)
 // =============================================================================
 
@@ -41,7 +41,6 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -52,6 +51,12 @@ namespace GUI::Agent {
 struct Budget {
   int rounds = 0, minutes = 0, ktokens = 0; // 轮数 / 分钟 / 千 token (输入 + 输出)
 };
+
+// 落盘 JSON 的字段清单: 作用域 / 门槛 / 预算 (Mine 页的 ui.json 与会话的 session.json 同一份)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Open, all, on)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, years, leaves, ops)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, mono, ric)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Budget, rounds, minutes, ktokens)
 
 struct Desk {
   // 一段会话的设定: 作用域 / 门槛 / 可否提问 / 自检 / 要求 New 定, 会话内不变; 后端与模型 / 评估后端 / 预算每段 (New / 继续) 按 Config 当前的定
@@ -85,23 +90,22 @@ struct Desk {
     int failed() const;
     int staged() const { return n(Tool::EvalFactor) - n(Verdict::Unstaged); }
   };
-  // 一条消息发出时的会话状态 (回退即恢复): 假设板 / 查过的叶 / 入库 / 约束与流程旗 / 折叠进度 / 观察窗首日
+  // 一条消息发出时的会话状态 (回退即恢复; 研究树取其中的假设板): 假设板 / 查过的叶 / 入库 / 约束与流程旗 / 观察窗首日
   struct Snap {
     Board board;
     std::set<std::string> seen, adopted;
     bool evaled = false, done = false, reviewed = false, asked = false;
-    size_t folded = 0;
     int look_from = 0;
   };
-  // 一轮 = 一条发出的消息. span = 发出 → 收齐, 其内 think / write = 首个思考增量 / 首个正文增量起 (无思考则 think 未开); acts = 回复里的调用, 按序执行
+  // 一轮 = 一条发出的消息. span = 发出 → 收齐 (未开 = 待发), 其内 think / write = 首个思考增量 / 首个正文增量起 (无思考则 think 未开); acts = 回复里的调用, 按序执行
   struct Round {
     Msg kind = Msg::First;
-    std::string user;
-    Snap before; // 发出这条时的状态
+    std::string user; // 系统生成的消息原文
+    std::string memo; // 随它发出的研究员插话 (空 = 无)
+    Snap before;      // 发出这条时的状态
     Span span, think, write;
-    llm::Reply reply;    // 收齐后有效
-    std::string error;   // reply.ok() 时 = 不合协议的原因; 否则 = 回复没收成的原因
-    bool edited = false; // 回复被研究员改写过 (redo_exec)
+    llm::Reply reply;  // 收齐后有效
+    std::string error; // reply.ok() 时 = 不合协议的原因; 否则 = 回复没收成的原因
     std::vector<Act> acts;
     Tally tally;
   };
@@ -125,9 +129,7 @@ struct Desk {
   bool done = false;             // agent 调了 finish 且复盘过 (自检会话不复盘): 本条做完即停
   bool reviewed = false;         // 已发过复盘 (首次 finish / 预算用完)
   bool asked = false;            // 已用过 ask_human
-  size_t folded = 0;             // timeline 前 folded 条的结果消息在对话历史里已换成折叠版 (只本地留历史的后端)
   std::string memo;              // 排队的插话 (随下一条发出)
-  std::optional<Message> draft;  // 停着时待发的消息 (回退后; 继续即发, 界面可改)
   std::string reason, report;    // 停下原因 / 停下报告
 
   double now() const;                                             // 会话起算秒 (停着时停在停下时刻)
@@ -163,12 +165,11 @@ public:
   void close();              // 须 Pause 且都不忙: 放下会话 (已存盘, 可再载入)
   void queue(std::string m); // 须有会话: 插话排队
   std::string unqueue();     // 撤回排队的插话 (返回原文)
-  void save() const;         // session.json + brief.json (界面改了 draft 之后也存)
+  void save() const;         // session.json + brief.json
   void update();
-  // 回退 (须 Pause 且都不忙, 1 ≤ k ≤ round()); keep = 留第 k 条消息 (改回复重执行)
-  Loss loss(int k, bool keep) const;
-  void redo_send(int k, std::string user);                      // 丢第 k 轮起; 第 k 条消息换成 user, 待发
-  bool redo_exec(int k, std::string reply, std::string &error); // 丢第 k 轮的执行与其后; 第 k 轮回复换成 reply, 待执行. 不合协议 / 违会话约束 → false + error, 不动
+  // 回退 (须 Pause 且都不忙, 1 ≤ k ≤ round()): 丢第 k 轮的回复与执行及其后各轮, 第 k 条待发
+  Loss loss(int k) const;
+  void rewind(int k);
 
   Phase phase() const { return phase_; }
   bool live() const { return phase_ == Phase::Think || phase_ == Phase::Act || phase_ == Phase::Choose; }
@@ -179,8 +180,9 @@ public:
   std::string hint() const;              // 停着时继续会做什么
 
 private:
-  bool go(Phase next); // 转移的唯一入口: 按过 Stop → 停下, false; 否则进 next
-  void ask(Message m);
+  bool go(Phase next);  // 转移的唯一入口: 按过 Stop → 停下, false; 否则进 next
+  void post(Message m); // 新起一轮 (记下发出时的快照) 并发出
+  void send();          // 发出末轮: 带上排队的插话, 照时间线算上下文
   void pause(std::string why);
   void on(Chat::Tick t);
   void on(Lab::Tick t);
@@ -191,18 +193,15 @@ private:
   void ended(Act &a);       // 一个调用做完: 截断结果, 记流水, 前进
   void abort(Act &a);       // 在跑的调用作废 (Cancel)
   void discard(int k);      // 删第 k 轮起落的候选文件与提的全局记录
-  void reopen();            // 照时间线重开对话
+  void unsend();            // 末轮回到待发 (回复与执行作废; 消息、插话与快照照旧)
   void flush();             // 删掉作废回测的候选文件 (实验台须不忙)
   std::string over() const; // 本段预算用完 = 用了多少; 否则空
   std::string report_of(const std::string &why) const;
-  static size_t folds(size_t n, size_t f); // 第 n + 1 条发出前 (已折叠到 f) 折叠到哪
 
   Phase phase_ = Phase::None;
   bool stop_ = false;
   size_t cur_ = 0;
   int retries_ = 0;                 // 连续不合协议的回复数
-  bool stale_ = false;              // 对话历史与时间线对不上: 继续前重开
-  std::string agent_;               // Cursor 远端 agent id, 与时间线对得上才留 (空 = 重开时新建并回放)
   std::vector<std::string> doomed_; // 作废回测的候选文件, 实验台停稳后删
   struct Leg {
     int round = 0;

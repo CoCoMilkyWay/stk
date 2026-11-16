@@ -4,7 +4,8 @@
 // Journal — 一段会话的日志目录 (只 GUI 线程写)
 // =============================================================================
 //   open    system.md                     系统提示 (reopen = 载入的会话接着写它的目录)
-//   turn    NN.{user,reply,thinking}.md   逐轮原文 (drop = 回退时删掉丢弃的轮)
+//   context NN.context.md                 逐轮发出时 agent 看到的整份上下文 (task_agent/Tree, 摊平; system 另见 system.md)
+//   turn    NN.{user,reply,thinking}.md   逐轮原文: 本条消息 (+ 插话) / 回复 / 思考 (drop = 回退时删掉丢弃的轮)
 //   event   events.jsonl                  交互流水一行: 毫秒时间 + 事件名 (事件表 kEvents) + 字段 (原生类型; 字段表见 AGENT.md)
 //   report  report.md                     停下报告
 //   save    session.json + brief.json     会话的全部状态 (载入 / 回退 / 续接照它恢复, task_agent/Save) + 一览用的摘要; 原子替换
@@ -59,6 +60,7 @@ public:
   const std::string &dir() const { return dir_; }
   std::string system() const;
 
+  void context(int n, const std::string &text) const;
   void turn(int n, const std::string &user, const llm::Reply &r) const;
   void drop(int from, int to) const; // 删第 from..to 轮的原文
   void event(Event e, const nlohmann::ordered_json &fields = nlohmann::ordered_json::object()) const;

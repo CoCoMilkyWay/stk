@@ -82,10 +82,10 @@ inline constexpr CatDef kCats[] = {{"观察"}, {"假设"}, {"回测"}, {"检索"
 inline constexpr size_t kCatCount = std::size(kCats);
 static_assert(kCatCount == static_cast<size_t>(Cat::Misc) + 1);
 inline const CatDef &def(Cat c) { return kCats[static_cast<int>(c)]; }
-// 折叠版 (Prompt FoldedText) 留什么; 没做成的一律 Keep (结果即原因)
-enum class Fold : uint8_t { Keep,    // 原样
-                            Brief,   // 一行结局
-                            Title }; // 只留标题
+// 原文交回之后在研究树 (task_agent/Tree) 里留什么; 没做成的一律留调用一行 + 原因首行
+enum class Fold : uint8_t { Keep,    // 结论: 原样 (假设 / 判定挂进假设节点, 其余进记录节)
+                            Brief,   // 变体: 一行结局 (挂进所挂的假设)
+                            Title }; // 过程: 只留调用一行 (被引作证据的挂到那次判定下)
 enum class Arg : uint8_t { Str,
                            Int,
                            Strs,

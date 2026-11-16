@@ -305,8 +305,9 @@ stk/
 │   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge; 协议见 AGENT.md)
 │   │   │       ├── TaskAgent.hpp                       # 🤖 Agent 任务: Mine (作用域 / 会话: 载入 · 继续 · 回退 · 插话 / 时间线 / 假设板 / 候选 / 记录的处理 / 开放的特征与算子) / Config
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 / 入库门槛默认值 / 各目录
-│   │   │       ├── Llm.hpp                             # 🤖 对话客户端 Session (纯传输, HTTPS): Zhipu / Cursor 两后端同一个 send, 结局归一 End
-│   │   │       ├── Chat.hpp                            # 🤖 一段对话的后台单线程: ask → poll 取 Tick
+│   │   │       ├── Llm.hpp                             # 🤖 对话客户端 Session (纯传输, HTTPS, 不留对话态): Zhipu / Cursor 两后端同一个 send (每次整份), 结局归一 End
+│   │   │       ├── Chat.hpp                            # 🤖 对话的后台单线程: ask (整份上下文) → poll 取 Tick
+│   │   │       ├── Tree.hpp                            # 🤖 上下文 = 时间线的纯函数: 首条 + 研究树 (按假设节点 / 结果类型收起) + 上一轮回复 + 本条
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 / 数的写法 / 检索
 │   │   │       ├── Journal.hpp                         # 🤖 会话日志目录 (system.md / 逐轮 md / events.jsonl / report.md / session.json 存档) + 工具样本
 │   │   │       ├── Tools.hpp                           # 🤖 工具表 → 系统提示工具节 / 回复解析 ParseCalls / 参数校验; 执行记录 Act
@@ -320,7 +321,6 @@ stk/
 │   │   │       │                                       #    · 四道 Search / Run / Lens (LensService) / Replay (ReplayService), 平面经 Store 与 GUI 服务共用
 │   │   │       ├── Acts.hpp                            # 🤖 一个调用的执行, 按执行方分派; 回复级约束 RuleMiss
 │   │   │       ├── services/ReplayService.hpp          # 🤖 盘口重放 worker: 一 (资产, 日) 逐笔进订单簿 → 逐秒盘口 / 大单事件 / 全簿 (view_book)
-│   │   │       ├── Json.hpp                            # 🤖 落盘 JSON 的字段清单 (作用域 / 门槛 / 预算; ui.json 与 session.json 同一份)
 │   │   │       └── Mine.hpp                            # 🤖 挖掘会话状态机 (AGENT.md 状态图): 每帧 poll Chat / Lab 两 worker; 时间线 = 全会话唯一真相; 停 / 续 / 回退 (状态快照); 存档与载入在 Save.cpp
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存

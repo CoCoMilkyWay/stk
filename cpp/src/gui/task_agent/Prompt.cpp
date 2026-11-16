@@ -318,7 +318,7 @@ std::string results_of(const std::vector<Act> &acts, int round) {
   std::string s;
   for (size_t i = 0; i < acts.size(); ++i) {
     const Act &a = acts[i];
-    s += "## [" + RefText({round, static_cast<int>(i) + 1}) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n\n" + a.out;
+    s += "## " + CallTitle(a, {round, static_cast<int>(i) + 1}) + "\n\n" + a.out;
     if (!s.ends_with('\n'))
       s += '\n';
     s += '\n';
@@ -327,6 +327,8 @@ std::string results_of(const std::vector<Act> &acts, int round) {
 }
 
 } // namespace
+
+std::string CallTitle(const Act &a, Ref r) { return "[" + RefText(r) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成"); }
 
 std::string LoadPrompt(Msg m) { return disk::read(disk::PromptFile, {.name = def(m).id}); }
 
@@ -479,7 +481,7 @@ std::string AnswerText(const Asked &a) {
 }
 
 // ---- 发 ----
-Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
+Message SystemMessage(const Context &c, const Gate &g, bool ask) {
   std::string ops = "| 算子 | 中文名 | 签名 (元与参数的值域) | 输出域 | 定义 | 说明 |\n|---|---|---|---|---|---|\n";
   for (const Op &o : c.ops)
     ops += "| " + o.name + " | " + cell(o.name_cn) + " | $" + cell(o.sig) + "$ | " + o.out + " | $" + cell(o.tex) + "$ | " + cell(o.note) + " |\n";
@@ -507,9 +509,6 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                             {"gate_mono", num(g.mono)},
                             {"gate_ric", num(g.ric)},
                             {"ask", ask ? "可以用 ask_human 向研究员提一次问 (整个会话只一次)" : "研究员不参与决策, 没有 ask_human; 疑问写 report_issue"},
-                            {"history", fold ? "最近 " + std::to_string(kKeepRounds) + "~" + std::to_string(2 * kKeepRounds) +
-                                                   " 条消息原样留在对话里, 更早的结果消息会成批折叠 (观察与查询只留标题, 回测只留一行结局; 提交 / 问答 / 假设与判定 / 没做成的原因原样); 还要用的数写进 judge 的 result, 或重调"
-                                             : "对话里的结果消息原样保留"},
                             {"tools", ToolsDoc(ask)},
                             {"leaves", leaves_text(c.leaves)},
                             {"ops", ops}});
@@ -573,27 +572,6 @@ Message ReviewMessage(const std::vector<Act> &acts, int round, const Board &boar
                             {"board", board.text()},
                             {"gaps", or_none(gaps, "(本会话没有成立的 judge)\n")},
                             {"filed", or_none(notes, "(无)\n")}});
-}
-
-std::string FoldedText(const std::vector<Act> &acts, int round) {
-  std::string s = "# 一条较早回复的调用结果 (已折叠: 观察与查询只留标题, 回测只留结局; 要细节就重调)\n\n";
-  for (size_t i = 0; i < acts.size(); ++i) {
-    const Act &a = acts[i];
-    s += "## [" + RefText({round, static_cast<int>(i) + 1}) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成") + "\n";
-    switch (a.ok ? def(a.call.tool).fold : Fold::Keep) {
-    case Fold::Keep:
-      s += a.out + (a.out.ends_with('\n') ? "" : "\n");
-      break;
-    case Fold::Brief: {
-      const Trial &k = std::get<Trial>(a.got);
-      s += "- " + k.st.cand.name + " `" + k.st.cand.expr + "`" + (k.change.empty() ? "" : " (" + text::head(k.change, kTitleChars) + ")") + ": " + Brief(k.st.res) + "\n";
-      break;
-    }
-    case Fold::Title:
-      break;
-    }
-  }
-  return s;
 }
 
 Message RetryMessage(const std::string &error) { return fill(Msg::Retry, {{"error", error}}); }
