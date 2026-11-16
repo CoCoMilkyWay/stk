@@ -1128,6 +1128,22 @@ Adopted Lab::adopt(std::string name, const Gate &g) {
   return s;
 }
 
+void Lab::discard(const std::string &file) {
+  Impl &I = *p_;
+  assert(!I.running && "评估在跑, 文件还在写");
+  disk::remove(I.dir.file, I.dir.of(file));
+  disk::remove(I.dir.log, I.dir.of(file));
+  I.fails.erase(file);
+  std::erase_if(I.results, [&](const Result &r) { return r.file == file; });
+}
+
+std::string Lab::search_log(const std::string &file) const {
+  const Impl &I = *p_;
+  return disk::exists(I.dir.log, I.dir.of(file)) ? disk::read(I.dir.log, I.dir.of(file)) : std::string();
+}
+
+void Lab::look_at(int from) { p_->ctx.look_from = from; }
+
 const Result *Lab::tried(const std::string &name) const {
   const std::vector<Result> &rs = p_->results;
   const auto it = std::find_if(rs.begin(), rs.end(), [&](const Result &r) { return r.visible && r.name == name; });
@@ -1241,6 +1257,7 @@ void Lab::send(Job job) {
   Impl &I = *p_;
   assert(!I.running && I.data && "评估忙或未 bind");
   I.running = true, I.halt = false;
+  I.ticks.clear(); // 不忙时还没取走的只能是上一件 (已被放下的) 的
   std::visit([&](auto &&s) { I.start(std::move(s)); }, std::move(job));
 }
 

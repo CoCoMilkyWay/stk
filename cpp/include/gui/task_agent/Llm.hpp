@@ -8,6 +8,7 @@
 //           JSON 模式 (response_format json_object) + 思考 (thinking enabled, reasoning_effort); system 逐字节不变 → 平台隐式缓存
 //   Cursor  Cloud Agents API: 首轮 POST /v1/agents 建无仓库 agent (无 system 角色: system 拼在首条 prompt 前), 之后 POST runs 续同一段对话;
 //           回复走 run 的 SSE 流 (assistant / thinking 增量, result 收尾; 断线按 Last-Event-ID 续); 无 JSON 模式, 靠提示词约束
+//   续接 History: 开 Session 时交此前各轮 —— Zhipu 照它们重发; Cursor 给 agent id 即接着远端那段, 不给则新建 agent, 首条 prompt 里回放各轮
 //   HTTPS: asio ssl::stream (OpenSSL) 上跑 beast http, 校验证书链与主机名 (SNI); 全部连接共用一个 TLS 上下文
 //   连接: 直连 / 经 HTTP 代理 (CONNECT 隧道, TLS 仍端到端到目标主机); 每个请求按调用方给的 Net 走
 //   重试: 网络瞬抖 / 智谱限流按 Config 一直重试; 非幂等的 POST (Cursor 建 agent / run) 只重发未发出的 (连接 / 代理隧道 / TLS 握手)
@@ -40,6 +41,7 @@ struct Net {
   bool proxy = false; // false = 直连
   std::string host;   // HTTP 代理 (proxy 时)
   int port = 0;
+  bool operator==(const Net &) const = default;
 };
 
 struct Model {
@@ -58,6 +60,13 @@ struct Options {
   Net net;
   std::string model;  // models() 的 id; Cursor "default" = 账号默认模型 (请求不带 model)
   std::string system; // 静态前缀
+};
+
+// 此前的对话 (续接用): turns = 各轮 (user, assistant) 原文, 按序 (旧的 user 可已是折叠版);
+// agent = Cursor 远端 agent id: 非空 = 接着它 (turns 不用); 空 = 新建 agent, 首条 prompt 里回放 turns
+struct History {
+  std::vector<std::pair<std::string, std::string>> turns;
+  std::string agent;
 };
 
 struct Usage {
@@ -87,7 +96,8 @@ struct Reply {
   End end = End::Error;
   std::string error; // 非 Ok 的原因: Cut = 平台原话 (Zhipu finish_reason / Cursor 终态); Error = HTTP 非 2xx / 代理拒绝 / 流异常收尾 / 流里的错误 / POST 发出后断网
   Usage usage;
-  std::string id; // 对账: Zhipu 响应 id / Cursor run id
+  std::string id;    // 对账: Zhipu 响应 id / Cursor run id
+  std::string agent; // Cursor: 这轮所在的远端 agent id (续接用); Zhipu 空
   double seconds = 0.0;
   bool ok() const { return end == End::Ok; }
 };
@@ -100,7 +110,7 @@ using Delta = std::function<void(Part part, std::string_view chunk)>;
 
 class Session {
 public:
-  explicit Session(Options o); // 该后端的 key 为空 → assert
+  Session(Options o, History h); // 该后端的 key 为空 → assert
 
   // 发一条 user 消息, 阻塞到整轮收齐. cancel 置位 → 1 秒内断流, End::Cancelled (Zhipu: 本轮不进上下文;
   // Cursor: 已拿到 run id 则远端 run 一并取消, 建 run 的 POST 途中取消则远端那轮不管). 失败不抛, End::Error + error (stderr 另打响应体)
@@ -113,7 +123,8 @@ private:
     std::vector<std::pair<std::string, std::string>> msgs; // (role, content), 不含 system; 只收 Ok 的轮
   };
   struct Cursor {
-    std::string agent; // 首轮建出的 agent id
+    std::string agent;                                       // 远端 agent id (空 = 首轮新建)
+    std::vector<std::pair<std::string, std::string>> replay; // 新建时在首条里回放的此前各轮
   };
   using Conv = std::variant<Zhipu, Cursor>; // 下标 = Backend
 

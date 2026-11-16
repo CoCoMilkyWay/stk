@@ -110,6 +110,7 @@ struct ToolDef {
 };
 std::span<const ToolDef> Tools(); // 下标 = Tool
 const ToolDef &def(Tool t);
+Tool ToolOf(std::string_view name); // 调用名 → 工具 (须在表里)
 std::string ToolText(const char *s);  // 工具说明 (desc / out) 的占位填实: {batch} → kBatch, {stock_days} → kStockDays, {stock_rows} / {book_rows} / {book_mins} 同理
 std::string ArgType(const ArgDef &a); // 参数的类型与取值 (可选值 / 范围 / 个数)
 std::string ArgText(const ArgDef &a); // 参数一行: `键` (类型, 缺省 / 必填): 说明 (工具节与界面同一份)
@@ -173,10 +174,11 @@ struct Span {
       t1 = t;
   }
 };
-// eval_factor 的候选: 落文件 → 回测, 其内 search / run 两段; change = 相对 base 的改动一行 (没落 = 空)
+// eval_factor 的候选: 落文件 → 回测, 其内 search / run 两段; change = 相对 base 的改动一行 (没落 = 空); knob = 落了文件的是旋钮类改动 (取消时退回配额)
 struct Trial {
   Staged st;
   std::string change;
+  bool knob = false;
   Span search, run;
 };
 // 一个调用的执行: span = 开始 → 做完; out = 交给 agent 的结果; ok = 做成了 (否则 out 是原因)

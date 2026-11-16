@@ -254,8 +254,9 @@ constexpr ToolDef kTools[] = {
      "列正式因子库里同一评估期且算子不超上限、在本持有期有统计的因子, 按 score 降序; 可作起点接着做",
      "每个因子: 模板 + 思路 + 最佳权重; 本持有期无统计的只报个数; 没列完时末尾给总数与接着看的 skip"},
     {Tool::ListNotes, "list_notes", "查全局记录", Run::Now, Cat::Query, Fold::Title, kNotesArgs,
-     "查历次会话 (各作用域) 留下的全局记录: 特征申请 / 工具申请 / 发现 / 建议与 bug. 起步时看前人的发现 (别重走证伪过的路); 提交记录前先查同类, 已有的用 ref 附议或补充, 不要重提",
-     "不给 kind: 各类条数 + 每类最近几条的标题; 给 kind: 逐条全文 (编号 / 时间 / 作用域 / 附议关系 / 各字段)"},
+     "查历次会话 (各作用域) 留下的全局记录: 特征申请 / 工具申请 / 发现 / 建议与 bug. 起步时看前人的发现 (别重走证伪过的路); 提交记录前先查同类, 已有的用 ref 附议或补充, 不要重提; "
+     "研究员处理过的标着 已做 / 不做 / 搁置 (带他的回复): 已做的申请可以直接用上, 不做的别再提",
+     "不给 kind: 各类条数 + 每类最近几条的标题; 给 kind: 逐条全文 (编号 / 时间 / 作用域 / 附议关系 / 研究员的处理 / 各字段)"},
     {Tool::SubmitFactor, "submit_factor", "提交入库", Run::Now, Cat::Trial, Fold::Keep, kNameArgs, "把一个已评候选提交入库 (至少一个权重过入库门槛才入); 一般只在最后交最好的版本",
      "入库 / 未入库的原因"},
     {Tool::RequestFeature, "request_feature", "申请特征", Run::Now, Cat::Note, Fold::Keep, kFeatureReqArgs,
@@ -469,6 +470,11 @@ std::string brief(const json &v) {
 
 std::span<const ToolDef> Tools() { return kTools; }
 const ToolDef &def(Tool t) { return kTools[static_cast<size_t>(t)]; }
+Tool ToolOf(std::string_view name) {
+  const ToolDef *d = find(name);
+  assert(d && "没有这个工具");
+  return d->id;
+}
 
 std::string ToolText(const char *s) {
   std::string t = s;

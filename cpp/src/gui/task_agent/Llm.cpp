@@ -387,10 +387,21 @@ Models models(Backend b, const Net &net, const std::atomic<bool> &cancel) {
   return out;
 }
 
-Session::Session(Options o) : o_(std::move(o)), conv_(o_.backend == Backend::Zhipu ? Conv(Zhipu{}) : Conv(Cursor{})) {
+Session::Session(Options o, History h) : o_(std::move(o)) {
   assert(valid(o_.net));
   assert(!key(o_.backend).empty() && "output/config/agent/keys.json 里该后端未填");
   assert(!o_.model.empty());
+  if (o_.backend == Backend::Zhipu) {
+    Zhipu z;
+    for (auto &[user, reply] : h.turns)
+      z.msgs.emplace_back("user", std::move(user)), z.msgs.emplace_back("assistant", std::move(reply));
+    conv_ = std::move(z);
+  } else {
+    Cursor c{std::move(h.agent), {}};
+    if (c.agent.empty())
+      c.replay = std::move(h.turns);
+    conv_ = std::move(c);
+  }
 }
 
 Reply Session::send(const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
@@ -485,7 +496,18 @@ Reply Session::send(Zhipu &c, const std::string &user, const Delta &on_delta, co
 
 Reply Session::send(Cursor &c, const std::string &user, const Delta &on_delta, const std::atomic<bool> &cancel) {
   json body;
-  body["prompt"]["text"] = c.agent.empty() && !o_.system.empty() ? o_.system + "\n\n---\n\n" + user : user;
+  std::string head; // 新建 agent: system + 此前各轮的回放
+  if (c.agent.empty()) {
+    if (!o_.system.empty())
+      head = o_.system + "\n\n---\n\n";
+    if (!c.replay.empty()) {
+      head += "# 此前的对话 (回放: 这段对话里已经走过的各轮, 按序; 接着最后一轮往下)\n\n";
+      for (size_t i = 0; i < c.replay.size(); ++i)
+        head += "## 第 " + std::to_string(i + 1) + " 条消息\n\n" + c.replay[i].first + "\n\n## 你的第 " + std::to_string(i + 1) + " 条回复\n\n" + c.replay[i].second + "\n\n";
+      head += "---\n\n# 本条消息\n\n";
+    }
+  }
+  body["prompt"]["text"] = head + user;
   if (c.agent.empty() && o_.model != "default")
     body["model"]["id"] = o_.model;
   const std::string target = c.agent.empty() ? std::string("/v1/agents") : "/v1/agents/" + c.agent + "/runs";
@@ -498,9 +520,10 @@ Reply Session::send(Cursor &c, const std::string &user, const Delta &on_delta, c
   const json j = parse_json(made->body);
   assert(j.contains("run") && (!c.agent.empty() || j.contains("agent")));
   if (c.agent.empty())
-    c.agent = str_of(j["agent"], "id");
+    c.agent = str_of(j["agent"], "id"), c.replay.clear();
   Reply r;
   r.id = str_of(j["run"], "id");
+  r.agent = c.agent;
   assert(!c.agent.empty() && !r.id.empty());
   const std::string run = "/v1/agents/" + c.agent + "/runs/" + r.id;
 

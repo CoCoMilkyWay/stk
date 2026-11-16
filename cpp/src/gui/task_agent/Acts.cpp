@@ -216,7 +216,7 @@ Wait eval(Act &a, Desk &d) {
     k.change = change_of(dl) + (dl.base.empty() ? "" : ": " + dl.what);
     k.st = d.lab.stage({c.str("name"), c.str("name_cn"), c.str("expr"), note_of(c, *h, dl)});
     if (k.st.ok())
-      ++h->evals, h->knobs += def(dl.kind).knob, h->pending = d.round();
+      k.knob = def(dl.kind).knob, ++h->evals, h->knobs += k.knob, h->pending = d.round();
   }
   d.log.event(Event::Stage, {{"round", d.round()},
                              {"name", k.st.cand.name},
@@ -294,7 +294,7 @@ void answer(Act &a, Desk &d) {
     const Question &x = q.qs[i];
     d.log.event(Event::Pick, {{"question", x.prompt}, {"picked", Answered(x, q.picks[i])}, {"recommended", Picked(x, x.recommended)}});
   }
-  d.log.event(Event::Start, {{"note", q.note}});
+  d.log.event(Event::Answer, {{"note", q.note}});
   a.out = AnswerText(q);
 }
 

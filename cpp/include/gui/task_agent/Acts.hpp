@@ -7,7 +7,7 @@
 //   Now    当场: search_leaves (列出的叶组整组记进 Desk::seen) / list_tried / list_library / list_notes / submit_factor /
 //                request_feature · request_tool · note_insight · report_issue (记进 Desk::notes; ref 对不上同类已有的一条则不记) /
 //                hypothesize (记上 Desk::board) / judge (证据的调用编号须成立才改判定) / finish
-//   Human  ask_human: 起问题 → 等人按 Start
+//   Human  ask_human: 起问题 → 等人交答案
 //   Eval   eval_factor: 叶都在 Desk::seen, 假设判为支持且有配额, base 可见, 改动归类不退回, 功能块覆盖模板 → 落文件 → 交 EvalSpec;
 //          Search / Run 两段记进 Trial; 没落成当场做完
 //   Look   观察: Views Spec → 交 LookSpec → Views Render; 参数不成当场做完
@@ -29,11 +29,11 @@ struct Desk;
 
 enum class Wait : uint8_t { None,    // 当场做完
                             Lab,     // 等实验台到 End
-                            Human }; // 等人按 Start
+                            Human }; // 等人交答案
 Wait begin(Act &a, Desk &d);
 void enter(Act &a, Lab::Step s, Desk &d);     // 实验台进一道
 void settle(Act &a, Lab::Got &&got, Desk &d); // 实验台交回结果 (End)
-void answer(Act &a, Desk &d);                 // 人按 Start
+void answer(Act &a, Desk &d);                 // 人交答案
 // 一条合协议的回复是否守住会话约束: 上一条执行了的回复有落了文件的回测 → 这条不能回测; 假设板上待判的 → 这条须各有一个 judge. 守住 = 空, 否则 = 原因 (经 retry 反馈)
 std::string RuleMiss(const std::vector<Call> &cs, const Desk &d);
 

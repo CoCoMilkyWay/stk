@@ -43,6 +43,14 @@ NoteKind kind_of(const std::string &id) {
   return NoteKind::Feature;
 }
 
+NoteState state_of(const std::string &id) {
+  for (size_t i = 0; i < kNoteStateCount; ++i)
+    if (id == kNoteStates[i].id)
+      return static_cast<NoteState>(i);
+  assert(false && "没有这种处理");
+  return NoteState::Open;
+}
+
 // 附议关系: 附议了哪条 / 有几条附议它
 std::string relation(const Notes &notes, const Note &x) {
   std::string s;
@@ -51,6 +59,18 @@ std::string relation(const Notes &notes, const Note &x) {
   if (const int b = notes.backers(x); b > 0)
     s += " · 有 " + std::to_string(b) + " 条附议";
   return s;
+}
+
+// 研究员的处理 (待办不写): " · 研究员: 已做 (回复)"
+std::string handled(const Note &x) {
+  if (x.state == NoteState::Open)
+    return "";
+  return " · 研究员: " + std::string(def(x.state).cn) + (x.reply.empty() ? "" : " (" + x.reply + ")");
+}
+
+json line_of(const Note &x) {
+  return {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"round", x.round}, {"ref", x.ref},
+          {"state", def(x.state).id}, {"reply", x.reply}, {"fields", x.fields}};
 }
 
 } // namespace
@@ -91,6 +111,8 @@ void Notes::load(bool test) {
                    .session = j.at("session").get<std::string>(),
                    .ref = j.at("ref").get<std::string>(),
                    .round = j.at("round").get<int>(),
+                   .state = state_of(j.value("state", std::string(def(NoteState::Open).id))),
+                   .reply = j.value("reply", std::string()),
                    .fields = j.at("fields")});
       assert(v.back().fields.contains("title"));
     }
@@ -108,12 +130,20 @@ int Notes::backers(const Note &n) const {
   return static_cast<int>(std::count_if(v.begin(), v.end(), [&](const Note &x) { return x.ref == n.id; }));
 }
 
+int Notes::open(NoteKind k) const {
+  const std::vector<Note> &v = of(k);
+  return static_cast<int>(std::count_if(v.begin(), v.end(), [](const Note &x) { return x.state == NoteState::Open; }));
+}
+
 const Note &Notes::add(const Call &c, std::string scope, std::string session, int round) {
   assert(test_ >= 0 && "先 load");
   const NoteKind k = NoteOf(c.tool);
   std::vector<Note> &v = notes_[static_cast<size_t>(k)];
+  int no = 0;
+  for (const Note &x : v)
+    no = std::max(no, std::stoi(x.id.substr(1)));
   Note x{.kind = k,
-         .id = def(k).prefix + std::to_string(v.size() + 1),
+         .id = def(k).prefix + std::to_string(no + 1),
          .time = text::local("%Y-%m-%d %H:%M"),
          .scope = std::move(scope),
          .session = std::move(session),
@@ -122,10 +152,39 @@ const Note &Notes::add(const Call &c, std::string scope, std::string session, in
          .fields = c.args};
   x.fields.erase("ref");
   assert(x.ref.empty() || find(k, x.ref));
-  const json j = {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"round", x.round}, {"ref", x.ref}, {"fields", x.fields}};
-  disk::append(disk::AgentNoteFile, key_of(test_, k), j.dump());
+  disk::append(disk::AgentNoteFile, key_of(test_, k), line_of(x).dump());
   v.push_back(std::move(x));
   return v.back();
+}
+
+void Notes::rewrite(NoteKind k) const {
+  std::string s;
+  for (const Note &x : of(k))
+    s += line_of(x).dump() + "\n";
+  disk::write(disk::AgentNoteFile, key_of(test_, k), s);
+}
+
+void Notes::set(NoteKind k, const std::string &id, NoteState s, std::string reply) {
+  assert(test_ >= 0 && "先 load");
+  std::vector<Note> &v = notes_[static_cast<size_t>(k)];
+  const auto it = std::find_if(v.begin(), v.end(), [&](const Note &x) { return x.id == id; });
+  assert(it != v.end());
+  it->state = s, it->reply = std::move(reply);
+  rewrite(k);
+}
+
+int Notes::count(const std::string &session, int from) const {
+  int n = 0;
+  for (const std::vector<Note> &v : notes_)
+    n += static_cast<int>(std::count_if(v.begin(), v.end(), [&](const Note &x) { return x.session == session && x.round >= from; }));
+  return n;
+}
+
+void Notes::drop(const std::string &session, int from) {
+  assert(test_ >= 0 && "先 load");
+  for (size_t i = 0; i < kNoteKindCount; ++i)
+    if (std::erase_if(notes_[i], [&](const Note &x) { return x.session == session && x.round >= from; }) > 0)
+      rewrite(static_cast<NoteKind>(i));
 }
 
 std::string NotesText(const Notes &notes, const std::string &kind, const std::string &scope, const std::string &query, int n) {
@@ -150,7 +209,7 @@ std::string NotesText(const Notes &notes, const std::string &kind, const std::st
       const std::vector<const Note *> h = hits(k);
       s += head(k, h.size());
       for (size_t j = 0; j < std::min(h.size(), static_cast<size_t>(n)); ++j)
-        s += "- " + h[j]->id + " · " + h[j]->time.substr(0, 10) + " · " + h[j]->scope + " · " + h[j]->title() + relation(notes, *h[j]) + "\n";
+        s += "- " + h[j]->id + " · " + h[j]->time.substr(0, 10) + " · " + h[j]->scope + " · " + h[j]->title() + relation(notes, *h[j]) + handled(*h[j]) + "\n";
       s += h.empty() ? "(无)\n\n" : "\n";
     }
     return s + "要看全文就给 kind\n";
@@ -162,7 +221,7 @@ std::string NotesText(const Notes &notes, const std::string &kind, const std::st
     return s + "(无)\n";
   for (size_t j = 0; j < std::min(h.size(), static_cast<size_t>(n)); ++j) {
     const Note &x = *h[j];
-    s += "\n### " + x.id + " " + x.title() + "\n- " + x.time + " · " + x.scope + relation(notes, x) + "\n";
+    s += "\n### " + x.id + " " + x.title() + "\n- " + x.time + " · " + x.scope + relation(notes, x) + handled(x) + "\n";
     const std::string b = x.body();
     for (size_t a = 0, e; a < b.size(); a = e + 1) {
       e = b.find('\n', a);
@@ -177,9 +236,10 @@ std::string NotesBrief(const Notes &notes, const std::string &scope) {
   for (size_t i = 0; i < kNoteKindCount; ++i) {
     const NoteKind k = static_cast<NoteKind>(i);
     const std::vector<Note> &v = notes.of(k);
-    s += (i ? " · " : "") + std::string(def(k).cn) + " " + std::to_string(v.size());
+    s += (i ? " · " : "") + std::string(def(k).cn) + " " + std::to_string(v.size()) + " (待办 " + std::to_string(notes.open(k));
     if (k == NoteKind::Insight)
-      s += " (本作用域 " + std::to_string(std::count_if(v.begin(), v.end(), [&](const Note &x) { return x.scope == scope; })) + ")";
+      s += ", 本作用域 " + std::to_string(std::count_if(v.begin(), v.end(), [&](const Note &x) { return x.scope == scope; }));
+    s += ")";
   }
   return s;
 }

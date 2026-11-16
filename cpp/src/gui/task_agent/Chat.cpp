@@ -18,9 +18,9 @@ Chat::~Chat() {
   thread_.join();
 }
 
-void Chat::open(llm::Options o) {
+void Chat::open(llm::Options o, llm::History h) {
   assert(!busy() && "对话在收, 先取消");
-  sess_ = std::make_unique<llm::Session>(std::move(o));
+  sess_ = std::make_unique<llm::Session>(std::move(o), std::move(h));
   std::lock_guard<std::mutex> lock(mutex_);
   live_ = {}, ++gen_;
   ticks_.clear();
@@ -33,6 +33,7 @@ void Chat::ask(std::string user) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     live_ = {}, ++gen_;
+    ticks_.clear(); // 不忙时还没取走的只能是上一轮 (已被放下的) 的
     pending_ = std::move(user);
   }
   cv_.notify_all();

@@ -467,7 +467,10 @@ public:
 
   Staged stage(Cand c);                               // 名字 / 模板不合法, 用了未开放的叶 / 算子, 算子超 kMaxOps 或同名已在 → Unstaged
   Adopted adopt(std::string name, const Gate &g);     // 候选目录里没有 / 不可见 / 不达门槛 / 正式目录已有同名 → error; 否则拷进正式目录 (test 不拷)
+  void discard(const std::string &file);              // 删掉一个候选文件与它的 Search 日志 (回退 / 取消; 须不忙); 正式目录不动
   const Result *tried(const std::string &name) const; // 可见的已试候选; 没有 = nullptr
+  std::string search_log(const std::string &file) const; // 候选的 Search 日志全文 (没有 = 空)
+  void look_at(int from);                                // 观察窗首日钉回 (续接一段会话: 与当初定下的同)
 
   // 候选的模板 (只查字段表与候选目录, 不碰数据); expr 解析不了的由 stage 报, 这里放行
   // 相对已试候选 base (英文名, 须可见) 的改动; base 空 = 新起: 依次比可见的已试候选, 与某个同式 / 只差参数 / 只差一处旋钮的按它当 base (Delta::base 回填其名)
