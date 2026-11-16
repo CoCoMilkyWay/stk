@@ -627,7 +627,7 @@ struct Job {
   double n_full = 0.0; // 满仓只数 (首块 pin 出; 各块同一个)
   std::string why;     // Rc::Empty (所用库未建 / 无共同落盘日) / Rc::Broken (首个坏根: 特征叶值域越界) 的原因
   Io io(FactorFlow &F) const { return F.io(*ft, dm); }
-  Chunk whole() const { return {0, 0, dm.days.size(), dm.days.size()}; } // 整期
+  Chunk whole() const { return {0, dm.warm, dm.days.size(), dm.days.size()}; } // 整期 (前带 = 预热)
   // 块之外的宿主预留 (字节): 引擎 + 探针 = 最长一块 × work + fixed (Store::pin 腾地用)
   double reserve() const { return static_cast<double>(P.max_days()) * ft->seg * static_cast<double>(dm.rs.axis.size()) * b.work + b.fixed; }
 };
@@ -645,7 +645,7 @@ struct JobOut {
   }
   StatScope scope(const FactorScope &sc) const { return stat_scope(sc, job.dm, job.ft->seg, job.n_full, backend); } // 结果的作用域头
 };
-// 评估域 (叶 feats 所用库 + 评估期, j.from 起) → 开库; j.spec.x = feats 的 LeafId. false = 评估域不成 (j.why; 正常输入)
+// 评估域 (叶 feats 所用库 + 评估期, j.from 起; 其前预热) → 开库; j.spec.x = feats 的 LeafId. false = 评估域不成 (j.why; 正常输入)
 inline bool open_job(FactorFlow &F, const FactorScope &sc, const std::vector<std::string> &feats, Job &j) {
   assert(sc.ft && sc.lv == sc.ft->lv && "作用域层与字段表层不符");
   j.ft = sc.ft.get();
@@ -654,22 +654,22 @@ inline bool open_job(FactorFlow &F, const FactorScope &sc, const std::vector<std
     return false;
   if (j.from) {
     const std::vector<misc::Ymd> &ds = j.dm.dates;
-    const auto keep = static_cast<size_t>(ds.end() - std::lower_bound(ds.begin(), ds.end(), j.from));
+    const auto keep = std::min(j.dm.stat_days(), static_cast<size_t>(ds.end() - std::lower_bound(ds.begin(), ds.end(), j.from)));
     if (keep == 0) {
       j.why = "所用特征库的落盘日都在 " + misc::dash(j.from) + " 之前";
       return false;
     }
-    [[maybe_unused]] const bool ok = keep == ds.size() || domain_of(*sc.ft, sc, j.spec.x, keep, j.dm, j.why);
+    [[maybe_unused]] const bool ok = keep == j.dm.stat_days() || domain_of(*sc.ft, sc, j.spec.x, keep, j.dm, j.why);
     assert(ok && "近期子期是整期的后缀, 评估域必成");
   }
   open_libs(sc, F.S.lr);
   return true;
 }
-// 整期一块 (j.bands.front < 0) 装不下宿主 / 显存预算 → 评估期只留最近的日 (按超出比例缩, 重解析评估域, 至放得下; 单日都放不下 → assert).
+// 整期一块 (j.bands.front < 0) 装不下宿主 / 显存预算 → 评估期只留最近的日 (按超出比例缩, 重解析评估域 (预热随之), 至放得下; 单日都放不下 → assert).
 // bud() = 当前评估域的作业预算. 宿主按 Store::budget (缓存全可让); 显存按空闲量 (引擎须已 release)
 template <class B>
 void fit_recent(FactorFlow &F, const FactorScope &sc, Job &j, B &&bud) {
-  const size_t all = j.dm.days.size();
+  const size_t all = j.dm.stat_days();
   const double host = F.S.budget();
   const double vram = bud().dev > 0.0 ? vram_budget() : 0.0;
   for (;;) {
@@ -677,16 +677,16 @@ void fit_recent(FactorFlow &F, const FactorScope &sc, Job &j, B &&bud) {
     const double fit = std::min(host / whole_bytes(j.dm, j.ft->seg, b), b.dev > 0.0 ? vram / whole_dev_bytes(j.dm, j.ft->seg, b) : 1.0);
     if (fit >= 1.0)
       break;
-    const size_t n = j.dm.days.size();
+    const size_t n = j.dm.stat_days();
     assert(n > 1 && "单日的整张量装载都放不下内存 / 显存 (因子层太细)");
     const size_t keep = std::clamp(static_cast<size_t>(static_cast<double>(n) * fit), size_t{1}, n - 1);
     std::string why;
     const bool ok = domain_of(*sc.ft, sc, j.spec.x, keep, j.dm, why);
     assert(ok && "近期子期是整期的后缀, 评估域必成");
   }
-  if (j.dm.days.size() < all)
-    std::fprintf(stderr, "[factors] %s: 整期 %zu 天装不下内存 / 显存预算, 只评最近 %zu 天 (%d - %d)\n", j.who, all, j.dm.days.size(),
-                 j.dm.dates.front(), j.dm.dates.back());
+  if (j.dm.stat_days() < all)
+    std::fprintf(stderr, "[factors] %s: 整期 %zu 天装不下内存 / 显存预算, 只评最近 %zu 天 (%d - %d)\n", j.who, all, j.dm.stat_days(), j.dm.first(),
+                 j.dm.dates.back());
 }
 // 作业预算 (字节 / 格): load = 块两侧 (nx 个叶 + Y) + 引擎挂在块上的 (E::budget 的 load); work / dev = 引擎 (d = 一张森林 / 批核的一个候选);
 // fixed = 探针 (常驻 Ps::bytes × R 个同时在评的根 + 暂存 Ps::scratch 一份; H 个持有期)

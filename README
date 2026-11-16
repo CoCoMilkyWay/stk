@@ -186,7 +186,7 @@ stk/
 │   │   │   │   │                                       #      → pass (逐块装载 → 种森林 → eval); Run / Inspect / Portfolio 走 eval_job (根去重, 一张森林)
 │   │   │   │   │                                       #      Search 每趟一次 pass; 池篮子走 eval_baskets (不走森林)
 │   │   │   │   │                                       #    · 钩子 HookBase = 一趟的事件 ↔ 探针 = 一个根的输出; 各服务的差别只在探针元组
-│   │   │   │   │                                       #    · 评估期 span_of = 标签库与叶所在库的落盘日交集; 计算全在计算权租约 Lease 内
+│   │   │   │   │                                       #    · 评估期 span_of = 标签库与叶所在库的落盘日交集的最近 N 年 (Alpha 页顶 / Agent Mine 页各设, 默认 1; Market 组合全期), 其前另装 10% 预热日 (Domain::warm, 只给回看); 计算全在计算权租约 Lease 内
 │   │   │   │   ├── Worker.hpp                          # 🖥️ FactorWorker<D, Req>: 全部因子服务同一份骨架 (进度 / 优先级 / 中断收尾)
 │   │   │   │   ├── Hold.hpp                            # 🖥️ 持有期的开 / 清仓描述 hold_points / hold_desc (UI 凡显示开清仓处同一份)
 │   │   │   │   ├── File.hpp                            # 🖥️ 因子文件读写 (一因子一文件); Run 只回写 run + stats, Search 只回写 weights / search
@@ -250,7 +250,7 @@ stk/
 │   │   │   │   ├── services/StyleService.hpp           # 🖥️ 一个风格的参数网格 (pool::Grid) 逐组选池 (PoolSelect) → 滚动一年绩效 (平均 / 中位) + 累计中位夏普 (全A = 池表首两池, 行情侧同名线)
 │   │   │   │   └── ui/TabStyle.hpp                     # 🖥️ 风格 × 参数网格回测 (维条按维表生成; 图 = 累计中位夏普, 打分 = 其逐日截面分位的平均; 区间条选回测区间), 选定的子池写 pools.json
 │   │   │   ├── task_alpha/                             # 🖥️ Alpha 任务 (因子挖掘, factor/ 的 GUI)
-│   │   │   │   ├── TaskAlpha.hpp                       # 🖥️ Alpha 任务主界面: Compute (all.lob + 子池各库) / Operators / Factors / Inspect; 页顶条选 池 + 因子层
+│   │   │   │   ├── TaskAlpha.hpp                       # 🖥️ Alpha 任务主界面: Compute (all.lob + 子池各库) / Operators / Factors / Inspect; 页顶条选 池 + 因子层 + 评估年数 (output/config/alpha/ui.json)
 │   │   │   │   ├── services/
 │   │   │   │   │   ├── OperatorsService.hpp            # 🖥️ 算子表: 三后端对拍 + 计时 (stream 为 golden)
 │   │   │   │   │   └── KlineService.hpp                # 🖥️ Inspect K 线: 选中资产 L_1min OHLC 流式读

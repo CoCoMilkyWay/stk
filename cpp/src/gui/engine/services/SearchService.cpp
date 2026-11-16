@@ -287,9 +287,10 @@ struct SearchService::Searcher {
     lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, factor::search::hold_reach(hd, seg), fs::kChainDays,
        job.bands.front, job.bands.back);
     const std::vector<misc::Ymd> &dates = job.dm.dates;
-    const int days = static_cast<int>(dates.size());
+    const int days = static_cast<int>(job.dm.stat_days());
     A = static_cast<int>(job.dm.rs.axis.size());
-    lg("评估期 %s ~ %s (%d 天, 所用库落盘日交集)", misc::dash(dates.front()).c_str(), misc::dash(dates.back()).c_str(), days);
+    lg("评估期 %s ~ %s (%d 天, 所用库落盘日交集的最近 %d 年) + 预热 %zu 天", misc::dash(job.dm.first()).c_str(), misc::dash(dates.back()).c_str(), days,
+       scope.years, job.dm.warm);
     stride = stride_of(days * seg);
     const double per_day = static_cast<double>(seg) * A;
     const Plan &P = job.P;
@@ -694,8 +695,7 @@ struct SearchService::Searcher {
       res.picks.push_back(std::move(pk));
       ws.push_back(SearchWeight{sp.hold, en.sc.sign, en.e.canon});
     }
-    const std::vector<misc::Ymd> &dates = job.dm.dates;
-    SearchMark mk{sp.hold, dates.front(), dates.back(), static_cast<int>(dates.size()), ws.empty() ? top_of() : std::nullopt};
+    SearchMark mk{sp.hold, job.dm.first(), job.dm.dates.back(), static_cast<int>(job.dm.stat_days()), ws.empty() ? top_of() : std::nullopt};
     WriteFactorSearch(scope.dir, sp.file, sp.fresh, mk, ws); // 不写 stat; 因子表数据由随后的 Run 用同一份目标从 stat 算
     res.wrote = true;
     res.n_weights = static_cast<int>(ws.size());
@@ -718,12 +718,12 @@ struct SearchService::Searcher {
   }
 };
 
-bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, int hold, bool fresh,
-                       bool gpu, SearchRequest &req) {
+bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, int hold,
+                       bool fresh, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};
   req.spec = SearchSpec{row.file, row.tmpl, row.frame, hold, fresh};
-  return MakeFactorScope(data, std::move(ft), pool, gpu, req.scope);
+  return MakeFactorScope(data, std::move(ft), pool, years, gpu, req.scope);
 }
 
 SearchService::SearchService() : FactorWorker(Prio::Batch) { Start(); }

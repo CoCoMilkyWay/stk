@@ -1,4 +1,5 @@
 /config/settings/
+/config/alpha/
 /config/market/
 /config/agent/keys.json
 /config/agent/ui.json

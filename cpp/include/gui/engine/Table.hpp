@@ -38,7 +38,7 @@ enum class RowState : uint8_t { Pending,
 //   (all: 当日活跃; 子池: 当日成员 = all Bar 库选股表在 D 之前调仓行选出的).
 //   特征叶写全名 档.层.列 (kLevelToken): bar.* / lob.* = 因子池的 Bar / Lob 库; 叶可来自任意不细于网格的层 (level_asof 投影).
 //   成本: 固定段恒有; 评估域含 Lob 库 (用了 lob.* 叶) 时另有盘口段 (Lob 库网格层的建仓冲击列, 只 min 层有)
-//   评估期 = 标签库 + 所用库 落盘日的交集 (不看 config 区间)
+//   评估期 = 标签库 + 所用库 落盘日的交集的最近 N 年 (FactorScope::years; 不看 config 区间)
 //   层间的差别全在表里 (网格层 / 名 / K 线列名式); 层几何 Geo 由网格层定 (行数 = level_valid_rows, 行末分钟与 level_end_sec 对账),
 //   服务 / 装载 / UI 不按层分支
 // 档 → 库 (因子池 pool 下): 各档列在 pool 的该档库 (lib_id). 叶 / 门控 / 标签 / 成本 / K 线 / 日频原料同一条
@@ -203,17 +203,19 @@ std::string now_string();
 
 // ---- 请求 (GUI 线程解析 config, worker 不碰) = 作用域 + 服务自己的 Spec (与 reader::Request<Spec> 对仗) ----
 // 作用域: 各服务同一份; 评估期 / A 轴按因子在 worker 解析 (Scope domain_of)
+inline constexpr int kEvalYears = 1; // 评估期默认只留最近几年 (Alpha 页顶 / Agent Mine 页各自可改)
 struct FactorScope {
   FactorLevelId lv = 0;                   // 因子层 (= ft->lv)
   std::string pool;                       // 因子池
   FactorDir dir;                          // factor_dir_of(pool, lv)
   std::shared_ptr<const FeatureTable> ft; // 该层字段表 (每层建一次, 各请求共享; worker 只读)
   PerLib<FeatureLib> libs;                // factor_libs
+  int years = 0;                          // 评估期只留最近几年 (0 = 全期: Market 组合)
   double max_impact = 0.0;                // Config::max_impact (买入冲击封顶, 成本装载时生效)
   bool gpu = false;
 };
-// 层 / 池 / 目录 / 字段表 / 封顶 / 后端恒填; 资产轴未就绪 (数据库未扫) / 标签库未建 → false (libs 不可用)
-bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool gpu, FactorScope &sc);
+// 层 / 池 / 目录 / 字段表 / 年数 / 封顶 / 后端恒填; 资产轴未就绪 (数据库未扫) / 标签库未建 → false (libs 不可用)
+bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool gpu, FactorScope &sc);
 template <class Spec>
 struct Request {
   FactorScope scope;
@@ -230,7 +232,8 @@ struct FactorRef {
 // ---- 评估结果 (Run 行 / Inspect 结果同一份) ----
 struct StatScope {
   std::string pool, backend, time;
-  misc::Ymd start_date = 0, end_date = 0; // 评估期首末 (所用库落盘日交集)
+  misc::Ymd start_date = 0, end_date = 0; // 评估期首末 (所用库落盘日交集的最近 years 年)
+  int years = 0;                          // = FactorScope::years (0 = 全期)
   int days = 0, T = 0, A = 0;
   double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)
   double n_full = 0.0;     // 满仓一组只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)

@@ -46,8 +46,8 @@ struct RunSpec {
   std::string only_file; // 非空 = 只评这个因子文件的权重 (Run / Search 写完后), 其余行保留文件里的 stat; 空 = Run all
 };
 using RunRequest = Request<RunSpec>;
-// 只扫描恒成; evaluate 要作用域可用 (MakeFactorScope). ft = 该层字段表
-bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool evaluate, bool gpu, RunRequest &req);
+// 只扫描恒成; evaluate 要作用域可用 (MakeFactorScope). ft = 该层字段表; years = 评估期只留最近几年
+bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool evaluate, bool gpu, RunRequest &req);
 
 // 进度面 = 自身 (FactorWorker): Scanning → (evaluate) Loading 期 done/total = 天 → Running 期 = 共享 DAG 算子节点
 class RunService : public FactorWorker<RunService, RunRequest> {

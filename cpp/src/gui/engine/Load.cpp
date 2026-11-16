@@ -486,9 +486,10 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
 StatScope stat_scope(const FactorScope &sc, const Domain &dm, int seg, double n_full, const char *backend) {
   StatScope o;
   o.pool = sc.pool;
-  o.start_date = dm.dates.front();
+  o.start_date = dm.first();
   o.end_date = dm.dates.back();
-  o.days = static_cast<int>(dm.days.size()), o.T = o.days * seg, o.A = static_cast<int>(dm.rs.axis.size()); // 评估域全期
+  o.years = sc.years;
+  o.days = static_cast<int>(dm.stat_days()), o.T = o.days * seg, o.A = static_cast<int>(dm.rs.axis.size()); // 评估期 (不含预热)
   o.max_impact = sc.max_impact;
   o.n_full = n_full;
   o.backend = backend;

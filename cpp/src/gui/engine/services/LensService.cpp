@@ -61,7 +61,7 @@ struct LensP : ProbeBase {
   const Land *land = nullptr;
   bool as_root = false, as_feat = false;
   const uint8_t *m0 = nullptr;
-  int d = st::kFwd, A = 0;
+  int d = st::kFwd, A = 0, lo = 0, T = 0; // lo = 预热行数 (块行 lo 起 = 落地行 0), T = 落地行数
   double cap = 0.0;
   LensRoot r;
   LensFeat f;
@@ -72,36 +72,35 @@ struct LensP : ProbeBase {
   Ext ext() const { return {{m0, d, {}}, {kTailThr.v, cap, d}}; }
   void open(const Ctx &c) {
     const st::Span s = c.s();
-    assert(s.t0_abs == 0 && s.t_lo == 0 && s.t_back == 0 && s.T == c.c.rows_all() && "整期一块");
+    assert(s.t0_abs == 0 && s.t_back == 0 && s.T == c.c.rows_all() && "整期一块 (前带 = 预热)");
     assert(c.L.hd.n == 1 && "单持有期");
-    m0 = c.L.l[0].m, d = c.d, A = s.A, cap = c.L.cap;
+    m0 = c.L.l[0].m, d = c.d, A = s.A, cap = c.L.cap, lo = s.t_lo, T = s.t_hi() - s.t_lo;
     if (as_root) {
-      r.rows.assign(static_cast<size_t>(s.T), st::Row{});
-      r.tails.assign(static_cast<size_t>(s.T), TailRow{});
-      by_row.assign(static_cast<size_t>(s.T), {});
+      r.rows.assign(static_cast<size_t>(T), st::Row{});
+      r.tails.assign(static_cast<size_t>(T), TailRow{});
+      by_row.assign(static_cast<size_t>(T), {});
     }
   }
   void row(int, int t, const st::Row &w, const Ext &e) {
     if (!as_root)
       return;
-    const size_t base = static_cast<size_t>(t) * A;
-    r.rows[static_cast<size_t>(t)] = w;
-    e.tails.finish(w, r.tails[static_cast<size_t>(t)]);
+    const size_t base = static_cast<size_t>(t) * A, u = static_cast<size_t>(t - lo);
+    r.rows[u] = w;
+    e.tails.finish(w, r.tails[u]);
     for (const EndsExt::Got &g : e.ends.got) {
       assert(g.k >= base && g.k < base + static_cast<size_t>(A) && "格不在本行");
       if (const int a = land->col_of[g.k - base]; a >= 0)
-        by_row[static_cast<size_t>(t)].push_back({t, a, g.e, g.ret});
+        by_row[u].push_back({t - lo, a, g.e, g.ret});
     }
   }
   void root(const Ctx &c, const RootView &v) {
-    const st::Span s = c.s();
     const size_t n = land->cols.size();
     if (as_root) {
-      r.rx.resize(static_cast<size_t>(s.T) * n);
-      c.ex.rows(s.T, [&](int t0, int t1, int) {
+      r.rx.resize(static_cast<size_t>(T) * n);
+      c.ex.rows(T, [&](int t0, int t1, int) {
         for (int t = t0; t < t1; ++t)
           for (size_t j = 0; j < n; ++j) {
-            const uint16_t x = v.rx[static_cast<size_t>(t) * A + static_cast<size_t>(land->cols[j])];
+            const uint16_t x = v.rx[static_cast<size_t>(t + lo) * A + static_cast<size_t>(land->cols[j])];
             r.rx[static_cast<size_t>(t) * n + j] = x == st::kRankNone || d == st::kFwd ? x : static_cast<uint16_t>(st::kRankMax - x);
           }
       });
@@ -110,11 +109,11 @@ struct LensP : ProbeBase {
       by_row = {};
     }
     if (as_feat) {
-      f.v.resize(static_cast<size_t>(s.T) * n);
-      c.ex.rows(s.T, [&](int t0, int t1, int) {
+      f.v.resize(static_cast<size_t>(T) * n);
+      c.ex.rows(T, [&](int t0, int t1, int) {
         for (int t = t0; t < t1; ++t)
           for (size_t j = 0; j < n; ++j) {
-            const size_t k = static_cast<size_t>(t) * A + static_cast<size_t>(land->cols[j]);
+            const size_t k = static_cast<size_t>(t + lo) * A + static_cast<size_t>(land->cols[j]);
             f.v[static_cast<size_t>(t) * n + j] = v.alpha.m[k] ? v.alpha.v[k] : kNaN;
           }
       });
@@ -130,10 +129,10 @@ struct LensHooks : HookBase {
   const JobOut &o;
   Land &land;
   LensResult &res;
-  std::vector<std::string> &why; // [条目]
-  void block(const Block &c, size_t, double) {
+  std::vector<std::string> &why;               // [条目]
+  void block(const Block &c, size_t, double) { // 落地只取评估期行 [t_lo, T) (前带 = 预热)
     const st::Span s = c.span();
-    const size_t T = static_cast<size_t>(s.T), A = static_cast<size_t>(s.A);
+    const size_t lo = static_cast<size_t>(s.t_lo), T = static_cast<size_t>(s.t_hi() - s.t_lo), A = static_cast<size_t>(s.A);
     const PoolAxis &ax = o.job.dm.rs.axis;
     assert(ax.size() == A && "块 A 轴 = 评估域池轴");
     assert(c.y.hd.n == 1 && c.y.hd.k[0] == sp.hold && "Y 只装会话持有期");
@@ -144,7 +143,7 @@ struct LensHooks : HookBase {
         land.cols.push_back(static_cast<int>(a));
     } else {
       std::vector<uint8_t> any(A, 0);
-      for (size_t k = 0; k < T * A; ++k)
+      for (size_t k = lo * A; k < (lo + T) * A; ++k)
         any[k % A] |= c.y.gate[k];
       for (size_t a = 0; a < A; ++a)
         if (any[a])
@@ -161,13 +160,13 @@ struct LensHooks : HookBase {
     for (size_t t = 0; t < T; ++t) {
       double sum = 0.0;
       size_t cnt = 0;
-      for (size_t a = 0, k = t * A; a < A; ++a, ++k)
+      for (size_t a = 0, k = (lo + t) * A; a < A; ++a, ++k)
         if (c.y.gate[k] && lb.m[k])
           sum += factor::cpu::stat::h2f(lv[k]), ++cnt;
       if (cnt > 0)
         res.mkt[t] = static_cast<float>(sum / static_cast<double>(cnt));
       for (size_t j = 0; j < n; ++j) {
-        const size_t k = t * A + static_cast<size_t>(land.cols[j]);
+        const size_t k = (lo + t) * A + static_cast<size_t>(land.cols[j]);
         res.gate[t * n + j] = c.y.gate[k];
         if (lb.m[k])
           res.label[t * n + j] = factor::cpu::stat::h2f(lv[k]);
@@ -177,15 +176,15 @@ struct LensHooks : HookBase {
   void fail(int e, const std::string &w) { why[static_cast<size_t>(e)] = w; }
 };
 
-// 定观察窗首日 (见 kWindowCellBytes); 标签库评估期不成 → 0 (随后 eval_job 报原因)
+// 定观察窗首日 (见 kWindowCellBytes; 装载日 = 窗 + 预热); 标签库评估期不成 → 0 (随后 eval_job 报原因)
 misc::Ymd window_from(const FactorScope &sc, double budget) {
   Domain dm;
   std::string why;
   if (!span_of(*sc.ft, sc, {}, SIZE_MAX, dm, why))
     return 0;
   const double A = static_cast<double>(sc.libs[label_lib(pool_id(sc.pool))].axis.size());
-  const double fit = budget / (static_cast<double>(sc.ft->seg) * A * kWindowCellBytes);
-  const size_t n = std::clamp(static_cast<size_t>(std::max(fit, 1.0)), size_t{1}, dm.dates.size());
+  const double fit = budget / (static_cast<double>(sc.ft->seg) * A * kWindowCellBytes * (1.0 + kWarmFrac));
+  const size_t n = std::clamp(static_cast<size_t>(std::max(fit, 1.0)), size_t{1}, dm.stat_days());
   return dm.dates[dm.dates.size() - n];
 }
 
@@ -251,7 +250,7 @@ bool LensService::eval(const LensRequest &req, FactorFlow &F, LensResult &res) {
                      .from = o.job.from};
     return true;
   }
-  res.dates = o.job.dm.dates;
+  res.dates = o.job.dm.stat_dates();
   for (const int a : land.cols)
     res.ids.push_back(o.job.dm.rs.axis.global(static_cast<size_t>(a)));
   for (size_t e = 0; e < rs.of.size(); ++e) {

@@ -263,14 +263,15 @@ std::shared_ptr<const FeatureTable> table_of(FeatureTables &tables, const Featur
   return t;
 }
 
-bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool gpu, FactorScope &sc) {
-  assert(ft);
+bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool gpu, FactorScope &sc) {
+  assert(ft && years >= 0);
   const FactorLevelId lv = ft->lv;
   sc = FactorScope{};
   sc.lv = lv;
   sc.pool = pool;
   sc.dir = factor_dir_of(pool, lv);
   sc.ft = std::move(ft);
+  sc.years = years;
   sc.max_impact = data.config.max_impact;
   sc.gpu = gpu;
   if (data.asset.items.empty())

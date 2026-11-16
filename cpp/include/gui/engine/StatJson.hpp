@@ -280,6 +280,7 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   j["pool"] = s.pool;
   j["start_date"] = misc::dash(s.start_date);
   j["end_date"] = misc::dash(s.end_date);
+  j["years"] = s.years;
   j["days"] = s.days;
   j["T"] = s.T;
   j["A"] = s.A;
@@ -346,7 +347,7 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
   if (!str(run, "pool", sc.pool) || !ymd(run, "start_date", sc.start_date) || !ymd(run, "end_date", sc.end_date) || !str(run, "backend", sc.backend) ||
       !str(j, "time", sc.time))
     return false;
-  if (!json_int(run, "days", sc.days) || !json_int(run, "T", sc.T) || !json_int(run, "A", sc.A))
+  if (!json_int(run, "years", sc.years) || sc.years < 0 || !json_int(run, "days", sc.days) || !json_int(run, "T", sc.T) || !json_int(run, "A", sc.A))
     return false;
   if (!json_num(run, "max_impact", sc.max_impact) || !json_num(run, "n_full", sc.n_full) || !(sc.n_full > 0.0))
     return false;

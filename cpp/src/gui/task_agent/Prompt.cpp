@@ -491,7 +491,7 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask, bool fold) {
                             {"hold", c.hold},
                             {"hold_key", c.hold_key},
                             {"hold_desc", c.hold_desc},
-                            {"window", c.window},
+                            {"window", "最近 " + std::to_string(c.years) + " 年, " + c.window},
                             {"srcs", c.srcs},
                             {"search_mono", num(c.min_mono)},
                             {"ts_root_d", std::to_string(c.ts_root_d)},

@@ -1475,7 +1475,9 @@ bool view_row(RunService &fsvc, const std::string &key, FactorRow &row, std::str
 }
 
 // 该行在当前作用域下的请求 key (与 MakeInspectRequest 产出的一致)
-std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) { return inspect_key(ctx.lv, ctx.pool, row.key, row.expr, factor::stat::dir_of(row.sign)); }
+std::string probe_key(const FactorRow &row, const FactorsUIContext &ctx) {
+  return inspect_key(ctx.lv, ctx.pool, ctx.years, row.key, row.expr, factor::stat::dir_of(row.sign));
+}
 
 // 表达式着色 (按语法结构, 同类同色; 只做词法, 显示的都是解析通过的规范串): 算子按类 (逐点 / 时序窗 / 截面 / 组截面, OpTable 的 t / a 列),
 // 特征 (档.层. 淡 + 列名), 参数 (键 / 值 / 裸键 = 自由参数), 括号按嵌套深度轮换色, 逗号 / 等号淡. 按词折行 (不超出当前可用宽; 特征整词不拆),

@@ -6,7 +6,7 @@
  "weights": [
   {"hold":2001,"sign":1,"expr":"CsRank(TsNeg(TsSumRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d=34)))"}
  ],
- "run": {"stat_ver":3,"pool":"all","start_date":"2015-01-05","end_date":"2026-10-28","days":2870,"T":2870,"A":5921,"backend":"gpu","frame":"CS","max_impact":0.01,"n_full":172.4},
+ "run": {"stat_ver":3,"pool":"all","start_date":"2015-01-05","end_date":"2026-10-28","years":0,"days":2870,"T":2870,"A":5921,"backend":"gpu","frame":"CS","max_impact":0.01,"n_full":172.4},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_fwd_mean","ls_fwd_sd","ls_fwd_ir","ls_fwd_t","ls_fwd_pos","ls_fwd_skew","ls_fwd_kurt","ls_rev_mean","ls_rev_sd","ls_rev_ir","ls_rev_t","ls_rev_pos","ls_rev_skew","ls_rev_kurt","beta_fwd","beta_rev","mono","leg_n","leg_fwd_long","leg_fwd_short","leg_rev_long","leg_rev_short","grp"],
  "acc_cols": ["long.imp","long.buy","long.sell","long.fix","long.w","long.n","short.imp","short.buy","short.sell","short.fix","short.w","short.n","rows"],
  "stats": [

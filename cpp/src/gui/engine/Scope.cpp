@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 
 namespace GUI::Engine {
@@ -58,7 +59,7 @@ bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<Le
       }
       dm.rs.libs[l] = libs[l];
     }
-  // 评估期: 标签库日期轴上 used 各库都落了盘的日
+  // 候选日: 标签库日期轴上 used 各库都落了盘的日
   const FeatureLib &L0 = libs[lab];
   LibMask m_prev = 0; // 标签库日期轴前一日的落盘位
   for (size_t i = 0; i < L0.dates.size(); ++i) {
@@ -80,11 +81,25 @@ bool span_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<Le
         why += " " + lib_name(l);
     return false;
   }
-  if (dm.days.size() > keep) {
-    const auto cut = static_cast<std::ptrdiff_t>(dm.days.size() - keep);
-    dm.dates.erase(dm.dates.begin(), dm.dates.begin() + cut);
-    dm.days.erase(dm.days.begin(), dm.days.begin() + cut);
+  // 评估期 = 末日往前整 N 个日历年 (YYYYMMDD 年位平移) 之后的日, 再至多 keep 日; 其前预热 ⌈s · kWarmFrac⌉ 日 (库首不够 → 按 1 : kWarmFrac 匀出)
+  const size_t n = dm.dates.size();
+  size_t s = n, w = 0;
+  if (sc.years > 0) {
+    const misc::Ymd edge = dm.dates.back() - static_cast<misc::Ymd>(sc.years) * 10000;
+    s = std::min(keep, static_cast<size_t>(dm.dates.end() - std::upper_bound(dm.dates.begin(), dm.dates.end(), edge)));
+    w = static_cast<size_t>(std::ceil(static_cast<double>(s) * kWarmFrac));
+    if (s + w > n) {
+      w = std::min(n - 1, static_cast<size_t>(std::ceil(static_cast<double>(n) * kWarmFrac / (1.0 + kWarmFrac))));
+      s = n - w;
+    }
+  } else {
+    s = std::min(keep, n);
   }
+  assert(s >= 1 && s + w <= n);
+  const auto cut = static_cast<std::ptrdiff_t>(n - s - w);
+  dm.dates.erase(dm.dates.begin(), dm.dates.begin() + cut);
+  dm.days.erase(dm.days.begin(), dm.days.begin() + cut);
+  dm.warm = w;
   return true;
 }
 
@@ -126,29 +141,30 @@ int Plan::max_days() const {
 }
 
 Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double host) {
-  const int days = static_cast<int>(dm.days.size()), A = static_cast<int>(dm.rs.axis.size());
-  assert(days > 0 && A > 0 && bd.back >= 0);
+  const int days = static_cast<int>(dm.days.size()), A = static_cast<int>(dm.rs.axis.size()), warm = static_cast<int>(dm.warm);
+  assert(days > warm && A > 0 && bd.back >= 0);
   const double per_day = static_cast<double>(seg) * A;
   Plan P;
   P.host = host - b.fixed;
   if (b.dev > 0.0)
     P.vram = vram_budget();
   if (bd.front < 0) {
-    P.chunks = {Chunk{0, 0, static_cast<size_t>(days), static_cast<size_t>(days)}};
-    P.D = days;
+    P.chunks = {Chunk{0, static_cast<size_t>(warm), static_cast<size_t>(days), static_cast<size_t>(days)}};
+    P.D = days - warm;
     P.cache = days * per_day * b.load;
     return P;
   }
-  const int band = bd.front + bd.back, least = std::min(days, 1 + band); // 最小的块: 1 统计日 + 前后带
+  // 首块前带 = 整段预热 (d0 = 0), 其后各块 = bd.front; 块的日数按两者之大定
+  const int band = std::max(bd.front, warm) + bd.back, stat = days - warm, least = std::min(days, 1 + band); // 最小的块: 1 统计日 + 前后带
   assert(P.host >= least * per_day * (b.load + b.work) && "内存预算装不下最小的块 (1 统计日 + 前后带)");
   assert((b.dev <= 0.0 || P.vram >= least * per_day * b.dev) && "显存预算装不下最小的块 (1 统计日 + 前后带)");
-  int D = std::clamp(static_cast<int>(P.host / (per_day * (b.load + b.work))) - band, 1, days);
+  int D = std::clamp(static_cast<int>(P.host / (per_day * (b.load + b.work))) - band, 1, stat);
   if (b.dev > 0.0)
-    D = std::min(D, std::clamp(static_cast<int>(P.vram / (per_day * b.dev)) - band, 1, days));
+    D = std::min(D, std::clamp(static_cast<int>(P.vram / (per_day * b.dev)) - band, 1, stat));
   P.D = D;
-  for (int s0 = 0; s0 < days; s0 += D) {
+  for (int s0 = warm; s0 < days; s0 += D) {
     const int s1 = std::min(days, s0 + D);
-    const Chunk k{static_cast<size_t>(std::max(0, s0 - bd.front)), static_cast<size_t>(s0), static_cast<size_t>(s1),
+    const Chunk k{static_cast<size_t>(s0 == warm ? 0 : std::max(0, s0 - bd.front)), static_cast<size_t>(s0), static_cast<size_t>(s1),
                   static_cast<size_t>(std::min(days, s1 + bd.back))};
     P.chunks.push_back(k);
     P.cache += k.days() * per_day * b.load;

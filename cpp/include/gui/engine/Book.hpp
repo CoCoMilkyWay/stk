@@ -26,6 +26,15 @@ struct BookLines {
     o.v.assign(at(i0), at(i0) + static_cast<size_t>(m) * static_cast<size_t>(P));
     return o;
   }
+  // 各线去掉前 p0 点 (预热段)
+  BookLines from(int p0) const {
+    assert(p0 >= 0 && p0 < P);
+    BookLines o;
+    o.n = n, o.P = P - p0;
+    for (int i = 0; i < n; ++i)
+      o.v.insert(o.v.end(), at(i) + p0, at(i) + P);
+    return o;
+  }
 };
 // 逐行批收益 (fold_book 入): x [n][T] = 线 i 行 t 这一批的收益 (占这批资金; 不 ok 记 0); hold[i] = 线 i 的持有期键 (各线可不同: 多持有期一次折完);
 // at_exit[i]: 1 = 收益 (平仓行 hold_exit_row 实现, 平仓越过 T 的批不计) / 0 = 成本 (建仓行即付)

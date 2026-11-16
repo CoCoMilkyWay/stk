@@ -8,8 +8,10 @@
 //     1. 区右侧两小框编辑因子组合 (output/portfolios/<name>.json), Market → NAV 画它的曲线.
 //   Inspect: Factors 页点行高光的单因子展示 (分层累计 / 期限结构 / IC 分布 / 资产 K 线). 行信息来自 RunService; 一级 Row 由自己的
 //     InspectService 对该因子单独读库算出 (高光因子变了自动起算, Recompute = 弃缓存重读); 选中资产的分钟 K 线由 KlineService 逐日流式读.
-//   作用域 (池 + 因子层) 由页顶条自持: 所有服务空闲时生效 (lv / pool); 换层 = 层服务 (Run / Search / Inspect / Kline) 整体重建, 同层换池只换目录.
+//   作用域 (池 + 因子层 + 评估年数) 由页顶条自持: 所有服务空闲时生效 (lv / pool / years); 换层 = 层服务 (Run / Search / Inspect / Kline) 整体重建,
+//   同层换池只换目录, 换年数只换此后请求的评估期.
 #include "gui/task_alpha/TaskAlpha.hpp"
+#include "disk/Disk.hpp"                   // AlphaUiFile (页顶评估年数)
 #include "features/Storage/FeatureLib.hpp" // feature_pools (页顶池选择)
 #include "gui/Tasks.hpp"
 #include "gui/compute/ui/TabCompute.hpp"
@@ -27,6 +29,7 @@
 #include "gui/util/PoolTip.hpp"
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
+#include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -41,6 +44,17 @@
 
 namespace GUI::Tasks {
 
+// 页顶评估年数 ⇄ output/config/alpha/ui.json {"years": N} (N ≥ 1; 改了即写); 无文件 = Engine::kEvalYears
+static int load_years() {
+  if (!disk::exists(disk::AlphaUiFile))
+    return Engine::kEvalYears;
+  const nlohmann::json j = nlohmann::json::parse(disk::read(disk::AlphaUiFile), nullptr, /*allow_exceptions=*/false);
+  assert(j.is_object() && j.contains("years") && j["years"].is_number_integer() && j["years"].get<int>() >= 1 &&
+         "output/config/alpha/ui.json: 顶层须是 {years: N ≥ 1}");
+  return j["years"].get<int>();
+}
+static void save_years(int years) { disk::write(disk::AlphaUiFile, {}, nlohmann::json{{"years", years}}.dump(2) + "\n"); }
+
 struct TaskAlphaState {
   std::shared_ptr<Engine::EngineHub> engine; // 与 Market 共用
 
@@ -53,9 +67,11 @@ struct TaskAlphaState {
   // 页顶条的选择
   PoolId want_pool = kAllPool;
   Engine::FactorLevelId want_lv = Engine::factor_level_of(L_1min);
-  // 已生效的 (池, 因子层): 所有服务空闲时才追上选择; lv 空 = 未进过 Factors / Inspect (无服务)
+  int want_years = load_years(); // 评估期只留最近几年
+  // 已生效的 (池, 因子层, 年数): 所有服务空闲时才追上选择; lv 空 = 未进过 Factors / Inspect (无服务)
   std::optional<Engine::FactorLevelId> lv;
   std::string pool;
+  int years = 0;
   // 页顶层按钮后的因子文件数 (所选池各因子层目录): 池变 / 因子服务进 Done (扫描 / Run / Add / 删除后的 Rescan) 时重数
   std::string counted_key; // 所选池; 空 = 没数过. 变 (进页 / 换池) → 按因子文件数重定默认层
   Engine::PerFactorLevel<size_t> level_files;
@@ -109,7 +125,7 @@ static void search_all_next(const SharedData &data, TaskAlphaState &s, bool wrot
   if (ui.search_queue.empty()) {
     ui.search_all_n = 0;
     Engine::RunRequest req;
-    if (Engine::MakeRunRequest(data, level_table(data, s), s.pool, /*evaluate=*/true, s.engine->gpu(), req))
+    if (Engine::MakeRunRequest(data, level_table(data, s), s.pool, s.years, /*evaluate=*/true, s.engine->gpu(), req))
       s.run_service->Request(req);
     return;
   }
@@ -117,7 +133,7 @@ static void search_all_next(const SharedData &data, TaskAlphaState &s, bool wrot
   ui.search_queue.erase(ui.search_queue.begin());
   const Alpha::SearchJob &job = ui.search_cur;
   Engine::SearchRequest req;
-  if (Engine::MakeSearchRequest(data, level_table(data, s), s.pool, job.row, job.hold, job.fresh, s.engine->gpu(), req)) {
+  if (Engine::MakeSearchRequest(data, level_table(data, s), s.pool, s.years, job.row, job.hold, job.fresh, s.engine->gpu(), req)) {
     s.search_service->Request(req);
   } else {
     ui.search_queue.clear();
@@ -125,11 +141,12 @@ static void search_all_next(const SharedData &data, TaskAlphaState &s, bool wrot
   }
 }
 
-// Factors 子页的作用域 (每帧从 config 取; 池 / 层取本页已生效的)
-static Alpha::FactorsUIContext factors_context(const SharedData &data, std::shared_ptr<const Engine::FeatureTable> ft, const std::string &pool) {
+// Factors 子页的作用域 (每帧从 config 取; 池 / 层 / 年数取本页已生效的)
+static Alpha::FactorsUIContext factors_context(const SharedData &data, std::shared_ptr<const Engine::FeatureTable> ft, const std::string &pool, int years) {
   Alpha::FactorsUIContext c;
   c.lv = ft->lv;
   c.pool = pool;
+  c.years = years;
   c.dir = Engine::factor_dir_of(pool, c.lv);
   c.ft = std::move(ft);
   c.fixed_impact = data.config.fixed_impact;
@@ -188,7 +205,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
         }
         if (wrote) {
           Engine::RunRequest req;
-          if (Engine::MakeRunRequest(data, level_table(data, *state), state->pool, /*evaluate=*/true, state->engine->gpu(), req)) {
+          if (Engine::MakeRunRequest(data, level_table(data, *state), state->pool, state->years, /*evaluate=*/true, state->engine->gpu(), req)) {
             req.spec.only_file = file;
             state->run_service->Request(req);
           }
@@ -339,12 +356,23 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           if (ImGui::RadioButton(label, l.id == state->want_lv))
             state->want_lv = l.id;
         }
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Period:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90);
+        if (int y = state->want_years; ImGui::InputInt("年##eval_years", &y) && std::max(y, 1) != state->want_years) {
+          state->want_years = std::max(y, 1);
+          save_years(state->want_years);
+        }
         ImGui::EndGroup();
         // 因子层 = 所用特征的最细层 (叶写全名 档.层.列); 门控 / 标签在因子池的 Bar 库 (截面 = 该库 cs_valid);
         // 用了 lob.* 叶 (只 min 层有) 评估期缩到同池 Lob 库落盘日, 另有真实冲击段; 因子目录 output/factors/<池>/<层>/
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-          tip("池 + 因子层 (括号里是因子数)\n"
+          tip("池 + 因子层 (括号里是因子数) + 评估期\n"
               "• 窗长 d 等参数按本层行数计\n"
+              "• 评估期 = 所用特征库落盘日交集的最近 N 年 (Run / Search / Inspect 同一段; Market 组合恒用全期),\n"
+              "  其前另装 10%% 预热日只给回看, 不计统计;\n"
+              "  表里按别的年数算的统计标灰, 重跑才换成本段的\n"
               "• 有计算在跑时, 先取消, 停下后切过去");
       }
       {
@@ -352,6 +380,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
                           (state->inspect_service && state->inspect_service->busy()) || state->factors_ui.search_all_n > 0;
         const Engine::FactorLevelId want_lv = state->want_lv;
         const std::string want_pool = pool_def(state->want_pool).name;
+        const int want_years = state->want_years;
         if (!busy) {
           if (want_lv != state->lv || want_pool != state->pool) { // 换作用域: 高光作废, 新表扫出后重新默认高光 (rIC 最高)
             state->factors_ui.view_file.clear();
@@ -365,7 +394,8 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
             state->prev_search_phase = Phase::Idle; // 旧池那轮 Search 的结束不再触发 Update 的自动 Run
             state->pool = want_pool;
           }
-        } else if (want_lv != state->lv || want_pool != state->pool) { // 换作用域 = 取消旧作用域在跑的 (Search all 整轮放弃), 停下那帧再切
+          state->years = want_years;
+        } else if (want_lv != state->lv || want_pool != state->pool || want_years != state->years) { // 换作用域 = 取消旧作用域在跑的 (Search all 整轮放弃), 停下那帧再切
           if (state->run_service)
             state->run_service->RequestCancel();
           if (state->search_service)
@@ -375,7 +405,8 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           state->factors_ui.search_queue.clear();
           state->factors_ui.search_all_n = 0;
           ImGui::SameLine();
-          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(取消中, 停下后切到 %s / %s)", want_pool.c_str(), Engine::factor_level(want_lv).name);
+          ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(取消中, 停下后切到 %s / %s / %d 年)", want_pool.c_str(), Engine::factor_level(want_lv).name,
+                             want_years);
         }
       }
       assert(state->lv); // 有服务在跑 ⇒ 之前已生效过
@@ -387,11 +418,11 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
       }
       auto &fs = *state->run_service;
       auto &ss = *state->search_service;
-      const Alpha::FactorsUIContext ctx = factors_context(data, ft, state->pool);
+      const Alpha::FactorsUIContext ctx = factors_context(data, ft, state->pool, state->years);
       if (state->factors_scanned_dir != ctx.dir.dir()) {
         state->factors_scanned_dir = ctx.dir.dir();
         Engine::RunRequest req;
-        Engine::MakeRunRequest(data, ft, state->pool, /*evaluate=*/false, false, req);
+        Engine::MakeRunRequest(data, ft, state->pool, state->years, /*evaluate=*/false, false, req);
         fs.Request(req);
       }
       if (!state->inspect_service) {
@@ -406,7 +437,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
         const int action = Alpha::RenderTabFactors(fs, ss, state->factors_ui, state->engine->backend, state->engine->portfolio_ui, ctx);
         if (action == 1 || action == 5 || action == 2) {
           Engine::RunRequest req;
-          if (Engine::MakeRunRequest(data, ft, state->pool, /*evaluate=*/action != 2, state->engine->gpu(), req)) {
+          if (Engine::MakeRunRequest(data, ft, state->pool, state->years, /*evaluate=*/action != 2, state->engine->gpu(), req)) {
             if (action == 1)
               req.spec.only_file = state->factors_ui.run_file;
             fs.Request(req);
@@ -415,7 +446,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           fs.RequestCancel();
         } else if (action == 3) {
           Engine::SearchRequest req;
-          if (Engine::MakeSearchRequest(data, ft, state->pool, state->factors_ui.search_one.row, state->factors_ui.search_one.hold,
+          if (Engine::MakeSearchRequest(data, ft, state->pool, state->years, state->factors_ui.search_one.row, state->factors_ui.search_one.hold,
                                         state->factors_ui.search_one.fresh, state->engine->gpu(), req))
             ss.Request(req);
         } else if (action == 4) {
@@ -430,7 +461,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
         iaction = 1;
       if (iaction == 1) {
         Engine::InspectRequest req;
-        if (Engine::MakeInspectRequest(data, ft, state->pool, state->inspect_ui.req_row, state->inspect_ui.req_reload,
+        if (Engine::MakeInspectRequest(data, ft, state->pool, state->years, state->inspect_ui.req_row, state->inspect_ui.req_reload,
                                        state->engine->gpu(), state->inspect_ui.req_export, state->inspect_ui.top_n, req))
           is.Request(req);
       } else if (iaction == -1) {

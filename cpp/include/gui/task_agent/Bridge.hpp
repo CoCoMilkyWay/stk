@@ -63,11 +63,13 @@ struct Open {
   bool operator==(const Open &) const = default;
 };
 
+inline constexpr int kEvalYears = 1; // 评估期默认只留最近几年 (= Engine::kEvalYears, Bridge.cpp 核对)
 struct Scope {
   std::string pool;
   int level = -1;                     // 因子层下标
   int hold = 0;                       // 持有期键
   bool lob = true;                    // 开放 lob 叶
+  int years = kEvalYears;             // 评估期只留最近几年 (≥ 1)
   std::map<std::string, Open> leaves; // 因子层名 → 该层开放的叶 (叶名, 叠在来源之上); 没有该层 = 全开
   Open ops;                           // 开放的算子 (算子名)
   // 开放的特征来源 (src_bit 之或): 只有这几类的叶给 agent 用
@@ -207,7 +209,8 @@ struct Context {
   std::string hold_key;           // 持有期的标签列名 token (N 元回归的 h 写它)
   std::string srcs;               // 有开放叶的来源 ("bar / lob")
   bool has_lob = false;           // 本层有 lob 叶 (不论开放与否)
-  std::string window;             // 评估期 = 标签库与开放的叶所在库落盘日交集 ("未就绪" = 作用域未就绪或无共同落盘日)
+  int years = 0;                  // 评估期只留最近几年 (= Scope::years)
+  std::string window;             // 评估期 = 标签库与开放的叶所在库落盘日交集的最近 years 年 ("未就绪" = 作用域未就绪或无共同落盘日)
   int first = 0, last = 0;        // 评估期首末日 YYYYMMDD (未就绪 0)
   int look_from = 0;              // 观察窗 [look_from, last] = 评估期的最近一段: 本会话首次观察时按内存定 (0 = 还没定), 此后观察都在这段上
   int seg = 0;                    // 本层每日行数 (d 的单位)

@@ -33,7 +33,7 @@
 namespace GUI::Agent {
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Open, all, on)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, leaves, ops)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, years, leaves, ops)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, mono, ric)
 
 namespace {
@@ -175,7 +175,7 @@ void load_ui(State &s) {
   }
   const Options &o = s.opt;
   ok = ok && o.backend >= 0 && o.backend < llm::kBackendCount && o.proxy_port > 0 && o.proxy_port < 65536 && o.gpu >= -1 && o.gpu <= 1 &&
-       o.prompt >= 0 && o.prompt < kMsgCount;
+       o.prompt >= 0 && o.prompt < kMsgCount && o.sc.years >= 1;
   if (!ok)
     s.opt = Options{};
   if (!catalog::gpu())
@@ -280,7 +280,15 @@ void scope_row(SharedData &data, State &s, bool locked) {
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
-  ImGui::Text("评估期 %s", c ? c->window.c_str() : "…");
+  ImGui::TextUnformatted("评估期 近");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(90);
+  if (int y = o.years; ImGui::InputInt("年##years", &y))
+    o.years = std::max(y, 1);
+  tip("评估期 = 标签库与开放的叶所在库落盘日交集的最近 N 年 (其前另装 10% 预热日只给回看, 不计统计): 回测 / 观察 / 已试候选与正式库的可见性都按这一段\n"
+      "(别的年数算的统计对 agent 不可见); 会话内不变");
+  ImGui::SameLine();
+  ImGui::Text("%s", c ? c->window.c_str() : "…");
   if (c && c->look_from > c->first) {
     ImGui::SameLine();
     ImGui::TextDisabled("| 观察窗 %s 起", misc::dash(c->look_from).c_str());
@@ -352,8 +360,8 @@ void session_row(const SharedData &data, State &s) {
   if (m.phase() != Phase::None) {
     const Mine::Setup &st = m.setup;
     ImGui::SameLine();
-    ImGui::TextDisabled("%s%s · %s %s · %s · %s", st.test ? "自检 · " : "", catalog::label(st.sc).c_str(), llm::def(st.llm.backend).name, st.llm.model.c_str(),
-                        st.gpu ? "GPU" : "CPU", st.ask ? "可提问" : "不提问");
+    ImGui::TextDisabled("%s%s · 近 %d 年 · %s %s · %s · %s", st.test ? "自检 · " : "", catalog::label(st.sc).c_str(), st.sc.years, llm::def(st.llm.backend).name,
+                        st.llm.model.c_str(), st.gpu ? "GPU" : "CPU", st.ask ? "可提问" : "不提问");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s", m.log.dir().c_str());
   }

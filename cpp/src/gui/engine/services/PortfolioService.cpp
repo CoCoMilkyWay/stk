@@ -148,7 +148,7 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
     if (!it.missing.empty())
       continue;
     FactorTask t;
-    if (!MakeFactorScope(data, table_of(tables, data.feature, it.e.lv), it.e.pool, gpu, t.scope)) {
+    if (!MakeFactorScope(data, table_of(tables, data.feature, it.e.lv), it.e.pool, /*years=*/0, gpu, t.scope)) {
       it.missing = "标签库未建";
       continue;
     }
@@ -158,7 +158,7 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
     req.factors.push_back(std::move(t));
   }
   BasketTask b;
-  if (MakeFactorScope(data, table_of(tables, data.feature, kBasketLevel), pool_def(kAllPool).name, /*gpu=*/false, b.scope))
+  if (MakeFactorScope(data, table_of(tables, data.feature, kBasketLevel), pool_def(kAllPool).name, /*years=*/0, /*gpu=*/false, b.scope))
     req.baskets = std::move(b);
 }
 

@@ -15,13 +15,19 @@ namespace GUI::Engine {
 
 // ---- 评估域 (一个因子; 同文件各权重同叶 → 同一份) ----
 // 设计决定: 每因子 (Run: 每文件) 现解析, 不做跨因子优化 (不合并评估域或森林; 跨因子只在 Store 的平面层命中), 勿改
+// 预热: FactorScope::years > 0 时评估期之前另装 ⌈统计日 · kWarmFrac⌉ 日, 只给时序回看, 不计统计 (首块统计从 warm 起; 库首不够则从评估期里匀出)
+inline constexpr double kWarmFrac = 0.1;
 struct Domain {
   PoolId pool = kAllPool;       // 因子池 (目录)
   LibMask used = 0;             // 所用库: 标签库 + 叶所在库
   reader::ReadScope rs;         // main = 标签库, libs = used 各库清单, axis = A 轴 (标签库轴), to = A → 各库轴
-  std::vector<misc::Ymd> dates; // 评估期 = used 各库落盘日交集的最近 keep 日 (升序, 非空)
+  std::vector<misc::Ymd> dates; // 装载日 = 预热 [0, warm) + 评估期 [warm, n) (升序; 评估期非空)
   std::vector<Day> days;        // [dates] 当日 + 承接日 (标签库日期轴上的前一日, 0 = 轴首) 及其落盘位 (承接日按库判)
-  std::string key() const;      // 缓存键: 池 | 所用库目录 + 池轴 | 评估期首末 + 天数
+  size_t warm = 0;              // 预热日数 (只给回看, 不计统计)
+  std::string key() const;      // 缓存键: 池 | 所用库目录 + 池轴 | 装载日首末 + 天数
+  size_t stat_days() const { return dates.size() - warm; }
+  misc::Ymd first() const { return dates[warm]; } // 评估期首日
+  std::vector<misc::Ymd> stat_dates() const { return {dates.begin() + static_cast<std::ptrdiff_t>(warm), dates.end()}; }
   // 列 c 所在库在评估域里 (盘口段成本只在评估域含 Lob 库时可用, 见 y_spec)
   bool uses(const Col &c) const { return used & lib_bit(lib_id(pool, c.tier)); }
 };
@@ -29,8 +35,8 @@ struct Domain {
 void open_libs(const FactorScope &sc, LibReaders &lr);
 // 池 pool 上叶 leaves 的所用库 = 标签库 ∪ 各叶所在库 (Col::ref): 评估期只随它变 (同所用库的因子同评估域)
 LibMask used_libs(const FeatureTable &ft, PoolId pool, const std::vector<LeafId> &leaves);
-// 作用域 sc + 叶 leaves → 评估域, 评估期只留最近 keep 日 (≥ 1).
-// 所用库 = used_libs: 只用 bar.* 叶的因子不碰 Lob 库, 评估期 = Bar 库全期;
+// 作用域 sc + 叶 leaves → 评估域, 评估期只留最近 sc.years 年 (0 = 全期), 再至多最近 keep 日 (≥ 1), 其前另带预热日 (Domain::warm).
+// 所用库 = used_libs: 只用 bar.* 叶的因子不碰 Lob 库, 评估期取自 Bar 库全期;
 // 所用库未建 / 无共同落盘日 → false + why (正常输入)
 bool domain_of(const FeatureTable &ft, const FactorScope &sc, const std::vector<LeafId> &leaves, size_t keep, Domain &dm, std::string &why);
 // domain_of 的前半 (pool / used / rs.libs / dates / days; 不建 A 轴, 不读库): 只问评估期时用
@@ -44,7 +50,7 @@ double vram_budget();
 
 // ---- 计划: 预算 → 分块 (全部服务同一份口径) ----
 // 一块 = 评估域日 [d0, d1), 前带 [d0, s0) 只给回看 / lag / 交接链, 统计日 [s0, s1), 后带 [s1, d1) 只给续持;
-// 各块统计段首尾相接覆盖全期 (Search 契约【分块流式】)
+// 各块统计段首尾相接覆盖评估期 [warm, n) (Search 契约【分块流式】); 首块 d0 = 0, 前带含整段预热
 struct Chunk {
   size_t d0 = 0, s0 = 0, s1 = 0, d1 = 0;
   int days() const { return static_cast<int>(d1 - d0); }
@@ -69,7 +75,7 @@ double whole_dev_bytes(const Domain &dm, int seg, const Budget &b);
 struct Bands {
   int front = -1, back = 0;
 };
-// 整期一块 或 块 = 尽量多的统计日 (≥ 1) + 前带 front 日 + 后带 back 日, 块数最少 (最小的块都装不下 → assert).
+// 整期一块 (统计日 = 评估期, 前带 = 预热) 或 块 = 尽量多的统计日 (≥ 1) + 前带 front 日 (首块 = 预热) + 后带 back 日, 块数最少 (最小的块都装不下 → assert).
 // host = 宿主预算 (字节; Load Store::budget: 平面缓存全可让)
 Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double host);
 

@@ -58,6 +58,7 @@ void Mine::open(const SharedData &data, Setup s) {
   log.event(Event::Open, {{"pool", setup.sc.pool},
                           {"level", ctx.level},
                           {"hold", ctx.hold},
+                          {"years", setup.sc.years},
                           {"srcs", ctx.srcs},
                           {"leaves", ctx.leaves.size()},
                           {"ops", ctx.ops.size()},

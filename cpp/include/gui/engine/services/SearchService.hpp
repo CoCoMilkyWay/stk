@@ -58,9 +58,10 @@ struct SearchSpec {
   bool fresh = false;                                  // 落盘前先清空文件全部 weights (否则只换 hold 的)
 };
 using SearchRequest = Request<SearchSpec>; // scope.dir 落盘 (log / weights / search); scope.max_impact 不看 (不评成本)
-// 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error); hold = 字段表标签组的键; ft = 该层字段表
-bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, int hold, bool fresh,
-                       bool gpu, SearchRequest &req);
+// 资产轴未就绪 / 标签库未建 → false. row 须是文件级有效的行 (tmpl 非空, 文件级无 error); hold = 字段表标签组的键; ft = 该层字段表;
+// years = 评估期只留最近几年
+bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, int hold,
+                       bool fresh, bool gpu, SearchRequest &req);
 
 // 评过的一个候选的分 (UI 列表)
 struct SearchCand {

@@ -428,10 +428,12 @@ Surface surface_of(const Engine::FeatureTable &ft, const Engine::SearchResult &r
 
 using Fails = std::map<std::string, std::string>; // 文件 → Search 中途放弃的原因 (本次运行里, 同作用域跨会话留着)
 
+static_assert(kEvalYears == Engine::kEvalYears);
+
 // 作用域此刻的数据: 未就绪 → 空 (此时一切统计都不可见)
-std::optional<Engine::FactorScope> fscope_of(const SharedData &data, const std::shared_ptr<const Engine::FeatureTable> &ft, const std::string &pool) {
+std::optional<Engine::FactorScope> fscope_of(const SharedData &data, const std::shared_ptr<const Engine::FeatureTable> &ft, const Scope &sc) {
   Engine::FactorScope fsc;
-  if (!Engine::MakeFactorScope(data, ft, pool, /*gpu=*/false, fsc))
+  if (!Engine::MakeFactorScope(data, ft, sc.pool, sc.years, /*gpu=*/false, fsc))
     return std::nullopt;
   return fsc;
 }
@@ -461,7 +463,7 @@ Period period_of(const std::optional<Engine::FactorScope> &fsc, const Engine::Fe
   std::string why;
   if (!Engine::span_of(ft, *fsc, leaves, SIZE_MAX, dm, why))
     return s;
-  s.pool = fsc->pool, s.start = dm.dates.front(), s.end = dm.dates.back(), s.days = static_cast<int>(dm.dates.size());
+  s.pool = fsc->pool, s.start = dm.first(), s.end = dm.dates.back(), s.days = static_cast<int>(dm.stat_days());
   return s;
 }
 
@@ -609,7 +611,7 @@ Context context_of(const SharedData &data, const Scope &sc, const Opened &open) 
   c.hold = factor::stat::hold_name(sc.hold);
   c.hold_key = factor::stat::hold_token(sc.hold);
   c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
-  const std::optional<Engine::FactorScope> fsc = fscope_of(data, ft, sc.pool);
+  const std::optional<Engine::FactorScope> fsc = fscope_of(data, ft, sc);
   std::array<bool, kSrcCount> has{}, on{}; // [Src] 本层有可作输入的叶 / 有开放的叶
   std::vector<Engine::LeafId> opened;      // 开放的叶
   for (size_t i = 0; i < ft->x.leaves.size(); ++i) {
@@ -635,6 +637,7 @@ Context context_of(const SharedData &data, const Scope &sc, const Opened &open) 
       c.srcs += (c.srcs.empty() ? "" : " / ") + std::string(kSrcs[s].name);
   c.has_lob = has[static_cast<size_t>(Src::Lob)];
   const Period base = period_of(fsc, *ft, opened);
+  c.years = sc.years;
   c.window = base.days > 0 ? base.text() : "未就绪";
   c.first = static_cast<int>(base.start), c.last = static_cast<int>(base.end);
   c.seg = ft->seg;
@@ -724,7 +727,7 @@ bool gpu() { return factor::gpu::available(); }
 
 bool ready(const SharedData &data, const Scope &sc, bool gpu) {
   Engine::FactorScope probe;
-  return Engine::MakeFactorScope(data, table(data, sc.level), sc.pool, gpu, probe);
+  return Engine::MakeFactorScope(data, table(data, sc.level), sc.pool, sc.years, gpu, probe);
 }
 
 std::string label(const Scope &sc) {
@@ -772,7 +775,7 @@ struct Lab::Impl {
   std::deque<Tick> ticks;            // 未取走的步
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
-  std::optional<Engine::FactorScope> fsc() const { return fscope_of(*data, ft(), sc.pool); }
+  std::optional<Engine::FactorScope> fsc() const { return fscope_of(*data, ft(), sc); }
   template <Step S>
   auto &lane() { return std::get<static_cast<size_t>(S)>(lanes); }
   // 在跑那步的道
@@ -828,14 +831,14 @@ struct Lab::Impl {
   // ---- 各道的请求 ----
   Engine::SearchRequest search_req() const {
     Engine::SearchRequest req;
-    [[maybe_unused]] const bool ok = Engine::MakeSearchRequest(*data, ft(), sc.pool, row, sc.hold, /*fresh=*/true, gpu, req);
+    [[maybe_unused]] const bool ok = Engine::MakeSearchRequest(*data, ft(), sc.pool, sc.years, row, sc.hold, /*fresh=*/true, gpu, req);
     assert(ok && "作用域须 ready");
     req.scope.dir = dir;
     return req;
   }
   Engine::RunRequest run_req() const {
     Engine::RunRequest req;
-    [[maybe_unused]] const bool ok = Engine::MakeRunRequest(*data, ft(), sc.pool, /*evaluate=*/true, gpu, req);
+    [[maybe_unused]] const bool ok = Engine::MakeRunRequest(*data, ft(), sc.pool, sc.years, /*evaluate=*/true, gpu, req);
     assert(ok && "作用域须 ready");
     req.scope.dir = dir;
     req.spec.only_file = file;
@@ -845,7 +848,7 @@ struct Lab::Impl {
   Engine::LensRequest lens_req(LookSpec s) {
     assert(!s.factors.empty() || std::any_of(s.feats.begin(), s.feats.end(), [](const LookExpr &x) { return x.error.empty(); }) || s.kline);
     Engine::LensRequest req;
-    [[maybe_unused]] const bool ok = Engine::MakeFactorScope(*data, ft(), sc.pool, /*gpu=*/false, req.scope);
+    [[maybe_unused]] const bool ok = Engine::MakeFactorScope(*data, ft(), sc.pool, sc.years, /*gpu=*/false, req.scope);
     assert(ok && "作用域须 ready");
     req.spec.hold = sc.hold;
     req.spec.from = ctx.look_from;
@@ -1062,7 +1065,7 @@ Lab::~Lab() = default;
 void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   Impl &I = *p_;
   assert(!I.running && "评估队列忙");
-  const bool same = sc.pool == I.sc.pool && sc.level == I.sc.level && sc.hold == I.sc.hold; // 来源与开放的叶 / 算子只定上下文与可见性, 不碰数据
+  const bool same = sc.pool == I.sc.pool && sc.level == I.sc.level && sc.hold == I.sc.hold && sc.years == I.sc.years; // 来源与开放的叶 / 算子只定上下文与可见性, 不碰数据
   if (!same || test != I.test)
     I.fails.clear();
   I.data = &data;

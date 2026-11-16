@@ -18,7 +18,7 @@
 //   拼路径 path (断言) / 列举 list (过滤) / 整理 sweep (disk/Sweep.hpp, 判定) 同一判据.
 //
 // output/ = config/ 人定的输入 + 按产研流水线分段的产物 + run/ 各段运行产物的同构镜像 (整删无损):
-//   config/      配置: 一任务一目录 (settings / beta / market / agent / live, 与左栏任务树对仗); 本机件由 output/.gitignore 逐项列出
+//   config/      配置: 一任务一目录 (settings / beta / alpha / market / agent / live, 与左栏任务树对仗); 本机件由 output/.gitignore 逐项列出
 //   data/        ① 数据 ← 外部 + 样例       run/data/       编码日志 / 归档修复
 //   features/    ② 特征 ← data              run/features/   计算日志 / 节点用时 (同 <池>/<档>)
 //   factors/     ③ 因子 ← features          run/factors/    Search 日志 / Inspect 导出 (同 <池>/<层>) + 算子表
@@ -97,6 +97,8 @@ enum class Seg : std::uint8_t {
   X(SettingsFile,      ConfigSettings,    File,   Lit,       "settings.json",     "",         true)        \
   X(ConfigBeta,        Config,            Dir,    Lit,       "beta",              "",         false)       \
   X(PoolsFile,         ConfigBeta,        File,   Lit,       "pools.json",        "",         false)       \
+  X(ConfigAlpha,       Config,            Dir,    Lit,       "alpha",             "",         false)       \
+  X(AlphaUiFile,       ConfigAlpha,       File,   Lit,       "ui.json",           "",         true)        \
   X(ConfigMarket,      Config,            Dir,    Lit,       "market",            "",         false)       \
   X(WatchFile,         ConfigMarket,      File,   Lit,       "watch.json",        "",         true)        \
   X(MarketUiFile,      ConfigMarket,      File,   Lit,       "ui.json",           "",         true)        \

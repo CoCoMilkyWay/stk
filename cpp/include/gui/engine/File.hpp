@@ -11,11 +11,11 @@
 //         "sign": -1,                                         //   可选, ±1 (缺 = +1): −1 = 取反才是好因子, 按反向评估 (Stat 契约【方向 Dir】)
 //         "expr": "CsRank(TsMeanRoll(TsLog(amt), d=35))" }, … ], //   模板的一个实例 (结构同模板, 固定参数相同, 自由参数落值)
 //     "search": [                                             // 可选: Search 的结局, 每持有期至多一项, 一行一个 (换模板即丢)
-//       { "hold": 30, "start_date", "end_date", "days",       //   评估期 (所用库落盘日交集)
+//       { "hold": 30, "start_date", "end_date", "days",       //   评估期 (所用库落盘日交集的最近 N 年)
 //         "top": { "expr", "sign", "mono", "ls", "ric",        //   可选: 无显著时的代表点 (SearchTop), 有终选则无
 //                  "g", "se", "mu", "peak" } }, … ],
 //     —— 以下 Run 写 (评估派生, 换掉 / 清空 weights 时一起删; StatJson scope_json / eval_json) ——
-//     "run": { scope…, "frame", "max_impact", "n_full" },     // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
+//     "run": { scope… (含 "years"), "frame", "max_impact", "n_full" }, // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
 //     "hold_cols": [...], "acc_cols": [...],                  // holds / acc 数组的列名 (StatJson), 与代码不符 → 全部 stats 忽略
 //     "stats": [                                              // 与 weights 同长同序 (没评的位置 null), 一行一个, 数值表密排
 //       { "time", "valid_pct", "rank_pct", "eval_ms",

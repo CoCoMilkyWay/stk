@@ -495,8 +495,10 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
 // 该行选定持有期的汇总; 没有 → nullptr
 const factor::stat::HoldStat *hold_of(const FactorRow &r, int hold) { return r.has_stat ? r.find_hold(hold) : nullptr; }
 
-// 文件里的 stat 与当前作用域是否一致 (池; 评估期随库落盘日走, 不比)
-bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) { return r.scope.pool == ctx.pool; }
+// stat 与当前作用域是否一致 (池 + 评估年数; 评估期首末随库落盘日走, 不比)
+bool scope_matches(const FactorRow &r, const FactorsUIContext &ctx) { return r.scope.pool == ctx.pool && r.scope.years == ctx.years; }
+// 评估年数的说法: 0 = 全期
+std::string years_text(int years) { return years ? "近 " + std::to_string(years) + " 年" : std::string("全期"); }
 
 // 评估期长度 "X年Y月" (整月 = 首末日历差, 末日的日 < 首日的日 少算一月); 不足一月 "<1月"
 std::string period_text(misc::Ymd lo, misc::Ymd hi) {
@@ -701,13 +703,13 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• CS: 每期截面排序分 20 组, 多空对冲\n"
      "• TS: 按自身时序分位分 20 组",
      true},
-    {Period, "period", "评估期长度 (= 所用特征库落盘日的交集)", true},
+    {Period, "period", "评估期长度 (= 所用特征库落盘日交集的最近 N 年, N 见页顶 Period)", true},
     {Status, "status",
      "• BROKEN: 文件有错, 悬停看原因\n"
      "• 未搜索: 模板含自由参数, 先 Search\n"
      "• 无显著: Search 过, 没有显著胜出的参数点\n"
      "• ok: 有 stat\n"
-     "• file≠scope: 文件里的 stat 是别的池算的\n"
+     "• ≠scope: stat 是别的池 / 别的评估年数算的 (整行标灰, 需重跑)\n"
      "• no stat: 还没评估\n"
      "• dup: 与另一行同持有期同表达式",
      false},
@@ -816,9 +818,10 @@ std::optional<ImVec4> grade_color(const Metric &m, const HS *h, const FR &r) {
 
 // Stat 列悬停: 精简头部 + 转置表 (行 = kMetrics 按组, 列 = 持有期), 有区间的指标按固定区间着色
 void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
-  ImGui::TextDisabled("%s%s | %s | %s %s..%s | 满仓 %.1f | %.3f ms", r.stat_from_file ? "文件" : "本轮",
-                      r.stat_from_file && !scope_matches(r, ctx) ? " (作用域≠当前)" : "", factor::stat::frame_name(r.frame), r.scope.pool.c_str(),
-                      misc::dash(r.scope.start_date).c_str(), misc::dash(r.scope.end_date).c_str(), r.scope.n_full, r.eval_ms);
+  ImGui::TextDisabled("%s%s | %s | %s %s %s..%s | 满仓 %.1f | %.3f ms", r.stat_from_file ? "文件" : "本轮",
+                      !scope_matches(r, ctx) ? " (作用域≠当前, 需重跑)" : "", factor::stat::frame_name(r.frame), r.scope.pool.c_str(),
+                      years_text(r.scope.years).c_str(), misc::dash(r.scope.start_date).c_str(), misc::dash(r.scope.end_date).c_str(), r.scope.n_full,
+                      r.eval_ms);
   if (!ImGui::BeginTable("HoldStatTip", kTipFixedCols + r.n_hold, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
     return;
   ImGui::TableSetupColumn("指标");
@@ -858,7 +861,7 @@ void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
   ImGui::EndTable();
 }
 
-// status 列: BROKEN / 未搜索 / 无显著 / … / running / no stat / ok / file / file≠scope (+ dup)
+// status 列: BROKEN / 未搜索 / 无显著 / … / running / no stat / ok / ≠scope (+ dup)
 void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   if (!r.error.empty()) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "BROKEN");
@@ -882,10 +885,13 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   }
   if (!r.has_stat) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "no stat");
-  } else if (!r.stat_from_file || scope_matches(r, ctx)) {
+  } else if (scope_matches(r, ctx)) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "ok");
   } else {
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "file≠scope");
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "≠scope");
+    if (ImGui::IsItemHovered())
+      tip("统计算在 %s / %s 上, 当前是 %s / %s: 整行标灰, 重跑才换成当前作用域的", r.scope.pool.c_str(), years_text(r.scope.years).c_str(),
+          ctx.pool.c_str(), years_text(ctx.years).c_str());
   }
   if (!r.dup_of.empty()) {
     ImGui::SameLine();
@@ -1848,6 +1854,9 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
         }
         ImGui::PopStyleVar();
       }
+      const bool stale = r.has_stat && !scope_matches(r, ctx); // 统计不是当前作用域 (池 / 评估年数) 算的 → 整行标灰
+      if (stale)
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.4f);
       for (int c = 1; c < kNumCols; ++c) { // 0 = edit 列 (上面画过)
         ImGui::TableSetColumnIndex(c);
         const ColRef &cr = kColLayout[static_cast<size_t>(c)];
@@ -1873,6 +1882,8 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
           metric_cell(h, m, r, col ? &*col : nullptr);
         }
       }
+      if (stale)
+        ImGui::PopStyleVar();
       ImGui::PopID();
     }
     ImGui::EndTable();

@@ -183,7 +183,8 @@ std::vector<Leg> top_legs(const std::vector<uint16_t> &rx, int T, int A, int n) 
   }
   return legs;
 }
-// 进出行所在日读标签库 (A 轴 = 其池轴): 因子层 close 本行 + 日频 adj_factor 当日适用值 (= 承接日 L_1day 行; 承接日未落盘 / 轴首 → 当日行). false = 库判废
+// 进出行 (评估期行, 不含预热) 所在日读标签库 (A 轴 = 其池轴): 因子层 close 本行 + 日频 adj_factor 当日适用值 (= 承接日 L_1day 行; 承接日未落盘 / 轴首 → 当日行).
+// false = 库判废
 bool fill_px(const Domain &dm, const FeatureTable &ft, std::vector<Leg> &legs) {
   const FeatureLib &lib = dm.rs.lib();
   const size_t lvl = factor_level(ft.lv).lvl, A = dm.rs.axis.size();
@@ -195,7 +196,7 @@ bool fill_px(const Domain &dm, const FeatureTable &ft, std::vector<Leg> &legs) {
   px.preallocate(A, lvl, 1);
   adj.preallocate(A, L_1day, 1);
   const LibMask main = lib_bit(dm.rs.main);
-  const int seg = ft.seg, t_last = static_cast<int>(dm.dates.size()) * seg - 1;
+  const int seg = ft.seg, t_last = static_cast<int>(dm.stat_days()) * seg - 1;
   struct Ev {
     int t;
     size_t i;
@@ -207,8 +208,8 @@ bool fill_px(const Domain &dm, const FeatureTable &ft, std::vector<Leg> &legs) {
   std::sort(ev.begin(), ev.end(), [](const Ev &x, const Ev &y) { return x.t < y.t; });
   for (size_t j = 0; j < ev.size();) {
     const size_t d = static_cast<size_t>(ev[j].t / seg);
-    const Day &dy = dm.days[d];
-    assert(dy.date == dm.dates[d] && (dy.has & main));
+    const Day &dy = dm.days[dm.warm + d];
+    assert(dy.date == dm.dates[dm.warm + d] && (dy.has & main));
     reader.load_day_columns(dy.date, c_px, px);
     reader.load_day_columns(dy.prev != 0 && (dy.has_prev & main) ? dy.prev : dy.date, c_adj, adj);
     if (reader.stale())
@@ -269,14 +270,14 @@ void write_legs(const InspectSpec &sp, std::vector<Leg> &legs, const std::vector
 
 } // namespace
 
-bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload,
+bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, bool reload,
                         bool gpu, InspectExport ex, int top_n, InspectRequest &req) {
   assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
   req = InspectRequest{};
   req.spec.f = FactorRef{row.expr, row.frame, factor::stat::dir_of(row.sign)};
   req.spec.row = row.key;
   req.reload = reload;
-  if (!MakeFactorScope(data, std::move(ft), pool, gpu, req.scope))
+  if (!MakeFactorScope(data, std::move(ft), pool, years, gpu, req.scope))
     return false;
   if (ex != InspectExport::None) {
     assert(top_n >= 1);
@@ -333,15 +334,7 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
       if (W.pool_gen_ == c.gen)
         return;
       W.pool_ = pool_line(F.S.ex, c.y), W.pool_gen_ = c.gen;
-      const int seg = c.y.sh.seg, days = W.pool_.P / seg; // 逐行收益 (每批 1/h̄, 平仓行实现) 全期之和 = 算术总收益, 按日折年 (与期限结构 × span_per_year 同口径)
-      assert(days >= 1 && W.pool_.P == days * seg && W.pool_.n == c.y.hd.n);
-      for (int hi = 0; hi < W.pool_.n; ++hi) {
-        const float *v = W.pool_.at(hi);
-        double s = 0.0;
-        for (int t = 0; t < W.pool_.P; ++t)
-          s += v[t];
-        W.pool_ann_[hi] = static_cast<float>(s / days * factor::stat::kDaysPerYear);
-      }
+      assert(W.pool_.P == c.y.sh.T && W.pool_.n == c.y.hd.n);
     }
   };
   const Rc rc = F.with_backend<InspectProbes>(sc.gpu, [&](auto &eng) {
@@ -352,7 +345,7 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
 
   // ---- 结果骨架 ----
   InspectResult res;
-  res.key = inspect_key(sc.lv, sc.pool, req.spec.row, f.expr, f.dir);
+  res.key = inspect_key(sc.lv, sc.pool, sc.years, req.spec.row, f.expr, f.dir);
   res.row = req.spec.row;
   res.expr = f.expr;
   res.lv = sc.lv;
@@ -375,22 +368,35 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
     publish_result();
     return true;
   }
-  res.dates = o.job.dm.dates;
-  res.read_scope = o.job.dm.rs;
-  res.pool_index = pool_;
-  std::copy_n(pool_ann_, pool_.n, res.pool_ann);
+  // 逐行 / 逐日的落地都去掉预热段 (前 warm 日): 结果的行轴 = 评估期
+  const Domain &dm = o.job.dm;
+  const int seg = sc.ft->seg, A = static_cast<int>(dm.rs.axis.size()), days = static_cast<int>(dm.stat_days());
+  const size_t lo = dm.warm * static_cast<size_t>(seg), T = static_cast<size_t>(days) * static_cast<size_t>(seg), T_all = lo + T;
+  pl_.rx.erase(pl_.rx.begin(), pl_.rx.begin() + static_cast<std::ptrdiff_t>(lo * static_cast<size_t>(A)));
+  pl_.rx_all.erase(pl_.rx_all.begin(), pl_.rx_all.begin() + static_cast<std::ptrdiff_t>(lo * static_cast<size_t>(A)));
+  for (int hi = 0; hi < o.job.spec.y.hd.n; ++hi) // [hd.n][T_all] → [hd.n][T], 就地前移
+    std::copy_n(pl_.ric.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(hi) * T_all + lo), T, pl_.ric.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(hi) * T));
+  pl_.ric.resize(static_cast<size_t>(o.job.spec.y.hd.n) * T);
+  res.dates = dm.stat_dates();
+  res.read_scope = dm.rs;
+  res.pool_index = pool_.from(static_cast<int>(lo));
+  for (int hi = 0; hi < res.pool_index.n; ++hi) { // 逐行收益 (每批 1/h̄, 平仓行实现) 评估期之和 = 算术总收益, 按日折年 (与期限结构 × span_per_year 同口径)
+    const float *v = res.pool_index.at(hi);
+    double s = 0.0;
+    for (int t = 0; t < res.pool_index.P; ++t)
+      s += v[t];
+    res.pool_ann[hi] = static_cast<float>(s / days * factor::stat::kDaysPerYear);
+  }
   res.hd = o.job.spec.y.hd;
-  fill_eval(ps, o.scope(sc), o.eval_ms(0), o.job.dm.dates, res);
+  fill_eval(ps, o.scope(sc), o.eval_ms(0), dm.dates, res);
   res.alpha_dist = std::move(ps.at<AlphaP>().d);
   std::copy_n(ps.at<IcPdfP>().pdf, res.hd.n, res.ic_agg);
-  res.nav = std::move(ps.at<NavP>().out);
+  res.nav = ps.at<NavP>().out.from(static_cast<int>(dm.warm));
   for (int j = 0; j < kTails; ++j)
     std::copy_n(ps.at<TurnP>().acc[j], res.hd.n, res.ls_turn[j]);
-  const Domain &dm = o.job.dm;
-  const int seg = sc.ft->seg, A = static_cast<int>(dm.rs.axis.size());
   std::vector<Leg> legs;
   if (req.spec.ex != InspectExport::None) {
-    legs = top_legs(pl_.rx, static_cast<int>(dm.dates.size()) * seg, A, req.spec.top_n);
+    legs = top_legs(pl_.rx, static_cast<int>(T), A, req.spec.top_n);
     if (req.spec.ex == InspectExport::Snap)
       std::erase_if(legs, [](const Leg &l) { return l.t_out >= 0; });
   }
@@ -400,7 +406,7 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   if (req.spec.ex != InspectExport::None) {
     if (!fill_px(dm, *sc.ft, legs))
       return settle(Rc::Stale);
-    write_legs(req.spec, legs, dm.dates, dm.rs.axis, factor_level(sc.lv).geo());
+    write_legs(req.spec, legs, dm.stat_dates(), dm.rs.axis, factor_level(sc.lv).geo());
     {
       std::lock_guard<std::mutex> lock(mutex);
       message = std::string(req.spec.ex == InspectExport::Log ? "导出进出 " : "导出名单 ") + std::to_string(legs.size()) + " 行 → " + req.spec.csv;

@@ -71,14 +71,14 @@ struct InspectSpec {
   std::vector<std::string> codes, names;
 };
 using InspectRequest = Request<InspectSpec>;
-// 请求 / 结果 key: 层 | 权重行 | 具体规范串 | 方向 | 池
-inline std::string inspect_key(FactorLevelId lv, const std::string &pool, const std::string &row, const std::string &expr, factor::stat::Dir dir) {
-  return std::string(factor_level(lv).name) + "|" + row + "|" + expr + (dir == factor::stat::kRev ? "|-" : "|+") + "|" + pool;
+// 请求 / 结果 key: 层 | 权重行 | 具体规范串 | 方向 | 池 | 评估年数
+inline std::string inspect_key(FactorLevelId lv, const std::string &pool, int years, const std::string &row, const std::string &expr, factor::stat::Dir dir) {
+  return std::string(factor_level(lv).name) + "|" + row + "|" + expr + (dir == factor::stat::kRev ? "|-" : "|+") + "|" + pool + "|" + std::to_string(years) + "y";
 }
-// 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表;
+// 资产轴未就绪 / 标签库未建 → false. row 须是有效 alpha 行 (error 空); ft = 该层字段表; years = 评估期只留最近几年;
 // ex ≠ None = 带导出 (top_n ≥ 1; csv = output/run/factors/<池>/<层>/export/<因子>_w<权重号>_top<N>_{log,snap}.csv)
-bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, const FactorRow &row, bool reload, bool gpu,
-                        InspectExport ex, int top_n, InspectRequest &req);
+bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, bool reload,
+                        bool gpu, InspectExport ex, int top_n, InspectRequest &req);
 
 // 分层累计净值 (净值引擎 fold_book, 全部持有期一遍, 复利). 分层线 [0, kGroups) = 20 组, layer_tail(端, j) = 该端组内第 j 级尾部 (口径同 Row::grp);
 // LS 线 0 = 顶底 (ls_row), 1 + j = 第 j 级尾部多空; LS = ½ (顶端 − 底端), 绝对 / 超额只差两端只数不同时的基准项.
@@ -142,10 +142,9 @@ private:
   bool eval(const InspectRequest &req, FactorFlow &F); // false = 取消 / 判废
 
   // worker 私有 (跨请求存活)
-  InspectPlanes pl_;                            // 一级平面, 发布时与 result.pl 交换
-  BookLines pool_;                              // 池等权线 (pool_line), 随 Y 的代
-  float pool_ann_[factor::stat::kMaxHold] = {}; // pool_ 各持有期的算术年化, 同代
-  uint64_t pool_gen_ = 0;                       // pool_ 算时的 c.gen
+  InspectPlanes pl_;      // 一级平面, 发布时与 result.pl 交换
+  BookLines pool_;        // 池等权线 (pool_line, 含预热段), 随 Y 的代
+  uint64_t pool_gen_ = 0; // pool_ 算时的 c.gen
 };
 
 } // namespace GUI::Engine

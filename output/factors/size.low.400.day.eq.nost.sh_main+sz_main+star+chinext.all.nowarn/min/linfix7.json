@@ -9,7 +9,7 @@
  "search": [
   {"hold":2001,"start_date":"2015-01-06","end_date":"2026-11-12","days":2880}
  ],
- "run": {"stat_ver":4,"pool":"size.low.400.day.eq.nost.sh_main+sz_main+star+chinext.all.nowarn","start_date":"2015-01-06","end_date":"2026-11-12","days":2880,"T":734400,"A":2451,"backend":"cpu","frame":"CS","max_impact":0.001,"n_full":20.0},
+ "run": {"stat_ver":4,"pool":"size.low.400.day.eq.nost.sh_main+sz_main+star+chinext.all.nowarn","start_date":"2015-01-06","end_date":"2026-11-12","years":0,"days":2880,"T":734400,"A":2451,"backend":"cpu","frame":"CS","max_impact":0.001,"n_full":20.0},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","ric_skew","ric_kurt","rac_mean","rac_sd","rac_ir","rac_t","rac_pos","rac_skew","rac_kurt","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","ls_skew","ls_kurt","beta","mono","end_n","grp"],
  "acc_cols": ["top.imp","top.buy","top.sell","top.fix","top.w","top.n","bot.imp","bot.buy","bot.sell","bot.fix","bot.w","bot.n","rows"],
  "stats": [

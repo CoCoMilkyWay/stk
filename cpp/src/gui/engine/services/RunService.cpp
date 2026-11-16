@@ -19,10 +19,10 @@ using RunProbes = EvalProbes<>;
 
 } // namespace
 
-bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, bool evaluate, bool gpu, RunRequest &req) {
+bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool evaluate, bool gpu, RunRequest &req) {
   req = RunRequest{};
   req.spec.evaluate = evaluate;
-  return MakeFactorScope(data, std::move(ft), pool, gpu, req.scope) || !evaluate;
+  return MakeFactorScope(data, std::move(ft), pool, years, gpu, req.scope) || !evaluate;
 }
 
 RunService::RunService() : FactorWorker(Prio::Batch) { Start(); }
