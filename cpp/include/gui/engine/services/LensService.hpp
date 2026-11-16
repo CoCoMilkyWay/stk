@@ -1,4 +1,5 @@
-// LensService — agent 观察工具的单 worker: 一组因子根 + 一组特征式, 在作用域评估期上整期一块评一次 (eval_job, 与 Inspect 同一条管线), 落地原料不做汇总:
+// LensService — agent 观察工具的单 worker: 一组因子根 + 一组特征式, 在观察窗 (评估期的最近一段, 会话首次观察按内存定) 上整期一块评一次
+//   (eval_job, 与 Inspect 同一条管线), 落地原料不做汇总:
 //   每个因子根: 已定向的池内秩 [T][A'] / 一级 Row [T] (单持有期) + 同行的尾部分层 TailRow [T] (与 Inspect 同一份 TailExt) /
 //               两端组真持有的格 (行 / 列 / 端 / 持有毛收益, 与 Row::grp 同一份判据: label_row 的逐格扩展);
 //   每个特征式: 包一层 CsRank 进森林, 取根的输入 (kNeedAlpha) = 特征原值 [T][A'];
@@ -23,7 +24,10 @@ struct LensSpec {
   std::vector<FactorRef> roots, feats;
   int hold = 0;
   uint32_t asset = UINT32_MAX; // 全局资产下标; UINT32_MAX = 整截面
+  misc::Ymd from = 0;          // 观察窗首日 (评估期只留此日起); 0 = 本次按宿主预算定, 定下的随结果交回
 };
+// 定观察窗: 标签库评估期的最近 n 日, n = 宿主预算 (缓存可让) / (本层行数 · 池轴资产数 · kWindowCellBytes), 封顶整期
+inline constexpr double kWindowCellBytes = 160.0; // 观察窗按重的观察 (根 + 十来个叶 + 标签 / 门控 + 引擎 + 落地平面) 估的每格字节
 using LensRequest = Request<LensSpec>;
 
 // 两端组真持有的一格: e = 端 (kTop / kBot, 已按根的方向); ret = 持有毛收益 (续持取名义值; 超额 = ret − Row::mkt)
@@ -44,12 +48,13 @@ struct LensFeat {
   std::vector<float> v; // [T][A'] 原值 (无效 NaN)
 };
 struct LensResult {
-  std::string error; // 非空 = 没算成 (评估域不成 / 资产不在池轴 / 全部根坏), 其余字段空
-  std::vector<misc::Ymd> dates;
-  std::vector<uint32_t> ids; // [A'] 全局资产下标
-  std::vector<uint8_t> gate; // [T][A'] 截面门控
-  std::vector<float> label;  // [T][A'] 持有毛收益 (无效 NaN)
-  std::vector<float> mkt;    // [T] 门控 ∧ 标签有效格的均值 (整截面; 无 → NaN)
+  std::string error;            // 非空 = 没算成 (评估域不成 / 资产不在池轴 / 全部根坏), 其余字段空 (from 除外)
+  misc::Ymd from = 0;           // 本次用的观察窗首日 (= LensSpec::from, 或本次定下的)
+  std::vector<misc::Ymd> dates; // 实际日段: 观察窗与叶的落盘日之交, 再装不下内存则截最近的日
+  std::vector<uint32_t> ids;    // [A'] 全局资产下标
+  std::vector<uint8_t> gate;    // [T][A'] 截面门控
+  std::vector<float> label;     // [T][A'] 持有毛收益 (无效 NaN)
+  std::vector<float> mkt;       // [T] 门控 ∧ 标签有效格的均值 (整截面; 无 → NaN)
   std::vector<LensRoot> roots;
   std::vector<LensFeat> feats;
 };

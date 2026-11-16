@@ -14,7 +14,7 @@ namespace GUI::Engine {
 
 namespace {
 
-// Run 的探针: EvalStat 通用五探针 (一个根一份, 同根的只评首个)
+// Run 的探针: EvalStat 通用六探针 (一个根一份, 同根的只评首个)
 using RunProbes = EvalProbes<>;
 
 } // namespace
@@ -158,7 +158,7 @@ bool RunService::eval_file(const RunRequest &req, FactorFlow &F, E &eng, const s
     void post(int e, int k) {
       if (k != k_st) {
         st = EvalStat{};
-        fill_eval(ps[static_cast<size_t>(k)], o.scope(sc), o.eval_ms(k), st);
+        fill_eval(ps[static_cast<size_t>(k)], o.scope(sc), o.eval_ms(k), o.job.dm.dates, st);
         k_st = k;
       }
       {

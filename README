@@ -179,7 +179,7 @@ stk/
 │   │   │   │   ├── Load.hpp                            # 🖥️ 装载层: 特征 X / 门控 + 标签 + 成本 Y / 池篮子 B 三侧宿主平面, 同一份逐天并行骨架
 │   │   │   │   │                                       #    · 门控 / 标签取因子池 Bar 库, 盘口成本取同池 Lob 库
 │   │   │   │   │                                       #    · Store = 进程唯一计算面: 线程池 + 已开的库 + 平面 LRU 缓存 (跨服务命中) + 计算权优先级队列
-│   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层: 一个根的一种输出 (Hold / Cost / Cover / Alpha / IcPdf 通用); EvalProbes → EvalStat
+│   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层: 一个根的一种输出 (Hold / Cost / Cover / Alpha / IcPdf / Year 通用); EvalProbes → EvalStat
 │   │   │   │   ├── Book.hpp                            # 🖥️ 净值引擎 (唯一): 逐行批收益 RowLines → fold_book → 复利; 分层 / 因子线 / 池篮子同一份
 │   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎 Backend<Cpu | Gpu> 同一接口; FactorFlow = 服务 worker 的计算句柄
 │   │   │   │   │                                       #    · 管线 (全部服务同一份): Job → prepare (评估域 + 开库 → 持有期 / 成本段 → 预算 → 分块)
@@ -195,7 +195,7 @@ stk/
 │   │   │   │   │   ├── RunService.hpp                  # 🖥️ 因子表 Run: 逐文件一张共享 DAG → 分层 / 多空 / 换手成本统计 → 回写 stats
 │   │   │   │   │   ├── SearchService.hpp               # 🖥️ 参数搜索: 采样 → 曲面取峰 → 细化 → 挑显著且不冗余的 → 回写 weights (目标见 factor/Search)
 │   │   │   │   │   ├── InspectService.hpp              # 🖥️ 单因子深看 (不写文件)
-│   │   │   │   │   ├── LensService.hpp                 # 🖥️ 观察 worker: 一组根 + 特征原值在评估期上整期一块 (不写文件; 与 Inspect 同一条管线)
+│   │   │   │   │   ├── LensService.hpp                 # 🖥️ 观察 worker: 一组根 + 特征原值在观察窗 (评估期最近一段, 会话首次观察按内存定) 上整期一块 (不写文件; 与 Inspect 同一条管线)
 │   │   │   │   │   └── PortfolioService.hpp            # 🖥️ 组合: 因子 / 篮子 / 个股 → 账 PortfolioBook (线 × [毛收益 / 冲击 / 固定 / 增仓量] × 行)
 │   │   │   │   └── ui/PortfolioBoxes.hpp               # 🖥️ Alpha → Factors 的组合小框 + 当前组合 (Lines 页因子 / 策略两组的来源)
 │   │   │   ├── quote/                                  # 🖥️ 行情: Market 各页 / Live 持仓页 / Database Sync 页共用

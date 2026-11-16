@@ -105,6 +105,11 @@ struct Op {
 struct Stat {
   double mono = 0, ls = 0, ric = 0; // 分层单调性 / 每期毛多空 / rIC 均值
 };
+// 一个自然年的统计 (n = 年内有统计的行数)
+struct Year {
+  int year = 0, n = 0;
+  Stat st;
+};
 // 一个权重在作用域持有期下的统计 (has = Run 过且该持有期 n ≥ 3)
 struct Weight {
   std::string expr;
@@ -114,6 +119,7 @@ struct Weight {
   Stat st;
   double score = 0, se = 0, valid = 0; // Search 目标 (不过门槛 = −∞) / 目标的标准误 / 池内有效率 (0..1)
   std::vector<double> grp;             // [kGroups] 组每期毛收益减组间均值 (已定向; has 才有)
+  std::vector<Year> years;             // 分年 (已定向; has 才有)
 };
 // Search 无显著时的代表点 (因子文件 search[]) —— 告诉 agent 差在哪. 怎么取的:
 //   Peak   过门槛的峰里曲面估计最高的 (差在显著)
@@ -203,6 +209,7 @@ struct Context {
   bool has_lob = false;           // 本层有 lob 叶 (不论开放与否)
   std::string window;             // 评估期 = 标签库与开放的叶所在库落盘日交集 ("未就绪" = 作用域未就绪或无共同落盘日)
   int first = 0, last = 0;        // 评估期首末日 YYYYMMDD (未就绪 0)
+  int look_from = 0;              // 观察窗 [look_from, last] = 评估期的最近一段: 本会话首次观察时按内存定 (0 = 还没定), 此后观察都在这段上
   int seg = 0;                    // 本层每日行数 (d 的单位)
   int open = 0;                   // 每日开头属集合竞价段 [09:15, 09:30) 的行数 (日层 0)
   std::vector<std::string> clock; // [seg] 行的收盘时刻 HH:MM
@@ -217,7 +224,7 @@ struct Context {
   std::vector<Result> library;  // 正式因子库, 按 score 降序 (含不可见的, 由用方滤)
 };
 
-// ---- 观察 (LookSpec → Look): 评估期上整期一块的原料; 平面 = [T = 天 · seg][A] 行主序, 格 k = Look::at(t, a) ----
+// ---- 观察 (LookSpec → Look): 观察窗 (Context::look_from) 上整期一块的原料; 平面 = [T = 天 · seg][A] 行主序, 格 k = Look::at(t, a) ----
 template <class X>
 using Plane = std::vector<X>;
 inline constexpr int kGroups = 20;            // 截面分组数 (= Stat 契约, Bridge.cpp 核对)
@@ -273,7 +280,8 @@ struct LookFeat {
 };
 struct Look {
   std::string error;              // 非空 = 没算成 (评估域不成 / 资产不在池轴 / 全部根坏), 其余字段空
-  std::vector<int> dates;         // [天] YYYYMMDD
+  bool fresh = false;             // 观察窗是本次定下的 (Context::look_from)
+  std::vector<int> dates;         // [天] YYYYMMDD: 观察窗与叶的落盘日之交, 再装不下内存则截最近的日
   int seg = 0;                    // 每日行数
   int open = 0;                   // = Context::open
   std::vector<std::string> clock; // [seg] 行的收盘时刻 HH:MM

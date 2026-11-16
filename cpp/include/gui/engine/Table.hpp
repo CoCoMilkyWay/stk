@@ -273,6 +273,11 @@ struct AlphaDist {
   float gmean[factor::stat::kGroups] = {};            // 组均值
   std::vector<float> series;                          // 逐行截面均值 (有样本的行, 时序)
 };
+// 一个持有期一个自然年的分层统计 (Probe YearP 逐日攒、按年合; 已定向, 毛收益): 与 HoldStat 同口径, 只取判稳定性的几项
+struct YearStat {
+  int year = 0, n = 0;                   // 年 / 年内有统计 (ok) 的行数
+  float mono = 0.f, ls = 0.f, ric = 0.f; // 分层单调性 / 每期毛多空均值 / rIC 均值
+};
 // 一个根的评估结果 (Run 行 / Inspect 结果同一份; Probe fill_eval 填全部: scope / eval_ms 由调用方给, 其余取探针;
 // StatJson scope_json + eval_json ⇄ load_eval)
 struct EvalStat {
@@ -283,6 +288,7 @@ struct EvalStat {
   factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
   std::vector<CostTier> costs;                         // [amt] = FeatureTable::y.costs 序 (非空), 每金额段 [n_hold] CostAcc (年换手 / Inspect 净线从它算)
   MiniPdf ic_pdf[factor::stat::kMaxHold];              // [hold] 逐行 rIC (ok 行) 分布 (Probe IcPdfP; 因子表小图)
+  std::vector<YearStat> years[factor::stat::kMaxHold]; // [hold] 分年 (年升序, 只列有统计行 ≥ 3 的年)
   MiniPdf alpha_pdf;                                   // alpha 分布 (截尾; Probe AlphaP; 与持有期无关)
   const factor::stat::HoldStat *find_hold(int hold_m) const {
     for (int j = 0; j < n_hold; ++j)
@@ -293,6 +299,10 @@ struct EvalStat {
   const MiniPdf *find_ic_pdf(int hold_m) const {
     const factor::stat::HoldStat *h = find_hold(hold_m);
     return h ? &ic_pdf[h - hold] : nullptr;
+  }
+  const std::vector<YearStat> *find_years(int hold_m) const {
+    const factor::stat::HoldStat *h = find_hold(hold_m);
+    return h ? &years[h - hold] : nullptr;
   }
   const factor::stat::CostAcc &turn_of(const factor::stat::HoldStat &h) const { // h = 本行 hold[] 之一; 换手量各段同一份, 取段 0
     assert(&h >= hold && &h < hold + n_hold && !costs.empty());

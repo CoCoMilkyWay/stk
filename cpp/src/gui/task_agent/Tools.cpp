@@ -40,7 +40,7 @@ constexpr ArgDef kTradesArgs[] = {
     {"tod", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 只看行末时刻在 HH:MM-HH:MM 内 (含两端) 的行 (日层不可用); 持仓格与对照的池内格同窗, 跨窗的段被窗口截断"}};
 constexpr ArgDef kSnapshotArgs[] = {
     {"factor", Arg::Str, nullptr, 0, 0, nullptr, kFactorDesc},
-    {"date", Arg::Str, nullptr, 0, 0, nullptr, "交易日 YYYY-MM-DD (须在评估期内)"},
+    {"date", Arg::Str, nullptr, 0, 0, nullptr, "交易日 YYYY-MM-DD (须在观察窗内)"},
     {"time", Arg::Str, "\"\"", 0, 0, nullptr, "日内层: 哪一行, 写该行的行末时刻 HH:MM (如 10:30); 日层不填"},
     {"n", Arg::Int, "10", 1, 20, nullptr, "两端各列几只"},
     {"exprs", Arg::Strs, "[]", 0, 3, nullptr, "可选: 一并列出的特征式 (写法同 view_feature)"}};
@@ -51,7 +51,7 @@ constexpr ArgDef kResponseArgs[] = {{"factor", Arg::Str, nullptr, 0, 0, nullptr,
                                     {"side", Arg::Str, "\"top\"", 0, 0, "top|bottom", kSideDesc},
                                     {"split", Arg::Str, "\"none\"", 0, 0, "none|tod", "切开看: none 不切 / tod 按开仓时段 (日层无时段, 同 none)"}};
 constexpr ArgDef kStockDayArgs[] = {{"code", Arg::Str, nullptr, 0, 0, nullptr, "6 位代码或 代码.交易所 (如 000001 / 000001.SZ)"},
-                                    {"date", Arg::Str, nullptr, 0, 0, nullptr, "交易日 YYYY-MM-DD (须在评估期内)"},
+                                    {"date", Arg::Str, nullptr, 0, 0, nullptr, "交易日 YYYY-MM-DD (须在观察窗内)"},
                                     {"factor", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 叠加看的因子, 写法同其他观察工具的 factor"},
                                     {"exprs", Arg::Strs, "[]", 0, 4, nullptr, "可选: 叠加看的特征式 (写法同 view_feature)"},
                                     {"rows", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 逐行细看的时段 HH:MM-HH:MM (按行末时刻, 含两端, 至多 {stock_rows} 行); 给了另附逐行表"}};
@@ -59,7 +59,7 @@ constexpr ArgDef kExplainArgs[] = {{"factor", Arg::Str, nullptr, 0, 0, nullptr, 
                                    {"exprs", Arg::Strs, "[]", 0, 4, nullptr, "可选: 另加的基准特征式 (写法同 view_feature; 例: 主动买卖失衡、价差、市值), 与内置基准一起剥离"}};
 constexpr ArgDef kStockDaysArgs[] = {{"code", Arg::Str, nullptr, 0, 0, nullptr, "6 位代码或 代码.交易所"},
                                      {"from", Arg::Str, "\"\"", 0, 0, nullptr, "首日 YYYY-MM-DD; 空 = 末日往前共 20 个交易日"},
-                                     {"to", Arg::Str, "\"\"", 0, 0, nullptr, "末日 YYYY-MM-DD; 空 = 评估期末日"},
+                                     {"to", Arg::Str, "\"\"", 0, 0, nullptr, "末日 YYYY-MM-DD; 空 = 观察窗末日 (= 评估期末日)"},
                                      {"factor", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 叠加看的因子"},
                                      {"exprs", Arg::Strs, "[]", 0, 4, nullptr, "可选: 叠加看的特征式 (各日取收盘行的值)"}};
 constexpr ArgDef kBookArgs[] = {
@@ -247,7 +247,7 @@ constexpr ToolDef kTools[] = {
      "须挂在判为支持的假设上 (每个至多 {hyp_evals} 个, 有变体回测过还没判的先 judge), 写明相对哪个 base 改了哪一处、功能块各衡量什么; 上一条回复有落了文件的回测时本条不能回测. "
      "与已有候选同式 (含只换截面根) 的不落, 用了本会话没经 search_leaves 查过的叶的不落; 同一条回复里先 search_leaves 再回测用它列出的叶也行",
      "改动归类 (相对 base) + 结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点 + 代表点的 20 组与分时段 mono) / 各权重的统计 (只写自由参数的取值) + 是否达入库门槛 "
-     "(+ 最佳权重的 20 组); 有自由参数的另附参数曲面 (每个参数按取值分段, 段内最好的点)"},
+     "(+ 最佳权重的 20 组与分年表); 有自由参数的另附参数曲面 (每个参数按取值分段, 段内最好的点; 参数多于 3 个时列最好的十来个点)"},
     {Tool::ListTried, "list_tried", "列已试", Run::Now, Cat::Query, Fold::Title, kTopArgs, "列本作用域已评过的候选 (历次会话累积, 只列同一评估期的), 按 score 降序; 可作起点接着做",
      "每个候选: 模板 + 结局 (权重只写自由参数的取值) + 是否达入库门槛; 没列完时末尾给总数与接着看的 skip"},
     {Tool::ListLibrary, "list_library", "列正式库", Run::Now, Cat::Query, Fold::Title, kTopArgs,

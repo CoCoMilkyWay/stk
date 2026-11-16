@@ -100,17 +100,17 @@ struct Filter {
     return std::all_of(conds.begin(), conds.end(), [&](const Cond &c) { return c.word || c.pass(i); }) &&
            std::any_of(conds.begin(), conds.end(), [&](const Cond &c) { return c.word && c.pass(i); });
   }
-  // 共 n 项的命中 (升序): 全部条件都满足的; 没有且检索词 ≥ 2 个 → 放宽为含任一词 (loosened = true)
+  // 共 n 项的命中 (升序): 全部条件都满足的; 没有且检索词 ≥ 2 个 → 放宽为含任一词 (放宽后有命中 → loosened = true)
   std::vector<size_t> hits(size_t n, bool &loosened) const {
     std::vector<size_t> o;
     for (size_t i = 0; i < n; ++i)
       if ((*this)(i))
         o.push_back(i);
-    loosened = o.empty() && std::count_if(conds.begin(), conds.end(), [](const Cond &c) { return c.word; }) >= 2;
-    if (loosened)
+    if (o.empty() && std::count_if(conds.begin(), conds.end(), [](const Cond &c) { return c.word; }) >= 2)
       for (size_t i = 0; i < n; ++i)
         if (loose(i))
           o.push_back(i);
+    loosened = !o.empty() && !(*this)(o.front());
     return o;
   }
   // 共 n 项时各条件单独的命中数 "名 k · 名 k"

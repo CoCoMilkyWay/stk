@@ -3,7 +3,7 @@
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
 // 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两端各 imp, buy, sell, fix, w, n + rows);
-// 一个金额段 (CostTier) cost_json / load_cost; 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf;
+// 一个金额段 (CostTier) cost_json / load_cost; 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf; 分年 (YearStat) 在 eval_json 内联;
 // 一个根的评估结果 (EvalStat) 两半写 scope_json (文件顶层 run) + eval_json (stats[i]), 一次读 load_eval.
 #pragma once
 
@@ -290,7 +290,7 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   return j;
 }
 
-// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / costs / 小图各一段
+// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / costs / 小图 / 分年 (years[hold] = [[年, 行, mono, ls, ric] …]) 各一段
 inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   nlohmann::ordered_json j;
   j["time"] = st.scope.time;
@@ -309,6 +309,14 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   j["costs"] = costs;
   j["ic_pdf"] = ic;
   j["alpha_pdf"] = mini_pdf_json(st.alpha_pdf);
+  nlohmann::ordered_json years = nlohmann::ordered_json::array();
+  for (int k = 0; k < st.n_hold; ++k) {
+    nlohmann::ordered_json ys = nlohmann::ordered_json::array();
+    for (const YearStat &y : st.years[k])
+      ys.push_back(nlohmann::ordered_json::array({y.year, y.n, sig4(y.mono), sig4(y.ls), sig4(y.ric)}));
+    years.push_back(ys);
+  }
+  j["years"] = years;
   return j;
 }
 
@@ -375,6 +383,22 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
   const auto ait = j.find("alpha_pdf");
   if (ait == j.end() || !load_mini_pdf(*ait, t.alpha_pdf))
     return false;
+  const auto yit = j.find("years");
+  if (yit == j.end() || !yit->is_array() || yit->size() != H)
+    return false;
+  for (size_t k = 0; k < H; ++k) {
+    const nlohmann::json &ys = (*yit)[k];
+    if (!ys.is_array())
+      return false;
+    for (const nlohmann::json &y : ys) {
+      if (!y.is_array() || y.size() != 5)
+        return false;
+      const auto e = [&](size_t i) -> const nlohmann::json & { return y[i]; };
+      if (!e(0).is_number_integer() || !e(1).is_number_integer() || !e(2).is_number() || !e(3).is_number() || !e(4).is_number())
+        return false;
+      t.years[k].push_back({e(0).get<int>(), e(1).get<int>(), e(2).get<float>(), e(3).get<float>(), e(4).get<float>()});
+    }
+  }
   dst = std::move(t);
   return true;
 }

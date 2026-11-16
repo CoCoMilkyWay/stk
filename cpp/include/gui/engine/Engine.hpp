@@ -29,6 +29,7 @@
 #include "factor/Search/Space.hpp"    // lookback
 #include "gui/engine/Probe.hpp"
 #include "gui/engine/Worker.hpp" // FactorWorker (成员定义在此)
+#include "misc/date.hpp"
 #include "misc/exec.hpp"
 
 #include <algorithm>
@@ -616,6 +617,7 @@ bool FactorWorker<D, Req>::settle(Rc rc) {
 // 一次作业 (全部服务同一份): 调用方填 who → prepare (评估域 dm + 规格 spec + 前后带 bands + 预算 b → 计划 P) → pass
 struct Job {
   const char *who = "";             // 整期截近期时的消息
+  misc::Ymd from = 0;               // 评估期只留此日起 (调用方定; 0 = 整期)
   BlockSpec spec;                   // 块两侧: x = 叶 / y = y_spec / ry = E::kRanks (prepare 定)
   Bands bands;                      // 前后带日 (front < 0 = 整期一块; prepare 定)
   Budget b;                         // 作业预算 (prepare 定)
@@ -643,13 +645,23 @@ struct JobOut {
   }
   StatScope scope(const FactorScope &sc) const { return stat_scope(sc, job.dm, job.ft->seg, job.n_full, backend); } // 结果的作用域头
 };
-// 评估域 (叶 feats 所用库 + 评估期) → 开库; j.spec.x = feats 的 LeafId. false = 评估域不成 (j.why; 正常输入)
+// 评估域 (叶 feats 所用库 + 评估期, j.from 起) → 开库; j.spec.x = feats 的 LeafId. false = 评估域不成 (j.why; 正常输入)
 inline bool open_job(FactorFlow &F, const FactorScope &sc, const std::vector<std::string> &feats, Job &j) {
   assert(sc.ft && sc.lv == sc.ft->lv && "作用域层与字段表层不符");
   j.ft = sc.ft.get();
   j.spec.x = sc.ft->x.ids(feats);
   if (!domain_of(*sc.ft, sc, j.spec.x, SIZE_MAX, j.dm, j.why))
     return false;
+  if (j.from) {
+    const std::vector<misc::Ymd> &ds = j.dm.dates;
+    const auto keep = static_cast<size_t>(ds.end() - std::lower_bound(ds.begin(), ds.end(), j.from));
+    if (keep == 0) {
+      j.why = "所用特征库的落盘日都在 " + misc::dash(j.from) + " 之前";
+      return false;
+    }
+    [[maybe_unused]] const bool ok = keep == ds.size() || domain_of(*sc.ft, sc, j.spec.x, keep, j.dm, j.why);
+    assert(ok && "近期子期是整期的后缀, 评估域必成");
+  }
   open_libs(sc, F.S.lr);
   return true;
 }

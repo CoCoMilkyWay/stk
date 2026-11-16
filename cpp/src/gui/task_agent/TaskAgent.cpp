@@ -6,6 +6,7 @@
 #include "gui/task_agent/Mine.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/util/Reorder.hpp"
+#include "misc/date.hpp"
 
 #include "imgui.h"
 #include "nlohmann/json.hpp"
@@ -280,6 +281,11 @@ void scope_row(SharedData &data, State &s, bool locked) {
   ImGui::TextDisabled("|");
   ImGui::SameLine();
   ImGui::Text("评估期 %s", c ? c->window.c_str() : "…");
+  if (c && c->look_from > c->first) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("| 观察窗 %s 起", misc::dash(c->look_from).c_str());
+    tip("观察工具整段一次装进内存, 只算评估期的最近一段; 本会话首次观察时按内存定下");
+  }
   ImGui::EndDisabled();
 }
 

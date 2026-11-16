@@ -5,6 +5,7 @@
 #include "gui/engine/Engine.hpp" // eval_job / Probes / FactorFlow
 #include "misc/profiler.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <limits>
 #include <mutex>
@@ -176,6 +177,18 @@ struct LensHooks : HookBase {
   void fail(int e, const std::string &w) { why[static_cast<size_t>(e)] = w; }
 };
 
+// 定观察窗首日 (见 kWindowCellBytes); 标签库评估期不成 → 0 (随后 eval_job 报原因)
+misc::Ymd window_from(const FactorScope &sc, double budget) {
+  Domain dm;
+  std::string why;
+  if (!span_of(*sc.ft, sc, {}, SIZE_MAX, dm, why))
+    return 0;
+  const double A = static_cast<double>(sc.libs[label_lib(pool_id(sc.pool))].axis.size());
+  const double fit = budget / (static_cast<double>(sc.ft->seg) * A * kWindowCellBytes);
+  const size_t n = std::clamp(static_cast<size_t>(std::max(fit, 1.0)), size_t{1}, dm.dates.size());
+  return dm.dates[dm.dates.size() - n];
+}
+
 } // namespace
 
 LensService::LensService() : FactorWorker(Prio::Interactive) { Start(); }
@@ -223,20 +236,19 @@ bool LensService::eval(const LensRequest &req, FactorFlow &F, LensResult &res) {
   }
   JobOut o;
   o.job.who = "Lens";
+  o.job.from = sp.from ? sp.from : window_from(sc, F.S.budget());
   std::vector<std::string> why(rs.of.size());
   const Rc rc = F.with_backend<LensProbes>(false, [&](auto &eng) {
     return eval_job(eng, F, sc, rs, [&](int k) -> LensProbes & { return ps[static_cast<size_t>(k)]; }, o, LensHooks{{}, sp, o, land, res, why});
   });
   if (!settle(rc))
     return false;
-  if (rc != Rc::Ok) {
-    res = LensResult{};
-    res.error = o.job.why;
-    return true;
-  }
-  if (land.cols.empty()) {
-    res = LensResult{};
-    res.error = sp.asset != UINT32_MAX ? "该资产不在本池特征库的资产轴上" : "评估期内池里没有资产";
+  res.from = o.job.from;
+  if (rc != Rc::Ok || land.cols.empty()) {
+    res = LensResult{.error = rc != Rc::Ok             ? o.job.why
+                              : sp.asset != UINT32_MAX ? "该资产不在本池特征库的资产轴上"
+                                                       : "观察窗内池里没有资产",
+                     .from = o.job.from};
     return true;
   }
   res.dates = o.job.dm.dates;

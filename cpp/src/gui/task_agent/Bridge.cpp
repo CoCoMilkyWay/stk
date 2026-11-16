@@ -531,6 +531,8 @@ Result result_of(const Engine::FeatureTable &ft, const std::optional<Engine::Fac
         mid += g / static_cast<double>(kGroups);
       for (const float g : h->grp)
         x.grp.push_back(g - mid);
+      for (const Engine::YearStat &y : *w.find_years(hold))
+        x.years.push_back({y.year, y.n, {y.mono, y.ls, y.ric}});
     }
     r.ws.push_back(std::move(x));
   }
@@ -846,6 +848,7 @@ struct Lab::Impl {
     [[maybe_unused]] const bool ok = Engine::MakeFactorScope(*data, ft(), sc.pool, /*gpu=*/false, req.scope);
     assert(ok && "作用域须 ready");
     req.spec.hold = sc.hold;
+    req.spec.from = ctx.look_from;
     labels.clear();
     for (const LookFactor &f : s.factors) {
       req.spec.roots.push_back({f.expr, f.ts ? factor::stat::Frame::TS : factor::stat::Frame::CS, factor::stat::dir_of(f.sign)});
@@ -930,9 +933,14 @@ struct Lab::Impl {
     assert(ok && "代表点是 Search 评过的具体式");
     enter<Step::Lens>(lens_req({.factors = {std::move(f)}}));
   }
-  // Look: 观察本身, 或在评那个的代表点
+  // Look: 观察本身, 或在评那个的代表点; 本会话首次观察定下观察窗 (不早于评估期首日)
   void looked() {
-    Look l = look_of(lane<Step::Lens>().take(), *ft(), labels, std::move(feat_err), bars, ctx.kline);
+    Engine::LensResult r = lane<Step::Lens>().take();
+    const bool fresh = !ctx.look_from && r.from && r.error.empty();
+    if (fresh)
+      ctx.look_from = std::max(static_cast<int>(r.from), ctx.first);
+    Look l = look_of(std::move(r), *ft(), labels, std::move(feat_err), bars, ctx.kline);
+    l.fresh = fresh;
     if (!graded)
       return close(std::move(l));
     graded->rep = std::move(l);

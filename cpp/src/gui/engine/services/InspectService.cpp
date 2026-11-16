@@ -380,7 +380,7 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
   res.pool_index = pool_;
   std::copy_n(pool_ann_, pool_.n, res.pool_ann);
   res.hd = o.job.spec.y.hd;
-  fill_eval(ps, o.scope(sc), o.eval_ms(0), res);
+  fill_eval(ps, o.scope(sc), o.eval_ms(0), o.job.dm.dates, res);
   res.alpha_dist = std::move(ps.at<AlphaP>().d);
   std::copy_n(ps.at<IcPdfP>().pdf, res.hd.n, res.ic_agg);
   res.nav = std::move(ps.at<NavP>().out);

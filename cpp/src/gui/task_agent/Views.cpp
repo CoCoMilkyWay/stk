@@ -200,11 +200,15 @@ bool rows_in(const char *key, const std::string &s, const std::vector<std::strin
   return true;
 }
 
-// 观察所在的日段与作用域评估期不同 (用到的叶落盘日更短) 才写
+// 观察窗本次才定且短于评估期 → 报窗; 本观察的日段与观察窗 [look_from, last] 不同 (叶落盘日更短 / 装不下内存截了最近的日) → 报日段
 std::string head(const Look &L, const Context &ctx) {
-  if (L.dates.front() == ctx.first && L.dates.back() == ctx.last)
-    return "";
-  return "注意: 本观察用到的叶落盘日更短, 日段为 " + date_of(L.dates.front()) + " ~ " + date_of(L.dates.back()) + " (" + str(L.dates.size()) + " 天), 不是作用域评估期\n\n";
+  std::string s;
+  if (L.fresh && ctx.look_from > ctx.first)
+    s += "观察窗定为 " + date_of(ctx.look_from) + " ~ " + date_of(ctx.last) + ": 评估期整段装不下内存, 本会话的观察都只算这最近一段 (回测仍在整个评估期上), 观察之间可比\n\n";
+  if (L.dates.front() != ctx.look_from || L.dates.back() != ctx.last)
+    s += "注意: 本观察的日段为 " + date_of(L.dates.front()) + " ~ " + date_of(L.dates.back()) + " (" + str(L.dates.size()) +
+         " 天), 与观察窗不同 (用到的叶落盘日更短, 或装不下内存只算了最近的日), 与别的观察不可直接比\n\n";
+  return s;
 }
 
 // ---- K 线取值 (没有 / 没算成的叶 → NaN) ----
@@ -725,7 +729,7 @@ bool trades_view(const Call &c, const Look &L, const Context &, std::string &out
     win = " · 只看 " + win + "的行 (" + std::to_string(rows) + " 行)";
   std::string s = "## 因子 `" + r->label + "` · " + side + " · 合并 " + merge + win + "\n";
   if (!rows) {
-    out = s + "窗口里没有行 (评估期 " + date_of(L.dates.front()) + " ~ " + date_of(L.dates.back()) + ")";
+    out = s + "窗口里没有行 (观察的日段 " + date_of(L.dates.front()) + " ~ " + date_of(L.dates.back()) + ")";
     return false;
   }
   const std::vector<LookCell> cs = side_cells(*r, top, in_win);
@@ -1158,7 +1162,7 @@ bool explain_view(const Call &c, const Look &L, const Context &, std::string &ou
   }
   const size_t m = bs.size();
   if (T <= lag) {
-    out = s + "评估期太短: 基准要回看 " + std::to_string(lag) + " 行\n";
+    out = s + "观察的日段太短: 基准要回看 " + std::to_string(lag) + " 行\n";
     return false;
   }
   const int rstep = std::max(1, (T - lag) / kExplainRows);
@@ -1263,7 +1267,7 @@ int day_of(const Look &L, const std::string &arg, std::string &out) {
   const int ymd = ymd_of(arg);
   const auto it = std::find(L.dates.begin(), L.dates.end(), ymd);
   if (it == L.dates.end()) {
-    out = "日期 " + arg + " 不是评估期 (" + date_of(L.dates.front()) + " ~ " + date_of(L.dates.back()) + ") 里的交易日";
+    out = "日期 " + arg + " 不是观察的日段 (" + date_of(L.dates.front()) + " ~ " + date_of(L.dates.back()) + ") 里的交易日";
     return -1;
   }
   return static_cast<int>(it - L.dates.begin());

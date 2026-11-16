@@ -290,6 +290,18 @@ std::string surface_text(const Surface &sf) {
   return s;
 }
 
+// 最佳权重分年 (同一份真持有口径, 评估期按自然年切): 几年反向 + 逐年一行
+std::string years_text(const std::vector<Year> &ys) {
+  if (ys.empty())
+    return "";
+  const auto neg = std::count_if(ys.begin(), ys.end(), [](const Year &y) { return y.st.mono < 0.0; });
+  std::string s = "- 最佳权重分年 (" + std::to_string(ys.size()) + " 年, mono 为负 " + std::to_string(neg) + " 年; 只看是否处处成立, 不据单年挑参数):\n\n"
+                                                                                                             "| 年 | 行 | mono | 每期毛多空 bp | rIC |\n|---|---|---|---|---|\n";
+  for (const Year &y : ys)
+    s += "| " + std::to_string(y.year) + " | " + std::to_string(y.n) + " | " + fmt("%.3f", y.st.mono) + " | " + fmt("%+.2f", y.st.ls * 1e4) + " | " + fmt("%.4f", y.st.ric) + " |\n";
+  return s + "\n";
+}
+
 // 本层的行 (系统提示 "行与时刻"): 竞价段几行 + 连续竞价的行末时刻
 std::string rows_of(const Context &c) {
   if (c.seg == 1)
@@ -413,8 +425,10 @@ std::string TrialText(const Trial &k, const Gate &g, const std::string &rep) {
   std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n" + (k.change.empty() ? "" : "- 改动: " + k.change + "\n") + Detail(r) + gate_line(r, g) + rep;
   if (!r.visible)
     return s;
-  if (const Weight *w = r.best(); w && !w->grp.empty())
+  if (const Weight *w = r.best(); w && !w->grp.empty()) {
     s += "- 最佳权重的 20 组每期毛收益 (减组间均值) G1 → G20: " + bp_spark(w->grp) + "\n";
+    s += years_text(w->years);
+  }
   return s + surface_text(r.surf);
 }
 
