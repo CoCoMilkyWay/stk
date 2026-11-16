@@ -114,14 +114,19 @@ struct Fills {
   Keyed<Flow> by_code;
 };
 
+// 一只融资负债
+struct Debt {
+  double qty = 0, amount = 0; // 负债数量 [股] / 负债金额 [元]
+};
+using Debts = std::map<std::string, Debt>; // 代码 → 负债
+
 // 信用账户 (读时)
 struct Account {
-  double assets = 0, line = 0, debt = 0, net = 0;         // 担保资产 / 可融额度余量 (最高融资额度 − 融资负债含费用) / 负债总额 / 净资产
-  double avail = 0, cash = 0;                             // 可用保证金 / 现金
-  double rate = 0;                                        // 融资年利率
-  std::map<std::string, std::pair<double, double>> debts; // 代码 → (负债数量 [股], 负债金额 [元])
-  std::map<std::string, double> bal;                      // 同一轮持仓 代码 → 股
-  std::map<std::string, double> px;                       // 同一轮持仓 代码 → 现价
+  double assets = 0, line = 0, debt = 0, net = 0; // 担保资产 / 可融额度余量 (最高融资额度 − 融资负债含费用) / 负债总额 / 净资产
+  double avail = 0, cash = 0;                     // 可用保证金 / 现金
+  double rate = 0;                                // 融资年利率
+  Debts debts;
+  std::shared_ptr<const Keyed<Position>> held; // 读时的持仓 (同一轮刚读的那份)
 };
 // 持仓 → 代码 → 股 (含余额 0 的行)
 std::map<std::string, double> balances(const Keyed<Position> &pos);
@@ -204,10 +209,10 @@ struct OrderReq {
   Credit credit = Credit::Plain;
   double px = 0, qty = 0, size = 0;
 };
-// 委托回报: 实际股数 / 价, 填单概要, 回报原文
+// 委托回报: 实际股数 / 价, 回报原文
 struct Placed {
   double qty = 0, px = 0;
-  std::string detail, msg;
+  std::string msg;
 };
 // 下单进度: at = order_steps 下标; detail 非空即更新概要
 using Step = std::function<void(size_t at, const std::string &detail)>;
@@ -226,10 +231,10 @@ public:
   virtual void touch() = 0;     // GUI 每帧: 有人在看
   virtual void hold(int d) = 0; // 后台事务期间有人在看 (Watch)
 
-  virtual uint64_t request(Part p) = 0; // 要一轮刷新 (不等) → 该范围的轮号
-  virtual void sync(Part p) = 0;        // 要一轮并等它刷完 (全部的一轮也算刷过成交); 失败 → Fail
-  virtual void every(double s) = 0;     // 定时周期 [s], 0 = 不定时
-  virtual void kick() = 0;              // 刚下过单: 隔几秒各刷一次 (限价单可能稍后才成交)
+  virtual void request(Part p) = 0; // 要一轮刷新 (不等)
+  virtual void sync(Part p) = 0;    // 要一轮并等它刷完 (全部的一轮也算刷过成交); 失败 → Fail
+  virtual void every(double s) = 0; // 定时周期 [s], 0 = 不定时
+  virtual void kick() = 0;          // 刚下过单: 隔几秒各刷一次 (限价单可能稍后才成交)
 
   virtual const std::vector<std::string> &order_steps() const = 0;
   virtual Placed place(const OrderReq &o, const Step &step) = 0;                // 当前线程跑完; 失败 → Fail (停在当时那一步)

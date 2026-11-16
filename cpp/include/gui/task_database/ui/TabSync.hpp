@@ -1,4 +1,4 @@
-// Tab Sync - 数据源 (BigQuant / Tushare / 东财 / 新浪) 状态与同步入口
+// Tab Sync - 数据源 (BigQuant / Tushare / 新浪) 状态与同步入口
 #pragma once
 
 #include "gui/Tasks.hpp"

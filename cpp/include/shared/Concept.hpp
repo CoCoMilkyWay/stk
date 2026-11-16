@@ -1,4 +1,4 @@
-// 概念表 — 东财概念板块 (只留题材) 的成分快照: output/data/concept/YYYYMMDD.tsv, 只留最近一份 (Fundamental 联网同步时拉当日缺的, 落盘后删旧).
+// 概念表 — 东财概念板块 (只留题材, 经 Tushare dc_index / dc_member) 的成分快照: output/data/concept/YYYYMMDD.tsv, 只留最近一份 (Fundamental 联网同步时拉当日缺的, 落盘后删旧).
 //   一行一个概念: 板块代码 \t 名称 \t 成分码 (A 轴码形, 逗号分隔), 按板块代码升序.
 //   题材 = 名称不命中剔除词 (指数成分 / 交易制度 / 资金持股 / 行情统计 / 风格 / 业绩预告) ∧ 成分 ≥ kConceptMin.
 //   进程内唯一 (concepts(), misc::Epochal): 每进程代首次访问载入最近一份, 代内不变 (新拉的随下一代生效); 成分按这一份倒推全史 (篮子表概念切片同一份)

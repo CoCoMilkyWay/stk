@@ -8,8 +8,8 @@
 #include <cassert>
 #include <cctype>
 #include <map>
+#include <mutex>
 #include <string_view>
-#include <utility>
 
 namespace live::tdx::ui {
 
@@ -24,7 +24,9 @@ constexpr const char *kMainClass = "TdxW_MainFrame_Class";
 // 交易栏左侧功能树 (查询 / 资产分析 / …), 右侧为所选功能的页; 树项只认真实光标处的点击, clickat 会钉光标
 const std::string kFuncTreeClass = "SysTreeView32";
 constexpr long kFuncTreeId = 59653;
-constexpr double kReclick = 3; // 开页: 别的页一直挡着这么久 [s] 即再点一次功能树
+constexpr double kReclick = 3;                  // 开页: 别的页一直挡着这么久 [s] 即再点一次功能树
+constexpr long kPageAll = 454;                  // 查询页的「查询全部」按钮
+constexpr long kMsgText = 7013, kMsgYes = 7015; // 确认框 / 提示框: 正文 Static、确认按钮
 
 // 交易栏页签的页: 认页的记号 = 页上可见的列表 (表头含 col 的 SysHeader32 (列表的子窗口), 或 id 为 list 的 SysListView32)
 struct Mark {
@@ -35,9 +37,22 @@ constexpr long kCancelList = 1567; // 撤单页的委托列表
 constexpr Mark kMarks[] = {{"持仓", "可卖数量", 0}, {"成交", "成交编号", 0}, {"撤单", nullptr, kCancelList}};
 constexpr double kTabWait = 2; // 切页签后等页出来 [s]
 constexpr int kClimb = 3;      // 从列表往上找条数标签至多几层
-constexpr int kLooks = 3;      // 一页找几回都没有条数标签即不再找
 
-int half(int a, int b) { return (a + b) >= 0 ? (a + b) / 2 : -((-(a + b) + 1) / 2); } // 向下取整
+// 「第1--N条」/「共N条」→ N; 不是这形 → 无
+std::optional<int> count_in(std::string_view v) {
+  if (v.starts_with("第1--"))
+    v.remove_prefix(std::string_view("第1--").size());
+  else if (v.starts_with("共"))
+    v.remove_prefix(std::string_view("共").size());
+  else
+    return std::nullopt;
+  if (!v.ends_with("条"))
+    return std::nullopt;
+  v.remove_suffix(std::string_view("条").size());
+  if (v.empty() || v.size() > 9 || !std::all_of(v.begin(), v.end(), [](unsigned char c) { return std::isdigit(c); }))
+    return std::nullopt;
+  return std::stoi(std::string(v));
+}
 
 std::vector<Node> func_trees() {
   std::vector<Node> out;
@@ -48,15 +63,15 @@ std::vector<Node> func_trees() {
 }
 
 // 可见的查询页 (id 为 count 的条数标签所在的对话框)
-std::vector<Hwnd> pages(long count) {
-  std::vector<Hwnd> out;
+std::vector<Page> pages(long count) {
+  std::vector<Page> out;
   for (const Node &n : win::find("Static", count))
     if (n.vis)
-      out.push_back(n.parent);
+      out.push_back({n.parent, {n.hwnd}});
   return out;
 }
 
-// ---------- 交易栏页签 ----------
+// ---------- 页签 ----------
 
 const Mark &mark_of(const std::string &tab) {
   for (const Mark &m : kMarks)
@@ -96,7 +111,7 @@ Tab tab_of(const Hwnd &mark) {
       if (n.vis && n.cls == "Static" && count_in(n.title))
         lbls.push_back(n.hwnd);
     if (lbls.size() == 1)
-      return {a, lbls[0]};
+      return {a, Count{lbls[0]}};
     if (lbls.size() > 1)
       break;
     a = win::node(a).parent;
@@ -104,11 +119,12 @@ Tab tab_of(const Hwnd &mark) {
   return {first, std::nullopt};
 }
 
-// 认出的页签: 记号控件 + 页 + 找过几回条数标签; 无 = 认不出 (此后只点不等). 按主窗记: 客户端重开即重认
+std::string label_of(const Tab &t) { return t.count ? t.count->h : ""; }
+
+// 认出的页签: 记号控件 + 页; 无 = 认不出 (此后只点不等). 按主窗记: 客户端重开即重认
 struct Known {
   Hwnd mark;
   Tab tab;
-  int looks = 1;
 };
 struct Tabs {
   std::mutex mu;
@@ -119,6 +135,8 @@ Tabs &tabs() {
   static Tabs t;
   return t;
 }
+
+// ---------- 查询页 ----------
 
 // 查询页列表的表头各列名; detail 在界面线程里只等 3s, 先 gettext (一直等) 把卡顿等过去
 std::vector<std::string> cols(const Hwnd &dlg, double timeout) {
@@ -133,57 +151,6 @@ std::vector<std::string> cols(const Hwnd &dlg, double timeout) {
 }
 
 } // namespace
-
-Gate::Hold::Hold(Gate &g, const char *who) : g_(g) {
-  if (!g_.mu_.try_lock()) {
-    const std::string by = g_.who();
-    const Clock::time_point t0 = Clock::now();
-    ++g_.waiting_;
-    g_.mu_.lock();
-    --g_.waiting_;
-    ++g_.granted_;
-    trace::ev("gate", {{"by", by}, {"ms", trace::ms_since(t0)}});
-  }
-  std::lock_guard lk(g_.who_mu_);
-  outer_ = g_.who_;
-  if (g_.who_.empty())
-    g_.who_ = who;
-}
-
-// 锁不保证先等先得: 放开后等在等的那路占到了再去抢
-void Gate::Hold::yield() {
-  assert(outer_.empty());
-  if (g_.waiting_ == 0)
-    return;
-  std::string me;
-  {
-    std::lock_guard lk(g_.who_mu_);
-    me = std::exchange(g_.who_, "");
-  }
-  const uint64_t n = g_.granted_;
-  const Clock::time_point t0 = Clock::now();
-  g_.mu_.unlock();
-  poll([&] { return g_.granted_ != n; }, 1, 0.001);
-  g_.mu_.lock();
-  {
-    std::lock_guard lk(g_.who_mu_);
-    g_.who_ = std::move(me);
-  }
-  trace::ev("yield", {{"ms", trace::ms_since(t0)}});
-}
-
-Gate::Hold::~Hold() {
-  {
-    std::lock_guard lk(g_.who_mu_);
-    g_.who_ = outer_;
-  }
-  g_.mu_.unlock();
-}
-
-std::string Gate::who() const {
-  std::lock_guard lk(who_mu_);
-  return who_;
-}
 
 Hwnd main_wnd() {
   const std::vector<Node> main = win::find(kMainClass);
@@ -217,7 +184,8 @@ void click_func(const std::string &name) {
     std::vector<std::string> names;
     for (const Item &it : items) {
       if (it.text && *it.text == name) {
-        win::clickat(t.hwnd, t.rect[0] + half(it.l, it.r), t.rect[1] + half(it.t, it.b));
+        const auto [x, y] = win::center(it);
+        win::clickat(t.hwnd, t.rect[0] + x, t.rect[1] + y);
         return;
       }
       names.push_back(it.text.value_or(""));
@@ -228,6 +196,22 @@ void click_func(const std::string &name) {
     win::send(t.hwnd, win::kWmVscroll, win::kSbPagedown, 0);
   }
 }
+
+// ---------- 条数标签 ----------
+
+void Count::clear() const { win::settext(h, ""); }
+
+std::optional<int> Count::read(double timeout) const {
+  const std::string t = win::text(h, timeout);
+  if (t.empty())
+    return std::nullopt;
+  const std::optional<int> n = count_in(t);
+  if (!n)
+    fail("条数标签读到「" + t + "」");
+  return n;
+}
+
+// ---------- 页签 ----------
 
 std::optional<Tab> open_tab(const std::string &tab) {
   trace::Span span("页签「" + tab + "」");
@@ -249,7 +233,7 @@ std::optional<Tab> open_tab(const std::string &tab) {
     }
     const Known k{*h, tab_of(*h)};
     c.at[tab] = k;
-    trace::ev("tab", {{"known", true}, {"mark", k.mark}, {"page", k.tab.page}, {"count", k.tab.count.value_or("")}});
+    trace::ev("tab", {{"known", true}, {"mark", k.mark}, {"page", k.tab.page}, {"count", label_of(k.tab)}});
     return k.tab;
   }
   if (!it->second) {
@@ -265,28 +249,26 @@ std::optional<Tab> open_tab(const std::string &tab) {
       return std::nullopt;
     }
   }
-  const bool lost = k.tab.count && !win::node(*k.tab.count).vis;
-  if (lost || (!k.tab.count && k.looks < kLooks)) {
-    k.looks = lost ? 1 : k.looks + 1;
+  if (!k.tab.count || !win::node(k.tab.count->h).vis) {
     k.tab = tab_of(k.mark);
-    trace::ev("tab", {{"page", k.tab.page}, {"count", k.tab.count.value_or("")}, {"looks", k.looks}});
+    trace::ev("tab", {{"page", k.tab.page}, {"count", label_of(k.tab)}});
   }
   return k.tab;
 }
 
 // ---------- 查询页 ----------
 
-Hwnd open_page(const std::string &func, const std::string &col, long count, double timeout) {
+Page open_page(const std::string &func, const std::string &col, long count, double timeout) {
   trace::Span span("开页「" + func + "」", {{"col", col}});
   click_func(func);
   Clock::time_point at = Clock::now();
   return *until(
       said("「" + func + "」页 (表头含「" + col + "」)"),
-      [&]() -> std::optional<Hwnd> {
-        for (const Hwnd &d : pages(count)) {
-          const std::vector<std::string> c = cols(d, timeout);
+      [&]() -> std::optional<Page> {
+        for (const Page &p : pages(count)) {
+          const std::vector<std::string> c = cols(p.dlg, timeout);
           if (std::find(c.begin(), c.end(), col) != c.end())
-            return d;
+            return p;
         }
         if (Clock::now() - at >= Secs(kReclick)) { // 排在前头还没处理完的点击 (如上一轮刚点的「持仓」) 会把页切回去
           click_func(func);
@@ -297,32 +279,7 @@ Hwnd open_page(const std::string &func, const std::string &col, long count, doub
       timeout);
 }
 
-Hwnd count_label(const Hwnd &dlg, long count) { return win::ctls(dlg, {{"n", count}}).at("n"); }
-
-std::optional<int> page_count(const Hwnd &lbl, double timeout) {
-  const std::string t = win::text(lbl, timeout);
-  if (t.empty())
-    return std::nullopt;
-  const std::optional<int> n = count_in(t);
-  if (!n)
-    fail("条数标签读到「" + t + "」");
-  return n;
-}
-
-std::optional<int> count_in(std::string_view v) {
-  if (v.starts_with("第1--"))
-    v.remove_prefix(std::string_view("第1--").size());
-  else if (v.starts_with("共"))
-    v.remove_prefix(std::string_view("共").size());
-  else
-    return std::nullopt;
-  if (!v.ends_with("条"))
-    return std::nullopt;
-  v.remove_suffix(std::string_view("条").size());
-  if (v.empty() || v.size() > 9 || !std::all_of(v.begin(), v.end(), [](unsigned char c) { return std::isdigit(c); }))
-    return std::nullopt;
-  return std::stoi(std::string(v));
-}
+void query_all(const Page &p) { win::command(p.dlg, kPageAll); }
 
 // ---------- 弹框 ----------
 

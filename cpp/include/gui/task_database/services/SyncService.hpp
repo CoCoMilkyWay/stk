@@ -1,4 +1,4 @@
-// Sync Service - 基本面 + 分钟线数据同步 (BigQuant DAI + Tushare HTTP) + 概念快照 (东财 HTTP)
+// Sync Service - 基本面 + 分钟线数据同步 (BigQuant DAI + Tushare HTTP) + 概念快照 (Tushare 东财板块接口)
 // 数据落地 = output/data/fundamental/YYYY-MM/*.parquet + YYYY-MM/bar1m/YYYY-MM-DD.parquet; 概念 = output/data/concept/YYYYMMDD.tsv (shared/Concept.hpp)
 // (fundamental/ 月度分片 + _meta 单文件 + Daily 日文件, 水位增量, 常量见 fundamental/Spec.hpp)
 // AssetInfo 从 parquet 构建 (按全局 id 稠密, 见 shared/AssetInfo.hpp).
@@ -31,14 +31,14 @@ struct TableFileStat {
 std::string short_time(std::time_t t); // "MM-DD HH:MM" (本地时区)
 
 // 同步道 = 一个接口的一类数据; 道序即 Update 的执行序, 日志 tag = kLaneTag
-//   Sync 页各源分表的表头逐道列出 (BigQuant 两道: 基本面 / 分钟线)
+//   Sync 页各源分表的表头逐道列出 (BigQuant 两道: 基本面 / 分钟线; Tushare 两道: 事件表 / 概念)
 enum Lane : std::size_t { kLaneBq,
                           kLaneTu,
                           kLaneConcept,
                           kLaneBar1m,
                           kLanes };
-inline constexpr const char *kLaneTag[kLanes] = {"bigquant", "tushare", "eastmoney.concept", "bigquant.bar1m"};
-inline constexpr const char *kConceptTable = "concept"; // 东财分表的表名 (概念快照)
+inline constexpr const char *kLaneTag[kLanes] = {"bigquant", "tushare", "tushare.concept", "bigquant.bar1m"};
+inline constexpr const char *kConceptTable = "concept"; // 概念快照在 Tushare 分表里的表名
 
 // 一道最近一次联网同步: Idle = 本进程未联网同步过; Queued = 本轮排在前道之后
 enum class LaneRun : std::uint8_t { Idle,
@@ -101,7 +101,7 @@ struct SyncResult {
 // 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::asset_info (只在 GUI 线程替换)
 //   - worker:   run = 外来写者 parquet 重写 (renative) → 四道计划 (Round, 纯本地) → 四道依次 drive
-//               [bigquant → tushare → eastmoney.concept → bigquant.bar1m] → 构建 (扫描 → 落地) → post
+//               [bigquant → tushare → tushare.concept → bigquant.bar1m] → 构建 (扫描 → 落地) → post
 //               (两开关皆关 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
 //               各道进退写 state.lanes (持 mutex)
 //   - UI:       进度面 = 自身 (Published): Scanning 重写 / Loading 同步 / Running 构建, done/total = 文件 / 任务 / 分片;

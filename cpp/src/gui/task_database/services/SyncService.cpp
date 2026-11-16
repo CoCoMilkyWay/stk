@@ -3,7 +3,7 @@
 // 同步: 四道 (kLaneTag) 同形 = 计划 (逐项, 纯本地判定) → drive 逐项执行 (Drive.hpp, 与 AuditService 同一骨架); 道序即执行序
 //   bigquant           sync::plan<Bq> 的 Month / Meta 表 → sync::run<Bq> (月度 parquet, 水位增量, 槽位状态见 fundamental/Store.hpp)
 //   tushare            sync::plan<Tu>                    → sync::run<Tu>
-//   eastmoney.concept  当日缺才有一项                     → sync_concepts (当日快照)
+//   tushare.concept    当日缺才有一项                     → sync_concepts (当日快照)
 //   bigquant.bar1m     sync::plan<Bq> 的 Daily 表         → sync::run<Bq> (分钟线日文件)
 //   四道同一套展示字段 state.lanes: 排队 / 在跑 / 完成 / 取消 + 计步 / 行数 / 收尾时刻
 //
@@ -11,7 +11,6 @@
 #include "gui/task_database/services/SyncService.hpp"
 
 #include "api/bigquant/client.hpp"
-#include "api/eastmoney/client.hpp"
 #include "api/tushare/client.hpp"
 #include "disk/Disk.hpp"
 #include "fundamental/Store.hpp"
@@ -22,6 +21,9 @@
 #include "misc/exec.hpp"
 #include "shared/AssetInfo.hpp"
 #include "shared/Concept.hpp"
+
+#include <arrow/array.h>
+#include <arrow/table.h>
 
 #include <algorithm>
 #include <atomic>
@@ -37,7 +39,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -138,7 +139,7 @@ void renative_all(Job &job) {
 // 同步: 概念道的一项 (另三道的项 = fundamental::Task)
 // ===========================================================================
 
-// 东财无分片 / 水位: 一项 = 当日一份快照, 当日缺才有
+// 概念无分片 / 水位: 一项 = 当日一份快照, 当日缺才有
 struct ConceptTask {
   Ymd day;
 };
@@ -149,39 +150,54 @@ std::string label(const ConceptTask &t) { return std::string(kConceptTable) + " 
 std::string_view table_of(const fundamental::Task &t) { return t.spec->name; }
 std::string_view table_of(const ConceptTask &) { return kConceptTable; }
 
-// 板块名单 (名称 → 代码) + 全 A 个股所属概念 (名称) 反排成各板块成分, 题材且够数的收; 返回收进快照的概念数
-//   东财网络不通 → 不落盘, 沿用已有快照 (概念非必需), 返回 0
-std::int64_t sync_concepts(Job &job, const ConceptTask &t) {
-  const auto unreachable = [] {
-    std::cerr << "[eastmoney] 网络不通, 沿用概念快照 " << concept_last() << std::endl;
-    return std::int64_t{0};
-  };
-  eastmoney::Client em;
-  job.set_message("同步 eastmoney.concept: 板块名单");
-  std::optional<std::vector<eastmoney::Board>> got = em.concepts();
-  if (!got)
-    return unreachable();
-  std::vector<eastmoney::Board> &boards = *got;
-  std::unordered_map<std::string_view, std::size_t> by_name;
-  for (std::size_t k = 0; k < boards.size(); ++k) {
-    const bool fresh = by_name.emplace(boards[k].name, k).second;
-    assert(fresh && "eastmoney: 板块名称重复");
+// Tushare 东财板块接口 (dc_index 板块名单 / dc_member 板块成分, 均按交易日)
+constexpr const char *kDcConcept = "概念板块"; // dc_index.idx_type 的概念一类
+constexpr const char *kDcSuffix = ".DC";       // ts_code = 板块代码 + 后缀
+constexpr int kDcLookback = 15;                // 当日无数据 (休市 / 未出) 往前找的天数上限
+constexpr std::int64_t kDcRows = 8000;         // 单次返回上限 (恰满 = 截断)
+
+// tushare 表的一列 (非 num 列 = utf8, 单块) 逐行; 缺列 / 空值 → assert
+std::vector<std::string> strings(const arrow::Table &t, const char *col) {
+  const auto c = t.GetColumnByName(col);
+  assert(c && c->num_chunks() == 1 && c->null_count() == 0 && "tushare.concept: 列缺失或有空值");
+  const auto &a = static_cast<const arrow::StringArray &>(*c->chunk(0));
+  std::vector<std::string> out;
+  out.reserve(static_cast<std::size_t>(a.length()));
+  for (std::int64_t i = 0; i < a.length(); ++i)
+    out.emplace_back(a.GetView(i));
+  return out;
+}
+
+// 最近一个有数据的交易日的概念板块名单, 题材的逐板块拉成分, 够数的收; 返回收进快照的概念数
+std::int64_t sync_concepts(Job &job, tushare::Client &tu, const ConceptTask &t) {
+  const std::string tag = std::string("同步 ") + kLaneTag[kLaneConcept] + ": ";
+  job.set_message(tag + "板块名单");
+  std::shared_ptr<arrow::Table> boards;
+  std::string day;
+  for (int k = 0; !boards || boards->num_rows() == 0; ++k) {
+    assert(k <= kDcLookback && "tushare.concept: 近期无板块数据");
+    day = misc::dense(misc::add_days(t.day, -k));
+    boards = tu.query({"dc_index", {{"trade_date", day}, {"idx_type", kDcConcept}}, {"pct_change", "leading_pct", "total_mv", "turnover_rate", "up_num", "down_num"}});
   }
-  job.set_message("同步 eastmoney.concept: 个股所属概念");
-  const std::optional<std::vector<eastmoney::Stock>> stocks = em.stocks();
-  if (!stocks)
-    return unreachable();
-  std::vector<std::vector<std::string>> syms(boards.size());
-  for (const eastmoney::Stock &s : *stocks)
-    for (const std::string &c : s.concepts) {
-      const auto it = by_name.find(c);
-      assert(it != by_name.end() && "eastmoney: 个股所属概念不在板块名单");
-      syms[it->second].push_back(s.sym);
-    }
+  assert(boards->num_rows() < kDcRows && "tushare.concept: dc_index 被截断");
+  const std::vector<std::string> codes = strings(*boards, "ts_code"), names = strings(*boards, "name");
+  for ([[maybe_unused]] const std::string &x : strings(*boards, "idx_type"))
+    assert(x == kDcConcept && "tushare.concept: dc_index 混入非概念板块");
   std::vector<Concept> list;
-  for (std::size_t k = 0; k < boards.size(); ++k)
-    if (concept_theme(boards[k].name) && syms[k].size() >= kConceptMin)
-      list.push_back({std::move(boards[k].code), std::move(boards[k].name), std::move(syms[k])});
+  for (std::size_t k = 0; k < codes.size(); ++k) {
+    if (!concept_theme(names[k]))
+      continue;
+    job.set_message(tag + "板块成分 " + std::to_string(k + 1) + "/" + std::to_string(codes.size()) + " " + names[k]);
+    const auto members = tu.query({"dc_member", {{"trade_date", day}, {"ts_code", codes[k]}}, {}});
+    assert(members->num_rows() < kDcRows && "tushare.concept: dc_member 被截断");
+    std::vector<std::string> syms = strings(*members, "con_code");
+    std::sort(syms.begin(), syms.end());
+    assert(std::adjacent_find(syms.begin(), syms.end()) == syms.end() && "tushare.concept: 板块成分重复");
+    if (syms.size() < kConceptMin)
+      continue;
+    assert(codes[k].ends_with(kDcSuffix) && "tushare.concept: ts_code 不是 BKxxxx.DC");
+    list.push_back({codes[k].substr(0, codes[k].size() - std::string_view(kDcSuffix).size()), names[k], std::move(syms)});
+  }
   std::sort(list.begin(), list.end(), [](const Concept &x, const Concept &y) { return x.code < y.code; });
   save_concepts(t.day, list);
   return static_cast<std::int64_t>(list.size());
@@ -286,12 +302,13 @@ bool SyncService::run(SyncRequest &req) {
       return rows;
     };
     std::optional<tushare::Client> tu;
-    auto run_tu = [&](const fundamental::Task &t) {
+    auto tu_client = [&]() -> tushare::Client & {
       if (!tu)
         tu.emplace();
-      return fundamental::sync::run<fundamental::Tu>(*tu, t);
+      return *tu;
     };
-    auto run_concept = [&](const ConceptTask &t) { return sync_concepts(job, t); };
+    auto run_tu = [&](const fundamental::Task &t) { return fundamental::sync::run<fundamental::Tu>(tu_client(), t); };
+    auto run_concept = [&](const ConceptTask &t) { return sync_concepts(job, tu_client(), t); };
 
     std::cout << "[sync] from " << fundamental::kSyncStart << " (lookback=" << fundamental::kLookbackDays
               << "d, dedup=" << fundamental::kDedupSeconds << "s)" << std::endl;

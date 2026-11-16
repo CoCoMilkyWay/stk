@@ -6,20 +6,14 @@
 
 #include "live/Broker.hpp"
 #include "live/tdx/Mem.hpp"
-#include "live/tdx/Tables.hpp"
+
+#include <memory>
 
 namespace live::tdx::credit {
 
-struct Tables {
-  mem::Table<tables::Margins> margins;
-  mem::Table<tables::Collats> collats;
-  mem::Table<tables::Assets> assets;
-  mem::Table<tables::Debts> debts;
-};
-
 // 客户端重查两融条款 (须持界面锁)
-Terms pull(Tables &t, const mem::HeapP &heap, const Log &log, const Live &live);
-// 客户端重查信用资产与融资负债 (须持界面锁, 停在融资负债汇总页); q 须含两表, pos 为同一轮刚读的持仓
-Account account(Tables &t, mem::Chain &q, const Keyed<Position> &pos);
+Terms pull(const mem::HeapP &heap, const Log &log, const Live &live);
+// 客户端重查信用资产与融资负债 (须持界面锁, 停在融资负债汇总页); q 须含两表, held 为同一轮刚读的持仓
+Account account(mem::Chain &q, std::shared_ptr<const Keyed<Position>> held);
 
 } // namespace live::tdx::credit

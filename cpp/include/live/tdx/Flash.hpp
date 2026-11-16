@@ -16,8 +16,7 @@
 namespace live::tdx::flash {
 
 const std::vector<std::string> &steps();
-bool supports(int side, Credit credit);
-// 当前线程跑完 (须持界面锁); step(i, 概要) 报进度
+// 当前线程跑完 (须持界面锁); 每步开头 step(i, 概要) 报进度 (概要填单后才有)
 Placed place(const OrderReq &o, const Step &step);
 
 } // namespace live::tdx::flash

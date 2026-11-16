@@ -13,6 +13,7 @@
 #include "live/tdx/Win.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
@@ -20,6 +21,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 
 namespace live::tdx {
 
@@ -40,8 +42,79 @@ using FillSnap = mem::Snap<tables::Fills>;
 
 constexpr size_t idx(Part p) { return static_cast<size_t>(p); }
 
-// 盯着的一样 (被动换代的表): 表、当前快照、交易栏页签、页上条数标签可否作应答到了的判据 (只增不改的表: 条数对上即同一份)、
-// 发布到 State 的哪样、快照 → 发布值
+// 界面锁: 客户端界面自动化 (刷新 / 下单 / 两融条款 / 资金流水 / 调仓) 一次只许一路; who = 占着的那路 (空 = 空闲).
+// 同一线程可重入 (调仓整批占着, 逐单再进), who 记最外层
+class Gate {
+public:
+  class Hold {
+  public:
+    Hold(Gate &g, const char *who) : g_(g) {
+      if (!g_.mu_.try_lock()) {
+        const std::string by = g_.who();
+        const Clock::time_point t0 = Clock::now();
+        ++g_.waiting_;
+        g_.mu_.lock();
+        --g_.waiting_;
+        ++g_.granted_;
+        trace::ev("gate", {{"by", by}, {"ms", trace::ms_since(t0)}});
+      }
+      std::lock_guard lk(g_.who_mu_);
+      outer_ = g_.who_;
+      if (g_.who_.empty())
+        g_.who_ = who;
+    }
+    ~Hold() {
+      {
+        std::lock_guard lk(g_.who_mu_);
+        g_.who_ = outer_;
+      }
+      g_.mu_.unlock();
+    }
+    Hold(const Hold &) = delete;
+    Hold &operator=(const Hold &) = delete;
+
+    // 有别路在等即先让它占、做完再接着占 (刷新一轮在两步之间让下单等先走); 只许最外层调.
+    // 让出期间界面任人改, 接着的一步须自己切到要的页. 锁不保证先等先得: 放开后等在等的那路占到了再去抢
+    void yield() {
+      assert(outer_.empty());
+      if (g_.waiting_ == 0)
+        return;
+      std::string me;
+      {
+        std::lock_guard lk(g_.who_mu_);
+        me = std::exchange(g_.who_, "");
+      }
+      const uint64_t n = g_.granted_;
+      const Clock::time_point t0 = Clock::now();
+      g_.mu_.unlock();
+      poll([&] { return g_.granted_ != n; }, 1, 0.001);
+      g_.mu_.lock();
+      {
+        std::lock_guard lk(g_.who_mu_);
+        g_.who_ = std::move(me);
+      }
+      trace::ev("yield", {{"ms", trace::ms_since(t0)}});
+    }
+
+  private:
+    Gate &g_;
+    std::string outer_;
+  };
+
+  std::string who() const {
+    std::lock_guard lk(who_mu_);
+    return who_;
+  }
+
+private:
+  std::recursive_mutex mu_;
+  mutable std::mutex who_mu_;
+  std::string who_;
+  std::atomic<int> waiting_{0};      // 在等的路数
+  std::atomic<uint64_t> granted_{0}; // 等过才占到的次数
+};
+
+// 盯着的一样 (被动换代的表): 表、当前快照、交易栏页签、发布到 State 的哪样、快照 → 发布值
 template <class S, class T>
 struct Watched {
   using Snap = mem::Snap<S>;
@@ -49,32 +122,27 @@ struct Watched {
   mem::Table<S> t;
   std::optional<Snap> snap;
   const char *tab;
-  bool counted;
   Got<T> State::*got;
   T (*view)(const Snap &);
 };
 
-// 清空页上的条数标签 (有才清): 客户端处理完随后那次查询的应答即写回
+// 页上的条数标签 (有才有): 清空 / 作应答到了的判据 (t 在 act 里才定, 故引用)
 void clear(const std::optional<ui::Tab> &t) {
   if (t && t->count)
-    win::settext(*t->count, "");
+    t->count->clear();
 }
-// 页上的条数标签作应答到了的判据: 写着条数即到了, 清空着或写着别的即还没 (t 在 act 里才定, 故引用)
 mem::Count count_of(const std::optional<ui::Tab> &t) {
-  return [&t]() -> std::optional<int> { return t && t->count ? ui::count_in(win::text(*t->count, 1)) : std::nullopt; };
+  return [&t]() -> std::optional<int> { return t && t->count ? t->count->read(1) : std::nullopt; };
 }
 
 // 两个后台线程与 Broker 接口共用; 线程各持一份 shared_ptr, Tdx 析构只置停 (在途的界面操作做完即退)
 struct Core {
-  ui::Gate gate;
+  Gate gate;
 
   // work: 盯着的两样与进程堆 (盯持仓的一步、刷新一轮的取数 / 并入都在其内); 序: work → mu
   std::mutex work;
-  Watched<tables::Fills, Fills> fills{{}, {}, "成交", true, &State::fills, [](const FillSnap &s) { return Fills{s.rows, s.index}; }};
-  Watched<tables::Positions, Keyed<Position>> pos{{}, {}, "持仓", false, &State::pos, [](const PosSnap &s) { return s.index; }};
-  mem::Table<tables::Pendings> pendings;
-  credit::Tables credit;
-  mem::Table<tables::CashFlows> flows;
+  Watched<tables::Fills, Fills> fills{{}, {}, "成交", &State::fills, [](const FillSnap &s) { return Fills{s.rows, s.index}; }};
+  Watched<tables::Positions, Keyed<Position>> pos{{}, {}, "持仓", &State::pos, [](const PosSnap &s) { return s.index; }};
   mem::HeapP heap;
   Clock::time_point scan_at{};
 
@@ -94,6 +162,14 @@ struct Core {
   Clock::time_point touched{};
 
   bool watched(Clock::time_point now) const { return holds > 0 || now - touched < kWatchLinger; }
+
+  // 要一轮 → 该范围的轮号
+  uint64_t want(Part p) {
+    std::lock_guard lk(mu);
+    const uint64_t n = ++asked[idx(p)];
+    cv.notify_all();
+    return n;
+  }
 
   // 改发布的 State (须持 mu)
   template <class F>
@@ -277,7 +353,7 @@ struct Core {
     return true;
   }
 
-  // 重查盯着的一样: 切到其页签 (counted 的先清条数标签) 点刷新, 等快照换代
+  // 被动换代的一样重查: 切到其页签、清条数标签、点刷新, 等快照换代 (条数标签作不作数由读法定)
   template <class W>
   void refresh(W &w) {
     note(State::name(w.got));
@@ -286,25 +362,36 @@ struct Core {
       std::lock_guard wk(work);
       return *w.snap;
     }();
-    std::optional<ui::Tab> tab = ui::open_tab(w.tab);
-    if (!w.counted && tab)
-      tab->count.reset();
+    const std::optional<ui::Tab> tab = ui::open_tab(w.tab);
     clear(tab);
     ui::click_tool("刷新");
     typename W::Snap n = w.t.wait(old, count_of(tab));
     std::lock_guard wk(work);
     fresh(w, std::move(n), true);
   }
+  // act 驱动的一样重查: fn() 让客户端重查并读回 → 发布值
+  template <class T, class F>
+  void ask(Got<T> State::*g, F &&fn) {
+    note(State::name(g));
+    trace::Span span(State::name(g));
+    auto v = std::make_shared<const T>(fn());
+    std::lock_guard lk(mu);
+    put(g, std::move(v), true);
+  }
   bool synced() {
     std::lock_guard lk(mu);
     return board::synced(*st->pos, *st->fills);
   }
+  std::shared_ptr<const Keyed<Position>> held() {
+    std::lock_guard lk(mu);
+    return st->pos.v;
+  }
 
   // 占界面锁 (别路占着即等它做完)
-  ui::Gate::Hold hold() {
+  Gate::Hold hold() {
     if (const std::string w = gate.who(); !w.empty())
       note("等界面 (" + w + ")");
-    return ui::Gate::Hold(gate, "刷新");
+    return Gate::Hold(gate, "刷新");
   }
   // 接上客户端、交易栏展开
   mem::HeapP enter() {
@@ -323,7 +410,7 @@ struct Core {
   // (撤单页上另画着一个撤单动作键, 故切去时须在持仓页, 页签唯一).
   // 各样之间有别路 (下单等) 在等界面即先让它 (三问一串之内不让: 让出期间客户端可能自己重查, 新块就不是这问的应答了)
   void round() {
-    ui::Gate::Hold g = hold();
+    Gate::Hold g = hold();
     const mem::HeapP h = enter();
     for (int i = 0; i < kSyncTries; ++i) {
       g.yield();
@@ -336,44 +423,34 @@ struct Core {
     }
     g.yield();
     mem::Chain q(h, {&tables::Pendings::kShape, &tables::Assets::kShape, &tables::Debts::kShape});
-    note(State::name(&State::orders));
-    std::shared_ptr<const Keyed<Position>> held;
-    {
-      trace::Span span(State::name(&State::orders));
+    ask(&State::orders, [&] {
       // 「撤单」页: 切页与刷新同在一问内 (切页自带一次查询, 其应答可能早于刷新); 等页出来再点刷新, 免得刷到原先那页
       std::optional<ui::Tab> tab;
-      auto orders = q.ask(
-          pendings, [&] {
-            tab = ui::open_tab("撤单");
-            clear(tab);
-            ui::click_tool("刷新");
-          },
-          count_of(tab));
-      std::lock_guard lk(mu);
-      put(&State::orders, std::make_shared<const std::vector<Pending>>(std::move(orders.rows)), true);
-      held = st->pos.v;
-    }
-    note(State::name(&State::acct));
-    {
-      trace::Span span(State::name(&State::acct));
-      auto a = std::make_shared<const Account>(credit::account(credit, q, *held));
+      const auto act = [&] {
+        tab = ui::open_tab("撤单");
+        clear(tab);
+        ui::click_tool("刷新");
+      };
+      return q.ask<tables::Pendings>(act, count_of(tab)).rows;
+    });
+    ask(&State::acct, [&, p = held()] {
+      Account a = credit::account(q, p);
       trace::ev("put", {{"what", State::name(&State::acct)},
-                        {"assets", a->assets},
-                        {"line", a->line},
-                        {"debt", a->debt},
-                        {"net", a->net},
-                        {"avail", a->avail},
-                        {"cash", a->cash},
-                        {"debts", a->debts.size()}});
-      std::lock_guard lk(mu);
-      put(&State::acct, std::move(a), true);
-    }
+                        {"assets", a.assets},
+                        {"line", a.line},
+                        {"debt", a.debt},
+                        {"net", a.net},
+                        {"avail", a.avail},
+                        {"cash", a.cash},
+                        {"debts", a.debts.size()}});
+      return a;
+    });
     ui::click_tool("持仓");
   }
 
   // 只刷成交 (等卖单成交时轮询); 查完回持仓页
   void round_fills() {
-    const ui::Gate::Hold g = hold();
+    const Gate::Hold g = hold();
     enter();
     refresh(fills);
     ui::click_tool("持仓");
@@ -475,14 +552,9 @@ public:
     c_->cv.notify_all();
   }
 
-  uint64_t request(Part p) override {
-    std::lock_guard lk(c_->mu);
-    const uint64_t n = ++c_->asked[idx(p)];
-    c_->cv.notify_all();
-    return n;
-  }
+  void request(Part p) override { c_->want(p); }
   void sync(Part p) override {
-    const uint64_t n = request(p);
+    const uint64_t n = c_->want(p);
     std::unique_lock lk(c_->mu);
     c_->cv.wait(lk, [&] { return c_->done[idx(p)] >= n || c_->stop; });
     if (c_->stop)
@@ -508,32 +580,30 @@ public:
 
   const std::vector<std::string> &order_steps() const override { return flash::steps(); }
   Placed place(const OrderReq &o, const Step &step) override {
-    trace::Span span("下单", {{"code", o.sec.code}, {"name", o.sec.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}, {"size", o.size}});
-    ui::Gate::Hold g(c_->gate, "下单");
-    c_->connected();
-    Placed p = flash::place(o, step);
-    trace::ev("placed", {{"qty", p.qty}, {"px", p.px}, {"msg", p.msg}});
-    return p;
+    return txn("下单",
+               {{"code", o.sec.code}, {"name", o.sec.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}, {"size", o.size}},
+               [&](const mem::HeapP &) {
+                 Placed p = flash::place(o, step);
+                 trace::ev("placed", {{"qty", p.qty}, {"px", p.px}, {"msg", p.msg}});
+                 return p;
+               });
   }
   void exclusive(const char *who, const std::function<void()> &fn) override {
-    trace::Span span(who);
-    ui::Gate::Hold g(c_->gate, who);
-    c_->connected();
-    fn();
+    txn(who, trace::Kw::object(), [&](const mem::HeapP &) { fn(); });
   }
   Terms pull_terms(const Log &log, const Live &live) override {
-    trace::Span span("两融条款");
-    ui::Gate::Hold g(c_->gate, "两融条款");
-    Terms t = credit::pull(c_->credit, c_->connected(), log, live);
-    trace::ev("terms", {{"n", t.size()}});
-    return t;
+    return txn("两融条款", trace::Kw::object(), [&](const mem::HeapP &h) {
+      Terms t = credit::pull(h, log, live);
+      trace::ev("terms", {{"n", t.size()}});
+      return t;
+    });
   }
   std::vector<CashFlow> pull_flows(misc::Ymd from, const Log &log, const Live &live) override {
-    trace::Span span("资金流水", {{"from", from}});
-    ui::Gate::Hold g(c_->gate, "资金流水");
-    std::vector<CashFlow> f = flow::pull(c_->flows, c_->connected(), from, log, live);
-    trace::ev("flows", {{"n", f.size()}});
-    return f;
+    return txn("资金流水", {{"from", from}}, [&](const mem::HeapP &h) {
+      std::vector<CashFlow> f = flow::pull(h, from, log, live);
+      trace::ev("flows", {{"n", f.size()}});
+      return f;
+    });
   }
 
   void console() override {
@@ -543,6 +613,14 @@ public:
   }
 
 private:
+  // 一件界面事务: 段 (who {kw}) + 界面锁 + 接上客户端, 当前线程跑 fn(进程堆)
+  template <class F>
+  auto txn(const char *who, trace::Kw kw, F &&fn) {
+    trace::Span span(who, std::move(kw));
+    const Gate::Hold g(c_->gate, who);
+    return fn(c_->connected());
+  }
+
   std::shared_ptr<Core> c_;
   std::unique_ptr<tdx::console::Console> console_; // 首次打开 Client 页才建
 };

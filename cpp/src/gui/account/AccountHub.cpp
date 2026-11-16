@@ -5,7 +5,6 @@
 #include "gui/account/AccountSide.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <functional>
 #include <unordered_map>
 #include <vector>
@@ -37,12 +36,9 @@ std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const
   auto h = std::make_shared<Quote::Holdings>();
   if (a && a->net > 0) {
     h->broker = true, h->net = a->net;
-    for (const auto &[code, q] : a->bal)
-      if (q != 0) {
-        const auto p = a->px.find(code);
-        assert(p != a->px.end() && "信用账户: 持仓缺现价");
-        h->list.push_back(holding(code, q, p->second));
-      }
+    for (const live::Position &p : a->held->list)
+      if (p.balance != 0)
+        h->list.push_back(holding(p.code, p.balance, p.price));
     if (f)
       for (const live::Flow &x : f->by_code.list)
         h->amount += x.amount[live::kBuy] + x.amount[live::kSell], h->buy += x.amount[live::kBuy];
@@ -89,9 +85,9 @@ account::Spot AccountHub::spot() const {
     return s;
   s.date = misc::today_ymd();
   const AssetAxis &ax = asset_axis();
-  for (const auto &[code, p] : acct_->px)
-    if (ax.find(account::asset_code(code)) >= ax.size())
-      s.px[code] = p;
+  for (const live::Position &p : acct_->held->list)
+    if (ax.find(account::asset_code(p.code)) >= ax.size())
+      s.px[p.code] = p.price;
   return s;
 }
 

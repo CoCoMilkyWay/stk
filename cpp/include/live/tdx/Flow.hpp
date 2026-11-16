@@ -5,13 +5,12 @@
 
 #include "live/Broker.hpp"
 #include "live/tdx/Mem.hpp"
-#include "live/tdx/Tables.hpp"
 
 #include <vector>
 
 namespace live::tdx::flow {
 
 // 客户端重查 from 日起 (含) 至昨日的资金流水 (须持界面锁; 客户端只给到上一日); from = 0 即从昨日往前逐窗查到连续几窗无流水 (开户前)
-std::vector<CashFlow> pull(mem::Table<tables::CashFlows> &t, const mem::HeapP &heap, misc::Ymd from, const Log &log, const Live &live);
+std::vector<CashFlow> pull(const mem::HeapP &heap, misc::Ymd from, const Log &log, const Live &live);
 
 } // namespace live::tdx::flow

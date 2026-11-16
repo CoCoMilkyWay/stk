@@ -21,7 +21,7 @@ GUI布局:
 
 数据流:
   ① 数据  BigQuant / Tushare ─(SyncService)─► output/data/fundamental ─► AssetInfo (资产元数据) / fund::Panel (日频 PIT 面板) / bar1m
-          东财 ─────────────────(SyncService)─► output/data/concept (概念成分快照)
+          Tushare 东财板块 ─────(SyncService)─► output/data/concept (概念成分快照)
           L2 逐笔 CSV 归档 ─────(EncodeService)─► output/data/orders (一日一文件, 每资产一 zstd 帧)
           新浪 ─────────────────(QuoteService)─► output/data/quote (当日行情, 接在 all.bar 库 / 基本面历史之后)
   ② 特征  orders | bar1m + fund::Panel + pool::Panel ─(ComputeService → pipeline<T>: 预取 → 时序 → 截面 → 落盘)─► output/features/<pool>/<tier> (特征库)
@@ -234,7 +234,7 @@ stk/
 │   │   │   │   │   ├── StateManager.hpp                # 🖥️ 流水线编排 (GUI 线程): 基本面 / 扫描 / 编码 / 核对 四 worker 各一通道, 陈旧交接件丢弃
 │   │   │   │   │   │                                   #    · 共享状态 (AssetInfo / Asset::items / 扫描产物) 只在帧首换进; 特征计算在飞 = 冻结
 │   │   │   │   │   │                                   #    · 唯一刷新链: 同步 → AssetInfo 重建 → 覆盖扫描
-│   │   │   │   │   ├── SyncService.hpp                 # 🖥️ 同步 基本面 + bar1m (BigQuant / Tushare) + 概念快照 (东财) → 落盘 (水位增量) → 构建 AssetInfo
+│   │   │   │   │   ├── SyncService.hpp                 # 🖥️ 同步 基本面 + bar1m (BigQuant / Tushare) + 概念快照 (Tushare 东财板块) → 落盘 (水位增量) → 构建 AssetInfo
 │   │   │   │   │   ├── AuditService.hpp                # 🖥️ 核对: BigQuant 远端 ↔ 本地冻结月分片, 逐级定位 + 逐表修复
 │   │   │   │   │   ├── Drive.hpp                       # 🖥️ 逐项驱动骨架 (同步 / 核对共用): 取消 / 计步 / 日志
 │   │   │   │   │   ├── ScanService.hpp                 # 🖥️ L2 binary / archive 扫盘 + 回测区间覆盖: 待编码 = archive 有 binary 无
@@ -242,7 +242,7 @@ stk/
 │   │   │   │   │   ├── FileCheckService.hpp            # 🖥️ 归档核查 ⇄ 修复 (Check / Repair 两请求, 顺序逐个, 单盘); 结论交 Encode 页
 │   │   │   │   │   └── AssetLoader.hpp                 # 🖥️ A 轴物化: AssetInfo::codes (含退市) → AssetAxis → Asset::items (下标 = asset_id)
 │   │   │   │   └── ui/
-│   │   │   │       ├── TabSync.hpp                     # 🖥️ 数据源状态与同步入口 (BigQuant / Tushare / 东财 / 新浪) + 核对
+│   │   │   │       ├── TabSync.hpp                     # 🖥️ 数据源状态与同步入口 (BigQuant / Tushare / 新浪) + 核对
 │   │   │   │       ├── TabEncode.hpp                   # 🖥️ L2 覆盖检查 / 文件核查 / 编码
 │   │   │   │       └── TabCalendar.hpp                 # 🖥️ 交易日历格: 除权除息 / 节假日 / 回测区间 / L2 覆盖
 │   │   │   ├── task_beta/                              # 🖥️ Beta 任务 (风格择优)
@@ -368,8 +368,7 @@ stk/
 │   │   ├── api/                                        # 🌐 数据源 API: 纯传输, 不知 Spec / 资产轴
 │   │   │   ├── bigquant/client.hpp                     # 🌐 BigQuant DAI: query → arrow::Table / quota
 │   │   │   ├── tushare/client.hpp                      # 🌐 Tushare HTTP: query → arrow::Table
-│   │   │   ├── sina/client.hpp                         # 🌐 新浪行情: 批量快照 (含五档) / 1 分钟 K / 日 K
-│   │   │   └── eastmoney/client.hpp                    # 🌐 东财: 概念板块名单 / 个股所属概念
+│   │   │   └── sina/client.hpp                         # 🌐 新浪行情: 批量快照 (含五档) / 1 分钟 K / 日 K
 │   │   ├── fundamental/                                # 📊 日频基本面数据集: 两数据源同一套; 只单向依赖 api
 │   │   │   ├── Spec.hpp                                # 📊 表定义 SPECS: Shape × snap × src (Bq / Tu)
 │   │   │   ├── AssetAxis.hpp                           # 📊 A 轴 append-only 注册表 (列序 = asset_id) + 池轴 PoolAxis (全局 id 子集)

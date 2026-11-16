@@ -256,7 +256,7 @@ Sheet sheet(double assets, double net, double debt, double cash, std::optional<d
   return {assets, net, debt, cash, X, L, assets / net, debt ? std::optional<double>(assets / debt) : std::nullopt};
 }
 
-Prices prices(const Bal &bal, const std::map<std::string, std::pair<double, double>> &debts, const Quotes &quotes) {
+Prices prices(const Bal &bal, const Debts &debts, const Quotes &quotes) {
   Prices px;
   for (const auto &[c, n] : bal)
     px[c] = quote_at(quotes, c).price;
@@ -275,7 +275,7 @@ nlohmann::json to_json(const Sheet &s) {
 
 double fee(double amt, int s) { return amt * (kCommission + kTransfer + (s == kSell ? kStamp : 0)); }
 
-double surplus(const Bal &bal, const std::map<std::string, std::pair<double, double>> &debts, const Prices &px, const Terms &terms) {
+double surplus(const Bal &bal, const Debts &debts, const Prices &px, const Terms &terms) {
   std::set<std::string> codes;
   for (const auto &[c, n] : bal)
     codes.insert(c);
@@ -286,7 +286,7 @@ double surplus(const Bal &bal, const std::map<std::string, std::pair<double, dou
     const auto b = bal.find(code);
     const auto d = debts.find(code);
     const double n = b == bal.end() ? 0 : b->second;
-    const auto [dq, amt] = d == debts.end() ? std::pair{0.0, 0.0} : d->second;
+    const auto [dq, amt] = d == debts.end() ? Debt{} : d->second;
     const Term *t = term_of(terms, code);
     if (!t)
       fail("两融条款里没有 " + code);
@@ -303,7 +303,7 @@ double surplus(const Bal &bal, const std::map<std::string, std::pair<double, dou
 }
 
 double avail(const Account &a, const Prices &px0, const Bal &bal, const Quotes &quotes, const Terms &terms) {
-  return a.avail + surplus(bal, a.debts, prices(bal, a.debts, quotes), terms) - surplus(a.bal, a.debts, px0, terms);
+  return a.avail + surplus(bal, a.debts, prices(bal, a.debts, quotes), terms) - surplus(balances(*a.held), a.debts, px0, terms);
 }
 
 std::string why(const Term *t) {

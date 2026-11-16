@@ -1,9 +1,9 @@
-// Tab Sync - 数据源 (BigQuant / Tushare / 东财 / 新浪) 状态与同步入口
+// Tab Sync - 数据源 (BigQuant / Tushare / 新浪) 状态与同步入口
 // 数据落地 = output/data/fundamental/{YYYY-MM, _meta}/<表>.parquet + YYYY-MM/<表>/YYYY-MM-DD.parquet (Daily)
 //   (水位增量, 常量见 fundamental/Spec.hpp) + output/data/concept/YYYYMMDD.tsv + output/data/quote/live.bin;
 // AssetInfo 由 SyncService 从 parquet 构建, 此处只渲染状态 + 回写按钮 flag.
 //
-// 一源一张分表 (BigQuant / Tushare / 东财 / 新浪), 列同形; 表头 = 源名 + 说明 + 各道同步状态
+// 一源一张分表 (BigQuant / Tushare / 新浪), 列同形; 表头 = 源名 + 说明 + 各道同步状态
 //   (Update 四道 = SyncState::lanes, 道序即执行序; 新浪当日 = QuoteStatus, 常驻轮询).
 //
 // 逐表清单的两半信息各有出处, 谁也不抄谁:
@@ -227,7 +227,7 @@ void text_wrapped_disabled(const char *s) {
   ImGui::PopStyleColor();
 }
 
-// 一行的静态元描述; SPECS 的表取自 spec (meta_of), 东财 / 新浪各自填, 四源同列
+// 一行的静态元描述; SPECS 的表取自 spec (meta_of), 概念 / 新浪各自填, 三源同列
 struct RowMeta {
   std::string name, vd, fetch, ready, desc;
   bool meta_single = false; // 落 _meta/ 单文件
@@ -535,7 +535,7 @@ void RenderTabSync(
                      audit_progress.total.load(std::memory_order_relaxed)};
 
   ImGui::Spacing();
-  ImGui::SeparatorText("Data Sources (BigQuant DAI · Tushare · 东财 · 新浪)");
+  ImGui::SeparatorText("Data Sources (BigQuant DAI · Tushare · 新浪)");
 
   // 状态行
   ImGui::Text("Status:");
@@ -601,7 +601,7 @@ void RenderTabSync(
       *update_clicked = true;
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("pending 判定 → 依次同步 bigquant / tushare (水位增量) → eastmoney.concept (当日缺才拉)\n"
+      ImGui::SetTooltip("pending 判定 → 依次同步 bigquant / tushare (水位增量) → tushare.concept (当日缺才拉)\n"
                         "→ bigquant.bar1m (逐日) → 重建 AssetInfo\n"
                         "已到水位时零网络, 秒级完成; 新浪当日不在其中 (Market 任务起后常驻轮询)");
     }
@@ -682,14 +682,12 @@ void RenderTabSync(
   lane_chip(state, kLaneBar1m);
   table("FundBigQuantTables", [&] { spec_rows(false); });
 
-  caption("Tushare", "BigQuant 无等价表的事件型 fallback, output/data/fundamental/ (不参与 Audit)");
+  caption("Tushare", "BigQuant 无等价表的事件型 fallback + 东财题材概念快照, output/data/{fundamental, concept}/ (不参与 Audit)");
   lane_chip(state, kLaneTu);
-  table("FundTushareTables", [&] { spec_rows(true); });
-
-  caption("东财", "题材概念成分快照, output/data/concept/ (不参与 Audit)");
   lane_chip(state, kLaneConcept);
-  table("FundEastmoneyTables", [&] {
-    table_row({kConceptTable, "-", "快照", "-", "题材概念板块成分 (一行一概念: 板块代码 / 名称 / 成分码), 一日一份"}, scanned,
+  table("FundTushareTables", [&] {
+    spec_rows(true);
+    table_row({kConceptTable, "-", "快照", "-", "东财题材概念板块成分 (dc_index / dc_member; 一行一概念: 板块代码 / 名称 / 成分码), 一日一份"}, scanned,
               state.concept_files.months ? &state.concept_files : nullptr, writing(kConceptTable), nullptr, av,
               disable_audit, audit_table, repair_table, weekly);
   });

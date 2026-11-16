@@ -1,5 +1,6 @@
 #include "live/tdx/Credit.hpp"
 
+#include "live/tdx/Tables.hpp"
 #include "live/tdx/Trace.hpp"
 #include "live/tdx/Ui.hpp"
 #include "live/tdx/Until.hpp"
@@ -9,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <stop_token>
 #include <thread>
 
 namespace live::tdx::credit {
@@ -25,54 +27,39 @@ double secs(Clock::time_point a, Clock::time_point b) { return Secs(b - a).count
 // 拼表期间每 kLiveGap 秒报 live (已等秒数 / 内存行数 / 页上条数 / 条数标签多久没读到).
 // 条数标签经客户端界面线程读, 客户端卡着时读不动, 故另起线程读; 内存直接读, 不受卡顿影响
 template <class S>
-mem::IndexOf<S> full(mem::Table<S> &table, const mem::HeapP &heap, const Log &log, const Live &live, const std::string &func, const std::string &col) {
+mem::IndexOf<S> full(const mem::HeapP &heap, const Log &log, const Live &live, const std::string &func, const std::string &col) {
   trace::Span span(func);
   log("page", {{"func", func}});
   live("开「" + func + "」页, 等客户端重查…");
-  const win::Hwnd dlg = ui::open_page(func, col);
-  const win::Hwnd lbl = ui::count_label(dlg);
-  win::command(dlg, ui::kPageAll);
+  const ui::Page pg = ui::open_page(func, col);
+  ui::query_all(pg);
   log("all", {{"func", func}});
   const Clock::time_point t0 = Clock::now();
 
   std::mutex mu;
-  std::condition_variable cv;
-  bool stop = false;
+  std::condition_variable_any cv;
   std::optional<int> n;
   Clock::time_point at = t0;
   std::optional<std::string> err;
-  std::thread label([&] {
+  std::jthread label([&](std::stop_token stop) {
     trace::Span labelling(func + "条数标签");
     try {
       std::unique_lock lk(mu);
-      while (!stop) {
+      while (!stop.stop_requested()) {
         lk.unlock();
-        const std::optional<int> got = ui::page_count(lbl, kFullWait);
+        const std::optional<int> got = pg.count.read(kFullWait);
         lk.lock();
         n = got;
         at = Clock::now();
-        cv.wait_for(lk, Secs(kLiveGap), [&] { return stop; });
+        cv.wait_for(lk, stop, Secs(kLiveGap), [] { return false; });
       }
     } catch (const Fail &f) {
       std::lock_guard lk(mu);
       err = f.why;
     }
   });
-  struct Join {
-    std::thread &t;
-    std::mutex &mu;
-    std::condition_variable &cv;
-    bool &stop;
-    ~Join() {
-      {
-        std::lock_guard lk(mu);
-        stop = true;
-      }
-      cv.notify_all();
-      t.join();
-    }
-  } join{label, mu, cv, stop};
 
+  mem::Table<S> table;
   std::optional<int> pn;
   size_t got = 0;
   std::optional<std::pair<std::optional<int>, size_t>> seen;
@@ -152,17 +139,17 @@ double value(const std::map<std::string, std::string> &c, const char *name) {
 
 } // namespace
 
-Terms pull(Tables &t, const mem::HeapP &heap, const Log &log, const Live &live) {
+Terms pull(const mem::HeapP &heap, const Log &log, const Live &live) {
   ui::show_bar();
-  const auto mg = full(t.margins, heap, log, live, "标的证券查询", "融资保证金比例");
-  const auto co = full(t.collats, heap, log, live, "担保品查询", "担保折算率");
+  const auto mg = full<tables::Margins>(heap, log, live, "标的证券查询", "融资保证金比例");
+  const auto co = full<tables::Collats>(heap, log, live, "担保品查询", "担保折算率");
   ui::click_tool("持仓");
   return merge(mg, co);
 }
 
-Account account(Tables &t, mem::Chain &q, const Keyed<Position> &pos) {
-  const auto c = q.ask(t.assets, [] { ui::click_func("信用资产"); }).index;
-  const auto d = q.ask(t.debts, [] { ui::click_func("融资负债汇总"); }).index;
+Account account(mem::Chain &q, std::shared_ptr<const Keyed<Position>> held) {
+  const auto c = q.ask<tables::Assets>([] { ui::click_func("信用资产"); }).index;
+  const auto d = q.ask<tables::Debts>([] { ui::click_func("融资负债汇总"); }).index;
   Account a;
   a.assets = value(c, "担保资产");
   a.line = value(c, "最高融资额度") - value(c, "融资负债（含费用）");
@@ -173,9 +160,7 @@ Account account(Tables &t, mem::Chain &q, const Keyed<Position> &pos) {
   a.rate = value(c, "融资年利率");
   for (const tables::Debt &r : d.list)
     a.debts[r.code] = {r.qty, r.amount};
-  a.bal = balances(pos);
-  for (const Position &p : pos.list)
-    a.px[p.code] = p.price;
+  a.held = std::move(held);
   return a;
 }
 

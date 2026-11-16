@@ -44,13 +44,15 @@ const Kind *kind_of(int side, Credit credit) {
   return nullptr;
 }
 
-// 本单上下文
+// 本单上下文: 各步依次填写 (main 切换 / dlg 开窗 / px_s px n detail 填单 / box 确认 / msg 回报)
 struct Ctx {
   const OrderReq &o;
   const Kind &k;
   Hwnd main, dlg, box;
   std::string px_s;
+  double px = 0;
   long n = 0;
+  std::string detail, msg;
 };
 
 bool is_num(const std::string &t) {
@@ -141,7 +143,7 @@ void open(Ctx &c) {
   c.dlg = ui::popup({c.k.title}, 3, [&] { win::post(c.main, win::kWmCommand, c.k.cmd); });
 }
 
-std::string form(Ctx &c, double &px_out) {
+void form(Ctx &c) {
   const auto ids = win::ctls(c.dlg, {{"code", c.k.code}, {"price", c.k.price}, {"qty", c.k.qty}, {"unit", c.k.unit}, {"quote", c.k.quote}, {"max", c.k.max}});
   const std::string got = win::text(ids.at("code"));
   if (got != c.o.sec.code)
@@ -162,17 +164,17 @@ std::string form(Ctx &c, double &px_out) {
   until(said("闪电窗最大可买 / 可卖"), [&] { return !win::text(ids.at("max")).empty(); }, 1);
   const long cap0 = max_qty(ids.at("max"));
   settext(ids.at("price"), c.px_s);
-  const double px = std::stod(c.px_s);
+  c.px = std::stod(c.px_s);
   // 最大可买按默认价算; 改价后客户端未必即时重算, 按价反比折一份, 与重读的取小
   long cap = max_qty(ids.at("max"));
-  cap = std::min(cap, c.o.side == kBuy ? static_cast<long>(cap0 * std::stod(dflt) / px) : cap0);
-  c.n = order_qty(c.o, px, cap);
+  cap = std::min(cap, c.o.side == kBuy ? static_cast<long>(cap0 * std::stod(dflt) / c.px) : cap0);
+  c.n = order_qty(c.o, c.px, cap);
   trace::ev("form", {{"px", c.px_s}, {"dflt", dflt}, {"unit", unit}, {"cap0", cap0}, {"cap", cap}, {"n", c.n}});
   if (unit == "股") {
     settext(ids.at("qty"), std::to_string(c.n));
   } else {
     // 向上取整到元: 多出的不足一股, 折回恰为 n 股
-    settext(ids.at("qty"), std::to_string(static_cast<long>(std::ceil(std::round(c.n * px * 100) / 100))));
+    settext(ids.at("qty"), std::to_string(static_cast<long>(std::ceil(std::round(c.n * c.px * 100) / 100))));
     const Hwnd est = win::ctls(c.dlg, {{"est", kEst}}).at("est");
     const auto shares = [&]() -> long {
       const std::string t = win::text(est);
@@ -187,8 +189,7 @@ std::string form(Ctx &c, double &px_out) {
     };
     until([&] { return strf("预估 %ld 股, 现为「%s」", c.n, win::text(est).c_str()); }, [&] { return shares() == c.n; }, 1);
   }
-  px_out = px;
-  return strf("%ld股 @ %s (最大 %ld)", c.n, c.px_s.c_str(), cap);
+  c.detail = strf("%ld股 @ %s (最大 %ld)", c.n, c.px_s.c_str(), cap);
 }
 
 void confirm(Ctx &c) {
@@ -202,12 +203,12 @@ void confirm(Ctx &c) {
 }
 
 // 读回报、点掉; 等回报框、确认框、闪电窗都关了才算完 (下一单紧接着切图表、开窗)
-std::string reply(Ctx &c) {
+void reply(Ctx &c) {
   const Hwnd res = ui::popup({kResultTitle}, 10, [&] { ui::yes(c.box); });
-  const std::string b = ui::body(res);
+  c.msg = ui::body(res);
   ui::yes(res);
-  if (b.find("合同号") == std::string::npos)
-    fail("委托未成功: " + b);
+  if (c.msg.find("合同号") == std::string::npos)
+    fail("委托未成功: " + c.msg);
   const Hwnd mine[3] = {res, c.box, c.dlg};
   until(
       [&] {
@@ -222,39 +223,37 @@ std::string reply(Ctx &c) {
         return std::none_of(std::begin(mine), std::end(mine), [&](const Hwnd &h) { return t.contains(h); });
       },
       3);
-  return b;
 }
+
+struct Stage {
+  const char *name;
+  void (*run)(Ctx &);
+};
+constexpr Stage kStages[] = {{"切换", switch_to}, {"开窗", open}, {"填单", form}, {"确认", confirm}, {"回报", reply}};
 
 } // namespace
 
 const std::vector<std::string> &steps() {
-  static const std::vector<std::string> s = {"切换", "开窗", "填单", "确认", "回报"};
+  static const std::vector<std::string> s = [] {
+    std::vector<std::string> v;
+    for (const Stage &x : kStages)
+      v.emplace_back(x.name);
+    return v;
+  }();
   return s;
 }
-
-bool supports(int side, Credit credit) { return kind_of(side, credit) != nullptr; }
 
 Placed place(const OrderReq &o, const Step &step) {
   const Kind *k = kind_of(o.side, o.credit);
   assert(k);
   assert((o.qty > 0) != (o.size > 0) && o.px > 0);
-  Ctx c{o, *k, {}, {}, {}, {}};
-  Placed p;
-  const auto at = [&](size_t i, const auto &fn) {
-    trace::Span span(steps()[i]);
-    step(i, "");
-    fn();
-  };
-  at(0, [&] { switch_to(c); });
-  at(1, [&] { open(c); });
-  at(2, [&] {
-    p.detail = form(c, p.px);
-    p.qty = static_cast<double>(c.n);
-    step(2, p.detail);
-  });
-  at(3, [&] { confirm(c); });
-  at(4, [&] { p.msg = reply(c); });
-  return p;
+  Ctx c{.o = o, .k = *k};
+  for (size_t i = 0; i < std::size(kStages); ++i) {
+    trace::Span span(kStages[i].name);
+    step(i, c.detail);
+    kStages[i].run(c);
+  }
+  return {static_cast<double>(c.n), c.px, c.msg};
 }
 
 } // namespace live::tdx::flash

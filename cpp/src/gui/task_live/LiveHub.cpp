@@ -260,8 +260,8 @@ void take(Core &c, const live::State &st, std::shared_ptr<const live::Quotes> q)
       else
         (*px)[code] = i->second.price;
     };
-    for (const auto &[code, n] : st.acct->bal)
-      take(code);
+    for (const live::Position &p : st.acct->held->list)
+      take(p.code);
     for (const auto &[code, d] : st.acct->debts)
       take(code);
     if (!all)
@@ -342,8 +342,6 @@ OrderJob exec(Core &c, uint64_t id, const live::Sec &sec, int side, double qty, 
       j.qty = p.qty;
       j.px = p.px;
       j.msg = p.msg;
-      if (!p.detail.empty())
-        j.detail = p.detail;
     });
   } catch (const live::Fail &e) {
     return put(c, id, [&](OrderJob &j) {
@@ -465,7 +463,10 @@ std::shared_ptr<const live::State> sync(Core &c) {
   auto st = c.broker->state();
   assert(st->pos && st->fills && st->orders && st->acct);
   const live::Account &a = *st->acct;
-  note(c, "acct", {{"acct", {{"at", st->acct.at}, {"assets", a.assets}, {"line", a.line}, {"debt", a.debt}, {"net", a.net}, {"avail", a.avail}, {"cash", a.cash}, {"debts", a.debts}}}});
+  nlohmann::json debts = nlohmann::json::object();
+  for (const auto &[code, d] : a.debts)
+    debts[code] = {d.qty, d.amount};
+  note(c, "acct", {{"acct", {{"at", st->acct.at}, {"assets", a.assets}, {"line", a.line}, {"debt", a.debt}, {"net", a.net}, {"avail", a.avail}, {"cash", a.cash}, {"debts", debts}}}});
   return st;
 }
 

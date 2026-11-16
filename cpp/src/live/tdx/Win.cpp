@@ -14,6 +14,8 @@ namespace live::tdx::win {
 
 namespace {
 
+constexpr double kRedraw = 2; // click_text: 一处没有时等绘制层画回来 [s]
+
 int half(int a, int b) { return (a + b) >= 0 ? (a + b) / 2 : -((-(a + b) + 1) / 2); } // 向下取整
 
 // 空白: ASCII 空白、不换行空格 U+00A0、全角空格 U+3000
@@ -27,8 +29,6 @@ size_t space_at(const std::string &s, size_t i) {
     return 3;
   return 0;
 }
-
-} // namespace
 
 Node node_of(const json &j) {
   Node n;
@@ -47,6 +47,8 @@ Node node_of(const json &j) {
   n.en = j.at("en").get<long>() != 0;
   return n;
 }
+
+} // namespace
 
 std::vector<Node> nodes_of(const std::vector<json> &recs) {
   std::vector<Node> out;
@@ -68,6 +70,8 @@ Layer layer_of(const json &j) {
   }
   return l;
 }
+
+std::pair<int, int> center(const Item &it) { return {half(it.l, it.r), half(it.t, it.b)}; }
 
 void attach() {
   shim::ensure();
@@ -106,13 +110,6 @@ Tops tops() {
   for (Node &n : enum_())
     if (n.depth == 0 && n.vis)
       out.emplace(n.hwnd, std::move(n));
-  return out;
-}
-
-std::vector<Layer> layers(const Hwnd &target) {
-  std::vector<Layer> out;
-  for (const json &d : target.empty() ? shim::cmd("gdidump") : shim::cmd("gdidump", target))
-    out.push_back(layer_of(d));
   return out;
 }
 
@@ -181,7 +178,8 @@ void click_text(const std::string &cls, const std::string &ttl, const std::strin
         for (Node &n : find(cls, std::nullopt, ttl))
           if (n.vis)
             wins.emplace(n.hwnd, std::move(n));
-        for (const Layer &l : layers(wins.size() == 1 ? wins.begin()->first : "")) {
+        for (const json &d : wins.size() == 1 ? shim::cmd("gdidump", wins.begin()->first) : shim::cmd("gdidump")) {
+          const Layer l = layer_of(d);
           const auto w = wins.find(l.hwnd);
           if (w == wins.end())
             continue;
@@ -203,7 +201,8 @@ void click_text(const std::string &cls, const std::string &ttl, const std::strin
     fail(strf("「%s」(%s %s) 命中 %zu 处, 需唯一", txt.c_str(), cls.c_str(), ttl.c_str(), hits.size()));
   }
   const Hit &h = hits[0];
-  clickat(h.n->hwnd, h.n->rect[0] + h.ox + half(h.it.l, h.it.r), h.n->rect[1] + h.oy + half(h.it.t, h.it.b));
+  const auto [x, y] = center(h.it);
+  clickat(h.n->hwnd, h.n->rect[0] + h.ox + x, h.n->rect[1] + h.oy + y);
 }
 
 // ---------- 文字 ----------

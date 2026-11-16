@@ -302,7 +302,6 @@ set(MATH_PRECISE
     misc/parquet.cpp
     # api
     api/bigquant/client.cpp
-    api/eastmoney/client.cpp
     api/sina/client.cpp
     api/tushare/client.cpp
     # fundamental

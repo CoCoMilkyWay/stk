@@ -28,7 +28,6 @@ struct Node {
   unsigned style = 0, exstyle = 0;
   bool vis = false, en = false;
 };
-Node node_of(const nlohmann::json &j);
 std::vector<Node> nodes_of(const std::vector<nlohmann::json> &recs);
 
 // 图层记录 (detail / gdidump / gdiwatch): 一窗口一份, off = 客户区左上相对窗口左上;
@@ -44,6 +43,7 @@ struct Layer {
   std::vector<Item> items;
 };
 Layer layer_of(const nlohmann::json &j);
+std::pair<int, int> center(const Item &it); // 项的中心点 (向下取整)
 
 // 接入客户端: shim 不在线即编译 + 注入; 再开 noraise 不抬窗 (重扫模块, 补钩 shim 注入后才加载的 DLL)、
 // gdi 绘制层 (首次装入口钩子并重绘全部窗口). 启动时与客户端重启后各一次
@@ -57,9 +57,8 @@ std::vector<Node> tree(const Hwnd &target = "", double timeout = 5);
 std::vector<Node> find(const std::string &cls, std::optional<long> id = std::nullopt, const std::string &title = "");
 Node node(const Hwnd &h); // 一个窗口的节点记录 (窗口已销毁: 类名为空、不可见)
 using Tops = std::map<Hwnd, Node>;
-Tops tops();                                        // 可见顶层窗口
-std::vector<Layer> layers(const Hwnd &target = ""); // 绘制层; 空 = 全部窗口
-double idle();                                      // 距客户端最近一次真实键鼠输入 [s] (shim 投递的不算)
+Tops tops();   // 可见顶层窗口
+double idle(); // 距客户端最近一次真实键鼠输入 [s] (shim 投递的不算)
 
 // ---------- 消息 ----------
 
@@ -78,8 +77,7 @@ std::map<std::string, Hwnd> ctls(const Hwnd &h, const std::vector<std::pair<std:
 // 点对话框 dlg 上 id 为 cid 的按钮: 向 dlg 投 WM_COMMAND(cid, 按钮)
 void command(const Hwnd &dlg, long cid);
 // 在类名为 cls (title 非空才比) 的可见窗口的绘制层里找文字恰为 text 的项, 向该窗口投递其中心点的左键单击
-// (自绘控件谁画谁处理点击); 须唯一命中. 一处没有 = 窗口正重绘 (绘制层刚清), 至多等 kRedraw 秒画回来
-inline constexpr double kRedraw = 2;
+// (自绘控件谁画谁处理点击); 须唯一命中. 一处没有 = 窗口正重绘 (绘制层刚清), 等一会儿画回来
 void click_text(const std::string &cls, const std::string &title, const std::string &text);
 
 // ---------- 文字 ----------

@@ -14,6 +14,8 @@
 //       被动换代          Live   活动块              Union  当日副本并集      → follow / wait
 //       act 驱动          Ask    act 后新冒出的块     Whole  整块拼到齐        → arm + act + read (Chain::ask)
 //     "见过的": Live 记扫到过的各块, Ask 记 act 前那一遍 (arm). 取最新一份即至多一块; 取累积即各块合并.
+//     只有 Live 跨次带状态 (其 Table 须常驻), 其余三种无状态 (Ask / Whole 的 Table 随用随建).
+//     页上条数对上即同一份, 只对只增不改的 Union 成立 (kCounted)
 //   索引 Index  Unique<键> 键不重 → Keyed<行> / Tally 成交按代码合计 → Keyed<Flow> / Pairs 名称不重 → 名称 → 数值原文 / Plain 无键 → 行原序
 // 一张表的流程: 扫 Heap::scan → 选 Mode::choose → 按址连读一致 stable → 解析校验 parse → 合并 Mode::merge → 索引 → Snap
 // 客户端正改写 / 刚释放 / 进程没了 都是外部结局 → Fail
@@ -339,7 +341,7 @@ std::vector<Row> one(std::vector<std::vector<Row>> parts) {
 // 记下扫到过的各块 (最近 kSeenCap 块), 没见过的即新冒出的、为在用的; 没有新冒出的即仍是上次选的那块; 几块内容相同取一块.
 // 头一次扫就有几块不一、或新冒出的不止一种内容, 定不出 → Fail (旧块释放后自愈)
 struct Live {
-  static constexpr bool kWatch = true;
+  static constexpr bool kWatch = true, kCounted = false;
   std::deque<Hit> seen;
   std::optional<Hit> cur;
 
@@ -392,7 +394,7 @@ struct Live {
 
 // 当日副本并集: 表头标签为 S::tag() 的各副本; 副本只增不改 (旧副本是新的子集), 按 S::uid 取并集、同号逐字段一致, 按 S::order 排
 struct Union {
-  static constexpr bool kWatch = true;
+  static constexpr bool kWatch = true, kCounted = true;
 
   template <class S>
   static std::vector<Hit> choose(const std::vector<Hit> &hits) { return tagged(hits, S::tag()); }
@@ -515,16 +517,16 @@ public:
   }
   // 客户端重查后轮询 follow 等 s 换代即回新快照, 不等固定时长;
   // timeout 内没换代 (应答与旧的逐字节相同, 如收盘后; 或盯不到新块) 即全量读; s 没有块即无从盯, 等 blind 秒全量读.
-  // count 给了 (只给只增不改的表: 条数对上即同一份) 则标签写回即应答已到: 行数相符即回, 不符即全量读, 不等满.
+  // count 只在 Mode::kCounted 时作数: 标签写回即应答已到, 行数相符即回, 不符即全量读, 不等满.
   // 先读标签再读内存: 标签是客户端处理完应答才写的, 其时应答已在内存里
-  Snap wait(const Snap &s, const Count &count = {}, double timeout = 3, double blind = 1) {
+  Snap wait(const Snap &s, const Count &count, double timeout = 3, double blind = 1) {
     static_assert(Mode::kWatch);
     const Clock::time_point t0 = Clock::now();
     const char *by = "full";
     std::optional<int> n;
     std::optional<Snap> got = poll(
         [&]() -> std::optional<Snap> {
-          n = count ? count() : std::nullopt;
+          n = Mode::kCounted && count ? count() : std::nullopt;
           Snap f = follow(s);
           if (!(f == s))
             by = "gen";
@@ -565,13 +567,14 @@ class Chain {
 public:
   Chain(HeapP heap, std::vector<const Shape *> shapes) : heap_(std::move(heap)), shapes_(std::move(shapes)), last_(heap_->scan(shapes_)) {}
 
-  // act 让客户端重查 t 一次, 等新冒出的块 (冒出即被释放的不算). 空表的应答与留在堆里的旧空表逐字节相同,
+  // act 让客户端重查 S 一次, 等新冒出的块 (冒出即被释放的不算). 空表的应答与留在堆里的旧空表逐字节相同,
   // 落回同址即认不出: count 给了且标签写回 0 条即空表; 否则 wait 秒没等到即再 act, 共 tries 次仍没有 → Fail.
   // 先读标签再扫内存 (见 Table::wait)
   template <class S>
-  Snap<S> ask(Table<S> &t, const std::function<void()> &act, const Count &count = {}, int tries = 3, double wait = 2) {
+  Snap<S> ask(const std::function<void()> &act, const Count &count = {}, int tries = 3, double wait = 2) {
     const size_t at = static_cast<size_t>(std::find(shapes_.begin(), shapes_.end(), &S::kShape) - shapes_.begin());
     assert(at < shapes_.size());
+    Table<S> t;
     t.arm(last_[at]);
     const Clock::time_point t0 = Clock::now();
     for (int i = 0; i < tries; ++i) {

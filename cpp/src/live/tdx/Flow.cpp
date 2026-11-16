@@ -1,5 +1,6 @@
 #include "live/tdx/Flow.hpp"
 
+#include "live/tdx/Tables.hpp"
 #include "live/tdx/Trace.hpp"
 #include "live/tdx/Ui.hpp"
 #include "live/tdx/Until.hpp"
@@ -28,8 +29,10 @@ constexpr long kVkLeft = 0x25, kVkRight = 0x27;
 constexpr double kAnswer = 30; // 一窗应答最长等多久 [s]
 constexpr double kSettle = 1;  // 条数标签写回后须这么久不变才采信 [s]
 
-struct Page {
-  win::Hwnd dlg, from, to, count;
+// 查询页 + 起 / 止日控件
+struct Form {
+  ui::Page page;
+  win::Hwnd from, to;
 };
 
 void chars(const win::Hwnd &h, std::string_view digits) {
@@ -62,20 +65,21 @@ void set_date(const win::Hwnd &dlg, const win::Hwnd &h, long cid, misc::Ymd d) {
 }
 
 // 一窗 [lo, hi] 的流水 (客户端原序)
-std::vector<CashFlow> ask(mem::Table<tables::CashFlows> &t, const mem::HeapP &heap, const Page &p, misc::Ymd lo, misc::Ymd hi) {
+std::vector<CashFlow> ask(const mem::HeapP &heap, const Form &f, misc::Ymd lo, misc::Ymd hi) {
   trace::Span span("窗", {{"lo", lo}, {"hi", hi}});
-  set_date(p.dlg, p.to, kTo, hi);
-  set_date(p.dlg, p.from, kFrom, lo);
-  win::settext(p.count, "");
+  set_date(f.page.dlg, f.to, kTo, hi);
+  set_date(f.page.dlg, f.from, kFrom, lo);
+  f.page.count.clear();
+  mem::Table<tables::CashFlows> t;
   t.arm(mem::scan_of<tables::CashFlows>(*heap));
-  win::command(p.dlg, kQuery);
+  win::command(f.page.dlg, kQuery);
   const std::string range = misc::dash(lo) + " ~ " + misc::dash(hi);
   std::optional<int> last;
   Clock::time_point since = Clock::now();
   const int n = *until(
       said("「" + kFunc + "」" + range + "的条数标签写回"),
       [&]() -> std::optional<int> {
-        const std::optional<int> c = ui::page_count(p.count);
+        const std::optional<int> c = f.page.count.read();
         const Clock::time_point now = Clock::now();
         if (c != last) {
           last = c;
@@ -105,17 +109,17 @@ std::vector<CashFlow> ask(mem::Table<tables::CashFlows> &t, const mem::HeapP &he
 
 } // namespace
 
-std::vector<CashFlow> pull(mem::Table<tables::CashFlows> &t, const mem::HeapP &heap, misc::Ymd from, const Log &log, const Live &live) {
+std::vector<CashFlow> pull(const mem::HeapP &heap, misc::Ymd from, const Log &log, const Live &live) {
   ui::show_bar();
   live("开「" + kFunc + "」页…");
   log("page", {{"func", kFunc}});
-  const win::Hwnd dlg = ui::open_page(kFunc, kCol, kCount);
-  const auto c = win::ctls(dlg, {{"from", kFrom}, {"to", kTo}, {"count", kCount}});
-  const Page p{dlg, c.at("from"), c.at("to"), c.at("count")};
+  const ui::Page pg = ui::open_page(kFunc, kCol, kCount);
+  const auto c = win::ctls(pg.dlg, {{"from", kFrom}, {"to", kTo}});
+  const Form f{pg, c.at("from"), c.at("to")};
   const misc::Ymd end = misc::add_days(misc::today_ymd(), -1);
   std::vector<std::vector<CashFlow>> wins; // 日序
   const auto one = [&](misc::Ymd lo, misc::Ymd hi) {
-    std::vector<CashFlow> rows = ask(t, heap, p, lo, hi);
+    std::vector<CashFlow> rows = ask(heap, f, lo, hi);
     log("window", {{"lo", lo}, {"hi", hi}, {"n", rows.size()}});
     live(strf("「%s」%s ~ %s: %zu 条", kFunc.c_str(), misc::dash(lo).c_str(), misc::dash(hi).c_str(), rows.size()));
     return rows;
