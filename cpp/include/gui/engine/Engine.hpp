@@ -3,13 +3,13 @@
 //   (Run / Search / Inspect / Portfolio / Lens 各自声明), 引擎与管线同一份.
 //   计算面 = 进程唯一的 Store (线程池 / 库 / 平面缓存 / 计算权); 服务 worker 的 FactorFlow 只持取消旗 / 进度面 / 优先级 / 引擎, 计算全在租约 Lease 内.
 //   后端 Backend<Cpu | Gpu> 同一份接口 (共有部分在 BackendBase; FactorFlow 持有, 懒建; 后端只在 FactorFlow::with_backend<Ps> 分叉):
-//     budget<Ps>(d, H) / batch_of(P, b, per_day)  预算 (字节 / 格: 挂块的 load + 宿主 work + 显存 dev) / 批核实际批 (kBatch = 预算按的同批候选数)
+//     budget<Ps>(d, H) / batch_of(P, b)      预算 (字节 / 格: 挂块的 load + 宿主 work + 显存 dev) / 批核实际批 (kBatch = 预算按的同批候选数)
 //     kRanks                                 块要钉标签秩 (BlockSpec::ry): CPU 是, GPU 在显存里自己预处理
-//     bind(c) / release()                    绑块: 块的代 gen 变 → 会话作废 (unbind), 下次用时重开 / 租约末弃会话与工作区 (宿主 / 显存还回)
+//     bind(c) / release()                    绑块: 块的代 gen 变 → close 会话, 下次用时重开 / 租约末 close + drop (宿主 / 显存还回, 与新建的同)
 //     labels()                               会话的标签 (Y 全部持有期; CPU 的 ry = 块上钉的标签秩): 探针 Ctx::L / 原料同一份
 //     walk(d, need, visit(i, ms))            顺序走 Dag (叶 = 块里的 X 平面, 截面池 g = 块的 Y 门控); ms = 算子耗时 (叶 0), visit 返回 false → 停
 //     plant<Ps>(roots, batch, C)             一批根 (Root = 式 + 口径 + 方向 + 持有期) 的共享森林 Forest (C 出 = 实际收的前 C 个, ≤ batch): GPU 批核再按显存减半
-//     eval(F, need, ps, last, node, done)    走森林, 每个根 k 评一次: 选取 Pick (根的 hd) → 探针 open → 原料 (按根的方向定向) → root (→ last: finish) → done(k).
+//     eval(F, need, ps, last, node, done)    走森林 (逐节点按 Forest::at 收根), 每个根 k 评一次: 选取 Pick (根的 hd) → 探针 open → 原料 (按根的方向定向) → root (→ last: finish) → done(k).
 //                                            原料 (后端 view<Ps>) 按本块要的 Ps::need_at(last) 给:
 //                                            CPU 恒逐根 Stat (run → accum_rows 进探针行钩子 → 端码; 抽样行拷 rx), 走到根即评;
 //                                            GPU 逐根 = stat_eval 只拷回要的; 批核 (kBatched<Ps>: 只累加 + 抽样行) = kDefer 走完森林一批根同在显存一次 search_eval
@@ -38,6 +38,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -58,45 +59,42 @@ struct Root {
   Holds hd;
 };
 // 根集 (各服务同一份): 条目 (规范串, 口径, 方向) → 根; 三者相同的条目共一个根 (只评一次, 持有期 = 各条目之并).
-// 根 k ↔ roots()[k] / 探针 ps(k); 条目 i 的根 = of[i]
+// 根 k ↔ r[k] / 探针 ps(k); 条目 i 的根 = of[i]
 struct RootSet {
-  std::vector<factor::expr::Expr> es;  // [k] 式
-  std::vector<factor::stat::Frame> fs; // [k] 口径
-  std::vector<factor::stat::Dir> ds;   // [k] 方向
-  std::vector<Holds> hs;               // [k] 持有期
-  std::vector<int> of;                 // [条目] → 根
+  std::deque<factor::expr::Expr> es; // [k] 式 (增根不搬: r[k].e 恒有效)
+  std::vector<Root> r;               // [k]
+  std::vector<int> of;               // [条目] → 根
   void add(const FeatureTable &ft, const std::string &canon, factor::stat::Frame f, factor::stat::Dir d, const Holds &hd) {
     assert(hd.n > 0);
     size_t k = 0;
-    while (k < es.size() && (es[k].canon != canon || fs[k] != f || ds[k] != d))
+    while (k < r.size() && (r[k].e->canon != canon || r[k].f != f || r[k].d != d))
       ++k;
-    if (k == es.size())
-      es.push_back(ft.reparse(canon)), fs.push_back(f), ds.push_back(d), hs.emplace_back();
-    hs[k] = keys_union(hs[k], hd);
+    if (k == r.size())
+      r.push_back({&es.emplace_back(ft.reparse(canon)), f, d, {}});
+    r[k].hd = keys_union(r[k].hd, hd);
     of.push_back(static_cast<int>(k));
   }
-  size_t size() const { return es.size(); }
-  std::vector<Root> roots() const { // 指 es: add 完再取
-    std::vector<Root> rs;
-    for (size_t k = 0; k < es.size(); ++k)
-      rs.push_back({&es[k], fs[k], ds[k], hs[k]});
-    return rs;
-  }
+  size_t size() const { return r.size(); }
 };
+// 一批根的共享森林: d.roots[k] ↔ r[k]; at[i] = 以节点 i 为根的 k (走森林时逐节点查)
 struct Forest {
-  factor::Dag d;                      // d.roots[k] ↔ 根 k
-  std::vector<factor::stat::Frame> f; // [k] 口径
-  std::vector<factor::stat::Dir> dir; // [k] 方向
-  std::vector<Holds> hd;              // [k] 持有期
-  size_t size() const { return f.size(); }
+  factor::Dag d;
+  std::vector<Root> r;
+  std::vector<std::vector<int>> at; // [node]
+  size_t size() const { return r.size(); }
 };
 inline Forest plant_forest(std::span<const Root> rs, bool keep_roots) {
   assert(!rs.empty());
   std::vector<const factor::expr::Expr *> es;
-  Forest o;
-  for (const Root &r : rs)
-    es.push_back(r.e), o.f.push_back(r.f), o.dir.push_back(r.d), o.hd.push_back(r.hd);
-  o.d = factor::build_forest(es, keep_roots);
+  for (const Root &x : rs)
+    es.push_back(x.e);
+  Forest o{factor::build_forest(es, keep_roots), {rs.begin(), rs.end()}, {}};
+  o.at.resize(o.d.nodes.size());
+  for (size_t k = 0; k < o.r.size(); ++k) {
+    const int i = o.d.roots[k];
+    assert(o.d.nodes[static_cast<size_t>(i)].op >= 0 && o.d.nodes[static_cast<size_t>(i)].n_in >= 1 && "根是归一算子, 至少一元");
+    o.at[static_cast<size_t>(i)].push_back(static_cast<int>(k));
+  }
   return o;
 }
 // 分块前后带 (日; Search 契约【分块流式】): 前带 = 回看 look 行 + 最长持有期 h 行 (统计首行的 lag 行 / 前一批也须整窗) + 交接链 kChainDays 日,
@@ -115,7 +113,8 @@ struct Gpu {};
 template <class B>
 class Backend;
 
-// 两后端共有: 线程池 / 取消旗 / 绑定的块 (视图每次 bind 换; 代 gen 变 → D::unbind 作废会话) / 当前 Dag; 森林骨架 eval (标签 D::labels / 原料 D::ready / D::view)
+// 两后端共有: 线程池 / 取消旗 / 绑定的块 (视图每次 bind 换) / 当前 Dag; 森林骨架 eval (标签 D::labels / 原料 D::ready / D::view).
+// 两级释放成对: D::close = 会话 (随块的代: gen 变即关) / D::drop = 宿主工作区 (随租约: release 连同会话一并还回, 此后与新建的同)
 template <class D>
 class BackendBase {
 public:
@@ -123,12 +122,11 @@ public:
     c_ = &c;
     if (gen_ == c.gen)
       return;
-    self().unbind();
+    self().close();
     gen_ = c.gen;
   }
-  // 弃会话与工作区 (宿主 / 显存还回, 绑定作废; 下次 bind 重开)
   void release() {
-    self().unbind();
+    self().close();
     self().drop();
     c_ = nullptr, gen_ = 0;
   }
@@ -147,11 +145,8 @@ public:
     std::vector<int> ks;
     const bool ok = self().walk(F.d, need, [&](int i, double ms) {
       node(i, ms);
-      for (size_t k = 0; k < F.size(); ++k)
-        if (F.d.roots[k] == i) {
-          assert(F.d.nodes[static_cast<size_t>(i)].op >= 0 && F.d.nodes[static_cast<size_t>(i)].n_in >= 1 && "根是归一算子, 至少一元");
-          ks.push_back(static_cast<int>(k));
-        }
+      const std::vector<int> &at = F.at[static_cast<size_t>(i)];
+      ks.insert(ks.end(), at.begin(), at.end());
       if (!defer && !ks.empty()) {
         roots<Ps>(F, ks, ps, last, done);
         ks.clear();
@@ -183,10 +178,11 @@ private:
     const uint8_t need = Ps::need_at(last);
     for (size_t j = 0; j < ks.size(); ++j) {
       const int k = ks[j];
+      const Root &r = F.r[static_cast<size_t>(k)];
       Ps &p = ps(k);
-      const Pick pk = pick_of(L0.hd, F.hd[static_cast<size_t>(k)]);
+      const Pick pk = pick_of(L0.hd, r.hd);
       const factor::stat::Labels L = labels_pick(L0, pk);
-      const Ctx cx{ex_, block(), L, w, F.dir[static_cast<size_t>(k)]};
+      const Ctx cx{ex_, block(), L, w, r.d};
       p.open(cx);
       factor::stat::Accum acc[factor::stat::kMaxHold];
       const RootView v = self().template view<Ps>(F, k, static_cast<int>(j), cx, pk, need, p, acc);
@@ -215,9 +211,9 @@ public:
   // 预算 (字节 / 格): 块上标签秩 2H (随块, 计 load); 宿主 = 活槽 + rx 2 + ec 1, 无显存. 批核的 d = 一个候选, kBatch 个同结构候选的森林按它另 2 槽余量
   template <class Ps>
   static Budget budget(const factor::Dag &d, int H) {
-    return {2.0 * H, kPlaneBytes * (d.n_slots + (kBatched<Ps> ? 2 : 0)) + 3.0, 0.0, 0.0};
+    return {.load = 2.0 * H, .work = kPlaneBytes * (d.n_slots + (kBatched<Ps> ? 2 : 0)) + 3.0};
   }
-  static int batch_of(const Plan &, const Budget &, double) { return kBatch; }
+  static int batch_of(const Plan &, const Budget &) { return kBatch; }
 
   template <class Visit>
   bool walk(const factor::Dag &d, const uint8_t *need, Visit &&visit) {
@@ -237,7 +233,7 @@ public:
   }
 
 private:
-  void unbind() {}
+  void close() {}
   void drop() {
     hp_ = {}, sc_ = {}, w_ = {};
     in_ = {}, rx_ = {}, ec_ = {};
@@ -258,7 +254,7 @@ private:
   template <class Ps>
   RootView view(const Forest &F, int k, int, const Ctx &cx, const Pick &, uint8_t need, Ps &p, factor::stat::Accum *acc) {
     const int i = F.d.roots[static_cast<size_t>(k)];
-    const factor::stat::Frame f = F.f[static_cast<size_t>(k)];
+    const factor::stat::Frame f = F.r[static_cast<size_t>(k)].f;
     const factor::stat::Span s = c_->span();
     const factor::check::Plane *rp = plane(i);
     rx_.resize(s.n());
@@ -316,11 +312,11 @@ public:
   static Budget budget(const factor::Dag &d, int H) {
     constexpr bool batch = kBatched<Ps>;
     const double dev = kPlaneBytes * (1.0 + static_cast<double>(d.feats.size())) + 2.0 + 7.0 * H + kPlaneBytes * d.n_slots * (batch ? 2 : 1);
-    return {0.0, batch ? 0.0 : 4.0 + kPlaneBytes, 0.0, batch ? dev + kDevRootBytes * kBatch : dev + 3.0};
+    return {.work = batch ? 0.0 : 4.0 + kPlaneBytes, .dev = batch ? dev + kDevRootBytes * kBatch : dev + 3.0};
   }
   // 批核实际批: 最长一块的格数下, 显存预算扣掉非根部分后能同在的根数 (b = budget 出的, ≤ search_max_batch)
-  static int batch_of(const Plan &P, const Budget &b, double per_day) {
-    const double nmax = static_cast<double>(P.max_days()) * per_day, dv = b.dev - kDevRootBytes * kBatch;
+  static int batch_of(const Plan &P, const Budget &b) {
+    const double nmax = P.max_cells(), dv = b.dev - kDevRootBytes * kBatch;
     return std::clamp(static_cast<int>((P.vram - nmax * dv) / (kDevRootBytes * nmax)), 1, factor::gpu::search_max_batch());
   }
   static constexpr double kDevRootBytes = kPlaneBytes + 2.0; // 批核根平面 5 + rx 2
@@ -356,7 +352,6 @@ public:
   }
 
 private:
-  void unbind() { close(); }
   void drop() {
     w_ = {}, out_ = {}, rows_ = {}, rx_ = {}, ec_ = {};
     xv_ = {}, mask_ = {}, av_ = {}, am_ = {};
@@ -369,12 +364,12 @@ private:
       return &stat_session();
     } else {
       assert(search_ && "批核先 plant");
-      const factor::stat::Frame f = F.f[static_cast<size_t>(ks.front())];
+      const factor::stat::Frame f = F.r[static_cast<size_t>(ks.front())].f;
       std::vector<const factor::gpu::DevPlane *> roots;
       for (const int k : ks) {
         const int r = F.d.roots[static_cast<size_t>(k)];
         assert(F.d.nodes[static_cast<size_t>(r)].slot >= 0);
-        assert(F.f[static_cast<size_t>(k)] == f && "一批同口径");
+        assert(F.r[static_cast<size_t>(k)].f == f && "一批同口径");
         roots.push_back(at(r));
       }
       const factor::stat::Span s = c_->span();
@@ -391,7 +386,7 @@ private:
       for (int hi = 0; hi < pk.n; ++hi)
         acc[hi] = out_[static_cast<size_t>(j)].acc[pk.at[hi]];
       RootView v;
-      v.f = F.f[static_cast<size_t>(k)];
+      v.f = F.r[static_cast<size_t>(k)].f;
       v.acc = acc;
       v.ranks = Ranks{search_, j, &ranks_of};
       return v;
@@ -404,7 +399,7 @@ private:
   RootView stat_root(const Forest &F, int k, factor::stat::Dir d, const Pick &pk, uint8_t need, Ps &p, factor::stat::Accum *acc) {
     static_assert(!Ps::cells && (Ps::need & kNeedRanks) == 0, "逐格扩展只 CPU; 抽样行只批核");
     RootView v;
-    v.f = F.f[static_cast<size_t>(k)];
+    v.f = F.r[static_cast<size_t>(k)].f;
     v.acc = acc;
     const YPlanes &y = c_->y;
     const factor::stat::Span s = c_->span();
@@ -557,15 +552,13 @@ struct FactorFlow {
     }
     return fn(backend<Cpu>());
   }
-  // 租约末: 引擎弃会话与工作区 (宿主 / 显存不跨租约占), 对象留着 (跨租约的作业 = Search 各趟同一个引擎)
+  // 租约末: 引擎弃会话与工作区 (宿主 / 显存不跨租约占; 此后与新建的同), 对象留着 (跨租约的作业 = Search 各趟同一个引擎)
   void release() {
     if (cpu_)
       cpu_->release();
     if (gpu_)
       gpu_->release();
   }
-  // 请求末: 引擎弃
-  void end() { cpu_.reset(), gpu_.reset(); }
 
 private:
   template <class B>
@@ -629,12 +622,12 @@ struct Job {
   Io io(FactorFlow &F) const { return F.io(*ft, dm); }
   Chunk whole() const { return {0, dm.warm, dm.days.size(), dm.days.size()}; } // 整期 (前带 = 预热)
   // 块之外的宿主预留 (字节): 引擎 + 探针 = 最长一块 × work + fixed (Store::pin 腾地用)
-  double reserve() const { return static_cast<double>(P.max_days()) * ft->seg * static_cast<double>(dm.rs.axis.size()) * b.work + b.fixed; }
+  double reserve() const { return P.max_cells() * b.work + b.fixed; }
 };
 // 一次评估 (eval_job) 的出参: 作业 + 森林 + 节点耗时 + 后端
 struct JobOut {
   Job job;
-  Forest fr;                    // 根 k ↔ eval_job 的 rs.roots()[k]
+  Forest fr;                    // 根 k ↔ eval_job 的 rs.r[k]
   std::vector<double> ms;       // [node] 算子耗时 (各块之和; 叶 / 没走的 0)
   const char *backend = "";     // E::kName
   double eval_ms(int k) const { // 根 k 子树的算子 wall 之和 (共享节点算给每个用它的根 = 单独算它要多久)
@@ -674,7 +667,8 @@ void fit_recent(FactorFlow &F, const FactorScope &sc, Job &j, B &&bud) {
   const double vram = bud().dev > 0.0 ? vram_budget() : 0.0;
   for (;;) {
     const Budget b = bud();
-    const double fit = std::min(host / whole_bytes(j.dm, j.ft->seg, b), b.dev > 0.0 ? vram / whole_dev_bytes(j.dm, j.ft->seg, b) : 1.0);
+    const double n_cells = cells_of(j.dm, j.ft->seg);
+    const double fit = std::min(host / b.host(n_cells), b.dev > 0.0 ? vram / b.vram(n_cells) : 1.0);
     if (fit >= 1.0)
       break;
     const size_t n = j.dm.stat_days();
@@ -735,7 +729,7 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, 
 //   block(c, ci, load_s)     块 ci 就位 (load_s = 装载秒): 块钩子 = 只随评估域变的产出 (池等权线)
 //   plan(b0, Fr, why, need)  一批森林 (首根 b0) 值域已查: why[k] 非空 = 根 b0 + k BROKEN, 不评 (每块一次, 坏根只增); need = 要走的节点
 //   node(b0, Fr, i, ms)      走完节点 i (ms = 算子耗时, 叶 0)
-//   done(k)                  根 k 本块的探针钩子走完 (每块一次, 末块含 finish); k = roots 下标
+//   done(k, last)            根 k 本块的探针钩子走完 (每块一次; last = 末块, 已含 finish); k = roots 下标
 //   fail(e, why) / post(e, k) (eval_job) 条目 e 的终局, 每条目恰一个 (中断不发): 没算成 (根坏 / 评估域不成 / 全部根坏) / 根 k 评完
 //   whole()                  eval_job 只整期一块 (块钩子 / alpha 分布要整期; 装不下截最近的日)
 struct HookBase {
@@ -743,32 +737,13 @@ struct HookBase {
   void block(const Block &, size_t, double) {}
   void plan(size_t, const Forest &, const std::vector<std::string> &, const std::vector<uint8_t> &) {}
   void node(size_t, const Forest &, int, double) {}
-  void done(int) {}
+  void done(int, bool) {}
   void fail(int, const std::string &) {}
   void post(int, int) {}
 };
-// 一批的森林 (pass 的 plant 入参): 按块现种 (Search: eng.plant 收前 ≤ batch 个, GPU 批核再按显存减半) / 一张整森林 (eval_job: 各块同一张)
-template <class Ps, class E>
-struct PlantBatch {
-  E &eng;
-  std::span<const Root> roots;
-  int batch;
-  Forest fr;
-  const Forest &operator()(size_t b0, int &C) {
-    fr = eng.template plant<Ps>(roots.subspan(b0), batch, C);
-    return fr;
-  }
-};
-struct PlantWhole {
-  const Forest &fr;
-  const Forest &operator()(size_t b0, int &C) const {
-    assert(b0 == 0);
-    C = static_cast<int>(fr.size());
-    return fr;
-  }
-};
 // 一趟 (全部服务同一份; j 已 prepare, 须持租约, eng 与 F.cancel 同旗): R 个根, 一批一张森林; 逐块: load_block (视图只活这一块) → hk.block → 逐批:
-// plant(b0, C) (根 b0 起一批, C 出 = 收的根数; 森林活到下一次 plant) → plan_forest (叶值域逐根归因) → hk.plan → eng.eval (hk.node; 末块根评完即 finish) → hk.done.
+// plant(b0, C) → 根 b0 起一批的森林 (C 出 = 收的根数; 森林活到下一次 plant. Search = 逐批现种 eng.plant, eval_job = 各块同一张整森林)
+// → plan_forest (叶值域逐根归因) → hk.plan → eng.eval (hk.node; 末块根评完即 finish) → hk.done.
 // 坏根跨块粘住 (某块越界 = 整根作废: 各块同一份探针, 不收半截). 无根 = 只块钩子.
 // Ok / Broken (全部根坏, j.why = 首个坏因) / Cancel / Stale
 template <class E, class Plant, class Slot, class H>
@@ -778,6 +753,7 @@ Rc pass(E &eng, FactorFlow &F, Job &j, size_t R, Plant &&plant, Slot &&ps, H &&h
   const size_t n = j.P.chunks.size();
   std::vector<std::string> dead(R); // [k] 坏因 (跨块粘住)
   for (size_t ci = 0; ci < n; ++ci) {
+    const bool last = ci + 1 == n;
     const Clock::time_point t_load = Clock::now();
     Block c;
     if (const Rc rc = load_block(F, j, ci, c); rc != Rc::Ok)
@@ -794,7 +770,7 @@ Rc pass(E &eng, FactorFlow &F, Job &j, size_t R, Plant &&plant, Slot &&ps, H &&h
       const int good = plan_forest(eng.ex(), c, Fr.d, why, need);
       std::copy(why.begin(), why.end(), dead.begin() + static_cast<long>(b0));
       hk.plan(b0, Fr, why, need);
-      if (good > 0 && !eng.eval(Fr, need.data(), at, ci + 1 == n, [&](int i, double ms) { hk.node(b0, Fr, i, ms); }, [&](int k) { hk.done(static_cast<int>(b0) + k); }))
+      if (good > 0 && !eng.eval(Fr, need.data(), at, last, [&](int i, double ms) { hk.node(b0, Fr, i, ms); }, [&](int k) { hk.done(static_cast<int>(b0) + k, last); }))
         return Rc::Cancel;
       b0 += static_cast<size_t>(C);
     }
@@ -816,11 +792,7 @@ struct JobHooks : HookBase {
   Progress &prog;
   const RootSet &rs;
   std::vector<uint8_t> fin; // [条目] 已有终局
-  bool last = false;        // 当前块是末块
-  void block(const Block &c, size_t ci, double s) {
-    last = ci + 1 == o.job.P.chunks.size();
-    h.block(c, ci, s);
-  }
+  void block(const Block &c, size_t ci, double s) { h.block(c, ci, s); }
   void plan(size_t b0, const Forest &Fr, const std::vector<std::string> &why, const std::vector<uint8_t> &need) {
     assert(b0 == 0 && "eval_job 根全进一张森林");
     size_t n_run = 0;
@@ -841,9 +813,9 @@ struct JobHooks : HookBase {
     }
     h.node(b0, Fr, i, ms);
   }
-  void done(int k) {
+  void done(int k, bool last) {
     prog.publish(1);
-    h.done(k);
+    h.done(k, last);
     if (!last)
       return;
     for (size_t e = 0; e < rs.of.size(); ++e)
@@ -868,21 +840,25 @@ Rc eval_job(E &eng, FactorFlow &F, const FactorScope &sc, const RootSet &rs, Slo
   using Hk = std::remove_reference_t<H>;
   static_assert(!kBatched<Ps>, "eval_job 逐根评 (批核只 Search)");
   assert(rs.size() > 0 && o.fr.size() == 0 && "根集非空, o 须是新的");
-  const std::vector<Root> roots = rs.roots();
-  o.fr = plant_forest(roots, /*keep_roots=*/false);
+  o.fr = plant_forest(rs.r, /*keep_roots=*/false);
   o.backend = E::kName;
   Holds hd;
   int look = Hk::whole() ? -1 : 0;
-  for (const Root &r : roots) {
+  for (const Root &r : rs.r) {
     hd = keys_union(hd, r.hd);
     if (!Hk::whole())
       look = std::max(look, factor::search::space::lookback(*r.e, sc.ft->seg));
   }
   JobHooks<Hk> jh{{}, hk, o, F.prog, rs, std::vector<uint8_t>(rs.of.size(), 0)};
-  Rc rc = prepare<E, Ps>(eng, F, sc, o.fr.d, look, hd, static_cast<int>(roots.size()), o.job);
+  Rc rc = prepare<E, Ps>(eng, F, sc, o.fr.d, look, hd, static_cast<int>(rs.size()), o.job);
   if (rc == Rc::Ok) {
     o.ms.assign(o.fr.d.nodes.size(), 0.0);
-    rc = pass(eng, F, o.job, roots.size(), PlantWhole{o.fr}, ps, jh);
+    const auto whole = [&](size_t b0, int &C) -> const Forest & {
+      assert(b0 == 0);
+      C = static_cast<int>(o.fr.size());
+      return o.fr;
+    };
+    rc = pass(eng, F, o.job, rs.size(), whole, ps, jh);
   }
   if (!aborted(rc))
     for (size_t e = 0; e < rs.of.size(); ++e) {

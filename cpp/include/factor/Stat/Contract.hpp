@@ -378,6 +378,8 @@ inline Row oriented(Row r, int d) {
   }
   return r;
 }
+// r16 改读成方向 d (【方向 Dir】): 反向 = kRankMax − x (高 = 做多端), 无效不动
+inline uint16_t oriented(uint16_t x, int d) { return x == kRankNone || d == kFwd ? x : static_cast<uint16_t>(kRankMax - x); }
 
 // ---- 二级输出: 每持有期一份 ----
 // 二级口径戳: 字段不变但口径变时 +1, 落盘 stat 与之不符读取即作废 (下次 Run 重算)

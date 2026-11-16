@@ -56,21 +56,24 @@ struct Chunk {
   int days() const { return static_cast<int>(d1 - d0); }
 };
 // 字节 / 格: load = 宿主块 (X + Y; 池篮子作业 = B 装载峰值); work = 引擎 + 探针 (同时只一块在用); dev = 显存 (> 0 = 也按显存限块).
-// fixed = 与格无关的宿主常驻 (字节)
+// fixed = 与格无关的宿主常驻 (字节). n 格的宿主量 host ↔ 显存量 vram
 struct Budget {
   double load = 0.0, work = 0.0, fixed = 0.0, dev = 0.0;
+  double host(double n) const { return n * (load + work) + fixed; }
+  double vram(double n) const { return n * dev; }
 };
+// 评估域的格数 (全部装载日 × 每日行数 seg × A 轴)
+inline double cells_of(const Domain &dm, int seg) { return static_cast<double>(dm.days.size()) * seg * static_cast<double>(dm.rs.axis.size()); }
 struct Plan {
   std::vector<Chunk> chunks;
   int D = 0;            // 每块统计日上限
+  double per_day = 0.0; // 每日格数 (seg × A)
   double host = 0.0;    // 宿主预算 (字节, 已扣 fixed)
   double vram = 0.0;    // 显存预算 (字节; dev = 0 → 0)
   double cache = 0.0;   // 全部块的装载量 (字节; 连同最长一块的 work 放得下 → 各趟全中缓存)
   int max_days() const; // 最长一块的日数 (含前带)
+  double max_cells() const { return max_days() * per_day; }
 };
-// 整期一块的宿主装载量 (字节): 全部日 × (load + work) + fixed; 显存量: 全部日 × dev
-double whole_bytes(const Domain &dm, int seg, const Budget &b);
-double whole_dev_bytes(const Domain &dm, int seg, const Budget &b);
 // 前后带日数 (Engine bands_of); front < 0 → 整期一块 (评估期已按宿主 / 显存预算截过: Engine fit_recent)
 struct Bands {
   int front = -1, back = 0;

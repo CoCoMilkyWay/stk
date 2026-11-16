@@ -292,11 +292,11 @@ struct SearchService::Searcher {
     lg("评估期 %s ~ %s (%d 天, 所用库落盘日交集的最近 %d 年) + 预热 %zu 天", misc::dash(job.dm.first()).c_str(), misc::dash(dates.back()).c_str(), days,
        scope.years, job.dm.warm);
     stride = stride_of(days * seg);
-    const double per_day = static_cast<double>(seg) * A;
     const Plan &P = job.P;
     const Budget &bud = job.b;
+    const double per_day = P.per_day;
     n_chunks = static_cast<int>(P.chunks.size());
-    batch = E::batch_of(P, bud, per_day);
+    batch = E::batch_of(P, bud);
     lg("开库 + 分块: %.1fs", std::chrono::duration<double>(Clock::now() - t_plan).count());
     res.n_chunk = n_chunks, res.chunk_days = P.D, res.batch = batch;
     res.n_assets = A;
@@ -308,7 +308,7 @@ struct SearchService::Searcher {
        hd.n, d0.n_slots, bud.load, bud.work);
     lg("预算: 内存 %.0f MB%s; 块 ≤ %d 天 + 前带 %d 天 + 后带 %d 天, 共 %d 块, 全部常驻 %s (需 %.0f MB)%s", P.host / kMiB,
        scope.gpu ? strf(", 显存 %.0f MB", P.vram / kMiB).c_str() : "", P.D, job.bands.front, job.bands.back, n_chunks,
-       P.cache + P.max_days() * per_day * bud.work <= P.host ? "是" : "否 (每趟逐块重读)", P.cache / kMiB,
+       P.cache + P.max_cells() * bud.work <= P.host ? "是" : "否 (每趟逐块重读)", P.cache / kMiB,
        scope.gpu ? strf(", GPU 批 %d", batch).c_str() : "");
     for (int ci = 0; ci < n_chunks; ++ci) {
       const Chunk &k = P.chunks[static_cast<size_t>(ci)];
@@ -510,9 +510,14 @@ struct SearchService::Searcher {
         S.W.begin(Phase::Running, n * static_cast<size_t>(S.n_chunks));
         S.W.publish(n * ci);
       }
-      void done(int) { S.W.publish(1); }
+      void done(int, bool) { S.W.publish(1); }
     } hooks{{}, *this, ids.size()};
-    const Rc rc = GUI::Engine::pass(eng, F, job, roots.size(), PlantBatch<SearchProbes, E>{eng, roots, batch, {}}, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[static_cast<size_t>(k)])].ps; }, hooks);
+    Forest fr; // 本批的森林 (逐批现种: 收前 ≤ batch 个, GPU 批核再按显存减半)
+    const auto plant = [&](size_t b0, int &C) -> const Forest & {
+      fr = eng.template plant<SearchProbes>(std::span<const Root>(roots).subspan(b0), batch, C);
+      return fr;
+    };
+    const Rc rc = GUI::Engine::pass(eng, F, job, roots.size(), plant, [&](int k) -> SearchProbes & { return ents[static_cast<size_t>(ids[static_cast<size_t>(k)])].ps; }, hooks);
     const double load_s = hooks.load_s;
     if (rc != Rc::Ok)
       return rc;
@@ -734,9 +739,7 @@ bool SearchService::run(SearchRequest &req) {
   chunk_.store(0, std::memory_order_relaxed);
   chunks_.store(0, std::memory_order_relaxed);
   stage_.store(SearchStage::Prepare, std::memory_order_relaxed);
-  const bool ok = eval(req, flow());
-  flow().end();
-  return ok;
+  return eval(req, flow());
 }
 
 bool SearchService::eval(const SearchRequest &req, FactorFlow &F) {

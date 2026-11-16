@@ -289,19 +289,15 @@ bool PortfolioService::run(PortfolioRequest &req) {
   const bool todo_b = req.baskets && !result.quotes[Quote::kBasket];
   jobs_done.store(0, std::memory_order_relaxed);
   jobs_total.store(static_cast<int>(todo_f.size()) + todo_b, std::memory_order_relaxed);
-  const bool ok = [&] {
-    Lease l(F);
-    if (!l)
+  Lease l(F);
+  if (!l)
+    return false;
+  if (req.reload)
+    F.S.clear();
+  for (const auto &[g, ts] : groups)
+    if (!eval(ts, F))
       return false;
-    if (req.reload)
-      F.S.clear();
-    for (const auto &[g, ts] : groups)
-      if (!eval(ts, F))
-        return false;
-    return !todo_b || eval(*req.baskets, F);
-  }();
-  F.end();
-  return ok;
+  return !todo_b || eval(*req.baskets, F);
 }
 
 // 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径, 方向), 根的 hd = 其条目的 hold 之并; 落账 BookP (G20 多头), 根评完即逐条发布
@@ -337,7 +333,7 @@ bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlo
     void post(int e, int k) {
       const PortfolioProbes &p = ps[static_cast<size_t>(k)];
       auto b = book(e, "");
-      const int hi = factor::stat::hold_index(o.fr.hd[static_cast<size_t>(k)], ts[static_cast<size_t>(e)]->hold);
+      const int hi = factor::stat::hold_index(o.fr.r[static_cast<size_t>(k)].hd, ts[static_cast<size_t>(e)]->hold);
       assert(hi >= 0);
       b->dates = o.job.dm.dates;
       b->amt = o.job.spec.y.ad.k[0];

@@ -46,7 +46,6 @@ bool RunService::run(RunRequest &req) {
   if (!req.spec.evaluate)
     return true;
   const bool ok = eval(req, flow());
-  flow().end();
   if (!ok) { // 中断: 没评到的行也收尾 (判废后不再有新请求刷新)
     std::lock_guard<std::mutex> lock(mutex);
     for (FactorRow &r : rows)

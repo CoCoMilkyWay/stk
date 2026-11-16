@@ -125,14 +125,6 @@ double vram_budget() {
   return kVramFrac * static_cast<double>(vfree);
 }
 
-double whole_bytes(const Domain &dm, int seg, const Budget &b) {
-  return static_cast<double>(dm.days.size()) * seg * static_cast<double>(dm.rs.axis.size()) * (b.load + b.work) + b.fixed;
-}
-
-double whole_dev_bytes(const Domain &dm, int seg, const Budget &b) {
-  return static_cast<double>(dm.days.size()) * seg * static_cast<double>(dm.rs.axis.size()) * b.dev;
-}
-
 int Plan::max_days() const {
   int m = 0;
   for (const Chunk &k : chunks)
@@ -145,6 +137,7 @@ Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double ho
   assert(days > warm && A > 0 && bd.back >= 0);
   const double per_day = static_cast<double>(seg) * A;
   Plan P;
+  P.per_day = per_day;
   P.host = host - b.fixed;
   if (b.dev > 0.0)
     P.vram = vram_budget();
@@ -156,11 +149,12 @@ Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double ho
   }
   // 首块前带 = 整段预热 (d0 = 0), 其后各块 = bd.front; 块的日数按两者之大定
   const int band = std::max(bd.front, warm) + bd.back, stat = days - warm, least = std::min(days, 1 + band); // 最小的块: 1 统计日 + 前后带
-  assert(P.host >= least * per_day * (b.load + b.work) && "内存预算装不下最小的块 (1 统计日 + 前后带)");
-  assert((b.dev <= 0.0 || P.vram >= least * per_day * b.dev) && "显存预算装不下最小的块 (1 统计日 + 前后带)");
-  int D = std::clamp(static_cast<int>(P.host / (per_day * (b.load + b.work))) - band, 1, stat);
+  const double day_host = b.host(per_day) - b.fixed, day_dev = b.vram(per_day);                              // 每日宿主 / 显存量
+  assert(P.host >= least * day_host && "内存预算装不下最小的块 (1 统计日 + 前后带)");
+  assert((b.dev <= 0.0 || P.vram >= least * day_dev) && "显存预算装不下最小的块 (1 统计日 + 前后带)");
+  int D = std::clamp(static_cast<int>(P.host / day_host) - band, 1, stat);
   if (b.dev > 0.0)
-    D = std::min(D, std::clamp(static_cast<int>(P.vram / (per_day * b.dev)) - band, 1, stat));
+    D = std::min(D, std::clamp(static_cast<int>(P.vram / day_dev) - band, 1, stat));
   P.D = D;
   for (int s0 = warm; s0 < days; s0 += D) {
     const int s1 = std::min(days, s0 + D);

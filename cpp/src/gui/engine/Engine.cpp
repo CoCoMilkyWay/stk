@@ -90,7 +90,7 @@ Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
     return Rc::Empty;
   const auto bud = [] { return Budget{.load = kBasketCellBytes}; };
   fit_recent(F, sc, j, bud);
-  F.S.room(whole_bytes(j.dm, j.ft->seg, bud()));
+  F.S.room(bud().host(cells_of(j.dm, j.ft->seg)));
   BPlanes B;
   if (const Rc rc = rc_of(load_b(j.io(F), j.whole(), B), F.S.lr); rc != Rc::Ok)
     return rc;

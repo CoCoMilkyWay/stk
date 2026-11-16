@@ -99,10 +99,8 @@ struct LensP : ProbeBase {
       r.rx.resize(static_cast<size_t>(T) * n);
       c.ex.rows(T, [&](int t0, int t1, int) {
         for (int t = t0; t < t1; ++t)
-          for (size_t j = 0; j < n; ++j) {
-            const uint16_t x = v.rx[static_cast<size_t>(t + lo) * A + static_cast<size_t>(land->cols[j])];
-            r.rx[static_cast<size_t>(t) * n + j] = x == st::kRankNone || d == st::kFwd ? x : static_cast<uint16_t>(st::kRankMax - x);
-          }
+          for (size_t j = 0; j < n; ++j)
+            r.rx[static_cast<size_t>(t) * n + j] = st::oriented(v.rx[static_cast<size_t>(t + lo) * A + static_cast<size_t>(land->cols[j])], d);
       });
       for (const std::vector<LensCell> &b : by_row)
         r.cells.insert(r.cells.end(), b.begin(), b.end());
@@ -205,7 +203,6 @@ bool LensService::run(LensRequest &req) {
     Lease l(F);
     return l && eval(req, F, res);
   }();
-  flow().end();
   if (ok) {
     std::lock_guard<std::mutex> lock(mutex);
     result = std::move(res);

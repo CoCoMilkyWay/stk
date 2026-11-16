@@ -254,6 +254,11 @@ private:
   std::shared_ptr<const T> find(const std::string &key);
   template <class T>
   std::shared_ptr<const T> put(const std::string &key, T &&v, double bytes);
+  // 角色平面的钉 (pin 用, 成对): hit = 查缓存, 命中即钉进 c 并 set(平面) / land = 新装的平面 (n 格, 按角色每格字节记账) 入缓存并钉 + set
+  template <class T, class Set>
+  bool hit(Block &c, const std::string &key, Set &&set);
+  template <class T, class Set>
+  void land(Block &c, const std::string &key, T &&v, double n, Set &&set);
   void own() const { assert(owner_ == std::this_thread::get_id() && "Store 只给计算权持有者"); }
 
   std::mutex mu_;

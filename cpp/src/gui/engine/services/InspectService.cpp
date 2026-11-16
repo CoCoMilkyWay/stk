@@ -98,13 +98,13 @@ struct TurnP : ProbeBase {
     }
   }
 };
-// 秩按所评方向显示: 反向 = kRankMax − r16 (高 = 做多端; 无效不动), 就地
+// 秩按所评方向显示 (Stat oriented: 高 = 做多端), 就地
 void orient_rx(misc::exec::ForkJoin &ex, uint16_t *rx, int T, int A, int d) {
   if (d == factor::stat::kFwd)
     return;
   ex.rows(T, [&](int t0, int t1, int) {
     for (size_t k = static_cast<size_t>(t0) * A, e = static_cast<size_t>(t1) * A; k < e; ++k)
-      rx[k] = rx[k] == factor::stat::kRankNone ? rx[k] : static_cast<uint16_t>(factor::stat::kRankMax - rx[k]);
+      rx[k] = factor::stat::oriented(rx[k], d);
   });
 }
 // 池内秩 rx 落地 [rows_all][A] (统计行; 右上资产轴 / K 线着色)
@@ -300,13 +300,9 @@ bool InspectService::run(InspectRequest &req) {
     message.clear();
   }
   publish();
-  const bool ok = [&] {
-    FactorFlow &F = flow();
-    Lease l(F);
-    return l && eval(req, F);
-  }();
-  flow().end();
-  return ok;
+  FactorFlow &F = flow();
+  Lease l(F);
+  return l && eval(req, F);
 }
 
 bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
