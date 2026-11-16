@@ -30,14 +30,27 @@ struct TableFileStat {
 
 std::string short_time(std::time_t t); // "MM-DD HH:MM" (本地时区)
 
-// 同步道 = 一个接口的一类数据; 道序即 Update 的执行序, 日志 tag = kLaneTag
-//   Sync 页各源分表的表头逐道列出 (BigQuant 两道: 基本面 / 分钟线; Tushare 两道: 事件表 / 概念)
+struct SyncRequest {
+  uint64_t seq = 0;         // 请求代 (StateManager 发), 交接原样带回
+  bool fundamental = false; // 联网同步基本面 (BigQuant 日频表 + Tushare) + 概念快照
+  bool bar1m = false;       // 联网补齐分钟线 (基本面之后)
+};
+
+// 同步道 = 一个接口的一类数据 (两源 × 两类); 道序即 Update 的执行序
+//   Sync 页各源分表的表头逐道列出 (BigQuant: 日频表 / 分钟线; Tushare: 事件表 / 概念)
 enum Lane : std::size_t { kLaneBq,
                           kLaneTu,
                           kLaneConcept,
                           kLaneBar1m,
                           kLanes };
-inline constexpr const char *kLaneTag[kLanes] = {"bigquant", "tushare", "tushare.concept", "bigquant.bar1m"};
+struct LaneDef {
+  const char *tag;       // 日志 tag / Sync 页道名
+  bool SyncRequest::*on; // 由请求的哪个开关开
+};
+inline constexpr LaneDef kLaneDef[kLanes] = {{"bigquant", &SyncRequest::fundamental},
+                                             {"tushare", &SyncRequest::fundamental},
+                                             {"tushare.concept", &SyncRequest::fundamental},
+                                             {"bigquant.bar1m", &SyncRequest::bar1m}};
 inline constexpr const char *kConceptTable = "concept"; // 概念快照在 Tushare 分表里的表名
 
 // 一道最近一次联网同步: Idle = 本进程未联网同步过; Queued = 本轮排在前道之后
@@ -49,7 +62,7 @@ enum class LaneRun : std::uint8_t { Idle,
 
 struct LaneStat {
   LaneRun run = LaneRun::Idle;
-  std::size_t total = 0, done = 0; // 计划项 / 已完成项; total 0 = 已到水位 (概念: 当日已有)
+  std::size_t total = 0, done = 0; // 计划项 / 已完成项; total 0 = 已到水位
   std::int64_t rows = 0;           // 落盘行数 (概念: 收进快照的概念数)
   std::string time;                // 收尾时刻 "MM-DD HH:MM"
 };
@@ -59,8 +72,8 @@ struct SyncState {
   std::string message;     // 当前阶段说明 (工作线程实时更新)
   std::string last_update; // 最近一次构建成功时刻
 
-  // BigQuant 周配额 (preflight 结果, 单位 cell; Sync 页常显)
-  //   每轮联网同步开头 preflight 一次, 每个 BigQuant 任务后再取; 未联网的轮次沿用上次
+  // BigQuant 周配额 (单位 cell; Sync 页常显)
+  //   每轮联网同步开头 preflight 一次, 收尾再取一次; 未联网的轮次沿用上次
   std::int64_t quota_weekly = 0;
   std::int64_t quota_used = 0;
   std::string quota_time; // 读数时刻 "YYYY-MM-DD HH:MM:SS"; 空 = 从未取到
@@ -72,20 +85,13 @@ struct SyncState {
   misc::Ymd date_range_start = 0;     // D 轴范围
   misc::Ymd date_range_end = 0;
 
-  // 逐表落盘状态 (构建失败也填 — 正是要看清哪张表缺)
+  // 逐表落盘状态 (构建失败也填 — 正是要看清哪张表缺); 概念快照记作表 kConceptTable (一份 = 一个日分片)
   std::vector<TableFileStat> tables;
-  TableFileStat concept_files; // 概念快照 (output/data/concept, 一份 = 一个日分片); 无快照 → months 0
   LaneStat lanes[kLanes];
   std::string syncing; // 在拉的表 (spec.name / kConceptTable); 空 = 无
 
   // tables 里 name == 的那条; 缺失返回 nullptr
   const TableFileStat *find_table(const std::string &name) const;
-};
-
-struct SyncRequest {
-  uint64_t seq = 0;         // 请求代 (StateManager 发), 交接原样带回
-  bool fundamental = false; // 联网同步基本面 (BigQuant 日频表 + Tushare) + 概念快照
-  bool bar1m = false;       // 联网补齐分钟线 (基本面之后)
 };
 
 // 交接件: ok = false ⇒ 本地 parquet 缺失 (需先联网同步), asset_info 空
@@ -100,8 +106,8 @@ struct SyncResult {
 //
 // 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::asset_info (只在 GUI 线程替换)
-//   - worker:   run = 外来写者 parquet 重写 (renative) → 四道计划 (Round, 纯本地) → 四道依次 drive
-//               [bigquant → tushare → tushare.concept → bigquant.bar1m] → 构建 (扫描 → 落地) → post
+//   - worker:   run = 本轮视图 Round → 外来写者 parquet 重写 (renative, 共用 Round 的清单) → 开道的计划 (纯本地)
+//               → 四道依次 drive [bigquant → tushare → tushare.concept → bigquant.bar1m] → 构建 (扫描 → 落地) → post
 //               (两开关皆关 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
 //               各道进退写 state.lanes (持 mutex)
 //   - UI:       进度面 = 自身 (Published): Scanning 重写 / Loading 同步 / Running 构建, done/total = 文件 / 任务 / 分片;

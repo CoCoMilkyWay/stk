@@ -53,7 +53,7 @@ stk/
 │   │   │   ├── Basket.hpp                              # 📦 篮子表 BasketTable = 切片 × 该切片的权重; 三段 (段序 = 目录组序 = 下标序): 各子池 (池参数, 全A 等权 / 加权两池起头) | 申万一级 | 概念 (行业 / 概念 = 全A 内切, 市值加权)
 │   │   │   │                                           #    · 逐篮子属性 (权重 / 周期 / 代码 / 名) 建表时定; 成员判据唯一一份, 两向 each ⇄ holds (事实 Fact = 池集位 + 行业, 同取成员源行; + 概念);
 │   │   │   │                                           #      一日的持仓 = 成员表 Members (键 = 篮子); 行情价格指数 / CTA / 因子可成交指数同一张
-│   │   │   ├── Concept.hpp                             # 📦 东财概念成分快照 (进程内唯一 = 最近一份)
+│   │   │   ├── Concept.hpp                             # 📦 东财概念成分快照: 写侧 fetch (Tushare dc_index / dc_member) → save; 读侧进程内唯一 = 最近一份
 │   │   │   ├── Feature.hpp                             # 📦 特征元数据 + 多选 picked = set<ColRef> (跨库跨层); 当前库 = (池, 档)
 │   │   │   ├── Progress.hpp                            # 📦 后台计算进度面 (原子量, UI 免锁读) + 单调前缀发布 PrefixPub
 │   │   │   └── ReadRequest.hpp                         # 📦 读请求 (GUI 各读端共用: Features 分析 / OrderFlow / 因子引擎 / K 线): 主库 × 日轴 × A 轴 × 行映射 × 列 (ReadSpec)
@@ -234,7 +234,7 @@ stk/
 │   │   │   │   │   ├── StateManager.hpp                # 🖥️ 流水线编排 (GUI 线程): 基本面 / 扫描 / 编码 / 核对 四 worker 各一通道, 陈旧交接件丢弃
 │   │   │   │   │   │                                   #    · 共享状态 (AssetInfo / Asset::items / 扫描产物) 只在帧首换进; 特征计算在飞 = 冻结
 │   │   │   │   │   │                                   #    · 唯一刷新链: 同步 → AssetInfo 重建 → 覆盖扫描
-│   │   │   │   │   ├── SyncService.hpp                 # 🖥️ 同步 基本面 + bar1m (BigQuant / Tushare) + 概念快照 (Tushare 东财板块) → 落盘 (水位增量) → 构建 AssetInfo
+│   │   │   │   │   ├── SyncService.hpp                 # 🖥️ 同步四道 (两源 × 两类, 道表 kLaneDef): 各道计划 = 一列项 (纯本地) → 逐项落盘 (水位增量) → 构建 AssetInfo
 │   │   │   │   │   ├── AuditService.hpp                # 🖥️ 核对: BigQuant 远端 ↔ 本地冻结月分片, 逐级定位 + 逐表修复
 │   │   │   │   │   ├── Drive.hpp                       # 🖥️ 逐项驱动骨架 (同步 / 核对共用): 取消 / 计步 / 日志
 │   │   │   │   │   ├── ScanService.hpp                 # 🖥️ L2 binary / archive 扫盘 + 回测区间覆盖: 待编码 = archive 有 binary 无

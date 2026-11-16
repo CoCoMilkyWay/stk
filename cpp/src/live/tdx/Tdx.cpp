@@ -230,6 +230,13 @@ struct Core {
     std::lock_guard wk(work);
     return connect();
   }
+  // 一件界面事务 (下单 / 独占 / 两融条款 / 资金流水): 段 (who {kw}) + 界面锁 + 接上客户端, 当前线程跑 fn(进程堆)
+  template <class F>
+  auto txn(const char *who, trace::Kw kw, F &&fn) {
+    trace::Span span(who, std::move(kw));
+    const Gate::Hold g(gate, who);
+    return fn(connected());
+  }
 
   // 一遍全量扫出成交与持仓 (并重找进程; 须持 work)
   void scan() {
@@ -580,26 +587,26 @@ public:
 
   const std::vector<std::string> &order_steps() const override { return flash::steps(); }
   Placed place(const OrderReq &o, const Step &step) override {
-    return txn("下单",
-               {{"code", o.sec.code}, {"name", o.sec.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}, {"size", o.size}},
-               [&](const mem::HeapP &) {
-                 Placed p = flash::place(o, step);
-                 trace::ev("placed", {{"qty", p.qty}, {"px", p.px}, {"msg", p.msg}});
-                 return p;
-               });
+    return c_->txn("下单",
+                   {{"code", o.sec.code}, {"name", o.sec.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}, {"size", o.size}},
+                   [&](const mem::HeapP &) {
+                     Placed p = flash::place(o, step);
+                     trace::ev("placed", {{"qty", p.qty}, {"px", p.px}, {"msg", p.msg}});
+                     return p;
+                   });
   }
   void exclusive(const char *who, const std::function<void()> &fn) override {
-    txn(who, trace::Kw::object(), [&](const mem::HeapP &) { fn(); });
+    c_->txn(who, trace::Kw::object(), [&](const mem::HeapP &) { fn(); });
   }
   Terms pull_terms(const Log &log, const Live &live) override {
-    return txn("两融条款", trace::Kw::object(), [&](const mem::HeapP &h) {
+    return c_->txn("两融条款", trace::Kw::object(), [&](const mem::HeapP &h) {
       Terms t = credit::pull(h, log, live);
       trace::ev("terms", {{"n", t.size()}});
       return t;
     });
   }
   std::vector<CashFlow> pull_flows(misc::Ymd from, const Log &log, const Live &live) override {
-    return txn("资金流水", {{"from", from}}, [&](const mem::HeapP &h) {
+    return c_->txn("资金流水", {{"from", from}}, [&](const mem::HeapP &h) {
       std::vector<CashFlow> f = flow::pull(h, from, log, live);
       trace::ev("flows", {{"n", f.size()}});
       return f;
@@ -613,14 +620,6 @@ public:
   }
 
 private:
-  // 一件界面事务: 段 (who {kw}) + 界面锁 + 接上客户端, 当前线程跑 fn(进程堆)
-  template <class F>
-  auto txn(const char *who, trace::Kw kw, F &&fn) {
-    trace::Span span(who, std::move(kw));
-    const Gate::Hold g(c_->gate, who);
-    return fn(c_->connected());
-  }
-
   std::shared_ptr<Core> c_;
   std::unique_ptr<tdx::console::Console> console_; // 首次打开 Client 页才建
 };

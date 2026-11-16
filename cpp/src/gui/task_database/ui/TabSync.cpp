@@ -330,7 +330,7 @@ void sync_chip(const char *tag, const TaskStatus &st, const std::string &round, 
   }
 }
 
-// Update 的一道: 未联网同步过 → [-]; 计划为空 → 已到水位 (概念: 当日已有); 否则 计步 · 行数; 时刻 = 收尾
+// Update 的一道: 未联网同步过 → [-]; 计划为空 → 已到水位; 否则 计步 · 行数; 时刻 = 收尾
 void lane_chip(const SyncState &state, Lane l) {
   const LaneStat &s = state.lanes[l];
   TaskStatus st;
@@ -352,9 +352,8 @@ void lane_chip(const SyncState &state, Lane l) {
   }
   std::string round;
   if (s.run != LaneRun::Idle)
-    round = s.total == 0 ? (l == kLaneConcept ? "当日已有" : "已到水位")
-                         : std::to_string(s.done) + "/" + std::to_string(s.total) + " · " + fmt_count(s.rows) + " rows";
-  sync_chip(kLaneTag[l], st, round, s.time);
+    round = s.total == 0 ? "已到水位" : std::to_string(s.done) + "/" + std::to_string(s.total) + " · " + fmt_count(s.rows) + " rows";
+  sync_chip(kLaneDef[l].tag, st, round, s.time);
 }
 
 // 新浪当日 (常驻轮询): 未起 → [-]; 补分钟 K 中 → syncing, 否则 live; 时刻 = 最新快照
@@ -688,8 +687,7 @@ void RenderTabSync(
   table("FundTushareTables", [&] {
     spec_rows(true);
     table_row({kConceptTable, "-", "快照", "-", "东财题材概念板块成分 (dc_index / dc_member; 一行一概念: 板块代码 / 名称 / 成分码), 一日一份"}, scanned,
-              state.concept_files.months ? &state.concept_files : nullptr, writing(kConceptTable), nullptr, av,
-              disable_audit, audit_table, repair_table, weekly);
+              state.find_table(kConceptTable), writing(kConceptTable), nullptr, av, disable_audit, audit_table, repair_table, weekly);
   });
 
   caption("新浪", "当日行情, output/data/quote/ (Market 任务起后常驻轮询, 不在 Update 内; 不参与 Audit)");
