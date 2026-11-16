@@ -1998,15 +1998,26 @@ void render_mine(SharedData &data, Ui &s) {
     }
     ImGui::EndTabItem();
   }
-  if (ImGui::BeginTabItem("特征")) {
+  const Scope &sc = s.opt.sc;
+  const Open &leaves_open = sc.leaves_of(v.ctx.level);
+  int leaves_n = 0, leaves_on = 0, ops_on = 0;
+  for (const Leaf &l : v.ctx.all_leaves)
+    if (sc.srcs() & src_bit(l.src))
+      ++leaves_n, leaves_on += leaves_open.has(l.code);
+  for (const Op &o : v.ctx.all_ops)
+    ops_on += sc.ops.has(o.name);
+  const std::string leaves = "特征 (" + std::to_string(leaves_on) + "/" + std::to_string(leaves_n) + ")###leaves";
+  const std::string ops = "算子 (" + std::to_string(ops_on) + "/" + std::to_string(v.ctx.all_ops.size()) + ")###ops";
+  if (ImGui::BeginTabItem(leaves.c_str())) {
     leaves_panel(s, v.ctx, m.held());
     ImGui::EndTabItem();
   }
-  if (ImGui::BeginTabItem("算子")) {
+  if (ImGui::BeginTabItem(ops.c_str())) {
     ops_panel(s, v.ctx, m.held());
     ImGui::EndTabItem();
   }
-  if (ImGui::BeginTabItem("工具")) {
+  const std::string tools = "工具 (" + std::to_string(Tools().size()) + ")###tools";
+  if (ImGui::BeginTabItem(tools.c_str())) {
     tools_panel(s);
     ImGui::EndTabItem();
   }
