@@ -2,11 +2,11 @@
 #include "gui/engine/services/PortfolioService.hpp"
 
 #include "disk/Disk.hpp"
-#include "features/Storage/FeatureLib.hpp" // pool_def
-#include "gui/engine/Engine.hpp"           // with_backend / eval_job / eval_baskets / Probes / LinesP / group_abs
-#include "gui/engine/File.hpp"             // ValidFactorName / FactorRow / ScanFactorFile
+#include "features/Storage/FeatureLib.hpp"
+#include "gui/engine/Engine.hpp"
+#include "gui/engine/File.hpp"
 #include "misc/profiler.hpp"
-#include "shared/Basket.hpp" // basket_table
+#include "shared/Basket.hpp"
 #include "shared/SharedData.hpp"
 
 #include "nlohmann/json.hpp"
@@ -33,7 +33,6 @@ disk::Key portfolio_key(const std::string &name) {
   return {.name = name};
 }
 
-// 一张森林的组 = 同评估域: (层, 池, 所用库). 评估期 = 所用库落盘日交集, 所用库不同的因子不同组 (只用 bar 叶的不被 Lob 库截短)
 std::tuple<FactorLevelId, std::string, LibMask> group_of(const FactorTask &t) {
   const FeatureTable &ft = *t.scope.ft;
   std::vector<std::string> feats;
@@ -46,7 +45,7 @@ std::tuple<FactorLevelId, std::string, LibMask> group_of(const FactorTask &t) {
 } // namespace
 
 // ============================================================================
-// 组合文件
+// 组合文件与请求解析
 // ============================================================================
 
 std::vector<std::string> ListPortfolios() {
@@ -76,24 +75,21 @@ std::vector<PortfolioEntry> LoadPortfolio(const std::string &name) {
   return es;
 }
 
-// 一条目一行 (人能直接读 / diff)
 void SavePortfolio(const std::string &name, const std::vector<PortfolioEntry> &es) {
   std::ostringstream f;
-  {
-    f << "{\n  \"factors\": [";
-    for (size_t i = 0; i < es.size(); ++i) {
-      const PortfolioEntry &e = es[i];
-      ojson o;
-      o["pool"] = e.pool;
-      o["level"] = factor_level(e.lv).name;
-      o["file"] = e.file;
-      o["hold"] = e.hold;
-      o["sign"] = e.sign;
-      o["expr"] = e.expr;
-      f << (i ? ",\n    " : "\n    ") << o.dump();
-    }
-    f << (es.empty() ? "]\n}\n" : "\n  ]\n}\n");
+  f << "{\n  \"factors\": [";
+  for (size_t i = 0; i < es.size(); ++i) {
+    const PortfolioEntry &e = es[i];
+    ojson o;
+    o["pool"] = e.pool;
+    o["level"] = factor_level(e.lv).name;
+    o["file"] = e.file;
+    o["hold"] = e.hold;
+    o["sign"] = e.sign;
+    o["expr"] = e.expr;
+    f << (i ? ",\n    " : "\n    ") << o.dump();
   }
+  f << (es.empty() ? "]\n}\n" : "\n  ]\n}\n");
   disk::write(disk::PortfolioFile, portfolio_key(name), f.str());
 }
 
@@ -106,13 +102,9 @@ bool RenamePortfolio(const std::string &from, const std::string &to) {
 
 void DeletePortfolio(const std::string &name) { disk::remove(disk::PortfolioFile, portfolio_key(name)); }
 
-// ============================================================================
-// 解析 / 请求
-// ============================================================================
-
 void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out) {
   out.clear();
-  std::map<std::string, std::vector<FactorRow>> scanned; // 因子文件路径 → 行 (同文件只扫一次)
+  std::map<std::string, std::vector<FactorRow>> scanned;
   for (const PortfolioEntry &e : es) {
     PortfolioItem it;
     it.e = e;
@@ -172,33 +164,35 @@ std::string PortfolioRequest::sig() const {
 }
 
 // ============================================================================
-// Service
+// 纯计算核与薄 Service 壳
 // ============================================================================
 
 namespace {
 
-// G20 多头的账 [hold][kBookCols][rows_stat] (Stat 契约【净值】/【换手成本】, 每批资金 1/h̄; fold_book stride 1 = 逐行):
-//   ret = 行的 G20 (所评方向的高端组; 行已定向) 绝对收益, 平仓行实现; imp = 买入冲击, fix = 固定量 (CostBook::fix), 建仓行即付 (不交接批的平仓量一并); buy = 增仓量, 记在建仓行
 struct BookP : LinesP<kBookCols> {
   static constexpr uint8_t need = kNeedRows | kNeedEc;
   static constexpr Segs segs = Segs::First;
   double cap = 0.0;
-  void open(const Ctx &c) {
-    assert(c.c.y.ad.n == 1 && "账: 一个金额段");
-    LinesP::open(c);
-    for (int hi = 0; hi < c.L.hd.n; ++hi)
+  void init(const PassCtx &p) {
+    assert(p.ad.n == 1 && "账: 一个金额段");
+    LinesP::init(p);
+    for (int hi = 0; hi < p.hd.n; ++hi)
       for (const int k : {kBookImp, kBookFix, kBookBuy})
         x.at_exit[static_cast<size_t>(hi * kBookCols + k)] = 0;
+  }
+  void open(const Ctx &c) {
+    LinesP::open(c);
     cap = c.L.cap;
   }
   void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
     at(hi, kBookRet, t) = static_cast<float>(group_abs(r, factor::stat::end_group(factor::stat::kTop), cap));
   }
-  void root(const Ctx &c, const RootView &v) {
-    const std::vector<factor::stat::Cost> cs = costs_of(c.c.y);
+  void close(const Ctx &c, const RootView &v) {
+    factor::stat::Cost cs[factor::stat::kMaxCost];
+    [[maybe_unused]] const int C = fill_costs(c.c.y, cs);
+    assert(C == 1);
     factor::stat::CostAcc acc[factor::stat::kMaxHold];
-    // 一个金额段: cost_rows 的逐行下标 = hi
-    factor::cpu::stat::cost_rows(c.ex, v.ec, c.s(), c.L, cap, cs.data(), 1, *c.w, acc, [&](size_t hi, int t, const factor::stat::CostAcc &r) {
+    factor::cpu::stat::cost_rows(c.ex, v.ec, c.s(), c.L, cap, cs, 1, *c.w, acc, [&](size_t hi, int t, const factor::stat::CostAcc &r) {
       const factor::stat::CostBook &cl = r.book[factor::stat::kTop];
       at(static_cast<int>(hi), kBookImp, t) = static_cast<float>(cl.imp);
       at(static_cast<int>(hi), kBookFix, t) = static_cast<float>(cl.fix);
@@ -208,7 +202,6 @@ struct BookP : LinesP<kBookCols> {
 };
 using PortfolioProbes = Probes<BookP>;
 
-// 因子缓存: reload → 全丢; 本请求的 (used = now) 都留, 其余按上次被请求的先后 (旧的先丢) 丢到总字节 ≤ kKeepBytes
 constexpr size_t kKeepBytes = size_t{1} << 30;
 size_t bytes_of(const PortfolioBook &b) {
   size_t n = b.dates.size() * sizeof(misc::Ymd) + b.keys.size() * sizeof(uint32_t);
@@ -239,7 +232,6 @@ void prune(std::map<std::string, std::shared_ptr<const PortfolioBook>> &m, std::
     m.erase(k), used.erase(k);
   }
 }
-// 要算的: 缺 / 签名变了
 std::vector<const FactorTask *> todo_of(const std::map<std::string, std::shared_ptr<const PortfolioBook>> &m, const std::vector<FactorTask> &ts) {
   std::vector<const FactorTask *> todo;
   for (const FactorTask &t : ts)
@@ -250,8 +242,79 @@ std::vector<const FactorTask *> todo_of(const std::map<std::string, std::shared_
 
 } // namespace
 
-PortfolioService::PortfolioService() : FactorWorker(Prio::Interactive) { Start(); }
-PortfolioService::~PortfolioService() { Stop(); }
+Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
+                      const std::function<void(size_t, std::shared_ptr<const PortfolioBook>)> &on_book) {
+  TraceN("PortfolioForest");
+  assert(!ts.empty());
+  const FactorScope &sc = ts.front()->scope;
+  RootSet rs;
+  for (const FactorTask *t : ts) {
+    rs.hd = keys_union(rs.hd, keys_of<Holds>(std::vector<int>{t->hold}));
+    rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir);
+  }
+  std::vector<PortfolioProbes> ps(rs.size());
+  ForestOut o;
+  o.job.who = "Portfolio";
+  return with_backend<PortfolioProbes>(F, sc.gpu, [&](auto &eng) {
+    return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/false, [&](int e, int k, const std::string &why) {
+      const FactorTask &t = *ts[static_cast<size_t>(e)];
+      auto b = std::make_shared<PortfolioBook>();
+      b->sig = t.sig();
+      b->lv = t.scope.lv;
+      if (!why.empty()) {
+        b->error = why;
+      } else {
+        const int hi = factor::stat::hold_index(o.job.spec.y.hd, t.hold);
+        assert(hi >= 0);
+        b->dates = o.job.dm.stat_dates();
+        b->amt = o.job.spec.y.ad.k[0];
+        b->keys = {0};
+        for (int c = 0; c < kBookCols; ++c)
+          b->col[c] = ps[static_cast<size_t>(k)].at<BookP>().out.slice(hi * kBookCols + c, 1);
+      }
+      if (on_book)
+        on_book(static_cast<size_t>(e), std::move(b));
+    });
+  });
+}
+
+Rc EvalBasketBooks(const BasketTask &t, FactorFlow &F, Quote::PerMarket<std::shared_ptr<const PortfolioBook>> &out) {
+  TraceN("PortfolioBaskets");
+  assert(t.scope.ft->lv == kBasketLevel && "篮子账按日");
+  Job j;
+  j.who = "Portfolio";
+  Baskets bs;
+  const Rc rc = eval_baskets(F, t.scope, j, bs);
+  if (aborted(rc))
+    return rc;
+
+  Quote::PerMarket<std::shared_ptr<PortfolioBook>> q;
+  for (std::shared_ptr<PortfolioBook> &x : q) {
+    x = std::make_shared<PortfolioBook>();
+    x->sig = t.sig(), x->lv = kBasketLevel;
+    if (rc != Rc::Ok)
+      x->error = j.why;
+    else
+      x->dates = j.dm.dates;
+  }
+  if (rc == Rc::Ok) {
+    q[Quote::kBasket]->keys.resize(basket_table().size());
+    std::iota(q[Quote::kBasket]->keys.begin(), q[Quote::kBasket]->keys.end(), 0u);
+    q[Quote::kStock]->keys = j.dm.rs.axis.ids;
+    assert(std::ranges::is_sorted(q[Quote::kStock]->keys) && "池轴 sub → 全局 id 升序 (line_of 二分)");
+    for (int k = 0; k < Quote::kMarkets; ++k) {
+      PortfolioBook &dst = *q[k];
+      SideBook &src = bs[k];
+      dst.col[kBookRet] = std::move(src.ret);
+      dst.col[kBookBuy] = std::move(src.buy);
+      for (int m = 0; m < kPoolVals; ++m)
+        dst.val[m] = std::move(src.val[m]);
+    }
+  }
+  for (int k = 0; k < Quote::kMarkets; ++k)
+    out[k] = std::move(q[k]);
+  return rc;
+}
 
 template <class Set>
 void PortfolioService::put(Set &&set) {
@@ -265,7 +328,6 @@ void PortfolioService::put(Set &&set) {
 }
 
 bool PortfolioService::run(PortfolioRequest &req) {
-  FactorFlow &F = flow();
   ++tick_;
   for (const FactorTask &t : req.factors)
     used_[t.key] = tick_;
@@ -279,121 +341,38 @@ bool PortfolioService::run(PortfolioRequest &req) {
   }
   publish();
 
-  // 只有 worker 写 result: 这里读不加锁. 一张森林 = 一组 (group_of), 组内按 (串, 口径, 方向) 排
   const std::vector<const FactorTask *> todo_f = todo_of(result.factors, req.factors);
   std::map<std::tuple<FactorLevelId, std::string, LibMask>, std::vector<const FactorTask *>> groups;
   for (const FactorTask *t : todo_f)
     groups[group_of(*t)].push_back(t);
   for (auto &[g, ts] : groups)
-    std::sort(ts.begin(), ts.end(), [](const FactorTask *a, const FactorTask *b) { return std::tie(a->f.expr, a->f.frame, a->f.dir) < std::tie(b->f.expr, b->f.frame, b->f.dir); });
+    std::sort(ts.begin(), ts.end(), [](const FactorTask *a, const FactorTask *b) {
+      return std::tie(a->f.expr, a->f.frame, a->f.dir) < std::tie(b->f.expr, b->f.frame, b->f.dir);
+    });
   const bool todo_b = req.baskets && !result.quotes[Quote::kBasket];
   jobs_done.store(0, std::memory_order_relaxed);
   jobs_total.store(static_cast<int>(todo_f.size()) + todo_b, std::memory_order_relaxed);
+
+  FactorFlow F = flow();
   Lease l(F);
   if (!l)
     return false;
   if (req.reload)
     F.S.clear();
-  for (const auto &[g, ts] : groups)
-    if (!eval(ts, F))
+  for (const auto &[g, ts] : groups) {
+    const Rc rc = EvalPortfolioGroup(ts, F, [&](size_t e, std::shared_ptr<const PortfolioBook> b) {
+      put([&](PortfolioResult &r) { r.factors[ts[e]->key] = std::move(b); });
+    });
+    if (!settle(rc))
       return false;
-  return !todo_b || eval(*req.baskets, F);
-}
-
-// 一张森林 (与 Run / Inspect 同一条管线 eval_job): 根 = 去重的 (规范串, 口径, 方向), 各根同评全部条目的 hold 之并; 落账 BookP (G20 多头), 根评完即逐条发布
-bool PortfolioService::eval(const std::vector<const FactorTask *> &ts, FactorFlow &F) {
-  TraceN("PortfolioForest");
-  const FactorScope &sc = ts.front()->scope;
-  RootSet rs; // 条目 i ↔ ts[i]
-  for (const FactorTask *t : ts) {
-    rs.hd = keys_union(rs.hd, keys_of<Holds>(std::vector<int>{t->hold}));
-    rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir);
   }
-  std::vector<PortfolioProbes> ps(rs.size());
-
-  // ---- 管线 eval_job: Y = 条目 hold 之并 + 首个金额段 (BookP) ----
-  JobOut o;
-  o.job.who = "Portfolio";
-  struct Hooks : HookBase {
-    PortfolioService &W;
-    const std::vector<const FactorTask *> &ts;
-    const std::vector<PortfolioProbes> &ps;
-    const JobOut &o;
-    std::shared_ptr<PortfolioBook> book(int e, const std::string &why) const {
-      const FactorTask &t = *ts[static_cast<size_t>(e)];
-      auto b = std::make_shared<PortfolioBook>();
-      b->sig = t.sig();
-      b->lv = t.scope.lv;
-      b->error = why;
-      return b;
-    }
-    void land(int e, std::shared_ptr<const PortfolioBook> b) {
-      W.put([&](PortfolioResult &r) { r.factors[ts[static_cast<size_t>(e)]->key] = std::move(b); });
-    }
-    void fail(int e, const std::string &why) { land(e, book(e, why)); }
-    // 条目 e 的根 k 评完: 列 hi · kBookCols 起的一段, 一列一线 (键 0)
-    void post(int e, int k) {
-      const PortfolioProbes &p = ps[static_cast<size_t>(k)];
-      auto b = book(e, "");
-      const int hi = factor::stat::hold_index(o.job.spec.y.hd, ts[static_cast<size_t>(e)]->hold);
-      assert(hi >= 0);
-      b->dates = o.job.dm.stat_dates();
-      b->amt = o.job.spec.y.ad.k[0];
-      b->keys = {0};
-      for (int c = 0; c < kBookCols; ++c)
-        b->col[c] = p.at<BookP>().out.slice(hi * kBookCols + c, 1);
-      land(e, std::move(b));
-    }
-  };
-  const Rc rc = F.with_backend<PortfolioProbes>(sc.gpu, [&](auto &eng) {
-    return eval_job(eng, F, sc, rs, std::span(ps), o, Hooks{{}, *this, ts, ps, o});
-  });
-  return settle(rc);
-}
-
-// 篮子 (管线 eval_baskets: all 池评估域, 全期一块, 一趟扫完) → 行情两侧的账同发布 (PortfolioResult::quotes, 同日轴):
-// 篮子表每篮一线 (键 = 篮子下标; 不扣成本: 只毛收益 / 增仓量两列) ↔ 个股 all 池轴每只一线 (键 = 全局 id = 评估域池轴; 只毛收益一列); 各带估值
-bool PortfolioService::eval(const BasketTask &t, FactorFlow &F) {
-  TraceN("PortfolioBaskets");
-  assert(t.scope.ft->lv == kBasketLevel && "篮子账按日");
-  Job j;
-  j.who = "Portfolio";
-  Baskets bs;
-  const Rc rc = eval_baskets(F, t.scope, j, bs);
+  if (!todo_b)
+    return true;
+  Quote::PerMarket<std::shared_ptr<const PortfolioBook>> q;
+  const Rc rc = EvalBasketBooks(*req.baskets, F, q);
   if (!settle(rc))
     return false;
-  Quote::PerMarket<std::shared_ptr<PortfolioBook>> q;
-  for (std::shared_ptr<PortfolioBook> &x : q) {
-    x = std::make_shared<PortfolioBook>();
-    x->sig = t.sig(), x->lv = kBasketLevel;
-    if (rc != Rc::Ok)
-      x->error = j.why;
-    else
-      x->dates = j.dm.dates;
-  }
-  if (rc == Rc::Ok) {
-    PortfolioBook &b = *q[Quote::kBasket], &s = *q[Quote::kStock];
-    const int D = static_cast<int>(j.dm.dates.size());
-    assert(bs.index.n == static_cast<int>(basket_table().size()) && bs.index.P == D);
-    assert(bs.buy.n == bs.index.n && bs.buy.P == D);
-    assert(bs.stock.n == static_cast<int>(j.dm.rs.axis.size()) && bs.stock.P == D);
-    b.keys.resize(basket_table().size());
-    std::iota(b.keys.begin(), b.keys.end(), 0u);
-    s.keys = j.dm.rs.axis.ids;
-    assert(std::ranges::is_sorted(s.keys) && "池轴 sub → 全局 id 升序 (line_of 二分)");
-    b.col[kBookRet] = std::move(bs.index);
-    b.col[kBookBuy] = std::move(bs.buy);
-    s.col[kBookRet] = std::move(bs.stock);
-    for (int m = 0; m < kPoolVals; ++m) {
-      assert(bs.val[m].size() == b.keys.size() * b.dates.size() && bs.stock_val[m].size() == s.keys.size() * s.dates.size());
-      b.val[m] = {b.col[kBookRet].n, D, std::move(bs.val[m])};
-      s.val[m] = {s.col[kBookRet].n, D, std::move(bs.stock_val[m])};
-    }
-  }
-  put([&](PortfolioResult &r) {
-    for (int k = 0; k < Quote::kMarkets; ++k)
-      r.quotes[k] = std::move(q[k]);
-  });
+  put([&](PortfolioResult &r) { r.quotes = std::move(q); });
   return true;
 }
 

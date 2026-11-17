@@ -93,10 +93,10 @@ set(GUI_BACKEND_Vulkan_IMPL vulkan)
 set(GUI_BACKEND_Vulkan_LINK Vulkan::Vulkan)
 
 # GPU 后端表: SRC GpuRun.hpp 的实现 / LINK 运行时
-set(GPU_BACKEND_Stub_SRC factor/op_check_gpu_stub.cpp)
+set(GPU_BACKEND_Stub_SRC factor/GpuRunStub.cpp)
 set(GPU_BACKEND_Stub_LINK "")
 
-set(GPU_BACKEND_CUDA_SRC factor/op_check_gpu.cu)
+set(GPU_BACKEND_CUDA_SRC factor/GpuRun.cu)
 set(GPU_BACKEND_CUDA_LINK CUDA::cudart)
 
 # ============================================================================
@@ -393,10 +393,8 @@ set(MATH_PRECISE
     gui/engine/Engine.cpp
     gui/engine/EngineHub.cpp
     gui/engine/File.cpp
-    gui/engine/Hold.cpp
     gui/engine/Load.cpp
     gui/engine/Probe.cpp
-    gui/engine/Scope.cpp
     gui/engine/Table.cpp
     gui/engine/services/InspectService.cpp
     gui/engine/services/PortfolioService.cpp
@@ -432,10 +430,10 @@ set(MATH_PRECISE
     gui/task_agent/TaskAgent.cpp
     gui/task_agent/Tools.cpp
     gui/task_agent/Views.cpp
-    # factor: 因子契约头的消费者 = op_check 本体与 GPU 后端
+    # factor: 因子契约头的消费者 = GPU 后端与 op_check 本体
+    factor/GpuRun.cu
+    factor/GpuRunStub.cpp
     factor/op_check.cpp
-    factor/op_check_gpu.cu
-    factor/op_check_gpu_stub.cpp
     # 入口
 )
 assert_partition(数学档 SRC_ALL MATH_FAST MATH_PRECISE)

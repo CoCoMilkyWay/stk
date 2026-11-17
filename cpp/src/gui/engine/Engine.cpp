@@ -96,8 +96,11 @@ Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
     return Rc::Empty;
   F.S.room(bud().host(cells_of(j.dm, j.ft->seg)));
   BPlanes B;
-  if (const Rc rc = rc_of(load_b(j.io(F), j.whole(), B), F.S.lr); rc != Rc::Ok)
+  if (const Rc rc = rc_of(load_b(j.io(F), j.whole(), B), F.S.lr); rc != Rc::Ok) {
+    if (rc == Rc::Stale)
+      F.S.clear();
     return rc;
+  }
   out = baskets(F.S.ex, B);
   return Rc::Ok;
 }

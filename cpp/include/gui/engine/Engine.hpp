@@ -68,7 +68,7 @@ struct Forest {
 };
 
 inline Forest plant_forest(const FeatureTable &ft, std::span<const Root> rs, bool keep_roots,
-                           std::span<const factor::expr::Expr *const> plain = {}) {
+                           std::span<const factor::expr::Expr *const> plain = {}, bool fuse = true) {
   assert(!rs.empty() || !plain.empty());
   std::vector<const factor::expr::Expr *> es;
   es.reserve(rs.size() + plain.size());
@@ -76,7 +76,7 @@ inline Forest plant_forest(const FeatureTable &ft, std::span<const Root> rs, boo
     es.push_back(x.e);
   for (const factor::expr::Expr *e : plain)
     es.push_back(e);
-  Forest o{factor::build_forest(es, keep_roots || !plain.empty()), ft.x.ids({}), {rs.begin(), rs.end()}, {}};
+  Forest o{factor::build_forest(es, keep_roots || !plain.empty(), fuse), {}, {rs.begin(), rs.end()}, {}};
   o.leaves = ft.x.ids(o.d.feats);
   o.at.resize(o.d.nodes.size());
   for (size_t k = 0; k < o.r.size(); ++k) {
@@ -892,11 +892,12 @@ Rc eval_forest(E &eng, FactorFlow &F, const FactorScope &sc, const RootSet &rs, 
   Rc rc = prepare<E, Ps>(F, sc, o.fr.d, o.fr.leaves, look, rs.hd, static_cast<int>(rs.size()), o.job);
   if (rc == Rc::Ok) {
     o.ms.assign(o.fr.d.nodes.size(), 0.0);
+    using EmitFn = decltype(emit);
     struct Hooks : PassHooks {
       Progress &prog;
       const RootSet &rs;
       ForestOut &o;
-      decltype(emit) &emit_fn;
+      const EmitFn &emit_fn;
       OnBlock &blk_fn;
       OnPlan &plan_fn;
       void block(const Block &c, size_t ci, double s) { blk_fn(c, ci, s); }

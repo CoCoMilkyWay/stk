@@ -632,25 +632,27 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
   TraceN("AgentViewStream");
   const Engine::FeatureTable &ft = *env.fsc.ft;
   const BarMeta bm(ft);
-  std::vector<const fx::Expr *> es;
+  std::vector<Engine::Root> fac_roots;
+  std::vector<const fx::Expr *> plain_es;
   if (cfg.fac)
-    es.push_back(&cfg.fac->e);
+    fac_roots.push_back({&cfg.fac->e, cfg.fac->frame, cfg.fac->dir});
   if (cfg.feats)
     for (FeatSpec &f : *cfg.feats)
       if (f.err.empty()) {
-        f.root_idx = static_cast<int>(es.size());
-        es.push_back(&f.e);
+        f.root_idx = static_cast<int>(fac_roots.size() + plain_es.size());
+        plain_es.push_back(&f.e);
       }
-  factor::Dag dag = es.empty() ? factor::Dag{} : factor::build_forest(es, /*keep_roots=*/true);
-  std::vector<std::string> leaf_codes = dag.feats;
+  const bool has_dag = !fac_roots.empty() || !plain_es.empty();
+  Engine::Forest fr = has_dag ? Engine::plant_forest(ft, fac_roots, /*keep_roots=*/true, plain_es) : Engine::Forest{};
+  std::vector<Engine::LeafId> leaves = fr.leaves;
   for (uint8_t b = 0; b < kBarCount; ++b)
-    if ((cfg.bars & (1u << b)) && !bm.col[b].code.empty() && std::find(leaf_codes.begin(), leaf_codes.end(), bm.col[b].code) == leaf_codes.end())
-      leaf_codes.push_back(bm.col[b].code);
+    if ((cfg.bars & (1u << b)) && bm.col[b].id != Engine::kNoCol && std::find(leaves.begin(), leaves.end(), bm.col[b].id) == leaves.end())
+      leaves.push_back(bm.col[b].id);
 
   Engine::Lease lease(F);
   if (!lease)
     return Engine::Rc::Cancel;
-  if (!Engine::open_job(F, env.fsc, leaf_codes, job)) {
+  if (!Engine::open_job(F, env.fsc, leaves, job)) {
     err = "没算成: " + job.why;
     return Engine::Rc::Empty;
   }
@@ -664,23 +666,20 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
   job.spec.y = Engine::y_spec(ft, job.dm, hd, Engine::Segs::None, env.fsc.max_impact);
   job.spec.ry = cfg.fac != nullptr;
   int look = 0;
-  for (const fx::Expr *e : es)
+  if (cfg.fac)
+    look = std::max(look, factor::search::space::lookback(cfg.fac->e, ft.seg));
+  for (const fx::Expr *e : plain_es)
     look = std::max(look, factor::search::space::lookback(*e, ft.seg));
   job.bands = cfg.fac ? Engine::bands_of(look, hd, ft.seg) : Engine::Bands{(look + ft.seg - 1) / ft.seg, 0};
   job.bands.front = std::max(job.bands.front, cfg.extra_front);
   job.bands.back = std::max(job.bands.back, cfg.extra_back);
-  Engine::Backend<Engine::Cpu> &eng = F.backend<Engine::Cpu>();
-  eng.release();
-  job.b = Engine::budget_of<Engine::Backend<Engine::Cpu>, Engine::ProbeBase>(job, dag, job.spec.x.size(), 1, 0);
+  job.b = Engine::budget_of<Engine::Backend<Engine::Cpu>, Engine::ProbeBase>(job, fr.d, job.spec.x.size(), 1, 0);
   job.b.work += cfg.extra_work;
   job.P = Engine::plan_chunks(job.dm, ft.seg, job.b, job.bands, F.S.budget());
 
+  Engine::Backend<Engine::Cpu> &eng = Engine::engine_space(F.S).cpu;
   const size_t want_d0 = job.dm.warm + s_lo, want_d1 = job.dm.warm + s_hi;
-  std::vector<std::string> dead(es.size());
-  factor::cpu::HostPool hp;
-  std::vector<factor::check::Arena> sc;
-  factor::cpu::stat::Workspace ws;
-  std::vector<uint16_t> rx;
+  std::vector<std::string> dead(fr.d.roots.size());
 
   for (size_t ci = 0; ci < job.P.chunks.size(); ++ci) {
     const Engine::Chunk &ck = job.P.chunks[ci];
@@ -688,18 +687,16 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
       continue;
     Engine::Block blk;
     if (const Engine::Rc rc = Engine::load_block(F, job, ci, blk); rc != Engine::Rc::Ok) {
-      if (rc == Engine::Rc::Stale) {
-        F.S.clear();
+      if (rc == Engine::Rc::Stale)
         err = std::string("没算成: ") + Engine::kStaleMsg;
-      }
       return rc;
     }
+    eng.bind(blk);
     const Engine::Shape &sh = blk.y.sh;
-    std::vector<const factor::check::Plane *> inputs;
-    if (!es.empty()) {
+    if (has_dag) {
       std::vector<std::string> why = dead;
       std::vector<uint8_t> need;
-      const int good = Engine::plan_forest(F.S.ex, blk, dag, why, need);
+      const int good = Engine::plan_forest(eng.ex(), blk, fr, why, need);
       dead = std::move(why);
       if (cfg.fac && !dead[0].empty()) {
         err = "因子没算成: " + dead[0];
@@ -710,14 +707,13 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
           if (f.root_idx >= 0 && !dead[static_cast<size_t>(f.root_idx)].empty())
             f.err = dead[static_cast<size_t>(f.root_idx)];
       size_t n_ops = 0;
-      for (size_t i = 0; i < dag.nodes.size(); ++i)
-        n_ops += need[i] && dag.nodes[i].op >= 0;
+      for (size_t i = 0; i < fr.d.nodes.size(); ++i)
+        n_ops += need[i] && fr.d.nodes[i].op >= 0;
       F.prog.begin(Phase::Running, n_ops + 1);
-      inputs = Engine::leaves(blk, dag.feats);
-      if (good > 0 && !factor::cpu::walk(F.S.ex, dag, inputs, hp, sc, sh.T, sh.A, sh.seg, blk.y.gate, need.data(), [&](int i, const auto &, double) {
-            if (dag.nodes[static_cast<size_t>(i)].op >= 0)
+      if (good > 0 && !eng.walk_dag(F.cancel, fr.d, fr.leaves, need.data(), [&](int i, double) {
+            if (fr.d.nodes[static_cast<size_t>(i)].op >= 0)
               F.prog.publish(1);
-            return !F.cancel.load(std::memory_order_relaxed);
+            return true;
           }))
         return Engine::Rc::Cancel;
     }
@@ -727,10 +723,9 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
     std::vector<st::Row> rows;
     std::vector<Engine::TailRow> tails;
     std::vector<std::vector<HeldCell>> cells;
+    uint16_t *rx = nullptr;
 
     if (cfg.fac) {
-      ws.ensure(sh.A, 1, 0, F.S.ex.threads());
-      rx.resize(span.n());
       rows.assign(static_cast<size_t>(n_stat), {});
       if (cfg.fac->tails)
         tails.assign(static_cast<size_t>(n_stat), {});
@@ -787,10 +782,10 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
             }
         }
       };
-      const factor::check::Plane *rp = factor::cpu::plane_at(dag, inputs, hp, dag.roots[0]);
+      const factor::check::Plane *rp = eng.plane(fr.d.roots[0]);
       st::Accum acc[st::kMaxHold];
-      factor::cpu::stat::run(F.S.ex, {rp->v.data(), rp->m.data()}, blk.y.gate, cfg.fac->frame, span, L, rx.data(), ws, acc,
-                             Sink{m0, L.cap, dir, t_lo, sh.A, cfg.fac->tails, cfg.fac->ends, cfg.fac->only_end, rows, tails, cells});
+      rx = eng.stat_run(rp, cfg.fac->frame, span, L, acc,
+                        Sink{m0, L.cap, dir, t_lo, sh.A, cfg.fac->tails, cfg.fac->ends, cfg.fac->only_end, rows, tails, cells});
       if (dir == st::kRev)
         F.S.ex.rows(sh.T, [&](int r0, int r1, int) {
           for (size_t k = static_cast<size_t>(r0) * static_cast<size_t>(sh.A), end = static_cast<size_t>(r1) * static_cast<size_t>(sh.A); k < end; ++k)
@@ -801,9 +796,9 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
     std::vector<const factor::check::Plane *> feat_pl;
     if (cfg.feats)
       for (const FeatSpec &f : *cfg.feats)
-        feat_pl.push_back(f.root_idx >= 0 && f.err.empty() ? factor::cpu::plane_at(dag, inputs, hp, dag.roots[static_cast<size_t>(f.root_idx)]) : nullptr);
+        feat_pl.push_back(f.root_idx >= 0 && f.err.empty() ? eng.plane(fr.d.roots[static_cast<size_t>(f.root_idx)]) : nullptr);
 
-    chunk_fn(ChunkView{job, blk, bm, stat_dates, blk.land0() + t_lo, t_lo, t_hi, cfg.fac ? rx.data() : nullptr, rows, tails, cells, feat_pl});
+    chunk_fn(ChunkView{job, blk, bm, stat_dates, blk.land0() + t_lo, t_lo, t_hi, rx, rows, tails, cells, feat_pl});
     F.prog.publish(1);
     if (F.cancel.load(std::memory_order_relaxed))
       return Engine::Rc::Cancel;

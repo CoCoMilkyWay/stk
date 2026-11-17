@@ -4,7 +4,7 @@
 #include "factor/Stat/Cpu.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
-#include "gui/engine/Engine.hpp" // eval_job (只 CPU) / Probes / LinesP / pool_line
+#include "gui/engine/Engine.hpp"
 #include "misc/date.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
@@ -25,13 +25,10 @@ namespace {
 using factor::stat::kBot;
 using factor::stat::kTop;
 
-// 端 e 第 j 级尾部的绝对持仓收益 (超额 + 只数 · 基准 / 持仓分母, 同 group_abs)
 double tail_abs(const factor::stat::Row &r, const TailRow &tr, int e, int j, double cap) {
   return factor::stat::book_abs(tr.sum[e][j], tr.cnt[e][j], r.mkt, cap * kTailOfGroup[j]);
 }
-// 净值线 i (InspectResult::nav 线序, 见 kNavLines) 在行 t 这一批的收益, 全取 Row / TailRow 现成值 (不 ok → 0): 分层超额 = grp / 尾部 sum;
-//   分层绝对 = 超额 + 只数 · 基准 / 持仓分母 (组 cap, 尾 j cap · kTailOfGroup[j]);
-//   LS = ½ (顶端 − 底端) 的超额 / 绝对: 0 = 两端组 (超额即 ls_row), 1 + j = 第 j 级尾部 (r 已定向)
+
 double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double cap) {
   if (!r.ok)
     return 0.0;
@@ -50,16 +47,19 @@ double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double ca
   const int e = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
   return absolute ? tail_abs(r, tr, e, j, cap) : tr.sum[e][j];
 }
-// 分层 / 尾部 / LS 净值线 [hd.n · kNavLines] (契约【净值】; 全部持有期一次 fold_book, stride = S → 日收益):
-// 逐格扩展 TailExt, 行收尾出本行尾部 → 各线这一批的收益 nav_value
+
 struct NavP : LinesP<kNavLines> {
   using Ext = TailExt;
   double cap = 0.0;
   int d = factor::stat::kFwd;
   Ext ext() const { return {kTailThr.v, cap, d}; }
+  void init(const PassCtx &p) {
+    LinesP::init(p);
+    stride = p.seg, d = p.d;
+  }
   void open(const Ctx &c) {
     LinesP::open(c);
-    cap = c.L.cap, stride = c.c.y.sh.seg, d = c.d;
+    cap = c.L.cap;
   }
   void row(int hi, int t, const factor::stat::Row &r, const Ext &e) {
     TailRow tr;
@@ -68,28 +68,26 @@ struct NavP : LinesP<kNavLines> {
       at(hi, i, t) = static_cast<float>(nav_value(r, tr, i, cap));
   }
 };
-// 逐行 rIC 落地 [hd.n][rows_stat] (非 ok = NaN): IC 时序
+
 struct RicP : RowsP<RicP, float> {
   std::vector<float> *dst = nullptr;
   static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(H) * sh.T; }
   static float of(const factor::stat::Row &r) { return ric_of(r); }
-  void open(const Ctx &c) {
-    RowsP::open(c);
-    land_open(*dst, static_cast<size_t>(c.L.hd.n) * c.c.rows_stat(), c.s(), std::numeric_limits<float>::quiet_NaN());
+  void init(const PassCtx &p) {
+    dst->assign(static_cast<size_t>(p.hd.n) * p.rows_stat, std::numeric_limits<float>::quiet_NaN());
   }
   void fold(const Ctx &c, int hi, int u0, std::span<const float> g) {
     std::copy(g.begin(), g.end(), dst->begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(hi) * c.c.rows_stat() + u0));
   }
 };
-// 各级尾部 LS 线两端的换手量 acc[j][hi] (Stat 契约【换手成本】的 Δw, cost_rows 走一个固定段; 顶底线 = CostP 的段 0):
-// 第 j 级尾部端码 tail_code, 满仓 cap · kTailOfGroup[j] (与 TailRow 同口径); 块间续攒
+
 struct TurnP : ProbeBase {
   static constexpr uint8_t need = kNeedRx;
   factor::stat::CostAcc acc[kTails][factor::stat::kMaxHold] = {};
   static double scratch(const Shape &sh, int) { return static_cast<double>(sh.n()); }
-  void root(const Ctx &c, const RootView &v) {
+  void close(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
-    std::vector<uint8_t> ec(s.n()); // 尾部端码 [T][A], 逐级复用
+    std::vector<uint8_t> ec(s.n());
     for (int j = 0; j < kTails; ++j) {
       c.ex.rows(s.T, [&](int t0, int t1, int) {
         for (size_t k = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; k < e; ++k)
@@ -103,7 +101,7 @@ struct TurnP : ProbeBase {
     }
   }
 };
-// 秩按所评方向显示 (Stat oriented: 高 = 做多端), 就地
+
 void orient_rx(misc::exec::ForkJoin &ex, uint16_t *rx, int T, int A, int d) {
   if (d == factor::stat::kFwd)
     return;
@@ -112,19 +110,19 @@ void orient_rx(misc::exec::ForkJoin &ex, uint16_t *rx, int T, int A, int d) {
       rx[k] = factor::stat::oriented(rx[k], d);
   });
 }
-// 池内秩 rx 落地 [rows_stat][A] (右上资产轴 / K 线着色)
+
 struct RxP : LandCellsP<uint16_t> {
   static constexpr uint8_t need = kNeedRx;
-  void root(const Ctx &c, const RootView &v) {
+  void close(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
     std::copy(v.rx + static_cast<size_t>(s.t_lo) * s.A, v.rx + static_cast<size_t>(s.t_hi()) * s.A, at(c));
     orient_rx(c.ex, at(c), s.t_hi() - s.t_lo, s.A, c.d);
   }
 };
-// 不看池的秩 (g = xm) 落地 [rows_stat][A] (只给 K 线显示池外段, 评估不用)
+
 struct RxAllP : LandCellsP<uint16_t> {
   static constexpr uint8_t need = kNeedMask | kNeedX;
-  void root(const Ctx &c, const RootView &v) {
+  void close(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
     const size_t o = static_cast<size_t>(s.t_lo) * s.A;
     const factor::stat::Plane x{v.x.v + o, v.x.m + o};
@@ -132,23 +130,21 @@ struct RxAllP : LandCellsP<uint16_t> {
     orient_rx(c.ex, at(c), s.t_hi() - s.t_lo, s.A, c.d);
   }
 };
+
 using InspectProbes = EvalProbes<RxP, RxAllP, RicP, NavP, TurnP>;
 
-// ---- 导出 (flow E) ----
-// 做多端前 n 的一段在持: 行 [t_in, t_out) 在前 n 内, t_out = −1 = 期末未平 (按末行估值). 名次 1 起;
-// rank_out = 出行名次 (0 = 出行无秩: 出池 / 无值); 未平 = 最近一个有秩行的名次
 struct Leg {
-  uint32_t a = 0; // A 轴下标
+  uint32_t a = 0;
   int t_in = 0, t_out = -1;
   int rank_in = 0, rank_out = 0;
   float px_in = 0.f, px_out = 0.f, adj_in = 0.f, adj_out = 0.f;
 };
-// rx [T][A] (已定向: 高 = 做多端) 逐行取前 n, 相邻行之差即进出
+
 std::vector<Leg> top_legs(const std::vector<uint16_t> &rx, int T, int A, int n) {
   using factor::stat::kRankNone;
   assert(n > 0 && rx.size() == static_cast<size_t>(T) * static_cast<size_t>(A));
   std::vector<Leg> legs;
-  std::vector<int> open(static_cast<size_t>(A), -1); // 资产 → 在持段 (legs 下标)
+  std::vector<int> open(static_cast<size_t>(A), -1);
   std::vector<uint8_t> in(static_cast<size_t>(A), 0);
   std::vector<uint32_t> cand;
   for (int t = 0; t < T; ++t) {
@@ -188,8 +184,7 @@ std::vector<Leg> top_legs(const std::vector<uint16_t> &rx, int T, int A, int n) 
   }
   return legs;
 }
-// 进出行 (评估期行, 不含预热) 所在日读标签库 (A 轴 = 其池轴): 因子层 close 本行 + 日频 adj_factor 当日适用值 (= 承接日 L_1day 行; 承接日未落盘 / 轴首 → 当日行).
-// false = 库判废
+
 bool fill_px(const Domain &dm, const FeatureTable &ft, std::vector<Leg> &legs) {
   const FeatureLib &lib = dm.rs.lib();
   const size_t lvl = factor_level(ft.lv).lvl, A = dm.rs.axis.size();
@@ -228,9 +223,7 @@ bool fill_px(const Domain &dm, const FeatureTable &ft, std::vector<Leg> &legs) {
   }
   return true;
 }
-// CSV (时刻 = 行末 YYYY-MM-DD HH:MM; ret = 复权收益; 未平按末行估值):
-//   Log  一段一行 (进行序), 未平 → out_rank 空, out = 末行
-//   Snap 未平段一行 (名次序) = 期末名单, time / px = 末行
+
 void write_legs(const InspectSpec &sp, std::vector<Leg> &legs, const std::vector<misc::Ymd> &dates, const PoolAxis &axis, const factor::Geo &g) {
   std::filesystem::create_directories(std::filesystem::path(sp.csv).parent_path());
   std::ofstream f(sp.csv);
@@ -288,7 +281,10 @@ bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTab
     assert(top_n >= 1);
     req.spec.ex = ex;
     req.spec.top_n = top_n;
-    req.spec.csv = disk::path(disk::RunExportFile, {.pool = pool, .level = factor_level(req.scope.lv).name, .name = row.name_en + "_w" + std::to_string(row.widx) + "_top" + std::to_string(top_n) + (ex == InspectExport::Log ? "_log" : "_snap")})
+    req.spec.csv = disk::path(disk::RunExportFile, {.pool = pool,
+                                                    .level = factor_level(req.scope.lv).name,
+                                                    .name = row.name_en + "_w" + std::to_string(row.widx) + "_top" + std::to_string(top_n) +
+                                                            (ex == InspectExport::Log ? "_log" : "_snap")})
                        .string();
     for (const AssetItem &it : data.asset.items)
       req.spec.codes.push_back(it.code_ex()), req.spec.names.push_back(it.asset_name);
@@ -296,87 +292,56 @@ bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTab
   return true;
 }
 
-InspectService::InspectService() : FactorWorker(Prio::Interactive) { Start(); }
-InspectService::~InspectService() { Stop(); }
-
-bool InspectService::run(InspectRequest &req) {
-  {
-    std::lock_guard<std::mutex> lock(mutex); // 旧 result 不清: 页面继续整页画旧因子, 新结果发布时一次性覆盖 (不闪)
-    message.clear();
-  }
-  publish();
-  FactorFlow &F = flow();
-  Lease l(F);
-  return l && eval(req, F);
-}
-
-bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
+Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, InspectResult &res, std::string &export_msg,
+                 const std::function<void(InspectResult &)> &on_ready) {
   TraceN("InspectEvaluate");
   const FactorScope &sc = req.scope;
   const FactorRef &f = req.spec.f;
+  export_msg.clear();
   if (req.reload)
     F.S.clear();
 
-  // ---- 管线 eval_job (与 Run / Portfolio 同一份): 一个根, 探针 InspectProbes; 块钩子 = 池等权线 (随 Y 的代) ----
-  //   Y = 全部持有期 + 全部金额段; X = 本因子的叶 (平面经 Store 缓存, 缺的补读)
   RootSet rs{.hd = keys_of<Holds>(sc.ft->y.labels)};
   rs.add(*sc.ft, f.expr, f.frame, f.dir);
-  JobOut o;
+  ForestOut o;
   o.job.who = "Inspect";
   std::vector<InspectProbes> ps(1);
   InspectProbes &p = ps[0];
-  p.at<RxP>().dst = &pl_.rx;
-  p.at<RxAllP>().dst = &pl_.rx_all;
-  p.at<RicP>().dst = &pl_.ric;
-  struct Hooks : HookBase {
-    static constexpr bool whole() { return true; } // 池等权线 / alpha 分布要整期
-    InspectService &W;
-    FactorFlow &F;
-    void block(const Block &c, size_t, double) {
-      if (W.pool_gen_ == c.gen)
-        return;
-      W.pool_ = pool_line(F.S.ex, c), W.pool_gen_ = c.gen;
-      assert(W.pool_.P == c.rows_stat() && W.pool_.n == c.y.hd.n);
-    }
-  };
-  const Rc rc = F.with_backend<InspectProbes>(sc.gpu, [&](auto &eng) {
-    return eval_job(eng, F, sc, rs, std::span(ps), o, Hooks{{}, *this, F});
-  });
-  if (!settle(rc))
-    return false;
+  p.at<RxP>().dst = &cache.pl.rx;
+  p.at<RxAllP>().dst = &cache.pl.rx_all;
+  p.at<RicP>().dst = &cache.pl.ric;
 
-  // ---- 结果骨架 ----
-  InspectResult res;
+  const Rc rc = with_backend<InspectProbes>(F, sc.gpu, [&](auto &eng) {
+    return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/true, NoOp{}, [&](const Block &c, size_t, double) {
+      if (cache.pool_gen == c.gen)
+        return;
+      cache.pool = pool_line(F.S.ex, c), cache.pool_gen = c.gen;
+      assert(cache.pool.P == c.rows_stat() && cache.pool.n == c.y.hd.n);
+    });
+  });
+  if (aborted(rc))
+    return rc;
+
+  res = InspectResult{};
   res.key = inspect_key(sc.lv, sc.pool, sc.years, req.spec.row, f.expr, f.dir);
   res.row = req.spec.row;
   res.expr = f.expr;
   res.lv = sc.lv;
   res.frame = f.frame;
-  const auto publish_result = [&] { // 新平面进结果, 旧结果的平面缓冲回收给 worker (下次原地写)
-    std::swap(res.pl, pl_);
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      std::swap(result, res);
-      ++result_gen;
-    }
-    pl_ = std::move(res.pl);
-    publish();
-  };
-
-  // ---- 评估域不成 / 叶值域越界: 只发头部 + error ----
   if (rc != Rc::Ok) {
     res.error = o.job.why;
-    pl_.clear(); // 无一级 / 无 rx
-    publish_result();
-    return true;
+    cache.pl.clear();
+    if (on_ready)
+      on_ready(res);
+    return rc;
   }
-  // 落地 / 净值线 / 池线的行轴都 = 评估期 (Block::rows_stat)
+
   const Domain &dm = o.job.dm;
   const int seg = sc.ft->seg, A = static_cast<int>(dm.rs.axis.size()), days = static_cast<int>(dm.stat_days()), T = days * seg;
   res.dates = dm.stat_dates();
   res.read_scope = dm.rs;
-  res.pool_index = pool_;
-  for (int hi = 0; hi < res.pool_index.n; ++hi) { // 逐行收益 (每批 1/h̄, 平仓行实现) 评估期之和 = 算术总收益, 按日折年 (与期限结构 × span_per_year 同口径)
+  res.pool_index = cache.pool;
+  for (int hi = 0; hi < res.pool_index.n; ++hi) {
     const float *v = res.pool_index.at(hi);
     double s = 0.0;
     for (int t = 0; t < res.pool_index.P; ++t)
@@ -384,28 +349,61 @@ bool InspectService::eval(const InspectRequest &req, FactorFlow &F) {
     res.pool_ann[hi] = static_cast<float>(s / days * factor::stat::kDaysPerYear);
   }
   res.hd = o.job.spec.y.hd;
-  fill_eval(p, o.scope(sc), o.eval_ms(0), res.dates, res);
+  fill_eval(p, o.scope(sc), o.eval_ms(0), res);
   res.alpha_dist = std::move(p.at<AlphaP>().d);
   std::copy_n(p.at<IcPdfP>().pdf, res.hd.n, res.ic_agg);
   res.nav = std::move(p.at<NavP>().out);
   for (int j = 0; j < kTails; ++j)
     std::copy_n(p.at<TurnP>().acc[j], res.hd.n, res.ls_turn[j]);
+
   std::vector<Leg> legs;
   if (req.spec.ex != InspectExport::None) {
-    legs = top_legs(pl_.rx, T, A, req.spec.top_n);
+    legs = top_legs(cache.pl.rx, T, A, req.spec.top_n);
     if (req.spec.ex == InspectExport::Snap)
       std::erase_if(legs, [](const Leg &l) { return l.t_out >= 0; });
   }
-  publish_result();
+  if (on_ready)
+    on_ready(res);
 
-  // ---- 导出 (flow E): 结果已发布, 读价不挡页面 ----
   if (req.spec.ex != InspectExport::None) {
-    if (!fill_px(dm, *sc.ft, legs))
-      return settle(Rc::Stale);
+    if (!fill_px(dm, *sc.ft, legs)) {
+      F.S.clear();
+      return Rc::Stale;
+    }
     write_legs(req.spec, legs, dm.stat_dates(), dm.rs.axis, factor_level(sc.lv).geo());
+    export_msg = std::string(req.spec.ex == InspectExport::Log ? "导出进出 " : "导出名单 ") + std::to_string(legs.size()) + " 行 → " + req.spec.csv;
+  }
+  return Rc::Ok;
+}
+
+bool InspectService::run(InspectRequest &req) {
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    message.clear();
+  }
+  publish();
+  FactorFlow F = flow();
+  Lease l(F);
+  if (!l)
+    return false;
+  InspectResult res;
+  std::string export_msg;
+  const Rc rc = InspectFactor(req, F, cache_, res, export_msg, [&](InspectResult &ready) {
+    std::swap(ready.pl, cache_.pl);
     {
       std::lock_guard<std::mutex> lock(mutex);
-      message = std::string(req.spec.ex == InspectExport::Log ? "导出进出 " : "导出名单 ") + std::to_string(legs.size()) + " 行 → " + req.spec.csv;
+      std::swap(result, ready);
+      ++result_gen;
+    }
+    cache_.pl = std::move(ready.pl);
+    publish();
+  });
+  if (!settle(rc))
+    return false;
+  if (!export_msg.empty()) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      message = std::move(export_msg);
     }
     publish();
   }

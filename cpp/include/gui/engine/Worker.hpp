@@ -23,7 +23,6 @@ protected:
     if (!aborted(rc))
       return true;
     if (rc == Rc::Stale) {
-      Store::get().clear();
       std::lock_guard<std::mutex> lock(this->mutex);
       message = kStaleMsg;
     }

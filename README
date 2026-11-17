@@ -171,31 +171,24 @@ stk/
 │   │   │   │   │                                       #    · 规划 plan_libs → 每库 LibPlan (清单 / 已落盘 / 规划日期轴; 上游未落盘齐 = blocked)
 │   │   │   │   │                                       #    · 全量 (清库重建) / 续算 (A 轴冻结, 只算库末之后的新日; 快照与清单 / 字段表对得上才可续)
 │   │   │   │   └── ui/TabCompute.hpp                   # 🖥️ Compute 页: 库表 (一行一池, 每池各档一库) + 核布局 + Rebuild / Append / 删除 + 进度
-│   │   │   ├── engine/                                 # 🖥️ 因子引擎: Alpha 各因子服务 / Market 组合 / Agent 观察同一份
+│   │   │   ├── engine/                                 # 🖥️ 因子引擎: Alpha 各因子服务 / Market 组合 / Agent 回测与观察同一份
 │   │   │   │   ├── EngineHub.hpp                       # 🖥️ 跨任务状态 (Alpha / Market 共用): 各层字段表 + 后端选择 + 组合 (PortfolioService / 编辑状态 / 重解析)
-│   │   │   │   ├── Table.hpp                           # 🖥️ 因子层公共类型: 层表 FACTOR_LEVELS (唯一真相, 加层只加一行) / 作用域 / 请求 / EvalStat
-│   │   │   │   ├── Scope.hpp                           # 🖥️ 作用域层: Domain 评估域 (库 + 评估期 + 资产轴) / Budget → plan_chunks 分块
-│   │   │   │   ├── Load.hpp                            # 🖥️ 装载层: 特征 X / 门控 + 标签 + 成本 Y / 池篮子 B 三侧宿主平面, 同一份逐天并行骨架
-│   │   │   │   │                                       #    · 门控 / 标签取因子池 Bar 库, 盘口成本取同池 Lob 库
-│   │   │   │   │                                       #    · Store = 进程唯一计算面: 线程池 + 已开的库 + 平面 LRU 缓存 (跨服务命中) + 计算权优先级队列
-│   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层: 一个根的一种输出 (Hold / Cost / Cover / Alpha / IcPdf / Year 通用); EvalProbes → EvalStat
-│   │   │   │   │                                       #    · 落地三形 RowsP (逐行暂存 → 折) / LandCellsP (逐格) / LinesP (净值线), 行轴 = 评估期 (Block::rows_stat, 不含预热)
-│   │   │   │   ├── Book.hpp                            # 🖥️ 净值引擎 (唯一): 逐行批收益 RowLines → fold_book → 复利; 分层 / 因子线 / 池篮子同一份
-│   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎 Backend<Cpu | Gpu> 同一接口; FactorFlow = 服务 worker 的计算句柄
-│   │   │   │   │                                       #    · 管线 (全部服务同一份): Job → prepare (评估域 + 开库 → 持有期 / 成本段 → 预算 → 分块)
-│   │   │   │   │                                       #      → pass (逐块装载 → 种森林 → eval; 根 k ↔ 探针 ps[k], 各根同评作业的全部持有期); Run / Inspect / Portfolio / Lens 走 eval_job (根去重, 一张森林)
-│   │   │   │   │                                       #      Search 每趟一次 pass; 池篮子走 eval_baskets (不走森林)
-│   │   │   │   │                                       #    · 钩子 HookBase = 一趟的事件 ↔ 探针 = 一个根的输出; 各服务的差别只在探针元组
-│   │   │   │   │                                       #    · 评估期 span_of = 标签库与叶所在库的落盘日交集的最近 N 年 (Alpha 页顶 / Agent Mine 页各设, 默认 1; Market 组合全期), 其前另装 10% 预热日 (Domain::warm, 只给回看); 计算全在计算权租约 Lease 内
-│   │   │   │   ├── Worker.hpp                          # 🖥️ FactorWorker<D, Req>: 全部因子服务同一份骨架 (进度 / 优先级 / 中断收尾)
-│   │   │   │   ├── Hold.hpp                            # 🖥️ 持有期的开 / 清仓描述 hold_points / hold_desc (UI 凡显示开清仓处同一份)
+│   │   │   │   ├── Table.hpp                           # 🖥️ 因子层公共类型: 层表 FACTOR_LEVELS + 持有期开关仓 HoldPoints / 三侧列 XCols ↔ YCols ↔ BCols / 作用域与年数上限 / EvalStat
+│   │   │   │   ├── Load.hpp                            # 🖥️ 评估域与装载层: Domain + Plan 分块 + 三侧平面 X ↔ Y ↔ B (共享 read_days) + 进程唯一计算面 Store
+│   │   │   │   │                                       #    · 门控 / 标签取因子池 Bar 库, 盘口成本取同池 Lob 库; 评估期 span_of = 落盘日交集最近 N 年 + 10% 预热日
+│   │   │   │   │                                       #    · Store = 线程池 ex + 库 lr + 宿主平面 LRU + 常驻执行环境 ExecSpace (CPU/GPU 内存与显存统一预算) + 计算权租约 Lease
+│   │   │   │   ├── Book.hpp                            # 🖥️ 净值与篮子引擎: RowLines → fold_book → BookLines → compound; 行情两侧 PerMarket<SideBook> (篮子 ↔ 个股同形)
+│   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层 (双层对仗): 趟级 init ⇄ finish × 块级 open → row → close; 落地三形 RowsP / LandCellsP / LinesP; EvalProbes → EvalStat
+│   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎: Forest (LeafId 一步到位, 因子根 + 纯表达式根) × Backend<Cpu | Gpu> (设备侧按块驻留 Y/X 复用)
+│   │   │   │   │                                       #    · 单一管线: prepare → run_pass (按需日段跳块); 单森林 eval_forest (Run / Inspect / Portfolio) ↔ 篮子 eval_baskets
+│   │   │   │   ├── Worker.hpp                          # 🖥️ FactorWorker<D, Req>: 薄异步服务骨架 (值句柄 flow() + 统一中断收尾 settle)
 │   │   │   │   ├── File.hpp                            # 🖥️ 因子文件读写 (一因子一文件); Run 只回写 run + stats, Search 只回写 weights / search
 │   │   │   │   ├── StatJson.hpp                        # 🖥️ EvalStat ↔ JSON
-│   │   │   │   ├── services/
-│   │   │   │   │   ├── RunService.hpp                  # 🖥️ 因子表 Run: 逐文件一张共享 DAG → 分层 / 多空 / 换手成本统计 → 回写 stats
-│   │   │   │   │   ├── SearchService.hpp               # 🖥️ 参数搜索: 采样 → 曲面取峰 → 细化 → 挑显著且不冗余的 → 回写 weights (目标见 factor/Search)
-│   │   │   │   │   ├── InspectService.hpp              # 🖥️ 单因子深看 (不写文件)
-│   │   │   │   │   └── PortfolioService.hpp            # 🖥️ 组合: 因子 / 篮子 / 个股 → 账 PortfolioBook (线 × [毛收益 / 冲击 / 固定 / 增仓量] × 行)
+│   │   │   │   ├── services/                           # 🖥️ 纯计算核 (GUI 与 Agent 共调) + 薄线程壳:
+│   │   │   │   │   ├── RunService.hpp                  # 🖥️ ScanFactors / EvalFactorFile (单文件共享森林评估 + 回写 stats) + RunService
+│   │   │   │   │   ├── SearchService.hpp               # 🖥️ SearchFactor (采样 → GP 曲面取峰 → 细化 → 非冗余终选回写 weights) + SearchService
+│   │   │   │   │   ├── InspectService.hpp              # 🖥️ InspectFactor (整期一级平面 / 分层与尾部净值 / 前 N 只 CSV 导出) + InspectService
+│   │   │   │   │   └── PortfolioService.hpp            # 🖥️ EvalPortfolioGroup / EvalBasketBooks → PortfolioBook + PortfolioService
 │   │   │   │   └── ui/PortfolioBoxes.hpp               # 🖥️ Alpha → Factors 的组合小框 + 当前组合 (Lines 页因子 / 策略两组的来源)
 │   │   │   ├── quote/                                  # 🖥️ 行情: Market 各页 / Live 持仓页 / Database Sync 页共用
 │   │   │   │   ├── QuoteHub.hpp                        # 🖥️ QuoteService + PriceLib 一份 + 交易日历一份; 首次用到才起 (之前不碰网络); 一帧一份 (frame): 新浪状态 / 当日 Live / 历史 PriceView
@@ -405,8 +398,8 @@ stk/
 │   ├── src/                                            # 💾 源文件实现 (目录与 include/ 一一对应)
 │   │   ├── main.cpp                                    # 💾 程序入口
 │   │   ├── factor/op_check.cpp                         # 💾 三后端对拍 CLI (独立 target)
-│   │   ├── factor/op_check_gpu.cu                      # 💾 GPU 后端 CUDA 实现 (GPU_BACKEND=CUDA 时入链)
-│   │   ├── factor/op_check_gpu_stub.cpp                # 💾 GPU stub (未开 CUDA)
+│   │   ├── factor/GpuRun.cu                            # 💾 GPU 后端 CUDA 实现 (GPU_BACKEND=CUDA 时入链)
+│   │   ├── factor/GpuRunStub.cpp                       # 💾 GPU stub (未开 CUDA)
 │   │   ├── features/FeatureMeta.cpp                    # 💾 字段表元数据唯一 TU (增删特征 GUI 不重编)
 │   │   ├── worker/compute/Feed{Lob,Bar}.cpp            # 💾 两档的源 TierFeed + 档入口表 (Lob fast-math / Bar precise-math)
 │   │   ├── worker/compute/StageCs.cpp                  # 💾 截面 cs_loop (档无关)

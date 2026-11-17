@@ -844,12 +844,18 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
                            kCellBytes<Leaf> * static_cast<double>(mx.size()));
   room(need, reserve);
   c.fresh = need > 0.0;
+  const auto end_io = [&](bool ok) {
+    const Rc rc = rc_of(ok, lr);
+    if (rc == Rc::Stale)
+      clear();
+    return rc;
+  };
   if (!core || mh.n > 0 || ma.n > 0) {
     YCore got;
     std::vector<LegPlane> labs;
     std::vector<U16> cs;
     if (!load_y(io, k, core, got, mh, ma, labs, cs))
-      return rc_of(false, lr);
+      return end_io(false);
     if (!core)
       land(c, key('g', 0), std::move(got), n, set_core);
     for (int j = 0; j < mh.n; ++j)
@@ -860,7 +866,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   if (!mx.empty()) {
     std::vector<Leaf> xs;
     if (!load_x(io, k, mx, xs))
-      return rc_of(false, lr);
+      return end_io(false);
     for (size_t j = 0; j < mx.size(); ++j)
       land(c, key('x', mx[j]), std::move(xs[j]), n, set_leaf(mx[j]));
   }
@@ -882,7 +888,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
     if (k.d0 == 0 && k.d1 == nd)
       y.n_full = n_full_from(core->on, sh.T);
     else if (!n_full_of(io, Chunk{0, 0, nd, nd}, y.n_full))
-      return rc_of(false, lr);
+      return end_io(false);
     n_full_.emplace(dom, y.n_full);
   }
   return Rc::Ok;

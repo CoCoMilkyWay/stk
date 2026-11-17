@@ -1,4 +1,4 @@
-// Bridge — 见头文件. 评估路径调 Engine::eval_job (含因子 CPU 后端), CMake 列入 MATH_PRECISE 源.
+// Bridge — 见头文件. 评估路径调 SearchFactor / EvalFactorFile, CMake 列入 MATH_PRECISE 源.
 #include "gui/task_agent/Bridge.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Docs.hpp"
@@ -12,10 +12,9 @@
 #include "features/Storage/FeatureLib.hpp"
 #include "features/TimeIndex.hpp"
 #include "fundamental/AssetAxis.hpp"
-#include "gui/engine/Engine.hpp"
 #include "gui/engine/File.hpp"
-#include "gui/engine/Hold.hpp"
-#include "gui/engine/Scope.hpp"
+#include "gui/engine/Load.hpp"
+#include "gui/engine/services/RunService.hpp"
 #include "gui/engine/services/SearchService.hpp"
 #include "gui/util/PoolTip.hpp"
 #include "misc/date.hpp"
@@ -329,66 +328,6 @@ Surface surface_of(const Engine::FeatureTable &ft, const Engine::SearchResult &r
 
 bool is_doc_tool(Tool t) { return t == Tool::SearchDocs || t == Tool::SearchFactors || t == Tool::ReadDoc; }
 
-Engine::Rc eval_weights_of_file(Engine::FactorFlow &F, const Engine::FactorScope &fsc, std::vector<Engine::FactorRow> &frows) {
-  std::vector<size_t> idx;
-  for (size_t i = 0; i < frows.size(); ++i)
-    if (frows[i].widx >= 0 && frows[i].error.empty() && !frows[i].expr.empty())
-      idx.push_back(i);
-  if (idx.empty())
-    return Engine::Rc::Ok;
-
-  using RunProbes = Engine::EvalProbes<>;
-  Engine::Rc rc_out = Engine::Rc::Ok;
-  F.with_backend<RunProbes>(fsc.gpu, [&](auto &eng) {
-    Engine::Lease l(F);
-    if (!l) {
-      rc_out = Engine::Rc::Cancel;
-      return false;
-    }
-    Engine::RootSet rs{.hd = Engine::keys_of<Engine::Holds>(fsc.ft->y.labels)};
-    for (const size_t i : idx)
-      rs.add(*fsc.ft, frows[i].expr, frows[i].frame, fs::dir_of(frows[i].sign));
-    Engine::JobOut o;
-    o.job.who = "Run";
-    std::vector<RunProbes> ps(rs.size());
-    std::vector<size_t> fin;
-    struct Hooks : Engine::HookBase {
-      std::vector<Engine::FactorRow> &frows;
-      const Engine::FactorScope &sc;
-      const std::vector<size_t> &idx;
-      const std::vector<RunProbes> &ps;
-      const Engine::JobOut &o;
-      std::vector<size_t> &fin;
-      int k_st = -1;
-      Engine::EvalStat st{};
-      void fail(int e, const std::string &why) { frows[idx[static_cast<size_t>(e)]].error = why; }
-      void post(int e, int k) {
-        if (k != k_st) {
-          st = Engine::EvalStat{};
-          Engine::fill_eval(ps[static_cast<size_t>(k)], o.scope(sc), o.eval_ms(k), o.job.dm.stat_dates(), st);
-          k_st = k;
-        }
-        Engine::FactorRow &r = frows[idx[static_cast<size_t>(e)]];
-        static_cast<Engine::EvalStat &>(r) = st;
-        r.has_stat = true;
-        r.stat_from_file = false;
-        fin.push_back(static_cast<size_t>(e));
-      }
-    };
-    rc_out = Engine::eval_job(eng, F, fsc, rs, std::span(ps), o, Hooks{{}, frows, fsc, idx, ps, o, fin});
-    if (rc_out == Engine::Rc::Stale)
-      F.S.clear();
-    if (rc_out == Engine::Rc::Ok && !fin.empty()) {
-      std::vector<const Engine::FactorRow *> out;
-      for (const size_t e : fin)
-        out.push_back(&frows[idx[e]]);
-      Engine::WriteFactorStats(fsc.dir, out);
-    }
-    return rc_out == Engine::Rc::Ok;
-  });
-  return rc_out;
-}
-
 } // namespace
 
 // =============================================================================
@@ -491,7 +430,7 @@ disk::Key key(const Scope &sc, bool test) {
 } // namespace catalog
 
 // =============================================================================
-// Lab 实现: 单线程 Async worker (持 SearchService(false) + ViewRunner), 与 GUI 零共享可变态
+// Lab 实现: 单线程 Async worker (直调引擎纯计算核 + ViewRunner), 与 GUI 零共享可变态
 // =============================================================================
 namespace {
 
@@ -529,13 +468,13 @@ struct Lab::Impl {
   std::map<std::string, Surface> surfaces;
   std::map<std::string, std::string> reps;
 
-  Engine::SearchService searcher{false};
+  Progress prog;
   ViewRunner views;
   Async<WorkerReq, LabStep, WorkerOut, LabLive> worker;
 
   Impl()
       : worker([this](WorkerReq &req, const auto &pipe) -> WorkerOut {
-          searcher.begin(Phase::Loading, 0);
+          prog.begin(Phase::Loading, 0);
           if (auto *ev = std::get_if<EvalTask>(&req))
             return run_eval(*ev, pipe);
           return run_call(std::get<CallTask>(req), pipe);
@@ -546,23 +485,30 @@ struct Lab::Impl {
   template <class Pipe>
   WorkerOut run_eval(EvalTask &ev, const Pipe &pipe) {
     pipe.step(LabStep::Search);
-    Engine::FactorFlow flow(pipe.cancel, searcher, Engine::Prio::Batch);
-    const Engine::SearchRequest sreq{ev.fsc, ev.ssp};
-    const bool ok = searcher.exec(sreq, flow);
-    if (pipe.cancel.load(std::memory_order_relaxed))
+    Engine::FactorFlow flow(pipe.cancel, prog, Engine::Prio::Batch);
+    Engine::SearchResult sres;
+    std::string why;
+    const Engine::Rc src = Engine::SearchFactor({ev.fsc, ev.ssp}, flow, sres, why);
+    if (pipe.cancel.load(std::memory_order_relaxed) || src == Engine::Rc::Cancel)
       return std::monostate{};
     EvalDone done{.file = ev.ssp.file};
-    if (!ok || !searcher.result.wrote) {
-      done.fail_why = searcher.message.empty() ? "Search 中止" : searcher.message;
+    if (src != Engine::Rc::Ok || !sres.wrote) {
+      done.fail_why = src == Engine::Rc::Stale ? Engine::kStaleMsg : why.empty() ? "Search 中止"
+                                                                                 : why;
       return done;
     }
-    done.surf = surface_of(*ev.fsc.ft, searcher.result);
+    done.surf = surface_of(*ev.fsc.ft, sres);
 
     std::vector<Engine::FactorRow> frows;
     Engine::ScanFactorFile(ev.fsc.dir, ev.ssp.file, *ev.fsc.ft, frows);
-    if (searcher.result.n_weights > 0) {
+    if (sres.n_weights > 0) {
       pipe.step(LabStep::Run);
-      const Engine::Rc rc = eval_weights_of_file(flow, ev.fsc, frows);
+      std::vector<size_t> idx;
+      for (size_t i = 0; i < frows.size(); ++i)
+        if (frows[i].widx >= 0 && frows[i].error.empty() && !frows[i].expr.empty())
+          idx.push_back(i);
+      Engine::Lease l(flow);
+      const Engine::Rc rc = l ? Engine::EvalFactorFile(ev.fsc, flow, frows, idx) : Engine::Rc::Cancel;
       if (pipe.cancel.load(std::memory_order_relaxed) || rc == Engine::Rc::Cancel)
         return std::monostate{};
       if (rc != Engine::Rc::Ok)
@@ -573,7 +519,7 @@ struct Lab::Impl {
       const auto mk = std::find_if(frows[0].searched.begin(), frows[0].searched.end(), [&](const Engine::SearchMark &m) { return m.hold == ev.ssp.hold; });
       if (mk != frows[0].searched.end() && mk->top) {
         pipe.step(LabStep::Look);
-        Engine::FactorFlow vflow(pipe.cancel, searcher, Engine::Prio::Interactive);
+        Engine::FactorFlow vflow(pipe.cancel, prog, Engine::Prio::Interactive);
         done.rep_text = views.rep_layers(mk->top->expr, mk->top->sign, ev.venv, vflow);
         if (pipe.cancel.load(std::memory_order_relaxed))
           return std::monostate{};
@@ -592,7 +538,7 @@ struct Lab::Impl {
       return out;
     }
     pipe.step(LabStep::Look);
-    Engine::FactorFlow flow(pipe.cancel, searcher, Engine::Prio::Interactive);
+    Engine::FactorFlow flow(pipe.cancel, prog, Engine::Prio::Interactive);
     ViewOut out = views.run(ct.call, ct.venv, flow);
     if (pipe.cancel.load(std::memory_order_relaxed))
       return std::monostate{};
@@ -882,8 +828,8 @@ std::optional<LabTick> Lab::poll() {
 }
 
 void Lab::live(LabLive &dst) const {
-  const size_t tot = impl_->searcher.total.load(std::memory_order_relaxed);
-  const size_t dn = impl_->searcher.done.load(std::memory_order_relaxed);
+  const size_t tot = impl_->prog.total.load(std::memory_order_relaxed);
+  const size_t dn = impl_->prog.done.load(std::memory_order_relaxed);
   dst.frac = tot > 0 ? std::clamp(static_cast<double>(dn) / static_cast<double>(tot), 0.0, 1.0) : 0.0;
 }
 

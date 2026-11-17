@@ -1,8 +1,7 @@
-// RunService — 见头文件. 本 TU include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点:
-// CMake 里已列入 MATH_PRECISE 源 (-fno-fast-math), 与 OperatorsService 同待遇.
+// RunService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/services/RunService.hpp"
 
-#include "gui/engine/Engine.hpp" // eval_job / Probes / FactorFlow (各服务同一条管线)
+#include "gui/engine/Engine.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 
@@ -12,12 +11,7 @@
 
 namespace GUI::Engine {
 
-namespace {
-
-// Run 的探针: EvalStat 通用六探针 (一个根一份, 同根的只评首个)
 using RunProbes = EvalProbes<>;
-
-} // namespace
 
 bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool evaluate, bool gpu, RunRequest &req) {
   req = RunRequest{};
@@ -25,51 +19,13 @@ bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> 
   return MakeFactorScope(data, std::move(ft), pool, years, gpu, req.scope) || !evaluate;
 }
 
-RunService::RunService() : FactorWorker(Prio::Batch) { Start(); }
-RunService::~RunService() { Stop(); }
-
-bool RunService::run(RunRequest &req) {
-  std::vector<FactorRow> rs;
-  scan(req, rs);
-  int nb = 0;
-  for (const FactorRow &r : rs)
-    nb += !r.error.empty();
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    rows = std::move(rs);
-    current = req;
-    message.clear();
-  }
-  broken_.store(nb, std::memory_order_relaxed);
-  publish();
-
-  if (!req.spec.evaluate)
-    return true;
-  const bool ok = eval(req, flow());
-  if (!ok) { // 中断: 没评到的行也收尾 (判废后不再有新请求刷新)
-    std::lock_guard<std::mutex> lock(mutex);
-    for (FactorRow &r : rows)
-      r.status = RowState::Done;
-  }
-  return ok;
-}
-
-void RunService::mark(size_t i, const std::string &why) {
-  FactorRow &r = rows[i];
-  assert(r.status != RowState::Done && "每行至多收尾一次");
-  r.error = why;
-  r.status = RowState::Done;
-  broken_.fetch_add(1, std::memory_order_relaxed);
-}
-
-// 扫目录: 每个 *.json 的每个权重一行 (文件级问题一行 widx −1); 解析 / 校验失败 → error (文件不动)
-void RunService::scan(const RunRequest &req, std::vector<FactorRow> &out) {
+void ScanFactors(const FactorScope &sc, std::vector<FactorRow> &out) {
   TraceN("FactorsScan");
   out.clear();
-  const FeatureTable &ft = *req.scope.ft;
-  for (const std::string &file : req.scope.dir.files())
-    ScanFactorFile(req.scope.dir, file, ft, out);
-  std::map<std::tuple<int, int, std::string>, std::string> seen; // (hold, 方向, 具体规范串) → 首行 key
+  const FeatureTable &ft = *sc.ft;
+  for (const std::string &file : sc.dir.files())
+    ScanFactorFile(sc.dir, file, ft, out);
+  std::map<std::tuple<int, int, std::string>, std::string> seen;
   for (FactorRow &w : out) {
     if (w.expr.empty())
       continue;
@@ -78,107 +34,133 @@ void RunService::scan(const RunRequest &req, std::vector<FactorRow> &out) {
     else
       seen.emplace(std::tuple{w.hold_src, w.sign, w.expr}, w.key);
   }
-  if (!req.spec.evaluate) // 只扫描: BROKEN 行也算"处理完"
-    for (FactorRow &r : out)
-      r.status = RowState::Done;
 }
 
-// 装载 + 评估 (worker 线程; 返回 false = 取消 / 判废): 逐因子文件 eval_file, 每文件一次租约 (文件之间让位给交互服务)
-bool RunService::eval(const RunRequest &req, FactorFlow &F) {
-  TraceN("FactorsEvaluate");
-  // 待评行 (有效权重; scan 已校验过), 按文件分组 (scan 出的行同文件相邻)
-  std::vector<std::vector<size_t>> idx;
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    for (size_t i = 0; i < rows.size(); ++i) {
-      if (!rows[i].error.empty() || rows[i].expr.empty() || (!req.spec.only_file.empty() && rows[i].file != req.spec.only_file)) {
-        rows[i].status = RowState::Done; // BROKEN / 未搜索 / 不在 only_file 的行本轮不算
-        continue;
-      }
-      if (idx.empty() || rows[idx.back().front()].file != rows[i].file)
-        idx.emplace_back();
-      idx.back().push_back(i);
-    }
-  }
-  if (idx.empty()) {
-    std::lock_guard<std::mutex> lock(mutex);
-    for (FactorRow &r : rows)
-      r.status = RowState::Done;
-    message = "无有效因子";
-    return true;
-  }
-  return F.with_backend<RunProbes>(req.scope.gpu, [&](auto &eng) {
-    for (const std::vector<size_t> &f : idx) {
-      Lease l(F);
-      if (!l || !eval_file(req, F, eng, f))
-        return false;
-    }
-    return true;
-  });
-}
-
-template <class E>
-bool RunService::eval_file(const RunRequest &req, FactorFlow &F, E &eng, const std::vector<size_t> &idx) {
+Rc EvalFactorFile(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx,
+                  const std::function<void()> &on_plan, const std::function<void(size_t)> &on_row) {
   TraceN("FactorsEvaluateFile");
-  // 该文件的权重 (条目 e ↔ 行 idx[e]) → 根集 (同式同口径共根, 只评一次; 全部持有期) → 一张共享森林. rows 只本 worker 写, 读不用锁
-  RootSet rs{.hd = keys_of<Holds>(req.scope.ft->y.labels)};
+  if (idx.empty())
+    return Rc::Ok;
+  RootSet rs{.hd = keys_of<Holds>(sc.ft->y.labels)};
   for (const size_t i : idx)
-    rs.add(*req.scope.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign));
-  // Y = 全部持有期 + 全部金额段; X = 本文件的叶 (平面经 Store 缓存跨文件 / 跨服务复用)
-  JobOut o;
+    rs.add(*sc.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign));
+  ForestOut o;
   o.job.who = "Run";
   std::vector<RunProbes> ps(rs.size());
-  std::vector<size_t> fin; // 本轮评完的条目 (森林走完 Ok 才一次回写)
-  struct Hooks : HookBase {
-    RunService &W;
-    const FactorScope &sc;
-    const std::vector<size_t> &idx;
-    const std::vector<RunProbes> &ps;
-    const JobOut &o;
-    std::vector<size_t> &fin;
-    int k_st = -1; // st = 根 k_st 的 stat (同根条目相继 post)
-    EvalStat st = {};
-    // 值域已查: 未收尾的行 Running (坏根的已由 fail 收尾)
-    void plan(size_t, const Forest &, const std::vector<std::string> &, const std::vector<uint8_t> &) {
-      std::lock_guard<std::mutex> lock(W.mutex);
-      for (const size_t i : idx)
-        if (W.rows[i].status != RowState::Done)
-          W.rows[i].status = RowState::Running;
-    }
-    void fail(int e, const std::string &why) {
-      {
-        std::lock_guard<std::mutex> lock(W.mutex);
-        W.mark(idx[static_cast<size_t>(e)], why);
-      }
-      W.publish();
-    }
-    // 条目 e 的根 k 评完 (同根共一份 stat, eval_ms 同)
-    void post(int e, int k) {
-      if (k != k_st) {
-        st = EvalStat{};
-        fill_eval(ps[static_cast<size_t>(k)], o.scope(sc), o.eval_ms(k), o.job.dm.stat_dates(), st);
-        k_st = k;
-      }
-      {
-        std::lock_guard<std::mutex> lock(W.mutex);
-        FactorRow &r = W.rows[idx[static_cast<size_t>(e)]];
-        static_cast<EvalStat &>(r) = st;
-        r.has_stat = true;
-        r.stat_from_file = false;
-        r.status = RowState::Done;
-      }
-      fin.push_back(static_cast<size_t>(e));
-      W.publish();
-    }
-  };
-  const Rc rc = eval_job(eng, F, req.scope, rs, std::span(ps), o, Hooks{{}, *this, req.scope, idx, ps, o, fin});
-  if (!settle(rc))
-    return false;
-  if (rc == Rc::Ok && !fin.empty()) { // 回写在锁外
+  std::vector<size_t> fin;
+  int k_st = -1;
+  EvalStat st{};
+
+  const Rc rc = with_backend<RunProbes>(F, sc.gpu, [&](auto &eng) {
+    return eval_forest(
+        eng, F, sc, rs, std::span(ps), o, /*whole=*/false,
+        [&](int e, int k, const std::string &why) {
+          const size_t ri = idx[static_cast<size_t>(e)];
+          FactorRow &r = rows[ri];
+          assert(r.status != RowState::Done && "每行至多收尾一次");
+          if (!why.empty()) {
+            r.error = why;
+            r.status = RowState::Done;
+          } else {
+            if (k != k_st) {
+              st = EvalStat{};
+              fill_eval(ps[static_cast<size_t>(k)], o.scope(sc), o.eval_ms(k), st);
+              k_st = k;
+            }
+            static_cast<EvalStat &>(r) = st;
+            r.has_stat = true;
+            r.stat_from_file = false;
+            r.status = RowState::Done;
+            fin.push_back(ri);
+          }
+          if (on_row)
+            on_row(ri);
+        },
+        NoOp{},
+        [&] {
+          if (on_plan)
+            on_plan();
+        });
+  });
+  if (rc == Rc::Ok && !fin.empty()) {
     std::vector<const FactorRow *> out;
-    for (const size_t e : fin)
-      out.push_back(&rows[idx[e]]);
-    WriteFactorStats(req.scope.dir, out);
+    out.reserve(fin.size());
+    for (const size_t ri : fin)
+      out.push_back(&rows[ri]);
+    WriteFactorStats(sc.dir, out);
+  }
+  return rc;
+}
+
+bool RunService::run(RunRequest &req) {
+  std::vector<FactorRow> work;
+  ScanFactors(req.scope, work);
+  if (!req.spec.evaluate)
+    for (FactorRow &r : work)
+      r.status = RowState::Done;
+
+  int nb = 0;
+  for (const FactorRow &r : work)
+    nb += !r.error.empty();
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    rows = work;
+    current = req;
+    message.clear();
+  }
+  broken_.store(nb, std::memory_order_relaxed);
+  publish();
+  if (!req.spec.evaluate)
+    return true;
+
+  TraceN("FactorsEvaluate");
+  std::vector<std::vector<size_t>> files;
+  for (size_t i = 0; i < work.size(); ++i) {
+    if (!work[i].error.empty() || work[i].expr.empty() || (!req.spec.only_file.empty() && work[i].file != req.spec.only_file)) {
+      work[i].status = RowState::Done;
+      continue;
+    }
+    if (files.empty() || work[files.back().front()].file != work[i].file)
+      files.emplace_back();
+    files.back().push_back(i);
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (size_t i = 0; i < work.size(); ++i)
+      rows[i].status = work[i].status;
+    if (files.empty()) {
+      message = "无有效因子";
+      return true;
+    }
+  }
+
+  FactorFlow F = flow();
+  for (const std::vector<size_t> &f : files) {
+    Lease l(F);
+    const Rc rc = l ? EvalFactorFile(
+                          req.scope, F, work, f,
+                          [&] {
+                            std::lock_guard<std::mutex> lock(mutex);
+                            for (const size_t i : f)
+                              if (rows[i].status != RowState::Done)
+                                rows[i].status = RowState::Running;
+                          },
+                          [&](size_t i) {
+                            {
+                              std::lock_guard<std::mutex> lock(mutex);
+                              rows[i] = work[i];
+                            }
+                            if (!work[i].error.empty())
+                              broken_.fetch_add(1, std::memory_order_relaxed);
+                            publish();
+                          })
+                    : Rc::Cancel;
+    if (!settle(rc)) {
+      std::lock_guard<std::mutex> lock(mutex);
+      for (FactorRow &r : rows)
+        r.status = RowState::Done;
+      return false;
+    }
   }
   return true;
 }

@@ -1,11 +1,10 @@
-// SearchService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Search/Cpu.hpp → Stat/Cpu.hpp), 依赖受控浮点:
-// CMake MATH_PRECISE 源.
+// SearchService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Search/Cpu.hpp → Stat/Cpu.hpp), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/services/SearchService.hpp"
 
 #include "factor/Dag.hpp"
 #include "factor/Search/Space.hpp"
 #include "factor/Search/Surface.hpp"
-#include "gui/engine/Engine.hpp" // FactorFlow / Backend<Cpu | Gpu> / Job 管线
+#include "gui/engine/Engine.hpp"
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
@@ -51,8 +50,6 @@ __attribute__((format(printf, 1, 2))) std::string strf(const char *f, ...) {
   return s;
 }
 
-// 过程日志 (FactorDir::log_path, run/ 下与因子目录同构): 每次 Search 覆盖; 逐行即刷 (断言崩了也留得下); 行首 = 距开跑秒数.
-// 只记流程中间量 (分块 / 分位表 / 采样 / 曲面 / 峰 / 细化 / 相关), 终选结果看因子文件 weights
 struct RunLog {
   std::ofstream f;
   Clock::time_point t0;
@@ -66,26 +63,22 @@ struct RunLog {
   }
 };
 
-// 删因子文件已不存在的 log (删 / 改名后的残留)
 void prune_logs(const FactorDir &dir) {
   for (const disk::Key &k : disk::list(dir.log, dir.key))
     if (!disk::exists(dir.file, k))
       disk::remove(dir.log, k);
 }
 
-// 槽在坐标 u 处的参数值 (整数槽按整数写)
 std::string slot_val(const space::Slot &s, double u) {
   const double v = space::to_v(s, u);
   return s.integer ? strf("%d", static_cast<int>(v)) : strf("%.4g", v);
 }
-// 坐标 u[P] → "Op.d=16, Op.k=0.0042"
 std::string params_of(const std::vector<space::Slot> &slots, const std::vector<double> &u) {
   std::string out;
   for (size_t j = 0; j < slots.size(); ++j)
     out += (j ? ", " : "") + slots[j].name + "=" + slot_val(slots[j], u[j]);
   return out;
 }
-// 坐标变换名 (Space.hpp to_v)
 const char *coord_name(const space::Slot &s) {
   if (s.key == space::Key::D)
     return "log2";
@@ -104,9 +97,7 @@ const char *coord_name(const space::Slot &s) {
   }
 }
 
-// r16 抽样步长: 全作用域 T 行抽约 kCorrRows 行
 int stride_of(int T) { return std::max(1, T / factor::search::kCorrRows); }
-// 一块的抽样行 (契约【多权重】): 统计区 [t_lo, t_hi) 里绝对行 ≡ 0 (mod stride) 的行 = 块内行 t_first + i·stride (i < n_rows)
 struct Samp {
   int t_first = 0, n_rows = 0;
 };
@@ -116,13 +107,14 @@ Samp samp_of(int t_hi, int t_lo, int t0_abs, int stride) {
     ++t;
   return {t, t < t_hi ? (t_hi - 1 - t) / stride + 1 : 0};
 }
-// 候选的 r16 抽样行: 按块序拼进 dst [R][A] (off = 已落行数). 常驻 (每候选一份; 预算按趟 0 的 kInit 个候选, 细化的随评随增)
+
 struct SampleP : ProbeBase {
   static constexpr uint8_t need = kNeedRanks;
   std::vector<uint16_t> *dst = nullptr;
   int stride = 1, off = 0;
   static double bytes(const Shape &sh, int) { return (static_cast<double>(sh.T) / stride_of(sh.T) + 1.0) * sh.A * sizeof(uint16_t); }
-  void root(const Ctx &c, const RootView &v) {
+  void init(const PassCtx &) { off = 0; }
+  void close(const Ctx &c, const RootView &v) {
     const fs::Span s = c.s();
     const Samp sm = samp_of(s.t_hi(), s.t_lo, s.t0_abs, stride);
     if (sm.n_rows > 0)
@@ -132,67 +124,64 @@ struct SampleP : ProbeBase {
 };
 using SearchProbes = Probes<HoldP, SampleP>;
 
-// 一个候选 (评过 / 待评)
 struct Entry {
   std::vector<double> u;
   factor::expr::Expr e;
   Score sc;
-  std::vector<uint16_t> r16; // 抽样行 r16 [行][A] (评时落, 截面相关用)
-  int pass = -1;             // 评过的趟; -1 = 待评
+  std::vector<uint16_t> r16;
+  int pass = -1;
 };
 
-// 曲面 + 终选 (每趟后重算)
 struct Surface {
   surface::Model M;
-  std::vector<int> ids;    // 观测 (M 的下标 → 候选 id)
-  std::vector<double> mu;  // 观测处后验均值
-  std::vector<int> peaks;  // 峰 (观测下标, μ 降序)
-  std::vector<int> picks;  // 终选 = 活跃峰 (候选 id, μ 降序)
-  std::vector<double> pmu; // picks 的 μ
+  std::vector<int> ids;
+  std::vector<double> mu;
+  std::vector<int> peaks;
+  std::vector<int> picks;
+  std::vector<double> pmu;
 };
 
-} // namespace
-
-// 一轮搜索 (eval 内建; 流程见头文件【搜索流程】): plan → prepare → design → 趟 0 → refine (趟 1..) → finish.
-// 步骤返回 false = 停, eval 返回 ret (true = 正常输入问题, 已进 message; false = 取消 / 判废)
-struct SearchService::Searcher {
-  SearchService &W;
+struct Searcher {
   FactorFlow &F;
   const FactorScope &scope;
   const FeatureTable &ft;
   const SearchSpec &sp;
+  SearchLive *live;
+  const std::function<void(const SearchResult &)> &on_pass;
   const int seg;
-  const fs::Holds hd; // 给定的持有期 (字段表已只收本层合法 (hold_ok) 的)
+  const fs::Holds hd;
   const Clock::time_point t_start = Clock::now();
-  SearchResult res;
+  SearchResult &res;
+  std::string &why_out;
   RunLog lg;
-  factor::expr::Expr e0;          // 模板 (自由 h 已落为所搜持有期)
-  factor::Dag d0;                 // 占位具体化的森林: 结构 / 特征叶序 / 槽数与任一候选同 (值域检查 plan_forest 按根归因, 不融合)
-  std::vector<space::Slot> slots; // 可搜槽 (区间要 A, 装完块 0 才建)
-  Job job;                        // 作业 (评估域 / 分块 / 块规格); 块 = 每块位一次 Store::pin (缓存命中不重读)
-  int A = 0, stride = 1, R = 0;   // 资产数 / r16 抽样步长 (绝对行 ≡ 0 mod stride, 全作用域约 kCorrRows 行) / 每候选抽样行数 (各块拼)
-  int n_chunks = 0, batch = 1;    // 块数 / 一张森林的候选数 (引擎 batch_of)
-  std::vector<Entry> ents;        // 候选表: 规范串去重
+  factor::expr::Expr e0;
+  Forest f0;
+  std::vector<space::Slot> slots;
+  Job job;
+  int A = 0, stride = 1, R = 0;
+  int n_chunks = 0, batch = 1;
+  std::vector<Entry> ents;
   std::map<std::string, int> seen;
-  std::map<std::pair<int, int>, double> rho_raw; // 截面相关 (不定向), 按需现算
+  std::map<std::pair<int, int>, double> rho_raw;
   Surface S;
-  bool ret = false;
+  Rc rc_end = Rc::Ok;
 
-  Searcher(SearchService &w, FactorFlow &f, const SearchRequest &req)
-      : W(w), F(f), scope(req.scope), ft(*req.scope.ft), sp(req.spec), seg(ft.seg), hd(keys_of<fs::Holds>(std::vector<int>{sp.hold})) {
+  Searcher(const SearchRequest &req, FactorFlow &f, SearchResult &out, std::string &why, SearchLive *lv,
+           const std::function<void(const SearchResult &)> &cb)
+      : F(f), scope(req.scope), ft(*req.scope.ft), sp(req.spec), live(lv), on_pass(cb), seg(ft.seg),
+        hd(keys_of<fs::Holds>(std::vector<int>{sp.hold})), res(out), why_out(why) {
     assert(find_leg(ft.y.labels, sp.hold) && "Search 的持有期须是字段表标签组之一");
     assert(factor::search::search_hold(sp.hold) && "Search 只搜 kSearchHolds 档");
     fs::assert_holds(hd, seg);
+    if (live)
+      live->reset();
+    res = SearchResult{};
+    why_out.clear();
     res.file = sp.file;
     res.tmpl = sp.tmpl;
     res.hold = sp.hold;
     res.backend = scope.gpu ? Backend<Gpu>::kName : Backend<Cpu>::kName;
-    {
-      std::lock_guard<std::mutex> lock(W.mutex);
-      W.result = res;
-      W.message.clear();
-    }
-    W.publish();
+    emit_pass();
     lg.t0 = t_start;
     prune_logs(scope.dir);
     const std::filesystem::path log_path = scope.dir.log_path(sp.file);
@@ -207,82 +196,94 @@ struct SearchService::Searcher {
     lg("后端 %s, 池 %s, 持有期 %s", res.backend.c_str(), scope.pool.c_str(), fs::hold_name(sp.hold).c_str());
   }
 
-  // 全流程 (引擎 E 按后端只构造一次); 停 → false. 计算权: plan → 趟 0 一次租约, 之后每趟一次 (趟之间让位给交互服务)
-  template <class E>
-  bool run(E &eng) {
+  Rc run() {
     std::vector<int> ids;
     {
       Lease l(F);
       if (!l)
-        return go(Rc::Cancel);
-      if (!plan(eng) || !prepare() || !design(ids))
-        return false;
-      W.stage_.store(SearchStage::Design, std::memory_order_relaxed);
-      if (!go(run_pass(eng, ids, 0)))
-        return false;
+        return fail(Rc::Cancel);
+      const bool ok0 = with_backend<SearchProbes>(F, scope.gpu, [&](auto &eng) {
+        if (!plan(eng) || !prepare_qtab() || !design(ids))
+          return false;
+        if (live)
+          live->stage.store(SearchStage::Design, std::memory_order_relaxed);
+        return check(run_pass(eng, ids, 0));
+      });
+      if (!ok0)
+        return rc_end;
     }
-    return refine(eng, ids);
+    for (int pass = 1;; ++pass) {
+      Lease l(F);
+      if (!l)
+        return fail(Rc::Cancel);
+      bool stop = false;
+      const bool okp = with_backend<SearchProbes>(F, scope.gpu, [&](auto &eng) {
+        if (!step_refine(ids, pass)) {
+          stop = true;
+          return true;
+        }
+        if (live)
+          live->stage.store(SearchStage::Refine, std::memory_order_relaxed);
+        return check(run_pass(eng, ids, pass));
+      });
+      if (!okp)
+        return rc_end;
+      if (stop)
+        break;
+    }
+    finish();
+    return Rc::Ok;
   }
 
-  // ---- 结局 ----
   bool cancelled() const { return F.cancel.load(std::memory_order_relaxed); }
-  // Ok → 续; 其余停: Empty / Broken (正常输入问题, job.why 已填) → give_up; Cancel / Stale → settle (判废)
-  bool go(Rc rc) {
-    if (rc == Rc::Ok)
-      return true;
+
+  Rc fail(Rc rc) {
     if (rc == Rc::Cancel)
       lg("已取消");
     else if (rc == Rc::Stale)
       lg("中止: %s", kStaleMsg);
-    ret = W.settle(rc);
-    if (ret) {
-      publish_result();
-      give_up(job.why);
+    rc_end = rc;
+    return rc;
+  }
+  bool check(Rc rc) {
+    if (rc == Rc::Ok)
+      return true;
+    fail(rc);
+    if (!aborted(rc)) {
+      emit_pass();
+      give_up(rc, job.why);
     }
     return false;
   }
-  // 正常输入问题 (作用域 / 模板 / 值域 / 无显著候选): 发布当前 res + message, 停
-  bool give_up(std::string msg) {
+  bool give_up(Rc rc, std::string msg) {
     lg("中止: %s", msg.c_str());
     res.seconds = std::chrono::duration<double>(Clock::now() - t_start).count();
-    std::lock_guard<std::mutex> lock(W.mutex);
-    W.result = res;
-    W.message = std::move(msg);
-    ret = true;
+    why_out = std::move(msg);
+    rc_end = rc;
     return false;
   }
-  void publish_result() {
+  void emit_pass() {
     res.seconds = std::chrono::duration<double>(Clock::now() - t_start).count();
     res.cands.clear();
-    for (const Entry &en : ents) {
-      if (en.pass < 0)
-        continue;
-      res.cands.push_back(SearchCand{en.e.canon, en.u, en.pass, en.sc});
-    }
+    for (const Entry &en : ents)
+      if (en.pass >= 0)
+        res.cands.push_back(SearchCand{en.e.canon, en.u, en.pass, en.sc});
     std::stable_sort(res.cands.begin(), res.cands.end(), [](const SearchCand &a, const SearchCand &b) { return a.sc.score > b.sc.score; });
-    {
-      std::lock_guard<std::mutex> lock(W.mutex);
-      W.result = res;
-    }
-    W.publish();
+    if (on_pass)
+      on_pass(res);
   }
 
-  // ---- 模板 → 作用域 (评估期 = 模板叶所用库落盘日交集) → 预算 → 分块 (gui/engine/Engine prepare; 见头文件【分块流式】) ----
-  //   load   宿主作用域块: 叶 + Y (截面门控 + 所搜持有期的标签, 不装成本)
-  //   work   宿主引擎 (随绑定的块重开) / dev 显存: 引擎 E::budget 的批核口径 (d0 = 一个候选)
-  //   fixed  探针: r16 常驻 (SampleP::bytes × 趟 0 的 kInit 个候选)
-  // 满仓只数 n_full = 评估域全期池内平均有效资产数 / kGroups (Store 按域算一次, 各块共用; 引擎的 Search 会话取 y.n_full)
   template <class E>
-  bool plan(E &eng) {
-    e0 = ft.reparse_at(sp.tmpl, sp.hold); // N 元回归的自由 h = 所搜持有期
+  bool plan(E &) {
+    e0 = ft.reparse_at(sp.tmpl, sp.hold);
     const int look = space::lookback(e0, seg);
     const factor::expr::Expr ep = e0.placeholder();
-    d0 = factor::build_forest({&ep}, /*keep_roots=*/false, /*fuse=*/false);
+    const Root r0{&ep, sp.frame, fs::kFwd};
+    f0 = plant_forest(ft, std::span<const Root>(&r0, 1), /*keep_roots=*/false, {}, /*fuse=*/false);
     job.who = "Search";
     const Clock::time_point t_plan = Clock::now();
-    if (!go(Engine::prepare<E, SearchProbes>(eng, F, scope, d0, look, hd, factor::search::kInit, job)))
+    if (!check(Engine::prepare<E, SearchProbes>(F, scope, f0.d, f0.leaves, look, hd, factor::search::kInit, job)))
       return false;
-    // 前后带 (bands_of): 统计首行的 lag 行 / 交接链所及的行也须整窗, 末统计行的续持要看后一批
     lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, factor::search::hold_reach(hd, seg), fs::kChainDays,
        job.bands.front, job.bands.back);
     const std::vector<misc::Ymd> &dates = job.dm.dates;
@@ -301,10 +302,11 @@ struct SearchService::Searcher {
     res.n_assets = A;
     for (const Chunk &k : P.chunks)
       res.chunk_plan.push_back(SearchChunk{k.days(), k.days() * per_day * bud.load / kMiB});
-    W.chunks_.store(n_chunks, std::memory_order_relaxed);
-    publish_result(); // 装载前先发布分块计划
-    lg("数据: %d 只 × %d 天, 特征 %d 列, 标签 %d 列, 共享 DAG 槽 %d; 每格 %.0f 字节 (宿主装载) + %.0f (CPU 工作区)", A, days, static_cast<int>(d0.feats.size()),
-       hd.n, d0.n_slots, bud.load, bud.work);
+    if (live)
+      live->chunks.store(n_chunks, std::memory_order_relaxed);
+    emit_pass();
+    lg("数据: %d 只 × %d 天, 特征 %d 列, 标签 %d 列, 共享 DAG 槽 %d; 每格 %.0f 字节 (宿主装载) + %.0f (CPU 工作区)", A, days, static_cast<int>(f0.d.feats.size()),
+       hd.n, f0.d.n_slots, bud.load, bud.work);
     lg("预算: 内存 %.0f MB%s; 块 ≤ %d 天 + 前带 %d 天 + 后带 %d 天, 共 %d 块, 全部常驻 %s (需 %.0f MB)%s", P.host / kMiB,
        scope.gpu ? strf(", 显存 %.0f MB", P.vram / kMiB).c_str() : "", P.D, job.bands.front, job.bands.back, n_chunks,
        P.cache + P.max_cells() * bud.work <= P.host ? "是" : "否 (每趟逐块重读)", P.cache / kMiB,
@@ -314,30 +316,28 @@ struct SearchService::Searcher {
       lg("  块 %d: 统计 %s ~ %s (%d 天), 装载 %d 天, %.0f MB", ci + 1, misc::dense(dates[k.s0]).c_str(), misc::dense(dates[k.s1 - 1]).c_str(),
          static_cast<int>(k.s1 - k.s0), k.days(), res.chunk_plan[static_cast<size_t>(ci)].mb);
     }
-    // r16 抽样行 (契约【多权重】): 各块的抽样行 (samp_of) 按块序拼成每候选一张 [R][A]
     for (const Chunk &k : P.chunks)
       R += samp_of(static_cast<int>(k.s1 - k.d0) * seg, static_cast<int>(k.s0 - k.d0) * seg, static_cast<int>(k.d0) * seg, stride).n_rows;
     return true;
   }
-  // 块 ci 刚就位 (pass 的块钩子 / prepare): 真读了才记
+
   void loaded(const Block &c, size_t ci, double load_s) {
     if (c.fresh)
       lg("装载块 %d/%d: %d 天, %.1fs", static_cast<int>(ci) + 1, n_chunks, job.P.chunks[ci].days(), load_s);
   }
 
-  // ---- 准备: 先装块 0 (趟 0 反正要, 随后 pass 命中缓存) → 叶值域 → A = n_full · kGroups 定槽区间 → 阈值槽分位表 ----
-  bool prepare() {
+  bool prepare_qtab() {
     const Clock::time_point t_load = Clock::now();
     Block c;
-    if (!go(load_block(F, job, 0, c)))
+    if (!check(load_block(F, job, 0, c)))
       return false;
     loaded(c, 0, std::chrono::duration<double>(Clock::now() - t_load).count());
-    { // 分位表要在块 0 上走模板前缀: 先查叶值域 (各块的候选森林由 pass 各查一次)
+    {
       std::vector<std::string> why;
       std::vector<uint8_t> need;
-      if (plan_forest(F.S.ex, c, d0, why, need) == 0) {
+      if (plan_forest(F.S.ex, c, f0, why, need) == 0) {
         job.why = why[0];
-        return go(Rc::Broken);
+        return check(Rc::Broken);
       }
     }
     res.n_full = c.y.n_full;
@@ -353,14 +353,12 @@ struct SearchService::Searcher {
       lg("自由参数 %d 个 (区间按池内平均有效资产数 %.0f 定):", static_cast<int>(slots.size()), a_eff);
     for (const space::Slot &s : slots)
       lg("  %-24s 坐标 %-8s 区间 [%.3g, %.3g] 中性 u0=%.3g%s", s.name.c_str(), coord_name(s), s.u_lo, s.u_hi, s.u0, s.integer ? " 整数" : "");
-    // 阈值槽 (ANY / GE0) 由深到浅 (前序逆序: 子树先于祖先)
     for (size_t jj = slots.size(); jj-- > 0;)
       if (space::needs_qtab(slots[jj]) && !qtab(slots[jj], c))
         return false;
     return true;
   }
-  // 阈值槽 sl 的分位表: 中性具体式在 CPU 上走到该槽的输入节点即止, 取块 0 (c) 抽样行的池内有效值 (GE0: |x|) 升序.
-  // 恒走 CPU (要宿主平面), 引擎用完即放 (活槽不与评估引擎同在); 输入是常量 → 整个搜索放弃
+
   bool qtab(space::Slot &sl, const Block &c) {
     const factor::expr::Expr ec = space::neutral(e0, slots, seg);
     const factor::Dag dc = factor::build(ec, /*fuse=*/false);
@@ -370,14 +368,14 @@ struct SearchService::Searcher {
     const auto it = std::find(dc.keys.begin(), dc.keys.end(), key);
     assert(it != dc.keys.end() && "Expr 子树必在同一 Expr 的 Dag 里");
     const int want = static_cast<int>(it - dc.keys.begin());
-    std::vector<uint8_t> prefix(dc.nodes.size(), 0); // 走到该输入节点即止
+    std::vector<uint8_t> prefix(dc.nodes.size(), 0);
     std::fill_n(prefix.begin(), want + 1, static_cast<uint8_t>(1));
     const fs::Span s = c.span();
     const Samp sm = samp_of(s.t_hi(), s.t_lo, s.t0_abs, stride);
     std::vector<float> tab;
-    Backend<Cpu> qe(F.S.ex, F.cancel);
+    Backend<Cpu> &qe = engine_space(F.S).cpu;
     qe.bind(c);
-    if (!qe.walk(dc, prefix.data(), [&](int i, double) {
+    if (!qe.walk_dag(F.cancel, dc, ft.x.ids(dc.feats), prefix.data(), [&](int i, double) {
           if (i == want) {
             const factor::check::Plane *p = qe.plane(i);
             const uint8_t *gate = c.y.gate;
@@ -388,14 +386,14 @@ struct SearchService::Searcher {
                   tab.push_back(sl.kdom == factor::KDom::GE0 ? std::fabs(p->v[k]) : p->v[k]);
               }
           }
-          return !cancelled();
+          return true;
         })) {
-      lg("已取消");
+      fail(Rc::Cancel);
       return false;
     }
     std::sort(tab.begin(), tab.end());
     if (tab.size() < 2 || !(tab.front() < tab.back()))
-      return give_up("阈值槽 " + sl.name + " 的输入在块 0 抽样行上是常量, 搜不动");
+      return give_up(Rc::Empty, "阈值槽 " + sl.name + " 的输入在块 0 抽样行上是常量, 搜不动");
     const size_t n_tab = tab.size();
     space::set_qtab(sl, std::move(tab));
     lg("分位表: %s ← %zu 个值 (输入 %s), 区间 [%s, %s], 中性 %s", sl.name.c_str(), n_tab, key.c_str(), slot_val(sl, sl.u_lo).c_str(), slot_val(sl, sl.u_hi).c_str(),
@@ -403,8 +401,6 @@ struct SearchService::Searcher {
     return true;
   }
 
-  // ---- 候选 ----
-  // 坐标 u → 候选 id (规范串去重; -1 = 参数不合法)
   int add_cand(const std::vector<double> &u) {
     Entry en;
     if (!space::apply(e0, slots, u, seg, en.e))
@@ -417,12 +413,10 @@ struct SearchService::Searcher {
     ents.push_back(std::move(en));
     return id;
   }
-  // 候选 id 的方向 + 参数 (日志)
   std::string params_at(int id) const {
     const Entry &en = ents[static_cast<size_t>(id)];
     return (en.sc.sign < 0 ? std::string("取反 ") : std::string()) + params_of(slots, en.u);
   }
-  // 趟 0 的点: R_d 低差异采样 (Space design), 不合法的丢, 取整去重; 无自由参数 → 模板本身一个点
   bool design(std::vector<int> &ids) {
     if (slots.empty()) {
       ids.push_back(add_cand({}));
@@ -438,11 +432,10 @@ struct SearchService::Searcher {
     }
     lg("采样: R_d %d 点 → 不合法 %d, 取整去重后 %d 候选; r16 抽样步长 %d 行 (每候选 %d 行)", factor::search::kInit, n_bad, static_cast<int>(ids.size()), stride, R);
     if (ids.empty())
-      return give_up("采样点无一参数合法 (值域互斥?), 文件不动");
+      return give_up(Rc::Empty, "采样点无一参数合法 (值域互斥?), 文件不动");
     return true;
   }
 
-  // ---- 截面相关 (不定向): 两候选抽样行逐行 Pearson (Stat/Host lag_row, lag 行换成另一候选) 的均值; 无一有效行 → 0 (视作不相关). 按需现算并缓存 ----
   void ensure_rho(const std::vector<int> &ids) {
     std::vector<std::pair<int, int>> need;
     for (size_t a = 0; a < ids.size(); ++a)
@@ -470,7 +463,6 @@ struct SearchService::Searcher {
     for (size_t p = 0; p < need.size(); ++p)
       rho_raw[need[p]] = out[p];
   }
-  // 定向后的持仓相关 (两者方向相反 → 原值相关取负); 先 ensure_rho
   double rho(int a, int b) const {
     if (a == b)
       return 1.0;
@@ -479,59 +471,61 @@ struct SearchService::Searcher {
     return ents[static_cast<size_t>(a)].sc.sign * ents[static_cast<size_t>(b)].sc.sign * it->second;
   }
 
-  // ---- 一趟: ids (全是待评) 沿全部块流过 (gui/engine/Engine pass, 引擎 E: 每批一张共享森林, plant 收前 ≤ batch 个, GPU 批核再按显存减半;
-  //      逐候选进探针 HoldP 续攒 Accum + SampleP 抽样 r16, 末块即 finish), 收尾打分 + 发布. 坏根 (某块叶值域越界) 不打分 (score −∞) ----
   template <class E>
   Rc run_pass(E &eng, const std::vector<int> &ids, int pass) {
     assert(!ids.empty());
-    W.pass_.store(pass, std::memory_order_relaxed);
-    W.chunk_.store(0, std::memory_order_relaxed);
+    if (live) {
+      live->pass.store(pass, std::memory_order_relaxed);
+      live->chunk.store(0, std::memory_order_relaxed);
+    }
     std::vector<Root> roots;
-    std::vector<SearchProbes> ps(ids.size()); // [k] ↔ ids[k], 跨块续攒
+    roots.reserve(ids.size());
+    std::vector<SearchProbes> ps(ids.size());
     for (size_t k = 0; k < ids.size(); ++k) {
       Entry &en = ents[static_cast<size_t>(ids[k])];
       assert(en.pass < 0 && "每个候选只评一次");
       en.r16.assign(static_cast<size_t>(R) * A, fs::kRankNone);
-      ps[k].at<SampleP>().dst = &en.r16; // ents 本趟不再增 → 地址稳
+      ps[k].at<SampleP>().dst = &en.r16;
       ps[k].at<SampleP>().stride = stride;
       roots.push_back({&en.e, sp.frame, fs::kFwd});
     }
     const Clock::time_point t_pass = Clock::now();
-    // 进度: Running 期 = 候选 × 块 (每块重开, 前面的块已评完)
-    struct Hooks : HookBase {
+    struct Hooks : PassHooks {
       Searcher &S;
       size_t n;
       double load_s = 0.0;
       void block(const Block &c, size_t ci, double s) {
         S.loaded(c, ci, s);
         load_s += s;
-        S.W.chunk_.store(static_cast<int>(ci), std::memory_order_relaxed);
-        S.W.begin(Phase::Running, n * static_cast<size_t>(S.n_chunks));
-        S.W.publish(n * ci);
+        if (S.live)
+          S.live->chunk.store(static_cast<int>(ci), std::memory_order_relaxed);
+        S.F.prog.begin(Phase::Running, n * static_cast<size_t>(S.n_chunks));
+        S.F.prog.publish(n * ci);
       }
-      void done(int, bool) { S.W.publish(1); }
+      void step(int) { S.F.prog.publish(1); }
     } hooks{{}, *this, ids.size()};
-    Forest fr; // 本批的森林 (逐批现种: 收前 ≤ batch 个, GPU 批核再按显存减半)
+    Forest fr;
+    std::vector<std::string> dead;
     const auto plant = [&](size_t b0, int &C) -> const Forest & {
-      fr = eng.template plant<SearchProbes>(std::span<const Root>(roots).subspan(b0), batch, C);
+      fr = eng.template plant<SearchProbes>(ft, std::span<const Root>(roots).subspan(b0), batch, C);
       return fr;
     };
-    const Rc rc = GUI::Engine::pass(eng, F, job, plant, std::span(ps), hooks);
-    const double load_s = hooks.load_s;
+    const Rc rc = Engine::run_pass(eng, F, job, std::span<const Root>(roots), plant, std::span(ps), dead, hooks);
     if (rc != Rc::Ok)
       return rc;
-    W.chunk_.store(n_chunks, std::memory_order_relaxed);
+    if (live)
+      live->chunk.store(n_chunks, std::memory_order_relaxed);
     for (size_t k = 0; k < ids.size(); ++k) {
       Entry &en = ents[static_cast<size_t>(ids[k])];
-      const HoldP &hp = ps[k].at<HoldP>();
       en.pass = pass;
-      if (hp.n_hold == 0) // 坏根: 没 finish
+      if (!dead[k].empty())
         continue;
+      const HoldP &hp = ps[k].at<HoldP>();
       assert(ps[k].at<SampleP>().off == R && "各块抽样行须拼满");
       assert(hp.n_hold == 1);
       en.sc = factor::search::score_signed(hp.acc[0], hp.hold[0].hold, hp.hold[0].seg);
     }
-    int n_pos = 0, top = -1; // top = 定向目标 g 最高的候选 (不看门槛)
+    int n_pos = 0, top = -1;
     double best = -std::numeric_limits<double>::infinity();
     for (int id : ids) {
       const Score &sc = ents[static_cast<size_t>(id)].sc;
@@ -542,18 +536,16 @@ struct SearchService::Searcher {
     }
     const double pass_s = std::chrono::duration<double>(Clock::now() - t_pass).count();
     lg("第 %d 趟完成: %d 候选 × %d 块, %.1fs (装载 %.1fs, 评估 %.1fs, %.1f ms/候选·块) | 正分 %d 最高 %.4g", pass, static_cast<int>(ids.size()), n_chunks, pass_s,
-       load_s, pass_s - load_s, 1e3 * (pass_s - load_s) / (static_cast<double>(ids.size()) * n_chunks), n_pos, best);
+       hooks.load_s, pass_s - hooks.load_s, 1e3 * (pass_s - hooks.load_s) / (static_cast<double>(ids.size()) * n_chunks), n_pos, best);
     if (top >= 0) {
       const Score &sc = ents[static_cast<size_t>(top)].sc;
       lg("  g 最高 %.3g ± %.3g: 每期毛多空 %.2fbp rIC %.4f mono %+.3f @ %s", sc.g, sc.se, 1e4 * sc.ls, sc.ric, sc.mono, params_at(top).c_str());
     }
     res.n_pass = pass + 1;
-    publish_result();
+    emit_pass();
     return Rc::Ok;
   }
 
-  // ---- 曲面: 已评且 ok 的点 (x = 单位立方坐标, y = g, 噪声 = SE) 拟合 GP → 峰 → pick_diverse 得活跃峰 (= 当前终选).
-  //      无自由参数: 唯一的点即峰, μ = 观测 g ----
   void fit() {
     S = Surface{};
     std::vector<std::vector<double>> x;
@@ -609,58 +601,46 @@ struct SearchService::Searcher {
       lg("  %s μ %.4g  SE %.4g  观测 %.4g  mono %+.3f @ %s", on ? "*" : " ", mu[a], se_pk[a], sc.g, sc.mono, params_at(pk[a]).c_str());
     }
   }
-  // ---- 趟 1..: 每趟前拟合曲面; 每个活跃峰 c, 每槽 ± 方向: 步长从 ℓ_j/2 起 (夹到区间端), 落到已评点就减半再试; 新点 μ + sd − μ_c > SE_c 才评;
-  //      回到 c / 不合法 / 本趟已提 / 不值得 → 该方向止. 新点去重拼成一趟; 没有新点 → 停 (true, 末次曲面即终选). 每趟一次租约 ----
-  template <class E>
-  bool refine(E &eng, std::vector<int> &ids) {
-    for (int pass = 1;; ++pass) {
-      Lease l(F);
-      if (!l)
-        return go(Rc::Cancel);
-      fit();
-      ids.clear();
-      for (size_t q = 0; q < S.picks.size(); ++q) {
-        const int c = S.picks[q];
-        const std::vector<double> uc = ents[static_cast<size_t>(c)].u;
-        const double se_c = ents[static_cast<size_t>(c)].sc.se;
-        for (size_t j = 0; j < slots.size(); ++j)
-          for (const int dir : {-1, 1}) {
-            double step = 0.5 * S.M.ell[j] * (slots[j].u_hi - slots[j].u_lo);
-            for (;;) {
-              std::vector<double> u = uc;
-              u[j] = std::clamp(uc[j] + dir * step, slots[j].u_lo, slots[j].u_hi);
-              step = std::fabs(u[j] - uc[j]);
-              if (!(step > 0.0))
-                break;
-              const int id = add_cand(u);
-              if (id < 0 || id == c)
-                break;
-              if (ents[static_cast<size_t>(id)].pass >= 0) {
-                step *= 0.5;
-                continue;
-              }
-              if (std::find(ids.begin(), ids.end(), id) != ids.end())
-                break;
-              double mu = 0.0, sd = 0.0;
-              surface::predict(S.M, space::unit(slots, ents[static_cast<size_t>(id)].u), mu, sd);
-              if (mu + sd - S.pmu[q] > se_c)
-                ids.push_back(id);
+
+  bool step_refine(std::vector<int> &ids, int pass) {
+    fit();
+    ids.clear();
+    for (size_t q = 0; q < S.picks.size(); ++q) {
+      const int c = S.picks[q];
+      const std::vector<double> uc = ents[static_cast<size_t>(c)].u;
+      const double se_c = ents[static_cast<size_t>(c)].sc.se;
+      for (size_t j = 0; j < slots.size(); ++j)
+        for (const int dir : {-1, 1}) {
+          double step = 0.5 * S.M.ell[j] * (slots[j].u_hi - slots[j].u_lo);
+          for (;;) {
+            std::vector<double> u = uc;
+            u[j] = std::clamp(uc[j] + dir * step, slots[j].u_lo, slots[j].u_hi);
+            step = std::fabs(u[j] - uc[j]);
+            if (!(step > 0.0))
               break;
+            const int id = add_cand(u);
+            if (id < 0 || id == c)
+              break;
+            if (ents[static_cast<size_t>(id)].pass >= 0) {
+              step *= 0.5;
+              continue;
             }
+            if (std::find(ids.begin(), ids.end(), id) != ids.end())
+              break;
+            double mu = 0.0, sd = 0.0;
+            surface::predict(S.M, space::unit(slots, ents[static_cast<size_t>(id)].u), mu, sd);
+            if (mu + sd - S.pmu[q] > se_c)
+              ids.push_back(id);
+            break;
           }
-      }
-      W.alive_.store(static_cast<int>(S.picks.size()), std::memory_order_relaxed);
-      lg("细化第 %d 趟: 活跃峰 %d, 新点 %d", pass, static_cast<int>(S.picks.size()), static_cast<int>(ids.size()));
-      if (ids.empty())
-        return true;
-      W.stage_.store(SearchStage::Refine, std::memory_order_relaxed);
-      if (!go(run_pass(eng, ids, pass)))
-        return false;
+        }
     }
+    if (live)
+      live->alive.store(static_cast<int>(S.picks.size()), std::memory_order_relaxed);
+    lg("细化第 %d 趟: 活跃峰 %d, 新点 %d", pass, static_cast<int>(S.picks.size()), static_cast<int>(ids.size()));
+    return !ids.empty();
   }
 
-  // 无显著时的代表点: 过门槛的峰里 μ 最高的 (差在显著); 没有峰 → 过门槛的点里 μ 最高的 (曲面往不过门槛处升, 或 μ ≤ 0);
-  // 一个过门槛的点都没有 → 可用点里 mono 最高的 (差在分层, μ 记 0); 一个可用点都没有 → 无
   std::optional<SearchTop> top_of() const {
     int id = -1;
     double mu = 0.0;
@@ -674,7 +654,8 @@ struct SearchService::Searcher {
         for (int i = 0; i < static_cast<int>(ents.size()); ++i) {
           const Score &sc = ents[static_cast<size_t>(i)].sc;
           if (ents[static_cast<size_t>(i)].pass >= 0 && sc.ok &&
-              (id < 0 || sc.mono > ents[static_cast<size_t>(id)].sc.mono || (sc.mono == ents[static_cast<size_t>(id)].sc.mono && sc.g > ents[static_cast<size_t>(id)].sc.g)))
+              (id < 0 || sc.mono > ents[static_cast<size_t>(id)].sc.mono ||
+               (sc.mono == ents[static_cast<size_t>(id)].sc.mono && sc.g > ents[static_cast<size_t>(id)].sc.g)))
             id = i;
         }
     }
@@ -684,8 +665,6 @@ struct SearchService::Searcher {
     return SearchTop{en.e.canon, en.sc.sign, en.sc.mono, en.sc.ls, en.sc.ric, en.sc.g, en.sc.se, mu, !S.peaks.empty()};
   }
 
-  // ---- 终选: 最后一次曲面的活跃峰即 weights; picks 替换文件里同 h 的 weights (sp.fresh: 先清空全部); 空 picks 也写 (= 清掉该 h).
-  //      结局 (评估期 + 无显著时的代表点) 同落 search[] ----
   void finish() {
     std::vector<SearchWeight> ws;
     for (const int c : S.picks) {
@@ -700,7 +679,7 @@ struct SearchService::Searcher {
       ws.push_back(SearchWeight{sp.hold, en.sc.sign, en.e.canon});
     }
     SearchMark mk{sp.hold, job.dm.first(), job.dm.dates.back(), static_cast<int>(job.dm.stat_days()), ws.empty() ? top_of() : std::nullopt};
-    WriteFactorSearch(scope.dir, sp.file, sp.fresh, mk, ws); // 不写 stat; 因子表数据由随后的 Run 用同一份目标从 stat 算
+    WriteFactorSearch(scope.dir, sp.file, sp.fresh, mk, ws);
     res.wrote = true;
     res.n_weights = static_cast<int>(ws.size());
     if (mk.top)
@@ -709,18 +688,17 @@ struct SearchService::Searcher {
          : factor::search::passes(mk.top->ls, mk.top->ric, mk.top->mono) ? "过门槛 μ 最高"
                                                                          : "mono 最高",
          mk.top->g, mk.top->se, mk.top->mu, mk.top->mono, mk.top->expr.c_str());
-    {
-      std::lock_guard<std::mutex> lock(W.mutex);
-      W.message = ws.empty() ? strf("没有显著 (μ > SE) 且 mono ≥ %.2f 的候选, 已清掉该 Hold 的权重", factor::search::kMinMono)
-                             : "weights 已写入 (" + std::to_string(ws.size()) + " 个权重), 自动 Run 重算 stat";
-    }
+    why_out = ws.empty() ? strf("没有显著 (μ > SE) 且 mono ≥ %.2f 的候选, 已清掉该 Hold 的权重", factor::search::kMinMono)
+                         : "weights 已写入 (" + std::to_string(ws.size()) + " 个权重), 自动 Run 重算 stat";
     int n_eval = 0;
     for (const Entry &en : ents)
       n_eval += en.pass >= 0;
     lg("完成: 写入 %d 个权重, 共评 %d 候选, %d 趟", static_cast<int>(ws.size()), n_eval, res.n_pass);
-    publish_result();
+    emit_pass();
   }
 };
+
+} // namespace
 
 bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, int hold,
                        bool fresh, bool gpu, SearchRequest &req) {
@@ -730,28 +708,36 @@ bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTabl
   return MakeFactorScope(data, std::move(ft), pool, years, gpu, req.scope);
 }
 
-SearchService::SearchService(bool start) : FactorWorker(Prio::Batch) {
-  if (start)
-    Start();
-}
-SearchService::~SearchService() { Stop(); }
-
-bool SearchService::exec(const SearchRequest &req, FactorFlow &F) {
-  pass_.store(0, std::memory_order_relaxed);
-  chunk_.store(0, std::memory_order_relaxed);
-  chunks_.store(0, std::memory_order_relaxed);
-  stage_.store(SearchStage::Prepare, std::memory_order_relaxed);
-  return eval(req, F);
-}
-
-bool SearchService::run(SearchRequest &req) { return exec(req, flow()); }
-
-bool SearchService::eval(const SearchRequest &req, FactorFlow &F) {
+Rc SearchFactor(const SearchRequest &req, FactorFlow &F, SearchResult &out, std::string &why, SearchLive *live,
+                const std::function<void(const SearchResult &)> &on_pass) {
   TraceN("SearchRun");
-  Searcher s(*this, F, req);
-  if (!F.with_backend<SearchProbes>(req.scope.gpu, [&](auto &E) { return s.run(E); }))
-    return s.ret;
-  s.finish();
+  Searcher s(req, F, out, why, live, on_pass);
+  return s.run();
+}
+
+bool SearchService::run(SearchRequest &req) {
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    message.clear();
+  }
+  FactorFlow F = flow();
+  SearchResult out;
+  std::string why;
+  const Rc rc = SearchFactor(req, F, out, why, &live_, [&](const SearchResult &r) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      result = r;
+    }
+    publish();
+  });
+  if (!settle(rc))
+    return false;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    result = std::move(out);
+    message = std::move(why);
+  }
+  publish();
   return true;
 }
 
