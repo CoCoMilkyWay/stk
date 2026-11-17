@@ -17,7 +17,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
-#include <iterator>
 #include <map>
 #include <optional>
 #include <ranges>
@@ -29,7 +28,7 @@ namespace GUI::Market {
 
 namespace {
 
-// 横轴刻度 (主图 / 区间条): x = 日下标 · kDayW + 槽 → YY/MM/DD, 只到日 (user_data = 日并集轴)
+// 横轴读数 (主图): x = 日下标 · kDayW + 槽 → YY/MM/DD, 只到日 (user_data = 日并集轴)
 int day_formatter(double v, char *buf, int size, void *ud) {
   const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
   if (dates.empty() || v < 0)
@@ -37,49 +36,9 @@ int day_formatter(double v, char *buf, int size, void *ud) {
   const misc::Ymd y = dates[std::min(static_cast<size_t>(v) / kDayW, dates.size() - 1)];
   return std::snprintf(buf, size, "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
-// 横轴刻度位: 只落在交易日收盘 x_of(d, kClose) (日线点位所在); 疏密 = kTickSteps 里首个刻度数不超过 图宽 / (kTickGap 个标签宽) 的档
-//   档 = 每 k 个交易日 / 每 k 月的首个交易日 / 每 k 年的首个交易日 (日并集轴首日算所在月 / 年的首日)
-enum TickUnit : int { kTickDay,
-                      kTickMonth,
-                      kTickYear };
-struct TickStep {
-  TickUnit unit;
-  int k;
-};
-constexpr TickStep kTickSteps[] = {{kTickDay, 1}, {kTickDay, 2}, {kTickDay, 5}, {kTickDay, 10}, {kTickMonth, 1}, {kTickMonth, 2}, {kTickMonth, 3}, {kTickMonth, 6}, {kTickYear, 1}, {kTickYear, 2}, {kTickYear, 5}, {kTickYear, 10}};
-constexpr float kTickGap = 2.0f;
-int tick_period(misc::Ymd y, TickUnit u) { return u == kTickMonth ? y / 10000 * 12 + y / 100 % 100 - 1 : y / 10000; }
-bool on_step(const std::vector<misc::Ymd> &dates, size_t d, TickStep s) {
-  if (s.unit == kTickDay)
-    return d % static_cast<size_t>(s.k) == 0;
-  const int p = tick_period(dates[d], s.unit);
-  return (d == 0 || tick_period(dates[d - 1], s.unit) != p) && p % s.k == 0;
-}
-void day_locator(ImPlotTicker &t, const ImPlotRange &r, float px, bool, ImPlotFormatter fmt, void *ud) {
-  const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
-  const double D = static_cast<double>(dates.size()), W = static_cast<double>(kDayW), c = static_cast<double>(kClose);
-  const double lo = std::max(0.0, std::ceil((r.Min - c) / W)), hi = std::min(D, std::floor((r.Max - c) / W) + 1.0); // 视野内的日 [lo, hi)
-  if (!(lo < hi))
-    return;
-  const size_t d0 = static_cast<size_t>(lo), d1 = static_cast<size_t>(hi);
-  const double cap = px / (kTickGap * ImGui::CalcTextSize("00/00/00").x);
-  constexpr size_t kSteps = std::size(kTickSteps);
-  size_t k = 0;
-  for (; k + 1 < kSteps; ++k) {
-    size_t n = 0;
-    for (size_t d = d0; d < d1; ++d)
-      n += on_step(dates, d, kTickSteps[k]);
-    if (static_cast<double>(n) <= cap)
-      break;
-  }
-  for (size_t d = d0; d < d1; ++d)
-    if (on_step(dates, d, kTickSteps[k]))
-      t.AddTick(x_of(d, kClose), true, 0, true, fmt, ud);
-}
-// 横轴 = 日并集轴 (主图 / 区间条同一份): 刻度位 day_locator + 标签 day_formatter
-void setup_day_axis(const std::vector<misc::Ymd> &dates) {
-  ImPlot::SetupAxisFormat(ImAxis_X1, day_formatter, const_cast<std::vector<misc::Ymd> *>(&dates));
-  ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].Locator = day_locator;
+// 横轴 = 日并集轴 (主图 / 区间条同一份): 日界 = 首根前半格 (前收点位所在)
+DayAxis day_axis(const std::vector<misc::Ymd> &dates) {
+  return {dates, static_cast<double>(kDayW), -0.5, {}, day_formatter, const_cast<std::vector<misc::Ymd> *>(&dates)};
 }
 
 // 主图 y 恒贴合视野内进 fit 的线 (AutoFit | RangeFit), 上下各留跨度 × kFitMargin (log 轴按对数跨度)
@@ -839,7 +798,8 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
   if (ImPlot::BeginPlot(nav ? "##portfolio" : "##pf_val", size, ImPlotFlags_NoLegend | ImPlotFlags_NoBoxSelect)) {
     ui.fit_key = fk;
     ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
-    setup_day_axis(d.dates);
+    DayAxis ax = day_axis(d.dates);
+    setup_day_axis(ax);
     if (ui.log_y)
       ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
     // x fit 帧的视野还是上帧的 (区间刚变时可能整段在外): 小字不按视野筛, 全收来量留白宽度
@@ -890,7 +850,8 @@ void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2
   ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
   if (D > 0)
     ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, x_of(d.dates.size(), kOpen), ImPlotCond_Always);
-  setup_day_axis(d.dates);
+  DayAxis ax = day_axis(d.dates);
+  setup_day_axis(ax);
   if (ui.log_y)
     ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
   const Line none;

@@ -45,7 +45,7 @@ std::string when(const CtaResult &r, size_t i) {
   return misc::dash(day_of(r, i)) + s;
 }
 
-// 横轴刻度: x = 有效根下标 → YY/MM/DD; 视野不足几日 → MM/DD hh:mm
+// 横轴读数: x = 有效根下标 → YY/MM/DD; 视野不足几日 → MM/DD hh:mm
 struct XFmt {
   const CtaResult *r;
   bool time;
@@ -61,6 +61,20 @@ int x_formatter(double v, char *buf, int size, void *ud) {
     return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
   const int m = Quote::slot_label(slot_of(*f.r, i));
   return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d %02d:%02d", y / 100 % 100, y % 100, m / 60, m % 60);
+}
+// 横轴刻度的日轴: 有根的日 + 各日首根前半格的日界 (x 按根不等宽)
+struct XDays {
+  std::vector<misc::Ymd> dates;
+  std::vector<double> xs;
+};
+XDays x_days(const CtaResult &r) {
+  const cta::Days &ds = r.tr.days;
+  const size_t d0 = r.se->t[0] / kS;
+  XDays o;
+  for (size_t d = 0; d < ds.size(); ++d)
+    if (ds.off[d] < ds.off[d + 1])
+      o.dates.push_back(r.dates[d0 + d]), o.xs.push_back(static_cast<double>(ds.off[d]) - 0.5);
+  return o;
 }
 
 // 视野 [x0, x1] 内每 step 根取末根 (两端各多一点, 线连到图边); 下标升序
@@ -137,13 +151,15 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const ImVec2 &size
   const ImGuiStyle &st = ImGui::GetStyle();
   const float ph = ImGui::GetContentRegionAvail().y - st.ItemSpacing.y, h1 = std::floor(ph * kPriceFrac);
   XFmt fmt{&r, c.x1 - c.x0 < 3.0 * kS};
+  const XDays xd = x_days(r);
+  DayAxis ax{xd.dates, 1.0, 0.0, xd.xs, x_formatter, &fmt};
   const double pad = static_cast<double>(n) * 0.02 + 10.0;
   bool pinned = c.path_open && c.cursor < 0, reset = false;
   double pin = c.cursor >= 0 ? c.cursor : std::clamp((c.x0 + c.x1) / 2, 0.0, static_cast<double>(n - 1));
   const auto setup_x = [&](ImPlotAxisFlags f) {
     ImPlot::SetupAxis(ImAxis_X1, nullptr, f);
     ImPlot::SetupAxisLinks(ImAxis_X1, &c.x0, &c.x1);
-    ImPlot::SetupAxisFormat(ImAxis_X1, x_formatter, &fmt);
+    setup_day_axis(ax);
     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, -pad, static_cast<double>(n) + pad);
   };
   const auto track = [&](int id) { // 双击 = 回全段; 光标 (同 OrderFlow 锚线): 左键拖动, 松手停住
@@ -474,10 +490,12 @@ void path(CtaState &c, const CtaResult &r) {
   const double span = hi > lo ? hi - lo : std::log10(cta::kStep);
   const float w = ImGui::GetContentRegionAvail().x;
   XFmt fmt{&r, c.x1 - c.x0 < 3.0 * kS};
+  const XDays xd = x_days(r);
+  DayAxis ax{xd.dates, 1.0, 0.0, xd.xs, x_formatter, &fmt};
   if (ImPlot::BeginPlot("##cta_path", ImVec2(w, std::floor(w * 0.6f)), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect)) {
     ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_None);
     ImPlot::SetupAxisLinks(ImAxis_X1, &c.x0, &c.x1);
-    ImPlot::SetupAxisFormat(ImAxis_X1, x_formatter, &fmt);
+    setup_day_axis(ax);
     ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_None);
     ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
     ImPlot::SetupAxisLimits(ImAxis_Y1, std::pow(10.0, lo - 0.2 * span), std::pow(10.0, hi + 0.2 * span), ImPlotCond_Always);

@@ -10,6 +10,7 @@
 #include "gui/task_features/ui/TabTable.hpp" // EffectiveCat2Snapshot (legend 标注)
 #include "gui/util/AssetFilter.hpp"          // 筛选控件 (与 ASSET 共用)
 #include "gui/util/Board.hpp"                // BoardType / GetBoardType (板块口径与 ASSET 同源)
+#include "gui/util/Chart.hpp"                // DayAxis (日轴刻度)
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -913,8 +914,10 @@ static void RenderMinPlot(SharedData &data, OrderFlow &of, const Preview &pv, fl
     ui.min_x_applied = ui.min_x_max;
     ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, std::max(ui.min_x_max, 1.0),
                             x_domain_changed ? ImPlotCond_Always : ImPlotCond_Once);
-    ImPlot::SetupAxisFormat(ImAxis_X1, MinTimeFormatter, &mn); // YY/MM/DD HH:MM (非重扫期 dates 稳定)
-    ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter);        // 定宽: 换资产不挪 plot 左边界
+    // 读数 YY/MM/DD HH:MM (非重扫期 dates 稳定); 日界 = 日首 x = day_idx * MIN_CAPACITY
+    DayAxis day_ax{mn.dates, static_cast<double>(OrderFlowConst::MIN_CAPACITY), 0.0, {}, MinTimeFormatter, &mn};
+    setup_day_axis(day_ax);
+    ImPlot::SetupAxisFormat(ImAxis_Y1, PriceFormatter); // 定宽: 换资产不挪 plot 左边界
     if (pre.ready)
       ui.min_last_pub_days = pre.days;
 

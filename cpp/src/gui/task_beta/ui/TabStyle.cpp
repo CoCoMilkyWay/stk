@@ -155,7 +155,7 @@ ImVec4 dim_col(uint16_t bits, int v) {
   return k == 2 ? kPairCol[pos] : oklch(kRowL, kRowC, static_cast<float>(pos) / static_cast<float>(k));
 }
 
-// 横轴刻度: 日下标 → YY/MM/DD
+// 横轴读数: 日下标 → YY/MM/DD
 int day_fmt(double v, char *buf, int size, void *ud) {
   const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
   const long i = std::lround(v);
@@ -164,6 +164,8 @@ int day_fmt(double v, char *buf, int size, void *ud) {
   const misc::Ymd y = dates[static_cast<size_t>(i)];
   return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
+// 横轴 = 日轴 (x = 日下标; 主图 / 区间条同一份): 日界 = 该日点位 (同区间条的把手)
+DayAxis day_axis(const std::vector<misc::Ymd> &dates) { return {dates, 1.0, 0.0, {}, day_fmt, const_cast<std::vector<misc::Ymd> *>(&dates)}; }
 
 // ---- 结果派生 (见 StyleUIState): 名随结果, 列出的线 / 名段宽 / 名次 / 画序随 (结果, 晚起), 选池态随选中 ----
 void derive(StyleUIState &s, const StyleResult &r) {
@@ -466,7 +468,8 @@ void plot(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
   if (!ImPlot::BeginPlot("##style_med", size, ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
     return;
   ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_None);
-  ImPlot::SetupAxisFormat(ImAxis_X1, day_fmt, const_cast<std::vector<misc::Ymd> *>(&r.dates));
+  DayAxis ax = day_axis(r.dates);
+  setup_day_axis(ax);
   std::vector<EndTag> tags;
   char id[24];
   // 线 l 自首个满一年的窗 (from) 起到区间末日每 step 日一点; tag = 线尾小字 (nullptr = 不标)
@@ -553,7 +556,8 @@ void range(StyleUIState &s, const StyleResult &r, const ImVec2 &size) {
     return;
   ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
   ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(D), ImPlotCond_Always);
-  ImPlot::SetupAxisFormat(ImAxis_X1, day_fmt, const_cast<std::vector<misc::Ymd> *>(&r.dates));
+  DayAxis ax = day_axis(r.dates);
+  setup_day_axis(ax);
   ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
   ImPlot::SetNextLineStyle(kBenchCol, 1.0f);
   ImPlot::PlotLine("##style_range_nav", r.nav.data(), D);

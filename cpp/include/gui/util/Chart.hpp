@@ -1,9 +1,10 @@
 #pragma once
 
-// 图表公共件 (ASSET 行情 / Market 净值 / Beta 风格表同一份): 涨跌色, 名次色 + 截面名次 + 表头排序口径, 横向框选, 色环, 右表宽, 开关按钮 / 档位按钮条, 线尾小字, 现价十字, 区间条
+// 图表公共件 (ASSET 行情 / Market 净值 / Beta 风格表同一份): 涨跌色, 名次色 + 截面名次 + 表头排序口径, 横向框选, 色环, 右表宽, 开关按钮 / 档位按钮条, 线尾小字, 现价十字, 区间条, 日轴刻度
 
 #include "imgui.h"
 #include "implot.h"
+#include "implot_internal.h" // ImPlotTicker / 轴的 Locator (日轴刻度)
 #include "misc/date.hpp"
 
 #include <algorithm>
@@ -13,6 +14,8 @@
 #include <cstdio>
 #include <limits>
 #include <numbers>
+#include <ranges>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -337,6 +340,70 @@ inline void range_bar(DayRange &rg, const std::vector<misc::Ymd> &dates, double 
     label(rx, s1, t1);
   }
   ImPlot::PopPlotClipRect();
+}
+
+// 日轴刻度 (横轴为交易日的各图同一份, 日内画分钟也一样): 竖线只落在 日 / 周 / 月 / 年 的首个交易日的日界 (轴首日算所在周 / 月 / 年的首日),
+//   档 = 视野内刻度数不超过 图宽 / (kDayTickGap 个标签宽) 的最细一档, 都超取年; 标签 日 / 周 = YY/MM/DD, 月 = YYYY/MM, 年 = YYYY.
+//   日 d 的日界 x = d · w + at; xs 非空则取 xs[d] (不等宽的轴, 升序). fmt / ud = 该轴自己的格式 (鼠标读数用; 刻度标签不经它). 须活到 EndPlot
+struct DayAxis {
+  std::span<const misc::Ymd> dates;
+  double w = 1, at = 0;
+  std::span<const double> xs;
+  ImPlotFormatter fmt = nullptr;
+  void *ud = nullptr;
+  double x(size_t d) const { return xs.empty() ? static_cast<double>(d) * w + at : xs[d]; }
+};
+inline constexpr float kDayTickGap = 2.0f;
+enum DayTick : int { kTickDay,
+                     kTickWeek,
+                     kTickMonth,
+                     kTickYear };
+// 日 y 所在档期的编号 (周 = 周一起的自然周 / 月 = YYYYMM / 年 = YYYY; 日档不用)
+inline long day_period(misc::Ymd y, int u) {
+  if (u == kTickWeek) // 1970-01-01 是周四: +3 ⇒ 周一换周
+    return (static_cast<long>(misc::to_days(y).time_since_epoch().count()) + 3) / 7;
+  return u == kTickMonth ? y / 100 : y / 10000;
+}
+inline void day_locator(ImPlotTicker &t, const ImPlotRange &r, float px, bool, ImPlotFormatter, void *ud) {
+  const DayAxis &a = *static_cast<const DayAxis *>(ud);
+  assert(a.xs.empty() || a.xs.size() == a.dates.size());
+  const auto ix = std::views::iota(size_t{0}, a.dates.size());
+  const size_t d0 = static_cast<size_t>(std::ranges::partition_point(ix, [&](size_t d) { return a.x(d) < r.Min; }) - ix.begin());
+  const size_t d1 = static_cast<size_t>(std::ranges::partition_point(ix, [&](size_t d) { return a.x(d) <= r.Max; }) - ix.begin());
+  const auto on = [&](size_t d, int u) { return u == kTickDay || d == 0 || day_period(a.dates[d - 1], u) != day_period(a.dates[d], u); };
+  constexpr const char *kSample[] = {"00/00/00", "00/00/00", "0000/00"};
+  int u = kTickDay;
+  for (; u < kTickYear; ++u) {
+    const double cap = px / (kDayTickGap * ImGui::CalcTextSize(kSample[u]).x);
+    size_t n = 0;
+    for (size_t d = d0; d < d1 && static_cast<double>(n) <= cap; ++d)
+      n += on(d, u);
+    if (static_cast<double>(n) <= cap)
+      break;
+  }
+  char s[16];
+  for (size_t d = d0; d < d1; ++d) {
+    if (!on(d, u))
+      continue;
+    const misc::Ymd y = a.dates[d];
+    if (u == kTickYear)
+      std::snprintf(s, sizeof(s), "%04d", y / 10000);
+    else if (u == kTickMonth)
+      std::snprintf(s, sizeof(s), "%04d/%02d", y / 10000, y / 100 % 100);
+    else
+      std::snprintf(s, sizeof(s), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
+    t.AddTick(a.x(d), true, 0, true, s);
+  }
+}
+inline int day_axis_fmt(double v, char *buf, int size, void *ud) {
+  const DayAxis &a = *static_cast<const DayAxis *>(ud);
+  return a.fmt(v, buf, size, a.ud);
+}
+// 当前图的 X1 设为日轴 (SetupAxis 之后, SetupFinish 之前)
+inline void setup_day_axis(DayAxis &a) {
+  assert(a.fmt != nullptr);
+  ImPlot::SetupAxisFormat(ImAxis_X1, day_axis_fmt, &a);
+  ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].Locator = day_locator;
 }
 
 } // namespace GUI

@@ -103,7 +103,7 @@ struct PlotBars {
                                                                                : bars[0].open; }
 };
 
-// K 线底轴: 分钟根 "MM-DD HH:MM", 日根 "MM-DD", 月以上一根 "YYYY-MM"
+// K 线底轴读数: 分钟根 "MM-DD HH:MM", 日根 "MM-DD", 月以上一根 "YYYY-MM"
 int k_tick(double v, char *buf, int size, void *ud) {
   const PlotBars &s = *static_cast<const PlotBars *>(ud);
   const long k = static_cast<long>(std::floor((v + 0.5) / kSlots));
@@ -250,13 +250,14 @@ void plot_chart(const char *id, const PlotBars &s, double win_lo, double win_hi,
     for (const std::string &t : tick_s)
       tick_p.push_back(t.c_str());
   }
+  DayAxis day_ax{s.days, static_cast<double>(kSlots), -0.5, {}, k_tick, const_cast<PlotBars *>(&s)}; // K 线: 日界 = 首槽前半格
   const auto setup_x = [&](bool labels) {
     ImPlot::SetupAxis(ImAxis_X1, nullptr, labels ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoTickLabels);
     ImPlot::SetupAxisLimits(ImAxis_X1, v.lo, v.hi, ImPlotCond_Always);
     if (s.intraday)
       ImPlot::SetupAxisTicks(ImAxis_X1, tick_x.data(), static_cast<int>(tick_x.size()), tick_p.data());
     else
-      ImPlot::SetupAxisFormat(ImAxis_X1, k_tick, const_cast<PlotBars *>(&s));
+      setup_day_axis(day_ax);
   };
   const auto visible = [&](const ImPlotRect &lim, int &a, int &b) {
     a = static_cast<int>(std::lower_bound(s.x.begin(), s.x.end(), lim.X.Min - s.g) - s.x.begin());

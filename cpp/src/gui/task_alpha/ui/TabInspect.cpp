@@ -1,10 +1,11 @@
 // Tab Inspect — 见头文件
 #include "gui/task_alpha/ui/TabInspect.hpp"
 #include "factor/Expr.hpp"        // kOps / op_index (表达式着色)
-#include "features/TimeIndex.hpp" // L_1min_to_Clock (K 线横轴刻度)
+#include "features/TimeIndex.hpp" // L_1min_to_Clock (K 线横轴读数)
 #include "gui/Tasks.hpp"          // StatusColor
 #include "shared/Asset.hpp"       // AssetItem (资产代码 / 名称)
 
+#include "gui/util/Chart.hpp" // DayAxis (日轴刻度)
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
 #include "implot.h"
@@ -89,7 +90,7 @@ void fit_on_change(const char *title, ImGuiID key, std::initializer_list<ImAxis>
     ImPlot::SetNextAxisToFit(ax);
 }
 
-// 横轴刻度: 日末 x = i (第 i − 1 日收; 0 = 起点, 同光标) → 最近点的 YYMMDD (user_data = InspectDerived::dates)
+// 横轴读数: 日末 x = i (第 i − 1 日收; 0 = 起点, 同光标) → 最近点的 YYMMDD (user_data = InspectDerived::dates)
 int date_formatter(double v, char *buf, int size, void *ud) {
   const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
   if (dates.empty())
@@ -417,7 +418,8 @@ void plot_layers(const InspectDerived &d, bool absolute, int &cursor_day, const 
       }
       ImPlot::SetupAxes(nullptr, absolute ? "对数年化(%)" : "超额对数年化(%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
       ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
-      ImPlot::SetupAxisFormat(ImAxis_X1, date_formatter, const_cast<std::vector<misc::Ymd> *>(&d.dates));
+      DayAxis day_ax{d.dates, 1.0, 0.0, {}, date_formatter, const_cast<std::vector<misc::Ymd> *>(&d.dates)}; // 日 i 的日界 = 前一日收 x = i
+      setup_day_axis(day_ax);
       follow_limits(ImAxis_X1, 0, std::max(1, d.days) * (1.0 + kCursorPad));
       follow_limits(ImAxis_Y1, yr.y_lo, yr.y_hi);
       ImPlot::SetupLegend(ImPlotLocation_SouthWest, ImPlotLegendFlags_None);
@@ -718,7 +720,8 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const InspectDerived 
   CompactLegend cl;
   ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_None);
   ImPlot::SetupAxes(nullptr, "价格", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
-  ImPlot::SetupAxisFormat(ImAxis_X1, minute_formatter, const_cast<KlineAxis *>(&ax));
+  DayAxis day_ax{dates, static_cast<double>(S), -0.5, {}, minute_formatter, const_cast<KlineAxis *>(&ax)}; // 日界 = 日首行前半格
+  setup_day_axis(day_ax);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
   if (ui.kline_gen_applied != ui.kline_gen) { // 换代 (换资产 / 换结果) → x 复位到全段历史, y 随新代前缀按全段重贴
     ui.kline_gen_applied = ui.kline_gen;
