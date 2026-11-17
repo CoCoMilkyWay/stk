@@ -227,6 +227,7 @@ class Scratch {
 public:
   Rows open(const Shard &sh, const Spec &s, const std::vector<std::string> &cols, const Ids &ids,
             Snap snap = Snap::All);
+  void release();
 
 private:
   std::unique_ptr<misc::pq::TableView> t_;

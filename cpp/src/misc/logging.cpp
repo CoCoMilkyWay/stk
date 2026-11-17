@@ -1,13 +1,12 @@
 #include "misc/logging.hpp"
 #include "misc/cross_platform.hpp"
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <shared_mutex>
-#include <sstream>
 #include <unordered_map>
 
 namespace Logger {
@@ -33,10 +32,11 @@ static std::string get_timestamp() {
 
   std::tm tm_buf = safe_localtime(&time_t);
 
-  std::stringstream ss;
-  ss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
-  ss << '.' << std::setfill('0') << std::setw(3) << ms.count();
-  return ss.str();
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03d",
+                tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
+                tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, static_cast<int>(ms.count()));
+  return buf;
 }
 
 void init(const std::string &temp_base_path) {
@@ -102,31 +102,28 @@ void log(const std::string &log_name, const std::string &message) {
   // Fast path with shared lock
   {
     std::shared_lock<std::shared_mutex> shared_lock(logs_map_mutex);
-    if (logs.find(log_name) != logs.end()) {
-      shared_lock.unlock();
-      std::lock_guard<std::mutex> stream_lock(logs[log_name].mutex);
-      logs[log_name].stream << "[" << get_timestamp() << "] " << message << std::endl;
-      logs[log_name].stream.flush();
+    if (const auto it = logs.find(log_name); it != logs.end()) {
+      std::lock_guard<std::mutex> stream_lock(it->second.mutex);
+      it->second.stream << "[" << get_timestamp() << "] " << message << '\n';
+      it->second.stream.flush();
       return;
     }
   }
 
   // Slow path: log doesn't exist, create it
-  {
-    std::unique_lock<std::shared_mutex> unique_lock(logs_map_mutex);
-    if (logs.find(log_name) == logs.end()) {
-      std::filesystem::path log_path = std::filesystem::path(log_dir_path) / (log_name + ".log");
-      logs[log_name].stream.open(log_path);
-      if (logs[log_name].stream.is_open()) {
-        logs[log_name].stream << "[" << get_timestamp() << "] Log Started: " << log_name << " at " << log_path << std::endl;
-      }
+  std::unique_lock<std::shared_mutex> unique_lock(logs_map_mutex);
+  auto [it, inserted] = logs.try_emplace(log_name);
+  if (inserted) {
+    std::filesystem::path log_path = std::filesystem::path(log_dir_path) / (log_name + ".log");
+    it->second.stream.open(log_path);
+    if (it->second.stream.is_open()) {
+      it->second.stream << "[" << get_timestamp() << "] Log Started: " << log_name << " at " << log_path << '\n';
     }
   }
 
-  // Write the log message
-  std::lock_guard<std::mutex> stream_lock(logs[log_name].mutex);
-  logs[log_name].stream << "[" << get_timestamp() << "] " << message << std::endl;
-  logs[log_name].stream.flush();
+  std::lock_guard<std::mutex> stream_lock(it->second.mutex);
+  it->second.stream << "[" << get_timestamp() << "] " << message << '\n';
+  it->second.stream.flush();
 }
 
 bool is_initialized() {

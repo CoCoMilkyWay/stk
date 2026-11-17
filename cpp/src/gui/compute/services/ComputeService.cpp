@@ -8,6 +8,7 @@
 #include "features/Storage/FeatureSnap.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "misc/logging.hpp"
+#include "misc/parquet.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -111,44 +112,48 @@ bool ComputeService::run(ComputeConfig &config) {
             << std::endl;
   begin(Phase::Running, r.dates.size());
 
-  // 日频 PIT 基本面数据源 (全市场 × 库日期轴: 切片起点 / 复权锚随库首日, 续算与全量同一面板), Fund 节点在 worker 内逐日推进; worker 只读
-  fund::Panel fund;
-  fund.build(r.lib.dates);
-  // 池面板 (本库 A 轴 × 管线日期轴逐日成员 + 轴外, 见 features/Panel/Pool.hpp)
-  const pool::Panel members = pool::Panel::build(r.lib.id, fund, r.dates, r.old);
-  r.lib.axis = members.axis();
-  r.lib.outside = members.outside();
-  PerTier<FeatureLib> libs;
-  for (const TierId s : TIER_IDS)
-    if (tier_side(tier, s))
-      libs[s] = load_lib(lib_id(pool, s));
-  FeatureLib &lib = libs[tier] = std::move(r.lib);
-  std::cout << "Lib " << lib_name(lib.id) << ": " << lib.dir << " → " << lib.axis.size() << " / "
-            << asset_axis().size() << " assets (轴外 " << lib.outside.size() << ")"
-            << (config.resume ? " | 续算 " + std::to_string(r.dates.size() - r.tail) + " 日 + 尾窗 " + std::to_string(r.tail) + " 日" : "") << "\n"
-            << std::endl;
+  bool completed = false;
+  {
+    // 日频 PIT 基本面数据源 (全市场 × 库日期轴: 切片起点 / 复权锚随库首日, 续算与全量同一面板), Fund 节点在 worker 内逐日推进; worker 只读
+    fund::Panel fund;
+    fund.build(r.lib.dates);
+    // 池面板 (本库 A 轴 × 管线日期轴逐日成员 + 轴外, 见 features/Panel/Pool.hpp)
+    const pool::Panel members = pool::Panel::build(r.lib.id, fund, r.dates, r.old);
+    r.lib.axis = members.axis();
+    r.lib.outside = members.outside();
+    PerTier<FeatureLib> libs;
+    for (const TierId s : TIER_IDS)
+      if (tier_side(tier, s))
+        libs[s] = load_lib(lib_id(pool, s));
+    FeatureLib &lib = libs[tier] = std::move(r.lib);
+    std::cout << "Lib " << lib_name(lib.id) << ": " << lib.dir << " → " << lib.axis.size() << " / "
+              << asset_axis().size() << " assets (轴外 " << lib.outside.size() << ")"
+              << (config.resume ? " | 续算 " + std::to_string(r.dates.size() - r.tail) + " 日 + 尾窗 " + std::to_string(r.tail) + " 日" : "") << "\n"
+              << std::endl;
 
-  // 全量重算: 显式清本库 (清库是调用方的决定, 不是 store 构造的副作用;
-  // 别的库不碰 —— 按目录分片, 见 lib_dir), 随即落新清单 (读端此后按它读; 中途取消 = 清单在, 已落盘日是其子集).
-  // 续算: 不清库, 跑完才落新清单 (中途取消 = 旧清单 + 旧续算点仍对得上, 再续即可; 已重落盘的尾窗日标签按新日结清, 再续同值重写)
-  if (!config.resume) {
-    disk::remove(disk::Lib, lib_key(lib.id)); // 可能与 reader 判废删库并发
-    FeatureRead::set_lib_stale(lib.id, false);
-    save_lib(lib);
+    // 全量重算: 显式清本库 (清库是调用方的决定, 不是 store 构造的副作用;
+    // 别的库不碰 —— 按目录分片, 见 lib_dir), 随即落新清单 (读端此后按它读; 中途取消 = 清单在, 已落盘日是其子集).
+    // 续算: 不清库, 跑完才落新清单 (中途取消 = 旧清单 + 旧续算点仍对得上, 再续即可; 已重落盘的尾窗日标签按新日结清, 再续同值重写)
+    if (!config.resume) {
+      disk::remove(disk::Lib, lib_key(lib.id)); // 可能与 reader 判废删库并发
+      FeatureRead::set_lib_stale(lib.id, false);
+      save_lib(lib);
+    }
+
+    // 日志: 先关 (释放上一轮文件句柄), 清空重建本库日志目录, 全部 worker 共用
+    Logger::close();
+    disk::remove(disk::RunLibLog, lib_key(lib.id));
+    Logger::init(disk::ensure(disk::RunLibLog, lib_key(lib.id)).string());
+
+    // 已落盘天数镜像进进度面
+    const PipelineArgs args{data_, libs, fund, members, r.dates, r.tail,
+                            config.pf_cores[tier], config.cs_cores[tier], config.io_cores[tier], cancel_,
+                            [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
+    completed = tier_ops(tier).pipeline(args);
+    if (completed && config.resume)
+      save_lib(lib);
   }
-
-  // 日志: 先关 (释放上一轮文件句柄), 清空重建本库日志目录, 全部 worker 共用
-  Logger::close();
-  disk::remove(disk::RunLibLog, lib_key(lib.id));
-  Logger::init(disk::ensure(disk::RunLibLog, lib_key(lib.id)).string());
-
-  // 已落盘天数镜像进进度面
-  const PipelineArgs args{data_, libs, fund, members, r.dates, r.tail,
-                          config.pf_cores[tier], config.cs_cores[tier], config.io_cores[tier], cancel_,
-                          [this](size_t io_done) { publish(io_done - done.load(std::memory_order_relaxed)); }};
-  const bool completed = tier_ops(tier).pipeline(args);
-  if (completed && config.resume)
-    save_lib(lib);
+  misc::pq::release_unused_memory();
 
   // Disable High Performance Mode: GUI resumes
   data_.high_performance_mode = false;

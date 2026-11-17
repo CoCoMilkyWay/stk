@@ -13,6 +13,7 @@
 #include "gui/task_settings/TaskSettings.hpp"
 #include "gui/task_tools/TaskTools.hpp"
 #include "imgui.h"
+#include "misc/cross_platform.hpp"
 #include "misc/epoch.hpp"
 #include "shared/SharedData.hpp"
 
@@ -211,6 +212,7 @@ void ReinitAllTasks(TaskTree &tree, SharedData &data) {
 
   // Step 2: Completely rebuild SharedData by placement new (destroys all state); 进程级缓存换代, 各自下次用到时按盘重读
   data.~SharedData();
+  trim_heap();
   misc::next_epoch();
   new (&data) SharedData();
   data.reinit = {.online = carry.online, .append = carry.append};

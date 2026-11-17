@@ -20,8 +20,9 @@ class Panel;
 template <class T>
 class FeatureStore;
 
-// 日环内存预算: 用到总内存的 1 − kRingMemMargin 为止 (MemAvailable 口径见 Pipeline.hpp)
-inline constexpr double kRingMemMargin = 0.1;
+// 日环内存预算与格数上限: 用到总内存的 1 − kRingMemMargin 为止, 至多 kMaxRingSlots 格 (MemAvailable 口径见 Pipeline.hpp)
+inline constexpr double kRingMemMargin = 0.25;
+inline constexpr size_t kMaxRingSlots = 64;
 
 // ============================================================================
 // TS 调度面: per-asset 处置权 + 认领/完成游标 (负载再平衡)

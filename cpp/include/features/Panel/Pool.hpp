@@ -17,6 +17,7 @@
 #include "fundamental/AssetAxis.hpp"          // PoolAxis
 #include "misc/date.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -41,6 +42,10 @@ public:
   // 第 D 日成员位 [axis().size()] / 单格. D 不在 dates() → assert
   const uint8_t *row(misc::Ymd d) const;
   bool in_pool(size_t sub, misc::Ymd d) const;
+  bool in_pool_at(size_t sub, size_t date_idx) const {
+    assert(date_idx < dates_.size() && sub < axis_.size());
+    return member_[date_idx * axis_.size() + sub] != 0;
+  }
 
 private:
   std::vector<misc::Ymd> dates_;

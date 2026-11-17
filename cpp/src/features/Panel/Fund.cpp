@@ -273,6 +273,8 @@ struct PitPool {
   // 网格切到 [new_g0, n_d): 逐列拷贝 (峰值 = 全网格 + 一列切片), 事件链不动
   void slice(int n_a, int new_g0) {
     assert(g0 == 0 && new_g0 >= 0 && new_g0 <= n_g);
+    if (new_g0 == 0)
+      return;
     const int nn = n_g - new_g0;
     auto cut = [&](auto &g) {
       using V = std::decay_t<decltype(g)>;
@@ -1785,6 +1787,7 @@ void Panel::build(const std::vector<Ymd> &dates) {
   pit.slice(n_a, g0);
 
   d_ = std::move(data);
+  pq::release_unused_memory();
 
   auto t1 = std::chrono::steady_clock::now();
   double sec = std::chrono::duration<double>(t1 - t0).count();

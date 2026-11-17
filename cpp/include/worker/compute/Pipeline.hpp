@@ -296,14 +296,15 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     std::sort(laggers.begin(), laggers.end());
 
     for (const auto &[victim_days, victim] : laggers) {
-      // victim 手里最重资产 (顺便数持仓; 至少给它留 2 个; 零负载的不搬)
+      // victim 手里最重资产 (顺便数持仓; 至少给它留 2 个; 零负载的不搬; 同重时按方位取段界保连续)
       size_t victim_count = 0, pick = SIZE_MAX;
       int64_t pick_weight = 0;
+      const bool take_tail = worker_id > victim;
       for (size_t i = 0; i < sched.owner.size(); ++i) {
         if (sched.owner[i].load(std::memory_order_relaxed) != victim)
           continue;
         ++victim_count;
-        if (sched.weight[i] > pick_weight) {
+        if (take_tail ? sched.weight[i] >= pick_weight : sched.weight[i] > pick_weight) {
           pick_weight = sched.weight[i];
           pick = i;
         }
@@ -353,7 +354,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
         sched.done[pick].store(d, std::memory_order_release);
         ++d; // 回填日 ≤ 本 worker 前沿 − 1 < 最后一日, 不会走到 finish_all
       }
-      my_asset_ids.push_back(pick);
+      my_asset_ids.insert(std::ranges::upper_bound(my_asset_ids, pick), pick);
       return; // 一次领养一个; 还在等 slot 的话下轮再来
     }
   };
@@ -369,9 +370,9 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     date_assets_processed = 0;
 
     // 本日写句柄: 每 worker 每日 open 一次, 之后所有写回是纯指针算术.
-    // 日环满 (或硬源未就绪) = 本 worker 领先到把日环吃满 —— 干等的时间拿去领养最慢者的资产
+    // 日环满 = 本 worker 领先到把日环吃满 —— 干等的时间拿去领养最慢者的资产
     // 并回填 (回填日仍在飞, 不占新 slot), 等 IO 交还 slot 后再继续本日.
-    // 只有 sleep 算干等 (领养回填是干活, 见 wait_open); 源已就绪的那部分是日环边干等 (扩格的观测面).
+    // 只有 sleep 算干等 (领养回填是干活, 见 wait_open); 源已就绪的那部分是日环边干等.
     Day day;
     {
       TraceN("PoolWait");
@@ -379,8 +380,10 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
       day = wait_open(
           cancel_requested, stat, [&] { return feed_ready(date_idx) ? store.ts_try_open(date_idx) : Day{}; },
           [&] {
+            if (!feed_ready(date_idx))
+              return false;
             try_adopt(date_idx); // date_idx = 本 worker 已完成日数
-            return feed_ready(date_idx);
+            return true;
           });
     }
     if (!day)
@@ -392,8 +395,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
       // 处置权已转走 (或 claim 输给领养方的回填): 移除, 计数由新 owner 负责
       if (sched.owner[asset_id].load(std::memory_order_relaxed) != worker_id ||
           !claim(asset_id, static_cast<int32_t>(date_idx))) {
-        my_asset_ids[i] = my_asset_ids.back();
-        my_asset_ids.pop_back();
+        my_asset_ids.erase(my_asset_ids.begin() + static_cast<std::ptrdiff_t>(i));
         continue;
       }
       const size_t work = process_asset_day(asset_id, date_idx, day);
@@ -471,12 +473,16 @@ bool pipeline(const PipelineArgs &args) {
   }
 
   // 日环深 P 启动时一次定死 (定长序号环, 无扩格, 见 FeatureStore.hpp):
-  //   上限 = 内存预算 (一格 = 张量 + 源格, 用到总内存 1 − kRingMemMargin) ∧ 日期轴天数 (环比轴长无益)
+  //   上限 = 内存预算 (一格 = 张量 + 源格; 此刻已用与常驻开销之外, 用到总内存 1 − kRingMemMargin) ∧ kMaxRingSlots ∧ 日期轴天数
   //   下限 = MIN_RING_SLOTS (标签悬挂 + 时序下一日 + 截面跨日) + 截面/落盘在飞核数 + 1, 不足死锁
   const size_t per_slot = FeatureStore<T>::Slot::bytes(num_assets) + TierFeed<T>::cell_bytes(num_assets);
-  const size_t mem_slots = static_cast<size_t>(static_cast<double>(memory_usage().total_bytes) * (1.0 - kRingMemMargin)) / per_slot;
+  const size_t fixed_bytes = num_assets * sizeof(CoreOf<T>) + (StoreRing::kPrefetchLead + 1) * TierFeed<T>::cell_bytes(num_assets);
+  const MemoryUsage mu = memory_usage();
+  const double mem_budget = static_cast<double>(mu.total_bytes) * (1.0 - kRingMemMargin) - static_cast<double>(mu.used_bytes + fixed_bytes);
+  const size_t mem_slots = static_cast<size_t>(std::max(0.0, mem_budget)) / per_slot;
   const size_t floor_slots = CoreOf<T>::kMinRingSlots + num_cs + num_io + 1;
-  const size_t slots = std::min(mem_slots, dates.size());
+  const size_t cap_slots = std::max(floor_slots, kMaxRingSlots);
+  const size_t slots = std::min({mem_slots, dates.size(), cap_slots});
   assert(slots >= floor_slots && slots > tail && "内存不够: 日环不到下限, 会死锁");
 
   std::cout << "\n=== Compute (" << tier_name(T::kId) << ") ===\n"

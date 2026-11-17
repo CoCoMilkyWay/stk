@@ -91,6 +91,7 @@ void Ids::miss(const Spec &s, std::string_view code) const {
 
 Rows Scratch::open(const Shard &sh, const Spec &s, const std::vector<std::string> &cols, const Ids &ids,
                    Snap snap) {
+  release();
   const std::string key(key_col(s));
   std::vector<std::string> need = cols;
   for (const std::string &c : {key, s.vd})
@@ -126,6 +127,11 @@ Rows Scratch::open(const Shard &sh, const Spec &s, const std::vector<std::string
   return r;
 }
 
+void Scratch::release() {
+  key_ = {};
+  t_.reset();
+}
+
 Scan::Scan(const Catalog &cat, const Ids &ids, std::size_t threads) : cat_(cat), ids_(ids), threads_(threads) {
   assert(threads_ > 0);
 }
@@ -134,7 +140,11 @@ void Scan::run(std::atomic<std::size_t> &done) {
   std::sort(jobs_.begin(), jobs_.end(), [](const Job &a, const Job &b) { return a.bytes > b.bytes; });
   misc::exec::ForkJoin ex(static_cast<int>(std::min(threads_, std::max<std::size_t>(1, jobs_.size()))));
   std::vector<Scratch> xs(static_cast<std::size_t>(ex.threads())); // 按 tid
-  ex.tasks(static_cast<int>(jobs_.size()), [&](int i, int tid) { jobs_[static_cast<std::size_t>(i)].body(xs[static_cast<std::size_t>(tid)], done); });
+  ex.tasks(static_cast<int>(jobs_.size()), [&](int i, int tid) {
+    Scratch &x = xs[static_cast<std::size_t>(tid)];
+    jobs_[static_cast<std::size_t>(i)].body(x, done);
+    x.release();
+  });
   jobs_.clear();
 }
 
@@ -145,6 +155,7 @@ bool daily(const Catalog &cat, const Ids &ids, const Spec &s, Ymd d, const std::
   if (!sh)
     return false;
   fn(x.open(*sh, s, cols, ids));
+  x.release();
   return true;
 }
 

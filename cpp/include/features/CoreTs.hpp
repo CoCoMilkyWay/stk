@@ -247,10 +247,12 @@ private:
     assert(n >= 1 && col + n <= Label::MIN_LABEL_COUNT);
     const Day &d = day_at(days_ago);
     for_each_close<L_1min>(label_min, [&]<size_t LVL>(size_t r) {
-      if constexpr (kLabCount[LVL] != 0)
+      if constexpr (kLabCount[LVL] != 0) {
+        feature_storage_t *row = fstore::ts_row<LVL>(d, r, asset_id_);
         for (size_t i = 0; i < n; ++i)
           if (const size_t f = kLabCol[LVL][col + i]; f != kNoCol)
-            fstore::ts_write<LVL>(d, r, f, asset_id_, values[i]);
+            row[f * d.A] = static_cast<feature_storage_t>(values[i]);
+      }
     });
   }
 

@@ -20,6 +20,9 @@
 #include <sys/sysctl.h>
 #include <unistd.h>
 #else
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -297,5 +300,12 @@ inline MemoryUsage memory_usage() {
   const std::size_t available_kb = field_kb("MemAvailable:");
   assert(total_kb > 0 && available_kb <= total_kb);
   return {(total_kb - available_kb) * 1024, total_kb * 1024};
+#endif
+}
+
+// 归还进程堆各线程 arena 中空闲物理页给内核
+inline void trim_heap() {
+#if defined(__GLIBC__)
+  ::malloc_trim(0);
 #endif
 }

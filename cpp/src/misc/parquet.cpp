@@ -1,7 +1,9 @@
 #include "misc/parquet.hpp"
+#include "misc/cross_platform.hpp"
 
 #include <arrow/array.h>
 #include <arrow/io/file.h>
+#include <arrow/memory_pool.h>
 #include <arrow/result.h>
 #include <arrow/type.h>
 #include <arrow/util/compression.h>
@@ -112,6 +114,11 @@ void append_table_atomic(const fs::path &path,
   auto res = arrow::ConcatenateTables({old, t});
   assert(res.ok() && "pq::append_table_atomic: schema 不一致");
   write_table_atomic(path, res.ValueOrDie());
+}
+
+void release_unused_memory() {
+  arrow::default_memory_pool()->ReleaseUnused();
+  trim_heap();
 }
 
 // ----------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 #include "fundamental/Scan.hpp"
 #include "misc/parquet.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <limits>
@@ -33,7 +34,7 @@ void Bar1mDay::load(const fundamental::Catalog &cat, const fundamental::Ids &ids
   date = d;
   A = ids.size();
   assert(A > 0);
-  rows.assign(A * TRADE_MINUTES_PER_DAY, Bar1m{});
+  rows.resize(A * TRADE_MINUTES_PER_DAY);
   has.assign(A, 0);
   n_assets = 0;
   n_skipped_rows = 0;
@@ -50,6 +51,11 @@ void Bar1mDay::load(const fundamental::Catalog &cat, const fundamental::Ids &ids
       fundamental::expect(vol >= 0.0f && vol <= static_cast<float>(std::numeric_limits<uint32_t>::max()), kSpec, at, "volume 越界");
       const size_t m = stamp_to_min(c_date.minute_of_day(i));
       fundamental::expect(m < TRADE_MINUTES_PER_DAY, kSpec, at, "时间戳不在交易时段");
+      if (!has[a]) {
+        std::fill_n(rows.data() + a * TRADE_MINUTES_PER_DAY, TRADE_MINUTES_PER_DAY, Bar1m{});
+        has[a] = 1;
+        ++n_assets;
+      }
       Bar1m &b = rows[a * TRADE_MINUTES_PER_DAY + m];
       b.open = c_open.f32(i);
       b.high = c_high.f32(i);
@@ -63,8 +69,6 @@ void Bar1mDay::load(const fundamental::Catalog &cat, const fundamental::Ids &ids
         b.amount = static_cast<float>(!(amt >= lo) ? lo : amt > hi ? hi
                                                                    : amt);
       }
-      n_assets += has[a] == 0;
-      has[a] = 1;
       ++hit;
     });
     n_skipped_rows = static_cast<size_t>(r.size() - hit);

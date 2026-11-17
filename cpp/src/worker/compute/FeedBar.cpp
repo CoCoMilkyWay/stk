@@ -38,21 +38,17 @@ struct TierFeed<bar::Tier> {
   }
 
   const PoolAxis &axis;
+  const pool::Panel &members;
   std::span<const misc::Ymd> dates;
   const fundamental::Catalog catalog;
-  fundamental::Ids ids; // A 轴码表 (id = sub; 子池 = 子集, 不查漏收); 构造后只读, 多预取核并发 find
-  // 一个源格: 当日分片 + 解码暂存 (一格同一时刻只有一个预取核在写)
-  struct Cell {
-    Bar1mDay day;
-    fundamental::Scratch scratch;
-  };
-  const StoreRing *store = nullptr;         // bind 后: 日 → 源格号
-  std::vector<std::unique_ptr<Cell>> cells; // [源格数 F] (预取线程建 / 写, TS 经 pf_close / pf_ready 的 release/acquire 读)
+  fundamental::Ids ids;                         // A 轴码表 (id = sub; 子池 = 子集, 不查漏收); 构造后只读, 多预取核并发 find
+  const StoreRing *store = nullptr;             // bind 后: 日 → 源格号
+  std::vector<std::unique_ptr<Bar1mDay>> cells; // [源格数 F] 当日分片 (预取线程建 / 写, TS 经 pf_close / pf_ready 的 release/acquire 读)
 
   static size_t cell_bytes(size_t num_assets) { return num_assets * (TRADE_MINUTES_PER_DAY * sizeof(Bar1m) + 1); }
 
   explicit TierFeed(const PipelineArgs &args)
-      : axis(args.libs[TierId::Bar].axis), dates(args.dates),
+      : axis(args.libs[TierId::Bar].axis), members(args.members), dates(args.dates),
         ids(args.libs[TierId::Bar].pool() == kAllPool ? fundamental::Ids::Cover::Full : fundamental::Ids::Cover::Part) {
     for (size_t sub = 0; sub < axis.size(); ++sub)
       ids.add(asset_axis().code(axis.global(sub)));
@@ -65,19 +61,21 @@ struct TierFeed<bar::Tier> {
     cells.resize(s.feed_size());
   }
 
-  size_t weight(size_t, size_t) const { return 1; } // 每资产每日恰 255 根, 负载均匀
+  size_t weight(size_t sub, size_t d) const { return members.in_pool_at(sub, d) ? 3 : 1; }
 
+  // 解码暂存 (整张分片表) 每预取线程一份, 不随源格: 源格只留稠密分钟 K
   size_t prefetch(size_t d) {
-    std::unique_ptr<Cell> &c = cells[store->feed_cell(d)];
+    thread_local fundamental::Scratch scratch;
+    std::unique_ptr<Bar1mDay> &c = cells[store->feed_cell(d)];
     if (!c)
-      c = std::make_unique<Cell>();
-    c->day.load(catalog, ids, c->scratch, dates[d]);
-    return c->day.rows.size() * sizeof(Bar1m);
+      c = std::make_unique<Bar1mDay>();
+    c->load(catalog, ids, scratch, dates[d]);
+    return c->rows.size() * sizeof(Bar1m);
   }
 
   // 源格 = 本资产当日 255 根 bar1m 的首根 (nullptr = 无 bar)
   const Bar1m *cell(size_t sub, size_t d) const {
-    const Bar1mDay &b = cells[store->feed_cell(d)]->day;
+    const Bar1mDay &b = *cells[store->feed_cell(d)];
     assert(b.date == dates[d] && "源格不是日 d (pf_ready 流控 / 源窗定址不符)");
     return b.asset(sub);
   }

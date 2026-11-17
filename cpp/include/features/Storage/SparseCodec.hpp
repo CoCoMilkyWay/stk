@@ -56,6 +56,30 @@ private:
     for (size_t b = 0; b < nblk; ++b) {
       const size_t base = b * 64;
       const size_t n = words - base < 64 ? words - base : 64;
+      if (n == 64 && (!kDelta || base >= A)) [[likely]] {
+        uint16_t vals[64];
+        if constexpr (kDelta) {
+          const uint16_t *p = s + base, *q = p - A;
+          for (size_t i = 0; i < 64; ++i)
+            vals[i] = static_cast<uint16_t>(p[i] ^ q[i]);
+        } else {
+          std::memcpy(vals, s + base, sizeof(vals));
+        }
+        uint64_t m = 0;
+        for (size_t i = 0; i < 64; ++i)
+          m |= static_cast<uint64_t>(vals[i] != 0) << i;
+        bm[b] = m;
+        if (m == 0)
+          continue;
+        if (m == ~uint64_t{0}) {
+          std::memcpy(lit, vals, sizeof(vals));
+          lit += 64;
+          continue;
+        }
+        for (uint64_t t = m; t; t &= t - 1)
+          *lit++ = vals[__builtin_ctzll(t)];
+        continue;
+      }
       uint64_t m = 0;
       for (size_t i = 0; i < n; ++i) {
         const size_t k = base + i;

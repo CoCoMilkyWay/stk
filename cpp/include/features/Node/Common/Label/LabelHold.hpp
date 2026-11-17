@@ -319,6 +319,12 @@ private:
   // 行 m 的组 h 在价点 x 平仓: 平得了的腿写出, 平不了的腿进等待
   template <class Writer>
   inline void exit_row(Pend &q, size_t age, size_t h, size_t m, const LabelPx &x, Writer &&writer) {
+    if (x.buy && x.sell) [[likely]] {
+      const float r = calc_return(q.entry[m].px, x.px, true);
+      const float v[GROUP_SIZE] = {r, r == 0.0f ? 0.0f : -r};
+      writer(hold_col(h), GROUP_SIZE, m, v, age);
+      return;
+    }
     for (size_t s = 0; s < GROUP_SIZE; ++s)
       if (x.exits(s)) {
         write_side(age, h, s, m, q.entry[m].px, x.px, writer);

@@ -53,6 +53,9 @@ void write_table_atomic(const std::filesystem::path &path,
 void append_table_atomic(const std::filesystem::path &path,
                          const std::shared_ptr<arrow::Table> &t);
 
+// 归还 Arrow 内存池与进程堆的空闲页给操作系统
+void release_unused_memory();
+
 // null / f32 内联直读缓存的位图与值缓冲 (逐行热路径: 千万行扫描每行每列一调)
 class Col {
 public:
