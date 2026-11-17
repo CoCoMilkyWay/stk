@@ -18,13 +18,14 @@ namespace llm {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Usage, prompt, cached, completion)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Reply, text, thinking, end, error, usage, id, seconds)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Net, proxy, host, port)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, backend, net, model) // system 不存: 载入取会话目录的 system.md
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, backend, net, model)
 } // namespace llm
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Span, t0, t1)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Cand, name, name_cn, expr, note)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Pick, on, other, text)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Setup, sc, gate, gpu, ask, test, remark, llm, budget)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Setup, sc, gate, ask, test, remark)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Leg, llm, gpu, budget) // system 不存: 载入取会话目录的 system.md
 
 // 回测: 候选 / 文件 / 改动 / 两段时段 + 没落文件的原因 (落了文件的定论载入时重扫)
 void to_json(json &j, const Trial &k) {
@@ -88,6 +89,7 @@ json read_json(const fs::path &p) {
 void Mine::save() const {
   const Tally c = tally();
   const json session = {{"setup", setup},
+                        {"leg", leg},
                         {"elapsed", now()},
                         {"clean", phase_ == Phase::Pause || phase_ == Phase::Choose},
                         {"cur", cur_},
@@ -104,8 +106,8 @@ void Mine::save() const {
                       {"cands", c.staged()},
                       {"weights", c.n(Verdict::Weights)},
                       {"hyps", st.board.all().size()},
-                      {"backend", def(setup.llm.backend).name},
-                      {"model", setup.llm.model},
+                      {"backend", def(leg.llm.backend).name},
+                      {"model", leg.llm.model},
                       {"remark", setup.remark},
                       {"elapsed", now()}};
   log.save(session, brief);
@@ -113,16 +115,13 @@ void Mine::save() const {
 
 // 干净的 (停着 / 等人时存的) 照存的续; 中途的 (没停稳就退了): 在收的回复作废 (末条待发), 或末轮的执行整轮作废 (删它落的候选与提的记录); 状态照时间线重算
 void Mine::load(const SharedData &data, const std::string &dir) {
-  assert(!live() && idle());
-  flush();
   log.reopen(dir);
   const json j = read_json(fs::path(dir) / kSessionFile);
   j.at("setup").get_to(setup);
-  setup.llm.system = log.system();
-  setup.gpu = setup.gpu && catalog::gpu();
-  assert(catalog::ready(data, setup.sc, setup.gpu));
-  lab.bind(data, setup.sc, setup.test);
-  notes.load(setup.test);
+  j.at("leg").get_to(leg);
+  leg.gpu = leg.gpu && catalog::gpu();
+  system = log.system();
+  bind(data);
   j.at("timeline").get_to(timeline);
   assert(!timeline.empty() && "开会话即发首条");
   const std::vector<Result> &rs = lab.results();
@@ -135,7 +134,6 @@ void Mine::load(const SharedData &data, const std::string &dir) {
   memo = j.at("memo").get<std::string>();
   reason = j.at("reason").get<std::string>();
   t_end = j.at("elapsed").get<double>();
-  stop_ = false, retries_ = 0;
   const bool clean = j.at("clean").get<bool>();
   if (!clean) {
     Round &rd = timeline.back();

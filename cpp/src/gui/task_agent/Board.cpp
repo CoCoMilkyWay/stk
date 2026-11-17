@@ -45,9 +45,9 @@ const Hyp *Board::find(const std::string &id) const {
 }
 
 Hyp &Board::hyp(const std::string &id) {
-  const auto it = std::find_if(hyps_.begin(), hyps_.end(), [&](const Hyp &h) { return h.id == id; });
-  assert(it != hyps_.end() && "假设已在板上");
-  return *it;
+  const Hyp *h = find(id);
+  assert(h && "假设已在板上");
+  return const_cast<Hyp &>(*h);
 }
 
 std::string Board::text() const {
@@ -67,13 +67,8 @@ std::string Board::text() const {
 std::string Board::report() const {
   std::string s;
   for (const Hyp &h : hyps_) {
-    s += "\n### " + h.id + " " + h.title() + " — " + def(h.stance).cn + " (变体 " + std::to_string(h.evals) + ")\n\n";
-    for (const auto &[k, v] : h.fields.items())
-      if (k != "title")
-        s += "- " + k + ": " + v.get<std::string>() + "\n";
-    for (const auto &[k, v] : h.verdict.items())
-      if (k != "hyp")
-        s += "- " + k + ": " + (v.is_string() ? v.get<std::string>() : v.dump()) + "\n";
+    s += "\n### " + h.id + " " + h.title() + " — " + def(h.stance).cn + " (变体 " + std::to_string(h.evals) + ")\n\n" + FieldsText(Tool::Hypothesize, h.fields, {"title"}, "- ") +
+         FieldsText(Tool::Judge, h.verdict, {"hyp", "verdict"}, "- ");
   }
   return s.empty() ? "\n(无)\n" : s;
 }

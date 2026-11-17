@@ -304,7 +304,7 @@ stk/
 │   │   │   │   └── AccountSide.hpp                     # 💹 行情的账户一侧: 一日 day_of (持仓 × 分钟收 → 时间加权指数的逐槽点位 → 一日; 历史回放 / 当日同一核) + 账本回放 replay (价格库 worker 上调; 全史 = 紧凑形, 恒带分钟)
 │   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge; 协议见 AGENT.md)
 │   │   │       ├── TaskAgent.hpp                       # 🤖 Agent 任务: Mine (作用域 / 会话: 载入 · 继续 · 回退 · 插话 / 时间线 / 假设板 / 候选 / 记录的处理 / 开放的特征与算子) / Config
-│   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 / 入库门槛默认值 / 各目录
+│   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 + 常量占位表 kConsts (提示词模板与工具说明共用) / 入库门槛默认值 / 各目录
 │   │   │       ├── Llm.hpp                             # 🤖 对话客户端 Session (纯传输, HTTPS, 不留对话态): Zhipu / Cursor 两后端同一个 send (每次整份), 结局归一 End
 │   │   │       ├── Chat.hpp                            # 🤖 对话的后台单线程: ask (整份上下文) → poll 取 Tick
 │   │   │       ├── Timeline.hpp                        # 🤖 时间线 (全会话唯一真相) 的纯函数: 状态 StateOf (调用收尾逐个 Apply: 假设板 / 查过的叶 / 入库) / 计数 TallyOf / 流程旗 FlagsOf
@@ -312,8 +312,8 @@ stk/
 │   │   │       ├── Enum.hpp                            # 🤖 枚举表 (一个枚举一行 AGENT_ROWS): def 取行 / kNum 个数 / IdOf 按 id 反查; 带 id 的枚举 JSON 一律写 id
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 / 数的写法 / 检索
 │   │   │       ├── Journal.hpp                         # 🤖 会话日志目录 (system.md / 逐轮 md / events.jsonl / report.md / session.json 存档) + 工具样本
-│   │   │       ├── Tools.hpp                           # 🤖 工具表 → 系统提示工具节 / 回复解析 ParseCalls / 参数校验; 执行记录 Act
-│   │   │       ├── Views.hpp                           # 🤖 观察工具: Spec (经 Lab 校验) ↔ Render → markdown; 视图表 kViews
+│   │   │       ├── Tools.hpp                           # 🤖 工具表 → 系统提示工具节 / 回复解析 ParseCalls / 参数校验 / 参数标签 (界面 / 报告 / 全局记录); 执行记录 Act
+│   │   │       ├── Views.hpp                           # 🤖 观察工具 (含 view_book): Spec → Lab::Job (经 Lab 校验) ↔ Lab::Got → Render → markdown; 视图表 kViews
 │   │   │       ├── Docs.hpp                            # 🤖 研报库工具 (只读 output/data/doc): search_docs / search_factors / read_doc
 │   │   │       ├── Prompt.hpp                          # 🤖 提示词模板填充 + 工具结果文本
 │   │   │       ├── Board.hpp                           # 🤖 假设板: 机制假设与判定; 判为支持的假设才能挂变体
@@ -322,8 +322,10 @@ stk/
 │   │   │       │                                       #    · 候选的一生 Cand ─stage→ 候选文件 ─eval→ Result ─adopt (过门槛)→ 正式因子目录
 │   │   │       │                                       #    · 四道 Search / Run / Lens (LensService) / Replay (ReplayService), 平面经 Store 与 GUI 服务共用
 │   │   │       ├── Acts.hpp                            # 🤖 一个调用的执行, 按执行方分派; 回复级约束 RuleMiss
-│   │   │       ├── services/ReplayService.hpp          # 🤖 盘口重放 worker: 一 (资产, 日) 逐笔进订单簿 → 逐秒盘口 / 大单事件 / 全簿 (view_book)
-│   │   │       └── Mine.hpp                            # 🤖 挖掘会话状态机 (AGENT.md 状态图): 每帧 poll Chat / Lab 两 worker; 停 / 续 / 回退 (截时间线, 状态照它重算); 存档与载入在 Save.cpp (成对 to_json / from_json)
+│   │   │       ├── Book.hpp                            # 🤖 盘口重放的原料 BookSpec → Book (逐秒盘口 / 大单事件 / 全簿) + 交易时段与交易秒; 不碰项目, ReplayService 产出 ↔ Views 成文
+│   │   │       ├── services/ReplayService.hpp          # 🤖 盘口重放 worker: 一 (资产, 日) 逐笔进订单簿 → Book (view_book)
+│   │   │       └── Mine.hpp                            # 🤖 挖掘会话状态机 (AGENT.md 状态图): 每帧 poll Chat / Lab 两 worker; 会话设定 Setup (New 定) ↔ 一段的设定 Leg (New / 继续 定);
+│   │   │                                               #    停 / 续 (继续做什么 cont: hint 与 resume 同一判断) / 回退 (截时间线, 状态照它重算); 存档与载入在 Save.cpp (成对 to_json / from_json)
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                           #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)

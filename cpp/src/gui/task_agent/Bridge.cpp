@@ -243,7 +243,7 @@ Opened opened_of(const Engine::FeatureTable &ft, const Scope &sc) {
   Opened o;
   const Open &pick = sc.leaves_of(Engine::factor_level(ft.lv).name);
   for (const Engine::FeatCol &l : ft.x.leaves)
-    if (l.allowed && (sc.srcs() & src_bit(src_of(l))) && pick.has(l.code))
+    if (l.allowed && sc.has(src_of(l)) && pick.has(l.code))
       o.leaves.insert(l.code);
   for (const fx::OpInfo &x : fx::kOps)
     o.ops.push_back(sc.ops.has(x.name));
@@ -1013,7 +1013,7 @@ struct Lab::Impl {
         continue;
       }
       const Src s = src_of(*t->x.find(x.feat));
-      leaves += (leaves.empty() ? "" : ", ") + name + ((sc.srcs() & src_bit(s)) ? "" : " (" + std::string(def(s).name) + " 来源未开放)");
+      leaves += (leaves.empty() ? "" : ", ") + name + (sc.has(s) ? "" : " (" + std::string(def(s).name) + " 来源未开放)");
     }
     if (leaves.empty() && ops.empty())
       return {};

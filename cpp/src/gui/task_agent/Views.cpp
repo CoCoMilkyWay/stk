@@ -34,9 +34,9 @@ constexpr double kIntraNone = 0.005; // 日内方差占比低于它 = 日频慢�
 constexpr size_t kGistExpr = 40;     // 关键数 (研究树) 里每个式子至多几字
 
 // ---- 数的写法 ----
+using text::bp;
 using text::fmt;
 using text::num;
-std::string bp(double r) { return std::isfinite(r) ? fmt("%+.1f", r * 1e4) : "—"; }
 std::string pct(double x) { return std::isfinite(x) ? fmt("%.0f%%", x * 100.0) : "—"; }
 std::string chg(double x) { return std::isfinite(x) ? fmt("%+.2f%%", x * 100.0) : "—"; }
 std::string r3(double x) { return std::isfinite(x) ? fmt("%.3f", x) : "—"; }
@@ -1577,39 +1577,6 @@ bool snapshot_view(const Call &c, const Look &L, const Context &ctx, std::string
   return true;
 }
 
-// ---- view_book ----
-constexpr size_t kProfile = 8;                                            // 剖面每侧几个价位
-constexpr int kBarCells = 12;                                             // 剖面条形图的满格
-constexpr int kSteps[] = {1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 300, 600}; // 自动 step 的候选
-
-// "HH:MM" / "HH:MM:SS" → 钟面秒; 不成 → −1
-int clock_of(const std::string &s) {
-  if (!hm_shape(s) || !(s.size() == 5 || (s.size() == 8 && s[5] == ':' && std::isdigit(static_cast<unsigned char>(s[6])) && std::isdigit(static_cast<unsigned char>(s[7])))))
-    return -1;
-  const int h = std::stoi(s.substr(0, 2)), m = std::stoi(s.substr(3, 2)), x = s.size() == 8 ? std::stoi(s.substr(6, 2)) : 0;
-  return h < 24 && m < 60 && x < 60 ? h * 3600 + m * 60 + x : -1;
-}
-std::string hms(int c) {
-  char b[16];
-  std::snprintf(b, sizeof(b), "%02d:%02d:%02d", c / 3600, c / 60 % 60, c % 60);
-  return b;
-}
-// 逐时表每行几秒: 给了照用, 0 = 候选里使行数 ≤ kBookRows 的最小者
-int step_of(int want, int secs) {
-  if (want > 0)
-    return want;
-  for (const int s : kSteps)
-    if ((secs + s - 1) / s <= kBookRows)
-      return s;
-  return kSteps[std::size(kSteps) - 1];
-}
-std::string w4(double yuan) { // 元 → 万元
-  const double v = yuan / 1e4;
-  return v == 0.0 ? "0" : std::fabs(v) < 10.0 ? fmt("%.1f", v)
-                                              : fmt("%.0f", v);
-}
-std::string px2(double p) { return p > 0.0 ? fmt("%.2f", p) : "—"; } // 无 (0 / NaN) → —
-
 // ---- 取参 (只查写法与 Lab 的三个校验, 不碰数据) ----
 bool factor_ok(const Lab &lab, const std::string &arg, LookSpec &out, std::string &error) {
   LookFactor f;
@@ -1730,85 +1697,40 @@ bool stock_days_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &
   return stock_spec(c, lab, out, error);
 }
 
-// 观察工具表 (下标 = Tool, view_feature .. view_stock_days): 取参 / 成文 (+ 研究树留的关键数, 没有的不写)
-struct ViewDef {
-  Tool id;
-  bool (*spec)(const Call &, const Lab &, LookSpec &, std::string &);
-  bool (*view)(const Call &, const Look &, const Context &, std::string &, std::string &);
-};
-constexpr ViewDef kViews[] = {
-    {Tool::ViewFeature, feature_spec, feature_view},
-    {Tool::ViewLayers, layers_spec, layers_view},
-    {Tool::ViewTrades, trades_spec, trades_view},
-    {Tool::ViewHolders, holders_spec, holders_view},
-    {Tool::ViewResponse, response_spec, response_view},
-    {Tool::ViewExplain, explain_spec, explain_view},
-    {Tool::ViewSnapshot, snapshot_spec, snapshot_view},
-    {Tool::ViewStockDay, stock_day_spec, stock_day_view},
-    {Tool::ViewStockDays, stock_days_spec, stock_days_view},
-};
-constexpr bool views_in_order() {
-  for (size_t i = 0; i < std::size(kViews); ++i)
-    if (static_cast<size_t>(kViews[i].id) != i)
-      return false;
-  return true;
-}
-static_assert(views_in_order(), "kViews 下标 = Tool");
-const ViewDef &view_of(Tool t) {
-  assert(static_cast<size_t>(t) < std::size(kViews) && def(t).run == Run::Look && "不是观察工具");
-  return kViews[static_cast<size_t>(t)];
-}
+// ---- view_book ----
+constexpr size_t kProfile = 8;                                            // 剖面每侧几个价位
+constexpr int kBarCells = 12;                                             // 剖面条形图的满格
+constexpr int kSteps[] = {1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 300, 600}; // 自动 step 的候选
 
-} // namespace
-
-bool Spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error) {
-  out = {};
-  return view_of(c.tool).spec(c, lab, out, error);
+// "HH:MM" / "HH:MM:SS" → 钟面秒; 不成 → −1
+int clock_of(const std::string &s) {
+  if (!hm_shape(s) || !(s.size() == 5 || (s.size() == 8 && s[5] == ':' && std::isdigit(static_cast<unsigned char>(s[6])) && std::isdigit(static_cast<unsigned char>(s[7])))))
+    return -1;
+  const int h = std::stoi(s.substr(0, 2)), m = std::stoi(s.substr(3, 2)), x = s.size() == 8 ? std::stoi(s.substr(6, 2)) : 0;
+  return h < 24 && m < 60 && x < 60 ? h * 3600 + m * 60 + x : -1;
 }
-
-std::string RepText(const Look &L) {
-  if (!L.error.empty())
-    return "- 代表点没观察成: " + L.error + "\n";
-  std::string miss;
-  const LookRoot *r = root_of(L, miss);
-  if (!r)
-    return "- 代表点" + miss + "\n";
-  Layer all;
-  for (const LookRow &w : r->rows)
-    all.add(w);
-  std::string s = "- 代表点的 20 组每期超额 G1 → G20: " + spark(all.grps(), bp) + " bp · mono " + r3(all.mono()) + " · 多空 " + bp(all.ls()) + "bp\n";
-  if (L.seg > 1) {
-    const std::vector<Slot> ps = parts_of(L);
-    const std::vector<int> pr = part_of_row(ps, L.seg);
-    std::vector<Layer> bs(ps.size());
-    for (int t = 0; t < L.T(); ++t)
-      bs[static_cast<size_t>(pr[t % L.seg])].add(r->rows[t]);
-    s += "- 代表点分时段 mono:";
-    for (size_t j = 0; j < ps.size(); ++j)
-      s += (j ? " · " : " ") + ps[j].name + " " + r3(bs[j].mono());
-    s += "\n";
-  }
-  return s + "- 观察工具的 factor 写本候选名即看代表点\n";
+std::string hms(int c) {
+  char b[16];
+  std::snprintf(b, sizeof(b), "%02d:%02d:%02d", c / 3600, c / 60 % 60, c % 60);
+  return b;
 }
-
-bool Render(const Call &c, const Look &L, const Context &ctx, std::string &out, std::string &gist) {
-  gist.clear();
-  if (!L.error.empty()) {
-    out = "没算成: " + L.error;
-    return false;
-  }
-  assert(!L.dates.empty() && L.seg == ctx.seg);
-  std::string body;
-  const bool ok = view_of(c.tool).view(c, L, ctx, body, gist);
-  out = ok ? head(L, ctx) + body : body;
-  if (!ok)
-    gist.clear();
-  return ok;
+// 逐时表每行几秒: 给了照用, 0 = 候选里使行数 ≤ kBookRows 的最小者
+int step_of(int want, int secs) {
+  if (want > 0)
+    return want;
+  for (const int s : kSteps)
+    if ((secs + s - 1) / s <= kBookRows)
+      return s;
+  return kSteps[std::size(kSteps) - 1];
 }
+std::string w4(double yuan) { // 元 → 万元
+  const double v = yuan / 1e4;
+  return v == 0.0 ? "0" : std::fabs(v) < 10.0 ? fmt("%.1f", v)
+                                              : fmt("%.0f", v);
+}
+std::string px2(double p) { return p > 0.0 ? fmt("%.2f", p) : "—"; } // 无 (0 / NaN) → —
 
-bool Spec(const Call &c, const Lab &lab, BookSpec &out, std::string &error) {
-  assert(c.tool == Tool::ViewBook);
-  out = {};
+bool book_spec(const Call &c, const Lab &lab, BookSpec &out, std::string &error) {
   if (!lab.code_of(c.str("code"), out.code, error)) {
     error = "code: " + error;
     return false;
@@ -1850,8 +1772,7 @@ bool Spec(const Call &c, const Lab &lab, BookSpec &out, std::string &error) {
   return true;
 }
 
-bool Render(const Call &c, const Book &b, const Context &, std::string &out) {
-  assert(c.tool == Tool::ViewBook);
+bool book_view(const Call &c, const Book &b, const Context &, std::string &out, std::string &) {
   const BookSpec &sp = b.spec;
   std::string s = "## " + sp.code + " · " + date_of(sp.date) + " · " + hms(sp.from) + "–" + hms(sp.to) + " 逐笔重放";
   if (!b.error.empty()) {
@@ -1981,6 +1902,85 @@ bool Render(const Call &c, const Book &b, const Context &, std::string &out) {
     level("买", i, bids[i]);
   out = std::move(s);
   return true;
+}
+
+// 观察工具表 (下标 = Tool, view_feature .. view_book): 取参 (原料的 Spec 落进 Lab::Job) / 成文 (取 Lab::Got 里同型的原料; + 研究树留的关键数, 没有的不写)
+template <class S, bool (*F)(const Call &, const Lab &, S &, std::string &)>
+bool spec_as(const Call &c, const Lab &lab, Lab::Job &job, std::string &error) { return F(c, lab, job.emplace<S>(), error); }
+template <class G, bool (*F)(const Call &, const G &, const Context &, std::string &, std::string &)>
+bool view_as(const Call &c, const Lab::Got &got, const Context &ctx, std::string &out, std::string &gist) { return F(c, std::get<G>(got), ctx, out, gist); }
+struct ViewDef {
+  Tool id;
+  bool (*spec)(const Call &, const Lab &, Lab::Job &, std::string &);
+  bool (*view)(const Call &, const Lab::Got &, const Context &, std::string &, std::string &);
+};
+constexpr ViewDef kViews[] = {
+    {Tool::ViewFeature, spec_as<LookSpec, feature_spec>, view_as<Look, feature_view>},
+    {Tool::ViewLayers, spec_as<LookSpec, layers_spec>, view_as<Look, layers_view>},
+    {Tool::ViewTrades, spec_as<LookSpec, trades_spec>, view_as<Look, trades_view>},
+    {Tool::ViewHolders, spec_as<LookSpec, holders_spec>, view_as<Look, holders_view>},
+    {Tool::ViewResponse, spec_as<LookSpec, response_spec>, view_as<Look, response_view>},
+    {Tool::ViewExplain, spec_as<LookSpec, explain_spec>, view_as<Look, explain_view>},
+    {Tool::ViewSnapshot, spec_as<LookSpec, snapshot_spec>, view_as<Look, snapshot_view>},
+    {Tool::ViewStockDay, spec_as<LookSpec, stock_day_spec>, view_as<Look, stock_day_view>},
+    {Tool::ViewStockDays, spec_as<LookSpec, stock_days_spec>, view_as<Look, stock_days_view>},
+    {Tool::ViewBook, spec_as<BookSpec, book_spec>, view_as<Book, book_view>},
+};
+constexpr bool views_in_order() {
+  for (size_t i = 0; i < std::size(kViews); ++i)
+    if (static_cast<size_t>(kViews[i].id) != i)
+      return false;
+  return true;
+}
+static_assert(views_in_order(), "kViews 下标 = Tool");
+const ViewDef &view_of(Tool t) {
+  assert(static_cast<size_t>(t) < std::size(kViews) && def(t).run == Run::Look && "不是观察工具");
+  return kViews[static_cast<size_t>(t)];
+}
+
+} // namespace
+
+bool Spec(const Call &c, const Lab &lab, Lab::Job &out, std::string &error) { return view_of(c.tool).spec(c, lab, out, error); }
+
+std::string RepText(const Look &L) {
+  if (!L.error.empty())
+    return "- 代表点没观察成: " + L.error + "\n";
+  std::string miss;
+  const LookRoot *r = root_of(L, miss);
+  if (!r)
+    return "- 代表点" + miss + "\n";
+  Layer all;
+  for (const LookRow &w : r->rows)
+    all.add(w);
+  std::string s = "- 代表点的 20 组每期超额 G1 → G20: " + spark(all.grps(), bp) + " bp · mono " + r3(all.mono()) + " · 多空 " + bp(all.ls()) + "bp\n";
+  if (L.seg > 1) {
+    const std::vector<Slot> ps = parts_of(L);
+    const std::vector<int> pr = part_of_row(ps, L.seg);
+    std::vector<Layer> bs(ps.size());
+    for (int t = 0; t < L.T(); ++t)
+      bs[static_cast<size_t>(pr[t % L.seg])].add(r->rows[t]);
+    s += "- 代表点分时段 mono:";
+    for (size_t j = 0; j < ps.size(); ++j)
+      s += (j ? " · " : " ") + ps[j].name + " " + r3(bs[j].mono());
+    s += "\n";
+  }
+  return s + "- 观察工具的 factor 写本候选名即看代表点\n";
+}
+
+bool Render(const Call &c, const Lab::Got &got, const Context &ctx, std::string &out, std::string &gist) {
+  gist.clear();
+  const Look *L = std::get_if<Look>(&got);
+  if (L && !L->error.empty()) {
+    out = "没算成: " + L->error;
+    return false;
+  }
+  assert(!L || (!L->dates.empty() && L->seg == ctx.seg));
+  std::string body;
+  const bool ok = view_of(c.tool).view(c, got, ctx, body, gist);
+  out = ok && L ? head(*L, ctx) + body : body;
+  if (!ok)
+    gist.clear();
+  return ok;
 }
 
 } // namespace GUI::Agent

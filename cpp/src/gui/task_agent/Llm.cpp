@@ -397,7 +397,7 @@ std::string Flat(const Turns &t) {
   return s + "# 本条消息\n\n" + t.back().text;
 }
 
-Session::Session(Options o) : o_(std::move(o)) {
+Session::Session(Options o, std::string system) : o_(std::move(o)), system_(std::move(system)) {
   assert(valid(o_.net));
   assert(!key(o_.backend).empty() && "output/config/agent/keys.json 里该后端未填");
   assert(!o_.model.empty());
@@ -422,8 +422,8 @@ Reply Session::send(const Turns &t, const Delta &on_delta, const std::atomic<boo
 
 Reply Session::zhipu(const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
   json msgs = json::array();
-  if (!o_.system.empty())
-    msgs.push_back({{"role", "system"}, {"content", o_.system}});
+  if (!system_.empty())
+    msgs.push_back({{"role", "system"}, {"content", system_}});
   for (const Turn &x : t)
     msgs.push_back({{"role", x.user ? "user" : "assistant"}, {"content", x.text}});
   json body;
@@ -487,7 +487,7 @@ Reply Session::zhipu(const Turns &t, const Delta &on_delta, const std::atomic<bo
 
 Reply Session::cursor(const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
   json body;
-  body["prompt"]["text"] = (o_.system.empty() ? std::string() : o_.system + "\n\n---\n\n") + Flat(t);
+  body["prompt"]["text"] = (system_.empty() ? std::string() : system_ + "\n\n---\n\n") + Flat(t);
   if (o_.model != "default")
     body["model"]["id"] = o_.model;
   const std::string payload = body.dump();

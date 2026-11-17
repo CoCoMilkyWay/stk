@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Text — agent 成文的公共件: 字 (UTF-8 码点) / 检索词 / 时刻 / 数的写法 / 火花线
+// Text — agent 成文的公共件: 字 (UTF-8 码点) / 检索词 / 占位 {{键}} / 时刻 / 数的写法 / 火花线
 // =============================================================================
 //   字数一律按码点算 (结果上限 kOutChars / 标题截断 / 研报片段都是字, 不是字节); 截断只落在码点边界; 短句上限 (功能块说明) 按 solid
 //   检索 (search_leaves / search_docs / search_factors / list_notes) 同一套: 词空白隔开、ASCII 小写, 按子串命中 (至多 kShortWord 个字母数字的短词只认整词), 条件全中才命中;
@@ -9,6 +9,7 @@
 // =============================================================================
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -138,6 +139,25 @@ struct Filter {
   }
 };
 
+// ---- 占位 ----
+// t 里的 {{键}} 逐个换成 val(键) (std::string); 占位须闭合
+template <class Val>
+std::string fill(std::string_view t, Val &&val) {
+  std::string out;
+  for (size_t i = 0;;) {
+    const size_t a = t.find("{{", i);
+    if (a == std::string_view::npos) {
+      out.append(t.substr(i));
+      return out;
+    }
+    const size_t b = t.find("}}", a);
+    assert(b != std::string_view::npos && "占位 {{ 未闭合");
+    out.append(t.substr(i, a - i));
+    out += val(t.substr(a + 2, b - a - 2));
+    i = b + 2;
+  }
+}
+
 // ---- 时刻 ----
 // 本地时刻按 strftime 格式 f; ms 另补 ".毫秒"
 inline std::string local(const char *f, bool ms = false) {
@@ -158,7 +178,8 @@ inline std::string fmt(const char *f, double v) {
   std::snprintf(b, sizeof(b), f, v);
   return b;
 }
-inline std::string num(double v) { return std::isfinite(v) ? fmt("%.4g", v) : "—"; } // 统计量 / 门槛 / 表格数; 非有限值 —
+inline std::string num(double v) { return std::isfinite(v) ? fmt("%.4g", v) : "—"; }       // 统计量 / 门槛 / 表格数; 非有限值 —
+inline std::string bp(double r) { return std::isfinite(r) ? fmt("%+.1f", r * 1e4) : "—"; } // 收益 → bp (带符号); 非有限值 —
 
 // ---- 火花线 ----
 inline constexpr size_t kSparkChars = 60; // 一条至多几字 (长序列等宽分箱取均值)

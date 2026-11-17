@@ -11,6 +11,8 @@
 //   退出: 任务 Destroy 置取消旗, 全部请求 / 重试等待 1 秒内收手 (只剩 Cursor 远端取消, 限时 kCancelTimeoutSeconds)
 // =============================================================================
 
+#include <string_view>
+
 namespace GUI::Agent {
 
 // ---- LLM ----
@@ -57,6 +59,19 @@ inline constexpr int kStockRows = 40;      // view_stock_day 逐行时段一次�
 inline constexpr int kBookMins = 30;       // view_book 一次重放的窗口至多几分钟 (交易时段内)
 inline constexpr int kBookRows = 30;       // view_book 逐时表至多几行 (每行 step 秒; 表要与事件 / 剖面一起装进 kOutChars)
 inline constexpr int kMaxRetries = 5;      // 连续这么多条回复不合协议即停下, 等研究员 (多半是模型或提示词出了问题)
+
+// 常量占位 {{键}} (提示词模板与工具说明同一张表; 模板另有随作用域的键, 见 gui/task_agent/Prompt.hpp)
+struct ConstDef {
+  const char *key;
+  int value;
+};
+inline constexpr ConstDef kConsts[] = {{"max_calls", kMaxCalls}, {"batch", kBatch}, {"hyp_evals", kHypEvals}, {"hyp_knobs", kHypKnobs}, {"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"part_chars", kPartChars}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}};
+inline const ConstDef *const_of(std::string_view key) {
+  for (const ConstDef &c : kConsts)
+    if (key == c.key)
+      return &c;
+  return nullptr;
+}
 
 // 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重全部达到才拷进正式因子库
 inline constexpr double kGateMono = 0.95; // 分层单调性

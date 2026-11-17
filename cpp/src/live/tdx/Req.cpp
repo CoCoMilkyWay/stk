@@ -303,7 +303,7 @@ Answer ask(int func, const std::map<int, std::string> &over) {
   std::lock_guard lk(s.mu);
   need(s.pid != 0, "请求层没接上 (req::arm)");
   const auto l = s.last.find(func);
-  need(l != s.last.end() && s.user, strf("还没见过插件发功能 %d, 入参无从照搬", func));
+  need(l != s.last.end() && s.user, strf("还没见过插件发功能 %d, 入参无从照搬 (见过 %zu 个功能, user 0x%08x)", func, s.last.size(), s.user));
   std::string line = strf("req class=TdxW_MainFrame_Class 0x%08x %d %s", s.user, func, l->second.lp.c_str());
   std::set<int> have;
   for (const In &i : l->second.ins) {

@@ -29,21 +29,33 @@ int tokens(const llm::Usage &u) { return u.prompt + u.completion; }
 
 } // namespace
 
-// ---- 人的操作 ----
-void Mine::open(const SharedData &data, Setup s) {
+// ---- 开 / 起一段 ----
+void Mine::bind(const SharedData &data) {
   assert(!live() && idle());
-  assert(catalog::ready(data, s.sc, s.gpu));
+  assert(catalog::ready(data, setup.sc, leg.gpu));
   flush();
-  setup = std::move(s);
   lab.bind(data, setup.sc, setup.test);
   notes.load(setup.test);
+  stop_ = false, retries_ = 0;
+}
+
+void Mine::depart(Event e, nlohmann::ordered_json ev) {
+  chat.open(leg.llm, system);
+  from_ = {round(), now(), tokens(tally().usage)};
+  ev.update(leg_j());
+  log.event(e, ev);
+}
+
+// ---- 人的操作 ----
+void Mine::open(const SharedData &data, Setup s, Leg l) {
+  setup = std::move(s), leg = std::move(l);
+  bind(data);
   const Context &ctx = lab.ctx();
   assert(!ctx.leaves.empty() && !ctx.ops.empty() && "须有开放的叶与算子");
-  setup.llm.system = SystemMessage(ctx, setup.gate, setup.ask).text;
-  chat.open(setup.llm);
+  system = SystemMessage(ctx, setup.gate, setup.ask).text;
   disk::Key key = catalog::key(setup.sc, setup.test);
   key.stamp = disk::stamp_now();
-  log.open(disk::path(disk::AgentChat, key).string(), setup.llm.system);
+  log.open(disk::path(disk::AgentChat, key).string(), system);
   std::vector<std::string> names;
   for (const ToolDef &d : Tools())
     names.push_back(d.name);
@@ -51,60 +63,51 @@ void Mine::open(const SharedData &data, Setup s) {
   timeline.clear();
   restate();
   memo.clear(), reason.clear(), report.clear();
-  cur_ = 0, retries_ = 0, stop_ = false;
+  cur_ = 0;
   t0 = Clock::now(), t_end = -1;
-  leg_ = {};
   phase_ = Phase::Think;
   const int tried = static_cast<int>(std::ranges::count_if(lab.results(), [](const Result &r) { return r.visible; }));
-  nlohmann::ordered_json ev = {{"pool", setup.sc.pool},
-                               {"level", ctx.level},
-                               {"hold", ctx.hold},
-                               {"years", setup.sc.years},
-                               {"srcs", ctx.srcs},
-                               {"leaves", ctx.leaves.size()},
-                               {"ops", ctx.ops.size()},
-                               {"gate", setup.gate},
-                               {"ask", setup.ask},
-                               {"test", setup.test},
-                               {"tried", tried},
-                               {"remark", setup.remark}};
-  ev.update(leg_j());
-  log.event(Event::Open, ev);
+  depart(Event::Open, {{"pool", setup.sc.pool},
+                       {"level", ctx.level},
+                       {"hold", ctx.hold},
+                       {"years", setup.sc.years},
+                       {"srcs", ctx.srcs},
+                       {"leaves", ctx.leaves.size()},
+                       {"ops", ctx.ops.size()},
+                       {"gate", setup.gate},
+                       {"ask", setup.ask},
+                       {"test", setup.test},
+                       {"tried", tried},
+                       {"remark", setup.remark}});
   post(setup.test ? TestMessage(setup.ask, setup.remark) : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask, setup.remark));
 }
 
-// 接着停下处: 重发末条 (回退后待发 / 回复没收成) / 重发要求 / 余下的调用 (等人时停的重问) / 下一条 (挖完后 = 照常发结果)
-void Mine::resume(const SharedData &data, llm::Options llm, bool gpu, Budget budget) {
+void Mine::resume(const SharedData &data, Leg l) {
   assert(phase_ == Phase::Pause && idle() && !timeline.empty());
   flush();
-  llm.system = setup.llm.system;
-  setup.llm = std::move(llm), setup.gpu = gpu, setup.budget = budget;
-  assert(catalog::ready(data, setup.sc, setup.gpu));
-  chat.open(setup.llm);
-  if (!timeline.back().reply.ok())
-    unsend();
+  leg = std::move(l);
+  assert(catalog::ready(data, setup.sc, leg.gpu));
   t0 = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(t_end)), t_end = -1;
   stop_ = false, retries_ = 0;
   reason.clear();
-  leg_ = {round(), now(), tokens(tally().usage)};
-  nlohmann::ordered_json ev = {{"round", round()}};
-  ev.update(leg_j());
-  log.event(Event::Resume, ev);
-  Round &rd = timeline.back();
-  if (!rd.span.began()) {
+  depart(Event::Resume, {{"round", round()}});
+  switch (cont()) {
+  case Cont::Resend:
+    unsend();
+    [[fallthrough]];
+  case Cont::Send:
     phase_ = Phase::Think;
     return send();
-  }
-  if (rd.acts.empty()) {
+  case Cont::Retry:
     phase_ = Phase::Think;
-    return post(RetryMessage(rd.error));
-  }
-  if (cur_ < rd.acts.size()) {
-    if (Act &a = rd.acts[cur_]; a.span.began())
+    return post(RetryMessage(timeline.back().error));
+  case Cont::Acts:
+    if (Act &a = timeline.back().acts[cur_]; a.span.began())
       a = Act{.call = a.call};
     return step();
+  case Cont::Results:
+    return next(flags().done);
   }
-  next(flags().done);
 }
 
 void Mine::start() {
@@ -161,13 +164,7 @@ std::string Mine::unqueue() {
 // ---- 回退 ----
 Mine::Loss Mine::loss(int k) const {
   assert(phase_ == Phase::Pause && k >= 1 && k <= round());
-  Loss l{.rounds = round() - k + 1};
-  for (size_t i = static_cast<size_t>(k) - 1; i < timeline.size(); ++i)
-    for (const Act &a : timeline[i].acts)
-      if (const Trial *t = std::get_if<Trial>(&a.got); t && t->st.ok())
-        ++l.files;
-  l.notes = static_cast<int>(notes.filed(log.dir(), k).size());
-  return l;
+  return {.rounds = round() - k + 1, .files = static_cast<int>(staged(k).size()), .notes = static_cast<int>(notes.filed(log.dir(), k).size())};
 }
 
 // 丢第 k 轮起的产出, 时间线截到第 k 轮 (待发), 状态照剩下的时间线重算; 它随附的插话退回排队 (排在已排的前面), 继续时可撤回改写
@@ -197,12 +194,19 @@ void Mine::unsend() {
 
 void Mine::restate() { st = StateOf(timeline); }
 
-// 丢的轮里落了文件的候选 (连同 Search 日志) + 本会话这些轮提的全局记录
-void Mine::discard(int k) {
+std::vector<std::string> Mine::staged(int k) const {
+  std::vector<std::string> out;
   for (size_t i = static_cast<size_t>(k) - 1; i < timeline.size(); ++i)
     for (const Act &a : timeline[i].acts)
       if (const Trial *t = std::get_if<Trial>(&a.got); t && t->st.ok())
-        lab.discard(t->st.file);
+        out.push_back(t->st.file);
+  return out;
+}
+
+// 丢的轮里落了文件的候选 (连同 Search 日志) + 本会话这些轮提的全局记录
+void Mine::discard(int k) {
+  for (const std::string &f : staged(k))
+    lab.discard(f);
   notes.drop(log.dir(), k);
 }
 
@@ -216,22 +220,32 @@ void Mine::flush() {
 // ---- 会话 ----
 double Desk::now() const { return t_end >= 0 ? t_end : std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); }
 
+Mine::Cont Mine::cont() const {
+  const Round &rd = timeline.back();
+  return !rd.span.began()        ? Cont::Send
+         : !rd.reply.ok()        ? Cont::Resend
+         : rd.acts.empty()       ? Cont::Retry
+         : cur_ < rd.acts.size() ? Cont::Acts
+                                 : Cont::Results;
+}
+
 std::string Mine::hint() const {
   if (phase_ != Phase::Pause)
     return {};
   const std::string n = std::to_string(round());
-  const Round &rd = timeline.back();
-  if (!rd.span.began())
+  switch (cont()) {
+  case Cont::Send:
     return "发出待发的第 " + n + " 条消息";
-  if (!rd.reply.ok())
+  case Cont::Resend:
     return "重发第 " + n + " 条消息 (它的回复没收成)";
-  if (rd.acts.empty())
+  case Cont::Retry:
     return "发重发要求 (第 " + n + " 条回复不合协议)";
-  if (cur_ < rd.acts.size())
-    return "接着执行第 " + n + " 轮第 " + std::to_string(cur_ + 1) + " 个调用起 (共 " + std::to_string(rd.acts.size()) + " 个)";
-  if (flags().done)
-    return "发第 " + n + " 轮的结果, 让 agent 接着挖 (它已宣布挖完)";
-  return "发第 " + n + " 轮的结果";
+  case Cont::Acts:
+    return "接着执行第 " + n + " 轮第 " + std::to_string(cur_ + 1) + " 个调用起 (共 " + std::to_string(timeline.back().acts.size()) + " 个)";
+  case Cont::Results:
+    return "发第 " + n + " 轮的结果" + (flags().done ? ", 让 agent 接着挖 (它已宣布挖完)" : "");
+  }
+  return {};
 }
 
 // ---- 每帧: 两个 worker 同样 poll; 作废回测的候选文件等实验台停稳后删 ----
@@ -437,9 +451,9 @@ void Mine::send() {
 }
 
 std::string Mine::over() const {
-  const Budget &b = setup.budget;
-  const int rounds = round() - leg_.round, used = tokens(tally().usage) - leg_.tokens;
-  const double secs = now() - leg_.t;
+  const Budget &b = leg.budget;
+  const int rounds = round() - from_.round, used = tokens(tally().usage) - from_.tokens;
+  const double secs = now() - from_.t;
   if (b.rounds > 0 && rounds >= b.rounds)
     return "本段 " + std::to_string(rounds) + " 轮, 上限 " + std::to_string(b.rounds) + " 轮";
   if (b.minutes > 0 && secs >= b.minutes * 60.0)
@@ -465,12 +479,12 @@ void Mine::pause(std::string why) {
 }
 
 nlohmann::ordered_json Mine::leg_j() const {
-  const llm::Net &n = setup.llm.net;
-  return {{"backend", def(setup.llm.backend).name},
-          {"model", setup.llm.model},
+  const llm::Net &n = leg.llm.net;
+  return {{"backend", def(leg.llm.backend).name},
+          {"model", leg.llm.model},
           {"net", n.proxy ? "proxy " + n.host + ":" + std::to_string(n.port) : std::string("direct")},
-          {"eval", setup.gpu ? "GPU" : "CPU"},
-          {"budget", setup.budget}};
+          {"eval", leg.gpu ? "GPU" : "CPU"},
+          {"budget", leg.budget}};
 }
 
 std::string Mine::report_of(const std::string &why) const {

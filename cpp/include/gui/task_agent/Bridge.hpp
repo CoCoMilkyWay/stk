@@ -53,7 +53,6 @@ struct SrcDef {
 };
 inline constexpr SrcDef kSrcs[] = {{"bar"}, {"lob"}};
 AGENT_ROWS(Src, kSrcs, Lob);
-inline constexpr uint8_t src_bit(Src s) { return static_cast<uint8_t>(1u << static_cast<int>(s)); }
 
 // 人开放给 agent 的一类 (特征叶 / 算子): all = 全开 (此后新加的也开); 否则只开 on 里的 (此后新加的不开)
 struct Open {
@@ -72,8 +71,8 @@ struct Scope {
   int years = kEvalYears;             // 评估期只留最近几年 (≥ 1)
   std::map<std::string, Open> leaves; // 因子层名 → 该层开放的叶 (叶名, 叠在来源之上); 没有该层 = 全开
   Open ops;                           // 开放的算子 (算子名)
-  // 开放的特征来源 (src_bit 之或): 只有这几类的叶给 agent 用
-  uint8_t srcs() const { return static_cast<uint8_t>(src_bit(Src::Bar) | (lob ? src_bit(Src::Lob) : 0)); }
+  // 开放该特征来源: 只有开放的来源的叶给 agent 用
+  bool has(Src s) const { return s == Src::Bar || lob; }
   const Open &leaves_of(const std::string &level) const {
     static const Open kAll;
     const auto it = leaves.find(level);
@@ -190,14 +189,13 @@ enum class Bar : uint8_t { Close,
                            PreClose,
                            LimUp,
                            LimDn };
-inline constexpr Bar kBars[] = {Bar::Close, Bar::High, Bar::Low, Bar::Volume, Bar::Amount, Bar::PreClose, Bar::LimUp, Bar::LimDn};
-inline constexpr size_t kBarCount = std::size(kBars);
-static_assert([] {
+inline constexpr size_t kBarCount = static_cast<size_t>(Bar::LimDn) + 1;
+inline constexpr std::array<Bar, kBarCount> kBars = [] {
+  std::array<Bar, kBarCount> a{};
   for (size_t i = 0; i < kBarCount; ++i)
-    if (static_cast<size_t>(kBars[i]) != i)
-      return false;
-  return true;
-}());
+    a[i] = static_cast<Bar>(i);
+  return a;
+}(); // 全部 Bar, 按下标序
 template <class X>
 struct PerBar {
   std::array<X, kBarCount> v{};

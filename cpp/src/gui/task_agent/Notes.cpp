@@ -15,16 +15,6 @@ namespace {
 
 using json = nlohmann::ordered_json;
 
-// 字段键 → 界面 / 结果里的标签 (四个提交工具的参数键, ref 除外)
-constexpr std::pair<std::string_view, const char *> kLabels[] = {
-    {"title", "标题"}, {"define", "定义"}, {"mechanism", "机制"}, {"gap", "缺口"}, {"want", "想看"}, {"purpose", "用途"}, {"evidence", "证据"}, {"reach", "适用范围"}, {"use", "含义"}, {"type", "类型"}, {"detail", "详情"}};
-
-const char *label(std::string_view key) {
-  const auto it = std::find_if(std::begin(kLabels), std::end(kLabels), [&](const auto &p) { return p.first == key; });
-  assert(it != std::end(kLabels) && "字段键没有标签");
-  return it->second;
-}
-
 disk::Key key_of(bool test, NoteKind k) { return {.test = test, .name = def(k).id}; }
 
 bool matches(const Note &x, const std::vector<std::string> &ws) {
@@ -53,7 +43,7 @@ std::string handled(const Note &x) {
 }
 
 json line_of(const Note &x) {
-  return {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"round", x.round}, {"ref", x.ref}, {"state", def(x.state).id}, {"reply", x.reply}, {"fields", x.fields}};
+  return {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"round", x.round}, {"ref", x.ref}, {"state", x.state}, {"reply", x.reply}, {"fields", x.fields}};
 }
 
 } // namespace
@@ -66,13 +56,7 @@ NoteKind NoteOf(Tool t) {
   return NoteKind::Feature;
 }
 
-std::string Note::body() const {
-  std::string s;
-  for (const auto &[k, v] : fields.items())
-    if (k != "title")
-      s += std::string(label(k)) + ": " + v.get<std::string>() + "\n";
-  return s;
-}
+std::string Note::body() const { return FieldsText(def(kind).tool, fields, {"title"}); }
 
 void Notes::load(bool test) {
   test_ = static_cast<int>(test);
@@ -94,8 +78,8 @@ void Notes::load(bool test) {
                    .session = j.at("session").get<std::string>(),
                    .ref = j.at("ref").get<std::string>(),
                    .round = j.at("round").get<int>(),
-                   .state = IdOf<NoteState>(j.value("state", std::string(def(NoteState::Open).id))),
-                   .reply = j.value("reply", std::string()),
+                   .state = j.at("state").get<NoteState>(),
+                   .reply = j.at("reply").get<std::string>(),
                    .fields = j.at("fields")});
       assert(v.back().fields.contains("title"));
     }

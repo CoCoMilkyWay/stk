@@ -18,9 +18,9 @@ Chat::~Chat() {
   thread_.join();
 }
 
-void Chat::open(llm::Options o) {
+void Chat::open(llm::Options o, std::string system) {
   assert(!busy() && "对话在收, 先取消");
-  sess_ = std::make_unique<llm::Session>(std::move(o));
+  sess_ = std::make_unique<llm::Session>(std::move(o), std::move(system));
   std::lock_guard<std::mutex> lock(mutex_);
   live_ = {}, ++gen_;
   ticks_.clear();

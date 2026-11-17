@@ -215,19 +215,18 @@ Wait eval(Act &a, Desk &d) {
     a.out = TrialText(k, d.setup.gate), a.ok = false;
     return Wait::None;
   }
-  d.lab.send(EvalSpec{k.st.file, d.setup.gpu});
+  d.lab.send(EvalSpec{k.st.file, d.leg.gpu});
   return Wait::Lab;
 }
 
-// 观察 / 重放: 取参不成当场做完
-template <class S>
+// 观察: 取参不成当场做完
 Wait view(Act &a, Desk &d) {
-  S s;
-  if (!Spec(a.call, d.lab, s, a.out)) {
+  Lab::Job job;
+  if (!Spec(a.call, d.lab, job, a.out)) {
     a.ok = false;
     return Wait::None;
   }
-  d.lab.send(std::move(s));
+  d.lab.send(std::move(job));
   return Wait::Lab;
 }
 
@@ -236,11 +235,11 @@ Wait docs(Act &a, Desk &) {
   return Wait::None;
 }
 
-constexpr Wait (*kBegin[])(Act &, Desk &) = {now, human, eval, view<LookSpec>, view<BookSpec>, docs}; // 下标 = Run
+constexpr Wait (*kBegin[])(Act &, Desk &) = {now, human, eval, view, docs}; // 下标 = Run
 static_assert(std::size(kBegin) == kNum<Run>);
 
 // 回测换上定论, 无显著另接代表点的分层摘要
-void settled(Act &a, Eval &&e, Desk &d) {
+void graded(Act &a, Eval &&e, Desk &d) {
   Trial &k = std::get<Trial>(a.got);
   k.st.res = std::move(e.res);
   assert(k.st.res.file == k.st.file);
@@ -248,14 +247,13 @@ void settled(Act &a, Eval &&e, Desk &d) {
   a.ok = k.st.res.verdict != Verdict::Broken;
   d.log.event(Event::Eval, {{"name", k.st.cand.name}, {"result", Brief(k.st.res)}});
 }
-void settled(Act &a, Look &&l, Desk &d) {
+// 观察成文, 关键数留给研究树
+void viewed(Act &a, const Lab::Got &got, Desk &d) {
   std::string gist;
-  a.ok = Render(a.call, l, d.lab.ctx(), a.out, gist);
+  a.ok = Render(a.call, got, d.lab.ctx(), a.out, gist);
   if (!gist.empty())
     a.got = Seen{std::move(gist)};
 }
-void settled(Act &a, Book &&b, Desk &d) { a.ok = Render(a.call, b, d.lab.ctx(), a.out); }
-void settled(Act &, std::monostate, Desk &) { assert(false && "取消的不收"); }
 
 } // namespace
 
@@ -276,7 +274,10 @@ void enter(Act &a, Lab::Step s, Desk &d) {
 
 void settle(Act &a, Lab::Got &&got, Desk &d) {
   enter(a, Lab::Step::End, d);
-  std::visit([&](auto &&x) { settled(a, std::move(x), d); }, std::move(got));
+  assert(!std::holds_alternative<std::monostate>(got) && "取消的不收");
+  if (Eval *e = std::get_if<Eval>(&got))
+    return graded(a, std::move(*e), d);
+  viewed(a, got, d);
 }
 
 void answer(Act &a, Desk &d) {

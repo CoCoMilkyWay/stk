@@ -5,8 +5,8 @@
 // =============================================================================
 //   回复 = 一串调用 {"calls": [{"tool": 名, "args": {...}}, ...]}; 系统按序执行, 下条消息按序给回各自的结果 (Prompt round)
 //   工具 = 名 + 执行方 + 用途类 + 研究树里留不留原样 + 参数表 (键 / 类型 / 缺省 / 取值范围 / 说明) + 做什么 / 返回什么; 加工具 = 表里加一行 + 执行方里接一个分支
-//   执行方 Run: Now 当场 (GUI 线程, 只读会话状态) / Human 等人 / Eval 回测 (Lab 跑 EvalSpec) / Look 观察 (Lab 跑 LookSpec) / Book 重放 (Lab 跑 BookSpec) /
-//              Docs 研报库 (GUI 线程当场查, task_agent/Docs 成文); Look / Book 的取参与成文在 task_agent/Views
+//   执行方 Run: Now 当场 (GUI 线程, 只读会话状态) / Human 等人 / Eval 回测 (Lab 跑 EvalSpec) / Look 观察 (Lab 跑 LookSpec 或 BookSpec; 取参与成文在 task_agent/Views) /
+//              Docs 研报库 (GUI 线程当场查, task_agent/Docs 成文)
 //   校验两层: 解析时按参数表 (类型 / 必填 / 范围 / 可选值; 不合 → 整条回复重发); 执行时按数据 (因子 / 特征 / 资产 / 日期 / 流派 / 研报不成 → 该调用的结果写原因, 其余照做)
 //   回复级约束: 1..kMaxCalls 个调用; eval_factor 至多 kBatch 个; finish 只能在末尾; ask_human 只在会话允许提问且还没问过时可用;
 //              随会话状态的 (上条有回测则本条不能回测 / 待判的假设须 judge) 见 task_agent/Acts RuleMiss
@@ -20,6 +20,7 @@
 #include "nlohmann/json.hpp"
 
 #include <cstdint>
+#include <initializer_list>
 #include <span>
 #include <string>
 #include <string_view>
@@ -61,12 +62,11 @@ enum class Run : uint8_t { Now,
                            Human,
                            Eval,
                            Look,
-                           Book,
                            Docs };
 struct RunDef {
   const char *cn;
 };
-inline constexpr RunDef kRuns[] = {{"当场"}, {"等人"}, {"回测"}, {"观察"}, {"重放"}, {"研报库"}};
+inline constexpr RunDef kRuns[] = {{"当场"}, {"等人"}, {"回测"}, {"观察"}, {"研报库"}};
 AGENT_ROWS(Run, kRuns, Docs);
 // 用途类 (下标 = Cat): 界面分组 / 计数; judge 判支持须引用的观察 = Cat::Look
 enum class Cat : uint8_t { Look,  // view_*
@@ -86,7 +86,7 @@ enum class Arg : uint8_t { Str,
                            Questions,
                            Parts };
 struct ArgDef {
-  const char *key;
+  const char *key, *cn; // 调用里的键 / 界面与报告里的标签
   Arg type;
   const char *def;     // 缺省值 (JSON 字面量); nullptr = 必填
   int lo, hi;          // Int 的取值 / Strs 的个数 (闭区间)
@@ -105,9 +105,11 @@ struct ToolDef {
 std::span<const ToolDef> Tools(); // 下标 = Tool
 const ToolDef &def(Tool t);
 Tool ToolOf(std::string_view name);   // 调用名 → 工具 (须在表里)
-std::string ToolText(const char *s);  // 工具说明 (desc / out) 的占位填实: {batch} → kBatch, {stock_days} → kStockDays, {stock_rows} / {book_rows} / {book_mins} 同理
+std::string ToolText(const char *s);  // 工具说明 (desc / out) 的常量占位 {{键}} 填实 (Config kConsts, 与提示词模板同一张表)
 std::string ArgType(const ArgDef &a); // 参数的类型与取值 (可选值 / 范围 / 个数)
 std::string ArgText(const ArgDef &a); // 参数一行: `键` (类型, 缺省 / 必填): 说明 (工具节与界面同一份)
+// 工具 t 的参数 args 里的文本字段 (字符串 / 字符串数组, 后者 ", " 连), 一行一个 "bullet标签: 值", 按参数表序; skip 里的键不列 (界面 / 报告 / 全局记录同一份)
+std::string FieldsText(Tool t, const nlohmann::ordered_json &args, std::initializer_list<std::string_view> skip, std::string_view bullet = "");
 
 // 一个调用 (已按参数表校验, 缺省已补, 键按参数表序)
 struct Call {

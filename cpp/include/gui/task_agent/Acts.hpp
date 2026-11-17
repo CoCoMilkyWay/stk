@@ -11,8 +11,7 @@
 //   Human  ask_human: 起问题 → 等人交答案
 //   Eval   eval_factor: 叶都查过, 假设判为支持且有配额, base 可见, 改动归类不退回, 功能块覆盖模板 → 落文件 → 交 EvalSpec;
 //          Search / Run 两段记进 Trial; 没落成当场做完
-//   Look   观察: Views Spec → 交 LookSpec → Views Render; 参数不成当场做完
-//   Book   重放: 同上 (BookSpec)
+//   Look   观察: Views Spec → 交 LookSpec / BookSpec → Views Render; 参数不成当场做完
 //   Docs   研报库: 当场
 //   调用读写会话只经 Desk (两个 worker / 设定 / 日志 / 全局记录 / 状态 / 流程旗)
 // =============================================================================

@@ -1,9 +1,9 @@
 #pragma once
 
 // =============================================================================
-// Views — 观察工具 (Run::Look / Run::Book) 的两半: 调用 → 要的原料 (Spec) / 交回的原料 → 交给 agent 的文本 (Render)
+// Views — 观察工具 (Run::Look) 的两半: 调用 → 要的原料 (Spec → Lab::Job) / 交回的原料 → 交给 agent 的文本 (Lab::Got → Render)
 // =============================================================================
-//   每个 view_* 一行表 {取参, 成文}, 两半同签名; Acts 只调这两个重载, 不按工具分派
+//   每个 view_* 一行表 {取参, 成文}; 原料两种: LookSpec → Look (特征库上整期一块) / BookSpec → Book (逐笔重放); Acts 只调这两个, 不按工具分派
 //   Spec    按参数查因子 / 特征 / 资产 / 日期与时段写法 (Lab 的三个校验, 不碰数据); 交割单 / 响应曲线 / 成分 / 个股视图另要本层 K 线叶 (LookSpec::kline);
 //           exprs 各式各自校验: 不成的带着原因不算 (Render 写在该式那里), 其余照算; view_feature 一式也不成才算没做成; view_layers 的 cond 不成即没做成
 //   Render  Look → markdown: 表 + 火花线 (▁..█, 无效 ·; 长序列分箱); 收益一律 bp, 超额 = 毛 − 本行在池均值; 依赖数据的参数 (日期在不在评估期) 在这里查;
@@ -22,11 +22,10 @@
 namespace GUI::Agent {
 
 // 不成 → false, error / out = 原因 (作该调用的结果)
-bool Spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error);
-bool Spec(const Call &c, const Lab &lab, BookSpec &out, std::string &error);
+bool Spec(const Call &c, const Lab &lab, Lab::Job &out, std::string &error);
+// got = 该调用的 Spec 交出的那件做完交回的 (Look / Book);
 // gist = 研究树留的关键数一行 (view_feature 各式 rIC 与隔日自相关 / view_layers mono · 多空 · rIC · 极端截 (+ 条件三段) / view_explain 剥基准前后); 其余观察与没做成的 = 空
-bool Render(const Call &c, const Look &look, const Context &ctx, std::string &out, std::string &gist);
-bool Render(const Call &c, const Book &book, const Context &ctx, std::string &out);
+bool Render(const Call &c, const Lab::Got &got, const Context &ctx, std::string &out, std::string &gist);
 // eval_factor 无显著时代表点的观察 → 分层摘要 ("- " 起: 20 组 + 分时段 mono), 接在回测结果后
 std::string RepText(const Look &look);
 

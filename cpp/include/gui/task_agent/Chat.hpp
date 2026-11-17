@@ -43,7 +43,7 @@ public:
   Chat(const Chat &) = delete;
   Chat &operator=(const Chat &) = delete;
 
-  void open(llm::Options o);                                          // 须不忙; 未取走的 Tick 作废
+  void open(llm::Options o, std::string system);                      // 须不忙; 未取走的 Tick 作废
   void ask(llm::Turns t);                                             // 须已 open 且不忙; 未取走的 Tick 作废
   void cancel();                                                      // 在收那轮断流; 它收尾即 End (Cancelled)
   bool busy() const { return busy_.load(std::memory_order_acquire); } // ask 起, 到 End 入队

@@ -25,28 +25,17 @@ constexpr size_t kSurfBins = 6;    // 参数曲面: 每个参数至多分几段
 constexpr size_t kSurfSlots = 3;   // 参数曲面: 自由参数至多几个时逐参数分段; 再多改列最好的点
 constexpr size_t kSurfTop = 12;    // 参数曲面: 改列最好的点时列几个
 
-// {{键}} → 值; 模板里的键都须在 kv 里
+// {{键}} → 值: kv 里的 (随作用域 / 会话), 否则常量 (Config kConsts); 都没有 → assert
 Message fill(Msg m, const KV &kv) {
-  const std::string t = LoadPrompt(m);
-  std::string out;
-  size_t i = 0;
-  for (;;) {
-    const size_t a = t.find("{{", i);
-    if (a == std::string::npos) {
-      out.append(t, i);
-      return {m, std::move(out)};
-    }
-    const size_t b = t.find("}}", a);
-    assert(b != std::string::npos && "模板占位 {{ 未闭合");
-    const std::string_view key(t.data() + a + 2, b - a - 2);
-    const auto it = std::find_if(kv.begin(), kv.end(), [&](const auto &p) { return p.first == key; });
-    if (it == kv.end())
-      std::fprintf(stderr, "[agent] %s.md: 未知占位 {{%.*s}}\n", def(m).id, static_cast<int>(key.size()), key.data());
-    assert(it != kv.end() && "模板占位键未知");
-    out.append(t, i, a - i);
-    out += it->second;
-    i = b + 2;
-  }
+  return {m, text::fill(LoadPrompt(m), [&](std::string_view key) -> std::string {
+            if (const auto it = std::find_if(kv.begin(), kv.end(), [&](const auto &p) { return p.first == key; }); it != kv.end())
+              return it->second;
+            const ConstDef *c = const_of(key);
+            if (!c)
+              std::fprintf(stderr, "[agent] %s.md: 未知占位 {{%.*s}}\n", def(m).id, static_cast<int>(key.size()), key.data());
+            assert(c && "模板占位键未知");
+            return std::to_string(c->value);
+          })};
 }
 
 std::string cell(std::string_view s) { // 表格单元: 竖线转义, 换行压成空格
@@ -226,10 +215,9 @@ std::string leaves_text(const std::vector<Leaf> &leaves) {
   return s;
 }
 
-std::string bp_of(double r) { return fmt("%+.1f", r * 1e4); }
 std::string bp_spark(const std::vector<double> &v) {
   const auto [lo, hi] = std::minmax_element(v.begin(), v.end());
-  return "`" + text::bars(v) + "`  [" + bp_of(*lo) + ", " + bp_of(*hi) + "] bp";
+  return "`" + text::bars(v) + "`  [" + text::bp(*lo) + ", " + text::bp(*hi) + "] bp";
 }
 
 // 参数值: 整数不带小数
@@ -499,14 +487,6 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask) {
                             {"search_mono", num(c.min_mono)},
                             {"ts_root_d", std::to_string(c.ts_root_d)},
                             {"max_d", std::to_string(c.max_d)},
-                            {"batch", std::to_string(kBatch)},
-                            {"hyp_evals", std::to_string(kHypEvals)},
-                            {"hyp_knobs", std::to_string(kHypKnobs)},
-                            {"part_chars", std::to_string(kPartChars)},
-                            {"max_calls", std::to_string(kMaxCalls)},
-                            {"out_chars", std::to_string(kOutChars)},
-                            {"max_ops", std::to_string(kMaxOps)},
-                            {"good_ops", std::to_string(kGoodOps)},
                             {"gate_mono", num(g.mono)},
                             {"gate_ric", num(g.ric)},
                             {"ask", ask ? "可以用 ask_human 向研究员提一次问 (整个会话只一次)" : "研究员不参与决策, 没有 ask_human; 疑问写 report_issue"},
@@ -518,7 +498,6 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask) {
 Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark) {
   return fill(Msg::First, {{"hold", c.hold},
                            {"remark", remark_text(remark)},
-                           {"max_calls", std::to_string(kMaxCalls)},
                            {"tried", std::to_string(tried)},
                            {"library", std::to_string(visible(c.library))},
                            {"notes", notes},
@@ -533,7 +512,6 @@ Message TestMessage(bool ask, const std::string &remark) {
       tools += (tools.empty() ? "" : ", ") + std::string(d.name);
   return fill(Msg::Test, {{"tools", tools},
                           {"remark", remark_text(remark)},
-                          {"max_calls", std::to_string(kMaxCalls)},
                           {"ask", ask ? "ask_human 也要测: 问 1 道题 (例: 先测哪类工具), 研究员答完再接着测"
                                       : "本会话没有 ask_human, 不测它"}});
 }

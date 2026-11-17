@@ -53,8 +53,7 @@ Models models(Backend b, const Net &net, const std::atomic<bool> &cancel);
 struct Options {
   Backend backend = Backend::Zhipu;
   Net net;
-  std::string model;  // models() 的 id; Cursor "default" = 账号默认模型 (请求不带 model)
-  std::string system; // 静态前缀
+  std::string model; // models() 的 id; Cursor "default" = 账号默认模型 (请求不带 model)
 };
 
 // 一次请求的对话 (system 之外): user / assistant 按序交替, 首末都是 user
@@ -105,7 +104,7 @@ using Delta = std::function<void(Part part, std::string_view chunk)>;
 
 class Session {
 public:
-  explicit Session(Options o); // 该后端的 key 为空 → assert
+  Session(Options o, std::string system); // system = 静态前缀; 该后端的 key 为空 → assert
 
   // 发整份对话 t, 阻塞到整轮收齐. cancel 置位 → 1 秒内断流, End::Cancelled (Cursor: 已拿到 run id 则远端 run 一并取消,
   // 建 agent 的 POST 途中取消则远端那轮不管). 失败不抛, End::Error + error (stderr 另打响应体)
@@ -116,6 +115,7 @@ private:
   Reply cursor(const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel);
 
   Options o_;
+  std::string system_;
 };
 
 } // namespace GUI::Agent::llm

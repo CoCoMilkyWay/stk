@@ -54,21 +54,26 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, mono, ric)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Budget, rounds, minutes, ktokens)
 
 struct Desk {
-  // 一段会话的设定: 作用域 / 门槛 / 可否提问 / 自检 / 要求 New 定, 会话内不变; 后端与模型 / 评估后端 / 预算每段 (New / 继续) 按 Config 当前的定
+  // 会话的设定: New 定, 会话内不变
   struct Setup {
     Scope sc;
     Gate gate;
-    bool gpu = false;
     bool ask = true;    // agent 可用 ask_human 向人提一次问
     bool test = false;  // 自检: 首条换成 test (每个工具调一遍); 候选 / 日志 / 全局记录进 global/test 目录, submit_factor 只查门槛不拷
     std::string remark; // 研究员对本会话的要求 / 说明 (空 = 无): 附在首条 (自检的首条) 末尾, 不进系统提示
-    llm::Options llm;   // system 由 open 填 (载入取会话目录的 system.md), 会话内不变
+  };
+  // 一段的设定: 每段 (New / 继续) 按 Config 当前的定
+  struct Leg {
+    llm::Options llm;
+    bool gpu = false; // 评估后端
     Budget budget;
   };
 
   Chat chat;
   Lab lab; // 上下文 = lab.ctx()
   Setup setup;
+  Leg leg;
+  std::string system; // 系统提示: open 定 (载入取会话目录的 system.md), 会话内不变
   Journal log;
   Notes notes; // 全局记录 (open 按 setup.test 读回; 无会话时界面按候选目录重读)
   std::vector<Round> timeline;
@@ -93,15 +98,21 @@ public:
                                Act,
                                Choose,
                                Pause };
+  // 停着时继续会做什么 (hint 与 resume 同一判断): 发待发的末条 / 重发回复没收成的末条 / 发重发要求 / 接着执行余下的调用 / 发结果
+  enum class Cont : uint8_t { Send,
+                              Resend,
+                              Retry,
+                              Acts,
+                              Results };
   // 回退会丢的: 轮数 / 候选文件 / 全局记录
   struct Loss {
     int rounds = 0, files = 0, notes = 0;
   };
 
-  void open(const SharedData &data, Setup s);                                     // 须没在跑且两个 worker 都不忙; 作用域须 ready
-  void load(const SharedData &data, const std::string &dir);                      // 同上; 读回会话目录 dir, 停在 Pause
-  void resume(const SharedData &data, llm::Options llm, bool gpu, Budget budget); // 须 Pause 且都不忙: 按这套后端 / 评估 / 预算接着走 (system 照旧)
-  void start();                                                                   // 须 Choose: 交答案
+  void open(const SharedData &data, Setup s, Leg l);         // 须没在跑且两个 worker 都不忙; 作用域须 ready
+  void load(const SharedData &data, const std::string &dir); // 同上; 读回会话目录 dir, 停在 Pause
+  void resume(const SharedData &data, Leg l);                // 须 Pause 且都不忙: 按这一段的设定接着走 (system 照旧)
+  void start();                                              // 须 Choose: 交答案
   void stop();
   void cancel();
   void close();              // 须 Pause 且都不忙: 放下会话 (已存盘, 可再载入)
@@ -119,26 +130,30 @@ public:
   bool idle() const { return !chat.busy() && !lab.busy(); }
   bool stopping() const { return stop_ && live(); }
   size_t acting() const { return cur_; } // Act / Choose 中在做的调用 = timeline.back().acts[acting()]
-  std::string hint() const;              // 停着时继续会做什么
+  Cont cont() const;                     // 须有会话
+  std::string hint() const;              // 停着时继续会做什么 (一句)
 
 private:
-  bool go(Phase next);  // 转移的唯一入口: 按过 Stop → 停下, false; 否则进 next
-  void post(Message m); // 新起一轮并发出
-  void send();          // 发出末轮: 带上排队的插话, 照时间线算上下文
+  void bind(const SharedData &data);               // 开 / 载入共用: 作用域就位 (实验台 / 全局记录), 计数清零
+  void depart(Event e, nlohmann::ordered_json ev); // 起一段 (New / 继续): 按 leg 开对话, 预算从此刻起算; 流水记 e (ev + 这段的设定)
+  bool go(Phase next);                             // 转移的唯一入口: 按过 Stop → 停下, false; 否则进 next
+  void post(Message m);                            // 新起一轮并发出
+  void send();                                     // 发出末轮: 带上排队的插话, 照时间线算上下文
   void pause(std::string why);
   void on(Chat::Tick t);
   void on(Lab::Tick t);
   void replied(llm::Reply r);
   void settled(Lab::Got g);
-  void step();              // 从 cur_ 起执行, 遇到要等的停下; 全部做完 → next / 停下
-  void next(bool more);     // 本条的调用全做完: 发下一条 (复盘 / 结果; more = 挖完后研究员要接着挖); 预算用完且复盘过 → 停下
-  void ended(Act &a);       // 一个调用做完: 截断结果, 落进状态, 记流水, 前进
-  void abort(Act &a);       // 在跑的调用作废 (Cancel)
-  void discard(int k);      // 删第 k 轮起落的候选文件与提的全局记录
-  void unsend();            // 末轮回到待发 (回复与执行作废; 消息与插话照旧)
-  void restate();           // st 照时间线重算
-  void flush();             // 删掉作废回测的候选文件 (实验台须不忙)
-  std::string over() const; // 本段预算用完 = 用了多少; 否则空
+  void step();                                  // 从 cur_ 起执行, 遇到要等的停下; 全部做完 → next / 停下
+  void next(bool more);                         // 本条的调用全做完: 发下一条 (复盘 / 结果; more = 挖完后研究员要接着挖); 预算用完且复盘过 → 停下
+  void ended(Act &a);                           // 一个调用做完: 截断结果, 落进状态, 记流水, 前进
+  void abort(Act &a);                           // 在跑的调用作废 (Cancel)
+  std::vector<std::string> staged(int k) const; // 第 k 轮起落了文件的候选
+  void discard(int k);                          // 删它们与第 k 轮起提的全局记录
+  void unsend();                                // 末轮回到待发 (回复与执行作废; 消息与插话照旧)
+  void restate();                               // st 照时间线重算
+  void flush();                                 // 删掉作废回测的候选文件 (实验台须不忙)
+  std::string over() const;                     // 本段预算用完 = 用了多少; 否则空
   std::string report_of(const std::string &why) const;
   nlohmann::ordered_json leg_j() const; // 一段的设定 (后端 / 模型 / 连接 / 评估 / 预算), 进流水
 
@@ -147,11 +162,11 @@ private:
   size_t cur_ = 0;
   int retries_ = 0;                 // 连续不合协议的回复数
   std::vector<std::string> doomed_; // 作废回测的候选文件, 实验台停稳后删
-  struct Leg {
+  struct From {
     int round = 0;
     double t = 0;
     int tokens = 0;
-  } leg_; // 本段的起点 (预算按它算)
+  } from_; // 本段的起点 (预算按它算)
 };
 
 // 一段存过的会话 (载入用): dir = 会话目录; sc = 它的作用域; brief = 一览用的摘要 (brief.json)

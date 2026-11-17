@@ -73,8 +73,8 @@ struct Options {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, budget, ask, prompt)
 
 llm::Net net_of(const Options &o, int backend) { return {o.via_proxy[backend], o.proxy_host, o.proxy_port}; }
-llm::Options llm_of(const Options &o) { return {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model, {}}; }
-Mine::Setup setup_of(const Options &o) { return {.sc = o.sc, .gate = o.gate, .gpu = o.gpu == 1, .ask = o.ask, .llm = llm_of(o), .budget = o.budget}; }
+Mine::Setup setup_of(const Options &o) { return {.sc = o.sc, .gate = o.gate, .ask = o.ask}; }
+Mine::Leg leg_of(const Options &o) { return {.llm = {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model}, .gpu = o.gpu == 1, .budget = o.budget}; }
 
 // 模型嗅探: 每后端一个后台 GET models (按该后端当前连接方式); cancel 须声明在 jobs 前 (future 析构 join 时它还活着)
 struct Sniffer {
@@ -642,7 +642,7 @@ void session_row(const SharedData &data, Ui &s) {
     Mine::Setup st = setup_of(o);
     st.test = test;
     st.remark = trim(s.remark);
-    m.open(data, std::move(st));
+    m.open(data, std::move(st), leg_of(o));
     s.fold_remark = true;
   };
   ImGui::BeginDisabled(!can_new);
@@ -678,7 +678,7 @@ void session_row(const SharedData &data, Ui &s) {
       s.message = "资产轴未就绪 (先在 Database 页扫描) 或标签库未建";
     } else {
       s.message.clear();
-      m.resume(data, llm_of(o), o.gpu == 1, o.budget);
+      m.resume(data, leg_of(o));
       s.pinned = true;
     }
   }
@@ -714,9 +714,10 @@ void session_row(const SharedData &data, Ui &s) {
 
   if (m.held()) {
     const Mine::Setup &st = m.setup;
+    const Mine::Leg &lg = m.leg;
     ImGui::SameLine();
-    ImGui::TextDisabled("%s%s · 近 %d 年 · %s %s · %s · %s", st.test ? "自检 · " : "", catalog::label(st.sc).c_str(), st.sc.years, def(st.llm.backend).name,
-                        st.llm.model.c_str(), st.gpu ? "GPU" : "CPU", st.ask ? "可提问" : "不提问");
+    ImGui::TextDisabled("%s%s · 近 %d 年 · %s %s · %s · %s", st.test ? "自检 · " : "", catalog::label(st.sc).c_str(), st.sc.years, def(lg.llm.backend).name,
+                        lg.llm.model.c_str(), lg.gpu ? "GPU" : "CPU", st.ask ? "可提问" : "不提问");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s", m.log.dir().c_str());
   }
@@ -1077,15 +1078,9 @@ void cand_block(const Mine &m, const Act &a, const std::string &ref, const Lab::
   }
 }
 
-// 假设 / 判定的字段 (调用参数) 一行一个 "标签: 值"; 标题与编号类的不列
-std::string fields_text(const nlohmann::ordered_json &args) {
-  static constexpr std::pair<std::string_view, const char *> kLabels[] = {{"actor", "谁在做什么"}, {"why", "为什么"}, {"expect", "预期"}, {"refute", "算落空"}, {"result", "测出来"}, {"insight", "认识"}, {"better_feature", "更好的特征"}, {"next", "下一步"}};
-  std::string s;
-  for (const auto &[k, v] : args.items()) {
-    const auto it = std::find_if(std::begin(kLabels), std::end(kLabels), [&](const auto &p) { return p.first == k; });
-    if (it != std::end(kLabels) && v.is_string())
-      s += std::string(it->second) + ": " + v.get<std::string>() + "\n";
-  }
+// 假设 / 判定的字段 (调用参数) 一行一个 "标签: 值"; 标题 / 编号 / 判定 / 证据另有地方写
+std::string fields_text(Tool t, const nlohmann::ordered_json &args) {
+  std::string s = FieldsText(t, args, {"title", "hyp", "verdict", "evidence"});
   while (!s.empty() && s.back() == '\n')
     s.pop_back();
   return s;
@@ -1192,7 +1187,7 @@ bool act_block(Ui &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
       } else {
         wrapped(a.call.str("title"));
       }
-      wrapped_dim(fields_text(a.call.args));
+      wrapped_dim(fields_text(a.call.tool, a.call.args));
       wrapped(color(a.ok ? TaskStatus::Kind::None : TaskStatus::Kind::Warn), a.out);
       ImGui::TreePop();
     }
@@ -1774,7 +1769,7 @@ void hyps_panel(Ui &s, const Mine &m) {
       evidence_buttons(s, h.verdict.at("evidence"), 2);
     ImGui::TableNextColumn();
     wrapped(h.title());
-    tip_long(fields_text(h.fields) + (h.verdict.is_object() ? "\n\n最近判定 (" + std::string(def(h.stance).cn) + "):\n" + fields_text(h.verdict) : std::string()));
+    tip_long(fields_text(Tool::Hypothesize, h.fields) + (h.verdict.is_object() ? "\n\n最近判定 (" + std::string(def(h.stance).cn) + "):\n" + fields_text(Tool::Judge, h.verdict) : std::string()));
     ImGui::PopID();
   }
   ImGui::EndTable();
@@ -1889,7 +1884,7 @@ void leaves_panel(Ui &s, const Context &c, bool locked) {
   const Open &open = sc.leaves_of(c.level);
   s.leaf_filter.Draw("过滤##leaf", 240);
   const auto pass = [&](const Leaf &l) {
-    return (sc.srcs() & src_bit(l.src)) && s.leaf_filter.PassFilter((l.code + ' ' + l.name_cn + ' ' + l.desc + ' ' + l.family).c_str());
+    return sc.has(l.src) && s.leaf_filter.PassFilter((l.code + ' ' + l.name_cn + ' ' + l.desc + ' ' + l.family).c_str());
   };
   std::vector<std::string> all, shown;
   std::array<int, kNum<Src>> n{}, on{}; // [Src] 列出的叶 / 其中开放的
@@ -2080,7 +2075,7 @@ void render_mine(SharedData &data, Ui &s) {
   const Open &leaves_open = sc.leaves_of(v.ctx.level);
   int leaves_n = 0, leaves_on = 0, ops_on = 0;
   for (const Leaf &l : v.ctx.all_leaves)
-    if (sc.srcs() & src_bit(l.src))
+    if (sc.has(l.src))
       ++leaves_n, leaves_on += leaves_open.has(l.code);
   for (const Op &o : v.ctx.all_ops)
     ops_on += sc.ops.has(o.name);
