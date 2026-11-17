@@ -1,4 +1,5 @@
 // view_stock_days — 看个股多日: 输入 code / from / to / factor / exprs → StockDaysRes (逐日一行 + 日级火花线) → 原文; 展示见 ui/look/ViewStockDays.cpp
+#include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 namespace GUI::Agent {

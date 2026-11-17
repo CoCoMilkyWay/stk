@@ -196,7 +196,6 @@ std::string stamp_text(const std::string &st) {
   return st.size() == 15 ? st.substr(0, 4) + "-" + st.substr(4, 2) + "-" + st.substr(6, 2) + " " + st.substr(9, 2) + ":" + st.substr(11, 2) : st;
 }
 
-constexpr ImGuiTableFlags kTableFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY;
 bool begin_table(const char *id, std::initializer_list<const char *> heads, float h) {
   if (!ImGui::BeginTable(id, static_cast<int>(heads.size()), kTableFlags, ImVec2(-1, h)))
     return false;

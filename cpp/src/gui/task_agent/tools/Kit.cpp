@@ -9,7 +9,6 @@
 #include "gui/task_agent/tools/Query.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 
-#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <iterator>

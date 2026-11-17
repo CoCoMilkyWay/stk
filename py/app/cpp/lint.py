@@ -50,9 +50,11 @@ COMPILE_COMMANDS = CPP_DIR / "compile_commands.json"
 
 # Per file: [hash of itself + its transitive project #includes, diagnostic counts by severity].
 # Invalidated when clangd version, .clangd or compile_commands.json changes.
-CACHE_FILE = Path(__file__).resolve().parent / "__pycache__" / "lint_cache.json"
+CACHE_FILE = Path(__file__).resolve().parent / \
+    "__pycache__" / "lint_cache.json"
 
-INCLUDE_RE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"\n]+)[>"]', re.MULTILINE)
+INCLUDE_RE = re.compile(
+    rb'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"\n]+)[>"]', re.MULTILINE)
 
 # Concurrent preamble/AST builds inside clangd. Lower if memory runs out.
 CLANGD_JOBS = os.cpu_count()
@@ -61,6 +63,9 @@ CLANGD_JOBS = os.cpu_count()
 SEV_ERROR = 1
 SEV_WARNING = 2
 SEV_COUNT = 4
+
+# Seconds to wait for the shutdown reply, then for the process to exit, before killing clangd.
+SHUTDOWN_TIMEOUT_S = 5.0
 
 # Max wall-clock seconds to wait for clangd to report on all opened files.
 # (clangd may stay silent on headers it can't build a TU for.)
@@ -119,7 +124,8 @@ def dep_hashes(sources: list) -> dict:
                 seen.add(d)
                 stack.append(d)
         joined = "".join(own[d] for d in sorted(seen)).encode()
-        hashes[rel_str(p)] = hashlib.blake2b(joined, digest_size=16).hexdigest()
+        hashes[rel_str(p)] = hashlib.blake2b(
+            joined, digest_size=16).hexdigest()
     return hashes
 
 
@@ -155,7 +161,8 @@ class LspClient:
     def request(self, method: str, params: dict) -> int:
         msg_id = self._next_id
         self._next_id += 1
-        self._send({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
+        self._send({"jsonrpc": "2.0", "id": msg_id,
+                   "method": method, "params": params})
         return msg_id
 
     def notify(self, method: str, params: dict) -> None:
@@ -234,10 +241,21 @@ class LspClient:
         self.notify("initialized", {})
 
     def shutdown(self):
-        self.notify("shutdown", {})
+        # shutdown 是请求: 等它的回复 (其间还在来的诊断照丢) 再发 exit; 没回 / 回了不退
+        # (还有 AST 在建, 结果已收完不要了) 就杀掉
+        msg_id = self.request("shutdown", None)
+        while True:
+            msg = self.read_message(timeout=SHUTDOWN_TIMEOUT_S)
+            if msg is None or msg.get("id") == msg_id:
+                break
         self.notify("exit", None)
         self.proc.stdin.close()
-        self.proc.wait(timeout=5)
+        deadline = time.time() + SHUTDOWN_TIMEOUT_S
+        while self.proc.poll() is None and time.time() < deadline:
+            time.sleep(0.05)
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.wait()
 
 
 # ============================================================================
@@ -265,7 +283,7 @@ def count_by_severity(diags: list) -> list:
 
 def print_diags(rel: str, counts: list, include_errors: bool) -> int:
     min_sev = SEV_ERROR if include_errors else SEV_WARNING
-    n = sum(counts[min_sev - 1 :])
+    n = sum(counts[min_sev - 1:])
     if not n:
         return 0
     # clear the bottom status line, print the file result above it, then
@@ -351,7 +369,8 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     target = (PROJECT_ROOT / args[0]).resolve() if args else CPP_DIR
     assert target.exists(), f"target not found: {target}"
-    files = list(iter_sources(target, LINT_EXTENSIONS)) if target.is_dir() else [target]
+    files = list(iter_sources(target, LINT_EXTENSIONS)
+                 ) if target.is_dir() else [target]
     assert files, f"No C/C++ source files to lint under {target}"
     print(f"Linting {len(files)} file(s) with clangd ...", flush=True)
 
@@ -362,11 +381,14 @@ def main():
     print(f"Using: {version}")
 
     assert CLANGD_FILE.is_file(), f"clangd config not found: {CLANGD_FILE}"
-    assert COMPILE_COMMANDS.is_file(), f"compile database not found: {COMPILE_COMMANDS}"
-    cache_key = "|".join([version, file_hash(CLANGD_FILE), file_hash(COMPILE_COMMANDS)])
+    assert COMPILE_COMMANDS.is_file(
+    ), f"compile database not found: {COMPILE_COMMANDS}"
+    cache_key = "|".join(
+        [version, file_hash(CLANGD_FILE), file_hash(COMPILE_COMMANDS)])
     cache = load_cache(CACHE_FILE, cache_key)
     deps = dep_hashes(list(iter_sources(CPP_DIR, FORMAT_EXTENSIONS)))
-    assert all(rel_str(p) in deps for p in files), "target outside the lintable sources"
+    assert all(
+        rel_str(p) in deps for p in files), "target outside the lintable sources"
     valid = {rel: v for rel, v in cache.items() if deps.get(rel) == v[0]}
     todo = [p for p in files if rel_str(p) not in valid]
     print(f"{len(files) - len(todo)} cached, {len(todo)} to check")

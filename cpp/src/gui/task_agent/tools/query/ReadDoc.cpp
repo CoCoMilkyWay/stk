@@ -75,7 +75,7 @@ ToolOut ReadDoc(const Call &c, const std::atomic<bool> &) {
     R.from = from, R.total = nf;
     for (size_t i = from > 0 ? from - 1 : 0; i < nf; ++i) {
       const docs::Factor &f = L.factors[d.factors[i]];
-      R.factors.push_back({i + 1, factor_head(f), text::flat(f.formula), text::head(text::flat(f.evidence), kEvidence)});
+      R.factors.push_back({i + 1, factor_head(f), text::flat(f.formula), text::head(text::flat(f.evidence), docs::kEvidence)});
     }
     if (from > 0)
       return Done(std::move(res));

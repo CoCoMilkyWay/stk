@@ -1,4 +1,5 @@
 // view_stock_day — 看个股一天: 输入 code / date / factor / exprs / rows → StockDayRes (当日概况 + 逐行序列 + 分段表 + 逐行表) → 原文; 展示见 ui/look/ViewStockDay.cpp
+#include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 namespace GUI::Agent {

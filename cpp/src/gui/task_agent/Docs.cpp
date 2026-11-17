@@ -1,13 +1,11 @@
 // Docs — 见头文件
 #include "gui/task_agent/Docs.hpp"
 #include "disk/Disk.hpp"
-#include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>

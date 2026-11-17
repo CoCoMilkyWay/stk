@@ -1,5 +1,7 @@
 // view_book — 看盘口重放: 输入 code / date / time / step / at / big / n → BookRes (当日与窗口概况 / 逐秒序列 / 逐时表 / 大单事件 / 全簿剖面) → 原文; 展示见 ui/look/ViewBook.cpp
+#include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
+#include "orders/OrdersDay.hpp"
 
 #include <limits>
 

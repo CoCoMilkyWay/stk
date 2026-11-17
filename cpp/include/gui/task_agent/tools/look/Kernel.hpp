@@ -7,7 +7,6 @@
 //   各 view_* 的入口 (Call, ViewEnv, FactorFlow, ViewRunner) → ToolOut, 结果结构见 tools/Look.hpp; 分派表在 Views.cpp
 // =============================================================================
 
-#include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/Views.hpp"
 #include "gui/task_agent/tools/Look.hpp"
@@ -20,7 +19,6 @@
 #include "gui/engine/Engine.hpp"
 #include "misc/profiler.hpp"
 #include "orders/OrderFrame.hpp"
-#include "orders/OrdersDay.hpp"
 
 #include <algorithm>
 #include <array>

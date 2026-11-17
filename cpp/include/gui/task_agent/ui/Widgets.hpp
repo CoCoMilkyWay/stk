@@ -47,6 +47,7 @@ ImVec4 color(TaskStatus::Kind k);
 std::string stamp_text(const std::string &st);
 
 // ---- 表 (随页宽: 前列 FixedFit, 末列吃剩下的宽并换行; 可滚) ----
+inline constexpr ImGuiTableFlags kTableFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY;
 bool begin_table(const char *id, std::initializer_list<const char *> heads, float h = -1.0f);
 
 // ---- 作用域行 ----
