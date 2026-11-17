@@ -18,7 +18,7 @@ namespace {
 
 // 通达信外部联动: 注册消息「Stock」投给主窗, wParam = 市场前缀 × 10⁶ + 代码, 图表即切到该只
 constexpr const char *kLink = "Stock";
-constexpr double kLinkRepost = 1, kLinkTimeout = 6; // 标题没换过来每几秒重投、共等几秒
+constexpr double kLinkTimeout = 6; // 投联动后等标题换过来至多几秒
 const std::vector<std::string> kConfirmTitles = {"买入交易确认", "卖出交易确认", "交易确认"};
 const std::string kResultTitle = "提示";
 constexpr long kEst = 8915; // 闪电窗按额时的「预估金额:…(N股)」
@@ -107,8 +107,7 @@ std::string after(const std::string &text, const std::string &label, bool dots, 
   fail("确认框缺" + label + " " + text);
 }
 
-// 图表切到 sec: 主窗标题已是「…-名称]」即跳过, 否则向主窗投联动消息、等标题换过来.
-// 切到同一只重投无副作用: 界面线程忙时消息可能落空, 标题没换过来即每 kLinkRepost 秒重投
+// 图表切到 sec: 主窗标题已是「…-名称]」即跳过, 否则向主窗投联动消息、等标题换过来 (客户端查着时照样处理联动)
 void go_to(const Hwnd &main, const Sec &x) {
   const std::string want = win::bare("-" + x.name + "]");
   const auto there = [&] { return win::bare(win::title(main)).ends_with(want); };
@@ -116,19 +115,9 @@ void go_to(const Hwnd &main, const Sec &x) {
     return;
   if (x.mkt == Mkt::BJ)
     fail(x.code + " 北交所没有联动前缀");
-  const unsigned msg = win::regmsg(kLink);
   const long wp = (x.mkt == Mkt::SH ? 7 : 6) * 1'000'000L + std::stol(x.code);
-  const auto t0 = Clock::now();
-  int n = 0;
-  until([&] { return strf("主窗切到「%s」, 现为「%s」(联动 %ld 已投 %d 次)", x.name.c_str(), win::title(main).c_str(), wp, n); },
-        [&] {
-          if (Secs(Clock::now() - t0).count() >= n * kLinkRepost) {
-            win::post(main, msg, wp);
-            ++n;
-          }
-          return there();
-        },
-        kLinkTimeout);
+  win::post(main, win::regmsg(kLink), wp);
+  until([&] { return strf("主窗切到「%s」, 现为「%s」(联动 %ld)", x.name.c_str(), win::title(main).c_str(), wp); }, there, kLinkTimeout);
 }
 
 void switch_to(Ctx &c) {

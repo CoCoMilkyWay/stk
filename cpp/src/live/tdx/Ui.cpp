@@ -8,7 +8,9 @@
 #include <cassert>
 #include <cctype>
 #include <map>
-#include <mutex>
+#include <optional>
+#include <set>
+#include <span>
 #include <string_view>
 
 namespace live::tdx::ui {
@@ -19,25 +21,30 @@ using win::Node;
 
 namespace {
 
-const std::string kToolbarClass = "MHPToolBar", kToolbarTitle = "MainViewBar";
 constexpr const char *kMainClass = "TdxW_MainFrame_Class";
 // 交易栏左侧功能树 (查询 / 资产分析 / …), 右侧为所选功能的页; 树项只认真实光标处的点击, clickat 会钉光标
 const std::string kFuncTreeClass = "SysTreeView32";
 constexpr long kFuncTreeId = 59653;
-constexpr double kReclick = 3;                  // 开页: 别的页一直挡着这么久 [s] 即再点一次功能树
-constexpr long kPageAll = 454;                  // 查询页的「查询全部」按钮
+constexpr long kHostId = 59649;                 // 交易栏下各页的宿主 (AfxWnd100), 页签命令也投给它
+constexpr long kKeys[] = {1140, 144};           // 页的查询键 (「查 询」/「刷 新」/「回到第一页」), 查着时禁用
+constexpr long kCounts[] = {1243, 166};         // 页的条数标签
 constexpr long kMsgText = 7013, kMsgYes = 7015; // 确认框 / 提示框: 正文 Static、确认按钮
+constexpr double kTick = 1;                     // 等查完期间报进度的间隔 [s]
 
-// 交易栏页签的页: 认页的记号 = 页上可见的列表 (表头含 col 的 SysHeader32 (列表的子窗口), 或 id 为 list 的 SysListView32;
-//   持仓 / 成交的列表也是这个 id, 子表头含别的页签的 col 即不算)
-struct Mark {
-  const char *tab, *col;
-  long list;
+// 交易栏页签: 认页的列 (只此页的表头有), 投给宿主切到它的命令
+struct Tab {
+  const char *name, *col;
+  long cmd;
 };
-constexpr long kCancelList = 1567; // 撤单页的委托列表
-constexpr Mark kMarks[] = {{"持仓", "可卖数量", 0}, {"成交", "成交编号", 0}, {"撤单", nullptr, kCancelList}};
-constexpr double kTabWait = 2; // 切页签后等页出来 [s]
-constexpr int kClimb = 3;      // 从列表往上找条数标签至多几层
+constexpr Tab kTabs[] = {{"持仓", "可卖数量", 0x271D}, {"成交", "成交编号", 0x271B}, {"撤单", "委托价格", 0x2716}};
+
+const Tab &tab_of(const std::string &name) {
+  for (const Tab &t : kTabs)
+    if (name == t.name)
+      return t;
+  assert(false && "没有这个页签");
+  return kTabs[0];
+}
 
 // 「第1--N条」/「共N条」→ N; 不是这形 → 无
 std::optional<int> count_in(std::string_view v) {
@@ -63,105 +70,108 @@ std::vector<Node> func_trees() {
   return out;
 }
 
-// 可见的查询页 (id 为 count 的条数标签所在的对话框)
-std::vector<Page> pages(long count) {
-  std::vector<Page> out;
-  for (const Node &n : win::find("Static", count))
+// ---------- 页 ----------
+// 认页、取件只用 find / rect (不经界面线程, 客户端查大表卡着时照样答); 读表头的 detail 经界面线程
+
+Hwnd host() {
+  std::vector<Hwnd> hs;
+  for (const Node &n : win::find("AfxWnd100", kHostId))
     if (n.vis)
-      out.push_back({n.parent, {n.hwnd}});
+      hs.push_back(n.hwnd);
+  if (hs.size() != 1)
+    fail(strf("交易栏页宿主 (AfxWnd100 %ld) 可见的有 %zu 个", kHostId, hs.size()));
+  return hs[0];
+}
+
+std::set<Hwnd> pages(const Hwnd &host) {
+  std::set<Hwnd> out;
+  for (const Node &n : win::find("#32770"))
+    if (n.parent == host)
+      out.insert(n.hwnd);
   return out;
 }
 
-// ---------- 页签 ----------
-
-const Mark &mark_of(const std::string &tab) {
-  for (const Mark &m : kMarks)
-    if (tab == m.tab)
-      return m;
-  assert(false && "页签没有认页的记号");
-  return kMarks[0];
-}
-
-bool header_has(const Hwnd &h, const char *col) {
-  for (const Item &it : win::layer_of(shim::cmd("detail", h).at(0)).items)
-    if (it.text && *it.text == col)
-      return true;
-  return false;
-}
-
-// 列表 list 的子表头含某页签的 col (= 那页签的列表)
-bool foreign(const Hwnd &list) {
-  for (const Node &n : win::enum_(list))
-    if (n.depth == 1 && n.cls == "SysHeader32")
-      for (const Mark &m : kMarks)
-        if (m.col && header_has(n.hwnd, m.col))
-          return true;
-  return false;
-}
-
-// h 是 m 的记号控件: 表头须含 col, 列表须不是别的页签的
-bool fits(const Mark &m, const Hwnd &h) { return m.col ? header_has(h, m.col) : !foreign(h); }
-
-// 记号控件 h 此刻可见且是 m 的 (先看可见: 已销毁的窗口不可见, 不去 detail)
-bool shown(const Mark &m, const Hwnd &h) { return win::node(h).vis && fits(m, h); }
-
-// 此刻可见的记号控件 (须恰一个)
-std::optional<Hwnd> mark_now(const Mark &m) {
-  std::vector<Hwnd> hits;
-  for (const Node &n : m.col ? win::find("SysHeader32") : win::find("SysListView32", m.list))
-    if (n.vis && fits(m, n.hwnd))
-      hits.push_back(n.hwnd);
-  return hits.size() == 1 ? std::optional<Hwnd>(hits[0]) : std::nullopt;
-}
-
-// 从记号控件往上逐层看子树里可见的条数标签: 头一层有的, 恰一个即它所在的那层为页; 都没有 (或那层不止一个) → 页 = 记号的父窗口, 无标签.
-// 标签只认此刻写着条数的 (正重查的清空着, 认不出, 下回再找)
-Tab tab_of(const Hwnd &mark) {
-  const Hwnd first = win::node(mark).parent;
-  Hwnd a = first;
-  for (int i = 0; i < kClimb && a != win::kNoWnd; ++i) {
-    std::vector<Hwnd> lbls;
-    for (const Node &n : win::tree(a))
-      if (n.vis && n.cls == "Static" && count_in(n.title))
-        lbls.push_back(n.hwnd);
-    if (lbls.size() == 1)
-      return {a, Count{lbls[0]}};
-    if (lbls.size() > 1)
-      break;
-    a = win::node(a).parent;
-  }
-  return {first, std::nullopt};
-}
-
-std::string label_of(const Tab &t) { return t.count ? t.count->h : ""; }
-
-// 认出的页签: 记号控件 + 页; 无 = 认不出 (此后只点不等). 按主窗记: 客户端重开即重认
-struct Known {
-  Hwnd mark;
-  Tab tab;
-};
-struct Tabs {
-  std::mutex mu;
-  Hwnd main;
-  std::map<std::string, std::optional<Known>> at;
-};
-Tabs &tabs() {
-  static Tabs t;
-  return t;
-}
-
-// ---------- 查询页 ----------
-
-// 查询页列表的表头各列名; detail 在界面线程里只等 3s, 先 gettext (一直等) 把卡顿等过去
-std::vector<std::string> cols(const Hwnd &dlg, double timeout) {
-  win::text(dlg, timeout);
-  std::vector<std::string> out;
-  for (const Node &n : win::tree(dlg, timeout))
-    if (n.vis && n.cls == "SysHeader32")
-      for (const Item &it : win::layer_of(shim::cmd_wait(timeout, "detail", n.hwnd).at(0)).items)
-        if (it.text)
-          out.push_back(*it.text);
+std::vector<Hwnd> shown(const Hwnd &host) {
+  std::vector<Hwnd> out;
+  for (const Node &n : win::find("#32770"))
+    if (n.parent == host && n.vis)
+      out.push_back(n.hwnd);
   return out;
+}
+
+// 页 dlg 的直接子窗口里类名 cls、id 在 ids 内的那一个 (至多一个)
+std::optional<Hwnd> kid(const Hwnd &dlg, const char *cls, std::span<const long> ids) {
+  std::vector<Hwnd> hs;
+  for (const long id : ids)
+    for (const Node &n : win::find(cls, id))
+      if (n.parent == dlg)
+        hs.push_back(n.hwnd);
+  if (hs.size() > 1)
+    fail(strf("页 %s 上的 %s (id %ld / %ld) 有 %zu 个", dlg.c_str(), cls, ids[0], ids[1], hs.size()));
+  return hs.empty() ? std::nullopt : std::optional<Hwnd>(hs[0]);
+}
+
+Page page_of(const Hwnd &dlg) {
+  const std::optional<Hwnd> k = kid(dlg, "Button", kKeys), c = kid(dlg, "Static", kCounts);
+  if (!k || !c)
+    fail(strf("页 %s 上没有查询键或条数标签", dlg.c_str()));
+  return {dlg, *k, Count{*c}};
+}
+
+// 各页 → 其列表的表头
+std::map<Hwnd, std::vector<Hwnd>> heads(const Hwnd &host) {
+  const std::set<Hwnd> ps = pages(host);
+  std::map<Hwnd, Hwnd> page_of_list;
+  for (const Node &n : win::find("SysListView32"))
+    if (ps.contains(n.parent))
+      page_of_list[n.hwnd] = n.parent;
+  std::map<Hwnd, std::vector<Hwnd>> out;
+  for (const Node &n : win::find("SysHeader32"))
+    if (const auto it = page_of_list.find(n.parent); it != page_of_list.end())
+      out[it->second].push_back(n.hwnd);
+  return out;
+}
+
+bool has_col(const std::vector<Hwnd> &hs, const std::string &col) {
+  for (const Hwnd &h : hs)
+    for (const Item &it : win::layer_of(shim::cmd("detail", h).at(0)).items)
+      if (it.text && *it.text == col)
+        return true;
+  return false;
+}
+
+// 等客户端空闲: 恰一页显示着、其查询键可用 (没有查询键的页如下单表单不查, 即空闲).
+// 顺带给界面线程装上禁用计数 (此后新建的页也记得)
+void idle(const Hwnd &host, double timeout) {
+  std::vector<Hwnd> s;
+  until([&] { return strf("客户端空闲 (显示着 %zu 页%s)", s.size(), s.size() == 1 ? ", 查询键禁用着" : ""); },
+        [&] {
+          s = shown(host);
+          if (s.size() != 1)
+            return false;
+          win::disables(host);
+          const std::optional<Hwnd> k = kid(s[0], "Button", kKeys);
+          return !k || win::node(*k).en;
+        },
+        timeout, 0.01);
+}
+
+// 等页 p 这一问查完: 查询键的禁用次数过了 n0 (查起过) 且此刻可用
+void settle(const Page &p, long n0, double timeout, const std::function<void()> &tick, Clock::time_point t0) {
+  const Clock::duration gap = std::chrono::duration_cast<Clock::duration>(Secs(kTick));
+  Clock::time_point next = Clock::now() + gap;
+  long n = n0;
+  until([&] { return strf("页 %s 查完 (查询键禁用 %ld 次)", p.dlg.c_str(), n - n0); },
+        [&] {
+          if (tick && Clock::now() >= next) {
+            tick();
+            next += gap;
+          }
+          n = win::disables(p.key);
+          return n > n0 && win::node(p.key).en;
+        },
+        timeout, 0.01);
+  trace::ev("done", {{"page", p.dlg}, {"ms", trace::ms_since(t0)}});
 }
 
 } // namespace
@@ -174,8 +184,6 @@ Hwnd main_wnd() {
 }
 
 // ---------- 交易栏 ----------
-
-void click_tool(const std::string &txt) { win::click_text(kToolbarClass, kToolbarTitle, txt); }
 
 void show_bar() {
   if (!func_trees().empty())
@@ -211,89 +219,74 @@ void click_func(const std::string &name) {
   }
 }
 
-// ---------- 条数标签 ----------
+// ---------- 页 ----------
 
-void Count::clear() const { win::settext(h, ""); }
-
-std::optional<int> Count::read(double timeout) const {
-  const std::string t = win::text(h, timeout);
-  if (t.empty())
-    return std::nullopt;
+int Count::read() const {
+  const std::string t = win::text(h);
   const std::optional<int> n = count_in(t);
   if (!n)
     fail("条数标签读到「" + t + "」");
-  return n;
+  return *n;
 }
 
-// ---------- 页签 ----------
-
-std::optional<Tab> open_tab(const std::string &tab) {
-  trace::Span span("页签「" + tab + "」");
-  const Mark &m = mark_of(tab);
-  Tabs &c = tabs();
-  std::lock_guard lk(c.mu);
-  if (const Hwnd w = main_wnd(); w != c.main) {
-    c.main = w;
-    c.at.clear();
-  }
-  const auto it = c.at.find(tab);
-  if (it == c.at.end()) {
-    click_tool(tab);
-    const std::optional<Hwnd> h = poll([&] { return mark_now(m); }, kTabWait);
-    if (!h) {
-      c.at[tab] = std::nullopt;
-      trace::ev("tab", {{"known", false}});
-      return std::nullopt;
-    }
-    const Known k{*h, tab_of(*h)};
-    c.at[tab] = k;
-    trace::ev("tab", {{"known", true}, {"mark", k.mark}, {"page", k.tab.page}, {"count", label_of(k.tab)}});
-    return k.tab;
-  }
-  if (!it->second) {
-    click_tool(tab);
-    return std::nullopt;
-  }
-  Known &k = *it->second;
-  if (!shown(m, k.mark)) {
-    click_tool(tab);
-    if (!poll([&] { return shown(m, k.mark); }, kTabWait)) {
-      trace::ev("tab", {{"shown", false}});
-      c.at.erase(it); // 页可能重建了: 下回重认
-      return std::nullopt;
-    }
-  }
-  if (!k.tab.count || !win::node(k.tab.count->h).vis) {
-    k.tab = tab_of(k.mark);
-    trace::ev("tab", {{"page", k.tab.page}, {"count", label_of(k.tab)}});
-  }
-  return k.tab;
-}
-
-// ---------- 查询页 ----------
-
-Page open_page(const std::string &func, const std::string &col, long count, double timeout) {
-  trace::Span span("开页「" + func + "」", {{"col", col}});
-  click_func(func);
-  Clock::time_point at = Clock::now();
-  return *until(
-      said("「" + func + "」页 (表头含「" + col + "」)"),
-      [&]() -> std::optional<Page> {
-        for (const Page &p : pages(count)) {
-          const std::vector<std::string> c = cols(p.dlg, timeout);
-          if (std::find(c.begin(), c.end(), col) != c.end())
-            return p;
+// 认目标页: act 前表头含 col 的页 (须至多一个) 记下其查询键的禁用次数; act 后显示出来的页是它即是,
+// 是 act 前没有的页 (头一回开) 即等其表头 (界面线程卡着时 gettext 一直等) 再看, 禁用次数从 0 起
+Page query(const std::string &col, const std::function<void()> &act, double timeout, const std::function<void()> &tick) {
+  const Hwnd h = host();
+  idle(h, timeout);
+  const std::set<Hwnd> before = pages(h);
+  std::map<Hwnd, long> cand;
+  for (const auto &[dlg, hs] : heads(h))
+    if (has_col(hs, col))
+      cand[dlg] = win::disables(page_of(dlg).key);
+  if (cand.size() > 1)
+    fail(strf("表头含「%s」的页有 %zu 个", col.c_str(), cand.size()));
+  const Clock::time_point t0 = Clock::now();
+  act();
+  long n0 = 0;
+  const Hwnd dlg = *until(
+      said("表头含「" + col + "」的页显示出来"),
+      [&]() -> std::optional<Hwnd> {
+        const std::vector<Hwnd> s = shown(h);
+        if (s.size() != 1)
+          return std::nullopt;
+        if (const auto it = cand.find(s[0]); it != cand.end()) {
+          n0 = it->second;
+          return s[0];
         }
-        if (Clock::now() - at >= Secs(kReclick)) { // 排在前头还没处理完的点击 (如上一轮刚点的「持仓」) 会把页切回去
-          click_func(func);
-          at = Clock::now();
-        }
-        return std::nullopt;
+        if (before.contains(s[0]))
+          return std::nullopt;
+        win::text(s[0], timeout);
+        return has_col(heads(h)[s[0]], col) ? std::optional<Hwnd>(s[0]) : std::nullopt;
       },
       timeout);
+  const Page p = page_of(dlg);
+  settle(p, n0, timeout, tick, t0);
+  return p;
 }
 
-void query_all(const Page &p) { win::command(p.dlg, kPageAll); }
+Page open_tab(const std::string &tab) {
+  trace::Span span("页签「" + tab + "」");
+  const Tab &t = tab_of(tab);
+  return query(t.col, [&] { win::post(host(), win::kWmCommand, t.cmd); });
+}
+
+Page open_page(const std::string &func, const std::string &col, double timeout) {
+  trace::Span span("开页「" + func + "」", {{"col", col}});
+  return query(col, [&] { click_func(func); }, timeout);
+}
+
+void press(const Page &p, long key, double timeout, const std::function<void()> &tick) {
+  trace::Span span(strf("按键 %ld", key));
+  const Hwnd h = host();
+  idle(h, timeout);
+  if (shown(h) != std::vector<Hwnd>{p.dlg})
+    fail(strf("页 %s 不在显示", p.dlg.c_str()));
+  const long n0 = win::disables(p.key);
+  const Clock::time_point t0 = Clock::now();
+  win::command(p.dlg, key);
+  settle(p, n0, timeout, tick, t0);
+}
 
 // ---------- 弹框 ----------
 

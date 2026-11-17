@@ -38,6 +38,13 @@ std::vector<tushare::Query> queries(const Spec &, const Tu &src, const Task &t) 
   return out;
 }
 
+// 一任务的各查询 → 各表 (按序): Bq 恒 1 条; Tu 逐日的一批并发
+std::vector<std::shared_ptr<arrow::Table>> pull(bigquant::Client &client, const std::vector<bigquant::Query> &qs) {
+  assert(qs.size() == 1 && "fetch: Bq 一任务恒 1 条查询");
+  return {client.query(qs[0])};
+}
+std::vector<std::shared_ptr<arrow::Table>> pull(tushare::Client &client, const std::vector<tushare::Query> &qs) { return client.batch(qs); }
+
 // 剥 Spec::drop
 std::shared_ptr<arrow::Table> strip(const Spec &s, std::shared_ptr<arrow::Table> tbl) {
   for (const std::string &c : s.drop) {
@@ -63,9 +70,7 @@ std::shared_ptr<arrow::Table> fetch(typename Src::Client &client, const Task &t)
   for ([[maybe_unused]] const std::string &k : t.keys)
     assert(grain_of(k) != Grain::Month && key_day(k) >= t.w.lo && key_day(k) <= t.w.hi &&
            "fetch: keys 须为 Day / Asset 级且在窗口内");
-  std::vector<std::shared_ptr<arrow::Table>> parts;
-  for (const auto &q : queries(s, std::get<Src>(s.src), t))
-    parts.push_back(client.query(q));
+  const std::vector<std::shared_ptr<arrow::Table>> parts = pull(client, queries(s, std::get<Src>(s.src), t));
   assert(!parts.empty());
   auto joined = arrow::ConcatenateTables(parts);
   assert(joined.ok() && "fetch: 响应 schema 跨查询不一致");

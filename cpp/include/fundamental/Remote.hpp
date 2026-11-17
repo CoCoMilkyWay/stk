@@ -17,7 +17,7 @@ namespace fundamental {
 //   queries(s, src, t)    : Task → Query 列表 (纯函数, .cpp 内)
 //                           Bq 恒 1 条 (= select(s, "*", t.w); Splice 另接 key_filter(s, t.keys),
 //                              与 audit 定位同一谓词), 行序 = 落盘行序 (见下); Tu 区间接口 1 条 / 逐日接口窗口内逐日 × day_params
-//   fetch<Src>(client, t) : 逐条 query → 按序拼接 → 剥 Spec::drop
+//   fetch<Src>(client, t) : 各条 query (Tu 一批并发, tushare::Client::batch) → 按序拼接 → 剥 Spec::drop
 //   sync::run 因而只有一句 put(t, fetch<Src>(client, t)).
 //
 // 落盘行序 (Bq): Month / Meta 按 vd (按日成块); Daily 按 (资产键, vd) (日文件内逐资产成段); vd 空不定

@@ -59,6 +59,8 @@ Node node(const Hwnd &h); // 一个窗口的节点记录 (窗口已销毁: 类�
 using Tops = std::map<Hwnd, Node>;
 Tops tops();   // 可见顶层窗口
 double idle(); // 距客户端最近一次真实键鼠输入 [s] (shim 投递的不算)
+// h 被禁用 (EnableWindow FALSE) 的累计次数: 禁用一闪即过也记得住. 头一回问到某线程的窗口起, 该线程上的才记
+long disables(const Hwnd &h);
 
 // ---------- 消息 ----------
 

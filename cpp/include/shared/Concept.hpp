@@ -30,8 +30,8 @@ bool concept_theme(std::string_view name);
 // 最近一份快照日 (0 = 无)
 misc::Ymd concept_last();
 // 写侧 fetch → save (与 fundamental::sync::run = put(fetch) 对仗)
-//   fetch: 不晚于 day 的最近一个有数据的交易日, 东财概念板块名单 (dc_index) → 题材逐板块拉成分 (dc_member) → 够数的收, 按板块代码升序;
-//          say = 逐板块进度
+//   fetch: 不晚于 day 的最近一个有数据的交易日, 东财概念板块名单 (dc_index) → 只拉题材的成分 (dc_member 一板块一条, 一批并发) → 够数的收, 按板块代码升序;
+//          say = 拉成分的进度 (已完成数)
 //   save : 当日快照落盘并删去其余日的 (list 按板块代码升序, 各自成分 ≥ kConceptMin)
 std::vector<Concept> fetch_concepts(tushare::Client &tu, misc::Ymd day, const std::function<void(const std::string &)> &say);
 void save_concepts(misc::Ymd date, const std::vector<Concept> &list);

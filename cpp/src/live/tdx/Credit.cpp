@@ -5,92 +5,35 @@
 #include "live/tdx/Ui.hpp"
 #include "live/tdx/Until.hpp"
 
-#include <condition_variable>
 #include <map>
-#include <mutex>
-#include <optional>
 #include <set>
-#include <stop_token>
-#include <thread>
 
 namespace live::tdx::credit {
 
 namespace {
 
-constexpr int kFullWait = 300; // 查询全部最长等多久 [s]
-constexpr int kLiveGap = 1;    // 拼表期间读内存、报实时进度的间隔 [s]
+constexpr double kFullWait = 300; // 开页 / 查询全部最长等多久 [s] (担保品近万只, 客户端卡一两分钟)
+constexpr long kAll = 454;        // 页上「查询全部」
 const std::string kNormal = "正常";
 
-double secs(Clock::time_point a, Clock::time_point b) { return Secs(b - a).count(); }
-
-// 开 func 页、点查询全部, 等内存整表行数到页上条数. 进度: 开页、点查询全部、(页上条数, 内存行数) 每变一次记 log;
-// 拼表期间每 kLiveGap 秒报 live (已等秒数 / 内存行数 / 页上条数 / 条数标签多久没读到).
-// 条数标签经客户端界面线程读, 客户端卡着时读不动, 故另起线程读; 内存直接读, 不受卡顿影响
+// 开 func 页 (认页的列 col)、点查询全部, 等查完 (分页收齐、另拼出整块) 读整表, 行数须恰为页上条数.
+// 进度: 开页、点查询全部、查完的条数记 log; 查着时每秒报 live 已等秒数 (界面线程忙, 不读界面)
 template <class S>
 mem::IndexOf<S> full(const mem::HeapP &heap, const Log &log, const Live &live, const std::string &func, const std::string &col) {
   trace::Span span(func);
   log("page", {{"func", func}});
   live("开「" + func + "」页, 等客户端重查…");
-  const ui::Page pg = ui::open_page(func, col);
-  ui::query_all(pg);
+  const ui::Page pg = ui::open_page(func, col, kFullWait);
   log("all", {{"func", func}});
   const Clock::time_point t0 = Clock::now();
-
-  std::mutex mu;
-  std::condition_variable_any cv;
-  std::optional<int> n;
-  Clock::time_point at = t0;
-  std::optional<std::string> err;
-  std::jthread label([&](std::stop_token stop) {
-    trace::Span labelling(func + "条数标签");
-    try {
-      std::unique_lock lk(mu);
-      while (!stop.stop_requested()) {
-        lk.unlock();
-        const std::optional<int> got = pg.count.read(kFullWait);
-        lk.lock();
-        n = got;
-        at = Clock::now();
-        cv.wait_for(lk, stop, Secs(kLiveGap), [] { return false; });
-      }
-    } catch (const Fail &f) {
-      std::lock_guard lk(mu);
-      err = f.why;
-    }
-  });
-
-  mem::Table<S> table;
-  std::optional<int> pn;
-  size_t got = 0;
-  std::optional<std::pair<std::optional<int>, size_t>> seen;
-  const auto page = [&] { return pn ? std::to_string(*pn) : std::string("—"); };
-  return std::move(*until(
-      [&] { return strf("「%s」拼齐 (页上 %s 条, 内存 %zu 行)", func.c_str(), page().c_str(), got); },
-      [&]() -> std::optional<mem::IndexOf<S>> {
-        Clock::time_point pat;
-        {
-          std::lock_guard lk(mu);
-          if (err)
-            fail(*err);
-          pn = n;
-          pat = at;
-        }
-        mem::IndexOf<S> rows = table.read(heap).index;
-        got = rows.list.size();
-        const Clock::time_point now = Clock::now();
-        const int waited = static_cast<int>(secs(t0, now) + 0.5), hung = static_cast<int>(secs(pat, now) + 0.5);
-        live(strf("「%s」已等 %ds · 内存 %zu 行 / 页上 %s 条%s", func.c_str(), waited, got, page().c_str(),
-                  hung >= 3 ? strf(" · 客户端卡着 %ds (界面线程忙, 内存照读)", hung).c_str() : ""));
-        if (!seen || *seen != std::pair{pn, got}) {
-          seen = std::pair{pn, got};
-          log("rows", {{"func", func}, {"n", pn ? nlohmann::json(*pn) : nlohmann::json()}, {"got", got}});
-          trace::ev("rows", {{"n", pn ? trace::Kw(*pn) : trace::Kw()}, {"got", got}});
-        }
-        if (pn && got == static_cast<size_t>(*pn))
-          return rows;
-        return std::nullopt;
-      },
-      kFullWait, kLiveGap));
+  ui::press(pg, kAll, kFullWait, [&] { live(strf("「%s」查询全部, 已等 %.0fs (客户端界面线程忙)", func.c_str(), Secs(Clock::now() - t0).count())); });
+  const int n = pg.count.read();
+  mem::IndexOf<S> rows = mem::Table<S>().read(heap).index;
+  log("rows", {{"func", func}, {"n", n}, {"got", rows.list.size()}});
+  trace::ev("rows", {{"n", n}, {"got", rows.list.size()}});
+  if (rows.list.size() != static_cast<size_t>(n))
+    fail(strf("「%s」查完 (页上 %d 条) 内存整表 %zu 行", func.c_str(), n, rows.list.size()));
+  return rows;
 }
 
 Term term_of(const tables::Margin *m, const tables::Collat *c, Mkt mkt) {
@@ -142,14 +85,14 @@ double value(const std::map<std::string, std::string> &c, const char *name) {
 Terms pull(const mem::HeapP &heap, const Log &log, const Live &live) {
   ui::show_bar();
   const auto mg = full<tables::Margins>(heap, log, live, "标的证券查询", "融资保证金比例");
-  const auto co = full<tables::Collats>(heap, log, live, "担保品查询", "担保折算率");
-  ui::click_tool("持仓");
+  const auto co = full<tables::Collats>(heap, log, live, "担保品查询", "担保状态");
+  ui::open_tab("持仓");
   return merge(mg, co);
 }
 
 Account account(mem::Chain &q, std::shared_ptr<const Keyed<Position>> held) {
-  const auto c = q.ask<tables::Assets>([] { ui::click_func("信用资产"); }).index;
-  const auto d = q.ask<tables::Debts>([] { ui::click_func("融资负债汇总"); }).index;
+  const auto c = q.ask<tables::Assets>([] { return ui::open_page("信用资产", "信用资金额度").count.read(); }).index;
+  const auto d = q.ask<tables::Debts>([] { return ui::open_page("融资负债汇总", "当前负债金额").count.read(); }).index;
   Account a;
   a.assets = value(c, "担保资产");
   a.line = value(c, "最高融资额度") - value(c, "融资负债（含费用）");

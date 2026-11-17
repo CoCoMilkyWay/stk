@@ -1,4 +1,5 @@
 #include "api/tushare/client.hpp"
+#include "misc/exec.hpp"
 #include "yyjson/yyjson.h"
 
 #include <arrow/array/builder_binary.h>
@@ -10,6 +11,7 @@
 #include <boost/beast/version.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -215,6 +217,18 @@ std::shared_ptr<arrow::Table> Client::query(const Query &q) {
   auto t = to_table(doc, q.num);
   yyjson_doc_free(doc);
   return t;
+}
+
+std::vector<std::shared_ptr<arrow::Table>> Client::batch(const std::vector<Query> &qs, const std::function<void(std::size_t)> &tick) {
+  std::vector<std::shared_ptr<arrow::Table>> out(qs.size());
+  std::atomic<std::size_t> done{0};
+  misc::exec::ForkJoin ex(std::min(kWidth, misc::exec::fit(qs.size())));
+  ex.tasks(static_cast<int>(qs.size()), [&](int i, int) {
+    out[static_cast<std::size_t>(i)] = query(qs[static_cast<std::size_t>(i)]);
+    if (tick)
+      tick(done.fetch_add(1, std::memory_order_relaxed) + 1);
+  });
+  return out;
 }
 
 } // namespace tushare

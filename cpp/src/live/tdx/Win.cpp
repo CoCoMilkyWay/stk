@@ -115,6 +115,8 @@ Tops tops() {
 
 double idle() { return shim::cmd("idle").at(0).at("ms").get<double>() / 1000; }
 
+long disables(const Hwnd &h) { return shim::cmd("disables", h).at(0).at("n").get<long>(); }
+
 // ---------- 消息 ----------
 
 void post(const Hwnd &h, unsigned msg, long wp, const std::string &lp) {

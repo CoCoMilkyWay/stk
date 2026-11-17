@@ -98,20 +98,24 @@ std::vector<Concept> fetch_concepts(tushare::Client &tu, misc::Ymd day, const st
   const std::vector<std::string> codes = strings(*boards, "ts_code"), names = strings(*boards, "name");
   for ([[maybe_unused]] const std::string &x : strings(*boards, "idx_type"))
     assert(x == kDcConcept && "concept: dc_index 混入非概念板块");
+  std::vector<std::size_t> themes; // 题材板块的下标
+  std::vector<tushare::Query> qs;
+  for (std::size_t k = 0; k < codes.size(); ++k)
+    if (concept_theme(names[k])) {
+      assert(codes[k].ends_with(kDcSuffix) && "concept: ts_code 不是 BKxxxx.DC");
+      themes.push_back(k);
+      qs.push_back({"dc_member", {{"trade_date", at}, {"ts_code", codes[k]}}, {}});
+    }
+  const auto members = tu.batch(qs, [&](std::size_t n) { say("板块成分 " + std::to_string(n) + "/" + std::to_string(qs.size())); });
   std::vector<Concept> list;
-  for (std::size_t k = 0; k < codes.size(); ++k) {
-    if (!concept_theme(names[k]))
-      continue;
-    say("板块成分 " + std::to_string(k + 1) + "/" + std::to_string(codes.size()) + " " + names[k]);
-    const auto members = tu.query({"dc_member", {{"trade_date", at}, {"ts_code", codes[k]}}, {}});
-    assert(members->num_rows() < kDcRows && "concept: dc_member 被截断");
-    std::vector<std::string> syms = strings(*members, "con_code");
+  for (std::size_t i = 0; i < themes.size(); ++i) {
+    const std::size_t k = themes[i];
+    assert(members[i]->num_rows() < kDcRows && "concept: dc_member 被截断");
+    std::vector<std::string> syms = strings(*members[i], "con_code");
     std::sort(syms.begin(), syms.end());
     assert(std::adjacent_find(syms.begin(), syms.end()) == syms.end() && "concept: 板块成分重复");
-    if (syms.size() < kConceptMin)
-      continue;
-    assert(codes[k].ends_with(kDcSuffix) && "concept: ts_code 不是 BKxxxx.DC");
-    list.push_back({codes[k].substr(0, codes[k].size() - kDcSuffix.size()), names[k], std::move(syms)});
+    if (syms.size() >= kConceptMin)
+      list.push_back({codes[k].substr(0, codes[k].size() - kDcSuffix.size()), names[k], std::move(syms)});
   }
   std::sort(list.begin(), list.end(), [](const Concept &x, const Concept &y) { return x.code < y.code; });
   return list;

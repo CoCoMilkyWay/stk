@@ -7,24 +7,23 @@
 //   适配里的 fail / need 经此 (遮住 live::fail): 先在当时的段路径下记一行 fail {why}, 再抛 live::Fail
 //   段: 刷新 {why 起因, n 轮号} › 成交 / 持仓 / 挂单 / 信用账户 (只刷成交的一轮只有成交);  刷新推后 {why} (有人在操作客户端);
 //     盯持仓 › 接入;  下单 {委托} › 切换 / 开窗 / 填单 / 确认 / 回报;
-//     两融条款 › <功能名> (另一线程 <功能名>条数标签);  资金流水 {from} › 窗 {lo, hi};  <独占者> (调仓整批等);
-//     界面件: 点「文字」/ 功能树「项」/ 页签「页签」/ 开页「功能」{col} / 弹框 {titles}
+//     两融条款 › <功能名>;  资金流水 {from} › 窗 {lo, hi};  <独占者> (调仓整批等);
+//     界面件: 点「文字」/ 功能树「项」/ 页签「页签」/ 开页「功能」{col} / 按键 <id> / 弹框 {titles}
 //   种类:
 //     shim {cmd, ms, ret 应答记录 | n 条数 + kb (应答大于 kRetCap 字节)}   run {argv, rc, ms, err / out 尾部}   外部进程
 //     build {dll, cc} / inject {dll, port, proc} / online {port}           shim 编译、注入、注入后上线
 //     attach {pid} / ptrace {scope}      接进程堆、放开 ptrace             torn {tab, n}  连读 n 次才一致
 //     gen {tab, rows, addr}              盯着的表换代 (addr = 选中各块的地址)
-//     wait {tab, ms, by: gen | count | full, n, rows}  等客户端重查后的换代 (count = 条数标签写回且行数相符; n / rows 有标签才记)
-//     ask {tab, rows, addr, ms, by: new | empty}       act 后等到新应答 (empty = 条数标签写回 0 条, 空表认不出新块)
-//     reask {tab, try, hits}             没等到新应答, 再 act (hits = 此刻该表命中各块的地址)
-//     tab {known, mark, page, count, shown, looks}     页签认页 / 认不出 / 没等到页 / 重找条数标签
+//     done {page, ms}                    一问查完 (页的查询键动作后禁用过且已恢复), ms 自动作起
+//     answer {tab, n, rows, addr}        盯着的表查完后全量读 (n = 页上条数)
+//     ask {tab, n, rows, addr}           act 驱动的表查完后新冒出的块 (n = 页上条数; 0 = 空表, 可无新块)
 //     yield {ms}                         刷新一轮把界面锁让给在等的那路, 让了 ms     user {quiet}  有人在操作客户端, 定时刷新推后
-//     rows {n, got}                      两融整表拼表 (页上条数 / 内存行数) 每变一次
+//     rows {n, got}                      两融整表查完 (页上条数 / 内存行数)
 //     texts {wins, seen}                 点文字不恰一处: 候选窗口数、各候选窗口上画着的文字
 //     popup {title, hwnd}                等到的弹框                        form {px, dflt, unit, cap0, cap, n}  填单的价、默认价、单位、最大量、股数
 //     gate {by, ms}                      界面锁被 by 占着, 等了 ms         unsynced {try}  持仓与成交对不上
 //     put {what, …}                      发布信用账户                      placed {qty, px, msg}  委托回报    terms {n}  两融条款只数
-//     count {n}                          资金流水一窗的条数标签            flows {n}  资金流水总条数
+//     flows {n}                          资金流水总条数
 //     back {down} / down {why}           盯持仓: 接回客户端 / 掉线期间原因变了 (原因不变的重试不记)
 #pragma once
 

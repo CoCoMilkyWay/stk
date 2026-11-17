@@ -2,6 +2,8 @@
 
 #include <arrow/table.h>
 
+#include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -30,6 +32,7 @@ inline constexpr const char *kPort = "80"; // 走 80, 省掉 SSL 依赖
 inline constexpr int kTimeoutSeconds = 60; // 单次连接 + 读写整体时长; range 接口序列化耗时可达 20s
 inline constexpr int kRetryMax = 4;        // 额外重试次数 (共 5 次尝试), 线性间隔
 inline constexpr int kRetryIntervalSeconds = 30;
+inline constexpr int kWidth = 8; // batch 并发路数 (单条 ~0.1s 为往返延迟; 频率超限由重试吸收)
 
 class Client {
 public:
@@ -45,6 +48,8 @@ public:
   //   num 声明的列必须出现在响应 fields 里 (拼错 / API 改名立刻暴露).
   // 网络瞬抖 / 频率超限 (40203) 共用重试预算; 其它 code != 0 / 解析失败 → assert.
   std::shared_ptr<arrow::Table> query(const Query &q);
+  // 一批 query 至多 kWidth 路并发, 结果按 qs 原序; tick(已完成条数) 每完成一条调一次 (在各工作线程上)
+  std::vector<std::shared_ptr<arrow::Table>> batch(const std::vector<Query> &qs, const std::function<void(std::size_t)> &tick = {});
 
 private:
   std::string token_;

@@ -10,6 +10,7 @@
 #include "live/tdx/Tables.hpp"
 #include "live/tdx/Trace.hpp"
 #include "live/tdx/Ui.hpp"
+#include "live/tdx/Until.hpp"
 #include "live/tdx/Win.hpp"
 
 #include <algorithm>
@@ -125,15 +126,6 @@ struct Watched {
   Got<T> State::*got;
   T (*view)(const Snap &);
 };
-
-// 页上的条数标签 (有才有): 清空 / 作应答到了的判据 (t 在 act 里才定, 故引用)
-void clear(const std::optional<ui::Tab> &t) {
-  if (t && t->count)
-    t->count->clear();
-}
-mem::Count count_of(const std::optional<ui::Tab> &t) {
-  return [&t]() -> std::optional<int> { return t && t->count ? t->count->read(1) : std::nullopt; };
-}
 
 // 两个后台线程与 Broker 接口共用; 线程各持一份 shared_ptr, Tdx 析构只置停 (在途的界面操作做完即退)
 struct Core {
@@ -360,21 +352,14 @@ struct Core {
     return true;
   }
 
-  // 被动换代的一样重查: 切到其页签、清条数标签、点刷新, 等快照换代 (条数标签作不作数由读法定)
+  // 被动换代的一样重查: 切到其页签 (切即一问, 已在也算), 查完全量读
   template <class W>
-  void refresh(W &w) {
+  void refresh(W &w, const mem::HeapP &h) {
     note(State::name(w.got));
     trace::Span span(State::name(w.got));
-    const typename W::Snap old = [&] {
-      std::lock_guard wk(work);
-      return *w.snap;
-    }();
-    const std::optional<ui::Tab> tab = ui::open_tab(w.tab);
-    clear(tab);
-    ui::click_tool("刷新");
-    typename W::Snap n = w.t.wait(old, count_of(tab));
+    const int n = ui::open_tab(w.tab).count.read();
     std::lock_guard wk(work);
-    fresh(w, std::move(n), true);
+    fresh(w, w.t.answered(h, n), true);
   }
   // act 驱动的一样重查: fn() 让客户端重查并读回 → 发布值
   template <class T, class F>
@@ -413,33 +398,23 @@ struct Core {
   }
 
   // 一轮: 成交、持仓两次查询之间又有成交即对不上, 连查至多 kSyncTries 遍, 仍不对留给上层标出;
-  // 挂单、信用资产、融资负债三问接成一串 (每问应答的那遍扫即下一问的问前); 查完回持仓页
-  // (撤单页上另画着一个撤单动作键, 故切去时须在持仓页, 页签唯一).
+  // 挂单、信用资产、融资负债三问接成一串 (每问查完后的那遍扫即下一问的问前); 查完回持仓页 (切回也是一问, 一样等查完).
   // 各样之间有别路 (下单等) 在等界面即先让它 (三问一串之内不让: 让出期间客户端可能自己重查, 新块就不是这问的应答了)
   void round() {
     Gate::Hold g = hold();
     const mem::HeapP h = enter();
     for (int i = 0; i < kSyncTries; ++i) {
       g.yield();
-      refresh(fills);
+      refresh(fills, h);
       g.yield();
-      refresh(pos);
+      refresh(pos, h);
       if (synced())
         break;
       trace::ev("unsynced", {{"try", i + 1}});
     }
     g.yield();
     mem::Chain q(h, {&tables::Pendings::kShape, &tables::Assets::kShape, &tables::Debts::kShape});
-    ask(&State::orders, [&] {
-      // 「撤单」页: 切页与刷新同在一问内 (切页自带一次查询, 其应答可能早于刷新); 等页出来再点刷新, 免得刷到原先那页
-      std::optional<ui::Tab> tab;
-      const auto act = [&] {
-        tab = ui::open_tab("撤单");
-        clear(tab);
-        ui::click_tool("刷新");
-      };
-      return q.ask<tables::Pendings>(act, count_of(tab)).rows;
-    });
+    ask(&State::orders, [&] { return q.ask<tables::Pendings>([] { return ui::open_tab("撤单").count.read(); }).rows; });
     ask(&State::acct, [&, p = held()] {
       Account a = credit::account(q, p);
       trace::ev("put", {{"what", State::name(&State::acct)},
@@ -452,15 +427,14 @@ struct Core {
                         {"debts", a.debts.size()}});
       return a;
     });
-    ui::click_tool("持仓");
+    ui::open_tab("持仓");
   }
 
   // 只刷成交 (等卖单成交时轮询); 查完回持仓页
   void round_fills() {
     const Gate::Hold g = hold();
-    enter();
-    refresh(fills);
-    ui::click_tool("持仓");
+    refresh(fills, enter());
+    ui::open_tab("持仓");
   }
 
   void tick() {

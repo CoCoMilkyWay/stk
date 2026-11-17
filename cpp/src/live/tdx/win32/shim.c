@@ -17,6 +17,8 @@
 //   send <target> <msg> <wp> <lp> {ret}  SendMessageW
 //   regmsg <name>                 {msg}  RegisterWindowMessageW
 //   click <target>                {ret}  BM_CLICK
+//   disables <target>             {n}  target 被禁用（WM_ENABLE FALSE）的累计次数；
+//                                 首次问到某线程的窗口即给该线程常挂钩子，此后才记
 //   clickat <target> <x> <y>      {client:[x,y]}  屏幕坐标投递左键按下+抬起
 //                                 （clickat / mouse 投递前把进程内光标钉在该处，
 //                                 真实光标不动）
@@ -794,6 +796,42 @@ static const char *in_thread(struct out *o, HWND h, thread_fn fn) {
       SendMessageTimeoutW(h, g_exec_msg, 0, (LPARAM)&e, SMTO_NORMAL, 3000, &r);
   UnhookWindowsHookEx(hk);
   return ok ? NULL : "target thread busy (timeout)";
+}
+
+// ---------- 命令：disables ----------
+// EnableWindow(FALSE) 在窗口所属线程内同步发 WM_ENABLE(FALSE)：常挂的
+// WH_CALLWNDPROC 钩子逐次给该窗口的属性计数 +1。禁用一闪即过也记得住，
+// 轮询 en 位会漏。
+#define DIS_THREADS 16
+static const wchar_t DIS_PROP[] = L"shim.disables";
+static DWORD g_dis_tid[DIS_THREADS];
+static int g_ndis = 0;
+
+static LRESULT CALLBACK dis_cwp(int code, WPARAM wp, LPARAM lp) {
+  const CWPSTRUCT *c = (const CWPSTRUCT *)lp;
+  if (code == HC_ACTION && c->message == WM_ENABLE && !c->wParam)
+    SetPropW(c->hwnd, DIS_PROP,
+             (HANDLE)((UINT_PTR)GetPropW(c->hwnd, DIS_PROP) + 1));
+  return CallNextHookEx(NULL, code, wp, lp);
+}
+
+static const char *cmd_disables(struct out *o, HWND h, char *a) {
+  DWORD pid = 0, tid = GetWindowThreadProcessId(h, &pid);
+  if (pid != GetCurrentProcessId())
+    return "target not in this process";
+  EnterCriticalSection(&g_cs);
+  int i = 0;
+  while (i < g_ndis && g_dis_tid[i] != tid)
+    i++;
+  if (i == g_ndis) {
+    assert(g_ndis < DIS_THREADS);
+    HHOOK hk = SetWindowsHookExW(WH_CALLWNDPROC, dis_cwp, g_hMod, tid);
+    assert(hk);
+    g_dis_tid[g_ndis++] = tid;
+  }
+  LeaveCriticalSection(&g_cs);
+  emit(o, "{\"n\":%lu}\n", (unsigned long)(UINT_PTR)GetPropW(h, DIS_PROP));
+  return NULL;
 }
 
 // ---------- 命令：detail（控件子项，均在目标线程内读）----------
@@ -2795,6 +2833,7 @@ static const struct cmd CMDS[] = {
     {"send", cmd_send, ARG_REQ},
     {"regmsg", cmd_regmsg, ARG_NONE},
     {"click", cmd_click, ARG_REQ},
+    {"disables", cmd_disables, ARG_REQ},
     {"clickat", cmd_clickat, ARG_REQ},
     {"highlight", cmd_highlight, ARG_REQ},
     {"detail", cmd_detail, ARG_REQ},

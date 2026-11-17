@@ -11,18 +11,18 @@
 //   列 kViews / kCols  各布局的列数; 行的各成员 ← 各布局的列号 (kNone = 该布局没有) 经转型 as::*; check(行) 行级交叉校验
 //   读法 Mode  触发 × 取法:
 //                        取最新一份 (没见过的)      取累积
-//       被动换代          Live   活动块              Union  当日副本并集      → follow / wait
+//       被动换代          Live   活动块              Union  当日副本并集      → follow / read
 //       act 驱动          Ask    act 后新冒出的块     Whole  整块拼到齐        → arm + act + read (Chain::ask)
 //     "见过的": Live 记扫到过的各块, Ask 记 act 前那一遍 (arm). 取最新一份即至多一块; 取累积即各块合并.
 //     只有 Live 跨次带状态 (其 Table 须常驻), 其余三种无状态 (Ask / Whole 的 Table 随用随建).
-//     页上条数对上即同一份, 只对只增不改的 Union 成立 (kCounted)
+//     重查经 ui::query / press 等到查完才回, 其时应答已在内存里: 重查后一遍 read 即是, 不等不重查
 //   索引 Index  Unique<键> 键不重 → Keyed<行> / Tally 成交按代码合计 → Keyed<Flow> / Pairs 名称不重 → 名称 → 数值原文 / Plain 无键 → 行原序
 // 一张表的流程: 扫 Heap::scan → 选 Mode::choose → 按址连读一致 stable → 解析校验 parse → 合并 Mode::merge → 索引 → Snap
 // 客户端正改写 / 刚释放 / 进程没了 都是外部结局 → Fail
 #pragma once
 
 #include "live/Broker.hpp"
-#include "live/tdx/Until.hpp"
+#include "live/tdx/Trace.hpp"
 
 #include <algorithm>
 #include <array>
@@ -261,9 +261,6 @@ struct Plain {
 template <class S>
 using IndexOf = typename S::Index::template Out<typename S::Row>;
 
-// 应答到了的判据: 页上条数标签 (客户端处理完应答才写回) → 条数; 还没写回 → 无
-using Count = std::function<std::optional<int>()>;
-
 template <class S>
 struct Snap {
   HeapP heap;
@@ -341,7 +338,7 @@ std::vector<Row> one(std::vector<std::vector<Row>> parts) {
 // 记下扫到过的各块 (最近 kSeenCap 块), 没见过的即新冒出的、为在用的; 没有新冒出的即仍是上次选的那块; 几块内容相同取一块.
 // 头一次扫就有几块不一、或新冒出的不止一种内容, 定不出 → Fail (旧块释放后自愈)
 struct Live {
-  static constexpr bool kWatch = true, kCounted = false;
+  static constexpr bool kWatch = true, kGrows = false;
   std::deque<Hit> seen;
   std::optional<Hit> cur;
 
@@ -392,9 +389,10 @@ struct Live {
   }
 };
 
-// 当日副本并集: 表头标签为 S::tag() 的各副本; 副本只增不改 (旧副本是新的子集), 按 S::uid 取并集、同号逐字段一致, 按 S::order 排
+// 当日副本并集: 表头标签为 S::tag() 的各副本; 副本只增不改 (旧副本是新的子集), 按 S::uid 取并集、同号逐字段一致, 按 S::order 排.
+// kGrows: 并集可多于某一问的应答 (其后客户端自己又查到了新的)
 struct Union {
-  static constexpr bool kWatch = true, kCounted = true;
+  static constexpr bool kWatch = true, kGrows = true;
 
   template <class S>
   static std::vector<Hit> choose(const std::vector<Hit> &hits) { return tagged(hits, S::tag()); }
@@ -515,38 +513,16 @@ public:
     static_assert(Mode::kWatch);
     return Mode::template same<S>(s) ? s : pick(s.heap, Mode::template rescan<S>(s));
   }
-  // 客户端重查后轮询 follow 等 s 换代即回新快照, 不等固定时长;
-  // timeout 内没换代 (应答与旧的逐字节相同, 如收盘后; 或盯不到新块) 即全量读; s 没有块即无从盯, 等 blind 秒全量读.
-  // count 只在 Mode::kCounted 时作数: 标签写回即应答已到, 行数相符即回, 不符即全量读, 不等满.
-  // 先读标签再读内存: 标签是客户端处理完应答才写的, 其时应答已在内存里
-  Snap wait(const Snap &s, const Count &count, double timeout = 3, double blind = 1) {
+  // 客户端这一问查完后 (ui::query 回来即是) 全量读: 应答已在内存里, 页上写着这一问的条数 n.
+  // 行数须恰为 n; kGrows 的可多 (查完后客户端自己又查到了新的)
+  Snap answered(const HeapP &heap, int n) {
     static_assert(Mode::kWatch);
-    const Clock::time_point t0 = Clock::now();
-    const char *by = "full";
-    std::optional<int> n;
-    std::optional<Snap> got = poll(
-        [&]() -> std::optional<Snap> {
-          n = Mode::kCounted && count ? count() : std::nullopt;
-          Snap f = follow(s);
-          if (!(f == s))
-            by = "gen";
-          else if (n)
-            by = "count";
-          else
-            return std::nullopt;
-          return f;
-        },
-        s.mark.empty() ? blind : timeout, 0.01);
-    if (got && n && got->rows.size() != static_cast<size_t>(*n))
-      got.reset();
-    Snap out = got ? std::move(*got) : read(s.heap);
-    trace::Kw kw = {{"tab", S::kShape.name}, {"ms", trace::ms_since(t0)}, {"by", got ? by : "full"}};
-    if (n) {
-      kw["n"] = *n;
-      kw["rows"] = out.rows.size();
-    }
-    trace::ev("wait", std::move(kw));
-    return out;
+    Snap s = read(heap);
+    const size_t m = s.rows.size(), want = static_cast<size_t>(n);
+    if (Mode::kGrows ? m < want : m != want)
+      fail(strf("%s查完 (页上 %d 条) 内存里读到 %zu 行", S::kShape.name, n, m));
+    trace::ev("answer", {{"tab", S::kShape.name}, {"n", n}, {"rows", m}, {"addr", addrs(s.mark)}});
+    return s;
   }
 
   // ---------- act 驱动 ----------
@@ -567,38 +543,21 @@ class Chain {
 public:
   Chain(HeapP heap, std::vector<const Shape *> shapes) : heap_(std::move(heap)), shapes_(std::move(shapes)), last_(heap_->scan(shapes_)) {}
 
-  // act 让客户端重查 S 一次, 等新冒出的块 (冒出即被释放的不算). 空表的应答与留在堆里的旧空表逐字节相同,
-  // 落回同址即认不出: count 给了且标签写回 0 条即空表; 否则 wait 秒没等到即再 act, 共 tries 次仍没有 → Fail.
-  // 先读标签再扫内存 (见 Table::wait)
+  // act 让客户端重查 S 一次并等到查完 (ui::query), 回页上的条数 n; 应答即 act 前那遍之后新冒出的块.
+  // 空表的应答与留在堆里的旧空表逐字节相同, 落回同址即认不出: n = 0 即空表; n > 0 却没有新块 → Fail
   template <class S>
-  Snap<S> ask(const std::function<void()> &act, const Count &count = {}, int tries = 3, double wait = 2) {
+  Snap<S> ask(const std::function<int()> &act) {
     const size_t at = static_cast<size_t>(std::find(shapes_.begin(), shapes_.end(), &S::kShape) - shapes_.begin());
     assert(at < shapes_.size());
     Table<S> t;
     t.arm(last_[at]);
-    const Clock::time_point t0 = Clock::now();
-    for (int i = 0; i < tries; ++i) {
-      if (i)
-        trace::ev("reask", {{"tab", S::kShape.name}, {"try", i + 1}, {"hits", addrs(last_[at])}});
-      act();
-      const char *by = "new";
-      std::optional<Snap<S>> got = poll(
-          [&]() -> std::optional<Snap<S>> {
-            const std::optional<int> n = count ? count() : std::nullopt;
-            last_ = heap_->scan(shapes_);
-            std::optional<Snap<S>> s = t.try_pick(heap_, last_[at]);
-            if (!s || (s->mark.empty() && n != 0))
-              return std::nullopt;
-            by = s->mark.empty() ? "empty" : "new";
-            return s;
-          },
-          wait, 0);
-      if (got) {
-        trace::ev("ask", {{"tab", S::kShape.name}, {"rows", got->rows.size()}, {"addr", addrs(got->mark)}, {"ms", trace::ms_since(t0)}, {"by", by}});
-        return std::move(*got);
-      }
-    }
-    fail(strf("%s重查 %d 次都没等到新应答", S::kShape.name, tries));
+    const int n = act();
+    last_ = heap_->scan(shapes_);
+    Snap<S> s = t.pick(heap_, last_[at]);
+    if (s.mark.empty() && n != 0)
+      fail(strf("%s查完 (页上 %d 条) 内存里没有新块", S::kShape.name, n));
+    trace::ev("ask", {{"tab", S::kShape.name}, {"n", n}, {"rows", s.rows.size()}, {"addr", addrs(s.mark)}});
+    return s;
   }
 
 private:
