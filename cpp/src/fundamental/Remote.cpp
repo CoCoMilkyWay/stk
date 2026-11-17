@@ -19,6 +19,7 @@ constexpr const char *kDcConcept = "概念板块";
 constexpr std::string_view kDcSuffix = ".DC";
 constexpr int kDcLookback = 15;
 constexpr std::int64_t kDcRows = 8000;
+constexpr int kDcMemberPerMin = 480; // tushare 限 dc_member 500 次/分钟, 留余量
 
 std::string literal(std::string_view v) { return "'" + std::string(v) + "'"; }
 std::string literal(Ymd d) { return literal(misc::dash(d)); }
@@ -86,7 +87,7 @@ std::shared_ptr<arrow::Table> fetch_concept(tushare::Client &tu, Window w) {
   std::vector<tushare::Query> qs;
   qs.reserve(idx.size());
   for (const std::size_t k : idx)
-    qs.push_back({"dc_member", {{"trade_date", at}, {"ts_code", codes[k]}}, {}});
+    qs.push_back({"dc_member", {{"trade_date", at}, {"ts_code", codes[k]}}, {}, kDcMemberPerMin});
   const std::vector<std::shared_ptr<arrow::Table>> members = tu.batch(qs);
 
   arrow::StringBuilder b_td, b_sym, b_code, b_name;

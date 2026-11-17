@@ -16,9 +16,12 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace tushare {
@@ -53,6 +56,25 @@ std::string build_body(const std::string &token, std::string_view api_name, cons
   return out;
 }
 
+// 按接口排发送时刻: 相邻两次至少隔 60s / per_min; 进程内全部 Client 共用 (限额按 token × 接口计)
+void pace(std::string_view api, int per_min) {
+  assert(per_min > 0);
+  using clock = std::chrono::steady_clock;
+  static std::mutex mu;
+  static std::map<std::string, clock::time_point, std::less<>> next;
+  const auto gap = std::chrono::microseconds(60'000'000 / per_min);
+  clock::time_point at;
+  {
+    std::lock_guard lk(mu);
+    auto it = next.find(api);
+    if (it == next.end())
+      it = next.emplace(std::string(api), clock::time_point{}).first;
+    at = std::max(it->second, clock::now());
+    it->second = at + gap;
+  }
+  std::this_thread::sleep_until(at);
+}
+
 tcp::resolver::results_type resolve_endpoints() {
   for (int attempt = 0;; ++attempt) {
     net::io_context ioc;
@@ -85,10 +107,12 @@ struct Session {
   }
 
   // 返回的 yyjson_doc* 由调用方 yyjson_doc_free
-  yyjson_doc *call(const tcp::resolver::results_type &ep, const std::string &token, std::string_view api_name,
-                   const Params &params) {
-    const std::string body = build_body(token, api_name, params);
+  yyjson_doc *call(const tcp::resolver::results_type &ep, const std::string &token, const Query &q) {
+    const std::string_view api_name = q.api;
+    const std::string body = build_body(token, api_name, q.params);
     for (int attempt = 0;;) {
+      if (q.per_min > 0)
+        pace(api_name, q.per_min);
       const bool reused = stream.has_value();
       beast::error_code ec;
       if (!stream) {
@@ -232,7 +256,7 @@ Client::Client() : Client(kToken) {}
 
 std::shared_ptr<arrow::Table> Client::query(const Query &q) {
   Session s;
-  yyjson_doc *doc = s.call(resolve_endpoints(), token_, q.api, q.params);
+  yyjson_doc *doc = s.call(resolve_endpoints(), token_, q);
   auto t = to_table(doc, q.num);
   yyjson_doc_free(doc);
   return t;
@@ -251,7 +275,7 @@ std::vector<std::shared_ptr<arrow::Table>> Client::batch(const std::vector<Query
     if (!s)
       s = std::make_unique<Session>();
     const Query &q = qs[static_cast<std::size_t>(i)];
-    yyjson_doc *doc = s->call(ep, token_, q.api, q.params);
+    yyjson_doc *doc = s->call(ep, token_, q);
     out[static_cast<std::size_t>(i)] = to_table(doc, q.num);
     yyjson_doc_free(doc);
     if (tick)

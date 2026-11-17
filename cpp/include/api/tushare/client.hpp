@@ -18,10 +18,12 @@ using Params = std::vector<std::pair<std::string, std::string>>;
 //   api:    接口名 (api_name)
 //   params: 请求参数
 //   num:    声明为 double 的列, 其余 → string (见 Client::query)
+//   per_min: 该接口每分钟至多发几次 (进程内同接口共用节拍); 0 = 不控速
 struct Query {
   std::string api;
   Params params;
   std::vector<std::string> num;
+  int per_min = 0;
 };
 
 // Tushare HTTP 客户端 — 与 bigquant::Client 对仗: 纯传输, 不知 Spec.
@@ -32,7 +34,7 @@ inline constexpr const char *kPort = "80"; // 走 80, 省掉 SSL 依赖
 inline constexpr int kTimeoutSeconds = 60; // 单次连接 + 读写整体时长; range 接口序列化耗时可达 20s
 inline constexpr int kRetryMax = 4;        // 额外重试次数 (共 5 次尝试), 线性间隔
 inline constexpr int kRetryIntervalSeconds = 30;
-inline constexpr int kWidth = 8; // batch 并发路数 (单条 ~0.1s 为往返延迟; 频率超限由重试吸收)
+inline constexpr int kWidth = 8; // batch 并发路数 (单条 ~0.1s 为往返延迟; 分钟限额由 Query::per_min 控速, 偶发超限由重试吸收)
 
 class Client {
 public:
