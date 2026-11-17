@@ -6,7 +6,7 @@
 //     起因: 有人要 (request / sync)、有人在看而还没刷过或距上轮满 every 秒、下单后的 kick 定点、
 //     客户端自己重查了持仓却与成交对不上 (交易端成交了). 失败不自动重试, 等下一个起因.
 //   界面自动化 (刷新 / 下单 / 两融条款 / 资金流水 / 调仓) 一次一路 (界面锁 Gate); 下单等各事务同形: 段 + 界面锁 + 接上客户端 (txn).
-//   console 即调试台 (live/tdx/Console.hpp).
+//   摸客户端 / 在线用例另有独立程序 shim (src/live/tdx/shim/).
 #pragma once
 
 #include "live/Broker.hpp"

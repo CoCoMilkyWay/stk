@@ -1,7 +1,6 @@
 // Task Live - 实盘: 券商客户端的持仓、下单与一键调仓 (中枢 LiveHub 券商无关; 客户端适配在 live/<客户端>/, 登记在 live/Clients.hpp)
 //   Board: 连接 + 持仓 · 调仓一页 (控件分组 / 持仓表行内闪电下单与卖出滑杆, 并调仓名单 / 日志) + 右栏选中行的行情图
 //     (Market 的个股面板, 与 Database / Market 共用 QuoteHub)
-//   Client: 已连客户端自带的调试台 (Broker::console), 不算有人在看持仓
 //   行情走新浪 (LiveHub 把要的码订阅给 QuoteHub, 本地资产库就绪才有), 不读客户端的行情; Board 可见时才盯客户端 (见 live/Broker.hpp 的 touch)
 //   账户净值 (gui/account): 每帧交信用账户 + 今日成交 (其库外持仓的现价转给价格库回放), 连上后每天在事务道上补一次资金流水
 #include "gui/task_live/TaskLive.hpp"
@@ -22,7 +21,6 @@ namespace GUI::Tasks {
 
 enum TabIdx {
   TAB_BOARD = 0,
-  TAB_CLIENT,
   TAB_COUNT
 };
 
@@ -41,7 +39,7 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
   TaskHandle handle;
   handle.name = "Live";
   handle.storage = state;
-  handle.tabs = {"Board", "Client"};
+  handle.tabs = {"Board"};
 
   handle.Init = [state](SharedData &) { state->hub = std::make_unique<Live::LiveHub>(); };
 
@@ -60,10 +58,10 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
       a.tried();
   };
 
-  handle.Status = [state](const SharedData &, int idx) -> TaskStatus {
+  handle.Status = [state](const SharedData &, [[maybe_unused]] int idx) -> TaskStatus {
     assert(idx >= 0 && idx < TAB_COUNT);
     const Live::LiveHub &h = *state->hub;
-    if (!h.connected() || idx == TAB_CLIENT)
+    if (!h.connected())
       return {};
     const live::Refresh &g = h.refresh();
     const auto &t = h.task();
@@ -82,21 +80,15 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
     return {TaskStatus::Kind::Muted, "live"};
   };
 
-  handle.Draw = [state](SharedData &data, int idx) {
+  handle.Draw = [state](SharedData &data, [[maybe_unused]] int idx) {
     assert(idx >= 0 && idx < TAB_COUNT);
     Live::LiveHub &h = *state->hub;
     if (data.task_state.database.asset_info_ready)
       state->quote->frame(data);
-    if (idx != TAB_CLIENT)
-      h.tick(data.asset_info, *state->quote);
+    h.tick(data.asset_info, *state->quote);
     ImGui::BeginChild("LiveTab", ImVec2(0, 0), false);
     ImGui::Spacing();
-    if (idx == TAB_BOARD)
-      Live::RenderTabBoard(data, h, *state->quote, state->board);
-    else if (!h.connected())
-      ImGui::TextDisabled("先在 Board 连接客户端");
-    else
-      h.broker().console();
+    Live::RenderTabBoard(data, h, *state->quote, state->board);
     ImGui::EndChild();
   };
 

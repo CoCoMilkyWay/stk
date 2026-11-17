@@ -1,23 +1,23 @@
-// 探内存 (只读): 给新表找块、定列. 先在客户端点过要探的那页查询 (如信用资产、融资标的、担保品), 再跑.
-//   列出明文表: 堆里全部 0|…|\r\n 打头、\r\n 分行、| 分列的块: 址 / 副本数 / 行数 / 列数 / 表头 / 前几行, 同表头同首行的副本只列一次;
-//   找文本: 各词 (空白分隔) 按 GBK、UTF-16LE 两种编码逐处列出址与前后字节 (按同一编码解码, 控制字符转义)
+// shim probe — 探进程堆 (只读): 给新表找块、定列. 先在客户端点过要探的那页查询 (如信用资产、融资标的、担保品), 再跑.
+//   tables: 堆里全部 0|…|\r\n 打头、\r\n 分行、| 分列的块: 址 / 副本数 / 行数 / 列数 / 表头 / 前几行, 同表头同首行的副本只列一次;
+//   text <词…>: 各词 (空白分隔) 按 GBK、UTF-16LE 两种编码逐处列出址与前后字节 (按同一编码解码, 控制字符转义)
+#include "live/tdx/shim/Tool.hpp"
+
 #include "live/Broker.hpp"
 #include "live/tdx/Mem.hpp"
-#include "live/tdx/console/Model.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
+#include <cstdio>
 #include <iconv.h>
 #include <map>
+#include <optional>
 #include <set>
-#include <thread>
 
-namespace live::tdx::console {
+namespace live::tdx::tool {
 
 namespace {
-
-using Lock = std::lock_guard<std::mutex>;
 
 constexpr size_t kHeadMax = 200, kRowsMax = 5000, kShowRows = 3, kContext = 300;
 
@@ -250,64 +250,14 @@ std::string texts(const mem::Heap &h, const std::vector<std::string> &words) {
   return out.empty() ? "（没找到）" : out;
 }
 
-std::vector<std::string> words_of(const std::string &s) {
-  std::vector<std::string> out;
-  for (size_t i = 0; i < s.size();) {
-    const size_t a = s.find_first_not_of(" \t\r\n", i);
-    if (a == std::string::npos)
-      break;
-    const size_t b = std::min(s.find_first_of(" \t\r\n", a), s.size());
-    out.push_back(s.substr(a, b - a));
-    i = b;
-  }
-  return out;
-}
-
-void run(const std::shared_ptr<Core> &cp, std::vector<std::string> words) {
-  Core &c = *cp;
-  {
-    Lock lk(c.mu);
-    if (c.probing)
-      return;
-    c.probing = true;
-  }
-  std::thread([cp, words = std::move(words)] {
-    std::string out;
-    try {
-      const mem::HeapP h = mem::attach();
-      out = words.empty() ? tables(*h) : texts(*h, words);
-    } catch (const Fail &f) {
-      out = "✗ " + f.why;
-    }
-    Lock lk(cp->mu);
-    cp->probe_out = std::move(out);
-    cp->probing = false;
-    ++cp->probe_ver;
-  }).detach();
-}
-
 } // namespace
 
-void draw_probe(const std::shared_ptr<Core> &c, View &v) {
-  ImGui::TextDisabled("先在客户端点过要探的那页查询（如信用资产、融资标的、担保品），再跑");
-  ImGui::BeginDisabled(v.probing);
-  if (ImGui::Button("列出明文表"))
-    run(c, {});
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 12);
-  const bool enter = input_text("##words", v.words, "要找的文本（空白分隔多个）", ImGuiInputTextFlags_EnterReturnsTrue);
-  ImGui::SameLine();
-  if ((ImGui::Button("找文本") || enter) && !words_of(v.words).empty())
-    run(c, words_of(v.words));
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  if (ImGui::Button("复制##probe"))
-    ImGui::SetClipboardText(v.probe_out.c_str());
-  if (v.probing) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("探测中…");
-  }
-  out_box("##probeout", v.probe_out, 0);
+int probe(const std::vector<std::string> &a) {
+  need(!a.empty() && (a[0] == "tables" ? a.size() == 1 : a[0] == "text" && a.size() > 1), "用法: shim probe tables | shim probe text <词…>");
+  const mem::HeapP h = mem::attach();
+  std::fputs((a[0] == "tables" ? tables(*h) : texts(*h, {a.begin() + 1, a.end()})).c_str(), stdout);
+  std::fputs("\n", stdout);
+  return 0;
 }
 
-} // namespace live::tdx::console
+} // namespace live::tdx::tool

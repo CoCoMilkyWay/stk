@@ -1,7 +1,6 @@
 #include "live/tdx/Tdx.hpp"
 
 #include "live/Board.hpp"
-#include "live/tdx/Console.hpp"
 #include "live/tdx/Credit.hpp"
 #include "live/tdx/Flash.hpp"
 #include "live/tdx/Flow.hpp"
@@ -587,15 +586,8 @@ public:
     });
   }
 
-  void console() override {
-    if (!console_)
-      console_ = std::make_unique<tdx::console::Console>();
-    console_->draw();
-  }
-
 private:
   std::shared_ptr<Core> c_;
-  std::unique_ptr<tdx::console::Console> console_; // 首次打开 Client 页才建
 };
 
 } // namespace

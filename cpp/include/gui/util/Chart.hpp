@@ -343,7 +343,8 @@ inline void range_bar(DayRange &rg, const std::vector<misc::Ymd> &dates, double 
 }
 
 // 日轴刻度 (横轴为交易日的各图同一份, 日内画分钟也一样): 竖线只落在 日 / 周 / 月 / 年 的首个交易日的日界 (轴首日算所在周 / 月 / 年的首日),
-//   档 = 视野内刻度数不超过 图宽 / (kDayTickGap 个标签宽) 的最细一档, 都超取年; 标签 日 / 周 = YY/MM/DD, 月 = YYYY/MM, 年 = YYYY.
+//   档 = 视野内刻度数不超过 kDayTickMax 的最细一档 (不看图宽), 都超取年; 标签 日 / 周 = YY/MM/DD, 月 = YYYY/MM, 年 = YYYY,
+//   离上个标字的刻度不足 kDayLabelGap 个标签宽的只画线不标字 (节假日短周 / 短月挤在一起时).
 //   日 d 的日界 x = d · w + at; xs 非空则取 xs[d] (不等宽的轴, 升序). fmt / ud = 该轴自己的格式 (鼠标读数用; 刻度标签不经它). 须活到 EndPlot
 struct DayAxis {
   std::span<const misc::Ymd> dates;
@@ -353,7 +354,8 @@ struct DayAxis {
   void *ud = nullptr;
   double x(size_t d) const { return xs.empty() ? static_cast<double>(d) * w + at : xs[d]; }
 };
-inline constexpr float kDayTickGap = 2.0f;
+inline constexpr size_t kDayTickMax = 20;
+inline constexpr float kDayLabelGap = 1.1f;
 enum DayTick : int { kTickDay,
                      kTickWeek,
                      kTickMonth,
@@ -371,16 +373,17 @@ inline void day_locator(ImPlotTicker &t, const ImPlotRange &r, float px, bool, I
   const size_t d0 = static_cast<size_t>(std::ranges::partition_point(ix, [&](size_t d) { return a.x(d) < r.Min; }) - ix.begin());
   const size_t d1 = static_cast<size_t>(std::ranges::partition_point(ix, [&](size_t d) { return a.x(d) <= r.Max; }) - ix.begin());
   const auto on = [&](size_t d, int u) { return u == kTickDay || d == 0 || day_period(a.dates[d - 1], u) != day_period(a.dates[d], u); };
-  constexpr const char *kSample[] = {"00/00/00", "00/00/00", "0000/00"};
+  constexpr const char *kSample[] = {"00/00/00", "00/00/00", "0000/00", "0000"};
   int u = kTickDay;
   for (; u < kTickYear; ++u) {
-    const double cap = px / (kDayTickGap * ImGui::CalcTextSize(kSample[u]).x);
     size_t n = 0;
-    for (size_t d = d0; d < d1 && static_cast<double>(n) <= cap; ++d)
+    for (size_t d = d0; d < d1 && n <= kDayTickMax; ++d)
       n += on(d, u);
-    if (static_cast<double>(n) <= cap)
+    if (n <= kDayTickMax)
       break;
   }
+  const double ppx = px / (r.Max - r.Min), lw = ImGui::CalcTextSize(kSample[u]).x * kDayLabelGap;
+  double last = -HUGE_VAL; // 上个标字刻度的像素 x
   char s[16];
   for (size_t d = d0; d < d1; ++d) {
     if (!on(d, u))
@@ -392,7 +395,11 @@ inline void day_locator(ImPlotTicker &t, const ImPlotRange &r, float px, bool, I
       std::snprintf(s, sizeof(s), "%04d/%02d", y / 10000, y / 100 % 100);
     else
       std::snprintf(s, sizeof(s), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
-    t.AddTick(a.x(d), true, 0, true, s);
+    const double p = (a.x(d) - r.Min) * ppx;
+    const bool label = p - last >= lw;
+    if (label)
+      last = p;
+    t.AddTick(a.x(d), true, 0, label, s);
   }
 }
 inline int day_axis_fmt(double v, char *buf, int size, void *ud) {

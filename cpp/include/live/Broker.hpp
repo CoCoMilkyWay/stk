@@ -19,7 +19,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace live {
@@ -242,8 +241,6 @@ public:
   virtual Terms pull_terms(const Log &log, const Live &live) = 0;               // 客户端重查两融条款; 失败 → Fail
   // 客户端重查 from 日起 (含; 0 = 开户起) 至昨日的资金流水; 失败 → Fail
   virtual std::vector<CashFlow> pull_flows(misc::Ymd from, const Log &log, const Live &live) = 0;
-
-  virtual void console() = 0; // GUI 线程每帧: 画该客户端自带的调试台 (Live 的 Client 页; ImGui, 占满当前区域)
 };
 
 // 后台事务期间有人在看

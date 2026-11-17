@@ -197,8 +197,10 @@ endfunction()
 # ============================================================================
 # 源表: src/ 全量按目标分区 (配置期断言不重不漏)
 #   SRC_OP_CHECK            因子算子对拍 CLI
+#   SRC_MAIN                GUI 主程序入口
+#   SRC_SHIM                shim 独立程序 (live/tdx/shim/: 通达信客户端的命令转发 / 探内存 / 录制 / 在线用例)
 #   <轴>_<取值>_SRC          GUI_BACKEND / GPU_BACKEND 每个取值一份, 当前取值入链
-#   SRC_APP                 其余全部 → app_main
+#   SRC_APP                 其余全部 → app (OBJECT, app_main 与 shim 共用, 只编一次)
 # 任一层 win32/ 目录 = 注入目标进程的 Windows 源 (客户端适配运行时交叉编译), 不入本机构建
 # ============================================================================
 file(GLOB_RECURSE SRC_ALL CONFIGURE_DEPENDS RELATIVE ${SRC_ROOT}
@@ -208,9 +210,12 @@ file(GLOB_RECURSE SRC_ALL CONFIGURE_DEPENDS RELATIVE ${SRC_ROOT}
 list(FILTER SRC_ALL EXCLUDE REGEX "(^|/)win32/")
 
 set(SRC_OP_CHECK factor/op_check.cpp)
+set(SRC_MAIN main.cpp)
+set(SRC_SHIM ${SRC_ALL})
+list(FILTER SRC_SHIM INCLUDE REGEX "^live/tdx/shim/")
 set(SRC_APP ${SRC_ALL})
-set(SRC_PARTS SRC_APP SRC_OP_CHECK)
-list(REMOVE_ITEM SRC_APP ${SRC_OP_CHECK})
+set(SRC_PARTS SRC_APP SRC_OP_CHECK SRC_MAIN SRC_SHIM)
+list(REMOVE_ITEM SRC_APP ${SRC_OP_CHECK} ${SRC_MAIN} ${SRC_SHIM})
 foreach(axis GUI_BACKEND GPU_BACKEND)
     foreach(value ${${axis}_VALUES})
         list(REMOVE_ITEM SRC_APP ${${axis}_${value}_SRC})
@@ -339,12 +344,10 @@ set(MATH_PRECISE
     live/tdx/Trace.cpp
     live/tdx/Ui.cpp
     live/tdx/Win.cpp
-    live/tdx/console/Console.cpp
-    live/tdx/console/List.cpp
-    live/tdx/console/Map.cpp
-    live/tdx/console/Probe.cpp
-    live/tdx/console/Rec.cpp
-    live/tdx/console/Tools.cpp
+    live/tdx/shim/Main.cpp
+    live/tdx/shim/Probe.cpp
+    live/tdx/shim/Rec.cpp
+    live/tdx/shim/Test.cpp
     # account: 账户净值 (资金流水回放)
     account/Ledger.cpp
     # gui
@@ -827,10 +830,12 @@ endforeach()
 
 # ============================================================================
 # Targets
-#   factor_gpu  因子 GPU 后端 (GpuRun.hpp 的唯一实现): 一份 object, 两个可执行文件共用, 只编一次
+#   factor_gpu  因子 GPU 后端 (GpuRun.hpp 的唯一实现): 一份 object, 各可执行文件共用, 只编一次
 #   op_check    因子算子三方对拍 (stream 实盘流式 / cpu 挖掘向量 / gpu 挖掘 CUDA; OpTable.hpp 展开)
 #               只依赖 factor/*.hpp, 无 GUI / Arrow / Python; 退化判据 (disp_ok / den_ok) 与 guard 依赖受控浮点 → PRECISE
+#   app         SRC_APP 的 object (含 GUI 后端), app_main 与 shim 共用, 只编一次
 #   app_main    GUI 主程序: Factors→Operators 页经同一 GpuRun.hpp 调 GPU
+#   shim        通达信客户端的独立调试程序 (live/tdx/shim/Main.cpp 文件头): 直接用适配代码, 不起 GUI
 # ============================================================================
 add_library(factor_gpu OBJECT ${SRC_ROOT}/${GPU_BACKEND_SRC})
 target_link_libraries(factor_gpu PUBLIC ${GPU_BACKEND_LINK})
@@ -843,9 +848,8 @@ target_link_libraries(op_check PRIVATE factor_gpu)
 #   排在前面会抢占全局符号查找, asio / libssl 调到它 → 结构体不对位崩溃. NEEDED 序 = 链接序
 find_package(OpenSSL REQUIRED)
 
-list(TRANSFORM SRC_APP PREPEND ${SRC_ROOT}/)
-add_executable(app_main ${SRC_APP} ${SRC_ROOT}/${GUI_BACKEND_SRC})
-target_link_libraries(app_main PRIVATE
+# object 库的 object 只并进直接链它的目标 (不经 app 传递): factor_gpu / tracy / yyjson 与 app 一样逐个可执行文件直链
+set(APP_LINK
     factor_gpu
     libzstd_static
     z
@@ -860,11 +864,21 @@ target_link_libraries(app_main PRIVATE
     arrow::arrow
     dl
 )
-# 运行时让 ld.so 找到 vendored libarrow*.so
-set_target_properties(app_main PROPERTIES
-    BUILD_RPATH "${ARROW_ROOT}/lib"
-    INSTALL_RPATH "${ARROW_ROOT}/lib"
-)
+list(TRANSFORM SRC_APP PREPEND ${SRC_ROOT}/)
+add_library(app OBJECT ${SRC_APP} ${SRC_ROOT}/${GUI_BACKEND_SRC})
+target_link_libraries(app PRIVATE ${APP_LINK})
+
+add_executable(app_main ${SRC_ROOT}/${SRC_MAIN})
+list(TRANSFORM SRC_SHIM PREPEND ${SRC_ROOT}/)
+add_executable(shim ${SRC_SHIM})
+foreach(exe app_main shim)
+    target_link_libraries(${exe} PRIVATE app ${APP_LINK})
+    # 运行时让 ld.so 找到 vendored libarrow*.so
+    set_target_properties(${exe} PROPERTIES
+        BUILD_RPATH "${ARROW_ROOT}/lib"
+        INSTALL_RPATH "${ARROW_ROOT}/lib"
+    )
+endforeach()
 
 # ============================================================================
 # Install and Post-Build

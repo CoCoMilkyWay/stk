@@ -13,14 +13,14 @@ TdxW.exe（Wine）
                                  Ui                  通达信界面：主窗 / 交易栏与功能树 / 页与查一次 / 条数标签 / 弹框
                                  Flash Credit Flow   闪电下单 / 两融条款与信用账户 / 资金流水
 Tdx（Broker）  盯持仓线程 + 刷新线程 + 界面锁 Gate + 事务 txn
-Console        调试台（Live 的 Client 页，ImGui）
+shim（程序）   独立调试程序：命令转发 / 探内存 / 录制 / 在线用例，直接用上面各件
 ```
 
 - 读只经进程内存；写只经 shim 操作客户端界面，客户端自己负责登录会话与交易通讯。
 - 客户端状态与预期不符（界面没弹出 / 内存正被改写 / 回报失败）是外部结局：`fail` 抛 `Fail`，在各轮 / 各事务的边界收成原因文本；本程序自身的不变式一律 `assert`。不重试，等下一个起因。
 - 界面动作一律等客户端查完再走下一步（`ui::query` / `ui::press`，见「三、交易链路」的界面层）：查着时客户端不理切页、页一开就挪焦点，抢在前头的动作会落空。
 - 等待一律经 `Until.hpp`：`poll` 等到即回、超时回空（调用方另有退路），`until` 超时即 `Fail`（报出当时的状态）。
-- 交互日志经 `Trace.hpp`：shim 命令与应答、读内存的换代与应答、外部进程、Broker 的轮次 / 下单 / 两融条款按段（`Span`）一行一事件，落 `output/run/live/tdx/log/<启动时刻>.jsonl`。段内有事件才落盘，相邻同样的事件并成一行 `rep`；适配里的 `fail` 先在当时的段路径下记一行再抛；调试台在段外，不记。事件种类与字段见其文件头。
+- 交互日志经 `Trace.hpp`：shim 命令与应答、读内存的换代与应答、外部进程、Broker 的轮次 / 下单 / 两融条款按段（`Span`）一行一事件，落 `output/run/live/tdx/log/<启动时刻>.jsonl`。段内有事件才落盘，相邻同样的事件并成一行 `rep`；适配里的 `fail` 先在当时的段路径下记一行再抛；段外不记。事件种类与字段见其文件头。
 
 ## 一、内存明文表（`Mem.hpp` `Tables.hpp`）
 
@@ -29,7 +29,7 @@ Console        调试台（Live 的 Client 页，ImGui）
 ### 堆
 
 - `Heap`：pid + 常开的 `/proc/<pid>/mem`（各线程共用，`pread` 不带状态）；堆段 = 可读写、私有、非文件映射（Wine 堆即匿名 `rwxp`），跳过 400M 以上的段（Wine 堆约 580M）。
-- `scan(形状们)`：段间并行（至多 4 线程，各一段一缓冲），同锚点的形状共一遍查找，命中按段序；`near` 给定时只扫含其中任一地址的段。`each` 逐段顺序读（调试台探内存用）。
+- `scan(形状们)`：段间并行（至多 4 线程，各一段一缓冲），同锚点的形状共一遍查找，命中按段序；`near` 给定时只扫含其中任一地址的段。`each` 逐段顺序读（`shim probe` 用）。
 - `attach`：找进程（`comm` 或 `argv[0]` 为 `tdxw.exe`）、确保有读权限、开堆；`ptrace_scope ≠ 0` 时用 `output/config/live/.sudo_pass` sudo 关一次，到重启前有效。
 
 ### 表的四条轴
@@ -125,7 +125,7 @@ Console        调试台（Live 的 Client 页，ImGui）
 记录：
 
 - 节点：`{depth,hwnd,parent,id,class,title,rect,style,exstyle,vis,en}`，先序、depth 定父子、兄弟序即 z 序（顶层 parent 为 `0x00000000`）；WinEvent 钩子维护变更版本号。
-- 查找：`find class=<类名> [id=<n>] [title=<标题>]` 在全部窗口里出相符的各节点；不相符的只取类名 / id，不读标题、不经界面线程，比整棵 `tree`（数百到近两千节点、经界面线程读可见编辑框）省得多。适配找窗口一律走它，`tree` 只给调试台与小子树。
+- 查找：`find class=<类名> [id=<n>] [title=<标题>]` 在全部窗口里出相符的各节点；不相符的只取类名 / id，不读标题、不经界面线程，比整棵 `tree`（数百到近两千节点、经界面线程读可见编辑框）省得多。适配找窗口一律走它，`tree` 只给录制与小子树。
 - 图层：`{hwnd,off,items:[[l,t,r,b,v,文字?]]}`，客户区坐标、后出的在上；`gdi` 与 `detail` 同形，`v` 分别为颜色与状态位。
 - 快照 / 推送成对：`treegen` / `treewatch`（版本号）、`gdidump` / `gdiwatch`（图层）；长连接无变更 1s 推心跳 `null`、不收尾。
 
@@ -200,7 +200,7 @@ Console        调试台（Live 的 Client 页，ImGui）
 
 - 信用委托：功能号 `0xCA`，路由字段 `0x4C1` = `"SDX.ORDER,"`。
 - 追踪：`req attach <hwnd> [offset]` 经 MFC42 `CWnd::FromHandlePermanent` 取顶层窗口的 `CWnd`，扫其中宿主指针（多个候选只回偏移、须显式给 `offset`），建一个空请求认出 vtable，钩初始化 / 功能号 / 字符串 / 整数 / 浮点 / 发送六个方法：先记参数、再原样调用。事件入 4096 条环形缓冲：公共 `{tick,tid,obj,op}`，`func` / `init` 带 `value`，`str` 带 `id,aux,value`，`int` / `float` 带 `id,value`，`send` 带 `args`。
-- 录制：调试台录制器开始即 `req on` `req clear`，每轮 `req drain` 以 `kind="req"` 并入同一 JSONL，停止即 `req off`。
+- 录制：`shim rec` 开录即 `req on` `req clear`，每轮 `req drain` 以 `kind="req"` 并入同一 JSONL，停止即 `req off`；要录交易请求先 `shim cmd req attach <闪电窗顶层 hwnd>`。
 
 ## 四、Broker（`Tdx.hpp`）
 
@@ -215,15 +215,19 @@ Console        调试台（Live 的 Client 页，ImGui）
 - 事务：下单 / 独占 / 两融条款 / 资金流水同形 `txn(名, 字段, fn)` —— 开段、占界面锁、接上客户端、当前线程跑 fn。
 - 锁：界面自动化（刷新、下单、两融条款、资金流水、调仓整批）共用界面锁 `Gate`（`Tdx.cpp`），带占用者名字，同一线程可重入。刷新一轮在各样之间 `yield`：有别路在等即先让它占、做完再接着刷（三问一串之内不让），下单至多等一样查完。
 
-## 五、调试台（`Console.hpp` `console/`）
+## 五、shim 独立程序（`src/live/tdx/shim/`，CMake 目标 `shim`，产物 `build/bin/shim`）
 
-- 页头：shim 在线状态（离线可点「接入」）/ 不抬窗开关与拦截次数 / 刷新窗口树 / ping。
-- 布局图：按屏幕坐标与 z 序还原窗口，标准控件按类画、自绘窗口用绘制层；交互开时鼠标、键盘、滚轮经 shim 投给客户端，关时点选。
-- 工具：控件读文本 / 点击 / 闪烁 / 取矩形 / 设文本，原始 `post` / `send`，Spy 抓消息。
-- 列表：窗口树（含自绘窗口里的绘制元素），与布局图同一悬停、选中。
-- 录制：消息 / 交易请求 / 窗口树 / 绘制层的变化逐条落 `output/run/live/tdx/rec/<时刻>.jsonl`。
-- 探内存：列出堆里全部明文表（址 / 副本数 / 行数 / 列数 / 表头 / 前几行），或按文本（GBK / UTF-16LE）找处；给新表找块、定列。
-- 只用通用一层 `Win.hpp`，不碰通达信界面件。
+摸客户端、验收适配都在这里：靠录下的日志与断言，不靠肉眼。与 `app_main` 共用同一份适配代码（CMake 的 `app` object 库），用例测的就是生产代码本身。在仓库内运行；shim.dll 不在线即编译 + 注入。
+
+| 子命令                  | 做什么                                                                                                    |
+| ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| `shim cmd <命令…>`      | 原样发一条 shim 命令（命令表见 `win32/shim.c` 文件头），应答逐行 JSON                                     |
+| `shim probe tables`     | 进程堆里全部明文表：址 / 副本数 / 行数 / 列数 / 表头 / 前几行；给新表找块、定列                           |
+| `shim probe text <词…>` | 各词按 GBK、UTF-16LE 逐处列出址与前后字节                                                                 |
+| `shim rec <秒>`         | 录制消息 / 交易请求 / 窗口树 / 绘制层的变化 → `output/run/live/tdx/rec/<时刻>.jsonl`，各条一行打到 stdout |
+| `shim test [用例…]`     | 在线用例（空 = 全部不慢的；`list` 列出）；一例一行 PASS / FAIL，细节在交互日志「用例 <名>」段             |
+
+在线用例（`Test.cpp`）钉住两类东西：适配的各条路径（各页查一次、查完即读、Chain、资金流水、两融条款），与本文实测的客户端行为（如「查着时切页签被吞」）。客户端升级后先跑一遍，哪条假设失效即知。界面动作只做查询类，不下单。
 
 ## 六、文件
 
@@ -241,8 +245,12 @@ include/live/tdx/
 ├── Flash.hpp      闪电下单
 ├── Credit.hpp     两融条款 / 信用账户
 ├── Flow.hpp       资金流水
-├── Console.hpp    调试台
-└── console/Model.hpp
+└── shim/Tool.hpp  shim 独立程序的子命令
+src/live/tdx/shim/
+├── Main.cpp       独立程序入口与用法（cmd 转发）
+├── Probe.cpp      探内存
+├── Rec.cpp        录制
+└── Test.cpp       在线用例
 src/live/tdx/win32/
 ├── shim.c         注入 DLL（命令表见其文件头）
 └── inject.c       注入器
