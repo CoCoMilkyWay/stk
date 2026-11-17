@@ -8,7 +8,7 @@
 //     flow    资金流水近 14 天 (开页、敲起止日、查询、取块, 同 Broker::pull_flows)
 //     fields  Tables.hpp 各表各布局: 列数 > 功能定义的出参数, 声明的各列号上的出参字段名恰为声明的 (协议字典, 不动界面)
 //     terms   两融条款 (标的证券 / 担保品 查询全部, 约 1 分钟) — 慢, 须点名才跑
-#include "live/tdx/shim/Schema.hpp"
+#include "live/tdx/Schema.hpp"
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"

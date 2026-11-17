@@ -6,7 +6,7 @@
 //   不记返回的 eax / out 为空.
 //   落 output/run/live/tdx/rec/<时刻>.jsonl ({kind: "vt", ...}), 同时各一行打到 stdout (同槽同调用处连续的读调用合成一行 ×N).
 //   自弹字节 = 函数 ret N 的 N (thiscall / stdcall 的参数字节); 只经虚表的调用过桩, 直接调用不过.
-#include "live/tdx/shim/Image.hpp"
+#include "live/tdx/Image.hpp"
 #include "live/tdx/shim/Tool.hpp"
 
 #include "disk/Disk.hpp"
@@ -38,7 +38,7 @@ std::string text(const std::string &h) {
   for (const char c : raw)
     if (static_cast<unsigned char>(c) < 0x20)
       return "";
-  const std::string u = gbk_utf8(raw);
+  const std::string u = mem::gbk(raw);
   return u.find("\xEF\xBF\xBD") == std::string::npos ? u : "";
 }
 
@@ -82,7 +82,10 @@ int vt(double secs, const std::vector<std::string> &targets) {
   const Clock::time_point t0 = Clock::now(), end = t0 + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(secs));
   const auto drain = [&] {
     for (json &e : shim::cmd_wait(30, "vt", "drain"))
-      evs.push_back(std::move(e));
+      if (e.contains("id"))
+        evs.push_back(std::move(e));
+      else if (const int lost = e.at("lost").get<int>(); lost > 0)
+        std::fprintf(stderr, "事件环满, 挤掉 %d 条\n", lost);
   };
   while (Clock::now() < end) {
     std::this_thread::sleep_for(kGap);

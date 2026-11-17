@@ -1,5 +1,4 @@
-#include "live/tdx/shim/Schema.hpp"
-#include "live/tdx/shim/Tool.hpp"
+#include "live/tdx/Schema.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -9,7 +8,7 @@
 #include <regex>
 #include <sstream>
 
-namespace live::tdx::tool {
+namespace live::tdx {
 
 namespace {
 
@@ -81,7 +80,7 @@ Schema schema(const mem::Heap &h) {
     if (!line.empty() && line.back() == '\r')
       line.pop_back();
     std::smatch m;
-    const std::string u = gbk_utf8(line);
+    const std::string u = mem::gbk(line);
     if (std::regex_match(u, m, wtgn))
       s.titles.emplace(std::stoi(m[1]), m[2]);
   }
@@ -92,7 +91,7 @@ Schema schema(const mem::Heap &h) {
   need(p + nf * kRecord <= b.size(), "字段字典越过文件尾");
   for (size_t i = 0; i < nf; ++i, p += kRecord) {
     const std::string_view r = b.substr(p, kRecord);
-    s.fields.emplace(u16(r, 0), gbk_utf8(r.substr(6, r.find('\0', 6) == std::string_view::npos ? kRecord - 6 : r.find('\0', 6) - 6)));
+    s.fields.emplace(u16(r, 0), mem::gbk(r.substr(6, r.find('\0', 6) == std::string_view::npos ? kRecord - 6 : r.find('\0', 6) - 6)));
   }
 
   std::vector<int> w;
@@ -112,4 +111,4 @@ Schema schema(const mem::Heap &h) {
   return s;
 }
 
-} // namespace live::tdx::tool
+} // namespace live::tdx

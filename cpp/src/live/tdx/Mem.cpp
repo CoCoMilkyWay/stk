@@ -453,6 +453,27 @@ std::optional<std::string> reread(const Shape &t, const Heap &h, const Hit &hit)
   return body(t, d, *m);
 }
 
+std::string gbk(std::string_view raw) {
+  const iconv_t cd = gbk_cd();
+  std::string out;
+  char buf[4096];
+  char *in = const_cast<char *>(raw.data());
+  size_t inl = raw.size();
+  while (inl > 0) {
+    char *o = buf;
+    size_t ol = sizeof(buf);
+    const size_t r = iconv(cd, &in, &inl, &o, &ol);
+    out.append(buf, static_cast<size_t>(o - buf));
+    if (r != static_cast<size_t>(-1) || errno == E2BIG)
+      continue;
+    out += static_cast<unsigned char>(*in) == 0x80 ? "€" : "\xEF\xBF\xBD";
+    ++in;
+    --inl;
+    iconv(cd, nullptr, nullptr, nullptr, nullptr);
+  }
+  return out;
+}
+
 Split split(const Shape &t, std::string_view raw, std::span<const int> views) {
   Split sp;
   sp.text.resize(raw.size() * 3 / 2 + 16);

@@ -104,6 +104,7 @@ struct Split {
 };
 Split split(const Shape &t, std::string_view raw, std::span<const int> views);
 
+std::string gbk(std::string_view raw); // GBK → UTF-8, 非法字节换 U+FFFD (0x80 即 €); 读客户端里零散的文本用 (表另经 split 严格解)
 bool isclose(double a, double b, double rel, double abs);
 void need_row(const Shape &t, bool ok, const std::string &key, const char *what); // 行级校验不过 → Fail
 

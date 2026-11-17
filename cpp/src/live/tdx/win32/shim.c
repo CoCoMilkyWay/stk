@@ -40,9 +40,10 @@
 //   gdidump [target]              全部窗口（或只 target）图层各一条图层记录
 //   gdiwatch 长连接，窗口绘制层变更即推变了的图层记录（不收尾） help / spy help
 //   （help 回 {cmds}）
-//   vt hook <虚表> <槽数> / ret <虚表> <槽,槽…> / unhook / on / off / clear /
+//   vt hook <虚表> <槽数> / ret|only <虚表> <槽,槽…> / unhook / on / off / clear /
 //   drain  虚表追踪：经该表的调用记进入（槽、this、参数及其所指头几字节、
-//                                 返回址），ret 点名的槽另记返回（eax、参数所指），drain 逐条出
+//                                 返回址），ret 点名的槽另记返回（eax、参数所指），only 只记点名的槽；
+//                                 drain 逐条出，末了一行 {now 此刻 tick, lost 环满挤掉的条数}
 // 节点记录：{depth,hwnd,parent,id,class,title,rect:[l,t,r,b],style,exstyle,vis,en}
 //   parent 顶层为 0x00000000。
 // 图层记录：{hwnd,off:[客户区相对窗口左上],items:[[l,t,r,b,v]|[l,t,r,b,v,"文字"]]}
@@ -2389,7 +2390,8 @@ static const char *pin_cursor(POINT p) {
 
 struct vt_rec { // 一个槽：桩 push 的就是它；orig 偏移 8 写死在 vt_common 里
   DWORD vt, slot, orig;
-  volatile LONG ret; // 记返回
+  volatile LONG ret;   // 记返回
+  volatile LONG quiet; // 不记（vt only 没点名的槽）：桩直通
 };
 struct vt_tab {
   DWORD vt;
@@ -2414,7 +2416,7 @@ static struct vt_tab g_vt[VT_TABS];
 static int g_nvt;
 static BYTE *g_vt_stubs; // VT_TABS × VT_SLOTS 个桩
 static struct vt_evt g_vte[VT_CAP];
-static int g_vte_head, g_vte_count;
+static int g_vte_head, g_vte_count, g_vte_lost; // lost = 环满后挤掉的条数
 static volatile LONG g_vt_on, g_vt_seq;
 static DWORD g_vt_tls = TLS_OUT_OF_INDEXES;
 
@@ -2447,6 +2449,8 @@ static void vt_push(const struct vt_rec *r, DWORD id, int ret_kind, DWORD self,
   g_vte_head = (g_vte_head + 1) % VT_CAP;
   if (g_vte_count < VT_CAP)
     g_vte_count++;
+  else
+    g_vte_lost++;
   LeaveCriticalSection(&g_vt_cs);
 }
 
@@ -2454,9 +2458,9 @@ static void vt_push(const struct vt_rec *r, DWORD id, int ret_kind, DWORD self,
 // ebp esp ebx edx ecx eax，[9] 槽记录，[10] 返回址，[11..] 参数
 void vt_record(DWORD *f) __asm__("vt_record_sym") __attribute__((used));
 void vt_record(DWORD *f) {
-  if (!g_vt_on)
-    return;
   const struct vt_rec *r = (const struct vt_rec *)f[9];
+  if (!g_vt_on || r->quiet)
+    return;
   const DWORD id = (DWORD)InterlockedIncrement(&g_vt_seq);
   vt_push(r, id, 0, f[7], f[10], f[8], f + 11);
   if (!r->ret)
@@ -2547,12 +2551,55 @@ static int code_ptr(DWORD p) {
   return 0;
 }
 
+// 各版 shim 共用的虚表原指针（跨 DLL 命名共享表，同 hooktab）：改了源码重注入时，
+// 虚表里可能已是旧版的桩，原指针从这里取；没记过的格 = 全进程第一次钩它
+struct vt_shared {
+  volatile LONG lock, n;
+  struct {
+    DWORD vt;
+    int n;
+    DWORD orig[VT_SLOTS];
+  } t[VT_TABS];
+};
+static struct vt_shared *g_vt_shared;
+
+static void vt_shared_lock(int on) {
+  if (!on) {
+    InterlockedExchange(&g_vt_shared->lock, 0);
+    return;
+  }
+  if (!g_vt_shared) {
+    HANDLE fm = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
+                                   sizeof(struct vt_shared), "tdx_shim_vt_v1");
+    assert(fm); // 句柄不关：共享表随进程存活
+    g_vt_shared = MapViewOfFile(fm, FILE_MAP_WRITE, 0, 0, sizeof(struct vt_shared));
+    assert(g_vt_shared);
+  }
+  while (InterlockedCompareExchange(&g_vt_shared->lock, 1, 0))
+    Sleep(0);
+}
+
+// 虚表 vt 在共享表里的那条（没有即新建；满了回 NULL）；调用方持锁
+static int vt_shared_at(DWORD vt) {
+  int t = 0;
+  while (t < g_vt_shared->n && g_vt_shared->t[t].vt != vt)
+    t++;
+  if (t == g_vt_shared->n) {
+    if (t == VT_TABS)
+      return -1;
+    g_vt_shared->t[t].vt = vt;
+    g_vt_shared->t[t].n = 0;
+    InterlockedIncrement(&g_vt_shared->n);
+  }
+  return t;
+}
+
 static int vt_hooked(DWORD fn) {
   return g_vt_stubs && fn >= (DWORD)g_vt_stubs &&
          fn < (DWORD)g_vt_stubs + VT_TABS * VT_SLOTS * VT_STUB;
 }
 
-// 虚表 vt 的前 n 个槽换成桩；已钩过的表只补后面的槽。槽里不是代码节里的地址即停
+// 虚表 vt 的前 n 个槽换成桩；已钩过的表只补后面的槽、已钩的槽回到缺省（全记、不记返回）。槽里不是代码节里的地址即停
 // (虚表到头: 其后是下一张表的 RTTI 指针或别的数据)。改页保护只改恰好要换的
 // 那几格: 多出一格 (哪怕同页) 客户端也会拒 (实测 tc.dll 的 CTcJob 表 62 格可改、63 格拒)。
 // 改不了回错误, 不 abort (shim 活在客户端进程里)
@@ -2577,10 +2624,28 @@ static const char *vt_hook(struct out *o, DWORD vt, int n) {
     g_vt[g_nvt++].vt = vt;
   }
   struct vt_tab *tab = &g_vt[t];
-  DWORD *slots = (DWORD *)vt, old;
+  for (int k = 0; k < tab->n; k++) { // 已钩的槽回到缺省：全记、不记返回
+    InterlockedExchange(&tab->rec[k].quiet, 0);
+    InterlockedExchange(&tab->rec[k].ret, 0);
+  }
+  DWORD *slots = (DWORD *)vt, old, fns[VT_SLOTS];
+  vt_shared_lock(1);
+  const int st = vt_shared_at(vt);
+  if (st < 0) {
+    vt_shared_lock(0);
+    return "shared vtable table full";
+  }
   int m = tab->n;
-  while (m < n && !vt_hooked(slots[m]) && code_ptr(slots[m]))
-    m++;
+  for (; m < n && !vt_hooked(slots[m]); m++) {
+    fns[m] = m < g_vt_shared->t[st].n ? g_vt_shared->t[st].orig[m] : slots[m];
+    if (!code_ptr(fns[m]))
+      break;
+    if (m >= g_vt_shared->t[st].n) {
+      g_vt_shared->t[st].orig[m] = fns[m];
+      g_vt_shared->t[st].n = m + 1;
+    }
+  }
+  vt_shared_lock(0);
   if (m == tab->n) {
     emit(o, "{\"vt\":\"0x%08x\",\"hooked\":%d}\n", vt, tab->n);
     return NULL;
@@ -2597,9 +2662,8 @@ static const char *vt_hook(struct out *o, DWORD vt, int n) {
     return why;
   }
   for (int k = tab->n; k < m; k++) {
-    DWORD fn = slots[k];
     struct vt_rec *r = &tab->rec[k];
-    r->vt = vt, r->slot = k, r->orig = fn, r->ret = 0;
+    r->vt = vt, r->slot = k, r->orig = fns[k], r->ret = 0, r->quiet = 0;
     BYTE *s = g_vt_stubs + (t * VT_SLOTS + k) * VT_STUB;
     s[0] = 0x68; // push imm32
     *(DWORD *)(s + 1) = (DWORD)r;
@@ -2614,8 +2678,8 @@ static const char *vt_hook(struct out *o, DWORD vt, int n) {
   return NULL;
 }
 
-// 已钩的虚表 vt 里点名的槽（逗号分隔）记返回；其余槽只记进入
-static const char *vt_ret(struct out *o, char *a) {
+// 已钩的虚表 vt 里点名的槽（逗号分隔）：ret = 另记返回；only = 只记这些（其余直通）
+static const char *vt_mark(struct out *o, char *a, int only) {
   char *e;
   DWORD vt = strtoul(a, &e, 0);
   int t = 0;
@@ -2623,16 +2687,18 @@ static const char *vt_ret(struct out *o, char *a) {
     t++;
   if (t == g_nvt)
     return "vtable not hooked";
+  for (int k = 0; only && k < g_vt[t].n; k++)
+    InterlockedExchange(&g_vt[t].rec[k].quiet, 1);
   int n = 0;
   for (char *p = e; *p;) {
     long k = strtol(p, &e, 0);
     if (e == p || k < 0 || k >= g_vt[t].n)
       return "slot not hooked";
-    InterlockedExchange(&g_vt[t].rec[k].ret, 1);
+    InterlockedExchange(only ? &g_vt[t].rec[k].quiet : &g_vt[t].rec[k].ret, !only);
     n++;
     p = e + (*e == ',');
   }
-  emit(o, "{\"vt\":\"0x%08x\",\"ret\":%d}\n", vt, n);
+  emit(o, "{\"vt\":\"0x%08x\",\"%s\":%d}\n", vt, only ? "only" : "ret", n);
   return NULL;
 }
 
@@ -2664,8 +2730,8 @@ static const char *cmd_vt(struct out *o, HWND h, char *a) {
     DWORD vt = strtoul(rest, &e, 0);
     return vt_hook(o, vt, (int)strtol(e, NULL, 0));
   }
-  if (!strcmp(a, "ret"))
-    return vt_ret(o, rest);
+  if (!strcmp(a, "ret") || !strcmp(a, "only"))
+    return vt_mark(o, rest, a[0] == 'o');
   const char *err = NULL;
   if (!strcmp(a, "unhook"))
     err = vt_unhook();
@@ -2696,11 +2762,13 @@ static const char *cmd_vt(struct out *o, HWND h, char *a) {
       }
       emit(o, "]}\n");
     }
-    g_vte_head = g_vte_count = 0;
+    if (*a == 'd')
+      emit(o, "{\"now\":%lu,\"lost\":%d}\n", GetTickCount(), g_vte_lost);
+    g_vte_head = g_vte_count = g_vte_lost = 0;
     LeaveCriticalSection(&g_vt_cs);
     return NULL;
   } else
-    return "usage: vt hook <vtable> <slots> | ret <vtable> <slot,slot…> | unhook | on | off | clear | drain";
+    return "usage: vt hook <vtable> <slots> | ret|only <vtable> <slot,slot…> | unhook | on | off | clear | drain";
   if (err)
     return err;
   int n = 0;

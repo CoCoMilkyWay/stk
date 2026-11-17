@@ -7,11 +7,13 @@
 //     shim probe schema [功能号…]   协议字典: 各功能 / 某功能的入参与出参
 //     shim rec <秒>           录制: 消息 / 窗口树 / 绘制层的变化 → output/run/live/tdx/rec/<时刻>.jsonl, 各条一行打到 stdout
 //     shim vt <秒> <类名 | 0x虚表>…   虚表追踪: 经这些虚表的每次调用 (参数 / 所指文本 / 返回) → 同上目录, 各一行打到 stdout
-//     shim test [用例…]       在线用例 (空 = 全部不慢的; list = 列出); 每例一行 PASS / FAIL, 有 FAIL 退出码 1
+//     shim test [用例…]       在线用例 (空 = 全部不慢的; list = 列出); 每例一行 PASS / FAIL, 有 FAIL 退出码 1; 各问的请求层日志 (req) 照记
 //   界面动作只做查询类 (切页 / 开查询页 / 点查询), 不下单; 交互日志照常落 output/run/live/tdx/log/
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
+#include "live/tdx/Mem.hpp"
+#include "live/tdx/Req.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/Win.hpp"
 
@@ -47,8 +49,10 @@ int run(const std::string &sub, const std::vector<std::string> &rest) {
     return tool::rec(std::stod(rest[0]));
   if (sub == "vt" && rest.size() >= 2)
     return tool::vt(std::stod(rest[0]), {rest.begin() + 1, rest.end()});
-  if (sub == "test")
+  if (sub == "test") {
+    req::arm(*mem::attach()); // 用例各段里另记请求层日志 (同 Broker)
     return tool::test(rest);
+  }
   std::fputs(kUsage, stderr);
   return 2;
 }

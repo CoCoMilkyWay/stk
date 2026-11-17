@@ -338,6 +338,8 @@ set(MATH_PRECISE
     live/tdx/Flow.cpp
     live/tdx/Mem.cpp
     live/tdx/Proc.cpp
+    live/tdx/Req.cpp
+    live/tdx/Schema.cpp
     live/tdx/Shim.cpp
     live/tdx/Tables.cpp
     live/tdx/Tdx.cpp
@@ -347,7 +349,6 @@ set(MATH_PRECISE
     live/tdx/shim/Main.cpp
     live/tdx/shim/Probe.cpp
     live/tdx/shim/Rec.cpp
-    live/tdx/shim/Schema.cpp
     live/tdx/shim/Test.cpp
     live/tdx/shim/Vt.cpp
     # account: 账户净值 (资金流水回放)

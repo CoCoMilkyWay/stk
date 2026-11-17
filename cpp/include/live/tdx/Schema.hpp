@@ -1,4 +1,4 @@
-// 客户端的协议字典: TcApi 缓存 <客户端目录>/T0002/wt_cache/TcApi_Cache/40-BRANCH-<营业部>-2.TCS, 登录时整份读进内存. 格式:
+// 通达信适配: 客户端的协议字典: TcApi 缓存 <客户端目录>/T0002/wt_cache/TcApi_Cache/40-BRANCH-<营业部>-2.TCS, 登录时整份读进内存. 格式:
 //   [二进制头][INI 文本 (\r\n 分行; WTGN_<序>=<功能号>,<名称> 列功能)][\0]
 //   [u16 字段数][字段数 × 35 字节 {u16 字段号, u8 类型, u8 ?, u16 宽度, char 名称[29] (GBK, \0 结尾)}]
 //   [功能定义: u16 流, 每条 {0x4bd, 入参数, 功能号, 入参字段号…, 出参数, 功能号 + 1, 出参字段号…}]
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace live::tdx::tool {
+namespace live::tdx {
 
 struct Schema {
   struct Func {
@@ -27,4 +27,4 @@ struct Schema {
 
 Schema schema(const mem::Heap &h); // 读不到 / 不恰一份在堆里 → Fail
 
-} // namespace live::tdx::tool
+} // namespace live::tdx

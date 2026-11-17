@@ -1,5 +1,6 @@
 #include "live/tdx/Ui.hpp"
 
+#include "live/tdx/Req.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/Trace.hpp"
 #include "live/tdx/Until.hpp"
@@ -172,6 +173,7 @@ void settle(const Page &p, long n0, double timeout, const std::function<void()> 
         },
         timeout, 0.01);
   trace::ev("done", {{"page", p.dlg}, {"ms", trace::ms_since(t0)}});
+  req::flush();
 }
 
 } // namespace

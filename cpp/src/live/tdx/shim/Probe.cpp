@@ -9,8 +9,8 @@
 
 #include "live/Broker.hpp"
 #include "live/tdx/Mem.hpp"
-#include "live/tdx/shim/Image.hpp"
-#include "live/tdx/shim/Schema.hpp"
+#include "live/tdx/Image.hpp"
+#include "live/tdx/Schema.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -70,32 +70,6 @@ iconv_t open_cd(const char *to, const char *from) {
   return cd;
 }
 
-} // namespace
-
-std::string gbk_utf8(std::string_view raw) {
-  thread_local const iconv_t cd = open_cd("UTF-8", "GBK");
-  std::string out;
-  char buf[4096];
-  char *in = const_cast<char *>(raw.data());
-  size_t inl = raw.size();
-  iconv(cd, nullptr, nullptr, nullptr, nullptr);
-  while (inl > 0) {
-    char *o = buf;
-    size_t ol = sizeof(buf);
-    const size_t r = iconv(cd, &in, &inl, &o, &ol);
-    out.append(buf, static_cast<size_t>(o - buf));
-    if (r != static_cast<size_t>(-1) || errno == E2BIG)
-      continue;
-    out += static_cast<unsigned char>(*in) == 0x80 ? "€" : "\xEF\xBF\xBD";
-    ++in;
-    --inl;
-    iconv(cd, nullptr, nullptr, nullptr, nullptr);
-  }
-  return out;
-}
-
-namespace {
-
 std::string utf8_gbk(const std::string &s) {
   thread_local const iconv_t cd = open_cd("GBK", "UTF-8");
   std::string out(s.size() * 2 + 4, '\0');
@@ -143,7 +117,7 @@ std::string utf8_utf16(const std::string &s) {
 // 解码后不可打印的单字节字符 (C0 / DEL / C1 / NBSP / 软连字符) 转 \xNN
 std::string esc(std::string_view raw, bool utf16 = false) {
   std::string out;
-  for (const uint32_t cp : cps_of(utf16 ? utf16_utf8(raw) : gbk_utf8(raw)))
+  for (const uint32_t cp : cps_of(utf16 ? utf16_utf8(raw) : mem::gbk(raw)))
     if (cp < 0x20 || (cp >= 0x7F && cp <= 0xA0) || cp == 0xAD)
       out += strf("\\x%02x", cp);
     else

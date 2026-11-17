@@ -1,4 +1,4 @@
-// 客户端进程的映像 (宿主一侧经 /proc/<pid>/mem 只读): PE 模块 / 任意址的试读 / MSVC RTTI 类名 / 按类名找虚表
+// 通达信适配: 客户端进程的映像 (宿主一侧经 /proc/<pid>/mem 只读): PE 模块 / 任意址的试读 / MSVC RTTI 类名 / 按类名找虚表
 #pragma once
 
 #include "live/Broker.hpp"
@@ -13,7 +13,7 @@
 #include <unistd.h>
 #include <vector>
 
-namespace live::tdx::tool {
+namespace live::tdx {
 
 // Wine 只把 PE 映像的头页按文件映射 (/proc/<pid>/maps 里带路径、文件偏移 0), 各节多是匿名段:
 // 模块 = 头页的址起、映像头 SizeOfImage 那么长
@@ -119,4 +119,4 @@ struct Image {
   }
 };
 
-} // namespace live::tdx::tool
+} // namespace live::tdx

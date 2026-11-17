@@ -14,7 +14,13 @@
 //     build {dll, cc} / inject {dll, port, proc} / online {port}           shim 编译、注入、注入后上线
 //     attach {pid} / ptrace {scope}      接进程堆、放开 ptrace             torn {tab, n}  连读 n 次才一致
 //     gen {tab, rows, addr}              盯着的表换代 (addr = 选中各块的地址)
-//     done {page, ms}                    一问查完 (页的查询键动作后禁用过且已恢复), ms 自动作起
+//     done {page, ms}                    一问查完 (页的查询键动作后禁用过且已恢复), ms 自动作起; 随即记其间的各请求:
+//     req {func, title?, page, by, job, in, to, ago, net_ms, ans_ms, end_ms, cols, rows, next, read, first}   请求层一个请求 (Req.hpp):
+//                                        功能号 / 功能名 / 页面标识 / 发起的插件 / job 地址 / 入参 {字段名: 值} (密码打码) /
+//                                        回包目标 {hwnd, lp} / 发出距此刻 ms / 发出到网络线程收到、插件开读、插件读完的 ms / 应答列数、行数 /
+//                                        插件移了几次游标 / 读法 (按列号 / 按字段号) / 首行 {字段名: 值} (各值至多 39 字节);
+//                                        没发出的带 sent: false, 等了 2s 插件仍没读完的带 finished: false
+//     req_arm {vt, slots, dict, fields, funcs}  请求层日志钩上 (虚表 / 槽数 / 协议字典文件与规模)   req_lost {n}  事件环满挤掉的调用数
 //     answer {tab, n, rows, addr}        盯着的表查完后全量读 (n = 页上条数)
 //     ask {tab, n, rows, addr}           act 驱动的表查完后新冒出的块 (n = 页上条数; 0 = 空表, 可无新块)
 //     yield {ms}                         刷新一轮把界面锁让给在等的那路, 让了 ms     user {quiet}  有人在操作客户端, 定时刷新推后

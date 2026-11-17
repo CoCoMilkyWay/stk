@@ -5,6 +5,7 @@
 #include "live/tdx/Flash.hpp"
 #include "live/tdx/Flow.hpp"
 #include "live/tdx/Mem.hpp"
+#include "live/tdx/Req.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/Tables.hpp"
 #include "live/tdx/Trace.hpp"
@@ -208,13 +209,13 @@ struct Core {
     }
     return heap;
   }
-  // 接上进程堆与 shim (须持 work): 客户端不在即 Fail, 不去空注入; 动界面的事务开头各调一次
+  // 接上进程堆与 shim (须持 work): 客户端不在即 Fail, 不去空注入; 动界面的事务开头各调一次. 请求层日志随之钩上 (钩着即跳过)
   const mem::HeapP &connect() {
     attach();
-    if (!shim::online()) {
-      trace::Span attaching("接入");
+    trace::Span attaching("接入");
+    if (!shim::online())
       win::attach();
-    }
+    req::arm(*heap);
     return heap;
   }
   mem::HeapP connected() {
