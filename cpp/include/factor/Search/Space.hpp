@@ -3,7 +3,7 @@
 // =============================================================================
 // Search 的参数空间 (纯逻辑, 无后端, 无 IO; 与 Surface.hpp 对仗: 点从哪来 / 点有多好): 表达式 → 可搜参数槽 → 统一坐标 + 闭区间 → 低差异采样 (第 0 趟)
 // =============================================================================
-//   【槽】模板表达式 (Expr.hpp 自由参数: 裸键名 d / k / k2 / w) 的每个自由参数各一槽, 裸 w 每个特征元一槽;
+//   【槽】模板表达式 (Expr.hpp 自由参数: 裸键名 d / k / k2 / w) 的每个自由参数各一槽, 裸 w 每个特征元一槽 (N 元节点直接作根的输入时首元的权定为 1, 不是槽);
 //     写了数字的参数固定不搜 (TS 口径根的 d 必是数字).
 //     h (N 元回归的持有期) 不是槽: 调用方先落到所搜持有期 (expr::bind_hold), 这里只收 h 已具体的树.
 //   【坐标与区间】每槽一维坐标 u, 单调; 区间两端全由已有常数推出 (不设跨度常数). 变换按参数含义选 (见 to_v):
@@ -16,9 +16,11 @@
 //       阈值 TsGt / 截断 TsClip    logit分位 [1/A, 1 − 1/A]            (k = 输入分布 (TsClip: |x|) 的分位, 分位表 qtab 由调用方装载后
 //                                                                       set_qtab; 平均每行触发 1 只为界)
 //       日内时段 TsTodMask         行        [0, S]
-//       N 元定权的权 w_i           线性      [−1, 1]                   (根归一抹掉整体尺度, 立方体已含全部方向)
+//       N 元定权的权 w_i, 作根输入 tan       [−A, A]  (i ≥ 2)          (w_1 = 1: 根归一抹掉整体尺度, Search 逐点定方向抹掉正负, 余下 N − 1 维即全部方向;
+//                                                                       u = 与首元的夹角, N = 2 时均匀铺满半圆; 比 A 大 = 首元贡献不到一个秩位)
+//                         其余     线性      [−1, 1]                   (与别的量相加 / 相乘时尺度与正负都有意义, 每元一槽)
 //     A = 池内平均有效资产数 (n_full · kGroups). 整数参数 (d / 桶数 / 时段) 取整回去.
-//     中性坐标 u0: 调用方定分位表时, 其他槽取它 (区间中点; 分位 / 阈值 = 中位; 时段 = 全天不掩; 权 = 等权 1).
+//     中性坐标 u0: 调用方定分位表时, 其他槽取它 (区间中点; 分位 / 阈值 = 中位; 时段 = 全天不掩; 权 = 与首元等权 1).
 //   【采样】第 0 趟的点 = R_d 低差异序列 (frac(0.5 + n·α), α_j = φ_P^{−j}, φ_P 为 x^{P+1} = x + 1 的正根) 映射到各槽区间:
 //     确定性, 无表无种子, 任意 P 每槽 N 个不同取值 (P 大也不退化). 点数 kInit (Config) 是唯一的预算量.
 //   出错策略: 只 assert (表达式来自已校验的因子行).
@@ -48,6 +50,7 @@ struct Slot {
   int node = -1; // Expr::nodes 下标 (算子节点)
   Key key = Key::D;
   int wi = 0;                    // w 槽: 特征元下标
+  bool top = false;              // w 槽: N 元节点直接作根的输入 (首元的权定为 1, 不是槽; 坐标 tan)
   KDom kdom = KDom::NONE;        // k 域 (d / w 槽不看)
   bool integer = false;          // 值取整
   double u_lo = 0.0, u_hi = 0.0; // 闭区间 (开端点由 check_params 否决)
@@ -78,7 +81,7 @@ inline double to_v(const Slot &s, double u) {
   if (s.key == Key::D) {
     v = std::exp2(u);
   } else if (s.key == Key::W) {
-    v = u;
+    v = s.top ? std::tan(u) : u;
   } else {
     switch (s.kdom) {
     case KDom::OPEN01:
@@ -116,6 +119,7 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
     if (n.op < 0 || !n.free)
       continue;
     const expr::OpInfo &o = expr::kOps[n.op];
+    const bool top = e.nodes[0].op >= 0 && e.nodes[0].args[0] == static_cast<int>(i); // 直接作根 (归一算子, 一元) 的输入
     const auto add = [&](Key key, int wi = 0) {
       Slot s;
       s.node = static_cast<int>(i);
@@ -127,7 +131,8 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
         s.integer = true;
         s.u_lo = 0.0, s.u_hi = std::log2(static_cast<double>(kMaxD));
       } else if (key == Key::W) {
-        s.u_lo = -1.0, s.u_hi = 1.0;
+        s.top = top;
+        s.u_hi = top ? std::atan(a) : 1.0, s.u_lo = -s.u_hi;
       } else {
         switch (o.kdom) {
         case KDom::OPEN01: { // 分位所取的样本数: 截面 = A; 滚窗 = d (自由 d 取上界)
@@ -163,7 +168,7 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
           assert(false);
         }
       }
-      s.u0 = key == Key::W                          ? 1.0
+      s.u0 = key == Key::W                          ? (top ? std::atan(1.0) : 1.0)
              : o.kdom == KDom::TOD && key != Key::D ? (key == Key::K ? s.u_lo : s.u_hi)
                                                     : 0.5 * (s.u_lo + s.u_hi);
       out.push_back(std::move(s));
@@ -175,8 +180,8 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
     if (n.free & expr::kFreeK2)
       add(Key::K2);
     if (n.free & expr::kFreeW)
-      for (int a = 0; a < n.n_args; ++a)
-        add(Key::W, a);
+      for (int j = top ? 1 : 0; j < n.n_args; ++j)
+        add(Key::W, j);
   }
   return out;
 }
@@ -204,17 +209,20 @@ inline void set_qtab(Slot &s, std::vector<float> t) {
 
 inline bool in_range(const Slot &s, double u) { return u >= s.u_lo - 1e-9 && u <= s.u_hi + 1e-9; }
 
-// 槽参数落值 v 并清自由位 (不刷 canon); k / k2 / w 落规范串往返值 (expr::kv_of), 评的与写进 weights 的同一个式子
+// 槽参数落值 v 并清自由位 (不刷 canon); k / k2 / w 落规范串往返值 (expr::kv_of), 评的与写进 weights 的同一个式子; 作根输入的 w 槽连带首元的权落 1
 inline void put(expr::Expr &e, const Slot &s, double v) {
   expr::Node &n = e.nodes[static_cast<size_t>(s.node)];
-  if (s.key == Key::D)
+  if (s.key == Key::D) {
     n.p.d = static_cast<int>(v), n.free &= static_cast<uint8_t>(~expr::kFreeD);
-  else if (s.key == Key::K)
+  } else if (s.key == Key::K) {
     n.p.k = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeK);
-  else if (s.key == Key::K2)
+  } else if (s.key == Key::K2) {
     n.p.k2 = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeK2);
-  else
+  } else {
+    if (s.top)
+      n.p.w[0] = expr::kv_of(1.0);
     n.p.w[s.wi] = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeW);
+  }
 }
 
 // 坐标 u[P] → 具体表达式 (base 模板的拷贝, 槽参数落值并清自由位, 刷新 canon); 任一槽出界 / 参数值域不合 → false.

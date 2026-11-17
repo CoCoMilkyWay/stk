@@ -121,6 +121,7 @@ struct Weight {
   bool has = false;
   Stat st;
   double score = 0, se = 0, valid = 0; // Search 目标 (不过门槛 = −∞) / 目标的标准误 / 池内有效率 (0..1)
+  double turn = 0, rac = 0;            // 年换手 (倍, 两端单边均, Stat turn_annual) / 隔一个持有期的因子秩自相关 (越近 1 换手越低; 只展示, 不进门槛与判优)
   std::vector<double> grp;             // [kGroups] 组每期毛收益减组间均值 (已定向; has 才有)
   std::vector<Year> years;             // 分年 (已定向; has 才有)
 };

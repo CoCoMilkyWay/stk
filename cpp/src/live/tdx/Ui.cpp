@@ -28,7 +28,8 @@ constexpr double kReclick = 3;                  // 开页: 别的页一直挡着
 constexpr long kPageAll = 454;                  // 查询页的「查询全部」按钮
 constexpr long kMsgText = 7013, kMsgYes = 7015; // 确认框 / 提示框: 正文 Static、确认按钮
 
-// 交易栏页签的页: 认页的记号 = 页上可见的列表 (表头含 col 的 SysHeader32 (列表的子窗口), 或 id 为 list 的 SysListView32)
+// 交易栏页签的页: 认页的记号 = 页上可见的列表 (表头含 col 的 SysHeader32 (列表的子窗口), 或 id 为 list 的 SysListView32;
+//   持仓 / 成交的列表也是这个 id, 子表头含别的页签的 col 即不算)
 struct Mark {
   const char *tab, *col;
   long list;
@@ -88,14 +89,27 @@ bool header_has(const Hwnd &h, const char *col) {
   return false;
 }
 
-// 记号控件 h 此刻可见 (表头另须含 col; 先看可见: 已销毁的窗口不可见, 不去 detail)
-bool shown(const Mark &m, const Hwnd &h) { return win::node(h).vis && (!m.col || header_has(h, m.col)); }
+// 列表 list 的子表头含某页签的 col (= 那页签的列表)
+bool foreign(const Hwnd &list) {
+  for (const Node &n : win::enum_(list))
+    if (n.depth == 1 && n.cls == "SysHeader32")
+      for (const Mark &m : kMarks)
+        if (m.col && header_has(n.hwnd, m.col))
+          return true;
+  return false;
+}
+
+// h 是 m 的记号控件: 表头须含 col, 列表须不是别的页签的
+bool fits(const Mark &m, const Hwnd &h) { return m.col ? header_has(h, m.col) : !foreign(h); }
+
+// 记号控件 h 此刻可见且是 m 的 (先看可见: 已销毁的窗口不可见, 不去 detail)
+bool shown(const Mark &m, const Hwnd &h) { return win::node(h).vis && fits(m, h); }
 
 // 此刻可见的记号控件 (须恰一个)
 std::optional<Hwnd> mark_now(const Mark &m) {
   std::vector<Hwnd> hits;
   for (const Node &n : m.col ? win::find("SysHeader32") : win::find("SysListView32", m.list))
-    if (n.vis && (!m.col || header_has(n.hwnd, m.col)))
+    if (n.vis && fits(m, n.hwnd))
       hits.push_back(n.hwnd);
   return hits.size() == 1 ? std::optional<Hwnd>(hits[0]) : std::nullopt;
 }

@@ -528,6 +528,8 @@ Result result_of(const Engine::FeatureTable &ft, const std::optional<Engine::Fac
       x.score = s.score, x.se = s.se, x.valid = w.valid_pct / 100.0;
       const factor::stat::HoldStat *h = w.find_hold(hold);
       assert(h && "RowScore ok 须有该持有期的 HoldStat");
+      x.turn = factor::stat::turn_annual(*h, w.turn_of(*h));
+      x.rac = h->rac.mean;
       double mid = 0.0;
       for (const float g : h->grp)
         mid += g / static_cast<double>(kGroups);

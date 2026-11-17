@@ -10,7 +10,8 @@
 //   校验两层: 解析时按参数表 (类型 / 必填 / 范围 / 可选值; 不合 → 整条回复重发); 执行时按数据 (因子 / 特征 / 资产 / 日期 / 流派 / 研报不成 → 该调用的结果写原因, 其余照做)
 //   回复级约束: 1..kMaxCalls 个调用; eval_factor 至多 kBatch 个; finish 只能在末尾; ask_human 只在会话允许提问且还没问过时可用;
 //              随会话状态的 (上条有回测则本条不能回测 / 待判的假设须 judge) 见 task_agent/Acts RuleMiss
-//   执行记录 Act: 一个调用的时段 / 交给 agent 的结果 / 落进会话状态要的那份 (eval_factor 的回测 Trial, ask_human 的问答 Asked, search_leaves 列出的叶 Shown);
+//   执行记录 Act: 一个调用的时段 / 交给 agent 的结果 / 落进会话状态要的那份 (eval_factor 的回测 Trial, ask_human 的问答 Asked, search_leaves 列出的叶 Shown;
+//              另有观察的关键数 Seen, 只给研究树);
 //              执行见 gui/task_agent/Acts.hpp, 落进状态见 gui/task_agent/Timeline.hpp Apply
 // =============================================================================
 
@@ -117,7 +118,7 @@ struct Call {
   std::vector<std::string> strs(const char *k) const;
   std::string text(size_t cap = 0) const; // 一行: 名(键=值, …) (流水 / 界面); cap > 0 = 每个值至多 cap 字 (结果标题)
 };
-// ask = 本条回复可用 ask_human; 不合协议 → false + error (首个不合处, 带字段路径; 原样经 retry 反馈给模型)
+// ask = 本条回复可用 ask_human; 不合协议 → false + error (全部不合处, 一行一处, 带字段路径; 经 retry 逐行反馈给模型)
 bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &error);
 // 系统提示的工具节: 每个工具一节 (做什么 / 参数 / 返回); ask = 列不列 ask_human
 std::string ToolsDoc(bool ask);
@@ -178,13 +179,17 @@ struct Trial {
 struct Shown {
   std::vector<std::string> leaves;
 };
+// 观察的关键数一行 (原文收起后研究树里留它, 见 task_agent/Views Render)
+struct Seen {
+  std::string gist;
+};
 // 一个调用的执行: span = 开始 → 做完; out = 交给 agent 的结果; ok = 做成了 (否则 out 是原因)
 struct Act {
   Call call;
   Span span;
   std::string out;
   bool ok = true;
-  std::variant<std::monostate, Trial, Asked, Shown> got;
+  std::variant<std::monostate, Trial, Asked, Shown, Seen> got;
 };
 
 } // namespace GUI::Agent

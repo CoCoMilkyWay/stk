@@ -7,8 +7,10 @@
 #include <cassert>
 #include <cstdint>
 #include <iterator>
+#include <map>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace GUI::Agent {
 
@@ -71,7 +73,7 @@ constexpr ArgDef kBookArgs[] = {
     {"at", Arg::Str, "\"\"", 0, 0, nullptr, "可选: 全簿剖面的时刻 HH:MM:SS (取该秒末的簿, 须在窗口内); 空 = 窗口最后一秒"},
     {"big", Arg::Int, "0", 0, 100000, nullptr, "大单门槛 (万元, 按委托额); 0 = 当日全部新挂单额的 99 分位"},
     {"n", Arg::Int, "20", 1, 40, nullptr, "大单事件列几条 (按额取最大的, 再按时序列)"}};
-constexpr ArgDef kLeavesArgs[] = {{"query", Arg::Str, nullptr, 0, 0, nullptr, "关键词, 查叶名 / 中文名 / 公式 / 说明; 空格隔开的几个须同时出现 (英文不分大小写), 都含的没有则列含任一词的 (几个叶名一次查清)"},
+constexpr ArgDef kLeavesArgs[] = {{"query", Arg::Str, nullptr, 0, 0, nullptr, "关键词, 查叶名 / 中文名 / 公式 / 说明; 空格隔开的几个须同时出现 (英文不分大小写; 至多 3 个字母数字的短词如 ep / pb 只认整词), 都含的没有则列含任一词的 (几个叶名一次查清)"},
                                   {"n", Arg::Int, "30", 1, 60, nullptr, "列几组 (同组 = 只差计量 / 阈值的叶)"}};
 // 研报库的词表 (标注体系的 code)
 constexpr const char *kStages = "L0_data|L1_factor|L2_process|L3_alpha|L4_risk|L5_portfolio|L6_evaluation|L7_execution|L8_timing";
@@ -175,7 +177,7 @@ constexpr ArgDef kAskArgs[] = {{"questions", Arg::Questions, nullptr, 1, 8, null
 
 constexpr ToolDef kTools[] = {
     {Tool::ViewFeature, "view_feature", "看特征", Run::Look, Cat::Look, false, kFeatureArgs,
-     "看特征长什么样: 池内分布 (分位) / 日内轮廓 (各行截面中位数) / 方差来自哪 (资产间 · 日间 · 日内) / 持续性 (同一资产的自相关) / 与本持有期收益的截面 rIC; "
+     "看特征长什么样: 池内分布 (分位) / 日内轮廓 (各行截面中位数; 日频慢变量不列) / 方差来自哪 (资产间 · 日间 · 日内) / 持续性 (同一资产的自相关) / 与本持有期收益的截面 rIC; "
      "给多个时附两两截面相关. 造新特征前先看原料, 造完看它是否如你所想",
      "每个式子一节统计 (带火花线; 写错的式子在它那节给原因, 其余照算) + 多个时的相关矩阵"},
     {Tool::ViewLayers, "view_layers", "看分层", Run::Look, Cat::Look, false, kLayersArgs,
@@ -290,22 +292,33 @@ const ToolDef *find(std::string_view name) {
 }
 
 // ---- 回复解析 ----
-// 回复 → JSON 对象 (取首个 '{' 到末个 '}', 容忍外包代码块); 同一对象里键重复也不收 (解析器会静默丢掉一个)
+// 回复 → JSON 对象 (取首个 '{' 到末个 '}', 容忍外包代码块); 同一对象里同键不同值不收 (解析器会静默丢掉一个), 同键同值无害, 收下
 bool object_of(std::string_view text, json &j, std::string &error) {
   const size_t a = text.find('{'), b = text.rfind('}');
   if (a == std::string_view::npos || b == std::string_view::npos || b < a) {
     error = "回复里没有 JSON 对象";
     return false;
   }
-  // 在开的各层容器: 数组记在第几项, 对象记在哪个键与已见的键; 键重复时按它们拼出所在对象的路径
+  // 在开的各层容器: 数组记在第几项, 对象记在哪个键与已收齐的键值; 同键不同值时按它们拼出所在对象的路径
   struct Open {
     bool arr = false;
     int n = -1;
     std::string key;
-    std::vector<std::string> keys;
+    std::map<std::string, json> vals;
   };
   std::vector<Open> st;
   std::string dup, where;
+  const auto put = [&](const json &v) { // 一个值收齐: 落进所在对象的当前键
+    if (st.empty() || st.back().arr)
+      return;
+    Open &o = st.back();
+    const auto [it, fresh] = o.vals.try_emplace(o.key, v);
+    if (fresh || it->second == v || !dup.empty())
+      return;
+    dup = o.key;
+    for (size_t i = 0; i + 1 < st.size(); ++i)
+      where += st[i].arr ? "[" + std::to_string(st[i].n) + "]" : (i ? "." : "") + st[i].key;
+  };
   const json::parser_callback_t seen = [&](int, json::parse_event_t ev, json &v) {
     using E = json::parse_event_t;
     if (ev == E::object_start || ev == E::array_start) {
@@ -314,18 +327,13 @@ bool object_of(std::string_view text, json &j, std::string &error) {
       st.push_back({.arr = ev == E::array_start});
     } else if (ev == E::object_end || ev == E::array_end) {
       st.pop_back();
+      put(v);
     } else if (ev == E::value) {
       if (!st.empty() && st.back().arr)
         ++st.back().n;
+      put(v);
     } else if (ev == E::key) {
-      Open &o = st.back();
-      o.key = v.get<std::string>();
-      if (dup.empty() && std::find(o.keys.begin(), o.keys.end(), o.key) != o.keys.end()) {
-        dup = o.key;
-        for (size_t i = 0; i + 1 < st.size(); ++i)
-          where += st[i].arr ? "[" + std::to_string(st[i].n) + "]" : (i ? "." : "") + st[i].key;
-      }
-      o.keys.push_back(o.key);
+      st.back().key = v.get<std::string>();
     }
     return true;
   };
@@ -335,7 +343,7 @@ bool object_of(std::string_view text, json &j, std::string &error) {
     return false;
   }
   if (!dup.empty()) {
-    error = (where.empty() ? "顶层对象" : where) + " 里键 \"" + dup + "\" 出现了两次 (常见于把两个调用写进一个 {...}: 每个调用单独一个 {\"tool\": ..., \"args\": {...}}, 之间用逗号隔开)";
+    error = (where.empty() ? "顶层对象" : where) + " 里键 \"" + dup + "\" 出现了两次且值不同 (常见于把两个调用写进一个 {...}: 每个调用单独一个 {\"tool\": ..., \"args\": {...}}, 之间用逗号隔开)";
     return false;
   }
   return true;
@@ -551,61 +559,63 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
     error = "calls 须有 1.." + std::to_string(kMaxCalls) + " 个调用 (收到 " + std::to_string(cs.size()) + " 个; 多的留到下一条)";
     return false;
   }
+  std::vector<std::string> errs; // 全部不合处 (一次报齐, 免得改一处退一次)
   int evals = 0;
   for (size_t i = 0; i < cs.size(); ++i) {
     const std::string p = at("calls", i);
     const json &c = cs[i];
+    const size_t n0 = errs.size();
     if (!c.is_object() || !c.contains("tool") || !c["tool"].is_string()) {
-      error = p + " 须是 {\"tool\": 工具名, \"args\": {...}}";
-      return false;
+      errs.push_back(p + " 须是 {\"tool\": 工具名, \"args\": {...}}");
+      continue;
     }
     const std::string name = c["tool"].get<std::string>();
     const ToolDef *d = find(name);
     if (!d || (d->id == Tool::AskHuman && !ask)) {
-      error = p + ".tool: " + (d ? "ask_human 本会话不可用 (研究员没开提问, 或已问过一次; 一条回复也只能有一个)" : "没有工具 " + name);
-      return false;
+      errs.push_back(p + ".tool: " + (d ? "ask_human 本会话不可用 (研究员没开提问, 或已问过一次; 一条回复也只能有一个)" : "没有工具 " + name));
+      continue;
     }
     if (d->id == Tool::AskHuman)
       ask = false;
-    if (d->id == Tool::Finish && i + 1 != cs.size()) {
-      error = p + ": finish 须是最后一个调用";
-      return false;
-    }
-    if (d->id == Tool::EvalFactor && ++evals > kBatch) {
-      error = p + ": 一条回复至多 " + std::to_string(kBatch) + " 个 eval_factor (这是第 " + std::to_string(evals) + " 个)";
-      return false;
-    }
+    if (d->id == Tool::Finish && i + 1 != cs.size())
+      errs.push_back(p + ": finish 须是最后一个调用");
+    if (d->id == Tool::EvalFactor && ++evals > kBatch)
+      errs.push_back(p + ": 一条回复至多 " + std::to_string(kBatch) + " 个 eval_factor (这是第 " + std::to_string(evals) + " 个)");
     const json args = c.contains("args") ? c["args"] : json::object();
     if (!args.is_object()) {
-      error = p + ".args 须是 JSON 对象";
-      return false;
+      errs.push_back(p + ".args 须是 JSON 对象");
+      continue;
     }
     for (const auto &[k, v] : args.items())
       if (std::none_of(d->args.begin(), d->args.end(), [&](const ArgDef &a) { return k == a.key; })) {
         std::string keys;
         for (const ArgDef &a : d->args)
           keys += (keys.empty() ? "" : " / ") + std::string(a.key);
-        error = p + ".args." + k + ": " + name + " 没有这个参数 (它的参数: " + (keys.empty() ? "无" : keys) + ")";
-        return false;
+        errs.push_back(p + ".args." + k + ": " + name + " 没有这个参数 (它的参数: " + (keys.empty() ? "无" : keys) + ")");
       }
     Call call{d->id, json::object()};
     for (const ArgDef &a : d->args) {
       const std::string ap = p + ".args." + a.key;
       if (!args.contains(a.key)) {
-        if (!a.def) {
-          error = "缺参数 " + ap;
-          return false;
-        }
-        call.args[a.key] = json::parse(a.def);
-        continue;
+        if (a.def)
+          call.args[a.key] = json::parse(a.def);
+        else
+          errs.push_back("缺参数 " + ap);
+      } else if (std::string why; !check(a, args[a.key], ap, why)) {
+        errs.push_back(std::move(why));
+      } else {
+        call.args[a.key] = args[a.key];
       }
-      if (!check(a, args[a.key], ap, error))
-        return false;
-      call.args[a.key] = args[a.key];
     }
-    out.push_back(std::move(call));
+    if (errs.size() == n0)
+      out.push_back(std::move(call));
   }
-  return true;
+  if (errs.empty())
+    return true;
+  out.clear();
+  for (const std::string &e : errs)
+    error += (error.empty() ? "" : "\n") + e;
+  return false;
 }
 
 std::string ToolsDoc(bool ask) {

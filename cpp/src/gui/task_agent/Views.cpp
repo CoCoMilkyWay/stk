@@ -30,6 +30,8 @@ constexpr size_t kBase = 40000;      // 交割单标签的池内基准抽样 (�
 constexpr int kMinCs = 20;           // 截面相关至少的格数
 constexpr size_t kEvents = 20000;    // 响应曲线的开仓段抽样上限
 constexpr int kExplainRows = 3000;   // 成分剥离取的行数上限
+constexpr double kIntraNone = 0.005; // 日内方差占比低于它 = 日频慢变量, 不列日内轮廓
+constexpr size_t kGistExpr = 40;     // 关键数 (研究树) 里每个式子至多几字
 
 // ---- 数的写法 ----
 using text::fmt;
@@ -370,7 +372,7 @@ std::string expr_line(size_t i, const std::string &x, const LookFeat &f, const c
 }
 
 // ---- view_feature ----
-bool feature_view(const Call &c, const Look &L, const Context &, std::string &out) {
+bool feature_view(const Call &c, const Look &L, const Context &, std::string &out, std::string &gist) {
   const std::vector<std::string> xs = c.strs("exprs");
   assert(xs.size() == L.feats.size());
   const int A = L.A(), T = L.T(), seg = L.seg, D = static_cast<int>(L.dates.size());
@@ -444,14 +446,15 @@ bool feature_view(const Call &c, const Look &L, const Context &, std::string &ou
         const double m = sad[da] / nad[da] - ma[da % A];
         ssd += nad[da] * m * m;
       }
+    const double intra = tot > 0.0 ? std::max(0.0, tot - ssa - ssd) / tot : 0.0;
     if (tot > 0.0)
-      s += "方差来自 (截到 1~99% 分位): 资产间 " + pct(ssa / tot) + " · 日间 (同一资产) " + pct(ssd / tot) +
-           (seg > 1 ? " · 日内 " + pct(std::max(0.0, tot - ssa - ssd) / tot) : std::string()) + "\n";
+      s += "方差来自 (截到 1~99% 分位): 资产间 " + pct(ssa / tot) + " · 日间 (同一资产) " + pct(ssd / tot) + (seg > 1 ? " · 日内 " + pct(intra) : std::string()) + "\n";
 
     // 持续性: 去资产均值后同一资产的自相关
     const std::vector<std::pair<int, const char *>> lags =
         seg > 1 ? std::vector<std::pair<int, const char *>>{{1, "隔 1 行"}, {seg, "隔 1 日"}, {5 * seg, "隔 5 日"}}
                 : std::vector<std::pair<int, const char *>>{{1, "隔 1 日"}, {5, "隔 5 日"}, {20, "隔 20 日"}};
+    double day1 = kNaN; // 隔 1 日的自相关 (进研究树的关键数)
     s += "持续性 (去资产均值, 同一资产自相关):";
     for (const auto &[lag, name] : lags) {
       double xy = 0.0, xx = 0.0, yy = 0.0;
@@ -463,7 +466,10 @@ bool feature_view(const Call &c, const Look &L, const Context &, std::string &ou
           const double x = w(v[k1]) - ma[a], y = w(v[k0]) - ma[a];
           xy += x * y, xx += x * x, yy += y * y;
         }
-      s += std::string(" ") + name + " " + r3(xx > 0.0 && yy > 0.0 ? xy / std::sqrt(xx * yy) : kNaN);
+      const double rho = xx > 0.0 && yy > 0.0 ? xy / std::sqrt(xx * yy) : kNaN;
+      if (lag == seg)
+        day1 = rho;
+      s += std::string(" ") + name + " " + r3(rho);
     }
     s += "\n";
 
@@ -489,7 +495,9 @@ bool feature_view(const Call &c, const Look &L, const Context &, std::string &ou
         ric.add(r), ric_part[static_cast<size_t>(pr[t % seg])].add(r);
       }
     }
-    if (seg > 1) {
+    if (seg > 1 && intra < kIntraNone) {
+      s += "日内轮廓: 日内方差不到 " + fmt("%g%%", kIntraNone * 100.0) + " (日频慢变量), 不列\n";
+    } else if (seg > 1) {
       std::vector<double> prof(static_cast<size_t>(seg)), col(static_cast<size_t>(D));
       for (int k = 0; k < seg; ++k) {
         for (int d = 0; d < D; ++d)
@@ -504,6 +512,7 @@ bool feature_view(const Call &c, const Look &L, const Context &, std::string &ou
       s += "截面中位数逐日: " + spark(med) + "\n";
     }
     s += "与本持有期收益的截面 rIC (原向): 均值 " + r3(ric.mean()) + " · t " + fmt("%.1f", ric.t()) + " (行间重叠未折算, 偏大) · 正 rIC 行 " + pct(ric.up()) + "\n";
+    gist += (gist.empty() ? "" : "; ") + text::head(xs[i], kGistExpr) + " rIC " + r3(ric.mean()) + " · 隔 1 日自相关 " + r3(day1);
     if (seg > 1) {
       s += "  分时段:";
       for (size_t j = 0; j < ps.size(); ++j)
@@ -557,7 +566,7 @@ std::string layers_row(const std::string &name, const Layer &b) {
 }
 
 // 条件三等分: 每行把 在池 ∧ 因子 / 标签 / 条件有效 的格按条件值截面三等分, 段内按因子分位近似分层 (抽行)
-std::string cond_view(const std::string &cond, const LookRoot &r, const Look &L) {
+std::string cond_view(const std::string &cond, const LookRoot &r, const Look &L, std::string &gist) {
   std::string s = "\n## 按条件三等分: `" + cond + "`\n";
   assert(L.feats.size() == 1 && "Spec 只为 cond 取一个特征式");
   const LookFeat &f = L.feats.front();
@@ -601,10 +610,12 @@ std::string cond_view(const std::string &cond, const LookRoot &r, const Look &L)
        "与上面的真持有口径略有出入, 只作这四行之间对照\n\n";
   s += layers_head("条件段");
   s += layers_row("全体 (同口径)", b[0]) + layers_row("低 1/3", b[1]) + layers_row("中 1/3", b[2]) + layers_row("高 1/3", b[3]);
+  gist += "; 按 " + text::head(cond, kGistExpr) + " 低/中/高 mono " + r3(b[1].mono()) + "/" + r3(b[2].mono()) + "/" + r3(b[3].mono()) + " · 多空 " + bp(b[1].ls()) + "/" +
+          bp(b[2].ls()) + "/" + bp(b[3].ls()) + "bp";
   return s;
 }
 
-bool layers_view(const Call &c, const Look &L, const Context &, std::string &out) {
+bool layers_view(const Call &c, const Look &L, const Context &, std::string &out, std::string &gist) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -640,6 +651,9 @@ bool layers_view(const Call &c, const Look &L, const Context &, std::string &out
   for (int k = 5; k < 15; ++k)
     mid += all.grp(k) / 10.0;
   s += "\n做多端 G20 " + bp(all.grp(kG20)) + "bp · 最低组 G1 " + bp(all.grp(kG1)) + "bp · 中段 G6–G15 均值 " + bp(mid) + "bp\n";
+  constexpr int kEnd = kTails - 1; // 最极端的一截
+  gist = "mono " + r3(all.mono()) + " · 多空 " + bp(all.ls()) + "bp · rIC " + r3(all.ric.mean()) + " · 组内最极端 " + fmt("%g%%", kTailOfGroup[kEnd] * 100.0) + ": G20 " +
+         bp(all.tail(0, kEnd)) + " / G1 " + bp(all.tail(1, kEnd)) + "bp";
   s += "\n两端组内按池内秩再截更极端的一截 (同一份真持有判据, 满仓按宽度折算, 每期超额口径同上):\n| 截取 | 占截面 | G20 端 bp | G20 行均只数 | G1 端 bp | G1 行均只数 | 多空 bp |\n|---|---|---|---|---|---|---|\n";
   s += "| 整组 | " + fmt("%g%%", 100.0 / kGroups) + " | " + bp(all.grp(kG20)) + " | " + fmt("%.1f", all.held(kG20)) + " | " + bp(all.grp(kG1)) + " | " + fmt("%.1f", all.held(kG1)) +
        " | " + bp(all.ls()) + " |\n";
@@ -671,7 +685,7 @@ bool layers_view(const Call &c, const Look &L, const Context &, std::string &out
       s += layers_row(name, b);
   }
   if (!cond.empty())
-    s += cond_view(cond, *r, L);
+    s += cond_view(cond, *r, L, gist);
   out = std::move(s);
   return true;
 }
@@ -693,7 +707,7 @@ struct Trade {
   double ex;        // 各行超额的均值
 };
 
-bool trades_view(const Call &c, const Look &L, const Context &, std::string &out) {
+bool trades_view(const Call &c, const Look &L, const Context &, std::string &out, std::string &) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -842,7 +856,7 @@ bool trades_view(const Call &c, const Look &L, const Context &, std::string &out
 }
 
 // ---- view_holders ----
-bool holders_view(const Call &c, const Look &L, const Context &, std::string &out) {
+bool holders_view(const Call &c, const Look &L, const Context &, std::string &out, std::string &) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -964,7 +978,7 @@ std::vector<Pt> points_of(int seg) {
   return p;
 }
 
-bool response_view(const Call &c, const Look &L, const Context &, std::string &out) {
+bool response_view(const Call &c, const Look &L, const Context &, std::string &out, std::string &) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -1112,7 +1126,7 @@ std::vector<double> resid_of(const std::vector<std::vector<double>> &X, const st
   return res;
 }
 
-bool explain_view(const Call &c, const Look &L, const Context &, std::string &out) {
+bool explain_view(const Call &c, const Look &L, const Context &, std::string &out, std::string &gist) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -1232,6 +1246,7 @@ bool explain_view(const Call &c, const Look &L, const Context &, std::string &ou
   s += "20 组按标签逐行近似分 (组超额 = 组内 (标签 − 本行在池均值) 等权均值, 建不了仓的格不剔), 与回测 / view_layers 的真持有口径略有出入, 只作两行之间对照\n\n";
   s += layers_head("");
   s += layers_row("原因子", orig) + layers_row("剩余部分", rest);
+  gist = "rIC " + r3(fric.mean()) + " → 剥全部基准剩 " + r3(rric.mean()) + " (R² " + r3(r2.mean()) + ") · 剩余部分 mono " + r3(rest.mono()) + " · 多空 " + bp(rest.ls()) + "bp";
   out = std::move(s);
   return true;
 }
@@ -1270,7 +1285,7 @@ int day_of(const Look &L, const std::string &arg, std::string &out) {
   return static_cast<int>(it - L.dates.begin());
 }
 
-bool stock_day_view(const Call &c, const Look &L, const Context &ctx, std::string &out) {
+bool stock_day_view(const Call &c, const Look &L, const Context &ctx, std::string &out, std::string &) {
   assert(L.A() == 1 && L.seg > 1);
   const int d = day_of(L, c.str("date"), out);
   if (d < 0)
@@ -1375,7 +1390,7 @@ bool stock_day_view(const Call &c, const Look &L, const Context &ctx, std::strin
   return true;
 }
 
-bool stock_days_view(const Call &c, const Look &L, const Context &ctx, std::string &out) {
+bool stock_days_view(const Call &c, const Look &L, const Context &ctx, std::string &out, std::string &) {
   assert(L.A() == 1);
   const int D = static_cast<int>(L.dates.size());
   const int d1 = c.str("to").empty() ? D - 1 : day_of(L, c.str("to"), out);
@@ -1456,7 +1471,7 @@ int row_at(const std::vector<std::string> &clock, const std::string &hm) {
   return it == clock.end() ? -1 : static_cast<int>(it - clock.begin());
 }
 
-bool snapshot_view(const Call &c, const Look &L, const Context &ctx, std::string &out) {
+bool snapshot_view(const Call &c, const Look &L, const Context &ctx, std::string &out, std::string &) {
   const LookRoot *r = root_of(L, out);
   if (!r)
     return false;
@@ -1718,11 +1733,11 @@ bool stock_days_spec(const Call &c, const Lab &lab, LookSpec &out, std::string &
   return stock_spec(c, lab, out, error);
 }
 
-// 观察工具表 (下标 = Tool, view_feature .. view_stock_days): 取参 / 成文
+// 观察工具表 (下标 = Tool, view_feature .. view_stock_days): 取参 / 成文 (+ 研究树留的关键数, 没有的不写)
 struct ViewDef {
   Tool id;
   bool (*spec)(const Call &, const Lab &, LookSpec &, std::string &);
-  bool (*view)(const Call &, const Look &, const Context &, std::string &);
+  bool (*view)(const Call &, const Look &, const Context &, std::string &, std::string &);
 };
 constexpr ViewDef kViews[] = {
     {Tool::ViewFeature, feature_spec, feature_view},
@@ -1779,15 +1794,18 @@ std::string RepText(const Look &L) {
   return s + "- 观察工具的 factor 写本候选名即看代表点\n";
 }
 
-bool Render(const Call &c, const Look &L, const Context &ctx, std::string &out) {
+bool Render(const Call &c, const Look &L, const Context &ctx, std::string &out, std::string &gist) {
+  gist.clear();
   if (!L.error.empty()) {
     out = "没算成: " + L.error;
     return false;
   }
   assert(!L.dates.empty() && L.seg == ctx.seg);
   std::string body;
-  const bool ok = view_of(c.tool).view(c, L, ctx, body);
+  const bool ok = view_of(c.tool).view(c, L, ctx, body, gist);
   out = ok ? head(L, ctx) + body : body;
+  if (!ok)
+    gist.clear();
   return ok;
 }
 

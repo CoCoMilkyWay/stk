@@ -4,7 +4,7 @@
 // Text — agent 成文的公共件: 字 (UTF-8 码点) / 检索词 / 时刻 / 数的写法 / 火花线
 // =============================================================================
 //   字数一律按码点算 (结果上限 kOutChars / 标题截断 / 研报片段都是字, 不是字节); 截断只落在码点边界; 短句上限 (功能块说明) 按 solid
-//   检索 (search_leaves / search_docs / search_factors / list_notes) 同一套: 词空白隔开、ASCII 小写, 条件全中才命中;
+//   检索 (search_leaves / search_docs / search_factors / list_notes) 同一套: 词空白隔开、ASCII 小写, 按子串命中 (至多 kShortWord 个字母数字的短词只认整词), 条件全中才命中;
 //   全中的没有且词 ≥ 2 个时放宽为含任一词 (search_* 三个; list_notes 不放宽), 仍零命中报各条件单独的命中数
 // =============================================================================
 
@@ -77,6 +77,18 @@ inline std::vector<std::string> words(std::string_view q) {
   }
   return ws;
 }
+// hay 含词 w: 至多 kShortWord 个 ASCII 字母数字的短词只认整词 (两侧不接同类字符: 字母不接字母、数字不接数字; ep 不中 repay, 30 中 lag30), 其余按子串
+inline constexpr size_t kShortWord = 3;
+inline bool has_word(std::string_view hay, std::string_view w) {
+  const auto cls = [](char ch) { return ch >= 'a' && ch <= 'z' ? 1 : ch >= '0' && ch <= '9' ? 2
+                                                                                            : 0; };
+  if (w.size() > kShortWord || std::any_of(w.begin(), w.end(), [&](char ch) { return cls(ch) == 0; }))
+    return hay.find(w) != std::string_view::npos;
+  for (size_t p = hay.find(w); p != std::string_view::npos; p = hay.find(w, p + 1))
+    if ((p == 0 || cls(hay[p - 1]) != cls(w.front())) && (p + w.size() == hay.size() || cls(hay[p + w.size()]) != cls(w.back())))
+      return true;
+  return false;
+}
 // 具名条件的合取: 第 i 项满足全部条件才命中; 检索词另可放宽为析取 (hits)
 struct Filter {
   struct Cond {
@@ -86,11 +98,11 @@ struct Filter {
   };
   std::vector<Cond> conds;
   void add(std::string name, std::function<bool(size_t)> pass, bool word = false) { conds.push_back({std::move(name), std::move(pass), word}); }
-  // hay(i) (已小写) 含词 w, 一词一条
+  // hay(i) (已小写) 含词 w (has_word), 一词一条
   template <class Hay>
   void add(const std::vector<std::string> &ws, const std::string &prefix, Hay hay) {
     for (const std::string &w : ws)
-      add(prefix + w, [hay, w](size_t i) { return std::string_view(hay(i)).find(w) != std::string_view::npos; }, true);
+      add(prefix + w, [hay, w](size_t i) { return has_word(hay(i), w); }, true);
   }
   bool operator()(size_t i) const {
     return std::all_of(conds.begin(), conds.end(), [&](const Cond &c) { return c.pass(i); });

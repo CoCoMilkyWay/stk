@@ -90,7 +90,7 @@ const char *coord_name(const space::Slot &s) {
   if (s.key == space::Key::D)
     return "log2";
   if (s.key == space::Key::W)
-    return "线性";
+    return s.top ? "tan" : "线性";
   switch (s.kdom) {
   case factor::KDom::OPEN01:
     return "logit";

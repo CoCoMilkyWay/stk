@@ -445,7 +445,7 @@ bool search_docs(const Call &c, std::string &out) {
     const size_t i = hit[r];
     out += doc_row(L.docs[i], text ? " · 命中 " + std::to_string(hits[i]) + " 处" : "");
     if (text)
-      out += snippets(texts()[i], *std::find_if(ws.begin(), ws.end(), [&](const std::string &w) { return texts()[i].low.find(w) != std::string::npos; }));
+      out += snippets(texts()[i], *std::find_if(ws.begin(), ws.end(), [&](const std::string &w) { return text::has_word(texts()[i].low, w); }));
   }
   return true;
 }

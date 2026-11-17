@@ -24,7 +24,8 @@ namespace GUI::Agent {
 // 不成 → false, error / out = 原因 (作该调用的结果)
 bool Spec(const Call &c, const Lab &lab, LookSpec &out, std::string &error);
 bool Spec(const Call &c, const Lab &lab, BookSpec &out, std::string &error);
-bool Render(const Call &c, const Look &look, const Context &ctx, std::string &out);
+// gist = 研究树留的关键数一行 (view_feature 各式 rIC 与隔日自相关 / view_layers mono · 多空 · rIC · 极端截 (+ 条件三段) / view_explain 剥基准前后); 其余观察与没做成的 = 空
+bool Render(const Call &c, const Look &look, const Context &ctx, std::string &out, std::string &gist);
 bool Render(const Call &c, const Book &book, const Context &ctx, std::string &out);
 // eval_factor 无显著时代表点的观察 → 分层摘要 ("- " 起: 20 组 + 分时段 mono), 接在回测结果后
 std::string RepText(const Look &look);

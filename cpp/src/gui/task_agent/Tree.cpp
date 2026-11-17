@@ -40,6 +40,12 @@ std::string fields(const nlohmann::ordered_json &args, std::initializer_list<std
 
 std::string why_of(const Act &a) { return text::head(std::string_view(a.out).substr(0, a.out.find('\n')), kWhyChars); }
 
+// 观察的关键数 (接在调用一行后; 没有 = 空)
+std::string gist_of(const Act &a, const char *sep) {
+  const Seen *x = std::get_if<Seen>(&a.got);
+  return x ? sep + x->gist : std::string();
+}
+
 struct Step {
   Ref at;
   const Act *a;
@@ -86,7 +92,7 @@ std::string tree_of(Rounds msgs) {
         for (const std::string &e : a.call.strs("evidence")) {
           Ref r;
           const Act *x = RefOf(e, r) ? act_at(r) : nullptr;
-          ev += (ev.empty() ? "" : "; ") + (x ? CallTitle(*x, r) : e);
+          ev += (ev.empty() ? "" : "; ") + (x ? CallTitle(*x, r) + gist_of(*x, " → ") : e);
         }
         hyps += "- [" + RefText(s.at) + "] 判 " + def(IdOf<Stance>(a.call.str("verdict"))).cn + " · 证据 " + ev + "\n";
         if (!closed || last)
@@ -115,7 +121,7 @@ std::string tree_of(Rounds msgs) {
       else if (def(a.call.tool).keep)
         notes += "- " + CallTitle(a, s.at) + "\n" + under(a.out);
       else if (!cited.contains(s.at))
-        rest += "- " + CallTitle(a, s.at) + "\n";
+        rest += "- " + CallTitle(a, s.at) + gist_of(a, ": ") + "\n";
     }
   }
   if (hyps.empty() && rest.empty() && notes.empty())
@@ -123,11 +129,11 @@ std::string tree_of(Rounds msgs) {
   std::string s = "# 研究树 (第 1–" + std::to_string(done.size()) +
                   " 轮的各步与结论)\n\n"
                   "各调用的原文只在交回它的那条消息里给一次, 此后收在这里: 假设留预测、各次判定的结论与变体的一行结局, 被引作证据的调用写在那次判定的证据里, "
-                  "其余观察与查询只留调用一行; 被退回的回复与重发要求不留. 调用编号照旧可作 judge 的证据; 要细节就重调.\n";
+                  "其余观察留调用一行与关键数 (rIC / mono / 多空等; 已有的不必重看), 查询只留调用一行; 被退回的回复与重发要求不留. 调用编号照旧可作 judge 的证据; 要细节就重调.\n";
   if (!hyps.empty())
     s += "\n## 假设\n" + hyps;
   if (!rest.empty())
-    s += "\n## 其余各步 (只留调用)\n\n" + rest;
+    s += "\n## 其余各步 (观察留关键数, 其余只留调用)\n\n" + rest;
   if (!notes.empty())
     s += "\n## 记录 (提交 / 全局记录 / 问答 / 插话)\n\n" + notes;
   return s;

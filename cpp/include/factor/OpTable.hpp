@@ -197,7 +197,7 @@
 //   x̃ / r̃ = 本行池内截面 pct − 1/2 (r^h 同); 回归: G 与 Σ x̃ r̃ 沿 L_t 各行的样本 (池内 ∧ 全部元与标签有效) 池化; 无样本 → w = 0
 #define OP_CSN(X)                                                                                                                                                                                                                                                                                                                                                                                           \
   X(CsLinRankRoll, "截滚线性序回归", factor::kNary, ROLL, ALL, MOMENT, GT0, OP_INN(REAL), REAL, R"tex(\Sigma_i\,w_i\,\tilde x_{i,a},\; w = (G + k\,(\mathrm{tr}\,G / N)\,I)^{-1}\,\Sigma_{L_t}\tilde X^{\top}\tilde r,\; G = \Sigma_{L_t}\tilde X^{\top}\tilde X,\; \tilde x = \mathrm{pct}(x) - 1/2)tex", "N 个特征的截面秩对 h 持有期收益截面秩的滚动岭回归拟合值; 多特征线性合成因子, 外套 CsRank 作根") \
-  X(CsLinRankFix, "截固线性序加权", factor::kNary, POINT, ALL, ORDER, NONE, OP_INN(REAL), REAL, R"tex(\Sigma_i\,w_i\,\tilde x_{i,a},\; \tilde x = \mathrm{pct}(x) - 1/2)tex", "N 个特征截面秩的定权线性合成; 权写死或留裸 w 交 Search 按分层表现搜, 外套 CsRank 作根")
+  X(CsLinRankFix, "截固线性序加权", factor::kNary, POINT, ALL, ORDER, NONE, OP_INN(REAL), REAL, R"tex(\Sigma_i\,w_i\,\tilde x_{i,a},\; \tilde x = \mathrm{pct}(x) - 1/2)tex", "N 个特征截面秩的定权线性合成; 权写死或留裸 w 交 Search 按分层表现搜 (直接作根的输入时首元权定为 1, 只搜其余各元相对它的权), 外套 CsRank 作根")
 
 // ---- 拼装: OP_ALL 展开序 = 全局 idx 序;
 //      需要按 A 域分派时用 X_##域 token 粘贴 (见 op_check / OperatorsService) ----

@@ -32,7 +32,7 @@ bool matches(const Note &x, const std::vector<std::string> &ws) {
   for (const auto &[k, v] : x.fields.items())
     hay += v.get<std::string>() + '\n';
   hay = text::lower(hay);
-  return std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return hay.find(w) != std::string::npos; });
+  return std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return text::has_word(hay, w); });
 }
 
 // 附议关系: 附议了哪条 / 有几条附议它

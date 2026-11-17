@@ -49,6 +49,8 @@ void to_json(json &j, const Act &a) {
     j["asked"] = {{"picks", q->picks}, {"note", q->note}};
   if (const Shown *x = std::get_if<Shown>(&a.got))
     j["shown"] = x->leaves;
+  if (const Seen *x = std::get_if<Seen>(&a.got))
+    j["seen"] = x->gist;
 }
 void from_json(const json &j, Act &a) {
   a = Act{.call = {ToolOf(j.at("tool").get<std::string>()), j.at("args")},
@@ -65,6 +67,8 @@ void from_json(const json &j, Act &a) {
   }
   if (j.contains("shown"))
     a.got = Shown{j.at("shown").get<std::vector<std::string>>()};
+  if (j.contains("seen"))
+    a.got = Seen{j.at("seen").get<std::string>()};
 }
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Round, kind, user, memo, span, think, write, reply, error, acts)

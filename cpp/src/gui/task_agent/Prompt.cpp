@@ -351,9 +351,10 @@ std::string Text(double g, double se) {
 std::string Text(const Weight &w) {
   if (!w.has)
     return "无该持有期统计";
-  char b[48];
+  char b[48], t[96];
   std::snprintf(b, sizeof(b), " · 有效率 %.0f%%", w.valid * 100.0);
-  return Text(w.st) + " · score " + (std::isfinite(w.score) ? Text(w.score, w.se) : std::string("不过门槛")) + b + (w.sign < 0 ? " · 取反" : "");
+  std::snprintf(t, sizeof(t), " · 年换手 %.0f 倍 · 隔一期秩自相关 %.3f", w.turn, w.rac);
+  return Text(w.st) + " · score " + (std::isfinite(w.score) ? Text(w.score, w.se) : std::string("不过门槛")) + b + t + (w.sign < 0 ? " · 取反" : "");
 }
 
 // 显著看曲面估计对标准误, 不看观测目标的 t
@@ -574,7 +575,15 @@ Message ReviewMessage(const std::vector<Act> &acts, int round, const Board &boar
                             {"filed", or_none(notes, "(无)\n")}});
 }
 
-Message RetryMessage(const std::string &error) { return fill(Msg::Retry, {{"error", error}}); }
+Message RetryMessage(const std::string &error) {
+  std::string list; // 不合处一行一条
+  for (size_t i = 0; i <= error.size();) {
+    const size_t e = std::min(error.find('\n', i), error.size());
+    list += (list.empty() ? "- " : "\n- ") + error.substr(i, e - i);
+    i = e + 1;
+  }
+  return fill(Msg::Retry, {{"error", list}});
+}
 
 std::string MemoText(const std::string &memo) {
   return "\n# 研究员插话\n\n" + memo + "\n\n这是研究员在会话中途给的意见: 与上文的做法冲突处以它为准, 回复协议与会话约束照旧.\n";

@@ -248,7 +248,12 @@ void settled(Act &a, Eval &&e, Desk &d) {
   a.ok = k.st.res.verdict != Verdict::Broken;
   d.log.event(Event::Eval, {{"name", k.st.cand.name}, {"result", Brief(k.st.res)}});
 }
-void settled(Act &a, Look &&l, Desk &d) { a.ok = Render(a.call, l, d.lab.ctx(), a.out); }
+void settled(Act &a, Look &&l, Desk &d) {
+  std::string gist;
+  a.ok = Render(a.call, l, d.lab.ctx(), a.out, gist);
+  if (!gist.empty())
+    a.got = Seen{std::move(gist)};
+}
 void settled(Act &a, Book &&b, Desk &d) { a.ok = Render(a.call, b, d.lab.ctx(), a.out); }
 void settled(Act &, std::monostate, Desk &) { assert(false && "取消的不收"); }
 
