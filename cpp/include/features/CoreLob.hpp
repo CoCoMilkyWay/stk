@@ -90,7 +90,7 @@ private:
       // 不要攒到秒末 / 日末再批量提交 —— 那是回测专属的形态, 会让回测与实盘走两条路.
       fstore::ts_write_row<L_sec>(day_, t, asset_id_, dag_);
 
-      // ts_valid (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值. (cs_valid 整日常量, begin_day 已写)
+      // ts_valid (编码/累积语义见 Meta.hpp): 逐笔覆盖写, 行终值 = 秒内累积值. (cs_valid 整日常量, CoreCs::begin_day 已写)
       // 盘口价只在 depth_updated 时取 (Depth 每日置 NaN, 首次更新前无簿)
       meta_.on_tick(t, depth_updated, dag_.MicroPrice.out(),
                     depth_updated ? dag_.Depth.bid_price[0] : 0.0f,

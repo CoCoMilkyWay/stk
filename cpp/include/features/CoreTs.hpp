@@ -187,24 +187,30 @@ private:
     return {ResamplerMin2Bin(d.minute_data, d.*graph::BIN_DATA[I], L_5min + I)...};
   }
 
+  // 分钟箱重采样只跑本档落盘的层 (档缺的层无人读 BinData; 节点引 min<N>_data / day_data 须其层在 TIER_LEVELS 登记)
+  static constexpr std::array<bool, std::size(graph::BIN_DATA)> kBinUsed = []<size_t... I>(std::index_sequence<I...>) {
+    return std::array{T::has(L_5min + I)...};
+  }(std::make_index_sequence<std::size(graph::BIN_DATA)>{});
+
   // 分钟 m 结算 (MinuteData 末 bar = 分钟 m): 分钟 bar + 成交位并入 L_1min 以上各层当前行 → 分钟 m 末秒收行的层逐层 close_row (细 → 粗)
   // → 有成交则标签 (只读 MinuteData, 写标签列; 与各层行无关)
   void close_minute(size_t m) {
     assert(m == dag_.minute_data.index && "close_minute: MinuteData 末 bar 不是分钟 m");
     const bool traded = dag_.minute_data.traded();
     meta_.on_minute(traded);
-    for (ResamplerMin2Bin &r : min2bin_)
-      r.accumulate();
+    for (size_t i = 0; i < min2bin_.size(); ++i)
+      if (kBinUsed[i])
+        min2bin_[i].accumulate();
     for_each_close<L_1min>(m, [&]<size_t LVL>(size_t r) { close_row<LVL>(r); });
     if (traded)
       graph::clocked(&graph::NodeClock::label, [&] { dag_.label.minute_closed(m, writer()); });
   }
 
   // 层 LVL 收行 r: 出该层 bar (L_1min 的 bar 已由档重采样器出) → 该层节拍域 → 写整行 + ts_valid (每行都写, L_1min 及以上稠密; 有成交 = ts_valid 非零).
-  // 档没有该层也照走 (bar / 节拍域节点两档同一路径), 只是不落盘
+  // 档没有该层也照走节拍域 (两档同一路径), 只是不出 bar / 不落盘
   template <size_t LVL>
   void close_row(size_t r) {
-    if constexpr (LVL != L_1min)
+    if constexpr (LVL != L_1min && T::has(LVL))
       min2bin_[LVL - L_5min].emit(r);
     dag_.template run<beat_of(LVL)>();
     if constexpr (LVL == L_1day)

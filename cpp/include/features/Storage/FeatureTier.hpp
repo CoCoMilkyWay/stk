@@ -166,26 +166,6 @@ TIER_LEVELS(GENERATE_LEVEL_META)
 #undef META_COL_CS
 #undef META_COL_LB
 
-// 档 T 的 LVL 层 META 列下标 (没有该列 = SIZE_MAX): MetaOf<T, LVL>::ts_valid / cs_valid
-template <class T, size_t LVL>
-struct MetaOf;
-#define TIER_META_OF(T, ns, LVL)                            \
-  template <>                                               \
-  struct MetaOf<ns::Tier, LVL> {                            \
-    static constexpr size_t ts_valid = [] {                 \
-      if constexpr (requires { ns::LVL##_meta::ts_valid; }) \
-        return ns::LVL##_meta::ts_valid;                    \
-      return SIZE_MAX;                                      \
-    }();                                                    \
-    static constexpr size_t cs_valid = [] {                 \
-      if constexpr (requires { ns::LVL##_meta::cs_valid; }) \
-        return ns::LVL##_meta::cs_valid;                    \
-      return SIZE_MAX;                                      \
-    }();                                                    \
-  };
-TIER_LEVELS(TIER_META_OF)
-#undef TIER_META_OF
-
 // ============================================================================
 // 每个字段的"来源" (GUI 特征依赖解析用)
 //   TS(node, port, tf) → 节点名 (如 "Book") + 口名; CS(ns,lvl,src,...) → 源字段 code (TS / CS 列名跨档唯一, 旁读也不加档名); 其余 → ""
@@ -323,6 +303,26 @@ constexpr size_t last_present(const std::array<LevelInfo, LEVEL_COUNT> &l) {
   }
 ALL_TIERS(GENERATE_TIER)
 #undef GENERATE_TIER
+
+// 档 T 的 LVL 层 META 列下标 (没有该列 = SIZE_MAX): MetaOf<T, LVL>::ts_valid / cs_valid
+template <class T, size_t LVL>
+struct MetaOf;
+#define TIER_META_OF(T, ns, LVL)                            \
+  template <>                                               \
+  struct MetaOf<ns::Tier, LVL> {                            \
+    static constexpr size_t ts_valid = [] {                 \
+      if constexpr (requires { ns::LVL##_meta::ts_valid; }) \
+        return ns::LVL##_meta::ts_valid;                    \
+      return SIZE_MAX;                                      \
+    }();                                                    \
+    static constexpr size_t cs_valid = [] {                 \
+      if constexpr (requires { ns::LVL##_meta::cs_valid; }) \
+        return ns::LVL##_meta::cs_valid;                    \
+      return SIZE_MAX;                                      \
+    }();                                                    \
+  };
+TIER_LEVELS(TIER_META_OF)
+#undef TIER_META_OF
 
 // 旁读档 (TIER_SIDES): TierSide<T>::type = T 的截面可读 (同层) 的档; 无 = void
 template <class T>
