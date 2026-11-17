@@ -39,7 +39,7 @@ struct Page {
 // act 让客户端查一次: 等表头含 col 的页显示着、且其查询键 act 后禁用过且此刻可用. act 前等空闲; 各至多 timeout 秒.
 // tick: 等查完期间约每秒调一次 (报进度)
 Page query(const std::string &col, const std::function<void()> &act, double timeout = kQueryWait, const std::function<void()> &tick = {});
-Page open_tab(const std::string &tab);                                                       // 切页签「持仓」「成交」「撤单」
+Page open_tab(const std::string &tab);                                                        // 切页签「持仓」「成交」「撤单」
 Page open_page(const std::string &func, const std::string &col, double timeout = kQueryWait); // 功能树点 func, 认页的列 col
 // 点页 p 上 id 为 key 的按键 (查询 / 查询全部), 等这一问查完 (同 query)
 void press(const Page &p, long key, double timeout = kQueryWait, const std::function<void()> &tick = {});
