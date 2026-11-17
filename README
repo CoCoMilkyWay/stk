@@ -294,7 +294,7 @@ stk/
 │   │   │       ├── Enum.hpp                            # 🤖 枚举表 (一个枚举一行 AGENT_ROWS): def 取行 / kNum 个数 / IdOf 按 id 反查; 带 id 的枚举 JSON 一律写 id
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 码点 / 检索词过滤 / 数的写法 / 火花线 / Markdown 表格建表器 Table
 │   │   │       ├── Async.hpp                           # 🤖 通用单线程异步管道 Async<Req, Step, Out, Live>: Chat 与 Lab 共用同一套 send / poll / live / busy / cancel
-│   │   │       ├── Llm.hpp                             # 🤖 左翼 · 大模型传输与 Chat: 驱动表 kDrivers 分派 Zhipu / Cursor (HTTPS, 零异常控制流, 不留对话态)
+│   │   │       ├── Llm.hpp                             # 🤖 左翼 · 大模型传输与 Chat: 驱动表 kDrivers 分派 Zhipu / Cursor (HTTPS) / Devin (本机 devin acp 子进程) (零异常控制流, 不留对话态)
 │   │   │       ├── Tools.hpp                           # 🤖 工具真相表 (三态执行 Exec: Sync / Lab / Human) → 系统提示工具节 / 回复解析 ParseCalls / 参数校验 / ask_human 问答
 │   │   │       ├── Notes.hpp                           # 🤖 研究记录双板: 会话假设板 Board (H1, H2 …) ↔ 跨会话全局记录 Notes (F / T / I / R, jsonl 累积, 研究员标处理)
 │   │   │       ├── Docs.hpp                            # 🤖 研报库工具 (只读 output/data/doc, 按篇懒加载并看取消旗): search_docs / search_factors / read_doc

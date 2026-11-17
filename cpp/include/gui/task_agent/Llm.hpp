@@ -3,9 +3,10 @@
 // =============================================================================
 // Llm — 左翼 · 大模型传输与异步对话管道 Chat (纯传输, 不知因子, 不留对话态)
 // =============================================================================
-//   两后端由驱动表 kDrivers 分派, 同一签名 send(opt, system, turns, on_delta, cancel):
+//   三后端由驱动表 kDrivers 分派, 同一签名 models(net, cancel) / send(opt, system, turns, on_delta, cancel):
 //     Zhipu   chat/completions: system + Turns 逐条作 messages; stream=true, JSON 模式 + 思考; system 不变命中平台缓存
 //     Cursor  Cloud Agents API: POST /v1/agents 建无仓库单轮 agent, prompt = system + Flat(Turns); SSE 流支持断线按 Last-Event-ID 续传
+//     Devin   本机 devin acp 子进程: authenticate (key) → session/new → 选模型 → session/prompt, prompt 同 Cursor; 思考 / 正文分片流式, 工具权限一律拒, 收尾删会话
 //   HTTPS: asio ssl::stream (OpenSSL) + beast http, 全程 error_code 返回值流转, 零异常控制流
 //   Chat:  Async<ChatReq, ChatStep, Reply, ChatLive>, 与右翼 Lab 同构同接口 (send / poll / live / busy / cancel)
 // =============================================================================
@@ -25,8 +26,9 @@
 namespace GUI::Agent::llm {
 
 enum class Backend : uint8_t { Zhipu,
-                               Cursor }; // 下标 = kBackends
-AGENT_ROWS(Backend, kBackends, Cursor);
+                               Cursor,
+                               Devin }; // 下标 = kBackends
+AGENT_ROWS(Backend, kBackends, Devin);
 
 // 该后端的 key (首次调用读 output/config/agent/keys.json); 空 = 未填
 const std::string &key(Backend b);

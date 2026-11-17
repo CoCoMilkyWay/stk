@@ -7,16 +7,29 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <openssl/ssl.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string_view>
 #include <thread>
 #include <utility>
+
+extern char **environ;
 
 namespace GUI::Agent::llm {
 
@@ -131,6 +144,7 @@ struct Conn {
 Resp request(Backend b, const Net &net, http::verb verb, const std::string &target, const std::string &body, const Headers &hdrs, const Chunk &on_chunk,
              const std::atomic<bool> *cancel, int timeout = kReadTimeoutSeconds) {
   const char *host = def(b).host;
+  assert(host && "子进程后端不走 HTTPS");
   Conn c(host, cancel, timeout);
   Resp r;
   beast::tcp_stream &raw = beast::get_lowest_layer(c.s);
@@ -298,9 +312,12 @@ bool check_2xx(const char *what, const Resp &r, std::string &why) {
   return false;
 }
 
-Reply fail_reply(const Resp &r, const std::string &why) {
-  return r.err == Err::Cancel ? Reply{.end = End::Cancelled} : Reply{.end = End::Error, .error = why};
+Reply fail_reply(Err err, const std::string &why) {
+  return err == Err::Cancel ? Reply{.end = End::Cancelled} : Reply{.end = End::Error, .error = why};
 }
+
+// 单轮 agent 后端 (Cursor / Devin) 的整份 prompt: system + Flat(Turns)
+std::string agent_prompt(std::string_view system, const Turns &t) { return (system.empty() ? std::string() : std::string(system) + "\n\n---\n\n") + Flat(t); }
 
 // ---- Zhipu 驱动 ----
 std::string zhipu_busy(const Resp &r) {
@@ -378,7 +395,7 @@ Reply zhipu_send(const Options &o, std::string_view system, const Turns &t, cons
       zhipu_busy);
   std::string why;
   if (!check_2xx("zhipu", resp, why))
-    return fail_reply(resp, why);
+    return fail_reply(resp.err, why);
   if (finish.empty())
     return {.end = End::Error, .error = "智谱流结束却没有 finish_reason"};
   r.end = finish == "stop" ? End::Ok : End::Cut;
@@ -400,7 +417,7 @@ std::vector<Model> cursor_models(const json &j) {
 
 Reply cursor_send(const Options &o, std::string_view system, const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
   json body;
-  body["prompt"]["text"] = (system.empty() ? std::string() : std::string(system) + "\n\n---\n\n") + Flat(t);
+  body["prompt"]["text"] = agent_prompt(system, t);
   if (o.model != "default")
     body["model"]["id"] = o.model;
   const std::string payload = body.dump();
@@ -408,7 +425,7 @@ Reply cursor_send(const Options &o, std::string_view system, const Turns &t, con
       "cursor", Resend::Unsent, cancel, [&](int) { return request(Backend::Cursor, o.net, http::verb::post, "/v1/agents", payload, {}, nullptr, &cancel); }, never);
   std::string why;
   if (!check_2xx("cursor", made, why))
-    return fail_reply(made, why);
+    return fail_reply(made.err, why);
   const json j = parse_json(made.body);
   assert(j.contains("run") && j.contains("agent"));
   const std::string agent = str_of(j["agent"], "id");
@@ -459,7 +476,7 @@ Reply cursor_send(const Options &o, std::string_view system, const Turns &t, con
     return r;
   }
   if (!check_2xx("cursor stream", streamed, why))
-    return fail_reply(streamed, why);
+    return fail_reply(streamed.err, why);
   if (!error.empty()) {
     r.end = End::Error, r.error = error;
     return r;
@@ -472,12 +489,271 @@ Reply cursor_send(const Options &o, std::string_view system, const Turns &t, con
   return r;
 }
 
+// ---- Devin 驱动 ----
+// 一轮一个本机 devin acp 子进程: socketpair 当 stdin / stdout (写带 MSG_NOSIGNAL, 子进程先退也不吃 SIGPIPE), 逐行 JSON-RPC
+struct Rpc {
+  Err err = Err::None;
+  json result;
+  std::string why;
+  bool ok() const { return err == Err::None; }
+};
+
+bool proxy_var(std::string_view e) {
+  static constexpr std::string_view ks[] = {"http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"};
+  return std::find(std::begin(ks), std::end(ks), e.substr(0, e.find('='))) != std::end(ks);
+}
+
+// 工作区: 仓库外的空目录; 项目配置关掉外部规则 / 技能 / MCP 的导入
+std::string devin_home() {
+  const std::filesystem::path d = std::filesystem::temp_directory_path() / "stk-devin";
+  std::filesystem::create_directories(d / ".devin");
+  json c;
+  for (const char *k : {"agents_standard", "cursor", "windsurf", "claude", "copilot", "codex", "kiro", "opencode", "zed"})
+    c["read_config_from"][k] = false;
+  std::ofstream(d / ".devin" / "config.json") << c.dump(2) << "\n";
+  return d.string();
+}
+
+struct Acp {
+  const std::atomic<bool> &cancel;
+  const std::string cwd = devin_home();
+  pid_t pid = -1;
+  int fd = -1, next = 0;
+  std::string buf, dead;                       // dead 非空 = 子进程没起来 / 已退
+  std::function<void(const json &)> on_update; // session/update 的 update
+
+  // 代理按 net 定: 先抹掉继承来的代理环境变量, 走代理再设上
+  Acp(const Net &net, const std::atomic<bool> &cancel) : cancel(cancel) {
+    int sp[2];
+    [[maybe_unused]] const int made = ::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sp);
+    assert(made == 0);
+    std::vector<std::string> env;
+    for (char **e = environ; *e; ++e)
+      if (!proxy_var(*e))
+        env.emplace_back(*e);
+    if (net.proxy)
+      for (const char *k : {"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"})
+        env.push_back(std::string(k) + "=http://" + net.host + ":" + std::to_string(net.port));
+    std::vector<char *> envp;
+    for (std::string &e : env)
+      envp.push_back(e.data());
+    envp.push_back(nullptr);
+    char *argv[] = {const_cast<char *>(kDevinExe), const_cast<char *>("acp"), nullptr};
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, sp[1], 0);
+    posix_spawn_file_actions_adddup2(&fa, sp[1], 1);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addchdir_np(&fa, cwd.c_str());
+    const int rc = ::posix_spawnp(&pid, kDevinExe, &fa, nullptr, argv, envp.data());
+    posix_spawn_file_actions_destroy(&fa);
+    ::close(sp[1]);
+    fd = sp[0];
+    if (rc != 0)
+      pid = -1, dead = std::string("起不来 ") + kDevinExe + ": " + std::strerror(rc);
+  }
+  // 关 stdin 即让 devin 自行退出; 取消即杀, 否则限时不退再杀
+  ~Acp() {
+    ::close(fd);
+    if (pid < 0)
+      return;
+    const Clock::time_point end = Clock::now() + std::chrono::seconds(kCancelTimeoutSeconds);
+    while (::waitpid(pid, nullptr, WNOHANG) == 0) {
+      if (cancel.load(std::memory_order_relaxed) || Clock::now() > end) {
+        ::kill(pid, SIGKILL);
+        ::waitpid(pid, nullptr, 0);
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }
+
+  void push(const json &j) {
+    const std::string s = j.dump() + "\n";
+    for (size_t at = 0; at < s.size() && dead.empty();)
+      if (const ssize_t k = ::send(fd, s.data() + at, s.size() - at, MSG_NOSIGNAL); k > 0)
+        at += static_cast<size_t>(k);
+      else if (errno != EINTR)
+        dead = "devin acp 已退出";
+  }
+
+  // 下一条消息 (每 200ms 看一次取消旗): 静默超 timeout 秒 / 子进程退出 → Fail, 取消 → Cancel
+  Err pull(json &m, int timeout, std::string &why) {
+    for (Clock::time_point last = Clock::now();;) {
+      if (const size_t nl = buf.find('\n'); nl != std::string::npos) {
+        const std::string line = buf.substr(0, nl);
+        buf.erase(0, nl + 1);
+        if (line.find_first_not_of(" \t\r") == std::string::npos)
+          continue;
+        m = parse_json(line);
+        return Err::None;
+      }
+      if (cancel.load(std::memory_order_relaxed))
+        return Err::Cancel;
+      if (!dead.empty()) {
+        why = dead;
+        return Err::Fail;
+      }
+      pollfd p{fd, POLLIN, 0};
+      if (::poll(&p, 1, 200) <= 0) {
+        if (Clock::now() - last > std::chrono::seconds(timeout)) {
+          why = "devin acp 静默超过 " + std::to_string(timeout) + " 秒";
+          return Err::Fail;
+        }
+        continue;
+      }
+      char b[65536];
+      if (const ssize_t k = ::recv(fd, b, sizeof b, 0); k > 0)
+        buf.append(b, static_cast<size_t>(k)), last = Clock::now();
+      else if (k == 0 || errno != EINTR)
+        dead = "devin acp 意外退出";
+    }
+  }
+
+  // agent 发来的: 通知只认 session/update; 请求一律回 —— 工具权限拒 (无拒项则取消), 其余 (没声明的 fs / terminal 能力) 不支持
+  void serve(const json &m) {
+    const std::string method = str_of(m, "method");
+    if (!m.contains("id")) {
+      if (method == "session/update" && on_update)
+        on_update(m["params"]["update"]);
+      return;
+    }
+    json reply = {{"jsonrpc", "2.0"}, {"id", m["id"]}};
+    if (method == "session/request_permission") {
+      json outcome = {{"outcome", "cancelled"}};
+      for (const json &o : m["params"]["options"])
+        if (str_of(o, "kind").starts_with("reject")) {
+          outcome = {{"outcome", "selected"}, {"optionId", o["optionId"]}};
+          break;
+        }
+      reply["result"] = {{"outcome", std::move(outcome)}};
+    } else {
+      reply["error"] = {{"code", -32601}, {"message", "method not found"}};
+    }
+    push(reply);
+  }
+
+  Rpc call(const char *method, json params, int timeout = kReadTimeoutSeconds) {
+    const int id = next++;
+    push({{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", std::move(params)}});
+    Rpc r;
+    for (json m; (r.err = pull(m, timeout, r.why)) == Err::None;) {
+      if (m.contains("method")) {
+        serve(m);
+      } else if (m.contains("id") && m["id"] == id) {
+        if (!m.contains("error")) {
+          r.result = std::move(m["result"]);
+          return r;
+        }
+        std::fprintf(stderr, "[agent] devin %s: %s\n", method, m["error"].dump().c_str());
+        return {.err = Err::Fail, .why = std::string("devin ") + method + ": " + str_of(m["error"], "message")};
+      }
+    }
+    return r;
+  }
+
+  // initialize → authenticate (key 经 stdin 交, 不上命令行 / 环境) → session/new; 成 = session/new 的 result
+  Rpc open() {
+    Rpc r = call("initialize", {{"protocolVersion", 1}, {"clientCapabilities", json::object()}});
+    if (!r.ok())
+      return r;
+    assert(r.result.contains("authMethods") && !r.result["authMethods"].empty());
+    r = call("authenticate", {{"methodId", r.result["authMethods"][0]["id"]}, {"_meta", {{"api_key", key(Backend::Devin)}}}});
+    if (!r.ok())
+      return r;
+    return call("session/new", {{"cwd", cwd}, {"mcpServers", json::array()}});
+  }
+  // 删掉本轮会话 (devin 会把会话落本机), 限时
+  void drop(const std::string &session) { call("session/delete", {{"sessionId", session}}, kCancelTimeoutSeconds); }
+};
+
+// session/new 给的模型项: configOptions 里 category = model 的那项
+const json &model_option(const json &session) {
+  assert(session.contains("configOptions"));
+  const json &cs = session["configOptions"];
+  const auto it = std::find_if(cs.begin(), cs.end(), [](const json &c) { return str_of(c, "category") == "model"; });
+  assert(it != cs.end() && "devin session/new 没给模型项");
+  return *it;
+}
+
+// 模型表 = 模型项的选项 (可分组, 摊平; 当前默认排首)
+Models devin_models(const Net &net, const std::atomic<bool> &cancel) {
+  Acp a(net, cancel);
+  const Rpc s = a.open();
+  if (s.err == Err::Cancel)
+    return {};
+  if (!s.ok())
+    return {.error = s.why};
+  const json &m = model_option(s.result);
+  Models out;
+  const auto add = [&](const json &o) { out.list.push_back({str_of(o, "value"), o.value("name", str_of(o, "value"))}); };
+  for (const json &o : m["options"]) {
+    if (!o.contains("group")) {
+      add(o);
+      continue;
+    }
+    for (const json &x : o["options"])
+      add(x);
+  }
+  std::stable_partition(out.list.begin(), out.list.end(), [cur = str_of(m, "currentValue")](const Model &x) { return x.id == cur; });
+  a.drop(str_of(s.result, "sessionId"));
+  return out;
+}
+
+Reply devin_send(const Options &o, std::string_view system, const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
+  Acp a(o.net, cancel);
+  const Rpc s = a.open();
+  if (!s.ok())
+    return fail_reply(s.err, s.why);
+  Reply r;
+  r.id = str_of(s.result, "sessionId");
+  assert(!r.id.empty());
+  if (const json &m = model_option(s.result); str_of(m, "currentValue") != o.model)
+    if (const Rpc x = a.call("session/set_config_option", {{"sessionId", r.id}, {"configId", m["id"]}, {"value", o.model}}); !x.ok())
+      return fail_reply(x.err, x.why);
+  // 正文 = 末一段话: 调工具前说的话归入思考 (只改收成的 Reply, 在收的样子不回改)
+  a.on_update = [&](const json &u) {
+    const std::string kind = str_of(u, "sessionUpdate");
+    if (kind == "agent_message_chunk" || kind == "agent_thought_chunk") {
+      put(r, on_delta, kind == "agent_message_chunk" ? Part::Text : Part::Thinking, str_of(u.value("content", json::object()), "text"));
+    } else if (kind == "tool_call") {
+      r.thinking += std::exchange(r.text, {});
+      put(r, on_delta, Part::Thinking, "\n[" + str_of(u, "title") + "]\n");
+    }
+  };
+  json text = {{"type", "text"}, {"text", agent_prompt(system, t)}};
+  const Rpc p = a.call("session/prompt", {{"sessionId", r.id}, {"prompt", json::array({std::move(text)})}});
+  if (!p.ok()) {
+    r.end = p.err == Err::Cancel ? End::Cancelled : End::Error, r.error = p.why;
+    return r;
+  }
+  a.drop(r.id);
+  const std::string stop = str_of(p.result, "stopReason");
+  r.end = stop == "end_turn" ? End::Ok : End::Cut;
+  if (!r.ok())
+    r.error = stop;
+  return r;
+}
+
 // ---- 后端驱动表 (下标 = Backend, 与 kBackends 一一对应) ----
+template <Backend B, std::vector<Model> (*Parse)(const json &)>
+Models https_models(const Net &net, const std::atomic<bool> &cancel) {
+  const char *target = def(B).models;
+  const std::string what = std::string(def(B).id) + " models";
+  const Resp r = retried(what.c_str(), Resend::Any, cancel, [&](int) { return request(B, net, http::verb::get, target, "", {}, nullptr, &cancel); }, never);
+  if (r.err == Err::Cancel)
+    return {};
+  Models out;
+  if (check_2xx(target, r, out.error))
+    out.list = Parse(parse_json(r.body));
+  return out;
+}
+
 struct Driver {
-  std::vector<Model> (*models)(const json &);
+  Models (*models)(const Net &, const std::atomic<bool> &);
   Reply (*send)(const Options &, std::string_view, const Turns &, const Delta &, const std::atomic<bool> &);
 };
-constexpr Driver kDrivers[] = {{zhipu_models, zhipu_send}, {cursor_models, cursor_send}};
+constexpr Driver kDrivers[] = {{https_models<Backend::Zhipu, zhipu_models>, zhipu_send}, {https_models<Backend::Cursor, cursor_models>, cursor_send}, {devin_models, devin_send}};
 static_assert(std::size(kDrivers) == kNum<Backend>);
 
 } // namespace
@@ -503,15 +779,7 @@ const std::string &key(Backend b) {
 
 Models models(Backend b, const Net &net, const std::atomic<bool> &cancel) {
   assert(!key(b).empty() && valid(net));
-  const char *target = def(b).models;
-  const std::string what = std::string(def(b).id) + " models";
-  const Resp r = retried(what.c_str(), Resend::Any, cancel, [&](int) { return request(b, net, http::verb::get, target, "", {}, nullptr, &cancel); }, never);
-  if (r.err == Err::Cancel)
-    return {};
-  Models out;
-  if (check_2xx(target, r, out.error))
-    out.list = kDrivers[static_cast<size_t>(b)].models(parse_json(r.body));
-  return out;
+  return kDrivers[static_cast<size_t>(b)].models(net, cancel);
 }
 
 std::string Flat(const Turns &t) {

@@ -76,7 +76,7 @@ llm::Net net_of(const Options &o, int backend) { return {o.via_proxy[backend], o
 Mine::Setup setup_of(const Options &o) { return {.sc = o.sc, .gate = o.gate, .ask = o.ask}; }
 Mine::Leg leg_of(const Options &o) { return {.llm = {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model}, .gpu = o.gpu == 1, .budget = o.budget}; }
 
-// 模型嗅探: 每后端一个后台 GET models (按该后端当前连接方式); cancel 须声明在 jobs 前 (future 析构 join 时它还活着)
+// 模型嗅探: 每后端一个后台 llm::models (按该后端当前连接方式); cancel 须声明在 jobs 前 (future 析构 join 时它还活着)
 struct Sniffer {
   std::atomic<bool> cancel{false};
   std::array<std::future<llm::Models>, kBackendN> jobs;
@@ -2122,7 +2122,7 @@ void render_config(Ui &s) {
       if (o.via_proxy[b])
         sniff(s, b);
   ImGui::EndDisabled();
-  tip("各后端分别选直连 / 代理, 代理地址共用 (HTTP CONNECT); 改了即重新嗅探模型");
+  tip("各后端分别选直连 / 代理, 代理地址共用 (HTTPS 后端 CONNECT, Devin 子进程经 HTTPS_PROXY); 改了即重新嗅探模型");
   const std::vector<llm::Model> &ms = s.sniff.got[o.backend].list;
   const std::string &sniff_err = s.sniff.got[o.backend].error;
   const auto cur = std::find_if(ms.begin(), ms.end(), [&](const llm::Model &m) { return m.id == o.model; });
