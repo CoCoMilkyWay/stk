@@ -119,9 +119,7 @@ std::vector<Pair> join(const Keyed<Position> &pos, const Fills &fills) {
 }
 
 bool synced(const Pair &p) {
-  if (!p.h || !p.h->traded)
-    return true;
-  return *p.h->traded == (p.f ? p.f->traded : BySide{});
+  return !p.h || p.h->traded == (p.f ? p.f->traded : BySide{});
 }
 
 bool synced(const Keyed<Position> &pos, const Fills &fills) {

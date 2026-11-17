@@ -4,11 +4,13 @@
 //   obj <址> [字数] [槽数]: 对象逐字标去处 (模块+偏移 / 指向的对象及其 RTTI 类名), 首字是 vtable 时另列各槽; 摸请求层的对象图用
 //   ref <值> [回看字节]: 堆里存着该值的各处及其所在对象 (类名 + 字段偏移); 如拿窗口句柄找持有它的对象
 //   class <类名>: 该 RTTI 类的各张虚表 (嵌套类写 内@外); 给 shim vt 定钩哪张表
+//   schema [功能号…]: 协议字典 (Schema.hpp): 空 = 各功能一行 (功能号 / 名称 / 入参数 / 出参数), 给了即列各功能的入参与出参 (字段号 + 名称)
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
 #include "live/tdx/Mem.hpp"
 #include "live/tdx/shim/Image.hpp"
+#include "live/tdx/shim/Schema.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -327,9 +329,28 @@ int probe(const std::vector<std::string> &a) {
                                  : a[0] == "text"  ? a.size() > 1
                                  : a[0] == "obj"   ? a.size() >= 2 && a.size() <= 4
                                  : a[0] == "class" ? a.size() == 2
-                                                   : a[0] == "ref" && a.size() >= 2 && a.size() <= 3);
-  need(ok, "用法: shim probe tables | text <词…> | obj <址> [字数 = 32] [槽数 = 0] | ref <值> [回看字节 = 0x200] | class <类名>");
+                                 : a[0] == "schema"
+                                     ? true
+                                     : a[0] == "ref" && a.size() >= 2 && a.size() <= 3);
+  need(ok, "用法: shim probe tables | text <词…> | obj <址> [字数 = 32] [槽数 = 0] | ref <值> [回看字节 = 0x200] | class <类名> | schema [功能号…]");
   const mem::HeapP h = mem::attach();
+  if (a[0] == "schema") {
+    const Schema s = schema(*h);
+    std::printf("%s: 字段 %zu · 功能 %zu\n", s.file.c_str(), s.fields.size(), s.funcs.size());
+    const auto title = [&](int fn) { return s.titles.contains(fn) ? s.titles.at(fn) : ""; };
+    if (a.size() == 1)
+      for (const auto &[fn, f] : s.funcs)
+        std::printf("%5d  %-12s 入 %2zu  出 %2zu\n", fn, title(fn).c_str(), f.in.size(), f.out.size());
+    for (size_t i = 1; i < a.size(); ++i) {
+      const int fn = std::stoi(a[i]);
+      need(s.funcs.contains(fn), strf("没有功能 %d", fn));
+      std::printf("== %d %s\n", fn, title(fn).c_str());
+      for (const auto &[side, v] : {std::pair{"入", &s.funcs.at(fn).in}, std::pair{"出", &s.funcs.at(fn).out}})
+        for (size_t k = 0; k < v->size(); ++k)
+          std::printf("  %s %2zu  0x%04x  %s\n", side, k, (*v)[k], s.name((*v)[k]).c_str());
+    }
+    return 0;
+  }
   if (a[0] == "class") {
     const Image p(h->pid());
     for (const mem::Addr vt : p.vtables(a[1]))

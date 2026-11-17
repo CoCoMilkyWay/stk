@@ -63,10 +63,10 @@ struct Sec {
   bool operator==(const Sec &) const = default;
 };
 
-// 一只持仓 (券商口径); traded / financed 精简视图没有
+// 一只持仓 (券商口径); financed / collateral 精简视图没有
 struct Position : Sec {
   double balance = 0, available = 0;                     // 证券数量 / 可卖 [股]
-  std::optional<BySide> traded;                          // 今买 / 今卖 [股], 与成交合计同形
+  BySide traded;                                         // 今买 / 今卖 [股], 与成交合计同形
   std::optional<double> financed;                        // 融资数量 [股]
   double cost = 0, price = 0, market_value = 0, pnl = 0; // 参考成本价 / 现价 / 市值 / 参考浮动盈亏 (券商口径, ≠ (现价 − 成本价) × 量)
   std::optional<double> position_pct;                    // 仓位 [%]

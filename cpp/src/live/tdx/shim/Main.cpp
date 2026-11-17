@@ -4,6 +4,7 @@
 //     shim probe tables       进程堆里全部明文表 (首行 0|…|): 址 / 副本数 / 行数 / 列数 / 表头 / 前几行
 //     shim probe text <词…>   各词按 GBK、UTF-16LE 逐处列出址与前后字节
 //     shim probe obj <址> [字数] [槽数] / ref <值> [回看字节] / class <类名>   对象逐字标去处 / 谁存着这个值 / 类的虚表
+//     shim probe schema [功能号…]   协议字典: 各功能 / 某功能的入参与出参
 //     shim rec <秒>           录制: 消息 / 窗口树 / 绘制层的变化 → output/run/live/tdx/rec/<时刻>.jsonl, 各条一行打到 stdout
 //     shim vt <秒> <类名 | 0x虚表>…   虚表追踪: 经这些虚表的每次调用 (参数 / 所指文本 / 返回) → 同上目录, 各一行打到 stdout
 //     shim test [用例…]       在线用例 (空 = 全部不慢的; list = 列出); 每例一行 PASS / FAIL, 有 FAIL 退出码 1
@@ -23,7 +24,7 @@ namespace {
 using namespace live::tdx;
 
 constexpr const char *kUsage =
-    "用法: shim cmd <命令…> | probe tables | probe text <词…> | probe obj <址> [字数] [槽数] | probe ref <值> [回看字节] | probe class <类名> | rec <秒> | "
+    "用法: shim cmd <命令…> | probe tables | probe text <词…> | probe obj <址> [字数] [槽数] | probe ref <值> [回看字节] | probe class <类名> | probe schema [功能号…] | rec <秒> | "
     "vt <秒> <类名 | 0x虚表>… | test [用例… | list]\n";
 
 int cmd(const std::vector<std::string> &a) {

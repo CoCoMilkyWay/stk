@@ -6,7 +6,9 @@
 //     busy    查着时切页签被吞: 切持仓、等其查询键禁用 (查起) 即投切撤单的命令, 撤单页 0.3s 内不显示
 //     answer  查完即读: 成交 / 持仓 answered 行数对页上条数, 挂单 / 信用资产 / 融资负债接成 Chain 各问一次并解析信用账户
 //     flow    资金流水近 14 天 (开页、敲起止日、查询、取块, 同 Broker::pull_flows)
+//     fields  Tables.hpp 各表各布局: 列数 > 功能定义的出参数, 声明的各列号上的出参字段名恰为声明的 (协议字典, 不动界面)
 //     terms   两融条款 (标的证券 / 担保品 查询全部, 约 1 分钟) — 慢, 须点名才跑
+#include "live/tdx/shim/Schema.hpp"
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
@@ -22,6 +24,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 
 namespace live::tdx::tool {
@@ -78,6 +81,52 @@ std::string flows() {
   return strf("%d 起 %zu 条", from, f.size());
 }
 
+// 表 T 各布局对功能定义: 不符的各条记进 bad, 核过的列数记进 n
+template <class T>
+void fields_of(const Schema &s, int &n, std::string &bad) {
+  for (size_t v = 0; v < T::kViews.size(); ++v) {
+    const auto f = s.funcs.find(T::kFuncs[v]);
+    if (f == s.funcs.end()) {
+      bad += strf("%s: 没有功能 %d; ", T::kShape.name, T::kFuncs[v]);
+      continue;
+    }
+    const std::vector<int> &out = f->second.out;
+    if (static_cast<int>(out.size()) >= T::kViews[v])
+      bad += strf("%s: 功能 %d 出参 %zu 个, 布局只 %d 列; ", T::kShape.name, T::kFuncs[v], out.size(), T::kViews[v]);
+    std::apply(
+        [&](const auto &...c) {
+          (
+              [&] {
+                const int at = c.at[v];
+                if (at == mem::kNone)
+                  return;
+                const std::string got = at < static_cast<int>(out.size()) ? s.name(out[static_cast<size_t>(at)]) : "(越界)";
+                if (got != c.field)
+                  bad += strf("%s 功能 %d 列 %d: 字典为「%s」, 声明「%s」; ", T::kShape.name, T::kFuncs[v], at, got.c_str(), c.field);
+                ++n;
+              }(),
+              ...);
+        },
+        T::kCols);
+  }
+}
+
+std::string fields() {
+  const Schema s = schema(*mem::attach());
+  int n = 0;
+  std::string bad;
+  fields_of<tables::Positions>(s, n, bad);
+  fields_of<tables::Fills>(s, n, bad);
+  fields_of<tables::Pendings>(s, n, bad);
+  fields_of<tables::Debts>(s, n, bad);
+  fields_of<tables::Assets>(s, n, bad);
+  fields_of<tables::Margins>(s, n, bad);
+  fields_of<tables::Collats>(s, n, bad);
+  fields_of<tables::CashFlows>(s, n, bad);
+  need(bad.empty(), bad);
+  return strf("%s: 字段 %zu · 功能 %zu · 8 表 %d 列对上", std::filesystem::path(s.file).filename().c_str(), s.fields.size(), s.funcs.size(), n);
+}
+
 std::string terms() {
   const Terms t = credit::pull(mem::attach(), [](const char *, nlohmann::json) {}, [](std::string) {});
   return strf("%zu 只", t.size());
@@ -88,7 +137,7 @@ struct Case {
   bool slow;
   std::string (*fn)();
 };
-constexpr Case kCases[] = {{"query", false, query}, {"busy", false, busy}, {"answer", false, answer}, {"flow", false, flows}, {"terms", true, terms}};
+constexpr Case kCases[] = {{"query", false, query}, {"busy", false, busy}, {"answer", false, answer}, {"flow", false, flows}, {"fields", false, fields}, {"terms", true, terms}};
 
 // 一例: 段「用例 <名>」内展开交易栏、跑、回持仓页
 bool run(const Case &c) {

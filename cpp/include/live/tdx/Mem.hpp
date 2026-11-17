@@ -8,7 +8,8 @@
 //       {clock} HH:MM:SS, {name} 非数字打头的非空列, * 任一列, ... 其后任意 (再跟的字面量须恰为行尾); 数据行不许有 NUL.
 //     表头带 {n} 即块只取前 n 行 (后随不足 n 行 = 被覆盖了一半的旧缓冲 / 分页块, 不算), 不带即整块.
 //     锚点 = 表头最长的字面段 (末段连 \r\n): 段内找锚点, 往前至多 (锚点前各记号的最宽 + 字面段) 字节找表头起点
-//   列 kViews / kCols  各布局的列数; 行的各成员 ← 各布局的列号 (kNone = 该布局没有) 经转型 as::*; check(行) 行级交叉校验
+//   列 kViews / kFuncs / kCols  各布局的列数与应答它的功能号; 行的各成员 ← 各布局的列号 (kNone = 该布局没有) 经转型 as::*,
+//     各列带客户端字段名 (列序 = 功能定义的出参序, 行尾多一空列); check(行) 行级交叉校验
 //   读法 Mode  触发 × 取法:
 //                        取最新一份 (没见过的)      取累积
 //       被动换代          Live   活动块              Union  当日副本并集      → follow / read
@@ -164,9 +165,10 @@ struct is { // 只核不存
 };
 } // namespace as
 
-// 一列: 成员 M (nullptr = 只核不存) ← 各布局的列号 at 经 As
+// 一列: 成员 M (nullptr = 只核不存) ← 各布局的列号 at 经 As; field = 客户端字段字典里该列的名称 (shim test fields 对功能定义的出参核)
 template <auto M, class As, size_t V>
 struct Col {
+  const char *field;
   std::array<int, V> at;
 
   template <class Row>
@@ -182,8 +184,8 @@ struct Col {
   }
 };
 template <auto M, class As, class... I>
-constexpr Col<M, As, sizeof...(I)> col(I... at) {
-  return {{static_cast<int>(at)...}};
+constexpr Col<M, As, sizeof...(I)> col(const char *field, I... at) {
+  return {field, {static_cast<int>(at)...}};
 }
 
 template <class S>
