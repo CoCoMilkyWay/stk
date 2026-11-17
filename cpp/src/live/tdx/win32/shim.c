@@ -2421,6 +2421,7 @@ static BYTE *g_vt_stubs; // VT_TABS × VT_SLOTS 个桩
 static struct vt_evt g_vte[VT_CAP];
 static int g_vte_head, g_vte_count, g_vte_lost; // lost = 环满后挤掉的条数
 static volatile LONG g_vt_on, g_vt_seq;
+static volatile DWORD g_vt_mute; // 此线程上的调用不记：req 直发在界面线程里建 / 发 / 读 job 的那段
 static DWORD g_vt_tls = TLS_OUT_OF_INDEXES;
 
 static void vt_ret_thunk(void);
@@ -2462,7 +2463,7 @@ static void vt_push(const struct vt_rec *r, DWORD id, int ret_kind, DWORD self,
 void vt_record(DWORD *f) __asm__("vt_record_sym") __attribute__((used));
 void vt_record(DWORD *f) {
   const struct vt_rec *r = (const struct vt_rec *)f[9];
-  if (!g_vt_on || r->quiet)
+  if (!g_vt_on || r->quiet || GetCurrentThreadId() == g_vt_mute)
     return;
   const DWORD id = (DWORD)InterlockedIncrement(&g_vt_seq);
   vt_push(r, id, 0, f[7], f[10], f[8], f + 11);
@@ -2884,10 +2885,12 @@ static LRESULT CALLBACK req_wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   g_req.got = (DWORD)wp;
   if (g_req.job && !g_req.done && (DWORD)wp == g_req.seq) {
     void *j = g_req.job;
+    g_vt_mute = GetCurrentThreadId();
     g_req.refs[1] = req_refs(j);
     req_read();
     for (DWORD n = g_req.refs[1]; n > 1; n--)
       ((th_0)VSLOT(j, 1))(j);
+    g_vt_mute = 0;
     g_req.job = NULL;
     InterlockedExchange(&g_req.done, 1);
   }
@@ -2907,8 +2910,10 @@ static void req_send_in(struct out *o, HWND h) {
                                 HWND_MESSAGE, NULL, g_hMod, NULL);
     assert(g_req_wnd);
   }
+  g_vt_mute = GetCurrentThreadId();
   void *u = g_req.user, *j = ((th_new)VSLOT(u, 7))(u, 0, 0);
   if (!j) {
+    g_vt_mute = 0;
     g_req.err = "CTcUser slot 7 returned no job";
     return;
   }
@@ -2924,6 +2929,7 @@ static void req_send_in(struct out *o, HWND h) {
   g_req.refs[0] = req_refs(j);
   for (DWORD n = g_req.refs[0]; n > 2; n--) // 插件发完放一份（3 → 2）：同样放到剩 2
     ((th_0)VSLOT(j, 1))(j);
+  g_vt_mute = 0;
   emit(o, "{\"job\":\"0x%08x\",\"seq\":%lu}\n", (DWORD)j, g_req.seq);
 }
 

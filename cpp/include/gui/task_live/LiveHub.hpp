@@ -82,6 +82,7 @@ struct BoardView {
 };
 struct PlanView {
   std::optional<live::rebal::Plan> plan;
+  std::optional<live::rebal::Sheet> now; // 账户「现」: 试算的, 试算没出即读时的; 没读到信用账户 = 无
   std::string wait, err;
 };
 

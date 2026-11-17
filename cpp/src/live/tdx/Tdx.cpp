@@ -20,6 +20,7 @@
 #include <iterator>
 #include <mutex>
 #include <optional>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -147,13 +148,14 @@ struct Core {
     req::arm(heap);
   }
 
-  // 引导: 插件在本客户端进程里还没发过的表, 各经界面查一次 (其引导页), 末了回持仓页 (占界面锁)
+  // 引导: 插件在本客户端进程里还没发过的表, 各经界面查一次 (其引导页), 末了回持仓页 (持仓缺也由它补; 占界面锁)
   template <class... S>
   void prime() {
     std::vector<ui::Open> miss;
     ((tables::seen<S>() ? void() : miss.push_back(S::kOpen)), ...);
     if (miss.empty())
       return;
+    std::erase_if(miss, [](const ui::Open &o) { return std::string_view(o.page) == tables::Positions::kOpen.page; });
     note("引导");
     const Gate::Hold g(gate, "引导");
     trace::Span span("引导");

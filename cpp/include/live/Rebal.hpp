@@ -116,6 +116,8 @@ struct Result {
 };
 Result plan(const Keyed<Position> &pos, const Account &acct, const Prices &px0, const Quotes &quotes, const Terms &terms,
             const std::vector<std::string> &codes, const Cfg &cfg);
+// 读时的账户 (客户端口径): 试算没出时账户的「现」栏
+Sheet now_of(const Account &a);
 // 名单里可买的 (试算要其行情)
 std::vector<Sec> buyable(const std::vector<std::string> &codes, const Terms &terms);
 

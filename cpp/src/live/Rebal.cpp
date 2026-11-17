@@ -403,6 +403,8 @@ Result plan(const Keyed<Position> &pos, const Account &acct, const Prices &px0, 
   return {std::move(pl), ""};
 }
 
+Sheet now_of(const Account &a) { return sheet(a.assets, a.net, a.debt, a.cash, a.avail, std::max(0.0, a.line)); }
+
 nlohmann::json to_json(const Order &o) {
   return {{"code", o.code}, {"name", o.name}, {"side", o.side}, {"credit", credit_name(o.credit)}, {"qty", o.qty}, {"px", o.px}, {"amount", o.amount}, {"slip", o.slip}, {"fee", o.fee}, {"full", o.full}};
 }

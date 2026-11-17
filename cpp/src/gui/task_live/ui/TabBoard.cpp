@@ -381,7 +381,7 @@ void task_line(LiveHub &hub) {
 }
 
 // 账户对照: 现 / 调仓后 / 变动%, 调仓后与现不同的格标色; 变动按该列好坏着色 (好红坏绿)
-void sheet(const live::rebal::Plan *p, bool priv, Fit &fit) {
+void sheet(const live::rebal::Sheet *n, const live::rebal::Sheet *e, bool priv, Fit &fit) {
   constexpr int kN = 8;
   constexpr const char *kHeads[kN + 1] = {"", "总资产", "净资产", "负债", "现金", "可用|保证金", "可融|余量", "杠杆", "维持|担保"};
   constexpr int kGood[kN] = {1, 1, -1, 1, 1, 1, -1, 1}; // 涨为好 1 / 跌为好 -1
@@ -392,7 +392,7 @@ void sheet(const live::rebal::Plan *p, bool priv, Fit &fit) {
   if (!begin_fit("##sheet", kHeads, kFlags, fit))
     return;
   fit_heads(kHeads, fit);
-  const Vals now = p ? vals(p->now) : Vals{}, exp = p ? vals(p->exp) : Vals{};
+  const Vals now = n ? vals(*n) : Vals{}, exp = e ? vals(*e) : Vals{};
   for (int r = 0; r < 2; ++r) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
@@ -458,8 +458,8 @@ void groups(LiveHub &hub, BoardState &st) {
   plan_sheet(hub, st);
   task_line(hub);
   row("账户");
-  const auto &p = hub.plan().plan;
-  sheet(p ? &*p : nullptr, hub.priv(), st.acct_fit);
+  const PlanView &v = hub.plan();
+  sheet(v.now ? &*v.now : nullptr, v.plan ? &v.plan->exp : nullptr, hub.priv(), st.acct_fit);
   ImGui::EndTable();
 }
 

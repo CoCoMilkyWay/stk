@@ -688,6 +688,10 @@ void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
         plan_.err = e.why;
       }
     }
+    if (plan_.plan)
+      plan_.now = plan_.plan->now;
+    else if (st.acct)
+      plan_.now = live::rebal::now_of(*st.acct);
   }
 }
 

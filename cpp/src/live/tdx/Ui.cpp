@@ -217,7 +217,7 @@ int Count::read() const {
 }
 
 // 认目标页: act 前表头含 col 的页 (须至多一个) 记下其查询键的禁用次数; act 后显示出来的页是它即是,
-// 是 act 前没有的页 (头一回开) 即等其表头 (界面线程卡着时 gettext 一直等) 再看, 禁用次数从 0 起
+// 是 act 前没有的页 (头一回开) 即禁用次数从 0 起等它查完再核表头 (查着时界面线程卡住, detail 等不到)
 Page query(const std::string &col, const std::function<void()> &act, double timeout) {
   const Hwnd h = host();
   idle(h, timeout);
@@ -241,14 +241,13 @@ Page query(const std::string &col, const std::function<void()> &act, double time
           n0 = it->second;
           return s[0];
         }
-        if (before.contains(s[0]))
-          return std::nullopt;
-        win::text(s[0], timeout);
-        return has_col(heads(h)[s[0]], col) ? std::optional<Hwnd>(s[0]) : std::nullopt;
+        return before.contains(s[0]) ? std::nullopt : std::optional<Hwnd>(s[0]);
       },
       timeout);
   const Page p = page_of(dlg);
   settle(p, n0, timeout, t0);
+  if (!cand.contains(dlg) && !has_col(heads(h)[dlg], col))
+    fail(strf("新开的页 %s 表头没有「%s」", dlg.c_str(), col.c_str()));
   return p;
 }
 
