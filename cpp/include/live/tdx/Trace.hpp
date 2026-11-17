@@ -8,7 +8,7 @@
 //   段: 刷新 {why 起因, n 轮号} › 接入 / 引导 / 成交 / 持仓 / 挂单 / 信用账户 (只刷成交的一轮只有成交);
 //     下单 {委托} › 接入 / 切换 / 开窗 / 填单 / 确认 / 回报;
 //     两融条款 › 接入 / 引导 / 标的证券 / 担保品;  资金流水 {from} › 接入 / 引导 / 窗 {lo, hi};  <独占者> (调仓整批等);
-//     界面件: 点「文字」/ 功能树「项」/ 页签「页签」/ 开页「功能」{col} / 按键 <id> / 弹框 {titles}
+//     界面件: 点「文字」/ 功能树「项」/ 开页「页」{col} / 弹框 {titles}
 //   种类:
 //     shim {cmd, ms, ret 应答记录 | n 条数 + kb (应答大于 kRetCap 字节)}   run {argv, rc, ms, err / out 尾部}   外部进程
 //     build {dll, cc} / inject {dll, port, proc} / online {port}           shim 编译、注入、注入后上线
@@ -26,8 +26,8 @@
 //     texts {wins, seen}                 点文字不恰一处: 候选窗口数、各候选窗口上画着的文字
 //     popup {title, hwnd}                等到的弹框                        form {px, dflt, unit, cap0, cap, n}  填单的价、默认价、单位、最大量、股数
 //     gate {by, ms}                      界面锁被 by 占着, 等了 ms         unsynced {try}  持仓与成交对不上
-//     put {what, …}                      发布信用账户                      placed {qty, px, msg}  委托回报    terms {n}  两融条款只数
-//     flows {n}                          资金流水总条数
+//     acct {assets, line, debt, net, avail, cash, debts}  读到的信用账户  placed {qty, px, msg}  委托回报
+//     terms {n}  两融条款只数            flows {n}  资金流水总条数
 #pragma once
 
 #include "nlohmann/json.hpp"

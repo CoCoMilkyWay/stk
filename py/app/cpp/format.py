@@ -10,44 +10,28 @@ Usage:
     python py/app/cpp/format.py --dry-run  # only list files that would change
 """
 
-import hashlib
-import json
 import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from common import CPP_DIR, FORMAT_EXTENSIONS, PROJECT_ROOT, iter_sources, which
+from common import (
+    CPP_DIR,
+    FORMAT_EXTENSIONS,
+    PROJECT_ROOT,
+    file_hash,
+    iter_sources,
+    load_cache,
+    save_cache,
+    which,
+)
 
 STYLE_FILE = CPP_DIR / ".clang-format"
 
 # Hash of each file's content after a successful format; unchanged files are skipped.
 # Invalidated when clang-format version or .clang-format changes.
 CACHE_FILE = Path(__file__).resolve().parent / "__pycache__" / "format_cache.json"
-
-
-# ============================================================================
-# Cache
-# ============================================================================
-
-
-def file_hash(path: Path) -> str:
-    return hashlib.blake2b(path.read_bytes(), digest_size=16).hexdigest()
-
-
-def load_cache(key: str) -> dict:
-    if not CACHE_FILE.exists():
-        return {}
-    data = json.loads(CACHE_FILE.read_text())
-    if data["key"] != key:
-        return {}
-    return data["files"]
-
-
-def save_cache(key: str, files: dict):
-    CACHE_FILE.parent.mkdir(exist_ok=True)
-    CACHE_FILE.write_text(json.dumps({"key": key, "files": files}, indent=0))
 
 
 # ============================================================================
@@ -94,7 +78,7 @@ def main():
 
     assert STYLE_FILE.is_file(), f"style file not found: {STYLE_FILE}"
     cache_key = version + "|" + file_hash(STYLE_FILE)
-    cache = load_cache(cache_key)
+    cache = load_cache(CACHE_FILE, cache_key)
     hashes = {rel: file_hash(PROJECT_ROOT / rel) for rel in files}
     todo = [rel for rel in files if cache.get(rel) != hashes[rel]]
     print(f"{len(files) - len(todo)} cached, {len(todo)} to check")
@@ -112,10 +96,10 @@ def main():
             changed += 1
         if new_hash:
             new_cache[rel] = new_hash
-    save_cache(cache_key, new_cache)
+    save_cache(CACHE_FILE, cache_key, new_cache)
 
     verb = "would be reformatted" if dry_run else "reformatted"
-    print(f"\nDone. {changed} file(s) {verb}, {len(todo)} checked.")
+    print(f"Done. {changed} file(s) {verb}, {len(todo)} checked.")
 
 
 if __name__ == "__main__":

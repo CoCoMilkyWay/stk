@@ -117,20 +117,23 @@ def main():
     print("Cleanup...")
     _cleanup_processes()
 
-    print("Formatting...")
+    print("\nFormatting...")
     subprocess.run([sys.executable, "py/app/cpp/format.py"], check=True)
 
-    print("Syncing remote...")
+    print("\nLinting...")
+    subprocess.run([sys.executable, "py/app/cpp/lint.py"], check=True)
+
+    print("\nSyncing remote...")
     _sync_remote(fetch)
 
-    print("Scanning untracked...")
+    print("\nScanning untracked...")
     _prune_untracked()
 
     if BUILD:
-        print("Building...")
+        print("\nBuilding...")
         build.build(PROJECT_DIR, MODE, ENABLE_CUDA)
 
-    print("Running...")
+    print("\nRunning...")
     sys.exit(modes.launch(MODE, BINARY, BUILD_DIR))
 
 

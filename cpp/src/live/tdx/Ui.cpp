@@ -6,8 +6,8 @@
 #include "live/tdx/Until.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cctype>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>

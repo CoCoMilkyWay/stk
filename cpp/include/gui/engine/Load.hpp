@@ -312,10 +312,10 @@ private:
 
 struct FactorFlow {
   Store &S;
-  std::atomic<bool> &cancel;
+  const std::atomic<bool> &cancel;
   Progress &prog;
   Prio prio;
-  FactorFlow(std::atomic<bool> &cancel, Progress &prog, Prio prio = Prio::Interactive) : S(Store::get()), cancel(cancel), prog(prog), prio(prio) {}
+  FactorFlow(const std::atomic<bool> &cancel, Progress &prog, Prio prio = Prio::Interactive) : S(Store::get()), cancel(cancel), prog(prog), prio(prio) {}
   Io io(const FeatureTable &ft, const Domain &dm) const { return {ft, dm, S.lr, S.ex, cancel, prog}; }
 };
 

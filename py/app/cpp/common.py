@@ -1,5 +1,7 @@
-"""cpp/ 源文件枚举与工具定位: format 与 lint 共用"""
+"""cpp/ 源文件枚举、工具定位与结果缓存: format 与 lint 共用"""
 
+import hashlib
+import json
 import os
 import shutil
 from pathlib import Path
@@ -27,6 +29,24 @@ def which(tool: str) -> str:
     found = shutil.which(tool)
     assert found, f"{tool} not found on PATH"
     return found
+
+
+def file_hash(path: Path) -> str:
+    return hashlib.blake2b(path.read_bytes(), digest_size=16).hexdigest()
+
+
+def load_cache(cache_file: Path, key: str) -> dict:
+    if not cache_file.exists():
+        return {}
+    data = json.loads(cache_file.read_text())
+    if data["key"] != key:
+        return {}
+    return data["files"]
+
+
+def save_cache(cache_file: Path, key: str, files: dict):
+    cache_file.parent.mkdir(exist_ok=True)
+    cache_file.write_text(json.dumps({"key": key, "files": files}, indent=0))
 
 
 def iter_sources(root: Path, extensions: set[str]):

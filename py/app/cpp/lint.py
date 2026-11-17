@@ -10,22 +10,49 @@ clangd is started the same way the IDE starts it (reads cpp/.clangd config,
 picks up cpp/compile_commands.json automatically), so results match what you
 see in Cursor.
 
+A translation unit's diagnostics depend only on its own text, the files it
+transitively #includes, the compile flags and clangd itself, so each file's
+diagnostic counts are cached under a hash of exactly that; unchanged files are
+skipped.
+
 Usage:
     python py/app/cpp/lint.py              # lint all files
     python py/app/cpp/lint.py <path>       # lint a single file / dir
     python py/app/cpp/lint.py --all        # include Error severity too
 """
 
+import hashlib
 import json
 import os
+import re
 import select
 import subprocess
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 from urllib.parse import quote
 
-from common import CPP_DIR, LINT_EXTENSIONS, PROJECT_ROOT, iter_sources, which
+from common import (
+    CPP_DIR,
+    FORMAT_EXTENSIONS,
+    LINT_EXTENSIONS,
+    PROJECT_ROOT,
+    file_hash,
+    iter_sources,
+    load_cache,
+    save_cache,
+    which,
+)
+
+CLANGD_FILE = CPP_DIR / ".clangd"
+COMPILE_COMMANDS = CPP_DIR / "compile_commands.json"
+
+# Per file: [hash of itself + its transitive project #includes, diagnostic counts by severity].
+# Invalidated when clangd version, .clangd or compile_commands.json changes.
+CACHE_FILE = Path(__file__).resolve().parent / "__pycache__" / "lint_cache.json"
+
+INCLUDE_RE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"\n]+)[>"]', re.MULTILINE)
 
 # Concurrent preamble/AST builds inside clangd. Lower if memory runs out.
 CLANGD_JOBS = os.cpu_count()
@@ -33,6 +60,7 @@ CLANGD_JOBS = os.cpu_count()
 # LSP severity values
 SEV_ERROR = 1
 SEV_WARNING = 2
+SEV_COUNT = 4
 
 # Max wall-clock seconds to wait for clangd to report on all opened files.
 # (clangd may stay silent on headers it can't build a TU for.)
@@ -47,6 +75,52 @@ def file_uri(path: Path) -> str:
     # LSP file URIs are percent-encoded; clangd expects absolute paths.
     quoted = quote(str(path))
     return f"file://{quoted}"
+
+
+def rel_str(path: Path) -> str:
+    return str(path.relative_to(PROJECT_ROOT))
+
+
+# ============================================================================
+# Cache key: hash of a file plus every project source it transitively includes
+# ============================================================================
+
+
+def dep_hashes(sources: list) -> dict:
+    contents = {p: p.read_bytes() for p in sources}
+    by_name = defaultdict(list)
+    for p in sources:
+        by_name[p.name].append(p)
+
+    def resolve(includer: Path, inc: bytes) -> set:
+        # Over-approximate (extra deps only cost a recheck): the path relative to the
+        # includer plus every source whose path ends with the include spelling.
+        spelled = Path(inc.decode("utf-8", errors="replace"))
+        tail = "/" + "/".join(s for s in spelled.parts if s not in (".", ".."))
+        found = {p for p in by_name[spelled.name] if str(p).endswith(tail)}
+        relative = Path(os.path.normpath(includer.parent / spelled))
+        if relative in contents:
+            found.add(relative)
+        return found
+
+    direct = {
+        p: set().union(*(resolve(p, inc) for inc in INCLUDE_RE.findall(text)))
+        for p, text in contents.items()
+    }
+    own = {
+        p: f"{rel_str(p)}\0{hashlib.blake2b(text, digest_size=16).hexdigest()}\n"
+        for p, text in contents.items()
+    }
+    hashes = {}
+    for p in sources:
+        seen, stack = {p}, [p]
+        while stack:
+            for d in direct[stack.pop()] - seen:
+                seen.add(d)
+                stack.append(d)
+        joined = "".join(own[d] for d in sorted(seen)).encode()
+        hashes[rel_str(p)] = hashlib.blake2b(joined, digest_size=16).hexdigest()
+    return hashes
 
 
 # ============================================================================
@@ -182,9 +256,16 @@ def clear_status() -> None:
     sys.stdout.flush()
 
 
-def print_diags(rel: Path, diags: list, include_errors: bool) -> int:
+def count_by_severity(diags: list) -> list:
+    counts = [0] * SEV_COUNT
+    for d in diags:
+        counts[d["severity"] - 1] += 1
+    return counts
+
+
+def print_diags(rel: str, counts: list, include_errors: bool) -> int:
     min_sev = SEV_ERROR if include_errors else SEV_WARNING
-    n = sum(1 for d in diags if d.get("severity", 0) >= min_sev)
+    n = sum(counts[min_sev - 1 :])
     if not n:
         return 0
     # clear the bottom status line, print the file result above it, then
@@ -194,13 +275,16 @@ def print_diags(rel: Path, diags: list, include_errors: bool) -> int:
     return n
 
 
-def lint_all(client: LspClient, paths: list, include_errors: bool) -> int:
-    """didOpen every file at once, print diagnostics incrementally as they land."""
-    uri_to_rel = {}
+def lint_all(client: LspClient, paths: list, include_errors: bool) -> tuple:
+    """didOpen every file at once, print diagnostics incrementally as they land.
+    Returns (shown diagnostic total, {path: counts by severity} for files clangd reported on).
+    """
+    uri_to_path = {}
+    results = {}
     pending = set()
     for path in paths:
         uri = file_uri(path)
-        uri_to_rel[uri] = path.relative_to(PROJECT_ROOT)
+        uri_to_path[uri] = path
         pending.add(uri)
         text = path.read_text(encoding="utf-8", errors="replace")
         client.notify(
@@ -237,9 +321,9 @@ def lint_all(client: LspClient, paths: list, include_errors: bool) -> int:
         uri = params.get("uri")
         if uri not in pending:
             continue
-        diags = params.get("diagnostics", [])
-        rel = uri_to_rel[uri]
-        total += print_diags(rel, diags, include_errors)
+        path = uri_to_path[uri]
+        results[path] = count_by_severity(params.get("diagnostics", []))
+        total += print_diags(rel_str(path), results[path], include_errors)
         pending.discard(uri)
         client.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
         reported += 1
@@ -249,7 +333,12 @@ def lint_all(client: LspClient, paths: list, include_errors: bool) -> int:
     clear_status()
     for uri in pending:
         client.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
-    return total
+    return total, results
+
+
+# ============================================================================
+# Main
+# ============================================================================
 
 
 def main():
@@ -267,13 +356,43 @@ def main():
     print(f"Linting {len(files)} file(s) with clangd ...", flush=True)
 
     binary = which("clangd")
-    client = LspClient(binary, CPP_DIR)
-    client.initialize()
+    version = subprocess.run(
+        [binary, "--version"], capture_output=True, text=True, check=True
+    ).stdout.splitlines()[0]
+    print(f"Using: {version}")
 
-    total = lint_all(client, files, include_errors)
-    client.shutdown()
+    assert CLANGD_FILE.is_file(), f"clangd config not found: {CLANGD_FILE}"
+    assert COMPILE_COMMANDS.is_file(), f"compile database not found: {COMPILE_COMMANDS}"
+    cache_key = "|".join([version, file_hash(CLANGD_FILE), file_hash(COMPILE_COMMANDS)])
+    cache = load_cache(CACHE_FILE, cache_key)
+    deps = dep_hashes(list(iter_sources(CPP_DIR, FORMAT_EXTENSIONS)))
+    assert all(rel_str(p) in deps for p in files), "target outside the lintable sources"
+    valid = {rel: v for rel, v in cache.items() if deps.get(rel) == v[0]}
+    todo = [p for p in files if rel_str(p) not in valid]
+    print(f"{len(files) - len(todo)} cached, {len(todo)} to check")
 
-    print(f"\nDone. {total} diagnostic(s) across linted files.", flush=True)
+    total = sum(
+        print_diags(rel_str(p), valid[rel_str(p)][1], include_errors)
+        for p in files
+        if rel_str(p) in valid
+    )
+    results = {}
+    if todo:
+        client = LspClient(binary, CPP_DIR)
+        client.initialize()
+        checked, results = lint_all(client, todo, include_errors)
+        client.shutdown()
+        total += checked
+
+    for p, counts in results.items():
+        valid[rel_str(p)] = [deps[rel_str(p)], counts]
+    save_cache(CACHE_FILE, cache_key, valid)
+
+    print(
+        f"Done. {total} diagnostic(s) across linted files, "
+        f"{len(results)}/{len(todo)} checked.",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

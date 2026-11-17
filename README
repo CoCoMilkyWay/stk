@@ -28,7 +28,7 @@ GUI布局:
   ③ 因子  因子引擎 (Run / Search) ─► output/factors/<pool>/<层> (一因子一文件); Agent 候选 output/agent ─(达门槛)─► 同上
   ④ 组合  因子 ─► output/portfolios (Market 组合)
   ⑤ 实盘  券商客户端 (live/<客户端>/, 登记于 live/Clients.hpp, 现只有通达信) ─(Broker: 读持仓 / 成交 / 挂单 / 信用账户, 下单 / 重查两融条款 / 资金流水)─► Live 持仓页 / 一键调仓;
-          摸客户端 / 在线用例另有独立程序 shim (cmd 转发 / 探内存 / 录制 / 用例, 与 app_main 共用适配代码); 行情走新浪 (订阅进 QuoteService 同一路, 不读客户端的), 两融条款缓存落 output/live (个股另经本地库核), 调仓名单 output/config/live/lists
+          摸客户端 / 在线用例另有独立程序 shim (cmd 转发 / 探内存 / 录制 / 用例, 与 app_main 共用适配代码); 行情走新浪 (订阅进 QuoteService 同一路, 不读客户端的), 两融条款缓存落 output/live (live/Terms.hpp; 个股另经本地库核), 调仓名单 output/config/live/lists
           资金流水 (每天自动补一次) ─► output/live/flows.csv ─(PriceLib 按 account/ 回放 × 日脊个股日根 / 分钟根; 当日 × 新浪分钟收)─► Market 自选首行「账户」(时间加权净值, 分钟频; ▸ 展开 = 持仓个股 + 仓位, 同篮子)
   人定的配置落 output/config/ (一任务一目录); 各段的运行产物 (日志 / 用时 / 导出 / 采样) 落 output/run/ 下的同构位置; output/ 的布局唯一由 disk/Disk.hpp 定
 ```
@@ -362,19 +362,21 @@ stk/
 │   │   │   └── Audit.hpp                               # 📊 核侧: plan(s, r, keep) → run(clients, unit) → Book / repair → Task
 │   │   ├── mining/                                     # ⛏️ 数据挖掘设计文档 (特征 → 因子): README.md 方法论 / COPULA.md
 │   │   ├── live/                                       # 💹 实盘: 券商无关的一层 + 各客户端适配; 外部结局 Fail 收在各轮 / 各事务边界, 自身不变式 assert
-│   │   │   ├── Broker.hpp                              # 💹 统一类型 (持仓 / 成交 / 挂单 / 信用账户 / 两融条款 / 资金流水 / 限价单) + Broker 接口 (读 / 刷新 / 下单 / 独占)
-│   │   │   ├── Clients.hpp                             # 💹 客户端登记表: 名称 + 建 Broker
+│   │   │   ├── Broker.hpp                              # 💹 统一类型 (持仓 / 成交 · 按代码合计 / 挂单 / 负债 · 信用账户 / 两融条款 / 资金流水 / 限价单 / 事务报告) + Broker 接口 (读 / 刷新 / 下单 / 独占 / 拉取)
+│   │   │   ├── Clients.hpp                             # 💹 客户端登记表: 名称 + 说明 + 建 Broker
+│   │   │   ├── Terms.hpp                               # 💹 两融条款缓存 (与 account/Ledger 同形: pulled + 一行一只)
 │   │   │   ├── Book.hpp                                # 💹 5 档盘口: 参考价 / 滑点 / 委托价 / 整手规则
 │   │   │   ├── Board.hpp                               # 💹 持仓页一帧: 持仓 × 当日成交 × 行情 按代码对齐 (纯函数)
 │   │   │   ├── Rebal.hpp                               # 💹 一键调仓试算 (纯函数): 名单等权补齐, 先卖、融资、再现金; 可用保证金按读时校准
-│   │   │   └── tdx/                                    # 💹 通达信 (Wine 下 TdxW.exe): 读走进程堆里的明文表, 写与重查经注入的 shim 驱动界面
-│   │   │       ├── Tdx.hpp                             # 💹 Broker 实现: 盯进程 (守望线程) + 刷新线程 + 界面闸
-│   │   │       ├── Mem.hpp / Tables.hpp                # 💹 进程堆 (常开 fd、段间并行扫) + 形 / 列 / 读法 / 索引四轴的表流程 / 各表声明
+│   │   │   └── tdx/                                    # 💹 通达信 (Wine 下 TdxW.exe): 读经注入的 shim 在客户端里直发请求 (不动界面), 写经 shim 驱动闪电下单窗
+│   │   │       ├── Tdx.hpp                             # 💹 Broker 实现: 刷新线程 (一轮四样同形 读表 → 发布) + 界面锁; 下单 / 独占 = txn, 两融条款 / 资金流水 = pull
+│   │   │       ├── Heap.hpp / Image.hpp / Schema.hpp   # 💹 进程堆 (只读, 常开 fd) / 进程映像 (建在堆上: PE 模块 · RTTI · 虚表) / 协议字典
+│   │   │       ├── Cols.hpp / Tables.hpp / Req.hpp     # 💹 列声明 · 转型 · 解析 · 索引 / 8 张表并排声明 + 直发读表 / 请求层日志与直发 (照搬插件入参, 自动翻页)
 │   │   │       ├── Shim.hpp / Proc.hpp / Until.hpp     # 💹 shim 编译注入 + TCP 控制通道 / 子进程 / 轮询原语 (poll · until)
-│   │   │       ├── Trace.hpp                           # 💹 交互日志: shim 命令 / 读内存 / 外部进程 / Broker 流程按段一行一事件; 适配里的 fail 先在当时的段下记一行
-│   │   │       ├── Win.hpp / Ui.hpp                    # 💹 通用 Win32 (窗口 · 图层 · 消息 · 控件 · 禁用计数) / 通达信界面 (主窗 · 交易栏 · 页与查一次: 动作前等空闲、动作后等查询键禁用过又恢复 · 弹框)
+│   │   │       ├── Trace.hpp                           # 💹 交互日志: shim 命令 / 请求层 / 外部进程 / Broker 流程按段一行一事件; 适配里的 fail 先在当时的段下记一行
+│   │   │       ├── Win.hpp / Ui.hpp                    # 💹 通用 Win32 (窗口 · 图层 · 消息 · 控件 · 禁用计数) / 通达信界面 (主窗 · 交易栏 · 开页 open 与查一次: 动作前等空闲、动作后等查询键禁用过又恢复 · 弹框)
 │   │   │       ├── Flash.hpp / Credit.hpp / Flow.hpp   # 💹 闪电下单 / 两融全表与信用账户 / 资金流水 (按 30 天窗逐窗查)
-│   │   │       └── shim/Tool.hpp                       # 💹 shim 独立程序的子命令: cmd 转发 / probe 探内存 / rec 录制 / test 在线用例 (源见 src/live/tdx/shim/)
+│   │   │       └── shim/Tool.hpp                       # 💹 shim 独立程序的子命令: cmd 转发 / probe 探内存 / rec 录制 / vt 虚表追踪 / test 在线用例 (源见 src/live/tdx/shim/)
 │   │   ├── account/Ledger.hpp                          # 💹 账户净值 (券商无关, 只认 live/Broker.hpp 的类型): 资金流水账本 合并 / 核持仓 / 逐交易日回放 → 时间加权指数
 │   │   ├── disk/                                       # 💽 落盘: output/ 的唯一布局 + 唯一路径入口
 │   │   │   ├── Disk.hpp                                # 💽 段表 DISK_SEGS (字段 × 写法 × 值域) × 布局表 DISK_LAYOUT (一行一节点); name ⇄ parse / path ⇄ list / read ⇄ write (原子) / ensure ⇄ remove (墓碑)
