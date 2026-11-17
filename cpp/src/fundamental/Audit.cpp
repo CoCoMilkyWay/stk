@@ -22,7 +22,6 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <random>
 #include <set>
 #include <sstream>
 #include <string>
@@ -735,44 +734,18 @@ std::optional<Book::Sheet> parse(const fs::path &p) {
 
 } // namespace
 
-template <class Src>
-std::vector<Unit> plan(const Round &r, const Keep &keep) {
-  static_assert(Src::exact, "audit: 只核精确源");
-  std::mt19937 rng(static_cast<unsigned>(r.now.at.time_since_epoch().count()));
-  std::vector<std::vector<Unit>> tables;
-  for (const Spec &s : SPECS) {
-    if (!from<Src>(s) || !audited(s))
-      continue;
-    std::map<int, Unit> by_year;
-    for (const Slot &sl : frozen(s, r)) {
-      if (keep && !keep(s, sl))
-        continue;
-      Unit &u = by_year[sl.ym / 100];
-      if (u.slots.empty())
-        u.w.lo = sl.w.lo;
-      u.slots.push_back(sl);
-      u.w.hi = sl.w.hi;
-    }
-    std::vector<Unit> units;
-    for (auto &[y, u] : by_year) {
-      u.spec = &s;
-      u.year = y;
-      units.push_back(std::move(u));
-    }
-    if (!units.empty())
-      tables.push_back(std::move(units));
-  }
-  std::shuffle(tables.begin(), tables.end(), rng);
-  std::size_t depth = 0;
-  for (auto &t : tables) {
-    std::shuffle(t.begin(), t.end(), rng);
-    depth = std::max(depth, t.size());
-  }
+std::vector<Unit> plan(const Spec &s, const Round &r, const Keep &keep) {
+  assert(audited(s) && "audit::plan: 表不参与核对");
   std::vector<Unit> out;
-  for (std::size_t k = 0; k < depth; ++k)
-    for (const auto &t : tables)
-      if (k < t.size())
-        out.push_back(t[k]);
+  for (const Slot &sl : frozen(s, r)) {
+    if (!keep(sl))
+      continue;
+    const int year = sl.ym / 100;
+    if (out.empty() || out.back().year != year)
+      out.push_back({&s, year, {}, {sl.w.lo, 0}});
+    out.back().slots.push_back(sl);
+    out.back().w.hi = sl.w.hi;
+  }
   return out;
 }
 
@@ -828,7 +801,6 @@ Result run(typename Src::Client &client, const Unit &u) {
   return out;
 }
 
-template std::vector<Unit> plan<Bq>(const Round &, const Keep &);
 template Result run<Bq>(bigquant::Client &, const Unit &);
 
 std::string label(const Unit &u) { return u.spec->name + " " + std::to_string(u.year); }
@@ -839,7 +811,7 @@ std::vector<Task> repair(const Spec &s, const Round &r, const std::vector<std::s
   std::set<std::string> hit;
   std::vector<Task> out;
   for (const Slot &sl : frozen(s, r)) {
-    const std::string k = slot_key(s, sl);
+    const std::string k = group_key(sg, sl.w.lo);
     std::vector<std::string> in; // 与槽相交的差异键 (升序)
     bool cover = false;
     for (const std::string &g : keys)

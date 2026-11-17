@@ -1578,13 +1578,10 @@ bool snapshot_view(const Call &c, const Look &L, const Context &ctx, std::string
 }
 
 // ---- view_book ----
-constexpr int kAm0 = 9 * 3600 + 15 * 60, kAm1 = 11 * 3600 + 30 * 60, kPm0 = 13 * 3600, kPm1 = 15 * 3600; // 交易时段 (钟面秒)
-constexpr int kOpenCall = 9 * 3600 + 25 * 60, kCloseCall = 14 * 3600 + 57 * 60;                          // 开盘竞价 [kAm0, kOpenCall) / 收盘竞价 [kCloseCall, kPm1)
-constexpr size_t kProfile = 8;                                                                           // 剖面每侧几个价位
-constexpr int kBarCells = 12;                                                                            // 剖面条形图的满格
-constexpr int kSteps[] = {1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 300, 600};                                // 自动 step 的候选
+constexpr size_t kProfile = 8;                                            // 剖面每侧几个价位
+constexpr int kBarCells = 12;                                             // 剖面条形图的满格
+constexpr int kSteps[] = {1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 300, 600}; // 自动 step 的候选
 
-bool in_session(int c) { return (c >= kAm0 && c < kAm1) || (c >= kPm0 && c < kPm1); }
 // "HH:MM" / "HH:MM:SS" → 钟面秒; 不成 → −1
 int clock_of(const std::string &s) {
   if (!hm_shape(s) || !(s.size() == 5 || (s.size() == 8 && s[5] == ':' && std::isdigit(static_cast<unsigned char>(s[6])) && std::isdigit(static_cast<unsigned char>(s[7])))))
@@ -1831,7 +1828,7 @@ bool Spec(const Call &c, const Lab &lab, BookSpec &out, std::string &error) {
     error = "time: " + w + " 须起 < 止, 两端在 09:15–11:30 / 13:00–15:00 内 (止是开区间, 可写 11:30 / 15:00)";
     return false;
   }
-  const int n = TradeSec(to - 1) + 1 - TradeSec(from);
+  const int n = trade_sec(to - 1) + 1 - trade_sec(from);
   if (n > kBookMins * 60) {
     error = "time: " + w + " 有 " + std::to_string((n + 59) / 60) + " 分钟交易时间, 至多 " + std::to_string(kBookMins) + " 分钟; 收窄窗口";
     return false;
@@ -1866,7 +1863,7 @@ bool Render(const Call &c, const Book &b, const Context &, std::string &out) {
   s += " (额 万元; 价差 / 距盘口按 0.01 元一跳)\n";
   s += "当日: 逐笔 " + std::to_string(b.orders) + " 条 · " +
        (b.close > 0 ? "开 " + px2(b.open) + " 高 " + px2(b.high) + " 低 " + px2(b.low) + " 收 " + px2(b.close) + " · 成交额 " + w4(b.amount) : std::string("无成交")) + " · 大单门槛 " +
-       w4(b.big) + (c.num("big") > 0 ? " (给定)" : " (当日新挂单额 99 分位)") + "\n";
+       w4(b.big) + (c.num("big") > 0 ? " (给定)" : " (当日新挂单额 " + fmt("%.0f", kBigQuantile * 100.0) + " 分位)") + "\n";
 
   // 窗口汇总 + 逐秒序列 (成交价无成交沿用上一笔)
   double tk[2] = {}, mk[2] = {}, cx[2] = {}, spread = 0.0, cum = 0.0;
@@ -1937,10 +1934,10 @@ bool Render(const Call &c, const Book &b, const Context &, std::string &out) {
   std::sort(ix.begin(), ix.end()); // 事件本按时序
   if (m > 0) {
     s += "\n额最大的 " + str(m) + " 起 (按时序; 距盘口 = 与上一秒末同侧最优价差几跳: 0 在盘口, + 在盘口后方, − 越过盘口):\n| 时刻 | 事件 | 侧 | 价 | 距盘口 | 额 | 寿命 秒 |\n|---|---|---|---|---|---|---|\n";
-    const int t0 = TradeSec(sp.from);
+    const int t0 = trade_sec(sp.from);
     for (const size_t i : ix) {
       const BookEvent &e = b.events[i];
-      const BookSec &z = b.secs[static_cast<size_t>(std::clamp(TradeSec(e.clock) - t0 - 1, 0, n - 1))];
+      const BookSec &z = b.secs[static_cast<size_t>(std::clamp(trade_sec(e.clock) - t0 - 1, 0, n - 1))];
       const float best = e.side == 0 ? z.bid : z.ask;
       const bool sweep = e.kind == BookKind::Sweep;
       const std::string dist = sweep        ? "吃 " + std::to_string(e.levels) + " 价位"

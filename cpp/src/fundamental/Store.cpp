@@ -288,16 +288,13 @@ std::vector<Slot> ledger(const Spec &s, const Round &r) {
 }
 
 std::vector<Slot> frozen(const Spec &s, const Round &r) {
+  assert(s.shape != Shape::Meta && "frozen: Meta 无冻结槽");
   std::vector<Slot> out;
-  if (s.shape == Shape::Meta)
-    return out;
   for (const Slot &sl : ledger(s, r))
     if (sl.st == State::Frozen)
       out.push_back(sl);
   return out;
 }
-
-std::string slot_key(const Spec &s, const Slot &sl) { return group_key(slot_grain(s), sl.w.lo); }
 
 std::optional<Task> todo(const Spec &s, const Slot &sl) {
   if (sl.st == State::Frozen || (sl.st == State::Open && s.shape == Shape::Daily))
@@ -401,7 +398,5 @@ void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl) {
   }
   assert(false && "put: 未知写法");
 }
-
-bool renative(const Shard &sh) { return pq::renative(sh.path); }
 
 } // namespace fundamental

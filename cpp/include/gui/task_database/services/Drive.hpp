@@ -1,7 +1,5 @@
 #pragma once
 
-#include "fundamental/Audit.hpp"
-#include "fundamental/Sync.hpp"
 #include "shared/Progress.hpp"
 
 #include <atomic>
@@ -17,8 +15,8 @@ enum class Outcome { Done,
                      Cancelled };
 
 // ============================================================================
-// drive — 逐项驱动骨架: 同步 (道的一项) / 修复 (sync::Task) / 核对 (audit::Unit) 同一份 (SyncService / AuditService 共用);
-//   取消 / 计步 / 日志只在这里写一次
+// drive — 逐项驱动骨架: 同步 (道的一项) / 修复 (Task) / 核对 (audit::Unit) 同一份 (SyncService / AuditService 共用);
+//   取消 / 计步 / 日志只在这里写一次; label(x) 随项的类型找 (与类型同域)
 //   每项开跑前: cancel → Cancelled (跳过余下全部)
 //   每项: say(label) → step(x) 返回一句结果 (日志) → board.publish(1)
 //   计步分母由调用方 begin (修复 = 重拉 + 复核两段共用一个分母); 在飞的一项不可中断
@@ -26,8 +24,6 @@ enum class Outcome { Done,
 template <class T, class Step>
 Outcome drive(Progress &board, const std::atomic<bool> &cancel, const std::string &tag, const std::vector<T> &items,
               const std::function<void(const std::string &)> &say, Step &&step) {
-  using fundamental::audit::label;
-  using fundamental::sync::label;
   std::cout << "[" << tag << "] " << items.size() << " item(s)" << std::endl;
   Outcome stop = Outcome::Done;
   for (const T &x : items) {

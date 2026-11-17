@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <vector>
 
 namespace live::tdx::req {
@@ -25,7 +26,18 @@ using trace::Kw;
 constexpr const char *kJob = "CTcJob@CTcComm";
 // 槽: 减引用 (插件读完应答即调) / 设功能号 / 写字符串入参 / 写整数入参 / 网络线程收到应答 / 列数 / 发送 / 行数 /
 //     应答可读 (插件开读先问) / 下一行 / 按列号取 / 按字段号取
-enum Slot { kRelease = 1, kFunc = 6, kStr = 7, kInt = 9, kNet = 18, kCols = 22, kSend = 25, kRows = 39, kOk = 40, kNext = 41, kByCol = 43, kByField = 44 };
+enum Slot { kRelease = 1,
+            kFunc = 6,
+            kStr = 7,
+            kInt = 9,
+            kNet = 18,
+            kCols = 22,
+            kSend = 25,
+            kRows = 39,
+            kOk = 40,
+            kNext = 41,
+            kByCol = 43,
+            kByField = 44 };
 constexpr const char *kOnly = "1,6,7,9,18,22,25,39,40,41,43,44";
 constexpr const char *kRet = "22,39,43,44"; // 无参 getter 与取字段 (返回时缓冲已填), 不会有异常越过
 constexpr int kMinSlots = kByField + 1;
@@ -33,12 +45,25 @@ constexpr uint32_t kFieldMask = 0xFFFF; // 插件画表时字段号另带 0x1200
 // done 时插件可能还没读应答 (查询键恢复比插件读早几到十几 ms): 等发出不久的请求都读完, 至多等这么久
 constexpr double kWaitRead = 2.0, kRecent = 5.0;
 
+struct In {
+  int fid;
+  bool is_int;
+  std::string v;
+};
+// 插件最近一次发某功能号时的样子 (ask 照搬)
+struct Last {
+  std::vector<In> ins; // 插件写的入参, 按序 (建 job 时 tc.dll 自填的不在内: 直发建 job 时它照样填)
+  std::string lp;      // 回包 lParam
+};
+
 struct State {
   std::mutex mu;
   int pid = 0;
   std::unique_ptr<Image> img;
   std::string vt;
   Schema schema;
+  std::map<int, Last> last; // 功能号 → 插件最近一次
+  uint32_t user = 0;        // 插件所用的 CTcUser (其 job 的 +0x18)
 };
 State &state() {
   static State s;
@@ -59,18 +84,20 @@ std::string text(const json &j) {
 // 一个请求: job 上自首个入参起, 到下一个请求的首个入参前
 struct Req {
   std::string job, by; // job 地址 / 设功能号的模块 (插件)
+  std::vector<In> ins; // 插件写的入参 (原样、按序)
   uint32_t t0 = 0;     // 首个入参的 tick
   std::optional<int> func;
   std::string page;
   Kw in = Kw::object();
   std::optional<uint32_t> sent, net, ans, end; // 发送 / 网络线程收到 / 插件开读 / 插件读完 的 tick
-  long tid = 0;                           // 发送的线程
+  long tid = 0;                                // 发送的线程
   Kw to = Kw::object();
   std::optional<long> cols, rows;
   long next = 0;
   std::string read;        // 按列号 / 按字段号
   Kw first = Kw::object(); // 首批读到的字段 (读过之后再移游标即首行完; AddinCredit 开读前会先多移两次)
   bool first_done = false;
+  std::set<uint32_t> keys; // 首行已读的列号 / 字段号 (插件同一字段会读几遍, 只留首遍)
 };
 
 Kw kw_of(const Req &r, const Schema &s, uint32_t now) {
@@ -129,8 +156,7 @@ void arm(const mem::Heap &h) {
     const int n = shim::cmd("vt", "hook", s.vt, 256).at(0).at("hooked").get<int>();
     need(n >= kMinSlots, strf("%s 虚表 %s 只钩上 %d 槽", kJob, s.vt.c_str(), n));
     shim::cmd("vt", "clear");
-    trace::ev("req_arm", {{"vt", s.vt}, {"slots", n}, {"dict", std::filesystem::path(s.schema.file).filename().string()}, {"fields", s.schema.fields.size()},
-                          {"funcs", s.schema.funcs.size()}});
+    trace::ev("req_arm", {{"vt", s.vt}, {"slots", n}, {"dict", std::filesystem::path(s.schema.file).filename().string()}, {"fields", s.schema.fields.size()}, {"funcs", s.schema.funcs.size()}});
   }
   shim::cmd("vt", "only", s.vt, kOnly); // 别处 (shim vt) 可能改过记哪些槽: 每次接入都按本模块的设一遍
   shim::cmd("vt", "ret", s.vt, kRet);
@@ -170,10 +196,13 @@ std::vector<Req> assemble(const std::vector<json> &evs, const State &s) {
       if (name == "?")
         name = strf("0x%x", fid);
       const std::string v =
-          name.find("密码") != std::string::npos ? "***" : slot == kStr ? text(str.at(1)) : std::to_string(static_cast<int32_t>(hex(a.at(1))));
+          name.find("密码") != std::string::npos ? "***" : slot == kStr ? text(str.at(1))
+                                                                        : std::to_string(static_cast<int32_t>(hex(a.at(1))));
       if (fid == 0x16a)
         r->page = v;
       r->in[name] = v;
+      if (from != "tc.dll")
+        r->ins.push_back({fid, slot == kInt, slot == kStr ? text(str.at(1)) : std::to_string(static_cast<int32_t>(hex(a.at(1))))});
       continue;
     }
     if (!r)
@@ -215,8 +244,11 @@ std::vector<Req> assemble(const std::vector<json> &evs, const State &s) {
           const auto f = r->func ? s.schema.funcs.find(*r->func) : s.schema.funcs.end();
           name = f != s.schema.funcs.end() && k < f->second.out.size() ? s.schema.name(f->second.out[k]) : strf("列 %u", k);
         }
-        if (!r->first.contains(name))
-          r->first[name] = text(ret->at("s").at(1));
+        if (!r->keys.insert(k).second)
+          continue;
+        if (r->first.contains(name)) // 同名的列 (信用资产的三列「数值」)
+          name += strf("#%u", k);
+        r->first[name] = text(ret->at("s").at(1));
       }
     }
   }
@@ -255,8 +287,43 @@ void flush() {
         return !reading();
       },
       kWaitRead, 0.02);
-  for (const Req &r : reqs)
+  for (const Req &r : reqs) {
     trace::ev("req", kw_of(r, s.schema, now));
+    if (r.sent && r.func && r.by.ends_with(".dll") && r.by.starts_with("Addin")) {
+      s.last[*r.func] = {r.ins, r.to.at("lp").get<std::string>()};
+      const std::optional<uint32_t> u = s.img->u32(std::stoull(r.job, nullptr, 16) + 0x18);
+      need(u.has_value(), "读不到 job 的 CTcUser (+0x18): " + r.job);
+      s.user = *u;
+    }
+  }
+}
+
+Answer ask(int func, const std::map<int, std::string> &over) {
+  State &s = state();
+  std::lock_guard lk(s.mu);
+  need(s.pid != 0, "请求层没接上 (req::arm)");
+  const auto l = s.last.find(func);
+  need(l != s.last.end() && s.user, strf("还没见过插件发功能 %d, 入参无从照搬", func));
+  std::string line = strf("req class=TdxW_MainFrame_Class 0x%08x %d %s", s.user, func, l->second.lp.c_str());
+  std::set<int> have;
+  for (const In &i : l->second.ins) {
+    const std::string v = over.contains(i.fid) ? over.at(i.fid) : i.v;
+    need(v.find(' ') == std::string::npos, strf("功能 %d 字段 %d 的值含空格: 「%s」", func, i.fid, v.c_str()));
+    line += strf(" %c%d=", i.is_int ? 'i' : 's', i.fid) + v;
+    have.insert(i.fid);
+  }
+  for (const auto &[fid, v] : over)
+    need(have.contains(fid), strf("功能 %d 的插件入参里没有字段 %d (%s), 不能凭空加", func, fid, s.schema.name(fid).c_str()));
+  const std::vector<json> r = shim::call(line, 30);
+  need(r.size() == 2, strf("req 应答 %zu 条", r.size()));
+  const json &a = r[1];
+  need(a.at("ok").get<int>() == 1, strf("功能 %d 应答不可读 (ok = %d)", func, a.at("ok").get<int>()));
+  Answer out{a.at("cols").get<int>(), {}};
+  for (const json &row : a.at("data"))
+    out.rows.push_back(row.get<std::vector<std::string>>());
+  need(static_cast<int>(out.rows.size()) == a.at("rows").get<int>(), "req 应答行数与 data 不符");
+  trace::ev("ask", {{"func", func}, {"job", r[0].at("job")}, {"seq", r[0].at("seq")}, {"cols", out.cols}, {"rows", out.rows.size()}});
+  return out;
 }
 
 } // namespace live::tdx::req

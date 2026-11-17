@@ -106,11 +106,11 @@ struct SyncResult {
 //
 // 线程模型 (gui/util/Service.hpp, 随对象):
 //   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::asset_info (只在 GUI 线程替换)
-//   - worker:   run = 本轮视图 Round → 外来写者 parquet 重写 (renative, 共用 Round 的清单) → 开道的计划 (纯本地)
+//   - worker:   run = 本轮视图 Round → 开道的计划 (纯本地)
 //               → 四道依次 drive [bigquant → tushare → tushare.concept → bigquant.bar1m] → 构建 (扫描 → 落地) → post
 //               (两开关皆关 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
 //               各道进退写 state.lanes (持 mutex)
-//   - UI:       进度面 = 自身 (Published): Scanning 重写 / Loading 同步 / Running 构建, done/total = 文件 / 任务 / 分片;
+//   - UI:       进度面 = 自身 (Published): Loading 同步 / Running 构建, done/total = 任务 / 分片;
 //               state 持 mutex 读
 // ============================================================================
 class SyncService : public Service<SyncService, SyncRequest>, public Published {
@@ -125,7 +125,7 @@ public:
   Mailbox<SyncResult> handoff; // worker 每轮收尾 post, StateManager 帧首 take
 
 private:
-  static constexpr Phase kStart = Phase::Scanning;
+  static constexpr Phase kStart = Phase::Loading;
   Progress &board() { return *this; }
   bool run(SyncRequest &req);
 };

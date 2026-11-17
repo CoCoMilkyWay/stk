@@ -6,6 +6,8 @@
 //     busy    查着时切页签被吞: 切持仓、等其查询键禁用 (查起) 即投切撤单的命令, 撤单页 0.3s 内不显示
 //     answer  查完即读: 成交 / 持仓 answered 行数对页上条数, 挂单 / 信用资产 / 融资负债接成 Chain 各问一次并解析信用账户
 //     flow    资金流水近 14 天 (开页、敲起止日、查询、取块, 同 Broker::pull_flows)
+//     direct  请求层直发对界面 + 内存: 持仓 / 挂单 / 信用资产 / 融资负债先经界面查一次 (插件发过, 入参才有得照搬),
+//             再 req::ask 同一功能号, 行数与逐行键值须一致
 //     fields  Tables.hpp 各表各布局: 列数 > 功能定义的出参数, 声明的各列号上的出参字段名恰为声明的 (协议字典, 不动界面)
 //     terms   两融条款 (标的证券 / 担保品 查询全部, 约 1 分钟) — 慢, 须点名才跑
 #include "live/tdx/Schema.hpp"
@@ -15,6 +17,7 @@
 #include "live/tdx/Credit.hpp"
 #include "live/tdx/Flow.hpp"
 #include "live/tdx/Mem.hpp"
+#include "live/tdx/Req.hpp"
 #include "live/tdx/Tables.hpp"
 #include "live/tdx/Trace.hpp"
 #include "live/tdx/Ui.hpp"
@@ -25,6 +28,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <memory>
 
 namespace live::tdx::tool {
@@ -79,6 +83,44 @@ std::string flows() {
   const misc::Ymd from = misc::add_days(misc::today_ymd(), -14);
   const std::vector<CashFlow> f = flow::pull(mem::attach(), from, [](const char *, nlohmann::json) {}, [](std::string) {});
   return strf("%d 起 %zu 条", from, f.size());
+}
+
+// 直发功能 func 的应答按表 T 解析
+template <class T>
+std::vector<typename T::Row> asked(int func) {
+  const req::Answer a = req::ask(func);
+  return mem::parse_answer<T>(func, a.cols, a.rows);
+}
+
+// 两份行逐行同键同值 (键 / 值由 key 取; 顺序不论)
+template <class Row, class K>
+void same(const char *what, const std::vector<Row> &ui, const std::vector<Row> &direct, K key) {
+  std::map<std::string, std::string> a, b;
+  for (const Row &r : ui)
+    a.insert(key(r));
+  for (const Row &r : direct)
+    b.insert(key(r));
+  need(ui.size() == direct.size(), strf("%s: 界面 %zu 行, 直发 %zu 行", what, ui.size(), direct.size()));
+  for (const auto &[k, v] : a)
+    need(b.contains(k) && b.at(k) == v, strf("%s「%s」: 界面 %s, 直发 %s", what, k.c_str(), v.c_str(), b.contains(k) ? b.at(k).c_str() : "(没有)"));
+}
+
+std::string direct() {
+  const mem::HeapP h = mem::attach();
+  mem::Table<tables::Positions> pos;
+  pos.read(h);
+  const int np = ui::open_tab("持仓").count.read();
+  const std::vector<Position> p = pos.answered(h, np).rows;
+  same("持仓", p, asked<tables::Positions>(1228),
+       [](const Position &r) { return std::pair{r.code, strf("%s %.0f/%.0f 成本 %.4f", r.name.c_str(), r.balance, r.available, r.cost)}; });
+  mem::Chain q(h, {&tables::Pendings::kShape, &tables::Assets::kShape, &tables::Debts::kShape});
+  same("挂单", q.ask<tables::Pendings>([] { return ui::open_tab("撤单").count.read(); }).rows, asked<tables::Pendings>(1100),
+       [](const Pending &r) { return std::pair{r.order_id, strf("%s %.0f@%.3f %s", r.code.c_str(), r.qty, r.price, r.status.c_str())}; });
+  same("信用资产", q.ask<tables::Assets>([] { return ui::open_page("信用资产", "信用资金额度").count.read(); }).rows, asked<tables::Assets>(3200),
+       [](const tables::Asset &r) { return std::pair{r.kv[0].first, r.kv[0].second + " " + r.kv[1].first + " " + r.kv[1].second + " " + r.kv[2].first}; });
+  same("融资负债", q.ask<tables::Debts>([] { return ui::open_page("融资负债汇总", "当前负债金额").count.read(); }).rows, asked<tables::Debts>(3264),
+       [](const tables::Debt &r) { return std::pair{r.code, strf("%.0f %.0f %.2f", r.balance, r.qty, r.amount)}; });
+  return strf("持仓 %zu · 挂单 · 信用资产 · 融资负债 逐行一致", p.size());
 }
 
 // 表 T 各布局对功能定义: 不符的各条记进 bad, 核过的列数记进 n
@@ -137,7 +179,7 @@ struct Case {
   bool slow;
   std::string (*fn)();
 };
-constexpr Case kCases[] = {{"query", false, query}, {"busy", false, busy}, {"answer", false, answer}, {"flow", false, flows}, {"fields", false, fields}, {"terms", true, terms}};
+constexpr Case kCases[] = {{"query", false, query}, {"busy", false, busy}, {"answer", false, answer}, {"flow", false, flows}, {"direct", false, direct}, {"fields", false, fields}, {"terms", true, terms}};
 
 // 一例: 段「用例 <名>」内展开交易栏、跑、回持仓页
 bool run(const Case &c) {

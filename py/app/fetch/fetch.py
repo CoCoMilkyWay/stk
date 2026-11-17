@@ -11,7 +11,6 @@
     tar (PACK=True 时生成, 不再压缩; 成员路径相对 data/, mtime 原样保留):
         data/pack/<table>_<yyyy>.tar
         tar -xf <table>_<yyyy>.tar -C <repo>/output/data/  → 直接覆盖本地分片, 之后本地增量 sync (月度表 / 分钟表同)
-        远端 pyarrow 的写者痕迹 (created_by / ARROW:schema) 由本地每轮开头的 renative 以本库重写抹掉
     json (可选, SPLIT_JSON=True 时同步生成):
         data/json/_meta/<table>.json                         # 静态表
         data/json/<yyyy>/<mm>/<dd>/<table>.json              # 按 visible_date 逐日切片

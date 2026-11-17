@@ -11,7 +11,7 @@
 
 // ============================================================================
 // audit — 核对侧 (与 sync 逐项对仗: Unit ↔ Task, plan ↔ plan, run ↔ run, label ↔ label, Book ↔ Store)
-//   调用方循环: for u ∈ plan<Src>(round): book.put(u, run<Src>(client, u))
+//   调用方循环: for s ∈ 选的表: for u ∈ plan(s, round, keep): book.put(u, run<Src>(client, u))
 //   修复: for t ∈ repair(s, round, groups): sync::run(client, t) —— audit → sync 的唯一桥 (差异键 → Task)
 //
 // 远端 vs 本地已冻结月分片的一致性核对 (只读, 不改盘)
@@ -89,13 +89,13 @@ struct Result {
   std::vector<Diff> diffs;
 };
 
-// SPECS 里来自 Src 且 audited 的表, 表间轮转 —— 表序与各表年序均按 r.now 打乱, 相邻单元几乎总是不同表,
-// 问题尽早暴露而不是盯着一张表扫完.
-// keep: 只核 keep(spec, 槽) 为真的冻结槽 (空 = 全部; 须按月同判, 同月的槽一起留或一起滤);
+// 冻结槽的过滤 (须按月同判, 同月的槽一起留或一起滤)
+using Keep = std::function<bool(const Slot &)>;
+
+// audited 表 s 的单元, 年升序: 只核 keep 为真的冻结槽;
 //   单元仍按 表 × 年 切, 年内被滤掉的月夹在 w 里只多一组远端指纹行, 不参与比对.
 // 单元里的槽指向 r.cat: r 须活到最后一个 run 结束.
-template <class Src>
-std::vector<Unit> plan(const Round &r, const Keep &keep = {});
+std::vector<Unit> plan(const Spec &s, const Round &r, const Keep &keep);
 
 // 跑一单元: 月级比对 → 不一致的月逐级定位 (每级每月一次查询)
 template <class Src>
@@ -114,7 +114,7 @@ std::vector<Task> repair(const Spec &s, const Round &r, const std::vector<std::s
 // Book — 核对侧的本地账本 (与 Store 对仗: Store 存数据, Book 存核对结论)
 //   output/data/fundamental/_audit/<表>.tsv: 每月只留最近一次核对的结论; put 后整写该表一个文件 (tmp + rename)
 //   结论有效 ⇔ 记下的版本 = 当前该月冻结槽的版本 (各槽 mtime 之和):
-//     重拉 / 修复 / 增删日 ⇒ 版本变 ⇒ 自动作废, 无需手动遗忘; renative 还原 mtime ⇒ 换编码不作废
+//     重拉 / 修复 / 增删日 ⇒ 版本变 ⇒ 自动作废, 无需手动遗忘
 //   单线程使用 (AuditService worker 独占)
 // ============================================================================
 class Book {

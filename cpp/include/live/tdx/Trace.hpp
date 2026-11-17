@@ -20,6 +20,7 @@
 //                                        回包目标 {hwnd, lp} / 发出距此刻 ms / 发出到网络线程收到、插件开读、插件读完的 ms / 应答列数、行数 /
 //                                        插件移了几次游标 / 读法 (按列号 / 按字段号) / 首行 {字段名: 值} (各值至多 39 字节);
 //                                        没发出的带 sent: false, 等了 2s 插件仍没读完的带 finished: false
+//     ask {func, job, seq, cols, rows}    请求层直发一问 (req::ask) 收到应答
 //     req_arm {vt, slots, dict, fields, funcs}  请求层日志钩上 (虚表 / 槽数 / 协议字典文件与规模)   req_lost {n}  事件环满挤掉的调用数
 //     answer {tab, n, rows, addr}        盯着的表查完后全量读 (n = 页上条数)
 //     ask {tab, n, rows, addr}           act 驱动的表查完后新冒出的块 (n = 页上条数; 0 = 空表, 可无新块)

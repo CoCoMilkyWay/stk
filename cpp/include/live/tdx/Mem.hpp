@@ -189,6 +189,28 @@ constexpr Col<M, As, sizeof...(I)> col(const char *field, I... at) {
   return {field, {static_cast<int>(at)...}};
 }
 
+// 请求层直发的应答 (req::ask, 各行各列的串) → 行: 布局按功能号认 (kFuncs), 同一套列声明与行级校验
+template <class S>
+std::vector<typename S::Row> parse_answer(int func, int cols, const std::vector<std::vector<std::string>> &cells) {
+  const auto v = std::find(S::kFuncs.begin(), S::kFuncs.end(), func);
+  if (v == S::kFuncs.end())
+    fail(strf("%s不由功能 %d 应答", S::kShape.name, func));
+  const size_t view = static_cast<size_t>(v - S::kFuncs.begin());
+  if (cols >= S::kViews[view])
+    fail(strf("%s功能 %d 应答 %d 列, 布局只 %d 列", S::kShape.name, func, cols, S::kViews[view]));
+  std::vector<typename S::Row> rows;
+  for (const std::vector<std::string> &c : cells) {
+    if (static_cast<int>(c.size()) != cols)
+      fail(strf("%s应答行 %zu 列, 应 %d 列", S::kShape.name, c.size(), cols));
+    const Fields f(c.begin(), c.end());
+    typename S::Row r;
+    std::apply([&](const auto &...k) { (k.put(S::kShape, f, view, r), ...); }, S::kCols);
+    S::check(S::kShape, r);
+    rows.push_back(std::move(r));
+  }
+  return rows;
+}
+
 template <class S>
 std::vector<typename S::Row> parse(std::string_view raw) {
   const Split sp = split(S::kShape, raw, S::kViews);

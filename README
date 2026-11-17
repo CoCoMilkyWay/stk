@@ -378,7 +378,7 @@ stk/
 │   │   │   ├── AssetAxis.hpp                           # 📊 A 轴 append-only 注册表 (列序 = asset_id) + 池轴 PoolAxis (全局 id 子集)
 │   │   │   ├── Store.hpp                               # 📊 本地: Catalog + 分片状态 + 拉取计划 + put
 │   │   │   ├── Remote.hpp                              # 📊 远端: fetch(client, task), 两源同骨架
-│   │   │   ├── Sync.hpp                                # 📊 写侧: plan<Src> → sync = put(fetch)
+│   │   │   ├── Sync.hpp                                # 📊 写侧: plan (单表, 纯本地) → run = put(fetch)
 │   │   │   ├── Scan.hpp                                # 📊 读侧: 并行 map-reduce + daily (AssetInfo / fund::Panel / Bar1mDay 共用)
 │   │   │   └── Audit.hpp                               # 📊 核对: 远端指纹 ↔ 本地指纹
 │   │   ├── mining/                                     # ⛏️ 数据挖掘设计文档 (特征 → 因子): README.md 方法论 / COPULA.md

@@ -15,6 +15,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <utility>
@@ -144,6 +145,23 @@ std::vector<AuditTableStat> aggregate(const Book &b, const Round &r) {
   return out;
 }
 
+// 各表单元 → 表间轮转: 表序与各表年序均按 r.now 打乱, 相邻单元几乎总是不同表, 问题尽早暴露而不是盯着一张表扫完
+std::vector<Unit> interleave(std::vector<std::vector<Unit>> tables, const Round &r) {
+  std::mt19937 rng(static_cast<unsigned>(r.now.at.time_since_epoch().count()));
+  std::shuffle(tables.begin(), tables.end(), rng);
+  std::size_t depth = 0;
+  for (std::vector<Unit> &t : tables) {
+    std::shuffle(t.begin(), t.end(), rng);
+    depth = std::max(depth, t.size());
+  }
+  std::vector<Unit> out;
+  for (std::size_t k = 0; k < depth; ++k)
+    for (const std::vector<Unit> &t : tables)
+      if (k < t.size())
+        out.push_back(t[k]);
+  return out;
+}
+
 } // namespace
 
 const AuditTableStat *AuditState::find_table(const std::string &name) const {
@@ -242,33 +260,31 @@ bool AuditService::load() {
   return true;
 }
 
-// audit::plan<Bq> (table 空 = 全部表, 否则只该表; incremental = 跳过仍有效的已核月)
+// 逐表 audit::plan (table 空 = 全部表, 否则只该表; incremental = 跳过仍有效的已核月) → 表间轮转
 //   → drive 逐单元 audit::run (月扫描 + 逐级定位) → Book::put 覆盖该 (表, 月)
 bool AuditService::audit(const std::string &table, bool incremental) {
   Worker &w = *worker_;
   w.refresh();
   bigquant::Client client;
   w.quota(client, true);
-  // 已核 = 有效结论里有该月 (plan 在开跑前算完, 之后账本的改动不影响)
-  std::map<std::string, std::set<std::string>> done;
-  if (incremental)
-    for (const Spec &s : fundamental::SPECS)
-      if (fundamental::audit::audited(s))
-        for (const auto &[ym, e] : w.book->sheet(s, *w.round).months)
-          done[s.name].insert(ym);
-  const std::vector<Unit> units = fundamental::audit::plan<fundamental::Bq>(*w.round, [&](const Spec &sp, const Slot &sl) {
-    if (!table.empty() && sp.name != table)
-      return false;
-    const auto it = done.find(sp.name);
-    return it == done.end() || !it->second.contains(misc::dash_ym(sl.ym));
-  });
+  std::vector<std::vector<Unit>> tables;
+  for (const Spec &s : fundamental::SPECS) {
+    if (!fundamental::audit::audited(s) || (!table.empty() && s.name != table))
+      continue;
+    std::set<std::string> done; // 已核 = 有效结论里有该月 (plan 在开跑前算完, 之后账本的改动不影响)
+    if (incremental)
+      for (const auto &[ym, e] : w.book->sheet(s, *w.round).months)
+        done.insert(ym);
+    tables.push_back(fundamental::audit::plan(s, *w.round, [&](const Slot &sl) { return !done.contains(misc::dash_ym(sl.ym)); }));
+  }
+  const std::vector<Unit> units = interleave(std::move(tables), *w.round);
   w.begin(units.size());
   std::cout << "[bigquant.audit] " << (table.empty() ? "全部表" : table) << (incremental ? " (增量)" : "") << std::endl;
   return drive(*this, cancel_, "bigquant.audit", units, [&](const std::string &l) { w.say(l); }, [&](const Unit &u) { return w.check(client, u); }) == Outcome::Done;
 }
 
 // table 的差异: audit::repair → drive 逐任务 sync::run (整槽 Replace / Splice 日·资产)
-//   → 新视图 (重写的月版本变, 旧结论自动作废) → plan(keep = 这些月) → drive 复核
+//   → 新视图 (重写的月版本变, 旧结论自动作废) → plan(s, keep = 这些月) → drive 复核
 bool AuditService::repair(const std::string &table) {
   Worker &w = *worker_;
   const Spec &s = fundamental::spec(table);
@@ -295,8 +311,7 @@ bool AuditService::repair(const std::string &table) {
 
   w.refresh();
   w.publish();
-  const std::vector<Unit> units = fundamental::audit::plan<fundamental::Bq>(
-      *w.round, [&](const Spec &sp, const Slot &sl) { return &sp == &s && months.contains(sl.ym); });
+  const std::vector<Unit> units = fundamental::audit::plan(s, *w.round, [&](const Slot &sl) { return months.contains(sl.ym); });
   assert(units.size() == years.size() && "repair: 复核单元数不符");
   return drive(*this, cancel_, "bigquant.repair", units, [&](const std::string &l) { w.say(l); }, [&](const Unit &u) { return w.check(client, u); }) == Outcome::Done;
 }

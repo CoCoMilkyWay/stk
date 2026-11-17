@@ -117,14 +117,8 @@ struct Slot {
 // s 的全部槽位: Meta = {0}; Month = [ym(kSyncStart), ym(today)] 升序; Daily = 交易日升序
 std::vector<Slot> ledger(const Spec &s, const Round &r);
 
-// ledger 中 Frozen 的 Month / Daily 槽 ((ym, 日) 升序) —— audit 与本地清点的唯一来源. 只看 now.today (关月判定与时刻无关)
+// ledger 中 Frozen 的 Month / Daily 槽 ((ym, 日) 升序; Meta → assert) —— audit 与本地清点的唯一来源. 只看 now.today (关月判定与时刻无关)
 std::vector<Slot> frozen(const Spec &s, const Round &r);
-
-// 槽键 = 槽级组键 (见 slot_grain): 与 Task::keys / audit::Diff::group 同一键语言 (父键 = 子键前缀)
-std::string slot_key(const Spec &s, const Slot &sl);
-
-// 调用方的槽过滤 (sync::plan / audit::plan 共用; 空 = 全部)
-using Keep = std::function<bool(const Spec &, const Slot &)>;
 
 // 槽 sl 的动作 (见文件头右列); 无事 (Frozen / Daily Open / 已到水位 / Snap::Day 快照已入盘) → nullopt.
 //   Month / Meta 的 Open 槽在这里读水位 (唯一一处), 其余零 IO
@@ -154,9 +148,5 @@ std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::strin
 //           (全 null 的 NA 列按新行提升), 新行带新列 → assert
 //   Daily: tbl 全部行属任务日 (w.lo), 落该日文件; 0 行 → assert (交易日远端未入库; 日文件落盘即不再拉, 不可留空文件)
 void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl);
-
-// 外来写者的分片 (远端 pyarrow / 其它 arrow 版本, 见 misc::pq::foreign_writer) 以本库原样重写; 本库写的 → 不动.
-//   内容与 mtime 不变 ⇒ 槽位状态 / 水位 / dedup 皆不变. 返回是否重写
-bool renative(const Shard &sh);
 
 } // namespace fundamental

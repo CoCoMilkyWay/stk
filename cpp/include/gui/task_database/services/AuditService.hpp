@@ -74,7 +74,7 @@ struct AuditState {
   AuditOp op = AuditOp::Load; // 在跑 / 最近一轮的请求; 构造即 Load (StateManager 首个请求)
   std::string table;
   bool incremental = false;
-  std::string current; // 当前步 (audit::label / sync::label)
+  std::string current; // 当前步 (label(Unit) / label(Task))
   // BigQuant 周配额 (单位 cell): 开跑时 / 最近一步后的 used; -1 = 未取
   std::int64_t quota_start = -1;
   std::int64_t quota_used = -1;

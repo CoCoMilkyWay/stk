@@ -40,6 +40,8 @@
 //   gdidump [target]              全部窗口（或只 target）图层各一条图层记录
 //   gdiwatch 长连接，窗口绘制层变更即推变了的图层记录（不收尾） help / spy help
 //   （help 回 {cmds}）
+//   req <界面窗口> <CTcUser> <功能号> <lParam> [i<字段号>=<整数> | s<字段号>=<串>]…  只读直发
+//                                 查询（白名单功能号）：{job, seq} + 应答 {ok, cols, rows, data}
 //   vt hook <虚表> <槽数> / ret|only <虚表> <槽,槽…> / unhook / on / off / clear /
 //   drain  虚表追踪：经该表的调用记进入（槽、this、参数及其所指头几字节、
 //                                 返回址），ret 点名的槽另记返回（eax、参数所指），only 只记点名的槽；
@@ -2779,6 +2781,186 @@ static const char *cmd_vt(struct out *o, HWND h, char *a) {
   return NULL;
 }
 
+// ---------- 命令：req（只读直发查询）----------
+// 照交易插件的做法在客户端里问一问（各槽见 TDX.md「请求层」），全在界面线程里：
+// CTcUser 槽 7 (0, 0) 建 job → job 槽 7 / 9 写入参 → 槽 6 设功能号 → 槽 25 发送（回包投给
+// 本 shim 在界面线程建的消息窗，回发送序号）→ 槽 1 放掉建时多的那份引用（同插件）。
+// 应答到了（0x1788，wParam = 序号）在消息窗里读完：槽 40 / 22 列数 / 39 行数，逐行槽 41
+// 移游标、槽 43 按列号取，再槽 1 放掉。只许白名单里的查询类功能号；命令等应答至多 REQ_WAIT。
+// 入参须与插件发的全同（照请求层日志 req 的 in）：缺页面标识 0x16a 实测应答回不来、客户端随后
+// 在 mfc100 里空指针崩溃（疑 tc.dll 按页面标识把应答分发给界面），故没带即拒。
+#define REQ_MSG 0x1788
+#define REQ_FIELDS 32
+#define REQ_VAL 128
+#define REQ_CELL 512
+#define REQ_WAIT 20000
+
+typedef void *(__attribute__((thiscall)) * th_new)(void *, DWORD, DWORD);
+typedef DWORD(__attribute__((thiscall)) * th_0)(void *);
+typedef DWORD(__attribute__((thiscall)) * th_1)(void *, DWORD);
+typedef DWORD(__attribute__((thiscall)) * th_str)(void *, DWORD, const char *,
+                                                 DWORD);
+typedef DWORD(__attribute__((thiscall)) * th_int)(void *, DWORD, DWORD);
+typedef DWORD(__attribute__((thiscall)) * th_send)(void *, HWND, DWORD, DWORD,
+                                                  DWORD);
+typedef DWORD(__attribute__((thiscall)) * th_get)(void *, DWORD, char *, DWORD,
+                                                 DWORD);
+#define VSLOT(obj, k) ((*(void ***)(obj))[k])
+
+// 持仓 / 资金 / 精简持仓 / 撤单 / 成交 / 资金流水 / 信用资产 / 标的证券 / 担保品 / 融资负债
+static const DWORD REQ_FUNCS[] = {1228, 104,  1114, 1100, 1108,
+                                  1118, 3200, 3216, 3220, 3264};
+
+struct req_field {
+  DWORD fid, v;
+  int is_int;
+  char s[REQ_VAL]; // GBK
+};
+static struct {
+  void *user, *job;
+  DWORD func, lp, seq, got; // got = 消息窗最近收到的 0x1788 的 wParam
+  int nf;
+  struct req_field f[REQ_FIELDS];
+  volatile LONG done;
+  struct out res; // 应答记录：界面线程里写，命令线程取
+  const char *err;
+} g_req;
+static HWND g_req_wnd;
+
+static void req_read(void) {
+  void *j = g_req.job;
+  struct out *o = &g_req.res;
+  const DWORD ok = ((th_0)VSLOT(j, 40))(j);
+  const int cols = (int)((th_0)VSLOT(j, 22))(j);
+  const int rows = (int)((th_0)VSLOT(j, 39))(j);
+  emit(o, "{\"ok\":%lu,\"cols\":%d,\"rows\":%d,\"data\":[", ok, cols, rows);
+  for (int r = 0; r < rows; r++) {
+    ((th_0)VSLOT(j, 41))(j);
+    put(o, r ? ",[" : "[", r ? 2 : 1);
+    for (int c = 0; c < cols; c++) {
+      char buf[REQ_CELL] = {0}, u[REQ_CELL * 3];
+      wchar_t w[REQ_CELL];
+      ((th_get)VSLOT(j, 43))(j, (DWORD)c, buf, sizeof(buf) - 1, 0);
+      MultiByteToWideChar(936, 0, buf, -1, w, REQ_CELL);
+      w2u(w, u, sizeof(u));
+      if (c)
+        put(o, ",", 1);
+      emit_str(o, u);
+    }
+    put(o, "]", 1);
+  }
+  emit(o, "]}\n");
+}
+
+static LRESULT CALLBACK req_wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+  if (m != REQ_MSG)
+    return DefWindowProcW(h, m, wp, lp);
+  g_req.got = (DWORD)wp;
+  if (g_req.job && !g_req.done && (DWORD)wp == g_req.seq) {
+    req_read();
+    ((th_0)VSLOT(g_req.job, 1))(g_req.job);
+    g_req.job = NULL;
+    InterlockedExchange(&g_req.done, 1);
+  }
+  return 0;
+}
+
+// 界面线程内：建消息窗（首次）、建 job、写入参、发送
+static void req_send_in(struct out *o, HWND h) {
+  (void)h;
+  if (!g_req_wnd) {
+    WNDCLASSW wc = {0};
+    wc.lpfnWndProc = req_wndproc;
+    wc.hInstance = g_hMod;
+    wc.lpszClassName = L"tdx_shim_req";
+    RegisterClassW(&wc);
+    g_req_wnd = CreateWindowExW(0, L"tdx_shim_req", L"", 0, 0, 0, 0, 0,
+                                HWND_MESSAGE, NULL, g_hMod, NULL);
+    assert(g_req_wnd);
+  }
+  void *u = g_req.user, *j = ((th_new)VSLOT(u, 7))(u, 0, 0);
+  if (!j) {
+    g_req.err = "CTcUser slot 7 returned no job";
+    return;
+  }
+  for (int i = 0; i < g_req.nf; i++)
+    if (g_req.f[i].is_int)
+      ((th_int)VSLOT(j, 9))(j, g_req.f[i].fid, g_req.f[i].v);
+    else
+      ((th_str)VSLOT(j, 7))(j, g_req.f[i].fid, g_req.f[i].s, 0);
+  ((th_1)VSLOT(j, 6))(j, g_req.func);
+  g_req.job = j;
+  g_req.done = 0;
+  g_req.seq = ((th_send)VSLOT(j, 25))(j, g_req_wnd, REQ_MSG, g_req.lp, 0);
+  ((th_0)VSLOT(j, 1))(j);
+  emit(o, "{\"job\":\"0x%08x\",\"seq\":%lu}\n", (DWORD)j, g_req.seq);
+}
+
+// req <界面线程的窗口> <CTcUser> <功能号> <lParam> [i<字段号>=<整数> | s<字段号>=<串>]…
+// 先回 {job, seq}，再回应答 {ok, cols, rows, data:[[各列]…]}（UTF-8）
+static const char *cmd_req(struct out *o, HWND h, char *a) {
+  char *e;
+  void *user = (void *)strtoul(a, &e, 0);
+  const DWORD func = strtoul(e, &e, 0), lp = strtoul(e, &e, 0);
+  int white = 0;
+  for (size_t i = 0; i < sizeof(REQ_FUNCS) / sizeof(*REQ_FUNCS); i++)
+    white |= REQ_FUNCS[i] == func;
+  if (!white)
+    return "func not in query whitelist";
+  if (!mem_ok(user, 4, 0) || !mem_ok(*(void **)user, 4 * 8, 0))
+    return "bad CTcUser";
+  if (g_req.job)
+    return "previous request still waiting";
+  g_req.user = user, g_req.func = func, g_req.lp = lp, g_req.nf = 0;
+  g_req.err = NULL;
+  for (char *p = e; *p;) {
+    while (*p == ' ')
+      p++;
+    if (!*p)
+      break;
+    if ((*p != 'i' && *p != 's') || g_req.nf == REQ_FIELDS)
+      return "fields: i<fid>=<int> | s<fid>=<str>";
+    struct req_field *f = &g_req.f[g_req.nf++];
+    f->is_int = *p == 'i';
+    f->fid = strtoul(p + 1, &e, 0);
+    if (*e != '=')
+      return "fields: i<fid>=<int> | s<fid>=<str>";
+    char *v = e + 1, *end = v + strcspn(v, " ");
+    const char keep = *end;
+    *end = 0;
+    if (f->is_int)
+      f->v = (DWORD)strtol(v, NULL, 0);
+    else {
+      wchar_t w[REQ_VAL];
+      u2w(v, w, REQ_VAL);
+      WideCharToMultiByte(936, 0, w, -1, f->s, REQ_VAL, NULL, NULL);
+    }
+    *end = keep;
+    p = end;
+  }
+  int page = 0;
+  for (int i = 0; i < g_req.nf; i++)
+    page |= !g_req.f[i].is_int && g_req.f[i].fid == 0x16a && g_req.f[i].s[0];
+  if (!page)
+    return "missing s362=<页面标识> (0x16a)";
+  g_req.res.len = 0;
+  const char *err = in_thread(o, h, req_send_in);
+  if (err || g_req.err)
+    return err ? err : g_req.err;
+  const DWORD t0 = GetTickCount();
+  while (!g_req.done && GetTickCount() - t0 < REQ_WAIT)
+    Sleep(5);
+  if (!g_req.done) {
+    g_req.job = NULL; // 应答再来即不读（job 留着那份引用）
+    static char why[96];
+    snprintf(why, sizeof(why), "no answer in %d ms (seq %lu, last 0x1788 wParam %lu)",
+             REQ_WAIT, g_req.seq, g_req.got);
+    return why;
+  }
+  put(o, g_req.res.buf, g_req.res.len);
+  return NULL;
+}
+
 static int redraw(HWND h, void *ctx) {
   return RedrawWindow(h, NULL, NULL,
                       RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
@@ -2954,6 +3136,7 @@ static const struct cmd CMDS[] = {
     {"click", cmd_click, ARG_REQ},
     {"disables", cmd_disables, ARG_REQ},
     {"vt", cmd_vt, ARG_NONE},
+    {"req", cmd_req, ARG_REQ},
     {"clickat", cmd_clickat, ARG_REQ},
     {"highlight", cmd_highlight, ARG_REQ},
     {"detail", cmd_detail, ARG_REQ},

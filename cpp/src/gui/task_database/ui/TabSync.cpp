@@ -544,7 +544,7 @@ void RenderTabSync(
     ImGui::SameLine();
     ImGui::TextDisabled("%s", state.message.c_str());
   }
-  // 阶段: scanning 外来写者重写 / loading 同步 (计步 = 任务) / running 构建 (计步 = 分片)
+  // 阶段: loading 同步 (计步 = 任务) / running 构建 (计步 = 分片)
   if (running)
     progress_bar(progress, PhaseName(phase));
 

@@ -8,8 +8,8 @@
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
-#include "live/tdx/Mem.hpp"
 #include "live/tdx/Image.hpp"
+#include "live/tdx/Mem.hpp"
 #include "live/tdx/Schema.hpp"
 
 #include <algorithm>

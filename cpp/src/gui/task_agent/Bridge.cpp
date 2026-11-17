@@ -36,13 +36,8 @@ namespace GUI::Agent {
 static_assert(kGroups == factor::stat::kGroups && kRankNone == factor::stat::kRankNone && kRankMax == factor::stat::kRankMax);
 static_assert(kTails == Engine::kTails && kTailOfGroup[0] == Engine::kTailOfGroup[0] && kTailOfGroup[1] == Engine::kTailOfGroup[1] && kTailOfGroup[2] == Engine::kTailOfGroup[2] &&
               factor::stat::kTop == 0 && factor::stat::kEnds == 2);
-static_assert(static_cast<int>(BookKind::New) == static_cast<int>(ReplayKind::New) &&
-              static_cast<int>(BookKind::Cancel) == static_cast<int>(ReplayKind::Cancel) &&
-              static_cast<int>(BookKind::Filled) == static_cast<int>(ReplayKind::Filled) &&
-              static_cast<int>(BookKind::Sweep) == static_cast<int>(ReplayKind::Sweep) && kBigQuantile == 0.99f);
 
 double Mono(const double *g, int n) { return factor::stat::mono_of(g, n); }
-int TradeSec(int clock) { return static_cast<int>(trade_sec(static_cast<uint32_t>(clock))); }
 
 namespace {
 
@@ -786,7 +781,6 @@ struct Lab::Impl {
   std::vector<std::string> labels;   // look: 因子的名字
   std::vector<std::string> feat_err; // look: 与 LookSpec::feats 对齐, 非空 = 该式不成 (没发)
   PerBar<bool> bars;                 // look: 取了的 K 线叶
-  BookSpec spec;                     // book: 在放的那段
   std::deque<Tick> ticks;            // 未取走的步
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
@@ -894,22 +888,12 @@ struct Lab::Impl {
     }
     return req;
   }
-  // 记下在放的那段
-  ReplayRequest replay_req(BookSpec s) {
+  ReplayRequest replay_req(BookSpec s) const {
     assert(s.from < s.to && s.at >= s.from && s.at < s.to);
     const size_t id = asset_axis().find(s.code);
     assert(id < asset_axis().size() && id < data->asset.items.size() && "码须经 code_of");
-    ReplayRequest req;
-    req.orders = data->asset.catalog();
+    ReplayRequest req{.orders = data->asset.catalog(), .asset = static_cast<uint32_t>(id), .exchange = data->asset.items[id].exchange_type, .spec = std::move(s)};
     assert(req.orders && "逐笔帧目录未扫描");
-    req.asset = static_cast<uint32_t>(id);
-    req.exchange = data->asset.items[id].exchange_type;
-    req.date = s.date;
-    req.s0 = trade_sec(static_cast<uint32_t>(s.from));
-    req.s1 = trade_sec(static_cast<uint32_t>(s.to - 1)) + 1;
-    req.at = trade_sec(static_cast<uint32_t>(s.at));
-    req.big = static_cast<float>(s.big);
-    spec = std::move(s);
     return req;
   }
 
@@ -958,33 +942,7 @@ struct Lab::Impl {
     graded->rep = std::move(l);
     close(std::move(*graded));
   }
-  // Book: 交易秒 → 钟面秒
-  void booked() {
-    ReplayResult r = lane<Step::Replay>().take();
-    Book b{.spec = spec,
-           .error = std::move(r.error),
-           .orders = static_cast<int>(r.orders),
-           .open = r.open,
-           .high = r.high,
-           .low = r.low,
-           .close = r.close,
-           .amount = r.amount,
-           .big = r.big};
-    const uint32_t s0 = trade_sec(static_cast<uint32_t>(spec.from));
-    for (size_t i = 0; i < r.secs.size(); ++i) {
-      const ReplaySec &x = r.secs[i];
-      BookSec &y = b.secs.emplace_back();
-      y.clock = static_cast<int>(trade_clock(s0 + static_cast<uint32_t>(i)));
-      y.bid = x.bid, y.ask = x.ask, y.ref = x.ref, y.matched = x.matched, y.imbalance = x.imbalance, y.last = x.last;
-      for (int s = 0; s < 2; ++s)
-        y.depth[s] = x.depth[s], y.taker[s] = x.taker[s], y.maker[s] = x.maker[s], y.cancel[s] = x.cancel[s];
-    }
-    for (const ReplayEvent &e : r.events)
-      b.events.push_back({L2::tick_hour(e.tick) * 3600 + L2::tick_minute(e.tick) * 60 + L2::tick_second(e.tick), L2::tick_millisecond(e.tick), static_cast<BookKind>(e.kind), e.side,
-                          e.levels, e.price, e.first, e.amount, e.life});
-    b.book = std::move(r.book);
-    close(std::move(b));
-  }
+  void booked() { close(lane<Step::Replay>().take()); }
   // 在跑那步的道跑完一轮 → 下一步
   void pump() {
     if (at == Step::End || !on_lane([](const auto &l) { return l.finished(); }))
