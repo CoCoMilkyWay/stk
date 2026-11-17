@@ -1,15 +1,20 @@
 // shim probe — 探进程堆 (只读): 给新表找块、定列. 先在客户端点过要探的那页查询 (如信用资产、融资标的、担保品), 再跑.
 //   tables: 堆里全部 0|…|\r\n 打头、\r\n 分行、| 分列的块: 址 / 副本数 / 行数 / 列数 / 表头 / 前几行, 同表头同首行的副本只列一次;
 //   text <词…>: 各词 (空白分隔) 按 GBK、UTF-16LE 两种编码逐处列出址与前后字节 (按同一编码解码, 控制字符转义)
+//   obj <址> [字数] [槽数]: 对象逐字标去处 (模块+偏移 / 指向的对象及其 RTTI 类名), 首字是 vtable 时另列各槽; 摸请求层的对象图用
+//   ref <值> [回看字节]: 堆里存着该值的各处及其所在对象 (类名 + 字段偏移); 如拿窗口句柄找持有它的对象
+//   class <类名>: 该 RTTI 类的各张虚表 (嵌套类写 内@外); 给 shim vt 定钩哪张表
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
 #include "live/tdx/Mem.hpp"
+#include "live/tdx/shim/Image.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <iconv.h>
 #include <map>
 #include <optional>
@@ -63,7 +68,8 @@ iconv_t open_cd(const char *to, const char *from) {
   return cd;
 }
 
-// GBK → UTF-8, 非法字节换 U+FFFD (0x80 即 €)
+} // namespace
+
 std::string gbk_utf8(std::string_view raw) {
   thread_local const iconv_t cd = open_cd("UTF-8", "GBK");
   std::string out;
@@ -85,6 +91,8 @@ std::string gbk_utf8(std::string_view raw) {
   }
   return out;
 }
+
+namespace {
 
 std::string utf8_gbk(const std::string &s) {
   thread_local const iconv_t cd = open_cd("GBK", "UTF-8");
@@ -250,11 +258,90 @@ std::string texts(const mem::Heap &h, const std::vector<std::string> &words) {
   return out.empty() ? "（没找到）" : out;
 }
 
+// ---------- 对象 ----------
+
+// 一个值的去处: 模块+偏移 / 对象 (首字是落在模块里的 vtable; 有 RTTI 即类名) / 空
+std::string where(const Image &p, uint32_t v) {
+  if (p.mod(v))
+    return p.at(v);
+  const std::optional<uint32_t> vt = p.u32(v);
+  if (!vt)
+    return "";
+  if (p.mod(*vt)) {
+    const std::optional<std::string> c = p.rtti(*vt);
+    return strf("→ obj %s (vt %s)", c ? c->c_str() : "?", p.at(*vt).c_str());
+  }
+  return "→ 可读";
+}
+
+// 对象 addr 起 n 个字 (4 字节), 每字标去处; 首字是 vtable 时另列其前 slots 个槽
+std::string object(const Image &p, mem::Addr addr, size_t n, size_t slots) {
+  std::string out;
+  const std::optional<uint32_t> vt = p.u32(addr);
+  need(vt.has_value(), strf("%#llx 读不到", static_cast<unsigned long long>(addr)));
+  if (const std::optional<std::string> c = p.mod(*vt) ? p.rtti(*vt) : std::nullopt)
+    out += "类 " + *c + "\n";
+  for (size_t i = 0; i < n; ++i)
+    if (const std::optional<uint32_t> v = p.u32(addr + 4 * i))
+      out += strf("+0x%03zx  %08x  %s\n", 4 * i, *v, where(p, *v).c_str());
+  if (p.mod(*vt))
+    for (size_t i = 0; i < slots; ++i)
+      if (const std::optional<uint32_t> f = p.u32(*vt + 4 * i))
+        out += strf("vt[0x%03zx]  %08x  %s\n", 4 * i, *f, where(p, *f).c_str());
+  return out;
+}
+
+// 32 位进程堆 (4G 以下) 里存着值 v 的各处: 往前至多 back 字节找首个「落在模块里、有 RTTI 的 vtable」即所在对象,
+// 逐处报 址 / 对象址 / 类 / 字段偏移; 认不出所在对象的只计数
+std::string refs(const mem::Heap &h, const Image &p, uint32_t v, size_t back) {
+  std::string out;
+  size_t n = 0, bare = 0;
+  h.each([&](mem::Addr lo, std::string_view d) {
+    if (lo >= (1ull << 32))
+      return;
+    for (size_t i = 0; i + 4 <= d.size(); i += 4) {
+      uint32_t x;
+      std::memcpy(&x, d.data() + i, 4);
+      if (x != v)
+        continue;
+      ++n;
+      bool found = false;
+      for (size_t k = 0; k <= back && k <= i && !found; k += 4) {
+        uint32_t vt;
+        std::memcpy(&vt, d.data() + i - k, 4);
+        if (const std::optional<std::string> c = p.mod(vt) ? p.rtti(vt) : std::nullopt) {
+          out += strf("%#llx  对象 %#llx %s +0x%zx\n", static_cast<unsigned long long>(lo + i), static_cast<unsigned long long>(lo + i - k), c->c_str(), k);
+          found = true;
+        }
+      }
+      bare += !found;
+    }
+  });
+  return out + strf("共 %zu 处 (认不出所在对象的 %zu 处)\n", n, bare);
+}
+
 } // namespace
 
 int probe(const std::vector<std::string> &a) {
-  need(!a.empty() && (a[0] == "tables" ? a.size() == 1 : a[0] == "text" && a.size() > 1), "用法: shim probe tables | shim probe text <词…>");
+  const bool ok = !a.empty() && (a[0] == "tables"  ? a.size() == 1
+                                 : a[0] == "text"  ? a.size() > 1
+                                 : a[0] == "obj"   ? a.size() >= 2 && a.size() <= 4
+                                 : a[0] == "class" ? a.size() == 2
+                                                   : a[0] == "ref" && a.size() >= 2 && a.size() <= 3);
+  need(ok, "用法: shim probe tables | text <词…> | obj <址> [字数 = 32] [槽数 = 0] | ref <值> [回看字节 = 0x200] | class <类名>");
   const mem::HeapP h = mem::attach();
+  if (a[0] == "class") {
+    const Image p(h->pid());
+    for (const mem::Addr vt : p.vtables(a[1]))
+      std::printf("0x%08llx  %s\n", static_cast<unsigned long long>(vt), p.at(vt).c_str());
+    return 0;
+  }
+  if (a[0] == "obj" || a[0] == "ref") {
+    const Image p(h->pid());
+    const auto num = [&](size_t i, unsigned long long dflt) { return a.size() > i ? std::stoull(a[i], nullptr, 0) : dflt; };
+    std::fputs((a[0] == "obj" ? object(p, num(1, 0), num(2, 32), num(3, 0)) : refs(*h, p, static_cast<uint32_t>(num(1, 0)), num(2, 0x200))).c_str(), stdout);
+    return 0;
+  }
   std::fputs((a[0] == "tables" ? tables(*h) : texts(*h, {a.begin() + 1, a.end()})).c_str(), stdout);
   std::fputs("\n", stdout);
   return 0;

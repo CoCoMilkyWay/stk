@@ -198,7 +198,7 @@ endfunction()
 # 源表: src/ 全量按目标分区 (配置期断言不重不漏)
 #   SRC_OP_CHECK            因子算子对拍 CLI
 #   SRC_MAIN                GUI 主程序入口
-#   SRC_SHIM                shim 独立程序 (live/tdx/shim/: 通达信客户端的命令转发 / 探内存 / 录制 / 在线用例)
+#   SRC_SHIM                shim 独立程序 (live/tdx/shim/: 通达信客户端的命令转发 / 探内存 / 录制 / 虚表追踪 / 在线用例)
 #   <轴>_<取值>_SRC          GUI_BACKEND / GPU_BACKEND 每个取值一份, 当前取值入链
 #   SRC_APP                 其余全部 → app (OBJECT, app_main 与 shim 共用, 只编一次)
 # 任一层 win32/ 目录 = 注入目标进程的 Windows 源 (客户端适配运行时交叉编译), 不入本机构建
@@ -348,6 +348,7 @@ set(MATH_PRECISE
     live/tdx/shim/Probe.cpp
     live/tdx/shim/Rec.cpp
     live/tdx/shim/Test.cpp
+    live/tdx/shim/Vt.cpp
     # account: 账户净值 (资金流水回放)
     account/Ledger.cpp
     # gui

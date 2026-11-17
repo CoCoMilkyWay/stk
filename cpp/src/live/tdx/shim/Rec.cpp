@@ -1,7 +1,7 @@
-// shim rec — 录制 (只读, 不投递任何输入): 每 kGap 取一次 spy 消息 (WM_COMMAND + 发给非标准控件的私有消息)、交易请求、窗口树、绘制层,
+// shim rec — 录制 (只读, 不投递任何输入): 每 kGap 取一次 spy 消息 (WM_COMMAND + 发给非标准控件的私有消息)、窗口树、绘制层,
 //   与上一轮比对, 变了的逐条落 output/run/live/tdx/rec/<时刻>.jsonl ({t 距开录秒数, kind, ...}), 同时各一行打到 stdout.
-//   录制期间独占 spy (每轮 dump 后 clear); 要录交易请求先 `shim cmd req attach <闪电窗顶层 hwnd>`.
-//   种类: start / tree (开录时全树, 只落盘) / msg (相邻同样的合并, n 为条数) / req (客户端内部请求字段) /
+//   录制期间独占 spy (每轮 dump 后 clear). 请求层另用 shim vt.
+//   种类: start / tree (开录时全树, 只落盘) / msg (相邻同样的合并, n 为条数) /
 //   new / del / chg (窗口出现、消失、属性变化) / gdi (可见窗口绘制文字) / stop.
 //   t 是取到的那一轮的时刻, 同一轮内只有 msg 之间保序
 #include "live/tdx/shim/Tool.hpp"
@@ -48,29 +48,10 @@ std::string win(const ojson &n) {
 }
 std::string hidden(const ojson &vis) { return truthy(vis) ? "" : " (隐藏)"; }
 
-// 请求记录按 op 各一行的格式; 表外回空
-std::string req_line(const ojson &r) {
-  const std::string op = r.contains("op") ? plain(r["op"]) : "";
-  if (op == "init")
-    return "init=" + plain(r.at("value"));
-  if (op == "func")
-    return strf("func=%lld (0x%llx)", r.at("value").get<long long>(), r.at("value").get<unsigned long long>());
-  if (op == "str")
-    return "str[" + plain(r.at("id")) + "," + plain(r.at("aux")) + "]=" + r.at("value").dump();
-  if (op == "int" || op == "float")
-    return op + "[" + plain(r.at("id")) + "]=" + plain(r.at("value"));
-  if (op == "send")
-    return "SEND args=" + r.at("args").dump();
-  return "";
-}
-
 std::string body(const std::string &kind, const ojson &r) {
   if (kind == "msg")
     return "msg " + plain(r.at("msg")) + " → " + win(r) + " wp=" + plain(r.at("wparam")) + " lp=" + plain(r.at("lparam")) +
            (r.at("n").get<long>() > 1 ? strf(" ×%ld", r.at("n").get<long>()) : "") + hidden(r.at("vis"));
-  if (kind == "req")
-    if (const std::string s = req_line(r); !s.empty())
-      return "req req=" + plain(r.at("obj")) + " " + s;
   if (kind == "new" || kind == "del")
     return kind + " " + win(r.at("node")) + hidden(r.at("node").at("vis"));
   if (kind == "chg") {
@@ -148,8 +129,6 @@ void loop(Out &o, double secs) {
                   {"gap", std::chrono::duration<double>(kGap).count()}});
   shim::cmd("spy", "on", "cmd");
   shim::cmd("spy", "clear");
-  shim::cmd("req", "on");
-  shim::cmd("req", "clear");
   Snap prev = snap(shim::cmd("tree"));
   ojson nodes = ojson::array();
   for (const json &n : prev.nodes)
@@ -161,8 +140,6 @@ void loop(Out &o, double secs) {
     std::this_thread::sleep_for(kGap);
     const std::vector<json> ev = shim::cmd("spy", "dump");
     shim::cmd("spy", "clear");
-    for (const json &e : shim::cmd("req", "drain"))
-      o.put("req", oj(e));
     const Snap cur = snap(shim::cmd("tree"));
     for (size_t i = 0, j; i < ev.size(); i = j) {
       for (j = i + 1; j < ev.size() && ev[j] == ev[i]; ++j) {
@@ -215,8 +192,7 @@ void loop(Out &o, double secs) {
 int rec(double secs) {
   Out o{disk::stamp_now()};
   loop(o, secs);
-  for (const char *a : {"spy", "req"})
-    shim::cmd(a, "off");
+  shim::cmd("spy", "off");
   o.put("stop");
   std::fprintf(stderr, "%ld 条 → %s\n", o.n, disk::path(disk::RunLiveTdxRecLog, {.stamp = o.stamp}).string().c_str());
   return 0;

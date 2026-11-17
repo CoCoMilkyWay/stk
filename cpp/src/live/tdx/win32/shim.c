@@ -39,9 +39,10 @@
 //   的内存位图图层数）
 //   gdidump [target]              全部窗口（或只 target）图层各一条图层记录
 //   gdiwatch 长连接，窗口绘制层变更即推变了的图层记录（不收尾） help / spy help
-//   req on / off / clear / drain  交易请求对象追踪（只记录，不改参数）
-//   req attach <hwnd> [offset]     从 MFC 窗口对象接入宿主请求接口；offset
-//   缺省自动找 {cmds}
+//   （help 回 {cmds}）
+//   vt hook <虚表> <槽数> / ret <虚表> <槽,槽…> / unhook / on / off / clear /
+//   drain  虚表追踪：经该表的调用记进入（槽、this、参数及其所指头几字节、
+//                                 返回址），ret 点名的槽另记返回（eax、参数所指），drain 逐条出
 // 节点记录：{depth,hwnd,parent,id,class,title,rect:[l,t,r,b],style,exstyle,vis,en}
 //   parent 顶层为 0x00000000。
 // 图层记录：{hwnd,off:[客户区相对窗口左上],items:[[l,t,r,b,v]|[l,t,r,b,v,"文字"]]}
@@ -66,7 +67,6 @@
 
 #define DEFAULT_PORT 17703
 #define SPY_CAP 512
-#define REQ_CAP 4096
 #define HOOK_CAP 256
 #define FILTER_ALL 0xFFFFFFFFu
 #define FILTER_CMD 0xFFFFFFFEu
@@ -76,7 +76,7 @@
 
 static HMODULE g_hMod = NULL;
 static CRITICAL_SECTION g_cs;
-static CRITICAL_SECTION g_req_cs;
+static CRITICAL_SECTION g_vt_cs; // 虚表追踪的事件环: 桩在任意线程里取, 不与命令线程的别的锁交叉
 static int g_cs_inited = 0;
 
 // ---------- 应答缓冲 / JSON ----------
@@ -345,112 +345,6 @@ static int spy_hook_thread(DWORD tid, void *ctx) {
 
 // 本进程每个线程各挂 HOOKS 全套。
 static void spy_hook(void) { each_thread(spy_hook_thread, NULL); }
-
-// ---------- 交易请求追踪 ----------
-// AddinStock/AddinCredit 不直接导入 tc.dll；插件从宿主对象取
-// session，再创建请求对象。 请求对象虚表在两种插件中一致：+14 初始化，+18
-// 功能号，+1c/+24/+2c 写字符串/整数/浮点字段，+64
-// 发送。这里只钩这六项，原样转调。
-enum req_op {
-  REQ_INIT,
-  REQ_FUNC,
-  REQ_STR,
-  REQ_INT,
-  REQ_FLOAT,
-  REQ_SEND,
-};
-
-struct req_evt {
-  DWORD tick, tid;
-  DWORD self;
-  int op, id;
-  DWORD a, b, c, d;
-  float f;
-  char s[512];
-};
-
-static struct req_evt g_req[REQ_CAP];
-static int g_req_head, g_req_count;
-static volatile LONG g_req_on;
-static int g_req_hooked;
-static DWORD g_req_target[6];
-
-#if defined(__GNUC__) || defined(__clang__)
-#define TCALL __attribute__((thiscall))
-#else
-#define TCALL __thiscall
-#endif
-
-typedef DWORD(TCALL *req_init_fn)(void *, DWORD);
-typedef DWORD(TCALL *req_func_fn)(void *, DWORD);
-typedef DWORD(TCALL *req_str_fn)(void *, DWORD, const char *, DWORD);
-typedef DWORD(TCALL *req_int_fn)(void *, DWORD, DWORD);
-typedef DWORD(TCALL *req_float_fn)(void *, DWORD, float);
-typedef DWORD(TCALL *req_send_fn)(void *, DWORD, DWORD, DWORD, DWORD);
-
-static req_init_fn o_req_init;
-static req_func_fn o_req_func;
-static req_str_fn o_req_str;
-static req_int_fn o_req_int;
-static req_float_fn o_req_float;
-static req_send_fn o_req_send;
-
-static void req_record(int op, void *self, int id, DWORD a, DWORD b, DWORD c,
-                       DWORD d, float f, const char *s) {
-  if (!g_req_on)
-    return;
-  EnterCriticalSection(&g_req_cs);
-  struct req_evt *e = &g_req[g_req_head];
-  memset(e, 0, sizeof(*e));
-  e->tick = GetTickCount();
-  e->tid = GetCurrentThreadId();
-  e->self = (DWORD)self;
-  e->op = op;
-  e->id = id;
-  e->a = a;
-  e->b = b;
-  e->c = c;
-  e->d = d;
-  e->f = f;
-  if (s && !IsBadStringPtrA(s, sizeof(e->s))) {
-    strncpy(e->s, s, sizeof(e->s) - 1);
-    e->s[sizeof(e->s) - 1] = 0;
-  }
-  g_req_head = (g_req_head + 1) % REQ_CAP;
-  if (g_req_count < REQ_CAP)
-    g_req_count++;
-  LeaveCriticalSection(&g_req_cs);
-}
-
-static DWORD TCALL my_req_init(void *self, DWORD clear) {
-  req_record(REQ_INIT, self, 0, clear, 0, 0, 0, 0, NULL);
-  return o_req_init(self, clear);
-}
-
-static DWORD TCALL my_req_func(void *self, DWORD fn) {
-  req_record(REQ_FUNC, self, 0, fn, 0, 0, 0, 0, NULL);
-  return o_req_func(self, fn);
-}
-
-static DWORD TCALL my_req_str(void *self, DWORD id, const char *s, DWORD aux) {
-  req_record(REQ_STR, self, (int)id, aux, 0, 0, 0, 0, s);
-  return o_req_str(self, id, s, aux);
-}
-
-static DWORD TCALL my_req_int(void *self, DWORD id, DWORD v) {
-  req_record(REQ_INT, self, (int)id, v, 0, 0, 0, 0, NULL);
-  return o_req_int(self, id, v);
-}
-
-static DWORD TCALL my_req_float(void *self, DWORD id, float v) {
-  req_record(REQ_FLOAT, self, (int)id, 0, 0, 0, 0, v, NULL);
-  return o_req_float(self, id, v);
-}
-
-static DWORD TCALL my_req_send(void *self, DWORD a, DWORD b, DWORD c, DWORD d) {
-  req_record(REQ_SEND, self, 0, a, b, c, d, 0, NULL);
-  return o_req_send(self, a, b, c, d);
-}
 
 // ---------- 窗口解析 ----------
 // 按类名 / 标题（UTF-8，NULL = 不比）找顶层窗口。
@@ -2475,188 +2369,345 @@ static const char *pin_cursor(POINT p) {
   return NULL;
 }
 
-static int req_host_candidate(void *p) {
-  if (!mem_ok(p, sizeof(void *), 0))
-    return 0;
-  void **vt = *(void ***)p;
-  if (!mem_ok(vt, 0x274, 0))
-    return 0;
-  const int slots[] = {0, 1, 2, 0x98, 0x99, 0x9a, 0x9b};
-  for (size_t i = 0; i < sizeof(slots) / sizeof(*slots); i++)
-    if (!mem_ok(vt[slots[i]], 1, 1))
-      return 0;
-  return 1;
-}
+// ---------- 命令：vt（虚表追踪）----------
+// 把一张虚表的前 n 个槽换成桩（只改表里的函数指针，不碰代码；经虚表的调用
+// 都过桩，直接调用不过）。桩 = push 槽记录; jmp vt_common：common 保存全部
+// 寄存器与标志、记一条进入 {槽, this(ecx), 返回址, 栈上前 4 个参数}，再原样
+// 恢复、跳回原函数（栈与寄存器不动，故不必知道调用约定与参数个数）。
+// 点名记返回的槽（vt ret）另把栈上的返回址换成 vt_ret_thunk（原址压进本线程的
+// 影子栈）：函数返回落到 thunk，记一条返回 {eax}，弹影子栈、跳回原址。进入与
+// 返回各取一遍参数所指的头 VT_STR 字节（返回时输出缓冲已填好）。函数可能 ret N 自弹参数，落到 thunk 时栈格已上移
+// N 字节：影子栈顶与之差 ≤ VT_POP 即配对，差 = 自弹的参数字节数（记进返回）；
+// 异常越过的帧留下的记录在低得多的栈格上，配对时先弹掉。
+#define VT_TABS 32
+#define VT_SLOTS 256
+#define VT_CAP 65536
+#define VT_STUB 10
+#define VT_STR 40
+#define VT_DEPTH 256
+#define VT_POP 256
 
-typedef void *(__stdcall *mfc_from_hwnd_fn)(HWND);
-typedef void *(TCALL *host_session_fn)(void *);
-typedef void *(TCALL *session_req_fn)(void *, DWORD, DWORD);
-typedef DWORD(TCALL *release_fn)(void *);
-
-// 六个方法入口须都认得出才钩（不留半钩）；已钩过则须是同一组实现。
-static const char *req_install(void *req) {
-  void **vt = *(void ***)req;
-  const int slot[] = {0x14 / 4, 0x18 / 4, 0x1c / 4,
-                      0x24 / 4, 0x2c / 4, 0x64 / 4};
-  void *hook[] = {(void *)my_req_init, (void *)my_req_func,
-                  (void *)my_req_str, (void *)my_req_int,
-                  (void *)my_req_float, (void *)my_req_send};
-  void **orig[] = {(void **)&o_req_init, (void **)&o_req_func,
-                   (void **)&o_req_str, (void **)&o_req_int,
-                   (void **)&o_req_float, (void **)&o_req_send};
-  if (g_req_hooked) {
-    for (int i = 0; i < 6; i++)
-      if (g_req_target[i] != (DWORD)vt[slot[i]])
-        return "request vtable differs from the hooked one";
-    return NULL;
-  }
-  if (!g_htab)
-    htab_open();
-  for (int i = 0; i < 6; i++) {
-    int len;
-    if (!mem_ok(vt[slot[i]], 1, 1) || !hk_clean((BYTE *)vt[slot[i]], &len))
-      return "request method entry not recognized";
-  }
-  for (int i = 0; i < 6; i++) {
-    g_req_target[i] = (DWORD)vt[slot[i]];
-    assert(inline_hook((BYTE *)vt[slot[i]], hook[i], orig[i]));
-  }
-  g_req_hooked = 1;
-  return NULL;
-}
-
-// 从所给窗口的 MFC 对象一路摸到请求对象，任一步不对回 err（不碍客户端）。
-static const char *req_attach(struct out *o, char *a) {
-  char *rest;
-  HWND h = split_target(a, &rest);
-  if (!h)
-    return "usage: req attach <hwnd> [object-offset]";
-  h = GetAncestor(h, GA_ROOT);
-  HMODULE mfc = GetModuleHandleA("MFC42.DLL");
-  if (!mfc)
-    return "MFC42.DLL not loaded";
-  mfc_from_hwnd_fn from = (mfc_from_hwnd_fn)GetProcAddress(
-      mfc, "?FromHandlePermanent@CWnd@@SGPAV1@PAUHWND__@@@Z");
-  if (!from)
-    return "CWnd::FromHandlePermanent not exported";
-  BYTE *wnd = (BYTE *)from(h);
-  if (!wnd || !mem_ok(wnd, 0x204, 0))
-    return "not an MFC permanent window";
-
-  int chosen = -1, found = 0;
-  if (*rest) {
-    chosen = (int)strtoul(rest, NULL, 0);
-    if (chosen < 0x20 || chosen > 0x200 || (chosen & 3))
-      return "offset must be 4-aligned in [0x20, 0x200]";
-    if (!req_host_candidate(*(void **)(wnd + chosen)))
-      return "no host object at offset";
-    found = 1;
-  } else {
-    for (int off = 0x20; off <= 0x200; off += 4) {
-      void *p = *(void **)(wnd + off);
-      if (!req_host_candidate(p))
-        continue;
-      emit(o, "{\"candidate\":\"0x%08x\",\"offset\":%d}\n", (DWORD)p, off);
-      chosen = off;
-      found++;
-    }
-    if (!found)
-      return "host object not found";
-    if (found != 1) {
-      emit(o, "{\"need_offset\":1,\"found\":%d}\n", found);
-      return NULL;
-    }
-  }
-
-  void *host = *(void **)(wnd + chosen);
-  void **hvt = *(void ***)host;
-  host_session_fn get_session = (host_session_fn)hvt[0x26c / 4];
-  void *session = get_session(host);
-  if (!session || !mem_ok(session, sizeof(void *), 0))
-    return "session not found";
-  void **svt = *(void ***)session;
-  if (!mem_ok(svt, 0x20, 0) || !mem_ok(svt[0x1c / 4], 1, 1))
-    return "session vtable not recognized";
-  session_req_fn make_req = (session_req_fn)svt[0x1c / 4];
-  void *req = make_req(session, 0, 0);
-  if (!req || !mem_ok(req, sizeof(void *), 0)) {
-    ((release_fn)svt[0x8 / 4])(session);
-    return "request object not created";
-  }
-  void **rvt = *(void ***)req;
-  const char *err = req_install(req);
-  ((release_fn)rvt[0x4 / 4])(req);
-  ((release_fn)svt[0x8 / 4])(session);
-  if (err)
-    return err;
-  g_req_on = 1;
-  emit(o,
-       "{\"attached\":\"0x%08x\",\"wnd\":\"0x%08x\",\"host\":\"0x%08x\","
-       "\"offset\":%d,\"request_vtable\":\"0x%08x\"}\n",
-       HX(h), (DWORD)wnd, (DWORD)host, chosen, (DWORD)rvt);
-  return NULL;
-}
-
-static const char *const REQ_NAMES[] = {
-    "init",
-    "func",
-    "str",
-    "int",
-    "float",
-    "send",
+struct vt_rec { // 一个槽：桩 push 的就是它；orig 偏移 8 写死在 vt_common 里
+  DWORD vt, slot, orig;
+  volatile LONG ret; // 记返回
+};
+struct vt_tab {
+  DWORD vt;
+  int n;
+  struct vt_rec rec[VT_SLOTS];
+};
+struct vt_evt {
+  DWORD tick, tid, id, ret_kind, vt, slot, self, ret, eax, a[4]; // ret_kind: 0 进入, 1 + 自弹字节 返回
+  BYTE s[4][VT_STR];
+};
+struct vt_frame { // 影子栈一格
+  DWORD *cell, orig, id;
+  const struct vt_rec *r;
+  DWORD self, a[4];
+};
+struct vt_shadow {
+  int n;
+  struct vt_frame f[VT_DEPTH];
 };
 
-static void req_emit(struct out *o, const struct req_evt *e) {
-  emit(o, "{\"tick\":%lu,\"tid\":%lu,\"obj\":\"0x%08x\",\"op\":\"%s\"", e->tick,
-       e->tid, e->self, REQ_NAMES[e->op]);
-  if (e->op == REQ_FUNC)
-    emit(o, ",\"value\":%lu", e->a);
-  else if (e->op == REQ_STR) {
-    wchar_t w[512] = {0};
-    char u[512 * 3 + 1] = {0};
-    int n = MultiByteToWideChar(CP_ACP, 0, e->s, -1, w, 512);
-    assert(n > 0);
-    w2u(w, u, sizeof(u));
-    emit(o, ",\"id\":%d,\"aux\":%lu,\"value\":", e->id, e->a);
-    emit_str(o, u);
-  } else if (e->op == REQ_INT)
-    emit(o, ",\"id\":%d,\"value\":%lu", e->id, e->a);
-  else if (e->op == REQ_FLOAT)
-    emit(o, ",\"id\":%d,\"value\":%.9g", e->id, (double)e->f);
-  else if (e->op == REQ_INIT)
-    emit(o, ",\"value\":%lu", e->a);
-  else if (e->op == REQ_SEND)
-    emit(o, ",\"args\":[%lu,%lu,%lu,%lu]", e->a, e->b, e->c, e->d);
-  emit(o, "}\n");
+static struct vt_tab g_vt[VT_TABS];
+static int g_nvt;
+static BYTE *g_vt_stubs; // VT_TABS × VT_SLOTS 个桩
+static struct vt_evt g_vte[VT_CAP];
+static int g_vte_head, g_vte_count;
+static volatile LONG g_vt_on, g_vt_seq;
+static DWORD g_vt_tls = TLS_OUT_OF_INDEXES;
+
+static void vt_ret_thunk(void);
+
+// 参数所指头 VT_STR 字节（整段可读才取，否则全零）
+static void vt_peek(BYTE *dst, DWORD p) {
+  memset(dst, 0, VT_STR);
+  if (p >= 0x10000 && mem_ok((const void *)p, VT_STR, 0))
+    memcpy(dst, (const void *)p, VT_STR - 1);
 }
 
-static const char *cmd_req(struct out *o, HWND h, char *a) {
+static void vt_push(const struct vt_rec *r, DWORD id, int ret_kind, DWORD self,
+                    DWORD ret, DWORD eax, const DWORD *a) {
+  EnterCriticalSection(&g_vt_cs);
+  struct vt_evt *e = &g_vte[g_vte_head];
+  e->tick = GetTickCount();
+  e->tid = GetCurrentThreadId();
+  e->id = id;
+  e->ret_kind = ret_kind;
+  e->vt = r->vt;
+  e->slot = r->slot;
+  e->self = self;
+  e->ret = ret;
+  e->eax = eax;
+  for (int i = 0; i < 4; i++) {
+    e->a[i] = a[i];
+    vt_peek(e->s[i], a[i]);
+  }
+  g_vte_head = (g_vte_head + 1) % VT_CAP;
+  if (g_vte_count < VT_CAP)
+    g_vte_count++;
+  LeaveCriticalSection(&g_vt_cs);
+}
+
+// frame（vt_common 里 pushal + pushfl 之后的栈）：[0] eflags，[1..8] edi esi
+// ebp esp ebx edx ecx eax，[9] 槽记录，[10] 返回址，[11..] 参数
+void vt_record(DWORD *f) __asm__("vt_record_sym") __attribute__((used));
+void vt_record(DWORD *f) {
+  if (!g_vt_on)
+    return;
+  const struct vt_rec *r = (const struct vt_rec *)f[9];
+  const DWORD id = (DWORD)InterlockedIncrement(&g_vt_seq);
+  vt_push(r, id, 0, f[7], f[10], f[8], f + 11);
+  if (!r->ret)
+    return;
+  struct vt_shadow *sh = TlsGetValue(g_vt_tls);
+  if (!sh) {
+    sh = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*sh));
+    assert(sh);
+    TlsSetValue(g_vt_tls, sh);
+  }
+  assert(sh->n < VT_DEPTH);
+  struct vt_frame *x = &sh->f[sh->n++];
+  x->cell = &f[10];
+  x->orig = f[10];
+  x->id = id;
+  x->r = r;
+  x->self = f[7];
+  memcpy(x->a, f + 11, sizeof(x->a));
+  f[10] = (DWORD)vt_ret_thunk;
+}
+
+// frame（vt_ret_thunk 里 push 占位 + pushal + pushfl 之后）：[0] eflags，
+// [1..8] 同上，[9] 占位 = 原返回址所在的栈格 + 自弹的参数字节。返回原返回址
+DWORD vt_return(DWORD *f) __asm__("vt_return_sym") __attribute__((used));
+DWORD vt_return(DWORD *f) {
+  struct vt_shadow *sh = TlsGetValue(g_vt_tls);
+  assert(sh);
+  const BYTE *at = (const BYTE *)&f[9];
+  while (sh->n && at - (const BYTE *)sh->f[sh->n - 1].cell > VT_POP)
+    sh->n--;
+  assert(sh->n && at >= (const BYTE *)sh->f[sh->n - 1].cell);
+  const struct vt_frame *x = &sh->f[--sh->n];
+  if (g_vt_on)
+    vt_push(x->r, x->id, 1 + (DWORD)(at - (const BYTE *)x->cell), x->self,
+            x->orig, f[8], x->a);
+  return x->orig;
+}
+
+__attribute__((naked)) static void vt_common(void) {
+  __asm__ volatile("pushal\n\t"
+                   "pushfl\n\t"
+                   "movl %esp, %eax\n\t"
+                   "pushl %eax\n\t"
+                   "call vt_record_sym\n\t"
+                   "addl $4, %esp\n\t"
+                   "popfl\n\t"
+                   "popal\n\t"
+                   "xchgl (%esp), %eax\n\t" // eax = 槽记录, 栈顶暂存原 eax
+                   "movl 8(%eax), %eax\n\t" // eax = orig
+                   "xchgl (%esp), %eax\n\t" // 恢复 eax, 栈顶 = orig
+                   "ret\n\t");
+}
+
+__attribute__((naked)) static void vt_ret_thunk(void) {
+  __asm__ volatile("pushl $0\n\t" // 占位：原返回址
+                   "pushal\n\t"
+                   "pushfl\n\t"
+                   "movl %esp, %eax\n\t"
+                   "pushl %eax\n\t"
+                   "call vt_return_sym\n\t"
+                   "addl $4, %esp\n\t"
+                   "movl %eax, 36(%esp)\n\t" // 写进占位
+                   "popfl\n\t"
+                   "popal\n\t"
+                   "ret\n\t");
+}
+
+// p 落在某个已载 PE 映像的代码节里 (节头带 IMAGE_SCN_CNT_CODE)。只看可执行位不行:
+// Wine 把 .text 与 .rdata 映射在同一段 r-x 里, 虚表之后紧挨着的 RTTI / 数据指针也「可执行」
+static int code_ptr(DWORD p) {
+  HMODULE m;
+  if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          (LPCSTR)p, &m))
+    return 0;
+  const IMAGE_NT_HEADERS *nt =
+      (const IMAGE_NT_HEADERS *)((const BYTE *)m +
+                                 ((const IMAGE_DOS_HEADER *)m)->e_lfanew);
+  const IMAGE_SECTION_HEADER *s = IMAGE_FIRST_SECTION(nt);
+  const DWORD rva = p - (DWORD)m;
+  for (int i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+    const DWORD size = s[i].Misc.VirtualSize > s[i].SizeOfRawData
+                           ? s[i].Misc.VirtualSize
+                           : s[i].SizeOfRawData;
+    if (rva >= s[i].VirtualAddress && rva < s[i].VirtualAddress + size)
+      return (s[i].Characteristics & IMAGE_SCN_CNT_CODE) != 0;
+  }
+  return 0;
+}
+
+static int vt_hooked(DWORD fn) {
+  return g_vt_stubs && fn >= (DWORD)g_vt_stubs &&
+         fn < (DWORD)g_vt_stubs + VT_TABS * VT_SLOTS * VT_STUB;
+}
+
+// 虚表 vt 的前 n 个槽换成桩；已钩过的表只补后面的槽。槽里不是代码节里的地址即停
+// (虚表到头: 其后是下一张表的 RTTI 指针或别的数据)。改页保护只改恰好要换的
+// 那几格: 多出一格 (哪怕同页) 客户端也会拒 (实测 tc.dll 的 CTcJob 表 62 格可改、63 格拒)。
+// 改不了回错误, 不 abort (shim 活在客户端进程里)
+static const char *vt_hook(struct out *o, DWORD vt, int n) {
+  if (n < 1 || n > VT_SLOTS)
+    return "slots must be in [1, 256]";
+  if (!mem_ok((void *)vt, 4 * n, 0))
+    return "vtable not readable";
+  if (!g_vt_stubs) {
+    g_vt_tls = TlsAlloc();
+    assert(g_vt_tls != TLS_OUT_OF_INDEXES);
+    g_vt_stubs = VirtualAlloc(NULL, VT_TABS * VT_SLOTS * VT_STUB,
+                              MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    assert(g_vt_stubs);
+  }
+  int t = 0;
+  while (t < g_nvt && g_vt[t].vt != vt)
+    t++;
+  if (t == g_nvt) {
+    if (g_nvt == VT_TABS)
+      return "too many vtables";
+    g_vt[g_nvt++].vt = vt;
+  }
+  struct vt_tab *tab = &g_vt[t];
+  DWORD *slots = (DWORD *)vt, old;
+  int m = tab->n;
+  while (m < n && !vt_hooked(slots[m]) && code_ptr(slots[m]))
+    m++;
+  if (m == tab->n) {
+    emit(o, "{\"vt\":\"0x%08x\",\"hooked\":%d}\n", vt, tab->n);
+    return NULL;
+  }
+  if (!VirtualProtect(slots + tab->n, 4 * (m - tab->n), PAGE_READWRITE, &old)) {
+    static char why[192];
+    MEMORY_BASIC_INFORMATION q = {0};
+    VirtualQuery(slots, &q, sizeof(q));
+    snprintf(why, sizeof(why),
+             "VirtualProtect err=%lu region=0x%08lx+0x%lx protect=0x%lx "
+             "type=0x%lx",
+             GetLastError(), (DWORD)q.BaseAddress, (DWORD)q.RegionSize,
+             q.Protect, q.Type);
+    return why;
+  }
+  for (int k = tab->n; k < m; k++) {
+    DWORD fn = slots[k];
+    struct vt_rec *r = &tab->rec[k];
+    r->vt = vt, r->slot = k, r->orig = fn, r->ret = 0;
+    BYTE *s = g_vt_stubs + (t * VT_SLOTS + k) * VT_STUB;
+    s[0] = 0x68; // push imm32
+    *(DWORD *)(s + 1) = (DWORD)r;
+    s[5] = 0xE9; // jmp rel32
+    *(DWORD *)(s + 6) = (DWORD)vt_common - (DWORD)(s + 10);
+    FlushInstructionCache(GetCurrentProcess(), s, VT_STUB);
+    InterlockedExchange((LONG *)&slots[k], (LONG)s);
+  }
+  VirtualProtect(slots + tab->n, 4 * (m - tab->n), old, &old);
+  tab->n = m;
+  emit(o, "{\"vt\":\"0x%08x\",\"hooked\":%d}\n", vt, tab->n);
+  return NULL;
+}
+
+// 已钩的虚表 vt 里点名的槽（逗号分隔）记返回；其余槽只记进入
+static const char *vt_ret(struct out *o, char *a) {
+  char *e;
+  DWORD vt = strtoul(a, &e, 0);
+  int t = 0;
+  while (t < g_nvt && g_vt[t].vt != vt)
+    t++;
+  if (t == g_nvt)
+    return "vtable not hooked";
+  int n = 0;
+  for (char *p = e; *p;) {
+    long k = strtol(p, &e, 0);
+    if (e == p || k < 0 || k >= g_vt[t].n)
+      return "slot not hooked";
+    InterlockedExchange(&g_vt[t].rec[k].ret, 1);
+    n++;
+    p = e + (*e == ',');
+  }
+  emit(o, "{\"vt\":\"0x%08x\",\"ret\":%d}\n", vt, n);
+  return NULL;
+}
+
+// 全部换回原指针、不再记返回（已在途的返回照常落回 thunk）; 改不了页保护回错误
+static const char *vt_unhook(void) {
+  for (int t = 0; t < g_nvt; t++) {
+    DWORD *slots = (DWORD *)g_vt[t].vt, old;
+    if (g_vt[t].n && !VirtualProtect(slots, 4 * g_vt[t].n, PAGE_READWRITE, &old))
+      return "VirtualProtect refused on unhook";
+    for (int k = 0; k < g_vt[t].n; k++) {
+      InterlockedExchange((LONG *)&slots[k], (LONG)g_vt[t].rec[k].orig);
+      InterlockedExchange(&g_vt[t].rec[k].ret, 0);
+    }
+    if (g_vt[t].n)
+      VirtualProtect(slots, 4 * g_vt[t].n, old, &old);
+    g_vt[t].n = 0;
+  }
+  return NULL;
+}
+
+// vt hook <虚表> <槽数> / unhook / on / off / clear / drain
+static const char *cmd_vt(struct out *o, HWND h, char *a) {
   (void)h;
   char *rest = a + strcspn(a, " ");
   if (*rest)
     *rest++ = 0;
-  if (!strcmp(a, "attach"))
-    return req_attach(o, rest);
-  if (!strcmp(a, "on"))
-    g_req_on = 1;
+  if (!strcmp(a, "hook")) {
+    char *e;
+    DWORD vt = strtoul(rest, &e, 0);
+    return vt_hook(o, vt, (int)strtol(e, NULL, 0));
+  }
+  if (!strcmp(a, "ret"))
+    return vt_ret(o, rest);
+  const char *err = NULL;
+  if (!strcmp(a, "unhook"))
+    err = vt_unhook();
+  else if (!strcmp(a, "on"))
+    g_vt_on = 1;
   else if (!strcmp(a, "off"))
-    g_req_on = 0;
-  else if (!strcmp(a, "clear")) {
-    EnterCriticalSection(&g_req_cs);
-    g_req_head = g_req_count = 0;
-    LeaveCriticalSection(&g_req_cs);
-  } else if (!strcmp(a, "drain")) {
-    EnterCriticalSection(&g_req_cs);
-    int start = (g_req_head - g_req_count + REQ_CAP) % REQ_CAP;
-    for (int i = 0; i < g_req_count; i++)
-      req_emit(o, &g_req[(start + i) % REQ_CAP]);
-    g_req_head = g_req_count = 0;
-    LeaveCriticalSection(&g_req_cs);
+    g_vt_on = 0;
+  else if (!strcmp(a, "clear") || !strcmp(a, "drain")) {
+    EnterCriticalSection(&g_vt_cs);
+    int start = (g_vte_head - g_vte_count + VT_CAP) % VT_CAP;
+    for (int i = 0; *a == 'd' && i < g_vte_count; i++) {
+      const struct vt_evt *e = &g_vte[(start + i) % VT_CAP];
+      emit(o,
+           "{\"tick\":%lu,\"tid\":%lu,\"id\":%lu,\"kind\":\"%s\",\"pop\":%ld,"
+           "\"vt\":\"0x%08x\",\"slot\":%lu,\"this\":\"0x%08x\","
+           "\"ret\":\"0x%08x\",\"eax\":\"0x%08x\",\"a\":[",
+           e->tick, e->tid, e->id, e->ret_kind ? "ret" : "call",
+           (long)e->ret_kind - 1, e->vt,
+           e->slot, e->self, e->ret, e->eax);
+      for (int k = 0; k < 4; k++)
+        emit(o, "%s\"0x%08x\"", k ? "," : "", e->a[k]);
+      emit(o, "],\"s\":[");
+      for (int k = 0; k < 4; k++) { // 参数所指头几字节, 十六进制到首个 0
+        emit(o, "%s\"", k ? "," : "");
+        for (int j = 0; j < VT_STR && e->s[k][j]; j++)
+          emit(o, "%02x", e->s[k][j]);
+        emit(o, "\"");
+      }
+      emit(o, "]}\n");
+    }
+    g_vte_head = g_vte_count = 0;
+    LeaveCriticalSection(&g_vt_cs);
+    return NULL;
   } else
-    return "usage: req on|off|clear|drain|attach <hwnd> [object-offset]";
-  if (strcmp(a, "drain"))
-    emit(o, "{\"on\":%ld,\"hooked\":%d,\"count\":%d}\n", g_req_on, g_req_hooked,
-         g_req_count);
+    return "usage: vt hook <vtable> <slots> | ret <vtable> <slot,slot…> | unhook | on | off | clear | drain";
+  if (err)
+    return err;
+  int n = 0;
+  for (int t = 0; t < g_nvt; t++)
+    n += g_vt[t].n;
+  emit(o, "{\"on\":%ld,\"vtables\":%d,\"slots\":%d,\"count\":%d}\n", g_vt_on,
+       g_nvt, n, g_vte_count);
   return NULL;
 }
 
@@ -2834,6 +2885,7 @@ static const struct cmd CMDS[] = {
     {"regmsg", cmd_regmsg, ARG_NONE},
     {"click", cmd_click, ARG_REQ},
     {"disables", cmd_disables, ARG_REQ},
+    {"vt", cmd_vt, ARG_NONE},
     {"clickat", cmd_clickat, ARG_REQ},
     {"highlight", cmd_highlight, ARG_REQ},
     {"detail", cmd_detail, ARG_REQ},
@@ -2842,7 +2894,6 @@ static const struct cmd CMDS[] = {
     {"char", cmd_char, ARG_NONE},
     {"noraise", cmd_noraise, ARG_NONE},
     {"gdi", cmd_gdi, ARG_NONE},
-    {"req", cmd_req, ARG_NONE},
     {NULL, NULL, 0},
 };
 
@@ -2965,7 +3016,7 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID reserved) {
     g_hMod = hMod;
     if (!g_cs_inited) {
       InitializeCriticalSection(&g_cs);
-      InitializeCriticalSection(&g_req_cs);
+      InitializeCriticalSection(&g_vt_cs);
       InitializeCriticalSection(&g_feed_cs);
       InitializeCriticalSection(&g_gdi_cs);
       g_tls = TlsAlloc();
