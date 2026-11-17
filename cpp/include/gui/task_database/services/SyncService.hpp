@@ -1,7 +1,7 @@
-// Sync Service - 基本面 + 分钟线数据同步 (BigQuant DAI + Tushare HTTP) + 概念快照 (Tushare 东财板块接口)
-// 数据落地 = output/data/fundamental/YYYY-MM/*.parquet + YYYY-MM/bar1m/YYYY-MM-DD.parquet; 概念 = output/data/concept/YYYYMMDD.tsv (shared/Concept.hpp)
-// (fundamental/ 月度分片 + _meta 单文件 + Daily 日文件, 水位增量, 常量见 fundamental/Spec.hpp)
-// AssetInfo 从 parquet 构建 (按全局 id 稠密, 见 shared/AssetInfo.hpp).
+// SyncService — 基本面 / 分钟线 / 概念数据集的统一后台服务: 同步 (Sync) · 核对 (Audit) · 修复 (Repair) + AssetInfo 构建
+//   数据落地 = output/data/fundamental/{YYYY-MM, _meta}/<表>.parquet + YYYY-MM/bar1m/YYYY-MM-DD.parquet;
+//   核对账本 = output/data/fundamental/_audit/<表>.tsv.
+//   同步 / 核对 / 修复天然互斥, 共用同一 worker、同一份 Round 本地视图、同一份周配额与逐表快照.
 #pragma once
 
 #include "gui/util/Service.hpp"
@@ -11,49 +11,44 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <memory>
 #include <string>
 #include <vector>
 
-namespace GUI::Database {
+namespace fundamental::audit {
+class Book;
+}
 
-// 单表本地落盘状态 — 工作线程由 fundamental::Catalog 得到, 渲染帧只读不做 IO.
-// 静态元描述 (增量键 / 抓法 / 就绪时点 / 中文说明) 不在这里重复: Sync 页直接
-// 遍历 fundamental::SPECS, 按 name 关联本结构.
-struct TableFileStat {
-  std::string name;        // = parquet 文件名 = spec.name
-  std::size_t months = 0;  // 已落月度分片数 (Daily: 日文件数); _meta 单文件表恒 0
-  misc::Ym last_month = 0; // 最新分片; _meta 单文件表为 0
-  misc::Ymd last_day = 0;  // Daily: 最新日文件; 其余 0
-  std::uint64_t bytes = 0;
-  std::string mtime; // 最后落盘时刻 "MM-DD HH:MM" (short_time)
-};
+namespace GUI::Database {
 
 std::string short_time(std::time_t t); // "MM-DD HH:MM" (本地时区)
 
+enum class SyncOp : std::uint8_t { Sync,
+                                   Audit,
+                                   Repair };
+
 struct SyncRequest {
-  uint64_t seq = 0;         // 请求代 (StateManager 发), 交接原样带回
-  bool fundamental = false; // 联网同步基本面 (BigQuant 日频表 + Tushare) + 概念快照
-  bool bar1m = false;       // 联网补齐分钟线 (基本面之后)
+  std::uint64_t seq = 0;    // 请求代 (StateManager 发), 交接原样带回
+  SyncOp op = SyncOp::Sync; // 操作类型
+  bool fundamental = false; // Sync: 联网同步基本面 (BigQuant 日频/静态表 + Tushare 事件/概念)
+  bool bar1m = false;       // Sync: 联网补齐分钟线 bar1m
+  std::string table;        // Audit (空 = 全部表) / Repair (目标表)
+  bool incremental = false; // Audit: 跳过仍有效的已核月
 };
 
-// 同步道 = 一个接口的一类数据 (两源 × 两类); 道序即 Update 的执行序
-//   Sync 页各源分表的表头逐道列出 (BigQuant: 日频表 / 分钟线; Tushare: 事件表 / 概念)
+// 同步三道 = 数据源 × 配置开关: BigQuant 轨 (bigquant → bigquant.bar1m) 与 Tushare 轨 (tushare) 并行
 enum Lane : std::size_t { kLaneBq,
                           kLaneTu,
-                          kLaneConcept,
                           kLaneBar1m,
                           kLanes };
 struct LaneDef {
   const char *tag;       // 日志 tag / Sync 页道名
-  bool SyncRequest::*on; // 由请求的哪个开关开
+  bool SyncRequest::*on; // 由请求的哪个开关启用
 };
 inline constexpr LaneDef kLaneDef[kLanes] = {{"bigquant", &SyncRequest::fundamental},
                                              {"tushare", &SyncRequest::fundamental},
-                                             {"tushare.concept", &SyncRequest::fundamental},
                                              {"bigquant.bar1m", &SyncRequest::bar1m}};
-inline constexpr const char *kConceptTable = "concept"; // 概念快照在 Tushare 分表里的表名
 
-// 一道最近一次联网同步: Idle = 本进程未联网同步过; Queued = 本轮排在前道之后
 enum class LaneRun : std::uint8_t { Idle,
                                     Queued,
                                     Syncing,
@@ -63,63 +58,85 @@ enum class LaneRun : std::uint8_t { Idle,
 struct LaneStat {
   LaneRun run = LaneRun::Idle;
   std::size_t total = 0, done = 0; // 计划项 / 已完成项; total 0 = 已到水位
-  std::int64_t rows = 0;           // 落盘行数 (概念: 收进快照的概念数)
+  std::int64_t rows = 0;           // 落盘行数
+  std::string current;             // 当前在拉的表名 (Sync 页整行高亮)
   std::string time;                // 收尾时刻 "MM-DD HH:MM"
 };
 
-// 展示字段 (worker 持 mutex 写, UI 持 mutex 读); 阶段与计步在进度面上
-struct SyncState {
-  std::string message;     // 当前阶段说明 (工作线程实时更新)
-  std::string last_update; // 最近一次构建成功时刻
+// 单表核对统计 (仅 fundamental::audit::audited(spec) 表有效; 分母只计已核月)
+struct AuditStat {
+  std::int64_t local_days = 0;
+  std::int64_t local_rows = 0;
+  std::int64_t remote_only_days = 0;
+  std::int64_t added = 0;
+  std::int64_t removed = 0;
+  std::size_t bad_days = 0;
+  std::size_t bad_months = 0;
+  std::int64_t repair_cells = 0;
+  std::int64_t full_cells = 0;
+  std::size_t audited_months = 0;
+  std::size_t frozen_months = 0;
+  std::string updated; // 最近一次核对时刻 "YYYY-MM-DD HH:MM"; 空 = 从未核对
 
-  // BigQuant 周配额 (单位 cell; Sync 页常显)
-  //   每轮联网同步开头 preflight 一次, 收尾再取一次; 未联网的轮次沿用上次
-  std::int64_t quota_weekly = 0;
-  std::int64_t quota_used = 0;
-  std::string quota_time; // 读数时刻 "YYYY-MM-DD HH:MM:SS"; 空 = 从未取到
-
-  // 构建结果统计 (最近一次构建成功的)
-  std::size_t stock_count = 0;        // cn_stock_basic_info 收录的股票数 (StockInfo::known)
-  std::size_t factor_stock_count = 0; // 有复权因子序列的股票数
-  std::size_t trading_days_count = 0; // 交易日历天数
-  misc::Ymd date_range_start = 0;     // D 轴范围
-  misc::Ymd date_range_end = 0;
-
-  // 逐表落盘状态 (构建失败也填 — 正是要看清哪张表缺); 概念快照记作表 kConceptTable (一份 = 一个日分片)
-  std::vector<TableFileStat> tables;
-  LaneStat lanes[kLanes];
-  std::string syncing; // 在拉的表 (spec.name / kConceptTable); 空 = 无
-
-  // tables 里 name == 的那条; 缺失返回 nullptr
-  const TableFileStat *find_table(const std::string &name) const;
+  bool audited() const { return audited_months > 0; }
+  double bad_pct() const {
+    const std::int64_t den = local_days + remote_only_days;
+    return den > 0 ? 100.0 * static_cast<double>(bad_days) / static_cast<double>(den) : 0.0;
+  }
+  double row_pct() const {
+    return local_rows > 0 ? 100.0 * static_cast<double>(added + removed) / static_cast<double>(local_rows) : 0.0;
+  }
 };
 
-// 交接件: ok = false ⇒ 本地 parquet 缺失 (需先联网同步), asset_info 空
+// 单表完整状态 = 本地分片统计 + 核对统计; SyncState::tables 与 fundamental::SPECS 等长同序 (O(1) 下标对齐)
+struct TableStat {
+  bool present = false;
+  std::size_t shards = 0; // Month: 月分片数; Daily: 日文件数; Meta: 1
+  misc::Ymd last_at = 0;  // Month: YYYYMM00; Daily: YYYYMMDD; Meta: 0
+  std::uint64_t bytes = 0;
+  std::string mtime; // 最后落盘时刻 "MM-DD HH:MM"
+  AuditStat audit;
+};
+
+struct SyncState {
+  SyncOp op = SyncOp::Sync;
+  std::string table; // Audit / Repair 目标表 (空 = 全部表)
+  bool incremental = false;
+  std::string message;     // 当前阶段 / 当前步说明
+  std::string last_update; // 最近一次 AssetInfo 构建成功时刻
+
+  // BigQuant 周配额 (单位 cell; Sync / Audit / Repair 共用同一份最新读数)
+  std::int64_t quota_weekly = 0;
+  std::int64_t quota_used = 0;
+  std::int64_t quota_start = -1; // 最近一轮联网操作起点 used (-1 = 未取)
+  std::string quota_time;        // 读数时刻 "YYYY-MM-DD HH:MM:SS"; 空 = 从未取到
+
+  // AssetInfo 构建结果统计
+  std::size_t stock_count = 0;
+  std::size_t factor_stock_count = 0;
+  std::size_t trading_days_count = 0;
+  misc::Ymd date_range_start = 0;
+  misc::Ymd date_range_end = 0;
+
+  std::vector<TableStat> tables; // 空 = 首轮尚未扫完; 非空则长度 == SPECS.size()
+  LaneStat lanes[kLanes];
+};
+
+// 交接件: rebuilt = false (只读 Audit) 时不触发 AssetInfo 替换与 L2 重扫
 struct SyncResult {
-  uint64_t seq = 0;
+  std::uint64_t seq = 0;
+  bool rebuilt = false;
   bool ok = false;
   AssetInfo asset_info;
 };
 
-// ============================================================================
-// SyncService — 四道数据源同步 + AssetInfo 构建 (单 worker; 阻塞网络 + parquet IO)
-//
-// 线程模型 (gui/util/Service.hpp, 随对象):
-//   - GUI 线程 (StateManager): Request; 帧首 handoff.take() → ok 则换进 SharedData::asset_info (只在 GUI 线程替换)
-//   - worker:   run = 本轮视图 Round → 开道的计划 (纯本地)
-//               → 四道依次 drive [bigquant → tushare → tushare.concept → bigquant.bar1m] → 构建 (扫描 → 落地) → post
-//               (两开关皆关 ⇒ 零网络直接本地构建). 取消 = 当前任务的查询跑完即停, 余下同步任务全部跳过, 构建照常
-//               各道进退写 state.lanes (持 mutex)
-//   - UI:       进度面 = 自身 (Published): Loading 同步 / Running 构建, done/total = 任务 / 分片;
-//               state 持 mutex 读
-// ============================================================================
 class SyncService : public Service<SyncService, SyncRequest>, public Published {
   friend Service<SyncService, SyncRequest>;
 
 public:
   static constexpr const char *kName = "SyncWorker";
-  SyncService(); // 末尾 Start
-  ~SyncService() { Stop(); }
+  SyncService();
+  ~SyncService();
 
   SyncState state;             // UI 持 mutex 读
   Mailbox<SyncResult> handoff; // worker 每轮收尾 post, StateManager 帧首 take
@@ -128,6 +145,12 @@ private:
   static constexpr Phase kStart = Phase::Loading;
   Progress &board() { return *this; }
   bool run(SyncRequest &req);
+  bool run_sync(const SyncRequest &req);
+  bool run_audit(const SyncRequest &req);
+  bool run_repair(const SyncRequest &req);
+  SyncResult build_and_publish(std::uint64_t seq, const fundamental::Round &r);
+
+  std::unique_ptr<fundamental::audit::Book> book_; // worker 独占, 首次 run 载入
 };
 
 } // namespace GUI::Database

@@ -1,23 +1,19 @@
 // State Manager - Database 流水线编排 (GUI 线程) + 解锁进度
 //
-// 四个 worker 服务 (基本面 / 扫描 / 编码 / 核对) 各自一条通道: 发请求带递增请求代, 交接件原样带回.
-//   在飞 = 发出代 != 收到代; 收到的不是最新代 = 陈旧件, 丢弃 (最新请求已在路上)
+// 三个 worker 服务 (数据集 Sync / 扫描 Scan / 编码 Encode) 各一条通道: 发请求带递增请求代, 交接件原样带回.
+//   在飞 = 发出代 != 收到代; 收到的不是最新代 = 陈旧件, 丢弃.
 // 共享状态 (asset_info / asset.items / Asset 扫描产物) 只在 tick 里换进 (GUI 线程), 换进时机保证无 worker 正在读:
-//   冻结:     特征计算在飞 (task_state.compute.computing) → 件都留在邮箱里, 不发编码 (Lob 按帧目录快照读日文件, 编码 rename 换掉它们);
-//             同步 / 扫描照跑, 收尾后再换进. 反向: 编码在飞时特征计算不开跑 (task_state.database.encode_inflight)
-//   基本面件: 扫描 / 编码都不在飞才收 (二者读 asset_info / items) → 换 asset_info → Asset::materialize 重建 items → 请求覆盖扫描
-//   扫描件:   adopt 扫描产物 + 留存覆盖结论 (扫描只在基本面件收下后 / 编码收尾后发, 编码只在扫描不在飞时发)
+//   冻结:     特征计算在飞 (task_state.compute.computing) → 件留在邮箱, 不发编码; 反向: 编码在飞时特征计算不开跑
+//   数据集件: 扫描 / 编码都不在飞才收 → rebuilt 为真时换 asset_info → Asset::materialize → 请求覆盖扫描
+//   扫描件:   adopt 扫描产物 + 留存覆盖结论
 //   编码件:   请求 RescanStorage (日文件被 rename 换掉)
-//   核对件:   Repair 收尾 → refresh (改了分片, 重建 AssetInfo)
 #pragma once
 
-#include "gui/task_database/services/AuditService.hpp"
 #include "gui/task_database/services/ScanService.hpp"
 
 #include <cstdint>
 #include <string>
 
-// Forward declaration
 struct SharedData;
 
 namespace GUI::Database {
@@ -25,72 +21,52 @@ namespace GUI::Database {
 class SyncService;
 class EncodeService;
 
-// ============================================================================
-// Tab Access Control State
-// ============================================================================
-
 struct TabAccessState {
-  // Tab unlock progression (基本面 → L2 → 日历)
-  bool can_access_sync = true;    // 数据源同步, 流水线第一步, 永远可进
-  bool can_access_encode = false; // 基本面 Ready 后解锁 (覆盖检查依赖日历)
-
-  // Calendar 本身就是在展示 L2 数据完整性 (缺口正是它要呈现的东西) ——
-  // 不需要 L2 覆盖 100% Pass, 但仍要等 Encode 页跑过一遍覆盖扫描 (数据才建好).
+  bool can_access_sync = true;      // 数据源同步, 流水线第一步, 永远可进
+  bool can_access_encode = false;   // 基本面 Ready 后解锁 (覆盖检查依赖日历)
   bool can_access_calendar = false; // 基本面 Ready 且已扫描过一遍
 };
 
-// ============================================================================
-// Aggregated State (lightweight, view-only)
-// ============================================================================
-
 struct AggregatedState {
-  // Tab access control
   TabAccessState tabs;
-
-  bool sync_taken = false;       // 收到过同步交接件 (否 = 首轮在跑)
-  bool asset_info_ready = false; // 最近一件 ok (AssetInfo 已从 parquet 构建并换进)
+  bool sync_taken = false;       // 收到过同步构建交接件 (否 = 首轮在跑)
+  bool asset_info_ready = false; // 最近一件构建成功 (AssetInfo 已换进)
   CoverageCheck coverage;        // 最近一件扫描交接的覆盖结论
 };
 
-// ============================================================================
-// State Manager - Coordinates all services
-// ============================================================================
-
 class StateManager {
 public:
-  // 构造即发首批请求: 核对 Load + refresh (进程内重启带 online = false → 首轮不联网)
-  StateManager(SharedData &data, SyncService &sync, ScanService &scan, EncodeService &enc,
-               AuditService &audit);
+  StateManager(SharedData &data, SyncService &sync, ScanService &scan, EncodeService &enc);
 
-  // 每帧帧首 (GUI 线程): 收交接 → 换进共享状态 → 推下一站 → 刷解锁 + task_state.database
   void tick();
 
-  // 唯一刷新链入口: 基本面 / 分钟线同步 (online 时联网按 config.sync_fundamental / sync_bar1m) → AssetInfo/items 重建 → L2 覆盖扫描.
-  // GUI 启动、Sync 页 Update、修复收尾都走这里, 不各写一份流程.
+  // 唯一刷新链入口: 数据集同步 (online 时按 config.sync_fundamental / sync_bar1m) → AssetInfo 重建 → L2 覆盖扫描
   void refresh(bool online = true);
-  // 编码 / 核对请求 (调用方按 can_encode / auditing 使能)
+  void audit(std::string table = {}, bool incremental = false);
+  void repair(std::string table);
   void encode(int workers, bool skip_existing);
-  void audit(AuditOp op, std::string table, bool incremental);
 
   bool syncing() const { return sync_ch_.inflight(); }
   bool scanning() const { return scan_ch_.inflight(); }
   bool encoding() const { return enc_ch_.inflight(); }
-  bool auditing() const { return audit_ch_.inflight(); }
-  bool frozen() const; // 共享数据冻结 (特征计算在飞)
-  bool can_encode() const { return !syncing() && !scanning() && !encoding() && !frozen(); }
+  bool frozen() const;
+  bool online() const;
+
+  bool can_sync() const { return !syncing() && !scanning() && !encoding(); }
+  bool can_audit() const { return can_sync() && online(); }
+  bool can_encode() const { return can_sync() && !frozen(); }
 
   const AggregatedState &get_state() const { return state_; }
   const TabAccessState &get_tab_access() const { return state_.tabs; }
 
 private:
   struct Channel {
-    uint64_t sent = 0, taken = 0;
+    std::uint64_t sent = 0, taken = 0;
     bool inflight() const { return sent != taken; }
-    uint64_t next() { return ++sent; }
-    bool latest(uint64_t seq) const { return seq == sent; } // 收件后: 是最新代
+    std::uint64_t next() { return ++sent; }
+    bool latest(std::uint64_t seq) const { return seq == sent; }
   };
 
-  // 覆盖扫描请求; RecomputeCoverage 但扫描缓存与 config 路径不符 → 降级 RescanStorage
   void scan(ScanMode mode);
   void publish_task_state();
 
@@ -98,9 +74,7 @@ private:
   SyncService &sync_;
   ScanService &scan_;
   EncodeService &enc_;
-  AuditService &audit_;
-  Channel sync_ch_, scan_ch_, enc_ch_, audit_ch_;
-  AuditOp audit_op_ = AuditOp::Load; // 最近一次核对请求的 op (收尾分流)
+  Channel sync_ch_, scan_ch_, enc_ch_;
   AggregatedState state_;
 };
 

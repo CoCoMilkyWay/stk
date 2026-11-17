@@ -240,7 +240,6 @@ set(MATH_PRECISE_FLAGS -fno-fast-math -fno-math-errno)
 set(MATH_FAST
     # shared
     shared/Asset.cpp
-    shared/Concept.cpp
     shared/Feature.cpp
     # misc
     misc/archive.cpp
@@ -275,7 +274,6 @@ set(MATH_FAST
     gui/compute/ui/TabCompute.cpp
     gui/icon_bar/IconBar.cpp
     gui/icon_bar/NetworkService.cpp
-    gui/task_database/services/AuditService.cpp
     gui/task_database/services/EncodeService.cpp
     gui/task_database/services/FileCheckService.cpp
     gui/task_database/ui/TabCalendar.cpp
@@ -296,6 +294,7 @@ set(MATH_FAST
 set(MATH_PRECISE
     # shared
     shared/AssetInfo.cpp
+    shared/Concept.cpp
     shared/Config.cpp
     shared/ReadRequest.cpp
     # disk

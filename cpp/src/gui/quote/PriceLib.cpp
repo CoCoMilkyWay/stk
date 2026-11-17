@@ -600,7 +600,7 @@ bool PriceLib::fill(const fundamental::Catalog &cat, const std::vector<misc::Ymd
       fundamental::Scratch xs;
       const auto f0 = tail.begin() + static_cast<std::ptrdiff_t>(keep), f1 = tail.begin() + static_cast<std::ptrdiff_t>(F);
       for (const fundamental::Shard &sh : cat.shards(kBar1d)) {
-        if (sh.ym < misc::ym_of(*f0) || sh.ym > misc::ym_of(f1[-1]))
+        if (sh.ym() < misc::ym_of(*f0) || sh.ym() > misc::ym_of(f1[-1]))
           continue;
         each_daily(xs, sh, ids, [&](uint32_t a, const Candle &c) {
           const auto it = std::lower_bound(f0, f1, c.date);

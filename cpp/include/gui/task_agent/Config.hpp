@@ -42,30 +42,27 @@ inline constexpr int kRetryIntervalSeconds = 30; // 不限次数, 直到成功�
 inline constexpr int kCancelTimeoutSeconds = 5;  // 取消后通知远端停 run (Cursor) 的每步限时: 取消 / 退出时唯一不看取消旗的请求
 
 // ---- 挖掘 ----
-inline constexpr int kMaxCalls = 12;       // 一条回复的工具调用数上限 (gui/task_agent/Tools.hpp)
-inline constexpr int kBatch = 3;           // 一条回复的 eval_factor 数上限 (提示词 {{batch}})
-inline constexpr int kHypEvals = 3;        // 一个假设至多挂几个落了文件的变体 (提示词 {{hyp_evals}})
-inline constexpr int kHypKnobs = 1;        // 其中至多几个是旋钮类改动 (换平滑 / 换压缩 / 换口径; 只在 base 达门槛时可用; 提示词 {{hyp_knobs}})
-inline constexpr int kMaxOps = 10;         // 一个表达式的算子节点数上限 (超了不落文件; 提示词 {{max_ops}})
-inline constexpr int kParts = kMaxOps - 1; // eval_factor 的功能块至多几个: 要说明的块各是根之外的一个算子节点, 装得下算子数上限的式子
-inline constexpr int kPartChars = 30;      // 一个功能块的说明至多几字, 不计空格标点 (提示词 {{part_chars}})
-inline constexpr int kEvidence = 6;        // judge 的证据至多引用几个调用
-inline constexpr int kGoodOps = 5;         // 建议的算子数 (提示词 {{good_ops}})
-inline constexpr int kListTop = 80;        // list_tried / list_library 一次至多列几个 (只列可见的: 同评估期且不超 kMaxOps; 按该持有期 score 降序)
-inline constexpr int kNotesTop = 40;       // list_notes 一次至多列几条 (新到旧)
-inline constexpr int kOutChars = 6000;     // 一个调用的结果交给 agent 的字数上限 (超了截断并说明; 提示词 {{out_chars}})
-inline constexpr int kStockDays = 60;      // view_stock_days 一次至多看几日
-inline constexpr int kStockRows = 40;      // view_stock_day 逐行时段一次至多几行 (逐行表要装进 kOutChars)
-inline constexpr int kBookMins = 30;       // view_book 一次重放的窗口至多几分钟 (交易时段内)
-inline constexpr int kBookRows = 30;       // view_book 逐时表至多几行 (每行 step 秒; 表要与事件 / 剖面一起装进 kOutChars)
-inline constexpr int kMaxRetries = 5;      // 连续这么多条回复不合协议即停下, 等研究员 (多半是模型或提示词出了问题)
+inline constexpr int kMaxCalls = 12;   // 一条回复的工具调用数上限 (gui/task_agent/Tools.hpp)
+inline constexpr int kBatch = 3;       // 一条回复的 eval_factor 数上限 (提示词 {{batch}})
+inline constexpr int kHypEvals = 3;    // 一个假设至多挂几个落了文件的变体 (提示词 {{hyp_evals}})
+inline constexpr int kMaxOps = 10;     // 一个表达式的算子节点数上限 (超了不落文件; 提示词 {{max_ops}})
+inline constexpr int kGoodOps = 5;     // 建议的算子数 (提示词 {{good_ops}})
+inline constexpr int kEvidence = 6;    // judge 的证据至多引用几个调用
+inline constexpr int kListTop = 80;    // list_tried / list_library 一次至多列几个 (只列可见的: 同评估期且不超 kMaxOps; 按该持有期 score 降序)
+inline constexpr int kNotesTop = 40;   // list_notes 一次至多列几条 (新到旧)
+inline constexpr int kOutChars = 6000; // 一个调用的结果交给 agent 的字数上限 (超了截断并说明; 提示词 {{out_chars}})
+inline constexpr int kStockDays = 60;  // view_stock_days 一次至多看几日
+inline constexpr int kStockRows = 40;  // view_stock_day 逐行时段一次至多几行 (逐行表要装进 kOutChars)
+inline constexpr int kBookMins = 30;   // view_book 一次重放的窗口至多几分钟 (交易时段内)
+inline constexpr int kBookRows = 30;   // view_book 逐时表至多几行 (每行 step 秒; 表要与事件 / 剖面一起装进 kOutChars)
+inline constexpr int kMaxRetries = 5;  // 连续这么多条回复不合协议即停下, 等研究员 (多半是模型或提示词出了问题)
 
 // 常量占位 {{键}} (提示词模板与工具说明同一张表; 模板另有随作用域的键, 见 gui/task_agent/Prompt.hpp)
 struct ConstDef {
   const char *key;
   int value;
 };
-inline constexpr ConstDef kConsts[] = {{"max_calls", kMaxCalls}, {"batch", kBatch}, {"hyp_evals", kHypEvals}, {"hyp_knobs", kHypKnobs}, {"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"part_chars", kPartChars}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}};
+inline constexpr ConstDef kConsts[] = {{"max_calls", kMaxCalls}, {"batch", kBatch}, {"hyp_evals", kHypEvals}, {"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}};
 inline const ConstDef *const_of(std::string_view key) {
   for (const ConstDef &c : kConsts)
     if (key == c.key)
@@ -80,10 +77,9 @@ inline constexpr double kGateRic = 0.03;  // rIC 均值
 // ---- 落盘 (disk::, 布局见 disk/Disk.hpp; <模式> = main | test, test = 自检会话) ----
 //   output/agent/<模式>/sessions/<池>/<层>/<持有期>/
 //     factors/                          候选因子文件 (与正式因子同格式)
-//     chat/<时间>/                      一段会话的日志 (gui/task_agent/Journal.hpp)
+//     chat/<时间>/                      一段会话的存档与可读日志 (session.json / brief.json / system.md / log.md)
 //   output/agent/<模式>/notes/<类>.jsonl 全局记录, 一类一个文件 (特征申请 / 工具申请 / 发现 / 建议与 bug; gui/task_agent/Notes.hpp)
 //   output/run/agent/<模式>/
-//     tools/<工具名>.md                 各工具最近一次交给 agent 的结果 (跨会话互相覆盖; 开会话时删掉工具表里已没有的)
 //     sessions/<池>/<层>/<持有期>/search/ 候选的 Search 日志
 //   output/data/doc/resources-{tag,proc}/ 研报库: 标注 + tag_stat.md / 全文 (gui/task_agent/Docs.hpp, 只读)
 //   output/config/agent/

@@ -23,7 +23,8 @@ namespace {
 using nlohmann::json;
 using trace::Kw;
 
-constexpr const char *kJob = "CTcJob@CTcComm";
+constexpr const char *kJob = "CTcJob@CTcComm", *kUser = "CTcUser@CTcClient@CTcComm";
+constexpr const char *kUserNew = "7"; // CTcUser 槽 7 (0, 0) 建 job: 插件调它的 this 即其所用的 CTcUser
 // 槽: 减引用 (插件读完应答即调) / 设功能号 / 写字符串入参 / 写整数入参 / 网络线程收到应答 / 列数 / 发送 / 行数 /
 //     应答可读 (插件开读先问) / 下一行 / 按列号取 / 按字段号取
 enum Slot { kRelease = 1,
@@ -41,7 +42,9 @@ enum Slot { kRelease = 1,
 constexpr const char *kOnly = "1,6,7,9,18,22,25,39,40,41,43,44";
 constexpr const char *kRet = "22,39,43,44"; // 无参 getter 与取字段 (返回时缓冲已填), 不会有异常越过
 constexpr int kMinSlots = kByField + 1;
-constexpr uint32_t kFieldMask = 0xFFFF; // 插件画表时字段号另带 0x120000
+constexpr uint32_t kFieldMask = 0xFFFF;             // 插件画表时字段号另带 0x120000
+constexpr int kPosField = 0x506, kPageRows = 0x508; // 定位字串 (分页的功能下一页从这里接) / 请求行数
+constexpr const char *kPageMax = "1000";            // 分页时每页要的行数 (插件要 200; 服务器至多给七百余行)
 // done 时插件可能还没读应答 (查询键恢复比插件读早几到十几 ms): 等发出不久的请求都读完, 至多等这么久
 constexpr double kWaitRead = 2.0, kRecent = 5.0;
 
@@ -62,8 +65,9 @@ struct State {
   std::unique_ptr<Image> img;
   std::string vt;
   Schema schema;
+  std::string vt_user;      // CTcUser 的虚表
   std::map<int, Last> last; // 功能号 → 插件最近一次
-  uint32_t user = 0;        // 插件所用的 CTcUser (其 job 的 +0x18)
+  uint32_t user = 0;        // 插件所用的 CTcUser (job 回池后其 +0x18 即清, 故从建 job 的调用取)
 };
 State &state() {
   static State s;
@@ -145,27 +149,35 @@ void arm(const mem::Heap &h) {
   std::lock_guard lk(s.mu);
   if (h.pid() != s.pid) {
     auto img = std::make_unique<Image>(h.pid());
-    const std::vector<mem::Addr> vs = img->vtables(kJob);
-    need(vs.size() == 1, strf("%s 的主虚表有 %zu 张", kJob, vs.size()));
+    const std::vector<mem::Addr> vs = img->vtables(kJob), vu = img->vtables(kUser);
+    need(vs.size() == 1 && vu.size() == 1, strf("%s / %s 的主虚表有 %zu / %zu 张", kJob, kUser, vs.size(), vu.size()));
     s.schema = schema(h);
     s.vt = strf("0x%08llx", static_cast<unsigned long long>(vs[0]));
+    s.vt_user = strf("0x%08llx", static_cast<unsigned long long>(vu[0]));
     s.img = std::move(img);
     s.pid = h.pid();
+    s.last.clear(); // 换了进程: 插件的入参与 CTcUser 都要重新见过
+    s.user = 0;
   }
-  if (shim::cmd("vt", "on").at(0).at("slots").get<int>() == 0) {
-    const int n = shim::cmd("vt", "hook", s.vt, 256).at(0).at("hooked").get<int>();
-    need(n >= kMinSlots, strf("%s 虚表 %s 只钩上 %d 槽", kJob, s.vt.c_str(), n));
+  // 两张表都钩 (已钩的照旧, 其记录设置回缺省, 下面重设); 新钩上 (新注入的 shim / 被 shim vt 卸了) 即清掉其间零碎
+  const bool fresh = shim::cmd("vt", "on").at(0).at("slots").get<int>() == 0;
+  const int n = shim::cmd("vt", "hook", s.vt, 256).at(0).at("hooked").get<int>();
+  need(n >= kMinSlots, strf("%s 虚表 %s 只钩上 %d 槽", kJob, s.vt.c_str(), n));
+  const int nu = shim::cmd("vt", "hook", s.vt_user, 256).at(0).at("hooked").get<int>();
+  need(nu > std::stoi(kUserNew), strf("%s 虚表 %s 只钩上 %d 槽", kUser, s.vt_user.c_str(), nu));
+  if (fresh) {
     shim::cmd("vt", "clear");
     trace::ev("req_arm", {{"vt", s.vt}, {"slots", n}, {"dict", std::filesystem::path(s.schema.file).filename().string()}, {"fields", s.schema.fields.size()}, {"funcs", s.schema.funcs.size()}});
   }
-  shim::cmd("vt", "only", s.vt, kOnly); // 别处 (shim vt) 可能改过记哪些槽: 每次接入都按本模块的设一遍
+  shim::cmd("vt", "only", s.vt, kOnly);
   shim::cmd("vt", "ret", s.vt, kRet);
+  shim::cmd("vt", "only", s.vt_user, kUserNew);
 }
 
 namespace {
 
-// 调用 (drain 的各条, 按进入先后) → 各请求
-std::vector<Req> assemble(const std::vector<json> &evs, const State &s) {
+// 调用 (drain 的各条, 按进入先后) → 各请求; 插件建 job 所用的 CTcUser 记进 user
+std::vector<Req> assemble(const std::vector<json> &evs, const State &s, uint32_t &user) {
   std::map<uint32_t, const json *> rets; // id → 返回那条
   for (const json &e : evs)
     if (e.at("kind") == "ret")
@@ -183,6 +195,11 @@ std::vector<Req> assemble(const std::vector<json> &evs, const State &s) {
     const std::string from = m ? m->name : "?";
     const auto rt = rets.find(e.at("id").get<uint32_t>());
     const json *ret = rt == rets.end() ? nullptr : rt->second;
+    if (e.at("vt") == s.vt_user) {
+      if (from.starts_with("Addin"))
+        user = hex(e.at("this"));
+      continue;
+    }
     const auto it = open.find(job);
     Req *r = it == open.end() ? nullptr : &reqs[it->second];
     if (slot == kStr || slot == kInt) {
@@ -274,7 +291,8 @@ void flush() {
     evs.insert(evs.end(), std::make_move_iterator(got.begin()), std::make_move_iterator(got.end()));
   };
   drain();
-  std::vector<Req> reqs = assemble(evs, s);
+  uint32_t user = 0;
+  std::vector<Req> reqs = assemble(evs, s, user);
   const auto reading = [&] {
     return std::any_of(reqs.begin(), reqs.end(), [&](const Req &r) { return r.sent && !r.end && now - *r.sent < kRecent * 1000; });
   };
@@ -283,19 +301,23 @@ void flush() {
         if (!reading())
           return true;
         drain();
-        reqs = assemble(evs, s);
+        reqs = assemble(evs, s, user);
         return !reading();
       },
       kWaitRead, 0.02);
   for (const Req &r : reqs) {
     trace::ev("req", kw_of(r, s.schema, now));
-    if (r.sent && r.func && r.by.ends_with(".dll") && r.by.starts_with("Addin")) {
+    if (r.sent && r.func && r.by.starts_with("Addin"))
       s.last[*r.func] = {r.ins, r.to.at("lp").get<std::string>()};
-      const std::optional<uint32_t> u = s.img->u32(std::stoull(r.job, nullptr, 16) + 0x18);
-      need(u.has_value(), "读不到 job 的 CTcUser (+0x18): " + r.job);
-      s.user = *u;
-    }
   }
+  if (user)
+    s.user = user;
+}
+
+bool seen(int func) {
+  State &s = state();
+  std::lock_guard lk(s.mu);
+  return s.user && s.last.contains(func);
 }
 
 Answer ask(int func, const std::map<int, std::string> &over) {
@@ -303,7 +325,7 @@ Answer ask(int func, const std::map<int, std::string> &over) {
   std::lock_guard lk(s.mu);
   need(s.pid != 0, "请求层没接上 (req::arm)");
   const auto l = s.last.find(func);
-  need(l != s.last.end() && s.user, strf("还没见过插件发功能 %d, 入参无从照搬 (见过 %zu 个功能, user 0x%08x)", func, s.last.size(), s.user));
+  need(l != s.last.end() && s.user, strf("还没见过插件发功能 %d, 入参无从照搬", func));
   std::string line = strf("req class=TdxW_MainFrame_Class 0x%08x %d %s", s.user, func, l->second.lp.c_str());
   std::set<int> have;
   for (const In &i : l->second.ins) {
@@ -314,16 +336,44 @@ Answer ask(int func, const std::map<int, std::string> &over) {
   }
   for (const auto &[fid, v] : over)
     need(have.contains(fid), strf("功能 %d 的插件入参里没有字段 %d (%s), 不能凭空加", func, fid, s.schema.name(fid).c_str()));
+  // 各列按出参的字段号取、排成出参序 (服务器的列序未必同协议字典, 如担保品)
+  const auto f = s.schema.funcs.find(func);
+  need(f != s.schema.funcs.end(), strf("协议字典里没有功能 %d", func));
+  line += " f=";
+  for (size_t i = 0; i < f->second.out.size(); ++i)
+    line += strf("%s%d", i ? "," : "", f->second.out[i]);
   const std::vector<json> r = shim::call(line, 30);
   need(r.size() == 2, strf("req 应答 %zu 条", r.size()));
   const json &a = r[1];
   need(a.at("ok").get<int>() == 1, strf("功能 %d 应答不可读 (ok = %d)", func, a.at("ok").get<int>()));
-  Answer out{a.at("cols").get<int>(), {}};
+  Answer out{a.at("cols").get<int>(), {}, a.at("pos").get<std::string>()};
   for (const json &row : a.at("data"))
     out.rows.push_back(row.get<std::vector<std::string>>());
   need(static_cast<int>(out.rows.size()) == a.at("rows").get<int>(), "req 应答行数与 data 不符");
-  trace::ev("ask", {{"func", func}, {"job", r[0].at("job")}, {"seq", r[0].at("seq")}, {"cols", out.cols}, {"rows", out.rows.size()}});
+  trace::ev("ask", {{"func", func}, {"job", r[0].at("job")}, {"seq", r[0].at("seq")}, {"cols", out.cols}, {"have", a.at("have")}, {"rows", out.rows.size()}, {"refs", a.at("refs")}, {"pos", out.pos}});
   return out;
+}
+
+Answer ask_all(int func, std::map<int, std::string> over) {
+  bool paged;
+  {
+    State &s = state();
+    std::lock_guard lk(s.mu);
+    const auto l = s.last.find(func);
+    paged = l != s.last.end() && std::any_of(l->second.ins.begin(), l->second.ins.end(), [](const In &i) { return i.fid == kPosField; });
+  }
+  if (paged)
+    over.try_emplace(kPageRows, kPageMax);
+  Answer all = ask(func, over);
+  for (Answer page = all; paged && !page.rows.empty();) {
+    need(!page.pos.empty(), strf("功能 %d 分页的应答没有定位串", func));
+    over[kPosField] = page.pos;
+    page = ask(func, over);
+    need(page.cols == all.cols || page.rows.empty(), strf("功能 %d 各页列数不一 (%d / %d)", func, all.cols, page.cols));
+    all.rows.insert(all.rows.end(), std::make_move_iterator(page.rows.begin()), std::make_move_iterator(page.rows.end()));
+    all.pos = page.pos;
+  }
+  return all;
 }
 
 } // namespace live::tdx::req

@@ -121,7 +121,7 @@ Rows Scratch::open(const Shard &sh, const Spec &s, const std::vector<std::string
   r.dates_ = dates_.data();
   if (snap == Snap::Day) {
     r.day_ = *std::max_element(dates_.begin(), dates_.end());
-    expect(r.day_ > 0, s, {}, "Snap::Day 分片 " + std::to_string(sh.ym) + " vd 全 null");
+    expect(r.day_ > 0, s, {}, "Snap::Day 分片 " + std::to_string(sh.ym()) + " vd 全 null");
   }
   return r;
 }
@@ -141,7 +141,7 @@ void Scan::run(std::atomic<std::size_t> &done) {
 bool daily(const Catalog &cat, const Ids &ids, const Spec &s, Ymd d, const std::vector<std::string> &cols, Scratch &x,
            const std::function<void(const Rows &)> &fn) {
   assert(s.shape == Shape::Daily && "daily: 只读 Daily 表");
-  const Shard *sh = cat.find_day(s.name, d);
+  const Shard *sh = cat.find(s.name, d);
   if (!sh)
     return false;
   fn(x.open(*sh, s, cols, ids));

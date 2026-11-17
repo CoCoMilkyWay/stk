@@ -1,53 +1,32 @@
-// 概念表 — 东财概念板块 (只留题材, 经 Tushare dc_index / dc_member) 的成分快照: output/data/concept/YYYYMMDD.tsv, 只留最近一份 (Fundamental 联网同步时拉当日缺的, 落盘后删旧).
-//   一行一个概念: 板块代码 \t 名称 \t 成分码 (A 轴码形, 逗号分隔), 按板块代码升序.
+// 概念表 — 东财题材概念板块成分视图 (源 = output/data/fundamental/_meta/concept.parquet, 随基本面同步落盘).
 //   题材 = 名称不命中剔除词 (指数成分 / 交易制度 / 资金持股 / 行情统计 / 风格 / 业绩预告) ∧ 成分 ≥ kConceptMin.
-//   进程内唯一 (concepts(), misc::Epochal): 每进程代首次访问载入最近一份, 代内不变 (新拉的随下一代生效); 成分按这一份倒推全史 (篮子表概念切片同一份)
+//   进程内唯一 (concepts(), misc::Epochal): 每进程代首次访问载入, 代内不变 (新同步的随下一代生效); 成分按这一份倒推全史 (篮子表概念切片同一份)
 #pragma once
 
 #include "misc/date.hpp"
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <span>
 #include <string>
-#include <string_view>
 #include <vector>
 
-namespace tushare {
-class Client;
-}
-
-inline constexpr size_t kConceptMin = 10; // 成分下限
-
-struct Concept {
-  std::string code, name;        // "BK0493" / "新能源"
-  std::vector<std::string> syms; // 成分码 (快照原样)
-};
-
-// 题材 (名称不命中剔除词)
-bool concept_theme(std::string_view name);
-// 最近一份快照日 (0 = 无)
-misc::Ymd concept_last();
-// 写侧 fetch → save (与 fundamental::sync::run = put(fetch) 对仗)
-//   fetch: 不晚于 day 的最近一个有数据的交易日, 东财概念板块名单 (dc_index) → 只拉题材的成分 (dc_member 一板块一条, 一批并发) → 够数的收, 按板块代码升序;
-//          say = 拉成分的进度 (已完成数)
-//   save : 当日快照落盘并删去其余日的 (list 按板块代码升序, 各自成分 ≥ kConceptMin)
-std::vector<Concept> fetch_concepts(tushare::Client &tu, misc::Ymd day, const std::function<void(const std::string &)> &say);
-void save_concepts(misc::Ymd date, const std::vector<Concept> &list);
+inline constexpr std::size_t kConceptMin = 10; // 成分下限
 
 // 载入的概念表: 成分映射到全局 A 轴 (轴外的码不收)
 struct ConceptTable {
-  misc::Ymd date = 0;            // 快照日 (0 = 无快照, 表空)
-  std::vector<std::string> code; // [概念] 板块代码
-  std::vector<std::string> name; // [概念] 名称
-  uint64_t hash = 0;             // 代码 + 成分全局 id 的指纹 (篮子缓存键)
-  std::vector<uint32_t> at;      // [全局 id + 1] 资产 g 所属概念 = of[at[g], at[g + 1]) (升序)
-  std::vector<uint16_t> of;
-  size_t size() const { return code.size(); }
+  misc::Ymd date = 0;            // 快照交易日 (0 = 未同步, 表空)
+  std::vector<std::string> code; // [概念] 板块代码 "BK0493"
+  std::vector<std::string> name; // [概念] 名称 "新能源"
+  std::uint64_t hash = 0;        // 代码 + 成分全局 id 的指纹 (篮子缓存键)
+  std::vector<std::uint32_t> at; // [全局 id + 1] 资产 g 所属概念 = of[at[g], at[g + 1]) (升序)
+  std::vector<std::uint16_t> of;
+  std::size_t size() const { return code.size(); }
   // 资产 g 所属的概念下标; g 在载入后才进轴 → 空
-  std::span<const uint16_t> concepts_of(uint32_t g) const {
-    return g + 1 < at.size() ? std::span<const uint16_t>(of.data() + at[g], at[g + 1] - at[g]) : std::span<const uint16_t>{};
+  std::span<const std::uint16_t> concepts_of(std::uint32_t g) const {
+    return g + 1 < at.size() ? std::span<const std::uint16_t>(of.data() + at[g], at[g + 1] - at[g])
+                             : std::span<const std::uint16_t>{};
   }
 };
+
 const ConceptTable &concepts();

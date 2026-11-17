@@ -30,7 +30,6 @@ constexpr long kHostId = 59649;                 // 交易栏下各页的宿主 (
 constexpr long kKeys[] = {1140, 144};           // 页的查询键 (「查 询」/「刷 新」/「回到第一页」), 查着时禁用
 constexpr long kCounts[] = {1243, 166};         // 页的条数标签
 constexpr long kMsgText = 7013, kMsgYes = 7015; // 确认框 / 提示框: 正文 Static、确认按钮
-constexpr double kTick = 1;                     // 等查完期间报进度的间隔 [s]
 
 // 交易栏页签: 认页的列 (只此页的表头有), 投给宿主切到它的命令
 struct Tab {
@@ -158,16 +157,10 @@ void idle(const Hwnd &host, double timeout) {
 }
 
 // 等页 p 这一问查完: 查询键的禁用次数过了 n0 (查起过) 且此刻可用
-void settle(const Page &p, long n0, double timeout, const std::function<void()> &tick, Clock::time_point t0) {
-  const Clock::duration gap = std::chrono::duration_cast<Clock::duration>(Secs(kTick));
-  Clock::time_point next = Clock::now() + gap;
+void settle(const Page &p, long n0, double timeout, Clock::time_point t0) {
   long n = n0;
   until([&] { return strf("页 %s 查完 (查询键禁用 %ld 次)", p.dlg.c_str(), n - n0); },
         [&] {
-          if (tick && Clock::now() >= next) {
-            tick();
-            next += gap;
-          }
           n = win::disables(p.key);
           return n > n0 && win::node(p.key).en;
         },
@@ -233,7 +226,7 @@ int Count::read() const {
 
 // 认目标页: act 前表头含 col 的页 (须至多一个) 记下其查询键的禁用次数; act 后显示出来的页是它即是,
 // 是 act 前没有的页 (头一回开) 即等其表头 (界面线程卡着时 gettext 一直等) 再看, 禁用次数从 0 起
-Page query(const std::string &col, const std::function<void()> &act, double timeout, const std::function<void()> &tick) {
+Page query(const std::string &col, const std::function<void()> &act, double timeout) {
   const Hwnd h = host();
   idle(h, timeout);
   const std::set<Hwnd> before = pages(h);
@@ -263,7 +256,7 @@ Page query(const std::string &col, const std::function<void()> &act, double time
       },
       timeout);
   const Page p = page_of(dlg);
-  settle(p, n0, timeout, tick, t0);
+  settle(p, n0, timeout, t0);
   return p;
 }
 
@@ -276,18 +269,6 @@ Page open_tab(const std::string &tab) {
 Page open_page(const std::string &func, const std::string &col, double timeout) {
   trace::Span span("开页「" + func + "」", {{"col", col}});
   return query(col, [&] { click_func(func); }, timeout);
-}
-
-void press(const Page &p, long key, double timeout, const std::function<void()> &tick) {
-  trace::Span span(strf("按键 %ld", key));
-  const Hwnd h = host();
-  idle(h, timeout);
-  if (shown(h) != std::vector<Hwnd>{p.dlg})
-    fail(strf("页 %s 不在显示", p.dlg.c_str()));
-  const long n0 = win::disables(p.key);
-  const Clock::time_point t0 = Clock::now();
-  win::command(p.dlg, key);
-  settle(p, n0, timeout, tick, t0);
 }
 
 // ---------- 弹框 ----------

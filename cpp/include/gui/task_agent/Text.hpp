@@ -1,47 +1,32 @@
 #pragma once
 
 // =============================================================================
-// Text — agent 成文的公共件: 字 (UTF-8 码点) / 检索词 / 占位 {{键}} / 时刻 / 数的写法 / 火花线
+// Text — agent 成文的公共件: 字 (UTF-8 码点) / 串 / 检索词 / 占位 {{键}} / 时刻 / 数 / 火花线 / Markdown 表
 // =============================================================================
-//   字数一律按码点算 (结果上限 kOutChars / 标题截断 / 研报片段都是字, 不是字节); 截断只落在码点边界; 短句上限 (功能块说明) 按 solid
-//   检索 (search_leaves / search_docs / search_factors / list_notes) 同一套: 词空白隔开、ASCII 小写, 按子串命中 (至多 kShortWord 个字母数字的短词只认整词), 条件全中才命中;
-//   全中的没有且词 ≥ 2 个时放宽为含任一词 (search_* 三个; list_notes 不放宽), 仍零命中报各条件单独的命中数
+//   字数一律按码点算 (结果上限 kOutChars / 标题截断 / 研报片段都是字, 不是字节); 截断只落在码点边界
+//   检索 (search_leaves / search_docs / search_factors / list_notes) 同一套: 词空白隔开、ASCII 小写, 按子串命中 (至多 kShortWord 个字母数字的短词只认整词),
+//   条件全中才命中; 全中的没有且词 ≥ 2 个时放宽为含任一词 (list_notes 不放宽), 仍零命中报各条件单独的命中数
 // =============================================================================
 
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cmath>
-#include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <functional>
+#include <initializer_list>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace GUI::Agent::text {
 
-// ---- 字 ----
+// ---- 字与串 ----
 inline bool lead(char ch) { return (static_cast<unsigned char>(ch) & 0xC0) != 0x80; } // 码点首字节
 inline size_t chars(std::string_view s) { return static_cast<size_t>(std::count_if(s.begin(), s.end(), lead)); }
-// 实字数: 不计空白与标点 (ASCII 非字母数字、通用标点 U+2000–206F、CJK 标点 U+3000–303F、全角形 U+FF00–FFEF)
-inline size_t solid(std::string_view s) {
-  size_t n = 0;
-  for (size_t i = 0; i < s.size();) {
-    const unsigned char c = static_cast<unsigned char>(s[i]);
-    const size_t len = c < 0x80 ? 1 : c < 0xE0 ? 2
-                                  : c < 0xF0   ? 3
-                                               : 4;
-    uint32_t u = len == 1 ? c : c & (0x3Fu >> (len - 1));
-    for (size_t k = 1; k < len && i + k < s.size(); ++k)
-      u = u << 6 | (static_cast<unsigned char>(s[i + k]) & 0x3Fu);
-    i += len;
-    const bool alnum = (u >= '0' && u <= '9') || (u >= 'A' && u <= 'Z') || (u >= 'a' && u <= 'z');
-    n += u < 0x80 ? alnum : !((u >= 0x2000 && u <= 0x206F) || (u >= 0x3000 && u <= 0x303F) || (u >= 0xFF00 && u <= 0xFFEF));
-  }
-  return n;
-}
+
 // 字节位 i 起前进 / 后退 n 字 (到头为止)
 inline size_t fwd(std::string_view s, size_t i, size_t n) {
   for (; i < s.size() && n > 0; --n)
@@ -60,6 +45,71 @@ inline std::string head(std::string_view s, size_t n) {
   const size_t e = fwd(s, 0, n);
   return std::string(s.substr(0, e)) + (e < s.size() ? "…" : "");
 }
+
+inline std::string_view trim(std::string_view s) {
+  const size_t b = s.find_first_not_of(" \t\r\n");
+  return b == std::string_view::npos ? std::string_view() : s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1);
+}
+// 空白压成单个空格
+inline std::string flat(std::string_view s) {
+  std::string o;
+  for (const char ch : s) {
+    const bool sp = ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t';
+    if (sp && (o.empty() || o.back() == ' '))
+      continue;
+    o += sp ? ' ' : ch;
+  }
+  return o;
+}
+inline std::string join(std::span<const std::string> v, std::string_view sep) {
+  std::string s;
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (i)
+      s += sep;
+    s += v[i];
+  }
+  return s;
+}
+// 表格单元: 竖线转义, 换行压成空格
+inline std::string cell(std::string_view s) {
+  std::string o;
+  o.reserve(s.size());
+  for (const char ch : s) {
+    if (ch == '|')
+      o += "\\|";
+    else
+      o += ch == '\n' ? ' ' : ch;
+  }
+  return o;
+}
+
+// ---- Markdown 表 ----
+struct Table {
+  size_t cols = 0;
+  std::string out;
+
+  explicit Table(std::span<const std::string> hs) : cols(hs.size()) {
+    assert(cols > 0);
+    out = "|";
+    for (const std::string &h : hs)
+      out += " " + cell(h) + " |";
+    out += "\n|";
+    for (size_t i = 0; i < cols; ++i)
+      out += "---|";
+    out += "\n";
+  }
+  explicit Table(std::initializer_list<std::string> hs) : Table(std::span<const std::string>(hs.begin(), hs.size())) {}
+
+  void add(std::span<const std::string> row) {
+    assert(row.size() == cols && "表格行列数须一致");
+    out += "|";
+    for (const std::string &v : row)
+      out += " " + cell(v) + " |";
+    out += "\n";
+  }
+  void add(std::initializer_list<std::string> row) { add(std::span<const std::string>(row.begin(), row.size())); }
+  const std::string &str() const { return out; }
+};
 
 // ---- 检索 ----
 inline std::string lower(std::string s) { // 只动 ASCII, 字节长不变
@@ -99,7 +149,6 @@ struct Filter {
   };
   std::vector<Cond> conds;
   void add(std::string name, std::function<bool(size_t)> pass, bool word = false) { conds.push_back({std::move(name), std::move(pass), word}); }
-  // hay(i) (已小写) 含词 w (has_word), 一词一条
   template <class Hay>
   void add(const std::vector<std::string> &ws, const std::string &prefix, Hay hay) {
     for (const std::string &w : ws)
@@ -108,12 +157,10 @@ struct Filter {
   bool operator()(size_t i) const {
     return std::all_of(conds.begin(), conds.end(), [&](const Cond &c) { return c.pass(i); });
   }
-  // 非词条件全满足, 且含任一检索词
   bool loose(size_t i) const {
     return std::all_of(conds.begin(), conds.end(), [&](const Cond &c) { return c.word || c.pass(i); }) &&
            std::any_of(conds.begin(), conds.end(), [&](const Cond &c) { return c.word && c.pass(i); });
   }
-  // 共 n 项的命中 (升序): 全部条件都满足的; 没有且检索词 ≥ 2 个 → 放宽为含任一词 (放宽后有命中 → loosened = true)
   std::vector<size_t> hits(size_t n, bool &loosened) const {
     std::vector<size_t> o;
     for (size_t i = 0; i < n; ++i)
@@ -126,7 +173,6 @@ struct Filter {
     loosened = !o.empty() && !(*this)(o.front());
     return o;
   }
-  // 共 n 项时各条件单独的命中数 "名 k · 名 k"
   std::string alone(size_t n) const {
     std::string o;
     for (const Cond &c : conds) {
@@ -140,7 +186,6 @@ struct Filter {
 };
 
 // ---- 占位 ----
-// t 里的 {{键}} 逐个换成 val(键) (std::string); 占位须闭合
 template <class Val>
 std::string fill(std::string_view t, Val &&val) {
   std::string out;
@@ -159,7 +204,6 @@ std::string fill(std::string_view t, Val &&val) {
 }
 
 // ---- 时刻 ----
-// 本地时刻按 strftime 格式 f; ms 另补 ".毫秒"
 inline std::string local(const char *f, bool ms = false) {
   const auto t = std::chrono::system_clock::now();
   const std::time_t s = std::chrono::system_clock::to_time_t(t);
@@ -180,11 +224,13 @@ inline std::string fmt(const char *f, double v) {
 }
 inline std::string num(double v) { return std::isfinite(v) ? fmt("%.4g", v) : "—"; }       // 统计量 / 门槛 / 表格数; 非有限值 —
 inline std::string bp(double r) { return std::isfinite(r) ? fmt("%+.1f", r * 1e4) : "—"; } // 收益 → bp (带符号); 非有限值 —
+inline std::string pct(double x) { return std::isfinite(x) ? fmt("%.0f%%", x * 100.0) : "—"; }
+inline std::string chg(double x) { return std::isfinite(x) ? fmt("%+.2f%%", x * 100.0) : "—"; }
+inline std::string r3(double x) { return std::isfinite(x) ? fmt("%.3f", x) : "—"; }
 
 // ---- 火花线 ----
 inline constexpr size_t kSparkChars = 60; // 一条至多几字 (长序列等宽分箱取均值)
 inline size_t spark_bin(size_t n) { return (n + kSparkChars - 1) / kSparkChars; }
-// 有限值线性映到 ▁..█ (箱内无有限值 ·); 每字 = spark_bin(v.size()) 个值的均值
 inline std::string bars(const std::vector<double> &v) {
   static constexpr const char *kBar[8] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
   const size_t w = std::max<size_t>(1, spark_bin(v.size()));
@@ -205,6 +251,14 @@ inline std::string bars(const std::vector<double> &v) {
   for (const double x : b)
     s += !std::isfinite(x) ? "·" : kBar[hi > lo ? std::min(7, static_cast<int>((x - lo) / (hi - lo) * 8.0)) : 3];
   return s;
+}
+inline std::string spark(const std::vector<double> &v, std::string (*f)(double) = num) {
+  double lo = INFINITY, hi = -INFINITY;
+  for (const double x : v)
+    if (std::isfinite(x))
+      lo = std::min(lo, x), hi = std::max(hi, x);
+  const size_t w = spark_bin(v.size());
+  return "`" + bars(v) + "`" + (lo <= hi ? "  [" + f(lo) + ", " + f(hi) + "]" : "") + (w > 1 ? " (每字 = 相邻 " + std::to_string(w) + " 个的均值)" : "");
 }
 
 } // namespace GUI::Agent::text

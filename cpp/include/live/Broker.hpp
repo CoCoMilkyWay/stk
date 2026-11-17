@@ -1,9 +1,8 @@
 // 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Broker 并登记进 live/Clients.hpp, 上层 (gui/task_live) 只认这里的类型
 //   读: 持仓 / 当日成交 / 挂单 / 信用账户 由客户端重查后整份发布 (State, 不可变; ver 变 = 换了一份); 两融条款 / 资金流水另拉 (pull_terms / pull_flows, 慢)
 //   写: 限价单 place (调用线程跑完, 逐步报进度); 一整批独占客户端 exclusive (批内连下, 其间不插刷新)
-//   刷新: request 要一轮 (不等) / sync 要一轮并等完 (都可只刷成交) / every 定时 / kick 刚下过单 (隔几秒再刷); 有人在看 (touch / Watch) 才转;
-//     有人在操作客户端时定时的不刷 (各客户端自定判据)
-//   客户端状态与预期不符 (界面没弹出 / 内存正被改写 / 回报失败) 是外部结局, 不是本程序的错: fail 抛 Fail, 在各轮 / 各事务的边界收成原因文本;
+//   刷新: request 要一轮 (不等) / sync 要一轮并等完 (都可只刷成交) / every 定时 / kick 刚下过单 (隔几秒再刷); 有人在看 (touch / Watch) 才转
+//   客户端状态与预期不符 (界面没弹出 / 应答不认识 / 回报失败) 是外部结局, 不是本程序的错: fail 抛 Fail, 在各轮 / 各事务的边界收成原因文本;
 //   本程序自身的不变式一律 assert
 // 编码: 方向 买 +1 / 卖 −1 (BySide 下标 s < 0); 市场由代码前缀定 (market_of), 新浪码 = 前缀 + 代码, AssetInfo 码 = 代码 + 后缀
 #pragma once
@@ -151,7 +150,7 @@ struct CashFlow {
   double amount = 0, balance = 0;
   bool operator==(const CashFlow &) const = default;
 };
-// 读到的一样: v 值 (nullptr = 还没读过), at 客户端重查后读于 HH:MM:SS (空 = 只经被动扫描读过)
+// 读到的一样: v 值 (nullptr = 还没读过), at 读于 HH:MM:SS
 template <class T>
 struct Got {
   std::shared_ptr<const T> v;
@@ -186,11 +185,10 @@ struct State {
 
 // 刷新进度
 struct Refresh {
-  std::string step;  // 正做的 (空 = 闲)
-  std::string err;   // 上一轮失败原因
-  std::string down;  // 接入失败原因 (盯客户端的上一步出错; 空 = 在线)
-  double every = 0;  // 定时周期 [s], 0 = 不定时
-  bool user = false; // 有人在操作客户端: 定时刷新推后
+  std::string step; // 正做的 (空 = 闲)
+  std::string err;  // 上一轮失败原因
+  std::string down; // 上一轮接不上客户端的原因 (空 = 在线)
+  double every = 0; // 定时周期 [s], 0 = 不定时
 };
 
 // 刷新一轮的范围: 全部 (成交 / 持仓 / 挂单 / 信用账户) / 只成交 (等成交时轮询, 快)

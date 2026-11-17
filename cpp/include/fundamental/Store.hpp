@@ -9,7 +9,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -17,37 +16,35 @@
 // ============================================================================
 // Store — 本地数据集 output/data/fundamental/{YYYY-MM, _meta}/<name>.parquet + YYYY-MM/<name>/YYYY-MM-DD.parquet (Daily)
 //
-// Catalog: 一次目录遍历的本地清单 (表名 → 分片). sync / audit / 构建 / GUI Sync 页全只读它.
-// Round  : 一轮的本地视图 = 清单 + 时刻 + 日历 (同一时刻各取一次); sync / audit 的 plan 只读它.
+// 分片键 Ymd at 与 disk::Key::date 同构 (整数序 = 时间序):
+//   Meta : 0
+//   Month: m * 100 (YYYYMM00)
+//   Daily: d       (YYYYMMDD)
+//
+// Catalog: 一次目录遍历的本地清单 (表名 → 分片, at 升序). sync / audit / 构建 / GUI Sync 页全只读它.
+// Round  : 一轮的本地视图 = 清单 + 时刻 + 日历 (同一时刻各取一次); sync / audit / 构建共用.
 // read / put: 本地唯一读点 / 唯一写点 (路径出自 disk 布局表).
 //
-// ledger: 一张表全部槽位在 Round 视角下的状态 —— "冻结" 只在这里定义一次, 每槽只判一次;
-//   todo: 一个槽的动作 (右列) —— "拉什么 / 怎么写" 只在这里定义一次.
-//   sync::plan = ledger 过 dedup 后逐槽 todo; frozen = ledger 的过滤. 时间与日历只经 Round 传入 ⇒ 两者是纯函数.
+// slots: 一张表全部槽位在 Round 视角下的状态 —— "冻结" 只在这里定义一次, sync 与 audit 严格互补:
 //   horizon = 当前时刻已完整的最晚数据日 (now.hour >= avail_hour ? today : 昨天)
 //   Month 关月 (月末 < today − lookback):
-//     Missing  无文件                                        → 整月拉, 覆盖
-//     Stale    写盘日 < 月末 + lookback (月中写的半月文件)       → 整月拉, 覆盖 (服务端回填的唯一兜底)
-//     Frozen   否则                                          → 不动 (audit 只核这类)
+//     Missing  无文件                                   → Replace 整月
+//     Stale    写盘日 < 月末 + lookback (月中写的半月片)  → Replace 整月 (服务端回填兜底)
+//     Frozen   否则                                     → 不动 (audit 只核这类)
 //   Month 开放月 (月末仍在 lookback 窗口内, 含当月):
-//     Missing  无文件                                        → 整段 [月初, min(月末, horizon)] 拉, 覆盖
-//     Open     有文件                                        → 水位增量: W = mark (文件内 max(vd)),
-//                                                             只拉 [W+1, min(月末, horizon)] append (0 行文件 → 整段覆盖);
-//                                                             Snap::Day 且 W > 0 → 月初快照已入盘, 不动
+//     Missing  无文件                                   → Replace [月初, min(月末, horizon)]
+//     Open     有文件                                   → Append [mark+1, min(月末, horizon)] (0 行片 → Replace; Snap::Day 有行 → 不动)
 //   Meta:
-//     Missing  无文件 / Stale 不新鲜 → 整刷; Frozen 新鲜 → 不动
-//     新鲜 = vd 空: 写盘时刻 ≥ horizon 日 avail_hour 点 (当日新股随其他表同点入盘); 否则: mark ≥ horizon
-//   Daily (槽位 = Round::days 里 [start, horizon] 的交易日; 日历未入盘 → 无槽; 关月 / 开放月按该日所属月, 同 Month):
-//     Missing  无文件                                        → 拉该日, 覆盖
-//     Open     有文件, 开放月                                 → 不动 (avail_hour=24 ⇒ 只拉到昨天, 落盘即整日)
-//     Frozen   有文件, 关月                                   → 不动 (日文件无半月之说, 无 Stale; 回填靠 audit)
-//   (右列动作 = todo; dedup 节流在 sync::plan)
-//
-// 配额 1 cell / 任务 (见 Remote.hpp) ⇒ 增量稳态下每表每天一条;
-// 月内漏掉的服务端回填由关月整月重拉兜回 (完整性月内降一级, 关月恢复).
-// 日期一律 Ymd; 写盘日按本地时区 (与 today 同口径).
+//     Meta·All (vd 空): 无文件 Missing / synced < horizon Stale → Replace; 否则 Frozen → 不动
+//     Meta·Day (快照):  无文件 Missing → Replace [start, trade_hz]; 有文件 Open → Replace [mark+1, trade_hz] (已到水位 → 不动)
+//   Daily (槽位 = Round::days 里 [start, horizon] 的交易日):
+//     Missing  无文件                                   → Replace 该日
+//     Open     有文件, 开放月                            → 不动 (avail_hour=24, 落盘即整日)
+//     Frozen   有文件, 关月                              → 不动 (audit 核对)
 // ============================================================================
 namespace fundamental {
+
+constexpr Ymd month_at(Ym m) { return m * 100; }
 
 // 一个时刻: 三字段取自同一次时钟读数 (本地时区)
 struct Now {
@@ -59,34 +56,33 @@ Now now();
 
 // 盘上一个分片
 struct Shard {
-  Ym ym = 0; // 0 = _meta 单文件
+  Ymd at = 0; // 0 = _meta, YYYYMM00 = Month, YYYYMMDD = Daily
   std::filesystem::path path;
   std::uint64_t bytes = 0;
   std::filesystem::file_time_type mtime{};
-  Ymd day = 0; // Daily: 该日; 其余 0
+
+  constexpr Ym ym() const { return misc::ym_of(at); }
+  constexpr Ymd day() const { return at % 100 ? at : 0; }
 };
 
 class Catalog {
 public:
   Catalog(); // 列举 output/data/fundamental 一次 (目录缺失 → assert)
 
-  // name 的全部分片, (ym, day) 升序 (_meta 片 ym = 0 排最前); 无 → 空
+  // name 的全部分片, at 升序; 无 → 空
   const std::vector<Shard> &shards(std::string_view name) const;
-  // Month: m 那一片; Meta: m = 0; 无 → nullptr
-  const Shard *find(std::string_view name, Ym m) const;
-  // Daily: d 那一片; 无 → nullptr
-  const Shard *find_day(std::string_view name, Ymd d) const;
-  // 含目录里不在 SPECS 的历史遗留表
+  // 按分片键查 (Meta: 0, Month: month_at(m), Daily: d); 无 → nullptr
+  const Shard *find(std::string_view name, Ymd at) const;
   const std::map<std::string, std::vector<Shard>, std::less<>> &all() const { return by_name_; }
 
 private:
   std::map<std::string, std::vector<Shard>, std::less<>> by_name_;
 };
 
-// all_trading_days 的 CN 交易日 (≤ today, 升序) —— D 轴唯一来源 (Round / AssetInfo / fund::Panel 共用); 无 CN 行 → assert
+// all_trading_days 的 CN 交易日 (≤ today, 升序) —— D 轴唯一来源; 无 CN 行 → assert
 std::vector<Ymd> calendar(const Catalog &cat, Ymd today);
 
-// 一轮的本地视图: 清单 + 时刻 + 日历, 同一时刻各取一次 (ledger / frozen / plan / repair 的唯一输入)
+// 一轮的本地视图: 清单 + 时刻 + 日历, 同一时刻各取一次
 //   days: calendar(cat, now.today); 日历未入盘 (首轮同步前) → 空
 //   Slot / Unit 指向 cat ⇒ 不可拷贝, 须活到最后一个 run 结束
 struct Round {
@@ -104,49 +100,33 @@ enum class State { Missing,
                    Open,
                    Frozen };
 
-// 一个分片槽 = 槽位 × 盘上分片 × 状态 × 整段窗口 (Shard 是盘上有什么, Slot 是该有什么)
-//   w: Meta = [start, horizon] (vd 空 → {0, 0}); Month = [max(月初, start), 关月 ? 月末 : min(月末, horizon)];
-//      Daily = [该日, 该日] (ym = 该日所属月)
+// 一个分片槽 = 分片键 × 整段窗口 × 盘上分片 × 状态
 struct Slot {
-  Ym ym = 0;                 // 0 = _meta
-  const Shard *sh = nullptr; // 指向 Catalog; nullptr = 盘上没有 (Missing)
-  State st = State::Missing;
+  Ymd at = 0;
   Window w;
+  const Shard *sh = nullptr; // 指向 Catalog; nullptr = Missing
+  State st = State::Missing;
+
+  constexpr Ym ym() const { return misc::ym_of(at); }
 };
 
-// s 的全部槽位: Meta = {0}; Month = [ym(kSyncStart), ym(today)] 升序; Daily = 交易日升序
-std::vector<Slot> ledger(const Spec &s, const Round &r);
+// s 的全部槽位 (at 升序): Meta = {0}; Month = [ym(kSyncStart), ym(today)]; Daily = [kSyncStart, horizon] 交易日
+std::vector<Slot> slots(const Spec &s, const Round &r);
 
-// ledger 中 Frozen 的 Month / Daily 槽 ((ym, 日) 升序; Meta → assert) —— audit 与本地清点的唯一来源. 只看 now.today (关月判定与时刻无关)
+// slots 中 Frozen 的 Month / Daily 槽 (at 升序; Meta → assert) —— audit 与本地清点的唯一来源
 std::vector<Slot> frozen(const Spec &s, const Round &r);
-
-// 槽 sl 的动作 (见文件头右列); 无事 (Frozen / Daily Open / 已到水位 / Snap::Day 快照已入盘) → nullopt.
-//   Month / Meta 的 Open 槽在这里读水位 (唯一一处), 其余零 IO
-std::optional<Task> todo(const Spec &s, const Slot &sl);
-
-// 整槽 Replace (todo 与 audit::repair 共用)
-Task whole(const Spec &s, const Slot &sl);
 
 // 水位 = 分片内 max(vd); 0 行 / 全 null → 0. 只读 footer 列统计 (vd 空 → assert)
 Ymd mark(const Spec &s, const Shard &sh);
 
 // 本地已齐到的最晚数据日 (此日及以前的行都已入盘; 0 = 无) —— 库规划 (fund::last_day) 的输入
-//   Month: 自 kSyncStart 所在月逐月连续, 缺月 → 止于前一月末. 一月整齐 = 该片末次写盘时 horizon 已过月末
-//          (Snap::Day 月初快照: 有行即整月); 首个未齐月齐到:
-//            dense (逐交易日都有行: 日线 / 股本 / 涨跌停 / 状态 / 两融) → 水位 (远端未入库的日拉到 0 行, 不算齐)
-//            否则 (事件表) → max(水位, 末次写盘时的 horizon) (同步拉到 horizon; 0 行探测也 touch mtime)
-//   Meta: vd 空 → 写盘时的 horizon; 否则水位. Daily → assert (日文件按日判)
 Ymd covered(const Spec &s, const Catalog &cat, bool dense);
 
-// 本地唯一读点: 只解 cols (空 = 全列), dict 里的列以字典落地 (见 misc::pq::read_table)
+// 本地唯一读点: 只解 cols (空 = 全列), dict 里的列以字典落地
 std::shared_ptr<arrow::Table> read(const Shard &sh, const std::vector<std::string> &cols = {},
                                    const std::vector<std::string> &dict = {});
 
-// 本地唯一写点: 按 t.how 落 t.ym 分片 (见 Write)
-//   Splice: 分片须已存在; 组键 ∈ t.keys 的旧行换成 tbl (tbl 每行须命中 t.keys);
-//           新行插回所属日的行块 (布局同整拉的 "按日成块"); 列序 / 列型同旧分片
-//           (全 null 的 NA 列按新行提升), 新行带新列 → assert
-//   Daily: tbl 全部行属任务日 (w.lo), 落该日文件; 0 行 → assert (交易日远端未入库; 日文件落盘即不再拉, 不可留空文件)
+// 本地唯一写点: 按 t.how 落 t.at 分片 (见 Write)
 void put(const Task &t, const std::shared_ptr<arrow::Table> &tbl);
 
 } // namespace fundamental

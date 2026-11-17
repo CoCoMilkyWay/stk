@@ -5,19 +5,6 @@
 #include <cstdint>
 #include <string>
 
-// https://github.com/fpga2u/AXOrderBook FPGA-real-time-parser
-// https://zhuanlan.zhihu.com/p/649040063 深交所orderbook重建
-// https://zhuanlan.zhihu.com/p/649400934 上交所orderbook重建
-// https://zhuanlan.zhihu.com/p/662438311 沪市level2数据重建
-// https://zhuanlan.zhihu.com/p/665919675 实时重建沪市level2数据
-// https://zhuanlan.zhihu.com/p/708215930 订单簿成像股价走势预测
-// https://zhuanlan.zhihu.com/p/640661128 Weighted Mid Price定价模型的改进
-// https://zhuanlan.zhihu.com/p/660995304 浅谈深层订单簿建模问题之复杂性(上)
-// https://zhuanlan.zhihu.com/p/672245189 浅谈深层订单簿建模之复杂性(下)
-// https://zhuanlan.zhihu.com/p/678879213 订单簿的一些性质
-// https://zhuanlan.zhihu.com/p/680914693 低价股的订单簿单队列建模
-// https://zhuanlan.zhihu.com/p/518906022 Santa Fe Model and Hawkes Process
-
 namespace L2 {
 
 inline constexpr size_t DEFAULT_ENCODER_ORDER_SIZE = 200000; // 逐笔合并(增删改成交), OrderEncoder 中间缓冲初始预留

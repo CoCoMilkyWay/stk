@@ -572,9 +572,11 @@ Csr<std::uint32_t> land_suspended(const std::vector<DayMark> &halts, const std::
 } // namespace
 
 // 结构性问题 (缺列/类型不符) 由 TableView 内部 assert fail fast.
-bool AssetInfo::build(const Catalog &cat, Progress &p, const std::function<void(std::string)> &stage) {
-  const Ymd today = misc::today_ymd();
-  if (cat.shards("all_trading_days").empty() || !cat.find("cn_stock_basic_info", 0))
+bool AssetInfo::build(const fundamental::Round &round, Progress &p, const std::function<void(std::string)> &stage) {
+  const Catalog &cat = round.cat;
+  const Ymd today = round.now.today;
+  const std::vector<Ymd> &trading = round.days;
+  if (trading.empty() || !cat.find("cn_stock_basic_info", 0))
     return false;
   AssetInfo &out = *this;
 
@@ -586,10 +588,9 @@ bool AssetInfo::build(const Catalog &cat, Progress &p, const std::function<void(
   for (const std::string &c : out.codes)
     ids.add(c);
   const std::uint32_t nid = ids.size();
-  const std::vector<Ymd> trading = fundamental::calendar(cat, today);
   out.days = calendar_of(trading);
   const std::vector<fundamental::Shard> &bar1m = cat.shards("bar1m");
-  out.bar1m_end = bar1m.empty() ? 0 : bar1m.back().day;
+  out.bar1m_end = bar1m.empty() ? 0 : bar1m.back().day();
   const std::vector<fundamental::Shard> &bar1d = cat.shards("cn_stock_real_bar1d");
   Ymd bar1d_end = 0;
   for (size_t k = bar1d.size(); k-- > 0 && bar1d_end == 0;)

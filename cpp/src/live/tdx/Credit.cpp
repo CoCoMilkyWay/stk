@@ -2,8 +2,6 @@
 
 #include "live/tdx/Tables.hpp"
 #include "live/tdx/Trace.hpp"
-#include "live/tdx/Ui.hpp"
-#include "live/tdx/Until.hpp"
 
 #include <map>
 #include <set>
@@ -12,28 +10,17 @@ namespace live::tdx::credit {
 
 namespace {
 
-constexpr double kFullWait = 300; // 开页 / 查询全部最长等多久 [s] (担保品近万只, 客户端卡一两分钟)
-constexpr long kAll = 454;        // 页上「查询全部」
 const std::string kNormal = "正常";
 
-// 开 func 页 (认页的列 col)、点查询全部, 等查完 (分页收齐、另拼出整块) 读整表, 行数须恰为页上条数.
-// 进度: 开页、点查询全部、查完的条数记 log; 查着时每秒报 live 已等秒数 (界面线程忙, 不读界面)
+// 直发读整表 S (翻页到底) → 索引; 进度记 log / live
 template <class S>
-mem::IndexOf<S> full(const mem::HeapP &heap, const Log &log, const Live &live, const std::string &func, const std::string &col) {
-  trace::Span span(func);
-  log("page", {{"func", func}});
-  live("开「" + func + "」页, 等客户端重查…");
-  const ui::Page pg = ui::open_page(func, col, kFullWait);
-  log("all", {{"func", func}});
-  const Clock::time_point t0 = Clock::now();
-  ui::press(pg, kAll, kFullWait, [&] { live(strf("「%s」查询全部, 已等 %.0fs (客户端界面线程忙)", func.c_str(), Secs(Clock::now() - t0).count())); });
-  const int n = pg.count.read();
-  mem::IndexOf<S> rows = mem::Table<S>().read(heap).index;
-  log("rows", {{"func", func}, {"n", n}, {"got", rows.list.size()}});
-  trace::ev("rows", {{"n", n}, {"got", rows.list.size()}});
-  if (rows.list.size() != static_cast<size_t>(n))
-    fail(strf("「%s」查完 (页上 %d 条) 内存整表 %zu 行", func.c_str(), n, rows.list.size()));
-  return rows;
+mem::IndexOf<S> full(const Log &log, const Live &live) {
+  trace::Span span(S::kShape.name);
+  live(strf("直发查「%s」…", S::kShape.name));
+  const std::vector<typename S::Row> rows = tables::read<S>();
+  log("rows", {{"tab", S::kShape.name}, {"n", rows.size()}});
+  trace::ev("rows", {{"tab", S::kShape.name}, {"n", rows.size()}});
+  return mem::index<S>(rows);
 }
 
 Term term_of(const tables::Margin *m, const tables::Collat *c, Mkt mkt) {
@@ -82,17 +69,11 @@ double value(const std::map<std::string, std::string> &c, const char *name) {
 
 } // namespace
 
-Terms pull(const mem::HeapP &heap, const Log &log, const Live &live) {
-  ui::show_bar();
-  const auto mg = full<tables::Margins>(heap, log, live, "标的证券查询", "融资保证金比例");
-  const auto co = full<tables::Collats>(heap, log, live, "担保品查询", "担保状态");
-  ui::open_tab("持仓");
-  return merge(mg, co);
-}
+Terms pull(const Log &log, const Live &live) { return merge(full<tables::Margins>(log, live), full<tables::Collats>(log, live)); }
 
-Account account(mem::Chain &q, std::shared_ptr<const Keyed<Position>> held) {
-  const auto c = q.ask<tables::Assets>([] { return ui::open_page("信用资产", "信用资金额度").count.read(); }).index;
-  const auto d = q.ask<tables::Debts>([] { return ui::open_page("融资负债汇总", "当前负债金额").count.read(); }).index;
+Account account(std::shared_ptr<const Keyed<Position>> held) {
+  const auto c = mem::index<tables::Assets>(tables::read<tables::Assets>());
+  const auto d = mem::index<tables::Debts>(tables::read<tables::Debts>());
   Account a;
   a.assets = value(c, "担保资产");
   a.line = value(c, "最高融资额度") - value(c, "融资负债（含费用）");

@@ -1,25 +1,10 @@
-// 通达信适配: 读客户端进程堆里的明文表 (只服务 Tables.hpp 里的表; shim probe 只借 attach / Heap::each)
-//   定位 TdxW 进程、确保有跨进程读权限 (本机存的密码自动 sudo 放开 ptrace)、堆段的读与扫、
-//   "连读两次一致才采信" 的完整性原语、明文表的找块 / 复读 / 解析, 以及各表共用的流程.
-//
-// 明文 GBK, \r\n 分行、| 分列, 首行表头 0|…|. 一张表由四条互不相干的轴拼成, 流程只此一份、只认这四条轴:
-//   形状 kShape  head 表头模式 / row 数据行模式 (都不含 \r\n); empty 空表 (n = 0、无行) 算不算块; slack 复读窗口在块尾外多留的字节
-//     模式 = 字面量 + 记号: {n} 行数 / {t} 标签 / {d} 不取 (≥ 1 位数字; 带位数 K 如 {t8} 即恰 K 位), {code} 6 位代码,
-//       {clock} HH:MM:SS, {name} 非数字打头的非空列, * 任一列, ... 其后任意 (再跟的字面量须恰为行尾); 数据行不许有 NUL.
-//     表头带 {n} 即块只取前 n 行 (后随不足 n 行 = 被覆盖了一半的旧缓冲 / 分页块, 不算), 不带即整块.
-//     锚点 = 表头最长的字面段 (末段连 \r\n): 段内找锚点, 往前至多 (锚点前各记号的最宽 + 字面段) 字节找表头起点
-//   列 kViews / kFuncs / kCols  各布局的列数与应答它的功能号; 行的各成员 ← 各布局的列号 (kNone = 该布局没有) 经转型 as::*,
-//     各列带客户端字段名 (列序 = 功能定义的出参序, 行尾多一空列); check(行) 行级交叉校验
-//   读法 Mode  触发 × 取法:
-//                        取最新一份 (没见过的)      取累积
-//       被动换代          Live   活动块              Union  当日副本并集      → follow / read
-//       act 驱动          Ask    act 后新冒出的块     Whole  整块拼到齐        → arm + act + read (Chain::ask)
-//     "见过的": Live 记扫到过的各块, Ask 记 act 前那一遍 (arm). 取最新一份即至多一块; 取累积即各块合并.
-//     只有 Live 跨次带状态 (其 Table 须常驻), 其余三种无状态 (Ask / Whole 的 Table 随用随建).
-//     重查经 ui::query / press 等到查完才回, 其时应答已在内存里: 重查后一遍 read 即是, 不等不重查
-//   索引 Index  Unique<键> 键不重 → Keyed<行> / Tally 成交按代码合计 → Keyed<Flow> / Pairs 名称不重 → 名称 → 数值原文 / Plain 无键 → 行原序
-// 一张表的流程: 扫 Heap::scan → 选 Mode::choose → 按址连读一致 stable → 解析校验 parse → 合并 Mode::merge → 索引 → Snap
-// 客户端正改写 / 刚释放 / 进程没了 都是外部结局 → Fail
+// 通达信适配: 客户端进程堆 (只读) 与应答表的列声明
+//   堆: 定位 TdxW 进程、确保有跨进程读权限 (本机存的密码自动 sudo 放开 ptrace)、堆段的逐段读; 协议字典 (Schema) / 进程映像 (Image) /
+//     shim probe 用. 账户数据不从堆里读, 一律经请求层直发 (Req.hpp)
+//   表 (Tables.hpp 各一份声明): 应答 = 各行各列的串, 列序即协议字典里该功能号的出参序;
+//     kViews / kFuncs  各布局的列数 (出参数 + 1) 与应答它的功能号; kCols 行的各成员 ← 各布局的列号 (kNone = 该布局没有) 经转型 as::*,
+//     各列带客户端字段名 (shim test fields 对协议字典核); check(行) 行级交叉校验; Index 行 → 索引
+//   Unique<键> 键不重 → Keyed<行> / Tally 成交按代码合计 → Keyed<Flow> / Pairs 名称不重 → 名称 → 数值原文 / Plain 无键 → 行原序
 #pragma once
 
 #include "live/Broker.hpp"
@@ -28,19 +13,13 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <chrono>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
-#include <set>
-#include <span>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -51,22 +30,8 @@ namespace live::tdx::mem {
 using Addr = uint64_t;
 using Fields = std::vector<std::string_view>;
 
-inline constexpr size_t kDigits = 10;   // 不定宽数字记号的最多位数 (只用于推锚点前的最宽字节数)
-inline constexpr size_t kSeenCap = 256; // 活动块读法记住的块数 (客户端每重查一次多一块, 旧块一分钟内即释放)
-
-// 命中: 块地址、表头标签、块字节、复读窗口尾 (不越段尾); 值相等即同址同内容
-struct Hit {
-  Addr addr = 0;
-  std::string tag, body;
-  Addr end = 0;
-  bool operator==(const Hit &) const = default;
-};
-
 struct Shape {
   const char *name;
-  std::string_view head, row;
-  bool empty = false;
-  size_t slack = 0;
 };
 
 // ---------- 堆 ----------
@@ -83,8 +48,6 @@ public:
   std::string read(Addr addr, size_t n) const; // 须整段可读
   // 逐段 (段序; near 给定时只读含其中任一地址的段): fn(段首址, 读到的字节)
   void each(const std::function<void(Addr lo, std::string_view data)> &fn, const std::vector<Addr> *near = nullptr) const;
-  // 各形状的命中, 与 shapes 同序: 段间并行, 同锚点的形状共一遍查找, 命中按段序
-  std::vector<std::vector<Hit>> scan(const std::vector<const Shape *> &shapes, const std::vector<Addr> *near = nullptr) const;
 
 private:
   int pid_, fd_;
@@ -94,17 +57,7 @@ using HeapP = std::shared_ptr<const Heap>;
 int find_pid(); // 0 = 没有
 HeapP attach(); // 定位进程、确保有读权限、开堆; 找不到 → Fail
 
-std::optional<std::string> reread(const Shape &t, const Heap &h, const Hit &hit); // 块已不在 (被释放 / 改作他用 / 标签变了) → 无
-
-// 块 → 各行的列 (GBK 解码为 UTF-8、无非法字节, 首行表头其后每行一条; 列数全表一致且为 views 之一) → (UTF-8 全文, 各行列, 布局号)
-struct Split {
-  std::string text;
-  std::vector<Fields> rows;
-  size_t view = 0;
-};
-Split split(const Shape &t, std::string_view raw, std::span<const int> views);
-
-std::string gbk(std::string_view raw); // GBK → UTF-8, 非法字节换 U+FFFD (0x80 即 €); 读客户端里零散的文本用 (表另经 split 严格解)
+std::string gbk(std::string_view raw); // GBK → UTF-8, 非法字节换 U+FFFD (0x80 即 €)
 bool isclose(double a, double b, double rel, double abs);
 void need_row(const Shape &t, bool ok, const std::string &key, const char *what); // 行级校验不过 → Fail
 
@@ -121,7 +74,7 @@ struct Lit {
   constexpr std::string_view view() const { return {s, N - 1}; }
 };
 
-// 转型: get(形状, 一行各列, 列号) → 成员值; 不符 → Fail
+// 转型: get(表, 一行各列, 列号) → 成员值; 不符 → Fail
 namespace as {
 struct text {
   static std::string get(const Shape &t, const Fields &f, int c);
@@ -166,7 +119,7 @@ struct is { // 只核不存
 };
 } // namespace as
 
-// 一列: 成员 M (nullptr = 只核不存) ← 各布局的列号 at 经 As; field = 客户端字段字典里该列的名称 (shim test fields 对功能定义的出参核)
+// 一列: 成员 M (nullptr = 只核不存) ← 各布局的列号 at 经 As; field = 客户端字段字典里该列的名称
 template <auto M, class As, size_t V>
 struct Col {
   const char *field;
@@ -189,9 +142,9 @@ constexpr Col<M, As, sizeof...(I)> col(const char *field, I... at) {
   return {field, {static_cast<int>(at)...}};
 }
 
-// 请求层直发的应答 (req::ask, 各行各列的串) → 行: 布局按功能号认 (kFuncs), 同一套列声明与行级校验
+// 功能 func 的应答 (各行各列的串) → 行: 布局按功能号认 (kFuncs), 列声明逐列转型, 行级校验
 template <class S>
-std::vector<typename S::Row> parse_answer(int func, int cols, const std::vector<std::vector<std::string>> &cells) {
+std::vector<typename S::Row> parse(int func, int cols, const std::vector<std::vector<std::string>> &cells) {
   const auto v = std::find(S::kFuncs.begin(), S::kFuncs.end(), func);
   if (v == S::kFuncs.end())
     fail(strf("%s不由功能 %d 应答", S::kShape.name, func));
@@ -205,19 +158,6 @@ std::vector<typename S::Row> parse_answer(int func, int cols, const std::vector<
     const Fields f(c.begin(), c.end());
     typename S::Row r;
     std::apply([&](const auto &...k) { (k.put(S::kShape, f, view, r), ...); }, S::kCols);
-    S::check(S::kShape, r);
-    rows.push_back(std::move(r));
-  }
-  return rows;
-}
-
-template <class S>
-std::vector<typename S::Row> parse(std::string_view raw) {
-  const Split sp = split(S::kShape, raw, S::kViews);
-  std::vector<typename S::Row> rows;
-  for (const Fields &f : sp.rows) {
-    typename S::Row r;
-    std::apply([&](const auto &...c) { (c.put(S::kShape, f, sp.view, r), ...); }, S::kCols);
     S::check(S::kShape, r);
     rows.push_back(std::move(r));
   }
@@ -287,308 +227,8 @@ template <class S>
 using IndexOf = typename S::Index::template Out<typename S::Row>;
 
 template <class S>
-struct Snap {
-  HeapP heap;
-  std::vector<Hit> mark; // 选中的各块 (body 为连读一致的那份)
-  std::vector<typename S::Row> rows;
-  IndexOf<S> index;
-  bool operator==(const Snap &o) const { return heap == o.heap && mark == o.mark; } // 同一代
-};
-
-// ---------- 流程件 ----------
-
-// 完整性原语: 反复调 fn() 直到相邻两次完全一致才采信, 躲开客户端正改写堆 (torn read) 的瞬间; 一致的空即 "已不在"
-template <class F>
-auto stable(F &&fn, const char *name, int tries = 5) {
-  auto prev = fn();
-  for (int i = 1; i < tries; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    auto cur = fn();
-    if (cur == prev) {
-      if (i > 1)
-        trace::ev("torn", {{"tab", name}, {"n", i + 1}});
-      return cur;
-    }
-    prev = std::move(cur);
-  }
-  fail(strf("%s连读 %d 次仍不一致, 内存正被改写", name, tries));
+IndexOf<S> index(const std::vector<typename S::Row> &rows) {
+  return S::Index::build(S::kShape, rows);
 }
-
-template <class S>
-std::vector<Hit> scan_of(const Heap &h, const std::vector<Addr> *near = nullptr) {
-  return h.scan({&S::kShape}, near)[0];
-}
-// 只扫 s 各块所在的段
-template <class S>
-std::vector<Hit> near_of(const Snap<S> &s) {
-  std::vector<Addr> near;
-  for (const Hit &h : s.mark)
-    near.push_back(h.addr);
-  return scan_of<S>(*s.heap, &near);
-}
-
-template <class C>
-bool in(const C &hs, const Hit &h) { return std::find(hs.begin(), hs.end(), h) != hs.end(); }
-inline std::vector<std::string> addrs(const std::vector<Hit> &hs) {
-  std::vector<std::string> out;
-  for (const Hit &h : hs)
-    out.push_back(strf("%#llx", static_cast<unsigned long long>(h.addr)));
-  return out;
-}
-inline std::vector<Hit> tagged(const std::vector<Hit> &hits, std::string_view tag) {
-  std::vector<Hit> out;
-  for (const Hit &h : hits)
-    if (h.tag == tag)
-      out.push_back(h);
-  return out;
-}
-inline size_t bodies(const std::vector<Hit> &hs) {
-  std::set<std::string_view> b;
-  for (const Hit &h : hs)
-    b.insert(h.body);
-  return b.size();
-}
-template <class Row>
-std::vector<Row> one(std::vector<std::vector<Row>> parts) {
-  assert(parts.size() <= 1);
-  return parts.empty() ? std::vector<Row>{} : std::move(parts[0]);
-}
-
-// ---------- 读法 ----------
-// 各读法同一组成员: choose(命中) → 选中的块 / merge(各块的行) → 行; 被动两种另有 same(快照) 没换代 / rescan(快照) 换代后的命中,
-// act 驱动两种另有 arm(act 前那一遍)
-
-// 活动块: 客户端在用的那块表头标签为 S::kTag (一块都没有即还没查过, 不选、不算错).
-// 客户端重查即另写一块, 旧块要过几秒到几十秒才释放, 其间同标签的有几块、内容不一:
-// 记下扫到过的各块 (最近 kSeenCap 块), 没见过的即新冒出的、为在用的; 没有新冒出的即仍是上次选的那块; 几块内容相同取一块.
-// 头一次扫就有几块不一、或新冒出的不止一种内容, 定不出 → Fail (旧块释放后自愈)
-struct Live {
-  static constexpr bool kWatch = true, kGrows = false;
-  std::deque<Hit> seen;
-  std::optional<Hit> cur;
-
-  template <class S>
-  std::vector<Hit> choose(const std::vector<Hit> &hits) {
-    const std::vector<Hit> all = tagged(hits, S::kTag);
-    if (all.empty() && !hits.empty())
-      fail(strf("%s共 %zu 份, 没有活动块 (标签 %s)", S::kShape.name, hits.size(), S::kTag));
-    std::vector<Hit> got = all;
-    if (bodies(got) > 1) {
-      std::vector<Hit> fresh;
-      for (const Hit &h : got)
-        if (!in(seen, h))
-          fresh.push_back(h);
-      if (fresh.empty())
-        for (const Hit &h : got)
-          if (cur && h == *cur)
-            fresh.push_back(h);
-      got = std::move(fresh);
-    }
-    if (bodies(got) != 1 && !hits.empty())
-      fail(strf("%s活动块 %zu 块内容不一, 定不出在用的 (等旧块释放)", S::kShape.name, all.size()));
-    for (const Hit &h : all)
-      if (!in(seen, h))
-        seen.push_back(h);
-    while (seen.size() > kSeenCap)
-      seen.pop_front();
-    cur = got.empty() ? std::nullopt : std::optional<Hit>(got[0]);
-    got.resize(std::min<size_t>(got.size(), 1));
-    return got;
-  }
-  template <class S>
-  static std::vector<typename S::Row> merge(std::vector<std::vector<typename S::Row>> parts) { return one(std::move(parts)); }
-
-  // 按址复读比字节 (约 0.03ms, 可高频)
-  template <class S>
-  static bool same(const Snap<S> &s) {
-    for (const Hit &h : s.mark)
-      if (reread(S::kShape, *s.heap, h) != h.body)
-        return false;
-    return true;
-  }
-  // 先扫上次所在段, 段内不恰为一块活动块再全量
-  template <class S>
-  static std::vector<Hit> rescan(const Snap<S> &s) {
-    std::vector<Hit> near = near_of(s);
-    return tagged(near, S::kTag).size() == 1 ? near : scan_of<S>(*s.heap);
-  }
-};
-
-// 当日副本并集: 表头标签为 S::tag() 的各副本; 副本只增不改 (旧副本是新的子集), 按 S::uid 取并集、同号逐字段一致, 按 S::order 排.
-// kGrows: 并集可多于某一问的应答 (其后客户端自己又查到了新的)
-struct Union {
-  static constexpr bool kWatch = true, kGrows = true;
-
-  template <class S>
-  static std::vector<Hit> choose(const std::vector<Hit> &hits) { return tagged(hits, S::tag()); }
-  template <class S>
-  static std::vector<typename S::Row> merge(std::vector<std::vector<typename S::Row>> parts) {
-    using Row = typename S::Row;
-    std::vector<Row> uniq;
-    std::map<decltype(S::uid(std::declval<const Row &>())), size_t> at;
-    for (auto &p : parts)
-      for (Row &r : p) {
-        const auto [it, fresh] = at.emplace(S::uid(r), uniq.size());
-        if (fresh)
-          uniq.push_back(std::move(r));
-        else if (!(uniq[it->second] == r))
-          fail(strf("%s %s 两份副本不一致", S::kShape.name, r.code.c_str()));
-      }
-    std::stable_sort(uniq.begin(), uniq.end(), [](const Row &a, const Row &b) { return S::order(a) < S::order(b); });
-    return uniq;
-  }
-
-  // 扫上次各副本所在段, 段内的都在上次的里面
-  template <class S>
-  static bool same(const Snap<S> &s) {
-    for (const Hit &h : choose<S>(near_of(s)))
-      if (!in(s.mark, h))
-        return false;
-    return true;
-  }
-  template <class S>
-  static std::vector<Hit> rescan(const Snap<S> &s) { return scan_of<S>(*s.heap); }
-};
-
-// act 后新冒出的块: act 前那一遍即见过的, 之后新冒出的 (新址或新内容) 即这次的应答, 各份须逐字节一致
-struct Ask {
-  static constexpr bool kWatch = false;
-  std::vector<Hit> seen;
-
-  template <class S>
-  void arm(std::vector<Hit> before) { seen = std::move(before); }
-  template <class S>
-  std::vector<Hit> choose(const std::vector<Hit> &hits) const {
-    std::vector<Hit> fresh;
-    for (const Hit &h : hits)
-      if (!in(seen, h))
-        fresh.push_back(h);
-    for (const Hit &h : fresh)
-      if (h.body != fresh[0].body)
-        fail(strf("%s新应答 %zu 份内容不一", S::kShape.name, fresh.size()));
-    fresh.resize(std::min<size_t>(fresh.size(), 1));
-    return fresh;
-  }
-  template <class S>
-  static std::vector<typename S::Row> merge(std::vector<std::vector<typename S::Row>> parts) { return one(std::move(parts)); }
-};
-
-// 整块拼到齐: 客户端收齐分页后另拼的整块 (每查全部一次一份, 旧的可能还留着), 各份须同内容; 到齐与否由调用方判
-struct Whole {
-  static constexpr bool kWatch = false;
-
-  template <class S>
-  void arm(std::vector<Hit>) {} // 不看 act 前: 新拼的整块与留着的旧整块同内容即同一份
-  template <class S>
-  static std::vector<Hit> choose(const std::vector<Hit> &hits) { return hits; }
-  template <class S>
-  static std::vector<typename S::Row> merge(std::vector<std::vector<typename S::Row>> parts) {
-    for (const auto &p : parts)
-      if (!(p == parts[0]))
-        fail(strf("%s整块 %zu 份内容不一", S::kShape.name, parts.size()));
-    return parts.empty() ? std::vector<typename S::Row>{} : std::move(parts[0]);
-  }
-};
-
-// ---------- 表 ----------
-
-// S: kShape / kViews / kCols / check(行) / Mode / Index; Live 另有 kTag; Union 另有 tag() / uid(行) / order(行)
-template <class S>
-class Table {
-public:
-  using Row = typename S::Row;
-  using Snap = mem::Snap<S>;
-  using Mode = typename S::Mode;
-
-  // 选中的块在复读前全被释放 (客户端正在重查) → 无
-  std::optional<Snap> try_pick(const HeapP &heap, const std::vector<Hit> &hits) {
-    std::vector<Hit> chosen;
-    {
-      std::lock_guard lk(mu_);
-      chosen = mode_.template choose<S>(hits);
-    }
-    std::vector<Hit> mark;
-    for (const Hit &h : chosen)
-      if (auto b = stable([&] { return reread(S::kShape, *heap, h); }, S::kShape.name)) {
-        Hit m = h;
-        m.body = std::move(*b);
-        mark.push_back(std::move(m));
-      }
-    if (mark.empty() && !chosen.empty())
-      return std::nullopt;
-    std::vector<std::vector<Row>> parts;
-    for (const Hit &h : mark)
-      parts.push_back(parse<S>(h.body));
-    Snap s{heap, std::move(mark), Mode::template merge<S>(std::move(parts)), {}};
-    s.index = S::Index::build(S::kShape, s.rows);
-    return s;
-  }
-  Snap pick(const HeapP &heap, const std::vector<Hit> &hits) {
-    std::optional<Snap> s = try_pick(heap, hits);
-    if (!s)
-      fail(strf("%s选中的块在复读前全被释放, 客户端正在重查", S::kShape.name));
-    return std::move(*s);
-  }
-  Snap read(const HeapP &heap) { return pick(heap, scan_of<S>(*heap)); }
-
-  // ---------- 被动换代 ----------
-
-  // 没换代回 s 本身, 换代即重扫再选
-  Snap follow(const Snap &s) {
-    static_assert(Mode::kWatch);
-    return Mode::template same<S>(s) ? s : pick(s.heap, Mode::template rescan<S>(s));
-  }
-  // 客户端这一问查完后 (ui::query 回来即是) 全量读: 应答已在内存里, 页上写着这一问的条数 n.
-  // 行数须恰为 n; kGrows 的可多 (查完后客户端自己又查到了新的)
-  Snap answered(const HeapP &heap, int n) {
-    static_assert(Mode::kWatch);
-    Snap s = read(heap);
-    const size_t m = s.rows.size(), want = static_cast<size_t>(n);
-    if (Mode::kGrows ? m < want : m != want)
-      fail(strf("%s查完 (页上 %d 条) 内存里读到 %zu 行", S::kShape.name, n, m));
-    trace::ev("answer", {{"tab", S::kShape.name}, {"n", n}, {"rows", m}, {"addr", addrs(s.mark)}});
-    return s;
-  }
-
-  // ---------- act 驱动 ----------
-
-  void arm(std::vector<Hit> before) {
-    static_assert(!Mode::kWatch);
-    std::lock_guard lk(mu_);
-    mode_.template arm<S>(std::move(before));
-  }
-
-private:
-  std::mutex mu_;
-  Mode mode_;
-};
-
-// 接连几问 (几张 act 驱动的表各 act 一次): 每遍扫齐各表, 等到上一问应答的那遍即下一问的 act 前, 省掉各问单另的一遍
-class Chain {
-public:
-  Chain(HeapP heap, std::vector<const Shape *> shapes) : heap_(std::move(heap)), shapes_(std::move(shapes)), last_(heap_->scan(shapes_)) {}
-
-  // act 让客户端重查 S 一次并等到查完 (ui::query), 回页上的条数 n; 应答即 act 前那遍之后新冒出的块.
-  // 空表的应答与留在堆里的旧空表逐字节相同, 落回同址即认不出: n = 0 即空表; n > 0 却没有新块 → Fail
-  template <class S>
-  Snap<S> ask(const std::function<int()> &act) {
-    const size_t at = static_cast<size_t>(std::find(shapes_.begin(), shapes_.end(), &S::kShape) - shapes_.begin());
-    assert(at < shapes_.size());
-    Table<S> t;
-    t.arm(last_[at]);
-    const int n = act();
-    last_ = heap_->scan(shapes_);
-    Snap<S> s = t.pick(heap_, last_[at]);
-    if (s.mark.empty() && n != 0)
-      fail(strf("%s查完 (页上 %d 条) 内存里没有新块", S::kShape.name, n));
-    trace::ev("ask", {{"tab", S::kShape.name}, {"n", n}, {"rows", s.rows.size()}, {"addr", addrs(s.mark)}});
-    return s;
-  }
-
-private:
-  HeapP heap_;
-  std::vector<const Shape *> shapes_;
-  std::vector<std::vector<Hit>> last_;
-};
 
 } // namespace live::tdx::mem

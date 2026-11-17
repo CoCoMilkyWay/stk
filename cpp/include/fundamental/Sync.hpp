@@ -7,31 +7,24 @@
 #include <vector>
 
 // ============================================================================
-// sync — 写侧 (与 audit 逐项对仗: Task ↔ Unit, plan ↔ plan, run ↔ run, label ↔ label)
-//   调用方循环: for s ∈ 选的表: for t ∈ plan(s, round): run<Src>(client, t)
-//   Src = Bq (BigQuant) / Tu (Tushare); 客户端类型 = Src::Client.
-//
-// plan: 一张表的纯本地判定 (零网络) = ledger → todo (ym 升序):
-//   已存在的分片 mtime 距 now.at < kDedupSeconds → 本轮不动 (节流); 其余槽的动作全由 todo 定
-//   (一槽至多一条任务). 空 ⇒ 本轮无事可做.
-//   run 只执行这份计划, 不重判 ⇒ "判定" 与 "执行" 结构上就是同一份.
-// round 是本轮开头的本地视图: 每表只写自己的分片, 表间互不影响, 故一轮内无需重扫.
-// client 由调用方持有 (BigQuant 配额探针与同步共用一条认证连接).
-// Task 另一来源 = audit::repair (差异键 → 整槽 Replace / Splice 日·资产), 同走 run.
+// sync — 写侧 (与 audit 逐项对仗: Task ↔ Unit, plan ↔ plan, run ↔ run, label ↔ label, Store ↔ Book)
+//   plan(s, round)      : 一张表的纯本地判定 (零网络) → Task 列表 (at 升序; 空 = 已到水位)
+//   run(clients, task)  : put(task, fetch(clients, task)), 返回远端行数
+//   Task 另一来源 = audit::repair (差异组键 → 分片槽 Replace 任务), 同走 fetch / put.
 // ============================================================================
 namespace fundamental {
+
+struct Clients;
 
 namespace sync {
 
 std::vector<Task> plan(const Spec &s, const Round &r);
 
-// put(t, fetch(client, t)); 返回远端行数
-template <class Src>
-std::int64_t run(typename Src::Client &client, const Task &t);
+std::int64_t run(Clients &c, const Task &t);
 
 } // namespace sync
 
-// "cn_stock_status 2024-05 +[20240510..]" / "... ~[1 日 + 4 资产]" / "bar1m 2026-10-09" (进度展示; 与 Task 同域)
+// "cn_stock_status 2024-05 +[20240510..]" / "cn_stock_basic_info _meta" / "bar1m 2026-10-09"
 std::string label(const Task &t);
 
 } // namespace fundamental

@@ -1,32 +1,64 @@
 #pragma once
 
 // =============================================================================
-// Views — 观察工具 (Run::Look) 的两半: 调用 → 要的原料 (Spec → Lab::Job) / 交回的原料 → 交给 agent 的文本 (Lab::Got → Render)
+// Views — 观察核: 9 个特征库视图 (分块流式 + ForkJoin 全核归约, 零中间 [T][A] 平面搬运) + view_book 逐笔重放
 // =============================================================================
-//   每个 view_* 一行表 {取参, 成文}; 原料两种: LookSpec → Look (特征库上整期一块) / BookSpec → Book (逐笔重放); Acts 只调这两个, 不按工具分派
-//   Spec    按参数查因子 / 特征 / 资产 / 日期与时段写法 (Lab 的三个校验, 不碰数据); 交割单 / 响应曲线 / 成分 / 个股视图另要本层 K 线叶 (LookSpec::kline);
-//           exprs 各式各自校验: 不成的带着原因不算 (Render 写在该式那里), 其余照算; view_feature 一式也不成才算没做成; view_layers 的 cond 不成即没做成
-//   Render  Look → markdown: 表 + 火花线 (▁..█, 无效 ·; 长序列分箱); 收益一律 bp, 超额 = 毛 − 本行在池均值; 依赖数据的参数 (日期在不在评估期) 在这里查;
-//           评估期 / 行 / 持有期在系统提示里, 观察日段与作用域评估期不同时才在开头注明
-//   统计口径与分层回测同一份: 组的每期超额 = 有统计行的组超额之和 / 全部行数; 多空 = (G20 − G1) / 2; mono = 组号与组超额的 Spearman
-//   例外: 条件分层 (view_layers cond) 与成分剥离 (view_explain) 要按别的分数重新分组, 用标签口径近似: 逐行把 在池 ∧ 标签有效 的格等分 20 组,
-//         组超额 = 组内 (标签 − 本行在池均值) 等权均值; 建不了仓的格不剔, 只作同一视图内各行之间对照
-//   view_book 走 Book: 逐笔重放 (逐时表每 step 秒并成一行; 额一律万元; 价位距离按 0.01 元一跳)
+//   每个观察工具对应 kViews 表中唯一一行函数 ViewOut(Call, ViewEnv, FactorFlow, ViewRunner):
+//     特征库视图  K 线叶直接钉进 Block::x 原地读 (不进 DAG, 不跑 Stat), 特征子式直接走 DAG 求值 (不包假 CsRank),
+//                 因子根只跑一次 Stat; 快照 / 个股视图在装载前先核日期并跳过无关块, 全期视图分块流式全核归约
+//     view_book   单 (资产, 日) 逐笔帧重放进常驻 LimitOrderBook, 原地汇总成文
 // =============================================================================
 
-#include "gui/task_agent/Bridge.hpp"
+#include "gui/engine/Table.hpp"
 #include "gui/task_agent/Tools.hpp"
 
+#include <map>
+#include <memory>
+#include <set>
 #include <string>
+#include <vector>
+
+struct OrdersCatalog;
+
+namespace GUI::Engine {
+struct FactorFlow;
+}
 
 namespace GUI::Agent {
 
-// 不成 → false, error / out = 原因 (作该调用的结果)
-bool Spec(const Call &c, const Lab &lab, Lab::Job &out, std::string &error);
-// got = 该调用的 Spec 交出的那件做完交回的 (Look / Book);
-// gist = 研究树留的关键数一行 (view_feature 各式 rIC 与隔日自相关 / view_layers mono · 多空 · rIC · 极端截 (+ 条件三段) / view_explain 剥基准前后); 其余观察与没做成的 = 空
-bool Render(const Call &c, const Lab::Got &got, const Context &ctx, std::string &out, std::string &gist);
-// eval_factor 无显著时代表点的观察 → 分层摘要 ("- " 起: 20 组 + 分时段 mono), 接在回测结果后
-std::string RepText(const Look &look);
+struct CandRef {
+  std::string expr, label, error;
+  int sign = 1;
+};
+
+struct ViewEnv {
+  Engine::FactorScope fsc;
+  int hold = 0;
+  int first = 0, last = 0; // 当前作用域评估期首末日 YYYYMMDD
+  int open = 0;            // 每日开头集合竞价行数
+  std::string level;
+  std::vector<std::string> clock; // [seg] 行末时刻 HH:MM
+  bool lob_open = true;
+  std::set<std::string> open_leaves;
+  std::vector<bool> open_ops;
+  std::map<std::string, CandRef> cands;
+  std::shared_ptr<const OrdersCatalog> orders;
+  L2::ExchangeType exchange = L2::ExchangeType::UNKNOWN;
+};
+
+class ViewRunner {
+public:
+  ViewRunner();
+  ~ViewRunner();
+  ViewRunner(const ViewRunner &) = delete;
+  ViewRunner &operator=(const ViewRunner &) = delete;
+
+  ViewOut run(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
+  std::string rep_layers(const std::string &expr, int sign, const ViewEnv &env, Engine::FactorFlow &F);
+
+private:
+  struct BookRes;
+  std::unique_ptr<BookRes> book_;
+};
 
 } // namespace GUI::Agent

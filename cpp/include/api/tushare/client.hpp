@@ -48,7 +48,7 @@ public:
   //   num 声明的列必须出现在响应 fields 里 (拼错 / API 改名立刻暴露).
   // 网络瞬抖 / 频率超限 (40203) 共用重试预算; 其它 code != 0 / 解析失败 → assert.
   std::shared_ptr<arrow::Table> query(const Query &q);
-  // 一批 query 至多 kWidth 路并发, 结果按 qs 原序; tick(已完成条数) 每完成一条调一次 (在各工作线程上)
+  // 一批 query 至多 kWidth 路并发 (每工作线程复用一条 HTTP/1.1 keep-alive 连接), 结果按 qs 原序; tick(已完成条数) 每完成一条调一次
   std::vector<std::shared_ptr<arrow::Table>> batch(const std::vector<Query> &qs, const std::function<void(std::size_t)> &tick = {});
 
 private:

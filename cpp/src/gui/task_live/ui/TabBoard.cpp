@@ -157,10 +157,6 @@ void progress(LiveHub &hub) {
     sep();
     text_col(kHot, "刷新中: " + g.step + "…");
   }
-  if (g.user) {
-    sep();
-    ImGui::TextDisabled("客户端有人操作, 定时刷新推后");
-  }
   if (!g.err.empty()) {
     sep();
     text_col(kRed, "✗ 上轮刷新失败");

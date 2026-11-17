@@ -250,7 +250,7 @@ bool known(Node n, const Key &k) {
   }
   case Seg::Table:
     return std::any_of(fundamental::SPECS.begin(), fundamental::SPECS.end(), [&](const fundamental::Spec &s) {
-      return s.name == k.name && (n == FundAuditSheet || s.shape == table_shape(n));
+      return s.name == k.name && (n == FundAuditSheet ? fundamental::audited(s) : s.shape == table_shape(n));
     });
   case Seg::Factor:
   case Seg::Portfolio:

@@ -7,7 +7,7 @@
 //     shim probe schema [功能号…]   协议字典: 各功能 / 某功能的入参与出参
 //     shim rec <秒>           录制: 消息 / 窗口树 / 绘制层的变化 → output/run/live/tdx/rec/<时刻>.jsonl, 各条一行打到 stdout
 //     shim vt <秒> <类名 | 0x虚表>…   虚表追踪: 经这些虚表的每次调用 (参数 / 所指文本 / 返回) → 同上目录, 各一行打到 stdout
-//     shim test [用例…]       在线用例 (空 = 全部不慢的; list = 列出); 每例一行 PASS / FAIL, 有 FAIL 退出码 1; 各问的请求层日志 (req) 照记
+//     shim test [用例…]       在线用例 (空 = 全部; list = 列出); 每例一行 PASS / FAIL, 有 FAIL 退出码 1; 各问的请求层日志 (req) 照记
 //   界面动作只做查询类 (切页 / 开查询页 / 点查询), 不下单; 交互日志照常落 output/run/live/tdx/log/
 #include "live/tdx/shim/Tool.hpp"
 

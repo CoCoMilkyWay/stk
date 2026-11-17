@@ -11,8 +11,6 @@ void Positions::check(const Shape &t, const Row &r) {
     fail(strf("%s %s 市值 (%.2f) ≠ 现价 × 余额 (%.2f), 数值列疑似错位", t.name, r.code.c_str(), mv, px * bal));
 }
 
-std::string Fills::tag() { return misc::dense(misc::today_ymd()); }
-
 void Fills::check(const Shape &t, const Row &r) {
   mem::need_row(t, r.qty > 0 && r.price > 0 && !r.fill_id.empty(), r.code, "成交行数值异常");
   mem::need_row(t, mem::isclose(r.price * r.qty, r.amount, 1e-4, 0.02), r.code, "金额 ≠ 价 × 量");

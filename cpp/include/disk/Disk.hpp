@@ -130,8 +130,6 @@ enum class Seg : std::uint8_t {
   X(FundAudit,         Fundamental,       Dir,    Lit,       "_audit",            "",         false)       \
   X(FundAuditSheet,    FundAudit,         File,   Table,     "",                  ".tsv",     false)       \
   X(AssetAxisFile,     Fundamental,       File,   Lit,       "asset_axis.json",   "",         false)       \
-  X(Concept,           Data,              Dir,    Lit,       "concept",           "",         true)        \
-  X(ConceptDay,        Concept,           File,   Ymd,       "",                  ".tsv",     false)       \
   X(Quote,             Data,              Dir,    Lit,       "quote",             "",         false)       \
   X(QuoteLive,         Quote,             File,   Lit,       "live.bin",          "",         false)       \
   X(QuoteDay,          Quote,             File,   Ymd,       "",                  ".bin",     false)       \

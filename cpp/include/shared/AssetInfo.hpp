@@ -17,7 +17,7 @@
 #include <vector>
 
 namespace fundamental {
-class Catalog;
+struct Round;
 }
 struct Progress;
 
@@ -90,5 +90,5 @@ struct AssetInfo {
 
   // 本地 parquet → 全部字段 (实现 shared/AssetInfo.cpp). 返回 false = 本地数据缺失 (首跑需先联网同步).
   // 进度: p.begin(Running, 分片数) + 逐分片计步; stage(说明) = 阶段切换
-  bool build(const fundamental::Catalog &cat, Progress &p, const std::function<void(std::string)> &stage);
+  bool build(const fundamental::Round &r, Progress &p, const std::function<void(std::string)> &stage);
 };

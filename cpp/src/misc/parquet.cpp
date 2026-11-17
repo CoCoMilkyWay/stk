@@ -84,7 +84,7 @@ void write_table_atomic(const fs::path &path,
   assert(out_res.ok() && "pq::write_table_atomic: tmp 无法打开");
   auto props = parquet::WriterProperties::Builder()
                    .compression(arrow::Compression::ZSTD)
-                   ->compression_level(19)
+                   ->compression_level(3)
                    ->build();
   // chunk_size 须 > 0 (0 行表写 1 个空 row group).
   auto st = parquet::arrow::WriteTable(*t, arrow::default_memory_pool(),

@@ -20,8 +20,7 @@ GUI布局:
 └───────────────────────────────────────────────────────────────────────────┘
 
 数据流:
-  ① 数据  BigQuant / Tushare ─(SyncService)─► output/data/fundamental ─► AssetInfo (资产元数据) / fund::Panel (日频 PIT 面板) / bar1m
-          Tushare 东财板块 ─────(SyncService)─► output/data/concept (概念成分快照)
+  ① 数据  BigQuant / Tushare ─(SyncService)─► output/data/fundamental ─► AssetInfo (资产元数据) / ConceptTable (概念成分) / fund::Panel (日频 PIT 面板) / bar1m
           L2 逐笔 CSV 归档 ─────(EncodeService)─► output/data/orders (一日一文件, 每资产一 zstd 帧)
           新浪 ─────────────────(QuoteService)─► output/data/quote (当日行情, 接在 all.bar 库 / 基本面历史之后)
   ② 特征  orders | bar1m + fund::Panel + pool::Panel ─(ComputeService → pipeline<T>: 预取 → 时序 → 截面 → 落盘)─► output/features/<pool>/<tier> (特征库)
@@ -53,7 +52,7 @@ stk/
 │   │   │   ├── Basket.hpp                              # 📦 篮子表 BasketTable = 切片 × 该切片的权重; 三段 (段序 = 目录组序 = 下标序): 各子池 (池参数, 全A 等权 / 加权两池起头) | 申万一级 | 概念 (行业 / 概念 = 全A 内切, 市值加权)
 │   │   │   │                                           #    · 逐篮子属性 (权重 / 周期 / 代码 / 名) 建表时定; 成员判据唯一一份, 两向 each ⇄ holds (事实 Fact = 池集位 + 行业, 同取成员源行; + 概念);
 │   │   │   │                                           #      一日的持仓 = 成员表 Members (键 = 篮子); 行情价格指数 / CTA / 因子可成交指数同一张
-│   │   │   ├── Concept.hpp                             # 📦 东财概念成分快照: 写侧 fetch (Tushare dc_index / dc_member) → save; 读侧进程内唯一 = 最近一份
+│   │   │   ├── Concept.hpp                             # 📦 东财题材概念成分视图: 读 _meta/concept.parquet 映射到全局 A 轴 (进程内唯一)
 │   │   │   ├── Feature.hpp                             # 📦 特征元数据 + 多选 picked = set<ColRef> (跨库跨层); 当前库 = (池, 档)
 │   │   │   ├── Progress.hpp                            # 📦 后台计算进度面 (原子量, UI 免锁读) + 单调前缀发布 PrefixPub
 │   │   │   └── ReadRequest.hpp                         # 📦 读请求 (GUI 各读端共用: Features 分析 / OrderFlow / 因子引擎 / K 线): 主库 × 日轴 × A 轴 × 行映射 × 列 (ReadSpec)
@@ -232,12 +231,10 @@ stk/
 │   │   │   ├── task_database/                          # 🖥️ 数据库管理
 │   │   │   │   ├── TaskDatabase.hpp                    # 🖥️ 数据库任务主界面
 │   │   │   │   ├── services/
-│   │   │   │   │   ├── StateManager.hpp                # 🖥️ 流水线编排 (GUI 线程): 基本面 / 扫描 / 编码 / 核对 四 worker 各一通道, 陈旧交接件丢弃
+│   │   │   │   │   ├── StateManager.hpp                # 🖥️ 流水线编排 (GUI 线程): 数据集 Sync / 扫描 Scan / 编码 Encode 三通道, 陈旧交接件丢弃
 │   │   │   │   │   │                                   #    · 共享状态 (AssetInfo / Asset::items / 扫描产物) 只在帧首换进; 特征计算在飞 = 冻结
 │   │   │   │   │   │                                   #    · 唯一刷新链: 同步 → AssetInfo 重建 → 覆盖扫描
-│   │   │   │   │   ├── SyncService.hpp                 # 🖥️ 同步四道 (两源 × 两类, 道表 kLaneDef): 各道计划 = 一列项 (纯本地) → 逐项落盘 (水位增量) → 构建 AssetInfo
-│   │   │   │   │   ├── AuditService.hpp                # 🖥️ 核对: BigQuant 远端 ↔ 本地冻结月分片, 逐级定位 + 逐表修复
-│   │   │   │   │   ├── Drive.hpp                       # 🖥️ 逐项驱动骨架 (同步 / 核对共用): 取消 / 计步 / 日志
+│   │   │   │   │   ├── SyncService.hpp                 # 🖥️ 数据集统一后台流: 同步三道 (BigQuant 轨 ∥ Tushare 轨, 轨内 fetch/put 流水) · 远端核对 · 差异修复 → 构建 AssetInfo
 │   │   │   │   │   ├── ScanService.hpp                 # 🖥️ L2 binary / archive 扫盘 + 回测区间覆盖: 待编码 = archive 有 binary 无
 │   │   │   │   │   ├── EncodeService.hpp               # 🖥️ 编码: CSV 归档 → output/data/orders (按天流水并行)
 │   │   │   │   │   ├── FileCheckService.hpp            # 🖥️ 归档核查 ⇄ 修复 (Check / Repair 两请求, 顺序逐个, 单盘); 结论交 Encode 页
@@ -376,13 +373,13 @@ stk/
 │   │   │   ├── tushare/client.hpp                      # 🌐 Tushare HTTP: query → arrow::Table
 │   │   │   └── sina/client.hpp                         # 🌐 新浪行情: 批量快照 (含五档) / 1 分钟 K / 日 K
 │   │   ├── fundamental/                                # 📊 日频基本面数据集: 两数据源同一套; 只单向依赖 api
-│   │   │   ├── Spec.hpp                                # 📊 表定义 SPECS: Shape × snap × src (Bq / Tu)
+│   │   │   ├── Spec.hpp                                # 📊 表定义 SPECS: Shape × Snap × src (Bq / Tu) + Task / Grain / Write
 │   │   │   ├── AssetAxis.hpp                           # 📊 A 轴 append-only 注册表 (列序 = asset_id) + 池轴 PoolAxis (全局 id 子集)
-│   │   │   ├── Store.hpp                               # 📊 本地: Catalog + 分片状态 + 拉取计划 + put
-│   │   │   ├── Remote.hpp                              # 📊 远端: fetch(client, task), 两源同骨架
-│   │   │   ├── Sync.hpp                                # 📊 写侧: plan (单表, 纯本地) → run = put(fetch)
+│   │   │   ├── Store.hpp                               # 📊 本地: Catalog + Round + 分片槽 slots / frozen + read / put
+│   │   │   ├── Remote.hpp                              # 📊 远端: Clients + fetch(clients, task) + schema 缓存
+│   │   │   ├── Sync.hpp                                # 📊 写侧: plan(s, r) → run(clients, task) = put(fetch)
 │   │   │   ├── Scan.hpp                                # 📊 读侧: 并行 map-reduce + daily (AssetInfo / fund::Panel / Bar1mDay 共用)
-│   │   │   └── Audit.hpp                               # 📊 核对: 远端指纹 ↔ 本地指纹
+│   │   │   └── Audit.hpp                               # 📊 核侧: plan(s, r, keep) → run(clients, unit) → Book / repair → Task
 │   │   ├── mining/                                     # ⛏️ 数据挖掘设计文档 (特征 → 因子): README.md 方法论 / COPULA.md
 │   │   ├── live/                                       # 💹 实盘: 券商无关的一层 + 各客户端适配; 外部结局 Fail 收在各轮 / 各事务边界, 自身不变式 assert
 │   │   │   ├── Broker.hpp                              # 💹 统一类型 (持仓 / 成交 / 挂单 / 信用账户 / 两融条款 / 资金流水 / 限价单) + Broker 接口 (读 / 刷新 / 下单 / 独占)
@@ -401,7 +398,7 @@ stk/
 │   │   ├── account/Ledger.hpp                          # 💹 账户净值 (券商无关, 只认 live/Broker.hpp 的类型): 资金流水账本 合并 / 核持仓 / 逐交易日回放 → 时间加权指数
 │   │   ├── disk/                                       # 💽 落盘: output/ 的唯一布局 + 唯一路径入口
 │   │   │   ├── Disk.hpp                                # 💽 段表 DISK_SEGS (字段 × 写法 × 值域) × 布局表 DISK_LAYOUT (一行一节点); name ⇄ parse / path ⇄ list / read ⇄ write (原子) / ensure ⇄ remove (墓碑)
-│   │   │   └── Sweep.hpp                               # 💽 开机整理: 残留 (含空目录) 直接清 / 基石 (orders / fundamental / concept + output/config 下本机配置) 自动迁入布局 / 其余不合布局的按 (节点, 名字) 归组逐组问删
+│   │   │   └── Sweep.hpp                               # 💽 开机整理: 残留 (含空目录) 直接清 / 基石 (orders / fundamental + output/config 下本机配置) 自动迁入布局 / 其余不合布局的按 (节点, 名字) 归组逐组问删
 │   │   └── misc/                                       # 🔧 通用工具库
 │   │       ├── logging.hpp / print.hpp                 # 🔧 日志 / STL 容器格式化打印
 │   │       ├── format.hpp                              # 🔧 定宽数值格式化
@@ -464,7 +461,6 @@ stk/
     │   │   ├── _meta/<表>.parquet                      # Static / Snapshot 单文件整刷
     │   │   ├── _audit/<表>.tsv                         # 核对账本 (每月留最近一次, 分片重写即作废)
     │   │   └── asset_axis.json                         # A 轴 (资产轴) 码表, 只增不删
-    │   ├── concept/YYYYMMDD.tsv                        # 东财概念快照: 一行一概念 = 板块代码 \t 名称 \t 成分码
     │   ├── quote/live.bin                              # 新浪当日分钟 K 缓存 (只存行情日一天)
     │   ├── quote/YYYYMMDD.bin                          # 新浪往日归档 (收完的 live.bin 原样转来; 价格库补段的新浪段, 基本面盖住即删)
     │   └── doc/                                        # 研报资料 (符号链接到仓库外): resources-raw 原始 / resources-proc 加工 / resources-tag 标注 (agent 研报工具的索引)

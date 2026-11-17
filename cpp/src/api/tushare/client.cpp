@@ -16,6 +16,8 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -28,116 +30,132 @@ using tcp = boost::asio::ip::tcp;
 
 namespace {
 
-// 返回的 yyjson_doc* 由 caller 用 yyjson_doc_free 释放
-yyjson_doc *call(const std::string &token, std::string_view api_name, const Params &params) {
-  // ---- Build request body ----
-  yyjson_mut_doc *body_doc = yyjson_mut_doc_new(nullptr);
-  yyjson_mut_val *root = yyjson_mut_obj(body_doc);
-  yyjson_mut_doc_set_root(body_doc, root);
+std::string build_body(const std::string &token, std::string_view api_name, const Params &params) {
+  yyjson_mut_doc *doc = yyjson_mut_doc_new(nullptr);
+  yyjson_mut_val *root = yyjson_mut_obj(doc);
+  yyjson_mut_doc_set_root(doc, root);
 
-  std::string api_str(api_name);
-  yyjson_mut_obj_add_strncpy(body_doc, root, "api_name", api_str.data(),
-                             api_str.size());
-  yyjson_mut_obj_add_strncpy(body_doc, root, "token", token.data(),
-                             token.size());
-  yyjson_mut_obj_add_str(body_doc, root, "fields", "");
+  yyjson_mut_obj_add_strncpy(doc, root, "api_name", api_name.data(), api_name.size());
+  yyjson_mut_obj_add_strncpy(doc, root, "token", token.data(), token.size());
+  yyjson_mut_obj_add_str(doc, root, "fields", "");
 
-  yyjson_mut_val *params_obj = yyjson_mut_obj(body_doc);
-  yyjson_mut_obj_add_val(body_doc, root, "params", params_obj);
-  for (auto &[k, v] : params) {
-    yyjson_mut_obj_add_strncpy(body_doc, params_obj, k.c_str(), v.data(),
-                               v.size());
+  yyjson_mut_val *params_obj = yyjson_mut_obj(doc);
+  yyjson_mut_obj_add_val(doc, root, "params", params_obj);
+  for (const auto &[k, v] : params)
+    yyjson_mut_obj_add_strncpy(doc, params_obj, k.c_str(), v.data(), v.size());
+
+  std::size_t len = 0;
+  char *raw = yyjson_mut_write(doc, 0, &len);
+  assert(raw);
+  std::string out(raw, len);
+  std::free(raw);
+  yyjson_mut_doc_free(doc);
+  return out;
+}
+
+tcp::resolver::results_type resolve_endpoints() {
+  for (int attempt = 0;; ++attempt) {
+    net::io_context ioc;
+    tcp::resolver resolver(ioc);
+    beast::error_code ec;
+    auto ep = resolver.resolve(kHost, kPort, ec);
+    if (!ec)
+      return ep;
+    std::cerr << "\n[http] resolve error (attempt " << (attempt + 1) << "/" << (kRetryMax + 1) << "): " << ec.message()
+              << std::endl;
+    assert(attempt < kRetryMax);
+    std::this_thread::sleep_for(std::chrono::seconds(kRetryIntervalSeconds));
+  }
+}
+
+// 单线程 HTTP/1.1 keep-alive 会话: batch 内每工作线程持有一份, 跨请求复用连接
+struct Session {
+  net::io_context ioc;
+  std::optional<beast::tcp_stream> stream;
+  beast::flat_buffer buffer;
+
+  ~Session() { close(); }
+
+  void close() {
+    if (!stream)
+      return;
+    beast::error_code ec;
+    [[maybe_unused]] auto r = stream->socket().shutdown(tcp::socket::shutdown_both, ec);
+    stream.reset();
   }
 
-  size_t body_len = 0;
-  char *body_str = yyjson_mut_write(body_doc, 0, &body_len);
-  assert(body_str);
-  std::string body(body_str, body_len);
-  std::free(body_str);
-  yyjson_mut_doc_free(body_doc);
-
-  // ---- POST via boost.beast (retry on transient network errors + rate limit) ----
-  // 网络瞬抖 (boost system_error) 与 tushare 频率超限 (code=40203) 共用同一 retry
-  // 预算；其它业务错误 (code != 0) 与解析失败仍由 assert 兜底
-  std::string res_body;
-  yyjson_doc *doc = nullptr;
-  for (int attempt = 0;; ++attempt) {
-    try {
-      net::io_context ioc;
-      tcp::resolver resolver(ioc);
-      beast::tcp_stream stream(ioc);
-      stream.expires_after(
-          std::chrono::seconds(kTimeoutSeconds));
-
-      auto results = resolver.resolve(kHost,
-                                      kPort);
-      stream.connect(results);
-
-      http::request<http::string_body> req{http::verb::post, "/", 11};
-      req.set(http::field::host, kHost);
-      req.set(http::field::user_agent, "stk-tushare/1.0");
-      req.set(http::field::content_type, "application/json");
-      req.body() = body;
-      req.prepare_payload();
-
-      http::write(stream, req);
-
-      beast::flat_buffer buffer;
-      http::response<http::string_body> res;
-      http::read(stream, buffer, res);
-
+  // 返回的 yyjson_doc* 由调用方 yyjson_doc_free
+  yyjson_doc *call(const tcp::resolver::results_type &ep, const std::string &token, std::string_view api_name,
+                   const Params &params) {
+    const std::string body = build_body(token, api_name, params);
+    for (int attempt = 0;;) {
+      const bool reused = stream.has_value();
       beast::error_code ec;
-      [[maybe_unused]] auto shutdown_ec =
-          stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+      if (!stream) {
+        stream.emplace(ioc);
+        stream->expires_after(std::chrono::seconds(kTimeoutSeconds));
+        stream->connect(ep, ec);
+      }
+      http::response<http::string_body> res;
+      if (!ec) {
+        stream->expires_after(std::chrono::seconds(kTimeoutSeconds));
+        http::request<http::string_body> req{http::verb::post, "/", 11};
+        req.set(http::field::host, kHost);
+        req.set(http::field::user_agent, "stk-tushare/1.0");
+        req.set(http::field::content_type, "application/json");
+        req.keep_alive(true);
+        req.body() = body;
+        req.prepare_payload();
+        http::write(*stream, req, ec);
+        if (!ec) {
+          buffer.clear();
+          http::read(*stream, buffer, res, ec);
+        }
+      }
+      if (ec) {
+        close();
+        if (reused) // keep-alive 空闲连接被对端关闭: 立即换新连接重发, 不计入退避
+          continue;
+        std::cerr << "\n[http] transient error (attempt " << (attempt + 1) << "/" << (kRetryMax + 1)
+                  << ") api=" << api_name << ": " << ec.message() << std::endl;
+        assert(attempt < kRetryMax);
+        std::this_thread::sleep_for(std::chrono::seconds(kRetryIntervalSeconds));
+        ++attempt;
+        continue;
+      }
+      if (!res.keep_alive())
+        close();
 
-      res_body = std::move(res.body());
-    } catch (const boost::system::system_error &e) {
-      std::cerr << "\n[http] transient error (attempt " << (attempt + 1) << "/"
-                << (kRetryMax + 1) << ") api=" << api_name
-                << ": " << e.what() << std::endl;
-      assert(attempt < kRetryMax);
-      std::this_thread::sleep_for(
-          std::chrono::seconds(kRetryIntervalSeconds));
-      continue;
-    }
+      yyjson_doc *doc = yyjson_read(res.body().data(), res.body().size(), 0);
+      if (!doc) {
+        std::cerr << "Tushare API: failed to parse response, body=\n"
+                  << res.body().substr(0, 1024) << std::endl;
+        assert(false);
+      }
 
-    // ---- Parse response ----
-    doc = yyjson_read(res_body.data(), res_body.size(), 0);
-    if (!doc) {
-      std::cerr << "Tushare API: failed to parse response, body=\n"
-                << res_body.substr(0, 1024) << std::endl;
+      yyjson_val *root_val = yyjson_doc_get_root(doc);
+      yyjson_val *code_val = yyjson_obj_get(root_val, "code");
+      assert(yyjson_is_int(code_val) || yyjson_is_uint(code_val));
+      const std::int64_t code = yyjson_get_int(code_val);
+      if (code == 0)
+        return doc;
+
+      yyjson_val *msg_val = yyjson_obj_get(root_val, "msg");
+      const char *msg = (msg_val && yyjson_is_str(msg_val)) ? yyjson_get_str(msg_val) : "";
+      if (code == 40203) { // 频率超限, 等窗口刷新恢复
+        std::cerr << "\n[http] rate limit (attempt " << (attempt + 1) << "/" << (kRetryMax + 1) << ") api=" << api_name
+                  << ": " << msg << std::endl;
+        yyjson_doc_free(doc);
+        assert(attempt < kRetryMax);
+        std::this_thread::sleep_for(std::chrono::seconds(kRetryIntervalSeconds));
+        ++attempt;
+        continue;
+      }
+      std::cerr << "Tushare API error: code=" << code << " msg=" << msg << " api=" << api_name << std::endl;
       assert(false);
     }
-
-    yyjson_val *root_val = yyjson_doc_get_root(doc);
-    yyjson_val *code_val = yyjson_obj_get(root_val, "code");
-    assert(yyjson_is_int(code_val) || yyjson_is_uint(code_val));
-    int64_t code = yyjson_get_int(code_val);
-    if (code == 0) {
-      break;
-    }
-    yyjson_val *msg_val = yyjson_obj_get(root_val, "msg");
-    const char *msg =
-        (msg_val && yyjson_is_str(msg_val)) ? yyjson_get_str(msg_val) : "";
-    // 40203 = 频率超限 (e.g. "访问接口(income_vip)频率超限(400次/分钟)")，等 1 分钟窗口刷新即可恢复
-    if (code == 40203) {
-      std::cerr << "\n[http] rate limit (attempt " << (attempt + 1) << "/"
-                << (kRetryMax + 1) << ") api=" << api_name
-                << ": " << msg << std::endl;
-      yyjson_doc_free(doc);
-      doc = nullptr;
-      assert(attempt < kRetryMax);
-      std::this_thread::sleep_for(
-          std::chrono::seconds(kRetryIntervalSeconds));
-      continue;
-    }
-    std::cerr << "Tushare API error: code=" << code << " msg=" << msg
-              << " api=" << api_name << std::endl;
-    assert(false);
   }
-
-  return doc;
-}
+};
 
 // 两种列型逐项对仗: Arrow 类型 / builder / JSON 判型 / 取值
 struct Num {
@@ -213,7 +231,8 @@ Client::Client(std::string token) : token_(std::move(token)) {
 Client::Client() : Client(kToken) {}
 
 std::shared_ptr<arrow::Table> Client::query(const Query &q) {
-  yyjson_doc *doc = call(token_, q.api, q.params);
+  Session s;
+  yyjson_doc *doc = s.call(resolve_endpoints(), token_, q.api, q.params);
   auto t = to_table(doc, q.num);
   yyjson_doc_free(doc);
   return t;
@@ -221,10 +240,20 @@ std::shared_ptr<arrow::Table> Client::query(const Query &q) {
 
 std::vector<std::shared_ptr<arrow::Table>> Client::batch(const std::vector<Query> &qs, const std::function<void(std::size_t)> &tick) {
   std::vector<std::shared_ptr<arrow::Table>> out(qs.size());
+  if (qs.empty())
+    return out;
+  const tcp::resolver::results_type ep = resolve_endpoints();
   std::atomic<std::size_t> done{0};
   misc::exec::ForkJoin ex(std::min(kWidth, misc::exec::fit(qs.size())));
-  ex.tasks(static_cast<int>(qs.size()), [&](int i, int) {
-    out[static_cast<std::size_t>(i)] = query(qs[static_cast<std::size_t>(i)]);
+  std::vector<std::unique_ptr<Session>> sessions(static_cast<std::size_t>(ex.threads()));
+  ex.tasks(static_cast<int>(qs.size()), [&](int i, int tid) {
+    std::unique_ptr<Session> &s = sessions[static_cast<std::size_t>(tid)];
+    if (!s)
+      s = std::make_unique<Session>();
+    const Query &q = qs[static_cast<std::size_t>(i)];
+    yyjson_doc *doc = s->call(ep, token_, q.api, q.params);
+    out[static_cast<std::size_t>(i)] = to_table(doc, q.num);
+    yyjson_doc_free(doc);
     if (tick)
       tick(done.fetch_add(1, std::memory_order_relaxed) + 1);
   });

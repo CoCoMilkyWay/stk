@@ -3,8 +3,8 @@
 // =============================================================================
 // Enum — 枚举的表 (唯一真相): 枚举值 = 表的下标; 一个枚举一行 AGENT_ROWS 挂上它的表
 // =============================================================================
-//   def(e) 取行 / kNum<E> 个数 / IdOf<E>(id) 按行的 id 反查 (须在表里)
-//   行带 id 的枚举 (Named), JSON 里一律写 id: 会话存档 / 全局记录 / 流水同一种写法
+//   def(e) 取行 / kNum<E> 个数 / FindId<E>(id) / IdOf<E>(id) 按行的 id 反查
+//   行带 id 的枚举 (Named), JSON 里一律写 id: 会话存档 / 全局记录同一种写法
 // =============================================================================
 
 #include "nlohmann/json.hpp"
@@ -13,6 +13,7 @@
 #include <cassert>
 #include <cstddef>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -32,11 +33,17 @@ template <Tabled E>
 constexpr const auto &def(E e) { return enum_rows(E{})[static_cast<size_t>(e)]; }
 
 template <Named E>
-E IdOf(std::string_view id) {
+constexpr std::optional<E> FindId(std::string_view id) {
   const auto &t = enum_rows(E{});
   const auto it = std::find_if(std::begin(t), std::end(t), [&](const auto &r) { return id == r.id; });
-  assert(it != std::end(t) && "表里没有这个 id");
-  return static_cast<E>(it - std::begin(t));
+  return it == std::end(t) ? std::nullopt : std::optional<E>(static_cast<E>(it - std::begin(t)));
+}
+
+template <Named E>
+E IdOf(std::string_view id) {
+  const std::optional<E> e = FindId<E>(id);
+  assert(e.has_value() && "表里没有这个 id");
+  return *e;
 }
 
 } // namespace GUI::Agent

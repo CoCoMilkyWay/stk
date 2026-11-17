@@ -56,7 +56,7 @@ struct TierFeed<bar::Tier> {
         ids(args.libs[TierId::Bar].pool() == kAllPool ? fundamental::Ids::Cover::Full : fundamental::Ids::Cover::Part) {
     for (size_t sub = 0; sub < axis.size(); ++sub)
       ids.add(asset_axis().code(axis.global(sub)));
-    assert(std::ranges::all_of(dates, [this](misc::Ymd d) { return catalog.find_day("bar1m", d) != nullptr; }) &&
+    assert(std::ranges::all_of(dates, [this](misc::Ymd d) { return catalog.find("bar1m", d) != nullptr; }) &&
            "bar1m: 日期轴内缺日 (同步漏日)");
   }
 
