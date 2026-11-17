@@ -7,7 +7,7 @@ namespace live {
 namespace {
 
 constexpr Client kClients[] = {
-    {"通达信", "Wine 下的 TdxW.exe (先登录并停在持仓页): 读其内存里的持仓 / 成交 / 挂单 / 信用账户, 下单与重查经注入的 shim 驱动其界面", &tdx::make},
+    {"通达信", "Wine 下的 TdxW.exe (先登录): 持仓 / 成交 / 挂单 / 信用账户经注入的 shim 在客户端里直发查询 (不动界面), 下单经 shim 驱动闪电下单窗", &tdx::make},
 };
 
 } // namespace

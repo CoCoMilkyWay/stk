@@ -12,7 +12,7 @@
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
-#include "live/tdx/Mem.hpp"
+#include "live/tdx/Heap.hpp"
 #include "live/tdx/Req.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/Win.hpp"
@@ -50,7 +50,7 @@ int run(const std::string &sub, const std::vector<std::string> &rest) {
   if (sub == "vt" && rest.size() >= 2)
     return tool::vt(std::stod(rest[0]), {rest.begin() + 1, rest.end()});
   if (sub == "test") {
-    req::arm(*mem::attach()); // 用例各段里另记请求层日志 (同 Broker)
+    req::arm(mem::attach()); // 用例各段里另记请求层日志 (同 Broker)
     return tool::test(rest);
   }
   std::fputs(kUsage, stderr);

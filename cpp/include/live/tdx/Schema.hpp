@@ -6,7 +6,7 @@
 // 认哪份: 客户端目录下各份里, 字典段原样在客户端堆里的那份 (恰一份; 别的营业部 / 旧账户的缓存不在堆里)
 #pragma once
 
-#include "live/tdx/Mem.hpp"
+#include "live/tdx/Heap.hpp"
 
 #include <map>
 #include <string>

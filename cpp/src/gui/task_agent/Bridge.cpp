@@ -1,5 +1,6 @@
 // Bridge — 见头文件. 评估路径调 SearchFactor / EvalFactorFile, CMake 列入 MATH_PRECISE 源.
 #include "gui/task_agent/Bridge.hpp"
+#include "gui/task_agent/Async.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Docs.hpp"
 #include "gui/task_agent/Text.hpp"

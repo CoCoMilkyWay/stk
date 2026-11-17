@@ -242,6 +242,7 @@ Placed place(const OrderReq &o, const Step &step) {
     step(i, c.detail);
     kStages[i].run(c);
   }
+  trace::ev("placed", {{"qty", c.n}, {"px", c.px}, {"msg", c.msg}});
   return {static_cast<double>(c.n), c.px, c.msg};
 }
 

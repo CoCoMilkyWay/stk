@@ -9,6 +9,6 @@
 namespace live::tdx::flow {
 
 // from 日起 (含) 至昨日的资金流水 (客户端只给到上一日); from = 0 即从昨日往前逐窗查到连续几窗无流水 (开户前)
-std::vector<CashFlow> pull(misc::Ymd from, const Log &log, const Live &live);
+std::vector<CashFlow> pull(misc::Ymd from, const Report &r);
 
 } // namespace live::tdx::flow

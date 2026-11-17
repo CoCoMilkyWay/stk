@@ -13,22 +13,19 @@
 namespace live::tdx::win {
 
 using Hwnd = std::string;
-inline const Hwnd kNoWnd = "0x00000000";
 
 inline constexpr unsigned kWmVscroll = 0x115, kWmCommand = 0x111;
 inline constexpr int kSbPagedown = 3, kSbTop = 6;
 
-// 节点记录 (enum / tree / find / rect): 先序, depth 定父子, 兄弟序即 z 序 (先 = 上层); rect 为屏幕坐标
+// 节点记录 (enum / find / rect): 先序, depth 定父子, 兄弟序即 z 序 (先 = 上层); rect 为屏幕坐标
 struct Node {
   int depth = 0;
-  Hwnd hwnd, parent; // parent: 顶层为 kNoWnd
+  Hwnd hwnd, parent; // parent: 顶层为 0x00000000
   long id = 0;
   std::string cls, title;
   int rect[4] = {};
-  unsigned style = 0, exstyle = 0;
   bool vis = false, en = false;
 };
-std::vector<Node> nodes_of(const std::vector<nlohmann::json> &recs);
 
 // 图层记录 (detail / gdidump / gdiwatch): 一窗口一份, off = 客户区左上相对窗口左上;
 //   项为客户区坐标, 后出的在上; v 在绘制层为色 0x00BBGGRR, 在 detail 为 st 位
@@ -52,13 +49,11 @@ void attach();
 // ---------- 窗口 ----------
 
 std::vector<Node> enum_(const Hwnd &target = ""); // 只展开一层; 空 = 本进程全部顶层窗口
-std::vector<Node> tree(const Hwnd &target = "", double timeout = 5);
 // 本进程全部窗口里类名为 cls (id / title 给了才比) 的各节点, 先序; 不读别的节点的标题、不经界面线程, 比整棵 tree 省得多
 std::vector<Node> find(const std::string &cls, std::optional<long> id = std::nullopt, const std::string &title = "");
 Node node(const Hwnd &h); // 一个窗口的节点记录 (窗口已销毁: 类名为空、不可见)
 using Tops = std::map<Hwnd, Node>;
-Tops tops();   // 可见顶层窗口
-double idle(); // 距客户端最近一次真实键鼠输入 [s] (shim 投递的不算)
+Tops tops(); // 可见顶层窗口
 // h 被禁用 (EnableWindow FALSE) 的累计次数: 禁用一闪即过也记得住. 头一回问到某线程的窗口起, 该线程上的才记
 long disables(const Hwnd &h);
 

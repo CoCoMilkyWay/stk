@@ -48,6 +48,7 @@ struct ViewEnv {
 
 class ViewRunner {
 public:
+  struct BookRes;
   ViewRunner();
   ~ViewRunner();
   ViewRunner(const ViewRunner &) = delete;
@@ -57,7 +58,6 @@ public:
   std::string rep_layers(const std::string &expr, int sign, const ViewEnv &env, Engine::FactorFlow &F);
 
 private:
-  struct BookRes;
   std::unique_ptr<BookRes> book_;
 };
 

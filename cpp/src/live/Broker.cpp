@@ -32,12 +32,31 @@ std::string clock_now() {
   return buf;
 }
 
+std::vector<std::string> cells(const std::string &line) {
+  std::vector<std::string> f(1);
+  for (const char ch : line) {
+    if (ch == ',')
+      f.emplace_back();
+    else
+      f.back().push_back(ch);
+  }
+  return f;
+}
+
 Mkt market_of(std::string_view code) {
   assert(code.size() == 6);
   if (code.starts_with("4") || code.starts_with("8") || code.starts_with("92"))
     return Mkt::BJ;
   if (code.starts_with("5") || code.starts_with("6") || code.starts_with("9"))
     return Mkt::SH;
+  return Mkt::SZ;
+}
+
+Mkt mkt_named(std::string_view s) {
+  for (const Mkt m : {Mkt::SZ, Mkt::SH, Mkt::BJ})
+    if (s == mkt_name(m))
+      return m;
+  assert(false && "市场名");
   return Mkt::SZ;
 }
 

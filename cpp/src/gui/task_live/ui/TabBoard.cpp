@@ -119,9 +119,9 @@ int snap(const live::rebal::Hold &h, double unit, double x) {
 void order_line(const OrderJob &j, bool priv) {
   ImGui::Text("%s", j.t.c_str());
   ImGui::SameLine();
-  text_col(side_col(j.side), strf("%s%s", live::side_name(j.side), j.label.c_str()));
+  text_col(side_col(j.o.side), strf("%s%s", live::side_name(j.o.side), j.label.c_str()));
   ImGui::SameLine();
-  ImGui::Text("%s %s ·", sec_txt(j.sec, priv).c_str(), j.detail.c_str());
+  ImGui::Text("%s %s ·", sec_txt(j.o.sec, priv).c_str(), j.detail.c_str());
   for (size_t i = 0; i < j.steps.size(); ++i) {
     const ImVec4 c = i < j.at || j.st == JobSt::Ok ? kGreen : i > j.at         ? grey()
                                                           : j.st == JobSt::Err ? kRed
@@ -132,7 +132,7 @@ void order_line(const OrderJob &j, bool priv) {
   ImGui::SameLine();
   text_col(j.st == JobSt::Ok ? kGreen : j.st == JobSt::Err ? kRed
                                                            : kHot,
-           strf("%s %s", job_name(j.st), j.msg.c_str()));
+           strf("%s %s", job_name(j.st), j.got.msg.c_str()));
 }
 
 // 刷新进度两行: 各样读于几时 · 行情时刻 · 接入的客户端; 时有时无的 (接入断、刷新中、上轮失败), 都没有即「空闲」
@@ -141,7 +141,7 @@ void progress(LiveHub &hub) {
   const auto &st = hub.state();
   std::string at;
   (st ? *st : live::State{}).each([&](const char *n, const std::string &t) { at += strf("%s%s %s", at.empty() ? "" : " · ", n, t.empty() ? "—" : t.c_str()); });
-  ImGui::Text("%s · 读于 %s · 行情 %s · %s", hub.broker().name(), at.c_str(), hub.quote_time().empty() ? "—" : hub.quote_time().c_str(),
+  ImGui::Text("%s · 读于 %s · 行情 %s · %s", hub.client().name, at.c_str(), hub.quote_time().empty() ? "—" : hub.quote_time().c_str(),
               st && !st->who.empty() ? st->who.c_str() : "未接入");
   bool any = false;
   const auto sep = [&] {
@@ -185,7 +185,7 @@ void data_ctl(LiveHub &hub, BoardState &st) {
   if (!ImGui::IsItemActive())
     st.every.reset();
   if (ImGui::IsItemHovered())
-    tip("定时刷新周期 [s], 0 = 不定时; 回车或点别处生效. 有人在操作客户端时定时的推后");
+    tip("定时刷新周期 [s], 0 = 不定时; 回车或点别处生效. 本页可见时才刷");
   ImGui::SameLine(0, ImGui::GetFontSize());
   ImGui::BeginDisabled(hub.busy());
   if (ImGui::SmallButton("更新两融名单"))
@@ -476,7 +476,7 @@ void info_line(LiveHub &hub, const std::set<std::string> &held) {
   std::string s;
   int n = 0;
   if (orders)
-    for (const live::Pending &o : *orders)
+    for (const live::Pending &o : orders->list)
       if (!held.count(o.code)) {
         ++n;
         s += strf("%s%s %s %.0f股 @%.3f %s", s.empty() ? "" : "、", live::side_name(o.side), sec_txt(o, hub.priv()).c_str(), o.qty - o.filled, o.price,
@@ -500,7 +500,7 @@ Flows flows_of(const live::State &s) {
     for (const live::Fill &x : s.fills->rows)
       f.fills[x.code].push_back(&x);
   if (s.orders)
-    for (const live::Pending &x : *s.orders)
+    for (const live::Pending &x : s.orders->list)
       f.orders[x.code].push_back(&x);
   return f;
 }
@@ -631,8 +631,8 @@ void confirm_run(LiveHub &hub, BoardState &st) {
   } else {
     int sell = 0, margin = 0, plain = 0;
     for (const live::rebal::Order &o : p->orders)
-      (o.s < 0 ? sell : o.credit == live::Credit::Margin ? margin
-                                                         : plain)++;
+      (o.side < 0 ? sell : o.credit == live::Credit::Margin ? margin
+                                                            : plain)++;
     ImGui::Text("按当前试算执行调仓: 卖 %d 单、融资买 %d 单、现金买 %d 单, 行使 %s, 成本约 %.0f 元?", sell, margin, plain,
                 hub.priv() ? kMask : wan(p->use).c_str(), p->cost);
   }
@@ -1028,7 +1028,7 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     masked();
   else {
     ImGui::Text("●%s", s.fills ? std::to_string(s.fills->rows.size()).c_str() : "-");
-    ImGui::Text("○%s", s.orders ? std::to_string(s.orders->size()).c_str() : "-");
+    ImGui::Text("○%s", s.orders ? std::to_string(s.orders->list.size()).c_str() : "-");
   }
   ImGui::TableSetColumnIndex(C_FIN);
   if (hub.plan().plan)

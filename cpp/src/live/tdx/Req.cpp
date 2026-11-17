@@ -144,18 +144,18 @@ Kw kw_of(const Req &r, const Schema &s, uint32_t now) {
 
 } // namespace
 
-void arm(const mem::Heap &h) {
+void arm(const mem::HeapP &h) {
   State &s = state();
   std::lock_guard lk(s.mu);
-  if (h.pid() != s.pid) {
-    auto img = std::make_unique<Image>(h.pid());
+  if (h->pid() != s.pid) {
+    auto img = std::make_unique<Image>(h);
     const std::vector<mem::Addr> vs = img->vtables(kJob), vu = img->vtables(kUser);
     need(vs.size() == 1 && vu.size() == 1, strf("%s / %s 的主虚表有 %zu / %zu 张", kJob, kUser, vs.size(), vu.size()));
-    s.schema = schema(h);
+    s.schema = schema(*h);
     s.vt = strf("0x%08llx", static_cast<unsigned long long>(vs[0]));
     s.vt_user = strf("0x%08llx", static_cast<unsigned long long>(vu[0]));
     s.img = std::move(img);
-    s.pid = h.pid();
+    s.pid = h->pid();
     s.last.clear(); // 换了进程: 插件的入参与 CTcUser 都要重新见过
     s.user = 0;
   }
@@ -212,14 +212,13 @@ std::vector<Req> assemble(const std::vector<json> &evs, const State &s, uint32_t
       std::string name = s.schema.name(fid);
       if (name == "?")
         name = strf("0x%x", fid);
-      const std::string v =
-          name.find("密码") != std::string::npos ? "***" : slot == kStr ? text(str.at(1))
-                                                                        : std::to_string(static_cast<int32_t>(hex(a.at(1))));
+      const std::string raw = slot == kStr ? text(str.at(1)) : std::to_string(static_cast<int32_t>(hex(a.at(1))));
+      const std::string v = name.find("密码") != std::string::npos ? "***" : raw;
       if (fid == 0x16a)
         r->page = v;
       r->in[name] = v;
       if (from != "tc.dll")
-        r->ins.push_back({fid, slot == kInt, slot == kStr ? text(str.at(1)) : std::to_string(static_cast<int32_t>(hex(a.at(1))))});
+        r->ins.push_back({fid, slot == kInt, raw});
       continue;
     }
     if (!r)
@@ -320,7 +319,10 @@ bool seen(int func) {
   return s.user && s.last.contains(func);
 }
 
-Answer ask(int func, const std::map<int, std::string> &over) {
+namespace {
+
+// 直发一问
+Answer ask_one(int func, const std::map<int, std::string> &over) {
   State &s = state();
   std::lock_guard lk(s.mu);
   need(s.pid != 0, "请求层没接上 (req::arm)");
@@ -354,7 +356,9 @@ Answer ask(int func, const std::map<int, std::string> &over) {
   return out;
 }
 
-Answer ask_all(int func, std::map<int, std::string> over) {
+} // namespace
+
+Answer ask(int func, std::map<int, std::string> over) {
   bool paged;
   {
     State &s = state();
@@ -364,11 +368,11 @@ Answer ask_all(int func, std::map<int, std::string> over) {
   }
   if (paged)
     over.try_emplace(kPageRows, kPageMax);
-  Answer all = ask(func, over);
+  Answer all = ask_one(func, over);
   for (Answer page = all; paged && !page.rows.empty();) {
     need(!page.pos.empty(), strf("功能 %d 分页的应答没有定位串", func));
     over[kPosField] = page.pos;
-    page = ask(func, over);
+    page = ask_one(func, over);
     need(page.cols == all.cols || page.rows.empty(), strf("功能 %d 各页列数不一 (%d / %d)", func, all.cols, page.cols));
     all.rows.insert(all.rows.end(), std::make_move_iterator(page.rows.begin()), std::make_move_iterator(page.rows.end()));
     all.pos = page.pos;

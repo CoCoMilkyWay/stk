@@ -57,6 +57,8 @@ const std::string &hash() {
 
 std::string dll_name() { return "shim_" + hash() + ".dll"; }
 
+int port() { return 20000 + static_cast<int>(std::stoul(hash(), nullptr, 16) % 10000); }
+
 fs::path wine_temp() {
   const char *p = std::getenv("WINEPREFIX");
   const fs::path prefix = p && *p ? fs::path(p) : fs::path(std::getenv("HOME")) / ".wine";
@@ -174,8 +176,6 @@ std::string_view chomp(std::string_view l) { return l.ends_with('\r') ? l.substr
 
 } // namespace
 
-int port() { return 20000 + static_cast<int>(std::stoul(hash(), nullptr, 16) % 10000); }
-
 bool online() {
   const int s = connect_to(1);
   if (s < 0)
@@ -236,35 +236,6 @@ std::vector<nlohmann::json> call(const std::string &line, double timeout) {
     trace::ev("shim", std::move(kw));
   }
   return out;
-}
-
-void watch(const std::string &line, const std::function<bool(const nlohmann::json &)> &on, double timeout) {
-  const std::string cmd = line.substr(0, line.find(' '));
-  const int s = open_to(line, cmd, timeout);
-  std::string buf;
-  for (char tmp[65536];;) {
-    const ssize_t k = ::recv(s, tmp, sizeof tmp, 0);
-    if (k <= 0) {
-      ::close(s);
-      fail(k < 0 ? strf("%s: %gs 内没推送 (客户端卡着?)", cmd.c_str(), timeout) : cmd + ": 连接被关");
-    }
-    buf.append(tmp, static_cast<size_t>(k));
-    size_t from = 0;
-    for (size_t e; (e = buf.find('\n', from)) != std::string::npos; from = e + 1) {
-      const std::string_view l = chomp(std::string_view(buf).substr(from, e - from));
-      if (l.starts_with("err")) {
-        ::close(s);
-        fail(cmd + ": " + std::string(l));
-      }
-      const nlohmann::json j = nlohmann::json::parse(l, nullptr, false);
-      assert(!j.is_discarded());
-      if (!on(j)) {
-        ::close(s);
-        return;
-      }
-    }
-    buf.erase(0, from);
-  }
 }
 
 } // namespace live::tdx::shim

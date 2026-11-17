@@ -1,7 +1,7 @@
 // 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Broker 并登记进 live/Clients.hpp, 上层 (gui/task_live) 只认这里的类型
 //   读: 持仓 / 当日成交 / 挂单 / 信用账户 由客户端重查后整份发布 (State, 不可变; ver 变 = 换了一份); 两融条款 / 资金流水另拉 (pull_terms / pull_flows, 慢)
-//   写: 限价单 place (调用线程跑完, 逐步报进度); 一整批独占客户端 exclusive (批内连下, 其间不插刷新)
-//   刷新: request 要一轮 (不等) / sync 要一轮并等完 (都可只刷成交) / every 定时 / kick 刚下过单 (隔几秒再刷); 有人在看 (touch / Watch) 才转
+//   写: 限价单 place (调用线程跑完, 逐步报进度; 成功后隔几秒再刷, 限价单可能稍后才成交); 一整批独占客户端 exclusive (批内连下, 其间不插刷新)
+//   刷新: request 要一轮 (不等) / sync 要一轮并等完 (都可只刷成交) / every 定时; 有人在看 (touch / Watch) 才转
 //   客户端状态与预期不符 (界面没弹出 / 应答不认识 / 回报失败) 是外部结局, 不是本程序的错: fail 抛 Fail, 在各轮 / 各事务的边界收成原因文本;
 //   本程序自身的不变式一律 assert
 // 编码: 方向 买 +1 / 卖 −1 (BySide 下标 s < 0); 市场由代码前缀定 (market_of), 新浪码 = 前缀 + 代码, AssetInfo 码 = 代码 + 后缀
@@ -35,7 +35,8 @@ inline void need(bool ok, const std::string &why) {
     fail(why);
 }
 std::string strf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-std::string clock_now(); // 本地时刻 HH:MM:SS
+std::string clock_now();                                 // 本地时刻 HH:MM:SS
+std::vector<std::string> cells(const std::string &line); // 一行 CSV (无引号) → 各格
 
 inline constexpr int kBuy = 1, kSell = -1;
 inline constexpr int kSides[2] = {kBuy, kSell};
@@ -51,9 +52,11 @@ struct BySide {
 enum class Mkt : uint8_t { SZ,
                            SH,
                            BJ };
-inline constexpr const char *kMktPrefix[3] = {"sz", "sh", "bj"};    // 新浪
-inline constexpr const char *kMktSuffix[3] = {".SZ", ".SH", ".BJ"}; // AssetInfo::codes
-Mkt market_of(std::string_view code);                               // 北 4 / 8 / 92 开头, 沪 5 / 6 / 9, 其余深
+inline constexpr const char *kMktPrefix[3] = {"sz", "sh", "bj"};                   // 新浪
+inline constexpr const char *kMktSuffix[3] = {".SZ", ".SH", ".BJ"};                // AssetInfo::codes
+Mkt market_of(std::string_view code);                                              // 北 4 / 8 / 92 开头, 沪 5 / 6 / 9, 其余深
+inline const char *mkt_name(Mkt m) { return kMktSuffix[static_cast<int>(m)] + 1; } // SZ / SH / BJ
+Mkt mkt_named(std::string_view s);                                                 // mkt_name 的逆
 inline std::string sina_sym(Mkt m, const std::string &code) { return kMktPrefix[static_cast<int>(m)] + code; }
 
 struct Sec {
@@ -89,10 +92,15 @@ struct Pending : Sec {
   double filled = 0; // 已成 [股]
   bool operator==(const Pending &) const = default;
 };
-// 按代码合计 (当日成交): {方向: Σ 股} / {方向: Σ 元}
-struct Flow : Sec {
-  BySide traded, amount;
-  bool operator==(const Flow &) const = default;
+// 一只当日成交的合计: {方向: Σ 股} / {方向: Σ 元}
+struct Traded : Sec {
+  BySide qty, amount;
+  bool operator==(const Traded &) const = default;
+};
+// 一只融资负债
+struct Debt : Sec {
+  double qty = 0, amount = 0; // 负债数量 [股] / 负债金额 [元]
+  bool operator==(const Debt &) const = default;
 };
 
 // 按键索引的表 (键多为代码): list 首见序, at = 键 → 下标
@@ -100,8 +108,8 @@ template <class T>
 struct Keyed {
   std::vector<T> list;
   std::unordered_map<std::string, size_t> at;
-  const T *find(const std::string &code) const {
-    const auto i = at.find(code);
+  const T *find(const std::string &key) const {
+    const auto i = at.find(key);
     return i == at.end() ? nullptr : &list[i->second];
   }
   bool operator==(const Keyed &o) const { return list == o.list; }
@@ -109,22 +117,16 @@ struct Keyed {
 
 struct Fills {
   std::vector<Fill> rows; // 时间序
-  Keyed<Flow> by_code;
+  Keyed<Traded> by_code;
 };
-
-// 一只融资负债
-struct Debt {
-  double qty = 0, amount = 0; // 负债数量 [股] / 负债金额 [元]
-};
-using Debts = std::map<std::string, Debt>; // 代码 → 负债
 
 // 信用账户 (读时)
 struct Account {
   double assets = 0, line = 0, debt = 0, net = 0; // 担保资产 / 可融额度余量 (最高融资额度 − 融资负债含费用) / 负债总额 / 净资产
   double avail = 0, cash = 0;                     // 可用保证金 / 现金
   double rate = 0;                                // 融资年利率
-  Debts debts;
-  std::shared_ptr<const Keyed<Position>> held; // 读时的持仓 (同一轮刚读的那份)
+  Keyed<Debt> debts;                              // 按代码
+  std::shared_ptr<const Keyed<Position>> held;    // 读时的持仓 (同一轮刚读的那份)
 };
 // 持仓 → 代码 → 股 (含余额 0 的行)
 std::map<std::string, double> balances(const Keyed<Position> &pos);
@@ -166,12 +168,12 @@ struct State {
   std::string who; // 客户端 (进程)
   Got<Fills> fills;
   Got<Keyed<Position>> pos;
-  Got<std::vector<Pending>> orders;
+  Got<Keyed<Pending>> orders;
   Got<Account> acct;
 
   static const char *name(Got<Fills> State::*) { return "成交"; }
   static const char *name(Got<Keyed<Position>> State::*) { return "持仓"; }
-  static const char *name(Got<std::vector<Pending>> State::*) { return "挂单"; }
+  static const char *name(Got<Keyed<Pending>> State::*) { return "挂单"; }
   static const char *name(Got<Account> State::*) { return "信用账户"; }
   // f(名称, 读于) 逐样
   template <class F>
@@ -213,14 +215,15 @@ struct Placed {
 };
 // 下单进度: at = order_steps 下标; detail 非空即更新概要
 using Step = std::function<void(size_t at, const std::string &detail)>;
-// 事务日志: 一条 = 种类 + 字段 (落盘), 实时进度 = 一行文字 (覆盖上一行)
-using Log = std::function<void(const char *kind, nlohmann::json kw)>;
-using Live = std::function<void(std::string line)>;
+// 长事务的报告: log 记一条 (种类 + 字段, 落盘), live 实时进度一行文字 (覆盖上一行); 缺省不报
+struct Report {
+  std::function<void(const char *kind, nlohmann::json kw)> log = [](const char *, nlohmann::json) {};
+  std::function<void(std::string line)> live = [](std::string) {};
+};
 
 class Broker {
 public:
   virtual ~Broker() = default;
-  virtual const char *name() const = 0;
 
   virtual std::shared_ptr<const State> state() const = 0;
   virtual Refresh refresh() const = 0;
@@ -231,14 +234,13 @@ public:
   virtual void request(Part p) = 0; // 要一轮刷新 (不等)
   virtual void sync(Part p) = 0;    // 要一轮并等它刷完 (全部的一轮也算刷过成交); 失败 → Fail
   virtual void every(double s) = 0; // 定时周期 [s], 0 = 不定时
-  virtual void kick() = 0;          // 刚下过单: 隔几秒各刷一次 (限价单可能稍后才成交)
 
   virtual const std::vector<std::string> &order_steps() const = 0;
   virtual Placed place(const OrderReq &o, const Step &step) = 0;                // 当前线程跑完; 失败 → Fail (停在当时那一步)
   virtual void exclusive(const char *who, const std::function<void()> &fn) = 0; // fn 期间独占客户端 (同一线程可重入)
-  virtual Terms pull_terms(const Log &log, const Live &live) = 0;               // 客户端重查两融条款; 失败 → Fail
+  virtual Terms pull_terms(const Report &r) = 0;                                // 客户端重查两融条款; 失败 → Fail
   // 客户端重查 from 日起 (含; 0 = 开户起) 至昨日的资金流水; 失败 → Fail
-  virtual std::vector<CashFlow> pull_flows(misc::Ymd from, const Log &log, const Live &live) = 0;
+  virtual std::vector<CashFlow> pull_flows(misc::Ymd from, const Report &r) = 0;
 };
 
 // 后台事务期间有人在看

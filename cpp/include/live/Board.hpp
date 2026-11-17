@@ -23,7 +23,7 @@ namespace live::board {
 
 struct Pair {
   const Position *h = nullptr; // 空 = 今日清仓
-  const Flow *f = nullptr;     // 空 = 今日没有成交
+  const Traded *f = nullptr;   // 空 = 今日没有成交
   const Sec &sec() const { return h ? static_cast<const Sec &>(*h) : static_cast<const Sec &>(*f); }
 };
 // 持仓 (余额 > 0) 在前、今日清仓在后; 两表市场须一致 (否则 Fail)

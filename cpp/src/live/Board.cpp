@@ -8,8 +8,6 @@ namespace live::board {
 
 namespace {
 
-const char *mkt_name(Mkt m) { return kMktPrefix[static_cast<int>(m)]; }
-
 void ident(Row &r, const Pair &p, const Quote &q) {
   r.code = p.sec().code;
   r.name = p.sec().name;
@@ -40,7 +38,7 @@ void today(Row &r, const Pair &p, const Quote &q) {
   double traded = 0, amount = 0, bought = 0;
   if (p.f) {
     for (const int s : kSides) {
-      traded += s * p.f->traded[s];
+      traded += s * p.f->qty[s];
       amount += s * p.f->amount[s];
     }
     bought = p.f->amount[kBuy];
@@ -104,7 +102,7 @@ std::vector<Pair> join(const Keyed<Position> &pos, const Fills &fills) {
   for (const Position &h : pos.list)
     if (h.balance > 0)
       out.push_back({&h, fills.by_code.find(h.code)});
-  for (const Flow &f : fills.by_code.list) {
+  for (const Traded &f : fills.by_code.list) {
     const Position *h = pos.find(f.code);
     if (!h || !(h->balance > 0))
       out.push_back({nullptr, &f});
@@ -119,7 +117,7 @@ std::vector<Pair> join(const Keyed<Position> &pos, const Fills &fills) {
 }
 
 bool synced(const Pair &p) {
-  return !p.h || p.h->traded == (p.f ? p.f->traded : BySide{});
+  return !p.h || p.h->traded == (p.f ? p.f->qty : BySide{});
 }
 
 bool synced(const Keyed<Position> &pos, const Fills &fills) {

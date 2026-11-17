@@ -8,13 +8,13 @@
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
+#include "live/tdx/Heap.hpp"
 #include "live/tdx/Image.hpp"
-#include "live/tdx/Mem.hpp"
 #include "live/tdx/Schema.hpp"
+#include "live/tdx/Trace.hpp"
 
 #include <algorithm>
 #include <cassert>
-#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <iconv.h>
@@ -240,7 +240,7 @@ std::string texts(const mem::Heap &h, const std::vector<std::string> &words) {
 std::string where(const Image &p, uint32_t v) {
   if (p.mod(v))
     return p.at(v);
-  const std::optional<uint32_t> vt = p.u32(v);
+  const std::optional<uint32_t> vt = p.heap->u32(v);
   if (!vt)
     return "";
   if (p.mod(*vt)) {
@@ -253,16 +253,16 @@ std::string where(const Image &p, uint32_t v) {
 // 对象 addr 起 n 个字 (4 字节), 每字标去处; 首字是 vtable 时另列其前 slots 个槽
 std::string object(const Image &p, mem::Addr addr, size_t n, size_t slots) {
   std::string out;
-  const std::optional<uint32_t> vt = p.u32(addr);
+  const std::optional<uint32_t> vt = p.heap->u32(addr);
   need(vt.has_value(), strf("%#llx 读不到", static_cast<unsigned long long>(addr)));
   if (const std::optional<std::string> c = p.mod(*vt) ? p.rtti(*vt) : std::nullopt)
     out += "类 " + *c + "\n";
   for (size_t i = 0; i < n; ++i)
-    if (const std::optional<uint32_t> v = p.u32(addr + 4 * i))
+    if (const std::optional<uint32_t> v = p.heap->u32(addr + 4 * i))
       out += strf("+0x%03zx  %08x  %s\n", 4 * i, *v, where(p, *v).c_str());
   if (p.mod(*vt))
     for (size_t i = 0; i < slots; ++i)
-      if (const std::optional<uint32_t> f = p.u32(*vt + 4 * i))
+      if (const std::optional<uint32_t> f = p.heap->u32(*vt + 4 * i))
         out += strf("vt[0x%03zx]  %08x  %s\n", 4 * i, *f, where(p, *f).c_str());
   return out;
 }
@@ -326,13 +326,13 @@ int probe(const std::vector<std::string> &a) {
     return 0;
   }
   if (a[0] == "class") {
-    const Image p(h->pid());
+    const Image p(h);
     for (const mem::Addr vt : p.vtables(a[1]))
       std::printf("0x%08llx  %s\n", static_cast<unsigned long long>(vt), p.at(vt).c_str());
     return 0;
   }
   if (a[0] == "obj" || a[0] == "ref") {
-    const Image p(h->pid());
+    const Image p(h);
     const auto num = [&](size_t i, unsigned long long dflt) { return a.size() > i ? std::stoull(a[i], nullptr, 0) : dflt; };
     std::fputs((a[0] == "obj" ? object(p, num(1, 0), num(2, 32), num(3, 0)) : refs(*h, p, static_cast<uint32_t>(num(1, 0)), num(2, 0x200))).c_str(), stdout);
     return 0;

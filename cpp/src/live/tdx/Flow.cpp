@@ -26,13 +26,13 @@ std::vector<CashFlow> ask(misc::Ymd lo, misc::Ymd hi) {
 
 } // namespace
 
-std::vector<CashFlow> pull(misc::Ymd from, const Log &log, const Live &live) {
+std::vector<CashFlow> pull(misc::Ymd from, const Report &r) {
   const misc::Ymd end = misc::add_days(misc::today_ymd(), -1);
   std::vector<std::vector<CashFlow>> wins; // 日序
   const auto one = [&](misc::Ymd lo, misc::Ymd hi) {
     std::vector<CashFlow> rows = ask(lo, hi);
-    log("window", {{"lo", lo}, {"hi", hi}, {"n", rows.size()}});
-    live(strf("资金流水 %s ~ %s: %zu 条", misc::dash(lo).c_str(), misc::dash(hi).c_str(), rows.size()));
+    r.log("window", {{"lo", lo}, {"hi", hi}, {"n", rows.size()}});
+    r.live(strf("资金流水 %s ~ %s: %zu 条", misc::dash(lo).c_str(), misc::dash(hi).c_str(), rows.size()));
     return rows;
   };
   if (from) {
@@ -53,6 +53,7 @@ std::vector<CashFlow> pull(misc::Ymd from, const Log &log, const Live &live) {
   std::vector<CashFlow> out;
   for (std::vector<CashFlow> &w : wins)
     out.insert(out.end(), std::make_move_iterator(w.begin()), std::make_move_iterator(w.end()));
+  trace::ev("flows", {{"n", out.size()}});
   return out;
 }
 

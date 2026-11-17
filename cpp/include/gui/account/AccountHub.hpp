@@ -25,7 +25,7 @@ public:
   // ---------- Live 侧 ----------
   bool due() const;                                                              // GUI 线程: 今天还没拉过
   void tried();                                                                  // GUI 线程: 今天的已交给事务道
-  void pull(live::Broker &b, const live::Log &log, const live::Live &live);      // 事务线程: 拉 → 并 → 核 → 落盘; 失败 → Fail
+  void pull(live::Broker &b, const live::Report &r);                             // 事务线程: 拉 → 并 → 核 → 落盘; 失败 → Fail
   void feed(const live::Got<live::Account> &a, const live::Got<live::Fills> &f); // GUI 线程每帧: 信用账户 + 今日成交 (持仓的源)
   account::Spot spot() const;                                                    // 库轴外持仓 (ETF / LOF) 的券商现价, 记于今日 (无账户 → 空)
 

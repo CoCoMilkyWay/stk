@@ -41,17 +41,6 @@ bool holds(const CashFlow &r) {
 bool debt(const CashFlow &r) { return r.kind == "融资借款" || r.kind.ends_with("偿还融资负债") || r.kind.ends_with("偿还融资费用"); }
 bool interest(const CashFlow &r) { return r.kind.ends_with("偿还融资利息"); }
 
-std::vector<std::string> fields(const std::string &s) {
-  std::vector<std::string> f(1);
-  for (const char ch : s) {
-    if (ch == ',')
-      f.emplace_back();
-    else
-      f.back().push_back(ch);
-  }
-  return f;
-}
-
 // 日序、余额链 (动资金的行: 上一行剩余 + 本行发生 = 本行剩余)、业务分类
 void check(const std::vector<CashFlow> &rows) {
   const CashFlow *prev = nullptr;
@@ -119,7 +108,7 @@ Ledger load() {
   std::istringstream in(disk::read(disk::LiveFlowsFile));
   std::string line;
   std::getline(in, line);
-  const std::vector<std::string> h = fields(line);
+  const std::vector<std::string> h = live::cells(line);
   assert(h.size() == 4 && h[0] == kPulled && h[2] == kRate && "资金流水账本: 首行");
   l.pulled = misc::parse_ymd(h[1]);
   assert(l.pulled > 0 && "资金流水账本: 拉于");
@@ -127,7 +116,7 @@ Ledger load() {
   std::getline(in, line);
   assert(line == kHead && "资金流水账本: 表头");
   while (std::getline(in, line)) {
-    const std::vector<std::string> f = fields(line);
+    const std::vector<std::string> f = live::cells(line);
     assert(f.size() == 8 && "资金流水账本: 列数");
     CashFlow r{misc::parse_ymd(f[0]), f[1], f[2], std::stod(f[3]), std::stod(f[4]), f[5], std::stod(f[6]), std::stod(f[7])};
     assert(r.date > 0 && "资金流水账本: 日期");
@@ -174,8 +163,8 @@ std::map<std::string, double> holdings(const std::vector<CashFlow> &rows) {
 
 std::string reconcile(const std::vector<CashFlow> &rows, const live::Keyed<live::Position> &pos, const live::Fills &fills) {
   std::map<std::string, double> want = holdings(rows), got;
-  for (const live::Flow &f : fills.by_code.list)
-    want[f.code] += f.traded[live::kBuy] - f.traded[live::kSell];
+  for (const live::Traded &f : fills.by_code.list)
+    want[f.code] += f.qty[live::kBuy] - f.qty[live::kSell];
   for (const live::Position &p : pos.list)
     got[p.code] += p.balance;
   std::set<std::string> codes;

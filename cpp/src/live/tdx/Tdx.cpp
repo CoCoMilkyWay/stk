@@ -4,7 +4,7 @@
 #include "live/tdx/Credit.hpp"
 #include "live/tdx/Flash.hpp"
 #include "live/tdx/Flow.hpp"
-#include "live/tdx/Mem.hpp"
+#include "live/tdx/Heap.hpp"
 #include "live/tdx/Req.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/Tables.hpp"
@@ -111,6 +111,14 @@ struct Core {
     cv.notify_all();
     return n;
   }
+  // 刚下过单: 隔几秒各刷一次
+  void kick() {
+    std::lock_guard lk(mu);
+    const Clock::time_point now = Clock::now();
+    for (const int k : kKicks)
+      kicks.push_back(now + std::chrono::seconds(k));
+    std::sort(kicks.begin(), kicks.end());
+  }
 
   // 改发布的 State (须持 mu)
   template <class F>
@@ -125,8 +133,9 @@ struct Core {
     prog.step = std::move(step);
   }
 
-  // 接上客户端 (须持 work): 没接过或进程换了即重开堆; shim 不在线即注入; 请求层钩上 (钩着即只重设记哪些槽)
+  // 接上客户端: 没接过或进程换了即重开堆; shim 不在线即注入; 请求层钩上 (钩着即只重设记哪些槽)
   void connect() {
+    std::lock_guard wk(work);
     trace::Span span("接入");
     if (!heap || heap->pid() != mem::find_pid()) {
       heap = mem::attach();
@@ -135,17 +144,13 @@ struct Core {
     }
     if (!shim::online())
       win::attach();
-    req::arm(*heap);
-  }
-  void connected() {
-    std::lock_guard wk(work);
-    connect();
+    req::arm(heap);
   }
 
   // 引导: 插件在本客户端进程里还没发过的表, 各经界面查一次 (其引导页), 末了回持仓页 (占界面锁)
   template <class... S>
   void prime() {
-    std::vector<tables::Open> miss;
+    std::vector<ui::Open> miss;
     ((tables::seen<S>() ? void() : miss.push_back(S::kOpen)), ...);
     if (miss.empty())
       return;
@@ -153,10 +158,10 @@ struct Core {
     const Gate::Hold g(gate, "引导");
     trace::Span span("引导");
     ui::show_bar();
-    for (const tables::Open &o : miss)
-      std::ignore = o.col ? ui::open_page(o.page, o.col) : ui::open_tab(o.page);
-    std::ignore = ui::open_tab("持仓");
-    (need(tables::seen<S>(), strf("经界面查过「%s」, 插件仍没发过其功能", S::kShape.name)), ...);
+    for (const ui::Open &o : miss)
+      std::ignore = ui::open(o);
+    std::ignore = ui::open(tables::Positions::kOpen);
+    (need(tables::seen<S>(), strf("经界面查过「%s」, 插件仍没发过其功能", S::kName)), ...);
   }
 
   // 一界面事务 (下单 / 独占): 段 (who {kw}) + 界面锁 + 接上客户端, 当前线程跑 fn
@@ -164,7 +169,15 @@ struct Core {
   auto txn(const char *who, trace::Kw kw, F &&fn) {
     trace::Span span(who, std::move(kw));
     const Gate::Hold g(gate, who);
-    connected();
+    connect();
+    return fn();
+  }
+  // 一次直发拉取 (两融条款 / 资金流水): 段 (who {kw}) + 接上客户端 + 引导表 S…, 当前线程跑 fn
+  template <class... S, class F>
+  auto pull(const char *who, trace::Kw kw, F &&fn) {
+    trace::Span span(who, std::move(kw));
+    connect();
+    prime<S...>();
     return fn();
   }
 
@@ -194,9 +207,9 @@ struct Core {
     return std::nullopt;
   }
 
-  // 直发读一样、发布: fn() → 值
+  // 读一样、发布: fn() → 值
   template <class T, class F>
-  void read(Got<T> State::*g, F &&fn) {
+  void put(Got<T> State::*g, F &&fn) {
     note(State::name(g));
     trace::Span span(State::name(g));
     auto v = std::make_shared<const T>(fn());
@@ -204,13 +217,6 @@ struct Core {
     publish([&](State &x) {
       (x.*g).v = std::move(v);
       (x.*g).at = clock_now();
-    });
-  }
-  void read_fills() {
-    read(&State::fills, [] {
-      std::vector<Fill> rows = tables::read<tables::Fills>();
-      std::stable_sort(rows.begin(), rows.end(), [](const Fill &a, const Fill &b) { return std::tie(a.time, a.fill_id) < std::tie(b.time, b.fill_id); });
-      return Fills{rows, mem::index<tables::Fills>(rows)};
     });
   }
   bool synced() {
@@ -226,30 +232,19 @@ struct Core {
   void round() {
     prime<tables::Fills, tables::Positions, tables::Pendings, tables::Assets, tables::Debts>();
     for (int i = 0; i < kSyncTries; ++i) {
-      read_fills();
-      read(&State::pos, [] { return mem::index<tables::Positions>(tables::read<tables::Positions>()); });
+      put(&State::fills, [] { return tables::read<tables::Fills>(); });
+      put(&State::pos, [] { return tables::read<tables::Positions>(); });
       if (synced())
         break;
       trace::ev("unsynced", {{"try", i + 1}});
     }
-    read(&State::orders, [] { return tables::read<tables::Pendings>(); });
-    read(&State::acct, [&] {
-      Account a = credit::account(held());
-      trace::ev("put", {{"what", State::name(&State::acct)},
-                        {"assets", a.assets},
-                        {"line", a.line},
-                        {"debt", a.debt},
-                        {"net", a.net},
-                        {"avail", a.avail},
-                        {"cash", a.cash},
-                        {"debts", a.debts.size()}});
-      return a;
-    });
+    put(&State::orders, [] { return tables::read<tables::Pendings>(); });
+    put(&State::acct, [&] { return credit::account(held()); });
   }
   // 只刷成交 (等卖单成交时轮询)
   void round_fills() {
     prime<tables::Fills>();
-    read_fills();
+    put(&State::fills, [] { return tables::read<tables::Fills>(); });
   }
 
   void tick() {
@@ -265,7 +260,7 @@ struct Core {
     trace::Span span("刷新", {{"why", why}, {"n", n[idx(part)]}});
     std::string down, msg;
     try { // 错误边界: 接不上报在 down, 一轮失败报在 err, 都等下一个起因再刷
-      connected();
+      connect();
     } catch (const Fail &f) {
       down = f.why;
     }
@@ -306,8 +301,6 @@ public:
     }
     c_->cv.notify_all();
   }
-
-  const char *name() const override { return "通达信"; }
 
   std::shared_ptr<const State> state() const override {
     std::lock_guard lk(c_->mu);
@@ -351,40 +344,20 @@ public:
     }
     c_->cv.notify_all();
   }
-  void kick() override {
-    std::lock_guard lk(c_->mu);
-    const Clock::time_point now = Clock::now();
-    for (const int k : kKicks)
-      c_->kicks.push_back(now + std::chrono::seconds(k));
-    std::sort(c_->kicks.begin(), c_->kicks.end());
-  }
 
   const std::vector<std::string> &order_steps() const override { return flash::steps(); }
   Placed place(const OrderReq &o, const Step &step) override {
-    return c_->txn("下单",
-                   {{"code", o.sec.code}, {"name", o.sec.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}, {"size", o.size}},
-                   [&] {
-                     Placed p = flash::place(o, step);
-                     trace::ev("placed", {{"qty", p.qty}, {"px", p.px}, {"msg", p.msg}});
-                     return p;
-                   });
+    const trace::Kw kw = {{"code", o.sec.code}, {"name", o.sec.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}, {"size", o.size}};
+    const Placed p = c_->txn("下单", kw, [&] { return flash::place(o, step); });
+    c_->kick();
+    return p;
   }
   void exclusive(const char *who, const std::function<void()> &fn) override { c_->txn(who, trace::Kw::object(), fn); }
-  Terms pull_terms(const Log &log, const Live &live) override {
-    trace::Span span("两融条款");
-    c_->connected();
-    c_->prime<tables::Margins, tables::Collats>();
-    Terms t = credit::pull(log, live);
-    trace::ev("terms", {{"n", t.size()}});
-    return t;
+  Terms pull_terms(const Report &r) override {
+    return c_->pull<tables::Margins, tables::Collats>("两融条款", trace::Kw::object(), [&] { return credit::pull(r); });
   }
-  std::vector<CashFlow> pull_flows(misc::Ymd from, const Log &log, const Live &live) override {
-    trace::Span span("资金流水", {{"from", from}});
-    c_->connected();
-    c_->prime<tables::CashFlows>();
-    std::vector<CashFlow> f = flow::pull(from, log, live);
-    trace::ev("flows", {{"n", f.size()}});
-    return f;
+  std::vector<CashFlow> pull_flows(misc::Ymd from, const Report &r) override {
+    return c_->pull<tables::CashFlows>("资金流水", {{"from", from}}, [&] { return flow::pull(from, r); });
   }
 
 private:

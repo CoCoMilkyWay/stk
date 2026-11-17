@@ -35,7 +35,7 @@ std::optional<Order> leg(const Quote &q, int s, int n, int min_n, double px, Cre
   const auto [slip, full] = cost(q, s, amt);
   Order o;
   static_cast<Sec &>(o) = x;
-  o.s = s;
+  o.side = s;
   o.credit = credit;
   o.qty = n;
   o.px = px;
@@ -256,12 +256,12 @@ Sheet sheet(double assets, double net, double debt, double cash, std::optional<d
   return {assets, net, debt, cash, X, L, assets / net, debt ? std::optional<double>(assets / debt) : std::nullopt};
 }
 
-Prices prices(const Bal &bal, const Debts &debts, const Quotes &quotes) {
+Prices prices(const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes) {
   Prices px;
   for (const auto &[c, n] : bal)
     px[c] = quote_at(quotes, c).price;
-  for (const auto &[c, d] : debts)
-    px[c] = quote_at(quotes, c).price;
+  for (const Debt &d : debts.list)
+    px[d.code] = quote_at(quotes, d.code).price;
   return px;
 }
 
@@ -275,18 +275,18 @@ nlohmann::json to_json(const Sheet &s) {
 
 double fee(double amt, int s) { return amt * (kCommission + kTransfer + (s == kSell ? kStamp : 0)); }
 
-double surplus(const Bal &bal, const Debts &debts, const Prices &px, const Terms &terms) {
+double surplus(const Bal &bal, const Keyed<Debt> &debts, const Prices &px, const Terms &terms) {
   std::set<std::string> codes;
   for (const auto &[c, n] : bal)
     codes.insert(c);
-  for (const auto &[c, d] : debts)
-    codes.insert(c);
+  for (const Debt &d : debts.list)
+    codes.insert(d.code);
   double s = 0;
   for (const std::string &code : codes) {
     const auto b = bal.find(code);
-    const auto d = debts.find(code);
+    const Debt *d = debts.find(code);
     const double n = b == bal.end() ? 0 : b->second;
-    const auto [dq, amt] = d == debts.end() ? Debt{} : d->second;
+    const double dq = d ? d->qty : 0, amt = d ? d->amount : 0;
     const Term *t = term_of(terms, code);
     if (!t)
       fail("两融条款里没有 " + code);
@@ -339,8 +339,8 @@ Result plan(const Keyed<Position> &pos, const Account &acct, const Prices &px0, 
     want(h.code);
   for (const std::string &c : ok)
     want(c);
-  for (const auto &[c, d] : acct.debts)
-    want(c);
+  for (const Debt &d : acct.debts.list)
+    want(d.code);
   if (!lack.empty())
     return {std::nullopt, strf("等行情 (%zu 只, 如 %s)", lack.size(), lack[0].c_str())};
   const double pct = cfg.pct / 100;
@@ -404,7 +404,7 @@ Result plan(const Keyed<Position> &pos, const Account &acct, const Prices &px0, 
 }
 
 nlohmann::json to_json(const Order &o) {
-  return {{"code", o.code}, {"name", o.name}, {"s", o.s}, {"credit", credit_name(o.credit)}, {"qty", o.qty}, {"px", o.px}, {"amount", o.amount}, {"slip", o.slip}, {"fee", o.fee}, {"full", o.full}};
+  return {{"code", o.code}, {"name", o.name}, {"side", o.side}, {"credit", credit_name(o.credit)}, {"qty", o.qty}, {"px", o.px}, {"amount", o.amount}, {"slip", o.slip}, {"fee", o.fee}, {"full", o.full}};
 }
 
 nlohmann::json to_json(const Plan &p) {

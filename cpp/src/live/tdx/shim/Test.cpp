@@ -13,10 +13,10 @@
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
+#include "live/tdx/Cols.hpp"
 #include "live/tdx/Credit.hpp"
 #include "live/tdx/Flow.hpp"
-#include "live/tdx/Mem.hpp"
-#include "live/tdx/Req.hpp"
+#include "live/tdx/Heap.hpp"
 #include "live/tdx/Tables.hpp"
 #include "live/tdx/Trace.hpp"
 #include "live/tdx/Ui.hpp"
@@ -34,22 +34,18 @@ namespace live::tdx::tool {
 
 namespace {
 
-// 交易栏宿主与页签命令 (TDX.md「交易栏」): busy 要绕开 ui::open_tab 的等待, 直接投
+// 交易栏宿主与页签命令 (TDX.md「交易栏」): busy 要绕开 ui::open 的等待, 直接投
 constexpr long kHostId = 59649, kHold = 0x271D, kCancel = 0x2716;
 
 std::string query() {
   std::string s;
-  const auto one = [&](const char *name, const ui::Page &p) { s += strf("%s%s %d 条", s.empty() ? "" : " · ", name, p.count.read()); };
-  for (const char *t : {"成交", "持仓", "撤单"})
-    one(t, ui::open_tab(t));
-  one("信用资产", ui::open_page("信用资产", "信用资金额度"));
-  one("融资负债汇总", ui::open_page("融资负债汇总", "当前负债金额"));
-  one("资金流水", ui::open_page("资金流水", "剩余金额"));
+  for (const ui::Open &o : {tables::Fills::kOpen, tables::Positions::kOpen, tables::Pendings::kOpen, tables::Assets::kOpen, tables::Debts::kOpen, tables::CashFlows::kOpen})
+    s += strf("%s%s %d 条", s.empty() ? "" : " · ", o.page, ui::open(o).count.read());
   return s;
 }
 
 std::string busy() {
-  const ui::Page hold = ui::open_tab("持仓"), cancel = ui::open_tab("撤单");
+  const ui::Page hold = ui::open(tables::Positions::kOpen), cancel = ui::open(tables::Pendings::kOpen);
   std::vector<win::Hwnd> hosts;
   for (const win::Node &n : win::find("AfxWnd100", kHostId))
     if (n.vis)
@@ -63,37 +59,37 @@ std::string busy() {
   return "持仓查着时切撤单无效";
 }
 
-// 经表 S 的引导页查一次 (插件发出, 页上 n 条), 再直发读同一功能: 行数须恰为 n
+// 经表 S 的引导页查一次 (插件发出, 页上 n 条), 再直发读同一功能: 行数须恰为 n; 建索引 (键不重)
 template <class S>
-std::vector<typename S::Row> read_one() {
-  trace::Span span(S::kShape.name);
-  const ui::Page p = S::kOpen.col ? ui::open_page(S::kOpen.page, S::kOpen.col) : ui::open_tab(S::kOpen.page);
-  const int n = p.count.read();
-  std::vector<typename S::Row> rows = tables::read<S>();
-  std::ignore = mem::index<S>(rows);
-  need(rows.size() == static_cast<size_t>(n), strf("%s页上 %d 条, 直发 %zu 行", S::kShape.name, n, rows.size()));
-  return rows;
+auto read_one() {
+  trace::Span span(S::kName);
+  const int n = ui::open(S::kOpen).count.read();
+  std::vector<typename S::Row> rows = tables::rows<S>();
+  need(rows.size() == static_cast<size_t>(n), strf("%s页上 %d 条, 直发 %zu 行", S::kName, n, rows.size()));
+  return S::Index::build(S::kName, std::move(rows));
 }
 
 std::string read() {
-  const size_t nf = read_one<tables::Fills>().size();
-  const auto pos = std::make_shared<const Keyed<Position>>(mem::index<tables::Positions>(read_one<tables::Positions>()));
-  const size_t no = read_one<tables::Pendings>().size(), na = read_one<tables::Assets>().size(), nd = read_one<tables::Debts>().size();
+  const Fills f = read_one<tables::Fills>();
+  const auto pos = std::make_shared<const Keyed<Position>>(read_one<tables::Positions>());
+  const Keyed<Pending> o = read_one<tables::Pendings>();
+  const std::map<std::string, std::string> c = read_one<tables::Assets>();
+  const Keyed<Debt> d = read_one<tables::Debts>();
   const Account a = credit::account(pos);
-  return strf("成交 %zu · 持仓 %zu · 挂单 %zu · 信用资产 %zu · 融资负债 %zu · 净资产 %.2f", nf, pos->list.size(), no, na, nd, a.net);
+  return strf("成交 %zu · 持仓 %zu · 挂单 %zu · 信用资产 %zu 项 · 融资负债 %zu · 净资产 %.2f", f.rows.size(), pos->list.size(), o.list.size(), c.size(), d.list.size(), a.net);
 }
 
 std::string flows() {
-  std::ignore = ui::open_page(tables::CashFlows::kOpen.page, tables::CashFlows::kOpen.col);
+  std::ignore = ui::open(tables::CashFlows::kOpen);
   const misc::Ymd from = misc::add_days(misc::today_ymd(), -14);
-  const std::vector<CashFlow> f = flow::pull(from, [](const char *, nlohmann::json) {}, [](std::string) {});
+  const std::vector<CashFlow> f = flow::pull(from, {});
   return strf("%d 起 %zu 条", from, f.size());
 }
 
 std::string terms() {
-  for (const tables::Open &o : {tables::Margins::kOpen, tables::Collats::kOpen})
-    std::ignore = ui::open_page(o.page, o.col);
-  const Terms t = credit::pull([](const char *, nlohmann::json) {}, [](std::string) {});
+  for (const ui::Open &o : {tables::Margins::kOpen, tables::Collats::kOpen})
+    std::ignore = ui::open(o);
+  const Terms t = credit::pull({});
   return strf("%zu 只", t.size());
 }
 
@@ -103,22 +99,22 @@ void fields_of(const Schema &s, int &n, std::string &bad) {
   for (size_t v = 0; v < T::kViews.size(); ++v) {
     const auto f = s.funcs.find(T::kFuncs[v]);
     if (f == s.funcs.end()) {
-      bad += strf("%s: 没有功能 %d; ", T::kShape.name, T::kFuncs[v]);
+      bad += strf("%s: 没有功能 %d; ", T::kName, T::kFuncs[v]);
       continue;
     }
     const std::vector<int> &out = f->second.out;
     if (static_cast<int>(out.size()) >= T::kViews[v])
-      bad += strf("%s: 功能 %d 出参 %zu 个, 布局只 %d 列; ", T::kShape.name, T::kFuncs[v], out.size(), T::kViews[v]);
+      bad += strf("%s: 功能 %d 出参 %zu 个, 布局只 %d 列; ", T::kName, T::kFuncs[v], out.size(), T::kViews[v]);
     std::apply(
         [&](const auto &...c) {
           (
               [&] {
                 const int at = c.at[v];
-                if (at == mem::kNone)
+                if (at == cols::kNone)
                   return;
                 const std::string got = at < static_cast<int>(out.size()) ? s.name(out[static_cast<size_t>(at)]) : "(越界)";
                 if (got != c.field)
-                  bad += strf("%s 功能 %d 列 %d: 字典为「%s」, 声明「%s」; ", T::kShape.name, T::kFuncs[v], at, got.c_str(), c.field);
+                  bad += strf("%s 功能 %d 列 %d: 字典为「%s」, 声明「%s」; ", T::kName, T::kFuncs[v], at, got.c_str(), c.field);
                 ++n;
               }(),
               ...);
@@ -156,7 +152,7 @@ bool run(const Case &c) {
     trace::Span span(std::string("用例 ") + c.name);
     ui::show_bar();
     const std::string s = c.fn();
-    ui::open_tab("持仓");
+    std::ignore = ui::open(tables::Positions::kOpen);
     std::printf("PASS %-7s %6ldms  %s\n", c.name, trace::ms_since(t0), s.c_str());
     return true;
   } catch (const Fail &f) {

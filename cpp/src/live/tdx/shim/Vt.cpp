@@ -11,6 +11,7 @@
 
 #include "disk/Disk.hpp"
 #include "live/tdx/Shim.hpp"
+#include "live/tdx/Trace.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -51,9 +52,7 @@ struct Call {
 
 int vt(double secs, const std::vector<std::string> &targets) {
   need(!targets.empty(), "用法: shim vt <秒> <类名 | 0x虚表>[=槽,槽…]…");
-  const int pid = mem::find_pid();
-  need(pid != 0, "客户端没开");
-  const Image img(pid);
+  const Image img(mem::attach());
   std::map<uint32_t, std::string> cls, rets; // 虚表 → 类名 / 记返回的槽
   for (const std::string &arg : targets) {
     const size_t eq = arg.find('=');

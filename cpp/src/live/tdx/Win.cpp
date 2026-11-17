@@ -41,14 +41,10 @@ Node node_of(const json &j) {
   const json &r = j.at("rect");
   for (int i = 0; i < 4; ++i)
     n.rect[i] = r.at(static_cast<size_t>(i)).get<int>();
-  n.style = j.at("style").get<unsigned>();
-  n.exstyle = j.at("exstyle").get<unsigned>();
   n.vis = j.at("vis").get<long>() != 0;
   n.en = j.at("en").get<long>() != 0;
   return n;
 }
-
-} // namespace
 
 std::vector<Node> nodes_of(const std::vector<json> &recs) {
   std::vector<Node> out;
@@ -56,6 +52,8 @@ std::vector<Node> nodes_of(const std::vector<json> &recs) {
     out.push_back(node_of(j));
   return out;
 }
+
+} // namespace
 
 Layer layer_of(const json &j) {
   Layer l;
@@ -89,10 +87,6 @@ void attach() {
 
 std::vector<Node> enum_(const Hwnd &target) { return nodes_of(target.empty() ? shim::cmd("enum") : shim::cmd("enum", target)); }
 
-std::vector<Node> tree(const Hwnd &target, double timeout) {
-  return nodes_of(target.empty() ? shim::cmd_wait(timeout, "tree") : shim::cmd_wait(timeout, "tree", target));
-}
-
 std::vector<Node> find(const std::string &cls, std::optional<long> id, const std::string &title) {
   assert(!cls.empty() && cls.find(' ') == std::string::npos);
   std::string line = "find class=" + cls;
@@ -112,8 +106,6 @@ Tops tops() {
       out.emplace(n.hwnd, std::move(n));
   return out;
 }
-
-double idle() { return shim::cmd("idle").at(0).at("ms").get<double>() / 1000; }
 
 long disables(const Hwnd &h) { return shim::cmd("disables", h).at(0).at("n").get<long>(); }
 

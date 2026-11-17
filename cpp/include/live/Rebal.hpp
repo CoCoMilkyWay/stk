@@ -49,7 +49,7 @@ using Bal = std::map<std::string, double>;    // 代码 → 股
 
 double fee(double amt, int s);
 // 持仓部分 S: px 须含 bal 与 debts 各只; 条款缺 → Fail
-double surplus(const Bal &bal, const Debts &debts, const Prices &px, const Terms &terms);
+double surplus(const Bal &bal, const Keyed<Debt> &debts, const Prices &px, const Terms &terms);
 // 持仓为 bal、行情为 quotes 时的可用保证金 (不含现金变动)
 double avail(const Account &a, const Prices &px0, const Bal &bal, const Quotes &quotes, const Terms &terms);
 
@@ -64,7 +64,7 @@ struct Cfg {
 std::string why(const Term *t);
 
 struct Order : Sec {
-  int s = kBuy;
+  int side = kBuy;
   Credit credit = Credit::Plain;
   double qty = 0, px = 0, amount = 0, slip = 0, fee = 0;
   bool full = false;

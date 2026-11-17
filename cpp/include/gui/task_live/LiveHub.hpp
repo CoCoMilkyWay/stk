@@ -1,11 +1,11 @@
 // Live 任务的中枢: 一个 Broker (客户端适配表 live/Clients.hpp 里选一个, 点「连接」才建) + 新浪行情 + 两融条款 + 下单 / 调仓事务, 券商无关
 //   行情: 要的码 (持仓、今日清仓、负债、调仓名单里可买的) 每帧订阅给 QuoteHub (与 Market 同一路新浪轮询, 改了即提前一轮), 随 Live 的版本取用;
 //     事务 (试算 / 下单) 另现取此刻的. 盘口列同帧复用其 5 档. 账户读到后头一次取齐其各只的行情记作读时现价 (可用保证金按它校准, 见 live/Rebal.hpp)
-//   条款: 券商的两融条款缓存一份 output/live/terms.csv (原子替换), 不论哪天拉的启动即用; 后台拉到新的即整份换掉.
+//   条款: 券商的两融条款缓存一份 (live/Terms.hpp), 不论哪天拉的启动即用; 后台拉到新的即整份换掉.
 //     与本地库合: 本地库有的个股名称 / 市场取本地 (AssetInfo), 融资标的 = 券商融资状态正常 ∧ 本地两融明细最新一日有它,
 //     担保品 = 券商担保状态正常 ∧ 本地在市; 保证金比例 / 折算率只有券商有; 本地库没有的 (ETF / 债券) 照用券商的整行.
 //     持仓页打开时缓存缺、满 kTermsAge 天、或名单 / 持仓 / 负债里有缓存没有的代码 → 后台拉 (每天自动至多一次, 失败了等人点)
-//   下单: 一次一单, 留最近 kOrderCap 单; 步骤 = 「行情」(按新取的盘口定委托价) + broker 的各步; 持仓页的单成功后 kick 定点刷新
+//   下单: 一次一单, 留最近 kOrderCap 单; 步骤 = 「行情」(按新取的盘口定委托价) + broker 的各步
 //   事务: 后台一次一件 (拉条款 / 执行调仓 / 别处交来的 job), 日志落 output/run/live/task/<时刻>.jsonl (留最近 kTaskKeep 个), 留尾巴给页面.
 //     执行调仓 = 条款缓存还没有即先拉 → 刷新 → 还有挂单即停 (免得重复下单、冻结的钱券没算进试算) → 试算 →
 //     卖单逐只卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 → 买单逐只 (融资在前) → 刷新.
@@ -16,6 +16,7 @@
 
 #include "live/Board.hpp"
 #include "live/Broker.hpp"
+#include "live/Clients.hpp"
 #include "live/Rebal.hpp"
 #include "misc/date.hpp"
 
@@ -54,15 +55,12 @@ struct OrderJob {
   uint64_t id = 0;
   std::string t; // 起于 HH:MM:SS
   JobSt st = JobSt::Run;
-  std::string msg;
-  live::Sec sec;
-  int side = live::kBuy;
-  live::Credit credit = live::Credit::Plain;
+  live::OrderReq o;               // 委托价「行情」一步才定
   std::string label;              // 量: N股 / xW
   std::vector<std::string> steps; // 「行情」+ broker 的各步
   size_t at = 0;
   std::string detail;
-  double qty = 0, px = 0; // 回报
+  live::Placed got; // 回报; 失败 = msg 为原因
 };
 
 struct LogLine {
@@ -97,8 +95,9 @@ public:
   LiveHub &operator=(const LiveHub &) = delete;
 
   // ---------- 以下皆 GUI 线程 ----------
-  bool connected() const;
+  bool connected() const { return client_ != nullptr; }
   void connect(size_t client); // 按 live::clients() 的下标建 broker
+  const live::Client &client() const;
   live::Broker &broker();
   // 隐私: 遮住代码、名称与账户金额 (连同其悬停提示), 比例、只数与下单照显; 落盘 output/config/live/ui.json
   bool priv() const { return priv_; }
@@ -136,12 +135,13 @@ public:
   void pull();      // 后台拉两融条款
   void run();       // 后台执行调仓
   void auto_pull(); // 持仓页打开时: 缓存缺 / 满 kTermsAge 天 / 有要用的代码缓存没有, 且今天还没自动拉过、没有事务在跑 → 拉
-  // 别处的事务走同一条道 (日志 / 进度同上): fn(broker, 记一条, 实时进度) 在后台跑, 失败 → Fail; 已有事务在跑 → 不收, false
-  using Job = std::function<void(live::Broker &, const live::Log &, const live::Live &)>;
+  // 别处的事务走同一条道 (日志 / 进度同上): fn(broker, 报告) 在后台跑, 失败 → Fail; 已有事务在跑 → 不收, false
+  using Job = std::function<void(live::Broker &, const live::Report &)>;
   bool job(const char *name, Job fn);
 
 private:
   std::shared_ptr<Core> c_;
+  const live::Client *client_ = nullptr;
   bool priv_ = false;
   std::shared_ptr<const live::State> st_;
   live::Refresh prog_;

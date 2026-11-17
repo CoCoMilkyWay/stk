@@ -40,7 +40,7 @@ std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const
       if (p.balance != 0)
         h->list.push_back(holding(p.code, p.balance, p.price));
     if (f)
-      for (const live::Flow &x : f->by_code.list)
+      for (const live::Traded &x : f->by_code.list)
         h->amount += x.amount[live::kBuy] + x.amount[live::kSell], h->buy += x.amount[live::kBuy];
   } else if (e.nav > 0) {
     h->net = e.nav, h->list = e.hold;
@@ -59,13 +59,13 @@ bool AccountHub::due() const { return pulled_ < misc::today_ymd(); }
 
 void AccountHub::tried() { pulled_ = misc::today_ymd(); }
 
-void AccountHub::pull(live::Broker &b, const live::Log &log, const live::Live &live) {
+void AccountHub::pull(live::Broker &b, const live::Report &r) {
   account::Ledger l = account::load();
   const misc::Ymd from = l.rows.empty() ? 0 : l.rows.back().date;
-  std::vector<live::CashFlow> fresh = b.pull_flows(from, log, live);
+  std::vector<live::CashFlow> fresh = b.pull_flows(from, r);
   const size_t n = fresh.size();
   l.rows = account::merge(l.rows, from, std::move(fresh));
-  live("刷新持仓, 核对资金流水…");
+  r.live("刷新持仓, 核对资金流水…");
   b.sync(live::Part::All);
   const std::shared_ptr<const live::State> s = b.state();
   live::need(s->pos && s->fills && s->acct, "持仓 / 成交 / 信用账户没读到");
@@ -74,7 +74,7 @@ void AccountHub::pull(live::Broker &b, const live::Log &log, const live::Live &l
   l.pulled = misc::today_ymd();
   l.rate = s->acct->rate;
   account::save(l);
-  log("flows", {{"rows", l.rows.size()}, {"from", from}, {"fresh", n}});
+  r.log("flows", {{"rows", l.rows.size()}, {"from", from}, {"fresh", n}});
 }
 
 void AccountHub::feed(const live::Got<live::Account> &a, const live::Got<live::Fills> &f) { acct_ = a, fills_ = f; }

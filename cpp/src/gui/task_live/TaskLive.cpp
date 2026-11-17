@@ -54,7 +54,7 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
     Account::AccountHub &a = *state->account;
     a.feed(s->acct, s->fills);
     state->quote->spot(a.spot());
-    if (a.due() && h.job("更新资金流水", [p = state->account](live::Broker &b, const live::Log &log, const live::Live &live) { p->pull(b, log, live); }))
+    if (a.due() && h.job("更新资金流水", [p = state->account](live::Broker &b, const live::Report &r) { p->pull(b, r); }))
       a.tried();
   };
 

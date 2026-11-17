@@ -1,14 +1,15 @@
-// 通达信适配: 各表 (请求层直发的应答) 并排声明: 列 / 索引 (含义见 Mem.hpp) + 行级校验 + 引导页.
+// 通达信适配: 各表 (请求层直发的应答) 并排声明: 列 / 索引 (含义见 Cols.hpp) + 行级校验 + 引导页.
 // 应答的列序 = 客户端功能定义里该功能号的出参序; 布局列数 = 出参数 + 1; 各列的字段名对协议字典核 (shim test fields).
 // 「证券名称」对 ETF 是短码名 (如 5GETF), 各表名称一律取其后的「长简称」.
-// 引导页 kOpen: 界面上查一次即让插件发出该功能 (直发照搬插件的入参, 每个客户端进程须先见过一次); col 空 = 交易栏页签, 否则功能树页 + 认页的列.
+// 引导页 kOpen: 界面上查一次即让插件发出该功能 (直发照搬插件的入参, 每个客户端进程须先见过一次); 页签或功能树页 + 认页的列 (ui::open).
 // 持仓两种布局: 23 列 (功能 1228) / 18 列 (功能 1114, 重登后常见), 后者没有融资数量与担保折算率; 插件发哪个即读哪个.
-// 标的证券 / 担保品单页至多七百余行: 按定位字串翻页到底 (req::ask_all).
+// 标的证券 / 担保品单页至多七百余行: 按定位字串翻页到底 (req::ask).
 #pragma once
 
 #include "live/Broker.hpp"
-#include "live/tdx/Mem.hpp"
+#include "live/tdx/Cols.hpp"
 #include "live/tdx/Req.hpp"
+#include "live/tdx/Ui.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,19 +20,14 @@
 
 namespace live::tdx::tables {
 
-namespace as = mem::as;
-using mem::col;
-using mem::kNone;
-using mem::Shape;
-
-struct Open {
-  const char *page, *col; // col 空 = 交易栏页签
-};
+namespace as = cols::as;
+using cols::col;
+using cols::kNone;
 
 struct Positions {
   using Row = Position;
-  static constexpr Shape kShape{"持仓"};
-  static constexpr Open kOpen{"持仓", nullptr};
+  static constexpr const char *kName = "持仓";
+  static constexpr ui::Open kOpen{"持仓", "可卖数量"};
   static constexpr std::array<int, 2> kViews{23, 18};
   static constexpr std::array<int, 2> kFuncs{1228, 1114};
   static constexpr auto kCols = std::tuple{
@@ -49,14 +45,14 @@ struct Positions {
       col<&Row::mkt, as::flag>("账号类别", 14, 13),
       col<&Row::collateral, as::num_or>("担保折算率", 16, kNone),
   };
-  using Index = mem::Unique<&Row::code>;
-  static void check(const Shape &t, const Row &r); // 市值 ≈ 现价 × 余额
+  using Index = cols::Unique<&Row::code>;
+  static void check(const Row &r); // 市值 ≈ 现价 × 余额
 };
 
 struct Fills {
   using Row = Fill;
-  static constexpr Shape kShape{"成交"};
-  static constexpr Open kOpen{"成交", nullptr};
+  static constexpr const char *kName = "成交";
+  static constexpr ui::Open kOpen{"成交", "成交编号"};
   static constexpr std::array<int, 1> kViews{17};
   static constexpr std::array<int, 1> kFuncs{1108};
   static constexpr auto kCols = std::tuple{
@@ -72,14 +68,14 @@ struct Fills {
       col<&Row::order_id, as::text>("委托编号", 11),
       col<&Row::mkt, as::flag>("账号类别", 13), // 与列 12 股东代码同市场
   };
-  using Index = mem::Tally;
-  static void check(const Shape &t, const Row &r); // 价 / 量为正、额 ≈ 价 × 量
+  using Index = cols::Tally;
+  static void check(const Row &r); // 价 / 量为正、额 ≈ 价 × 量
 };
 
 struct Pendings {
   using Row = Pending;
-  static constexpr Shape kShape{"挂单"};
-  static constexpr Open kOpen{"撤单", nullptr};
+  static constexpr const char *kName = "挂单";
+  static constexpr ui::Open kOpen{"撤单", "委托价格"};
   static constexpr std::array<int, 1> kViews{23};
   static constexpr std::array<int, 1> kFuncs{1100};
   static constexpr auto kCols = std::tuple{
@@ -95,30 +91,25 @@ struct Pendings {
       col<&Row::filled, as::num>("成交数量", 12), // 已成交 [股]
       col<&Row::mkt, as::flag>("账号类别", 16),
   };
-  using Index = mem::Unique<&Row::order_id>;
-  static void check(const Shape &t, const Row &r); // 状态 / 编号非空、0 ≤ 已成 < 委托量
+  using Index = cols::Unique<&Row::order_id>;
+  static void check(const Row &r); // 状态 / 编号非空、0 ≤ 已成 < 委托量
 };
 
-struct Debt : Sec {
-  double balance = 0, qty = 0, amount = 0; // 持仓量 / 当前负债数量 [股] / 当前负债金额 [元]
-  bool operator==(const Debt &) const = default;
-};
 struct Debts {
   using Row = Debt;
-  static constexpr Shape kShape{"融资负债"};
-  static constexpr Open kOpen{"融资负债汇总", "当前负债金额"};
+  static constexpr const char *kName = "融资负债";
+  static constexpr ui::Open kOpen{"融资负债汇总", "当前负债金额"};
   static constexpr std::array<int, 1> kViews{15};
   static constexpr std::array<int, 1> kFuncs{3264};
   static constexpr auto kCols = std::tuple{
       col<&Row::mkt, as::flag>("账号类别", 0),
       col<&Row::code, as::code>("证券代码", 2),
       col<&Row::name, as::text>("长简称", 4),
-      col<&Row::balance, as::num>("持仓量", 5),
       col<&Row::qty, as::num>("当前负债数量", 7),
       col<&Row::amount, as::num>("当前负债金额", 9),
   };
-  using Index = mem::Unique<&Row::code>;
-  static void check(const Shape &t, const Row &r); // 负债非负
+  using Index = cols::Unique<&Row::code>;
+  static void check(const Row &r); // 负债非负
 };
 
 struct Asset {
@@ -127,15 +118,15 @@ struct Asset {
 };
 struct Assets {
   using Row = Asset;
-  static constexpr Shape kShape{"信用资产"};
-  static constexpr Open kOpen{"信用资产", "信用资金额度"};
+  static constexpr const char *kName = "信用资产";
+  static constexpr ui::Open kOpen{"信用资产", "信用资金额度"};
   static constexpr std::array<int, 1> kViews{11};
   static constexpr std::array<int, 1> kFuncs{3200};
   static constexpr auto kCols = std::tuple{
       col<&Row::kv, as::groups>("信用资金额度", 0),
   };
-  using Index = mem::Pairs;                        // 「无」「300.00%」等非数原样
-  static void check(const Shape &t, const Row &r); // 首组名称非空
+  using Index = cols::Pairs;       // 「无」「300.00%」等非数原样
+  static void check(const Row &r); // 首组名称非空
 };
 
 struct Margin : Sec {
@@ -145,8 +136,8 @@ struct Margin : Sec {
 };
 struct Margins {
   using Row = Margin;
-  static constexpr Shape kShape{"标的证券"};
-  static constexpr Open kOpen{"标的证券查询", "融资保证金比例"};
+  static constexpr const char *kName = "标的证券";
+  static constexpr ui::Open kOpen{"标的证券查询", "融资保证金比例"};
   static constexpr std::array<int, 1> kViews{14};
   static constexpr std::array<int, 1> kFuncs{3216};
   static constexpr auto kCols = std::tuple{
@@ -157,8 +148,8 @@ struct Margins {
       col<&Row::remark, as::text>("备注", 7),
       col<&Row::status, as::text>("融资状态", 10),
   };
-  using Index = mem::Unique<&mem::sym>;
-  static void check(const Shape &t, const Row &r); // 保证金比例为正
+  using Index = cols::Unique<&cols::sym>;
+  static void check(const Row &r); // 保证金比例为正
 };
 
 struct Collat : Sec {
@@ -168,8 +159,8 @@ struct Collat : Sec {
 };
 struct Collats {
   using Row = Collat;
-  static constexpr Shape kShape{"担保品"};
-  static constexpr Open kOpen{"担保品查询", "担保状态"};
+  static constexpr const char *kName = "担保品";
+  static constexpr ui::Open kOpen{"担保品查询", "担保状态"};
   static constexpr std::array<int, 1> kViews{15};
   static constexpr std::array<int, 1> kFuncs{3220};
   static constexpr auto kCols = std::tuple{
@@ -180,14 +171,14 @@ struct Collats {
       col<&Row::status, as::text>("担保状态", 6),
       col<&Row::remark, as::text>("备注", 12),
   };
-  using Index = mem::Unique<&mem::sym>;
-  static void check(const Shape &t, const Row &r); // 折算率在 [0, 1]
+  using Index = cols::Unique<&cols::sym>;
+  static void check(const Row &r); // 折算率在 [0, 1]
 };
 
 struct CashFlows {
   using Row = CashFlow;
-  static constexpr Shape kShape{"资金流水"};
-  static constexpr Open kOpen{"资金流水", "剩余金额"};
+  static constexpr const char *kName = "资金流水";
+  static constexpr ui::Open kOpen{"资金流水", "剩余金额"};
   static constexpr std::array<int, 1> kViews{14};
   static constexpr std::array<int, 1> kFuncs{1118};
   static constexpr auto kCols = std::tuple{
@@ -200,8 +191,8 @@ struct CashFlows {
       col<&Row::amount, as::num>("发生金额", 7),
       col<&Row::balance, as::num>("剩余金额", 8),
   };
-  using Index = mem::Plain;
-  static void check(const Shape &t, const Row &r); // 带股数的行有代码
+  using Index = cols::Plain;
+  static void check(const Row &r); // 带股数的行有代码
 };
 
 // 插件发过 S 的功能 (直发有入参可照搬)
@@ -210,13 +201,18 @@ bool seen() {
   return std::any_of(S::kFuncs.begin(), S::kFuncs.end(), req::seen);
 }
 
-// 直发读表 S: 功能号取 kFuncs 里插件发过的那个, 带定位字串的功能翻页到底; over 覆盖入参 (字段号 → 值)
+// 直发读表 S 的各行: 功能号取 kFuncs 里插件发过的那个; over 覆盖入参 (字段号 → 值)
 template <class S>
-std::vector<typename S::Row> read(const std::map<int, std::string> &over = {}) {
+std::vector<typename S::Row> rows(const std::map<int, std::string> &over = {}) {
   const auto f = std::find_if(S::kFuncs.begin(), S::kFuncs.end(), req::seen);
-  need(f != S::kFuncs.end(), strf("%s: 插件还没发过 (先经界面查一次), 入参无从照搬", S::kShape.name));
-  const req::Answer a = req::ask_all(*f, over);
-  return mem::parse<S>(*f, a.cols, a.rows);
+  need(f != S::kFuncs.end(), strf("%s: 插件还没发过 (先经界面查一次), 入参无从照搬", S::kName));
+  const req::Answer a = req::ask(*f, over);
+  return cols::parse<S>(*f, a.cols, a.rows);
+}
+// 直发读表 S → 其索引 (S::Index)
+template <class S>
+auto read(const std::map<int, std::string> &over = {}) {
+  return S::Index::build(S::kName, rows<S>(over));
 }
 
 } // namespace live::tdx::tables

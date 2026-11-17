@@ -31,20 +31,12 @@ constexpr long kKeys[] = {1140, 144};           // 页的查询键 (「查 询�
 constexpr long kCounts[] = {1243, 166};         // 页的条数标签
 constexpr long kMsgText = 7013, kMsgYes = 7015; // 确认框 / 提示框: 正文 Static、确认按钮
 
-// 交易栏页签: 认页的列 (只此页的表头有), 投给宿主切到它的命令
+// 交易栏页签: 投给宿主切到它的命令
 struct Tab {
-  const char *name, *col;
+  std::string_view name;
   long cmd;
 };
-constexpr Tab kTabs[] = {{"持仓", "可卖数量", 0x271D}, {"成交", "成交编号", 0x271B}, {"撤单", "委托价格", 0x2716}};
-
-const Tab &tab_of(const std::string &name) {
-  for (const Tab &t : kTabs)
-    if (name == t.name)
-      return t;
-  assert(false && "没有这个页签");
-  return kTabs[0];
-}
+constexpr Tab kTabs[] = {{"持仓", 0x271D}, {"成交", 0x271B}, {"撤单", 0x2716}};
 
 // 「第1--N条」/「共N条」→ N; 不是这形 → 无
 std::optional<int> count_in(std::string_view v) {
@@ -260,15 +252,10 @@ Page query(const std::string &col, const std::function<void()> &act, double time
   return p;
 }
 
-Page open_tab(const std::string &tab) {
-  trace::Span span("页签「" + tab + "」");
-  const Tab &t = tab_of(tab);
-  return query(t.col, [&] { win::post(host(), win::kWmCommand, t.cmd); });
-}
-
-Page open_page(const std::string &func, const std::string &col, double timeout) {
-  trace::Span span("开页「" + func + "」", {{"col", col}});
-  return query(col, [&] { click_func(func); }, timeout);
+Page open(const Open &o, double timeout) {
+  trace::Span span(strf("开页「%s」", o.page), {{"col", o.col}});
+  const Tab *t = std::find_if(std::begin(kTabs), std::end(kTabs), [&](const Tab &x) { return x.name == o.page; });
+  return query(o.col, [&] { t != std::end(kTabs) ? win::post(host(), win::kWmCommand, t->cmd) : click_func(o.page); }, timeout);
 }
 
 // ---------- 弹框 ----------

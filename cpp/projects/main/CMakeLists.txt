@@ -331,10 +331,12 @@ set(MATH_PRECISE
     live/Broker.cpp
     live/Clients.cpp
     live/Rebal.cpp
+    live/Terms.cpp
+    live/tdx/Cols.cpp
     live/tdx/Credit.cpp
     live/tdx/Flash.cpp
     live/tdx/Flow.cpp
-    live/tdx/Mem.cpp
+    live/tdx/Heap.cpp
     live/tdx/Proc.cpp
     live/tdx/Req.cpp
     live/tdx/Schema.cpp

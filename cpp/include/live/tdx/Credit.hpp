@@ -10,7 +10,7 @@
 
 namespace live::tdx::credit {
 
-Terms pull(const Log &log, const Live &live);
+Terms pull(const Report &r);
 Account account(std::shared_ptr<const Keyed<Position>> held);
 
 } // namespace live::tdx::credit

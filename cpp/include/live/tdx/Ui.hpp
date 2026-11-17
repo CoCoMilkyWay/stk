@@ -39,8 +39,11 @@ struct Page {
 };
 // act 让客户端查一次: 等表头含 col 的页显示着、且其查询键 act 后禁用过且此刻可用. act 前等空闲; 各至多 timeout 秒
 Page query(const std::string &col, const std::function<void()> &act, double timeout = kQueryWait);
-Page open_tab(const std::string &tab);                                                        // 切页签「持仓」「成交」「撤单」
-Page open_page(const std::string &func, const std::string &col, double timeout = kQueryWait); // 功能树点 func, 认页的列 col
+// 一页: page = 交易栏页签 (持仓 / 成交 / 撤单) 或功能树上的功能名, col = 认页的列 (只此页的表头有)
+struct Open {
+  const char *page, *col;
+};
+Page open(const Open &o, double timeout = kQueryWait); // 页签即向宿主投其命令, 否则点功能树; 经 query 等查完
 
 // ---------- 弹框 ----------
 

@@ -12,15 +12,15 @@ namespace {
 
 const std::string kNormal = "正常";
 
-// 直发读整表 S (翻页到底) → 索引; 进度记 log / live
+// 直发读整表 S (翻页到底) → 索引; 进度报给 r
 template <class S>
-mem::IndexOf<S> full(const Log &log, const Live &live) {
-  trace::Span span(S::kShape.name);
-  live(strf("直发查「%s」…", S::kShape.name));
-  const std::vector<typename S::Row> rows = tables::read<S>();
-  log("rows", {{"tab", S::kShape.name}, {"n", rows.size()}});
-  trace::ev("rows", {{"tab", S::kShape.name}, {"n", rows.size()}});
-  return mem::index<S>(rows);
+auto full(const Report &r) {
+  trace::Span span(S::kName);
+  r.live(strf("直发查「%s」…", S::kName));
+  auto t = tables::read<S>();
+  r.log("rows", {{"tab", S::kName}, {"n", t.list.size()}});
+  trace::ev("rows", {{"tab", S::kName}, {"n", t.list.size()}});
+  return t;
 }
 
 Term term_of(const tables::Margin *m, const tables::Collat *c, Mkt mkt) {
@@ -69,11 +69,16 @@ double value(const std::map<std::string, std::string> &c, const char *name) {
 
 } // namespace
 
-Terms pull(const Log &log, const Live &live) { return merge(full<tables::Margins>(log, live), full<tables::Collats>(log, live)); }
+Terms pull(const Report &r) {
+  const Keyed<tables::Margin> mg = full<tables::Margins>(r);
+  const Keyed<tables::Collat> co = full<tables::Collats>(r);
+  Terms t = merge(mg, co);
+  trace::ev("terms", {{"n", t.size()}});
+  return t;
+}
 
 Account account(std::shared_ptr<const Keyed<Position>> held) {
-  const auto c = mem::index<tables::Assets>(tables::read<tables::Assets>());
-  const auto d = mem::index<tables::Debts>(tables::read<tables::Debts>());
+  const auto c = tables::read<tables::Assets>();
   Account a;
   a.assets = value(c, "担保资产");
   a.line = value(c, "最高融资额度") - value(c, "融资负债（含费用）");
@@ -82,9 +87,9 @@ Account account(std::shared_ptr<const Keyed<Position>> held) {
   a.avail = value(c, "可用保证金");
   a.cash = value(c, "现金资产");
   a.rate = value(c, "融资年利率");
-  for (const tables::Debt &r : d.list)
-    a.debts[r.code] = {r.qty, r.amount};
+  a.debts = tables::read<tables::Debts>();
   a.held = std::move(held);
+  trace::ev("acct", {{"assets", a.assets}, {"line", a.line}, {"debt", a.debt}, {"net", a.net}, {"avail", a.avail}, {"cash", a.cash}, {"debts", a.debts.list.size()}});
   return a;
 }
 
