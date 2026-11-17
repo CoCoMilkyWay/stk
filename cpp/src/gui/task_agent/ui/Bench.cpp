@@ -249,7 +249,8 @@ std::string call_line(Tool t, const json &args) { return Call{t, args}.text(80);
 void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool blocked) {
   Impl &b = *impl_;
   const bool held = b.running.has_value() || b.lab.busy();
-  // ---- 作用域 (换了就重绑, 快照与工作台的调用清空) ----
+  // ---- 作用域 (先由作用域行把持有期校到本层可搜的; 换了就重绑, 快照与工作台的调用清空) ----
+  scope_row(data, sc, b.pool_rows, b.lab, held, "作用域:");
   if (!held && b.lab.scope() != sc && !catalog::holds(data, sc.level).empty()) {
     b.lab.bind(data, sc, false);
     if (!b.notes.loaded(false))
@@ -257,7 +258,6 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
     b.snap.clear(), b.snap_dir.clear(), b.snap_stamp.clear(), b.snap_k = 0;
     b.reset();
   }
-  scope_row(data, sc, b.pool_rows, b.lab, held, "作用域:");
   const bool bound = b.lab.scope() == sc;
   if (!bound) {
     ImGui::TextDisabled("该作用域未就绪 (无可搜持有期), 或调用在跑");
