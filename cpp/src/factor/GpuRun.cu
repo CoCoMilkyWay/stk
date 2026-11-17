@@ -1,9 +1,8 @@
 // =============================================================================
-// GpuRun 的 CUDA 实现: 输入拷进显存 (会话内一次) → 跑 Gpu.cuh 的算子 → 输出拷回
+// GpuRun 的 CUDA 实现: 常驻会话 / 设备平面 / Stat 与 Search 会话
 // =============================================================================
-//   只服务对拍的正确性 + 纯 kernel 计时, 不是挖掘的性能路径 (挖掘侧数据常驻显存, 不走这里).
 //   分派表由 OpTable.hpp 展开 (下标 = expr::kOps 下标): 表里有名字而 Gpu.cuh 无同名 struct → 此处编译错.
-//   逐点链融合节点 (Dag fuse) 的解释核也在这里 (run_fused).
+//   逐点链融合节点 (Dag fuse) 的解释核在 run_fused.
 // =============================================================================
 
 #include "factor/CS/Gpu.cuh" // IWYU pragma: keep
@@ -191,7 +190,6 @@ Session *session_open(size_t n) {
   assert(n > 0);
   Session *s = new Session;
   s->n = n;
-  plane_alloc(s->o, n); // 输出不清零: 契约是后端写满每格
   CU(cudaEventCreate(&s->e0));
   CU(cudaEventCreate(&s->e1));
   return s;
@@ -203,7 +201,8 @@ void session_close(Session *s) {
     plane_free(*p);
     delete p;
   }
-  plane_free(s->o);
+  if (s->o.m)
+    plane_free(s->o);
   if (s->ws)
     CU(cudaFree(s->ws));
   CU(cudaEventDestroy(s->e0));
@@ -211,21 +210,27 @@ void session_close(Session *s) {
   delete s;
 }
 
+size_t session_bytes(const Session *s) {
+  if (!s)
+    return 0;
+  size_t b = s->ws_cap + (s->o.m ? (sizeof(float) + 1) * s->n : 0);
+  for (const DevPlane *p : s->in)
+    b += ((p->v ? sizeof(float) : 0) + 1) * s->n;
+  return b;
+}
+
 DevPlane *upload(Session *s, const float *v, const uint8_t *m) {
   assert(s && v && m);
-  DevPlane *p = new DevPlane;
-  plane_alloc(*p, s->n);
-  CU(cudaMemcpy(p->v, v, s->n * sizeof(float), cudaMemcpyHostToDevice));
-  CU(cudaMemcpy(p->m, m, s->n, cudaMemcpyHostToDevice));
+  DevPlane *p = plane_new(s);
+  upload_to(s, p, v, m);
   s->in.push_back(p);
   return p;
 }
 
 DevPlane *upload_mask(Session *s, const uint8_t *m) {
   assert(s && m);
-  DevPlane *p = new DevPlane;
-  CU(cudaMalloc(&p->m, s->n));
-  CU(cudaMemcpy(p->m, m, s->n, cudaMemcpyHostToDevice));
+  DevPlane *p = mask_new(s);
+  upload_to(s, p, nullptr, m);
   s->in.push_back(p);
   return p;
 }
@@ -237,16 +242,35 @@ DevPlane *plane_new(Session *s) {
   return p;
 }
 
+DevPlane *mask_new(Session *s) {
+  assert(s);
+  DevPlane *p = new DevPlane;
+  CU(cudaMalloc(&p->m, s->n));
+  return p;
+}
+
 void plane_del(Session *s, DevPlane *p) {
   assert(s && p);
   plane_free(*p);
   delete p;
 }
 
+void upload_to(Session *s, DevPlane *p, const float *v, const uint8_t *m) {
+  assert(s && p && (v || m));
+  if (v) {
+    assert(p->v);
+    CU(cudaMemcpy(p->v, v, s->n * sizeof(float), cudaMemcpyHostToDevice));
+  }
+  if (m)
+    CU(cudaMemcpy(p->m, m, s->n, cudaMemcpyHostToDevice));
+}
+
 void download(Session *s, const DevPlane *p, float *v, uint8_t *m) {
   assert(s && p && (v || m));
-  if (v)
+  if (v) {
+    assert(p->v);
     CU(cudaMemcpy(v, p->v, s->n * sizeof(float), cudaMemcpyDeviceToHost));
+  }
   if (m)
     CU(cudaMemcpy(m, p->m, s->n, cudaMemcpyDeviceToHost));
 }
@@ -284,9 +308,11 @@ int search_max_batch() { return stat::kMaxBatch; }
 // 会话版: 写会话输出平面后拷回宿主 (宿主 pin 过则走 DMA)
 void run(Session *s, int op, const DevPlane *const *in, int n_in, const DevPlane *g, float *ov, uint8_t *om, int T, int A, int seg,
          const Param &p, double *kernel_ms) {
+  assert(s);
+  if (!s->o.m)
+    plane_alloc(s->o, s->n);
   run_dev(s, op, in, n_in, g, &s->o, T, A, seg, p, kernel_ms);
-  CU(cudaMemcpy(ov, s->o.v, s->n * sizeof(float), cudaMemcpyDeviceToHost));
-  CU(cudaMemcpy(om, s->o.m, s->n, cudaMemcpyDeviceToHost));
+  download(s, &s->o, ov, om);
 }
 
 // 一次性版: 临时会话, 上传 → 跑 → 关
@@ -318,23 +344,30 @@ void run_fused(Session *s, const Fuse &f, const DevPlane *const *in, int n_in, D
 
 namespace {
 
-// 设备缓冲 (任意元素类型): 拷入 / 分配 / 拷出 / 释放
+// 设备缓冲 (任意元素类型): alloc 只分配 (整张覆写的平面), zalloc 分配并清零 (带未写尾段的汇总缓冲)
 template <class E>
 struct DevBuf {
   E *p = nullptr;
-  void up(const E *h, size_t n) {
-    CU(cudaMalloc(&p, n * sizeof(E)));
-    CU(cudaMemcpy(p, h, n * sizeof(E), cudaMemcpyHostToDevice));
+  size_t n = 0;
+  size_t bytes() const { return n * sizeof(E); }
+  void alloc(size_t n_) {
+    n = n_;
+    CU(cudaMalloc(&p, bytes()));
   }
-  void alloc(size_t n) {
-    CU(cudaMalloc(&p, n * sizeof(E)));
-    CU(cudaMemset(p, 0, n * sizeof(E)));
+  void zalloc(size_t n_) {
+    alloc(n_);
+    CU(cudaMemset(p, 0, bytes()));
   }
-  void put(const E *h, size_t n) const { CU(cudaMemcpy(p, h, n * sizeof(E), cudaMemcpyHostToDevice)); } // 已分配, 只拷入
-  void down(E *h, size_t n) const { CU(cudaMemcpy(h, p, n * sizeof(E), cudaMemcpyDeviceToHost)); }
+  void up(const E *h, size_t n_) {
+    alloc(n_);
+    put(h, n_);
+  }
+  void put(const E *h, size_t n_) const { CU(cudaMemcpy(p, h, n_ * sizeof(E), cudaMemcpyHostToDevice)); }
+  void down(E *h, size_t n_) const { CU(cudaMemcpy(h, p, n_ * sizeof(E), cudaMemcpyDeviceToHost)); }
   void free_() {
     if (p)
       CU(cudaFree(p));
+    p = nullptr, n = 0;
   }
 };
 
@@ -405,11 +438,17 @@ struct DevLabels {
     }
     eo.free_();
   }
+  size_t bytes() const {
+    size_t b = eo.bytes();
+    for (int i = 0; i < H; ++i)
+      b += v[kLong][i].bytes() + v[kShort][i].bytes() + m[i].bytes() + ry[i].bytes();
+    return b;
+  }
 };
 
 } // namespace
 
-// Stat 常驻会话: 标签 + rx / ec 工作区 + 一级 / 分片 / 出口, open 时全部就位
+// Stat 常驻会话: 标签 + rx / ec 工作区 + 一级 / 分片 / 出口, open 时全部就位, load 可按同形状新块覆盖标签
 struct StatSession {
   factor::stat::Span s;
   DevLabels lab;
@@ -429,13 +468,18 @@ StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, dou
   const int H = L.hd.n, NB = stat::n_parts(s->s);
   s->lab.alloc(L.hd, seg, n);
   s->rx.alloc(n), s->ec.alloc(n);
-  s->rows.alloc(static_cast<size_t>(H) * T);
-  s->part.alloc(static_cast<size_t>(H) * NB), s->acc.alloc(static_cast<size_t>(H));
+  s->rows.zalloc(static_cast<size_t>(H) * T);
+  s->part.zalloc(static_cast<size_t>(H) * NB), s->acc.zalloc(static_cast<size_t>(H));
   s->w = {s->rows.p, s->part.p, s->acc.p, H, NB};
+  stat_load(s, L, prep_ms);
+  return s;
+}
+
+void stat_load(StatSession *s, const factor::stat::Labels &L, double *prep_ms) {
+  assert(s);
   const double pms = s->lab.load(L, s->s, s->tm);
   if (prep_ms)
     *prep_ms = pms;
-  return s;
 }
 
 void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Dir d, int t0_abs, int t_lo, int t_back,
@@ -465,6 +509,10 @@ void stat_close(StatSession *s) {
   assert(s);
   s->acc.free_(), s->part.free_(), s->rows.free_(), s->ec.free_(), s->rx.free_(), s->lab.free_();
   delete s;
+}
+
+size_t stat_bytes(const StatSession *s) {
+  return s ? s->lab.bytes() + s->rx.bytes() + s->ec.bytes() + s->rows.bytes() + s->part.bytes() + s->acc.bytes() : 0;
 }
 
 // 一次性版: 临时会话 + 上传 x / g
@@ -504,8 +552,8 @@ SearchSession *search_open(int T, int A, int seg, int Cmax, const factor::stat::
   s->lab.alloc(hd, seg, n);
   const search::Work w = search::plan(Cmax, T, A, seg, hd.n, 0, 0); // t_lo = t_back = 0 是分片数上界
   s->rx.alloc(w.rx_elems());
-  s->part.alloc(w.part_elems());
-  s->out.alloc(w.out_elems());
+  s->part.zalloc(w.part_elems());
+  s->out.zalloc(w.out_elems());
   return s;
 }
 
@@ -554,6 +602,10 @@ void search_close(SearchSession *s) {
   s->out.free_(), s->part.free_(), s->rx.free_();
   s->lab.free_();
   delete s;
+}
+
+size_t search_bytes(const SearchSession *s) {
+  return s ? s->lab.bytes() + s->rx.bytes() + s->part.bytes() + s->out.bytes() : 0;
 }
 
 void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int seg,

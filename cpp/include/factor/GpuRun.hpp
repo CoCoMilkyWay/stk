@@ -1,12 +1,10 @@
 #pragma once
 
 // =============================================================================
-// GPU 后端的对拍入口 (把 CUDA 编译单元与 op_check 的宿主代码隔开)
+// GPU 后端的宿主接口 (POD 边界: 把 nvcc 编译单元与 clang 宿主代码隔开)
 // =============================================================================
-//   op_check 用纯 C++ 编译, Gpu.cuh 用 clang -x cuda 编译; 两边只通过这个声明相见.
-//   拷入拷出由 .cu 侧包办: 一次性版本收**宿主指针** (op_check); 常驻 Session 版本一轮只上传一次
-//   (GUI Operators 表: 算子之间除了 D2H 拷回一张输出, 不留别的 overhead).
-//   未开 CUDA 时链接 op_check_gpu_stub.cpp, available() = false, op_check 退化成两方对拍.
+//   宿主侧纯 C++ 编译, GpuRun.cu 由 nvcc 编译; 两边只经本头声明相见 (引擎与 op_check 同一入口).
+//   未开 CUDA 时链接 GpuRunStub.cpp, available() = false.
 // =============================================================================
 
 #include "factor/Contract.hpp"
@@ -27,16 +25,15 @@ void mem_info(size_t *free_bytes, size_t *total_bytes);
 // Search 一批候选上限 (= Stat/Contract.hpp kMaxBatch, 候选指针走 kernel 参数区); 未编译 CUDA → 0
 int search_max_batch();
 
-// ---- 常驻会话: 一轮对拍里输入只上传一次, 逐算子只跑 kernel + 拷回输出 ----
-//   Session 持有: 上传过的输入平面 (归会话, close 时统一释放) / 一块输出平面 / 按需长大的工作区 / 计时事件.
-//   n = T·A 开会话时定死 (整轮张量同形). 输出不清零 (契约: 后端写满每格).
-//   pin / unpin: 把宿主输出缓冲注册成页锁定 (cudaHostRegister), D2H 走 DMA; 一轮一次, 不要逐算子做.
+// ---- 常驻会话: 形状 n = T·A 开会话时定死, 持有按需增长的算子工作区 / 计时事件 / (对拍用) 输出平面 ----
+//   pin / unpin: 宿主缓冲注册成页锁定 (cudaHostRegister), D2H 走 DMA.
 struct Session;
 struct DevPlane; // 显存里一对 (值, 掩码) 平面
 Session *session_open(size_t n);
 void session_close(Session *s);
-DevPlane *upload(Session *s, const float *v, const uint8_t *m); // n 取会话的
-DevPlane *upload_mask(Session *s, const uint8_t *m);            // 只有掩码的平面 (截面池 g; v = nullptr)
+size_t session_bytes(const Session *s);
+DevPlane *upload(Session *s, const float *v, const uint8_t *m); // 归会话释放 (对拍用)
+DevPlane *upload_mask(Session *s, const uint8_t *m);            // 归会话释放 (只有掩码)
 void pin(void *host, size_t bytes);
 void unpin(void *host);
 
@@ -47,13 +44,14 @@ void unpin(void *host);
 void run(Session *s, int op, const DevPlane *const *in, int n_in, const DevPlane *g, float *ov, uint8_t *om, int T, int A, int seg,
          const Param &p, double *kernel_ms = nullptr);
 
-// ---- 设备常驻中间量 (因子 DAG: 算子之间不落宿主, 见 factor/EvalGpu.hpp) ----
-//   plane_new / plane_del  会话形状的空平面 (不清零), 归调用方释放 (不在会话的 in 列表里)
-//   download               拷回宿主 (v / m 任一可空 = 只拷另一侧; 如只要掩码算有效率)
-//   run_dev                算子输出写进设备平面 out (不拷回); 其余同会话版
-//   run_fused              逐点链融合节点 (Dag fuse; Contract Fuse): in[q] (q < n_in) = 外部输入, 一个核逐格跑完全部步, 只写 out
+// ---- 设备常驻平面 (因子引擎: 输入 / 中间量常驻显存, 见 factor/EvalGpu.hpp) ----
+//   plane_new / mask_new / plane_del  会话形状的空平面 (值+掩码 / 仅掩码, 不清零), 归调用方释放
+//   upload_to ⇄ download              宿主 ↔ 设备平面 (v / m 任一可空 = 只传另一侧)
+//   run_dev / run_fused               算子 / 逐点融合链输出写进设备平面 out (不拷回)
 DevPlane *plane_new(Session *s);
+DevPlane *mask_new(Session *s);
 void plane_del(Session *s, DevPlane *p);
+void upload_to(Session *s, DevPlane *p, const float *v, const uint8_t *m);
 void download(Session *s, const DevPlane *p, float *v, uint8_t *m);
 void run_dev(Session *s, int op, const DevPlane *const *in, int n_in, const DevPlane *g, DevPlane *out, int T, int A, int seg,
              const Param &p, double *kernel_ms = nullptr);
@@ -79,9 +77,11 @@ void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, i
 // run_stat 一次性版 = open + 上传 x / g + eval (整块) + close.
 struct StatSession;
 StatSession *stat_open(int T, int A, int seg, const factor::stat::Labels &L, double *prep_ms = nullptr);
+void stat_load(StatSession *s, const factor::stat::Labels &L, double *prep_ms = nullptr);
 void stat_eval(StatSession *s, const DevPlane *x, const DevPlane *g, factor::stat::Frame f, factor::stat::Dir d, int t0_abs, int t_lo, int t_back,
                factor::stat::Accum *acc, factor::stat::Row *rows = nullptr, uint8_t *ec = nullptr, uint16_t *rx = nullptr, double *eval_ms = nullptr);
 void stat_close(StatSession *s);
+size_t stat_bytes(const StatSession *s);
 
 // Search 批评估算子 (factor/Search/Gpu.cuh; 契约 factor/Search/Contract.hpp): 一个会话 = 一块 (chunk) 的形状 (T, A) + 候选上限 Cmax + 持有期,
 // 显存 open 时一次分配 (标签 / ry / rx[Cmax] / 分片 / 结果). 流程: open → 每块 load (上传宿主标签 hd.n 组, ry 预处理, 候选共用) →
@@ -95,6 +95,7 @@ void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPla
 // 刚 eval 过的候选 c 的 r16(x) 抽样行: 行 t0 + i·stride (i < n_rows) 各 A 格 → out[n_rows][A] (调用方给候选间截面相关用)
 void search_ranks(SearchSession *s, int c, int t0, int stride, int n_rows, uint16_t *out);
 void search_close(SearchSession *s);
+size_t search_bytes(const SearchSession *s);
 // 一次性版 (op_check 用): 宿主指针进出 (xv[c] / xm[c] 各一张 [T][A]), 内部 open + 上传 + load + eval + close
 void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int seg,
                 int t0_abs, int t_lo, int t_back, const factor::stat::Holds &hd, double cap, const factor::stat::Label *lab, factor::search::Result *out,

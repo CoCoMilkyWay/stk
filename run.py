@@ -1,7 +1,7 @@
 """Build & Run Pipeline (Linux)
 
 Usage:
-    Set MODE, then: python run.py
+    Set MODE / BUILD, then: python run.py
 """
 
 import os
@@ -25,6 +25,9 @@ APP_NAME = "main"
 #   "assert"      -O2   -         开    直接运行                     -
 #   "production"  -O2   -         关    直接运行 (NDEBUG)            -
 MODE = "assert"
+
+# True: CMake 配置 + 编译; False: 跳过编译, 直接运行已有 app_main
+BUILD = True
 
 # 因子 GPU 后端 (factor/*/Gpu.cuh, nvcc): 与上面的模式正交. ON 需要完整 CUDA Toolkit (nvcc + CCCL),
 # op_check 与 app_main (Alpha→Operators 页 GPU 列) 一并链 cudart; OFF 链 stub, GPU 列显示 n/a.
@@ -107,6 +110,7 @@ def _cleanup_processes():
 
 def main():
     assert MODE in modes.MODES, MODE
+    assert BUILD or BINARY.is_file(), f"binary not found: {BINARY}"
     os.chdir(REPO_ROOT)
     fetch = _start_fetch()
 
@@ -122,8 +126,9 @@ def main():
     print("Scanning untracked...")
     _prune_untracked()
 
-    print("Building...")
-    build.build(PROJECT_DIR, MODE, ENABLE_CUDA)
+    if BUILD:
+        print("Building...")
+        build.build(PROJECT_DIR, MODE, ENABLE_CUDA)
 
     print("Running...")
     sys.exit(modes.launch(MODE, BINARY, BUILD_DIR))

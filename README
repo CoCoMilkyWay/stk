@@ -1,5 +1,5 @@
 ```
-入口: run.py ──► py/build.py ──► CMake ──► app_main (C++可执行文件)
+入口: run.py ─(BUILD: py/build.py → CMake)─► py/modes.py ──► app_main (C++可执行文件)
 
 GUI布局:
 ┌───────────────────────────────────────────────────────────────────────────┐
@@ -36,7 +36,7 @@ GUI布局:
 ```
 stk/
 ├── AGENT.md                                            # 🤖 Agent 挖因子: 状态机 / 调用协议与工具表 / 会话流水字段
-├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + CUDA 开关 → py/build.py → py/modes.py
+├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + BUILD / CUDA 开关 → py/build.py (可选) → py/modes.py
 ├── py/                                                 # 🐍 Python 工具链
 │   ├── build.py                                        # 🐍 构建: CMake 配置 + 编译 (BUILD_MODE / GPU_BACKEND)
 │   ├── modes.py                                        # 🐍 运行: 五模式同签名 (tsan / debug / profile / assert / production)
@@ -195,7 +195,6 @@ stk/
 │   │   │   │   │   ├── RunService.hpp                  # 🖥️ 因子表 Run: 逐文件一张共享 DAG → 分层 / 多空 / 换手成本统计 → 回写 stats
 │   │   │   │   │   ├── SearchService.hpp               # 🖥️ 参数搜索: 采样 → 曲面取峰 → 细化 → 挑显著且不冗余的 → 回写 weights (目标见 factor/Search)
 │   │   │   │   │   ├── InspectService.hpp              # 🖥️ 单因子深看 (不写文件)
-│   │   │   │   │   ├── LensService.hpp                 # 🖥️ 观察 worker: 一组根 + 特征原值在评估期 (与回测同一段) 上整期一块 (不写文件; 与 Inspect 同一条管线)
 │   │   │   │   │   └── PortfolioService.hpp            # 🖥️ 组合: 因子 / 篮子 / 个股 → 账 PortfolioBook (线 × [毛收益 / 冲击 / 固定 / 增仓量] × 行)
 │   │   │   │   └── ui/PortfolioBoxes.hpp               # 🖥️ Alpha → Factors 的组合小框 + 当前组合 (Lines 页因子 / 策略两组的来源)
 │   │   │   ├── quote/                                  # 🖥️ 行情: Market 各页 / Live 持仓页 / Database Sync 页共用
@@ -299,30 +298,20 @@ stk/
 │   │   │   ├── account/
 │   │   │   │   ├── AccountHub.hpp                      # 💹 账户净值中枢 (Live 与 Market 共用): 事务道上拉资金流水并账 (存盘即进账本代) / 拼账户的持仓 (券商实时持仓优先, 否则回放末日; Market 账户行的成分 / 当日四列) 与当日交给 QuoteHub (历史 = 价格库的账户侧; 当日 = 持仓 × 新浪分钟收)
 │   │   │   │   └── AccountSide.hpp                     # 💹 行情的账户一侧: 一日 day_of (持仓 × 分钟收 → 时间加权指数的逐槽点位 → 一日; 历史回放 / 当日同一核) + 账本回放 replay (价格库 worker 上调; 全史 = 紧凑形, 恒带分钟)
-│   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (自成一体: 自带配置 / 对话线程 / 状态机 / GUI 任务; 与项目只经 Bridge; 协议见 AGENT.md)
-│   │   │       ├── TaskAgent.hpp                       # 🤖 Agent 任务: Mine (作用域 / 会话: 载入 · 继续 · 回退 · 插话 / 时间线 / 假设板 / 候选 / 记录的处理 / 开放的特征与算子) / Config
+│   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (双翼 Async 对仗: 左翼 Chat 问模型 ↔ 右翼 Lab 问数据核; 协议见 AGENT.md)
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 + 常量占位表 kConsts (提示词模板与工具说明共用) / 入库门槛默认值 / 各目录
-│   │   │       ├── Llm.hpp                             # 🤖 对话客户端 Session (纯传输, HTTPS, 不留对话态): Zhipu / Cursor 两后端同一个 send (每次整份), 结局归一 End
-│   │   │       ├── Chat.hpp                            # 🤖 对话的后台单线程: ask (整份上下文) → poll 取 Tick
-│   │   │       ├── Timeline.hpp                        # 🤖 时间线 (全会话唯一真相) 的纯函数: 状态 StateOf (调用收尾逐个 Apply: 假设板 / 查过的叶 / 入库) / 计数 TallyOf / 流程旗 FlagsOf
-│   │   │       ├── Tree.hpp                            # 🤖 上下文 = 时间线的纯函数 TurnsOf: 首条 + 研究树 (按假设节点 / 结果类型收起) + 上一轮回复 + 本条
 │   │   │       ├── Enum.hpp                            # 🤖 枚举表 (一个枚举一行 AGENT_ROWS): def 取行 / kNum 个数 / IdOf 按 id 反查; 带 id 的枚举 JSON 一律写 id
-│   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 / 数的写法 / 检索
-│   │   │       ├── Journal.hpp                         # 🤖 会话日志目录 (system.md / 逐轮 md / events.jsonl / report.md / session.json 存档) + 工具样本
-│   │   │       ├── Tools.hpp                           # 🤖 工具表 → 系统提示工具节 / 回复解析 ParseCalls / 参数校验 / 参数标签 (界面 / 报告 / 全局记录); 执行记录 Act
-│   │   │       ├── Views.hpp                           # 🤖 观察工具 (含 view_book): Spec → Lab::Job (经 Lab 校验) ↔ Lab::Got → Render → markdown; 视图表 kViews
-│   │   │       ├── Docs.hpp                            # 🤖 研报库工具 (只读 output/data/doc): search_docs / search_factors / read_doc
-│   │   │       ├── Prompt.hpp                          # 🤖 提示词模板填充 + 工具结果文本
-│   │   │       ├── Board.hpp                           # 🤖 假设板: 机制假设与判定; 判为支持的假设才能挂变体
-│   │   │       ├── Notes.hpp                           # 🤖 全局记录 (特征申请 / 工具申请 / 发现 / 建议与 bug): 一类一个 jsonl, 跨会话累积; 研究员逐条标处理
-│   │   │       ├── Bridge.hpp                          # 🤖 与项目的唯一接口面: catalog (作用域: 池 / 层 / 持有期) + Lab (作用域工作区)
-│   │   │       │                                       #    · 候选的一生 Cand ─stage→ 候选文件 ─eval→ Result ─adopt (过门槛)→ 正式因子目录
-│   │   │       │                                       #    · 四道 Search / Run / Lens (LensService) / Replay (ReplayService), 平面经 Store 与 GUI 服务共用
-│   │   │       ├── Acts.hpp                            # 🤖 一个调用的执行, 按执行方分派; 回复级约束 RuleMiss
-│   │   │       ├── Book.hpp                            # 🤖 盘口重放的原料 BookSpec → Book (逐秒盘口 / 大单事件 / 全簿) + 交易时段与交易秒; 不碰项目, ReplayService 产出 ↔ Views 成文
-│   │   │       ├── services/ReplayService.hpp          # 🤖 盘口重放 worker: 一 (资产, 日) 逐笔进订单簿 → Book (view_book)
-│   │   │       └── Mine.hpp                            # 🤖 挖掘会话状态机 (AGENT.md 状态图): 每帧 poll Chat / Lab 两 worker; 会话设定 Setup (New 定) ↔ 一段的设定 Leg (New / 继续 定);
-│   │   │                                               #    停 / 续 (继续做什么 cont: hint 与 resume 同一判断) / 回退 (截时间线, 状态照它重算); 存档与载入在 Save.cpp (成对 to_json / from_json)
+│   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 码点 / 检索词过滤 / 数的写法 / 火花线 / Markdown 表格建表器 Table
+│   │   │       ├── Async.hpp                           # 🤖 通用单线程异步管道 Async<Req, Step, Out, Live>: Chat 与 Lab 共用同一套 send / poll / live / busy / cancel
+│   │   │       ├── Llm.hpp                             # 🤖 左翼 · 大模型传输与 Chat: 驱动表 kDrivers 分派 Zhipu / Cursor (HTTPS, 零异常控制流, 不留对话态)
+│   │   │       ├── Tools.hpp                           # 🤖 工具真相表 (三态执行 Exec: Sync / Lab / Human) → 系统提示工具节 / 回复解析 ParseCalls / 参数校验 / ask_human 问答
+│   │   │       ├── Notes.hpp                           # 🤖 研究记录双板: 会话假设板 Board (H1, H2 …) ↔ 跨会话全局记录 Notes (F / T / I / R, jsonl 累积, 研究员标处理)
+│   │   │       ├── Docs.hpp                            # 🤖 研报库工具 (只读 output/data/doc, 按篇懒加载并看取消旗): search_docs / search_factors / read_doc
+│   │   │       ├── Views.hpp                           # 🤖 观察核: 9 个特征库视图 (分块流式 + ForkJoin 全核归约, K 线直读, 按需跳块) + view_book 逐笔重放进常驻订单簿
+│   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 单线程工作台 Lab (Eval: Search→单文件 Run→代表点分层 直通; View/Docs 原地成文; Store 共用)
+│   │   │       ├── Prompt.hpp                          # 🤖 提示词模板填充 + 工具结果成文 + 时间线唯一状态折叠 StateOf + 上下文纯函数 TurnsOf (含研究树收起)
+│   │   │       ├── Mine.hpp                            # 🤖 挖掘会话状态机: 每帧对仗轮询 Chat / Lab; 停 / 续 / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
+│   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (作用域 / 会话控制 / 时间线 / 假设板 / 候选 / 记录处理 / 开放的特征与算子) / Config
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                           #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)
@@ -448,7 +437,7 @@ stk/
     │   ├── beta/pools.json                             # ⚙️ 子池表: Beta → Style 选定的子池 (池名 = features/Panel/PoolSpec.hpp 规范串; 无文件 = 缺省池表; 文件序 = 池表序, 各页池列表左键 / 中键拖动可调); 写入即进程内重启生效
     │   ├── market/watch.json                           # ⚙️ Market 自选: 篮子键 / 个股代码 (本机; 文件序 = 自选序, 右表自选组拖动可调)
     │   ├── market/ui.json                              # ⚙️ Market NAV / FLOW 选中的行 (行 id) + 所属组合 (本机; 改了即存, 重开读回)
-    │   ├── agent/                                      # ⚙️ Agent: prompt/<名>.md 提示词模板 (system / first / round / retry / review / test) · families.md 特征族卡
+    │   ├── agent/                                      # ⚙️ Agent: prompt/<名>.md 提示词模板 (system / first / round / retry / test) · families.md 特征族卡
     │   │                                               #    · keys.json 后端 key · ui.json Mine / Config 页选项 (本机)
     │   └── live/                                       # ⚙️ Live: lists/<名>.csv 调仓名单 (名 = 字母数字下划线; 每行首列一个 6 位代码, 行序即排名)
     │                                                   #    · ui.json 页面选项 (隐私) · .sudo_pass 放开 ptrace 读客户端内存用的 sudo 密码 (本机)
@@ -481,7 +470,7 @@ stk/
     ├── agent/<main|test>/                              # ③ 的旁路: Agent 挖候选 (test = 自检会话, 不拷进正式库)
     │   ├── sessions/<pool>/<层>/<持有期>/              # 会话作用域 (池 × 因子层 × 持有期)
     │   │   ├── factors/*.json                          # 候选因子文件 (与正式因子同格式); 提交且达门槛的拷进 factors/<pool>/<层>/
-    │   │   └── chat/<YYYYMMDD-HHMMSS>/                 # 一段会话: system.md + 逐轮 md + events.jsonl + report.md + session.json (存档, 载入 / 回退照它) + brief.json (载入菜单的一行)
+    │   │   └── chat/<YYYYMMDD-HHMMSS>/                 # 一段会话: system.md + log.md (肉眼可读连续日志) + report.md + session.json (存档, 载入 / 回退照它) + brief.json (载入菜单的一行)
     │   └── notes/{feature,tool,insight,issue}.jsonl    # 全局记录, 一类一个文件
     ├── live/terms.csv                                  # ⑤ 两融条款缓存 (券商原样, 一份, 原子替换): 首行拉于哪天; 代码 / 名称 / 市场 / 保证金比例 / 融资标的 / 折算率 / 担保状态
     ├── live/flows.csv                                  # ⑤ 资金流水账本 (券商原样, 原子替换): 首行拉于哪天 + 融资年利率; 日期 / 代码 / 名称 / 价 / 股数 / 业务 / 发生金额 / 剩余金额 (截至拉的前一日)
@@ -492,7 +481,7 @@ stk/
         ├── factors/                                    # 因子
         │   ├── operators.json                          # 算子表快照 (对拍 + 耗时), 与当前 OpTable 不符则重算
         │   └── <pool>/<层>/                            # search/<name>.log Search 过程日志 (每次覆盖) / export/ Inspect 导出 <因子>_w<权重号>_top<N>_{log,snap}.csv
-        ├── agent/<main|test>/                          # Agent: tools/<工具名>.md 各工具最近一次交给 agent 的结果 / sessions/<pool>/<层>/<持有期>/search/<name>.log
+        ├── agent/<main|test>/                          # Agent: sessions/<pool>/<层>/<持有期>/search/<name>.log
         ├── live/task/<YYYYMMDD-HHMMSS>.jsonl           # Live 事务日志 (拉两融条款 / 执行调仓 / 更新资金流水; 一事务一文件, 一行一步, 留最近 100 个)
         ├── live/tdx/                                   # 通达信适配: shim/ 注入件构建产物 (shim_<源码哈希>.dll / inject.exe) / rec/<YYYYMMDD-HHMMSS>.jsonl shim rec 录制
         │                                               #    / log/<YYYYMMDD-HHMMSS>.jsonl 交互日志 (一次启动一个, 留最近 20 个)

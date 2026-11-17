@@ -1,7 +1,7 @@
 // Table — 因子层公共类型 (GUI 线程建, worker 只读; 各服务与装载层共用):
-//   因子层 FactorLevel (FactorLevelId / PerFactorLevel) ↔ 网格层 / 因子子目录 / K 线列;
+//   因子层 FactorLevel (FactorLevelId / PerFactorLevel) + 持有期开关仓描述 HoldPoints ↔ 网格层 / 因子子目录 / K 线列;
 //   字段表视图 FeatureTable (X 叶 ↔ Y 门控 / 标签 / 成本 ↔ B K 线 / 复权 / 股本 / 估值 / 行业) + 按层缓存 FeatureTables;
-//   作用域 FactorScope + 请求 Request<Spec> / FactorRef; 评估结果 EvalStat (StatScope / HoldStat / CostTier / MiniPdf) + AlphaDist.
+//   作用域 FactorScope (+ 年数上限 year_cap) + 请求 Request<Spec> / FactorRef; 评估结果 EvalStat + AlphaDist.
 #pragma once
 
 #include "disk/Disk.hpp"
@@ -91,6 +91,15 @@ struct PerFactorLevel {
 };
 // 叶名里的层段 (档.层.列 的中段), 下标 = FeatureLevel
 inline constexpr const char *kLevelToken[LEVEL_COUNT] = {"1s", "1m", "5m", "15m", "30m", "60m", "1d"};
+// 持有期在因子层 lv 上的开 / 清仓 = Stat/Contract.hpp【协议表 1】的一行: 各一个 时点 @ 价 (UI 凡显示开关仓处同一份; 由层表 + Geo 推, 不按层分支)
+struct HoldPoint {
+  std::string at, px;
+};
+struct HoldPoints {
+  HoldPoint open, close;
+};
+HoldPoints hold_points(int hold, FactorLevelId lv);
+std::string hold_desc(int hold, FactorLevelId lv); // "开仓: C(层) @ 价, 清仓: 点 @ 价"
 // 因子目录: 一组因子文件 <名>.json (file 节点, 键定到目录) + 各自的 Search 日志 <名>.log (log 节点, 同键, 在 run/ 下同构位置).
 //   正式 = output/factors/<池>/<层>/; Agent 候选 = 会话作用域的 factors/ (gui/task_agent/Bridge.cpp)
 struct FactorDir {
@@ -216,6 +225,9 @@ struct FactorScope {
 };
 // 层 / 池 / 目录 / 字段表 / 年数 / 封顶 / 后端恒填; 资产轴未就绪 (数据库未扫) / 标签库未建 → false (libs 不可用)
 bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool gpu, FactorScope &sc);
+// 评估年数上限 (池 × 因子层; 本次运行内只降不升, 线程安全): 整期一块的作业装不下时记下装得下的最多年数, UI 年数随之封顶 (0 = 未触顶)
+void cap_years(const std::string &pool, FactorLevelId lv, int years);
+int year_cap(const std::string &pool, FactorLevelId lv);
 template <class Spec>
 struct Request {
   FactorScope scope;

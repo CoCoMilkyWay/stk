@@ -2,7 +2,7 @@
 #include "gui/task_market/ui/LinesView.hpp"
 
 #include "fundamental/AssetAxis.hpp" // asset_axis (成分行代码)
-#include "gui/engine/Hold.hpp"       // hold_desc
+#include "gui/engine/Table.hpp"      // hold_desc
 #include "gui/util/Chart.hpp"        // rank_by
 #include "misc/date.hpp"             // to_days (滚动窗权重按日历天)
 #include "misc/exec.hpp"             // ForkJoin (缺的线并行现算)

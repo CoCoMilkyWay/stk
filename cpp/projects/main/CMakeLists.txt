@@ -399,7 +399,6 @@ set(MATH_PRECISE
     gui/engine/Scope.cpp
     gui/engine/Table.cpp
     gui/engine/services/InspectService.cpp
-    gui/engine/services/LensService.cpp
     gui/engine/services/PortfolioService.cpp
     gui/engine/services/RunService.cpp
     gui/engine/services/SearchService.cpp
@@ -423,24 +422,16 @@ set(MATH_PRECISE
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp
     gui/util/Latex.cpp
-    # gui: task_agent 的 Bridge = 因子契约头的消费者; services/ReplayService = 盘口重放 (同 OrderFlow 读端); Views = 观察的统计 (NaN 即无效); Docs = 研报统计 (原文没给 = NaN); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
-    gui/task_agent/Acts.cpp
-    gui/task_agent/Board.cpp
+    # gui: task_agent 的 Bridge / Views = 因子契约头与观察统计的消费者; Docs = 研报统计 (原文没给 = NaN); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
     gui/task_agent/Bridge.cpp
-    gui/task_agent/Chat.cpp
     gui/task_agent/Docs.cpp
-    gui/task_agent/Journal.cpp
     gui/task_agent/Llm.cpp
     gui/task_agent/Mine.cpp
     gui/task_agent/Notes.cpp
     gui/task_agent/Prompt.cpp
-    gui/task_agent/Save.cpp
     gui/task_agent/TaskAgent.cpp
-    gui/task_agent/Timeline.cpp
     gui/task_agent/Tools.cpp
-    gui/task_agent/Tree.cpp
     gui/task_agent/Views.cpp
-    gui/task_agent/services/ReplayService.cpp
     # factor: 因子契约头的消费者 = op_check 本体与 GPU 后端
     factor/op_check.cpp
     factor/op_check_gpu.cu

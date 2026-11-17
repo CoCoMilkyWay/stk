@@ -35,6 +35,7 @@ struct DevPool {
     slots.clear();
     s = nullptr;
   }
+  size_t bytes(size_t n) const { return slots.size() * (sizeof(float) + 1) * n; }
 };
 
 // in[a] (a < nd.n_in) 输入平面; kernel_ms 口径同 run_dev

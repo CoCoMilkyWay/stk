@@ -1,65 +1,132 @@
-// Load — 因子评估的特征库装载层 (全部因子服务共用; 只装数据, 根上的统计归 Probe, 净值 / 篮子归 Book): 作用域层 (Scope) 之上.
-//   X ↔ Y ↔ B 三侧同一份逐天并行骨架 (read_days, 环境 Io): 叶 LeafId → Leaf (因子输入叶) / Y → YCore (截面门控 + 建仓可成交码) + 标签两侧平面 [hold] /
-//   买入冲击 [amt] / 池篮子 → BPlanes (全部池成员位 + T+1C 标签 + close / 复权 / 股本 / 估值 / 行业 / 概念, 一趟装齐, 不缓存); n_full_of 只扫门控出满仓只数;
-//   Store = 进程唯一的计算面 (线程池 / 库 / 平面缓存 / 计算权): 平面按 (层, 评估域, 日段, 角色) 逐张缓存, 块 Block = 钉住一组平面的视图 (Store::pin);
-//   y_spec = Y 规格 (持有期 + 探针要的成本段 Segs); labels_of 标签的契约视图 (ry = 块上钉的标签秩, 只 CPU 要; cap = n_full);
-//   stat_scope = 结果的作用域头.
+// Load — 评估域 / 分块计划 / 三侧特征库装载 / 进程唯一计算面 Store (全部因子服务与观察工具共用):
+//   结局 Rc; 评估域 Domain (domain_of: 所用库 + 评估期 + 预热 + A 轴) → 预算 Budget + 前后带 Bands → 分块 Plan (plan_chunks);
+//   三侧严格对仗 (共享逐天并行骨架 read_days):
+//     X (因子输入叶: LeafId → Leaf → XPlanes, load_x)
+//     Y (截面门控 + 建仓可成交码 YCore + 标签两侧 [hold] + 买入冲击 [amt] → YPlanes, load_y)
+//     B (池篮子与个股原料: 池成员位 + T+1C 标签 + close / 复权 / 股本 / 估值 / 行业 / 概念 → BPlanes, load_b)
+//   Store = 进程唯一的计算面 (线程池 ex + 库 lr + 宿主平面 LRU + 常驻算子/评估工作区 ExecSpace + 计算权优先级队列):
+//     计算句柄 FactorFlow + 独占租约 Lease (计算权在手才可碰其余全部资源, 跨文件 / 跨趟零重分配复用).
 #pragma once
 
 #include "factor/Check.hpp" // check::Plane
 #include "factor/Stat/Contract.hpp"
-#include "features/Panel/PoolSpec.hpp" // kRebals
-#include "gui/engine/Scope.hpp"        // Domain / Chunk / Rc
+#include "features/Panel/PoolSpec.hpp"       // kRebals
+#include "features/Storage/FeaturePlane.hpp" // Day / LibReaders
+#include "gui/engine/Table.hpp"              // FeatureTable / FactorScope / StatScope
 #include "misc/epoch.hpp"
 #include "misc/exec.hpp"
-#include "shared/Basket.hpp"   // Fact
-#include "shared/Progress.hpp" // Progress
+#include "shared/Basket.hpp"      // Fact
+#include "shared/Progress.hpp"    // Progress
+#include "shared/ReadRequest.hpp" // ReadScope
 
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <condition_variable>
 #include <cstdint>
-#include <iterator>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace GUI::Engine {
 
-// ---- 装载: X ↔ Y ↔ B 三侧同形 (XCols / YCols / BCols → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b 同一份逐天骨架) ----
-//   X = 因子输入叶 (随因子变): 叶按各自 ts_valid 门控
-//   Y = 门控 + 标签 / 成本平面 (只随评估域变): 截面门控 = 标签库 cs_valid (all: 当日活跃; 子池: 当日成员) ∧ 当日有成交; 标签 = 池内 ∧ 两侧有限,
-//   买入冲击 = 池内原值 (盘口缺 → +inf; 封顶在取用时, Stat Cost::top); 可成交 / 顺延已在标签里, 不另读)
-//   B = 池篮子输入 (Portfolio 池线, all 池评估域): 全部池的成员位 + T+1C 标签 + 本层 close + 日频复权 / 股本 / 估值 / 行业 (as-of), 一趟读齐交 Book baskets
-// 张量形 (三侧同一份; T = days · seg)
+// ---- 评估结局 (装载 / 评估 / 全部服务同一个) ----
+enum class Rc : uint8_t { Ok,
+                          Empty,  // 评估域不成 (所用库未建 / 无共同落盘日 / 整期一块装不下), why
+                          Broken, // 特征叶值域越界 (全部根), why
+                          Cancel,
+                          Stale }; // 库判废 (弃平面缓存 + 置 kStaleMsg)
+inline constexpr const char *kStaleMsg = "特征库判废 (池轴/字段表与当前不符), 需重算特征";
+inline Rc rc_of(bool ok, const LibReaders &lr) { return ok ? Rc::Ok : lr.stale() ? Rc::Stale
+                                                                                 : Rc::Cancel; }
+inline bool aborted(Rc rc) { return rc == Rc::Cancel || rc == Rc::Stale; }
+
+// ---- 评估域 Domain 与分块计划 Plan ----
+// 预热: FactorScope::years > 0 时评估期之前另装 ⌈统计日 · kWarmFrac⌉ 日, 只给时序回看, 不计统计 (库首不够则按比例匀出)
+inline constexpr double kWarmFrac = 0.1;
+struct Domain {
+  PoolId pool = kAllPool;       // 因子池
+  LibMask used = 0;             // 所用库: 标签库 ∪ 叶所在库
+  reader::ReadScope rs;         // main = 标签库, libs = used 各库清单, axis = A 轴, to = A → 各库轴
+  std::vector<misc::Ymd> dates; // 装载日 = 预热 [0, warm) + 评估期 [warm, n) (升序; 评估期非空)
+  std::vector<Day> days;        // [dates] 当日 + 承接日及其落盘位
+  size_t warm = 0;              // 预热日数
+  std::string key() const;      // 缓存键: 池 | 所用库目录 + 池轴 | 装载日首末 + 天数
+  size_t stat_days() const { return dates.size() - warm; }
+  misc::Ymd first() const { return dates[warm]; }
+  std::vector<misc::Ymd> stat_dates() const { return {dates.begin() + static_cast<std::ptrdiff_t>(warm), dates.end()}; }
+  bool uses(const Col &c) const { return used & lib_bit(lib_id(pool, c.tier)); }
+};
+void open_libs(const FactorScope &sc, LibReaders &lr);
+LibMask used_libs(const FeatureTable &ft, PoolId pool, std::span<const LeafId> leaves);
+bool span_of(const FeatureTable &ft, const FactorScope &sc, std::span<const LeafId> leaves, size_t keep, Domain &dm, std::string &why);
+bool domain_of(const FeatureTable &ft, const FactorScope &sc, std::span<const LeafId> leaves, size_t keep, Domain &dm, std::string &why);
+StatScope stat_scope(const FactorScope &sc, const Domain &dm, int seg, double n_full, const char *backend);
+
+// 宿主内存预算 (总内存 × kHostFrac − 当前已用) 与空闲显存预算 (空闲显存 × kVramFrac); Store::budget / vram 另加回本计算面可复用部分
+inline constexpr double kHostFrac = 0.8;
+inline constexpr double kVramFrac = 0.85;
+double host_budget();
+double vram_budget();
+
+// 一块 = 评估域日 [d0, d1): 前带 [d0, s0) 只给回看 / lag / 交接链, 统计日 [s0, s1), 后带 [s1, d1) 只给续持; 首块 d0 = 0 (含整段预热)
+struct Chunk {
+  size_t d0 = 0, s0 = 0, s1 = 0, d1 = 0;
+  int days() const { return static_cast<int>(d1 - d0); }
+};
+// 字节 / 格: load = 宿主块 (X + Y; 篮子 = B); work = 引擎宿主槽与暂存; dev = 显存; fixed = 与格无关的宿主常驻 (字节)
+struct Budget {
+  double load = 0.0, work = 0.0, fixed = 0.0, dev = 0.0;
+  double host(double n) const { return n * (load + work) + fixed; }
+  double vram(double n) const { return n * dev; }
+};
+inline double cells_of(const Domain &dm, int seg) { return static_cast<double>(dm.days.size()) * seg * static_cast<double>(dm.rs.axis.size()); }
+// 前后带日数; front < 0 → 整期一块
+struct Bands {
+  int front = -1, back = 0;
+};
+struct Plan {
+  std::vector<Chunk> chunks;
+  int D = 0;            // 每块统计日上限
+  double per_day = 0.0; // 每日格数 (seg × A)
+  double host = 0.0;    // 宿主可用预算 (字节, 已扣 fixed)
+  double vram = 0.0;    // 显存可用预算 (字节; dev = 0 → 0)
+  double cache = 0.0;   // 全部块的装载量 (字节)
+  int max_days() const;
+  double max_cells() const { return max_days() * per_day; }
+};
+Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double host, double vram = 0.0);
+
+// ---- 三侧规格与平面: X ↔ Y ↔ B 同形 ----
 struct Shape {
-  int T = 0, A = 0, days = 0;
-  int seg = 0; // 因子层每日行数 (= FeatureTable::seg = Geo::S)
+  int T = 0, A = 0, days = 0, seg = 0;
   size_t n() const { return static_cast<size_t>(T) * A; }
   bool operator==(const Shape &) const = default;
 };
-// 键集 (LegCol::key): 持有期 Holds ↔ 金额段 Amts 同形 (factor::stat::Keys)
 using Holds = factor::stat::Holds;
 using Amts = factor::stat::Amts;
-// 键表 → 键集 K (容量断言 kMaxHold / kMaxCost; 非空 Holds 再 assert_holds 由装载按 seg 做)
 template <class K>
-K keys_of(const std::vector<int> &keys) {
+K keys_of(std::span<const int> keys) {
   K o;
   assert(keys.size() <= std::size(o.k) && "键数超 Stat 容量 (kMaxHold / kMaxCost)");
   o.n = static_cast<int>(keys.size());
   std::copy(keys.begin(), keys.end(), o.k);
   return o;
 }
-// 两侧列组的全部键 (cols 序; 字段表 y.labels → Holds / y.costs → Amts)
+template <class K>
+K keys_of(const std::vector<int> &keys) { return keys_of<K>(std::span<const int>(keys)); }
 template <class K>
 K keys_of(const std::vector<LegCol> &cols) {
   std::vector<int> keys;
+  keys.reserve(cols.size());
   for (const LegCol &c : cols)
     keys.push_back(c.key);
   return keys_of<K>(keys);
 }
-// 键集之并 (升序去重; 字段表列组本是升序, 与之同序)
 template <class K>
 K keys_union(const K &a, const K &b) {
   std::vector<int> keys(a.k, a.k + a.n);
@@ -69,56 +136,42 @@ K keys_union(const K &a, const K &b) {
   return keys_of<K>(keys);
 }
 
-struct YSpec {
-  Holds hd;               // 标签组 (LegCol::key, 字段表里有)
-  Amts ad;                // 成本段 (LegCol::key, 字段表里有且评估域可用; 空 = 不装; 固定段无平面)
-  float max_impact = 0.f; // 买入冲击封顶 (Config::max_impact; 有盘口段时 > 0): 取用时 min(原值, 封顶)
-  std::string key() const;
-};
-// 成本段取法 (探针声明 Probe Ps::segs, 管线据此定 YSpec::ad): 不装 (Search) / 主段 (Portfolio 出参线: 首个盘口段, 无则固定段) /
-// 全部 (Run / Inspect 各段 CostAcc)
 enum class Segs : uint8_t { None,
                             First,
                             All };
-// 块的 Y 规格: 持有期 hd (字段表里有) + 成本段 sg (评估域 dm 可用的段: 固定段恒在, 盘口段要 dm 含其所在 Lob 库); 有段才带封顶 max_impact
+struct YSpec {
+  Holds hd;
+  Amts ad;
+  float max_impact = 0.f;
+  std::string key() const;
+};
 YSpec y_spec(const FeatureTable &ft, const Domain &dm, const Holds &hd, Segs sg, double max_impact);
-// 块规格 (X ↔ Y 两侧各一项): X = 叶 / Y = YSpec; ry = 钉上标签秩 (Backend<Cpu> 要; GPU 会话在显存里自己预处理)
+
 struct BlockSpec {
   std::vector<LeafId> x;
   YSpec y;
   bool ry = false;
 };
-// 每格平面字节 (check::Plane: float + u8)
 inline constexpr double kPlaneBytes = 5.0;
-// B 装载 + 篮子期峰值 (字节 / 格): 池成员位 8 + 标签两侧 (lv, sv, m) 5 + 建仓可成交码 1 + close 5 + 价 4 + 权重 4 + 复权 4
-// + 估值 (股本 / 净利 / 权益 / 营收 / 经营现金流 / 股息率) 24 + 行业 1 + 上一有效 close 行 4 + 补价副本 4 (baskets)
 inline constexpr double kBasketCellBytes = 8.0 + kPlaneBytes + 1.0 + kPlaneBytes + 4.0 + 4.0 + 4.0 + 24.0 + 1.0 + 4.0 + 4.0;
-// 宿主装载量 (字节 / 格): X = 叶 kPlaneBytes · nx; Y = 门控 1 + 建仓可成交码 1 + 标签两侧 (lv, sv, m) 5 · hd
-// + 盘口段买入冲击 (无 m) 2 · 段数 (固定段无平面)
 double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx);
 
-// ---- 平面 (装好即只读, Store 逐张缓存; 块只持视图) ----
-// 叶平面: 值 + 掩码 (按 ts_valid 门控) + 值域缓存 (严格域 → 首个越界值, 空 = 合; Engine plan_forest 填, 随平面一代)
 struct Leaf : factor::check::Plane {
   mutable std::map<factor::Dom, std::string> dom;
 };
-// Y 的公共部分 (各持有期 / 金额段共用)
 struct YCore {
-  std::vector<uint8_t> gate; // 截面池掩码 g = 当日在池 (标签库 cs_valid) ∧ 当日有成交 (ts_valid 任一行 ≠ 0; 整日常量)
-  std::vector<uint8_t> eo;   // 建仓可成交码 kEoBuy | kEoSell (lb_entry_ok; 池外 / 缺 → 0); 各持有期共用 (Stat 契约【仓位感知】)
-  long long on = 0;          // 门控在池格数 (整期一块的满仓只数由它出)
+  std::vector<uint8_t> gate;
+  std::vector<uint8_t> eo;
+  long long on = 0;
 };
-// 标签两侧平面: fp16 位 (与落盘同格式, Stat 直接吃) + 有效位 (池内 ∧ 两侧皆有限)
 struct LegPlane {
   std::vector<uint16_t> v[factor::stat::kLegs];
   std::vector<uint8_t> m;
 };
-// 宿主平面 → 契约视图 (整张量, 未偏). eo = 建仓可成交码平面 (YCore::eo); ry = 预处理的做多标签 r16 (nullptr = 未预处理, GPU 会话自做)
 inline factor::stat::Label label_of(const LegPlane &p, const uint8_t *eo, const uint16_t *ry) {
   return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}, p.m.data(), eo, ry};
 }
 
-// ---- 视图 (块上, 指向钉住的平面) ----
 struct XPlanes {
   Shape sh;
   std::vector<const Leaf *> v; // [LeafId] 钉住的叶; nullptr = 不在块上
@@ -126,45 +179,40 @@ struct XPlanes {
 };
 struct YPlanes {
   Shape sh;
-  const uint8_t *gate = nullptr;                       // = YCore::gate
-  const uint8_t *eo = nullptr;                         // = YCore::eo
-  Holds hd;                                            // [hold] = YSpec::hd
-  const LegPlane *labels[factor::stat::kMaxHold] = {}; // [hold] 两侧毛收益: 做多 / 做空; 本层行 t 取本层标签列行 t (封板照写, 能否建仓看 eo; 平仓顺延已在值里)
-  const uint16_t *ry[factor::stat::kMaxHold] = {};     // [hold] 做多标签逐行 r16 (prep_label; BlockSpec::ry, 否则 nullptr)
-  Amts ad;                                             // [amt] = YSpec::ad
-  const uint16_t *costs[factor::stat::kMaxCost] = {};  // [amt] 买入冲击 (比例, 原值) fp16 位; 采样同标签 (行末分钟), 池内格恒有值 (盘口缺 = +inf), 无有效位; 固定段 nullptr
-  float max_impact = 0.f;                              // = YSpec::max_impact (Cost::top)
-  double n_full = 0.0;                                 // 满仓一组只数 (Stat 契约【持仓口径】的 cap) = 全期池内平均每行有效资产数 / kGroups: 池宽决定, 与因子 / 分块无关
+  const uint8_t *gate = nullptr;
+  const uint8_t *eo = nullptr;
+  Holds hd;
+  const LegPlane *labels[factor::stat::kMaxHold] = {};
+  const uint16_t *ry[factor::stat::kMaxHold] = {};
+  Amts ad;
+  const uint16_t *costs[factor::stat::kMaxCost] = {};
+  float max_impact = 0.f;
+  double n_full = 0.0;
 };
-// 全部金额段的成本视图 [amt] (= y.ad 序; cost_rows 的 c, C = y.ad.n): 盘口段带封顶, 固定段空 Cost
-inline std::vector<factor::stat::Cost> costs_of(const YPlanes &y) {
-  std::vector<factor::stat::Cost> c;
+inline int fill_costs(const YPlanes &y, factor::stat::Cost (&out)[factor::stat::kMaxCost]) {
   for (int k = 0; k < y.ad.n; ++k)
-    c.push_back(y.costs[k] ? factor::stat::Cost{y.costs[k], y.max_impact} : factor::stat::Cost{});
-  return c;
+    out[k] = y.costs[k] ? factor::stat::Cost{y.costs[k], y.max_impact} : factor::stat::Cost{};
+  return y.ad.n;
 }
-// 池篮子输入 (load_b; all 池评估域 = 全轴, 一趟读齐, 交 Book baskets)
+factor::stat::Labels labels_of(const YPlanes &y);
+
 struct BPlanes {
   Shape sh;
-  std::vector<PoolMask> in;                  // 池成员位 (整日常量): 位 kAllPool = all 截面门控 (同 YPlanes::gate), 位 p = 第 p 池当日成员 (all.bar 选股表) ∧ 当日有成交
-  LegPlane lab;                              // T+1C 两侧毛收益 (同 YPlanes::labels 的折叠, 池内 = 在任一池 in ≠ 0)
-  std::vector<uint8_t> eo;                   // 建仓可成交码 (同 YPlanes::eo, 池内 = in ≠ 0)
-  factor::check::Plane close;                // 本行有成交的后复权 close (估值 / 换手漂移, 跨日除权不进收益)
-  std::vector<float> mcap;                   // 本行总市值 = close × total_shares (加权版的目标权; close 无效 / 缺股本 → 0)
-  std::vector<uint32_t> from[pool::kRebals]; // [Rebal][T] 行 t 所在调仓期的首行 (pool::rebal_at 换源之日; 期首在块前 → 0)
-  std::vector<float> px, shares;             // 本行有成交的 close (不复权; 否则 0) / 总股本 (缺 → NaN)
-  std::vector<float> val[kPoolVals];         // [PoolVal] 估值输入 (BCols::val 原值; 缺 → NaN)
-  std::vector<uint8_t> ind;                  // 行业 ID (SW2021 一级, as-of = 前一交易日收盘, 与成员位同取成员源行; 0 = 未知 / 缺 / 越界)
-  std::vector<uint32_t> cc_at;               // [A + 1] 资产 a 所属概念 = cc[cc_at[a], cc_at[a + 1]) (概念表下标, 全期同一份)
+  std::vector<PoolMask> in;
+  LegPlane lab;
+  std::vector<uint8_t> eo;
+  factor::check::Plane close;
+  std::vector<float> mcap;
+  std::vector<uint32_t> from[pool::kRebals];
+  std::vector<float> px, shares;
+  std::vector<float> val[kPoolVals];
+  std::vector<uint8_t> ind;
+  std::vector<uint32_t> cc_at;
   std::vector<uint16_t> cc;
-  // 篮子判据的两份输入 (BasketTable::each / holds): 格 i 的事实 ⇄ 资产 a 的概念
   Fact fact(size_t i) const { return {in[i], ind[i]}; }
   std::span<const uint16_t> concepts_of(size_t a) const { return {cc.data() + cc_at[a], cc_at[a + 1] - cc_at[a]}; }
 };
-// 标签的契约视图 (ry = YPlanes::ry: CPU 会话的块钉了标签秩; GPU 的块不钉, stat_open 在显存里自己预处理; cap = n_full)
-factor::stat::Labels labels_of(const YPlanes &y);
 
-// 装载环境 (三侧装载 / 门控预扫同一份; lr / ex 取自 Store): 字段表 / 评估域 / 已开的库 (按 dm.rs.libs 开好) / 线程池 / 取消旗 / 进度
 struct Io {
   const FeatureTable &ft;
   const Domain &dm;
@@ -173,67 +221,64 @@ struct Io {
   const std::atomic<bool> &cancel;
   Progress &prog;
 };
-// 逐天并行读 (ex 抢单) 评估域日 [k.d0, k.d1) (形 days × A → T, 容量断言在此). 三侧同一份骨架:
-// 一张读计划 (reader::read_plan, 同 (库, 层, 盘后) 一源, 网格行 level_asof 投影), 列全部 Col::ref(dm.pool);
-// X 列段 = 叶 ids (按所在 (库, 层) 投影) → out[ids 序];
-// Y 列段 = [ts_valid | cs_valid | lb_entry_ok (have 空才读, 进 core)] | 标签 [hd][kLegs] | 盘口段买入冲击 [ad] → labels [hd 序] / costs [ad 序]
-//   (门控取 have 或刚装的 core; ad 只含盘口段);
-// B 列段 = ts_valid cs_valid lb_entry_ok T+1C 标签 [kLegs] close (标签库网格层本层列) | adj_factor total_shares val[kPoolVals] ind_l1 (日频原料 bar.1d);
-// B 只在 all 池评估域 (assert); 子池成员不读列, 取 all.bar 选股表; 概念成员不读库, 取概念表 (A 轴 → 全局 id).
-// 返回 false = 取消 或 库判废 (调用方查 lr.stale()). 四个装载同一份进度: prog.begin Loading (日数), 每天 publish(1)
-bool load_x(const Io &io, const Chunk &k, const std::vector<LeafId> &ids, std::vector<Leaf> &out);
+bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vector<Leaf> &out);
 bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LegPlane> &labels,
             std::vector<std::vector<uint16_t>> &costs);
 bool load_b(const Io &io, const Chunk &k, BPlanes &B);
-// [k.d0, k.d1) 的满仓只数 (与整期 YCore::on 同一份门控同式), 只读 ts_valid / cs_valid 两列, 不留平面 (多块作业的全期 cap).
-// false = 取消 / 库判废
 bool n_full_of(const Io &io, const Chunk &k, double &out);
 
-// ---- 块 = 评估域日 [d0, d1) 的一组钉住的平面 (Store::pin 建; 视图 x / y 指向 pins) ----
-//   行 [0, T); 统计行 [t_lo, T − t_back) (前带只给回看 / lag / 交接链, 后带只给续持; Search 契约【分块流式】)
-//   落地行轴 = 评估期 [0, rows_stat) (不含预热; 各服务跨块的落地平面 / 净值线 / 分年同一轴): 块内行 t ↔ 落地行 t + land0 (统计行恒 ≥ 0)
+// 块视图: 评估域日段 ck 的钉住平面 (x_gen = 层|域|日段|代, gen = x_gen + YSpec)
 struct Block {
-  size_t d0 = 0, d1 = 0;
-  size_t nd = 0, warm = 0;          // 评估域总日数 / 预热日数 (Domain::warm)
-  int t_lo = 0, t_back = 0;         // 前带 / 后带行数
-  uint64_t gen = 0;                 // Y 视图的代 = (层, 评估域, 日段, YSpec, 缓存代) 的散列: 同代 = 同一份 Y (引擎据此判会话作废 / 块钩子据此复用)
-  bool fresh = false;               // 本次 pin 真读了库 (否则全中缓存)
-  const FeatureTable *ft = nullptr; // 叶名 → LeafId
+  Chunk ck;
+  size_t nd = 0, warm = 0;
+  int t_lo = 0, t_back = 0;
+  uint64_t x_gen = 0, gen = 0;
+  bool fresh = false;
   XPlanes x;
   YPlanes y;
-  std::vector<std::shared_ptr<const void>> pins; // 钉住的平面 (块活着, 缓存就不淘汰它们)
-  factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), static_cast<int>(d0) * y.sh.seg, t_lo, t_back}; }
+  std::vector<std::shared_ptr<const void>> pins;
+  factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), static_cast<int>(ck.d0) * y.sh.seg, t_lo, t_back}; }
   int rows_stat() const { return static_cast<int>(nd - warm) * y.sh.seg; }
-  int land0() const { return (static_cast<int>(d0) - static_cast<int>(warm)) * y.sh.seg; }
+  int land0() const { return (static_cast<int>(ck.d0) - static_cast<int>(warm)) * y.sh.seg; }
 };
-// Dag 叶的平面视图 (下标 = Dag::feats 下标); 全部须在块上
-std::vector<const factor::check::Plane *> leaves(const Block &c, const std::vector<std::string> &feats);
+std::vector<const factor::check::Plane *> leaves_of(const Block &c, std::span<const LeafId> ids);
 
-// ---- Store: 进程唯一的计算面 (GUI 各因子服务 + agent 同一份; 每进程代重建, 库与缓存随盘) ----
-//   线程池 ex / 已开的库 lr / 平面缓存 / 计算权, 四者同归一个持有者: 计算权在手才可碰其余三样 (assert 持有线程).
-//   计算权: 同时只一个作业持有; 交互 (Inspect / Lens / Portfolio) 先于批 (Run / Search), 批在文件 / 趟边界让位 (Engine Lease).
-//   平面缓存: 键 = 层 | Domain::key | 日段 | 角色 (门控 / 标签组 / 金额段 / 标签秩 / 叶), 与请求方无关 (跨服务命中);
-//   淘汰 = 未钉的按 LRU, 至 缓存 + 新装 + 调用方预留 ≤ 宿主预算; 满仓只数按评估域记 (整期一块 = 门控在池格数, 多块 = 全期预扫)
+// ---- Store: 进程唯一计算面 + 计算句柄 FactorFlow + 独占租约 Lease ----
 enum class Prio : uint8_t { Batch,
                             Interactive };
+
+// 引擎常驻执行环境接口 (Engine.cpp 实现唯一实例挂入 Store; 宿主与显存占用纳入 Store 统一预算)
+struct ExecSpace {
+  virtual ~ExecSpace() = default;
+  virtual double host_bytes() const = 0;
+  virtual double vram_bytes() const = 0;
+  virtual void drop_host() = 0;
+  virtual void clear() = 0;
+};
+
 class Store {
 public:
   static Store &get();
   misc::exec::ForkJoin ex;
   LibReaders lr;
 
-  // 计算权: 按 p 排队 (同级先到先得), 等待中 cancel → false (不持有)
   bool acquire(Prio p, const std::atomic<bool> &cancel);
   void release();
-  // 钉住块 k (s.y 的持有期 / 金额段 + s.x 的叶 + s.ry 的标签秩): 缺的平面一趟补读, 先腾地 (room: need + reserve).
-  // reserve = 调用方在块之外要的宿主字节 (引擎 + 探针). Ok / Cancel / Stale
+
   Rc pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double reserve);
-  // 腾出 bytes: 未钉的按 LRU 淘汰, 至 缓存 + bytes ≤ 宿主预算 (kHostFrac · 总内存 − 缓存外的已用)
-  void room(double bytes);
-  // 宿主预算 (规划口径): 缓存全可让, 算回预算
+  void room(double need, double reserve = 0.0);
   double budget() const;
-  // 弃全部缓存 (库判废 / 请求带 reload); 已钉的随块析构释放
+  double vram() const;
   void clear();
+
+  ExecSpace *exec() const {
+    own();
+    return exec_.get();
+  }
+  void set_exec(std::unique_ptr<ExecSpace> e) {
+    own();
+    exec_ = std::move(e);
+  }
 
 private:
   friend class misc::Epochal<Store>;
@@ -247,7 +292,6 @@ private:
   std::shared_ptr<const T> find(const std::string &key);
   template <class T>
   std::shared_ptr<const T> put(const std::string &key, T &&v, double bytes);
-  // 角色平面的钉 (pin 用, 成对): hit = 查缓存, 命中即钉进 c 并 set(平面) / land = 新装的平面 (n 格, 按角色每格字节记账) 入缓存并钉 + set
   template <class T, class Set>
   bool hit(Block &c, const std::string &key, Set &&set);
   template <class T, class Set>
@@ -257,15 +301,38 @@ private:
   std::mutex mu_;
   std::condition_variable cv_;
   bool busy_ = false;
-  int waiting_[2] = {}; // [Prio] 排队数
+  int waiting_[2] = {};
   std::thread::id owner_;
   std::map<std::string, Entry> cache_;
-  std::map<std::string, double> n_full_; // 层 | Domain::key → 满仓只数
+  std::map<std::string, double> n_full_;
+  std::unique_ptr<ExecSpace> exec_;
   double bytes_ = 0.0;
-  uint64_t tick_ = 0, epoch_ = 0; // LRU 时钟 / 缓存代 (clear 进一)
+  uint64_t tick_ = 0, epoch_ = 0;
 };
 
-// 结果的作用域头 (Run 行 / Inspect 结果同一份): 池 / 期 / 形 / 封顶 / 满仓只数 / 后端 / 时刻
-StatScope stat_scope(const FactorScope &sc, const Domain &dm, int seg, double n_full, const char *backend);
+struct FactorFlow {
+  Store &S;
+  std::atomic<bool> &cancel;
+  Progress &prog;
+  Prio prio;
+  FactorFlow(std::atomic<bool> &cancel, Progress &prog, Prio prio = Prio::Interactive) : S(Store::get()), cancel(cancel), prog(prog), prio(prio) {}
+  Io io(const FeatureTable &ft, const Domain &dm) const { return {ft, dm, S.lr, S.ex, cancel, prog}; }
+};
+
+class Lease {
+public:
+  explicit Lease(FactorFlow &F) : S_(F.S), held_(F.S.acquire(F.prio, F.cancel)) {}
+  ~Lease() {
+    if (held_)
+      S_.release();
+  }
+  Lease(const Lease &) = delete;
+  Lease &operator=(const Lease &) = delete;
+  explicit operator bool() const { return held_; }
+
+private:
+  Store &S_;
+  const bool held_;
+};
 
 } // namespace GUI::Engine

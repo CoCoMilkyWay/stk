@@ -8,8 +8,10 @@
 #include <cassert>
 #include <cstdio>
 #include <ctime>
+#include <mutex>
 #include <set>
 #include <string_view>
+#include <utility>
 
 namespace GUI::Engine {
 
@@ -109,6 +111,26 @@ FactorLevelId factor_level_of(std::string_view name) {
       return l.id;
   assert(false && "name 不是因子层");
   __builtin_unreachable();
+}
+
+HoldPoints hold_points(int hold, FactorLevelId lv) {
+  namespace st = factor::stat;
+  const FactorLevel &L = factor_level(lv);
+  const bool at_close = st::close_entry(0, L.geo());
+  const std::string px = "次分钟VWAP", close_px = "收盘撮合价", open_px = "开盘撮合价";
+  const std::string at = at_close ? "C(T)" : "C(" + std::string(L.name) + ")";
+  const HoldPoint open{at, at_close ? close_px : px};
+  if (st::hold_intraday(hold))
+    return {open, {at + "+" + std::to_string(hold) + "m", px}};
+  if (hold == st::kHoldClose)
+    return {open, {"C(T)", close_px}};
+  const std::string n = std::to_string(st::hold_days(hold));
+  return {open, st::hold_is_open(hold) ? HoldPoint{"O(T+" + n + ")", open_px} : HoldPoint{"C(T+" + n + ")", close_px}};
+}
+
+std::string hold_desc(int hold, FactorLevelId lv) {
+  const HoldPoints p = hold_points(hold, lv);
+  return "开仓: " + p.open.at + " @ " + p.open.px + ", 清仓: " + p.close.at + " @ " + p.close.px;
 }
 
 disk::Key FactorDir::of(std::string_view name) const {
@@ -278,6 +300,25 @@ bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable>
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
   sc.libs = factor_libs(data, pool);
   return sc.libs[label_lib(pool_id(pool))].ready(); // 标签库未建 → false; 叶所在库未建由评估域报 (span_of)
+}
+
+namespace {
+std::mutex g_caps_mu;
+std::map<std::pair<std::string, FactorLevelId>, int> g_caps;
+} // namespace
+
+void cap_years(const std::string &pool, FactorLevelId lv, int years) {
+  assert(years >= 1);
+  std::lock_guard<std::mutex> lock(g_caps_mu);
+  const auto [it, fresh] = g_caps.try_emplace({pool, lv}, years);
+  if (!fresh)
+    it->second = std::min(it->second, years);
+}
+
+int year_cap(const std::string &pool, FactorLevelId lv) {
+  std::lock_guard<std::mutex> lock(g_caps_mu);
+  const auto it = g_caps.find({pool, lv});
+  return it == g_caps.end() ? 0 : it->second;
 }
 
 } // namespace GUI::Engine

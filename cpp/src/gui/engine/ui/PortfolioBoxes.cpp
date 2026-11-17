@@ -1,6 +1,6 @@
 // 组合小框 + 当前组合的载入 / 存盘 — 见头文件
 #include "gui/engine/ui/PortfolioBoxes.hpp"
-#include "gui/engine/Hold.hpp" // hold_desc
+#include "gui/engine/Table.hpp" // hold_desc
 
 #include "gui/Tasks.hpp"      // StatusColor
 #include "gui/util/Chart.hpp" // kHead

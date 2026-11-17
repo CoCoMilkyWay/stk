@@ -8,33 +8,51 @@
 namespace GUI::Engine {
 
 void cover_rows(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int t0, int t1, int A, Cover &o) {
+  assert(A >= 1 && A <= factor::stat::kMaxA);
   const int nt = ex.threads();
   std::vector<Cover> part(static_cast<size_t>(nt));
   ex.rows(t1 - t0, [&](int r0, int r1, int tid) {
-    std::vector<uint32_t> cnt(size_t{1} << 16, 0); // r16 → 本行同秩格数 (每行用完清回 0)
+    uint16_t s0[factor::stat::kMaxA], s1[factor::stat::kMaxA];
+    int c0[256], c1[256];
     Cover &c = part[static_cast<size_t>(tid)];
     for (int t = t0 + r0; t < t0 + r1; ++t) {
       const uint16_t *r = rx + static_cast<size_t>(t) * A;
       const uint8_t *mr = m + static_cast<size_t>(t) * A, *gr = gate + static_cast<size_t>(t) * A;
+      std::fill_n(c0, 256, 0);
+      std::fill_n(c1, 256, 0);
       int nv = 0, nb = 0;
       for (int a = 0; a < A; ++a) {
         nv += mr[a] & gr[a];
         c.all += gr[a];
-        if (r[a] != factor::stat::kRankNone)
-          ++cnt[r[a]], ++nb;
+        if (const uint16_t x = r[a]; x != factor::stat::kRankNone) {
+          s0[nb++] = x;
+          ++c0[x & 0xFFu];
+          ++c1[x >> 8];
+        }
       }
       c.on += static_cast<uint64_t>(nv);
       assert(nb <= nv && "有秩格须在池内有效格里");
-      const uint32_t wmax = static_cast<uint32_t>((nv + factor::stat::kGroups - 1) / factor::stat::kGroups);
-      int good = 0;
-      for (int a = 0; a < A; ++a)
-        if (r[a] != factor::stat::kRankNone)
-          good += cnt[r[a]] <= wmax;
-      for (int a = 0; a < A; ++a)
-        if (r[a] != factor::stat::kRankNone)
-          cnt[r[a]] = 0;
       if (nv == 0)
         continue;
+      for (int b = 0, p0 = 0, p1 = 0; b < 256; ++b) {
+        const int n0 = c0[b], n1 = c1[b];
+        c0[b] = p0, p0 += n0;
+        c1[b] = p1, p1 += n1;
+      }
+      for (int i = 0; i < nb; ++i)
+        s1[c0[s0[i] & 0xFFu]++] = s0[i];
+      for (int i = 0; i < nb; ++i)
+        s0[c1[s1[i] >> 8]++] = s1[i];
+      const int wmax = (nv + factor::stat::kGroups - 1) / factor::stat::kGroups;
+      int good = 0;
+      for (int i = 0; i < nb;) {
+        int j = i + 1;
+        while (j < nb && s0[j] == s0[i])
+          ++j;
+        if (j - i <= wmax)
+          good += j - i;
+        i = j;
+      }
       c.sum += static_cast<double>(good) / nv;
       ++c.rows;
     }
@@ -43,22 +61,16 @@ void cover_rows(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, 
     o.merge(c);
 }
 
-void CostP::root(const Ctx &c, const RootView &v) {
+void CostP::close(const Ctx &c, const RootView &v) {
   const YPlanes &y = c.c.y;
-  const int C = y.ad.n, H = c.L.hd.n;
-  assert(v.ec && C >= 1);
-  if (costs.empty()) {
-    costs.assign(static_cast<size_t>(C), CostTier{});
-    for (int k = 0; k < C; ++k)
-      costs[static_cast<size_t>(k)].amt = y.ad.k[k];
-  }
-  assert(costs.size() == static_cast<size_t>(C));
-  const std::vector<factor::stat::Cost> cs = costs_of(y);
-  std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(C) * H); // [k][hi]
-  factor::cpu::stat::cost_rows(c.ex, v.ec, c.s(), c.L, c.L.cap, cs.data(), C, *c.w, acc.data());
+  factor::stat::Cost cs[factor::stat::kMaxCost];
+  const int C = fill_costs(y, cs), H = c.L.hd.n;
+  assert(v.ec && C >= 1 && costs.size() == static_cast<size_t>(C));
+  factor::stat::CostAcc acc[factor::stat::kMaxCost * factor::stat::kMaxHold] = {};
+  factor::cpu::stat::cost_rows(c.ex, v.ec, c.s(), c.L, c.L.cap, cs, C, *c.w, acc);
   for (int k = 0; k < C; ++k)
     for (int i = 0; i < H; ++i)
-      costs[static_cast<size_t>(k)].acc[i].merge(acc[static_cast<size_t>(k) * H + i]);
+      costs[static_cast<size_t>(k)].acc[i].merge(acc[k * H + i]);
 }
 
 void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, int d, AlphaDist &o) {
@@ -153,7 +165,7 @@ void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, cons
   for (int k = 0; k < K; ++k) {
     o.share[k] = static_cast<float>(static_cast<double>(tot.gn[k]) / static_cast<double>(o.n));
     o.gmean[k] = tot.gn[k] ? static_cast<float>(tot.gsum[k] / static_cast<double>(tot.gn[k])) : 0.f;
-    if (k + 1 < K) // 无一行两组同时有人 (稀疏 TS) → 沿用前一条边界, 该组段宽 0
+    if (k + 1 < K)
       o.bound[k] = tot.bcnt[k] ? static_cast<float>(tot.bsum[k] / static_cast<double>(tot.bcnt[k])) : (k ? o.bound[k - 1] : o.lo);
   }
   for (int t = 0; t < T; ++t)

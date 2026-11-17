@@ -1,4 +1,4 @@
-// Engine — 见头文件 (plan_forest / eval_baskets). include 因子 CPU 后端头, 依赖受控浮点: CMake MATH_PRECISE 源.
+// Engine — 见头文件 (engine_space / plan_forest / eval_baskets). include 因子 CPU 后端头, 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Engine.hpp"
 
 #include "features/Storage/FeatureLib.hpp" // pool_id
@@ -6,12 +6,18 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <memory>
 
 namespace GUI::Engine {
 
+EngineSpace &engine_space(Store &S) {
+  if (!S.exec())
+    S.set_exec(std::make_unique<EngineSpace>(S.ex));
+  return *static_cast<EngineSpace *>(S.exec());
+}
+
 namespace {
 
-// 叶 p 在严格域 dom 上首个越界格的值 (空 = 有效格全落在域内; 各条带首个越界格取全局最小, 与顺序扫同一格)
 std::string out_of_dom(misc::exec::ForkJoin &ex, const factor::check::Plane &p, factor::Dom dom) {
   const size_t n = p.v.size();
   std::vector<size_t> first(static_cast<size_t>(ex.threads()), n);
@@ -32,13 +38,10 @@ std::string out_of_dom(misc::exec::ForkJoin &ex, const factor::check::Plane &p, 
 
 } // namespace
 
-// 算子节点的特征叶元: parse 时放行 (值域只能查数据), 这里按 OpTable in 列的严格域 (dom_strict, 即组 id 的 INT) 逐元查数据
-// (有效格全部落在值域内): CS 算子内部 max_gid 断言炸不得由数据触发. 非严格域越界格由算子自身置无效, 不在此判.
-// 融合节点只装逐点 TS 算子, 无严格域元
-int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, std::vector<std::string> &why, std::vector<uint8_t> &need) {
-  assert(!d.roots.empty() && "森林 (build_forest) 才有根表");
+int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const Forest &F, std::vector<std::string> &why, std::vector<uint8_t> &need) {
+  const factor::Dag &d = F.d;
+  assert(!d.roots.empty() && d.feats.size() == F.leaves.size());
   assert((why.empty() || why.size() == d.roots.size()) && "why 入参 = 空 或 各根的已知坏因");
-  const std::vector<LeafId> ids = c.ft->x.ids(d.feats);
   const size_t N = d.nodes.size();
   std::vector<std::string> err(N);
   for (size_t i = 0; i < N; ++i) {
@@ -53,7 +56,7 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const factor::Dag &d, 
       if (g.op >= 0 || !factor::dom_strict(in))
         continue;
       const size_t f = static_cast<size_t>(g.feat);
-      const Leaf *lf = c.x.find(ids[f]);
+      const Leaf *lf = c.x.find(F.leaves[f]);
       assert(lf && "叶不在块上 (BlockSpec::x)");
       const auto [it, fresh] = lf->dom.try_emplace(in);
       if (fresh)

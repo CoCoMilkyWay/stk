@@ -4,7 +4,7 @@
 // 结构规模 / 选定持有期的 Stat 列 / 耗时; 首列勾选 → 模板载入构建器编辑, 点行高光 → 给 Inspect 页).
 #pragma once
 
-#include "gui/engine/Hold.hpp"
+#include "gui/engine/Table.hpp"
 #include "gui/engine/services/RunService.hpp"
 #include "gui/engine/services/SearchService.hpp"
 

@@ -1,9 +1,10 @@
-// Book — 净值引擎 (Stat 契约【净值】; Inspect 分层 / Portfolio 因子线 / 池篮子 / 池整体线同一份): 装载层 (Load) 之上.
-//   逐行批收益 RowLines (落线探针 / 篮子写) → fold_book (每批资金 1/h̄, 收益在平仓行实现 / 成本在建仓行即付; 按 stride 求和) → 期收益 BookLines
-//   → compound 净值 (UI). 池篮子 baskets (全部篮子一趟: 指数 / 增仓 / 估值, 吃 B); pool_line (池整体等权线, 只吃 Y, 任意层). 两者同一个指数核.
+// Book — 净值与篮子引擎 (Stat 契约【净值】; Inspect 分层 / Portfolio 因子线 / 池篮子 / 池整体线同一份): Load 之上.
+//   逐行批收益 RowLines → fold_book (每批资金 1/h̄, 收益在平仓行实现 / 成本在建仓行即付; 按 stride 求和) → 期收益 BookLines → compound 净值.
+//   行情两侧 SideBook (篮子 kBasket ↔ 个股 kStock 同形, 全部列均为 BookLines): baskets 一趟出齐; pool_line 出池整体等权线.
 #pragma once
 
-#include "gui/engine/Load.hpp" // YPlanes / BPlanes
+#include "gui/engine/Load.hpp" // YPlanes / BPlanes / Block
+#include "gui/quote/Quote.hpp" // PerMarket
 #include "misc/exec.hpp"
 
 #include <cassert>
@@ -13,12 +14,16 @@
 
 namespace GUI::Engine {
 
-// 期收益表 (fold_book 出): [n][P], 线 i 点 p
+// 期收益 / 序列矩阵 [n][P], 线 i 点 p
 struct BookLines {
-  int n = 0, P = 0; // 线数 / 每线点数 (= T / stride)
+  int n = 0, P = 0;
   std::vector<float> v;
+  void reset(int n_, int P_, float fill = 0.f) {
+    n = n_, P = P_;
+    v.assign(static_cast<size_t>(n) * static_cast<size_t>(P), fill);
+  }
+  float *at(int i) { return v.data() + static_cast<size_t>(i) * static_cast<size_t>(P); }
   const float *at(int i) const { return v.data() + static_cast<size_t>(i) * static_cast<size_t>(P); }
-  // 线 [i0, i0 + m) 拷成一张
   BookLines slice(int i0, int m) const {
     assert(i0 >= 0 && m >= 0 && i0 + m <= n);
     BookLines o;
@@ -27,13 +32,13 @@ struct BookLines {
     return o;
   }
 };
-// 逐行批收益 (fold_book 入): x [n][T] = 线 i 行 t 这一批的收益 (占这批资金; 不 ok 记 0); hold[i] = 线 i 的持有期键 (各线可不同: 多持有期一次折完);
-// at_exit[i]: 1 = 收益 (平仓行 hold_exit_row 实现, 平仓越过 T 的批不计) / 0 = 成本 (建仓行即付)
+
+// 逐行批收益 (fold_book 入): x [n][T] = 线 i 行 t 这一批的收益; hold[i] = 持有期键; at_exit[i]: 1 = 平仓行实现 / 0 = 建仓行即付
 struct RowLines {
   int n = 0, T = 0;
-  std::vector<int> hold;        // [n]
-  std::vector<uint8_t> at_exit; // [n]
-  std::vector<float> x;         // [n][T]
+  std::vector<int> hold;
+  std::vector<uint8_t> at_exit;
+  std::vector<float> x;
   void reset(int n_, int T_) {
     n = n_, T = T_;
     hold.assign(static_cast<size_t>(n), 0);
@@ -42,9 +47,9 @@ struct RowLines {
   }
   float *at(int i) { return x.data() + static_cast<size_t>(i) * static_cast<size_t>(T); }
 };
-// 线 i 行 t 的 x / h̄ (h̄ = hold_span) 记到实现行 (at_exit ? 平仓行 : t) → 每 stride 行求和一点 (stride 1 = 逐行 / S = 日). 线间并行
+
 BookLines fold_book(misc::exec::ForkJoin &ex, int seg, const RowLines &r, int stride);
-// 期收益 → 净值 (起点 1 不含): put(p, Π_{q ≤ p} (1 + r_q)). 一切净值 / 指数的复利只此一处 (UI: Inspect 分层 / Portfolio 组合 / 池指数)
+
 template <class R, class Put>
 void compound(const R *r, size_t n, Put &&put) {
   double l = 1.0;
@@ -54,32 +59,18 @@ void compound(const R *r, size_t n, Put &&put) {
   }
 }
 
-// 篮子 (baskets; 全部池一趟, 各篮子同形): 篮子表 shared/Basket.hpp (切片 × 该切片的权重), 三样一律以线 (篮子下标) 为键.
-//   成分判据 = 格的事实 (BPlanes::fact: 成员位 + 行业, 同取成员源行) + 概念 (BPlanes::cc, 全期同一份) 过 BasketTable::each / holds:
-//   子池 = 含该池位, 行业 k = 含母集位 ∧ ind_l1 = k, 概念 = 含母集位 ∧ 在该概念成分里.
-//   价格指数 (不看可成交) 在行情侧 (Quote::PriceLib 的篮子侧, 同一张篮子表); 这里是可成交指数 + 增仓 + 估值.
-//   个股 = 单只的篮子 (线 = 池轴资产): 收益 / 估值与篮子的个股项同一份输入同一式, 不看成员位
-struct Baskets {
-  BookLines index;                         // [线][T] 可成交指数的逐行收益 (stride 1; 净值 = compound, 调用方) = fold_book: 行 t 一批 = 成分 (行 t 成员位合判据 ∧ T+1C
-                                           //   标签有效) 做多标签按持仓权 ω 平均 (调仓期首行的目标权: 等权 1 / 总市值 close × total_shares 不复权, 缺股本 0;
-                                           //   随后复权 close 漂移到行 t; 日频篮子 = 行 t 的目标权), 平仓行实现 1/h̄. T+1C = C(行) → C(D+1) 复权, 顺延在标签里,
-                                           //   建仓 / 续持仓位感知 (Stat 契约)
-  BookLines buy;                           // [线][T] 逐行增仓量 Σ (w_t − w̃)⁺ = 行 t 成员表对上一行成员表随价漂移后的换仓 (Members::turnover, 与 pool::run_book 同一式):
-                                           //   w_t = ω / Σω (ω 同 index; 成分 = 上一有效 close 格的事实合判据; 停牌 = 移出 / 复牌 = 移回), w̃ = w (1 + r) / (1 + R);
-                                           //   上一行篮子空 = 建仓 1; 本行篮子空 0. 两边满仓 ⇒ = 单边 ½ Σ|w_t − w̃| (再平衡 + 成分进出); 与因子账的增仓量同一列 (UI 折年化换手同一式)
-  std::vector<float> val[kPoolVals];       // [PoolVal][线 · T] 估值: 行 t 成分 = 上一行的事实合判据; 市值 = 本行收盘价 (停牌带上一有效价) × 本行总股本;
-                                           //   个股收益率 = 分子 / 市值, 按权平均: 等权 = 算术平均 (= 等权组合每元的分子) / 加权 (权 = 市值) = 整体法 Σ分子 / Σ市值;
-                                           //   分子: EP = 归母净利TTM, BP = 归母普通股权益MRQ, SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 分红,
-                                           //   分红 = 本行 dy_ttm × 前一交易日末行收盘价 × 该行总股本 (= Fund 的收盘市值分母还原近 4 季报告期税前分红额; 评估期首日无 → NaN);
-                                           //   股本 / 财务 / 行业是日频盘后列, as-of 读到的本行 = 当日适用; 每口只收该口输入有限的成分 (亏损 / 负权益 / 负现金流照计为负);
-                                           //   Σ权 ≤ 0 / 无成分 → NaN
-  BookLines stock;                         // [资产][T] 个股逐行收益 = 后复权 close / 上一有效 close − 1 (本行无成交 → 0)
-  std::vector<float> stock_val[kPoolVals]; // [PoolVal][资产 · T] 个股收益率 = 分子 / 市值 (同 val 的个股项; 市值 ≤ 0 / 分子缺 → NaN)
+// 行情一侧的账原料 (篮子 kBasket ↔ 个股 kStock 完全同形):
+//   ret = 逐行收益 (篮子 = 可成交指数 fold_book; 个股 = 后复权 close 比 − 1)
+//   buy = 逐行增仓量 (篮子 = Members::turnover; 个股无此列 n = 0)
+//   val = 估值五口 EP / BP / SP / CP / DY [线][T]
+struct SideBook {
+  BookLines ret;
+  BookLines buy;
+  BookLines val[kPoolVals];
 };
-// 池篮子输入 B (load_b) → 全部篮子的指数 / 增仓 / 估值 (Baskets 注)
+using Baskets = Quote::PerMarket<SideBook>;
+
 Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B);
-// 池整体等权线 (= 评估域池整体的等权指数; 线 i = 持有期 y.hd.k[i]): 块 c 的统计行 t 一批 = 行 t 标签有效格做多标签的等权平均 (与因子的落地线同轴同起点:
-// 预热行不建仓; 点 = 统计行). 任意层, 只吃 Y
 BookLines pool_line(misc::exec::ForkJoin &ex, const Block &c);
 
 } // namespace GUI::Engine

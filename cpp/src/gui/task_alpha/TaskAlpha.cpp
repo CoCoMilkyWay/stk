@@ -16,7 +16,6 @@
 #include "gui/Tasks.hpp"
 #include "gui/compute/ui/TabCompute.hpp"
 #include "gui/engine/EngineHub.hpp"
-#include "gui/engine/Scope.hpp" // year_cap (页顶年数上限)
 #include "gui/engine/services/InspectService.hpp"
 #include "gui/engine/services/RunService.hpp"
 #include "gui/engine/services/SearchService.hpp"
