@@ -63,7 +63,7 @@ void remove_lib(LibId id);
 // Compute Config (= 请求)
 // ============================================================================
 
-// 日环深度 / 领养额度不在这里: 管线按负载模拟定初值、运行中按实测调 (见 worker/compute/TsTuner.hpp)
+// 日环深 / 领养不在这里: 环深启动时按内存预算一次定死, 领养由领跑核在日环边自收敛 (见 FeatureStore.hpp / TsSchedule)
 struct ComputeConfig {
   // 按档. 预取 / 截面 / 落盘核数: 各自按日轮转, 从时序让核 (Lob 时序是瓶颈, 不让).
   PerTier<int> pf_cores{{1, 1}};

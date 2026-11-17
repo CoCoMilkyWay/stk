@@ -77,7 +77,6 @@ struct TierFeed<lob::Tier> {
       const misc::Ymd date = feed_.dates[d];
 
       lob_.bind(&core, sub, feed_.data.asset.items[feed_.axis.global(sub)].exchange_type); // 工作区换绑本资产 (簿此刻是干净的)
-      lob_.tick_data().core_id = static_cast<uint32_t>(worker_id_);                        // 追踪: 当前驱动核
 
       // 帧的位置/条数/价位基准都在扫描灌好的帧目录里, 不读任何头; 同一天的
       // 资产共用 reader 里那一个 fd.

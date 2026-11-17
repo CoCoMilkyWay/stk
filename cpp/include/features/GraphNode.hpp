@@ -9,106 +9,61 @@
 #include <cstdint>
 #include <iterator>
 #include <string>
-#include <type_traits>
 
 namespace fund {
 class Panel;
 }
 
 // ============================================================================
-// Node: 节点类实例 + 它的输出口 Ports<K>. 节点类只写 y[口], 发布到输出口由 Node 统一做. 两档构图端共用
+// Node: 节点类实例 + 它的输出口. 输出口 = 节点类的 y[] 本体, 无中转缓冲: 两档构图端共用
 // (LobGraph.hpp / BarGraph.hpp; 一个 TU 只许 include 其一, 见 NodesGenerated.hpp).
-//   输出口 = 最近一次 flush (或 carry) 时 y 的快照, 尚无输出时 NaN (缺失值约定, 见 DataDefine.hpp); 与 y 分开:
-//   compute 与 flush 异域的节点 (逐笔累计 / 分钟结算) 在两次 flush 之间改 y, 下游与字段表只看已发布的值
+//   契约依据 (DataDefine.hpp): 采样型节点 compute 直接写 y (compute = publish);
+//   降频型节点 compute 只累计私有状态, flush 才写 y (flush = publish) ——
+//   下游与字段表在两次发布之间读到的 y = 最近一次发布的值, 尚无输出时 NaN (缺失值约定).
 //   node.compute()                   节点类的 compute()
-//   node.flush()                     节点类有 flush() 先调 (降频型结算到 y), 然后 y → 输出口
-//   node.reset()                     跨天 (日内节点): 输出口置 NaN (不留昨日尾值), 节点类有 reset() 再调
-//   node.carry()                     跨天 (日频节点, 见 is_day_trigger): 输出口保留; 节点类有 carry() 且返回 true → y → 输出口 (盘前承接)
-//   node.snap<kDay>(ar)              续算点 (misc/snap.hpp): y (reset 不清) + 日频节点的输出口 / hist (carry 保留) + 节点类有 snap(ar) 再调
+//   node.flush()                     节点类有 flush() 才调 (降频型结算到 y)
+//   node.reset()                     跨天 (日内节点): y 置 NaN (不留昨日尾值), 节点类有 reset() 再调
+//   node.carry()                     跨天 (日频节点, 见 is_day_trigger): y 保留; 节点类有 carry() 再调 (盘前承接: y 不是当日盘前态时改写)
+//   node.snap<kDay>(ar)              续算点 (misc/snap.hpp): 日频节点的 y (carry 保留) + 节点类有 snap(ar) 再调
 //   node.out(i) / node.out()         第 i 个输出口 (下游节点输入 / 字段表写回); 单口默认 0
-//   node.outs()                      全部输出口 Ports<K> (下游按口成组消费)
-//   node.hist()                      节点类声明 kHist = H 才有: 最近 H 次发布的 History<K, H> (每次发布推一行, 与输出口同步;
-//                                    reset 清空, carry 保留 —— 与输出口同一跨天约定)
 //   node.<port>                      节点类 enum Out 的枚举值 (node.out(node.price))
 // ============================================================================
 namespace graph {
 
-template <class Impl>
-inline constexpr size_t hist_len = [] {
-  if constexpr (requires { Impl::kHist; })
-    return size_t{Impl::kHist};
-  else
-    return size_t{0};
-}();
-
-struct NoHist {};
-
 template <class Impl, size_t K = Impl::kCount>
 struct Node : Impl {
-  static constexpr size_t H = hist_len<Impl>;
-  using Hist = std::conditional_t<(H > 0), History<K, (H > 0 ? H : 1)>, NoHist>;
-
   using Impl::Impl;
 
   const Port &out(size_t i = 0) const {
     assert(i < K);
-    return ports_[i];
-  }
-  const Ports<K> &outs() const { return ports_; }
-  const Hist &hist() const
-    requires(H > 0)
-  {
-    return hist_;
+    return Impl::y[i];
   }
 
   [[gnu::always_inline]] inline void flush() {
     if constexpr (requires(Impl &o) { o.flush(); })
       Impl::flush();
-    publish();
   }
   void reset() {
-    ports_.fill(kNaN);
-    if constexpr (H > 0)
-      hist_.clear();
+    std::fill_n(Impl::y, K, kNaN);
     if constexpr (requires(Impl &o) { o.reset(); })
       Impl::reset();
   }
   void carry() {
     if constexpr (requires(Impl &o) { o.carry(); })
-      if (Impl::carry())
-        publish();
+      Impl::carry();
   }
   template <bool kDay, class Ar>
   void snap(Ar &ar) {
-    ar(Impl::y);
-    if constexpr (kDay) {
-      ar(ports_);
-      if constexpr (H > 0)
-        ar(hist_);
-    }
+    if constexpr (kDay)
+      ar(Impl::y); // 日频节点的输出口跨天承接 → 存; 日内节点的 y 盘前置 NaN, 不存
     if constexpr (requires(Impl &o) { o.snap(ar); })
       Impl::snap(ar);
   }
-
-private:
-  [[gnu::always_inline]] inline void publish() {
-    std::copy_n(Impl::y, K, ports_.begin());
-    if constexpr (H > 0)
-      hist_.push_back(ports_);
-  }
-
-  Ports<K> ports_ = [] {
-    Ports<K> p;
-    p.fill(kNaN);
-    return p;
-  }();
-  [[no_unique_address]] Hist hist_;
 };
 
 // 源层节点 (kCount = 0): 无标量输出口, 自持输出 (如 Depth 的 N 价位当前簿, 由节点自己的 reset 置 NaN); flush/reset 有才调
 template <class Impl>
 struct Node<Impl, 0> : Impl {
-  static_assert(hist_len<Impl> == 0, "源层节点自持输出, 不走 kHist");
   using Impl::Impl;
   void flush() {
     if constexpr (requires(Impl &o) { o.flush(); })
@@ -193,8 +148,7 @@ static_assert(L_5min + std::size(BIN_DATA) == L_1day + 1);
 //   class DAG  声明链末端 + 标签成员 label (回填别的时间行, 不在节点表; 调用在 CoreTs) + 触发域调度:
 //     run<trig>()        对表里 compute/flush 触发域 == trig 的节点, 按行序调 compute()/flush(); 本线程挂了 graph::node_clock 则逐节点计时
 //     kNode_<name>       节点下标 (NODES 行序 = node_deps::TABLE 行序); kNodes = node_deps::TABLE (名 / 文件)
-//     at_day_start(date) 设日期 → 日内节点 reset / 日频节点 carry (按行序) → 标签 reset → onDay 域
-//     at_day_end()       盘尾钩子 (目前无事可做; 留给需要收盘结算的特征)
+//     at_day_start(date) 设日期 → 日内节点 reset / 日频节点 carry (按行序) → 标签 reset
 //     snap(ar)           续算点: 各节点 graph::snap (按行序) → 标签 snap; 与 at_day_start 同表同序
 // ============================================================================
 #define DAG_CAT_(a, b) a##b
@@ -247,9 +201,7 @@ static_assert(L_5min + std::size(BIN_DATA) == L_1day + 1);
       date_ = date;                                                                              \
       DAG_CAT(DAG_TIER, _NODES)(DAG_RESET_NODE)                                                  \
           label.reset();                                                                         \
-      run<Trigger::onDay>();                                                                     \
     }                                                                                            \
-    void at_day_end() {}                                                                         \
     template <class Ar>                                                                          \
     void snap(Ar &ar) {                                                                          \
       DAG_CAT(DAG_TIER, _NODES)(DAG_SNAP_NODE)                                                   \

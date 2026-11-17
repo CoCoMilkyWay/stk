@@ -1,6 +1,6 @@
 #pragma once
-// MetaTracker: 基建标志 ts_valid / cs_valid 的状态机 (两档共用; 落盘列 FIELDS_*_Meta 各档自写, 编码/解码 → features/MetaFlag.hpp)
-//   CoreTs 持有: begin_day 重置 + 给当日成员位, close_minute 先 on_minute 并入 L_1min 及以上各层当前行, close_row<LVL> 取 flag<LVL>();
+// MetaTracker: 基建标志 ts_valid 的状态机 (两档共用; 落盘列 FIELDS_*_Meta 各档自写, 编码/解码 → features/MetaFlag.hpp)
+//   CoreTs 持有: begin_day 重置, close_minute 先 on_minute 并入 L_1min 及以上各层当前行, close_row<LVL> 取 flag<LVL>();
 //   Lob 档每笔另喂 on_tick (L_sec 行 + 分钟 depth OR), 写 L_sec 行取 flag<L_sec>().
 //   Bar 档无逐笔 (从不 on_tick) → min_depth_ 恒 false, 各层 flag = 有成交 ? pack(false, 1) : 0, 符号位 (depth) 恒不置.
 //
@@ -9,13 +9,12 @@
 //   依据: 盘口更新必来自事件 → depth ⟹ data, 三态刚好用 零/符号 编进一个 Float16 槽, 价格精度无损
 //   L_1min 行稠密 (每分钟都写, 特征列 ALL 不受本列门控), 本列在 L_1min 只是"有成交"信息位 + 标签分钟型 exit 的推进条件.
 //
-//   cs_valid = 当日成员 ? 1 : 0 —— 纯日频成员位, 整日常量, 与事件无关 (盘前一次写满本档全部层全部行). 两列对仗:
+//   cs_valid (当日成员位) 不进本类 —— 它是 CS 语义的截面列, 整层列写归 CoreCs (begin_day 一次写满, 见 CoreCs.hpp).
+//   两列对仗:
 //     ts_valid  本资产这一行有没有事件 / 成交 (TS 语义, 与池无关; 全轴资产永远算, 日后进池不用补历史)
 //     cs_valid  本资产今天在不在截面里 (CS 语义). 截面 (CoreCs gather / 因子层 CS 节点 / Stat) 只看它, 不看 ts_valid:
 //               CS 本就该在平稳可比的信息上算, 池内资产在有效行上理应全部有值 (Fund 族 PIT 列除外) —— 因子层对喂 CS 的叶
 //               assert 掩码 ⊇ cs_valid, 不满足就是数据脏或用法错 (拿 CS 套 PIT 事件), 让人 think again
-//   成员位是日频 PIT 输入, 按库定 (CoreTs::member ← pool::Panel, 同池两档同口径): all = 当日活跃 (Fund live 同一份),
-//   子池 = 第 D 日由 all Bar 库 D−1 收盘行定; Lob 库读同池 Bar 库当日 cs_valid. 对本类只是一个 (资产, 日) 的 bool —— TS 行仍只看本资产 + 日频 PIT, 不破一致性红线.
 
 #include "features/MetaFlag.hpp"              // fmeta:: 编码/解码 (稳定头, 消费端直接用它, 不依赖本节点文件)
 #include "features/Storage/FeatureLevels.hpp" // LEVEL_COUNT / L_sec_to_L_1min
@@ -27,13 +26,8 @@
 // ts_valid 状态机: 同秒 (L_sec 行) / 同分钟 (L_1min 行) 多笔的 depth 位 OR 累积 + micro price 维护.
 // 逐笔覆盖写同一槽位, 最后一笔的累积值 = 该行终值 (免读改写). close_minute 在跨分钟的那笔
 // 进入 on_tick 之前调 (CoreTs::advance 顺序), 所以 on_minute 读到的 min_depth_ 就是刚完结分钟的 OR.
-// cs(): 当日 cs_valid 值 = 成员 ? 1 : 0 (成员位 begin_day 给, 日内不变; CoreTs 盘前写满整列).
 class MetaTracker {
 public:
-  // 盘前: 当日成员位 (日频 PIT 输入, 日内恒定; CoreTs::begin_day 经档钩子 member 传入)
-  void begin_day(bool member) { member_ = member; }
-  float cs() const { return member_ ? 1.0f : 0.0f; }
-
   // 每笔一次 (run<L_sec> 末尾, onDepth 已跑完): micro = MicroPrice 节点值 (单边盘口公式给 0);
   // tick_price = 该笔事件价 (开盘竞价盘口未发布, 幅值退化为最近事件价, 首个盘口价一到永久切回)
   inline void on_tick(size_t t, bool depth_updated, float micro, float bid0, float ask0, float tick_price) {
@@ -94,6 +88,5 @@ private:
   bool sec_depth_ = false, min_depth_ = false;
   std::array<bool, LEVEL_COUNT> traded_{}, depth_{}; // [lvl] L_1min 及以上各层当前行 (close_minute 逐分钟 OR, flag 取走即清; L_sec 位不用)
   bool book_priced_ = false;                         // 日内是否已有盘口价 (之前幅值退化为事件价)
-  bool member_ = false;                              // 当日成员位 (begin_day 给; 日内不变)
   float price_ = 0.0f;                               // 最近价 (元, 日内): 盘口 micro price, 竞价阶段为事件价
 };

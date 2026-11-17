@@ -181,8 +181,12 @@ public:
 
   void bind(const Block &c) { c_ = &c; }
   void drop() {
-    hp_ = {}, sc_ = {}, w_ = {};
-    in_ = {}, rx_ = {}, ec_ = {};
+    hp_ = factor::cpu::HostPool{};
+    w_ = factor::cpu::stat::Workspace{};
+    std::vector<factor::check::Arena>().swap(sc_);
+    std::vector<const factor::check::Plane *>().swap(in_);
+    std::vector<uint16_t>().swap(rx_);
+    std::vector<uint8_t>().swap(ec_);
   }
   void release() {
     drop();
@@ -325,8 +329,15 @@ public:
     }
   }
   void drop() {
-    w_ = {}, out_ = {}, rows_ = {}, rx_ = {}, ec_ = {};
-    xv_ = {}, mask_ = {}, av_ = {}, am_ = {};
+    w_ = factor::cpu::stat::Workspace{};
+    std::vector<factor::search::Result>().swap(out_);
+    std::vector<factor::stat::Row>().swap(rows_);
+    std::vector<uint16_t>().swap(rx_);
+    std::vector<uint8_t>().swap(ec_);
+    std::vector<float>().swap(xv_);
+    std::vector<uint8_t>().swap(mask_);
+    std::vector<float>().swap(av_);
+    std::vector<uint8_t>().swap(am_);
   }
   void release() {
     release_vram();

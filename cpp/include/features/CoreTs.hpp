@@ -2,11 +2,11 @@
 
 #include "features/DataDefine.hpp"
 #include "features/GraphNode.hpp"             // graph::BIN_DATA (分钟箱层 + L_1day 输入)
-#include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid / cs_valid)
+#include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid)
 #include "features/Panel/Fund.hpp"            // fund::Panel
-#include "features/Panel/Pool.hpp"
-#include "features/Sample/ResamplerMin2Bin.hpp"
+#include "features/Sample/Sample.hpp"
 #include "features/Storage/FeatureStore.hpp"
+#include "fundamental/AssetAxis.hpp" // PoolAxis
 #include "misc/date.hpp"
 #include "misc/profiler.hpp"
 
@@ -17,23 +17,63 @@
 #include <utility>
 
 // ============================================================================
+// 标签列定址 (CoreTs 的 LB 块偏移 → 落盘列): 档 T 的 LVL 层字段表里每个 LB(port) 行 → map[Label::port] = 列下标
+// (本层没有的 LB 偏移 = kNoCol). port = 标签类 enum Out 成员名 = 列 code, 直连编译期枚举, 无字符串反查.
+// ============================================================================
+inline constexpr size_t kNoCol = SIZE_MAX;
+template <class T, size_t LVL>
+struct LabCols {
+  template <class Label>
+  static constexpr auto get() { // 档缺的层: 全 kNoCol
+    std::array<size_t, Label::MIN_LABEL_COUNT> m{};
+    m.fill(kNoCol);
+    return m;
+  }
+};
+#define CORE_LAB_LB(code, port)                            \
+  assert(m[Label::port] == kNoCol && "LB 口重复: " #port); \
+  m[Label::port] = FO::code;
+#define CORE_LAB_TS(...)
+#define CORE_LAB_CS(...)
+#define CORE_LAB_META(code, port)
+#define CORE_LAB_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(CORE_LAB, code, src)
+#define CORE_LAB_COLS(T, ns, LVL)                     \
+  template <>                                         \
+  struct LabCols<ns::Tier, LVL> {                     \
+    template <class Label>                            \
+    static constexpr auto get() {                     \
+      namespace FO = ns::LVL##_Field;                 \
+      std::array<size_t, Label::MIN_LABEL_COUNT> m{}; \
+      m.fill(kNoCol);                                 \
+      TIER_FIELDS(T, LVL)(CORE_LAB_ONE) return m;     \
+    }                                                 \
+  };
+TIER_LEVELS(CORE_LAB_COLS)
+#undef CORE_LAB_COLS
+#undef CORE_LAB_ONE
+#undef CORE_LAB_TS
+#undef CORE_LAB_CS
+#undef CORE_LAB_LB
+#undef CORE_LAB_META
+
+// ============================================================================
 // CoreTs<Derived, T, Dag>: 单资产时序计算的档无关骨架 (CRTP). CoreLob / CoreBar 只写"源单位怎么进 DAG / 重采样器".
-//   日:   begin_day  句柄进日环 → 日内节点 reset / 日频节点承接 → onDay → 当日成员位 (member) → 元数据 / 重采样器归零 → cs_valid 盘前写满本档全部层 → 标签日历
-//         成员位 = 本库 pool::Panel (all = 当日活跃, 子池 = all Bar 库选股表 (D 之前调仓行选出), Lob = 同池 Bar 库当日 cs_valid; 见 features/Panel/Pool.hpp), 同池两档同口径
-//         end_day    advance 到收盘 (末分钟级联收 L_1day 行: onClose → onSettle → 写行) → 标签收盘结算 → 日末 flush → 各层末 bar 归零
+//   本类不认识"池": 截面成员列 cs_valid 由 CoreCs 写 (见 CoreCs.hpp), 这里只持 A 轴列下标 (asset_id_) 与全局 id.
+//   日:   begin_day  句柄进日环 → 日内节点 reset / 日频节点承接 → 元数据 / 重采样器归零 → 标签日历
+//         end_day    advance 到收盘 (末分钟级联收 L_1day 行: onClose → onSettle → 写行) → 标签收盘结算 → 各层末 bar 归零
 //         无数据日 (缺源) = begin_day → end_day 之间不喂源单位 = 零事件日, 同一路径
 //   分钟: advance(m)  重采样器逐根出 m 之前未出的 bar, 每根 close_minute: 分钟 bar + 成交位并入 L_1min 以上各层当前行
 //                     → 按收行判据 (for_each_close) 级联 close_row<LVL>, 细 → 粗: 出该层 bar (L_1min 已出) → 该层节拍域 (beat_of; L_1day 另跟 onSettle) → 写该层行 + ts_valid
 //                     → 有成交则标签 minute_closed. L_1min / 分钟箱层 / L_1day 同一路径, 两档同一路径
 //   源:   档的 compute_and_store (Lob 每笔 / Bar 每分钟 bar1m) 先 advance 到本单位所在分钟, 再把本单位收进重采样器
 //   标签: writer(col, n, t_min, values, days_ago) 写 days_ago 天前那日 LB 块内偏移 col 起的 n 列, 落到以 t_min 为行末分钟的各层行
-//         (哪层有哪些标签列由字段表定, 层内按名 Label::col_of 定址: Lob 冲击成本只 L_1min; Bar 收益标签 L_1min 及以上, 每层只留本层及以上的持有期组);
+//         (哪层有哪些标签列由字段表定, 层内直连标签类 enum Out 定址: Lob 冲击成本只 L_1min; Bar 收益标签 L_1min 及以上, 每层只留本层及以上的持有期组);
 //         writer.rows(col) = 该列落盘的行 (编译期 kLabRows), LabelHold 只结算这些行;
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
 //   日句柄环与标签悬挂日环同步前进 (Label::PEND_DAYS): Bar 日级型 / 平仓顺延回填旧日张量, 旧日句柄持到结清才 ts_close; Lob 冲击成本只写当日.
 //   续算: snap = 区间末日的跨天态 (节点 + 标签), resume = 下一轮把尾窗日 (≤ PEND_DAYS, 张量已从盘读回) 的句柄接回环, 之后同一路径.
 //   档钩子 (Derived 实现):
-//     auto &resampler()        源 → MinuteData 的重采样器 (ResamplerTick2Min / ResamplerBar2Min: reset / roll)
+//     auto &resampler()        源 → MinuteData 的重采样器 (Lob tick2min / Bar bar2min: reset / roll / accumulate)
 // ============================================================================
 template <class Derived, class T, class Dag>
 class CoreTs {
@@ -49,24 +89,18 @@ public:
     push_day(day);
     dag_.at_day_start(date);
     meta_.reset();
-    meta_.begin_day(member(date));
     self().resampler().reset();
     for (ResamplerMin2Bin &r : min2bin_)
       r.reset();
-    if (const float cs = meta_.cs(); cs != 0.0f)
-      graph::clocked(&graph::NodeClock::write, [&] {
-        [&]<size_t... L>(std::index_sequence<L...>) { (write_cs_valid<L>(cs), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
-      });
     graph::clocked(&graph::NodeClock::label, [&] { dag_.label.day_begin(); });
   }
 
   // 收盘: 末分钟 (收盘集合竞价 → L_1min 254) 没有后续源单位触发结算, 这里 advance 到收盘 (补齐到 254 含),
   // 末分钟级联写 L_1day 收盘行; 须在标签收盘结算之前 (day_end 可能 ts_close 本日).
-  // 无数据日照走 (onDay / 255 根空 bar 逐分钟级联收行 / 标签日历), 各节点按自身的无成交约定给值 —— 本类不认识"缺数据", 不特判任何特征
+  // 无数据日照走 (255 根空 bar 逐分钟级联收行 / 标签日历), 各节点按自身的无成交约定给值 —— 本类不认识"缺数据", 不特判任何特征
   void end_day(Store &store) {
     advance(TRADE_MINUTES_PER_DAY);
     graph::clocked(&graph::NodeClock::label, [&] { dag_.label.day_end(writer(), releaser(store)); });
-    dag_.at_day_end();
     dag_.minute_data.clear();
     for (BinData graph::Root::*b : graph::BIN_DATA)
       (dag_.*b).clear();
@@ -115,13 +149,9 @@ public:
   }
 
 protected:
-  // sub = 本库 A 轴下标 (张量列); members = 本库逐日成员 (其轴 = 本库 A 轴); fund 按全局 id 取行
-  CoreTs(const fund::Panel &fund, const pool::Panel &members, size_t sub)
-      : asset_id_(sub), members_(members), dag_(fund, members.axis().global(sub)), min2bin_(make_min2bin(dag_, std::make_index_sequence<std::size(graph::BIN_DATA)>{})) {
-    dag_.minute_data.asset_id = static_cast<uint32_t>(sub);
-    for (BinData graph::Root::*b : graph::BIN_DATA)
-      (dag_.*b).asset_id = static_cast<uint32_t>(sub);
-  }
+  // sub = 本库 A 轴下标 (张量列); axis 给全局 id (dag 的 fund_panel 行)
+  CoreTs(const fund::Panel &fund, const PoolAxis &axis, size_t sub)
+      : asset_id_(sub), dag_(fund, axis.global(sub)), min2bin_(make_min2bin(dag_, std::make_index_sequence<std::size(graph::BIN_DATA)>{})) {}
 
   // 标签落盘口 (标签类的 writer): 调用 = write_label; rows(col) = LB 块偏移 col 的落盘行 (kLabRows)
   struct LabelWriter {
@@ -142,9 +172,8 @@ protected:
 
   Day day_{}; // 本日写句柄 (= days_[cur_]), 热路径直接用
   size_t asset_id_;
-  const pool::Panel &members_; // 本库逐日成员 (只读共享)
   Dag dag_;
-  MetaTracker meta_; // ts_valid / cs_valid 元列状态机 (begin_day 重置 + 给当日成员位; Lob 档每笔另喂 on_tick)
+  MetaTracker meta_; // ts_valid 元列状态机 (begin_day 重置; Lob 档每笔另喂 on_tick)
   // minute_data → 层 L_5min + i 的 bar (graph::BIN_DATA[i], 分钟箱层 + L_1day; 两档共用, 档钩子 resampler() 只管源 → 分钟)
   std::array<ResamplerMin2Bin, std::size(graph::BIN_DATA)> min2bin_;
 
@@ -152,8 +181,6 @@ private:
   static constexpr size_t kPendDays = Label::PEND_DAYS;
 
   Derived &self() { return static_cast<Derived &>(*this); }
-
-  bool member(misc::Ymd date) const { return members_.in_pool(asset_id_, date); }
 
   template <size_t... I>
   static std::array<ResamplerMin2Bin, std::size(graph::BIN_DATA)> make_min2bin(Dag &d, std::index_sequence<I...>) {
@@ -184,24 +211,12 @@ private:
       dag_.template run<Trigger::onSettle>();
     const float flag = meta_.flag<LVL>();
     if constexpr (T::has(LVL)) {
-      constexpr size_t F = field_of<T>(LVL, "ts_valid");
+      constexpr size_t F = MetaOf<T, LVL>::ts_valid;
       static_assert(F < T::LEVELS[LVL].field_count, "L_1min 及以上每层必须有 ts_valid 列");
       graph::clocked(&graph::NodeClock::write, [&] {
         fstore::ts_write_row<LVL>(day_, r, asset_id_, dag_);
         fstore::ts_write<LVL>(day_, r, F, asset_id_, flag);
       });
-    }
-  }
-
-  // cs_valid: 当日成员位, 整日常量, 与事件无关 → 盘前一次写满本档全部层全部行 (不在截面不写, slot 清零即 0).
-  // 逐行存而非每日一个标量: CS 在 t 只读张量第 t 行 (见 CoreCs.hpp 一致性锚)
-  template <size_t LVL>
-  void write_cs_valid(float cs) {
-    if constexpr (T::has(LVL)) {
-      constexpr size_t F = field_of<T>(LVL, "cs_valid");
-      static_assert(F < T::LEVELS[LVL].field_count, "档的每层都必须有 cs_valid 列");
-      for (size_t t = 0; t < T::LEVELS[LVL].rows; ++t)
-        fstore::ts_write<LVL>(day_, t, F, asset_id_, cs);
     }
   }
 
@@ -233,40 +248,25 @@ private:
     });
   }
 
-  // 标签列定址: LB 块偏移 → 层 LVL 的列下标 (本层没有 = kNoCol). 层内每个 LB 列按名 (Label::col_of) 定址回 LB 块; 对不上 / 重复 → 编译期失败
-  static constexpr size_t kNoCol = SIZE_MAX;
-  struct LabLayout { // 无默认成员初始化器: 外层类未完整时 (下方静态成员初始化) 不许用
-    std::array<std::array<size_t, Label::MIN_LABEL_COUNT>, LEVEL_COUNT> col;
-    std::array<size_t, LEVEL_COUNT> count;
-    bool ok;
-  };
-  static constexpr LabLayout kLab = [] {
-    LabLayout L{};
-    L.ok = true;
+  // 标签列定址: [层][LB 块偏移] → 列下标 (本层没有 = kNoCol). 由字段表 LB(port) 行直连标签类 enum Out 生成 (LabCols)
+  static constexpr std::array<std::array<size_t, Label::MIN_LABEL_COUNT>, LEVEL_COUNT> kLabCol = []<size_t... L>(std::index_sequence<L...>) {
+    return std::array{LabCols<T, L>::template get<Label>()...};
+  }(std::make_index_sequence<LEVEL_COUNT>{});
+  static constexpr std::array<size_t, LEVEL_COUNT> kLabCount = [] {
+    std::array<size_t, LEVEL_COUNT> c{};
     for (size_t l = 0; l < LEVEL_COUNT; ++l) {
-      L.col[l].fill(kNoCol);
       if (!T::has(l))
         continue;
       const std::span<const FieldInfo> fs{T::LEVELS[l].fields, T::LEVELS[l].field_count};
-      const size_t base = first_of_kind(fs, FeatureDataType::LB), cnt = count_of_kind(fs, FeatureDataType::LB);
-      L.count[l] = cnt;
-      L.ok = L.ok && kind_contiguous(fs, FeatureDataType::LB);
-      for (size_t f = base; f < base + cnt; ++f) {
-        const size_t c = Label::col_of(fs[f].code);
-        L.ok = L.ok && c < Label::MIN_LABEL_COUNT && L.col[l][c] == kNoCol;
-        if (c < Label::MIN_LABEL_COUNT)
-          L.col[l][c] = f;
-      }
+      c[l] = count_of_kind(fs, FeatureDataType::LB);
+      assert(kind_contiguous(fs, FeatureDataType::LB) && "各层 LB 列须连续");
     }
     size_t total = 0;
-    for (const size_t c : L.count)
-      total += c;
-    L.ok = L.ok && total > 0; // 至少一层落标签
-    return L;
+    for (const size_t n : c)
+      total += n;
+    assert(total > 0 && "至少一层落标签");
+    return c;
   }();
-  static_assert(kLab.ok, "各层 LB 列须连续, 且每列都能按名 (Label::col_of) 定址回标签 LB 块, 不重复");
-  static constexpr const auto &kLabCount = kLab.count;
-  static constexpr const auto &kLabCol = kLab.col;
 
   // 标签列落盘行: LB 块偏移 c → 以 m 为行末分钟的层里有 c 列的 m 集 (LabelHold 只结算这些行)
   static constexpr std::array<LabelRows, Label::MIN_LABEL_COUNT> kLabRows = [] {

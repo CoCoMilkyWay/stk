@@ -2,7 +2,7 @@
 
 #include "features/CoreTs.hpp"
 #include "features/LobGraph.hpp"
-#include "features/Sample/ResamplerTick2Min.hpp"
+#include "features/Sample/Sample.hpp"
 #include "misc/profiler.hpp"
 
 // ============================================================================
@@ -16,7 +16,7 @@
 //   L_1min 稠密: 255 行每行都跑 onMinute 并写 (无成交分钟 bar 为日内携带价 / 0, 各节点按自身约定兜底, 见 ResamplerTick2Min);
 //   缺数据日 = 零事件日 (begin_day → end_day 之间无逐笔), 同一路径. 本类不读任何特征值, 不特判任何节点.
 //   ts_valid 只标"本分钟有成交".
-//   Lob 档 (逐笔 → 订单簿源). 节点调度全部由 Lob_NODES 表展开 (行序 = 执行序), 这里只按触发域分发和写回; 手写的只有 FLAG / LABEL 列
+//   Lob 档 (逐笔 → 订单簿源). 节点调度全部由 Lob_NODES 表展开 (行序 = 执行序), TS 列由 fstore::RowWriter 按字段表 SRC 展开; 手写的只有 META / LB 列
 //
 //   一致性红线: TS 是资产局部纯函数 —— 输入只有本资产的逐笔流 + 日频 PIT
 //   (fund::Panel), 不读其他资产 / 全局状态 / CS 结果. 张量行 (t, f, a) 因此只由
@@ -29,8 +29,8 @@ class CoreLob : public CoreTs<CoreLob, lob::Tier, lob::DAG> {
   friend Base;
 
 public:
-  CoreLob(const fund::Panel &fund, const pool::Panel &members, size_t sub)
-      : Base(fund, members, sub), tick2min_(dag_.tick_data, dag_.minute_data) {
+  CoreLob(const fund::Panel &fund, const PoolAxis &axis, size_t sub)
+      : Base(fund, axis, sub), tick2min_(dag_.tick_data, dag_.minute_data) {
     dag_.tick_data.asset_id = static_cast<uint32_t>(sub);
   }
 

@@ -6,6 +6,7 @@
 #include "features/Storage/FeatureSnap.hpp"
 #include "features/Storage/FeatureStore.hpp"
 #include "misc/affinity.hpp"
+#include "misc/cross_platform.hpp" // memory_usage (日环内存预算)
 #include "misc/logging.hpp"
 #include "misc/profiler.hpp"
 #include "misc/snap.hpp"
@@ -13,7 +14,6 @@
 #include "worker/compute/Layout.hpp"
 #include "worker/compute/Stages.hpp"
 #include "worker/compute/TierOps.hpp"
-#include "worker/compute/TsTuner.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -38,8 +38,8 @@
 //   static source_dates(const SharedData &)                 源日历 (库表规划, 见 ComputeService.hpp)
 //   static cell_bytes(num_assets)       一个源格的字节 (日环内存预算; 软源 0)
 //   TierFeed(const PipelineArgs &)      全管线一份 (帧目录 / 源格 / 名单 ...)
-//   void bind(const StoreRing &)        日环建好后接上 (硬源经源窗给日 d 定址源格, 见 StoreRing::feed_cell)
-//   size_t weight(sub, d) const         (资产, 日) 的负载 —— 初始分配 / 初始日环模拟 / 领养配额的单位
+//   void bind(const StoreRing &)        日环建好后接上 (硬源经源格环给日 d 定址源格, 见 StoreRing::feed_cell)
+//   size_t weight(sub, d) const         (资产, 日) 的负载 —— 初始分配 / 领养择重的单位
 //   size_t prefetch(d)                  预取线程备日 d 的源, 返回字节 (多预取核对不同 d 并发调用)
 //   cell(sub, d) const                  (资产, 日) 的源格 (Lob: 帧引用; Bar: 255 根 bar1m), 空 = 缺源
 //   Runner(TierFeed &, worker_id)       每 TS worker 一份的工作区 (Lob: 订单簿 + decoder + reader)
@@ -61,8 +61,8 @@ using CoreOf = typename TierFeed<T>::Core;
 template <class T>
 struct TsRole {
   TierFeed<T> &feed;
-  const fund::Panel &fund;    // Core 构造 (日频 PIT)
-  const pool::Panel &members; // Core 构造 (逐日成员)
+  const fund::Panel &fund; // Core 构造 (日频 PIT)
+  const PoolAxis &axis;    // Core 构造 (本库 A 轴 = 池面板轴)
   TsSchedule &sched;
   std::vector<std::unique_ptr<CoreOf<T>>> &cores;
   const FeatureSnap *snap_in;                          // 全量 = nullptr
@@ -118,12 +118,12 @@ SnapHeader snap_header(const FeatureLib &lib, misc::Ymd date) {
 }
 
 // 预取: 第 lane 核 (共 lanes 核) 备日 lane, lane + lanes, ... 的源 (各日写各自的源格, 互不握手).
-// 流控 = store.pf_try_open (日 d 在源窗: 领先计满日不超过 P + 余量; 硬源的源格由此可复用, 见 StoreRing).
+// 流控 = store.pf_try_open (源格 d % F 的前主日已计满, 无读者 ⇒ 可复用; 软源同一份流控, 见 StoreRing).
 template <class T>
 void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed, size_t lane, size_t lanes) {
   assert(lane < lanes);
   const int worker_id = ctx.worker_id;
-  StoreRing &store = ctx.store;
+  FeatureStore<T> &store = ctx.store;
   const std::atomic<bool> &cancel_requested = ctx.cancel;
   // 本核发布槽 (单写者): work = 累计备源字节, idle_us = 累计流控干等微秒
   ComputeStats::Core &stat = ctx.stat;
@@ -178,7 +178,7 @@ void prefetch_loop(const StageCtx<T> &ctx, TierFeed<T> &feed, size_t lane, size_
 // 时序: 逐资产喂源 + DAG, 写张量 (日期主序遍历); 领跑核在日环边干等时领养落后核的资产并回填
 // (wait_open 的 on_idle, 处置权转移见 TsSchedule).
 // 触发时机 = 领跑者在日环边干等 slot (它已领先, 等待时间白白浪费, 正好拿来帮最慢者);
-// 额度 = 两侧配额 (sched.quota, 协调线程按实测忙碌占比每窗重算, 见 TsTuner): victim 让出 / leader 接手都不超过各自余额.
+// 领养条件 = 对方落后 ≥ 2 天且手里 ≥ 2 个资产: 接手其最重的一个 (一次修正得多、换核少), 永久转移不归还.
 template <class T>
 void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   using Store = FeatureStore<T>;
@@ -223,7 +223,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     TraceN("InitCores");
     // asset_id = 本库 A 轴下标 (张量列); fund_panel 的行 = 其全局 id (Core 内经 members.axis() 映射)
     for (const size_t asset_id : my_asset_ids) {
-      cores[asset_id] = std::make_unique<CoreOf<T>>(role.fund, role.members, asset_id);
+      cores[asset_id] = std::make_unique<CoreOf<T>>(role.fund, role.axis, asset_id);
       if (role.snap_in) {
         misc::snap::Load in(role.snap_in->record(asset_id));
         cores[asset_id]->snap(in);
@@ -278,63 +278,44 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   };
 
   // 负载再平衡: 只在日环边干等 slot 时调用 (本 worker 已领先满日环深, 等待时间正好拿来
-  // 帮落后者). 本核可接手 (配额 < 0) 才领: 接手 victim 放得进双方余额的最重资产 (一次修正得多、换核少;
-  // 放不进 = 偏差小于一个资产, 不动), 立刻回填落下的旧日期 —— 含 victim
+  // 帮落后者). 落后 ≥ 2 天 (1 天差是相位噪声) 的候选按前沿升序逐个试 —— 最慢者优先,
+  // 撞车时顺延帮第二慢者, 而不是空转干等; 接手 victim 手里最重的资产 (一次修正得多、换核少;
+  // 至少给它留 2 个, 零负载的不搬), 立刻回填落下的旧日期 —— 含 victim
   // 的"当天" (claim CAS 唯一裁决: victim 日循环还没轮到它就被本 worker 先
   // claim 走, victim 见 owner 已变直接跳过, 当天即刻变轻). 旧日未计满 ⇒
-  // 仍在飞, ts_try_open 必得; 硬源的旧日源格同理未复用 (见 StoreRing 源窗); 回填后并入本 worker 日循环 (永久转移, 不归还).
+  // 其格 free_day 仍停在 d, ts_try_open 必得; 硬源的旧日源格同理未复用 (见 StoreRing); 回填后并入本 worker 日循环 (永久转移, 不归还).
   // 触发条件 (日环边干等 + 落后 ≥ 2 天) 与永久转移都是刻意的: 不要改成自由领 / 按日窃取 (理由见 TsSchedule).
-  std::atomic<int64_t> &my_quota = sched.quota[static_cast<size_t>(worker_id)];
+  // f ≥ 1 兼保证 victim 的 core 构造已通过 frontier 的 release/acquire 发布.
   auto try_adopt = [&](size_t my_days_done) {
-    const int64_t room = -my_quota.load(std::memory_order_relaxed);
-    if (room <= 0)
-      return;
-
-    // 候选 victim: 落后 ≥ 2 天 (1 天差是相位噪声) 且该让出者, 按前沿升序逐个试
-    // —— 最慢者余额耗尽/撞车时顺延帮第二慢者, 而不是空转干等.
-    // f ≥ 1 兼保证 victim 的 core 构造已通过 frontier 的 release/acquire 发布.
     std::vector<std::pair<size_t, int>> laggers; // (前沿, worker)
     for (int w = 0; w < static_cast<int>(sched.frontier.size()); ++w) {
       const size_t f = sched.frontier[static_cast<size_t>(w)].load(std::memory_order_acquire);
-      if (w != worker_id && f >= 1 && my_days_done >= f + 2 && sched.quota[static_cast<size_t>(w)].load(std::memory_order_relaxed) > 0)
+      if (w != worker_id && f >= 1 && my_days_done >= f + 2)
         laggers.emplace_back(f, w);
     }
     std::sort(laggers.begin(), laggers.end());
 
     for (const auto &[victim_days, victim] : laggers) {
-      std::atomic<int64_t> &owe = sched.quota[static_cast<size_t>(victim)];
-      const int64_t budget = std::min(owe.load(std::memory_order_relaxed), room);
-      // victim 手里放得进 budget 的最重资产 (顺便数持仓; 至少给它留 2 个; 零负载的不搬)
+      // victim 手里最重资产 (顺便数持仓; 至少给它留 2 个; 零负载的不搬)
       size_t victim_count = 0, pick = SIZE_MAX;
       int64_t pick_weight = 0;
       for (size_t i = 0; i < sched.owner.size(); ++i) {
         if (sched.owner[i].load(std::memory_order_relaxed) != victim)
           continue;
         ++victim_count;
-        if (sched.weight[i] <= budget && sched.weight[i] > pick_weight) {
+        if (sched.weight[i] > pick_weight) {
           pick_weight = sched.weight[i];
           pick = i;
         }
       }
-      if (victim_count < 2 || pick == SIZE_MAX)
-        continue;
-
-      // victim 侧扣额 CAS: 余额不够 = 别的领养方先扣了 (或协调线程刚重算), 试下一个 victim
-      int64_t q = owe.load(std::memory_order_relaxed);
-      bool budget_ok = false;
-      while (q >= pick_weight && !budget_ok)
-        budget_ok = owe.compare_exchange_weak(q, q - pick_weight, std::memory_order_relaxed);
-      if (!budget_ok)
+      if (victim_count < 2 || pick == SIZE_MAX || pick_weight == 0)
         continue;
 
       // 处置权 CAS: 路标改指本 worker, victim 下一天起直接跳过 pick.
-      // 失败 = 与其他领养方撞车 (退回扣额, 试下一个 victim).
+      // 失败 = 与其他领养方撞车, 试下一个 victim.
       int32_t expect = victim;
-      if (!sched.owner[pick].compare_exchange_strong(expect, worker_id, std::memory_order_acq_rel)) {
-        owe.fetch_add(pick_weight, std::memory_order_relaxed);
+      if (!sched.owner[pick].compare_exchange_strong(expect, worker_id, std::memory_order_acq_rel))
         continue;
-      }
-      my_quota.fetch_add(pick_weight, std::memory_order_relaxed);
       // victim 可能正在算 pick 的在飞一天: 等它交割 (窗口 = 单个 asset-day)
       auto settled = [&] { return sched.claimed[pick].load(std::memory_order_acquire) == sched.done[pick].load(std::memory_order_acquire); };
       if (!wait_open(cancel_requested, stat, settled))
@@ -448,7 +429,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
   }
 }
 
-// 管线: 档的源 → 初始分配 → 日环 (按初始分配模拟定深) → 四角色按 StageLayout pin 死启动 (统一 launch) → 等收尾 (协调线程调参).
+// 管线: 档的源 → 初始分配 → 日环 (按内存预算一次定深) → 四角色按 StageLayout pin 死启动 (统一 launch) → 等收尾.
 template <class T>
 bool pipeline(const PipelineArgs &args) {
   // 核布局: 预取 → TS → CS → IO 四个 stage, 按物理核分配, 全部 pin 死 (见 StageLayout)
@@ -472,7 +453,6 @@ bool pipeline(const PipelineArgs &args) {
   // 交错分配则每次写都跨核 (跨插槽) 抢行, TS 退化为缓存一致性流量.
   // 运行期差距由 worker 间的处置权转移收敛 (见 ts_loop 的 try_adopt), 这里只求起点均衡.
   TsSchedule sched(num_assets, num_ts, tail);
-  std::vector<std::vector<double>> load(num_ts, std::vector<double>(dates.size() - tail, 0.0)); // [核][待算日] 负载 (初始日环模拟)
   {
     int64_t total = 0;
     for (size_t sub = 0; sub < num_assets; ++sub) {
@@ -487,31 +467,27 @@ bool pipeline(const PipelineArgs &args) {
       const size_t w = static_cast<size_t>(std::min(n - 1, (2 * acc + sched.weight[sub]) * n / (2 * total)));
       sched.owner[sub].store(static_cast<int32_t>(w), std::memory_order_relaxed);
       acc += sched.weight[sub];
-      for (size_t d = tail; d < dates.size(); ++d)
-        load[w][d - tail] += static_cast<double>(feed.weight(sub, d));
     }
   }
 
-  // 日环 (口径见 TsTuner.hpp): 下游段 = MIN_RING_SLOTS (悬挂 + 时序下一日 + 截面跨日, 少于此死锁)
-  //   + 截面在飞 ≤ K_cs + 落盘在飞 ≤ K_io + 1 (截面 / 落盘单日耗时波动与落盘前缀乱序); 再加时序余量 (模拟), 按内存截断.
-  // 格数上限 = 总内存口径 ∧ 日期轴天数 (窗口比整轴还长无益)
-  const RingBudget budget{FeatureStore<T>::Slot::bytes(num_assets) + TierFeed<T>::cell_bytes(num_assets)};
+  // 日环深 P 启动时一次定死 (定长序号环, 无扩格, 见 FeatureStore.hpp):
+  //   上限 = 内存预算 (一格 = 张量 + 源格, 用到总内存 1 − kRingMemMargin) ∧ 日期轴天数 (环比轴长无益)
+  //   下限 = MIN_RING_SLOTS (标签悬挂 + 时序下一日 + 截面跨日) + 截面/落盘在飞核数 + 1, 不足死锁
+  const size_t per_slot = FeatureStore<T>::Slot::bytes(num_assets) + TierFeed<T>::cell_bytes(num_assets);
+  const size_t mem_slots = static_cast<size_t>(static_cast<double>(memory_usage().total_bytes) * (1.0 - kRingMemMargin)) / per_slot;
   const size_t floor_slots = CoreOf<T>::kMinRingSlots + num_cs + num_io + 1;
-  const size_t mem_cap = budget.cap();
-  const size_t lead = ts_lead_days(load, mem_cap > floor_slots ? mem_cap - floor_slots : 0);
-  const size_t slots = std::min(floor_slots + lead, budget.affordable());
-  const size_t cap = std::max(slots, std::min(mem_cap, dates.size()));
-  assert(slots >= CoreOf<T>::kMinRingSlots && slots > tail && "内存不够: 日环不到 MIN_RING_SLOTS, 会死锁");
+  const size_t slots = std::min(mem_slots, dates.size());
+  assert(slots >= floor_slots && slots > tail && "内存不够: 日环不到下限, 会死锁");
 
   std::cout << "\n=== Compute (" << tier_name(T::kId) << ") ===\n"
             << L.summary() << "\n"
             << "Assets: " << num_assets
-            << " | Ring 初值: " << slots << " (下游 " << floor_slots << " + 时序余量 " << lead << ", 上限 " << cap << ")"
+            << " | Ring: " << slots << " slots (内存预算 " << mem_slots << ", 下限 " << floor_slots << ")"
             << " | Dates: " << dates.size() << " (" << dates.front() << " - " << dates.back() << ")"
             << " | Tail: " << tail << "\n"
             << std::endl;
 
-  FeatureStore<T> store(num_assets, lib.axis.hash, lib.id, slots, cap);
+  FeatureStore<T> store(num_assets, lib.axis.hash, lib.id, slots);
   feed.bind(store);
 
   // 续算: 尾窗日张量读回日环 + 续算点整读 (头须对上尾窗末日 / 本库轴 / 状态指纹), 尾窗日句柄给 TS 接回
@@ -531,15 +507,14 @@ bool pipeline(const PipelineArgs &args) {
   const size_t clock_every = std::max<size_t>(1, num_assets * (dates.size() - tail) / kClockTarget);
   std::vector<graph::NodeClock> clocks(num_ts);
   std::vector<CsClock> cs_clocks(num_cs);
-  TsRole<T> role{feed, args.fund, args.members, sched, cores, snap_in ? &*snap_in : nullptr, tail_days, snap_out, clock_every, clocks};
+  TsRole<T> role{feed, args.fund, args.members.axis(), sched, cores, snap_in ? &*snap_in : nullptr, tail_days, snap_out, clock_every, clocks};
 
   // 统一 launch(worker_id, name, cpus, fn): 线程名 name (StageLayout::thread_name), pin 到 cpus (StageLayout::cpus_of), worker_id 与 CPU 号无关.
-  // 进度 = 仪表盘自行采样 store/sched/stats (拉取式); 时序调参同样拉取式, 见 TsTuner.
+  // 进度 = 仪表盘自行采样 store/sched/stats (拉取式).
   ComputeStats stats(num_pf, num_ts, num_cs, num_io);
   ComputeDashboard dashboard(store, sched, stats, dates, TierFeed<T>::kUnit);
-  TsTuner tuner(store, sched, stats, dates.size(), budget, [&store] { store.grow(); });
   auto ctx = [&](int worker_id, ComputeStats::Core &stat) {
-    return StageCtx<T>{worker_id, store, args.libs, dates, tail, args.cancel, stat};
+    return StageCtx<T>{worker_id, store, args.libs, dates, tail, args.members, args.cancel, stat};
   };
   std::vector<std::future<void>> workers;
   workers.reserve(static_cast<size_t>(L.total_threads()));
@@ -574,12 +549,11 @@ bool pipeline(const PipelineArgs &args) {
       }
     }
 
-  // 等收尾: 已落盘天数镜像进进度面, 时序调参随之推进 (worker 自己查 cancel, 这里报一声)
+  // 等收尾: 已落盘天数镜像进进度面 (worker 自己查 cancel, 这里报一声)
   bool announced = false;
   for (auto &worker : workers)
     while (worker.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
       args.on_io(store.query_io_done());
-      tuner.tick();
       if (!announced && args.cancel.load(std::memory_order_relaxed)) {
         announced = true;
         std::cout << "[Compute] Cancelling..." << std::endl;

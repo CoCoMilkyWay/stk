@@ -1,6 +1,5 @@
 #pragma once
 
-#include "define/CBuffer.hpp"
 #include "features/OrderBook/LimitOrderBookDefine.hpp" // IWYU pragma: export
 #include <array>
 #include <cstdint>
@@ -14,7 +13,7 @@
 //
 // Design:
 // - Source levels hold only the last bar (plain fields): resamplers assign it, nodes read it in that level's beat
-// - Node outputs hold the latest value per port (Port); history is opt-in (producer kHist → History, or a consumer-owned window)
+// - Node outputs hold the latest value per port (Port); history is a consumer-owned window
 //========================================================================================
 
 //----------------------------------------------------------------------------------------
@@ -22,7 +21,6 @@
 // 声明 (compute 触发, flush 触发), 档的 DAG (LobGraph / BarGraph) 按 CMake 汇总的 NODES 表展开成直线调度代码.
 //----------------------------------------------------------------------------------------
 enum class Trigger : uint8_t {
-  onDay,    // 盘前 (begin_day, 节点 reset / carry 之后)
   onTaker,  // 成交单
   onMaker,  // 挂单
   onCancel, // 撤单
@@ -45,16 +43,13 @@ inline constexpr bool is_day_trigger(Trigger t) { return t == Trigger::onClose |
 inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
 //----------------------------------------------------------------------------------------
-// 节点间数据流的统一类型: 一个输出口 = Port (该口最近一次 flush 的值, 尚无输出 NaN); K 个口 = Ports<K>;
-// 一侧盘口 N 个价位 = DepthPorts (Depth 的 bid_qty 等, 当前簿). 下游按 const 引用接, 读到的永远是最新值.
-// 回看 = History<K, H>: 最近 H 次发布的 Ports<K> 行环 (back() = 当前输出口, [size() − 1 − j][口] = 前 j 次), 上游声明 kHist 才有
+// 节点间数据流的统一类型: 一个输出口 = Port (该口最近一次 flush 的值, 尚无输出 NaN);
+// K 个口 = Ports<K>; 一侧盘口 N 个价位 = DepthPorts (Depth 的 bid_qty 等, 当前簿). 下游按 const 引用接, 读到的永远是最新值.
 //----------------------------------------------------------------------------------------
 using Port = float;
 template <size_t K>
 using Ports = std::array<Port, K>;
 using DepthPorts = Ports<L2::LOB_DEPTH>;
-template <size_t K, size_t H>
-using History = CBuffer<Ports<K>, H>;
 
 // 价格比较容差 (元): 价位价 / 委托价 / 成交价由整数分换算成 float, 与解析的涨跌停价可能差 1 ulp.
 // 涨跌停判定 (Depth 钳价位 / Flow 彩票委托 / Valuation 触板标记) 统一用它, 不各写一个.
@@ -64,23 +59,21 @@ inline constexpr float kPxEps = 1e-4f;
 // NODE CONTRACT (节点统一接口)
 //----------------------------------------------------------------------------------------
 //   enum Out : size_t { <名>..., kCount };   // 输出口; 单输出用 { value, kCount }; 无输出 (源层) kCount = 0
-//   float y[kCount] = {};                    // 输出值: compute()/flush() 写 y[口], Node 在 flush 域发布到输出口
-//   static constexpr size_t kHist = H;       // (可选) 下游要回看本节点最近 H 次发布: Node 另持 History<kCount, H>, 下游接 Up.hist(); 不声明零开销
-//   <NodeType>(<输入引用>...);               // 只接输入 (const Port & / const Ports<K> & / const History<K, H> & / const DepthPorts & / 数据结构引用), 不接输出
-// 输入红线: 只准接本资产的数据 (Port/History/DepthPorts/TickData/MinuteData/BinData) 与日频 PIT (fund::Panel).
+//   float y[kCount] = {};                    // 输出值 = 输出口本体: compute()/flush()/carry() 写 y[口], 下游与落盘直接读 y
+//   <NodeType>(<输入引用>...);               // 只接输入 (const Port & / const Ports<K> & / const DepthPorts & / 数据结构引用), 不接输出
+// 输入红线: 只准接本资产的数据 (Port/DepthPorts/TickData/MinuteData/BinData) 与日频 PIT (fund::Panel).
 // 跨资产 / 全局状态 / CS 结果一律禁止 —— TS 必须保持资产局部纯函数, 回测重放可任意重排
 // (串行/并行/分片) 且与实盘推流逐值一致, 全系于此; 截面信息的表达一律走 CS 层与因子层.
 //   void compute();                          // 采样型: 直接写 y
-//   void flush();   (可选)                   // 降频型: compute 累计状态, flush 结算到 y (Node 随后发布)
-//   void reset();   (可选)                   // 有跨天状态才写 (日内节点; 日频节点不 reset)
-//   bool carry();   (可选, 日频节点)         // 盘前承接: 输出口不是当日盘前态 (区间首日 / 日期轴跳日) → 写 y 并返回 true, Node 发布
+//   void flush();   (可选)                   // 降频型: compute 累计状态, flush 结算到 y
+//   void reset();   (可选)                   // 有跨天状态才写 (日内节点; 日频节点不 reset); y 由 Node 盘前置 NaN
+//   void carry();   (可选, 日频节点)         // 盘前承接: 输出口 (= y) 不是当日盘前态 (区间首日 / 日期轴跳日) → 改写 y
 //   template <class Ar> void snap(Ar &ar);   // (可选) 续算点: 逐个 ar(成员) 列出 reset 不清的成员 (跨天窗口 / 昨值 / 分布)
-//                                            //   (misc/snap.hpp); y / 输出口 / hist 由 Node 存. 漏列 = 续算与全量不再逐位一致
+//                                            //   (misc/snap.hpp); 日频节点的 y 由 Node 存. 漏列 = 续算与全量不再逐位一致
 //                                            //   能由 fund::Panel 从头重推的 (Fund 的状态机) 不必列; 状态只许依赖库首日, 不许依赖本轮首日
 // 单侧节点 (只看一侧盘口) 只收那一侧的 DepthPorts, 用模板参数 IS_BID 决定符号; 不要两侧都收再挑一侧.
-// 输出口由 graph::Node 持有, 默认只存最新值; 下游用 Up.out(口) 接 Port, 字段表用 TS(节点, 口) 引用. 回看两条路:
-//   同域 (消费方每次发布恰读一次上游): 消费方自持窗口 (如 MovingAverage), 窗长归消费方;
-//   跨域 (要上游按它自己的 flush 节奏产出的序列, 消费方采样不到): 上游声明 kHist, 下游接 Up.hist().
+// 下游接 Up.out() (单口) / Up.out(Up.port) (多口), 字段表用 TS(节点, 口, Tf) 引用.
+// 回看 = 消费方自持窗口 (如 MovingAverage), 窗长归消费方.
 // 实例接线 (NODE_) + 落盘列 (FIELDS_) 写在节点文件末尾, CMake 扫描汇总 (格式见 FeaturesDefine.hpp).
 //----------------------------------------------------------------------------------------
 
@@ -104,9 +97,7 @@ inline constexpr float kPxEps = 1e-4f;
 //----------------------------------------------------------------------------------------
 // Re-export LOB_Feature as part of the data hierarchy
 struct TickData {
-  // Metadata
   uint32_t asset_id{0};  // static: asset identifier
-  uint32_t core_id{0};   // static: core identifier
   uint32_t sec_index{0}; // dynamic: current tick index (trading second index 0-?)
 
   LOB_Feature lob;
@@ -146,10 +137,7 @@ inline bool ord_filled_before(const LOB_Feature &lob, size_t s, uint32_t &f) {
 //----------------------------------------------------------------------------------------
 template <class Vol, class Amt>
 struct BarData {
-  // Metadata
-  uint32_t asset_id{0}; // static: asset identifier
-  uint32_t core_id{0};  // static: core identifier
-  uint32_t index{0};    // dynamic: 末 bar 的本层行 (L_1min 0-254 / 箱 0 .. bins_per_day(n) - 1 / L_1day 0)
+  uint32_t index{0}; // dynamic: 末 bar 的本层行 (L_1min 0-254 / 箱 0 .. bins_per_day(n) - 1 / L_1day 0)
 
   // 末 bar: OHLC + 分侧量额
   float open{0}, high{0}, low{0}, close{0};
@@ -158,7 +146,7 @@ struct BarData {
 
   bool traded() const { return close > 0 && bid_volume + ask_volume > 0; } // 本 bar 有成交
 
-  void clear() { *this = BarData{asset_id, core_id}; }
+  void clear() { *this = BarData{}; }
 };
 using MinuteData = BarData<uint32_t, float>;
 using BinData = BarData<uint64_t, double>;

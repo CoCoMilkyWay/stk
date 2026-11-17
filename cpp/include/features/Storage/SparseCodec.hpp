@@ -6,8 +6,7 @@
 #include <cstring>
 
 // ============================================================================
-// SPARSE CODEC — 特征列落盘编码之一: 位图 + 非零字面 (手搓, 无第三方依赖,
-// 与 ZstdCodec 同 API 对仗, bound / encode / decode; 选型见 FeatureDay.hpp)
+// SPARSE CODEC — 特征列落盘编码: 位图 + 非零字面 (手搓, 无第三方依赖, bound / encode / decode)
 // ============================================================================
 // 单位 = 一列 [T][A] (fp16 按位当 uint16). delta = 沿 T 轴 XOR 差分 (字 k 存
 // col[k] ^ col[k − A], 首行原样; 无损): 稠密慢变列 (L_1min / 整日常量) 差分后大片零,
@@ -15,8 +14,8 @@
 // 零字沿 A 轴逐字散布不成游程 —— RLE 吃不到 (实测仅 ~82%), 位图刚好:
 // 每 64 字 1 个 u64 掩码 (1/16 开销) + 非零字面原样.
 //
-// 实测 (5897 资产, 2023/01/03): 全天 945 MB → ~422 MB (45%). 压缩率不及
-// ZstdCodec (29%), 但单遍分支免除扫描是内存带宽级吞吐, IO worker 单核绰绰有余.
+// 实测 (5897 资产, 2023/01/03): 全天 945 MB → ~422 MB (45%),
+// 单遍分支免除扫描是内存带宽级吞吐, IO worker 单核绰绰有余.
 //
 // 格式: [u64 位图 × ceil(words/64)][非零 uint16 字面 ...][u16 尾填充 0], 位图 LSB 优先.
 // 尾填充字让解码无分支取字面 (多读一字不越界). 解码端字数由形状推出 (T×A, 文件头校验),
@@ -31,7 +30,7 @@ public:
     return ((words + 63) / 64) * sizeof(uint64_t) + (words + 1) * sizeof(uint16_t);
   }
 
-  // col 不改写 (与 ZstdCodec 同签名). 返回实际载荷字节数
+  // col 不改写. 返回实际载荷字节数
   static size_t encode(void *col, size_t T, size_t A, bool delta, void *dst, size_t dst_capacity) {
     assert(dst_capacity >= bound(T * A));
     return delta ? encode_<true>(static_cast<const uint16_t *>(col), T * A, A, dst)

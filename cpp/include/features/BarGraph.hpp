@@ -7,7 +7,7 @@
 // ============================================================================
 // Bar 档 DAG (namespace bar; 与 LobGraph.hpp 对仗, 一个 TU 只许 include 其一). 公共体见 GraphNode.hpp TIER_DAG.
 // 源 = 分钟 K (MinuteData, CoreBar 由 bar1m 填充) + 分钟箱 K / 日 K (BinData, CoreTs 重采样) + 日频 PIT (fund::Panel),
-// 触发域只有 onDay / onMinute / on5Min / on15Min / on30Min / on60Min / onClose / onSettle.
+// 触发域只有 onMinute / on5Min / on15Min / on30Min / on60Min / onClose / onSettle.
 // ============================================================================
 namespace bar {
 
@@ -16,7 +16,7 @@ struct DAG_Root : graph::Root {
 };
 
 #define DAG_TIER Bar
-TIER_DAG(::LabelBar, minute_data, Tradable.y[Tradable.can_buy], Tradable.y[Tradable.can_sell], Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn), Fund.out(Fund.adj_ratio))
+TIER_DAG(::LabelBar, minute_data, Tradable.out(Tradable.can_buy), Tradable.out(Tradable.can_sell), Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn), Fund.out(Fund.adj_ratio))
 #undef DAG_TIER
 
 } // namespace bar

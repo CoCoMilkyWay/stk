@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <iterator>
 
@@ -13,8 +14,17 @@
 // 节点表 (拓扑序 = DAG 声明序 = 同一触发域内执行序)
 #define @DAG_TIER@_NODES(N)@DAG_GEN_NODES@
 
-// 落盘字段表 (按层; 行序 = 列序)
+// 落盘字段表 (按层; 行序 = 列序). CAT1 = ("一级分类","节点文件") 二元组
 @DAG_GEN_FIELDS@
+
+// 分类表 (一级 = Node/{TS,CS}/<分类> 目录, 二级 = 字段表 cat_l2 token; 排序去重)
+namespace @DAG_NS@ {
+inline constexpr std::array<const char *, @DAG_CATEGORIES_N@> FeatureCategoryL1_ALL = {
+@DAG_GEN_CATEGORIES@};
+
+inline constexpr std::array<const char *, @DAG_CAT2S_N@> FeatureCategoryL2_ALL = {
+@DAG_GEN_CAT2S@};
+} // namespace @DAG_NS@
 
 // 节点上游依赖 (仅真实节点, 拓扑序 = DAG 节点下标; GUI 特征依赖解析 / 节点用时归并用). 项 = "Up" 整节点 / "Up.port" 单口 (Up.out(Up.port) 形态); file = 节点所在文件
 namespace @DAG_NS@::node_deps {

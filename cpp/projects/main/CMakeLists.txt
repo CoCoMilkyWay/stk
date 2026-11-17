@@ -261,7 +261,6 @@ set(MATH_FAST
     worker/compute/FeedLob.cpp
     worker/compute/StageCs.cpp
     worker/compute/StageIo.cpp
-    worker/compute/TsTuner.cpp
     worker/encode/Pipeline.cpp
     # live
     # account
@@ -467,13 +466,12 @@ endforeach()
 #                        只改节点实现体 → 本文件内容不变 (configure_file 不重写) → 消费者不重编.
 #   NodesGenerated.hpp   本档全部节点 #include + <Tier>_NODE_PREV_* 声明链 —— 只给本档构图端用.
 #                        一个 TU 只许 include 一档的 NodesGenerated (两档节点文件的 NODE_ 宏同名).
-#   FeatureCategoriesGenerated.hpp  本档一级 / 二级分类表 (namespace <tier>)
 #   两档 FieldsGenerated 同处一个 TU (FeatureMeta.cpp / FeatureTier), 而节点 / 字段 owner 可同名
 #   (Fund / Kline / Meta) 且内容不同 —— 所以内联的 NODE_ / FIELDS_ 宏改名加档前缀 (<Tier>_NODE_x / <Tier>_FIELDS_L_1min_x);
 #   helper 宏原名内联, 两档同名必须逐字一致 (否则 FATAL_ERROR).
 #   节点实例和落盘列直接写在节点文件里 (TS/ 时序节点, CS/ 截面列; 方法在 Method/):
 #     #define NODE_<Name>(N)         N(<Name>, (NodeType), (ctor inputs), compute_trigger, flush_trigger)
-#     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ DAG_LEVELS; Owner = 节点名, 或非节点列 (CS/LABEL/FLAG) 的任意名字
+#     #define FIELDS_<LVL>_<Owner>(X, CAT1) X(code, CAT1, ...)   LVL ∈ DAG_LEVELS; Owner = 节点名, 或非节点列 (CS/LB/META) 的任意名字
 #   依赖 = ctor inputs 里出现的 "<Up>." (Up.out() / Depth.bid_qty ...), 不需要任何 include.
 #   此处: glob → 正则抽 NODE_/FIELDS_ → 分层拓扑排序 (同层按发现序 = 路径序) → 套 templates/<文件>.hpp.in 生成
 #     <Tier>_NODES(N) / <Tier>_NODE_PREV_<Name> (声明链, 让顺序错误变成编译错误) /
@@ -615,7 +613,7 @@ macro(dag_scan)
             set(DAG_NODEFILE_${node_name} "${scan_rel}")
             # 依赖 = 该行里所有 "<Ident>." (先全收, 排序时只认节点名)
             # 单口引用 Up.out(Up.port) / Up.y[Up.port] 另记成 "Up.port" (GUI 依赖解析按口过滤, 不把上游整节点的字段都算进来);
-            # 其余形态 (Up.out() / Up.outs() / Up.hist() / Up.y / Up.member) = 整节点
+            # 其余形态 (Up.out() / Up.y / Up.member) = 整节点
             string(REGEX MATCH "(^|\n) *#define NODE_${node_name}\\([^\n]*" node_line "${scan_defs}")
             set(port_ref_re "[A-Za-z_][A-Za-z0-9_]*\\.(out\\( *[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+ *\\)|y\\[ *[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z0-9_]+ *\\])")
             string(REGEX MATCHALL "${port_ref_re}" port_refs "${node_line}")
@@ -636,7 +634,7 @@ macro(dag_scan)
                 list(APPEND DAG_DEPREFS_${node_name} "${up}.${port}")
             endforeach()
         endforeach()
-        # 每 (层, owner) 记两张同形表的 CAT1 位: FIELDS = 一级分类, FILES = 节点文件路径
+        # 每 (层, owner) 记 CAT1 二元组两项: 一级分类 + 节点文件路径 (合成 ("cat","file") 传入, 见 dag_emit)
         foreach(field_def ${field_defs})
             string(REGEX REPLACE ".*#define FIELDS_(${DAG_LEVEL_RE})_([A-Za-z0-9_]+)\\(" "\\1;\\2" lvl_owner "${field_def}")
             list(GET lvl_owner 0 lvl)
@@ -727,20 +725,17 @@ macro(dag_emit)
             list(APPEND dag_field_order ${owner})
         endif()
     endforeach()
-    # 层名与 FeaturesDefine.hpp TIER_LEVELS 一致; 每层两张同形表 (同一展开, 行序一致, 只差 CAT1 位; 档没有的层为空表, C++ 侧断言):
-    #   <Tier>_<LVL>_FIELDS(X)  CAT1 = 一级分类
-    #   <Tier>_<LVL>_FILES(X)   CAT1 = 节点文件路径 (include/ 下相对; GUI 元数据用)
+    # 层名与 FeaturesDefine.hpp TIER_LEVELS 一致; 每层一张表 (档没有的层为空表, C++ 侧断言):
+    #   <Tier>_<LVL>_FIELDS(X)  CAT1 = ("一级分类", "节点文件") 二元组 (消费者拆 CAT_CAT / CAT_FILE, 见 FeaturesDefine.hpp)
     set(DAG_GEN_FIELDS "")
     foreach(lvl ${DAG_LEVELS})
-        foreach(table FIELDS FILES)
-            string(APPEND DAG_GEN_FIELDS "#define ${DAG_TIER}_${lvl}_${table}(X)")
-            foreach(owner ${dag_field_order})
-                if(DEFINED DAG_${table}_${lvl}_${owner})
-                    string(APPEND DAG_GEN_FIELDS " \\\n  ${DAG_TIER}_FIELDS_${lvl}_${owner}(X, \"${DAG_${table}_${lvl}_${owner}}\")")
-                endif()
-            endforeach()
-            string(APPEND DAG_GEN_FIELDS "\n\n")
+        string(APPEND DAG_GEN_FIELDS "#define ${DAG_TIER}_${lvl}_FIELDS(X)")
+        foreach(owner ${dag_field_order})
+            if(DEFINED DAG_FIELDS_${lvl}_${owner})
+                string(APPEND DAG_GEN_FIELDS " \\\n  ${DAG_TIER}_FIELDS_${lvl}_${owner}(X, (\"${DAG_FIELDS_${lvl}_${owner}}\", \"${DAG_FILES_${lvl}_${owner}}\"))")
+            endif()
         endforeach()
+        string(APPEND DAG_GEN_FIELDS "\n\n")
     endforeach()
 
     list(LENGTH DAG_ORDER DAG_N)
@@ -751,7 +746,7 @@ macro(dag_emit)
     endforeach()
 
     # 内容不变不重写 (消费者不重编)
-    foreach(gen FeatureCategoriesGenerated FieldsGenerated NodesGenerated)
+    foreach(gen FieldsGenerated NodesGenerated)
         configure_file(${DAG_TEMPLATE_ROOT}/${gen}.hpp.in ${DAG_GEN_DIR}/${gen}.hpp @ONLY NEWLINE_STYLE UNIX)
     endforeach()
 endmacro()

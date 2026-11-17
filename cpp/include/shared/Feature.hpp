@@ -10,7 +10,6 @@
 
 // ts:: / cs:: 归一化枚举的 GUI 适配 (与 FeaturesDefine 的 to_string / *_ALL 同形, 供 TabTable 过滤下拉 / 两列显示)
 inline constexpr EnumStr to_string(ts::TfId t) { return {ts::TF_TOKENS[static_cast<size_t>(t)], ts::TF_NAMES[static_cast<size_t>(t)]}; }
-inline constexpr EnumStr to_string(ts::MethodId m) { return {ts::METHOD_TOKENS[static_cast<size_t>(m)], ts::METHOD_NAMES[static_cast<size_t>(m)]}; }
 inline constexpr EnumStr to_string(cs::TfId t) { return {cs::TF_TOKENS[static_cast<size_t>(t)], cs::TF_NAMES[static_cast<size_t>(t)]}; }
 inline constexpr EnumStr to_string(cs::MethodId m) { return {cs::METHOD_TOKENS[static_cast<size_t>(m)], cs::METHOD_NAMES[static_cast<size_t>(m)]}; }
 template <class E>
@@ -20,7 +19,7 @@ constexpr auto norm_enum_all() {
     a[i] = static_cast<E>(i);
   return a;
 }
-inline constexpr auto ts_MethodId_ALL = norm_enum_all<ts::MethodId>();
+inline constexpr auto ts_TfId_ALL = norm_enum_all<ts::TfId>();
 inline constexpr auto cs_MethodId_ALL = norm_enum_all<cs::MethodId>();
 
 // ============================================================================
@@ -58,8 +57,8 @@ struct Feature {
     std::set<FeatureDataType> filter_data_type;
     std::set<std::string_view> filter_cat_l1;
     std::set<std::string_view> filter_cat_l2;
-    std::set<ts::MethodId> filter_ts_method; // TS Norm 列按 Method 过滤 (Tf 只显示)
-    std::set<cs::MethodId> filter_cs_method; // CS Norm 列同
+    std::set<ts::TfId> filter_ts_tf;         // TS Tf 列按变换过滤
+    std::set<cs::MethodId> filter_cs_method; // CS Norm 列按 Method 过滤 (Tf 只显示)
 
     // 选中列 (跨库跨层多选; 选中时绑定当时的当前库, 切库 / 切层保留; 同列在不同库各选一次; primary = 首个, 供需要单选的消费方)
     std::set<ColRef> picked;

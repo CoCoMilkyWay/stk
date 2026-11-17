@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -181,8 +182,9 @@ void names_of(Lib &L) {
 double stat_of(const json &v) { return v.is_null() ? NAN : v.get<double>(); }
 
 const Lib &lib() {
-  static const Lib L = [] {
-    Lib x;
+  static const std::unique_ptr<const Lib> L = [] {
+    auto p = std::make_unique<Lib>();
+    Lib &x = *p;
     names_of(x);
     const fs::path root = disk::path(disk::Doc) / "resources-tag" / "report";
     assert(fs::is_directory(root) && "研报标注不在 output/data/doc");
@@ -245,9 +247,9 @@ const Lib &lib() {
         if (const auto it = x.by_id.find(b); it != x.by_id.end())
           x.docs[it->second].cited_by.push_back(i);
     x.texts.resize(x.docs.size());
-    return x;
+    return p;
   }();
-  return L;
+  return *L;
 }
 
 // ---- 分面与格式 ----

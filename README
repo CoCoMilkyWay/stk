@@ -84,8 +84,8 @@ stk/
 │   │   │   ├── FeaturesDefine.hpp                      # 🧮 字段表格式 (NODE_ / FIELDS_ 行) + 元数据枚举
 │   │   │   ├── TimeIndex.hpp                           # 🧮 时间索引: Clock ↔ L_sec ↔ L_1min → n 分钟箱 (首箱 = 竞价; L_1day 一日一行)
 │   │   │   ├── DataDefine.hpp                          # 🧮 TickData / MinuteData / BinData + 节点契约 / 截面列契约
-│   │   │   │                                           #    · 触发域: 盘前 onDay → 盘中 onTick / onDepth / onMinute → 箱末 on<n>Min → 收盘 onClose → 盘后 onSettle
-│   │   │   ├── GraphNode.hpp                           # 🧮 graph::Node: 节点实例 + 输出口 Ports (最新值) + 可选回看 hist(); 跨天 reset (日内) / carry (日频)
+│   │   │   │                                           #    · 触发域: 盘中 onTick / onDepth / onMinute → 箱末 on<n>Min → 收盘 onClose → 盘后 onSettle
+│   │   │   ├── GraphNode.hpp                           # 🧮 graph::Node: 节点实例, y[] 即输出口; 跨天 reset (日内) / carry (日频)
 │   │   │   ├── LobGraph.hpp                            # 🧮 Lob 档计算图 DAG (节点表由 CMake 扫描生成 <Tier>/NodesGenerated.hpp)
 │   │   │   ├── BarGraph.hpp                            # 🧮 Bar 档计算图 DAG (与 LobGraph 对仗)
 │   │   │   ├── CoreTs.hpp                              # 🧮 单资产时序骨架 (档无关, CRTP): asset-day = begin_day → feed → end_day; 收行级联 for_each_close (细 → 粗); 续算 = snap 读回 resume
@@ -133,14 +133,12 @@ stk/
 │   │   │       ├── FeaturePlane.hpp                    # 🧮 读端载入平面: TsPlane / CsPlane (网格行) / RowPlane (尾部行) + 流式批 Stream::run
 │   │   │       │                                       #    · ReadPlan → 每 (库, 层, 盘后) 一个 Source: 一天一次选列读 + level_asof 行映射 + Readers::ids 收拢到 A 轴
 │   │   │       │                                       #    · 写端上游读 (CoreCs 旁读 / pool::Panel 成员) 与读端同一个 Source
-│   │   │       ├── SparseCodec.hpp                     # 🧮 落盘编码: 稀疏位图 (默认)
-│   │   │       └── ZstdCodec.hpp                       # 🧮 落盘编码: zstd
+│   │   │       └── SparseCodec.hpp                     # 🧮 落盘编码: 稀疏位图
 │   │   ├── worker/                                     # ⚡ 多线程工作流编排: compute = 特征计算, encode = 逐笔编码
 │   │   │   ├── encode/EncodeWorker.hpp                 # ⚡ 逐笔编码: producer 按天列举 → worker 并行解码落盘
 │   │   │   ├── compute/Pipeline.hpp                    # ⚡ 管线骨架 pipeline<T>: 两档同一份, 档只写源 TierFeed<T> (src/worker/compute/Feed{Lob,Bar}.cpp)
 │   │   │   ├── compute/Layout.hpp                      # ⚡ 核布局 StageLayout: 机器拓扑 + 按档的预取 / 截面 / 落盘核数 → 各角色的物理核
 │   │   │   ├── compute/TierOps.hpp                     # ⚡ 档入口表 tier_ops(tier): ComputeService 备好共享前置后经它调档的 pipeline<T>
-│   │   │   ├── compute/TsTuner.hpp                     # ⚡ 时序调参: 日环深度 (RingBudget) 与领养额度全自动
 │   │   │   ├── compute/Progress.hpp                    # ⚡ 计算统计 ComputeStats + 终端仪表盘 ComputeProgress
 │   │   │   └── compute/Stages.hpp                      # ⚡ 特征计算四角色日流水线; 段间只经 FeatureStore 的日窗握手
 │   │   │                                               #    前提: 特征多带串行状态 (订单簿 / DAG), 无法向量化 ⇒ 并行只靠切资产 + 分流水段
@@ -149,7 +147,7 @@ stk/
 │   │   │                                               #    时序 | N    | 沿 A 并行 | 源 → 订单簿 → DAG → 写行   | 日环有空 slot (背压)
 │   │   │                                               #    截面 | 1    | 沿 T 串行 | 第 t 行 → 截面列           | 本日时序全部写完
 │   │   │                                               #    落盘 | 1    | 沿 D 顺序 | 日张量 → 逐列编码落盘      | 本日 + 次日截面写完, 清零交还 slot
-│   │   │                                               #    · 时序是瓶颈, 其余核全给它; 持续落后核的资产被领跑核领养, 运行中可扩日环 (TsTuner)
+│   │   │                                               #    · 时序是瓶颈, 其余核全给它; 持续落后核的资产被领跑核领养; 日环深度启动时按内存预算一次定死
 │   │   │                                               #    · 两档只差源: Lob 软源 (预取只暖 page cache) / Bar 硬源 (预取解码 bar1m, 时序等它)
 │   │   │                                               #    · 续算: 日期轴 = 尾窗日 + 新日; 时序从快照接着新日算, 落盘重写尾窗日 (标签补结清)
 │   │   ├── gui/                                        # 🖥️ GUI (ImGui + Service 后台线程); 每任务分两层:
@@ -404,7 +402,6 @@ stk/
 │   │   ├── worker/compute/Feed{Lob,Bar}.cpp            # 💾 两档的源 TierFeed + 档入口表 (Lob fast-math / Bar precise-math)
 │   │   ├── worker/compute/StageCs.cpp                  # 💾 截面 cs_loop (档无关)
 │   │   ├── worker/compute/StageIo.cpp                  # 💾 落盘 io_loop (档无关)
-│   │   ├── worker/compute/TsTuner.cpp                  # 💾 时序调参: 初始日环 / 内存预算 / 扩格 + 领养
 │   │   ├── worker/compute/Progress.cpp                 # 💾 特征计算终端仪表盘
 │   │   ├── worker/encode/EncodeWorker.cpp              # 💾 逐笔编码 worker
 │   │   ├── live/tdx/shim/                              # 💾 shim 独立程序 (独立 target, 与 app_main 共用 app object 库): 对着活客户端跑适配代码, 靠日志与断言验收
@@ -422,7 +419,7 @@ stk/
 │   ├── script/                                         # 🐍 绘图脚本 (bookmap / plot_bars / plot_signals)
 │   └── projects/main/                                  # 🏗️ 构建系统
 │       ├── CMakeLists.txt                              # 🏗️ CMake (C++23, Clang); 按档扫描 Node/<Tier>/{TS,CS} → 拓扑排序 → 生成节点表 / 字段表
-│       ├── templates/                                  # 🏗️ 生成头模板: NodesGenerated / FieldsGenerated / FeatureCategoriesGenerated
+│       ├── templates/                                  # 🏗️ 生成头模板: NodesGenerated / FieldsGenerated
 │       └── build/bin/app_main                          # 🎯 可执行文件
 └── output/                                             # 📁 落盘 (与 cpp/ 同级): config/ 人定的输入 + 按产研流水线分段的产物 + run/ 各段运行产物的同构镜像 (整删无损)
     ├── config/                                         # ⚙️ 配置: 一任务一目录 (与左栏任务树对仗); 本机件 (不进仓库) 由 output/.gitignore 逐项列出
@@ -487,13 +484,12 @@ stk/
 #
 # 动手前必读 (按序):
 #   1. cpp/include/features/FeaturesDefine.hpp   NODE_ / FIELDS_ 宏格式 + 公式符号规范 (索引 τ/c/j/i/t/D; P 价格族; O 订单流; ε 容差)
-#   2. cpp/include/features/DataDefine.hpp       节点契约 (enum Out / y[] / compute / flush / reset / carry / kHist / snap) + 输出口 (Port / History) + Trigger 触发域 + 输入红线 (只准本资产数据 + 日频 PIT)
-#   3. cpp/include/features/Node/unused/         想要的节点可能已有半成品
-#   4. 同类现有节点 1-2 个作模板 (命名 / 公式 / 注释风格照抄):
+#   2. cpp/include/features/DataDefine.hpp       节点契约 (enum Out / y[] / compute / flush / reset / carry / snap) + Trigger 触发域 + 输入红线 (只准本资产数据 + 日频 PIT)
+#   3. 同类现有节点 1-2 个作模板 (命名 / 公式 / 注释风格照抄):
 #        - 累计降频型:   Node/Lob/TS/OrderFlow/Flow.hpp
 #        - 盘口时间加权: Node/Lob/TS/Book/Book.hpp
 #        - 分钟采样型:   Node/Common/Basic/Kline.hpp + Node/{Lob,Bar}/TS/Basic/Kline.hpp
-#        - 回看型:       同域 = 消费方自持窗口 (Node/Bar/TS/Basic/MovingAverage.hpp); 跨域 = 上游声明 kHist, 下游接 Up.hist() (见 DataDefine.hpp)
+#        - 回看型:       消费方自持窗口 (Node/Bar/TS/Basic/MovingAverage.hpp)
 #        - 日频型:       Node/Common/Fund/Fund.hpp + Node/Bar/TS/Fund/Fund.hpp (onSettle; 输出口跨天保留, 盘中读到的 = 当日适用值)
 #                        (Lob 档的 Fund 节点只供盘中节点取前收 / 涨跌停, 不落盘)
 #                        全市场截面 / 长窗的日频量 (市场收益 → ivol / β, 趋势回归, 12−1 动量) 在 fund::Panel 预计算 (Panel/Fund.cpp build_market), 经 Fund 口进 TS

@@ -22,7 +22,7 @@
 //   writer.rows(col) = 列 col 落盘的行集 (行末分钟): 骨架只结算落盘行 —— 不落盘的 (行, 列) 不写可成交码, 不平仓, 不进等待;
 //     entry 价点逐行照收 (分钟型名义平仓 = 后续行的 entry). 一组两腿落盘行相同 (rows_ok).
 //   release(days_ago) = 该日全部组已写完, 写句柄可归还.
-//   LB 块列名: 持有期组 lb_<side>_<name> (hold_col(h) + side), 之后 lb_entry_ok (ENTRY_COL); CoreTs 按名定址 (col_of).
+//   LB 块列名: 持有期组 lb_<side>_<name> (hold_col(h) + side), 之后 lb_entry_ok (ENTRY_COL); 字段表 LB(port) 直连 enum Out 定址.
 // =============================================================================
 
 #include "features/DataDefine.hpp"
@@ -55,6 +55,12 @@ public:
   static constexpr size_t HOLD_COLS = HOLD_COUNT * GROUP_SIZE;
   static constexpr size_t ENTRY_COL = HOLD_COLS;           // lb_entry_ok (建仓可成交码)
   static constexpr size_t MIN_LABEL_COUNT = ENTRY_COL + 1; // LB 块总列数
+
+// LB 块输出口 (字段表 LB(port) 的 port): 枚举值 = LB 块偏移 (组序 = LABEL_GROUPS 序, 组内 [long, short], 末位 entry_ok)
+#define LABEL_OUT_ONE(name, kind, n, ...) long_##name, short_##name,
+  enum Out : size_t { LABEL_GROUPS(LABEL_OUT_ONE) entry_ok };
+#undef LABEL_OUT_ONE
+  static_assert(Out::entry_ok == ENTRY_COL);
   static_assert(HOLD_COUNT <= 32, "日级组排期位图用 uint32_t");
   static_assert([] {
     for (size_t h = 0; h < HOLD_COUNT; ++h)
@@ -135,19 +141,6 @@ public:
     }
   };
 
-  // LB 块偏移 ← 列名 (CoreTs 按名定址): lb_<side>_<name> → hold_col(h) + side, lb_entry_ok → ENTRY_COL; 对不上 → SIZE_MAX
-  static constexpr size_t col_of(std::string_view code) {
-    if (code == "lb_entry_ok")
-      return ENTRY_COL;
-    for (size_t h = 0; h < HOLD_COUNT; ++h)
-      for (size_t s = 0; s < GROUP_SIZE; ++s) {
-        const std::string_view side = SIDE_NAME[s], name = LABEL_NAME[h];
-        if (code.size() == 3 + side.size() + 1 + name.size() && code.starts_with("lb_") && code.substr(3, side.size()) == side &&
-            code[3 + side.size()] == '_' && code.ends_with(name))
-          return hold_col(h) + s;
-      }
-    return SIZE_MAX;
-  }
   // 落盘行约束 (CoreTs 编译期查; rows[c] = LB 块偏移 c 的落盘行): 骨架按组结算, 一组两腿落盘行须相同
   template <class Rows>
   static constexpr bool rows_ok(const Rows &rows) {

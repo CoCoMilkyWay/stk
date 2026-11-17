@@ -75,7 +75,7 @@ private:
 };
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-// 行序: 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序; 层内按名定址回 LB 块 hold_col(h), 见 LabelHold::col_of), 之后 lb_entry_ok (ENTRY_COL).
+// 行序: 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序; 层内按 LB(port) 直连 Label::Out 定址回 LB 块偏移), 之后 lb_entry_ok.
 // 英 / 中片段见 LabelGroups.hpp
 #define LBAR_NOTE_MIN(n) "行m+" #n "的entry(其后首个有成交连续竞价分钟的VWAP, 与entry同基准, 相邻行精确伸缩); 过收盘则按当日收盘价"
 #define LBAR_NOTE_CLOSE(n) "当日收盘价(末笔成交价)"
@@ -87,12 +87,12 @@ private:
 #define LBAR_TEX_CLOSE_N(n) R"(, \quad P_{exit}=P^{close}_{D+)" #n "}"
 #define LBAR_ROW(X, CAT1, side, en, cn, formula, name, kind, n)                                       \
   X(lb_##side##_##name, CAT1, ret, en " " LABEL_EN_##kind(n) " Return", cn LABEL_CN_##kind(n) "收益", \
-    cn LABEL_CN_##kind(n) "价格收益(比例; 不含冲击与税佣; 后复权). entry: 其后首个有成交连续竞价分钟的VWAP, 无成交顺延, 再无则按收盘价建仓; entry价可否买卖见lb_entry_ok(封板照写, 消费端按持仓判). exit: " LBAR_NOTE_##kind(n) "; 该腿不可成交(封板)或停牌则顺延至之后首个该腿可成交价点, 环满(" LABEL_DELAY_NOTE ")按最近收盘价; 越过区间末则按最后一日收盘价. 冲击与税佣由消费端扣(固定冲击Config::fixed_impact; 有Lob库时建仓可改扣真实冲击lb_cost_*)", formula LBAR_TEX_##kind(n), LABEL)
+    cn LABEL_CN_##kind(n) "价格收益(比例; 不含冲击与税佣; 后复权). entry: 其后首个有成交连续竞价分钟的VWAP, 无成交顺延, 再无则按收盘价建仓; entry价可否买卖见lb_entry_ok(封板照写, 消费端按持仓判). exit: " LBAR_NOTE_##kind(n) "; 该腿不可成交(封板)或停牌则顺延至之后首个该腿可成交价点, 环满(" LABEL_DELAY_NOTE ")按最近收盘价; 越过区间末则按最后一日收盘价. 冲击与税佣由消费端扣(固定冲击Config::fixed_impact; 有Lob库时建仓可改扣真实冲击lb_cost_*)", formula LBAR_TEX_##kind(n), LB(side##_##name))
 #define LBAR_ROW_LONG(name, kind, n, X, CAT1) LBAR_ROW(X, CAT1, long, "Long", "做多", R"(\frac{P_{exit}-\mathrm{VWAP}_{entry}}{\mathrm{VWAP}_{entry}})", name, kind, n)
 #define LBAR_ROW_SHORT(name, kind, n, X, CAT1) LBAR_ROW(X, CAT1, short, "Short", "做空", R"(\frac{\mathrm{VWAP}_{entry}-P_{exit}}{\mathrm{VWAP}_{entry}})", name, kind, n)
 #define LBAR_GROUP(name, kind, n, X, CAT1) LBAR_ROW_LONG(name, kind, n, X, CAT1) LBAR_ROW_SHORT(name, kind, n, X, CAT1)
 #define LBAR_ENTRY(X, CAT1) \
-  X(lb_entry_ok, CAT1, flag, "Entry Tradable", "建仓可成交", "entry价点可成交码: 可买=1 | 可卖=2 (封涨停=2, 封跌停=1, 两向=3; 分钟价点按Tradable整分钟封板判, 收盘价点按单一价撮合判). 各持有期组共用", LABEL_ENTRY_TEX, LABEL)
+  X(lb_entry_ok, CAT1, flag, "Entry Tradable", "建仓可成交", "entry价点可成交码: 可买=1 | 可卖=2 (封涨停=2, 封跌停=1, 两向=3; 分钟价点按Tradable整分钟封板判, 收盘价点按单一价撮合判). 各持有期组共用", LABEL_ENTRY_TEX, LB(entry_ok))
 
 #define FIELDS_L_1min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_1min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
 #define FIELDS_L_5min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_5min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)

@@ -2,20 +2,18 @@
 // FeatureMeta — 字段表元数据的唯一数据 TU
 // ============================================================================
 // 全项目只有这个 TU (加上写端 worker) include 生成的字段表 (FieldsGenerated, 经
-// FeatureTier) 与 FeatureCategoriesGenerated —— 其余消费者只 include
+// FeatureTier) —— 其余消费者只 include
 // 稳定头 (features/FeatureMeta.hpp / features/Storage/FeatureLevels.hpp), 增删改特征时
 // 它们不重编, 只重编本文件 + 写端, 再重链.
 //   level_info(tier, lvl)      FeatureLevels.hpp 声明的运行时层表入口
 //   feature_meta::features     每档每层 FeatureMetadata 表 (编译期展开, 运行时只读)
-//   feature_meta::categories_* 每档分类表 (FeatureCategoriesGenerated)
+//   feature_meta::categories_* 每档分类表 (FieldsGenerated 内 FeatureCategoryL*_ALL)
 //   feature_meta::deps         字段直接依赖解析 (node_deps)
 //   两档 TS / CS 列名全局唯一 (编译期断言): 因子层按列名拼两档, 重名即歧义
 // ============================================================================
 
 #include "features/FeatureMeta.hpp"
-#include "features/Bar/FeatureCategoriesGenerated.hpp"
-#include "features/Lob/FeatureCategoriesGenerated.hpp"
-#include "features/Storage/FeatureTier.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps
+#include "features/Storage/FeatureTier.hpp" // 编译期 <tier>::LEVELS / 字段表 / FieldSource / node_deps / 分类表
 
 #include <algorithm>
 #include <array>
@@ -107,26 +105,14 @@ static_assert(tiers_unique(), "跨档 TS / CS 列名重复 (因子层按名拼�
 // ============================================================================
 // Compile-time Metadata Generation: 每档每层一张表 (字段表行 + 层信息)
 // ============================================================================
-// 节点文件取自 <Tier>_<LVL>_FILES (与字段表同一展开, CAT1 位 = 文件路径, 行序一致; 行数不等即模板推导失败)
-#define GENERATE_METADATA(code, cat_l1, cat_l2, name_en, name_cn, description, formula, src)                                \
-  {#code, SRC_VALID_##src, SRC_KIND_##src, cat_l1, nullptr, #cat_l2, SRC_TS_TF_##src, SRC_TS_METHOD_##src, SRC_CS_TF_##src, \
+// 一级分类 / 节点文件取自 CAT1 二元组 (CAT_CAT / CAT_FILE, 见 FeaturesDefine.hpp)
+#define GENERATE_METADATA(code, cat_l1, cat_l2, name_en, name_cn, description, formula, src)                           \
+  {#code, SRC_VALID_##src, SRC_KIND_##src, CAT_CAT cat_l1, CAT_FILE cat_l1, #cat_l2, SRC_TS_TF_##src, SRC_CS_TF_##src, \
    SRC_CS_METHOD_##src, formula, name_en, name_cn, description, kLevel},
-#define GENERATE_FILE(code, file, ...) file,
-template <size_t N>
-constexpr std::array<FeatureMetadata, N> with_files(const FeatureMetadata (&base)[N], const char *const (&files)[N]) {
-  std::array<FeatureMetadata, N> out{};
-  for (size_t i = 0; i < N; ++i) {
-    out[i] = base[i];
-    out[i].file = files[i];
-  }
-  return out;
-}
-#define GENERATE_METADATA_TABLE(T, ns, name, num, fields, psd)                 \
-  namespace ns::name##_meta_detail {                                           \
-    constexpr uint8_t kLevel = num;                                            \
-    constexpr FeatureMetadata BASE[] = {fields(GENERATE_METADATA)};            \
-    constexpr const char *const FILES[] = {T##_##name##_FILES(GENERATE_FILE)}; \
-    constexpr auto TABLE = with_files(BASE, FILES);                            \
+#define GENERATE_METADATA_TABLE(T, ns, LVL)                                              \
+  namespace ns::LVL##_meta_detail {                                                      \
+    constexpr uint8_t kLevel = LVL;                                                      \
+    inline constexpr FeatureMetadata TABLE[] = {TIER_FIELDS(T, LVL)(GENERATE_METADATA)}; \
   }
 TIER_LEVELS(GENERATE_METADATA_TABLE)
 
@@ -137,7 +123,7 @@ struct MetaCell {
   std::span<const FeatureMetadata> meta;
   std::span<const FieldSource> sources;
 };
-#define META_CELL_ONE(T, ns, name, num, fields, psd) MetaCell{TierId::T, num, ns::name##_meta_detail::TABLE, ns::name##_FIELD_SOURCE},
+#define META_CELL_ONE(T, ns, LVL) MetaCell{TierId::T, LVL, ns::LVL##_meta_detail::TABLE, ns::LVL##_FIELD_SOURCE},
 constexpr MetaCell META_CELLS[] = {TIER_LEVELS(META_CELL_ONE)};
 #undef META_CELL_ONE
 template <class V>
@@ -174,7 +160,6 @@ const TierMeta &tier_meta(TierId tier) {
 } // namespace
 
 #undef GENERATE_METADATA
-#undef GENERATE_FILE
 #undef GENERATE_METADATA_TABLE
 #undef GENERATE_TIER_META
 
@@ -192,7 +177,7 @@ std::span<const char *const> categories_l2(TierId tier) { return tier_meta(tier)
 std::array<std::vector<std::string>, LEVEL_COUNT> deps(TierId t) {
   const TierMeta &tm = tier_meta(t);
   // 1. 节点上游依赖表: node name → 直接依赖项 (来自 CMake 生成的 <tier>::node_deps::TABLE)
-  //    项 = "Up" (整节点: Up.out() / Up.outs() / Up.hist() / Up.member) 或 "Up.port" (单口: Up.out(Up.port))
+  //    项 = "Up" (整节点: Up.out() / Up.member) 或 "Up.port" (单口: Up.out(Up.port) / Up.y[Up.port])
   std::unordered_map<std::string, std::vector<std::string>> node_deps_map;
   auto load_deps = [&](const auto &table) {
     for (const auto &e : table)

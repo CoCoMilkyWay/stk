@@ -179,26 +179,34 @@ struct LevelInfo {
   size_t field_count;      // F
   const FieldInfo *fields; // [field_count]
   uint64_t fingerprint;    // 字段表指纹
-  const char *psd;         // 该层特征的推荐频谱 (GUI 元数据)
 };
 
-// 语义层数 (FeatureLevel: L_sec 秒 / L_1min 分钟 / L_5min .. L_60min 分钟箱 / L_1day 日, 见 FeaturesDefine.hpp), 与档无关; 档可以缺层
-inline constexpr size_t LEVEL_COUNT = L_1day + 1;
+// 语义层数 (FeatureLevel: L_sec 秒 / L_1min 分钟 / L_5min .. L_60min 分钟箱 / L_1day 日, 见 FeaturesDefine.hpp ALL_LEVELS), 与档无关; 档可以缺层
+#define LEVEL_COUNT_ONE(...) +1
+inline constexpr size_t LEVEL_COUNT = 0 ALL_LEVELS(LEVEL_COUNT_ONE);
+#undef LEVEL_COUNT_ONE
 // 分钟箱层的箱长 (分钟)
 inline constexpr size_t level_bin_minutes(size_t lvl) {
   assert(is_bin_level(lvl));
   return BIN_MINUTES[lvl - L_5min];
 }
+#define LEVEL_NAME_ONE(name, unit, token) #name,
+#define LEVEL_UNIT_ONE(name, unit, token) unit,
+#define LEVEL_TOKEN_ONE(name, unit, token) token,
+inline constexpr const char *kLevelName[LEVEL_COUNT] = {ALL_LEVELS(LEVEL_NAME_ONE)};
+inline constexpr const char *kLevelUnit[LEVEL_COUNT] = {ALL_LEVELS(LEVEL_UNIT_ONE)};
+inline constexpr const char *kLevelToken[LEVEL_COUNT] = {ALL_LEVELS(LEVEL_TOKEN_ONE)}; // 因子表达式叶名的层标 (bar.5m.x)
+#undef LEVEL_NAME_ONE
+#undef LEVEL_UNIT_ONE
+#undef LEVEL_TOKEN_ONE
 inline constexpr const char *level_name(size_t lvl) {
   assert(lvl < LEVEL_COUNT);
-  constexpr const char *kNames[LEVEL_COUNT] = {"L_sec", "L_1min", "L_5min", "L_15min", "L_30min", "L_60min", "L_1day"};
-  return kNames[lvl];
+  return kLevelName[lvl];
 }
 // 一网格行的时间单位 (UI 周期 / 滞后轴标注)
 inline constexpr const char *level_unit(size_t lvl) {
   assert(lvl < LEVEL_COUNT);
-  constexpr const char *kUnits[LEVEL_COUNT] = {"s", "min", "5min", "15min", "30min", "60min", "d"};
-  return kUnits[lvl];
+  return kLevelUnit[lvl];
 }
 inline constexpr size_t level_rows(size_t lvl) {
   assert(lvl < LEVEL_COUNT);

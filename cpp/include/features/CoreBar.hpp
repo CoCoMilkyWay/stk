@@ -3,7 +3,7 @@
 #include "features/Bar1mDay.hpp"
 #include "features/BarGraph.hpp"
 #include "features/CoreTs.hpp"
-#include "features/Sample/ResamplerBar2Min.hpp"
+#include "features/Sample/Sample.hpp"
 
 // ============================================================================
 // CoreBar: Bar 档单资产时序计算 (源 = bar1m 分钟 K; L_1min / 分钟箱层 / L_1day). 日 / 分钟 / 分钟箱 / 标签骨架见 CoreTs.hpp
@@ -19,7 +19,7 @@ class CoreBar : public CoreTs<CoreBar, bar::Tier, bar::DAG> {
   friend Base;
 
 public:
-  CoreBar(const fund::Panel &fund, const pool::Panel &members, size_t sub) : Base(fund, members, sub), bar2min_(dag_.minute_data) {}
+  CoreBar(const fund::Panel &fund, const PoolAxis &axis, size_t sub) : Base(fund, axis, sub), bar2min_(dag_.minute_data) {}
 
   // 每分钟一调 (L_1min 节拍): 先把时钟推进到分钟 m (逐根结算之前的分钟), 再把本分钟 bar1m 收进重采样器
   void compute_and_store(size_t m, const Bar1m &bar) noexcept {

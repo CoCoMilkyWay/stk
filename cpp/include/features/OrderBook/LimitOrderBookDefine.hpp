@@ -25,26 +25,6 @@
 #endif
 
 //========================================================================================
-// DEBUG CONFIGURATION
-//========================================================================================
-
-// Debug switches
-#define DEBUG_ORDER_PRINT 0         // Print every order processing
-#define DEBUG_ORDER_FLAGS_CREATE 0  // Print when order with special flags is created
-#define DEBUG_ORDER_FLAGS_RESOLVE 0 // Print when order with special flags is resolved/migrated
-#define DEBUG_BOOK_PRINT 0          // Print order book snapshot when effective TOB updated
-#define DEBUG_BOOK_AS_AMOUNT 1      // 0: 股, 1: 1万元
-#define DEBUG_ANOMALY_PRINT 1       // Print max unmatched order with creation timestamp
-
-// Auto-disable dependent switches based on logical relationships
-#if DEBUG_BOOK_PRINT == 0
-#undef DEBUG_BOOK_AS_AMOUNT
-#define DEBUG_BOOK_AS_AMOUNT 0
-#undef DEBUG_ANOMALY_PRINT
-#define DEBUG_ANOMALY_PRINT 0
-#endif
-
-//========================================================================================
 // CONSTANTS AND TYPES
 //========================================================================================
 
@@ -81,8 +61,9 @@ constexpr bool is_real_level(Price index) { return index > L2::LOB_DEPTH && inde
 //    - 委托本体就在槽里, 查到 id 即查到委托; Order* 整日稳定
 //    - 表长按当日事件数 reserve, 换日只清用过的前缀
 //
-// 2. price_levels_: array<Level*, PRICE_RANGE_SIZE>
-//    - 价格到Level的映射, 快速找到任意价格价位
+// 2. levels_ + price_levels_: vector<Level>(PRICE_RANGE_SIZE) + array<Level*, PRICE_RANGE_SIZE>
+//    - 价位表扁平常驻, 价位下标即数组下标; price_levels_ 只标存在性 (nullptr = 当日未触碰)
+//    - 当日新建价位记 touched_levels_, unbind 只清它们, 不扫 512KB 指针表
 //    - Level[0]是特殊价位, 存放price=0的订单
 //
 // 3. Level: 价格价位聚合 (16 字节, 不持有委托队列)

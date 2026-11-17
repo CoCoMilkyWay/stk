@@ -89,8 +89,7 @@ struct PerFactorLevel {
   constexpr X &operator[](FactorLevelId l) { return v[l]; }
   constexpr const X &operator[](FactorLevelId l) const { return v[l]; }
 };
-// 叶名里的层段 (档.层.列 的中段), 下标 = FeatureLevel
-inline constexpr const char *kLevelToken[LEVEL_COUNT] = {"1s", "1m", "5m", "15m", "30m", "60m", "1d"};
+// 叶名里的层段 (档.层.列 的中段) = kLevelToken (FeatureLevels.hpp, ALL_LEVELS 表), 下标 = FeatureLevel
 // 持有期在因子层 lv 上的开 / 清仓 = Stat/Contract.hpp【协议表 1】的一行: 各一个 时点 @ 价 (UI 凡显示开关仓处同一份; 由层表 + Geo 推, 不按层分支)
 struct HoldPoint {
   std::string at, px;

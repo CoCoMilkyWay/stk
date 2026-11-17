@@ -1,7 +1,8 @@
 #pragma once
 
-#include "features/MetaFlag.hpp"  // fmeta::data_valid
-#include "features/Method/CS.hpp" // cs::<Tf> / cs::<Method> + NeutralRank::Ctx + NEUTRAL_RANK_* 源列
+#include "features/MetaFlag.hpp"   // fmeta::data_valid
+#include "features/Method/CS.hpp"  // cs::<Tf> / cs::<Method> + NeutralRank::Ctx + NEUTRAL_RANK_* 源列
+#include "features/Panel/Pool.hpp" // pool::Panel (cs_valid 当日成员位)
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeaturePlane.hpp" // 上游读: Source / load_source (与读端同一份)
 #include "features/Storage/FeatureStore.hpp"
@@ -23,6 +24,8 @@
 //   与 CoreTs 对仗: begin_day / compute_and_store (节拍层 kBeatLevel, for_each_close 同一级联) / end_day, 逐层 run<LVL>
 //   字段表 CS(ns, src_lvl, src, Tf, Method) 行由 CsLevel<T, LVL>::run 编译期展开 (与 fstore::RowWriter<T, LVL> 同构),
 //   每行 = run_one<...>: gather(valid 子集 dense) → Tf::apply → Method::apply → scatter (子集外资产输出 0)
+//   元列分工 (与 CoreTs::close_row 对仗): cs_valid = 当日成员位, 整层常量 → begin_day 一次写满本档全部层全部行
+//   (ts_valid 是本资产行语义, 随行写, 归 CoreTs); 截面每拍仍逐行读它 —— CS 在 t 的输入只许来自张量第 t 行 (行自足).
 //   源层任意: 源行 = level_asof(源列, 本列, t) (同刻先写的读同刻行, 后写的 (粗层 / 盘后列) 读已收的上一行; −1 = 前一交易日末行,
 //   与读端同一投影; 本列盘后 = FieldInfo::settle, 同层 CS 继承源列, 故 L_1day 盘后截面读同行).
 //   跨日 (−1): 本档读日环 d−1 槽位 (FeatureStore::cs_prev; IO(d−1) 等本日 cs_close 才放行), 只许 TS / 元列 —— d−1 的截面可能还在写;
@@ -55,8 +58,8 @@
 // ============================================================================
 #define CS_RUN_CS(code, ns, src_lvl, s, tf, m) core.template run_one<kLevel, ns::Tier, src_lvl, ns::src_lvl##_Field::s, FO::code, cs::tf, cs::m>(t);
 #define CS_RUN_TS(code, ...)
-#define CS_RUN_LABEL(code)
-#define CS_RUN_FLAG(code)
+#define CS_RUN_LB(code, port)
+#define CS_RUN_META(code, port)
 #define CS_RUN_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(CS_RUN, code, src)
 
 // CS 行的源列引用 (旁读列集按它推导)
@@ -69,31 +72,41 @@ struct CsRef {
 };
 #define CS_REF_CS(code, ns, src_lvl, s, tf, m) CsRef{ns::Tier::kId, src_lvl, ns::src_lvl##_Field::s, cs::m::kNeutral, kInfo[FO::code].settle},
 #define CS_REF_TS(code, ...)
-#define CS_REF_LABEL(code)
-#define CS_REF_FLAG(code)
+#define CS_REF_LB(code, port)
+#define CS_REF_META(code, port)
 #define CS_REF_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(CS_REF, code, src)
 
 template <class T, size_t LVL>
 struct CsLevel;
-#define CS_LEVEL_TRAITS(T, ns, name, num, fields, psd)                                                      \
-  template <>                                                                                               \
-  struct CsLevel<ns::Tier, num> {                                                                           \
-    static constexpr size_t kLevel = num;                                                                   \
-    static constexpr bool kEmpty = count_of_kind(ns::name##_FIELD_INFO, FeatureDataType::CS) == 0;          \
-    /* 首项哨兵 (档号越界, 不匹配任何档): 层内无 CS 行时数组也非空 */                                       \
-    static constexpr auto kRefs = [] {                                                                      \
-      namespace FO = ns::name##_Field;                                                                      \
-      [[maybe_unused]] constexpr const auto &kInfo = ns::name##_FIELD_INFO;                                 \
-      return std::array{CsRef{static_cast<TierId>(TIER_COUNT), 0, 0, false, false}, fields(CS_REF_ONE)};    \
-    }();                                                                                                    \
-    template <class Core>                                                                                   \
-    [[gnu::always_inline]] static inline void run([[maybe_unused]] Core &core, [[maybe_unused]] size_t t) { \
-      namespace FO = ns::name##_Field;                                                                      \
-      fields(CS_RUN_ONE)                                                                                    \
-    }                                                                                                       \
+#define CS_LEVEL_TRAITS(T, ns, LVL)                                                                                   \
+  template <>                                                                                                         \
+  struct CsLevel<ns::Tier, LVL> {                                                                                     \
+    static constexpr size_t kLevel = LVL;                                                                             \
+    static constexpr bool kEmpty = count_of_kind(ns::LVL##_FIELD_INFO, FeatureDataType::CS) == 0;                     \
+    /* 首项哨兵 (档号越界, 不匹配任何档): 层内无 CS 行时数组也非空 */                                                 \
+    static constexpr auto kRefs = [] {                                                                                \
+      namespace FO = ns::LVL##_Field;                                                                                 \
+      [[maybe_unused]] constexpr const auto &kInfo = ns::LVL##_FIELD_INFO;                                            \
+      return std::array{CsRef{static_cast<TierId>(TIER_COUNT), 0, 0, false, false}, TIER_FIELDS(T, LVL)(CS_REF_ONE)}; \
+    }();                                                                                                              \
+    template <class Core>                                                                                             \
+    [[gnu::always_inline]] static inline void run([[maybe_unused]] Core &core, [[maybe_unused]] size_t t) {           \
+      namespace FO = ns::LVL##_Field;                                                                                 \
+      TIER_FIELDS(T, LVL)(CS_RUN_ONE)                                                                                 \
+    }                                                                                                                 \
   };
 TIER_LEVELS(CS_LEVEL_TRAITS)
 #undef CS_LEVEL_TRAITS
+#undef CS_RUN_TS
+#undef CS_RUN_CS
+#undef CS_RUN_LB
+#undef CS_RUN_META
+#undef CS_RUN_ONE
+#undef CS_REF_TS
+#undef CS_REF_CS
+#undef CS_REF_LB
+#undef CS_REF_META
+#undef CS_REF_ONE
 
 #define CS_STR_(x) #x
 #define CS_STR(x) CS_STR_(x)
@@ -178,11 +191,12 @@ public:
   // 任一层有旁读列
   static constexpr bool kSides = []<size_t... L>(std::index_sequence<L...>) { return ((Side<L>::N > 0) || ...); }(std::make_index_sequence<LEVEL_COUNT>{});
 
-  // libs[T::kId] = 本库 (轴 sub → global); libs[旁读档] = 同池旁读档的库 (无旁读列时不读)
-  CoreCs(FeatureStore<T> &store, [[maybe_unused]] const PerTier<FeatureLib> &libs)
-      : A_(store.query_A()), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
+  // libs[T::kId] = 本库 (轴 sub → global); libs[旁读档] = 同池旁读档的库 (无旁读列时不读); members = 本库逐日成员 (cs_valid)
+  CoreCs(FeatureStore<T> &store, const pool::Panel &members, [[maybe_unused]] const PerTier<FeatureLib> &libs)
+      : members_(members), A_(store.query_A()), member_row_(A_), input_fp32_(A_), logmc_dense_(A_), industry_dense_(A_) {
     valid_indices_.reserve(A_);
     if constexpr (kSides) {
+      side_idx_.reserve(A_);
       using S = typename TierSide<T>::type;
       const FeatureLib &side = libs[S::kId], &self = libs[T::kId];
       assert(side.tier() == S::kId && self.axis.size() == A_);
@@ -206,12 +220,14 @@ public:
   const std::array<std::vector<uint64_t>, LEVEL_COUNT> &col_cycles() const { return col_cycles_; }
 
   // day = 本日读写句柄 (store.cs_try_open, 已按日流控: 各层张量整体就绪); prev = 日期轴前一日句柄 (store.cs_prev, 只读 TS 列;
-  // 区间首日为空); prev_date = 前一日日期 (旁读承接日; 区间首日 0). end_day 交还
+  // 区间首日为空); prev_date = 前一日日期 (旁读承接日; 区间首日 0). end_day 交还.
+  // 先写 cs_valid (盘前整层写满, 与 CoreTs::close_row 写 ts_valid 对仗), 再读旁读张量
   void begin_day(const Day &day, const Day &prev, misc::Ymd date, misc::Ymd prev_date) {
     assert(day && !day_ && "begin_day / end_day 须成对");
     assert(bool(prev) == (prev_date != 0));
     day_ = day;
     prev_ = prev;
+    write_cs_valid_(date);
     [&]<size_t... L>(std::index_sequence<L...>) { (load_side_<L>(date, prev_date), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
   }
   void end_day() {
@@ -239,10 +255,9 @@ public:
     constexpr bool kSettle = T::LEVELS[LVL].fields[DST].settle;
 
     const uint64_t t0 = __builtin_ia32_rdtsc();
-    const std::vector<size_t> &idx = valid_indices_;
-    const size_t n = idx.size();
+    const size_t n = valid_indices_.size();
     float *y = input_fp32_.data();
-    gather_(src_col_<S, SRC_LVL, SRC, LVL, kSettle>(t), idx, y);
+    gather_(src_col_<S, SRC_LVL, SRC, LVL, kSettle>(t), src_idx_<S>(), n, y);
     Tf::apply(y, n);
     if constexpr (Method::kNeutral) {
       if (const cs::NeutralRank::Ctx *c = neutral_<LVL, kSettle>(t))
@@ -252,7 +267,7 @@ public:
     } else {
       Method::apply(y, n);
     }
-    scatter_<LVL>(t, DST, idx, y);
+    scatter_<LVL>(t, DST, y);
     col_cycles_[LVL][DST] += __builtin_ia32_rdtsc() - t0;
   }
 
@@ -267,7 +282,7 @@ private:
       TraceN(level_name(LVL));
       // 截面只看 cs_valid (= 当日在池, 整日常量, 不与 ts_valid 相与, 见 Meta.hpp); 池外资产的 TS 列照常算, 只是不进任何截面.
       // 虽是整日常量仍逐行读第 t 行: CS 在 t 的输入只许来自张量第 t 行 (行自足), 实盘逐秒推进时也成立 —— 别挪成每日向量
-      constexpr size_t VALID = field_of<T>(LVL, "cs_valid");
+      constexpr size_t VALID = MetaOf<T, LVL>::cs_valid;
       static_assert(VALID < T::LEVELS[LVL].field_count, "有 CS 行的层必须有 cs_valid 列");
       const _Float16 *valid_flags = fstore::cs_col<LVL>(day_, t, VALID);
       valid_indices_.clear();
@@ -276,40 +291,65 @@ private:
           valid_indices_.push_back(a);
       if (valid_indices_.empty())
         return;
+      if (!side_ids_.empty()) { // 旁读轴 ≠ 本轴: 有效子集预映射到旁读轴, gather 与本档同一级寻址
+        side_idx_.clear();
+        for (const size_t a : valid_indices_)
+          side_idx_.push_back(side_ids_[a]);
+      }
       neutral_at_ = -1;
       CsLevel<T, LVL>::run(*this, t);
     }
   }
 
-  // 源列一行: v = 源库轴上全部资产连续 (nullptr = 落到前一交易日而无前日), ids = 本库 a → 源库轴下标 (nullptr = 同轴)
-  struct SrcRow {
-    const feature_storage_t *v;
-    const uint32_t *ids;
-  };
+  // cs_valid: 当日成员位, 整层常量 → begin_day 一次写满本档全部层全部行 (与 CoreTs 写 ts_valid 对仗; 截面不写则 slot 清零即 0)
+  void write_cs_valid_(misc::Ymd date) {
+    for (size_t a = 0; a < A_; ++a)
+      member_row_[a] = static_cast<feature_storage_t>(members_.in_pool(a, date) ? 1.0f : 0.0f);
+    [&]<size_t... L>(std::index_sequence<L...>) { (write_cs_valid_<L>(), ...); }(std::make_index_sequence<LEVEL_COUNT>{});
+  }
+  template <size_t LVL>
+  void write_cs_valid_() {
+    if constexpr (T::has(LVL)) {
+      constexpr size_t F = MetaOf<T, LVL>::cs_valid;
+      static_assert(F < T::LEVELS[LVL].field_count, "档的每层都必须有 cs_valid 列");
+      for (size_t t = 0; t < T::LEVELS[LVL].rows; ++t)
+        std::copy_n(member_row_.data(), A_, fstore::cs_col<LVL>(day_, t, F));
+    }
+  }
+
+  // 源列截面子集的下标集: 本档 = 本库有效子集; 旁读档 = 预映射的旁读轴下标 (gather 同构, 见 run)
+  template <class S>
+  const size_t *src_idx_() const {
+    if constexpr (std::is_same_v<S, T>) {
+      return valid_indices_.data();
+    } else {
+      return side_ids_.empty() ? valid_indices_.data() : side_idx_.data();
+    }
+  }
+
   // 源档 S 源层 SRC_LVL 的列 SRC 在本层 LVL 行 t (目标列盘后 SETTLE) 的 as-of 行:
-  //   本档 → 当日张量 / 日环 d−1 槽位 (本库轴); 旁读档 → 本日 / 承接日旁读张量 (旁读库轴)
+  //   v = 源库轴上全部资产连续 (nullptr = 落到前一交易日而无前日); 本档 → 当日张量 / 日环 d−1 槽位; 旁读档 → 旁读张量 (旁读库轴)
   template <class S, size_t SRC_LVL, size_t SRC, size_t LVL, bool SETTLE>
-  SrcRow src_col_(size_t t) {
+  const feature_storage_t *src_col_(size_t t) {
     constexpr FieldInfo kSrc = S::LEVELS[SRC_LVL].fields[SRC];
     const ptrdiff_t x = level_asof(SRC_LVL, kSrc.settle, LVL, SETTLE, t);
     if constexpr (std::is_same_v<S, T>) {
       static_assert(!level_later(SRC_LVL, kSrc.settle, LVL, SETTLE) || kSrc.kind == FeatureDataType::TS || kSrc.kind == FeatureDataType::META,
                     "本档源列晚于本行, as-of 会落到前一交易日, 那天的截面 / 标签可能还在写: 跨日只读 TS / 元列");
       if (x >= 0)
-        return {fstore::cs_col<SRC_LVL>(day_, static_cast<size_t>(x), SRC), nullptr};
-      return {prev_ ? fstore::cs_col<SRC_LVL>(prev_, level_valid_rows(SRC_LVL) - 1, SRC) : nullptr, nullptr};
+        return fstore::cs_col<SRC_LVL>(day_, static_cast<size_t>(x), SRC);
+      return prev_ ? fstore::cs_col<SRC_LVL>(prev_, level_valid_rows(SRC_LVL) - 1, SRC) : nullptr;
     } else {
       static_assert(std::is_same_v<S, typename TierSide<T>::type>, "CS 源档须为本档或 TIER_SIDES 登记的旁读档");
       constexpr size_t i = Side<SRC_LVL>::index_of(SRC);
       static_assert(i < Side<SRC_LVL>::N);
       const IoSlot::Buf &b = side_buf_[SRC_LVL];
-      const uint32_t *ids = side_readers_.ids[side_src_[SRC_LVL].lib];
       assert(b.has_cur && (x >= 0 || Side<SRC_LVL>::kPrev) && "旁读源本日未读");
       if (x < 0 && !b.has_prev)
-        return {nullptr, ids};
+        return nullptr;
       const FeatureRead::DayColumns &dc = x >= 0 ? b.cur : b.prev;
       const size_t r = x >= 0 ? static_cast<size_t>(x) : level_valid_rows(SRC_LVL) - 1;
-      return {dc.col(i) + r * dc.A, ids};
+      return dc.col(i) + r * dc.A;
     }
   }
   // NeutralRank 上下文 (Method/CS.hpp 声明的 (层, code), as-of 投影到本层行 t, 目标列盘后 SETTLE): 首个同盘后性的 NeutralRank 行触发, 本拍内复用.
@@ -324,12 +364,14 @@ private:
     static_assert(MCAP < NS::LEVELS[ML].field_count && INDUSTRY < NS::LEVELS[IL].field_count,
                   "NeutralRank 上下文档须有 NEUTRAL_RANK_MCAP / NEUTRAL_RANK_INDUSTRY 源列 (各在其声明层)");
     if (neutral_at_ != int{SETTLE}) {
-      const SrcRow mc = src_col_<NS, ML, MCAP, LVL, SETTLE>(t), ind = src_col_<NS, IL, INDUSTRY, LVL, SETTLE>(t);
-      neutral_ok_ = mc.v && ind.v;
+      const feature_storage_t *mc = src_col_<NS, ML, MCAP, LVL, SETTLE>(t), *ind = src_col_<NS, IL, INDUSTRY, LVL, SETTLE>(t);
+      neutral_ok_ = mc && ind;
       if (neutral_ok_) {
-        gather_(mc, valid_indices_, logmc_dense_.data());
-        cs::NeutralRank::prepare_logmc(logmc_dense_.data(), valid_indices_.size());
-        gather_(ind, valid_indices_, industry_dense_.data());
+        const size_t *idx = src_idx_<NS>();
+        const size_t n = valid_indices_.size();
+        gather_(mc, idx, n, logmc_dense_.data());
+        cs::NeutralRank::prepare_logmc(logmc_dense_.data(), n);
+        gather_(ind, idx, n, industry_dense_.data());
       }
       neutral_at_ = int{SETTLE};
     }
@@ -367,39 +409,38 @@ private:
     }
   }
 
-  // 源列截面子集 idx (本库轴) → dense fp32; 无前日 → NaN
-  void gather_(SrcRow src, const std::vector<size_t> &idx, float *dst) const {
-    const size_t n = idx.size();
-    if (!src.v)
+  // 源列截面子集 idx → dense fp32; 无前日 → NaN. 旁读轴映射已在 run<LVL> 预映射进 idx, 这里只有一级寻址
+  void gather_(const feature_storage_t *v, const size_t *idx, size_t n, float *dst) const {
+    if (!v)
       std::fill_n(dst, n, std::numeric_limits<float>::quiet_NaN());
-    else if (!src.ids)
-      for (size_t i = 0; i < n; ++i)
-        dst[i] = static_cast<float>(src.v[idx[i]]);
     else
       for (size_t i = 0; i < n; ++i)
-        dst[i] = static_cast<float>(src.v[src.ids[idx[i]]]);
+        dst[i] = static_cast<float>(v[idx[i]]);
   }
 
-  // dense fp32 → 目标列就地写 (清零后只写子集 idx): 无中转缓冲, 全 A 只扫一遍
+  // dense fp32 → 目标列就地写 (清零后只写有效子集 valid_indices_): 无中转缓冲, 全 A 只扫一遍
   template <size_t LVL>
-  void scatter_(size_t t, size_t dst, const std::vector<size_t> &idx, const float *y) {
+  void scatter_(size_t t, size_t dst, const float *y) {
     feature_storage_t *col = fstore::cs_col<LVL>(day_, t, dst);
     std::memset(col, 0, A_ * sizeof(feature_storage_t)); // fp16 的 0 是全零位
-    for (size_t i = 0; i < idx.size(); ++i)
-      col[idx[i]] = static_cast<feature_storage_t>(y[i]);
+    for (size_t i = 0; i < valid_indices_.size(); ++i)
+      col[valid_indices_[i]] = static_cast<feature_storage_t>(y[i]);
   }
 
-  Day day_{};  // 本日读写句柄, begin_day 换入 / end_day 交还
-  Day prev_{}; // 日期轴前一日句柄 (只读 TS 列; 区间首日空)
+  const pool::Panel &members_; // 本库逐日成员 (cs_valid; 只读共享)
+  Day day_{};                  // 本日读写句柄, begin_day 换入 / end_day 交还
+  Day prev_{};                 // 日期轴前一日句柄 (只读 TS 列; 区间首日空)
   size_t A_;
 
   std::optional<FeatureRead> side_rd_;              // 旁读库 reader (无旁读列不建)
-  Readers side_readers_;                            // rd[旁读档] = side_rd_, ids[旁读档] = side_ids_ (同轴 nullptr)
+  Readers side_readers_;                            // rd[旁读档] = side_rd_, ids[旁读档] = side_ids_ (同轴空)
   std::vector<uint32_t> side_ids_;                  // 本库 a → 旁读库轴下标 (同轴空)
+  std::vector<size_t> side_idx_;                    // 有效子集的旁读轴下标 (同轴不用)
   std::array<Source, LEVEL_COUNT> side_src_{};      // [源层] 旁读源 (无旁读列的层空)
   std::array<IoSlot::Buf, LEVEL_COUNT> side_buf_{}; // [源层] 本日 (+ 承接日) 旁读张量 (旁读库轴)
 
-  std::vector<size_t> valid_indices_; // 本 t 有效资产 (dense 下标 → asset id)
+  std::vector<feature_storage_t> member_row_; // 当日成员位行 (cs_valid 整层写; fp16 0/1)
+  std::vector<size_t> valid_indices_;         // 本 t 有效资产 (dense 下标 → asset id)
   std::vector<float> input_fp32_;
   std::vector<float> logmc_dense_;                                                      // 中性化输入 (本拍本层)
   std::vector<float> industry_dense_;                                                   // 中性化输入 (本拍本层)
@@ -408,3 +449,6 @@ private:
   const cs::NeutralRank::Ctx neutral_ctx_{logmc_dense_.data(), industry_dense_.data()}; // 向量在 ctor 定长, 指针稳定
   std::array<std::vector<uint64_t>, LEVEL_COUNT> col_cycles_;                           // [层][列] 截面列用时 (档缺的层空)
 };
+
+#undef CS_STR
+#undef CS_STR_

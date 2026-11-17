@@ -42,9 +42,9 @@ private:
 #define NODE_Tradable(N) N(Tradable, (Tradable), (minute_data, Fund.out(Fund.lim_up), Fund.out(Fund.lim_dn)), onMinute)
 
 // 列名带层后缀 (_<n>min / _day)
-#define BAR_TRADABLE(X, CAT1, sfx, cn)                                                                                                                                                                                                         \
-  X(can_buy_##sfx, CAT1, AUTO, "Can Buy (" #sfx ")", cn "可买", "行末可买入=1: 最近有成交分钟未封涨停 (low < 涨停价); 当日尚无成交=0", R"(\mathbf{1}[P^{\mathrm{low}}_{\tau} < P^{up}_{D} - \varepsilon])", TS(Tradable, can_buy, None, None)) \
-  X(can_sell_##sfx, CAT1, AUTO, "Can Sell (" #sfx ")", cn "可卖", "行末可卖出=1: 最近有成交分钟未封跌停 (high > 跌停价); 当日尚无成交=0", R"(\mathbf{1}[P^{\mathrm{high}}_{\tau} > P^{dn}_{D} + \varepsilon])", TS(Tradable, can_sell, None, None))
+#define BAR_TRADABLE(X, CAT1, sfx, cn)                                                                                                                                                                                                   \
+  X(can_buy_##sfx, CAT1, AUTO, "Can Buy (" #sfx ")", cn "可买", "行末可买入=1: 最近有成交分钟未封涨停 (low < 涨停价); 当日尚无成交=0", R"(\mathbf{1}[P^{\mathrm{low}}_{\tau} < P^{up}_{D} - \varepsilon])", TS(Tradable, can_buy, None)) \
+  X(can_sell_##sfx, CAT1, AUTO, "Can Sell (" #sfx ")", cn "可卖", "行末可卖出=1: 最近有成交分钟未封跌停 (high > 跌停价); 当日尚无成交=0", R"(\mathbf{1}[P^{\mathrm{high}}_{\tau} > P^{dn}_{D} + \varepsilon])", TS(Tradable, can_sell, None))
 #define FIELDS_L_5min_Tradable(X, CAT1) BAR_TRADABLE(X, CAT1, 5min, "5分钟")
 #define FIELDS_L_15min_Tradable(X, CAT1) BAR_TRADABLE(X, CAT1, 15min, "15分钟")
 #define FIELDS_L_30min_Tradable(X, CAT1) BAR_TRADABLE(X, CAT1, 30min, "30分钟")

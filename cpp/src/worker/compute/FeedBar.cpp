@@ -16,7 +16,7 @@
 #include <vector>
 
 // 硬源: 预取线程把日 d 的 bar1m 分片解码进源格 cells[store.feed_cell(d)], TS 等 pf_ready(d) 后读.
-//   源格随源窗定址 (见 StoreRing): 日 d 的格交给下一个进窗日时 d 已全员计满 (再无读者); 源窗扩格的新格首次备源时才建.
+//   源格随源格环定址 (见 StoreRing): 日 d 恒占格 d % F, 交给日 d + F 时 d 已全员计满 (再无读者); 各格首次备源时才建.
 //   日期轴不越过末个 bar1m 日 (source_dates), 轴内每日都须有分片, 构造时断言.
 template <>
 struct TierFeed<bar::Tier> {
@@ -47,7 +47,7 @@ struct TierFeed<bar::Tier> {
     fundamental::Scratch scratch;
   };
   const StoreRing *store = nullptr;         // bind 后: 日 → 源格号
-  std::vector<std::unique_ptr<Cell>> cells; // [源窗格数上限] (预取线程建 / 写, TS 经 pf_close / pf_ready 的 release/acquire 读)
+  std::vector<std::unique_ptr<Cell>> cells; // [源格数 F] (预取线程建 / 写, TS 经 pf_close / pf_ready 的 release/acquire 读)
 
   static size_t cell_bytes(size_t num_assets) { return num_assets * (TRADE_MINUTES_PER_DAY * sizeof(Bar1m) + 1); }
 
@@ -62,7 +62,7 @@ struct TierFeed<bar::Tier> {
 
   void bind(const StoreRing &s) {
     store = &s;
-    cells.resize(s.feed_cap());
+    cells.resize(s.feed_size());
   }
 
   size_t weight(size_t, size_t) const { return 1; } // 每资产每日恰 255 根, 负载均匀

@@ -141,9 +141,9 @@ private:
 // ---- 节点实例 + 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
 #define NODE_MovingAverage(N) N(MovingAverage, (MovingAverage), (CloseAdj5min.out(CloseAdj5min.value)), on5Min)
 
-#define MA_ROWS(X, CAT1, D)                                                                                                                                                                                                      \
-  X(ma_dev_##D##d, CAT1, AUTO, "MA Deviation " #D "d", #D "日均线偏离", "5分钟箱末后复权价相对" #D "日均线(" #D "×49箱)的偏离", R"(\frac{P_k}{\mathrm{MA}^{()" #D R"(d)}_k} - 1)", TS(MovingAverage, ma_dev_##D##d, None, None)) \
-  X(hl_pos_##D##d, CAT1, AUTO, "MA5 High-Low Position " #D "d", #D "日高低分位", "现价在近" #D "日5日均线最高/最低区间的位置(高低取在均线上防插针; 区间≤ε→NaN)", R"(\frac{P_k - \min_{()" #D R"(d)} \mathrm{MA}^{(5d)}}{\max_{()" #D R"(d)} \mathrm{MA}^{(5d)} - \min_{()" #D R"(d)} \mathrm{MA}^{(5d)}})", TS(MovingAverage, hl_pos_##D##d, None, None))
+#define MA_ROWS(X, CAT1, D)                                                                                                                                                                                                \
+  X(ma_dev_##D##d, CAT1, AUTO, "MA Deviation " #D "d", #D "日均线偏离", "5分钟箱末后复权价相对" #D "日均线(" #D "×49箱)的偏离", R"(\frac{P_k}{\mathrm{MA}^{()" #D R"(d)}_k} - 1)", TS(MovingAverage, ma_dev_##D##d, None)) \
+  X(hl_pos_##D##d, CAT1, AUTO, "MA5 High-Low Position " #D "d", #D "日高低分位", "现价在近" #D "日5日均线最高/最低区间的位置(高低取在均线上防插针; 区间≤ε→NaN)", R"(\frac{P_k - \min_{()" #D R"(d)} \mathrm{MA}^{(5d)}}{\max_{()" #D R"(d)} \mathrm{MA}^{(5d)} - \min_{()" #D R"(d)} \mathrm{MA}^{(5d)}})", TS(MovingAverage, hl_pos_##D##d, None))
 
 #define FIELDS_L_5min_MovingAverage(X, CAT1) \
   MA_ROWS(X, CAT1, 5)                        \

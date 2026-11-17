@@ -294,7 +294,7 @@ struct RowsP : ProbeBase {
     for (int hi = 0; hi < c.L.hd.n; ++hi)
       static_cast<D &>(*this).fold(c, hi, u0, std::span<const Got>(got).subspan(static_cast<size_t>(hi) * n, static_cast<size_t>(n)));
     if (c.last)
-      got = {};
+      std::vector<Got>().swap(got);
   }
 };
 
@@ -327,7 +327,7 @@ struct LinesP : ProbeBase {
   float &at(int hi, int k, int t) { return x.x[static_cast<size_t>(hi * K + k) * x.T + static_cast<size_t>(t0 + t)]; }
   void finish(const PassCtx &p) {
     out = fold_book(p.ex, p.seg, x, stride);
-    x = {};
+    x = RowLines{};
   }
 };
 
@@ -355,7 +355,7 @@ struct IcPdfP : RowsP<IcPdfP, float> {
   void finish(const PassCtx &p) {
     for (int i = 0; i < p.hd.n; ++i)
       pdf[i].fill(kll[static_cast<size_t>(i)], 3);
-    kll = {};
+    std::vector<KLLcache>().swap(kll);
   }
 };
 
@@ -415,7 +415,7 @@ struct YearP : RowsP<YearP, YearRow> {
         out.push_back({y, s.n, static_cast<float>(factor::stat::mono_of(s.g, factor::stat::kGroups)), static_cast<float>(s.ls / s.n), static_cast<float>(s.ric / s.n)});
       }
     }
-    day = {};
+    std::vector<std::vector<Day>>().swap(day);
   }
 };
 

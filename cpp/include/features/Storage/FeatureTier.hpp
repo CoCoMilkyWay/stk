@@ -1,7 +1,7 @@
 #pragma once
 
 #include "FeatureLevels.hpp" // 稳定层: feature_storage_t / FieldInfo / LevelInfo / TierId
-// FieldsGenerated: CMake 从节点文件汇总 (宏文本, 不含节点 #include): <Tier>_NODES(N) / <Tier>_L*_FIELDS(X); 经 ALL_TIERS 拼名使用
+// FieldsGenerated: CMake 从节点文件汇总 (宏文本, 不含节点 #include): <Tier>_NODES(N) / <Tier>_FIELDS_<LVL>_<Owner>(X, CAT1) / <Tier>_<LVL>_FIELDS(X); 经 ALL_TIERS 拼名使用
 #include "features/Bar/FieldsGenerated.hpp" // IWYU pragma: keep
 #include "features/FeaturesDefine.hpp"
 #include "features/Lob/FieldsGenerated.hpp" // IWYU pragma: keep
@@ -20,14 +20,19 @@
 // 读端/GUI 走 FeatureLevels.hpp 的 level_info(tier, lvl) (运行时), 不依赖本文件 ——
 // 增删改特征只重编写端 + FeatureMeta.cpp.
 //   布局: 每层平铺 [T][F][A], data[(t * F + f) * A + a]
-//   TIER_LEVELS 每格 (档 <tier>, 层 <LVL>) 生成 (消费者统一签名 GEN(T, ns, LVL, index, fields, psd), 自己进 ns):
+//   TIER_LEVELS 每格 (档 <Tier>, 层 <LVL>) 生成 (消费者统一签名 GEN(T, ns, LVL), 层号 / 宏名 / 层名都由 LVL 定):
 //     <tier>::<LVL>_FIELD_INFO[]     每列 {code, valid, kind, ts_tf, settle} (有效性 / 类型 / 盘后均由 SRC 列推出)
 //     <tier>::<LVL>_Field::<code>    列下标枚举
+//     <tier>::<LVL>_meta::<port>     META 列下标 (ts_valid / cs_valid, 基建按名取)
 //     <tier>::<LVL>_FINGERPRINT      字段表指纹 (落文件头)
 //   汇总成 <tier>::LEVELS[lvl] (LevelInfo, 按语义层号; 档缺的层 fields == nullptr), 编译期/运行时按层取 rows / field_count / fingerprint;
 //   <tier>::Tier = 写端基建 (FeatureStore / CoreCs / fstore) 的档模板参数; TierSide<T>::type = 旁读档 (TIER_SIDES).
-//   字段格式: X(code, cat_l1, cat_l2, name_en, name_cn, desc, formula, SRC)
+//   字段格式: X(code, CAT1, cat_l2, name_en, name_cn, desc, formula, SRC)
 // ============================================================================
+
+// 档 × 层的字段表宏名: TIER_FIELDS(Lob, L_1min) → Lob_L_1min_FIELDS
+#define TIER_FIELDS_(T, LVL) T##_##LVL##_FIELDS
+#define TIER_FIELDS(T, LVL) TIER_FIELDS_(T, LVL)
 
 // ============================================================================
 // 节点 flush 域 (L_sec 的 TS 列有效性标志由此推出; SRC_VALID_TS 在档命名空间内按名查到本档的)
@@ -46,15 +51,16 @@ ALL_TIERS(TIER_NODE_FLUSH)
 // ============================================================================
 #define FIELD_CODE_ONE(code, c1, c2, en, cn, desc, formula, src) code,
 // 下标枚举先于全部 FieldInfo 表 (盘后推导按源列下标查, 源列可在任一档任一层)
-#define GENERATE_LEVEL_CODES(T, ns, name, num, fields, psd) \
-  namespace ns::name##_Field {                              \
-    enum : size_t { fields(FIELD_CODE_ONE) };               \
+#define GENERATE_LEVEL_CODES(T, ns, LVL)                   \
+  namespace ns::LVL##_Field {                              \
+    enum : size_t { TIER_FIELDS(T, LVL)(FIELD_CODE_ONE) }; \
   }
 TIER_LEVELS(GENERATE_LEVEL_CODES)
 #undef GENERATE_LEVEL_CODES
+#undef FIELD_CODE_ONE
 
 // 盘后 (FieldInfo::settle) 推导: TS = 本层 L_1day ∧ 节点 flush 域 onSettle; CS = 同档同层源列的盘后性 (同行继承, 链式);
-// 跨层 CS 不继承 (源行按 as-of 已定, 本行 emit 随本层); LABEL / FLAG 盘中
+// 跨层 CS 不继承 (源行按 as-of 已定, 本行 emit 随本层); LB / META 盘中
 struct SettleLink {
   bool ts;    // TS 列本身盘后
   size_t src; // 同档同层 CS 源列下标 (kNoLink = 不继承)
@@ -74,10 +80,10 @@ constexpr bool settle_at(const SettleLink (&t)[N], size_t i) {
   assert(false && "盘后继承成环 (同层 CS 源链)");
   return false;
 }
-#define SETTLE_LINK_TS(code, node, ...) {kLevel == L_1day && node_flush::node == Trigger::onSettle, kNoLink},
+#define SETTLE_LINK_TS(code, node, port, tf) {kLevel == L_1day && node_flush::node == Trigger::onSettle, kNoLink},
 #define SETTLE_LINK_CS(code, sns, l, s, tf, m) {false, settle_link(l == kLevel, tier_of::sns == kTier, l, sns::l##_Field::s)},
-#define SETTLE_LINK_LABEL(code) {false, kNoLink},
-#define SETTLE_LINK_FLAG(code) {false, kNoLink},
+#define SETTLE_LINK_LB(code, port) {false, kNoLink},
+#define SETTLE_LINK_META(code, port) {false, kNoLink},
 #define SETTLE_LINK_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(SETTLE_LINK, code, src)
 #define FIELD_INFO_ONE(code, c1, c2, en, cn, desc, formula, src) \
   {#code, SRC_VALID_##src, SRC_KIND_##src, SRC_TS_TF_##src, settle_at(SETTLE, Fld::code)},
@@ -104,79 +110,116 @@ constexpr bool kind_contiguous(std::span<const FieldInfo> f, FeatureDataType k) 
   return true;
 }
 
-#define GENERATE_LEVEL_FIELDS(T, ns, name, num, fields, psd)                  \
-  namespace ns::name##_info_detail {                                          \
-    constexpr size_t kLevel = num; /* SRC_VALID_TS 按层推有效性; 盘后推导 */  \
-    constexpr TierId kTier = TierId::T;                                       \
-    namespace Fld = ns::name##_Field;                                         \
-    inline constexpr SettleLink SETTLE[] = {fields(SETTLE_LINK_ONE)};         \
-    inline constexpr FieldInfo TABLE[] = {fields(FIELD_INFO_ONE)};            \
-  }                                                                           \
-  namespace ns {                                                              \
-  inline constexpr const auto &name##_FIELD_INFO = name##_info_detail::TABLE; \
-  constexpr size_t name##_FIELD_COUNT = std::size(name##_FIELD_INFO);         \
+#define GENERATE_LEVEL_FIELDS(T, ns, LVL)                                          \
+  namespace ns::LVL##_info_detail {                                                \
+    constexpr size_t kLevel = LVL; /* SRC_VALID_TS 按层推有效性; 盘后推导 */       \
+    constexpr TierId kTier = TierId::T;                                            \
+    namespace Fld = ns::LVL##_Field;                                               \
+    inline constexpr SettleLink SETTLE[] = {TIER_FIELDS(T, LVL)(SETTLE_LINK_ONE)}; \
+    inline constexpr FieldInfo TABLE[] = {TIER_FIELDS(T, LVL)(FIELD_INFO_ONE)};    \
+  }                                                                                \
+  namespace ns {                                                                   \
+  inline constexpr const auto &LVL##_FIELD_INFO = LVL##_info_detail::TABLE;        \
+  constexpr size_t LVL##_FIELD_COUNT = std::size(LVL##_FIELD_INFO);                \
   }
 TIER_LEVELS(GENERATE_LEVEL_FIELDS)
+#undef GENERATE_LEVEL_FIELDS
+#undef FIELD_INFO_ONE
+#undef SETTLE_LINK_TS
+#undef SETTLE_LINK_CS
+#undef SETTLE_LINK_LB
+#undef SETTLE_LINK_META
+#undef SETTLE_LINK_ONE
 
 // 档缺的层不许有列 (CMake 对每档都生成全部层的表, 未登记的层应为空)
 #define FIELD_COUNT_ONE(...) +1
-#define CELL_FIELD_COUNT(T, ns, name, num, fields, psd) +(TierId::T == tier ? ns::name##_FIELD_COUNT : 0)
+#define CELL_FIELD_COUNT(T, ns, LVL) +(TierId::T == tier ? ns::LVL##_FIELD_COUNT : 0)
 constexpr size_t registered_field_count(TierId tier) { return 0 TIER_LEVELS(CELL_FIELD_COUNT); }
-#define CHECK_TIER_FIELDS(T, ns)                                                                                          \
-  static_assert(0 T##_L_sec_FIELDS(FIELD_COUNT_ONE) T##_L_1min_FIELDS(FIELD_COUNT_ONE) T##_L_5min_FIELDS(FIELD_COUNT_ONE) \
-                        T##_L_15min_FIELDS(FIELD_COUNT_ONE) T##_L_30min_FIELDS(FIELD_COUNT_ONE)                           \
-                            T##_L_60min_FIELDS(FIELD_COUNT_ONE) T##_L_1day_FIELDS(FIELD_COUNT_ONE) ==                     \
-                    registered_field_count(TierId::T),                                                                    \
+#define LEVEL_FIELD_COUNT(name, unit, token, T) T##_##name##_FIELDS(FIELD_COUNT_ONE)
+#define CHECK_TIER_FIELDS(T, ns)                                                         \
+  static_assert(0 ALL_LEVELS(LEVEL_FIELD_COUNT, T) == registered_field_count(TierId::T), \
                 "档 " #T " 有未在 TIER_LEVELS 登记的层的 FIELDS_ 行");
 ALL_TIERS(CHECK_TIER_FIELDS)
 #undef CHECK_TIER_FIELDS
+#undef LEVEL_FIELD_COUNT
 #undef CELL_FIELD_COUNT
 #undef FIELD_COUNT_ONE
 
 // ============================================================================
+// META 列下标 (ts_valid / cs_valid; 基建按名取): <tier>::<LVL>_meta::<port>
+// ============================================================================
+#define META_COL_META(code, port) constexpr size_t port = Fld::code;
+#define META_COL_TS(...)
+#define META_COL_CS(...)
+#define META_COL_LB(code, port)
+#define META_COL_ONE(code, c1, c2, en, cn, desc, formula, src) SRC_DISPATCH(META_COL, code, src)
+#define GENERATE_LEVEL_META(T, ns, LVL) \
+  namespace ns::LVL##_meta {            \
+    namespace Fld = ns::LVL##_Field;    \
+    TIER_FIELDS(T, LVL)(META_COL_ONE)   \
+  }
+TIER_LEVELS(GENERATE_LEVEL_META)
+#undef GENERATE_LEVEL_META
+#undef META_COL_ONE
+#undef META_COL_META
+#undef META_COL_TS
+#undef META_COL_CS
+#undef META_COL_LB
+
+// 档 T 的 LVL 层 META 列下标 (没有该列 = SIZE_MAX): MetaOf<T, LVL>::ts_valid / cs_valid
+template <class T, size_t LVL>
+struct MetaOf;
+#define TIER_META_OF(T, ns, LVL)                            \
+  template <>                                               \
+  struct MetaOf<ns::Tier, LVL> {                            \
+    static constexpr size_t ts_valid = [] {                 \
+      if constexpr (requires { ns::LVL##_meta::ts_valid; }) \
+        return ns::LVL##_meta::ts_valid;                    \
+      return SIZE_MAX;                                      \
+    }();                                                    \
+    static constexpr size_t cs_valid = [] {                 \
+      if constexpr (requires { ns::LVL##_meta::cs_valid; }) \
+        return ns::LVL##_meta::cs_valid;                    \
+      return SIZE_MAX;                                      \
+    }();                                                    \
+  };
+TIER_LEVELS(TIER_META_OF)
+#undef TIER_META_OF
+
+// ============================================================================
 // 每个字段的"来源" (GUI 特征依赖解析用)
-//   TS(node[,port]) → 节点名 (如 "Book") + 口名 (单口节点 ""); CS(ns,lvl,src,...) → 源字段 code (TS / CS 列名跨档唯一, 旁读也不加档名); 其余 → ""
+//   TS(node, port, tf) → 节点名 (如 "Book") + 口名; CS(ns,lvl,src,...) → 源字段 code (TS / CS 列名跨档唯一, 旁读也不加档名); 其余 → ""
 //   口名配合 node_deps::TABLE 的 "Up.port" 项: 下游只引用某一口时, 依赖只算该口的字段
 // ============================================================================
 struct FieldSource {
   const char *code;   // 字段 code
-  const char *source; // 节点名 (TS) / 源字段 code (CS) / 空 (LABEL/FLAG)
-  const char *port;   // 口名 (TS 多口) / 空
+  const char *source; // 节点名 (TS) / 源字段 code (CS) / 空 (LB / META)
+  const char *port;   // 口名 (TS) / 空
 };
-#define SRCSRC_TS(code, node, ...) #node
+#define SRCSRC_TS(code, node, port, tf) #node
 #define SRCSRC_CS(code, ns, lvl, src, ...) #src
-#define SRCSRC_LABEL(code) ""
-#define SRCSRC_FLAG(code) ""
-#define SRCPORT_TS_3(node, tf, m) ""
-#define SRCPORT_TS_4(node, port, tf, m) #port
-#define SRCPORT_TS(code, ...) SRC_NODE_PICK(__VA_ARGS__, SRCPORT_TS_4, SRCPORT_TS_3, , )(__VA_ARGS__)
+#define SRCSRC_LB(code, port) ""
+#define SRCSRC_META(code, port) ""
+#define SRCPORT_TS(code, node, port, tf) #port
 #define SRCPORT_CS(...) ""
-#define SRCPORT_LABEL(code) ""
-#define SRCPORT_FLAG(code) ""
+#define SRCPORT_LB(code, port) ""
+#define SRCPORT_META(code, port) ""
 #define FIELD_SOURCE_ONE(code, c1, c2, en, cn, desc, formula, src) {#code, SRC_DISPATCH(SRCSRC, code, src), SRC_DISPATCH(SRCPORT, code, src)},
-#define GENERATE_LEVEL_SOURCES(T, ns, name, num, fields, psd)                      \
-  namespace ns {                                                                   \
-  inline constexpr FieldSource name##_FIELD_SOURCE[] = {fields(FIELD_SOURCE_ONE)}; \
+#define GENERATE_LEVEL_SOURCES(T, ns, LVL)                                                     \
+  namespace ns {                                                                               \
+  inline constexpr FieldSource LVL##_FIELD_SOURCE[] = {TIER_FIELDS(T, LVL)(FIELD_SOURCE_ONE)}; \
   }
 TIER_LEVELS(GENERATE_LEVEL_SOURCES)
-
-// ============================================================================
-// 编译期一致性检查: 列所在层 == 来源允许的层
-//   CS 源层任意 (CoreCs 按 level_asof 投影; 跨日只许 TS / 元列, CoreCs 编译期查); TS 任意 (节拍取输出口最新值, 见 Level);
-//   LABEL / FLAG 任意 —— 目前全部放行, 留作挂点
-// ============================================================================
-#define SRC_LEVEL_TS(...) kLevel
-#define SRC_LEVEL_CS(...) kLevel
-#define SRC_LEVEL_LABEL kLevel
-#define SRC_LEVEL_FLAG kLevel
-#define CHECK_FIELD_ONE(code, c1, c2, en, cn, desc, formula, src) \
-  static_assert(SRC_LEVEL_##src == kLevel, "field level != source level: " #code);
-#define GENERATE_CHECK_LEVEL(T, ns, name, num, fields, psd) \
-  namespace ns::name##_level_check {                        \
-    constexpr size_t kLevel = num;                          \
-    fields(CHECK_FIELD_ONE)                                 \
-  }
-TIER_LEVELS(GENERATE_CHECK_LEVEL)
+#undef GENERATE_LEVEL_SOURCES
+#undef FIELD_SOURCE_ONE
+#undef SRCSRC_TS
+#undef SRCSRC_CS
+#undef SRCSRC_LB
+#undef SRCSRC_META
+#undef SRCPORT_TS
+#undef SRCPORT_CS
+#undef SRCPORT_LB
+#undef SRCPORT_META
 
 // ============================================================================
 // 字段表指纹 (写入文件头, 读取时比对; 表改了旧文件立刻报错而非静默错位)
@@ -206,12 +249,13 @@ constexpr uint64_t table_fingerprint(const FieldInfo (&f)[N]) {
   }
   return h;
 }
-#define GENERATE_FINGERPRINT(T, ns, name, num, fields, psd)                                                           \
-  namespace ns {                                                                                                      \
-  constexpr uint64_t name##_FINGERPRINT = num == L_1day ? fnv1a_u64(table_fingerprint(name##_FIELD_INFO), kDaySemver) \
-                                                        : table_fingerprint(name##_FIELD_INFO);                       \
+#define GENERATE_FINGERPRINT(T, ns, LVL)                                                                            \
+  namespace ns {                                                                                                    \
+  constexpr uint64_t LVL##_FINGERPRINT = LVL == L_1day ? fnv1a_u64(table_fingerprint(LVL##_FIELD_INFO), kDaySemver) \
+                                                       : table_fingerprint(LVL##_FIELD_INFO);                       \
   }
 TIER_LEVELS(GENERATE_FINGERPRINT)
+#undef GENERATE_FINGERPRINT
 
 // ============================================================================
 // 层表: <tier>::LEVELS[lvl] — 编译期版本 (写端定址折叠; LevelInfo 结构体在 FeatureLevels.hpp)
@@ -223,8 +267,8 @@ struct LevelCell {
   size_t index;
   LevelInfo info;
 };
-#define LEVEL_CELL_ONE(T, ns, name, num, fields, psd) \
-  LevelCell{TierId::T, num, LevelInfo{#name, level_rows(num), ns::name##_FIELD_COUNT, ns::name##_FIELD_INFO, ns::name##_FINGERPRINT, psd}},
+#define LEVEL_CELL_ONE(T, ns, LVL) \
+  LevelCell{TierId::T, LVL, LevelInfo{#LVL, level_rows(LVL), ns::LVL##_FIELD_COUNT, ns::LVL##_FIELD_INFO, ns::LVL##_FINGERPRINT}},
 inline constexpr LevelCell LEVEL_CELLS[] = {TIER_LEVELS(LEVEL_CELL_ONE)};
 #undef LEVEL_CELL_ONE
 
@@ -244,7 +288,7 @@ static_assert(level_cells_valid(), "TIER_LEVELS: 层名须与层号一致 (Featu
 constexpr std::array<LevelInfo, LEVEL_COUNT> tier_levels(TierId tier) {
   std::array<LevelInfo, LEVEL_COUNT> l{};
   for (size_t i = 0; i < LEVEL_COUNT; ++i)
-    l[i] = LevelInfo{level_name(i), level_rows(i), 0, nullptr, 0, ""};
+    l[i] = LevelInfo{level_name(i), level_rows(i), 0, nullptr, 0};
   for (const LevelCell &c : LEVEL_CELLS)
     if (c.tier == tier)
       l[c.index] = c.info;

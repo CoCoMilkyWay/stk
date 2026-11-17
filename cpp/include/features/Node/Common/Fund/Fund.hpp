@@ -181,13 +181,12 @@ public:
   }
 
   // 盘前承接: 输出口须是当日盘前态 (状态 d). 前一回测日已推到 d → 无事; 区间首日 / 日期轴跳日 → 推进到 d 补发布一次
-  bool carry() {
+  void carry() {
     const int d = today();
     if (at_ == d)
-      return false;
+      return;
     stream_.advance_to(d, y);
     at_ = d;
-    return true;
   }
 
   // 续算点: 只存 at_ (y / 输出口由 Node 存, 次日 carry 照旧无事); stream_ 不存 —— advance_to 按 D 轴日逐步推进, 只依赖日下标,

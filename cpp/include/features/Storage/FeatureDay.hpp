@@ -2,7 +2,6 @@
 
 #include "FeatureLevels.hpp" // 稳定层: level_info / feature_storage_t (不依赖字段表)
 #include "SparseCodec.hpp"
-#include "ZstdCodec.hpp" // IWYU pragma: keep
 #include "misc/cross_platform.hpp"
 #include "misc/profiler.hpp"
 #include <algorithm>
@@ -62,10 +61,8 @@ struct ColSpan {
 static_assert(sizeof(ColSpan) == 16, "特征日文件目录项必须紧凑无填充");
 
 // ============================================================================
-// 落盘编码选型: 两种实现同一 API (bound / encode / decode), 载荷不落自述信息,
-// 读端按此别名解码 —— 换选型 = 换别名 + 重算特征库 (解码断言会拦住旧文件)
-//   SparseCodec  位图+非零字面: 全天 ~45%, 内存带宽级, 差分还原融合进解码 (默认)
-//   ZstdCodec    zstd 熵压缩:   全天 ~29%, 单核 ~185 MB/s 顶不住落盘节奏
+// 落盘编码: SparseCodec 位图+非零字面 (全天 ~45%, 内存带宽级, 差分还原融合进解码),
+// 载荷不落自述信息, 读端按此别名解码 —— 换选型 = 换别名 + 重算特征库 (解码断言会拦住旧文件)
 // ============================================================================
 using FeatureCodec = SparseCodec;
 
@@ -118,23 +115,37 @@ struct FeatureDay {
     const size_t words = T * A;
     const size_t group = gather_group_(words);
     s.column.resize(group * words);
-    s.buf.resize(FeatureCodec::bound(words));
     s.dir.resize(F);
+    // 列载荷攒进 s.buf 满 kRunCap 即落一次 (与读端 kRunCap 并段对仗; 单列超限的层退化为逐列).
+    // 缓冲 = kRunCap + bound: flush 后游标恒 ≤ kRunCap, 列的 bound 空间一定有
+    const size_t bound = FeatureCodec::bound(words);
+    if (s.buf.size() < kRunCap + bound)
+      s.buf.resize(kRunCap + bound);
     uint64_t end = sizeof(FeatureFileHeader) + F * sizeof(ColSpan);
+    size_t stage = 0;
+    const auto flush = [&] {
+      if (stage > 0) {
+        const size_t written = file_pwrite(fd, s.buf.data(), stage, end);
+        assert(written == stage && "特征日文件写入失败 (磁盘满?)");
+        (void)written;
+        end += stage;
+        stage = 0;
+      }
+    };
     bool delta[kGatherMaxCols];
     for (size_t f0 = 0; f0 < F; f0 += group) {
       const size_t nf = std::min(group, F - f0);
       gather_(layer, T, F, A, f0, nf, s.column.data(), delta);
       for (size_t j = 0; j < nf; ++j) {
-        const size_t size = FeatureCodec::encode(s.column.data() + j * words, T, A, delta[j], s.buf.data(), s.buf.size());
+        if (stage > 0 && stage + bound > kRunCap)
+          flush();
+        const size_t size = FeatureCodec::encode(s.column.data() + j * words, T, A, delta[j], s.buf.data() + stage, s.buf.size() - stage);
         assert(size <= UINT32_MAX && "单列载荷超 4GB");
-        const size_t written = file_pwrite(fd, s.buf.data(), size, end);
-        assert(written == size && "特征日文件写入失败 (磁盘满?)");
-        (void)written;
-        s.dir[f0 + j] = {end, static_cast<uint32_t>(size), delta[j] ? 1u : 0u};
-        end += size;
+        s.dir[f0 + j] = {end + stage, static_cast<uint32_t>(size), delta[j] ? 1u : 0u};
+        stage += size;
       }
     }
+    flush();
 
     const FeatureFileHeader head{FeatureFileHeader::kMagic, T, F, A, axis_hash, L.fingerprint};
     const size_t head_written = file_pwrite(fd, &head, sizeof(head), 0);
@@ -253,7 +264,7 @@ private:
   }
 
   // 抽相邻 nf 列 [f0, f0 + nf) → cols 第 j 段 [T][A] = 列 f0 + j, 同一遍数原值 / T 轴差分的非零字:
-  // delta[j] = 差分零字更多才差分 (SparseCodec 载荷 ∝ 非零字数; 对 zstd 也是好代理)
+  // delta[j] = 差分零字更多才差分 (SparseCodec 载荷 ∝ 非零字数)
   static void gather_(const feature_storage_t *layer, size_t T, size_t F, size_t A, size_t f0, size_t nf,
                       feature_storage_t *cols, bool *delta) {
     assert(nf >= 1 && nf <= kGatherMaxCols && f0 + nf <= F);

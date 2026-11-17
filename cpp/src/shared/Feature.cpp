@@ -45,7 +45,7 @@ void Feature::Selection::clear_filters() {
   filter_data_type.clear();
   filter_cat_l1.clear();
   filter_cat_l2.clear();
-  filter_ts_method.clear();
+  filter_ts_tf.clear();
   filter_cs_method.clear();
 }
 

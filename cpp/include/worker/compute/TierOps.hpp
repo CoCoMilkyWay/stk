@@ -27,7 +27,7 @@ struct PipelineArgs {
   SharedData &data;
   const PerTier<FeatureLib> &libs; // 本库 + 同池 CS 旁读档的库 (余档空), 见 StageCtx
   const fund::Panel &fund;         // 日频 PIT 基本面 (全市场, 库日期轴), TS worker 只读共享
-  const pool::Panel &members;      // 本库逐日成员 (轴 = 本库 A 轴, 日期轴同 dates), TS worker 只读共享 → Meta 的 cs_valid
+  const pool::Panel &members;      // 本库逐日成员 (轴 = 本库 A 轴, 日期轴同 dates), CS worker 只读共享 → CoreCs 的 cs_valid
   const std::vector<misc::Ymd> &dates;
   size_t tail;  // 尾窗日数, 见 StageCtx
   int pf_cores; // 预取核数 (按日轮转, 见 StageLayout)

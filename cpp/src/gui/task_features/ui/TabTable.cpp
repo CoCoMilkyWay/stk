@@ -153,8 +153,8 @@ static std::vector<int> get_filtered_indices(const Feature::Selection &sel, cons
     if (!sel.filter_cat_l2.empty() && sel.filter_cat_l2.find(eff_cat2[i]) == sel.filter_cat_l2.end())
       pass = false;
 
-    // Filter by TS / CS norm method (Tf 不参与过滤)
-    if (!sel.filter_ts_method.empty() && sel.filter_ts_method.find(features[i].ts_method) == sel.filter_ts_method.end())
+    // Filter by TS Tf / CS norm method (CS Tf 不参与过滤)
+    if (!sel.filter_ts_tf.empty() && sel.filter_ts_tf.find(features[i].ts_tf) == sel.filter_ts_tf.end())
       pass = false;
     if (!sel.filter_cs_method.empty() && sel.filter_cs_method.find(features[i].cs_method) == sel.filter_cs_method.end())
       pass = false;
@@ -933,7 +933,7 @@ void RenderTabTable(SharedData &data, const Preview &pv, TableUIState &ui_state)
   render_filter_dropdown("Cat2", ui_state.show_filter_cat_l2, sel.filter_cat_l2,
                          std::span<const char *const>(s_cat2_items.data(), s_cat2_items.size()));
   ImGui::SameLine();
-  render_filter_dropdown("TS Norm", ui_state.show_filter_ts_method, sel.filter_ts_method, ts_MethodId_ALL);
+  render_filter_dropdown("TS Tf", ui_state.show_filter_ts_tf, sel.filter_ts_tf, ts_TfId_ALL);
   ImGui::SameLine();
   render_filter_dropdown("CS Norm", ui_state.show_filter_cs_method, sel.filter_cs_method, cs_MethodId_ALL);
   ImGui::SameLine();
@@ -1021,7 +1021,7 @@ void RenderTabTable(SharedData &data, const Preview &pv, TableUIState &ui_state)
     ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort);          // 9
     ImGui::TableSetupColumn("PSD(intraday)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort); // 10
     ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthFixed);                                         // 11
-    ImGui::TableSetupColumn("TS Norm", ImGuiTableColumnFlags_WidthFixed);                                      // 12
+    ImGui::TableSetupColumn("TS Tf", ImGuiTableColumnFlags_WidthFixed);                                        // 12
     ImGui::TableSetupColumn("CS Norm", ImGuiTableColumnFlags_WidthFixed);                                      // 13
     ImGui::TableSetupColumn("Deps", ImGuiTableColumnFlags_WidthFixed);                                         // 14
     ImGui::TableSetupScrollFreeze(0, 1);                                                                       // Freeze header row
@@ -1042,7 +1042,7 @@ void RenderTabTable(SharedData &data, const Preview &pv, TableUIState &ui_state)
     // Custom header row with tooltips
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
     const char *headers[kNumCols] = {"Multi", "Code", "Valid", "Name CN", "Type", "Cat1", "Cat2",
-                                     "Stat", "Range", "Dist", "PSD (intraday)", "File", "TS Norm", "CS Norm", "Deps"};
+                                     "Stat", "Range", "Dist", "PSD (intraday)", "File", "TS Tf", "CS Norm", "Deps"};
     const char *tooltips[kNumCols] = {
         "多选: 选择多个特征进行对比\n"
         "• 首个作为主特征",
@@ -1184,8 +1184,8 @@ void RenderTabTable(SharedData &data, const Preview &pv, TableUIState &ui_state)
               case 11:
                 cmp = std::strcmp(fa.file, fb.file);
                 break;
-              case 12: // TS Norm
-                cmp = (int)fa.ts_method - (int)fb.ts_method;
+              case 12: // TS Tf
+                cmp = (int)fa.ts_tf - (int)fb.ts_tf;
                 break;
               case 13: // CS Norm
                 cmp = (int)fa.cs_method - (int)fb.cs_method;
@@ -1310,9 +1310,9 @@ void RenderTabTable(SharedData &data, const Preview &pv, TableUIState &ui_state)
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", f.file);
 
-      // Columns: TS Norm / CS Norm (SRC 推出的 Method; Tf 不显示; None 显 "-")
+      // Columns: TS Tf / CS Norm (TS 行落盘变换 / CS 行 Method; CS Tf 不显示; None 显 "-")
       ImGui::TableNextColumn();
-      render_norm_cell(to_string(f.ts_method), f.ts_method == ts::MethodId::None);
+      render_norm_cell(to_string(f.ts_tf), f.ts_tf == ts::TfId::None);
       ImGui::TableNextColumn();
       render_norm_cell(to_string(f.cs_method), f.cs_method == cs::MethodId::None);
 
@@ -1437,7 +1437,7 @@ void SaveFeatureTableJson(const SharedData &data, const Preview &pv) {
           }
         }
         r["file"] = f.file;
-        r["ts_norm"] = to_string(f.ts_method).en;
+        r["ts_tf"] = to_string(f.ts_tf).en;
         r["cs_norm"] = to_string(f.cs_method).en;
         r["deps"] = split_deps(deps_list[i]);
 

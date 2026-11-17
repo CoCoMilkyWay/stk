@@ -27,9 +27,9 @@ void cs_loop(const StageCtx<T> &ctx, size_t lane, size_t lanes, CsClock &clock) 
 
   Logger::log("worker_" + std::to_string(worker_id), "Started: " + std::to_string(total_dates) + " dates to process");
 
-  // 本核的截面实例 (各层截面列的缓冲与计算)
+  // 本核的截面实例 (各层截面列的缓冲与计算 + cs_valid 成员位)
   using Core = CoreCs<T>;
-  Core core(store, ctx.libs);
+  Core core(store, ctx.members, ctx.libs);
 
   // Date-first traversal
   for (size_t date_idx = lane; date_idx < total_dates; date_idx += lanes) {

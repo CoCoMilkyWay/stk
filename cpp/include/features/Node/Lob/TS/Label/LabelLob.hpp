@@ -50,9 +50,9 @@ constexpr size_t LABEL_DELAY_SECONDS = 3;                       // 下单延迟 
 inline constexpr size_t LABEL_AMOUNT_WAN[] = {LABEL_AMTS(LABEL_LIST_ONE)};
 #undef LABEL_LIST_ONE
 inline constexpr size_t LABEL_AMT_COUNT = std::size(LABEL_AMOUNT_WAN);
-#define LABEL_COST_CODE(a, side) "lb_cost_" #side "_" #a "w",
-inline constexpr const char *LABEL_COST_CODES[] = {LABEL_AMTS(LABEL_COST_CODE, buy) LABEL_AMTS(LABEL_COST_CODE, sell)}; // LB 块列名 (序 = write_cost)
-#undef LABEL_COST_CODE
+// LB 块输出口 (字段表 LB(port) 的 port): 枚举值 = LB 块偏移 [cost_buy × 各金额, cost_sell × 各金额]
+#define LABEL_OUT_BUY(a, ...) cost_buy_##a##w,
+#define LABEL_OUT_SELL(a, ...) cost_sell_##a##w,
 
 // 连续竞价盘口快照 (建仓价点用): 可买 / 可卖 + 各金额段吃单冲击
 struct LobSnapshot {
@@ -72,7 +72,8 @@ public:
   static constexpr size_t MIN_LABEL_COUNT = 2 * AMT_COUNT; // LB 块总列数 [cost_buy × 各金额, cost_sell × 各金额]
   static constexpr size_t PEND_DAYS = LabelHold::PEND_DAYS;
   static constexpr size_t MIN_RING_SLOTS = LabelHold::MIN_RING_SLOTS;
-  static_assert(std::size(LABEL_COST_CODES) == MIN_LABEL_COUNT);
+  enum Out : size_t { LABEL_AMTS(LABEL_OUT_BUY) LABEL_AMTS(LABEL_OUT_SELL) };
+  static_assert(Out::cost_sell_5w == AMT_COUNT);
   static_assert([] {
     for (size_t a = 1; a < AMT_COUNT; ++a)
       if (LABEL_AMOUNT_WAN[a] <= LABEL_AMOUNT_WAN[a - 1])
@@ -81,13 +82,6 @@ public:
   }(),
                 "LABEL_AMTS 须严格升序");
 
-  // LB 块偏移 ← 列名 (CoreTs 按名定址); 对不上 → SIZE_MAX
-  static constexpr size_t col_of(std::string_view code) {
-    for (size_t c = 0; c < MIN_LABEL_COUNT; ++c)
-      if (code == LABEL_COST_CODES[c])
-        return c;
-    return SIZE_MAX;
-  }
   // 落盘行约束 (CoreTs 编译期查): 一行的冲击成本整组一次写 (write_cost), 各列落盘行须相同
   template <class Rows>
   static constexpr bool rows_ok(const Rows &rows) {
@@ -324,9 +318,11 @@ private:
 // 描述统一四段: 口径 | 吃单 | 边界 | 净收益换算 (买入 / 卖出逐词对应)
 #define LABEL_COST_BUY(a, X, CAT1)                                                         \
   X(lb_cost_buy_##a##w, CAT1, ratio_pos, "Entry Buy Impact " #a "w", "买入冲击(" #a "万)", \
-    "建仓买入冲击(比例≥0; 标签不含). 吃单: 锚点(分钟末)+3s的连续竞价盘口吃ask " #a "万元, 成交VWAP相对中间价的溢价; 空窗则顺延至首个入环簿, 锚点后再无入环簿则按收盘价建仓(冲击0). 边界: 全簿不足余量按涨停价成交; 无卖盘(封涨停, 不可买)则NaN. 做多净收益=lb_long_*−本列−Config::fixed_impact", R"(\frac{\mathrm{VWAP}^{A}_{entry}(A)}{P^{mid}_{entry}}-1, \quad A=)" #a R"(\mathrm{w})", LABEL)
+    "建仓买入冲击(比例≥0; 标签不含). 吃单: 锚点(分钟末)+3s的连续竞价盘口吃ask " #a "万元, 成交VWAP相对中间价的溢价; 空窗则顺延至首个入环簿, 锚点后再无入环簿则按收盘价建仓(冲击0). 边界: 全簿不足余量按涨停价成交; 无卖盘(封涨停, 不可买)则NaN. 做多净收益=lb_long_*−本列−Config::fixed_impact", R"(\frac{\mathrm{VWAP}^{A}_{entry}(A)}{P^{mid}_{entry}}-1, \quad A=)" #a R"(\mathrm{w})", LB(cost_buy_##a##w))
 #define LABEL_COST_SELL(a, X, CAT1)                                                          \
   X(lb_cost_sell_##a##w, CAT1, ratio_pos, "Entry Sell Impact " #a "w", "卖出冲击(" #a "万)", \
-    "建仓卖出冲击(比例≥0; 标签不含). 吃单: 锚点(分钟末)+3s的连续竞价盘口吃bid " #a "万元, 成交VWAP相对中间价的折价; 空窗则顺延至首个入环簿, 锚点后再无入环簿则按收盘价建仓(冲击0). 边界: 全簿不足余量按跌停价成交; 无买盘(封跌停, 不可卖)则NaN. 做空净收益=lb_short_*−本列−Config::fixed_impact", R"(1-\frac{\mathrm{VWAP}^{B}_{entry}(A)}{P^{mid}_{entry}}, \quad A=)" #a R"(\mathrm{w})", LABEL)
+    "建仓卖出冲击(比例≥0; 标签不含). 吃单: 锚点(分钟末)+3s的连续竞价盘口吃bid " #a "万元, 成交VWAP相对中间价的折价; 空窗则顺延至首个入环簿, 锚点后再无入环簿则按收盘价建仓(冲击0). 边界: 全簿不足余量按跌停价成交; 无买盘(封跌停, 不可卖)则NaN. 做空净收益=lb_short_*−本列−Config::fixed_impact", R"(1-\frac{\mathrm{VWAP}^{B}_{entry}(A)}{P^{mid}_{entry}}, \quad A=)" #a R"(\mathrm{w})", LB(cost_sell_##a##w))
 
 #define FIELDS_L_1min_LabelLob(X, CAT1) LABEL_AMTS(LABEL_COST_BUY, X, CAT1) LABEL_AMTS(LABEL_COST_SELL, X, CAT1)
+#undef LABEL_OUT_BUY
+#undef LABEL_OUT_SELL

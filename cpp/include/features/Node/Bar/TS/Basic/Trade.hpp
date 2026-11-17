@@ -39,19 +39,19 @@ using Trade = TradeT<MinuteData>;
 #define NODE_Trade60min(N) N(Trade60min, (TradeT<BinData>), (min60_data), on60Min)
 #define NODE_TradeDay(N) N(TradeDay, (TradeT<BinData>), (day_data), onClose)
 
-#define FIELDS_L_1min_Trade(X, CAT1)                                                                             \
-  X(volume, CAT1, AUTO, "Volume", "成交量", "分钟成交量(股)", R"(\mathrm{Vol}_t)", TS(Trade, volume, Log, None)) \
-  X(amount, CAT1, AUTO, "Amount", "成交额", "分钟成交额(元); 分钟 VWAP = amount / volume (因子层)", R"(\mathrm{Amt}_t)", TS(Trade, amount, Log, None))
+#define FIELDS_L_1min_Trade(X, CAT1)                                                                       \
+  X(volume, CAT1, AUTO, "Volume", "成交量", "分钟成交量(股)", R"(\mathrm{Vol}_t)", TS(Trade, volume, Log)) \
+  X(amount, CAT1, AUTO, "Amount", "成交额", "分钟成交额(元); 分钟 VWAP = amount / volume (因子层)", R"(\mathrm{Amt}_t)", TS(Trade, amount, Log))
 
 // 分钟箱成交量 / 额: 列名带 _<n>min 后缀
-#define BAR_BIN_TRADE(X, CAT1, node, n)                                                                                                           \
-  X(volume_##n##min, CAT1, AUTO, "Volume (" #n "min)", #n "分钟成交量", #n " 分钟箱成交量(股)", R"(\mathrm{Vol}_k)", TS(node, volume, Log, None)) \
-  X(amount_##n##min, CAT1, AUTO, "Amount (" #n "min)", #n "分钟成交额", #n " 分钟箱成交额(元)", R"(\mathrm{Amt}_k)", TS(node, amount, Log, None))
+#define BAR_BIN_TRADE(X, CAT1, node, n)                                                                                                     \
+  X(volume_##n##min, CAT1, AUTO, "Volume (" #n "min)", #n "分钟成交量", #n " 分钟箱成交量(股)", R"(\mathrm{Vol}_k)", TS(node, volume, Log)) \
+  X(amount_##n##min, CAT1, AUTO, "Amount (" #n "min)", #n "分钟成交额", #n " 分钟箱成交额(元)", R"(\mathrm{Amt}_k)", TS(node, amount, Log))
 #define FIELDS_L_5min_Trade5min(X, CAT1) BAR_BIN_TRADE(X, CAT1, Trade5min, 5)
 #define FIELDS_L_15min_Trade15min(X, CAT1) BAR_BIN_TRADE(X, CAT1, Trade15min, 15)
 #define FIELDS_L_30min_Trade30min(X, CAT1) BAR_BIN_TRADE(X, CAT1, Trade30min, 30)
 #define FIELDS_L_60min_Trade60min(X, CAT1) BAR_BIN_TRADE(X, CAT1, Trade60min, 60)
 
-#define FIELDS_L_1day_TradeDay(X, CAT1)                                                                                       \
-  X(volume_day, CAT1, AUTO, "Volume (day)", "日成交量", "日成交量(股)", R"(\mathrm{Vol}_D)", TS(TradeDay, volume, Log, None)) \
-  X(amount_day, CAT1, AUTO, "Amount (day)", "日成交额", "日成交额(元)", R"(\mathrm{Amt}_D)", TS(TradeDay, amount, Log, None))
+#define FIELDS_L_1day_TradeDay(X, CAT1)                                                                                 \
+  X(volume_day, CAT1, AUTO, "Volume (day)", "日成交量", "日成交量(股)", R"(\mathrm{Vol}_D)", TS(TradeDay, volume, Log)) \
+  X(amount_day, CAT1, AUTO, "Amount (day)", "日成交额", "日成交额(元)", R"(\mathrm{Amt}_D)", TS(TradeDay, amount, Log))
