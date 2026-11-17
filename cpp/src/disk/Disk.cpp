@@ -9,7 +9,6 @@
 #include "gui/engine/Table.hpp"               // kFactorLevels
 #include "gui/task_agent/Notes.hpp"           // kNoteKinds
 #include "gui/task_agent/Prompt.hpp"          // kMsgs
-#include "gui/task_agent/Tools.hpp"           // Tools
 
 #include <algorithm>
 #include <array>
@@ -257,10 +256,6 @@ bool known(Node n, const Key &k) {
     return GUI::Engine::ValidFactorName(k.name);
   case Seg::Export:
     return export_name(k.name);
-  case Seg::Tool: {
-    const auto tools = GUI::Agent::Tools();
-    return std::any_of(tools.begin(), tools.end(), [&](const GUI::Agent::ToolDef &t) { return k.name == t.name; });
-  }
   case Seg::Note:
     return std::any_of(std::begin(GUI::Agent::kNoteKinds), std::end(GUI::Agent::kNoteKinds), [&](const auto &d) { return k.name == d.id; });
   case Seg::Prompt:

@@ -1,42 +1,91 @@
 #pragma once
 
 // =============================================================================
-// Notes — agent 的全局记录: 特征申请 / 工具申请 / 发现 / 建议与 bug (跨会话、跨作用域累积; 只 GUI 线程读写)
+// Notes — 研究记录双板: 会话内假设板 Board (H1, H2 …) ↔ 跨会话全局记录板 Notes (F / T / I / R)
 // =============================================================================
-//   一类一个文件 output/agent/<main|test>/notes/<类>.jsonl, 一条一行: 编号 / 时间 / 作用域 / 出处 (会话目录 · 轮) / 附议哪条 / 研究员的处理 / 字段
-//   字段 = 提交它的工具的参数 (去掉 ref), 键按参数表序; 编号 = 类前缀 + 类内序号 (F3 / T1 / I7 / R2; 新的 = 已有最大号 + 1); ref = 附议 / 补充同类已有的一条
-//   提交 request_feature / request_tool / note_insight / report_issue, 查 list_notes (task_agent/Acts); 界面 = Mine 页 "候选" 下各类一页:
-//   研究员逐条标处理 (待办 / 已做 / 不做 / 搁置 + 一句回复), agent 在 list_notes 与首条里看得到; 回退一段会话时删掉那段提的 (drop)
+//   Board  会话内假设与判定 (时间线折叠的纯内存状态):
+//            hypothesize 记一条 (待检验) → 观察检验 → judge 判 (支持 / 落空 / 不清, 证据写调用编号 R<轮>#<序>) → 支持的挂 eval_factor 变体 (至多 kHypEvals 个)
+//            有变体回测过即待判 (pending): 下一条回复须 judge 它
+//   Notes  跨会话全局记录 (output/agent/<main|test>/notes/<类>.jsonl):
+//            特征申请 (F) / 工具申请 (T) / 发现 (I) / 建议与 bug (R); 研究员逐条标处理 (待办 / 已做 / 不做 / 搁置 + 回复); 回退时 drop 删掉对应轮提的
 // =============================================================================
 
+#include "gui/task_agent/Enum.hpp"
 #include "gui/task_agent/Tools.hpp"
 #include "nlohmann/json.hpp"
 
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace GUI::Agent {
 
+// ---- 调用编号 R<轮>#<序> ----
+struct Ref {
+  int round = 0, call = 0; // round 0 = 无
+  auto operator<=>(const Ref &) const = default;
+};
+bool RefOf(std::string_view s, Ref &r);
+std::string RefText(Ref r);
+
+// ---- 会话假设板 Board ----
+enum class Stance : uint8_t { Open,
+                              Supported,
+                              Refuted,
+                              Unclear };
+struct StanceDef {
+  const char *id, *cn;
+};
+inline constexpr StanceDef kStances[] = {{"open", "待检验"}, {"supported", "支持"}, {"refuted", "落空"}, {"unclear", "不清"}};
+AGENT_ROWS(Stance, kStances, Unclear);
+
+struct Hyp {
+  std::string id;
+  nlohmann::ordered_json fields; // hypothesize 参数
+  Ref at;                        // 提出处
+  Stance stance = Stance::Open;
+  Ref judged;                     // 最近判定处 (round 0 = 未判)
+  nlohmann::ordered_json verdict; // 最近 judge 参数
+  int evals = 0;                  // 已落文件的变体数
+  int pending = 0;                // 回测过尚未判的变体所在轮 (0 = 无)
+  std::string title() const { return fields.at("title").get<std::string>(); }
+};
+
+class Board {
+public:
+  void add(const Call &c, Ref at);
+  void judge(const Call &c, Ref at);
+  void vary(const Call &c, Ref at);
+  std::string next() const { return "H" + std::to_string(hyps_.size() + 1); }
+  const Hyp *find(const std::string &id) const;
+  const std::vector<Hyp> &all() const { return hyps_; }
+  std::string text() const;   // 结果消息附的整张板
+  std::string report() const; // 停下报告的一节
+
+private:
+  Hyp &hyp(const std::string &id);
+  std::vector<Hyp> hyps_;
+};
+
+// ---- 跨会话全局记录板 Notes ----
 enum class NoteKind : uint8_t { Feature,
                                 ToolReq,
                                 Insight,
                                 Issue };
-// 类表 (下标 = NoteKind): id = 文件名 = list_notes 的 kind
 struct NoteKindDef {
   const char *id, *cn;
   char prefix;
-  Tool tool; // 提交它的工具
+  Tool tool;
 };
 inline constexpr NoteKindDef kNoteKinds[] = {{"feature", "特征申请", 'F', Tool::RequestFeature},
                                              {"tool", "工具申请", 'T', Tool::RequestTool},
                                              {"insight", "发现", 'I', Tool::NoteInsight},
                                              {"issue", "建议与 bug", 'R', Tool::ReportIssue}};
 AGENT_ROWS(NoteKind, kNoteKinds, Issue);
-NoteKind NoteOf(Tool t); // 提交工具 → 类 (须是四个提交工具之一)
+NoteKind NoteOf(Tool t);
 
-// 研究员的处理 (下标 = NoteState): id = 文件里的 state; cn = 界面 / 给 agent 的名字
 enum class NoteState : uint8_t { Open,
                                  Done,
                                  Rejected,
@@ -52,25 +101,24 @@ struct Note {
   std::string id, time, scope, session, ref;
   int round = 0;
   NoteState state = NoteState::Open;
-  std::string reply; // 研究员的一句回复 (可空)
+  std::string reply;
   nlohmann::ordered_json fields;
   std::string title() const { return fields.at("title").get<std::string>(); }
-  std::string body() const; // 除标题外的字段, 每个一行 "标签: 值"
+  std::string body() const;
 };
 
 class Notes {
 public:
-  void load(bool test); // 读回该目录各类文件 (没有 = 空)
+  void load(bool test);
   bool loaded(bool test) const { return test_ == static_cast<int>(test); }
-  const std::vector<Note> &of(NoteKind k) const { return notes_[static_cast<size_t>(k)]; } // 旧到新
+  const std::vector<Note> &of(NoteKind k) const { return notes_[static_cast<size_t>(k)]; }
   const Note *find(NoteKind k, const std::string &id) const;
-  int backers(const Note &n) const; // 附议它的条数
-  int open(NoteKind k) const;       // 待办的条数
-  // 记一条 (落盘 + 进表): c = 该类的提交工具的调用, ref 须为空或 find 得到; scope = 作用域名, session = 会话目录
+  int backers(const Note &n) const;
+  int open(NoteKind k) const;
   const Note &add(const Call &c, std::string scope, std::string session, int round);
-  void set(NoteKind k, const std::string &id, NoteState s, std::string reply);     // 研究员处理一条 (改写该类文件)
-  std::vector<const Note *> filed(const std::string &session, int from = 1) const; // 会话 session 第 from 轮起提的, 按类再按时序
-  void drop(const std::string &session, int from);                                 // 删掉它们 (改写涉及的类文件)
+  void set(NoteKind k, const std::string &id, NoteState s, std::string reply);
+  std::vector<const Note *> filed(const std::string &session, int from = 1) const;
+  void drop(const std::string &session, int from);
 
 private:
   void rewrite(NoteKind k) const;
@@ -78,9 +126,7 @@ private:
   std::array<std::vector<Note>, kNum<NoteKind>> notes_;
 };
 
-// list_notes: kind 空 = 各类条数 + 每类最近 n 条的标题; 否则该类命中的最近 n 条全文. scope 非空 = 只看该作用域提的; query 同 search_leaves 的写法
 std::string NotesText(const Notes &notes, const std::string &kind, const std::string &scope, const std::string &query, int n);
-// 首条用: 各类条数与其中待办的 (发现另给本作用域的条数)
 std::string NotesBrief(const Notes &notes, const std::string &scope);
 
 } // namespace GUI::Agent

@@ -1,85 +1,125 @@
 #pragma once
 
 // =============================================================================
-// 提示词: 系统 → agent 的消息 (模板填充) + 工具结果的文本
+// Prompt — 提示词模板、工具结果成文、时间线状态折叠与对话上下文纯函数 TurnsOf
 // =============================================================================
-//   模板 = output/config/agent/prompt/<名>.md, {{键}} 占位 (随作用域 / 会话的由各消息给, 常量取 Config kConsts); 模板里出现未知的键 → assert (模板与代码脱节立刻暴露)
-//     system  静态前缀 (一段对话内逐字节不变): 作用域 / 本层的行与时刻 / 语法与口径 / 入库门槛 / 做法 (先看后改, 一段会话精修一个因子) / 调用协议 /
-//             工具表 / 特征叶 (按族分节: 族卡 (output/config/agent/families.md) + 按 档.层 分组的 列名 + 中文名 + 落盘变换, 同组叶 (LeafKin) 合一行写成花括号式; 公式与说明经 search_leaves) / 算子表
-//     first   首条 user: 已试候选 / 正式库 / 全局记录的规模 (用 list_tried / list_library / list_notes 看) + 能否提问 + 开工 (+ 研究员对本会话的要求)
-//     test    自检会话的首条 (代替 first): 把每个工具都调一遍, 对照说明查结果, 问题记 report_issue, 末了总评再 finish (+ 研究员对本会话的要求)
-//     round   每条回复的调用结果, 按调用序 (调用编号 + 调用一行 + 结果) + 假设板 + 下一步 (挖掘 / 自检各一种); 只在本条给原文, 此后收进研究树 (task_agent/Tree)
-//     review  首次 finish (或本段预算用完) 的那条回复的结果 (同 round) + 假设板 + 复盘清单 (本会话各 judge 的 better_feature / next + 本会话已提的全局记录); 再 finish 才结束
-//     retry   回复不合协议: 原因 + 按协议重发
-//   研究员的插话 (MemoText) 附在随后发出的那条消息末尾, 与本会话要求同一写法
-//   回复的解析 / 工具表见 gui/task_agent/Tools.hpp; 观察工具的成文见 gui/task_agent/Views.hpp
-//   结局文本两档: Brief 一行 (流水 / 界面标题) ↔ Detail 多行 (工具结果 / 界面展开); 五种结局 (Verdict) 一处写全
+//   模板 = output/config/agent/prompt/<名>.md ({{键}} 占位, 未知键立即 assert):
+//     system  静态前缀 (会话内逐字节不变): 作用域 / 行与时刻 / 语法与口径 / 入库门槛 / 做法 / 协议 / 工具表 / 特征族卡与叶表 / 算子表
+//     first   首条 user: 已试候选 / 正式库 / 全局记录规模 + 能否提问 + 开工 (+ 本会话要求)
+//     test    自检会话首条: 把每个工具调一遍, 问题记 report_issue, 末了总评再 finish (+ 本会话要求)
+//     round   每条回复各调用的结果 (带调用编号 R<轮>#<序>) + 假设板 + 下一步; 原文只在本条给一次, 此后收进研究树
+//     retry   回复不合协议: 原因 + 重发要求
+//   时间线 Round 是全会话唯一真相: StateOf(Rounds) 唯一折叠出假设板 Board / 已落候选 / 已入库名, TurnsOf(Rounds) 纯函数折叠出完整上下文
 // =============================================================================
 
-#include "gui/task_agent/Board.hpp"
 #include "gui/task_agent/Bridge.hpp"
+#include "gui/task_agent/Llm.hpp"
 #include "gui/task_agent/Notes.hpp"
 #include "gui/task_agent/Tools.hpp"
 
 #include <cstdint>
-#include <iterator>
+#include <set>
+#include <span>
 #include <string>
-#include <utility>
+#include <variant>
 #include <vector>
 
 namespace GUI::Agent {
 
+// ---- 时段、动作与时间线 ----
+struct Span {
+  double t0 = -1.0, t1 = -1.0;
+  bool began() const { return t0 >= 0.0; }
+  bool ended() const { return t1 >= 0.0; }
+  bool running() const { return began() && !ended(); }
+  double len(double now) const { return !began() ? 0.0 : (ended() ? t1 : now) - t0; }
+  void begin(double t) {
+    if (!began())
+      t0 = t;
+  }
+  void end(double t) {
+    if (running())
+      t1 = t;
+  }
+};
+
+struct Trial {
+  Staged st;
+  Span search, run;
+};
+
+using Extra = std::variant<std::monostate, Trial, Asked>;
+
+struct Act {
+  Call call;
+  Span span;
+  std::string out, gist; // gist = 观察留进研究树的一行关键数
+  bool ok = true;
+  Extra extra;
+};
+
 enum class Msg : uint8_t { System,
                            First,
                            Round,
-                           Review,
                            Retry,
                            Test };
-// 消息表 (下标 = Msg): id = 模板名 = 流水里的 kind; cn = 界面名
 struct MsgDef {
   const char *id, *cn;
 };
-inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"review", "复盘"}, {"retry", "重发"}, {"test", "自检"}};
+inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"retry", "重发"}, {"test", "自检"}};
 AGENT_ROWS(Msg, kMsgs, Test);
+
 struct Message {
   Msg kind;
   std::string text;
 };
 
-// 模板原文 (文件须在)
+struct Round {
+  Msg kind = Msg::First;
+  std::string user;
+  std::string memo;
+  Span span, think, write;
+  llm::Reply reply;
+  std::string error;
+  std::vector<Act> acts;
+};
+using Rounds = std::span<const Round>;
+
+// ---- 时间线唯一状态折叠 ----
+struct State {
+  Board board;
+  std::set<std::string> staged;  // 本会话落了文件的候选文件名 (*.json)
+  std::set<std::string> adopted; // submit_factor 做成的英文名
+};
+void Apply(State &s, const Act &a, Ref at);
+State StateOf(Rounds rs);
+
+// ---- 模板读写 ----
 std::string LoadPrompt(Msg m);
 void SavePrompt(Msg m, const std::string &text);
 
-// ---- 结局文本 ----
-std::string Text(const Stat &s);     // mono · 每期毛多空 · rIC
-std::string Text(const Weight &w);   // + score ± 标准误 (t) · 有效率; 无本持有期统计另说
-std::string Text(const Top &t);      // + 目标 ± 标准误 (+ 曲面估计) (+ 取反)
-std::string Brief(const Result &r);  // 一行: 结局 + 原因 / 最佳权重 / 代表点
-std::string Detail(const Result &r); // 多行 ("- " 起): 结局 + 原因 / 每个权重 (自由参数的取值) / 落选原因与代表点; 不可见的只说不可比
+// ---- 结局与工具成文 ----
+std::string Text(const Stat &s);
+std::string Text(const Weight &w);
+std::string Text(const Top &t);
+std::string Brief(const Result &r);
+std::string Detail(const Result &r);
 
-// ---- 工具结果 (当场 / 回测 / 问答; 观察的在 task_agent/Views) ----
-std::string CallTitle(const Act &a, Ref r); // 结果标题: [调用编号] 调用一行 (长参数只写开头) (+ 没做成)
-// 列表跳过可见的前 skip 个, 列 top 个; 没列完的末尾给总数与接着看的 skip
-std::string TriedText(const std::vector<Result> &tried, int skip, int top, const Gate &g); // list_tried: 每个另标是否达入库门槛
-std::string LibraryText(const std::vector<Result> &lib, int skip, int top);                // list_library: 只列本持有期有统计的, 其余报个数
-// eval_factor: 名 + 模板 + 改动 + 结局 + 是否达入库门槛 (+ rep = 代表点的观察摘要, task_agent/Views RepText) (+ 最佳权重的 20 组 / 参数曲面)
-std::string TrialText(const Trial &k, const Gate &g, const std::string &rep = "");
-std::string AnswerText(const Asked &a); // ask_human: 每题的选择 (没照推荐的附上推荐) + 附言
-// search_leaves: 命中的叶所在的同组 (LeafKin, 落盘变换也同) 前 n 组, 每组一行 (叶 / 中文名 / 公式 / 说明 / 落盘值, 按组内首个命中的写); shown 追加这几组的全部叶名
-std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n, std::vector<std::string> &shown);
+std::string CallTitle(const Act &a, Ref r);
+std::string TriedText(const std::vector<Result> &tried, int skip, int top, const Gate &g);
+std::string LibraryText(const std::vector<Result> &lib, int skip, int top);
+std::string TrialText(const Trial &k, const Gate &g);
+std::string AnswerText(const Asked &a);
+std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n);
 
-// ---- 发 ----
+// ---- 消息组装与上下文纯函数 ----
 Message SystemMessage(const Context &c, const Gate &g, bool ask);
-// tried = 可见的已试候选数; notes = 全局记录的条数 (NotesBrief); remark = 本会话要求 (非空则成末尾一节)
 Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark);
 Message TestMessage(bool ask, const std::string &remark);
-// 一条回复的全部调用, 按序 (标题带调用编号 R<round>#<序>) + 假设板 + 下一步; evaled = 这条回复有落了文件的回测 (下一条不能回测); test = 自检会话
 Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool evaled, bool test);
-// 首次 finish 的那条回复: 结果同 round + 假设板 + 复盘清单; judges = 本会话判定成立的 judge (调用编号 + 调用), filed = 本会话提的全局记录;
-// budget 非空 = 不是 agent 宣布挖完, 而是本段预算用完了 (写用了多少)
-Message ReviewMessage(const std::vector<Act> &acts, int round, const Board &board, const std::vector<std::pair<Ref, const Call *>> &judges,
-                      const std::vector<const Note *> &filed, const std::string &budget);
 Message RetryMessage(const std::string &error);
-std::string MemoText(const std::string &memo); // 插话一节 (附在消息末尾)
+std::string MemoText(const std::string &memo);
+std::string TextOf(const Round &rd);
+llm::Turns TurnsOf(Rounds rounds);
 
 } // namespace GUI::Agent

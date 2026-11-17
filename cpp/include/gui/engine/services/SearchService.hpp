@@ -112,8 +112,10 @@ class SearchService : public FactorWorker<SearchService, SearchRequest> {
 
 public:
   static constexpr const char *kName = "SearchWorker";
-  SearchService(); // 两者都在 .cpp: FactorFlow 不完整
+  explicit SearchService(bool start = true); // 两者都在 .cpp: FactorFlow 不完整; start=false 供外部单 worker 直调 exec
   ~SearchService();
+
+  bool exec(const SearchRequest &req, FactorFlow &F);
 
   SearchStage stage() const { return stage_.load(std::memory_order_relaxed); }
   int alive() const { return alive_.load(std::memory_order_relaxed); }   // 活跃峰数 (Refine 期)

@@ -225,7 +225,7 @@ struct SearchService::Searcher {
   }
 
   // ---- 结局 ----
-  bool cancelled() const { return W.cancel_.load(std::memory_order_relaxed); }
+  bool cancelled() const { return F.cancel.load(std::memory_order_relaxed); }
   // Ok → 续; 其余停: Empty / Broken (正常输入问题, job.why 已填) → give_up; Cancel / Stale → settle (判废)
   bool go(Rc rc) {
     if (rc == Rc::Ok)
@@ -375,7 +375,7 @@ struct SearchService::Searcher {
     const fs::Span s = c.span();
     const Samp sm = samp_of(s.t_hi(), s.t_lo, s.t0_abs, stride);
     std::vector<float> tab;
-    Backend<Cpu> qe(F.S.ex, W.cancel_);
+    Backend<Cpu> qe(F.S.ex, F.cancel);
     qe.bind(c);
     if (!qe.walk(dc, prefix.data(), [&](int i, double) {
           if (i == want) {
@@ -730,16 +730,21 @@ bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTabl
   return MakeFactorScope(data, std::move(ft), pool, years, gpu, req.scope);
 }
 
-SearchService::SearchService() : FactorWorker(Prio::Batch) { Start(); }
+SearchService::SearchService(bool start) : FactorWorker(Prio::Batch) {
+  if (start)
+    Start();
+}
 SearchService::~SearchService() { Stop(); }
 
-bool SearchService::run(SearchRequest &req) {
+bool SearchService::exec(const SearchRequest &req, FactorFlow &F) {
   pass_.store(0, std::memory_order_relaxed);
   chunk_.store(0, std::memory_order_relaxed);
   chunks_.store(0, std::memory_order_relaxed);
   stage_.store(SearchStage::Prepare, std::memory_order_relaxed);
-  return eval(req, flow());
+  return eval(req, F);
 }
+
+bool SearchService::run(SearchRequest &req) { return exec(req, flow()); }
 
 bool SearchService::eval(const SearchRequest &req, FactorFlow &F) {
   TraceN("SearchRun");

@@ -23,7 +23,7 @@
 //   features/    ② 特征 ← data              run/features/   计算日志 / 节点用时 (同 <池>/<档>)
 //   factors/     ③ 因子 ← features          run/factors/    Search 日志 / Inspect 导出 (同 <池>/<层>) + 算子表
 //   portfolios/  ④ 组合 ← factors
-//   agent/       ③ 的旁路: 挖候选 → 入库      run/agent/      Search 日志 (同会话作用域) + 工具结果样本 (同 <main|test>)
+//   agent/       ③ 的旁路: 挖候选 → 入库      run/agent/      Search 日志 (同会话作用域)
 //   live/        实盘: 两融条款缓存          run/live/       事务日志 + 客户端适配的运行产物 (<客户端>/: 注入件构建 / 录制 / 交互日志)
 //                                           run/app/        进程级: TSan 报告 / 崩溃栈
 //
@@ -71,7 +71,6 @@ struct Key {
   X(Factor,     Word,    "",                  &Key::name)    /* 因子名 ValidFactorName               */  \
   X(Portfolio,  Word,    "",                  &Key::name)    /* 组合名 ValidFactorName               */  \
   X(Export,     Word,    "",                  &Key::name)    /* <因子>_w<权重号>_top<N>_{log,snap}   */  \
-  X(Tool,       Word,    "",                  &Key::name)    /* Agent 工具 Tools                     */  \
   X(Note,       Word,    "",                  &Key::name)    /* Agent 记录类 kNoteKinds              */  \
   X(Prompt,     Word,    "",                  &Key::name)    /* Agent 提示词 kMsgs                   */  \
   X(Log,        Word,    "",                  &Key::name)    /* -                                   */  \
@@ -202,8 +201,6 @@ enum class Seg : std::uint8_t {
   X(RunExportFile,     RunExport,         File,   Export,    "",                  ".csv",     false)       \
   X(RunAgent,          Run,               Dir,    Lit,       "agent",             "",         false)       \
   X(RunAgentMode,      RunAgent,          Dir,    Mode,      "",                  "",         false)       \
-  X(RunAgentTools,     RunAgentMode,      Dir,    Lit,       "tools",             "",         false)       \
-  X(RunAgentToolFile,  RunAgentTools,     File,   Tool,      "",                  ".md",      false)       \
   X(RunAgentSessions,  RunAgentMode,      Dir,    Lit,       "sessions",          "",         false)       \
   X(RunAgentPool,      RunAgentSessions,  Dir,    Pool,      "",                  "",         false)       \
   X(RunAgentLevel,     RunAgentPool,      Dir,    Level,     "",                  "",         false)       \

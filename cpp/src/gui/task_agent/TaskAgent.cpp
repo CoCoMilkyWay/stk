@@ -5,7 +5,6 @@
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Mine.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/Tree.hpp"
 #include "gui/util/Reorder.hpp"
 
 #include "imgui.h"
@@ -69,6 +68,7 @@ struct Options {
   Budget budget;
   bool ask = true; // agent 可用 ask_human 向人提一次问
   int prompt = 0;  // Msg 下标
+  bool operator==(const Options &) const = default;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, budget, ask, prompt)
 
@@ -115,7 +115,7 @@ struct Sniffer {
 struct Ui {
   std::unique_ptr<Mine> mine; // 首次 Draw 建 (Destroy 释放: 对话线程 / 评估 worker 与常驻块)
   Options opt;
-  std::string opt_saved; // ui.json 当前内容; 选项序列化后与之不同才写
+  std::optional<Options> opt_saved; // 上次落盘的选项; operator== 判变, 改了才序列化写盘
   Sniffer sniff;
   // Config 页提示词编辑
   std::string prompt_text;
@@ -133,8 +133,8 @@ struct Ui {
   bool pinned = true, jump = false;
   float flow_y = 0.0f; // 上一帧的滚动位置
   // 两个 worker 在跑那件事的样子 (每帧 live 同步)
-  Chat::Live chat_live;
-  Lab::Live lab_live;
+  ChatLive chat_live;
+  LabLive lab_live;
   // 在收那轮: 增量总量与它上次变的时刻 (量静默)
   size_t live_n = 0;
   double live_t = 0.0;
@@ -161,9 +161,8 @@ struct Ui {
     Mine::Loss loss;
     bool open = false;
   } rewind;
-  // 候选页: 选中的候选文件与它的 Search 日志 (换了选中才重读); staged = 本会话落了文件的候选 (英文名, 每帧重算)
+  // 候选页: 选中的候选文件与它的 Search 日志 (换了选中才重读)
   std::string pick, pick_log, pick_log_of;
-  std::set<std::string> staged;
   // 记录页: 只看待办 / 在写的回复草稿
   bool only_open = false;
   std::string reply;
@@ -189,16 +188,29 @@ bool model_ok(const Ui &s) {
 }
 
 // ---- 选项落盘 (output/config/agent/ui.json) ----
-// 无文件 / 读不出 / 字段对不上 / 取值越界 ⇒ 整份回默认值, 首次 save_ui 按当前字段清单重写
-// 池 / 层 / 持有期 / 模型失效由各自的选择逻辑回落; GPU 不在了回落 CPU
+bool ui_json_valid(const nlohmann::json &j) {
+  if (!j.is_object() || !j.contains("sc") || !j["sc"].is_object() || !j.contains("gate") || !j["gate"].is_object() || !j.contains("budget") ||
+      !j["budget"].is_object())
+    return false;
+  const auto &sc = j["sc"], &gt = j["gate"], &bg = j["budget"];
+  return sc.contains("pool") && sc["pool"].is_string() && sc.contains("level") && sc["level"].is_number_integer() && sc.contains("hold") &&
+         sc["hold"].is_number_integer() && sc.contains("lob") && sc["lob"].is_boolean() && sc.contains("years") && sc["years"].is_number_integer() &&
+         sc.contains("leaves") && sc["leaves"].is_object() && sc.contains("ops") && sc["ops"].is_object() && gt.contains("mono") && gt["mono"].is_number() &&
+         gt.contains("ric") && gt["ric"].is_number() && bg.contains("rounds") && bg["rounds"].is_number_integer() && bg.contains("minutes") &&
+         bg["minutes"].is_number_integer() && bg.contains("ktokens") && bg["ktokens"].is_number_integer() && j.contains("backend") &&
+         j["backend"].is_number_integer() && j.contains("model") && j["model"].is_string() && j.contains("via_proxy") && j["via_proxy"].is_array() &&
+         j["via_proxy"].size() == kBackendN && j.contains("proxy_host") && j["proxy_host"].is_string() && j.contains("proxy_port") &&
+         j["proxy_port"].is_number_integer() && j.contains("gpu") && j["gpu"].is_number_integer() && j.contains("ask") && j["ask"].is_boolean() &&
+         j.contains("prompt") && j["prompt"].is_number_integer();
+}
 void load_ui(Ui &s) {
   bool ok = false;
   if (disk::exists(disk::AgentUiFile)) {
     const nlohmann::json j = nlohmann::json::parse(disk::read(disk::AgentUiFile), nullptr, false);
-    try {
+    if (ui_json_valid(j)) {
       j.get_to(s.opt);
+      s.opt.prompt = std::clamp(s.opt.prompt, 0, static_cast<int>(kNum<Msg>) - 1);
       ok = true;
-    } catch (const nlohmann::json::exception &) {
     }
   }
   const Options &o = s.opt;
@@ -208,19 +220,16 @@ void load_ui(Ui &s) {
     s.opt = Options{};
   if (!catalog::gpu())
     s.opt.gpu = 0;
-  s.opt_saved = ok ? nlohmann::ordered_json(s.opt).dump(2) : std::string();
+  if (ok)
+    s.opt_saved = s.opt;
+  else
+    s.opt_saved.reset();
 }
 void save_ui(Ui &s) {
-  std::string text = nlohmann::ordered_json(s.opt).dump(2);
-  if (text == s.opt_saved)
+  if (s.opt_saved && *s.opt_saved == s.opt)
     return;
-  disk::write(disk::AgentUiFile, {}, text);
-  s.opt_saved = std::move(text);
-}
-
-std::string_view trim(std::string_view s) {
-  const size_t b = s.find_first_not_of(" \t\r\n");
-  return b == std::string_view::npos ? std::string_view() : s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1);
+  disk::write(disk::AgentUiFile, {}, nlohmann::ordered_json(s.opt).dump(2));
+  s.opt_saved = s.opt;
 }
 
 // ---- std::string 输入框 (imgui 缓冲随串扩) ----
@@ -340,25 +349,10 @@ void scope_row(SharedData &data, Ui &s, bool locked) {
   ImGui::TextUnformatted("评估期 近");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(90);
-  // 年数封顶于 YearCap (观察整期装不下时记下; 会话内不变, 只在没锁时动): 刚碰到上限 → 降到上限; 往上加到顶 → 不动 + warning
-  const int cap = YearCap(o);
-  if (!locked && cap > 0 && o.years > cap) {
-    std::fprintf(stderr, "[agent] %s: 评估年数 %d → %d 年 (整期装不下内存 / 显存预算)\n", catalog::label(o).c_str(), o.years, cap);
-    o.years = cap;
-  }
-  if (int y = o.years; ImGui::InputInt("年##years", &y)) {
-    if (cap > 0 && y > cap)
-      std::fprintf(stderr, "[agent] %s: 评估年数已到上限 %d 年 (整期装不下内存 / 显存预算), 不能再加\n", catalog::label(o).c_str(), cap);
+  if (int y = o.years; ImGui::InputInt("年##years", &y))
     o.years = std::max(y, 1);
-    if (cap > 0)
-      o.years = std::min(o.years, cap);
-  }
   tip("评估期 = 标签库与开放的叶所在库落盘日交集的最近 N 年 (其前另装 10% 预热日只给回看, 不计统计): 回测 / 观察 / 已试候选与正式库的可见性都按这一段\n"
-      "(别的年数算的统计对 agent 不可见); 会话内不变. 观察整段一次装进内存, 装不下时年数封顶于装得下的最多年数 (本次运行内, 按池 + 层)");
-  if (cap > 0) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("(上限 %d 年)", cap);
-  }
+      "(别的年数算的统计对 agent 不可见); 会话内不变, 分块流式计算无整期内存封顶");
   ImGui::SameLine();
   ImGui::Text("%s", c ? c->window.c_str() : "…");
   ImGui::EndDisabled();
@@ -405,14 +399,14 @@ std::string topic(std::string_view s, bool live) {
   for (size_t end = s.size(); end > 0;) {
     const size_t nl = s.rfind('\n', end - 1);
     const size_t b = nl == std::string_view::npos ? 0 : nl + 1;
-    const std::string_view line = trim(s.substr(b, end - b));
+    const std::string_view line = text::trim(s.substr(b, end - b));
     end = b == 0 ? 0 : nl;
     if (line.empty())
       continue;
     if (line.size() > 4 && line.starts_with("**") && line.ends_with("**"))
-      return text::head(trim(line.substr(2, line.size() - 4)), kTopicChars);
+      return text::head(text::trim(line.substr(2, line.size() - 4)), kTopicChars);
     if (const size_t h = line.find_first_not_of('#'); h > 0 && h <= 6 && h < line.size() && line[h] == ' ')
-      return text::head(trim(line.substr(h)), kTopicChars);
+      return text::head(text::trim(line.substr(h)), kTopicChars);
     if (tail.empty())
       tail = line;
   }
@@ -641,7 +635,7 @@ void session_row(const SharedData &data, Ui &s) {
     s.message.clear();
     Mine::Setup st = setup_of(o);
     st.test = test;
-    st.remark = trim(s.remark);
+    st.remark = std::string(text::trim(s.remark));
     m.open(data, std::move(st), leg_of(o));
     s.fold_remark = true;
   };
@@ -846,7 +840,7 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
   const double t = m.now();
   const Tally all = m.tally();
   const llm::Reply &live = s.chat_live.reply;
-  const Lab::Live &ll = s.lab_live;
+  const LabLive &ll = s.lab_live;
   const Act *a = acting(m);
   std::string what;
   TaskStatus::Kind kind = TaskStatus::Kind::Busy;
@@ -873,10 +867,15 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
       }
       what = "第 " + std::to_string(m.timeline.size()) + " 轮 · 调用 " + std::to_string(m.acting() + 1) + "/" + std::to_string(m.timeline.back().acts.size()) + " " +
              text::head(a->call.text(), kTopicChars);
-      if (const Trial *k = std::get_if<Trial>(&a->got)) {
+      if (const Trial *k = std::get_if<Trial>(&a->extra)) {
         char pct[32];
         std::snprintf(pct, sizeof(pct), " %.0f%%", ll.frac * 100.0);
         what += std::string(" · ") + step_name(*k) + pct;
+        frac = static_cast<float>(ll.frac);
+      } else if (def(a->call.tool).exec == Exec::Lab) {
+        char pct[32];
+        std::snprintf(pct, sizeof(pct), " %.0f%%", ll.frac * 100.0);
+        what += std::string(" · 执行中") + (ll.frac > 0.0 ? pct : "…");
         frac = static_cast<float>(ll.frac);
       } else {
         what += " · 执行中…";
@@ -911,12 +910,10 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
                       all.staged(), all.adopted, board_brief(m.st.board).c_str());
   tip_long("用时 " + dur(t) + " (LLM " + dur(all.llm_s) + " · 执行 " + dur(all.act_s) + ")\ntoken 输入 " + kilo(all.usage.prompt) + " (缓存 " + kilo(all.usage.cached) + ") / 输出 " +
            kilo(all.usage.completion) + "\n" + std::to_string(m.timeline.size()) + " 轮 · 调用 " + std::to_string(all.all()) + " (观察 " + std::to_string(all.n(Cat::Look)) +
-           " · 查研报 " + std::to_string(all.n(Run::Docs)) + " · 没做成 " + std::to_string(all.failed()) + ")\n候选 " + std::to_string(all.staged()) + " (有参数组 " +
+           " · 查研报 " + std::to_string(all.docs()) + " · 没做成 " + std::to_string(all.failed()) + ")\n候选 " + std::to_string(all.staged()) + " (有参数组 " +
            std::to_string(all.n(Verdict::Weights)) + ") · 提交 " + std::to_string(all.n(Tool::SubmitFactor)) + " · 入库 " + std::to_string(all.adopted) + "\n假设 " +
            board_brief(m.st.board) + (m.memo.empty() ? "" : "\n插话已排队, 随下一条发出"));
   tools_bar(all);
-  if (!ll.message.empty())
-    wrapped(color(TaskStatus::Kind::Warn), ll.message);
 }
 
 // ask_human: 逐题点选 (已按推荐预选; 末项 "其他" 自己写意见) + 附言; edit = Choose 中在问的那个调用. 返回 = 按了交答案
@@ -1031,8 +1028,8 @@ constexpr size_t kCallChars = 96; // 调用一行在标题里的字数
 
 // eval_factor 调用: 标题 = 名 + 回测状态 / 用时 + 结局一行 (悬浮看表达式); 展开 = 表达式, 思路, 结局全文.
 // 默认收起; 定论那刻 (换节点 id, 开合重定) 未落 / BROKEN / 有参数组的自动展开
-void cand_block(const Mine &m, const Act &a, const std::string &ref, const Lab::Live &ll) {
-  const Trial &k = std::get<Trial>(a.got);
+void cand_block(const Mine &m, const Act &a, const std::string &ref, const LabLive &ll) {
+  const Trial &k = std::get<Trial>(a.extra);
   const Staged &st = k.st;
   const Result &res = st.res;
   const bool done = a.span.ended();
@@ -1153,9 +1150,9 @@ bool act_block(Ui &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
     state = " · 执行中… " + dur(a.span.len(t)), kind = TaskStatus::Kind::Busy;
   else
     state = m.live() ? " · 排队" : " · 未做", kind = TaskStatus::Kind::Muted;
-  if (std::holds_alternative<Trial>(a.got)) {
+  if (std::holds_alternative<Trial>(a.extra)) {
     cand_block(m, a, rt, s.lab_live);
-  } else if (Asked *q = std::get_if<Asked>(&a.got)) {
+  } else if (Asked *q = std::get_if<Asked>(&a.extra)) {
     ImGui::PushStyleColor(ImGuiCol_Text, color(edit ? TaskStatus::Kind::Warn : TaskStatus::Kind::None));
     const bool open = ImGui::TreeNodeEx("ask", kNode | ImGuiTreeNodeFlags_DefaultOpen, "%s 问研究员 · %zu 个问题%s", rt.c_str(), q->qs.size(), edit ? " · 等你答" : "");
     ImGui::PopStyleColor();
@@ -1232,7 +1229,7 @@ std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Ki
   h += " · 调用 " + std::to_string(c.all());
   if (const int n = c.n(Cat::Look); n > 0)
     h += " · 观察 " + std::to_string(n);
-  if (const int n = c.n(Run::Docs); n > 0)
+  if (const int n = c.docs(); n > 0)
     h += " · 查研报 " + std::to_string(n);
   if (c.n(Tool::EvalFactor) > 0) {
     const int u = c.n(Verdict::Unstaged);
@@ -1348,7 +1345,7 @@ bool round_block(Ui &s, Mine &m, size_t i, const Flow &f, bool fresh) {
 std::string group_head(const Mine &m, size_t g0, size_t g1) {
   const Tally c = TallyOf(Rounds(m.timeline).subspan(g0, g1 - g0), m.now());
   return "第 " + std::to_string(g0 + 1) + "–" + std::to_string(g1) + " 轮 · +" + dur(m.timeline[g0].span.t0) + " · 调用 " + std::to_string(c.all()) + " · 观察 " +
-         std::to_string(c.n(Cat::Look)) + " · 查研报 " + std::to_string(c.n(Run::Docs)) + " · 候选 " + std::to_string(c.staged()) + " · 有权重 " + std::to_string(c.n(Verdict::Weights)) +
+         std::to_string(c.n(Cat::Look)) + " · 查研报 " + std::to_string(c.docs()) + " · 候选 " + std::to_string(c.staged()) + " · 有权重 " + std::to_string(c.n(Verdict::Weights)) +
          " · 入库 " + std::to_string(c.adopted);
 }
 
@@ -1359,7 +1356,7 @@ void summary_block(const Mine &m) {
   std::vector<const Result *> hits;
   for (const Round &rd : m.timeline)
     for (const Act &a : rd.acts)
-      if (const Trial *k = std::get_if<Trial>(&a.got); k && k->st.res.verdict == Verdict::Weights)
+      if (const Trial *k = std::get_if<Trial>(&a.extra); k && k->st.res.verdict == Verdict::Weights)
         hits.push_back(&k->st.res);
   std::stable_sort(hits.begin(), hits.end(), [&](const Result *a, const Result *b) {
     const bool ia = m.st.adopted.count(a->name) > 0, ib = m.st.adopted.count(b->name) > 0;
@@ -1368,7 +1365,7 @@ void summary_block(const Mine &m) {
   ImGui::SeparatorText(("停下 · +" + dur(m.now())).c_str());
   wrapped(color(TaskStatus::Kind::Ready), m.reason);
   wrapped_dim("按 继续 = " + m.hint() + "; 右键某一轮的标题可回退到那轮; 关闭 = 放下这段 (已存盘, 可再载入)");
-  ImGui::TextDisabled("%zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.all(), c.n(Cat::Look), c.n(Run::Docs), c.staged(), c.n(Verdict::Weights),
+  ImGui::TextDisabled("%zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.all(), c.n(Cat::Look), c.docs(), c.staged(), c.n(Verdict::Weights),
                       c.n(Tool::SubmitFactor), c.adopted);
   const auto row = [&](size_t i) {
     const Result &r = *hits[i];
@@ -1492,29 +1489,21 @@ View view_of(const SharedData &data, Ui &s) {
     m.lab.bind(data, sc, false);
   if (!m.notes.loaded(m.lab.test()))
     m.notes.load(m.lab.test());
-  s.staged.clear();
-  for (const Round &rd : m.timeline)
-    for (const Act &a : rd.acts)
-      if (const Trial *k = std::get_if<Trial>(&a.got); k && k->st.ok())
-        s.staged.insert(k->st.cand.name);
   static const Context kNoCtx;
   static const std::vector<Result> kNoResults;
   static const Names kNone;
   if (m.lab.scope() != sc)
     return {kNoCtx, kNoResults, kNone, kNone, m.lab.test(), m.notes, m.lab};
   const bool mine = m.held() && m.setup.sc == sc;
-  return {m.lab.ctx(), m.lab.results(), mine ? m.st.adopted : kNone, mine ? s.staged : kNone, m.lab.test(), m.notes, m.lab};
+  return {m.lab.ctx(), m.lab.results(), mine ? m.st.adopted : kNone, mine ? m.st.staged : kNone, m.lab.test(), m.notes, m.lab};
 }
 
-// 候选文件的思路 (Acts note_of: "H1 标题 · 改动: … · 预期: … · 功能块: …") 里 key 之后到 end 之前的一段; 不是这个写法 = 空
-std::string note_part(const std::string &note, std::string_view key, std::string_view end) {
-  if (note.size() < 2 || note[0] != 'H' || note[1] < '0' || note[1] > '9')
-    return {};
-  const size_t a = key.empty() ? 0 : note.find(key);
-  if (a == std::string::npos)
-    return {};
-  const size_t b = a + key.size(), e = note.find(end, b);
-  return note.substr(b, e == std::string::npos ? std::string::npos : e - b);
+// 候选文件的思路 ("H1 标题 · 思路"): 拆出假设与思路两栏
+std::pair<std::string, std::string> split_note(const std::string &note) {
+  if (note.size() >= 2 && note[0] == 'H' && note[1] >= '0' && note[1] <= '9')
+    if (const size_t sep = note.find(" · "); sep != std::string::npos)
+      return {note.substr(0, sep), note.substr(sep + 3)};
+  return {{}, note};
 }
 
 // 候选表: 列头点了排序 (默认 = 本持有期 score 降序); 本会话落的标 ●; 点一行在下面看详情与 Search 日志
@@ -1539,7 +1528,7 @@ void results_table(Ui &s, const View &v) {
   ImGui::TableSetupColumn("rIC", kDesc);
   ImGui::TableSetupColumn("score", kDesc);
   ImGui::TableSetupColumn("假设");
-  ImGui::TableSetupColumn("改动");
+  ImGui::TableSetupColumn("思路");
   ImGui::TableSetupColumn("模板", ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_NoSort);
   ImGui::TableHeadersRow();
   // 统计列: 最佳权重; 无显著则代表点 (灰)
@@ -1548,8 +1537,8 @@ void results_table(Ui &s, const View &v) {
     return w ? &w->st : r.top ? &r.top->st
                               : nullptr;
   };
-  const auto hyp_of = [](const Result &r) { return note_part(r.note, "", " · "); };
-  const auto change_of = [](const Result &r) { return note_part(r.note, " · 改动: ", " · 预期: "); };
+  const auto hyp_of = [](const Result &r) { return split_note(r.note).first; };
+  const auto change_of = [](const Result &r) { return split_note(r.note).second; };
   std::vector<size_t> ix;
   for (size_t i = 0; i < results.size(); ++i)
     if (const Result &r = results[i]; s.cand_filter.PassFilter((r.name + ' ' + r.name_cn + ' ' + r.tmpl + ' ' + r.note).c_str()))
@@ -1595,7 +1584,7 @@ void results_table(Ui &s, const View &v) {
     const Result &r = results[i];
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    if (v.staged.count(r.name))
+    if (v.staged.contains(r.file))
       ImGui::TextColored(kColHead, "●");
     ImGui::TableNextColumn();
     if (ImGui::Selectable((r.name + "##" + r.file).c_str(), s.pick == r.file, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
@@ -1713,7 +1702,7 @@ void notes_table(Ui &s, const View &v, NoteKind k) {
       ImGui::TextDisabled("给 agent 的一句回复 (list_notes 里随处理一起给; 空 = 不回)");
       input_multiline("##reply_text", s.reply, ImVec2(ImGui::GetFontSize() * 30.0f, ImGui::GetTextLineHeightWithSpacing() * 4.0f));
       if (ImGui::Button("保存", ImVec2(80, 0))) {
-        change = Change{x.id, x.state, std::string(trim(s.reply))};
+        change = Change{x.id, x.state, std::string(text::trim(s.reply))};
         ImGui::CloseCurrentPopup();
       }
       ImGui::SameLine();
@@ -1745,7 +1734,7 @@ void hyps_panel(Ui &s, const Mine &m) {
     return;
   }
   ImGui::TextDisabled("假设 %s · 点调用编号跳到过程页里的那个调用; 悬浮假设看全文", board_brief(m.st.board).c_str());
-  if (!begin_table("##hyps", {"编号", "判定", "变体 (旋钮)", "提出", "最近判定", "证据", "假设"}))
+  if (!begin_table("##hyps", {"编号", "判定", "变体", "提出", "最近判定", "证据", "假设"}))
     return;
   for (size_t i = 0; i < hs.size(); ++i) {
     const Hyp &h = hs[i];
@@ -1756,7 +1745,7 @@ void hyps_panel(Ui &s, const Mine &m) {
     ImGui::TableNextColumn();
     ImGui::TextColored(color(kind_of(h.stance)), "%s%s", def(h.stance).cn, h.pending ? " · 待判" : "");
     ImGui::TableNextColumn();
-    ImGui::Text("%d/%d (%d/%d)", h.evals, kHypEvals, h.knobs, kHypKnobs);
+    ImGui::Text("%d/%d", h.evals, kHypEvals);
     ImGui::TableNextColumn();
     ref_button(s, h.at, 0);
     ImGui::TableNextColumn();
@@ -1793,7 +1782,7 @@ void memo_bar(Ui &s, Mine &m) {
   }
   input_multiline("##memo", s.memo, ImVec2(-90, ImGui::GetTextLineHeightWithSpacing() * 2.6f));
   ImGui::SameLine();
-  const std::string_view text = trim(s.memo);
+  const std::string_view text = text::trim(s.memo);
   ImGui::BeginDisabled(text.empty());
   if (ImGui::Button("插话", ImVec2(80, 0))) {
     m.queue(std::string(text));
@@ -1989,7 +1978,7 @@ void tools_panel(Ui &s) {
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(d.cn);
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(def(d.run).cn);
+    ImGui::TextUnformatted(def(d.exec).cn);
     ImGui::TableNextColumn();
     std::string keys, args;
     for (const ArgDef &a : d.args)
@@ -2178,7 +2167,7 @@ void render_config(Ui &s) {
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "预算");
-  ImGui::TextDisabled("每段 (New / 继续 起) 的上限: 到了 agent 先复盘收尾, 复盘过还没 finish 就停下等你; 0 = 不限; 下次 New / 继续 生效");
+  ImGui::TextDisabled("每段 (New / 继续 起) 的上限: 到了本段即停下等你 (按 继续 开启下一段); 0 = 不限; 下次 New / 继续 生效");
   const auto limit = [](const char *label, int &v) {
     ImGui::SetNextItemWidth(120);
     ImGui::InputInt(label, &v, 1, 10);
