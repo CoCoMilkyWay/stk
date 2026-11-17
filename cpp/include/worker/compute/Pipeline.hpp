@@ -16,6 +16,7 @@
 #include "worker/compute/TierOps.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -35,6 +36,7 @@
 //   using Core                          per-asset 跨日状态 (CoreLob / CoreBar), 构造 Core(fund, members, sub)
 //   kHardFeed                           TS 是否等预取 (硬源: 预取解码进源格, TS 读格; 软源: 预取只暖 page cache)
 //   kUnit                               时序工作量单位 (仪表盘)
+//   kGroup                              组宽上限 (组 = 相邻 sub 的一段, 组内同日推进; 实际组宽见 TsSchedule::group; 1 = 逐资产)
 //   static source_dates(const SharedData &)                 源日历 (库表规划, 见 ComputeService.hpp)
 //   static cell_bytes(num_assets)       一个源格的字节 (日环内存预算; 软源 0)
 //   TierFeed(const PipelineArgs &)      全管线一份 (帧目录 / 源格 / 名单 ...)
@@ -43,10 +45,11 @@
 //   size_t prefetch(d)                  预取线程备日 d 的源, 返回字节 (多预取核对不同 d 并发调用)
 //   cell(sub, d) const                  (资产, 日) 的源格 (Lob: 帧引用; Bar: 255 根 bar1m), 空 = 缺源
 //   Runner(TierFeed &, worker_id)       每 TS worker 一份的工作区 (Lob: 订单簿 + decoder + reader)
-//     size_t feed(core, sub, d)         源格的源单位逐个进 core (begin_day 与 end_day 之间), 返回源条数; 缺源 = 不喂 (零事件日)
-//     void release()                    core 收盘之后归还工作区
+//     size_t feed(cores, subs, d)       一组 (≤ kGroup) 资产的源单位进各自 core (begin_day 与 end_day 之间), 返回源条数; 缺源 = 不喂 (零事件日)
+//                                       组内推进次序由档定 (Bar: 逐分钟轮流, 同一缓存行在 L1 里被组内写满); 各资产的值与次序无关
+//     void release()                    组内 core 收盘之后归还工作区
 //     std::string day_log()             自上次取走以来 (含领养回填) 的源诊断, 接在本日日志行尾 (无 = 空); 取走即清
-// 一个 asset-day (骨架唯一一份): core.begin_day → runner.feed → core.end_day → runner.release.
+// 一个组日 (骨架唯一一份): 各 core.begin_day → runner.feed → 各 core.end_day → runner.release.
 //   与实盘同一路径 (TS → CS 同趟), 回测才能与实盘逐位一致 (见 FeatureLib.hpp 文件头).
 // 截面 / 落盘档无关 (cs_loop / io_loop, 各自 TU).
 // ============================================================================
@@ -251,24 +254,30 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     return sched.claimed[asset_id].compare_exchange_strong(expected, d, std::memory_order_acq_rel);
   };
 
-  // 处理一个 asset-day, 返回源条数. 主循环与领养回填共用 —— 两者只差句柄来自哪一天.
-  // 本 asset-day 的 ts_close 由 core 决定何时做: 开盘型标签 (T+N) 跨日回填, 旧日句柄持到结清
+  // 处理一个组日 (group = 已认领的同组资产, 升序), 返回源条数. 主循环与领养回填 (单资产组) 共用 —— 两者只差句柄来自哪一天.
+  // 各 asset-day 的 ts_close 由 core 决定何时做: 开盘型标签 (T+N) 跨日回填, 旧日句柄持到结清
   // (见 CoreTs / LabelHold 文件头); 最后一日之后由 finish_all 全部结清.
-  // 抽中的 asset-day 挂本 worker 的节点钟 (只在本 asset-day 内; 领养回填同一路径)
+  // 抽中的组日 (按组首资产抽, 计 |组| 个样本) 挂本 worker 的节点钟 (只在本组日内; 领养回填同一路径)
+  constexpr size_t kGroup = TierFeed<T>::kGroup;
   graph::NodeClock &clock = role.clocks[static_cast<size_t>(worker_id)];
-  auto process_asset_day = [&](size_t asset_id, size_t date_idx, const Day &day) -> size_t {
-    ++date_assets_processed;
-    CoreOf<T> &core = *cores[asset_id];
-    const bool timed = node_clock_pick(asset_id, date_idx, role.clock_every);
+  auto process_group = [&](std::span<const size_t> group, size_t date_idx, const Day &day) -> size_t {
+    assert(!group.empty() && group.size() <= kGroup);
+    date_assets_processed += group.size();
+    std::array<CoreOf<T> *, kGroup> group_cores;
+    const bool timed = node_clock_pick(group.front(), date_idx, role.clock_every);
     uint64_t t0 = 0;
     if (timed) {
       graph::node_clock = &clock;
-      ++clock.samples;
+      clock.samples += group.size();
       t0 = __builtin_ia32_rdtsc();
     }
-    core.begin_day(ctx.dates[date_idx], day);
-    const size_t work = runner.feed(core, asset_id, date_idx);
-    core.end_day(store);
+    for (size_t i = 0; i < group.size(); ++i) {
+      group_cores[i] = cores[group[i]].get();
+      group_cores[i]->begin_day(ctx.dates[date_idx], day);
+    }
+    const size_t work = runner.feed(std::span<CoreOf<T> *const>(group_cores.data(), group.size()), group, date_idx);
+    for (size_t i = 0; i < group.size(); ++i)
+      group_cores[i]->end_day(store);
     runner.release();
     if (timed) {
       clock.total += __builtin_ia32_rdtsc() - t0;
@@ -279,8 +288,8 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
 
   // 负载再平衡: 只在日环边干等 slot 时调用 (本 worker 已领先满日环深, 等待时间正好拿来
   // 帮落后者). 落后 ≥ 2 天 (1 天差是相位噪声) 的候选按前沿升序逐个试 —— 最慢者优先,
-  // 撞车时顺延帮第二慢者, 而不是空转干等; 接手 victim 手里最重的资产 (一次修正得多、换核少;
-  // 至少给它留 2 个, 零负载的不搬), 立刻回填落下的旧日期 —— 含 victim
+  // 撞车时顺延帮第二慢者, 而不是空转干等; 接手 victim 手里最重的一组 (整组搬: 组内同 owner 才能同组推进;
+  // 一次修正得多、换核少; 至少给它留 1 个资产, 零负载的不搬), 立刻整组回填落下的旧日期 —— 含 victim
   // 的"当天" (claim CAS 唯一裁决: victim 日循环还没轮到它就被本 worker 先
   // claim 走, victim 见 owner 已变直接跳过, 当天即刻变轻). 旧日未计满 ⇒
   // 其格 free_day 仍停在 d, ts_try_open 必得; 硬源的旧日源格同理未复用 (见 StoreRing); 回填后并入本 worker 日循环 (永久转移, 不归还).
@@ -296,66 +305,89 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     std::sort(laggers.begin(), laggers.end());
 
     for (const auto &[victim_days, victim] : laggers) {
-      // victim 手里最重资产 (顺便数持仓; 至少给它留 2 个; 零负载的不搬; 同重时按方位取段界保连续)
-      size_t victim_count = 0, pick = SIZE_MAX;
+      // victim 手里最重的组 (组内 victim 持有资产的权重和; 顺便数持仓; 至少给它留 1 个资产; 零负载的不搬)
+      size_t victim_count = 0, pick = SIZE_MAX, pick_count = 0;
       int64_t pick_weight = 0;
-      const bool take_tail = worker_id > victim;
-      for (size_t i = 0; i < sched.owner.size(); ++i) {
-        if (sched.owner[i].load(std::memory_order_relaxed) != victim)
-          continue;
-        ++victim_count;
-        if (take_tail ? sched.weight[i] >= pick_weight : sched.weight[i] > pick_weight) {
-          pick_weight = sched.weight[i];
-          pick = i;
+      for (size_t g0 = 0; g0 < sched.owner.size(); g0 += sched.group) {
+        const size_t g1 = std::min(sched.owner.size(), g0 + sched.group);
+        size_t count = 0;
+        int64_t gw = 0;
+        for (size_t i = g0; i < g1; ++i)
+          if (sched.owner[i].load(std::memory_order_relaxed) == victim) {
+            ++count;
+            gw += sched.weight[i];
+          }
+        victim_count += count;
+        if (gw > pick_weight) {
+          pick_weight = gw;
+          pick = g0 / sched.group;
+          pick_count = count;
         }
       }
-      if (victim_count < 2 || pick == SIZE_MAX || pick_weight == 0)
+      if (victim_count <= pick_count || pick == SIZE_MAX || pick_weight == 0)
         continue;
 
-      // 处置权 CAS: 路标改指本 worker, victim 下一天起直接跳过 pick.
-      // 失败 = 与其他领养方撞车, 试下一个 victim.
-      int32_t expect = victim;
-      if (!sched.owner[pick].compare_exchange_strong(expect, worker_id, std::memory_order_acq_rel))
+      // 处置权 CAS (组内 victim 持有的逐个): 路标改指本 worker, victim 下一天起直接跳过它们.
+      // 全部失败 = 与其他领养方撞车, 试下一个 victim.
+      std::array<size_t, kGroup> moved;
+      size_t n_moved = 0;
+      for (size_t i = pick * sched.group; i < std::min(sched.owner.size(), (pick + 1) * sched.group); ++i) {
+        int32_t expect = victim;
+        if (sched.owner[i].compare_exchange_strong(expect, worker_id, std::memory_order_acq_rel))
+          moved[n_moved++] = i;
+      }
+      if (n_moved == 0)
         continue;
-      // victim 可能正在算 pick 的在飞一天: 等它交割 (窗口 = 单个 asset-day)
-      auto settled = [&] { return sched.claimed[pick].load(std::memory_order_acquire) == sched.done[pick].load(std::memory_order_acquire); };
-      if (!wait_open(cancel_requested, stat, settled))
-        return;
+      const std::span<const size_t> unit(moved.data(), n_moved);
+      // victim 可能正在算这组的在飞一天: 等它交割 (窗口 = 一个组日)
+      auto settled = [&](size_t a) { return sched.claimed[a].load(std::memory_order_acquire) == sched.done[a].load(std::memory_order_acquire); };
+      for (const size_t a : unit)
+        if (!wait_open(cancel_requested, stat, [&] { return settled(a); }))
+          return;
 
-      const int32_t from = sched.done[pick].load(std::memory_order_acquire) + 1;
+      int32_t from = INT32_MAX;
+      for (const size_t a : unit)
+        from = std::min(from, sched.done[a].load(std::memory_order_acquire) + 1);
       const int32_t upto = static_cast<int32_t>(my_days_done) - 1; // 回填到本 worker 前沿
       Logger::log("worker_" + std::to_string(worker_id),
-                  "adopt: asset " + std::to_string(pick) + " from worker " + std::to_string(victim) +
+                  "adopt: group " + std::to_string(pick) + " (" + std::to_string(n_moved) + " assets) from worker " + std::to_string(victim) +
                       " (gap " + std::to_string(my_days_done - victim_days) + "d), backfill didx " +
                       std::to_string(from) + ".." + std::to_string(upto));
 
-      for (int32_t d = from; d <= upto;) {
+      // 逐日回填: 当日落后 (done = d − 1) 且仍归本 worker 的整组推进
+      std::array<size_t, kGroup> todo;
+      for (int32_t d = from; d <= upto; ++d) {
         if (cancel_requested.load(std::memory_order_relaxed))
           return;
         TraceN("AdoptBackfill");
-        // 处置权可能被更快的 leader 再领养 (本 worker 转做 victim): 剩余回填
-        // 归新 owner, 本 worker 不再持有此资产.
-        if (sched.owner[pick].load(std::memory_order_relaxed) != worker_id)
-          return;
-        if (!claim(pick, d)) {
-          // 对手凭陈旧 owner 路标赢下在飞一天 (claim CAS 唯一裁决, 见日循环):
-          // victim "查 owner → claim" 非原子, 其 claim 可落在上面等交割之后.
-          // 等它交割, 从其 done 之后继续.
-          if (!wait_open(cancel_requested, stat, settled))
-            return;
-          d = sched.done[pick].load(std::memory_order_acquire) + 1;
-          continue;
+        size_t n = 0;
+        for (const size_t a : unit) {
+          // 处置权可能被更快的 leader 再领养 (本 worker 转做 victim): 剩余回填归新 owner
+          if (sched.owner[a].load(std::memory_order_relaxed) != worker_id || sched.done[a].load(std::memory_order_acquire) >= d)
+            continue;
+          if (!claim(a, d)) {
+            // 对手凭陈旧 owner 路标赢下在飞一天 (claim CAS 唯一裁决, 见日循环):
+            // victim "查 owner → claim" 非原子, 其 claim 可落在上面等交割之后. 等它交割, 这一天归它
+            if (!wait_open(cancel_requested, stat, [&] { return settled(a); }))
+              return;
+            continue;
+          }
+          todo[n++] = a;
         }
+        if (n == 0)
+          continue;
         assert(feed_ready(static_cast<size_t>(d)) && "回填日 < 本 worker 前沿, 源必已就绪");
         const Day bday = store.ts_try_open(static_cast<size_t>(d));
         assert(bday && "回填日未计满 ⇒ 仍在飞 (d < 本 worker 前沿 ≤ io_done + P), slot 必得");
-        cumulative_work += process_asset_day(pick, static_cast<size_t>(d), bday);
+        cumulative_work += process_group(std::span<const size_t>(todo.data(), n), static_cast<size_t>(d), bday);
         stat.work.store(cumulative_work, std::memory_order_relaxed);
-        sched.done[pick].store(d, std::memory_order_release);
-        ++d; // 回填日 ≤ 本 worker 前沿 − 1 < 最后一日, 不会走到 finish_all
+        for (size_t k = 0; k < n; ++k)
+          sched.done[todo[k]].store(d, std::memory_order_release); // 回填日 ≤ 本 worker 前沿 − 1 < 最后一日, 不会走到 finish_all
       }
-      my_asset_ids.insert(std::ranges::upper_bound(my_asset_ids, pick), pick);
-      return; // 一次领养一个; 还在等 slot 的话下轮再来
+      for (const size_t a : unit)
+        if (sched.owner[a].load(std::memory_order_relaxed) == worker_id)
+          my_asset_ids.insert(std::ranges::upper_bound(my_asset_ids, a), a);
+      return; // 一次领养一组; 还在等 slot 的话下轮再来
     }
   };
 
@@ -370,7 +402,7 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
     date_assets_processed = 0;
 
     // 本日写句柄: 每 worker 每日 open 一次, 之后所有写回是纯指针算术.
-    // 日环满 = 本 worker 领先到把日环吃满 —— 干等的时间拿去领养最慢者的资产
+    // 日环满 (或硬源未就绪) = 本 worker 领先到把日环吃满 —— 干等的时间拿去领养最慢者的资产
     // 并回填 (回填日仍在飞, 不占新 slot), 等 IO 交还 slot 后再继续本日.
     // 只有 sleep 算干等 (领养回填是干活, 见 wait_open); 源已就绪的那部分是日环边干等.
     Day day;
@@ -380,35 +412,45 @@ void ts_loop(const StageCtx<T> &ctx, TsRole<T> &role) {
       day = wait_open(
           cancel_requested, stat, [&] { return feed_ready(date_idx) ? store.ts_try_open(date_idx) : Day{}; },
           [&] {
-            if (!feed_ready(date_idx))
-              return false;
             try_adopt(date_idx); // date_idx = 本 worker 已完成日数
-            return true;
+            return feed_ready(date_idx);
           });
     }
     if (!day)
       break;
 
-    // Process each asset at this date
+    // 本日逐组: my_asset_ids 升序 (领养有序插入, 移除保序), 同组 (sub / sched.group 相同) 的资产相邻, 先逐个认领再整组推进
+    assert(std::ranges::is_sorted(my_asset_ids));
+    std::array<size_t, kGroup> group;
     for (size_t i = 0; i < my_asset_ids.size();) {
-      const size_t asset_id = my_asset_ids[i];
-      // 处置权已转走 (或 claim 输给领养方的回填): 移除, 计数由新 owner 负责
-      if (sched.owner[asset_id].load(std::memory_order_relaxed) != worker_id ||
-          !claim(asset_id, static_cast<int32_t>(date_idx))) {
-        my_asset_ids.erase(my_asset_ids.begin() + static_cast<std::ptrdiff_t>(i));
-        continue;
+      const size_t key = my_asset_ids[i] / sched.group;
+      size_t n = 0;
+      while (i < my_asset_ids.size() && my_asset_ids[i] / sched.group == key) {
+        const size_t asset_id = my_asset_ids[i];
+        // 处置权已转走 (或 claim 输给领养方的回填): 移除, 计数由新 owner 负责
+        if (sched.owner[asset_id].load(std::memory_order_relaxed) != worker_id ||
+            !claim(asset_id, static_cast<int32_t>(date_idx))) {
+          my_asset_ids.erase(my_asset_ids.begin() + static_cast<std::ptrdiff_t>(i));
+          continue;
+        }
+        group[n++] = asset_id;
+        ++i;
       }
-      const size_t work = process_asset_day(asset_id, date_idx, day);
-      if (date_idx + 1 == total_dates) {
-        // 续算点 = 末日收盘态 (先于 finish_all: 区间末的估值结清是本轮的收尾, 不是跨天态)
-        misc::snap::Save out(role.snap_out[asset_id]);
-        cores[asset_id]->snap(out);
-        cores[asset_id]->finish_all(store); // 区间末: 悬挂的开盘型按最近收盘价结算, 旧日句柄全部归还
+      if (n == 0)
+        continue;
+      const std::span<const size_t> claimed_group(group.data(), n);
+      const size_t work = process_group(claimed_group, date_idx, day);
+      for (const size_t asset_id : claimed_group) {
+        if (date_idx + 1 == total_dates) {
+          // 续算点 = 末日收盘态 (先于 finish_all: 区间末的估值结清是本轮的收尾, 不是跨天态)
+          misc::snap::Save out(role.snap_out[asset_id]);
+          cores[asset_id]->snap(out);
+          cores[asset_id]->finish_all(store); // 区间末: 悬挂的开盘型按最近收盘价结算, 旧日句柄全部归还
+        }
+        sched.done[asset_id].store(static_cast<int32_t>(date_idx), std::memory_order_release);
       }
       date_work += work;
       cumulative_work += work;
-      sched.done[asset_id].store(static_cast<int32_t>(date_idx), std::memory_order_release);
-      ++i;
       stat.work.store(cumulative_work, std::memory_order_relaxed);
     }
 
@@ -450,11 +492,11 @@ bool pipeline(const PipelineArgs &args) {
 
   TierFeed<T> feed(args);
 
-  // 初始分配: A 轴切 num_ts 个连续段, 各段权重和均衡 (资产归其权重中点所在的那一份; 权重 = 待算日的负载和).
+  // 初始分配: A 轴按组 (sched.group) 切 num_ts 个连续段, 各段权重和均衡 (组归其权重中点所在的那一份; 权重 = 待算日的负载和).
   // 张量 [T][F][A] 的一条缓存行 = 相邻 32 个资产的同一 (t, f): 连续段同核写, 核间只在段界共一行;
-  // 交错分配则每次写都跨核 (跨插槽) 抢行, TS 退化为缓存一致性流量.
-  // 运行期差距由 worker 间的处置权转移收敛 (见 ts_loop 的 try_adopt), 这里只求起点均衡.
-  TsSchedule sched(num_assets, num_ts, tail);
+  // 交错分配则每次写都跨核 (跨插槽) 抢行, TS 退化为缓存一致性流量. 段界落在组界: 组内同 owner 才能同组推进.
+  // 运行期差距由 worker 间的处置权转移收敛 (见 ts_loop 的 try_adopt, 同样整组搬), 这里只求起点均衡.
+  TsSchedule sched(num_assets, num_ts, tail, TierFeed<T>::kGroup);
   {
     int64_t total = 0;
     for (size_t sub = 0; sub < num_assets; ++sub) {
@@ -465,10 +507,15 @@ bool pipeline(const PipelineArgs &args) {
     assert(total > 0 && "初始分配: 全轴权重为 0");
     const int64_t n = static_cast<int64_t>(num_ts);
     int64_t acc = 0;
-    for (size_t sub = 0; sub < num_assets; ++sub) {
-      const size_t w = static_cast<size_t>(std::min(n - 1, (2 * acc + sched.weight[sub]) * n / (2 * total)));
-      sched.owner[sub].store(static_cast<int32_t>(w), std::memory_order_relaxed);
-      acc += sched.weight[sub];
+    for (size_t g0 = 0; g0 < num_assets; g0 += sched.group) {
+      const size_t g1 = std::min(num_assets, g0 + sched.group);
+      int64_t gw = 0;
+      for (size_t sub = g0; sub < g1; ++sub)
+        gw += sched.weight[sub];
+      const size_t w = static_cast<size_t>(std::min(n - 1, (2 * acc + gw) * n / (2 * total)));
+      for (size_t sub = g0; sub < g1; ++sub)
+        sched.owner[sub].store(static_cast<int32_t>(w), std::memory_order_relaxed);
+      acc += gw;
     }
   }
 
@@ -487,7 +534,7 @@ bool pipeline(const PipelineArgs &args) {
 
   std::cout << "\n=== Compute (" << tier_name(T::kId) << ") ===\n"
             << L.summary() << "\n"
-            << "Assets: " << num_assets
+            << "Assets: " << num_assets << " (组宽 " << sched.group << ")"
             << " | Ring: " << slots << " slots (内存预算 " << mem_slots << ", 下限 " << floor_slots << ")"
             << " | Dates: " << dates.size() << " (" << dates.front() << " - " << dates.back() << ")"
             << " | Tail: " << tail << "\n"

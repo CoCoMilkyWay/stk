@@ -35,7 +35,7 @@ struct None {
   static constexpr float apply(float x) { return x; }
 };
 struct Log {
-  static inline float apply(float x) { return x == 0.0f ? x : std::copysign(std::log1p(std::fabs(x)), x); }
+  static inline float apply(float x) { return std::copysign(std::log1p(std::fabs(x)), x); }
 };
 struct Asinh {
   static inline float apply(float x) { return std::asinh(x); }
@@ -44,7 +44,7 @@ struct Tanh {
   static inline float apply(float x) { return std::tanh(x); }
 };
 struct Sqrt {
-  static inline float apply(float x) { return x == 0.0f ? x : std::copysign(std::sqrt(std::fabs(x)), x); }
+  static inline float apply(float x) { return std::copysign(std::sqrt(std::fabs(x)), x); }
 };
 
 // ---- 枚举 + 名字表 (元数据 / GUI) ----

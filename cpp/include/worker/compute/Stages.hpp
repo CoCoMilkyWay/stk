@@ -4,8 +4,10 @@
 #include "misc/date.hpp"
 #include "worker/compute/Dashboard.hpp" // ComputeStats::Core
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <immintrin.h> // _mm_pause
@@ -29,7 +31,7 @@ inline constexpr size_t kMaxRingSlots = 64;
 //
 // 资产静态分给 worker 只是初始形态: 权重模型有偏差 + 核速不一, 差距持续拉开 (漂移),
 // 而落后者的活别人接不了就只能全员等它. 所以处置权可转移 —— 领跑 worker 在日环边
-// 干等 slot 时, 对落后 ≥2 天的候选按前沿升序逐个尝试, 接手其最重资产, 立刻回填该资产
+// 干等 slot 时, 对落后 ≥2 天的候选按前沿升序逐个尝试, 接手其最重的一组资产, 立刻回填这些资产
 // 落下的旧日期 —— 含 victim 的当天 (claim CAS 裁决, victim 见 owner 已变即跳过, 当天
 // 即刻变轻; 旧日未计满 ⇒ 其格 free_day 仍停在 d, ts_try_open 必得, 见 FeatureStore),
 // 之后并入自己的日循环. 反馈零延迟, 且是自收敛的: 下游 (截面/落盘) 为瓶颈时全员顶在
@@ -41,6 +43,8 @@ inline constexpr size_t kMaxRingSlots = 64;
 //   只有持续落后 (领跑者被日环卡住 且 对方落后 ≥ 2 天) 才永久转移处置权 —— 一次转移修正一次
 //   权重偏差, 之后不再换核. 自由领 / 按日窃取会把每次噪声都变成换核, 且偏差不收敛 (天天重复偷).
 //
+//   group:    组宽 (sub / group 相同 = 同组): 初始分配 / 领养 / 日循环推进的单位, 组内资产同 owner 才能同组推进
+//             (= min(档 kGroup, A 轴 / (TS worker 数 × kGroupsPerWorker)): 池小 / 核多时缩窄, 保住每核组数, 领养粒度不至过粗)
 //   owner:    处置权路标 (领养 CAS victim→adopter; 原 owner 观察到即弃)
 //   claimed:  谁处理 (asset, d) 由 CAS claimed d-1→d 唯一裁决 (转移瞬间的
 //             双写/漏写由它兜底, owner 只是"该不该去试"的提示)
@@ -51,7 +55,10 @@ inline constexpr size_t kMaxRingSlots = 64;
 // cores (per-asset 跨日状态, 档的 Core, 见 Pipeline.hpp TsRole) 由初始 owner 在自己核上构造 (first-touch);
 // 领养方经 frontier 的 release/acquire 链观察到构造完成后才会触碰.
 // ============================================================================
+inline constexpr size_t kGroupsPerWorker = 8; // 每 TS worker 至少约这么多组 (组宽随之收窄; 领养一次搬一组 ≈ 该核 1/8 负载)
+
 struct TsSchedule {
+  const size_t group; // 组宽 (≥ 1)
   // 全部数组按档 A 轴下标 (sub) 索引, 大小 = A 轴大小 (= 张量 A 维)
   std::vector<std::atomic<int32_t>> owner;   // 处置权 worker id (每个资产都有 owner)
   std::vector<std::atomic<int32_t>> claimed; // 已认领日 didx, first − 1 起
@@ -62,9 +69,11 @@ struct TsSchedule {
   // core 构造/状态写入构成 happens-before). 大小 = TS worker 数.
   std::vector<std::atomic<uint32_t>> frontier;
 
-  TsSchedule(size_t num_assets, size_t num_workers, size_t first)
-      : owner(num_assets), claimed(num_assets), done(num_assets),
+  TsSchedule(size_t num_assets, size_t num_workers, size_t first, size_t max_group)
+      : group(std::clamp<size_t>(num_assets / (num_workers * kGroupsPerWorker), 1, max_group)),
+        owner(num_assets), claimed(num_assets), done(num_assets),
         weight(num_assets, 0), frontier(num_workers) {
+    assert(max_group >= 1 && num_workers >= 1);
     const int32_t before = static_cast<int32_t>(first) - 1;
     for (size_t i = 0; i < num_assets; ++i) {
       owner[i].store(-1, std::memory_order_relaxed);

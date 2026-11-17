@@ -9,8 +9,10 @@
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <memory>
+#include <new>
 #include <span>
 #include <string>
 #include <vector>
@@ -23,6 +25,9 @@ struct TierFeed<bar::Tier> {
   using Core = CoreBar;
   static constexpr bool kHardFeed = true;
   static constexpr const char *kUnit = "bar";
+  // 组宽上限 = 张量一条缓存行上的资产数 ([T][F][A] 的一个 (t, f) 里相邻 kGroup 个 a): 组内逐分钟轮流推进, 每条缓存行在 L1 里被组内连续写满.
+  //   一个 asset-day 写上万条互不相邻的缓存行 (每条 2 字节), 逐资产推进则每条行要被组内各资产各从 L3 / 内存搬一次, TS 卡在存储缓冲区满
+  static constexpr size_t kGroup = std::hardware_constructive_interference_size / sizeof(feature_storage_t);
 
   // 源日历: 交易日 [fundamental::kSyncStart, min(asset_info.bar1m_end, asset_info.pit_end)] —— 分钟线与基本面 (行 D 所需的
   //   D 盘后 / D+1 盘前表, 见 fund::last_day) 都齐的日才进库
@@ -85,14 +90,24 @@ struct TierFeed<bar::Tier> {
   public:
     Runner(TierFeed &f, int) : feed_(f) {}
 
-    // 源格的 255 根 bar1m 逐分钟进 core, 返回 bar 数; 缺源 = 不喂 (零事件日)
-    size_t feed(CoreBar &core, size_t sub, size_t d) {
-      const Bar1m *bars = feed_.cell(sub, d);
-      if (!bars)
-        return 0;
+    // 组内各资产源格的 255 根 bar1m 逐分钟轮流进各自 core, 返回 bar 数; 缺源 = 不喂, 只把时钟推进到同一分钟 (零事件日;
+    //   与收盘 end_day 一次补齐逐分钟结算同序同值)
+    size_t feed(std::span<CoreBar *const> cores, std::span<const size_t> subs, size_t d) {
+      assert(cores.size() == subs.size() && cores.size() <= kGroup);
+      std::array<const Bar1m *, kGroup> bars;
+      size_t fed = 0;
+      for (size_t i = 0; i < subs.size(); ++i) {
+        bars[i] = feed_.cell(subs[i], d);
+        fed += bars[i] != nullptr;
+      }
       for (size_t m = 0; m < TRADE_MINUTES_PER_DAY; ++m)
-        core.compute_and_store(m, bars[m]);
-      return TRADE_MINUTES_PER_DAY;
+        for (size_t i = 0; i < cores.size(); ++i) {
+          if (bars[i])
+            cores[i]->compute_and_store(m, bars[i][m]);
+          else
+            cores[i]->advance(m);
+        }
+      return fed * TRADE_MINUTES_PER_DAY;
     }
 
     void release() {}

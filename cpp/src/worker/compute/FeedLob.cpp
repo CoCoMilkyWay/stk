@@ -21,6 +21,7 @@ struct TierFeed<lob::Tier> {
   using Core = CoreLob;
   static constexpr bool kHardFeed = false;
   static constexpr const char *kUnit = "单";
+  static constexpr size_t kGroup = 1; // 订单簿工作区每 worker 一份, 资产只能逐个推进
 
   // 源日历: 回测日历 ≤ 末个已编码日, 止于首个待编码日之前 (有归档未编码 ⇒ 数据将至, 不落默认张量;
   //   raw 缺口日 = 无源可编, 在轴内落默认张量)
@@ -70,7 +71,10 @@ struct TierFeed<lob::Tier> {
     Runner(TierFeed &f, int worker_id) : feed_(f), worker_id_(worker_id), lob_(L2::LOB_ORDER_CAPACITY) {}
 
     // 源格的逐笔经订单簿进 core, 返回订单数; 缺源 = 不绑订单簿 (零事件日)
-    size_t feed(CoreLob &core, size_t sub, size_t d) {
+    size_t feed(std::span<CoreLob *const> cores, std::span<const size_t> subs, size_t d) {
+      assert(cores.size() == 1 && subs.size() == 1);
+      CoreLob &core = *cores[0];
+      const size_t sub = subs[0];
       const FrameRef &ref = feed_.cell(sub, d);
       if (ref.empty())
         return 0;

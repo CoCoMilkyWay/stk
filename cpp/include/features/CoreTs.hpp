@@ -109,7 +109,7 @@ public:
   misc::Ymd date() const { return dag_.date_; } // 当日 (begin_day 之后)
 
   // 时钟推进到 L_1min 分钟 m 起点: 逐分钟结算 m 之前尚未结算的分钟 (事件空窗的分钟一并补齐), 每分钟 close_minute.
-  //   回测: 由本资产下一个源单位 (compute_and_store) / 收盘 (end_day) 调.
+  //   回测: 由本资产下一个源单位 (compute_and_store) / 档 Runner 组内逐分钟推进 (Bar 缺源资产) / 收盘 (end_day) 调.
   //   实盘: feed 层另须在每分钟末 (墙钟) 对全部资产调 advance(m + 1), 再调 CoreCs::compute_and_store(t):
   //         CS 在分钟末级联读 L_1min 行 m (该分钟收行的更粗层另读其行), 不能等本资产下一个源单位才结算 (冷门股可能几分钟无事件 → 读到空行, 回测 ≠ 实盘).
   //   结算时刻不影响值 (onMinute 域只读 MinuteData / 分钟边界), 两种触发写出同一行.
@@ -247,12 +247,10 @@ private:
     assert(n >= 1 && col + n <= Label::MIN_LABEL_COUNT);
     const Day &d = day_at(days_ago);
     for_each_close<L_1min>(label_min, [&]<size_t LVL>(size_t r) {
-      if constexpr (kLabCount[LVL] != 0) {
-        feature_storage_t *row = fstore::ts_row<LVL>(d, r, asset_id_);
+      if constexpr (kLabCount[LVL] != 0)
         for (size_t i = 0; i < n; ++i)
           if (const size_t f = kLabCol[LVL][col + i]; f != kNoCol)
-            row[f * d.A] = static_cast<feature_storage_t>(values[i]);
-      }
+            fstore::ts_write<LVL>(d, r, f, asset_id_, values[i]);
     });
   }
 
