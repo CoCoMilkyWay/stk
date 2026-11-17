@@ -13,7 +13,6 @@
 #include <set>
 #include <sstream>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 
 namespace GUI::Agent {
@@ -62,14 +61,10 @@ State StateOf(Rounds rs) {
 namespace {
 
 using text::cell;
-using text::fmt;
 using text::num;
 using KV = std::vector<std::pair<std::string_view, std::string>>;
 
 constexpr size_t kTitleChars = 40;
-constexpr size_t kSurfBins = 6;
-constexpr size_t kSurfSlots = 3;
-constexpr size_t kSurfTop = 12;
 constexpr size_t kWhyChars = 80;
 
 Message fill(Msg m, const KV &kv) {
@@ -92,93 +87,6 @@ std::string remark_text(const std::string &r) {
 
 int visible(const std::vector<Result> &rs) {
   return static_cast<int>(std::count_if(rs.begin(), rs.end(), [](const Result &r) { return r.visible; }));
-}
-
-template <class Keep, class Fn>
-std::string list_of(const std::vector<Result> &rs, int skip, int top, Keep &&keep, Fn &&one) {
-  std::string s;
-  int all = 0, n = 0;
-  for (const Result &r : rs)
-    if (r.visible && keep(r) && all++ >= skip && n < top) {
-      ++n;
-      s += one(r);
-    }
-  if (n < all)
-    s += !n ? "(共 " + std::to_string(all) + " 个, skip=" + std::to_string(skip) + " 已过末尾)\n"
-            : "(共 " + std::to_string(all) + " 个, 这里是第 " + std::to_string(skip + 1) + "–" + std::to_string(skip + n) + " 个" +
-                  (skip + n < all ? "; 接着看给 skip=" + std::to_string(skip + n) : std::string()) + ")\n";
-  return s;
-}
-
-std::string fills(const std::string &tmpl, const std::string &expr) {
-  const std::string whole = "`" + expr + "`";
-  std::string s;
-  size_t i = 0, j = 0;
-  while (i < tmpl.size() && j < expr.size()) {
-    if (tmpl[i] == expr[j]) {
-      ++i, ++j;
-      continue;
-    }
-    const size_t e = expr.find_first_of(",)", j);
-    if (expr[j] != '=' || (tmpl[i] != ',' && tmpl[i] != ')') || e == std::string::npos)
-      return whole;
-    size_t k = i;
-    while (k > 0 && std::isalnum(static_cast<unsigned char>(tmpl[k - 1])))
-      --k;
-    s += (s.empty() ? "" : ", ") + tmpl.substr(k, i - k) + expr.substr(j, e - j);
-    j = e;
-  }
-  if (i != tmpl.size() || j != expr.size())
-    return whole;
-  return s.empty() ? "(即模板)" : s;
-}
-
-std::string gate_line(const Result &r, const Gate &g) {
-  if (!r.visible || r.verdict != Verdict::Weights)
-    return "";
-  const std::string miss = GateMiss(g, r);
-  return "- " + (miss.empty() ? std::string("达入库门槛") : miss) + "\n";
-}
-
-std::string col_of(const std::string &code) { return code.substr(code.find('.', code.find('.') + 1) + 1); }
-
-std::string kin_name(const std::vector<const Leaf *> &g) {
-  const size_t W = LeafWords(g.front()->code).second.size();
-  std::vector<std::vector<std::string>> at(W);
-  for (const Leaf *l : g) {
-    const std::vector<std::string> ws = LeafWords(l->code).second;
-    assert(ws.size() == W && "同组叶词数相同");
-    for (size_t k = 0; k < W; ++k)
-      if (std::find(at[k].begin(), at[k].end(), ws[k]) == at[k].end())
-        at[k].push_back(ws[k]);
-  }
-  size_t all = 1;
-  for (const std::vector<std::string> &v : at)
-    all *= v.size();
-  std::string s;
-  if (all != g.size()) {
-    for (const Leaf *l : g)
-      s += (s.empty() ? "" : ", ") + col_of(l->code);
-    return s;
-  }
-  for (size_t k = 0; k < W; ++k) {
-    std::string w;
-    for (const std::string &x : at[k])
-      w += (w.empty() ? "" : ",") + x;
-    s += (k ? "_" : "") + (at[k].size() > 1 ? "{" + w + "}" : w);
-  }
-  return s;
-}
-
-std::vector<std::vector<const Leaf *>> kin_groups(const std::vector<const Leaf *> &ls) {
-  std::vector<std::vector<const Leaf *>> gs;
-  std::unordered_map<std::string_view, size_t> at;
-  for (const Leaf *l : ls)
-    if (const auto [it, fresh] = at.try_emplace(l->kin, gs.size()); fresh)
-      gs.push_back({l});
-    else
-      gs[it->second].push_back(l);
-  return gs;
 }
 
 struct Family {
@@ -232,87 +140,16 @@ std::string leaves_text(const std::vector<Leaf> &leaves) {
     s += (s.empty() ? "## " : "\n## ") + f->title + " (" + std::to_string(n) + " 个)\n\n" + f->card;
     for (const auto &[g, ls] : groups) {
       s += "\n### " + g + ".*\n";
-      for (const std::vector<const Leaf *> &kin : kin_groups(ls)) {
+      for (const std::vector<const Leaf *> &kin : KinGroups(ls)) {
         const Leaf &l = *kin.front();
         s += "- " +
-             (kin.size() == 1 ? col_of(l.code) + " " + cell(l.name_cn)
-                              : kin_name(kin) + " (" + std::to_string(kin.size()) + " 个; 首个 " + col_of(l.code) + " " + cell(l.name_cn) + ")") +
+             (kin.size() == 1 ? LeafCol(l.code) + " " + cell(l.name_cn)
+                              : KinName(kin) + " (" + std::to_string(kin.size()) + " 个; 首个 " + LeafCol(l.code) + " " + cell(l.name_cn) + ")") +
              (l.tf.empty() ? "" : " [" + l.tf + "]") + "\n";
       }
     }
   }
   return s;
-}
-
-std::string bp_spark(const std::vector<double> &v) {
-  const auto [lo, hi] = std::minmax_element(v.begin(), v.end());
-  return "`" + text::bars(v) + "`  [" + text::bp(*lo) + ", " + text::bp(*hi) + "] bp";
-}
-
-std::string param(double v) { return v == std::round(v) ? fmt("%.0f", v) : fmt("%.4g", v); }
-
-std::string surface_text(const Surface &sf) {
-  if (sf.slots.empty() || sf.pts.size() < 2)
-    return "";
-  const size_t n = sf.pts.size(), per = (n + kSurfBins - 1) / kSurfBins;
-  const auto g = [](const Stat &st) { return std::max(st.mono, 0.0) * std::max(st.mono, 0.0) * st.ls * st.ric; };
-  const auto better = [&](const Stat &x, const Stat &y) { return x.mono != y.mono ? x.mono > y.mono : g(x) > g(y); };
-  if (sf.slots.size() > kSurfSlots) {
-    std::vector<const Probe *> ps;
-    for (const Probe &p : sf.pts)
-      ps.push_back(&p);
-    std::stable_sort(ps.begin(), ps.end(), [&](const Probe *a, const Probe *b) { return better(a->st, b->st); });
-    ps.erase(std::unique(ps.begin(), ps.end(), [](const Probe *a, const Probe *b) { return a->v == b->v; }), ps.end());
-    ps.resize(std::min(ps.size(), kSurfTop));
-    std::vector<std::string> hs = sf.slots;
-    hs.push_back("mono"), hs.push_back("每期毛多空 bp"), hs.push_back("rIC");
-    text::Table tbl(hs);
-    for (const Probe *p : ps) {
-      std::vector<std::string> row;
-      for (const double x : p->v)
-        row.push_back(param(x));
-      row.push_back(fmt("%.3f", p->st.mono)), row.push_back(fmt("%+.2f", p->st.ls * 1e4)), row.push_back(fmt("%.4f", p->st.ric));
-      tbl.add(row);
-    }
-    return "- 参数曲面 (Search 评过 " + std::to_string(n) + " 个点; 参数多, 只列最好的 " + std::to_string(ps.size()) + " 个不同点: mono 最高, 同 mono 取目标高的):\n\n" +
-           tbl.str();
-  }
-  std::string s = "- 参数曲面 (Search 评过 " + std::to_string(n) + " 个点; 每个参数按取值分段, 段内取最好的点: mono 最高, 同 mono 取目标高的):\n";
-  for (size_t j = 0; j < sf.slots.size(); ++j) {
-    std::vector<size_t> ix(n);
-    for (size_t i = 0; i < n; ++i)
-      ix[i] = i;
-    const auto v = [&](size_t i) { return sf.pts[ix[i]].v[j]; };
-    std::stable_sort(ix.begin(), ix.end(), [&](size_t a, size_t b) { return sf.pts[a].v[j] < sf.pts[b].v[j]; });
-    text::Table tbl({sf.slots[j] + " 段", "最好的点", "mono", "每期毛多空 bp", "rIC"});
-    for (size_t a = 0; a < n;) {
-      size_t b = std::min(n, a + per);
-      while (b < n && v(b) == v(b - 1))
-        ++b;
-      size_t best = a;
-      for (size_t i = a; i < b; ++i)
-        if (better(sf.pts[ix[i]].st, sf.pts[ix[best]].st))
-          best = i;
-      const Probe &p = sf.pts[ix[best]];
-      std::string at;
-      for (size_t q = 0; q < sf.slots.size(); ++q)
-        at += (q ? ", " : "") + (sf.slots.size() > 1 ? sf.slots[q] + "=" : std::string()) + param(p.v[q]);
-      tbl.add({v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1)), at, fmt("%.3f", p.st.mono), fmt("%+.2f", p.st.ls * 1e4), fmt("%.4f", p.st.ric)});
-      a = b;
-    }
-    s += "\n" + tbl.str();
-  }
-  return s;
-}
-
-std::string years_text(const std::vector<Year> &ys) {
-  if (ys.empty())
-    return "";
-  const auto neg = std::count_if(ys.begin(), ys.end(), [](const Year &y) { return y.st.mono < 0.0; });
-  text::Table tbl({"年", "行", "mono", "每期毛多空 bp", "rIC"});
-  for (const Year &y : ys)
-    tbl.add({std::to_string(y.year), std::to_string(y.n), fmt("%.3f", y.st.mono), fmt("%+.2f", y.st.ls * 1e4), fmt("%.4f", y.st.ric)});
-  return "- 最佳权重分年 (" + std::to_string(ys.size()) + " 年, mono 为负 " + std::to_string(neg) + " 年; 只看是否处处成立, 不据单年挑参数):\n\n" + tbl.str() + "\n";
 }
 
 std::string rows_of(const Context &c) {
@@ -457,6 +294,44 @@ std::string tree_of(Rounds msgs) {
 // =============================================================================
 std::string CallTitle(const Act &a, Ref r) { return "[" + RefText(r) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成"); }
 
+std::string Fills(const std::string &tmpl, const std::string &expr) {
+  const std::string whole = "`" + expr + "`";
+  std::string s;
+  size_t i = 0, j = 0;
+  while (i < tmpl.size() && j < expr.size()) {
+    if (tmpl[i] == expr[j]) {
+      ++i, ++j;
+      continue;
+    }
+    const size_t e = expr.find_first_of(",)", j);
+    if (expr[j] != '=' || (tmpl[i] != ',' && tmpl[i] != ')') || e == std::string::npos)
+      return whole;
+    size_t k = i;
+    while (k > 0 && std::isalnum(static_cast<unsigned char>(tmpl[k - 1])))
+      --k;
+    s += (s.empty() ? "" : ", ") + tmpl.substr(k, i - k) + expr.substr(j, e - j);
+    j = e;
+  }
+  if (i != tmpl.size() || j != expr.size())
+    return whole;
+  return s.empty() ? "(即模板)" : s;
+}
+
+std::string GateLine(const Result &r, const Gate &g) {
+  if (!r.visible || r.verdict != Verdict::Weights)
+    return "";
+  const std::string miss = GateMiss(g, r);
+  return "- " + (miss.empty() ? std::string("达入库门槛") : miss) + "\n";
+}
+
+std::string ListTail(int all, int skip, int n) {
+  if (n >= all)
+    return {};
+  return !n ? "(共 " + std::to_string(all) + " 个, skip=" + std::to_string(skip) + " 已过末尾)\n"
+            : "(共 " + std::to_string(all) + " 个, 这里是第 " + std::to_string(skip + 1) + "–" + std::to_string(skip + n) + " 个" +
+                  (skip + n < all ? "; 接着看给 skip=" + std::to_string(skip + n) : std::string()) + ")\n";
+}
+
 std::string LoadPrompt(Msg m) { return disk::read(disk::PromptFile, {.name = def(m).id}); }
 void SavePrompt(Msg m, const std::string &text) { disk::write(disk::PromptFile, {.name = def(m).id}, text); }
 
@@ -519,78 +394,16 @@ std::string Detail(const Result &r) {
   case Verdict::Weights: {
     std::string s;
     for (const Weight &w : r.ws)
-      s += "- 权重 " + fills(r.tmpl, w.expr) + ": " + Text(w) + "\n";
+      s += "- 权重 " + Fills(r.tmpl, w.expr) + ": " + Text(w) + "\n";
     return s;
   }
   case Verdict::Null:
-    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 代表点 (" + def(r.top->rep).cn + ") " + fills(r.tmpl, r.top->expr) + ": " + Text(*r.top) + "\n"
+    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 代表点 (" + def(r.top->rep).cn + ") " + Fills(r.tmpl, r.top->expr) + ": " + Text(*r.top) + "\n"
                  : std::string("- Search 无显著权重 (没有一个点算得出该持有期统计)\n");
   case Verdict::Pending:
     return "- " + std::string(def(r.verdict).cn) + "\n";
   }
   return {};
-}
-
-std::string TriedText(const std::vector<Result> &tried, int skip, int top, const Gate &g) {
-  return or_none(
-      list_of(tried, skip, top, [](const Result &) { return true; }, [&](const Result &r) { return "### " + r.name + " (" + r.name_cn + ")\n`" + r.tmpl + "`\n" + Detail(r) + gate_line(r, g); }), "(无)\n");
-}
-
-std::string LibraryText(const std::vector<Result> &lib, int skip, int top) {
-  const auto has = [](const Result &r) { return r.best() != nullptr; };
-  std::string s = list_of(lib, skip, top, has, [](const Result &r) {
-    const Weight &w = *r.best();
-    return "- " + r.name + " (" + r.name_cn + "): `" + r.tmpl + "`" + (r.note.empty() ? "" : " — " + r.note) + "\n  - 最佳权重 " + fills(r.tmpl, w.expr) + ": " +
-           Text(w) + "\n";
-  });
-  if (const int none = static_cast<int>(std::count_if(lib.begin(), lib.end(), [&](const Result &r) { return r.visible && !has(r); })))
-    s += "(另有 " + std::to_string(none) + " 个在本持有期无统计, 不列)\n";
-  return or_none(s, "(空)\n");
-}
-
-std::string TrialText(const Trial &k, const Gate &g) {
-  const Staged &st = k.st;
-  const Result &r = st.res;
-  std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n";
-  if (!st.cand.note.empty())
-    s += "- 思路 (" + st.cand.hyp + "): " + st.cand.note + "\n";
-  s += Detail(r) + gate_line(r, g) + r.rep_text;
-  if (!r.visible)
-    return s;
-  if (const Weight *w = r.best(); w && !w->grp.empty()) {
-    s += "- 最佳权重的 20 组每期毛收益 (减组间均值) G1 → G20: " + bp_spark(w->grp) + "\n";
-    s += years_text(w->years);
-  }
-  return s + surface_text(r.surf);
-}
-
-std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n) {
-  text::Filter f;
-  f.add(text::words(query), "", [&](size_t i) -> const std::string & { return leaves[i].hay; });
-  bool loose = false;
-  std::vector<const Leaf *> hits, all;
-  for (const size_t i : f.hits(leaves.size(), loose))
-    hits.push_back(&leaves[i]);
-  for (const Leaf &l : leaves)
-    all.push_back(&l);
-  const size_t hit = hits.size();
-  if (!hit)
-    return "(无命中; 各词单独命中: " + f.alone(leaves.size()) + "; 换个写法或少给几个词)\n";
-  const std::vector<std::vector<const Leaf *>> gs = kin_groups(hits);
-  std::unordered_map<std::string_view, std::vector<const Leaf *>> kins;
-  for (const std::vector<const Leaf *> &g : kin_groups(all))
-    kins.emplace(g.front()->kin, g);
-  text::Table tbl({"叶", "中文名", "公式 (原量 x)", "说明", "落盘值"});
-  for (size_t i = 0; i < gs.size() && i < static_cast<size_t>(n); ++i) {
-    const Leaf &l = *gs[i].front();
-    const std::vector<const Leaf *> &kin = kins.at(l.kin);
-    const std::string name =
-        kin.size() == 1 ? l.code : LeafWords(l.code).first + "." + kin_name(kin) + " (" + std::to_string(kin.size()) + " 个; 下列按 " + col_of(l.code) + ")";
-    tbl.add({name, l.name_cn, l.formula, l.desc, l.tf.empty() ? "x" : l.tf_def});
-  }
-  return (loose ? "没有同时含全部词的叶, 下列含其中任一词 (各词单独命中: " + f.alone(leaves.size()) + "). " : std::string()) + "命中 " + std::to_string(hit) +
-         " 个叶, 在 " + std::to_string(gs.size()) + " 组里" + (gs.size() > static_cast<size_t>(n) ? ", 列前 " + std::to_string(n) + " 组" : std::string()) +
-         ". 同组的叶只差计量 (amt 额 / vol 量 / n 笔) 或阈值 / 窗口 (带数字的词), 列出整组; 公式与说明按组内首个命中的写, 其余照族卡换词\n\n" + tbl.str();
 }
 
 std::string AnswerText(const Asked &a) {

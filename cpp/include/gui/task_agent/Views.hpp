@@ -3,10 +3,10 @@
 // =============================================================================
 // Views — 观察核: 9 个特征库视图 (分块流式 + ForkJoin 全核归约, 零中间 [T][A] 平面搬运) + view_book 逐笔重放
 // =============================================================================
-//   每个观察工具对应 kViews 表中唯一一行函数 ViewOut(Call, ViewEnv, FactorFlow, ViewRunner):
+//   每个观察工具一个入口 ToolOut(Call, ViewEnv, FactorFlow) (tools/look/<工具>.cpp, 公共件 tools/look/Kernel.hpp), 分派表在 Views.cpp:
 //     特征库视图  K 线叶直接钉进 Block::x 原地读 (不进 DAG, 不跑 Stat), 特征子式直接走 DAG 求值 (不包假 CsRank),
 //                 因子根只跑一次 Stat; 快照 / 个股视图在装载前先核日期并跳过无关块, 全期视图分块流式全核归约
-//     view_book   单 (资产, 日) 逐笔帧重放进常驻 LimitOrderBook, 原地汇总成文
+//     view_book   单 (资产, 日) 逐笔帧重放进常驻 LimitOrderBook, 原地汇总
 // =============================================================================
 
 #include "gui/engine/Table.hpp"
@@ -48,17 +48,17 @@ struct ViewEnv {
 
 class ViewRunner {
 public:
-  struct BookRes;
+  struct Replay;
   ViewRunner();
   ~ViewRunner();
   ViewRunner(const ViewRunner &) = delete;
   ViewRunner &operator=(const ViewRunner &) = delete;
 
-  ViewOut run(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
+  ToolOut run(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
   std::string rep_layers(const std::string &expr, int sign, const ViewEnv &env, Engine::FactorFlow &F);
 
 private:
-  std::unique_ptr<BookRes> book_;
+  std::unique_ptr<Replay> book_;
 };
 
 } // namespace GUI::Agent

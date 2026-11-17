@@ -484,6 +484,33 @@ std::string Call::text(size_t cap) const {
   return s + ")";
 }
 
+bool CallOf(Tool t, const json &args, const std::string &path, Call &out, std::vector<std::string> &errs) {
+  const ToolDef &d = def(t);
+  const size_t n0 = errs.size();
+  for (const auto &[k, v] : args.items())
+    if (std::none_of(d.args.begin(), d.args.end(), [&](const ArgDef &a) { return k == a.key; })) {
+      std::string keys;
+      for (const ArgDef &a : d.args)
+        keys += (keys.empty() ? "" : " / ") + std::string(a.key);
+      errs.push_back(path + "." + k + ": " + d.name + " 没有这个参数 (它的参数: " + (keys.empty() ? "无" : keys) + ")");
+    }
+  out = Call{t, json::object()};
+  for (const ArgDef &a : d.args) {
+    const std::string ap = path + "." + a.key;
+    if (!args.contains(a.key)) {
+      if (a.def)
+        out.args[a.key] = json::parse(a.def);
+      else
+        errs.push_back("缺参数 " + ap);
+    } else if (std::string why; !check(a, args[a.key], ap, why)) {
+      errs.push_back(std::move(why));
+    } else {
+      out.args[a.key] = args[a.key];
+    }
+  }
+  return errs.size() == n0;
+}
+
 bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &error) {
   out.clear(), error.clear();
   json j;
@@ -503,7 +530,6 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
   for (size_t i = 0; i < cs.size(); ++i) {
     const std::string p = at("calls", i);
     const json &c = cs[i];
-    const size_t n0 = errs.size();
     if (!c.is_object() || !c.contains("tool") || !c["tool"].is_string()) {
       errs.push_back(p + " 须是 {\"tool\": 工具名, \"args\": {...}}");
       continue;
@@ -525,28 +551,7 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
       errs.push_back(p + ".args 须是 JSON 对象");
       continue;
     }
-    for (const auto &[k, v] : args.items())
-      if (std::none_of(d->args.begin(), d->args.end(), [&](const ArgDef &a) { return k == a.key; })) {
-        std::string keys;
-        for (const ArgDef &a : d->args)
-          keys += (keys.empty() ? "" : " / ") + std::string(a.key);
-        errs.push_back(p + ".args." + k + ": " + name + " 没有这个参数 (它的参数: " + (keys.empty() ? "无" : keys) + ")");
-      }
-    Call call{d->id, json::object()};
-    for (const ArgDef &a : d->args) {
-      const std::string ap = p + ".args." + a.key;
-      if (!args.contains(a.key)) {
-        if (a.def)
-          call.args[a.key] = json::parse(a.def);
-        else
-          errs.push_back("缺参数 " + ap);
-      } else if (std::string why; !check(a, args[a.key], ap, why)) {
-        errs.push_back(std::move(why));
-      } else {
-        call.args[a.key] = args[a.key];
-      }
-    }
-    if (errs.size() == n0)
+    if (Call call; CallOf(d->id, args, p + ".args", call, errs))
       out.push_back(std::move(call));
   }
   if (errs.empty())

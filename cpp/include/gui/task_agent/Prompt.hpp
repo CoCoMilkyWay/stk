@@ -56,6 +56,7 @@ struct Act {
   std::string out, gist; // gist = 观察留进研究树的一行关键数
   bool ok = true;
   Extra extra;
+  ResPtr res; // 结构化结果 (工作台展示; 不存盘)
 };
 
 enum class Msg : uint8_t { System,
@@ -105,12 +106,12 @@ std::string Text(const Top &t);
 std::string Brief(const Result &r);
 std::string Detail(const Result &r);
 
+std::string Fills(const std::string &tmpl, const std::string &expr); // 具体式相对模板只写自由参数的取值
+std::string GateLine(const Result &r, const Gate &g);                // 有权重的候选: 是否达入库门槛一行
+std::string ListTail(int all, int skip, int n);                      // 分页列表末尾: 共几个 / 这是第几到第几 / 接着看的 skip
+
 std::string CallTitle(const Act &a, Ref r);
-std::string TriedText(const std::vector<Result> &tried, int skip, int top, const Gate &g);
-std::string LibraryText(const std::vector<Result> &lib, int skip, int top);
-std::string TrialText(const Trial &k, const Gate &g);
 std::string AnswerText(const Asked &a);
-std::string LeavesText(const std::vector<Leaf> &leaves, const std::string &query, int n);
 
 // ---- 消息组装与上下文纯函数 ----
 Message SystemMessage(const Context &c, const Gate &g, bool ask);

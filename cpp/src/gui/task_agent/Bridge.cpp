@@ -33,6 +33,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -169,7 +170,8 @@ struct Period {
   std::string text() const { return misc::dash(start) + " ~ " + misc::dash(end) + ", " + std::to_string(days) + " 天"; }
 };
 
-Period period_of(const std::optional<Engine::FactorScope> &fsc, const Engine::FeatureTable &ft, const std::vector<Engine::LeafId> &leaves) {
+// out 非空: 另交回评估域 (Lab::bind 取评估期交易日与池轴代码)
+Period period_of(const std::optional<Engine::FactorScope> &fsc, const Engine::FeatureTable &ft, const std::vector<Engine::LeafId> &leaves, Engine::Domain *out = nullptr) {
   Period s;
   if (!fsc)
     return s;
@@ -178,6 +180,8 @@ Period period_of(const std::optional<Engine::FactorScope> &fsc, const Engine::Fe
   if (!Engine::span_of(ft, *fsc, leaves, SIZE_MAX, dm, why))
     return s;
   s.pool = fsc->pool, s.start = dm.first(), s.end = dm.dates.back(), s.days = static_cast<int>(dm.stat_days());
+  if (out)
+    *out = std::move(dm);
   return s;
 }
 
@@ -353,6 +357,47 @@ std::string LeafKin(const std::string &code) {
   return s;
 }
 
+std::string LeafCol(const std::string &code) { return code.substr(code.find('.', code.find('.') + 1) + 1); }
+
+std::vector<std::vector<const Leaf *>> KinGroups(const std::vector<const Leaf *> &ls) {
+  std::vector<std::vector<const Leaf *>> gs;
+  std::unordered_map<std::string_view, size_t> at;
+  for (const Leaf *l : ls)
+    if (const auto [it, fresh] = at.try_emplace(l->kin, gs.size()); fresh)
+      gs.push_back({l});
+    else
+      gs[it->second].push_back(l);
+  return gs;
+}
+
+std::string KinName(const std::vector<const Leaf *> &g) {
+  const size_t W = LeafWords(g.front()->code).second.size();
+  std::vector<std::vector<std::string>> at(W);
+  for (const Leaf *l : g) {
+    const std::vector<std::string> ws = LeafWords(l->code).second;
+    assert(ws.size() == W && "同组叶词数相同");
+    for (size_t k = 0; k < W; ++k)
+      if (std::find(at[k].begin(), at[k].end(), ws[k]) == at[k].end())
+        at[k].push_back(ws[k]);
+  }
+  size_t all = 1;
+  for (const std::vector<std::string> &v : at)
+    all *= v.size();
+  std::string s;
+  if (all != g.size()) {
+    for (const Leaf *l : g)
+      s += (s.empty() ? "" : ", ") + LeafCol(l->code);
+    return s;
+  }
+  for (size_t k = 0; k < W; ++k) {
+    std::string w;
+    for (const std::string &x : at[k])
+      w += (w.empty() ? "" : ",") + x;
+    s += (k ? "_" : "") + (at[k].size() > 1 ? "{" + w + "}" : w);
+  }
+  return s;
+}
+
 const Weight *Result::best() const {
   const auto it = std::find_if(ws.begin(), ws.end(), [](const Weight &w) { return w.has && std::isfinite(w.score); });
   return it != ws.end() ? &*it : ws.empty() || !ws.front().has ? nullptr
@@ -452,7 +497,7 @@ struct EvalDone {
   std::string rep_text;
   std::string fail_why;
 };
-using WorkerOut = std::variant<std::monostate, EvalDone, ViewOut>;
+using WorkerOut = std::variant<std::monostate, EvalDone, ToolOut>;
 
 } // namespace
 
@@ -533,14 +578,14 @@ struct Lab::Impl {
   WorkerOut run_call(CallTask &ct, const Pipe &pipe) {
     if (is_doc_tool(ct.call.tool)) {
       pipe.step(LabStep::Docs);
-      ViewOut out = Browse(ct.call, pipe.cancel);
+      ToolOut out = Browse(ct.call, pipe.cancel);
       if (pipe.cancel.load(std::memory_order_relaxed))
         return std::monostate{};
       return out;
     }
     pipe.step(LabStep::Look);
     Engine::FactorFlow flow(pipe.cancel, prog, Engine::Prio::Interactive);
-    ViewOut out = views.run(ct.call, ct.venv, flow);
+    ToolOut out = views.run(ct.call, ct.venv, flow);
     if (pipe.cancel.load(std::memory_order_relaxed))
       return std::monostate{};
     return out;
@@ -665,7 +710,15 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
     if (on[s])
       c.srcs += (c.srcs.empty() ? "" : " / ") + std::string(kSrcs[s].name);
   c.has_lob = has[static_cast<size_t>(Src::Lob)];
-  const Period base = period_of(fsc, *ft, opened_ids);
+  Engine::Domain dm;
+  const Period base = period_of(fsc, *ft, opened_ids, &dm);
+  if (base.days > 0) {
+    for (const misc::Ymd d : dm.stat_dates())
+      c.days.push_back(static_cast<int>(d));
+    const AssetAxis &ax = asset_axis();
+    for (size_t i = 0; i < dm.rs.axis.size(); ++i)
+      c.codes.push_back(ax.code(dm.rs.axis.global(i)));
+  }
   c.years = sc.years;
   c.window = base.days > 0 ? base.text() : "未就绪";
   c.first = static_cast<int>(base.start), c.last = static_cast<int>(base.end);
@@ -754,7 +807,7 @@ Staged Lab::stage(Cand c, std::string_view hyp_title) {
   return {std::move(c), file, *it};
 }
 
-Adopted Lab::adopt(std::string name, const Gate &g) {
+Adopted Lab::adopt(std::string name, const Gate &g, bool dry) {
   assert(impl_->data && !busy());
   const Result *r = tried(name);
   if (!r) {
@@ -763,7 +816,7 @@ Adopted Lab::adopt(std::string name, const Gate &g) {
   }
   if (const std::string why = GateMiss(g, *r); !why.empty())
     return {std::move(name), why};
-  if (impl_->is_test)
+  if (impl_->is_test || dry)
     return {std::move(name), {}};
   const Engine::FactorDir formal = Engine::factor_dir_of(impl_->sc.pool, level_id(impl_->sc.level));
   const std::filesystem::path dst = formal.path(r->file);
@@ -810,7 +863,7 @@ std::optional<LabTick> Lab::poll() {
     return LabTick{t->step, {}};
   if (std::holds_alternative<std::monostate>(t->out))
     return LabTick{LabStep::End, {}};
-  if (auto *vo = std::get_if<ViewOut>(&t->out))
+  if (auto *vo = std::get_if<ToolOut>(&t->out))
     return LabTick{LabStep::End, std::move(*vo)};
   EvalDone &ed = std::get<EvalDone>(t->out);
   if (ed.fail_why.empty())

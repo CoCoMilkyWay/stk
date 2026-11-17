@@ -3,6 +3,7 @@
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Note.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -88,29 +89,6 @@ using json = nlohmann::ordered_json;
 
 disk::Key note_key(bool test, NoteKind k) { return {.test = test, .name = def(k).id}; }
 
-bool matches(const Note &x, const std::vector<std::string> &ws) {
-  std::string hay;
-  for (const auto &[k, v] : x.fields.items())
-    hay += v.get<std::string>() + '\n';
-  hay = text::lower(hay);
-  return std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return text::has_word(hay, w); });
-}
-
-std::string relation(const Notes &notes, const Note &x) {
-  std::string s;
-  if (!x.ref.empty())
-    s += " · 附议 " + x.ref;
-  if (const int b = notes.backers(x); b > 0)
-    s += " · 有 " + std::to_string(b) + " 条附议";
-  return s;
-}
-
-std::string handled(const Note &x) {
-  if (x.state == NoteState::Open && x.reply.empty())
-    return "";
-  return " · 研究员: " + std::string(def(x.state).cn) + (x.reply.empty() ? "" : " (" + x.reply + ")");
-}
-
 json line_of(const Note &x) {
   return {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"round", x.round}, {"ref", x.ref}, {"state", x.state}, {"reply", x.reply}, {"fields", x.fields}};
 }
@@ -171,15 +149,19 @@ int Notes::open(NoteKind k) const {
   return static_cast<int>(std::count_if(v.begin(), v.end(), [](const Note &x) { return x.state == NoteState::Open; }));
 }
 
+std::string Notes::next(NoteKind k) const {
+  int no = 0;
+  for (const Note &x : of(k))
+    no = std::max(no, std::stoi(x.id.substr(1)));
+  return def(k).prefix + std::to_string(no + 1);
+}
+
 const Note &Notes::add(const Call &c, std::string scope, std::string session, int round) {
   assert(test_ >= 0 && "先 load");
   const NoteKind k = NoteOf(c.tool);
   std::vector<Note> &v = notes_[static_cast<size_t>(k)];
-  int no = 0;
-  for (const Note &x : v)
-    no = std::max(no, std::stoi(x.id.substr(1)));
   Note x{.kind = k,
-         .id = def(k).prefix + std::to_string(no + 1),
+         .id = next(k),
          .time = text::local("%Y-%m-%d %H:%M"),
          .scope = std::move(scope),
          .session = std::move(session),
@@ -225,48 +207,23 @@ void Notes::drop(const std::string &session, int from) {
       rewrite(static_cast<NoteKind>(i));
 }
 
-std::string NotesText(const Notes &notes, const std::string &kind, const std::string &scope, const std::string &query, int n) {
-  const std::vector<std::string> ws = text::words(query);
-  const auto hits = [&](NoteKind k) {
-    std::vector<const Note *> h;
-    const std::vector<Note> &v = notes.of(k);
-    for (auto it = v.rbegin(); it != v.rend(); ++it)
-      if ((scope.empty() || it->scope == scope) && matches(*it, ws))
-        h.push_back(&*it);
-    return h;
-  };
-  const std::string filter = (scope.empty() ? std::string() : " · 只看本作用域") + (ws.empty() ? std::string() : " · query 命中");
-  const auto head = [&](NoteKind k, size_t hit) {
-    return "## " + std::string(def(k).cn) + " (" + std::to_string(hit) + " 条" + filter +
-           (hit > static_cast<size_t>(n) ? ", 列最近 " + std::to_string(n) + " 条" : "") + ")\n";
-  };
-  std::string s;
-  if (kind.empty()) {
-    for (size_t i = 0; i < kNum<NoteKind>; ++i) {
-      const NoteKind k = static_cast<NoteKind>(i);
-      const std::vector<const Note *> h = hits(k);
-      s += head(k, h.size());
-      for (size_t j = 0; j < std::min(h.size(), static_cast<size_t>(n)); ++j)
-        s += "- " + h[j]->id + " · " + h[j]->time.substr(0, 10) + " · " + h[j]->scope + " · " + h[j]->title() + relation(notes, *h[j]) + handled(*h[j]) + "\n";
-      s += h.empty() ? "(无)\n\n" : "\n";
-    }
-    return s + "要看全文就给 kind\n";
+// ---- 记录工具 (request_feature / request_tool / note_insight / report_issue) 的落记录与原文 ----
+std::string NoteRes::text() const {
+  if (!miss.empty())
+    return miss;
+  return "已记为 " + id + (ref.empty() ? "" : " (附议 " + ref + ")") + "; 全局可见: 研究员在界面里看, 后续会话用 list_notes 查得到";
+}
+
+ToolOut FileNote(const Call &c, Seat &s, std::shared_ptr<NoteRes> r) {
+  const NoteKind k = NoteOf(c.tool);
+  r->kind = k, r->ref = c.str("ref"), r->fields = c.args, r->dry = s.dry;
+  r->fields.erase("ref");
+  if (!r->ref.empty() && !s.notes.find(k, r->ref)) {
+    r->miss = "没有" + std::string(def(k).cn) + " " + r->ref + ": ref 写 list_notes 里同类已有一条的编号 (编号首字母 " + def(k).prefix + "), 新提的不写";
+    return Done(std::move(r), false);
   }
-  const NoteKind k = IdOf<NoteKind>(kind);
-  const std::vector<const Note *> h = hits(k);
-  s += head(k, h.size());
-  if (h.empty())
-    return s + "(无)\n";
-  for (size_t j = 0; j < std::min(h.size(), static_cast<size_t>(n)); ++j) {
-    const Note &x = *h[j];
-    s += "\n### " + x.id + " " + x.title() + "\n- " + x.time + " · " + x.scope + relation(notes, x) + handled(x) + "\n";
-    const std::string b = x.body();
-    for (size_t a = 0, e; a < b.size(); a = e + 1) {
-      e = b.find('\n', a);
-      s += "- " + b.substr(a, e - a) + "\n";
-    }
-  }
-  return s;
+  r->id = s.dry ? s.notes.next(k) : s.notes.add(c, s.scope, s.session, s.me.round).id;
+  return Done(std::move(r));
 }
 
 std::string NotesBrief(const Notes &notes, const std::string &scope) {

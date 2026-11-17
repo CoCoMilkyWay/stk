@@ -11,6 +11,7 @@
 //   校验两层:
 //     协议层 (ParseCalls + RuleMiss): JSON 结构 / 工具名 / 参数类型与范围 / 回复级约束 → 不合则整条退回重发
 //     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 假设 / 证据 / 研报 id 不成 → 仅该调用 ok=false 写原因, 其余照做
+//   每个工具三部分对仗: 输入 Call → 结果 Res (该工具独有的结构, tools/<类>.hpp) → 交给 agent 的原文 text() (tools/<类>/<工具>.cpp) ↔ 工作台的展示 draw() (ui/<类>/<工具>.cpp)
 // =============================================================================
 
 #include "gui/task_agent/Enum.hpp"
@@ -18,9 +19,11 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace GUI::Agent {
@@ -116,14 +119,32 @@ struct Call {
   std::string text(size_t cap = 0) const;
 };
 
+// 一个调用的参数按参数表校验并补缺省 (path = 报错里参数的前缀); 不合的各条进 errs
+bool CallOf(Tool t, const nlohmann::ordered_json &args, const std::string &path, Call &out, std::vector<std::string> &errs);
 bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &error);
 std::string ToolsDoc(bool ask);
 
-// 观察与研报工具的统一产出: ok = 做成了; out = 交给 agent 的正文; gist = 收进研究树后留的一行关键数 (无则空)
-struct ViewOut {
+// ---- 工具的结果 ----
+struct Res {
+  virtual ~Res() = default;
+  virtual std::string text() const = 0;           // 交给 agent 的原文
+  virtual std::string gist() const { return {}; } // 收进研究树后留的一行关键数 (无则空)
+  virtual void draw() const = 0;                  // 工作台的展示
+};
+using ResPtr = std::shared_ptr<const Res>;
+
+// 一个调用的产出: ok = 做成了; out = 交给 agent 的原文 (有 res 即 res->text()); 没做成而无结构的, out 写原因
+struct ToolOut {
   bool ok = false;
   std::string out, gist;
+  ResPtr res;
 };
+template <class R>
+ToolOut Done(std::shared_ptr<R> r, bool ok = true) {
+  std::string out = r->text(), gist = r->gist();
+  return {ok, std::move(out), std::move(gist), std::move(r)};
+}
+inline ToolOut Fail(std::string why) { return {false, std::move(why), {}, {}}; }
 
 // ---- ask_human: 问题与答复 ----
 struct Question {

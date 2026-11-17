@@ -3,6 +3,7 @@
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Misc.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -280,60 +281,7 @@ void Journal::save(const json &session, const json &brief) const {
 // =============================================================================
 namespace {
 
-void clip(std::string &s) {
-  const size_t n = text::chars(s), cut = text::fwd(s, 0, static_cast<size_t>(kOutChars));
-  if (cut == s.size())
-    return;
-  s.resize(cut);
-  s += "\n…(截断: 共 " + std::to_string(n) + " 字, 只给前 " + std::to_string(kOutChars) + " 字; 缩小范围或分几次看)\n";
-}
-
 int tokens(const llm::Usage &u) { return u.prompt + u.completion; }
-
-std::string evidence_miss(const Call &c, const Hyp &h, Ref me, const Desk &d) {
-  bool look = false, fresh = false;
-  for (const std::string &s : c.strs("evidence")) {
-    Ref r;
-    if (!RefOf(s, r))
-      return "证据 " + s + " 不是调用编号 (写结果标题里的 R<轮>#<序>, 如 R12#3)";
-    if (!(r < me))
-      return "证据 " + s + " 不在本调用之前 (同一条回复里只能引用排在 judge 前面的调用)";
-    if (static_cast<size_t>(r.call) > d.timeline[static_cast<size_t>(r.round) - 1].acts.size())
-      return "证据 " + s + " 不存在: 第 " + std::to_string(r.round) + " 轮没有第 " + std::to_string(r.call) + " 个调用";
-    if (!(h.at < r))
-      return "证据 " + s + " 在 " + h.id + " 提出 (" + RefText(h.at) + ") 之前: 检验它的调用须在提出之后";
-    const Act &x = d.timeline[static_cast<size_t>(r.round) - 1].acts[static_cast<size_t>(r.call) - 1];
-    if (!x.span.ended() || !x.ok)
-      return "证据 " + s + " (" + def(x.call.tool).name + ") 没做成";
-    look = look || def(x.call.tool).cat == Cat::Look;
-    fresh = fresh || h.judged < r;
-  }
-  if (IdOf<Stance>(c.str("verdict")) == Stance::Supported && !look) {
-    std::string near;
-    const std::vector<Act> &acts = d.timeline.back().acts;
-    for (int i = 1; i < me.call; ++i)
-      if (const Act &x = acts[static_cast<size_t>(i) - 1]; def(x.call.tool).cat == Cat::Look && x.span.ended() && x.ok && h.at < Ref{me.round, i})
-        near += (near.empty() ? "" : ", ") + RefText({me.round, i});
-    return "判支持须有观察调用 (view_*) 作证据: 回测只说好不好, 观察才说机制是否成立. 同一条回复里把观察排在 judge 前面, 就能引用它们" +
-           (near.empty() ? std::string() : "; 本条排在前面做成了的观察: " + near + ", 补进 evidence 即可");
-  }
-  if (h.judged.round && !fresh)
-    return "再判 " + h.id + " 须至少一个证据在上次判定 (" + RefText(h.judged) + ") 之后";
-  return {};
-}
-
-std::string eval_hyp_miss(const Call &c, const Desk &d) {
-  const Hyp *h = d.st.board.find(c.str("hyp"));
-  if (!h)
-    return "假设板上没有 " + c.str("hyp") + ": 先 hypothesize, 用观察检验并 judge 为支持, 再挂变体";
-  if (h->stance != Stance::Supported)
-    return h->id + " 的判定是 " + def(h->stance).cn + ": 只有判为支持的假设能挂变体";
-  if (h->pending && h->pending != d.round())
-    return h->id + " 有第 " + std::to_string(h->pending) + " 轮回测过的变体还没判: 先 judge 它";
-  if (h->evals >= kHypEvals)
-    return h->id + " 的 " + std::to_string(kHypEvals) + " 个变体已用完: 回到观察与研报找还没解释的现象, 提新假设";
-  return {};
-}
 
 } // namespace
 
@@ -466,7 +414,7 @@ void Mine::resume(const SharedData &data, Leg l) {
 void Mine::start() {
   assert(phase_ == Phase::Choose);
   Act &a = timeline.back().acts[cur_];
-  a.out = AnswerText(std::get<Asked>(a.extra));
+  Put(a, AskOut(std::get<Asked>(a.extra)));
   ended(a);
   step();
 }
@@ -719,110 +667,22 @@ void Mine::enter_lab(Act &a, LabStep s) {
 void Mine::settled(LabOut out) {
   Act &a = timeline.back().acts[cur_];
   enter_lab(a, LabStep::End);
-  assert(!std::holds_alternative<std::monostate>(out) && "取消的不收");
-  if (Result *res = std::get_if<Result>(&out)) {
-    Trial &k = std::get<Trial>(a.extra);
-    k.st.res = std::move(*res);
-    assert(k.st.res.file == k.st.file);
-    a.out = TrialText(k, setup.gate);
-    a.ok = k.st.res.verdict != Verdict::Broken;
-  } else {
-    ViewOut &vo = std::get<ViewOut>(out);
-    a.ok = vo.ok;
-    a.out = std::move(vo.out);
-    a.gist = std::move(vo.gist);
-  }
+  SettleLab(a, std::move(out), setup.gate);
   ended(a);
   save();
   step();
 }
 
+Seat Mine::seat() { return {lab, notes, setup.gate, st, timeline, {round(), static_cast<int>(cur_) + 1}, catalog::label(setup.sc), log.dir(), false}; }
+
 void Mine::exec_sync(Act &a) {
-  const Call &c = a.call;
-  switch (c.tool) {
-  case Tool::SearchLeaves:
-    a.out = LeavesText(lab.ctx().leaves, c.str("query"), c.num("n"));
-    break;
-  case Tool::ListTried:
-    a.out = TriedText(lab.results(), c.num("skip"), c.num("top"), setup.gate);
-    break;
-  case Tool::ListLibrary:
-    a.out = LibraryText(lab.ctx().library, c.num("skip"), c.num("top"));
-    break;
-  case Tool::ListNotes:
-    a.out = NotesText(notes, c.str("kind"), c.str("scope") == "here" ? catalog::label(setup.sc) : "", c.str("query"), c.num("n"));
-    break;
-  case Tool::SubmitFactor: {
-    const Adopted x = lab.adopt(c.str("name"), setup.gate);
-    a.ok = x.ok();
-    a.out = !a.ok ? "未入库: " + x.error : setup.test ? "达门槛 (自检会话, 不拷进正式库)"
-                                                      : "已入库";
-    break;
-  }
-  case Tool::RequestFeature:
-  case Tool::RequestTool:
-  case Tool::NoteInsight:
-  case Tool::ReportIssue: {
-    const NoteKind k = NoteOf(c.tool);
-    if (const std::string ref = c.str("ref"); !ref.empty() && !notes.find(k, ref)) {
-      a.ok = false;
-      a.out = "没有" + std::string(def(k).cn) + " " + ref + ": ref 写 list_notes 里同类已有一条的编号 (编号首字母 " + def(k).prefix + "), 新提的不写";
-      break;
-    }
-    const Note &x = notes.add(c, catalog::label(setup.sc), log.dir(), round());
-    a.out = "已记为 " + x.id + (x.ref.empty() ? "" : " (附议 " + x.ref + ")") + "; 全局可见: 研究员在界面里看, 后续会话用 list_notes 查得到";
-    break;
-  }
-  case Tool::Hypothesize: {
-    const std::string id = st.board.next();
-    a.out = "已记为 " + id + " (待检验): 用观察按 expect / refute 检验它, 再 judge; 判为支持才能挂 eval_factor 的变体";
-    break;
-  }
-  case Tool::Judge: {
-    const Hyp *h = st.board.find(c.str("hyp"));
-    const Ref me{round(), static_cast<int>(cur_) + 1};
-    const std::string miss = h ? evidence_miss(c, *h, me, *this) : "假设板上没有 " + c.str("hyp");
-    if (!miss.empty()) {
-      a.ok = false;
-      a.out = miss + "; 判定没改";
-      break;
-    }
-    const Stance s = IdOf<Stance>(c.str("verdict"));
-    a.out = "已判 " + h->id + ": " + def(s).cn + " (变体 " + std::to_string(h->evals) + "/" + std::to_string(kHypEvals) + ")" +
-            (s == Stance::Supported ? (h->evals < kHypEvals ? "; 可以挂变体" : "; 变体已用完, 接着做须提新假设")
-                                    : "; 不能再挂变体, 接着做须提新假设或带新证据再判");
-    break;
-  }
-  case Tool::Finish:
-    a.out = "本条回复的调用做完后会话结束";
-    break;
-  default:
-    assert(false && "不是 Sync 工具");
-  }
+  Seat s = seat();
+  RunSync(a, s);
 }
 
 bool Mine::exec_lab(Act &a) {
-  const Call &c = a.call;
-  if (c.tool != Tool::EvalFactor) {
-    lab.send(c);
-    return true;
-  }
-  Trial &k = a.extra.emplace<Trial>();
-  Cand cand{c.str("name"), c.str("name_cn"), c.str("expr"), c.str("hyp"), c.str("note")};
-  if (std::string miss = eval_hyp_miss(c, *this); !miss.empty()) {
-    k.st.cand = std::move(cand);
-    k.st.res = {.name = k.st.cand.name, .name_cn = k.st.cand.name_cn, .tmpl = k.st.cand.expr, .note = k.st.cand.note, .error = std::move(miss), .verdict = Verdict::Unstaged, .visible = false};
-  } else {
-    const Hyp *h = st.board.find(cand.hyp);
-    assert(h);
-    k.st = lab.stage(std::move(cand), h->title());
-  }
-  if (!k.st.ok()) {
-    a.out = TrialText(k, setup.gate), a.ok = false;
-    return false;
-  }
-  lab.send(EvalJob{k.st.file, leg.gpu});
-  return true;
+  Seat s = seat();
+  return SendLab(a, s, leg.gpu);
 }
 
 void Mine::step() {
@@ -870,7 +730,7 @@ void Mine::ended(Act &a) {
   a.span.end(now_s);
   const Ref at{round(), static_cast<int>(cur_) + 1};
   Apply(st, a, at);
-  clip(a.out);
+  Clip(a.out);
   log.append_log(fmt_act_done(at, a));
   ++cur_;
 }
@@ -971,6 +831,20 @@ std::string Mine::report_of(const std::string &why) const {
     r += "\n## " + std::string(def(k).cn) + " (" + std::to_string(n) + ")\n" + (s.empty() ? "\n(无)\n" : s);
   }
   return r;
+}
+
+std::vector<Round> TimelineOf(const std::string &dir) { return read_json(fs::path(dir) / kSessionFile).at("timeline").get<std::vector<Round>>(); }
+
+std::vector<Seen> SeenCalls(const Scope &sc, Tool t) {
+  std::vector<Seen> out;
+  for (const Saved &s : SavedSessions(sc)) {
+    const std::vector<Round> rs = TimelineOf(s.dir);
+    for (size_t i = 0; i < rs.size(); ++i)
+      for (size_t j = 0; j < rs[i].acts.size(); ++j)
+        if (const Act &a = rs[i].acts[j]; a.call.tool == t && a.span.ended())
+          out.push_back({s.stamp, s.test, {static_cast<int>(i) + 1, static_cast<int>(j) + 1}, a.call.args, a.out, a.ok});
+  }
+  return out;
 }
 
 std::vector<Saved> SavedSessions(const Scope &sc) {

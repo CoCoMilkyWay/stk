@@ -421,7 +421,8 @@ set(MATH_PRECISE
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp
     gui/util/Latex.cpp
-    # gui: task_agent 的 Bridge / Views = 因子契约头与观察统计的消费者; Docs = 研报统计 (原文没给 = NaN); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
+    # gui: task_agent 的 Bridge / Views / tools/look = 因子契约头与观察统计的消费者; Docs / tools/query = 研报统计 (原文没给 = NaN);
+    #      ui = 统计结果的展示 (NaN = 缺); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
     gui/task_agent/Bridge.cpp
     gui/task_agent/Docs.cpp
     gui/task_agent/Llm.cpp
@@ -431,6 +432,63 @@ set(MATH_PRECISE
     gui/task_agent/TaskAgent.cpp
     gui/task_agent/Tools.cpp
     gui/task_agent/Views.cpp
+    gui/task_agent/tools/Kit.cpp
+    gui/task_agent/tools/hyp/Hypothesize.cpp
+    gui/task_agent/tools/hyp/Judge.cpp
+    gui/task_agent/tools/look/ViewBook.cpp
+    gui/task_agent/tools/look/ViewExplain.cpp
+    gui/task_agent/tools/look/ViewFeature.cpp
+    gui/task_agent/tools/look/ViewHolders.cpp
+    gui/task_agent/tools/look/ViewLayers.cpp
+    gui/task_agent/tools/look/ViewResponse.cpp
+    gui/task_agent/tools/look/ViewSnapshot.cpp
+    gui/task_agent/tools/look/ViewStockDay.cpp
+    gui/task_agent/tools/look/ViewStockDays.cpp
+    gui/task_agent/tools/look/ViewTrades.cpp
+    gui/task_agent/tools/misc/AskHuman.cpp
+    gui/task_agent/tools/misc/Finish.cpp
+    gui/task_agent/tools/note/NoteInsight.cpp
+    gui/task_agent/tools/note/ReportIssue.cpp
+    gui/task_agent/tools/note/RequestFeature.cpp
+    gui/task_agent/tools/note/RequestTool.cpp
+    gui/task_agent/tools/query/ListLibrary.cpp
+    gui/task_agent/tools/query/ListNotes.cpp
+    gui/task_agent/tools/query/ListTried.cpp
+    gui/task_agent/tools/query/ReadDoc.cpp
+    gui/task_agent/tools/query/SearchDocs.cpp
+    gui/task_agent/tools/query/SearchFactors.cpp
+    gui/task_agent/tools/query/SearchLeaves.cpp
+    gui/task_agent/tools/trial/EvalFactor.cpp
+    gui/task_agent/tools/trial/SubmitFactor.cpp
+    gui/task_agent/ui/Bench.cpp
+    gui/task_agent/ui/Widgets.cpp
+    gui/task_agent/ui/hyp/Hypothesize.cpp
+    gui/task_agent/ui/hyp/Judge.cpp
+    gui/task_agent/ui/look/ViewBook.cpp
+    gui/task_agent/ui/look/ViewExplain.cpp
+    gui/task_agent/ui/look/ViewFeature.cpp
+    gui/task_agent/ui/look/ViewHolders.cpp
+    gui/task_agent/ui/look/ViewLayers.cpp
+    gui/task_agent/ui/look/ViewResponse.cpp
+    gui/task_agent/ui/look/ViewSnapshot.cpp
+    gui/task_agent/ui/look/ViewStockDay.cpp
+    gui/task_agent/ui/look/ViewStockDays.cpp
+    gui/task_agent/ui/look/ViewTrades.cpp
+    gui/task_agent/ui/misc/AskHuman.cpp
+    gui/task_agent/ui/misc/Finish.cpp
+    gui/task_agent/ui/note/NoteInsight.cpp
+    gui/task_agent/ui/note/ReportIssue.cpp
+    gui/task_agent/ui/note/RequestFeature.cpp
+    gui/task_agent/ui/note/RequestTool.cpp
+    gui/task_agent/ui/query/ListLibrary.cpp
+    gui/task_agent/ui/query/ListNotes.cpp
+    gui/task_agent/ui/query/ListTried.cpp
+    gui/task_agent/ui/query/ReadDoc.cpp
+    gui/task_agent/ui/query/SearchDocs.cpp
+    gui/task_agent/ui/query/SearchFactors.cpp
+    gui/task_agent/ui/query/SearchLeaves.cpp
+    gui/task_agent/ui/trial/EvalFactor.cpp
+    gui/task_agent/ui/trial/SubmitFactor.cpp
     # factor: 因子契约头的消费者 = GPU 后端与 op_check 本体
     factor/GpuRun.cu
     factor/GpuRunStub.cpp

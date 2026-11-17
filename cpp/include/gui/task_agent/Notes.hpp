@@ -115,6 +115,7 @@ public:
   const Note *find(NoteKind k, const std::string &id) const;
   int backers(const Note &n) const;
   int open(NoteKind k) const;
+  std::string next(NoteKind k) const; // 下一条的编号
   const Note &add(const Call &c, std::string scope, std::string session, int round);
   void set(NoteKind k, const std::string &id, NoteState s, std::string reply);
   std::vector<const Note *> filed(const std::string &session, int from = 1) const;
@@ -126,7 +127,6 @@ private:
   std::array<std::vector<Note>, kNum<NoteKind>> notes_;
 };
 
-std::string NotesText(const Notes &notes, const std::string &kind, const std::string &scope, const std::string &query, int n);
 std::string NotesBrief(const Notes &notes, const std::string &scope);
 
 } // namespace GUI::Agent

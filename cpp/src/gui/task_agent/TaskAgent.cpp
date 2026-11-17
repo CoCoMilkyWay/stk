@@ -5,7 +5,8 @@
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Mine.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/util/Reorder.hpp"
+#include "gui/task_agent/ui/Bench.hpp"
+#include "gui/task_agent/ui/Widgets.hpp"
 
 #include "imgui.h"
 #include "nlohmann/json.hpp"
@@ -36,23 +37,25 @@ namespace GUI::Agent {
 
 namespace {
 
+using namespace ui;
 using Phase = Mine::Phase;
 
 enum TabIdx {
   TAB_MINE = 0,
+  TAB_TOOLS,
   TAB_CONFIG,
   TAB_COUNT
 };
 
-constexpr ImVec4 kColHead(0.4f, 0.8f, 1.0f, 1.0f);
 constexpr int kBackendN = static_cast<int>(kNum<llm::Backend>); // 界面按下标 (int) 选后端
 
 bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
-// Mine / Config 页的选项 (ui.json 读写同一份字段清单): 作用域 (含开放的叶 / 算子) / 连接 / 模型 / 评估后端 / 预算 (下次 New / 继续生效) /
-// 入库门槛 / 可否提问 (下次 New 生效) + Config 页在看的模板
+// Mine / Tools / Config 页的选项 (ui.json 读写同一份字段清单): 作用域 (含开放的叶 / 算子) / 连接 / 模型 / 评估后端 / 预算 (下次 New / 继续生效) /
+// 入库门槛 / 可否提问 (下次 New 生效) + Tools 页的作用域 + Config 页在看的模板
 struct Options {
   Scope sc;
+  Scope bench; // Tools 页的作用域 (与 Mine 页分开选)
   int backend = 0;
   std::string model; // 该后端嗅探表里的 id; 空 = 还没嗅探到
   std::array<bool, kBackendN> via_proxy = [] {
@@ -70,7 +73,7 @@ struct Options {
   int prompt = 0;  // Msg 下标
   bool operator==(const Options &) const = default;
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, budget, ask, prompt)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, bench, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, budget, ask, prompt)
 
 llm::Net net_of(const Options &o, int backend) { return {o.via_proxy[backend], o.proxy_host, o.proxy_port}; }
 Mine::Setup setup_of(const Options &o) { return {.sc = o.sc, .gate = o.gate, .ask = o.ask}; }
@@ -113,7 +116,8 @@ struct Sniffer {
 };
 
 struct Ui {
-  std::unique_ptr<Mine> mine; // 首次 Draw 建 (Destroy 释放: 对话线程 / 评估 worker 与常驻块)
+  std::unique_ptr<Mine> mine;   // 首次 Draw 建 (Destroy 释放: 对话线程 / 评估 worker 与常驻块)
+  std::unique_ptr<Bench> bench; // Tools 页的工作台 (首次进 Tools 页建)
   Options opt;
   std::optional<Options> opt_saved; // 上次落盘的选项; operator== 判变, 改了才序列化写盘
   Sniffer sniff;
@@ -189,13 +193,16 @@ bool model_ok(const Ui &s) {
 
 // ---- 选项落盘 (output/config/agent/ui.json) ----
 bool ui_json_valid(const nlohmann::json &j) {
-  if (!j.is_object() || !j.contains("sc") || !j["sc"].is_object() || !j.contains("gate") || !j["gate"].is_object() || !j.contains("budget") ||
-      !j["budget"].is_object())
+  if (!j.is_object() || !j.contains("sc") || !j["sc"].is_object() || !j.contains("bench") || !j["bench"].is_object() || !j.contains("gate") ||
+      !j["gate"].is_object() || !j.contains("budget") || !j["budget"].is_object())
     return false;
-  const auto &sc = j["sc"], &gt = j["gate"], &bg = j["budget"];
-  return sc.contains("pool") && sc["pool"].is_string() && sc.contains("level") && sc["level"].is_number_integer() && sc.contains("hold") &&
-         sc["hold"].is_number_integer() && sc.contains("lob") && sc["lob"].is_boolean() && sc.contains("years") && sc["years"].is_number_integer() &&
-         sc.contains("leaves") && sc["leaves"].is_object() && sc.contains("ops") && sc["ops"].is_object() && gt.contains("mono") && gt["mono"].is_number() &&
+  const auto scope_ok = [](const nlohmann::json &sc) {
+    return sc.contains("pool") && sc["pool"].is_string() && sc.contains("level") && sc["level"].is_number_integer() && sc.contains("hold") &&
+           sc["hold"].is_number_integer() && sc.contains("lob") && sc["lob"].is_boolean() && sc.contains("years") && sc["years"].is_number_integer() &&
+           sc.contains("leaves") && sc["leaves"].is_object() && sc.contains("ops") && sc["ops"].is_object();
+  };
+  const auto &gt = j["gate"], &bg = j["budget"];
+  return scope_ok(j["sc"]) && scope_ok(j["bench"]) && gt.contains("mono") && gt["mono"].is_number() &&
          gt.contains("ric") && gt["ric"].is_number() && bg.contains("rounds") && bg["rounds"].is_number_integer() && bg.contains("minutes") &&
          bg["minutes"].is_number_integer() && bg.contains("ktokens") && bg["ktokens"].is_number_integer() && j.contains("backend") &&
          j["backend"].is_number_integer() && j.contains("model") && j["model"].is_string() && j.contains("via_proxy") && j["via_proxy"].is_array() &&
@@ -215,7 +222,7 @@ void load_ui(Ui &s) {
   }
   const Options &o = s.opt;
   ok = ok && o.backend >= 0 && o.backend < kBackendN && o.proxy_port > 0 && o.proxy_port < 65536 && o.gpu >= -1 && o.gpu <= 1 &&
-       o.prompt >= 0 && o.prompt < static_cast<int>(kNum<Msg>) && o.sc.years >= 1 && o.budget.rounds >= 0 && o.budget.minutes >= 0 && o.budget.ktokens >= 0;
+       o.prompt >= 0 && o.prompt < static_cast<int>(kNum<Msg>) && o.sc.years >= 1 && o.bench.years >= 1 && o.budget.rounds >= 0 && o.budget.minutes >= 0 && o.budget.ktokens >= 0;
   if (!ok)
     s.opt = Options{};
   if (!catalog::gpu())
@@ -230,166 +237,6 @@ void save_ui(Ui &s) {
     return;
   disk::write(disk::AgentUiFile, {}, nlohmann::ordered_json(s.opt).dump(2));
   s.opt_saved = s.opt;
-}
-
-// ---- std::string 输入框 (imgui 缓冲随串扩) ----
-int resize_cb(ImGuiInputTextCallbackData *d) {
-  if (d->EventFlag == ImGuiInputTextFlags_CallbackResize) {
-    auto *s = static_cast<std::string *>(d->UserData);
-    s->resize(static_cast<size_t>(d->BufTextLen));
-    d->Buf = s->data();
-  }
-  return 0;
-}
-bool input_text(const char *id, std::string &s, const char *hint = nullptr) {
-  return ImGui::InputTextWithHint(id, hint, s.data(), s.capacity() + 1, ImGuiInputTextFlags_CallbackResize, resize_cb, &s);
-}
-bool input_multiline(const char *id, std::string &s, ImVec2 size) {
-  return ImGui::InputTextMultiline(id, s.data(), s.capacity() + 1, size, ImGuiInputTextFlags_CallbackResize | ImGuiInputTextFlags_WordWrap, resize_cb, &s);
-}
-
-void tip(const char *s) {
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("%s", s);
-}
-// 悬浮看长文 (限宽换行)
-void tip_long(const std::string &s) {
-  if (!ImGui::IsItemHovered())
-    return;
-  ImGui::BeginTooltip();
-  ImGui::PushTextWrapPos(ImGui::GetFontSize() * 50.0f);
-  ImGui::TextUnformatted(s.c_str(), s.c_str() + s.size());
-  ImGui::PopTextWrapPos();
-  ImGui::EndTooltip();
-}
-
-// ---- Mine ----
-void scope_row(SharedData &data, Ui &s, bool locked) {
-  Scope &o = s.opt.sc;
-  ImGui::TextColored(kColHead, "1. Scope:");
-  ImGui::SameLine();
-  ImGui::BeginDisabled(locked);
-  ImGui::SetNextItemWidth(160);
-  if (ImGui::BeginCombo("##pool", catalog::pool_cn(o.pool).c_str())) {
-    if (ImGui::IsWindowAppearing())
-      s.pool_rows = catalog::pool_rows(o.level);
-    // 列: 各来源库状态 | 正式库因子数 | 中文名 | 池名 (可能很长, 放末列)
-    const float gap = 2.0f * ImGui::GetStyle().ItemSpacing.x;
-    float w_n = 0.0f, w_cn = 0.0f;
-    for (const catalog::PoolRow &r : s.pool_rows) {
-      w_n = std::max(w_n, ImGui::CalcTextSize(("(" + std::to_string(r.factors) + ")").c_str()).x);
-      w_cn = std::max(w_cn, ImGui::CalcTextSize(r.name_cn.c_str()).x);
-    }
-    const float x_src = ImGui::GetCursorPosX();
-    const float x_n = x_src + ImGui::CalcTextSize("bar lob").x + gap, x_cn = x_n + w_n + gap, x_en = x_cn + w_cn + gap;
-    Reorder rd("##pool_order");
-    for (const catalog::PoolRow &r : s.pool_rows) {
-      const bool selected = r.name == o.pool;
-      if (ImGui::Selectable(("##" + r.name).c_str(), selected))
-        o.pool = r.name;
-      rd.item(r.key, catalog::pool_movable(r.key));
-      if (selected)
-        ImGui::SetItemDefaultFocus();
-      for (const Src src : {Src::Bar, Src::Lob}) {
-        ImGui::SameLine(src == Src::Bar ? x_src : 0.0f);
-        const char *name = kSrcs[static_cast<size_t>(src)].name;
-        if (r.built[static_cast<size_t>(src)])
-          ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "%s", name);
-        else
-          ImGui::TextDisabled("%s", name);
-        tip(r.built[static_cast<size_t>(src)] ? "库已建" : "库未建");
-      }
-      ImGui::SameLine(x_n);
-      ImGui::TextDisabled("(%zu)", r.factors);
-      tip("正式因子库在本层的因子数");
-      ImGui::SameLine(x_cn);
-      ImGui::TextUnformatted(r.name_cn.c_str());
-      ImGui::SameLine(x_en);
-      ImGui::TextDisabled("%s", r.name.c_str());
-    }
-    if (const std::optional<Move> m = rd.end())
-      catalog::move_pool(data, m->from, m->to);
-    ImGui::EndCombo();
-  }
-  const std::vector<Choice> lvs = catalog::levels();
-  for (const Choice &l : lvs) {
-    ImGui::SameLine();
-    if (ImGui::RadioButton((l.name + "##lv").c_str(), o.level == l.key))
-      o.level = l.key;
-  }
-  const std::vector<Choice> hs = catalog::holds(data, o.level);
-  ImGui::SameLine();
-  ImGui::TextDisabled("|  Hold");
-  if (hs.empty()) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("(该层无可搜持有期: 标签未建)");
-    ImGui::EndDisabled();
-    return;
-  }
-  if (std::none_of(hs.begin(), hs.end(), [&](const Choice &c) { return c.key == o.hold; }))
-    o.hold = hs.front().key;
-  for (const Choice &h : hs) {
-    ImGui::SameLine();
-    if (ImGui::RadioButton((h.name + "##hd").c_str(), o.hold == h.key))
-      o.hold = h.key;
-  }
-  ImGui::TextDisabled("   %s", catalog::hold_desc(o.hold, o.level).c_str());
-  // 特征来源: bar 恒开放, lob 可选 (本层无 lob 叶则不可改) + 开放的合起来的评估期 (Lab 绑到此作用域后才有)
-  const Lab &lab = s.mine->lab;
-  const Context *c = lab.scope() == o ? &lab.ctx() : nullptr;
-  ImGui::TextDisabled("   Src  bar +");
-  ImGui::SameLine();
-  ImGui::BeginDisabled(c && !c->has_lob);
-  ImGui::Checkbox("lob##src", &o.lob);
-  ImGui::EndDisabled();
-  tip(c && !c->has_lob ? "本层无 lob 叶" : "开放 lob (逐笔与盘口) 叶; bar (价量与基本面) 恒开放");
-  ImGui::SameLine();
-  ImGui::TextDisabled("|");
-  ImGui::SameLine();
-  ImGui::TextUnformatted("评估期 近");
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(90);
-  if (int y = o.years; ImGui::InputInt("年##years", &y))
-    o.years = std::max(y, 1);
-  tip("评估期 = 标签库与开放的叶所在库落盘日交集的最近 N 年 (其前另装 10% 预热日只给回看, 不计统计): 回测 / 观察 / 已试候选与正式库的可见性都按这一段\n"
-      "(别的年数算的统计对 agent 不可见); 会话内不变, 分块流式计算无整期内存封顶");
-  ImGui::SameLine();
-  ImGui::Text("%s", c ? c->window.c_str() : "…");
-  ImGui::EndDisabled();
-}
-
-// ---- 显示用的量 ----
-std::string dur(double sec) {
-  const int t = static_cast<int>(sec + 0.5);
-  char b[32];
-  if (t < 60)
-    std::snprintf(b, sizeof(b), "%ds", t);
-  else if (t < 3600)
-    std::snprintf(b, sizeof(b), "%dm%02ds", t / 60, t % 60);
-  else
-    std::snprintf(b, sizeof(b), "%dh%02dm", t / 3600, t / 60 % 60);
-  return b;
-}
-std::string kilo(double n) {
-  char b[32];
-  if (n < 1e3)
-    std::snprintf(b, sizeof(b), "%.0f", n);
-  else if (n < 1e6)
-    std::snprintf(b, sizeof(b), "%.1fk", n / 1e3);
-  else
-    std::snprintf(b, sizeof(b), "%.2fM", n / 1e6);
-  return b;
-}
-// 字数
-std::string chars(const std::string &s) { return kilo(static_cast<double>(text::chars(s))) + " 字"; }
-// 状态色; 进行中的随时间明暗呼吸 (一眼看出哪在动)
-ImVec4 color(TaskStatus::Kind k) {
-  if (k == TaskStatus::Kind::None)
-    return ImGui::GetStyleColorVec4(ImGuiCol_Text);
-  ImVec4 c = StatusColor(k);
-  if (k == TaskStatus::Kind::Busy)
-    c.w *= 0.7f + 0.3f * static_cast<float>(std::cos(ImGui::GetTime() * 4.0));
-  return c;
 }
 
 // 思考在想什么: 末个独占一行的 **小标题** / # 标题; 没有则 (live) 末个非空行的开头
@@ -456,113 +303,6 @@ std::string doing(const Flow &f) {
   return h;
 }
 
-// ---- 自动换行的文本块 ----
-void wrapped(const std::string &s) {
-  ImGui::PushTextWrapPos(0.0f);
-  ImGui::TextUnformatted(s.c_str(), s.c_str() + s.size());
-  ImGui::PopTextWrapPos();
-}
-void wrapped(const ImVec4 &c, const std::string &s) {
-  ImGui::PushStyleColor(ImGuiCol_Text, c);
-  wrapped(s);
-  ImGui::PopStyleColor();
-}
-void wrapped_dim(const std::string &s) { wrapped(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), s); }
-void copy_button(const char *id, const std::string &s) {
-  ImGui::SameLine();
-  if (ImGui::SmallButton(id))
-    ImGui::SetClipboardText(s.c_str());
-}
-constexpr float kThinkLines = 12.0f, kBoxLines = 20.0f; // 思考 / 在收正文框 · 其余文本框的最大行高
-
-// 文本框的排版 (按框的 id 缓存): 按段 ('\n' 切) 记折行后的高, 每帧只画看得见的段 (长文 = 首条 / 结果 / 上下文 / 思考, 整篇每帧量不起).
-// 键 (框内宽 / 字号 / 最大高) 不变且文本没变 → 原样; 只在末尾追加 (在收的思考 / 正文) → 从末段起续排; 否则整篇重排. 高过最大高就让出滚动条的宽排
-struct Layout {
-  float w = 0.0f, font = 0.0f, cap = 0.0f; // 键: 框内宽 (不计滚动条) / 字号 / 文本的最大高
-  size_t n = 0, hash = 0;                  // 排过的文本: 字节数 / 散列
-  bool scroll = false;                     // 高过 cap: 按让出滚动条的宽 lw 排
-  float lw = 0.0f;                         // 实排的宽
-  std::vector<size_t> at;                  // 各段起点
-  std::vector<float> y{0.0f};              // 各段顶, 末项 = 总高
-  int used = 0;                            // 末次用到的帧 (久不用的丢)
-};
-constexpr int kLayoutFrames = 600;
-std::unordered_map<ImGuiID, Layout> layouts;
-
-// 从段起点 a 排到文末 (at / y 已截到 a 之前)
-void lay(Layout &L, std::string_view s, size_t a) {
-  for (;;) {
-    const size_t e = std::min(s.find('\n', a), s.size());
-    L.at.push_back(a);
-    L.y.push_back(L.y.back() + ImGui::CalcTextSize(s.data() + a, s.data() + e, false, L.lw).y);
-    if (e == s.size())
-      return;
-    a = e + 1;
-  }
-}
-void relay(Layout &L, std::string_view s) {
-  L.lw = L.scroll ? L.w - ImGui::GetStyle().ScrollbarSize : L.w;
-  L.at.clear(), L.y.assign(1, 0.0f);
-  lay(L, s, 0);
-}
-const Layout &layout_of(ImGuiID id, std::string_view s, float w, float cap) {
-  const int frame = ImGui::GetFrameCount();
-  if (frame % kLayoutFrames == 0)
-    std::erase_if(layouts, [&](const auto &kv) { return frame - kv.second.used > kLayoutFrames; });
-  Layout &L = layouts[id];
-  L.used = frame;
-  const float font = ImGui::GetFontSize();
-  const std::hash<std::string_view> hash;
-  if (!L.at.empty() && L.w == w && L.font == font && L.cap == cap && s.size() >= L.n && hash(s.substr(0, L.n)) == L.hash) {
-    if (s.size() == L.n)
-      return L;
-    const size_t a = L.at.back();
-    L.at.pop_back(), L.y.pop_back();
-    lay(L, s, a);
-  } else {
-    L.w = w, L.font = font, L.cap = cap, L.scroll = false;
-    relay(L, s);
-  }
-  if (!L.scroll && L.y.back() > cap) {
-    L.scroll = true;
-    relay(L, s);
-  }
-  L.n = s.size(), L.hash = hash(s);
-  return L;
-}
-
-// 文本框: 全文, 高过 lines 行就在框内滚 (不把时间线顶走); tail = 停在底部时跟着新内容走 (初开即在底部)
-void box(const std::string &body, bool dim, float lines, bool tail) {
-  const ImGuiStyle &st = ImGui::GetStyle();
-  const float pad = 2.0f * st.WindowPadding.y + 2.0f, cap = lines * ImGui::GetTextLineHeightWithSpacing();
-  const Layout &L = layout_of(ImGui::GetID("##box"), body, ImGui::GetContentRegionAvail().x - 2.0f * st.WindowPadding.x, cap - pad);
-  ImGui::BeginChild("##box", ImVec2(0, std::min(L.y.back() + pad, cap)), ImGuiChildFlags_Borders, L.scroll ? ImGuiWindowFlags_AlwaysVerticalScrollbar : ImGuiWindowFlags_None);
-  const bool follow = tail && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 2.0f;
-  ImDrawList *dl = ImGui::GetWindowDrawList();
-  const ImVec2 o = ImGui::GetCursorScreenPos();
-  const float top = dl->GetClipRectMin().y - o.y, bot = dl->GetClipRectMax().y - o.y;
-  const ImU32 col = ImGui::GetColorU32(dim ? ImGuiCol_TextDisabled : ImGuiCol_Text);
-  for (size_t k = static_cast<size_t>(std::upper_bound(L.y.begin() + 1, L.y.end(), top) - L.y.begin()) - 1; k < L.at.size() && L.y[k] < bot; ++k) {
-    const size_t e = k + 1 < L.at.size() ? L.at[k + 1] - 1 : body.size();
-    dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(o.x, o.y + L.y[k]), col, body.data() + L.at[k], body.data() + e, L.lw);
-  }
-  ImGui::Dummy(ImVec2(L.lw, L.y.back()));
-  if (follow)
-    ImGui::SetScrollHereY(1.0f);
-  ImGui::EndChild();
-}
-// 可折叠的文本块: 标题行 + 复制; 展开 = 文本框 (box). 返回 = 人点了开合
-bool fold(const char *id, ImGuiTreeNodeFlags flags, const std::string &label, const std::string &body, bool dim, float lines, bool tail) {
-  const bool open = ImGui::TreeNodeEx(id, flags, "%s", label.c_str());
-  const bool toggled = ImGui::IsItemToggledOpen();
-  copy_button((std::string("复制##") + id).c_str(), body);
-  if (!open)
-    return toggled;
-  box(body, dim, lines, tail);
-  ImGui::TreePop();
-  return toggled;
-}
-
 // 在做的调用 (Act / Choose 中; 否则空)
 const Act *acting(const Mine &m) {
   if (m.phase() != Phase::Act && m.phase() != Phase::Choose)
@@ -573,11 +313,6 @@ const Act *acting(const Mine &m) {
 const char *step_name(const Trial &k) { return k.run.began() ? "Run" : "Search"; }
 
 // ---- 会话行: New / Test / 载入 / 继续 / 交答案 / Stop / Cancel / 关闭 ----
-// 时刻戳 YYYYMMDD-HHMMSS → YYYY-MM-DD HH:MM
-std::string stamp_text(const std::string &st) {
-  return st.size() == 15 ? st.substr(0, 4) + "-" + st.substr(4, 2) + "-" + st.substr(6, 2) + " " + st.substr(9, 2) + ":" + st.substr(11, 2) : st;
-}
-
 void load_session(const SharedData &data, Ui &s, const Saved &x) {
   if (!catalog::ready(data, x.sc, false)) {
     s.message = "这段会话的作用域未就绪 (资产轴未扫描或标签库未建)";
@@ -617,8 +352,10 @@ void session_row(const SharedData &data, Ui &s) {
   const bool keyed = has_key(o.backend);
   const bool bound = m.lab.scope() == o.sc;
   const bool has_leaves = bound && !m.lab.ctx().leaves.empty(), has_ops = bound && !m.lab.ctx().ops.empty();
-  const char *llm_not = !keyed ? "所选后端的 key 未填 (output/config/agent/keys.json)" : !model_ok(s) ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
-                                                                                                      : nullptr;
+  const char *llm_not = !keyed                       ? "所选后端的 key 未填 (output/config/agent/keys.json)"
+                        : !model_ok(s)               ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
+                        : s.bench && s.bench->busy() ? "Tools 页的调用在跑 (不并跑, 等它做完或取消)"
+                                                     : nullptr;
 
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
@@ -914,75 +651,6 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
            std::to_string(all.n(Verdict::Weights)) + ") · 提交 " + std::to_string(all.n(Tool::SubmitFactor)) + " · 入库 " + std::to_string(all.adopted) + "\n假设 " +
            board_brief(m.st.board) + (m.memo.empty() ? "" : "\n插话已排队, 随下一条发出"));
   tools_bar(all);
-}
-
-// ask_human: 逐题点选 (已按推荐预选; 末项 "其他" 自己写意见) + 附言; edit = Choose 中在问的那个调用. 返回 = 按了交答案
-bool asked_block(Asked &a, bool edit) {
-  if (edit)
-    ImGui::TextColored(color(TaskStatus::Kind::Warn), "已按推荐预选, 只改不同意的 (可选 \"其他\" 自己写), 改完按 交答案");
-  for (size_t i = 0; i < a.qs.size(); ++i) {
-    const Question &q = a.qs[i];
-    Pick &p = a.picks[i];
-    ImGui::PushID(static_cast<int>(i));
-    wrapped(std::to_string(i + 1) + ". " + q.prompt + (q.multiple ? " (可多选)" : ""));
-    ImGui::Indent();
-    // 单选: 选项与 "其他" 互斥
-    const auto pick = [&](size_t j) {
-      if (q.multiple) {
-        p.on[j] = !p.on[j];
-        return;
-      }
-      p.on.assign(q.options.size(), false);
-      p.other = false;
-      p.on[j] = true;
-    };
-    const auto pick_other = [&] {
-      if (!q.multiple)
-        p.on.assign(q.options.size(), false);
-      p.other = true;
-    };
-    for (size_t j = 0; j < q.options.size(); ++j) {
-      ImGui::PushID(static_cast<int>(j));
-      bool on = p.on[j];
-      ImGui::BeginDisabled(!edit);
-      const bool hit = q.multiple ? ImGui::Checkbox("##o", &on) : ImGui::RadioButton("##o", on);
-      ImGui::EndDisabled();
-      ImGui::SameLine();
-      if (q.recommended[j]) {
-        ImGui::TextColored(color(TaskStatus::Kind::Ready), "推荐");
-        ImGui::SameLine();
-      }
-      p.on[j] || edit ? wrapped(q.options[j]) : wrapped_dim(q.options[j]);
-      if (edit && (hit || ImGui::IsItemClicked()))
-        pick(j);
-      ImGui::PopID();
-    }
-    // 其他: 打字即选中
-    bool other = p.other;
-    ImGui::BeginDisabled(!edit);
-    if (q.multiple ? ImGui::Checkbox("其他##other", &other) : ImGui::RadioButton("其他##other", other)) {
-      if (q.multiple)
-        p.other = other;
-      else
-        pick_other();
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(-1);
-    if (input_text("##other_text", p.text, "自己的意见") && !p.text.empty() && !p.other)
-      pick_other();
-    ImGui::EndDisabled();
-    ImGui::Unindent();
-    ImGui::Spacing();
-    ImGui::PopID();
-  }
-  if (edit) {
-    ImGui::TextDisabled("附言 (可空)");
-    input_multiline("##note", a.note, ImVec2(-1, ImGui::GetTextLineHeightWithSpacing() * 4));
-    return ImGui::Button("交答案", ImVec2(80, 0));
-  }
-  if (!a.note.empty())
-    wrapped_dim("附言: " + a.note);
-  return false;
 }
 
 using Names = std::set<std::string>; // 入库的英文名
@@ -1455,19 +1123,6 @@ void timeline_panel(Ui &s, Mine &m, const Flow &f, bool to_end, float bottom) {
       s.pinned = true;
     ImGui::EndChild();
   }
-}
-
-// 表随页宽缩放: 不可拖宽, 前面的列 FixedFit 每帧按内容重算宽 (新行再长也不截断), 末列 (长文本) 吃剩下的宽并自动换行
-constexpr ImGuiTableFlags kTableFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY;
-bool begin_table(const char *id, std::initializer_list<const char *> heads, float h = -1.0f) {
-  if (!ImGui::BeginTable(id, static_cast<int>(heads.size()), kTableFlags, ImVec2(-1, h)))
-    return false;
-  ImGui::TableSetupScrollFreeze(0, 1);
-  int i = 0;
-  for (const char *x : heads)
-    ImGui::TableSetupColumn(x, ++i == static_cast<int>(heads.size()) ? ImGuiTableColumnFlags_WidthStretch : ImGuiTableColumnFlags_None);
-  ImGui::TableHeadersRow();
-  return true;
 }
 
 // 特征 / 算子 / 候选 三页的数据 = Lab (会话中候选随评估实时更新). 无会话时随作用域重绑; 绑不上 (该层无可搜持有期 / 评估在收尾) = 空表
@@ -2017,7 +1672,7 @@ void remark_panel(Ui &s, const Mine &m) {
 // 刚进 Choose 切回过程并滚到底 (问题在那); 要跳到某个调用也切回过程; 回退确认框浮在页上
 void render_mine(SharedData &data, Ui &s) {
   Mine &m = *s.mine;
-  scope_row(data, s, m.held());
+  scope_row(data, s.opt.sc, s.pool_rows, m.lab, m.held(), "1. Scope:");
   session_row(data, s);
   m.chat.live(s.chat_live);
   m.lab.live(s.lab_live);
@@ -2230,15 +1885,17 @@ TaskHandle CreateAgentTask() {
   TaskHandle handle;
   handle.name = "Agent";
   handle.storage = state;
-  handle.tabs = {"Mine", "Config"};
+  handle.tabs = {"Mine", "Tools", "Config"};
 
-  // 每帧 (无论是否选中): 收嗅探结果; 推进会话 (含评估队列与会话日志)
+  // 每帧 (无论是否选中): 收嗅探结果; 推进会话 (含评估队列与会话日志); 收工作台的后台结果
   handle.Update = [state](SharedData &) {
     Ui &s = *state;
     if (!s.mine)
       return;
     poll_sniff(s);
     s.mine->update();
+    if (s.bench)
+      s.bench->update();
   };
 
   handle.Status = [state](const SharedData &, int idx) -> TaskStatus {
@@ -2256,6 +1913,8 @@ TaskHandle CreateAgentTask() {
         return {TaskStatus::Kind::Error, "sniff failed"};
       return s.opt.model.empty() ? TaskStatus{TaskStatus::Kind::Warn, "no model"} : TaskStatus{};
     }
+    if (idx == TAB_TOOLS)
+      return s.bench && s.bench->busy() ? TaskStatus{TaskStatus::Kind::Busy, "running"} : TaskStatus{};
     if (idx != TAB_MINE)
       return {};
     const Mine &m = *s.mine;
@@ -2281,16 +1940,23 @@ TaskHandle CreateAgentTask() {
         sniff(s, b);
     }
     const std::vector<Choice> pools = catalog::pools();
-    if (std::none_of(pools.begin(), pools.end(), [&](const Choice &p) { return p.name == s.opt.sc.pool; }))
-      s.opt.sc.pool = pools.front().name;
     const std::vector<Choice> lvs = catalog::levels();
-    if (std::none_of(lvs.begin(), lvs.end(), [&](const Choice &l) { return l.key == s.opt.sc.level; }))
-      s.opt.sc.level = lvs.front().key;
+    for (Scope *sc : {&s.opt.sc, &s.opt.bench}) {
+      if (std::none_of(pools.begin(), pools.end(), [&](const Choice &p) { return p.name == sc->pool; }))
+        sc->pool = pools.front().name;
+      if (std::none_of(lvs.begin(), lvs.end(), [&](const Choice &l) { return l.key == sc->level; }))
+        sc->level = lvs.front().key;
+    }
     ImGui::BeginChild("AgentTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     switch (idx) {
     case TAB_MINE:
       render_mine(data, s);
+      break;
+    case TAB_TOOLS:
+      if (!s.bench)
+        s.bench = std::make_unique<Bench>();
+      s.bench->draw(data, s.opt.bench, s.opt.gate, s.opt.gpu == 1, s.mine->live() || !s.mine->idle());
       break;
     case TAB_CONFIG:
       render_config(s);
@@ -2305,6 +1971,7 @@ TaskHandle CreateAgentTask() {
   handle.Destroy = [state]() {
     Ui &s = *state;
     s.sniff.quit();
+    s.bench.reset();
     s.mine.reset(); // 析构: 对话线程取消并 join, 评估 worker Stop
     s.seen_phase = Phase::None;
   };

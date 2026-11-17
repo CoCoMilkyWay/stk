@@ -7,7 +7,7 @@
 //     catalog   无状态作用域目录 (池 / 因子层 / 持有期 / GPU 可用 / 就绪判据 / 落盘键)
 //     Lab       单线程 Async 工作台:
 //                 EvalJob → Search + 单文件 Run + 无显著代表点分层 直通跑完 → Result
-//                 Call    → Views 分块流式全核归约 / 逐笔重放 / Docs 研报检索 → ViewOut (零跨线程平面拷贝)
+//                 Call    → Views 分块流式全核归约 / 逐笔重放 / Docs 研报检索 → ToolOut (零跨线程平面拷贝)
 //   异步接口与左翼 Chat 完全一致: send / cancel / busy / poll / live
 // =============================================================================
 
@@ -81,6 +81,9 @@ struct Leaf {
 };
 std::pair<std::string, std::vector<std::string>> LeafWords(const std::string &code);
 std::string LeafKin(const std::string &code);
+std::string LeafCol(const std::string &code);                                          // 叶名去掉 档.层. 的列名
+std::vector<std::vector<const Leaf *>> KinGroups(const std::vector<const Leaf *> &ls); // 按同组键分组 (组序 = 首见序)
+std::string KinName(const std::vector<const Leaf *> &g);                               // 一组叶写成花括号式 (不成积的逐个列)
 
 struct Op {
   std::string name, name_cn, sig, out, tex, note;
@@ -169,6 +172,8 @@ struct Context {
   std::vector<Leaf> leaves, all_leaves;
   std::vector<Op> ops, all_ops;
   std::vector<Result> library;
+  std::vector<int> days;          // 评估期交易日 YYYYMMDD (工作台随机输入的取材)
+  std::vector<std::string> codes; // 池轴上的代码 (同上)
 };
 
 struct Gate {
@@ -230,7 +235,7 @@ struct LabStepDef {
 inline constexpr LabStepDef kLabSteps[] = {{"Search"}, {"Run"}, {"观察"}, {"查研报"}, {"完"}};
 AGENT_ROWS(LabStep, kLabSteps, End);
 
-using LabOut = std::variant<std::monostate, Result, ViewOut>; // monostate = 已取消
+using LabOut = std::variant<std::monostate, Result, ToolOut>; // monostate = 已取消
 struct LabLive {
   double frac = 0.0;
 };
@@ -255,7 +260,7 @@ public:
   std::string search_log(const std::string &file) const;
 
   Staged stage(Cand c, std::string_view hyp_title);
-  Adopted adopt(std::string name, const Gate &g);
+  Adopted adopt(std::string name, const Gate &g, bool dry); // dry = 只查门槛不拷进正式库 (工作台; 自检会话恒不拷)
   void discard(const std::string &file);
 
   void send(EvalJob job);
