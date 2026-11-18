@@ -1,8 +1,10 @@
-/config/settings/
 /config/alpha/
+/config/live/.sudo_pass
+/config/live/ui.json
 /config/market/
 /config/agent/keys.json
 /config/agent/ui.json
+/config/settings/
 /data/orders/
 /data/fundamental/
 /data/quote/
