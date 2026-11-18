@@ -12,8 +12,8 @@ struct ImVec4;
 namespace GUI {
 
 // ============================================================================
-// 状态标签: 左栏每行名字后的 [text] 彩色标签; 同时在跑的几路各一签, 依次接在同行 (放不下换行).
-// 文字各任务自定义 (支持动态进度如 "encoding 45%", 两级如 "刷新.持仓"), 颜色只由 Kind 决定 ——
+// 状态标签: 左栏每行名字后的 [text] 彩色标签.
+// 文字各任务自定义 (支持动态进度如 "encoding 45%"), 颜色只由 Kind 决定 ——
 // 全局一张色表 (StatusColor), 不允许各任务自配颜色.
 // ============================================================================
 struct TaskStatus {
@@ -27,9 +27,6 @@ struct TaskStatus {
   };
   Kind kind = Kind::None;
   std::string text;
-  std::vector<TaskStatus> also; // 同时在跑的其余几路, 各一签接在本签后
-
-  void add(Kind k, std::string t); // 接一路: 还无标签即作本签, 否则排进 also
 };
 
 ImVec4 StatusColor(TaskStatus::Kind kind);
@@ -81,7 +78,7 @@ struct TaskHandle {
 };
 
 // 左栏行标签的唯一入口. 有子项任务的任务行 = 子行聚合: 档位 Busy > Error > Warn > Ready > Muted
-// 取最高档 (按各子行的本签), 同档取首个子行的 (连同 also); Ready 档统一显示 done
+// 取最高档, 同档取首个子行的文字; Ready 档统一显示 done
 TaskStatus RowStatus(const SharedData &data, const TaskHandle &t, int idx);
 
 // ============================================================================

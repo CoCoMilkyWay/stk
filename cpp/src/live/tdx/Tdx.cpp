@@ -148,21 +148,26 @@ struct Core {
     req::arm(heap);
   }
 
-  // 引导: 插件在本客户端进程里还没发过的表, 各经界面查一次 (其引导页), 末了回持仓页 (持仓缺也由它补; 占界面锁)
+  // 引导: 插件在本客户端进程里还没发过的表, 各经界面查一次 (其引导页), 末了回持仓页 (持仓缺也由它补; 占界面锁).
+  // 刷新线程调的 (step) 把走到哪页记进刷新进度
   template <class... S>
-  void prime() {
+  void prime(bool step = false) {
     std::vector<ui::Open> miss;
     ((tables::seen<S>() ? void() : miss.push_back(S::kOpen)), ...);
     if (miss.empty())
       return;
     std::erase_if(miss, [](const ui::Open &o) { return std::string_view(o.page) == tables::Positions::kOpen.page; });
-    note("引导");
+    miss.push_back(tables::Positions::kOpen);
+    if (step)
+      note("引导");
     const Gate::Hold g(gate, "引导");
     trace::Span span("引导");
     ui::show_bar();
-    for (const ui::Open &o : miss)
+    for (const ui::Open &o : miss) {
+      if (step)
+        note(strf("引导「%s」", o.page));
       std::ignore = ui::open(o);
-    std::ignore = ui::open(tables::Positions::kOpen);
+    }
     (need(tables::seen<S>(), strf("经界面查过「%s」, 插件仍没发过其功能", S::kName)), ...);
   }
 
@@ -232,7 +237,7 @@ struct Core {
 
   // 一轮: 成交、持仓两问之间又有成交即对不上, 连查至多 kSyncTries 遍, 仍不对留给上层标出; 再挂单、信用账户
   void round() {
-    prime<tables::Fills, tables::Positions, tables::Pendings, tables::Assets, tables::Debts>();
+    prime<tables::Fills, tables::Positions, tables::Pendings, tables::Assets, tables::Debts>(true);
     for (int i = 0; i < kSyncTries; ++i) {
       put(&State::fills, [] { return tables::read<tables::Fills>(); });
       put(&State::pos, [] { return tables::read<tables::Positions>(); });
@@ -245,7 +250,7 @@ struct Core {
   }
   // 只刷成交 (等卖单成交时轮询)
   void round_fills() {
-    prime<tables::Fills>();
+    prime<tables::Fills>(true);
     put(&State::fills, [] { return tables::read<tables::Fills>(); });
   }
 

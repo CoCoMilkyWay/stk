@@ -63,21 +63,21 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
     const Live::LiveHub &h = *state->hub;
     if (!h.connected())
       return {};
-    TaskStatus s;
     const live::Refresh &g = h.refresh();
+    const auto &t = h.task();
+    if (!g.down.empty())
+      return {TaskStatus::Kind::Error, "down"};
+    if (h.ordering())
+      return {TaskStatus::Kind::Busy, "ordering"};
+    if (t && t->st == Live::JobSt::Run)
+      return {TaskStatus::Kind::Busy, "running"};
     if (!g.step.empty())
-      s.add(TaskStatus::Kind::Busy, "刷新." + g.step);
-    else if (!g.down.empty())
-      s.add(TaskStatus::Kind::Error, "刷新.接不上");
-    else if (!g.err.empty())
-      s.add(TaskStatus::Kind::Error, "刷新.失败");
-    if (const auto &t = h.task(); t && t->st == Live::JobSt::Run)
-      s.add(TaskStatus::Kind::Busy, t->step.empty() ? t->name : t->name + "." + t->step);
-    else if (t && t->st == Live::JobSt::Err)
-      s.add(TaskStatus::Kind::Error, t->name + ".失败");
-    if (s.kind == TaskStatus::Kind::None)
-      s.add(TaskStatus::Kind::Muted, "live");
-    return s;
+      return {TaskStatus::Kind::Busy, "refreshing"};
+    if (!g.err.empty())
+      return {TaskStatus::Kind::Error, "error"};
+    if (t && t->st == Live::JobSt::Err)
+      return {TaskStatus::Kind::Error, "failed"};
+    return {TaskStatus::Kind::Muted, "live"};
   };
 
   handle.Draw = [state](SharedData &data, [[maybe_unused]] int idx) {

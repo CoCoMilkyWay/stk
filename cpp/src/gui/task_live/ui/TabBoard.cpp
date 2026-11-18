@@ -135,7 +135,8 @@ void order_line(const OrderJob &j, bool priv) {
            strf("%s %s", job_name(j.st), j.got.msg.c_str()));
 }
 
-// 刷新进度两行: 各样读于几时 · 行情时刻 · 接入的客户端; 时有时无的 (接入断、刷新中、上轮失败), 都没有即「空闲」
+// 刷新进度两行: 各样读于几时 · 行情时刻 · 接入的客户端; 次行 = 时有时无的: 接入断、在做的各路 (刷新 / 事务, 各一段「路.步…」)、
+// 上轮刷新失败, 都没有即「空闲」
 void progress(LiveHub &hub) {
   const live::Refresh &g = hub.refresh();
   const auto &st = hub.state();
@@ -155,7 +156,13 @@ void progress(LiveHub &hub) {
   }
   if (!g.step.empty()) {
     sep();
-    text_col(kHot, "刷新中: " + g.step + "…");
+    text_col(kHot, "刷新." + g.step + "…");
+  }
+  if (const auto &t = hub.task(); t && t->st == JobSt::Run) {
+    sep();
+    text_col(kHot, t->name + (t->step.empty() ? "" : "." + t->step) + "…");
+    if (!t->live.empty() && ImGui::IsItemHovered())
+      tip("%s", t->live.c_str());
   }
   if (!g.err.empty()) {
     sep();

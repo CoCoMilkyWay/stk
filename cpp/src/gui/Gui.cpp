@@ -6,27 +6,16 @@
 #include <cassert>
 #include <cstdio>
 #include <fstream>
-#include <string>
 
 namespace GUI {
 
-// 一签 [text] 接在同行, 放不下即换行
-static void DrawTag(const TaskStatus &s) {
-  if (s.kind == TaskStatus::Kind::None || s.text.empty())
-    return;
-  const std::string tag = "[" + s.text + "]";
-  ImGui::SameLine();
-  if (ImGui::GetContentRegionAvail().x < ImGui::CalcTextSize(tag.c_str()).x)
-    ImGui::NewLine();
-  ImGui::TextColored(StatusColor(s.kind), "%s", tag.c_str());
-}
-
-// 行状态标签: 行名后画本签与 also 各签, 颜色查全局色表 (idx == -1 任务行, >= 0 子行)
+// 行状态标签: 行名后画 [text], 颜色查全局色表 (idx == -1 任务行, >= 0 子行)
 static void DrawRowStatus(const SharedData &data, const TaskHandle &t, int idx) {
   const TaskStatus s = RowStatus(data, t, idx);
-  DrawTag(s);
-  for (const TaskStatus &a : s.also)
-    DrawTag(a);
+  if (s.kind == TaskStatus::Kind::None || s.text.empty())
+    return;
+  ImGui::SameLine();
+  ImGui::TextColored(StatusColor(s.kind), "[%s]", s.text.c_str());
 }
 
 void LoadFonts(float dpi_scale) {
