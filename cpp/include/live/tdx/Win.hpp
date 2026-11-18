@@ -43,7 +43,8 @@ Layer layer_of(const nlohmann::json &j);
 std::pair<int, int> center(const Item &it); // 项的中心点 (向下取整)
 
 // 接入客户端: shim 不在线即编译 + 注入; 再开 noraise 不抬窗 (重扫模块, 补钩 shim 注入后才加载的 DLL)、
-// gdi 绘制层 (首次装入口钩子并重绘全部窗口). 启动时与客户端重启后各一次
+// gdi 绘制层 (首次装入口钩子并重绘全部窗口)、detours 修补客户端里旧版 Detours 的坏跳板 (不修则其 MessageBoxA 一弹即崩).
+// 启动时与客户端重启后各一次
 void attach();
 
 // ---------- 窗口 ----------

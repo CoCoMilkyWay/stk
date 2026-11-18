@@ -48,6 +48,8 @@ std::vector<size_t> day_cols(size_t n = kDayCols); // 前 n 列的库列下标
 
 // 周序号 (周一起)
 int64_t week_of(misc::Ymd d);
+// d 之后首个交易日: rows (升序) 内取 upper_bound, 超出末日取次个工作日 (节假日待日历同步后纠正)
+misc::Ymd next_day(std::span<const misc::Ymd> rows, misc::Ymd d);
 // 调仓日历 (选股表 / 篮子账 / 行情篮子 / 回测池篮子同一份): 交易日 d 的成员源行 = rows (升序) 里 d 之前的末行 (日频) / d 所在周之前的末行 (周频);
 //   无 → SIZE_MAX
 size_t src_of(Rebal rb, std::span<const misc::Ymd> rows, misc::Ymd d);
@@ -112,9 +114,8 @@ struct Orders {
 
 // 原料带: all.bar 全轴 × 已落盘日
 struct Strip {
+  PoolAxis axis;                // all.bar 轴 (全局唯一轴源)
   std::vector<misc::Ymd> dates; // 行 = 已落盘日 (升序)
-  size_t A = 0;                 // all.bar 轴长
-  uint64_t axis = 0;            // 轴指纹
   uint64_t line = 0;            // 谱系: 同谱系 = 同轴且日轴互为前缀 (增量补行沿用, 重建换新)
   std::vector<uint16_t> cls;    // [行 · A] 类号 (不在市 = kOut)
   std::vector<uint16_t> cnt;    // [行 · kClasses] 类内在市数
@@ -122,11 +123,16 @@ struct Strip {
   std::vector<float> mcap;      // [行 · A] 收盘总市值 = close_day × total_shares (缺 → 0)
   std::vector<float> grow;      // [行 · A] 累计增长 Π_{0 < k ≤ 行} (1 + 日收益) (首行 1) = 后复权收盘价 (除权除息日不断)
   std::vector<float> pre;       // [A] 末行前收 (续行的收益)
+  size_t A() const { return axis.size(); }
   size_t days() const { return dates.size(); }
-  size_t row_of(misc::Ymd d) const; // d 的行 (须在)
-  Order row(size_t r) const;        // 行 r 的类号 (无次序: 只够全市场选)
+  size_t row_of(misc::Ymd d) const;             // d 的行 (须在)
+  misc::Ymd holding_after(size_t r) const;      // 行 r 收盘建仓对应的持仓交易日 (= r+1 日; 末行 = next_day)
+  Order row(size_t r) const;                    // 行 r 的类号 (无次序: 只够全市场选)
   // 资产 a 行 r → q 的收益比 grow_q / grow_r
-  float rel(size_t r, size_t q, size_t a) const { return grow[q * A + a] / grow[r * A + a]; }
+  float rel(size_t r, size_t q, size_t a) const {
+    const size_t n = A();
+    return grow[q * n + a] / grow[r * n + a];
+  }
   // 资产 a 在行 q 收盘的持仓权 = 源行 r 的目标权 (等权 1 / 加权 mcap) × rel(r, q) (r ≤ q; r = q → 目标权)
   float omega(size_t r, size_t q, size_t a, Weight w) const;
 };

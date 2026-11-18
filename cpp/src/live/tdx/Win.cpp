@@ -81,6 +81,7 @@ void attach() {
     if (!ok)
       fail(strf("%s on: %s", c, json(r).dump().c_str()));
   }
+  shim::cmd("detours");
 }
 
 // ---------- 窗口 ----------

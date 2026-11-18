@@ -3,6 +3,7 @@
 //   进程内唯一 (concepts(), misc::Epochal): 每进程代首次访问载入, 代内不变 (新同步的随下一代生效); 成分按这一份倒推全史 (篮子表概念切片同一份)
 #pragma once
 
+#include "define/Csr.hpp"
 #include "misc/date.hpp"
 
 #include <cstddef>
@@ -20,13 +21,11 @@ struct ConceptTable {
   std::vector<std::string> name;  // [概念] 名称 "新能源"
   std::uint64_t hash = 0;         // 代码 + 成分全局 id 的指纹 (篮子缓存键)
   std::vector<std::uint64_t> sig; // [概念] 本概念代码 + 成分全局 id 的指纹 (篮子的身份)
-  std::vector<std::uint32_t> at;  // [全局 id + 1] 资产 g 所属概念 = of[at[g], at[g + 1]) (升序)
-  std::vector<std::uint16_t> of;
+  Csr<std::uint16_t> of;          // [全局 id] 所属概念下标 (升序)
   std::size_t size() const { return code.size(); }
   // 资产 g 所属的概念下标; g 在载入后才进轴 → 空
   std::span<const std::uint16_t> concepts_of(std::uint32_t g) const {
-    return g + 1 < at.size() ? std::span<const std::uint16_t>(of.data() + at[g], at[g + 1] - at[g])
-                             : std::span<const std::uint16_t>{};
+    return g < of.size() ? of[g] : std::span<const std::uint16_t>{};
   }
 };
 

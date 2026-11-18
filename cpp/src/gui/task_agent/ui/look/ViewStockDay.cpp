@@ -5,6 +5,7 @@
 #include "implot.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace GUI::Agent {
@@ -30,7 +31,12 @@ void StockDayRes::draw() const {
   for (int i = 0; i < n; i += std::max(1, n / 8))
     at.push_back(i), names.push_back(clock[static_cast<size_t>(i)].c_str());
   if (n > 1 && ImPlot::BeginPlot("价##px", ImVec2(-1, 200), ImPlotFlags_NoMenus)) {
-    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+    const bool mid = std::isfinite(pre) && hi >= lo; // 昨收居中 (0% 在 y 中间, 上下取两侧较大者对称); 当日无成交 → 贴合
+    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_AutoFit, mid ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit);
+    if (mid) {
+      const double d = std::max({hi - pre, pre - lo, pre * 1e-3}) * 1.06;
+      ImPlot::SetupAxisLimits(ImAxis_Y1, pre - d, pre + d, ImPlotCond_Always);
+    }
     ImPlot::SetupAxisTicks(ImAxis_X1, at.data(), static_cast<int>(at.size()), names.data());
     ImPlot::PlotShaded("高低", xs.data(), low.data(), high.data(), n);
     ImPlot::PlotLine("收", xs.data(), close.data(), n);

@@ -30,6 +30,8 @@ constexpr long kHostId = 59649;                 // 交易栏下各页的宿主 (
 constexpr long kKeys[] = {1140, 144};           // 页的查询键 (「查 询」/「刷 新」/「回到第一页」), 查着时禁用
 constexpr long kCounts[] = {1243, 166};         // 页的条数标签
 constexpr long kMsgText = 7013, kMsgYes = 7015; // 确认框 / 提示框: 正文 Static、确认按钮
+// 系统 MessageBox 的正文 Static (MSGBOX_IDTEXT); 客户端框里的 IDC_STATIC 也是此号, 故先认 kMsgText
+constexpr long kBoxText = 0xFFFF;
 
 // 交易栏页签: 投给宿主切到它的命令
 struct Tab {
@@ -276,19 +278,15 @@ Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::fu
   };
   std::string title;
   const Hwnd box = *until(
-      [&] {
-        std::string s;
-        for (const auto &[h, n] : fresh())
-          s += (s.empty() ? "" : "; ") + ("「" + n.title + "」") + body(h);
-        return "「" + want + "」, 期间新窗口: " + (s.empty() ? "无" : s);
-      },
+      said("「" + want + "」"),
       [&]() -> std::optional<Hwnd> {
         std::vector<Hwnd> hits;
-        for (const auto &[h, n] : fresh())
-          if (std::find(titles.begin(), titles.end(), n.title) != titles.end()) {
-            hits.push_back(h);
-            title = n.title;
-          }
+        for (const auto &[h, n] : fresh()) {
+          if (std::find(titles.begin(), titles.end(), n.title) == titles.end())
+            fail(strf("等「%s」时先弹出「%s」%s", want.c_str(), n.title.c_str(), body(h).c_str()));
+          hits.push_back(h);
+          title = n.title;
+        }
         if (hits.size() > 1)
           fail(strf("「%s」同时出现 %zu 个", want.c_str(), hits.size()));
         return hits.empty() ? std::nullopt : std::optional<Hwnd>(hits[0]);
@@ -299,11 +297,14 @@ Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::fu
 }
 
 std::string body(const Hwnd &box) {
-  std::vector<Hwnd> hits;
+  std::map<long, std::vector<Hwnd>> hits;
   for (const Node &n : win::enum_(box))
-    if (n.depth == 1 && n.id == kMsgText)
-      hits.push_back(n.hwnd);
-  return hits.size() == 1 ? win::squash(win::text(hits[0])) : "";
+    if (n.depth == 1 && (n.id == kMsgText || n.id == kBoxText))
+      hits[n.id].push_back(n.hwnd);
+  for (const long id : {kMsgText, kBoxText})
+    if (const std::vector<Hwnd> &h = hits[id]; !h.empty())
+      return h.size() == 1 ? win::squash(win::text(h[0])) : "";
+  return "";
 }
 
 void yes(const Hwnd &box) { win::command(box, kMsgYes); }

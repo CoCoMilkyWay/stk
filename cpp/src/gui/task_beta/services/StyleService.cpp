@@ -8,6 +8,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <span>
 #include <string>
@@ -133,20 +134,15 @@ bool StyleService::publish(const StyleRequest &req, std::string lack, std::share
 }
 
 std::shared_ptr<const pool::Orders> StyleService::ranks(const FeatureLib &lib, pool::Style st, const pool::Tick &tick) {
-  const auto hit = std::find_if(keys_.begin(), keys_.end(), [&](const Key &k) { return k.style == st; });
-  const Key k = hit != keys_.end() ? *hit : Key{st, std::make_shared<pool::Orders>()};
-  if (hit != keys_.end())
-    keys_.erase(hit);
-  if (k.rk->rows() < strip_->days()) {
-    auto rk = std::make_shared<pool::Orders>(*k.rk);
-    if (!pool::rank(lib, *strip_, st, pool_, &cancel_, tick, *rk))
-      return nullptr;
-    keys_.insert(keys_.begin(), Key{st, std::move(rk)});
-  } else
-    keys_.insert(keys_.begin(), k);
-  if (keys_.size() > kKeep)
-    keys_.pop_back();
-  return keys_.front().rk;
+  const auto *hit = ranks_.find(st);
+  if (hit && (*hit)->rows() == strip_->days())
+    return *hit;
+  auto rk = hit ? std::make_shared<pool::Orders>(**hit) : std::make_shared<pool::Orders>();
+  if (!pool::rank(lib, *strip_, st, pool_, &cancel_, tick, *rk))
+    return nullptr;
+  ranks_.put(st, rk);
+  ranks_.trim([](double c) { return c > static_cast<double>(kKeepRanks); });
+  return rk;
 }
 
 bool StyleService::run(StyleRequest &req) {
@@ -159,12 +155,11 @@ bool StyleService::run(StyleRequest &req) {
     return false;
   if (t != strip_) {
     if (!(strip_ && strip_->line == t->line))
-      keys_.clear();
+      ranks_.clear();
     perfs_.clear(), bench_ = nullptr;
     strip_ = t;
   }
   const pool::Style style = req.grid.style();
-  std::erase_if(perfs_, [&](const auto &kv) { return kv.first.style() != style; });
 
   const std::vector<pool::Spec> specs = pool::specs_of(req.grid);
   std::vector<pool::Spec> sets;             // 成员 (权重归 0, 首现序): 只差权重的组共用一本账
@@ -181,8 +176,8 @@ bool StyleService::run(StyleRequest &req) {
   std::vector<std::shared_ptr<const pool::Perf>> perfs(sets.size());
   std::vector<size_t> todo; // 未留账的成员
   for (size_t i = 0; i < sets.size(); ++i)
-    if (const auto it = perfs_.find(sets[i]); it != perfs_.end())
-      perfs[i] = it->second;
+    if (const auto *p = perfs_.find(sets[i]))
+      perfs[i] = *p;
     else
       todo.push_back(i);
   std::shared_ptr<const pool::Orders> rk;
@@ -207,7 +202,8 @@ bool StyleService::run(StyleRequest &req) {
   });
   for (const size_t i : todo) // 取消前算完的照留
     if (perfs[i])
-      perfs_.emplace(sets[i], perfs[i]);
+      perfs_.put(sets[i], perfs[i]);
+  perfs_.trim([](double c) { return c > static_cast<double>(kKeepPerfs); });
   if (cancel_.load(std::memory_order_relaxed))
     return false;
 

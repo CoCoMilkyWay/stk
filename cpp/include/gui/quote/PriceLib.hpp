@@ -42,8 +42,7 @@
 #include "account/Ledger.hpp" // Spot
 #include "define/Members.hpp"
 #include "disk/Disk.hpp"
-#include "fundamental/AssetAxis.hpp" // PoolAxis
-#include "gui/quote/Quote.hpp"       // Side / PerMarket / Series / Tape / PriceView
+#include "gui/quote/Quote.hpp" // Side / PerMarket / Series / Tape / PriceView
 #include "gui/util/Service.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
@@ -160,7 +159,6 @@ private:
   const std::function<void(const Handoff &)> bind_;
   std::atomic<bool> quit_{false}; // 补库只认它 (析构)
   disk::Key lib_;                 // 所在特征库
-  PoolAxis axis_;                 // 库轴
   Head head_;
   uint64_t prefix_ = 0;               // 资产轴前 rows(kStock) 条的指纹
   uint64_t table_ = 0;                // 篮子侧所依的篮子表指纹 (BasketTable::hash)
@@ -186,8 +184,8 @@ private:
   Equity equity_;                       // account_ 的摘要
   uint64_t ledger_ = 0;                 // account_ 所依的账本代
   account::Spot spot_;                  // account_ 所依的券商现价
-  misc::Lru<RefAt, Series> daily_;      // 个股日根全史 (留 kKeep 个)
-  misc::Lru<RefAt, Series> minute_;     // 连分钟的全史 (两侧; 留 kKeepMinutes 个)
+  misc::Lru<uint32_t, Series> daily_; // 本戳个股日根全史 (留 kKeep 个; 换戳即清)
+  misc::Lru<Ref, Series> minute_;     // 本戳连分钟的全史 (两侧; 留 kKeepMinutes 个; 换戳即清)
 };
 
 } // namespace GUI::Quote

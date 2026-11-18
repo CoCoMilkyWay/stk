@@ -1,15 +1,15 @@
 #pragma once
 
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <list>
+#include <map>
 #include <memory>
 #include <utility>
-#include <vector>
 
-// 最近用留存 (LRU): 键 → 不可变值 (shared_ptr<const V>; 空 = 记 "没有"), 各带代价; 新 → 旧排. 两种用法对仗:
-//   条数封顶 get (命中沿用, 否则现建; 留最近 cap 个, 不看外面持不持有: 读出的序列)
-//   代价封顶 put + trim (逐出只逐外面无人持有的, 直到总代价不超: 因子引擎的宿主平面)
+// 最近用留存 (LRU, O(log N) 查找 + O(1) 提新 / 淘汰): 键 → 不可变值 (shared_ptr<const V>; 空 = 记 "没有"), 各带代价; 新 → 旧排. 两种用法对仗:
+//   条数封顶 get (命中沿用, 否则现建; 留最近 cap 个, 不看外面持不持有: 读出的序列 / 参数账)
+//   代价封顶 find + put + trim (put 键已在则原地换新提首; trim 逐出只逐外面无人持有的, 直到总代价不超: 宿主平面 / 组合账)
 // 业务无关.
 namespace misc {
 
@@ -26,30 +26,41 @@ public:
       return *p;
     put(k, make(), 1.0);
     while (items_.size() > cap)
-      cost_ -= items_.back().cost, items_.pop_back();
+      pop_back();
     return items_.front().v;
   }
   // 留着 → 提到最新; 不在 → nullptr
   const Ptr *find(const Key &k) {
-    for (size_t i = 0; i < items_.size(); ++i)
-      if (items_[i].k == k) {
-        std::rotate(items_.begin(), items_.begin() + static_cast<std::ptrdiff_t>(i), items_.begin() + static_cast<std::ptrdiff_t>(i + 1));
-        return &items_.front().v;
-      }
-    return nullptr;
+    const auto it = index_.find(k);
+    if (it == index_.end())
+      return nullptr;
+    items_.splice(items_.begin(), items_, it->second);
+    return &items_.front().v;
   }
-  // 收为最新 (键须不在)
-  void put(const Key &k, Ptr v, double cost) {
-    assert(std::ranges::none_of(items_, [&](const Item &x) { return x.k == k; }) && "键已在");
-    items_.insert(items_.begin(), Item{k, std::move(v), cost});
+  // 收为最新 (键已在则替换值与代价并提首)
+  void put(const Key &k, Ptr v, double cost = 1.0) {
+    if (const auto it = index_.find(k); it != index_.end()) {
+      cost_ += cost - it->second->cost;
+      it->second->v = std::move(v);
+      it->second->cost = cost;
+      items_.splice(items_.begin(), items_, it->second);
+      return;
+    }
+    items_.push_front(Item{k, std::move(v), cost});
+    index_.emplace(items_.front().k, items_.begin());
     cost_ += cost;
   }
   // 自最旧起逐出外面无人持有的, 直到 over(总代价) 为假
   template <class Over>
   void trim(Over &&over) {
-    for (size_t i = items_.size(); i-- > 0 && over(cost_);)
-      if (items_[i].v.use_count() <= 1)
-        cost_ -= items_[i].cost, items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(i));
+    for (auto it = items_.end(); it != items_.begin() && over(cost_);) {
+      --it;
+      if (it->v.use_count() <= 1) {
+        cost_ -= it->cost;
+        index_.erase(it->k);
+        it = items_.erase(it);
+      }
+    }
   }
   // 新 → 旧 f(键, 值)
   template <class F>
@@ -58,7 +69,7 @@ public:
       f(x.k, x.v);
   }
   double cost() const { return cost_; }
-  void clear() { items_.clear(), cost_ = 0.0; }
+  void clear() { items_.clear(), index_.clear(), cost_ = 0.0; }
 
 private:
   struct Item {
@@ -66,7 +77,13 @@ private:
     Ptr v;
     double cost;
   };
-  std::vector<Item> items_; // 新 → 旧
+  void pop_back() {
+    cost_ -= items_.back().cost;
+    index_.erase(items_.back().k);
+    items_.pop_back();
+  }
+  std::list<Item> items_; // 新 → 旧
+  std::map<Key, typename std::list<Item>::iterator> index_;
   double cost_ = 0.0;
 };
 

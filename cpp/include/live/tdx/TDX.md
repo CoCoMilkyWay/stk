@@ -48,7 +48,7 @@ shim（程序）   独立调试程序：命令转发 / 探内存 / 协议字典 
 
 - 构成：`shim.c` 注入后开 TCP 控制通道；`inject.c` 远程 `LoadLibraryA`。
 - 构建：交叉编译（clang + mingw 运行时优先，`i686-w64-mingw32-gcc` 次之）；产物按源码哈希 H 命名 `shim_<H>.dll`、端口 `20000 + H % 10000`，落 `output/run/live/tdx/shim/`。改源码即换新 DLL、新端口；客户端不重开时新旧版并存于同一进程、各听各的端口（`gdi` 钩子叠在旧版之上照常工作，`noraise` 新版报 `patched 0`、旧版照拦）。
-- 注入：DLL 拷进 wine 的 `C:\windows\temp`、写端口文件，`inject.exe` 远程加载（`WINEPREFIX` 取环境变量或 `~/.wine`，目标进程名 `SHIM_TARGET_PROC` 或 `tdxw.exe`）。`win::attach`：不在线即编译 + 注入，再开 `noraise` 与 `gdi`。
+- 注入：DLL 拷进 wine 的 `C:\windows\temp`、写端口文件，`inject.exe` 远程加载（`WINEPREFIX` 取环境变量或 `~/.wine`，目标进程名 `SHIM_TARGET_PROC` 或 `tdxw.exe`）。`win::attach`：不在线即编译 + 注入，再开 `noraise` 与 `gdi`、跑一次 `detours`。
 - shim 活在客户端进程里：其 `assert` 失败即 abort 整个客户端，不弹框。客户端从桌面图标启动时 Wine 的输出进 systemd 日志（`journalctl --user | rg Assertion`）。
 - 协议：一行 `cmd arg...` → 0..N 行 JSON + 末行 `ok` / `err <原因>`；一次一条连接、串行应答；`target` 为 `0x..` 或 `class=<类名>`；窗口句柄是 shim 给的 `0x%08x` 串（`win::Hwnd`），原样回传。命令表见 `shim.c` 文件头。
 
@@ -61,13 +61,14 @@ shim（程序）   独立调试程序：命令转发 / 探内存 / 协议字典 
 | 输入   | `mouse` `key` `char`                            |
 | 绘制层 | `gdi` `gdidump [target]` `gdiwatch`             |
 | 虚表   | `vt hook\|ret\|unhook\|on\|off\|clear\|drain`   |
-| 其它   | `noraise` `spy` `ping` `help`                   |
+| 其它   | `noraise` `detours` `spy` `ping` `help`         |
 
 - 节点 `{depth,hwnd,parent,id,class,title,rect,style,exstyle,vis,en}`：先序、depth 定父子、兄弟序即 z 序。图层 `{hwnd,off,items:[[l,t,r,b,v,文字?]]}`：客户区坐标、后出的在上（`gdi` 的 `v` 为颜色，`detail` 为状态位）。`treegen`/`treewatch`、`gdidump`/`gdiwatch` 成对，长连接无变更 1s 推心跳 `null`。
 - `find class=… [id=…] [title=…]` 不经界面线程、只读相符节点的标题，适配找窗口一律走它；`tree` 经界面线程读可见编辑框（数百到近两千节点），只给录制与小子树。
 - 输入一律进程内 `PostMessage`：不动真实光标、不抢前台；鼠标投给捕获窗口或坐标下最深子窗口，键盘投给焦点窗口。`idle` = 距最近一次真实键鼠输入（投递的不算）的毫秒数。
 - 钉光标：功能树等只认 `GetCursorPos` / `GetMessagePos` 处的点击；`clickat` / `mouse` 投递前改写这两个入口，500ms 内回投递点。
 - 不抬窗：各模块 IAT 里的 `NtUserSetWindowPos` / `NtUserDeferWindowPosAndBand` 换成去掉 z 序变化的包装。
+- 修跳板：客户端里有模块用旧版 Detours（2.x：区首签名 `'Rrtd'`、跳板 32 字节）挂 user32 / win32u 的入口；它不认 `endbr32`（`F3 0F 1E FB`），搬进跳板时漏写 `1E`（留着填充的 `CC`），Wine 里以 `endbr32` 开头的入口（`MessageBoxA`）一经跳板即崩（客户端任何提示框都会带崩整个进程）。`detours` 扫全部可执行私有区，补回这样的跳板。
 - 绘制层：自绘控件（`CFQS_*` / `MHPToolBar` / `Afx*`）上的按钮只是画出来的字；`TdxW.exe` 有 VMProtect 壳、不走 IAT，故改写 gdi32 / user32 的 18 个绘制函数入口，按「后画盖先画」维护各窗口可见的文字与色块（`win::click_text` 据此点字）。
 - 禁用计数：`disables` 回窗口被禁用（`EnableWindow(FALSE)` → 同步 `WM_ENABLE`）的累计次数；首次问到某线程即给它常挂 `WH_CALLWNDPROC`。最短约 35ms 的禁用也记得住，轮询 `en` 会漏。
 - 卡顿：查大表时界面线程卡住（担保品查询全部约 45~100s），经界面线程的命令（`gettext` `detail`）随之等；`find` `rect` `disables` 照样答。
@@ -98,7 +99,7 @@ shim（程序）   独立调试程序：命令转发 / 探内存 / 协议字典 
 | 融资买入 | `0x1441` | `0x1945` | 313 / 314 / 315 / 320 / 220 / 199 / 1                              |
 | 融券卖出 | `0x1462` | `0x1946` | 未录（`flash::kKinds` 只收前三种）                                 |
 
-- 下单步骤（`Broker::order_steps`，「名 → 函数」表，各步结果写进本单上下文）：切换 → 开窗 → 填单 → 确认 → 回报；开窗 / 确认 / 回报同形「做一个动作、等它弹出的对话框」（`ui::popup`），任一步不符或超时即停、已弹出的窗口留给人工。
+- 下单步骤（`Broker::order_steps`，「名 → 函数」表，各步结果写进本单上下文）：切换 → 开窗 → 填单 → 确认 → 回报；开窗 / 确认 / 回报同形「做一个动作、等它弹出的对话框」（`ui::popup`；先冒出别的对话框，如客户端的 MessageBox 提示，即停并报其正文），任一步不符或超时即停、已弹出的窗口留给人工。
   - 切换：注册消息 `Stock` 投给主窗，`wParam` = 市场前缀 × 10⁶ + 代码（深 6、沪 7，北交所没有），等主窗标题换成「…-名称]」；客户端查着时照样处理（实测 0.1s 内换过来）。
   - 填单：核窗内代码与限价委托；价按默认价的小数位格式化；股数以最大可买 / 可卖封顶（改价后客户端未必即时重算，按价反比折一份取小）；数量单位为「元」时填 ⌈股数 × 价⌉、以「预估金额:…(N股)」（`8915`）核股数。写入后 `EN_CHANGE` 会先改写一下，等读回恰为所写。
   - 确认 / 回报：标题「买入交易确认」「卖出交易确认」「交易确认」/「提示」，正文 `Static` 7013、确认 `Button` 7015；确认框核代码 / 价 / 量，回报成功含合同号、失败含错误码与原因；等回报框、确认框、闪电窗都关了才算完。`BM_CLICK` 会被模态框阻塞，一律异步投递。

@@ -4,7 +4,6 @@
 //   (PortfolioService 只算新增的因子; 篮子账不依赖组合, all 标签库建好即算).
 #pragma once
 
-#include "gui/engine/Table.hpp" // FeatureTables
 #include "gui/engine/services/PortfolioService.hpp"
 #include "gui/engine/ui/PortfolioBoxes.hpp" // PortfolioUIState
 
@@ -17,7 +16,6 @@ struct SharedData;
 namespace GUI::Engine {
 
 struct EngineHub {
-  FeatureTables tables;   // 各层字段表视图
   int backend = -1;       // 0 = CPU, 1 = GPU; -1 = 未定, 首帧按 GPU 可用性定 (有 GPU 默认 GPU)
   uint64_t files_gen = 0; // 因子文件代: Alpha 的 RunService 每进一次 Done (扫描 / Run / Add / 删除后的 Rescan) +1
 

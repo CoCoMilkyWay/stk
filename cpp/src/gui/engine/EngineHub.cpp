@@ -19,14 +19,14 @@ void SyncPortfolio(const SharedData &data, EngineHub &e, bool reload) {
   if (pui.content_gen != e.portfolio_gen || e.files_gen != e.portfolio_files) {
     e.portfolio_gen = pui.content_gen;
     e.portfolio_files = e.files_gen;
-    ResolvePortfolio(data, e.tables, pui.entries, pui.items);
+    ResolvePortfolio(data, pui.entries, pui.items);
     ++pui.items_gen;
     e.portfolio_dirty = true;
   }
   if ((e.portfolio_dirty || reload) && !data.asset.items.empty()) {
     e.portfolio_dirty = false;
     PortfolioRequest req;
-    MakePortfolioRequest(data, e.tables, pui.items, reload, e.gpu(), req);
+    MakePortfolioRequest(data, pui.items, reload, e.gpu(), req);
     ++pui.items_gen; // 作用域建不成的条目在这里标失效
     std::string sig = req.sig();
     if (reload || sig != e.portfolio_sig) {

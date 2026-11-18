@@ -66,7 +66,7 @@ struct Ref {
   uint32_t key = kNone;
   bool ok() const { return key != kNone; }
   bool is(Side s) const { return ok() && side == s; }
-  bool operator==(const Ref &) const = default;
+  auto operator<=>(const Ref &) const = default;
 };
 // 账户的一只持仓: 流水代码 / 全局 id (Ref::kNone = 资产轴外, 如 ETF / LOF) / 股 / 计价 (券商现价 / 回放末日收盘)
 struct Holding {
@@ -138,18 +138,12 @@ struct Equity {
   double nav = 0, after = 0, in = 0;
   std::vector<Holding> hold; // 计价 = 末日收盘
 };
-// 价格库的戳 = 日脊的摘要: 库轴指纹 + 篮子表指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用)
+// 价格库的戳 = 日脊的摘要: 库轴指纹 + 篮子表指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用, 换戳即清)
 struct PriceStamp {
   uint64_t axis = 0, table = 0;
   misc::Ymd last = 0;
   size_t days = 0, lib = 0, fund = 0;
   bool operator==(const PriceStamp &) const = default;
-};
-// 标的 × 戳 = 读出序列的留存键 (misc::Lru; 戳对得上才沿用)
-struct RefAt {
-  Ref ref;
-  PriceStamp st;
-  bool operator==(const RefAt &) const = default;
 };
 // 价格库的一份发布 (PriceLib 每趟发布; 不可变, 只拷指针): lack 非空 = 用不了 (以用处开头; 其余空)
 struct PriceView {

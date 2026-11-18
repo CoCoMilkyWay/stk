@@ -102,14 +102,14 @@ bool RenamePortfolio(const std::string &from, const std::string &to) {
 
 void DeletePortfolio(const std::string &name) { disk::remove(disk::PortfolioFile, portfolio_key(name)); }
 
-void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out) {
+void ResolvePortfolio(const SharedData &data, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out) {
   out.clear();
   std::map<std::string, std::vector<FactorRow>> scanned;
   for (const PortfolioEntry &e : es) {
     PortfolioItem it;
     it.e = e;
     it.name_en = std::filesystem::path(e.file).stem().string();
-    const std::shared_ptr<const FeatureTable> ft = table_of(tables, data.feature, e.lv);
+    const std::shared_ptr<const FeatureTable> ft = table_of(data.feature, e.lv);
     const FactorDir dir = factor_dir_of(e.pool, e.lv);
     const std::filesystem::path p = dir.path(e.file);
     const bool exists = std::filesystem::is_regular_file(p);
@@ -132,7 +132,7 @@ void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::
   }
 }
 
-void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::vector<PortfolioItem> &items, bool reload, bool gpu, PortfolioRequest &req) {
+void MakePortfolioRequest(const SharedData &data, std::vector<PortfolioItem> &items, bool reload, bool gpu, PortfolioRequest &req) {
   assert(!data.asset.items.empty() && "资产轴未就绪");
   req = PortfolioRequest{};
   req.reload = reload;
@@ -140,7 +140,7 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
     if (!it.missing.empty())
       continue;
     FactorTask t;
-    if (!MakeFactorScope(data, table_of(tables, data.feature, it.e.lv), it.e.pool, /*years=*/0, gpu, t.scope)) {
+    if (!MakeFactorScope(data, table_of(data.feature, it.e.lv), it.e.pool, /*years=*/0, gpu, t.scope)) {
       it.missing = "标签库未建";
       continue;
     }
@@ -150,8 +150,13 @@ void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::ve
     req.factors.push_back(std::move(t));
   }
   BasketTask b;
-  if (MakeFactorScope(data, table_of(tables, data.feature, kBasketLevel), pool_def(kAllPool).name, /*years=*/0, /*gpu=*/false, b.scope))
+  if (MakeFactorScope(data, table_of(data.feature, kBasketLevel), pool_def(kAllPool).name, /*years=*/0, /*gpu=*/false, b.scope))
     req.baskets = std::move(b);
+}
+
+std::string BasketTask::sig() const {
+  const FeatureLib &L = scope.libs[kAllBar];
+  return L.dir + "#" + std::to_string(L.axis.hash) + "#" + std::to_string(L.dates.size()) + "#" + std::to_string(basket_table().hash());
 }
 
 std::string PortfolioRequest::sig() const {
@@ -202,43 +207,7 @@ struct BookP : LinesP<kBookCols> {
 };
 using PortfolioProbes = Probes<BookP>;
 
-constexpr size_t kKeepBytes = size_t{1} << 30;
-size_t bytes_of(const PortfolioBook &b) {
-  size_t n = b.dates.size() * sizeof(misc::Ymd) + b.keys.size() * sizeof(uint32_t);
-  for (const BookLines &c : b.col)
-    n += c.v.size() * sizeof(float);
-  for (const BookLines &c : b.val)
-    n += c.v.size() * sizeof(float);
-  return n;
-}
-void prune(std::map<std::string, std::shared_ptr<const PortfolioBook>> &m, std::map<std::string, uint64_t> &used, uint64_t now, bool reload) {
-  if (reload)
-    m.clear();
-  std::erase_if(used, [&](const auto &kv) { return kv.second != now && !m.contains(kv.first); });
-  size_t bytes = 0;
-  std::vector<std::pair<uint64_t, std::string>> old;
-  for (const auto &[k, c] : m) {
-    bytes += bytes_of(*c);
-    const auto u = used.find(k);
-    assert(u != used.end() && "缓存的因子必被请求过");
-    if (u->second != now)
-      old.emplace_back(u->second, k);
-  }
-  std::sort(old.begin(), old.end());
-  for (const auto &[u, k] : old) {
-    if (bytes <= kKeepBytes)
-      break;
-    bytes -= bytes_of(*m.at(k));
-    m.erase(k), used.erase(k);
-  }
-}
-std::vector<const FactorTask *> todo_of(const std::map<std::string, std::shared_ptr<const PortfolioBook>> &m, const std::vector<FactorTask> &ts) {
-  std::vector<const FactorTask *> todo;
-  for (const FactorTask &t : ts)
-    if (const auto it = m.find(t.key); it == m.end() || it->second->sig != t.sig())
-      todo.push_back(&t);
-  return todo;
-}
+constexpr double kKeepBytes = static_cast<double>(size_t{1} << 30);
 
 } // namespace
 
@@ -259,7 +228,6 @@ Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
     return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/false, [&](int e, int k, const std::string &why) {
       const FactorTask &t = *ts[static_cast<size_t>(e)];
       auto b = std::make_shared<PortfolioBook>();
-      b->sig = t.sig();
       b->lv = t.scope.lv;
       if (!why.empty()) {
         b->error = why;
@@ -291,25 +259,19 @@ Rc EvalBasketBooks(const BasketTask &t, FactorFlow &F, Quote::PerMarket<std::sha
   Quote::PerMarket<std::shared_ptr<PortfolioBook>> q;
   for (std::shared_ptr<PortfolioBook> &x : q) {
     x = std::make_shared<PortfolioBook>();
-    x->sig = t.sig(), x->lv = kBasketLevel;
+    x->lv = kBasketLevel;
     if (rc != Rc::Ok)
       x->error = j.why;
     else
-      x->dates = j.dm.dates;
+      x->dates = j.dm.stat_dates();
   }
   if (rc == Rc::Ok) {
     q[Quote::kBasket]->keys.resize(basket_table().size());
     std::iota(q[Quote::kBasket]->keys.begin(), q[Quote::kBasket]->keys.end(), 0u);
     q[Quote::kStock]->keys = j.dm.rs.axis.ids;
     assert(std::ranges::is_sorted(q[Quote::kStock]->keys) && "池轴 sub → 全局 id 升序 (line_of 二分)");
-    for (int k = 0; k < Quote::kMarkets; ++k) {
-      PortfolioBook &dst = *q[k];
-      SideBook &src = bs[k];
-      dst.col[kBookRet] = std::move(src.ret);
-      dst.col[kBookBuy] = std::move(src.buy);
-      for (int m = 0; m < kPoolVals; ++m)
-        dst.val[m] = std::move(src.val[m]);
-    }
+    for (int k = 0; k < Quote::kMarkets; ++k)
+      static_cast<Book &>(*q[k]) = std::move(bs[k]);
   }
   for (int k = 0; k < Quote::kMarkets; ++k)
     out[k] = std::move(q[k]);
@@ -328,20 +290,28 @@ void PortfolioService::put(Set &&set) {
 }
 
 bool PortfolioService::run(PortfolioRequest &req) {
-  ++tick_;
+  if (req.reload)
+    cache_.clear(), quotes_sig_.clear();
+  std::map<std::string, std::shared_ptr<const PortfolioBook>> hit;
+  std::vector<const FactorTask *> todo_f;
   for (const FactorTask &t : req.factors)
-    used_[t.key] = tick_;
+    if (const auto *p = cache_.find(t.sig()))
+      hit.emplace(t.key, *p);
+    else
+      todo_f.push_back(&t);
+  const std::string bsig = req.baskets ? req.baskets->sig() : std::string{};
+  const bool keep_b = req.baskets && bsig == quotes_sig_;
   {
     std::lock_guard<std::mutex> lock(mutex);
     message.clear();
-    prune(result.factors, used_, tick_, req.reload);
-    if (req.reload || !req.baskets)
-      result.quotes = {};
+    result.factors = std::move(hit);
+    if (!keep_b)
+      result.quotes = {}, quotes_sig_.clear();
     ++result_gen;
   }
+  cache_.trim([](double c) { return c > kKeepBytes; });
   publish();
 
-  const std::vector<const FactorTask *> todo_f = todo_of(result.factors, req.factors);
   std::map<std::tuple<FactorLevelId, std::string, LibMask>, std::vector<const FactorTask *>> groups;
   for (const FactorTask *t : todo_f)
     groups[group_of(*t)].push_back(t);
@@ -349,7 +319,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
     std::sort(ts.begin(), ts.end(), [](const FactorTask *a, const FactorTask *b) {
       return std::tie(a->f.expr, a->f.frame, a->f.dir) < std::tie(b->f.expr, b->f.frame, b->f.dir);
     });
-  const bool todo_b = req.baskets && !result.quotes[Quote::kBasket];
+  const bool todo_b = req.baskets && !keep_b;
   jobs_done.store(0, std::memory_order_relaxed);
   jobs_total.store(static_cast<int>(todo_f.size()) + todo_b, std::memory_order_relaxed);
 
@@ -361,7 +331,10 @@ bool PortfolioService::run(PortfolioRequest &req) {
     F.S.clear();
   for (const auto &[g, ts] : groups) {
     const Rc rc = EvalPortfolioGroup(ts, F, [&](size_t e, std::shared_ptr<const PortfolioBook> b) {
-      put([&](PortfolioResult &r) { r.factors[ts[e]->key] = std::move(b); });
+      const double bytes = static_cast<double>(b->bytes());
+      cache_.put(ts[e]->sig(), b, bytes);
+      put([&](PortfolioResult &r) { r.factors[ts[e]->key] = b; });
+      cache_.trim([](double c) { return c > kKeepBytes; });
     });
     if (!settle(rc))
       return false;
@@ -372,6 +345,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
   const Rc rc = EvalBasketBooks(*req.baskets, F, q);
   if (!settle(rc))
     return false;
+  quotes_sig_ = bsig;
   put([&](PortfolioResult &r) { r.quotes = std::move(q); });
   return true;
 }

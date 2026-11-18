@@ -1,20 +1,18 @@
 #pragma once
 
-// 篮子表 (行情价格库 Quote::PriceLib (篮子侧) / 回测 Engine::baskets 同一张): 篮子 = 切片 × 该切片的权重 (pool::Weight), 一切片一个篮子
+// 篮子表 (行情价格库 Quote::PriceLib / 回测 Engine::baskets 同一张): 篮子 = 切片 × 该切片的权重 (pool::Weight), 一切片一个篮子
 //   三段, 段序 = 目录组序 = 下标序: 子池 (池表序, 首两池 = 全A 等权 / 加权) | 申万一级行业 (ind_l1 序) | 概念 (概念表序)
 //   子池的成员 / 权重 / 周期 = 池参数; 行业 / 概念 = 母集 (全A 等权池) 内切, 加权, 日频
 //   下标 b = 篮子号: 两边一切按篮子的量 (点位 / 收益 / 估值 / 换手 / 成员权) 都以 b 为键, 序 / 名同此; 一日的持仓 = 成员表 (define/Members.hpp, 键 = b)
-//   逐篮子的属性建表时定 (热循环只查数组); 成员判据只此一处 (each ⇄ holds), 持仓权只此一处 (Weigh), 一日的成员表只此一处 (members)
+//   逐篮子的属性建表时定 (热循环只查数组); 持仓权 Weigh 按 (周期, 权重) 降维为每资产 2×2 四数; 成员两步对仗 members ⇄ drift 同出于此
 #include "define/Members.hpp"
 #include "features/Panel/Fund.hpp"         // SW2021_L1_COUNT / NAMES
 #include "features/Panel/PoolSelect.hpp"   // pool::Picks / Strip
 #include "features/Storage/FeatureLib.hpp" // pool_count / pool_def / kAllAPool / PoolMask
-#include "fundamental/AssetAxis.hpp"       // PoolAxis
 #include "misc/date.hpp"
 #include "misc/epoch.hpp"
 #include "shared/Concept.hpp" // concepts
 
-#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -33,12 +31,6 @@ enum BasketGroup : int { kGroupPool,
 inline constexpr int kBasketGroups = 3;
 inline constexpr size_t kIndBaskets = fund::SW2021_L1_COUNT - 1;  // ind_l1 1..; 0 = 未知 (不在市)
 inline constexpr PoolId kBasketBase = kAllAPool[pool::kWeightEq]; // 行业 / 概念篮子的母集
-
-// 一只一日的事实 (判据的当日输入, 同取成员源行 = D−1 收盘, 整日常量); 所属概念是资产常量, 另给
-struct Fact {
-  PoolMask in = 0; // 当日所在的池 (位 kAllPool 不看)
-  uint8_t ind = 0; // 申万一级 (0 = 未知)
-};
 
 class BasketTable {
 public:
@@ -76,39 +68,26 @@ public:
     assert(group(b) == kGroupPool);
     return static_cast<PoolId>(b + 1);
   }
-  // 权所依的池: 子池 = 本池, 行业 / 概念 = 母集
-  PoolId base(size_t b) const { return group(b) == kGroupPool ? pool_of(b) : kBasketBase; }
 
-  // 逐篮子的属性: 权重 / 调仓周期 (子池 = 池参数, 其余日频: 成员源 = 前一交易日收盘, 见 features/Panel/PoolSelect.hpp src_of)
-  //   / 代码 (子池 = 池名, 行业 = sw<ID>, 概念 = 板块代码) / 名 = 主干 (切片名) + 权重后缀
+  // 逐篮子的属性: 权重 / 调仓周期 (子池 = 池参数, 其余日频) / 代码 (子池 = 池名, 行业 = sw<ID>, 概念 = 板块代码) / 名 = 主干 + 权重后缀
   pool::Weight weight(size_t b) const { return weight_[b]; }
   pool::Rebal rebal(size_t b) const { return rebal_[b]; }
   const std::string &code(size_t b) const { return code_[b]; }
   const std::string &stem(size_t b) const { return stem_[b]; }
   std::string name(size_t b) const { return stem_[b] + pool::weight_suffix(weight_[b]); }
 
-  // 成员判据两向 (价格指数的成员表 Quote::members / 回测池篮子 Engine::baskets / 仓位链同出于此): 一只一日的事实 f + 所属概念 cs (概念表下标升序)
-  //   子池 p: f.in 含 p; 行业 k: f.in 含母集 ∧ f.ind = k; 概念 k: f.in 含母集 ∧ k ∈ cs
-  //   each 枚举所属的篮子 fn(b) (b 升序) ⇄ holds 测是否在篮子 b
+  // 枚举一只一日所属的篮子 fn(b) (b 升序): 当日所在的子池位集 in + 源行行业 ind + 所属概念 cs (概念表下标升序)
+  //   子池 p: in 含 p; 行业 k: in 含母集 ∧ ind = k; 概念 k: in 含母集 ∧ k ∈ cs
   template <class Fn>
-  void each(const Fact &f, std::span<const uint16_t> cs, Fn &&fn) const {
-    for (PoolMask r = f.in & ~pool_bit(kAllPool); r; r &= r - 1)
+  void each(PoolMask in, uint8_t ind, std::span<const uint16_t> cs, Fn &&fn) const {
+    for (PoolMask r = in & ~pool_bit(kAllPool); r; r &= r - 1)
       fn(at_pool(pool_first(r)));
-    if (!(f.in & pool_bit(kBasketBase)))
+    if (!(in & pool_bit(kBasketBase)))
       return;
-    if (f.ind > 0)
-      fn(at_ind(f.ind));
+    if (ind > 0)
+      fn(at_ind(ind));
     for (const uint16_t k : cs)
       fn(at_concept(k));
-  }
-  bool holds(size_t b, const Fact &f, std::span<const uint16_t> cs) const {
-    const BasketGroup g = group(b);
-    if (g == kGroupPool)
-      return (f.in & pool_bit(pool_of(b))) != 0;
-    if (!(f.in & pool_bit(kBasketBase)))
-      return false;
-    const size_t k = b - lo_[g];
-    return g == kGroupInd ? static_cast<size_t>(f.ind) == k + 1 : std::ranges::binary_search(cs, static_cast<uint16_t>(k));
   }
 
 private:
@@ -126,23 +105,31 @@ inline const BasketTable &basket_table() {
   return t.get();
 }
 
-// 交易日 d 的持仓权 (行情价格指数 / 回测池篮子同一式): 篮子 b 的源行 = 所依池 base(b) 按其周期的源行 (pool::Picks::src),
-//   资产 a 的权 = 源行目标权漂到原料带行 q (pool::Strip::omega; q ≥ 各池源行)
+// 交易日 d 的持仓权 (权落在 d 之前的末行 q = D−1 收盘; 行情价格指数 / 回测池篮子同一式):
+//   源行只按调仓周期分两档 src_[Rebal] (无 → SIZE_MAX); 一只资产至多 2×2 四个权 Cell, 按篮子 (周期, 权重) O(1) 查表
 class Weigh {
 public:
-  Weigh(const pool::Picks &pk, misc::Ymd d, size_t q);
-  float operator()(size_t b, size_t a) const;
+  struct Cell {
+    float v[pool::kRebals][pool::kWeights]{};
+    float operator()(pool::Rebal rb, pool::Weight w) const { return v[rb][w]; }
+    float operator()(const BasketTable &bt, size_t b) const { return v[bt.rebal(b)][bt.weight(b)]; }
+  };
+  Weigh(const pool::Picks &pk, misc::Ymd d);
+  bool empty() const { return q_ == SIZE_MAX; }
+  size_t row() const { return q_; }
+  Cell of(size_t a) const;
 
 private:
   const pool::Strip *s_;
-  const BasketTable *bt_;
   size_t q_;
-  std::vector<size_t> src_; // [池] 源行 (无 = SIZE_MAX)
+  std::array<size_t, pool::kRebals> src_{};
 };
 
-// 交易日 d 的成员表 m (资产 = all.bar 轴下标 a; 行情价格指数 / 回测池篮子同一份): 事实 = 当日所在的子池 (Picks::pools) + 原料带行 q 的行业,
-//   过 BasketTable::each, 权 = Weigh (≤ 0 不进); 概念按 axis.global(a); Members::cap = 行 q 收盘总市值; only 非空 = 只收 only[篮子]
-void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, size_t q, Members &m, std::span<const uint8_t> only = {});
+// 成员两步对仗 (行情价格指数 / 回测池篮子同一套):
+//   members: 选股表 → 交易日 d 的成员表 m (权与 cap 落在 D−1 收盘; 无源 → 空; global = 资产记全局 id, 否则 all.bar 轴下标; only 非空 = 只收 only[篮子])
+//   drift:   成员表 m 冻结过交易日 prev → d (补段无选股表行): 权与 cap × rel [资产], 逢篮子周期换源回目标权
+void members(const pool::Picks &pk, misc::Ymd d, Members &m, bool global = false, std::span<const uint8_t> only = {});
+void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel);
 
 inline BasketTable::BasketTable() {
   const ConceptTable &ct = concepts();

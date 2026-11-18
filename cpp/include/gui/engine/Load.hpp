@@ -1,9 +1,8 @@
-// Load — 评估域 / 分块计划 / 三侧特征库装载 / 进程唯一计算面 Store (全部因子服务与观察工具共用):
+// Load — 评估域 / 分块计划 / 两侧特征库装载 / 进程唯一计算面 Store (全部因子服务、篮子账与观察工具共用):
 //   结局 Rc; 评估域 Domain (domain_of: 所用库 + 评估期 + 预热 + A 轴) → 预算 Budget + 前后带 Bands → 分块 Plan (plan_chunks);
-//   三侧严格对仗 (共享逐天并行骨架 read_days):
-//     X (因子输入叶: LeafId → Leaf → XPlanes, load_x)
+//   两侧严格对仗 (共享逐天并行骨架 read_days, 统一经 Store::pin 钉成 Block):
+//     X (特征输入叶: LeafId → Leaf → XPlanes, load_x; 含池篮子复用的 bar.1d 估值五叶)
 //     Y (截面门控 + 建仓可成交码 YCore + 标签两侧 [hold] + 买入冲击 [amt] → YPlanes, load_y)
-//     B (池篮子与个股原料: 池成员位 + T+1C 标签 + 估值 → BPlanes, load_b; 成员 / 持仓权 / 行业 / 市值 / 收益 = 选股表的原料带, 与行情篮子同一份)
 //   Store = 进程唯一的计算面 (线程池 ex + 库 lr + 宿主平面 LRU + 常驻算子/评估工作区 ExecSpace + 计算权优先级队列):
 //     计算句柄 FactorFlow + 独占租约 Lease (计算权在手才可碰其余全部资源, 跨文件 / 跨趟零重分配复用).
 #pragma once
@@ -15,7 +14,6 @@
 #include "misc/epoch.hpp"
 #include "misc/exec.hpp"
 #include "misc/lru.hpp"
-#include "shared/Basket.hpp"      // Fact / pool::Picks
 #include "shared/Progress.hpp"    // Progress
 #include "shared/ReadRequest.hpp" // ReadScope
 
@@ -101,7 +99,7 @@ struct Plan {
 };
 Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double host, double vram = 0.0);
 
-// ---- 三侧规格与平面: X ↔ Y ↔ B 同形 ----
+// ---- 两侧规格与平面: X ↔ Y 同形 ----
 struct Shape {
   int T = 0, A = 0, days = 0, seg = 0;
   size_t n() const { return static_cast<size_t>(T) * A; }
@@ -153,8 +151,6 @@ struct BlockSpec {
   bool ry = false;
 };
 inline constexpr double kPlaneBytes = 5.0;
-// 池篮子一格: 入 (in + 标签 + 可成交码 + 估值) + 个股侧出 (ret + 估值)
-inline constexpr double kBasketCellBytes = sizeof(PoolMask) + kPlaneBytes + 1.0 + 4.0 * kPoolVals + 4.0 * (1 + kPoolVals);
 double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx);
 
 struct Leaf : factor::check::Plane {
@@ -197,24 +193,6 @@ inline int fill_costs(const YPlanes &y, factor::stat::Cost (&out)[factor::stat::
 }
 factor::stat::Labels labels_of(const YPlanes &y);
 
-// 块行 t = 原料带行 r0 + t (评估日 = 原料带的连续行); 格 i = t · A + a
-struct BPlanes {
-  Shape sh;
-  std::shared_ptr<const pool::Picks> pk; // 选股表 + 原料带 (成员 / 持仓权 / 行业 / 市值 / 收益)
-  PoolAxis axis;                         // = 原料带轴
-  size_t r0 = 0;
-  std::vector<PoolMask> in; // 门控 (kAllPool) + 当日有数据的子池成员
-  LegPlane lab;             // T+1C
-  std::vector<uint8_t> eo;
-  std::vector<float> val[kPoolVals]; // 估值分子 (kPoolValCols)
-  const pool::Strip &strip() const { return *pk->strip; }
-  misc::Ymd date(size_t t) const { return strip().dates[r0 + t]; }
-  Fact fact(size_t i) const {
-    const size_t A = static_cast<size_t>(sh.A);
-    return {in[i], strip().ind[(r0 + i / A) * A + i % A]};
-  }
-};
-
 struct Io {
   const FeatureTable &ft;
   const Domain &dm;
@@ -226,7 +204,6 @@ struct Io {
 bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vector<Leaf> &out);
 bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LegPlane> &labels,
             std::vector<std::vector<uint16_t>> &costs);
-bool load_b(const Io &io, const Chunk &k, BPlanes &B);
 bool n_full_of(const Io &io, const Chunk &k, double &out);
 
 // 块视图: 评估域日段 ck 的钉住平面 (x_gen = 层|域|日段|代, gen = x_gen + YSpec)

@@ -1,16 +1,19 @@
 // Book — 净值与篮子引擎 (Stat 契约【净值】; Inspect 分层 / Portfolio 因子线 / 池篮子 / 池整体线同一份): Load 之上.
 //   逐行批收益 RowLines → fold_book (每批资金 1/h̄, 收益在平仓行实现 / 成本在建仓行即付; 按 stride 求和) → 期收益 BookLines → compound 净值.
-//   行情两侧 SideBook (篮子 kBasket ↔ 个股 kStock 同形, 全部列均为 BookLines): baskets 一趟出齐; pool_line 出池整体等权线.
-//   池篮子的成员 / 持仓权 = shared/Basket.hpp members / Weigh (与行情篮子同一份), 换手 / 估值的持仓 = 篮子账 Sleeve (define/Members.hpp)
+//   统一账核 Book (col[kBookCols] + val[kPoolVals]): 因子账 / 篮子账 / 个股账完全同形; BasketPass 沿 Store::pin 的分块流式归约出 Baskets.
+//   池篮子的成员 / 持仓权 = shared/Basket.hpp members / Weigh (按持仓日对齐, 与行情篮子 / Style 同一份), 换手 / 估值的持仓 = 篮子账 Sleeve (define/Members.hpp)
 #pragma once
 
-#include "gui/engine/Load.hpp" // YPlanes / BPlanes / Block
-#include "gui/quote/Quote.hpp" // PerMarket
+#include "features/Panel/PoolSelect.hpp" // pool::Picks
+#include "gui/engine/Load.hpp"           // Block / Domain
+#include "gui/quote/Quote.hpp"           // PerMarket
 #include "misc/exec.hpp"
 
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <span>
 #include <vector>
 
 namespace GUI::Engine {
@@ -60,18 +63,47 @@ void compound(const R *r, size_t n, Put &&put) {
   }
 }
 
-// 行情一侧的账原料 (篮子 kBasket ↔ 个股 kStock 完全同形):
-//   ret = 逐行收益 (篮子 = 可成交指数 fold_book; 个股 = 原料带 grow 比 − 1, 后复权)
-//   buy = 逐行增仓量 (篮子 = Sleeve::roll; 个股无此列 n = 0)
-//   val = 估值五口 EP / BP / SP / CP / DY [线][T] (篮子 = 持仓加权)
-struct SideBook {
-  BookLines ret;
-  BookLines buy;
-  BookLines val[kPoolVals];
-};
-using Baskets = Quote::PerMarket<SideBook>;
+// 统一账列: 收益 / 买入冲击 / 固定冲击份数 / 增仓量
+enum BookCol : int { kBookRet,
+                     kBookImp,
+                     kBookFix,
+                     kBookBuy };
+inline constexpr int kBookCols = 4;
 
-Baskets baskets(misc::exec::ForkJoin &ex, const BPlanes &B);
+// 账核 (因子 / 篮子 kBasket / 个股 kStock 完全同形; 无该列的 BookLines n = 0):
+//   因子: col[Ret / Imp / Fix / Buy] 齐, val 空
+//   篮子: col[Ret] = 可成交指数 fold_book; col[Buy] = Sleeve::roll 增仓量; val = 持仓加权五口估值 EP / BP / SP / CP / DY
+//   个股: col[Ret] = 原料带 grow 比 − 1 (后复权); val = 五口估值
+struct Book {
+  BookLines col[kBookCols];
+  BookLines val[kPoolVals];
+  size_t bytes() const {
+    size_t n = 0;
+    for (const BookLines &c : col)
+      n += c.v.size() * sizeof(float);
+    for (const BookLines &c : val)
+      n += c.v.size() * sizeof(float);
+    return n;
+  }
+};
+using Baskets = Quote::PerMarket<Book>;
+
+// 池篮子与个股账的分块归约器 (与 Probe 的 init → chunk → finish 对仗; 消费 Store::pin 的 Block)
+class BasketPass {
+public:
+  BasketPass(const Domain &dm, std::shared_ptr<const pool::Picks> pk, std::span<const LeafId, kPoolVals> val);
+  static double fixed_bytes(const Domain &dm);
+  void chunk(misc::exec::ForkJoin &ex, const Block &c);
+  Baskets finish(misc::exec::ForkJoin &ex);
+
+private:
+  std::shared_ptr<const pool::Picks> pk_;
+  LeafId val_[kPoolVals] = {};
+  size_t r0_ = 0, warm_ = 0, ds_ = 0;
+  RowLines rx_;
+  Baskets out_;
+};
+
 BookLines pool_line(misc::exec::ForkJoin &ex, const Block &c);
 
 } // namespace GUI::Engine

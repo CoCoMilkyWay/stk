@@ -5,7 +5,6 @@
 #include "factor/Stat/Cpu.hpp"                      // prep_label / Workspace
 #include "features/MetaFlag.hpp"                    // fmeta::valid / keep / finite
 #include "features/Node/Common/Label/LabelHold.hpp" // 只取 kContCloseMin 对账尾部界
-#include "features/Panel/PoolSelect.hpp"            // pool::picks
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
 #include "misc/cross_platform.hpp" // memory_usage
@@ -20,7 +19,6 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <type_traits>
 #include <utility>
@@ -211,7 +209,7 @@ Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double ho
 }
 
 // ============================================================================
-// 三侧规格与逐天并行装载: load_x ↔ load_y ↔ load_b
+// 两侧规格与逐天并行装载: load_x ↔ load_y
 // ============================================================================
 
 YSpec y_spec(const FeatureTable &ft, const Domain &dm, const Holds &hd, Segs sg, double max_impact) {
@@ -511,72 +509,6 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
     for (const long long x : on)
       core.on += x;
   return true;
-}
-
-bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
-  TraceN("FactorsLoadB");
-  constexpr size_t K = factor::stat::kLegs;
-  const FeatureTable &ft = io.ft;
-  assert(io.dm.pool == kAllPool && "池篮子在 all 池评估域 (全轴; 各池成员 = all.bar 选股表)");
-  B = BPlanes{};
-  B.sh = shape_of(io, k);
-  const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg);
-  assert(pool_count() <= static_cast<size_t>(kPoolBits));
-  assert(VR == 1 && "池篮子按日 (一行一日)");
-  assert(io.dm.rs.has(kAllBar));
-  B.pk = pool::picks(io.dm.rs.libs[kAllBar]);
-  if (!B.pk)
-    return false;
-  const pool::Strip &s = B.strip();
-  assert(s.axis == io.dm.rs.axis.hash && s.A == A && "选股表与评估域 A 轴不符");
-  B.axis = io.dm.rs.axis;
-  B.r0 = s.row_of(io.dm.dates[k.d0]);
-  assert(B.r0 + static_cast<size_t>(k.days()) <= s.days() &&
-         std::equal(io.dm.dates.begin() + static_cast<std::ptrdiff_t>(k.d0), io.dm.dates.begin() + static_cast<std::ptrdiff_t>(k.d1), s.dates.begin() + static_cast<std::ptrdiff_t>(B.r0)) &&
-         "评估日 = 原料带的连续行");
-  ColList cols{io.dm.pool, {}};
-  const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs), eo_i = cols.add(ft.y.entry);
-  const size_t lab_i = cols.refs.size();
-  for (const Col &c : leg_of(ft.y.labels, factor::stat::hold_close(1)).leg)
-    cols.add(c);
-  const size_t val_i = cols.refs.size();
-  for (const Col &v : ft.b.val)
-    cols.add(v);
-  assert(cols.refs[ts_i].lib == io.dm.rs.main && "门控 / 标签在标签库");
-  B.in.assign(n, 0);
-  for (std::vector<uint16_t> &v : B.lab.v)
-    v.assign(n, 0);
-  B.lab.m.assign(n, 0);
-  B.eo.assign(n, 0);
-  for (std::vector<float> &v : B.val)
-    v.resize(n);
-  const size_t nt = static_cast<size_t>(io.ex.threads());
-  std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A));
-  std::vector<std::vector<PoolMask>> sub(nt, std::vector<PoolMask>(A));
-  return read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &day, size_t d, size_t tid) {
-    gate_day(view, ts_i, cs_i, VR, A, has[tid], gate[tid].data());
-    const std::vector<uint8_t> &on = has[tid];
-    std::vector<PoolMask> &sm = sub[tid];
-    std::fill(sm.begin(), sm.end(), PoolMask{0});
-    B.pk->pools(day.date, sm);
-    const size_t row = d * A;
-    PoolMask *in = B.in.data() + row;
-    for (size_t a = 0; a < A; ++a)
-      in[a] = (gate[tid][a] ? pool_bit(kAllPool) : PoolMask{0}) | (on[a] ? sm[a] : PoolMask{0});
-    const View we = view(eo_i, 0), wl[K] = {view(lab_i, 0), view(lab_i + 1, 0)};
-    for (size_t a = 0; a < A; ++a) {
-      B.eo[row + a] = eo_cell(we, a, in[a] != 0);
-      leg_cell(wl, a, in[a] != 0, B.eo[row + a], B.lab, row + a);
-    }
-    constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-    for (int m = 0; m < kPoolVals; ++m) {
-      const View wv = view(val_i + static_cast<size_t>(m), 0);
-      for (size_t a = 0; a < A; ++a) {
-        feature_storage_t x;
-        B.val[m][row + a] = cell(wv, a, x) ? static_cast<float>(x) : kNaN;
-      }
-    }
-  });
 }
 
 bool n_full_of(const Io &io, const Chunk &k, double &out) {

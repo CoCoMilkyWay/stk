@@ -33,6 +33,8 @@
 //   序变化（默认开；on 重扫模块） spy on [msg=<id>|all|cmd] / off / clear /
 //   dump  默认 msg=0x111(WM_COMMAND)；cmd = WM_COMMAND + 发给非标准控件的
 //   WM_USER..0xFFFF 私有消息
+//   detours                       {tramp,target}… + {regions,tramps,fixed}
+//                                 修补别的模块里旧版 Detours 漏搬 endbr32 的跳板（可重扫）
 //   gdi [on|off]                  {on,patched,layers,items,evicted}  绘制层：钩
 //   文字/填色/贴图入口，按窗口记录可见文字与色块（on 首次装钩并重绘全部窗口；
 //   patched = 已装入口数，装不上的先各回一行 {skip}；evicted = 图层满时挤掉
@@ -1131,6 +1133,77 @@ static const char *cmd_noraise(struct out *o, HWND h, char *a) {
     return "usage: noraise [on|off]";
   emit(o, "{\"on\":%ld,\"patched\":%d,\"blocked\":%ld}\n", (long)g_noraise,
        g_patched, (long)g_blocked);
+  return NULL;
+}
+
+// ---------- 修补旧版 Detours 跳板 ----------
+// 进程里别的模块用旧版 Detours (2.x) 挂函数入口：跳板区 64KB、首 4 字节签名
+// 'Rrtd'，其后每 32 字节一个跳板 {搬走的目标头几条指令 + jmp 回 remain,
+// 搬了几字节, remain, detour}。其反汇编表不认 0F 1E（endbr32 = F3 0F 1E FB），
+// 搬时漏写这一字节、留着填充的 0xCC；Wine 里以 endbr32 开头的入口（如
+// MessageBoxA）一经跳板即崩。扫全部可执行私有区，把这样的跳板补回 endbr32。
+#define DETOURS_SIG 0x52727464u // 'Rrtd'
+#define DETOURS_REGION 0x10000
+struct detours_tramp {
+  BYTE code[23];
+  BYTE n;
+  BYTE *remain, *detour;
+};
+_Static_assert(sizeof(struct detours_tramp) == 32, "Detours 2.x 跳板 32 字节");
+static const BYTE ENDBR32[4] = {0xF3, 0x0F, 0x1E, 0xFB};
+static const BYTE ENDBR32_LOST[4] = {0xF3, 0x0F, 0xCC, 0xFB};
+
+// 在用的跳板：搬的字节够一条 jmp、其后紧跟 jmp rel32 到 remain
+static int detours_live(const struct detours_tramp *t) {
+  if (t->n < 5 || t->n + 5 > (int)sizeof(t->code) || t->code[t->n] != 0xE9 ||
+      !t->remain || !t->detour)
+    return 0;
+  DWORD rel;
+  memcpy(&rel, t->code + t->n + 1, sizeof(rel));
+  return (DWORD)(DWORD_PTR)(t->code + t->n + 5) + rel ==
+         (DWORD)(DWORD_PTR)t->remain;
+}
+
+static const char *cmd_detours(struct out *o, HWND h, char *a) {
+  (void)h;
+  (void)a;
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  int regions = 0, tramps = 0, fixed = 0;
+  MEMORY_BASIC_INFORMATION mb;
+  for (BYTE *p = (BYTE *)si.lpMinimumApplicationAddress;
+       p < (BYTE *)si.lpMaximumApplicationAddress &&
+       VirtualQuery(p, &mb, sizeof(mb));
+       p = (BYTE *)mb.BaseAddress + mb.RegionSize) {
+    if (mb.State != MEM_COMMIT || mb.Type != MEM_PRIVATE ||
+        mb.BaseAddress != mb.AllocationBase || mb.RegionSize < DETOURS_REGION ||
+        (mb.Protect & PAGE_GUARD) ||
+        !(mb.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                        PAGE_EXECUTE_WRITECOPY)) ||
+        *(DWORD *)p != DETOURS_SIG)
+      continue;
+    regions++;
+    for (struct detours_tramp *t = (struct detours_tramp *)p + 1;
+         (BYTE *)(t + 1) <= p + DETOURS_REGION; t++) {
+      if (!detours_live(t))
+        continue;
+      tramps++;
+      if (memcmp(t->code, ENDBR32_LOST, sizeof(ENDBR32_LOST)))
+        continue;
+      DWORD old;
+      BOOL ok = VirtualProtect(t->code, sizeof(ENDBR32), PAGE_EXECUTE_READWRITE,
+                               &old);
+      assert(ok);
+      memcpy(t->code, ENDBR32, sizeof(ENDBR32));
+      VirtualProtect(t->code, sizeof(ENDBR32), old, &old);
+      FlushInstructionCache(GetCurrentProcess(), t->code, sizeof(ENDBR32));
+      fixed++;
+      emit(o, "{\"tramp\":\"0x%08x\",\"target\":\"0x%08x\"}\n", HX(t),
+           HX(t->remain - t->n));
+    }
+  }
+  emit(o, "{\"regions\":%d,\"tramps\":%d,\"fixed\":%d}\n", regions, tramps,
+       fixed);
   return NULL;
 }
 
@@ -3192,6 +3265,7 @@ static const struct cmd CMDS[] = {
     {"key", cmd_key, ARG_NONE},
     {"char", cmd_char, ARG_NONE},
     {"noraise", cmd_noraise, ARG_NONE},
+    {"detours", cmd_detours, ARG_NONE},
     {"gdi", cmd_gdi, ARG_NONE},
     {NULL, NULL, 0},
 };

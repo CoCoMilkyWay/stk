@@ -15,7 +15,6 @@
 #include "gui/engine/Load.hpp"
 #include "gui/util/PoolTip.hpp"
 #include "misc/date.hpp"
-#include "misc/epoch.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -52,8 +51,7 @@ Engine::FactorLevelId level_id(int level) {
 }
 
 std::shared_ptr<const Engine::FeatureTable> table(const SharedData &data, int level) {
-  static misc::Epochal<Engine::FeatureTables> tables;
-  return Engine::table_of(tables.get(), data.feature, level_id(level));
+  return Engine::table_of(data.feature, level_id(level));
 }
 
 Engine::FactorDir candidates(const Scope &sc, bool test) {

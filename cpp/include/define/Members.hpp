@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -11,9 +12,9 @@
 // ============================================================================
 // Members — 成员表 (一日的持仓, 资产主序的稀疏 CSR): 行 k = 资产 id[k] (升序, 只收有所属的), 所属 = of(k) (键升序), 各带权 w > 0
 //   键 = 篮子下标 (shared/Basket.hpp; 行情价格指数 / 回测池篮子) 或权重 (pool::perf 的账); 资产 = 调用方的轴
-//   合 scatter: 各键 Σ w · x(a) / Σ w
+//   合 scatter: 各键对有限值 x(a) 累 Σ w · x(a) 与 Σ w
 //   两向: scale 过一日 (随价漂移) ⇄ turnover 换仓 (目标对漂移后的增仓量)
-// Sleeve — 篮子账 (Style 篮子账 / 回测池篮子同一核): 持仓 hold 两步对仗
+// Sleeve — 篮子账 (Style 篮子账 / 回测池篮子同一核, 自持工作区零重分配): 持仓 hold 两步对仗
 //   roll 换源: buy[键] += 目标 to 对 hold 的增仓量, hold ← to ⇄ pass 过一日: ret[键] = 合 rel − 1, hold 随价 × rel
 // ============================================================================
 struct Members {
@@ -43,14 +44,13 @@ struct Members {
   std::span<const Weight> of(size_t k) const { return {ws.data() + at[k], ws.data() + at[k + 1]}; }
   std::span<Weight> of(size_t k) { return {ws.data() + at[k], ws.data() + at[k + 1]}; }
 
-  // s[键] += Σ w · x(a), n[键] += Σ w
+  // 有限的 x(a): s[键] += Σ w · x(a), n[键] += Σ w
   template <class X>
   void scatter(X &&x, std::span<double> s, std::span<double> n) const {
-    for (size_t k = 0; k < size(); ++k) {
-      const double v = x(id[k]);
-      for (const Weight &e : of(k))
-        s[e.key] += e.w * v, n[e.key] += e.w;
-    }
+    for (size_t k = 0; k < size(); ++k)
+      if (const double v = x(id[k]); std::isfinite(v))
+        for (const Weight &e : of(k))
+          s[e.key] += e.w * v, n[e.key] += e.w;
   }
   // 过一日: 权与 cap × rel(a)
   template <class Rel>
@@ -62,9 +62,10 @@ struct Members {
         e.w *= r;
     }
   }
-  // 换仓 (本表 = 目标, from = 漂移到换仓时的旧表): buy[键] += Σ (w / Σw − w̃ / Σw̃)⁺; 键在 from 里空 ⇒ 建仓 = 1
-  void turnover(const Members &from, std::span<double> buy) const {
-    std::vector<double> n(buy.size()), nf(buy.size());
+  // 换仓 (本表 = 目标, from = 漂移到换仓时的旧表; n / nf = 调用方给的 [buy.size()] 已清零工作区):
+  //   buy[键] += Σ (w / Σw − w̃ / Σw̃)⁺; 键在 from 里空 ⇒ 建仓 = 1
+  void turnover(const Members &from, std::span<double> buy, std::span<double> n, std::span<double> nf) const {
+    assert(n.size() == buy.size() && nf.size() == buy.size());
     for (const Weight &e : ws)
       n[e.key] += e.w;
     for (const Weight &e : from.ws)
@@ -89,7 +90,8 @@ struct Sleeve {
 
   // 换源 (to 交出新目标, 换回旧持仓)
   void roll(Members &to, std::span<double> buy) {
-    to.turnover(hold, buy);
+    s_.assign(buy.size(), 0.0), n_.assign(buy.size(), 0.0);
+    to.turnover(hold, buy, s_, n_);
     std::swap(hold, to);
   }
   // 过一日: ret 空 = 只漂移; 键无仓 → 0

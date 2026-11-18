@@ -6,7 +6,7 @@
 #pragma once
 
 #include "cta/Trace.hpp"
-#include "gui/quote/Quote.hpp" // Side / RefAt
+#include "gui/quote/Quote.hpp" // Ref / PriceStamp
 #include "gui/util/Service.hpp"
 #include "misc/exec.hpp"
 #include "misc/lru.hpp"
@@ -61,7 +61,8 @@ private:
   bool publish(const CtaRequest &req, std::string lack, std::shared_ptr<CtaResult> out = nullptr);
 
   misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
-  misc::Lru<RefAt, cta::Series> kept_;
+  Quote::PriceStamp stamp_;
+  misc::Lru<Quote::Ref, cta::Series> kept_;
 };
 
 } // namespace GUI::Market

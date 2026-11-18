@@ -1,6 +1,6 @@
 // StyleService — Beta→Style 页的单 worker: 一个风格的参数网格 (features/Panel/PoolSpec.hpp Grid) 逐组选池 → 篮子的滚动一年绩效 (平均 / 中位) 与累计中位夏普 + 其逐日截面分位的平均 (打分)
-//   原料带 = 每进程代一份 (pool::strip, 与选股表共用; 新落盘日增量补); 风格的次序 (pool::rank) 按风格留最近 kKeep 份 (随原料带补行);
-//   篮子账按成员 (权重归 0, 两权重同一趟) 留 (只留当前风格; 原料带换代清空): 改网格只算新出现的成员
+//   原料带 = 每进程代一份 (pool::strip, 与选股表共用; 新落盘日增量补); 风格的次序 (pool::rank) 与篮子账 (权重归 0, 两权重同一趟) 均由 misc::Lru 跨风格留存
+//   (随原料带增量补行 / 换代清空): 改网格 / 切风格只算新出现的成员
 //   全A = 池表首两池 (pool::all_a, 行情篮子同一条; 切片内在市全取, 日频), 两权重
 //   请求 = 网格 (风格维只勾打开的那一个) + 回测区间 (只改区间 = 账全在, 只重算绩效); 新请求覆盖旧的. 进度: Loading = 原料 / 键的行数, Running = 待算的篮子数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (shared_ptr 拷出即放锁)
@@ -10,12 +10,12 @@
 #include "gui/util/Service.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
+#include "misc/lru.hpp"
 #include "shared/Progress.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -75,7 +75,7 @@ public:
 
 private:
   static constexpr Phase kStart = Phase::Loading;
-  static constexpr size_t kKeep = 3; // 留在内存的风格次序数 (每份 ≈ [日 · A] 两份 uint16)
+  static constexpr size_t kKeepRanks = 3, kKeepPerfs = 1024; // 留在内存的风格次序数 / 篮子账数
   Progress &board() { return *this; }
   bool run(StyleRequest &req);
   bool publish(const StyleRequest &req, std::string lack, std::shared_ptr<StyleResult> out = nullptr);
@@ -84,16 +84,11 @@ private:
   // 风格 st 补到 strip_ 末行的次序 (提到最新); 取消 / 库判废 → nullptr
   std::shared_ptr<const pool::Orders> ranks(const FeatureLib &lib, pool::Style st, const pool::Tick &tick);
 
-  struct Key {
-    pool::Style style;
-    std::shared_ptr<const pool::Orders> rk;
-  };
-
-  misc::exec::ForkJoin pool_{misc::exec::hw()};                   // 键: 每线程一行的列读 + 排序; 篮子: 每线程一组参数的成员 / 权
-  std::shared_ptr<const pool::Strip> strip_;                      // 上次用的原料带 (空 = 未装)
-  std::vector<Key> keys_;                                         // 新 → 旧 (原料带重建清空, 补行随用随补)
-  std::map<pool::Spec, std::shared_ptr<const pool::Perf>> perfs_; // 篮子账 [成员 (权重归 0)] (随 strip_ 换代清空)
-  std::shared_ptr<const pool::Perf> bench_;                       // 全A 的账 (随 strip_ 换代清空)
+  misc::exec::ForkJoin pool_{misc::exec::hw()};  // 键: 每线程一行的列读 + 排序; 篮子: 每线程一组参数的成员 / 权
+  std::shared_ptr<const pool::Strip> strip_;     // 上次用的原料带 (空 = 未装)
+  misc::Lru<pool::Style, pool::Orders> ranks_;   // 风格次序 (原料带重建清空, 补行随用随补)
+  misc::Lru<pool::Spec, pool::Perf> perfs_;      // 篮子账 [成员 (权重归 0)] (跨风格留存, 随 strip_ 换代清空)
+  std::shared_ptr<const pool::Perf> bench_;      // 全A 的账 (随 strip_ 换代清空)
 };
 
 } // namespace GUI::Beta

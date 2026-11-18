@@ -1,6 +1,4 @@
-// 价格库的合成件 (PriceLib): 个股源 → 个股的根; 成员 × 个股的根 → Lane (Fold 一日一份) → 各篮子一日; 普查 census 出发布的成员统计.
-//   成员 (谁 × 权) 两步对仗: members = 选股表 → 交易日 D 的成员表 (shared/Basket.hpp members, 权落在 D−1 收盘)
-//                             drift   = 成员冻结, 过一个交易日 (库末日之后的补段: 随价漂移, 逢换源回目标权)
+// 价格库的合成件 (PriceLib): 个股源 → 个股的根; 成员 (shared/Basket.hpp members ⇄ drift) × 个股的根 → Lane (Fold 一日一份) → 各篮子一日; 普查 census 出发布的成员统计.
 //   个股源 (每只一日的 Leg) 三种对仗: LibDay  = all.bar L_1day 日行 (基准 = D−1 行 pre_close) + L_1min 分钟根
 //                                     FundDay = 基本面 bar1d 行 (基准 = 当行 pre_close) + bar1m 分钟根
 //                                     SinaDay = 新浪归档的末快照 (基准 = 昨收) + 分钟根
@@ -46,11 +44,6 @@ void row_alloc(FeatureRead::DayColumns &dc, size_t A);
 void read_row(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &dc, Row &r);
 void minute_alloc(FeatureRead::DayColumns &mc, size_t A);
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc);
-
-// 交易日 d 的成员表 (资产 = 全局 id): shared/Basket.hpp members 落在成员源行 (D−1 收盘; 无 → 空); pk 与 axis 同为 all.bar 轴; only 同彼
-void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m, std::span<const uint8_t> only = {});
-// 成员表 m 过交易日 prev → d (成员冻结): 权与 cap 随价 × rel [全局 id] (收 / 前收); 篮子逢其周期换源 (pool::rebal_at) 回目标权 pool::omega (加权 = 漂移后的 cap)
-void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel);
 // 一只一日的 L_1min (mc = read_minutes 的读; a = 库轴行) → 分钟根: 无成交的行不收 (与 bar1m 的 bars_of 同一并根)
 void bars_of(const FeatureRead::DayColumns &mc, size_t a, Bars &b);
 

@@ -313,10 +313,8 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
 
   const Rc rc = with_backend<InspectProbes>(F, sc.gpu, [&](auto &eng) {
     return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/true, NoOp{}, [&](const Block &c, size_t, double) {
-      if (cache.pool_gen == c.gen)
-        return;
-      cache.pool = pool_line(F.S.ex, c), cache.pool_gen = c.gen;
-      assert(cache.pool.P == c.rows_stat() && cache.pool.n == c.y.hd.n);
+      cache.pool.update(c.gen, [&](BookLines &b) { b = pool_line(F.S.ex, c); });
+      assert(cache.pool.val.P == c.rows_stat() && cache.pool.val.n == c.y.hd.n);
     });
   });
   if (aborted(rc))
@@ -340,7 +338,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
   const int seg = sc.ft->seg, A = static_cast<int>(dm.rs.axis.size()), days = static_cast<int>(dm.stat_days()), T = days * seg;
   res.dates = dm.stat_dates();
   res.read_scope = dm.rs;
-  res.pool_index = cache.pool;
+  res.pool_index = cache.pool.val;
   for (int hi = 0; hi < res.pool_index.n; ++hi) {
     const float *v = res.pool_index.at(hi);
     double s = 0.0;

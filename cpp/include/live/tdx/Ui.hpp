@@ -47,9 +47,9 @@ Page open(const Open &o, double timeout = kQueryWait); // 页签即向宿主投�
 
 // ---------- 弹框 ----------
 
-// 做 act, 等其后新出现、标题在 titles 内的可见对话框 (须唯一); 超时报出期间冒出的新窗口及正文
+// 做 act, 等其后新出现、标题在 titles 内的可见对话框 (须唯一); 先冒出别的对话框 (如客户端的 MessageBox 提示) 即 Fail, 报其标题与正文
 win::Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::function<void()> &act);
-std::string body(const win::Hwnd &box); // 确认 / 提示框正文, 没有该控件 → 空串
+std::string body(const win::Hwnd &box); // 确认 / 提示框 / 系统 MessageBox 正文, 没有该控件 → 空串
 void yes(const win::Hwnd &box);         // 点确认
 
 } // namespace live::tdx::ui

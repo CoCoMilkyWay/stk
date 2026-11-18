@@ -8,6 +8,7 @@
 #include "gui/engine/Table.hpp"
 #include "gui/engine/Worker.hpp"
 #include "gui/quote/Quote.hpp"
+#include "misc/lru.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -50,7 +51,7 @@ struct PortfolioItem {
   factor::stat::Frame frame = factor::stat::Frame::CS;
   std::string missing;
 };
-void ResolvePortfolio(const SharedData &data, FeatureTables &tables, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out);
+void ResolvePortfolio(const SharedData &data, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out);
 
 struct FactorTask {
   std::string key;
@@ -62,7 +63,7 @@ struct FactorTask {
 inline constexpr FactorLevelId kBasketLevel = factor_level_of(L_1day);
 struct BasketTask {
   FactorScope scope;
-  std::string sig() const { return "baskets"; }
+  std::string sig() const;
 };
 struct PortfolioRequest {
   std::vector<FactorTask> factors;
@@ -70,24 +71,16 @@ struct PortfolioRequest {
   bool reload = false;
   std::string sig() const;
 };
-void MakePortfolioRequest(const SharedData &data, FeatureTables &tables, std::vector<PortfolioItem> &items, bool reload, bool gpu, PortfolioRequest &req);
+void MakePortfolioRequest(const SharedData &data, std::vector<PortfolioItem> &items, bool reload, bool gpu, PortfolioRequest &req);
 
-// ---- 账与结果 ----
-enum BookCol : int { kBookRet,
-                     kBookImp,
-                     kBookFix,
-                     kBookBuy };
-inline constexpr int kBookCols = 4;
-
-struct PortfolioBook {
-  std::string sig;
+// ---- 账与结果 (账列与核 Book 见 gui/engine/Book.hpp) ----
+struct PortfolioBook : Book {
   std::vector<misc::Ymd> dates;
   FactorLevelId lv = 0;
   int amt = kAmtFixed;
   std::vector<uint32_t> keys;
-  BookLines col[kBookCols];
-  BookLines val[kPoolVals];
   std::string error;
+  size_t bytes() const { return Book::bytes() + dates.size() * sizeof(misc::Ymd) + keys.size() * sizeof(uint32_t); }
   size_t lines() const { return keys.size(); }
   size_t line_of(uint32_t key) const {
     const auto it = std::lower_bound(keys.begin(), keys.end(), key);
@@ -131,8 +124,8 @@ private:
   template <class Set>
   void put(Set &&set);
 
-  std::map<std::string, uint64_t> used_;
-  uint64_t tick_ = 0;
+  misc::Lru<std::string, PortfolioBook> cache_;
+  std::string quotes_sig_;
 };
 
 } // namespace GUI::Engine

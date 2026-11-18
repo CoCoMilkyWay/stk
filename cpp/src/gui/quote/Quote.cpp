@@ -1,20 +1,13 @@
 #include "gui/quote/Quote.hpp"
 
 #include "api/sina/client.hpp"
+#include "features/Panel/PoolSelect.hpp" // pool::next_day
 
 #include <cassert>
 
 namespace GUI::Quote {
 
-misc::Ymd Calendar::next(misc::Ymd d) const {
-  assert(!days.empty());
-  if (const auto it = std::ranges::upper_bound(days, d); it != days.end())
-    return *it;
-  misc::Ymd o = misc::add_days(d, 1);
-  while (misc::weekday_of(o) >= 5)
-    o = misc::add_days(o, 1);
-  return o;
-}
+misc::Ymd Calendar::next(misc::Ymd d) const { return pool::next_day(days, d); }
 
 misc::Ymd Calendar::prev(misc::Ymd d) const {
   const auto it = std::ranges::lower_bound(days, d);

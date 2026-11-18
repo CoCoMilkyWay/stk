@@ -87,21 +87,38 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const Forest &F, std::
 }
 
 Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
-  assert(sc.ft && pool_id(sc.pool) == kAllPool && "池篮子在 all 池评估域");
+  assert(sc.ft && sc.ft->seg == 1 && pool_id(sc.pool) == kAllPool && "池篮子在 all 池日层评估域");
   assert(find_leg(sc.ft->y.labels, factor::stat::hold_close(1)) && "篮子须有 T+1C 标签 (池指数 C(行) → C(D+1))");
-  if (!open_job(F, sc, {}, j))
+  const std::span<const LeafId, kPoolVals> val(sc.ft->val);
+  if (!open_job(F, sc, val, j))
     return Rc::Empty;
-  const auto bud = [] { return Budget{.load = kBasketCellBytes}; };
-  if (!fit_years(F, sc, j, bud))
-    return Rc::Empty;
-  F.S.room(bud().host(cells_of(j.dm, j.ft->seg)));
-  BPlanes B;
-  if (const Rc rc = rc_of(load_b(j.io(F), j.whole(), B), F.S.lr); rc != Rc::Ok) {
+  assert(j.dm.rs.has(kAllBar));
+  std::shared_ptr<const pool::Picks> pk = pool::picks(j.dm.rs.libs[kAllBar], &F.cancel);
+  if (!pk) {
+    const Rc rc = rc_of(false, F.S.lr);
     if (rc == Rc::Stale)
       F.S.clear();
     return rc;
   }
-  out = baskets(F.S.ex, B);
+  j.spec.y = {keys_of<Holds>(std::vector<int>{factor::stat::hold_close(1)}), {}, 0.f};
+  j.spec.ry = false;
+  j.bands = {factor::stat::kChainDays + 1, 1};
+  j.b = {.load = cell_bytes(*j.ft, j.spec, val.size()), .work = static_cast<double>(sizeof(PoolMask)), .fixed = BasketPass::fixed_bytes(j.dm)};
+  j.P = plan_chunks(j.dm, 1, j.b, j.bands, F.S.budget());
+  BasketPass pass(j.dm, std::move(pk), val);
+  const size_t n = j.P.chunks.size();
+  for (size_t ci = 0; ci < n; ++ci) {
+    Block c;
+    if (const Rc rc = load_block(F, j, ci, c); rc != Rc::Ok)
+      return rc;
+    F.prog.begin(Phase::Running, n);
+    F.prog.publish(ci);
+    pass.chunk(F.S.ex, c);
+    F.prog.publish(1);
+    if (F.cancel.load(std::memory_order_relaxed))
+      return Rc::Cancel;
+  }
+  out = pass.finish(F.S.ex);
   return Rc::Ok;
 }
 

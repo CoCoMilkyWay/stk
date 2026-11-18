@@ -400,6 +400,17 @@ private:
     bool pinned = false;
   };
 
+  factor::gpu::DevPlane *pop_lru() {
+    auto lru = x_cache_.end();
+    for (auto it = x_cache_.begin(); it != x_cache_.end(); ++it)
+      if (!it->second.pinned && (lru == x_cache_.end() || it->second.tick < lru->second.tick))
+        lru = it;
+    if (lru == x_cache_.end())
+      return nullptr;
+    factor::gpu::DevPlane *p = lru->second.p;
+    x_cache_.erase(lru);
+    return p;
+  }
   size_t reclaimable_x_bytes() const {
     size_t k = free_x_.size();
     for (const auto &[_, e] : x_cache_)
@@ -419,14 +430,10 @@ private:
         vfree += unit;
         continue;
       }
-      auto lru = x_cache_.end();
-      for (auto it = x_cache_.begin(); it != x_cache_.end(); ++it)
-        if (!it->second.pinned && (lru == x_cache_.end() || it->second.tick < lru->second.tick))
-          lru = it;
-      if (lru == x_cache_.end())
+      factor::gpu::DevPlane *p = pop_lru();
+      if (!p)
         break;
-      factor::gpu::plane_del(sess_, lru->second.p);
-      x_cache_.erase(lru);
+      factor::gpu::plane_del(sess_, p);
       vfree += unit;
     }
   }
@@ -445,14 +452,10 @@ private:
       factor::gpu::mem_info(&vfree, &vtotal);
       const size_t unit = (sizeof(float) + 1) * n_;
       while (miss > free_x_.size() && static_cast<double>((miss - free_x_.size()) * unit) > 0.9 * static_cast<double>(vfree)) {
-        auto lru = x_cache_.end();
-        for (auto it = x_cache_.begin(); it != x_cache_.end(); ++it)
-          if (!it->second.pinned && (lru == x_cache_.end() || it->second.tick < lru->second.tick))
-            lru = it;
-        if (lru == x_cache_.end())
+        factor::gpu::DevPlane *p = pop_lru();
+        if (!p)
           break;
-        free_x_.push_back(lru->second.p);
-        x_cache_.erase(lru);
+        free_x_.push_back(p);
       }
       while (free_x_.size() < miss)
         free_x_.push_back(factor::gpu::plane_new(sess_));
@@ -713,7 +716,6 @@ struct Job {
   double n_full = 0.0;
   std::string why;
   Io io(FactorFlow &F) const { return F.io(*ft, dm); }
-  Chunk whole() const { return {0, dm.warm, dm.days.size(), dm.days.size()}; }
   double reserve() const { return P.max_cells() * b.work + b.fixed; }
   PassCtx pass_ctx(misc::exec::ForkJoin &ex, factor::stat::Dir d = factor::stat::kFwd) const {
     const int seg = ft->seg, ds = static_cast<int>(dm.stat_days());

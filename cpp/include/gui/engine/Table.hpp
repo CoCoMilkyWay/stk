@@ -1,6 +1,6 @@
-// Table — 因子层公共类型 (GUI 线程建, worker 只读; 各服务与装载层共用):
+// Table — 因子层公共类型 (各服务与装载层共用):
 //   因子层 FactorLevel (FactorLevelId / PerFactorLevel) + 持有期开关仓描述 HoldPoints ↔ 网格层 / 因子子目录 / K 线列;
-//   字段表视图 FeatureTable (X 叶 ↔ Y 门控 / 标签 / 成本 ↔ B K 线 / 复权 / 股本 / 估值 / 行业) + 按层缓存 FeatureTables;
+//   字段表视图 FeatureTable (X 叶 ↔ Y 门控 / 标签 / 成本 + K 线 / 复权 / 估值五叶; 每进程代按层建一次 table_of, 全仓共享);
 //   作用域 FactorScope (+ 年数上限 year_cap) + 请求 Request<Spec> / FactorRef; 评估结果 EvalStat + AlphaDist.
 #pragma once
 
@@ -146,11 +146,10 @@ inline constexpr int kAmtFixed = 0;
 inline std::string amt_name(int amt) { return amt == kAmtFixed ? std::string("固定") : std::to_string(amt) + "w"; } // 金额段的 UI 名
 const LegCol *find_leg(const std::vector<LegCol> &cols, int key);                                                   // key 不在 → nullptr
 const LegCol &leg_of(const std::vector<LegCol> &cols, int key);                                                     // key 不在 → assert
-// X ↔ Y ↔ B 三侧 (XCols / YCols / BCols ↔ Load 叶 LeafId / YSpec / 篮子 → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b):
-//   X = 因子输入叶 = Lob 档 (只 min 层有) 及 Bar 档不细于网格的各层全部列, 随因子变
-//   Y = 门控 / 标签 = Bar 档网格层本层列; 成本盘口段 = Lob 档网格层本层列; 只随评估域变
-//   B = 价格 / 篮子原料: K 线 = Bar 档网格层本层列; 复权 / 估值 = 日频原料, 恒取 bar.1d 列 (as-of 投影到网格行, 各层同一份);
-//       池成员 / 持仓权 / 行业 / 市值 / 收益 不在此 (选股表的原料带 pool::Strip, 与行情篮子同一份)
+// X ↔ Y 两侧装载平面 (XCols / YCols ↔ Load LeafId / YSpec → XPlanes / YPlanes, load_x / load_y → Store::pin):
+//   X = 因子输入叶 = Lob 档 (只 min 层有) 及 Bar 档不细于网格的各层全部列 (含日层估值五叶 val[PoolVal])
+//   Y = 门控 / 标签 = Bar 档网格层本层列; 成本盘口段 = Lob 档网格层本层列
+//   b = K 线 / 复权列定位 (K 线流与 Inspect 导出按列直读); 池成员 / 持仓权 / 行业 / 市值 / 收益 取选股表原料带 pool::Strip
 // 叶的身份 = leaves 下标 (字段表编译期定 → 同层进程内不变; 叶名只在 Dag / 解析边界, 装载 / 缓存 / 引擎全按 LeafId)
 using LeafId = uint32_t;
 struct XCols {
@@ -159,7 +158,7 @@ struct XCols {
   const FeatCol *find(std::string_view code) const;                     // 不在 → nullptr
   std::vector<LeafId> ids(const std::vector<std::string> &codes) const; // 须都在
 };
-// 池估值五口 (收益率口径 = 分子 / 市值, 按 Weight 平均: 等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值; Load load_b → Baskets → Portfolio VAL 页):
+// 池估值五口 (收益率口径 = 分子 / 市值, 按 Weight 平均: 等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值; Book → Portfolio VAL 页):
 // EP = 净利, BP = 权益, SP = 营收, CP = 经营现金流, DY = 分红 (高 = 便宜, 分子过 0 连续)
 enum PoolVal : int { kValEp,
                      kValBp,
@@ -167,7 +166,7 @@ enum PoolVal : int { kValEp,
                      kValCp,
                      kValDy };
 inline constexpr int kPoolVals = 5;
-// 各口的日频输入列 (BCols::val 下标 = PoolVal): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM (DY 的分子 Book 还原)
+// 各口的日频输入叶 (FeatureTable::val 下标 = PoolVal, bar.1d.<列>): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM
 inline constexpr const char *kPoolValCols[kPoolVals] = {"pl_npp_ttm", "bs_eq", "pl_rev_ttm", "cf_ocf_ttm", "dy_ttm"};
 struct YCols {
   Col ts;                     // ts_valid (当日有成交)
@@ -177,9 +176,8 @@ struct YCols {
   std::vector<LegCol> costs;  // 按 key 升序: 固定段 (恒在, 首个) + 盘口段 (Lob 档本层冲击列; 评估域含 Lob 库才可用, 见 y_spec). Run / Inspect / Portfolio 每段攒 CostAcc; Search 不看成本
 };
 struct BCols {
-  Col ohlc[4];        // open high low close (K 线, 不复权; 列名 FactorLevel::kline)
-  Col adj_factor;     // 复权因子 (盘后列, 网格行 as-of = 当日因子): 后复权收盘 = 本行 close × 本列
-  Col val[kPoolVals]; // [PoolVal] 估值输入 (kPoolValCols): 池估值 EP / BP / SP / CP / DY (整体法)
+  Col ohlc[4];    // open high low close (K 线, 不复权; 列名 FactorLevel::kline)
+  Col adj_factor; // 复权因子 (盘后列, 网格行 as-of = 当日因子): 后复权收盘 = 本行 close × 本列
 };
 struct FeatureTable {
   FactorLevelId lv = 0;             // 因子层
@@ -188,6 +186,7 @@ struct FeatureTable {
   XCols x;
   YCols y;
   BCols b;
+  LeafId val[kPoolVals] = {};                 // [PoolVal] bar.1d 估值五叶 (X 侧复用)
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER; 回归目标 = label_leaf)
   // 持有期 hold 的回归目标叶名 (y.labels 的做多列); 本层无该持有期 → 空串
   std::string label_leaf(int hold) const;
@@ -201,9 +200,8 @@ struct FeatureTable {
 // LB 列按 code 识别: Bar 档 lb_<long|short>_<name> 标签 (name = <n>m / close / t<N>o / t<N>c → 持有期键, Stat/Contract.hpp) + lb_entry_ok;
 // Lob 档 lb_cost_<buy|sell>_<amt>w 建仓冲击 (盘口段)
 FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId lv);
-// 按层缓存的字段表 (GUI 线程, 全部页共享): 首次用到该层时建
-using FeatureTables = PerFactorLevel<std::shared_ptr<const FeatureTable>>;
-std::shared_ptr<const FeatureTable> table_of(FeatureTables &tables, const Feature &feature, FactorLevelId lv);
+// 按层缓存的字段表 (每进程代一份, Alpha / Market / Agent 线程安全共享): 首次用到该层时建
+std::shared_ptr<const FeatureTable> table_of(const Feature &feature, FactorLevelId lv);
 
 // 本地时间 "YYYY-MM-DD HH:MM" (stat.time / search.time 落盘用)
 std::string now_string();

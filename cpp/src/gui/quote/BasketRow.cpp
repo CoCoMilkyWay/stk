@@ -2,7 +2,6 @@
 
 #include "features/Bar1mDay.hpp"
 #include "fundamental/Scan.hpp"
-#include "shared/Basket.hpp" // basket_table
 
 #include <algorithm>
 #include <cassert>
@@ -61,28 +60,6 @@ void minute_alloc(FeatureRead::DayColumns &mc, size_t A) { mc.preallocate(A, L_1
 
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc) { rd.load_day_columns(d, minute_cols(), mc); }
 
-void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m, std::span<const uint8_t> only) {
-  const size_t q = pool::src_of(pool::kRebalDay, pk.strip->dates, d);
-  if (q == SIZE_MAX)
-    return m.clear();
-  ::members(pk, axis, d, q, m, only);
-  for (uint32_t &a : m.id)
-    a = axis.global(a);
-}
-
-void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel) {
-  assert(m.id.empty() || m.id.back() < rel.size());
-  const BasketTable &bt = basket_table();
-  bool reb[pool::kRebals];
-  for (int k = 0; k < pool::kRebals; ++k)
-    reb[k] = pool::rebal_at(static_cast<pool::Rebal>(k), prev, d);
-  m.scale([&](uint32_t a) { return rel[a]; });
-  for (size_t k = 0; k < m.size(); ++k)
-    for (Members::Weight &w : m.of(k))
-      if (reb[bt.rebal(w.key)])
-        w.w = static_cast<float>(pool::omega(bt.weight(w.key), m.cap[k], 1.0));
-}
-
 void bars_of(const FeatureRead::DayColumns &mc, size_t a, Bars &b) {
   b.has.reset();
   for (size_t t = 0; t < level_valid_rows(L_1min); ++t)
@@ -139,12 +116,17 @@ Census census(const Members &m, size_t K) {
   std::vector<std::pair<size_t, Constituent>> cs; // (篮子, 成分)
   for (size_t r = 0; r < m.size(); ++r) {
     const std::span<const Members::Weight> ws = m.of(r);
-    for (const Members::Weight &x : ws) {
+    for (size_t u = 0; u < ws.size(); ++u) {
+      const Members::Weight &x = ws[u];
       assert(x.key < K);
       ++t.members[x.key], t.weight[x.key] += x.w, t.cap[x.key] += m.cap[r];
       cs.push_back({x.key, {m.id[r], x.w}});
-      for (const Members::Weight &y : ws)
-        dot[x.key * K + y.key] += static_cast<double>(x.w) * y.w;
+      dot[x.key * K + x.key] += static_cast<double>(x.w) * x.w;
+      for (size_t v = u + 1; v < ws.size(); ++v) {
+        const Members::Weight &y = ws[v];
+        const double p = static_cast<double>(x.w) * y.w;
+        dot[x.key * K + y.key] += p, dot[y.key * K + x.key] += p;
+      }
     }
   }
   std::stable_sort(cs.begin(), cs.end(), [](const auto &p, const auto &q) { return p.second.w > q.second.w; });

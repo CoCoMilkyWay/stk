@@ -45,20 +45,25 @@ bool CtaService::run(CtaRequest &req) {
   assert(req.ref.ok() && req.dates && req.series && req.series->minute && "CTA 请求须有标的与其连分钟的全史");
   constexpr size_t S = Quote::kSlots;
   const std::vector<misc::Ymd> &spine = *req.dates;
-  const std::shared_ptr<const cta::Series> se = kept_.get({req.ref, req.stamp}, [&] {
-    auto s = std::make_shared<cta::Series>();
-    const Quote::Series &m = *req.series;
-    Quote::Cell b;
-    for (size_t j = 0, i = 0; j < m.daily.size(); ++j, ++i) { // 有根的日 ⊂ 日脊: 同向走
-      while (spine[i] < m.daily[j].date)
-        ++i;
-      assert(spine[i] == m.daily[j].date && "全史的日不在日脊上");
-      if (m.has(j))
-        for (size_t k = 0; k < S; ++k)
-          if (m.bar(j, static_cast<int>(k), b))
-            push(*s, i * S + k, b, m.adj[j]);
-    }
-    return s; }, kKeep);
+  if (!(stamp_ == req.stamp))
+    kept_.clear(), stamp_ = req.stamp;
+  const std::shared_ptr<const cta::Series> se = kept_.get(
+      req.ref, [&] {
+        auto s = std::make_shared<cta::Series>();
+        const Quote::Series &m = *req.series;
+        Quote::Cell b;
+        for (size_t j = 0, i = 0; j < m.daily.size(); ++j, ++i) { // 有根的日 ⊂ 日脊: 同向走
+          while (spine[i] < m.daily[j].date)
+            ++i;
+          assert(spine[i] == m.daily[j].date && "全史的日不在日脊上");
+          if (m.has(j))
+            for (size_t k = 0; k < S; ++k)
+              if (m.bar(j, static_cast<int>(k), b))
+                push(*s, i * S + k, b, m.adj[j]);
+        }
+        return s;
+      },
+      kKeep);
   const size_t nd = cta::days_of(*se, S).size();
   if (nd < 2)
     return publish(req, "有效根只跨 " + std::to_string(nd) + " 日, 至少 2 日.");

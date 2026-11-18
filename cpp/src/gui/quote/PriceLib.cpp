@@ -609,7 +609,6 @@ void PriceLib::reopen(const FeatureLib &lib, const std::vector<misc::Ymd> &dates
     prefix_ = ax.hash_at(rows(kStock));
     save_head();
   }
-  axis_ = lib.axis;
 }
 
 template <Side S>
@@ -734,7 +733,7 @@ bool PriceLib::lib_pass(const FeatureLib &lib, const std::vector<misc::Ymd> &dat
     b.clear();
     b.put_stocks(LibDay{d, ax, rws[k], rws[k + 1], w.mc});
     if (pk) {
-      members(*pk, ax, d, w.lane.mem);
+      members(*pk, d, w.lane.mem, true);
       w.lane.run(BuildDay{d, b});
       bb[k].clear();
       bb[k].put_baskets(w.lane.day);
@@ -926,7 +925,7 @@ bool PriceLib::refold(const pool::Picks &pk) {
         if (i == 0)
           return;
         FoldWork &w = *works[static_cast<size_t>(jj)];
-        members(pk, axis_, dates_[i], w.lane.mem, fresh);
+        members(pk, dates_[i], w.lane.mem, true, fresh);
         const auto [sg, d] = store_->at(kStock, i);
         w.lane.run(SegDay{dates_[i], *sg, d});
         bs[j].put_baskets(w.lane.day);
@@ -958,7 +957,7 @@ bool PriceLib::fold(const pool::Picks &pk) {
   const size_t D = dates_.size(), L = lib_days_, N = rows(kStock), NB = rows(kBasket);
   assert(bdays_ >= 1 && bdays_ <= D);
   Members tm; // 补段的成员: 库末日之后冻结, 逐日过 drift (漂移比 = 个股侧当日的 收 / 前收; 无日根 1)
-  members(pk, axis_, cal_->next(dates_[L - 1]), tm);
+  members(pk, cal_->next(dates_[L - 1]), tm, true);
   std::vector<float> rel(N);
   const auto pass = [&](size_t i) {
     std::ranges::fill(rel, 1.f);
@@ -992,7 +991,7 @@ bool PriceLib::fold(const pool::Picks &pk) {
         const size_t j = static_cast<size_t>(jj), i = i0 + j;
         FoldWork &w = *works[j];
         if (i < L)
-          members(pk, axis_, dates_[i], w.lane.mem);
+          members(pk, dates_[i], w.lane.mem, true);
         const auto [sg, d] = store_->at(kStock, i);
         w.lane.run(SegDay{dates_[i], *sg, d});
         w.b.put_baskets(w.lane.day);
@@ -1040,21 +1039,15 @@ bool PriceLib::run(PriceRequest &req) {
       return series(w.ref, w.minute, *s) ? s : nullptr;
     };
     if (w.minute)
-      minute_.get({w.ref, at_}, read, kKeepMinutes);
+      minute_.get(w.ref, read, kKeepMinutes);
     else if (w.ref.side == kStock)
-      daily_.get({w.ref, at_}, read, kKeep);
+      daily_.get(w.ref.key, read, kKeep);
   }
   // 发布 = 本戳留着的全部 (不只本次要的: 切页不闪), 键升序; 连分钟的盖过不连的
   using Item = std::pair<uint32_t, std::shared_ptr<const Series>>;
   std::vector<Item> ks, bm;
-  minute_.each([&](const RefAt &k, const std::shared_ptr<const Series> &s) {
-    if (k.st == at_)
-      (k.ref.side == kStock ? ks : bm).emplace_back(k.ref.key, s);
-  });
-  daily_.each([&](const RefAt &k, const std::shared_ptr<const Series> &s) {
-    if (k.st == at_)
-      ks.emplace_back(k.ref.key, s);
-  });
+  minute_.each([&](const Ref &r, const std::shared_ptr<const Series> &s) { (r.side == kStock ? ks : bm).emplace_back(r.key, s); });
+  daily_.each([&](uint32_t k, const std::shared_ptr<const Series> &s) { ks.emplace_back(k, s); });
   std::ranges::stable_sort(ks, {}, &Item::first);
   ks.erase(std::ranges::unique(ks, {}, &Item::first).begin(), ks.end());
   auto v = std::make_shared<PriceView>();
@@ -1092,6 +1085,7 @@ void PriceLib::put(std::shared_ptr<const PriceView> v) {
 
 void PriceLib::rebuild() {
   built_ = at_;
+  daily_.clear(), minute_.clear();
   account_ = nullptr;
   spine_ = std::make_shared<const std::vector<misc::Ymd>>(dates_);
   // 个股日脊末段: 自末段往前, 各只取够 kTailDays 个有根日

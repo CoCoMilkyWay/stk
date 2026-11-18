@@ -88,10 +88,10 @@ const ConceptTable &concepts() {
         i = j;
       }
     }
-    o.at.assign(G + 1, 0);
+    o.of.off.assign(G + 1, 0);
     for (std::size_t g = 0; g < G; ++g) {
-      o.at[g + 1] = o.at[g] + static_cast<std::uint32_t>(by[g].size());
-      o.of.insert(o.of.end(), by[g].begin(), by[g].end());
+      o.of.off[g + 1] = o.of.off[g] + static_cast<std::uint32_t>(by[g].size());
+      o.of.v.insert(o.of.v.end(), by[g].begin(), by[g].end());
     }
     return o;
   };

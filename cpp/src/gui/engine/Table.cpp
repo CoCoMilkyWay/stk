@@ -2,6 +2,7 @@
 #include "gui/engine/Table.hpp"
 
 #include "features/Storage/FeatureLib.hpp"
+#include "misc/epoch.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -194,8 +195,12 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
   }
   const auto daily = [&](const char *code) { return Col{TierId::Bar, L_1day, static_cast<uint32_t>(meta.col_of(L_1day, code))}; }; // 日频原料 bar.1d
   t.b.adj_factor = daily("adj_factor");
-  for (int m = 0; m < kPoolVals; ++m)
-    t.b.val[m] = daily(kPoolValCols[m]);
+  const std::string pre1d = std::string(tier_name(TierId::Bar)) + "." + kLevelToken[L_1day] + ".";
+  for (int m = 0; m < kPoolVals; ++m) {
+    const auto it = t.x.index.find(pre1d + kPoolValCols[m]);
+    assert(it != t.x.index.end() && "估值列不在 bar.1d 叶表里");
+    t.val[m] = it->second;
+  }
   struct Lab {
     bool is_long;
     int hold;
@@ -276,11 +281,20 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
   return t;
 }
 
-std::shared_ptr<const FeatureTable> table_of(FeatureTables &tables, const Feature &feature, FactorLevelId lv) {
-  std::shared_ptr<const FeatureTable> &t = tables[lv];
-  if (!t)
-    t = std::make_shared<FeatureTable>(BuildFeatureTable(feature, lv));
-  return t;
+namespace {
+struct TableShelf {
+  std::mutex mu;
+  PerFactorLevel<std::shared_ptr<const FeatureTable>> v;
+};
+} // namespace
+
+std::shared_ptr<const FeatureTable> table_of(const Feature &feature, FactorLevelId lv) {
+  static misc::Epochal<TableShelf> shelf;
+  auto &[mu, v] = shelf.get();
+  std::lock_guard<std::mutex> lock(mu);
+  if (!v[lv])
+    v[lv] = std::make_shared<FeatureTable>(BuildFeatureTable(feature, lv));
+  return v[lv];
 }
 
 bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool gpu, FactorScope &sc) {

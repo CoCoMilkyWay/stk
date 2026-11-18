@@ -100,7 +100,7 @@ enum TabIdx {
 // 本页已生效层的字段表
 static std::shared_ptr<const Engine::FeatureTable> level_table(const SharedData &data, TaskAlphaState &s) {
   assert(s.lv);
-  return Engine::table_of(s.engine->tables, data.feature, *s.lv);
+  return Engine::table_of(data.feature, *s.lv);
 }
 
 // 换层: 层服务整体重建 (析构 Stop() join worker; 下次 Draw 按新层建)

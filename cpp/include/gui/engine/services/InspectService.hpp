@@ -7,6 +7,7 @@
 #include "gui/engine/Book.hpp"
 #include "gui/engine/File.hpp"
 #include "gui/engine/Worker.hpp"
+#include "gui/util/Stage.hpp"
 #include "math/distribution/PdfSnap.hpp"
 #include "shared/ReadRequest.hpp"
 
@@ -75,8 +76,7 @@ struct InspectResult : EvalStat {
 
 struct InspectCache {
   InspectPlanes pl;
-  BookLines pool;
-  uint64_t pool_gen = 0;
+  Stage<uint64_t, BookLines> pool;
 };
 
 // 单因子评估纯计算核 (须持 Lease): 结果填进 out (一级平面在 cache.pl, 调用方按需与结果交换以复用容量);

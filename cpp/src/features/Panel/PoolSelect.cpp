@@ -129,7 +129,7 @@ void order_row(const uint16_t *cls, const Aid *seq, size_t len, uint16_t *n, Aid
 
 // 一日的读 (列序 = day_cols) → 原料带行 r (资产态 + 类号 + 类内在市数); pre / close [A] = 该行前收 / 收盘 (无成交 → 0)
 void fill_row(const FeatureRead::DayColumns &c, Strip &t, size_t r, float *pre, float *close) {
-  const size_t A = t.A;
+  const size_t A = t.A();
   uint16_t *cls = t.cls.data() + r * A, *cnt = t.cnt.data() + r * kClasses;
   std::fill(cnt, cnt + kClasses, uint16_t{0});
   for (size_t a = 0; a < A; ++a) {
@@ -200,7 +200,7 @@ void step(const Tick &tick) {
 //   键读库 (各风格的键列同列只读一次); 取消 / 库判废 → false
 template <class Visit>
 bool sweep(const FeatureLib &lib, const Strip &t, size_t lo, std::span<const Style> sts, misc::exec::ForkJoin &ex, const Cancel *cancel, const Tick &tick, Visit &&visit) {
-  const size_t R = t.days(), A = t.A;
+  const size_t R = t.days(), A = t.A();
   assert(lo <= R);
   KeyCols kc;
   for (const Style st : sts)
@@ -261,6 +261,16 @@ std::vector<size_t> day_cols(size_t n) {
 
 int64_t week_of(misc::Ymd d) { return (misc::to_days(d).time_since_epoch().count() + 3) / 7; } // 1970-01-01 = 周四
 
+misc::Ymd next_day(std::span<const misc::Ymd> rows, misc::Ymd d) {
+  assert(!rows.empty());
+  if (const auto it = std::ranges::upper_bound(rows, d); it != rows.end())
+    return *it;
+  misc::Ymd o = misc::add_days(d, 1);
+  while (misc::weekday_of(o) >= 5)
+    o = misc::add_days(o, 1);
+  return o;
+}
+
 size_t src_of(Rebal rb, std::span<const misc::Ymd> rows, misc::Ymd d) {
   const auto it = rb == kRebalWeek ? std::partition_point(rows.begin(), rows.end(), [w = week_of(d)](misc::Ymd r) { return week_of(r) < w; })
                                    : std::lower_bound(rows.begin(), rows.end(), d);
@@ -307,7 +317,7 @@ bool covers(const Spec &s, size_t c) {
 void Orders::resize(size_t R, size_t A) { seq.resize(R * A), len.resize(R), n.resize(R * kClasses), pos.resize(R * A); }
 
 Order Orders::row(const Strip &t, size_t r) const {
-  const size_t A = t.A;
+  const size_t A = t.A();
   assert(r < rows() && r < t.days());
   return {t.cls.data() + r * A, t.cnt.data() + r * kClasses, seq.data() + r * A, len[r], n.data() + r * kClasses, pos.data() + r * A, A};
 }
@@ -318,14 +328,21 @@ size_t Strip::row_of(misc::Ymd d) const {
   return static_cast<size_t>(it - dates.begin());
 }
 
+misc::Ymd Strip::holding_after(size_t r) const {
+  assert(r < days());
+  return r + 1 < days() ? dates[r + 1] : next_day(dates, dates[r]);
+}
+
 Order Strip::row(size_t r) const {
   assert(r < days());
-  return {cls.data() + r * A, cnt.data() + r * kClasses, nullptr, 0, nullptr, nullptr, A};
+  const size_t n = A();
+  return {cls.data() + r * n, cnt.data() + r * kClasses, nullptr, 0, nullptr, nullptr, n};
 }
 
 float Strip::omega(size_t r, size_t q, size_t a, Weight w) const {
   assert(r <= q && q < days());
-  return static_cast<float>(pool::omega(w, mcap[r * A + a], static_cast<double>(grow[q * A + a]) / grow[r * A + a]));
+  const size_t n = A();
+  return static_cast<float>(pool::omega(w, mcap[r * n + a], static_cast<double>(grow[q * n + a]) / grow[r * n + a]));
 }
 
 std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel, const Tick &tick) {
@@ -335,13 +352,13 @@ std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel, 
   auto &[mu, cur] = shelf.get();
   const std::lock_guard<std::mutex> lock(mu);
   std::vector<misc::Ymd> rows = landed(lib);
-  const bool keep = cur && cur->axis == lib.axis.hash && extends(cur->dates, rows);
+  const bool keep = cur && cur->axis.hash == lib.axis.hash && extends(cur->dates, rows);
   if (keep && cur->days() == rows.size())
     return cur;
   const size_t A = lib.axis.size(), lo = keep ? cur->days() : 0, R = rows.size();
   assert(A > 0 && A <= UINT16_MAX && R > lo);
   auto t = keep ? std::make_shared<Strip>(*cur) : std::make_shared<Strip>();
-  t->dates = std::move(rows), t->A = A, t->axis = lib.axis.hash;
+  t->axis = lib.axis, t->dates = std::move(rows);
   if (!keep)
     t->line = ++lines;
   t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->ind.resize(R * A), t->mcap.resize(R * A), t->grow.resize(R * A);
@@ -381,7 +398,7 @@ std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel, 
 }
 
 bool rank(const FeatureLib &lib, const Strip &t, Style st, misc::exec::ForkJoin &ex, const Cancel *cancel, const Tick &tick, Orders &rk) {
-  const size_t lo = rk.rows(), A = t.A;
+  const size_t lo = rk.rows(), A = t.A();
   rk.resize(t.days(), A);
   if (sweep(lib, t, lo, {&st, 1}, ex, cancel, tick, [&](size_t r, Style, const Order &o, int) {
         std::copy_n(o.seq, o.len, rk.seq.data() + r * A);
@@ -498,7 +515,7 @@ std::span<const Aid> Picks::of(PoolId p, misc::Ymd d) const {
 }
 
 void Picks::pools(misc::Ymd d, std::span<PoolMask> in) const {
-  assert(in.size() == strip->A);
+  assert(in.size() == strip->A());
   for (PoolId p = 1; p < pool_count(); ++p)
     for (const Aid a : of(p, d))
       in[a] |= pool_bit(p);
