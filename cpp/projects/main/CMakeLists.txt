@@ -293,6 +293,7 @@ set(MATH_FAST
 set(MATH_PRECISE
     # shared
     shared/AssetInfo.cpp
+    shared/Basket.cpp
     shared/Concept.cpp
     shared/Config.cpp
     shared/ReadRequest.cpp
