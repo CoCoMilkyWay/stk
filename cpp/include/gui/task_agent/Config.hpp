@@ -19,7 +19,7 @@ namespace GUI::Agent {
 // ---- LLM ----
 // 后端表 (唯一真相, 下标 = llm::Backend)
 //   fake: 假 key, 格式同真 key (智谱 {id}.{secret}, Cursor crsr_ + 64 位 hex, Devin cog_ 前缀), 全 0; 读到等同未填
-//   proxy: 默认连接 (Config 页可改); Cursor / Devin 的部分模型按出口地区限售, 默认走代理
+//   proxy: 默认连接 (Config 页可改); 均默认直连, Cursor / Devin 的部分模型按出口地区限售, 需要时在 Config 页开代理
 struct BackendDef {
   const char *name;   // 显示名 (Config 页 / 会话日志)
   const char *id;     // keys.json 里的字段 = 会话存档里的写法
@@ -30,8 +30,8 @@ struct BackendDef {
 };
 inline constexpr BackendDef kBackends[] = {
     {"Zhipu", "zhipu", "00000000000000000000000000000000.0000000000000000", "open.bigmodel.cn", "/api/paas/v4/models", false},
-    {"Cursor", "cursor", "crsr_0000000000000000000000000000000000000000000000000000000000000000", "api.cursor.com", "/v1/models", true},
-    {"Devin", "devin", "cog_00000000000000000000000000000000", nullptr, nullptr, true},
+    {"Cursor", "cursor", "crsr_0000000000000000000000000000000000000000000000000000000000000000", "api.cursor.com", "/v1/models", false},
+    {"Devin", "devin", "cog_00000000000000000000000000000000", nullptr, nullptr, false},
 };
 inline constexpr const char *kZhipuChat = "/api/paas/v4/chat/completions";
 inline constexpr const char *kZhipuEffort = "high"; // reasoning_effort
