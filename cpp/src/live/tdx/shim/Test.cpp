@@ -1,13 +1,13 @@
 // shim test — 在线用例: 对着活客户端跑适配代码 (Ui / Req / Tables / Credit / Flow 本身) 与客户端行为的假设 (TDX.md 实测的那些).
 //   每例自成一段: 先展开交易栏, 末了回持仓页; 只做查询类动作. 一例一行 PASS / FAIL (原因), 用时与摘要; 有 FAIL 退出码 1.
-//   失败的细节在交互日志 (output/run/live/tdx/log/<启动时刻>.jsonl) 的「用例 <名>」段里.
+//   失败的细节在交互日志 (output/run/live/trace/<启动时刻>.jsonl) 的「用例 <名>」段里.
 //   用例:
 //     query   各页查一次 (页签 成交 / 持仓 / 撤单、功能树 信用资产 / 融资负债汇总 / 资金流水): 认页、等到查完、条数可读
 //     busy    查着时切页签被吞: 切持仓、等其查询键禁用 (查起) 即投切撤单的命令, 撤单页 0.3s 内不显示
 //     read    直发读表: 成交 / 持仓 / 挂单 / 信用资产 / 融资负债各经引导页查一次 (插件发出, 页上 N 条), 再直发同一功能,
 //             行数须恰为 N、索引键不重; 末了合成信用账户
-//     flow    资金流水近 14 天 (引导后按窗直发, 同 Broker::pull_flows)
-//     terms   两融条款 (引导后标的证券 / 担保品各翻页到底, 同 Broker::pull_terms)
+//     flow    资金流水近 14 天 (引导后按窗直发, 同 Driver::flows)
+//     terms   两融条款 (引导后标的证券 / 担保品各翻页到底, 同 Driver::terms)
 //     fields  Tables.hpp 各表各布局: 列数 > 功能定义的出参数, 声明的各列号上的出参字段名恰为声明的 (协议字典, 不动界面)
 #include "live/tdx/Schema.hpp"
 #include "live/tdx/shim/Tool.hpp"
@@ -28,7 +28,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <map>
-#include <memory>
 
 namespace live::tdx::tool {
 
@@ -71,12 +70,12 @@ auto read_one() {
 
 std::string read() {
   const Fills f = read_one<tables::Fills>();
-  const auto pos = std::make_shared<const Keyed<Position>>(read_one<tables::Positions>());
+  const Keyed<Position> pos = read_one<tables::Positions>();
   const Keyed<Pending> o = read_one<tables::Pendings>();
   const std::map<std::string, std::string> c = read_one<tables::Assets>();
   const Keyed<Debt> d = read_one<tables::Debts>();
-  const Account a = credit::account(pos);
-  return strf("成交 %zu · 持仓 %zu · 挂单 %zu · 信用资产 %zu 项 · 融资负债 %zu · 净资产 %.2f", f.rows.size(), pos->list.size(), o.list.size(), c.size(), d.list.size(), a.net);
+  const Account a = credit::account();
+  return strf("成交 %zu · 持仓 %zu · 挂单 %zu · 信用资产 %zu 项 · 融资负债 %zu · 净资产 %.2f", f.rows.size(), pos.list.size(), o.list.size(), c.size(), d.list.size(), a.net);
 }
 
 std::string flows() {
@@ -97,15 +96,15 @@ std::string terms() {
 template <class T>
 void fields_of(const Schema &s, int &n, std::string &bad) {
   for (size_t v = 0; v < T::kViews.size(); ++v) {
-    const auto [func, cols] = T::kViews[v];
-    const auto f = s.funcs.find(func);
+    const cols::View w = T::kViews[v];
+    const auto f = s.funcs.find(w.func);
     if (f == s.funcs.end()) {
-      bad += strf("%s: 没有功能 %d; ", T::kName, func);
+      bad += strf("%s: 没有功能 %d; ", T::kName, w.func);
       continue;
     }
     const std::vector<int> &out = f->second.out;
-    if (static_cast<int>(out.size()) >= cols)
-      bad += strf("%s: 功能 %d 出参 %zu 个, 布局只 %d 列; ", T::kName, func, out.size(), cols);
+    if (static_cast<int>(out.size()) >= w.cols)
+      bad += strf("%s: 功能 %d 出参 %zu 个, 布局只 %d 列; ", T::kName, w.func, out.size(), w.cols);
     std::apply(
         [&](const auto &...c) {
           (
@@ -115,7 +114,7 @@ void fields_of(const Schema &s, int &n, std::string &bad) {
                   return;
                 const std::string got = at < static_cast<int>(out.size()) ? s.name(out[static_cast<size_t>(at)]) : "(越界)";
                 if (got != c.field)
-                  bad += strf("%s 功能 %d 列 %d: 字典为「%s」, 声明「%s」; ", T::kName, func, at, got.c_str(), c.field);
+                  bad += strf("%s 功能 %d 列 %d: 字典为「%s」, 声明「%s」; ", T::kName, w.func, at, got.c_str(), c.field);
                 ++n;
               }(),
               ...);

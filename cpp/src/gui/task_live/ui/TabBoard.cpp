@@ -142,7 +142,7 @@ void progress(LiveHub &hub) {
   const auto &st = hub.state();
   std::string at;
   (st ? *st : live::State{}).each([&](const char *n, const std::string &t) { at += strf("%s%s %s", at.empty() ? "" : " · ", n, t.empty() ? "—" : t.c_str()); });
-  ImGui::Text("%s · 读于 %s · 行情 %s · %s", hub.client().name, at.c_str(), hub.quote_time().empty() ? "—" : hub.quote_time().c_str(),
+  ImGui::Text("%s · 读于 %s · 行情 %s · %s", hub.client().name, at.c_str(), hub.in().quote_at.empty() ? "—" : hub.in().quote_at.c_str(),
               st && !st->who.empty() ? st->who.c_str() : "未接入");
   bool any = false;
   const auto sep = [&] {
@@ -196,16 +196,16 @@ void data_ctl(LiveHub &hub, BoardState &st) {
   ImGui::SameLine(0, ImGui::GetFontSize());
   ImGui::BeginDisabled(hub.busy());
   if (ImGui::SmallButton("更新两融名单"))
-    hub.pull();
+    hub.pull_terms();
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     tip("客户端重查融资标的与担保品两张全表 (慢, 期间独占客户端界面), 整份换掉缓存 output/live/terms.csv\n"
-        "平时只用缓存; 本页打开时缓存缺、满 %d 天、或名单 / 持仓 / 负债里有缓存没有的代码即后台自动拉 (每天至多一次)\n"
+        "平时只用缓存; 读到信用账户后缓存缺、满 %d 天、或名单 / 持仓 / 负债里有缓存没有的代码即后台自动拉 (每天至多一次)\n"
         "个股的名称、融资标的、担保品另经本地库核 (Database 同步的两融明细 / 在市)",
         kTermsAge);
   ImGui::SameLine();
-  if (hub.terms())
-    ImGui::Text("✓ %s · %zu 只", misc::dash(hub.terms_day()).substr(5).c_str(), *hub.terms());
+  if (const Inputs &in = hub.in(); in.terms)
+    ImGui::Text("✓ %s · %zu 只", misc::dash(in.raw->pulled).substr(5).c_str(), in.terms->size());
   else
     text_col(kRed, "未拉过");
   if (ImGui::IsItemHovered())
@@ -219,10 +219,10 @@ void data_ctl(LiveHub &hub, BoardState &st) {
 }
 
 void order_ctl(LiveHub &hub, BoardState &st) {
-  int px = static_cast<int>(hub.cfg().px);
+  int px = static_cast<int>(hub.in().cfg.px);
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
   if (ImGui::Combo("委托价", &px, live::kPxModeNames, IM_ARRAYSIZE(live::kPxModeNames)))
-    hub.set_px(static_cast<live::PxMode>(px));
+    hub.edit_cfg([&](live::rebal::Cfg &c) { c.px = static_cast<live::PxMode>(px); });
   if (ImGui::IsItemHovered())
     tip("持仓行下单与调仓共用\n• 扫档: 对手盘累计恰好吃满该额那档\n• 对手价 / 对手价 ±1%%: 对手一档, 后者再朝成交方向偏 1%%\n• 本方价: 本方一档");
   ImGui::SameLine(0, ImGui::GetFontSize());
@@ -238,7 +238,7 @@ void order_ctl(LiveHub &hub, BoardState &st) {
 }
 
 void rebal_ctl(LiveHub &hub, BoardState &st) {
-  const live::rebal::Cfg &cfg = hub.cfg();
+  const live::rebal::Cfg &cfg = hub.in().cfg;
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
   if (ImGui::BeginCombo("名单", cfg.list.empty() ? "(无)" : cfg.list.c_str())) {
     for (const std::string &n : hub.lists())
@@ -249,10 +249,10 @@ void rebal_ctl(LiveHub &hub, BoardState &st) {
   if (ImGui::IsItemHovered())
     tip("output/config/live/lists/<名>.csv, 名为字母数字下划线; 每行首列一个 6 位代码 (可有 code 表头), 行序即排名; 新在前\n选中即重读");
   ImGui::SameLine();
-  ImGui::TextDisabled("%zu 只", hub.codes().size());
-  if (!hub.list_err().empty()) {
+  ImGui::TextDisabled("%zu 只", hub.in().codes.size());
+  if (!hub.in().list_err.empty()) {
     ImGui::SameLine();
-    text_col(kRed, "✗ " + hub.list_err());
+    text_col(kRed, "✗ " + hub.in().list_err);
   }
   ImGui::SameLine(0, ImGui::GetFontSize());
   double unit = st.unit.value_or(cfg.unit);
@@ -260,7 +260,7 @@ void rebal_ctl(LiveHub &hub, BoardState &st) {
   if (ImGui::InputDouble("最小单元", &unit, 0, 0, "%.0f"))
     st.unit = unit;
   if (ImGui::IsItemDeactivatedAfterEdit())
-    hub.set_unit(std::max(0.0, unit));
+    hub.edit_cfg([&](live::rebal::Cfg &c) { c.unit = std::max(0.0, unit); });
   if (!ImGui::IsItemActive())
     st.unit.reset();
   if (ImGui::IsItemHovered())
@@ -269,12 +269,12 @@ void rebal_ctl(LiveHub &hub, BoardState &st) {
   int pct = static_cast<int>(std::lround(cfg.pct));
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
   if (ImGui::SliderInt("行使", &pct, 0, 100, "%d%%"))
-    hub.set_pct(pct);
+    hub.edit_cfg([&](live::rebal::Cfg &c) { c.pct = pct; });
   if (ImGui::IsItemHovered())
     tip("本次用掉现金、可用保证金、可融余量的比例");
   ImGui::SameLine(0, ImGui::GetFontSize());
   const auto &p = hub.plan().plan;
-  ImGui::BeginDisabled(!p || p->orders.empty() || hub.busy() || hub.ordering());
+  ImGui::BeginDisabled(!p || p->orders.empty() || hub.busy());
   if (ImGui::SmallButton("执行调仓"))
     st.run = true;
   ImGui::EndDisabled();
@@ -611,8 +611,7 @@ void confirm(LiveHub &hub, BoardState &st, bool open) {
   const BoardState::Ask &a = *st.ask;
   ImGui::Text("%s%s %s %s, 滑点 %s, 确认下单?", live::side_name(a.side), a.side > 0 ? strf(" (%s)", live::credit_name(a.credit)).c_str() : "",
               size_txt(a.size).c_str(), sec_txt({a.code, a.name}, hub.priv()).c_str(), a.slip.c_str());
-  const bool can = !hub.ordering() && !hub.busy();
-  ImGui::BeginDisabled(!can);
+  ImGui::BeginDisabled(hub.busy());
   if (ImGui::Button("下单")) {
     hub.submit(a.code, a.side, a.size, a.credit);
     st.ask.reset();
@@ -645,7 +644,7 @@ void confirm_run(LiveHub &hub, BoardState &st) {
     ImGui::Text("按当前试算执行调仓: 卖 %d 单、融资买 %d 单、现金买 %d 单, 行使 %s, 成本约 %.0f 元?", sell, margin, plain,
                 hub.priv() ? kMask : wan(p->use).c_str(), p->cost);
   }
-  ImGui::BeginDisabled(!p || hub.busy() || hub.ordering());
+  ImGui::BeginDisabled(!p || hub.busy());
   if (ImGui::Button("执行")) {
     hub.run();
     ImGui::CloseCurrentPopup();
@@ -828,16 +827,22 @@ void head_tip(int c, const live::board::Frame &f) {
 
 // 卖出滑杆 (配置里的股数, 拖动即 snap 到能成单的)
 int sell_n(LiveHub &hub, const live::rebal::Hold &h) {
-  const auto i = hub.cfg().sells.find(h.code);
-  return std::min(i == hub.cfg().sells.end() ? 0 : i->second, h.avail);
+  const std::map<std::string, int> &sells = hub.in().cfg.sells;
+  const auto i = sells.find(h.code);
+  return std::min(i == sells.end() ? 0 : i->second, h.avail);
 }
 void sell_slider(LiveHub &hub, const live::rebal::Hold &h) {
-  const double unit = hub.cfg().unit;
+  const double unit = hub.in().cfg.unit;
   int n = sell_n(hub, h);
   ImGui::BeginDisabled(snap(h, unit, h.avail) == 0 || hub.busy());
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4);
   if (ImGui::SliderInt("##sell", &n, 0, h.avail, ""))
-    hub.set_sell(h.code, snap(h, unit, n));
+    hub.edit_cfg([&, m = snap(h, unit, n)](live::rebal::Cfg &c) {
+      if (m > 0)
+        c.sells[h.code] = m;
+      else
+        c.sells.erase(h.code);
+    });
   ImGui::EndDisabled();
 }
 
@@ -918,7 +923,7 @@ void plan_cells(const RowPlan &p, bool priv, Amt &amt, double &cost) {
 
 void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, bool &ask) {
   const Flows flows = flows_of(*hub.state());
-  const std::set<std::string> listed(hub.codes().begin(), hub.codes().end());
+  const std::set<std::string> listed(hub.in().codes.begin(), hub.in().codes.end());
   const auto &plan = hub.plan().plan;
   std::map<std::string, const live::rebal::Hold *> holds;
   std::map<std::string, const live::rebal::Target *> tgts;
@@ -1192,8 +1197,6 @@ void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, Boar
     }
     return;
   }
-  hub.auto_pull();
-
   const BoardView &v = hub.board();
   std::set<std::string> held;
   if (v.frame)
@@ -1211,7 +1214,7 @@ void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, Boar
   groups(hub, st);
   info_line(hub, held);
   if (v.frame)
-    table(data, hub, st, *v.frame, st.armed && !hub.ordering() && !hub.busy(), ask);
+    table(data, hub, st, *v.frame, st.armed && !hub.busy(), ask);
   journal(hub, hub.priv());
   ImGui::PopStyleVar(3);
   ImGui::PopFont();

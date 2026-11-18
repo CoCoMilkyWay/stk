@@ -8,7 +8,6 @@
 //   资产一律全局 id (成员表 / 源 / 漂移比同一下标): 库源逐库轴行给其全局 id, 补段源稠密在资产轴上.
 #pragma once
 
-#include "features/Panel/PoolSelect.hpp" // pool::Picks / day_cols
 #include "features/Storage/FeatureRead.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/quote/Fold.hpp"

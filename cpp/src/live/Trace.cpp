@@ -1,6 +1,7 @@
 #include "live/Trace.hpp"
 
 #include "disk/Disk.hpp"
+#include "live/Broker.hpp"
 #include "misc/cross_platform.hpp"
 
 #include <cassert>

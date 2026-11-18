@@ -1,7 +1,6 @@
 #include "live/tdx/Schema.hpp"
 
 #include "live/Broker.hpp"
-#include "live/Trace.hpp"
 
 #include <algorithm>
 #include <cstring>

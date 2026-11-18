@@ -1,17 +1,15 @@
-// Live 任务的中枢: 一个 Broker (客户端适配表 live/Clients.hpp 里选一个, 点「连接」才建) + 新浪行情 + 两融条款 + 下单 / 调仓事务, 券商无关
+// Live 任务的中枢: 一个 Broker (客户端适配表 live/Clients.hpp 里选一个, 点「连接」才建) + 新浪行情 + 两融条款 + 下单 / 调仓 / 拉取事务, 券商无关
+//   快照: 后台改、GUI 每帧取, 一律不可变 shared_ptr (指针换了 = 换了一份): Broker 的 State, 中枢的 Inputs / Task / 最近几单;
+//     持仓帧按 (State, 行情) 变了才重算, 试算按 (State, Inputs) 变了才重算
 //   行情: 要的码 (持仓、今日清仓、负债、调仓名单里可买的) 每帧订阅给 QuoteHub (与 Market 同一路新浪轮询, 改了即提前一轮), 随 Live 的版本取用;
 //     事务 (试算 / 下单) 另现取此刻的. 盘口列同帧复用其 5 档. 账户读到后头一次取齐其各只的行情记作读时现价 (可用保证金按它校准, 见 live/Rebal.hpp)
-//   条款: 券商的两融条款缓存一份 (live/Terms.hpp), 不论哪天拉的启动即用; 后台拉到新的即整份换掉.
-//     与本地库合: 本地库有的个股名称 / 市场取本地 (AssetInfo), 融资标的 = 券商融资状态正常 ∧ 本地两融明细最新一日有它,
-//     担保品 = 券商担保状态正常 ∧ 本地在市; 保证金比例 / 折算率只有券商有; 本地库没有的 (ETF / 债券) 照用券商的整行.
-//     持仓页打开时缓存缺、满 kTermsAge 天、或名单 / 持仓 / 负债里有缓存没有的代码 → 后台拉 (每天自动至多一次, 失败了等人点)
-//   下单: 一次一单, 留最近 kOrderCap 单; 步骤 = 「行情」(按新取的盘口定委托价) + broker 的各步. 单只走事务的道:
-//     持仓页点的一单即一件「下单」事务, 调仓里的各单在「执行调仓」事务里; 请求、取到的盘口、结局各记一条, 各步即事务的步骤
-//   事务: 后台一次一件 (下单 / 拉条款 / 执行调仓 / 别处交来的 job), 日志落 output/run/live/task/<时刻>.jsonl (留最近 kTaskKeep 个), 留尾巴给页面.
+//   拉取: 两融条款 (live/Terms.hpp) 与资金流水账本 (account/Ledger.hpp) 同形 — 一件事务里 拉 → 存; 读到信用账户后各每天自动至多一次:
+//     条款缓存缺、满 kTermsAge 天、或名单 / 持仓 / 负债里有缓存没有的代码; 账本今天还没拉过. 条款另可人点; 失败了等明天或人点
+//   下单: 一单即一件「下单」事务 (调仓的各单在「执行调仓」事务里), 留最近 kOrderCap 单; 步骤 = 「行情」(按新取的盘口定委托价) + broker 的各步;
+//     请求、取到的盘口、结局各记一条, 各步即事务的步骤
+//   事务: 后台一次一件 (下单 / 执行调仓 / 两样拉取), 日志落 output/run/live/task/<时刻>.jsonl (留最近 kTaskKeep 个), 留尾巴给页面.
 //     执行调仓 = 条款缓存还没有即先拉 → 刷新 → 还有挂单即停 (免得重复下单、冻结的钱券没算进试算) → 试算 →
-//     卖单逐只卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 → 买单逐只 (融资在前) → 刷新.
-//     任一步失败即停 (已下的单不撤); 卖单、买单各一整批独占界面连下, 其间不插刷新
-//   GUI 线程每帧 tick 取一份快照, 持仓帧 / 试算按其输入 (State 版本 / 行情 / 配置 / 条款 / 读时现价) 变了才重算; AssetInfo 换了即重合条款
+//     卖单逐只卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 → 买单逐只 (融资在前) → 刷新. 任一步失败即停 (已下的单不撤)
 //   后台线程各持核心的 shared_ptr (在途的客户端操作做完即退)
 #pragma once
 
@@ -19,6 +17,7 @@
 #include "live/Broker.hpp"
 #include "live/Clients.hpp"
 #include "live/Rebal.hpp"
+#include "live/Terms.hpp"
 #include "misc/date.hpp"
 
 #include <array>
@@ -53,7 +52,6 @@ inline const char *job_name(JobSt s) { return s == JobSt::Run ? "进行中" : s 
                                                                                           : "失败"; }
 
 struct OrderJob {
-  uint64_t id = 0;
   std::string t; // 起于 HH:MM:SS
   JobSt st = JobSt::Run;
   live::OrderReq o;               // 委托价「行情」一步才定
@@ -74,6 +72,21 @@ struct Task {
   std::string msg, file, live; // live = 实时进度 (覆盖上一行)
   std::string step;            // 走到哪一步 (左栏标签的第二级)
   std::deque<LogLine> log;
+};
+
+// 持仓帧 / 试算的输入 (行情 / 读时现价 / 条款 / 配置与名单), 改一样即整份换
+struct Inputs {
+  std::shared_ptr<const live::Quotes> quotes;   // 订阅的或事务现取的, 最新一份
+  std::string quote_at;                         // 行情最新时刻
+  std::shared_ptr<const live::Account> px_acct; // px0 是哪份账户的读时现价
+  std::shared_ptr<const live::rebal::Prices> px0;
+  std::shared_ptr<const live::terms::Cache> raw;   // 券商的条款 (缓存); 还没拉过 = 空
+  std::shared_ptr<const live::terms::Local> local; // 本地库的个股
+  std::shared_ptr<const live::Terms> terms;        // raw 合 local; raw 空 = 空
+  live::rebal::Cfg cfg;
+  std::vector<std::string> codes; // 名单
+  std::string list_err;           // 名单读不出的原因
+  std::vector<live::Sec> buy;     // 名单里可买的
 };
 
 // 帧 / 等什么 / 出错原因 三选一
@@ -105,64 +118,46 @@ public:
   // 隐私: 遮住代码、名称与账户金额 (连同其悬停提示), 比例、只数与下单照显; 落盘 output/config/live/ui.json
   bool priv() const { return priv_; }
   void set_priv(bool on);
-  void peek(); // 每帧: 取单 / 事务 / 刷新进度 (左栏标签用), 不算有人在看
-  // 每帧 (页面可见时; quote 本帧已 frame): peek + 有人在看 + 订阅行情 + 其余快照, 输入变了即重算持仓帧 / 试算
+  void peek();      // 每帧: 取快照, 不算有人在看
+  void auto_pull(); // 每帧 (peek 后): 两样拉取该拉了即起事务
+  // 每帧 (页面可见时; quote 本帧已 frame): 本地库变了即重合条款 + peek + 有人在看 + 订阅行情, 输入变了即重算持仓帧 / 试算
   void tick(const AssetInfo &info, Quote::QuoteHub &quote);
 
   // peek / tick 取的快照
   const std::shared_ptr<const live::State> &state() const { return st_; }
   const live::Refresh &refresh() const { return prog_; }
+  const Inputs &in() const { return *in_; }
+  const std::shared_ptr<const Task> &task() const { return task_; } // 还没有事务 = 空
+  const std::vector<OrderJob> &orders() const { return *jobs_; }    // 新在前
   const BoardView &board() const { return board_; }
   const PlanView &plan() const { return plan_; }
-  const std::string &quote_time() const { return quote_at_; } // 行情最新时刻
-  const live::rebal::Cfg &cfg() const { return cfg_; }
-  const std::vector<std::string> &codes() const { return codes_; } // 当前名单
-  const std::string &list_err() const { return list_err_; }        // 名单读不出的原因
-  std::optional<size_t> terms() const { return terms_n_; }         // 条款只数; 还没拉过 = 无
-  misc::Ymd terms_day() const { return terms_day_; }               // 条款缓存拉于哪天
-  const std::vector<OrderJob> &orders() const { return jobs_; }    // 新在前
-  const std::optional<Task> &task() const { return task_; }
-  bool ordering() const; // 有单在跑
-  bool busy() const;     // 调仓事务在跑
+  bool busy() const { return task_ && task_->st == JobSt::Run; } // 有事务在跑
 
   std::vector<std::string> lists() const;
-  void set_list(const std::string &name); // 即重读
-  void set_unit(double unit);
-  void set_pct(double pct);
-  void set_px(live::PxMode px);
-  void set_sell(const std::string &code, int n); // 0 = 不卖
+  void set_list(const std::string &name);                          // 即重读
+  void edit_cfg(const std::function<void(live::rebal::Cfg &)> &f); // 改名单以外的配置
 
-  // 持仓页 code 那只 (持仓 / 今日成交里的, 或名单里可买的只许买) 按 size 元下一单 (一件「下单」事务), 委托价随 cfg().px; 有事务在跑即不收
+  // 持仓页 code 那只 (持仓 / 今日成交里的, 或名单里可买的只许买) 按 size 元下一单, 委托价随配置; 有事务在跑即不收
   void submit(const std::string &code, int side, double size, live::Credit credit);
-
-  void pull();      // 后台拉两融条款
-  void run();       // 后台执行调仓
-  void auto_pull(); // 持仓页打开时: 缓存缺 / 满 kTermsAge 天 / 有要用的代码缓存没有, 且今天还没自动拉过、没有事务在跑 → 拉
-  // 别处的事务走同一条道 (日志 / 进度同上): fn(broker, 报告) 在后台跑, 失败 → Fail; 已有事务在跑 → 不收, false
-  using Job = std::function<void(live::Broker &, const live::Report &)>;
-  bool job(const char *name, Job fn);
+  void pull_terms(); // 后台拉两融条款
+  void run();        // 后台执行调仓
 
 private:
   std::shared_ptr<Core> c_;
   const live::Client *client_ = nullptr;
   bool priv_ = false;
+  misc::Ymd tried_[2] = {}; // 两样拉取 (条款 / 流水) 上次自动拉的日子
   std::shared_ptr<const live::State> st_;
   live::Refresh prog_;
+  std::shared_ptr<const Inputs> in_;
+  std::shared_ptr<const Task> task_;
+  std::shared_ptr<const std::vector<OrderJob>> jobs_;
   BoardView board_;
   PlanView plan_;
-  std::string quote_at_;
-  live::rebal::Cfg cfg_;
-  std::vector<std::string> codes_;
-  std::string list_err_;
-  std::optional<size_t> terms_n_;
-  misc::Ymd terms_day_ = 0;
-  std::array<int64_t, 3> info_key_ = {-1, -1, -1}; // AssetInfo 的 (pit_end, bar1m_end, 代码数): 变了即重合条款
-  std::vector<OrderJob> jobs_;
-  std::optional<Task> task_;
-  std::vector<std::string> watch_;                             // 订阅给 QuoteHub 的码 (变了才交: 交要过服务的锁)
-  uint64_t live_ver_ = 0;                                      // 取用过的 Live 版本
-  uint64_t board_key_[2] = {~0ull, ~0ull};                     // State 版本, 行情版本
-  uint64_t plan_key_[5] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull}; // + 配置, 条款, 读时现价
+  std::array<int64_t, 3> info_key_ = {-1, -1, -1};         // AssetInfo 的 (pit_end, bar1m_end, 代码数): 变了即重合条款
+  std::vector<std::string> watch_;                         // 订阅给 QuoteHub 的码 (变了才交: 交要过服务的锁)
+  uint64_t live_ver_ = 0;                                  // 取用过的 Live 版本
+  std::shared_ptr<const void> board_key_[2], plan_key_[2]; // (State, 行情) / (State, Inputs)
 };
 
 } // namespace GUI::Live

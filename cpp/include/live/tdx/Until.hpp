@@ -4,7 +4,6 @@
 #pragma once
 
 #include "live/Broker.hpp"
-#include "live/Trace.hpp"
 
 #include <chrono>
 #include <functional>

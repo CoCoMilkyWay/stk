@@ -582,36 +582,21 @@ static const char *cmd_settext(struct out *o, HWND h, char *a) {
 }
 
 // ---------- 命令：消息 ----------
-struct wmsg {
-  UINT msg;
-  WPARAM wp;
-  LPARAM lp;
-};
-
-// "<msg> <wp> <lp>"，各数可带 0x 前缀。
-static struct wmsg parse_wmsg(char *a) {
-  struct wmsg m;
-  m.msg = strtoul(a, &a, 0);
-  m.wp = (WPARAM)strtoul(a, &a, 0);
-  m.lp = (LPARAM)strtoul(a, &a, 0);
-  return m;
-}
-
-static const char *cmd_post(struct out *o, HWND h, char *a) {
-  struct wmsg m = parse_wmsg(a);
-  if (!m.msg)
+// "<msg> <wp> <lp>"，各数可带 0x 前缀；send = SendMessageW，否则 PostMessageW。
+static const char *deliver(struct out *o, HWND h, char *a, int send) {
+  UINT msg = strtoul(a, &a, 0);
+  WPARAM wp = (WPARAM)strtoul(a, &a, 0);
+  LPARAM lp = (LPARAM)strtoul(a, &a, 0);
+  if (!msg)
     return "msg=0";
-  emit(o, "{\"ret\":%ld}\n", (long)PostMessageW(h, m.msg, m.wp, m.lp));
+  emit(o, "{\"ret\":%ld}\n",
+       send ? (long)SendMessageW(h, msg, wp, lp) : (long)PostMessageW(h, msg, wp, lp));
   return NULL;
 }
 
-static const char *cmd_send(struct out *o, HWND h, char *a) {
-  struct wmsg m = parse_wmsg(a);
-  if (!m.msg)
-    return "msg=0";
-  emit(o, "{\"ret\":%ld}\n", (long)SendMessageW(h, m.msg, m.wp, m.lp));
-  return NULL;
-}
+static const char *cmd_post(struct out *o, HWND h, char *a) { return deliver(o, h, a, 0); }
+
+static const char *cmd_send(struct out *o, HWND h, char *a) { return deliver(o, h, a, 1); }
 
 static const char *cmd_regmsg(struct out *o, HWND h, char *a) {
   wchar_t w[256];
@@ -684,9 +669,15 @@ static LRESULT CALLBACK exec_cwp(int code, WPARAM wp, LPARAM lp) {
   return CallNextHookEx(NULL, code, wp, lp);
 }
 
-static const char *in_thread(struct out *o, HWND h, thread_fn fn) {
+// h 所属线程；不在本进程回 0。
+static DWORD own_tid(HWND h) {
   DWORD pid = 0, tid = GetWindowThreadProcessId(h, &pid);
-  if (pid != GetCurrentProcessId())
+  return pid == GetCurrentProcessId() ? tid : 0;
+}
+
+static const char *in_thread(struct out *o, HWND h, thread_fn fn) {
+  DWORD tid = own_tid(h);
+  if (!tid)
     return "target not in this process";
   struct exec e = {fn, o};
   HHOOK hk = SetWindowsHookExW(WH_CALLWNDPROC, exec_cwp, g_hMod, tid);
@@ -716,8 +707,8 @@ static LRESULT CALLBACK dis_cwp(int code, WPARAM wp, LPARAM lp) {
 }
 
 static const char *cmd_disables(struct out *o, HWND h, char *a) {
-  DWORD pid = 0, tid = GetWindowThreadProcessId(h, &pid);
-  if (pid != GetCurrentProcessId())
+  DWORD tid = own_tid(h);
+  if (!tid)
     return "target not in this process";
   EnterCriticalSection(&g_cs);
   int i = 0;
@@ -1083,13 +1074,14 @@ static IMAGE_IMPORT_DESCRIPTOR *imports(HMODULE m) {
                           : NULL;
 }
 
-static void iat_write(IMAGE_THUNK_DATA *t, void *to) {
+// 改写本进程里受保护的 n 字节：临时放开为 prot，写完恢复、刷指令缓存。
+static void poke(void *dst, const void *src, size_t n, DWORD prot) {
   DWORD old;
-  BOOL ok = VirtualProtect(&t->u1.Function, sizeof(t->u1.Function),
-                           PAGE_READWRITE, &old);
+  BOOL ok = VirtualProtect(dst, n, prot, &old);
   assert(ok);
-  t->u1.Function = (DWORD_PTR)to;
-  VirtualProtect(&t->u1.Function, sizeof(t->u1.Function), old, &old);
+  memcpy(dst, src, n);
+  VirtualProtect(dst, n, old, &old);
+  FlushInstructionCache(GetCurrentProcess(), dst, n);
 }
 
 // 模块 m 的 IAT 里值为 from 的项改成 to，回改写项数。
@@ -1100,7 +1092,8 @@ static int patch_iat(HMODULE m, void *from, void *to) {
     for (IMAGE_THUNK_DATA *t = (IMAGE_THUNK_DATA *)(b + imp->FirstThunk);
          t->u1.Function; t++)
       if ((void *)t->u1.Function == from) {
-        iat_write(t, to);
+        const DWORD_PTR v = (DWORD_PTR)to;
+        poke(&t->u1.Function, &v, sizeof(v), PAGE_READWRITE);
         n++;
       }
   return n;
@@ -1190,13 +1183,7 @@ static const char *cmd_detours(struct out *o, HWND h, char *a) {
       tramps++;
       if (memcmp(t->code, ENDBR32_LOST, sizeof(ENDBR32_LOST)))
         continue;
-      DWORD old;
-      BOOL ok = VirtualProtect(t->code, sizeof(ENDBR32), PAGE_EXECUTE_READWRITE,
-                               &old);
-      assert(ok);
-      memcpy(t->code, ENDBR32, sizeof(ENDBR32));
-      VirtualProtect(t->code, sizeof(ENDBR32), old, &old);
-      FlushInstructionCache(GetCurrentProcess(), t->code, sizeof(ENDBR32));
+      poke(t->code, ENDBR32, sizeof(ENDBR32), PAGE_EXECUTE_READWRITE);
       fixed++;
       emit(o, "{\"tramp\":\"0x%08x\",\"target\":\"0x%08x\"}\n", HX(t),
            HX(t->remain - t->n));
@@ -2258,37 +2245,53 @@ static int prologue_len(const BYTE *p) {
   return n;
 }
 
-static void htab_open(void) {
+// 各版 shim 共用的跨 DLL 命名共享表（入口原字节 / 虚表原指针）与其自旋锁；
+// 句柄不关：本 DLL 不卸载，共享表随进程存活。
+static void *shared_map(const char *name, size_t size) {
   HANDLE fm = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
-                                 sizeof(struct hooktab), "tdx_shim_hooktab_v1");
-  assert(fm); // 句柄不关：本 DLL 不卸载，共享表随进程存活
-  g_htab = MapViewOfFile(fm, FILE_MAP_WRITE, 0, 0, sizeof(struct hooktab));
-  assert(g_htab);
+                                 (DWORD)size, name);
+  assert(fm);
+  void *p = MapViewOfFile(fm, FILE_MAP_WRITE, 0, 0, size);
+  assert(p);
+  return p;
+}
+
+static void spin_lock(volatile LONG *l) {
+  while (InterlockedCompareExchange(l, 1, 0))
+    Sleep(0);
+}
+
+static void spin_unlock(volatile LONG *l) { InterlockedExchange(l, 0); }
+
+static struct hooktab *htab(void) {
+  if (!g_htab)
+    g_htab = shared_map("tdx_shim_hooktab_v1", sizeof(*g_htab));
+  return g_htab;
 }
 
 // addr 入口的原字节：表里有就用表里的；没有说明是全进程第一次钩它，按现字节
 // 解析并存表。认不出回 NULL。
 static const BYTE *hk_clean(void *addr, int *len) {
-  while (InterlockedCompareExchange(&g_htab->lock, 1, 0))
-    Sleep(0);
+  struct hooktab *t = htab();
+  spin_lock(&t->lock);
   const BYTE *out = NULL;
-  for (int i = 0; i < g_htab->n && !out; i++)
-    if (g_htab->r[i].addr == (DWORD)addr) {
-      *len = g_htab->r[i].len;
-      out = g_htab->r[i].clean;
+  for (int i = 0; i < t->n && !out; i++)
+    if (t->r[i].addr == (DWORD)addr) {
+      *len = t->r[i].len;
+      out = t->r[i].clean;
     }
   int l = out ? 0 : prologue_len(addr);
   if (l) {
-    assert(g_htab->n < HK_MAX);
-    struct hookrec *r = &g_htab->r[g_htab->n];
+    assert(t->n < HK_MAX);
+    struct hookrec *r = &t->r[t->n];
     r->addr = (DWORD)addr;
     r->len = l;
     memcpy(r->clean, addr, l);
-    InterlockedIncrement(&g_htab->n);
+    InterlockedIncrement(&t->n);
     *len = l;
     out = r->clean;
   }
-  InterlockedExchange(&g_htab->lock, 0);
+  spin_unlock(&t->lock);
   return out;
 }
 
@@ -2420,8 +2423,6 @@ static DWORD WINAPI my_GetMessagePos(void) {
 }
 
 static const char *pin_hook(void) {
-  if (!g_htab)
-    htab_open();
   HMODULE u = GetModuleHandleA("user32.dll");
   assert(u);
   if (!inline_hook((BYTE *)GetProcAddress(u, "GetCursorPos"),
@@ -2640,34 +2641,32 @@ struct vt_shared {
 };
 static struct vt_shared *g_vt_shared;
 
-static void vt_shared_lock(int on) {
-  if (!on) {
-    InterlockedExchange(&g_vt_shared->lock, 0);
-    return;
-  }
-  if (!g_vt_shared) {
-    HANDLE fm = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0,
-                                   sizeof(struct vt_shared), "tdx_shim_vt_v1");
-    assert(fm); // 句柄不关：共享表随进程存活
-    g_vt_shared = MapViewOfFile(fm, FILE_MAP_WRITE, 0, 0, sizeof(struct vt_shared));
-    assert(g_vt_shared);
-  }
-  while (InterlockedCompareExchange(&g_vt_shared->lock, 1, 0))
-    Sleep(0);
+static struct vt_shared *vt_shared(void) {
+  if (!g_vt_shared)
+    g_vt_shared = shared_map("tdx_shim_vt_v1", sizeof(*g_vt_shared));
+  return g_vt_shared;
 }
 
-// 虚表 vt 在共享表里的那条（没有即新建；满了回 NULL）；调用方持锁
-static int vt_shared_at(DWORD vt) {
+// 虚表 vt 在共享表 sh 里的那条（没有即新建；满了回 -1）；调用方持锁
+static int vt_shared_at(struct vt_shared *sh, DWORD vt) {
   int t = 0;
-  while (t < g_vt_shared->n && g_vt_shared->t[t].vt != vt)
+  while (t < sh->n && sh->t[t].vt != vt)
     t++;
-  if (t == g_vt_shared->n) {
+  if (t == sh->n) {
     if (t == VT_TABS)
       return -1;
-    g_vt_shared->t[t].vt = vt;
-    g_vt_shared->t[t].n = 0;
-    InterlockedIncrement(&g_vt_shared->n);
+    sh->t[t].vt = vt;
+    sh->t[t].n = 0;
+    InterlockedIncrement(&sh->n);
   }
+  return t;
+}
+
+// 已钩的虚表 vt 在 g_vt 里的下标；没有回 g_nvt
+static int vt_find(DWORD vt) {
+  int t = 0;
+  while (t < g_nvt && g_vt[t].vt != vt)
+    t++;
   return t;
 }
 
@@ -2692,9 +2691,7 @@ static const char *vt_hook(struct out *o, DWORD vt, int n) {
                               MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     assert(g_vt_stubs);
   }
-  int t = 0;
-  while (t < g_nvt && g_vt[t].vt != vt)
-    t++;
+  int t = vt_find(vt);
   if (t == g_nvt) {
     if (g_nvt == VT_TABS)
       return "too many vtables";
@@ -2706,23 +2703,24 @@ static const char *vt_hook(struct out *o, DWORD vt, int n) {
     InterlockedExchange(&tab->rec[k].ret, 0);
   }
   DWORD *slots = (DWORD *)vt, old, fns[VT_SLOTS];
-  vt_shared_lock(1);
-  const int st = vt_shared_at(vt);
+  struct vt_shared *sh = vt_shared();
+  spin_lock(&sh->lock);
+  const int st = vt_shared_at(sh, vt);
   if (st < 0) {
-    vt_shared_lock(0);
+    spin_unlock(&sh->lock);
     return "shared vtable table full";
   }
   int m = tab->n;
   for (; m < n && !vt_hooked(slots[m]); m++) {
-    fns[m] = m < g_vt_shared->t[st].n ? g_vt_shared->t[st].orig[m] : slots[m];
+    fns[m] = m < sh->t[st].n ? sh->t[st].orig[m] : slots[m];
     if (!code_ptr(fns[m]))
       break;
-    if (m >= g_vt_shared->t[st].n) {
-      g_vt_shared->t[st].orig[m] = fns[m];
-      g_vt_shared->t[st].n = m + 1;
+    if (m >= sh->t[st].n) {
+      sh->t[st].orig[m] = fns[m];
+      sh->t[st].n = m + 1;
     }
   }
-  vt_shared_lock(0);
+  spin_unlock(&sh->lock);
   if (m == tab->n) {
     emit(o, "{\"vt\":\"0x%08x\",\"hooked\":%d}\n", vt, tab->n);
     return NULL;
@@ -2759,9 +2757,7 @@ static const char *vt_hook(struct out *o, DWORD vt, int n) {
 static const char *vt_mark(struct out *o, char *a, int only) {
   char *e;
   DWORD vt = strtoul(a, &e, 0);
-  int t = 0;
-  while (t < g_nvt && g_vt[t].vt != vt)
-    t++;
+  int t = vt_find(vt);
   if (t == g_nvt)
     return "vtable not hooked";
   for (int k = 0; only && k < g_vt[t].n; k++)
@@ -2909,6 +2905,21 @@ static struct {
 } g_req;
 static HWND g_req_wnd;
 
+// 客户端的文本一律 GBK（代码页 936）：GBK → UTF-8（转不了即空串）/ UTF-8 → GBK
+static void gbk2u(const char *g, char *u, int cap) {
+  wchar_t w[REQ_CELL];
+  if (MultiByteToWideChar(936, 0, g, -1, w, REQ_CELL) > 0)
+    w2u(w, u, cap);
+  else
+    u[0] = 0;
+}
+
+static void u2gbk(const char *u, char *g, int cap) {
+  wchar_t w[REQ_VAL];
+  u2w(u, w, REQ_VAL);
+  WideCharToMultiByte(936, 0, w, -1, g, cap, NULL, NULL);
+}
+
 // job 此刻的引用数（一加一减，槽 1 回减后的数）
 static DWORD req_refs(void *j) {
   ((th_0)VSLOT(j, 0))(j);
@@ -2928,13 +2939,11 @@ static void req_read(void) {
     put(o, r ? ",[" : "[", r ? 2 : 1);
     for (int c = 0; c < cols; c++) {
       char buf[REQ_CELL] = {0}, u[REQ_CELL * 3];
-      wchar_t w[REQ_CELL];
       if (!g_req.nfid)
         ((th_get)VSLOT(j, 43))(j, (DWORD)c, buf, sizeof(buf) - 1, 0);
       else if (!((th_get)VSLOT(j, 44))(j, g_req.fid[c], buf, sizeof(buf) - 1, 0))
         buf[0] = 0; // 应答里没有该字段
-      MultiByteToWideChar(936, 0, buf, -1, w, REQ_CELL);
-      w2u(w, u, sizeof(u));
+      gbk2u(buf, u, sizeof(u));
       if (c)
         put(o, ",", 1);
       emit_str(o, u);
@@ -2944,9 +2953,8 @@ static void req_read(void) {
   // 槽 36 → 定位串（末行的市场 + 代码；分页的功能下一页以它为定位字串）
   const char *pos = (const char *)((th_0)VSLOT(j, 36))(j);
   char u[REQ_CELL * 3] = {0};
-  wchar_t w[REQ_CELL];
-  if (pos && mem_ok(pos, 1, 0) && MultiByteToWideChar(936, 0, pos, -1, w, REQ_CELL) > 0)
-    w2u(w, u, sizeof(u));
+  if (pos && mem_ok(pos, 1, 0))
+    gbk2u(pos, u, sizeof(u));
   emit(o, "],\"refs\":[%lu,%lu],\"pos\":", g_req.refs[0], g_req.refs[1]);
   emit_str(o, u);
   emit(o, "}\n");
@@ -3051,11 +3059,8 @@ static const char *cmd_req(struct out *o, HWND h, char *a) {
     *end = 0;
     if (f->is_int)
       f->v = (DWORD)strtol(v, NULL, 0);
-    else {
-      wchar_t w[REQ_VAL];
-      u2w(v, w, REQ_VAL);
-      WideCharToMultiByte(936, 0, w, -1, f->s, REQ_VAL, NULL, NULL);
-    }
+    else
+      u2gbk(v, f->s, REQ_VAL);
     *end = keep;
     p = end;
   }
@@ -3101,8 +3106,6 @@ static const char *cmd_gdi(struct out *o, HWND h, char *a) {
     }
     if (!g_gdi_hooked) {
       g_gdi_hooked = 1;
-      if (!g_htab)
-        htab_open();
       for (int k = 0; GDI_HOOKS[k].dll; k++) {
         HMODULE m = GetModuleHandleA(GDI_HOOKS[k].dll);
         assert(m);

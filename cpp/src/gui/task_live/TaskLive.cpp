@@ -2,7 +2,7 @@
 //   Board: 连接 + 持仓 · 调仓一页 (控件分组 / 持仓表行内闪电下单与卖出滑杆, 并调仓名单 / 日志) + 右栏选中行的行情图
 //     (Market 的个股面板, 与 Database / Market 共用 QuoteHub)
 //   行情走新浪 (LiveHub 把要的码订阅给 QuoteHub, 本地资产库就绪才有), 不读客户端的行情; Board 可见时才盯客户端 (见 live/Broker.hpp 的 touch)
-//   账户净值 (gui/account): 每帧交信用账户 + 今日成交 (其库外持仓的现价转给价格库回放), 连上后每天在事务道上补一次资金流水
+//   账户净值 (gui/account): 每帧交信用账户 + 今日成交 (其库外持仓的现价转给价格库回放); 两融条款与资金流水由 LiveHub 每天自动拉
 #include "gui/task_live/TaskLive.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/account/AccountHub.hpp"
@@ -46,16 +46,12 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
   handle.Update = [state](SharedData &) {
     Live::LiveHub &h = *state->hub;
     h.peek();
-    if (!h.connected())
-      return;
-    const std::shared_ptr<const live::State> s = h.broker().state();
-    if (!s || !s->acct)
+    h.auto_pull();
+    if (!h.connected() || !h.state()->acct)
       return;
     Account::AccountHub &a = *state->account;
-    a.feed(s->acct, s->fills);
+    a.feed(h.state()->acct, h.state()->fills);
     state->quote->spot(a.spot());
-    if (a.due() && h.job("更新资金流水", [p = state->account](live::Broker &b, const live::Report &r) { p->pull(b, r); }))
-      a.tried();
   };
 
   handle.Status = [state](const SharedData &, [[maybe_unused]] int idx) -> TaskStatus {
@@ -67,9 +63,7 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
     const auto &t = h.task();
     if (!g.down.empty())
       return {TaskStatus::Kind::Error, "down"};
-    if (h.ordering())
-      return {TaskStatus::Kind::Busy, "ordering"};
-    if (t && t->st == Live::JobSt::Run)
+    if (h.busy())
       return {TaskStatus::Kind::Busy, "running"};
     if (!g.step.empty())
       return {TaskStatus::Kind::Busy, "refreshing"};

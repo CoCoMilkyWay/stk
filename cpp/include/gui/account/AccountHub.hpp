@@ -1,6 +1,5 @@
 // 账户净值的中枢 (gui/Tasks.cpp 建, Live 与 Market 共用): 资金流水账本 (account/Ledger.hpp) → 行情的账户一侧 (Quote::kAccount)
-//   拉: Live 连上客户端、读到信用账户后每天自动一次, 走 Live 的事务道 (LiveHub::job): 重查账本末日起的资金流水并入账本,
-//     流水累计的持仓 + 今日成交对上券商持仓才落盘 (账本代 +1)
+//   拉: 归 Live 的事务道 (LiveHub, account::pull), 与两融条款同形; 落盘即账本代 +1, 这里随代重放
 //   历史: 价格库按账本在日脊上回放 (PriceView::tape[kAccount]; 时间加权指数, 分钟频); 库轴外的持仓以券商现价为今日的观测点 (spot → QuoteHub)
 //   持仓 (Quote::Holdings; Market 账户行的成分 / 当日四列): 券商实时持仓 (信用账户有净资产) 优先, 否则回放末日收后持仓; 今日成交额取券商成交
 //   当日: 接在回放末日之后才有 (QuoteHub 每帧取, 并进 Live::days[kAccount]); 与历史同一核 (AccountSide.hpp day_of): 当日收后持仓 = 上面的持仓,
@@ -10,7 +9,6 @@
 #include "account/Ledger.hpp" // Spot
 #include "gui/quote/Quote.hpp"
 #include "live/Broker.hpp"
-#include "misc/date.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -20,13 +18,8 @@ namespace GUI::Account {
 
 class AccountHub {
 public:
-  AccountHub();
-
-  // ---------- Live 侧 ----------
-  bool due() const;                                                              // GUI 线程: 今天还没拉过
-  void tried();                                                                  // GUI 线程: 今天的已交给事务道
-  void pull(live::Broker &b, const live::Report &r);                             // 事务线程: 拉 → 并 → 核 → 落盘; 失败 → Fail
-  void feed(const live::Got<live::Account> &a, const live::Got<live::Fills> &f); // GUI 线程每帧: 信用账户 + 今日成交 (持仓的源)
+  // ---------- Live 侧 (GUI 线程每帧) ----------
+  void feed(const live::Got<live::Account> &a, const live::Got<live::Fills> &f); // 信用账户 + 今日成交 (持仓的源)
   account::Spot spot() const;                                                    // 库轴外持仓 (ETF / LOF) 的券商现价, 记于今日 (无账户 → 空)
 
   // ---------- 行情侧 (GUI 线程每帧) ----------
@@ -38,7 +31,6 @@ public:
 private:
   void rehold(const Quote::PriceView *view); // 回放 / 信用账户 / 成交变了: 持仓 + 悬停 (有账户全史 ⇒ view 非空)
 
-  misc::Ymd pulled_ = 0; // 账本拉于 (含今天已交出的)
   live::Got<live::Account> acct_;
   live::Got<live::Fills> fills_;
   // 持仓由前三样拼成, 当日再加新浪的一份; 变了才重拼

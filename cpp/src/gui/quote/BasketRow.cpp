@@ -1,6 +1,7 @@
 #include "gui/quote/BasketRow.hpp"
 
 #include "features/Bar1mDay.hpp"
+#include "features/Panel/PoolSelect.hpp"
 #include "fundamental/Scan.hpp"
 
 #include <algorithm>

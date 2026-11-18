@@ -1,7 +1,6 @@
 #include "live/Board.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 
 namespace live::board {

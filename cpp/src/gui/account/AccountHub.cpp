@@ -53,31 +53,6 @@ std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const
 
 } // namespace
 
-AccountHub::AccountHub() : pulled_(account::load().pulled) {}
-
-bool AccountHub::due() const { return pulled_ < misc::today_ymd(); }
-
-void AccountHub::tried() { pulled_ = misc::today_ymd(); }
-
-void AccountHub::pull(live::Broker &b, const live::Report &r) {
-  account::Ledger l = account::load();
-  const misc::Ymd from = l.rows.empty() ? 0 : l.rows.back().date;
-  std::vector<live::CashFlow> fresh = b.pull_flows(from, r);
-  const size_t n = fresh.size();
-  l.rows = account::merge(l.rows, from, std::move(fresh));
-  r.step("核对");
-  r.live("刷新持仓, 核对资金流水…");
-  b.sync(live::Part::All);
-  const std::shared_ptr<const live::State> s = b.state();
-  live::need(s->pos && s->fills && s->acct, "持仓 / 成交 / 信用账户没读到");
-  const std::string off = account::reconcile(l.rows, *s->pos, *s->fills);
-  live::need(off.empty(), "资金流水累计的持仓 + 今日成交对不上券商持仓 (代码 流水/券商): " + off);
-  l.pulled = misc::today_ymd();
-  l.rate = s->acct->rate;
-  account::save(l);
-  r.log("flows", {{"rows", l.rows.size()}, {"from", from}, {"fresh", n}});
-}
-
 void AccountHub::feed(const live::Got<live::Account> &a, const live::Got<live::Fills> &f) { acct_ = a, fills_ = f; }
 
 account::Spot AccountHub::spot() const {
