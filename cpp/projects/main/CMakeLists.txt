@@ -333,6 +333,7 @@ set(MATH_PRECISE
     live/Clients.cpp
     live/Rebal.cpp
     live/Terms.cpp
+    live/Trace.cpp
     live/tdx/Cols.cpp
     live/tdx/Credit.cpp
     live/tdx/Flash.cpp
@@ -344,7 +345,6 @@ set(MATH_PRECISE
     live/tdx/Shim.cpp
     live/tdx/Tables.cpp
     live/tdx/Tdx.cpp
-    live/tdx/Trace.cpp
     live/tdx/Ui.cpp
     live/tdx/Win.cpp
     live/tdx/shim/Main.cpp

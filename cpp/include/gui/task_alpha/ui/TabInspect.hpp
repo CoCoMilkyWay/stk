@@ -57,7 +57,8 @@
 #include "gui/engine/services/RunService.hpp"
 #include "gui/task_alpha/services/KlineService.hpp"
 #include "gui/task_alpha/ui/TabFactors.hpp" // FactorsUIState / FactorsUIContext
-#include "math/distribution/PdfSnap.hpp"    // AggPdf (KLL 成品快照)
+#include "gui/util/Stage.hpp"
+#include "math/distribution/PdfSnap.hpp" // AggPdf (KLL 成品快照)
 
 #include <cstdint>
 #include <string>
@@ -107,25 +108,38 @@ struct InspectUIState {
   FactorRow req_row;
   bool req_reload = false;
   InspectExport req_export = InspectExport::None;
-  // 派生缓存 (切片 (epoch, hold) + 口径)
-  uint64_t derived_epoch = ~0ull;
-  int derived_sel = -1;
-  bool derived_abs = false;
-  InspectDerived der;
+  // 派生缓存 (Stage<Key, Val> 四级对仗)
+  struct DerKey {
+    uint64_t epoch = 0;
+    int sel = -1;
+    bool abs = false;
+    bool operator==(const DerKey &) const = default;
+  };
+  Stage<DerKey, InspectDerived> der;
   // ---- 右上 资产 K 线 ----
   uint32_t asset_gid = ~0u; // 选中资产 (全局 id; ~0u = 未选 → 光标日 R 最高者); 跨结果经 read_scope.axis.sub_of 找回, 不在 A 轴内 → 重选
-  // 资产轴派生 (键: epoch / 光标日): 光标日各资产日内均 R 降序
-  uint64_t ax_epoch = ~0ull;
-  int ax_day = -1;
-  std::vector<int> ax_order;    // [n] 池轴下标 (R 降序, 左 = G20 侧)
-  std::vector<uint32_t> ax_gid; // [n] 对应全局 id
-  std::vector<float> ax_r;      // [n] R ∈ [0,1]
-  bool ax_scrub = false;        // 在资产条上按下且未松开: 每帧选中鼠标所指格
-  // 选中资产的 R(t) 列派生 (键: epoch / 池轴下标)
-  uint64_t col_epoch = ~0ull;
-  int col_sub = -1;
-  std::vector<float> col_r;     // [T] 池内秩 R ∈ [0,1], < 0 = 池外 / 无值
-  std::vector<float> col_r_all; // [T] 不看池的秩 (池外段靠它淡色显示), < 0 = 因子无输出
+  struct AxKey {
+    uint64_t epoch = 0;
+    int day = -1;
+    bool operator==(const AxKey &) const = default;
+  };
+  struct AxBar {
+    std::vector<int> order;    // [n] 池轴下标 (R 降序, 左 = G20 侧)
+    std::vector<uint32_t> gid; // [n] 对应全局 id
+    std::vector<float> r;      // [n] R ∈ [0,1]
+  };
+  Stage<AxKey, AxBar> ax;
+  bool ax_scrub = false; // 在资产条上按下且未松开: 每帧选中鼠标所指格
+  struct ColKey {
+    uint64_t epoch = 0;
+    int sub = -1;
+    bool operator==(const ColKey &) const = default;
+  };
+  struct ColRanks {
+    std::vector<float> r;     // [T] 池内秩 R ∈ [0,1], < 0 = 池外 / 无值
+    std::vector<float> r_all; // [T] 不看池的秩 (池外段靠它淡色显示), < 0 = 因子无输出
+  };
+  Stage<ColKey, ColRanks> col;
   // K 线请求期望态 (结果 key + 池轴下标 变 → gen++ → KlineService::Request; 与 KlineStream::pub 配对)
   uint32_t kline_gen = 0;
   std::string kline_key;
@@ -135,15 +149,20 @@ struct InspectUIState {
   uint32_t kline_gen_applied = ~0u;          // x 视野已复位到全段的代 (换代 = 换资产 / 换结果 → 复位)
   size_t kline_last_pub_days = ~0ull;        // 上次 y 贴合时的已发布日数 (换代 / 前缀增长 → 按当前 x 窗口重贴)
   uint8_t kline_shown = 0xFF;                // 上次 y 贴合时的指数线图例显隐位 (开关图例 → 重贴)
-  int kline_sel = -1;                        // 上次 y 贴合时的 Hold (derived_sel; 换 Hold → 池指数换线 → 重贴)
+  int kline_sel = -1;                        // 上次 y 贴合时的 Hold (换 Hold → 池指数换线 → 重贴)
   double kline_x_lo = 0.0, kline_x_hi = 0.0; // 上帧 x 视野 (y 贴合只看窗口内的蜡烛)
-  // 滚动重锚指数线 (键: 代 / 已发布点数 / 派生 epoch / Hold 变才重算; 只用已发布前缀)
-  uint32_t ref_gen = ~0u;
-  size_t ref_pts = ~0ull;
-  uint64_t ref_epoch = ~0ull;
-  int ref_sel = -1;
-  int ref_t0 = 0, ref_t1 = 0;  // 定义域 [t0, t1): t0 = 首根有效蜡烛 + L, t1 = 已发布日数 × kline_seg
-  std::vector<float> ref_line; // [T], 定义域外无意义
+  struct RefKey {
+    uint32_t gen = 0;
+    size_t pts = 0;
+    uint64_t epoch = 0;
+    int sel = -1;
+    bool operator==(const RefKey &) const = default;
+  };
+  struct RefLine {
+    int t0 = 0, t1 = 0;      // 定义域 [t0, t1): t0 = 首根有效蜡烛 + L, t1 = 已发布日数 × kline_seg
+    std::vector<float> line; // [T], 定义域外无意义
+  };
+  Stage<RefKey, RefLine> ref;
 };
 
 // 自动起算 (Factors / Inspect 两页都每帧调, 不管哪页在前: Factors 页点行高光即起算): 高光因子有效 且 服务空闲 且 请求 key (因子 / 作用域)

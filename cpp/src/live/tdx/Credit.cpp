@@ -1,7 +1,7 @@
 #include "live/tdx/Credit.hpp"
 
 #include "live/tdx/Tables.hpp"
-#include "live/tdx/Trace.hpp"
+#include "live/Trace.hpp"
 
 #include <map>
 #include <set>
@@ -19,7 +19,7 @@ auto full(const Report &r) {
   r.step(S::kName);
   r.live(strf("直发查「%s」…", S::kName));
   auto t = tables::read<S>();
-  r.log("rows", {{"tab", S::kName}, {"n", t.list.size()}});
+  r.log("rows", strf("「%s」%zu 行", S::kName, t.list.size()), {{"tab", S::kName}, {"n", t.list.size()}});
   trace::ev("rows", {{"tab", S::kName}, {"n", t.list.size()}});
   return t;
 }
@@ -78,7 +78,7 @@ Terms pull(const Report &r) {
   return t;
 }
 
-Account account(std::shared_ptr<const Keyed<Position>> held) {
+Account account() {
   const auto c = tables::read<tables::Assets>();
   Account a;
   a.assets = value(c, "担保资产");
@@ -89,7 +89,6 @@ Account account(std::shared_ptr<const Keyed<Position>> held) {
   a.cash = value(c, "现金资产");
   a.rate = value(c, "融资年利率");
   a.debts = tables::read<tables::Debts>();
-  a.held = std::move(held);
   trace::ev("acct", {{"assets", a.assets}, {"line", a.line}, {"debt", a.debt}, {"net", a.net}, {"avail", a.avail}, {"cash", a.cash}, {"debts", a.debts.list.size()}});
   return a;
 }

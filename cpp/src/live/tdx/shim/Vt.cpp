@@ -11,7 +11,7 @@
 
 #include "disk/Disk.hpp"
 #include "live/tdx/Shim.hpp"
-#include "live/tdx/Trace.hpp"
+#include "live/Trace.hpp"
 
 #include <chrono>
 #include <cstdio>

@@ -2,10 +2,10 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -44,13 +44,20 @@ struct Members {
   std::span<const Weight> of(size_t k) const { return {ws.data() + at[k], ws.data() + at[k + 1]}; }
   std::span<Weight> of(size_t k) { return {ws.data() + at[k], ws.data() + at[k + 1]}; }
 
-  // 有限的 x(a): s[键] += Σ w · x(a), n[键] += Σ w
+  // s[键] += Σ w · x(a), n[键] += Σ w; x(a, v) 返回 bool 时只在真时计入
   template <class X>
   void scatter(X &&x, std::span<double> s, std::span<double> n) const {
-    for (size_t k = 0; k < size(); ++k)
-      if (const double v = x(id[k]); std::isfinite(v))
-        for (const Weight &e : of(k))
-          s[e.key] += e.w * v, n[e.key] += e.w;
+    for (size_t k = 0; k < size(); ++k) {
+      double v = 0.0;
+      if constexpr (std::is_invocable_r_v<bool, X &, uint32_t, double &>) {
+        if (!x(id[k], v))
+          continue;
+      } else {
+        v = x(id[k]);
+      }
+      for (const Weight &e : of(k))
+        s[e.key] += e.w * v, n[e.key] += e.w;
+    }
   }
   // 过一日: 权与 cap × rel(a)
   template <class Rel>

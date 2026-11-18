@@ -1,6 +1,6 @@
 #include "live/tdx/Proc.hpp"
 
-#include "live/tdx/Trace.hpp"
+#include "live/Trace.hpp"
 
 #include <cassert>
 #include <cerrno>

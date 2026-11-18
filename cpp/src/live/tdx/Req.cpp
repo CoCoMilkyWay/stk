@@ -3,7 +3,7 @@
 #include "live/tdx/Image.hpp"
 #include "live/tdx/Schema.hpp"
 #include "live/tdx/Shim.hpp"
-#include "live/tdx/Trace.hpp"
+#include "live/Trace.hpp"
 #include "live/tdx/Until.hpp"
 
 #include <algorithm>

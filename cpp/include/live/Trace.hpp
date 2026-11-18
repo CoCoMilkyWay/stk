@@ -1,13 +1,13 @@
-// 通达信适配: 交互日志 — 与客户端的交互 (shim 命令 / 请求层 / 外部进程) 与 Broker 的流程, 一行一事件落
-//   output/run/live/tdx/log/<启动时刻>.jsonl (每次启动一个文件, 只留最近 kKeep 个). 只记事件与定位所需的字段, 供事后据此还原一次失败.
+// 实盘: 交互日志 — Broker 的流程 (刷新 / 下单 / 拉取) 与适配里同客户端的交互 (shim 命令 / 请求层 / 外部进程), 一行一事件落
+//   output/run/live/trace/<启动时刻>.jsonl (每次启动一个文件, 只留最近 kKeep 个). 只记事件与定位所需的字段, 供事后据此还原一次失败.
 //   行: {t 本地时刻 HH:MM:SS.mmm, th 线程号, at 段路径 (外/内), ev 种类, 其余为该事件的字段}
 //   段 Span: 段内有事件才落盘 (首个事件前补记 begin + 段的字段, 出段记 end + ms, 因异常出段另带 fail: true), 空转的轮询不留痕;
 //     段外不记 (shim 程序的命令转发、探内存、录制都在段外; 其在线用例各成一段「用例 <名>」)
 //   同一线程相邻几条除 ms 外全同的事件只记首条, 其后记一行 rep {n 又几次, ms 首条到末条}
-//   适配里的 fail / need 经此 (遮住 live::fail): 先在当时的段路径下记一行 fail {why}, 再抛 live::Fail
-//   段: 刷新 {why 起因, n 轮号} › 接入 / 引导 / 成交 / 持仓 / 挂单 / 信用账户 (只刷成交的一轮只有成交);
+//   live::fail 经此: 先在当时的段路径下记一行 fail {why}, 再抛 live::Fail
+//   段: 刷新 {why 起因, n 轮号} › 接入 (› 引导) / 成交 / 持仓 / 挂单 / 信用账户 (只刷成交的一轮只有接入与成交);
 //     下单 {委托} › 接入 / 切换 / 开窗 / 填单 / 确认 / 回报;
-//     两融条款 › 接入 / 引导 / 标的证券 / 担保品;  资金流水 {from} › 接入 / 引导 / 窗 {lo, hi};  <独占者> (调仓整批等);
+//     两融条款 › 接入 / 引导 / 标的证券 / 担保品;  资金流水 {from} › 接入 / 引导 / 窗 {lo, hi};
 //     界面件: 点「文字」/ 功能树「项」/ 开页「页」{col} / 弹框 {titles}
 //   种类:
 //     shim {cmd, ms, ret 应答记录 | n 条数 + kb (应答大于 kRetCap 字节)}   run {argv, rc, ms, err / out 尾部}   外部进程
@@ -25,29 +25,19 @@
 //     rows {tab, n}                      两融条款一表翻页到底的行数
 //     texts {wins, seen}                 点文字不恰一处: 候选窗口数、各候选窗口上画着的文字
 //     popup {title, hwnd}                等到的弹框                        form {px, dflt, unit, cap0, cap, n}  填单的价、默认价、单位、最大量、股数
-//     gate {by, ms}                      界面锁被 by 占着, 等了 ms         unsynced {try}  持仓与成交对不上
+//     gate {ms}                          界面锁被占着, 等了 ms             unsynced {try}  持仓与成交对不上
 //     acct {assets, line, debt, net, avail, cash, debts}  读到的信用账户  placed {qty, px, msg}  委托回报
 //     terms {n}  两融条款只数            flows {n}  资金流水总条数
 #pragma once
+
+#include "live/Broker.hpp"
 
 #include "nlohmann/json.hpp"
 
 #include <chrono>
 #include <string>
 
-namespace live::tdx {
-
-[[noreturn]] void fail(std::string why);
-inline void need(bool ok, const char *why) {
-  if (!ok)
-    fail(why);
-}
-inline void need(bool ok, const std::string &why) {
-  if (!ok)
-    fail(why);
-}
-
-namespace trace {
+namespace live::trace {
 
 using Kw = nlohmann::ordered_json;
 
@@ -73,6 +63,4 @@ private:
   int unwinding_;
 };
 
-} // namespace trace
-
-} // namespace live::tdx
+} // namespace live::trace

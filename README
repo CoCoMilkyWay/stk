@@ -50,8 +50,8 @@ stk/
 │   │   │   ├── Asset.hpp / AssetInfo.hpp               # 📦 资产定义 / 元数据 (按全局 id 稠密: 一对一 vector, 一对多 Csr)
 │   │   │   ├── AssetEvent.hpp                          # 📦 个股历史事件 (AssetInfo 内)
 │   │   │   ├── Basket.hpp                              # 📦 篮子表 BasketTable = 切片 × 该切片的权重; 三段 (段序 = 目录组序 = 下标序): 各子池 (池参数, 全A 等权 / 加权两池起头) | 申万一级 | 概念 (行业 / 概念 = 全A 内切, 市值加权)
-│   │   │   │                                           #    · 逐篮子属性 (权重 / 周期 / 代码 / 名) 建表时定; 成员判据唯一一份, 两向 each ⇄ holds (事实 Fact = 池集位 + 行业, 同取成员源行; + 概念);
-│   │   │   │                                           #    · 持仓权唯一一份 Weigh (所依池的源行目标权漂到某行, Strip::omega); 一日的成员表唯一一份 members (选股表 × 原料带 → Members, 键 = 篮子);
+│   │   │   │                                           #    · 逐篮子属性 (权重 / 周期 / 代码 / 名) 建表时定; 枚举所属篮子 each (子池位集 + 源行行业 + 所属概念);
+│   │   │   │                                           #    · 持仓权 Weigh (按周期两档源行降维为每资产 2×2 四数); 成员两步对仗 members (选股表 → 交易日成员表) ⇄ drift (补段冻结随价漂移, 逢换源回目标权);
 │   │   │   │                                           #      行情价格指数 / CTA / 回测池篮子 (可成交指数 + 换手 / 估值) 同一张、同一份成员与权
 │   │   │   ├── Concept.hpp                             # 📦 东财题材概念成分视图: 读 _meta/concept.parquet 映射到全局 A 轴 (进程内唯一)
 │   │   │   ├── Feature.hpp                             # 📦 特征元数据 + 多选 picked = set<ColRef> (跨库跨层); 当前库 = (池, 档)
@@ -172,14 +172,13 @@ stk/
 │   │   │   │   │                                       #    · 全量 (清库重建) / 续算 (A 轴冻结, 只算库末之后的新日; 快照与清单 / 字段表对得上才可续)
 │   │   │   │   └── ui/TabCompute.hpp                   # 🖥️ Compute 页: 库表 (一行一池, 每池各档一库) + 核布局 + Rebuild / Append / 删除 + 进度
 │   │   │   ├── engine/                                 # 🖥️ 因子引擎: Alpha 各因子服务 / Market 组合 / Agent 回测与观察同一份
-│   │   │   │   ├── EngineHub.hpp                       # 🖥️ 跨任务状态 (Alpha / Market 共用): 各层字段表 + 后端选择 + 组合 (PortfolioService / 编辑状态 / 重解析)
-│   │   │   │   ├── Table.hpp                           # 🖥️ 因子层公共类型: 层表 FACTOR_LEVELS + 持有期开关仓 HoldPoints / 三侧列 XCols ↔ YCols ↔ BCols / 作用域与年数上限 / EvalStat
-│   │   │   │   ├── Load.hpp                            # 🖥️ 评估域与装载层: Domain + Plan 分块 + 三侧平面 X ↔ Y ↔ B (共享 read_days) + 进程唯一计算面 Store
+│   │   │   │   ├── EngineHub.hpp                       # 🖥️ 跨任务状态 (Alpha / Market 共用): 后端选择 + 组合 (PortfolioService / 编辑状态 / 重解析)
+│   │   │   │   ├── Table.hpp                           # 🖥️ 因子层公共类型: 层表 FACTOR_LEVELS + 持有期开关仓 HoldPoints / 两侧列 XCols ↔ YCols + K 线与估值五叶 (每进程代按层一份 table_of) / 作用域与年数上限 / EvalStat
+│   │   │   │   ├── Load.hpp                            # 🖥️ 评估域与装载层: Domain + Plan 分块 + 两侧平面 X ↔ Y (共享 read_days, 统一经 Store::pin 钉成 Block) + 进程唯一计算面 Store
 │   │   │   │   │                                       #    · 门控 / 标签取因子池 Bar 库, 盘口成本取同池 Lob 库; 评估期 span_of = 落盘日交集最近 N 年 + 10% 预热日
 │   │   │   │   │                                       #    · Store = 线程池 ex + 库 lr + 宿主平面 LRU (misc::Lru, 钉着的不逐) + 常驻执行环境 ExecSpace (CPU/GPU 内存与显存统一预算) + 计算权租约 Lease
-│   │   │   │   │                                       #    · B 只装门控 / 标签 / 估值; 成员 / 持仓权 / 行业 / 市值 / 收益 取选股表的原料带 (评估日 = 原料带连续行)
-│   │   │   │   ├── Book.hpp                            # 🖥️ 净值与篮子引擎: RowLines → fold_book → BookLines → compound; 行情两侧 PerMarket<SideBook> (篮子 ↔ 个股同形)
-│   │   │   │   │                                       #    · 池篮子: 收益 = 可成交指数 (Weigh 权 × Stat 行核); 换手 / 估值 = 篮子账 Sleeve (members 换源 ⇄ 过日漂移, 估值持仓加权)
+│   │   │   │   ├── Book.hpp                            # 🖥️ 净值与篮子引擎: RowLines → fold_book → BookLines → compound; 统一账核 Book (因子 / 篮子 / 个股同形); 分块归约 BasketPass → Baskets
+│   │   │   │   │                                       #    · 池篮子: 收益 = 可成交指数 (Weigh 2×2 权 × Stat 行核, 母集广播概念零二分); 换手 / 估值 = 篮子账 Sleeve (members 换源 ⇄ 过日漂移, 估值持仓加权)
 │   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层 (双层对仗): 趟级 init ⇄ finish × 块级 open → row → close; 落地三形 RowsP / LandCellsP / LinesP; EvalProbes → EvalStat
 │   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎: Forest (LeafId 一步到位, 因子根 + 纯表达式根) × Backend<Cpu | Gpu> (设备侧按块驻留 Y/X 复用)
 │   │   │   │   │                                       #    · 单一管线: prepare → run_pass (按需日段跳块); 单森林 eval_forest (Run / Inspect / Portfolio) ↔ 篮子 eval_baskets
@@ -213,8 +212,8 @@ stk/
 │   │   │   │   │                                       #      进度一趟一次定总量 (库段 + 补段 + 篮子侧合成天)
 │   │   │   │   │                                       #    · 账户: 资金流水账本按日脊个股的根回放 (gui/account/AccountSide.hpp, 与当日同一核) → 时间加权指数 (分钟频); 账本代变 / 换戳才重放
 │   │   │   │   │                                       #    · 库只 worker 碰, 外面 (行情各页 / CTA) 只读发布; 交接 (下一交易日成员表 + 末日点位) 一变即直交当日合成 (QuoteService::bind)
-│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 价格库合成件: 成员 members (shared/Basket.hpp members 落在 D−1 收盘, 全局 id) ⇄ drift (冻结, 随价漂移, 逢换源回目标权);
-│   │   │   │   │                                       #    个股源 LibDay (all.bar 日行 + L_1min) / FundDay (bar1d + bar1m) / SinaDay (新浪归档); 一日合成件 Lane<源> (篮子源 = 个股侧的段); 普查 census (只数 / 权 / 成分 / 重合)
+│   │   │   │   ├── BasketRow.hpp                       # 🖥️ 价格库合成件: 个股源 LibDay (all.bar 日行 + L_1min) / FundDay (bar1d + bar1m) / SinaDay (新浪归档);
+│   │   │   │   │                                       #    一日合成件 Lane<源> (成员见 shared/Basket.hpp members ⇄ drift; 篮子源 = 个股侧的段); 普查 census (只数 / 权 / 成分 / 重合)
 │   │   │   │   └── services/
 │   │   │   │       └── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin (收完的往日转作归档); 篮子当日按交接的成员表增量合成;
 │   │   │   │                                           #    各只按全局 id 下标 (live.bin 头记资产轴前缀指纹); 一轮发布一份不可变 Live (个股 / 篮子的 Day + 逐只共享的快照 (只换变了的) + 订阅码的快照;
@@ -396,7 +395,7 @@ stk/
 │   │       ├── snap.hpp                                # 🔧 快照归档 Save ⇄ Load: 每类型一份成员清单, 两向同一份
 │   │       ├── exec.hpp                                # 🔧 执行器 (全仓唯一批内并行抽象): Serial / ForkJoin 逐位一致
 │   │       ├── epoch.hpp                               # 🔧 进程代 + Epochal<T>: 读盘派生的进程级缓存每代重建 (进程内重启换代)
-│   │       ├── lru.hpp                                 # 🔧 最近用留存 Lru<Key, V>: 条数封顶 get (读出的序列: 价格库 / CTA) ⇄ 代价封顶 put + trim (钉着的不逐: 因子引擎宿主平面)
+│   │       ├── lru.hpp                                 # 🔧 最近用留存 Lru<Key, V> (list + map, O(1) 提新 / 淘汰): 条数封顶 get (价格库 / CTA) ⇄ 代价封顶 find + put + trim (宿主平面 / 组合账 / 风格账)
 │   │       ├── affinity.hpp                            # 🔧 CPU 亲和性 / 线程命名
 │   │       ├── archive.hpp / parquet.hpp               # 🔧 归档操作 / Parquet 读写
 │   │       ├── file_check.hpp / file_repair.hpp        # 🔧 归档核查 ⇄ 修复: 同一份问题分类, 可修项重打包为非固实 RAR 原地原子替换

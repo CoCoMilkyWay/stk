@@ -5,6 +5,7 @@
 #pragma once
 
 #include "features/Storage/FeatureLevels.hpp" // TierId
+#include "gui/util/Stage.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -33,10 +34,14 @@ struct TableUIState {
   int sort_column = -1;
   bool sort_ascending = true;
 
-  // 聚类排序缓存 (凝聚聚类较重, 只在 level / 过滤集变化时重算)
-  int cluster_cache_level = -1;
-  std::vector<int> cluster_cache_key; // cat_l1 稳定排序后的 filtered_indices
-  std::vector<int> cluster_cache_val; // 聚类排序结果
+  // 聚类排序缓存 (凝聚聚类较重, 只在档 / 层 / 过滤集变化时重算)
+  struct ClusterKey {
+    TierId tier = TierId::Bar;
+    int level = -1;
+    std::vector<int> rows;
+    bool operator==(const ClusterKey &) const = default;
+  };
+  Stage<ClusterKey, std::vector<int>> cluster;
 
   // 列宽贴合: FixedFit 只在列首次出现那几帧量内容, 之后宽度冻结; 且 ScrollX 下
   // 视野外的列被跳过提交, 根本量不到 → 内容变了必须显式 TableSetColumnWidthAutoAll

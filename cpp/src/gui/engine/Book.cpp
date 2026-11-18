@@ -199,7 +199,7 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
         bk.col[kBookBuy].v[l * ds_ + u] = static_cast<float>(buy[l]);
       for (int m = 0; m < kPoolVals; ++m) {
         std::fill(vs.begin(), vs.end(), 0.0), std::fill(vn.begin(), vn.end(), 0.0);
-        lg.hold.scatter([&](uint32_t a) { return static_cast<double>(sk.val[m].v[a * ds_ + u]); }, vs, vn);
+        lg.hold.scatter([&](uint32_t a, double &v) { return std::isfinite(v = sk.val[m].v[a * ds_ + u]); }, vs, vn);
         for (size_t l = 0; l < nl; ++l)
           if (vn[l] > 0.0)
             bk.val[m].v[l * ds_ + u] = static_cast<float>(vs[l] / vn[l]);

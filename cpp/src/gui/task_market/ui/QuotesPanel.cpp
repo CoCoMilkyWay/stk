@@ -3,6 +3,7 @@
 #include "gui/Tasks.hpp"      // StatusColor (补分钟进度条 = 进行中色)
 #include "gui/util/Chart.hpp" // kUp / kDn / tint / toggle_button / button_bar / EndTag
 #include "gui/util/HoverSync.hpp"
+#include "gui/util/Stage.hpp"
 #include "shared/Basket.hpp" // 0 轴净流入柱的默认标的 (全A.等)
 
 #include "imgui.h"
@@ -675,20 +676,27 @@ void header(const char *title, const Source &src, const char *note) {
 
 } // namespace
 
-// 个股图的根: 键 = 源 (个股历史 / 当日) + 标的 + 日内档
-struct StockSeries {
-  std::shared_ptr<const PriceView> view; // 持着 tape 与 src 的全史
+// 个股图的两级键控缓存: 外级 = 源 (个股历史 / 当日) + 标的 + 日内档 → 内级 = K 线视野 / 图宽
+struct StockKey {
   const Tape *tape = nullptr;
-  std::shared_ptr<const Live> live; // 持着 src 的当日
+  std::shared_ptr<const Live> live;
   uint32_t id = Ref::kNone;
   int span = 0;
-  Source src;
-  PlotBars intra;           // 日内 (未并根)
-  std::vector<Candle> days; // K 线的日根 [k] (= 源的日序列)
-  PlotBars k;               // K 线视野的根 (视野 / 图宽变才重建)
-  double klo = 0, khi = 0;
-  float kpx = 0;
+  bool operator==(const StockKey &) const = default;
 };
+struct KlineKey {
+  double lo = 0, hi = 0;
+  float px = 0;
+  bool operator==(const KlineKey &) const = default;
+};
+struct StockData {
+  std::shared_ptr<const PriceView> view; // 持着 tape 与 src 的全史
+  Source src;
+  PlotBars intra;              // 日内 (未并根)
+  std::vector<Candle> days;    // K 线的日根 [k] (= 源的日序列)
+  Stage<KlineKey, PlotBars> k; // K 线视野的根 (视野 / 图宽变才重建)
+};
+struct StockSeries : Stage<StockKey, StockData> {};
 
 namespace {
 
@@ -702,19 +710,16 @@ void plot_intraday(const char *name, const PlotBars &intra, uint64_t id, ChartSt
   plot_chart(name, s, -0.5, hi, st.iv, size, kIntraName, kIntras, st.intraday, 0);
 }
 // K 线档窗口右端 = 最新一日; 不足一档的历史靠右, 左侧留空
-void plot_k(const char *name, StockSeries &c, uint64_t id, ChartState &st, const ImVec2 &size) {
+void plot_k(const char *name, StockData &c, uint64_t id, ChartState &st, const ImVec2 &size) {
   const double end = static_cast<double>(c.days.size()) * kSlots, lo = end - kKSpan[st.kline] * kSlots - 0.5, hi = end - 0.5;
   reset(st.kv, id | static_cast<uint64_t>(st.kline) << 24 | static_cast<uint64_t>(c.days.size()), lo, hi);
-  if (c.klo != st.kv.lo || c.khi != st.kv.hi || c.kpx != size.x) {
-    c.klo = st.kv.lo, c.khi = st.kv.hi, c.kpx = size.x;
-    k_bars(c.days, c.src, c.klo, c.khi, c.kpx, c.k);
-  }
-  plot_chart(name, c.k, lo, hi, st.kv, size, kKName, 4, st.kline, end + 1.0);
+  c.k.update({st.kv.lo, st.kv.hi, size.x}, [&](PlotBars &b) { k_bars(c.days, c.src, st.kv.lo, st.kv.hi, size.x, b); });
+  plot_chart(name, c.k.val, lo, hi, st.kv, size, kKName, 4, st.kline, end + 1.0);
 }
 
 // 个股行情的图区: 上 日内 (右挂 1/3 宽五档; 上下 6 : 4) / 下 K 线.
 //   显式定位 (档位按钮叠在图上, 画完光标不在流式位置)
-void charts(const char *name, StockSeries &c, uint64_t id, ChartState &st, const sina::Quote *book, misc::Ymd date) {
+void charts(const char *name, StockData &c, uint64_t id, ChartState &st, const sina::Quote *book, misc::Ymd date) {
   ImGui::PushID(name);
   const float gap = 4.f;
   const ImVec2 p0 = ImGui::GetCursorScreenPos(), avail = ImGui::GetContentRegionAvail();
@@ -1088,18 +1093,22 @@ constexpr OverlayDef kOverlayDefs[kOverlays] = {
 } // namespace
 
 // 叠加图的线: 键 = 源 (价格库 / 当日) + 选中 + 档
-struct OverlayCache {
+struct OverlayKey {
   std::shared_ptr<const PriceView> view;
   std::shared_ptr<const Live> live;
   std::vector<OverlayPick> picks;
   int span = 0, unit = 0;
   bool ends = false;
+  bool operator==(const OverlayKey &) const = default;
+};
+struct OverlayData {
   std::vector<misc::Ymd> days;
   std::vector<Overlay> ls;
   NetBars net;
   char note[256] = "";
   bool gap = false;
 };
+struct OverlayCache : Stage<OverlayKey, OverlayData> {};
 
 void Want(QuoteHub &mk, StockState &st, uint32_t id) {
   if (id != st.want) {
@@ -1138,11 +1147,11 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
   const Source src = j.of(id);
   if (!st.series)
     st.series = std::make_shared<StockSeries>();
-  StockSeries &c = *st.series;
-  if (c.tape != j.tape() || c.live != j.live || c.id != id || c.span != st.chart.intraday) {
-    c = {.view = j.view, .tape = j.tape(), .live = j.live, .id = id, .span = st.chart.intraday, .src = src, .days = k_days(src)};
-    intraday(src, day_axis(mk.calendar().days, j.live ? j.live->date : 0, kIntraDays[st.chart.intraday]), c.intra);
-  }
+  st.series->update({j.tape(), j.live, id, st.chart.intraday}, [&](StockData &d) {
+    d = {.view = j.view, .src = src, .days = k_days(src)};
+    intraday(src, day_axis(mk.calendar().days, j.live ? j.live->date : 0, kIntraDays[st.chart.intraday]), d.intra);
+  });
+  StockData &c = st.series->val;
 
   char note[256];
   if (st.want != id)
@@ -1172,9 +1181,7 @@ int RenderOverlay(OverlayKind kind, QuoteHub &mk, OverlayState &st, const std::v
     return -1;
   if (!st.cache[kind])
     st.cache[kind] = std::make_shared<OverlayCache>();
-  OverlayCache &c = *st.cache[kind];
-  if (c.view != mk.view || c.live != mk.live || c.picks != picks || c.span != st.span[kind] || c.unit != st.flow_unit || c.ends != st.flow_ends) {
-    c.view = mk.view, c.live = mk.live, c.picks = picks, c.span = st.span[kind], c.unit = st.flow_unit, c.ends = st.flow_ends;
+  st.cache[kind]->update({mk.view, mk.live, picks, st.span[kind], st.flow_unit, st.flow_ends}, [&](OverlayData &c) {
     c.days = OverlayDays(kind, mk, st);
     c.gap = coverage(*mk.view, mk.live.get(), c.note, sizeof(c.note));
     const OverlayCtx cx{st, c.days, picks.size() == 1};
@@ -1193,7 +1200,8 @@ int RenderOverlay(OverlayKind kind, QuoteHub &mk, OverlayState &st, const std::v
       const Ref nk = cx.one ? picks.front().ref : Ref{kBasket, static_cast<uint32_t>(all_eq)};
       c.net = net_bars(mk.of(nk), cx.one ? picks.front().name : basket_table().name(all_eq), c.days);
     }
-  }
+  });
+  OverlayData &c = st.cache[kind]->val;
   ImGui::PushID(def.id);
   int near = -1;
   const ImVec2 corner = plot_overlay(c.ls, c.days, ImGui::GetContentRegionAvail(), def.unit(st), hot, near, def.net ? &c.net : nullptr);

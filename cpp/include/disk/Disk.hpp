@@ -210,12 +210,12 @@ enum class Seg : std::uint8_t {
   X(RunLive,           Run,               Dir,    Lit,       "live",              "",         false)       \
   X(RunLiveTask,       RunLive,           Dir,    Lit,       "task",              "",         false)       \
   X(RunLiveTaskLog,    RunLiveTask,       File,   Stamp,     "",                  ".jsonl",   false)       \
+  X(RunLiveTrace,      RunLive,           Dir,    Lit,       "trace",             "",         false)       \
+  X(RunLiveTraceLog,   RunLiveTrace,      File,   Stamp,     "",                  ".jsonl",   false)       \
   X(RunLiveTdx,        RunLive,           Dir,    Lit,       "tdx",               "",         false)       \
   X(RunLiveTdxShim,    RunLiveTdx,        Bundle, Lit,       "shim",              "",         false)       \
   X(RunLiveTdxRec,     RunLiveTdx,        Dir,    Lit,       "rec",               "",         false)       \
   X(RunLiveTdxRecLog,  RunLiveTdxRec,     File,   Stamp,     "",                  ".jsonl",   false)       \
-  X(RunLiveTdxLog,     RunLiveTdx,        Dir,    Lit,       "log",               "",         false)       \
-  X(RunLiveTdxLogFile, RunLiveTdxLog,     File,   Stamp,     "",                  ".jsonl",   false)       \
   X(RunApp,            Run,               Dir,    Lit,       "app",               "",         false)       \
   X(RunAppTsan,        RunApp,            File,   Lit,       "tsan_report.log",   "",         false)       \
   X(RunAppCrash,       RunApp,            File,   Lit,       "crash_stacks.txt",  "",         false)

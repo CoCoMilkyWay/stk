@@ -1,9 +1,15 @@
-// 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Broker 并登记进 live/Clients.hpp, 上层 (gui/task_live) 只认这里的类型
-//   读: 持仓 / 当日成交 / 挂单 / 信用账户 由客户端重查后整份发布 (State, 不可变; ver 变 = 换了一份); 两融条款 / 资金流水另拉 (pull_terms / pull_flows, 慢)
-//   写: 限价单 place (调用线程跑完, 逐步报进度; 成功后隔几秒再刷, 限价单可能稍后才成交); 一整批独占客户端 exclusive (批内连下, 其间不插刷新)
-//   刷新: request 要一轮 (不等) / sync 要一轮并等完 (都可只刷成交) / every 定时; 有人在看 (touch / Watch) 才转
-//   客户端状态与预期不符 (界面没弹出 / 应答不认识 / 回报失败) 是外部结局, 不是本程序的错: fail 抛 Fail, 在各轮 / 各事务的边界收成原因文本;
-//   本程序自身的不变式一律 assert
+// 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Driver 并登记进 live/Clients.hpp, 上层 (gui/task_live) 只认这里的类型与 Broker
+//   Driver (一个客户端一份): 同步, 调用线程跑完; 刷新线程与事务线程会同时调, 自身线程安全
+//     接: connect 接上客户端 (换了进程即重接, 接上即可读) → 是谁
+//     读: fills / positions / pendings / account 四样同形, 一轮按此序
+//     拉: terms / flows 两样同形 (慢, 事务里跑, 进度经 Report)
+//     写: place 一张限价单 (逐步报进度, steps 即各步名)
+//   Broker (券商无关, 只此一份): 包一个 Driver + 刷新线程; 读由刷新线程发布, 拉 / 写由调用线程跑 (段 + 接上 + Driver), 两类同一个接入
+//     读: 一轮四样每读完一样即发布 (State, 不可变; 指针换了 = 换了一份); 有人在看 (touch) 才转
+//       起因: request 要一轮 (不等) / sync 要一轮并等完 (都可只刷成交) / 有人在看而还没刷过或距上轮满 every 秒 /
+//       下单成功后隔几秒 (限价单可能稍后才成交). 失败不自动重试, 等下一个起因
+//   客户端状态与预期不符 (界面没弹出 / 应答不认识 / 回报失败) 是外部结局, 不是本程序的错: fail 先在当时的段下记一行 (live/Trace.hpp)
+//   再抛 Fail, 在各轮 / 各事务的边界收成原因文本; 本程序自身的不变式一律 assert
 // 编码: 方向 买 +1 / 卖 −1 (BySide 下标 s < 0); 市场由代码前缀定 (market_of), 新浪码 = 前缀 + 代码, AssetInfo 码 = 代码 + 后缀
 #pragma once
 
@@ -35,8 +41,7 @@ inline void need(bool ok, const std::string &why) {
     fail(why);
 }
 std::string strf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-std::string clock_now();                                 // 本地时刻 HH:MM:SS
-std::vector<std::string> cells(const std::string &line); // 一行 CSV (无引号) → 各格
+std::string clock_now(); // 本地时刻 HH:MM:SS
 
 inline constexpr int kBuy = 1, kSell = -1;
 inline constexpr int kSides[2] = {kBuy, kSell};
@@ -119,6 +124,8 @@ struct Fills {
   std::vector<Fill> rows; // 时间序
   Keyed<Traded> by_code;
 };
+// 持仓 h 的今买 / 今卖与成交合计 f (空 = 今日没有成交) 相符; 余额为 0 的不核. 不符 = 两问之间又有成交, 其一旧了
+bool synced(const Position &h, const Traded *f);
 
 // 信用账户 (读时)
 struct Account {
@@ -126,10 +133,8 @@ struct Account {
   double avail = 0, cash = 0;                     // 可用保证金 / 现金
   double rate = 0;                                // 融资年利率
   Keyed<Debt> debts;                              // 按代码
-  std::shared_ptr<const Keyed<Position>> held;    // 读时的持仓 (同一轮刚读的那份)
+  std::shared_ptr<const Keyed<Position>> held;    // 读时的持仓 (同一轮刚读的那份; Broker 填)
 };
-// 持仓 → 代码 → 股 (含余额 0 的行)
-std::map<std::string, double> balances(const Keyed<Position> &pos);
 
 // 两融条款 (一只)
 struct Term {
@@ -164,7 +169,6 @@ struct Got {
 
 // 客户端读到的一份; 各样按一轮的刷新序
 struct State {
-  uint64_t ver = 0;
   std::string who; // 客户端 (进程)
   Got<Fills> fills;
   Got<Keyed<Position>> pos;
@@ -208,52 +212,66 @@ struct OrderReq {
   Credit credit = Credit::Plain;
   double px = 0, qty = 0, size = 0;
 };
+nlohmann::json to_json(const OrderReq &o);
 // 委托回报: 实际股数 / 价, 回报原文
 struct Placed {
   double qty = 0, px = 0;
   std::string msg;
 };
-// 下单进度: at = order_steps 下标; detail 非空即更新概要
+// 下单进度: at = steps 下标; detail 非空即更新概要
 using Step = std::function<void(size_t at, const std::string &detail)>;
-// 长事务的报告: log 记一条 (种类 + 字段, 落盘), live 实时进度一行文字 (覆盖上一行), step 走到哪一步 (短词, 状态标签的第二级); 缺省不报
+// 长事务的报告: log 记一条 (种类 + 文字给页面 + 字段落盘), live 实时进度一行 (覆盖上一行), step 走到哪一步 (短词, 状态标签的第二级); 缺省不报
 struct Report {
-  std::function<void(const char *kind, nlohmann::json kw)> log = [](const char *, nlohmann::json) {};
+  std::function<void(const char *kind, std::string text, nlohmann::json kw)> log = [](const char *, std::string, nlohmann::json) {};
   std::function<void(std::string line)> live = [](std::string) {};
   std::function<void(std::string name)> step = [](std::string) {};
 };
 
-class Broker {
+// 一个客户端的适配 (见文件头); 失败 → Fail
+class Driver {
 public:
-  virtual ~Broker() = default;
+  virtual ~Driver() = default;
 
-  virtual std::shared_ptr<const State> state() const = 0;
-  virtual Refresh refresh() const = 0;
+  virtual std::string connect() = 0;
 
-  virtual void touch() = 0;     // GUI 每帧: 有人在看
-  virtual void hold(int d) = 0; // 后台事务期间有人在看 (Watch)
+  virtual Fills fills() = 0;
+  virtual Keyed<Position> positions() = 0;
+  virtual Keyed<Pending> pendings() = 0;
+  virtual Account account() = 0;
 
-  virtual void request(Part p) = 0; // 要一轮刷新 (不等)
-  virtual void sync(Part p) = 0;    // 要一轮并等它刷完 (全部的一轮也算刷过成交); 失败 → Fail
-  virtual void every(double s) = 0; // 定时周期 [s], 0 = 不定时
+  virtual Terms terms(const Report &r) = 0;                               // 两融条款全表
+  virtual std::vector<CashFlow> flows(misc::Ymd from, const Report &r) = 0; // from 日起 (含; 0 = 开户起) 至昨日的资金流水
 
-  virtual const std::vector<std::string> &order_steps() const = 0;
-  virtual Placed place(const OrderReq &o, const Step &step) = 0;                // 当前线程跑完; 失败 → Fail (停在当时那一步)
-  virtual void exclusive(const char *who, const std::function<void()> &fn) = 0; // fn 期间独占客户端 (同一线程可重入)
-  virtual Terms pull_terms(const Report &r) = 0;                                // 客户端重查两融条款; 失败 → Fail
-  // 客户端重查 from 日起 (含; 0 = 开户起) 至昨日的资金流水; 失败 → Fail
-  virtual std::vector<CashFlow> pull_flows(misc::Ymd from, const Report &r) = 0;
+  virtual const std::vector<std::string> &steps() const = 0;
+  virtual Placed place(const OrderReq &o, const Step &step) = 0; // 停在失败的那一步
 };
 
-// 后台事务期间有人在看
-class Watch {
+// 券商无关的客户端 (见文件头); 刷新线程持核心的 shared_ptr, 析构只置停 (在途的一问做完即退)
+class Broker {
 public:
-  explicit Watch(Broker &b) : b_(b) { b_.hold(1); }
-  ~Watch() { b_.hold(-1); }
-  Watch(const Watch &) = delete;
-  Watch &operator=(const Watch &) = delete;
+  struct Core;
+
+  explicit Broker(std::unique_ptr<Driver> d);
+  ~Broker();
+  Broker(const Broker &) = delete;
+  Broker &operator=(const Broker &) = delete;
+
+  std::shared_ptr<const State> state() const;
+  Refresh refresh() const;
+
+  void touch();          // GUI 每帧: 有人在看
+  void request(Part p);  // 要一轮 (不等)
+  void sync(Part p);     // 要一轮并等它刷完 (全部的一轮也算刷过成交); 失败 → Fail
+  void every(double s);  // 定时周期 [s], 0 = 不定时
+
+  Terms terms(const Report &r);
+  std::vector<CashFlow> flows(misc::Ymd from, const Report &r);
+
+  const std::vector<std::string> &steps() const;
+  Placed place(const OrderReq &o, const Step &step);
 
 private:
-  Broker &b_;
+  std::shared_ptr<Core> c_;
 };
 
 } // namespace live

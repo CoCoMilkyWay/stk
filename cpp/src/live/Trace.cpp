@@ -1,7 +1,6 @@
-#include "live/tdx/Trace.hpp"
+#include "live/Trace.hpp"
 
 #include "disk/Disk.hpp"
-#include "live/Broker.hpp"
 #include "misc/cross_platform.hpp"
 
 #include <cassert>
@@ -13,7 +12,7 @@
 
 #include <unistd.h>
 
-namespace live::tdx {
+namespace live {
 
 namespace trace {
 
@@ -62,11 +61,11 @@ public:
 
 private:
   void open() {
-    const std::vector<disk::Key> old = disk::list(disk::RunLiveTdxLogFile);
+    const std::vector<disk::Key> old = disk::list(disk::RunLiveTraceLog);
     for (size_t i = 0; i + kKeep <= old.size(); ++i)
-      disk::remove(disk::RunLiveTdxLogFile, old[i]);
-    disk::ensure(disk::RunLiveTdxLog);
-    f_.open(disk::path(disk::RunLiveTdxLogFile, {.stamp = disk::stamp_now()}), std::ios::app);
+      disk::remove(disk::RunLiveTraceLog, old[i]);
+    disk::ensure(disk::RunLiveTrace);
+    f_.open(disk::path(disk::RunLiveTraceLog, {.stamp = disk::stamp_now()}), std::ios::app);
     assert(f_);
   }
 
@@ -160,7 +159,7 @@ Span::~Span() {
 
 void fail(std::string why) {
   trace::ev("fail", {{"why", why}});
-  live::fail(std::move(why));
+  throw Fail{std::move(why)};
 }
 
-} // namespace live::tdx
+} // namespace live

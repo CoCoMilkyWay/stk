@@ -28,8 +28,7 @@ struct Positions {
   using Row = Position;
   static constexpr const char *kName = "持仓";
   static constexpr ui::Open kOpen{"持仓", "可卖数量"};
-  static constexpr std::array<int, 2> kViews{23, 18};
-  static constexpr std::array<int, 2> kFuncs{1228, 1114};
+  static constexpr std::array<cols::View, 2> kViews{{{1228, 23}, {1114, 18}}};
   static constexpr auto kCols = std::tuple{
       col<&Row::code, as::code>("证券代码", 0, 0),
       col<&Row::name, as::name>("长简称", 2, 2),
@@ -53,8 +52,7 @@ struct Fills {
   using Row = Fill;
   static constexpr const char *kName = "成交";
   static constexpr ui::Open kOpen{"成交", "成交编号"};
-  static constexpr std::array<int, 1> kViews{17};
-  static constexpr std::array<int, 1> kFuncs{1108};
+  static constexpr std::array<cols::View, 1> kViews{{{1108, 17}}};
   static constexpr auto kCols = std::tuple{
       col<&Row::time, as::clock>("成交时间", 0),
       col<&Row::code, as::code>("证券代码", 1),
@@ -76,8 +74,7 @@ struct Pendings {
   using Row = Pending;
   static constexpr const char *kName = "挂单";
   static constexpr ui::Open kOpen{"撤单", "委托价格"};
-  static constexpr std::array<int, 1> kViews{23};
-  static constexpr std::array<int, 1> kFuncs{1100};
+  static constexpr std::array<cols::View, 1> kViews{{{1100, 23}}};
   static constexpr auto kCols = std::tuple{
       col<&Row::time, as::clock>("委托时间", 0),
       col<&Row::code, as::code>("证券代码", 1),
@@ -99,8 +96,7 @@ struct Debts {
   using Row = Debt;
   static constexpr const char *kName = "融资负债";
   static constexpr ui::Open kOpen{"融资负债汇总", "当前负债金额"};
-  static constexpr std::array<int, 1> kViews{15};
-  static constexpr std::array<int, 1> kFuncs{3264};
+  static constexpr std::array<cols::View, 1> kViews{{{3264, 15}}};
   static constexpr auto kCols = std::tuple{
       col<&Row::mkt, as::flag>("账号类别", 0),
       col<&Row::code, as::code>("证券代码", 2),
@@ -120,8 +116,7 @@ struct Assets {
   using Row = Asset;
   static constexpr const char *kName = "信用资产";
   static constexpr ui::Open kOpen{"信用资产", "信用资金额度"};
-  static constexpr std::array<int, 1> kViews{11};
-  static constexpr std::array<int, 1> kFuncs{3200};
+  static constexpr std::array<cols::View, 1> kViews{{{3200, 11}}};
   static constexpr auto kCols = std::tuple{
       col<&Row::kv, as::groups>("信用资金额度", 0),
   };
@@ -138,8 +133,7 @@ struct Margins {
   using Row = Margin;
   static constexpr const char *kName = "标的证券";
   static constexpr ui::Open kOpen{"标的证券查询", "融资保证金比例"};
-  static constexpr std::array<int, 1> kViews{14};
-  static constexpr std::array<int, 1> kFuncs{3216};
+  static constexpr std::array<cols::View, 1> kViews{{{3216, 14}}};
   static constexpr auto kCols = std::tuple{
       col<&Row::code, as::code>("证券代码", 0),
       col<&Row::name, as::text>("长简称", 2),
@@ -161,8 +155,7 @@ struct Collats {
   using Row = Collat;
   static constexpr const char *kName = "担保品";
   static constexpr ui::Open kOpen{"担保品查询", "担保状态"};
-  static constexpr std::array<int, 1> kViews{15};
-  static constexpr std::array<int, 1> kFuncs{3220};
+  static constexpr std::array<cols::View, 1> kViews{{{3220, 15}}};
   static constexpr auto kCols = std::tuple{
       col<&Row::mkt, as::flag>("账号类别", 0),
       col<&Row::code, as::code>("证券代码", 2),
@@ -179,8 +172,7 @@ struct CashFlows {
   using Row = CashFlow;
   static constexpr const char *kName = "资金流水";
   static constexpr ui::Open kOpen{"资金流水", "剩余金额"};
-  static constexpr std::array<int, 1> kViews{14};
-  static constexpr std::array<int, 1> kFuncs{1118};
+  static constexpr std::array<cols::View, 1> kViews{{{1118, 14}}};
   static constexpr auto kCols = std::tuple{
       col<&Row::date, as::ymd>("成交日期", 0),
       col<&Row::code, as::text>("证券代码", 1),
@@ -195,19 +187,20 @@ struct CashFlows {
   static void check(const Row &r); // 带股数的行有代码
 };
 
-// 插件发过 S 的功能 (直发有入参可照搬)
+// S 的各布局里插件发过的那个 (直发有入参可照搬); 都没发过 → 空
 template <class S>
-bool seen() {
-  return std::any_of(S::kFuncs.begin(), S::kFuncs.end(), req::seen);
+const cols::View *seen() {
+  const auto v = std::find_if(S::kViews.begin(), S::kViews.end(), [](const cols::View &x) { return req::seen(x.func); });
+  return v == S::kViews.end() ? nullptr : &*v;
 }
 
-// 直发读表 S 的各行: 功能号取 kFuncs 里插件发过的那个; over 覆盖入参 (字段号 → 值)
+// 直发读表 S 的各行: 功能号取插件发过的那个布局的; over 覆盖入参 (字段号 → 值)
 template <class S>
 std::vector<typename S::Row> rows(const std::map<int, std::string> &over = {}) {
-  const auto f = std::find_if(S::kFuncs.begin(), S::kFuncs.end(), req::seen);
-  need(f != S::kFuncs.end(), strf("%s: 插件还没发过 (先经界面查一次), 入参无从照搬", S::kName));
-  const req::Answer a = req::ask(*f, over);
-  return cols::parse<S>(*f, a.cols, a.rows);
+  const cols::View *v = seen<S>();
+  need(v != nullptr, strf("%s: 插件还没发过 (先经界面查一次), 入参无从照搬", S::kName));
+  const req::Answer a = req::ask(v->func, over);
+  return cols::parse<S>(v->func, a.cols, a.rows);
 }
 // 直发读表 S → 其索引 (S::Index)
 template <class S>

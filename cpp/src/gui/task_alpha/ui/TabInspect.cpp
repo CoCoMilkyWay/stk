@@ -582,9 +582,10 @@ int fallback_asset(const InspectResult &res) {
 
 // 资产轴 (右上的头行条, 单行高): 一资产一格 x ∈ [i, i+1), 格色 = R 组色 (不足 1px 补到 1px); 定死全部资产, 不缩放 / 平移 / 框选.
 // 光标 = 选中格中线 (pos < 0 = 选中资产当日无值, 不画); 按下即选中所指格, 按住拖动连续换 (ui.ax_scrub, 出条也跟随); 悬停报该格资产.
-// 返回 pos 是否变 (调用方按 ax_gid[pos] 换资产)
+// 返回 pos 是否变 (调用方按 ax.val.gid[pos] 换资产)
 bool plot_asset_axis(InspectUIState &ui, const FactorsUIContext &ctx, int &pos, const ImVec2 &size) {
-  const int n = static_cast<int>(ui.ax_order.size());
+  const InspectUIState::AxBar &ax = ui.ax.val;
+  const int n = static_cast<int>(ax.order.size());
   bool changed = false;
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(0.f, 0.f)); // SetupFinish 才读, 包到 EndPlot
   if (!ImPlot::BeginPlot("##assets", size, ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoMouseText | ImPlotFlags_NoBoxSelect)) {
@@ -603,7 +604,7 @@ bool plot_asset_axis(InspectUIState &ui, const FactorsUIContext &ctx, int &pos, 
     const float y0 = ImPlot::PlotToPixels(0.0, 1.0).y, y1 = ImPlot::PlotToPixels(0.0, 0.0).y;
     for (int i = i0; i < i1; ++i) {
       const float xa = ImPlot::PlotToPixels(static_cast<double>(i), 0.0).x, xb = ImPlot::PlotToPixels(static_cast<double>(i) + 1.0, 0.0).x;
-      dl->AddRectFilled(ImVec2(xa, y0), ImVec2(std::max(xb, xa + 1.f), y1), r_color(ui.ax_r[static_cast<size_t>(i)]));
+      dl->AddRectFilled(ImVec2(xa, y0), ImVec2(std::max(xb, xa + 1.f), y1), r_color(ax.r[static_cast<size_t>(i)]));
     }
     ImPlot::PopPlotClipRect();
   }
@@ -616,9 +617,9 @@ bool plot_asset_axis(InspectUIState &ui, const FactorsUIContext &ctx, int &pos, 
       ui.ax_scrub = true;
     const int i = std::clamp(static_cast<int>(std::floor(ImPlot::GetPlotMousePos().x)), 0, n - 1);
     char name[96];
-    asset_label(ctx, ui.ax_gid[static_cast<size_t>(i)], name, sizeof(name));
-    ImGui::SetTooltip("#%d/%d  %s  R %.3f (G%d)\n按下选中, 按住拖动连续换", i + 1, n, name, ui.ax_r[static_cast<size_t>(i)],
-                      r_group(ui.ax_r[static_cast<size_t>(i)]) + 1);
+    asset_label(ctx, ax.gid[static_cast<size_t>(i)], name, sizeof(name));
+    ImGui::SetTooltip("#%d/%d  %s  R %.3f (G%d)\n按下选中, 按住拖动连续换", i + 1, n, name, ax.r[static_cast<size_t>(i)],
+                      r_group(ax.r[static_cast<size_t>(i)]) + 1);
   }
   if (!ImGui::IsMouseDown(0))
     ui.ax_scrub = false;
@@ -694,7 +695,7 @@ void derive_ref(const KlineStream &ks, int seg_rows, size_t pub_days, size_t pub
 }
 
 // K 线 (右上的下图): 选中资产沿全部交易日的分钟 OHLC, 画 KlineService 已发布前缀 (gen 配对; 换代在途照画空图, 轴不撤). 每根色 = 该刻 R(t)
-// 组色 (ui.col_r; 灰 = 无值), 阴线实心 / 阳线空心, 自绘 (ImPlot 一个 item 只能一色).
+// 组色 (ui.col; 灰 = 无值), 阴线实心 / 阳线空心, 自绘 (ImPlot 一个 item 只能一色).
 // 视野: x 域 = 日数 × seg (全段历史, 不按个股上市区间), 换代 (换资产 / 换结果) 即复位到全段, 双击 fit 同样贴全段; y 在换代 / 前缀增长 / 图例开关 / 换 Hold
 // (池指数换线) 时按**当前 x 窗口内**的已发布蜡烛 + 显示中的指数线重定 (上帧视野 ui.kline_x_lo/hi; 窗口内还没流到就下帧再试), 之后不打扰.
 // 光标 = 与左上图共享的 cursor_day (锚在交易日边界 x = day × seg): 同色 DragLineX 吸附整日, 双击落点, 拖哪边另一边同步; 光标日 [day−1, day]
@@ -751,7 +752,14 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const InspectDerived 
     };
     shown = static_cast<uint8_t>((on(kIdxName, false) ? 1 : 0) | (on(kRefName, true) ? 2 : 0));
   }
-  if (n > 0 && (ui.kline_last_pub_days != pub_days || ui.kline_shown != shown || ui.kline_sel != ui.derived_sel)) { // y 贴合当前 x 窗口内的已发布蜡烛 + 显示中的指数线
+  // 滚动重锚指数线: 键 (代 / 已发布点数 / 派生 epoch / Hold) 变才重算; 在 SetupFinish 前更新以便当帧参与 y 轴贴合
+  if (ready)
+    ui.ref.update({ui.kline_gen, pub_pts, ui.der.key.epoch, ui.der.key.sel}, [&](InspectUIState::RefLine &r) {
+      derive_ref(ks, S, pub_days, pub_pts, pool_idx, r.t0, r.t1, r.line);
+    });
+  const InspectUIState::RefLine &rf = ui.ref.val;
+  const bool ref_ok = ready && ui.ref.gen > 0 && ui.ref.key.gen == ui.kline_gen && rf.t1 > rf.t0;
+  if (n > 0 && (ui.kline_last_pub_days != pub_days || ui.kline_shown != shown || ui.kline_sel != ui.der.key.sel)) { // y 贴合当前 x 窗口内的已发布蜡烛 + 显示中的指数线
     const int w0 = static_cast<int>(std::lower_bound(xs, xs + n, ui.kline_x_lo) - xs), w1 = static_cast<int>(std::upper_bound(xs, xs + n, ui.kline_x_hi) - xs);
     if (w1 > w0) {
       double lo = ks.low[static_cast<size_t>(w0)], hi = ks.high[static_cast<size_t>(w0)];
@@ -764,15 +772,14 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const InspectDerived 
         for (int t = ta; t < tb; ++t)
           lo = std::min(lo, pool_idx[static_cast<size_t>(t)] * k), hi = std::max(hi, pool_idx[static_cast<size_t>(t)] * k);
       }
-      if ((shown & 2) && ready && ui.ref_gen == ui.kline_gen) // 上帧算好的线 (前缀增长时稍旧, 下次增长再贴)
-        for (int t = std::max(ta, ui.ref_t0); t < std::min(tb, ui.ref_t1); ++t)
-          lo = std::min(lo, static_cast<double>(ui.ref_line[static_cast<size_t>(t)])), hi = std::max(hi, static_cast<double>(ui.ref_line[static_cast<size_t>(t)]));
+      if ((shown & 2) && ref_ok)
+        for (int t = std::max(ta, rf.t0); t < std::min(tb, rf.t1); ++t)
+          lo = std::min(lo, static_cast<double>(rf.line[static_cast<size_t>(t)])), hi = std::max(hi, static_cast<double>(rf.line[static_cast<size_t>(t)]));
       const double m = (hi > lo ? hi - lo : 1.0) * 0.05;
       ImPlot::SetupAxisLimits(ImAxis_Y1, lo - m, hi + m, ImPlotCond_Always);
       ui.kline_last_pub_days = pub_days;
       ui.kline_shown = shown;
-      if (!(shown & 2) || ui.ref_sel == ui.derived_sel) // 换 Hold 的那帧滚动重锚线还是旧的 (本帧稍后重算) → 下帧再贴一次
-        ui.kline_sel = ui.derived_sel;
+      ui.kline_sel = ui.der.key.sel;
     }
   }
   ImPlot::SetupFinish();
@@ -813,21 +820,15 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const InspectDerived 
     ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认隐藏 (带全区间历史), 点图例显; 重锚系数 uk 照算 (悬停仍报)
     ImPlot::PlotLineG(kIdxName, rebased, &rb, static_cast<int>(t1 - t0), ImPlotItemFlags_NoFit);
   }
-  // 滚动重锚指数线: 键 (代 / 已发布点数 / 派生 epoch / Hold) 变才重算; 换代在途 (!ready) 不算, 旧线也不画 (pool_idx 已换)
-  if (ready && (ui.ref_gen != ui.kline_gen || ui.ref_pts != pub_pts || ui.ref_epoch != ui.derived_epoch || ui.ref_sel != ui.derived_sel)) {
-    ui.ref_gen = ui.kline_gen, ui.ref_pts = pub_pts, ui.ref_epoch = ui.derived_epoch, ui.ref_sel = ui.derived_sel;
-    derive_ref(ks, S, pub_days, pub_pts, pool_idx, ui.ref_t0, ui.ref_t1, ui.ref_line);
-  }
-  const bool ref_ok = ready && ui.ref_gen == ui.kline_gen && ui.ref_t1 > ui.ref_t0;
   {
     int ta = 0, tb = 0; // 无线 → 空线
     if (ref_ok) {
       const ImPlotRect lim = ImPlot::GetPlotLimits();
-      ta = std::clamp(static_cast<int>(std::floor(lim.X.Min)), ui.ref_t0, ui.ref_t1);
-      tb = std::clamp(static_cast<int>(std::ceil(lim.X.Max)) + 1, ta, ui.ref_t1);
+      ta = std::clamp(static_cast<int>(std::floor(lim.X.Min)), rf.t0, rf.t1);
+      tb = std::clamp(static_cast<int>(std::ceil(lim.X.Max)) + 1, ta, rf.t1);
     }
     ImPlot::SetNextLineStyle(kColRef, 1.5f);
-    ImPlot::PlotLine(kRefName, ui.ref_line.data() + ta, tb - ta, 1.0, static_cast<double>(ta), ImPlotItemFlags_NoFit);
+    ImPlot::PlotLine(kRefName, rf.line.data() + ta, tb - ta, 1.0, static_cast<double>(ta), ImPlotItemFlags_NoFit);
   }
   ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
   ImPlot::SetNextLineStyle(kColIcHigh, 1.5f);
@@ -861,12 +862,13 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const InspectDerived 
       }
     }
     const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const InspectUIState::ColRanks &cr = ui.col.val;
     const int i0 = static_cast<int>(std::lower_bound(xs, xs + n, lim.X.Min - 1.0) - xs), i1 = static_cast<int>(std::upper_bound(xs, xs + n, lim.X.Max + 1.0) - xs);
     for (int i = i0; i < i1; ++i) {
       const size_t u = static_cast<size_t>(i), t = static_cast<size_t>(xs[i]);
       const double o = ks.open[u], h = ks.high[u], l = ks.low[u], c = ks.close[u];
-      const float rp = t < ui.col_r.size() ? ui.col_r[t] : -1.f; // 池内秩优先, 池外段用不看池的秩 (淡)
-      const ImU32 col = rp >= 0.f ? r_color(rp) : r_color(t < ui.col_r_all.size() ? ui.col_r_all[t] : -1.f, false);
+      const float rp = t < cr.r.size() ? cr.r[t] : -1.f; // 池内秩优先, 池外段用不看池的秩 (淡)
+      const ImU32 col = rp >= 0.f ? r_color(rp) : r_color(t < cr.r_all.size() ? cr.r_all[t] : -1.f, false);
       dl->AddLine(ImPlot::PlotToPixels(xs[i], l), ImPlot::PlotToPixels(xs[i], h), col);
       ImVec2 a = ImPlot::PlotToPixels(xs[i] - 0.5, o), b = ImPlot::PlotToPixels(xs[i] + 0.5, c);
       if (std::abs(b.y - a.y) < 1.f) { // 身体至少 1px
@@ -895,14 +897,15 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const InspectDerived 
       if (i > 0 && (i == n || xs[i] - mp.x > mp.x - xs[i - 1]))
         --i;
       const size_t u = static_cast<size_t>(i), t = static_cast<size_t>(xs[i]);
-      const float rp = t < ui.col_r.size() ? ui.col_r[t] : -1.f, ra = t < ui.col_r_all.size() ? ui.col_r_all[t] : -1.f;
+      const InspectUIState::ColRanks &cr = ui.col.val;
+      const float rp = t < cr.r.size() ? cr.r[t] : -1.f, ra = t < cr.r_all.size() ? cr.r_all[t] : -1.f;
       char when[32], ux[224] = "";
       minute_formatter(xs[i], when, sizeof(when), const_cast<KlineAxis *>(&ax));
       int ul = 0;
       if (uk > 0.0)
         ul += std::snprintf(ux + ul, sizeof(ux) - static_cast<size_t>(ul), "\n池等权指数 %.2f (按视野首根重锚)", pool_idx[t] * uk);
-      if (ref_ok && static_cast<int>(t) >= ui.ref_t0 && static_cast<int>(t) < ui.ref_t1) {
-        const double ref = ui.ref_line[t];
+      if (ref_ok && static_cast<int>(t) >= rf.t0 && static_cast<int>(t) < rf.t1) {
+        const double ref = rf.line[t];
         ul += std::snprintf(ux + ul, sizeof(ux) - static_cast<size_t>(ul), "\n青线 %.2f  相对偏移 %+.2f%%", ref, (ks.close[u] / ref - 1.0) * 100.0);
       }
       std::snprintf(ux + ul, sizeof(ux) - static_cast<size_t>(ul), "\n累计 rIC %.2f  回撤 %.2f", ic_cum[t], d.ic_dd[t]);
@@ -1767,28 +1770,22 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
       res_pool_ann.assign(res.pool_ann, res.pool_ann + res.n_hold);
     }
     const uint64_t ep = isvc.result_gen;
-    if (ep != ui.derived_epoch || sel_hold != ui.derived_sel || ui.absolute != ui.derived_abs) {
-      ui.derived_epoch = ep;
-      ui.derived_sel = sel_hold;
-      ui.derived_abs = ui.absolute;
+    ui.der.update({ep, sel_hold, ui.absolute}, [&](InspectDerived &d) {
       if (res_has && sel_hold < res.hd.n)
-        derive(res, sel_hold, ui.absolute, ui.der);
+        derive(res, sel_hold, ui.absolute, d);
       else
-        ui.der = InspectDerived{};
-    }
+        d = InspectDerived{};
+    });
     // 右上: 资产轴 (光标日序) / 选中资产 R(t) 列 / K 线请求期望态 —— 都要读 res.pl.rx / read_scope, 在锁内派生, 出锁只留派生
-    if (res_has && ui.der.valid) {
-      if (ui.cursor_day < 0 || ui.cursor_day > ui.der.days)
-        ui.cursor_day = ui.der.days;
+    if (res_has && ui.der.val.valid) {
+      if (ui.cursor_day < 0 || ui.cursor_day > ui.der.val.days)
+        ui.cursor_day = ui.der.val.days;
       const int day = std::max(ui.cursor_day, 1) - 1; // 起点 (0) 也按首日排
-      if (ep != ui.ax_epoch || day != ui.ax_day) {
-        ui.ax_epoch = ep, ui.ax_day = day;
-        derive_axis(res, day, ui.ax_order, ui.ax_gid, ui.ax_r);
-      }
+      ui.ax.update({ep, day}, [&](InspectUIState::AxBar &a) { derive_axis(res, day, a.order, a.gid, a.r); });
       const PoolAxis &axis = res.read_scope.axis;
       size_t sub = axis.sub_of(ui.asset_gid); // 未选 / 不在本池轴内 → 光标日 R 最高者 (光标日无池内资产 → 全区间有效刻最多者), 结果一到就有 K 线
       if (sub >= axis.size()) {
-        const int pick = !ui.ax_order.empty() ? ui.ax_order.front() : fallback_asset(res);
+        const int pick = !ui.ax.val.order.empty() ? ui.ax.val.order.front() : fallback_asset(res);
         if (pick >= 0) {
           sub = static_cast<size_t>(pick);
           ui.asset_gid = axis.global(sub);
@@ -1796,10 +1793,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
       }
       if (sub < axis.size()) {
         k_sub = static_cast<int>(sub);
-        if (ep != ui.col_epoch || k_sub != ui.col_sub) {
-          ui.col_epoch = ep, ui.col_sub = k_sub;
-          derive_col(res, k_sub, ui.col_r, ui.col_r_all);
-        }
+        ui.col.update({ep, k_sub}, [&](InspectUIState::ColRanks &c) { derive_col(res, k_sub, c.r, c.r_all); });
         if (ui.kline_key != res.key || ui.kline_sub != k_sub) { // 换结果 / 换资产 → 新代从头流
           ++ui.kline_gen;
           ui.kline_key = res.key, ui.kline_sub = k_sub, ui.kline_days = res.scope.days, ui.kline_seg = factor_level(res.lv).seg, ui.kline_last_pub_days = ~0ull;
@@ -1850,8 +1844,8 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
         "• 点图例 \"LS 50%%\" 等可看更极端的尾部");
   ImGui::SameLine(0.f, kCtlGap);
   {
-    const bool can_win = shown && ui.der.valid;
-    const int days = can_win ? ui.der.days : 1;
+    const bool can_win = shown && ui.der.val.valid;
+    const int days = can_win ? ui.der.val.days : 1;
     int w = ui.window > 0 ? std::min(ui.window, days) : days;
     ImGui::SetNextItemWidth(160.f);
     if (!can_win)
@@ -1962,19 +1956,21 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   const ImVec2 cell(std::max(100.f, (avail.x - sp) * 0.5f), std::max(100.f, (avail.y - ImGui::GetStyle().ItemSpacing.y) * 0.5f));
   const char *wait_hint = busy ? "计算中…" : "Recompute 后可见";
 
-  if (shown && ui.der.valid) {
-    roll_window(ui.der, ui.window > 0 ? std::min(ui.window, ui.der.days) : ui.der.days);
-    plot_layers(ui.der, ui.derived_abs, ui.cursor_day, cell);
+  InspectDerived &der = ui.der.val;
+  if (shown && der.valid) {
+    roll_window(der, ui.window > 0 ? std::min(ui.window, der.days) : der.days);
+    plot_layers(der, ui.der.key.abs, ui.cursor_day, cell);
   } else
     empty_plot("分层对数累计###layers", cell, wait_hint);
   ImGui::SameLine();
   // 右上: 头行 (◂ ▸ 步进 + 资产轴条) + K 线
-  if (shown && ui.der.valid && k_sub >= 0) {
+  if (shown && der.valid && k_sub >= 0) {
     ImGui::BeginGroup();
-    const int n = static_cast<int>(ui.ax_order.size());
+    const InspectUIState::AxBar &ax = ui.ax.val;
+    const int n = static_cast<int>(ax.order.size());
     int pos = -1; // 选中资产在光标日序里的位置 (-1 = 当日无值)
     for (int i = 0; i < n; ++i)
-      if (ui.ax_order[static_cast<size_t>(i)] == k_sub) {
+      if (ax.order[static_cast<size_t>(i)] == k_sub) {
         pos = i;
         break;
       }
@@ -2019,21 +2015,21 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
           "• 累计 rIC (右轴) = 当前 Hold 的逐行 rIC 累计; 斜率 = 该段因子有效性; 蓝 = 新高, 回撤越深越红");
     const float sp_y = st.ItemSpacing.y;
     if (moved && pos >= 0 && pos < n)
-      ui.asset_gid = ui.ax_gid[static_cast<size_t>(pos)];
+      ui.asset_gid = ax.gid[static_cast<size_t>(pos)];
     char title[160];
     std::snprintf(title, sizeof(title), "分钟K %s###kline", name);
     const float kh = std::max(60.f, cell.y - ImGui::GetFrameHeight() - sp_y);
-    plot_kline(ui, ksvc.stream(), ui.der, ui.cursor_day, title, ImVec2(cell.x, kh));
+    plot_kline(ui, ksvc.stream(), der, ui.cursor_day, title, ImVec2(cell.x, kh));
     ImGui::EndGroup();
   } else {
     empty_plot("资产 K 线###kline", cell, wait_hint);
   }
 
-  if (shown && ui.der.valid) { // 左下一格分两半: rIC 分布 | 因子分布
+  if (shown && der.valid) { // 左下一格分两半: rIC 分布 | 因子分布
     const ImVec2 half(std::max(50.f, (cell.x - sp) * 0.5f), cell.y);
-    plot_ic(ui.der, half);
+    plot_ic(der, half);
     ImGui::SameLine();
-    plot_alpha(ui.der, half);
+    plot_alpha(der, half);
   } else
     empty_plot("IC 分布###ic", cell, wait_hint);
   ImGui::SameLine();

@@ -1,12 +1,12 @@
 // 通达信适配: 应答表的列声明、解析与索引 (各表的声明并排在 Tables.hpp)
 //   应答 = 各行各列的串, 列序即协议字典里该功能号的出参序;
-//   kFuncs / kViews  应答它的功能号与各布局的列数 (出参数 + 1); kCols 行的各成员 ← 各布局的列号 (kNone = 该布局没有) 经转型 as::*,
+//   kViews 各布局 {应答它的功能号, 列数 (出参数 + 1)}; kCols 行的各成员 ← 各布局的列号 (kNone = 该布局没有) 经转型 as::*,
 //     各列带客户端字段名 (shim test fields 对协议字典核); check(行) 行级交叉校验; Index 各行 → 读出的样子
 //   Unique<键> 键不重 → Keyed<行> / Tally 成交 → 时间序 + 按代码合计 (Fills) / Pairs 名称不重 → 名称 → 数值原文 / Plain 行原序
 #pragma once
 
 #include "live/Broker.hpp"
-#include "live/tdx/Trace.hpp"
+#include "live/Trace.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,6 +25,11 @@ namespace live::tdx::cols {
 using Cells = std::vector<std::string>; // 一行各列
 
 inline constexpr int kNone = -1;
+
+// 一种布局: 应答它的功能号, 列数 (出参数 + 1)
+struct View {
+  int func, cols;
+};
 
 const std::string &cell(const Cells &f, int c);
 bool isclose(double a, double b, double rel, double abs);
@@ -105,15 +110,15 @@ constexpr Col<M, As, sizeof...(I)> col(const char *field, I... at) {
   return {field, {static_cast<int>(at)...}};
 }
 
-// 功能 func 的应答 (各行各列) → 行: 布局按功能号认 (kFuncs), 列声明逐列转型, 行级校验
+// 功能 func 的应答 (各行各列) → 行: 布局按功能号认 (kViews), 列声明逐列转型, 行级校验
 template <class S>
 std::vector<typename S::Row> parse(int func, int cols, const std::vector<Cells> &cells) {
-  const auto v = std::find(S::kFuncs.begin(), S::kFuncs.end(), func);
-  if (v == S::kFuncs.end())
+  const auto v = std::find_if(S::kViews.begin(), S::kViews.end(), [&](const View &x) { return x.func == func; });
+  if (v == S::kViews.end())
     fail(strf("%s不由功能 %d 应答", S::kName, func));
-  const size_t view = static_cast<size_t>(v - S::kFuncs.begin());
-  if (cols >= S::kViews[view])
-    fail(strf("%s功能 %d 应答 %d 列, 布局只 %d 列", S::kName, func, cols, S::kViews[view]));
+  const size_t view = static_cast<size_t>(v - S::kViews.begin());
+  if (cols >= v->cols)
+    fail(strf("%s功能 %d 应答 %d 列, 布局只 %d 列", S::kName, func, cols, v->cols));
   std::vector<typename S::Row> rows;
   for (const Cells &f : cells) {
     if (static_cast<int>(f.size()) != cols)

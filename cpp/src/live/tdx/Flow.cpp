@@ -1,7 +1,7 @@
 #include "live/tdx/Flow.hpp"
 
 #include "live/tdx/Tables.hpp"
-#include "live/tdx/Trace.hpp"
+#include "live/Trace.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -32,8 +32,9 @@ std::vector<CashFlow> pull(misc::Ymd from, const Report &r) {
   const auto one = [&](misc::Ymd lo, misc::Ymd hi) {
     r.step(strf("第 %zu 窗", wins.size() + 1));
     std::vector<CashFlow> rows = ask(lo, hi);
-    r.log("window", {{"lo", lo}, {"hi", hi}, {"n", rows.size()}});
-    r.live(strf("资金流水 %s ~ %s: %zu 条", misc::dash(lo).c_str(), misc::dash(hi).c_str(), rows.size()));
+    std::string text = strf("资金流水 %s ~ %s: %zu 条", misc::dash(lo).c_str(), misc::dash(hi).c_str(), rows.size());
+    r.log("window", text, {{"lo", lo}, {"hi", hi}, {"n", rows.size()}});
+    r.live(std::move(text));
     return rows;
   };
   if (from) {

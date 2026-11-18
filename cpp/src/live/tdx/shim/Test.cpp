@@ -18,7 +18,7 @@
 #include "live/tdx/Flow.hpp"
 #include "live/tdx/Heap.hpp"
 #include "live/tdx/Tables.hpp"
-#include "live/tdx/Trace.hpp"
+#include "live/Trace.hpp"
 #include "live/tdx/Ui.hpp"
 #include "live/tdx/Until.hpp"
 #include "live/tdx/Win.hpp"
@@ -97,14 +97,15 @@ std::string terms() {
 template <class T>
 void fields_of(const Schema &s, int &n, std::string &bad) {
   for (size_t v = 0; v < T::kViews.size(); ++v) {
-    const auto f = s.funcs.find(T::kFuncs[v]);
+    const auto [func, cols] = T::kViews[v];
+    const auto f = s.funcs.find(func);
     if (f == s.funcs.end()) {
-      bad += strf("%s: 没有功能 %d; ", T::kName, T::kFuncs[v]);
+      bad += strf("%s: 没有功能 %d; ", T::kName, func);
       continue;
     }
     const std::vector<int> &out = f->second.out;
-    if (static_cast<int>(out.size()) >= T::kViews[v])
-      bad += strf("%s: 功能 %d 出参 %zu 个, 布局只 %d 列; ", T::kName, T::kFuncs[v], out.size(), T::kViews[v]);
+    if (static_cast<int>(out.size()) >= cols)
+      bad += strf("%s: 功能 %d 出参 %zu 个, 布局只 %d 列; ", T::kName, func, out.size(), cols);
     std::apply(
         [&](const auto &...c) {
           (
@@ -114,7 +115,7 @@ void fields_of(const Schema &s, int &n, std::string &bad) {
                   return;
                 const std::string got = at < static_cast<int>(out.size()) ? s.name(out[static_cast<size_t>(at)]) : "(越界)";
                 if (got != c.field)
-                  bad += strf("%s 功能 %d 列 %d: 字典为「%s」, 声明「%s」; ", T::kName, T::kFuncs[v], at, got.c_str(), c.field);
+                  bad += strf("%s 功能 %d 列 %d: 字典为「%s」, 声明「%s」; ", T::kName, func, at, got.c_str(), c.field);
                 ++n;
               }(),
               ...);

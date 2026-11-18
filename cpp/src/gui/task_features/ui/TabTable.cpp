@@ -1121,90 +1121,72 @@ void RenderTabTable(SharedData &data, const Preview &pv, TableUIState &ui_state)
                          return std::strcmp(features[a].cat_l1, features[b].cat_l1) < 0;
                        });
 
-      // 聚类排序较重, 缓存: level / 过滤集不变 → 直接用上次结果
-      const bool use_cluster_cache =
-          ui_state.sort_column == -1 &&
-          ui_state.cluster_cache_level == sel.selected_level &&
-          ui_state.cluster_cache_key == filtered_indices;
-      if (use_cluster_cache) {
-        filtered_indices = ui_state.cluster_cache_val;
-      } else {
-        if (ui_state.sort_column == -1)
-          ui_state.cluster_cache_key = filtered_indices; // 先存 key (下面就地重排)
-
-        // 2. 逐 cat_l1 组应用组内排序
-        auto it = filtered_indices.begin();
-        while (it != filtered_indices.end()) {
-          auto g_end = it;
-          while (g_end != filtered_indices.end() &&
-                 std::strcmp(features[*g_end].cat_l1, features[*it].cat_l1) == 0)
-            ++g_end;
-
-          if (ui_state.sort_column == -1) {
-            // 默认: 依赖拓扑 + 名字聚类
-            std::vector<int> group(it, g_end);
-            group = topo_cluster_group(group, features, deps_list);
+      if (ui_state.sort_column == -1) {
+        ui_state.cluster.update({sel.tier, sel.selected_level, filtered_indices}, [&](std::vector<int> &out) {
+          out = filtered_indices;
+          for (auto it = out.begin(), g_end = it; it != out.end(); it = g_end) {
+            while (g_end != out.end() && std::strcmp(features[*g_end].cat_l1, features[*it].cat_l1) == 0)
+              ++g_end;
+            const std::vector<int> group = topo_cluster_group({it, g_end}, features, deps_list);
             std::copy(group.begin(), group.end(), it);
-          } else {
-            // 用户选列: 按该列排序
-            auto cmp3 = [](auto x, auto y) { return x < y ? -1 : (x > y ? 1 : 0); };
-            std::sort(it, g_end, [&](int a, int b) {
-              const FeatureMetadata &fa = features[a];
-              const FeatureMetadata &fb = features[b];
-              const Preview::Cell &ca = cell_of(a);
-              const Preview::Cell &cb = cell_of(b);
-              int cmp = 0;
-              switch (ui_state.sort_column) {
-              case 1:
-                cmp = strcmp(fa.code, fb.code);
-                break;
-              case 2:
-                cmp = (int)fa.valid_type - (int)fb.valid_type;
-                break;
-              case 3:
-                cmp = strcmp(fa.name_cn, fb.name_cn);
-                break;
-              case 4:
-                cmp = (int)fa.data_type - (int)fb.data_type;
-                break;
-              case 5:
-                cmp = std::strcmp(fa.cat_l1, fb.cat_l1);
-                break;
-              case 6:
-                cmp = std::strcmp(s_eff_cat2[a], s_eff_cat2[b]);
-                break;
-              case 7: // Stat: invalid% (次键 nan%)
-                cmp = cmp3(ca.integrity.invalid_pct(), cb.integrity.invalid_pct());
-                if (cmp == 0)
-                  cmp = cmp3(ca.integrity.nan_pct(), cb.integrity.nan_pct());
-                break;
-              case 8: // Range: sd (var 单调等价)
-                cmp = cmp3(ca.var, cb.var);
-                break;
-              case 11:
-                cmp = std::strcmp(fa.file, fb.file);
-                break;
-              case 12: // TS Tf
-                cmp = (int)fa.ts_tf - (int)fb.ts_tf;
-                break;
-              case 13: // CS Norm
-                cmp = (int)fa.cs_method - (int)fb.cs_method;
-                break;
-              case 14:
-                cmp = deps_list[a].compare(deps_list[b]);
-                break;
-              }
-              return ui_state.sort_ascending ? cmp < 0 : cmp > 0;
-            });
           }
-          it = g_end;
+        });
+        filtered_indices = ui_state.cluster.val;
+      } else {
+        auto cmp3 = [](auto x, auto y) { return x < y ? -1 : (x > y ? 1 : 0); };
+        for (auto it = filtered_indices.begin(), g_end = it; it != filtered_indices.end(); it = g_end) {
+          while (g_end != filtered_indices.end() && std::strcmp(features[*g_end].cat_l1, features[*it].cat_l1) == 0)
+            ++g_end;
+          std::sort(it, g_end, [&](int a, int b) {
+            const FeatureMetadata &fa = features[a];
+            const FeatureMetadata &fb = features[b];
+            const Preview::Cell &ca = cell_of(a);
+            const Preview::Cell &cb = cell_of(b);
+            int cmp = 0;
+            switch (ui_state.sort_column) {
+            case 1:
+              cmp = strcmp(fa.code, fb.code);
+              break;
+            case 2:
+              cmp = (int)fa.valid_type - (int)fb.valid_type;
+              break;
+            case 3:
+              cmp = strcmp(fa.name_cn, fb.name_cn);
+              break;
+            case 4:
+              cmp = (int)fa.data_type - (int)fb.data_type;
+              break;
+            case 5:
+              cmp = std::strcmp(fa.cat_l1, fb.cat_l1);
+              break;
+            case 6:
+              cmp = std::strcmp(s_eff_cat2[a], s_eff_cat2[b]);
+              break;
+            case 7: // Stat: invalid% (次键 nan%)
+              cmp = cmp3(ca.integrity.invalid_pct(), cb.integrity.invalid_pct());
+              if (cmp == 0)
+                cmp = cmp3(ca.integrity.nan_pct(), cb.integrity.nan_pct());
+              break;
+            case 8: // Range: sd (var 单调等价)
+              cmp = cmp3(ca.var, cb.var);
+              break;
+            case 11:
+              cmp = std::strcmp(fa.file, fb.file);
+              break;
+            case 12: // TS Tf
+              cmp = (int)fa.ts_tf - (int)fb.ts_tf;
+              break;
+            case 13: // CS Norm
+              cmp = (int)fa.cs_method - (int)fb.cs_method;
+              break;
+            case 14:
+              cmp = deps_list[a].compare(deps_list[b]);
+              break;
+            }
+            return ui_state.sort_ascending ? cmp < 0 : cmp > 0;
+          });
         }
-
-        if (ui_state.sort_column == -1) {
-          ui_state.cluster_cache_level = sel.selected_level;
-          ui_state.cluster_cache_val = filtered_indices;
-        }
-      } // !use_cluster_cache
+      }
     }
 
     // Table rows (preview 锁已在上方持有): 行体 lambda, 下面按视野裁剪分两条路提交
