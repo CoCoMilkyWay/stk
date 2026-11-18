@@ -748,13 +748,14 @@ std::optional<double> sort_key(const live::board::Row &r, int c, const Caps &cap
   }
 }
 
-// 表头点选排序 (三态, 不排 = 帧序); 今日清仓恒在后, 空值恒在有值后
+// 表头点选排序 (三态, 不排 = 帧序); 今日清仓恒在后, 空值恒在有值后.
+// imgui.ini 存的排序列是列下标, 列表改过后可能落在不可排的列上: 当不排
 std::vector<const live::board::Row *> sorted(const live::board::Frame &f, const Caps &caps) {
   std::vector<const live::board::Row *> rows;
   for (const live::board::Row &r : f.rows)
     rows.push_back(&r);
   const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
-  if (!ss || !ss->SpecsCount)
+  if (!ss || !ss->SpecsCount || col_flags(ss->Specs[0].ColumnIndex) & ImGuiTableColumnFlags_NoSort)
     return rows;
   const int c = ss->Specs[0].ColumnIndex;
   const bool desc = ss->Specs[0].SortDirection == ImGuiSortDirection_Descending;
