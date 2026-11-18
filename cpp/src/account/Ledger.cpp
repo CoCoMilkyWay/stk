@@ -1,6 +1,7 @@
 #include "account/Ledger.hpp"
 
 #include "disk/Disk.hpp"
+#include "live/Pulled.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -9,7 +10,6 @@
 #include <iterator>
 #include <optional>
 #include <set>
-#include <sstream>
 
 namespace account {
 
@@ -17,7 +17,6 @@ namespace {
 
 using live::strf;
 
-constexpr const char *kPulled = "pulled";
 constexpr const char *kRate = "rate";
 constexpr const char *kHead = "date,code,name,price,qty,kind,amount,balance";
 constexpr double kCent = 0.005; // 余额链容差 [元]
@@ -99,46 +98,7 @@ Closes marks(const std::vector<CashFlow> &rows, const std::vector<misc::Ymd> &da
   return out;
 }
 
-} // namespace
-
-Ledger load() {
-  Ledger l;
-  if (!disk::exists(disk::LiveFlowsFile))
-    return l;
-  std::istringstream in(disk::read(disk::LiveFlowsFile));
-  std::string line;
-  std::getline(in, line);
-  const std::vector<std::string> h = live::cells(line);
-  assert(h.size() == 4 && h[0] == kPulled && h[2] == kRate && "资金流水账本: 首行");
-  l.pulled = misc::parse_ymd(h[1]);
-  assert(l.pulled > 0 && "资金流水账本: 拉于");
-  l.rate = std::stod(h[3]);
-  std::getline(in, line);
-  assert(line == kHead && "资金流水账本: 表头");
-  while (std::getline(in, line)) {
-    const std::vector<std::string> f = live::cells(line);
-    assert(f.size() == 8 && "资金流水账本: 列数");
-    CashFlow r{misc::parse_ymd(f[0]), f[1], f[2], std::stod(f[3]), std::stod(f[4]), f[5], std::stod(f[6]), std::stod(f[7])};
-    assert(r.date > 0 && "资金流水账本: 日期");
-    l.rows.push_back(std::move(r));
-  }
-  return l;
-}
-
-void save(const Ledger &l) {
-  assert(l.pulled > 0);
-  std::string s = strf("%s,%s,%s,%.6g\n%s\n", kPulled, misc::dense(l.pulled).c_str(), kRate, l.rate, kHead);
-  for (const CashFlow &r : l.rows) {
-    live::need((r.code + r.name + r.kind).find(',') == std::string::npos, strf("资金流水 %d %s %s 含逗号", r.date, r.name.c_str(), r.kind.c_str()));
-    s += strf("%s,%s,%s,%.4f,%.2f,%s,%.2f,%.2f\n", misc::dense(r.date).c_str(), r.code.c_str(), r.name.c_str(), r.price, r.qty, r.kind.c_str(), r.amount,
-              r.balance);
-  }
-  disk::write(disk::LiveFlowsFile, {}, s);
-  gen.fetch_add(1, std::memory_order_release);
-}
-
-uint64_t generation() { return gen.load(std::memory_order_acquire); }
-
+// 账本并入一次重查 (重查覆盖 from 日起)
 std::vector<CashFlow> merge(const std::vector<CashFlow> &old, misc::Ymd from, std::vector<CashFlow> fresh) {
   for (const CashFlow &r : fresh)
     live::need(r.date >= from, strf("资金流水重查 %s 起, 回来 %d 的行", misc::dash(from).c_str(), r.date));
@@ -152,6 +112,7 @@ std::vector<CashFlow> merge(const std::vector<CashFlow> &old, misc::Ymd from, st
   return out;
 }
 
+// 流水累计的持仓: 代码 → 股 (不含 0)
 std::map<std::string, double> holdings(const std::vector<CashFlow> &rows) {
   std::map<std::string, double> h;
   for (const CashFlow &r : rows)
@@ -161,6 +122,7 @@ std::map<std::string, double> holdings(const std::vector<CashFlow> &rows) {
   return h;
 }
 
+// 流水累计的持仓 + 今日成交 对 券商持仓: 对不上的各只 "代码 流水/券商" (对上 → 空)
 std::string reconcile(const std::vector<CashFlow> &rows, const live::Keyed<live::Position> &pos, const live::Fills &fills) {
   std::map<std::string, double> want = holdings(rows), got;
   for (const live::Traded &f : fills.by_code.list)
@@ -178,6 +140,49 @@ std::string reconcile(const std::vector<CashFlow> &rows, const live::Keyed<live:
       s += strf("%s%s %.0f/%.0f", s.empty() ? "" : " · ", c.c_str(), a, b);
   return s;
 }
+
+} // namespace
+
+Ledger load() {
+  const live::Pulled s = live::load_pulled(disk::LiveFlowsFile, kHead);
+  Ledger l{s.pulled, s.pulled ? std::stod(s.meta.at(kRate)) : 0, {}};
+  for (const std::vector<std::string> &f : s.rows) {
+    l.rows.push_back({misc::parse_ymd(f[0]), f[1], f[2], std::stod(f[3]), std::stod(f[4]), f[5], std::stod(f[6]), std::stod(f[7])});
+    assert(l.rows.back().date > 0 && "资金流水账本: 日期");
+  }
+  return l;
+}
+
+void save(const Ledger &l) {
+  live::Pulled s{l.pulled, {{kRate, strf("%.6g", l.rate)}}, {}};
+  for (const CashFlow &r : l.rows)
+    s.rows.push_back({misc::dense(r.date), r.code, r.name, strf("%.4f", r.price), strf("%.2f", r.qty), r.kind, strf("%.2f", r.amount), strf("%.2f", r.balance)});
+  live::save_pulled(disk::LiveFlowsFile, kHead, s);
+  gen.fetch_add(1, std::memory_order_release);
+}
+
+Ledger pull(live::Broker &b, const live::Report &r) {
+  Ledger l = load();
+  const misc::Ymd from = l.rows.empty() ? 0 : l.rows.back().date;
+  std::vector<CashFlow> fresh = b.flows(from, r);
+  const size_t n = fresh.size();
+  l.rows = merge(l.rows, from, std::move(fresh));
+  r.step("核对");
+  r.live("刷新持仓, 核对资金流水…");
+  b.sync(live::Part::All);
+  const std::shared_ptr<const live::State> s = b.state();
+  live::need(s->pos && s->fills && s->acct, "持仓 / 成交 / 信用账户没读到");
+  const std::string off = reconcile(l.rows, *s->pos, *s->fills);
+  live::need(off.empty(), "资金流水累计的持仓 + 今日成交对不上券商持仓 (代码 流水/券商): " + off);
+  l.pulled = misc::today_ymd();
+  l.rate = s->acct->rate;
+  r.log("flows", strf("资金流水账本 %zu 条 (%s起重查 %zu 条), 持仓对上", l.rows.size(), from ? misc::dash(from).c_str() : "开户", n),
+        {{"rows", l.rows.size()}, {"from", from}, {"fresh", n}});
+  save(l);
+  return l;
+}
+
+uint64_t generation() { return gen.load(std::memory_order_acquire); }
 
 std::vector<std::string> securities(const std::vector<CashFlow> &rows) {
   std::set<std::string> s;

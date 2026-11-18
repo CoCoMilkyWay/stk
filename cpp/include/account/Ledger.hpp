@@ -1,5 +1,7 @@
-// 账户净值: 券商资金流水 (live::CashFlow) 的本地账本与逐日回放. 券商无关, 只认 live/Broker.hpp 的类型
-//   账本 output/live/flows.csv (原子替换): 首行 pulled,<拉于 YYYYMMDD>,rate,<融资年利率>; 次行表头; 其后流水原序 (截至拉的前一日)
+// 账户净值: 券商资金流水 (live::CashFlow) 的本地账本与逐日回放. 券商无关, 只认 live/Broker.hpp (与两融条款 live/Terms.hpp 同形: 拉 → 存 → 用)
+//   账本 output/live/flows.csv (live/Pulled.hpp): 首行另带 rate,<融资年利率>; 流水原序 (截至拉的前一日)
+//   拉: 重查账本末日起的资金流水并入账本 (账本末日起的各行须恰为重查的开头几行; 余额链断开 / 有不认识的带股数业务 → Fail),
+//     流水累计的持仓 + 今日成交对上券商持仓才落盘
 //   回放 (逐交易日, 当日的流水全记完后计):
 //     现金     = 末个发生金额非 0 行的剩余金额
 //     持仓     = 买卖 / 融资买入 / 担保品划入 / 新股入账 的股数累计 (申购途中的配号、中签与回冲不计; 其余带股数的业务不认识 → Fail);
@@ -35,15 +37,8 @@ struct Ledger {
 
 Ledger load(); // 没有账本 → 空
 void save(const Ledger &l);
-uint64_t generation(); // 账本代: 本进程起于 1, save 一次 +1 (任意线程)
-
-// 账本并入一次重查 (重查覆盖 from 日起): 账本 from 日起的各行须恰为重查的开头几行; 并后余额链断开 / 有不认识的带股数业务 → Fail
-std::vector<CashFlow> merge(const std::vector<CashFlow> &old, misc::Ymd from, std::vector<CashFlow> fresh);
-
-// 流水累计的持仓: 代码 → 股 (不含 0)
-std::map<std::string, double> holdings(const std::vector<CashFlow> &rows);
-// 流水累计的持仓 + 今日成交 对 券商持仓: 对不上的各只 "代码 流水/券商" (对上 → 空)
-std::string reconcile(const std::vector<CashFlow> &rows, const live::Keyed<live::Position> &pos, const live::Fills &fills);
+Ledger pull(live::Broker &b, const live::Report &r); // 客户端重查 → 并 → 核 → 存; 失败 → Fail
+uint64_t generation();                               // 账本代: 本进程起于 1, save 一次 +1 (任意线程)
 
 // 回放要计价的证券 (计入持仓的各行的代码, 升序)
 std::vector<std::string> securities(const std::vector<CashFlow> &rows);

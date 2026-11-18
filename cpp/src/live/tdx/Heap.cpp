@@ -2,8 +2,8 @@
 
 #include "disk/Disk.hpp"
 #include "live/Broker.hpp"
-#include "live/tdx/Proc.hpp"
 #include "live/Trace.hpp"
+#include "live/tdx/Proc.hpp"
 
 #include <algorithm>
 #include <cassert>

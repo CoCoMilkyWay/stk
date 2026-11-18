@@ -1,7 +1,7 @@
 #include "live/tdx/Credit.hpp"
 
-#include "live/tdx/Tables.hpp"
 #include "live/Trace.hpp"
+#include "live/tdx/Tables.hpp"
 
 #include <map>
 #include <set>

@@ -8,10 +8,10 @@
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
+#include "live/Trace.hpp"
 #include "live/tdx/Heap.hpp"
 #include "live/tdx/Image.hpp"
 #include "live/tdx/Schema.hpp"
-#include "live/Trace.hpp"
 
 #include <algorithm>
 #include <cassert>

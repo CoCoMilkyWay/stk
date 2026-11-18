@@ -10,8 +10,8 @@
 #include "live/tdx/shim/Tool.hpp"
 
 #include "disk/Disk.hpp"
-#include "live/tdx/Shim.hpp"
 #include "live/Trace.hpp"
+#include "live/tdx/Shim.hpp"
 
 #include <chrono>
 #include <cstdio>

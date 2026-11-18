@@ -265,7 +265,18 @@ Prices prices(const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes) {
   return px;
 }
 
+Bal balances(const Keyed<Position> &pos) {
+  Bal out;
+  for (const Position &h : pos.list)
+    out[h.code] = h.balance;
+  return out;
+}
+
 nlohmann::json opt(const std::optional<double> &x) { return x ? nlohmann::json(*x) : nlohmann::json(); }
+
+nlohmann::json to_json(const Order &o) {
+  return {{"code", o.code}, {"name", o.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"qty", o.qty}, {"px", o.px}, {"amount", o.amount}, {"slip", o.slip}, {"fee", o.fee}, {"full", o.full}};
+}
 
 nlohmann::json to_json(const Sheet &s) {
   return {{"assets", s.assets}, {"net", s.net}, {"debt", s.debt}, {"cash", s.cash}, {"X", opt(s.X)}, {"L", s.L}, {"lev", s.lev}, {"maint", opt(s.maint)}};
@@ -324,25 +335,16 @@ std::vector<Sec> buyable(const std::vector<std::string> &codes, const Terms &ter
   return out;
 }
 
-Result plan(const Keyed<Position> &pos, const Account &acct, const Prices &px0, const Quotes &quotes, const Terms &terms,
-            const std::vector<std::string> &codes, const Cfg &cfg) {
+std::optional<Plan> plan(const Keyed<Position> &pos, const Account &acct, const Prices &px0, const Quotes &quotes, const Terms &terms,
+                         const std::vector<std::string> &codes, const Cfg &cfg) {
   std::vector<std::string> ok;
   for (const std::string &c : codes)
     if (why(term_of(terms, c)).empty())
       ok.push_back(c);
-  std::vector<std::string> lack;
-  const auto want = [&](const std::string &c) {
-    if (!quotes.contains(c))
-      lack.push_back(c);
-  };
-  for (const Position &h : pos.list)
-    want(h.code);
-  for (const std::string &c : ok)
-    want(c);
-  for (const Debt &d : acct.debts.list)
-    want(d.code);
-  if (!lack.empty())
-    return {std::nullopt, strf("等行情 (%zu 只, 如 %s)", lack.size(), lack[0].c_str())};
+  const auto has = [&](const std::string &c) { return quotes.contains(c); };
+  if (!std::all_of(ok.begin(), ok.end(), has) || !std::all_of(pos.list.begin(), pos.list.end(), [&](const Position &h) { return has(h.code); }) ||
+      !std::all_of(acct.debts.list.begin(), acct.debts.list.end(), [&](const Debt &d) { return has(d.code); }))
+    return std::nullopt;
   const double pct = cfg.pct / 100;
 
   Plan pl;
@@ -400,14 +402,10 @@ Result plan(const Keyed<Position> &pos, const Account &acct, const Prices &px0, 
   pl.orders.insert(pl.orders.end(), buys.begin(), buys.end());
   for (const auto &[c, q] : quotes)
     pl.time = std::max(pl.time, quote_time(q));
-  return {std::move(pl), ""};
+  return pl;
 }
 
 Sheet now_of(const Account &a) { return sheet(a.assets, a.net, a.debt, a.cash, a.avail, std::max(0.0, a.line)); }
-
-nlohmann::json to_json(const Order &o) {
-  return {{"code", o.code}, {"name", o.name}, {"side", o.side}, {"credit", credit_name(o.credit)}, {"qty", o.qty}, {"px", o.px}, {"amount", o.amount}, {"slip", o.slip}, {"fee", o.fee}, {"full", o.full}};
-}
 
 nlohmann::json to_json(const Plan &p) {
   nlohmann::json orders = nlohmann::json::array();

@@ -331,6 +331,7 @@ set(MATH_PRECISE
     live/Book.cpp
     live/Broker.cpp
     live/Clients.cpp
+    live/Pulled.cpp
     live/Rebal.cpp
     live/Terms.cpp
     live/Trace.cpp

@@ -125,9 +125,9 @@ struct Strip {
   std::vector<float> pre;       // [A] 末行前收 (续行的收益)
   size_t A() const { return axis.size(); }
   size_t days() const { return dates.size(); }
-  size_t row_of(misc::Ymd d) const;             // d 的行 (须在)
-  misc::Ymd holding_after(size_t r) const;      // 行 r 收盘建仓对应的持仓交易日 (= r+1 日; 末行 = next_day)
-  Order row(size_t r) const;                    // 行 r 的类号 (无次序: 只够全市场选)
+  size_t row_of(misc::Ymd d) const;        // d 的行 (须在)
+  misc::Ymd holding_after(size_t r) const; // 行 r 收盘建仓对应的持仓交易日 (= r+1 日; 末行 = next_day)
+  Order row(size_t r) const;               // 行 r 的类号 (无次序: 只够全市场选)
   // 资产 a 行 r → q 的收益比 grow_q / grow_r
   float rel(size_t r, size_t q, size_t a) const {
     const size_t n = A();

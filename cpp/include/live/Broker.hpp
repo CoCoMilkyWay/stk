@@ -239,7 +239,7 @@ public:
   virtual Keyed<Pending> pendings() = 0;
   virtual Account account() = 0;
 
-  virtual Terms terms(const Report &r) = 0;                               // 两融条款全表
+  virtual Terms terms(const Report &r) = 0;                                 // 两融条款全表
   virtual std::vector<CashFlow> flows(misc::Ymd from, const Report &r) = 0; // from 日起 (含; 0 = 开户起) 至昨日的资金流水
 
   virtual const std::vector<std::string> &steps() const = 0;
@@ -259,10 +259,10 @@ public:
   std::shared_ptr<const State> state() const;
   Refresh refresh() const;
 
-  void touch();          // GUI 每帧: 有人在看
-  void request(Part p);  // 要一轮 (不等)
-  void sync(Part p);     // 要一轮并等它刷完 (全部的一轮也算刷过成交); 失败 → Fail
-  void every(double s);  // 定时周期 [s], 0 = 不定时
+  void touch();         // GUI 每帧: 有人在看
+  void request(Part p); // 要一轮 (不等)
+  void sync(Part p);    // 要一轮并等它刷完 (全部的一轮也算刷过成交); 失败 → Fail
+  void every(double s); // 定时周期 [s], 0 = 不定时
 
   Terms terms(const Report &r);
   std::vector<CashFlow> flows(misc::Ymd from, const Report &r);

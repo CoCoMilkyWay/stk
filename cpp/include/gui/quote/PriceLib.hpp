@@ -184,8 +184,8 @@ private:
   Equity equity_;                       // account_ 的摘要
   uint64_t ledger_ = 0;                 // account_ 所依的账本代
   account::Spot spot_;                  // account_ 所依的券商现价
-  misc::Lru<uint32_t, Series> daily_; // 本戳个股日根全史 (留 kKeep 个; 换戳即清)
-  misc::Lru<Ref, Series> minute_;     // 本戳连分钟的全史 (两侧; 留 kKeepMinutes 个; 换戳即清)
+  misc::Lru<uint32_t, Series> daily_;   // 本戳个股日根全史 (留 kKeep 个; 换戳即清)
+  misc::Lru<Ref, Series> minute_;       // 本戳连分钟的全史 (两侧; 留 kKeepMinutes 个; 换戳即清)
 };
 
 } // namespace GUI::Quote

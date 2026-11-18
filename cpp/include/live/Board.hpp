@@ -21,17 +21,6 @@
 
 namespace live::board {
 
-struct Pair {
-  const Position *h = nullptr; // 空 = 今日清仓
-  const Traded *f = nullptr;   // 空 = 今日没有成交
-  const Sec &sec() const { return h ? static_cast<const Sec &>(*h) : static_cast<const Sec &>(*f); }
-};
-// 持仓 (余额 > 0) 在前、今日清仓在后; 两表市场须一致 (否则 Fail)
-std::vector<Pair> join(const Keyed<Position> &pos, const Fills &fills);
-bool synced(const Pair &p);                                                         // 今买 / 今卖与成交合计相符 (不符 = 两表之间又有成交, 其一旧了)
-bool synced(const Keyed<Position> &pos, const Fills &fills);                        // 每只都对得上
-bool covered(const Keyed<Position> &pos, const Fills &fills, const Quotes &quotes); // 每只都有行情
-
 struct Row {
   std::string code, name;
   bool closed = false;
@@ -51,8 +40,8 @@ struct Frame {
   bool synced = false;
   std::string time; // 行情最新时刻
 };
-// quotes 须 covered; 返回的 Row::quote 指向 quotes
-Frame view(const Keyed<Position> &pos, const Fills &fills, const Quotes &quotes);
+// 持仓 (余额 > 0) 在前、今日清仓在后; 有一只没行情 → 无; 两表市场不一致 → Fail. Row::quote 指向 quotes
+std::optional<Frame> view(const Keyed<Position> &pos, const Fills &fills, const Quotes &quotes);
 // 名单里未持有的一只: 标识 + 盘口 + 当日涨跌 (day_pnl_pct = 现价 / 昨收 − 1); 持仓组与当日盈亏额皆空. Row::quote 指向 q
 Row quoted(const std::string &code, const std::string &name, const Quote &q);
 

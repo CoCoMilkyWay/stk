@@ -13,12 +13,12 @@
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
+#include "live/Trace.hpp"
 #include "live/tdx/Cols.hpp"
 #include "live/tdx/Credit.hpp"
 #include "live/tdx/Flow.hpp"
 #include "live/tdx/Heap.hpp"
 #include "live/tdx/Tables.hpp"
-#include "live/Trace.hpp"
 #include "live/tdx/Ui.hpp"
 #include "live/tdx/Until.hpp"
 #include "live/tdx/Win.hpp"

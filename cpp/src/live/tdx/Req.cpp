@@ -1,9 +1,9 @@
 #include "live/tdx/Req.hpp"
 
+#include "live/Trace.hpp"
 #include "live/tdx/Image.hpp"
 #include "live/tdx/Schema.hpp"
 #include "live/tdx/Shim.hpp"
-#include "live/Trace.hpp"
 #include "live/tdx/Until.hpp"
 
 #include <algorithm>

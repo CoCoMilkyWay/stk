@@ -8,6 +8,33 @@ namespace live::board {
 
 namespace {
 
+struct Pair {
+  const Position *h = nullptr; // 空 = 今日清仓
+  const Traded *f = nullptr;   // 空 = 今日没有成交
+  const Sec &sec() const { return h ? static_cast<const Sec &>(*h) : static_cast<const Sec &>(*f); }
+  bool synced() const { return !h || live::synced(*h, f); }
+};
+
+// 持仓 (余额 > 0) 在前、今日清仓在后; 两表市场须一致 (否则 Fail)
+std::vector<Pair> join(const Keyed<Position> &pos, const Fills &fills) {
+  std::vector<Pair> out;
+  for (const Position &h : pos.list)
+    if (h.balance > 0)
+      out.push_back({&h, fills.by_code.find(h.code)});
+  for (const Traded &f : fills.by_code.list) {
+    const Position *h = pos.find(f.code);
+    if (!h || !(h->balance > 0))
+      out.push_back({nullptr, &f});
+  }
+  std::string bad;
+  for (const Pair &p : out)
+    if (p.h && p.f && p.h->mkt != p.f->mkt)
+      bad += strf(" %s %s (持仓 %s, 成交 %s)", p.h->code.c_str(), p.h->name.c_str(), mkt_name(p.h->mkt), mkt_name(p.f->mkt));
+  if (!bad.empty())
+    fail("成交与持仓的市场不一致:" + bad);
+  return out;
+}
+
 void ident(Row &r, const Pair &p, const Quote &q) {
   r.code = p.sec().code;
   r.name = p.sec().name;
@@ -32,7 +59,7 @@ void hold(Row &r, const Pair &p, const Quote &q) {
 }
 
 void today(Row &r, const Pair &p, const Quote &q) {
-  if (!synced(p))
+  if (!p.synced())
     return;
   const double bal = p.h ? p.h->balance : 0;
   double traded = 0, amount = 0, bought = 0;
@@ -95,51 +122,15 @@ double cents(double x) { return std::round(x * 100) / 100; }
 
 } // namespace
 
-std::vector<Pair> join(const Keyed<Position> &pos, const Fills &fills) {
-  std::vector<Pair> out;
-  for (const Position &h : pos.list)
-    if (h.balance > 0)
-      out.push_back({&h, fills.by_code.find(h.code)});
-  for (const Traded &f : fills.by_code.list) {
-    const Position *h = pos.find(f.code);
-    if (!h || !(h->balance > 0))
-      out.push_back({nullptr, &f});
-  }
-  std::string bad;
-  for (const Pair &p : out)
-    if (p.h && p.f && p.h->mkt != p.f->mkt)
-      bad += strf(" %s %s (持仓 %s, 成交 %s)", p.h->code.c_str(), p.h->name.c_str(), mkt_name(p.h->mkt), mkt_name(p.f->mkt));
-  if (!bad.empty())
-    fail("成交与持仓的市场不一致:" + bad);
-  return out;
-}
-
-bool synced(const Pair &p) {
-  return !p.h || p.h->traded == (p.f ? p.f->qty : BySide{});
-}
-
-bool synced(const Keyed<Position> &pos, const Fills &fills) {
-  for (const Pair &p : join(pos, fills))
-    if (!synced(p))
-      return false;
-  return true;
-}
-
-bool covered(const Keyed<Position> &pos, const Fills &fills, const Quotes &quotes) {
-  for (const Pair &p : join(pos, fills))
-    if (!quotes.contains(p.sec().code))
-      return false;
-  return true;
-}
-
-Frame view(const Keyed<Position> &pos, const Fills &fills, const Quotes &quotes) {
+std::optional<Frame> view(const Keyed<Position> &pos, const Fills &fills, const Quotes &quotes) {
+  const std::vector<Pair> ps = join(pos, fills);
+  if (!std::all_of(ps.begin(), ps.end(), [&](const Pair &p) { return quotes.contains(p.sec().code); }))
+    return std::nullopt;
   Frame fr;
   fr.synced = true;
   double mv = 0;
-  for (const Pair &p : join(pos, fills)) {
-    const auto it = quotes.find(p.sec().code);
-    assert(it != quotes.end());
-    const Quote &q = it->second;
+  for (const Pair &p : ps) {
+    const Quote &q = quotes.at(p.sec().code);
     Row r;
     ident(r, p, q);
     hold(r, p, q);
@@ -147,7 +138,7 @@ Frame view(const Keyed<Position> &pos, const Fills &fills, const Quotes &quotes)
     if (p.h)
       depth(r, q);
     mv += r.market_value.value_or(0);
-    fr.synced = fr.synced && synced(p);
+    fr.synced = fr.synced && p.synced();
     fr.rows.push_back(std::move(r));
   }
   const std::optional<double> base = asset(pos, mv);

@@ -84,11 +84,11 @@ private:
   // 风格 st 补到 strip_ 末行的次序 (提到最新); 取消 / 库判废 → nullptr
   std::shared_ptr<const pool::Orders> ranks(const FeatureLib &lib, pool::Style st, const pool::Tick &tick);
 
-  misc::exec::ForkJoin pool_{misc::exec::hw()};  // 键: 每线程一行的列读 + 排序; 篮子: 每线程一组参数的成员 / 权
-  std::shared_ptr<const pool::Strip> strip_;     // 上次用的原料带 (空 = 未装)
-  misc::Lru<pool::Style, pool::Orders> ranks_;   // 风格次序 (原料带重建清空, 补行随用随补)
-  misc::Lru<pool::Spec, pool::Perf> perfs_;      // 篮子账 [成员 (权重归 0)] (跨风格留存, 随 strip_ 换代清空)
-  std::shared_ptr<const pool::Perf> bench_;      // 全A 的账 (随 strip_ 换代清空)
+  misc::exec::ForkJoin pool_{misc::exec::hw()}; // 键: 每线程一行的列读 + 排序; 篮子: 每线程一组参数的成员 / 权
+  std::shared_ptr<const pool::Strip> strip_;    // 上次用的原料带 (空 = 未装)
+  misc::Lru<pool::Style, pool::Orders> ranks_;  // 风格次序 (原料带重建清空, 补行随用随补)
+  misc::Lru<pool::Spec, pool::Perf> perfs_;     // 篮子账 [成员 (权重归 0)] (跨风格留存, 随 strip_ 换代清空)
+  std::shared_ptr<const pool::Perf> bench_;     // 全A 的账 (随 strip_ 换代清空)
 };
 
 } // namespace GUI::Beta
