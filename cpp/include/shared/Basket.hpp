@@ -42,6 +42,10 @@ public:
 
   size_t size() const { return lo_[kBasketGroups]; }
   uint64_t hash() const { return hash_; } // 池表 + 概念表的指纹: 按篮子下标存的缓存以此判废
+  // 篮子的身份: 子池 = 池名 (规范串, 成员 / 权重 / 周期皆在其中); 行业 / 概念 = 母集池名 + 代码 (概念另 + 成分) 的指纹.
+  //   身份同 ⇒ 全史同 (与下标 / 别的篮子无关; 价格库篮子侧换表时按它搬留)
+  uint64_t key(size_t b) const { return key_[b]; }
+  const std::vector<uint64_t> &keys() const { return key_; }
 
   // 段 ⇄ 篮子: 段 g 第 k 个 / 段 g 的篮子 / 篮子 b 所在的段
   size_t at(BasketGroup g, size_t k) const {
@@ -106,6 +110,7 @@ public:
 private:
   std::array<size_t, kBasketGroups + 1> lo_{}; // 段界
   uint64_t hash_ = 0;
+  std::vector<uint64_t> key_;
   std::vector<pool::Weight> weight_;
   std::vector<pool::Rebal> rebal_;
   std::vector<std::string> code_, stem_;
@@ -122,14 +127,23 @@ inline BasketTable::BasketTable() {
   const size_t NP = pool_count() - 1, NC = ct.size();
   lo_ = {0, NP, NP + kIndBaskets, NP + kIndBaskets + NC};
   hash_ = ct.hash ^ pool_hash() * 0x9E3779B97F4A7C15ULL;
+  key_.resize(size());
   weight_.assign(size(), pool::kWeightCap);
   rebal_.assign(size(), pool::kRebalDay);
   code_.resize(size()), stem_.resize(size());
+  const auto fnv = [](uint64_t h, std::string_view s) {
+    for (const char c : s)
+      h = (h ^ static_cast<uint8_t>(c)) * 0x100000001b3ULL;
+    return h;
+  };
+  constexpr uint64_t kFnv = 0xcbf29ce484222325ULL;
+  const uint64_t base = fnv(kFnv, pool_def(kBasketBase).name);
   for (size_t k = 0; k < NP; ++k) {
     const PoolDef &d = pool_def(static_cast<PoolId>(k + 1));
     const std::string_view suf = pool::weight_suffix(d.spec.weight());
     assert(d.name_cn.ends_with(suf) && "子池显示名以权重后缀收尾");
     const size_t b = at(kGroupPool, k);
+    key_[b] = fnv(kFnv, d.name);
     weight_[b] = d.spec.weight(), rebal_[b] = d.spec.rebal();
     code_[b] = d.name, stem_[b] = d.name_cn.substr(0, d.name_cn.size() - suf.size());
   }
@@ -137,10 +151,12 @@ inline BasketTable::BasketTable() {
     char s[8];
     std::snprintf(s, sizeof(s), "sw%02zu", k + 1);
     const size_t b = at(kGroupInd, k);
+    key_[b] = fnv(base, s);
     code_[b] = s, stem_[b] = fund::SW2021_L1_NAMES[k + 1];
   }
   for (size_t k = 0; k < NC; ++k) {
     const size_t b = at(kGroupConcept, k);
+    key_[b] = ct.sig[k] ^ base * 0x9E3779B97F4A7C15ULL;
     code_[b] = ct.code[k], stem_[b] = ct.name[k];
   }
 }

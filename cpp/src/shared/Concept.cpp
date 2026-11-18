@@ -73,14 +73,17 @@ const ConceptTable &concepts() {
           o.code.emplace_back(bcode);
           o.name.emplace_back(bname);
           o.hash = fnv_append(o.hash, bcode);
+          std::uint64_t s = fnv_append(kFnvOffset, bcode);
           for (std::int64_t r = i; r < j; ++r) {
             const std::string_view sym = c_sym.str(r);
             assert(r == i || c_sym.str(r - 1) < sym);
             if (const std::size_t g = ax.find(std::string(sym)); g < G) {
               by[g].push_back(static_cast<std::uint16_t>(k));
               o.hash = fnv_append(o.hash, std::to_string(g));
+              s = fnv_append(s, std::to_string(g));
             }
           }
+          o.sig.push_back(s);
         }
         i = j;
       }

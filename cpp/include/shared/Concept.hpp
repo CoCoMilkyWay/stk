@@ -15,11 +15,12 @@ inline constexpr std::size_t kConceptMin = 10; // 成分下限
 
 // 载入的概念表: 成分映射到全局 A 轴 (轴外的码不收)
 struct ConceptTable {
-  misc::Ymd date = 0;            // 快照交易日 (0 = 未同步, 表空)
-  std::vector<std::string> code; // [概念] 板块代码 "BK0493"
-  std::vector<std::string> name; // [概念] 名称 "新能源"
-  std::uint64_t hash = 0;        // 代码 + 成分全局 id 的指纹 (篮子缓存键)
-  std::vector<std::uint32_t> at; // [全局 id + 1] 资产 g 所属概念 = of[at[g], at[g + 1]) (升序)
+  misc::Ymd date = 0;             // 快照交易日 (0 = 未同步, 表空)
+  std::vector<std::string> code;  // [概念] 板块代码 "BK0493"
+  std::vector<std::string> name;  // [概念] 名称 "新能源"
+  std::uint64_t hash = 0;         // 代码 + 成分全局 id 的指纹 (篮子缓存键)
+  std::vector<std::uint64_t> sig; // [概念] 本概念代码 + 成分全局 id 的指纹 (篮子的身份)
+  std::vector<std::uint32_t> at;  // [全局 id + 1] 资产 g 所属概念 = of[at[g], at[g + 1]) (升序)
   std::vector<std::uint16_t> of;
   std::size_t size() const { return code.size(); }
   // 资产 g 所属的概念下标; g 在载入后才进轴 → 空

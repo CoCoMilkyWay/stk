@@ -61,7 +61,7 @@ void minute_alloc(FeatureRead::DayColumns &mc, size_t A) { mc.preallocate(A, L_1
 
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc) { rd.load_day_columns(d, minute_cols(), mc); }
 
-void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m) {
+void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m, std::span<const uint8_t> only) {
   const pool::Tape &t = *pk.tape;
   const BasketTable &bt = basket_table();
   const ConceptTable &ct = concepts();
@@ -83,6 +83,8 @@ void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &
     assert((!base || f.ind > 0) && "母集成员的行业已知");
     PoolId at = kAllPool; // om 所依的池
     bt.each(f, ct.concepts_of(axis.global(a)), [&](size_t b) {
+      if (!only.empty() && !only[b])
+        return;
       if (const PoolId p = bt.base(b); p != at)
         t.omega(src[p], q, a, om), at = p;
       if (const float w = om[bt.weight(b)]; w > 0)
@@ -140,7 +142,7 @@ Leg LibDay::leg(size_t j, Cell &c, Bars &b) const {
   const float x = cur.px[3][j];
   c = cell(cur.px[0][j], cur.px[1][j], cur.px[2][j], x, cur.amount[j]);
   bars_of(mc, j, b);
-  return {prev.pre[j], cur.trade[j] && x > 0 ? &c : nullptr, &b};
+  return {prev.pre[j], traded_row(cur, j) ? &c : nullptr, &b};
 }
 
 Leg FundDay::leg(size_t j, Cell &, Bars &b) const {

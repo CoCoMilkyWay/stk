@@ -35,12 +35,15 @@ Fold::Fold(size_t baskets) : sw_(baskets), froze_(baskets * kCells * kQ), live_(
 
 void Fold::open(int slots) {
   assert(0 <= slots && slots <= kSlots);
-  const size_t n = (1 + static_cast<size_t>(std::max(slots, slots_))) * kQ;
-  slots_ = slots;
+  const size_t lo = (1 + static_cast<size_t>(std::min(touch_, slots_))) * kQ, hi = (1 + static_cast<size_t>(slots_)) * kQ;
+  for (size_t b = 0; b < sw_.size(); ++b) {
+    double *l = live_.data() + b * kCells * kQ;
+    std::fill_n(l, kQ, 0.0);
+    std::fill(l + lo, l + hi, 0.0);
+  }
+  slots_ = touch_ = slots;
   end_ = fend_;
   std::fill(sw_.begin(), sw_.end(), 0.0);
-  for (size_t b = 0; b < sw_.size(); ++b)
-    std::fill_n(live_.data() + b * kCells * kQ, n, 0.0);
 }
 
 void Fold::reset() {
@@ -51,6 +54,7 @@ void Fold::reset() {
 bool Fold::add(const Leg &g, std::span<const Members::Weight> ws, int freeze, Carry &k) {
   Row r;
   const int from = k.at;
+  touch_ = std::min(touch_, freeze);
   const int x = row(g, ws.empty() || !(g.base > 0) ? 0.f : g.base, freeze, k, r, end_, fend_);
   if (x > 0)
     put(r, from, freeze, ws);
@@ -93,17 +97,26 @@ int Fold::row(const Leg &g, float base, int freeze, Carry &k, Row &r, int &end, 
 }
 
 void Fold::put(const Row &r, int from, int freeze, std::span<const Members::Weight> ws) {
+  // 格内前 4 量 (开 高 低 收) 乘权, 其余直加; 一段连续格一趟 (可向量化)
+  static constexpr std::array<bool, kCells * kQ> kPriced = [] {
+    std::array<bool, kCells * kQ> p{};
+    for (size_t i = 0; i < p.size(); ++i)
+      p[i] = i % kQ < 4;
+    return p;
+  }();
+  const size_t a = (1 + static_cast<size_t>(from)) * kQ, z = (1 + static_cast<size_t>(freeze)) * kQ, e = (1 + static_cast<size_t>(slots_)) * kQ;
   for (const Members::Weight &w : ws) {
     sw_[w.key] += w.w;
-    double *f = froze_.data() + static_cast<size_t>(w.key) * kCells * kQ, *l = live_.data() + static_cast<size_t>(w.key) * kCells * kQ;
-    const auto at = [&](double *a, size_t j) {
-      for (size_t i = 0; i < 4; ++i)
-        a[j + i] += w.w * r[j + i];
-      a[j + 4] += r[j + 4], a[j + 5] += r[j + 5], a[j + 6] += r[j + 6];
+    const double ww = w.w;
+    const size_t o = static_cast<size_t>(w.key) * kCells * kQ;
+    const auto at = [&](std::vector<double> &acc, size_t i0, size_t i1) {
+      double *x = acc.data() + o;
+      for (size_t i = i0; i < i1; ++i)
+        x[i] += r[i] * (kPriced[i] ? ww : 1.0);
     };
-    at(l, 0);
-    for (int s = from; s < slots_; ++s)
-      at(s < freeze ? f : l, (1 + static_cast<size_t>(s)) * kQ);
+    at(live_, 0, kQ);
+    at(froze_, a, z);
+    at(live_, z, e);
   }
 }
 

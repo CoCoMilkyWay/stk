@@ -7,6 +7,8 @@
 //   当日无成交的成员比 1; 分钟缺根沿用其上根收盘, 首根前 = 基准; 计入的成员有一只在某根是缺口 (Bars::hole) → 篮子该根也是缺口.
 //   逐资产一遍 (资产主序): 一只的分钟根只读一次, 比 × 权散进所属各篮子.
 //   整表并行: 篮子按权数切段, 各线程扫全部成员、只累加本段的篮子 ⇒ 各篮子的累加序同逐只 (篮子段的累加格常驻本核缓存).
+//   历史一日 (day): 槽按块合, 块宽使全部篮子该块的累加格合计 ≈ kCache (常驻本核缓存), 每块扫一遍成员 (各只的接续同冻结线, 逐块推进);
+//     逐格的累加序同逐只一遍.
 // 当日增量 (逐成员冻结线): 各量对资产线性可加 ⇒ 每只各有冻结线 Carry::at, 其前的槽已并入冻结累加 (跨轮保留);
 //   每轮各只只合日根与 [at, slots) 的槽: [at, freeze) 并入冻结累加 (本只冻结线推进到 freeze), [freeze, slots) 与日根进活跃累加 (每轮清零).
 //   冻结线由调用方逐只给 (该只之后不会再改写的槽), 不随别只的待补而退 ⇒ 每轮的活只是各只末几槽.
@@ -52,12 +54,9 @@ public:
   void open(int slots);
   // 冻结累加清零 (各只的 Carry 须一并回 {})
   void reset();
-  // 一只: ws = 成员表一行; 全进活跃累加 (历史一日)
-  void add(const Leg &g, std::span<const Members::Weight> ws) {
-    Carry k;
-    [[maybe_unused]] const bool ok = add(g, ws, 0, k);
-    assert(ok);
-  }
+  // 历史一日 (成员表 m 全进, 合成分钟根) → out (同 finish): leg(k, lo, hi) = 第 k 行的 Leg (分钟根只须槽 [lo, hi) 有效)
+  template <class LegOf>
+  void day(const Members &m, LegOf &&leg, misc::Ymd d, std::span<Day> out);
   // 一只: freeze = 本只本轮的冻结线 (k.at ≤ freeze ≤ slots); k = 本只的冻结段 (入出).
   //   false = 冻结段所用的基准与本轮的不符 (本只未计; 调用方须 reset 后重合)
   bool add(const Leg &g, std::span<const Members::Weight> ws, int freeze, Carry &k);
@@ -71,18 +70,37 @@ public:
 private:
   // 一格 = 开 高 低 收 (比 × 权) / 额 / 净流入 / 缺口成员数; 格 0 = 日根, 格 1 + s = 槽 s
   static constexpr size_t kQ = 7, kCells = 1 + kSlots;
-  using Row = std::array<double, kCells * kQ>; // 一只的各格 (比未乘权)
+  static constexpr size_t kCache = size_t{256} << 10; // day 一块的累加格 [字节]
+  using Row = std::array<double, kCells * kQ>;        // 一只的各格 (比未乘权)
   // 一只 (基准 base, 0 = 不计) 的格 r: 日根 + 槽 [k.at, slots); k 推进到 freeze; end / fend 取有根末槽 (全部 / 冻结累加) 之极.
   //   返回 −1 = 冻结段所用的基准不符, 0 = 不计 (r 未填), 1 = r 已填
   int row(const Leg &g, float base, int freeze, Carry &k, Row &r, int &end, int &fend) const;
   // r 按 ws 各键的权累加: 槽 [from, freeze) 进冻结, 日根与 [freeze, slots) 进活跃
   void put(const Row &r, int from, int freeze, std::span<const Members::Weight> ws);
   int slots_ = 0;
+  int touch_ = 0;             // 本轮活跃累加写过的槽 [touch_, slots_) (+ 日根): 下次 open 只清它们
   int end_ = -1, fend_ = -1;  // 有根的末槽: 全部 / 冻结累加
   std::vector<double> sw_;    // [篮子] Σ w (本轮)
   std::vector<double> froze_; // [篮子][kCells][kQ] 冻结累加
   std::vector<double> live_;  // [篮子][kCells][kQ] 活跃累加
+  std::vector<Carry> carry_;  // day: [成员表行] 逐块的接续
 };
+
+template <class LegOf>
+void Fold::day(const Members &m, LegOf &&leg, misc::Ymd d, std::span<Day> out) {
+  const int w = static_cast<int>(std::clamp<size_t>(kCache / (std::max<size_t>(sw_.size(), 1) * kQ * sizeof(double)), 1, kSlots));
+  reset();
+  carry_.assign(m.size(), Carry{});
+  for (int lo = 0; lo < kSlots; lo += w) {
+    const int hi = std::min(lo + w, kSlots);
+    open(hi);
+    for (size_t k = 0; k < m.size(); ++k) {
+      [[maybe_unused]] const bool ok = add(leg(k, lo, hi), m.of(k), hi, carry_[k]);
+      assert(ok);
+    }
+  }
+  finish(d, out);
+}
 
 template <class LegOf, class FreezeOf>
 bool Fold::add(misc::exec::ForkJoin &ex, const Members &m, LegOf &&leg, FreezeOf &&freeze, std::span<const Carry> was, std::span<Carry> now) {
@@ -97,7 +115,7 @@ bool Fold::add(misc::exec::ForkJoin &ex, const Members &m, LegOf &&leg, FreezeOf
   cut[0] = 0;
   for (size_t t = 1; t < T; ++t)
     cut[t] = static_cast<uint32_t>(std::lower_bound(cum.begin(), cum.end(), cum[B] * t / T) - cum.begin());
-  std::vector<int> end(T, end_), fend(T, fend_);
+  std::vector<int> end(T, end_), fend(T, fend_), touch(T, touch_);
   std::atomic<bool> ok{true};
   ex.tasks(static_cast<int>(T), [&](int ti, int) {
     const size_t t = static_cast<size_t>(ti);
@@ -110,6 +128,7 @@ bool Fold::add(misc::exec::ForkJoin &ex, const Members &m, LegOf &&leg, FreezeOf
         continue;
       const Leg g = leg(k);
       const int fz = freeze(k);
+      touch[t] = std::min(touch[t], fz);
       Carry c = was[k];
       const int x = row(g, g.base > 0 ? g.base : 0.f, fz, c, r, end[t], fend[t]);
       if (x < 0) {
@@ -122,7 +141,7 @@ bool Fold::add(misc::exec::ForkJoin &ex, const Members &m, LegOf &&leg, FreezeOf
         now[k] = c;
     }
   });
-  end_ = *std::ranges::max_element(end), fend_ = *std::ranges::max_element(fend);
+  end_ = *std::ranges::max_element(end), fend_ = *std::ranges::max_element(fend), touch_ = *std::ranges::min_element(touch);
   return ok.load(std::memory_order_relaxed);
 }
 
