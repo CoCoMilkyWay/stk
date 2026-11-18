@@ -233,14 +233,14 @@ void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, 
       rd.item(r.key, catalog::pool_movable(r.key));
       if (selected)
         ImGui::SetItemDefaultFocus();
-      for (const Src src : {Src::Bar, Src::Lob}) {
+      for (const Src src : kVals<Src>) {
         ImGui::SameLine(src == Src::Bar ? x_src : 0.0f);
-        const char *name = kSrcs[static_cast<size_t>(src)].name;
-        if (r.built[static_cast<size_t>(src)])
+        const char *name = def(src).id;
+        if (r.built[src])
           ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "%s", name);
         else
           ImGui::TextDisabled("%s", name);
-        tip(r.built[static_cast<size_t>(src)] ? "库已建" : "库未建");
+        tip(r.built[src] ? "库已建" : "库未建");
       }
       ImGui::SameLine(x_n);
       ImGui::TextDisabled("(%zu)", r.factors);
@@ -300,35 +300,35 @@ void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, 
   ImGui::EndDisabled();
 }
 
-// ask_human: 逐题点选 (已按推荐预选; 末项 "其他" 自己写意见) + 附言; edit = Choose 中在问的那个调用. 返回 = 按了交答案
-bool asked_block(Asked &a, bool edit) {
+namespace {
+bool render_asked(const Asked &view, Asked *edit) {
   if (edit)
     ImGui::TextColored(color(TaskStatus::Kind::Warn), "已按推荐预选, 只改不同意的 (可选 \"其他\" 自己写), 改完按 交答案");
-  for (size_t i = 0; i < a.qs.size(); ++i) {
-    const Question &q = a.qs[i];
-    Pick &p = a.picks[i];
+  for (size_t i = 0; i < view.qs.size(); ++i) {
+    const Question &q = view.qs[i];
+    const Pick &pv = view.picks[i];
+    Pick *pe = edit ? &edit->picks[i] : nullptr;
     ImGui::PushID(static_cast<int>(i));
     wrapped(std::to_string(i + 1) + ". " + q.prompt + (q.multiple ? " (可多选)" : ""));
     ImGui::Indent();
-    // 单选: 选项与 "其他" 互斥
     const auto pick = [&](size_t j) {
       if (q.multiple) {
-        p.on[j] = !p.on[j];
+        pe->on[j] = !pe->on[j];
         return;
       }
-      p.on.assign(q.options.size(), false);
-      p.other = false;
-      p.on[j] = true;
+      pe->on.assign(q.options.size(), false);
+      pe->other = false;
+      pe->on[j] = true;
     };
     const auto pick_other = [&] {
       if (!q.multiple)
-        p.on.assign(q.options.size(), false);
-      p.other = true;
+        pe->on.assign(q.options.size(), false);
+      pe->other = true;
     };
     for (size_t j = 0; j < q.options.size(); ++j) {
       ImGui::PushID(static_cast<int>(j));
-      bool on = p.on[j];
-      ImGui::BeginDisabled(!edit);
+      bool on = pv.on[j];
+      ImGui::BeginDisabled(!pe);
       const bool hit = q.multiple ? ImGui::Checkbox("##o", &on) : ImGui::RadioButton("##o", on);
       ImGui::EndDisabled();
       ImGui::SameLine();
@@ -336,23 +336,23 @@ bool asked_block(Asked &a, bool edit) {
         ImGui::TextColored(color(TaskStatus::Kind::Ready), "推荐");
         ImGui::SameLine();
       }
-      p.on[j] || edit ? wrapped(q.options[j]) : wrapped_dim(q.options[j]);
-      if (edit && (hit || ImGui::IsItemClicked()))
+      pv.on[j] || pe ? wrapped(q.options[j]) : wrapped_dim(q.options[j]);
+      if (pe && (hit || ImGui::IsItemClicked()))
         pick(j);
       ImGui::PopID();
     }
-    // 其他: 打字即选中
-    bool other = p.other;
-    ImGui::BeginDisabled(!edit);
+    bool other = pv.other;
+    ImGui::BeginDisabled(!pe);
     if (q.multiple ? ImGui::Checkbox("其他##other", &other) : ImGui::RadioButton("其他##other", other)) {
       if (q.multiple)
-        p.other = other;
+        pe->other = other;
       else
         pick_other();
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-1);
-    if (input_text("##other_text", p.text, "自己的意见") && !p.text.empty() && !p.other)
+    std::string txt = pv.text;
+    if (input_text("##other_text", pe ? pe->text : txt, "自己的意见") && pe && !pe->text.empty() && !pe->other)
       pick_other();
     ImGui::EndDisabled();
     ImGui::Unindent();
@@ -361,13 +361,17 @@ bool asked_block(Asked &a, bool edit) {
   }
   if (edit) {
     ImGui::TextDisabled("附言 (可空)");
-    input_multiline("##note", a.note, ImVec2(-1, ImGui::GetTextLineHeightWithSpacing() * 4));
+    input_multiline("##note", edit->note, ImVec2(-1, ImGui::GetTextLineHeightWithSpacing() * 4));
     return ImGui::Button("交答案", ImVec2(80, 0));
   }
-  if (!a.note.empty())
-    wrapped_dim("附言: " + a.note);
+  if (!view.note.empty())
+    wrapped_dim("附言: " + view.note);
   return false;
 }
+} // namespace
+
+bool edit_asked(Asked &a) { return render_asked(a, &a); }
+void draw_asked(const Asked &a) { render_asked(a, nullptr); }
 
 // ---- 工具展示 ----
 void heading(const std::string &s) {

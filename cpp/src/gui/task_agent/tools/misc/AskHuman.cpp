@@ -1,17 +1,14 @@
 // ask_human — 问研究员: 输入 questions → 研究员逐题点选 + 附言 → AskRes → 原文; 展示见 ui/misc/AskHuman.cpp
+#include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Misc.hpp"
 
 namespace GUI::Agent {
 
 using json = nlohmann::ordered_json;
 
-std::string AskRes::text() const { return AnswerText(a); }
+std::string AskRes::text() const { return AnswerText(asked); }
 
-ToolOut AskHuman(const Asked &a) {
-  auto r = std::make_shared<AskRes>();
-  r->a = a;
-  return Done(std::move(r));
-}
+ToolOut AskHuman(std::shared_ptr<AskRes> r) { return Done(std::move(r)); }
 
 json SampleAskHuman(Feed &p) {
   return {{"questions",

@@ -10,6 +10,7 @@
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <iterator>
@@ -17,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace GUI::Agent {
 
@@ -28,6 +30,20 @@ concept Named = Tabled<E> && requires { std::string_view(enum_rows(E{})[0].id); 
 
 template <Tabled E>
 inline constexpr size_t kNum = std::size(enum_rows(E{}));
+
+template <Tabled E>
+inline constexpr auto kVals = []<size_t... I>(std::index_sequence<I...>) {
+  return std::array<E, sizeof...(I)>{static_cast<E>(I)...};
+}(std::make_index_sequence<kNum<E>>{});
+
+// 按枚举下标的定长表 (与 PerLib / PerFactorLevel 对仗: 既认枚举也认 size_t 下标)
+template <Tabled E, class V>
+struct Per : std::array<V, kNum<E>> {
+  using Base = std::array<V, kNum<E>>;
+  using Base::operator[];
+  constexpr V &operator[](E e) { return Base::operator[](static_cast<size_t>(e)); }
+  constexpr const V &operator[](E e) const { return Base::operator[](static_cast<size_t>(e)); }
+};
 
 template <Tabled E>
 constexpr const auto &def(E e) { return enum_rows(E{})[static_cast<size_t>(e)]; }

@@ -82,7 +82,7 @@ std::vector<Hold> sells_of(const Keyed<Position> &pos, const Quotes &quotes, con
   return rows;
 }
 
-// 买 n 股的委托价: 按 n × 参考价的额定 (与下单同算); 竞价中或空盘取参考价
+// 买 n 股的委托价: 按 n × 参考价的额定 (与下单同算); 空盘取参考价
 double buy_px(const Quote &q, PxMode mode, int n) {
   const double r = *ref(q);
   return order_px(q, kBuy, mode, n * r).value_or(r);

@@ -128,12 +128,14 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
         for (size_t i = 0; i < feats.size(); ++i)
           R.exprs.push_back(expr_line(i, feats[i]));
 
+        RankScratch rs;
+        std::vector<double> cu, cv_y;
         const auto corr_fn = [&](auto &&fn) {
-          std::vector<double> u, v;
+          cu.clear(), cv_y.clear();
           for (const Cell &x : cs)
             if (const double y = fn(x); std::isfinite(y))
-              u.push_back(x.rank), v.push_back(y);
-          return u.size() >= static_cast<size_t>(kMinCs) ? spearman(u, v) : kNaN;
+              cu.push_back(x.rank), cv_y.push_back(y);
+          return cu.size() >= static_cast<size_t>(kMinCs) ? rs.spearman(cu, cv_y) : kNaN;
         };
         R.corr.push_back({"当日涨跌", corr_fn([](const Cell &x) { return x.m.chg; })});
         if (seg > 1)

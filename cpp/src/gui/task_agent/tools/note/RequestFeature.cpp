@@ -5,7 +5,7 @@ namespace GUI::Agent {
 
 using json = nlohmann::ordered_json;
 
-ToolOut RequestFeature(const Call &c, Seat &s) { return FileNote(c, s, std::make_shared<FeatureNoteRes>()); }
+ToolOut RequestFeature(const Call &c, Seat &s) { return FileNote(c, s); }
 
 json SampleRequestFeature(Feed &p) {
   return {{"title", "示例: 撤单前挂单存续时长的分布"},

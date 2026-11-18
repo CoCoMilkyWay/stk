@@ -130,8 +130,9 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
     std::vector<Mean> trho(static_cast<size_t>(nt)), tric(static_cast<size_t>(nt));
 
     F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
-      std::vector<double> cval, fxv, ey;
+      std::vector<double> cval, fxv, ey, rc_v, rf_v, ry_v;
       std::array<std::vector<double>, 3> px, py;
+      RankScratch rs;
       st::Row w;
       const size_t ut = static_cast<size_t>(tid);
       for (int r = r0; r < r1; ++r) {
@@ -151,18 +152,18 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
         const size_t n = cval.size();
         if (n < 3 * static_cast<size_t>(kMinCs))
           continue;
-        const std::vector<double> rc_v = ranks_of(cval);
-        trho[ut].add(pearson(rc_v, ranks_of(fxv))), tric[ut].add(pearson(rc_v, ranks_of(ey)));
+        rs.rank_into(cval, rc_v), rs.rank_into(fxv, rf_v), rs.rank_into(ey, ry_v);
+        trho[ut].add(pearson(rc_v, rf_v)), tric[ut].add(pearson(rc_v, ry_v));
         for (size_t j = 0; j < 3; ++j)
           px[j].clear(), py[j].clear();
         for (size_t i = 0; i < n; ++i) {
           const size_t j = std::min<size_t>(2, static_cast<size_t>(rc_v[i] * 3.0 / static_cast<double>(n)));
           px[j].push_back(fxv[i]), py[j].push_back(ey[i]);
         }
-        if (approx_row(fxv, ey, w))
+        if (rs.approx_ranked(rf_v, ey, ry_v, w))
           tb[ut][0].add(w);
         for (size_t j = 0; j < 3; ++j)
-          if (approx_row(px[j], py[j], w))
+          if (rs.approx_row(px[j], py[j], w))
             tb[ut][j + 1].add(w);
       }
     });

@@ -53,8 +53,9 @@ bool begin_table(const char *id, std::initializer_list<const char *> heads, floa
 // ---- 作用域行 ----
 void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, const Lab &lab, bool locked, const char *title);
 
-// ---- ask_human 的逐题点选 (edit = 在问它); 返回 = 按了交答案 ----
-bool asked_block(Asked &a, bool edit);
+// ---- ask_human 的逐题点选 (edit_asked 在问它, 返回按了交答案; draw_asked 只读展示) ----
+bool edit_asked(Asked &a);
+void draw_asked(const Asked &a);
 
 // ---- 工具展示 ----
 void heading(const std::string &s);                               // 节标题

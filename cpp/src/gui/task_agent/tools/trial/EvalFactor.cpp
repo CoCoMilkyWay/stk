@@ -1,6 +1,7 @@
-// eval_factor — 回测: 输入 name / name_cn / expr / hyp / note → 投递前核假设并落候选文件 (GUI) → Search + Run + 代表点分层 (Lab) → 收结局 (GUI)
-//               → TrialRes (落文件与否 + 结局 + 最佳权重 20 组 / 分年 + 参数曲面) → 原文; 展示见 ui/trial/EvalFactor.cpp
+// eval_factor — 回测: 三拍对仗 OpenEvalFactor (核假设落盘, GUI) → LabTask (Search + Run + 代表点分层, Lab) → CloseEvalFactor (入表封存, GUI)
+//               → TrialRes (结局 + 最佳权重 20 组 / 分年 + 参数曲面) → 原文; 展示见 ui/trial/EvalFactor.cpp
 #include "gui/task_agent/Config.hpp"
+#include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Bay.hpp"
 #include "gui/task_agent/tools/Look.hpp"
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <utility>
 
 namespace GUI::Agent {
 
@@ -30,6 +32,13 @@ namespace space = factor::search::space;
 constexpr size_t kSurfBins = 6;
 constexpr size_t kSurfSlots = 3;
 constexpr size_t kSurfTop = 12;
+
+struct EvalYield final : Res {
+  Surface surf;
+  std::string rep;
+  std::string text() const override { return {}; }
+  void draw() const override {}
+};
 
 std::string bp_spark(const std::vector<double> &v) {
   const auto [lo, hi] = std::minmax_element(v.begin(), v.end());
@@ -108,19 +117,30 @@ Surface surface_of(const Engine::FeatureTable &ft, const Engine::SearchResult &r
   const fx::Expr t = ft.reparse_at(r.tmpl, r.hold);
   const std::vector<space::Slot> slots = space::slots_of(t, ft.seg, r.n_full * factor::stat::kGroups);
   assert(slots.size() == r.slots.size());
+  const bool need_parse = std::ranges::any_of(slots, space::needs_qtab);
   s.slots = r.slots;
+  s.pts.reserve(r.cands.size());
   for (const Engine::SearchCand &c : r.cands) {
     if (!c.sc.ok)
       continue;
-    const fx::Expr e = ft.reparse(c.expr);
-    assert(e.nodes.size() == t.nodes.size() && "具体式与模板同构");
     Probe p{.st = {c.sc.mono, c.sc.ls, c.sc.ric}};
-    for (const space::Slot &x : slots) {
-      const auto &q = e.nodes[static_cast<size_t>(x.node)].p;
-      p.v.push_back(x.key == space::Key::D    ? static_cast<double>(q.d)
-                    : x.key == space::Key::K  ? q.k
-                    : x.key == space::Key::K2 ? q.k2
-                                              : q.w[x.wi]);
+    p.v.reserve(slots.size());
+    if (!need_parse && c.u.size() == slots.size()) {
+      for (size_t j = 0; j < slots.size(); ++j) {
+        const space::Slot &x = slots[j];
+        const double raw = space::to_v(x, c.u[j]);
+        p.v.push_back(x.key == space::Key::D ? raw : static_cast<double>(fx::kv_of(raw)));
+      }
+    } else {
+      const fx::Expr e = ft.reparse(c.expr);
+      assert(e.nodes.size() == t.nodes.size() && "具体式与模板同构");
+      for (const space::Slot &x : slots) {
+        const auto &q = e.nodes[static_cast<size_t>(x.node)].p;
+        p.v.push_back(x.key == space::Key::D    ? static_cast<double>(q.d)
+                      : x.key == space::Key::K  ? q.k
+                      : x.key == space::Key::K2 ? q.k2
+                                                : q.w[x.wi]);
+      }
     }
     s.pts.push_back(std::move(p));
   }
@@ -141,16 +161,54 @@ std::string eval_miss(const Call &c, const Board &b, int round) {
   return {};
 }
 
-ToolOut trial_out(const Trial &k, const Gate &g) {
-  auto r = std::make_shared<TrialRes>();
-  r->k = k, r->gate = g;
-  return Done(std::move(r), k.st.ok() && k.st.res.verdict != Verdict::Broken);
+ToolOut run_eval(const Engine::FactorScope &fsc, const std::string &file, const std::string &tmpl, Bay &bay) {
+  const Engine::FeatureTable &ft = *fsc.ft;
+  factor::stat::Frame frame = factor::stat::Frame::CS;
+  std::string dummy;
+  [[maybe_unused]] const bool ok_rf = fx::root_frame(ft.reparse_at(tmpl, bay.env.hold), ft.seg, frame, dummy);
+  assert(ok_rf);
+  const Engine::SearchSpec ssp{file, tmpl, frame, bay.env.hold, true};
+  Engine::SearchResult sres;
+  std::string why;
+  const Engine::Rc src = Engine::SearchFactor({fsc, ssp}, bay.flow, sres, why);
+  if (bay.cancelled())
+    return {};
+  if (src != Engine::Rc::Ok || !sres.wrote)
+    return Fail(src == Engine::Rc::Stale ? Engine::kStaleMsg : why.empty() ? "Search 中止"
+                                                                           : why);
+  auto yield = std::make_shared<EvalYield>();
+  yield->surf = surface_of(ft, sres);
+
+  std::vector<Engine::FactorRow> frows;
+  Engine::ScanFactorFile(fsc.dir, ssp.file, ft, frows);
+  if (sres.n_weights > 0) {
+    bay.step(LabStep::Run);
+    std::vector<size_t> idx;
+    for (size_t i = 0; i < frows.size(); ++i)
+      if (frows[i].widx >= 0 && frows[i].error.empty() && !frows[i].expr.empty())
+        idx.push_back(i);
+    Engine::Lease l(bay.flow);
+    const Engine::Rc rc = l ? Engine::EvalFactorFile(fsc, bay.flow, frows, idx) : Engine::Rc::Cancel;
+    if (bay.cancelled())
+      return {};
+    if (rc != Engine::Rc::Ok)
+      return {false, rc == Engine::Rc::Stale ? Engine::kStaleMsg : "Run 中止", {}, std::move(yield)};
+    return {true, {}, {}, std::move(yield)};
+  }
+  if (!frows.empty()) {
+    const auto mk = std::find_if(frows[0].searched.begin(), frows[0].searched.end(), [&](const Engine::SearchMark &m) { return m.hold == ssp.hold; });
+    if (mk != frows[0].searched.end() && mk->top) {
+      bay.step(LabStep::Look);
+      Engine::FactorFlow vflow(bay.cancel, bay.flow.prog, Engine::Prio::Interactive);
+      yield->rep = RepLayers(mk->top->expr, mk->top->sign, bay.env, vflow);
+    }
+  }
+  return {true, {}, {}, std::move(yield)};
 }
 
 } // namespace
 
 std::string TrialRes::text() const {
-  const Staged &st = k.st;
   const Result &r = st.res;
   std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n";
   if (!st.cand.note.empty())
@@ -165,70 +223,39 @@ std::string TrialRes::text() const {
   return s + surface_text(r.surf);
 }
 
-bool StageEvalFactor(Act &a, Seat &s) {
+std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
   const Call &c = a.call;
-  Trial &k = a.extra.emplace<Trial>();
+  auto r = std::make_shared<TrialRes>();
+  r->gate = s.gate;
   Cand cand{c.str("name"), c.str("name_cn"), c.str("expr"), c.str("hyp"), c.str("note")};
   if (std::string miss = eval_miss(c, s.st.board, s.me.round); !miss.empty()) {
-    k.st.cand = std::move(cand);
-    k.st.res = {.name = k.st.cand.name, .name_cn = k.st.cand.name_cn, .tmpl = k.st.cand.expr, .note = k.st.cand.note, .error = std::move(miss), .verdict = Verdict::Unstaged, .visible = false};
+    r->st.cand = std::move(cand);
+    r->st.res = {.name = r->st.cand.name, .name_cn = r->st.cand.name_cn, .tmpl = r->st.cand.expr, .note = r->st.cand.note, .error = std::move(miss), .verdict = Verdict::Unstaged, .visible = false};
   } else {
     const Hyp *h = s.st.board.find(cand.hyp);
     assert(h);
-    k.st = s.lab.stage(std::move(cand), h->title());
+    r->st = s.lab.stage(std::move(cand), h->title());
   }
-  if (k.st.ok())
-    return true;
-  a.out = trial_out(k, s.gate);
-  return false;
+  if (!r->st.ok()) {
+    a.out = Done(std::move(r), false);
+    return std::nullopt;
+  }
+  const Engine::FactorScope fsc = FactorScopeOf(s.lab, s.gpu);
+  const std::string file = r->st.file, tmpl = r->st.res.tmpl;
+  a.out.res = std::move(r);
+  return LabTask([fsc, file, tmpl](Bay &bay) { return run_eval(fsc, file, tmpl, bay); });
 }
 
-ToolOut EvalFactor(const Call &, Bay &bay) {
-  const Engine::FactorScope &fsc = bay.fsc;
-  const Engine::FeatureTable &ft = *fsc.ft;
-  std::vector<Engine::FactorRow> rows;
-  Engine::ScanFactorFile(fsc.dir, bay.file, ft, rows);
-  assert(!rows.empty() && rows[0].error.empty() && !rows[0].tmpl.empty());
-  const Engine::SearchSpec ssp{rows[0].file, rows[0].tmpl, rows[0].frame, bay.env.hold, true};
-  Engine::SearchResult sres;
-  std::string why;
-  const Engine::Rc src = Engine::SearchFactor({fsc, ssp}, bay.flow, sres, why);
-  if (bay.cancelled())
-    return {};
-  if (src != Engine::Rc::Ok || !sres.wrote)
-    return Fail(src == Engine::Rc::Stale ? Engine::kStaleMsg : why.empty() ? "Search 中止"
-                                                                           : why);
-  bay.graded.surf = surface_of(ft, sres);
-
-  std::vector<Engine::FactorRow> frows;
-  Engine::ScanFactorFile(fsc.dir, ssp.file, ft, frows);
-  if (sres.n_weights > 0) {
-    bay.step(LabStep::Run);
-    std::vector<size_t> idx;
-    for (size_t i = 0; i < frows.size(); ++i)
-      if (frows[i].widx >= 0 && frows[i].error.empty() && !frows[i].expr.empty())
-        idx.push_back(i);
-    Engine::Lease l(bay.flow);
-    const Engine::Rc rc = l ? Engine::EvalFactorFile(fsc, bay.flow, frows, idx) : Engine::Rc::Cancel;
-    if (bay.cancelled())
-      return {};
-    return rc == Engine::Rc::Ok ? ToolOut{} : Fail(rc == Engine::Rc::Stale ? Engine::kStaleMsg : "Run 中止");
-  }
-  if (!frows.empty()) {
-    const auto mk = std::find_if(frows[0].searched.begin(), frows[0].searched.end(), [&](const Engine::SearchMark &m) { return m.hold == ssp.hold; });
-    if (mk != frows[0].searched.end() && mk->top) {
-      bay.step(LabStep::Look);
-      Engine::FactorFlow vflow(bay.cancel, bay.flow.prog, Engine::Prio::Interactive);
-      bay.graded.rep = RepLayers(mk->top->expr, mk->top->sign, bay.env, vflow);
-    }
-  }
-  return {};
-}
-
-void SettleEvalFactor(Act &a, ToolOut, Seat &s) {
-  Trial &k = std::get<Trial>(a.extra);
-  k.st.res = s.lab.result(k.st.file);
-  a.out = trial_out(k, s.gate);
+void CloseEvalFactor(Act &a, ToolOut out, Seat &s) {
+  auto r = std::static_pointer_cast<TrialRes>(a.out.res);
+  assert(r);
+  Surface surf;
+  std::string rep;
+  if (auto *y = static_cast<EvalYield *>(out.res.get()))
+    surf = std::move(y->surf), rep = std::move(y->rep);
+  r->st.res = s.lab.absorb(r->st.file, out.ok, out.text, std::move(surf), std::move(rep));
+  const bool ok = r->st.res.verdict != Verdict::Broken;
+  a.out = Done(std::move(r), ok);
 }
 
 json SampleEvalFactor(Feed &p) {

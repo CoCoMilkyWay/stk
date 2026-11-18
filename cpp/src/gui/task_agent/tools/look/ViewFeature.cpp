@@ -143,22 +143,32 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
         ac.med.assign(static_cast<size_t>(total_T), kNaN);
         ac.ric_part.resize(ps.size());
       }
-      // 1) 池内有效格计数与等距抽样 (首块即定 1%~99% 截尾界)
+      // 1) 池内有效格计数与等距抽样 (首有值块即定 1%~99% 截尾界, 不漏算首块方差)
       const size_t base0 = static_cast<size_t>(cv.t_lo) * static_cast<size_t>(A), end0 = static_cast<size_t>(cv.t_hi) * static_cast<size_t>(A);
+      const size_t ok_prev = ac.ok;
       for (size_t k = base0; k < end0; ++k)
         if (cv.blk.y.gate[k]) {
           ++ac.in;
           if (pl->m[k] && std::isfinite(pl->v[k]) && ac.ok++ % st_smp == 0)
             ac.smp.push_back(pl->v[k]);
         }
-      if (!ac.bounds_ready && ac.smp.size() >= 20) {
-        std::vector<double> tmp = ac.smp;
-        std::sort(tmp.begin(), tmp.end());
-        ac.lo = quant(tmp, 0.01), ac.hi = quant(tmp, 0.99);
-        ac.bounds_ready = true;
-      }
-      if (!ac.bounds_ready)
+      if (ac.ok == ok_prev)
         continue;
+      if (!ac.bounds_ready) {
+        std::vector<double> tmp = ac.smp;
+        if (tmp.size() < 20) {
+          tmp.clear();
+          for (size_t k = base0; k < end0 && tmp.size() < 200; ++k)
+            if (cv.blk.y.gate[k] && pl->m[k] && std::isfinite(pl->v[k]))
+              tmp.push_back(pl->v[k]);
+        }
+        if (tmp.size() >= 2) {
+          std::sort(tmp.begin(), tmp.end());
+          ac.lo = quant(tmp, 0.01), ac.hi = quant(tmp, 0.99);
+        }
+        if (ac.smp.size() >= 20 || tmp.size() >= 20)
+          ac.bounds_ready = true;
+      }
 
       // 2) 按资产列全核并行: 单趟攒方差分解 (ANOVA 恒等式) + 三档滞后自相关
       std::vector<double> t_sx(static_cast<size_t>(nt), 0.0), t_sxx(static_cast<size_t>(nt), 0.0), t_dsq(static_cast<size_t>(nt), 0.0);
@@ -205,11 +215,12 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
         ac.sx += t_sx[ut], ac.sxx += t_sxx[ut], ac.sum_day_sq += t_dsq[ut], ac.n_val += t_n[ut];
       }
 
-      // 3) 按统计行全核并行: 截面中位数 + 抽样行 rIC
+      // 3) 按统计行全核并行: 截面中位数 (原地 nth_element 复用缓冲) + 抽样行 rIC (零堆分配)
       std::vector<Mean> t_ric(static_cast<size_t>(nt));
       std::vector<std::vector<Mean>> t_part(static_cast<size_t>(nt), std::vector<Mean>(ps.size()));
       F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
         std::vector<double> cs, xa, ya;
+        RankScratch rs;
         const size_t ut = static_cast<size_t>(tid);
         for (int r = r0; r < r1; ++r) {
           const int t = cv.t_lo + r, u = cv.u0 + r;
@@ -218,8 +229,11 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
           for (int a = 0; a < A; ++a)
             if (const size_t k = base + static_cast<size_t>(a); cv.blk.y.gate[k] && pl->m[k] && std::isfinite(pl->v[k]))
               cs.push_back(pl->v[k]);
-          if (cs.size() >= 5)
-            ac.med[static_cast<size_t>(u)] = median_of(std::move(cs));
+          if (cs.size() >= 5) {
+            const auto mid = cs.begin() + static_cast<std::ptrdiff_t>(cs.size() / 2);
+            std::nth_element(cs.begin(), mid, cs.end());
+            ac.med[static_cast<size_t>(u)] = *mid;
+          }
           if (u % rstep != 0)
             continue;
           xa.clear(), ya.clear();
@@ -227,7 +241,7 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
             if (const size_t k = base + static_cast<size_t>(a); cv.blk.y.gate[k] && pl->m[k] && std::isfinite(pl->v[k]) && lb.m[k])
               xa.push_back(pl->v[k]), ya.push_back(h2f(lv[k]));
           if (xa.size() >= static_cast<size_t>(kMinCs)) {
-            const double rho = spearman(xa, ya);
+            const double rho = rs.spearman(xa, ya);
             t_ric[ut].add(rho);
             t_part[ut][static_cast<size_t>(pr[static_cast<size_t>(u % seg)])].add(rho);
           }
@@ -240,34 +254,37 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
       }
     }
 
-    // 4) 两两截面相关 (抽样行全核并行)
-    std::vector<std::vector<Mean>> t_corr(static_cast<size_t>(nt), std::vector<Mean>(F_n * F_n));
-    F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
-      std::vector<double> xa, ya;
-      std::vector<Mean> &mc = t_corr[static_cast<size_t>(tid)];
-      for (int r = r0; r < r1; ++r) {
-        const int u = cv.u0 + r;
-        if (u % cstep != 0)
-          continue;
-        const size_t base = static_cast<size_t>(cv.t_lo + r) * static_cast<size_t>(A);
-        for (size_t i = 0; i < F_n; ++i)
-          for (size_t j = i + 1; j < F_n; ++j) {
-            const factor::check::Plane *px = cv.feat_pl[i], *py = cv.feat_pl[j];
-            if (!px || !py)
-              continue;
-            xa.clear(), ya.clear();
-            for (int a = 0; a < A; ++a)
-              if (const size_t k = base + static_cast<size_t>(a);
-                  cv.blk.y.gate[k] && px->m[k] && py->m[k] && std::isfinite(px->v[k]) && std::isfinite(py->v[k]))
-                xa.push_back(px->v[k]), ya.push_back(py->v[k]);
-            if (xa.size() >= static_cast<size_t>(kMinCs))
-              mc[i * F_n + j].add(spearman(xa, ya));
-          }
-      }
-    });
-    for (int tid = 0; tid < nt; ++tid)
-      for (size_t idx = 0; idx < F_n * F_n; ++idx)
-        pair_corr[idx].merge(t_corr[static_cast<size_t>(tid)][idx]);
+    // 4) 两两截面相关 (抽样行全核并行, 零堆分配)
+    if (F_n >= 2) {
+      std::vector<std::vector<Mean>> t_corr(static_cast<size_t>(nt), std::vector<Mean>(F_n * F_n));
+      F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
+        std::vector<double> xa, ya;
+        RankScratch rs;
+        std::vector<Mean> &mc = t_corr[static_cast<size_t>(tid)];
+        for (int r = r0; r < r1; ++r) {
+          const int u = cv.u0 + r;
+          if (u % cstep != 0)
+            continue;
+          const size_t base = static_cast<size_t>(cv.t_lo + r) * static_cast<size_t>(A);
+          for (size_t i = 0; i < F_n; ++i)
+            for (size_t j = i + 1; j < F_n; ++j) {
+              const factor::check::Plane *px = cv.feat_pl[i], *py = cv.feat_pl[j];
+              if (!px || !py)
+                continue;
+              xa.clear(), ya.clear();
+              for (int a = 0; a < A; ++a)
+                if (const size_t k = base + static_cast<size_t>(a);
+                    cv.blk.y.gate[k] && px->m[k] && py->m[k] && std::isfinite(px->v[k]) && std::isfinite(py->v[k]))
+                  xa.push_back(px->v[k]), ya.push_back(py->v[k]);
+              if (xa.size() >= static_cast<size_t>(kMinCs))
+                mc[i * F_n + j].add(rs.spearman(xa, ya));
+            }
+        }
+      });
+      for (int tid = 0; tid < nt; ++tid)
+        for (size_t idx = 0; idx < F_n * F_n; ++idx)
+          pair_corr[idx].merge(t_corr[static_cast<size_t>(tid)][idx]);
+    }
   });
 
   if (rc != Engine::Rc::Ok)

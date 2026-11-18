@@ -8,7 +8,7 @@
 #include "gui/engine/File.hpp"                // ValidFactorName
 #include "gui/engine/Table.hpp"               // kFactorLevels
 #include "gui/task_agent/Notes.hpp"           // kNoteKinds
-#include "gui/task_agent/Prompt.hpp"          // kMsgs
+#include "gui/task_agent/tools/Kit.hpp"       // kMsgs
 
 #include <algorithm>
 #include <array>

@@ -1,4 +1,5 @@
 // submit_factor 的展示: 入库结局 + 候选的结局全文
+#include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 

@@ -18,6 +18,7 @@
 #include <optional>
 #include <thread>
 #include <utility>
+#include <variant>
 
 namespace GUI::Agent {
 
@@ -25,7 +26,7 @@ namespace GUI::Agent {
 template <class Live>
 void sync_live(Live &dst, const Live &src, uint64_t) { dst = src; }
 
-template <class Req, class Step, class Out, class Live>
+template <class Req, class Step, class Out, class Live = std::monostate>
 class Async {
 public:
   struct Tick {

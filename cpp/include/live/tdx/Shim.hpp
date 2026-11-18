@@ -19,7 +19,7 @@ bool online();
 void ensure(double timeout = 5); // 编译 + 注入直到在线 (已在线即跳过); 失败 → Fail
 
 // 一条命令 → 记录; 末行非 ok 或 timeout 秒内没应答 → Fail.
-// 要经目标界面线程的命令 (gettext 等) 在客户端卡着时会一直等到它缓过来, 故调用方按需给长 timeout
+// 要经目标界面线程的命令 (gettext / detail 等) 在客户端卡着时 shim 隔 3s 回 busy, 这里接着再问, 一直等到它缓过来或 timeout, 故调用方按需给长 timeout
 std::vector<nlohmann::json> call(const std::string &line, double timeout = 5);
 
 inline std::string arg(const std::string &s) { return s; }

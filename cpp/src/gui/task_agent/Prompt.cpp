@@ -3,6 +3,7 @@
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Trial.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -13,47 +14,10 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace GUI::Agent {
-
-// =============================================================================
-// 时间线唯一状态折叠
-// =============================================================================
-void Apply(State &s, const Act &a, Ref at) {
-  assert(a.span.ended());
-  const Call &c = a.call;
-  switch (c.tool) {
-  case Tool::Hypothesize:
-    s.board.add(c, at);
-    break;
-  case Tool::Judge:
-    if (a.out.ok)
-      s.board.judge(c, at);
-    break;
-  case Tool::EvalFactor:
-    if (const Trial *k = std::get_if<Trial>(&a.extra); k && k->st.ok()) {
-      s.board.vary(c, at);
-      s.staged.insert(k->st.file);
-    }
-    break;
-  case Tool::SubmitFactor:
-    if (a.out.ok)
-      s.adopted.insert(c.str("name"));
-    break;
-  default:
-    break;
-  }
-}
-
-State StateOf(Rounds rs) {
-  State s;
-  for (size_t i = 0; i < rs.size(); ++i)
-    for (size_t j = 0; j < rs[i].acts.size(); ++j)
-      if (const Act &a = rs[i].acts[j]; a.span.ended())
-        Apply(s, a, {static_cast<int>(i) + 1, static_cast<int>(j) + 1});
-  return s;
-}
 
 // =============================================================================
 // 内部辅助
@@ -189,8 +153,8 @@ std::string under(std::string_view s) {
 std::string fields(const nlohmann::ordered_json &args, std::initializer_list<std::string_view> keys) {
   std::string s;
   for (const auto &[k, v] : args.items())
-    if (v.is_string() && std::find(keys.begin(), keys.end(), k) != keys.end())
-      s += "  - " + k + ": " + v.get<std::string>() + "\n";
+    if (v.is_string() && std::ranges::contains(keys, std::string_view(k)))
+      s += "  - " + k + ": " + v.get_ref<const std::string &>() + "\n";
   return s;
 }
 
@@ -215,15 +179,25 @@ std::string tree_of(Rounds msgs) {
     return r.call >= 1 && static_cast<size_t>(r.call) <= as.size() && as[static_cast<size_t>(r.call) - 1].span.ended() ? &as[static_cast<size_t>(r.call) - 1] : nullptr;
   };
   const auto on = [](const Act &a, Tool t) { return a.call.tool == t && a.out.ok; };
-  const auto staged = [](const Act &a) { return a.call.tool == Tool::EvalFactor && std::get<Trial>(a.extra).st.ok(); };
+  const auto staged = [](const Act &a) {
+    const TrialRes *k = AsTrial(a);
+    return k && k->st.ok();
+  };
   const auto gist_of = [](const Act &a, const char *sep) { return a.out.gist.empty() ? std::string() : std::string(sep) + a.out.gist; };
 
   std::set<Ref> cited;
-  for (const Step &s : steps)
-    if (on(*s.a, Tool::Judge))
-      for (const std::string &e : s.a->call.strs("evidence"))
+  std::unordered_map<std::string, std::vector<Step>> by_hyp;
+  for (const Step &s : steps) {
+    const Act &a = *s.a;
+    if (on(a, Tool::Judge)) {
+      for (const std::string &e : a.call.strs("evidence"))
         if (Ref r; RefOf(e, r))
           cited.insert(r);
+      by_hyp[a.call.str("hyp")].push_back(s);
+    } else if (staged(a)) {
+      by_hyp[a.call.str("hyp")].push_back(s);
+    }
+  }
 
   std::string hyps;
   for (const Hyp &h : board.all()) {
@@ -232,9 +206,12 @@ std::string tree_of(Rounds msgs) {
             RefText(h.at) + (closed ? " · 结案" : "") + "\n\n";
     if (!closed)
       hyps += "- 预测\n" + fields(h.fields, {"actor", "why", "expect", "refute"});
-    for (const Step &s : steps) {
+    const auto hit = by_hyp.find(h.id);
+    if (hit == by_hyp.end())
+      continue;
+    for (const Step &s : hit->second) {
       const Act &a = *s.a;
-      if (on(a, Tool::Judge) && a.call.str("hyp") == h.id) {
+      if (on(a, Tool::Judge)) {
         const bool last = s.at == h.judged;
         std::string ev;
         for (const std::string &e : a.call.strs("evidence")) {
@@ -247,8 +224,8 @@ std::string tree_of(Rounds msgs) {
           hyps += fields(a.call.args, {"result", "insight"});
         if (!closed && last)
           hyps += fields(a.call.args, {"why", "better_feature", "next"});
-      } else if (staged(a) && a.call.str("hyp") == h.id) {
-        const Trial &k = std::get<Trial>(a.extra);
+      } else {
+        const TrialRes &k = *AsTrial(a);
         hyps += "- [" + RefText(s.at) + "] 变体 " + k.st.cand.name + " `" + k.st.cand.expr + "` · " + text::head(k.st.cand.note, 60) + " → " + Brief(k.st.res) + "\n";
       }
     }
@@ -456,9 +433,9 @@ Message FirstMessage(const Context &c, int tried, const std::string &notes, bool
 
 Message TestMessage(bool ask, const std::string &remark) {
   std::string tools;
-  for (const ToolDef &d : Tools())
-    if (d.id != Tool::AskHuman || ask)
-      tools += (tools.empty() ? "" : ", ") + std::string(d.name);
+  for (const Tool t : kVals<Tool>)
+    if (t != Tool::AskHuman || ask)
+      tools += (tools.empty() ? "" : ", ") + std::string(def(t).id);
   return fill(Msg::Test, {{"tools", tools},
                           {"remark", remark_text(remark)},
                           {"ask", ask ? "ask_human 也要测: 问 1 道题 (例: 先测哪类工具), 研究员答完再接着测" : "本会话没有 ask_human, 不测它"}});

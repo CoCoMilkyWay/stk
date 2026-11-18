@@ -540,7 +540,7 @@ void flow_cell(const Flows &f, const std::string &code, bool priv) {
     tip("%s", tips.c_str());
 }
 
-// 下单按钮: 一列滑点一个, 填充 = 该额的滑点色
+// 下单按钮: 一列滑点一个, 填充 = 该额的滑点色; 未持有的 (名单股) 卖不了
 void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool can, bool &ask) {
   if (r.closed)
     return ImGui::TextDisabled("今日清仓");
@@ -573,7 +573,9 @@ void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool ca
     ImGui::PushStyleColor(ImGuiCol_Text, side_col(c.s));
     if (fill)
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(fill->x, fill->y, fill->z, 0.45f));
+    ImGui::BeginDisabled(c.s < 0 && !r.market_value);
     const bool hit = ImGui::SmallButton(strf("%s##o%zu", size_txt(c.n).c_str(), i).c_str());
+    ImGui::EndDisabled();
     ImGui::PopStyleColor(fill ? 2 : 1);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       tip("%s", side_tip(c.s).c_str());
@@ -651,6 +653,7 @@ void confirm_run(LiveHub &hub, BoardState &st) {
 enum Column {
   C_CODE,
   C_POS_PCT,
+  C_CAP,
   C_NAME,
   C_FLOW,
   C_FIN,
@@ -668,8 +671,33 @@ enum Column {
   C_COLLAT,
   C_COUNT
 };
-constexpr const char *kHeads[C_COUNT] = {"代码", "仓位%", "名称", "状态", "融", "买 / 卖", "当日%", "当日", "盈亏%",
+constexpr const char *kHeads[C_COUNT] = {"代码", "仓位%", "总市值", "名称", "状态", "融", "买 / 卖", "当日%", "当日", "盈亏%",
                                          "盈亏", "市值", "融资", "可卖", "卖出", "金额", "成本", "折算"};
+
+using Caps = std::unordered_map<std::string, double>; // 代码 → 总市值 [亿元]
+
+// 代码 → 全局 id; 资产库没就绪或本地库没有 → 无 (id 表随 AssetInfo 的代码数变了即重建)
+std::optional<uint32_t> id_of(const SharedData &data, BoardState &st, const std::string &code) {
+  if (!data.task_state.database.asset_info_ready)
+    return std::nullopt;
+  const std::vector<std::string> &codes = data.asset_info.codes;
+  if (st.ids.size() != codes.size()) {
+    st.ids.clear();
+    for (uint32_t i = 0; i < codes.size(); ++i)
+      st.ids.emplace(codes[i], i);
+  }
+  const auto i = st.ids.find(code + live::kMktSuffix[static_cast<int>(live::market_of(code))]);
+  return i == st.ids.end() ? std::nullopt : std::optional<uint32_t>(i->second);
+}
+
+// 本地库最新收盘的总市值; 没有即不记
+void add_cap(Caps &caps, const SharedData &data, BoardState &st, const std::string &code) {
+  const std::optional<uint32_t> id = id_of(data, st, code);
+  if (!id || *id >= data.asset_info.stocks.size())
+    return;
+  if (const StockInfo *s = data.asset_info.find(*id); s && std::isfinite(s->mcap))
+    caps.emplace(code, s->mcap);
+}
 
 ImGuiTableColumnFlags col_flags(int c) {
   switch (c) {
@@ -689,11 +717,15 @@ ImGuiTableColumnFlags col_flags(int c) {
 }
 
 // 数值列的排序键; 融资 / 可卖按占总市值
-std::optional<double> sort_key(const live::board::Row &r, int c) {
+std::optional<double> sort_key(const live::board::Row &r, int c, const Caps &caps) {
   const auto share = [&](const std::optional<double> &v) { return v && r.market_value.value_or(0) > 0 ? std::optional<double>(*v / *r.market_value) : std::nullopt; };
   switch (c) {
   case C_POS_PCT:
     return r.position_pct;
+  case C_CAP: {
+    const auto i = caps.find(r.code);
+    return i == caps.end() ? std::nullopt : std::optional<double>(i->second);
+  }
   case C_DAY_PCT:
     return r.day_pnl_pct;
   case C_DAY:
@@ -717,7 +749,7 @@ std::optional<double> sort_key(const live::board::Row &r, int c) {
 }
 
 // 表头点选排序 (三态, 不排 = 帧序); 今日清仓恒在后, 空值恒在有值后
-std::vector<const live::board::Row *> sorted(const live::board::Frame &f) {
+std::vector<const live::board::Row *> sorted(const live::board::Frame &f, const Caps &caps) {
   std::vector<const live::board::Row *> rows;
   for (const live::board::Row &r : f.rows)
     rows.push_back(&r);
@@ -733,7 +765,7 @@ std::vector<const live::board::Row *> sorted(const live::board::Frame &f) {
       const std::string &x = c == C_CODE ? a->code : a->name, &y = c == C_CODE ? b->code : b->name;
       return desc ? y < x : x < y;
     }
-    const std::optional<double> x = sort_key(*a, c), y = sort_key(*b, c);
+    const std::optional<double> x = sort_key(*a, c, caps), y = sort_key(*b, c, caps);
     if (!x || !y)
       return x && !y;
     return desc ? *y < *x : *x < *y;
@@ -744,7 +776,10 @@ std::vector<const live::board::Row *> sorted(const live::board::Frame &f) {
 void head_tip(int c, const live::board::Frame &f) {
   switch (c) {
   case C_NAME:
-    return tip("名称: 青 = 在当前调仓名单里, 灰 = 今日清仓 / 名单里这次不入的\n名单里未持有的列在表末 (不随排序); 名单股悬停看排名、保证金比例与不补 / 不可买的原因");
+    return tip("名称: 青 = 在当前调仓名单里, 灰 = 今日清仓 / 名单里这次不入的\n名单里未持有的列在表末 (不随排序), 能出的列照持仓出 (可买的有行情: 买入按钮、当日涨跌); "
+               "名单股悬停看排名、保证金比例与不补 / 不可买的原因");
+  case C_CAP:
+    return tip("总市值 [亿元]: 本地库最新收盘 (收盘价 × 总股本); 本地库没有即空");
   case C_FLOW:
     return tip("● 今日成交 · ○ 挂单, 买红卖绿; 悬停看逐笔");
   case C_FIN:
@@ -757,7 +792,7 @@ void head_tip(int c, const live::board::Frame &f) {
   }
   case C_DAY:
   case C_DAY_PCT:
-    return tip("当日盈亏: 按成交价自算 (毛, 不扣费); 与持仓的今买 / 今卖对不上即空\n"
+    return tip("当日盈亏: 按成交价自算 (毛, 不扣费); 与持仓的今买 / 今卖对不上即空; 名单股的当日%% = 现价 / 昨收 − 1\n"
                "合计行的当日%% = 当日盈亏 / 昨净资产 (现金 + 总市值 − 负债 − 当日盈亏, 信用账户未读即无)");
   case C_PNL:
   case C_PNL_PCT:
@@ -873,17 +908,22 @@ void plan_cells(const RowPlan &p, bool priv, Amt &amt, double &cost) {
   cost += p.slip + p.fee;
 }
 
-void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, bool &ask) {
+void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, bool &ask) {
   const Flows flows = flows_of(*hub.state());
   const std::set<std::string> listed(hub.codes().begin(), hub.codes().end());
   const auto &plan = hub.plan().plan;
   std::map<std::string, const live::rebal::Hold *> holds;
   std::map<std::string, const live::rebal::Target *> tgts;
+  Caps caps;
+  for (const live::board::Row &r : f.rows)
+    add_cap(caps, data, st, r.code);
   if (plan) {
     for (const live::rebal::Hold &h : plan->holds)
       holds.emplace(h.code, &h);
-    for (const live::rebal::Target &t : plan->targets)
+    for (const live::rebal::Target &t : plan->targets) {
       tgts.emplace(t.code, &t);
+      add_cap(caps, data, st, t.code);
+    }
   }
   const auto lookup = [](const auto &m, const std::string &c) { const auto i = m.find(c); return i == m.end() ? nullptr : i->second; };
   if (!begin_fit("##pos", kHeads, kFlags | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate, st.pos_fit))
@@ -936,7 +976,25 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     if (is_tgt && ImGui::IsItemHovered())
       tip("%s", rp.tip.c_str());
   };
-  for (const live::board::Row *p : sorted(f)) {
+  const auto cap_cell = [&](const std::string &code) {
+    ImGui::TableSetColumnIndex(C_CAP);
+    const auto i = caps.find(code);
+    if (i == caps.end())
+      return;
+    if (priv)
+      masked_num();
+    else
+      right(strf("%.0f", i->second));
+  };
+  const auto pnl_cell = [&](int c, const std::optional<double> &v, const std::string &s) {
+    ImGui::TableSetColumnIndex(c);
+    if (priv && v)
+      masked_num();
+    else
+      pnl_opt(v, s);
+  };
+  const auto pct_txt = [](const std::optional<double> &v) { return v ? strf("%+.2f", *v) : ""; };
+  for (const live::board::Row *p : sorted(f, caps)) {
     const live::board::Row &r = *p;
     ImGui::TableNextRow();
     ImGui::PushID(r.code.c_str());
@@ -954,6 +1012,7 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     ImGui::TableSetColumnIndex(C_POS_PCT);
     if (r.position_pct)
       right(wc, strf("%.2f", *r.position_pct));
+    cap_cell(r.code);
     name_cell(r.closed ? grey() : listed.count(r.code) ? kAcc
                                                        : ImGui::GetStyleColorVec4(ImGuiCol_Text),
               r.name, rp, t != nullptr);
@@ -966,16 +1025,9 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     }
     ImGui::TableSetColumnIndex(C_ORDER);
     order_cell(hub, st, r, can, ask);
-    const auto pnl_cell = [&](int c, const std::optional<double> &v, const std::string &s) {
-      ImGui::TableSetColumnIndex(c);
-      if (priv && v)
-        masked_num();
-      else
-        pnl_opt(v, s);
-    };
-    pnl_cell(C_DAY_PCT, r.day_pnl_pct, r.day_pnl_pct ? strf("%+.2f", *r.day_pnl_pct) : "");
+    pnl_cell(C_DAY_PCT, r.day_pnl_pct, pct_txt(r.day_pnl_pct));
     pnl_cell(C_DAY, r.day_pnl, r.day_pnl ? wan_pnl(*r.day_pnl) : "");
-    pnl_cell(C_PNL_PCT, r.pnl_pct, r.pnl_pct ? strf("%+.2f", *r.pnl_pct) : "");
+    pnl_cell(C_PNL_PCT, r.pnl_pct, pct_txt(r.pnl_pct));
     pnl_cell(C_PNL, r.pnl, r.pnl ? wan_pnl(*r.pnl) : "");
     ImGui::TableSetColumnIndex(C_MV);
     if (r.market_value && priv)
@@ -995,10 +1047,12 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
     text_opt(r.collateral, "%.2f");
     ImGui::PopID();
   }
-  // 名单里未持有的: 恒在表末, 按排名
+  // 名单里未持有的: 恒在表末, 按排名; 有行情的 (可买的) 照持仓出买入按钮与当日涨跌
   std::set<std::string> in_frame;
   for (const live::board::Row &r : f.rows)
     in_frame.insert(r.code);
+  const std::shared_ptr<const live::Quotes> &quotes = hub.board().quotes;
+  assert(quotes && "帧出了即有行情");
   if (plan)
     for (const live::rebal::Target &t : plan->targets) {
       if (in_frame.count(t.code))
@@ -1007,10 +1061,19 @@ void table(LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, 
       ImGui::PushID(t.code.c_str());
       const RowPlan rp = row_plan(nullptr, 0, &t, priv);
       code_cell(t.code);
+      cap_cell(t.code);
       name_cell(rp.amt.buy || rp.amt.fin ? kAcc : grey(), t.name, rp, true);
+      ImGui::TableSetColumnIndex(C_FLOW);
+      flow_cell(flows, t.code, priv);
       ImGui::TableSetColumnIndex(C_FIN);
       if (t.financeable && t.why.empty())
         text_col(kHot, "R");
+      if (const auto q = quotes->find(t.code); t.why.empty() && q != quotes->end()) {
+        const live::board::Row r = live::board::quoted(t.code, t.name, q->second);
+        ImGui::TableSetColumnIndex(C_ORDER);
+        order_cell(hub, st, r, can, ask);
+        pnl_cell(C_DAY_PCT, r.day_pnl_pct, pct_txt(r.day_pnl_pct));
+      }
       plan_cells(rp, priv, amt, cost);
       ImGui::TableSetColumnIndex(C_COLLAT);
       text_opt(t.rate, "%.2f");
@@ -1096,19 +1159,8 @@ void chart(SharedData &data, Quote::QuoteHub &quote, BoardState &st, bool priv) 
     return ImGui::TextDisabled("行情图要本地资产库就绪 (见 Database)");
   quote.frame(data);
   const std::vector<std::string> &codes = data.asset_info.codes;
-  if (st.ids.size() != codes.size()) {
-    st.ids.clear();
-    for (uint32_t i = 0; i < codes.size(); ++i)
-      st.ids.emplace(codes[i], i);
-  }
-  uint32_t id = 0;
-  bool have = false;
-  if (!st.sel.empty()) {
-    const auto i = st.ids.find(st.sel + live::kMktSuffix[static_cast<int>(live::market_of(st.sel))]);
-    if ((have = i != st.ids.end()))
-      id = i->second;
-  }
-  Market::Want(quote, st.stock, have ? id : Quote::Ref::kNone);
+  const std::optional<uint32_t> id = st.sel.empty() ? std::nullopt : id_of(data, st, st.sel);
+  Market::Want(quote, st.stock, id ? *id : Quote::Ref::kNone);
   std::string title;
   if (const uint32_t k = st.stock.shown; k != Quote::Ref::kNone) {
     assert(k < codes.size());
@@ -1151,7 +1203,7 @@ void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, Boar
   groups(hub, st);
   info_line(hub, held);
   if (v.frame)
-    table(hub, st, *v.frame, st.armed && !hub.ordering() && !hub.busy(), ask);
+    table(data, hub, st, *v.frame, st.armed && !hub.ordering() && !hub.busy(), ask);
   journal(hub, hub.priv());
   ImGui::PopStyleVar(3);
   ImGui::PopFont();

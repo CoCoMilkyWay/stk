@@ -65,6 +65,7 @@ void AccountHub::pull(live::Broker &b, const live::Report &r) {
   std::vector<live::CashFlow> fresh = b.pull_flows(from, r);
   const size_t n = fresh.size();
   l.rows = account::merge(l.rows, from, std::move(fresh));
+  r.step("核对");
   r.live("刷新持仓, 核对资金流水…");
   b.sync(live::Part::All);
   const std::shared_ptr<const live::State> s = b.state();

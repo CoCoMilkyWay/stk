@@ -96,9 +96,9 @@ json line_of(const Note &x) {
 } // namespace
 
 NoteKind NoteOf(Tool t) {
-  for (size_t i = 0; i < kNum<NoteKind>; ++i)
-    if (kNoteKinds[i].tool == t)
-      return static_cast<NoteKind>(i);
+  for (const NoteKind k : kVals<NoteKind>)
+    if (def(k).tool == t)
+      return k;
   assert(false && "不是提交记录的工具");
   return NoteKind::Feature;
 }
@@ -107,9 +107,8 @@ std::string Note::body() const { return FieldsText(def(kind).tool, fields, {"tit
 
 void Notes::load(bool test) {
   test_ = static_cast<int>(test);
-  for (size_t i = 0; i < kNum<NoteKind>; ++i) {
-    const NoteKind k = static_cast<NoteKind>(i);
-    std::vector<Note> &v = notes_[i];
+  for (const NoteKind k : kVals<NoteKind>) {
+    std::vector<Note> &v = notes_[k];
     v.clear();
     if (!disk::exists(disk::AgentNoteFile, note_key(test, k)))
       continue;
@@ -159,7 +158,7 @@ std::string Notes::next(NoteKind k) const {
 const Note &Notes::add(const Call &c, std::string scope, std::string session, int round) {
   assert(test_ >= 0 && "先 load");
   const NoteKind k = NoteOf(c.tool);
-  std::vector<Note> &v = notes_[static_cast<size_t>(k)];
+  std::vector<Note> &v = notes_[k];
   Note x{.kind = k,
          .id = next(k),
          .time = text::local("%Y-%m-%d %H:%M"),
@@ -184,7 +183,7 @@ void Notes::rewrite(NoteKind k) const {
 
 void Notes::set(NoteKind k, const std::string &id, NoteState s, std::string reply) {
   assert(test_ >= 0 && "先 load");
-  std::vector<Note> &v = notes_[static_cast<size_t>(k)];
+  std::vector<Note> &v = notes_[k];
   const auto it = std::find_if(v.begin(), v.end(), [&](const Note &x) { return x.id == id; });
   assert(it != v.end());
   it->state = s, it->reply = std::move(reply);
@@ -202,9 +201,9 @@ std::vector<const Note *> Notes::filed(const std::string &session, int from) con
 
 void Notes::drop(const std::string &session, int from) {
   assert(test_ >= 0 && "先 load");
-  for (size_t i = 0; i < kNum<NoteKind>; ++i)
-    if (std::erase_if(notes_[i], [&](const Note &x) { return x.session == session && x.round >= from; }) > 0)
-      rewrite(static_cast<NoteKind>(i));
+  for (const NoteKind k : kVals<NoteKind>)
+    if (std::erase_if(notes_[k], [&](const Note &x) { return x.session == session && x.round >= from; }) > 0)
+      rewrite(k);
 }
 
 // ---- 记录工具 (request_feature / request_tool / note_insight / report_issue) 的落记录与原文 ----
@@ -214,7 +213,8 @@ std::string NoteRes::text() const {
   return "已记为 " + id + (ref.empty() ? "" : " (附议 " + ref + ")") + "; 全局可见: 研究员在界面里看, 后续会话用 list_notes 查得到";
 }
 
-ToolOut FileNote(const Call &c, Seat &s, std::shared_ptr<NoteRes> r) {
+ToolOut FileNote(const Call &c, Seat &s) {
+  auto r = std::make_shared<NoteRes>();
   const NoteKind k = NoteOf(c.tool);
   r->kind = k, r->ref = c.str("ref"), r->fields = c.args, r->dry = s.dry;
   r->fields.erase("ref");
@@ -228,10 +228,11 @@ ToolOut FileNote(const Call &c, Seat &s, std::shared_ptr<NoteRes> r) {
 
 std::string NotesBrief(const Notes &notes, const std::string &scope) {
   std::string s;
-  for (size_t i = 0; i < kNum<NoteKind>; ++i) {
-    const NoteKind k = static_cast<NoteKind>(i);
+  bool first = true;
+  for (const NoteKind k : kVals<NoteKind>) {
     const std::vector<Note> &v = notes.of(k);
-    s += (i ? " · " : "") + std::string(def(k).cn) + " " + std::to_string(v.size()) + " (待办 " + std::to_string(notes.open(k));
+    s += (first ? "" : " · ") + std::string(def(k).cn) + " " + std::to_string(v.size()) + " (待办 " + std::to_string(notes.open(k));
+    first = false;
     if (k == NoteKind::Insight)
       s += ", 本作用域 " + std::to_string(std::count_if(v.begin(), v.end(), [&](const Note &x) { return x.scope == scope; }));
     s += ")";

@@ -43,6 +43,13 @@ ImVec4 StatusColor(TaskStatus::Kind kind) {
   return ImVec4(0.0f, 1.0f, 1.0f, 1.0f); // Cyan (不应到达)
 }
 
+void TaskStatus::add(Kind k, std::string t) {
+  if (kind == Kind::None)
+    kind = k, text = std::move(t);
+  else
+    also.push_back({k, std::move(t)});
+}
+
 TaskStatus::Kind PhaseKind(Phase p) {
   switch (p) {
   case Phase::Idle:

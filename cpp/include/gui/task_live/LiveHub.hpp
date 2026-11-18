@@ -5,8 +5,9 @@
 //     与本地库合: 本地库有的个股名称 / 市场取本地 (AssetInfo), 融资标的 = 券商融资状态正常 ∧ 本地两融明细最新一日有它,
 //     担保品 = 券商担保状态正常 ∧ 本地在市; 保证金比例 / 折算率只有券商有; 本地库没有的 (ETF / 债券) 照用券商的整行.
 //     持仓页打开时缓存缺、满 kTermsAge 天、或名单 / 持仓 / 负债里有缓存没有的代码 → 后台拉 (每天自动至多一次, 失败了等人点)
-//   下单: 一次一单, 留最近 kOrderCap 单; 步骤 = 「行情」(按新取的盘口定委托价) + broker 的各步
-//   事务: 后台一次一件 (拉条款 / 执行调仓 / 别处交来的 job), 日志落 output/run/live/task/<时刻>.jsonl (留最近 kTaskKeep 个), 留尾巴给页面.
+//   下单: 一次一单, 留最近 kOrderCap 单; 步骤 = 「行情」(按新取的盘口定委托价) + broker 的各步. 单只走事务的道:
+//     持仓页点的一单即一件「下单」事务, 调仓里的各单在「执行调仓」事务里; 请求、取到的盘口、结局各记一条, 各步即事务的步骤
+//   事务: 后台一次一件 (下单 / 拉条款 / 执行调仓 / 别处交来的 job), 日志落 output/run/live/task/<时刻>.jsonl (留最近 kTaskKeep 个), 留尾巴给页面.
 //     执行调仓 = 条款缓存还没有即先拉 → 刷新 → 还有挂单即停 (免得重复下单、冻结的钱券没算进试算) → 试算 →
 //     卖单逐只卖出 → 刷新到成交表里各只卖量到齐 → 去掉卖出重算 → 买单逐只 (融资在前) → 刷新.
 //     任一步失败即停 (已下的单不撤); 卖单、买单各一整批独占界面连下, 其间不插刷新
@@ -39,7 +40,7 @@ namespace GUI::Live {
 inline constexpr size_t kOrderCap = 5;   // 留最近几单
 inline constexpr int kTermsAge = 7;      // 条款缓存满几天即后台重拉 [日]
 inline constexpr size_t kLogTail = 200;  // 事务日志留给页面的条数
-inline constexpr size_t kTaskKeep = 100; // 事务日志留几个文件
+inline constexpr size_t kTaskKeep = 500; // 事务日志留几个文件 (一单一个)
 
 // 万为单位, 定一位小数 (表里按位对齐); sign 带正负号
 inline std::string wan(double v, bool sign = false) { return live::strf(sign ? "%+.1fW" : "%.1fW", v / 1e4); }
@@ -71,6 +72,7 @@ struct Task {
   std::string name, t;
   JobSt st = JobSt::Run;
   std::string msg, file, live; // live = 实时进度 (覆盖上一行)
+  std::string step;            // 走到哪一步 (左栏标签的第二级)
   std::deque<LogLine> log;
 };
 
@@ -130,7 +132,7 @@ public:
   void set_px(live::PxMode px);
   void set_sell(const std::string &code, int n); // 0 = 不卖
 
-  // 持仓页 code 那只后台按 size 元下一单, 委托价随 cfg().px; 有单在跑即不收
+  // 持仓页 code 那只 (持仓 / 今日成交里的, 或名单里可买的只许买) 按 size 元下一单 (一件「下单」事务), 委托价随 cfg().px; 有事务在跑即不收
   void submit(const std::string &code, int side, double size, live::Credit credit);
 
   void pull();      // 后台拉两融条款

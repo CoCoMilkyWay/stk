@@ -56,7 +56,8 @@ struct Slip {
 
 bool auction(const Quote &q);              // 集合竞价: 盘口只给虚拟撮合价, 卖一 ≤ 买一 (锁定 / 交叉), 此时滑点无意义
 std::optional<double> ref(const Quote &q); // 参考价 = 现价 (含昨收兜底); 都无 → 无
-// 方向 s 做 notional 元按 mode 定委托价 (未舍入); 竞价中或该侧空盘 → 无
+// 方向 s 做 notional 元按 mode 定委托价 (未舍入); 该侧空盘 → 无.
+// 竞价中盘口只一档虚拟撮合价: 扫档 / 对手价 / 本方价都取它, 对手价 ±1% 照偏 (集合竞价按单一价成交, 偏出去不多花钱、更易成)
 std::optional<double> order_px(const Quote &q, int s, PxMode mode, double notional);
 std::pair<int, int> lot(const std::string &code); // (起买股数, 递增步长): 科创板起 200 零股递增, 北交所起 100 零股递增, 其余整手
 // 吃 notional 元相对参考价的滑点 [元, 正 = 成本] 与 5 档是否吃满; 无参考价或竞价中 → 无

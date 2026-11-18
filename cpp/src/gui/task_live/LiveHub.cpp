@@ -255,41 +255,6 @@ OrderJob put(Core &c, uint64_t id, const std::function<void(OrderJob &)> &f) {
   return *i;
 }
 
-// 「行情」: 现取盘口按 mode 定委托价, 再交 broker 下; o 的量为 qty 股或 size 元 (恰给其一)
-OrderJob exec(Core &c, uint64_t id, live::OrderReq o, live::PxMode mode) {
-  try {
-    sina::Client cl(sina::kQuoteHost);
-    const std::vector<sina::Quote> got = cl.quotes({live::sina_sym(o.sec.mkt, o.sec.code)});
-    live::need(!got.empty(), "新浪查无此码");
-    const live::Quote q = live::quote_of(got[0]);
-    const std::optional<double> r = live::ref(q);
-    live::need(r.has_value(), "无参考价");
-    const std::optional<double> px = live::order_px(q, o.side, mode, o.size > 0 ? o.size : o.qty * *r);
-    live::need(px.has_value(), "集合竞价中或盘口为空, 无连续价");
-    o.px = *px;
-    put(c, id, [&](OrderJob &j) {
-      j.o = o;
-      j.at = 1;
-    });
-    const live::Placed p = c.broker->place(o, [&](size_t at, const std::string &d) {
-      put(c, id, [&](OrderJob &j) {
-        j.at = 1 + at;
-        if (!d.empty())
-          j.detail = d;
-      });
-    });
-    return put(c, id, [&](OrderJob &j) {
-      j.st = JobSt::Ok;
-      j.got = p;
-    });
-  } catch (const live::Fail &e) {
-    return put(c, id, [&](OrderJob &j) {
-      j.st = JobSt::Err;
-      j.got.msg = e.why;
-    });
-  }
-}
-
 // ---------- 事务 ----------
 
 std::string by_code(const nlohmann::json &want, const nlohmann::json &got) {
@@ -303,8 +268,15 @@ std::string by_code(const nlohmann::json &want, const nlohmann::json &got) {
 std::string describe(const std::string &k, const nlohmann::json &r) {
   if (k == "order") {
     const nlohmann::json &o = r["order"];
-    return strf("%s %s %s %s %.0f股 @≈%.3f", live::side_name(o["side"].get<int>()), o["credit"].get<std::string>().c_str(),
-                o["code"].get<std::string>().c_str(), o["name"].get<std::string>().c_str(), o["qty"].get<double>(), o["px"].get<double>());
+    const double qty = o["qty"].get<double>();
+    return strf("%s %s %s %s %s", live::side_name(o["side"].get<int>()), o["credit"].get<std::string>().c_str(), o["code"].get<std::string>().c_str(),
+                o["name"].get<std::string>().c_str(), qty > 0 ? strf("%.0f股", qty).c_str() : wan(o["size"].get<double>()).c_str());
+  }
+  if (k == "quote") {
+    const nlohmann::json &q = r["quote"];
+    const auto top = [](const nlohmann::json &side) { return side.empty() ? std::string("-") : strf("%.3f", side[0][0].get<double>()); };
+    return strf("行情 %s 现价 %.3f 昨收 %.3f · 卖一 %s 买一 %s%s", q["at"].get<std::string>().c_str(), q["price"].get<double>(), q["last_close"].get<double>(),
+                top(q["ask"]).c_str(), top(q["bid"]).c_str(), q["auction"].get<bool>() ? " · 竞价中" : "");
   }
   if (k == "job") {
     const nlohmann::json &j = r["job"];
@@ -363,16 +335,82 @@ nlohmann::json job_json(const OrderJob &j) {
   return {{"state", job_name(j.st)}, {"detail", j.detail}, {"msg", j.got.msg}, {"qty", j.got.qty}, {"px", j.got.px}};
 }
 
-// 事务的报告 (交给 broker 的长操作): 记一条 / 实时进度
+// 事务走到哪一步
+void stage(Core &c, std::string s) {
+  Lock lk(c.mu);
+  c.task->step = std::move(s);
+}
+
+// 事务的报告 (交给 broker 的长操作): 记一条 / 实时进度 / 走到哪一步
 live::Report report_of(Core &c) {
   return {[&c](const char *k, nlohmann::json kw) { note(c, k, kw); },
           [&c](std::string line) {
             Lock lk(c.mu);
             c.task->live = std::move(line);
-          }};
+          },
+          [&c](std::string s) { stage(c, std::move(s)); }};
+}
+
+nlohmann::json quote_json(const live::Quote &q) {
+  const auto book = [](const std::vector<live::Level> &side) {
+    nlohmann::json v = nlohmann::json::array();
+    for (const live::Level &l : side)
+      v.push_back({l.px, l.vol});
+    return v;
+  };
+  return {{"at", live::quote_time(q)}, {"price", q.price}, {"last_close", q.last_close}, {"auction", live::auction(q)}, {"ask", book(q.book(live::kBuy))}, {"bid", book(q.book(live::kSell))}};
+}
+
+// 事务里下一单 (事务线程): 「行情」现取盘口记一条、按 mode 定委托价, 再交 broker 下; o 的量为 qty 股或 size 元 (恰给其一).
+// 各步记进事务的步骤 (前缀 at, 如「卖出 2/5」); 结局记一条 job, 不成 → Fail
+OrderJob exec(Core &c, live::OrderReq o, std::string label, live::PxMode mode, const std::string &at) {
+  const uint64_t id = open_job(c, o, std::move(label));
+  live::need(id != 0, "还有单在跑");
+  const auto step = [&](size_t i) {
+    std::string s;
+    put(c, id, [&](OrderJob &j) {
+      j.at = i;
+      s = j.steps[i];
+    });
+    stage(c, at.empty() ? s : at + " " + s);
+  };
+  OrderJob out;
+  try {
+    step(0);
+    sina::Client cl(sina::kQuoteHost);
+    const std::vector<sina::Quote> got = cl.quotes({live::sina_sym(o.sec.mkt, o.sec.code)});
+    live::need(!got.empty(), "新浪查无此码");
+    const live::Quote q = live::quote_of(got[0]);
+    note(c, "quote", {{"quote", quote_json(q)}});
+    const std::optional<double> r = live::ref(q);
+    live::need(r.has_value(), "无参考价");
+    const std::optional<double> px = live::order_px(q, o.side, mode, o.size > 0 ? o.size : o.qty * *r);
+    live::need(px.has_value(), "盘口为空 (竞价还没撮合出价 / 停牌), 定不了委托价");
+    o.px = *px;
+    put(c, id, [&](OrderJob &j) { j.o = o; });
+    step(1);
+    const live::Placed p = c.broker->place(o, [&](size_t i, const std::string &d) {
+      step(1 + i);
+      if (!d.empty())
+        put(c, id, [&](OrderJob &j) { j.detail = d; });
+    });
+    out = put(c, id, [&](OrderJob &j) {
+      j.st = JobSt::Ok;
+      j.got = p;
+    });
+  } catch (const live::Fail &e) {
+    out = put(c, id, [&](OrderJob &j) {
+      j.st = JobSt::Err;
+      j.got.msg = e.why;
+    });
+  }
+  note(c, "job", {{"job", job_json(out)}});
+  live::need(out.st == JobSt::Ok, strf("%s %s 下单失败: %s", o.sec.code.c_str(), o.sec.name.c_str(), out.got.msg.c_str()));
+  return out;
 }
 
 void pull_terms(Core &c) {
+  stage(c, "拉条款");
   note(c, "pull", kNone);
   auto x = std::make_shared<live::terms::Cache>(live::terms::Cache{misc::today_ymd(), c.broker->pull_terms(report_of(c))});
   int fin = 0, pl = 0;
@@ -390,6 +428,7 @@ void pull_terms(Core &c) {
 
 // 刷新一轮 (成交、持仓、挂单、信用账户), 记下账户
 std::shared_ptr<const live::State> sync(Core &c) {
+  stage(c, "刷新");
   c.broker->sync(live::Part::All);
   auto st = c.broker->state();
   assert(st->pos && st->fills && st->orders && st->acct);
@@ -402,6 +441,7 @@ std::shared_ptr<const live::State> sync(Core &c) {
 }
 
 live::rebal::Plan plan_now(Core &c, sina::Client &cl) {
+  stage(c, "试算");
   const auto st = c.broker->state();
   fetch(c, cl, *st, watch_set(c, *st));
   std::shared_ptr<const live::Terms> terms;
@@ -425,15 +465,9 @@ live::rebal::Plan plan_now(Core &c, sina::Client &cl) {
   return *r.plan;
 }
 
-OrderJob place_one(Core &c, const live::rebal::Order &o, live::PxMode mode) {
+OrderJob place_one(Core &c, const live::rebal::Order &o, live::PxMode mode, const std::string &at) {
   note(c, "order", {{"order", live::rebal::to_json(o)}});
-  const live::OrderReq req{o, o.side, o.credit, 0, o.qty, 0};
-  const uint64_t id = open_job(c, req, strf("%.0f股", o.qty));
-  live::need(id != 0, "还有单在跑");
-  const OrderJob j = exec(c, id, req, mode);
-  note(c, "job", {{"job", job_json(j)}});
-  live::need(j.st == JobSt::Ok, strf("%s %s 下单失败: %s", o.code.c_str(), o.name.c_str(), j.got.msg.c_str()));
-  return j;
+  return exec(c, {o, o.side, o.credit, 0, o.qty, 0}, strf("%.0f股", o.qty), mode, at);
 }
 
 double sold(const live::State &st, const std::string &code) {
@@ -443,6 +477,7 @@ double sold(const live::State &st, const std::string &code) {
 
 // 只刷成交, 到成交表里各只卖量到 want [股]
 void wait_fills(Core &c, const std::map<std::string, double> &want) {
+  stage(c, "等成交");
   const double end = mono() + kFillWait;
   for (;;) {
     c.broker->sync(live::Part::Fills);
@@ -487,8 +522,8 @@ void run_rebal(Core &c) {
     for (const live::rebal::Order &o : sells)
       want[o.code] = sold(*st, o.code);
     c.broker->exclusive("调仓", [&] {
-      for (const live::rebal::Order &o : sells)
-        want[o.code] += place_one(c, o, mode).got.qty;
+      for (size_t i = 0; i < sells.size(); ++i)
+        want[sells[i].code] += place_one(c, sells[i], mode, strf("卖出 %zu/%zu", i + 1, sells.size())).got.qty;
     });
     wait_fills(c, want);
     sync(c);
@@ -500,9 +535,10 @@ void run_rebal(Core &c) {
     p = plan_now(c, cl);
   }
   c.broker->exclusive("调仓", [&] {
-    for (const live::rebal::Order &o : p.orders) {
+    for (size_t i = 0; i < p.orders.size(); ++i) {
+      const live::rebal::Order &o = p.orders[i];
       live::need(o.side == live::kBuy, "去掉卖出后试算仍有卖单: " + o.code + " " + o.name);
-      place_one(c, o, mode);
+      place_one(c, o, mode, strf("买入 %zu/%zu", i + 1, p.orders.size()));
     }
   });
   sync(c);
@@ -753,15 +789,19 @@ void LiveHub::submit(const std::string &code, int side, double size, live::Credi
   const live::Sec *sec = st_->pos ? st_->pos->find(code) : nullptr;
   if (!sec && st_->fills)
     sec = st_->fills->by_code.find(code);
-  assert(sec);
-  const live::OrderReq o{*sec, side, credit, 0, 0, size};
-  const uint64_t id = open_job(*c_, o, strf("%gW", size / 1e4));
-  if (!id)
-    return;
-  std::thread([c = c_, id, o, mode = cfg_.px] {
-    live::Watch w(*c->broker);
-    exec(*c, id, o, mode);
-  }).detach();
+  std::optional<live::Sec> buy;
+  if (!sec) {
+    Lock lk(c_->mu);
+    const auto i = std::find_if(c_->buy.begin(), c_->buy.end(), [&](const live::Sec &s) { return s.code == code; });
+    if (i != c_->buy.end())
+      buy = *i;
+  }
+  assert(sec || (buy && side == live::kBuy));
+  const live::OrderReq o{sec ? *sec : *buy, side, credit, 0, 0, size};
+  start(c_, "下单", [o, mode = cfg_.px](Core &c) {
+    note(c, "order", {{"order", {{"code", o.sec.code}, {"name", o.sec.name}, {"side", o.side}, {"credit", live::credit_name(o.credit)}, {"qty", 0}, {"size", o.size}, {"mode", live::kPxModeNames[static_cast<int>(mode)]}}}});
+    exec(c, o, strf("%gW", o.size / 1e4), mode, "");
+  });
 }
 
 void LiveHub::pull() {

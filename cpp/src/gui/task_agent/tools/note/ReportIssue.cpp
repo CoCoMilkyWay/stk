@@ -5,7 +5,7 @@ namespace GUI::Agent {
 
 using json = nlohmann::ordered_json;
 
-ToolOut ReportIssue(const Call &c, Seat &s) { return FileNote(c, s, std::make_shared<IssueNoteRes>()); }
+ToolOut ReportIssue(const Call &c, Seat &s) { return FileNote(c, s); }
 
 json SampleReportIssue(Feed &p) {
   static const char *kTypes[] = {"bug", "idea", "question"};

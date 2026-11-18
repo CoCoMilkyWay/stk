@@ -5,18 +5,17 @@
 // =============================================================================
 //   agent 会话层与界面只认这里的值类型, 不碰 FactorRow / EvalStat / SearchResult / LimitOrderBook:
 //     catalog   无状态作用域目录 (池 / 因子层 / 持有期 / GPU 可用 / 就绪判据 / 落盘键)
-//     Lab       单线程 Async 工作台: send(Call, LabFn) → GUI 线程备好台面 Bay 的值 → worker 跑 LabFn → ToolOut (零跨线程平面拷贝)
-//                 观察 = 分块流式全核归约 / 逐笔重放; 研报 = 研报库检索; eval_factor = Search + 单文件 Run + 无显著代表点分层,
-//                 其评估产物在 poll 收下即重扫候选 (result 按文件取)
-//   异步接口与左翼 Chat 完全一致: send / cancel / busy / poll / live
+//     Lab       候选四拍 (stage / absorb / adopt / discard) + 单线程 Async 工作台:
+//                 send(Tool, LabTask) → 共享不可变快照 ViewEnv (零跨线程拷贝) → worker 跑 LabTask → LabOut
+//   异步五件与左翼 Chat 逐字同构: Tick / send / cancel / busy / poll / live
 // =============================================================================
 
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Enum.hpp"
 #include "gui/task_agent/Tools.hpp"
 
-#include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -34,7 +33,7 @@ namespace GUI::Agent {
 enum class Src : uint8_t { Bar,
                            Lob };
 struct SrcDef {
-  const char *name;
+  const char *id;
 };
 inline constexpr SrcDef kSrcs[] = {{"bar"}, {"lob"}};
 AGENT_ROWS(Src, kSrcs, Lob);
@@ -201,7 +200,7 @@ std::vector<Choice> pools();
 struct PoolRow {
   int key = 0;
   std::string name, name_cn;
-  std::array<bool, std::size(kSrcs)> built{};
+  Per<Src, bool> built{};
   size_t factors = 0;
 };
 std::vector<PoolRow> pool_rows(int level);
@@ -217,7 +216,7 @@ std::string label(const Scope &sc);
 disk::Key key(const Scope &sc, bool test);
 } // namespace catalog
 
-// ---- 右翼异步工作台 Lab (与左翼 Chat 完全对仗: send / cancel / busy / poll / live) ----
+// ---- 右翼异步工作台 Lab (与左翼 Chat 完全对仗: Tick / send / cancel / busy / poll / live) ----
 enum class LabStep : uint8_t { Search,
                                Run,
                                Look,
@@ -229,16 +228,24 @@ struct LabStepDef {
 inline constexpr LabStepDef kLabSteps[] = {{"Search"}, {"Run"}, {"观察"}, {"查研报"}, {"完"}};
 AGENT_ROWS(LabStep, kLabSteps, End);
 
+struct Bay;
+using LabTask = std::function<ToolOut(Bay &)>;
+
 struct LabLive {
   double frac = 0.0;
 };
-struct LabTick {
-  LabStep step;
-  std::optional<ToolOut> out; // End 才有; End 而空 = 已取消
+struct LabOut {
+  bool cancelled = false;
+  ToolOut out;
 };
 
 class Lab {
 public:
+  struct Tick {
+    LabStep step;
+    LabOut out{};
+  };
+
   Lab();
   ~Lab();
   Lab(const Lab &) = delete;
@@ -254,17 +261,20 @@ public:
   std::string search_log(const std::string &file) const;
 
   Staged stage(Cand c, std::string_view hyp_title);
+  const Result &absorb(const std::string &file, bool ok, const std::string &err, Surface surf, std::string rep);
   Adopted adopt(std::string name, const Gate &g, bool dry); // dry = 只查门槛不拷进正式库 (工作台; 自检会话恒不拷)
   void discard(const std::string &file);
 
-  void send(Call call, LabFn fn, std::string file, bool gpu); // file = eval_factor 落的候选文件 (其余空), gpu = 它的回测上 GPU
+  void send(Tool tool, LabTask task);
   void cancel();
   bool busy() const;
-  std::optional<LabTick> poll();
+  std::optional<Tick> poll();
   void live(LabLive &dst) const;
 
-private:
   struct Impl;
+  const Impl &impl() const { return *impl_; }
+
+private:
   std::unique_ptr<Impl> impl_;
 };
 

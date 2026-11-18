@@ -1,32 +1,22 @@
 #pragma once
 
 // =============================================================================
-// Mine — 挖掘会话状态机、工具分派、计数与存档/可读日志 (无 ImGui, 界面见 task_agent/TaskAgent)
+// Mine — 挖掘会话状态机、计数与存档/可读日志 (基于双翼 Chat ⇄ Rig 对仗底座; 无 ImGui, 界面见 TaskAgent)
 // =============================================================================
 //   双翼对仗:
 //     左翼 Chat (问大模型): send(ChatReq) → Think / Write / Restart / End(Reply)
-//     右翼 Lab  (问数据核): send(Call, LabFn) → Search / Run / Look / Docs / End(ToolOut)
-//   调用的一生走 Kit (Begin → Enter … → Settle / Answer / Abort → End, 与工作台同一份); Begin 返回这一步落在谁手上 (Exec):
-//     Sync   GUI 线程当场完成 (查叶 / 列表 / 全局记录 / 假设与判定 / 提交 / finish), 接着下一个
-//     Lab    已投右翼 worker (eval_factor 先核假设并落候选文件), 等 End
-//     Human  进 Choose 等研究员点选答案 (ask_human)
-//   唯一真相: timeline (std::vector<Round>); st = StateOf(timeline) 增量 Apply, 上下文 TurnsOf(timeline) 按需纯函数折叠
-//   会话目录 (output/agent/<main|test>/sessions/<池>/<层>/<持有期>/chat/<时刻>/):
-//     system.md              系统提示
-//     log.md                 肉眼直接阅读的连续 Markdown 研究日志 (思考折叠块 + 调用清单 + 各工具表格与火花线; 回退时自动重整)
-//     report.md              停下总结报告 (入库 / 假设全貌 / 全局记录)
-//     session.json / brief.json  原子替换的会话存档与列表摘要
+//     右翼 Lab  (问数据核): send(Tool, LabTask) → Search / Run / Look / Docs / End(LabOut)
+//   调用执行统一走 Rig (open_act → step_act / settle_act / answer_act / abort_act, 与工作台 Bench 同一底座)
+//   唯一真相: timeline (std::vector<Round>); st (Board + Tally + Flags + staged + adopted) 增量维护, 上下文 TurnsOf 纯函数折叠
 // =============================================================================
 
 #include "gui/task_agent/Bridge.hpp"
 #include "gui/task_agent/Llm.hpp"
 #include "gui/task_agent/Notes.hpp"
-#include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Tools.hpp"
 #include "gui/task_agent/tools/Kit.hpp"
 #include "nlohmann/json.hpp"
 
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -44,34 +34,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Open, all, on)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, years, leaves, ops)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, mono, ric)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Budget, rounds, minutes, ktokens)
-
-// ---- 计数与流程旗 (时间线的纯函数) ----
-struct Tally {
-  std::array<int, kToolCount> calls{}, fails{};
-  std::array<int, kNum<Verdict>> verdicts{};
-  int adopted = 0;
-  double llm_s = 0.0, act_s = 0.0;
-  llm::Usage usage;
-
-  int n(Tool t) const { return calls[static_cast<size_t>(t)]; }
-  int n(Verdict v) const { return verdicts[static_cast<size_t>(v)]; }
-  int n(Exec e) const;
-  int n(Cat c) const;
-  int docs() const { return n(Tool::SearchDocs) + n(Tool::SearchFactors) + n(Tool::ReadDoc); }
-  int all() const;
-  int failed(Tool t) const { return fails[static_cast<size_t>(t)]; }
-  int failed(Cat c) const;
-  int failed() const;
-  int staged() const { return n(Tool::EvalFactor) - n(Verdict::Unstaged); }
-};
-Tally TallyOf(Rounds rs, double now);
-
-struct Flags {
-  bool evaled = false; // 末个有调用的轮里有落了文件的回测 (下一条回复不能回测)
-  bool asked = false;  // 已有 ask_human 调用 (整段会话只问一次)
-  bool done = false;   // 末轮的 finish 已做完: 本条做完即结束会话
-};
-Flags FlagsOf(Rounds rs);
 
 // ---- 会话目录日志器 (只 GUI 线程写) ----
 class Journal {
@@ -95,8 +57,8 @@ inline constexpr const char *kSessionFile = "session.json";
 inline constexpr const char *kBriefFile = "brief.json";
 inline constexpr const char *kLogFile = "log.md";
 
-// ---- 会话台面与状态机 ----
-struct Desk {
+// ---- 会话台面与状态机 (Desk : Rig) ----
+struct Desk : Rig {
   struct Setup {
     Scope sc;
     Gate gate;
@@ -111,22 +73,16 @@ struct Desk {
   };
 
   Chat chat;
-  Lab lab;
   Setup setup;
   Leg leg;
   std::string system;
   std::shared_ptr<const std::string> system_ptr;
   Journal log;
-  Notes notes;
-  std::vector<Round> timeline;
-  State st;
   std::string memo;
   std::string reason, report;
 
   double now() const;
-  int round() const { return static_cast<int>(timeline.size()); }
-  Tally tally() const { return TallyOf(timeline, now()); }
-  Flags flags() const { return FlagsOf(timeline); }
+  Tally tally() const { return Rig::tally(now()); }
 
 protected:
   std::chrono::steady_clock::time_point t0;
@@ -182,20 +138,17 @@ private:
   void pause(std::string why);
 
   void on_chat(Chat::Tick t);
-  void on_lab(LabTick t);
+  void on_lab(Lab::Tick t);
   void replied(llm::Reply r);
 
   void step();
-  Seat seat();
+  Seat mine_seat();
   void next();
-  void ended(Act &a);
-  void abort(Act &a);
+  void log_act(size_t i);
 
   std::vector<std::string> staged_from(int k) const;
   void discard(int k);
   void unsend();
-  void restate();
-  void flush();
   std::string over() const;
   std::string rule_miss(const std::vector<Call> &cs) const;
   std::string make_log_head() const;
@@ -205,7 +158,6 @@ private:
   bool stop_ = false;
   size_t cur_ = 0;
   int retries_ = 0;
-  std::vector<std::string> doomed_;
   struct From {
     int round = 0;
     double t = 0.0;

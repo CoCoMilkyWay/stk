@@ -233,7 +233,7 @@ ToolOut ViewBook(const Call &c, Bay &bay) {
   std::vector<std::pair<float, float>> profile;
 
   LimitOrderBook &lob = R.lob;
-  lob.bind(&R.tick_data, asset_id, env.exchange);
+  lob.bind(&R.tick_data, asset_id, env.exchanges[asset_id]);
   lob.begin_frame(view);
   constexpr size_t N = L2::LOB_DEPTH;
   const LOB_Feature &lf = R.tick_data.lob;

@@ -11,9 +11,11 @@ using json = nlohmann::ordered_json;
 namespace {
 
 bool matches(const Note &x, const std::vector<std::string> &ws) {
+  if (ws.empty())
+    return true;
   std::string hay;
   for (const auto &[k, v] : x.fields.items())
-    hay += v.get<std::string>() + '\n';
+    hay += v.get_ref<const std::string &>() + '\n';
   hay = text::lower(hay);
   return std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return text::has_word(hay, w); });
 }
@@ -88,8 +90,8 @@ ToolOut ListNotes(const Call &c, Seat &s) {
     R.groups.push_back(std::move(g));
   };
   if (R.kind.empty())
-    for (size_t i = 0; i < kNum<NoteKind>; ++i)
-      group(static_cast<NoteKind>(i));
+    for (const NoteKind k : kVals<NoteKind>)
+      group(k);
   else
     group(IdOf<NoteKind>(R.kind));
   return Done(std::move(res));

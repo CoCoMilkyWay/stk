@@ -27,6 +27,8 @@ namespace {
 
 constexpr const char *kGcc = "i686-w64-mingw32-gcc";
 constexpr const char *kSysroot = "/usr/i686-w64-mingw32";
+constexpr std::string_view kBusy = "err target thread busy (timeout)"; // shim.c in_thread: 界面线程 kBusyWait 秒没接
+constexpr double kBusyWait = 3;
 
 fs::path src_dir() { return disk::root() / "cpp/src/live/tdx/win32"; }
 fs::path out_dir() { return disk::ensure(disk::RunLiveTdxShim); }
@@ -196,27 +198,33 @@ void ensure(double timeout) {
 std::vector<nlohmann::json> call(const std::string &line, double timeout) {
   const std::string cmd = line.substr(0, line.find(' '));
   const Clock::time_point t0 = Clock::now();
-  const int s = open_to(line, cmd, timeout);
+  const auto left = [&] { return timeout - std::chrono::duration<double>(Clock::now() - t0).count(); };
   std::string buf;
-  for (char tmp[65536];;) {
-    const ssize_t k = ::recv(s, tmp, sizeof tmp, 0);
-    if (k > 0) {
-      buf.append(tmp, static_cast<size_t>(k));
-      continue;
-    }
-    if (k < 0) {
-      ::close(s);
-      fail(strf("%s: %gs 内没应答 (客户端卡着?)", cmd.c_str(), timeout));
-    }
-    break;
-  }
-  ::close(s);
   std::vector<std::string_view> lines;
-  for (std::string_view v = buf; !v.empty();) {
-    const size_t e = v.find('\n');
-    lines.push_back(chomp(v.substr(0, e)));
-    v = e == std::string_view::npos ? std::string_view{} : v.substr(e + 1);
-  }
+  // 经界面线程的命令 shim 里只等 kBusyWait 秒即回 busy: 界面线程卡着 (查大表) 而 timeout 没到即再问
+  do {
+    const int s = open_to(line, cmd, std::max(left(), 0.1));
+    buf.clear();
+    for (char tmp[65536];;) {
+      const ssize_t k = ::recv(s, tmp, sizeof tmp, 0);
+      if (k > 0) {
+        buf.append(tmp, static_cast<size_t>(k));
+        continue;
+      }
+      if (k < 0) {
+        ::close(s);
+        fail(strf("%s: %gs 内没应答 (客户端卡着?)", cmd.c_str(), timeout));
+      }
+      break;
+    }
+    ::close(s);
+    lines.clear();
+    for (std::string_view v = buf; !v.empty();) {
+      const size_t e = v.find('\n');
+      lines.push_back(chomp(v.substr(0, e)));
+      v = e == std::string_view::npos ? std::string_view{} : v.substr(e + 1);
+    }
+  } while (!lines.empty() && lines.back() == kBusy && left() > kBusyWait);
   if (lines.empty() || lines.back() != "ok")
     fail(cmd + ": " + (lines.empty() ? std::string("连接被关, 无应答") : std::string(lines.back())));
   std::vector<nlohmann::json> out;

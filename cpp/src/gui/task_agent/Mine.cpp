@@ -2,16 +2,17 @@
 #include "gui/task_agent/Mine.hpp"
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Config.hpp"
+#include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Misc.hpp"
+#include "gui/task_agent/tools/Trial.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
-#include <numeric>
 #include <sstream>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace GUI::Agent {
@@ -36,106 +37,38 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Pick, on, other, text)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Setup, sc, gate, ask, test, remark)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Leg, llm, gpu, budget)
 
-void to_json(json &j, const Trial &k) {
-  j = {{"cand", k.st.cand}, {"file", k.st.file}, {"error", k.st.res.error}, {"search", k.search}, {"run", k.run}};
-}
-void from_json(const json &j, Trial &k) {
-  j.at("cand").get_to(k.st.cand);
-  j.at("file").get_to(k.st.file);
-  j.at("search").get_to(k.search);
-  j.at("run").get_to(k.run);
-  k.st.res = k.st.ok() ? Result{.error = "候选文件已不在", .verdict = Verdict::Pending}
-                       : Result{.error = j.at("error").get<std::string>(), .verdict = Verdict::Unstaged};
-}
-
 void to_json(json &j, const Act &a) {
-  j = {{"tool", def(a.call.tool).name}, {"args", a.call.args}, {"span", a.span}, {"out", a.out.text}, {"gist", a.out.gist}, {"ok", a.out.ok}};
-  if (const Trial *k = std::get_if<Trial>(&a.extra))
-    j["trial"] = *k;
-  if (const Asked *q = std::get_if<Asked>(&a.extra))
-    j["asked"] = {{"picks", q->picks}, {"note", q->note}};
+  j = {{"tool", a.call.tool}, {"args", a.call.args}, {"span", a.span}, {"out", a.out.text}, {"gist", a.out.gist}, {"ok", a.out.ok}};
+  if (const TrialRes *k = AsTrial(a))
+    j["trial"] = {{"cand", k->st.cand}, {"file", k->st.file}, {"error", k->st.res.error}, {"search", k->search}, {"run", k->run}};
+  if (const AskRes *q = AsAsk(a))
+    j["asked"] = {{"picks", q->asked.picks}, {"note", q->asked.note}};
 }
 void from_json(const json &j, Act &a) {
-  a = Act{.call = {ToolOf(j.at("tool").get<std::string>()), j.at("args")},
+  a = Act{.call = {j.at("tool").get<Tool>(), j.at("args")},
           .span = j.at("span").get<Span>(),
           .out = {.ok = j.at("ok").get<bool>(), .text = j.at("out").get<std::string>(), .gist = j.value("gist", std::string())}};
-  if (j.contains("trial"))
-    a.extra = j.at("trial").get<Trial>();
+  if (j.contains("trial")) {
+    const json &t = j.at("trial");
+    auto k = std::make_shared<TrialRes>();
+    t.at("cand").get_to(k->st.cand);
+    t.at("file").get_to(k->st.file);
+    t.at("search").get_to(k->search);
+    t.at("run").get_to(k->run);
+    k->st.res = k->st.ok() ? Result{.error = "候选文件已不在", .verdict = Verdict::Pending}
+                           : Result{.error = t.at("error").get<std::string>(), .verdict = Verdict::Unstaged};
+    a.out.res = std::move(k);
+  }
   if (j.contains("asked")) {
-    Asked &q = a.extra.emplace<Asked>(QuestionsOf(a.call));
-    j.at("asked").at("picks").get_to(q.picks);
-    j.at("asked").at("note").get_to(q.note);
-    assert(q.picks.size() == q.qs.size());
+    auto q = std::make_shared<AskRes>(QuestionsOf(a.call));
+    j.at("asked").at("picks").get_to(q->asked.picks);
+    j.at("asked").at("note").get_to(q->asked.note);
+    assert(q->asked.picks.size() == q->asked.qs.size());
+    a.out.res = std::move(q);
   }
 }
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Round, kind, user, memo, span, think, write, reply, error, acts)
-
-// =============================================================================
-// 计数 Tally 与流程旗 Flags
-// =============================================================================
-int Tally::n(Exec e) const {
-  int s = 0;
-  for (const ToolDef &d : Tools())
-    s += d.exec() == e ? n(d.id) : 0;
-  return s;
-}
-
-int Tally::n(Cat c) const {
-  int s = 0;
-  for (const ToolDef &d : Tools())
-    s += d.cat() == c ? n(d.id) : 0;
-  return s;
-}
-
-int Tally::failed(Cat c) const {
-  int s = 0;
-  for (const ToolDef &d : Tools())
-    s += d.cat() == c ? failed(d.id) : 0;
-  return s;
-}
-
-int Tally::all() const { return std::accumulate(calls.begin(), calls.end(), 0); }
-int Tally::failed() const { return std::accumulate(fails.begin(), fails.end(), 0); }
-
-Tally TallyOf(Rounds rs, double now) {
-  Tally t;
-  for (const Round &rd : rs) {
-    t.llm_s += rd.span.len(now), t.usage += rd.reply.usage;
-    for (const Act &a : rd.acts) {
-      if (!a.span.began())
-        continue;
-      const size_t k = static_cast<size_t>(a.call.tool);
-      ++t.calls[k], t.act_s += a.span.len(now);
-      if (!a.span.ended())
-        continue;
-      t.fails[k] += !a.out.ok;
-      if (const Trial *x = std::get_if<Trial>(&a.extra))
-        ++t.verdicts[static_cast<size_t>(x->st.res.verdict)];
-      t.adopted += a.call.tool == Tool::SubmitFactor && a.out.ok;
-    }
-  }
-  return t;
-}
-
-Flags FlagsOf(Rounds rs) {
-  const auto asks = [](const Act &a) { return a.call.tool == Tool::AskHuman; };
-  const auto staged = [](const Act &a) {
-    const Trial *k = std::get_if<Trial>(&a.extra);
-    return k && k->st.ok();
-  };
-  const auto finished = [](const Act &a) { return a.call.tool == Tool::Finish && a.span.ended(); };
-  Flags f;
-  const Round *last = nullptr;
-  for (const Round &rd : rs) {
-    f.asked = f.asked || std::ranges::any_of(rd.acts, asks);
-    if (!rd.acts.empty())
-      last = &rd;
-  }
-  f.evaled = last && std::ranges::any_of(last->acts, staged);
-  f.done = !rs.empty() && std::ranges::any_of(rs.back().acts, finished);
-  return f;
-}
 
 // =============================================================================
 // 可读研究日志 log.md 与会话目录 Journal
@@ -350,9 +283,12 @@ void Mine::load(const SharedData &data, const std::string &dir) {
   const std::vector<Result> &rs = lab.results();
   for (Round &rd : timeline)
     for (Act &a : rd.acts)
-      if (Trial *k = std::get_if<Trial>(&a.extra); k && k->st.ok())
-        if (const auto it = std::ranges::find(rs, k->st.file, &Result::file); it != rs.end())
-          k->st.res = *it;
+      if (TrialRes *k = AsTrial(a)) {
+        k->gate = setup.gate;
+        if (k->st.ok())
+          if (const auto it = std::ranges::find(rs, k->st.file, &Result::file); it != rs.end())
+            k->st.res = *it;
+      }
   cur_ = j.at("cur").get<size_t>();
   memo = j.at("memo").get<std::string>();
   reason = j.at("reason").get<std::string>();
@@ -392,6 +328,7 @@ void Mine::resume(const SharedData &data, Leg l) {
   switch (cont()) {
   case Cont::Resend:
     unsend();
+    restate();
     [[fallthrough]];
   case Cont::Send:
     phase_ = Phase::Think;
@@ -410,9 +347,8 @@ void Mine::resume(const SharedData &data, Leg l) {
 
 void Mine::start() {
   assert(phase_ == Phase::Choose);
-  Act &a = timeline.back().acts[cur_];
-  Answer(a);
-  ended(a);
+  answer_act(cur_, now());
+  log_act(cur_++);
   step();
 }
 
@@ -426,14 +362,17 @@ void Mine::stop() {
 void Mine::cancel() {
   assert(live());
   Round &rd = timeline.back();
+  const double t = now();
   if (phase_ == Phase::Think) {
-    const double t = now();
     rd.think.end(t), rd.write.end(t), rd.span.end(t);
     rd.error = "按 Cancel 作废了在收的回复";
+    CloseReply(st, rd);
     log.append_log(fmt_round_reply(round(), rd));
   }
-  if (phase_ == Phase::Act && cur_ < rd.acts.size() && rd.acts[cur_].span.running())
-    abort(rd.acts[cur_]);
+  if (phase_ == Phase::Act && cur_ < rd.acts.size() && rd.acts[cur_].span.running()) {
+    abort_act(cur_, t);
+    log_act(cur_++);
+  }
   pause("按 Cancel");
 }
 
@@ -514,13 +453,11 @@ void Mine::unsend() {
   rd = Round{.kind = rd.kind, .user = std::move(rd.user), .memo = std::move(rd.memo)};
 }
 
-void Mine::restate() { st = StateOf(timeline); }
-
 std::vector<std::string> Mine::staged_from(int k) const {
   std::vector<std::string> out;
   for (size_t i = static_cast<size_t>(k) - 1; i < timeline.size(); ++i)
     for (const Act &a : timeline[i].acts)
-      if (const Trial *t = std::get_if<Trial>(&a.extra); t && t->st.ok())
+      if (const TrialRes *t = AsTrial(a); t && t->st.ok())
         out.push_back(t->st.file);
   return out;
 }
@@ -529,13 +466,6 @@ void Mine::discard(int k) {
   for (const std::string &f : staged_from(k))
     lab.discard(f);
   notes.drop(log.dir(), k);
-}
-
-void Mine::flush() {
-  assert(!lab.busy());
-  for (const std::string &f : doomed_)
-    lab.discard(f);
-  doomed_.clear();
 }
 
 Mine::Cont Mine::cont() const {
@@ -572,10 +502,9 @@ std::string Mine::hint() const {
 void Mine::update() {
   while (std::optional<Chat::Tick> t = chat.poll())
     on_chat(std::move(*t));
-  while (std::optional<LabTick> t = lab.poll())
+  while (std::optional<Lab::Tick> t = lab.poll())
     on_lab(std::move(*t));
-  if (!doomed_.empty() && !lab.busy())
-    flush();
+  flush();
 }
 
 void Mine::on_chat(Chat::Tick t) {
@@ -600,16 +529,16 @@ void Mine::on_chat(Chat::Tick t) {
   }
 }
 
-void Mine::on_lab(LabTick t) {
+void Mine::on_lab(Lab::Tick t) {
   if (phase_ != Phase::Act)
     return;
-  Act &a = timeline.back().acts[cur_];
   if (t.step != LabStep::End)
-    return Enter(a, t.step, now());
-  assert(t.out && "取消的不收 (按 Cancel 已当场收作取消)");
-  Seat s = seat();
-  Settle(a, std::move(*t.out), s);
-  ended(a);
+    return step_act(cur_, t.step, now());
+  if (t.out.cancelled)
+    return;
+  Seat s = mine_seat();
+  settle_act(cur_, std::move(t.out.out), s, now());
+  log_act(cur_++);
   save();
   step();
 }
@@ -632,6 +561,7 @@ void Mine::replied(llm::Reply r) {
   const llm::Reply &x = rd.reply;
   if (!x.ok()) {
     rd.error = "回复失败 (" + std::string(def(x.end).id) + (x.error.empty() ? "" : ": " + x.error) + ")";
+    CloseReply(st, rd);
     log.append_log(fmt_round_reply(round(), rd));
     return pause(rd.error);
   }
@@ -639,6 +569,7 @@ void Mine::replied(llm::Reply r) {
   std::string error;
   if (!ParseCalls(x.text, setup.ask && !flags().asked, cs, error) || !(error = rule_miss(cs)).empty()) {
     rd.error = error;
+    CloseReply(st, rd);
     log.append_log(fmt_round_reply(round(), rd));
     if (++retries_ >= kMaxRetries)
       return pause("连续 " + std::to_string(kMaxRetries) + " 条回复不合协议");
@@ -649,24 +580,24 @@ void Mine::replied(llm::Reply r) {
   retries_ = 0;
   for (Call &c : cs)
     rd.acts.push_back({.call = std::move(c)});
+  CloseReply(st, rd);
   log.append_log(fmt_round_reply(round(), rd));
   cur_ = 0;
   save();
   step();
 }
 
-Seat Mine::seat() { return {lab, notes, setup.gate, st, timeline, {round(), static_cast<int>(cur_) + 1}, catalog::label(setup.sc), log.dir(), false, leg.gpu}; }
+Seat Mine::mine_seat() { return seat(cur_, setup.gate, log.dir(), false, leg.gpu); }
 
 void Mine::step() {
   Round &rd = timeline.back();
   while (cur_ < rd.acts.size()) {
     if (!go(Phase::Act))
       return;
-    Act &a = rd.acts[cur_];
-    Seat s = seat();
-    const Exec at = Begin(a, s, now());
+    Seat s = mine_seat();
+    const Exec at = open_act(cur_, s, now());
     if (at == Exec::Sync) {
-      ended(a);
+      log_act(cur_++);
       continue;
     }
     if (at == Exec::Human)
@@ -688,18 +619,7 @@ void Mine::next() {
   post(RoundMessage(rd.acts, round(), st.board, flags().evaled, setup.test));
 }
 
-void Mine::ended(Act &a) {
-  const Ref at{round(), static_cast<int>(cur_) + 1};
-  End(a, st, at, now());
-  log.append_log(fmt_act_done(at, a));
-  ++cur_;
-}
-
-void Mine::abort(Act &a) {
-  if (std::string file = Abort(a); !file.empty())
-    doomed_.push_back(std::move(file));
-  ended(a);
-}
+void Mine::log_act(size_t i) { log.append_log(fmt_act_done({round(), static_cast<int>(i) + 1}, timeline.back().acts[i])); }
 
 bool Mine::go(Phase next_ph) {
   if (stop_) {
@@ -712,6 +632,7 @@ bool Mine::go(Phase next_ph) {
 
 void Mine::post(Message m) {
   timeline.push_back({.kind = m.kind, .user = std::move(m.text)});
+  OpenRound(st);
   send();
 }
 
@@ -773,8 +694,7 @@ std::string Mine::report_of(const std::string &why) const {
   r += "## 未入库的提交 (" + std::to_string(c.n(Tool::SubmitFactor) - c.adopted) + ")\n\n" + (out.empty() ? "(无)\n" : out);
   r += "\n## 假设 (" + std::to_string(st.board.all().size()) + ")\n" + st.board.report();
   const std::vector<const Note *> filed = notes.filed(log.dir());
-  for (size_t i = 0; i < kNum<NoteKind>; ++i) {
-    const NoteKind k = static_cast<NoteKind>(i);
+  for (const NoteKind k : kVals<NoteKind>) {
     std::string s;
     int n = 0;
     for (const Note *x : filed)

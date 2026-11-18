@@ -4,7 +4,10 @@
 #include "gui/Tasks.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Mine.hpp"
+#include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Misc.hpp"
+#include "gui/task_agent/tools/Trial.hpp"
 #include "gui/task_agent/ui/Bench.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
@@ -24,13 +27,11 @@
 #include <memory>
 #include <optional>
 #include <set>
-#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace GUI::Agent {
@@ -310,7 +311,7 @@ const Act *acting(const Mine &m) {
   const std::vector<Act> &as = m.timeline.back().acts;
   return m.acting() < as.size() ? &as[m.acting()] : nullptr;
 }
-const char *step_name(const Trial &k) { return k.run.began() ? "Run" : "Search"; }
+const char *step_name(const TrialRes &k) { return k.run.began() ? "Run" : "Search"; }
 
 // ---- 会话行: New / Test / 载入 / 继续 / 交答案 / Stop / Cancel / 关闭 ----
 void load_session(const SharedData &data, Ui &s, const Saved &x) {
@@ -459,11 +460,7 @@ void session_row(const SharedData &data, Ui &s) {
 }
 
 // ---- 工具用量条: 按类拼接, 类内一工具一段 (同色相深浅相间), 段宽 = 次数占比; 类段够宽写类名与占比, 悬浮看各类各工具的次数 / 占比 / 失败数 (表格) ----
-// 类色 (下标 = Cat)
-constexpr ImVec4 kCatCols[] = {{0.35f, 0.78f, 0.45f, 1.0f}, {0.85f, 0.80f, 0.35f, 1.0f}, {0.95f, 0.62f, 0.25f, 1.0f}, {0.38f, 0.62f, 0.95f, 1.0f}, {0.72f, 0.52f, 0.92f, 1.0f}, {0.58f, 0.58f, 0.58f, 1.0f}};
-static_assert(std::size(kCatCols) == kNum<Cat>);
-size_t cat_of(Tool t) { return static_cast<size_t>(def(t).cat()); }
-const char *cat_cn(size_t k) { return def(static_cast<Cat>(k)).cn; }
+constexpr Per<Cat, ImVec4> kCatCols{{{{0.35f, 0.78f, 0.45f, 1.0f}, {0.85f, 0.80f, 0.35f, 1.0f}, {0.95f, 0.62f, 0.25f, 1.0f}, {0.38f, 0.62f, 0.95f, 1.0f}, {0.72f, 0.52f, 0.92f, 1.0f}, {0.58f, 0.58f, 0.58f, 1.0f}}}};
 
 ImU32 shade(ImVec4 c, int i) {
   const float f = 1.0f - 0.2f * static_cast<float>(i % 3);
@@ -483,29 +480,29 @@ void tools_bar(const Tally &c) {
       ImGui::SetTooltip("还没有调用");
     return;
   }
-  std::array<int, kNum<Cat>> per{};
-  for (size_t k = 0; k < kNum<Cat>; ++k)
-    per[k] = c.n(static_cast<Cat>(k));
+  Per<Cat, int> per{};
+  for (const Cat k : kVals<Cat>)
+    per[k] = c.n(k);
   const float mx = ImGui::GetIO().MousePos.x;
   const auto pct = [&](int n) { return 100.0 * n / all; };
-  int hit = -1;
+  std::optional<Tool> hit;
   float x = p0.x;
-  for (size_t k = 0; k < kNum<Cat>; ++k) {
+  for (const Cat k : kVals<Cat>) {
     if (per[k] == 0)
       continue;
     const float k0 = x;
     int i = 0;
-    for (size_t t = 0; t < kToolCount; ++t) {
-      if (cat_of(static_cast<Tool>(t)) != k || c.calls[t] == 0)
+    for (const Tool t : kVals<Tool>) {
+      if (def(t).cat != k || c.n(t) == 0)
         continue;
-      const float x1 = x + w * static_cast<float>(c.calls[t]) / static_cast<float>(all);
+      const float x1 = x + w * static_cast<float>(c.n(t)) / static_cast<float>(all);
       dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x1, p0.y + h), shade(kCatCols[k], i++));
       if (hovered && mx >= x && mx < x1)
-        hit = static_cast<int>(t);
+        hit = t;
       x = x1;
     }
     char label[32];
-    std::snprintf(label, sizeof(label), "%s %.0f%%", cat_cn(k), pct(per[k]));
+    std::snprintf(label, sizeof(label), "%s %.0f%%", def(k).cn, pct(per[k]));
     if (const float tw = ImGui::CalcTextSize(label).x; tw + 4.0f <= x - k0)
       dl->AddText(ImVec2((k0 + x - tw) * 0.5f, p0.y), IM_COL32(20, 20, 20, 255), label);
     if (k0 > p0.x)
@@ -520,7 +517,7 @@ void tools_bar(const Tally &c) {
       ImGui::TableSetupColumn(head);
     ImGui::TableHeadersRow();
     const ImVec4 bad = color(TaskStatus::Kind::Error), dim = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
-    const auto right = [](const ImVec4 &col, const char *s) { // 数字列右对齐
+    const auto right = [](const ImVec4 &col, const char *s) {
       ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetColumnWidth() - ImGui::CalcTextSize(s).x);
       ImGui::TextColored(col, "%s", s);
     };
@@ -534,16 +531,16 @@ void tools_bar(const Tally &c) {
       ImGui::TableNextColumn(), std::snprintf(b, sizeof(b), "%d", fail), right(fail ? bad : dim, b);
     };
     row(kColHead, "全部", "", all, c.failed());
-    for (size_t k = 0; k < kNum<Cat>; ++k) {
+    for (const Cat k : kVals<Cat>) {
       if (per[k] == 0)
         continue;
-      row(kCatCols[k], cat_cn(k), "", per[k], c.failed(static_cast<Cat>(k)));
-      for (size_t t = 0; t < kToolCount; ++t) {
-        if (cat_of(static_cast<Tool>(t)) != k || c.calls[t] == 0)
+      row(kCatCols[k], def(k).cn, "", per[k], c.failed(k));
+      for (const Tool t : kVals<Tool>) {
+        if (def(t).cat != k || c.n(t) == 0)
           continue;
-        const ToolDef &d = def(static_cast<Tool>(t));
-        const std::string name = std::string("  ") + d.name;
-        row(static_cast<int>(t) == hit ? kColHead : ImGui::GetStyleColorVec4(ImGuiCol_Text), name.c_str(), d.cn, c.calls[t], c.fails[t]);
+        const ToolMeta &m = def(t);
+        const std::string name = std::string("  ") + m.id;
+        row(hit == t ? kColHead : ImGui::GetStyleColorVec4(ImGuiCol_Text), name.c_str(), m.cn, c.n(t), c.failed(t));
       }
     }
     ImGui::EndTable();
@@ -553,17 +550,17 @@ void tools_bar(const Tally &c) {
 
 // 假设板一句: 个数 (各判定的个数) + 待判的
 std::string board_brief(const Board &b) {
-  std::array<int, kNum<Stance>> n{};
+  Per<Stance, int> n{};
   std::string owe;
   for (const Hyp &h : b.all()) {
-    ++n[static_cast<size_t>(h.stance)];
+    ++n[h.stance];
     if (h.pending)
       owe += (owe.empty() ? "" : " ") + h.id;
   }
   std::string s;
-  for (size_t i = 0; i < n.size(); ++i)
-    if (n[i])
-      s += (s.empty() ? "" : " · ") + std::string(kStances[i].cn) + " " + std::to_string(n[i]);
+  for (const Stance st : kVals<Stance>)
+    if (n[st])
+      s += (s.empty() ? "" : " · ") + std::string(def(st).cn) + " " + std::to_string(n[st]);
   return std::to_string(b.all().size()) + (s.empty() ? "" : " (" + s + ")") + (owe.empty() ? "" : " · 待判 " + owe);
 }
 
@@ -604,12 +601,12 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
       }
       what = "第 " + std::to_string(m.timeline.size()) + " 轮 · 调用 " + std::to_string(m.acting() + 1) + "/" + std::to_string(m.timeline.back().acts.size()) + " " +
              text::head(a->call.text(), kTopicChars);
-      if (const Trial *k = std::get_if<Trial>(&a->extra)) {
+      if (const TrialRes *k = AsTrial(*a)) {
         char pct[32];
         std::snprintf(pct, sizeof(pct), " %.0f%%", ll.frac * 100.0);
         what += std::string(" · ") + step_name(*k) + pct;
         frac = static_cast<float>(ll.frac);
-      } else if (def(a->call.tool).exec() == Exec::Lab) {
+      } else if (def(a->call.tool).exec == Exec::Lab) {
         char pct[32];
         std::snprintf(pct, sizeof(pct), " %.0f%%", ll.frac * 100.0);
         what += std::string(" · 执行中") + (ll.frac > 0.0 ? pct : "…");
@@ -697,7 +694,7 @@ constexpr size_t kCallChars = 96; // 调用一行在标题里的字数
 // eval_factor 调用: 标题 = 名 + 回测状态 / 用时 + 结局一行 (悬浮看表达式); 展开 = 表达式, 思路, 结局全文.
 // 默认收起; 定论那刻 (换节点 id, 开合重定) 未落 / BROKEN / 有参数组的自动展开
 void cand_block(const Mine &m, const Act &a, const std::string &ref, const LabLive &ll) {
-  const Trial &k = std::get<Trial>(a.extra);
+  const TrialRes &k = *AsTrial(a);
   const Staged &st = k.st;
   const Result &res = st.res;
   const bool done = a.span.ended();
@@ -709,7 +706,7 @@ void cand_block(const Mine &m, const Act &a, const std::string &ref, const LabLi
   if (!open && ImGui::IsItemHovered()) {
     ImGui::BeginTooltip();
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * 50.0f);
-    ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.55f, 1.0f), "%s", st.cand.expr.c_str());
+    ImGui::TextColored(kColExpr, "%s", st.cand.expr.c_str());
     if (!st.cand.note.empty())
       ImGui::TextDisabled("%s", st.cand.note.c_str());
     ImGui::PopTextWrapPos();
@@ -734,11 +731,15 @@ void cand_block(const Mine &m, const Act &a, const std::string &ref, const LabLi
     ImGui::TextDisabled("%s", m.live() ? "排队" : "未评");
   }
   if (open) {
-    wrapped(ImVec4(0.9f, 0.8f, 0.55f, 1.0f), st.cand.expr);
-    if (!st.cand.note.empty())
-      wrapped_dim(st.cand.note);
-    if (done)
-      wrapped(color(kind_of(m.st.adopted, res)), detail(res));
+    if (done) {
+      k.draw();
+      if (!a.out.text.empty())
+        fold("raw", ImGuiTreeNodeFlags_None, "原文 · " + chars(a.out.text), a.out.text, true, kBoxLines, false);
+    } else {
+      wrapped(kColExpr, st.cand.expr);
+      if (!st.cand.note.empty())
+        wrapped_dim(st.cand.note);
+    }
     ImGui::TreePop();
   }
 }
@@ -818,14 +819,20 @@ bool act_block(Ui &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
     state = " · 执行中… " + dur(a.span.len(t)), kind = TaskStatus::Kind::Busy;
   else
     state = m.live() ? " · 排队" : " · 未做", kind = TaskStatus::Kind::Muted;
-  if (std::holds_alternative<Trial>(a.extra)) {
+  if (AsTrial(a)) {
     cand_block(m, a, rt, s.lab_live);
-  } else if (Asked *q = std::get_if<Asked>(&a.extra)) {
+  } else if (AskRes *q = AsAsk(a)) {
     ImGui::PushStyleColor(ImGuiCol_Text, color(edit ? TaskStatus::Kind::Warn : TaskStatus::Kind::None));
-    const bool open = ImGui::TreeNodeEx("ask", kNode | ImGuiTreeNodeFlags_DefaultOpen, "%s 问研究员 · %zu 个问题%s", rt.c_str(), q->qs.size(), edit ? " · 等你答" : "");
+    const bool open = ImGui::TreeNodeEx("ask", kNode | ImGuiTreeNodeFlags_DefaultOpen, "%s 问研究员 · %zu 个问题%s", rt.c_str(), q->asked.qs.size(), edit ? " · 等你答" : "");
     ImGui::PopStyleColor();
     if (open) {
-      start = asked_block(*q, edit);
+      if (edit) {
+        start = edit_asked(q->asked);
+      } else {
+        q->draw();
+        if (!a.out.text.empty())
+          fold("raw", ImGuiTreeNodeFlags_None, "原文 · " + chars(a.out.text), a.out.text, true, kBoxLines, false);
+      }
       ImGui::TreePop();
     }
   } else if (a.call.tool == Tool::Hypothesize || a.call.tool == Tool::Judge) {
@@ -849,18 +856,38 @@ bool act_block(Ui &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
         ImGui::TextDisabled("证据");
         ImGui::SameLine();
         evidence_buttons(s, a.call.args.at("evidence"), 0);
-      } else {
-        wrapped(a.call.str("title"));
       }
-      wrapped_dim(fields_text(a.call.tool, a.call.args));
-      wrapped(color(a.out.ok ? TaskStatus::Kind::None : TaskStatus::Kind::Warn), a.out.text);
+      if (a.out.res) {
+        a.out.res->draw();
+        if (!a.out.text.empty())
+          fold("raw", ImGuiTreeNodeFlags_None, "原文 · " + chars(a.out.text), a.out.text, true, kBoxLines, false);
+      } else {
+        if (!judge)
+          wrapped(a.call.str("title"));
+        wrapped_dim(fields_text(a.call.tool, a.call.args));
+        wrapped(color(a.out.ok ? TaskStatus::Kind::None : TaskStatus::Kind::Warn), a.out.text);
+      }
       ImGui::TreePop();
     }
   } else {
-    const ToolDef &d = def(a.call.tool);
-    ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
-    fold("act", ImGuiTreeNodeFlags_None, rt + " " + d.cn + " · " + text::head(a.call.text(), kCallChars) + state, a.out.text, false, kBoxLines, false);
-    ImGui::PopStyleColor();
+    const ToolMeta &tm = def(a.call.tool);
+    const std::string label = rt + " " + tm.cn + " · " + text::head(a.call.text(), kCallChars) + state;
+    if (a.out.res) {
+      ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
+      const bool open = ImGui::TreeNodeEx("act", ImGuiTreeNodeFlags_None, "%s", label.c_str());
+      ImGui::PopStyleColor();
+      copy_button("复制##act", a.out.text);
+      if (open) {
+        a.out.res->draw();
+        if (!a.out.text.empty())
+          fold("raw", ImGuiTreeNodeFlags_None, "原文 · " + chars(a.out.text), a.out.text, true, kBoxLines, false);
+        ImGui::TreePop();
+      }
+    } else {
+      ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
+      fold("act", ImGuiTreeNodeFlags_None, label, a.out.text, false, kBoxLines, false);
+      ImGui::PopStyleColor();
+    }
   }
   ImGui::PopID();
   if (s.flash == ref && ImGui::GetTime() - s.flash_t < kFlashS) {
@@ -1024,7 +1051,7 @@ void summary_block(const Mine &m) {
   std::vector<const Result *> hits;
   for (const Round &rd : m.timeline)
     for (const Act &a : rd.acts)
-      if (const Trial *k = std::get_if<Trial>(&a.extra); k && k->st.res.verdict == Verdict::Weights)
+      if (const TrialRes *k = AsTrial(a); k && k->st.res.verdict == Verdict::Weights)
         hits.push_back(&k->st.res);
   std::stable_sort(hits.begin(), hits.end(), [&](const Result *a, const Result *b) {
     const bool ia = m.st.adopted.count(a->name) > 0, ib = m.st.adopted.count(b->name) > 0;
@@ -1343,9 +1370,9 @@ void notes_table(Ui &s, const View &v, NoteKind k) {
     ImGui::TableNextColumn();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4.0f);
     if (ImGui::BeginCombo("##state", def(x.state).cn)) {
-      for (size_t i = 0; i < kNum<NoteState>; ++i)
-        if (ImGui::Selectable(kNoteStates[i].cn, static_cast<size_t>(x.state) == i))
-          change = Change{x.id, static_cast<NoteState>(i), x.reply};
+      for (const NoteState st : kVals<NoteState>)
+        if (ImGui::Selectable(def(st).cn, x.state == st))
+          change = Change{x.id, st, x.reply};
       ImGui::EndCombo();
     }
     ImGui::SameLine();
@@ -1531,21 +1558,21 @@ void leaves_panel(Ui &s, const Context &c, bool locked) {
     return sc.has(l.src) && s.leaf_filter.PassFilter((l.code + ' ' + l.name_cn + ' ' + l.desc + ' ' + l.family).c_str());
   };
   std::vector<std::string> all, shown;
-  std::array<int, kNum<Src>> n{}, on{}; // [Src] 列出的叶 / 其中开放的
+  Per<Src, int> n{}, on{}; // [Src] 列出的叶 / 其中开放的
   for (const Leaf &l : c.all_leaves) {
     all.push_back(l.code);
     if (!pass(l))
       continue;
     shown.push_back(l.code);
-    ++n[static_cast<size_t>(l.src)];
-    on[static_cast<size_t>(l.src)] += open.has(l.code);
+    ++n[l.src];
+    on[l.src] += open.has(l.code);
   }
   std::optional<Open> next;
   pick_bar(open, all, shown, locked, next);
   std::string counts;
-  for (size_t i = 0; i < kNum<Src>; ++i)
-    if (n[i] > 0)
-      counts += (counts.empty() ? "" : " · ") + std::string(kSrcs[i].name) + " " + std::to_string(on[i]) + "/" + std::to_string(n[i]);
+  for (const Src src : kVals<Src>)
+    if (n[src] > 0)
+      counts += (counts.empty() ? "" : " · ") + std::string(def(src).id) + " " + std::to_string(on[src]) + "/" + std::to_string(n[src]);
   ImGui::SameLine();
   ImGui::TextDisabled("开放 / 列出: %s 个叶, 模板里写全名; 悬浮看公式", counts.c_str());
   if (begin_table("##leaves", {"开放", "叶", "中文名", "说明"})) {
@@ -1620,20 +1647,22 @@ void ops_panel(Ui &s, const Context &c, bool locked) {
 void tools_panel(Ui &s) {
   s.tool_filter.Draw("过滤##tool", 240);
   ImGui::SameLine();
-  ImGui::TextDisabled("%zu 个工具; 悬浮参数看类型与说明, 悬浮说明看返回", Tools().size());
+  ImGui::TextDisabled("%zu 个工具; 悬浮参数看类型与说明, 悬浮说明看返回", kNum<Tool>);
   if (!begin_table("##tools", {"工具", "中文名", "执行", "参数", "说明"}))
     return;
-  for (const ToolDef &d : Tools()) {
+  for (const Tool t : kVals<Tool>) {
+    const ToolMeta &m = def(t);
+    const ToolDoc &d = doc(t);
     const std::string desc = ToolText(d.desc);
-    if (!s.tool_filter.PassFilter((std::string(d.name) + ' ' + d.cn + ' ' + desc).c_str()))
+    if (!s.tool_filter.PassFilter((std::string(m.id) + ' ' + m.cn + ' ' + desc).c_str()))
       continue;
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(d.name);
+    ImGui::TextUnformatted(m.id);
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(d.cn);
+    ImGui::TextUnformatted(m.cn);
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(def(d.exec()).cn);
+    ImGui::TextUnformatted(def(m.exec).cn);
     ImGui::TableNextColumn();
     std::string keys, args;
     for (const ArgDef &a : d.args)
@@ -1642,7 +1671,7 @@ void tools_panel(Ui &s) {
     if (!args.empty())
       tip_long(args);
     ImGui::TableNextColumn();
-    wrapped(desc + (d.id == Tool::AskHuman ? " (只在可提问的会话里给)" : ""));
+    wrapped(desc + (t == Tool::AskHuman ? " (只在可提问的会话里给)" : ""));
     tip_long("返回: " + ToolText(d.out));
   }
   ImGui::EndTable();
@@ -1703,8 +1732,7 @@ void render_mine(SharedData &data, Ui &s) {
         results_table(s, v);
         ImGui::EndTabItem();
       }
-      for (size_t i = 0; i < kNum<NoteKind>; ++i) {
-        const NoteKind k = static_cast<NoteKind>(i);
+      for (const NoteKind k : kVals<NoteKind>) {
         const std::string label = std::string(def(k).cn) + " (" + std::to_string(v.notes.open(k)) + "/" + std::to_string(v.notes.of(k).size()) + ")###" + def(k).id;
         if (ImGui::BeginTabItem(label.c_str())) {
           notes_table(s, v, k);
@@ -1733,7 +1761,7 @@ void render_mine(SharedData &data, Ui &s) {
     ops_panel(s, v.ctx, m.held());
     ImGui::EndTabItem();
   }
-  const std::string tools = "工具 (" + std::to_string(Tools().size()) + ")###tools";
+  const std::string tools = "工具 (" + std::to_string(kNum<Tool>) + ")###tools";
   if (ImGui::BeginTabItem(tools.c_str())) {
     tools_panel(s);
     ImGui::EndTabItem();

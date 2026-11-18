@@ -30,7 +30,7 @@ void JudgeRes::draw() const {
     }
     ImGui::EndTable();
   }
-  for (const ArgDef &a : def(Tool::Judge).args) {
+  for (const ArgDef &a : doc(Tool::Judge).args) {
     const std::string_view k = a.key;
     if (k == "hyp" || k == "verdict" || k == "evidence" || !fields.contains(a.key))
       continue;

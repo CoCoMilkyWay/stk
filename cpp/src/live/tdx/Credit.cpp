@@ -16,6 +16,7 @@ const std::string kNormal = "正常";
 template <class S>
 auto full(const Report &r) {
   trace::Span span(S::kName);
+  r.step(S::kName);
   r.live(strf("直发查「%s」…", S::kName));
   auto t = tables::read<S>();
   r.log("rows", {{"tab", S::kName}, {"n", t.list.size()}});

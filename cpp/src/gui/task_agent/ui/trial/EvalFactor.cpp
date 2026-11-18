@@ -1,4 +1,5 @@
 // eval_factor 的展示: 候选 (模板 / 思路) + 结局 + 各权重表 + 最佳权重的 20 组与分年 + 参数曲面散点
+#include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
@@ -9,7 +10,6 @@ namespace GUI::Agent {
 using namespace ui;
 
 void TrialRes::draw() const {
-  const Staged &st = k.st;
   const Result &r = st.res;
   heading(st.cand.name + "  " + st.cand.name_cn);
   wrapped(kColExpr, st.cand.expr);

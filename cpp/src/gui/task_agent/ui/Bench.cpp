@@ -1,20 +1,23 @@
 // Bench — 见头文件
 #include "gui/task_agent/ui/Bench.hpp"
 #include "gui/task_agent/Mine.hpp"
+#include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Kit.hpp"
+#include "gui/task_agent/tools/Misc.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
 #include "imgui.h"
+#include "nlohmann/json.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <chrono>
 #include <optional>
 #include <random>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace GUI::Agent {
@@ -23,9 +26,7 @@ using namespace ui;
 using json = nlohmann::ordered_json;
 using Clock = std::chrono::steady_clock;
 
-struct Bench::Impl {
-  Lab lab;
-  Notes notes;
+struct Bench::Impl : Rig {
   std::mt19937_64 rng{std::random_device{}()};
   std::vector<catalog::PoolRow> pool_rows;
   // 快照: 一段存过的会话的前 k 轮 (空 = 空白)
@@ -33,13 +34,10 @@ struct Bench::Impl {
   std::string snap_dir, snap_stamp;
   std::vector<Round> snap;
   int snap_k = 0;
-  // 时间线 = 快照前 k 轮 + 工作台轮 (末轮); 假设板等照它折叠
-  std::vector<Round> timeline{Round{.kind = Msg::Round}};
-  State st;
   // 输入: 每个工具各一份
   Tool tool = Tool::ViewLayers;
-  std::array<json, kToolCount> args;
-  std::array<std::string, kToolCount> raw;
+  Per<Tool, json> args;
+  Per<Tool, std::string> raw;
   bool json_mode = false;
   std::string error;
   std::string origin_pending; // 载入日志时那次调用当时的原文 (下一次 Run 带上作对照)
@@ -54,32 +52,28 @@ struct Bench::Impl {
   Clock::time_point t0 = Clock::now();
   LabLive live;
 
+  Impl() { timeline.push_back(Round{.kind = Msg::Round}); }
+
   double now() const { return std::chrono::duration<double>(Clock::now() - t0).count(); }
-  int round() const { return static_cast<int>(timeline.size()); }
   std::vector<Act> &acts() { return timeline.back().acts; }
+  Seat bench_seat(size_t i) { return seat(i, gate, {}, true, gpu); }
 
   void reset() {
     assert(!running);
+    flush();
     timeline.assign(snap.begin(), snap.begin() + snap_k);
     timeline.push_back(Round{.kind = Msg::Round});
-    st = StateOf(timeline);
+    restate();
     origin.clear(), pick = SIZE_MAX;
   }
-
-  Seat seat(size_t i) { return {lab, notes, gate, st, timeline, {round(), static_cast<int>(i) + 1}, catalog::label(lab.scope()), "", true, gpu}; }
 
   Feed feed() { return {lab.ctx(), lab.results(), st.board, timeline, {round(), static_cast<int>(acts().size()) + 1}, rng}; }
 
   void sample() {
     Feed f = feed();
-    args[static_cast<size_t>(tool)] = SampleArgs(tool, f);
-    raw[static_cast<size_t>(tool)] = args[static_cast<size_t>(tool)].dump(2);
+    args[tool] = SampleArgs(tool, f);
+    raw[tool] = args[tool].dump(2);
     origin_pending.clear(), error.clear();
-  }
-
-  void end(size_t i) {
-    End(acts()[i], st, {round(), static_cast<int>(i) + 1}, now());
-    running.reset(), choosing = false;
   }
 
   void run(Call c) {
@@ -88,32 +82,41 @@ struct Bench::Impl {
     origin_pending.clear();
     const size_t i = acts().size() - 1;
     pick = i;
-    Seat s = seat(i);
-    const Exec at = Begin(acts()[i], s, now());
+    Seat s = bench_seat(i);
+    const Exec at = open_act(i, s, now());
     if (at == Exec::Sync)
-      return end(i);
+      return;
     running = i, choosing = at == Exec::Human;
   }
 
+  void abort() {
+    if (!running) {
+      lab.cancel();
+      return;
+    }
+    const size_t i = *running;
+    running.reset(), choosing = false;
+    abort_act(i, now());
+  }
+
   void poll() {
-    while (std::optional<LabTick> t = lab.poll()) {
+    while (std::optional<Lab::Tick> t = lab.poll()) {
       if (!running || choosing)
         continue;
       const size_t i = *running;
-      Act &a = acts()[i];
       if (t->step != LabStep::End) {
-        Enter(a, t->step, now());
+        step_act(i, t->step, now());
         continue;
       }
-      if (!t->out) {
-        if (const std::string file = Abort(a); !file.empty())
-          lab.discard(file);
+      if (t->out.cancelled) {
+        abort_act(i, now());
       } else {
-        Seat s = seat(i);
-        Settle(a, std::move(*t->out), s);
+        Seat s = bench_seat(i);
+        settle_act(i, std::move(t->out.out), s, now());
       }
-      end(i);
+      running.reset();
     }
+    flush();
     lab.live(live);
   }
 };
@@ -125,46 +128,39 @@ bool Bench::busy() const { return impl_->lab.busy(); }
 
 namespace {
 
-bool long_field(const ToolDef &d, const ArgDef &a) {
+bool long_field(Tool t, const ArgDef &a) {
+  const Cat cat = def(t).cat;
   const std::string_view k = a.key;
-  return d.cat() == Cat::Hyp || d.cat() == Cat::Note || k == "note" || k == "expr";
+  return cat == Cat::Hyp || cat == Cat::Note || k == "note" || k == "expr";
 }
 
-// 表单: 参数表逐项一个控件 (缺的按缺省补上); 返回 = 改了
-bool form(const ToolDef &d, json &args) {
+// 表单: 参数表逐项一个控件 (缺的按 SeedJson 补上); 返回 = 改了
+bool form(Tool t, json &args) {
   bool changed = false;
-  for (const ArgDef &a : d.args) {
+  for (const ArgDef &a : doc(t).args) {
     if (!args.contains(a.key))
-      args[a.key] = a.def ? json::parse(a.def) : a.type == Arg::Int ? json(a.lo)
-                                             : a.type == Arg::Str   ? json("")
-                                                                    : json::array();
+      args[a.key] = SeedJson(a);
     json &v = args[a.key];
     ImGui::PushID(a.key);
-    ImGui::TextColored(a.def ? ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled) : kColHead, "%s %s", a.key, a.cn);
+    ImGui::TextColored(!a.required() ? ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled) : kColHead, "%s %s", a.key, a.cn);
     tip_long(ArgText(a));
     ImGui::SameLine(ImGui::GetFontSize() * 9.0f);
     ImGui::SetNextItemWidth(-1);
     switch (a.type) {
     case Arg::Str: {
       std::string s = v.is_string() ? v.get<std::string>() : std::string();
-      if (a.choices) {
-        std::vector<std::string> opts;
-        if (a.def && std::string_view(a.def) == "\"\"")
-          opts.emplace_back();
-        for (std::string_view c = a.choices;;) {
-          const size_t bar = c.find('|');
-          opts.emplace_back(c.substr(0, bar));
-          if (bar == std::string_view::npos)
-            break;
-          c.remove_prefix(bar + 1);
-        }
+      if (!a.choices.empty()) {
         if (ImGui::BeginCombo("##v", s.empty() ? "(空)" : s.c_str())) {
-          for (const std::string &o : opts)
-            if (ImGui::Selectable(o.empty() ? "(空)" : o.c_str(), o == s))
-              v = o, changed = true;
+          if (a.empty_ok() && ImGui::Selectable("(空)", s.empty()))
+            v = "", changed = true;
+          for (const std::string_view o : a.choices) {
+            const std::string opt(o);
+            if (ImGui::Selectable(opt.c_str(), o == s))
+              v = opt, changed = true;
+          }
           ImGui::EndCombo();
         }
-      } else if (long_field(d, a) ? input_multiline("##v", s, ImVec2(-1, ImGui::GetTextLineHeightWithSpacing() * 2.6f)) : input_text("##v", s)) {
+      } else if (long_field(t, a) ? input_multiline("##v", s, ImVec2(-1, ImGui::GetTextLineHeightWithSpacing() * 2.6f)) : input_text("##v", s)) {
         v = s, changed = true;
       }
       break;
@@ -274,20 +270,20 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
 
   // ---- 左: 工具按类 ----
   ImGui::BeginChild("##bench_tools", ImVec2(ImGui::GetFontSize() * 15.0f, -1), ImGuiChildFlags_Borders);
-  for (size_t k = 0; k < kNum<Cat>; ++k) {
-    const Cat cat = static_cast<Cat>(k);
+  for (const Cat cat : kVals<Cat>) {
     if (!ImGui::TreeNodeEx(def(cat).cn, ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
       continue;
-    for (const ToolDef &d : Tools()) {
-      if (d.cat() != cat)
+    for (const Tool t : kVals<Tool>) {
+      const ToolMeta &m = def(t);
+      if (m.cat != cat)
         continue;
-      if (ImGui::Selectable((std::string(d.name) + "##tool").c_str(), b.tool == d.id)) {
-        b.tool = d.id, b.error.clear();
-        if (b.args[static_cast<size_t>(d.id)].is_null())
+      if (ImGui::Selectable((std::string(m.id) + "##tool").c_str(), b.tool == t)) {
+        b.tool = t, b.error.clear();
+        if (b.args[t].is_null())
           b.sample();
       }
       ImGui::SameLine(ImGui::GetFontSize() * 9.5f);
-      ImGui::TextDisabled("%s", d.cn);
+      ImGui::TextDisabled("%s", m.cn);
     }
     ImGui::TreePop();
   }
@@ -296,13 +292,13 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
 
   // ---- 右: 输入 / 展示 / 原文 ----
   ImGui::BeginChild("##bench_page", ImVec2(0, -1));
-  const ToolDef &d = def(b.tool);
-  const size_t ti = static_cast<size_t>(b.tool);
-  if (b.args[ti].is_null())
+  const ToolMeta &m = def(b.tool);
+  const ToolDoc &d = doc(b.tool);
+  if (b.args[b.tool].is_null())
     b.sample();
-  ImGui::TextColored(kColHead, "%s — %s", d.name, d.cn);
+  ImGui::TextColored(kColHead, "%s — %s", m.id, m.cn);
   ImGui::SameLine();
-  ImGui::TextDisabled("(%s)", def(d.exec()).cn);
+  ImGui::TextDisabled("(%s)", def(m.exec).cn);
   wrapped_dim(ToolText(d.desc));
   tip_long("返回: " + ToolText(d.out));
 
@@ -318,13 +314,13 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   tip("本作用域存过的会话里 agent 真调过的这个工具: 载入参数, Run 后可对照当时交给 agent 的原文");
   if (ImGui::BeginPopup("##seen")) {
     if (b.seen.empty())
-      ImGui::TextDisabled("本作用域的会话里没调过 %s", d.name);
+      ImGui::TextDisabled("本作用域的会话里没调过 %s", m.id);
     for (size_t i = 0; i < b.seen.size() && i < 200; ++i) {
       const Seen &x = b.seen[b.seen.size() - 1 - i];
       const std::string label = stamp_text(x.stamp) + (x.test ? " · 自检" : "") + " · " + RefText(x.at) + (x.ok ? "" : " · 没做成") + " · " + call_line(b.tool, x.args) +
                                 "###seen" + std::to_string(i);
       if (ImGui::Selectable(label.c_str())) {
-        b.args[ti] = x.args, b.raw[ti] = x.args.dump(2), b.origin_pending = x.out, b.error.clear();
+        b.args[b.tool] = x.args, b.raw[b.tool] = x.args.dump(2), b.origin_pending = x.out, b.error.clear();
         ImGui::CloseCurrentPopup();
       }
       tip_long(x.out);
@@ -333,15 +329,15 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   }
   ImGui::SameLine();
   if (ImGui::Checkbox("JSON", &b.json_mode))
-    b.raw[ti] = b.args[ti].dump(2);
+    b.raw[b.tool] = b.args[b.tool].dump(2);
   ImGui::SameLine();
-  const bool needs_scope = d.cat() == Cat::Look || d.id == Tool::EvalFactor;
+  const bool needs_scope = m.cat == Cat::Look || b.tool == Tool::EvalFactor;
   const bool can_run = !held && !blocked && (!needs_scope || !ctx.days.empty());
   ImGui::BeginDisabled(!can_run);
   if (ImGui::Button("Run", ImVec2(70, 0))) {
     std::vector<std::string> errs;
     Call c;
-    if (CallOf(b.tool, b.args[ti], "args", c, errs)) {
+    if (CallOf(b.tool, b.args[b.tool], "args", c, errs)) {
       b.error.clear(), b.gate = gate, b.gpu = gpu;
       b.run(std::move(c));
     } else {
@@ -352,9 +348,9 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   tip(blocked ? "Mine 页的会话在走 (不并跑)" : needs_scope && ctx.days.empty() ? "本作用域评估期未就绪"
                                                                                : "按参数表校验后执行 (与会话同一条路径)");
   ImGui::SameLine();
-  ImGui::BeginDisabled(!b.lab.busy());
+  ImGui::BeginDisabled(!held);
   if (ImGui::Button("Cancel", ImVec2(70, 0)))
-    b.lab.cancel();
+    b.abort();
   ImGui::EndDisabled();
   if (b.running && !b.choosing) {
     ImGui::SameLine();
@@ -366,15 +362,15 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   }
   ImGui::BeginChild("##bench_in", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 10.0f), ImGuiChildFlags_Borders);
   if (b.json_mode) {
-    if (input_multiline("##raw", b.raw[ti], ImVec2(-1, -1))) {
-      const json p = json::parse(b.raw[ti], nullptr, false);
+    if (input_multiline("##raw", b.raw[b.tool], ImVec2(-1, -1))) {
+      const json p = json::parse(b.raw[b.tool], nullptr, false);
       if (!p.is_discarded() && p.is_object())
-        b.args[ti] = p, b.error.clear();
+        b.args[b.tool] = p, b.error.clear();
       else
         b.error = "JSON 不合法 (须是参数对象)";
     }
-  } else if (form(d, b.args[ti])) {
-    b.raw[ti] = b.args[ti].dump(2), b.error.clear();
+  } else if (form(b.tool, b.args[b.tool])) {
+    b.raw[b.tool] = b.args[b.tool].dump(2), b.error.clear();
   }
   ImGui::EndChild();
   if (!b.error.empty())
@@ -408,9 +404,9 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   ImGui::BeginChild("##bench_show", ImVec2(w * 0.58f, -1), ImGuiChildFlags_Borders);
   ImGui::TextColored(kColHead, "展示");
   if (b.choosing && b.running == b.pick) {
-    if (asked_block(std::get<Asked>(a.extra), true)) {
-      Answer(a);
-      b.end(b.pick);
+    if (edit_asked(AsAsk(a)->asked)) {
+      b.answer_act(b.pick, b.now());
+      b.running.reset(), b.choosing = false;
     }
   } else if (!a.span.ended()) {
     ImGui::TextColored(color(TaskStatus::Kind::Busy), "执行中… %.0f%%", b.live.frac * 100.0);

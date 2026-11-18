@@ -160,6 +160,7 @@ ToolOut ViewResponse(const Call &c, Bay &bay) {
       std::vector<Mean> tr(static_cast<size_t>(nt));
       F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
         std::vector<double> xs, ys;
+        RankScratch rs;
         for (int r = r0; r < r1; ++r) {
           const int t = cv.t_lo + r, u = cv.u0 + r;
           if (u < w || (u - w) % rstep != 0)
@@ -170,7 +171,7 @@ ToolOut ViewResponse(const Call &c, Bay &bay) {
             if (cv.blk.y.gate[base + static_cast<size_t>(a)] && cv.rx[base + static_cast<size_t>(a)] != st::kRankNone)
               xs.push_back(rank_of_r16(cv.rx[base + static_cast<size_t>(a)])), ys.push_back(cum_step(e, A, a, t, t - w));
           if (static_cast<int>(xs.size()) >= kMinCs)
-            tr[static_cast<size_t>(tid)].add(spearman(xs, ys));
+            tr[static_cast<size_t>(tid)].add(rs.spearman(xs, ys));
         }
       });
       for (int tid = 0; tid < nt; ++tid)

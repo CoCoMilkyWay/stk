@@ -6,6 +6,6 @@ namespace GUI::Agent {
 
 using namespace ui;
 
-void AskRes::draw() const { asked_block(a, false); }
+void AskRes::draw() const { draw_asked(asked); }
 
 } // namespace GUI::Agent

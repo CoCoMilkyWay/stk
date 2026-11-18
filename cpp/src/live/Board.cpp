@@ -51,9 +51,7 @@ void today(Row &r, const Pair &p, const Quote &q) {
     r.day_pnl_pct = day / den * 100;
 }
 
-void depth(Row &r, const Pair &p, const Quote &q) {
-  if (!p.h)
-    return;
+void depth(Row &r, const Quote &q) {
   const auto x = ref(q);
   r.auction = auction(q);
   if (x && !r.auction)
@@ -146,7 +144,8 @@ Frame view(const Keyed<Position> &pos, const Fills &fills, const Quotes &quotes)
     ident(r, p, q);
     hold(r, p, q);
     today(r, p, q);
-    depth(r, p, q);
+    if (p.h)
+      depth(r, q);
     mv += r.market_value.value_or(0);
     fr.synced = fr.synced && synced(p);
     fr.rows.push_back(std::move(r));
@@ -169,6 +168,14 @@ Frame view(const Keyed<Position> &pos, const Fills &fills, const Quotes &quotes)
   for (const auto &[code, q] : quotes)
     fr.time = std::max(fr.time, quote_time(q));
   return fr;
+}
+
+Row quoted(const std::string &code, const std::string &name, const Quote &q) {
+  Row r{.code = code, .name = name, .quote = &q};
+  if (q.last_close > 0)
+    r.day_pnl_pct = (q.price / q.last_close - 1) * 100;
+  depth(r, q);
+  return r;
 }
 
 } // namespace live::board

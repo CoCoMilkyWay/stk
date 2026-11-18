@@ -1,27 +1,131 @@
 #pragma once
 
 // =============================================================================
-// Kit — 工具的实现表、调用的一生与输入取材: 活会话 (Mine) 与工作台 (Bench) 走同一条执行路径
+// Kit — 时间线、单趟增量账本、工具三拍契约与统一执行器 Rig: 活会话 (Mine) 与工作台 (Bench) 100% 同构同路
 // =============================================================================
-//   Seat       当场台面 (GUI 线程): 候选与正式库 (Lab) / 全局记录 / 门槛 / 假设板 / 时间线 (末轮 = 本调用所在轮) / 本调用编号 / GPU 开关
-//              dry = 工作台: 全局记录只给编号不落盘, 提交只查门槛不拷进正式库
-//   实现表     kImpls (Kit.cpp, 由 AGENT_TOOLS 拼名): 每个工具 = 执行 RunFn + 取材 Sample<工具>; 后台工具另可挂投递前 / 收结果两钩 (仅 eval_factor)
-//   调用的一生 Begin → (Enter …) → Settle (后台) | Answer (等人) | Abort (取消) → End
-//   Feed       随机输入的取材 (开放的叶 / 候选名 / 评估期交易日 / 池内代码 / 本层时刻 / 假设板 / 时间线); SampleArgs 按工具出一组合参数表的参数
+//   时间线与账本:
+//     Round / Act     全会话唯一真相 (Act 仅持 Call + Span + ToolOut, 无旁路 Extra; Res 即唯一结构化载体)
+//     State           单趟增量账本 = 假设板 Board + 计数 Tally + 流程旗 Flags + 已落文件 staged + 已入库 adopted
+//                     OpenRound / CloseReply / ApplyAct 增量 O(1) 推进; StateOf(Rounds) 纯函数全量重算; TallyAt(now) O(1) 补在跑项秒数
+//   三态四形契约 (kSpecs 由 AGENT_TOOLS 拼名, 编译期核对签名 = ToolMeta::exec):
+//     SyncFn      (Call, Seat) → ToolOut                   当场一次到位
+//     LabFn       (Call, Bay)  → ToolOut                   后台纯计算直通
+//     StagedLab   open(Act, Seat) → LabTask ⇄ close(...)   后台三拍 (eval_factor: GUI 核假设落盘 → Lab 回测 → GUI 入表封存)
+//     HumanFn     (shared_ptr<AskRes>) → ToolOut           等人三拍 (ask_human: GUI 建问卷 → 人点选 → GUI 封存)
+//   Rig             实验台底座 (Lab + Notes + timeline + State + doomed): 统一驱动单调用 open / step / settle / answer / abort
 // =============================================================================
 
 #include "gui/task_agent/Bridge.hpp"
+#include "gui/task_agent/Llm.hpp"
 #include "gui/task_agent/Notes.hpp"
-#include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Tools.hpp"
 #include "nlohmann/json.hpp"
 
+#include <cstdint>
+#include <memory>
+#include <optional>
 #include <random>
+#include <set>
+#include <span>
 #include <string>
+#include <string_view>
+#include <variant>
 #include <vector>
 
 namespace GUI::Agent {
 
+// ---- 时段、消息、动作与时间线 ----
+struct Span {
+  double t0 = -1.0, t1 = -1.0;
+  bool began() const { return t0 >= 0.0; }
+  bool ended() const { return t1 >= 0.0; }
+  bool running() const { return began() && !ended(); }
+  double len(double now) const { return !began() ? 0.0 : (ended() ? t1 : now) - t0; }
+  void begin(double t) {
+    if (!began())
+      t0 = t;
+  }
+  void end(double t) {
+    if (running())
+      t1 = t;
+  }
+};
+
+enum class Msg : uint8_t { System,
+                           First,
+                           Round,
+                           Retry,
+                           Test };
+struct MsgDef {
+  const char *id, *cn;
+};
+inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"retry", "重发"}, {"test", "自检"}};
+AGENT_ROWS(Msg, kMsgs, Test);
+
+struct Message {
+  Msg kind = Msg::First;
+  std::string text;
+};
+
+struct Act {
+  Call call;
+  Span span;
+  ToolOut out; // out.res 为唯一结构化载体 (TrialRes / AskRes 在挂起期即驻留)
+};
+
+struct Round {
+  Msg kind = Msg::First;
+  std::string user;
+  std::string memo;
+  Span span, think, write;
+  llm::Reply reply;
+  std::string error;
+  std::vector<Act> acts;
+};
+using Rounds = std::span<const Round>;
+
+// ---- 计数、流程旗与单趟增量账本 State ----
+struct Tally {
+  Per<Tool, int> calls{}, fails{};
+  Per<Verdict, int> verdicts{};
+  int adopted = 0;
+  double llm_s = 0.0, act_s = 0.0;
+  llm::Usage usage;
+
+  int n(Tool t) const { return calls[t]; }
+  int n(Verdict v) const { return verdicts[v]; }
+  int n(Exec e) const;
+  int n(Cat c) const;
+  int docs() const { return n(Tool::SearchDocs) + n(Tool::SearchFactors) + n(Tool::ReadDoc); }
+  int all() const;
+  int failed(Tool t) const { return fails[t]; }
+  int failed(Cat c) const;
+  int failed() const;
+  int staged() const { return n(Tool::EvalFactor) - n(Verdict::Unstaged); }
+};
+
+struct Flags {
+  bool evaled = false; // 末个有调用的轮里有落了文件的回测 (下一条回复不能回测)
+  bool asked = false;  // 已有 ask_human 调用 (整段会话只问一次)
+  bool done = false;   // 末轮的 finish 已做完: 本条做完即结束会话
+};
+
+struct State {
+  Board board;
+  std::set<std::string> staged;  // 本会话落了文件的候选文件名 (*.json)
+  std::set<std::string> adopted; // submit_factor 做成的英文名
+  Tally tally;                   // 已收尾轮与调用的精确累计
+  Flags flags;
+};
+
+void OpenRound(State &s);
+void CloseReply(State &s, const Round &rd);
+void ApplyAct(State &s, const Act &a, Ref at);
+State StateOf(Rounds rs);
+Tally TallyAt(const State &s, Rounds rs, double now);
+Tally TallyOf(Rounds rs, double now);
+
+// ---- 台面与三拍工具签名 ----
 struct Seat {
   Lab &lab;
   Notes &notes;
@@ -34,18 +138,40 @@ struct Seat {
   bool gpu = false; // eval_factor 的回测上 GPU
 };
 
-// 后台工具的两钩 (GUI 线程): 投递前 (false = 当场已收, 不投) / 收结果
-using StageFn = bool (*)(Act &, Seat &);
-using SettleFn = void (*)(Act &, ToolOut, Seat &);
+struct AskRes;
+using SyncFn = ToolOut (*)(const Call &, Seat &);
+using LabFn = ToolOut (*)(const Call &, Bay &);
+struct StagedLab {
+  std::optional<LabTask> (*open)(Act &, Seat &);
+  void (*close)(Act &, ToolOut, Seat &);
+};
+using HumanFn = ToolOut (*)(std::shared_ptr<AskRes>);
+using ImplFn = std::variant<SyncFn, LabFn, StagedLab, HumanFn>;
 
-// ---- 调用的一生 ----
-Exec Begin(Act &a, Seat &s, double t);         // 开始并分派; 返回 = 这一步落在谁手上 (Sync = 已当场收)
-void Enter(Act &a, LabStep step, double t);    // 后台报步 (eval_factor 的 Search / Run 计时)
-void Settle(Act &a, ToolOut out, Seat &s);     // 后台结果落进 Act
-void Answer(Act &a);                           // 研究员答完, 成文落进 Act
-std::string Abort(Act &a);                     // 取消在跑的调用; 返回 = 要删的候选文件 (落了文件的回测, 否则空)
-void End(Act &a, State &st, Ref at, double t); // 收尾: 时段 / 折进状态 / 原文超 kOutChars 字截断
+// ---- 统一调用底座 Rig (Mine 与 Bench 共用) ----
+struct Rig {
+  Lab lab;
+  Notes notes;
+  std::vector<Round> timeline;
+  State st;
+  std::vector<std::string> doomed;
 
+  int round() const { return static_cast<int>(timeline.size()); }
+  Tally tally(double now) const { return TallyAt(st, timeline, now); }
+  const Flags &flags() const { return st.flags; }
+
+  Seat seat(size_t i, const Gate &gate, std::string_view session, bool dry, bool gpu);
+  void restate() { st = StateOf(timeline); }
+  void flush();
+
+  Exec open_act(size_t i, Seat &s, double t); // Sync (含未落文件的 eval_factor) 当场收尾并返回 Exec::Sync
+  void step_act(size_t i, LabStep step, double t);
+  void settle_act(size_t i, ToolOut out, Seat &s, double t);
+  void answer_act(size_t i, double t);
+  void abort_act(size_t i, double t);
+};
+
+// ---- 随机输入的取材 ----
 struct Feed {
   const Context &ctx;
   const std::vector<Result> &tried;

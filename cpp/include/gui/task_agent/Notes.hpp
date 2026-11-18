@@ -14,7 +14,6 @@
 #include "gui/task_agent/Tools.hpp"
 #include "nlohmann/json.hpp"
 
-#include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -111,7 +110,7 @@ class Notes {
 public:
   void load(bool test);
   bool loaded(bool test) const { return test_ == static_cast<int>(test); }
-  const std::vector<Note> &of(NoteKind k) const { return notes_[static_cast<size_t>(k)]; }
+  const std::vector<Note> &of(NoteKind k) const { return notes_[k]; }
   const Note *find(NoteKind k, const std::string &id) const;
   int backers(const Note &n) const;
   int open(NoteKind k) const;
@@ -124,7 +123,7 @@ public:
 private:
   void rewrite(NoteKind k) const;
   int test_ = -1;
-  std::array<std::vector<Note>, kNum<NoteKind>> notes_;
+  Per<NoteKind, std::vector<Note>> notes_;
 };
 
 std::string NotesBrief(const Notes &notes, const std::string &scope);

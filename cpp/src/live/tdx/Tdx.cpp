@@ -261,6 +261,7 @@ struct Core {
     const auto [why, part] = *d;
     trace::Span span("刷新", {{"why", why}, {"n", n[idx(part)]}});
     std::string down, msg;
+    note("接入");
     try { // 错误边界: 接不上报在 down, 一轮失败报在 err, 都等下一个起因再刷
       connect();
     } catch (const Fail &f) {

@@ -5,7 +5,7 @@ namespace GUI::Agent {
 
 using json = nlohmann::ordered_json;
 
-ToolOut NoteInsight(const Call &c, Seat &s) { return FileNote(c, s, std::make_shared<InsightNoteRes>()); }
+ToolOut NoteInsight(const Call &c, Seat &s) { return FileNote(c, s); }
 
 json SampleNoteInsight(Feed &p) {
   const std::vector<std::string> refs = p.refs(1);

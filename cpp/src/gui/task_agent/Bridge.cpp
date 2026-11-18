@@ -84,44 +84,19 @@ bool measure_word(const std::string &w) {
   return w == "amt" || w == "vol" || w == "n" || w == "all" || std::any_of(w.begin(), w.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
 }
 
-// 开放集快照
-struct Opened {
-  std::set<std::string> leaves;
-  std::vector<bool> ops;
-  bool has(const fx::Node &n) const { return n.op >= 0 ? ops[static_cast<size_t>(n.op)] : leaves.contains(n.feat); }
-};
-Opened opened_of(const Engine::FeatureTable &ft, const Scope &sc) {
-  Opened o;
+Opened opened_of(const Engine::FeatureTable &ft, const Scope &sc, bool has_lob) {
+  Opened o{.lob_open = sc.lob, .has_lob = has_lob};
   const Open &pick = sc.leaves_of(Engine::factor_level(ft.lv).name);
-  for (const Engine::FeatCol &l : ft.x.leaves)
+  o.leaves.assign(ft.x.leaves.size(), 0);
+  for (size_t i = 0; i < ft.x.leaves.size(); ++i) {
+    const Engine::FeatCol &l = ft.x.leaves[i];
     if (l.allowed && sc.has(src_of(l)) && pick.has(l.code))
-      o.leaves.insert(l.code);
-  for (const fx::OpInfo &x : fx::kOps)
-    o.ops.push_back(sc.ops.has(x.name));
-  return o;
-}
-
-std::string closed_err(const Scope &sc, const Context &ctx, const Engine::FeatureTable &ft, const Opened &open, const fx::Expr &e) {
-  std::vector<std::string> seen;
-  std::string leaves, ops;
-  for (const fx::Node &x : e.nodes) {
-    if (x.target || open.has(x))
-      continue;
-    const std::string name = x.op >= 0 ? fx::kOps[x.op].name : x.feat;
-    if (std::find(seen.begin(), seen.end(), name) != seen.end())
-      continue;
-    seen.push_back(name);
-    if (x.op >= 0) {
-      ops += (ops.empty() ? "" : ", ") + name;
-    } else {
-      const Src s = src_of(*ft.x.find(name));
-      const char *why = !sc.has(s) ? (s == Src::Lob && !ctx.has_lob ? " (lob 在本层无落盘)" : " (lob 来源未开放)") : "";
-      leaves += (leaves.empty() ? "" : ", ") + name + why;
-    }
+      o.leaves[i] = 1;
   }
-  if (leaves.empty() && ops.empty())
-    return {};
-  return "用了本会话未开放的" + (leaves.empty() ? "" : " 叶: " + leaves + ";") + (ops.empty() ? "" : " 算子: " + ops + ";") + " 只能用系统提示特征表与算子表里列的";
+  o.ops.assign(std::size(fx::kOps), 0);
+  for (size_t i = 0; i < std::size(fx::kOps); ++i)
+    o.ops[i] = sc.ops.has(fx::kOps[i].name);
+  return o;
 }
 
 // 行的收盘时刻 HH:MM 与竞价段行数
@@ -235,7 +210,7 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
     r.ops = te.n_ops;
     r.twin = twin_of_expr(te);
     now = spans.for_expr(ft, te);
-    opened = std::ranges::all_of(te.nodes, [&](const fx::Node &n) { return n.target || open.has(n); });
+    opened = open.all_open(ft, te);
   }
   bool fresh = true;
   const auto mk = std::find_if(r0.searched.begin(), r0.searched.end(), [&](const Engine::SearchMark &m) { return m.hold == hold; });
@@ -303,6 +278,29 @@ std::vector<Result> scan(const Engine::FeatureTable &ft, const SpanCache &spans,
 }
 
 } // namespace
+
+std::string Opened::closed_err(const Engine::FeatureTable &ft, const fx::Expr &e) const {
+  std::vector<std::string_view> seen;
+  std::string ls, os;
+  for (const fx::Node &x : e.nodes) {
+    if (has(ft, x))
+      continue;
+    const std::string_view name = x.op >= 0 ? std::string_view(fx::kOps[x.op].name) : std::string_view(x.feat);
+    if (std::ranges::contains(seen, name))
+      continue;
+    seen.push_back(name);
+    if (x.op >= 0) {
+      os += (os.empty() ? "" : ", ") + std::string(name);
+    } else {
+      const Src s = src_of(*ft.x.find(name));
+      const char *why = s == Src::Lob && !lob_open ? (!has_lob ? " (lob 在本层无落盘)" : " (lob 来源未开放)") : "";
+      ls += (ls.empty() ? "" : ", ") + std::string(name) + why;
+    }
+  }
+  if (ls.empty() && os.empty())
+    return {};
+  return "用了本会话未开放的" + (ls.empty() ? "" : " 叶: " + ls + ";") + (os.empty() ? "" : " 算子: " + os + ";") + " 只能用系统提示特征表与算子表里列的";
+}
 
 // =============================================================================
 // 叶词、门槛与作用域目录 catalog
@@ -405,8 +403,8 @@ std::vector<PoolRow> pool_rows(int level) {
   for (size_t i = 0; i < po.size(); ++i) {
     const PoolDef &d = pool_def(po[i]);
     PoolRow r{.key = static_cast<int>(i), .name = d.name, .name_cn = d.name_cn};
-    for (const Src s : {Src::Bar, Src::Lob})
-      r.built[static_cast<size_t>(s)] = load_lib(lib_id(po[i], s == Src::Lob ? TierId::Lob : TierId::Bar)).ready();
+    for (const Src s : kVals<Src>)
+      r.built[s] = load_lib(lib_id(po[i], s == Src::Lob ? TierId::Lob : TierId::Bar)).ready();
     r.factors = Engine::factor_dir_of(d.name, level_id(level)).files().size();
     out.push_back(std::move(r));
   }
@@ -445,25 +443,16 @@ disk::Key key(const Scope &sc, bool test) {
 } // namespace catalog
 
 // =============================================================================
-// Lab 实现: 单线程 Async worker (跑投来的 LabFn), 与 GUI 零共享可变态
+// Lab 实现: 单线程 Async worker (与左翼 Chat 同构, 零共享可变态)
 // =============================================================================
 namespace {
 
-// 一件后台活: GUI 线程备好的值 + 要跑的工具
 struct Job {
-  Call call;
-  LabFn fn = nullptr;
-  ViewEnv env;
-  Engine::FactorScope fsc; // eval_factor 的回测作用域
-  std::string file;        // eval_factor 的候选文件
+  Tool tool = Tool::ViewFeature;
+  std::shared_ptr<const ViewEnv> env;
+  LabTask task;
 };
-struct Yield {
-  ToolOut out;
-  Graded graded;
-};
-using JobOut = std::optional<Yield>; // 空 = 已取消
 
-// 各类后台工具的首步与计算流优先级
 LabStep first_step(Cat c) { return c == Cat::Look ? LabStep::Look : c == Cat::Query ? LabStep::Docs
                                                                                     : LabStep::Search; }
 Engine::Prio prio_of(Cat c) { return c == Cat::Trial ? Engine::Prio::Batch : Engine::Prio::Interactive; }
@@ -482,40 +471,27 @@ struct Lab::Impl {
   Fails fails;
   std::map<std::string, Surface> surfaces;
   std::map<std::string, std::string> reps;
-  std::string flight; // 在跑的 eval_factor 的候选文件
+  std::shared_ptr<const ViewEnv> env_cache;
 
   Progress prog;
-  Async<Job, LabStep, JobOut, LabLive> worker;
+  Async<Job, LabStep, LabOut> worker;
 
   Impl()
-      : worker([this](Job &j, const auto &pipe) -> JobOut {
+      : worker([this](Job &j, const auto &pipe) -> LabOut {
           prog.begin(Phase::Loading, 0);
-          const Cat cat = def(j.call.tool).cat();
+          const Cat cat = def(j.tool).cat;
           pipe.step(first_step(cat));
           Engine::FactorFlow flow(pipe.cancel, prog, prio_of(cat));
           const std::function<void(LabStep)> step = [&](LabStep s) { pipe.step(s); };
-          Yield d;
-          Bay bay{j.env, j.fsc, j.file, flow, pipe.cancel, step, d.graded};
-          d.out = j.fn(j.call, bay);
+          static const ViewEnv kNoEnv;
+          Bay bay{j.env ? *j.env : kNoEnv, flow, pipe.cancel, step};
+          ToolOut out = j.task(bay);
           if (bay.cancelled())
-            return std::nullopt;
-          return d;
+            return {.cancelled = true};
+          return {.cancelled = false, .out = std::move(out)};
         }) {}
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
-
-  void absorb(const std::string &file, const Yield &d) {
-    if (d.out.ok)
-      fails.erase(file);
-    else
-      fails[file] = d.out.text;
-    surfaces[file] = d.graded.surf;
-    if (d.graded.rep.empty())
-      reps.erase(file);
-    else
-      reps[file] = d.graded.rep;
-    rescan_one(file);
-  }
 
   Engine::FactorScope factor_scope(bool gpu) const {
     Engine::FactorScope fsc;
@@ -525,17 +501,19 @@ struct Lab::Impl {
     return fsc;
   }
 
-  ViewEnv make_view_env(const Call &call) const {
-    ViewEnv env;
+  std::shared_ptr<const ViewEnv> view_env() {
+    if (env_cache)
+      return env_cache;
+    auto p = std::make_shared<ViewEnv>();
+    ViewEnv &env = *p;
     env.fsc = factor_scope(false);
     env.hold = sc.hold;
     env.first = context.first, env.last = context.last;
     env.open = context.open;
     env.level = context.level;
     env.clock = context.clock;
-    env.lob_open = sc.lob;
-    env.open_leaves = open.leaves;
-    env.open_ops = open.ops;
+    env.opened = open;
+    env.cands.reserve(results.size());
     for (const Result &r : results) {
       CandRef cr;
       if (!r.visible) {
@@ -551,19 +529,12 @@ struct Lab::Impl {
       }
       env.cands.emplace(r.name, std::move(cr));
     }
-    if (call.tool == Tool::ViewBook) {
-      env.orders = data->asset.catalog();
-      const AssetAxis &ax = asset_axis();
-      const std::string arg = call.str("code");
-      for (const char *ex : {"", ".SZ", ".SH", ".BJ"}) {
-        const size_t id = ax.find(arg + ex);
-        if (id < ax.size()) {
-          env.exchange = data->asset.items[id].exchange_type;
-          break;
-        }
-      }
-    }
-    return env;
+    env.orders = data->asset.catalog();
+    env.exchanges.resize(data->asset.items.size());
+    for (size_t i = 0; i < data->asset.items.size(); ++i)
+      env.exchanges[i] = data->asset.items[i].exchange_type;
+    env_cache = std::move(p);
+    return env_cache;
   }
 
   void attach_extras(Result &r) const {
@@ -577,6 +548,7 @@ struct Lab::Impl {
     results = scan(*ft(), *spans, open, dir, sc.hold, fails);
     for (Result &r : results)
       attach_extras(r);
+    env_cache.reset();
   }
 
   void rescan_one(const std::string &file) {
@@ -588,8 +560,11 @@ struct Lab::Impl {
     else
       results.push_back(std::move(got));
     sort_results(results);
+    env_cache.reset();
   }
 };
+
+Engine::FactorScope FactorScopeOf(const Lab &lab, bool gpu) { return lab.impl().factor_scope(gpu); }
 
 Lab::Lab() : impl_(std::make_unique<Impl>()) {}
 Lab::~Lab() = default;
@@ -603,39 +578,39 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
     impl_->fails.clear(), impl_->surfaces.clear(), impl_->reps.clear();
 
   const std::shared_ptr<const Engine::FeatureTable> ft = impl_->ft();
-  impl_->open = opened_of(*ft, sc);
   const std::optional<Engine::FactorScope> fsc = fscope_of(data, ft, sc);
   impl_->spans.emplace(fsc, *ft);
+  impl_->open = opened_of(*ft, sc, impl_->spans->has_lob);
 
   Context &c = impl_->context;
   c = Context{};
   c.pool = sc.pool, c.pool_cn = catalog::pool_cn(sc.pool);
   c.level = Engine::factor_level(level_id(sc.level)).name;
   c.hold = fs::hold_name(sc.hold), c.hold_key = fs::hold_token(sc.hold), c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
-  std::array<bool, kNum<Src>> has{}, on{};
+  Per<Src, bool> has{}, on{};
   std::vector<Engine::LeafId> opened_ids;
   for (size_t i = 0; i < ft->x.leaves.size(); ++i) {
     const Engine::FeatCol &l = ft->x.leaves[i];
     if (!l.allowed)
       continue;
     const Src src = src_of(l);
-    has[static_cast<size_t>(src)] = true;
+    has[src] = true;
     const FeatureMetadata &m = meta_of(*ft, l);
     const size_t tf = static_cast<size_t>(m.ts_tf);
     Leaf x{l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf], family_of(m), src};
     x.kin = LeafKin(x.code) + "|" + x.tf;
     x.hay = text::lower(x.code + "\n" + x.name_cn + "\n" + x.formula + "\n" + x.desc + "\n" + x.tf + "\n" + x.family);
-    if (impl_->open.leaves.contains(l.code)) {
-      on[static_cast<size_t>(src)] = true;
+    if (impl_->open.leaves[i]) {
+      on[src] = true;
       opened_ids.push_back(static_cast<Engine::LeafId>(i));
       c.leaves.push_back(x);
     }
     c.all_leaves.push_back(std::move(x));
   }
-  for (size_t s = 0; s < kNum<Src>; ++s)
+  for (const Src s : kVals<Src>)
     if (on[s])
-      c.srcs += (c.srcs.empty() ? "" : " / ") + std::string(kSrcs[s].name);
-  c.has_lob = has[static_cast<size_t>(Src::Lob)];
+      c.srcs += (c.srcs.empty() ? "" : " / ") + std::string(def(s).id);
+  c.has_lob = has[Src::Lob];
   Engine::Domain dm;
   const Period base = period_of(fsc, *ft, opened_ids, &dm);
   if (base.days > 0) {
@@ -715,7 +690,7 @@ Staged Lab::stage(Cand c, std::string_view hyp_title) {
   std::string err;
   if (!fx::parse(c.expr, ft->lookup(), ft->seg, e, err) || !fx::root_frame(e, ft->seg, frame, err) || !ft->check_grid(e, err))
     return bad(std::move(err));
-  if (std::string cl = closed_err(impl_->sc, impl_->context, *ft, impl_->open, e); !cl.empty())
+  if (std::string cl = impl_->open.closed_err(*ft, e); !cl.empty())
     return bad(std::move(cl));
   if (e.n_ops > kMaxOps)
     return bad("算子节点 " + std::to_string(e.n_ops) + " 个 > 上限 " + std::to_string(kMaxOps) + " (精简结构, 建议 " + std::to_string(kGoodOps) + " 个以内)");
@@ -734,9 +709,22 @@ Staged Lab::stage(Cand c, std::string_view hyp_title) {
     return bad(std::move(err));
   impl_->fails.erase(file);
   impl_->rescan_one(file);
-  const auto it = std::find_if(impl_->results.begin(), impl_->results.end(), [&](const Result &r) { return r.file == file; });
-  assert(it != impl_->results.end());
-  return {std::move(c), file, *it};
+  return {std::move(c), file, result(file)};
+}
+
+const Result &Lab::absorb(const std::string &file, bool ok, const std::string &err, Surface surf, std::string rep) {
+  assert(impl_->data && !busy() && !file.empty());
+  if (ok)
+    impl_->fails.erase(file);
+  else
+    impl_->fails[file] = err;
+  impl_->surfaces[file] = std::move(surf);
+  if (rep.empty())
+    impl_->reps.erase(file);
+  else
+    impl_->reps[file] = std::move(rep);
+  impl_->rescan_one(file);
+  return result(file);
 }
 
 Adopted Lab::adopt(std::string name, const Gate &g, bool dry) {
@@ -765,34 +753,23 @@ void Lab::discard(const std::string &file) {
   disk::remove(impl_->dir.log, impl_->dir.of(file));
   impl_->fails.erase(file), impl_->surfaces.erase(file), impl_->reps.erase(file);
   std::erase_if(impl_->results, [&](const Result &r) { return r.file == file; });
+  impl_->env_cache.reset();
 }
 
-void Lab::send(Call call, LabFn fn, std::string file, bool gpu) {
-  assert(impl_->data && !busy() && fn && file.empty() == (call.tool != Tool::EvalFactor));
-  Job job{.call = std::move(call), .fn = fn};
-  if (def(job.call.tool).cat() != Cat::Query)
-    job.env = impl_->make_view_env(job.call);
-  if (!file.empty())
-    job.fsc = impl_->factor_scope(gpu);
-  impl_->flight = job.file = std::move(file);
-  impl_->worker.send(std::move(job));
+void Lab::send(Tool tool, LabTask task) {
+  assert(impl_->data && !busy() && task);
+  std::shared_ptr<const ViewEnv> env;
+  if (def(tool).cat != Cat::Query)
+    env = impl_->view_env();
+  impl_->worker.send({tool, std::move(env), std::move(task)});
 }
 
 void Lab::cancel() { impl_->worker.cancel(); }
 bool Lab::busy() const { return impl_->worker.busy(); }
 
-std::optional<LabTick> Lab::poll() {
+std::optional<Lab::Tick> Lab::poll() {
   auto t = impl_->worker.poll();
-  if (!t)
-    return std::nullopt;
-  if (t->step != LabStep::End)
-    return LabTick{t->step, {}};
-  const std::string file = std::exchange(impl_->flight, {});
-  if (!t->out)
-    return LabTick{LabStep::End, {}};
-  if (!file.empty())
-    impl_->absorb(file, *t->out);
-  return LabTick{LabStep::End, std::move(t->out->out)};
+  return t ? std::optional<Tick>(Tick{t->step, std::move(t->out)}) : std::nullopt;
 }
 
 void Lab::live(LabLive &dst) const {

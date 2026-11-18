@@ -56,9 +56,9 @@ std::optional<double> order_px(const Quote &q, int s, PxMode mode, double notion
   const bool opp = mode != PxMode::Own, sweep = mode == PxMode::Sweep;
   const double pct = mode == PxMode::Opp1 ? 1 : 0;
   const auto &side = q.book(opp ? s : -s);
-  if (auction(q) || side.empty())
+  if (side.empty())
     return std::nullopt;
-  return (sweep ? reach(side, notional) : side[0].px) * (1 + s * pct / 100);
+  return (sweep && !auction(q) ? reach(side, notional) : side[0].px) * (1 + s * pct / 100);
 }
 
 std::pair<int, int> lot(const std::string &code) {

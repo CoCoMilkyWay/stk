@@ -215,10 +215,11 @@ struct Placed {
 };
 // 下单进度: at = order_steps 下标; detail 非空即更新概要
 using Step = std::function<void(size_t at, const std::string &detail)>;
-// 长事务的报告: log 记一条 (种类 + 字段, 落盘), live 实时进度一行文字 (覆盖上一行); 缺省不报
+// 长事务的报告: log 记一条 (种类 + 字段, 落盘), live 实时进度一行文字 (覆盖上一行), step 走到哪一步 (短词, 状态标签的第二级); 缺省不报
 struct Report {
   std::function<void(const char *kind, nlohmann::json kw)> log = [](const char *, nlohmann::json) {};
   std::function<void(std::string line)> live = [](std::string) {};
+  std::function<void(std::string name)> step = [](std::string) {};
 };
 
 class Broker {

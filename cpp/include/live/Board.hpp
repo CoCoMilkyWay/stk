@@ -53,5 +53,7 @@ struct Frame {
 };
 // quotes 须 covered; 返回的 Row::quote 指向 quotes
 Frame view(const Keyed<Position> &pos, const Fills &fills, const Quotes &quotes);
+// 名单里未持有的一只: 标识 + 盘口 + 当日涨跌 (day_pnl_pct = 现价 / 昨收 − 1); 持仓组与当日盈亏额皆空. Row::quote 指向 q
+Row quoted(const std::string &code, const std::string &name, const Quote &q);
 
 } // namespace live::board

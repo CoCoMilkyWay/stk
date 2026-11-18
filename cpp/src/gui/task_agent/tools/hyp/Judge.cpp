@@ -23,15 +23,15 @@ std::string evidence_miss(const Call &c, const Hyp &h, Ref me, Rounds timeline) 
       return "证据 " + s + " 在 " + h.id + " 提出 (" + RefText(h.at) + ") 之前: 检验它的调用须在提出之后";
     const Act &x = timeline[static_cast<size_t>(r.round) - 1].acts[static_cast<size_t>(r.call) - 1];
     if (!x.span.ended() || !x.out.ok)
-      return "证据 " + s + " (" + def(x.call.tool).name + ") 没做成";
-    look = look || def(x.call.tool).cat() == Cat::Look;
+      return "证据 " + s + " (" + def(x.call.tool).id + ") 没做成";
+    look = look || def(x.call.tool).cat == Cat::Look;
     fresh = fresh || h.judged < r;
   }
   if (IdOf<Stance>(c.str("verdict")) == Stance::Supported && !look) {
     std::string near;
     const std::vector<Act> &acts = timeline.back().acts;
     for (int i = 1; i < me.call; ++i)
-      if (const Act &x = acts[static_cast<size_t>(i) - 1]; def(x.call.tool).cat() == Cat::Look && x.span.ended() && x.out.ok && h.at < Ref{me.round, i})
+      if (const Act &x = acts[static_cast<size_t>(i) - 1]; def(x.call.tool).cat == Cat::Look && x.span.ended() && x.out.ok && h.at < Ref{me.round, i})
         near += (near.empty() ? "" : ", ") + RefText({me.round, i});
     return "判支持须有观察调用 (view_*) 作证据: 回测只说好不好, 观察才说机制是否成立. 同一条回复里把观察排在 judge 前面, 就能引用它们" +
            (near.empty() ? std::string() : "; 本条排在前面做成了的观察: " + near + ", 补进 evidence 即可");
@@ -60,7 +60,7 @@ ToolOut Judge(const Call &c, Seat &s) {
         static_cast<size_t>(at.call) <= s.timeline[static_cast<size_t>(at.round) - 1].acts.size()) {
       const Act &x = s.timeline[static_cast<size_t>(at.round) - 1].acts[static_cast<size_t>(at.call) - 1];
       if (x.span.ended())
-        ev.call = x.call.text(60), ev.gist = x.out.gist, ev.ok = x.out.ok, ev.look = def(x.call.tool).cat() == Cat::Look;
+        ev.call = x.call.text(60), ev.gist = x.out.gist, ev.ok = x.out.ok, ev.look = def(x.call.tool).cat == Cat::Look;
     }
     r->evidence.push_back(std::move(ev));
   }

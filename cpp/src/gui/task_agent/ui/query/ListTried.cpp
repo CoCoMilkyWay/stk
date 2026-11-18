@@ -1,4 +1,5 @@
 // list_tried 的展示: 候选表 (结局 / 最佳权重统计 / 是否达门槛 / 模板; 悬浮看结局全文)
+#include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Query.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 

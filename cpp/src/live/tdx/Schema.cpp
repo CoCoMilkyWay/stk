@@ -72,7 +72,7 @@ Schema schema(const mem::Heap &h) {
     if (text_end != std::string::npos && in_heap(h, std::string_view(b).substr(text_end + 3, kNeedle)))
       live.emplace_back(e.path(), std::move(b));
   }
-  need(live.size() == 1, strf("%s 下字典段在客户端堆里的缓存有 %zu 份", dir.string().c_str(), live.size()));
+  need(live.size() == 1, strf("%s 下字典段在客户端堆里的缓存有 %zu 份%s", dir.string().c_str(), live.size(), live.empty() ? " (客户端交易还没登录?)" : ""));
   const std::string_view b = live[0].second;
   Schema s{live[0].first.string(), {}, {}, {}};
 

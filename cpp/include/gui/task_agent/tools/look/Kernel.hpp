@@ -128,22 +128,7 @@ inline double quant(const std::vector<double> &sorted, double p) {
   const size_t i = static_cast<size_t>(x);
   return i + 1 < sorted.size() ? sorted[i] + (sorted[i + 1] - sorted[i]) * (x - static_cast<double>(i)) : sorted[i];
 }
-inline std::vector<double> ranks_of(const std::vector<double> &x) {
-  std::vector<size_t> ix(x.size());
-  std::iota(ix.begin(), ix.end(), size_t{0});
-  std::sort(ix.begin(), ix.end(), [&](size_t a, size_t b) { return x[a] < x[b]; });
-  std::vector<double> r(x.size());
-  for (size_t i = 0; i < ix.size();) {
-    size_t j = i;
-    while (j + 1 < ix.size() && x[ix[j + 1]] == x[ix[i]])
-      ++j;
-    for (size_t k = i; k <= j; ++k)
-      r[ix[k]] = 0.5 * static_cast<double>(i + j);
-    i = j + 1;
-  }
-  return r;
-}
-inline double pearson(const std::vector<double> &a, const std::vector<double> &b) {
+inline double pearson(std::span<const double> a, std::span<const double> b) {
   const double ma = std::accumulate(a.begin(), a.end(), 0.0) / static_cast<double>(a.size());
   const double mb = std::accumulate(b.begin(), b.end(), 0.0) / static_cast<double>(b.size());
   double sab = 0.0, saa = 0.0, sbb = 0.0;
@@ -151,7 +136,57 @@ inline double pearson(const std::vector<double> &a, const std::vector<double> &b
     sab += (a[i] - ma) * (b[i] - mb), saa += (a[i] - ma) * (a[i] - ma), sbb += (b[i] - mb) * (b[i] - mb);
   return saa > 0.0 && sbb > 0.0 ? sab / std::sqrt(saa * sbb) : kNaN;
 }
-inline double spearman(const std::vector<double> &a, const std::vector<double> &b) { return a.size() >= 3 ? pearson(ranks_of(a), ranks_of(b)) : kNaN; }
+
+// 线程内复用的零堆分配秩 / 相关 / 近似分层工作区
+struct RankScratch {
+  std::vector<size_t> ix;
+  std::vector<double> a, b, tmp;
+
+  void rank_into(std::span<const double> x, std::vector<double> &out, bool center = false) {
+    const size_t n = x.size();
+    ix.resize(n), out.resize(n);
+    std::iota(ix.begin(), ix.end(), size_t{0});
+    std::sort(ix.begin(), ix.end(), [&](size_t i, size_t j) { return x[i] < x[j]; });
+    const double shift = center ? 0.5 * static_cast<double>(n - 1) : 0.0;
+    for (size_t i = 0; i < n;) {
+      size_t j = i;
+      while (j + 1 < n && x[ix[j + 1]] == x[ix[i]])
+        ++j;
+      const double rv = 0.5 * static_cast<double>(i + j) - shift;
+      for (size_t k = i; k <= j; ++k)
+        out[ix[k]] = rv;
+      i = j + 1;
+    }
+  }
+  double spearman(std::span<const double> x, std::span<const double> y) {
+    if (x.size() < 3)
+      return kNaN;
+    rank_into(x, a), rank_into(y, b);
+    return pearson(a, b);
+  }
+  bool approx_ranked(std::span<const double> rx, std::span<const double> y, std::span<const double> ry, st::Row &w) const {
+    const size_t n = rx.size();
+    if (n < static_cast<size_t>(kMinCs))
+      return false;
+    w = {};
+    double s[kGroups] = {};
+    for (size_t i = 0; i < n; ++i) {
+      const int k = std::min(static_cast<int>(rx[i] * kGroups / static_cast<double>(n)), kG20);
+      s[k] += y[i], ++w.cnt[k];
+    }
+    for (int k = 0; k < kGroups; ++k)
+      w.grp[k] = static_cast<float>(w.cnt[k] ? s[k] / w.cnt[k] : 0.0);
+    w.ric = static_cast<float>(pearson(rx, ry));
+    w.ok = 1;
+    return true;
+  }
+  bool approx_row(std::span<const double> x, std::span<const double> y, st::Row &w) {
+    if (x.size() < static_cast<size_t>(kMinCs))
+      return false;
+    rank_into(x, a), rank_into(y, b);
+    return approx_ranked(a, y, b, w);
+  }
+};
 
 // 升序样本在 [p1, p99] 间等宽分箱的频数 (界写进 lo / hi)
 inline std::vector<double> hist_of(const std::vector<double> &sorted, double &lo, double &hi) {
@@ -284,30 +319,19 @@ struct Layer {
       v[static_cast<size_t>(k)] = grp(k);
     return v;
   }
-  double mono() const { return ok ? st::mono_of(grps().data(), kGroups) : kNaN; }
+  double mono() const {
+    if (!ok)
+      return kNaN;
+    double v[kGroups];
+    for (int k = 0; k < kGroups; ++k)
+      v[k] = grp(k);
+    return st::mono_of(v, kGroups);
+  }
   double ls() const { return (grp(kG20) - grp(kG1)) / 2.0; }
   double held(int k) const { return ok ? cnt[k] / ok : kNaN; }
 };
 
 inline LayerRow row_of(std::string name, const Layer &b) { return {std::move(name), b.rows, b.ok, b.mono(), b.ls(), b.ric.mean(), b.grps()}; }
-
-inline bool approx_row(const std::vector<double> &x, const std::vector<double> &y, st::Row &w) {
-  const size_t n = x.size();
-  if (n < static_cast<size_t>(kMinCs))
-    return false;
-  const std::vector<double> rx = ranks_of(x);
-  w = {};
-  double s[kGroups] = {};
-  for (size_t i = 0; i < n; ++i) {
-    const int k = std::min(static_cast<int>(rx[i] * kGroups / static_cast<double>(n)), kG20);
-    s[k] += y[i], ++w.cnt[k];
-  }
-  for (int k = 0; k < kGroups; ++k)
-    w.grp[k] = static_cast<float>(w.cnt[k] ? s[k] / w.cnt[k] : 0.0);
-  w.ric = static_cast<float>(pearson(rx, ranks_of(y)));
-  w.ok = 1;
-  return true;
-}
 
 // 分层行的原文表 (列: 名 / 行 / 有统计 / mono / 多空 / rIC / G1 / G10 / G20 / 20 组火花线)
 inline text::Table layer_table(const char *first) { return text::Table({first, "行", "有统计", "mono", "多空 bp", "rIC", "G1 bp", "G10 bp", "G20 bp", "20 组"}); }
@@ -485,27 +509,6 @@ inline std::string tags_of(uint32_t m) {
 }
 
 // ---- 参数校验与解析 ----
-inline std::string closed_err(const ViewEnv &env, const Engine::FeatureTable &ft, const fx::Expr &e) {
-  std::vector<std::string> seen;
-  std::string leaves, ops;
-  for (const fx::Node &x : e.nodes) {
-    const std::string name = x.op >= 0 ? fx::kOps[x.op].name : x.feat;
-    const bool ok = x.target || (x.op >= 0 ? env.open_ops[static_cast<size_t>(x.op)] : env.open_leaves.contains(x.feat));
-    if (ok || std::find(seen.begin(), seen.end(), name) != seen.end())
-      continue;
-    seen.push_back(name);
-    if (x.op >= 0) {
-      ops += (ops.empty() ? "" : ", ") + name;
-    } else {
-      const bool is_lob = ft.x.find(x.feat)->tier == TierId::Lob;
-      leaves += (leaves.empty() ? "" : ", ") + name + (is_lob && !env.lob_open ? " (lob 来源未开放)" : "");
-    }
-  }
-  if (leaves.empty() && ops.empty())
-    return {};
-  return "用了本会话未开放的" + (leaves.empty() ? "" : " 叶: " + leaves + ";") + (ops.empty() ? "" : " 算子: " + ops + ";") + " 只能用系统提示特征表与算子表里列的";
-}
-
 inline bool parse_concrete(const Engine::FeatureTable &ft, const std::string &src, fx::Expr &e, std::string &err) {
   if (!fx::parse(src, ft.lookup(), ft.seg, e, err))
     return false;
@@ -538,7 +541,7 @@ inline bool resolve_factor(const std::string &arg, const ViewEnv &env, FactorSpe
     src = it->second.expr, label = it->second.label, sign = it->second.sign;
   }
   if (!parse_concrete(ft, src, out.e, err) || !fx::root_frame(out.e, ft.seg, out.frame, err) || !ft.check_grid(out.e, err) ||
-      !(err = closed_err(env, ft, out.e)).empty()) {
+      !(err = env.opened.closed_err(ft, out.e)).empty()) {
     err = std::string("factor: ") + (it != env.cands.end() ? "" : "不是候选英文名, 按根式解析: ") + err;
     return false;
   }
@@ -560,7 +563,7 @@ inline bool resolve_feats(const std::vector<std::string> &xs, const ViewEnv &env
   for (const std::string &x : xs) {
     FeatSpec f{.raw = x};
     if (parse_concrete(ft, x, f.e, f.err))
-      f.err = closed_err(env, ft, f.e);
+      f.err = env.opened.closed_err(ft, f.e);
     any |= f.err.empty();
     out.push_back(std::move(f));
   }

@@ -13,19 +13,25 @@
 
 namespace GUI::Agent {
 
-struct FinishRes : Res {
+struct FinishRes final : Res {
   std::string text() const override;
   void draw() const override;
 };
 
-struct AskRes : Res {
-  mutable Asked a; // 展示只读 (控件禁用)
+struct AskRes final : Res {
+  Asked asked;
+  AskRes() = default;
+  explicit AskRes(Asked a) : asked(std::move(a)) {}
+  explicit AskRes(Questions q) : asked(std::move(q)) {}
   std::string text() const override;
   void draw() const override;
 };
+
+inline AskRes *AsAsk(Act &a) { return a.call.tool == Tool::AskHuman ? static_cast<AskRes *>(a.out.res.get()) : nullptr; }
+inline const AskRes *AsAsk(const Act &a) { return a.call.tool == Tool::AskHuman ? static_cast<const AskRes *>(a.out.res.get()) : nullptr; }
 
 ToolOut Finish(const Call &c, Seat &s);
-ToolOut AskHuman(const Asked &a);
+ToolOut AskHuman(std::shared_ptr<AskRes> r);
 
 nlohmann::ordered_json SampleFinish(Feed &p);
 nlohmann::ordered_json SampleAskHuman(Feed &p);

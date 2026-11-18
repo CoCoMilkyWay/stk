@@ -5,7 +5,7 @@ namespace GUI::Agent {
 
 using json = nlohmann::ordered_json;
 
-ToolOut RequestTool(const Call &c, Seat &s) { return FileNote(c, s, std::make_shared<ToolNoteRes>()); }
+ToolOut RequestTool(const Call &c, Seat &s) { return FileNote(c, s); }
 
 json SampleRequestTool(Feed &) {
   return {{"title", "示例: 看因子的年换手与净值"},

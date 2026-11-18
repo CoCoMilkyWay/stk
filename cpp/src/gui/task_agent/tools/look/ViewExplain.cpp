@@ -8,16 +8,9 @@ using json = nlohmann::ordered_json;
 
 namespace {
 
-std::vector<double> centered_ranks(const std::vector<double> &x) {
-  std::vector<double> r = ranks_of(x);
-  const double m = 0.5 * static_cast<double>(x.size() - 1);
-  for (double &v : r)
-    v -= m;
-  return r;
-}
-double dot(const std::vector<double> &a, const std::vector<double> &b) { return std::inner_product(a.begin(), a.end(), b.begin(), 0.0); }
+double dot(std::span<const double> a, std::span<const double> b) { return std::inner_product(a.begin(), a.end(), b.begin(), 0.0); }
 
-std::vector<double> resid_of(const std::vector<std::vector<double>> &X, const std::vector<double> &y) {
+void resid_into(const std::vector<std::vector<double>> &X, std::span<const double> y, std::vector<double> &res) {
   const size_t m = X.size();
   std::vector<double> g(m * m), h(m), beta(m);
   double tr = 0.0;
@@ -41,11 +34,10 @@ std::vector<double> resid_of(const std::vector<std::vector<double>> &X, const st
       s -= g[p * m + j] * beta[j];
     beta[p] = s / g[p * m + p];
   }
-  std::vector<double> res = y;
+  res.assign(y.begin(), y.end());
   for (size_t j = 0; j < m; ++j)
     for (size_t i = 0; i < res.size(); ++i)
       res[i] -= beta[j] * X[j][i];
-  return res;
 }
 
 } // namespace
@@ -121,7 +113,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
                 .feats = &feats,
                 .bars = bit(Close) | bit(High) | bit(Low) | bit(Volume) | bit(Amount) | bit(PreClose),
                 .extra_front = seg > 1 ? 7 : 22,
-                .extra_work = sizeof(double)};
+                .extra_work = sizeof(double) + (seg > 1 ? 3.0 * sizeof(float) : 0.0)};
   const Engine::Rc rc = run_stream(
       env, F, cfg, dates, job, err,
       [&](const std::vector<misc::Ymd> &ds, size_t &, size_t &, std::string &why) {
@@ -149,11 +141,24 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
         const Px px(cv.blk, cv.bm, cfg.bars, env.open);
         const std::vector<float> e = block_excess_steps(F.S.ex, cv.blk, px, cv.blk.land0());
         std::vector<double> cum(e.size());
+        std::vector<float> damt(seg > 1 ? e.size() : 0), dhi(seg > 1 ? e.size() : 0), dlo(seg > 1 ? e.size() : 0);
         F.S.ex.rows(A, [&](int a0, int a1, int) {
           for (int a = a0; a < a1; ++a) {
-            double acc = 0.0;
-            for (int t = 0; t < T; ++t)
-              cum[static_cast<size_t>(t) * static_cast<size_t>(A) + static_cast<size_t>(a)] = acc += e[static_cast<size_t>(t) * static_cast<size_t>(A) + static_cast<size_t>(a)];
+            double acc = 0.0, amt_s = 0.0;
+            float hi = -INFINITY, lo = INFINITY;
+            for (int t = 0; t < T; ++t) {
+              const size_t k = static_cast<size_t>(t) * static_cast<size_t>(A) + static_cast<size_t>(a);
+              cum[k] = acc += e[k];
+              if (seg <= 1)
+                continue;
+              if (t % seg == 0)
+                amt_s = 0.0, hi = -INFINITY, lo = INFINITY;
+              if (const double av = px(Amount, t, a); std::isfinite(av))
+                amt_s += av;
+              if (px.traded(t, a))
+                hi = std::fmax(hi, static_cast<float>(px(High, t, a))), lo = std::fmin(lo, static_cast<float>(px(Low, t, a)));
+              damt[k] = static_cast<float>(amt_s), dhi[k] = hi, dlo[k] = lo;
+            }
           }
         });
         const auto ret = [&](int a, int t1, int t0) {
@@ -174,8 +179,9 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
 
         F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
           ThreadAcc &loc = ta[static_cast<size_t>(tid)];
-          std::vector<double> fxv, ey, one(m);
+          std::vector<double> fxv, ey, rf, rf_raw, ry, res, one(m);
           std::vector<std::vector<double>> bv(m), X(m);
+          RankScratch rs;
           st::Row w;
           for (int r = r0; r < r1; ++r) {
             const int t = cv.t_lo + r, u = cv.u0 + r;
@@ -199,20 +205,13 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
               for (const int rw : ret_lags)
                 one[col++] = ret(a, t, t - rw);
               if (seg > 1) {
-                double damt = 0.0, dhi = -INFINITY, dlo = INFINITY;
-                for (int q = t_day0; q <= t; ++q) {
-                  if (const double av = px(Amount, q, a); std::isfinite(av))
-                    damt += av;
-                  if (px.traded(q, a))
-                    dhi = std::fmax(dhi, px(High, q, a)), dlo = std::fmin(dlo, px(Low, q, a));
-                }
-                const double pre = px.pre(t, a), cl = px(Close, t, a);
+                const double pre = px.pre(t, a), cl = px(Close, t, a), hi = dhi[k], lo = dlo[k];
                 one[col++] = ret(a, t, t_day0 - 1);
                 one[col++] = ret(a, t_day0 - 1, t_day0 - 1 - seg);
                 one[col++] = ret(a, t_day0 - 1, t_day0 - 1 - 5 * seg);
-                one[col++] = damt;
-                one[col++] = dhi > dlo ? (dhi - dlo) / pre : 0.0;
-                one[col++] = dhi > dlo ? (cl - dlo) / (dhi - dlo) : 0.5;
+                one[col++] = damt[k];
+                one[col++] = hi > lo ? (hi - lo) / pre : 0.0;
+                one[col++] = hi > lo ? (cl - lo) / (hi - lo) : 0.5;
                 one[col++] = cl;
               } else {
                 one[col++] = px(Amount, t, a);
@@ -236,25 +235,32 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
             }
             if (fxv.size() < static_cast<size_t>(kMinCs))
               continue;
-            const std::vector<double> rf = centered_ranks(fxv), ry = ranks_of(ey);
+            rs.rank_into(fxv, rf_raw);
+            rs.rank_into(ey, ry);
+            rf.resize(rf_raw.size());
+            const double shift = 0.5 * static_cast<double>(rf_raw.size() - 1);
+            for (size_t i = 0; i < rf_raw.size(); ++i)
+              rf[i] = rf_raw[i] - shift;
             loc.fric.add(pearson(rf, ry));
+            res.resize(rf.size());
             for (size_t j = 0; j < m; ++j) {
-              X[j] = centered_ranks(bv[j]);
+              rs.rank_into(bv[j], X[j], true);
               loc.corr[j].add(pearson(rf, X[j])), loc.bric[j].add(pearson(X[j], ry));
               const double xx = dot(X[j], X[j]), beta = xx > 0.0 ? dot(X[j], rf) / xx : 0.0;
-              std::vector<double> res = rf;
               for (size_t i = 0; i < res.size(); ++i)
-                res[i] -= beta * X[j][i];
-              loc.sric[j].add(pearson(ranks_of(res), ry));
+                res[i] = rf[i] - beta * X[j][i];
+              rs.rank_into(res, rs.a);
+              loc.sric[j].add(pearson(rs.a, ry));
             }
-            const std::vector<double> res = resid_of(X, rf);
+            resid_into(X, rf, res);
             const double tot = dot(rf, rf);
             if (tot > 0.0)
               loc.r2.add(1.0 - dot(res, res) / tot);
-            loc.rric.add(pearson(ranks_of(res), ry));
-            if (approx_row(fxv, ey, w))
+            rs.rank_into(res, rs.a);
+            loc.rric.add(pearson(rs.a, ry));
+            if (rs.approx_ranked(rf_raw, ey, ry, w))
               loc.orig.add(w);
-            if (approx_row(res, ey, w))
+            if (rs.approx_ranked(rs.a, ey, ry, w))
               loc.rest.add(w);
           }
         });
