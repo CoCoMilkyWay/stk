@@ -124,10 +124,11 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
             while (hi < (int)t.tabs.size() && std::string_view(t.tabs[hi]).starts_with(g))
               ++hi;
             ImGuiStorage *st = ImGui::GetStateStorage();
-            const ImGuiID key = ImGui::GetID(("TaskGroupOpen_" + std::to_string(i) + "_" + std::to_string(j)).c_str());
+            // 组的身份 = 整段前缀 g (外层组与其首个子组同起于子行 j, 不能拿 j 作键)
+            const ImGuiID key = ImGui::GetID(("TaskGroupOpen_" + std::to_string(i) + "_" + std::string(g)).c_str());
             const bool open = st->GetBool(key, path.size() > 1);
             char group_label[256];
-            snprintf(group_label, sizeof(group_label), "  %s %.*s###TaskGroup_%d_%d", open ? "▾" : "▸", (int)(g.size() - 1 - from), g.data() + from, i, j);
+            snprintf(group_label, sizeof(group_label), "  %s %.*s###TaskGroup_%d_%.*s", open ? "▾" : "▸", (int)(g.size() - 1 - from), g.data() + from, i, (int)g.size(), g.data());
             if (ImGui::Selectable(group_label, tree.selected == i && t.selected_tab >= j && t.selected_tab < hi))
               st->SetBool(key, !open);
             DrawStatus(SpanStatus(data, t, j, hi));
