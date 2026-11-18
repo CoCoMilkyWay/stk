@@ -227,6 +227,8 @@ ToolOut ViewResponse(const Call &c, Bay &bay) {
   return Done(std::move(res));
 }
 
-json SampleViewResponse(Feed &p) { return {{"factor", p.factor()}, {"side", p.coin(0.5) ? "top" : "bottom"}, {"split", p.coin(0.3) ? "tod" : "none"}}; }
+json SampleViewResponse(Feed &p) {
+  return {{"factor", p.factor()}, {"side", p.coin(0.5) ? "top" : "bottom"}, {"split", p.ctx.seg > 1 && p.coin(0.3) ? "tod" : "none"}};
+}
 
 } // namespace GUI::Agent

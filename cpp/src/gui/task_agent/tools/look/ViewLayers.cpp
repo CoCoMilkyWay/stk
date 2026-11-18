@@ -239,8 +239,8 @@ std::string RepLayers(const std::string &expr, int sign, const ViewEnv &env, Eng
 }
 
 json SampleViewLayers(Feed &p) {
-  static const char *kSplits[] = {"none", "tod", "month"};
-  return {{"factor", p.factor()}, {"split", kSplits[p.below(3)]}, {"cond", p.coin(0.3) ? p.leaf() : std::string()}};
+  static const char *kSplits[] = {"none", "month", "tod"};
+  return {{"factor", p.factor()}, {"split", kSplits[p.below(p.ctx.seg > 1 ? 3 : 2)]}, {"cond", p.coin(0.3) ? p.leaf() : std::string()}};
 }
 
 } // namespace GUI::Agent

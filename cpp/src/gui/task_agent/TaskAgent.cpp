@@ -79,11 +79,10 @@ constexpr int kBackendN = static_cast<int>(kNum<llm::Backend>); // 界面按下�
 
 bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
-// Mine / Tools / Config 页的选项 (ui.json 读写同一份字段清单): 作用域 (含开放的叶 / 算子) / 连接 / 模型 / 评估后端 / 预算 (下次 New / 继续生效) /
-// 入库门槛 / 可否提问 (下次 New 生效) + Tools 页的作用域 + Config 页在看的模板
+// Mine / Tools / Config 页的选项 (ui.json 读写同一份字段清单): 作用域 (Mine 与 Tools 页共用, 含开放的叶 / 算子) / 连接 / 模型 / 评估后端 / 预算 (下次 New / 继续生效) /
+// 入库门槛 / 可否提问 (下次 New 生效) + Config 页在看的模板
 struct Options {
   Scope sc;
-  Scope bench; // Tools 页的作用域 (各工具页共用, 与 Mine 页分开选)
   int backend = 0;
   std::string model; // 该后端嗅探表里的 id; 空 = 还没嗅探到
   std::array<bool, kBackendN> via_proxy = [] {
@@ -101,7 +100,7 @@ struct Options {
   int prompt = 0;  // Msg 下标
   bool operator==(const Options &) const = default;
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, bench, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, budget, ask, prompt)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, budget, ask, prompt)
 
 llm::Net net_of(const Options &o, int backend) { return {o.via_proxy[backend], o.proxy_host, o.proxy_port}; }
 Mine::Setup setup_of(const Options &o) { return {.sc = o.sc, .gate = o.gate, .ask = o.ask}; }
@@ -219,18 +218,21 @@ bool model_ok(const Ui &s) {
   return !s.sniff.busy(b) && s.sniff.got[b].error.empty() && !s.opt.model.empty(); // 按当前连接方式嗅探成功且已选
 }
 
+// Tools 页有调用在跑 (含等研究员答)
+bool bench_busy(const Ui &s) { return s.bench && s.bench->busy(); }
+// 作用域 (含开放的叶 / 算子; Mine 与 Tools 页共用一份) 锁着: Mine 页有会话, 或 Tools 页有调用在跑
+bool scope_locked(const Ui &s) { return s.mine->held() || bench_busy(s); }
+
 // ---- 选项落盘 (output/config/agent/ui.json) ----
 bool ui_json_valid(const nlohmann::json &j) {
-  if (!j.is_object() || !j.contains("sc") || !j["sc"].is_object() || !j.contains("bench") || !j["bench"].is_object() || !j.contains("gate") ||
-      !j["gate"].is_object() || !j.contains("budget") || !j["budget"].is_object())
+  if (!j.is_object() || !j.contains("sc") || !j["sc"].is_object() || !j.contains("gate") || !j["gate"].is_object() || !j.contains("budget") ||
+      !j["budget"].is_object())
     return false;
-  const auto scope_ok = [](const nlohmann::json &sc) {
-    return sc.contains("pool") && sc["pool"].is_string() && sc.contains("level") && sc["level"].is_number_integer() && sc.contains("hold") &&
-           sc["hold"].is_number_integer() && sc.contains("lob") && sc["lob"].is_boolean() && sc.contains("years") && sc["years"].is_number_integer() &&
-           sc.contains("leaves") && sc["leaves"].is_object() && sc.contains("ops") && sc["ops"].is_object();
-  };
-  const auto &gt = j["gate"], &bg = j["budget"];
-  return scope_ok(j["sc"]) && scope_ok(j["bench"]) && gt.contains("mono") && gt["mono"].is_number() &&
+  const auto &sc = j["sc"], &gt = j["gate"], &bg = j["budget"];
+  const bool scope_ok = sc.contains("pool") && sc["pool"].is_string() && sc.contains("level") && sc["level"].is_number_integer() && sc.contains("hold") &&
+                        sc["hold"].is_number_integer() && sc.contains("lob") && sc["lob"].is_boolean() && sc.contains("years") && sc["years"].is_number_integer() &&
+                        sc.contains("leaves") && sc["leaves"].is_object() && sc.contains("ops") && sc["ops"].is_object();
+  return scope_ok && gt.contains("mono") && gt["mono"].is_number() &&
          gt.contains("ric") && gt["ric"].is_number() && bg.contains("rounds") && bg["rounds"].is_number_integer() && bg.contains("minutes") &&
          bg["minutes"].is_number_integer() && bg.contains("ktokens") && bg["ktokens"].is_number_integer() && j.contains("backend") &&
          j["backend"].is_number_integer() && j.contains("model") && j["model"].is_string() && j.contains("via_proxy") && j["via_proxy"].is_array() &&
@@ -250,7 +252,7 @@ void load_ui(Ui &s) {
   }
   const Options &o = s.opt;
   ok = ok && o.backend >= 0 && o.backend < kBackendN && o.proxy_port > 0 && o.proxy_port < 65536 && o.gpu >= -1 && o.gpu <= 1 &&
-       o.prompt >= 0 && o.prompt < static_cast<int>(kNum<Msg>) && o.sc.years >= 1 && o.bench.years >= 1 && o.budget.rounds >= 0 && o.budget.minutes >= 0 && o.budget.ktokens >= 0;
+       o.prompt >= 0 && o.prompt < static_cast<int>(kNum<Msg>) && o.sc.years >= 1 && o.budget.rounds >= 0 && o.budget.minutes >= 0 && o.budget.ktokens >= 0;
   if (!ok)
     s.opt = Options{};
   if (!catalog::gpu())
@@ -380,10 +382,10 @@ void session_row(const SharedData &data, Ui &s) {
   const bool keyed = has_key(o.backend);
   const bool bound = m.lab.scope() == o.sc;
   const bool has_leaves = bound && !m.lab.ctx().leaves.empty(), has_ops = bound && !m.lab.ctx().ops.empty();
-  const char *llm_not = !keyed                       ? "所选后端的 key 未填 (output/config/agent/keys.json)"
-                        : !model_ok(s)               ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
-                        : s.bench && s.bench->busy() ? "Tools 页的调用在跑 (不并跑, 等它做完或取消)"
-                                                     : nullptr;
+  const char *llm_not = !keyed          ? "所选后端的 key 未填 (output/config/agent/keys.json)"
+                        : !model_ok(s)  ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
+                        : bench_busy(s) ? "Tools 页的调用在跑 (不并跑, 等它做完或取消)"
+                                        : nullptr;
 
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
@@ -418,7 +420,7 @@ void session_row(const SharedData &data, Ui &s) {
               : "开一段自检会话: 同样的系统提示, 首条换成 test 模板, 让 agent 把每个工具都调一遍, 问题记 report_issue, 末了总评\n"
                 "候选 / 日志 / 全局记录进 global/test 目录, submit_factor 只查门槛不拷进正式库");
   ImGui::SameLine();
-  ImGui::BeginDisabled(m.live() || !m.idle());
+  ImGui::BeginDisabled(m.live() || !m.idle() || bench_busy(s));
   if (ImGui::Button("载入", ImVec2(60, 0))) {
     s.saved = SavedSessions(o.sc);
     ImGui::OpenPopup("##saved");
@@ -1728,7 +1730,7 @@ void remark_panel(Ui &s, const Mine &m) {
 // 刚进 Choose 切回过程并滚到底 (问题在那); 要跳到某个调用也切回过程; 回退确认框浮在页上
 void render_mine(SharedData &data, Ui &s) {
   Mine &m = *s.mine;
-  scope_row(data, s.opt.sc, s.pool_rows, m.lab, m.held(), "1. Scope:");
+  scope_row(data, s.opt.sc, s.pool_rows, m.lab, scope_locked(s), "1. Scope:");
   session_row(data, s);
   m.chat.live(s.chat_live);
   m.lab.live(s.lab_live);
@@ -1781,11 +1783,11 @@ void render_mine(SharedData &data, Ui &s) {
   const std::string leaves = "特征 (" + std::to_string(leaves_on) + "/" + std::to_string(leaves_n) + ")###leaves";
   const std::string ops = "算子 (" + std::to_string(ops_on) + "/" + std::to_string(v.ctx.all_ops.size()) + ")###ops";
   if (ImGui::BeginTabItem(leaves.c_str())) {
-    leaves_panel(s, v.ctx, m.held());
+    leaves_panel(s, v.ctx, scope_locked(s));
     ImGui::EndTabItem();
   }
   if (ImGui::BeginTabItem(ops.c_str())) {
-    ops_panel(s, v.ctx, m.held());
+    ops_panel(s, v.ctx, scope_locked(s));
     ImGui::EndTabItem();
   }
   const std::string tools = "工具 (" + std::to_string(kNum<Tool>) + ")###tools";
@@ -1999,12 +2001,11 @@ TaskHandle CreateAgentTask() {
     }
     const std::vector<Choice> pools = catalog::pools();
     const std::vector<Choice> lvs = catalog::levels();
-    for (Scope *sc : {&s.opt.sc, &s.opt.bench}) {
-      if (std::none_of(pools.begin(), pools.end(), [&](const Choice &p) { return p.name == sc->pool; }))
-        sc->pool = pools.front().name;
-      if (std::none_of(lvs.begin(), lvs.end(), [&](const Choice &l) { return l.key == sc->level; }))
-        sc->level = lvs.front().key;
-    }
+    Scope &sc = s.opt.sc;
+    if (std::none_of(pools.begin(), pools.end(), [&](const Choice &p) { return p.name == sc.pool; }))
+      sc.pool = pools.front().name;
+    if (std::none_of(lvs.begin(), lvs.end(), [&](const Choice &l) { return l.key == sc.level; }))
+      sc.level = lvs.front().key;
     ImGui::BeginChild("AgentTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     switch (idx) {
@@ -2017,7 +2018,7 @@ TaskHandle CreateAgentTask() {
     default:
       if (!s.bench)
         s.bench = std::make_unique<Bench>();
-      s.bench->draw(data, tool_of(idx), s.opt.bench, s.opt.gate, s.opt.gpu == 1, s.mine->live() || !s.mine->idle());
+      s.bench->draw(data, tool_of(idx), s.opt.sc, s.opt.gate, s.opt.gpu == 1, s.mine->live() || !s.mine->idle(), s.mine->held());
       break;
     }
     ImGui::EndChild();

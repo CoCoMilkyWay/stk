@@ -151,9 +151,10 @@ ToolOut ViewStockDays(const Call &c, Bay &bay) {
 }
 
 json SampleViewStockDays(Feed &p) {
-  json j = {{"code", p.code()}, {"factor", p.coin(0.6) ? p.factor() : std::string()}, {"exprs", json::array()}};
+  const Spot s = p.spot();
+  json j = {{"code", s.code}, {"factor", p.coin(0.6) ? p.factor() : std::string()}, {"exprs", p.leaves(p.coin(0.4) ? 1 : 0)}};
   if (p.coin(0.5))
-    j["to"] = p.day();
+    j["to"] = s.day;
   return j;
 }
 

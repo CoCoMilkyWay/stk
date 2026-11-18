@@ -716,7 +716,7 @@ std::vector<Seen> SeenCalls(const Scope &sc, Tool t) {
     for (size_t i = 0; i < rs.size(); ++i)
       for (size_t j = 0; j < rs[i].acts.size(); ++j)
         if (const Act &a = rs[i].acts[j]; a.call.tool == t && a.span.ended())
-          out.push_back({s.stamp, s.test, {static_cast<int>(i) + 1, static_cast<int>(j) + 1}, a.call.args, a.out.text, a.out.ok});
+          out.push_back({s.dir, s.stamp, s.test, {static_cast<int>(i) + 1, static_cast<int>(j) + 1}, a.call.args, a.out.text, a.out.ok});
   }
   return out;
 }

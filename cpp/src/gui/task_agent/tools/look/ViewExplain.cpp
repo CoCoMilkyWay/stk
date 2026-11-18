@@ -289,11 +289,6 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
   return Done(std::move(res));
 }
 
-json SampleViewExplain(Feed &p) {
-  json xs = json::array();
-  for (int i = 0, n = p.below(3); i < n; ++i)
-    xs.push_back(p.leaf());
-  return {{"factor", p.factor()}, {"exprs", xs}};
-}
+json SampleViewExplain(Feed &p) { return {{"factor", p.factor()}, {"exprs", p.leaves(p.below(3))}}; }
 
 } // namespace GUI::Agent

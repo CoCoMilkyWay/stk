@@ -172,6 +172,8 @@ struct Context {
   std::vector<Result> library;
   std::vector<int> days;          // 评估期交易日 YYYYMMDD (工作台随机输入的取材)
   std::vector<std::string> codes; // 池轴上的代码 (同上)
+  std::vector<uint8_t> traded;    // [days × codes] 当日有逐笔 (逐笔目录里没有的日子全记 1; 同上)
+  std::string grid;               // 网格层在叶名里的层段 (档.<层>.列; 同上: 因子须含本层的叶)
 };
 
 struct Gate {

@@ -381,11 +381,6 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
   return Done(std::move(r));
 }
 
-json SampleViewFeature(Feed &p) {
-  json xs = json::array();
-  for (int i = 0, n = 1 + p.below(3); i < n; ++i)
-    xs.push_back(p.leaf());
-  return {{"exprs", xs}};
-}
+json SampleViewFeature(Feed &p) { return {{"exprs", p.leaves(1 + p.below(3))}}; }
 
 } // namespace GUI::Agent

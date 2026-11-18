@@ -172,11 +172,11 @@ struct Saved {
   nlohmann::ordered_json brief;
 };
 std::vector<Saved> SavedSessions(const Scope &sc);
-std::vector<Round> TimelineOf(const std::string &dir); // 存过的会话的时间线 (工作台的快照取它的前 k 轮)
+std::vector<Round> TimelineOf(const std::string &dir); // 存过的会话的时间线 (工作台载入日志时取那次调用之前的部分作快照)
 
 // 存过的会话里某个工具做完的调用 (工作台 "载入日志" 的输入, 带当时交给 agent 的原文作对照)
 struct Seen {
-  std::string stamp;
+  std::string dir, stamp;
   bool test = false;
   Ref at;
   nlohmann::ordered_json args;

@@ -244,11 +244,11 @@ json SampleViewTrades(Feed &p) {
   static const char *kMerges[] = {"none", "run", "day"};
   json j = {{"factor", p.factor()}, {"side", p.coin(0.5) ? "top" : "bottom"}, {"sort", kSorts[p.below(3)]}, {"n", 6 + p.below(10)}, {"merge", kMerges[p.below(3)]}};
   if (p.coin(0.3) && !p.ctx.days.empty()) {
-    const std::string a = p.day(), b = p.day();
-    j["from"] = std::min(a, b), j["to"] = std::max(a, b);
+    const auto [a, b] = p.span(20, 60);
+    j["from"] = a, j["to"] = b;
   }
-  if (p.coin(0.2) && p.ctx.clock.size() > 1)
-    j["tod"] = std::string("14:30-15:00");
+  if (p.coin(0.2) && p.ctx.seg > 1)
+    j["tod"] = p.tod(std::max(1, (p.ctx.seg - p.ctx.open) / 4));
   return j;
 }
 

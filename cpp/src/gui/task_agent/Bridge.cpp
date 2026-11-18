@@ -8,6 +8,7 @@
 #include "factor/Expr.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/Search/Contract.hpp"
+#include "features/Storage/FeatureLevels.hpp"
 #include "features/Storage/FeatureLib.hpp"
 #include "features/TimeIndex.hpp"
 #include "fundamental/AssetAxis.hpp"
@@ -15,6 +16,7 @@
 #include "gui/engine/Load.hpp"
 #include "gui/util/PoolTip.hpp"
 #include "misc/date.hpp"
+#include "orders/OrdersDay.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -612,12 +614,21 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   Engine::Domain dm;
   const Period base = period_of(fsc, *ft, opened_ids, &dm);
   if (base.days > 0) {
-    for (const misc::Ymd d : dm.stat_dates())
+    const std::vector<misc::Ymd> ds = dm.stat_dates();
+    for (const misc::Ymd d : ds)
       c.days.push_back(static_cast<int>(d));
     const AssetAxis &ax = asset_axis();
-    for (size_t i = 0; i < dm.rs.axis.size(); ++i)
+    const size_t n = dm.rs.axis.size();
+    for (size_t i = 0; i < n; ++i)
       c.codes.push_back(ax.code(dm.rs.axis.global(i)));
+    c.traded.assign(ds.size() * n, 1);
+    if (const std::shared_ptr<const OrdersCatalog> oc = data.asset.catalog())
+      for (size_t d = 0; d < ds.size(); ++d)
+        if (const size_t di = oc->day_idx(ds[d]); di != OrdersCatalog::kNoDay)
+          for (size_t i = 0; i < n; ++i)
+            c.traded[d * n + i] = !oc->at(di, dm.rs.axis.global(i)).empty();
   }
+  c.grid = kLevelToken[Engine::factor_level(ft->lv).lvl];
   c.years = sc.years;
   c.window = base.days > 0 ? base.text() : "未就绪";
   c.first = static_cast<int>(base.start), c.last = static_cast<int>(base.end);

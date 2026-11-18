@@ -29,22 +29,23 @@ using Clock = std::chrono::steady_clock;
 struct Bench::Impl : Rig {
   std::mt19937_64 rng{std::random_device{}()};
   std::vector<catalog::PoolRow> pool_rows;
-  // 快照: 一段存过的会话的前 k 轮 (空 = 空白)
-  std::vector<Saved> saved;
-  std::string snap_dir, snap_stamp;
-  std::vector<Round> snap;
-  int snap_k = 0;
   // 输入: 每个工具各一份
   Tool tool = Tool::ViewLayers;
   Per<Tool, json> args;
   Per<Tool, std::string> raw;
   bool json_mode = false;
-  std::string error;
-  std::string origin_pending; // 载入日志时那次调用当时的原文 (下一次 Run 带上作对照)
+  std::string json_err;
   std::vector<Seen> seen;
-  // 工作台轮的调用
-  std::vector<std::string> origin; // 与工作台轮的调用一一对应
-  size_t pick = SIZE_MAX;
+  // 载入的日志调用: 快照 = 它所在会话在它之前的时间线 (前几轮 + 本轮它之前的调用; 没有 = 空白); 输入还是它的参数时, 原文栏对照它当时的原文
+  struct Loaded {
+    Tool tool;
+    Seen at;
+  };
+  std::optional<Loaded> loaded;
+  std::vector<Round> snap;
+  // 工作台轮的调用: 前 base 个是快照里本轮已有的
+  size_t base = 0;
+  std::vector<std::string> origin; // 与工作台轮的调用一一对应 (日志里当时的原文; 空 = 不是载入的)
   std::optional<size_t> running;
   bool choosing = false;
   Gate gate;
@@ -55,16 +56,35 @@ struct Bench::Impl : Rig {
   Impl() { timeline.push_back(Round{.kind = Msg::Round}); }
 
   double now() const { return std::chrono::duration<double>(Clock::now() - t0).count(); }
+  bool held() const { return running.has_value() || lab.busy(); }
   std::vector<Act> &acts() { return timeline.back().acts; }
   Seat bench_seat(size_t i) { return seat(i, gate, {}, true, gpu); }
 
   void reset() {
-    assert(!running);
+    assert(!held());
     flush();
-    timeline.assign(snap.begin(), snap.begin() + snap_k);
-    timeline.push_back(Round{.kind = Msg::Round});
+    if (snap.empty())
+      timeline.assign(1, Round{.kind = Msg::Round});
+    else
+      timeline = snap;
     restate();
-    origin.clear(), pick = SIZE_MAX;
+    base = acts().size();
+    origin.assign(base, {});
+  }
+
+  void clear() {
+    snap.clear(), loaded.reset();
+    reset();
+  }
+
+  void load(const Seen &x) {
+    std::vector<Round> rs = TimelineOf(x.dir);
+    assert(x.at.round >= 1 && static_cast<size_t>(x.at.round) <= rs.size() && x.at.call >= 1);
+    rs.resize(static_cast<size_t>(x.at.round));
+    rs.back().acts.resize(static_cast<size_t>(x.at.call - 1));
+    snap = std::move(rs), loaded = Loaded{tool, x};
+    reset();
+    args[tool] = x.args, raw[tool] = x.args.dump(2), json_err.clear();
   }
 
   Feed feed() { return {lab.ctx(), lab.results(), st.board, timeline, {round(), static_cast<int>(acts().size()) + 1}, rng}; }
@@ -73,20 +93,17 @@ struct Bench::Impl : Rig {
     Feed f = feed();
     args[tool] = SampleArgs(tool, f);
     raw[tool] = args[tool].dump(2);
-    origin_pending.clear(), error.clear();
+    json_err.clear();
   }
 
-  void run(Call c) {
+  void run(Call c, std::string org) {
     acts().push_back({.call = std::move(c)});
-    origin.push_back(std::move(origin_pending));
-    origin_pending.clear();
+    origin.push_back(std::move(org));
     const size_t i = acts().size() - 1;
-    pick = i;
     Seat s = bench_seat(i);
     const Exec at = open_act(i, s, now());
-    if (at == Exec::Sync)
-      return;
-    running = i, choosing = at == Exec::Human;
+    if (at != Exec::Sync)
+      running = i, choosing = at == Exec::Human;
   }
 
   void abort() {
@@ -124,7 +141,7 @@ struct Bench::Impl : Rig {
 Bench::Bench() : impl_(std::make_unique<Impl>()) {}
 Bench::~Bench() = default;
 void Bench::update() { impl_->poll(); }
-bool Bench::busy() const { return impl_->lab.busy(); }
+bool Bench::busy() const { return impl_->held(); }
 std::optional<Tool> Bench::running() const {
   const Impl &b = *impl_;
   return b.running ? std::optional(b.timeline.back().acts[*b.running].call.tool) : std::nullopt;
@@ -209,212 +226,217 @@ bool form(Tool t, json &args) {
 
 std::string call_line(Tool t, const json &args) { return Call{t, args}.text(80); }
 
+// 文本框填满所在栏余下的高 (下面另留 keep 行)
+float fill_lines(float keep) { return std::max(3.0f, ImGui::GetContentRegionAvail().y / ImGui::GetTextLineHeightWithSpacing() - keep); }
+
 } // namespace
 
-void Bench::draw(SharedData &data, Tool tool, Scope &sc, const Gate &gate, bool gpu, bool blocked) {
+void Bench::draw(SharedData &data, Tool tool, Scope &sc, const Gate &gate, bool gpu, bool blocked, bool pinned) {
   Impl &b = *impl_;
   if (b.tool != tool)
-    b.tool = tool, b.error.clear();
-  const bool held = b.running.has_value() || b.lab.busy();
-  // ---- 作用域 (先由作用域行把持有期校到本层可搜的; 换了就重绑, 快照与工作台的调用清空) ----
-  scope_row(data, sc, b.pool_rows, b.lab, held, "作用域:");
+    b.tool = tool, b.json_err.clear();
+  const bool held = b.held();
+  // ---- 作用域 (与 Mine 页同一份: 先由作用域行把持有期校到本层可搜的; 换了就重绑, 快照与工作台的调用清空) ----
+  scope_row(data, sc, b.pool_rows, b.lab, held || pinned, "作用域:");
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s", pinned ? "· 与 Mine 页共用, 随其会话锁定" : "· 与 Mine 页共用");
   if (!held && b.lab.scope() != sc && !catalog::holds(data, sc.level).empty()) {
     b.lab.bind(data, sc, false);
     if (!b.notes.loaded(false))
       b.notes.load(false);
-    b.snap.clear(), b.snap_dir.clear(), b.snap_stamp.clear(), b.snap_k = 0;
-    b.reset();
+    b.clear();
   }
-  const bool bound = b.lab.scope() == sc;
-  if (!bound) {
+  if (b.lab.scope() != sc) {
     ImGui::TextDisabled("该作用域未就绪 (无可搜持有期), 或调用在跑");
     return;
   }
   const Context &ctx = b.lab.ctx();
 
-  // ---- 快照 ----
-  ImGui::TextColored(kColHead, "快照:");
+  // ---- 工作台: 第几轮 / 快照 / 假设板 / 门槛 ----
+  ImGui::TextColored(kColHead, "工作台:");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(320);
+  const std::string at = b.loaded ? "快照 = " + stamp_text(b.loaded->at.stamp) + (b.loaded->at.test ? " 自检" : "") + " 会话 " + RefText(b.loaded->at.at) + " 之前" : "空白";
+  ImGui::TextDisabled("第 %d 轮 · %s · 假设 %zu · 门槛 mono ≥ %.2f, rIC ≥ %.3f (Config 页)", b.round(), at.c_str(), b.st.board.all().size(), gate.mono, gate.ric);
+  tip("会话类工具 (假设 / 判定 / 回测挂假设 / 提交 / 记录) 跑在快照上: 输入栏载入日志里的一次调用, 就取那段会话在它之前的时间线 (前几轮 + 本轮它之前的调用) 折出假设板,\n"
+      "工作台接着那一轮往下编号 (Run 的调用编号与日志里的相同, 可作 judge 的证据); 只在内存, 不落盘");
+  ImGui::SameLine();
   ImGui::BeginDisabled(held);
-  const std::string snap_label = b.snap_dir.empty() ? std::string("空白 (无假设)") : stamp_text(b.snap_stamp);
-  if (ImGui::BeginCombo("##snap", snap_label.c_str())) {
-    if (ImGui::IsWindowAppearing())
-      b.saved = SavedSessions(sc);
-    if (ImGui::Selectable("空白 (无假设)", b.snap_dir.empty())) {
-      b.snap.clear(), b.snap_dir.clear(), b.snap_stamp.clear(), b.snap_k = 0;
-      b.reset();
-    }
-    for (const Saved &x : b.saved) {
-      const std::string label = stamp_text(x.stamp) + (x.test ? " · 自检" : "") + " · " + std::to_string(x.brief.at("rounds").get<int>()) + " 轮 · 假设 " +
-                                std::to_string(x.brief.at("hyps").get<int>()) + "###" + x.dir;
-      if (ImGui::Selectable(label.c_str(), x.dir == b.snap_dir)) {
-        b.snap = TimelineOf(x.dir), b.snap_dir = x.dir, b.snap_stamp = x.stamp;
-        b.snap_k = static_cast<int>(b.snap.size());
-        b.reset();
-      }
-    }
-    ImGui::EndCombo();
-  }
-  tip("会话类工具 (假设 / 判定 / 回测挂假设 / 提交 / 记录) 跑在快照上: 取这段会话前 k 轮的假设板, 工作台自己是第 k+1 轮; 只在内存, 不落盘");
-  if (!b.snap.empty()) {
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(110);
-    if (int k = b.snap_k; ImGui::InputInt("前 k 轮##snap_k", &k)) {
-      b.snap_k = std::clamp(k, 0, static_cast<int>(b.snap.size()));
-      b.reset();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::SmallButton("清空工作台调用"))
-    b.reset();
+  if (ImGui::SmallButton("清空"))
+    b.clear();
   ImGui::EndDisabled();
-  tip("丢掉工作台轮的调用 (假设板回到快照; 已落的候选文件不动)");
-  ImGui::SameLine();
-  ImGui::TextDisabled("· 工作台 = 第 %d 轮 · 假设 %zu · 门槛 mono ≥ %.2f, rIC ≥ %.3f (Config 页)", b.round(), b.st.board.all().size(), gate.mono, gate.ric);
-  ImGui::Separator();
+  tip("丢掉工作台的调用与快照, 回到空白的第 1 轮 (已落的候选文件不动)");
 
-  // ---- 输入 / 展示 / 原文 ----
   const ToolMeta &m = def(b.tool);
   const ToolDoc &d = doc(b.tool);
-  if (b.args[b.tool].is_null())
-    b.sample();
   ImGui::TextColored(kColHead, "%s — %s", m.id, m.cn);
   ImGui::SameLine();
   ImGui::TextDisabled("(%s)", def(m.exec).cn);
   wrapped_dim(ToolText(d.desc));
   tip_long("返回: " + ToolText(d.out));
 
-  ImGui::SeparatorText("输入");
-  if (ImGui::Button("随机"))
+  // ---- 当前输入对应的调用: 校验 + 工作台里跑过同样参数的最近一次 (在问研究员的 ask_human 恒是它) ----
+  json &in = b.args[b.tool];
+  if (in.is_null())
     b.sample();
-  tip("按本作用域取材 (开放的叶 / 候选名 / 评估期交易日 / 池内代码 / 假设板) 出一组参数");
+  std::vector<std::string> errs;
+  Call cur;
+  const bool valid = b.json_err.empty() && CallOf(b.tool, in, "args", cur, errs);
+  std::optional<size_t> hit;
+  if (b.choosing && b.acts()[*b.running].call.tool == b.tool)
+    hit = b.running;
+  else if (valid)
+    for (size_t i = b.acts().size(); i-- > b.base && !hit;)
+      if (const Call &c = b.acts()[i].call; c.tool == b.tool && c.args == cur.args)
+        hit = i;
+  const bool from_log = valid && b.loaded && b.loaded->tool == b.tool && b.loaded->at.args == cur.args;
+
+  const float top = std::max(ImGui::GetContentRegionAvail().y * 0.4f, ImGui::GetTextLineHeightWithSpacing() * 12.0f);
+
+  // ---- 输入 (左): 随机 / JSON / 载入日志 → Run · Cancel · 调用 → 表单 ----
+  ImGui::BeginChild("##bench_in", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, top), ImGuiChildFlags_Borders);
+  ImGui::TextColored(kColHead, "输入");
   ImGui::SameLine();
-  if (ImGui::Button("载入日志")) {
-    b.seen = SeenCalls(sc, b.tool);
-    ImGui::OpenPopup("##seen");
-  }
-  tip("本作用域存过的会话里 agent 真调过的这个工具: 载入参数, Run 后可对照当时交给 agent 的原文");
-  if (ImGui::BeginPopup("##seen")) {
+  if (ImGui::SmallButton("随机"))
+    b.sample();
+  tip("按本作用域取材出一组用得上的参数: 开放的叶 / 候选名 (没有就拿本层的叶套开放的归一根) / 本层的行与时段 / 当日有逐笔的票 (工作台里 view_trades 列过的段优先) / 假设板");
+  ImGui::SameLine();
+  if (ImGui::Checkbox("JSON", &b.json_mode))
+    b.raw[b.tool] = in.dump(2), b.json_err.clear();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(held);
+  ImGui::SetNextItemWidth(-1);
+  const std::string log_label = from_log ? "日志 " + stamp_text(b.loaded->at.stamp) + " · " + RefText(b.loaded->at.at) : std::string("载入日志…");
+  std::optional<Seen> pick; // 选中的日志调用: 本帧画完再换快照 (换了时间线, 上面算的 hit 就作废)
+  if (ImGui::BeginCombo("##seen", log_label.c_str(), ImGuiComboFlags_HeightLarge)) {
+    if (ImGui::IsWindowAppearing())
+      b.seen = SeenCalls(sc, b.tool);
     if (b.seen.empty())
       ImGui::TextDisabled("本作用域的会话里没调过 %s", m.id);
     for (size_t i = 0; i < b.seen.size() && i < 200; ++i) {
       const Seen &x = b.seen[b.seen.size() - 1 - i];
       const std::string label = stamp_text(x.stamp) + (x.test ? " · 自检" : "") + " · " + RefText(x.at) + (x.ok ? "" : " · 没做成") + " · " + call_line(b.tool, x.args) +
                                 "###seen" + std::to_string(i);
-      if (ImGui::Selectable(label.c_str())) {
-        b.args[b.tool] = x.args, b.raw[b.tool] = x.args.dump(2), b.origin_pending = x.out, b.error.clear();
-        ImGui::CloseCurrentPopup();
-      }
+      if (ImGui::Selectable(label.c_str()))
+        pick = x;
       tip_long(x.out);
     }
-    ImGui::EndPopup();
-  }
-  ImGui::SameLine();
-  if (ImGui::Checkbox("JSON", &b.json_mode))
-    b.raw[b.tool] = b.args[b.tool].dump(2);
-  ImGui::SameLine();
-  const bool needs_scope = m.cat == Cat::Look || b.tool == Tool::EvalFactor;
-  const bool can_run = !held && !blocked && (!needs_scope || !ctx.days.empty());
-  ImGui::BeginDisabled(!can_run);
-  if (ImGui::Button("Run", ImVec2(70, 0))) {
-    std::vector<std::string> errs;
-    Call c;
-    if (CallOf(b.tool, b.args[b.tool], "args", c, errs)) {
-      b.error.clear(), b.gate = gate, b.gpu = gpu;
-      b.run(std::move(c));
-    } else {
-      b.error = text::join(errs, "\n");
-    }
+    ImGui::EndCombo();
   }
   ImGui::EndDisabled();
-  tip(blocked ? "Mine 页的会话在走 (不并跑)" : needs_scope && ctx.days.empty() ? "本作用域评估期未就绪"
-                                                                               : "按参数表校验后执行 (与会话同一条路径)");
+  tip("本作用域存过的会话里 agent 真调过的这个工具: 载入参数, 工作台换成那段会话在这次调用之前的样子 (快照); 原文栏先给它当时交给 agent 的那段, Run 后两相对照");
+
+  const bool needs_scope = m.cat == Cat::Look || b.tool == Tool::EvalFactor;
+  const bool can_run = !held && !blocked && valid && (!needs_scope || !ctx.days.empty());
+  ImGui::BeginDisabled(!can_run);
+  if (ImGui::Button("Run", ImVec2(60, 0))) {
+    b.gate = gate, b.gpu = gpu;
+    b.run(cur, from_log ? b.loaded->at.out : std::string());
+  }
+  ImGui::EndDisabled();
+  tip(blocked                           ? "Mine 页的会话在走 (不并跑)"
+      : needs_scope && ctx.days.empty() ? "本作用域评估期未就绪"
+      : !valid                          ? "参数不合 (见下)"
+                                        : "按参数表校验后执行 (与会话同一条路径)");
   ImGui::SameLine();
   ImGui::BeginDisabled(!held);
-  if (ImGui::Button("Cancel", ImVec2(70, 0)))
+  if (ImGui::Button("Cancel", ImVec2(60, 0)))
     b.abort();
   ImGui::EndDisabled();
   if (b.running && !b.choosing) {
     ImGui::SameLine();
-    ImGui::ProgressBar(static_cast<float>(b.live.frac), ImVec2(140, 0));
+    ImGui::ProgressBar(static_cast<float>(b.live.frac), ImVec2(90, 0));
   }
-  if (!b.origin_pending.empty()) {
-    ImGui::SameLine();
-    ImGui::TextColored(color(TaskStatus::Kind::Warn), "载入自日志 (Run 后可对照当时的原文)");
-  }
-  ImGui::BeginChild("##bench_in", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 10.0f), ImGuiChildFlags_Borders);
-  if (b.json_mode) {
-    if (input_multiline("##raw", b.raw[b.tool], ImVec2(-1, -1))) {
-      const json p = json::parse(b.raw[b.tool], nullptr, false);
-      if (!p.is_discarded() && p.is_object())
-        b.args[b.tool] = p, b.error.clear();
-      else
-        b.error = "JSON 不合法 (须是参数对象)";
-    }
-  } else if (form(b.tool, b.args[b.tool])) {
-    b.raw[b.tool] = b.args[b.tool].dump(2), b.error.clear();
-  }
-  ImGui::EndChild();
-  if (!b.error.empty())
-    wrapped(color(TaskStatus::Kind::Error), b.error);
-
-  // ---- 工作台轮的调用 ----
   std::vector<Act> &as = b.acts();
-  ImGui::SeparatorText("调用");
-  if (as.empty()) {
-    ImGui::TextDisabled("还没有调用: 随机或载入一组参数, 按 Run");
-    return;
-  }
-  if (b.pick >= as.size())
-    b.pick = as.size() - 1;
-  ImGui::SetNextItemWidth(-1);
   const auto label_of = [&](size_t i) {
     const Act &a = as[i];
     const std::string state = !a.span.ended() ? " · 执行中…" : (a.out.ok ? "" : " · 没做成") + std::string(" · ") + dur(a.span.len(a.span.t1));
     return RefText({b.round(), static_cast<int>(i) + 1}) + " " + a.call.text(80) + state;
   };
-  if (ImGui::BeginCombo("##acts", label_of(b.pick).c_str())) {
-    for (size_t i = as.size(); i-- > 0;)
-      if (ImGui::Selectable((label_of(i) + "###act" + std::to_string(i)).c_str(), i == b.pick))
-        b.pick = i;
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(-1);
+  const std::string preview = !valid ? std::string("(参数不合)") : hit ? label_of(*hit)
+                                                                       : "(未跑) " + cur.text(80);
+  if (ImGui::BeginCombo("##acts", preview.c_str(), ImGuiComboFlags_HeightLarge)) {
+    bool any = false;
+    for (size_t i = as.size(); i-- > b.base;) {
+      if (as[i].call.tool != b.tool)
+        continue;
+      any = true;
+      if (ImGui::Selectable((label_of(i) + "###act" + std::to_string(i)).c_str(), hit == i))
+        in = as[i].call.args, b.raw[b.tool] = in.dump(2), b.json_err.clear();
+    }
+    if (!any)
+      ImGui::TextDisabled("工作台里还没跑过 %s", m.id);
     ImGui::EndCombo();
   }
-  Act &a = as[b.pick];
-  const Ref ref{b.round(), static_cast<int>(b.pick) + 1};
-  const float w = ImGui::GetContentRegionAvail().x;
-  ImGui::BeginChild("##bench_show", ImVec2(w * 0.58f, -1), ImGuiChildFlags_Borders);
-  ImGui::TextColored(kColHead, "展示");
-  if (b.choosing && b.running == b.pick) {
-    if (edit_asked(AsAsk(a)->asked)) {
-      b.answer_act(b.pick, b.now());
-      b.running.reset(), b.choosing = false;
+  tip("调用 = 当前输入: 工作台里跑过同样参数的显示它的编号与结局, 原文与展示随之; 下拉选跑过的一次即载入它的参数");
+  if (!b.json_err.empty() || !errs.empty())
+    wrapped(color(TaskStatus::Kind::Error), b.json_err.empty() ? text::join(errs, "\n") : b.json_err);
+  ImGui::BeginChild("##form", ImVec2(0, 0));
+  if (b.json_mode) {
+    if (input_multiline("##raw", b.raw[b.tool], ImVec2(-1, -1))) {
+      const json p = json::parse(b.raw[b.tool], nullptr, false);
+      if (!p.is_discarded() && p.is_object())
+        in = p, b.json_err.clear();
+      else
+        b.json_err = "JSON 不合法 (须是参数对象)";
     }
-  } else if (!a.span.ended()) {
-    ImGui::TextColored(color(TaskStatus::Kind::Busy), "执行中… %.0f%%", b.live.frac * 100.0);
-  } else {
-    if (!a.out.ok)
-      wrapped(color(TaskStatus::Kind::Warn), a.out.res ? "没做成 (原文见右)" : a.out.text);
-    if (a.out.res)
-      a.out.res->draw();
+  } else if (form(b.tool, in)) {
+    b.raw[b.tool] = in.dump(2), b.json_err.clear();
   }
   ImGui::EndChild();
+  ImGui::EndChild();
+
+  // ---- 原文 (右): 交给 agent 的那段 (+ 日志里当时的) ----
   ImGui::SameLine();
-  ImGui::BeginChild("##bench_out", ImVec2(0, -1), ImGuiChildFlags_Borders);
+  ImGui::BeginChild("##bench_out", ImVec2(0, top), ImGuiChildFlags_Borders);
   ImGui::TextColored(kColHead, "原文 (交给 agent 的)");
-  if (a.span.ended()) {
-    const std::string title = "## " + CallTitle(a, ref);
+  if (hit && as[*hit].span.ended()) {
+    const Act &a = as[*hit];
+    const std::string title = "## " + CallTitle(a, {b.round(), static_cast<int>(*hit) + 1});
+    const std::string &org = b.origin[*hit];
     ImGui::SameLine();
     ImGui::TextDisabled("%s", chars(a.out.text).c_str());
     copy_button("复制##out", title + "\n\n" + a.out.text);
     wrapped_dim(title);
     if (!a.out.gist.empty())
       wrapped(color(TaskStatus::Kind::Ready), "研究树里留的关键数: " + a.out.gist);
-    box(a.out.text, false, 60.0f, false);
-    if (b.pick < b.origin.size() && !b.origin[b.pick].empty())
-      fold("origin", ImGuiTreeNodeFlags_None, "日志里当时交给 agent 的原文 · " + chars(b.origin[b.pick]), b.origin[b.pick], true, kBoxLines, false);
+    box(a.out.text, false, fill_lines(org.empty() ? 0.5f : 2.0f), false);
+    if (!org.empty())
+      fold("origin", ImGuiTreeNodeFlags_None, "日志里当时交给 agent 的原文 · " + chars(org), org, true, kBoxLines, false);
+  } else if (from_log) {
+    const Seen &x = b.loaded->at;
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", chars(x.out).c_str());
+    copy_button("复制##log", x.out);
+    wrapped_dim("日志里 " + RefText(x.at) + " 当时交给 agent 的 (工作台还没跑; 按 Run 重跑对照)");
+    box(x.out, true, fill_lines(0.5f), false);
+  } else {
+    ImGui::TextDisabled("%s", hit ? "执行中…" : "这组参数还没跑");
   }
   ImGui::EndChild();
+
+  // ---- 展示 (底, 全宽): 该工具独有的界面 ----
+  ImGui::BeginChild("##bench_show", ImVec2(0, -1), ImGuiChildFlags_Borders);
+  ImGui::TextColored(kColHead, "展示");
+  if (!hit) {
+    ImGui::TextDisabled("%s", valid ? "这组参数还没跑: 按 Run" : "参数不合, 改好再 Run");
+  } else if (Act &a = as[*hit]; b.choosing && b.running == hit) {
+    if (edit_asked(AsAsk(a)->asked)) {
+      b.answer_act(*hit, b.now());
+      b.running.reset(), b.choosing = false;
+    }
+  } else if (!a.span.ended()) {
+    ImGui::TextColored(color(TaskStatus::Kind::Busy), "执行中… %.0f%%", b.live.frac * 100.0);
+  } else {
+    if (!a.out.ok)
+      wrapped(color(TaskStatus::Kind::Warn), a.out.res ? "没做成 (原文见上)" : a.out.text);
+    if (a.out.res)
+      a.out.res->draw();
+  }
+  ImGui::EndChild();
+  if (pick)
+    b.load(*pick);
 }
 
 } // namespace GUI::Agent

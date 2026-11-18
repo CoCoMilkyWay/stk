@@ -179,9 +179,10 @@ ToolOut ViewStockDay(const Call &c, Bay &bay) {
 }
 
 json SampleViewStockDay(Feed &p) {
-  json j = {{"code", p.code()}, {"date", p.day()}, {"factor", p.coin(0.6) ? p.factor() : std::string()}, {"exprs", json::array()}};
+  const Spot s = p.spot();
+  json j = {{"code", s.code}, {"date", s.day}, {"factor", p.coin(0.6) ? p.factor() : std::string()}, {"exprs", p.leaves(p.coin(0.4) ? 1 : 0)}};
   if (p.coin(0.4))
-    j["rows"] = "10:00-10:20";
+    j["rows"] = p.tod(kStockRows / 2, s.clock);
   return j;
 }
 

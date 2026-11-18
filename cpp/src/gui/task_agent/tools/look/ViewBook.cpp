@@ -437,9 +437,14 @@ ToolOut ViewBook(const Call &c, Bay &bay) {
   return Done(std::move(res));
 }
 
+// 窗口: 5 分钟的整数倍 (≤ kBookMins), 按交易秒罩住那段的行末时刻 (没有则随机), 整分起止
 json SampleViewBook(Feed &p) {
-  static const char *kWins[] = {"09:15-09:30", "09:30-09:50", "10:00-10:20", "13:00-13:15", "14:30-14:57", "14:50-15:00"};
-  return {{"code", p.code()}, {"date", p.day()}, {"time", kWins[p.below(static_cast<int>(std::size(kWins)))]}, {"step", 0}, {"at", ""}, {"big", 0}, {"n", 12 + p.below(9)}};
+  const Spot s = p.spot();
+  const int len = 5 * 60 * (1 + p.below(kBookMins / 5));
+  const int mid = s.clock.empty() ? p.below(kTradeSecs) : trade_sec(parse_clock(s.clock));
+  const int s0 = std::clamp(mid - len / 2, 0, kTradeSecs - len) / 60 * 60;
+  const std::string win = hms(trade_clock(s0)).substr(0, 5) + "-" + hms(trade_clock(s0 + len - 1) + 1).substr(0, 5);
+  return {{"code", s.code}, {"date", s.day}, {"time", win}, {"step", 0}, {"at", ""}, {"big", 0}, {"n", 12 + p.below(9)}};
 }
 
 } // namespace GUI::Agent

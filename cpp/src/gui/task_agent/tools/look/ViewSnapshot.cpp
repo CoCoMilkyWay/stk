@@ -178,10 +178,7 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
 }
 
 json SampleViewSnapshot(Feed &p) {
-  json xs = json::array();
-  if (p.coin(0.4))
-    xs.push_back(p.leaf());
-  return {{"factor", p.factor()}, {"date", p.day()}, {"time", p.clock()}, {"n", 6 + p.below(8)}, {"exprs", xs}};
+  return {{"factor", p.factor()}, {"date", p.day()}, {"time", p.clock()}, {"n", 6 + p.below(8)}, {"exprs", p.leaves(p.coin(0.4) ? 1 : 0)}};
 }
 
 } // namespace GUI::Agent
