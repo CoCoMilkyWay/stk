@@ -5,14 +5,12 @@
 #include "factor/Stat/Cpu.hpp"                      // prep_label / Workspace
 #include "features/MetaFlag.hpp"                    // fmeta::valid / keep / finite
 #include "features/Node/Common/Label/LabelHold.hpp" // 只取 kContCloseMin 对账尾部界
-#include "features/Panel/Fund.hpp"                  // fund::SW2021_L1_COUNT
 #include "features/Panel/PoolSelect.hpp"            // pool::picks
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
 #include "misc/cross_platform.hpp" // memory_usage
 #include "misc/date.hpp"           // months_between
 #include "misc/profiler.hpp"
-#include "shared/Concept.hpp" // concepts
 #include "shared/ReadRequest.hpp"
 
 #include <algorithm>
@@ -522,111 +520,63 @@ bool load_b(const Io &io, const Chunk &k, BPlanes &B) {
   assert(io.dm.pool == kAllPool && "池篮子在 all 池评估域 (全轴; 各池成员 = all.bar 选股表)");
   B = BPlanes{};
   B.sh = shape_of(io, k);
-  const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg), NP = pool_count();
-  assert(NP <= static_cast<size_t>(kPoolBits));
+  const size_t A = static_cast<size_t>(B.sh.A), n = B.sh.n(), VR = static_cast<size_t>(ft.seg);
+  assert(pool_count() <= static_cast<size_t>(kPoolBits));
   assert(VR == 1 && "池篮子按日 (一行一日)");
   assert(io.dm.rs.has(kAllBar));
-  const std::shared_ptr<const pool::Picks> pk = pool::picks(io.dm.rs.libs[kAllBar]);
-  if (!pk)
+  B.pk = pool::picks(io.dm.rs.libs[kAllBar]);
+  if (!B.pk)
     return false;
-  assert(pk->tape->axis == io.dm.rs.axis.hash && "选股表与评估域 A 轴不符");
+  const pool::Strip &s = B.strip();
+  assert(s.axis == io.dm.rs.axis.hash && s.A == A && "选股表与评估域 A 轴不符");
+  B.axis = io.dm.rs.axis;
+  B.r0 = s.row_of(io.dm.dates[k.d0]);
+  assert(B.r0 + static_cast<size_t>(k.days()) <= s.days() &&
+         std::equal(io.dm.dates.begin() + static_cast<std::ptrdiff_t>(k.d0), io.dm.dates.begin() + static_cast<std::ptrdiff_t>(k.d1), s.dates.begin() + static_cast<std::ptrdiff_t>(B.r0)) &&
+         "评估日 = 原料带的连续行");
   ColList cols{io.dm.pool, {}};
   const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs), eo_i = cols.add(ft.y.entry);
   const size_t lab_i = cols.refs.size();
   for (const Col &c : leg_of(ft.y.labels, factor::stat::hold_close(1)).leg)
     cols.add(c);
-  const size_t px_i = cols.add(ft.b.ohlc[3]), adj_i = cols.add(ft.b.adj_factor), sh_i = cols.add(ft.b.total_shares);
   const size_t val_i = cols.refs.size();
   for (const Col &v : ft.b.val)
     cols.add(v);
-  const size_t ind_i = cols.add(ft.b.ind_l1);
-  assert(cols.refs[ts_i].lib == io.dm.rs.main && "门控 / 标签 / K 线在标签库");
-  std::vector<float> vadj(n, 0.f);
+  assert(cols.refs[ts_i].lib == io.dm.rs.main && "门控 / 标签在标签库");
   B.in.assign(n, 0);
   for (std::vector<uint16_t> &v : B.lab.v)
     v.assign(n, 0);
   B.lab.m.assign(n, 0);
   B.eo.assign(n, 0);
-  B.close.resize(n);
-  B.mcap.assign(n, 0.f);
-  B.px.assign(n, 0.f);
-  B.shares.resize(n);
   for (std::vector<float> &v : B.val)
     v.resize(n);
-  B.ind.assign(n, 0);
   const size_t nt = static_cast<size_t>(io.ex.threads());
   std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A));
   std::vector<std::vector<PoolMask>> sub(nt, std::vector<PoolMask>(A));
-  const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &day, size_t d, size_t tid) {
+  return read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &day, size_t d, size_t tid) {
     gate_day(view, ts_i, cs_i, VR, A, has[tid], gate[tid].data());
     const std::vector<uint8_t> &on = has[tid];
     std::vector<PoolMask> &sm = sub[tid];
     std::fill(sm.begin(), sm.end(), PoolMask{0});
-    if (day.date)
-      for (PoolId p = 1; p < NP; ++p)
-        for (const uint16_t a : pk->of(p, day.date))
-          sm[a] |= pool_bit(p);
-    for (size_t t = 0; t < VR; ++t) {
-      const size_t row = (d * VR + t) * A;
-      PoolMask *in = B.in.data() + row;
-      for (size_t a = 0; a < A; ++a)
-        in[a] = (gate[tid][t * A + a] ? pool_bit(kAllPool) : PoolMask{0}) | (on[a] ? sm[a] : PoolMask{0});
-      const View we = view(eo_i, t), wl[K] = {view(lab_i, t), view(lab_i + 1, t)};
-      for (size_t a = 0; a < A; ++a) {
-        B.eo[row + a] = eo_cell(we, a, in[a] != 0);
-        leg_cell(wl, a, in[a] != 0, B.eo[row + a], B.lab, row + a);
-      }
-      const View wt = view(ts_i, t), wp = view(px_i, t), wa = view(adj_i, t);
-      for (size_t a = 0; a < A; ++a) {
-        feature_storage_t s, px, f;
-        const bool ok = cell(wp, a, px) && cell(wt, a, s) && fmeta::keep(static_cast<float>(s), L2::ValidType::DATA, px) && static_cast<float>(px) > 0.f;
-        B.close.v[row + a] = ok ? static_cast<float>(px) : 0.f, B.close.m[row + a] = ok;
-        B.px[row + a] = B.close.v[row + a];
-        vadj[row + a] = cell(wa, a, f) && fmeta::finite(f) && static_cast<float>(f) > 0.f ? static_cast<float>(f) : 0.f;
-      }
-      const View ws = view(sh_i, t), wi = view(ind_i, t);
-      View wv[kPoolVals];
-      for (int m = 0; m < kPoolVals; ++m)
-        wv[m] = view(val_i + static_cast<size_t>(m), t);
-      constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+    B.pk->pools(day.date, sm);
+    const size_t row = d * A;
+    PoolMask *in = B.in.data() + row;
+    for (size_t a = 0; a < A; ++a)
+      in[a] = (gate[tid][a] ? pool_bit(kAllPool) : PoolMask{0}) | (on[a] ? sm[a] : PoolMask{0});
+    const View we = view(eo_i, 0), wl[K] = {view(lab_i, 0), view(lab_i + 1, 0)};
+    for (size_t a = 0; a < A; ++a) {
+      B.eo[row + a] = eo_cell(we, a, in[a] != 0);
+      leg_cell(wl, a, in[a] != 0, B.eo[row + a], B.lab, row + a);
+    }
+    constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+    for (int m = 0; m < kPoolVals; ++m) {
+      const View wv = view(val_i + static_cast<size_t>(m), 0);
       for (size_t a = 0; a < A; ++a) {
         feature_storage_t x;
-        const float px = B.px[row + a];
-        B.shares[row + a] = cell(ws, a, x) ? static_cast<float>(x) : kNaN;
-        if (px > 0.f && B.shares[row + a] > 0.f)
-          B.mcap[row + a] = px * B.shares[row + a];
-        for (int m = 0; m < kPoolVals; ++m)
-          B.val[m][row + a] = cell(wv[m], a, x) ? static_cast<float>(x) : kNaN;
-        if (cell(wi, a, x) && static_cast<float>(x) >= 1.f && static_cast<float>(x) < static_cast<float>(fund::SW2021_L1_COUNT))
-          B.ind[row + a] = static_cast<uint8_t>(static_cast<float>(x));
+        B.val[m][row + a] = cell(wv, a, x) ? static_cast<float>(x) : kNaN;
       }
     }
   });
-  if (!read)
-    return false;
-  io.ex.rows(B.sh.T, [&](int t0, int t1, int) {
-    for (size_t i = static_cast<size_t>(t0) * A; i < static_cast<size_t>(t1) * A; ++i) {
-      const float f = vadj[i];
-      B.close.m[i] = B.close.m[i] && f > 0.f;
-      B.close.v[i] = B.close.m[i] ? B.close.v[i] * f : 0.f;
-    }
-  });
-  const size_t T = static_cast<size_t>(B.sh.T);
-  for (int rb = 0; rb < pool::kRebals; ++rb) {
-    std::vector<uint32_t> &s = B.from[rb];
-    s.assign(T, 0);
-    for (size_t t = 1; t < T; ++t)
-      s[t] = pool::rebal_at(static_cast<pool::Rebal>(rb), io.dm.dates[k.d0 + t - 1], io.dm.dates[k.d0 + t]) ? static_cast<uint32_t>(t) : s[t - 1];
-  }
-  const ConceptTable &ct = concepts();
-  assert(io.dm.rs.axis.size() == A);
-  B.cc_at.assign(A + 1, 0);
-  for (size_t a = 0; a < A; ++a) {
-    const std::span<const uint16_t> ks = ct.concepts_of(io.dm.rs.axis.global(a));
-    B.cc.insert(B.cc.end(), ks.begin(), ks.end());
-    B.cc_at[a + 1] = static_cast<uint32_t>(B.cc.size());
-  }
-  return true;
 }
 
 bool n_full_of(const Io &io, const Chunk &k, double &out) {
@@ -715,19 +665,14 @@ void Store::release() {
 
 template <class T>
 std::shared_ptr<const T> Store::find(const std::string &key) {
-  const auto it = cache_.find(key);
-  if (it == cache_.end())
-    return nullptr;
-  it->second.tick = ++tick_;
-  return std::static_pointer_cast<const T>(it->second.p);
+  const std::shared_ptr<const void> *p = cache_.find(key);
+  return p ? std::static_pointer_cast<const T>(*p) : nullptr;
 }
 
 template <class T>
 std::shared_ptr<const T> Store::put(const std::string &key, T &&v, double bytes) {
   std::shared_ptr<const T> p = std::make_shared<const T>(std::move(v));
-  [[maybe_unused]] const bool fresh = cache_.emplace(key, Entry{p, bytes, ++tick_}).second;
-  assert(fresh && "平面已在缓存");
-  bytes_ += bytes;
+  cache_.put(key, p, bytes);
   return p;
 }
 
@@ -751,7 +696,7 @@ void Store::land(Block &c, const std::string &key, T &&v, double n, Set &&set) {
 
 double Store::budget() const {
   own();
-  return host_budget() + bytes_ + (exec_ ? exec_->host_bytes() : 0.0);
+  return host_budget() + cache_.cost() + (exec_ ? exec_->host_bytes() : 0.0);
 }
 
 double Store::vram() const {
@@ -764,18 +709,9 @@ double Store::vram() const {
 void Store::room(double need, double reserve) {
   own();
   double ex_b = exec_ ? exec_->host_bytes() : 0.0;
-  const double cap = host_budget() + bytes_ + ex_b;
-  const auto fits = [&] { return bytes_ + std::max(ex_b, reserve) + need <= cap; };
-  while (!fits()) {
-    auto lru = cache_.end();
-    for (auto it = cache_.begin(); it != cache_.end(); ++it)
-      if (it->second.p.use_count() == 1 && (lru == cache_.end() || it->second.tick < lru->second.tick))
-        lru = it;
-    if (lru == cache_.end())
-      break;
-    bytes_ -= lru->second.bytes;
-    cache_.erase(lru);
-  }
+  const double cap = host_budget() + cache_.cost() + ex_b;
+  const auto fits = [&] { return cache_.cost() + std::max(ex_b, reserve) + need <= cap; };
+  cache_.trim([&](double) { return !fits(); });
   if (!fits() && exec_ && ex_b > reserve) {
     exec_->drop_host();
     ex_b = 0.0;
@@ -786,7 +722,6 @@ void Store::clear() {
   own();
   cache_.clear();
   n_full_.clear();
-  bytes_ = 0.0;
   if (exec_)
     exec_->clear();
   ++epoch_;

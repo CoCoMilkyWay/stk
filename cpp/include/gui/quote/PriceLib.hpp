@@ -47,9 +47,9 @@
 #include "gui/util/Service.hpp"
 #include "misc/date.hpp"
 #include "misc/exec.hpp"
+#include "misc/lru.hpp"
 #include "shared/Progress.hpp"
 
-#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -86,45 +86,6 @@ struct PriceRequest {
 struct Handoff {
   Members mem;
   std::vector<double> level; // [篮子]
-};
-
-// 读出序列的沿用: 按标的留最近 cap 个, 戳对得上才沿用
-template <class T>
-class Kept {
-public:
-  explicit Kept(size_t cap) : cap_(cap) {}
-  // ref 在戳 st 下的序列: 留着 → 沿用 (提到最新); 否则 make(T &) 读 (false = 读不到 → 留 nullptr)
-  template <class F>
-  std::shared_ptr<const T> get(Ref ref, const PriceStamp &st, F &&make) {
-    const auto hit = std::ranges::find_if(items_, [&](const Item &k) { return k.ref == ref && k.st == st; });
-    std::shared_ptr<const T> v;
-    if (hit != items_.end()) {
-      v = hit->v;
-      items_.erase(hit);
-    } else if (auto t = std::make_shared<T>(); make(*t)) {
-      v = std::move(t);
-    }
-    items_.insert(items_.begin(), Item{ref, st, v});
-    if (items_.size() > cap_)
-      items_.pop_back();
-    return v;
-  }
-  // 戳 st 下留着的各项 f(ref, v) (新 → 旧)
-  template <class F>
-  void each(const PriceStamp &st, F &&f) const {
-    for (const Item &k : items_)
-      if (k.st == st)
-        f(k.ref, k.v);
-  }
-
-private:
-  struct Item {
-    Ref ref;
-    PriceStamp st;
-    std::shared_ptr<const T> v;
-  };
-  size_t cap_;
-  std::vector<Item> items_; // 新 → 旧
 };
 
 struct PriceStore; // 两侧的段 (映射)
@@ -225,8 +186,8 @@ private:
   Equity equity_;                       // account_ 的摘要
   uint64_t ledger_ = 0;                 // account_ 所依的账本代
   account::Spot spot_;                  // account_ 所依的券商现价
-  Kept<Series> daily_{kKeep};           // 个股日根全史
-  Kept<Series> minute_{kKeepMinutes};   // 连分钟的全史 (两侧)
+  misc::Lru<RefAt, Series> daily_;      // 个股日根全史 (留 kKeep 个)
+  misc::Lru<RefAt, Series> minute_;     // 连分钟的全史 (两侧; 留 kKeepMinutes 个)
 };
 
 } // namespace GUI::Quote

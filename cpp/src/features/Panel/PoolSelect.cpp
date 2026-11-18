@@ -128,7 +128,7 @@ void order_row(const uint16_t *cls, const Aid *seq, size_t len, uint16_t *n, Aid
 }
 
 // 一日的读 (列序 = day_cols) → 原料带行 r (资产态 + 类号 + 类内在市数); pre / close [A] = 该行前收 / 收盘 (无成交 → 0)
-void fill_row(const FeatureRead::DayColumns &c, Tape &t, size_t r, float *pre, float *close) {
+void fill_row(const FeatureRead::DayColumns &c, Strip &t, size_t r, float *pre, float *close) {
   const size_t A = t.A;
   uint16_t *cls = t.cls.data() + r * A, *cnt = t.cnt.data() + r * kClasses;
   std::fill(cnt, cnt + kClasses, uint16_t{0});
@@ -199,7 +199,7 @@ void step(const Tick &tick) {
 // 行扫 (调优 rank / 落地 picks 同一条): 原料带 t 的行 [lo, 末行] 逐行并行, 每行为 sts 各风格现排一行次序 → visit(行, 风格, 次序, 线程);
 //   键读库 (各风格的键列同列只读一次); 取消 / 库判废 → false
 template <class Visit>
-bool sweep(const FeatureLib &lib, const Tape &t, size_t lo, std::span<const Style> sts, misc::exec::ForkJoin &ex, const Cancel *cancel, const Tick &tick, Visit &&visit) {
+bool sweep(const FeatureLib &lib, const Strip &t, size_t lo, std::span<const Style> sts, misc::exec::ForkJoin &ex, const Cancel *cancel, const Tick &tick, Visit &&visit) {
   const size_t R = t.days(), A = t.A;
   assert(lo <= R);
   KeyCols kc;
@@ -306,27 +306,31 @@ bool covers(const Spec &s, size_t c) {
 
 void Orders::resize(size_t R, size_t A) { seq.resize(R * A), len.resize(R), n.resize(R * kClasses), pos.resize(R * A); }
 
-Order Orders::row(const Tape &t, size_t r) const {
+Order Orders::row(const Strip &t, size_t r) const {
   const size_t A = t.A;
   assert(r < rows() && r < t.days());
   return {t.cls.data() + r * A, t.cnt.data() + r * kClasses, seq.data() + r * A, len[r], n.data() + r * kClasses, pos.data() + r * A, A};
 }
 
-Order Tape::row(size_t r) const {
+size_t Strip::row_of(misc::Ymd d) const {
+  const auto it = std::ranges::lower_bound(dates, d);
+  assert(it != dates.end() && *it == d && "日不在原料带上");
+  return static_cast<size_t>(it - dates.begin());
+}
+
+Order Strip::row(size_t r) const {
   assert(r < days());
   return {cls.data() + r * A, cnt.data() + r * kClasses, nullptr, 0, nullptr, nullptr, A};
 }
 
-void Tape::omega(size_t r, size_t q, size_t a, float om[kWeights]) const {
+float Strip::omega(size_t r, size_t q, size_t a, Weight w) const {
   assert(r <= q && q < days());
-  const double g = static_cast<double>(grow[q * A + a]) / grow[r * A + a];
-  for (int w = 0; w < kWeights; ++w)
-    om[w] = static_cast<float>(pool::omega(static_cast<Weight>(w), mcap[r * A + a], g));
+  return static_cast<float>(pool::omega(w, mcap[r * A + a], static_cast<double>(grow[q * A + a]) / grow[r * A + a]));
 }
 
-std::shared_ptr<const Tape> tape(const FeatureLib &lib, const Cancel *cancel, const Tick &tick) {
+std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel, const Tick &tick) {
   assert(lib.id == kAllBar && lib.ready() && "原料带的源 = 已建的 all.bar 库");
-  static misc::Epochal<Shelf<Tape>> shelf;
+  static misc::Epochal<Shelf<Strip>> shelf;
   static std::atomic<uint64_t> lines{0};
   auto &[mu, cur] = shelf.get();
   const std::lock_guard<std::mutex> lock(mu);
@@ -336,7 +340,7 @@ std::shared_ptr<const Tape> tape(const FeatureLib &lib, const Cancel *cancel, co
     return cur;
   const size_t A = lib.axis.size(), lo = keep ? cur->days() : 0, R = rows.size();
   assert(A > 0 && A <= UINT16_MAX && R > lo);
-  auto t = keep ? std::make_shared<Tape>(*cur) : std::make_shared<Tape>();
+  auto t = keep ? std::make_shared<Strip>(*cur) : std::make_shared<Strip>();
   t->dates = std::move(rows), t->A = A, t->axis = lib.axis.hash;
   if (!keep)
     t->line = ++lines;
@@ -376,7 +380,7 @@ std::shared_ptr<const Tape> tape(const FeatureLib &lib, const Cancel *cancel, co
   return cur;
 }
 
-bool rank(const FeatureLib &lib, const Tape &t, Style st, misc::exec::ForkJoin &ex, const Cancel *cancel, const Tick &tick, Orders &rk) {
+bool rank(const FeatureLib &lib, const Strip &t, Style st, misc::exec::ForkJoin &ex, const Cancel *cancel, const Tick &tick, Orders &rk) {
   const size_t lo = rk.rows(), A = t.A;
   rk.resize(t.days(), A);
   if (sweep(lib, t, lo, {&st, 1}, ex, cancel, tick, [&](size_t r, Style, const Order &o, int) {
@@ -445,13 +449,14 @@ void Selector::at(const Order &o, std::vector<Aid> &out) const {
   std::ranges::sort(out);
 }
 
-void run_book(const Tape &t, Rebal rb, const Pick &pick, Book &b) {
-  const size_t D = t.days(), A = t.A;
+void perf(const Strip &t, Rebal rb, const Pick &pick, Perf &b) {
+  const size_t D = t.days();
   for (int w = 0; w < kWeights; ++w)
     b.ret[w].assign(D, 0.0f), b.buy[w].assign(D, 0.0f);
   b.first = D;
   std::vector<Aid> nx; // 新选的成员 (资产下标升序)
-  Members mem, to;     // [键 = Weight] 持仓 (随价漂移到前一日收盘) / 新源行的目标权 (源行 = 前一日)
+  Sleeve lg;           // [键 = Weight] 持仓随价漂移到前一日收盘
+  Members to;          // 新源行的目标权 (源行 = 前一日)
   size_t src = SIZE_MAX;
   for (size_t d = 1; d < D; ++d) {
     if (const size_t r = src_of(rb, t.dates, t.dates[d]); r != src) {
@@ -459,36 +464,30 @@ void run_book(const Tape &t, Rebal rb, const Pick &pick, Book &b) {
       pick(r, nx);
       to.clear();
       for (const Aid a : nx) {
-        float om[kWeights];
-        t.omega(r, r, a, om);
         for (int w = 0; w < kWeights; ++w)
-          if (om[w] > 0.0f)
-            to.add(static_cast<uint32_t>(w), om[w]);
+          if (const float om = t.omega(r, r, a, static_cast<Weight>(w)); om > 0.0f)
+            to.add(static_cast<uint32_t>(w), om);
         to.next(a);
       }
       double buy[kWeights] = {};
-      to.turnover(mem, buy);
+      lg.roll(to, buy);
       for (int w = 0; w < kWeights; ++w)
         b.buy[w][d] = static_cast<float>(buy[w]);
-      std::swap(mem, to);
-      if (b.first == D && mem.size())
+      if (b.first == D && lg.hold.size())
         b.first = d;
     }
-    if (!mem.size())
+    if (!lg.hold.size())
       continue;
-    const float *g = t.grow.data() + d * A, *g0 = g - A;
-    const auto rel = [&](uint32_t a) { return g[a] / g0[a]; };
-    double s[kWeights] = {}, n[kWeights] = {};
-    mem.scatter(rel, s, n);
+    double ret[kWeights];
+    lg.pass([&](uint32_t a) { return t.rel(d - 1, d, a); }, ret);
     for (int w = 0; w < kWeights; ++w)
-      b.ret[w][d] = n[w] > 0.0 ? static_cast<float>(s[w] / n[w] - 1.0) : 0.0f;
-    mem.scale(rel);
+      b.ret[w][d] = static_cast<float>(ret[w]);
   }
 }
 
 size_t Picks::src(PoolId p, misc::Ymd d) const {
   assert(p != kAllPool && p < pool_count() && rows.size() + 1 == pool_count() && "选股表: 不是子池");
-  return src_of(pool_def(p).spec.rebal(), tape->dates, d);
+  return src_of(pool_def(p).spec.rebal(), strip->dates, d);
 }
 
 std::span<const Aid> Picks::row(PoolId p, size_t r) const { return rows[p - 1][r]; }
@@ -498,19 +497,26 @@ std::span<const Aid> Picks::of(PoolId p, misc::Ymd d) const {
   return r == SIZE_MAX ? std::span<const Aid>{} : row(p, r);
 }
 
+void Picks::pools(misc::Ymd d, std::span<PoolMask> in) const {
+  assert(in.size() == strip->A);
+  for (PoolId p = 1; p < pool_count(); ++p)
+    for (const Aid a : of(p, d))
+      in[a] |= pool_bit(p);
+}
+
 std::shared_ptr<const Picks> picks(const FeatureLib &lib, const Cancel *cancel, const Tick &tick) {
   static misc::Epochal<Shelf<Picks>> shelf;
   auto &[mu, cur] = shelf.get();
   const std::lock_guard<std::mutex> lock(mu);
-  std::shared_ptr<const Tape> t = tape(lib, cancel, tick);
+  std::shared_ptr<const Strip> t = strip(lib, cancel, tick);
   if (!t)
     return nullptr;
-  if (cur && cur->tape == t)
+  if (cur && cur->strip == t)
     return cur;
-  const bool keep = cur && cur->tape->line == t->line;
-  const size_t lo = keep ? cur->tape->days() : 0, R = t->days(), NP = pool_count();
+  const bool keep = cur && cur->strip->line == t->line;
+  const size_t lo = keep ? cur->strip->days() : 0, R = t->days(), NP = pool_count();
   auto pk = keep ? std::make_shared<Picks>(*cur) : std::make_shared<Picks>(Picks{{}, std::vector<Csr<Aid>>(NP - 1)});
-  pk->tape = t;
+  pk->strip = t;
 
   // 子池按风格分组 (同风格共用一次排序)
   std::vector<Selector> sel;

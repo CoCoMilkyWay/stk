@@ -125,6 +125,10 @@ Bench::Bench() : impl_(std::make_unique<Impl>()) {}
 Bench::~Bench() = default;
 void Bench::update() { impl_->poll(); }
 bool Bench::busy() const { return impl_->lab.busy(); }
+std::optional<Tool> Bench::running() const {
+  const Impl &b = *impl_;
+  return b.running ? std::optional(b.timeline.back().acts[*b.running].call.tool) : std::nullopt;
+}
 
 namespace {
 
@@ -207,8 +211,10 @@ std::string call_line(Tool t, const json &args) { return Call{t, args}.text(80);
 
 } // namespace
 
-void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool blocked) {
+void Bench::draw(SharedData &data, Tool tool, Scope &sc, const Gate &gate, bool gpu, bool blocked) {
   Impl &b = *impl_;
+  if (b.tool != tool)
+    b.tool = tool, b.error.clear();
   const bool held = b.running.has_value() || b.lab.busy();
   // ---- 作用域 (先由作用域行把持有期校到本层可搜的; 换了就重绑, 快照与工作台的调用清空) ----
   scope_row(data, sc, b.pool_rows, b.lab, held, "作用域:");
@@ -268,30 +274,7 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   ImGui::TextDisabled("· 工作台 = 第 %d 轮 · 假设 %zu · 门槛 mono ≥ %.2f, rIC ≥ %.3f (Config 页)", b.round(), b.st.board.all().size(), gate.mono, gate.ric);
   ImGui::Separator();
 
-  // ---- 左: 工具按类 ----
-  ImGui::BeginChild("##bench_tools", ImVec2(ImGui::GetFontSize() * 15.0f, -1), ImGuiChildFlags_Borders);
-  for (const Cat cat : kVals<Cat>) {
-    if (!ImGui::TreeNodeEx(def(cat).cn, ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
-      continue;
-    for (const Tool t : kVals<Tool>) {
-      const ToolMeta &m = def(t);
-      if (m.cat != cat)
-        continue;
-      if (ImGui::Selectable((std::string(m.id) + "##tool").c_str(), b.tool == t)) {
-        b.tool = t, b.error.clear();
-        if (b.args[t].is_null())
-          b.sample();
-      }
-      ImGui::SameLine(ImGui::GetFontSize() * 9.5f);
-      ImGui::TextDisabled("%s", m.cn);
-    }
-    ImGui::TreePop();
-  }
-  ImGui::EndChild();
-  ImGui::SameLine();
-
-  // ---- 右: 输入 / 展示 / 原文 ----
-  ImGui::BeginChild("##bench_page", ImVec2(0, -1));
+  // ---- 输入 / 展示 / 原文 ----
   const ToolMeta &m = def(b.tool);
   const ToolDoc &d = doc(b.tool);
   if (b.args[b.tool].is_null())
@@ -381,7 +364,6 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   ImGui::SeparatorText("调用");
   if (as.empty()) {
     ImGui::TextDisabled("还没有调用: 随机或载入一组参数, 按 Run");
-    ImGui::EndChild();
     return;
   }
   if (b.pick >= as.size())
@@ -432,7 +414,6 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
     if (b.pick < b.origin.size() && !b.origin[b.pick].empty())
       fold("origin", ImGuiTreeNodeFlags_None, "日志里当时交给 agent 的原文 · " + chars(b.origin[b.pick]), b.origin[b.pick], true, kBoxLines, false);
   }
-  ImGui::EndChild();
   ImGui::EndChild();
 }
 

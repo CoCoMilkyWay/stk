@@ -48,9 +48,9 @@ enum class Cat : uint8_t { Look,  // view_*
                            Note,  // request_* / note_insight / report_issue
                            Misc };
 struct CatDef {
-  const char *cn;
+  const char *en, *cn; // en = 主栏 Tools 下的组名
 };
-inline constexpr CatDef kCats[] = {{"观察"}, {"假设"}, {"回测"}, {"检索"}, {"记录"}, {"其他"}};
+inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Hypothesis", "假设"}, {"Trial", "回测"}, {"Query", "检索"}, {"Note", "记录"}, {"Misc", "其他"}};
 AGENT_ROWS(Cat, kCats, Misc);
 
 // 工具清单: X(枚举, id, 中文名, 执行, 类, 研究树留结论原文)

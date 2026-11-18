@@ -4,7 +4,7 @@
 //     单选维 (风格 / 端 / 只数 / 周期 / 权重): Spec 存取值下标, 恒起作用 (全市场风格的端 / 只数除外)
 //       风格 = 排序键 (同风格的池共用一份次序); 端 = 键的低端 / 高端; 只数 N = 切片内键在端头取前 N
 //       全市场 (mkt) = 无键: 切片内在市全取, 端 / 只数不起作用 (canon 归 0, 池名段 "-"); 全A / 板块等指数即此
-//       周期 = 调仓日历 (features/Panel/PoolSelect.hpp src_of); 权重 = 篮子成分的权 (等权 / 总市值加权, PoolSelect.hpp Tape::omega)
+//       周期 = 调仓日历 (features/Panel/PoolSelect.hpp src_of); 权重 = 篮子成分的权 (等权 / 总市值加权, PoolSelect.hpp Strip::omega)
 //     集合维 (ST 起, 切片维): Spec 存取值表的位集, 0 = 不起作用
 //       划分维 (ST / 板块 / 融资): 按 all.bar 一列把在市 A 股分成互斥的类, 池取若干类之并 (全部类 = 0 = 不切, canon 归一)
 //       过滤维: 各项按 all.bar 一列剔掉一部分 (不互斥, 不是划分), 池剔若干项之并

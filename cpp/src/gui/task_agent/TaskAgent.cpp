@@ -18,6 +18,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -41,12 +42,38 @@ namespace {
 using namespace ui;
 using Phase = Mine::Phase;
 
+// 子行: Mine | Tools (主栏 "Tools/<类>/<工具>", 按类相邻, 一工具一行) | Config
 enum TabIdx {
   TAB_MINE = 0,
-  TAB_TOOLS,
-  TAB_CONFIG,
+  TAB_TOOL0,
+  TAB_CONFIG = TAB_TOOL0 + static_cast<int>(kNum<Tool>),
   TAB_COUNT
 };
+constexpr std::array<Tool, kNum<Tool>> kTabTools = [] {
+  std::array<Tool, kNum<Tool>> a{};
+  size_t n = 0;
+  for (const Cat c : kVals<Cat>)
+    for (const Tool t : kVals<Tool>)
+      if (def(t).cat == c)
+        a[n++] = t;
+  return a;
+}();
+bool is_tool_tab(int idx) { return idx >= TAB_TOOL0 && idx < TAB_CONFIG; }
+Tool tool_of(int idx) {
+  assert(is_tool_tab(idx));
+  return kTabTools[idx - TAB_TOOL0];
+}
+// 主栏子行名与各任务同为大驼峰: view_feature → ViewFeature
+std::string pascal(std::string_view id) {
+  std::string s;
+  bool up = true;
+  for (const char c : id) {
+    if (c != '_')
+      s += up ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c;
+    up = c == '_';
+  }
+  return s;
+}
 
 constexpr int kBackendN = static_cast<int>(kNum<llm::Backend>); // 界面按下标 (int) 选后端
 
@@ -56,7 +83,7 @@ bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend))
 // 入库门槛 / 可否提问 (下次 New 生效) + Tools 页的作用域 + Config 页在看的模板
 struct Options {
   Scope sc;
-  Scope bench; // Tools 页的作用域 (与 Mine 页分开选)
+  Scope bench; // Tools 页的作用域 (各工具页共用, 与 Mine 页分开选)
   int backend = 0;
   std::string model; // 该后端嗅探表里的 id; 空 = 还没嗅探到
   std::array<bool, kBackendN> via_proxy = [] {
@@ -1913,7 +1940,10 @@ TaskHandle CreateAgentTask() {
   TaskHandle handle;
   handle.name = "Agent";
   handle.storage = state;
-  handle.tabs = {"Mine", "Tools", "Config"};
+  handle.tabs = {"Mine"};
+  for (const Tool t : kTabTools)
+    handle.tabs.push_back(std::string("Tools/") + def(def(t).cat).en + "/" + pascal(def(t).id));
+  handle.tabs.push_back("Config");
 
   // 每帧 (无论是否选中): 收嗅探结果; 推进会话 (含评估队列与会话日志); 收工作台的后台结果
   handle.Update = [state](SharedData &) {
@@ -1941,8 +1971,8 @@ TaskHandle CreateAgentTask() {
         return {TaskStatus::Kind::Error, "sniff failed"};
       return s.opt.model.empty() ? TaskStatus{TaskStatus::Kind::Warn, "no model"} : TaskStatus{};
     }
-    if (idx == TAB_TOOLS)
-      return s.bench && s.bench->busy() ? TaskStatus{TaskStatus::Kind::Busy, "running"} : TaskStatus{};
+    if (is_tool_tab(idx))
+      return s.bench && s.bench->running() == tool_of(idx) ? TaskStatus{TaskStatus::Kind::Busy, "running"} : TaskStatus{};
     if (idx != TAB_MINE)
       return {};
     const Mine &m = *s.mine;
@@ -1981,15 +2011,13 @@ TaskHandle CreateAgentTask() {
     case TAB_MINE:
       render_mine(data, s);
       break;
-    case TAB_TOOLS:
-      if (!s.bench)
-        s.bench = std::make_unique<Bench>();
-      s.bench->draw(data, s.opt.bench, s.opt.gate, s.opt.gpu == 1, s.mine->live() || !s.mine->idle());
-      break;
     case TAB_CONFIG:
       render_config(s);
       break;
     default:
+      if (!s.bench)
+        s.bench = std::make_unique<Bench>();
+      s.bench->draw(data, tool_of(idx), s.opt.bench, s.opt.gate, s.opt.gpu == 1, s.mine->live() || !s.mine->idle());
       break;
     }
     ImGui::EndChild();

@@ -6,17 +6,22 @@
 #include <cassert>
 #include <cstdio>
 #include <fstream>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace GUI {
 
-// 行状态标签: 行名后画 [text], 颜色查全局色表 (idx == -1 任务行, >= 0 子行)
-static void DrawRowStatus(const SharedData &data, const TaskHandle &t, int idx) {
-  const TaskStatus s = RowStatus(data, t, idx);
+// 行状态标签: 行名后画 [text], 颜色查全局色表
+static void DrawStatus(const TaskStatus &s) {
   if (s.kind == TaskStatus::Kind::None || s.text.empty())
     return;
   ImGui::SameLine();
   ImGui::TextColored(StatusColor(s.kind), "[%s]", s.text.c_str());
 }
+
+// idx == -1 任务行, >= 0 子行
+static void DrawRowStatus(const SharedData &data, const TaskHandle &t, int idx) { DrawStatus(RowStatus(data, t, idx)); }
 
 void LoadFonts(float dpi_scale) {
   const char *main_path = "fonts/MapleMonoNormal-NF-CN-Regular.ttf";
@@ -82,7 +87,7 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
         ImGui::EndDisabled();
       DrawRowStatus(data, t, -1);
     } else {
-      // 有子项: 父节点可展开 (本身不可选), 子项为叶子
+      // 有子项: 父节点可展开 (本身不可选), 子项为叶子 (按 '/' 分组的收进组节点, 组节点同样只折叠不可选)
       char header_label[256];
       snprintf(header_label, sizeof(header_label), "%s###TaskHeader_%d", t.name.c_str(), i);
       // 父节点选中态: 任一子项被选中时高亮父节点
@@ -93,11 +98,48 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
       bool opened = ImGui::TreeNodeEx(header_label, flags);
       DrawRowStatus(data, t, -1);
       if (opened) {
+        // path = 当前所在的各层组 (各为子行名的前缀, 含末尾 '/'); 其前 shown 层已展开, 其后折起 (子行不画)
+        std::vector<std::string_view> path;
+        size_t shown = 0;
         for (int j = 0; j < (int)t.tabs.size(); j++) {
+          const std::string_view name = t.tabs[j];
+          std::vector<std::string_view> groups;
+          for (size_t p = name.find('/'); p != std::string_view::npos; p = name.find('/', p + 1))
+            groups.push_back(name.substr(0, p + 1));
+          size_t k = 0;
+          while (k < path.size() && k < groups.size() && path[k] == groups[k])
+            ++k;
+          for (; path.size() > k; path.pop_back())
+            if (shown == path.size())
+              ImGui::TreePop(), --shown;
+          while (path.size() < groups.size()) {
+            const bool visible = shown == path.size();
+            const size_t from = path.empty() ? 0 : path.back().size();
+            const std::string_view g = groups[path.size()];
+            path.push_back(g);
+            if (!visible)
+              continue;
+            int hi = j;
+            while (hi < (int)t.tabs.size() && std::string_view(t.tabs[hi]).starts_with(g))
+              ++hi;
+            const std::string label = std::string(g.substr(from, g.size() - 1 - from)) + "###TaskGroup_" + std::to_string(i) + "_" + std::to_string(j);
+            ImGuiTreeNodeFlags gf = ImGuiTreeNodeFlags_SpanAvailWidth;
+            if (path.size() > 1)
+              gf |= ImGuiTreeNodeFlags_DefaultOpen;
+            if (tree.selected == i && t.selected_tab >= j && t.selected_tab < hi)
+              gf |= ImGuiTreeNodeFlags_Selected;
+            const bool open = ImGui::TreeNodeEx(label.c_str(), gf);
+            DrawStatus(SpanStatus(data, t, j, hi));
+            if (open)
+              ++shown;
+          }
+          if (shown != path.size())
+            continue;
+          const std::string_view leaf = name.substr(groups.empty() ? 0 : groups.back().size());
           bool enabled = t.Enabled ? t.Enabled(data, j) : true;
           bool is_selected = (tree.selected == i && t.selected_tab == j);
           char child_label[256];
-          snprintf(child_label, sizeof(child_label), "  > %s###%d_%d", t.tabs[j].c_str(), i, j);
+          snprintf(child_label, sizeof(child_label), "  > %.*s###%d_%d", (int)leaf.size(), leaf.data(), i, j);
           if (!enabled)
             ImGui::BeginDisabled();
           if (ImGui::Selectable(child_label, is_selected)) {
@@ -110,6 +152,8 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
           }
           DrawRowStatus(data, t, j);
         }
+        for (; shown > 0; --shown)
+          ImGui::TreePop();
         ImGui::TreePop();
       }
     }

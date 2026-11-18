@@ -62,36 +62,12 @@ void minute_alloc(FeatureRead::DayColumns &mc, size_t A) { mc.preallocate(A, L_1
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc) { rd.load_day_columns(d, minute_cols(), mc); }
 
 void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m, std::span<const uint8_t> only) {
-  const pool::Tape &t = *pk.tape;
-  const BasketTable &bt = basket_table();
-  const ConceptTable &ct = concepts();
-  const size_t A = axis.size(), NP = pool_count(), q = pool::src_of(pool::kRebalDay, t.dates, d);
-  assert(t.axis == axis.hash && t.A == A && "选股表与库轴不符");
-  std::vector<size_t> src(NP, SIZE_MAX); // [池] 源行
-  std::vector<PoolMask> in(A, 0);        // [库轴] 当日所在的池
-  for (PoolId p = 1; p < NP && q != SIZE_MAX; ++p) {
-    src[p] = pk.src(p, d);
-    if (src[p] != SIZE_MAX)
-      for (const pool::Aid a : pk.row(p, src[p]))
-        in[a] |= pool_bit(p);
-  }
-  m.clear();
-  float om[pool::kWeights];
-  for (size_t a = 0; a < A; ++a) {
-    const bool base = in[a] & pool_bit(kBasketBase);
-    const Fact f{in[a], base ? t.ind[q * A + a] : uint8_t{0}};
-    assert((!base || f.ind > 0) && "母集成员的行业已知");
-    PoolId at = kAllPool; // om 所依的池
-    bt.each(f, ct.concepts_of(axis.global(a)), [&](size_t b) {
-      if (!only.empty() && !only[b])
-        return;
-      if (const PoolId p = bt.base(b); p != at)
-        t.omega(src[p], q, a, om), at = p;
-      if (const float w = om[bt.weight(b)]; w > 0)
-        m.add(static_cast<uint32_t>(b), w);
-    });
-    m.next(axis.global(a), q != SIZE_MAX ? t.mcap[q * A + a] : 0.f);
-  }
+  const size_t q = pool::src_of(pool::kRebalDay, pk.strip->dates, d);
+  if (q == SIZE_MAX)
+    return m.clear();
+  ::members(pk, axis, d, q, m, only);
+  for (uint32_t &a : m.id)
+    a = axis.global(a);
 }
 
 void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel) {

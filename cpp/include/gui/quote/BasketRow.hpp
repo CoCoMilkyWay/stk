@@ -1,5 +1,5 @@
 // 价格库的合成件 (PriceLib): 个股源 → 个股的根; 成员 × 个股的根 → Lane (Fold 一日一份) → 各篮子一日; 普查 census 出发布的成员统计.
-//   成员 (谁 × 权) 两步对仗: members = 选股表 → 交易日 D 的成员表 (判据 = shared/Basket.hpp BasketTable::each, 权 = Tape::omega)
+//   成员 (谁 × 权) 两步对仗: members = 选股表 → 交易日 D 的成员表 (shared/Basket.hpp members, 权落在 D−1 收盘)
 //                             drift   = 成员冻结, 过一个交易日 (库末日之后的补段: 随价漂移, 逢换源回目标权)
 //   个股源 (每只一日的 Leg) 三种对仗: LibDay  = all.bar L_1day 日行 (基准 = D−1 行 pre_close) + L_1min 分钟根
 //                                     FundDay = 基本面 bar1d 行 (基准 = 当行 pre_close) + bar1m 分钟根
@@ -8,23 +8,19 @@
 //     只解这段的分钟根) ⇒ 篮子不碰个股源, 个股侧一份根两侧共用;
 //   当日 (新浪快照) 的增量合成在 QuoteService (Fold 增量).
 //   资产一律全局 id (成员表 / 源 / 漂移比同一下标): 库源逐库轴行给其全局 id, 补段源稠密在资产轴上.
-//   续算件的盘上头 + 体同一读写 (snap_read / snap_write).
 #pragma once
 
-#include "disk/Disk.hpp"
 #include "features/Panel/PoolSelect.hpp" // pool::Picks / day_cols
 #include "features/Storage/FeatureRead.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/quote/Fold.hpp"
 #include "gui/quote/Quote.hpp"
-#include "misc/snap.hpp"
 
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <span>
-#include <string>
 #include <vector>
 
 struct Bar1m;
@@ -51,9 +47,7 @@ void read_row(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &dc, R
 void minute_alloc(FeatureRead::DayColumns &mc, size_t A);
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc);
 
-// 交易日 d 的成员表 (资产 = 全局 id): 事实 = 当日所在的池 (子池 = 选股表 d 的成员) + 成员源行 (D−1) 的行业, 过 BasketTable::each,
-//   权 = Tape::omega 取该篮的权重 (源 = 该篮所依的池 BasketTable::base 的源行; ≤ 0 不进); pk 与 axis 同为 all.bar 轴; Members::cap = D−1 收盘总市值;
-//   only 非空 = 只收 only[篮子] 的篮子
+// 交易日 d 的成员表 (资产 = 全局 id): shared/Basket.hpp members 落在成员源行 (D−1 收盘; 无 → 空); pk 与 axis 同为 all.bar 轴; only 同彼
 void members(const pool::Picks &pk, const PoolAxis &axis, misc::Ymd d, Members &m, std::span<const uint8_t> only = {});
 // 成员表 m 过交易日 prev → d (成员冻结): 权与 cap 随价 × rel [全局 id] (收 / 前收); 篮子逢其周期换源 (pool::rebal_at) 回目标权 pool::omega (加权 = 漂移后的 cap)
 void drift(Members &m, misc::Ymd prev, misc::Ymd d, std::span<const float> rel);
@@ -127,30 +121,6 @@ void Lane::run(const Src &src) {
     row_[k] = j < src.size() && src.id(j) == mem.id[k] ? j : src.size();
   }
   fold.day(mem, [&](size_t k, int lo, int hi) { return row_[k] < src.size() ? src.leg(row_[k], cell_, bars_, lo, hi) : idle; }, src.date, day);
-}
-
-// 续算件的盘上一份 = 头 + 体 (体 = body(ar)): 读 = 有文件且头 == want 才读体, 返回 = 读了体
-template <class Head, class Body>
-bool snap_read(disk::Node n, const disk::Key &k, const Head &want, Body &&body) {
-  if (!disk::exists(n, k))
-    return false;
-  const std::string blob = disk::read(n, k);
-  misc::snap::Load ar(std::as_bytes(std::span(blob)));
-  Head h;
-  ar(h);
-  if (!(h == want))
-    return false;
-  body(ar);
-  assert(ar.done() && "续算件: 文件尾有多余字节");
-  return true;
-}
-template <class Head, class Body>
-void snap_write(disk::Node n, const disk::Key &k, const Head &head, Body &&body) {
-  std::vector<std::byte> blob;
-  misc::snap::Save ar(blob);
-  ar(head);
-  body(ar);
-  disk::write(n, k, {reinterpret_cast<const char *>(blob.data()), blob.size()});
 }
 
 // 普查: 成员表 m 在篮子全表 [0, K) 上 (见 Census)

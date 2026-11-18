@@ -5,13 +5,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <utility>
 #include <vector>
 
 // ============================================================================
 // Members — 成员表 (一日的持仓, 资产主序的稀疏 CSR): 行 k = 资产 id[k] (升序, 只收有所属的), 所属 = of(k) (键升序), 各带权 w > 0
-//   键 = 篮子下标 (shared/Basket.hpp; 行情价格指数 / 回测池篮子) 或权重 (pool::run_book 的账); 资产 = 调用方的轴
+//   键 = 篮子下标 (shared/Basket.hpp; 行情价格指数 / 回测池篮子) 或权重 (pool::perf 的账); 资产 = 调用方的轴
 //   合 scatter: 各键 Σ w · x(a) / Σ w
 //   两向: scale 过一日 (随价漂移) ⇄ turnover 换仓 (目标对漂移后的增仓量)
+// Sleeve — 篮子账 (Style 篮子账 / 回测池篮子同一核): 持仓 hold 两步对仗
+//   roll 换源: buy[键] += 目标 to 对 hold 的增仓量, hold ← to ⇄ pass 过一日: ret[键] = 合 rel − 1, hold 随价 × rel
 // ============================================================================
 struct Members {
   struct Weight {
@@ -79,4 +82,28 @@ struct Members {
       }
     }
   }
+};
+
+struct Sleeve {
+  Members hold; // 随价漂移到上一收盘的持仓
+
+  // 换源 (to 交出新目标, 换回旧持仓)
+  void roll(Members &to, std::span<double> buy) {
+    to.turnover(hold, buy);
+    std::swap(hold, to);
+  }
+  // 过一日: ret 空 = 只漂移; 键无仓 → 0
+  template <class Rel>
+  void pass(Rel &&rel, std::span<double> ret) {
+    if (!ret.empty()) {
+      s_.assign(ret.size(), 0.0), n_.assign(ret.size(), 0.0);
+      hold.scatter(rel, s_, n_);
+      for (size_t k = 0; k < ret.size(); ++k)
+        ret[k] = n_[k] > 0.0 ? s_[k] / n_[k] - 1.0 : 0.0;
+    }
+    hold.scale(rel);
+  }
+
+private:
+  std::vector<double> s_, n_;
 };

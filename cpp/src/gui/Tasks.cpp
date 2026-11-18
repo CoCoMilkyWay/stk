@@ -107,8 +107,15 @@ TaskStatus RowStatus(const SharedData &data, const TaskHandle &t, int idx) {
     return {};
   if (idx >= 0 || t.tabs.empty())
     return t.Status(data, idx);
+  return SpanStatus(data, t, 0, (int)t.tabs.size());
+}
+
+TaskStatus SpanStatus(const SharedData &data, const TaskHandle &t, int lo, int hi) {
+  assert(0 <= lo && lo <= hi && hi <= (int)t.tabs.size());
+  if (!t.Status)
+    return {};
   TaskStatus top;
-  for (int j = 0; j < (int)t.tabs.size(); j++) {
+  for (int j = lo; j < hi; j++) {
     TaskStatus s = t.Status(data, j);
     if (rank(s.kind) > rank(top.kind))
       top = std::move(s);

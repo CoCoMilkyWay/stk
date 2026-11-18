@@ -145,6 +145,12 @@ struct PriceStamp {
   size_t days = 0, lib = 0, fund = 0;
   bool operator==(const PriceStamp &) const = default;
 };
+// 标的 × 戳 = 读出序列的留存键 (misc::Lru; 戳对得上才沿用)
+struct RefAt {
+  Ref ref;
+  PriceStamp st;
+  bool operator==(const RefAt &) const = default;
+};
 // 价格库的一份发布 (PriceLib 每趟发布; 不可变, 只拷指针): lack 非空 = 用不了 (以用处开头; 其余空)
 struct PriceView {
   std::string lack;

@@ -1,5 +1,5 @@
 // StyleService — Beta→Style 页的单 worker: 一个风格的参数网格 (features/Panel/PoolSpec.hpp Grid) 逐组选池 → 篮子的滚动一年绩效 (平均 / 中位) 与累计中位夏普 + 其逐日截面分位的平均 (打分)
-//   原料带 = 每进程代一份 (pool::tape, 与选股表共用; 新落盘日增量补); 风格的次序 (pool::rank) 按风格留最近 kKeep 份 (随原料带补行);
+//   原料带 = 每进程代一份 (pool::strip, 与选股表共用; 新落盘日增量补); 风格的次序 (pool::rank) 按风格留最近 kKeep 份 (随原料带补行);
 //   篮子账按成员 (权重归 0, 两权重同一趟) 留 (只留当前风格; 原料带换代清空): 改网格只算新出现的成员
 //   全A = 池表首两池 (pool::all_a, 行情篮子同一条; 切片内在市全取, 日频), 两权重
 //   请求 = 网格 (风格维只勾打开的那一个) + 回测区间 (只改区间 = 账全在, 只重算绩效); 新请求覆盖旧的. 进度: Loading = 原料 / 键的行数, Running = 待算的篮子数
@@ -81,7 +81,7 @@ private:
   bool publish(const StyleRequest &req, std::string lack, std::shared_ptr<StyleResult> out = nullptr);
   // 区间 [d0, d1) 内逐日: 有累计中位夏普的线按其截面排名 (并列取均秩) → 分位 (1 = 最高); 各线对有值的日取平均 → stat.sharpe_pct
   void rank_pct(std::vector<StyleLine> &lines, size_t d0, size_t d1);
-  // 风格 st 补到 tape_ 末行的次序 (提到最新); 取消 / 库判废 → nullptr
+  // 风格 st 补到 strip_ 末行的次序 (提到最新); 取消 / 库判废 → nullptr
   std::shared_ptr<const pool::Orders> ranks(const FeatureLib &lib, pool::Style st, const pool::Tick &tick);
 
   struct Key {
@@ -90,10 +90,10 @@ private:
   };
 
   misc::exec::ForkJoin pool_{misc::exec::hw()};                   // 键: 每线程一行的列读 + 排序; 篮子: 每线程一组参数的成员 / 权
-  std::shared_ptr<const pool::Tape> tape_;                        // 上次用的原料带 (空 = 未装)
+  std::shared_ptr<const pool::Strip> strip_;                      // 上次用的原料带 (空 = 未装)
   std::vector<Key> keys_;                                         // 新 → 旧 (原料带重建清空, 补行随用随补)
-  std::map<pool::Spec, std::shared_ptr<const pool::Book>> books_; // 篮子账 [成员 (权重归 0)] (随 tape_ 换代清空)
-  std::shared_ptr<const pool::Book> bench_;                       // 全A 的账 (随 tape_ 换代清空)
+  std::map<pool::Spec, std::shared_ptr<const pool::Perf>> perfs_; // 篮子账 [成员 (权重归 0)] (随 strip_ 换代清空)
+  std::shared_ptr<const pool::Perf> bench_;                       // 全A 的账 (随 strip_ 换代清空)
 };
 
 } // namespace GUI::Beta

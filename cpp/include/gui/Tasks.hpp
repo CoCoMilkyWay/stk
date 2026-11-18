@@ -43,6 +43,8 @@ void TextProgress(const Progress &p);
 
 // ============================================================================
 // 任务节点: 左栏一行 (tabs 空 = 任务本身是叶子) 或一个可展开父节点 (tabs = 子叶子).
+// 子行名可按 '/' 分组 ("组/子组/叶"): 前缀相同的相邻子行收进同一折叠节点, 行上只显示叶名;
+// 组默认折起, 组内子组默认展开 (展开一层即见全部叶); 组行标签 = 组内子行聚合 (同任务行).
 //
 // 行接口三件套统一用 idx 寻址 (最大化对仗): idx == -1 任务行, idx >= 0 子行.
 //   Status(data, idx)  -> 该行状态标签 (缺省无标签; 有子项任务只答子行, 任务行由 RowStatus 聚合)
@@ -80,6 +82,8 @@ struct TaskHandle {
 // 左栏行标签的唯一入口. 有子项任务的任务行 = 子行聚合: 档位 Busy > Error > Warn > Ready > Muted
 // 取最高档, 同档取首个子行的文字; Ready 档统一显示 done
 TaskStatus RowStatus(const SharedData &data, const TaskHandle &t, int idx);
+// 子行 [lo, hi) 的聚合标签 (任务行 = 全部子行, 组行 = 组内子行), 口径同上
+TaskStatus SpanStatus(const SharedData &data, const TaskHandle &t, int lo, int hi);
 
 // ============================================================================
 // 任务树: 左栏全部状态收敛于此 (tasks + 唯一选中态), Run_* 只持有一个 TaskTree.

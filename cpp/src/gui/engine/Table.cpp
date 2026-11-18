@@ -194,10 +194,8 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
   }
   const auto daily = [&](const char *code) { return Col{TierId::Bar, L_1day, static_cast<uint32_t>(meta.col_of(L_1day, code))}; }; // 日频原料 bar.1d
   t.b.adj_factor = daily("adj_factor");
-  t.b.total_shares = daily("total_shares");
   for (int m = 0; m < kPoolVals; ++m)
     t.b.val[m] = daily(kPoolValCols[m]);
-  t.b.ind_l1 = daily("ind_l1");
   struct Lab {
     bool is_long;
     int hold;

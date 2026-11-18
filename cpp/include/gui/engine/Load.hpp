@@ -3,19 +3,19 @@
 //   三侧严格对仗 (共享逐天并行骨架 read_days):
 //     X (因子输入叶: LeafId → Leaf → XPlanes, load_x)
 //     Y (截面门控 + 建仓可成交码 YCore + 标签两侧 [hold] + 买入冲击 [amt] → YPlanes, load_y)
-//     B (池篮子与个股原料: 池成员位 + T+1C 标签 + close / 复权 / 股本 / 估值 / 行业 / 概念 → BPlanes, load_b)
+//     B (池篮子与个股原料: 池成员位 + T+1C 标签 + 估值 → BPlanes, load_b; 成员 / 持仓权 / 行业 / 市值 / 收益 = 选股表的原料带, 与行情篮子同一份)
 //   Store = 进程唯一的计算面 (线程池 ex + 库 lr + 宿主平面 LRU + 常驻算子/评估工作区 ExecSpace + 计算权优先级队列):
 //     计算句柄 FactorFlow + 独占租约 Lease (计算权在手才可碰其余全部资源, 跨文件 / 跨趟零重分配复用).
 #pragma once
 
 #include "factor/Check.hpp" // check::Plane
 #include "factor/Stat/Contract.hpp"
-#include "features/Panel/PoolSpec.hpp"       // kRebals
 #include "features/Storage/FeaturePlane.hpp" // Day / LibReaders
 #include "gui/engine/Table.hpp"              // FeatureTable / FactorScope / StatScope
 #include "misc/epoch.hpp"
 #include "misc/exec.hpp"
-#include "shared/Basket.hpp"      // Fact
+#include "misc/lru.hpp"
+#include "shared/Basket.hpp"      // Fact / pool::Picks
 #include "shared/Progress.hpp"    // Progress
 #include "shared/ReadRequest.hpp" // ReadScope
 
@@ -153,7 +153,8 @@ struct BlockSpec {
   bool ry = false;
 };
 inline constexpr double kPlaneBytes = 5.0;
-inline constexpr double kBasketCellBytes = 8.0 + kPlaneBytes + 1.0 + kPlaneBytes + 4.0 + 4.0 + 4.0 + 24.0 + 1.0 + 4.0 + 4.0;
+// 池篮子一格: 入 (in + 标签 + 可成交码 + 估值) + 个股侧出 (ret + 估值)
+inline constexpr double kBasketCellBytes = sizeof(PoolMask) + kPlaneBytes + 1.0 + 4.0 * kPoolVals + 4.0 * (1 + kPoolVals);
 double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx);
 
 struct Leaf : factor::check::Plane {
@@ -196,21 +197,22 @@ inline int fill_costs(const YPlanes &y, factor::stat::Cost (&out)[factor::stat::
 }
 factor::stat::Labels labels_of(const YPlanes &y);
 
+// 块行 t = 原料带行 r0 + t (评估日 = 原料带的连续行); 格 i = t · A + a
 struct BPlanes {
   Shape sh;
-  std::vector<PoolMask> in;
-  LegPlane lab;
+  std::shared_ptr<const pool::Picks> pk; // 选股表 + 原料带 (成员 / 持仓权 / 行业 / 市值 / 收益)
+  PoolAxis axis;                         // = 原料带轴
+  size_t r0 = 0;
+  std::vector<PoolMask> in; // 门控 (kAllPool) + 当日有数据的子池成员
+  LegPlane lab;             // T+1C
   std::vector<uint8_t> eo;
-  factor::check::Plane close;
-  std::vector<float> mcap;
-  std::vector<uint32_t> from[pool::kRebals];
-  std::vector<float> px, shares;
-  std::vector<float> val[kPoolVals];
-  std::vector<uint8_t> ind;
-  std::vector<uint32_t> cc_at;
-  std::vector<uint16_t> cc;
-  Fact fact(size_t i) const { return {in[i], ind[i]}; }
-  std::span<const uint16_t> concepts_of(size_t a) const { return {cc.data() + cc_at[a], cc_at[a + 1] - cc_at[a]}; }
+  std::vector<float> val[kPoolVals]; // 估值分子 (kPoolValCols)
+  const pool::Strip &strip() const { return *pk->strip; }
+  misc::Ymd date(size_t t) const { return strip().dates[r0 + t]; }
+  Fact fact(size_t i) const {
+    const size_t A = static_cast<size_t>(sh.A);
+    return {in[i], strip().ind[(r0 + i / A) * A + i % A]};
+  }
 };
 
 struct Io {
@@ -283,11 +285,6 @@ public:
 private:
   friend class misc::Epochal<Store>;
   Store();
-  struct Entry {
-    std::shared_ptr<const void> p;
-    double bytes = 0.0;
-    uint64_t tick = 0;
-  };
   template <class T>
   std::shared_ptr<const T> find(const std::string &key);
   template <class T>
@@ -303,11 +300,10 @@ private:
   bool busy_ = false;
   int waiting_[2] = {};
   std::thread::id owner_;
-  std::map<std::string, Entry> cache_;
+  misc::Lru<std::string, void> cache_; // 宿主平面 (代价 = 字节; 钉着的不逐)
   std::map<std::string, double> n_full_;
   std::unique_ptr<ExecSpace> exec_;
-  double bytes_ = 0.0;
-  uint64_t tick_ = 0, epoch_ = 0;
+  uint64_t epoch_ = 0;
 };
 
 struct FactorFlow {

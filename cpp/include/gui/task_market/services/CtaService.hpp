@@ -6,10 +6,10 @@
 #pragma once
 
 #include "cta/Trace.hpp"
-#include "gui/quote/PriceLib.hpp"
-#include "gui/quote/Quote.hpp" // Side
+#include "gui/quote/Quote.hpp" // Side / RefAt
 #include "gui/util/Service.hpp"
 #include "misc/exec.hpp"
+#include "misc/lru.hpp"
 #include "shared/Progress.hpp"
 
 #include <cstdint>
@@ -61,7 +61,7 @@ private:
   bool publish(const CtaRequest &req, std::string lack, std::shared_ptr<CtaResult> out = nullptr);
 
   misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
-  Kept<cta::Series> kept_{kKeep};
+  misc::Lru<RefAt, cta::Series> kept_;
 };
 
 } // namespace GUI::Market

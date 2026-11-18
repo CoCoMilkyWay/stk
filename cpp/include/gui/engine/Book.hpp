@@ -1,6 +1,7 @@
 // Book — 净值与篮子引擎 (Stat 契约【净值】; Inspect 分层 / Portfolio 因子线 / 池篮子 / 池整体线同一份): Load 之上.
 //   逐行批收益 RowLines → fold_book (每批资金 1/h̄, 收益在平仓行实现 / 成本在建仓行即付; 按 stride 求和) → 期收益 BookLines → compound 净值.
 //   行情两侧 SideBook (篮子 kBasket ↔ 个股 kStock 同形, 全部列均为 BookLines): baskets 一趟出齐; pool_line 出池整体等权线.
+//   池篮子的成员 / 持仓权 = shared/Basket.hpp members / Weigh (与行情篮子同一份), 换手 / 估值的持仓 = 篮子账 Sleeve (define/Members.hpp)
 #pragma once
 
 #include "gui/engine/Load.hpp" // YPlanes / BPlanes / Block
@@ -60,9 +61,9 @@ void compound(const R *r, size_t n, Put &&put) {
 }
 
 // 行情一侧的账原料 (篮子 kBasket ↔ 个股 kStock 完全同形):
-//   ret = 逐行收益 (篮子 = 可成交指数 fold_book; 个股 = 后复权 close 比 − 1)
-//   buy = 逐行增仓量 (篮子 = Members::turnover; 个股无此列 n = 0)
-//   val = 估值五口 EP / BP / SP / CP / DY [线][T]
+//   ret = 逐行收益 (篮子 = 可成交指数 fold_book; 个股 = 原料带 grow 比 − 1, 后复权)
+//   buy = 逐行增仓量 (篮子 = Sleeve::roll; 个股无此列 n = 0)
+//   val = 估值五口 EP / BP / SP / CP / DY [线][T] (篮子 = 持仓加权)
 struct SideBook {
   BookLines ret;
   BookLines buy;

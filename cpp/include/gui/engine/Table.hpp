@@ -149,7 +149,8 @@ const LegCol &leg_of(const std::vector<LegCol> &cols, int key);                 
 // X ↔ Y ↔ B 三侧 (XCols / YCols / BCols ↔ Load 叶 LeafId / YSpec / 篮子 → XPlanes / YPlanes / BPlanes, load_x / load_y / load_b):
 //   X = 因子输入叶 = Lob 档 (只 min 层有) 及 Bar 档不细于网格的各层全部列, 随因子变
 //   Y = 门控 / 标签 = Bar 档网格层本层列; 成本盘口段 = Lob 档网格层本层列; 只随评估域变
-//   B = 价格 / 篮子原料: K 线 = Bar 档网格层本层列; 复权 / 股本 / 估值 / 行业 / 池成员 = 日频原料, 恒取 bar.1d 列 (as-of 投影到网格行, 各层同一份)
+//   B = 价格 / 篮子原料: K 线 = Bar 档网格层本层列; 复权 / 估值 = 日频原料, 恒取 bar.1d 列 (as-of 投影到网格行, 各层同一份);
+//       池成员 / 持仓权 / 行业 / 市值 / 收益 不在此 (选股表的原料带 pool::Strip, 与行情篮子同一份)
 // 叶的身份 = leaves 下标 (字段表编译期定 → 同层进程内不变; 叶名只在 Dag / 解析边界, 装载 / 缓存 / 引擎全按 LeafId)
 using LeafId = uint32_t;
 struct XCols {
@@ -166,7 +167,7 @@ enum PoolVal : int { kValEp,
                      kValCp,
                      kValDy };
 inline constexpr int kPoolVals = 5;
-// 各口的日频输入列 (BCols::val 下标 = PoolVal): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM (DY 的分子 load_b 还原)
+// 各口的日频输入列 (BCols::val 下标 = PoolVal): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM (DY 的分子 Book 还原)
 inline constexpr const char *kPoolValCols[kPoolVals] = {"pl_npp_ttm", "bs_eq", "pl_rev_ttm", "cf_ocf_ttm", "dy_ttm"};
 struct YCols {
   Col ts;                     // ts_valid (当日有成交)
@@ -178,9 +179,7 @@ struct YCols {
 struct BCols {
   Col ohlc[4];        // open high low close (K 线, 不复权; 列名 FactorLevel::kline)
   Col adj_factor;     // 复权因子 (盘后列, 网格行 as-of = 当日因子): 后复权收盘 = 本行 close × 本列
-  Col total_shares;   // 总股本: 池估值的市值 + 池加权指数的权重 = close × 本列
   Col val[kPoolVals]; // [PoolVal] 估值输入 (kPoolValCols): 池估值 EP / BP / SP / CP / DY (整体法)
-  Col ind_l1;         // SW2021 一级行业 ID (池估值页的行业切分)
 };
 struct FeatureTable {
   FactorLevelId lv = 0;             // 因子层

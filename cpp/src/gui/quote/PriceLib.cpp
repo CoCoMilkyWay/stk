@@ -232,6 +232,30 @@ void each_side(F &&f) {
 
 using misc::snap::items;
 
+// head.bin = 头 + 体 (体 = body(ar)): 读 = 有文件且头 == want 才读体, 返回 = 读了体 ⇄ 写
+template <class Head, class Body>
+bool snap_read(disk::Node n, const disk::Key &k, const Head &want, Body &&body) {
+  if (!disk::exists(n, k))
+    return false;
+  const std::string blob = disk::read(n, k);
+  misc::snap::Load ar(std::as_bytes(std::span(blob)));
+  Head h;
+  ar(h);
+  if (!(h == want))
+    return false;
+  body(ar);
+  assert(ar.done() && "head.bin: 文件尾有多余字节");
+  return true;
+}
+template <class Head, class Body>
+void snap_write(disk::Node n, const disk::Key &k, const Head &head, Body &&body) {
+  std::vector<std::byte> blob;
+  misc::snap::Save ar(blob);
+  ar(head);
+  body(ar);
+  disk::write(n, k, {reinterpret_cast<const char *>(blob.data()), blob.size()});
+}
+
 // 一行一日过链 z: base = 当日前收 (存价口径), close = 当日收; origin = 首个有根日的因子. 返回当日因子
 double step(PriceLib::Link &z, float base, float close, double origin) {
   assert(close > 0);
@@ -672,7 +696,7 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
     return true;
   at_ = {};
   const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &quit_);
-  if (!pk || pk->tape->dates != dates) // 库在落新日: 下趟再补
+  if (!pk || pk->strip->dates != dates) // 库在落新日: 下趟再补
     return false;
   if (dates_.size() > lib_days_ + keep)
     cut(lib_days_ + keep);
@@ -1011,16 +1035,26 @@ bool PriceLib::run(PriceRequest &req) {
   for (const Want &w : req.wants) {
     if (cancel_.load(std::memory_order_relaxed))
       return false;
+    const auto read = [&] {
+      auto s = std::make_shared<Series>();
+      return series(w.ref, w.minute, *s) ? s : nullptr;
+    };
     if (w.minute)
-      minute_.get(w.ref, at_, [&](Series &s) { return series(w.ref, true, s); });
+      minute_.get({w.ref, at_}, read, kKeepMinutes);
     else if (w.ref.side == kStock)
-      daily_.get(w.ref, at_, [&](Series &s) { return series(w.ref, false, s); });
+      daily_.get({w.ref, at_}, read, kKeep);
   }
   // 发布 = 本戳留着的全部 (不只本次要的: 切页不闪), 键升序; 连分钟的盖过不连的
   using Item = std::pair<uint32_t, std::shared_ptr<const Series>>;
   std::vector<Item> ks, bm;
-  minute_.each(at_, [&](Ref r, const std::shared_ptr<const Series> &s) { (r.side == kStock ? ks : bm).emplace_back(r.key, s); });
-  daily_.each(at_, [&](Ref r, const std::shared_ptr<const Series> &s) { ks.emplace_back(r.key, s); });
+  minute_.each([&](const RefAt &k, const std::shared_ptr<const Series> &s) {
+    if (k.st == at_)
+      (k.ref.side == kStock ? ks : bm).emplace_back(k.ref.key, s);
+  });
+  daily_.each([&](const RefAt &k, const std::shared_ptr<const Series> &s) {
+    if (k.st == at_)
+      ks.emplace_back(k.ref.key, s);
+  });
   std::ranges::stable_sort(ks, {}, &Item::first);
   ks.erase(std::ranges::unique(ks, {}, &Item::first).begin(), ks.end());
   auto v = std::make_shared<PriceView>();
