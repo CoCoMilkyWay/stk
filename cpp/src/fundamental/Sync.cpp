@@ -37,7 +37,7 @@ std::vector<Task> plan(const Spec &s, const Round &r) {
 
 std::int64_t run(Clients &c, const Task &t) {
   const auto tbl = fetch(c, t);
-  assert(tbl && "sync::run: 远端 5xx");
+  assert(tbl && "sync::run: 远端故障");
   put(t, tbl);
   return tbl->num_rows();
 }

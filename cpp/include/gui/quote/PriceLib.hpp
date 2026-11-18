@@ -36,7 +36,7 @@
 // 服务 (gui/util/Service.hpp, 随对象): 请求 = 要的全史 (标的 × 连不连分钟) + 基本面段末日 + 行情日 + 账本代 + 券商现价 (QuoteHub 每帧并成; 变了即补);
 //   每趟: 补库 (只析构中断, 新请求不打断) → 库变了重建日脊 / 篮子全表 (+ 交接的普查) / 个股日脊末段 → 账户 → 读要的 (按 (标的, 戳) 沿用; 新请求打断)
 //   → 发布 PriceView (与上份同则不发). 进度: Loading = 合成天 (库段 + 补段 + 篮子侧重排 / 合成, 一趟一次 begin)
-// 线程: 库只 worker 读写, 外面只经 PriceView 读; 合成线程池随对象 (kThreads 封顶; 两侧按日并行合成, 篮子全表按篮子并行读)
+// 线程: 库只 worker 读写, 外面只经 PriceView 读; 合成线程池随对象 (全部核, 按可用内存封顶; 两侧按日并行合成, 篮子全表按篮子并行读)
 #pragma once
 
 #include "account/Ledger.hpp" // Spot
@@ -97,7 +97,7 @@ public:
   static constexpr const char *kName = "PriceLib";
   static constexpr size_t kKeep = 64, kKeepMinutes = 32; // 留在内存的个股日根全史 / 连分钟的全史数 (请求的上限)
   static constexpr size_t kBlock = 64;
-  static constexpr int kThreads = 8; // 合成线程 (每线程 ~60MB: 分钟读 + 一日的件 + 篮子合成件; 定数封顶, 小内存机器同样安全)
+  static constexpr size_t kThreadBytes = size_t{64} << 20; // 每个合成线程的工作区 (分钟读 + 一日的件 + 篮子合成件)
   static constexpr double kBase = 1000;
   // 一行的因子链: 末日因子 (0 = 尚无根) / 参考价 (末个收盘, 按前收滚动; 0 = 尚无)
   struct Link {
@@ -173,7 +173,8 @@ private:
   PriceStamp at_;             // 交接所对的戳 (空 = 未定 / 补到一半)
   Members mem_;               // 交接: 成员表
   std::vector<double> level_; // 交接: [篮子] 末日点位
-  misc::exec::ForkJoin pool_{misc::exec::fit(kThreads)};
+  static int threads();       // 合成线程数: 全部核, 至多此刻可用内存的一半 / kThreadBytes
+  misc::exec::ForkJoin pool_{threads()};
   // worker 私有: 本戳 (built_) 的日脊 / 篮子全表 / 个股日脊末段 / 普查 / 账户 + 沿用的读
   PriceStamp built_;
   std::shared_ptr<const std::vector<misc::Ymd>> spine_;

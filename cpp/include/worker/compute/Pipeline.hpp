@@ -521,7 +521,8 @@ bool pipeline(const PipelineArgs &args) {
 
   // 日环深 P 启动时一次定死 (定长序号环, 无扩格, 见 FeatureStore.hpp):
   //   上限 = 内存预算 (一格 = 张量 + 源格; 此刻已用与常驻开销之外, 用到总内存 1 − kRingMemMargin) ∧ kMaxRingSlots ∧ 日期轴天数
-  //   下限 = MIN_RING_SLOTS (标签悬挂 + 时序下一日 + 截面跨日) + 截面/落盘在飞核数 + 1, 不足死锁
+  //   下限 = MIN_RING_SLOTS (标签悬挂 + 时序下一日 + 截面跨日) + 截面/落盘在飞核数 + 1, 不足死锁;
+  //   日期轴整根装得下 (P = 天数, 格不复用) 则无需下限 (如续算短轴)
   const size_t per_slot = FeatureStore<T>::Slot::bytes(num_assets) + TierFeed<T>::cell_bytes(num_assets);
   const size_t fixed_bytes = num_assets * sizeof(CoreOf<T>) + (StoreRing::kPrefetchLead + 1) * TierFeed<T>::cell_bytes(num_assets);
   const MemoryUsage mu = memory_usage();
@@ -530,7 +531,7 @@ bool pipeline(const PipelineArgs &args) {
   const size_t floor_slots = CoreOf<T>::kMinRingSlots + num_cs + num_io + 1;
   const size_t cap_slots = std::max(floor_slots, kMaxRingSlots);
   const size_t slots = std::min({mem_slots, dates.size(), cap_slots});
-  assert(slots >= floor_slots && slots > tail && "内存不够: 日环不到下限, 会死锁");
+  assert((slots >= floor_slots || slots == dates.size()) && slots > tail && "内存不够: 日环不到下限, 会死锁");
 
   std::cout << "\n=== Compute (" << tier_name(T::kId) << ") ===\n"
             << L.summary() << "\n"

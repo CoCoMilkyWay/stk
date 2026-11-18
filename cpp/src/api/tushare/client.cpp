@@ -75,19 +75,15 @@ void pace(std::string_view api, int per_min) {
   std::this_thread::sleep_until(at);
 }
 
+// 解析失败 = 远端不可达 → 空 (调用方跳过)
 tcp::resolver::results_type resolve_endpoints() {
-  for (int attempt = 0;; ++attempt) {
-    net::io_context ioc;
-    tcp::resolver resolver(ioc);
-    beast::error_code ec;
-    auto ep = resolver.resolve(kHost, kPort, ec);
-    if (!ec)
-      return ep;
-    std::cerr << "\n[http] resolve error (attempt " << (attempt + 1) << "/" << (kRetryMax + 1) << "): " << ec.message()
-              << std::endl;
-    assert(attempt < kRetryMax);
-    std::this_thread::sleep_for(std::chrono::seconds(kRetryIntervalSeconds));
-  }
+  net::io_context ioc;
+  tcp::resolver resolver(ioc);
+  beast::error_code ec;
+  auto ep = resolver.resolve(kHost, kPort, ec);
+  if (ec)
+    std::cerr << "\n[http] resolve error: " << ec.message() << ", 跳过" << std::endl;
+  return ec ? tcp::resolver::results_type{} : ep;
 }
 
 // 单线程 HTTP/1.1 keep-alive 会话: batch 内每工作线程持有一份, 跨请求复用连接
@@ -106,11 +102,19 @@ struct Session {
     stream.reset();
   }
 
-  // 返回的 yyjson_doc* 由调用方 yyjson_doc_free; HTTP 5xx → nullptr
-  yyjson_doc *call(const tcp::resolver::results_type &ep, const std::string &token, const Query &q) {
+  // 返回的 yyjson_doc* 由调用方 yyjson_doc_free; 远端故障 → 置 down, nullptr (down 已置 → 不发, 直接 nullptr)
+  yyjson_doc *call(const tcp::resolver::results_type &ep, const std::string &token, const Query &q, std::atomic<bool> &down) {
     const std::string_view api_name = q.api;
     const std::string body = build_body(token, api_name, q.params);
+    const auto fail = [&](const std::string &why) -> yyjson_doc * {
+      close();
+      if (!down.exchange(true, std::memory_order_relaxed))
+        std::cerr << "\n[http] 远端故障 api=" << api_name << ": " << why << ", 本轮余下的 tushare 请求跳过" << std::endl;
+      return nullptr;
+    };
     for (int attempt = 0;;) {
+      if (down.load(std::memory_order_relaxed))
+        return nullptr;
       if (q.per_min > 0)
         pace(api_name, q.per_min);
       const bool reused = stream.has_value();
@@ -138,29 +142,18 @@ struct Session {
       }
       if (ec) {
         close();
-        if (reused) // keep-alive 空闲连接被对端关闭: 立即换新连接重发, 不计入退避
+        if (reused) // keep-alive 空闲连接被对端关闭: 立即换新连接重发
           continue;
-        std::cerr << "\n[http] transient error (attempt " << (attempt + 1) << "/" << (kRetryMax + 1)
-                  << ") api=" << api_name << ": " << ec.message() << std::endl;
-        assert(attempt < kRetryMax);
-        std::this_thread::sleep_for(std::chrono::seconds(kRetryIntervalSeconds));
-        ++attempt;
-        continue;
+        return fail("网络 " + ec.message());
       }
       if (!res.keep_alive())
         close();
-      if (res.result_int() >= 500) { // 服务端故障 (502 / 503 / 504), 重发无益: 交调用方跳过
-        close();
-        std::cerr << "\n[http] HTTP " << res.result_int() << " api=" << api_name << ", 跳过" << std::endl;
-        return nullptr;
-      }
+      if (res.result_int() >= 500) // 服务端故障 (502 / 503 / 504)
+        return fail("HTTP " + std::to_string(res.result_int()));
 
       yyjson_doc *doc = yyjson_read(res.body().data(), res.body().size(), 0);
-      if (!doc) {
-        std::cerr << "Tushare API: failed to parse response, body=\n"
-                  << res.body().substr(0, 1024) << std::endl;
-        assert(false);
-      }
+      if (!doc) // 网关错误页等非 JSON 回包
+        return fail("回包不是 JSON: " + res.body().substr(0, 200));
 
       yyjson_val *root_val = yyjson_doc_get_root(doc);
       yyjson_val *code_val = yyjson_obj_get(root_val, "code");
@@ -179,6 +172,11 @@ struct Session {
         std::this_thread::sleep_for(std::chrono::seconds(kRetryIntervalSeconds));
         ++attempt;
         continue;
+      }
+      if (code >= 50000) { // 服务端内部错误 (50101 "系统未知错误" / "指定数据不存在" 等)
+        const std::string why = "code=" + std::to_string(code) + " " + msg;
+        yyjson_doc_free(doc);
+        return fail(why);
       }
       std::cerr << "Tushare API error: code=" << code << " msg=" << msg << " api=" << api_name << std::endl;
       assert(false);
@@ -260,8 +258,15 @@ Client::Client(std::string token) : token_(std::move(token)) {
 Client::Client() : Client(kToken) {}
 
 std::shared_ptr<arrow::Table> Client::query(const Query &q) {
+  if (down_.load(std::memory_order_relaxed))
+    return nullptr;
+  const tcp::resolver::results_type ep = resolve_endpoints();
+  if (ep.empty()) {
+    down_.store(true, std::memory_order_relaxed);
+    return nullptr;
+  }
   Session s;
-  yyjson_doc *doc = s.call(resolve_endpoints(), token_, q);
+  yyjson_doc *doc = s.call(ep, token_, q, down_);
   if (!doc)
     return nullptr;
   auto t = to_table(doc, q.num);
@@ -271,9 +276,13 @@ std::shared_ptr<arrow::Table> Client::query(const Query &q) {
 
 std::vector<std::shared_ptr<arrow::Table>> Client::batch(const std::vector<Query> &qs, const std::function<void(std::size_t)> &tick) {
   std::vector<std::shared_ptr<arrow::Table>> out(qs.size());
-  if (qs.empty())
+  if (qs.empty() || down_.load(std::memory_order_relaxed))
     return out;
   const tcp::resolver::results_type ep = resolve_endpoints();
+  if (ep.empty()) {
+    down_.store(true, std::memory_order_relaxed);
+    return out;
+  }
   std::atomic<std::size_t> done{0};
   misc::exec::ForkJoin ex(std::min(kWidth, misc::exec::fit(qs.size())));
   std::vector<std::unique_ptr<Session>> sessions(static_cast<std::size_t>(ex.threads()));
@@ -282,7 +291,7 @@ std::vector<std::shared_ptr<arrow::Table>> Client::batch(const std::vector<Query
     if (!s)
       s = std::make_unique<Session>();
     const Query &q = qs[static_cast<std::size_t>(i)];
-    if (yyjson_doc *doc = s->call(ep, token_, q)) {
+    if (yyjson_doc *doc = s->call(ep, token_, q, down_)) {
       out[static_cast<std::size_t>(i)] = to_table(doc, q.num);
       yyjson_doc_free(doc);
     }

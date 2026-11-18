@@ -49,7 +49,7 @@
 // TS 按 (asset, d) 计数 (而非按 worker) 使资产处置权可在 worker 间转移: 领跑 worker 可接手
 // 落后 worker 的资产并回填旧日 (旧日未计满 ⇒ 其格 free_day 仍停在 d, ts_try_open 必得), 见 TsSchedule.
 // 资产内日序由调度侧的 claim/done 原子保证.
-// 开盘型标签 (T+N) 跨日回填: 旧日 ts_close 推迟到标签结清 (见 CoreTs), 故 P ≥ LabelHold::MIN_RING_SLOTS.
+// 开盘型标签 (T+N) 跨日回填: 旧日 ts_close 推迟到标签结清 (见 CoreTs), 故 P ≥ LabelHold::MIN_RING_SLOTS (或 P = 日期轴天数, 格不复用).
 //
 // 句柄在有效期内被握手钉住 (TS 未计满不给 CS, CS 未 close 不给 IO, IO 未 close 不复用),
 // 不需要 epoch / 每次访问的验证. 数值一致性与调度形态无关, 由输入契约锚定

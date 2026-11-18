@@ -16,7 +16,7 @@ namespace fundamental {
 
 // ============================================================================
 // Remote — 远端传输面 (Store 的对偶上游): Clients 聚合两源连接 + 远端表 schema 缓存
-//   fetch(clients, task) : Task → 远端查询 → Table → 剥 Spec::drop; Tushare 任一请求 HTTP 5xx → nullptr (该任务跳过)
+//   fetch(clients, task) : Task → 远端查询 → Table → 剥 Spec::drop; Tushare 远端故障 → nullptr (该任务跳过; 同一 Clients 其后的 Tushare 任务也不再发, 见 tushare::Client::query)
 //   schema(clients, s, w): BigQuant 表 LIMIT 0 schema (同 Clients 实例内每表查一次)
 //
 // 落盘行序 (Bq): Month / Meta 按 vd (按日成块); Daily 按 (资产键, vd) (日文件内逐资产成段); vd 空不定

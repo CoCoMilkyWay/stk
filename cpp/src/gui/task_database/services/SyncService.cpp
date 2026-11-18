@@ -221,8 +221,8 @@ Outcome pipe_tasks(Clients &clients, const std::atomic<bool> &cancel, std::strin
         cur.swap(slot);
       }
       cv.notify_one();
-      if (!cur->tbl) { // 远端 5xx: 不落盘, 下轮 plan 照旧排到
-        log_line("[" + std::string(tag) + "] " + cur->lbl + " ... 远端 5xx, 跳过");
+      if (!cur->tbl) { // 远端故障: 不落盘, 下轮 plan 照旧排到
+        log_line("[" + std::string(tag) + "] " + cur->lbl + " ... 远端故障, 跳过");
         on_done(0);
         continue;
       }

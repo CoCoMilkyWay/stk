@@ -9,6 +9,7 @@
 #include "gui/account/AccountSide.hpp" // 账户一侧的回放
 #include "gui/quote/BasketRow.hpp"
 #include "gui/quote/services/QuoteService.hpp" // 新浪归档
+#include "misc/cross_platform.hpp"             // memory_usage
 #include "misc/snap.hpp"
 #include "shared/Basket.hpp" // basket_table
 
@@ -505,6 +506,12 @@ std::shared_ptr<const Seg> first_day(Side s, const disk::Key &lib, misc::Ymd d, 
 }
 
 } // namespace
+
+int PriceLib::threads() {
+  const MemoryUsage mu = memory_usage();
+  const size_t n = (mu.total_bytes - mu.used_bytes) / 2 / kThreadBytes;
+  return static_cast<int>(std::clamp<size_t>(n, 1, static_cast<size_t>(misc::exec::hw())));
+}
 
 PriceLib::PriceLib(std::shared_ptr<const Calendar> cal, std::function<void(const Handoff &)> bind) : cal_(std::move(cal)), bind_(std::move(bind)) {
   assert(cal_ && !cal_->days.empty() && bind_);

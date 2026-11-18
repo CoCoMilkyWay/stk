@@ -2,6 +2,7 @@
 
 #include <arrow/table.h>
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -32,7 +33,7 @@ inline constexpr const char *kToken = "6b5ea435a4626b1eeedefb2115bcf9e84fc64a0d2
 inline constexpr const char *kHost = "api.tushare.pro";
 inline constexpr const char *kPort = "80"; // 走 80, 省掉 SSL 依赖
 inline constexpr int kTimeoutSeconds = 60; // 单次连接 + 读写整体时长; range 接口序列化耗时可达 20s
-inline constexpr int kRetryMax = 4;        // 额外重试次数 (共 5 次尝试), 线性间隔
+inline constexpr int kRetryMax = 4;        // 频率超限的额外重试次数 (共 5 次尝试), 线性间隔
 inline constexpr int kRetryIntervalSeconds = 30;
 inline constexpr int kWidth = 8; // batch 并发路数 (单条 ~0.1s 为往返延迟; 分钟限额由 Query::per_min 控速, 偶发超限由重试吸收)
 
@@ -48,13 +49,15 @@ public:
   // 响应 data.{fields, items} → arrow::Table (0 行 → 0 行表, schema 仍完整):
   //   num 内的列 → double, 其余 → string. 不按数据推断: 全 null 列无从推断, 同一列会跨调用漂移.
   //   num 声明的列必须出现在响应 fields 里 (拼错 / API 改名立刻暴露).
-  // 网络瞬抖 / 频率超限 (40203) 共用重试预算; HTTP 5xx (服务端故障) 不重发 → nullptr; 其它 code != 0 / 解析失败 → assert.
+  // 远端故障 (解析不了域名 / 连不上 / 读写超时 / HTTP 5xx / 回包非 JSON / code ≥ 50000) 不重发不等 → nullptr, 且本对象从此判远端挂了:
+  //   其后的 query / batch 不再发请求, 一律 nullptr (一轮同步一个对象, 下轮重试). 频率超限 (40203) 隔 kRetryIntervalSeconds 重试; 其它 code != 0 → assert.
   std::shared_ptr<arrow::Table> query(const Query &q);
-  // 一批 query 至多 kWidth 路并发 (每工作线程复用一条 HTTP/1.1 keep-alive 连接), 结果按 qs 原序 (5xx 的位置为 nullptr); tick(已完成条数) 每完成一条调一次
+  // 一批 query 至多 kWidth 路并发 (每工作线程复用一条 HTTP/1.1 keep-alive 连接), 结果按 qs 原序 (远端故障的位置为 nullptr); tick(已完成条数) 每完成一条调一次
   std::vector<std::shared_ptr<arrow::Table>> batch(const std::vector<Query> &qs, const std::function<void(std::size_t)> &tick = {});
 
 private:
   std::string token_;
+  std::atomic<bool> down_{false}; // 远端挂了 (见 query)
 };
 
 } // namespace tushare
