@@ -1833,10 +1833,11 @@ struct State {
   // 股本结构: 最新一次变更的境外上市股 (无变更记录 → NaN)
   std::size_t cap = 0;
   float foreign = NaNF;
-  // 分红: 近 4 季报告期累计 (dy) + 近 3 个会计年度累计 (dividend_st), 均按报告期取窗
+  // 分红: 近 3 个报告期年窗 (窗 0 = dy, 三窗 = flt_div) + 近 3 个会计年度累计 (dividend_st), 均按报告期取窗
   std::size_t div_hi = 0;
-  int annual_y = 0; // 最新已披露年报的会计年度 (0 = 无)
-  float cash_sum = 0.0f, sum_3y = 0.0f;
+  int annual_y = 0;     // 最新已披露年报的会计年度 (0 = 无)
+  float div_yr[3] = {}; // 窗 k = 报告期 ∈ (锚 − (k+1) 年, 锚 − k 年] 的税前分红总额
+  float sum_3y = 0.0f;
   // 预亏 / 营收预警: 区间并集 ⇔ d < max{off : on ≤ d}
   std::vector<Trig> profit_trig, revenue_trig;
   std::size_t pp = 0, rp = 0;
@@ -1955,8 +1956,8 @@ struct State {
     for (const auto &ev = p.capital[ai]; cap < ev.size() && ev[cap].v <= d; ++cap)
       foreign = ev[cap].foreign;
     {
-      // 公告入列 / 定期报告换期 / 年报换年 → 两窗重算 (只看报告期, 与公告日先后无关, 每期恰计一次):
-      //   dy:          报告期 ∈ (锚 − 1 年, 锚], 锚 = 最新已披露定期报告的报告期 (无 → 空窗)
+      // 公告入列 / 定期报告换期 / 年报换年 → 各窗重算 (只看报告期, 与公告日先后无关, 每期恰计一次):
+      //   div_yr[k]:   报告期 ∈ (锚 − (k+1) 年, 锚 − k 年], 锚 = 最新已披露定期报告的报告期 (无 → 空窗); dy = 窗 0
       //   dividend_st: 报告年 ∈ [annual_y − 2, annual_y]
       const auto &divs = p.dividend[ai];
       bool moved = annual_y != annual_y0 || income.top != income_top0;
@@ -1964,11 +1965,13 @@ struct State {
         moved = true;
       if (moved) {
         const std::int32_t anchor = income.top >= 0 ? quarter_end(income.top) : 0;
-        cash_sum = sum_3y = 0.0f;
+        std::fill(std::begin(div_yr), std::end(div_yr), 0.0f);
+        sum_3y = 0.0f;
         for (std::size_t j = 0; j < div_hi; ++j) {
           const auto &e = divs[j];
-          if (e.report_date > anchor - 10000 && e.report_date <= anchor)
-            cash_sum += e.amt_pre;
+          for (int k = 0; k < 3; ++k)
+            if (e.report_date > anchor - 10000 * (k + 1) && e.report_date <= anchor - 10000 * k)
+              div_yr[k] += e.amt_pre;
           const int py = year_of(e.report_date);
           if (py >= annual_y - 2 && py <= annual_y && std::isfinite(e.amt_after))
             sum_3y += e.amt_after;
@@ -2080,6 +2083,9 @@ struct State {
     out[Fund::flt_susp] = static_cast<float>(p.at(p.suspended, a, d));
     out[Fund::flt_noind] = industry > 0 ? 0.0f : 1.0f;
     out[Fund::flt_warn] = (profit_st || revenue_st || dividend_st || run >= 15) ? 1.0f : 0.0f;
+    // 分红不稳: 数据轴满 3 年起才判 (之前分红史不全, 不剔)
+    const float lo = std::min({div_yr[0], div_yr[1], div_yr[2]}), hi = std::max({div_yr[0], div_yr[1], div_yr[2]});
+    out[Fund::flt_div] = (d >= D.axes_warmup_d && !(lo > 0.0f && lo >= hi * kDivStable)) ? 1.0f : 0.0f;
   }
 
   // 当日行 (布局 Fund::Out; 亿单位; fp16 饱和: 极值 / +inf 违约束标记 → NaN)
@@ -2128,7 +2134,7 @@ struct State {
       }
     }
     // -- dy: 近 4 季报告期税前分红总额 / 收盘市值 --
-    const float dy = (std::isfinite(m) && m > 0.0f) ? std::max(cash_sum / m, 0.0f) : NaNF;
+    const float dy = (std::isfinite(m) && m > 0.0f) ? std::max(div_yr[0] / m, 0.0f) : NaNF;
 
     // 股本 / 估值分母 (亿单位)
     out[Fund::total_shares] = pos(p.at(p.total_shares, a, d)) * 1e-8f;

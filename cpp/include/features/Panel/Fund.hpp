@@ -65,6 +65,10 @@ inline std::uint8_t sw2021_l1_name_to_id(std::string_view name) {
 // 覆盖上市初期连板炒作与 6 / 12 个月限售解禁窗口
 inline constexpr float kNewListDays = 365.0f;
 
+// 分红稳定: 近 3 个报告期年窗 (同 dy 的锚, 逐年前推) 各有税前现金分红, 且最少一年 ≥ 最多一年 × kDivStable (过滤表列 flt_div; 子池过滤维 divstab 剔不稳的).
+// 剔掉 "突然发一年高股息" 的与新近才开始分红的
+inline constexpr float kDivStable = 1.0f / 3.0f;
+
 // 板块 (代码判定, 静态): 落盘列 board 的取值域; 其余 (B 股等) 记未知
 enum Board : std::uint8_t { kBoardUnknown,
                             kBoardShMain,  // 沪市主板 600 / 601 / 603 / 605

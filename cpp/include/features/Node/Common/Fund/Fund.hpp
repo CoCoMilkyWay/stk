@@ -71,6 +71,7 @@ public:
     flt_susp,    // 0/1 停牌
     flt_noind,   // 0/1 申万一级行业未知
     flt_warn,    // 0/1 风险预警 (st_trading / st_profit / st_revenue / st_dividend 任一)
+    flt_div,     // 0/1 分红不稳 (近 3 个报告期年窗任一无分红, 或最少 / 最多 < kDivStable)
     // ---- 行情日线 / 两融明细 / 公告日 ----
     pre_close,         // [元] 次日除权后前收 (盘中 back() = 当日前收)
     adj_factor,        // 次日复权因子

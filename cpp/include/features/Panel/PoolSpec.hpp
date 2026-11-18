@@ -93,8 +93,9 @@ inline constexpr int kMargins = 2;
 enum Filter : uint8_t { kFltNew,
                         kFltWarn,
                         kFltPb,
-                        kFltPe };
-inline constexpr int kFilters = 4;
+                        kFltPe,
+                        kFltDiv };
+inline constexpr int kFilters = 5;
 
 struct StyleDef {
   const char *code;          // 池名风格段
@@ -170,6 +171,7 @@ inline constexpr DimValue kFilterValues[kFilters] = {
     {"nowarn", "无预警", "剔 交易 / 预亏 / 营收 / 分红 四项预警任一 (flt_warn = 1)"},
     {"pbpos", "PB>0", "剔 归母普通股权益 MRQ ≤ 0 或缺 (bs_eq)"},
     {"pepos", "PE>0", "剔 归母净利 TTM ≤ 0 或缺 (pl_npp_ttm)"},
+    {"divstab", "分红稳定", "剔 近 3 个报告期年窗任一无现金分红, 或最少一年 < 最多一年 × 1/3 (flt_div = 1)"},
 };
 
 // 维 (维序 = 池名段序); 切片维 = 集合维 = [kDimSt, kDims), 第 k 个切片维 = kDimSt + k
