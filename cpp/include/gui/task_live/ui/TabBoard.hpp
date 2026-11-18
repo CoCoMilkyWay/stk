@@ -14,8 +14,9 @@
 //     不补 / 不成单 / 不可买的原因与成本拆分放悬停 (名称、金额、成本格).
 //     合计行当日% = 当日盈亏 / 昨净资产 (现金 + 总市值 − 负债 − 当日盈亏).
 //   下单: 一列滑点一个按钮 (kSlipCols, 自左而右 大买 … 小买、小卖 … 大卖), 填充 = 该额的滑点色
-//     (绿 < kSlipOk ≤ 黄 < kSlipHi ≤ 红, 竞价 / 无行情不填); 只有绿的 (5 档吃满且低滑点) 直接下, 其余先确认.
-//     默认锁住 (勾上该列表头的「解锁」才下得了单); 买入方式只管买入 (默认融资), 卖出一律担保品卖出; 有事务在跑即都不收
+//     (绿 < kSlipOk ≤ 黄 < kSlipHi ≤ 红, 竞价 / 无行情不填); 悬停看 价格 (micro price) / 预期成交价 / 滑点 bp / 成本 (元).
+//     默认锁住 (勾上该列表头的「解锁」才下得了单), 解锁后点了直接下, 不再确认;
+//     买入方式只管买入 (默认融资), 卖出一律担保品卖出; 有事务在跑即都不收
 //   卖出滑杆按股数线性走 (0 … 全部可卖), 拖动时就地 snap 到能成单的股数: 0 不卖、
 //     first 起按步长递增 (first 够起买股数且够最小调仓单元)、全部可卖 (够最小调仓单元才有), 取最近的
 //   调仓: 名单先融资标的、后其余, 各按排名入选, 等权补齐; 试算与执行的口径见 live/Rebal.hpp, 事务的步骤见 LiveHub.hpp
@@ -53,13 +54,6 @@ struct BoardState {
   bool run = false;           // 执行调仓待确认
   std::optional<int> every;   // 定时刷新 [s] 输入框编辑中的值 (无 = 显示当前周期)
   std::optional<double> unit; // 最小调仓单元输入框编辑中的值 (无 = 显示当前配置)
-  struct Ask {
-    std::string code, name, slip;
-    int side = live::kBuy;
-    double size = 0;
-    live::Credit credit = live::Credit::Plain;
-  };
-  std::optional<Ask> ask; // 待确认的单
   Market::StockState stock;
   std::unordered_map<std::string, uint32_t> ids; // "000001.SZ" → 全局 id
   float split = 0.66f;                           // 左右分栏比

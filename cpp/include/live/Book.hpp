@@ -1,6 +1,6 @@
-// 实盘: 5 档盘口, 相对参考价算滑点与价位; 委托价与整手规则 (下单与调仓试算同用)
+// 实盘: 5 档盘口, 相对参考价算滑点; 委托价与整手规则 (下单与调仓试算同用)
 //   Quote::side[] = 各方向吃的那侧: 买 +1 吃卖盘 (价位往上), 卖 −1 吃买盘 (价位往下); 空档已滤掉
-//   滑点与价位两组列同构: (量, 方向), 滑点乘方向 → 正 = 成本. 只出数字, 格式化归 UI
+//   滑点列: (额, 方向), 滑点乘方向 → 正 = 成本. 只出数字, 格式化归 UI
 #pragma once
 
 #include "api/sina/client.hpp"
@@ -33,7 +33,6 @@ using Quotes = std::unordered_map<std::string, Quote>; // 代码 → 行情
 std::string quote_time(const Quote &q);                // HH:MM:SS
 
 inline constexpr double kNotionals[3] = {1e4, 5e4, 15e4}; // 吃 n 元
-inline constexpr double kPcts[2] = {1, 2};                // 偏 p%
 
 // 委托价: 扫档 (对手盘累计恰好吃满该额那档) / 对手价 / 对手价再朝成交方向偏 1% / 本方价
 enum class PxMode : uint8_t { Sweep,
@@ -43,15 +42,17 @@ enum class PxMode : uint8_t { Sweep,
 inline constexpr const char *kPxModeNames[4] = {"扫档", "对手价", "对手价 ±1%", "本方价"};
 
 struct Col {
-  double n; // 元 / %
+  double n; // 元
   int s;
 };
 inline constexpr std::array<Col, 6> kSlipCols = {{{15e4, kBuy}, {5e4, kBuy}, {1e4, kBuy}, {1e4, kSell}, {5e4, kSell}, {15e4, kSell}}};
-inline constexpr std::array<Col, 4> kLevelCols = {{{1, kBuy}, {1, kSell}, {2, kBuy}, {2, kSell}}};
 
+// 吃 n 元: 对手盘空 → px / pct / cost 皆无
 struct Slip {
-  std::optional<double> pct; // 万分比 × 方向 (正 = 成本)
-  bool full = false;         // 5 档吃满; 否则实际更差
+  std::optional<double> px;   // 预期成交价 = 吃到的各档均价
+  std::optional<double> pct;  // 万分比 × 方向 (正 = 成本)
+  std::optional<double> cost; // 元 × 方向 (正 = 成本) = pct × n
+  bool full = false;          // 5 档吃满; 否则实际更差
 };
 
 bool auction(const Quote &q);              // 集合竞价: 盘口只给虚拟撮合价, 卖一 ≤ 买一 (锁定 / 交叉), 此时滑点无意义
@@ -63,6 +64,5 @@ std::pair<int, int> lot(const std::string &code); // (起买股数, 递增步长
 // 吃 notional 元相对参考价的滑点 [元, 正 = 成本] 与 5 档是否吃满; 无参考价或竞价中 → 无
 std::pair<std::optional<double>, bool> cost(const Quote &q, int s, double notional);
 std::array<Slip, kSlipCols.size()> slips(const Quote &q, double r);
-std::array<double, kLevelCols.size()> levels(double r); // r 朝方向 s 偏 p%
 
 } // namespace live

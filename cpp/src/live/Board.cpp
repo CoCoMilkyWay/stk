@@ -82,8 +82,6 @@ void depth(Row &r, const Quote &q) {
   r.auction = auction(q);
   if (x && !r.auction)
     r.slips = slips(q, *x);
-  if (x)
-    r.levels = levels(*x);
 }
 
 // 券商口径的资产: 持仓表的 市值 / 仓位 反推, 再随总市值 mv 平移; 持仓表无仓位 → 无

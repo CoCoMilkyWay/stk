@@ -80,15 +80,14 @@ std::array<Slip, kSlipCols.size()> slips(const Quote &q, double r) {
   for (size_t i = 0; i < kSlipCols.size(); ++i) {
     const auto [n, s] = kSlipCols[i];
     const auto [avg, full] = eat(q.book(s), n);
-    out[i] = {avg ? std::optional<double>(s * (*avg - r) / r * 1e4) : std::nullopt, full};
+    out[i].full = full;
+    if (!avg)
+      continue;
+    const double rel = s * (*avg - r) / r;
+    out[i].px = avg;
+    out[i].pct = rel * 1e4;
+    out[i].cost = rel * n;
   }
-  return out;
-}
-
-std::array<double, kLevelCols.size()> levels(double r) {
-  std::array<double, kLevelCols.size()> out;
-  for (size_t i = 0; i < kLevelCols.size(); ++i)
-    out[i] = r * (1 + kLevelCols[i].s * kLevelCols[i].n / 100);
   return out;
 }
 

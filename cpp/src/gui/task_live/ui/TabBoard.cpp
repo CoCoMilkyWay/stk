@@ -32,14 +32,13 @@ constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFl
                                    ImGuiTableFlags_BordersOuterH | ImGuiTableFlags_NoHostExtendX;
 constexpr size_t kOrderLines = 2; // 下单组的状态行: 最近几单
 
-std::string slip_txt(const std::optional<double> &v, bool full = true) { return v ? strf("%s%.1fp", full ? "" : ">", *v) : "-"; }
+std::string slip_txt(const std::optional<double> &v) { return v ? strf("%.1fp", *v) : "-"; }
 std::optional<ImVec4> slip_col(const std::optional<double> &v) {
   if (!v)
     return std::nullopt;
   return *v < kSlipOk ? kGreen : *v < kSlipHi ? kHot
                                               : kRed;
 }
-bool quick(const live::Slip &x) { return x.full && x.pct && *x.pct < kSlipOk; }
 
 std::string wan_pnl(double v) { return wan(v, true); }
 std::string size_txt(double n) { return strf("%.0fW", n / 1e4); } // 下单额 (整万)
@@ -547,27 +546,24 @@ void flow_cell(const Flows &f, const std::string &code, bool priv) {
     tip("%s", tips.c_str());
 }
 
-// 下单按钮: 一列滑点一个, 填充 = 该额的滑点色; 未持有的 (名单股) 卖不了
-void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool can, bool &ask) {
+// 下单按钮: 一列滑点一个, 填充 = 该额的滑点色; 未持有的 (名单股) 卖不了; 点了直接下 (解锁与否由 can 管)
+void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool can) {
   if (r.closed)
     return ImGui::TextDisabled("今日清仓");
-  const auto side_tip = [&](int s) {
-    std::string t = strf("%s 滑点", live::side_name(s));
-    if (r.slips) {
-      for (size_t i = 0; i < live::kSlipCols.size(); ++i)
-        if (live::kSlipCols[i].s == s)
-          t += " " + size_txt(live::kSlipCols[i].n) + " " + slip_txt((*r.slips)[i].pct, (*r.slips)[i].full);
-    } else
-      t += r.auction ? " 竞价中" : " 无行情";
-    if (r.levels) {
-      t += "\n价位";
-      for (size_t i = 0; i < live::kLevelCols.size(); ++i)
-        if (live::kLevelCols[i].s == s)
-          t += strf(" %s%.0f%% %.3f", s > 0 ? "+" : "-", live::kLevelCols[i].n, (*r.levels)[i]);
-    }
-    if (r.weight)
-      t += strf("\n占比 %.2f%%", *r.weight);
-    return t;
+  assert(r.quote);
+  // 悬停: 价格 (micro price) / 预期成交价 / 滑点 / 成本; 5 档吃不满的标 > (成交价买标 >、卖标 <, 实际更差)
+  const auto btn_tip = [&](const live::Slip &x, int s) {
+    if (!live::ref(*r.quote))
+      return std::string("无行情");
+    std::string t = strf("价格 %.3f (micro price)", r.quote->price);
+    if (r.auction)
+      return t + "\n竞价中";
+    if (!x.px)
+      return t + "\n对手盘空";
+    const char *worse = x.full ? "" : ">";
+    return t + strf("\n预期成交价 %s%.3f\n滑点 %s%.1fbp\n成本 %s%.1f 元", x.full ? "" : s > 0 ? ">"
+                                                                                              : "<",
+                    *x.px, worse, *x.pct, worse, *x.cost);
   };
   ImGui::BeginDisabled(!can);
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetFontSize() * 0.12f, ImGui::GetStyle().FramePadding.y));
@@ -585,45 +581,12 @@ void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool ca
     ImGui::EndDisabled();
     ImGui::PopStyleColor(fill ? 2 : 1);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      tip("%s", side_tip(c.s).c_str());
-    if (!hit)
-      continue;
-    const live::Credit credit = c.s > 0 && st.margin ? live::Credit::Margin : live::Credit::Plain;
-    if (quick(x))
-      hub.submit(r.code, c.s, c.n, credit);
-    else {
-      st.ask = BoardState::Ask{r.code, r.name, r.slips ? slip_txt(x.pct, x.full) : r.auction ? "竞价中"
-                                                                                             : "无行情",
-                               c.s, c.n, credit};
-      ask = true;
-    }
+      tip("%s", btn_tip(x, c.s).c_str());
+    if (hit)
+      hub.submit(r.code, c.s, c.n, c.s > 0 && st.margin ? live::Credit::Margin : live::Credit::Plain);
   }
   ImGui::PopStyleVar();
   ImGui::EndDisabled();
-}
-
-void confirm(LiveHub &hub, BoardState &st, bool open) {
-  if (open)
-    ImGui::OpenPopup("确认下单");
-  if (!ImGui::BeginPopupModal("确认下单", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    return;
-  assert(st.ask);
-  const BoardState::Ask &a = *st.ask;
-  ImGui::Text("%s%s %s %s, 滑点 %s, 确认下单?", live::side_name(a.side), a.side > 0 ? strf(" (%s)", live::credit_name(a.credit)).c_str() : "",
-              size_txt(a.size).c_str(), sec_txt({a.code, a.name}, hub.priv()).c_str(), a.slip.c_str());
-  ImGui::BeginDisabled(hub.busy());
-  if (ImGui::Button("下单")) {
-    hub.submit(a.code, a.side, a.size, a.credit);
-    st.ask.reset();
-    ImGui::CloseCurrentPopup();
-  }
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  if (ImGui::Button("取消")) {
-    st.ask.reset();
-    ImGui::CloseCurrentPopup();
-  }
-  ImGui::EndPopup();
 }
 
 void confirm_run(LiveHub &hub, BoardState &st) {
@@ -795,7 +758,7 @@ void head_tip(int c, const live::board::Frame &f) {
     std::string s;
     for (size_t i = 0; i < live::kSlipCols.size(); ++i)
       s += strf("%s%s%s %s", s.empty() ? "" : " · ", live::side_name(live::kSlipCols[i].s), size_txt(live::kSlipCols[i].n).c_str(), slip_txt(f.slips[i]).c_str());
-    return tip("滑点 p = 万分之一, 正 = 成本; 按钮填充 绿 < %.0fp ≤ 黄 < %.0fp ≤ 红, 非绿的点了先确认\n持仓按占比加权 %s", kSlipOk, kSlipHi, s.c_str());
+    return tip("滑点 p = 万分之一, 正 = 成本; 按钮填充 绿 < %.0fp ≤ 黄 < %.0fp ≤ 红, 解锁后点了直接下单\n持仓按占比加权 %s", kSlipOk, kSlipHi, s.c_str());
   }
   case C_DAY:
   case C_DAY_PCT:
@@ -921,7 +884,7 @@ void plan_cells(const RowPlan &p, bool priv, Amt &amt, double &cost) {
   cost += p.slip + p.fee;
 }
 
-void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can, bool &ask) {
+void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can) {
   const Flows flows = flows_of(*hub.state());
   const std::set<std::string> listed(hub.in().codes.begin(), hub.in().codes.end());
   const auto &plan = hub.plan().plan;
@@ -1037,7 +1000,7 @@ void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::boa
       ++fin;
     }
     ImGui::TableSetColumnIndex(C_ORDER);
-    order_cell(hub, st, r, can, ask);
+    order_cell(hub, st, r, can);
     pnl_cell(C_DAY_PCT, r.day_pnl_pct, pct_txt(r.day_pnl_pct));
     pnl_cell(C_DAY, r.day_pnl, r.day_pnl ? wan_pnl(*r.day_pnl) : "");
     pnl_cell(C_PNL_PCT, r.pnl_pct, pct_txt(r.pnl_pct));
@@ -1084,7 +1047,7 @@ void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::boa
       if (const auto q = quotes->find(t.code); t.why.empty() && q != quotes->end()) {
         const live::board::Row r = live::board::quoted(t.code, t.name, q->second);
         ImGui::TableSetColumnIndex(C_ORDER);
-        order_cell(hub, st, r, can, ask);
+        order_cell(hub, st, r, can);
         pnl_cell(C_DAY_PCT, r.day_pnl_pct, pct_txt(r.day_pnl_pct));
       }
       plan_cells(rp, priv, amt, cost);
@@ -1204,7 +1167,6 @@ void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, Boar
       held.insert(r.code);
 
   const float w = ImGui::GetContentRegionAvail().x;
-  bool ask = false;
   ImGui::BeginChild("##board_left", ImVec2(w * st.split, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
   ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * kFontScale);
   const float em = ImGui::GetFontSize();
@@ -1214,7 +1176,7 @@ void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, Boar
   groups(hub, st);
   info_line(hub, held);
   if (v.frame)
-    table(data, hub, st, *v.frame, st.armed && !hub.busy(), ask);
+    table(data, hub, st, *v.frame, st.armed && !hub.busy());
   journal(hub, hub.priv());
   ImGui::PopStyleVar(3);
   ImGui::PopFont();
@@ -1223,7 +1185,6 @@ void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, Boar
   ImGui::BeginChild("##board_right", ImVec2(0, 0), ImGuiChildFlags_Borders);
   chart(data, quote, st, hub.priv());
   ImGui::EndChild();
-  confirm(hub, st, ask);
   confirm_run(hub, st);
 }
 

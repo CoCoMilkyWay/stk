@@ -6,7 +6,7 @@
 //     持仓: 量、成本、券商盈亏取自持仓表, 随价变的按 Δ价 × 量 平移 (保留券商口径);
 //     当日: 按成交价自算 (毛, 不扣费) = 现市值 − 昨收 × 昨仓 − Σ 方向 × 额, 昨仓 = 现量 − Σ 方向 × 量,
 //           % 的分母为 昨收 × 昨仓 + 今买额; 与持仓的今买 / 今卖对不上即空;
-//     盘口: 各列滑点 (竞价时空)、价位, 无参考价皆空
+//     盘口: 各列滑点, 竞价或无参考价时空
 //   占比两列同构 = 市值 / 分母: 仓位% 的分母是券商口径的资产 (持仓表的 市值 / 仓位 反推, 取仓位最大那只、
 //   舍入误差最小, 再随总市值平移), 占比的分母是总市值
 #pragma once
@@ -29,7 +29,6 @@ struct Row {
   std::optional<double> day_pnl, day_pnl_pct;
   bool auction = false;
   std::optional<std::array<Slip, kSlipCols.size()>> slips;
-  std::optional<std::array<double, kLevelCols.size()>> levels;
   std::optional<double> position_pct, weight;
 };
 
