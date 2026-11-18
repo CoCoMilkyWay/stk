@@ -1,6 +1,7 @@
 // search_docs — 查研报: 输入 query / scope / stage / approach / asset / freq / genre / n → DocsRes (分面 + 研报行) → 原文; 展示见 ui/query/SearchDocs.cpp
 #include "gui/task_agent/Docs.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Bay.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -38,7 +39,7 @@ std::string DocsRes::text() const {
   return out;
 }
 
-ToolOut SearchDocs(const Call &c, const std::atomic<bool> &cancel) {
+ToolOut SearchDocs(const Call &c, Bay &bay) {
   const Lib &L = lib();
   const std::string scope = c.str("scope"), stage = c.str("stage"), ap = c.str("approach"), asset = c.str("asset"), freq = c.str("freq"), genre = c.str("genre");
   const std::vector<std::string> ws = text::words(c.str("query"));
@@ -47,7 +48,7 @@ ToolOut SearchDocs(const Call &c, const std::atomic<bool> &cancel) {
     return Fail("没有流派 " + ap + " (写流派 code, 见不带 approach 时分面里的 阶段 → 流派)");
   if (full && ws.empty())
     return Fail("scope=text 须给 query");
-  if (full && !L.ensure_all_texts(cancel))
+  if (full && !L.ensure_all_texts(bay.cancel))
     return {};
   const auto hay = [&](size_t i) -> const std::string & { return full ? L.text_at(i).low : L.docs[i].hay; };
   text::Filter f;

@@ -53,10 +53,8 @@ using Extra = std::variant<std::monostate, Trial, Asked>;
 struct Act {
   Call call;
   Span span;
-  std::string out, gist; // gist = 观察留进研究树的一行关键数
-  bool ok = true;
+  ToolOut out; // 结构化结果 res 只供工作台展示, 不存盘
   Extra extra;
-  ResPtr res; // 结构化结果 (工作台展示; 不存盘)
 };
 
 enum class Msg : uint8_t { System,

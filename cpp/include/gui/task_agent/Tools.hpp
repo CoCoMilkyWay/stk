@@ -11,6 +11,11 @@
 //   校验两层:
 //     协议层 (ParseCalls + RuleMiss): JSON 结构 / 工具名 / 参数类型与范围 / 回复级约束 → 不合则整条退回重发
 //     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 假设 / 证据 / 研报 id 不成 → 仅该调用 ok=false 写原因, 其余照做
+//   工具清单 AGENT_TOOLS (唯一顺序 = Tool 的值): 一行一个工具 (名, 执行, 类); 说明表 kTools (Tools.cpp) 与实现表 kImpls (tools/Kit.cpp) 同序各一行
+//   三态执行各一个签名 (实现表按签名归入 RunFn, 编译期核对 = 清单的执行):
+//     SyncFn   (Call, Seat) → ToolOut   GUI 线程当场, 读写会话台面 Seat (tools/Kit.hpp)
+//     LabFn    (Call, Bay)  → ToolOut   Lab 线程后台, 只读备好的台面 Bay (tools/Bay.hpp)
+//     HumanFn  (Asked)      → ToolOut   研究员答完成文
 //   每个工具三部分对仗: 输入 Call → 结果 Res (该工具独有的结构, tools/<类>.hpp) → 交给 agent 的原文 text() (tools/<类>/<工具>.cpp) ↔ 工作台的展示 draw() (ui/<类>/<工具>.cpp)
 // =============================================================================
 
@@ -19,43 +24,16 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <iterator>
 #include <memory>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace GUI::Agent {
-
-enum class Tool : uint8_t { ViewFeature,
-                            ViewLayers,
-                            ViewTrades,
-                            ViewHolders,
-                            ViewResponse,
-                            ViewExplain,
-                            ViewSnapshot,
-                            ViewStockDay,
-                            ViewStockDays,
-                            ViewBook,
-                            SearchLeaves,
-                            SearchDocs,
-                            SearchFactors,
-                            ReadDoc,
-                            Hypothesize,
-                            Judge,
-                            EvalFactor,
-                            ListTried,
-                            ListLibrary,
-                            ListNotes,
-                            SubmitFactor,
-                            RequestFeature,
-                            RequestTool,
-                            NoteInsight,
-                            ReportIssue,
-                            Finish,
-                            AskHuman };
-inline constexpr size_t kToolCount = static_cast<size_t>(Tool::AskHuman) + 1;
 
 enum class Exec : uint8_t { Sync,
                             Lab,
@@ -78,6 +56,49 @@ struct CatDef {
 inline constexpr CatDef kCats[] = {{"观察"}, {"假设"}, {"回测"}, {"检索"}, {"记录"}, {"其他"}};
 AGENT_ROWS(Cat, kCats, Misc);
 
+// 工具清单: X(工具, 执行, 类); 实现表按名拼出 <工具> / Sample<工具>, 缺一即编译错
+#define AGENT_TOOLS(X)          \
+  X(ViewFeature, Lab, Look)     \
+  X(ViewLayers, Lab, Look)      \
+  X(ViewTrades, Lab, Look)      \
+  X(ViewHolders, Lab, Look)     \
+  X(ViewResponse, Lab, Look)    \
+  X(ViewExplain, Lab, Look)     \
+  X(ViewSnapshot, Lab, Look)    \
+  X(ViewStockDay, Lab, Look)    \
+  X(ViewStockDays, Lab, Look)   \
+  X(ViewBook, Lab, Look)        \
+  X(SearchLeaves, Sync, Query)  \
+  X(SearchDocs, Lab, Query)     \
+  X(SearchFactors, Lab, Query)  \
+  X(ReadDoc, Lab, Query)        \
+  X(Hypothesize, Sync, Hyp)     \
+  X(Judge, Sync, Hyp)           \
+  X(EvalFactor, Lab, Trial)     \
+  X(ListTried, Sync, Query)     \
+  X(ListLibrary, Sync, Query)   \
+  X(ListNotes, Sync, Query)     \
+  X(SubmitFactor, Sync, Trial)  \
+  X(RequestFeature, Sync, Note) \
+  X(RequestTool, Sync, Note)    \
+  X(NoteInsight, Sync, Note)    \
+  X(ReportIssue, Sync, Note)    \
+  X(Finish, Sync, Misc)         \
+  X(AskHuman, Human, Misc)
+
+#define AGENT_TOOL_ID(T, E, C) T,
+enum class Tool : uint8_t { AGENT_TOOLS(AGENT_TOOL_ID) };
+#undef AGENT_TOOL_ID
+
+struct ToolKind {
+  Exec exec;
+  Cat cat;
+};
+#define AGENT_TOOL_KIND(T, E, C) {Exec::E, Cat::C},
+inline constexpr ToolKind kToolKinds[] = {AGENT_TOOLS(AGENT_TOOL_KIND)};
+#undef AGENT_TOOL_KIND
+inline constexpr size_t kToolCount = std::size(kToolKinds);
+
 enum class Arg : uint8_t { Str,
                            Int,
                            Strs,
@@ -94,11 +115,11 @@ struct ArgDef {
 struct ToolDef {
   Tool id;
   const char *name, *cn;
-  Exec exec;
-  Cat cat;
   bool keep; // 研究树里留结论原文 (提交 / 全局记录 / 问答 / finish)
   std::span<const ArgDef> args;
   const char *desc, *out;
+  constexpr Exec exec() const { return kToolKinds[static_cast<size_t>(id)].exec; }
+  constexpr Cat cat() const { return kToolKinds[static_cast<size_t>(id)].cat; }
 };
 
 std::span<const ToolDef> Tools();
@@ -133,16 +154,17 @@ struct Res {
 };
 using ResPtr = std::shared_ptr<const Res>;
 
-// 一个调用的产出: ok = 做成了; out = 交给 agent 的原文 (有 res 即 res->text()); 没做成而无结构的, out 写原因
+// 一个调用的产出: ok = 做成了; text = 交给 agent 的原文 (有 res 即 res->text()), 没做成而无结构的写原因; gist = 收进研究树后留的一行关键数
+// 缺省 = 做成了而无原文 (还没做的调用同此)
 struct ToolOut {
-  bool ok = false;
-  std::string out, gist;
+  bool ok = true;
+  std::string text, gist;
   ResPtr res;
 };
 template <class R>
 ToolOut Done(std::shared_ptr<R> r, bool ok = true) {
-  std::string out = r->text(), gist = r->gist();
-  return {ok, std::move(out), std::move(gist), std::move(r)};
+  std::string text = r->text(), gist = r->gist();
+  return {ok, std::move(text), std::move(gist), std::move(r)};
 }
 inline ToolOut Fail(std::string why) { return {false, std::move(why), {}, {}}; }
 
@@ -170,5 +192,13 @@ struct Asked {
 Questions QuestionsOf(const Call &c);
 std::string Picked(const Question &q, const std::vector<bool> &mask);
 std::string Answered(const Question &q, const Pick &p);
+
+// ---- 三态执行的签名 (下标 = Exec) ----
+struct Seat; // 当场台面 (tools/Kit.hpp)
+struct Bay;  // 后台台面 (tools/Bay.hpp)
+using SyncFn = ToolOut (*)(const Call &, Seat &);
+using LabFn = ToolOut (*)(const Call &, Bay &);
+using HumanFn = ToolOut (*)(const Asked &);
+using RunFn = std::variant<SyncFn, LabFn, HumanFn>;
 
 } // namespace GUI::Agent

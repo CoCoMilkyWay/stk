@@ -33,7 +33,7 @@ std::string FactorsRes::text() const {
   return out;
 }
 
-ToolOut SearchFactors(const Call &c, const std::atomic<bool> &) {
+ToolOut SearchFactors(const Call &c, Bay &) {
   const Lib &L = lib();
   const std::string family = c.str("family"), period = c.str("period"), horizon = c.str("horizon"), ap = c.str("approach"), asset = c.str("asset"), sort = c.str("sort");
   const std::vector<std::string> ws = text::words(c.str("query"));

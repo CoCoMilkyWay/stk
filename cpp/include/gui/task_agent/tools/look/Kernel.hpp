@@ -4,21 +4,19 @@
 // Kernel — 观察核的公共件 (10 个 view_* 共用): 格式与日期 / 统计 / 日内时段 / 分层累加器 / K 线直读 / 盘面标签 / 参数解析 / 分块流式观察核
 // =============================================================================
 //   run_stream: 装载前核日期 → 跳过无关块 → 块内全核 DAG + Stat → 交 ChunkView 原地归约 (零中间 [T][A] 平面搬运)
-//   各 view_* 的入口 (Call, ViewEnv, FactorFlow, ViewRunner) → ToolOut, 结果结构见 tools/Look.hpp; 分派表在 Views.cpp
+//   各 view_* 的入口 (Call, Bay) → ToolOut 与结果结构见 tools/Look.hpp, 实现表在 tools/Kit.cpp
 // =============================================================================
 
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/Views.hpp"
+#include "gui/task_agent/tools/Bay.hpp"
 #include "gui/task_agent/tools/Look.hpp"
 
 #include "factor/Expr.hpp"
 #include "factor/Search/Space.hpp"
 #include "factor/Stat/Host.hpp"
-#include "features/OrderBook/LimitOrderBook.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/engine/Engine.hpp"
 #include "misc/profiler.hpp"
-#include "orders/OrderFrame.hpp"
 
 #include <algorithm>
 #include <array>
@@ -37,25 +35,6 @@
 #include <vector>
 
 namespace GUI::Agent {
-
-// 逐笔重放的常驻资源 (view_book 首次用时建)
-struct ViewRunner::Replay {
-  L2::FrameDecoder decoder;
-  LimitOrderBook lob;
-  TickData tick_data;
-  Replay() : lob(L2::LOB_ORDER_CAPACITY) {}
-};
-
-ToolOut ViewFeature(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
-ToolOut ViewLayers(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
-ToolOut ViewTrades(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
-ToolOut ViewHolders(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
-ToolOut ViewResponse(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
-ToolOut ViewExplain(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
-ToolOut ViewSnapshot(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
-ToolOut ViewStockDay(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
-ToolOut ViewStockDays(const Call &c, const ViewEnv &env, Engine::FactorFlow &F);
-ToolOut ViewBook(const Call &c, const ViewEnv &env, Engine::FactorFlow &F, ViewRunner::Replay &R);
 
 namespace look {
 

@@ -294,18 +294,4 @@ std::string setup_of(const json &s) {
 
 } // namespace docs
 
-ToolOut Browse(const Call &c, const std::atomic<bool> &cancel) {
-  switch (c.tool) {
-  case Tool::SearchDocs:
-    return SearchDocs(c, cancel);
-  case Tool::SearchFactors:
-    return SearchFactors(c, cancel);
-  case Tool::ReadDoc:
-    return ReadDoc(c, cancel);
-  default:
-    assert(false && "不是研报库工具");
-    return {};
-  }
-}
-
 } // namespace GUI::Agent

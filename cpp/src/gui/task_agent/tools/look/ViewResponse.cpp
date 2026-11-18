@@ -74,7 +74,9 @@ std::string ResponseRes::text() const {
   return s;
 }
 
-ToolOut ViewResponse(const Call &c, const ViewEnv &env, Engine::FactorFlow &F) {
+ToolOut ViewResponse(const Call &c, Bay &bay) {
+  const ViewEnv &env = bay.env;
+  Engine::FactorFlow &F = bay.flow;
   std::string err;
   const bool top = c.str("side") == "top";
   FactorSpec fac;

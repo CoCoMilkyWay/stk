@@ -44,7 +44,9 @@ std::string StockDaysRes::text() const {
   return s + "\n" + tbl.str();
 }
 
-ToolOut ViewStockDays(const Call &c, const ViewEnv &env, Engine::FactorFlow &F) {
+ToolOut ViewStockDays(const Call &c, Bay &bay) {
+  const ViewEnv &env = bay.env;
+  Engine::FactorFlow &F = bay.flow;
   std::string err, code;
   uint32_t asset_id = 0;
   if (!resolve_code(c.str("code"), env, code, asset_id, err) || !date_arg_ok(c, "from", err) || !date_arg_ok(c, "to", err))

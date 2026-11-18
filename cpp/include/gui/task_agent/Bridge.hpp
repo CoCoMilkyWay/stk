@@ -5,9 +5,9 @@
 // =============================================================================
 //   agent 会话层与界面只认这里的值类型, 不碰 FactorRow / EvalStat / SearchResult / LimitOrderBook:
 //     catalog   无状态作用域目录 (池 / 因子层 / 持有期 / GPU 可用 / 就绪判据 / 落盘键)
-//     Lab       单线程 Async 工作台:
-//                 EvalJob → Search + 单文件 Run + 无显著代表点分层 直通跑完 → Result
-//                 Call    → Views 分块流式全核归约 / 逐笔重放 / Docs 研报检索 → ToolOut (零跨线程平面拷贝)
+//     Lab       单线程 Async 工作台: send(Call, LabFn) → GUI 线程备好台面 Bay 的值 → worker 跑 LabFn → ToolOut (零跨线程平面拷贝)
+//                 观察 = 分块流式全核归约 / 逐笔重放; 研报 = 研报库检索; eval_factor = Search + 单文件 Run + 无显著代表点分层,
+//                 其评估产物在 poll 收下即重扫候选 (result 按文件取)
 //   异步接口与左翼 Chat 完全一致: send / cancel / busy / poll / live
 // =============================================================================
 
@@ -24,7 +24,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
 
 struct SharedData;
@@ -219,11 +218,6 @@ disk::Key key(const Scope &sc, bool test);
 } // namespace catalog
 
 // ---- 右翼异步工作台 Lab (与左翼 Chat 完全对仗: send / cancel / busy / poll / live) ----
-struct EvalJob {
-  std::string file;
-  bool gpu = false;
-};
-
 enum class LabStep : uint8_t { Search,
                                Run,
                                Look,
@@ -235,13 +229,12 @@ struct LabStepDef {
 inline constexpr LabStepDef kLabSteps[] = {{"Search"}, {"Run"}, {"观察"}, {"查研报"}, {"完"}};
 AGENT_ROWS(LabStep, kLabSteps, End);
 
-using LabOut = std::variant<std::monostate, Result, ToolOut>; // monostate = 已取消
 struct LabLive {
   double frac = 0.0;
 };
 struct LabTick {
   LabStep step;
-  LabOut out;
+  std::optional<ToolOut> out; // End 才有; End 而空 = 已取消
 };
 
 class Lab {
@@ -257,14 +250,14 @@ public:
   const Context &ctx() const;
   const std::vector<Result> &results() const;
   const Result *tried(std::string_view name) const;
+  const Result &result(const std::string &file) const; // 候选目录里按文件取 (不论可见)
   std::string search_log(const std::string &file) const;
 
   Staged stage(Cand c, std::string_view hyp_title);
   Adopted adopt(std::string name, const Gate &g, bool dry); // dry = 只查门槛不拷进正式库 (工作台; 自检会话恒不拷)
   void discard(const std::string &file);
 
-  void send(EvalJob job);
-  void send(Call call);
+  void send(Call call, LabFn fn, std::string file, bool gpu); // file = eval_factor 落的候选文件 (其余空), gpu = 它的回测上 GPU
   void cancel();
   bool busy() const;
   std::optional<LabTick> poll();

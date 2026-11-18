@@ -3,7 +3,6 @@
 #include "gui/task_agent/Mine.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Kit.hpp"
-#include "gui/task_agent/tools/Misc.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
 #include "imgui.h"
@@ -16,7 +15,6 @@
 #include <random>
 #include <string>
 #include <string_view>
-#include <variant>
 #include <vector>
 
 namespace GUI::Agent {
@@ -68,7 +66,7 @@ struct Bench::Impl {
     origin.clear(), pick = SIZE_MAX;
   }
 
-  Seat seat(size_t i) { return {lab, notes, gate, st, timeline, {round(), static_cast<int>(i) + 1}, catalog::label(lab.scope()), "", true}; }
+  Seat seat(size_t i) { return {lab, notes, gate, st, timeline, {round(), static_cast<int>(i) + 1}, catalog::label(lab.scope()), "", true, gpu}; }
 
   Feed feed() { return {lab.ctx(), lab.results(), st.board, timeline, {round(), static_cast<int>(acts().size()) + 1}, rng}; }
 
@@ -80,10 +78,7 @@ struct Bench::Impl {
   }
 
   void end(size_t i) {
-    Act &a = acts()[i];
-    a.span.end(now());
-    Apply(st, a, {round(), static_cast<int>(i) + 1});
-    Clip(a.out);
+    End(acts()[i], st, {round(), static_cast<int>(i) + 1}, now());
     running.reset(), choosing = false;
   }
 
@@ -92,40 +87,12 @@ struct Bench::Impl {
     origin.push_back(std::move(origin_pending));
     origin_pending.clear();
     const size_t i = acts().size() - 1;
-    Act &a = acts()[i];
-    a.span.begin(now());
     pick = i;
-    switch (def(a.call.tool).exec) {
-    case Exec::Sync: {
-      Seat s = seat(i);
-      RunSync(a, s);
-      end(i);
-      break;
-    }
-    case Exec::Lab: {
-      Seat s = seat(i);
-      running = i;
-      if (!SendLab(a, s, gpu))
-        end(i);
-      break;
-    }
-    case Exec::Human:
-      a.extra.emplace<Asked>(QuestionsOf(a.call));
-      running = i, choosing = true;
-      break;
-    }
-  }
-
-  void step(Act &a, LabStep s) {
-    Trial *k = std::get_if<Trial>(&a.extra);
-    if (!k)
-      return;
-    const double t = now();
-    k->search.end(t), k->run.end(t);
-    if (s == LabStep::Search)
-      k->search.begin(t);
-    else if (s == LabStep::Run)
-      k->run.begin(t);
+    Seat s = seat(i);
+    const Exec at = Begin(acts()[i], s, now());
+    if (at == Exec::Sync)
+      return end(i);
+    running = i, choosing = at == Exec::Human;
   }
 
   void poll() {
@@ -134,18 +101,16 @@ struct Bench::Impl {
         continue;
       const size_t i = *running;
       Act &a = acts()[i];
-      step(a, t->step);
-      if (t->step != LabStep::End)
+      if (t->step != LabStep::End) {
+        Enter(a, t->step, now());
         continue;
-      if (std::holds_alternative<std::monostate>(t->out)) {
-        if (Trial *k = std::get_if<Trial>(&a.extra); k && k->st.ok()) {
-          lab.discard(k->st.file);
-          k->st.file.clear();
-          k->st.res = Result{.error = "取消了这次回测", .verdict = Verdict::Unstaged};
-        }
-        a.ok = false, a.out = "取消了这个调用, 没做完", a.res.reset();
+      }
+      if (!t->out) {
+        if (const std::string file = Abort(a); !file.empty())
+          lab.discard(file);
       } else {
-        SettleLab(a, std::move(t->out), gate);
+        Seat s = seat(i);
+        Settle(a, std::move(*t->out), s);
       }
       end(i);
     }
@@ -162,7 +127,7 @@ namespace {
 
 bool long_field(const ToolDef &d, const ArgDef &a) {
   const std::string_view k = a.key;
-  return d.cat == Cat::Hyp || d.cat == Cat::Note || k == "note" || k == "expr";
+  return d.cat() == Cat::Hyp || d.cat() == Cat::Note || k == "note" || k == "expr";
 }
 
 // 表单: 参数表逐项一个控件 (缺的按缺省补上); 返回 = 改了
@@ -314,7 +279,7 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
     if (!ImGui::TreeNodeEx(def(cat).cn, ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth))
       continue;
     for (const ToolDef &d : Tools()) {
-      if (d.cat != cat)
+      if (d.cat() != cat)
         continue;
       if (ImGui::Selectable((std::string(d.name) + "##tool").c_str(), b.tool == d.id)) {
         b.tool = d.id, b.error.clear();
@@ -337,7 +302,7 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
     b.sample();
   ImGui::TextColored(kColHead, "%s — %s", d.name, d.cn);
   ImGui::SameLine();
-  ImGui::TextDisabled("(%s)", def(d.exec).cn);
+  ImGui::TextDisabled("(%s)", def(d.exec()).cn);
   wrapped_dim(ToolText(d.desc));
   tip_long("返回: " + ToolText(d.out));
 
@@ -370,7 +335,7 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   if (ImGui::Checkbox("JSON", &b.json_mode))
     b.raw[ti] = b.args[ti].dump(2);
   ImGui::SameLine();
-  const bool needs_scope = d.cat == Cat::Look || d.id == Tool::EvalFactor;
+  const bool needs_scope = d.cat() == Cat::Look || d.id == Tool::EvalFactor;
   const bool can_run = !held && !blocked && (!needs_scope || !ctx.days.empty());
   ImGui::BeginDisabled(!can_run);
   if (ImGui::Button("Run", ImVec2(70, 0))) {
@@ -428,7 +393,7 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   ImGui::SetNextItemWidth(-1);
   const auto label_of = [&](size_t i) {
     const Act &a = as[i];
-    const std::string state = !a.span.ended() ? " · 执行中…" : (a.ok ? "" : " · 没做成") + std::string(" · ") + dur(a.span.len(a.span.t1));
+    const std::string state = !a.span.ended() ? " · 执行中…" : (a.out.ok ? "" : " · 没做成") + std::string(" · ") + dur(a.span.len(a.span.t1));
     return RefText({b.round(), static_cast<int>(i) + 1}) + " " + a.call.text(80) + state;
   };
   if (ImGui::BeginCombo("##acts", label_of(b.pick).c_str())) {
@@ -444,16 +409,16 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   ImGui::TextColored(kColHead, "展示");
   if (b.choosing && b.running == b.pick) {
     if (asked_block(std::get<Asked>(a.extra), true)) {
-      Put(a, AskOut(std::get<Asked>(a.extra)));
+      Answer(a);
       b.end(b.pick);
     }
   } else if (!a.span.ended()) {
     ImGui::TextColored(color(TaskStatus::Kind::Busy), "执行中… %.0f%%", b.live.frac * 100.0);
   } else {
-    if (!a.ok)
-      wrapped(color(TaskStatus::Kind::Warn), a.res ? "没做成 (原文见右)" : a.out);
-    if (a.res)
-      a.res->draw();
+    if (!a.out.ok)
+      wrapped(color(TaskStatus::Kind::Warn), a.out.res ? "没做成 (原文见右)" : a.out.text);
+    if (a.out.res)
+      a.out.res->draw();
   }
   ImGui::EndChild();
   ImGui::SameLine();
@@ -462,12 +427,12 @@ void Bench::draw(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool b
   if (a.span.ended()) {
     const std::string title = "## " + CallTitle(a, ref);
     ImGui::SameLine();
-    ImGui::TextDisabled("%s", chars(a.out).c_str());
-    copy_button("复制##out", title + "\n\n" + a.out);
+    ImGui::TextDisabled("%s", chars(a.out.text).c_str());
+    copy_button("复制##out", title + "\n\n" + a.out.text);
     wrapped_dim(title);
-    if (!a.gist.empty())
-      wrapped(color(TaskStatus::Kind::Ready), "研究树里留的关键数: " + a.gist);
-    box(a.out, false, 60.0f, false);
+    if (!a.out.gist.empty())
+      wrapped(color(TaskStatus::Kind::Ready), "研究树里留的关键数: " + a.out.gist);
+    box(a.out.text, false, 60.0f, false);
     if (b.pick < b.origin.size() && !b.origin[b.pick].empty())
       fold("origin", ImGuiTreeNodeFlags_None, "日志里当时交给 agent 的原文 · " + chars(b.origin[b.pick]), b.origin[b.pick], true, kBoxLines, false);
   }

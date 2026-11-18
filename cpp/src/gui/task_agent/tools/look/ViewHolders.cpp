@@ -17,7 +17,9 @@ std::string HoldersRes::text() const {
   return s + tbl.str();
 }
 
-ToolOut ViewHolders(const Call &c, const ViewEnv &env, Engine::FactorFlow &F) {
+ToolOut ViewHolders(const Call &c, Bay &bay) {
+  const ViewEnv &env = bay.env;
+  Engine::FactorFlow &F = bay.flow;
   std::string err;
   const bool top = c.str("side") == "top";
   FactorSpec fac;

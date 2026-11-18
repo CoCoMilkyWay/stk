@@ -5,10 +5,10 @@
 // =============================================================================
 //   双翼对仗:
 //     左翼 Chat (问大模型): send(ChatReq) → Think / Write / Restart / End(Reply)
-//     右翼 Lab  (问数据核): send(EvalJob | Call) → Search / Run / Look / Docs / End(LabOut)
-//   三态工具分派 (Exec = Tools 表的唯一分派轴):
-//     Sync   GUI 线程当场完成 (查叶 / 列表 / 全局记录 / 假设与判定 / 提交 / finish)
-//     Lab    投右翼 worker (eval_factor 先核假设并落候选文件; view_* 与研报工具直接投 Call)
+//     右翼 Lab  (问数据核): send(Call, LabFn) → Search / Run / Look / Docs / End(ToolOut)
+//   调用的一生走 Kit (Begin → Enter … → Settle / Answer / Abort → End, 与工作台同一份); Begin 返回这一步落在谁手上 (Exec):
+//     Sync   GUI 线程当场完成 (查叶 / 列表 / 全局记录 / 假设与判定 / 提交 / finish), 接着下一个
+//     Lab    已投右翼 worker (eval_factor 先核假设并落候选文件), 等 End
 //     Human  进 Choose 等研究员点选答案 (ask_human)
 //   唯一真相: timeline (std::vector<Round>); st = StateOf(timeline) 增量 Apply, 上下文 TurnsOf(timeline) 按需纯函数折叠
 //   会话目录 (output/agent/<main|test>/sessions/<池>/<层>/<持有期>/chat/<时刻>/):
@@ -184,13 +184,9 @@ private:
   void on_chat(Chat::Tick t);
   void on_lab(LabTick t);
   void replied(llm::Reply r);
-  void settled(LabOut out);
 
   void step();
   Seat seat();
-  void exec_sync(Act &a);
-  bool exec_lab(Act &a); // true = 已投递给 Lab worker 等异步完成; false = 当场未落盘已填结果
-  void enter_lab(Act &a, LabStep s);
   void next();
   void ended(Act &a);
   void abort(Act &a);

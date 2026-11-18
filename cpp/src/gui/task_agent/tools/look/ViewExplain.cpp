@@ -77,7 +77,9 @@ std::string ExplainRes::gist() const {
   return "rIC " + r3(fric) + " → 剥全部基准剩 " + r3(rric) + " (R² " + r3(r2) + ") · 剩余部分 mono " + r3(rest.mono) + " · 多空 " + bp(rest.ls) + "bp";
 }
 
-ToolOut ViewExplain(const Call &c, const ViewEnv &env, Engine::FactorFlow &F) {
+ToolOut ViewExplain(const Call &c, Bay &bay) {
+  const ViewEnv &env = bay.env;
+  Engine::FactorFlow &F = bay.flow;
   std::string err;
   FactorSpec fac;
   if (!resolve_factor(c.str("factor"), env, fac, err))

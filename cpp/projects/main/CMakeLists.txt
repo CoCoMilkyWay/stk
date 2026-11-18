@@ -421,7 +421,7 @@ set(MATH_PRECISE
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp
     gui/util/Latex.cpp
-    # gui: task_agent 的 Bridge / Views / tools/look = 因子契约头与观察统计的消费者; Docs / tools/query = 研报统计 (原文没给 = NaN);
+    # gui: task_agent 的 Bridge / tools/look / tools/trial = 因子契约头与观察统计的消费者; Docs / tools/query = 研报统计 (原文没给 = NaN);
     #      ui = 统计结果的展示 (NaN = 缺); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
     gui/task_agent/Bridge.cpp
     gui/task_agent/Docs.cpp
@@ -431,7 +431,6 @@ set(MATH_PRECISE
     gui/task_agent/Prompt.cpp
     gui/task_agent/TaskAgent.cpp
     gui/task_agent/Tools.cpp
-    gui/task_agent/Views.cpp
     gui/task_agent/tools/Kit.cpp
     gui/task_agent/tools/hyp/Hypothesize.cpp
     gui/task_agent/tools/hyp/Judge.cpp

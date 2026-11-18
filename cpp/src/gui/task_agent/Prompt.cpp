@@ -28,7 +28,7 @@ void Apply(State &s, const Act &a, Ref at) {
     s.board.add(c, at);
     break;
   case Tool::Judge:
-    if (a.ok)
+    if (a.out.ok)
       s.board.judge(c, at);
     break;
   case Tool::EvalFactor:
@@ -38,7 +38,7 @@ void Apply(State &s, const Act &a, Ref at) {
     }
     break;
   case Tool::SubmitFactor:
-    if (a.ok)
+    if (a.out.ok)
       s.adopted.insert(c.str("name"));
     break;
   default:
@@ -166,7 +166,7 @@ std::string results_of(const std::vector<Act> &acts, int round) {
   std::string s;
   for (size_t i = 0; i < acts.size(); ++i) {
     const Act &a = acts[i];
-    s += "## " + CallTitle(a, {round, static_cast<int>(i) + 1}) + "\n\n" + a.out;
+    s += "## " + CallTitle(a, {round, static_cast<int>(i) + 1}) + "\n\n" + a.out.text;
     if (!s.ends_with('\n'))
       s += '\n';
     s += '\n';
@@ -194,7 +194,7 @@ std::string fields(const nlohmann::ordered_json &args, std::initializer_list<std
   return s;
 }
 
-std::string why_of(const Act &a) { return text::head(std::string_view(a.out).substr(0, a.out.find('\n')), kWhyChars); }
+std::string why_of(const Act &a) { return text::head(std::string_view(a.out.text).substr(0, a.out.text.find('\n')), kWhyChars); }
 
 std::string tree_of(Rounds msgs) {
   const Rounds done = msgs.first(msgs.size() - 1);
@@ -214,9 +214,9 @@ std::string tree_of(Rounds msgs) {
     const std::vector<Act> &as = done[static_cast<size_t>(r.round) - 1].acts;
     return r.call >= 1 && static_cast<size_t>(r.call) <= as.size() && as[static_cast<size_t>(r.call) - 1].span.ended() ? &as[static_cast<size_t>(r.call) - 1] : nullptr;
   };
-  const auto on = [](const Act &a, Tool t) { return a.call.tool == t && a.ok; };
+  const auto on = [](const Act &a, Tool t) { return a.call.tool == t && a.out.ok; };
   const auto staged = [](const Act &a) { return a.call.tool == Tool::EvalFactor && std::get<Trial>(a.extra).st.ok(); };
-  const auto gist_of = [](const Act &a, const char *sep) { return a.gist.empty() ? std::string() : std::string(sep) + a.gist; };
+  const auto gist_of = [](const Act &a, const char *sep) { return a.out.gist.empty() ? std::string() : std::string(sep) + a.out.gist; };
 
   std::set<Ref> cited;
   for (const Step &s : steps)
@@ -264,10 +264,10 @@ std::string tree_of(Rounds msgs) {
       const Act &a = *s.a;
       if (on(a, Tool::Hypothesize) || on(a, Tool::Judge) || staged(a))
         continue;
-      if (!a.ok)
+      if (!a.out.ok)
         rest += "- " + CallTitle(a, s.at) + ": " + why_of(a) + "\n";
       else if (def(a.call.tool).keep)
-        notes += "- " + CallTitle(a, s.at) + "\n" + under(a.out);
+        notes += "- " + CallTitle(a, s.at) + "\n" + under(a.out.text);
       else if (!cited.contains(s.at))
         rest += "- " + CallTitle(a, s.at) + gist_of(a, ": ") + "\n";
     }
@@ -292,7 +292,7 @@ std::string tree_of(Rounds msgs) {
 // =============================================================================
 // 公开函数
 // =============================================================================
-std::string CallTitle(const Act &a, Ref r) { return "[" + RefText(r) + "] " + a.call.text(kTitleChars) + (a.ok ? "" : " — 没做成"); }
+std::string CallTitle(const Act &a, Ref r) { return "[" + RefText(r) + "] " + a.call.text(kTitleChars) + (a.out.ok ? "" : " — 没做成"); }
 
 std::string Fills(const std::string &tmpl, const std::string &expr) {
   const std::string whole = "`" + expr + "`";

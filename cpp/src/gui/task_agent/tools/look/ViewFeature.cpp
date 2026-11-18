@@ -76,7 +76,9 @@ std::string FeatureRes::gist() const {
   return g;
 }
 
-ToolOut ViewFeature(const Call &c, const ViewEnv &env, Engine::FactorFlow &F) {
+ToolOut ViewFeature(const Call &c, Bay &bay) {
+  const ViewEnv &env = bay.env;
+  Engine::FactorFlow &F = bay.flow;
   std::vector<FeatSpec> feats;
   if (!resolve_feats(c.strs("exprs"), env, feats)) {
     std::string err;

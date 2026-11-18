@@ -1,6 +1,9 @@
 // view_book — 看盘口重放: 输入 code / date / time / step / at / big / n → BookRes (当日与窗口概况 / 逐秒序列 / 逐时表 / 大单事件 / 全簿剖面) → 原文; 展示见 ui/look/ViewBook.cpp
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
+
+#include "features/OrderBook/LimitOrderBook.hpp"
+#include "orders/OrderFrame.hpp"
 #include "orders/OrdersDay.hpp"
 
 #include <limits>
@@ -27,6 +30,14 @@ enum BookKind : uint8_t { BkNew,
                           BkSweep,
                           kBookKindCount };
 static_assert(std::size(kBookKinds) == kBookKindCount);
+
+// 逐笔重放的常驻资源: 每个 Lab worker 线程一份, 首次 view_book 时建
+struct Replay {
+  L2::FrameDecoder decoder;
+  LimitOrderBook lob;
+  TickData tick_data;
+  Replay() : lob(L2::LOB_ORDER_CAPACITY) {}
+};
 
 constexpr bool in_session(int clock) { return (clock >= kAmOpen && clock < kAmClose) || (clock >= kPmOpen && clock < kPmClose); }
 constexpr int trade_sec(int clock) {
@@ -149,8 +160,11 @@ std::string BookRes::text() const {
   return s + ptbl.str();
 }
 
-ToolOut ViewBook(const Call &c, const ViewEnv &env, Engine::FactorFlow &F, ViewRunner::Replay &R) {
+ToolOut ViewBook(const Call &c, Bay &bay) {
   TraceN("AgentBookReplay");
+  const ViewEnv &env = bay.env;
+  Engine::FactorFlow &F = bay.flow;
+  thread_local Replay R;
   std::string err, code;
   uint32_t asset_id = 0;
   if (!resolve_code(c.str("code"), env, code, asset_id, err))

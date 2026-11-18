@@ -2,21 +2,17 @@
 #include "gui/task_agent/Bridge.hpp"
 #include "gui/task_agent/Async.hpp"
 #include "gui/task_agent/Config.hpp"
-#include "gui/task_agent/Docs.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/Views.hpp"
+#include "gui/task_agent/tools/Bay.hpp"
 
 #include "factor/Expr.hpp"
 #include "factor/GpuRun.hpp"
 #include "factor/Search/Contract.hpp"
-#include "factor/Search/Space.hpp"
 #include "features/Storage/FeatureLib.hpp"
 #include "features/TimeIndex.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/engine/File.hpp"
 #include "gui/engine/Load.hpp"
-#include "gui/engine/services/RunService.hpp"
-#include "gui/engine/services/SearchService.hpp"
 #include "gui/util/PoolTip.hpp"
 #include "misc/date.hpp"
 #include "misc/epoch.hpp"
@@ -29,8 +25,10 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -46,7 +44,6 @@ namespace {
 namespace fx = factor::expr;
 namespace fs = factor::stat;
 namespace fsearch = factor::search;
-namespace space = factor::search::space;
 using text::num;
 
 Engine::FactorLevelId level_id(int level) {
@@ -305,34 +302,6 @@ std::vector<Result> scan(const Engine::FeatureTable &ft, const SpanCache &spans,
   return out;
 }
 
-Surface surface_of(const Engine::FeatureTable &ft, const Engine::SearchResult &r) {
-  Surface s;
-  if (r.slots.empty())
-    return s;
-  const fx::Expr t = ft.reparse_at(r.tmpl, r.hold);
-  const std::vector<space::Slot> slots = space::slots_of(t, ft.seg, r.n_full * fs::kGroups);
-  assert(slots.size() == r.slots.size());
-  s.slots = r.slots;
-  for (const Engine::SearchCand &c : r.cands) {
-    if (!c.sc.ok)
-      continue;
-    const fx::Expr e = ft.reparse(c.expr);
-    assert(e.nodes.size() == t.nodes.size() && "具体式与模板同构");
-    Probe p{.st = {c.sc.mono, c.sc.ls, c.sc.ric}};
-    for (const space::Slot &x : slots) {
-      const auto &q = e.nodes[static_cast<size_t>(x.node)].p;
-      p.v.push_back(x.key == space::Key::D    ? static_cast<double>(q.d)
-                    : x.key == space::Key::K  ? q.k
-                    : x.key == space::Key::K2 ? q.k2
-                                              : q.w[x.wi]);
-    }
-    s.pts.push_back(std::move(p));
-  }
-  return s;
-}
-
-bool is_doc_tool(Tool t) { return t == Tool::SearchDocs || t == Tool::SearchFactors || t == Tool::ReadDoc; }
-
 } // namespace
 
 // =============================================================================
@@ -476,28 +445,28 @@ disk::Key key(const Scope &sc, bool test) {
 } // namespace catalog
 
 // =============================================================================
-// Lab 实现: 单线程 Async worker (直调引擎纯计算核 + ViewRunner), 与 GUI 零共享可变态
+// Lab 实现: 单线程 Async worker (跑投来的 LabFn), 与 GUI 零共享可变态
 // =============================================================================
 namespace {
 
-struct EvalTask {
-  Engine::FactorScope fsc;
-  Engine::SearchSpec ssp;
-  ViewEnv venv;
-};
-struct CallTask {
+// 一件后台活: GUI 线程备好的值 + 要跑的工具
+struct Job {
   Call call;
-  ViewEnv venv;
+  LabFn fn = nullptr;
+  ViewEnv env;
+  Engine::FactorScope fsc; // eval_factor 的回测作用域
+  std::string file;        // eval_factor 的候选文件
 };
-using WorkerReq = std::variant<EvalTask, CallTask>;
+struct Yield {
+  ToolOut out;
+  Graded graded;
+};
+using JobOut = std::optional<Yield>; // 空 = 已取消
 
-struct EvalDone {
-  std::string file;
-  Surface surf;
-  std::string rep_text;
-  std::string fail_why;
-};
-using WorkerOut = std::variant<std::monostate, EvalDone, ToolOut>;
+// 各类后台工具的首步与计算流优先级
+LabStep first_step(Cat c) { return c == Cat::Look ? LabStep::Look : c == Cat::Query ? LabStep::Docs
+                                                                                    : LabStep::Search; }
+Engine::Prio prio_of(Cat c) { return c == Cat::Trial ? Engine::Prio::Batch : Engine::Prio::Interactive; }
 
 } // namespace
 
@@ -513,82 +482,39 @@ struct Lab::Impl {
   Fails fails;
   std::map<std::string, Surface> surfaces;
   std::map<std::string, std::string> reps;
+  std::string flight; // 在跑的 eval_factor 的候选文件
 
   Progress prog;
-  ViewRunner views;
-  Async<WorkerReq, LabStep, WorkerOut, LabLive> worker;
+  Async<Job, LabStep, JobOut, LabLive> worker;
 
   Impl()
-      : worker([this](WorkerReq &req, const auto &pipe) -> WorkerOut {
+      : worker([this](Job &j, const auto &pipe) -> JobOut {
           prog.begin(Phase::Loading, 0);
-          if (auto *ev = std::get_if<EvalTask>(&req))
-            return run_eval(*ev, pipe);
-          return run_call(std::get<CallTask>(req), pipe);
+          const Cat cat = def(j.call.tool).cat();
+          pipe.step(first_step(cat));
+          Engine::FactorFlow flow(pipe.cancel, prog, prio_of(cat));
+          const std::function<void(LabStep)> step = [&](LabStep s) { pipe.step(s); };
+          Yield d;
+          Bay bay{j.env, j.fsc, j.file, flow, pipe.cancel, step, d.graded};
+          d.out = j.fn(j.call, bay);
+          if (bay.cancelled())
+            return std::nullopt;
+          return d;
         }) {}
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
 
-  template <class Pipe>
-  WorkerOut run_eval(EvalTask &ev, const Pipe &pipe) {
-    pipe.step(LabStep::Search);
-    Engine::FactorFlow flow(pipe.cancel, prog, Engine::Prio::Batch);
-    Engine::SearchResult sres;
-    std::string why;
-    const Engine::Rc src = Engine::SearchFactor({ev.fsc, ev.ssp}, flow, sres, why);
-    if (pipe.cancel.load(std::memory_order_relaxed) || src == Engine::Rc::Cancel)
-      return std::monostate{};
-    EvalDone done{.file = ev.ssp.file};
-    if (src != Engine::Rc::Ok || !sres.wrote) {
-      done.fail_why = src == Engine::Rc::Stale ? Engine::kStaleMsg : why.empty() ? "Search 中止"
-                                                                                 : why;
-      return done;
-    }
-    done.surf = surface_of(*ev.fsc.ft, sres);
-
-    std::vector<Engine::FactorRow> frows;
-    Engine::ScanFactorFile(ev.fsc.dir, ev.ssp.file, *ev.fsc.ft, frows);
-    if (sres.n_weights > 0) {
-      pipe.step(LabStep::Run);
-      std::vector<size_t> idx;
-      for (size_t i = 0; i < frows.size(); ++i)
-        if (frows[i].widx >= 0 && frows[i].error.empty() && !frows[i].expr.empty())
-          idx.push_back(i);
-      Engine::Lease l(flow);
-      const Engine::Rc rc = l ? Engine::EvalFactorFile(ev.fsc, flow, frows, idx) : Engine::Rc::Cancel;
-      if (pipe.cancel.load(std::memory_order_relaxed) || rc == Engine::Rc::Cancel)
-        return std::monostate{};
-      if (rc != Engine::Rc::Ok)
-        done.fail_why = rc == Engine::Rc::Stale ? Engine::kStaleMsg : "Run 中止";
-      return done;
-    }
-    if (!frows.empty()) {
-      const auto mk = std::find_if(frows[0].searched.begin(), frows[0].searched.end(), [&](const Engine::SearchMark &m) { return m.hold == ev.ssp.hold; });
-      if (mk != frows[0].searched.end() && mk->top) {
-        pipe.step(LabStep::Look);
-        Engine::FactorFlow vflow(pipe.cancel, prog, Engine::Prio::Interactive);
-        done.rep_text = views.rep_layers(mk->top->expr, mk->top->sign, ev.venv, vflow);
-        if (pipe.cancel.load(std::memory_order_relaxed))
-          return std::monostate{};
-      }
-    }
-    return done;
-  }
-
-  template <class Pipe>
-  WorkerOut run_call(CallTask &ct, const Pipe &pipe) {
-    if (is_doc_tool(ct.call.tool)) {
-      pipe.step(LabStep::Docs);
-      ToolOut out = Browse(ct.call, pipe.cancel);
-      if (pipe.cancel.load(std::memory_order_relaxed))
-        return std::monostate{};
-      return out;
-    }
-    pipe.step(LabStep::Look);
-    Engine::FactorFlow flow(pipe.cancel, prog, Engine::Prio::Interactive);
-    ToolOut out = views.run(ct.call, ct.venv, flow);
-    if (pipe.cancel.load(std::memory_order_relaxed))
-      return std::monostate{};
-    return out;
+  void absorb(const std::string &file, const Yield &d) {
+    if (d.out.ok)
+      fails.erase(file);
+    else
+      fails[file] = d.out.text;
+    surfaces[file] = d.graded.surf;
+    if (d.graded.rep.empty())
+      reps.erase(file);
+    else
+      reps[file] = d.graded.rep;
+    rescan_one(file);
   }
 
   Engine::FactorScope factor_scope(bool gpu) const {
@@ -599,7 +525,7 @@ struct Lab::Impl {
     return fsc;
   }
 
-  ViewEnv make_view_env(const Call *call = nullptr) const {
+  ViewEnv make_view_env(const Call &call) const {
     ViewEnv env;
     env.fsc = factor_scope(false);
     env.hold = sc.hold;
@@ -625,10 +551,10 @@ struct Lab::Impl {
       }
       env.cands.emplace(r.name, std::move(cr));
     }
-    if (call && call->tool == Tool::ViewBook) {
+    if (call.tool == Tool::ViewBook) {
       env.orders = data->asset.catalog();
       const AssetAxis &ax = asset_axis();
-      const std::string arg = call->str("code");
+      const std::string arg = call.str("code");
       for (const char *ex : {"", ".SZ", ".SH", ".BJ"}) {
         const size_t id = ax.find(arg + ex);
         if (id < ax.size()) {
@@ -751,6 +677,12 @@ const Result *Lab::tried(std::string_view name) const {
   return nullptr;
 }
 
+const Result &Lab::result(const std::string &file) const {
+  const auto it = std::find_if(impl_->results.begin(), impl_->results.end(), [&](const Result &r) { return r.file == file; });
+  assert(it != impl_->results.end() && "候选文件不在候选目录里");
+  return *it;
+}
+
 std::string Lab::search_log(const std::string &file) const {
   const std::filesystem::path p = impl_->dir.log_path(file);
   if (!std::filesystem::exists(p))
@@ -835,21 +767,15 @@ void Lab::discard(const std::string &file) {
   std::erase_if(impl_->results, [&](const Result &r) { return r.file == file; });
 }
 
-void Lab::send(EvalJob job) {
-  assert(impl_->data && !busy());
-  std::vector<Engine::FactorRow> rows;
-  Engine::ScanFactorFile(impl_->dir, job.file, *impl_->ft(), rows);
-  assert(!rows.empty() && rows[0].error.empty() && !rows[0].tmpl.empty());
-  EvalTask task{.fsc = impl_->factor_scope(job.gpu),
-                .ssp = {rows[0].file, rows[0].tmpl, rows[0].frame, impl_->sc.hold, true},
-                .venv = impl_->make_view_env()};
-  impl_->worker.send(std::move(task));
-}
-
-void Lab::send(Call call) {
-  assert(impl_->data && !busy());
-  ViewEnv env = is_doc_tool(call.tool) ? ViewEnv{} : impl_->make_view_env(&call);
-  impl_->worker.send(CallTask{std::move(call), std::move(env)});
+void Lab::send(Call call, LabFn fn, std::string file, bool gpu) {
+  assert(impl_->data && !busy() && fn && file.empty() == (call.tool != Tool::EvalFactor));
+  Job job{.call = std::move(call), .fn = fn};
+  if (def(job.call.tool).cat() != Cat::Query)
+    job.env = impl_->make_view_env(job.call);
+  if (!file.empty())
+    job.fsc = impl_->factor_scope(gpu);
+  impl_->flight = job.file = std::move(file);
+  impl_->worker.send(std::move(job));
 }
 
 void Lab::cancel() { impl_->worker.cancel(); }
@@ -861,24 +787,12 @@ std::optional<LabTick> Lab::poll() {
     return std::nullopt;
   if (t->step != LabStep::End)
     return LabTick{t->step, {}};
-  if (std::holds_alternative<std::monostate>(t->out))
+  const std::string file = std::exchange(impl_->flight, {});
+  if (!t->out)
     return LabTick{LabStep::End, {}};
-  if (auto *vo = std::get_if<ToolOut>(&t->out))
-    return LabTick{LabStep::End, std::move(*vo)};
-  EvalDone &ed = std::get<EvalDone>(t->out);
-  if (ed.fail_why.empty())
-    impl_->fails.erase(ed.file);
-  else
-    impl_->fails[ed.file] = std::move(ed.fail_why);
-  impl_->surfaces[ed.file] = std::move(ed.surf);
-  if (ed.rep_text.empty())
-    impl_->reps.erase(ed.file);
-  else
-    impl_->reps[ed.file] = std::move(ed.rep_text);
-  impl_->rescan_one(ed.file);
-  const auto it = std::find_if(impl_->results.begin(), impl_->results.end(), [&](const Result &r) { return r.file == ed.file; });
-  assert(it != impl_->results.end());
-  return LabTick{LabStep::End, *it};
+  if (!file.empty())
+    impl_->absorb(file, *t->out);
+  return LabTick{LabStep::End, std::move(t->out->out)};
 }
 
 void Lab::live(LabLive &dst) const {

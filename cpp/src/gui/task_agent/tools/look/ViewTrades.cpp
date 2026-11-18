@@ -38,7 +38,9 @@ std::string TradesRes::text() const {
   return s;
 }
 
-ToolOut ViewTrades(const Call &c, const ViewEnv &env, Engine::FactorFlow &F) {
+ToolOut ViewTrades(const Call &c, Bay &bay) {
+  const ViewEnv &env = bay.env;
+  Engine::FactorFlow &F = bay.flow;
   std::string err;
   if (!date_arg_ok(c, "from", err) || !date_arg_ok(c, "to", err))
     return Fail(std::move(err));

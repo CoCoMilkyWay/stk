@@ -1,13 +1,12 @@
 #pragma once
 
 // =============================================================================
-// Kit — 工具的执行台与输入取材: 活会话 (Mine) 与工作台 (Bench) 走同一条执行路径
+// Kit — 工具的实现表、调用的一生与输入取材: 活会话 (Mine) 与工作台 (Bench) 走同一条执行路径
 // =============================================================================
-//   Seat       当场工具读写的会话台面: 候选与正式库 (Lab) / 全局记录 / 门槛 / 假设板 / 时间线 (末轮 = 本调用所在轮) / 本调用编号
+//   Seat       当场台面 (GUI 线程): 候选与正式库 (Lab) / 全局记录 / 门槛 / 假设板 / 时间线 (末轮 = 本调用所在轮) / 本调用编号 / GPU 开关
 //              dry = 工作台: 全局记录只给编号不落盘, 提交只查门槛不拷进正式库
-//   RunSync    当场工具做完, 结果 (原文 / 关键数 / 结构化结果) 落进 Act
-//   SendLab    后台工具投递: eval_factor 先核假设并落候选文件 (没落成 = 当场填结果, 返回 false); 其余直接投 Lab
-//   SettleLab  后台结果落进 Act
+//   实现表     kImpls (Kit.cpp, 由 AGENT_TOOLS 拼名): 每个工具 = 执行 RunFn + 取材 Sample<工具>; 后台工具另可挂投递前 / 收结果两钩 (仅 eval_factor)
+//   调用的一生 Begin → (Enter …) → Settle (后台) | Answer (等人) | Abort (取消) → End
 //   Feed       随机输入的取材 (开放的叶 / 候选名 / 评估期交易日 / 池内代码 / 本层时刻 / 假设板 / 时间线); SampleArgs 按工具出一组合参数表的参数
 // =============================================================================
 
@@ -32,13 +31,20 @@ struct Seat {
   Ref me;          // 本调用的编号
   std::string scope, session;
   bool dry = false;
+  bool gpu = false; // eval_factor 的回测上 GPU
 };
 
-void Put(Act &a, ToolOut o);
-void Clip(std::string &s); // 原文超 kOutChars 字截断并说明
-void RunSync(Act &a, Seat &s);
-bool SendLab(Act &a, Seat &s, bool gpu);
-void SettleLab(Act &a, LabOut out, const Gate &g);
+// 后台工具的两钩 (GUI 线程): 投递前 (false = 当场已收, 不投) / 收结果
+using StageFn = bool (*)(Act &, Seat &);
+using SettleFn = void (*)(Act &, ToolOut, Seat &);
+
+// ---- 调用的一生 ----
+Exec Begin(Act &a, Seat &s, double t);         // 开始并分派; 返回 = 这一步落在谁手上 (Sync = 已当场收)
+void Enter(Act &a, LabStep step, double t);    // 后台报步 (eval_factor 的 Search / Run 计时)
+void Settle(Act &a, ToolOut out, Seat &s);     // 后台结果落进 Act
+void Answer(Act &a);                           // 研究员答完, 成文落进 Act
+std::string Abort(Act &a);                     // 取消在跑的调用; 返回 = 要删的候选文件 (落了文件的回测, 否则空)
+void End(Act &a, State &st, Ref at, double t); // 收尾: 时段 / 折进状态 / 原文超 kOutChars 字截断
 
 struct Feed {
   const Context &ctx;

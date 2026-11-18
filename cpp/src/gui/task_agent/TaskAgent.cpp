@@ -462,7 +462,7 @@ void session_row(const SharedData &data, Ui &s) {
 // 类色 (下标 = Cat)
 constexpr ImVec4 kCatCols[] = {{0.35f, 0.78f, 0.45f, 1.0f}, {0.85f, 0.80f, 0.35f, 1.0f}, {0.95f, 0.62f, 0.25f, 1.0f}, {0.38f, 0.62f, 0.95f, 1.0f}, {0.72f, 0.52f, 0.92f, 1.0f}, {0.58f, 0.58f, 0.58f, 1.0f}};
 static_assert(std::size(kCatCols) == kNum<Cat>);
-size_t cat_of(Tool t) { return static_cast<size_t>(def(t).cat); }
+size_t cat_of(Tool t) { return static_cast<size_t>(def(t).cat()); }
 const char *cat_cn(size_t k) { return def(static_cast<Cat>(k)).cn; }
 
 ImU32 shade(ImVec4 c, int i) {
@@ -609,7 +609,7 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
         std::snprintf(pct, sizeof(pct), " %.0f%%", ll.frac * 100.0);
         what += std::string(" · ") + step_name(*k) + pct;
         frac = static_cast<float>(ll.frac);
-      } else if (def(a->call.tool).exec == Exec::Lab) {
+      } else if (def(a->call.tool).exec() == Exec::Lab) {
         char pct[32];
         std::snprintf(pct, sizeof(pct), " %.0f%%", ll.frac * 100.0);
         what += std::string(" · 执行中") + (ll.frac > 0.0 ? pct : "…");
@@ -813,7 +813,7 @@ bool act_block(Ui &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
   std::string state;
   TaskStatus::Kind kind = TaskStatus::Kind::None;
   if (a.span.ended())
-    state = " · " + dur(a.span.len(t)) + (a.ok ? "" : " · 没做成"), kind = a.ok ? TaskStatus::Kind::None : TaskStatus::Kind::Warn;
+    state = " · " + dur(a.span.len(t)) + (a.out.ok ? "" : " · 没做成"), kind = a.out.ok ? TaskStatus::Kind::None : TaskStatus::Kind::Warn;
   else if (a.span.running() && m.live())
     state = " · 执行中… " + dur(a.span.len(t)), kind = TaskStatus::Kind::Busy;
   else
@@ -834,11 +834,11 @@ bool act_block(Ui &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
     if (judge) {
       const Stance st = IdOf<Stance>(a.call.str("verdict"));
       label += "判 " + a.call.str("hyp") + " → " + def(st).cn;
-      kind = a.ok ? kind_of(st) : TaskStatus::Kind::Warn;
+      kind = a.out.ok ? kind_of(st) : TaskStatus::Kind::Warn;
     } else {
       const Hyp *h = hyp_at(m.st.board, ref);
       label += "提假设 " + (h ? h->id + " · " : std::string()) + text::head(a.call.str("title"), kCallChars);
-      if (a.ok && h)
+      if (a.out.ok && h)
         kind = kind_of(h->stance);
     }
     ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
@@ -853,13 +853,13 @@ bool act_block(Ui &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
         wrapped(a.call.str("title"));
       }
       wrapped_dim(fields_text(a.call.tool, a.call.args));
-      wrapped(color(a.ok ? TaskStatus::Kind::None : TaskStatus::Kind::Warn), a.out);
+      wrapped(color(a.out.ok ? TaskStatus::Kind::None : TaskStatus::Kind::Warn), a.out.text);
       ImGui::TreePop();
     }
   } else {
     const ToolDef &d = def(a.call.tool);
     ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
-    fold("act", ImGuiTreeNodeFlags_None, rt + " " + d.cn + " · " + text::head(a.call.text(), kCallChars) + state, a.out, false, kBoxLines, false);
+    fold("act", ImGuiTreeNodeFlags_None, rt + " " + d.cn + " · " + text::head(a.call.text(), kCallChars) + state, a.out.text, false, kBoxLines, false);
     ImGui::PopStyleColor();
   }
   ImGui::PopID();
@@ -1633,7 +1633,7 @@ void tools_panel(Ui &s) {
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(d.cn);
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(def(d.exec).cn);
+    ImGui::TextUnformatted(def(d.exec()).cn);
     ImGui::TableNextColumn();
     std::string keys, args;
     for (const ArgDef &a : d.args)

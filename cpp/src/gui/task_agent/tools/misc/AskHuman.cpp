@@ -7,7 +7,7 @@ using json = nlohmann::ordered_json;
 
 std::string AskRes::text() const { return AnswerText(a); }
 
-ToolOut AskOut(const Asked &a) {
+ToolOut AskHuman(const Asked &a) {
   auto r = std::make_shared<AskRes>();
   r->a = a;
   return Done(std::move(r));

@@ -165,103 +165,103 @@ constexpr ArgDef kAskArgs[] = {{"questions", "问题", Arg::Questions, nullptr, 
                                 "问题数组, 每题 {\"prompt\": 题干, \"options\": [2..5 个字符串], \"multiple\": 可多选 (缺省 false), \"recommended\": [推荐的选项下标]}"}};
 
 constexpr ToolDef kTools[] = {
-    {Tool::ViewFeature, "view_feature", "看特征", Exec::Lab, Cat::Look, false, kFeatureArgs,
+    {Tool::ViewFeature, "view_feature", "看特征", false, kFeatureArgs,
      "看特征长什么样: 池内分布 (分位) / 日内轮廓 (各行截面中位数; 日频慢变量不列) / 方差来自哪 (资产间 · 日间 · 日内) / 持续性 (同一资产的自相关) / 与本持有期收益的截面 rIC; "
      "给多个时附两两截面相关. 造新特征前先看原料, 造完看它是否如你所想",
      "每个式子一节统计 (带火花线; 写错的式子在它那节给原因, 其余照算) + 多个时的相关矩阵"},
-    {Tool::ViewLayers, "view_layers", "看分层", Exec::Lab, Cat::Look, false, kLayersArgs,
+    {Tool::ViewLayers, "view_layers", "看分层", false, kLayersArgs,
      "看因子的 20 组分层: 每组每期超额 / mono / 多空 / rIC, 做多端与最低组各贡献多少; 两端组内再截最极端的 50% / 20% / 5% 看尾部 (越极端越强 = 信号集中在极值, "
      "可加强截面根的区分度; 尾部反而回落 = 极值多是事件 / 数据噪声); 切开看分层在哪些时段 / 月份成立、哪些失效; 给 cond 再按条件三等分看各段的分层",
      "全期 20 组 + 尾部表 (各截取宽度两端的每期超额 / 只数 / 多空) + 切分时每段一行 (行数 / mono / 多空 / rIC / 首中末组) + 给 cond 时条件三段各一行; "
      "切分或给 cond 时全期部分照给, 不必另调一次不切的"},
-    {Tool::ViewTrades, "view_trades", "看交割单", Exec::Lab, Cat::Look, false, kTradesArgs,
+    {Tool::ViewTrades, "view_trades", "看交割单", false, kTradesArgs,
      "看因子一端真持有过的仓位 (与分层回测同一份持仓判据, 建不了仓的不算): 段收益的分布与集中度, 按开仓时段 / 标签 (涨跌停附近 · 当日大涨大跌 · 日内高低位 · 放量 · "
      "竞价段 · 尾盘) 的格占比提升 (本端真持有格对池内格) 与段收益, 再列若干段的明细 (代码与日期可接 view_stock_day). 汇总与两张表看收益从哪类情形来、亏在哪类情形; "
      "明细只用来挑票对着盘面看机制, 尾部个例 (worst / best) 多是个股事件或数据缺失, 不代表信号",
      "汇总 + 时段表 + 标签表 + 明细表; 给 from / to / tod 只看该日段 / 时段 (看收益集中在哪段行情、开盘还是尾盘)"},
-    {Tool::ViewHolders, "view_holders", "看常客", Exec::Lab, Cat::Look, false, kHoldersArgs,
+    {Tool::ViewHolders, "view_holders", "看常客", false, kHoldersArgs,
      "看哪些资产最常落在因子一端: 本端行数 / 占其在池行的比例 / 涉及天数 / 平均连续行数 / 本端持仓平均超额, 附集中度. 用来看因子是否只在少数票上起作用、在挑哪类票",
      "集中度一行 + 资产表"},
-    {Tool::ViewResponse, "view_response", "看响应", Exec::Lab, Cat::Look, false, kResponseArgs,
+    {Tool::ViewResponse, "view_response", "看响应", false, kResponseArgs,
      "看因子一端开仓前后全池平均的价格路径 (事件研究, 与分层回测同一份持仓): 以真持有段的开仓行为零点, 开仓前若干时点到开仓的累计超额 (因子是不是过去价格的影子: 反转 / 动量) "
      "与开仓后到若干时点的累计超额 (收益何时到、多快衰减、持有期是否合适), 各时点的因子分位 (信号能持续多久), 附开仓行因子分位与此前收益的截面相关; 可按开仓时段切开",
      "说明两行 + 时点表 (段数 / 累计超额 ± 按日聚类标准误 / 为正占比 / 因子分位) + 与此前收益的相关一行 + 切分时的时段表"},
-    {Tool::ViewExplain, "view_explain", "看成分", Exec::Lab, Cat::Look, false, kExplainArgs,
+    {Tool::ViewExplain, "view_explain", "看成分", false, kExplainArgs,
      "看因子是不是已知量的影子: 内置基准 (日内层: 近 5 / 30 行收益、当日至今收益、前 1 / 5 日收益、当日至今成交额、当日至今振幅、日内位置、价格; 日层: 当日 / 5 日 / 20 日收益、成交额、振幅、价格) "
      "加你给的特征式, 每个给与因子的截面秩相关、它自身的 rIC、只剥掉它之后因子剩下的 rIC; 再把全部基准一起剥掉 (每行截面回归取残差), 给剩余部分与原因子的 rIC / mono / 多空 对照. "
      "新方向起步、每次显著改进后都看一次: 剥掉之后还剩下的才是新信息, 被哪个基准吃掉就说明它是谁的影子",
      "基准表 (与因子的相关 / 基准自身 rIC / 只剥它后的因子 rIC) + 全剥离对照 (原因子与剩余部分的 rIC · mono · 多空 · 20 组火花线)"},
-    {Tool::ViewSnapshot, "view_snapshot", "看截面快照", Exec::Lab, Cat::Look, false, kSnapshotArgs,
+    {Tool::ViewSnapshot, "view_snapshot", "看截面快照", false, kSnapshotArgs,
      "看某一天某一行的截面: 因子分位最高 / 最低的各 n 只 (分位 · 组 · 是否真持有 · 当日涨跌 · 本行涨跌 · 日内位置 · 当日至此成交额 · 后续超额 · 盘面标签 · 特征值), 中间夹一行池中位作对照, "
      "附各列与因子分位的截面秩相关. 用来看同一时刻两端各是什么样的票 (同涨同跌的一批? 刚异动的? 小票?), 与 view_trades 的明细互补: 那里是一只票的一段, 这里是一个时刻的全池",
      "本行概况 + 截面秩相关一行 + 两端表 (中夹池中位)"},
-    {Tool::ViewStockDay, "view_stock_day", "看个股一天", Exec::Lab, Cat::Look, false, kStockDayArgs,
+    {Tool::ViewStockDay, "view_stock_day", "看个股一天", false, kStockDayArgs,
      "看一只股票一天的逐行走势: 价 / 量 / 因子分位 / 特征的火花线, 加分段表 (竞价段 + 每段约 30 分钟: 涨跌 / 段内高低 / 量占比 / 因子分位 / 后续持有期超额 / 特征段末值). "
      "给 rows 另附该时段逐行表 (价 / 涨跌 / 高低 / 量额 / 因子分位与组 / 后续超额 / 特征值), 对着分钟看机制里说的那个行为是否真的发生. 用来对照盘面现象与因子何时高、何时低",
      "当日概况 + 火花线 + 分段表 (+ 逐行表)"},
-    {Tool::ViewStockDays, "view_stock_days", "看个股多日", Exec::Lab, Cat::Look, false, kStockDaysArgs,
+    {Tool::ViewStockDays, "view_stock_days", "看个股多日", false, kStockDaysArgs,
      "看一只股票连续多日 (至多 {{stock_days}} 日) 的日级概况: 每日一行 (涨跌 / 振幅 / 成交额 / 在池 / 因子日均与收盘分位 / 两端行数 / 收盘开仓的后续超额 / 特征收盘值), 附日级火花线",
      "火花线 + 逐日表"},
-    {Tool::ViewBook, "view_book", "看盘口重放", Exec::Lab, Cat::Look, false, kBookArgs,
+    {Tool::ViewBook, "view_book", "看盘口重放", false, kBookArgs,
      "逐笔重放一只股票一天里的一段 (至多 {{book_mins}} 分钟; 不经特征库, 任何有逐笔数据的日子都能看): 逐时表 (每行 step 秒: 末买一卖一 / 价差 / 末价 / 主动买卖额 / 新挂与撤单额 (分买卖侧) / 前五档挂单额, "
      "竞价段另有预撮合参考价与未匹配额), 大单事件 (≥ 门槛的新挂 / 撤单 / 被吃完, 带距盘口几档与挂了多久; 一个主动单连吃多个价位的扫单), 某一秒的全簿剖面 (盘口两侧各若干价位的挂单额). "
      "用来亲眼看特征叶背后的行为: 大单是挂在盘口还是远处、挂多久撤、被谁吃; 撤单是不是集中在价格变动之前; 主动扫单之后盘口怎么补; 竞价里谁在挂撤. "
      "挑 view_trades / view_snapshot 里的票与时刻来看",
      "当日与窗口概况 + 逐时表 + 大单事件 (计数 + 明细) + 全簿剖面"},
-    {Tool::SearchLeaves, "search_leaves", "查特征叶", Exec::Sync, Cat::Query, false, kLeavesArgs,
+    {Tool::SearchLeaves, "search_leaves", "查特征叶", false, kLeavesArgs,
      "查特征叶的公式与说明 (系统提示的特征表只列族卡、叶名与中文名): 用一个陌生的叶之前查清它怎么算、什么单位、在哪个时点可见、落盘值是不是原量. "
      "只差计量 (额 / 量 / 笔) 或阈值 / 窗口的同组叶合成一行, 公式与说明按组内首个写",
      "命中的叶数与组数 + 组行 (叶 (同组写成花括号式) / 中文名 / 公式 / 说明 / 落盘值); 零命中时给各词单独的命中数"},
-    {Tool::SearchDocs, "search_docs", "查研报", Exec::Lab, Cat::Query, false, kDocsArgs,
+    {Tool::SearchDocs, "search_docs", "查研报", false, kDocsArgs,
      "查研报库 (券商金工研报的标注与全文): 先给命中研报的分面 —— 阶段 → 流派树 (篇数) / 机构 / 年份 / 价值 (我们对研报的判断: high 可直接复用 / medium 有参考 / low 有水分), "
      "再列研报. 不带条件 = 全库版图; 从上往下逐层加条件 (阶段 → 流派 → 关键词) 收窄到感兴趣的几篇, 再用 read_doc 读",
      "分面 + 研报行 (id / 价值 / 主阶段 / 流派 / 因子数 / 首条结论; 全文检索另给命中数与片段)"},
-    {Tool::SearchFactors, "search_factors", "查研报因子", Exec::Lab, Cat::Query, false, kFactorsArgs,
+    {Tool::SearchFactors, "search_factors", "查研报因子", false, kFactorsArgs,
      "查研报里提出过的因子: 先给命中因子的分面 (类别 / 出处流派 / 数据周期 × 预测期), 再列因子 (名 / 类别 / 方向 / 数据周期 → 预测期 / 原文统计 / LaTeX 公式). "
      "造新特征或换思路前先查别人怎么定义同类东西、背后讲的什么机制. 统计是原文在其自己股票池与预测期 (多为月度) 上的数, 只用来理解机制, 与本会话的回测不可比",
      "分面 + 因子行 (出处研报 id 可接 read_doc)"},
-    {Tool::ReadDoc, "read_doc", "读研报", Exec::Lab, Cat::Query, false, kReadArgs,
+    {Tool::ReadDoc, "read_doc", "读研报", false, kReadArgs,
      "读一篇研报: card 是标注卡 (各阶段的流派与设定 / 结论 / 库内前作与被引 / 因子与公式; 因子多读不完时末尾给接着读的 from), 先看它判断值不值得细读; 要细节看 outline (节号 · 标题 · 字数) 挑节, "
      "再用 text 从那节读原文 (图片已去, 表格与公式保留), 每次读到字数上限为止, 末尾给接着读的 from / skip",
      "标注卡 / 目录 / 原文一段"},
-    {Tool::Hypothesize, "hypothesize", "提假设", Exec::Sync, Cat::Hyp, true, kHypArgs,
+    {Tool::Hypothesize, "hypothesize", "提假设", true, kHypArgs,
      "写下一个机制假设与它可证伪的预测, 记上假设板 (编号 H1, H2 …, 待检验). 之后用观察检验它, 再 judge; 只有判为支持的假设才能挂 eval_factor 的变体 (每个至多 {{hyp_evals}} 个). "
      "观察到新现象、上一个假设落空或变体用完、想换方向时提新的",
      "编号"},
-    {Tool::Judge, "judge", "判假设", Exec::Sync, Cat::Hyp, true, kJudgeArgs,
+    {Tool::Judge, "judge", "判假设", true, kJudgeArgs,
      "对照假设的 expect / refute 给它下判定, 证据写调用编号. 两个时点: 检验它的观察做完后 (判为支持才能挂变体); 它的变体回测完的下一条回复 (系统强制: 待判的不判, 整条退回). "
      "判支持须引用观察: 同一条回复里把观察排在 judge 前面, 就能引用它们. "
      "每次都写清测出来是什么、为什么、得到什么认识、有没有更好的特征、下一步用什么工具查什么",
      "判定后的假设板一行; 证据不成 (编号不存在 / 在提出之前 / 没做成 / 判支持却没有观察 / 再判没有新证据) 写原因, 不改判定"},
-    {Tool::EvalFactor, "eval_factor", "回测", Exec::Lab, Cat::Trial, false, kEvalArgs,
+    {Tool::EvalFactor, "eval_factor", "回测", false, kEvalArgs,
      "把一个模板落成候选文件并回测: Search (定方向 + 搜自由参数) → 各权重全量分层回测. 一条回复至多 {{batch}} 个, 每个变体相对基准只改一处以检验一个问题; "
      "须挂在判为支持的假设上 (每个假设至多 {{hyp_evals}} 个, 有变体回测过还没判的先 judge), 上一条回复有落了文件的回测时本条不能回测. "
      "与已有候选同式 (含只换截面根 CsRank / CsNormRank / CsZ) 或算子超 {{max_ops}} 个的不落",
      "结局: 未落文件的原因 / BROKEN / 无显著 (落选原因 + 代表点 + 代表点的 20 组与分时段 mono) / 各权重的统计 (只写自由参数的取值) + 是否达入库门槛 "
      "(+ 最佳权重的 20 组与分年表); 有自由参数的另附参数曲面"},
-    {Tool::ListTried, "list_tried", "列已试", Exec::Sync, Cat::Query, false, kTopArgs, "列本作用域已评过的候选 (历次会话累积, 只列同一评估期的), 按 score 降序; 可作起点接着做",
+    {Tool::ListTried, "list_tried", "列已试", false, kTopArgs, "列本作用域已评过的候选 (历次会话累积, 只列同一评估期的), 按 score 降序; 可作起点接着做",
      "每个候选: 模板 + 结局 (权重只写自由参数的取值) + 是否达入库门槛; 没列完时末尾给总数与接着看的 skip"},
-    {Tool::ListLibrary, "list_library", "列正式库", Exec::Sync, Cat::Query, false, kTopArgs,
+    {Tool::ListLibrary, "list_library", "列正式库", false, kTopArgs,
      "列正式因子库里同一评估期且算子不超上限、在本持有期有统计的因子, 按 score 降序; 可作起点接着做",
      "每个因子: 模板 + 思路 + 最佳权重; 本持有期无统计的只报个数; 没列完时末尾给总数与接着看的 skip"},
-    {Tool::ListNotes, "list_notes", "查全局记录", Exec::Sync, Cat::Query, false, kNotesArgs,
+    {Tool::ListNotes, "list_notes", "查全局记录", false, kNotesArgs,
      "查历次会话 (各作用域) 留下的全局记录: 特征申请 / 工具申请 / 发现 / 建议与 bug. 起步时看前人的发现 (别重走证伪过的路); 提交记录前先查同类, 已有的用 ref 附议或补充, 不要重提; "
      "研究员处理过的标着 已做 / 不做 / 搁置 (带他的回复): 已做的申请可以直接用上, 不做的别再提",
      "不给 kind: 各类条数 + 每类最近几条的标题; 给 kind: 逐条全文 (编号 / 时间 / 作用域 / 附议关系 / 研究员的处理 / 各字段)"},
-    {Tool::SubmitFactor, "submit_factor", "提交入库", Exec::Sync, Cat::Trial, true, kNameArgs, "把一个已评候选提交入库 (至少一个权重过入库门槛才入); 一般只在最后交最好的版本",
+    {Tool::SubmitFactor, "submit_factor", "提交入库", true, kNameArgs, "把一个已评候选提交入库 (至少一个权重过入库门槛才入); 一般只在最后交最好的版本",
      "入库 / 未入库的原因"},
-    {Tool::RequestFeature, "request_feature", "申请特征", Exec::Sync, Cat::Note, true, kFeatureReqArgs,
+    {Tool::RequestFeature, "request_feature", "申请特征", true, kFeatureReqArgs,
      "申请一个新特征叶: 想刻画的量 (lob / bar / fund 任一类) 现有叶没有、只能近似, 或信号卡在天花板要新信息源. 全局记录, 研究员据此加叶; 提完本会话照常用现有的叶接着做",
      "编号"},
-    {Tool::RequestTool, "request_tool", "申请工具", Exec::Sync, Cat::Note, true, kToolReqArgs,
+    {Tool::RequestTool, "request_tool", "申请工具", true, kToolReqArgs,
      "申请一个新工具或给现有工具加功能: 验证假设要看的东西现有工具看不到, 或要拼几个调用、绕弯才看到. 全局记录, 研究员据此加工具; 提完照常接着做", "编号"},
-    {Tool::NoteInsight, "note_insight", "记发现", Exec::Sync, Cat::Note, true, kInsightArgs,
+    {Tool::NoteInsight, "note_insight", "记发现", true, kInsightArgs,
      "记下一条被观察 / 回测证实或证伪的规律 (市场微观结构、某类叶或算子的脾性、哪条路走不通), 对别的因子与后续会话也有用的才记. 全局记录, 后续会话的 agent 经 list_notes 看得到",
      "编号"},
-    {Tool::ReportIssue, "report_issue", "报问题", Exec::Sync, Cat::Note, true, kIssueArgs,
+    {Tool::ReportIssue, "report_issue", "报问题", true, kIssueArgs,
      "报工具结果不对 (bug)、对规则 / 系统 / 工具的改进建议 (idea: 哪条规则卡住了你、哪个结果不好读、哪里浪费了轮次)、想问研究员的疑问 (question). 全局记录, 研究员会看; 提完照常接着做", "编号"},
-    {Tool::Finish, "finish", "结束", Exec::Sync, Cat::Misc, true, {}, "宣布挖完: 须是本条回复的最后一个调用, 前面的调用照常执行, 全部做完后会话结束", "会话结束"},
-    {Tool::AskHuman, "ask_human", "问研究员", Exec::Human, Cat::Misc, true, kAskArgs,
+    {Tool::Finish, "finish", "结束", true, {}, "宣布挖完: 须是本条回复的最后一个调用, 前面的调用照常执行, 全部做完后会话结束", "会话结束"},
+    {Tool::AskHuman, "ask_human", "问研究员", true, kAskArgs,
      "向研究员提问 (每题带推荐), 等他选答; 整个会话只有一次机会. 只问研究员才能定的事 (从哪个因子起步、往哪个方向挖); 系统提示已定的不问也不确认. "
      "研究员每题都能选 \"其他\" 自己写, 还能附言, 所以选项不必穷举, 不要列 \"其他\" / \"由你决定\" 之类的兜底项",
      "每题的选择 (没照推荐的附上推荐) + 附言"},

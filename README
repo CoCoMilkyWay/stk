@@ -295,13 +295,16 @@ stk/
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 码点 / 检索词过滤 / 数的写法 / 火花线 / Markdown 表格建表器 Table
 │   │   │       ├── Async.hpp                           # 🤖 通用单线程异步管道 Async<Req, Step, Out, Live>: Chat 与 Lab 共用同一套 send / poll / live / busy / cancel
 │   │   │       ├── Llm.hpp                             # 🤖 左翼 · 大模型传输与 Chat: 驱动表 kDrivers 分派 Zhipu / Cursor (HTTPS) / Devin (本机 devin acp 子进程) (零异常控制流, 不留对话态)
-│   │   │       ├── Tools.hpp                           # 🤖 工具真相表 (三态执行 Exec: Sync / Lab / Human) → 系统提示工具节 / 回复解析 ParseCalls / 参数校验 / ask_human 问答
+│   │   │       ├── Tools.hpp                           # 🤖 工具真相表: 清单 AGENT_TOOLS (名 / 三态执行 Exec: Sync / Lab / Human / 类) + 说明表 → 系统提示工具节 / 回复解析 ParseCalls / 参数校验 / ask_human 问答; 三态签名 SyncFn ↔ LabFn ↔ HumanFn
 │   │   │       ├── Notes.hpp                           # 🤖 研究记录双板: 会话假设板 Board (H1, H2 …) ↔ 跨会话全局记录 Notes (F / T / I / R, jsonl 累积, 研究员标处理)
 │   │   │       ├── Docs.hpp                            # 🤖 研报库工具 (只读 output/data/doc, 按篇懒加载并看取消旗): search_docs / search_factors / read_doc
-│   │   │       ├── Views.hpp                           # 🤖 观察核: 9 个特征库视图 (分块流式 + ForkJoin 全核归约, K 线直读, 按需跳块) + view_book 逐笔重放进常驻订单簿
-│   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 单线程工作台 Lab (Eval: Search→单文件 Run→代表点分层 直通; View/Docs 原地成文; Store 共用)
+│   │   │       ├── tools/                              # 🤖 Kit.hpp 实现表 kImpls (AGENT_TOOLS 拼名 <工具> / Sample<工具>, 编译期核签名 = 执行) + 调用的一生 Begin → Enter … → Settle / Answer / Abort → End
+│   │   │       │                                       #    · 当场台面 Seat (Kit.hpp, GUI 线程读写会话) ↔ 后台台面 Bay (Bay.hpp, Lab 线程只读备好的值 + 计算流); 后台两钩 (投递前 / 收结果) 只挂 eval_factor
+│   │   │       │                                       #    · <类>.hpp 各工具的结果 Res 与入口 (Look / Query / Hyp / Trial / Note / Misc), <类>/<工具>.cpp 计算与原文; 观察核公共件 look/Kernel.hpp
+│   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw) + 工作台 Bench (Agent → Tools 页, 与会话同一条执行路径) + 控件 Widgets
+│   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 单线程工作台 Lab (send(Call, LabFn) → 备好台面 Bay → worker 跑 LabFn → ToolOut; eval_factor 的评估产物收下即重扫候选; Store 共用)
 │   │   │       ├── Prompt.hpp                          # 🤖 提示词模板填充 + 工具结果成文 + 时间线唯一状态折叠 StateOf + 上下文纯函数 TurnsOf (含研究树收起)
-│   │   │       ├── Mine.hpp                            # 🤖 挖掘会话状态机: 每帧对仗轮询 Chat / Lab; 停 / 续 / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
+│   │   │       ├── Mine.hpp                            # 🤖 挖掘会话状态机: 每帧对仗轮询 Chat / Lab, 调用走 Kit 的一生; 停 / 续 / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
 │   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (作用域 / 会话控制 / 时间线 / 假设板 / 候选 / 记录处理 / 开放的特征与算子) / Config
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存

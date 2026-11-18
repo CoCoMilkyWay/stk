@@ -3,7 +3,6 @@
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Misc.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -50,7 +49,7 @@ void from_json(const json &j, Trial &k) {
 }
 
 void to_json(json &j, const Act &a) {
-  j = {{"tool", def(a.call.tool).name}, {"args", a.call.args}, {"span", a.span}, {"out", a.out}, {"gist", a.gist}, {"ok", a.ok}};
+  j = {{"tool", def(a.call.tool).name}, {"args", a.call.args}, {"span", a.span}, {"out", a.out.text}, {"gist", a.out.gist}, {"ok", a.out.ok}};
   if (const Trial *k = std::get_if<Trial>(&a.extra))
     j["trial"] = *k;
   if (const Asked *q = std::get_if<Asked>(&a.extra))
@@ -59,9 +58,7 @@ void to_json(json &j, const Act &a) {
 void from_json(const json &j, Act &a) {
   a = Act{.call = {ToolOf(j.at("tool").get<std::string>()), j.at("args")},
           .span = j.at("span").get<Span>(),
-          .out = j.at("out").get<std::string>(),
-          .gist = j.value("gist", std::string()),
-          .ok = j.at("ok").get<bool>()};
+          .out = {.ok = j.at("ok").get<bool>(), .text = j.at("out").get<std::string>(), .gist = j.value("gist", std::string())}};
   if (j.contains("trial"))
     a.extra = j.at("trial").get<Trial>();
   if (j.contains("asked")) {
@@ -80,21 +77,21 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Round, kind, user, memo, span, think, write, 
 int Tally::n(Exec e) const {
   int s = 0;
   for (const ToolDef &d : Tools())
-    s += d.exec == e ? n(d.id) : 0;
+    s += d.exec() == e ? n(d.id) : 0;
   return s;
 }
 
 int Tally::n(Cat c) const {
   int s = 0;
   for (const ToolDef &d : Tools())
-    s += d.cat == c ? n(d.id) : 0;
+    s += d.cat() == c ? n(d.id) : 0;
   return s;
 }
 
 int Tally::failed(Cat c) const {
   int s = 0;
   for (const ToolDef &d : Tools())
-    s += d.cat == c ? failed(d.id) : 0;
+    s += d.cat() == c ? failed(d.id) : 0;
   return s;
 }
 
@@ -112,10 +109,10 @@ Tally TallyOf(Rounds rs, double now) {
       ++t.calls[k], t.act_s += a.span.len(now);
       if (!a.span.ended())
         continue;
-      t.fails[k] += !a.ok;
+      t.fails[k] += !a.out.ok;
       if (const Trial *x = std::get_if<Trial>(&a.extra))
         ++t.verdicts[static_cast<size_t>(x->st.res.verdict)];
-      t.adopted += a.call.tool == Tool::SubmitFactor && a.ok;
+      t.adopted += a.call.tool == Tool::SubmitFactor && a.out.ok;
     }
   }
   return t;
@@ -214,7 +211,7 @@ std::string fmt_act_done(Ref at, const Act &a) {
   if (!a.span.ended())
     return {};
   std::string s = "#### [" + RefText(at) + "] `" + a.call.text(100) + "` (" + text::fmt("%.1fs", a.span.len(a.span.t1)) +
-                  (a.ok ? "" : " · 没做成") + ")\n\n" + a.out;
+                  (a.out.ok ? "" : " · 没做成") + ")\n\n" + a.out.text;
   if (!s.ends_with('\n'))
     s += '\n';
   return s + "\n";
@@ -414,7 +411,7 @@ void Mine::resume(const SharedData &data, Leg l) {
 void Mine::start() {
   assert(phase_ == Phase::Choose);
   Act &a = timeline.back().acts[cur_];
-  Put(a, AskOut(std::get<Asked>(a.extra)));
+  Answer(a);
   ended(a);
   step();
 }
@@ -606,9 +603,15 @@ void Mine::on_chat(Chat::Tick t) {
 void Mine::on_lab(LabTick t) {
   if (phase_ != Phase::Act)
     return;
+  Act &a = timeline.back().acts[cur_];
   if (t.step != LabStep::End)
-    return enter_lab(timeline.back().acts[cur_], t.step);
-  settled(std::move(t.out));
+    return Enter(a, t.step, now());
+  assert(t.out && "取消的不收 (按 Cancel 已当场收作取消)");
+  Seat s = seat();
+  Settle(a, std::move(*t.out), s);
+  ended(a);
+  save();
+  step();
 }
 
 std::string Mine::rule_miss(const std::vector<Call> &cs) const {
@@ -652,38 +655,7 @@ void Mine::replied(llm::Reply r) {
   step();
 }
 
-void Mine::enter_lab(Act &a, LabStep s) {
-  Trial *k = std::get_if<Trial>(&a.extra);
-  if (!k)
-    return;
-  const double t = now();
-  k->search.end(t), k->run.end(t);
-  if (s == LabStep::Search)
-    k->search.begin(t);
-  else if (s == LabStep::Run)
-    k->run.begin(t);
-}
-
-void Mine::settled(LabOut out) {
-  Act &a = timeline.back().acts[cur_];
-  enter_lab(a, LabStep::End);
-  SettleLab(a, std::move(out), setup.gate);
-  ended(a);
-  save();
-  step();
-}
-
-Seat Mine::seat() { return {lab, notes, setup.gate, st, timeline, {round(), static_cast<int>(cur_) + 1}, catalog::label(setup.sc), log.dir(), false}; }
-
-void Mine::exec_sync(Act &a) {
-  Seat s = seat();
-  RunSync(a, s);
-}
-
-bool Mine::exec_lab(Act &a) {
-  Seat s = seat();
-  return SendLab(a, s, leg.gpu);
-}
+Seat Mine::seat() { return {lab, notes, setup.gate, st, timeline, {round(), static_cast<int>(cur_) + 1}, catalog::label(setup.sc), log.dir(), false, leg.gpu}; }
 
 void Mine::step() {
   Round &rd = timeline.back();
@@ -691,25 +663,16 @@ void Mine::step() {
     if (!go(Phase::Act))
       return;
     Act &a = rd.acts[cur_];
-    a.span.begin(now());
-    switch (def(a.call.tool).exec) {
-    case Exec::Sync:
-      exec_sync(a);
+    Seat s = seat();
+    const Exec at = Begin(a, s, now());
+    if (at == Exec::Sync) {
       ended(a);
       continue;
-    case Exec::Lab:
-      if (!exec_lab(a)) {
-        ended(a);
-        continue;
-      }
-      save();
-      return;
-    case Exec::Human:
-      a.extra.emplace<Asked>(QuestionsOf(a.call));
-      go(Phase::Choose);
-      save();
-      return;
     }
+    if (at == Exec::Human)
+      go(Phase::Choose);
+    save();
+    return;
   }
   if (flags().done)
     return pause("agent 宣布挖完");
@@ -726,24 +689,15 @@ void Mine::next() {
 }
 
 void Mine::ended(Act &a) {
-  const double now_s = now();
-  a.span.end(now_s);
   const Ref at{round(), static_cast<int>(cur_) + 1};
-  Apply(st, a, at);
-  Clip(a.out);
+  End(a, st, at, now());
   log.append_log(fmt_act_done(at, a));
   ++cur_;
 }
 
 void Mine::abort(Act &a) {
-  enter_lab(a, LabStep::End);
-  if (Trial *k = std::get_if<Trial>(&a.extra); k && k->st.ok()) {
-    doomed_.push_back(k->st.file);
-    k->st.file.clear();
-    k->st.res = Result{.error = "研究员取消了这次回测", .verdict = Verdict::Unstaged};
-  }
-  a.ok = false;
-  a.out = "研究员取消了这个调用, 没做完";
+  if (std::string file = Abort(a); !file.empty())
+    doomed_.push_back(std::move(file));
   ended(a);
 }
 
@@ -814,7 +768,7 @@ std::string Mine::report_of(const std::string &why) const {
   for (size_t i = 0; i < timeline.size(); ++i)
     for (const Act &a : timeline[i].acts)
       if (a.span.ended() && a.call.tool == Tool::SubmitFactor)
-        (a.ok ? in : out) += "- 第 " + std::to_string(i + 1) + " 轮 " + a.call.str("name") + (a.ok ? "" : " — " + a.out) + "\n";
+        (a.out.ok ? in : out) += "- 第 " + std::to_string(i + 1) + " 轮 " + a.call.str("name") + (a.out.ok ? "" : " — " + a.out.text) + "\n";
   r += std::string(setup.test ? "## 达门槛 (" : "## 入库 (") + std::to_string(c.adopted) + ")\n\n" + (in.empty() ? "(无)\n" : in) + "\n";
   r += "## 未入库的提交 (" + std::to_string(c.n(Tool::SubmitFactor) - c.adopted) + ")\n\n" + (out.empty() ? "(无)\n" : out);
   r += "\n## 假设 (" + std::to_string(st.board.all().size()) + ")\n" + st.board.report();
@@ -842,7 +796,7 @@ std::vector<Seen> SeenCalls(const Scope &sc, Tool t) {
     for (size_t i = 0; i < rs.size(); ++i)
       for (size_t j = 0; j < rs[i].acts.size(); ++j)
         if (const Act &a = rs[i].acts[j]; a.call.tool == t && a.span.ended())
-          out.push_back({s.stamp, s.test, {static_cast<int>(i) + 1, static_cast<int>(j) + 1}, a.call.args, a.out, a.ok});
+          out.push_back({s.stamp, s.test, {static_cast<int>(i) + 1, static_cast<int>(j) + 1}, a.call.args, a.out.text, a.out.ok});
   }
   return out;
 }

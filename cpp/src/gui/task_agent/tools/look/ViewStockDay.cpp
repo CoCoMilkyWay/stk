@@ -67,7 +67,9 @@ std::string StockDayRes::text() const {
   return s;
 }
 
-ToolOut ViewStockDay(const Call &c, const ViewEnv &env, Engine::FactorFlow &F) {
+ToolOut ViewStockDay(const Call &c, Bay &bay) {
+  const ViewEnv &env = bay.env;
+  Engine::FactorFlow &F = bay.flow;
   const int seg = env.fsc.ft->seg;
   if (seg == 1)
     return Fail("日层每天只有一行, 看个股用 view_stock_days");

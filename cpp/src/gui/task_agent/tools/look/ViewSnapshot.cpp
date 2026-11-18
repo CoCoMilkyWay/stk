@@ -42,7 +42,9 @@ std::string SnapshotRes::text() const {
   return s + tbl.str();
 }
 
-ToolOut ViewSnapshot(const Call &c, const ViewEnv &env, Engine::FactorFlow &F) {
+ToolOut ViewSnapshot(const Call &c, Bay &bay) {
+  const ViewEnv &env = bay.env;
+  Engine::FactorFlow &F = bay.flow;
   std::string err;
   if (!date_arg_ok(c, "date", err))
     return Fail(std::move(err));

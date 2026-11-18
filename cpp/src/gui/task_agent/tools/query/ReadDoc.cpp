@@ -57,7 +57,7 @@ std::string ReadRes::text() const {
   return o;
 }
 
-ToolOut ReadDoc(const Call &c, const std::atomic<bool> &) {
+ToolOut ReadDoc(const Call &c, Bay &) {
   const Lib &L = lib();
   std::string error;
   const std::optional<size_t> di = doc_index(L, c.str("id"), error);
