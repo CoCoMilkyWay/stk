@@ -28,7 +28,6 @@ using Clock = std::chrono::steady_clock;
 
 struct Bench::Impl : Rig {
   std::mt19937_64 rng{std::random_device{}()};
-  std::vector<catalog::PoolRow> pool_rows;
   // 输入: 每个工具各一份
   Tool tool = Tool::ViewLayers;
   Per<Tool, json> args;
@@ -231,34 +230,46 @@ float fill_lines(float keep) { return std::max(3.0f, ImGui::GetContentRegionAvai
 
 } // namespace
 
-void Bench::draw(SharedData &data, Tool tool, Scope &sc, const Gate &gate, bool gpu, bool blocked, bool pinned) {
+void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate &gate, bool gpu, bool blocked) {
   Impl &b = *impl_;
   if (b.tool != tool)
     b.tool = tool, b.json_err.clear();
   const bool held = b.held();
-  // ---- 作用域 (与 Mine 页同一份: 先由作用域行把持有期校到本层可搜的; 换了就重绑, 快照与工作台的调用清空) ----
-  scope_row(data, sc, b.pool_rows, b.lab, held || pinned, "作用域:");
-  ImGui::SameLine();
-  ImGui::TextDisabled("%s", pinned ? "· 与 Mine 页共用, 随其会话锁定" : "· 与 Mine 页共用");
-  if (!held && b.lab.scope() != sc && !catalog::holds(data, sc.level).empty()) {
+  // ---- 作用域 = Mine 页的那份 (不在这里改; 变了就重绑, 快照与工作台的调用清空); 不能用的只给警告 ----
+  const auto warn = [](const std::string &s) { wrapped(color(TaskStatus::Kind::Warn), s); };
+  const std::string label = "作用域 (Mine 页) " + catalog::label(sc) + ": ";
+  const std::vector<Choice> hs = catalog::holds(data, sc.level);
+  if (hs.empty() || std::none_of(hs.begin(), hs.end(), [&](const Choice &h) { return h.key == sc.hold; })) {
+    warn(label + (hs.empty() ? "该层无可搜持有期 (标签未建)" : "持有期在该层不可搜") + "; 到 Mine 页改");
+    return;
+  }
+  if (!held && b.lab.scope() != sc) {
     b.lab.bind(data, sc, false);
     if (!b.notes.loaded(false))
       b.notes.load(false);
     b.clear();
   }
   if (b.lab.scope() != sc) {
-    ImGui::TextDisabled("该作用域未就绪 (无可搜持有期), 或调用在跑");
+    warn(label + "与工作台在跑的调用所用的不同, 等它做完或取消");
     return;
   }
   const Context &ctx = b.lab.ctx();
+  if (ctx.days.empty())
+    warn(label + "评估期未就绪 (开放的叶与标签库没有共同的落盘日): 观察与回测不能跑");
+  if (ctx.leaves.empty())
+    warn(label + "没有开放的特征叶 (Mine 页特征页一个没勾, 或本层无叶)");
+  if (ctx.ops.empty())
+    warn(label + "没有开放的算子 (Mine 页算子页一个没勾)");
 
   // ---- 工作台: 第几轮 / 快照 / 假设板 / 门槛 ----
   ImGui::TextColored(kColHead, "工作台:");
   ImGui::SameLine();
   const std::string at = b.loaded ? "快照 = " + stamp_text(b.loaded->at.stamp) + (b.loaded->at.test ? " 自检" : "") + " 会话 " + RefText(b.loaded->at.at) + " 之前" : "空白";
   ImGui::TextDisabled("第 %d 轮 · %s · 假设 %zu · 门槛 mono ≥ %.2f, rIC ≥ %.3f (Config 页)", b.round(), at.c_str(), b.st.board.all().size(), gate.mono, gate.ric);
-  tip("会话类工具 (假设 / 判定 / 回测挂假设 / 提交 / 记录) 跑在快照上: 输入栏载入日志里的一次调用, 就取那段会话在它之前的时间线 (前几轮 + 本轮它之前的调用) 折出假设板,\n"
-      "工作台接着那一轮往下编号 (Run 的调用编号与日志里的相同, 可作 judge 的证据); 只在内存, 不落盘");
+  tip(("作用域 = Mine 页的 " + catalog::label(sc) + " · 评估期 " + ctx.window +
+       "\n会话类工具 (假设 / 判定 / 回测挂假设 / 提交 / 记录) 跑在快照上: 输入栏载入日志里的一次调用, 就取那段会话在它之前的时间线 (前几轮 + 本轮它之前的调用) 折出假设板,\n"
+       "工作台接着那一轮往下编号 (Run 的调用编号与日志里的相同, 可作 judge 的证据); 只在内存, 不落盘")
+          .c_str());
   ImGui::SameLine();
   ImGui::BeginDisabled(held);
   if (ImGui::SmallButton("清空"))

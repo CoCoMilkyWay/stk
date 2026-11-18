@@ -2018,7 +2018,7 @@ TaskHandle CreateAgentTask() {
     default:
       if (!s.bench)
         s.bench = std::make_unique<Bench>();
-      s.bench->draw(data, tool_of(idx), s.opt.sc, s.opt.gate, s.opt.gpu == 1, s.mine->live() || !s.mine->idle(), s.mine->held());
+      s.bench->draw(data, tool_of(idx), s.opt.sc, s.opt.gate, s.opt.gpu == 1, s.mine->live() || !s.mine->idle());
       break;
     }
     ImGui::EndChild();
