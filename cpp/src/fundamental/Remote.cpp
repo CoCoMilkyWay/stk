@@ -64,6 +64,8 @@ std::shared_ptr<arrow::Table> fetch_concept(tushare::Client &tu, Window w) {
   for (Ymd d = w.hi; d >= floor; d = misc::add_days(d, -1)) {
     at = misc::dense(d);
     boards = tu.query({"dc_index", {{"trade_date", at}, {"idx_type", kDcConcept}}, {"pct_change", "leading_pct", "total_mv", "turnover_rate", "up_num", "down_num"}});
+    if (!boards)
+      return nullptr;
     if (boards->num_rows() > 0)
       break;
   }
@@ -89,6 +91,8 @@ std::shared_ptr<arrow::Table> fetch_concept(tushare::Client &tu, Window w) {
   for (const std::size_t k : idx)
     qs.push_back({"dc_member", {{"trade_date", at}, {"ts_code", codes[k]}}, {}, kDcMemberPerMin});
   const std::vector<std::shared_ptr<arrow::Table>> members = tu.batch(qs);
+  if (std::ranges::any_of(members, [](const auto &m) { return !m; }))
+    return nullptr;
 
   arrow::StringBuilder b_td, b_sym, b_code, b_name;
   for (std::size_t i = 0; i < idx.size(); ++i) {
@@ -130,6 +134,8 @@ std::shared_ptr<arrow::Table> fetch_src(Clients &c, const Spec &, const Tu &src,
   }
   const std::vector<std::shared_ptr<arrow::Table>> parts = c.tu.batch(qs);
   assert(!parts.empty());
+  if (std::ranges::any_of(parts, [](const auto &p) { return !p; }))
+    return nullptr;
   auto joined = arrow::ConcatenateTables(parts);
   assert(joined.ok() && "fetch: 响应 schema 跨查询不一致");
   return std::move(joined).ValueUnsafe();
@@ -144,7 +150,7 @@ std::shared_ptr<arrow::Table> fetch(Clients &c, const Task &t) {
   assert((s.shape != Shape::Daily || (t.how == Write::Replace && t.w.lo == t.at && t.w.hi == t.at)) &&
          "fetch: Daily 一日一任务, 整日 Replace");
   std::shared_ptr<arrow::Table> tbl = std::visit([&](const auto &src) { return fetch_src(c, s, src, t); }, s.src);
-  return strip(s, std::move(tbl));
+  return tbl ? strip(s, std::move(tbl)) : nullptr;
 }
 
 std::shared_ptr<arrow::Schema> schema(Clients &c, const Spec &s, Window w) {

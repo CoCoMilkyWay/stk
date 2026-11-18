@@ -106,7 +106,7 @@ struct Session {
     stream.reset();
   }
 
-  // 返回的 yyjson_doc* 由调用方 yyjson_doc_free
+  // 返回的 yyjson_doc* 由调用方 yyjson_doc_free; HTTP 5xx → nullptr
   yyjson_doc *call(const tcp::resolver::results_type &ep, const std::string &token, const Query &q) {
     const std::string_view api_name = q.api;
     const std::string body = build_body(token, api_name, q.params);
@@ -149,6 +149,11 @@ struct Session {
       }
       if (!res.keep_alive())
         close();
+      if (res.result_int() >= 500) { // 服务端故障 (502 / 503 / 504), 重发无益: 交调用方跳过
+        close();
+        std::cerr << "\n[http] HTTP " << res.result_int() << " api=" << api_name << ", 跳过" << std::endl;
+        return nullptr;
+      }
 
       yyjson_doc *doc = yyjson_read(res.body().data(), res.body().size(), 0);
       if (!doc) {
@@ -257,6 +262,8 @@ Client::Client() : Client(kToken) {}
 std::shared_ptr<arrow::Table> Client::query(const Query &q) {
   Session s;
   yyjson_doc *doc = s.call(resolve_endpoints(), token_, q);
+  if (!doc)
+    return nullptr;
   auto t = to_table(doc, q.num);
   yyjson_doc_free(doc);
   return t;
@@ -275,9 +282,10 @@ std::vector<std::shared_ptr<arrow::Table>> Client::batch(const std::vector<Query
     if (!s)
       s = std::make_unique<Session>();
     const Query &q = qs[static_cast<std::size_t>(i)];
-    yyjson_doc *doc = s->call(ep, token_, q);
-    out[static_cast<std::size_t>(i)] = to_table(doc, q.num);
-    yyjson_doc_free(doc);
+    if (yyjson_doc *doc = s->call(ep, token_, q)) {
+      out[static_cast<std::size_t>(i)] = to_table(doc, q.num);
+      yyjson_doc_free(doc);
+    }
     if (tick)
       tick(done.fetch_add(1, std::memory_order_relaxed) + 1);
   });

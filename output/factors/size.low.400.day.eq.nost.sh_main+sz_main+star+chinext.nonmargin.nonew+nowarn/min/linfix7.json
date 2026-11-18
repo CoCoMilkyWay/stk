@@ -1,0 +1,12 @@
+{
+ "type": "alpha",
+ "name_cn": "定权搜权合成",
+ "expr": "CsRank(CsLinRankFix(bar.5m.ep_ttm_cs, bar.5m.bp_mrq_cs, bar.1d.roe_ttm_cs, bar.1d.dy_ttm_cs, bar.5m.mcap_cs, bar.5m.ma_dev_25d, bar.1m.close_cs, w))",
+ "note": "H3 基本面截面秩按预测力加权 (CsLinRankRoll 滚动岭 / CsLinRankFix 搜权) 可修复等权驼峰 · 改动: 新起, 与 linroll7 同特征集, 只把滚动回归换成 CsLinRankFix 裸 w 交 Search; 检验 CsLinRankFix 的搜权功能是否正常, 及静态最优权与滚动权的差距 · 预期: Search 给出若干组非等权且方向合理的 w (小市值/反转/低价为正贡献), mono 相对等权 (R4#3 的 -0.28) 明显改善; 与 linroll7 持平或略低 (静态权不随日适应) · 功能块: `CsLinRankFix(bar.5m.ep_ttm_cs, bar.5m.bp_mrq_cs, bar.1d.roe_ttm_cs, bar.1d.dy_ttm_cs, bar.5m.mcap_cs, bar.5m.ma_dev_25d, bar.1m.close_cs, w)` 七个慢变量截面秩的定权线性合成, 权重交搜索;",
+ "weights": [
+  {"hold":2001,"sign":-1,"expr":"CsRank(CsLinRankFix(bar.5m.ep_ttm_cs, bar.5m.bp_mrq_cs, bar.1d.roe_ttm_cs, bar.1d.dy_ttm_cs, bar.5m.mcap_cs, bar.5m.ma_dev_25d, bar.1m.close_cs, w=[-0.542166, -0.505954, 0.0575019, -0.89841, 0.583819, 0.819006, 0.711182]))"}
+ ],
+ "search": [
+  {"hold":2001,"start_date":"2015-01-06","end_date":"2026-11-12","days":2880}
+ ]
+}

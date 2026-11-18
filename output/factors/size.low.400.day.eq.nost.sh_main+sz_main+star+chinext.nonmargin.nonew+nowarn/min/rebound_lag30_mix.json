@@ -1,0 +1,12 @@
+{
+ "type": "alpha",
+ "name_cn": "反弹三十分合成",
+ "expr": "CsRank(CsLinRankFix(bar.1m.rebound_intra, bar.1m.ret_lag30, w))",
+ "note": "H3 离日内低点的反弹幅度是比 30 分钟收益更强的 T+1C 反转信号; 反转在特定票型上更强, 基本面只作条件不加项 · 改动: 改结构 (相对 rebound_intra_rev), 把 ret_lag30 作为第二元加入 CsLinRankFix, 权交搜索. R6#3 看到 rebound 长端极值亏钱而 ret_lag30 极端端不亏, 检验两者合成能否修长端同时保 mono. · 预期: mono 保持 ≥0.95, 多空高于 rebound_intra_rev (长端落刀被 ret_lag30 权重对冲); 若搜索给两元都是负权 (低反弹+低收益 = 超跌) 则方向符合机制. · 功能块: `bar.1m.rebound_intra` 离日内低点涨幅, 贴地未弹度; `bar.1m.ret_lag30` 近30分钟收益, 短窗反转; `CsLinRankFix(bar.1m.rebound_intra, bar.1m.ret_lag30, w)` 两路反转特征的线性合成;",
+ "weights": [
+  {"hold":2001,"sign":1,"expr":"CsRank(CsLinRankFix(bar.1m.rebound_intra, bar.1m.ret_lag30, w=[-0.924435, -0.758846]))"}
+ ],
+ "search": [
+  {"hold":2001,"start_date":"2024-11-13","end_date":"2026-11-12","days":485}
+ ]
+}

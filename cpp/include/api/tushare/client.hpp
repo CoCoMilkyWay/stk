@@ -48,9 +48,9 @@ public:
   // 响应 data.{fields, items} → arrow::Table (0 行 → 0 行表, schema 仍完整):
   //   num 内的列 → double, 其余 → string. 不按数据推断: 全 null 列无从推断, 同一列会跨调用漂移.
   //   num 声明的列必须出现在响应 fields 里 (拼错 / API 改名立刻暴露).
-  // 网络瞬抖 / 频率超限 (40203) 共用重试预算; 其它 code != 0 / 解析失败 → assert.
+  // 网络瞬抖 / 频率超限 (40203) 共用重试预算; HTTP 5xx (服务端故障) 不重发 → nullptr; 其它 code != 0 / 解析失败 → assert.
   std::shared_ptr<arrow::Table> query(const Query &q);
-  // 一批 query 至多 kWidth 路并发 (每工作线程复用一条 HTTP/1.1 keep-alive 连接), 结果按 qs 原序; tick(已完成条数) 每完成一条调一次
+  // 一批 query 至多 kWidth 路并发 (每工作线程复用一条 HTTP/1.1 keep-alive 连接), 结果按 qs 原序 (5xx 的位置为 nullptr); tick(已完成条数) 每完成一条调一次
   std::vector<std::shared_ptr<arrow::Table>> batch(const std::vector<Query> &qs, const std::function<void(std::size_t)> &tick = {});
 
 private:
