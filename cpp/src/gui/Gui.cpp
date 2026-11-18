@@ -99,6 +99,7 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
       DrawRowStatus(data, t, -1);
       if (opened) {
         // path = 当前所在的各层组 (各为子行名的前缀, 含末尾 '/'); 其前 shown 层已展开, 其后折起 (子行不画)
+        // 组行与子行同格式 ("  ▸ 组名" 对 "  > 叶名", 与同级对齐), 点击切折叠; 展开态存窗口状态表
         std::vector<std::string_view> path;
         size_t shown = 0;
         for (int j = 0; j < (int)t.tabs.size(); j++) {
@@ -111,7 +112,7 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
             ++k;
           for (; path.size() > k; path.pop_back())
             if (shown == path.size())
-              ImGui::TreePop(), --shown;
+              ImGui::Unindent(), --shown;
           while (path.size() < groups.size()) {
             const bool visible = shown == path.size();
             const size_t from = path.empty() ? 0 : path.back().size();
@@ -122,16 +123,16 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
             int hi = j;
             while (hi < (int)t.tabs.size() && std::string_view(t.tabs[hi]).starts_with(g))
               ++hi;
-            const std::string label = std::string(g.substr(from, g.size() - 1 - from)) + "###TaskGroup_" + std::to_string(i) + "_" + std::to_string(j);
-            ImGuiTreeNodeFlags gf = ImGuiTreeNodeFlags_SpanAvailWidth;
-            if (path.size() > 1)
-              gf |= ImGuiTreeNodeFlags_DefaultOpen;
-            if (tree.selected == i && t.selected_tab >= j && t.selected_tab < hi)
-              gf |= ImGuiTreeNodeFlags_Selected;
-            const bool open = ImGui::TreeNodeEx(label.c_str(), gf);
+            ImGuiStorage *st = ImGui::GetStateStorage();
+            const ImGuiID key = ImGui::GetID(("TaskGroupOpen_" + std::to_string(i) + "_" + std::to_string(j)).c_str());
+            const bool open = st->GetBool(key, path.size() > 1);
+            char group_label[256];
+            snprintf(group_label, sizeof(group_label), "  %s %.*s###TaskGroup_%d_%d", open ? "▾" : "▸", (int)(g.size() - 1 - from), g.data() + from, i, j);
+            if (ImGui::Selectable(group_label, tree.selected == i && t.selected_tab >= j && t.selected_tab < hi))
+              st->SetBool(key, !open);
             DrawStatus(SpanStatus(data, t, j, hi));
             if (open)
-              ++shown;
+              ImGui::Indent(), ++shown;
           }
           if (shown != path.size())
             continue;
@@ -153,7 +154,7 @@ void DrawGUILayout(SharedData &data, TaskTree &tree) {
           DrawRowStatus(data, t, j);
         }
         for (; shown > 0; --shown)
-          ImGui::TreePop();
+          ImGui::Unindent();
         ImGui::TreePop();
       }
     }
