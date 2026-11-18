@@ -9,7 +9,6 @@
 
 #include "gui/task_agent/tools/Kit.hpp"
 
-#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
