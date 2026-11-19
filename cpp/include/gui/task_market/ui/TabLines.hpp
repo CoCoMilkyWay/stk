@@ -155,7 +155,6 @@ struct CtaState {
   bool boxing = false;   // 价格图上框选进行中
   XZoom zoom;            // 净值 / 回撤图横向框选 (两图同画)
   int cursor = -1;       // 光标 (三图上可拖的竖线) 所在有效根 (−1 = 未放; 换标的重放)
-  uint8_t path = 0;      // 参数轨迹矩阵各格开关 (位 = 行 · cta::kAxes + 轴; 默认全关)
   bool nav_log = true;   // 净值图 y 轴: log / 绝对
 };
 

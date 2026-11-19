@@ -392,28 +392,39 @@ inline long day_period(misc::Ymd y, int u) {
     return (static_cast<long>(misc::to_days(y).time_since_epoch().count()) + 3) / 7;
   return u == kTickMonth ? y / 100 : y / 10000;
 }
-inline void day_locator(ImPlotTicker &t, const ImPlotRange &r, float px, bool, ImPlotFormatter, void *ud) {
-  const DayAxis &a = *static_cast<const DayAxis *>(ud);
+// 日轴 a 在视野 r (宽 px 像素) 下选的档 (DayTick, 选法见上) + 视野内的日 [d0, d1); 档 u 下日 d 是否落刻度 = day_tick_on
+struct DayTicks {
+  int u = kTickDay;
+  size_t d0 = 0, d1 = 0;
+};
+inline bool day_tick_on(const DayAxis &a, size_t d, int u) { return u == kTickDay || d == 0 || day_period(a.dates[d - 1], u) != day_period(a.dates[d], u); }
+inline float day_label_w(int u) {
+  constexpr const char *kSample[] = {"00/00/00", "00/00/00", "0000/00", "0000"};
+  return ImGui::CalcTextSize(kSample[u]).x * kDayLabelGap;
+}
+inline DayTicks day_ticks(const DayAxis &a, const ImPlotRange &r, float px) {
   assert(a.xs.empty() || a.xs.size() == a.dates.size());
   const auto ix = std::views::iota(size_t{0}, a.dates.size());
-  const size_t d0 = static_cast<size_t>(std::ranges::partition_point(ix, [&](size_t d) { return a.x(d) < r.Min; }) - ix.begin());
-  const size_t d1 = static_cast<size_t>(std::ranges::partition_point(ix, [&](size_t d) { return a.x(d) <= r.Max; }) - ix.begin());
-  const auto on = [&](size_t d, int u) { return u == kTickDay || d == 0 || day_period(a.dates[d - 1], u) != day_period(a.dates[d], u); };
-  constexpr const char *kSample[] = {"00/00/00", "00/00/00", "0000/00", "0000"};
-  const auto label_w = [&](int u) { return ImGui::CalcTextSize(kSample[u]).x * kDayLabelGap; };
-  int u = kTickDay;
-  for (; u < kTickYear; ++u) {
+  DayTicks o;
+  o.d0 = static_cast<size_t>(std::ranges::partition_point(ix, [&](size_t d) { return a.x(d) < r.Min; }) - ix.begin());
+  o.d1 = static_cast<size_t>(std::ranges::partition_point(ix, [&](size_t d) { return a.x(d) <= r.Max; }) - ix.begin());
+  for (; o.u < kTickYear; ++o.u) {
     size_t n = 0;
-    for (size_t d = d0; d < d1 && n <= kDayTickMax; ++d)
-      n += on(d, u);
-    if (n <= kDayTickMax && static_cast<double>(n) * label_w(u) <= px)
+    for (size_t d = o.d0; d < o.d1 && n <= kDayTickMax; ++d)
+      n += day_tick_on(a, d, o.u);
+    if (n <= kDayTickMax && static_cast<double>(n) * day_label_w(o.u) <= px)
       break;
   }
-  const double ppx = px / (r.Max - r.Min), lw = label_w(u);
+  return o;
+}
+inline void day_locator(ImPlotTicker &t, const ImPlotRange &r, float px, bool, ImPlotFormatter, void *ud) {
+  const DayAxis &a = *static_cast<const DayAxis *>(ud);
+  const auto [u, d0, d1] = day_ticks(a, r, px);
+  const double ppx = px / (r.Max - r.Min), lw = day_label_w(u);
   double last = -HUGE_VAL; // 上个刻度的像素 x
   char s[16];
   for (size_t d = d0; d < d1; ++d) {
-    if (!on(d, u))
+    if (!day_tick_on(a, d, u))
       continue;
     const double p = (a.x(d) - r.Min) * ppx;
     if (p - last < lw)

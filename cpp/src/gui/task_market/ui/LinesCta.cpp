@@ -35,7 +35,6 @@ constexpr ImVec4 kFollowSellCol(0.25f, 0.70f, 0.95f, 1.0f);                     
 constexpr ImVec4 kCostCol[] = {{0.35f, 0.60f, 0.95f, 1.0f}, {0.70f, 0.50f, 0.95f, 1.0f}, {0.95f, 0.65f, 0.25f, 1.0f}, {0.30f, 0.80f, 0.75f, 1.0f}, {0.95f, 0.40f, 0.55f, 1.0f}};
 static_assert(std::size(kCostCol) == cta::kNC, "成本带色");
 constexpr float kCostA = 0.22f, kCostHotA = 0.6f;
-constexpr float kBandA0 = 0.8f, kBandA1 = 0.06f; // 档线不透明度: 同极性离收盘最近 / 最远那条
 
 // 有效根 i 所在日 / 槽
 misc::Ymd day_of(const CtaResult &r, size_t i) { return r.dates[r.se->t[i] / kS]; }
@@ -142,7 +141,7 @@ std::vector<size_t> sample(size_t n, double x0, double x1, size_t step) {
 // 有效根 i 所在日 (下标同 Track::days)
 size_t dix(const CtaResult &r, size_t i) { return r.se->t[i] / kS - r.se->t[0] / kS; }
 
-// ---- 三图: 上 = 收盘 (按仓位着色: 多 → kUp / 空 → kDn, 越满越纯) + 中线 + 档线 (每份一条: 减仓线 / 跟随买入线 / 跟随卖出线) + 买 / 卖标记 (逐根时才画)
+// ---- 三图: 上 = 收盘 (按仓位着色: 多 → kUp / 空 → kDn, 越满越纯) + 中线 + 档线 (每份一条: 减仓线 / 跟随买入线 / 跟随卖出线) + 买 / 卖标记 (横轴刻度进到日档才画)
 //        + PB Band (同 VAL: 偏离 v / q_j 乘本图当日末根收盘, 每日一点在该日末根; 填色 + 各档线共一个图例项, 默认关);
 //      中 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换); 下 = 策略 / 持有回撤 (%); 底 = 区间条.
 //      窄边框, x / y 刻度标签都画在图区内 (x 只回撤图标, 三图同一套刻度线; y 在各图右边), 三图 + 区间条绘图区同宽;
@@ -197,7 +196,10 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
     wm[k] /= static_cast<double>(at[k + 1] - at[k]);
   }
 
-  // 买 / 卖: 视野内逐根计次; 标记只在逐根 (step = 1) 时画, 一根一个
+  // 买 / 卖: 视野内逐根计次; 横轴刻度进到日档 (同 day_locator 的选档) 即画标记, 一根一个 (在该根的 x)
+  XFmt fmt{&r, c.x1 - c.x0 < 3.0 * kS};
+  DayAxis ax{xd.dates, 1.0, 0.0, xd.xs, x_formatter, &fmt};
+  const bool daily = day_ticks(ax, {c.x0, c.x1}, size.x).u == kTickDay;
   const size_t lo = static_cast<size_t>(std::clamp(std::ceil(c.x0), 0.0, static_cast<double>(n - 1)));
   const size_t hi = static_cast<size_t>(std::clamp(std::floor(c.x1), 0.0, static_cast<double>(n - 1)));
   const auto dw = [&](size_t i) { return w[i] - (i ? w[i - 1] : 0.0f); };
@@ -208,7 +210,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
     if (std::fabs(d) <= 1e-6f)
       continue;
     ++(d > 0 ? buys : sells);
-    if (step == 1)
+    if (daily)
       marks.push_back(i);
   }
 
@@ -219,7 +221,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
   if (step == 1)
     std::snprintf(gran, sizeof(gran), "逐根, 买 %d 次 / 卖 %d 次", buys, sells);
   else
-    std::snprintf(gran, sizeof(gran), "每点 %zu 根 (放大到逐根才标买卖), 买 %d 次 / 卖 %d 次", step, buys, sells);
+    std::snprintf(gran, sizeof(gran), daily ? "每点 %zu 根, 买 %d 次 / 卖 %d 次" : "每点 %zu 根 (放大到日刻度才标买卖), 买 %d 次 / 卖 %d 次", step, buys, sells);
   ImGui::TextColored(kHead, "%s", name ? name : "");
   ImGui::SameLine();
   ImGui::TextDisabled("%s  ·  窗 %d / %d / %d 年  ·  %s ~ %s  ·  %s", model.c_str(), r.spec.band.win, r.spec.reduce.win, r.spec.follow.win,
@@ -227,8 +229,6 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
 
   const ImGuiStyle &st = ImGui::GetStyle();
   const float ph = ImGui::GetContentRegionAvail().y - 3 * st.ItemSpacing.y - kRangeH, h1 = std::floor(ph * kPriceFrac), h3 = std::floor(ph * kDdFrac);
-  XFmt fmt{&r, c.x1 - c.x0 < 3.0 * kS};
-  DayAxis ax{xd.dates, 1.0, 0.0, xd.xs, x_formatter, &fmt};
   // PB Band: 有根的日各一点 (该日末根), 价 = 末根收盘 × v / q_j (同 VAL 断开: 轴上无该日 / v ≤ 0 / 窗内有无解点 / q_j ≤ 0 = NaN); 填色只画各档全有限的连续段
   const size_t nk = xd.dates.size();
   std::vector<double> pb_x(nk), pb_y[kBandQ];
@@ -312,25 +312,29 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
         ImPlot::PlotLine(pb_lb, pb_x.data(), pb_y[q].data(), static_cast<int>(nk), ImPlotLineFlags_SkipNaN);
       }
     }
-    { // 档线 (Cuts::rungs_at): 一份一条连续线 (恒为份数条), 段色按段末的类别: 减仓线绿 / 跟随买入线红 / 跟随卖出线蓝; 每点在同色里按离收盘的远近排名, 越近越浓 (逐段画);
-      //   图例只管三色的显隐
+    { // 档线 (Cuts::rungs_at) = 生效的线: 一份一条连续线 (恒为份数条), 段色按段末的类别: 减仓线绿 / 跟随买入线红 / 跟随卖出线蓝 (同一不透明度);
+      //   悬停: 鼠标处离它最近的那份 (kRungHit px 内) 的线 (三类各段) 一起高亮, 提示该份; 图例管三色的显隐
+      //   + 预期卖出线 (静态档线, 未生效): 第 j 条 = 中线 − j × band = 第 j 份的预期, 更淡, 不进 fit, 不参与高亮; 独立图例项, 默认关
       static const char *const kName[] = {"减仓线", "跟随买入线", "跟随卖出线"}; // 下标 = 类别 (cta::kReduce / kFollowBuy / kFollowSell)
       const ImVec4 kCol[] = {kDn, kUp, kFollowSellCol};
+      constexpr float kRungHit = 6.0f, kRungA = 0.8f;
       const size_t U = static_cast<size_t>(tr.cut.units);
       const size_t K = at.size();
-      std::vector<float> p(U * K, cta::kNaN); // [份][点] 价
-      std::vector<uint8_t> pol(p.size(), 0);  // [份][点] 类别
-      std::vector<uint8_t> rk(p.size(), 0);   // [份][点] 同类别里离收盘的名次 (0 = 最近)
-      for (size_t k = 0; k < K; ++k) {
-        tr.cut.rungs_at(at[k], [&](int j, float v, uint8_t type) { p[static_cast<size_t>(j) * K + k] = v, pol[static_cast<size_t>(j) * K + k] = type; });
+      { // 预期卖出线
+        const std::vector<double> hb = take(tr.cut.h);
+        std::vector<double> ey(K);
+        ImPlot::HideNextItem(true, ImPlotCond_Once);
         for (size_t j = 0; j < U; ++j) {
-          const float dj = std::fabs(p[j * K + k] - static_cast<float>(close[k]));
-          for (size_t i = 0; i < U; ++i) {
-            const float di = std::fabs(p[i * K + k] - static_cast<float>(close[k]));
-            rk[j * K + k] += pol[i * K + k] == pol[j * K + k] && (di < dj || (di == dj && i < j)); // NaN 比较恒假
-          }
+          for (size_t k = 0; k < K; ++k)
+            ey[k] = mid[k] - tr.cut.s * static_cast<double>(j) * hb[k];
+          ImPlot::SetNextLineStyle(ImVec4(kDn.x, kDn.y, kDn.z, 0.1f), 1.0f);
+          ImPlot::PlotLine("预期卖出线", xs.data(), ey.data(), static_cast<int>(K), ImPlotItemFlags_NoFit);
         }
       }
+      std::vector<float> p(U * K, cta::kNaN); // [份][点] 价
+      std::vector<uint8_t> pol(p.size(), 0);  // [份][点] 类别
+      for (size_t k = 0; k < K; ++k)
+        tr.cut.rungs_at(at[k], [&](int j, float v, uint8_t type) { p[static_cast<size_t>(j) * K + k] = v, pol[static_cast<size_t>(j) * K + k] = type; });
       bool show[std::size(kName)];
       for (size_t a = 0; a < std::size(kName); ++a) {
         ImPlot::SetNextLineStyle(kCol[a]);
@@ -338,18 +342,38 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
         const ImPlotItem *it = ImPlot::GetItem(kName[a]);
         show[a] = !it || it->Show;
       }
+      int hot = -1; // 悬停的份
+      size_t hk = 0;
+      if (ImPlot::IsPlotHovered() && K) {
+        hk = std::min(K - 1, static_cast<size_t>(std::ranges::lower_bound(xs, ImPlot::GetPlotMousePos().x) - xs.begin()));
+        const float my = ImGui::GetMousePos().y;
+        float best = kRungHit;
+        for (size_t j = 0; j < U; ++j)
+          if (const size_t e = j * K + hk; !std::isnan(p[e]) && show[pol[e]])
+            if (const float dy = std::fabs(ImPlot::PlotToPixels(xs[hk], p[e]).y - my); dy < best)
+              best = dy, hot = static_cast<int>(j);
+      }
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       ImPlot::PushPlotClipRect();
-      for (size_t j = 0; j < U; ++j)
+      const auto draw = [&](size_t j, bool hl) {
         for (size_t k = 0; k + 1 < K; ++k) {
           const size_t e = j * K + k + 1;
           const float y0 = p[e - 1], y1 = p[e];
           if (std::isnan(y0) || std::isnan(y1) || !show[pol[e]])
             continue;
           ImVec4 col = kCol[pol[e]];
-          col.w = kBandA0 + (kBandA1 - kBandA0) * static_cast<float>(rk[e]) / static_cast<float>(std::max<size_t>(1, U - 1));
-          dl->AddLine(ImPlot::PlotToPixels(xs[k], y0), ImPlot::PlotToPixels(xs[k + 1], y1), ImGui::GetColorU32(col), 1.0f);
+          col.w = hl ? 1.0f : kRungA;
+          dl->AddLine(ImPlot::PlotToPixels(xs[k], y0), ImPlot::PlotToPixels(xs[k + 1], y1), ImGui::GetColorU32(col), hl ? 2.5f : 1.0f);
         }
+      };
+      for (size_t j = 0; j < U; ++j)
+        if (static_cast<int>(j) != hot)
+          draw(j, false);
+      if (hot >= 0) {
+        const size_t j = static_cast<size_t>(hot), e = j * K + hk;
+        draw(j, true);
+        tip("第 %zu 份 (自上而下, 0 起): %s %.4g\n其预期卖出线 = 中线 − %zu × band", j, kName[pol[e]], p[e], j);
+      }
       ImPlot::PopPlotClipRect();
     }
     ImPlot::SetNextLineStyle(kMidCol, 1.2f);
@@ -615,11 +639,9 @@ std::string grid_note(const cta::Kind &k, int n) {
   return "参数网格 " + std::to_string(k.na) + " 维: " + names + " = " + counts + (k.na > 1 ? " = " + std::to_string(prod) : "") + " 个组合";
 }
 
-// ---- 参数轨迹: 矩阵 3 行 (band / 减仓 / 跟随) × 各自的参数, 一格一个开关 (默认全关), 开了在格里画该参数逐日的轨迹:
-//      实线 = 所用 (阻尼后; 日内过渡 = 每日首根自上一日的值斜到末根的当日值), 淡线 = 曲面最高点 (跳 = 岭回归选参不稳); band 行 = band ÷ 当日收盘 (%);
+// ---- 参数轨迹: 一张图, 各参数逐日 ÷ 各自首个有值日的值 (都从 1 起, log 轴; 只看相对变化): 实线 = 阻尼后所用, 淡线 = 曲面最高点 (跳 = 岭回归选参不稳);
+//      band 行 = band ÷ 首个有值日的 band; 图例矩阵 (同 NAV): 行 = band / 减仓 / 跟随, 列 = 各自的参数, 格 = 该参数的线 (色块 + 光标处的值; 默认全关);
 //      x 链到左侧三图 (同一视野), 未选参日断开; 窄边框, 刻度画在图内; 光标 = 橙色竖线; 悬停看当日值 ----
-constexpr float kPathH = 70.0f; // 一格轨迹图高
-
 void path(CtaState &c, const CtaResult &r) {
   const cta::Track &tr = r.tr;
   const cta::Series &se = *r.se;
@@ -629,103 +651,138 @@ void path(CtaState &c, const CtaResult &r) {
   for (size_t d = 0; d < tr.days.size(); ++d)
     if (tr.days.off[d] < tr.days.off[d + 1])
       xs.push_back(static_cast<double>(tr.days.off[d])), xs.push_back(static_cast<double>(tr.days.off[d + 1] - 1)), ds.push_back(d);
-  XFmt fmt{&r, c.x1 - c.x0 < 3.0 * kS};
-  const XDays xd = x_days(r);
-  DayAxis ax{xd.dates, 1.0, 0.0, xd.xs, x_formatter, &fmt};
-  // 格里的图: 所用 use / 最高点 raw (空 = 不画), [日两点]; hover(日) → 悬停说明
-  const auto plot = [&](const char *id, const std::vector<double> &use, const std::vector<double> &raw, auto hover) {
-    ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 1));
-    if (ImPlot::BeginPlot(id, ImVec2(ImGui::GetContentRegionAvail().x, kPathH), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend)) {
-      ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoTickLabels);
-      ImPlot::SetupAxisLinks(ImAxis_X1, &c.x0, &c.x1);
-      setup_day_axis(ax);
-      ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit | ImPlotAxisFlags_NoTickLabels);
-      const ImVec4 col = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-      if (!raw.empty()) {
-        ImPlot::SetNextLineStyle(ImVec4(col.x, col.y, col.z, 0.35f), 1.0f);
-        ImPlot::PlotLine("##raw", xs.data(), raw.data(), static_cast<int>(xs.size()));
-      }
-      ImPlot::SetNextLineStyle(col, 1.5f);
-      ImPlot::PlotLine("##use", xs.data(), use.data(), static_cast<int>(xs.size()));
-      if (c.cursor >= 0) {
-        const double x = c.cursor;
-        ImPlot::SetNextLineStyle(kPinCol, 2.0f);
-        ImPlot::PlotInfLines("##pin", &x, 1);
-      }
-      y_ticks_inside();
-      if (ImPlot::IsPlotHovered()) {
-        const size_t i = static_cast<size_t>(std::clamp(std::lround(ImPlot::GetPlotMousePos().x), 0L, static_cast<long>(n - 1)));
-        tip("%s", (misc::dash(day_of(r, i)) + "\n" + hover(dix(r, i))).c_str());
-      }
-      ImPlot::EndPlot();
-    }
-    ImPlot::PopStyleVar();
+  const size_t dc = dix(r, c.cursor >= 0 ? static_cast<size_t>(c.cursor) : n - 1); // 光标所在日 (未放 = 末根)
+  const auto close_of = [&](size_t d) { return se.c[tr.days.off[d + 1] - 1]; };    // 日 d 的末根收盘 (d 须有根)
+  // 一条线 = 一个模型的一个参数: item 名 / 轴名 / 说明 / [日两点] 所用 / 最高点 (空 = 无) ÷ 首个有值日的值 / 光标日的值
+  struct Line {
+    std::string id;
+    const char *axis, *tip;
+    std::vector<double> use, raw;
+    std::string now;
   };
-  // 一格的开关 (位 bit); 开着 = 格里画图
-  const auto toggle = [&](int bit, const char *label, const char *note) {
-    bool on = c.path >> bit & 1;
-    ImGui::PushID(bit);
-    if (ImGui::Selectable(label, &on))
-      c.path = static_cast<uint8_t>(on ? c.path | 1u << bit : c.path & ~(1u << bit));
-    if (ImGui::IsItemHovered())
-      tip("%s\n点击开 / 收这格的轨迹", note);
-    ImGui::PopID();
-    return on;
-  };
-  if (!ImGui::BeginTable("##cta_path", 1 + static_cast<int>(cta::kAxes), ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame))
-    return;
-  ImGui::TableSetupColumn("##model", ImGuiTableColumnFlags_WidthFixed);
-  for (size_t a = 0; a < cta::kAxes; ++a)
-    ImGui::TableSetupColumn("##axis", ImGuiTableColumnFlags_WidthStretch);
-  // band 行: band ÷ 当日末根收盘 (%); 首根 = 上一日的值 (日内过渡)
-  ImGui::TableNextRow();
-  ImGui::TableNextColumn();
-  ImGui::TextUnformatted((std::string("band ") + cta::Band::kinds[r.spec.band.kind].name).c_str());
-  ImGui::TableNextColumn();
-  if (toggle(0, "band / 价", "band ÷ 当日收盘 (%): 档线间距相对价格的大小 (人选, 不调; 日内自上一日的值线性过渡)")) {
-    std::vector<double> y(xs.size());
-    for (size_t k = 0; k < ds.size(); ++k) {
-      const size_t d = ds[k];
-      const double cl = se.c[tr.days.off[d + 1] - 1], b0 = d && std::isfinite(tr.band[d - 1]) ? tr.band[d - 1] : tr.band[d];
-      y[2 * k] = b0 / cl * 100, y[2 * k + 1] = tr.band[d] / cl * 100;
+  constexpr size_t kRows = 3; // band / 减仓 / 跟随
+  std::vector<Line> ls[kRows];
+  std::string names[kRows];
+  names[0] = std::string("band ") + cta::Band::kinds[r.spec.band.kind].name;
+  {
+    Line l{"band###cta_path_band", "band", "band ÷ 首个有值日的 band (档线间距的相对变化; 人选, 不调)", std::vector<double>(xs.size(), cta::kNaN), {}, "-"};
+    double v0 = cta::kNaN;
+    for (size_t j = 0; j < ds.size(); ++j)
+      if (const double b = tr.band[ds[j]]; std::isfinite(b)) {
+        v0 = std::isnan(v0) ? b : v0;
+        l.use[2 * j] = l.use[2 * j + 1] = b / v0;
+      }
+    if (std::isfinite(tr.band[dc]) && tr.days.off[dc] < tr.days.off[dc + 1]) {
+      char b[32];
+      std::snprintf(b, sizeof(b), "%.2f%%", tr.band[dc] / close_of(dc) * 100);
+      l.now = b;
     }
-    plot("##band", y, {}, [&](size_t d) {
-      char b[64];
-      std::snprintf(b, sizeof(b), "band = %.4g (收盘的 %.2f%%)", tr.band[d], tr.band[d] / se.c[tr.days.off[d + 1] - 1] * 100);
-      return std::string(b);
-    });
+    ls[0].push_back(std::move(l));
   }
-  // 减仓 / 跟随行: 各轴一格
   for (size_t k = 0; k < 2; ++k) {
     const cta::Path &p = path_of(r, k);
     const cta::Kind &kd = *p.grid.kind;
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::TextUnformatted((std::string(kPathName[k]) + " " + kd.name).c_str());
-    if (!kd.na) {
-      ImGui::TableNextColumn();
-      ImGui::TextDisabled("无参数");
-    }
+    names[1 + k] = std::string(kPathName[k]) + " " + kd.name;
+    const size_t first = static_cast<size_t>(std::ranges::find(p.sel, 1) - p.sel.begin());
     for (size_t a = 0; a < kd.na; ++a) {
-      ImGui::TableNextColumn();
       const cta::Axis &x = kd.ax[a];
-      if (!toggle(static_cast<int>((1 + k) * cta::kAxes + a), x.name, x.tip))
-        continue;
-      std::vector<double> use(xs.size(), cta::kNaN), raw(xs.size(), cta::kNaN);
-      for (size_t j = 0; j < ds.size(); ++j)
-        if (const size_t d = ds[j]; p.sel[d])
-          use[2 * j] = (d && p.sel[d - 1] ? p.use[d - 1] : p.use[d])[a], use[2 * j + 1] = p.use[d][a], raw[2 * j] = raw[2 * j + 1] = p.raw[d][a];
-      const std::string id = std::string("##") + kPathName[k] + x.name;
-      plot(id.c_str(), use, raw, [&](size_t d) {
-        if (!p.sel[d])
-          return std::string(kPathName[k]) + " 未选参" + (k ? "" : " (买入持有)");
-        char b[96];
-        std::snprintf(b, sizeof(b), "%s: 所用 (阻尼后) %.3g / 最高点 %.3g%s", x.name, p.use[d][a], p.raw[d][a], x.day ? " 日" : "");
-        return std::string(b);
-      });
+      Line l{std::string(kPathName[k]) + " " + x.name + "###cta_path_" + std::to_string(k) + "_" + std::to_string(a), x.name, x.tip,
+             std::vector<double>(xs.size(), cta::kNaN), std::vector<double>(xs.size(), cta::kNaN), "-"};
+      if (first < p.sel.size())
+        for (size_t j = 0; j < ds.size(); ++j)
+          if (const size_t d = ds[j]; p.sel[d])
+            l.use[2 * j] = l.use[2 * j + 1] = p.use[d][a] / p.use[first][a], l.raw[2 * j] = l.raw[2 * j + 1] = p.raw[d][a] / p.use[first][a];
+      if (p.sel[dc]) {
+        char b[32];
+        std::snprintf(b, sizeof(b), "%.3g%s", p.use[dc][a], x.day ? "日" : "");
+        l.now = b;
+      }
+      ls[1 + k].push_back(std::move(l));
     }
   }
-  ImGui::EndTable();
+  if (std::ranges::find(tr.reduce.sel, 1) == tr.reduce.sel.end()) {
+    ImGui::TextDisabled("全期未选参 (买入持有)");
+    return;
+  }
+  XFmt fmt{&r, c.x1 - c.x0 < 3.0 * kS};
+  const XDays xd = x_days(r);
+  DayAxis ax{xd.dates, 1.0, 0.0, xd.xs, x_formatter, &fmt};
+  const float w = ImGui::GetContentRegionAvail().x;
+  ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 1));
+  if (ImPlot::BeginPlot("##cta_path", ImVec2(w, std::floor(w * 0.6f)), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend)) {
+    ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoTickLabels);
+    ImPlot::SetupAxisLinks(ImAxis_X1, &c.x0, &c.x1);
+    setup_day_axis(ax);
+    ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit | ImPlotAxisFlags_NoTickLabels);
+    ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+    const auto color = [&](size_t row, size_t a) { return ImPlot::GetColormapColor(static_cast<int>(row * cta::kAxes + a)); };
+    for (size_t row = 0; row < kRows; ++row)
+      for (size_t a = 0; a < ls[row].size(); ++a) {
+        const Line &l = ls[row][a];
+        const ImVec4 col = color(row, a);
+        ImPlot::HideNextItem(true, ImPlotCond_Once);
+        ImPlot::SetNextLineStyle(col, 1.5f);
+        ImPlot::PlotLine(l.id.c_str(), xs.data(), l.use.data(), static_cast<int>(xs.size()));
+        if (const ImPlotItem *it = ImPlot::GetItem(l.id.c_str()); !l.raw.empty() && it && it->Show) {
+          ImPlot::SetNextLineStyle(ImVec4(col.x, col.y, col.z, 0.35f), 1.0f);
+          ImPlot::PlotLine(("##raw" + l.id).c_str(), xs.data(), l.raw.data(), static_cast<int>(xs.size()), ImPlotItemFlags_NoLegend);
+        }
+      }
+    if (c.cursor >= 0) {
+      const double x = c.cursor;
+      ImPlot::SetNextLineStyle(kPinCol, 2.0f);
+      ImPlot::PlotInfLines("##cta_path_pin", &x, 1);
+    }
+    x_ticks_inside();
+    y_ticks_inside();
+    // 图例矩阵: 行 = 模型, 列 = 参数 (格 = 色块 + 轴名 光标处的值)
+    const LgCol cols[] = {{"参数 1", 0}, {"参数 2", 1}};
+    static_assert(cta::kAxes == 2, "图例列 = 参数轴数上限");
+    const ImU32 c_txt = ImGui::GetColorU32(ImGuiCol_Text);
+    std::vector<LgRow> lr;
+    std::vector<LgCell> cells;
+    for (size_t row = 0; row < kRows; ++row) {
+      lr.push_back({names[row].c_str(), c_txt});
+      for (size_t a = 0; a < cta::kAxes; ++a)
+        if (a < ls[row].size())
+          cells.push_back({std::string(ls[row][a].axis) + " " + ls[row][a].now, 0, {color(row, a), color(row, a)}});
+        else
+          cells.push_back({});
+    }
+    const ImVec2 o = ImPlot::GetPlotPos();
+    const LgHover h = legend("##cta_path_lg", ImVec2(o.x + 4.f, o.y + 4.f), cols, lr, cells, [&](int row, int t) -> ImPlotItem * {
+      const std::vector<Line> &v = ls[static_cast<size_t>(row)];
+      return static_cast<size_t>(t) < v.size() ? ImPlot::GetItem(v[static_cast<size_t>(t)].id.c_str()) : nullptr;
+    });
+    if (h.on && h.r >= 0 && h.t >= 0 && static_cast<size_t>(h.t) < ls[static_cast<size_t>(h.r)].size()) {
+      const Line &l = ls[static_cast<size_t>(h.r)][static_cast<size_t>(h.t)];
+      tip("%s = %s\n实线 = 所用 (阻尼后), 淡线 = 曲面最高点; 都 ÷ 首个有值日的值\n格里的数 = 光标处所用; 点 = 开关这条线", l.axis, l.tip);
+    } else if (ImPlot::IsPlotHovered() && !h.box.Contains(ImGui::GetMousePos())) {
+      const size_t i = static_cast<size_t>(std::clamp(std::lround(ImPlot::GetPlotMousePos().x), 0L, static_cast<long>(n - 1))), d = dix(r, i);
+      std::string s = misc::dash(day_of(r, i));
+      if (std::isfinite(tr.band[d])) {
+        char b[64];
+        std::snprintf(b, sizeof(b), "\nband = %.4g (收盘的 %.2f%%)", tr.band[d], tr.band[d] / se.c[i] * 100);
+        s += b;
+      }
+      for (size_t k = 0; k < 2; ++k) {
+        const cta::Path &p = path_of(r, k);
+        const cta::Kind &kd = *p.grid.kind;
+        if (!p.sel[d]) {
+          s += std::string("\n") + kPathName[k] + " 未选参" + (k ? "" : " (买入持有)");
+          continue;
+        }
+        for (size_t a = 0; a < kd.na; ++a) {
+          char b[96];
+          std::snprintf(b, sizeof(b), "\n%s %s: 所用 %.3g / 最高点 %.3g%s", kPathName[k], kd.ax[a].name, p.use[d][a], p.raw[d][a], kd.ax[a].day ? " 日" : "");
+          s += b;
+        }
+      }
+      tip("%s", s.c_str());
+    }
+    ImPlot::EndPlot();
+  }
+  ImPlot::PopStyleVar();
 }
 
 void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::Rates &rates, const CtaResult *r, const std::string &lack) {
@@ -818,7 +875,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   pick("band", cta::Band::kinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 日 d 盘中自上一日的值线性过渡到前一交易日收盘时的值, 收盘到齐; 人选, 不调); 止损与跟随线的漂移都以它计",
        "band 的窗; 不足窗长 = 用已有的日 (增量窗)");
   tuned("减仓", cta::Reduce::kinds, sp.reduce, 0,
-        "减仓模型: 中线 = 模型线统一往逆向 (多 = 下) 挪一个 band; 预期卖出线 = 中线往下每隔一个 band 一条 (持有 h 份时, 持有的线自上而下第 r 条的预期 = 中线 − (份数 − h + r) × band); 目的是尽量保留顺向敞口\n"
+        "减仓模型: 中线 = 模型线统一往逆向 (多 = 下) 挪一个 band; 预期卖出线 = 中线往下每隔一个 band 一条 (第 j 份的预期 = 中线 − j × band, 各份各管自己的一条); 目的是尽量保留顺向敞口\n"
         "调参目标 = 少穿线: 只看中线 (快线往逆向挪一个 band; 与分层档位 / 跟随无关), 窗内收盘穿过它的次数越少越好, 分 = −每日穿线次数",
         "减仓选参的滚动窗: 每日以此前这么长的窗内网格各配置的分拟曲面, 取最高点用到当日; 窗内根数不足窗长一半 = 买入持有");
   tuned("跟随", cta::Follow::kinds, sp.follow, 1,
@@ -834,27 +891,27 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   if (r) {
     ImGui::SeparatorText("参数轨迹");
     if (ImGui::IsItemHovered())
-      tip("矩阵: 3 行 (band / 减仓 / 跟随) × 各自的参数, 点一格开 / 收它的逐日轨迹 (默认全关)\n"
-          "• 实线 = 阻尼后所用 (每日首根自上一日的值斜到末根的当日值 = 日内过渡), 淡线 = 曲面最高点; 淡线跳得频 / 跳得大 = 岭回归选参不稳\n"
-          "• 阻尼: 所用参数 (对数) 每日朝最高点走 1 / %.0f; band 行 = band ÷ 当日收盘 (%%)\n"
+      tip("一张图: 各参数逐日 ÷ 各自首个有值日的值 (都从 1 起, log 轴), 只看相对变化; 实线 = 阻尼后所用, 淡线 = 曲面最高点; 淡线跳得频 / 跳得大 = 岭回归选参不稳\n"
+          "• 图例矩阵 (同 NAV): 行 = band / 减仓 / 跟随, 列 = 各自的参数; 点格开关该线 (默认全关), 点行头 / 列头切整行 / 整列; 格里的数 = 光标处所用\n"
+          "• 阻尼: 所用参数 (对数) 每日朝最高点走 1 / %.0f\n"
           "• x 与左侧三图同一视野; 橙色竖线 = 光标",
           cta::kDamp);
     path(c, *r);
   }
 
   ImGui::SeparatorText("分层");
-  hint("未触发的份挂在减仓线链上: 首个止损起锁在触发价下, 全部收复且赶上预期才回到随中线; 中途收复的最顶层跟随卖出线带着链一起上漂; 触发过的份各自在跟随买入 / 跟随卖出之间切换并漂移");
+  hint("减仓线首个止损起锁定, 全部收复且赶上预期才回到随中线; 自下而上第一条跟随卖出线压着下面的减仓线 (它上移一起上移, 它横着一起横着); 跟随卖出线只在预期更高时上移, 赶上即退化成减仓线");
   if (ImGui::IsItemHovered())
-    tip("每份恰一条线: 减仓线 (持有, 未触发, 在链上) / 跟随买入线 (已减, 在价上) / 跟随卖出线 (持有, 已买回, 在价下); 成交按档线价\n"
+    tip("每份恰一条线: 减仓线 (持有, 未触发 / 已退化) / 跟随买入线 (已减, 在价上) / 跟随卖出线 (持有, 已买回, 在价下); 成交按档线价\n"
         "• 逐日换的量 (band / 减仓 / 跟随参数) 当日内自上一日的值线性过渡到当日值, 收盘到齐, 档线不在日界跳\n"
         "• 持有的份跌到自己的线即卖 → 跟随买入线 = 线 + 止损距; 跟随买入线涨到即买回 → 跟随卖出线 = 线 − 止损距; 一根越过几条成交几条 (先近后远)\n"
-        "• 跟随线各份独立漂移: 跟随买入线往下, 不越过 收盘 + 止损距; 跟随卖出线往上, 不越过 收盘 − 止损距, 也不越过其预期卖出线; 赶上预期卖出线 = 交回减仓线\n"
-        "• 预期卖出线 (按链序): 持有 h 份时, 持有的线自上而下第 r 条的预期 = 中线 − (份数 − h + r) × band\n"
-        "• 减仓线链 (链上每条隔一个 band) 的锚: 起步 / 全部收复且都赶上预期 = 随预期卖出线 (随中线波动);\n"
-        "  有卖出 = 锚触发价 (链顶 = 本根卖出的最低线 − band, 不高于原链顶; 不随中线): 首个止损起整链锁定, 下面的线只尊重上层的触发价;\n"
-        "  中途买回的份成了最顶的持有线 = 挂在它下面 (链随它一起上漂); 它交回 (赶上预期) 而未全部收复 = 仍锁定, 链顶 = 它的线\n"
-        "• 跳空消化 (只作用于链上的线): 换锚 / 链序变的那根, 链上各线留在原处, 与新链位之差自那根起一日的根数内线性走完 (跨日接着走); 新成交的跟随线不受影响\n"
-        "• 图上: 一份一条连续线 (恒为份数条), 绿 = 减仓线, 红 = 跟随买入线, 蓝 = 跟随卖出线, 成交处换色; 同色里离收盘越近越浓\n"
+        "• 跟随线各份独立漂移, 只朝价走不回头: 跟随买入线只往下, 不越过 收盘 + 止损距; 跟随卖出线只往上, 不越过 收盘 − 止损距, 也不越过其预期卖出线;\n"
+        "  跟随卖出线只在其预期更高时上移; 自下而上赶上预期 = 退化成减仓线 (定在那里); 预期在它之下 = 横着等, 不下探\n"
+        "• 预期卖出线 (按份): 第 j 份 (j = 0 起) 的预期 = 中线 − j × band, 各份独立: 跟随卖出线只看自己那条, 它在上面就自己上移\n"
+        "• 减仓线: 起步 / 全部收复且都赶上预期 = 随预期卖出线 (随中线波动); 首个止损起锁定在触发时的位置, 不随中线, 下面的线只尊重上层的触发价\n"
+        "• 锁定时, 自下而上第一条跟随卖出线压着它下面所有减仓线: 它上移多少, 下面的一起上移多少; 它横着, 下面的一起横着 (不下探, 不破坏首个止损定下的锚)\n"
+        "• 跳空消化: 锁定 → 随预期的那根, 各减仓线留在原处, 与预期之差自那根起一日的根数内线性走完 (跨日接着走)\n"
+        "• 图上: 一份一条连续线 (恒为份数条), 绿 = 减仓线, 红 = 跟随买入线, 蓝 = 跟随卖出线, 成交处换色; 悬停一份 = 它的线各段一起高亮; 淡绿 = 预期卖出线 (未生效, 图例开关, 默认关)\n"
         "• 中线 / band 尚无值 (如首日) = 买入持有 (与基准同口径)");
   pair(
       "份数",

@@ -163,6 +163,15 @@ void settle(const Page &p, long n0, double timeout, Clock::time_point t0) {
   req::flush();
 }
 
+// before 之后新出的可见对话框
+win::Tops fresh(const win::Tops &before) {
+  win::Tops out;
+  for (auto &[h, n] : win::tops())
+    if (!before.contains(h) && n.cls == "#32770")
+      out.emplace(h, n);
+  return out;
+}
+
 } // namespace
 
 Hwnd main_wnd() {
@@ -177,9 +186,14 @@ Hwnd main_wnd() {
 void show_bar() {
   if (!func_trees().empty())
     return;
-  // 主窗顶栏的「交易」: 交易栏收起 (整个停靠条高 0、功能树与 MainViewBar 都不可见) 时点它展开
+  // 主窗顶栏的「交易」: 交易栏收起 (整个停靠条高 0、功能树与 MainViewBar 都不可见) 时点它展开.
+  // 停靠条随即排好位, 功能树等界面线程空闲时才显示; 其间弹出的模态框不关, 界面线程一直在其里, 树就一直不显示
+  const win::Tops before = win::tops();
   win::click_text("AfxWnd100", "", "交易");
-  until(said("点顶栏「交易」后交易栏展开"), [] { return !func_trees().empty(); }, 5);
+  until(said("点顶栏「交易」后交易栏展开"), [&] {
+    for (const auto &[h, n] : fresh(before))
+      fail(strf("点顶栏「交易」后弹出「%s」%s, 交易栏等它关了才显示", n.title.c_str(), body(h).c_str()));
+    return !func_trees().empty(); }, 5);
 }
 
 void click_func(const std::string &name) {
@@ -261,17 +275,6 @@ Page open(const Open &o, double timeout) {
 }
 
 // ---------- 弹框 ----------
-
-namespace {
-// before 之后新出的可见对话框
-win::Tops fresh(const win::Tops &before) {
-  win::Tops out;
-  for (auto &[h, n] : win::tops())
-    if (!before.contains(h) && n.cls == "#32770")
-      out.emplace(h, n);
-  return out;
-}
-} // namespace
 
 Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::function<void()> &act, const std::vector<std::string> &again) {
   trace::Span span("弹框", {{"titles", titles}});

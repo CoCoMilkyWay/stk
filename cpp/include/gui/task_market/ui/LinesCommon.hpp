@@ -9,10 +9,17 @@
 #include "gui/util/PoolTip.hpp"
 #include "gui/util/Tip.hpp"
 #include "imgui.h"
+#include "imgui_internal.h" // ImRect, ButtonBehavior (图例矩阵)
+#include "implot.h"
+#include "implot_internal.h" // ImPlotItem (图例矩阵的开关格)
 
+#include <algorithm>
+#include <cassert>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -268,7 +275,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
     {"CTA",
      "CTA = 单标的 band + 减仓 + 跟随 分层择时 (方向 long / short), 减仓 / 跟随参数滚动调优\n"
      "• 右侧单选一个指数 / 行业 / 概念 / 自选 / 成分股 (与 VAL 同一份选中); 价格 = all.bar 库合成落盘的 1 分钟价 (篮子 = 同 NAV 日内栏口径的点位, 个股 = 后复权价; 价格库随行情起即备)\n"
-     "• band (atr / dev, 人选, 窗以年设, 不调) = 档线间距; 满仓分份数份, 每份恰一条线: 未触发的份挂在减仓线链上 (起步随预期卖出线; 首个止损起锁在触发价下, 全部收复且赶上预期才回到随预期; 中途收复的最顶层跟随卖出线带着链上漂), 跌到即卖成跟随买入线 (往下漂), 涨到即买回成跟随卖出线 (往上漂, 赶上预期卖出线即交回链上)\n"
+     "• band (atr / dev, 人选, 窗以年设, 不调) = 档线间距; 满仓分份数份, 每份恰一条线: 减仓线起步随预期卖出线, 首个止损起锁定 (全部收复且赶上预期才回到随预期); 跌到即卖成跟随买入线 (往下漂), 涨到即买回成跟随卖出线 (只在预期更高时往上漂, 赶上即退化成减仓线); 自下而上第一条跟随卖出线压着下面的减仓线一起上移 / 横着\n"
      "• 减仓模型 (price / ema / kama / mid): 中线 (模型线统一往逆向挪一个 band), 其下每隔一个 band 一条预期卖出线, 尽量保留顺向敞口; 调参目标 = 少穿线 (只看中线, 收盘穿过它的次数越少越好)\n"
      "• 跟随模型 (decay / chand / sar): 跟随线怎么朝价漂 (买入线往下 / 卖出线往上, 同参数镜像; 参数以日计, 逐根摊开随分钟走; 各份的参数在它成交时定下, 之后不变); 调参目标 = 当日减仓下每笔 (先减后加) 的中位夏普\n"
      "• 两个模型只选类型, 参数滚动选出: 各以自己的滚动窗 (整年, 默认 1 年; 不足 = 自首日起, expanding) 内参数网格 (对数格点; 中心周围的配置数 = 分层份数, 默认 10, 各自分到自己的参数轴) 的分拟岭回归曲面, 取连续最高点 (参数可为小数), 在网格边上则以它为中心移网格再拟; 先减仓, 再在其下选跟随; 打分跑日线 (每日训练一次), 回测跑 1 分钟; 所用参数 = 最高点的 5 日阻尼 (band 与参数逐日的变化都在当日内线性过渡, 收盘到齐; 链上的线换锚时不跳, 一日内消化); 首日 / 中线都未就绪 = 买入持有 (与基准同口径)\n"
@@ -355,6 +362,198 @@ inline void row_tip(const LinesRow &r) {
     pool_tip(pool_def(r.pool).spec, r.hover);
   else
     tip("%s", r.hover.c_str());
+}
+
+// 图例矩阵 (legend) 的格按钮: 叠在图上 (AllowOverlap), 按下即触发; hov = 悬停
+inline bool lg_button(const ImRect &r, const char *id, bool &hov) {
+  bool held = false;
+  const ImGuiID gid = ImGui::GetID(id);
+  ImGui::KeepAliveID(gid);
+  return ImGui::ButtonBehavior(r, gid, &hov, &held, ImGuiButtonFlags_AllowOverlap | ImGuiButtonFlags_PressedOnClick);
+}
+// 图例矩阵的开关格: R 行 × C 列, item(r, c) = 该格的 item (nullptr = 该行无此格); 整行 / 整列 (r0 / c0 = −1 = 不限): 集合里有显示的 → 全隐, 否则全显
+template <class Item>
+bool lg_any(int R, int C, int r0, int c0, const Item &item) {
+  for (int r = 0; r < R; ++r)
+    for (int c = 0; c < C; ++c)
+      if ((r0 < 0 || r == r0) && (c0 < 0 || c == c0) && item(r, c) && item(r, c)->Show)
+        return true;
+  return false;
+}
+template <class Item>
+void lg_flip(int R, int C, int r0, int c0, const Item &item) {
+  const bool any = lg_any(R, C, r0, c0, item);
+  for (int r = 0; r < R; ++r)
+    for (int c = 0; c < C; ++c)
+      if (ImPlotItem *it = item(r, c); it && (r0 < 0 || r == r0) && (c0 < 0 || c == c0))
+        it->Show = !any;
+}
+
+// 图例矩阵的字: 字号 = 字体 × kLgScale, 行高 = 字号; 框内边距 kLgPad
+inline constexpr float kLgScale = 0.8f;
+inline constexpr ImVec2 kLgPad(4.f, 2.f);
+struct LgFont {
+  ImFont *font = ImGui::GetFont();
+  float fs = ImGui::GetFontSize() * kLgScale;
+  float w(const char *s) const { return font->CalcTextSizeA(fs, FLT_MAX, 0.f, s).x; }
+  void text(ImDrawList &dl, const ImVec2 &at, ImU32 col, const char *s) const { dl.AddText(font, fs, at, col, s); }
+};
+
+// ---- 图例矩阵 (NAV / VAL / CTA 同一件, 各页只填表), 左上角 o (绘图区内): 行 = 行头 (名) + 各列一格; 列 = 文本列 | 开关列 (格 = ImPlot item(行, 开关号), nullptr = 该行无此格, 只写字);
+//      开关格 = 色块 (实心 = 显示, 空框 = 隐; 格有字 → 色块贴左缘, 否则居中), 点格切该项; 点行头 / 开关列头切整行 / 整列 (有显示的 → 全隐, 否则全显);
+//      列头右对齐 (只色块的列居中), 文本列头灰; 字右对齐, 字色 0 = 随显隐 (开关格 = 该项, 文本格 = 行有显示 → 字色, 否则灰). 返回悬停 + 框 ----
+struct LgCol {
+  const char *head;
+  int toggle = -1; // 开关号 (−1 = 文本列)
+};
+struct LgRow {
+  const char *name;
+  ImU32 col; // 名色 (行有显示时)
+};
+struct LgCell {
+  std::string text; // 空 = 无字
+  ImU32 col = 0;    // 字色 (0 = 随显隐)
+  ImVec4 sw[2]{};   // 开关格色块: 左 / 右 (同色 = 实心)
+};
+// 悬停: on = 在行头 / 开关列头 / 开关格上 (r / t = 其行 / 开关号, −1 = 整列 / 整行); row = 所在行 (框内任意处; −1 = 列头行 / 框外)
+struct LgHover {
+  bool on = false;
+  int r = -1, t = -1;
+  int row = -1;
+  ImRect box;
+  bool at(int r0, int t0) const { return on && (r < 0 || r == r0) && (t < 0 || t == t0); }
+};
+// 格 = cells [行][列]
+template <class Item>
+LgHover legend(const char *id, const ImVec2 &o, std::span<const LgCol> cols, std::span<const LgRow> rows, std::span<const LgCell> cells, const Item &item) {
+  LgHover h;
+  const int R = static_cast<int>(rows.size()), C = static_cast<int>(cols.size());
+  assert(cells.size() == rows.size() * cols.size());
+  if (R == 0)
+    return h;
+  const int T = static_cast<int>(std::ranges::count_if(cols, [](const LgCol &k) { return k.toggle >= 0; }));
+  std::vector<ImPlotItem *> its(static_cast<size_t>(R * T)); // 先于下面的 PushID 取齐: item 的 ID 随当前 ID 栈 (须同画线处)
+  for (int r = 0; r < R; ++r)
+    for (int t = 0; t < T; ++t)
+      its[static_cast<size_t>(r * T + t)] = item(r, t);
+  const auto item_at = [&](int r, int t) { return its[static_cast<size_t>(r * T + t)]; };
+  const auto cell = [&](int r, int c) -> const LgCell & { return cells[static_cast<size_t>(r * C + c)]; };
+  const LgFont lf;
+  const float th = lf.fs, sw = th * 0.7f, gx = ImGui::GetStyle().ItemSpacing.x, sg = 0.3f * th;
+  float w_head = 0.f;
+  for (const LgRow &r : rows)
+    w_head = std::max(w_head, lf.w(r.name));
+  std::vector<float> w(static_cast<size_t>(C)), xc(static_cast<size_t>(C));
+  std::vector<uint8_t> bare(static_cast<size_t>(C)); // 只色块的开关列
+  float x = o.x + kLgPad.x + w_head;
+  for (int c = 0; c < C; ++c) {
+    const size_t k = static_cast<size_t>(c);
+    bare[k] = cols[k].toggle >= 0;
+    w[k] = lf.w(cols[k].head);
+    for (int r = 0; r < R; ++r) {
+      const LgCell &e = cell(r, c);
+      bare[k] &= e.text.empty();
+      w[k] = std::max(w[k], (cols[k].toggle < 0 ? 0.f : e.text.empty() ? sw
+                                                                       : sw + sg) +
+                                lf.w(e.text.c_str()));
+    }
+    xc[k] = x + gx;
+    x = xc[k] + w[k];
+  }
+  h.box = ImRect(o, ImVec2(x + kLgPad.x, o.y + 2.f * kLgPad.y + static_cast<float>(R + 1) * th));
+  const auto y_row = [&](int r) { return h.box.Min.y + kLgPad.y + static_cast<float>(r + 1) * th; }; // r = −1 → 列头行
+  const auto any = [&](int r0, int t0) { return lg_any(R, T, r0, t0, item_at); };
+  const auto hover = [&](int r, int t) { h.on = true, h.r = r, h.t = t; };
+  ImGui::PushID(id);
+  bool bg = false;
+  lg_button(h.box, "##bg", bg);
+  ImDrawList &dl = *ImPlot::GetPlotDrawList();
+  ImPlot::PushPlotClipRect();
+  dl.AddRectFilled(h.box.Min, h.box.Max, ImPlot::GetStyleColorU32(ImPlotCol_LegendBg));
+  dl.AddRect(h.box.Min, h.box.Max, ImPlot::GetStyleColorU32(ImPlotCol_LegendBorder));
+  const ImU32 c_txt = ImGui::GetColorU32(ImGuiCol_Text), c_dis = ImGui::GetColorU32(ImGuiCol_TextDisabled),
+              c_hov = ImGui::GetColorU32(ImGuiCol_PlotLinesHovered);
+  for (int c = 0; c < C; ++c) {
+    const size_t k = static_cast<size_t>(c);
+    const LgCol &col = cols[k];
+    const float tw = lf.w(col.head);
+    const ImRect rc(ImVec2(xc[k], y_row(-1)), ImVec2(xc[k] + w[k], y_row(-1) + th));
+    const ImVec2 at(bare[k] ? rc.Min.x + (w[k] - tw) * 0.5f : rc.Max.x - tw, rc.Min.y);
+    if (col.toggle < 0) {
+      lf.text(dl, at, c_dis, col.head);
+      continue;
+    }
+    ImGui::PushID(c);
+    bool hov = false;
+    if (lg_button(rc, "##c", hov))
+      lg_flip(R, T, -1, col.toggle, item_at);
+    ImGui::PopID();
+    if (hov)
+      hover(-1, col.toggle);
+    lf.text(dl, at, hov ? c_hov : any(-1, col.toggle) ? c_txt
+                                                      : c_dis,
+            col.head);
+  }
+  for (int r = 0; r < R; ++r) {
+    const float y = y_row(r);
+    ImGui::PushID(r);
+    { // 行头
+      const ImRect rr(ImVec2(h.box.Min.x + kLgPad.x, y), ImVec2(h.box.Min.x + kLgPad.x + w_head, y + th));
+      bool hov = false;
+      if (lg_button(rr, "##r", hov))
+        lg_flip(R, T, r, -1, item_at);
+      if (hov)
+        hover(r, -1);
+      lf.text(dl, rr.Min, hov ? c_hov : any(r, -1) ? rows[static_cast<size_t>(r)].col
+                                                   : c_dis,
+              rows[static_cast<size_t>(r)].name);
+    }
+    for (int c = 0; c < C; ++c) {
+      const size_t k = static_cast<size_t>(c);
+      const LgCell &e = cell(r, c);
+      bool on = cols[k].toggle < 0 && any(r, -1);
+      if (const int t = cols[k].toggle; t >= 0 && item_at(r, t)) { // 整格可点
+        ImPlotItem *it = item_at(r, t);
+        ImGui::PushID(c);
+        bool hov = false;
+        if (lg_button(ImRect(ImVec2(xc[k], y), ImVec2(xc[k] + w[k], y + th)), "##t", hov))
+          it->Show = !it->Show;
+        ImGui::PopID();
+        if (hov)
+          hover(r, t);
+        const ImVec2 s0(bare[k] ? xc[k] + (w[k] - sw) * 0.5f : xc[k], y + (th - sw) * 0.5f), s1(s0.x + sw, s0.y + sw);
+        if (!it->Show) {
+          dl.AddRect(s0, s1, hov ? c_txt : c_dis);
+        } else {
+          ImVec4 a = e.sw[0], b = e.sw[1];
+          a.w *= hov ? 0.75f : 1.f, b.w *= hov ? 0.75f : 1.f;
+          const ImU32 ua = ImGui::ColorConvertFloat4ToU32(a), ub = ImGui::ColorConvertFloat4ToU32(b);
+          dl.AddRectFilledMultiColor(s0, s1, ua, ub, ub, ua);
+        }
+        on = it->Show;
+      }
+      if (!e.text.empty())
+        lf.text(dl, ImVec2(xc[k] + w[k] - lf.w(e.text.c_str()), y), e.col ? e.col : on ? c_txt
+                                                                                       : c_dis,
+                e.text.c_str());
+    }
+    ImGui::PopID();
+  }
+  ImPlot::PopPlotClipRect();
+  ImGui::PopID();
+  if (h.on)
+    h.row = h.r;
+  else if (const int i = static_cast<int>(std::floor((ImGui::GetMousePos().y - y_row(0)) / th)); bg && i >= 0 && i < R)
+    h.row = i;
+  return h;
+}
+// 图例格的数: v 不可算 → "-"
+inline std::string lg_num(const char *fmt, double v) {
+  if (!std::isfinite(v))
+    return "-";
+  char s[24];
+  std::snprintf(s, sizeof(s), fmt, v);
+  return s;
 }
 
 // ---- 图 (LinesPlot.cpp) ----
