@@ -697,18 +697,21 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   if (syncing && ImGui::IsItemHovered())
     tip("首次一趟合成全部篮子线与个股的 1 分钟价, 存在 all.bar 库目录 cache/price/ 下 (十年全市场约 40 GB); 之后只补新日, 退出不丢已合成的");
 
-  // 设定: 分组 (band / 减仓线 / 加仓线 / 分层 / 引擎), 组内一行一项, 名左值右; 改了即全部重算
+  // 设定: 分组 (band / 减仓线 / 加仓线 / 分层 / 引擎), 一行两项 (名 控件 | 名 控件, 各占半行); 改了即全部重算
   cta::Spec &sp = c.spec;
   const float x0 = ImGui::GetCursorPosX();
-  float lw = 0.0f; // 名列宽 (控件 / 灰显参数都从这里起)
-  for (const char *s : {"模型", "窗 (年)", "网格配置数", "滚动窗 (年)", "份数", "止损 (间距)", "方向", "费率 (bp)"})
-    lw = std::max(lw, ImGui::CalcTextSize(s).x);
-  lw += ImGui::GetStyle().ItemSpacing.x;
-  const auto label = [&](const char *s) {
+  const auto pair = [&](const char *a, auto fa, const char *b, auto fb) {
+    const float g = ImGui::GetStyle().ItemSpacing.x, half = (ImGui::GetContentRegionAvail().x - g) / 2;
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(s);
-    ImGui::SameLine(x0 + lw);
+    ImGui::TextUnformatted(a);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(half - ImGui::CalcTextSize(a).x - g);
+    fa();
+    ImGui::SameLine(x0 + half + g);
+    ImGui::TextUnformatted(b);
+    ImGui::SameLine();
     ImGui::SetNextItemWidth(-FLT_MIN);
+    fb();
   };
   const auto hint = [](const char *s) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
@@ -753,40 +756,32 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   };
 
   ImGui::SeparatorText("band");
-  label("模型");
-  model_combo("##cta_band", cta::kBandKinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 盘中用前一交易日收盘时的值; 人选, 不调); 止损与加仓线的下移都以它计");
-  label("窗 (年)");
-  years("##cta_band_win", sp.band_win, "band 的窗; 不足窗长 = 用已有的日 (增量窗)");
-  label("网格配置数");
-  ImGui::InputInt("##cta_grid", &sp.grid, 1, 10);
-  sp.grid = std::clamp(sp.grid, 3, 1000);
-  c.editing |= ImGui::IsItemActive();
-  if (ImGui::IsItemHovered())
-    tip("减仓线 / 加仓线各自独立选参时, 每日在当前最优点周围评的参数组合数上限 (两者共用此数, 各自按自己的参数轴分; 分法悬停减仓线 / 加仓线的节标题看); 默认 %d\n"
-        "• 参数轴 = 自 v0 向两侧铺的格点, 相邻之比 %.3g, 间距不小于各轴基本单位 (小值处退成等差), 收进各轴硬边界\n"
-        "• 各轴的格点数轮流分得 (每次给格点最少的轴加一个), 积不超过此数; 网格 = 以当前最优为中点的全部组合 (碰到硬边界则整格平移进界)\n"
-        "• 每日拟岭回归曲面取连续最高点 (参数可为小数, 相邻格点间对数插值); 最近的格点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日\n"
-        "• 编辑完生效",
-        cta::kGrid, cta::kStep, cta::kHops);
+  pair(
+      "模型", [&] { model_combo("##cta_band", cta::kBandKinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 盘中用前一交易日收盘时的值; 人选, 不调); 止损与加仓线的下移都以它计"); },
+      "窗 (年)", [&] { years("##cta_band_win", sp.band_win, "band 的窗; 不足窗长 = 用已有的日 (增量窗)"); });
 
   const cta::Kind &kr = cta::kReduceKinds[sp.reduce], &ka = cta::kAddKinds[sp.add];
   head("减仓线", kr);
   axes(kr, r && r->spec.reduce == sp.reduce ? at[0] : nullptr);
-  label("模型");
-  model_combo("##cta_reduce", cta::kReduceKinds, sp.reduce,
-              "减仓线模型: 满仓时链顶随它, 往下每隔一个 band 一条减仓线; 目的是尽量保留顺向敞口\n"
-              "调参目标 = 保敞口: 它当静态档线 (第 r 份 = 线 − r × band, 跌破即出 / 涨回即入, 与加仓线无关), 分 = (顺向 − 翻转成本) / 总振幅");
-  label("滚动窗 (年)");
-  years("##cta_reduce_win", sp.reduce_win, "减仓线选参的滚动窗: 每日以此前这么长的窗内网格各配置的分拟曲面, 取最高点用到当日; 窗内根数不足窗长一半 = 买入持有");
+  pair(
+      "模型",
+      [&] {
+        model_combo("##cta_reduce", cta::kReduceKinds, sp.reduce,
+                    "减仓线模型: 满仓时链顶随它, 往下每隔一个 band 一条减仓线; 目的是尽量保留顺向敞口\n"
+                    "调参目标 = 保敞口: 它当静态档线 (第 r 份 = 线 − r × band, 跌破即出 / 涨回即入, 与加仓线无关), 分 = (顺向 − 翻转成本) / 总振幅");
+      },
+      "窗 (年)", [&] { years("##cta_reduce_win", sp.reduce_win, "减仓线选参的滚动窗: 每日以此前这么长的窗内网格各配置的分拟曲面, 取最高点用到当日; 窗内根数不足窗长一半 = 买入持有"); });
 
   head("加仓线", ka);
   axes(ka, r && r->spec.add == sp.add ? at[1] : nullptr);
-  label("模型");
-  model_combo("##cta_add", cta::kAddKinds, sp.add,
-              "加仓线模型: 已减的份的加仓线怎么下移 (参数以日计, 逐根摊开随分钟走; 下移不越过 收盘 + 止损距), 回撤够深后下移做网格抄底; 各份的参数在它卖出时定下, 之后不变 (各份可不同)\n"
-              "调参目标 = 每笔中位夏普: 在当日减仓线下跑完整分层, 窗内卖出的各笔 (ln(卖价 / 买回价) − 成本) / (band / 卖价 × √持续日) 的中位; 窗末未买回的按窗末收盘计");
-  label("滚动窗 (年)");
-  years("##cta_add_win", sp.add_win, "加仓线选参的滚动窗: 每日以此前这么长的窗内卖出的各笔打分, 拟曲面取最高点用到当日; 窗内无笔 = 沿用上一日的");
+  pair(
+      "模型",
+      [&] {
+        model_combo("##cta_add", cta::kAddKinds, sp.add,
+                    "加仓线模型: 已减的份的加仓线怎么下移 (参数以日计, 逐根摊开随分钟走; 下移不越过 收盘 + 止损距), 回撤够深后下移做网格抄底; 各份的参数在它卖出时定下, 之后不变 (各份可不同)\n"
+                    "调参目标 = 每笔中位夏普: 在当日减仓线下跑完整分层, 窗内卖出的各笔 (ln(卖价 / 买回价) − 成本) / (band / 卖价 × √持续日) 的中位; 窗末未买回的按窗末收盘计");
+      },
+      "窗 (年)", [&] { years("##cta_add_win", sp.add_win, "加仓线选参的滚动窗: 每日以此前这么长的窗内卖出的各笔打分, 拟曲面取最高点用到当日; 窗内无笔 = 沿用上一日的"); });
   if (r) {
     hint(where.c_str());
     if (ImGui::IsItemHovered())
@@ -812,18 +807,23 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
         "• 一根越过几条成交几条 (先近后远)\n"
         "• 图上: 一份一条连续线 (恒为份数条), 绿 = 减仓线, 红 = 加仓线, 成交处换色; 同色里离收盘越近越浓\n"
         "• 减仓线 / band 尚无值 (如首日) = 买入持有 (与基准同口径)");
-  label("份数");
-  ImGui::InputInt("##cta_units", &sp.rule.units, 1, 5);
-  sp.rule.units = std::clamp(sp.rule.units, 1, 100);
-  c.editing |= ImGui::IsItemActive();
-  if (ImGui::IsItemHovered())
-    tip("满仓分几份 (= 档线条数), 一份 = 1 / 份数 的仓位; 默认 %d; 编辑完生效", cta::kUnits);
-  label("止损 (间距)");
-  ImGui::InputFloat("##cta_stop", &sp.rule.stop, 0.1f, 0.5f, "%.2f");
-  sp.rule.stop = std::clamp(sp.rule.stop, 0.0f, 10.0f);
-  c.editing |= ImGui::IsItemActive();
-  if (ImGui::IsItemHovered())
-    tip("成交一份, 该份换极性并止损 × 当日 band: 卖出 = 加仓线挂在成交价上方这么远, 买回 = 链顶挂在买入价下方这么远; 默认 %.2g; 编辑完生效", cta::kStop);
+  pair(
+      "份数",
+      [&] {
+        ImGui::InputInt("##cta_units", &sp.rule.units, 1, 5);
+        sp.rule.units = std::clamp(sp.rule.units, 1, 100);
+        c.editing |= ImGui::IsItemActive();
+        if (ImGui::IsItemHovered())
+          tip("满仓分几份 (= 档线条数), 一份 = 1 / 份数 的仓位; 默认 %d; 编辑完生效", cta::kUnits);
+      },
+      "止损", [&] {
+        ImGui::InputFloat("##cta_stop", &sp.rule.stop, 0.1f, 0.5f, "%.2f");
+        sp.rule.stop = std::clamp(sp.rule.stop, 0.0f, 10.0f);
+        c.editing |= ImGui::IsItemActive();
+        if (ImGui::IsItemHovered())
+          tip("止损距 (以 band 计): 成交一份, 该份换极性并止损 × 当日 band: 卖出 = 加仓线挂在成交价上方这么远, 买回 = 链顶挂在买入价下方这么远; 默认 %.2g; 编辑完生效",
+              cta::kStop);
+      });
 
   ImGui::SeparatorText("引擎");
   {
@@ -832,14 +832,31 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
     std::string s = "方向: 顺向 = 所押的一侧";
     for (int k = 0; k < nd; ++k)
       names[k] = cta::kDirs[k].name, s += std::string("\n• ") + cta::kDirs[k].name + " = " + cta::kDirs[k].tip;
-    label("方向");
-    ImGui::BeginGroup();
-    button_bar(names, nd, sp.dir);
-    ImGui::EndGroup();
-    if (ImGui::IsItemHovered())
-      tip("%s", s.c_str());
+    pair(
+        "方向",
+        [&] {
+          ImGui::BeginGroup();
+          button_bar(names, nd, sp.dir);
+          ImGui::EndGroup();
+          if (ImGui::IsItemHovered())
+            tip("%s", s.c_str());
+        },
+        "网格", [&] {
+          ImGui::InputInt("##cta_grid", &sp.grid, 1, 10);
+          sp.grid = std::clamp(sp.grid, 3, 1000);
+          c.editing |= ImGui::IsItemActive();
+          if (ImGui::IsItemHovered())
+            tip("网格配置数: 减仓线 / 加仓线各自独立选参时, 每日在当前最优点周围评的参数组合数上限 (两者共用此数, 各自按自己的参数轴分; 分法悬停减仓线 / 加仓线的节标题看); 默认 %d\n"
+                "• 参数轴 = 自 v0 向两侧铺的格点, 相邻之比 %.3g, 间距不小于各轴基本单位 (小值处退成等差), 收进各轴硬边界\n"
+                "• 各轴的格点数轮流分得 (每次给格点最少的轴加一个), 积不超过此数; 网格 = 以当前最优为中点的全部组合 (碰到硬边界则整格平移进界)\n"
+                "• 每日拟岭回归曲面取连续最高点 (参数可为小数, 相邻格点间对数插值); 最近的格点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日\n"
+                "• 编辑完生效",
+                cta::kGrid, cta::kStep, cta::kHops);
+        });
   }
-  label("费率 (bp)");
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("费率 (bp)");
+  ImGui::SameLine();
   ImGui::TextDisabled("佣金 %.3g / 印花税 %.3g / 冲击 %.3g", rates.commission * 1e4, rates.stamp * 1e4, rates.impact * 1e4);
   if (ImGui::IsItemHovered())
     tip("系统设置的税佣与固定冲击 (Settings), 各页同一份; 改了即重算\n"
