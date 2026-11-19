@@ -695,7 +695,7 @@ void derive_ref(const KlineStream &ks, int seg_rows, size_t pub_days, size_t pub
 }
 
 // K 线 (右上的下图): 选中资产沿全部交易日的分钟 OHLC, 画 KlineService 已发布前缀 (gen 配对; 换代在途照画空图, 轴不撤). 每根色 = 该刻 R(t)
-// 组色 (ui.col; 灰 = 无值), 阴线实心 / 阳线空心, 自绘 (ImPlot 一个 item 只能一色).
+// 组色 (ui.col; 灰 = 无值), 实心, 自绘 (ImPlot 一个 item 只能一色).
 // 视野: x 域 = 日数 × seg (全段历史, 不按个股上市区间), 换代 (换资产 / 换结果) 即复位到全段, 双击 fit 同样贴全段; y 在换代 / 前缀增长 / 图例开关 / 换 Hold
 // (池指数换线) 时按**当前 x 窗口内**的已发布蜡烛 + 显示中的指数线重定 (上帧视野 ui.kline_x_lo/hi; 窗口内还没流到就下帧再试), 之后不打扰.
 // 光标 = 与左上图共享的 cursor_day (锚在交易日边界 x = day × seg): 同色 DragLineX 吸附整日, 双击落点, 拖哪边另一边同步; 光标日 [day−1, day]
@@ -875,10 +875,7 @@ void plot_kline(InspectUIState &ui, const KlineStream &ks, const InspectDerived 
         const float mid = (a.y + b.y) * 0.5f;
         a.y = mid - 0.5f, b.y = mid + 0.5f;
       }
-      if (c >= o)
-        dl->AddRect(a, b, col); // 阳线空心
-      else
-        dl->AddRectFilled(a, b, col); // 阴线实心
+      dl->AddRectFilled(a, b, col);
     }
     ImPlot::EndItem();
   }
