@@ -1,5 +1,6 @@
 #include "api/tushare/client.hpp"
 #include "misc/exec.hpp"
+#include "misc/netlog.hpp"
 #include "yyjson/yyjson.h"
 
 #include <arrow/array/builder_binary.h>
@@ -15,7 +16,6 @@
 #include <cassert>
 #include <chrono>
 #include <cstdint>
-#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -82,7 +82,7 @@ tcp::resolver::results_type resolve_endpoints() {
   beast::error_code ec;
   auto ep = resolver.resolve(kHost, kPort, ec);
   if (ec)
-    std::cerr << "\n[http] resolve error: " << ec.message() << ", 跳过" << std::endl;
+    netlog::fail("tushare", kHost, "域名解析 " + ec.message() + ", 跳过");
   return ec ? tcp::resolver::results_type{} : ep;
 }
 
@@ -109,7 +109,7 @@ struct Session {
     const auto fail = [&](const std::string &why) -> yyjson_doc * {
       close();
       if (!down.exchange(true, std::memory_order_relaxed))
-        std::cerr << "\n[http] 远端故障 api=" << api_name << ": " << why << ", 本轮余下的 tushare 请求跳过" << std::endl;
+        netlog::fail("tushare", api_name, why + ", 本轮余下的请求跳过");
       return nullptr;
     };
     for (int attempt = 0;;) {
@@ -153,7 +153,7 @@ struct Session {
 
       yyjson_doc *doc = yyjson_read(res.body().data(), res.body().size(), 0);
       if (!doc) // 网关错误页等非 JSON 回包
-        return fail("回包不是 JSON: " + res.body().substr(0, 200));
+        return fail("回包不是 JSON: " + netlog::clip(res.body()));
 
       yyjson_val *root_val = yyjson_doc_get_root(doc);
       yyjson_val *code_val = yyjson_obj_get(root_val, "code");
@@ -165,8 +165,7 @@ struct Session {
       yyjson_val *msg_val = yyjson_obj_get(root_val, "msg");
       const char *msg = (msg_val && yyjson_is_str(msg_val)) ? yyjson_get_str(msg_val) : "";
       if (code == 40203) { // 频率超限, 等窗口刷新恢复
-        std::cerr << "\n[http] rate limit (attempt " << (attempt + 1) << "/" << (kRetryMax + 1) << ") api=" << api_name
-                  << ": " << msg << std::endl;
+        netlog::retry("tushare", api_name, std::string("频率超限 ") + msg, attempt, kRetryIntervalSeconds);
         yyjson_doc_free(doc);
         assert(attempt < kRetryMax);
         std::this_thread::sleep_for(std::chrono::seconds(kRetryIntervalSeconds));
@@ -178,7 +177,7 @@ struct Session {
         yyjson_doc_free(doc);
         return fail(why);
       }
-      std::cerr << "Tushare API error: code=" << code << " msg=" << msg << " api=" << api_name << std::endl;
+      netlog::fail("tushare", api_name, "code=" + std::to_string(code) + " " + msg);
       assert(false);
     }
   }

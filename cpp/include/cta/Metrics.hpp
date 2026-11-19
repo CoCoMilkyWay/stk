@@ -4,9 +4,9 @@
 //   择时 = 上涨捕获 up / 下跌捕获 dn (毛 = 按档线价成交, 不含各项成本): 资产逐根收益 a 为正的根上 Σ 策略毛收益 / Σ a, 为负的同理
 //     全程满多 up = dn = 1, 满空 = −1; 随机择时 (平均净仓位 e) up ≈ dn ≈ e; edge = up − dn = 择时本身挣的, dn = 磨损 (承受的下跌, 做空为负), 成本另计
 //   在场段 = 仓位同号非零的连续根 (建仓根到清仓 / 翻向根, 均为收盘), 段收益 = 段内 Π(1 + 净) − 1; 开仓成本归本段 (翻向根的成本按平旧 |p| : 开新 |w| 分给两段)
-//   平均仓位 = 逐根 |w| 的均值
-//   年成本 = 佣金 + 印花税 + 冲击 + 震荡 + 跳空 (Engine.hpp 成本分项各自 Σ / 年数)
-//   一本账 Book = 一条逐根链 (汇 Pnl) 的 Run → 全期指标 + 复利净值 + 成本叠层 (逐项叠回成本的复利净值, 画成压在净值之上的成本带; 策略 / 买入持有同一份)
+//   平均仓位 = 逐根 |w| 的均值; 年换手 = Σ |Δw| / 年数
+//   年成本 = 成本分项各自 Σ / 年数 (Engine.hpp kCosts), 及其和
+//   一本账 Book = 一条逐根链的 Run → 全期指标 + 分层复利净值 (逐项叠回成本: 净值 → … → 毛, 画成压在净值之上的成本带; 策略 / 买入持有同一份)
 #include "cta/Engine.hpp"
 
 #include <algorithm>
@@ -20,11 +20,12 @@
 namespace cta {
 
 struct Stat {
-  double years = 0, cagr = 0, vol = 0, sharpe = 0, sortino = 0, mdd = 0;     // 索提诺 = 均值 / 下行波动 √E[min(r, 0)²]
-  double expo = 0, turn = 0;                                                 // 平均仓位 / 年换手 (单边)
-  double cost = 0, commission = 0, stamp = 0, impact = 0, chop = 0, gap = 0; // 年成本 = 佣金 + 印花税 + 冲击 + 震荡 + 跳空
-  double up = 0, dn = 0, edge = 0;                                           // 上涨 / 下跌捕获, 两者之差
-  double trades = 0, win = 0, payoff = 0, hold = 0;                          // 年在场段数 / 胜率 / 盈亏比 (均盈 / 均亏) / 平均在场根数
+  double years = 0, cagr = 0, vol = 0, sharpe = 0, sortino = 0, mdd = 0; // 索提诺 = 均值 / 下行波动 √E[min(r, 0)²]
+  double expo = 0, turn = 0;                                             // 平均仓位 / 年换手 (单边)
+  double cost = 0;                                                       // 年成本 (分项之和)
+  Costs costs{};                                                         // 年成本分项
+  double up = 0, dn = 0, edge = 0;                                       // 上涨 / 下跌捕获, 两者之差
+  double trades = 0, win = 0, payoff = 0, hold = 0;                      // 年在场段数 / 胜率 / 盈亏比 (均盈 / 均亏) / 平均在场根数
 };
 
 inline Stat returns_stat(std::span<const double> r, double bpy) {
@@ -48,16 +49,18 @@ inline Stat returns_stat(std::span<const double> r, double bpy) {
 inline Stat stat_of(const Tape &t, const Run &run, double bpy) {
   Stat s = returns_stat(run.r, bpy);
   const size_t n = t.n;
-  double expo = 0, ua = 0, ug = 0, da = 0, dg = 0;
+  double expo = 0, turn = 0, ua = 0, ug = 0, da = 0, dg = 0;
   for (size_t i = 0; i < n; ++i) {
-    const double a = t.a[i];
-    expo += std::fabs(run.w[i]);
-    (a > 0 ? ua : da) += a, (a > 0 ? ug : dg) += run.g[i];
+    const double a = t.a[i], g = run.r[i] + run.k[i].sum();
+    expo += std::fabs(run.w[i]), turn += std::fabs(run.w[i] - (i ? run.w[i - 1] : 0.0f));
+    for (size_t j = 0; j < kNC; ++j)
+      s.costs[j] += run.k[i][j];
+    (a > 0 ? ua : da) += a, (a > 0 ? ug : dg) += g;
   }
-  s.expo = expo / static_cast<double>(n);
-  const Costs &k = run.cost;
-  s.turn = run.turn / s.years, s.cost = k.sum() / s.years;
-  s.commission = k.commission / s.years, s.stamp = k.stamp / s.years, s.impact = k.impact / s.years, s.chop = k.chop / s.years, s.gap = k.gap / s.years;
+  s.expo = expo / static_cast<double>(n), s.turn = turn / s.years;
+  for (double &c : s.costs)
+    c /= s.years;
+  s.cost = s.costs.sum();
   s.up = ua > 0 ? ug / ua : kNaN, s.dn = da < 0 ? dg / da : kNaN, s.edge = s.up - s.dn;
   double nw = 0, sw = 0, nl = 0, sl = 0, bars = 0, nav = 1;
   size_t i0 = n; // 在场段建仓根 (n = 不在场)
@@ -78,7 +81,7 @@ inline Stat stat_of(const Tape &t, const Run &run, double bpy) {
       continue;
     }
     const Costs &e = run.k[i];
-    const double p = run.w[i - 1], open = (e.commission + e.stamp + e.impact) * std::fabs(w) / std::fabs(w - p); // 本根成本里开新仓的那份
+    const double p = run.w[i - 1], open = (e[kCommission] + e[kStamp] + e[kImpact]) * std::fabs(w) / std::fabs(w - p); // 本根成本里开新仓的那份
     nav *= 1 + r + open;
     seal(i), i0 = n;
     if (w != 0)
@@ -94,31 +97,28 @@ inline Stat stat_of(const Tape &t, const Run &run, double bpy) {
   return s;
 }
 
-// 一本账: 回测 + 全期指标 + 净值
+// 一本账: 回测 + 全期指标 + 分层净值
 struct Book {
   Run run;
   Stat st;
-  std::vector<double> nav;                   // [根] Π(1 + 净)
-  std::array<std::vector<double>, kNC> lift; // [项][根] 叠回前 j + 1 项成本的复利净值 Π(1 + 净 + Σ_{≤ j} 成本); 末项 = 毛
+  std::array<std::vector<double>, kNC + 1> nav; // [层][根] Π(1 + 净 + 前 j 项成本): 层 0 = 净值, 层 kNC = 毛
 };
 
-// run = 回测 (Pnl), bpy = 每年根数
+// run = 回测, bpy = 每年根数
 inline Book book_of(const Tape &t, Run run, double bpy) {
   assert(run.w.size() == t.n && "回测长度");
-  Book b{std::move(run), {}, std::vector<double>(t.n), {}};
+  Book b{std::move(run), {}, {}};
   b.st = stat_of(t, b.run, bpy);
-  double v = 1;
-  for (size_t i = 0; i < t.n; ++i)
-    b.nav[i] = v *= 1 + b.run.r[i];
-  std::array<double, kNC> x;
-  x.fill(1);
-  for (std::vector<double> &o : b.lift)
+  std::array<double, kNC + 1> v;
+  v.fill(1);
+  for (std::vector<double> &o : b.nav)
     o.resize(t.n);
   for (size_t i = 0; i < t.n; ++i) {
     double r = b.run.r[i];
-    for (size_t j = 0; j < kNC; ++j) {
-      r += b.run.k[i].*kCosts[j].f;
-      b.lift[j][i] = x[j] *= 1 + r;
+    for (size_t j = 0; j <= kNC; ++j) {
+      b.nav[j][i] = v[j] *= 1 + r;
+      if (j < kNC)
+        r += b.run.k[i][j];
     }
   }
   return b;

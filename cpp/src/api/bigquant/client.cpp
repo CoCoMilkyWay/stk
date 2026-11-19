@@ -1,5 +1,6 @@
 #include "api/bigquant/client.hpp"
 
+#include "misc/netlog.hpp"
 #include "yyjson/yyjson.h"
 
 #include <arrow/array.h>
@@ -56,11 +57,11 @@ std::string build_ticket_json(std::string_view sql, const Filters &filters) {
   return s;
 }
 
-// 任何 arrow::Status / arrow::Result 失败一律 assert; 错误信息写 stderr.
+// 任何 arrow::Status / arrow::Result 失败一律 assert; 错误信息经 netlog 写 stderr.
 template <typename T>
 T unwrap(arrow::Result<T> &&r, const char *what) {
   if (!r.ok()) {
-    std::cerr << "[bigquant.dai] arrow " << what << " failed: " << r.status().ToString() << std::endl;
+    netlog::fail("bigquant", what, r.status().ToString());
     assert(false);
   }
   return std::move(r).ValueUnsafe();

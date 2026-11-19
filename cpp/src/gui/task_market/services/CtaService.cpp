@@ -6,6 +6,7 @@
 #include <cassert>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -72,9 +73,12 @@ bool CtaService::run(CtaRequest &req) {
   const double years = static_cast<double>((misc::to_days(out->dates.back()) - misc::to_days(out->dates.front())).count() + 1) / 365.25;
   const double bpy = static_cast<double>(out->dates.size() * S) / years;
   begin(Phase::Running, nd - 1);
-  const bool done = cta::trace(
-      *se, S, sp, req.rates, bpy, pool_, out->tr, [&] { return cancel_.load(std::memory_order_relaxed); }, [&] { Progress::publish(1); });
-  return done && publish(req, {}, std::move(out));
+  std::optional<cta::Track> tr = cta::trace(
+      *se, S, sp, req.rates, bpy, pool_, [&] { return cancel_.load(std::memory_order_relaxed); }, [&] { Progress::publish(1); });
+  if (!tr)
+    return false;
+  out->tr = std::move(*tr);
+  return publish(req, {}, std::move(out));
 }
 
 } // namespace GUI::Market

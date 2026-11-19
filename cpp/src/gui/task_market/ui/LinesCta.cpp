@@ -18,6 +18,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -170,9 +171,9 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
   const size_t anc = first ? first - 1 : 0; // 对齐根: 视野首根的前一根 (视野自首根起 = 首根); 净值 / 成本带在此 = 1
   const cta::Col &w = tr.strat.run.w;
   const std::vector<double> close = take(se.c), mid = take(tr.cut.mid);
-  std::vector<double> nav = take(tr.strat.nav), hold = take(tr.hold.nav);
+  std::vector<double> nav = take(tr.strat.nav[0]), hold = take(tr.hold.nav[0]);
   for (size_t k = 0; k < at.size(); ++k)
-    nav[k] /= tr.strat.nav[anc], hold[k] /= tr.hold.nav[anc];
+    nav[k] /= tr.strat.nav[0][anc], hold[k] /= tr.hold.nav[0][anc];
   std::vector<double> wm(at.size(), 0); // wm[k] = 点 k → k + 1 这段所持的平均仓位 (根 at[k] .. at[k + 1] − 1 收盘调到的)
   for (size_t k = 0; k + 1 < at.size(); ++k) {
     for (size_t i = at[k]; i < at[k + 1]; ++i)
@@ -196,8 +197,8 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
   }
 
   // 标题: 标的 (高亮) · 模型 · 窗 · 视野 · 粒度
-  const std::string model = std::string(cta::kBandKinds[r.spec.band].name) + " / " + cta::kReduceKinds[r.spec.reduce].name + " / " +
-                            cta::kAddKinds[r.spec.add].name + " / " + cta::kDirs[r.spec.dir].name;
+  const std::string model = std::string(cta::Band::kinds[r.spec.band.kind].name) + " / " + cta::Reduce::kinds[r.spec.reduce.kind].name + " / " +
+                            cta::Add::kinds[r.spec.add.kind].name + " / " + cta::kDirs[r.spec.dir].name;
   char gran[96];
   if (step == 1)
     std::snprintf(gran, sizeof(gran), "逐根, 买 %d 次 / 卖 %d 次", buys, sells);
@@ -205,7 +206,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
     std::snprintf(gran, sizeof(gran), "每点 %zu 根 (放大到逐根才标买卖), 买 %d 次 / 卖 %d 次", step, buys, sells);
   ImGui::TextColored(kHead, "%s", name ? name : "");
   ImGui::SameLine();
-  ImGui::TextDisabled("%s  ·  窗 %d / %d / %d 年  ·  %s ~ %s  ·  %s", model.c_str(), r.spec.band_win, r.spec.reduce_win, r.spec.add_win,
+  ImGui::TextDisabled("%s  ·  窗 %d / %d / %d 年  ·  %s ~ %s  ·  %s", model.c_str(), r.spec.band.win, r.spec.reduce.win, r.spec.add.win,
                       misc::dash(day_of(r, lo)).c_str(), misc::dash(day_of(r, hi)).c_str(), gran);
 
   const ImGuiStyle &st = ImGui::GetStyle();
@@ -381,7 +382,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
     const bool hovered = ImPlot::IsPlotHovered(); // 锁定 setup 之后 item 才能按 label 查
     const ImPlotItem *nav_it = ImPlot::GetItem("策略净值");
     const bool on_nav = !nav_it || nav_it->Show;
-    const auto lift = [&](size_t j, size_t i) { return j ? sb.lift[j - 1][i] / sb.lift[j - 1][anc] : sb.nav[i] / sb.nav[anc]; };
+    const auto lift = [&](size_t j, size_t i) { return sb.nav[j][i] / sb.nav[j][anc]; };
     const auto edge = [&](size_t j, size_t i) { // 第 j 层的下沿 (j = 0 = 基线; j = kNC = 毛)
       return on_nav ? lift(j, i) : lift(j, i) / lift(0, i);
     };
@@ -416,11 +417,10 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
       c.zoom.begin(zx);
     zoomed = c.zoom.track(zx, zlo, zhi) && zhi > zlo;
     if (band >= 0) {
-      const cta::CostItem &ci = cta::kCosts[band];
       const size_t j = static_cast<size_t>(band);
       const double y0 = edge(j, bi), y1 = edge(j + 1, bi);
-      tip("%s\n截至 %s: 不扣这项, 净值高 %.2f%% (%.4f → %.4f)\n全期年均 %.2f%% (占净值)", ci.name, when(r, bi).c_str(), (y1 / y0 - 1) * 100, y0, y1,
-          sb.run.cost.*ci.f / sb.st.years * 100);
+      tip("%s\n截至 %s: 不扣这项, 净值高 %.2f%% (%.4f → %.4f)\n全期年均 %.2f%% (占净值)", cta::kCosts[j].name, when(r, bi).c_str(), (y1 / y0 - 1) * 100, y0, y1,
+          sb.st.costs[j] * 100);
     }
     corner = ImVec2(ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x, ImPlot::GetPlotPos().y);
     ImPlot::EndPlot();
@@ -451,7 +451,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
 }
 
 // ---- 中栏: 状态 + 设定 (改了下帧即重发) + 光标处所用参数 + 全期指标 ----
-// 全期指标表 [行]: 名 / 字段 / 格式 / 倍数 / 说明
+// 全期指标表 [行]: 名 / 字段 / 格式 / 倍数 / 说明; 年成本行下展开各分项 (cta::kCosts, 同格式)
 struct StatRow {
   const char *name;
   double cta::Stat::*f;
@@ -468,12 +468,6 @@ const StatRow kStatRows[] = {
     {"平均仓位", &cta::Stat::expo, "%.2f", 1, "逐根 |仓位| 的均值 (满多 / 满空 = 1)"},
     {"年换手", &cta::Stat::turn, "%.1f", 1, "单边: Σ |Δ仓位| / 年数"},
     {"年成本", &cta::Stat::cost, "%.2f%%", 100, "佣金 + 印花税 + 冲击 + 震荡 + 跳空, 每年占净值"},
-    {"  佣金", &cta::Stat::commission, "%.2f%%", 100, "佣金率 × Σ |Δ仓位| / 年数"},
-    {"  印花税", &cta::Stat::stamp, "%.2f%%", 100, "印花税率 × Σ 卖出量 (多头减仓 / 融券卖出) / 年数"},
-    {"  冲击", &cta::Stat::impact, "%.2f%%", 100, "冲击率 × Σ |Δ仓位| / 年数"},
-    {"  震荡", &cta::Stat::chop, "%.2f%%", 100,
-     "越线差的震荡部分: 分层按收盘成交比按档线价成交多付的差, 每份都按离收盘最近那档的差计 (只越过一档 = 全归震荡); Σ / 年数"},
-    {"  跳空", &cta::Stat::gap, "%.2f%%", 100, "越线差的跳空部分: 一根越过几档时, 远处的档比最近那档多付的部分; Σ / 年数"},
     {"上涨捕获", &cta::Stat::up, "%.2f", 1, "资产上涨的根上 Σ 策略毛收益 / Σ 资产收益 (满多 = 1, 满空 = −1, 随机择时 ≈ 平均净仓位)"},
     {"下跌捕获", &cta::Stat::dn, "%.2f", 1, "资产下跌的根上 Σ 策略毛收益 / Σ 资产收益 = 承受的下跌 (做空为负 = 下跌里挣的)"},
     {"Edge", &cta::Stat::edge, "%+.2f", 1, "上涨捕获 − 下跌捕获 = 择时本身挣的 (不含成本)"},
@@ -505,20 +499,26 @@ void stat_table(const CtaResult &r) {
     ImGui::TableNextColumn();
     right(h, true);
   }
-  for (const StatRow &x : kStatRows) {
+  const auto row = [&](const std::string &name, const std::string &note, const StatRow &x, auto get) {
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(x.name);
+    ImGui::TextUnformatted(name.c_str());
     if (ImGui::IsItemHovered())
-      tip("%s = %s", x.name, x.tip);
+      tip("%s = %s", name.c_str(), note.c_str());
     for (const cta::Stat *s : {&r.tr.strat.st, &r.tr.hold.st}) {
       ImGui::TableNextColumn();
-      const double v = s->*x.f;
+      const double v = get(*s);
       char t[32] = "-";
       if (std::isfinite(v))
         std::snprintf(t, sizeof(t), x.fmt, v * x.mul);
       right(t, s == &r.tr.hold.st);
     }
+  };
+  for (const StatRow &x : kStatRows) {
+    row(x.name, x.tip, x, [&](const cta::Stat &s) { return s.*x.f; });
+    if (x.f == &cta::Stat::cost)
+      for (size_t j = 0; j < cta::kNC; ++j)
+        row(std::string("  ") + cta::kCosts[j].name, std::string(cta::kCosts[j].tip) + "; Σ / 年数", x, [&](const cta::Stat &s) { return s.costs[j]; });
   }
   ImGui::EndTable();
 }
@@ -528,7 +528,7 @@ const cta::Path &path_of(const CtaResult &r, size_t k) { return k ? r.tr.add : r
 constexpr const char *kPathName[] = {"减仓线", "加仓线"};
 
 // 光标处 (−1 = 末根) 所在日 → v[k] = 当日所用参数 (阻尼后, 轴的单位; 减仓线未选参 = 买入持有, 两者都 nullptr; 加仓线未选参 = 沿用的上一个选参日, 尚无 = nullptr); 返回说明
-std::string cursor_at(const CtaResult &r, int cursor, const cta::V *(&v)[2]) {
+std::string cursor_at(const CtaResult &r, int cursor, const cta::P *(&v)[2]) {
   const size_t n = r.se->c.size(), i = cursor >= 0 ? static_cast<size_t>(cursor) : n - 1;
   const size_t d = dix(r, i);
   const std::string head = cursor >= 0 ? "光标 " + when(r, i) : "末根";
@@ -565,11 +565,11 @@ void model_combo(const char *id, const Xs &xs, size_t &cur, const std::string &h
 //      x 链到两图 (同一视野, 双击回全段), 未选参日断开; 光标 = 橙色竖线; 悬停看当日参数 ----
 
 // 参数 v (轴的单位): 头 模型  轴 = 值 …
-std::string params_of(const char *head, const cta::Grid &g, const cta::V &v) {
-  std::string s = std::string(head) + " " + g.model->name;
-  for (size_t a = 0; a < g.na; ++a) {
+std::string params_of(const char *head, const cta::Kind &k, const cta::P &v) {
+  std::string s = std::string(head) + " " + k.name;
+  for (size_t a = 0; a < k.na; ++a) {
     char b[48];
-    std::snprintf(b, sizeof(b), "  %s = %.3g%s", g.ax[a]->name, v[a], g.ax[a]->day ? " 日" : "");
+    std::snprintf(b, sizeof(b), "  %s = %.3g%s", k.ax[a].name, v[a], k.ax[a].day ? " 日" : "");
     s += b;
   }
   return s;
@@ -577,14 +577,14 @@ std::string params_of(const char *head, const cta::Grid &g, const cta::V &v) {
 
 // 模型 k 在网格配置数 n 下的参数网格: 维数 + 各轴格点数 (之积 = 每日评的组合数)
 std::string grid_note(const cta::Kind &k, int n) {
-  if (k.axes.empty())
+  if (!k.na)
     return "无参数, 不调参";
   const cta::At m = cta::split(k, static_cast<size_t>(n));
   std::string names, counts;
   size_t prod = 1;
-  for (size_t a = 0; a < k.axes.size(); ++a)
-    names += (a ? " × " : "") + std::string(k.axes[a].name), counts += (a ? " × " : "") + std::to_string(m[a]), prod *= m[a];
-  return "参数网格 " + std::to_string(k.axes.size()) + " 维: " + names + " = " + counts + (k.axes.size() > 1 ? " = " + std::to_string(prod) : "") + " 个组合";
+  for (size_t a = 0; a < k.na; ++a)
+    names += (a ? " × " : "") + std::string(k.ax[a].name), counts += (a ? " × " : "") + std::to_string(m[a]), prod *= m[a];
+  return "参数网格 " + std::to_string(k.na) + " 维: " + names + " = " + counts + (k.na > 1 ? " = " + std::to_string(prod) : "") + " 个组合";
 }
 
 void path(CtaState &c, const CtaResult &r) {
@@ -606,9 +606,9 @@ void path(CtaState &c, const CtaResult &r) {
     first[k] = static_cast<size_t>(std::ranges::find(p.sel, 1) - p.sel.begin());
     if (first[k] == p.sel.size())
       continue;
-    const cta::V &v0 = p.use[first[k]];
-    for (size_t a = 0; a < p.grid.na; ++a) {
-      Line l{std::string(kPathName[k]) + " " + p.grid.ax[a]->name, {}, {}};
+    const cta::P &v0 = p.use[first[k]];
+    for (size_t a = 0; a < p.grid.kind->na; ++a) {
+      Line l{std::string(kPathName[k]) + " " + p.grid.kind->ax[a].name, {}, {}};
       for (size_t d = 0; d < tr.days.size(); ++d)
         if (tr.days.off[d] < tr.days.off[d + 1])
           for (int twice = 0; twice < 2; ++twice) {
@@ -663,7 +663,7 @@ void path(CtaState &c, const CtaResult &r) {
       std::string s = misc::dash(day_of(r, i));
       for (size_t k = 0; k < 2; ++k) {
         const cta::Path &p = path_of(r, k);
-        s += p.sel[d] ? "\n所用 (阻尼后): " + params_of(kPathName[k], p.grid, p.use[d]) + "\n最高点: " + params_of(kPathName[k], p.grid, p.raw[d])
+        s += p.sel[d] ? "\n所用 (阻尼后): " + params_of(kPathName[k], *p.grid.kind, p.use[d]) + "\n最高点: " + params_of(kPathName[k], *p.grid.kind, p.raw[d])
                       : std::string("\n") + kPathName[k] + " 未选参" + (k ? "" : " (买入持有)");
       }
       tip("%s", s.c_str());
@@ -673,7 +673,7 @@ void path(CtaState &c, const CtaResult &r) {
   for (size_t k = 0; k < 2; ++k) {
     const cta::Path &p = path_of(r, k);
     if (first[k] < p.sel.size())
-      ImGui::TextDisabled("首个选参日: %s", params_of(kPathName[k], p.grid, p.use[first[k]]).c_str());
+      ImGui::TextDisabled("首个选参日: %s", params_of(kPathName[k], *p.grid.kind, p.use[first[k]]).c_str());
   }
 }
 
@@ -727,23 +727,23 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
       tip("%s\n• %d ~ %d 年 (整年, 1 年 = %.0f 交易日), 默认 1 年; 不足窗长 = 自首日起全部 (expanding)\n• 编辑完生效", what, cta::kMinYears, cta::kMaxYears,
           cta::kYearDays);
   };
-  const cta::V *at[2] = {};
+  const cta::P *at[2] = {};
   const std::string where = r ? cursor_at(*r, c.cursor, at) : std::string{};
   const auto head = [&](const char *name, const cta::Kind &k) { // 节标题 = 名 (参数维度); 悬停 = 参数网格的分法
     std::string t = std::string(name) + " (";
-    for (size_t a = 0; a < k.axes.size(); ++a)
-      t += (a ? ", " : "") + std::string(k.axes[a].name);
-    t += k.axes.empty() ? "无参数)" : ")";
+    for (size_t a = 0; a < k.na; ++a)
+      t += (a ? ", " : "") + std::string(k.ax[a].name);
+    t += k.na ? ")" : "无参数)";
     ImGui::SeparatorText(t.c_str());
     if (ImGui::IsItemHovered())
       tip("%s", grid_note(k, sp.grid).c_str());
   };
-  const auto axes = [&](const cta::Kind &k, const cta::V *v) { // 各轴 最小 | 光标处所用 | 最大 (v = nullptr: 所用记 -)
-    if (k.axes.empty())
+  const auto axes = [&](const cta::Kind &k, const cta::P *v) { // 各轴 最小 | 光标处所用 | 最大 (v = nullptr: 所用记 -)
+    if (!k.na)
       return;
     std::string t;
-    for (size_t a = 0; a < k.axes.size(); ++a) {
-      const cta::Axis &ax = k.axes[a];
+    for (size_t a = 0; a < k.na; ++a) {
+      const cta::Axis &ax = k.ax[a];
       char b[96], y[16] = "-";
       if (v)
         std::snprintf(y, sizeof(y), "%.3g", (*v)[a]);
@@ -755,33 +755,28 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
       tip("各轴 最小 | 光标处所用 (阻尼后) | 最大; 最小 / 最大 = 该轴的搜索硬边界, 以日计的轴单位为日\n%s", grid_note(k, sp.grid).c_str());
   };
 
+  const auto pick = [&](const char *id, std::span<const cta::Kind> kinds, cta::Pick &pk, const char *model, const char *win) { // 模型 | 窗 (年) 一行
+    ImGui::PushID(id);
+    pair("模型", [&] { model_combo("##model", kinds, pk.kind, model); }, "窗 (年)", [&] { years("##win", pk.win, win); });
+    ImGui::PopID();
+  };
+  const auto tuned = [&](const char *name, std::span<const cta::Kind> kinds, cta::Pick &pk, size_t k, const char *model, const char *win) { // 节标题 + 各轴 + 模型 | 窗
+    head(name, kinds[pk.kind]);
+    axes(kinds[pk.kind], r && (k ? r->spec.add : r->spec.reduce).kind == pk.kind ? at[k] : nullptr);
+    pick(name, kinds, pk, model, win);
+  };
+
   ImGui::SeparatorText("band");
-  pair(
-      "模型", [&] { model_combo("##cta_band", cta::kBandKinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 盘中用前一交易日收盘时的值; 人选, 不调); 止损与加仓线的下移都以它计"); },
-      "窗 (年)", [&] { years("##cta_band_win", sp.band_win, "band 的窗; 不足窗长 = 用已有的日 (增量窗)"); });
-
-  const cta::Kind &kr = cta::kReduceKinds[sp.reduce], &ka = cta::kAddKinds[sp.add];
-  head("减仓线", kr);
-  axes(kr, r && r->spec.reduce == sp.reduce ? at[0] : nullptr);
-  pair(
-      "模型",
-      [&] {
-        model_combo("##cta_reduce", cta::kReduceKinds, sp.reduce,
-                    "减仓线模型: 满仓时链顶随它, 往下每隔一个 band 一条减仓线; 目的是尽量保留顺向敞口\n"
-                    "调参目标 = 保敞口: 它当静态档线 (第 r 份 = 线 − r × band, 跌破即出 / 涨回即入, 与加仓线无关), 分 = (顺向 − 翻转成本) / 总振幅");
-      },
-      "窗 (年)", [&] { years("##cta_reduce_win", sp.reduce_win, "减仓线选参的滚动窗: 每日以此前这么长的窗内网格各配置的分拟曲面, 取最高点用到当日; 窗内根数不足窗长一半 = 买入持有"); });
-
-  head("加仓线", ka);
-  axes(ka, r && r->spec.add == sp.add ? at[1] : nullptr);
-  pair(
-      "模型",
-      [&] {
-        model_combo("##cta_add", cta::kAddKinds, sp.add,
-                    "加仓线模型: 已减的份的加仓线怎么下移 (参数以日计, 逐根摊开随分钟走; 下移不越过 收盘 + 止损距), 回撤够深后下移做网格抄底; 各份的参数在它卖出时定下, 之后不变 (各份可不同)\n"
-                    "调参目标 = 每笔中位夏普: 在当日减仓线下跑完整分层, 窗内卖出的各笔 (ln(卖价 / 买回价) − 成本) / (band / 卖价 × √持续日) 的中位; 窗末未买回的按窗末收盘计");
-      },
-      "窗 (年)", [&] { years("##cta_add_win", sp.add_win, "加仓线选参的滚动窗: 每日以此前这么长的窗内卖出的各笔打分, 拟曲面取最高点用到当日; 窗内无笔 = 沿用上一日的"); });
+  pick("band", cta::Band::kinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 盘中用前一交易日收盘时的值; 人选, 不调); 止损与加仓线的下移都以它计",
+       "band 的窗; 不足窗长 = 用已有的日 (增量窗)");
+  tuned("减仓线", cta::Reduce::kinds, sp.reduce, 0,
+        "减仓线模型: 满仓时链顶随它, 往下每隔一个 band 一条减仓线; 目的是尽量保留顺向敞口\n"
+        "调参目标 = 保敞口: 它当静态档线 (第 r 份 = 线 − r × band, 跌破即出 / 涨回即入, 与加仓线无关), 分 = (顺向 − 翻转成本) / 总振幅",
+        "减仓线选参的滚动窗: 每日以此前这么长的窗内网格各配置的分拟曲面, 取最高点用到当日; 窗内根数不足窗长一半 = 买入持有");
+  tuned("加仓线", cta::Add::kinds, sp.add, 1,
+        "加仓线模型: 已减的份的加仓线怎么下移 (参数以日计, 逐根摊开随分钟走; 下移不越过 收盘 + 止损距), 回撤够深后下移做网格抄底; 各份的参数在它卖出时定下, 之后不变 (各份可不同)\n"
+        "调参目标 = 每笔中位夏普: 在当日减仓线下跑完整分层, 窗内卖出的各笔 (ln(卖价 / 买回价) − 成本) / (band / 卖价 × √持续日) 的中位; 窗末未买回的按窗末收盘计",
+        "加仓线选参的滚动窗: 每日以此前这么长的窗内卖出的各笔打分, 拟曲面取最高点用到当日; 窗内无笔 = 沿用上一日的");
   if (r) {
     hint(where.c_str());
     if (ImGui::IsItemHovered())
@@ -822,8 +817,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
         c.editing |= ImGui::IsItemActive();
         if (ImGui::IsItemHovered())
           tip("止损距 (以 band 计): 成交一份, 该份换极性并止损 × 当日 band: 卖出 = 加仓线挂在成交价上方这么远, 买回 = 链顶挂在买入价下方这么远; 默认 %.2g; 编辑完生效",
-              cta::kStop);
-      });
+              cta::kStop); });
 
   ImGui::SeparatorText("引擎");
   {
@@ -851,8 +845,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
                 "• 各轴的格点数轮流分得 (每次给格点最少的轴加一个), 积不超过此数; 网格 = 以当前最优为中点的全部组合 (碰到硬边界则整格平移进界)\n"
                 "• 每日拟岭回归曲面取连续最高点 (参数可为小数, 相邻格点间对数插值); 最近的格点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日\n"
                 "• 编辑完生效",
-                cta::kGrid, cta::kStep, cta::kHops);
-        });
+                cta::kGrid, cta::kStep, cta::kHops); });
   }
   ImGui::AlignTextToFramePadding();
   ImGui::TextUnformatted("费率 (bp)");

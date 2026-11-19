@@ -1,5 +1,6 @@
 #include "gui/task_agent/Llm.hpp"
 #include "disk/Disk.hpp"
+#include "misc/netlog.hpp"
 #include "nlohmann/json.hpp"
 
 #include <boost/asio.hpp>
@@ -21,7 +22,6 @@
 #include <cassert>
 #include <cerrno>
 #include <chrono>
-#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -247,7 +247,7 @@ private:
 };
 
 bool wait_retry(const char *what, int attempt, const std::string &why, const std::atomic<bool> &cancel) {
-  std::fprintf(stderr, "[agent] %s: %s (第 %d 次失败, %ds 后重试)\n", what, why.c_str(), attempt + 1, kRetryIntervalSeconds);
+  netlog::retry("agent", what, why, attempt, kRetryIntervalSeconds);
   for (int i = 0; i < kRetryIntervalSeconds; ++i) {
     if (cancel.load(std::memory_order_relaxed))
       return false;
@@ -297,18 +297,19 @@ bool check_2xx(const char *what, const Resp &r, std::string &why) {
   }
   if (r.status / 100 == 2)
     return true;
-  std::fprintf(stderr, "[agent] %s: HTTP %u\n%s\n", what, r.status, r.body.substr(0, 2048).c_str());
-  why = std::string(what) + ": HTTP " + std::to_string(r.status);
+  std::string d = "HTTP " + std::to_string(r.status);
   const json j = json::parse(r.body, nullptr, false);
   if (!j.is_discarded() && j.is_object() && j.contains("error") && j["error"].is_object()) {
     const json &e = j["error"];
     if (e.contains("code"))
-      why += " " + (e["code"].is_string() ? e["code"].get<std::string>() : e["code"].dump());
+      d += " " + (e["code"].is_string() ? e["code"].get<std::string>() : e["code"].dump());
     if (const std::string m = str_of(e, "message"); !m.empty())
-      why += ": " + m;
+      d += ": " + m;
   } else if (!r.body.empty()) {
-    why += ": " + r.body.substr(0, 300);
+    d += ": " + netlog::clip(r.body);
   }
+  netlog::fail("agent", what, d);
+  why = std::string(what) + ": " + d;
   return false;
 }
 
@@ -447,9 +448,9 @@ Reply cursor_send(const Options &o, std::string_view system, const Turns &t, con
       if (const std::string txt = str_of(x, "text"); !txt.empty())
         r.text = txt;
     } else if (ev == "error") {
-      std::fprintf(stderr, "[agent] cursor stream error: %s\n", data.c_str());
       const json x = json::parse(data, nullptr, false);
-      error = x.is_object() ? str_of(x, "code") + ": " + str_of(x, "message") : data;
+      error = x.is_object() ? str_of(x, "code") + ": " + str_of(x, "message") : netlog::clip(data);
+      netlog::fail("agent", "cursor stream", error);
     } else if (ev == "done") {
       done = true;
       return false;
@@ -645,8 +646,9 @@ struct Acp {
           r.result = std::move(m["result"]);
           return r;
         }
-        std::fprintf(stderr, "[agent] devin %s: %s\n", method, m["error"].dump().c_str());
-        return {.err = Err::Fail, .why = std::string("devin ") + method + ": " + str_of(m["error"], "message")};
+        const std::string what = std::string("devin ") + method, msg = str_of(m["error"], "message");
+        netlog::fail("agent", what, msg);
+        return {.err = Err::Fail, .why = what + ": " + msg};
       }
     }
     return r;

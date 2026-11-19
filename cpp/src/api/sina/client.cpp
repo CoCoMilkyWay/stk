@@ -1,4 +1,5 @@
 #include "api/sina/client.hpp"
+#include "misc/netlog.hpp"
 #include "yyjson/yyjson.h"
 
 #include <boost/asio/ip/tcp.hpp>
@@ -9,7 +10,7 @@
 #include <algorithm>
 #include <cassert>
 #include <charconv>
-#include <iostream>
+#include <chrono>
 #include <string>
 #include <thread>
 
@@ -71,10 +72,10 @@ std::string_view json_str(yyjson_val *o, const char *k) {
 Client::Client(std::string host) : host_(std::move(host)) {}
 
 std::string Client::get(const std::string &target) {
-  for (int attempt = 0;; ++attempt) {
+  for (int fails = 0;;) {
+    const bool reused = stream_ && std::chrono::steady_clock::now() - used_ <= kIdle;
     try {
-      const auto now = std::chrono::steady_clock::now();
-      if (!stream_ || now - used_ > kIdle) {
+      if (!reused) {
         stream_.emplace(ioc_);
         stream_->expires_after(std::chrono::seconds(kTimeoutSeconds));
         stream_->connect(tcp::resolver(ioc_).resolve(host_, "80"));
@@ -94,7 +95,7 @@ std::string Client::get(const std::string &target) {
       if (!res.keep_alive())
         stream_.reset();
       if (res.result() != http::status::ok) {
-        std::cerr << "[sina] " << host_ << " HTTP " << res.result_int() << " " << target.substr(0, 120) << std::endl;
+        netlog::fail("sina", host_, "HTTP " + std::to_string(res.result_int()) + " " + netlog::clip(target));
         assert(false && "sina: HTTP 非 200");
       }
       const auto enc = res[http::field::content_encoding];
@@ -102,8 +103,9 @@ std::string Client::get(const std::string &target) {
       return enc.empty() ? std::move(res.body()) : gunzip(res.body());
     } catch (const boost::system::system_error &e) {
       stream_.reset();
-      std::cerr << "[sina] transient error (attempt " << (attempt + 1) << ") " << host_ << ": " << e.what()
-                << std::endl;
+      if (reused) // keep-alive 连接被对端关了: 立即换新连接重发
+        continue;
+      netlog::retry("sina", host_, e.code().message(), fails++, 1);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   }

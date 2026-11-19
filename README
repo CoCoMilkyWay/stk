@@ -341,14 +341,15 @@ stk/
 │   │   │       └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU (复用 Stat 行核) / GPU 后端 + 对拍
 │   │   ├── cta/                                        # 📈 CTA 单资产 band + 减仓线 + 加仓线 分层择时 (header-only 纯计算; Market → CTA 页的模型层)
 │   │   │   │                                           #    band (atr / dev, 人选, 窗可设, 默认一年) = 档线间距 ─→ 分层 Ladder (减仓线链: 链顶锚定上一个触发点, 往下每条隔一个 band; 满仓随减仓线模型, 买回后先挂买入价下方的止损链, 它升过链顶且在收盘之下才回到随它; 份数默认 20 / 止损默认 0.1 band (人设);
-│   │   │   │                                           #    卖出即挂加仓线止损, 加仓线每日按加仓线模型下移) ─刀 Cut→ 成交 Fill (+ 成本) → 损益 Pnl; 减仓线 / 加仓线模型的参数滚动调优
-│   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 只读原料带 Tape (含日 K); 三张模型表: band kBandKinds (band_of) / 减仓线 kReduceKinds (price / ema / kama / mid) /
-│   │   │   │                                           #    加仓线 kAddKinds (decay / chand / sar), 一模型一核 (日首换参 + 逐根出值, 定参 = 各日同参, 窗不满用部分窗); 分层 Ladder (减仓线链 + 各份加仓线, 档线快照, 可录逐笔 Trip) 逐根出刀 Cut
-│   │   │   ├── Engine.hpp                              # 📈 执行: 唯一一条逐根链 drive (日 × 根: 源 → 成交 → 汇); 调参 / 策略 / 买入持有只换源与汇; 五项成本
-│   │   │   ├── Tune.hpp                                # 📈 调参目标 (打分一律跑日线): 减仓线 = 保敞口 (Steps 静态档线源 → Keep 汇: 顺向 − 翻转成本, 日前缀) / 加仓线 = 每笔中位夏普 (Laddered 定参完整分层录逐笔);
-│   │   │   │                                           #    参数网格 Grid + 岭回归曲面
-│   │   │   ├── Metrics.hpp                             # 📈 指标: 收益统计 / 择时捕获 / 在场段; 一本账 Book
-│   │   │   └── Trace.hpp                               # 📈 设定 Spec + 滚动调参全期轨迹: 格点并行打分 → 逐日先减仓线后加仓线, 以此前窗口拟曲面取连续最高点 → 5 日阻尼 → 两条变参线 + 分层一遍跑出 Cuts 与策略账 ↔ 买入持有账
+│   │   │   │                                           #    卖出即挂加仓线止损, 加仓线每日按加仓线模型下移) ─刀 Cut→ 成交 Fill (+ 五项成本 Costs) → 损益 Run; 减仓线 / 加仓线模型的参数滚动调优
+│   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 只读原料带 Tape (含日 K); 三个模型族 Family (核的类型列表 → 族表 kinds + with 分派): Band (atr / dev) /
+│   │   │   │                                           #    Reduce (price / ema / kama / mid; 日首换参 + 逐根出值, 定参 = 各日同参, 窗不满用部分窗) / Add (decay / chand / sar; 一份一条 Line, 卖出时定参);
+│   │   │   │                                           #    核与分层同建于上下文 Ctx; 分层 Ladder (减仓线链 + 各份加仓线, 档线快照 Rungs, 可录逐笔 Trip) 逐根出刀 Cut
+│   │   │   ├── Engine.hpp                              # 📈 执行: 源 (Hold 买入持有 / Steps 静态档线 / Laddered 完整分层) → 唯一一条逐根链 drive (日 × 根: 源 → 成交 → 汇 = 收 Fill 的可调用) → 损益列 Run; 五项成本 Costs
+│   │   │   ├── Tune.hpp                                # 📈 调参目标 (打分一律跑日线; 一个配置一份记录, 根段 → 分, NaN = 不可打分): 减仓线 = 保敞口 (Steps → 逐根前缀 Terms: 顺向 − 翻转成本) /
+│   │   │   │                                           #    加仓线 = 每笔中位夏普 (Laddered 定参完整分层录逐笔); 参数网格 Grid + 岭回归曲面 (细格预铺)
+│   │   │   ├── Metrics.hpp                             # 📈 指标: 收益统计 / 择时捕获 / 在场段 / 年成本分项; 一本账 Book (分层净值: 净 → 逐项叠回成本 → 毛)
+│   │   │   └── Trace.hpp                               # 📈 设定 Spec (band / 减仓线 / 加仓线 各一 Pick) + 滚动调参全期轨迹: 格点并行打分 → 减仓线 / 加仓线各一 Tuner 逐日选参 (以此前窗口拟曲面取连续最高点 → 5 日阻尼) → 两条变参线 + 分层一遍跑出 Cuts 与策略账 ↔ 买入持有账
 │   │   ├── math/                                       # 📐 数学工具
 │   │   │   ├── Step.hpp                                # 📐 变换步元数据 / 定义 (编译期注册)
 │   │   │   ├── distribution/                           # 📐 分位 / 矩: DailyQuantile · KLLcache · RetMoments · SizeThresholds · PdfSnap (KLL 成品快照)
