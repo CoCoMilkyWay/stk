@@ -13,6 +13,7 @@
 #include "gui/quote/Fold.hpp"
 #include "gui/quote/Quote.hpp"
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -43,8 +44,19 @@ void row_alloc(FeatureRead::DayColumns &dc, size_t A);
 void read_row(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &dc, Row &r);
 void minute_alloc(FeatureRead::DayColumns &mc, size_t A);
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc);
-// 一只一日的 L_1min (mc = read_minutes 的读; a = 库轴行) → 分钟根: 无成交的行不收 (与 bar1m 的 bars_of 同一并根)
-void bars_of(const FeatureRead::DayColumns &mc, size_t a, Bars &b);
+void prefetch_day(const FeatureRead &rd, misc::Ymd d, FeatureDay::Scratch &s); // 交易日 d 的日根行 + 分钟的列交内核预读
+// L_1min (mc = read_minutes 的读) → 分钟根, 按组读: 列是 [T][A], 逐只读 = 每格一条冷缓存行;
+//   一组 kWidth 只 (一条缓存行的 f16) 逐时刻顺序读, 一次出整组. 无成交的行不收 (与 bar1m 的 bars_of 同一并根)
+struct MinuteBlock {
+  static constexpr size_t kWidth = 32;
+  // 库轴行 a 的分钟根 (所在组本日未读则先读整组; 引用到下次换组)
+  const Bars &of(const FeatureRead::DayColumns &mc, size_t a);
+
+private:
+  misc::Ymd date_ = 0;
+  size_t a0_ = 0;
+  std::array<Bars, kWidth> bars_;
+};
 
 // 基本面源 (补段两侧同一读法): 日根 = bar1d 行 (ref = pre_close), 分钟根 = bar1m 行按 row_slot 并根; 基本面段末日 = AssetInfo::quote_end
 inline constexpr const char *kBar1d = "cn_stock_real_bar1d";
@@ -56,12 +68,13 @@ void bars_of(const Bar1m *m, Bars &b);
 
 // 源 (同形): date = 交易日; size() 行, 行 j 的全局 id = id(j) (升序);
 //   leg(j, c, b) = 一行的 Leg (c / b = 调用方给的格, Leg 可指向它们)
-// all.bar 库源 (行 = 库轴): 基准 = 前一行 prev 的 pre_close, 日根 = 当日行 cur, 分钟根 = mc 的 L_1min
+// all.bar 库源 (行 = 库轴): 基准 = 前一行 prev 的 pre_close, 日根 = 当日行 cur, 分钟根 = mc 的 L_1min (经 mb 按组读)
 struct LibDay {
   misc::Ymd date;
   const PoolAxis &axis;
   const Row &prev, &cur;
   const FeatureRead::DayColumns &mc;
+  MinuteBlock &mb;
   size_t size() const { return cur.trade.size(); }
   uint32_t id(size_t j) const { return axis.global(j); }
   Leg leg(size_t j, Cell &c, Bars &b) const;

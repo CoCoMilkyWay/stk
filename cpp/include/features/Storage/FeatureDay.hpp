@@ -34,6 +34,7 @@
 //
 //   FeatureDay::write     (path, L = level_info(tier, lvl), layer [T][F][A], A, hash, s) → 字节数
 //   FeatureDay::read      (path, L, cols[n], dst [n][T][A], A, hash, s) → Status
+//   FeatureDay::prefetch  (path, L, cols[n], A, hash, s)                 (只读头 + 目录, 所请求列的载荷交内核预读)
 //   FeatureDay::read_layer(path, L, layer [T][F][A], A, hash, s) → Status   (整层读回, write 的逆; 续算尾窗日)
 //
 // 与 orders 日文件 (orders/OrdersDay.hpp) 同形: 头 + 载荷 + 目录. 这里单写者顺序
@@ -163,38 +164,14 @@ struct FeatureDay {
   static Status read(const std::string &path, const LevelInfo &L, const size_t *cols, size_t n, feature_storage_t *dst, size_t A,
                      std::uint64_t axis_hash, Scratch &s) {
     TraceN("FeatureDayRead");
-    const size_t T = L.rows, F = L.field_count;
-
-    const int fd = file_open_read(path.c_str());
-    if (fd < 0)
-      return Status::Missing;
-
-    {
-      TraceN("ReadHeader");
-      FeatureFileHeader head{};
-      const size_t got = file_pread(fd, &head, sizeof(head), 0);
-      assert(got == sizeof(head) && "特征日文件短于头 (损坏)");
-      (void)got;
-      const Status st = head.magic != FeatureFileHeader::kMagic ? Status::Format
-                        : head.A != A                           ? Status::AxisSize
-                        : head.axis_hash != axis_hash           ? Status::AxisHash
-                        : head.fingerprint != L.fingerprint     ? Status::Fields
-                                                                : Status::Ok;
-      if (st != Status::Ok) {
-        file_close(fd);
-        return st;
-      }
-      assert(head.T == T && head.F == F && "形状不符: 落盘形状恒为满 (rows / field_count)");
-
-      s.dir.resize(F);
-      const size_t dir_got = file_pread(fd, s.dir.data(), F * sizeof(ColSpan), sizeof(head));
-      assert(dir_got == F * sizeof(ColSpan) && "特征日文件目录读不全");
-      (void)dir_got;
-    }
+    const size_t T = L.rows;
+    int fd = -1;
+    if (const Status st = open_(path, L, A, axis_hash, s, fd); st != Status::Ok)
+      return st;
 
     s.order.resize(n);
     for (size_t i = 0; i < n; ++i) {
-      assert(cols[i] < F && "列越界");
+      assert(cols[i] < L.field_count && "列越界");
       s.order[i] = static_cast<uint32_t>(i);
     }
     std::sort(s.order.begin(), s.order.end(),
@@ -229,6 +206,18 @@ struct FeatureDay {
     return Status::Ok;
   }
 
+  // 一层一天: cols[0..n) 的载荷交内核预读进页缓存 (头 + 目录同步读, 载荷异步; 之后的 read 撞上在途页即等). 非 Ok 时不发, 留给 read 判
+  static void prefetch(const std::string &path, const LevelInfo &L, const size_t *cols, size_t n, size_t A, std::uint64_t axis_hash, Scratch &s) {
+    int fd = -1;
+    if (open_(path, L, A, axis_hash, s, fd) != Status::Ok)
+      return;
+    for (size_t i = 0; i < n; ++i) {
+      assert(cols[i] < L.field_count && "列越界");
+      file_readahead(fd, s.dir[cols[i]].offset, s.dir[cols[i]].size);
+    }
+    file_close(fd);
+  }
+
   // 一层一天整层读回 layer [T][F][A] (write 的逆): 按 write 的同一列组, 一组 read 进 s.column 再散回 layer. 非 Ok 时 layer 不动.
   static Status read_layer(const std::string &path, const LevelInfo &L, feature_storage_t *layer, size_t A,
                            std::uint64_t axis_hash, Scratch &s) {
@@ -251,6 +240,35 @@ struct FeatureDay {
   }
 
 private:
+  // 打开日文件, 核对头, 目录读进 s.dir; Ok → fd 开着 (调用方关), 否则已关
+  static Status open_(const std::string &path, const LevelInfo &L, size_t A, std::uint64_t axis_hash, Scratch &s, int &fd) {
+    TraceN("ReadHeader");
+    const size_t F = L.field_count;
+    fd = file_open_read(path.c_str());
+    if (fd < 0)
+      return Status::Missing;
+    FeatureFileHeader head{};
+    const size_t got = file_pread(fd, &head, sizeof(head), 0);
+    assert(got == sizeof(head) && "特征日文件短于头 (损坏)");
+    (void)got;
+    const Status st = head.magic != FeatureFileHeader::kMagic ? Status::Format
+                      : head.A != A                           ? Status::AxisSize
+                      : head.axis_hash != axis_hash           ? Status::AxisHash
+                      : head.fingerprint != L.fingerprint     ? Status::Fields
+                                                              : Status::Ok;
+    if (st != Status::Ok) {
+      file_close(fd);
+      fd = -1;
+      return st;
+    }
+    assert(head.T == L.rows && head.F == F && "形状不符: 落盘形状恒为满 (rows / field_count)");
+    s.dir.resize(F);
+    const size_t dir_got = file_pread(fd, s.dir.data(), F * sizeof(ColSpan), sizeof(head));
+    assert(dir_got == F * sizeof(ColSpan) && "特征日文件目录读不全");
+    (void)dir_got;
+    return Status::Ok;
+  }
+
   // 首尾相接的列载荷并成一段读, 一段最多这么大
   static constexpr size_t kRunCap = size_t(4) << 20;
 

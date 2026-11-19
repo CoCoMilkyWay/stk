@@ -7,8 +7,8 @@
 //         最近的格点落在网格边上 (未到硬边界) → 以它为中心移网格, 补打新格点再拟, 当日至多 kHops 次; 中心留到次日 (各日只读当日之前的窗)
 //         加仓线在减仓线最高点的最近格点下打分 (窗内卖出的各笔的中位夏普)
 //         (首日 / 减仓线窗内根数不足窗长一半 / 窗内各配置的减仓线都未就绪 = 未选参, 买入持有, 与基准同口径; 加仓线窗内无笔 = 沿用上一日的)
-//         阻尼: 所用参数 (对数) 每日朝最高点走 1 / kDamp, 用到当日
-//   策略 (一遍, 逐根): 源 Laddered = 变参减仓线核 (逐日所用参数, 状态接续) + 分层 Ladder (加仓线各份用它卖出当日所用的参数, 之后不变)
+//         阻尼: 所用参数 (对数) 每日朝最高点走 1 / kDamp, 用到当日 (逐根: 当日内自上一日的线性过渡到它, 收盘到齐; band 同)
+//   策略 (一遍, 逐根): 源 Laddered = 变参减仓线核 (逐根所用参数, 状态接续) + 分层 Ladder (加仓线各份用它卖出那根所用的参数, 之后不变)
 //         (状态跨日接续; 未选参日 = Hold, 分层复位; 减仓线 / band 预热 = Hold) → 汇 = 损益 Run + 档线 Cuts (档线快照随之交给 Cuts)
 //   两本账: 策略 (调仓计成本, 成本分项见 Engine.hpp) ↔ Hold → Run = 买入持有 (满仓不动, 无越线差)
 #include "cta/Metrics.hpp"
@@ -146,7 +146,8 @@ std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Rat
   Band::with(sp.band.kind, [&]<class B>() { N = B::of(t, win_of(sp.band.win)); });
   const Series ds = day_series(t);
   const Tape td(ds, 1); // 打分用的日线原料带 (日下标同 t)
-  const Ctx x{t, N, s}, dx{td, N, s};
+  const Col G = bars_of(t, N), Gd = bars_of(td, N);
+  const Ctx x{t, G, s}, dx{td, Gd, s};
   Tuner tr(Reduce::kinds[sp.reduce.kind], static_cast<size_t>(sp.grid), nd), ta(Add::kinds[sp.add.kind], static_cast<size_t>(sp.grid), nd);
   const Grid &gr = tr.p.grid, &ga = ta.p.grid;
 

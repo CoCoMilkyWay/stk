@@ -809,7 +809,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   };
 
   ImGui::SeparatorText("band");
-  pick("band", cta::Band::kinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 盘中用前一交易日收盘时的值; 人选, 不调); 止损与加仓线的下移都以它计",
+  pick("band", cta::Band::kinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 日 d 盘中自上一日的值线性过渡到前一交易日收盘时的值, 收盘到齐; 人选, 不调); 止损与加仓线的下移都以它计",
        "band 的窗; 不足窗长 = 用已有的日 (增量窗)");
   tuned("减仓线", cta::Reduce::kinds, sp.reduce, 0,
         "减仓线模型: 满仓时链顶随它, 往下每隔一个 band 一条减仓线; 目的是尽量保留顺向敞口\n"
@@ -834,12 +834,14 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
     path(c, *r);
 
   ImGui::SeparatorText("分层");
-  hint("减仓线链: 链顶锚定上一个触发点, 往下每条隔一个 band (每日变); 加仓线每日按加仓线模型下移");
+  hint("减仓线链: 链顶锚定上一个触发点, 往下每条隔一个 band; 重锚时线不跳, 一日内线性消化; 加仓线每日按加仓线模型下移");
   if (ImGui::IsItemHovered())
     tip("持有的份挂减仓线 (逆向跌到即减一份), 已减的份各挂一条加仓线 (顺向涨到即加回该份); 成交按档线价\n"
-        "• 减仓线链: 链顶锚定上一个触发点, 往下每条 = 上一条 − 当日 band (锚定不变, band 每日变)\n"
-        "• 链顶: 满仓 = 减仓线模型; 卖出 @a 后 = a − 当日 band; 买回 @L 后 = L − 止损 × 当日 band\n"
+        "• 逐日换的量 (band / 减仓线 / 加仓线参数) 当日内自上一日的值线性过渡到当日值, 收盘到齐, 档线不在日界跳\n"
+        "• 减仓线链: 链顶锚定上一个触发点, 往下每条 = 上一条 − band (锚定不变)\n"
+        "• 链顶: 满仓 = 减仓线模型; 卖出后 = 本根卖出的最低线 − band; 买回 @L 后 = L − 止损 × band\n"
         "• 满仓 (只剩减仓线) 且减仓线模型升过链顶、仍在收盘之下 = 回到随它 (它在收盘之上时不随, 买回后先留着买入价下方的止损链, 不会买了立刻卖)\n"
+        "• 跳空消化: 链重锚 (卖出 / 买回 / 回到随它) 时各持有份的线留在原处, 与新链位之差自那根起一日的根数内线性走完 (跨日接着走); 新买回那份即在其止损上\n"
         "• 加仓线: 卖出 @a 即挂 a + 止损距; 逐根按加仓线模型下移, 下移不越过 收盘 + 止损距 (不会自行触发, 也不上移); 减仓线不下移\n"
         "• 一根越过几条成交几条 (先近后远)\n"
         "• 图上: 一份一条连续线 (恒为份数条), 绿 = 减仓线, 红 = 加仓线, 成交处换色; 同色里离收盘越近越浓\n"
@@ -858,7 +860,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
         sp.rule.stop = std::clamp(sp.rule.stop, 0.0f, 10.0f);
         c.editing |= ImGui::IsItemActive();
         if (ImGui::IsItemHovered())
-          tip("止损距 (以 band 计): 成交一份, 该份换极性并止损 × 当日 band: 卖出 = 加仓线挂在成交价上方这么远, 买回 = 链顶挂在买入价下方这么远; 默认 %.2g; 编辑完生效",
+          tip("止损距 (以 band 计): 成交一份, 该份换极性并止损 × band: 卖出 = 加仓线挂在成交价上方这么远, 买回 = 链顶挂在买入价下方这么远; 默认 %.2g; 编辑完生效",
               cta::kStop); });
 
   ImGui::SeparatorText("引擎");

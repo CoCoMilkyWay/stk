@@ -61,13 +61,35 @@ void minute_alloc(FeatureRead::DayColumns &mc, size_t A) { mc.preallocate(A, L_1
 
 void read_minutes(const FeatureRead &rd, misc::Ymd d, FeatureRead::DayColumns &mc) { rd.load_day_columns(d, minute_cols(), mc); }
 
-void bars_of(const FeatureRead::DayColumns &mc, size_t a, Bars &b) {
-  b.has.reset();
-  for (size_t t = 0; t < level_valid_rows(L_1min); ++t)
-    if (val(mc, t, kMinTs, a) > 0.5f)
-      if (const Cell c = cell(val(mc, t, kMinOpen, a), val(mc, t, kMinHigh, a), val(mc, t, kMinLow, a), val(mc, t, kMinClose, a), std::expm1(val(mc, t, kMinAmount, a)));
-          traded(c))
-        b.add(row_slot(t), c);
+void prefetch_day(const FeatureRead &rd, misc::Ymd d, FeatureDay::Scratch &s) {
+  rd.prefetch_day_columns(d, L_1day, row_cols(), s);
+  rd.prefetch_day_columns(d, L_1min, minute_cols(), s);
+}
+
+const Bars &MinuteBlock::of(const FeatureRead::DayColumns &mc, size_t a) {
+  assert(a < mc.A);
+  if (mc.date != date_ || a < a0_ || a >= a0_ + kWidth) {
+    assert(mc.fields == minute_cols());
+    date_ = mc.date, a0_ = a / kWidth * kWidth;
+    const size_t n = std::min(kWidth, mc.A - a0_);
+    for (size_t j = 0; j < n; ++j)
+      bars_[j].has.reset();
+    const feature_storage_t *col[kMinCols];
+    for (size_t i = 0; i < kMinCols; ++i)
+      col[i] = mc.col(i);
+    const auto v = [&](size_t i, size_t o) {
+      const float x = static_cast<float>(col[i][o]);
+      return std::isfinite(x) ? x : 0.f;
+    };
+    for (size_t t = 0; t < level_valid_rows(L_1min); ++t) {
+      const int s = row_slot(t);
+      for (size_t j = 0, o = t * mc.A + a0_; j < n; ++j, ++o)
+        if (v(kMinTs, o) > 0.5f)
+          if (const Cell c = cell(v(kMinOpen, o), v(kMinHigh, o), v(kMinLow, o), v(kMinClose, o), std::expm1(v(kMinAmount, o))); traded(c))
+            bars_[j].add(s, c);
+    }
+  }
+  return bars_[a - a0_];
 }
 
 void each_daily(fundamental::Scratch &xs, const fundamental::Shard &sh, const fundamental::Ids &ids,
@@ -92,11 +114,10 @@ void bars_of(const Bar1m *m, Bars &b) {
       b.add(row_slot(t), c);
 }
 
-Leg LibDay::leg(size_t j, Cell &c, Bars &b) const {
+Leg LibDay::leg(size_t j, Cell &c, Bars &) const {
   const float x = cur.px[3][j];
   c = cell(cur.px[0][j], cur.px[1][j], cur.px[2][j], x, cur.amount[j]);
-  bars_of(mc, j, b);
-  return {prev.pre[j], traded_row(cur, j) ? &c : nullptr, &b};
+  return {prev.pre[j], traded_row(cur, j) ? &c : nullptr, &mb.of(mc, j)};
 }
 
 Leg FundDay::leg(size_t j, Cell &, Bars &b) const {

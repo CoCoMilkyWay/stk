@@ -26,7 +26,6 @@
 #include <filesystem>
 #include <mutex>
 #include <numeric>
-#include <optional>
 #include <set>
 #include <string>
 #include <system_error>
@@ -183,40 +182,6 @@ public:
 private:
   std::filesystem::path p_, tmp_;
   std::FILE *f_ = nullptr;
-};
-
-// 一段的定位写 (库段整块直写): tmp 定长, 各线程按偏移并发写, done 换上; 没 done 即弃 tmp
-class SegAt {
-public:
-  SegAt(std::filesystem::path p, size_t bytes) : p_(std::move(p)), tmp_(p_) {
-    tmp_ += ".tmp";
-    fd_ = ::open(tmp_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    assert(fd_ >= 0 && "price/: 段建不出来");
-    [[maybe_unused]] const int t = ::ftruncate(fd_, static_cast<off_t>(bytes));
-    assert(t == 0 && "price/: 段建不出来");
-  }
-  SegAt(const SegAt &) = delete;
-  SegAt &operator=(const SegAt &) = delete;
-  ~SegAt() {
-    if (fd_ >= 0) {
-      ::close(fd_);
-      std::filesystem::remove(tmp_);
-    }
-  }
-  void put(size_t off, const void *x, size_t n) const {
-    [[maybe_unused]] const ssize_t w = ::pwrite(fd_, x, n, static_cast<off_t>(off));
-    assert(w == static_cast<ssize_t>(n) && "price/: 段写入失败");
-  }
-  void done() {
-    [[maybe_unused]] const int c = ::close(fd_);
-    assert(c == 0 && "price/: 段写入失败");
-    fd_ = -1;
-    std::filesystem::rename(tmp_, p_);
-  }
-
-private:
-  std::filesystem::path p_, tmp_;
-  int fd_ = -1;
 };
 
 disk::Key at_day(const disk::Key &lib, misc::Ymd d) {
@@ -386,6 +351,8 @@ struct DayBuild {
   std::vector<DayRec> recs;
   std::vector<int32_t> at; // [行] 分钟根在 mins 的下标 (−1 = 无)
   std::vector<Packed> mins;
+  bool keep = false;      // 另留分钟根的还原 (库段同趟合成篮子用: 一只一日只解一次, 与 leg_of 解出的逐位相同)
+  std::vector<Bars> full; // [分钟根] mins 的还原 (keep; 只增不减, 逐日复用前 mins.size() 个)
 
   void clear() { keys.clear(), recs.clear(), at.clear(), mins.clear(); }
   // 第 q 行的分钟根; 无 → nullptr
@@ -405,8 +372,18 @@ struct DayBuild {
     assert(keys.empty() || keys.back() < key);
     DayRec r{0, c.open, c.high, c.low, c.close, ref, static_cast<float>(c.amount), flow, {}};
     const bool m = b && b->has.any();
-    if (m)
+    if (m) {
       r.k = pack(*b, net, S == kStock, mins.emplace_back());
+      if (keep) {
+        if (full.size() < mins.size())
+          full.emplace_back();
+        Bars &u = full[mins.size() - 1];
+        u.has.reset();
+        for (int s = 0; s < kSlots; ++s)
+          if (const Slot &y = mins.back().s[static_cast<size_t>(s)]; y.c != kNoBar)
+            u.add(s, unpack(y, r.k, 1.0));
+      }
+    }
     keys.push_back(key), recs.push_back(r), at.push_back(m ? static_cast<int32_t>(mins.size()) - 1 : -1);
   }
   // 个股各行 ← 源的一日 (无成交不收; 净流入 = 本只分钟涨跌法)
@@ -451,28 +428,37 @@ void chain(DayBuild &b, std::vector<PriceLib::Link> &z) {
   }
 }
 
-// 篮子的源 = 个股侧一日的件 (库段同趟, 内存里; 与落盘后的 SegDay 同读法)
+// 篮子的源 = 个股侧一日的件 (库段同趟, 内存里, keep; 与落盘后的 SegDay 同值: 分钟根 = 件里留的还原, 不逐块再解)
 struct BuildDay {
   misc::Ymd date;
   const DayBuild &b;
   size_t size() const { return b.keys.size(); }
   uint32_t id(size_t r) const { return b.keys[r]; }
-  Leg leg(size_t r, Cell &c, Bars &bars, int lo, int hi) const { return leg_of(b.recs[r], b.minute(r), c, bars, lo, hi); }
+  Leg leg(size_t r, Cell &c, Bars &, int, int) const {
+    static const Bars kNone{};
+    assert(b.keep);
+    const DayRec &d = b.recs[r];
+    c = cell(d.open, d.high, d.low, d.close, d.amount);
+    return {d.ref, &c, b.at[r] >= 0 ? &b.full[static_cast<size_t>(b.at[r])] : &kNone};
+  }
 };
 
-// 库段一趟的一件 (每线程一份, 逐日复用): 日根行 / 分钟的读 + 个股一日的件 + 篮子合成件 (同趟时)
+// 库段一趟的一件 (每线程一份, 逐日复用): 日根行 / 分钟的读 (+ 按组读的分钟根) + 个股一日的件 + 篮子合成件 (同趟时)
 struct LibWork {
   LibWork(size_t A, size_t baskets) : lane(baskets) {
     row_alloc(dc, A);
     minute_alloc(mc, A);
+    b.keep = baskets > 0;
   }
   FeatureRead::DayColumns dc, mc;
+  MinuteBlock mb;
   DayBuild b;
   Lane lane;
 };
 
 // 库段一批的件 (两份轮用: 整块的收尾与下一块的合成并行): 批首日 + 日根行 [批内日 + 1] (首项 = 批首日的前一日) + 篮子件 [批内日];
-//   整块另有 行表 / 日根 / 带分钟根 [日][行] / 个股块的定位写
+//   整块另有 段头 / 行表 / 日根 / 分钟根 (与日根同位) / 带分钟根 [日][行]: 全块在内存里合成, 收尾一趟顺序写
+//   (各日并发小块写同一文件会在 inode 写锁上排队)
 struct LibBlock {
   size_t i0 = 0;
   std::vector<Row> rws = std::vector<Row>(kB + 1);
@@ -480,10 +466,8 @@ struct LibBlock {
   SegHead h{};
   std::vector<RowAt> rs;
   std::vector<DayRec> recs;
+  std::vector<Packed> mins;
   std::vector<uint8_t> has;
-  std::optional<SegAt> out;
-  size_t at_rec() const { return sizeof(SegHead) + rs.size() * sizeof(RowAt); }
-  size_t at_min() const { return at_rec() + recs.size() * sizeof(DayRec); }
 };
 
 // 个股补段一日的件 (逐批复用): 源的读 (基本面段 = bar1m, 新浪段 = 归档的日根 / 分钟根 [全局 id]) + 一日的件
@@ -747,6 +731,8 @@ bool PriceLib::lib_pass(const FeatureLib &lib, const std::vector<misc::Ymd> &dat
   for (size_t t = 0; t < T; ++t)
     works.push_back(std::make_unique<LibWork>(A, NB));
   std::vector<DayBuild> sb(T); // [批内日] 个股件 (单日段)
+  for (DayBuild &b : sb)
+    b.keep = pk != nullptr;
   std::array<LibBlock, 2> blk;
   for (LibBlock &x : blk)
     x.bb.resize(pk ? kB : 0);
@@ -758,7 +744,7 @@ bool PriceLib::lib_pass(const FeatureLib &lib, const std::vector<misc::Ymd> &dat
     const misc::Ymd d = dates[x.i0 + k];
     read_minutes(rd, d, w.mc);
     b.clear();
-    b.put_stocks(LibDay{d, ax, x.rws[k], x.rws[k + 1], w.mc});
+    b.put_stocks(LibDay{d, ax, x.rws[k], x.rws[k + 1], w.mc, w.mb});
     if (pk) {
       members(*pk, d, w.lane.mem, true);
       w.lane.run(BuildDay{d, b});
@@ -778,11 +764,14 @@ bool PriceLib::lib_pass(const FeatureLib &lib, const std::vector<misc::Ymd> &dat
         y.min |= uint64_t{x.has[j * x.rs.size() + r]} << j;
       });
     }
-    x.out->put(0, &x.h, sizeof(x.h));
-    x.out->put(sizeof(x.h), x.rs.data(), x.rs.size() * sizeof(RowAt));
-    x.out->put(x.at_rec(), x.recs.data(), x.recs.size() * sizeof(DayRec));
-    x.out->done();
-    store_->side[kStock].push_back({x.i0, std::make_shared<const Seg>(disk::path(kBlockFile[kStock], at_day(lib_, dates[x.i0])))});
+    const std::filesystem::path p = disk::path(kBlockFile[kStock], at_day(lib_, dates[x.i0]));
+    SegOut o(p);
+    o.put(x.h);
+    o.all(std::span<const RowAt>(x.rs));
+    o.all(std::span<const DayRec>(x.recs));
+    o.all(std::span<const Packed>(x.mins));
+    o.done();
+    store_->side[kStock].push_back({x.i0, std::make_shared<const Seg>(p)});
     dates_.insert(dates_.end(), dates.begin() + static_cast<ptrdiff_t>(x.i0), dates.begin() + static_cast<ptrdiff_t>(x.i0 + kB));
     ++sealed_[kStock];
     if (pk) {
@@ -804,7 +793,8 @@ bool PriceLib::lib_pass(const FeatureLib &lib, const std::vector<misc::Ymd> &dat
       head_ = {};
     return rd.stale();
   };
-  LibBlock *done = nullptr; // 合成完、待收尾的整块 (随下一块的合成一并收尾)
+  LibBlock *done = nullptr;  // 合成完、待收尾的整块 (随下一块的合成一并收尾)
+  FeatureDay::Scratch ahead; // 预读件 (只用其目录)
   for (size_t i0 = lib_days_; i0 < N;) {
     if (quit_.load(std::memory_order_relaxed))
       return false;
@@ -818,7 +808,7 @@ bool PriceLib::lib_pass(const FeatureLib &lib, const std::vector<misc::Ymd> &dat
     if (stale())
       return false;
     if (whole) {
-      // 行表 = 库轴行 (全局 id 升序) 在块内有日根的日 (判据同 LibDay) ⇒ 各行的格先定, 文件定长
+      // 行表 = 库轴行 (全局 id 升序) 在块内有日根的日 (判据同 LibDay) ⇒ 各行的格先定, 块件定长
       x.rs.clear();
       uint64_t R = 0;
       for (size_t a = 0; a < A; ++a) {
@@ -829,12 +819,17 @@ bool PriceLib::lib_pass(const FeatureLib &lib, const std::vector<misc::Ymd> &dat
           x.rs.push_back({ax.global(a), static_cast<uint32_t>(R), m, 0}), R += static_cast<uint64_t>(std::popcount(m));
       }
       x.h = {kSegMagic, 0, static_cast<uint32_t>(kB), static_cast<uint32_t>(x.rs.size()), R};
-      x.recs.assign(R, {});
+      x.recs.resize(R), x.mins.resize(R); // 各格恰由其日填一次 (下面断言行表与当日的根相符)
       x.has.assign(kB * x.rs.size(), 0);
-      x.out.emplace(disk::path(kBlockFile[kStock], at_day(lib_, dates[i0])), seg_bytes(x.h));
-      // 各日并行: 个股件的行 = 行表里该日有根的行 (同序) → 日根进格, 分钟根当场写进格; 上一块的收尾占排头一件
-      const int o = done ? 1 : 0;
+      // 各日并行: 个股件的行 = 行表里该日有根的行 (同序) → 日根 / 分钟根进格;
+      //   排头两件 = 下一块各日的预读 (读盘与本块合成重叠) / 上一块的收尾
+      const int o = done ? 2 : 1;
       pool_.tasks(static_cast<int>(kB) + o, [&](int kk, int t) {
+        if (kk == 0) {
+          for (size_t i = i0 + kB; i < std::min(N, i0 + 2 * kB); ++i)
+            prefetch_day(rd, dates[i], ahead);
+          return;
+        }
         if (kk < o)
           return finish(*done);
         const size_t k = static_cast<size_t>(kk - o);
@@ -847,8 +842,7 @@ bool PriceLib::lib_pass(const FeatureLib &lib, const std::vector<misc::Ymd> &dat
           assert(r < x.rs.size() && x.rs[r].key == b.keys[q] && "库段整块: 当日的根与行表不符");
           const size_t s = slot(x.rs[r], k);
           const Packed *m = b.minute(q);
-          x.recs[s] = b.recs[q], x.has[k * x.rs.size() + r] = m != nullptr;
-          x.out->put(x.at_min() + s * sizeof(Packed), m ? m : &void_packed(), sizeof(Packed));
+          x.recs[s] = b.recs[q], x.mins[s] = m ? *m : void_packed(), x.has[k * x.rs.size() + r] = m != nullptr;
         }
         assert(std::ranges::count_if(x.rs, [&](const RowAt &y) { return y.day >> k & 1; }) == static_cast<ptrdiff_t>(b.keys.size()) && "库段整块: 当日的根与行表不符");
       });

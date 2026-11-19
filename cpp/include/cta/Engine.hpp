@@ -81,10 +81,10 @@ struct Steps {
   K c;
   P p;
   int U;
-  double g = kNaN;
-  void day(size_t d) { c.day(d, K::kind.bars(p, c.t.S)), g = c.N[d]; }
+  void day(size_t) {}
   Cut operator()(size_t i) {
-    const float m = c.bar(i);
+    const float m = c.bar(i, K::kind.bars(p, c.t.S));
+    const double g = c.G[i];
     if (!(m > 0 && g > 0))
       return {.mid = m};
     const int out = std::clamp(static_cast<int>(std::ceil(c.s * (m - c.t.c[i]) / g)), 0, U); // 跌破了几条
@@ -92,7 +92,7 @@ struct Steps {
   }
 };
 
-// 完整分层: 减仓线核 c (日 d 用 pr[d]) → 分层 lad (日 d 新卖出的份的加仓线用 pa[d], 之后不变); 参数为轴的单位;
+// 完整分层: 减仓线核 c (日 d 用 pr[d]) → 分层 lad (新卖出的份的加仓线用本根的 pa, 之后不变); 参数为轴的单位, 逐根经日内过渡 (Ramp);
 //   未选参日 (on[d] = 0) = Hold (分层复位), 刀未就绪 = Hold; 核逐根都走 (状态接续)
 template <class K, class A>
 struct Laddered {
@@ -100,15 +100,17 @@ struct Laddered {
   Ladder<A> lad;
   const std::vector<P> &pr, &pa;  // [日]
   const std::vector<uint8_t> &on; // [日]
+  Ramp<P> rr{}, ra{};             // 减仓线 / 加仓线参数的日内过渡 (以根计)
   size_t d = 0;
   void day(size_t x) {
-    c.day(d = x, K::kind.bars(pr[x], c.t.S)), lad.day(x, A::kind.bars(pa[x], c.t.S));
+    d = x, rr.day(K::kind.bars(pr[x], c.t.S)), ra.day(A::kind.bars(pa[x], c.t.S)), lad.day(x);
     if (!on[x])
       lad.reset(c.t.days.off[x]);
   }
   Cut operator()(size_t i) {
-    const float m = c.bar(i);
-    const Cut x = on[d] ? lad(i, m) : Cut{};
+    const float m = c.bar(i, rr.bar(c.t.f[i]));
+    const P &p = ra.bar(c.t.f[i]);
+    const Cut x = on[d] ? lad(i, m, p) : Cut{};
     return x.h > 0 ? x : Hold{}(i);
   }
 };

@@ -27,6 +27,7 @@
 //
 // API: load_day_columns(date, cols, DayColumns) — 单日选列 [n][T][A], 只读 n 列的载荷
 //      (缓冲挂在 DayColumns 里复用, 与写端 IO worker 的 FeatureDay::Scratch 对仗, 稳态零分配)
+//      prefetch_day_columns(date, level, cols, s) — 同一份列的载荷先交内核预读 (读在后头的批, 读盘与合成重叠)
 // ============================================================================
 
 class FeatureRead {
@@ -132,6 +133,13 @@ public:
       mark_stale(FeatureDay::why(st), /*wipe=*/false);
     else if (st != FeatureDay::Status::Ok)
       mark_stale(FeatureDay::why(st), /*wipe=*/true);
+  }
+
+  // 预读: level 层日 date 的 cols 载荷交内核读进页缓存, 稍后的 load_day_columns 不再等盘 (s 只用其目录; 头不符 / 已判废 → 不发)
+  void prefetch_day_columns(misc::Ymd date, size_t level, const std::vector<size_t> &cols, FeatureDay::Scratch &s) const {
+    assert(date > 0 && has_level(tier_, level) && !cols.empty());
+    if (!stale_.load(std::memory_order_relaxed))
+      FeatureDay::prefetch(lib_day_file(lib_, date, level), level_info(tier_, level), cols.data(), cols.size(), axis_A_, axis_hash_, s);
   }
 
   // ========================================================================
