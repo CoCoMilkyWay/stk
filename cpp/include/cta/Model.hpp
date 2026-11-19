@@ -7,7 +7,7 @@
 //   原料带 = 高 / 低 / 收 / 收益 / 累计路程 + 日 K; band (ATR / dev, 日频, 价格单位) 由它算, 即档线间距
 //   三个模型族 Family = 核的类型列表 (族表 kinds 由各核的 kind 生成, with(下标) 分派到核的类型; 人选模型, 减仓 / 跟随的参数滚动调优, band 的窗人设):
 //     Band (atr / dev): 档线间距 g, 整列 of(原料带, 窗) [日], 逐根用前经日内过渡 (bars_of)
-//     Reduce (price / ema / kama / mid): 中线 = 核出值统一往逆向挪一个 g (Engine mid_of); 预期卖出线 = 中线往下每隔 g 一条, 目的是尽量保留顺向敞口; 调参只看中线少穿价; 逐根 bar(i, p) 出值 (参数逐根给), 状态逐根接续;
+//     Reduce (price / ema / kama / mid): 中线 = 核出值统一往逆向挪一个 g (Engine mid_of); 预期卖出线 = 中线往下每隔 g 一条, 目的是尽量保留顺向敞口; 一律快线, 周期固定 5 日 (kFastDays), 无参数不调; 逐根 bar(i, p) 出值, 状态逐根接续;
 //       定参 (调参打分) = 各日同参, 变参 (实盘) = 逐日所用参数, 同一个核
 //     Follow (decay / chand / sar): 成交过的份的跟随线怎么朝价漂 (参数以日计, 逐根摊开): 跟随买入线往下漂做网格抄底, 跟随卖出线往上漂做移动止损 (同参数镜像);
 //       一份一条 Line, 参数在它成交时定下, 之后不变
@@ -15,7 +15,7 @@
 //   逐日换的量 (band / 减仓 / 跟随参数) 一律日内过渡: 自上一根所到的值线性走向当日值, 收盘到齐 (Ramp), 档线不在日界跳
 //   分层 (Ladder): 减仓线起步随预期卖出线; 首个止损起锁定在触发时的位置, 全部收复且都赶上预期才回到随预期 (差额一日的根数内线性消化, Ease);
 //     触发过的份各自在跟随买入 / 跟随卖出之间切换并漂移 (只朝价走); 自下而上第一条跟随卖出线压着下面的减仓线 (它上移下面一起上移, 它横着下面一起横着);
-//     跟随卖出线只在预期更高时上移, 赶上即退化成减仓线; 一份 = 1 / 份数
+//     跟随卖出线挂出时预期在上 = 上漂去追, 追到即结束; 否则横着等, 被预期上穿即结束; 结束 = 回到随预期 (生效的是那条预期卖出线); 一份 = 1 / 份数
 //   列只在两端: 原料带 (只读) → 逐根链 (源 → 成交 → 汇) → 轨迹列 Cuts; 核 / 分层的状态 (各份档线) 只在源里
 //   源 / 成交 / 逐根链归 Engine
 #include <algorithm>
@@ -281,15 +281,14 @@ struct Dev {
 };
 
 // ---- 减仓线核 ----
-//   逐根 bar(i, p): 本根参数 p (以根计, 可为小数; 逐日换参经日内过渡, 调用方给) → 减仓线 (NaN = 未就绪); 根按序逐个
-//   状态逐根接续: 参数变只改跟随的快慢, 不在几条定参线之间换线; 窗不满 = 自首根起的部分窗
+//   一律快线, 周期固定 kFastDays 日 (乘每日根数), 无参数不调; 逐根 bar(i, p) → 减仓线 (NaN = 未就绪; p 不用, 与带参的核同一接口); 根按序逐个
+//   窗不满 = 自首根起的部分窗
 
-// 周期轴 (日; 减仓线一律快线, 3 ~ 10 日), tip = 该模型里 n 的含义
-inline constexpr Axis days(const char *tip) { return {"n", 5, 3, 10, 0.25f, true, tip}; }
+inline constexpr double kFastDays = 5; // 减仓线周期 (日)
 
 // price: 收盘 − band 的棘轮 (顺向坐标只升不降); 收盘跌到线上 = 本根出这条线 (分层在此触发), 下一根起自 收盘 − band 重新起算; band 无值 = NaN
 struct Price : Ctx {
-  static constexpr Kind kind{"price", "移动止损: 减仓线 = 收盘 − 1 个 band, 只升不降 (价涨即跟着抬, 回落不降), 收盘跌到线上即触发, 之后自 收盘 − band 重新起算; 无参数"};
+  static constexpr Kind kind{"price", "移动止损: 收盘 − 1 个 band, 只升不降"};
   double v = kNaN; // 下一根起算的线 (顺向坐标)
   float bar(size_t i, const P &) {
     const double g = G[i], x = s * t.c[i];
@@ -303,65 +302,55 @@ struct Price : Ctx {
   }
 };
 
-// ema: α = 2 / (k + 1); 第 i 根的平滑系数 = max(α, 1 / (i + 1)) (前段 = 已有值的均值)
+// ema: 跨度 k = kFastDays 日的根数, α = 2 / (k + 1); 第 i 根的平滑系数 = max(α, 1 / (i + 1)) (前段 = 已有值的均值)
 struct Ema : Ctx {
-  static constexpr Kind kind{"ema", "指数均线, 跟得最匀", {days("均线跨度: α = 2 / (n + 1)")}};
-  double v = 0;
-  float bar(size_t i, const P &p) {
-    assert(p[0] > 0 && "均线跨度");
-    return static_cast<float>(v += std::max(2 / (p[0] + 1), 1.0 / static_cast<double>(i + 1)) * (t.c[i] - v));
-  }
+  static constexpr Kind kind{"ema", "指数均线 (5 日), 跟得最匀"};
+  double a = 2 / (kFastDays * static_cast<double>(t.S) + 1), v = 0;
+  float bar(size_t i, const P &) { return static_cast<float>(v += std::max(a, 1.0 / static_cast<double>(i + 1)) * (t.c[i] - v)); }
 };
 
-// kama: 效率比 ER = |收 − w 根前收| / 近 w 根路程 (w = min(round(n), i)); 平滑系数 (ER · (α_fast − α_slow) + α_slow)², α = √(2 / (跨度 + 1)):
-//   震荡 (ER → 0) 时等效 EMA 跨度 L, 趋势 (ER → 1) 时等效跨度 kFast 日 (两端都以日计, 乘每日根数; 日线上 α_fast = 2/3)
+// kama: 效率比 ER = |收 − w 根前收| / 近 w 根路程 (w = min(k, i), k = kFastDays 日的根数); 平滑系数 (ER · (α_fast − α_slow) + α_slow)², α = √(2 / (跨度 + 1)):
+//   震荡 (ER → 0) 时等效 EMA 跨度 kFastDays 日, 趋势 (ER → 1) 时等效跨度 kTrend 日 (两端都乘每日根数; 日线上 α_fast = 2/3)
 struct Kama : Ctx {
-  static constexpr Kind kind{"kama", "考夫曼自适应均线: 按效率比在震荡跨度与趋势跨度 (3.5 日) 之间调快慢", {days("效率比窗: |收 − n 日前收| / 近 n 日路程"), {"L", 6, 4, 10, 1, true, "震荡跨度: 效率比 → 0 时等效 EMA 跨度 (须慢于趋势端 3.5 日)"}}};
-  static constexpr double kFast = 3.5; // 趋势端跨度 (日)
-  double af = std::sqrt(2 / (kFast * static_cast<double>(t.S) + 1)), v = t.c[0];
-  float bar(size_t i, const P &p) {
-    const size_t k = len(p[0]), w = std::min(k, i);
-    assert(k > 0 && p[1] > kFast * static_cast<double>(t.S) && "kama 窗口 / 震荡跨度 (须慢于趋势端)");
-    const double as = std::sqrt(2 / (p[1] + 1));
+  static constexpr Kind kind{"kama", "考夫曼自适应均线 (5 日): 震荡时慢, 趋势时快"};
+  static constexpr double kTrend = 3.5; // 趋势端跨度 (日; 须快于 kFastDays)
+  static_assert(kTrend < kFastDays, "kama 趋势端须快于震荡端");
+  size_t k = len(kFastDays * static_cast<double>(t.S));
+  double af = std::sqrt(2 / (kTrend * static_cast<double>(t.S) + 1)), as = std::sqrt(2 / (kFastDays * static_cast<double>(t.S) + 1)), v = t.c[0];
+  float bar(size_t i, const P &) {
+    const size_t w = std::min(k, i);
     const double sum = t.trip[i] - t.trip[i - w], er = sum > 0 ? std::fabs(t.c[i] - t.c[i - w]) / sum : 0, sc = er * (af - as) + as;
     return static_cast<float>(v += sc * sc * (t.c[i] - v));
   }
 };
 
-// 近 k 根最高 / 最低 (含本根; 不足 k 根 = 自首根起), k ≤ cap 可逐根变: 单调队列按 cap 根维护 (候选的值严格单调),
-//   窗 k 的最值 = 队里首个下标 ≥ i + 1 − k 的候选 (二分); 逐根 push(i) 后读 hi / lo
+// 近 k 根最高 / 最低 (含本根; 不足 k 根 = 自首根起): 单调队列 (候选的值严格单调, 下标升序), 逐根 push(i) 后读 hi / lo
 struct Hilo {
   const Tape &t;
-  size_t cap;
-  std::deque<uint32_t> qh, ql; // 近 cap 根最高 / 最低的候选 (下标升序)
+  size_t k;
+  std::deque<uint32_t> qh, ql; // 近 k 根最高 / 最低的候选
   void push(size_t i) {
     while (!qh.empty() && t.h[qh.back()] <= t.h[i])
       qh.pop_back();
     while (!ql.empty() && t.l[ql.back()] >= t.l[i])
       ql.pop_back();
     qh.push_back(static_cast<uint32_t>(i)), ql.push_back(static_cast<uint32_t>(i));
-    if (qh.front() + cap <= i)
+    if (qh.front() + k <= i)
       qh.pop_front();
-    if (ql.front() + cap <= i)
+    if (ql.front() + k <= i)
       ql.pop_front();
   }
-  static uint32_t first(const std::deque<uint32_t> &q, size_t i, size_t k) {
-    assert(k > 0 && "最高 / 最低窗口");
-    return *std::ranges::lower_bound(q, static_cast<uint32_t>(i + 1 > k ? i + 1 - k : 0));
-  }
-  float hi(size_t i, size_t k) const { return t.h[first(qh, i, k)]; }
-  float lo(size_t i, size_t k) const { return t.l[first(ql, i, k)]; }
+  float hi() const { return t.h[qh.front()]; }
+  float lo() const { return t.l[ql.front()]; }
 };
 
-// mid: 唐奇安中线 = 窗 round(n) 的 (最高 + 最低) / 2
+// mid: 唐奇安中线 = 近 kFastDays 日的根 (最高 + 最低) / 2
 struct Mid : Ctx {
-  static constexpr Kind kind{"mid", "唐奇安中线 = 窗内 (最高 + 最低) / 2, 区间内呈台阶", {days("窗: 取近 n 日的最高 / 最低")}};
-  Hilo hl{t, static_cast<size_t>(std::ceil(kind.ax[0].hi *static_cast<double>(t.S)))};
-  float bar(size_t i, const P &p) {
-    const size_t k = len(p[0]);
-    assert(k <= hl.cap && "唐奇安窗超过上限");
+  static constexpr Kind kind{"mid", "唐奇安中线 (5 日) = 窗内 (最高 + 最低) / 2, 区间内呈台阶"};
+  Hilo hl{t, std::max<size_t>(1, len(kFastDays *static_cast<double>(t.S)))};
+  float bar(size_t i, const P &) {
     hl.push(i);
-    return (hl.hi(i, k) + hl.lo(i, k)) / 2;
+    return (hl.hi() + hl.lo()) / 2;
   }
 };
 
@@ -466,13 +455,13 @@ struct Ease {
   double at(size_t i) const { return std::copysign(std::max(0.0, std::fabs(d) - r * static_cast<double>(i - i0)), d); }
 };
 
-// 档线快照 (持久, 各根共用): 一组 = 各份 (Cuts::units) 的类别 + 一条档线 + 链的状态; 档线变了 / 换类别 / 换状态的根才压一组, 其余根沿用
+// 档线快照 (持久, 各根共用): 一组 = 各份 (Cuts::units) 的类别 + 一条档线; 档线变了 / 换类别 / 换状态的根才压一组, 其余根沿用
 //   减仓线: 随预期 = 中线 − 系数 · h + 消化余量 (h 逐根过渡), 锁定 = 记价; 跟随线记价
 struct Rungs {
   std::vector<float> px;     // [组][份] 系数 (随预期的减仓线) / 价 (锁定的减仓线 / 跟随线)
   std::vector<uint8_t> type; // [组][份] 类别
   std::vector<Ease> ez;      // [组][份] 跳空消化 (随预期的减仓线)
-  std::vector<uint8_t> lock; // [组] 1 = 链锁定
+  std::vector<uint8_t> lock; // [组][份] 1 = 减仓线锁定 (记价)
 };
 
 // 一刀 = 一根的信号: 中线 + 档线间距 h = band (未就绪 = NaN) + 档线快照 snap (kNone = 未就绪) + 目标仓位 w
@@ -501,7 +490,7 @@ struct Cuts {
     const size_t U = static_cast<size_t>(units), g = snap[i], b = g * U;
     for (size_t j = 0; j < U; ++j) {
       const uint8_t k = rungs.type[b + j];
-      f(static_cast<int>(j), k == kReduce && !rungs.lock[g] ? mid[i] - s * (rungs.px[b + j] * h[i] - static_cast<float>(rungs.ez[b + j].at(i))) : rungs.px[b + j], k);
+      f(static_cast<int>(j), k == kReduce && !rungs.lock[b + j] ? mid[i] - s * (rungs.px[b + j] * h[i] - static_cast<float>(rungs.ez[b + j].at(i))) : rungs.px[b + j], k);
     }
   }
 };
@@ -535,12 +524,14 @@ struct Trip {
 //   持有的份 (减仓线 / 跟随卖出线) 跌到自己的线即卖 → 跟随买入线 = 线 + e; 跟随买入线涨到即买回 → 跟随卖出线 = 线 − e (逐条, 先近后远); 一根越过几条成交几条
 //   预期卖出线 (按份): 第 j 份 (j = 0 起) 的预期 = 中线 − j · g, 各份各管自己的一条, 份与份独立
 //   跟随线逐根按跟随核漂移 (各份独立, 只朝价走不回头): 跟随买入线只下移, 不越过 收盘 + e;
-//     跟随卖出线只在其预期卖出线更高时上移, 不越过 min(收盘 − e, 预期卖出线); 预期在它之下 = 横着等; 自下而上赶上预期 = 退化成减仓线 (就在那条预期线上)
-//   减仓线两态:
-//     随预期 (起步 / 全部收复且都赶上预期): 线 = 其预期卖出线 (随中线波动) + 消化余量
-//     锁定 (首个止损触发起, 至全部收复且都赶上预期): 各线定在触发那根的位置, 不随中线 (下面的线尊重上层的触发价; 交回的份定在它交回处);
-//       自下而上第一条跟随卖出线压着它下面所有减仓线: 它上移多少, 下面的一起上移多少; 它横着, 下面的一起横着 (不下探)
-//   跳空消化: 锁定 → 随预期的那根, 各线留在原处, 与预期之差自该根起每根朝 0 走, 一日的根数 (S) 内走完 (跨日接着走; Ease)
+//     跟随卖出线挂出那根定去向: 其预期在上方 = 上漂去追 (不越过 min(收盘 − e, 预期)), 追到 (线 ≥ 预期) 即结束;
+//       否则横着等, 预期自下而上穿过它 (预期 ≥ 线) 即结束; 结束 = 退化成随预期的减仓线 (生效的是那条预期卖出线)
+//   减仓线 (各份各自) 两态:
+//     随预期: 线 = 其预期卖出线 (随中线波动) + 消化余量; 起步各份都随预期, 跟随卖出线结束的份也随预期
+//     锁定: 首个止损 (此前各份都随预期) 那根, 其余减仓线都定在此刻的位置, 不随中线 (下面的线尊重上层的触发价);
+//       之后跟随卖出线结束而回到随预期的份不再被别的份的卖出锁住, 一直随预期到它自己被触发;
+//       自下而上第一条跟随卖出线压着它下面所有锁定的减仓线: 它上移多少, 下面的一起上移多少; 它横着, 下面的一起横着 (不下探)
+//     全部收复 (各份都是减仓线) = 锁定的回到随预期, 各线留在原处, 与预期之差自该根起每根朝 0 走, 一日的根数 (S) 内走完 (跨日接着走; Ease)
 //   减仓线 / band 无值 = 未就绪的刀 (h = NaN; 轨迹按买入持有), 状态复位; 之后首根有值 = 满仓随预期起步 (已在线下的份即卖), 按收盘建仓, 不计越线差也不录笔
 template <class F>
 struct Ladder : Ctx {
@@ -551,7 +542,8 @@ struct Ladder : Ctx {
   std::vector<double> b;                    // [份] 线的顺向坐标: 跟随线 / 锁定的减仓线
   std::vector<typename F::Line> line;       // [份] 跟随核的逐份状态 (跟随线的份)
   std::vector<Ease> ez;                     // [份] 随预期的减仓线的跳空消化
-  bool lock = false;                        // 链锁定
+  std::vector<uint8_t> lk;                  // [份] 减仓线锁定 (线 = b; 否则随预期)
+  std::vector<uint8_t> up;                  // [份] 跟随卖出线挂出时其预期在上方 (上漂去追; 否则横着等预期上穿)
   bool on = false;                          // 已就位 (复位后首根有值时就位)
   uint32_t cur = kNone;                     // 当前快照
   size_t d = 0;                             // 当日
@@ -583,7 +575,7 @@ struct Ladder : Ctx {
     const bool cold = !on, eod = i + 1 == t.days.off[d + 1];
     bool moved = cold; // 本根档线变了 / 换了类别 / 换了状态 (压新快照)
     if (cold) {
-      on = true, lock = false, type.assign(U, kReduce), b.assign(U, kNaN), line.resize(U), ez.assign(U, {}), pend.assign(U, kNone), y.resize(U);
+      on = true, lk.assign(U, 0), up.assign(U, 0), type.assign(U, kReduce), b.assign(U, kNaN), line.resize(U), ez.assign(U, {}), pend.assign(U, kNone), y.resize(U);
     }
     const auto expect = [&](size_t j) { return q - static_cast<double>(j) * g; };          // 份 j 的预期卖出线 (第 j 条静态档线)
     const auto core = [&](size_t j) -> F & { return type[j] == kFollowBuy ? buy : sell; }; // 跟随线 j 的核
@@ -592,7 +584,7 @@ struct Ladder : Ctx {
       if (type[j] != kReduce)
         core(j).see(line[j], i);
     for (size_t j = 0; j < U; ++j)
-      y[j] = type[j] == kReduce && !lock ? expect(j) + ez[j].at(i) : b[j];
+      y[j] = type[j] == kReduce && !lk[j] ? expect(j) + ez[j].at(i) : b[j];
 
     int n = 0;                        // 本根成交份数
     double near = 0, sum = 0;         // 离收盘最近那档的越线差 / 各份越线差之和
@@ -610,7 +602,8 @@ struct Ladder : Ctx {
           a = j;
       return a;
     };
-    // 卖出: 持有的份跌到自己的线; 首个止损 = 链锁定, 各减仓线定在此刻的位置
+    // 卖出: 持有的份跌到自己的线; 首个止损 (此前各份都随预期) = 其余减仓线都锁定在此刻的位置
+    const bool calm = std::ranges::all_of(type, [](uint8_t k) { return k == kReduce; }) && std::ranges::none_of(lk, [](uint8_t k) { return k != 0; });
     bool sold = false;
     for (size_t j = 0; j < U; ++j)
       if (type[j] != kFollowBuy && x <= y[j]) {
@@ -619,16 +612,14 @@ struct Ladder : Ctx {
           pend[j] = static_cast<uint32_t>(log->size()), log->push_back({static_cast<uint32_t>(i), kNone, static_cast<float>(g)});
         fill(y[j]);
       }
-    if (sold && !lock) {
-      lock = true;
+    if (sold && calm)
       for (size_t j = 0; j < U; ++j)
-        if (type[j] == kReduce)
-          b[j] = y[j];
-    }
+        if (type[j] == kReduce && !lk[j])
+          lk[j] = 1, b[j] = y[j];
     // 买回: 跟随买入线涨到 (先近后远)
     for (size_t a; (a = lowest()) < U && x >= b[a];) {
       const double L = b[a];
-      type[a] = kFollowSell, b[a] = y[a] = L - e, line[a] = sell.open(pf, -x);
+      type[a] = kFollowSell, b[a] = y[a] = L - e, line[a] = sell.open(pf, -x), up[a] = expect(a) > b[a];
       if (log && pend[a] != kNone)
         (*log)[pend[a]].i1 = static_cast<uint32_t>(i), pend[a] = kNone;
       fill(L);
@@ -639,39 +630,39 @@ struct Ladder : Ctx {
       if (type[j] == kFollowSell && (base == U || b[j] < b[base]))
         base = j;
     const double b0 = base < U ? b[base] : kNaN;
-    // 跟随线漂移 (核坐标里下移, 不越过下限; 只朝价走, 不回头)
+    // 跟随线漂移 (核坐标里下移, 不越过下限; 只朝价走, 不回头); 横着等的跟随卖出线不动
     for (size_t j = 0; j < U; ++j) {
       if (type[j] == kReduce)
         continue;
       F &k = core(j);
       const double r = sign(j), v = r * b[j], f = type[j] == kFollowBuy ? x + e : -std::min(x - e, expect(j));
-      const double w = r * std::max(k.fall(line[j], i, v, g), std::min(v, f));
+      const double w = type[j] == kFollowSell && !up[j] ? b[j] : r * std::max(k.fall(line[j], i, v, g), std::min(v, f));
       moved |= w != b[j], b[j] = w;
       if (eod)
         k.close(line[j]);
     }
-    // 压着的减仓线随它上移 (它横着 = 一起横着)
+    // 压着的锁定减仓线随它上移 (它横着 = 一起横着)
     if (base < U && b[base] > b0)
       for (size_t j = 0; j < U; ++j)
-        if (type[j] == kReduce && b[j] < b0)
+        if (type[j] == kReduce && lk[j] && b[j] < b0)
           b[j] += b[base] - b0;
-    // 跟随卖出线自下而上赶上预期卖出线 = 退化成减仓线, 定在那里 (预期在它之下 = 横着等)
+    // 跟随卖出线结束 (追的追到预期 / 等的被预期上穿) = 退化成随预期的减仓线
     for (size_t j = 0; j < U; ++j)
-      if (type[j] == kFollowSell && expect(j) >= y[j] && b[j] >= expect(j))
-        type[j] = kReduce, moved = true;
-    // 全部收复且都赶上预期: 链回到随预期, 各线留在原处, 与预期之差 S 根内消化
-    if (lock && std::ranges::all_of(type, [](uint8_t k) { return k == kReduce; })) {
-      lock = false, moved = true;
-      for (size_t j = 0; j < U; ++j) {
-        const double v = b[j] - expect(j);
-        ez[j] = {v, std::fabs(v) / static_cast<double>(t.S), static_cast<uint32_t>(i)};
-      }
-    }
-    if (moved) {
+      if (type[j] == kFollowSell && (up[j] ? b[j] >= expect(j) : expect(j) >= b[j]))
+        type[j] = kReduce, lk[j] = 0, ez[j] = {}, moved = true;
+    // 全部收复: 锁定的回到随预期, 各线留在原处, 与预期之差 S 根内消化
+    if (std::ranges::all_of(type, [](uint8_t k) { return k == kReduce; }))
       for (size_t j = 0; j < U; ++j)
-        rungs.type.push_back(type[j]), rungs.px.push_back(static_cast<float>(type[j] == kReduce && !lock ? static_cast<double>(j) : s * b[j])), rungs.ez.push_back(ez[j]);
-      rungs.lock.push_back(lock);
-      cur = static_cast<uint32_t>(rungs.lock.size() - 1);
+        if (lk[j]) {
+          const double v = b[j] - expect(j);
+          lk[j] = 0, ez[j] = {v, std::fabs(v) / static_cast<double>(t.S), static_cast<uint32_t>(i)}, moved = true;
+        }
+    if (moved) {
+      for (size_t j = 0; j < U; ++j) {
+        const bool rides = type[j] == kReduce && !lk[j]; // 随预期
+        rungs.type.push_back(type[j]), rungs.px.push_back(static_cast<float>(rides ? static_cast<double>(j) : s * b[j])), rungs.ez.push_back(ez[j]), rungs.lock.push_back(!rides);
+      }
+      cur = static_cast<uint32_t>(rungs.type.size() / U - 1);
     }
     o.h = static_cast<float>(g), o.snap = cur;
     o.w = static_cast<float>(s * u * static_cast<double>(std::ranges::count_if(type, [](uint8_t k) { return k != kFollowBuy; }))), o.chop = static_cast<float>(u * n * near), o.gap = static_cast<float>(u * (sum - n * near));

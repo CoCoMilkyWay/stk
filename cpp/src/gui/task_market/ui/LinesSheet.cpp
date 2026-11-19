@@ -936,9 +936,7 @@ void page_tool(PageTool t, LinesState &ui) {
     ImGui::SetNextItemWidth(ImGui::CalcTextSize("Band 滚动窗 00 年").x + 2.0f * ImGui::GetStyle().FramePadding.x);
     ImGui::SliderInt("##pf_band_years", &ui.band_years, 1, kBandYearsMax, "Band 滚动窗 %d 年", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered())
-      tip("Band 分位的滚动窗长 N (VAL / MARGIN 同一份): 每日取过去 N 年 (含当日) 的收益率 / 两融占比加权分位, 拖动即时重算\n"
-          "• 权重 = 1 - exp(-10 u), u = 1 - 距今 / 窗跨度: 近 ~3/4 窗约等权, 窗尾段快速降到 0 (老点出窗时分位不跳)\n"
-          "• 估值史不足 N 年时先扩张窗 (权重按实际史长缩放); 不满 1 年不画");
+      tip("Band 分位的滚动窗 N 年 (整年; VAL / MARGIN / CTA 同一份): 每日取过去 N 年的收益率 / 两融占比加权分位");
     return;
   }
   assert(false && "未知页件");

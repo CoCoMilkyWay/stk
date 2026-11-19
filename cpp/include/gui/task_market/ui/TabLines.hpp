@@ -156,6 +156,12 @@ struct CtaState {
   XZoom zoom;            // 净值 / 回撤图横向框选 (两图同画)
   int cursor = -1;       // 光标 (三图上可拖的竖线) 所在有效根 (−1 = 未放; 换标的重放)
   bool nav_log = true;   // 净值图 y 轴: log / 绝对
+  struct Seg {           // 视野内指标 (中栏): 所属结果 + 根段 [i0, i1) → 持有 / 策略; 段 / 结果变了才重算
+    const CtaResult *of = nullptr;
+    uint32_t gen = 0;
+    size_t i0 = 0, i1 = 0;
+    cta::Stat hold, strat;
+  } seg;
 };
 
 // 篮子组 (指数 / 行业 / 概念) 右表的行过滤 (各页共用, 按组各一份): 只数 / 总市值 [亿元] ∈ [lo, hi] (hi 0 = 不限), |资金流入| ≥ flow (%; 0 = 不限);

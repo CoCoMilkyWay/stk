@@ -1,4 +1,4 @@
-// Market→CTA 页: 左 = 三图 (价格与中线 / 档线, 底色 = 仓位 / 净值 / 回撤, 共一条 x) + 区间条, 其右 = 中栏 (设定 / 参数轨迹 / 光标处参数 / 全期指标; 与右表分右栏) — 见 TabLines.hpp
+// Market→CTA 页: 左 = 三图 (价格与中线 / 档线, 底色 = 仓位 / 净值 / 回撤, 共一条 x) + 区间条, 其右 = 中栏 (设定 / 参数轨迹 / 光标处参数 / 视野内指标; 与右表分右栏) — 见 TabLines.hpp
 #include "gui/task_market/ui/LinesCommon.hpp"
 
 #include "gui/Tasks.hpp"      // StatusColor
@@ -313,14 +313,16 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
       }
     }
     { // 档线 (Cuts::rungs_at) = 生效的线: 一份一条连续线 (恒为份数条), 段色按段末的类别: 减仓线绿 / 跟随买入线红 / 跟随卖出线蓝 (同一不透明度);
-      //   悬停: 鼠标处离它最近的那份 (kRungHit px 内) 的线 (三类各段) 一起高亮, 提示该份; 图例管三色的显隐
-      //   + 预期卖出线 (静态档线, 未生效): 第 j 条 = 中线 − j × band = 第 j 份的预期, 更淡, 不进 fit, 不参与高亮; 独立图例项, 默认关
-      static const char *const kName[] = {"减仓线", "跟随买入线", "跟随卖出线"}; // 下标 = 类别 (cta::kReduce / kFollowBuy / kFollowSell)
-      const ImVec4 kCol[] = {kDn, kUp, kFollowSellCol};
+      //   图例: 实际减仓线 (持有的: 生效的预期卖出线 / 锁定的减仓线 = 绿 + 跟随卖出线 = 蓝) / 跟随买入线 (红) / 预期减仓线 (未生效的预期卖出线)
+      //   悬停: 鼠标处离它最近的那份 (kRungHit px 内) 的线 (各段) 一起高亮, 提示该份
+      //   + 预期减仓线 (静态档线, 未生效): 第 j 条 = 中线 − j × band = 第 j 份的预期, 更淡, 不进 fit, 不参与高亮; 独立图例项, 默认关
+      static const char *const kName[] = {"实际减仓线", "跟随买入线"}; // 图例项; 类别 → 项: 减仓线 / 跟随卖出线 → 0, 跟随买入线 → 1
+      const ImVec4 kCol[] = {kDn, kUp, kFollowSellCol};                // 下标 = 类别 (cta::kReduce / kFollowBuy / kFollowSell)
+      const auto group = [](uint8_t type) { return type == cta::kFollowBuy ? 1 : 0; };
       constexpr float kRungHit = 6.0f, kRungA = 0.8f;
       const size_t U = static_cast<size_t>(tr.cut.units);
       const size_t K = at.size();
-      { // 预期卖出线
+      { // 预期减仓线
         const std::vector<double> hb = take(tr.cut.h);
         std::vector<double> ey(K);
         ImPlot::HideNextItem(true, ImPlotCond_Once);
@@ -328,7 +330,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
           for (size_t k = 0; k < K; ++k)
             ey[k] = mid[k] - tr.cut.s * static_cast<double>(j) * hb[k];
           ImPlot::SetNextLineStyle(ImVec4(kDn.x, kDn.y, kDn.z, 0.1f), 1.0f);
-          ImPlot::PlotLine("预期卖出线", xs.data(), ey.data(), static_cast<int>(K), ImPlotItemFlags_NoFit);
+          ImPlot::PlotLine("预期减仓线", xs.data(), ey.data(), static_cast<int>(K), ImPlotItemFlags_NoFit);
         }
       }
       std::vector<float> p(U * K, cta::kNaN); // [份][点] 价
@@ -349,7 +351,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
         const float my = ImGui::GetMousePos().y;
         float best = kRungHit;
         for (size_t j = 0; j < U; ++j)
-          if (const size_t e = j * K + hk; !std::isnan(p[e]) && show[pol[e]])
+          if (const size_t e = j * K + hk; !std::isnan(p[e]) && show[group(pol[e])])
             if (const float dy = std::fabs(ImPlot::PlotToPixels(xs[hk], p[e]).y - my); dy < best)
               best = dy, hot = static_cast<int>(j);
       }
@@ -359,7 +361,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
         for (size_t k = 0; k + 1 < K; ++k) {
           const size_t e = j * K + k + 1;
           const float y0 = p[e - 1], y1 = p[e];
-          if (std::isnan(y0) || std::isnan(y1) || !show[pol[e]])
+          if (std::isnan(y0) || std::isnan(y1) || !show[group(pol[e])])
             continue;
           ImVec4 col = kCol[pol[e]];
           col.w = hl ? 1.0f : kRungA;
@@ -372,7 +374,8 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
       if (hot >= 0) {
         const size_t j = static_cast<size_t>(hot), e = j * K + hk;
         draw(j, true);
-        tip("第 %zu 份 (自上而下, 0 起): %s %.4g\n其预期卖出线 = 中线 − %zu × band", j, kName[pol[e]], p[e], j);
+        static const char *const kType[] = {"减仓线", "跟随买入线", "跟随卖出线"};
+        tip("第 %zu 份 (自上而下, 0 起): %s %.4g\n其预期卖出线 = 中线 − %zu × band", j, kType[pol[e]], p[e], j);
       }
       ImPlot::PopPlotClipRect();
     }
@@ -515,8 +518,8 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
   range(c, r, xd, ImVec2(size.x, kRangeH));
 }
 
-// ---- 中栏: 状态 + 设定 (改了下帧即重发) + 光标处所用参数 + 全期指标 ----
-// 全期指标表 [行]: 名 / 字段 / 格式 / 倍数 / 优向 (+1 = 越高越好, −1 = 越低越好, 0 = 不论优劣) / 说明; 年成本行可展开各分项 (cta::kCosts, 默认折叠, 同格式同优向)
+// ---- 中栏: 状态 + 设定 (改了下帧即重发) + 光标处所用参数 + 视野内指标 ----
+// 指标表 [行]: 名 / 字段 / 格式 / 倍数 / 优向 (+1 = 越高越好, −1 = 越低越好, 0 = 不论优劣) / 说明; 年成本行可展开各分项 (cta::kCosts, 默认折叠, 同格式同优向)
 struct StatRow {
   const char *name;
   double cta::Stat::*f;
@@ -531,7 +534,7 @@ const StatRow kStatRows[] = {
     {"年化波动", &cta::Stat::vol, "%.1f%%", 100, -1, "逐根净收益标准差 × √每年根数"},
     {"夏普", &cta::Stat::sharpe, "%.2f", 1, 1, "逐根净收益 均值 / 标准差 × √每年根数"},
     {"索提诺", &cta::Stat::sortino, "%.2f", 1, 1, "逐根净收益 均值 / 下行波动 √E[min(r, 0)²] × √每年根数"},
-    {"年化", &cta::Stat::cagr, "%+.1f%%", 100, 1, "全期净值按年数复利折算"},
+    {"年化", &cta::Stat::cagr, "%+.1f%%", 100, 1, "视野内净值按年数复利折算"},
     {"最大回撤", &cta::Stat::mdd, "%.1f%%", 100, 1, "净值自前高的最大回落"},
     {"年成本", &cta::Stat::cost, "%.2f%%", 100, -1, "佣金 + 印花税 + 冲击 + 震荡 + 跳空, 每年占净值; 展开看各分项"},
 };
@@ -543,7 +546,15 @@ void right(const char *s, const ImVec4 &col) {
 }
 
 // 名 | 持有 (灰, 作对照) | 策略 (比持有好 → kUp / 差 → kDn, 不论优劣的行 = 文字色); 数值右对齐
-void stat_table(const CtaResult &r) {
+//   指标 = 视野 [x0, x1] 内的根段 (同左侧三图 / 区间条), 每年根数沿用全期的 (根数 / 年数); 段变了才重算 (CtaState::seg 缓存)
+void stat_table(CtaState &c, const CtaResult &r) {
+  const size_t n = r.se->c.size();
+  const size_t i0 = static_cast<size_t>(std::clamp(std::ceil(c.x0), 0.0, static_cast<double>(n - 1)));
+  const size_t i1 = static_cast<size_t>(std::clamp(std::floor(c.x1), static_cast<double>(i0), static_cast<double>(n - 1))) + 1;
+  if (c.seg.of != &r || c.seg.gen != r.gen || c.seg.i0 != i0 || c.seg.i1 != i1) {
+    const double bpy = static_cast<double>(n) / r.tr.strat.st.years;
+    c.seg = {&r, r.gen, i0, i1, cta::stat_of(r.tr.hold.run, i0, i1, bpy), cta::stat_of(r.tr.strat.run, i0, i1, bpy)};
+  }
   if (!ImGui::BeginTable("##cta_stat", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
     return;
   ImGui::TableSetupColumn("##name", ImGuiTableColumnFlags_WidthStretch, 1.4f);
@@ -567,7 +578,7 @@ void stat_table(const CtaResult &r) {
       ImGui::TextUnformatted(name);
     if (ImGui::IsItemHovered())
       tip("%s = %s", name, note.c_str());
-    const double h = get(r.tr.hold.st), v = get(r.tr.strat.st);
+    const double h = get(c.seg.hold), v = get(c.seg.strat);
     for (const bool st : {false, true}) {
       ImGui::TableNextColumn();
       const double u = st ? v : h;
@@ -756,7 +767,7 @@ void path(CtaState &c, const CtaResult &r) {
     });
     if (h.on && h.r >= 0 && h.t >= 0 && static_cast<size_t>(h.t) < ls[static_cast<size_t>(h.r)].size()) {
       const Line &l = ls[static_cast<size_t>(h.r)][static_cast<size_t>(h.t)];
-      tip("%s = %s\n实线 = 所用 (阻尼后), 淡线 = 曲面最高点; 都 ÷ 首个有值日的值\n格里的数 = 光标处所用; 点 = 开关这条线", l.axis, l.tip);
+      tip("%s = %s; 点 = 开关", l.axis, l.tip);
     } else if (ImPlot::IsPlotHovered() && !h.box.Contains(ImGui::GetMousePos())) {
       const size_t i = static_cast<size_t>(std::clamp(std::lround(ImPlot::GetPlotMousePos().x), 0L, static_cast<long>(n - 1))), d = dix(r, i);
       std::string s = misc::dash(day_of(r, i));
@@ -803,7 +814,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   } else
     ImGui::TextDisabled("未算");
   if (syncing && ImGui::IsItemHovered())
-    tip("首次一趟合成全部篮子线与个股的 1 分钟价, 存在 all.bar 库目录 cache/price/ 下 (十年全市场约 40 GB); 之后只补新日, 退出不丢已合成的");
+    tip("首次合成全部 1 分钟价 (all.bar 库 cache/price/), 之后只补新日");
 
   // 设定: 分组 (band / 减仓 / 跟随 / 分层 / 引擎), 一行两项 (名 控件 | 名 控件, 各占半行); 改了即全部重算
   cta::Spec &sp = c.spec;
@@ -832,8 +843,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
     y = std::clamp(y, cta::kMinYears, cta::kMaxYears);
     c.editing |= ImGui::IsItemActive();
     if (ImGui::IsItemHovered())
-      tip("%s\n• %d ~ %d 年 (整年, 1 年 = %.0f 交易日), 默认 1 年; 不足窗长 = 自首日起全部 (expanding)\n• 编辑完生效", what, cta::kMinYears, cta::kMaxYears,
-          cta::kYearDays);
+      tip("%s (%d ~ %d 年)", what, cta::kMinYears, cta::kMaxYears);
   };
   const cta::P *at[2] = {};
   const std::string where = r ? cursor_at(*r, c.cursor, at) : std::string{};
@@ -856,7 +866,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
         ImGui::SameLine();
       ImGui::TextDisabled("%s: %.3g|%s|%.3g", ax.name, ax.lo, y, ax.hi);
       if (ImGui::IsItemHovered())
-        tip("%s = %s%s\n最小 | 光标处所用 (阻尼后) | 最大; 最小 / 最大 = 该轴的搜索硬边界", ax.name, ax.tip, ax.day ? " (以日计)" : "");
+        tip("%s = %s%s (最小 | 光标处所用 | 最大)", ax.name, ax.tip, ax.day ? ", 以日计" : "");
     }
   };
 
@@ -871,48 +881,31 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
     pick(name, kinds, pk, model, win);
   };
 
+  // 机制 (悬停只讲模型含义, 细节见 cta/Model.hpp · Tune.hpp · Trace.hpp):
+  //   band = 档线间距, 日频, 日内线性过渡到前一交易日收盘时的值; 止损 / 跟随线漂移都以它计
+  //   减仓 = 快线 (固定 5 日, 不调) 往逆向挪一个 band 为中线, 第 j 份的预期卖出线 = 中线 − j × band; 选参窗只管就绪 (窗内根数不足一半 = 买入持有)
+  //   跟随 = 跟随买入 / 卖出线朝价漂的模型 (两向镜像, 各份成交时定参); 每日以窗内卖出各笔的中位夏普拟岭回归曲面选参, 5 日阻尼
+  //   分层: 每份恰一条线 (减仓线 / 跟随买入线 / 跟随卖出线); 首个止损起其余减仓线锁定, 最下面的跟随卖出线带着下面锁定的线上移 / 横着;
+  //     跟随卖出线挂出时预期在上 = 上漂去追, 否则横着等, 追到 / 被预期上穿 = 回到随预期; 全部收复 = 锁定的回到随预期 (差额一日内消化)
+  //   份数 = 满仓份数, 也是每日评的参数组合数上限; 止损距 = 成交一份后新线离成交线几个 band
   ImGui::SeparatorText("band");
-  pick("band", cta::Band::kinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 日 d 盘中自上一日的值线性过渡到前一交易日收盘时的值, 收盘到齐; 人选, 不调); 止损与跟随线的漂移都以它计",
-       "band 的窗; 不足窗长 = 用已有的日 (增量窗)");
-  tuned("减仓", cta::Reduce::kinds, sp.reduce, 0,
-        "减仓模型: 中线 = 模型线统一往逆向 (多 = 下) 挪一个 band; 预期卖出线 = 中线往下每隔一个 band 一条 (第 j 份的预期 = 中线 − j × band, 各份各管自己的一条); 目的是尽量保留顺向敞口\n"
-        "调参目标 = 少穿线: 只看中线 (快线往逆向挪一个 band; 与分层档位 / 跟随无关), 窗内收盘穿过它的次数越少越好, 分 = −每日穿线次数",
-        "减仓选参的滚动窗: 每日以此前这么长的窗内网格各配置的分拟曲面, 取最高点用到当日; 窗内根数不足窗长一半 = 买入持有");
-  tuned("跟随", cta::Follow::kinds, sp.follow, 1,
-        "跟随模型: 成交过的份的跟随线怎么朝价漂 (参数以日计, 逐根摊开随分钟走; 各份的参数在它成交时定下, 之后不变, 各份可不同):\n"
-        "跟随买入线往下漂 (不越过 收盘 + 止损距) 做网格抄底, 跟随卖出线往上漂 (不越过 收盘 − 止损距, 也不越过其预期卖出线) 做移动止损; 两向同参数镜像\n"
-        "调参目标 = 每笔中位夏普: 在当日减仓下跑完整分层, 窗内卖出的各笔 (ln(卖价 / 买回价) − 成本) / (band / 卖价 × √持续日) 的中位; 窗末未买回的按窗末收盘计",
-        "跟随选参的滚动窗: 每日以此前这么长的窗内卖出的各笔打分, 拟曲面取最高点用到当日; 窗内无笔 = 沿用上一日的");
-  if (r) {
+  pick("band", cta::Band::kinds, sp.band, "band = 档线间距 (价格单位), 人选, 不调", "band 的窗");
+  tuned("减仓", cta::Reduce::kinds, sp.reduce, 0, "减仓模型: 快线 (5 日) 往下挪一个 band 为中线, 第 j 份的预期卖出线 = 中线 − j × band", "减仓的窗: 窗内数据不足 = 买入持有");
+  tuned("跟随", cta::Follow::kinds, sp.follow, 1, "跟随模型: 卖出后的跟随买入线往下漂 (抄底), 买回后的跟随卖出线往上漂 (移动止损)",
+        "跟随选参的滚动窗");
+  if (r)
     hint(where.c_str());
+  if (r) { // 参数轨迹 (默认折叠)
+    const bool open = ImGui::CollapsingHeader("参数轨迹");
     if (ImGui::IsItemHovered())
-      tip("光标 = 图上可拖的橙色竖线; 两节标题下的所用参数看它所在日");
-  }
-  if (r) {
-    ImGui::SeparatorText("参数轨迹");
-    if (ImGui::IsItemHovered())
-      tip("一张图: 各参数逐日 ÷ 各自首个有值日的值 (都从 1 起, log 轴), 只看相对变化; 实线 = 阻尼后所用, 淡线 = 曲面最高点; 淡线跳得频 / 跳得大 = 岭回归选参不稳\n"
-          "• 图例矩阵 (同 NAV): 行 = band / 减仓 / 跟随, 列 = 各自的参数; 点格开关该线 (默认全关), 点行头 / 列头切整行 / 整列; 格里的数 = 光标处所用\n"
-          "• 阻尼: 所用参数 (对数) 每日朝最高点走 1 / %.0f\n"
-          "• x 与左侧三图同一视野; 橙色竖线 = 光标",
-          cta::kDamp);
-    path(c, *r);
+      tip("各参数逐日 ÷ 首个有值日的值; 实线 = 所用, 淡线 = 曲面最高点");
+    if (open)
+      path(c, *r);
   }
 
   ImGui::SeparatorText("分层");
-  hint("减仓线首个止损起锁定, 全部收复且赶上预期才回到随中线; 自下而上第一条跟随卖出线压着下面的减仓线 (它上移一起上移, 它横着一起横着); 跟随卖出线只在预期更高时上移, 赶上即退化成减仓线");
   if (ImGui::IsItemHovered())
-    tip("每份恰一条线: 减仓线 (持有, 未触发 / 已退化) / 跟随买入线 (已减, 在价上) / 跟随卖出线 (持有, 已买回, 在价下); 成交按档线价\n"
-        "• 逐日换的量 (band / 减仓 / 跟随参数) 当日内自上一日的值线性过渡到当日值, 收盘到齐, 档线不在日界跳\n"
-        "• 持有的份跌到自己的线即卖 → 跟随买入线 = 线 + 止损距; 跟随买入线涨到即买回 → 跟随卖出线 = 线 − 止损距; 一根越过几条成交几条 (先近后远)\n"
-        "• 跟随线各份独立漂移, 只朝价走不回头: 跟随买入线只往下, 不越过 收盘 + 止损距; 跟随卖出线只往上, 不越过 收盘 − 止损距, 也不越过其预期卖出线;\n"
-        "  跟随卖出线只在其预期更高时上移; 自下而上赶上预期 = 退化成减仓线 (定在那里); 预期在它之下 = 横着等, 不下探\n"
-        "• 预期卖出线 (按份): 第 j 份 (j = 0 起) 的预期 = 中线 − j × band, 各份独立: 跟随卖出线只看自己那条, 它在上面就自己上移\n"
-        "• 减仓线: 起步 / 全部收复且都赶上预期 = 随预期卖出线 (随中线波动); 首个止损起锁定在触发时的位置, 不随中线, 下面的线只尊重上层的触发价\n"
-        "• 锁定时, 自下而上第一条跟随卖出线压着它下面所有减仓线: 它上移多少, 下面的一起上移多少; 它横着, 下面的一起横着 (不下探, 不破坏首个止损定下的锚)\n"
-        "• 跳空消化: 锁定 → 随预期的那根, 各减仓线留在原处, 与预期之差自那根起一日的根数内线性走完 (跨日接着走)\n"
-        "• 图上: 一份一条连续线 (恒为份数条), 绿 = 减仓线, 红 = 跟随买入线, 蓝 = 跟随卖出线, 成交处换色; 悬停一份 = 它的线各段一起高亮; 淡绿 = 预期卖出线 (未生效, 图例开关, 默认关)\n"
-        "• 中线 / band 尚无值 (如首日) = 买入持有 (与基准同口径)");
+    tip("每份一条线: 减仓线 → 跌到即卖成跟随买入线 → 涨到即买回成跟随卖出线 → 赶上预期回到减仓线");
   pair(
       "份数",
       [&] {
@@ -920,20 +913,14 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
         sp.rule.units = std::clamp(sp.rule.units, 1, 100);
         c.editing |= ImGui::IsItemActive();
         if (ImGui::IsItemHovered())
-          tip("满仓分几份 (= 档线条数), 一份 = 1 / 份数 的仓位; 默认 %d; 编辑完生效\n"
-              "• 也是减仓 / 跟随每日在当前最优点周围评的参数组合数上限 (两者各按自己的参数轴分; 分法悬停减仓 / 跟随的节标题看)\n"
-              "• 参数轴 = 自 v0 向两侧铺的格点, 相邻之比 %.3g, 间距不小于各轴基本单位 (小值处退成等差), 收进各轴硬边界\n"
-              "• 各轴的格点数轮流分得 (每次给格点最少的轴加一个), 积不超过份数; 网格 = 以当前最优为中点的全部组合 (碰到硬边界则整格平移进界)\n"
-              "• 每日拟岭回归曲面取连续最高点 (参数可为小数, 相邻格点间对数插值); 最近的格点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日",
-              cta::kUnits, cta::kStep, cta::kHops);
+          tip("满仓分几份 (= 档线条数); 默认 %d", cta::kUnits);
       },
       "止损", [&] {
         ImGui::InputFloat("##cta_stop", &sp.rule.stop, 0.1f, 0.5f, "%.2f");
         sp.rule.stop = std::clamp(sp.rule.stop, 0.0f, 10.0f);
         c.editing |= ImGui::IsItemActive();
         if (ImGui::IsItemHovered())
-          tip("止损距 (以 band 计): 成交一份, 该份换极性并止损 × band: 卖出 = 跟随买入线挂在卖出线上方这么远, 买回 = 跟随卖出线挂在买入线下方这么远; 默认 %.2g; 编辑完生效",
-              cta::kStop); });
+          tip("成交一份后, 新挂的跟随线离成交线几个 band; 默认 %.2g", cta::kStop); });
 
   ImGui::SeparatorText("引擎");
   {
@@ -956,14 +943,12 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   ImGui::SameLine();
   ImGui::TextDisabled("佣金 %.3g / 印花税 %.3g / 冲击 %.3g", rates.commission * 1e4, rates.stamp * 1e4, rates.impact * 1e4);
   if (ImGui::IsItemHovered())
-    tip("系统设置的税佣与固定冲击 (Settings), 各页同一份; 改了即重算\n"
-        "• 佣金 = 佣金率 × |Δ仓位|, 买卖各一次\n"
-        "• 印花税 = 印花税率 × 卖出量 (多头减仓 / 融券卖出), 买入不收\n"
-        "• 冲击 = 固定冲击 × |Δ仓位|, 买卖各一次, 不按金额变\n"
-        "• 震荡 / 跳空另计: 分层按收盘成交比按档线价成交多付的差; 最近那档的差 = 震荡, 一根越过几档多出的部分 = 跳空");
+    tip("系统设置 (Settings) 的税佣与固定冲击");
   if (r) {
-    ImGui::SeparatorText("全期指标");
-    stat_table(*r);
+    ImGui::SeparatorText("视野内指标");
+    if (ImGui::IsItemHovered())
+      tip("随左侧视野重算; 双击图回全段 = 全期");
+    stat_table(c, *r);
   }
 }
 

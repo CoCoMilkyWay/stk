@@ -41,11 +41,13 @@ inline Stat returns_stat(std::span<const double> r, double bpy) {
   return s;
 }
 
-inline Stat stat_of(const Tape &t, const Run &run, double bpy) {
-  Stat s = returns_stat(run.r, bpy);
-  const size_t n = t.n;
+// 根段 [i0, i1) 的指标 (i0 < i1; 段首的调仓量按前一根的仓位算); bpy = 每年根数
+inline Stat stat_of(const Run &run, size_t i0, size_t i1, double bpy) {
+  assert(i0 < i1 && i1 <= run.w.size() && "指标根段");
+  Stat s = returns_stat(std::span<const double>(run.r).subspan(i0, i1 - i0), bpy);
+  const size_t n = i1 - i0;
   double expo = 0, turn = 0;
-  for (size_t i = 0; i < n; ++i) {
+  for (size_t i = i0; i < i1; ++i) {
     expo += std::fabs(run.w[i]), turn += std::fabs(run.w[i] - (i ? run.w[i - 1] : 0.0f));
     for (size_t j = 0; j < kNC; ++j)
       s.costs[j] += run.k[i][j];
@@ -57,7 +59,7 @@ inline Stat stat_of(const Tape &t, const Run &run, double bpy) {
   return s;
 }
 
-// 一本账: 回测 + 全期指标 + 分层净值
+// 一本账: 回测 + 全期指标 (任一根段另由 stat_of 算) + 分层净值
 struct Book {
   Run run;
   Stat st;
@@ -68,7 +70,7 @@ struct Book {
 inline Book book_of(const Tape &t, Run run, double bpy) {
   assert(run.w.size() == t.n && "回测长度");
   Book b{std::move(run), {}, {}};
-  b.st = stat_of(t, b.run, bpy);
+  b.st = stat_of(b.run, 0, t.n, bpy);
   std::array<double, kNC + 1> v;
   v.fill(1);
   for (std::vector<double> &o : b.nav)
