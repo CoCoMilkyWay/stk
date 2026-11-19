@@ -6,8 +6,9 @@
 //     写: place 一张限价单 (逐步报进度, steps 即各步名)
 //   Broker (券商无关, 只此一份): 包一个 Driver + 刷新线程; 读由刷新线程发布, 拉 / 写由调用线程跑 (段 + 接上 + Driver), 两类同一个接入
 //     读: 一轮四样逐样读进底稿, 轮末 (成败都) 整份发布 (State, 不可变; 指针换了 = 换了一份), 上层不见半轮; 有人在看 (touch) 才转
-//       起因: request 要一轮 (不等) / sync 要一轮并等完 (都可只刷成交) / 有人在看而还没刷过或距上轮满 every 秒 /
+//       起因: request 要一轮 (不等) / sync 要一轮并等完 / 有人在看而还没刷过或距上轮满 every 秒 /
 //       下单成功后隔几秒 (限价单可能稍后才成交). 失败不自动重试, 等下一个起因
+//       hush (批量下单期间不扫客户端): 只认 request / sync, 不自起、不排下单后的
 //   客户端状态与预期不符 (界面没弹出 / 应答不认识 / 回报失败) 是外部结局, 不是本程序的错: fail 先在当时的段下记一行 (live/Trace.hpp)
 //   再抛 Fail, 在各轮 / 各事务的边界收成原因文本; 本程序自身的不变式一律 assert
 // 编码: 方向 买 +1 / 卖 −1 (BySide 下标 s < 0); 市场由代码前缀定 (market_of), 新浪码 = 前缀 + 代码, AssetInfo 码 = 代码 + 后缀
@@ -197,10 +198,6 @@ struct Refresh {
   double every = 0; // 定时周期 [s], 0 = 不定时
 };
 
-// 刷新一轮的范围: 全部 (成交 / 持仓 / 挂单 / 信用账户) / 只成交 (等成交时轮询, 快)
-enum class Part : uint8_t { All,
-                            Fills };
-
 enum class Credit : uint8_t { Plain,    // 普通 (担保品买卖)
                               Margin }; // 融资买入
 inline const char *credit_name(Credit c) { return c == Credit::Margin ? "融资" : "普通"; }
@@ -260,8 +257,9 @@ public:
   Refresh refresh() const;
 
   void touch();         // GUI 每帧: 有人在看
-  void request(Part p); // 要一轮 (不等)
-  void sync(Part p);    // 要一轮并等它刷完 (全部的一轮也算刷过成交); 失败 → Fail
+  void request();       // 要一轮 (不等)
+  void sync();          // 要一轮并等它刷完; 失败 → Fail
+  void hush(bool on);   // 批量下单期间: 只跑要的轮 (request / sync), 不自起刷新、不排下单后的
   void every(double s); // 定时周期 [s], 0 = 不定时
 
   Terms terms(const Report &r);

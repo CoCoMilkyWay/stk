@@ -85,7 +85,7 @@ inline Terms keep_of(const Tape &t, size_t kind, const P &p, const Col &N, float
 
 // ---- 加仓线目标 ----
 
-// 分层源: 减仓线核 c (日 d 用 pr[d]) + band N [日] → 分层 lad (加仓线核日 d 用 pa[d]); sel 未选参日 = Hold (分层复位; nullptr = 各日都选),
+// 分层源: 减仓线核 c (日 d 用 pr[d]) + band N [日] → 分层 lad (日 d 新卖出的份的加仓线用 pa[d], 之后不变); sel 未选参日 = Hold (分层复位; nullptr = 各日都选),
 //   刀未就绪 = Hold; 核逐根都走 (状态接续)
 template <class K, class A>
 struct Laddered {

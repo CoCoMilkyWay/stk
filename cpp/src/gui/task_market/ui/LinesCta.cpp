@@ -91,13 +91,14 @@ struct PbBand {
 
 // ---- 区间条 (range_bar, 同 NAV / VAL): x = 有根的日 (XDays 下标), 底线 = 各日末根收盘; 选段 [d0, d1) ↔ 两图 x 视野:
 //      每帧由视野定 (含该视野的整日段), 拖了 → 视野改成该整日段, 价格 y 回跟随;
-//      左把手松手 / 双击改了左端 (段内平移不算) → 净值图锚定到 d0 ----
+//      左把手松手 / 双击改了左端 (段内平移不算), 或两图框选 / 双击改了视野 → 净值图锚定到 d0 ----
 int range_formatter(double v, char *buf, int size, void *ud) {
   const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
   const misc::Ymd y = dates[static_cast<size_t>(std::clamp(v, 0.0, static_cast<double>(dates.size() - 1)))];
   return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
-void range(CtaState &c, const CtaResult &r, const XDays &xd, const ImVec2 &size) {
+// reanchor = 本帧框选 / 双击改了视野: 净值图锚定到视野的首日
+void range(CtaState &c, const CtaResult &r, const XDays &xd, const ImVec2 &size, bool reanchor) {
   const int K = static_cast<int>(xd.dates.size());
   assert(K > 0);
   std::vector<double> b(xd.xs); // 日界 [K + 1]: 日 k 占 x ∈ [b[k], b[k + 1])
@@ -106,6 +107,8 @@ void range(CtaState &c, const CtaResult &r, const XDays &xd, const ImVec2 &size)
   rg.d0 = std::clamp(static_cast<int>(std::ranges::upper_bound(b, c.x0) - b.begin()) - 1, 0, K - 1);
   rg.d1 = std::clamp(static_cast<int>(std::ranges::lower_bound(b, c.x1) - b.begin()), rg.d0 + 1, K);
   const int d0 = rg.d0, d1 = rg.d1;
+  if (reanchor)
+    c.anchor = d0;
   push_range_style();
   if (!ImPlot::BeginPlot("##cta_range", size, ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText)) {
     ImPlot::PopStyleVar();
@@ -147,7 +150,7 @@ size_t dix(const CtaResult &r, size_t i) { return r.se->t[i] / kS - r.se->t[0] /
 //        + PB Band (同 VAL: 偏离 v / q_j 乘本图当日末根收盘, 每日一点在该日末根; 填色 + 各档线共一个图例项, 默认关);
 //      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换); 底 = 区间条. x 同一视野 (链到 ui), 每像素取末根; 光标 = 可拖竖线 (两图同一条)
 //      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 双击回全段;
-//      光标 = 橙色竖线 (同 OrderFlow 锚线): 参数轨迹展开时才出现 (初放视野正中), 只能拖动, 标注时刻 ----
+//      光标 = 橙色竖线 (同 OrderFlow 锚线): 常显 (初放视野正中), 只能拖动, 标注时刻; 框选 / 双击改了视野 → 净值图锚定到视野首日 ----
 void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, const ImVec2 &size) {
   const cta::Series &se = *r.se;
   const cta::Track &tr = r.tr;
@@ -244,7 +247,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
   char pb_lb[48];
   std::snprintf(pb_lb, sizeof(pb_lb), "PB %d年 Band###cta_pb", pb.years);
   const double pad = static_cast<double>(n) * 0.02 + 10.0;
-  bool pinned = c.path_open && c.cursor < 0, reset = false;
+  bool pinned = c.cursor < 0, reset = false;
   double pin = c.cursor >= 0 ? c.cursor : std::clamp((c.x0 + c.x1) / 2, 0.0, static_cast<double>(n - 1));
   const auto setup_x = [&](ImPlotAxisFlags f) {
     ImPlot::SetupAxis(ImAxis_X1, nullptr, f);
@@ -254,15 +257,15 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
   };
   const auto track = [&](int id) { // 双击 = 回全段; 光标 (同 OrderFlow 锚线): 左键拖动, 松手停住
     reset |= ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
-    if (c.path_open)
-      pinned |= ImPlot::DragLineX(id, &pin, kPinCol, 2.0f, ImPlotDragToolFlags_NoFit);
+    pinned |= ImPlot::DragLineX(id, &pin, kPinCol, 2.0f, ImPlotDragToolFlags_NoFit);
   };
   const ImPlotInputMap keep = ImPlot::GetInputMap(); // 本页两图: 右键平移; 左键 = 价格图框选 (x + y) / 净值图横向框选 (XZoom); 画完还原
   ImPlot::MapInputReverse();
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2));
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2, 1));
 
-  if (c.boxing && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) // 框选松手: 本帧起用框的 y
+  const bool boxed = c.boxing && ImGui::IsMouseReleased(ImGuiMouseButton_Left); // 框选松手: 本帧起用框的 y, 净值图锚定到框的首日
+  if (boxed)
     c.fit_y = false;
   if (c.fit_y)
     ImPlot::SetNextAxisToFit(ImAxis_Y1);
@@ -363,7 +366,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
       ImPlot::PopPlotClipRect();
     }
     track(0);
-    if (c.path_open) {
+    {
       const size_t i = static_cast<size_t>(std::clamp(std::lround(pin), 0L, static_cast<long>(n - 1)));
       ImPlot::Annotation(static_cast<double>(i), se.c[i], kPinCol, ImVec2(5, -15), true, "%s", when(r, i).c_str());
     }
@@ -455,7 +458,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
     c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true;
     c.zoom.cancel();
   }
-  range(c, r, xd, ImVec2(size.x, kRangeH));
+  range(c, r, xd, ImVec2(size.x, kRangeH), boxed || zoomed || reset);
 }
 
 // ---- 中栏: 状态 + 设定 (改了下帧即重发) + 光标处所用参数 + 全期指标 ----
@@ -733,19 +736,31 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
           cta::kMaxYears, cta::kYearDays);
   };
   const cta::V *at[2] = {};
-  const std::string where = r ? cursor_at(*r, c.path_open ? c.cursor : -1, at) : std::string{};
-  const auto params = [&](const cta::Kind &k, const cta::V *v) { // 灰显参数 (按结果的模型): 光标处所用
+  const std::string where = r ? cursor_at(*r, c.cursor, at) : std::string{};
+  const auto head = [&](const char *name, const cta::Kind &k) { // 节标题 = 名 (参数维度); 悬停 = 参数网格的分法
+    std::string t = std::string(name) + " (";
+    for (size_t a = 0; a < k.axes.size(); ++a)
+      t += (a ? ", " : "") + std::string(k.axes[a].name);
+    t += k.axes.empty() ? "无参数)" : ")";
+    ImGui::SeparatorText(t.c_str());
+    if (ImGui::IsItemHovered())
+      tip("%s", grid_note(k, sp.grid).c_str());
+  };
+  const auto axes = [&](const cta::Kind &k, const cta::V *v) { // 各轴 最小 | 光标处所用 | 最大 (v = nullptr: 所用记 -)
+    if (k.axes.empty())
+      return;
+    std::string t;
     for (size_t a = 0; a < k.axes.size(); ++a) {
       const cta::Axis &ax = k.axes[a];
-      char s[32];
-      std::snprintf(s, sizeof(s), "%s%s", ax.name, ax.day ? " (日)" : "");
-      ImGui::TextUnformatted(s);
-      ImGui::SameLine(x0 + lw);
+      char b[96], y[16] = "-";
       if (v)
-        ImGui::TextDisabled("%.3g", (*v)[a]);
-      else
-        ImGui::TextDisabled("-");
+        std::snprintf(y, sizeof(y), "%.3g", (*v)[a]);
+      std::snprintf(b, sizeof(b), "%s%s: %.3g|%s|%.3g", a ? ", " : "", ax.name, ax.lo, y, ax.hi);
+      t += b;
     }
+    hint(t.c_str());
+    if (ImGui::IsItemHovered())
+      tip("各轴 最小 | 光标处所用 (阻尼后) | 最大; 最小 / 最大 = 该轴的搜索硬边界, 以日计的轴单位为日\n%s", grid_note(k, sp.grid).c_str());
   };
 
   ImGui::SeparatorText("band");
@@ -758,42 +773,41 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   sp.grid = std::clamp(sp.grid, 3, 1000);
   c.editing |= ImGui::IsItemActive();
   if (ImGui::IsItemHovered())
-    tip("减仓线 / 加仓线各自独立选参时, 每日在当前最优点周围评的参数组合数上限 (两者共用此数, 各自按自己的参数轴分; 分法见各模型下的注释); 默认 %d\n"
+    tip("减仓线 / 加仓线各自独立选参时, 每日在当前最优点周围评的参数组合数上限 (两者共用此数, 各自按自己的参数轴分; 分法悬停减仓线 / 加仓线的节标题看); 默认 %d\n"
         "• 参数轴 = 自 v0 向两侧铺的格点, 相邻之比 %.3g, 间距不小于各轴基本单位 (小值处退成等差), 收进各轴硬边界\n"
         "• 各轴的格点数轮流分得 (每次给格点最少的轴加一个), 积不超过此数; 网格 = 以当前最优为中点的全部组合 (碰到硬边界则整格平移进界)\n"
         "• 每日拟岭回归曲面取连续最高点 (参数可为小数, 相邻格点间对数插值); 最近的格点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日\n"
         "• 编辑完生效",
         cta::kGrid, cta::kStep, cta::kHops);
 
-  ImGui::SeparatorText("减仓线");
+  const cta::Kind &kr = cta::kReduceKinds[sp.reduce], &ka = cta::kAddKinds[sp.add];
+  head("减仓线", kr);
+  axes(kr, r && r->spec.reduce == sp.reduce ? at[0] : nullptr);
   label("模型");
   model_combo("##cta_reduce", cta::kReduceKinds, sp.reduce,
               "减仓线模型: 满仓时链顶随它, 往下每隔一个 band 一条减仓线; 目的是尽量保留顺向敞口\n"
               "调参目标 = 保敞口: 它当静态档线 (第 r 份 = 线 − r × band, 跌破即出 / 涨回即入, 与加仓线无关), 分 = (顺向 − 翻转成本) / 总振幅");
-  hint(grid_note(cta::kReduceKinds[sp.reduce], sp.grid).c_str());
   label("滚动窗 (年)");
   years("##cta_reduce_win", sp.reduce_win, "减仓线选参的滚动窗: 每日以此前这么长的窗内网格各配置的分拟曲面, 取最高点用到当日; 窗内根数不足窗长一半 = 买入持有");
-  params(cta::kReduceKinds[r ? r->spec.reduce : sp.reduce], at[0]);
 
-  ImGui::SeparatorText("加仓线");
+  head("加仓线", ka);
+  axes(ka, r && r->spec.add == sp.add ? at[1] : nullptr);
   label("模型");
   model_combo("##cta_add", cta::kAddKinds, sp.add,
-              "加仓线模型: 已减的份的加仓线每日收盘怎么下移 (不低于 收盘 + 止损距), 回撤够深后下移做网格抄底\n"
+              "加仓线模型: 已减的份的加仓线每日收盘怎么下移 (不低于 收盘 + 止损距), 回撤够深后下移做网格抄底; 各份的参数在它卖出时定下, 之后不变 (各份可不同)\n"
               "调参目标 = 每笔中位夏普: 在当日减仓线下跑完整分层, 窗内卖出的各笔 (ln(卖价 / 买回价) − 成本) / (band / 卖价 × √持续日) 的中位; 窗末未买回的按窗末收盘计");
-  hint(grid_note(cta::kAddKinds[sp.add], sp.grid).c_str());
   label("滚动窗 (年)");
   years("##cta_add_win", sp.add_win, "加仓线选参的滚动窗: 每日以此前这么长的窗内卖出的各笔打分, 拟曲面取最高点用到当日; 窗内无笔 = 沿用上一日的");
-  params(cta::kAddKinds[r ? r->spec.add : sp.add], at[1]);
   if (r) {
     hint(where.c_str());
     if (ImGui::IsItemHovered())
-      tip("灰显 = 光标 (参数轨迹展开时图上可拖的竖线; 收起 = 末根) 处所用的参数; 以日计的轴单位为日");
+      tip("光标 = 图上可拖的橙色竖线; 两节标题下的所用参数看它所在日");
   }
   c.path_open = r && ImGui::CollapsingHeader("参数轨迹");
   if (r && ImGui::IsItemHovered())
     tip("减仓线 / 加仓线逐日参数, 每轴 ÷ 各自首个选参日的值 (都从 1 起, log 轴), 只看相对变化: 实线 = 阻尼后所用, 淡线 = 曲面最高点; 淡线跳得频 / 跳得大 = 岭回归选参不稳\n"
         "• 阻尼: 所用参数 (对数) 每日朝最高点走 1 / %.0f\n"
-        "• x 与左侧两图同一视野; 展开时左图出现光标 (橙色竖线), 中栏参数看光标所在日",
+        "• x 与左侧两图同一视野; 橙色竖线 = 光标, 中栏参数看光标所在日",
         cta::kDamp);
   if (c.path_open)
     path(c, *r);

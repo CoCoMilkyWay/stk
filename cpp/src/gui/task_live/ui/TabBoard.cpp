@@ -176,7 +176,7 @@ void progress(LiveHub &hub) {
 void data_ctl(LiveHub &hub, BoardState &st) {
   live::Broker &b = hub.broker();
   if (ImGui::SmallButton("刷新"))
-    b.request(live::Part::All);
+    b.request();
   if (ImGui::IsItemHovered())
     tip("客户端依次重查当日成交、持仓、挂单、信用资产与融资负债, 一轮查完整份更新");
   ImGui::SameLine();

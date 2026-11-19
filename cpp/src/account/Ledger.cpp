@@ -169,7 +169,7 @@ Ledger pull(live::Broker &b, const live::Report &r) {
   l.rows = merge(l.rows, from, std::move(fresh));
   r.step("核对");
   r.live("刷新持仓, 核对资金流水…");
-  b.sync(live::Part::All);
+  b.sync();
   const std::shared_ptr<const live::State> s = b.state();
   live::need(s->pos && s->fills && s->acct, "持仓 / 成交 / 信用账户没读到");
   const std::string off = reconcile(l.rows, *s->pos, *s->fills);

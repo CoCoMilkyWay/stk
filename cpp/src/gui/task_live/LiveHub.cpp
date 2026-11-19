@@ -10,8 +10,9 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
-#include <iterator>
+#include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_set>
 
@@ -37,7 +38,6 @@ namespace {
 using Core = LiveHub::Core;
 using Lock = std::lock_guard<std::mutex>;
 
-constexpr double kFillWait = 120, kFillGap = 1; // 等卖单成交: 最长秒数、两次只刷成交之间隔几秒
 const nlohmann::json kNone = nlohmann::json::object();
 
 double mono() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -130,6 +130,76 @@ void fetch(Core &c, sina::Client &cl, const live::State &st, const std::vector<l
   take(c, st, std::move(q));
 }
 
+// 下单用的盘口: 批量 = 后台一条常驻连接每 kBookGap 秒取一遍这批各只, 取用最新的一份; 收到已超 kBookStale 秒或还没这只 → 当场现取.
+// 单笔 (secs 空) = 每次现取. 后台线程持 Feed 的 shared_ptr, 析构只置停 (在途的一问做完即退)
+class Books {
+public:
+  struct Book {
+    live::Quote q;
+    double age = 0; // 收到距今 [s]; 现取 = 0
+    bool fed = false;
+  };
+  explicit Books(const std::vector<live::Sec> &secs) {
+    std::vector<std::string> syms;
+    for (const live::Sec &s : secs)
+      syms.push_back(live::sina_sym(s.mkt, s.code));
+    std::sort(syms.begin(), syms.end());
+    syms.erase(std::unique(syms.begin(), syms.end()), syms.end());
+    assert(syms.size() <= static_cast<size_t>(sina::kQuoteMax) && "一批下单的码超出一次快照");
+    if (syms.empty())
+      return;
+    std::thread([f = feed_, syms = std::move(syms)] {
+      sina::Client cl(sina::kQuoteHost);
+      std::unique_lock lk(f->mu);
+      while (!f->stop) {
+        lk.unlock();
+        live::Quotes q;
+        for (const sina::Quote &x : cl.quotes(syms))
+          q[x.sym.substr(2)] = live::quote_of(x);
+        lk.lock();
+        f->q = std::move(q);
+        f->at = mono();
+        f->cv.wait_for(lk, std::chrono::duration<double>(kBookGap), [&] { return f->stop; });
+      }
+    }).detach();
+  }
+  ~Books() {
+    {
+      Lock lk(feed_->mu);
+      feed_->stop = true;
+    }
+    feed_->cv.notify_all();
+  }
+  Books(const Books &) = delete;
+  Books &operator=(const Books &) = delete;
+
+  Book get(const live::Sec &s) {
+    {
+      Lock lk(feed_->mu);
+      const auto i = feed_->q.find(s.code);
+      if (const double age = mono() - feed_->at; i != feed_->q.end() && age <= kBookStale)
+        return {i->second, age, true};
+    }
+    if (!cl_)
+      cl_.emplace(sina::kQuoteHost);
+    const std::vector<sina::Quote> got = cl_->quotes({live::sina_sym(s.mkt, s.code)});
+    live::need(!got.empty(), "新浪查无此码");
+    return {live::quote_of(got[0])};
+  }
+
+private:
+  static constexpr double kBookGap = 0.5, kBookStale = 5; // [s]
+  struct Feed {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool stop = false;
+    live::Quotes q;
+    double at = 0; // 收到于 (mono)
+  };
+  std::shared_ptr<Feed> feed_ = std::make_shared<Feed>();
+  std::optional<sina::Client> cl_; // 现取的连接 (头一回现取才建)
+};
+
 // ---------- 事务 ----------
 
 // 记一条: 落盘字段, 页面留文字
@@ -176,9 +246,9 @@ std::string quote_text(const live::Quote &q) {
               top(q.book(live::kSell)).c_str(), live::auction(q) ? " · 竞价中" : "");
 }
 
-// 事务里下一单: 「行情」现取盘口记一条、按 mode 定委托价, 再交 broker 下; o 的量为 qty 股或 size 元 (恰给其一).
+// 事务里下一单: 「行情」从 books 取盘口记一条、按 mode 定委托价, 再交 broker 下; o 的量为 qty 股或 size 元 (恰给其一).
 // 本单进最近几单之首, 各步记进本单与事务的步骤 (前缀 at, 如「卖出 2/5」); 请求与结局各记一条, 成败看 st (不抛)
-OrderJob exec(Core &c, live::OrderReq o, std::string label, live::PxMode mode, const std::string &at) {
+OrderJob exec(Core &c, Books &books, live::OrderReq o, std::string label, live::PxMode mode, const std::string &at) {
   const char *px_name = live::kPxModeNames[static_cast<int>(mode)];
   note(c, "order", strf("%s %s %s %s %s · %s", live::side_name(o.side), live::credit_name(o.credit), o.sec.code.c_str(), o.sec.name.c_str(), label.c_str(), px_name),
        {{"order", live::to_json(o)}, {"mode", px_name}});
@@ -205,11 +275,9 @@ OrderJob exec(Core &c, live::OrderReq o, std::string label, live::PxMode mode, c
   OrderJob out;
   try {
     step(0);
-    sina::Client cl(sina::kQuoteHost);
-    const std::vector<sina::Quote> got = cl.quotes({live::sina_sym(o.sec.mkt, o.sec.code)});
-    live::need(!got.empty(), "新浪查无此码");
-    const live::Quote q = live::quote_of(got[0]);
-    note(c, "quote", quote_text(q), {{"quote", quote_json(q)}});
+    const Books::Book b = books.get(o.sec);
+    const live::Quote &q = b.q;
+    note(c, "quote", quote_text(q) + (b.fed ? strf(" · 流 %.1fs 前", b.age) : " · 现取"), {{"quote", quote_json(q)}, {"fed", b.fed}, {"age", std::round(b.age * 100) / 100}});
     const std::optional<double> r = live::ref(q);
     live::need(r.has_value(), "无参考价");
     const std::optional<double> px = live::order_px(q, o.side, mode, o.size > 0 ? o.size : o.qty * *r);
@@ -255,7 +323,7 @@ void flows_task(Core &c) {
 // 刷新一轮 (成交、持仓、挂单、信用账户), 记下账户
 std::shared_ptr<const live::State> sync(Core &c) {
   stage(c, "刷新");
-  c.broker->sync(live::Part::All);
+  c.broker->sync();
   auto st = c.broker->state();
   assert(st->pos && st->fills && st->orders && st->acct);
   const live::Account &a = *st->acct;
@@ -281,39 +349,14 @@ live::rebal::Plan plan_now(Core &c, sina::Client &cl) {
   return *p;
 }
 
-OrderJob place_one(Core &c, const live::rebal::Order &o, live::PxMode mode, const std::string &at) {
-  return exec(c, {o, o.side, o.credit, 0, o.qty, 0}, strf("%.0f股", o.qty), mode, at);
-}
-
-double sold(const live::State &st, const std::string &code) {
-  const live::Traded *f = st.fills->by_code.find(code);
-  return f ? f->qty[live::kSell] : 0;
-}
-
-std::string by_code(const std::map<std::string, double> &want, const std::map<std::string, double> &got) {
-  std::string s;
-  for (const auto &[code, n] : want)
-    s += strf("%s%s %.0f/%.0f股", s.empty() ? "" : " · ", code.c_str(), got.at(code), n);
-  return s;
-}
-
-// 只刷成交, 到成交表里各只卖量到 want [股]
-void wait_fills(Core &c, const std::map<std::string, double> &want) {
-  stage(c, "等成交");
-  const double end = mono() + kFillWait;
-  for (;;) {
-    c.broker->sync(live::Part::Fills);
-    const auto st = c.broker->state();
-    std::map<std::string, double> got;
-    for (const auto &[code, n] : want)
-      got[code] = sold(*st, code);
-    note(c, "fills", "卖单成交 (到 / 要): " + by_code(want, got), {{"want", want}, {"got", got}});
-    if (std::all_of(want.begin(), want.end(), [&](const auto &w) { return got[w.first] >= w.second; }))
-      return;
-    live::need(mono() < end, strf("%.0fs 内卖单没成交完 (到 / 要): %s", kFillWait, by_code(want, got).c_str()));
-    std::this_thread::sleep_for(std::chrono::duration<double>(kFillGap));
-  }
-}
+// 批量下单期间 broker 不自起刷新 (不扫客户端), 出作用域即恢复
+struct Hush {
+  live::Broker &b;
+  explicit Hush(live::Broker &x) : b(x) { b.hush(true); }
+  ~Hush() { b.hush(false); }
+  Hush(const Hush &) = delete;
+  Hush &operator=(const Hush &) = delete;
+};
 
 void rebal_task(Core &c) {
   sina::Client cl(sina::kQuoteHost);
@@ -327,31 +370,21 @@ void rebal_task(Core &c) {
     live::fail(strf("还有 %zu 笔未成交委托 (%s), 撤掉或等成交后再调仓", st->orders->list.size(), s.c_str()));
   }
   const live::PxMode mode = inputs(c)->cfg.px;
-  live::rebal::Plan p = plan_now(c, cl);
+  const live::rebal::Plan p = plan_now(c, cl);
   std::vector<std::string> fails; // 没下成的单: 记下接着下后面的, 末了一并报
-  std::vector<live::rebal::Order> sells;
-  std::copy_if(p.orders.begin(), p.orders.end(), std::back_inserter(sells), [](const live::rebal::Order &o) { return o.side == live::kSell; });
-  if (!sells.empty()) {
-    std::map<std::string, double> want;
-    for (const live::rebal::Order &o : sells)
-      want[o.code] = sold(*st, o.code);
-    for (size_t i = 0; i < sells.size(); ++i)
-      if (const OrderJob j = place_one(c, sells[i], mode, strf("卖出 %zu/%zu", i + 1, sells.size())); j.st == JobSt::Ok)
-        want[sells[i].code] += j.got.qty;
-      else
+  {
+    const Hush hush(*c.broker);
+    Books books(std::vector<live::Sec>(p.orders.begin(), p.orders.end()));
+    for (size_t i = 0; i < p.orders.size(); ++i) {
+      const live::rebal::Order &o = p.orders[i];
+      const OrderJob j = exec(c, books, {o, o.side, o.credit, 0, o.qty, 0}, strf("%.0f股", o.qty), mode,
+                              strf("%s %zu/%zu", live::side_name(o.side), i + 1, p.orders.size()));
+      if (j.st != JobSt::Ok)
         fails.push_back(failed(j));
-    wait_fills(c, want);
-    sync(c);
-    edit(c, &Core::in, [](Inputs &x) { x.cfg.sells.clear(); });
-    p = plan_now(c, cl);
-  }
-  for (size_t i = 0; i < p.orders.size(); ++i) {
-    const live::rebal::Order &o = p.orders[i];
-    live::need(o.side == live::kBuy, "去掉卖出后试算仍有卖单: " + o.code + " " + o.name);
-    if (const OrderJob j = place_one(c, o, mode, strf("买入 %zu/%zu", i + 1, p.orders.size())); j.st != JobSt::Ok)
-      fails.push_back(failed(j));
+    }
   }
   sync(c);
+  edit(c, &Core::in, [](Inputs &x) { x.cfg.sells.clear(); });
   if (!fails.empty()) {
     std::string s;
     for (const std::string &f : fails)
@@ -585,7 +618,8 @@ void LiveHub::submit(const std::string &code, int side, double size, live::Credi
   }
   const live::OrderReq o{*sec, side, credit, 0, 0, size};
   start(c_, "下单", [o, mode = in_->cfg.px](Core &c) {
-    const OrderJob j = exec(c, o, strf("%gW", o.size / 1e4), mode, "");
+    Books books(std::vector<live::Sec>{});
+    const OrderJob j = exec(c, books, o, strf("%gW", o.size / 1e4), mode, "");
     live::need(j.st == JobSt::Ok, failed(j));
   });
 }

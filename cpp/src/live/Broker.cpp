@@ -10,7 +10,6 @@
 #include <cstdarg>
 #include <cstdio>
 #include <ctime>
-#include <iterator>
 #include <mutex>
 #include <thread>
 
@@ -73,8 +72,6 @@ constexpr int kKicks[] = {1, 6};  // 下单成功后隔几秒各刷新一次 (�
 constexpr int kSyncTries = 2;     // 一轮里成交与持仓对不上 (两问之间又成交) 时最多连查几遍
 constexpr auto kWatchLinger = 1s; // touch 之后算有人在看的时长
 
-constexpr size_t idx(Part p) { return static_cast<size_t>(p); }
-
 } // namespace
 
 // mu: State 的底稿 (轮内逐样改) 与发布的一份 (轮末整份换上)、进度、轮次与起因
@@ -85,22 +82,24 @@ struct Broker::Core {
   std::condition_variable cv;
   std::shared_ptr<const State> st = std::make_shared<State>(), shown = st;
   Refresh prog{.every = kEvery};
-  bool stop = false;
-  uint64_t asked[2] = {}, done[2] = {};  // 各范围 (下标 Part) 要过 / 刷完的轮号
-  std::optional<Clock::time_point> last; // 上一个全部的一轮结束时刻
+  bool stop = false, hushed = false;
+  uint64_t asked = 0, done = 0;          // 要过 / 刷完的轮号
+  std::optional<Clock::time_point> last; // 上一轮结束时刻
   std::vector<Clock::time_point> kicks;
   Clock::time_point touched{};
 
-  // 要一轮 → 该范围的轮号
-  uint64_t want(Part p) {
+  // 要一轮 → 轮号
+  uint64_t want() {
     std::lock_guard lk(mu);
-    const uint64_t n = ++asked[idx(p)];
+    const uint64_t n = ++asked;
     cv.notify_all();
     return n;
   }
-  // 刚下过单: 隔几秒各刷一次
+  // 刚下过单: 隔几秒各刷一次 (hush 着不排)
   void kick() {
     std::lock_guard lk(mu);
+    if (hushed)
+      return;
     const Clock::time_point now = Clock::now();
     for (const int k : kKicks)
       kicks.push_back(now + std::chrono::seconds(k));
@@ -137,23 +136,21 @@ struct Broker::Core {
 
   // ---------- 刷新线程 ----------
 
-  // 该刷新一轮了 → (起因, 范围); 不该 → 无 (须持 mu)
-  std::optional<std::pair<const char *, Part>> due(Clock::time_point now) {
-    if (asked[idx(Part::All)] > done[idx(Part::All)])
-      return std::pair{"请求", Part::All};
-    if (asked[idx(Part::Fills)] > done[idx(Part::Fills)])
-      return std::pair{"等成交", Part::Fills};
-    if (now - touched >= kWatchLinger)
-      return std::nullopt;
+  // 该刷新一轮了 → 起因; 不该 → 空 (须持 mu)
+  const char *due(Clock::time_point now) {
+    if (asked > done)
+      return "请求";
+    if (hushed || now - touched >= kWatchLinger)
+      return nullptr;
     if (!kicks.empty() && now >= kicks.front()) {
       kicks.erase(kicks.begin());
-      return std::pair{"下单后", Part::All};
+      return "下单后";
     }
     if (!last)
-      return std::pair{"首轮", Part::All};
+      return "首轮";
     if (prog.every > 0 && now - *last >= std::chrono::duration<double>(prog.every))
-      return std::pair{"定时", Part::All};
-    return std::nullopt;
+      return "定时";
+    return nullptr;
   }
 
   // 读一样、记进底稿: fn() → 值
@@ -190,22 +187,17 @@ struct Broker::Core {
       return a;
     });
   }
-  // 只刷成交 (等卖单成交时轮询)
-  void round_fills() {
-    put(&State::fills, [&] { return d->fills(); });
-  }
 
   void tick() {
-    uint64_t n[2];
-    std::optional<std::pair<const char *, Part>> cause;
+    uint64_t n = 0;
+    const char *why = nullptr;
     {
       std::unique_lock lk(mu);
-      if (!cv.wait_for(lk, kTick, [&] { return stop || (cause = due(Clock::now())).has_value(); }) || stop)
+      if (!cv.wait_for(lk, kTick, [&] { return stop || (why = due(Clock::now())) != nullptr; }) || stop)
         return;
-      std::copy(std::begin(asked), std::end(asked), n);
+      n = asked;
     }
-    const auto [why, part] = *cause;
-    trace::Span span("刷新", {{"why", why}, {"n", n[idx(part)]}});
+    trace::Span span("刷新", {{"why", why}, {"n", n}});
     std::string down, msg;
     note("接入");
     try { // 错误边界: 接不上报在 down, 一轮失败报在 err, 都等下一个起因再刷
@@ -215,18 +207,15 @@ struct Broker::Core {
     }
     if (down.empty()) {
       try {
-        part == Part::All ? round() : round_fills();
+        round();
       } catch (const Fail &f) {
         msg = f.why;
       }
     }
     std::lock_guard lk(mu);
     shown = st;
-    if (part == Part::All) {
-      last = Clock::now();
-      done[idx(Part::All)] = n[idx(Part::All)];
-    }
-    done[idx(Part::Fills)] = n[idx(Part::Fills)]; // 全部的一轮也刷了成交
+    last = Clock::now();
+    done = n;
     prog.step.clear();
     prog.down = down;
     prog.err = down.empty() ? msg : "";
@@ -270,18 +259,25 @@ void Broker::touch() {
   c_->touched = Clock::now();
 }
 
-void Broker::request(Part p) { c_->want(p); }
+void Broker::request() { c_->want(); }
 
-void Broker::sync(Part p) {
-  const uint64_t n = c_->want(p);
+void Broker::sync() {
+  const uint64_t n = c_->want();
   std::unique_lock lk(c_->mu);
-  c_->cv.wait(lk, [&] { return c_->done[idx(p)] >= n || c_->stop; });
+  c_->cv.wait(lk, [&] { return c_->done >= n || c_->stop; });
   if (c_->stop)
     fail("已断开");
   if (!c_->prog.down.empty())
     fail("接不上客户端: " + c_->prog.down);
   if (!c_->prog.err.empty())
     fail("刷新失败: " + c_->prog.err);
+}
+
+void Broker::hush(bool on) {
+  std::lock_guard lk(c_->mu);
+  c_->hushed = on;
+  if (on)
+    c_->kicks.clear();
 }
 
 void Broker::every(double s) {

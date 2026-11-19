@@ -9,7 +9,7 @@
 //     band kBandKinds (atr / dev): 档线间距 g
 //     减仓线 kReduceKinds (price / ema / kama / mid): 满仓随它, 目的是尽量保留顺向敞口; 一个模型一个核, 日首 day(d, p) 换参, 逐根 bar(i) 出值, 状态逐根接续;
 //       定参 (调参打分) = 各日同参, 变参 (实盘) = 逐日所用参数, 同一个核
-//     加仓线 kAddKinds (decay / chand / sar): 已减的份的加仓线每日收盘怎么下移, 回撤够深后下移做网格抄底
+//     加仓线 kAddKinds (decay / chand / sar): 已减的份的加仓线每日收盘怎么下移, 回撤够深后下移做网格抄底; 各份的参数在它卖出时定下, 之后不变
 //   分层: 减仓线链 (链顶锚定上一个触发点, 往下每条隔当日间距; 满仓随减仓线, 减仓线上穿链顶即回到随减仓线) + 各份加仓线;
 //     卖出即挂加仓线于成交价外 stop · 间距 (止损), 买回后链顶 = 买入价 − stop · 间距; 加仓线每日收盘按加仓线模型下移, 不低于 收 + stop · 间距 (减仓线不下移); 一份 = 1 / 份数
 //   列只在两端: 原料带 (只读) → 逐根链 (源 → 成交 → 汇) → 轨迹列 Cuts; 核 / 分层的状态 (各份档线) 只在源里
@@ -17,6 +17,7 @@
 //   成交 / 成本 / 逐根链归 Engine
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -318,7 +319,8 @@ void with_reduce(size_t kind, const Tape &t, F &&f) {
 
 // ---- 加仓线 ----
 //   顺向坐标 (多 = 价, 空 = −价) 下加仓线在价上; 日末各加仓线 b 先按模型下移 fall, 再收到不低于 收 + 止损距 (分层里做)
-//   核: 日首 day(d, p) 换参; sold(j, x) = 份 j 在 x 卖出 (挂上加仓线); 逐根 bar(i, b) (成交前, b = 各份加仓线, 持有 = NaN); 日末 close(d) 后逐份 fall(j, b, g)
+//   各份的参数在它卖出 (挂上加仓线) 时定下, 之后不变 (各份可不同); 当日参数只给当日新卖出的份
+//   核: 日首 day(d, p) 换当日参数; sold(j, x) = 份 j 在 x 卖出 (定下它的参数); 逐根 bar(i, b) (成交前, b = 各份加仓线, 持有 = NaN); 日末 close(d) 后逐份 fall(j, b, g)
 
 // 加仓线模型 (下标同 kAddKinds)
 enum : size_t { kDecay,
@@ -330,54 +332,83 @@ inline const Kind kAddKinds[] = {
     {"chand", "吊灯: 每日收盘压到 近 n 日最低 + m × 间距 以下 (只降不升)", {{"n", 20, 1, 250, 1, true}, {"m", 3, 0.25f, 10, 0.25f}}},
     {"sar", "抛物线 (各份自卖出起): 每日收盘朝卖出以来的最低移 af 倍距离; 创新低的日 af += 步长 (≤ max)", {{"af", 0.02f, 0.002f, 0.2f, 0.002f}, {"max", 0.2f, 0.02f, 1, 0.02f}}}};
 
-// decay: b − r · g
-struct Decay {
-  double r = 0;
-  void day(size_t, const P &p) {
-    assert(p[0] > 0 && "衰减距");
-    r = p[0];
+// 各份的参数: 日首换当日参数 cur, 份卖出时 freeze 定下
+struct Frozen {
+  P cur{};
+  std::vector<P> at; // [份]
+  void freeze(size_t j) {
+    if (at.size() <= j)
+      at.resize(j + 1);
+    at[j] = cur;
   }
-  void sold(size_t, double) {}
-  void bar(size_t, const std::vector<double> &) {}
-  void close(size_t) {}
-  double fall(size_t, double b, double g) const { return b - r * g; }
 };
 
-// chand: min(b, 近 round(n / 每日根数) 日的顺向最低 + m · g) (含当日)
+// decay: b − trail · g
+struct Decay {
+  Frozen p;
+  void day(size_t, const P &q) {
+    assert(q[0] > 0 && "衰减距");
+    p.cur = q;
+  }
+  void sold(size_t j, double) { p.freeze(j); }
+  void bar(size_t, const std::vector<double> &) {}
+  void close(size_t) {}
+  double fall(size_t j, double b, double g) const { return b - p.at[j][0] * g; }
+};
+
+// chand: min(b, 近 round(n / 每日根数) 日的顺向最低 + m · g) (含当日); 区间最低查稀疏表 (建核时一遍)
 struct Chand {
   const Tape &t;
   float s;
-  size_t k = 1;
-  double m = 0, lo = 0;
-  void day(size_t, const P &p) {
-    k = std::max<size_t>(1, len(p[0] / static_cast<float>(t.S))), m = p[1];
-    assert(m > 0 && "吊灯倍数");
+  Frozen p;
+  std::vector<Col> mn = lows(t, s); // [层 l][日] 自该日起 2^l 日的顺向最低 (无根的日 = +∞)
+  size_t d = 0;                     // 当日
+  void day(size_t, const P &q) {
+    assert(q[1] > 0 && "吊灯倍数");
+    p.cur = q;
   }
-  void sold(size_t, double) {}
+  void sold(size_t j, double) { p.freeze(j); }
   void bar(size_t, const std::vector<double> &) {}
-  void close(size_t d) {
-    lo = INFINITY;
-    for (size_t e = d + 1 > k ? d + 1 - k : 0; e <= d; ++e)
-      lo = std::min<double>(lo, s > 0 ? t.dl[e] : -t.dh[e]); // 无根的日 NaN: min 取前者
+  void close(size_t x) { d = x; }
+  double fall(size_t j, double b, double g) const {
+    const P &q = p.at[j];
+    const size_t k = std::max<size_t>(1, len(q[0] / static_cast<float>(t.S))), a = d + 1 > k ? d + 1 - k : 0;
+    const size_t l = static_cast<size_t>(std::bit_width(d + 1 - a)) - 1;
+    return std::min(b, std::min<double>(mn[l][a], mn[l][d + 1 - (size_t{1} << l)]) + q[1] * g);
   }
-  double fall(size_t, double b, double g) const { return std::min(b, lo + m * g); }
+  static std::vector<Col> lows(const Tape &t, float s) {
+    const size_t nd = t.days.size();
+    std::vector<Col> o(1, Col(nd));
+    for (size_t e = 0; e < nd; ++e) {
+      const float v = s > 0 ? t.dl[e] : -t.dh[e];
+      o[0][e] = std::isnan(v) ? INFINITY : v;
+    }
+    for (size_t l = 1, h = 1; 2 * h <= nd; ++l, h *= 2) {
+      Col c(nd - 2 * h + 1);
+      for (size_t e = 0; e < c.size(); ++e)
+        c[e] = std::min(o[l - 1][e], o[l - 1][e + h]);
+      o.push_back(std::move(c));
+    }
+    return o;
+  }
 };
 
-// sar: 各份自卖出起记顺向最低 ep (起于卖价) 与加速 af (起于步长); 日末创过新低则 af += 步长 (≤ max), b += af · (ep − b)
+// sar: 各份自卖出起记顺向最低 ep (起于卖价) 与加速 af (起于该份的步长); 日末创过新低则 af += 步长 (≤ max), b += af · (ep − b)
 struct Sar {
   const Tape &t;
   float s;
-  double st = 0, mx = 0;
+  Frozen p;
   std::vector<double> af, ep;
   std::vector<uint8_t> nw; // [份] 当日创了新低
-  void day(size_t, const P &p) {
-    st = p[0], mx = std::max(p[0], p[1]);
-    assert(st > 0 && "SAR 步长");
+  void day(size_t, const P &q) {
+    assert(q[0] > 0 && "SAR 步长");
+    p.cur = q;
   }
   void sold(size_t j, double x) {
+    p.freeze(j);
     if (af.size() <= j)
       af.resize(j + 1), ep.resize(j + 1), nw.resize(j + 1);
-    af[j] = st, ep[j] = x, nw[j] = 0;
+    af[j] = p.at[j][0], ep[j] = x, nw[j] = 0;
   }
   void bar(size_t i, const std::vector<double> &b) {
     const double v = s > 0 ? t.l[i] : -t.h[i];
@@ -387,8 +418,9 @@ struct Sar {
   }
   void close(size_t) {}
   double fall(size_t j, double b, double) {
+    const P &q = p.at[j];
     if (nw[j])
-      af[j] = std::min(af[j] + st, mx), nw[j] = 0;
+      af[j] = std::min<double>(af[j] + q[0], std::max(q[0], q[1])), nw[j] = 0;
     return b + af[j] * (ep[j] - b);
   }
 };

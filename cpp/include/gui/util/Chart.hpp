@@ -357,8 +357,9 @@ inline void range_bar(DayRange &rg, const std::vector<misc::Ymd> &dates, double 
 }
 
 // 日轴刻度 (横轴为交易日的各图同一份, 日内画分钟也一样): 竖线只落在 日 / 周 / 月 / 年 的首个交易日的日界 (轴首日算所在周 / 月 / 年的首日),
-//   档 = 视野内刻度数不超过 kDayTickMax 的最细一档 (不看图宽), 都超取年; 标签 日 / 周 = YY/MM/DD, 月 = YYYY/MM, 年 = YYYY,
-//   离上个刻度不足 kDayLabelGap 个标签宽的整条略去 (节假日短周 / 短月挤在一起时), 竖线恒带标签.
+//   档 = 视野内刻度数不超过 kDayTickMax、且按平均间距排得下各标签 (刻度数 × kDayLabelGap 个标签宽 ≤ 图宽) 的最细一档, 都不行取年
+//   (一档内不隔日 / 隔周地抽); 标签 日 / 周 = YY/MM/DD, 月 = YYYY/MM, 年 = YYYY,
+//   离上个刻度不足 kDayLabelGap 个标签宽的整条略去 (只在节假日短周 / 短月挤在一起时), 竖线恒带标签.
 //   日 d 的日界 x = d · w + at; xs 非空则取 xs[d] (不等宽的轴, 升序). fmt / ud = 该轴自己的格式 (鼠标读数用; 刻度标签不经它). 须活到 EndPlot
 struct DayAxis {
   std::span<const misc::Ymd> dates;
@@ -388,15 +389,16 @@ inline void day_locator(ImPlotTicker &t, const ImPlotRange &r, float px, bool, I
   const size_t d1 = static_cast<size_t>(std::ranges::partition_point(ix, [&](size_t d) { return a.x(d) <= r.Max; }) - ix.begin());
   const auto on = [&](size_t d, int u) { return u == kTickDay || d == 0 || day_period(a.dates[d - 1], u) != day_period(a.dates[d], u); };
   constexpr const char *kSample[] = {"00/00/00", "00/00/00", "0000/00", "0000"};
+  const auto label_w = [&](int u) { return ImGui::CalcTextSize(kSample[u]).x * kDayLabelGap; };
   int u = kTickDay;
   for (; u < kTickYear; ++u) {
     size_t n = 0;
     for (size_t d = d0; d < d1 && n <= kDayTickMax; ++d)
       n += on(d, u);
-    if (n <= kDayTickMax)
+    if (n <= kDayTickMax && static_cast<double>(n) * label_w(u) <= px)
       break;
   }
-  const double ppx = px / (r.Max - r.Min), lw = ImGui::CalcTextSize(kSample[u]).x * kDayLabelGap;
+  const double ppx = px / (r.Max - r.Min), lw = label_w(u);
   double last = -HUGE_VAL; // 上个刻度的像素 x
   char s[16];
   for (size_t d = d0; d < d1; ++d) {
