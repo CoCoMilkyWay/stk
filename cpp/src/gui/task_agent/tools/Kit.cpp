@@ -78,7 +78,8 @@ void ApplyAct(State &s, const Act &a, Ref at) {
     break;
   case Tool::EvalFactor:
     if (const TrialRes *x = AsTrial(a); x && x->st.ok()) {
-      s.board.vary(c, at);
+      if (s.board.find(c.str("hyp"))) // 工作台的回测可不挂板上的假设
+        s.board.vary(c, at);
       s.staged.insert(x->st.file);
       s.flags.evaled = true;
     }

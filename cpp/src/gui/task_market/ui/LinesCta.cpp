@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace GUI::Market {
@@ -32,8 +33,7 @@ constexpr ImVec4 kMidCol(1.0f, 0.6f, 0.2f, 1.0f), kHoldCol(0.6f, 0.6f, 0.6f, 1.0
 constexpr ImVec4 kCostCol[] = {{0.35f, 0.60f, 0.95f, 1.0f}, {0.70f, 0.50f, 0.95f, 1.0f}, {0.95f, 0.65f, 0.25f, 1.0f}, {0.30f, 0.80f, 0.75f, 1.0f}, {0.95f, 0.40f, 0.55f, 1.0f}};
 static_assert(std::size(kCostCol) == cta::kNC, "成本带色");
 constexpr float kCostA = 0.22f, kCostHotA = 0.6f;
-constexpr float kBandA0 = 0.8f, kBandA1 = 0.06f;   // 档线不透明度: 同极性离收盘最近 / 最远那条
-constexpr ImVec4 kPbCol(0.75f, 0.55f, 1.0f, 1.0f); // PB 分位线
+constexpr float kBandA0 = 0.8f, kBandA1 = 0.06f; // 档线不透明度: 同极性离收盘最近 / 最远那条
 
 // 有效根 i 所在日 / 槽
 misc::Ymd day_of(const CtaResult &r, size_t i) { return r.dates[r.se->t[i] / kS]; }
@@ -79,15 +79,19 @@ XDays x_days(const CtaResult &r) {
   return o;
 }
 
-// 标的 BP 估值分位 (VAL 标的的滚动分位同一份: 日并集轴 dates 上, 窗 years 年; pct 空 = 无估值腿)
-struct PbPct {
+// 标的 BP Band 的来源 (VAL 标的同一份): 日并集轴 dates 上, 轴日 k 的估值账行 at[k] (−1 = 无), BP 收益率 v [账行] (nullptr = 无估值腿),
+// 滚动分位 roll (窗 years 年); 轴日 k 的 band_j 偏离 = v / q_j(k) (× 价格 = 该档价)
+struct PbBand {
   const std::vector<misc::Ymd> &dates;
-  const std::vector<float> &pct;
+  const std::vector<int32_t> &at;
+  const float *v;
+  const LinesRoll &roll;
   int years;
 };
 
 // ---- 区间条 (range_bar, 同 NAV / VAL): x = 有根的日 (XDays 下标), 底线 = 各日末根收盘; 选段 [d0, d1) ↔ 两图 x 视野:
-//      每帧由视野定 (含该视野的整日段), 拖了 → 视野改成该整日段, 价格 y 回跟随 ----
+//      每帧由视野定 (含该视野的整日段), 拖了 → 视野改成该整日段, 价格 y 回跟随;
+//      左把手松手 / 双击改了左端 (段内平移不算) → 净值图锚定到 d0 ----
 int range_formatter(double v, char *buf, int size, void *ud) {
   const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
   const misc::Ymd y = dates[static_cast<size_t>(std::clamp(v, 0.0, static_cast<double>(dates.size() - 1)))];
@@ -117,9 +121,12 @@ void range(CtaState &c, const CtaResult &r, const XDays &xd, const ImVec2 &size)
   ImPlot::SetNextLineStyle(ImGui::GetStyleColorVec4(ImGuiCol_Text), 1.0f);
   ImPlot::PlotLine("##cta_range_line", xs.data(), ys.data(), static_cast<int>(xs.size()));
   x_ticks_inside();
+  const int was = rg.drag;
   range_bar(rg, xd.dates, 1.0);
   ImPlot::EndPlot();
   ImPlot::PopStyleVar();
+  if (rg.drag == 0 && (was == 1 || (was == 0 && rg.d0 != d0)))
+    c.anchor = rg.d0;
   if (rg.d0 != d0 || rg.d1 != d1)
     c.x0 = b[static_cast<size_t>(rg.d0)], c.x1 = b[static_cast<size_t>(rg.d1)], c.fit_y = true;
 }
@@ -137,17 +144,17 @@ std::vector<size_t> sample(size_t n, double x0, double x1, size_t step) {
 size_t dix(const CtaResult &r, size_t i) { return r.se->t[i] / kS - r.se->t[0] / kS; }
 
 // ---- 两图: 上 = 收盘 (按仓位着色: 多 → kUp / 空 → kDn, 越满越纯) + 中线 + 档线 (每份一条: 减仓线 / 加仓线) + 买 / 卖标记 (逐根时才画)
-//        + PB 分位 (图例开关, 默认关; 开着才起右轴 0 ~ 100%; 每日一点在该日末根);
+//        + PB Band (同 VAL: 偏离 v / q_j 乘本图当日末根收盘, 每日一点在该日末根; 填色 + 各档线共一个图例项, 默认关);
 //      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换); 底 = 区间条. x 同一视野 (链到 ui), 每像素取末根; 光标 = 可拖竖线 (两图同一条)
 //      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 双击回全段;
 //      光标 = 橙色竖线 (同 OrderFlow 锚线): 参数轨迹展开时才出现 (初放视野正中), 只能拖动, 标注时刻 ----
-void plots(CtaState &c, const CtaResult &r, const char *name, const PbPct &pb, const ImVec2 &size) {
+void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, const ImVec2 &size) {
   const cta::Series &se = *r.se;
   const cta::Track &tr = r.tr;
   const size_t n = se.c.size();
-  if (c.fit != r.ref) { // 换标的: 回全段, 光标回末根
+  if (c.fit != r.ref) { // 换标的: 回全段, 光标回末根, 锚回首日
     c.fit = r.ref;
-    c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true, c.cursor = -1;
+    c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true, c.cursor = -1, c.anchor = 0;
   }
   const size_t step = std::max<size_t>(1, static_cast<size_t>((c.x1 - c.x0) / std::max(1.0f, size.x)));
   const std::vector<size_t> at = sample(n, c.x0, c.x1, step);
@@ -160,8 +167,14 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbPct &pb, c
   std::vector<double> xs(at.size());
   for (size_t k = 0; k < at.size(); ++k)
     xs[k] = static_cast<double>(at[k]);
+  const XDays xd = x_days(r);
+  assert(c.anchor >= 0 && static_cast<size_t>(c.anchor) < xd.dates.size());
+  const size_t anc = c.anchor ? xd.last[static_cast<size_t>(c.anchor) - 1] : 0; // 锚根: 锚定日前一日末根 (锚 = 首日则首根); 净值 / 成本带在此 = 1
   const cta::Col &w = tr.strat.run.w;
-  const std::vector<double> close = take(se.c), mid = take(tr.cut.mid), nav = take(tr.strat.nav), hold = take(tr.hold.nav);
+  const std::vector<double> close = take(se.c), mid = take(tr.cut.mid);
+  std::vector<double> nav = take(tr.strat.nav), hold = take(tr.hold.nav);
+  for (size_t k = 0; k < at.size(); ++k)
+    nav[k] /= tr.strat.nav[anc], hold[k] /= tr.hold.nav[anc];
   std::vector<double> wm(at.size(), 0); // wm[k] = 点 k → k + 1 这段所持的平均仓位 (根 at[k] .. at[k + 1] − 1 收盘调到的)
   for (size_t k = 0; k + 1 < at.size(); ++k) {
     for (size_t i = at[k]; i < at[k + 1]; ++i)
@@ -199,18 +212,36 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbPct &pb, c
   const ImGuiStyle &st = ImGui::GetStyle();
   const float ph = ImGui::GetContentRegionAvail().y - 2 * st.ItemSpacing.y - kRangeH, h1 = std::floor(ph * kPriceFrac);
   XFmt fmt{&r, c.x1 - c.x0 < 3.0 * kS};
-  const XDays xd = x_days(r);
   DayAxis ax{xd.dates, 1.0, 0.0, xd.xs, x_formatter, &fmt};
-  std::vector<double> pb_x, pb_y; // PB 分位: 有根的日各一点 (该日末根; 日并集轴上无该日 = NaN)
-  assert(pb.pct.empty() || pb.pct.size() == pb.dates.size());
-  if (!pb.pct.empty())
-    for (size_t k = 0; k < xd.dates.size(); ++k) {
-      const auto it = std::ranges::lower_bound(pb.dates, xd.dates[k]);
-      pb_x.push_back(static_cast<double>(xd.last[k]));
-      pb_y.push_back(it != pb.dates.end() && *it == xd.dates[k] ? pb.pct[static_cast<size_t>(it - pb.dates.begin())] : kNaN);
-    }
+  // PB Band: 有根的日各一点 (该日末根), 价 = 末根收盘 × v / q_j (同 VAL 断开: 轴上无该日 / v ≤ 0 / 窗内有无解点 / q_j ≤ 0 = NaN); 填色只画各档全有限的连续段
+  const size_t nk = xd.dates.size();
+  std::vector<double> pb_x(nk), pb_y[kBandQ];
+  std::vector<std::pair<int, int>> pb_segs;
+  for (std::vector<double> &y : pb_y)
+    y.assign(nk, kNaN);
+  assert(!pb.v || (pb.at.size() == pb.dates.size() && pb.roll.band.size() == pb.dates.size()));
+  for (size_t k = 0; k < nk; ++k) {
+    pb_x[k] = static_cast<double>(xd.last[k]);
+    const auto it = std::ranges::lower_bound(pb.dates, xd.dates[k]);
+    if (!pb.v || it == pb.dates.end() || *it != xd.dates[k])
+      continue;
+    const size_t j = static_cast<size_t>(it - pb.dates.begin());
+    const double v = pb.at[j] >= 0 ? pb.v[pb.at[j]] : kNaN;
+    if (!(v > 0.0) || !pb.roll.band[j])
+      continue;
+    for (int q = 0; q < kBandQ; ++q)
+      if (const float qk = pb.roll.q[q][j]; qk > 0.f)
+        pb_y[q][k] = se.c[xd.last[k]] * v / qk;
+    if (!(pb.roll.q[kBandQ - 1][j] > 0.f)) // q 降序: 最贵档 > 0 ⇔ 各档全有限
+      continue;
+    const int ik = static_cast<int>(k);
+    if (pb_segs.empty() || pb_segs.back().second != ik)
+      pb_segs.push_back({ik, ik + 1});
+    else
+      ++pb_segs.back().second;
+  }
   char pb_lb[48];
-  std::snprintf(pb_lb, sizeof(pb_lb), "PB %d年分位###cta_pb", pb.years);
+  std::snprintf(pb_lb, sizeof(pb_lb), "PB %d年 Band###cta_pb", pb.years);
   const double pad = static_cast<double>(n) * 0.02 + 10.0;
   bool pinned = c.path_open && c.cursor < 0, reset = false;
   double pin = c.cursor >= 0 ? c.cursor : std::clamp((c.x0 + c.x1) / 2, 0.0, static_cast<double>(n - 1));
@@ -235,16 +266,29 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbPct &pb, c
   if (c.fit_y)
     ImPlot::SetNextAxisToFit(ImAxis_Y1);
   if (ImPlot::BeginPlot("##cta_px", ImVec2(size.x, h1), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus)) {
-    const ImPlotItem *pb_it = ImPlot::GetItem(pb_lb); // 上帧图例的显隐 (首帧未登记 = 默认关)
-    const bool pb_on = pb_it && pb_it->Show;
     setup_x(ImPlotAxisFlags_NoTickLabels);
     ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_RangeFit);
-    if (pb_on) {
-      ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault);
-      ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, 100.0, ImPlotCond_Always);
-      ImPlot::SetupAxisFormat(ImAxis_Y2, "%.0f%%");
-    }
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_Horizontal);
+    { // PB Band (同 VAL 主图): 色块 c ∈ [0, kBandQ]: 0 = 最便宜档以下 (到图底), kBandQ = 最贵档以上 (到图顶), 其余 = 相邻两档之间; 线进 fit, 填色不进
+      ImPlot::HideNextItem(true, ImPlotCond_Once);
+      for (const auto &[i0, i1] : pb_segs) {
+        const int m = i1 - i0;
+        const double *x = pb_x.data() + i0;
+        for (int q = 0; q <= kBandQ; ++q) {
+          ImPlot::SetNextFillStyle(band_col(static_cast<double>(q) / kBandQ, 1.0f), kBandFillA);
+          if (q == 0)
+            ImPlot::PlotShaded(pb_lb, x, pb_y[0].data() + i0, m, -HUGE_VAL, ImPlotItemFlags_NoFit);
+          else if (q == kBandQ)
+            ImPlot::PlotShaded(pb_lb, x, pb_y[kBandQ - 1].data() + i0, m, HUGE_VAL, ImPlotItemFlags_NoFit);
+          else
+            ImPlot::PlotShaded(pb_lb, x, pb_y[q - 1].data() + i0, pb_y[q].data() + i0, m, ImPlotItemFlags_NoFit);
+        }
+      }
+      for (int q = 0; q < kBandQ; ++q) {
+        ImPlot::SetNextLineStyle(band_col((q + 0.5) / kBandQ, kBandLineA), q == kBandQ / 2 ? 1.5f : 1.0f);
+        ImPlot::PlotLine(pb_lb, pb_x.data(), pb_y[q].data(), static_cast<int>(nk), ImPlotLineFlags_SkipNaN);
+      }
+    }
     { // 档线 (Cuts::rungs_at): 一份一条连续线 (恒为份数条), 段色按段末的极性: 减仓线绿 / 加仓线红; 每点在同色里按离收盘的远近排名, 越近越浓 (逐段画);
       //   图例只管两色的显隐
       static const char *const kName[] = {"减仓线", "加仓线"};
@@ -317,12 +361,6 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbPct &pb, c
       }
       ImPlot::PopPlotClipRect();
     }
-    ImPlot::HideNextItem(true, ImPlotCond_Once);
-    if (pb_on) // 关着时右轴不起, 登记在左轴 (隐着不画不 fit)
-      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-    ImPlot::SetNextLineStyle(kPbCol, 1.2f);
-    ImPlot::PlotLine(pb_lb, pb_x.data(), pb_y.data(), static_cast<int>(pb_x.size()), ImPlotLineFlags_SkipNaN);
-    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
     track(0);
     if (c.path_open) {
       const size_t i = static_cast<size_t>(std::clamp(std::lround(pin), 0L, static_cast<long>(n - 1)));
@@ -340,14 +378,14 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbPct &pb, c
     ImPlot::SetupAxisScale(ImAxis_Y1, c.nav_log ? ImPlotScale_Log10 : ImPlotScale_Linear);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_Horizontal);
     // 成本带: 逐项叠 (带下沿 = 叠回前几项, 上沿 = 再叠回本项), 带厚 = 该项把净值压下去的量; 悬停的带高亮 + 说明
-    //   基线 = 策略净值; 图例隐去策略净值时 = 1 (各沿除以策略净值, 只看成本本身)
+    //   基线 = 策略净值; 图例隐去策略净值时 = 1 (各沿除以策略净值, 只看成本本身); 各沿在锚根 = 1 (自锚根起不扣前几项的净值)
     const cta::Book &sb = tr.strat;
     const bool hovered = ImPlot::IsPlotHovered(); // 锁定 setup 之后 item 才能按 label 查
     const ImPlotItem *nav_it = ImPlot::GetItem("策略净值");
     const bool on_nav = !nav_it || nav_it->Show;
+    const auto lift = [&](size_t j, size_t i) { return j ? sb.lift[j - 1][i] / sb.lift[j - 1][anc] : sb.nav[i] / sb.nav[anc]; };
     const auto edge = [&](size_t j, size_t i) { // 第 j 层的下沿 (j = 0 = 基线; j = kNC = 毛)
-      const double v = j ? sb.lift[j - 1][i] : sb.nav[i];
-      return on_nav ? v : v / sb.nav[i];
+      return on_nav ? lift(j, i) : lift(j, i) / lift(0, i);
     };
     int band = -1;
     size_t bi = 0;
@@ -374,6 +412,11 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbPct &pb, c
     ImPlot::PlotLine("持有净值", xs.data(), hold.data(), static_cast<int>(xs.size()));
     ImPlot::SetNextLineStyle(ImGui::GetStyleColorVec4(ImGuiCol_Text), 1.5f);
     ImPlot::PlotLine("策略净值", xs.data(), nav.data(), static_cast<int>(xs.size()));
+    if (c.anchor > 0) { // 锚点: 锚定日的日界
+      const double x = xd.xs[static_cast<size_t>(c.anchor)];
+      ImPlot::SetNextLineStyle(kHoldCol, 1.0f);
+      ImPlot::PlotInfLines("##cta_anchor", &x, 1, ImPlotItemFlags_NoFit);
+    }
     track(1);
     const double zx = plot_mouse_x();
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemActive()) // 拖光标时不起
@@ -798,9 +841,11 @@ void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, 
   ImGui::PopStyleVar();
   if (!q.ok())
     ImGui::TextDisabled("右表单选一个指数 / 行业 / 概念 / 成分股 (与 VAL 同一份选中)");
-  else if (show)
-    plots(c, *show, name, {ui.der.val.dates, ui.roll.val[kValBp].pct, ui.roll.key.years}, ImGui::GetContentRegionAvail());
-  else if (!ready)
+  else if (show) {
+    const LinesLeg &lg = ui.roll.key.leg; // 滚动分位所属的估值腿 (= 本页标的的)
+    plots(c, *show, name, {ui.der.val.dates, ui.der.val.val_at, lg.b ? lg.b->val_of(lg.line, kValBp) : nullptr, ui.roll.val[kValBp], ui.roll.key.years},
+          ImGui::GetContentRegionAvail());
+  } else if (!ready)
     ImGui::TextDisabled("等价格库…");
   else if (!m && !off)
     ImGui::TextDisabled("读分钟价…");

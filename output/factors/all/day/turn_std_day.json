@@ -2,5 +2,8 @@
  "type": "alpha",
  "name_cn": "换手波动",
  "expr": "CsRank(TsNeg(TsStdRoll(TsDiv(bar.1d.volume_day, bar.1d.float_shares), d)))",
- "note": "d 日换手标准差取负; 长江 高频因子-016 换手率波动率 IC 0.1013 方向负 (月)"
+ "note": "d 日换手标准差取负; 长江 高频因子-016 换手率波动率 IC 0.1013 方向负 (月)",
+ "search": [
+  {"hold":2001,"start_date":"2021-11-18","end_date":"2026-11-17","days":1211,"top":{"expr":"CsRank(TsNeg(TsStdRoll(TsDiv(bar.1d.volume_day, bar.1d.float_shares), d=4)))","sign":1,"mono":0.8617,"ls":0.0002059,"ric":0.02068,"g":3.163e-06,"se":1.898e-06,"mu":0.0,"peak":false}}
+ ]
 }

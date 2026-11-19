@@ -228,13 +228,14 @@ std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
   auto r = std::make_shared<TrialRes>();
   r->gate = s.gate;
   Cand cand{c.str("name"), c.str("name_cn"), c.str("expr"), c.str("hyp"), c.str("note")};
-  if (std::string miss = eval_miss(c, s.st.board, s.me.round); !miss.empty()) {
+  // 工作台不查假设 (板上没有也照回测, 只为试工具)
+  if (std::string miss = s.dry ? std::string() : eval_miss(c, s.st.board, s.me.round); !miss.empty()) {
     r->st.cand = std::move(cand);
     r->st.res = {.name = r->st.cand.name, .name_cn = r->st.cand.name_cn, .tmpl = r->st.cand.expr, .note = r->st.cand.note, .error = std::move(miss), .verdict = Verdict::Unstaged, .visible = false};
   } else {
     const Hyp *h = s.st.board.find(cand.hyp);
-    assert(h);
-    r->st = s.lab.stage(std::move(cand), h->title());
+    assert(h || s.dry);
+    r->st = s.lab.stage(std::move(cand), h ? h->title() : std::string());
   }
   if (!r->st.ok()) {
     a.out = Done(std::move(r), false);

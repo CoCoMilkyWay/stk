@@ -2,5 +2,11 @@
  "type": "alpha",
  "name_cn": "高频偏度",
  "expr": "CsRank(TsNeg(TsSkewRoll(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17)), d)))",
- "note": "近 d 箱 15 分钟收益偏度取负 (掩首箱); 海通 选股因子-019 高频收益偏度 rankIC -0.053 (月), 长江 高频因子-016 收益偏度方向负"
+ "note": "近 d 箱 15 分钟收益偏度取负 (掩首箱); 海通 选股因子-019 高频收益偏度 rankIC -0.053 (月), 长江 高频因子-016 收益偏度方向负",
+ "search": [
+  {"hold":30,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsSkewRoll(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17)), d=3)))","sign":1,"mono":0.1639,"ls":-1.319e-05,"ric":0.005713,"g":-2.024e-09,"se":8.921e-10,"mu":0.0,"peak":false}},
+  {"hold":60,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsSkewRoll(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17)), d=5)))","sign":1,"mono":0.2256,"ls":9.863e-07,"ric":0.01181,"g":5.928e-10,"se":1.45e-08,"mu":0.0,"peak":false}},
+  {"hold":1000,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsSkewRoll(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17)), d=209)))","sign":1,"mono":0.6617,"ls":-7.518e-05,"ric":0.02205,"g":-7.257e-07,"se":6.926e-07,"mu":0.0,"peak":false}},
+  {"hold":2001,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsSkewRoll(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17)), d=219)))","sign":1,"mono":0.7203,"ls":0.00054,"ric":0.03875,"g":1.086e-05,"se":3.227e-06,"mu":0.0,"peak":false}}
+ ]
 }

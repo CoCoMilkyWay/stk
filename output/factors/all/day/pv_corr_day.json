@@ -2,5 +2,8 @@
  "type": "alpha",
  "name_cn": "日量价相关",
  "expr": "CsRank(TsNeg(TsCorrRoll(bar.1d.close_day, bar.1d.volume_day, d)))",
- "note": "d 日 corr(收盘价, 成交量) 取负 (close_day 不复权, 窗内除权会扰动); 长江 高频因子-015 Spearman_21d(volume, close) 方向负, 海通 选股因子-012 量价相关性"
+ "note": "d 日 corr(收盘价, 成交量) 取负 (close_day 不复权, 窗内除权会扰动); 长江 高频因子-015 Spearman_21d(volume, close) 方向负, 海通 选股因子-012 量价相关性",
+ "search": [
+  {"hold":2001,"start_date":"2021-11-18","end_date":"2026-11-17","days":1211,"top":{"expr":"CsRank(TsNeg(TsCorrRoll(bar.1d.close_day, bar.1d.volume_day, d=23)))","sign":1,"mono":0.9308,"ls":0.0008023,"ric":0.03621,"g":2.517e-05,"se":5.084e-06,"mu":0.0,"peak":false}}
+ ]
 }

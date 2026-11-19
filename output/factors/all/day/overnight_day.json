@@ -2,5 +2,8 @@
  "type": "alpha",
  "name_cn": "隔夜收益",
  "expr": "CsRank(TsNeg(TsSumRoll(TsLogRatio(bar.1d.open_day, bar.1d.pre_close), d)))",
- "note": "d 日隔夜对数收益和取负 (open / 前一行 pre_close); 方正 多因子选股-004 隔夜反转为负, 中金 量化多因子-006 隔夜动量为正, 方向待 Search 定"
+ "note": "d 日隔夜对数收益和取负 (open / 前一行 pre_close); 方正 多因子选股-004 隔夜反转为负, 中金 量化多因子-006 隔夜动量为正, 方向待 Search 定",
+ "search": [
+  {"hold":2001,"start_date":"2021-11-18","end_date":"2026-11-17","days":1211,"top":{"expr":"CsRank(TsNeg(TsSumRoll(TsLogRatio(bar.1d.open_day, bar.1d.pre_close), d=235)))","sign":-1,"mono":0.7549,"ls":0.0003817,"ric":0.01695,"g":3.687e-06,"se":1.208e-06,"mu":0.0,"peak":false}}
+ ]
 }

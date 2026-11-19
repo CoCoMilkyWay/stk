@@ -73,8 +73,8 @@ constexpr const char *kPairName[2][kPairLines] = {{"可成交", "理想"}, {"有
 constexpr const char *kPairTag[2][kPairLines] = {{" 可成交", " 理想"}, {"", " 无冲击"}};
 int pair_kind(const LinesRow &r) { return !r.ref.ok(); }
 
-// VAL 线表 (标的线色 = 该行的 row_color): band 填色 / 线 / 线尾刻度的 alpha
-constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f, kBandTagA = 0.9f;
+// VAL 线尾刻度的 alpha (band 填色 / 线的见 LinesCommon.hpp)
+constexpr float kBandTagA = 0.9f;
 // VAL 线尾刻度: 价格线末点 × (1 + r) 的点位 (对照 band 线看离各档还差多少); 色 = band_col(u) (涨绿, 跌越多越红)
 struct ValMark {
   double r, u;

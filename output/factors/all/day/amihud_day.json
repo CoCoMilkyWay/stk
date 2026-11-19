@@ -2,5 +2,8 @@
  "type": "alpha",
  "name_cn": "非流动性",
  "expr": "CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), bar.1d.amount_day), bar.1d.amount_day), d))",
- "note": "Amihud: d 日 |r| / 成交额 均值 (零成交日掩掉, TsDiv 分母 0 会给 0); 东方 因子选股-014 非流动性溢价, 方向正"
+ "note": "Amihud: d 日 |r| / 成交额 均值 (零成交日掩掉, TsDiv 分母 0 会给 0); 东方 因子选股-014 非流动性溢价, 方向正",
+ "search": [
+  {"hold":2001,"start_date":"2021-11-18","end_date":"2026-11-17","days":1211,"top":{"expr":"CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), bar.1d.amount_day), bar.1d.amount_day), d=71))","sign":-1,"mono":0.9579,"ls":0.000643,"ric":0.04788,"g":2.825e-05,"se":1.4e-05,"mu":2.854e-05,"peak":false}}
+ ]
 }

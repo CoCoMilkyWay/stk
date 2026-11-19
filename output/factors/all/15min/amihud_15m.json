@@ -2,5 +2,11 @@
  "type": "alpha",
  "name_cn": "高频非流动性",
  "expr": "CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17))), bar.15m.amount_15min), bar.15m.amount_15min), d))",
- "note": "近 d 箱 |r| / 成交额 均值 (掩首箱 + 零成交箱); 广发 多因子-048 Amihud_illiq rankIC 0.0699 方向正 (周)"
+ "note": "近 d 箱 |r| / 成交额 均值 (掩首箱 + 零成交箱); 广发 多因子-048 Amihud_illiq rankIC 0.0699 方向正 (周)",
+ "search": [
+  {"hold":30,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17))), bar.15m.amount_15min), bar.15m.amount_15min), d=235))","sign":-1,"mono":0.3203,"ls":-3.711e-05,"ric":0.05506,"g":-2.096e-07,"se":2.88e-07,"mu":0.0,"peak":false}},
+  {"hold":60,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17))), bar.15m.amount_15min), bar.15m.amount_15min), d=43))","sign":-1,"mono":0.2887,"ls":-0.0001879,"ric":0.06539,"g":-1.024e-06,"se":4.597e-07,"mu":0.0,"peak":false}},
+  {"hold":1000,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17))), bar.15m.amount_15min), bar.15m.amount_15min), d=173))","sign":-1,"mono":0.5098,"ls":0.0002148,"ric":0.05049,"g":2.819e-06,"se":4.096e-06,"mu":0.0,"peak":false}},
+  {"hold":2001,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsMask(TsLogRatio(bar.15m.close_15min, TsDelayRoll(bar.15m.close_15min, d=1)), TsTodMask(k=1, k2=17))), bar.15m.amount_15min), bar.15m.amount_15min), d=235))","sign":-1,"mono":0.6135,"ls":0.001093,"ric":0.05706,"g":2.348e-05,"se":1.45e-05,"mu":0.0,"peak":false}}
+ ]
 }

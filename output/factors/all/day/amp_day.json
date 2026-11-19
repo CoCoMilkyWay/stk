@@ -2,5 +2,8 @@
  "type": "alpha",
  "name_cn": "日振幅",
  "expr": "CsRank(TsNeg(TsMeanRoll(TsLogRatio(bar.1d.high_day, bar.1d.low_day), d)))",
- "note": "d 日 ln(high / low) 均值取负; 方正 多因子选股-006 传统振幅 rankIC -0.0741 (月), 信达 因子选股-001 Amp_Mean -0.0548"
+ "note": "d 日 ln(high / low) 均值取负; 方正 多因子选股-006 传统振幅 rankIC -0.0741 (月), 信达 因子选股-001 Amp_Mean -0.0548",
+ "search": [
+  {"hold":2001,"start_date":"2021-11-18","end_date":"2026-11-17","days":1211,"top":{"expr":"CsRank(TsNeg(TsMeanRoll(TsLogRatio(bar.1d.high_day, bar.1d.low_day), d=25)))","sign":1,"mono":0.9534,"ls":0.0007111,"ric":0.05877,"g":3.799e-05,"se":1.812e-05,"mu":3.609e-05,"peak":false}}
+ ]
 }
