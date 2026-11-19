@@ -190,7 +190,7 @@ bool trace(const Series &se, size_t S, const Spec &sp, const Rates &u, double bp
   Cuts cut(n);
   Pnl strat(t), hold(t);
   Record rec{cut};
-  with_reduce(sp.reduce, t, [&]<class K>(K &k) {
+  with_reduce(sp.reduce, t, N, s, [&]<class K>(K &k) {
     with_add(sp.add, t, s, [&]<class A>(A &a) {
       Ladder<A> lad{t, s, sp.rule, a};
       drive(t, u, Laddered<K, A>{k, lad, N, pdr, pda, &pr.sel}, Tee<Pnl, Record>{strat, rec});

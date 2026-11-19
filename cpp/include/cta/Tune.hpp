@@ -80,7 +80,7 @@ inline Terms keep_of(const Tape &t, size_t kind, const P &p, const Col &N, float
   Keep sink{t};
   sink.o.a.reserve(t.days.size() + 1), sink.o.b.reserve(t.days.size() + 1);
   sink.o.a.push_back(0), sink.o.b.push_back(0);
-  with_reduce(kind, t, [&]<class K>(K &k) { drive(t, u, Steps<K>{k, t, N, p, s, U}, sink); });
+  with_reduce(kind, t, N, s, [&]<class K>(K &k) { drive(t, u, Steps<K>{k, t, N, p, s, U}, sink); });
   return std::move(sink.o);
 }
 
@@ -113,7 +113,7 @@ struct Laddered {
 inline std::vector<Trip> trips_of(const Tape &t, size_t reduce, size_t add, const P &pr, const P &pa, const Col &N, float s, const Rule &z) {
   std::vector<Trip> o;
   const std::vector<P> vr(t.days.size(), pr), va(t.days.size(), pa);
-  with_reduce(reduce, t, [&]<class K>(K &k) {
+  with_reduce(reduce, t, N, s, [&]<class K>(K &k) {
     with_add(add, t, s, [&]<class A>(A &a) {
       Ladder<A> lad{t, s, z, a};
       lad.log = &o;

@@ -217,7 +217,7 @@ enum : size_t { kPrice,
 inline constexpr Axis kDays{"n", 5, 1, 250, 0.25f, true}; // 周期 (日; 打分跑日线, 下限 1 日)
 
 inline const Kind kReduceKinds[] = {
-    {"price", "价格本身: 减仓线 = 收盘价, 无参数 (满仓随它时首条减仓线贴着收盘, 档线由止损推着走)", {}},
+    {"price", "移动止损: 减仓线 = 收盘 − 1 个 band, 只升不降 (价涨即跟着抬, 回落不降), 收盘跌到线上即触发, 之后自 收盘 − band 重新起算; 无参数", {}},
     {"ema", "指数均线, 跟得最匀", {kDays}},
     {"kama", "考夫曼自适应均线: n = 效率比窗, L = 震荡跨度", {kDays, {"L", 40, 4, 250, 1, true}}},
     {"mid", "唐奇安中线 = 近 n 根 (最高 + 最低) / 2, 区间内呈台阶", {kDays}}};
@@ -226,11 +226,24 @@ inline const Kind kReduceKinds[] = {
 //   日首 day(d, p): 日 d 用参数 p (以根计, 可为小数); 逐根 bar(i) → 减仓线 (NaN = 未就绪); 日 d 的根之前先 day(d) (无根的日也调), 根按序逐个
 //   状态逐根接续: 参数变只改跟随的快慢, 不在几条定参线之间换线; 窗不满 = 自首根起的部分窗
 
-// price: 收盘价本身
+// price: 收盘 − band 的棘轮 (顺向坐标只升不降); 收盘跌到线上 = 本根出这条线 (分层在此触发), 下一根起自 收盘 − band 重新起算; band 无值 = NaN
 struct Price {
   const Tape &t;
-  void day(size_t, const P &) {}
-  float bar(size_t i) const { return t.c[i]; }
+  const Col &N; // [日] band
+  float s;      // 顺向
+  size_t d = 0;
+  double v = kNaN; // 下一根起算的线 (顺向坐标)
+  void day(size_t x, const P &) { d = x; }
+  float bar(size_t i) {
+    const double g = N[d], x = s * t.c[i];
+    if (!(g > 0)) {
+      v = kNaN;
+      return kNaN;
+    }
+    const double o = std::isnan(v) ? x - g : std::max(v, x - g);
+    v = x <= o ? x - g : o;
+    return static_cast<float>(s * o);
+  }
 };
 
 // ema: α = 2 / (k + 1); 第 i 根的平滑系数 = max(α, 1 / (i + 1)) (前段 = 已有值的均值)
@@ -301,12 +314,12 @@ struct Mid {
   }
 };
 
-// 减仓线模型 kind 的核 (新起状态) 交给 f(核): 每个配置分派一次, 逐根无分派
+// 减仓线模型 kind 的核 (新起状态; band N [日] 与顺向 s 只 price 用) 交给 f(核): 每个配置分派一次, 逐根无分派
 template <class F>
-void with_reduce(size_t kind, const Tape &t, F &&f) {
+void with_reduce(size_t kind, const Tape &t, const Col &N, float s, F &&f) {
   switch (kind) {
   case kPrice: {
-    Price k{t};
+    Price k{t, N, s};
     return f(k);
   }
   case kEma: {
