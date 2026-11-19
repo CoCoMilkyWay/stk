@@ -21,6 +21,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -83,12 +84,15 @@ enum PairLine : int { kTrade,   // 可成交 / 有冲击
                       kIdeal }; // 理想 / 无冲击
 inline constexpr int kPairLines = 2;
 
-// 腿 = 账的一线 (逐行增量 + 增仓量 + 估值); b = nullptr = 无
+// 腿 = 账的一线 (逐行增量 + 增仓量 + 估值); b = nullptr = 无; alt = 估值取另一种权重 (Book::alt; 只篮子行的估值腿, 见 val_leg)
 struct LinesLeg {
   const PortfolioBook *b = nullptr;
   size_t line = 0;
+  bool alt = false;
   bool operator==(const LinesLeg &) const = default;
 };
+// 估值腿 lg 第 m 口 [账日]
+inline const float *leg_val(const LinesLeg &lg, int m) { return lg.b->val_of(lg.line, m, lg.alt); }
 // 线源 (线的身份): 腿集合成 legs (cost = 扣成本: 毛 − 冲击 − 固定份数 · impact; 腿账都无成本列 → 恒不扣) / 价格 price; 都空 = 空线.
 //   price = 该标的的全史 (前收链接续): legs 空 = 全由它 (篮子 = 价格指数), 否则接在腿集之后 (账末之后各日, 个股 = 后复权)
 //   minutes = 日内形 (该标的连分钟的全史; 有行情键的行两条都带, 见 LinesDerived::rows): 有该日分钟根的日子按它画到分钟
@@ -117,6 +121,14 @@ struct LinesRow {
   std::string watch;                                                               // 自选键: 篮子 = 切片代码 + .等 / .加, 个股 = 代码; 因子 / 策略 / 账户 = 空 (不可自选)
   bool opens() const { return ref.is(Quote::kBasket) || ref.is(Quote::kAccount); } // 可展开成分 (篮子 = 成员, 账户 = 持仓)
 };
+// 估值换权重的行 (VAL / MARGIN 右表逐行切, 行 id; 默认空 = 各按篮子自己的权重)
+using WeighFlip = std::set<std::string>;
+// 行 r 在用的估值腿: 篮子行在 flip 里 → 另一种权重
+inline LinesLeg val_leg(const LinesRow &r, const WeighFlip &flip) {
+  LinesLeg lg = r.val;
+  lg.alt = lg.b && r.ref.is(Quote::kBasket) && flip.contains(r.id);
+  return lg;
+}
 
 // 行组 (右表类别条 = 前 PageDef::groups 组; 成分行只挂在展开的篮子行下): 前 kBasketGroups 组 = 篮子目录三组 (BasketGroup), 其后 自选 / 因子 / 策略 / 成分 / 账户
 enum RowGroup : int { kGroupWatch = kBasketGroups,
@@ -339,7 +351,7 @@ struct LinesLiveKey {
 };
 struct LinesRollKey {
   uint64_t axis = 0; // LinesDerived::axis_gen
-  LinesLeg leg;      // VAL 标的的估值腿
+  LinesLeg leg;      // VAL / MARGIN 标的在用的估值腿 (val_leg)
   int years = 0;     // 窗长
   bool operator==(const LinesRollKey &) const = default;
 };
@@ -347,12 +359,14 @@ struct LinesPctKey {
   uint64_t val = 0; // LinesDerived::val_gen
   int years = 0;    // 窗长
   int d1 = 0;       // 区间末
+  WeighFlip flip;   // 估值换权重的行
   bool operator==(const LinesPctKey &) const = default;
 };
 struct LinesViewKey {
   uint64_t der = 0, live = 0, roll = 0, pct = 0; // 派生 gen / 当日尾 gen / 滚动分位 gen / 末点分位 gen
-  LinesAt pin;                                   // VAL 标的
+  LinesAt pin;                                   // VAL / MARGIN 标的
   int d0 = 0, d1 = 0;                            // 区间
+  WeighFlip flip;                                // 估值换权重的行
   bool operator==(const LinesViewKey &) const = default;
 };
 
@@ -367,12 +381,12 @@ void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string
 Quote::Ref RowRef(const std::string &id);
 // 旁支: 当日 y (日期 = d.live; 空 / d.live = 0 → 全无尾) 各行理想线的当日尾
 void MakeLinesLive(const LinesDerived &d, const Quote::Live *y, LinesLive &t);
-// 二级: VAL / MARGIN 标的的估值腿 lg 各口 [PoolVal], 窗长 years; 空腿 → 空
+// 二级: VAL / MARGIN 标的在用的估值腿 lg (val_leg) 各口 [PoolVal], 窗长 years; 空腿 → 空
 void MakeLinesRoll(const LinesDerived &d, const LinesLeg &lg, int years, LinesRolls &r);
-// 二级: 区间末 d1 (日并集轴下标) 之前各估值行各口的末个可算日, 窗长 years
-void MakeLinesPct(const LinesDerived &d, int d1, int years, LinesPct &p);
-// 三级: 区间 [d0, d1) (日并集轴下标); t = 当日尾; pin / roll / pct = 二级的
+// 二级: 区间末 d1 (日并集轴下标) 之前各估值行 (在用的估值腿, flip 见 val_leg) 各口的末个可算日, 窗长 years
+void MakeLinesPct(const LinesDerived &d, int d1, int years, const WeighFlip &flip, LinesPct &p);
+// 三级: 区间 [d0, d1) (日并集轴下标); t = 当日尾; pin / roll / pct = 二级的; flip = 估值换权重的行 (MARGIN 区间末占比 / 标的 band)
 void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, const LinesAt &pin, const LinesRolls &roll, const LinesPct &pct,
-                   LinesView &v);
+                   const WeighFlip &flip, LinesView &v);
 
 } // namespace GUI::Market

@@ -90,9 +90,10 @@ struct PortfolioBook : Book {
     assert(line < lines());
     return col[k].n ? col[k].at(static_cast<int>(line)) : nullptr;
   }
-  const float *val_of(size_t line, int m) const {
-    assert(line < lines() && val[m].n);
-    return val[m].at(static_cast<int>(line));
+  const float *val_of(size_t line, int m, bool other = false) const { // other = 另一种权重 (Book::alt; 只篮子账有)
+    const BookLines &x = other ? alt[m] : val[m];
+    assert(line < lines() && x.n);
+    return x.at(static_cast<int>(line));
   }
   const float *cap_of(size_t line) const {
     assert(line < lines() && cap.n);

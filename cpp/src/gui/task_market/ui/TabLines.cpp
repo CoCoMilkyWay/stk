@@ -106,9 +106,11 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState
     for (int p = 0; p < kPages; ++p)
       ui.range[p] = DefaultLinesRange(p, d.dates);
     ui.log_y = false;
+    ui.flip.clear();
   }
   if (ImGui::IsItemHovered())
-    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL / MARGIN / CTA 标的 / 展开的行 / 叠加的成分股 / 区间 (NAV 回近 1 月, VAL / MARGIN 回近 10 年) / log 关");
+    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL / MARGIN / CTA 标的 / 展开的行 / 叠加的成分股 / 区间 (NAV 回近 1 月, VAL / MARGIN 回近 10 年) / log 关 / "
+        "VAL / MARGIN 切过的权重");
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
@@ -241,13 +243,13 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
                 });
   ui.live.update(LinesLiveKey{ui.der.gen, live}, [&](LinesLive &t) { MakeLinesLive(d, live.get(), t); });
   const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
-  const LinesAt pin = one.empty() ? LinesAt{} : d.at(one.begin()->first); // VAL / MARGIN / CTA 标的
-  const LinesLeg lg = pin.g >= 0 ? d.row(pin).val : LinesLeg{};           // 其估值腿
+  const LinesAt pin = one.empty() ? LinesAt{} : d.at(one.begin()->first);     // VAL / MARGIN / CTA 标的
+  const LinesLeg lg = pin.g >= 0 ? val_leg(d.row(pin), ui.flip) : LinesLeg{}; // 其在用的估值腿
   ui.roll.update(LinesRollKey{d.axis_gen, lg, ui.band_years}, [&](LinesRolls &r) { MakeLinesRoll(d, lg, ui.band_years, r); });
   const LinesRange &rg = ui.range[page];
-  ui.pct.update(LinesPctKey{d.val_gen, ui.band_years, rg.d1}, [&](LinesPct &p) { MakeLinesPct(d, rg.d1, ui.band_years, p); });
-  ui.view.update(LinesViewKey{ui.der.gen, ui.live.gen, ui.roll.gen, ui.pct.gen, pin, rg.d0, rg.d1},
-                 [&](LinesView &vw) { MakeLinesView(d, ui.live.val, rg.d0, rg.d1, pin, ui.roll.val, ui.pct.val, vw); });
+  ui.pct.update(LinesPctKey{d.val_gen, ui.band_years, rg.d1, ui.flip}, [&](LinesPct &p) { MakeLinesPct(d, rg.d1, ui.band_years, ui.flip, p); });
+  ui.view.update(LinesViewKey{ui.der.gen, ui.live.gen, ui.roll.gen, ui.pct.gen, pin, rg.d0, rg.d1, ui.flip},
+                 [&](LinesView &vw) { MakeLinesView(d, ui.live.val, rg.d0, rg.d1, pin, ui.roll.val, ui.pct.val, ui.flip, vw); });
 
   const int action = head(page, svc, pf, ui, d, res, message, fixed_impact);
 

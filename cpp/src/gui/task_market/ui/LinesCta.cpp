@@ -891,7 +891,7 @@ void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, 
     ImGui::TextDisabled("右表单选一个指数 / 行业 / 概念 / 成分股 (与 VAL 同一份选中)");
   else if (show) {
     const LinesLeg &lg = ui.roll.key.leg; // 滚动分位所属的估值腿 (= 本页标的的)
-    plots(c, *show, name, {ui.der.val.dates, ui.der.val.val_at, lg.b ? lg.b->val_of(lg.line, kValBp) : nullptr, ui.roll.val[kValBp], ui.roll.key.years},
+    plots(c, *show, name, {ui.der.val.dates, ui.der.val.val_at, lg.b ? leg_val(lg, kValBp) : nullptr, ui.roll.val[kValBp], ui.roll.key.years},
           ImGui::GetContentRegionAvail());
   } else if (!ready)
     ImGui::TextDisabled("等价格库…");

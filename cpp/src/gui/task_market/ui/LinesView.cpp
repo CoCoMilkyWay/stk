@@ -22,7 +22,6 @@
 #include <numeric>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -874,7 +873,7 @@ struct ValSeries {
   int years;
   bool up;
   size_t first = 0; // 首个可算点 (无 = D)
-  ValSeries(const ValAxis &a, const LinesLeg &lg, int m, int years_) : ax(a), v(lg.b->val_of(lg.line, m)), years(years_), up(margin_val(m)) {
+  ValSeries(const ValAxis &a, const LinesLeg &lg, int m, int years_) : ax(a), v(leg_val(lg, m)), years(years_), up(margin_val(m)) {
     assert(lg.b->dates.size() == a.hd.size());
     while (first < size() && !ok(first))
       ++first;
@@ -1026,7 +1025,7 @@ std::array<Ranked, kMarginNums> margin_at(const LinesDerived &d, const LinesLeg 
       o[kMarCap].x = cap[t];
       for (int j = 0; j < kMarginVals; ++j) {
         o[static_cast<size_t>(kMarBal + j)].x = lg.b->bal_of(lg.line, j)[t];
-        o[static_cast<size_t>(kMarPct + j)].x = lg.b->val_of(lg.line, kValRz + j)[t];
+        o[static_cast<size_t>(kMarPct + j)].x = leg_val(lg, kValRz + j)[t];
       }
       break;
     }
@@ -1124,20 +1123,23 @@ void MakeLinesRoll(const LinesDerived &d, const LinesLeg &lg, int years, LinesRo
     roll_of(ValSeries(ax, lg, b, years), d.val_at, rw, r[b]);
 }
 
-void MakeLinesPct(const LinesDerived &d, int d1, int years, LinesPct &p) {
+void MakeLinesPct(const LinesDerived &d, int d1, int years, const WeighFlip &flip, LinesPct &p) {
   for (int g = 0; g < kRowGroups; ++g)
     p.rows[g].assign(d.rows[g].size(), {});
   if (!d.quotes[Quote::kBasket])
     return;
   const ValAxis ax(*d.quotes[Quote::kBasket]);
   RollW rw;
-  for (const auto &[at, lg] : val_rows(d))
+  for (const auto &row : val_rows(d)) {
+    const LinesAt &at = row.first;
+    const LinesLeg lg = val_leg(d.row(at), flip);
     for (int b = 0; b < kPoolVals; ++b)
       p.rows[at.g][at.r][b] = last_pct(ValSeries(ax, lg, b, years), d.val_at, d1, rw);
+  }
 }
 
 void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, const LinesAt &pin, const LinesRolls &roll, const LinesPct &pct,
-                   LinesView &v) {
+                   const WeighFlip &flip, LinesView &v) {
   // ---- 各组同一套: 各线切片 + NAV 数值列 + VAL / MARGIN 各口区间内末个可算日的估值分位 (= 区间末之前的末个可算日落在区间内, 含区间起点的前收日)
   //      + MARGIN 区间末数; 各列同组同列名次 (分位低 = 便宜 / 占比低 = 好; MARGIN 只占比列有名次) ----
   for (int g = 0; g < kRowGroups; ++g) {
@@ -1158,7 +1160,7 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
         if (const LinesLastPct &lp = pct.rows[g][i][b]; lp.k >= 0 && lp.k >= d0 - 1)
           v.pct[g][i][b].x = lp.pct;
       if (r.val.b)
-        v.margin[g][i] = margin_at(d, r.val, d0, d1);
+        v.margin[g][i] = margin_at(d, val_leg(r, flip), d0, d1);
     }
     for (int k = 0; k < kNavNums; ++k)
       rank_col(n, kNavGood[k], [&](size_t i) -> Ranked & { return v.num[g][i][k]; });
@@ -1177,7 +1179,7 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
     bd = {};
   if (pin.g < 0 || !d.row(pin).val.b)
     return;
-  const LinesLeg &lg = d.row(pin).val;
+  const LinesLeg lg = val_leg(d.row(pin), flip);
   const LinesSlice &sl = v.slice[pin.g][pin.r][kIdeal];
   std::vector<int> day; // [日末点] 所属日 (日并集轴; −1 = 轴外)
   for (size_t i = 0; i < sl.size(); ++i)
@@ -1189,7 +1191,7 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
     assert(r.pct.size() == d.dates.size());
     LinesBand &bd = v.band[b];
     const bool mg = margin_val(b);
-    const float *hv = lg.b->val_of(lg.line, b);
+    const float *hv = leg_val(lg, b);
     for (std::vector<double> &y : bd.y)
       y.assign(n, kNaN);
     (mg ? bd.ratio : bd.unit).assign(n, kNaN);

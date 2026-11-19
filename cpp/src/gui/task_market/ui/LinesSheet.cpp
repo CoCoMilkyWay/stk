@@ -99,13 +99,15 @@ Recent recent_of(const Line &c) {
 }
 
 // 右图例表头排序 (三张右表同一份; 三态: 升 → 降 → 原序): order (表行下标) 按当前排序列重排;
-// 表列 0 = 星 (不排序); 名列 (c = 0) 按 name(a, b) 三路比较, 其余按 num(i, c), 不可算的恒在末
+// 表列 0 = 星 (不排序), 名列后 skip 列不排序 (权重钮); 名列 (c = 0) 按 name(a, b) 三路比较, 其余按 num(i, c), 不可算的恒在末
 template <class Name, class Num>
-void sort_rows(std::vector<size_t> &order, const Name &name, const Num &num) {
+void sort_rows(std::vector<size_t> &order, int skip, const Name &name, const Num &num) {
   const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
   if (!ss || ss->SpecsCount == 0)
     return;
-  const int c = ss->Specs[0].ColumnIndex - 1;
+  int c = ss->Specs[0].ColumnIndex - 1;
+  if (c > 0)
+    c -= skip;
   const bool desc = ss->Specs[0].SortDirection == ImGuiSortDirection_Descending;
   std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
     if (c == 0) {
@@ -115,6 +117,30 @@ void sort_rows(std::vector<size_t> &order, const Name &name, const Num &num) {
     return sort_less(num(a, c), num(b, c), desc);
   });
 }
+// ---- 权重钮 (VAL / MARGIN 右表名列后一列; PageDef::weigh): 篮子行 = 小钮 等 / 加 = 本行估值 / 两融此刻按的权重 (默认 = 篮子自己的; 切过的按下色),
+//      点 = 切换 (ui.flip, 各页同一份, 自选副本同原行); 其余行空 ----
+const SheetCol kWeighHead = {"权", "权 = 本行估值 / 两融按的权重\n"
+                                   "• 算法: 等 = 成分个股的算术平均; 加 = 按总市值加权 (整体法 Σ分子 / Σ总市值); 默认 = 篮子自己的权重 (名后缀 .等 / .加, 按持仓权, 随价漂移)\n"
+                                   "• 显示: 小钮 = 本行此刻按的权重; 切过 (≠ 篮子自己的) 按下色\n"
+                                   "• 点钮 = 本行换另一种权重: 本页各口分位 / 占比 / 主图 Band 随之 (VAL / MARGIN 同一份; 线 / 只数 / 市值 / 余额不变); Clear = 全部回默认\n"
+                                   "• 适用: 指数 / 行业 / 概念 / 自选 的篮子行; 成分行 / 账户行无"};
+pool::Weight other_weight(pool::Weight w) { return w == pool::kWeightEq ? pool::kWeightCap : pool::kWeightEq; }
+// 钮先于行的 Selectable / TreeNode (跨全列) 交, 悬停归它 (同星格)
+void weigh_cell(LinesState &ui, const LinesRow &h) {
+  if (!h.ref.is(Quote::kBasket))
+    return;
+  const pool::Weight own = basket_table().weight(h.ref.key);
+  const bool flip = ui.flip.contains(h.id);
+  const std::string label = std::string(pool::weight_suffix(flip ? other_weight(own) : own)).substr(1) + "##weigh";
+  if (toggle_button(label.c_str(), flip)) {
+    if (!ui.flip.erase(h.id))
+      ui.flip.insert(h.id);
+  }
+  if (ImGui::IsItemHovered())
+    tip("篮子 %s; 本行估值 / 两融现按 %s 算\n点 = 换成 %s", pool::weight_suffix(own), pool::weight_suffix(flip ? other_weight(own) : own),
+        pool::weight_suffix(flip ? own : other_weight(own)));
+}
+
 // 名格悬停 (星列之后; 行 Selectable 跨全列, 只认本格) → 行的悬停
 void name_tip(const LinesRow &r) {
   if (ImGui::IsItemHovered() && ImGui::TableGetHoveredColumn() == 1)
@@ -131,17 +157,19 @@ SheetCell ranked_cell(const Ranked &q, const char *fmt) {
   c.rank = q.rank;
   return c;
 }
-// 一张右表: 组 g 的行, 列 = 星 + cols (cols[0] = 名); order = 列出的组内行 (按表头排序重排后画); ps = 该组的格 (sheet_of);
+// 一张右表: 组 g 的行, 列 = 星 + cols[0] (名) + [权重钮 (weigh)] + cols 其余; order = 列出的组内行 (按表头排序重排后画); ps = 该组的格 (sheet_of);
 // on(t) = 选中 (高亮), 点行 → click(t) (t = 表行, 见 LinesSheet::at); 悬停表行 t 的数值列 k → hover(t, k).
-// 宽由外面定: 名列伸满余宽, 内容更宽 → 横滚 (星 / 名列钉住). 篮子行名前 ▸ 展开 / 收起 (ui.pick.open, 至多一行): 展开行钉在表头下,
+// 宽由外面定: 名列伸满余宽, 内容更宽 → 横滚 (星 / 名 / 权重钮列钉住). 篮子行名前 ▸ 展开 / 收起 (ui.pick.open, 至多一行): 展开行钉在表头下,
 // 其下先列成分行 (缩进; 同列排序), 再列其余组内行; 字色 = 线色; 有自选键的行: 星格点 / 名格右键 = 加入 / 移出自选; 只画可见的行;
 // 原序 = 指数组按池表待生效序 (pool_order; 全A 两行在首), 其余组按行号; 原序下拖动调序 (Reorder): 自选组 = 改 ui.watch 即存,
 // 指数组子池 = 交 ui.pool_move (改池表); 悬停联动 (ui.hover): 图上悬停的行底色亮 + 滚到居中, 本表悬停的行 → ui.hover.row
 template <class On, class Click, class Hover>
-void sheet(const char *id, const std::vector<SheetCol> &cols, LinesState &ui, const LinesDerived &d, int g, std::vector<size_t> order,
+void sheet(const char *id, const std::vector<SheetCol> &cols, bool weigh, LinesState &ui, const LinesDerived &d, int g, std::vector<size_t> order,
            const LinesSheet &ps, const On &on, const Click &click, const Hover &hover) {
   const std::vector<LinesRow> &rs = d.rows[g];
   const size_t nc = cols.size() - 1, R = rs.size(); // 名之后的列 / 组内行
+  const int W = weigh ? 1 : 0;                      // 权重钮列数 (表列 2)
+  const int c0 = 2 + W;                             // 首个数值列的表列
   assert(ps.nc == nc && ps.R == R && ps.cells.size() == ps.at.size() * nc);
   std::vector<size_t> by(R); // 原序位 → 组内行
   std::iota(by.begin(), by.end(), size_t{0});
@@ -159,26 +187,36 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesState &ui, co
   // 横滚宽 = 上帧各列内容宽之和 (EndTable 按内容更新; 列不可拖 → 纯内容宽), 不足表宽 → 表宽 (名列伸满); 首帧 0 = 按内容
   const ImGuiTable *last = ImGui::TableFindByID(ImGui::GetID(id));
   const float inner = last ? std::max(last->ColumnsAutoFitWidth, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize) : 0.f;
-  if (!ImGui::BeginTable(id, static_cast<int>(cols.size() + 1),
+  const int n_cols = static_cast<int>(cols.size()) + 1 + W;
+  if (!ImGui::BeginTable(id, n_cols,
                          ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV |
                              ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate,
                          ImVec2(0, 0), inner))
     return;
-  ImGui::TableSetupScrollFreeze(2, pin == SIZE_MAX ? 1 : 2);
+  ImGui::TableSetupScrollFreeze(c0, pin == SIZE_MAX ? 1 : 2);
   ImGui::TableSetupColumn("##star", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort,
                           ImGui::CalcTextSize(kStarOn).x + 2.0f * ImGui::GetStyle().FramePadding.x);
   ImGui::TableSetupColumn(cols[0].name.c_str(), ImGuiTableColumnFlags_WidthStretch);
+  if (weigh)
+    ImGui::TableSetupColumn(kWeighHead.name.c_str(), ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort,
+                            ImGui::CalcTextSize("加").x + 2.0f * ImGui::GetStyle().FramePadding.x);
   std::vector<float> cw(nc); // 列出行的最宽 (表头起)
   for (size_t k = 0; k < nc; ++k) {
     ImGui::TableSetupColumn(cols[1 + k].name.c_str());
     cw[k] = ImGui::CalcTextSize(cols[1 + k].name.c_str()).x;
   }
-  sheet_head(static_cast<int>(cols.size() + 1), [&](int c) -> const SheetCol & { return c == 0 ? kStarHead : cols[static_cast<size_t>(c - 1)]; });
+  sheet_head(n_cols, [&](int c) -> const SheetCol & {
+    if (c == 0)
+      return kStarHead;
+    if (c == 2 && weigh)
+      return kWeighHead;
+    return cols[static_cast<size_t>(c < 2 ? c - 1 : c - 1 - W)];
+  });
   const auto at = [&](size_t t) { return ps.cells.data() + t * nc; };
   const auto num = [&](size_t t, int c) { return at(t)[c - 1].key; };
   const auto row_of = [&](size_t t) -> const LinesRow & { return d.row(ps.at[t]); };
   sort_rows(
-      order, [&](size_t a, size_t b) { // 名列: 按色相 (相似的挨着; 未定色 = 按 cn 字典序)
+      order, W, [&](size_t a, size_t b) { // 名列: 按色相 (相似的挨着; 未定色 = 按 cn 字典序)
         const float ha = rs[a].hue, hb = rs[b].hue;
         if (!std::isnan(ha) && !std::isnan(hb))
           return (ha > hb) - (ha < hb);
@@ -196,7 +234,7 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesState &ui, co
   if (pin != SIZE_MAX) {
     for (size_t t = R; t < ps.at.size(); ++t)
       lines.push_back(t);
-    sort_rows(lines, [&](size_t a, size_t b) { return row_of(a).cn.compare(row_of(b).cn); }, num); // 名列: 按简称
+    sort_rows(lines, W, [&](size_t a, size_t b) { return row_of(a).cn.compare(row_of(b).cn); }, num); // 名列: 按简称
     for (size_t k = 0; k < nc; ++k)
       cw[k] = std::max(cw[k], at(pin)[k].text.w);
   }
@@ -221,6 +259,8 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesState &ui, co
       ImGui::SetScrollHereY(0.5f);
     if (!h.watch.empty())
       star_cell(ui, h.watch);
+    if (weigh && ImGui::TableSetColumnIndex(2))
+      weigh_cell(ui, h);
     ImGui::TableSetColumnIndex(1);
     const std::string label = h.cn + "##" + h.id;
     ImGui::PushStyleColor(ImGuiCol_Text, row_color(d, ps.at[t], kTrade));
@@ -249,7 +289,7 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesState &ui, co
         click(t);
     }
     ImGui::PopStyleColor();
-    const int hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - 2 : -1; // 行跨全列: 悬停的数值列
+    const int hov = ImGui::IsItemHovered() ? ImGui::TableGetHoveredColumn() - c0 : -1; // 行跨全列: 悬停的数值列
     if (ImGui::IsItemHovered())
       hot = h.id;
     name_tip(h);
@@ -259,7 +299,7 @@ void sheet(const char *id, const std::vector<SheetCol> &cols, LinesState &ui, co
       ImGui::EndPopup();
     }
     for (size_t k = 0; k < nc; ++k) {
-      ImGui::TableSetColumnIndex(static_cast<int>(2 + k));
+      ImGui::TableSetColumnIndex(c0 + static_cast<int>(k));
       draw_cell(at(t)[k], cw[k]);
     }
     if (hov >= 0)
@@ -609,7 +649,7 @@ void table(LinesState &ui, const Quote::QuoteHub *mk, const StockInfos &infos, c
   const std::vector<size_t> order = listing(ui, ps, d, g, on);
   ImGui::PushID(static_cast<int>(ps.nc)); // 列数可变 (资金流段随档位)
   sheet(
-      kPageDefs[page].table, cols_of(name, segs), ui, d, g, order, ps, on, [&](size_t t) { pick(ui, page, d.row(ps.at[t])); },
+      kPageDefs[page].table, cols_of(name, segs), kPageDefs[page].weigh, ui, d, g, order, ps, on, [&](size_t t) { pick(ui, page, d.row(ps.at[t])); },
       [&](size_t t, int k) {
         for (const Seg &s : segs) {
           const int n = static_cast<int>(s.cols.size());

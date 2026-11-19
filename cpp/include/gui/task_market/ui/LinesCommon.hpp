@@ -86,6 +86,7 @@ struct PageDef {
   bool log, folio;        // 头: log 开关 / 组合 (名 + 失效 / 失败条目)
   PageWork work, rest;    // Tab 状态: work 在忙 → 它, 否则 rest; 页发 work 的请求
   ValSetId vals;          // 估值口集: kLayoutPlot 页有 = 主图画标的 + 该集 band, 无 = NAV 资金曲线
+  bool weigh;             // 右表名列后一列权重钮 (篮子行 等 / 加, 默认 = 篮子自己的; 点 = 该行估值 / 两融换另一种权重, ui.flip)
 };
 inline constexpr PageDef kPageDefs[kPages] = {
     {"NAV",
@@ -140,7 +141,8 @@ inline constexpr PageDef kPageDefs[kPages] = {
      true,
      kWorkPrice,
      kWorkPortfolio,
-     kSetNone},
+     kSetNone,
+     false},
     {"VAL",
      "VAL = 估值 (Valuation)\n"
      "• 右侧单选一个池 / 申万一级行业 / 概念 / 自选 / 成分股 (▸ 展开行): 主图 = 它的指数 (成分股 = 后复权收盘) + 估值 Band\n"
@@ -162,6 +164,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 行业成员 = 全A 成分按当日适用 (盘前已知) 的 SW2021 一级行业 (ind_l1) 切\n"
      "• 概念成员 = 全A 成分 ∩ 最近一份东财概念快照的成分 (全史同一份)\n"
      "• 估值与价格同权重: 个股收益率 = 分子 / 总市值; 加权 = 整体法 Σ分子 / Σ总市值, 等权 = 成分个股收益率的算术平均 (= 等权组合每元的分子); 成分股 = 本只\n"
+     "• 名后小钮 等 / 加 = 本行估值按的权重 (默认 = 篮子自己的): 点 = 本行换另一种权重, 分位 / 主图 Band 随之 (与 MARGIN 同一份; Clear 回默认)\n"
      "  分子: EP = 归母净利TTM, BP = 归母普通股权益MRQ (扣永续债 / 优先股), SP = 营业总收入TTM, CP = 经营现金流TTM, DY = 近4季报告期税前分红 (亏损 / 负权益 / 负现金流照计为负)\n"
      "• 成分 = 当日持仓 (同池指数: 上一交易日收盘建仓的池); 市值 = 收盘价 × 当日适用总股本, 财务取当日适用 (无前视)\n"
      "• 估值分位 = 当日收益率在过去 N 年 (含当日; 类别条旁滑条) 窗内的加权分位 (窗尾降权, 见滑条提示), 收益率越低越贵 (高 = 贵; ≤ 0 排在最贵端), 逐日滚动; 估值史不满 1 年不画\n"
@@ -187,7 +190,8 @@ inline constexpr PageDef kPageDefs[kPages] = {
      false,
      kWorkPrice,
      kWorkPortfolio,
-     kSetVal},
+     kSetVal,
+     true},
     {"MARGIN",
      "MARGIN = 两融 (Margin Trading)\n"
      "• 右侧单选一个池 / 申万一级行业 / 概念 / 自选 / 成分股 (▸ 展开行; 与 VAL / CTA 同一份选中)\n"
@@ -203,6 +207,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "##pf_margin_tbl",
      "类别条选一组 (指数 = 各池, 行业 = 申万一级, 概念 = 东财题材概念), 点行 / 成分行选一个: 主图画它的融资 / 融券占比 + Band (右轴叠它的价格; 与 VAL / CTA 同一份选中); 再点 = 取消\n"
      "• 列 = 区间末 总市值 / 融资 · 融券余额 / 占比 / N 年分位; 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
+     "• 名后小钮 等 / 加 = 本行占比按的权重 (默认 = 篮子自己的): 点 = 本行换另一种权重, 占比 / 分位 / 主图随之 (与 VAL 同一份; Clear 回默认)\n"
      "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中 / 展开行恒列\n"
      "• 行名前 ▸ = 展开成分股 (至多一行, 各页同一份; 该行钉在表头下): 各列 = 该股本只 (底色 = 成分之间名次); 点成分行 = 选该股\n"
      "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)\n"
@@ -222,7 +227,8 @@ inline constexpr PageDef kPageDefs[kPages] = {
      false,
      kWorkPrice,
      kWorkPortfolio,
-     kSetMargin},
+     kSetMargin,
+     true},
     {"FLOW",
      "FLOW = 资金流 (Money Flow): 指数 / 行业 / 概念 / 自选的日内净流入, 当日随新浪快照实时动\n"
      "• 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟; 成分之和不加权, 分不出大单\n"
@@ -257,7 +263,8 @@ inline constexpr PageDef kPageDefs[kPages] = {
      false,
      kWorkPortfolio,
      kWorkPortfolio,
-     kSetNone},
+     kSetNone,
+     false},
     {"CTA",
      "CTA = 单标的 band + 减仓 + 跟随 分层择时 (方向 long / short), 减仓 / 跟随参数滚动调优\n"
      "• 右侧单选一个指数 / 行业 / 概念 / 自选 / 成分股 (与 VAL 同一份选中); 价格 = all.bar 库合成落盘的 1 分钟价 (篮子 = 同 NAV 日内栏口径的点位, 个股 = 后复权价; 价格库随行情起即备)\n"
@@ -297,7 +304,8 @@ inline constexpr PageDef kPageDefs[kPages] = {
      false,
      kWorkCta,
      kWorkCta,
-     kSetNone},
+     kSetNone,
+     false},
 };
 
 // 线 ID 后缀 [PairLine]: 线的 ImGui ID = 行 id + 后缀 (主图例显隐 / 行刚选中回默认显隐同一份)

@@ -54,7 +54,8 @@
 //     只显示一条线时 (VAL = 价格线) 同日内栏画现价十字: 过视野内末点的横 / 竖虚线 (区间涨跌色), 右壁标区间涨跌, 底壁标日期
 //   页: NAV = 上面的资金曲线; VAL = 估值 (同一布局, log 共用, 区间各一份; 行 = NAV 篮子三组 + 自选的同一份): 右侧类别条 (指数 / 行业 / 概念 / 自选) 选一组, 表格单选一个标的 = 池 / 申万一级行业
 //     (全A 内按上一行 ind_l1 切) / 概念 / 展开行的成分股 (再点 = 取消); 默认不选 (空图); 列 = 中文名 (悬停看名) | 只数 | 总市值 | 可成交 | 理想 | 夏普 | 年换手 (同 NAV)
-//     | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位,
+//     | 区间末 EP / BP / SP / CP / DY 的 N 年估值分位; 名后权重钮 (篮子行 等 / 加, 默认 = 篮子自己的; 点 = 本行估值换另一种权重: 分位 / Band 随之,
+//     见 Book::alt; ui.flip 与 MARGIN 同一份),
 //     底色 = 该分位在同组同口内的截面名次, 便宜绿 → 贵红),
 //     主图 = 标的理想线 P (篮子 = 价格指数: 行业 / 概念 = 总市值加权, 子池 (含全A) = 池参数的权重; 成分股 = 后复权收盘; 区间起点 = 1, 与 NAV 同一切片; 同 NAV 画到分钟)
 //     + 同口径的滚动 EP / BP / SP / CP / DY Band (篮子 = 同权重, 成分股 = 本只; 篮子与个股同一套: 两本账同一作业出, 见 LinesView.hpp)
@@ -234,6 +235,7 @@ struct LinesState {
   std::optional<Move> pool_move;  // 右表指数组拖定的池表移动 (pool_order 的位置; 由 TaskMarket 交 move_pool)
   int band_years = kBandYearsDef; // VAL / MARGIN 滚动窗 N (年; 右图例滑条, 两页同一份)
   int margin_on = kValRz;         // MARGIN 主图在画的口 (两口单选, 主图例切; −1 = 都关)
+  WeighFlip flip;                 // VAL / MARGIN 估值换权重的篮子行 (右表权重钮切; 各页同一份, 不存盘)
   bool log_y = false;
   std::set<std::string> reveal;                                                   // 待在主图例里回默认显隐的线 ID (行刚选中; 画到时消费; 理想列显, 可成交列隐)
   std::string shown_key;                                                          // 上帧主图各线显隐 (进 fit 键)
