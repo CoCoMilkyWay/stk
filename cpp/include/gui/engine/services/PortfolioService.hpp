@@ -98,6 +98,10 @@ struct PortfolioBook : Book {
     assert(line < lines() && cap.n);
     return cap.at(static_cast<int>(line));
   }
+  const float *bal_of(size_t line, int j) const { // j = 两融口 − kValRz
+    assert(line < lines() && bal[j].n);
+    return bal[j].at(static_cast<int>(line));
+  }
 };
 
 struct PortfolioResult {

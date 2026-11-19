@@ -45,9 +45,10 @@ DayAxis day_axis(const std::vector<misc::Ymd> &dates) {
 constexpr double kFitMargin = 0.2;
 // 本帧 x 在 fit (切片画全段 / 小字不按视野筛)
 bool fit_x() { return ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].FitThisFrame; }
-// y 的留白: 须在本帧进 fit 的 item 都画完之后
-void fit_margin(bool log) {
-  const ImPlotRange &e = ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].FitExtents;
+// y 轴 y 的留白: 须在本帧进 fit 的 item 都画完之后 (之后当前 y 轴 = y)
+void fit_margin(ImAxis y, bool log) {
+  ImPlot::SetAxis(y);
+  const ImPlotRange &e = ImPlot::GetCurrentPlot()->Axes[y].FitExtents;
   if (!(e.Min < e.Max))
     return;
   assert(!log || e.Min > 0.0);
@@ -558,8 +559,8 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
 }
 
 // ---- VAL / MARGIN 主图例 (legend; 对仗 Inspect 期限结构图例): 行 = 口集 vs 的口 (EP / BP / SP / CP / DY | 融资 / 融券),
-//      列 = 当前收益率 (占比) | 当前倍数 (两融 = 余额) | N 年分位 | Band | 等值线 (两融无); 分位按低绿 → 高红着色; Band 色块 = band 渐变 (下 → 上);
-//      悬停格 / 头 → 对应线高亮 (下帧) ----
+//      列 = 当前收益率 (占比) | 当前倍数 (两融 = 余额) | N 年分位 | Band (两融 = 占比线 + Band, 两口单选) | 等值线 (两融无);
+//      分位按低绿 → 高红着色; Band 色块 = band 渐变 (下 → 上); 悬停格 / 头 → 对应线高亮 (下帧) ----
 enum ValLgCol : int { kLgBand,
                       kLgContour };
 constexpr float kHiScale = 2.0f; // 图例悬停高亮: 线宽倍数 (等值线改用 kContourHotA)
@@ -568,8 +569,6 @@ constexpr float kContourHotA = 0.6f;
 std::string val_item(int c, int b) {
   return std::string(kVal[b].name) + (c == kLgBand ? " Band###pf_band" : " 等值线###pf_contour") + std::to_string(b);
 }
-// band 第 u ∈ [0, 1] 处 (0 = 最下档) 的色调: 估值 = 便宜绿 → 贵红; 两融反过来 (下 = 占比高 = 红)
-double band_tone(const ValSet &vs, double u) { return vs.margin() ? 1.0 - u : u; }
 
 // 返回悬停 (r = 口集内第几口, t = ValLgCol) + 框 (悬停等值线避开)
 LgHover val_legend(const LinesView &v, int years, const ValSet &vs) {
@@ -588,8 +587,8 @@ LgHover val_legend(const LinesView &v, int years, const ValSet &vs) {
     char a[24] = "-", m[24] = "-", p[16] = "-";
     if (bd.ok) {
       fmt_val(b, bd.now, a, sizeof(a));
-      if (mg && std::isfinite(bd.now * bd.cap))
-        std::snprintf(m, sizeof(m), "%s", yi_text(bd.now * bd.cap).c_str());
+      if (mg && std::isfinite(bd.bal))
+        std::snprintf(m, sizeof(m), "%s", yi_text(bd.bal).c_str());
       else if (!mg && bd.now > 0.0)
         std::snprintf(m, sizeof(m), "%s %.2f", kVal[b].inv, 1.0 / bd.now);
       std::snprintf(p, sizeof(p), "%3.0f%%", bd.pct);
@@ -599,7 +598,7 @@ LgHover val_legend(const LinesView &v, int years, const ValSet &vs) {
     cells.push_back({a, ink});
     cells.push_back({m, ink});
     cells.push_back({p, bd.ok ? ImGui::ColorConvertFloat4ToU32(band_col(bd.pct / 100.0, 1.0f)) : c_dis});
-    cells.push_back({{}, 0, {band_col(band_tone(vs, 0.0), 1.0f), band_col(band_tone(vs, 1.0), 1.0f)}});
+    cells.push_back({{}, 0, {band_col(0.0, 1.0f), band_col(1.0, 1.0f)}});
     if (!mg)
       cells.push_back({{}, 0, {contour, contour}});
   }
@@ -612,7 +611,7 @@ LgHover val_legend(const LinesView &v, int years, const ValSet &vs) {
     const int b = vs.lo + h.r;
     const std::vector<double> &lv = v.band[b].levels;
     if (h.t == kLgBand && mg)
-      tip("%s Band: 过去 %d 年余额占比分位换算的价格线 = 余额不变时占比落到该档的价格 (下 = 占比高, 点 = 开关)", kVal[b].name, years);
+      tip("%s: 余额占比线 (左轴 %%) + 过去 %d 年滚动分位 Band (占比低绿 → 高红); 两口单选, 点 = 切到该口", kVal[b].name, years);
     else if (h.t == kLgBand)
       tip("%s Band: 过去 %d 年估值分位换算的价格线 (点 = 开关)", kVal[b].name, years);
     else if (!lv.empty())
@@ -704,48 +703,47 @@ void wheel_x(LinesRange &rg) {
   rg.d0 = rg.d1 - std::clamp(m, 1, rg.d1);
 }
 
-// ---- VAL / MARGIN 主图: 标的口集 vs 各口滚动 band (日末点; 填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 vs.show)
-//      + 各口绝对估值等值线 (只估值口; 同口各档共一个 item, 首次默认关) + 标的理想线 (常显; 有分钟价则画到分钟) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
+// 一口 band 进 item lb (当前 y 轴): 色块 c ∈ [0, kBandQ]: 0 = 最下档以下 (到图底), kBandQ = 最上档以上 (到图顶), 其余 = 相邻两档之间 (下绿 → 上红; 填色不进 fit)
+// + kBandQ 条档线 (中位档加粗; 线宽 × hw)
+void plot_band(const char *lb, const LinesBand &bd, const double *bx, int bn, float hw) {
+  for (const auto &[i0, i1] : bd.segs) {
+    const int n = i1 - i0;
+    const double *x = bx + i0;
+    for (int c = 0; c <= kBandQ; ++c) {
+      ImPlot::SetNextFillStyle(band_col(static_cast<double>(c) / kBandQ, 1.0f), kBandFillA);
+      if (c == 0)
+        ImPlot::PlotShaded(lb, x, bd.y[0].data() + i0, n, -HUGE_VAL, ImPlotItemFlags_NoFit);
+      else if (c == kBandQ)
+        ImPlot::PlotShaded(lb, x, bd.y[kBandQ - 1].data() + i0, n, HUGE_VAL, ImPlotItemFlags_NoFit);
+      else
+        ImPlot::PlotShaded(lb, x, bd.y[c - 1].data() + i0, bd.y[c].data() + i0, n, ImPlotItemFlags_NoFit);
+    }
+  }
+  for (int j = 0; j < kBandQ; ++j) {
+    ImPlot::SetNextLineStyle(band_col((j + 0.5) / kBandQ, kBandLineA), (j == kBandQ / 2 ? 1.5f : 1.0f) * hw);
+    ImPlot::PlotLine(lb, bx, bd.y[j].data(), bn, ImPlotLineFlags_SkipNaN);
+  }
+}
+
+// ---- VAL 主图: 标的各口滚动 band (日末点; 填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
+//      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的理想线 (常显; 有分钟价则画到分钟) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
 //      标的日内形未到 (minute_wait) 整图不画, 到了一次画成;
 //      价格线 + 开着的 band 线进 fit, band 填色 (到图顶 / 底) / 等值线不进; 框选改 rg ----
-void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const LinesView &v, const LinesAt &pin, ValSetId set, PlotFrame &pf) {
-  static LgHover s_hls[std::size(kValSets)]; // [ValSetId] 上帧图例矩阵
-  assert(set != kSetNone);
-  const ValSet &vs = kValSets[set];
-  LgHover &s_hl = s_hls[static_cast<size_t>(set)];
-  const bool mg = vs.margin();
+void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf) {
+  static LgHover s_hl; // 上帧图例矩阵
+  const ValSet &vs = kValSets[kSetVal];
   const LinesSlice &sl = v.slice[pin.g][pin.r][kIdeal];
   const double *bx = v.band_x.data();
   const int bn = static_cast<int>(v.band_x.size());
   for (int b = vs.lo; b < vs.hi; ++b) {
-    const LinesBand &bd = v.band[b];
     const std::string lbs = val_item(kLgBand, b);
-    const char *lb = lbs.c_str();
-    const float hw = s_hl.at(b - vs.lo, kLgBand) ? kHiScale : 1.0f;
     if (b != vs.show)
       ImPlot::HideNextItem(true, ImPlotCond_Once);
-    // 色块 c ∈ [0, kBandQ]: 0 = 最下档以下 (到图底), kBandQ = 最上档以上 (到图顶), 其余 = 相邻两档之间; 色调见 band_tone
-    for (const auto &[i0, i1] : bd.segs) {
-      const int n = i1 - i0;
-      const double *x = bx + i0;
-      for (int c = 0; c <= kBandQ; ++c) {
-        ImPlot::SetNextFillStyle(band_col(band_tone(vs, static_cast<double>(c) / kBandQ), 1.0f), kBandFillA);
-        if (c == 0)
-          ImPlot::PlotShaded(lb, x, bd.y[0].data() + i0, n, -HUGE_VAL, ImPlotItemFlags_NoFit);
-        else if (c == kBandQ)
-          ImPlot::PlotShaded(lb, x, bd.y[kBandQ - 1].data() + i0, n, HUGE_VAL, ImPlotItemFlags_NoFit);
-        else
-          ImPlot::PlotShaded(lb, x, bd.y[c - 1].data() + i0, bd.y[c].data() + i0, n, ImPlotItemFlags_NoFit);
-      }
-    }
-    for (int j = 0; j < kBandQ; ++j) {
-      ImPlot::SetNextLineStyle(band_col(band_tone(vs, (j + 0.5) / kBandQ), kBandLineA), (j == kBandQ / 2 ? 1.5f : 1.0f) * hw);
-      ImPlot::PlotLine(lb, bx, bd.y[j].data(), bn, ImPlotLineFlags_SkipNaN);
-    }
+    plot_band(lbs.c_str(), v.band[b], bx, bn, s_hl.at(b - vs.lo, kLgBand) ? kHiScale : 1.0f);
   }
-  // 等值线 (只估值口): 每档一条 (同一 item; 无档也登记)
+  // 等值线: 每档一条 (同一 item; 无档也登记)
   bool on[kPoolVals] = {};
-  for (int b = vs.lo; b < vs.hi && !mg; ++b) {
+  for (int b = vs.lo; b < vs.hi; ++b) {
     const std::vector<double> &lv = v.band[b].levels;
     const std::string lbs = val_item(kLgContour, b);
     const char *lb = lbs.c_str();
@@ -775,9 +773,65 @@ void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const Lines
         pf.marks.push_back({ImPlot::PlotToPixels(p.x, p.y * (1.0 + m.r)), ImGui::ColorConvertFloat4ToU32(band_col(m.u, kBandTagA)), t});
       }
   }
-  if (!mg)
-    hover_contour(d, v, on, s_hl.box);
+  hover_contour(d, v, on, s_hl.box);
   s_hl = val_legend(v, ui.roll.key.years, vs);
+  zoom_x(rg, static_cast<int>(d.dates.size()), s_hl.box);
+}
+
+// ---- MARGIN 主图: 两轴 (余额不随价格走, 不换算成价格) — 右轴 Y2 = 标的理想线 (背景淡线, 同 NAV 画到分钟; log 开关作用于它),
+//      左轴 Y1 = 当前口的余额占比 (%) + 其滚动分位 band (占比空间; 下 = 占比低绿 → 上 = 高红);
+//      口 = 两口单选 (各口 占比线 + band 共一个 item, 主图例 Band 列切; 首次默认融资, ui.margin_on 记着; 左轴刻度按其小数位);
+//      价格线 / 占比线 / 开着的 band 线各进各轴的 fit, 填色不进; 线尾小字 = 价格 (右轴) + 占比 (视野内末个可算点); 无现价十字 / 刻度;
+//      框选 / 滚轮同 VAL ----
+constexpr float kMarginPxA = 0.35f; // 背景价格线的 alpha
+void plot_margin(LinesState &ui, LinesRange &rg, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf) {
+  static LgHover s_hl; // 上帧图例矩阵
+  const ValSet &vs = kValSets[kSetMargin];
+  const LinesSlice &sl = v.slice[pin.g][pin.r][kIdeal];
+  ImVec4 pc = row_color(d, pin, kTrade);
+  pc.w = kMarginPxA;
+  ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+  ImPlot::SetNextLineStyle(pc, 1.0f);
+  plot_slice(pf, "##pf_margin_px", sl);
+  if (pf.item("##pf_margin_px"))
+    push_tag(pf.tags, pf.lim, sl, ImGui::ColorConvertFloat4ToU32(pc), d.row(pin).tag);
+  ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+  const double *bx = v.band_x.data();
+  const int bn = static_cast<int>(v.band_x.size());
+  const ImVec4 ink = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+  const auto item = [](int b) { // 本帧刚 Plot 过, 必在池里 (池会扩容: 用时现取)
+    ImPlotItem *it = ImPlot::GetItem(val_item(kLgBand, b).c_str());
+    assert(it);
+    return it;
+  };
+  for (int b = vs.lo; b < vs.hi; ++b) {
+    const LinesBand &bd = v.band[b];
+    const std::string lbs = val_item(kLgBand, b);
+    const char *lb = lbs.c_str();
+    const float hw = s_hl.at(b - vs.lo, kLgBand) ? kHiScale : 1.0f;
+    if (b != vs.show)
+      ImPlot::HideNextItem(true, ImPlotCond_Once);
+    plot_band(lb, bd, bx, bn, hw);
+    ImPlot::SetNextLineStyle(ink, 1.5f * hw);
+    ImPlot::PlotLine(lb, bx, bd.ratio.data(), bn, ImPlotLineFlags_SkipNaN);
+    if (!item(b)->Show)
+      continue;
+    for (size_t i = static_cast<size_t>(bn); i-- > 0;)
+      if (bx[i] <= pf.lim.X.Max && std::isfinite(bd.ratio[i])) {
+        if (bx[i] >= pf.lim.X.Min)
+          pf.tags.push_back({ImPlot::PlotToPixels(bx[i], bd.ratio[i]), ImGui::ColorConvertFloat4ToU32(ink), std::string(kVal[b].name) + "占比"});
+        break;
+      }
+  }
+  s_hl = val_legend(v, ui.roll.key.years, vs);
+  // 两口单选: 图例刚点开另一口 → 换到它 (原口隐); 都关 → −1
+  int pick = -1;
+  for (int b = vs.lo; b < vs.hi; ++b)
+    if (item(b)->Show && (pick < 0 || pick == ui.margin_on))
+      pick = b;
+  for (int b = vs.lo; b < vs.hi; ++b)
+    item(b)->Show = b == pick;
+  ui.margin_on = pick;
   zoom_x(rg, static_cast<int>(d.dates.size()), s_hl.box);
 }
 
@@ -789,14 +843,14 @@ LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates) {
   return LinesRange{{.d0 = D > 0 && s != kSpanAll ? span_d0(dates, kSpanDefs[s]) : 0, .d1 = D}};
 }
 
-// ---- 主图: NAV (plot_nav) ↔ VAL / MARGIN (plot_val, 按页的估值口集) 同一框: 贴边 (窄内边距, 不标轴名); y 恒贴合 + 留白 (fit_margin);
+// ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) ↔ MARGIN (plot_margin: 左轴占比 + 右轴价格) 同一框: 贴边 (窄内边距, 不标轴名); y 恒贴合 + 留白 (fit_margin, 各轴各留);
 //      x: 恒贴合 (视野只随区间; 滚轮 = 钉住右端缩放区间, wheel_x); x 右端留出线尾小字 / 刻度 / 十字标签;
 //      左上角 = 区间档位条 (span_bar) + 其下图例矩阵 ----
 void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size) {
   const LinesDerived &d = ui.der.val;
   const LinesView &v = ui.view.val;
   const ValSetId vals = kPageDefs[page].vals;
-  const bool nav = vals == kSetNone;
+  const bool nav = vals == kSetNone, mg = vals == kSetMargin;
   LinesRange &range = ui.range[page];
   const LinesRange rg = range;                                    // 视图所切的区间 (VAL / MARGIN 框选本帧改 range, 下帧才进视图)
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2)); // 贴边: 图区让给线
@@ -812,26 +866,38 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
       }
   if (fk != ui.fit_key)
     ImPlot::SetNextAxesToFit();
-  if (ImPlot::BeginPlot(nav ? "##portfolio" : vals == kSetMargin ? "##pf_margin"
-                                                                 : "##pf_val",
+  if (ImPlot::BeginPlot(nav ? "##portfolio" : mg ? "##pf_margin"
+                                                 : "##pf_val",
                         size, ImPlotFlags_NoLegend | ImPlotFlags_NoBoxSelect)) {
     ui.fit_key = fk;
-    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
+    constexpr ImPlotAxisFlags kFitY = ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
+    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_AutoFit, kFitY);
     DayAxis ax = day_axis(d.dates);
     setup_day_axis(ax);
+    const ImAxis px = mg ? ImAxis_Y2 : ImAxis_Y1; // 价格 / 净值所在的 y 轴 (log 开关作用于它)
+    if (mg) {                                     // 左轴 = 占比 (%, 按在画的口的小数位), 右轴 = 价格
+      char f[16];
+      std::snprintf(f, sizeof(f), "%%.%df%%%%", ui.margin_on >= 0 ? kVal[ui.margin_on].prec : 2);
+      ImPlot::SetupAxisFormat(ImAxis_Y1, f);
+      ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | kFitY);
+    }
     if (ui.log_y)
-      ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+      ImPlot::SetupAxisScale(px, ImPlotScale_Log10);
     // x fit 帧的视野还是上帧的 (区间刚变时可能整段在外): 小字不按视野筛, 全收来量留白宽度
     const ImPlotRect cur = ImPlot::GetPlotLimits(); // 先锁 setup, FitThisFrame 才定
     PlotFrame pf{fit_x() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}, ui.view.gen};
     if (nav)
       plot_nav(ui, d, v, pf);
+    else if (pin.g >= 0 && !wait && mg)
+      plot_margin(ui, range, d, v, pin, pf);
     else if (pin.g >= 0 && !wait)
-      plot_val(ui, range, d, v, pin, vals, pf);
+      plot_val(ui, range, d, v, pin, pf);
     wheel_x(range);
     if (wait)
       plot_hint("分钟线载入中…");
-    fit_margin(ui.log_y);
+    fit_margin(px, ui.log_y);
+    if (mg)
+      fit_margin(ImAxis_Y1, false);
     thin_prune();
     ui.shown_key = std::move(pf.shown);
     NowCross cross{};

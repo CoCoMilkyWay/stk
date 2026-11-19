@@ -297,13 +297,17 @@ enum MarginNum : int { kMarCap,
                        kMarPct = kMarBal + kMarginVals };
 inline constexpr int kMarginNums = kMarPct + kMarginVals;
 // VAL / MARGIN 标的的一口 band (PoolVal): 标的理想线切片的日末点上, x = LinesView::band_x
+//   估值口 = 价格空间 (y 与价格线同轴); 两融口 = 占比空间 (%, 与价格线分轴: 余额不随价格走, 不换算)
 struct LinesBand {
-  bool ok = false;                        // 区间内有分位点 (否则其余空)
-  std::vector<double> y[kBandQ];          // P · v / q_j (v = 当日收益率; v ≤ 0 / q_j ≤ 0 / 无分位 = NaN), 升序 = 便宜 → 贵
-  std::vector<std::pair<int, int>> segs;  // y 全有限的连续段 [i0, i1) (填色按段画: PlotShaded 不跳 NaN)
-  std::vector<double> unit;               // P · v (v ≤ 0 / 不可算 = NaN; 不看分位): 倍数 m (= 1 / v) 的绝对估值等值线 y = unit · m
-  std::vector<double> levels;             // 等值线倍数 (= LinesRoll::levels)
-  double now = 0.0, pct = 0.0, cap = 0.0; // 区间末个有分位点的收益率 / 余额占比 · 估值分位 (%, 见 LinesRoll::pct) · 总市值 (亿元; 余额 = now · cap)
+  bool ok = false;                                       // 区间内有分位点 (否则其余空)
+  std::vector<double> y[kBandQ];                         // 升序 (下 → 上): 估值口 = P · v / q_j (v = 当日收益率; v ≤ 0 / q_j ≤ 0 / 无分位 = NaN), 便宜 → 贵;
+                                                         //   两融口 = 分位档的占比 (%; 无分位 = NaN), 占比低 → 高
+  std::vector<std::pair<int, int>> segs;                 // y 全有限的连续段 [i0, i1) (填色按段画: PlotShaded 不跳 NaN)
+  std::vector<double> unit;                              // 估值口: P · v (v ≤ 0 / 不可算 = NaN; 不看分位): 倍数 m (= 1 / v) 的绝对估值等值线 y = unit · m
+  std::vector<double> levels;                            // 估值口: 等值线倍数 (= LinesRoll::levels)
+  std::vector<double> ratio;                             // 两融口: 当日占比 (%; 不可算 = NaN)
+  double now = 0.0, pct = 0.0;                           // 区间末个有分位点的收益率 / 余额占比 · 估值分位 (%, 见 LinesRoll::pct)
+  double bal = std::numeric_limits<double>::quiet_NaN(); // 两融口: 同日余额 (亿元, Book::bal)
 };
 struct LinesView {
   std::vector<std::array<LinesSlice, kPairLines>> slice[kRowGroups]; // [RowGroup][行][PairLine]

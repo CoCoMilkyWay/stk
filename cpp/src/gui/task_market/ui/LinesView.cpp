@@ -1017,7 +1017,7 @@ LinesLastPct last_pct(const ValSeries &s, const std::vector<int32_t> &at, int k1
   return {};
 }
 
-// 估值腿 lg 在日段 [d0, d1) 内 (含起点前收日) 末个有总市值的日的 MARGIN 右表数 (MarginNum; 余额 = 占比 · 总市值); 无 → 全不可算
+// 估值腿 lg 在日段 [d0, d1) 内 (含起点前收日) 末个有总市值的日的 MARGIN 右表数 (MarginNum); 无 → 全不可算
 std::array<Ranked, kMarginNums> margin_at(const LinesDerived &d, const LinesLeg &lg, int d0, int d1) {
   std::array<Ranked, kMarginNums> o{};
   const float *cap = lg.b->cap_of(lg.line);
@@ -1025,8 +1025,8 @@ std::array<Ranked, kMarginNums> margin_at(const LinesDerived &d, const LinesLeg 
     if (const int32_t t = d.val_at[static_cast<size_t>(k)]; t >= 0 && cap[t] > 0.f) {
       o[kMarCap].x = cap[t];
       for (int j = 0; j < kMarginVals; ++j) {
-        const double p = lg.b->val_of(lg.line, kValRz + j)[t];
-        o[static_cast<size_t>(kMarBal + j)].x = p * cap[t], o[static_cast<size_t>(kMarPct + j)].x = p;
+        o[static_cast<size_t>(kMarBal + j)].x = lg.b->bal_of(lg.line, j)[t];
+        o[static_cast<size_t>(kMarPct + j)].x = lg.b->val_of(lg.line, kValRz + j)[t];
       }
       break;
     }
@@ -1168,8 +1168,10 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
       rank_col(n, -1, [&](size_t i) -> Ranked & { return v.margin[g][i][static_cast<size_t>(kMarPct + j)]; });
   }
 
-  // ---- VAL / MARGIN 标的各口 band: 标的理想线切片的日末点 (起点 + 各日末点), y = P · v / q (v = 当日收益率 / 余额占比; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画);
-  //      等值线单位点位 unit = P · v (只看当日, 不看滚动分位; v ≤ 0 → 断开), 档 = 二级的全史倍数档 ----
+  // ---- VAL / MARGIN 标的各口 band: 标的理想线切片的日末点 (起点 + 各日末点);
+  //      估值口: y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画);
+  //        等值线单位点位 unit = P · v (只看当日, 不看滚动分位; v ≤ 0 → 断开), 档 = 二级的全史倍数档;
+  //      两融口: 不换算成价格, y = 窗内分位档的占比本身 (%, 窗就绪即画), ratio = 当日占比 (%) ----
   v.band_x.clear(), v.band_p.clear();
   for (LinesBand &bd : v.band)
     bd = {};
@@ -1186,16 +1188,36 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
     const LinesRoll &r = roll[b];
     assert(r.pct.size() == d.dates.size());
     LinesBand &bd = v.band[b];
+    const bool mg = margin_val(b);
     const float *hv = lg.b->val_of(lg.line, b);
     for (std::vector<double> &y : bd.y)
       y.assign(n, kNaN);
-    bd.unit.assign(n, kNaN);
-    bd.levels = r.levels;
+    (mg ? bd.ratio : bd.unit).assign(n, kNaN);
+    if (!mg)
+      bd.levels = r.levels;
     int last = -1; // 末个有分位的日
+    const auto seg = [&](size_t i) {
+      const int ii = static_cast<int>(i);
+      if (bd.segs.empty() || bd.segs.back().second != ii)
+        bd.segs.push_back({ii, ii + 1});
+      else
+        ++bd.segs.back().second;
+    };
     for (size_t i = 0; i < n; ++i) {
       const int k = day[i];
       const int32_t t = k >= 0 ? d.val_at[static_cast<size_t>(k)] : -1;
       const double x = t >= 0 ? hv[t] : kNaN;
+      if (mg) {
+        bd.ratio[i] = 100.0 * x;
+        if (t >= 0 && std::isfinite(r.pct[static_cast<size_t>(k)]))
+          last = k;
+        if (k < 0 || !std::isfinite(r.q[0][static_cast<size_t>(k)]))
+          continue;
+        for (int q = 0; q < kBandQ; ++q) // q 按贵度升 = 占比降: 反过来即占比升序
+          bd.y[q][i] = 100.0 * r.q[kBandQ - 1 - q][static_cast<size_t>(k)];
+        seg(i);
+        continue;
+      }
       if (x > 0.0)
         bd.unit[i] = v.band_p[i] * x;
       if (t < 0 || !std::isfinite(r.pct[static_cast<size_t>(k)]))
@@ -1206,19 +1228,16 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
       for (int q = 0; q < kBandQ; ++q)
         if (const float qk = r.q[q][static_cast<size_t>(k)]; qk > 0.f)
           bd.y[q][i] = v.band_p[i] * x / qk;
-      if (!(r.q[kBandQ - 1][static_cast<size_t>(k)] > 0.f)) // q 降序: 最贵档 > 0 ⇔ 各档全可画 (填色只画全有限段)
-        continue;
-      const int ii = static_cast<int>(i);
-      if (bd.segs.empty() || bd.segs.back().second != ii)
-        bd.segs.push_back({ii, ii + 1});
-      else
-        ++bd.segs.back().second;
+      if (r.q[kBandQ - 1][static_cast<size_t>(k)] > 0.f) // q 降序: 最贵档 > 0 ⇔ 各档全可画 (填色只画全有限段)
+        seg(i);
     }
     if (last < 0)
       continue;
     bd.ok = true;
     const int32_t tl = d.val_at[static_cast<size_t>(last)];
-    bd.now = hv[tl], bd.pct = r.pct[static_cast<size_t>(last)], bd.cap = lg.b->cap_of(lg.line)[tl];
+    bd.now = hv[tl], bd.pct = r.pct[static_cast<size_t>(last)];
+    if (mg)
+      bd.bal = lg.b->bal_of(lg.line, b - kValRz)[tl];
   }
 }
 

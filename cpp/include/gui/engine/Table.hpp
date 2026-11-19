@@ -159,10 +159,9 @@ struct XCols {
   const FeatCol *find(std::string_view code) const;                     // 不在 → nullptr
   std::vector<LeafId> ids(const std::vector<std::string> &codes) const; // 须都在
 };
-// 池估值七口 (收益率口径 = 分子 / 市值; Book → Market VAL / MARGIN 页):
-//   估值五口 [kValEp, kValRz) 按 Weight 平均 (等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值):
-//     EP = 净利, BP = 权益, SP = 营收, CP = 经营现金流, DY = 分红 (高 = 便宜, 分子过 0 连续)
-//   两融两口 [kValRz, kPoolVals) 不看 Weight, 恒总量 Σ余额 / Σ市值 (非两融标的余额计 0; 成员全无余额 → NaN): RZ = 融资余额, RQ = 融券余额
+// 池估值七口 (收益率口径 = 分子 / 市值, 按 Weight 平均: 等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值; Book → Market VAL / MARGIN 页):
+//   估值五口 [kValEp, kValRz): EP = 净利, BP = 权益, SP = 营收, CP = 经营现金流, DY = 分红 (高 = 便宜, 分子过 0 连续; 个股不可算 → 不计入)
+//   两融两口 [kValRz, kPoolVals): RZ = 融资余额, RQ = 融券余额 (非两融标的计 0 照入平均; 成员全无余额 → NaN)
 enum PoolVal : int { kValEp,
                      kValBp,
                      kValSp,
