@@ -1,14 +1,14 @@
 #pragma once
 
-// 单资产的滚动调参全期轨迹 (只用本资产, 不用未来信息): band 人选固定, 减仓线 / 加仓线各一个 Tuner 逐日依次选参, 分层沿两条变参线一遍跑完
+// 单资产的滚动调参全期轨迹 (只用本资产, 不用未来信息): band 人选固定, 减仓 / 跟随各一个 Tuner 逐日依次选参, 分层沿两条变参线一遍跑完
 //   打分 (格点首次进网格时, 一批并行; 一个配置一个任务, 只读日线原料带 (日 K, 每日 1 根); Tune.hpp):
-//     减仓线 = 保敞口目标 keep_of, 全期一遍出逐根前缀; 加仓线 = (减仓格点, 加仓格点) 对的定参完整分层 trips_of, 全期一遍出逐笔
-//   选参 (逐日, 先减仓线后加仓线, Tuner::step): 各以此前至多自己的窗 W 日 (不足 W 日 = 自首日起全部, expanding) 网格各配置的分拟岭回归曲面 (Tune.hpp), 取连续最高点的参数 (小数);
+//     减仓 = 保敞口目标 keep_of, 全期一遍出逐根前缀; 跟随 = (减仓格点, 跟随格点) 对的定参完整分层 trips_of, 全期一遍出逐笔
+//   选参 (逐日, 先减仓后跟随, Tuner::step): 各以此前至多自己的窗 W 日 (不足 W 日 = 自首日起全部, expanding) 网格各配置的分拟岭回归曲面 (Tune.hpp), 取连续最高点的参数 (小数);
 //         最近的格点落在网格边上 (未到硬边界) → 以它为中心移网格, 补打新格点再拟, 当日至多 kHops 次; 中心留到次日 (各日只读当日之前的窗)
-//         加仓线在减仓线最高点的最近格点下打分 (窗内卖出的各笔的中位夏普)
-//         (首日 / 减仓线窗内根数不足窗长一半 / 窗内各配置的减仓线都未就绪 = 未选参, 买入持有, 与基准同口径; 加仓线窗内无笔 = 沿用上一日的)
+//         跟随在减仓最高点的最近格点下打分 (窗内卖出的各笔的中位夏普)
+//         (首日 / 减仓线窗内根数不足窗长一半 / 窗内各配置的减仓线都未就绪 = 未选参, 买入持有, 与基准同口径; 跟随窗内无笔 = 沿用上一日的)
 //         阻尼: 所用参数 (对数) 每日朝最高点走 1 / kDamp, 用到当日 (逐根: 当日内自上一日的线性过渡到它, 收盘到齐; band 同)
-//   策略 (一遍, 逐根): 源 Laddered = 变参减仓线核 (逐根所用参数, 状态接续) + 分层 Ladder (加仓线各份用它卖出那根所用的参数, 之后不变)
+//   策略 (一遍, 逐根): 源 Laddered = 变参减仓线核 (逐根所用参数, 状态接续) + 分层 Ladder (跟随线各份用它成交那根所用的参数, 之后不变)
 //         (状态跨日接续; 未选参日 = Hold, 分层复位; 减仓线 / band 预热 = Hold) → 汇 = 损益 Run + 档线 Cuts (档线快照随之交给 Cuts)
 //   两本账: 策略 (调仓计成本, 成本分项见 Engine.hpp) ↔ Hold → Run = 买入持有 (满仓不动, 无越线差)
 #include "cta/Metrics.hpp"
@@ -29,7 +29,7 @@ namespace cta {
 inline constexpr int kHops = 8;    // 一日内最多移网格几次
 inline constexpr double kDamp = 5; // 参数阻尼 (日): 所用参数 (对数) 每日朝曲面最高点走 1 / kDamp
 
-// 一个模型的选择: 族表下标 + 窗 (整年, kMinYears ~ kMaxYears; band = 自身的窗, 减仓线 / 加仓线 = 滚动调参窗)
+// 一个模型的选择: 族表下标 + 窗 (整年, kMinYears ~ kMaxYears; band = 自身的窗, 减仓 / 跟随 = 滚动调参窗)
 struct Pick {
   size_t kind;
   int win = 1;
@@ -38,8 +38,8 @@ struct Pick {
 
 // 模型与回测设定 (费率另给: 系统配置); 改了即全部重算
 struct Spec {
-  Pick band{Band::of<Dev>}, reduce{Reduce::of<Kama>}, add{Add::of<Decay>};
-  int grid = kGrid; // 网格配置数上限 (减仓线 / 加仓线各自按它分到自己的参数轴; split)
+  Pick band{Band::of<Dev>}, reduce{Reduce::of<Kama>}, follow{Follow::of<Decay>};
+  int grid = kGrid; // 网格配置数上限 (减仓 / 跟随各自按它分到自己的参数轴; split)
   Rule rule;        // 分层规则
   int dir = kLong;  // 方向 (kDirs 下标)
   bool operator==(const Spec &) const = default;
@@ -53,10 +53,10 @@ struct Path {
 };
 
 struct Track {
-  Path reduce, add; // 减仓线 / 加仓线
-  Days days;        // 日轴 (days_of)
-  Cuts cut;         // [根] 分层的档线 + 快照 (未选参日 / 预热 = Hold: 无档线)
-  Book strat, hold; // 策略 / 买入持有
+  Path reduce, follow; // 减仓 / 跟随
+  Days days;           // 日轴 (days_of)
+  Cuts cut;            // [根] 分层的档线 + 快照 (未选参日 / 预热 = Hold: 无档线)
+  Book strat, hold;    // 策略 / 买入持有
 };
 
 // 打分表: 键 → 分; 键首次进来时一批并行打分 (一个键一个任务); false = 放弃
@@ -138,7 +138,7 @@ template <class Exec, class Stop, class Tick>
 std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Rates &u, double bpy, Exec &ex, Stop stop, Tick tick) {
   const Tape t(se, S);
   const Days &days = t.days;
-  const size_t n = t.n, nd = days.size(), Wr = win_of(sp.reduce.win), Wa = win_of(sp.add.win);
+  const size_t n = t.n, nd = days.size(), Wr = win_of(sp.reduce.win), Wf = win_of(sp.follow.win);
   assert(n > 1 && nd > 1 && "样本须跨 2 日以上");
   assert(static_cast<size_t>(sp.dir) < std::size(kDirs) && "方向");
   const float s = kDirs[sp.dir].s;
@@ -148,25 +148,25 @@ std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Rat
   const Tape td(ds, 1); // 打分用的日线原料带 (日下标同 t)
   const Col G = bars_of(t, N), Gd = bars_of(td, N);
   const Ctx x{t, G, s}, dx{td, Gd, s};
-  Tuner tr(Reduce::kinds[sp.reduce.kind], static_cast<size_t>(sp.grid), nd), ta(Add::kinds[sp.add.kind], static_cast<size_t>(sp.grid), nd);
-  const Grid &gr = tr.p.grid, &ga = ta.p.grid;
+  Tuner tr(Reduce::kinds[sp.reduce.kind], static_cast<size_t>(sp.grid), nd), tf(Follow::kinds[sp.follow.kind], static_cast<size_t>(sp.grid), nd);
+  const Grid &gr = tr.p.grid, &gf = tf.p.grid;
 
   Scores<Q, Terms> rs;                           // 减仓格点 → 保敞口前缀
-  Scores<std::pair<Q, Q>, std::vector<Trip>> as; // (减仓格点, 加仓格点) → 逐笔
+  Scores<std::pair<Q, Q>, std::vector<Trip>> fs; // (减仓格点, 跟随格点) → 逐笔
   std::vector<double> buf;
   const auto enroll_r = [&](const std::vector<Q> &g) {
     return rs.enroll(ex, g, stop, [&](const Q &q) { return keep_of(dx, sp.reduce.kind, gr.p(q), sp.rule.units, u); });
   };
-  const auto enroll_a = [&](const std::vector<Q> &g) {
+  const auto enroll_f = [&](const std::vector<Q> &g) {
     std::vector<std::pair<Q, Q>> ks;
     for (const Q &q : g)
       ks.push_back({tr.q, q});
-    return as.enroll(ex, ks, stop, [&](const std::pair<Q, Q> &k) { return trips_of(dx, sp.reduce.kind, sp.add.kind, gr.p(k.first), ga.p(k.second), sp.rule); });
+    return fs.enroll(ex, ks, stop, [&](const std::pair<Q, Q> &k) { return trips_of(dx, sp.reduce.kind, sp.follow.kind, gr.p(k.first), gf.p(k.second), sp.rule); });
   };
   const std::vector<size_t> &o = td.days.off; // 日 → 日线原料带的根
   for (size_t d = 1; d < nd; ++d) {
     tick();
-    const size_t r0 = d > Wr ? d - Wr : 0, a0 = d > Wa ? d - Wa : 0;
+    const size_t r0 = d > Wr ? d - Wr : 0, f0 = d > Wf ? d - Wf : 0;
     if (2 * (days.off[d] - days.off[r0]) < (d - r0) * S)
       continue;
     const bool ok = tr.step(d, enroll_r, [&](const Q &q) { return rs.at(q).over(o[r0], o[d]); });
@@ -174,17 +174,17 @@ std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Rat
       return std::nullopt;
     if (!ok)
       continue;
-    ta.step(d, enroll_a, [&](const Q &q) { return median_of(as.at({tr.q, q}), td, o[a0], o[d], s, u, buf); });
+    tf.step(d, enroll_f, [&](const Q &q) { return median_of(fs.at({tr.q, q}), td, o[f0], o[d], s, u, buf); });
     if (stop())
       return std::nullopt;
   }
 
-  const std::vector<P> ur = tr.used(), ua = ta.used();
-  Track out{std::move(tr.p), std::move(ta.p), days, Cuts(n), {}, {}};
+  const std::vector<P> ur = tr.used(), uf = tf.used();
+  Track out{std::move(tr.p), std::move(tf.p), days, Cuts(n), {}, {}};
   Run strat(n), hold(n);
   Reduce::with(sp.reduce.kind, [&]<class K>() {
-    Add::with(sp.add.kind, [&]<class A>() {
-      Laddered<K, A> src{K{x}, Ladder<A>{x, sp.rule, A{x}}, ur, ua, out.reduce.sel};
+    Follow::with(sp.follow.kind, [&]<class F>() {
+      Laddered<K, F> src{K{x}, Ladder<F>{x, sp.rule}, ur, uf, out.reduce.sel};
       drive(t, u, src, [&](const Fill &f) { strat.put(t, f), out.cut.put(f.i, f.x); });
       out.cut.rungs = std::move(src.lad.rungs);
     });

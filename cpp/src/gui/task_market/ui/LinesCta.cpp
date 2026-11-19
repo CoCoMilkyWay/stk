@@ -30,6 +30,7 @@ namespace {
 constexpr size_t kS = Quote::kSlots;
 constexpr float kPriceFrac = 0.55f, kDdFrac = 0.15f;                                                                 // 价格图 / 回撤图占三图高的比例 (余 = 净值图)
 constexpr ImVec4 kMidCol(1.0f, 0.6f, 0.2f, 1.0f), kHoldCol(0.6f, 0.6f, 0.6f, 1.0f), kPinCol(1.0f, 0.5f, 0.0f, 1.0f); // kPinCol = 光标 (同 OrderFlow 锚线)
+constexpr ImVec4 kFollowSellCol(0.25f, 0.70f, 0.95f, 1.0f);                                                          // 跟随卖出线 (减仓线 = kDn, 跟随买入线 = kUp)
 // 成本带色 (序同 cta::kCosts) + 常态 / 悬停的不透明度
 constexpr ImVec4 kCostCol[] = {{0.35f, 0.60f, 0.95f, 1.0f}, {0.70f, 0.50f, 0.95f, 1.0f}, {0.95f, 0.65f, 0.25f, 1.0f}, {0.30f, 0.80f, 0.75f, 1.0f}, {0.95f, 0.40f, 0.55f, 1.0f}};
 static_assert(std::size(kCostCol) == cta::kNC, "成本带色");
@@ -141,7 +142,7 @@ std::vector<size_t> sample(size_t n, double x0, double x1, size_t step) {
 // 有效根 i 所在日 (下标同 Track::days)
 size_t dix(const CtaResult &r, size_t i) { return r.se->t[i] / kS - r.se->t[0] / kS; }
 
-// ---- 三图: 上 = 收盘 (按仓位着色: 多 → kUp / 空 → kDn, 越满越纯) + 中线 + 档线 (每份一条: 减仓线 / 加仓线) + 买 / 卖标记 (逐根时才画)
+// ---- 三图: 上 = 收盘 (按仓位着色: 多 → kUp / 空 → kDn, 越满越纯) + 中线 + 档线 (每份一条: 减仓线 / 跟随买入线 / 跟随卖出线) + 买 / 卖标记 (逐根时才画)
 //        + PB Band (同 VAL: 偏离 v / q_j 乘本图当日末根收盘, 每日一点在该日末根; 填色 + 各档线共一个图例项, 默认关);
 //      中 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换); 下 = 策略 / 持有回撤 (%); 底 = 区间条.
 //      窄边框, x / y 刻度标签都画在图区内 (x 只回撤图标, 三图同一套刻度线; y 在各图右边), 三图 + 区间条绘图区同宽;
@@ -213,7 +214,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
 
   // 标题: 标的 (高亮) · 模型 · 窗 · 视野 · 粒度
   const std::string model = std::string(cta::Band::kinds[r.spec.band.kind].name) + " / " + cta::Reduce::kinds[r.spec.reduce.kind].name + " / " +
-                            cta::Add::kinds[r.spec.add.kind].name + " / " + cta::kDirs[r.spec.dir].name;
+                            cta::Follow::kinds[r.spec.follow.kind].name + " / " + cta::kDirs[r.spec.dir].name;
   char gran[96];
   if (step == 1)
     std::snprintf(gran, sizeof(gran), "逐根, 买 %d 次 / 卖 %d 次", buys, sells);
@@ -221,7 +222,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
     std::snprintf(gran, sizeof(gran), "每点 %zu 根 (放大到逐根才标买卖), 买 %d 次 / 卖 %d 次", step, buys, sells);
   ImGui::TextColored(kHead, "%s", name ? name : "");
   ImGui::SameLine();
-  ImGui::TextDisabled("%s  ·  窗 %d / %d / %d 年  ·  %s ~ %s  ·  %s", model.c_str(), r.spec.band.win, r.spec.reduce.win, r.spec.add.win,
+  ImGui::TextDisabled("%s  ·  窗 %d / %d / %d 年  ·  %s ~ %s  ·  %s", model.c_str(), r.spec.band.win, r.spec.reduce.win, r.spec.follow.win,
                       misc::dash(day_of(r, lo)).c_str(), misc::dash(day_of(r, hi)).c_str(), gran);
 
   const ImGuiStyle &st = ImGui::GetStyle();
@@ -311,17 +312,17 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
         ImPlot::PlotLine(pb_lb, pb_x.data(), pb_y[q].data(), static_cast<int>(nk), ImPlotLineFlags_SkipNaN);
       }
     }
-    { // 档线 (Cuts::rungs_at): 一份一条连续线 (恒为份数条), 段色按段末的极性: 减仓线绿 / 加仓线红; 每点在同色里按离收盘的远近排名, 越近越浓 (逐段画);
-      //   图例只管两色的显隐
-      static const char *const kName[] = {"减仓线", "加仓线"};
-      const ImVec4 kCol[] = {kDn, kUp};
+    { // 档线 (Cuts::rungs_at): 一份一条连续线 (恒为份数条), 段色按段末的类别: 减仓线绿 / 跟随买入线红 / 跟随卖出线蓝; 每点在同色里按离收盘的远近排名, 越近越浓 (逐段画);
+      //   图例只管三色的显隐
+      static const char *const kName[] = {"减仓线", "跟随买入线", "跟随卖出线"}; // 下标 = 类别 (cta::kReduce / kFollowBuy / kFollowSell)
+      const ImVec4 kCol[] = {kDn, kUp, kFollowSellCol};
       const size_t U = static_cast<size_t>(tr.cut.units);
       const size_t K = at.size();
       std::vector<float> p(U * K, cta::kNaN); // [份][点] 价
-      std::vector<uint8_t> pol(p.size(), 0);  // [份][点] 1 = 加仓线
-      std::vector<uint8_t> rk(p.size(), 0);   // [份][点] 同极性里离收盘的名次 (0 = 最近)
+      std::vector<uint8_t> pol(p.size(), 0);  // [份][点] 类别
+      std::vector<uint8_t> rk(p.size(), 0);   // [份][点] 同类别里离收盘的名次 (0 = 最近)
       for (size_t k = 0; k < K; ++k) {
-        tr.cut.rungs_at(at[k], [&](int j, float v, bool add) { p[static_cast<size_t>(j) * K + k] = v, pol[static_cast<size_t>(j) * K + k] = add; });
+        tr.cut.rungs_at(at[k], [&](int j, float v, uint8_t type) { p[static_cast<size_t>(j) * K + k] = v, pol[static_cast<size_t>(j) * K + k] = type; });
         for (size_t j = 0; j < U; ++j) {
           const float dj = std::fabs(p[j * K + k] - static_cast<float>(close[k]));
           for (size_t i = 0; i < U; ++i) {
@@ -330,8 +331,8 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
           }
         }
       }
-      bool show[2];
-      for (size_t a = 0; a < 2; ++a) {
+      bool show[std::size(kName)];
+      for (size_t a = 0; a < std::size(kName); ++a) {
         ImPlot::SetNextLineStyle(kCol[a]);
         ImPlot::PlotDummy(kName[a]);
         const ImPlotItem *it = ImPlot::GetItem(kName[a]);
@@ -565,11 +566,11 @@ void stat_table(const CtaResult &r) {
   ImGui::EndTable();
 }
 
-// 减仓线 / 加仓线 (下标 0 / 1)
-const cta::Path &path_of(const CtaResult &r, size_t k) { return k ? r.tr.add : r.tr.reduce; }
-constexpr const char *kPathName[] = {"减仓线", "加仓线"};
+// 减仓 / 跟随 (下标 0 / 1)
+const cta::Path &path_of(const CtaResult &r, size_t k) { return k ? r.tr.follow : r.tr.reduce; }
+constexpr const char *kPathName[] = {"减仓", "跟随"};
 
-// 光标处 (−1 = 末根) 所在日 → v[k] = 当日所用参数 (阻尼后, 轴的单位; 减仓线未选参 = 买入持有, 两者都 nullptr; 加仓线未选参 = 沿用的上一个选参日, 尚无 = nullptr); 返回说明
+// 光标处 (−1 = 末根) 所在日 → v[k] = 当日所用参数 (阻尼后, 轴的单位; 减仓未选参 = 买入持有, 两者都 nullptr; 跟随未选参 = 沿用的上一个选参日, 尚无 = nullptr); 返回说明
 std::string cursor_at(const CtaResult &r, int cursor, const cta::P *(&v)[2]) {
   const size_t n = r.se->c.size(), i = cursor >= 0 ? static_cast<size_t>(cursor) : n - 1;
   const size_t d = dix(r, i);
@@ -578,12 +579,12 @@ std::string cursor_at(const CtaResult &r, int cursor, const cta::P *(&v)[2]) {
   if (!r.tr.reduce.sel[d])
     return head + ": 买入持有 (首日 / 窗内数据不足 / 减仓线未就绪, 未选参)";
   v[0] = &r.tr.reduce.use[d];
-  const cta::Path &a = r.tr.add;
+  const cta::Path &f = r.tr.follow;
   for (size_t e = d + 1; e-- > 0 && !v[1];)
-    if (a.sel[e])
-      v[1] = &a.use[e];
-  return head + ": 当日所用 (阻尼后)" + (a.sel[d] ? "" : v[1] ? "; 加仓线窗内无笔, 沿用上一个选参日的"
-                                                              : "; 加仓线尚未选参, 用初始中心");
+    if (f.sel[e])
+      v[1] = &f.use[e];
+  return head + ": 当日所用 (阻尼后)" + (f.sel[d] ? "" : v[1] ? "; 跟随窗内无笔, 沿用上一个选参日的"
+                                                              : "; 跟随尚未选参, 用初始中心");
 }
 
 // 模型下拉: 选项 xs (各有 name / tip) 的下标 cur; 悬停 = head + 各模型说明
@@ -603,7 +604,7 @@ void model_combo(const char *id, const Xs &xs, size_t &cur, const std::string &h
   }
 }
 
-// ---- 参数轨迹: 减仓线 / 加仓线逐日各轴参数 ÷ 各自首个选参日的值 (都从 1 起, log 轴; 只看相对变化): 实线 = 阻尼后所用, 淡线 = 曲面最高点 (跳 = 岭回归选参不稳);
+// ---- 参数轨迹: 减仓 / 跟随逐日各轴参数 ÷ 各自首个选参日的值 (都从 1 起, log 轴; 只看相对变化): 实线 = 阻尼后所用, 淡线 = 曲面最高点 (跳 = 岭回归选参不稳);
 //      x 链到两图 (同一视野, 双击回全段), 未选参日断开; 光标 = 橙色竖线; 悬停看当日参数 ----
 
 // 参数 v (轴的单位): 头 模型  轴 = 值 …
@@ -739,7 +740,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   if (syncing && ImGui::IsItemHovered())
     tip("首次一趟合成全部篮子线与个股的 1 分钟价, 存在 all.bar 库目录 cache/price/ 下 (十年全市场约 40 GB); 之后只补新日, 退出不丢已合成的");
 
-  // 设定: 分组 (band / 减仓线 / 加仓线 / 分层 / 引擎), 一行两项 (名 控件 | 名 控件, 各占半行); 改了即全部重算
+  // 设定: 分组 (band / 减仓 / 跟随 / 分层 / 引擎), 一行两项 (名 控件 | 名 控件, 各占半行); 改了即全部重算
   cta::Spec &sp = c.spec;
   const float x0 = ImGui::GetCursorPosX();
   const auto pair = [&](const char *a, auto fa, const char *b, auto fb) {
@@ -804,21 +805,22 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   };
   const auto tuned = [&](const char *name, std::span<const cta::Kind> kinds, cta::Pick &pk, size_t k, const char *model, const char *win) { // 节标题 + 各轴 + 模型 | 窗
     head(name, kinds[pk.kind]);
-    axes(kinds[pk.kind], r && (k ? r->spec.add : r->spec.reduce).kind == pk.kind ? at[k] : nullptr);
+    axes(kinds[pk.kind], r && (k ? r->spec.follow : r->spec.reduce).kind == pk.kind ? at[k] : nullptr);
     pick(name, kinds, pk, model, win);
   };
 
   ImGui::SeparatorText("band");
-  pick("band", cta::Band::kinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 日 d 盘中自上一日的值线性过渡到前一交易日收盘时的值, 收盘到齐; 人选, 不调); 止损与加仓线的下移都以它计",
+  pick("band", cta::Band::kinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 日 d 盘中自上一日的值线性过渡到前一交易日收盘时的值, 收盘到齐; 人选, 不调); 止损与跟随线的漂移都以它计",
        "band 的窗; 不足窗长 = 用已有的日 (增量窗)");
-  tuned("减仓线", cta::Reduce::kinds, sp.reduce, 0,
-        "减仓线模型: 满仓时链顶随它, 往下每隔一个 band 一条减仓线; 目的是尽量保留顺向敞口\n"
-        "调参目标 = 保敞口: 它当静态档线 (第 r 份 = 线 − r × band, 跌破即出 / 涨回即入, 与加仓线无关), 分 = (顺向 − 翻转成本) / 总振幅",
-        "减仓线选参的滚动窗: 每日以此前这么长的窗内网格各配置的分拟曲面, 取最高点用到当日; 窗内根数不足窗长一半 = 买入持有");
-  tuned("加仓线", cta::Add::kinds, sp.add, 1,
-        "加仓线模型: 已减的份的加仓线怎么下移 (参数以日计, 逐根摊开随分钟走; 下移不越过 收盘 + 止损距), 回撤够深后下移做网格抄底; 各份的参数在它卖出时定下, 之后不变 (各份可不同)\n"
-        "调参目标 = 每笔中位夏普: 在当日减仓线下跑完整分层, 窗内卖出的各笔 (ln(卖价 / 买回价) − 成本) / (band / 卖价 × √持续日) 的中位; 窗末未买回的按窗末收盘计",
-        "加仓线选参的滚动窗: 每日以此前这么长的窗内卖出的各笔打分, 拟曲面取最高点用到当日; 窗内无笔 = 沿用上一日的");
+  tuned("减仓", cta::Reduce::kinds, sp.reduce, 0,
+        "减仓模型: 中线; 预期卖出线 = 中线往下每隔一个 band 一条 (持有 h 份时, 持有的线自上而下第 r 条的预期 = 中线 − (份数 − h + r) × band); 目的是尽量保留顺向敞口\n"
+        "调参目标 = 保敞口: 只有预期卖出线 (静态档线: 第 r 份 = 中线 − r × band, 跌破即出 / 涨回即入, 与跟随无关), 分 = (顺向 − 翻转成本) / 总振幅",
+        "减仓选参的滚动窗: 每日以此前这么长的窗内网格各配置的分拟曲面, 取最高点用到当日; 窗内根数不足窗长一半 = 买入持有");
+  tuned("跟随", cta::Follow::kinds, sp.follow, 1,
+        "跟随模型: 成交过的份的跟随线怎么朝价漂 (参数以日计, 逐根摊开随分钟走; 各份的参数在它成交时定下, 之后不变, 各份可不同):\n"
+        "跟随买入线往下漂 (不越过 收盘 + 止损距) 做网格抄底, 跟随卖出线往上漂 (不越过 收盘 − 止损距, 也不越过其预期卖出线) 做移动止损; 两向同参数镜像\n"
+        "调参目标 = 每笔中位夏普: 在当日减仓下跑完整分层, 窗内卖出的各笔 (ln(卖价 / 买回价) − 成本) / (band / 卖价 × √持续日) 的中位; 窗末未买回的按窗末收盘计",
+        "跟随选参的滚动窗: 每日以此前这么长的窗内卖出的各笔打分, 拟曲面取最高点用到当日; 窗内无笔 = 沿用上一日的");
   if (r) {
     hint(where.c_str());
     if (ImGui::IsItemHovered())
@@ -826,7 +828,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   }
   c.path_open = r && ImGui::CollapsingHeader("参数轨迹");
   if (r && ImGui::IsItemHovered())
-    tip("减仓线 / 加仓线逐日参数, 每轴 ÷ 各自首个选参日的值 (都从 1 起, log 轴), 只看相对变化: 实线 = 阻尼后所用, 淡线 = 曲面最高点; 淡线跳得频 / 跳得大 = 岭回归选参不稳\n"
+    tip("减仓 / 跟随逐日参数, 每轴 ÷ 各自首个选参日的值 (都从 1 起, log 轴), 只看相对变化: 实线 = 阻尼后所用, 淡线 = 曲面最高点; 淡线跳得频 / 跳得大 = 岭回归选参不稳\n"
         "• 阻尼: 所用参数 (对数) 每日朝最高点走 1 / %.0f\n"
         "• x 与左侧两图同一视野; 橙色竖线 = 光标, 中栏参数看光标所在日",
         cta::kDamp);
@@ -834,18 +836,18 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
     path(c, *r);
 
   ImGui::SeparatorText("分层");
-  hint("减仓线链: 链顶锚定上一个触发点, 往下每条隔一个 band; 重锚时线不跳, 一日内线性消化; 加仓线每日按加仓线模型下移");
+  hint("未触发的份挂在减仓线链上 (随预期 / 锚触发价 / 挂最顶层的跟随卖出线); 触发过的份各自在跟随买入 / 跟随卖出之间切换并漂移, 跟随卖出线赶上预期即交回");
   if (ImGui::IsItemHovered())
-    tip("持有的份挂减仓线 (逆向跌到即减一份), 已减的份各挂一条加仓线 (顺向涨到即加回该份); 成交按档线价\n"
-        "• 逐日换的量 (band / 减仓线 / 加仓线参数) 当日内自上一日的值线性过渡到当日值, 收盘到齐, 档线不在日界跳\n"
-        "• 减仓线链: 链顶锚定上一个触发点, 往下每条 = 上一条 − band (锚定不变)\n"
-        "• 链顶: 满仓 = 减仓线模型; 卖出后 = 本根卖出的最低线 − band; 买回 @L 后 = L − 止损 × band\n"
-        "• 满仓 (只剩减仓线) 且减仓线模型升过链顶、仍在收盘之下 = 回到随它 (它在收盘之上时不随, 买回后先留着买入价下方的止损链, 不会买了立刻卖)\n"
-        "• 跳空消化: 链重锚 (卖出 / 买回 / 回到随它) 时各持有份的线留在原处, 与新链位之差自那根起一日的根数内线性走完 (跨日接着走); 新买回那份即在其止损上\n"
-        "• 加仓线: 卖出 @a 即挂 a + 止损距; 逐根按加仓线模型下移, 下移不越过 收盘 + 止损距 (不会自行触发, 也不上移); 减仓线不下移\n"
-        "• 一根越过几条成交几条 (先近后远)\n"
-        "• 图上: 一份一条连续线 (恒为份数条), 绿 = 减仓线, 红 = 加仓线, 成交处换色; 同色里离收盘越近越浓\n"
-        "• 减仓线 / band 尚无值 (如首日) = 买入持有 (与基准同口径)");
+    tip("每份恰一条线: 减仓线 (持有, 未触发, 在链上) / 跟随买入线 (已减, 在价上) / 跟随卖出线 (持有, 已买回, 在价下); 成交按档线价\n"
+        "• 逐日换的量 (band / 减仓 / 跟随参数) 当日内自上一日的值线性过渡到当日值, 收盘到齐, 档线不在日界跳\n"
+        "• 持有的份跌到自己的线即卖 → 跟随买入线 = 线 + 止损距; 跟随买入线涨到即买回 → 跟随卖出线 = 线 − 止损距; 一根越过几条成交几条 (先近后远)\n"
+        "• 跟随线各份独立漂移: 跟随买入线往下, 不越过 收盘 + 止损距; 跟随卖出线往上, 不越过 收盘 − 止损距, 也不越过其预期卖出线; 赶上预期卖出线 = 交回减仓线\n"
+        "• 预期卖出线 (按链序): 持有 h 份时, 持有的线自上而下第 r 条的预期 = 中线 − (份数 − h + r) × band\n"
+        "• 减仓线链 (链上每条隔一个 band) 的锚: 起步 / 交回的份成了链顶 = 随预期卖出线 (随中线波动); 有卖出 = 锚触发价 (链顶 = 本根卖出的最低线 − band, 不高于原链顶; 不随中线);\n"
+        "  买回的份成了最顶的持有线 = 挂在它下面 (链随它一起上漂, 它交回即转随预期)\n"
+        "• 跳空消化 (只作用于链上的线): 换锚 / 链序变的那根, 链上各线留在原处, 与新链位之差自那根起一日的根数内线性走完 (跨日接着走); 新成交的跟随线不受影响\n"
+        "• 图上: 一份一条连续线 (恒为份数条), 绿 = 减仓线, 红 = 跟随买入线, 蓝 = 跟随卖出线, 成交处换色; 同色里离收盘越近越浓\n"
+        "• 中线 / band 尚无值 (如首日) = 买入持有 (与基准同口径)");
   pair(
       "份数",
       [&] {
@@ -860,7 +862,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
         sp.rule.stop = std::clamp(sp.rule.stop, 0.0f, 10.0f);
         c.editing |= ImGui::IsItemActive();
         if (ImGui::IsItemHovered())
-          tip("止损距 (以 band 计): 成交一份, 该份换极性并止损 × band: 卖出 = 加仓线挂在成交价上方这么远, 买回 = 链顶挂在买入价下方这么远; 默认 %.2g; 编辑完生效",
+          tip("止损距 (以 band 计): 成交一份, 该份换极性并止损 × band: 卖出 = 跟随买入线挂在卖出线上方这么远, 买回 = 跟随卖出线挂在买入线下方这么远; 默认 %.2g; 编辑完生效",
               cta::kStop); });
 
   ImGui::SeparatorText("引擎");
@@ -884,7 +886,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
           sp.grid = std::clamp(sp.grid, 3, 1000);
           c.editing |= ImGui::IsItemActive();
           if (ImGui::IsItemHovered())
-            tip("网格配置数: 减仓线 / 加仓线各自独立选参时, 每日在当前最优点周围评的参数组合数上限 (两者共用此数, 各自按自己的参数轴分; 分法悬停减仓线 / 加仓线的节标题看); 默认 %d\n"
+            tip("网格配置数: 减仓 / 跟随各自独立选参时, 每日在当前最优点周围评的参数组合数上限 (两者共用此数, 各自按自己的参数轴分; 分法悬停减仓 / 跟随的节标题看); 默认 %d\n"
                 "• 参数轴 = 自 v0 向两侧铺的格点, 相邻之比 %.3g, 间距不小于各轴基本单位 (小值处退成等差), 收进各轴硬边界\n"
                 "• 各轴的格点数轮流分得 (每次给格点最少的轴加一个), 积不超过此数; 网格 = 以当前最优为中点的全部组合 (碰到硬边界则整格平移进界)\n"
                 "• 每日拟岭回归曲面取连续最高点 (参数可为小数, 相邻格点间对数插值); 最近的格点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日\n"

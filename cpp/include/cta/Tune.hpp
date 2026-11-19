@@ -1,10 +1,10 @@
 #pragma once
 
-// 减仓线 / 加仓线调参 (band 与分层规则固定, 不参与): 两个目标 (逐根链出记录, 取根段打分) + 参数网格 Grid (格点 + 中心可移的网格 + 其上的岭回归曲面)
+// 减仓 / 跟随调参 (band 与分层规则固定, 不参与): 两个目标 (逐根链出记录, 取根段打分) + 参数网格 Grid (格点 + 中心可移的网格 + 其上的岭回归曲面)
 //   两个目标同一形: 一个配置全期一遍出一份记录, 之后任一根段 [i0, i1) → 分 (NaN = 段内不可打分)
-//   减仓线目标 = 保敞口: 源 Steps (定参减仓线核当静态档线: 第 r 份的线 = 减仓线 − r · band, 跌破即出, 涨回即入; 与加仓线无关) → 逐根两项的前缀 Terms;
+//   减仓目标 = 保敞口: 源 Steps (定参减仓线核, 只有预期卖出线: 第 r 份的线 = 中线 − r · band, 跌破即出, 涨回即入; 与跟随无关) → 逐根两项的前缀 Terms;
 //     分 = (顺向 − 翻转成本) / 总振幅, 对数价单位, 1 ≈ 走过的路程全部顺向吃到; 敞口留得多、来回翻得少则高
-//   加仓线目标 = 每笔中位夏普: 源 Laddered (定参减仓线 + 定参加仓线的完整分层, Ladder 录逐笔) → 逐笔 Trip; 段内卖出的各笔
+//   跟随目标 = 每笔中位夏普: 源 Laddered (定参减仓 + 定参跟随的完整分层, Ladder 录逐笔) → 逐笔 Trip; 段内卖出的各笔
 //     夏普 = (s · ln(卖价 / 买回价) − 该笔成本) / (卖出那根的 band / 卖价 · √持续日), 段末未买回 = 按段末前一根收盘计; 分 = 各笔的中位
 //   打分一律跑日线 (日 K 合成的原料带, 每日 1 根): 训练每日一次, 不必逐分钟; 回测才跑原频
 //   成本与回测同一份费率; 只读 Tape, 一个配置一个任务
@@ -26,7 +26,7 @@ namespace cta {
 inline constexpr int kGrid = 20;    // 网格配置数默认 (Spec::grid)
 inline constexpr double kRidge = 1; // 岭罚 λ (相对样本数; 坐标方差 ~0.4, 高次项方差更小、压得更狠)
 
-// ---- 减仓线目标 ----
+// ---- 减仓目标 ----
 
 // 保敞口两项的逐根前缀 [n + 1] (前导 0): 根段 [i0, i1) 之和 = x[i1] − x[i0]
 //   a = 顺向 − 翻转成本 = 前根仓位 · 对数涨跌 − 本根成本 (佣金 + 印花税 + 冲击; 静态档线无越线差)
@@ -37,7 +37,7 @@ struct Terms {
   double over(size_t i0, size_t i1) const { return b[i1] > b[i0] ? (a[i1] - a[i0]) / (b[i1] - b[i0]) : kNaN; }
 };
 
-// 减仓线目标: 减仓线模型 kind 定参 p (轴的单位), 份数 U, 费率 u
+// 减仓目标: 减仓线模型 kind 定参 p (轴的单位), 份数 U, 费率 u
 inline Terms keep_of(const Ctx &x, size_t kind, const P &p, int U, const Rates &u) {
   const Tape &t = x.t;
   Terms o{{0}, {0}};
@@ -54,17 +54,17 @@ inline Terms keep_of(const Ctx &x, size_t kind, const P &p, int U, const Rates &
   return o;
 }
 
-// ---- 加仓线目标 ----
+// ---- 跟随目标 ----
 
-// 定参完整分层的逐笔 (按卖出根升序): 减仓线模型 reduce 定参 pr, 加仓线模型 add 定参 pa (轴的单位), 分层规则 z
-inline std::vector<Trip> trips_of(const Ctx &x, size_t reduce, size_t add, const P &pr, const P &pa, const Rule &z) {
+// 定参完整分层的逐笔 (按卖出根升序): 减仓线模型 reduce 定参 pr, 跟随模型 follow 定参 pf (轴的单位), 分层规则 z
+inline std::vector<Trip> trips_of(const Ctx &x, size_t reduce, size_t follow, const P &pr, const P &pf, const Rule &z) {
   std::vector<Trip> o;
   const size_t nd = x.t.days.size();
-  const std::vector<P> vr(nd, pr), va(nd, pa);
+  const std::vector<P> vr(nd, pr), vf(nd, pf);
   const std::vector<uint8_t> on(nd, 1);
   Reduce::with(reduce, [&]<class K>() {
-    Add::with(add, [&]<class A>() {
-      Laddered<K, A> src{K{x}, Ladder<A>{x, z, A{x}}, vr, va, on};
+    Follow::with(follow, [&]<class F>() {
+      Laddered<K, F> src{K{x}, Ladder<F>{x, z}, vr, vf, on};
       src.lad.log = &o;
       drive(x.t, Rates{}, src, [](const Fill &) {});
     });
