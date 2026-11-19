@@ -177,7 +177,7 @@ std::string quote_text(const live::Quote &q) {
 }
 
 // 事务里下一单: 「行情」现取盘口记一条、按 mode 定委托价, 再交 broker 下; o 的量为 qty 股或 size 元 (恰给其一).
-// 本单进最近几单之首, 各步记进本单与事务的步骤 (前缀 at, 如「卖出 2/5」); 请求与结局各记一条, 不成 → Fail
+// 本单进最近几单之首, 各步记进本单与事务的步骤 (前缀 at, 如「卖出 2/5」); 请求与结局各记一条, 成败看 st (不抛)
 OrderJob exec(Core &c, live::OrderReq o, std::string label, live::PxMode mode, const std::string &at) {
   const char *px_name = live::kPxModeNames[static_cast<int>(mode)];
   note(c, "order", strf("%s %s %s %s %s · %s", live::side_name(o.side), live::credit_name(o.credit), o.sec.code.c_str(), o.sec.name.c_str(), label.c_str(), px_name),
@@ -234,9 +234,9 @@ OrderJob exec(Core &c, live::OrderReq o, std::string label, live::PxMode mode, c
   }
   note(c, "job", strf("%s %s %s", job_name(out.st), out.detail.c_str(), out.got.msg.c_str()),
        {{"job", {{"state", job_name(out.st)}, {"detail", out.detail}, {"msg", out.got.msg}, {"qty", out.got.qty}, {"px", out.got.px}}}});
-  live::need(out.st == JobSt::Ok, strf("%s %s 下单失败: %s", o.sec.code.c_str(), o.sec.name.c_str(), out.got.msg.c_str()));
   return out;
 }
+std::string failed(const OrderJob &j) { return strf("%s %s 下单失败: %s", j.o.sec.code.c_str(), j.o.sec.name.c_str(), j.got.msg.c_str()); }
 
 // 各件事务的身子; 两样拉取同形: 拉 → 存, 再换上
 void terms_task(Core &c) {
@@ -328,6 +328,7 @@ void rebal_task(Core &c) {
   }
   const live::PxMode mode = inputs(c)->cfg.px;
   live::rebal::Plan p = plan_now(c, cl);
+  std::vector<std::string> fails; // 没下成的单: 记下接着下后面的, 末了一并报
   std::vector<live::rebal::Order> sells;
   std::copy_if(p.orders.begin(), p.orders.end(), std::back_inserter(sells), [](const live::rebal::Order &o) { return o.side == live::kSell; });
   if (!sells.empty()) {
@@ -335,7 +336,10 @@ void rebal_task(Core &c) {
     for (const live::rebal::Order &o : sells)
       want[o.code] = sold(*st, o.code);
     for (size_t i = 0; i < sells.size(); ++i)
-      want[sells[i].code] += place_one(c, sells[i], mode, strf("卖出 %zu/%zu", i + 1, sells.size())).got.qty;
+      if (const OrderJob j = place_one(c, sells[i], mode, strf("卖出 %zu/%zu", i + 1, sells.size())); j.st == JobSt::Ok)
+        want[sells[i].code] += j.got.qty;
+      else
+        fails.push_back(failed(j));
     wait_fills(c, want);
     sync(c);
     edit(c, &Core::in, [](Inputs &x) { x.cfg.sells.clear(); });
@@ -344,9 +348,16 @@ void rebal_task(Core &c) {
   for (size_t i = 0; i < p.orders.size(); ++i) {
     const live::rebal::Order &o = p.orders[i];
     live::need(o.side == live::kBuy, "去掉卖出后试算仍有卖单: " + o.code + " " + o.name);
-    place_one(c, o, mode, strf("买入 %zu/%zu", i + 1, p.orders.size()));
+    if (const OrderJob j = place_one(c, o, mode, strf("买入 %zu/%zu", i + 1, p.orders.size())); j.st != JobSt::Ok)
+      fails.push_back(failed(j));
   }
   sync(c);
+  if (!fails.empty()) {
+    std::string s;
+    for (const std::string &f : fails)
+      s += (s.empty() ? "" : "; ") + f;
+    live::fail(strf("%zu 单没下成, 其余照下: %s", fails.size(), s.c_str()));
+  }
 }
 
 // 后台起一件事务; 已有事务在跑 → 不收, false
@@ -573,7 +584,10 @@ void LiveHub::submit(const std::string &code, int side, double size, live::Credi
     sec = &*i;
   }
   const live::OrderReq o{*sec, side, credit, 0, 0, size};
-  start(c_, "下单", [o, mode = in_->cfg.px](Core &c) { exec(c, o, strf("%gW", o.size / 1e4), mode, ""); });
+  start(c_, "下单", [o, mode = in_->cfg.px](Core &c) {
+    const OrderJob j = exec(c, o, strf("%gW", o.size / 1e4), mode, "");
+    live::need(j.st == JobSt::Ok, failed(j));
+  });
 }
 
 void LiveHub::pull_terms() {

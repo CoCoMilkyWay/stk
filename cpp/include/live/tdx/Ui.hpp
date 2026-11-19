@@ -47,9 +47,13 @@ Page open(const Open &o, double timeout = kQueryWait); // 页签即向宿主投�
 
 // ---------- 弹框 ----------
 
-// 做 act, 等其后新出现、标题在 titles 内的可见对话框 (须唯一); 先冒出别的对话框 (如客户端的 MessageBox 提示) 即 Fail, 报其标题与正文
-win::Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::function<void()> &act);
+// 做 act, 等其后新出现、标题在 titles 内的可见对话框 (须唯一); 先冒出别的对话框 (如客户端的 MessageBox 提示) 即 Fail, 报其标题与正文;
+//   正文含 again 之一的 (客户端一时没就绪) 例外: 关掉它、隔 kAgainGap 秒再做 act, 都算在 timeout 内
+inline constexpr double kAgainGap = 0.3;
+win::Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::function<void()> &act, const std::vector<std::string> &again = {});
 std::string body(const win::Hwnd &box); // 确认 / 提示框 / 系统 MessageBox 正文, 没有该控件 → 空串
 void yes(const win::Hwnd &box);         // 点确认
+// before 之后新出的可见对话框一律关掉 (WM_CLOSE = 取消 / 关提示), 等至多 3s; 关不完只记一笔, 不 Fail (失败的收尾里用)
+void close_new(const win::Tops &before);
 
 } // namespace live::tdx::ui

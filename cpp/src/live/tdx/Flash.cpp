@@ -22,6 +22,9 @@ constexpr double kLinkTimeout = 6; // 投联动后等标题换过来至多几秒
 const std::vector<std::string> kConfirmTitles = {"买入交易确认", "卖出交易确认", "交易确认"};
 const std::string kResultTitle = "提示";
 constexpr long kEst = 8915; // 闪电窗按额时的「预估金额:…(N股)」
+// 图表刚切过来、盘口还没到时开闪电窗, 客户端弹「…的价格档位上的价格为空!」: 关掉再开, 至多等 kOpenWait 秒
+const std::vector<std::string> kNotReady = {"价格档位上的价格为空"};
+constexpr double kOpenWait = 6;
 
 // 闪电窗: 主窗命令 id、窗标题、各控件 id (证券代码 / 价格 / 数量 / 数量单位 / 报价方式 / 最大可买·可卖·可融 (股) / 提交)
 struct Kind {
@@ -129,7 +132,7 @@ void open(Ctx &c) {
   for (const auto &[h, n] : win::tops())
     if (n.title == c.k.title)
       fail(strf("已有未关的「%s」窗", c.k.title));
-  c.dlg = ui::popup({c.k.title}, 3, [&] { win::post(c.main, win::kWmCommand, c.k.cmd); });
+  c.dlg = ui::popup({c.k.title}, kOpenWait, [&] { win::post(c.main, win::kWmCommand, c.k.cmd); }, kNotReady);
 }
 
 void form(Ctx &c) {
@@ -237,10 +240,16 @@ Placed place(const OrderReq &o, const Step &step) {
   assert(k);
   assert((o.qty > 0) != (o.size > 0) && o.px > 0);
   Ctx c{.o = o, .k = *k};
-  for (size_t i = 0; i < std::size(kStages); ++i) {
-    trace::Span span(kStages[i].name);
-    step(i, c.detail);
-    kStages[i].run(c);
+  const win::Tops before = win::tops();
+  try {
+    for (size_t i = 0; i < std::size(kStages); ++i) {
+      trace::Span span(kStages[i].name);
+      step(i, c.detail);
+      kStages[i].run(c);
+    }
+  } catch (const Fail &) {
+    ui::close_new(before); // 本单弹出的各框关掉, 下一单接着做
+    throw;
   }
   trace::ev("placed", {{"qty", c.n}, {"px", c.px}, {"msg", c.msg}});
   return {static_cast<double>(c.n), c.px, c.msg};

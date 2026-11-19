@@ -14,7 +14,7 @@ namespace live::tdx::win {
 
 using Hwnd = std::string;
 
-inline constexpr unsigned kWmVscroll = 0x115, kWmCommand = 0x111;
+inline constexpr unsigned kWmVscroll = 0x115, kWmCommand = 0x111, kWmClose = 0x10;
 inline constexpr int kSbPagedown = 3, kSbTop = 6;
 
 // 节点记录 (enum / find / rect): 先序, depth 定父子, 兄弟序即 z 序 (先 = 上层); rect 为屏幕坐标

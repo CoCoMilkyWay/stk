@@ -262,28 +262,41 @@ Page open(const Open &o, double timeout) {
 
 // ---------- 弹框 ----------
 
-Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::function<void()> &act) {
+namespace {
+// before 之后新出的可见对话框
+win::Tops fresh(const win::Tops &before) {
+  win::Tops out;
+  for (auto &[h, n] : win::tops())
+    if (!before.contains(h) && n.cls == "#32770")
+      out.emplace(h, n);
+  return out;
+}
+} // namespace
+
+Hwnd popup(const std::vector<std::string> &titles, double timeout, const std::function<void()> &act, const std::vector<std::string> &again) {
   trace::Span span("弹框", {{"titles", titles}});
   const win::Tops before = win::tops();
   act();
   std::string want;
   for (const std::string &t : titles)
     want += (want.empty() ? "" : "/") + t;
-  const auto fresh = [&] {
-    win::Tops out;
-    for (auto &[h, n] : win::tops())
-      if (!before.contains(h) && n.cls == "#32770")
-        out.emplace(h, n);
-    return out;
-  };
   std::string title;
   const Hwnd box = *until(
       said("「" + want + "」"),
       [&]() -> std::optional<Hwnd> {
         std::vector<Hwnd> hits;
-        for (const auto &[h, n] : fresh()) {
-          if (std::find(titles.begin(), titles.end(), n.title) == titles.end())
-            fail(strf("等「%s」时先弹出「%s」%s", want.c_str(), n.title.c_str(), body(h).c_str()));
+        for (const auto &[h, n] : fresh(before)) {
+          if (std::find(titles.begin(), titles.end(), n.title) == titles.end()) {
+            const std::string b = body(h);
+            if (std::none_of(again.begin(), again.end(), [&](const std::string &s) { return b.find(s) != std::string::npos; }))
+              fail(strf("等「%s」时先弹出「%s」%s", want.c_str(), n.title.c_str(), b.c_str()));
+            trace::ev("again", {{"title", n.title}, {"body", b}});
+            win::post(h, win::kWmClose, 0);
+            until(said("「" + n.title + "」" + b + " 关掉"), [x = h] { return !win::tops().contains(x); }, 3);
+            std::this_thread::sleep_for(Secs(kAgainGap));
+            act();
+            return std::nullopt;
+          }
           hits.push_back(h);
           title = n.title;
         }
@@ -308,5 +321,29 @@ std::string body(const Hwnd &box) {
 }
 
 void yes(const Hwnd &box) { win::command(box, kMsgYes); }
+
+// 每轮只关可用的 (模态框盖着的闪电窗此时禁用, 等上面的关了再关)
+void close_new(const win::Tops &before) {
+  trace::Span span("收尾");
+  const auto left = [&] {
+    std::vector<std::string> v;
+    for (const auto &[h, n] : fresh(before))
+      v.push_back(n.title);
+    return v;
+  };
+  const bool done = poll(
+      [&] {
+        const win::Tops t = fresh(before);
+        for (const auto &[h, n] : t)
+          if (n.en) {
+            trace::ev("close", {{"title", n.title}, {"hwnd", h}});
+            win::post(h, win::kWmClose, 0);
+          }
+        return t.empty();
+      },
+      3, kAgainGap);
+  if (!done)
+    trace::ev("left", {{"titles", left()}});
+}
 
 } // namespace live::tdx::ui
