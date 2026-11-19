@@ -187,7 +187,7 @@ stk/
 │   │   │   │   ├── StatJson.hpp                        # 🖥️ EvalStat ↔ JSON
 │   │   │   │   ├── services/                           # 🖥️ 纯计算核 (GUI 与 Agent 共调) + 薄线程壳:
 │   │   │   │   │   ├── RunService.hpp                  # 🖥️ ScanFactors / EvalFactorFile (单文件共享森林评估 + 回写 stats) + RunService
-│   │   │   │   │   ├── SearchService.hpp               # 🖥️ SearchFactor (采样 → GP 曲面取峰 → 细化 → 非冗余终选回写 weights) + SearchService
+│   │   │   │   │   ├── SearchService.hpp               # 🖥️ SearchFactor (采样 → 一趟评完 → 逐点中位 rIC 定向打分 → 最高的一个回写 weights) + SearchService
 │   │   │   │   │   ├── InspectService.hpp              # 🖥️ InspectFactor (整期一级平面 / 分层与尾部净值 / 前 N 只 CSV 导出) + InspectService
 │   │   │   │   │   └── PortfolioService.hpp            # 🖥️ EvalPortfolioGroup / EvalBasketBooks → PortfolioBook + PortfolioService
 │   │   │   │   └── ui/PortfolioBoxes.hpp               # 🖥️ Alpha → Factors 的组合小框 + 当前组合 (Lines 页因子 / 策略两组的来源)
@@ -331,12 +331,11 @@ stk/
 │   │   │   │   │                                       #    · 口径 Run / Inspect / Portfolio 同一份; Search 不看成本
 │   │   │   │   ├── Host.hpp / Dev.cuh                  # 🧬 行核宿主版 / 设备版 (同名同参序, Stat 与 Search 共用)
 │   │   │   │   └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU / GPU 后端 + 对拍
-│   │   │   └── Search/                                 # 🧬 参数搜索评估 (建在 Stat 上): 一批同形候选直接攒累加器, 不落 Row
-│   │   │       ├── Config.hpp                          # 🧬 编译期常量: 可搜持有期 / 硬门槛 kMinMono / 采样点数
-│   │   │       ├── Contract.hpp                        # 🧬 语义契约: 分块流式 + 目标函数 + 噪声 + 终选
-│   │   │       │                                       #    · 目标 = 固定 h 的每期毛多空 · rIC · mono²; 方向 = rIC 的号; 不看成本, 不跨 h 比
+│   │   │   └── Search/                                 # 🧬 参数搜索评估 (建在 Stat 上): 一批同形候选直接攒累加器 + 逐行 Tick (rIC / 多空), 不落 Row
+│   │   │       ├── Config.hpp                          # 🧬 编译期常量: 可搜持有期 / 滚动窗份数 kRollParts / 采样点数
+│   │   │       ├── Contract.hpp                        # 🧬 语义契约: 分块流式 + 逐行 Tick + 目标 (滚动窗中位 rIC) + 方向
+│   │   │       │                                       #    · 目标 = 固定 h 下滚动窗 (评估期 / 10) rIC 的中位; 方向 = 它的号; 不看成本 / 多空 / 分层, 不跨 h 比
 │   │   │       ├── Space.hpp                           # 🧬 参数空间: 可搜槽 → 单调坐标 + 区间 → 低差异采样
-│   │   │       ├── Surface.hpp                         # 🧬 曲面: 已评点 → 高斯过程 → 后验 / 峰
 │   │   │       └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU (复用 Stat 行核) / GPU 后端 + 对拍
 │   │   ├── cta/                                        # 📈 CTA 单资产 中线 + 分层 择时 (header-only 纯计算; Market → CTA 页的模型层)
 │   │   │   │                                           #    中线 (调参, 开关) ─拼接→ 分层 Ladder (减仓线链: 链顶锚定上一个触发点, 往下每条隔每日 1 波动 (dev / ATR, 窗可设, 默认一年, 每日变化 ≤ 10%); 满仓随中线, 中线上穿链顶即回到随中线; 份数默认 20 (可调); 卖出即挂加仓线止损, 加仓线每日跟随 (以间距计, 默认 0.1 / 0.1, 可调)) ─刀 Cut→ 仓位层 Size ─→ 成交 Fill (+ 成本) → 损益 Pnl
@@ -398,6 +397,7 @@ stk/
 │   │       ├── exec.hpp                                # 🔧 执行器 (全仓唯一批内并行抽象): Serial / ForkJoin 逐位一致
 │   │       ├── epoch.hpp                               # 🔧 进程代 + Epochal<T>: 读盘派生的进程级缓存每代重建 (进程内重启换代)
 │   │       ├── lru.hpp                                 # 🔧 最近用留存 Lru<Key, V> (list + map, O(1) 提新 / 淘汰): 条数封顶 get (价格库 / CTA) ⇄ 代价封顶 find + put + trim (宿主平面 / 组合账 / 风格账)
+│   │       ├── median.hpp                              # 🔧 累计中位 RunMedian<T> (双堆, 逐个 push 随时取中位): Beta 选池的累计中位夏普 / Search 的滚动窗中位 rIC
 │   │       ├── affinity.hpp                            # 🔧 CPU 亲和性 / 线程命名
 │   │       ├── archive.hpp / parquet.hpp               # 🔧 归档操作 / Parquet 读写
 │   │       ├── file_check.hpp / file_repair.hpp        # 🔧 归档核查 ⇄ 修复: 同一份问题分类, 可修项重打包为非固实 RAR 原地原子替换

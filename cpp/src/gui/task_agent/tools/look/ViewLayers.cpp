@@ -204,40 +204,6 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
   return Done(std::move(r));
 }
 
-std::string RepLayers(const std::string &expr, int sign, const ViewEnv &env, Engine::FactorFlow &F) {
-  const Engine::FeatureTable &ft = *env.fsc.ft;
-  FactorSpec fac{.e = ft.reparse(expr), .dir = st::dir_of(sign), .label = expr};
-  std::string dummy;
-  [[maybe_unused]] const bool ok_rf = fx::root_frame(fac.e, ft.seg, fac.frame, dummy);
-  assert(ok_rf);
-  const int seg = ft.seg;
-  const std::vector<Slot> ps = parts_of(seg, env.open, env.clock);
-  const std::vector<int> pr = part_of_row(ps, seg);
-  Layer all;
-  std::vector<Layer> bs(ps.size());
-  std::vector<misc::Ymd> dates;
-  Engine::Job job;
-  std::string err;
-  StreamCfg cfg{.fac = &fac};
-  const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, whole, [&](const ChunkView &cv) {
-    for (int r = 0; r < cv.t_hi - cv.t_lo; ++r) {
-      all.add(cv.rows[static_cast<size_t>(r)]);
-      if (seg > 1)
-        bs[static_cast<size_t>(pr[static_cast<size_t>((cv.u0 + r) % seg)])].add(cv.rows[static_cast<size_t>(r)]);
-    }
-  });
-  if (rc != Engine::Rc::Ok)
-    return err.empty() ? std::string() : "- 代表点" + err + "\n";
-  std::string s = "- 代表点的 20 组每期超额 G1 → G20: " + spark(all.grps(), bp) + " bp · mono " + r3(all.mono()) + " · 多空 " + bp(all.ls()) + "bp\n";
-  if (seg > 1) {
-    s += "- 代表点分时段 mono:";
-    for (size_t j = 0; j < ps.size(); ++j)
-      s += (j ? " · " : " ") + ps[j].name + " " + r3(bs[j].mono());
-    s += "\n";
-  }
-  return s + "- 观察工具的 factor 写本候选名即看代表点\n";
-}
-
 json SampleViewLayers(Feed &p) {
   static const char *kSplits[] = {"none", "month", "tod"};
   return {{"factor", p.factor()}, {"split", kSplits[p.below(p.ctx.seg > 1 ? 3 : 2)]}, {"cond", p.coin(0.3) ? p.leaf() : std::string()}};

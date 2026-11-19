@@ -1,14 +1,12 @@
-// eval_factor — 回测: 三拍对仗 OpenEvalFactor (核假设落盘, GUI) → LabTask (Search + Run + 代表点分层, Lab) → CloseEvalFactor (入表封存, GUI)
-//               → TrialRes (结局 + 最佳权重 20 组 / 分年 + 参数曲面) → 原文; 展示见 ui/trial/EvalFactor.cpp
+// eval_factor — 回测: 三拍对仗 OpenEvalFactor (核假设落盘, GUI) → LabTask (Search + Run, Lab) → CloseEvalFactor (入表封存, GUI)
+//               → TrialRes (结局 + 最佳权重 20 组 / 分年 + 参数扫描) → 原文; 展示见 ui/trial/EvalFactor.cpp
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Bay.hpp"
-#include "gui/task_agent/tools/Look.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 
 #include "factor/Expr.hpp"
-#include "factor/Search/Space.hpp"
 #include "gui/engine/File.hpp"
 #include "gui/engine/Load.hpp"
 #include "gui/engine/services/RunService.hpp"
@@ -27,15 +25,13 @@ using text::fmt;
 namespace {
 
 namespace fx = factor::expr;
-namespace space = factor::search::space;
 
-constexpr size_t kSurfBins = 6;
-constexpr size_t kSurfSlots = 3;
-constexpr size_t kSurfTop = 12;
+constexpr size_t kSweepBins = 6;
+constexpr size_t kSweepSlots = 3;
+constexpr size_t kSweepTop = 12;
 
 struct EvalYield final : Res {
-  Surface surf;
-  std::string rep;
+  Sweep sweep;
   std::string text() const override { return {}; }
   void draw() const override {}
 };
@@ -47,52 +43,55 @@ std::string bp_spark(const std::vector<double> &v) {
 
 std::string param(double v) { return v == std::round(v) ? fmt("%.0f", v) : fmt("%.4g", v); }
 
-std::string surface_text(const Surface &sf) {
-  if (sf.slots.empty() || sf.pts.size() < 2)
+// 参数扫描 (pts 已按中位 rIC 降序): 参数 ≤ kSweepSlots 个时每个参数按取值分段、段内取中位 rIC 最高的点; 多了改列最高的 kSweepTop 个点
+std::string sweep_text(const Sweep &sw) {
+  if (sw.slots.empty() || sw.pts.size() < 2)
     return "";
-  const size_t n = sf.pts.size(), per = (n + kSurfBins - 1) / kSurfBins;
-  const auto g = [](const Stat &st) { return std::max(st.mono, 0.0) * std::max(st.mono, 0.0) * st.ls * st.ric; };
-  const auto better = [&](const Stat &x, const Stat &y) { return x.mono != y.mono ? x.mono > y.mono : g(x) > g(y); };
-  if (sf.slots.size() > kSurfSlots) {
-    std::vector<const Probe *> ps;
-    for (const Probe &p : sf.pts)
-      ps.push_back(&p);
-    std::stable_sort(ps.begin(), ps.end(), [&](const Probe *a, const Probe *b) { return better(a->st, b->st); });
-    ps.erase(std::unique(ps.begin(), ps.end(), [](const Probe *a, const Probe *b) { return a->v == b->v; }), ps.end());
-    ps.resize(std::min(ps.size(), kSurfTop));
-    std::vector<std::string> hs = sf.slots;
-    hs.push_back("mono"), hs.push_back("每期毛多空 bp"), hs.push_back("rIC");
+  const size_t n = sw.pts.size(), per = (n + kSweepBins - 1) / kSweepBins;
+  const Roll &r0 = sw.pts.front().roll;
+  const std::string head = "- 参数扫描 (Search 评过 " + std::to_string(n) + " 个点, 滚动窗 " + std::to_string(r0.win) + " 日; ";
+  const auto row_of = [](const Point &p, std::vector<std::string> row) {
+    row.push_back(p.sign < 0 ? "反" : "正");
+    row.push_back(fmt("%.4f", p.roll.ric_med)), row.push_back(fmt("%.4f", p.roll.ric_mean)), row.push_back(fmt("%+.1f", p.roll.ann_med * 100.0));
+    row.push_back(fmt("%.3f", p.st.mono)), row.push_back(fmt("%+.2f", p.st.ls * 1e4));
+    return row;
+  };
+  const std::vector<std::string> tail = {"向", "中位 rIC", "平均 rIC", "年化毛多空 中位 %", "全期 mono", "全期每期毛多空 bp"};
+  if (sw.slots.size() > kSweepSlots) {
+    std::vector<std::string> hs = sw.slots;
+    hs.insert(hs.end(), tail.begin(), tail.end());
     text::Table tbl(hs);
-    for (const Probe *p : ps) {
+    for (size_t i = 0; i < std::min(n, kSweepTop); ++i) {
       std::vector<std::string> row;
-      for (const double x : p->v)
+      for (const double x : sw.pts[i].v)
         row.push_back(param(x));
-      row.push_back(fmt("%.3f", p->st.mono)), row.push_back(fmt("%+.2f", p->st.ls * 1e4)), row.push_back(fmt("%.4f", p->st.ric));
-      tbl.add(row);
+      tbl.add(row_of(sw.pts[i], std::move(row)));
     }
-    return "- 参数曲面 (Search 评过 " + std::to_string(n) + " 个点; 参数多, 只列最好的 " + std::to_string(ps.size()) + " 个不同点: mono 最高, 同 mono 取目标高的):\n\n" + tbl.str();
+    return head + "参数多, 只列中位 rIC 最高的 " + std::to_string(std::min(n, kSweepTop)) + " 个):\n\n" + tbl.str();
   }
-  std::string s = "- 参数曲面 (Search 评过 " + std::to_string(n) + " 个点; 每个参数按取值分段, 段内取最好的点: mono 最高, 同 mono 取目标高的):\n";
-  for (size_t j = 0; j < sf.slots.size(); ++j) {
+  std::string s = head + "每个参数按取值分段, 段内取中位 rIC 最高的点):\n";
+  for (size_t j = 0; j < sw.slots.size(); ++j) {
     std::vector<size_t> ix(n);
     for (size_t i = 0; i < n; ++i)
       ix[i] = i;
-    const auto v = [&](size_t i) { return sf.pts[ix[i]].v[j]; };
-    std::stable_sort(ix.begin(), ix.end(), [&](size_t a, size_t b) { return sf.pts[a].v[j] < sf.pts[b].v[j]; });
-    text::Table tbl({sf.slots[j] + " 段", "最好的点", "mono", "每期毛多空 bp", "rIC"});
+    const auto v = [&](size_t i) { return sw.pts[ix[i]].v[j]; };
+    std::stable_sort(ix.begin(), ix.end(), [&](size_t a, size_t b) { return sw.pts[a].v[j] < sw.pts[b].v[j]; });
+    std::vector<std::string> hs = {sw.slots[j] + " 段", "最好的点"};
+    hs.insert(hs.end(), tail.begin(), tail.end());
+    text::Table tbl(hs);
     for (size_t a = 0; a < n;) {
       size_t b = std::min(n, a + per);
       while (b < n && v(b) == v(b - 1))
         ++b;
       size_t best = a;
       for (size_t i = a; i < b; ++i)
-        if (better(sf.pts[ix[i]].st, sf.pts[ix[best]].st))
+        if (sw.pts[ix[i]].roll.ric_med > sw.pts[ix[best]].roll.ric_med)
           best = i;
-      const Probe &p = sf.pts[ix[best]];
+      const Point &p = sw.pts[ix[best]];
       std::string at;
-      for (size_t q = 0; q < sf.slots.size(); ++q)
-        at += (q ? ", " : "") + (sf.slots.size() > 1 ? sf.slots[q] + "=" : std::string()) + param(p.v[q]);
-      tbl.add({v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1)), at, fmt("%.3f", p.st.mono), fmt("%+.2f", p.st.ls * 1e4), fmt("%.4f", p.st.ric)});
+      for (size_t q = 0; q < sw.slots.size(); ++q)
+        at += (q ? ", " : "") + (sw.slots.size() > 1 ? sw.slots[q] + "=" : std::string()) + param(p.v[q]);
+      tbl.add(row_of(p, {v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1)), at}));
       a = b;
     }
     s += "\n" + tbl.str();
@@ -103,46 +102,22 @@ std::string surface_text(const Surface &sf) {
 std::string years_text(const std::vector<Year> &ys) {
   if (ys.empty())
     return "";
-  const auto neg = std::count_if(ys.begin(), ys.end(), [](const Year &y) { return y.st.mono < 0.0; });
-  text::Table tbl({"年", "行", "mono", "每期毛多空 bp", "rIC"});
+  const auto neg = std::count_if(ys.begin(), ys.end(), [](const Year &y) { return y.st.ric < 0.0; });
+  text::Table tbl({"年", "行", "rIC", "mono", "每期毛多空 bp"});
   for (const Year &y : ys)
-    tbl.add({std::to_string(y.year), std::to_string(y.n), fmt("%.3f", y.st.mono), fmt("%+.2f", y.st.ls * 1e4), fmt("%.4f", y.st.ric)});
-  return "- 最佳权重分年 (" + std::to_string(ys.size()) + " 年, mono 为负 " + std::to_string(neg) + " 年; 只看是否处处成立, 不据单年挑参数):\n\n" + tbl.str() + "\n";
+    tbl.add({std::to_string(y.year), std::to_string(y.n), fmt("%.4f", y.st.ric), fmt("%.3f", y.st.mono), fmt("%+.2f", y.st.ls * 1e4)});
+  return "- 最佳权重分年 (" + std::to_string(ys.size()) + " 年, rIC 为负 " + std::to_string(neg) + " 年; 只看是否处处成立, 不据单年挑参数):\n\n" + tbl.str() + "\n";
 }
 
-Surface surface_of(const Engine::FeatureTable &ft, const Engine::SearchResult &r) {
-  Surface s;
-  if (r.slots.empty())
-    return s;
-  const fx::Expr t = ft.reparse_at(r.tmpl, r.hold);
-  const std::vector<space::Slot> slots = space::slots_of(t, ft.seg, r.n_full * factor::stat::kGroups);
-  assert(slots.size() == r.slots.size());
-  const bool need_parse = std::ranges::any_of(slots, space::needs_qtab);
-  s.slots = r.slots;
-  s.pts.reserve(r.cands.size());
+Sweep sweep_of(const Engine::SearchResult &r) {
+  Sweep s{.slots = r.slots};
+  for (const misc::Ymd d : r.dates)
+    s.dates.push_back(static_cast<int>(d));
   for (const Engine::SearchCand &c : r.cands) {
-    if (!c.sc.ok)
+    if (!c.roll.ok())
       continue;
-    Probe p{.st = {c.sc.mono, c.sc.ls, c.sc.ric}};
-    p.v.reserve(slots.size());
-    if (!need_parse && c.u.size() == slots.size()) {
-      for (size_t j = 0; j < slots.size(); ++j) {
-        const space::Slot &x = slots[j];
-        const double raw = space::to_v(x, c.u[j]);
-        p.v.push_back(x.key == space::Key::D ? raw : static_cast<double>(fx::kv_of(raw)));
-      }
-    } else {
-      const fx::Expr e = ft.reparse(c.expr);
-      assert(e.nodes.size() == t.nodes.size() && "具体式与模板同构");
-      for (const space::Slot &x : slots) {
-        const auto &q = e.nodes[static_cast<size_t>(x.node)].p;
-        p.v.push_back(x.key == space::Key::D    ? static_cast<double>(q.d)
-                      : x.key == space::Key::K  ? q.k
-                      : x.key == space::Key::K2 ? q.k2
-                                                : q.w[x.wi]);
-      }
-    }
-    s.pts.push_back(std::move(p));
+    const factor::search::Roll &x = c.roll;
+    s.pts.push_back({c.v, c.sign, {x.win, x.n, x.ric_med, x.ric_mean, x.ann_med, x.ann_mean}, {c.mono, c.ls, c.ric}, c.line});
   }
   return s;
 }
@@ -177,32 +152,22 @@ ToolOut run_eval(const Engine::FactorScope &fsc, const std::string &file, const 
     return Fail(src == Engine::Rc::Stale ? Engine::kStaleMsg : why.empty() ? "Search 中止"
                                                                            : why);
   auto yield = std::make_shared<EvalYield>();
-  yield->surf = surface_of(ft, sres);
-
+  yield->sweep = sweep_of(sres);
+  if (sres.n_weights == 0)
+    return {true, {}, {}, std::move(yield)};
+  bay.step(LabStep::Run);
   std::vector<Engine::FactorRow> frows;
   Engine::ScanFactorFile(fsc.dir, ssp.file, ft, frows);
-  if (sres.n_weights > 0) {
-    bay.step(LabStep::Run);
-    std::vector<size_t> idx;
-    for (size_t i = 0; i < frows.size(); ++i)
-      if (frows[i].widx >= 0 && frows[i].error.empty() && !frows[i].expr.empty())
-        idx.push_back(i);
-    Engine::Lease l(bay.flow);
-    const Engine::Rc rc = l ? Engine::EvalFactorFile(fsc, bay.flow, frows, idx) : Engine::Rc::Cancel;
-    if (bay.cancelled())
-      return {};
-    if (rc != Engine::Rc::Ok)
-      return {false, rc == Engine::Rc::Stale ? Engine::kStaleMsg : "Run 中止", {}, std::move(yield)};
-    return {true, {}, {}, std::move(yield)};
-  }
-  if (!frows.empty()) {
-    const auto mk = std::find_if(frows[0].searched.begin(), frows[0].searched.end(), [&](const Engine::SearchMark &m) { return m.hold == ssp.hold; });
-    if (mk != frows[0].searched.end() && mk->top) {
-      bay.step(LabStep::Look);
-      Engine::FactorFlow vflow(bay.cancel, bay.flow.prog, Engine::Prio::Interactive);
-      yield->rep = RepLayers(mk->top->expr, mk->top->sign, bay.env, vflow);
-    }
-  }
+  std::vector<size_t> idx;
+  for (size_t i = 0; i < frows.size(); ++i)
+    if (frows[i].widx >= 0 && frows[i].error.empty() && !frows[i].expr.empty())
+      idx.push_back(i);
+  Engine::Lease l(bay.flow);
+  const Engine::Rc rc = l ? Engine::EvalFactorFile(fsc, bay.flow, frows, idx) : Engine::Rc::Cancel;
+  if (bay.cancelled())
+    return {};
+  if (rc != Engine::Rc::Ok)
+    return {false, rc == Engine::Rc::Stale ? Engine::kStaleMsg : "Run 中止", {}, std::move(yield)};
   return {true, {}, {}, std::move(yield)};
 }
 
@@ -213,14 +178,14 @@ std::string TrialRes::text() const {
   std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n";
   if (!st.cand.note.empty())
     s += "- 思路 (" + st.cand.hyp + "): " + st.cand.note + "\n";
-  s += Detail(r) + GateLine(r, gate) + r.rep_text;
+  s += Detail(r) + GateLine(r, gate);
   if (!r.visible)
     return s;
   if (const Weight *w = r.best(); w && !w->grp.empty()) {
     s += "- 最佳权重的 20 组每期毛收益 (减组间均值) G1 → G20: " + bp_spark(w->grp) + "\n";
     s += years_text(w->years);
   }
-  return s + surface_text(r.surf);
+  return s + sweep_text(r.sweep);
 }
 
 std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
@@ -250,11 +215,10 @@ std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
 void CloseEvalFactor(Act &a, ToolOut out, Seat &s) {
   auto r = std::static_pointer_cast<TrialRes>(a.out.res);
   assert(r);
-  Surface surf;
-  std::string rep;
+  Sweep sweep;
   if (auto *y = static_cast<EvalYield *>(out.res.get()))
-    surf = std::move(y->surf), rep = std::move(y->rep);
-  r->st.res = s.lab.absorb(r->st.file, out.ok, out.text, std::move(surf), std::move(rep));
+    sweep = std::move(y->sweep);
+  r->st.res = s.lab.absorb(r->st.file, out.ok, out.text, std::move(sweep));
   const bool ok = r->st.res.verdict != Verdict::Broken;
   a.out = Done(std::move(r), ok);
 }

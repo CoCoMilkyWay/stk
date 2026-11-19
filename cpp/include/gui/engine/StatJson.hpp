@@ -3,7 +3,7 @@
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
 // 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两端各 imp, buy, sell, fix, w, n + rows);
-// 一个金额段 (CostTier) cost_json / load_cost; 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf; 分年 (YearStat) 在 eval_json 内联;
+// 一个金额段 (CostTier) cost_json / load_cost; 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf; 分年 (YearStat) / 滚动窗 (Roll) 在 eval_json 内联;
 // 一个根的评估结果 (EvalStat) 两半写 scope_json (文件顶层 run) + eval_json (stats[i]), 一次读 load_eval.
 #pragma once
 
@@ -291,7 +291,8 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   return j;
 }
 
-// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / costs / 小图 / 分年 (years[hold] = [[年, 行, mono, ls, ric] …]) 各一段
+// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / costs / 小图 / 分年 (years[hold] = [[年, 行, mono, ls, ric] …]) /
+// 滚动窗 (roll[hold] = [窗长, 窗数, 中位 rIC, 平均 rIC, 中位年化多空, 平均年化多空]) 各一段
 inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   nlohmann::ordered_json j;
   j["time"] = st.scope.time;
@@ -318,6 +319,12 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
     years.push_back(ys);
   }
   j["years"] = years;
+  nlohmann::ordered_json roll = nlohmann::ordered_json::array();
+  for (int k = 0; k < st.n_hold; ++k) {
+    const factor::search::Roll &r = st.roll[k];
+    roll.push_back(nlohmann::ordered_json::array({r.win, r.n, sig4(r.ric_med), sig4(r.ric_mean), sig4(r.ann_med), sig4(r.ann_mean)}));
+  }
+  j["roll"] = roll;
   return j;
 }
 
@@ -399,6 +406,18 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
         return false;
       t.years[k].push_back({e(0).get<int>(), e(1).get<int>(), e(2).get<float>(), e(3).get<float>(), e(4).get<float>()});
     }
+  }
+  const auto rit = j.find("roll");
+  if (rit == j.end() || !rit->is_array() || rit->size() != H)
+    return false;
+  for (size_t k = 0; k < H; ++k) {
+    const nlohmann::json &r = (*rit)[k];
+    if (!r.is_array() || r.size() != 6 || !r[0].is_number_integer() || !r[1].is_number_integer())
+      return false;
+    for (size_t i = 2; i < 6; ++i)
+      if (!r[i].is_number())
+        return false;
+    t.roll[k] = {r[0].get<int>(), r[1].get<int>(), r[2].get<double>(), r[3].get<double>(), r[4].get<double>(), r[5].get<double>()};
   }
   dst = std::move(t);
   return true;

@@ -5,6 +5,7 @@
 //   通用六探针: HoldP / CostP / CoverP / AlphaP / IcPdfP / YearP → EvalProbes<X...> → fill_eval.
 #pragma once
 
+#include "factor/Search/Contract.hpp" // Tick / DaySum / roll_of
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Cpu.hpp" // Workspace / NoExt
 #include "gui/engine/Book.hpp" // RowLines / fold_book
@@ -106,17 +107,7 @@ enum Need : uint8_t {
   kNeedMask = 8,
   kNeedAlpha = 16,
   kNeedX = 32,
-  kNeedRanks = 64
-};
-
-struct Ranks {
-  void *src = nullptr;
-  int k = 0;
-  void (*fn)(void *src, int k, int t0, int stride, int n_rows, uint16_t *out) = nullptr;
-  void operator()(int t0, int stride, int n_rows, uint16_t *out) const {
-    assert(fn && "本路径无抽样行");
-    fn(src, k, t0, stride, n_rows, out);
-  }
+  kNeedTicks = 64
 };
 
 struct RootView {
@@ -126,7 +117,7 @@ struct RootView {
   const uint16_t *rx = nullptr;
   const uint8_t *ec = nullptr;
   const factor::stat::Accum *acc = nullptr;
-  Ranks ranks;
+  const factor::search::Tick *ticks = nullptr; // [H][T] 逐行 Tick (kNeedTicks; 正向, 只统计行有值; Search 契约【逐行 Tick】)
 };
 
 // 趟级上下文 (init / finish 共用)
@@ -359,7 +350,7 @@ struct IcPdfP : RowsP<IcPdfP, float> {
   }
 };
 
-// 分年分层统计
+// 分年分层统计 + 滚动窗统计 (同一份逐日和; 行已按所评方向, 见 ProbeSink)
 struct YearRow {
   bool ok = false;
   float ric = 0.f, ls = 0.f, g[factor::stat::kGroups] = {};
@@ -372,6 +363,7 @@ struct YearP : RowsP<YearP, YearRow> {
   int seg = 0;
   std::vector<std::vector<Day>> day;
   std::vector<YearStat> years[factor::stat::kMaxHold];
+  factor::search::Roll roll[factor::stat::kMaxHold];
   static double bytes(const Shape &sh, int H) { return sizeof(Day) * static_cast<double>(H) * sh.days; }
   static YearRow of(const factor::stat::Row &r) {
     YearRow x{r.ok != 0, r.ric, factor::stat::ls_row(r), {}};
@@ -398,6 +390,10 @@ struct YearP : RowsP<YearP, YearRow> {
     for (int hi = 0; hi < p.hd.n; ++hi) {
       const std::vector<Day> &ds = day[static_cast<size_t>(hi)];
       assert(ds.size() == dates.size() && "逐日累加与评估期日期不齐");
+      std::vector<factor::search::DaySum> sums(ds.size());
+      for (size_t i = 0; i < ds.size(); ++i)
+        sums[i] = {ds[i].n, ds[i].ric, ds[i].ls};
+      roll[hi] = factor::search::roll_of(sums, p.hd.k[hi], seg);
       std::vector<YearStat> &out = years[hi];
       out.clear();
       for (size_t a = 0; a < ds.size();) {
@@ -439,6 +435,7 @@ void fill_eval(const Ps &p, const StatScope &scope, double eval_ms, EvalStat &st
   for (int hi = 0; hi < h.n_hold; ++hi) {
     st.ic_pdf[hi] = mini_pdf_of(ic.pdf[hi]);
     st.years[hi] = yr.years[hi];
+    st.roll[hi] = yr.roll[hi];
   }
   st.alpha_pdf = mini_pdf_of(p.template at<AlphaP>().d.pdf);
 }

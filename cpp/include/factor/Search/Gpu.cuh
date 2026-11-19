@@ -6,7 +6,8 @@
 //   契约 factor/Search/Contract.hpp + Stat/Contract.hpp; 行核 Stat/Dev.cuh (rank_x / row_stat, 与 Stat GPU 同一组). 本文件只加:
 //   【stat_batch】grid (⌈C/kWarps⌉, NB, H) × kWB, **一 warp 一候选**, 一块管 kRows 行 × 一个持有期 (grid.z):
 //     每行一次 row_stat (全 lane 拿到 Row) → **直接折进 warp 私有的分片累加器** (契约 Accum 的两半: lane 0 攒 Accum::Head,
-//     lane k < 20 攒 Accum::Grp[k]; 调的就是契约的 add) → 块末写分片 Slice[c][h][tb] (= 契约的 Accum 原样). 不落 Row.
+//     lane k < 20 攒 Accum::Grp[k]; 调的就是契约的 add) → 块末写分片 Slice[c][h][tb] (= 契约的 Accum 原样). 不落 Row;
+//     lane 0 顺手写该行的 tick_of(Row) 进 ticks[c][h][t] (契约【逐行 Tick】, 只统计行).
 //     同 block 的 kWarps 个候选同一 (t, h): ry / lv / sv 行一次进 L1 共用, 标签流量被候选数摊薄. 核内没有块级同步, 没有原子.
 //   【reduce_slices】每 (c, h) 一线程, 沿 tb 升序 merge (契约 merge 原样; 固定序 → GPU 自身逐次确定) → 直接写 Result[c] (设备),
 //     主机整块拷回, 无转换.
@@ -31,6 +32,7 @@ using factor::gpu::stat::kWarps;
 using factor::gpu::stat::kWB;
 using factor::gpu::stat::Slots;
 using factor::search::Result;
+using factor::search::Tick;
 using factor::stat::Accum;
 using factor::stat::Frame;
 using factor::stat::kGroups;
@@ -50,7 +52,7 @@ struct Slice {
 
 namespace k {
 
-__global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, Span s, Labels L, int NB, Slice *part) {
+__global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, Span s, Labels L, int NB, Slice *part, Tick *ticks) {
   const auto &hd = L.hd;
   __shared__ Slots sh;
   const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
@@ -61,6 +63,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
   const Label lb = L.l[hi];
   const int tb = blockIdx.y, t_beg = s.t_lo + tb * kRows, t_end = min(s.t_hi(), t_beg + kRows);
   const uint16_t *rxc = rx + static_cast<size_t>(c) * s.n();
+  Tick *tk = ticks + (static_cast<size_t>(c) * hd.n + hi) * s.T;
 
   // warp 私有分片 (= 契约 Accum 的两半: lane 0 攒 head, lane q < kGroups 攒 grp = 组 q)
   Accum::Head head;
@@ -72,8 +75,10 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
     const uint16_t *xl = t >= h ? xr - static_cast<size_t>(h) * A : nullptr;
     const Row r = dev::row_stat(xr, xl, lb.at(base), factor::stat::chain_of(t, s, hold), L.cap, factor::stat::tail_masked(s.t0_abs + t, hold, s.g),
                                 sh.gs[warp], sh.gc[warp], lane);
-    if (lane == 0)
+    if (lane == 0) {
       head.add(r);
+      tk[t] = factor::search::tick_of(r);
+    }
     if (r.ok) {
       float gq = 0.f; // lane q 取 grp[q] / cnt[q] (编译期展开的 select, Row 留在寄存器)
       unsigned cq = 0;
@@ -112,13 +117,14 @@ __global__ void __launch_bounds__(kWB) reduce_slices(const Slice *part, int NB, 
 // 宿主接口 (全部设备指针; 拷入拷出由调用方负责 —— 搜索侧候选平面常驻显存)
 // =============================================================================
 
-// 一次 eval 的形状与工作区尺寸 (调用方按它分配: rx / part / out); g = 因子所在层 (seg 定)
+// 一次 eval 的形状与工作区尺寸 (调用方按它分配: rx / part / out / ticks); g = 因子所在层 (seg 定)
 struct Work {
   int C = 0, T = 0, A = 0, H = 0, t_lo = 0, t_back = 0, NB = 0;
   Geo g;
   size_t rx_elems() const { return static_cast<size_t>(C) * T * A; }
   size_t part_elems() const { return static_cast<size_t>(C) * H * NB; }
   size_t out_elems() const { return static_cast<size_t>(C); }
+  size_t tick_elems() const { return static_cast<size_t>(C) * H * T; }
 };
 inline Work plan(int C, int T, int A, int seg, int H, int t_lo, int t_back) {
   assert(C >= 1 && C <= kMaxBatch && T >= 1 && A >= 1 && A <= kMaxA && static_cast<long long>(T) * A < (1LL << 31));
@@ -129,15 +135,16 @@ inline Work plan(int C, int T, int A, int seg, int H, int t_lo, int t_back) {
   return w;
 }
 
-// 一批候选的评估: B (口径 f, 只看池内 g ∧ m) + L (L.hd.n 组预处理标签, 设备指针) → out[C] (设备 Result). 契约【分块流式】的 t0_abs / t_lo / t_back
+// 一批候选的评估: B (口径 f, 只看池内 g ∧ m) + L (L.hd.n 组预处理标签, 设备指针) → out[C] (设备 Result) + ticks[C][H][T] (设备, 只写统计行).
+// 契约【分块流式】的 t0_abs / t_lo / t_back
 inline void eval(const Batch &B, const uint8_t *g, Frame f, const Work &w, int t0_abs, const Labels &L, uint16_t *rx, Slice *part, Result *out,
-                 cudaStream_t stream) {
+                 Tick *ticks, cudaStream_t stream) {
   factor::stat::assert_labels(L, w.g.S, true);
-  assert(B.C == w.C && L.hd.n == w.H && g && rx && part && out && t0_abs >= 0);
+  assert(B.C == w.C && L.hd.n == w.H && g && rx && part && out && ticks && t0_abs >= 0);
   const Span s{w.T, w.A, w.g, t0_abs, w.t_lo, w.t_back};
   factor::gpu::stat::rank_x(B, g, f, s, rx, stream);
   const dim3 grid(static_cast<unsigned>((w.C + kWarps - 1) / kWarps), static_cast<unsigned>(w.NB), static_cast<unsigned>(w.H));
-  k::stat_batch<<<grid, kWB, 0, stream>>>(rx, w.C, s, L, w.NB, part);
+  k::stat_batch<<<grid, kWB, 0, stream>>>(rx, w.C, s, L, w.NB, part, ticks);
   FACTOR_CUDA_OK(cudaGetLastError());
   const int P = w.C * w.H;
   k::reduce_slices<<<(P + kWB - 1) / kWB, kWB, 0, stream>>>(part, w.NB, w.C, w.H, out);

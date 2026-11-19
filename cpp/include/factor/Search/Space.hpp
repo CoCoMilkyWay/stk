@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Search 的参数空间 (纯逻辑, 无后端, 无 IO; 与 Surface.hpp 对仗: 点从哪来 / 点有多好): 表达式 → 可搜参数槽 → 统一坐标 + 闭区间 → 低差异采样 (第 0 趟)
+// Search 的参数空间 (纯逻辑, 无后端, 无 IO; 点从哪来, 点有多好见 Contract.hpp【目标】): 表达式 → 可搜参数槽 → 统一坐标 + 闭区间 → 低差异采样
 // =============================================================================
 //   【槽】模板表达式 (Expr.hpp 自由参数: 裸键名 d / k / k2 / w) 的每个自由参数各一槽, 裸 w 每个特征元一槽 (N 元节点直接作根的输入时首元的权定为 1, 不是槽);
 //     写了数字的参数固定不搜 (TS 口径根的 d 必是数字).
@@ -21,7 +21,7 @@
 //                         其余     线性      [−1, 1]                   (与别的量相加 / 相乘时尺度与正负都有意义, 每元一槽)
 //     A = 池内平均有效资产数 (n_full · kGroups). 整数参数 (d / 桶数 / 时段) 取整回去.
 //     中性坐标 u0: 调用方定分位表时, 其他槽取它 (区间中点; 分位 / 阈值 = 中位; 时段 = 全天不掩; 权 = 与首元等权 1).
-//   【采样】第 0 趟的点 = R_d 低差异序列 (frac(0.5 + n·α), α_j = φ_P^{−j}, φ_P 为 x^{P+1} = x + 1 的正根) 映射到各槽区间:
+//   【采样】评的点 = R_d 低差异序列 (frac(0.5 + n·α), α_j = φ_P^{−j}, φ_P 为 x^{P+1} = x + 1 的正根) 映射到各槽区间:
 //     确定性, 无表无种子, 任意 P 每槽 N 个不同取值 (P 大也不退化). 点数 kInit (Config) 是唯一的预算量.
 //   出错策略: 只 assert (表达式来自已校验的因子行).
 // =============================================================================
@@ -264,18 +264,7 @@ inline expr::Expr neutral(const expr::Expr &base, const std::vector<Slot> &slots
   return out;
 }
 
-// 单位立方坐标 (曲面拟合用): 每槽 (u − u_lo) / (u_hi − u_lo); 区间退化的槽恒 0
-inline std::vector<double> unit(const std::vector<Slot> &slots, const std::vector<double> &u) {
-  assert(u.size() == slots.size());
-  std::vector<double> x(slots.size());
-  for (size_t j = 0; j < slots.size(); ++j) {
-    const double w = slots[j].u_hi - slots[j].u_lo;
-    x[j] = w > 0.0 ? (u[j] - slots[j].u_lo) / w : 0.0;
-  }
-  return x;
-}
-
-// 第 0 趟采样 (见【采样】): n 个 R_d 点, 坐标 u[P]
+// 采样 (见【采样】): n 个 R_d 点, 坐标 u[P]
 inline std::vector<std::vector<double>> design(const std::vector<Slot> &slots, int n) {
   const int P = static_cast<int>(slots.size());
   assert(P >= 1 && n >= 1);

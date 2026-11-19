@@ -179,21 +179,6 @@ struct SpanCache {
   }
 };
 
-Top top_of(const Engine::SearchTop &t) {
-  Top x{t.expr, t.sign, {t.mono, t.ls, t.ric}, t.g, t.se, t.mu, t.peak ? Rep::Peak : fsearch::passes(t.ls, t.ric, t.mono) ? Rep::Gated
-                                                                                                                          : Rep::Mono,
-        {}};
-  if (x.rep == Rep::Peak)
-    x.miss = "过门槛的峰, 但曲面估计 " + num(t.mu) + " ≤ 标准误 " + num(t.se) + " (不显著)";
-  else if (x.rep == Rep::Gated)
-    x.miss = t.mu > 0.0 ? "过门槛的点都不成峰: 曲面估计更高处不过门槛 (多是 mono 不够)" : "过门槛的点曲面估计都 ≤ 0 (最高 " + num(t.mu) + ")";
-  else if (t.mono < fsearch::kMinMono)
-    x.miss = "没有点 mono ≥ " + num(fsearch::kMinMono) + " (最高 " + num(t.mono) + ")";
-  else
-    x.miss = "mono 过门槛的点每期毛多空或 rIC 都 ≤ 0";
-  return x;
-}
-
 using Fails = std::map<std::string, std::string>;
 
 Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, const std::string &file, int hold,
@@ -214,11 +199,8 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
   }
   bool fresh = true;
   const auto mk = std::find_if(r0.searched.begin(), r0.searched.end(), [&](const Engine::SearchMark &m) { return m.hold == hold; });
-  if (mk != r0.searched.end()) {
+  if (mk != r0.searched.end())
     fresh = now.same(now.pool, mk->start_date, mk->end_date, mk->days);
-    if (mk->top)
-      r.top = top_of(*mk->top);
-  }
   if (const auto it = fails.find(r.file); it != fails.end())
     r.error = "Search 放弃: " + it->second;
   bool run = true;
@@ -234,13 +216,14 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
     if (w.has_stat)
       fresh = fresh && now.same(w.scope.pool, w.scope.start_date, w.scope.end_date, w.scope.days);
     Weight x{.expr = w.expr, .sign = w.sign, .hold_src = w.hold_src};
-    const fsearch::Score s = Engine::RowScore(w, hold);
-    x.has = s.ok;
-    if (s.ok) {
-      x.st = {s.mono, s.ls, s.ric};
-      x.score = s.score, x.se = s.se, x.valid = w.valid_pct / 100.0;
+    const fsearch::Roll *rl = Engine::RowRoll(w, hold);
+    x.has = rl != nullptr;
+    if (rl) {
       const fs::HoldStat *h = w.find_hold(hold);
-      assert(h && "RowScore ok 须有该持有期的 HoldStat");
+      assert(h && "RowRoll 非空须有该持有期的 HoldStat");
+      x.st = {h->mono, fs::ls_period(*h), h->ric.mean};
+      x.roll = {rl->win, rl->n, rl->ric_med, rl->ric_mean, rl->ann_med, rl->ann_mean};
+      x.score = fsearch::score_of(*rl), x.valid = w.valid_pct / 100.0;
       x.turn = fs::turn_annual(*h, w.turn_of(*h));
       x.rac = h->rac.mean;
       double mid = 0.0;
@@ -375,17 +358,12 @@ std::string GateMiss(const Gate &g, const Result &r) {
   if (r.verdict == Verdict::Broken)
     return "BROKEN: " + r.error;
   for (const Weight &w : r.ws)
-    if (w.has && w.st.mono >= g.mono && w.st.ric >= g.ric)
+    if (w.has && w.roll.ric_med >= g.ric)
       return "";
   const Weight *w = r.best();
   if (!w)
-    return "本持有期无显著权重";
-  std::string s = "最佳权重未达入库门槛:";
-  if (w->st.mono < g.mono)
-    s += " mono " + num(w->st.mono) + " < " + num(g.mono);
-  if (w->st.ric < g.ric)
-    s += " rIC " + num(w->st.ric) + " < " + num(g.ric);
-  return s;
+    return "本持有期无权重";
+  return "最佳权重未达入库门槛: 中位 rIC " + num(w->roll.ric_med) + " < " + num(g.ric);
 }
 
 namespace catalog {
@@ -469,8 +447,7 @@ struct Lab::Impl {
   std::optional<SpanCache> spans;
   std::vector<Result> results;
   Fails fails;
-  std::map<std::string, Surface> surfaces;
-  std::map<std::string, std::string> reps;
+  std::map<std::string, Sweep> sweeps;
   std::shared_ptr<const ViewEnv> env_cache;
 
   Progress prog;
@@ -521,11 +498,8 @@ struct Lab::Impl {
       } else if (const Weight *w = r.best()) {
         cr.expr = w->expr, cr.sign = w->sign;
         cr.label = r.name + (w->sign < 0 ? " (反向: " : " (") + w->expr + ")";
-      } else if (r.top) {
-        cr.expr = r.top->expr, cr.sign = r.top->sign;
-        cr.label = r.name + " 的代表点" + (r.top->sign < 0 ? " (反向: " : " (") + r.top->expr + ")";
       } else {
-        cr.error = "候选 `" + r.name + "` 没有可用的权重或代表点 (" + def(r.verdict).cn + ")";
+        cr.error = "候选 `" + r.name + "` 没有可用的权重 (" + def(r.verdict).cn + ")";
       }
       env.cands.emplace(r.name, std::move(cr));
     }
@@ -538,10 +512,8 @@ struct Lab::Impl {
   }
 
   void attach_extras(Result &r) const {
-    if (const auto it = surfaces.find(r.file); it != surfaces.end())
-      r.surf = it->second;
-    if (const auto it = reps.find(r.file); it != reps.end())
-      r.rep_text = it->second;
+    if (const auto it = sweeps.find(r.file); it != sweeps.end())
+      r.sweep = it->second;
   }
 
   void rescan_all() {
@@ -608,7 +580,7 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   impl_->data = &data, impl_->sc = sc, impl_->is_test = test;
   impl_->dir = candidates(sc, test);
   if (!same_cand)
-    impl_->fails.clear(), impl_->surfaces.clear(), impl_->reps.clear();
+    impl_->fails.clear(), impl_->sweeps.clear();
 
   const std::shared_ptr<const Engine::FeatureTable> ft = impl_->ft();
   const std::optional<Engine::FactorScope> fsc = fscope_of(data, ft, sc);
@@ -670,7 +642,7 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   c.open = open_of(c.clock);
   c.ts_root_d = fs::ts_norm_d(ft->seg);
   c.max_d = factor::kMaxD;
-  c.min_mono = fsearch::kMinMono;
+  c.roll_parts = fsearch::kRollParts;
   for (size_t i = 0; i < std::size(fx::kOps); ++i) {
     const fx::OpInfo &o = fx::kOps[i];
     Op x{o.name, o.c_name, fx::operand_tex(o), factor::dom_name(o.out), o.op, o.note};
@@ -734,17 +706,13 @@ Staged Lab::stage(Cand c, std::string_view hyp_title) {
   return {std::move(c), file, result(file)};
 }
 
-const Result &Lab::absorb(const std::string &file, bool ok, const std::string &err, Surface surf, std::string rep) {
+const Result &Lab::absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep) {
   assert(impl_->data && !busy() && !file.empty());
   if (ok)
     impl_->fails.erase(file);
   else
     impl_->fails[file] = err;
-  impl_->surfaces[file] = std::move(surf);
-  if (rep.empty())
-    impl_->reps.erase(file);
-  else
-    impl_->reps[file] = std::move(rep);
+  impl_->sweeps[file] = std::move(sweep);
   impl_->rescan_one(file);
   return result(file);
 }
@@ -773,7 +741,7 @@ void Lab::discard(const std::string &file) {
   assert(impl_->data && !busy() && !file.empty());
   Engine::DeleteFactorFile(impl_->dir, file);
   disk::remove(impl_->dir.log, impl_->dir.of(file));
-  impl_->fails.erase(file), impl_->surfaces.erase(file), impl_->reps.erase(file);
+  impl_->fails.erase(file), impl_->sweeps.erase(file);
   std::erase_if(impl_->results, [&](const Result &r) { return r.file == file; });
   impl_->env_cache.reset();
 }

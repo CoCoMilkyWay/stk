@@ -3,7 +3,6 @@
 
 #include "factor/Dag.hpp"
 #include "factor/Search/Space.hpp"
-#include "factor/Search/Surface.hpp"
 #include "gui/engine/Engine.hpp"
 #include "misc/exec.hpp"
 #include "misc/profiler.hpp"
@@ -18,7 +17,6 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
-#include <limits>
 #include <map>
 #include <string>
 #include <utility>
@@ -28,12 +26,12 @@ namespace GUI::Engine {
 namespace {
 
 namespace space = factor::search::space;
-namespace surface = factor::search::surface;
 namespace fs = factor::stat;
-using factor::search::Score;
+namespace fsearch = factor::search;
 using Clock = std::chrono::steady_clock;
 
 constexpr double kMiB = 1024.0 * 1024.0;
+constexpr size_t kLogTop = 10; // 日志里列的最好点数
 
 std::string vstrf(const char *f, va_list ap) {
   char buf[4096];
@@ -97,7 +95,7 @@ const char *coord_name(const space::Slot &s) {
   }
 }
 
-int stride_of(int T) { return std::max(1, T / factor::search::kCorrRows); }
+int stride_of(int T) { return std::max(1, T / factor::search::kQtabRows); }
 struct Samp {
   int t_first = 0, n_rows = 0;
 };
@@ -108,37 +106,31 @@ Samp samp_of(int t_hi, int t_lo, int t0_abs, int stride) {
   return {t, t < t_hi ? (t_hi - 1 - t) / stride + 1 : 0};
 }
 
-struct SampleP : ProbeBase {
-  static constexpr uint8_t need = kNeedRanks;
-  std::vector<uint16_t> *dst = nullptr;
-  int stride = 1, off = 0;
-  static double bytes(const Shape &sh, int) { return (static_cast<double>(sh.T) / stride_of(sh.T) + 1.0) * sh.A * sizeof(uint16_t); }
-  void init(const PassCtx &) { off = 0; }
+// 逐日 Tick 和 (Search 契约【目标】逐日; Search 恒一个持有期)
+struct TickP : ProbeBase {
+  static constexpr uint8_t need = kNeedTicks;
+  int seg = 0;
+  std::vector<fsearch::DaySum> day;
+  static double bytes(const Shape &sh, int) { return sizeof(fsearch::DaySum) * static_cast<double>(sh.days); }
+  void init(const PassCtx &p) {
+    assert(p.hd.n == 1);
+    seg = p.seg;
+    day.assign(static_cast<size_t>(p.days_stat), {});
+  }
   void close(const Ctx &c, const RootView &v) {
     const fs::Span s = c.s();
-    const Samp sm = samp_of(s.t_hi(), s.t_lo, s.t0_abs, stride);
-    if (sm.n_rows > 0)
-      v.ranks(sm.t_first, stride, sm.n_rows, dst->data() + static_cast<size_t>(off) * s.A);
-    off += sm.n_rows;
+    const int u0 = c.c.land0();
+    for (int t = s.t_lo; t < s.t_hi(); ++t)
+      day[static_cast<size_t>((u0 + t) / seg)].add(v.ticks[t]);
   }
 };
-using SearchProbes = Probes<HoldP, SampleP>;
+using SearchProbes = Probes<HoldP, TickP>;
 
 struct Entry {
   std::vector<double> u;
   factor::expr::Expr e;
-  Score sc;
-  std::vector<uint16_t> r16;
-  int pass = -1;
-};
-
-struct Surface {
-  surface::Model M;
-  std::vector<int> ids;
-  std::vector<double> mu;
-  std::vector<int> peaks;
-  std::vector<int> picks;
-  std::vector<double> pmu;
+  SearchCand c;
+  bool evaled = false;
 };
 
 struct Searcher {
@@ -158,12 +150,10 @@ struct Searcher {
   Forest f0;
   std::vector<space::Slot> slots;
   Job job;
-  int A = 0, stride = 1, R = 0;
+  int A = 0, stride = 1;
   int n_chunks = 0, batch = 1;
   std::vector<Entry> ents;
   std::map<std::string, int> seen;
-  std::map<std::pair<int, int>, double> rho_raw;
-  Surface S;
   Rc rc_end = Rc::Ok;
 
   Searcher(const SearchRequest &req, FactorFlow &f, SearchResult &out, std::string &why, SearchLive *lv,
@@ -171,7 +161,7 @@ struct Searcher {
       : F(f), scope(req.scope), ft(*req.scope.ft), sp(req.spec), live(lv), on_pass(cb), seg(ft.seg),
         hd(keys_of<fs::Holds>(std::vector<int>{sp.hold})), res(out), why_out(why) {
     assert(find_leg(ft.y.labels, sp.hold) && "Search 的持有期须是字段表标签组之一");
-    assert(factor::search::search_hold(sp.hold) && "Search 只搜 kSearchHolds 档");
+    assert(fsearch::search_hold(sp.hold) && "Search 只搜 kSearchHolds 档");
     fs::assert_holds(hd, seg);
     if (live)
       live->reset();
@@ -197,45 +187,24 @@ struct Searcher {
   }
 
   Rc run() {
-    std::vector<int> ids;
     {
       Lease l(F);
       if (!l)
         return fail(Rc::Cancel);
-      const bool ok0 = with_backend<SearchProbes>(F, scope.gpu, [&](auto &eng) {
+      const bool ok = with_backend<SearchProbes>(F, scope.gpu, [&](auto &eng) {
+        std::vector<int> ids;
         if (!plan(eng) || !prepare_qtab() || !design(ids))
           return false;
         if (live)
-          live->stage.store(SearchStage::Design, std::memory_order_relaxed);
-        return check(run_pass(eng, ids, 0));
+          live->stage.store(SearchStage::Eval, std::memory_order_relaxed);
+        return check(run_pass(eng, ids));
       });
-      if (!ok0)
+      if (!ok)
         return rc_end;
-    }
-    for (int pass = 1;; ++pass) {
-      Lease l(F);
-      if (!l)
-        return fail(Rc::Cancel);
-      bool stop = false;
-      const bool okp = with_backend<SearchProbes>(F, scope.gpu, [&](auto &eng) {
-        if (!step_refine(ids, pass)) {
-          stop = true;
-          return true;
-        }
-        if (live)
-          live->stage.store(SearchStage::Refine, std::memory_order_relaxed);
-        return check(run_pass(eng, ids, pass));
-      });
-      if (!okp)
-        return rc_end;
-      if (stop)
-        break;
     }
     finish();
     return Rc::Ok;
   }
-
-  bool cancelled() const { return F.cancel.load(std::memory_order_relaxed); }
 
   Rc fail(Rc rc) {
     if (rc == Rc::Cancel)
@@ -266,9 +235,10 @@ struct Searcher {
     res.seconds = std::chrono::duration<double>(Clock::now() - t_start).count();
     res.cands.clear();
     for (const Entry &en : ents)
-      if (en.pass >= 0)
-        res.cands.push_back(SearchCand{en.e.canon, en.u, en.pass, en.sc});
-    std::stable_sort(res.cands.begin(), res.cands.end(), [](const SearchCand &a, const SearchCand &b) { return a.sc.score > b.sc.score; });
+      if (en.evaled)
+        res.cands.push_back(en.c);
+    std::stable_sort(res.cands.begin(), res.cands.end(),
+                     [](const SearchCand &a, const SearchCand &b) { return fsearch::score_of(a.roll) > fsearch::score_of(b.roll); });
     if (on_pass)
       on_pass(res);
   }
@@ -282,15 +252,16 @@ struct Searcher {
     f0 = plant_forest(ft, std::span<const Root>(&r0, 1), /*keep_roots=*/false, {}, /*fuse=*/false);
     job.who = "Search";
     const Clock::time_point t_plan = Clock::now();
-    if (!check(Engine::prepare<E, SearchProbes>(F, scope, f0.d, f0.leaves, look, hd, factor::search::kInit, job)))
+    if (!check(Engine::prepare<E, SearchProbes>(F, scope, f0.d, f0.leaves, look, hd, fsearch::kInit, job)))
       return false;
-    lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, factor::search::hold_reach(hd, seg), fs::kChainDays,
-       job.bands.front, job.bands.back);
+    lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, fsearch::hold_reach(hd, seg), fs::kChainDays, job.bands.front,
+       job.bands.back);
     const std::vector<misc::Ymd> &dates = job.dm.dates;
     const int days = static_cast<int>(job.dm.stat_days());
     A = static_cast<int>(job.dm.rs.axis.size());
-    lg("评估期 %s ~ %s (%d 天, 所用库落盘日交集的最近 %d 年) + 预热 %zu 天", misc::dash(job.dm.first()).c_str(), misc::dash(dates.back()).c_str(), days,
-       scope.years, job.dm.warm);
+    lg("评估期 %s ~ %s (%d 天, 所用库落盘日交集的最近 %d 年) + 预热 %zu 天; 滚动窗 %d 天 (评估期 / %d)", misc::dash(job.dm.first()).c_str(),
+       misc::dash(dates.back()).c_str(), days, scope.years, job.dm.warm, fsearch::roll_win(days), fsearch::kRollParts);
+    res.dates = job.dm.stat_dates();
     stride = stride_of(days * seg);
     const Plan &P = job.P;
     const Budget &bud = job.b;
@@ -309,15 +280,12 @@ struct Searcher {
        hd.n, f0.d.n_slots, bud.load, bud.work);
     lg("预算: 内存 %.0f MB%s; 块 ≤ %d 天 + 前带 %d 天 + 后带 %d 天, 共 %d 块, 全部常驻 %s (需 %.0f MB)%s", P.host / kMiB,
        scope.gpu ? strf(", 显存 %.0f MB", P.vram / kMiB).c_str() : "", P.D, job.bands.front, job.bands.back, n_chunks,
-       P.cache + P.max_cells() * bud.work <= P.host ? "是" : "否 (每趟逐块重读)", P.cache / kMiB,
-       scope.gpu ? strf(", GPU 批 %d", batch).c_str() : "");
+       P.cache + P.max_cells() * bud.work <= P.host ? "是" : "否 (逐块重读)", P.cache / kMiB, scope.gpu ? strf(", GPU 批 %d", batch).c_str() : "");
     for (int ci = 0; ci < n_chunks; ++ci) {
       const Chunk &k = P.chunks[static_cast<size_t>(ci)];
       lg("  块 %d: 统计 %s ~ %s (%d 天), 装载 %d 天, %.0f MB", ci + 1, misc::dense(dates[k.s0]).c_str(), misc::dense(dates[k.s1 - 1]).c_str(),
          static_cast<int>(k.s1 - k.s0), k.days(), res.chunk_plan[static_cast<size_t>(ci)].mb);
     }
-    for (const Chunk &k : P.chunks)
-      R += samp_of(static_cast<int>(k.s1 - k.d0) * seg, static_cast<int>(k.s0 - k.d0) * seg, static_cast<int>(k.d0) * seg, stride).n_rows;
     return true;
   }
 
@@ -348,7 +316,7 @@ struct Searcher {
     for (const space::Slot &s : slots)
       res.slots.push_back(s.name);
     if (slots.empty())
-      lg("无自由参数: 只评模板本身 (定方向 + 判显著)");
+      lg("无自由参数: 只评模板本身 (定方向)");
     else
       lg("自由参数 %d 个 (区间按池内平均有效资产数 %.0f 定):", static_cast<int>(slots.size()), a_eff);
     for (const space::Slot &s : slots)
@@ -408,87 +376,47 @@ struct Searcher {
     if (const auto it = seen.find(en.e.canon); it != seen.end())
       return it->second;
     en.u = u;
+    en.c.expr = en.e.canon;
+    for (const space::Slot &s : slots) {
+      const size_t j = en.c.v.size();
+      const double raw = space::to_v(s, u[j]);
+      en.c.v.push_back(s.key == space::Key::D ? raw : static_cast<double>(factor::expr::kv_of(raw)));
+    }
     const int id = static_cast<int>(ents.size());
     seen.emplace(en.e.canon, id);
     ents.push_back(std::move(en));
     return id;
   }
-  std::string params_at(int id) const {
-    const Entry &en = ents[static_cast<size_t>(id)];
-    return (en.sc.sign < 0 ? std::string("取反 ") : std::string()) + params_of(slots, en.u);
-  }
+  std::string params_at(const Entry &en) const { return (en.c.sign < 0 ? std::string("取反 ") : std::string()) + params_of(slots, en.u); }
   bool design(std::vector<int> &ids) {
     if (slots.empty()) {
       ids.push_back(add_cand({}));
       return true;
     }
     int n_bad = 0;
-    for (const std::vector<double> &u : space::design(slots, factor::search::kInit)) {
+    for (const std::vector<double> &u : space::design(slots, fsearch::kInit)) {
       const int id = add_cand(u);
       if (id < 0)
         ++n_bad;
       else if (std::find(ids.begin(), ids.end(), id) == ids.end())
         ids.push_back(id);
     }
-    lg("采样: R_d %d 点 → 不合法 %d, 取整去重后 %d 候选; r16 抽样步长 %d 行 (每候选 %d 行)", factor::search::kInit, n_bad, static_cast<int>(ids.size()), stride, R);
+    lg("采样: R_d %d 点 → 不合法 %d, 取整去重后 %d 候选", fsearch::kInit, n_bad, static_cast<int>(ids.size()));
     if (ids.empty())
       return give_up(Rc::Empty, "采样点无一参数合法 (值域互斥?), 文件不动");
     return true;
   }
 
-  void ensure_rho(const std::vector<int> &ids) {
-    std::vector<std::pair<int, int>> need;
-    for (size_t a = 0; a < ids.size(); ++a)
-      for (size_t b = a + 1; b < ids.size(); ++b) {
-        const std::pair<int, int> pr(std::min(ids[a], ids[b]), std::max(ids[a], ids[b]));
-        if (pr.first != pr.second && !rho_raw.count(pr) && std::find(need.begin(), need.end(), pr) == need.end())
-          need.push_back(pr);
-      }
-    std::vector<double> out(need.size(), 0.0);
-    F.S.ex.rows(static_cast<int>(need.size()), [&](int p0, int p1, int) {
-      for (int p = p0; p < p1; ++p) {
-        const uint16_t *ra = ents[static_cast<size_t>(need[static_cast<size_t>(p)].first)].r16.data();
-        const uint16_t *rb = ents[static_cast<size_t>(need[static_cast<size_t>(p)].second)].r16.data();
-        double sum = 0.0;
-        long long cnt = 0;
-        for (int i = 0; i < R; ++i) {
-          fs::Row row;
-          factor::cpu::stat::lag_row(ra + static_cast<size_t>(i) * A, rb + static_cast<size_t>(i) * A, A, row);
-          if (row.ok_rac)
-            sum += row.rac, ++cnt;
-        }
-        out[static_cast<size_t>(p)] = cnt > 0 ? sum / static_cast<double>(cnt) : 0.0;
-      }
-    });
-    for (size_t p = 0; p < need.size(); ++p)
-      rho_raw[need[p]] = out[p];
-  }
-  double rho(int a, int b) const {
-    if (a == b)
-      return 1.0;
-    const auto it = rho_raw.find({std::min(a, b), std::max(a, b)});
-    assert(it != rho_raw.end());
-    return ents[static_cast<size_t>(a)].sc.sign * ents[static_cast<size_t>(b)].sc.sign * it->second;
-  }
-
   template <class E>
-  Rc run_pass(E &eng, const std::vector<int> &ids, int pass) {
+  Rc run_pass(E &eng, const std::vector<int> &ids) {
     assert(!ids.empty());
-    if (live) {
-      live->pass.store(pass, std::memory_order_relaxed);
+    if (live)
       live->chunk.store(0, std::memory_order_relaxed);
-    }
     std::vector<Root> roots;
     roots.reserve(ids.size());
+    for (const int id : ids)
+      roots.push_back({&ents[static_cast<size_t>(id)].e, sp.frame, fs::kFwd});
     std::vector<SearchProbes> ps(ids.size());
-    for (size_t k = 0; k < ids.size(); ++k) {
-      Entry &en = ents[static_cast<size_t>(ids[k])];
-      assert(en.pass < 0 && "每个候选只评一次");
-      en.r16.assign(static_cast<size_t>(R) * A, fs::kRankNone);
-      ps[k].at<SampleP>().dst = &en.r16;
-      ps[k].at<SampleP>().stride = stride;
-      roots.push_back({&en.e, sp.frame, fs::kFwd});
-    }
     const Clock::time_point t_pass = Clock::now();
     struct Hooks : PassHooks {
       Searcher &S;
@@ -515,185 +443,53 @@ struct Searcher {
       return rc;
     if (live)
       live->chunk.store(n_chunks, std::memory_order_relaxed);
+    int n_ok = 0;
     for (size_t k = 0; k < ids.size(); ++k) {
       Entry &en = ents[static_cast<size_t>(ids[k])];
-      en.pass = pass;
+      en.evaled = true;
       if (!dead[k].empty())
         continue;
+      SearchCand &c = en.c;
+      const fsearch::Roll fwd = fsearch::roll_of(ps[k].at<TickP>().day, sp.hold, seg, &c.line);
+      c.sign = fsearch::sign_of(fwd);
+      c.roll = c.sign > 0 ? fwd : fsearch::flipped(fwd);
+      if (c.sign < 0)
+        for (float &x : c.line)
+          x = -x;
       const HoldP &hp = ps[k].at<HoldP>();
-      assert(ps[k].at<SampleP>().off == R && "各块抽样行须拼满");
       assert(hp.n_hold == 1);
-      en.sc = factor::search::score_signed(hp.acc[0], hp.hold[0].hold, hp.hold[0].seg);
-    }
-    int n_pos = 0, top = -1;
-    double best = -std::numeric_limits<double>::infinity();
-    for (int id : ids) {
-      const Score &sc = ents[static_cast<size_t>(id)].sc;
-      n_pos += std::isfinite(sc.score);
-      best = std::max(best, sc.score);
-      if (sc.ok && (top < 0 || sc.g > ents[static_cast<size_t>(top)].sc.g))
-        top = id;
+      const fs::HoldStat h = fs::oriented(hp.acc[0], fs::dir_of(c.sign)).finish(sp.hold, seg);
+      c.mono = h.mono, c.ls = fs::ls_period(h), c.ric = h.ric.mean;
+      n_ok += c.roll.ok();
     }
     const double pass_s = std::chrono::duration<double>(Clock::now() - t_pass).count();
-    lg("第 %d 趟完成: %d 候选 × %d 块, %.1fs (装载 %.1fs, 评估 %.1fs, %.1f ms/候选·块) | 正分 %d 最高 %.4g", pass, static_cast<int>(ids.size()), n_chunks, pass_s,
-       hooks.load_s, pass_s - hooks.load_s, 1e3 * (pass_s - hooks.load_s) / (static_cast<double>(ids.size()) * n_chunks), n_pos, best);
-    if (top >= 0) {
-      const Score &sc = ents[static_cast<size_t>(top)].sc;
-      lg("  g 最高 %.3g ± %.3g: 每期毛多空 %.2fbp rIC %.4f mono %+.3f @ %s", sc.g, sc.se, 1e4 * sc.ls, sc.ric, sc.mono, params_at(top).c_str());
-    }
-    res.n_pass = pass + 1;
+    lg("评完: %d 候选 × %d 块, %.1fs (装载 %.1fs, 评估 %.1fs, %.1f ms/候选·块) | 有滚动窗 %d", static_cast<int>(ids.size()), n_chunks, pass_s, hooks.load_s,
+       pass_s - hooks.load_s, 1e3 * (pass_s - hooks.load_s) / (static_cast<double>(ids.size()) * n_chunks), n_ok);
     emit_pass();
     return Rc::Ok;
   }
 
-  void fit() {
-    S = Surface{};
-    std::vector<std::vector<double>> x;
-    std::vector<double> y, se;
-    for (int id = 0; id < static_cast<int>(ents.size()); ++id) {
-      const Entry &en = ents[static_cast<size_t>(id)];
-      if (en.pass < 0 || !en.sc.ok)
-        continue;
-      S.ids.push_back(id);
-      x.push_back(space::unit(slots, en.u));
-      y.push_back(en.sc.g);
-      se.push_back(en.sc.se);
-    }
-    if (!S.ids.empty() && slots.empty()) {
-      S.mu = y;
-      if (std::isfinite(ents[static_cast<size_t>(S.ids[0])].sc.score))
-        S.peaks = {0};
-    } else if (!S.ids.empty()) {
-      S.M = surface::fit(x, y, se);
-      std::vector<uint8_t> usable;
-      for (size_t i = 0; i < x.size(); ++i) {
-        S.mu.push_back(surface::mean(S.M, x[i]));
-        usable.push_back(std::isfinite(ents[static_cast<size_t>(S.ids[i])].sc.score));
-      }
-      S.peaks = surface::peaks(S.M, S.mu, usable);
-    }
-    std::vector<int> pk;
-    for (const int i : S.peaks)
-      pk.push_back(S.ids[static_cast<size_t>(i)]);
-    ensure_rho(pk);
-    const size_t M = pk.size();
-    std::vector<double> mu(M), se_pk(M);
-    std::vector<std::vector<double>> corr(M, std::vector<double>(M, 0.0));
-    for (size_t a = 0; a < M; ++a) {
-      mu[a] = S.mu[static_cast<size_t>(S.peaks[a])], se_pk[a] = ents[static_cast<size_t>(pk[a])].sc.se;
-      for (size_t b = 0; b < M; ++b)
-        corr[a][b] = rho(pk[a], pk[b]);
-    }
-    for (const int a : factor::search::pick_diverse(mu, se_pk, corr))
-      S.picks.push_back(pk[static_cast<size_t>(a)]), S.pmu.push_back(mu[static_cast<size_t>(a)]);
-    res.n_peak = static_cast<int>(M);
-    std::string ell;
-    for (const double l : S.M.ell)
-      ell += strf("%s%.3g", ell.empty() ? "" : " ", l);
-    if (slots.empty())
-      lg("单点: 峰 %d, 活跃 %d", static_cast<int>(M), static_cast<int>(S.picks.size()));
-    else
-      lg("曲面: %d 点, ℓ = [%s], σf = %.3g; 峰 %d, 活跃 %d", static_cast<int>(S.ids.size()), ell.c_str(), S.ids.empty() ? 0.0 : std::sqrt(S.M.sf2) * S.M.ys,
-         static_cast<int>(M), static_cast<int>(S.picks.size()));
-    for (size_t a = 0; a < M; ++a) {
-      const bool on = std::find(S.picks.begin(), S.picks.end(), pk[a]) != S.picks.end();
-      const Score &sc = ents[static_cast<size_t>(pk[a])].sc;
-      lg("  %s μ %.4g  SE %.4g  观测 %.4g  mono %+.3f @ %s", on ? "*" : " ", mu[a], se_pk[a], sc.g, sc.mono, params_at(pk[a]).c_str());
-    }
-  }
-
-  bool step_refine(std::vector<int> &ids, int pass) {
-    fit();
-    ids.clear();
-    for (size_t q = 0; q < S.picks.size(); ++q) {
-      const int c = S.picks[q];
-      const std::vector<double> uc = ents[static_cast<size_t>(c)].u;
-      const double se_c = ents[static_cast<size_t>(c)].sc.se;
-      for (size_t j = 0; j < slots.size(); ++j)
-        for (const int dir : {-1, 1}) {
-          double step = 0.5 * S.M.ell[j] * (slots[j].u_hi - slots[j].u_lo);
-          for (;;) {
-            std::vector<double> u = uc;
-            u[j] = std::clamp(uc[j] + dir * step, slots[j].u_lo, slots[j].u_hi);
-            step = std::fabs(u[j] - uc[j]);
-            if (!(step > 0.0))
-              break;
-            const int id = add_cand(u);
-            if (id < 0 || id == c)
-              break;
-            if (ents[static_cast<size_t>(id)].pass >= 0) {
-              step *= 0.5;
-              continue;
-            }
-            if (std::find(ids.begin(), ids.end(), id) != ids.end())
-              break;
-            double mu = 0.0, sd = 0.0;
-            surface::predict(S.M, space::unit(slots, ents[static_cast<size_t>(id)].u), mu, sd);
-            if (mu + sd - S.pmu[q] > se_c)
-              ids.push_back(id);
-            break;
-          }
-        }
-    }
-    if (live)
-      live->alive.store(static_cast<int>(S.picks.size()), std::memory_order_relaxed);
-    lg("细化第 %d 趟: 活跃峰 %d, 新点 %d", pass, static_cast<int>(S.picks.size()), static_cast<int>(ids.size()));
-    return !ids.empty();
-  }
-
-  std::optional<SearchTop> top_of() const {
-    int id = -1;
-    double mu = 0.0;
-    if (!S.peaks.empty()) {
-      id = S.ids[static_cast<size_t>(S.peaks[0])], mu = S.mu[static_cast<size_t>(S.peaks[0])];
-    } else {
-      for (size_t i = 0; i < S.ids.size(); ++i)
-        if (std::isfinite(ents[static_cast<size_t>(S.ids[i])].sc.score) && (id < 0 || S.mu[i] > mu))
-          id = S.ids[i], mu = S.mu[i];
-      if (id < 0)
-        for (int i = 0; i < static_cast<int>(ents.size()); ++i) {
-          const Score &sc = ents[static_cast<size_t>(i)].sc;
-          if (ents[static_cast<size_t>(i)].pass >= 0 && sc.ok &&
-              (id < 0 || sc.mono > ents[static_cast<size_t>(id)].sc.mono ||
-               (sc.mono == ents[static_cast<size_t>(id)].sc.mono && sc.g > ents[static_cast<size_t>(id)].sc.g)))
-            id = i;
-        }
-    }
-    if (id < 0)
-      return std::nullopt;
-    const Entry &en = ents[static_cast<size_t>(id)];
-    return SearchTop{en.e.canon, en.sc.sign, en.sc.mono, en.sc.ls, en.sc.ric, en.sc.g, en.sc.se, mu, !S.peaks.empty()};
-  }
-
   void finish() {
-    std::vector<SearchWeight> ws;
-    for (const int c : S.picks) {
-      const Entry &en = ents[static_cast<size_t>(c)];
-      SearchPick pk;
-      pk.expr = en.e.canon;
-      pk.sc = en.sc;
-      for (const int o : S.picks)
-        if (o != c)
-          pk.corr = std::max(pk.corr, rho(c, o));
-      res.picks.push_back(std::move(pk));
-      ws.push_back(SearchWeight{sp.hold, en.sc.sign, en.e.canon});
+    std::vector<const Entry *> order;
+    for (const Entry &en : ents)
+      if (en.evaled && en.c.roll.ok())
+        order.push_back(&en);
+    std::stable_sort(order.begin(), order.end(), [](const Entry *a, const Entry *b) { return a->c.roll.ric_med > b->c.roll.ric_med; });
+    for (size_t i = 0; i < std::min(order.size(), kLogTop); ++i) {
+      const SearchCand &c = order[i]->c;
+      lg("  %s 中位 rIC %+.4f (平均 %+.4f, %d 窗 × %d 天) · 年化多空 中位 %+.1f%% · 全期 mono %+.3f 每期毛多空 %.2fbp @ %s", i == 0 ? "*" : " ", c.roll.ric_med,
+         c.roll.ric_mean, c.roll.n, c.roll.win, 100.0 * c.roll.ann_med, c.mono, 1e4 * c.ls, params_at(*order[i]).c_str());
     }
-    SearchMark mk{sp.hold, job.dm.first(), job.dm.dates.back(), static_cast<int>(job.dm.stat_days()), ws.empty() ? top_of() : std::nullopt};
+    std::vector<SearchWeight> ws;
+    if (!order.empty())
+      ws.push_back(SearchWeight{sp.hold, order.front()->c.sign, order.front()->c.expr});
+    const SearchMark mk{sp.hold, job.dm.first(), job.dm.dates.back(), static_cast<int>(job.dm.stat_days())};
     WriteFactorSearch(scope.dir, sp.file, sp.fresh, mk, ws);
     res.wrote = true;
     res.n_weights = static_cast<int>(ws.size());
-    if (mk.top)
-      lg("无显著, 代表点 (%s): g %.3g ± %.3g μ %.3g mono %+.3f @ %s",
-         mk.top->peak                                                    ? "峰"
-         : factor::search::passes(mk.top->ls, mk.top->ric, mk.top->mono) ? "过门槛 μ 最高"
-                                                                         : "mono 最高",
-         mk.top->g, mk.top->se, mk.top->mu, mk.top->mono, mk.top->expr.c_str());
-    why_out = ws.empty() ? strf("没有显著 (μ > SE) 且 mono ≥ %.2f 的候选, 已清掉该 Hold 的权重", factor::search::kMinMono)
-                         : "weights 已写入 (" + std::to_string(ws.size()) + " 个权重), 自动 Run 重算 stat";
-    int n_eval = 0;
-    for (const Entry &en : ents)
-      n_eval += en.pass >= 0;
-    lg("完成: 写入 %d 个权重, 共评 %d 候选, %d 趟", static_cast<int>(ws.size()), n_eval, res.n_pass);
+    why_out = ws.empty() ? strf("没有一个参数点算得出滚动窗 rIC (每窗 ok 行 ≥ %d), 已清掉该 Hold 的权重", fsearch::kRollMinRows)
+                         : "weights 已写入 (中位 rIC 最高的 1 个), 自动 Run 重算 stat";
+    lg("完成: 写入 %d 个权重, 共评 %d 候选", static_cast<int>(ws.size()), static_cast<int>(res.cands.size()));
     emit_pass();
   }
 };

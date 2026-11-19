@@ -73,9 +73,8 @@ inline const ConstDef *const_of(std::string_view key) {
   return nullptr;
 }
 
-// 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重全部达到才拷进正式因子库
-inline constexpr double kGateMono = 0.95; // 分层单调性
-inline constexpr double kGateRic = 0.03;  // rIC 均值
+// 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重达到才拷进正式因子库
+inline constexpr double kGateRic = 0.03; // 中位 rIC (滚动窗 rIC 的中位, 同 Search 的目标)
 
 // ---- 落盘 (disk::, 布局见 disk/Disk.hpp; <模式> = main | test, test = 自检会话) ----
 //   output/agent/<模式>/sessions/<池>/<层>/<持有期>/

@@ -94,7 +94,7 @@ struct Options {
   std::string proxy_host = kProxyHost;
   int proxy_port = kProxyPort;
   int gpu = -1; // -1 = 未定 (有 GPU 默认 GPU)
-  Gate gate{kGateMono, kGateRic};
+  Gate gate{kGateRic};
   Budget budget;
   bool ask = true; // agent 可用 ask_human 向人提一次问
   int prompt = 0;  // Msg 下标
@@ -232,8 +232,7 @@ bool ui_json_valid(const nlohmann::json &j) {
   const bool scope_ok = sc.contains("pool") && sc["pool"].is_string() && sc.contains("level") && sc["level"].is_number_integer() && sc.contains("hold") &&
                         sc["hold"].is_number_integer() && sc.contains("lob") && sc["lob"].is_boolean() && sc.contains("years") && sc["years"].is_number_integer() &&
                         sc.contains("leaves") && sc["leaves"].is_object() && sc.contains("ops") && sc["ops"].is_object();
-  return scope_ok && gt.contains("mono") && gt["mono"].is_number() &&
-         gt.contains("ric") && gt["ric"].is_number() && bg.contains("rounds") && bg["rounds"].is_number_integer() && bg.contains("minutes") &&
+  return scope_ok && gt.contains("ric") && gt["ric"].is_number() && bg.contains("rounds") && bg["rounds"].is_number_integer() && bg.contains("minutes") &&
          bg["minutes"].is_number_integer() && bg.contains("ktokens") && bg["ktokens"].is_number_integer() && j.contains("backend") &&
          j["backend"].is_number_integer() && j.contains("model") && j["model"].is_string() && j.contains("via_proxy") && j["via_proxy"].is_array() &&
          j["via_proxy"].size() == kBackendN && j.contains("proxy_host") && j["proxy_host"].is_string() && j.contains("proxy_port") &&
@@ -692,7 +691,6 @@ TaskStatus::Kind kind_of(const Names &in, const Result &r) {
   case Verdict::Weights:
     return in.count(r.name) ? TaskStatus::Kind::Ready : TaskStatus::Kind::None;
   case Verdict::Null:
-    return r.top ? TaskStatus::Kind::Warn : TaskStatus::Kind::Muted;
   case Verdict::Pending:
     return TaskStatus::Kind::Muted;
   }
@@ -1073,7 +1071,7 @@ std::string group_head(const Mine &m, size_t g0, size_t g1) {
          " · 入库 " + std::to_string(c.adopted);
 }
 
-// 停下汇总: 原因与继续会做什么 + 计数 + 本会话有参数组的候选 (入库的在前, 再按 score 降序; 先列 kSummaryRows 个, 其余折起) + 停下报告
+// 停下汇总: 原因与继续会做什么 + 计数 + 本会话有参数组的候选 (入库的在前, 再按 score (中位 rIC) 降序; 先列 kSummaryRows 个, 其余折起) + 停下报告
 constexpr size_t kSummaryRows = 5;
 void summary_block(const Mine &m) {
   const Tally c = m.tally();
@@ -1217,7 +1215,7 @@ std::pair<std::string, std::string> split_note(const std::string &note) {
   return {{}, note};
 }
 
-// 候选表: 列头点了排序 (默认 = 本持有期 score 降序); 本会话落的标 ●; 点一行在下面看详情与 Search 日志
+// 候选表: 列头点了排序 (默认 = 本持有期 score (中位 rIC) 降序); 本会话落的标 ●; 点一行在下面看详情与 Search 日志
 void results_table(Ui &s, const View &v) {
   const std::vector<Result> &results = v.results;
   s.cand_filter.Draw("过滤##cand", 240);
@@ -1234,20 +1232,15 @@ void results_table(Ui &s, const View &v) {
   ImGui::TableSetupColumn("名");
   ImGui::TableSetupColumn("中文");
   ImGui::TableSetupColumn("结局");
+  ImGui::TableSetupColumn("中位rIC", kDesc);
+  ImGui::TableSetupColumn("rIC", kDesc);
   ImGui::TableSetupColumn("mono", kDesc);
   ImGui::TableSetupColumn("多空bp", kDesc);
-  ImGui::TableSetupColumn("rIC", kDesc);
-  ImGui::TableSetupColumn("score", kDesc);
   ImGui::TableSetupColumn("假设");
   ImGui::TableSetupColumn("思路");
   ImGui::TableSetupColumn("模板", ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_NoSort);
   ImGui::TableHeadersRow();
-  // 统计列: 最佳权重; 无显著则代表点 (灰)
-  const auto stat_of = [](const Result &r) -> const Stat * {
-    const Weight *w = r.best();
-    return w ? &w->st : r.top ? &r.top->st
-                              : nullptr;
-  };
+  // 统计列: 最佳权重 (中位 rIC + 全期 rIC / mono / 多空)
   const auto hyp_of = [](const Result &r) { return split_note(r.note).first; };
   const auto change_of = [](const Result &r) { return split_note(r.note).second; };
   std::vector<size_t> ix;
@@ -1257,17 +1250,16 @@ void results_table(Ui &s, const View &v) {
   if (const ImGuiTableSortSpecs *sp = ImGui::TableGetSortSpecs(); sp && sp->SpecsCount > 0) {
     const ImGuiTableColumnSortSpecs &c = sp->Specs[0];
     const auto num = [&](const Result &r) -> double {
-      const Stat *st = stat_of(r);
       const Weight *w = r.best();
       switch (c.ColumnIndex) {
       case 4:
-        return st ? st->mono : -INFINITY;
-      case 5:
-        return st ? st->ls : -INFINITY;
-      case 6:
-        return st ? st->ric : -INFINITY;
-      case 7:
         return w ? w->score : -INFINITY;
+      case 5:
+        return w ? w->st.ric : -INFINITY;
+      case 6:
+        return w ? w->st.mono : -INFINITY;
+      case 7:
+        return w ? w->st.ls : -INFINITY;
       default:
         return static_cast<double>(r.verdict);
       }
@@ -1308,21 +1300,18 @@ void results_table(Ui &s, const View &v) {
     ImGui::TextColored(color(kind_of(v.adopted, r)), "%s", v.adopted.count(r.name) ? "入库" : def(r.verdict).cn);
     tip_long(detail(r));
     const Weight *w = r.best();
-    const Stat *st = stat_of(r);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(w ? ImGuiCol_Text : ImGuiCol_TextDisabled));
-    ImGui::TableNextColumn();
-    if (st)
-      ImGui::Text("%.3f", st->mono);
-    ImGui::TableNextColumn();
-    if (st)
-      ImGui::Text("%.2f", st->ls * 1e4);
-    ImGui::TableNextColumn();
-    if (st)
-      ImGui::Text("%.4f", st->ric);
     ImGui::TableNextColumn();
     if (w)
-      ImGui::Text("%.3g", w->score);
-    ImGui::PopStyleColor();
+      ImGui::Text("%.4f", w->roll.ric_med);
+    ImGui::TableNextColumn();
+    if (w)
+      ImGui::Text("%.4f", w->st.ric);
+    ImGui::TableNextColumn();
+    if (w)
+      ImGui::Text("%.3f", w->st.mono);
+    ImGui::TableNextColumn();
+    if (w)
+      ImGui::Text("%.2f", w->st.ls * 1e4);
     ImGui::TableNextColumn();
     if (const std::string h = hyp_of(r); !h.empty()) {
       ImGui::TextUnformatted(text::head(h, 16).c_str());
@@ -1893,14 +1882,10 @@ void render_config(Ui &s) {
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "入库门槛");
-  ImGui::TextDisabled("agent 提交的候选至少一个权重全部达到才进正式因子库; 下次 New 生效");
-  const auto field = [](const char *label, double &v, const char *fmt) {
-    ImGui::SetNextItemWidth(120);
-    ImGui::InputDouble(label, &v, 0.0, 0.0, fmt);
-  };
-  field("mono >=", o.gate.mono, "%.2f");
-  ImGui::SameLine();
-  field("rIC >=", o.gate.ric, "%.3f");
+  ImGui::TextDisabled("agent 提交的候选至少一个权重达到才进正式因子库; 下次 New 生效");
+  ImGui::SetNextItemWidth(120);
+  ImGui::InputDouble("中位 rIC >=", &o.gate.ric, 0.0, 0.0, "%.3f");
+  tip("中位 rIC = 滚动窗 (评估期 / 10) rIC 的中位, 同 Search 的目标");
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "提问");

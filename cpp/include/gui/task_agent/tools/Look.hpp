@@ -291,9 +291,6 @@ ToolOut ViewStockDay(const Call &c, Bay &bay);
 ToolOut ViewStockDays(const Call &c, Bay &bay);
 ToolOut ViewBook(const Call &c, Bay &bay);
 
-// 代表点 (具体式 + 方向) 的全期分层与分时段 mono 一段原文 (eval_factor 无显著时附上; tools/look/ViewLayers.cpp)
-std::string RepLayers(const std::string &expr, int sign, const ViewEnv &env, Engine::FactorFlow &F);
-
 nlohmann::ordered_json SampleViewFeature(Feed &p);
 nlohmann::ordered_json SampleViewLayers(Feed &p);
 nlohmann::ordered_json SampleViewTrades(Feed &p);

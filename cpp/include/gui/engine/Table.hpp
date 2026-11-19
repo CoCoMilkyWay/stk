@@ -6,6 +6,7 @@
 
 #include "disk/Disk.hpp"
 #include "factor/Expr.hpp"
+#include "factor/Search/Contract.hpp" // Roll (因子表 score)
 #include "factor/Stat/Contract.hpp"
 #include "features/Storage/FeatureLib.hpp" // FeatureLib (请求的库清单)
 #include "math/distribution/PdfSnap.hpp"   // AggPdf
@@ -300,12 +301,17 @@ struct EvalStat {
   std::vector<CostTier> costs;                         // [amt] = FeatureTable::y.costs 序 (非空), 每金额段 [n_hold] CostAcc (年换手 / Inspect 净线从它算)
   MiniPdf ic_pdf[factor::stat::kMaxHold];              // [hold] 逐行 rIC (ok 行) 分布 (Probe IcPdfP; 因子表小图)
   std::vector<YearStat> years[factor::stat::kMaxHold]; // [hold] 分年 (年升序, 只列有统计行 ≥ 3 的年)
+  factor::search::Roll roll[factor::stat::kMaxHold];   // [hold] 滚动窗统计 (Probe YearP; 中位 rIC = 因子表 score, Search 契约【目标】)
   MiniPdf alpha_pdf;                                   // alpha 分布 (截尾; Probe AlphaP; 与持有期无关)
   const factor::stat::HoldStat *find_hold(int hold_m) const {
     for (int j = 0; j < n_hold; ++j)
       if (hold[j].hold == hold_m)
         return &hold[j];
     return nullptr;
+  }
+  const factor::search::Roll &roll_of(const factor::stat::HoldStat &h) const { // h = 本行 hold[] 之一
+    assert(&h >= hold && &h < hold + n_hold);
+    return roll[&h - hold];
   }
   const MiniPdf *find_ic_pdf(int hold_m) const {
     const factor::stat::HoldStat *h = find_hold(hold_m);

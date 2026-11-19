@@ -224,7 +224,7 @@ std::string Mine::make_log_head() const {
   const Context &c = lab.ctx();
   std::string h = "# 会话日志 · " + catalog::label(setup.sc) + " (近 " + std::to_string(setup.sc.years) + " 年)\n\n";
   h += "- 模式: " + std::string(setup.test ? "自检" : "正式") + " · 后端: " + def(leg.llm.backend).name + " / " + leg.llm.model +
-       " · 评估: " + (leg.gpu ? "GPU" : "CPU") + " · 门槛: mono ≥ " + text::num(setup.gate.mono) + ", rIC ≥ " + text::num(setup.gate.ric) + "\n";
+       " · 评估: " + (leg.gpu ? "GPU" : "CPU") + " · 门槛: 中位 rIC ≥ " + text::num(setup.gate.ric) + "\n";
   h += "- 来源: " + c.srcs + " · 开放: 叶 " + std::to_string(c.leaves.size()) + " 个, 算子 " + std::to_string(c.ops.size()) + " 个 · 评估期: " + c.window + "\n";
   if (!setup.remark.empty())
     h += "- 本会话要求: " + text::flat(setup.remark) + "\n";

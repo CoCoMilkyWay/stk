@@ -87,9 +87,14 @@ struct Op {
   std::string name, name_cn, sig, out, tex, note;
 };
 
-// ---- 回测统计与候选结局 ----
-struct Stat {
+// ---- 回测统计与候选结局 (均已按所评方向) ----
+struct Stat { // 全期: 分层单调性 / 每期真实毛多空 / rIC 均值
   double mono = 0.0, ls = 0.0, ric = 0.0;
+};
+struct Roll {                           // 滚动窗 (窗长 = 评估期 / kRollParts; factor/Search/Contract.hpp【目标】): 中位 rIC = score
+  int win = 0, n = 0;                   // 窗长 (交易日) / 窗数 (0 = 无窗)
+  double ric_med = 0.0, ric_mean = 0.0; // 窗 rIC 的中位 / 平均
+  double ann_med = 0.0, ann_mean = 0.0; // 窗年化多空的中位 / 平均
 };
 struct Year {
   int year = 0, n = 0;
@@ -99,29 +104,12 @@ struct Weight {
   std::string expr;
   int sign = 1;
   int hold_src = 0;
-  bool has = false;
+  bool has = false; // 有该持有期的统计且有滚动窗
   Stat st;
-  double score = 0.0, se = 0.0, valid = 0.0, turn = 0.0, rac = 0.0;
+  Roll roll;
+  double score = 0.0, valid = 0.0, turn = 0.0, rac = 0.0; // score = 中位 rIC
   std::vector<double> grp;
   std::vector<Year> years;
-};
-
-enum class Rep : uint8_t { Peak,
-                           Gated,
-                           Mono };
-struct RepDef {
-  const char *cn;
-};
-inline constexpr RepDef kReps[] = {{"过门槛的峰"}, {"过门槛 μ 最高"}, {"mono 最高"}};
-AGENT_ROWS(Rep, kReps, Mono);
-
-struct Top {
-  std::string expr;
-  int sign = 1;
-  Stat st;
-  double g = 0.0, se = 0.0, mu = 0.0;
-  Rep rep = Rep::Mono;
-  std::string miss;
 };
 
 enum class Verdict : uint8_t { Unstaged,
@@ -132,25 +120,29 @@ enum class Verdict : uint8_t { Unstaged,
 struct VerdictDef {
   const char *cn;
 };
-inline constexpr VerdictDef kVerdicts[] = {{"未落文件"}, {"BROKEN"}, {"有权重"}, {"无显著"}, {"未评完"}};
+inline constexpr VerdictDef kVerdicts[] = {{"未落文件"}, {"BROKEN"}, {"有权重"}, {"无权重"}, {"未评完"}};
 AGENT_ROWS(Verdict, kVerdicts, Pending);
 
-struct Probe {
-  std::vector<double> v;
+// Search 评过的一个参数点 (已按所评方向)
+struct Point {
+  std::vector<double> v; // 各自由参数的取值 (Sweep::slots 同序)
+  int sign = 1;
+  Roll roll;
   Stat st;
+  std::vector<float> line; // [日] 累计中位 rIC (Sweep::dates 同长; 首个窗之前 NaN)
 };
-struct Surface {
+// 一趟 Search 的全部点 (本进程内存里; 载入的会话没有)
+struct Sweep {
   std::vector<std::string> slots;
-  std::vector<Probe> pts;
+  std::vector<int> dates; // 评估期交易日 YYYYMMDD
+  std::vector<Point> pts; // 中位 rIC 降序
 };
 
 struct Result {
   std::string file, name, name_cn, tmpl, twin, note, error;
   Verdict verdict = Verdict::Pending;
-  std::optional<Top> top;
   std::vector<Weight> ws;
-  Surface surf;
-  std::string rep_text;
+  Sweep sweep;
   int ops = 0;
   bool visible = true;
   const Weight *best() const;
@@ -166,7 +158,7 @@ struct Context {
   int seg = 1, open = 0;
   std::vector<std::string> clock;
   int ts_root_d = 0, max_d = 0;
-  double min_mono = 0.0;
+  int roll_parts = 0; // 滚动窗 = 评估期 / roll_parts
   std::vector<Leaf> leaves, all_leaves;
   std::vector<Op> ops, all_ops;
   std::vector<Result> library;
@@ -177,7 +169,7 @@ struct Context {
 };
 
 struct Gate {
-  double mono = 0.0, ric = 0.0;
+  double ric = 0.0; // 中位 rIC 下限
   bool operator==(const Gate &) const = default;
 };
 std::string GateMiss(const Gate &g, const Result &r);
@@ -264,7 +256,7 @@ public:
 
   std::string vet(const Cand &c) const; // stage 落文件前的全部查验 (空 = 可落; 不写盘, 不查假设)
   Staged stage(Cand c, std::string_view hyp_title);
-  const Result &absorb(const std::string &file, bool ok, const std::string &err, Surface surf, std::string rep);
+  const Result &absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep);
   Adopted adopt(std::string name, const Gate &g, bool dry); // dry = 只查门槛不拷进正式库 (工作台; 自检会话恒不拷)
   void discard(const std::string &file);
 

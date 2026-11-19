@@ -51,27 +51,13 @@ std::string stat_block(const ojson &st) {
   return "{" + head + body + "}";
 }
 
-// search[] 一项 ↔ SearchMark (数值 4 位有效)
+// search[] 一项 ↔ SearchMark
 ojson search_json(const SearchMark &mk) {
   ojson o;
   o["hold"] = mk.hold;
   o["start_date"] = misc::dash(mk.start_date);
   o["end_date"] = misc::dash(mk.end_date);
   o["days"] = mk.days;
-  if (mk.top) {
-    const SearchTop &t = *mk.top;
-    ojson p;
-    p["expr"] = t.expr;
-    p["sign"] = t.sign;
-    p["mono"] = sig4(t.mono);
-    p["ls"] = sig4(t.ls);
-    p["ric"] = sig4(t.ric);
-    p["g"] = sig4(t.g);
-    p["se"] = sig4(t.se);
-    p["mu"] = sig4(t.mu);
-    p["peak"] = t.peak;
-    o["top"] = std::move(p);
-  }
   return o;
 }
 
@@ -86,25 +72,7 @@ bool load_search(const json &o, SearchMark &mk) {
     out = misc::parse_ymd(it->get<std::string>());
     return out != 0;
   };
-  if (!ymd("start_date", mk.start_date) || !ymd("end_date", mk.end_date))
-    return false;
-  const auto tit = o.find("top");
-  if (tit == o.end())
-    return true;
-  if (!tit->is_object())
-    return false;
-  const json &p = *tit;
-  SearchTop t;
-  const auto xit = p.find("expr"), kit = p.find("peak");
-  if (xit == p.end() || !xit->is_string() || kit == p.end() || !kit->is_boolean() || !json_int(p, "sign", t.sign) || (t.sign != 1 && t.sign != -1))
-    return false;
-  if (!json_num(p, "mono", t.mono) || !json_num(p, "ls", t.ls) || !json_num(p, "ric", t.ric) || !json_num(p, "g", t.g) || !json_num(p, "se", t.se) ||
-      !json_num(p, "mu", t.mu))
-    return false;
-  t.expr = xit->get<std::string>();
-  t.peak = kit->get<bool>();
-  mk.top = std::move(t);
-  return true;
+  return ymd("start_date", mk.start_date) && ymd("end_date", mk.end_date);
 }
 
 // 因子文件排版 (给人看, 合法 JSON): 顶层一键一行, 人写的键 (type / name_cn / expr / note / …) 在前, 之后 weights → search → 评估派生
@@ -179,11 +147,12 @@ bool ValidFactorNameCn(std::string_view name) {
   return n <= 10;
 }
 
-factor::search::Score RowScore(const FactorRow &r, int hold) {
+const factor::search::Roll *RowRoll(const FactorRow &r, int hold) {
   const factor::stat::HoldStat *h = r.has_stat ? r.find_hold(hold) : nullptr;
   if (!h)
-    return {};
-  return factor::search::score_of(*h);
+    return nullptr;
+  const factor::search::Roll &x = r.roll_of(*h);
+  return x.ok() ? &x : nullptr;
 }
 
 // ============================================================================
@@ -248,7 +217,7 @@ void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTa
     for (const json &o : *sit)
       if (SearchMark mk; load_search(o, mk) && find_leg(ft.y.labels, mk.hold))
         r.searched.push_back(std::move(mk));
-  // 权重: weights 数组每项一行; 无 weights 时, 模板具体且没搜过 → 手填唯一权重, 否则 "未搜索 / 无显著" 一行
+  // 权重: weights 数组每项一行; 无 weights 时, 模板具体且没搜过 → 手填唯一权重, 否则 "未搜索 / 无权重" 一行
   struct W {
     int hold = 0, sign = 1;
     std::string expr, err;
@@ -279,7 +248,7 @@ void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTa
   } else if (!t.is_template() && r.searched.empty()) {
     ws.push_back(W{0, 1, t.canon, {}});
   }
-  if (ws.empty()) { // 未搜索 / 无显著
+  if (ws.empty()) { // 未搜索 / 无权重
     r.status = RowState::Done;
     emit(r);
     return;

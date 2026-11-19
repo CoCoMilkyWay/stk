@@ -32,7 +32,7 @@ struct Budget {
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Open, all, on)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, years, leaves, ops)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, mono, ric)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, ric)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Budget, rounds, minutes, ktokens)
 
 // ---- 会话目录日志器 (只 GUI 线程写) ----

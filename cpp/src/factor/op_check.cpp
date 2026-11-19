@@ -377,85 +377,89 @@ void check_stat(int A, unsigned seed, Report &rep) {
     std::printf("  ok   %-14s\n", "Stat");
 }
 
-// Search 评估算子 (factor/Search): 参考 = Stat CPU 对每张候选平面的 HoldStat; Search cpu / gpu 各与它比,
-//   再比 分块 (两块带前后带, merge) ≡ 整块. 层 × 两口径 × profile 全扫; 无 GPU 时只跑 cpu 两项
+// Search 评估算子 (factor/Search): 参考 = Stat CPU 对每张候选平面的 HoldStat 与逐行 Tick; Search cpu / gpu 各与它比,
+//   再比 分块 (两块带前后带, merge) ≡ 整块, 分块的 Tick 按绝对行对回参考. 层 × 两口径 × profile 全扫; 无 GPU 时只跑 cpu
 void check_search(int A, unsigned seed, Report &rep) {
   namespace sk = factor::search::check;
   ++rep.ops;
   bool op_bad = false;
   const int threads = misc::exec::hw();
   const Param p;
+  // 一块的输出: Result[kCands] + Tick[kCands][H][rows]
+  struct Blk {
+    int row0 = 0, rows = 0, t_lo = 0, t_hi = 0;
+    factor::search::Result r[sk::kCands];
+    std::vector<factor::search::Tick> tk;
+  };
   for_segs(rep, [&](int S) {
     const int T = rows_of(rep, S);
     for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
       const char *fname = factor::stat::frame_name(fr);
-      char tag[32];
+      char tag[40];
       for (int pi = 0; pi < kProfiles; ++pi) {
         const Profile pr = static_cast<Profile>(pi);
         std::mt19937 rng(seed + 1000u * pi);
         sk::Data d;
         sk::make(d, fr, pr, T, A, S, rng);
         const factor::stat::Holds &hd = d.base.hd;
+        const int H = hd.n;
         const Tol tol = factor::stat::check::tol_of(pr);
         const sk::Split sp = sk::split_of(T, hd, S);
         sk::Ref ref[sk::kCands];
         for (int c = 0; c < sk::kCands; ++c)
           sk::reference(d, c, threads, ref[c]);
-        // 一个后端的两项: 整块 vs 参考; 两块 merge vs 整块
-        const auto judge = [&](const char *side, const factor::search::Result *full, const factor::search::Result *c1,
-                               const factor::search::Result *c2) {
+        const auto blk = [&](int row0, int rows, int t_lo, int t_back) {
+          Blk b{row0, rows, t_lo, rows - t_back, {}, {}};
+          b.tk.resize(static_cast<size_t>(sk::kCands) * H * rows);
+          return b;
+        };
+        // 一个后端: 整块 vs 参考; 两块 merge vs 整块; 三块的 Tick vs 参考
+        const auto judge = [&](const char *side, const Blk &full, const Blk &c1, const Blk &c2) {
           bool bad = false;
-          for (int c = 0; c < sk::kCands; ++c) {
-            std::snprintf(tag, sizeof(tag), "Search.%s.c%d", fname, c);
-            const Diff df = sk::compare(ref[c], full[c], hd, S, tol);
+          const auto put = [&](const char *what, int c, const Diff &df) {
+            std::snprintf(tag, sizeof(tag), "Search.%s.c%d%s", fname, c, what);
             emit(rep, tag, S, p, kProfName[pi], side, df, op_bad);
             bad = bad || !df.ok();
-            factor::search::Result m = c1[c];
-            m.merge(c2[c], hd.n);
+          };
+          for (int c = 0; c < sk::kCands; ++c) {
+            put("", c, sk::compare(ref[c], full.r[c], hd, S, tol));
+            factor::search::Result m = c1.r[c];
+            m.merge(c2.r[c], H);
             sk::Ref rf;
-            sk::to_ref(full[c], hd, S, rf);
-            const Diff dm = sk::compare(rf, m, hd, S, tol);
-            std::snprintf(tag, sizeof(tag), "Search.%s.c%d.chunk", fname, c);
-            emit(rep, tag, S, p, kProfName[pi], side, dm, op_bad);
-            bad = bad || !dm.ok();
+            sk::to_ref(full.r[c], hd, S, rf);
+            put(".chunk", c, sk::compare(rf, m, hd, S, tol));
+            for (const Blk *b : {&full, &c1, &c2})
+              put(b == &full ? ".tick" : ".chunk.tick", c,
+                  sk::compare_ticks(ref[c], b->tk.data() + static_cast<size_t>(c) * H * b->rows, H, T, b->rows, b->row0, b->t_lo, b->t_hi, tol));
           }
           return bad;
         };
         {
-          factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
-          sk::run_cpu(d, threads, 0, T, 0, 0, full);
-          sk::run_cpu(d, threads, 0, sp.e1, 0, sp.e1 - sp.T1, c1);
-          sk::run_cpu(d, threads, sp.s, T - sp.s, sp.t_lo, 0, c2);
+          Blk full = blk(0, T, 0, 0), c1 = blk(0, sp.e1, 0, sp.e1 - sp.T1), c2 = blk(sp.s, T - sp.s, sp.t_lo, 0);
+          for (Blk *b : {&full, &c1, &c2})
+            sk::run_cpu(d, threads, b->row0, b->rows, b->t_lo, b->rows - b->t_hi, b->r, b->tk.data());
           ++rep.cases;
           if (judge("cpu", full, c1, c2))
             ++rep.stream_bad; // cpu 侧失败计在 stream 列 (本节无流式后端)
-          if (rep.verbose)
-            for (int c = 0; c < sk::kCands; ++c)
-              for (int hi = 0; hi < hd.n; ++hi) {
-                const factor::search::Score s = factor::search::score_of(full[c], hd, S, hi);
-                std::printf("       Search.%s cpu S=%-3d c%d %-8s h=%-4d ls %+.5f rIC %+.4f score %+.3g\n", fname, S, c, kProfName[pi], hd.k[hi],
-                            s.ls, s.ric, s.score);
-              }
         }
         if (!factor::gpu::available())
           continue;
         {
-          const int H = hd.n;
           std::vector<factor::stat::Label> lab(static_cast<size_t>(H));
           const float *xv[sk::kCands];
           const uint8_t *xm[sk::kCands];
-          const auto run = [&](int row0, int rows, int t_lo, int t_back, factor::search::Result *out) {
-            const size_t off = static_cast<size_t>(row0) * A;
+          const auto run = [&](Blk &b) {
+            const size_t off = static_cast<size_t>(b.row0) * A;
             for (int i = 0; i < H; ++i)
               lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], d.base.eo, nullptr, off);
             for (int c = 0; c < sk::kCands; ++c)
               xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-            factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, S, row0, t_lo, t_back, hd, d.base.cap, lab.data(), out);
+            factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, b.rows, A, S, b.row0, b.t_lo, b.rows - b.t_hi, hd, d.base.cap,
+                                    lab.data(), b.r, b.tk.data());
           };
-          factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
-          run(0, T, 0, 0, full);
-          run(0, sp.e1, 0, sp.e1 - sp.T1, c1);
-          run(sp.s, T - sp.s, sp.t_lo, 0, c2);
+          Blk full = blk(0, T, 0, 0), c1 = blk(0, sp.e1, 0, sp.e1 - sp.T1), c2 = blk(sp.s, T - sp.s, sp.t_lo, 0);
+          for (Blk *b : {&full, &c1, &c2})
+            run(*b);
           ++rep.cases;
           if (judge("gpu", full, c1, c2))
             ++rep.gpu_bad;

@@ -4,7 +4,8 @@
 // Search 评估算子对拍的公共件: 候选造数 / 参考 (Stat CPU) / 比较 / CPU 驱动 / 分块切法
 // =============================================================================
 //   口径: Search 的语义 = Stat (契约 Search/Contract.hpp), 所以参考不是另一份 Search 实现, 而是 **Stat CPU** 对同一张平面算出的 HoldStat
-//   (Stat 自身已 cpu ↔ gpu 对拍过). Search CPU / Search GPU 各自与它比 (二级 compare_stat 容差), 再比 分块 (两块带前后带, merge) ≡ 整块.
+//   与一级 Row 折成的 Tick (Stat 自身已 cpu ↔ gpu 对拍过). Search CPU / Search GPU 各自与它比 (二级 compare_stat / 逐行 compare_ticks 容差),
+//   再比 分块 (两块带前后带, merge) ≡ 整块; 分块的 Tick 各块按绝对行对回参考.
 //   造数沿用 Stat/Check.hpp 的 make (x / g / 标签), 候选 = 从 x 派生的 kCands 张平面 (CS {x, −x, x²}; TS {x, 1−x, x²}: 都在 [0,1]).
 //   本头只依赖 Contract / Check / Exec / Stat/{Contract,Check,Cpu} / Search/{Contract,Cpu}; 消费者 TU 编进 -fno-fast-math.
 // =============================================================================
@@ -17,6 +18,7 @@
 #include "factor/Stat/Cpu.hpp"
 #include "misc/exec.hpp"
 
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <random>
@@ -69,9 +71,10 @@ inline Split split_of(int T, const factor::stat::Holds &hd, int seg) {
   return sp;
 }
 
-// ---- 参考: 候选 c 走 Stat CPU (HoldStat[H]) ----
+// ---- 参考: 候选 c 走 Stat CPU (HoldStat[H] + 一级 Row 折成的 Tick[H][T]) ----
 struct Ref {
   std::vector<HoldStat> stat; // [H]
+  std::vector<Tick> ticks;    // [H][T] (整张量)
 };
 inline void reference(const Data &d, int c, int threads, Ref &r) {
   factor::stat::check::Data b = d.base;
@@ -79,6 +82,9 @@ inline void reference(const Data &d, int c, int threads, Ref &r) {
   factor::stat::check::Result res;
   factor::stat::check::run_cpu(b, res, threads);
   r.stat = res.stat;
+  r.ticks.resize(res.rows.size());
+  for (size_t i = 0; i < res.rows.size(); ++i)
+    r.ticks[i] = tick_of(res.rows[i]);
 }
 // Search 的 Result → 同形 Ref (finish 各持有期), 给 分块 ≡ 整块 用
 inline void to_ref(const Result &res, const factor::stat::Holds &hd, int seg, Ref &r) {
@@ -93,11 +99,29 @@ inline Diff compare(const Ref &ref, const Result &got, const factor::stat::Holds
   to_ref(got, hd, seg, g);
   return factor::stat::check::compare_stat(ref.stat.data(), g.stat.data(), hd.n, tol);
 }
+// 逐行: 一块的 got[H][rows] 统计行 [t_lo, t_hi) ↔ 参考 Tick 的绝对行 row0 + t (参考整张量 T 行); ok 不符计 mask_bad
+inline Diff compare_ticks(const Ref &ref, const Tick *got, int H, int T, int rows, int row0, int t_lo, int t_hi, Tol tol) {
+  assert(static_cast<int>(ref.ticks.size()) == H * T && row0 + t_hi <= T);
+  Diff d;
+  for (int i = 0; i < H; ++i)
+    for (int t = t_lo; t < t_hi; ++t) {
+      const Tick &a = ref.ticks[static_cast<size_t>(i) * T + row0 + t], &b = got[static_cast<size_t>(i) * rows + t];
+      const int at = i * T + row0 + t;
+      if (a.ok != b.ok) {
+        if (d.mask_bad++ == 0)
+          d.worst_at = at;
+        continue;
+      }
+      factor::stat::check::detail::cmp1(d, a.ric, b.ric, tol, at);
+      factor::stat::check::detail::cmp1(d, a.ls, b.ls, tol, at);
+    }
+  return d;
+}
 
-// ---- CPU 驱动: 块 = 行 [row0, row0 + rows), 统计 [t_lo, rows − t_back) (t0_abs = row0) → out[kCands] ----
+// ---- CPU 驱动: 块 = 行 [row0, row0 + rows), 统计 [t_lo, rows − t_back) (t0_abs = row0) → out[kCands] + ticks[kCands][H][rows] ----
 //   ry 整张量一次预处理 (按行独立, 块取子段指针即可); 候选内 ForkJoin(threads) 切行.
 //   prep_ms / eval_ms 非空 → 回填 预处理 (标签 rank) / 评估 (kCands 张候选) 的 wall 耗时 (与 Stat/Check.hpp run_cpu, gpu::run_search 同口径)
-inline void run_cpu(const Data &d, int threads, int row0, int rows, int t_lo, int t_back, Result *out, double *prep_ms = nullptr,
+inline void run_cpu(const Data &d, int threads, int row0, int rows, int t_lo, int t_back, Result *out, Tick *ticks, double *prep_ms = nullptr,
                     double *eval_ms = nullptr) {
   using Clock = std::chrono::steady_clock;
   const int T = d.base.T, A = d.base.A, H = d.base.hd.n;
@@ -121,7 +145,7 @@ inline void run_cpu(const Data &d, int threads, int row0, int rows, int t_lo, in
   for (int c = 0; c < kCands; ++c)
     B.x[c] = {d.cand[c].v.data() + off, d.cand[c].m.data() + off};
   t0 = Clock::now();
-  factor::cpu::search::run(ex, B, d.base.g.m.data() + off, d.base.frame, s, factor::stat::check::labels_of(d.base, ry, off), rx.data(), w, out);
+  factor::cpu::search::run(ex, B, d.base.g.m.data() + off, d.base.frame, s, factor::stat::check::labels_of(d.base, ry, off), rx.data(), w, out, ticks);
   if (eval_ms)
     *eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }

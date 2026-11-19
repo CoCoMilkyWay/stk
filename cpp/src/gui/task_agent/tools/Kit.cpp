@@ -334,7 +334,7 @@ std::vector<std::string> Feed::grid() {
 std::string Feed::factor() {
   std::vector<const Result *> ok;
   for (const Result &r : tried)
-    if (r.visible && (r.best() || r.top))
+    if (r.visible && r.best())
       ok.push_back(&r);
   if (!ok.empty() && coin(0.8))
     return one(ok)->name;

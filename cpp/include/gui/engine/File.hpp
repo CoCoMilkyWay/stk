@@ -11,9 +11,7 @@
 //         "sign": -1,                                         //   可选, ±1 (缺 = +1): −1 = 取反才是好因子, 按反向评估 (Stat 契约【方向 Dir】)
 //         "expr": "CsRank(TsMeanRoll(TsLog(amt), d=35))" }, … ], //   模板的一个实例 (结构同模板, 固定参数相同, 自由参数落值)
 //     "search": [                                             // 可选: Search 的结局, 每持有期至多一项, 一行一个 (换模板即丢)
-//       { "hold": 30, "start_date", "end_date", "days",       //   评估期 (所用库落盘日交集的最近 N 年)
-//         "top": { "expr", "sign", "mono", "ls", "ric",        //   可选: 无显著时的代表点 (SearchTop), 有终选则无
-//                  "g", "se", "mu", "peak" } }, … ],
+//       { "hold": 30, "start_date", "end_date", "days" }, … ], //   评估期 (所用库落盘日交集的最近 N 年)
 //     —— 以下 Run 写 (评估派生, 换掉 / 清空 weights 时一起删; StatJson scope_json / eval_json) ——
 //     "run": { scope… (含 "years"), "frame", "max_impact", "n_full" }, // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
 //     "hold_cols": [...], "acc_cols": [...],                  // holds / acc 数组的列名 (StatJson), 与代码不符 → 全部 stats 忽略
@@ -21,15 +19,17 @@
 //       { "time", "valid_pct", "rank_pct", "eval_ms",
 //         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径), 载入时显示
 //         "costs": [{amt, acc: [[CostAcc]…]}…],               //   每金额段 (amt 0 = 固定段) × 每持有期换手成本累加器 (年换手 / Inspect 净线从它算)
-//         "ic_pdf": [{lo, hi, y}…], "alpha_pdf": {lo, hi, y} }, … ] } //   可选 (缺 = 因子表小图空): 每持有期逐行 rIC 分布 / alpha 分布 (MiniPdf)
+//         "ic_pdf": [{lo, hi, y}…], "alpha_pdf": {lo, hi, y},  //   每持有期逐行 rIC 分布 / alpha 分布 (MiniPdf; 因子表小图)
+//         "years": [[[年, 行, mono, ls, ric]…]…],             //   每持有期分年
+//         "roll": [[窗长, 窗数, 中位 rIC, 平均 rIC, 中位年化多空, 平均年化多空]…] }, … ] } //   每持有期滚动窗 (中位 rIC = 因子表 score)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   表里一行 = 一个权重 (FactorRow::widx); 模板含自由参数而无 weights → 一行 "未搜索" (不评); 模板本身具体而无 weights → 没搜过则视作唯一权重
-//   (hold 0), 搜过 (有 search) 则同 "搜过无显著" 一行 (不评).
+//   (hold 0), 搜过 (有 search) 则同 "搜过无权重" 一行 (不评).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 回写的文件扫描时已解析过 → 不合即 assert.
 #pragma once
 
-#include "factor/Search/Contract.hpp" // Score (因子表 score / util 与 Search 同一份目标)
+#include "factor/Search/Contract.hpp" // Roll (因子表 score 与 Search 同一份目标)
 #include "gui/engine/Table.hpp"       // FeatureTable / EvalStat / RowState
 
 #include <cstdint>
@@ -45,25 +45,16 @@ enum class FactorKind : uint8_t { Alpha,
                                   Beta };
 inline constexpr const char *kind_name(FactorKind k) { return k == FactorKind::Alpha ? "alpha" : "beta"; }
 
-// 一趟 Search 的结局 (文件 search[] 一项): 评估期 + 无显著时的代表点. 统计已按 sign 定向 (Search/Contract.hpp【方向】)
-struct SearchTop {
-  std::string expr; // 具体规范串 (不含 sign)
-  int sign = 1;
-  double mono = 0.0, ls = 0.0, ric = 0.0;
-  double g = 0.0, se = 0.0; // 定向目标 / 其标准误 (Contract【目标】【噪声】)
-  double mu = 0.0;          // 曲面在它处的后验均值 (过门槛的点才有, 否则 0)
-  bool peak = false;        // 真 = 过门槛的峰, 差在显著 (μ ≤ SE); 假 = 没有峰: 有过门槛的点则取其中 μ 最高的, 否则取 mono 最高的点
-};
+// 一趟 Search 的结局 (文件 search[] 一项): 搜时的评估期
 struct SearchMark {
   int hold = 0;
   misc::Ymd start_date = 0, end_date = 0; // 评估期首末
   int days = 0;
-  std::optional<SearchTop> top; // 无显著且有可用候选才有
 };
 
 // 行身份 (view_file / dup_of): "<file>#<widx>"
 inline std::string row_key(std::string_view file, int widx) { return std::string(file) + "#" + std::to_string(widx); }
-// 一行 = 一个因子文件的一个权重 (weights[widx]); 文件级问题 (BROKEN / 未搜索 / 无显著) 的文件只出一行 widx = −1, 无可评估表达式.
+// 一行 = 一个因子文件的一个权重 (weights[widx]); 文件级问题 (BROKEN / 未搜索 / 无权重) 的文件只出一行 widx = −1, 无可评估表达式.
 // 文件级字段 (file / name_* / expr_raw / tmpl / note / kind) 同文件各行相同
 struct FactorRow : EvalStat {
   std::string file;    // 文件名 (不含目录) = 因子 (父) 身份 (edit_file / Search / 删除)
@@ -88,9 +79,9 @@ struct FactorRow : EvalStat {
   bool stat_from_file = false;         // stat 来自文件 (非本进程算的); EvalStat::eval_ms = time 列
 };
 
-// 因子表的目标分量 (Search/Contract.hpp【目标】, 与 Search 打分同一份 score_of): 该行 stat 在持有期 hold 下的 每期真实毛 LS / rIC / score.
-// 无 stat / stat 无该持有期 / n < 3 → ok = false
-factor::search::Score RowScore(const FactorRow &r, int hold);
+// 因子表的目标 (Search/Contract.hpp【目标】, 与 Search 打分同一份 score_of): 该行 stat 在持有期 hold 下的滚动窗统计 (中位 rIC = score).
+// 无 stat / stat 无该持有期 / 无窗 → nullptr
+const factor::search::Roll *RowRoll(const FactorRow &r, int hold);
 
 // 一个因子文件 → 行 (每权重一行; 文件级问题一行 widx −1) 追加进 out; 解析 / 校验失败 → error (文件不动). 跨行查重 (dup_of) 不在这里.
 // RunService::scan 逐文件调; Portfolio 按 (文件, 具体规范串) 找回条目的权重也走它

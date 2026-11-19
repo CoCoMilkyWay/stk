@@ -14,7 +14,8 @@
 #include "factor/EvalCpu.hpp"
 #include "factor/EvalGpu.hpp"
 #include "factor/GpuRun.hpp"
-#include "factor/Search/Contract.hpp" // Result / hold_reach
+#include "factor/Search/Contract.hpp" // Result / Tick / hold_reach
+#include "factor/Search/Cpu.hpp"      // LandTicks
 #include "factor/Search/Space.hpp"    // lookback
 #include "gui/engine/Probe.hpp"
 #include "misc/exec.hpp"
@@ -95,7 +96,7 @@ inline Bands bands_of(int look, const factor::stat::Holds &hd, int seg) {
 inline bool same_holds(const Holds &a, const Holds &b) { return a.n == b.n && std::equal(a.k, a.k + a.n, b.k); }
 
 template <class Ps>
-inline constexpr bool kBatched = (Ps::need & ~kNeedRanks) == 0;
+inline constexpr bool kBatched = (Ps::need & ~kNeedTicks) == 0;
 
 // ---- 双后端同构: Backend<Cpu> ⇄ Backend<Gpu> ----
 struct Cpu {};
@@ -187,13 +188,15 @@ public:
     std::vector<const factor::check::Plane *>().swap(in_);
     std::vector<uint16_t>().swap(rx_);
     std::vector<uint8_t>().swap(ec_);
+    std::vector<factor::search::Tick>().swap(tk_);
   }
   void release() {
     drop();
     c_ = nullptr, d_ = nullptr;
   }
   double host_bytes() const {
-    double b = static_cast<double>(hp_.bytes()) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) + static_cast<double>(ec_.capacity());
+    double b = static_cast<double>(hp_.bytes()) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) + static_cast<double>(ec_.capacity()) +
+               static_cast<double>(tk_.capacity()) * sizeof(factor::search::Tick);
     for (const factor::check::Arena &a : sc_)
       b += static_cast<double>(a.buf.capacity());
     return b;
@@ -246,16 +249,22 @@ private:
     const factor::stat::Span s = c_->span();
     const factor::check::Plane *rp = plane(i);
     rx_.resize(s.n());
-    if ((need & kNeedRows) != 0 || Ps::cells)
+    const bool ticks = (need & kNeedTicks) != 0;
+    assert(!(ticks && ((need & kNeedRows) != 0 || Ps::cells)) && "逐行 Tick 与一级行不同探");
+    if ((need & kNeedRows) != 0 || Ps::cells) {
       factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, s, cx.L, rx_.data(), w_, acc, ProbeSink<Ps>{&p, cx.d});
-    else
+    } else if (ticks) {
+      tk_.resize(static_cast<size_t>(cx.L.hd.n) * s.T);
+      factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, s, cx.L, rx_.data(), w_, acc, factor::cpu::search::LandTicks{tk_.data(), s.T});
+    } else {
       factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, s, cx.L, rx_.data(), w_, acc, factor::cpu::stat::DropRows{});
+    }
     RootView v;
     v.f = f;
     v.acc = acc;
     v.x = {(need & kNeedX) != 0 ? rp->v.data() : nullptr, (need & kNeedMask) != 0 ? rp->m.data() : nullptr};
     v.rx = (need & kNeedRx) != 0 ? rx_.data() : nullptr;
-    v.ranks = Ranks{this, 0, &ranks_of};
+    v.ticks = ticks ? tk_.data() : nullptr;
     if ((need & kNeedEc) != 0) {
       ec_.resize(s.n());
       factor::cpu::stat::end_codes(ex_, rx_.data(), s, cx.d, ec_.data());
@@ -267,12 +276,6 @@ private:
     }
     return v;
   }
-  static void ranks_of(void *src, int, int t0, int stride, int n_rows, uint16_t *out) {
-    const Backend &e = *static_cast<const Backend *>(src);
-    const size_t A = static_cast<size_t>(e.c_->y.sh.A);
-    for (int r = 0; r < n_rows; ++r)
-      std::copy_n(e.rx_.data() + static_cast<size_t>(t0 + r * stride) * A, A, out + static_cast<size_t>(r) * A);
-  }
 
   std::vector<const factor::check::Plane *> in_;
   factor::cpu::HostPool hp_;
@@ -280,6 +283,7 @@ private:
   factor::cpu::stat::Workspace w_;
   std::vector<uint16_t> rx_;
   std::vector<uint8_t> ec_;
+  std::vector<factor::search::Tick> tk_; // [H][T] 逐行 Tick (kNeedTicks)
 };
 
 template <>
@@ -331,6 +335,7 @@ public:
   void drop() {
     w_ = factor::cpu::stat::Workspace{};
     std::vector<factor::search::Result>().swap(out_);
+    std::vector<factor::search::Tick>().swap(tk_);
     std::vector<factor::stat::Row>().swap(rows_);
     std::vector<uint16_t>().swap(rx_);
     std::vector<uint8_t>().swap(ec_);
@@ -347,7 +352,7 @@ public:
   double host_bytes() const {
     return static_cast<double>(rows_.capacity()) * sizeof(factor::stat::Row) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) +
            static_cast<double>(ec_.capacity()) + static_cast<double>(xv_.capacity() + av_.capacity()) * sizeof(float) +
-           static_cast<double>(mask_.capacity() + am_.capacity());
+           static_cast<double>(mask_.capacity() + am_.capacity()) + static_cast<double>(tk_.capacity()) * sizeof(factor::search::Tick);
   }
   double vram_bytes() const {
     if (!sess_)
@@ -518,7 +523,8 @@ private:
       }
       const factor::stat::Span s = c_->span();
       out_.assign(ks.size(), {});
-      factor::gpu::search_eval(search_, roots.data(), static_cast<int>(ks.size()), gate_, f, s.t0_abs, s.t_lo, s.t_back, out_.data());
+      tk_.resize(ks.size() * static_cast<size_t>(c_->y.hd.n) * s.T);
+      factor::gpu::search_eval(search_, roots.data(), static_cast<int>(ks.size()), gate_, f, s.t0_abs, s.t_lo, s.t_back, out_.data(), tk_.data());
       return nullptr;
     }
   }
@@ -530,7 +536,7 @@ private:
       RootView v;
       v.f = F.r[static_cast<size_t>(k)].f;
       v.acc = acc;
-      v.ranks = Ranks{search_, j, &ranks_of};
+      v.ticks = tk_.data() + static_cast<size_t>(j) * cx.L.hd.n * c_->span().T;
       return v;
     } else {
       return stat_root(F, k, cx, need, p, acc);
@@ -538,7 +544,7 @@ private:
   }
   template <class Ps>
   RootView stat_root(const Forest &F, int k, const Ctx &cx, uint8_t need, Ps &p, factor::stat::Accum *acc) {
-    static_assert(!Ps::cells && (Ps::need & kNeedRanks) == 0, "逐格扩展只 CPU; 抽样行只批核");
+    static_assert(!Ps::cells && (Ps::need & kNeedTicks) == 0, "逐格扩展只 CPU; 逐行 Tick 只批核");
     RootView v;
     v.f = F.r[static_cast<size_t>(k)].f;
     v.acc = acc;
@@ -633,9 +639,6 @@ private:
       sr_gen_ = c_->gen;
     }
   }
-  static void ranks_of(void *src, int k, int t0, int stride, int n_rows, uint16_t *out) {
-    factor::gpu::search_ranks(static_cast<factor::gpu::SearchSession *>(src), k, t0, stride, n_rows, out);
-  }
 
   size_t n_ = 0;
   uint64_t x_gen_ = 0, x_tick_ = 0;
@@ -658,6 +661,7 @@ private:
   uint64_t sr_gen_ = 0;
 
   std::vector<factor::search::Result> out_;
+  std::vector<factor::search::Tick> tk_; // [C][H][T] 批核的逐行 Tick
   factor::cpu::stat::Workspace w_;
   std::vector<factor::stat::Row> rows_;
   std::vector<uint16_t> rx_;

@@ -9,16 +9,15 @@ using namespace ui;
 
 void TriedRes::draw() const {
   heading("已试候选 " + std::to_string(all) + " 个 · 这里第 " + std::to_string(skip + 1) + " 个起 " + std::to_string(rows.size()) + " 个");
-  if (rows.empty() || !begin_table("##tried", {"名", "中文", "结局", "mono", "多空 bp", "rIC", "score", "门槛", "模板"}, 0.0f))
+  if (rows.empty() || !begin_table("##tried", {"名", "中文", "结局", "中位 rIC", "rIC", "mono", "多空 bp", "门槛", "模板"}, 0.0f))
     return;
   for (const Result &r : rows) {
     const Weight *w = r.best();
-    const Stat *st = w ? &w->st : r.top ? &r.top->st
-                                        : nullptr;
     ImGui::TableNextRow();
     cell(r.name), cell(r.name_cn), cell(def(r.verdict).cn);
     tip_long(Detail(r));
-    cell_num(st ? st->mono : NAN, "%.3f", true), cell_num(st ? st->ls * 1e4 : NAN, "%+.2f", true), cell_num(st ? st->ric : NAN, "%.4f", true), cell_num(w ? w->score : NAN, "%.3g");
+    cell_num(w ? w->roll.ric_med : NAN, "%.4f", true), cell_num(w ? w->st.ric : NAN, "%.4f", true), cell_num(w ? w->st.mono : NAN, "%.3f", true),
+        cell_num(w ? w->st.ls * 1e4 : NAN, "%+.2f", true);
     ImGui::TableNextColumn();
     if (r.verdict == Verdict::Weights) {
       const std::string miss = GateMiss(gate, r);

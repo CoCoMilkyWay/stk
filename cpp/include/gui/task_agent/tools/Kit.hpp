@@ -196,7 +196,7 @@ struct Feed {
   std::string leaf();                                       // 开放的叶
   std::vector<std::string> leaves(int n);                   // 至多 n 个互不相同的开放的叶
   std::vector<std::string> grid();                          // 开放的本层叶 (因子须含本层的叶)
-  std::string factor();                                     // 可见且有权重 / 代表点的候选名; 没有就拿开放的本层叶套开放的归一根
+  std::string factor();                                     // 可见且有权重的候选名; 没有就拿开放的本层叶套开放的归一根
   std::string day();                                        // 评估期内的交易日 YYYY-MM-DD
   std::pair<std::string, std::string> span(int lo, int hi); // 评估期内连续 lo..hi 个交易日的首末日
   std::string code();                                       // 池内代码

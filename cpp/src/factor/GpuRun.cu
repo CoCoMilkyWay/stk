@@ -530,7 +530,7 @@ void run_stat(factor::stat::Plane x, const uint8_t *gm, factor::stat::Frame f, i
   xv.free_(), xm.free_(), g.free_();
 }
 
-// Search 会话: 一块的标签 + Cmax 候选的 rx 工作区 + 分片 / 结果, open 时全部分配; load 只拷入 + 预处理
+// Search 会话: 一块的标签 + Cmax 候选的 rx 工作区 + 分片 / 结果 / 逐行 Tick, open 时全部分配; load 只拷入 + 预处理
 struct SearchSession {
   int T = 0, A = 0, seg = 0, Cmax = 0;
   factor::stat::Holds hd;
@@ -539,6 +539,7 @@ struct SearchSession {
   DevBuf<uint16_t> rx;
   DevBuf<search::Slice> part;
   DevBuf<factor::search::Result> out;
+  DevBuf<factor::search::Tick> ticks;
   bool loaded = false;
   Timer tm;
 };
@@ -554,6 +555,7 @@ SearchSession *search_open(int T, int A, int seg, int Cmax, const factor::stat::
   s->rx.alloc(w.rx_elems());
   s->part.zalloc(w.part_elems());
   s->out.zalloc(w.out_elems());
+  s->ticks.zalloc(w.tick_elems());
   return s;
 }
 
@@ -571,8 +573,8 @@ void search_load(SearchSession *s, const factor::stat::Label *lab, double *prep_
 }
 
 void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, int t0_abs, int t_lo, int t_back,
-                 factor::search::Result *out, double *eval_ms) {
-  assert(s && s->loaded && x && C >= 1 && C <= s->Cmax && g && g->m && out);
+                 factor::search::Result *out, factor::search::Tick *ticks, double *eval_ms) {
+  assert(s && s->loaded && x && C >= 1 && C <= s->Cmax && g && g->m && out && ticks);
   stat::Batch B;
   B.C = C;
   for (int c = 0; c < C; ++c) {
@@ -582,35 +584,27 @@ void search_eval(SearchSession *s, const DevPlane *const *x, int C, const DevPla
   const search::Work w = search::plan(C, s->T, s->A, s->seg, s->hd.n, t_lo, t_back);
   if (eval_ms)
     s->tm.begin();
-  search::eval(B, g->m, f, w, t0_abs, s->lab.L, s->rx.p, s->part.p, s->out.p, nullptr);
+  search::eval(B, g->m, f, w, t0_abs, s->lab.L, s->rx.p, s->part.p, s->out.p, s->ticks.p, nullptr);
   if (eval_ms)
     *eval_ms = s->tm.end();
-  s->out.down(out, w.out_elems()); // D2H 自带同步; Result 是 POD, 设备格式 = 宿主格式
-}
-
-void search_ranks(SearchSession *s, int c, int t0, int stride, int n_rows, uint16_t *out) {
-  assert(s && s->loaded && c >= 0 && c < s->Cmax && t0 >= 0 && stride >= 1 && n_rows >= 1 && out);
-  assert(t0 + static_cast<long long>(n_rows - 1) * stride < s->T && "抽样行越界");
-  const size_t A = static_cast<size_t>(s->A);
-  const uint16_t *src = s->rx.p + (static_cast<size_t>(c) * s->T + static_cast<size_t>(t0)) * A;
-  CU(cudaMemcpy2D(out, A * sizeof(uint16_t), src, static_cast<size_t>(stride) * A * sizeof(uint16_t), A * sizeof(uint16_t),
-                  static_cast<size_t>(n_rows), cudaMemcpyDeviceToHost));
+  s->out.down(out, w.out_elems()); // D2H 自带同步; Result / Tick 是 POD, 设备格式 = 宿主格式
+  s->ticks.down(ticks, w.tick_elems());
 }
 
 void search_close(SearchSession *s) {
   assert(s);
-  s->out.free_(), s->part.free_(), s->rx.free_();
+  s->ticks.free_(), s->out.free_(), s->part.free_(), s->rx.free_();
   s->lab.free_();
   delete s;
 }
 
 size_t search_bytes(const SearchSession *s) {
-  return s ? s->lab.bytes() + s->rx.bytes() + s->part.bytes() + s->out.bytes() : 0;
+  return s ? s->lab.bytes() + s->rx.bytes() + s->part.bytes() + s->out.bytes() + s->ticks.bytes() : 0;
 }
 
 void run_search(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, int T, int A, int seg,
                 int t0_abs, int t_lo, int t_back, const factor::stat::Holds &hd, double cap, const factor::stat::Label *lab, factor::search::Result *out,
-                double *prep_ms, double *eval_ms) {
+                factor::search::Tick *ticks, double *prep_ms, double *eval_ms) {
   assert(C >= 1 && C <= stat::kMaxBatch && xv && xm && gm);
   const size_t n = static_cast<size_t>(T) * A;
   std::vector<DevBuf<float>> x(static_cast<size_t>(C));
@@ -627,7 +621,7 @@ void run_search(int C, const float *const *xv, const uint8_t *const *xm, const u
   const DevPlane gp{nullptr, g.p};
   SearchSession *s = search_open(T, A, seg, C, hd, cap);
   search_load(s, lab, prep_ms);
-  search_eval(s, xpp.data(), C, &gp, f, t0_abs, t_lo, t_back, out, eval_ms);
+  search_eval(s, xpp.data(), C, &gp, f, t0_abs, t_lo, t_back, out, ticks, eval_ms);
   search_close(s);
   for (int c = 0; c < C; ++c)
     x[static_cast<size_t>(c)].free_(), m[static_cast<size_t>(c)].free_();

@@ -314,36 +314,22 @@ void SavePrompt(Msg m, const std::string &text) { disk::write(disk::PromptFile, 
 
 std::string Text(const Stat &s) {
   char b[128];
-  std::snprintf(b, sizeof(b), "mono %.3f · 每期毛多空 %.2fbp · rIC %.4f", s.mono, s.ls * 1e4, s.ric);
+  std::snprintf(b, sizeof(b), "全期 rIC %.4f · mono %.3f · 每期毛多空 %.2fbp", s.ric, s.mono, s.ls * 1e4);
   return b;
 }
 
-namespace {
-std::string score_se_text(double g, double se) {
-  char b[64];
-  std::snprintf(b, sizeof(b), "%.3g ± %.2g (t %.1f)", g, se, se > 0.0 ? g / se : 0.0);
+std::string Text(const Roll &r) {
+  char b[160];
+  std::snprintf(b, sizeof(b), "中位 rIC %.4f (平均 %.4f; %d 个 %d 日窗) · 年化毛多空 中位 %+.1f%%", r.ric_med, r.ric_mean, r.n, r.win, r.ann_med * 100.0);
   return b;
 }
-} // namespace
 
 std::string Text(const Weight &w) {
   if (!w.has)
     return "无该持有期统计";
-  char b[48], t[96];
-  std::snprintf(b, sizeof(b), " · 有效率 %.0f%%", w.valid * 100.0);
-  std::snprintf(t, sizeof(t), " · 年换手 %.0f 倍 · 隔一期秩自相关 %.3f", w.turn, w.rac);
-  return Text(w.st) + " · score " + (std::isfinite(w.score) ? score_se_text(w.score, w.se) : std::string("不过门槛")) + b + t + (w.sign < 0 ? " · 取反" : "");
-}
-
-std::string Text(const Top &t) {
-  char b[96];
-  std::snprintf(b, sizeof(b), " · 目标 %.3g ± %.2g", t.g, t.se);
-  std::string s = Text(t.st) + b;
-  if (t.rep != Rep::Mono) {
-    std::snprintf(b, sizeof(b), " · 曲面估计 %.3g", t.mu);
-    s += b;
-  }
-  return s + (t.sign < 0 ? " · 取反" : "");
+  char t[128];
+  std::snprintf(t, sizeof(t), " · 有效率 %.0f%% · 年换手 %.0f 倍 · 隔一期秩自相关 %.3f", w.valid * 100.0, w.turn, w.rac);
+  return Text(w.roll) + " · " + Text(w.st) + t + (w.sign < 0 ? " · 取反" : "");
 }
 
 std::string Brief(const Result &r) {
@@ -354,7 +340,6 @@ std::string Brief(const Result &r) {
   case Verdict::Weights:
     return std::to_string(r.ws.size()) + " 个权重, 最佳 " + Text(*r.best());
   case Verdict::Null:
-    return r.top ? std::string(def(r.verdict).cn) + " (" + r.top->miss + "), 代表点 " + Text(*r.top) : std::string(def(r.verdict).cn);
   case Verdict::Pending:
     return def(r.verdict).cn;
   }
@@ -375,8 +360,7 @@ std::string Detail(const Result &r) {
     return s;
   }
   case Verdict::Null:
-    return r.top ? "- Search 无显著权重, 落选原因: " + r.top->miss + "\n- 代表点 (" + def(r.top->rep).cn + ") " + Fills(r.tmpl, r.top->expr) + ": " + Text(*r.top) + "\n"
-                 : std::string("- Search 无显著权重 (没有一个点算得出该持有期统计)\n");
+    return "- Search 无权重 (没有一个参数点算得出该持有期的滚动窗 rIC)\n";
   case Verdict::Pending:
     return "- " + std::string(def(r.verdict).cn) + "\n";
   }
@@ -410,10 +394,9 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask) {
                             {"hold_desc", c.hold_desc},
                             {"window", "最近 " + std::to_string(c.years) + " 年, " + c.window},
                             {"srcs", c.srcs},
-                            {"search_mono", num(c.min_mono)},
+                            {"roll_parts", std::to_string(c.roll_parts)},
                             {"ts_root_d", std::to_string(c.ts_root_d)},
                             {"max_d", std::to_string(c.max_d)},
-                            {"gate_mono", num(g.mono)},
                             {"gate_ric", num(g.ric)},
                             {"ask", ask ? "可以用 ask_human 向研究员提一次问 (整个会话只一次)" : "研究员不参与决策, 没有 ask_human; 疑问写 report_issue"},
                             {"tools", ToolsDoc(ask)},

@@ -9,7 +9,7 @@
 namespace factor::search {
 
 // ---- 持有期 (Contract【目标】) ----
-// 可搜集合 (持有期键, 按时间序列出全部标签组, 注释掉 = 不搜); 层上合法另看 hold_ok. 分钟型 ≥ 30m = 不看成本的前提 (换手 ≈ 100%)
+// 可搜集合 (持有期键, 按时间序列出全部标签组, 注释掉 = 不搜); 层上合法另看 hold_ok
 inline constexpr int kSearchHolds[] = {
     // 1,                           // 1m
     // 5,                           // 5m
@@ -24,11 +24,11 @@ inline constexpr int kSearchHolds[] = {
                                  // factor::stat::hold_close(3), // T+3C
 };
 
-// ---- 硬门槛 (Contract【目标】) ----
-inline constexpr double kMinMono = 0.95; // 分层单调性 mono (定向后) 下限: 分层不清的因子没有分析价值
+// ---- 目标 (Contract【目标】) ----
+inline constexpr int kRollParts = 10; // 滚动窗长 = 评估期交易日数 / kRollParts (10 年 → 1 年窗)
 
 // ---- 预算 ----
-inline constexpr int kInit = 64;       // 第 0 趟采样点数 (Space【采样】; 唯一的预算量, 整数槽取整去重后可能更少)
-inline constexpr int kCorrRows = 1024; // r16 抽样行数 (Contract【多权重】; 整个作用域上均匀; 截面相关 + 阈值槽分位表)
+inline constexpr int kInit = 64;       // 采样点数 (Space【采样】; 唯一的预算量, 整数槽取整去重后可能更少)
+inline constexpr int kQtabRows = 1024; // 阈值槽分位表的抽样行数 (整个作用域上均匀)
 
 } // namespace factor::search

@@ -77,14 +77,13 @@ SearchSession *search_open(int, int, int, int, const factor::stat::Holds &, doub
 }
 void search_load(SearchSession *, const factor::stat::Label *, double *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
 void search_eval(SearchSession *, const DevPlane *const *, int, const DevPlane *, factor::stat::Frame, int, int, int, factor::search::Result *,
-                 double *) {
+                 factor::search::Tick *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
-void search_ranks(SearchSession *, int, int, int, int, uint16_t *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
 void search_close(SearchSession *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
 size_t search_bytes(const SearchSession *) { return 0; }
 void run_search(int, const float *const *, const uint8_t *const *, const uint8_t *, factor::stat::Frame, int, int, int, int, int, int,
-                const factor::stat::Holds &, double, const factor::stat::Label *, factor::search::Result *, double *, double *) {
+                const factor::stat::Holds &, double, const factor::stat::Label *, factor::search::Result *, factor::search::Tick *, double *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
 

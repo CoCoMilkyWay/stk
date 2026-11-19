@@ -29,8 +29,8 @@ void SavePrompt(Msg m, const std::string &text);
 
 // ---- 结局与工具成文 ----
 std::string Text(const Stat &s);
+std::string Text(const Roll &r);
 std::string Text(const Weight &w);
-std::string Text(const Top &t);
 std::string Brief(const Result &r);
 std::string Detail(const Result &r);
 

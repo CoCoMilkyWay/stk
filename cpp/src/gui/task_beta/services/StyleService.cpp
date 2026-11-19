@@ -2,11 +2,11 @@
 
 #include "features/Storage/FeatureLib.hpp"
 #include "misc/date.hpp"
+#include "misc/median.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <functional>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -19,29 +19,6 @@ namespace GUI::Beta {
 namespace {
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-
-// 累计中位: 逐个 push, 随时取中位 (偶数个取中间两个的均值)
-class RunMedian {
-  std::vector<float> lo_, hi_; // 较小一半 (大顶堆) / 较大一半 (小顶堆); |lo| − |hi| ∈ {0, 1}
-
-public:
-  void push(float x) {
-    if (lo_.empty() || x <= lo_.front())
-      lo_.push_back(x), std::ranges::push_heap(lo_);
-    else
-      hi_.push_back(x), std::ranges::push_heap(hi_, std::greater{});
-    if (lo_.size() > hi_.size() + 1) {
-      std::ranges::pop_heap(lo_);
-      hi_.push_back(lo_.back()), lo_.pop_back();
-      std::ranges::push_heap(hi_, std::greater{});
-    } else if (hi_.size() > lo_.size()) {
-      std::ranges::pop_heap(hi_, std::greater{});
-      lo_.push_back(hi_.back()), hi_.pop_back();
-      std::ranges::push_heap(lo_);
-    }
-  }
-  float mid() const { return lo_.size() > hi_.size() ? lo_.front() : 0.5f * (lo_.front() + hi_.front()); }
-};
 
 // 日收益 r / 日增仓量 buy (首个有仓日 first) 在区间 [d0, d1) 内: 各满一年的滚动窗的年化 / 夏普 → 平均 / 中位 + 累计中位夏普; 整段回撤 / 换手.
 // 年化在对数空间平均 / 取中位再换回简单收益; 窗内各和 = 前缀和之差; 一年前的边界随收尾日单调右移
@@ -64,7 +41,7 @@ void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<floa
     b += buy[d];
   }
   l.stat.mdd = static_cast<float>(mdd), l.stat.turn = static_cast<float>(b / years(f - 1, d1 - 1));
-  RunMedian ann_m, shp_m; // 年化 = 对数年化
+  misc::RunMedian<float> ann_m, shp_m; // 年化 = 对数年化
   double ann_s = 0.0, shp_s = 0.0;
   size_t ys = 0; // 首个晚于 dates[t] 前推一年的日 = 窗起
   for (size_t t = f; t < d1; ++t) {

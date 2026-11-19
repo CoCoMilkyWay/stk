@@ -265,7 +265,7 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   ImGui::TextColored(kColHead, "工作台:");
   ImGui::SameLine();
   const std::string at = b.loaded ? "快照 = " + stamp_text(b.loaded->at.stamp) + (b.loaded->at.test ? " 自检" : "") + " 会话 " + RefText(b.loaded->at.at) + " 之前" : "空白";
-  ImGui::TextDisabled("第 %d 轮 · %s · 假设 %zu · 门槛 mono ≥ %.2f, rIC ≥ %.3f (Config 页)", b.round(), at.c_str(), b.st.board.all().size(), gate.mono, gate.ric);
+  ImGui::TextDisabled("第 %d 轮 · %s · 假设 %zu · 门槛 中位 rIC ≥ %.3f (Config 页)", b.round(), at.c_str(), b.st.board.all().size(), gate.ric);
   tip(("作用域 = Mine 页的 " + catalog::label(sc) + " · 评估期 " + ctx.window +
        "\n会话类工具 (假设 / 判定 / 回测挂假设 / 提交 / 记录) 跑在快照上: 输入栏载入日志里的一次调用, 就取那段会话在它之前的时间线 (前几轮 + 本轮它之前的调用) 折出假设板,\n"
        "工作台接着那一轮往下编号 (Run 的调用编号与日志里的相同, 可作 judge 的证据); 只在内存, 不落盘")
