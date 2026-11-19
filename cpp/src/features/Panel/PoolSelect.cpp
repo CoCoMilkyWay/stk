@@ -353,6 +353,8 @@ std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel, 
   auto &[mu, cur] = shelf.get();
   const std::lock_guard<std::mutex> lock(mu);
   std::vector<misc::Ymd> rows = landed(lib);
+  if (rows.empty()) // 库已判废删除 (调用方持的是删前的清单): 同 stale 收工, 调用方下趟按新库再来
+    return nullptr;
   const bool keep = cur && cur->axis.hash == lib.axis.hash && extends(cur->dates, rows);
   if (keep && cur->days() == rows.size())
     return cur;

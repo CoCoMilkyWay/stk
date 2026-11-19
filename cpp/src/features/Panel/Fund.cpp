@@ -2362,7 +2362,8 @@ std::vector<std::uint8_t> univ_mask(const Data &data) {
 //   最低档线 L   = 窗内键加权 kHistLo 分位处的 v (估值口 = 最便宜档, 质量口 = 最差档);
 //                 估值口换成价格线 P^adj · v / L (VAL 主图最下一条 band; L ≤ 0 → 无, v ≤ 0 照算 = 价格线落到 ≤ 0), 质量口 = L 本身
 //   <口>_lo_curv = (日 − 3 自然年, 日] 内最低档线对时间 t (年) 的 OLS 二次拟合 y = a + b t + c t² 的 2c (年⁻²);
-//                 估值口 y 除以窗内均值 (均值 ≤ 0 → NaN), 质量口原值 (百分点); 当日无线 / 窗内首点距今不满 1 年 / 点数 < kCurvMin → NaN.
+//                 估值口 y 除以窗内 (有线日) 后复权价均值 (价恒正: 线穿 0 照常; 量纲 = 均价的倍数, 跨股可比), 质量口原值 (百分点);
+//                 当日无线 / 窗内首点距今不满 1 年 / 点数 < kCurvMin → NaN.
 //                 < 0 = 底部拐头向下 (基本面预期转弱), > 0 = 拐头向上
 //   遍: per-A 并行: 状态机沿全 D 轴出七口 v → 各口有序窗 (逐日二分插入 / 出窗删除) 出分位与最低档线 → 前缀和出各日曲度;
 //       一律全史算 (前缀和原点 = 首个有线日, 与切片无关) ⇒ 续算 ≡ 全量
@@ -2371,7 +2372,7 @@ constexpr int kHistYears = 5, kCurvYears = 3, kHistReady = 1; // 分位 / 最低
 constexpr double kHistLo = 0.05;                              // 最低档 = VAL band 首档 (kBandQs[0])
 constexpr double kHistK = 10.0;                               // 窗尾降权速率 (VAL kRollK)
 constexpr int kCurvMin = 120;                                 // 曲度最少点数
-constexpr int kCurvAcc = 8;                                   // 前缀和: n | Σ t | Σ t² | Σ t³ | Σ t⁴ | Σ y | Σ t y | Σ t² y
+constexpr int kCurvAcc = 9;                                   // 前缀和: n | Σ t | Σ t² | Σ t³ | Σ t⁴ | Σ y | Σ t y | Σ t² y | Σ P^adj (估值口)
 
 Hist build_hist(const Data &data, int g0) {
   const Axes &axes = data.axes;
@@ -2498,7 +2499,7 @@ Hist build_hist(const Data &data, int g0) {
             continue;
           }
           const double t = (dd[sz(d)] - o) / 365.25, t2 = t * t;
-          const double r[kCurvAcc] = {1.0, t, t2, t2 * t, t2 * t2, y, t * y, t2 * y};
+          const double r[kCurvAcc] = {1.0, t, t2, t2 * t, t2 * t2, y, t * y, t2 * y, up ? 0.0 : px[sz(d)]};
           for (int j = 0; j < kCurvAcc; ++j)
             q1[j] = q0[j] + r[j];
         }
@@ -2521,8 +2522,8 @@ Hist build_hist(const Data &data, int g0) {
           const double det = n * (m2 * m4 - m3 * m3) - m2 * m2 * m2;
           if (!(det > 0.0))
             continue;
-          const double q = (n * (m2 * y2 - m3 * y1) - y0 * m2 * m2) / det, mean = y0 / n;
-          put(h.curv[k], a, d, up ? 2.0 * q : (mean > 0.0 ? 2.0 * q / mean : NaND));
+          const double q = (n * (m2 * y2 - m3 * y1) - y0 * m2 * m2) / det;
+          put(h.curv[k], a, d, up ? 2.0 * q : 2.0 * q / (S[8] / n));
         }
       }
     }

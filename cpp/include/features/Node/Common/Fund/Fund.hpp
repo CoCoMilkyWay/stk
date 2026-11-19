@@ -103,7 +103,7 @@ public:
     dy_pct5y,   // [%] DY 的贵度 (高 = 股息率低)
     roe_pct5y,  // [%] ROE 本身 (高 = ROE 高)
     roa_pct5y,  // [%] ROA 本身
-    pe_lo_curv, // [年⁻²] 5 年最低档 band 近 3 年二次拟合曲度 (估值口: 价格线 / 窗内均值; 质量口: 百分点)
+    pe_lo_curv, // [年⁻²] 5 年最低档 band 近 3 年二次拟合曲度 (估值口: 价格线 / 窗内后复权价均值; 质量口: 百分点)
     pb_lo_curv,
     ps_lo_curv,
     pcf_lo_curv,

@@ -17,7 +17,7 @@
 #define FUND_ROWS_HIST(X, CAT1, item, EN, CN, KEY, BAND, SYM)                                                                                                                                 \
   X(item##_pct5y, CAT1, AUTO, EN " Pct 5Y", CN "5年分位", "近5年(自然年,窗尾降权)" KEY "的加权分位(0~100; 史不满1年→NaN)", R"(\mathrm{pctl}_{5y}()" SYM R"())", TS(Fund, item##_pct5y, None)) \
   X(item##_lo_curv, CAT1, AUTO, EN " Low Band Curv", CN "底档曲度", BAND "近3年对时间(年)二次OLS的2c(年^-2; <0=拐头向下)", R"(2c:\ L^{lo}_{t}()" SYM R"() = a + bt + ct^2)", TS(Fund, item##_lo_curv, None))
-#define FUND_BAND_VAL "5年最低档band价格线(后复权价×收益率/窗内贵度0.05加权分位的收益率)/窗内均值, "
+#define FUND_BAND_VAL "5年最低档band价格线(后复权价×收益率/窗内贵度0.05加权分位的收益率)/窗内后复权价均值, "
 #define FUND_BAND_QUA "5年最低档band(窗内0.05加权分位, 百分点), "
 // 资产负债表 MRQ 单行
 #define FUND_ROW_BS(X, CAT1, item, EN, CN, DESC, SYM) \

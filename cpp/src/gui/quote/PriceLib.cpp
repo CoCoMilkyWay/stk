@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <string>
 #include <system_error>
@@ -470,6 +471,21 @@ struct LibWork {
   Lane lane;
 };
 
+// 库段一批的件 (两份轮用: 整块的收尾与下一块的合成并行): 批首日 + 日根行 [批内日 + 1] (首项 = 批首日的前一日) + 篮子件 [批内日];
+//   整块另有 行表 / 日根 / 带分钟根 [日][行] / 个股块的定位写
+struct LibBlock {
+  size_t i0 = 0;
+  std::vector<Row> rws = std::vector<Row>(kB + 1);
+  std::vector<DayBuild> bb;
+  SegHead h{};
+  std::vector<RowAt> rs;
+  std::vector<DayRec> recs;
+  std::vector<uint8_t> has;
+  std::optional<SegAt> out;
+  size_t at_rec() const { return sizeof(SegHead) + rs.size() * sizeof(RowAt); }
+  size_t at_min() const { return at_rec() + recs.size() * sizeof(DayRec); }
+};
+
 // 个股补段一日的件 (逐批复用): 源的读 (基本面段 = bar1m, 新浪段 = 归档的日根 / 分钟根 [全局 id]) + 一日的件
 struct TailWork {
   Bar1mDay bd;
@@ -725,112 +741,140 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
 bool PriceLib::lib_pass(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, const pool::Picks *pk) {
   FeatureRead rd(lib, &quit_);
   const PoolAxis &ax = lib.axis;
-  const size_t A = ax.size(), N = dates.size(), T = static_cast<size_t>(pool_.threads());
+  const size_t A = ax.size(), N = dates.size(), T = static_cast<size_t>(pool_.threads()), NB = pk ? rows(kBasket) : 0;
   assert(lib_days_ >= 1 && dates_.size() == lib_days_ && (!pk || bdays_ == lib_days_));
   std::vector<std::unique_ptr<LibWork>> works;
   for (size_t t = 0; t < T; ++t)
-    works.push_back(std::make_unique<LibWork>(A, pk ? rows(kBasket) : 0));
-  std::vector<Row> rws(kB + 1);                 // [批内日 + 1] 日根行 (首项 = 批首日的前一日)
-  std::vector<DayBuild> sb(T), bb(pk ? kB : 0); // [批内日] 个股件 (单日段) / 篮子件
-  // 批内第 k 日 (线程 t): 读分钟 → 个股件 b; 同趟 → 篮子件 bb[k]
-  const auto day = [&](size_t i0, size_t k, int t, DayBuild &b) {
+    works.push_back(std::make_unique<LibWork>(A, NB));
+  std::vector<DayBuild> sb(T); // [批内日] 个股件 (单日段)
+  std::array<LibBlock, 2> blk;
+  for (LibBlock &x : blk)
+    x.bb.resize(pk ? kB : 0);
+  std::vector<uint32_t> bkeys(NB); // 篮子块的行 = 全部篮子
+  std::iota(bkeys.begin(), bkeys.end(), 0u);
+  // 批 x 内第 k 日 (线程 t): 读分钟 → 个股件 b; 同趟 → 篮子件 x.bb[k]
+  const auto day = [&](LibBlock &x, size_t k, int t, DayBuild &b) {
     LibWork &w = *works[static_cast<size_t>(t)];
-    const misc::Ymd d = dates[i0 + k];
+    const misc::Ymd d = dates[x.i0 + k];
     read_minutes(rd, d, w.mc);
     b.clear();
-    b.put_stocks(LibDay{d, ax, rws[k], rws[k + 1], w.mc});
+    b.put_stocks(LibDay{d, ax, x.rws[k], x.rws[k + 1], w.mc});
     if (pk) {
       members(*pk, d, w.lane.mem, true);
       w.lane.run(BuildDay{d, b});
-      bb[k].clear();
-      bb[k].put_baskets(w.lane.day);
+      x.bb[k].clear();
+      x.bb[k].put_baskets(w.lane.day);
     }
     publish(pk ? 2 : 1);
+  };
+  // 整块 x 收尾: 逐行过链 (行内即日序), 补分钟位图, 写行表 + 日根后换上; 同趟 → 篮子件按日序过链, 直写成块
+  const auto finish = [&](LibBlock &x) {
+    assert(sealed_[kStock] * kB == x.i0);
+    for (size_t r = 0; r < x.rs.size(); ++r) {
+      RowAt &y = x.rs[r];
+      bits(y.day, [&](size_t j) {
+        DayRec &d = x.recs[slot(y, j)];
+        d.f = step(link_[kStock][y.key], d.ref, d.close, origin<kStock>());
+        y.min |= uint64_t{x.has[j * x.rs.size() + r]} << j;
+      });
+    }
+    x.out->put(0, &x.h, sizeof(x.h));
+    x.out->put(sizeof(x.h), x.rs.data(), x.rs.size() * sizeof(RowAt));
+    x.out->put(x.at_rec(), x.recs.data(), x.recs.size() * sizeof(DayRec));
+    x.out->done();
+    store_->side[kStock].push_back({x.i0, std::make_shared<const Seg>(disk::path(kBlockFile[kStock], at_day(lib_, dates[x.i0])))});
+    dates_.insert(dates_.end(), dates.begin() + static_cast<ptrdiff_t>(x.i0), dates.begin() + static_cast<ptrdiff_t>(x.i0 + kB));
+    ++sealed_[kStock];
+    if (pk) {
+      assert(bdays_ == x.i0 && sealed_[kBasket] * kB == x.i0);
+      for (DayBuild &b : x.bb)
+        chain<kBasket>(b, link_[kBasket]);
+      const std::filesystem::path f = disk::path(kBlockFile[kBasket], at_day(lib_, dates[x.i0]));
+      write_seg(
+          f, table_, kB, bkeys, [&](size_t q, size_t j) { return x.bb[j].rec(static_cast<uint32_t>(q)); },
+          [&](size_t q, size_t j) { return x.bb[j].min(static_cast<uint32_t>(q)); });
+      store_->side[kBasket].push_back({x.i0, std::make_shared<const Seg>(f)});
+      bdays_ += kB, ++sealed_[kBasket];
+    }
+    lib_days_ = dates_.size();
+    save_head();
   };
   const auto stale = [&] {
     if (rd.stale()) // 库在重算: 下次从头核对
       head_ = {};
     return rd.stale();
   };
-  while (lib_days_ < N) {
+  LibBlock *done = nullptr; // 合成完、待收尾的整块 (随下一块的合成一并收尾)
+  for (size_t i0 = lib_days_; i0 < N;) {
     if (quit_.load(std::memory_order_relaxed))
       return false;
-    const size_t i0 = lib_days_;
     const bool whole = i0 % kB == 0 && N - i0 >= kB; // 整块: 直写成块, 不经单日段
     const size_t n = whole ? kB : std::min({T, N - i0, kB - i0 % kB});
+    LibBlock &x = blk[done == &blk[0] ? 1u : 0u];
+    x.i0 = i0;
     pool_.tasks(static_cast<int>(n + 1), [&](int k, int t) {
-      read_row(rd, dates[i0 - 1 + static_cast<size_t>(k)], works[static_cast<size_t>(t)]->dc, rws[static_cast<size_t>(k)]);
+      read_row(rd, dates[i0 - 1 + static_cast<size_t>(k)], works[static_cast<size_t>(t)]->dc, x.rws[static_cast<size_t>(k)]);
     });
     if (stale())
       return false;
     if (whole) {
-      assert(sealed_[kStock] * kB == i0);
       // 行表 = 库轴行 (全局 id 升序) 在块内有日根的日 (判据同 LibDay) ⇒ 各行的格先定, 文件定长
-      std::vector<RowAt> rs;
+      x.rs.clear();
       uint64_t R = 0;
       for (size_t a = 0; a < A; ++a) {
         uint64_t m = 0;
         for (size_t j = 0; j < kB; ++j)
-          m |= uint64_t{traded_row(rws[j + 1], a)} << j;
+          m |= uint64_t{traded_row(x.rws[j + 1], a)} << j;
         if (m)
-          rs.push_back({ax.global(a), static_cast<uint32_t>(R), m, 0}), R += static_cast<uint64_t>(std::popcount(m));
+          x.rs.push_back({ax.global(a), static_cast<uint32_t>(R), m, 0}), R += static_cast<uint64_t>(std::popcount(m));
       }
-      const SegHead h{kSegMagic, 0, static_cast<uint32_t>(kB), static_cast<uint32_t>(rs.size()), R};
-      const size_t at_rec = sizeof(SegHead) + rs.size() * sizeof(RowAt), at_min = at_rec + R * sizeof(DayRec);
-      const std::filesystem::path f = disk::path(kBlockFile[kStock], at_day(lib_, dates[i0]));
-      SegAt out(f, seg_bytes(h));
-      std::vector<DayRec> recs(R);
-      std::vector<uint8_t> has(kB * rs.size()); // [日][行] 带分钟根
-      // 各日并行: 个股件的行 = 行表里该日有根的行 (同序) → 日根进格, 分钟根当场写进格
-      pool_.tasks(static_cast<int>(kB), [&](int kk, int t) {
-        const size_t k = static_cast<size_t>(kk);
+      x.h = {kSegMagic, 0, static_cast<uint32_t>(kB), static_cast<uint32_t>(x.rs.size()), R};
+      x.recs.assign(R, {});
+      x.has.assign(kB * x.rs.size(), 0);
+      x.out.emplace(disk::path(kBlockFile[kStock], at_day(lib_, dates[i0])), seg_bytes(x.h));
+      // 各日并行: 个股件的行 = 行表里该日有根的行 (同序) → 日根进格, 分钟根当场写进格; 上一块的收尾占排头一件
+      const int o = done ? 1 : 0;
+      pool_.tasks(static_cast<int>(kB) + o, [&](int kk, int t) {
+        if (kk < o)
+          return finish(*done);
+        const size_t k = static_cast<size_t>(kk - o);
         DayBuild &b = works[static_cast<size_t>(t)]->b;
-        day(i0, k, t, b);
+        day(x, k, t, b);
         size_t r = 0;
         for (size_t q = 0; q < b.keys.size(); ++q, ++r) {
-          while (r < rs.size() && !(rs[r].day >> k & 1))
+          while (r < x.rs.size() && !(x.rs[r].day >> k & 1))
             ++r;
-          assert(r < rs.size() && rs[r].key == b.keys[q] && "库段整块: 当日的根与行表不符");
-          const size_t s = slot(rs[r], k);
+          assert(r < x.rs.size() && x.rs[r].key == b.keys[q] && "库段整块: 当日的根与行表不符");
+          const size_t s = slot(x.rs[r], k);
           const Packed *m = b.minute(q);
-          recs[s] = b.recs[q], has[k * rs.size() + r] = m != nullptr;
-          out.put(at_min + s * sizeof(Packed), m ? m : &void_packed(), sizeof(Packed));
+          x.recs[s] = b.recs[q], x.has[k * x.rs.size() + r] = m != nullptr;
+          x.out->put(x.at_min() + s * sizeof(Packed), m ? m : &void_packed(), sizeof(Packed));
         }
-        assert(std::ranges::count_if(rs, [&](const RowAt &x) { return x.day >> k & 1; }) == static_cast<ptrdiff_t>(b.keys.size()) && "库段整块: 当日的根与行表不符");
+        assert(std::ranges::count_if(x.rs, [&](const RowAt &y) { return y.day >> k & 1; }) == static_cast<ptrdiff_t>(b.keys.size()) && "库段整块: 当日的根与行表不符");
       });
       if (stale())
         return false;
-      // 块末: 逐行过链 (行内即日序), 补分钟位图, 写行表 + 日根后换上
-      for (size_t r = 0; r < rs.size(); ++r) {
-        RowAt &x = rs[r];
-        bits(x.day, [&](size_t j) {
-          DayRec &d = recs[slot(x, j)];
-          d.f = step(link_[kStock][x.key], d.ref, d.close, origin<kStock>());
-          x.min |= uint64_t{has[j * rs.size() + r]} << j;
-        });
-      }
-      out.put(0, &h, sizeof(h));
-      out.put(sizeof(h), rs.data(), rs.size() * sizeof(RowAt));
-      out.put(at_rec, recs.data(), recs.size() * sizeof(DayRec));
-      out.done();
-      store_->side[kStock].push_back({i0, std::make_shared<const Seg>(f)});
-      dates_.insert(dates_.end(), dates.begin() + static_cast<ptrdiff_t>(i0), dates.begin() + static_cast<ptrdiff_t>(i0 + kB));
-      ++sealed_[kStock];
+      done = &x;
     } else {
-      pool_.tasks(static_cast<int>(n), [&](int k, int t) { day(i0, static_cast<size_t>(k), t, sb[static_cast<size_t>(k)]); });
+      if (done)
+        finish(*done), done = nullptr;
+      pool_.tasks(static_cast<int>(n), [&](int k, int t) { day(x, static_cast<size_t>(k), t, sb[static_cast<size_t>(k)]); });
       if (stale())
         return false;
       for (size_t k = 0; k < n; ++k)
         commit<kStock>(dates[i0 + k], sb[k], link_[kStock]);
+      for (size_t k = 0; pk && k < n; ++k)
+        commit<kBasket>(dates[i0 + k], x.bb[k], link_[kBasket]);
+      lib_days_ = dates_.size();
+      seal<kStock>();
+      if (pk)
+        seal<kBasket>();
+      save_head();
     }
-    for (size_t k = 0; pk && k < n; ++k)
-      commit<kBasket>(dates[i0 + k], bb[k], link_[kBasket]);
-    lib_days_ = dates_.size();
-    seal<kStock>();
-    if (pk)
-      seal<kBasket>();
-    save_head();
+    i0 += n;
   }
+  if (done)
+    finish(*done);
   return true;
 }
 
