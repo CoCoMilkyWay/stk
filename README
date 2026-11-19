@@ -340,7 +340,7 @@ stk/
 │   │   │       ├── Space.hpp                           # 🧬 参数空间: 可搜槽 → 单调坐标 + 区间 → 低差异采样
 │   │   │       └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU (复用 Stat 行核) / GPU 后端 + 对拍
 │   │   ├── cta/                                        # 📈 CTA 单资产 band + 减仓 + 跟随 分层择时 (header-only 纯计算; Market → CTA 页的模型层)
-│   │   │   │                                           #    band (atr / dev, 人选, 窗可设, 默认一年) = 档线间距 ─→ 分层 Ladder (每份各管一档、恒一条线: 减仓线 = 中线 − j · band 跌到即卖 → 跟随加仓线往下漂, 涨到即买回 → 跟随减仓线往上漂,
+│   │   │   │                                           #    band (atr / dev, 人选, 窗可设, 默认一年) = 档线间距 ─→ 分层 Ladder (每份各管一档、恒一条线: 减仓线 = 中线 − j · band (j = 1 起, 中线本身不触发) 跌到即卖 → 跟随加仓线往下漂, 涨到即买回 → 跟随减仓线往上漂,
 │   │   │   │                                           #    升过减仓线即交回减仓模型; 份数默认 20 / 止损默认 0.1 band (人设)) ─刀 Cut→ 成交 Fill (+ 五项成本 Costs) → 损益 Run; 减仓 / 跟随模型的参数滚动调优
 │   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 只读原料带 Tape (含日 K); 三个模型族 Family (核的类型列表 → 族表 kinds + with 分派): Band (atr / dev) /
 │   │   │   │                                           #    Reduce (price / ema / kama / mid; 中线, 日首换参 + 逐根出值, 定参 = 各日同参, 窗不满用部分窗) / Follow (decay / chand / sar; 一份一条 Line, 成交时定参, 加仓线 / 减仓线两向镜像);

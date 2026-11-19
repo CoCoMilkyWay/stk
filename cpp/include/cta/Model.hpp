@@ -7,7 +7,7 @@
 //   原料带 = 高 / 低 / 收 / 收益 / 累计路程 + 日 K; band (ATR / dev, 日频, 价格单位) 由它算, 即档线间距
 //   三个模型族 Family = 核的类型列表 (族表 kinds 由各核的 kind 生成, with(下标) 分派到核的类型; 人选模型, 减仓 / 跟随的参数滚动调优, band 的窗人设):
 //     Band (atr / dev): 档线间距 g, 整列 of(原料带, 窗)
-//     Reduce (price / ema / kama / mid): 中线, 第 j 份的减仓线 = 中线 − j · g, 目的是尽量保留顺向敞口; 日首 day(d, p) 换参, 逐根 bar(i) 出值, 状态逐根接续;
+//     Reduce (price / ema / kama / mid): 中线, 第 j 份 (j = 1 起) 的减仓线 = 中线 − j · g (中线本身不触发), 目的是尽量保留顺向敞口; 日首 day(d, p) 换参, 逐根 bar(i) 出值, 状态逐根接续;
 //       定参 (调参打分) = 各日同参, 变参 (实盘) = 逐日所用参数, 同一个核
 //     Follow (decay / chand / sar): 成交过的份的跟随线怎么朝价漂 (参数以日计, 逐根摊开): 跟随加仓线往下漂做网格抄底, 跟随减仓线往上漂做移动止损;
 //       一份一条 Line, 参数在它成交时定下, 之后不变
@@ -405,7 +405,7 @@ using Follow = Family<Decay, Chand, Sar>;
 
 inline constexpr uint32_t kNone = UINT32_MAX;
 
-// 档线类别 (每份恰一条): 减仓线 (持有, 中线 − j · h, 随减仓模型) / 跟随加仓线 (已减, 往下漂) / 跟随减仓线 (持有, 往上漂)
+// 档线类别 (每份恰一条): 减仓线 (持有, 中线 − (j + 1) · h, 随减仓模型; j = 份下标) / 跟随加仓线 (已减, 往下漂) / 跟随减仓线 (持有, 往上漂)
 enum : uint8_t { kReduce,
                  kFollowAdd,
                  kFollowReduce };
@@ -442,7 +442,7 @@ struct Cuts {
     const size_t U = static_cast<size_t>(units), b = snap[i] * U;
     for (size_t j = 0; j < U; ++j) {
       const uint8_t k = rungs.type[b + j];
-      f(static_cast<int>(j), k == kReduce ? mid[i] - s * static_cast<float>(j) * h[i] : rungs.px[b + j], k);
+      f(static_cast<int>(j), k == kReduce ? mid[i] - s * static_cast<float>(j + 1) * h[i] : rungs.px[b + j], k);
     }
   }
 };
@@ -474,10 +474,10 @@ struct Trip {
 //   顺向坐标 x = s · 价; 下文的涨 / 跌 / 以上 / 以下都按 x; g = band (间距, 每日变), e = stop · g
 //   份 j 各管一档, 份与份独立, 每份恰一条线; 持有的份跌到线上即卖, 已减的份涨到线上即买回; 成交按档线价
 //     止损锚定实际成交价 (本根收盘 x; 越过档线 L 的差另计越线差): 卖出 → 跟随加仓线 x + e, 买回 → 跟随减仓线 x − e
-//     减仓线 (持有): 中线 q − j · g, 随减仓模型逐根走; 跌到即卖 → 跟随加仓线
+//     减仓线 (持有): q − (j + 1) · g (中线本身不触发), 随减仓模型逐根走; 跌到即卖 → 跟随加仓线
 //     跟随加仓线 (已减): 逐根按跟随核 add 下移, 下移不越过 收盘 + e; 涨到即买回 → 跟随减仓线
 //     跟随减仓线 (持有): 逐根按跟随核 reduce 上移 (add 的镜像, 同参数), 上移不越过 收盘 − e; 跌到即卖 → 跟随加仓线;
-//       升到减仓线 q − j · g 之上 (或减仓线降到它之下) 即交回减仓模型
+//       升到减仓线 q − (j + 1) · g 之上 (或减仓线降到它之下) 即交回减仓模型
 //     成交的份用当日参数开它的跟随线 (之后不变); 跟随线都不会自行触发 (新挂 / 漂移的线都在收盘的另一侧)
 //   一根越过几条成交几条; 减仓与加回在同一根里互不触发
 //   中线 / band 无值 = 未就绪的刀 (h = NaN; 轨迹按买入持有), 状态复位; 之后首根有值 = 各份按减仓线就位 (已在线下的份即卖成跟随加仓线), 按收盘建仓, 不计越线差也不录笔
@@ -523,7 +523,7 @@ struct Ladder : Ctx {
       on = true, type.assign(U, kReduce), b.assign(U, kNaN), line.resize(U), pend.assign(U, kNone);
     const auto core = [&](size_t j) -> F & { return type[j] == kFollowAdd ? add : reduce; }; // 跟随线 j 的核
     const auto sign = [&](size_t j) { return type[j] == kFollowAdd ? 1.0 : -1.0; };          // 跟随线 j 的核坐标 = sign · 顺向坐标
-    const auto cut = [&](size_t j) { return q - static_cast<double>(j) * g; };               // 份 j 的减仓线
+    const auto cut = [&](size_t j) { return q - static_cast<double>(j + 1) * g; };           // 份 j 的减仓线
     for (size_t j = 0; j < U; ++j)
       if (type[j] != kReduce)
         core(j).see(line[j], i);

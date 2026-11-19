@@ -75,7 +75,7 @@ struct Hold {
   Cut operator()(size_t) const { return {.w = 1}; }
 };
 
-// 静态档线: 减仓核 c 各日同参 p (轴的单位); 第 r 份 (r ∈ [0, U)) 持有 ⇔ s · 收 ≥ s · (中线 − s · r · g); 仓位 = s · 持有份数 / U, 未就绪 = 0
+// 静态档线: 减仓核 c 各日同参 p (轴的单位); 第 r 份 (r ∈ [1, U]) 持有 ⇔ s · 收 > s · (中线 − s · r · g); 仓位 = s · 持有份数 / U, 未就绪 = 0
 template <class K>
 struct Steps {
   K c;
@@ -87,7 +87,7 @@ struct Steps {
     const float m = c.bar(i);
     if (!(m > 0 && g > 0))
       return {.mid = m};
-    const int out = std::clamp(static_cast<int>(std::ceil(c.s * (m - c.t.c[i]) / g)), 0, U); // 跌破了几条
+    const int out = std::clamp(static_cast<int>(std::floor(c.s * (m - c.t.c[i]) / g)), 0, U); // 跌到了几条
     return {.mid = m, .h = static_cast<float>(g), .w = c.s * static_cast<float>(U - out) / static_cast<float>(U)};
   }
 };
