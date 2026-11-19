@@ -146,17 +146,17 @@ inline constexpr int kPicks = 2;
 // CTA 页: 设定 (进请求; 标的 = kPickOne 那一行) + 三图同一 x 视野 + 区间条 + 光标
 struct CtaState {
   cta::Spec spec;
-  Sent<CtaRequest> sent;  // 上次发出的
-  bool editing = false;   // 数值框编辑中 (spec 未定, 不发请求)
-  Quote::Ref fit;         // x 视野所属的标的: 换标的即回全段, 只改设定保留缩放
-  double x0 = 0, x1 = 1;  // 三图 x 视野 (有效根下标)
-  DayRange range;         // 区间条 (有根的日下标; 每帧由 x 视野定, 拖了反写视野)
-  bool fit_y = true;      // 价格轴跟随视野内数据 (框选放大后 = 用框的 y)
-  bool boxing = false;    // 价格图上框选进行中
-  XZoom zoom;             // 净值 / 回撤图横向框选 (两图同画)
-  int cursor = -1;        // 光标 (三图上可拖的竖线) 所在有效根 (−1 = 未放; 换标的重放)
-  bool path_open = false; // 参数轨迹展开
-  bool nav_log = true;    // 净值图 y 轴: log / 绝对
+  Sent<CtaRequest> sent; // 上次发出的
+  bool editing = false;  // 数值框编辑中 (spec 未定, 不发请求)
+  Quote::Ref fit;        // x 视野所属的标的: 换标的即回全段, 只改设定保留缩放
+  double x0 = 0, x1 = 1; // 三图 x 视野 (有效根下标)
+  DayRange range;        // 区间条 (有根的日下标; 每帧由 x 视野定, 拖了反写视野)
+  bool fit_y = true;     // 价格轴跟随视野内数据 (框选放大后 = 用框的 y)
+  bool boxing = false;   // 价格图上框选进行中
+  XZoom zoom;            // 净值 / 回撤图横向框选 (两图同画)
+  int cursor = -1;       // 光标 (三图上可拖的竖线) 所在有效根 (−1 = 未放; 换标的重放)
+  uint8_t path = 0;      // 参数轨迹矩阵各格开关 (位 = 行 · cta::kAxes + 轴; 默认全关)
+  bool nav_log = true;   // 净值图 y 轴: log / 绝对
 };
 
 // 篮子组 (指数 / 行业 / 概念) 右表的行过滤 (各页共用, 按组各一份): 只数 / 总市值 [亿元] ∈ [lo, hi] (hi 0 = 不限), |资金流入| ≥ flow (%; 0 = 不限);

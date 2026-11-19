@@ -2,14 +2,14 @@
 
 // 减仓 / 跟随调参 (band 与分层规则固定, 不参与): 两个目标 (逐根链出记录, 取根段打分) + 参数网格 Grid (格点 + 中心可移的网格 + 其上的岭回归曲面)
 //   两个目标同一形: 一个配置全期一遍出一份记录, 之后任一根段 [i0, i1) → 分 (NaN = 段内不可打分)
-//   减仓目标 = 保敞口: 源 Steps (定参减仓线核, 只有预期卖出线: 第 r 份的线 = 中线 − r · band, 跌破即出, 涨回即入; 与跟随无关) → 逐根两项的前缀 Terms;
-//     分 = (顺向 − 翻转成本) / 总振幅, 对数价单位, 1 ≈ 走过的路程全部顺向吃到; 敞口留得多、来回翻得少则高
+//   减仓目标 = 少穿线: 只看定参减仓线核的中线 (快线往逆向挪一个 band, mid_of; 与分层档位 / 跟随无关), 收盘穿过它的次数 → 逐根两项的前缀 Terms;
+//     分 = −每根穿线次数 (0 = 一次不穿; 越少越高)
 //   跟随目标 = 每笔中位夏普: 源 Laddered (定参减仓 + 定参跟随的完整分层, Ladder 录逐笔) → 逐笔 Trip; 段内卖出的各笔
 //     夏普 = (s · ln(卖价 / 买回价) − 该笔成本) / (卖出那根的 band / 卖价 · √持续日), 段末未买回 = 按段末前一根收盘计; 分 = 各笔的中位
 //   打分一律跑日线 (日 K 合成的原料带, 每日 1 根): 训练每日一次, 不必逐分钟; 回测才跑原频
 //   成本与回测同一份费率; 只读 Tape, 一个配置一个任务
 //   参数轴 = 自 v0 向两侧铺的格点 (相邻之比 kStep; 间距不小于轴的基本单位), 一个配置 = 各轴格点号 Q, 参数 (轴的单位) 由它查 (Grid::p); 各轴量定长 Ax (轴数之外不用)
-//   网格 = 中心周围各轴 m 个相邻格点的全部组合 (配置数可配, 由各多值轴轮流分得 m); 一点在网格内 = 各轴下标 At
+//   网格 = 中心周围各轴 m 个相邻格点的全部组合 (配置数 = 分层份数, 由各多值轴轮流分得 m); 一点在网格内 = 各轴下标 At
 //   每日重拟: 窗 = 此前至多 W 日 (不足 = 自首日起, expanding); 最高点落在网格边上 → 以它为中心移网格再拟 (Trace.hpp)
 //   岭回归曲面 (网格上): 特征 = 各多值参数轴的网格内下标坐标 u ∈ [−1, 1] 的二次项 (u, u² (≥ 3 值的轴), 两两 u · u'), 去均值 → X [n][d];
 //     ŷ = ȳ + X (XᵀX + λ · n · I)⁻¹ Xᵀ (y − ȳ) = ȳ + X Z y (X 去均值 ⇒ Z · 1 = 0); Z [d][n] 只看网格, 预先算好
@@ -23,33 +23,34 @@
 
 namespace cta {
 
-inline constexpr int kGrid = 20;    // 网格配置数默认 (Spec::grid)
 inline constexpr double kRidge = 1; // 岭罚 λ (相对样本数; 坐标方差 ~0.4, 高次项方差更小、压得更狠)
 
 // ---- 减仓目标 ----
 
-// 保敞口两项的逐根前缀 [n + 1] (前导 0): 根段 [i0, i1) 之和 = x[i1] − x[i0]
-//   a = 顺向 − 翻转成本 = 前根仓位 · 对数涨跌 − 本根成本 (佣金 + 印花税 + 冲击; 静态档线无越线差)
-//   b = 振幅 |对数涨跌| (前根与本根都就绪才计)
+// 少穿线两项的逐根前缀 [n + 1] (前导 0): 根段 [i0, i1) 之和 = x[i1] − x[i0]
+//   a = −穿线 (本根收盘在中线的哪一侧与前根相反 = 1), b = 1 (前根与本根的中线都就绪才计)
 struct Terms {
   std::vector<double> a, b;
-  // 分 = Σa / Σb (段内无减仓线就绪的根 = NaN)
+  // 分 = Σa / Σb = −每根穿线次数 (段内无中线就绪的根 = NaN)
   double over(size_t i0, size_t i1) const { return b[i1] > b[i0] ? (a[i1] - a[i0]) / (b[i1] - b[i0]) : kNaN; }
 };
 
-// 减仓目标: 减仓线模型 kind 定参 p (轴的单位), 份数 U, 费率 u
-inline Terms keep_of(const Ctx &x, size_t kind, const P &p, int U, const Rates &u) {
+// 减仓目标: 减仓线模型 kind 定参 p (轴的单位) 的中线, 收盘逐根穿线
+inline Terms cross_of(const Ctx &x, size_t kind, const P &p) {
   const Tape &t = x.t;
   Terms o{{0}, {0}};
   o.a.reserve(t.n + 1), o.b.reserve(t.n + 1);
-  float ph = kNaN; // 前根间距 (未就绪 = NaN)
   Reduce::with(kind, [&]<class K>() {
-    drive(t, u, Steps<K>{K{x}, p, U}, [&](const Fill &f) {
-      const double r = f.i ? std::log(static_cast<double>(t.c[f.i]) / t.c[f.i - 1]) : 0;
-      o.a.push_back(o.a.back() + f.p * r - f.k.sum());
-      o.b.push_back(o.b.back() + (ph > 0 && f.x.h > 0 ? std::fabs(r) : 0));
-      ph = f.x.h;
-    });
+    K c{x};
+    const P q = K::kind.bars(p, t.S);
+    int ps = 0; // 前根收盘在中线上方 (+1) / 下方 (−1); 0 = 未就绪
+    for (size_t i = 0; i < t.n; ++i) {
+      const float m = mid_of(c, i, q);
+      const int side = m > 0 ? (t.c[i] >= m ? 1 : -1) : 0;
+      o.a.push_back(o.a.back() - (ps && side && side != ps ? 1 : 0));
+      o.b.push_back(o.b.back() + (ps && side ? 1 : 0));
+      ps = side;
+    }
   });
   return o;
 }

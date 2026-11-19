@@ -7,13 +7,14 @@
 //   原料带 = 高 / 低 / 收 / 收益 / 累计路程 + 日 K; band (ATR / dev, 日频, 价格单位) 由它算, 即档线间距
 //   三个模型族 Family = 核的类型列表 (族表 kinds 由各核的 kind 生成, with(下标) 分派到核的类型; 人选模型, 减仓 / 跟随的参数滚动调优, band 的窗人设):
 //     Band (atr / dev): 档线间距 g, 整列 of(原料带, 窗) [日], 逐根用前经日内过渡 (bars_of)
-//     Reduce (price / ema / kama / mid): 中线; 预期卖出线 = 中线往下每隔 g 一条 (静态档线), 目的是尽量保留顺向敞口; 逐根 bar(i, p) 出值 (参数逐根给), 状态逐根接续;
+//     Reduce (price / ema / kama / mid): 中线 = 核出值统一往逆向挪一个 g (Engine mid_of); 预期卖出线 = 中线往下每隔 g 一条, 目的是尽量保留顺向敞口; 调参只看中线少穿价; 逐根 bar(i, p) 出值 (参数逐根给), 状态逐根接续;
 //       定参 (调参打分) = 各日同参, 变参 (实盘) = 逐日所用参数, 同一个核
 //     Follow (decay / chand / sar): 成交过的份的跟随线怎么朝价漂 (参数以日计, 逐根摊开): 跟随买入线往下漂做网格抄底, 跟随卖出线往上漂做移动止损 (同参数镜像);
 //       一份一条 Line, 参数在它成交时定下, 之后不变
 //   减仓 / 跟随核与分层都建于同一份上下文 Ctx (原料带 + band + 顺向): K{x}
 //   逐日换的量 (band / 减仓 / 跟随参数) 一律日内过渡: 自上一根所到的值线性走向当日值, 收盘到齐 (Ramp), 档线不在日界跳
-//   分层 (Ladder): 未触发的份挂在减仓线链上 (链锚: 随预期卖出线 / 锚定触发价 / 挂在最顶层的跟随卖出线下), 触发过的份各自在跟随买入 / 跟随卖出之间切换并漂移,
+//   分层 (Ladder): 未触发的份挂在减仓线链上 (链锚: 随预期卖出线 / 锚定触发价 (首个止损起锁定, 全部收复且赶上预期才回到随预期) / 挂在中途收复的最顶层跟随卖出线下),
+//     触发过的份各自在跟随买入 / 跟随卖出之间切换并漂移,
 //     跟随卖出线赶上预期卖出线即交回减仓线链; 链上的线换锚时不跳, 与新链位之差一日的根数内线性消化 (Ease); 一份 = 1 / 份数
 //   列只在两端: 原料带 (只读) → 逐根链 (源 → 成交 → 汇) → 轨迹列 Cuts; 核 / 分层的状态 (各份档线) 只在源里
 //   源 / 成交 / 逐根链归 Engine
@@ -40,8 +41,8 @@ inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 inline constexpr double kYearDays = 250; // 一年的交易日数 (窗以年设, 以日用)
 inline constexpr int kMinYears = 1;      // 窗下限 (年)
 inline constexpr int kMaxYears = 10;     // 窗上限 (年)
-inline constexpr int kUnits = 20;        // 满仓份数默认 (Rule::units)
-inline constexpr float kStop = 0.1f;     // 止损距默认 (Rule::stop)
+inline constexpr int kUnits = 10;        // 满仓份数默认 (Rule::units; 也是减仓 / 跟随每日评的网格配置数)
+inline constexpr float kStop = 0.3f;     // 止损距默认 (Rule::stop)
 
 inline size_t len(double x) { return static_cast<size_t>(std::lround(x)); }
 // 窗 y 整年 → 交易日
@@ -145,6 +146,7 @@ struct Axis {
   float v0 = 0, lo = 0, hi = 0; // 初始网格中心 (格点 q = 0) / 硬边界
   float u = 0;                  // 基本单位: 相邻格点的最小间距 (> 0)
   bool day = false;             // 以日计
+  const char *tip = nullptr;    // 说明 (单独悬停)
 };
 
 struct Kind {
@@ -282,7 +284,8 @@ struct Dev {
 //   逐根 bar(i, p): 本根参数 p (以根计, 可为小数; 逐日换参经日内过渡, 调用方给) → 减仓线 (NaN = 未就绪); 根按序逐个
 //   状态逐根接续: 参数变只改跟随的快慢, 不在几条定参线之间换线; 窗不满 = 自首根起的部分窗
 
-inline constexpr Axis kDays{"n", 5, 1, 250, 0.25f, true}; // 周期 (日; 打分跑日线, 下限 1 日)
+// 周期轴 (日; 减仓线一律快线, 3 ~ 10 日), tip = 该模型里 n 的含义
+inline constexpr Axis days(const char *tip) { return {"n", 5, 3, 10, 0.25f, true, tip}; }
 
 // price: 收盘 − band 的棘轮 (顺向坐标只升不降); 收盘跌到线上 = 本根出这条线 (分层在此触发), 下一根起自 收盘 − band 重新起算; band 无值 = NaN
 struct Price : Ctx {
@@ -302,7 +305,7 @@ struct Price : Ctx {
 
 // ema: α = 2 / (k + 1); 第 i 根的平滑系数 = max(α, 1 / (i + 1)) (前段 = 已有值的均值)
 struct Ema : Ctx {
-  static constexpr Kind kind{"ema", "指数均线, 跟得最匀", {kDays}};
+  static constexpr Kind kind{"ema", "指数均线, 跟得最匀", {days("均线跨度: α = 2 / (n + 1)")}};
   double v = 0;
   float bar(size_t i, const P &p) {
     assert(p[0] > 0 && "均线跨度");
@@ -313,7 +316,7 @@ struct Ema : Ctx {
 // kama: 效率比 ER = |收 − w 根前收| / 近 w 根路程 (w = min(round(n), i)); 平滑系数 (ER · (α_fast − α_slow) + α_slow)², α = √(2 / (跨度 + 1)):
 //   震荡 (ER → 0) 时等效 EMA 跨度 L, 趋势 (ER → 1) 时等效跨度 kFast 日 (两端都以日计, 乘每日根数; 日线上 α_fast = 2/3)
 struct Kama : Ctx {
-  static constexpr Kind kind{"kama", "考夫曼自适应均线: n = 效率比窗, L = 震荡跨度; 趋势时跨度 3.5 日", {kDays, {"L", 40, 4, 250, 1, true}}};
+  static constexpr Kind kind{"kama", "考夫曼自适应均线: 按效率比在震荡跨度与趋势跨度 (3.5 日) 之间调快慢", {days("效率比窗: |收 − n 日前收| / 近 n 日路程"), {"L", 6, 4, 10, 1, true, "震荡跨度: 效率比 → 0 时等效 EMA 跨度 (须慢于趋势端 3.5 日)"}}};
   static constexpr double kFast = 3.5; // 趋势端跨度 (日)
   double af = std::sqrt(2 / (kFast * static_cast<double>(t.S) + 1)), v = t.c[0];
   float bar(size_t i, const P &p) {
@@ -352,7 +355,7 @@ struct Hilo {
 
 // mid: 唐奇安中线 = 窗 round(n) 的 (最高 + 最低) / 2
 struct Mid : Ctx {
-  static constexpr Kind kind{"mid", "唐奇安中线 = 近 n 根 (最高 + 最低) / 2, 区间内呈台阶", {kDays}};
+  static constexpr Kind kind{"mid", "唐奇安中线 = 窗内 (最高 + 最低) / 2, 区间内呈台阶", {days("窗: 取近 n 日的最高 / 最低")}};
   Hilo hl{t, static_cast<size_t>(std::ceil(kind.ax[0].hi *static_cast<double>(t.S)))};
   float bar(size_t i, const P &p) {
     const size_t k = len(p[0]);
@@ -371,7 +374,7 @@ struct Mid : Ctx {
 
 // decay: 每根 b − trail · g / 每日根数
 struct Decay : Ctx {
-  static constexpr Kind kind{"decay", "固定漂移: 每日朝价漂 trail × 间距 (逐根摊开)", {{"trail", 0.1f, 0.01f, 2, 0.01f}}};
+  static constexpr Kind kind{"decay", "固定漂移: 每日朝价漂固定距离 (逐根摊开)", {{"trail", 0.1f, 0.01f, 2, 0.01f, false, "每日漂移 (以间距计)"}}};
   struct Line {
     double trail;
   };
@@ -386,7 +389,7 @@ struct Decay : Ctx {
 
 // chand: min(b, 近 round(n) 根 (n 以根给) 的最低 (核的坐标) + m · g) (含本根); 区间最低查逐根稀疏表 (建核时一遍, 层数够 n 的上限即止)
 struct Chand : Ctx {
-  static constexpr Kind kind{"chand", "吊灯: 跟随买入线压到 近 n 日最低 + m × 间距 以下, 跟随卖出线抬到 近 n 日最高 − m × 间距 以上 (只朝价走; 逐根滚动)", {{"n", 20, 1, 250, 1, true}, {"m", 3, 0.25f, 10, 0.25f}}};
+  static constexpr Kind kind{"chand", "吊灯: 跟随买入线压到近期最低 + 若干间距以下, 跟随卖出线抬到近期最高 − 若干间距以上 (只朝价走; 逐根滚动)", {{"n", 20, 1, 250, 1, true, "窗: 取近 n 日的最低 / 最高"}, {"m", 3, 0.25f, 10, 0.25f, false, "离极值几个间距"}}};
   struct Line {
     size_t k; // 窗 (根)
     double m; // 倍数
@@ -421,7 +424,7 @@ struct Chand : Ctx {
 // sar: 各份自成交起记最低 ep (核的坐标, 起于成交价) 与加速 af (起于该份的步长); 每日 b 朝 ep 走 af 倍距离, 逐根摊开 (每根走 1 − (1 − af)^(1 / 每日根数));
 //   日末当日创过新低则 af += 步长 (≤ max)
 struct Sar : Ctx {
-  static constexpr Kind kind{"sar", "抛物线 (各份自成交起): 每日朝成交以来的极值 (跟随买入线 = 最低, 跟随卖出线 = 最高) 移 af 倍距离 (逐根摊开); 创新极值的日 af += 步长 (≤ max)", {{"af", 0.02f, 0.002f, 0.2f, 0.002f}, {"max", 0.2f, 0.02f, 1, 0.02f}}};
+  static constexpr Kind kind{"sar", "抛物线 (各份自成交起): 每日朝成交以来的极值 (跟随买入线 = 最低, 跟随卖出线 = 最高) 移加速倍距离 (逐根摊开); 创新极值的日加速加一步", {{"af", 0.02f, 0.002f, 0.2f, 0.002f, false, "起始加速, 也是创新极值日每次加的步长"}, {"max", 0.2f, 0.02f, 1, 0.02f, false, "加速上限"}}};
   struct Line {
     double step, top;  // 步长 / 加速上限
     double af, fb, ep; // 加速 / 每根的步 / 最低 (核的坐标)
@@ -531,13 +534,14 @@ struct Trip {
 //   顺向坐标 x = s · 价; 下文的涨 / 跌 / 以上 / 以下都按 x; g = band (间距, 逐根过渡), e = stop · g; 成交按档线价
 //   各份恰一条线, 三类: 减仓线 (持有, 未触发, 挂在链上) / 跟随买入线 (已减, 在价上, 往下漂) / 跟随卖出线 (持有, 已买回, 在价下, 往上漂)
 //   持有的份 (减仓线 / 跟随卖出线) 跌到自己的线即卖 → 跟随买入线 = 线 + e; 跟随买入线涨到即买回 → 跟随卖出线 = 线 − e (逐条, 先近后远); 一根越过几条成交几条
-//   预期卖出线 (按链序): 持有 h 份时, 持有的线 (按线自上而下) 第 r 条的预期 = 中线 − (份数 − h + r) · g (同静态档线 Steps 的位置)
+//   预期卖出线 (按链序): 持有 h 份时, 持有的线 (按线自上而下) 第 r 条的预期 = 中线 − (份数 − h + r) · g
 //   跟随线逐根按跟随核漂移 (各份独立): 跟随买入线下移不越过 收盘 + e; 跟随卖出线上移不越过 min(收盘 − e, 其预期卖出线) (已在其上则不动); 都不会自行触发
 //     跟随卖出线赶上其预期卖出线 = 交回减仓线 (按线的位置插进链)
 //   减仓线链: 链上自上而下第 k 份的链位 = 锚 − 系数 · g, 锚三态:
-//     随预期 (起步 / 交回的份成了链顶): 锚 = 中线, 系数 = 其预期卖出线的 (份数 − h + r), 随中线波动
-//     锚触发价 (本根有卖出): 链顶 = min(原链顶, 本根卖出的最低线 − g), 系数 = k (下面的线尊重触发价, 不随中线)
-//     挂跟随卖出线 (买回的份成了最顶的持有线): 锚 = 该线, 系数 = k + 1 (链随它一起上漂; 它交回即转随预期, 它被卖即转锚触发价)
+//     随预期 (起步 / 全部收复且都赶上预期, 即各份都在链上): 锚 = 中线, 系数 = 其预期卖出线的 (份数 − h + r), 随中线波动
+//     锚触发价 (本根有卖出): 链顶 = min(原链顶, 本根卖出的最低线 − g), 系数 = k (下面的线尊重上层的触发价, 不随中线; 首个止损起整链锁定)
+//       交回的份成了链顶 (或挂着的那条交回) 而未全部收复: 仍锁定, 链顶 = 它的线
+//     挂跟随卖出线 (中途买回的份成了最顶的持有线): 锚 = 该线, 系数 = k + 1 (链随它一起上漂; 它交回即锁在它下面, 它被卖即转锚触发价)
 //   跳空消化 (只作用于链上的线): 链位公式变了 (换锚 / 系数变) 的那根, 线留在原处 (交回的份 = 其跟随卖出线), 与新链位之差
 //     自该根起每根朝 0 走, 一日的根数 (S) 内走完 (日内起算, 跨日接着走; 已在消化的不放慢); 线 = 链位 + 消化余量 (Ease); 锚自身的移动照走不消化
 //     新成交的份 (跟随线) 即在其线上, 不受影响
@@ -677,11 +681,14 @@ struct Ladder : Ctx {
       if (type[j] == kFollowSell && b[j] >= expect(j)) {
         type[j] = kReduce, y[j] = b[j], ez[j] = {}, moved = true;
         const auto it = std::ranges::find_if(ord, [&](uint32_t a) { return y[a] < y[j]; });
-        if (it == ord.begin() || (mode == kHang && hang == j))
-          mode = kExpect;
+        const bool lead = it == ord.begin() || (mode == kHang && hang == j); // 成了链顶 / 挂着的那条交回: 链锁在链顶下
         ord.insert(it, static_cast<uint32_t>(j));
+        if (lead)
+          mode = kAnchor, T = y[ord[0]];
       }
     }
+    if (ord.size() == U) // 全部收复且都赶上预期: 链回到随预期
+      mode = kExpect;
     // 链位: 公式变了的份, 线留在原处, 差额 S 根内消化
     for (size_t k = 0; k < ord.size(); ++k) {
       const uint32_t j = ord[k];

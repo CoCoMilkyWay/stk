@@ -2,7 +2,7 @@
 
 // 单资产的滚动调参全期轨迹 (只用本资产, 不用未来信息): band 人选固定, 减仓 / 跟随各一个 Tuner 逐日依次选参, 分层沿两条变参线一遍跑完
 //   打分 (格点首次进网格时, 一批并行; 一个配置一个任务, 只读日线原料带 (日 K, 每日 1 根); Tune.hpp):
-//     减仓 = 保敞口目标 keep_of, 全期一遍出逐根前缀; 跟随 = (减仓格点, 跟随格点) 对的定参完整分层 trips_of, 全期一遍出逐笔
+//     减仓 = 少穿线目标 cross_of (只看中线), 全期一遍出逐根前缀; 跟随 = (减仓格点, 跟随格点) 对的定参完整分层 trips_of, 全期一遍出逐笔
 //   选参 (逐日, 先减仓后跟随, Tuner::step): 各以此前至多自己的窗 W 日 (不足 W 日 = 自首日起全部, expanding) 网格各配置的分拟岭回归曲面 (Tune.hpp), 取连续最高点的参数 (小数);
 //         最近的格点落在网格边上 (未到硬边界) → 以它为中心移网格, 补打新格点再拟, 当日至多 kHops 次; 中心留到次日 (各日只读当日之前的窗)
 //         跟随在减仓最高点的最近格点下打分 (窗内卖出的各笔的中位夏普)
@@ -38,10 +38,9 @@ struct Pick {
 
 // 模型与回测设定 (费率另给: 系统配置); 改了即全部重算
 struct Spec {
-  Pick band{Band::of<Dev>}, reduce{Reduce::of<Kama>}, follow{Follow::of<Decay>};
-  int grid = kGrid; // 网格配置数上限 (减仓 / 跟随各自按它分到自己的参数轴; split)
-  Rule rule;        // 分层规则
-  int dir = kLong;  // 方向 (kDirs 下标)
+  Pick band{Band::of<Dev>}, reduce{Reduce::of<Kama>}, follow{Follow::of<Sar>};
+  Rule rule;       // 分层规则 (份数也是减仓 / 跟随的网格配置数上限, 各自分到自己的参数轴; split)
+  int dir = kLong; // 方向 (kDirs 下标)
   bool operator==(const Spec &) const = default;
 };
 
@@ -55,6 +54,7 @@ struct Path {
 struct Track {
   Path reduce, follow; // 减仓 / 跟随
   Days days;           // 日轴 (days_of)
+  Col band;            // [日] band (日 d 盘中所用的日值, 逐根另经日内过渡)
   Cuts cut;            // [根] 分层的档线 + 快照 (未选参日 / 预热 = Hold: 无档线)
   Book strat, hold;    // 策略 / 买入持有
 };
@@ -148,14 +148,15 @@ std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Rat
   const Tape td(ds, 1); // 打分用的日线原料带 (日下标同 t)
   const Col G = bars_of(t, N), Gd = bars_of(td, N);
   const Ctx x{t, G, s}, dx{td, Gd, s};
-  Tuner tr(Reduce::kinds[sp.reduce.kind], static_cast<size_t>(sp.grid), nd), tf(Follow::kinds[sp.follow.kind], static_cast<size_t>(sp.grid), nd);
+  const size_t grid = static_cast<size_t>(sp.rule.units); // 网格配置数 = 分层份数
+  Tuner tr(Reduce::kinds[sp.reduce.kind], grid, nd), tf(Follow::kinds[sp.follow.kind], grid, nd);
   const Grid &gr = tr.p.grid, &gf = tf.p.grid;
 
-  Scores<Q, Terms> rs;                           // 减仓格点 → 保敞口前缀
+  Scores<Q, Terms> rs;                           // 减仓格点 → 少穿线前缀
   Scores<std::pair<Q, Q>, std::vector<Trip>> fs; // (减仓格点, 跟随格点) → 逐笔
   std::vector<double> buf;
   const auto enroll_r = [&](const std::vector<Q> &g) {
-    return rs.enroll(ex, g, stop, [&](const Q &q) { return keep_of(dx, sp.reduce.kind, gr.p(q), sp.rule.units, u); });
+    return rs.enroll(ex, g, stop, [&](const Q &q) { return cross_of(dx, sp.reduce.kind, gr.p(q)); });
   };
   const auto enroll_f = [&](const std::vector<Q> &g) {
     std::vector<std::pair<Q, Q>> ks;
@@ -180,7 +181,7 @@ std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Rat
   }
 
   const std::vector<P> ur = tr.used(), uf = tf.used();
-  Track out{std::move(tr.p), std::move(tf.p), days, Cuts(n), {}, {}};
+  Track out{std::move(tr.p), std::move(tf.p), days, N, Cuts(n), {}, {}};
   Run strat(n), hold(n);
   Reduce::with(sp.reduce.kind, [&]<class K>() {
     Follow::with(sp.follow.kind, [&]<class F>() {
