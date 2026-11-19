@@ -240,22 +240,11 @@ struct Dev {
 
 inline constexpr Axis kDays{"n", 5, 1, 250, 0.25f, true}; // 周期 (日; 打分跑日线, 下限 1 日)
 
-// price: 收盘 − band 的棘轮 (顺向坐标只升不降); 收盘跌到线上 = 本根出这条线 (首份在此触发), 下一根起自 收盘 − band 重新起算; band 无值 = NaN
+// price: 中线 = 收盘本身 (逐根, 无参数, 无状态)
 struct Price : Ctx {
-  static constexpr Kind kind{"price", "移动止损: 中线 = 收盘 − 1 个 band, 只升不降 (价涨即跟着抬, 回落不降), 收盘跌到线上即触发, 之后自 收盘 − band 重新起算; 无参数"};
-  size_t d = 0;
-  double v = kNaN; // 下一根起算的线 (顺向坐标)
-  void day(size_t x, const P &) { d = x; }
-  float bar(size_t i) {
-    const double g = N[d], x = s * t.c[i];
-    if (!(g > 0)) {
-      v = kNaN;
-      return kNaN;
-    }
-    const double o = std::isnan(v) ? x - g : std::max(v, x - g);
-    v = x <= o ? x - g : o;
-    return static_cast<float>(s * o);
-  }
+  static constexpr Kind kind{"price", "价格本身: 中线 = 收盘 (逐根, 无参数)"};
+  void day(size_t, const P &) {}
+  float bar(size_t i) const { return t.c[i]; }
 };
 
 // ema: α = 2 / (k + 1); 第 i 根的平滑系数 = max(α, 1 / (i + 1)) (前段 = 已有值的均值)
@@ -269,19 +258,20 @@ struct Ema : Ctx {
   float bar(size_t i) { return static_cast<float>(v += std::max(a, 1.0 / static_cast<double>(i + 1)) * (t.c[i] - v)); }
 };
 
-// kama: 效率比 ER = |收 − w 根前收| / 近 w 根路程 (w = min(round(n), i)); 平滑系数 (ER · (2/3 − α_slow) + α_slow)², α_slow = √(2 / (L + 1)):
-//   震荡 (ER → 0) 时等效 EMA 跨度 L, 趋势 (ER → 1) 时贴近价格
+// kama: 效率比 ER = |收 − w 根前收| / 近 w 根路程 (w = min(round(n), i)); 平滑系数 (ER · (α_fast − α_slow) + α_slow)², α = √(2 / (跨度 + 1)):
+//   震荡 (ER → 0) 时等效 EMA 跨度 L, 趋势 (ER → 1) 时等效跨度 kFast 日 (两端都以日计, 乘每日根数; 日线上 α_fast = 2/3)
 struct Kama : Ctx {
-  static constexpr Kind kind{"kama", "考夫曼自适应均线: n = 效率比窗, L = 震荡跨度", {kDays, {"L", 40, 4, 250, 1, true}}};
+  static constexpr Kind kind{"kama", "考夫曼自适应均线: n = 效率比窗, L = 震荡跨度; 趋势时跨度 3.5 日", {kDays, {"L", 40, 4, 250, 1, true}}};
+  static constexpr double kFast = 3.5; // 趋势端跨度 (日)
   size_t k = 0;
-  double as = 0, v = t.c[0];
+  double af = std::sqrt(2 / (kFast * static_cast<double>(t.S) + 1)), as = 0, v = t.c[0];
   void day(size_t, const P &p) {
     k = len(p[0]), as = std::sqrt(2 / (p[1] + 1));
-    assert(k > 0 && p[1] > 3 && "kama 窗口 / 震荡跨度");
+    assert(k > 0 && p[1] > kFast * static_cast<double>(t.S) && "kama 窗口 / 震荡跨度 (须慢于趋势端)");
   }
   float bar(size_t i) {
     const size_t w = std::min(k, i);
-    const double sum = t.trip[i] - t.trip[i - w], er = sum > 0 ? std::fabs(t.c[i] - t.c[i - w]) / sum : 0, sc = er * (2 / 3.0 - as) + as;
+    const double sum = t.trip[i] - t.trip[i - w], er = sum > 0 ? std::fabs(t.c[i] - t.c[i - w]) / sum : 0, sc = er * (af - as) + as;
     return static_cast<float>(v += sc * sc * (t.c[i] - v));
   }
 };
