@@ -8,6 +8,8 @@
 //           与全市场截面 (活跃等权市场收益 → 特质波动 / β; 均线截面回归 → 趋势预期收益; 三项波动合成正交 → 残差波动).
 //           截面一律取活跃: 切片前让状态机沿全 D 轴只推事件 + 状态口, 出全史活跃掩码 (经 Fund live 口供节点读,
 //           另经 live() 给 all 池逐日成员).
+//           估值史 (Hist): 切片前逐资产让状态机沿全 D 轴再走一遍, 出七口 (EP / BP / SP / CP / DY / ROE / ROA) 的
+//           5 年滚动加权分位 + 5 年最低档 band 近 3 年二次拟合曲度 (口径同 Market VAL 页), 只留切片窗口.
 //           每格只用 ≤ T 收盘的数据 (行 T+1 起可见), 对 TS 是与基本面同级的日频 PIT 输入; 截面归约按固定资产块定序,
 //           结果与线程数无关. 各窗按可得史扩张 (数据起点 / 新股同规则), 有价次日起即有值.
 //   Stream  per-资产日频状态机 (Fund 节点各持一个). advance_to(d) 沿 D 轴逐日推进到 d (回测日之间的非回测日也走,
@@ -15,7 +17,7 @@
 //           fp16 存不下的极值也归 NaN). 总算力 = per-A 沿 D 轴一遍, 与预计算相同.
 //
 // PIT 口径 (row D = D 日盘前可知; 逐表见 .cpp GridScan / EventScan, Fund 节点前另列 L_1day 对齐):
-//   cutoff=-1 (T 盘后, row T+1 起可见): bar1d.close / shares.total 收盘口 (收盘市值) / margin_trading_detail / industry / dividend / financial_ttm / balance / income / forecast / 行情派生
+//   cutoff=-1 (T 盘后, row T+1 起可见): bar1d.close / shares.total 收盘口 (收盘市值) / margin_trading_detail / industry / dividend / financial_ttm / balance / income / forecast / 行情派生 / 估值史
 //   cutoff=0  (T 盘前可知): status(st/susp), shares, limit_price, bar1d.pre_close / adjust_factor (交易所盘前公布前收 / 除权事先公告)
 //   涨跌停价: row T 即 "T 当日适用涨跌停" (由 pre_close(T) 推出), 直接配盘中实时价判触板.
 //   D 轴 = 交易日历截到 today. 库末日 ≤ last_day: 行 D 所读各表本地已齐到 D 盘后 / D+1 盘前, 且 D+1 在轴内

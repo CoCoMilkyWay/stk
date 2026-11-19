@@ -143,18 +143,18 @@ enum PickMode : int { kPickMany,  // 多选 (NAV / FLOW)
                       kPickOne }; // 单选, 再点 = 取消 (VAL / MARGIN / CTA)
 inline constexpr int kPicks = 2;
 
-// CTA 页: 设定 (进请求; 标的 = kPickOne 那一行) + 两图同一 x 视野 + 区间条 + 光标
+// CTA 页: 设定 (进请求; 标的 = kPickOne 那一行) + 三图同一 x 视野 + 区间条 + 光标
 struct CtaState {
   cta::Spec spec;
   Sent<CtaRequest> sent;  // 上次发出的
   bool editing = false;   // 数值框编辑中 (spec 未定, 不发请求)
   Quote::Ref fit;         // x 视野所属的标的: 换标的即回全段, 只改设定保留缩放
-  double x0 = 0, x1 = 1;  // 两图 x 视野 (有效根下标)
+  double x0 = 0, x1 = 1;  // 三图 x 视野 (有效根下标)
   DayRange range;         // 区间条 (有根的日下标; 每帧由 x 视野定, 拖了反写视野)
   bool fit_y = true;      // 价格轴跟随视野内数据 (框选放大后 = 用框的 y)
   bool boxing = false;    // 价格图上框选进行中
-  XZoom zoom;             // 净值图横向框选
-  int cursor = -1;        // 光标 (两图上可拖的竖线) 所在有效根 (−1 = 未放; 换标的重放)
+  XZoom zoom;             // 净值 / 回撤图横向框选 (两图同画)
+  int cursor = -1;        // 光标 (三图上可拖的竖线) 所在有效根 (−1 = 未放; 换标的重放)
   bool path_open = false; // 参数轨迹展开
   bool nav_log = true;    // 净值图 y 轴: log / 绝对
 };

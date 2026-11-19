@@ -2,8 +2,8 @@
 
 // 单资产执行: 逐根链 drive (日 × 根) = 源 (日首 day(d), 逐根出刀) → 成交 Fill (前根仓位 + 本根的刀 + 成本) → 汇 (逐根收 Fill 的可调用);
 //   仓位 = 刀的目标仓位, 按本根收盘价调到; 调参 / 策略 / 买入持有同一条链, 只换源与汇:
-//     源: Hold (买入持有) / Steps (只有减仓线: 静态档线) / Laddered (完整分层: 减仓核 + 分层 Ladder)
-//     减仓调参 = Steps → 保敞口前缀; 跟随调参 = Laddered (定参, 录逐笔) → 空汇 (Tune.hpp); 策略 = Laddered (变参) → Run + Cuts (Trace.hpp); 买入持有 = Hold → Run
+//     源: Hold (买入持有) / Steps (减仓线当静态档线) / Laddered (完整分层: 减仓线核 + 分层 Ladder)
+//     减仓线调参 = Steps → 保敞口前缀; 加仓线调参 = Laddered (定参, 录逐笔) → 空汇 (Tune.hpp); 策略 = Laddered (变参) → Run + Cuts (Trace.hpp); 买入持有 = Hold → Run
 //   成本无状态, 前根仓位只在 drive 里记; 汇只读 Fill + Tape
 //   仓位 w ∈ [−1, 1]: 正 = 多, 负 = 空
 //   损益: 实际按本根收盘成交, 净 r = p · a − 佣金 − 印花税 − 冲击; p = 前根收盘调到的仓位, w = 本根收盘调到的, a = 资产本根收益
@@ -75,7 +75,7 @@ struct Hold {
   Cut operator()(size_t) const { return {.w = 1}; }
 };
 
-// 静态档线: 减仓核 c 各日同参 p (轴的单位); 第 r 份 (r ∈ [1, U]) 持有 ⇔ s · 收 > s · (中线 − s · r · g); 仓位 = s · 持有份数 / U, 未就绪 = 0
+// 静态档线: 减仓线核 c 各日同参 p (轴的单位); 第 r 份 (r ∈ [0, U)) 持有 ⇔ s · 收 ≥ s · (减仓线 − s · r · g); 仓位 = s · 持有份数 / U, 未就绪 = 0
 template <class K>
 struct Steps {
   K c;
@@ -87,22 +87,22 @@ struct Steps {
     const float m = c.bar(i);
     if (!(m > 0 && g > 0))
       return {.mid = m};
-    const int out = std::clamp(static_cast<int>(std::floor(c.s * (m - c.t.c[i]) / g)), 0, U); // 跌到了几条
+    const int out = std::clamp(static_cast<int>(std::ceil(c.s * (m - c.t.c[i]) / g)), 0, U); // 跌破了几条
     return {.mid = m, .h = static_cast<float>(g), .w = c.s * static_cast<float>(U - out) / static_cast<float>(U)};
   }
 };
 
-// 完整分层: 减仓核 c (日 d 用 pr[d]) → 分层 lad (日 d 成交的份的跟随线用 pf[d], 之后不变); 参数为轴的单位;
+// 完整分层: 减仓线核 c (日 d 用 pr[d]) → 分层 lad (日 d 新卖出的份的加仓线用 pa[d], 之后不变); 参数为轴的单位;
 //   未选参日 (on[d] = 0) = Hold (分层复位), 刀未就绪 = Hold; 核逐根都走 (状态接续)
-template <class K, class F>
+template <class K, class A>
 struct Laddered {
   K c;
-  Ladder<F> lad;
-  const std::vector<P> &pr, &pf;  // [日]
+  Ladder<A> lad;
+  const std::vector<P> &pr, &pa;  // [日]
   const std::vector<uint8_t> &on; // [日]
   size_t d = 0;
   void day(size_t x) {
-    c.day(d = x, K::kind.bars(pr[x], c.t.S)), lad.day(x, F::kind.bars(pf[x], c.t.S));
+    c.day(d = x, K::kind.bars(pr[x], c.t.S)), lad.day(x, A::kind.bars(pa[x], c.t.S));
     if (!on[x])
       lad.reset(c.t.days.off[x]);
   }

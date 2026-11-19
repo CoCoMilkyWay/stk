@@ -250,6 +250,17 @@ inline void x_ticks_inside() {
       dl.AddText(ImVec2(k.PixelPos + 3.0f, yb - k.LabelSize.y - 1.0f), a.ColorTxt, a.Ticker.GetText(t));
   ImPlot::PopPlotClipRect();
 }
+// 当前图 Y1 的刻度标签画在图区内右边, 右对齐、贴各刻度线上方 (轴设 NoTickLabels 时用: 不占轴旁一列, 上下各图绘图区同宽; 图内、setup 锁定之后调)
+inline void y_ticks_inside() {
+  const ImPlotAxis &a = ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1];
+  const float xr = ImPlot::GetPlotPos().x + ImPlot::GetPlotSize().x;
+  ImDrawList &dl = *ImPlot::GetPlotDrawList();
+  ImPlot::PushPlotClipRect();
+  for (int t = 0; t < a.Ticker.TickCount(); ++t)
+    if (const ImPlotTick &k = a.Ticker.Ticks[t]; k.ShowLabel && k.TextOffset >= 0)
+      dl.AddText(ImVec2(xr - k.LabelSize.x - 3.0f, k.PixelPos - k.LabelSize.y - 1.0f), a.ColorTxt, a.Ticker.GetText(t));
+  ImPlot::PopPlotClipRect();
+}
 
 // 区间条的日段 [d0, d1) (日轴下标) + 拖动态
 struct DayRange {

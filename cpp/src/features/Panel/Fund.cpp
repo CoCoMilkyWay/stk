@@ -2,7 +2,7 @@
 //
 // 结构: Panel::build   parquet 月度分片 → 网格 (raw cutoff 单点应用, ffill, 切到 [首回测日−15, 末]) + per-A 事件链 (v 升序)
 //                     全部 16 张月度表登记进同一个 fundamental::Scan (列裁剪 + 字典键 + 跨表重段先跑)
-//                     切片前另从全史网格扫出行情派生 (build_market: 长窗时序 + 全市场截面)
+//                     切片前另从全史网格扫出行情派生 (build_market: 长窗时序 + 全市场截面) 与估值史 (build_hist: 逐资产 5 年分位 + 底档曲度)
 //       Stream        per-A 沿 D 轴逐日推进的状态机 (估值分母 / 因子 raw / filter), 与按事件批量前扫逐日等价:
 //                       ttm/balance 取 latest (上市前事件丢弃), 年报 annuals, 分红按报告期取窗 (近 4 季 / 近 3 会计年度双阈值),
 //                       预亏/营收区间 = "d < max{off : on ≤ d}" (区间并集的流式形式), 行业 replay, trading_st 连续计数
@@ -327,6 +327,27 @@ struct Market {
   }
 };
 
+// 估值史网格 (build_hist 产出, 只留切片窗口; 行 = 状态日, 同 Fund 口); 七口序 = Fund::<口>_pct5y / <口>_lo_curv 序.
+// fp16 存 (落盘同精度, 逐位不变; 超 fp16 的值存前已归 NaN)
+enum HistVal : std::size_t {
+  hv_pe,
+  hv_pb,
+  hv_ps,
+  hv_pcf,
+  hv_dy,
+  hv_roe, // 质量口起 (键 = 值本身, 最低档不换价格线)
+  hv_roa,
+  HV_COUNT
+};
+struct Hist {
+  int g0 = 0, n_g = 0;
+  std::vector<_Float16> pct[HV_COUNT], curv[HV_COUNT]; // [a·n_g + (d − g0)]
+  float at(const std::vector<_Float16> &g, int a, int d) const {
+    assert(d >= g0 && d < g0 + n_g && "估值史窗口不覆盖该日");
+    return static_cast<float>(g[static_cast<std::size_t>(a) * static_cast<std::size_t>(n_g) + static_cast<std::size_t>(d - g0)]);
+  }
+};
+
 } // namespace
 
 // ============================================================================
@@ -337,6 +358,7 @@ struct Data {
   Meta meta;
   PitPool pit;
   Market market;
+  Hist hist;
   int axes_warmup_d = 0; // dividend_st 数据轴 warmup: 轴起点 + 3 年
 };
 
@@ -1603,6 +1625,7 @@ inline int year_of_d(const Axes &axes, int d) {
 inline int first_d_of_year(const Axes &axes, int y) { return axes.lower(y * 10000 + 101); }
 
 std::vector<std::uint8_t> univ_mask(const Data &data); // 定义在 State 之后
+Hist build_hist(const Data &data, int g0);             // 同上
 
 // Panel 读的各表 → L_1day 行 D (= D+1 盘前态) 要它本地齐到的数据日 (cutoff 见 GridScan / EventScan; dense 见 fundamental::covered)
 enum class Need : std::uint8_t {
@@ -1782,6 +1805,9 @@ void Panel::build(const std::vector<Ymd> &dates) {
   // ---- 行情派生 (全市场截面) ----
   data->market = build_market(axes, pit, volume, g0);
   std::vector<float>().swap(volume);
+
+  // ---- 估值史 (逐资产全史状态机, 须在切片前、全史资产态掩码之后) ----
+  data->hist = build_hist(*data, g0);
 
   // ---- 网格切片: 其余历史只在事件链上 ----
   pit.slice(n_a, g0);
@@ -2088,6 +2114,39 @@ struct State {
     out[Fund::flt_div] = (d >= D.axes_warmup_d && !(lo > 0.0f && lo >= hi * kDivStable)) ? 1.0f : 0.0f;
   }
 
+  // 收盘市值 + 估值分母 + 质量口 raw (emit 与估值史 build_hist 共用; 金额 [元], roe / roa [%], dy [ratio]; 缺失 = NaN)
+  struct Base {
+    float m, np, eq, rev, cf, roe, roa, dy;
+  };
+  Base base(int d) const {
+    const float m = mcap_raw(d);
+    const FinancialTtmEv *t = ttm();
+    Base b{m, NaNF, NaNF, rev_ttm(), NaNF, NaNF, NaNF, NaNF};
+    if (t) {
+      const float n = t->net_profit_to_parent_shareholders_ttm;
+      b.np = (std::isfinite(n) && n != 0.0f) ? n : NaNF;
+      const float c = t->net_cffoa_ttm;
+      b.cf = (std::isfinite(c) && c != 0.0f) ? c : NaNF;
+    }
+    // -- 权益 MRQ / roe / roa (avg5 分母) --
+    if (!latest_by_rd.empty()) {
+      const float e = latest_by_rd.rbegin()->second.common_equity;
+      b.eq = (std::isfinite(e) && e != 0.0f) ? e : NaNF;
+      if (t) {
+        const float n = t->net_profit_to_parent_shareholders_ttm;
+        const float e5 = ttm_window_avg(t->report_date, latest_by_rd,
+                                        &FinancialBalanceEv::common_equity);
+        b.roe = (std::isfinite(n) && std::isfinite(e5) && e5 > 0.0f) ? (n / e5) * 100.0f : NaNF;
+        const float na = t->net_profit_ttm;
+        const float a5 = ttm_window_avg(t->report_date, latest_by_rd, &FinancialBalanceEv::total_assets);
+        b.roa = (std::isfinite(na) && std::isfinite(a5) && a5 > 0.0f) ? (na / a5) * 100.0f : NaNF;
+      }
+    }
+    // -- dy: 近 4 季报告期税前分红总额 / 收盘市值 --
+    b.dy = (std::isfinite(m) && m > 0.0f) ? std::max(div_yr[0] / m, 0.0f) : NaNF;
+    return b;
+  }
+
   // 当日行 (布局 Fund::Out; 亿单位; fp16 饱和: 极值 / +inf 违约束标记 → NaN)
   void emit(int d, float *out) const {
     const Axes &axes = D.axes;
@@ -2101,40 +2160,18 @@ struct State {
     emit_status(d, out);
     const std::uint8_t u = p.at(p.univ, a, d); // 状态口的全史判定结果 (univ_mask)
     out[Fund::live] = (u & kLive) ? 1.0f : 0.0f;
-    const float m = mcap_raw(d);
+    const auto [m, np, eq, rev, cf, roe, roa, dy] = base(d);
     const FinancialTtmEv *t = ttm();
 
-    // -- 财务分母 / cffoa 改善 --
-    const float rev = rev_ttm();
-    float np = NaNF, cf = NaNF, cf_chg = NaNF, cf_yoy = NaNF;
+    // -- cffoa 改善 --
+    float cf_chg = NaNF, cf_yoy = NaNF;
     if (t) {
-      const float n = t->net_profit_to_parent_shareholders_ttm;
-      np = (std::isfinite(n) && n != 0.0f) ? n : NaNF;
-      const float c = t->net_cffoa_ttm;
-      cf = (std::isfinite(c) && c != 0.0f) ? c : NaNF;
       const float c0 = t->net_cffoa_ttm, c4 = t->net_cffoa_ttm_ly;
       cf_chg = (std::isfinite(m) && m > 0.0f && std::isfinite(c0) && std::isfinite(c4))
                    ? std::tanh((c0 - c4) / m)
                    : NaNF;
       cf_yoy = (std::isfinite(c0) && std::isfinite(c4) && c4 != 0.0f) ? (c0 - c4) / std::fabs(c4) : NaNF;
     }
-    // -- 权益 MRQ / roe / roa (avg5 分母) --
-    float eq = NaNF, roe = NaNF, roa = NaNF;
-    if (!latest_by_rd.empty()) {
-      const float e = latest_by_rd.rbegin()->second.common_equity;
-      eq = (std::isfinite(e) && e != 0.0f) ? e : NaNF;
-      if (t) {
-        const float n = t->net_profit_to_parent_shareholders_ttm;
-        const float e5 = ttm_window_avg(t->report_date, latest_by_rd,
-                                        &FinancialBalanceEv::common_equity);
-        roe = (std::isfinite(n) && std::isfinite(e5) && e5 > 0.0f) ? (n / e5) * 100.0f : NaNF;
-        const float na = t->net_profit_ttm;
-        const float a5 = ttm_window_avg(t->report_date, latest_by_rd, &FinancialBalanceEv::total_assets);
-        roa = (std::isfinite(na) && std::isfinite(a5) && a5 > 0.0f) ? (na / a5) * 100.0f : NaNF;
-      }
-    }
-    // -- dy: 近 4 季报告期税前分红总额 / 收盘市值 --
-    const float dy = (std::isfinite(m) && m > 0.0f) ? std::max(div_yr[0] / m, 0.0f) : NaNF;
 
     // 股本 / 估值分母 (亿单位)
     out[Fund::total_shares] = pos(p.at(p.total_shares, a, d)) * 1e-8f;
@@ -2233,6 +2270,13 @@ struct State {
       out[Fund::trend] = mkt(mk_trend);
     }
 
+    // ---- 估值史 (逐资产全史预计算) ----
+    static_assert(Fund::roa_pct5y == Fund::pe_pct5y + std::size_t{hv_roa} && Fund::roa_lo_curv == Fund::pe_lo_curv + std::size_t{hv_roa}, "估值史七口序须与 Fund::Out 一致");
+    for (std::size_t k = 0; k < HV_COUNT; ++k) {
+      out[Fund::pe_pct5y + k] = D.hist.at(D.hist.pct[k], a, d);
+      out[Fund::pe_lo_curv + k] = D.hist.at(D.hist.curv[k], a, d);
+    }
+
     // ---- 利润表 / 现金流量表 三口径 (亿元; eps 元) ----
     {
       float q[INC_COUNT], ttm[INC_COUNT], lyr[INC_COUNT];
@@ -2304,6 +2348,186 @@ std::vector<std::uint8_t> univ_mask(const Data &data) {
     }
   });
   return m;
+}
+
+// ============================================================================
+// 估值史 build_hist: 全史状态机 + 全史网格 (切片前, g0 = 0) → Hist (只留 [g0, n_d)); 逐资产, 无截面.
+//   口径同 Market VAL 页 (gui/task_market/ui/LinesView.cpp roll_of), 行 d 的值 = 数据日 d−1 收盘后可知 (同 dy_ttm).
+//   七口 v: 估值口 = 收益率 EP / BP / SP / CP = 归母净利 TTM / 归母权益 MRQ / 营收 TTM / 经营现金流 TTM ÷ 收盘总市值, DY = dy_ttm;
+//          质量口 = roe_ttm / roa_ttm. 可算点 = 活跃 (univ kLive) ∧ v 有限 (收益率 ≤ 0 照排, 在最贵端)
+//   键: 估值口 = 贵度 −v (高 = 贵, 即倍数口径的分位), 质量口 = v (高 = 好)
+//   窗 = (日 − 5 自然年, 日] 内可算点; 点 u 的权 = 1 − exp(−kHistK (1 − 距今日历天 / 窗跨度)), 窗跨度 = 日 − max(5 年前, 首个可算日);
+//   首个可算日起史不满 1 年 → 不出
+//   <口>_pct5y   = 窗内键 ≤ 当日的权重和 / 权重和 (%; 当日不可算 → NaN)
+//   最低档线 L   = 窗内键加权 kHistLo 分位处的 v (估值口 = 最便宜档, 质量口 = 最差档);
+//                 估值口换成价格线 P^adj · v / L (VAL 主图最下一条 band; L ≤ 0 → 无, v ≤ 0 照算 = 价格线落到 ≤ 0), 质量口 = L 本身
+//   <口>_lo_curv = (日 − 3 自然年, 日] 内最低档线对时间 t (年) 的 OLS 二次拟合 y = a + b t + c t² 的 2c (年⁻²);
+//                 估值口 y 除以窗内均值 (均值 ≤ 0 → NaN), 质量口原值 (百分点); 当日无线 / 窗内首点距今不满 1 年 / 点数 < kCurvMin → NaN.
+//                 < 0 = 底部拐头向下 (基本面预期转弱), > 0 = 拐头向上
+//   遍: per-A 并行: 状态机沿全 D 轴出七口 v → 各口有序窗 (逐日二分插入 / 出窗删除) 出分位与最低档线 → 前缀和出各日曲度;
+//       一律全史算 (前缀和原点 = 首个有线日, 与切片无关) ⇒ 续算 ≡ 全量
+// ============================================================================
+constexpr int kHistYears = 5, kCurvYears = 3, kHistReady = 1; // 分位 / 最低档窗, 曲度窗, 最短史 (自然年)
+constexpr double kHistLo = 0.05;                              // 最低档 = VAL band 首档 (kBandQs[0])
+constexpr double kHistK = 10.0;                               // 窗尾降权速率 (VAL kRollK)
+constexpr int kCurvMin = 120;                                 // 曲度最少点数
+constexpr int kCurvAcc = 8;                                   // 前缀和: n | Σ t | Σ t² | Σ t³ | Σ t⁴ | Σ y | Σ t y | Σ t² y
+
+Hist build_hist(const Data &data, int g0) {
+  const Axes &axes = data.axes;
+  const PitPool &p = data.pit;
+  const int n_a = axes.n_a(), n_d = axes.n_d(), n_g = n_d - g0;
+  assert(p.g0 == 0 && p.n_g == n_d && "build_hist 须在切片前");
+  assert(p.univ.size() == static_cast<std::size_t>(n_a) * static_cast<std::size_t>(n_d) && "资产态掩码须先于估值史");
+  const auto sz = [](int i) { return static_cast<std::size_t>(i); };
+  const auto days_of = [](Ymd y) { return static_cast<int>(misc::to_days(y).time_since_epoch().count()); };
+  const auto before = [&](int d, int years) { return axes.dates[sz(d)] - years * 10000; }; // 自然年平移 (同 VAL years_before)
+
+  // 各日共用: 日历天 / 5 年窗首日 / 3 年窗首日 / 5 年前的日历天 (窗跨度下界)
+  std::vector<int> dd(sz(n_d)), lo5(sz(n_d)), lo3(sz(n_d)), dd5(sz(n_d));
+  for (int d = 0; d < n_d; ++d) {
+    dd[sz(d)] = days_of(axes.dates[sz(d)]);
+    lo5[sz(d)] = axes.floor(before(d, kHistYears)) + 1;
+    lo3[sz(d)] = axes.floor(before(d, kCurvYears)) + 1;
+    dd5[sz(d)] = days_of(before(d, kHistYears));
+  }
+
+  Hist h;
+  h.g0 = g0, h.n_g = n_g;
+  for (std::size_t k = 0; k < HV_COUNT; ++k) {
+    h.pct[k].assign(sz(n_a) * sz(n_g), static_cast<_Float16>(NaNF));
+    h.curv[k].assign(sz(n_a) * sz(n_g), static_cast<_Float16>(NaNF));
+  }
+  const auto put = [&](std::vector<_Float16> &g, int a, int d, double x) {
+    g[sz(a) * sz(n_g) + sz(d - g0)] = static_cast<_Float16>(std::isfinite(x) && std::fabs(x) < 65504.0 ? x : NaND);
+  };
+
+  misc::exec::ForkJoin pool(misc::exec::hw());
+  pool.rows(n_a, [&](int a0, int a1, int) {
+    std::vector<float> v[HV_COUNT];
+    for (auto &x : v)
+      x.resize(sz(n_d));
+    std::vector<double> px(sz(n_d)), band(sz(n_d)), wt, ps((sz(n_d) + 1) * kCurvAcc);
+    std::vector<int> win, nx(sz(n_d) + 1);
+    int wt_T = -1;
+    for (int a = a0; a < a1; ++a) {
+      State s(data, a);
+      for (int d = 0; d < n_d; ++d) {
+        s.step(d);
+        const State::Base b = s.base(d);
+        const bool live = (p.at(p.univ, a, d) & kLive) != 0;
+        const bool cap = live && std::isfinite(b.m) && b.m > 0.0f;
+        v[hv_pe][sz(d)] = cap ? b.np / b.m : NaNF;
+        v[hv_pb][sz(d)] = cap ? b.eq / b.m : NaNF;
+        v[hv_ps][sz(d)] = cap ? b.rev / b.m : NaNF;
+        v[hv_pcf][sz(d)] = cap ? b.cf / b.m : NaNF;
+        v[hv_dy][sz(d)] = live ? b.dy : NaNF;
+        v[hv_roe][sz(d)] = live ? b.roe : NaNF;
+        v[hv_roa][sz(d)] = live ? b.roa : NaNF;
+        // 后复权收盘 (行 d = 数据日 d−1: close 行 d × adj 行 d−1)
+        px[sz(d)] = d > 0 ? static_cast<double>(p.at(p.close, a, d)) * static_cast<double>(p.at(p.adj_factor, a, d - 1)) : NaND;
+      }
+
+      for (std::size_t k = 0; k < HV_COUNT; ++k) {
+        const float *x = v[k].data();
+        const bool up = k >= hv_roe;
+        const auto ok = [&](int u) { return std::isfinite(x[u]); };
+        const auto key = [&](int u) { return up ? x[u] : -x[u]; };
+        const auto by_key = [&](int i, int j) { return key(i) < key(j); };
+
+        // ---- 有序窗 → 分位 + 最低档线 ----
+        win.clear();
+        int first = -1, t0 = 0; // 首个可算日 / 未出窗的首日
+        for (int d = 0; d < n_d; ++d) {
+          band[sz(d)] = NaND;
+          if (ok(d)) {
+            if (first < 0)
+              first = d;
+            win.insert(std::upper_bound(win.begin(), win.end(), d, by_key), d);
+          }
+          for (; t0 < lo5[sz(d)]; ++t0)
+            if (ok(t0)) {
+              const auto [e0, e1] = std::equal_range(win.begin(), win.end(), t0, by_key);
+              const auto e = std::find(e0, e1, t0);
+              assert(e != e1);
+              win.erase(e);
+            }
+          if (win.empty() || axes.dates[sz(first)] > before(d, kHistReady))
+            continue;
+          const int T = dd[sz(d)] - std::max(dd5[sz(d)], dd[sz(first)]);
+          assert(T > 0);
+          if (T != wt_T) {
+            wt_T = T;
+            wt.resize(sz(T) + 1);
+            for (int g = 0; g <= T; ++g)
+              wt[sz(g)] = 1.0 - std::exp(-kHistK * (1.0 - static_cast<double>(g) / T));
+          }
+          const auto w_of = [&](int u) { return wt[sz(dd[sz(d)] - dd[sz(u)])]; };
+          double W = 0.0, le = 0.0;
+          const float m = ok(d) ? key(d) : 0.0f;
+          for (int u = t0; u <= d; ++u)
+            if (ok(u)) {
+              const double w = w_of(u);
+              W += w, le += key(u) <= m ? w : 0.0;
+            }
+          if (ok(d) && d >= g0)
+            put(h.pct[k], a, d, 100.0 * le / W);
+          double cw = 0.0;
+          std::size_t i = 0;
+          for (; i + 1 < win.size(); ++i)
+            if ((cw += w_of(win[i])) >= kHistLo * W)
+              break;
+          const double L = x[win[i]];
+          band[sz(d)] = up ? L : (L > 0.0 ? px[sz(d)] * x[d] / L : NaND);
+        }
+
+        // ---- 最低档线前缀和 (t = 距首个有线日的年数) → 各日 3 年窗二次 OLS (按窗内 t 均值中心化) ----
+        nx[sz(n_d)] = n_d; // nx[u] = u 起首个有线日
+        for (int d = n_d; d-- > 0;)
+          nx[sz(d)] = std::isfinite(band[sz(d)]) ? d : nx[sz(d) + 1];
+        if (nx[0] == n_d)
+          continue;
+        const int o = dd[sz(nx[0])];
+        std::fill_n(ps.begin(), kCurvAcc, 0.0);
+        for (int d = 0; d < n_d; ++d) {
+          const double *q0 = ps.data() + sz(d) * kCurvAcc;
+          double *q1 = ps.data() + (sz(d) + 1) * kCurvAcc;
+          const double y = band[sz(d)];
+          if (!std::isfinite(y)) {
+            std::copy_n(q0, kCurvAcc, q1);
+            continue;
+          }
+          const double t = (dd[sz(d)] - o) / 365.25, t2 = t * t;
+          const double r[kCurvAcc] = {1.0, t, t2, t2 * t, t2 * t2, y, t * y, t2 * y};
+          for (int j = 0; j < kCurvAcc; ++j)
+            q1[j] = q0[j] + r[j];
+        }
+        for (int d = g0; d < n_d; ++d) {
+          const int l = lo3[sz(d)];
+          if (!std::isfinite(band[sz(d)]) || axes.dates[sz(nx[sz(l)])] > before(d, kHistReady))
+            continue;
+          double S[kCurvAcc];
+          for (int j = 0; j < kCurvAcc; ++j)
+            S[j] = ps[(sz(d) + 1) * kCurvAcc + sz(j)] - ps[sz(l) * kCurvAcc + sz(j)];
+          const double n = S[0];
+          if (n < kCurvMin)
+            continue;
+          const double c = S[1] / n, c2 = c * c; // 中心
+          const double m2 = S[2] - 2.0 * c * S[1] + c2 * n;
+          const double m3 = S[3] - 3.0 * c * S[2] + 3.0 * c2 * S[1] - c2 * c * n;
+          const double m4 = S[4] - 4.0 * c * S[3] + 6.0 * c2 * S[2] - 4.0 * c2 * c * S[1] + c2 * c2 * n;
+          const double y0 = S[5], y1 = S[6] - c * S[5], y2 = S[7] - 2.0 * c * S[6] + c2 * S[5];
+          // [n 0 m2; 0 m2 m3; m2 m3 m4] (a, b, c₂) = (y0, y1, y2), Cramer 解 c₂
+          const double det = n * (m2 * m4 - m3 * m3) - m2 * m2 * m2;
+          if (!(det > 0.0))
+            continue;
+          const double q = (n * (m2 * y2 - m3 * y1) - y0 * m2 * m2) / det, mean = y0 / n;
+          put(h.curv[k], a, d, up ? 2.0 * q : (mean > 0.0 ? 2.0 * q / mean : NaND));
+        }
+      }
+    }
+  });
+  return h;
 }
 } // namespace
 

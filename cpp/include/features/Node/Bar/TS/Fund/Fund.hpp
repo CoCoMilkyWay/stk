@@ -13,6 +13,12 @@
   X(item##_q, CAT1, AUTO, EN " Q", CN "单季", DESC "(单季, " UNIT ")", SYM R"(^{Q}_{D})", TS(Fund, item##_q, None))            \
   X(item##_ttm, CAT1, AUTO, EN " TTM", CN "TTM", DESC "(滚动四季, " UNIT ")", SYM R"(^{TTM}_{D})", TS(Fund, item##_ttm, None)) \
   X(item##_lyr, CAT1, AUTO, EN " LYR", CN "上年", DESC "(上年年报, " UNIT ")", SYM R"(^{LYR}_{D})", TS(Fund, item##_lyr, None))
+// 估值史一口两行: item → item_pct5y (近 5 年加权分位) / item_lo_curv (5 年最低档 band 近 3 年二次拟合曲度); 口径见 Panel/Fund.cpp build_hist
+#define FUND_ROWS_HIST(X, CAT1, item, EN, CN, KEY, BAND, SYM)                                                                                                                                 \
+  X(item##_pct5y, CAT1, AUTO, EN " Pct 5Y", CN "5年分位", "近5年(自然年,窗尾降权)" KEY "的加权分位(0~100; 史不满1年→NaN)", R"(\mathrm{pctl}_{5y}()" SYM R"())", TS(Fund, item##_pct5y, None)) \
+  X(item##_lo_curv, CAT1, AUTO, EN " Low Band Curv", CN "底档曲度", BAND "近3年对时间(年)二次OLS的2c(年^-2; <0=拐头向下)", R"(2c:\ L^{lo}_{t}()" SYM R"() = a + bt + ct^2)", TS(Fund, item##_lo_curv, None))
+#define FUND_BAND_VAL "5年最低档band价格线(后复权价×收益率/窗内贵度0.05加权分位的收益率)/窗内均值, "
+#define FUND_BAND_QUA "5年最低档band(窗内0.05加权分位, 百分点), "
 // 资产负债表 MRQ 单行
 #define FUND_ROW_BS(X, CAT1, item, EN, CN, DESC, SYM) \
   X(item, CAT1, AUTO, EN " MRQ", CN "MRQ", DESC "(最近报告期, 亿元)", SYM R"(^{MRQ}_{D})", TS(Fund, item, None))
@@ -62,6 +68,13 @@
   X(resvol, CAT1, AUTO, "Residual Volatility", "残差波动率", "活跃截面: 250日波动/12月对数极差/特质波动 三项z按近250日相关阵第一主成分合成, 对β与log市值正交后标准化(活跃外NaN)", R"(\frac{e}{\sigma_e},\ \sum_k w_k z_k = a + b\beta + c\ln\mathrm{mcap} + e)", TS(Fund, resvol, None)) \
   X(beta, CAT1, AUTO, "Market Beta", "市场贝塔", "近156周周收益(5日滚动, 逐日采样)对等权市场周收益OLS斜率(≥52周; 史不足按可得史扩张)", R"(\frac{\mathrm{Cov}(r^{w}, m^{w})}{\mathrm{Var}(m^{w})})", TS(Fund, beta, None))                                                                \
   X(trend, CAT1, AUTO, "Trend Expected Return", "趋势预期收益", "均线信号MA_L/P×截面回归系数近250日均值(L=3..400; 20日收益; 史不足按可得史扩张)", R"(\sum_L \bar{b}_L \frac{MA_{L,D}}{P_D})", TS(Fund, trend, None))                                                                     \
+  FUND_ROWS_HIST(X, CAT1, pe, "PE", "PE", "EP贵度(高=贵,亏损排最贵端)", FUND_BAND_VAL, R"(-EP)")                                                                                                                                                                                         \
+  FUND_ROWS_HIST(X, CAT1, pb, "PB", "PB", "BP贵度(高=贵,负权益排最贵端)", FUND_BAND_VAL, R"(-BP)")                                                                                                                                                                                       \
+  FUND_ROWS_HIST(X, CAT1, ps, "PS", "PS", "SP贵度(高=贵)", FUND_BAND_VAL, R"(-SP)")                                                                                                                                                                                                      \
+  FUND_ROWS_HIST(X, CAT1, pcf, "PCF", "PCF", "CP贵度(高=贵,烧钱排最贵端)", FUND_BAND_VAL, R"(-CP)")                                                                                                                                                                                      \
+  FUND_ROWS_HIST(X, CAT1, dy, "DY", "股息率", "股息率贵度(高=贵=股息率低)", FUND_BAND_VAL, R"(-DY)")                                                                                                                                                                                     \
+  FUND_ROWS_HIST(X, CAT1, roe, "ROE", "ROE", "ROE TTM(高=ROE高)", FUND_BAND_QUA, R"(ROE)")                                                                                                                                                                                               \
+  FUND_ROWS_HIST(X, CAT1, roa, "ROA", "ROA", "ROA TTM(高=ROA高)", FUND_BAND_QUA, R"(ROA)")                                                                                                                                                                                               \
   FUND_ROW_BS(X, CAT1, bs_ta, "Total Assets", "总资产", "总资产", R"(TA)")                                                                                                                                                                                                               \
   FUND_ROW_BS(X, CAT1, bs_tl, "Total Liabilities", "总负债", "总负债", R"(TL)")                                                                                                                                                                                                          \
   FUND_ROW_BS(X, CAT1, bs_ncl, "Noncurrent Liabilities", "非流动负债", "非流动负债", R"(NCL)")                                                                                                                                                                                           \

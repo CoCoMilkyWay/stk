@@ -26,6 +26,7 @@
 //     industry component / change                            T 盘后                 −1       T ≤ D
 //     日历派生 (list_age / delist_age / flt_new / days_since_report / shares_yoy 回看)   按 D+1 的日历日计
 //     行情派生 (ret_12_1 / ret_1m / turn / ivol / resvol / beta / trend; 全市场预计算, 见 Panel/Fund.hpp)   T 收盘后  −1   T ≤ D
+//     估值史 (<口>_pct5y / <口>_lo_curv; 逐资产全史预计算, 见 Panel/Fund.hpp)                              T 收盘后  −1   T ≤ D
 //   盘前态全部在 D 收盘后至 D+1 开盘前可知 → L_1day 行 D 在 D+1 全天可 act on (实盘: 盘前表 D+1 早盘到齐后补算末行).
 //   库末日 ≤ fund::last_day: 上表各源本地已齐到行 D 所需的数据日 (D 盘后 / D+1 盘前), D+1 在 D 轴内
 //   (Bar 源日历截到此日, fund::Panel::build 断言). 源缺尾日则库停在源齐处, 数据入盘后再追加.
@@ -94,6 +95,21 @@ public:
     resvol,   // [z] 残差波动: dastd / cmra / hsigma 三项 z 按相关阵第一主成分合成, 对 β / log 市值截面正交 (活跃外 NaN)
     beta,     // 近 156 周周收益对等权市场周收益的 β (周收益 = 5 日滚动, 逐日采样)
     trend,    // [20 日收益] 均线截面回归的预期收益 (系数取近 250 日均值)
+    // ---- 估值史 (逐资产全史预计算, 口径同 Market VAL 页; 七口序 = Panel/Fund.cpp HistVal) ----
+    pe_pct5y,   // [%] 近 5 年加权分位: EP 的贵度 (高 = 贵, 亏损排最贵端)
+    pb_pct5y,   // [%] BP 的贵度
+    ps_pct5y,   // [%] SP 的贵度
+    pcf_pct5y,  // [%] CP 的贵度
+    dy_pct5y,   // [%] DY 的贵度 (高 = 股息率低)
+    roe_pct5y,  // [%] ROE 本身 (高 = ROE 高)
+    roa_pct5y,  // [%] ROA 本身
+    pe_lo_curv, // [年⁻²] 5 年最低档 band 近 3 年二次拟合曲度 (估值口: 价格线 / 窗内均值; 质量口: 百分点)
+    pb_lo_curv,
+    ps_lo_curv,
+    pcf_lo_curv,
+    dy_lo_curv,
+    roe_lo_curv,
+    roa_lo_curv,
     // ---- 资产负债表 MRQ [亿元] ----
     bs_ta,        // 总资产
     bs_tl,        // 总负债

@@ -1,20 +1,18 @@
 #pragma once
 
-// 单资产 band + 减仓 + 跟随 模型: 有效根 → 原料带 Tape (只读, 同资产各配置共用) → band (日频间距) + 减仓核 (逐日换参, 逐根出中线) → 分层 Ladder (内含跟随核) 逐根出一刀 Cut (档线 + 目标仓位, 按本根收盘价调到)
+// 单资产 band + 减仓线 + 加仓线 模型: 有效根 → 原料带 Tape (只读, 同资产各配置共用) → band (日频间距) + 减仓线核 (逐日换参, 逐根出值) → 分层 Ladder (内含加仓线核) 逐根出一刀 Cut (档线 + 目标仓位, 按本根收盘价调到)
 //   方向 kDirs: long = 满多起步 / short = 满空起步; 顺向 = 方向所押的一侧, 逆向 = 另一侧
 //   列 = 逐根一个量, 因果 ([i] 只看 ≤ i 的根); 窗口一律以根计 (日线 / 分钟同一套)
 //   窗不满 = 用自首个有效值起的部分窗 (增量窗); 仍无值 = NaN: 比较恒假, 不入也不出
 //   原料带 = 高 / 低 / 收 / 收益 / 累计路程 + 日 K; band (ATR / dev, 日频, 价格单位) 由它算, 即档线间距
-//   三个模型族 Family = 核的类型列表 (族表 kinds 由各核的 kind 生成, with(下标) 分派到核的类型; 人选模型, 减仓 / 跟随的参数滚动调优, band 的窗人设):
+//   三个模型族 Family = 核的类型列表 (族表 kinds 由各核的 kind 生成, with(下标) 分派到核的类型; 人选模型, 减仓线 / 加仓线的参数滚动调优, band 的窗人设):
 //     Band (atr / dev): 档线间距 g, 整列 of(原料带, 窗)
-//     Reduce (price / ema / kama / mid): 中线, 第 j 份 (j = 1 起) 的减仓线 = 中线 − j · g (中线本身不触发), 目的是尽量保留顺向敞口; 日首 day(d, p) 换参, 逐根 bar(i) 出值, 状态逐根接续;
+//     Reduce (price / ema / kama / mid): 满仓随它, 目的是尽量保留顺向敞口; 日首 day(d, p) 换参, 逐根 bar(i) 出值, 状态逐根接续;
 //       定参 (调参打分) = 各日同参, 变参 (实盘) = 逐日所用参数, 同一个核
-//     Follow (decay / chand / sar): 成交过的份的跟随线怎么朝价漂 (参数以日计, 逐根摊开): 跟随加仓线往下漂做网格抄底, 跟随减仓线往上漂做移动止损;
-//       一份一条 Line, 参数在它成交时定下, 之后不变
-//   减仓 / 跟随核与分层都建于同一份上下文 Ctx (原料带 + band + 顺向): K{x}
-//   分层: 每份各管自己的一档, 份与份独立; 同一时刻每份恰一条线 (减仓线 / 跟随加仓线 / 跟随减仓线), 一份 = 1 / 份数
-//     减仓线跌到即卖, 挂跟随加仓线于成交价外 stop · 间距 (止损), 往下漂; 涨到即买回, 挂跟随减仓线于成交价内 stop · 间距, 往上漂;
-//     跟随减仓线升到该份的减仓线之上 (或减仓线降到它之下) 即交回减仓模型
+//     Add (decay / chand / sar): 已减的份的加仓线怎么下移 (参数以日计, 逐根摊开), 回撤够深后下移做网格抄底; 一份一条 Line, 参数在它卖出时定下, 之后不变
+//   减仓线 / 加仓线核与分层都建于同一份上下文 Ctx (原料带 + band + 顺向): K{x}
+//   分层: 减仓线链 (链顶锚定上一个触发点, 往下每条隔当日间距; 满仓随减仓线; 买回满仓后先挂锚定的止损链, 减仓线升过链顶且仍在收盘之下才回到随它) + 各份加仓线;
+//     卖出即挂加仓线于成交价外 stop · 间距 (止损), 买回后链顶 = 买入价 − stop · 间距; 加仓线逐根按加仓线模型下移, 下移不越过 收 + stop · 间距 (减仓线不下移); 一份 = 1 / 份数
 //   列只在两端: 原料带 (只读) → 逐根链 (源 → 成交 → 汇) → 轨迹列 Cuts; 核 / 分层的状态 (各份档线) 只在源里
 //   源 / 成交 / 逐根链归 Engine
 #include <algorithm>
@@ -175,7 +173,7 @@ struct Family {
   }
 };
 
-// 减仓 / 跟随核与分层的上下文 (同一条链共用): 建核 K{x}
+// 减仓线 / 加仓线核与分层的上下文 (同一条链共用): 建核 K{x}
 struct Ctx {
   const Tape &t;
   const Col &N; // [日] band
@@ -234,17 +232,28 @@ struct Dev {
   }
 };
 
-// ---- 减仓核 ----
-//   日首 day(d, p): 日 d 用参数 p (以根计, 可为小数); 逐根 bar(i) → 中线 (NaN = 未就绪); 日 d 的根之前先 day(d) (无根的日也调), 根按序逐个
+// ---- 减仓线核 ----
+//   日首 day(d, p): 日 d 用参数 p (以根计, 可为小数); 逐根 bar(i) → 减仓线 (NaN = 未就绪); 日 d 的根之前先 day(d) (无根的日也调), 根按序逐个
 //   状态逐根接续: 参数变只改跟随的快慢, 不在几条定参线之间换线; 窗不满 = 自首根起的部分窗
 
 inline constexpr Axis kDays{"n", 5, 1, 250, 0.25f, true}; // 周期 (日; 打分跑日线, 下限 1 日)
 
-// price: 中线 = 收盘本身 (逐根, 无参数, 无状态)
+// price: 收盘 − band 的棘轮 (顺向坐标只升不降); 收盘跌到线上 = 本根出这条线 (分层在此触发), 下一根起自 收盘 − band 重新起算; band 无值 = NaN
 struct Price : Ctx {
-  static constexpr Kind kind{"price", "价格本身: 中线 = 收盘 (逐根, 无参数)"};
-  void day(size_t, const P &) {}
-  float bar(size_t i) const { return t.c[i]; }
+  static constexpr Kind kind{"price", "移动止损: 减仓线 = 收盘 − 1 个 band, 只升不降 (价涨即跟着抬, 回落不降), 收盘跌到线上即触发, 之后自 收盘 − band 重新起算; 无参数"};
+  size_t d = 0;
+  double v = kNaN; // 下一根起算的线 (顺向坐标)
+  void day(size_t x, const P &) { d = x; }
+  float bar(size_t i) {
+    const double g = N[d], x = s * t.c[i];
+    if (!(g > 0)) {
+      v = kNaN;
+      return kNaN;
+    }
+    const double o = std::isnan(v) ? x - g : std::max(v, x - g);
+    v = x <= o ? x - g : o;
+    return static_cast<float>(s * o);
+  }
 };
 
 // ema: α = 2 / (k + 1); 第 i 根的平滑系数 = max(α, 1 / (i + 1)) (前段 = 已有值的均值)
@@ -316,16 +325,15 @@ struct Mid : Ctx {
   }
 };
 
-// ---- 跟随核 ----
-//   核的坐标 = 核的 s · 价 (Ctx::s); 此坐标下跟随线在价上, 逐根 (成交之后) 按模型下移 fall, 下移不越过 收 + 止损距 (分层里做; 不会自行触发, 也不上移)
-//     分层建两个核: 跟随加仓线用顺向 s (顺向坐标里在价上, 往下漂), 跟随减仓线用 −s (镜像: 顺向坐标里在价下, 往上漂); 同一模型同一套参数
-//     参数以日计 (每日漂多少), 逐根摊开 (每根 = 日量的 1 / 每日根数), 跟随线随分钟平滑走, 不在日界跳
-//   一份一条 Line (该份成交时 open 定下参数, 之后不变; 各份可不同): open(p, x) = 当日参数 p 下在 x (核的坐标) 成交;
+// ---- 加仓线核 ----
+//   顺向坐标 (多 = 价, 空 = −价) 下加仓线在价上; 逐根 (成交之后) 各加仓线 b 按模型下移 fall, 下移不越过 收 + 止损距 (分层里做; 不会自行触发, 也不上移)
+//     参数以日计 (每日下移多少), 逐根摊开 (每根 = 日量的 1 / 每日根数), 加仓线随分钟平滑走, 不在日界跳
+//   一份一条 Line (该份卖出时 open 定下参数, 之后不变; 各份可不同): open(p, x) = 当日参数 p 下在 x 卖出;
 //     逐根 see(e, i) (成交前, 此前已挂的各份) → 成交 → 逐份 fall(e, i, b, g); 日末逐份 close(e)
 
 // decay: 每根 b − trail · g / 每日根数
 struct Decay : Ctx {
-  static constexpr Kind kind{"decay", "固定漂移: 每日朝价漂 trail × 间距 (逐根摊开)", {{"trail", 0.1f, 0.01f, 2, 0.01f}}};
+  static constexpr Kind kind{"decay", "固定衰减: 每日下移 trail × 间距 (逐根摊开)", {{"trail", 0.1f, 0.01f, 2, 0.01f}}};
   struct Line {
     double trail;
   };
@@ -338,14 +346,14 @@ struct Decay : Ctx {
   double fall(const Line &e, size_t, double b, double g) const { return b - e.trail * g / static_cast<double>(t.S); }
 };
 
-// chand: min(b, 近 round(n) 根 (n 以根给) 的最低 (核的坐标) + m · g) (含本根); 区间最低查逐根稀疏表 (建核时一遍, 层数够 n 的上限即止)
+// chand: min(b, 近 round(n) 根 (n 以根给) 的顺向最低 + m · g) (含本根); 区间最低查逐根稀疏表 (建核时一遍, 层数够 n 的上限即止)
 struct Chand : Ctx {
-  static constexpr Kind kind{"chand", "吊灯: 跟随加仓线压到 近 n 日最低 + m × 间距 以下, 跟随减仓线抬到 近 n 日最高 − m × 间距 以上 (只朝价走; 逐根滚动)", {{"n", 20, 1, 250, 1, true}, {"m", 3, 0.25f, 10, 0.25f}}};
+  static constexpr Kind kind{"chand", "吊灯: 压到 近 n 日最低 + m × 间距 以下 (只降不升; 逐根滚动)", {{"n", 20, 1, 250, 1, true}, {"m", 3, 0.25f, 10, 0.25f}}};
   struct Line {
     size_t k; // 窗 (根)
     double m; // 倍数
   };
-  std::vector<Col> mn = lows(t, s); // [层 l][根] 自该根起 2^l 根的最低 (核的坐标)
+  std::vector<Col> mn = lows(t, s); // [层 l][根] 自该根起 2^l 根的顺向最低
   Line open(const P &q, double) const {
     assert(q[1] > 0 && "吊灯倍数");
     return {std::max<size_t>(1, len(q[0])), q[1]};
@@ -372,13 +380,13 @@ struct Chand : Ctx {
   }
 };
 
-// sar: 各份自成交起记最低 ep (核的坐标, 起于成交价) 与加速 af (起于该份的步长); 每日 b 朝 ep 走 af 倍距离, 逐根摊开 (每根走 1 − (1 − af)^(1 / 每日根数));
+// sar: 各份自卖出起记顺向最低 ep (起于卖价) 与加速 af (起于该份的步长); 每日 b 朝 ep 走 af 倍距离, 逐根摊开 (每根走 1 − (1 − af)^(1 / 每日根数));
 //   日末当日创过新低则 af += 步长 (≤ max)
 struct Sar : Ctx {
-  static constexpr Kind kind{"sar", "抛物线 (各份自成交起): 每日朝成交以来的极值 (跟随加仓线 = 最低, 跟随减仓线 = 最高) 移 af 倍距离 (逐根摊开); 创新极值的日 af += 步长 (≤ max)", {{"af", 0.02f, 0.002f, 0.2f, 0.002f}, {"max", 0.2f, 0.02f, 1, 0.02f}}};
+  static constexpr Kind kind{"sar", "抛物线 (各份自卖出起): 每日朝卖出以来的最低移 af 倍距离 (逐根摊开); 创新低的日 af += 步长 (≤ max)", {{"af", 0.02f, 0.002f, 0.2f, 0.002f}, {"max", 0.2f, 0.02f, 1, 0.02f}}};
   struct Line {
     double step, top;  // 步长 / 加速上限
-    double af, fb, ep; // 加速 / 每根的步 / 最低 (核的坐标)
+    double af, fb, ep; // 加速 / 每根的步 / 顺向最低
     bool nw;           // 当日创了新低
   };
   double pace(double af) const { return 1 - std::pow(1 - std::min(af, 1.0), 1 / static_cast<double>(t.S)); }
@@ -399,24 +407,22 @@ struct Sar : Ctx {
 
 using Band = Family<Atr, Dev>;
 using Reduce = Family<Price, Ema, Kama, Mid>;
-using Follow = Family<Decay, Chand, Sar>;
+using Add = Family<Decay, Chand, Sar>;
 
 // ---- 刀 ----
 
 inline constexpr uint32_t kNone = UINT32_MAX;
 
-// 档线类别 (每份恰一条): 减仓线 (持有, 中线 − (j + 1) · h, 随减仓模型; j = 份下标) / 跟随加仓线 (已减, 往下漂) / 跟随减仓线 (持有, 往上漂)
-enum : uint8_t { kReduce,
-                 kFollowAdd,
-                 kFollowReduce };
-
-// 档线快照 (持久, 各根共用): 一组 = 各份 (Cuts::units) 的类别 + 跟随线的价; 跟随线变了 / 换类别的根才压一组, 其余根沿用 (减仓线由中线与间距逐根定)
+// 档线快照 (持久, 各根共用): 一组 = 各份 (Cuts::units) 一条档线 + 减仓线链的锚; 档线变了 / 换模式的根才压一组, 其余根沿用
+//   减仓线链: 链顶 = 锚 − 偏 · h, 往下每 h 一条 (持有几份就几条; h 每日变); 持有的份记链序, 已减的份记加仓线价
 struct Rungs {
-  std::vector<float> px;     // [组][份] 跟随线的价 (减仓线 = NaN)
-  std::vector<uint8_t> type; // [组][份] 类别
+  std::vector<float> px;    // [组][份] 链序 (0 = 链顶; 减仓线) / 价 (加仓线)
+  std::vector<uint8_t> add; // [组][份] 1 = 加仓线
+  std::vector<float> ref;   // [组] 锚价 (NaN = 减仓线模型)
+  std::vector<float> off;   // [组] 链顶离锚 (以 h 计)
 };
 
-// 一刀 = 一根的信号: 中线 + 档线间距 h = band (未就绪 = NaN) + 档线快照 snap (kNone = 未就绪) + 目标仓位 w
+// 一刀 = 一根的信号: 减仓线 + 档线间距 h = band (未就绪 = NaN) + 档线快照 snap (kNone = 未就绪) + 目标仓位 w
 //   + 越线差 (占净值, 按本根调仓量 |Δw| 计): 分层按收盘成交比按档线价成交多付的差; 震荡 = 各份都按离收盘最近那档计, 跳空 = 远处各档多出的部分
 struct Cut {
   float mid = kNaN, h = kNaN, w = 0, chop = 0, gap = 0;
@@ -434,16 +440,18 @@ struct Cuts {
   explicit Cuts(size_t n) : mid(n, kNaN), h(n, kNaN), snap(n, kNone) {}
   void put(size_t i, const Cut &x) { mid[i] = x.mid, h[i] = x.h, snap[i] = x.snap; }
 
-  // 根 i 的档线 f(j, 价, 类别), 份 j ∈ [0, units) (一份一条); 未就绪 = 无
+  // 根 i 的档线 f(j, 价, 加仓线), 份 j ∈ [0, units) (一份一条, 成交换极性); 未就绪 = 无
   template <class F>
   void rungs_at(size_t i, F f) const {
     if (!(h[i] > 0) || snap[i] == kNone)
       return;
-    const size_t U = static_cast<size_t>(units), b = snap[i] * U;
-    for (size_t j = 0; j < U; ++j) {
-      const uint8_t k = rungs.type[b + j];
-      f(static_cast<int>(j), k == kReduce ? mid[i] - s * static_cast<float>(j + 1) * h[i] : rungs.px[b + j], k);
-    }
+    const size_t U = static_cast<size_t>(units), g = snap[i], b = g * U;
+    const float top = (std::isnan(rungs.ref[g]) ? mid[i] : rungs.ref[g]) - s * rungs.off[g] * h[i];
+    for (size_t j = 0; j < U; ++j)
+      if (rungs.add[b + j])
+        f(static_cast<int>(j), rungs.px[b + j], true);
+      else
+        f(static_cast<int>(j), top - s * rungs.px[b + j] * h[i], false);
   }
 };
 
@@ -454,8 +462,8 @@ struct Dir {
   const char *name, *tip;
   float s;
 };
-inline constexpr Dir kDirs[] = {{"long", "只做多: 满多, 跌破中线下方各档按分层减仓 / 加回", 1},
-                                {"short", "只做空: 满空, 涨过中线上方各档按分层减仓 / 加回", -1}};
+inline constexpr Dir kDirs[] = {{"long", "只做多: 满多, 跌破减仓线下方档线按分层减仓 / 加回", 1},
+                                {"short", "只做空: 满空, 涨过减仓线上方档线按分层减仓 / 加回", -1}};
 
 // 分层规则 (人设, 不调): 止损距 (以间距计) + 份数; 间距 = band
 struct Rule {
@@ -472,31 +480,30 @@ struct Trip {
 
 // ---- 分层 (逐根, 有状态) ----
 //   顺向坐标 x = s · 价; 下文的涨 / 跌 / 以上 / 以下都按 x; g = band (间距, 每日变), e = stop · g
-//   份 j 各管一档, 份与份独立, 每份恰一条线; 持有的份跌到线上即卖, 已减的份涨到线上即买回; 成交按档线价
-//     止损锚定实际成交价 (本根收盘 x; 越过档线 L 的差另计越线差): 卖出 → 跟随加仓线 x + e, 买回 → 跟随减仓线 x − e
-//     减仓线 (持有): q − (j + 1) · g (中线本身不触发), 随减仓模型逐根走; 跌到即卖 → 跟随加仓线
-//     跟随加仓线 (已减): 逐根按跟随核 add 下移, 下移不越过 收盘 + e; 涨到即买回 → 跟随减仓线
-//     跟随减仓线 (持有): 逐根按跟随核 reduce 上移 (add 的镜像, 同参数), 上移不越过 收盘 − e; 跌到即卖 → 跟随加仓线;
-//       升到减仓线 q − (j + 1) · g 之上 (或减仓线降到它之下) 即交回减仓模型
-//     成交的份用当日参数开它的跟随线 (之后不变); 跟随线都不会自行触发 (新挂 / 漂移的线都在收盘的另一侧)
-//   一根越过几条成交几条; 减仓与加回在同一根里互不触发
-//   中线 / band 无值 = 未就绪的刀 (h = NaN; 轨迹按买入持有), 状态复位; 之后首根有值 = 各份按减仓线就位 (已在线下的份即卖成跟随加仓线), 按收盘建仓, 不计越线差也不录笔
-template <class F>
+//   持有的份挂减仓线 (在价下, 跌到即减一份), 已减的份各挂一条加仓线 (在价上, 涨到即加回该份); 成交按档线价
+//   减仓线链: 链顶锚定上一个触发点, 往下每条 = 上一条 − g (锚定不变, 间距每日变)
+//     随减仓线 (满仓): 链顶 = 减仓线; 卖出 @a 后: 链顶 = a − g; 买回 @L 后: 链顶 = L − e
+//     满仓 (只剩减仓线) 且 链顶 ≤ 减仓线 < 收盘: 转随减仓线 (减仓线在收盘之上时不转, 免得一随即卖; 买回后留着买入价下方 e 的止损链)
+//   加仓线: 卖出 @a 即挂 a + e (止损), 该份的 Line 用当日参数开; 逐根各加仓线按加仓线核 add 下移, 下移不越过 收盘 + e (不自行触发, 也不上移)
+//   一根越过几条成交几条 (逐条, 先近后远); 减仓与加回在同一根里互不触发 (新挂 / 下移的档线都在收盘的另一侧)
+//   减仓线 / band 无值 = 未就绪的刀 (h = NaN; 轨迹按买入持有), 状态复位; 之后首根有值 = 满仓随减仓线起步 (已在链顶以下则逐条卖到对应档), 按收盘建仓, 不计越线差也不录笔
+template <class A>
 struct Ladder : Ctx {
-  Rule z;                                     // 分层规则
-  F add{Ctx{t, N, s}}, reduce{Ctx{t, N, -s}}; // 跟随核: 跟随加仓线 (顺向坐标) / 跟随减仓线 (逆向坐标, 即镜像)
-  Rungs rungs;                                // 档线快照 (只增)
-  std::vector<uint8_t> type;                  // [份] 类别
-  std::vector<double> b;                      // [份] 跟随线的顺向坐标 (减仓线不用)
-  std::vector<typename F::Line> line;         // [份] 跟随核的逐份状态 (跟随线的份)
-  bool on = false;                            // 已就位 (复位后首根有值时就位)
-  uint32_t cur = kNone;                       // 当前快照
-  size_t d = 0;                               // 当日
-  P pf{};                                     // 当日跟随参数 (以根计; 当日成交的份用它)
-  std::vector<Trip> *log = nullptr;           // 逐笔 (调参用; nullptr = 不录)
-  std::vector<uint32_t> pend;                 // [份] 未加回那笔在 log 里的下标 (kNone = 无)
+  Rule z;                             // 分层规则
+  A add;                              // 加仓线核
+  Rungs rungs;                        // 档线快照 (只增)
+  std::vector<double> b;              // [份] 加仓线的顺向坐标 (持有 = NaN)
+  std::vector<typename A::Line> line; // [份] 加仓线核的逐份状态 (b 有值的份)
+  std::vector<uint32_t> ord;          // 持有的份按链序自底到顶 (末 = 链顶; 卖出取链顶, 买回的份成新链顶); 持有份数 = 其长
+  bool on = false, follow = true;     // 已就位 (复位后首根有值时就位) / 链随减仓线
+  double R = 0, off = 0;              // 链的锚 (顺向坐标; 随减仓线时不用) / 链顶离锚 (以 g 计)
+  uint32_t cur = kNone;               // 当前快照
+  size_t d = 0;                       // 当日
+  P pa{};                             // 当日加仓线参数 (以根计; 当日新卖出的份用它)
+  std::vector<Trip> *log = nullptr;   // 逐笔 (调参用; nullptr = 不录)
+  std::vector<uint32_t> pend;         // [份] 未加回那笔在 log 里的下标 (kNone = 无)
 
-  void day(size_t x, const P &p) { d = x, pf = p; }
+  void day(size_t x, const P &p) { d = x, pa = p; }
   // 复位 (根 i 起买入持有): 未加回的笔记作在 i 收盘加回
   void reset(size_t i) {
     if (log && on)
@@ -506,7 +513,7 @@ struct Ladder : Ctx {
     on = false, cur = kNone;
   }
 
-  // 根 i (日 d), 中线 m → 一刀
+  // 根 i (日 d), 减仓线 m → 一刀
   Cut operator()(size_t i, float m) {
     const double g = N[d];
     Cut o{.mid = m};
@@ -518,51 +525,68 @@ struct Ladder : Ctx {
     const size_t U = static_cast<size_t>(z.units);
     const double x = s * t.c[i], q = s * m, e = z.stop * g, u = 1.0 / z.units;
     const bool cold = !on, eod = i + 1 == t.days.off[d + 1];
-    bool moved = cold; // 本根有份换了类别 / 跟随线动了 (压新快照)
-    if (cold)
-      on = true, type.assign(U, kReduce), b.assign(U, kNaN), line.resize(U), pend.assign(U, kNone);
-    const auto core = [&](size_t j) -> F & { return type[j] == kFollowAdd ? add : reduce; }; // 跟随线 j 的核
-    const auto sign = [&](size_t j) { return type[j] == kFollowAdd ? 1.0 : -1.0; };          // 跟随线 j 的核坐标 = sign · 顺向坐标
-    const auto cut = [&](size_t j) { return q - static_cast<double>(j + 1) * g; };           // 份 j 的减仓线
-    for (size_t j = 0; j < U; ++j)
-      if (type[j] != kReduce)
-        core(j).see(line[j], i);
-    int n = 0, held = 0;      // 本根成交份数 / 持有份数
-    double near = 0, sum = 0; // 离收盘最近那档的越线差 / 各份越线差之和
-    for (size_t j = 0; j < U; ++j) {
-      const double L = type[j] == kReduce ? cut(j) : b[j];
-      const bool sell = type[j] != kFollowAdd;
-      if (sell ? x > L : x < L)
-        continue;
-      type[j] = sell ? kFollowAdd : kFollowReduce, b[j] = sell ? x + e : x - e, line[j] = core(j).open(pf, sign(j) * x), moved = true;
-      if (log && sell && !cold)
-        pend[j] = static_cast<uint32_t>(log->size()), log->push_back({static_cast<uint32_t>(i), kNone, static_cast<float>(g)});
-      if (log && !sell && pend[j] != kNone)
-        (*log)[pend[j]].i1 = static_cast<uint32_t>(i), pend[j] = kNone;
+    bool moved = false; // 本根档线变了 / 换了模式 (压新快照)
+    if (cold) {
+      on = moved = follow = true, off = 0, b.assign(U, kNaN), line.resize(U), pend.assign(U, kNone), ord.clear();
+      for (uint32_t j = static_cast<uint32_t>(U); j-- > 0;)
+        ord.push_back(j);
+    } else
+      for (size_t j = 0; j < U; ++j)
+        if (!std::isnan(b[j]))
+          add.see(line[j], i);
+    const auto top = [&] { return (follow ? q : R) - off * g; }; // 链顶
+    int n = 0;                                                   // 本根成交份数
+    double near = 0, sum = 0;                                    // 离收盘最近那档的越线差 / 各份越线差之和
+    const auto fill = [&](double L) {                            // 档线 L 上成交一份
+      moved = true, follow = false;
       if (cold)
-        continue;
+        return;
       const double f = std::fabs(x / L - 1);
       near = n ? std::min(near, f) : f, sum += f, ++n;
+    };
+    const auto lowest = [&] { // 最低的加仓线 (无 = U)
+      size_t a = U;
+      for (size_t j = 0; j < U; ++j)
+        if (!std::isnan(b[j]) && (a == U || b[j] < b[a]))
+          a = j;
+      return a;
+    };
+    while (!ord.empty() && x <= top()) {
+      const double L = top();
+      const uint32_t a = ord.back();
+      ord.pop_back();
+      b[a] = L + e, line[a] = add.open(pa, x), R = L, off = 1;
+      if (log && !cold)
+        pend[a] = static_cast<uint32_t>(log->size()), log->push_back({static_cast<uint32_t>(i), kNone, static_cast<float>(g)});
+      fill(L);
     }
-    for (size_t j = 0; j < U; ++j) {
-      if (type[j] != kReduce) {
-        F &k = core(j);
-        const double r = sign(j), v = r * b[j], y = r * std::max(k.fall(line[j], i, v, g), std::min(v, r * x + e));
+    for (size_t a; (a = lowest()) < U && x >= b[a];) {
+      const double L = b[a];
+      b[a] = kNaN, ord.push_back(static_cast<uint32_t>(a)), R = L, off = z.stop;
+      if (log && pend[a] != kNone)
+        (*log)[pend[a]].i1 = static_cast<uint32_t>(i), pend[a] = kNone;
+      fill(L);
+    }
+    for (size_t j = 0; j < U; ++j)
+      if (!std::isnan(b[j])) {
+        const double y = std::max(add.fall(line[j], i, b[j], g), std::min(b[j], x + e));
         moved |= y != b[j], b[j] = y;
         if (eod)
-          k.close(line[j]);
-        if (type[j] == kFollowReduce && b[j] >= cut(j))
-          type[j] = kReduce, moved = true;
+          add.close(line[j]);
       }
-      held += type[j] != kFollowAdd;
-    }
+    if (!follow && ord.size() == U && q >= top() && q < x)
+      follow = moved = true, off = 0;
     if (moved) {
-      for (size_t j = 0; j < U; ++j)
-        rungs.px.push_back(type[j] == kReduce ? kNaN : static_cast<float>(s * b[j])), rungs.type.push_back(type[j]);
-      cur = static_cast<uint32_t>(rungs.type.size() / U - 1);
+      const size_t g0 = rungs.px.size();
+      for (const double v : b)
+        rungs.px.push_back(static_cast<float>(s * v)), rungs.add.push_back(!std::isnan(v));
+      for (size_t r = 0; r < ord.size(); ++r)
+        rungs.px[g0 + ord[r]] = static_cast<float>(ord.size() - 1 - r);
+      rungs.ref.push_back(follow ? kNaN : static_cast<float>(s * R)), rungs.off.push_back(static_cast<float>(off));
+      cur = static_cast<uint32_t>(rungs.ref.size() - 1);
     }
     o.h = static_cast<float>(g), o.snap = cur;
-    o.w = static_cast<float>(s * u * held), o.chop = static_cast<float>(u * n * near), o.gap = static_cast<float>(u * (sum - n * near));
+    o.w = static_cast<float>(s * u * static_cast<double>(ord.size())), o.chop = static_cast<float>(u * n * near), o.gap = static_cast<float>(u * (sum - n * near));
     return o;
   }
 };

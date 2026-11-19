@@ -1,4 +1,4 @@
-// CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产 band + 减仓 + 跟随 模型的滚动调参全期轨迹 (cta/Trace.hpp)
+// CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产 band + 减仓线 + 加仓线 模型的滚动调参全期轨迹 (cta/Trace.hpp)
 //   价格源 = 价格库发布的 PriceView (QuoteHub 的): 请求带该份的日脊 + 标的的分钟价 (不可变, 只拷指针) + 戳;
 //     有效根序列按 (标的, 戳) 留最近 kKeep 个 (只改设定不重算)
 //   请求 = 标的 + cta::Spec + 价; 新请求覆盖旧的 (换标的 / 改设定 / 库变即重算). 进度: Running = 选参日数
