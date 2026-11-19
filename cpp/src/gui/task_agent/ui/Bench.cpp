@@ -57,7 +57,7 @@ struct Bench::Impl : Rig {
   double now() const { return std::chrono::duration<double>(Clock::now() - t0).count(); }
   bool held() const { return running.has_value() || lab.busy(); }
   std::vector<Act> &acts() { return timeline.back().acts; }
-  Seat bench_seat(size_t i) { return seat(i, gate, {}, true, gpu); }
+  Seat bench_seat(size_t i) { return seat(i, gate, {}, true, true, gpu); }
 
   void reset() {
     assert(!held());

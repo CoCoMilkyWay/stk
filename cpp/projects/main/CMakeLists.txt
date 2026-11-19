@@ -428,6 +428,7 @@ set(MATH_PRECISE
     gui/task_agent/Bridge.cpp
     gui/task_agent/Docs.cpp
     gui/task_agent/Llm.cpp
+    gui/task_agent/Mcp.cpp
     gui/task_agent/Mine.cpp
     gui/task_agent/Notes.cpp
     gui/task_agent/Prompt.cpp

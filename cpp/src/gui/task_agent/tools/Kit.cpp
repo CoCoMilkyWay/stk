@@ -192,8 +192,8 @@ void finish_act(Act &a, State &st, Ref at, double t) {
 // =============================================================================
 // 统一调用底座 Rig: open ⇄ step / settle / answer / abort
 // =============================================================================
-Seat Rig::seat(size_t i, const Gate &gate, std::string_view session, bool dry, bool gpu) {
-  return {lab, notes, gate, st, timeline, {round(), static_cast<int>(i) + 1}, catalog::label(lab.scope()), std::string(session), dry, gpu};
+Seat Rig::seat(size_t i, const Gate &gate, std::string_view session, bool free, bool dry, bool gpu) {
+  return {lab, notes, gate, st, timeline, {round(), static_cast<int>(i) + 1}, catalog::label(lab.scope()), std::string(session), free, dry, gpu};
 }
 
 void Rig::flush() {

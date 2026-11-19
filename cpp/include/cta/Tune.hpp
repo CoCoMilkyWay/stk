@@ -1,7 +1,11 @@
 #pragma once
 
-// 中线调参 (分层固定, 不参与): 优化目标 (模型表 kGoals; 逐根两项累成日前缀取窗) + 参数网格 Grid (格点 + 中心可移的网格 + 其上的岭回归曲面)
-//   目标 = 一条逐根链 (Engine.hpp drive): 源 Switch (定参中线核当开关) → 仓位层不调 → 汇 Capture (日前缀); 成本与回测同一份 costs_of; 只读 Tape, 一个配置一个任务
+// 减仓线 / 加仓线调参 (band 与分层规则固定, 不参与): 两个目标 (逐根链出分, 取窗) + 参数网格 Grid (格点 + 中心可移的网格 + 其上的岭回归曲面)
+//   减仓线目标 = 保敞口: 源 Steps (定参减仓线核当静态档线: 第 r 份的线 = 减仓线 − r · band, 跌破即出, 涨回即入; 与加仓线无关) → 汇 Keep (逐根两项累成日前缀);
+//     分 = (顺向 − 翻转成本) / 总振幅, 对数价单位, 1 ≈ 走过的路程全部顺向吃到; 敞口留得多、来回翻得少则高
+//   加仓线目标 = 每笔中位夏普: 源 Laddered (定参减仓线 + 定参加仓线的完整分层, Ladder 录逐笔) → 空汇; 窗内卖出的各笔 (Trip)
+//     夏普 = (s · ln(卖价 / 买回价) − 该笔成本) / (卖出当日 band / 卖价 · √持续日), 窗末未买回 = 按窗末前一根收盘计; 分 = 各笔的中位
+//   成本与回测同一份费率; 只读 Tape, 一个配置一个任务
 //   参数轴 = 自 v0 向两侧铺的格点 (相邻之比 kStep; 间距不小于轴的基本单位), 一个配置 = 各轴格点号 Q, 以根计的参数由它查 (Grid::p); 各轴量定长 Ax (轴数之外不用)
 //   网格 = 中心周围各轴 m 个相邻格点的全部组合 (配置数可配, 由各多值轴轮流分得 m); 一点在网格内 = 各轴下标 At
 //   每日重拟: 窗 = 此前至多 W 日 (不足 = 自首日起, expanding); 最高点落在网格边上 → 以它为中心移网格再拟 (Trace.hpp)
@@ -13,7 +17,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <iterator>
 #include <utility>
 #include <vector>
 
@@ -24,70 +27,123 @@ inline constexpr size_t kMaxRoll = 2500; // 滚动调参窗上限 (日) = 十年
 inline constexpr size_t kRoll = 250;     // 滚动调参窗默认 (日) = 一年
 inline constexpr double kRidge = 1;      // 岭罚 λ (相对样本数; 坐标方差 ~0.4, 高次项方差更小、压得更狠)
 
-// 优化目标: 选一个模型 (下标同 kGoals), 逐根出两项 [a, b], 一段的分数 = Σa / Σb
-enum : size_t { kCapture };
+// ---- 减仓线目标 ----
 
-struct Goal {
-  const char *name, *tip;
-};
-
-inline const Goal kGoals[] = {
-    {"capture", "有效多空: 中线当开关 (顺向侧满仓 / 逆向侧空仓), 切得好 = 顺向吃满、来回翻转少; "
-                "分数 = (开关顺向 − 翻转成本) / 总振幅, 对数价单位, 1 ≈ 走过的路程全部顺向吃到; 成本 = 佣金 + 印花税 + 冲击, 与回测同一费率; 不含分层"},
-};
-
-// 一段的目标值
-inline double score(double a, double b) { return b > 0 ? a / b : 0; }
-
-// 两项的日前缀 [nd + 1] (前导 0): 日段 [d0, d1) 之和 = x[d1] − x[d0]
+// 两项的日前缀 [nd + 1] (前导 0): 日段 [d0, d1) 之和 = x[d1] − x[d0]; 分 = Σa / Σb
 struct Terms {
   std::vector<double> a, b;
-  double over(size_t d0, size_t d1) const { return score(a[d1] - a[d0], b[d1] - b[d0]); }
-  bool live(size_t d0, size_t d1) const { return b[d1] > b[d0]; } // 段内有中线就绪的根
+  double over(size_t d0, size_t d1) const { return b[d1] > b[d0] ? (a[d1] - a[d0]) / (b[d1] - b[d0]) : 0; }
+  bool live(size_t d0, size_t d1) const { return b[d1] > b[d0]; } // 段内有减仓线就绪的根
 };
 
-// 调参源: 中线当开关, 仓位 g = s (顺向侧: s · (收 − 中线) ≥ 0) / 0 (逆向侧 / 中线未就绪); 中线核 c 各日同参 p (以根计)
+// 减仓线调参源: 静态档线, 第 r 份 (r ∈ [0, U)) 持有 ⇔ s · 收 ≥ s · (减仓线 − s · r · g); 仓位 = s · 持有份数 / U, 未就绪 = 0; 减仓线核 c 各日同参 p (以根计)
 template <class K>
-struct Switch {
+struct Steps {
   K &c;
   const Tape &t;
+  const Col &N; // [日] band
   P p;
   float s;
-  void day(size_t d) { c.day(d, p); }
+  int U;
+  double g = kNaN;
+  void day(size_t d) { c.day(d, p), g = N[d]; }
   Cut operator()(size_t i) {
     const float m = c.bar(i);
-    return {.mid = m, .w = s * (t.c[i] - m) >= 0 ? s : 0};
+    if (!(m > 0 && g > 0))
+      return {.mid = m};
+    const int out = std::clamp(static_cast<int>(std::ceil(s * (m - t.c[i]) / g)), 0, U); // 跌破了几条
+    return {.mid = m, .h = static_cast<float>(g), .w = s * static_cast<float>(U - out) / static_cast<float>(U)};
   }
 };
 
-// capture 汇 = 有效多空: 逐根两项 [a, b] 累成日前缀 o, 对数价 (≈ 满仓收益) 单位
-//   a = 开关顺向 − 翻转成本 = 前根 g · 对数涨跌 − 本根成本 (佣金 + 印花税 + 冲击; 开关无越线差)
-//   b = 振幅 |对数涨跌| (前根与本根中线都就绪才计)
-struct Capture {
+// 保敞口汇: 逐根两项 [a, b] 累成日前缀 o, 对数价 (≈ 满仓收益) 单位
+//   a = 顺向 − 翻转成本 = 前根仓位 · 对数涨跌 − 本根成本 (佣金 + 印花税 + 冲击; 静态档线无越线差)
+//   b = 振幅 |对数涨跌| (前根与本根都就绪才计)
+struct Keep {
   const Tape &t;
   Terms o;
   double a = 0, b = 0; // 当日累计
-  float pm = kNaN;     // 前根中线
+  float ph = kNaN;     // 前根间距 (未就绪 = NaN)
   void operator()(const Fill &f) {
     if (f.i) {
       const double r = t.lr[f.i];
       a += f.p * r;
-      if (pm > 0 && f.x.mid > 0)
+      if (ph > 0 && f.x.h > 0)
         b += std::fabs(r);
     }
-    a -= f.k.sum(), pm = f.x.mid;
+    a -= f.k.sum(), ph = f.x.h;
   }
   void close(size_t) { o.a.push_back(o.a.back() + a), o.b.push_back(o.b.back() + b), a = b = 0; }
 };
 
-// 优化目标 goal 的日前缀: 中线模型 kind 定参 p (以根计), 顺向 s, 费率 u
-inline Terms goal_of(size_t goal, const Tape &t, size_t kind, const P &p, float s, const Rates &u) {
-  assert(goal == kCapture && "优化目标");
-  Capture sink{t};
+// 减仓线目标的日前缀: 减仓线模型 kind 定参 p (以根计), band N, 顺向 s, 份数 U, 费率 u
+inline Terms keep_of(const Tape &t, size_t kind, const P &p, const Col &N, float s, int U, const Rates &u) {
+  Keep sink{t};
   sink.o.a.reserve(t.days.size() + 1), sink.o.b.reserve(t.days.size() + 1);
   sink.o.a.push_back(0), sink.o.b.push_back(0);
-  with_center(kind, t, [&]<class K>(K &k) { drive(t, u, Size{t}, Switch<K>{k, t, p, s}, sink); });
+  with_reduce(kind, t, [&]<class K>(K &k) { drive(t, u, Steps<K>{k, t, N, p, s, U}, sink); });
   return std::move(sink.o);
+}
+
+// ---- 加仓线目标 ----
+
+// 分层源: 减仓线核 c (日 d 用 pr[d]) + band N [日] → 分层 lad (加仓线核日 d 用 pa[d]); sel 未选参日 = Hold (分层复位; nullptr = 各日都选),
+//   刀未就绪 = Hold; 核逐根都走 (状态接续)
+template <class K, class A>
+struct Laddered {
+  K &c;
+  Ladder<A> &lad;
+  const Col &N;
+  const std::vector<P> &pr, &pa;
+  const std::vector<uint8_t> *sel = nullptr;
+  size_t d = 0;
+  bool on(size_t x) const { return !sel || (*sel)[x]; }
+  void day(size_t x) {
+    c.day(d = x, pr[x]), lad.day(x, pa[x]);
+    if (!on(x))
+      lad.reset(lad.t.days.off[x]);
+  }
+  Cut operator()(size_t i) {
+    const float m = c.bar(i);
+    const Cut x = on(d) ? lad(i, m, N[d]) : Cut{};
+    return x.h > 0 ? x : Hold{}(i);
+  }
+};
+
+// 定参完整分层的逐笔 (按卖出根升序): 减仓线模型 reduce 定参 pr, 加仓线模型 add 定参 pa (以根计), band N, 顺向 s, 分层规则 z
+inline std::vector<Trip> trips_of(const Tape &t, size_t reduce, size_t add, const P &pr, const P &pa, const Col &N, float s, const Rule &z) {
+  std::vector<Trip> o;
+  const std::vector<P> vr(t.days.size(), pr), va(t.days.size(), pa);
+  with_reduce(reduce, t, [&]<class K>(K &k) {
+    with_add(add, t, s, [&]<class A>(A &a) {
+      Ladder<A> lad{t, s, z, a};
+      lad.log = &o;
+      drive(t, Rates{}, Laddered<K, A>{k, lad, N, vr, va}, Skip{});
+    });
+  });
+  return o;
+}
+
+// 日段 [d0, d1) 内卖出的各笔的中位夏普 (无笔 = 0; 有笔则 live = true); 顺向 s, 费率 u; buf = 暂存
+inline double median_of(const std::vector<Trip> &tr, const Tape &t, size_t d0, size_t d1, float s, const Rates &u, bool &live, std::vector<double> &buf) {
+  const size_t b = t.days.off[d0], e = t.days.off[d1];
+  const double one = u.commission + u.impact; // 单边佣金 + 冲击
+  buf.clear();
+  for (auto it = std::ranges::lower_bound(tr, b, {}, &Trip::i0); it != tr.end() && it->i0 < e; ++it) {
+    const bool shut = it->i1 < e;
+    const size_t j = shut ? it->i1 : e - 1;
+    const double a = t.c[it->i0], cost = shut ? 2 * one + u.stamp : one + (s > 0 ? u.stamp : 0);
+    const double tau = static_cast<double>(std::max<size_t>(j - it->i0, 1)) / static_cast<double>(t.S);
+    buf.push_back((s * std::log(a / t.c[j]) - cost) / (it->g / a * std::sqrt(tau)));
+  }
+  if (buf.empty())
+    return 0;
+  live = true;
+  const size_t h = buf.size() / 2;
+  std::ranges::nth_element(buf, buf.begin() + static_cast<std::ptrdiff_t>(h));
+  if (buf.size() % 2)
+    return buf[h];
+  return (buf[h] + *std::max_element(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(h))) / 2;
 }
 
 // 网格的一点: 各轴网格内下标
@@ -235,10 +291,10 @@ using V = Ax<double>;
 
 inline constexpr double kStep = 1.41421356; // 相邻格点之比 (大值处; 小值处退成等差 u)
 
-// 一个中线模型的格点 + 中心可移的网格 + 网格上的岭回归曲面
+// 一个模型的格点 + 中心可移的网格 + 网格上的岭回归曲面
 //   网格 = 中心 c 周围各轴 m 个相邻格点的全部组合 (收进硬边界); 岭回归只看网格内下标, 与中心无关, 预先算好
 struct Grid {
-  size_t kind = kEma;          // 中线模型 (kCenters 下标)
+  const Kind *model = nullptr; // 模型 (kReduceKinds / kAddKinds 的一项)
   size_t S = 0;                // 每日根数 (以日计的轴 × S)
   size_t na = 0;               // 轴数 (≤ kAxes)
   Ax<const Axis *> ax{};       // [轴]
@@ -306,13 +362,12 @@ struct Grid {
   }
 };
 
-// S = 每日根数, kind = 中线模型, n = 网格配置数上限 (≥ 1)
-inline Grid grid_of(size_t S, size_t kind, size_t n) {
+// S = 每日根数, model = 模型, n = 网格配置数上限 (≥ 1)
+inline Grid grid_of(size_t S, const Kind &model, size_t n) {
   assert(n >= 1 && "网格配置数");
-  assert(kind < std::size(kCenters) && "中线模型");
-  const std::vector<Axis> &axes = kCenters[kind].axes;
+  const std::vector<Axis> &axes = model.axes;
   assert(axes.size() <= kAxes && "参数轴数");
-  Grid g{.kind = kind, .S = S, .na = axes.size()};
+  Grid g{.model = &model, .S = S, .na = axes.size()};
   g.m.fill(1);
   for (size_t k = 0; k < g.na; ++k) {
     const Axis *a = g.ax[k] = &axes[k];

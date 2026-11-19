@@ -35,11 +35,12 @@ GUI布局:
 
 ```
 stk/
-├── AGENT.md                                            # 🤖 Agent 挖因子: 状态机 / 调用协议与工具表 / 会话流水字段
+├── AGENT.md                                            # 🤖 外部 agent 说明书: 接入 (MCP / py/agent.py) / 锁 / 流程 / 口径 / 研究工具表 + GUI 内置会话的状态机
 ├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + BUILD / CUDA 开关 → py/build.py (可选) → py/modes.py
 ├── py/                                                 # 🐍 Python 工具链
 │   ├── build.py                                        # 🐍 构建: CMake 配置 + 编译 (BUILD_MODE / GPU_BACKEND)
 │   ├── modes.py                                        # 🐍 运行: 五模式同签名 (tsan / debug / profile / assert / production)
+│   ├── agent.py                                        # 🐍 外部 agent 调研究工具的命令行 (一次 MCP 握手 + 一个 tools/call; 地址读 output/run/agent/mcp.json)
 │   └── app/                                            # 🐍 cpp/ format · lint (clang-format / clangd)
 ├── cpp/
 │   ├── include/
@@ -253,7 +254,7 @@ stk/
 │   │   │   │   │                                       #    · ASSET = 个股表 + 行情; NAV / VAL / FLOW / CTA = 篮子 (池指数 / 行业 / 概念) + 因子组合 + 个股的 净值 / 估值 / 资金流 / 择时
 │   │   │   │   ├── TaskMarket.hpp                      # 🖥️ Market 任务主界面
 │   │   │   │   ├── services/
-│   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 (价格库发布的连分钟全史) → cta/Trace 滚动调参轨迹 (中线 + 分层)
+│   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 (价格库发布的连分钟全史) → cta/Trace 滚动调参轨迹 (band + 减仓线 + 加仓线)
 │   │   │   │   └── ui/
 │   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / FLOW / CTA (一行一对线 Line, 四页同一份派生 / 选中 / 区间)
 │   │   │   │       │                                   #    · 右表 = 指数 / 行业 / 概念 / 自选 / 因子 / 策略 行 (篮子行可展开成分股); 左 = 主图 + 日内栏 + 区间条
@@ -292,7 +293,7 @@ stk/
 │   │   │   ├── account/
 │   │   │   │   ├── AccountHub.hpp                      # 💹 账户净值中枢 (Live 与 Market 共用): 随账本代重放 (拉归 LiveHub 事务道) / 拼账户的持仓 (券商实时持仓优先, 否则回放末日; Market 账户行的成分 / 当日四列) 与当日交给 QuoteHub (历史 = 价格库的账户侧; 当日 = 持仓 × 新浪分钟收)
 │   │   │   │   └── AccountSide.hpp                     # 💹 行情的账户一侧: 一日 day_of (持仓 × 分钟收 → 时间加权指数的逐槽点位 → 一日; 历史回放 / 当日同一核) + 账本回放 replay (价格库 worker 上调; 全史 = 紧凑形, 恒带分钟)
-│   │   │   └── task_agent/                             # 🤖 LLM 挖因子 (双翼 Async 对仗: 左翼 Chat 问模型 ↔ 右翼 Lab 问数据核; 协议见 AGENT.md)
+│   │   │   └── task_agent/                             # 🤖 挖因子 (外部 agent 经 MCP / 内置 LLM 会话: 左翼 Chat 问模型 ↔ 右翼 Lab 问数据核; 说明书见 AGENT.md)
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 + 常量占位表 kConsts (提示词模板与工具说明共用) / 入库门槛默认值 / 各目录
 │   │   │       ├── Enum.hpp                            # 🤖 枚举表 (一个枚举一行 AGENT_ROWS): def 取行 / kNum 个数 / kVals 序列 / Per<E,V> 定长表 / IdOf 反查; Named 枚举 JSON 一律写 id
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 码点 / 检索词过滤 / 数的写法 / 火花线 / Markdown 表格建表器 Table
@@ -307,8 +308,9 @@ stk/
 │   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw, Mine 与 Bench 同源共用) + 工作台 Bench (Agent → Tools, 主栏按类折叠一工具一页, 基于 Rig) + 控件 Widgets
 │   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 候选四拍 (stage / absorb / adopt / discard) + 单线程工作台 Lab (共享不可变 ViewEnv, Store 共用)
 │   │   │       ├── Prompt.hpp                          # 🤖 纯成文层: 提示词模板填充 + 工具结果成文 + 上下文纯函数 TurnsOf (研究树线性分桶收起)
+│   │   │       ├── Mcp.hpp                             # 🤖 MCP 服务 (本机 Streamable HTTP): doc / scope / run / wait / cancel / unlock → 自带 Rig 按批执行 (不查假设板, 真落记录 / 真入库); 头一个请求替 agent 锁上 Agent 模块
 │   │   │       ├── Mine.hpp                            # 🤖 挖掘会话状态机 (Desk : Rig): 每帧对仗轮询 Chat / Lab; 停 / 续 / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
-│   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (作用域 / 会话控制 / 时间线内嵌结构化图表 / 假设板 / 候选 / 记录处理 / 开放的特征与算子) / Tools / Config
+│   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (外部 agent 锁着时 = 只读 MCP 面板; 没锁时 = 作用域 / 会话控制 / 时间线内嵌结构化图表 / 假设板 / 候选 / 记录处理 / 开放的特征与算子) / Tools / Config
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                           #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)
@@ -337,14 +339,16 @@ stk/
 │   │   │       │                                       #    · 目标 = 固定 h 下滚动窗 (评估期 / 10) rIC 的中位; 方向 = 它的号; 不看成本 / 多空 / 分层, 不跨 h 比
 │   │   │       ├── Space.hpp                           # 🧬 参数空间: 可搜槽 → 单调坐标 + 区间 → 低差异采样
 │   │   │       └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU (复用 Stat 行核) / GPU 后端 + 对拍
-│   │   ├── cta/                                        # 📈 CTA 单资产 中线 + 分层 择时 (header-only 纯计算; Market → CTA 页的模型层)
-│   │   │   │                                           #    中线 (调参, 开关) ─拼接→ 分层 Ladder (减仓线链: 链顶锚定上一个触发点, 往下每条隔每日 1 波动 (dev / ATR, 窗可设, 默认一年, 每日变化 ≤ 10%); 满仓随中线, 中线上穿链顶即回到随中线; 份数默认 20 (可调); 卖出即挂加仓线止损, 加仓线每日跟随 (以间距计, 默认 0.1 / 0.1, 可调)) ─刀 Cut→ 仓位层 Size ─→ 成交 Fill (+ 成本) → 损益 Pnl
-│   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 只读原料带 Tape (含日 K) / 分层波动 swing_of; 中线表 kCenters 一模型一核 (ema / kama / mid / chand / sar / price;
-│   │   │   │                                           #    日首换参 + 逐根出值, 定参 = 各日同参, 窗不满用部分窗); 分层 Ladder (减仓线链 + 各份加仓线止损与跟随, 档线快照) 逐根出刀 Cut
-│   │   │   ├── Engine.hpp                              # 📈 执行: 唯一一条逐根链 drive (日 × 根: 源 → 仓位层 → 成交 → 汇); 调参 / 策略 / 买入持有只换源与汇; 仓位层 (波动率定仓) + 五项成本
-│   │   │   ├── Tune.hpp                                # 📈 中线调参: 优化目标 (Switch 源 → Capture 汇: 有效多空 − 翻转成本, 日前缀) + 参数网格 Grid + 岭回归曲面
+│   │   ├── cta/                                        # 📈 CTA 单资产 band + 减仓线 + 加仓线 分层择时 (header-only 纯计算; Market → CTA 页的模型层)
+│   │   │   │                                           #    band (atr / dev, 人选, 窗可设, 默认一年) = 档线间距 ─→ 分层 Ladder (减仓线链: 链顶锚定上一个触发点, 往下每条隔一个 band; 满仓随减仓线模型, 它上穿链顶即回到随它; 份数默认 20 / 止损默认 0.1 band (人设);
+│   │   │   │                                           #    卖出即挂加仓线止损, 加仓线每日按加仓线模型下移) ─刀 Cut→ 成交 Fill (+ 成本) → 损益 Pnl; 减仓线 / 加仓线模型的参数滚动调优
+│   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 只读原料带 Tape (含日 K); 三张模型表: band kBandKinds (band_of) / 减仓线 kReduceKinds (price / ema / kama / mid) /
+│   │   │   │                                           #    加仓线 kAddKinds (decay / chand / sar), 一模型一核 (日首换参 + 逐根出值, 定参 = 各日同参, 窗不满用部分窗); 分层 Ladder (减仓线链 + 各份加仓线, 档线快照, 可录逐笔 Trip) 逐根出刀 Cut
+│   │   │   ├── Engine.hpp                              # 📈 执行: 唯一一条逐根链 drive (日 × 根: 源 → 成交 → 汇); 调参 / 策略 / 买入持有只换源与汇; 五项成本
+│   │   │   ├── Tune.hpp                                # 📈 调参目标: 减仓线 = 保敞口 (Steps 静态档线源 → Keep 汇: 顺向 − 翻转成本, 日前缀) / 加仓线 = 每笔中位夏普 (Laddered 定参完整分层录逐笔);
+│   │   │   │                                           #    参数网格 Grid + 岭回归曲面
 │   │   │   ├── Metrics.hpp                             # 📈 指标: 收益统计 / 择时捕获 / 在场段; 一本账 Book
-│   │   │   └── Trace.hpp                               # 📈 设定 Spec + 滚动调参全期轨迹: 格点并行打分 → 逐日以此前窗口拟曲面取连续最高点 → 5 日阻尼 → 变参中线核 + 分层一遍跑出 Cuts 与策略账 ↔ 买入持有账
+│   │   │   └── Trace.hpp                               # 📈 设定 Spec + 滚动调参全期轨迹: 格点并行打分 → 逐日先减仓线后加仓线, 以此前窗口拟曲面取连续最高点 → 5 日阻尼 → 两条变参线 + 分层一遍跑出 Cuts 与策略账 ↔ 买入持有账
 │   │   ├── math/                                       # 📐 数学工具
 │   │   │   ├── Step.hpp                                # 📐 变换步元数据 / 定义 (编译期注册)
 │   │   │   ├── distribution/                           # 📐 分位 / 矩: DailyQuantile · KLLcache · RetMoments · SizeThresholds · PdfSnap (KLL 成品快照)

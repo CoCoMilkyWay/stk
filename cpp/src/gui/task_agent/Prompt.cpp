@@ -126,18 +126,6 @@ std::string rows_of(const Context &c) {
          " … " + c.clock.back() + ", 午休不占行; 末行含收盘竞价).";
 }
 
-std::string results_of(const std::vector<Act> &acts, int round) {
-  std::string s;
-  for (size_t i = 0; i < acts.size(); ++i) {
-    const Act &a = acts[i];
-    s += "## " + CallTitle(a, {round, static_cast<int>(i) + 1}) + "\n\n" + a.out.text;
-    if (!s.ends_with('\n'))
-      s += '\n';
-    s += '\n';
-  }
-  return s;
-}
-
 // ---- 研究树折叠 (TurnsOf 内部调用) ----
 std::string under(std::string_view s) {
   std::string o;
@@ -270,6 +258,18 @@ std::string tree_of(Rounds msgs) {
 // 公开函数
 // =============================================================================
 std::string CallTitle(const Act &a, Ref r) { return "[" + RefText(r) + "] " + a.call.text(kTitleChars) + (a.out.ok ? "" : " — 没做成"); }
+
+std::string ResultsText(const std::vector<Act> &acts, int round) {
+  std::string s;
+  for (size_t i = 0; i < acts.size(); ++i) {
+    const Act &a = acts[i];
+    s += "## " + CallTitle(a, {round, static_cast<int>(i) + 1}) + "\n\n" + a.out.text;
+    if (!s.ends_with('\n'))
+      s += '\n';
+    s += '\n';
+  }
+  return s;
+}
 
 std::string Fills(const std::string &tmpl, const std::string &expr) {
   const std::string whole = "`" + expr + "`";
@@ -425,7 +425,7 @@ Message TestMessage(bool ask, const std::string &remark) {
 }
 
 Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool evaled, bool test) {
-  const std::string s = results_of(acts, round);
+  const std::string s = ResultsText(acts, round);
   const std::string batch = std::to_string(kBatch);
   std::string next;
   if (test) {

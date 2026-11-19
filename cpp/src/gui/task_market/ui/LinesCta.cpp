@@ -198,7 +198,8 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
   }
 
   // 标题: 标的 (高亮) · 模型 · 窗 · 视野 · 粒度
-  const std::string model = std::string(cta::kCenters[r.spec.kind].name) + " / " + cta::kDirs[r.spec.dir].name;
+  const std::string model = std::string(cta::kBandKinds[r.spec.band].name) + " / " + cta::kReduceKinds[r.spec.reduce].name + " / " +
+                            cta::kAddKinds[r.spec.add].name + " / " + cta::kDirs[r.spec.dir].name;
   char gran[96];
   if (step == 1)
     std::snprintf(gran, sizeof(gran), "逐根, 买 %d 次 / 卖 %d 次", buys, sells);
@@ -530,13 +531,25 @@ void stat_table(const CtaResult &r) {
   ImGui::EndTable();
 }
 
-// 光标处 (−1 = 末根) 所在日 → v = 当日所用参数 (阻尼后, 轴的单位; 未选参 = nullptr); 返回说明
-std::string cursor_at(const CtaResult &r, int cursor, const cta::V *&v) {
+// 减仓线 / 加仓线 (下标 0 / 1)
+const cta::Path &path_of(const CtaResult &r, size_t k) { return k ? r.tr.add : r.tr.reduce; }
+constexpr const char *kPathName[] = {"减仓线", "加仓线"};
+
+// 光标处 (−1 = 末根) 所在日 → v[k] = 当日所用参数 (阻尼后, 轴的单位; 减仓线未选参 = 买入持有, 两者都 nullptr; 加仓线未选参 = 沿用的上一个选参日, 尚无 = nullptr); 返回说明
+std::string cursor_at(const CtaResult &r, int cursor, const cta::V *(&v)[2]) {
   const size_t n = r.se->c.size(), i = cursor >= 0 ? static_cast<size_t>(cursor) : n - 1;
   const size_t d = dix(r, i);
   const std::string head = cursor >= 0 ? "光标 " + when(r, i) : "末根";
-  v = r.tr.sel[d] ? &r.tr.use[d] : nullptr;
-  return head + (!v ? ": 买入持有 (首日 / 窗内数据不足 / 中线未就绪, 未选参)" : ": 当日所用 (阻尼后)");
+  v[0] = v[1] = nullptr;
+  if (!r.tr.reduce.sel[d])
+    return head + ": 买入持有 (首日 / 窗内数据不足 / 减仓线未就绪, 未选参)";
+  v[0] = &r.tr.reduce.use[d];
+  const cta::Path &a = r.tr.add;
+  for (size_t e = d + 1; e-- > 0 && !v[1];)
+    if (a.sel[e])
+      v[1] = &a.use[e];
+  return head + ": 当日所用 (阻尼后)" + (a.sel[d] ? "" : v[1] ? "; 加仓线窗内无笔, 沿用上一个选参日的"
+                                                              : "; 加仓线尚未选参, 用初始中心");
 }
 
 // 模型下拉: 选项 xs (各有 name / tip) 的下标 cur; 悬停 = head + 各模型说明
@@ -556,12 +569,12 @@ void model_combo(const char *id, const Xs &xs, size_t &cur, const std::string &h
   }
 }
 
-// ---- 参数轨迹: 逐日各轴参数 ÷ 首个选参日的值 (都从 1 起, log 轴; 只看相对变化): 实线 = 阻尼后所用, 淡线 = 曲面最高点 (跳 = 岭回归选参不稳);
+// ---- 参数轨迹: 减仓线 / 加仓线逐日各轴参数 ÷ 各自首个选参日的值 (都从 1 起, log 轴; 只看相对变化): 实线 = 阻尼后所用, 淡线 = 曲面最高点 (跳 = 岭回归选参不稳);
 //      x 链到两图 (同一视野, 双击回全段), 未选参日断开; 光标 = 橙色竖线; 悬停看当日参数 ----
 
-// 参数 v (轴的单位): 中线 模型  轴 = 值 …
-std::string params_of(const cta::Grid &g, const cta::V &v) {
-  std::string s = std::string("中线 ") + cta::kCenters[g.kind].name;
+// 参数 v (轴的单位): 头 模型  轴 = 值 …
+std::string params_of(const char *head, const cta::Grid &g, const cta::V &v) {
+  std::string s = std::string(head) + " " + g.model->name;
   for (size_t a = 0; a < g.na; ++a) {
     char b[48];
     std::snprintf(b, sizeof(b), "  %s = %.3g%s", g.ax[a]->name, v[a], g.ax[a]->day ? " 日" : "");
@@ -572,36 +585,47 @@ std::string params_of(const cta::Grid &g, const cta::V &v) {
 
 void path(CtaState &c, const CtaResult &r) {
   const cta::Track &tr = r.tr;
-  const cta::Grid &g = tr.grid;
-  const size_t n = r.se->c.size(), na = g.na;
-  const auto first = std::ranges::find(tr.sel, 1);
-  if (first == tr.sel.end()) {
+  const size_t n = r.se->c.size();
+  // 一条线 = 一个模型的一个轴: 名 / [点] 所用 / 最高点 (÷ 首个选参日的值)
+  struct Line {
+    std::string name;
+    std::vector<double> use, raw;
+  };
+  std::vector<Line> ls;
+  std::vector<double> xs; // 阶梯: 每日两点 (首根, 末根), 日间的竖跳 = 换参; 未选参日 = NaN 断开
+  for (size_t d = 0; d < tr.days.size(); ++d)
+    if (tr.days.off[d] < tr.days.off[d + 1])
+      xs.push_back(static_cast<double>(tr.days.off[d])), xs.push_back(static_cast<double>(tr.days.off[d + 1] - 1));
+  size_t first[2] = {};
+  for (size_t k = 0; k < 2; ++k) {
+    const cta::Path &p = path_of(r, k);
+    first[k] = static_cast<size_t>(std::ranges::find(p.sel, 1) - p.sel.begin());
+    if (first[k] == p.sel.size())
+      continue;
+    const cta::V &v0 = p.use[first[k]];
+    for (size_t a = 0; a < p.grid.na; ++a) {
+      Line l{std::string(kPathName[k]) + " " + p.grid.ax[a]->name, {}, {}};
+      for (size_t d = 0; d < tr.days.size(); ++d)
+        if (tr.days.off[d] < tr.days.off[d + 1])
+          for (int twice = 0; twice < 2; ++twice) {
+            l.use.push_back(p.sel[d] ? p.use[d][a] / v0[a] : cta::kNaN);
+            l.raw.push_back(p.sel[d] ? p.raw[d][a] / v0[a] : cta::kNaN);
+          }
+      ls.push_back(std::move(l));
+    }
+  }
+  if (first[0] == tr.reduce.sel.size()) {
     ImGui::TextDisabled("全期未选参 (买入持有)");
     return;
-  }
-  const cta::V &v0 = tr.use[static_cast<size_t>(first - tr.sel.begin())];
-  // 阶梯: 每日两点 (首根, 末根), 日间的竖跳 = 换参; 未选参日 = NaN 断开
-  std::vector<double> xs;
-  std::vector<std::vector<double>> ys(2 * na); // [轴] 所用 / [na + 轴] 最高点
-  for (size_t d = 0; d < tr.days.size(); ++d) {
-    const size_t b = tr.days.off[d], e = tr.days.off[d + 1];
-    if (b == e)
-      continue;
-    for (const size_t i : {b, e - 1}) {
-      xs.push_back(static_cast<double>(i));
-      for (size_t a = 0; a < na; ++a) {
-        ys[a].push_back(tr.sel[d] ? tr.use[d][a] / v0[a] : cta::kNaN);
-        ys[na + a].push_back(tr.sel[d] ? tr.raw[d][a] / v0[a] : cta::kNaN);
-      }
-    }
   }
   // y 范围 = 视野内各日 (与视野相交) 的 log 跨度, 上下各留 20%; 跨度为 0 按一格 (kStep) 计
   double lo = INFINITY, hi = -INFINITY;
   for (size_t k = 0; k + 1 < xs.size(); k += 2)
     if (xs[k] <= c.x1 && xs[k + 1] >= c.x0)
-      for (const std::vector<double> &y : ys)
-        if (std::isfinite(y[k]))
-          lo = std::min(lo, std::log10(y[k])), hi = std::max(hi, std::log10(y[k]));
+      for (const Line &l : ls)
+        for (const std::vector<double> *y : {&l.use, &l.raw})
+          if (std::isfinite((*y)[k]))
+            lo = std::min(lo, std::log10((*y)[k])), hi = std::max(hi, std::log10((*y)[k]));
   if (!(lo <= hi))
     lo = hi = 0;
   const double span = hi > lo ? hi - lo : std::log10(cta::kStep);
@@ -617,13 +641,13 @@ void path(CtaState &c, const CtaResult &r) {
     ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
     ImPlot::SetupAxisLimits(ImAxis_Y1, std::pow(10.0, lo - 0.2 * span), std::pow(10.0, hi + 0.2 * span), ImPlotCond_Always);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_Horizontal);
-    for (size_t a = 0; a < na; ++a) {
+    for (size_t a = 0; a < ls.size(); ++a) {
       const ImVec4 col = ImPlot::GetColormapColor(static_cast<int>(a));
-      const std::string top = std::string(g.ax[a]->name) + " 最高点";
+      const std::string top = ls[a].name + " 最高点";
       ImPlot::SetNextLineStyle(ImVec4(col.x, col.y, col.z, 0.35f), 1.0f);
-      ImPlot::PlotLine(top.c_str(), xs.data(), ys[na + a].data(), static_cast<int>(xs.size()));
+      ImPlot::PlotLine(top.c_str(), xs.data(), ls[a].raw.data(), static_cast<int>(xs.size()));
       ImPlot::SetNextLineStyle(col, 1.5f);
-      ImPlot::PlotLine(g.ax[a]->name, xs.data(), ys[a].data(), static_cast<int>(xs.size()));
+      ImPlot::PlotLine(ls[a].name.c_str(), xs.data(), ls[a].use.data(), static_cast<int>(xs.size()));
     }
     if (c.cursor >= 0) {
       const double x = c.cursor;
@@ -632,14 +656,21 @@ void path(CtaState &c, const CtaResult &r) {
     }
     if (ImPlot::IsPlotHovered()) {
       const size_t i = static_cast<size_t>(std::clamp(std::lround(ImPlot::GetPlotMousePos().x), 0L, static_cast<long>(n - 1))), d = dix(r, i);
-      if (!tr.sel[d])
-        tip("%s\n未选参 (买入持有)", misc::dash(day_of(r, i)).c_str());
-      else
-        tip("%s\n所用 (阻尼后): %s\n最高点: %s", misc::dash(day_of(r, i)).c_str(), params_of(g, tr.use[d]).c_str(), params_of(g, tr.raw[d]).c_str());
+      std::string s = misc::dash(day_of(r, i));
+      for (size_t k = 0; k < 2; ++k) {
+        const cta::Path &p = path_of(r, k);
+        s += p.sel[d] ? "\n所用 (阻尼后): " + params_of(kPathName[k], p.grid, p.use[d]) + "\n最高点: " + params_of(kPathName[k], p.grid, p.raw[d])
+                      : std::string("\n") + kPathName[k] + " 未选参" + (k ? "" : " (买入持有)");
+      }
+      tip("%s", s.c_str());
     }
     ImPlot::EndPlot();
   }
-  ImGui::TextDisabled("首个选参日: %s", params_of(g, v0).c_str());
+  for (size_t k = 0; k < 2; ++k) {
+    const cta::Path &p = path_of(r, k);
+    if (first[k] < p.sel.size())
+      ImGui::TextDisabled("首个选参日: %s", params_of(kPathName[k], p.grid, p.use[first[k]]).c_str());
+  }
 }
 
 void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::Rates &rates, const CtaResult *r, const std::string &lack) {
@@ -662,11 +693,11 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   if (syncing && ImGui::IsItemHovered())
     tip("首次一趟合成全部篮子线与个股的 1 分钟价, 存在 all.bar 库目录 cache/price/ 下 (十年全市场约 40 GB); 之后只补新日, 退出不丢已合成的");
 
-  // 设定: 分组 (优化目标 / 中线 / 分层 / 引擎), 组内一行一项, 名左值右
+  // 设定: 分组 (调参 / band / 减仓线 / 加仓线 / 分层 / 引擎), 组内一行一项, 名左值右; 改了即全部重算
   cta::Spec &sp = c.spec;
   const float x0 = ImGui::GetCursorPosX();
   float lw = 0.0f; // 名列宽 (控件 / 灰显参数都从这里起)
-  for (const char *s : {"滚动窗 (日)", "网格配置数", "模型", "方向", "波动", "波动窗 (日)", "份数", "止损 (间距)", "跟随 (间距)", "费率 (bp)", "目标年化波动", "不交易带"})
+  for (const char *s : {"滚动窗 (日)", "网格配置数", "模型", "窗 (日)", "份数", "止损 (间距)", "方向", "费率 (bp)"})
     lw = std::max(lw, ImGui::CalcTextSize(s).x);
   lw += ImGui::GetStyle().ItemSpacing.x;
   const auto label = [&](const char *s) {
@@ -680,16 +711,14 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
     ImGui::TextWrapped("%s", s);
     ImGui::PopStyleColor();
   };
-  ImGui::SeparatorText("优化目标");
-  label("模型");
-  model_combo("##cta_goal", cta::kGoals, sp.goal, "优化目标: 滚动选参所最大化的分数");
+  ImGui::SeparatorText("调参");
   label("滚动窗 (日)");
   ImGui::SliderInt("##cta_roll", &sp.roll, static_cast<int>(cta::kMinRoll), static_cast<int>(cta::kMaxRoll), "%d", ImGuiSliderFlags_Logarithmic);
   sp.roll = std::clamp(sp.roll, static_cast<int>(cta::kMinRoll), static_cast<int>(cta::kMaxRoll));
   c.editing = ImGui::IsItemActive();
   if (ImGui::IsItemHovered())
-    tip("每日以此前至多 W 日 (%zu ~ %zu, 对数滑条; 不足 W 日 = 自首日起全部, expanding) 网格各配置的目标值拟岭回归曲面, 取最高点 (平原顶) 用到当日; "
-        "首日 / 窗内根数不足窗长一半 / 窗内各配置的中线都未就绪 = 买入持有 (与基准同口径)\n"
+    tip("每日以此前至多 W 日 (%zu ~ %zu, 对数滑条; 不足 W 日 = 自首日起全部, expanding) 网格各配置的分拟岭回归曲面, 取最高点 (平原顶) 用到当日; 先减仓线, 再在其下选加仓线\n"
+        "首日 / 窗内根数不足窗长一半 / 窗内各配置的减仓线都未就绪 = 买入持有 (与基准同口径); 加仓线窗内无笔 = 沿用上一日的\n"
         "• 松手生效 (Ctrl + 点击可直接输入)",
         cta::kMinRoll, cta::kMaxRoll);
   label("网格配置数");
@@ -698,67 +727,76 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   c.editing |= ImGui::IsItemActive();
   if (ImGui::IsItemHovered())
     tip("参数轴 = 自 v0 向两侧铺的格点, 相邻之比 %.3g, 间距不小于各轴基本单位 (小值处退成等差), 收进各轴硬边界\n"
-        "网格 = 以当前最优为中点、各多值轴 m 个相邻格点的全部组合 (碰到硬边界则整格平移进界); 各轴的 m 轮流分得 (每次给格点最少的轴加一个), 积不超过此数\n"
+        "网格 = 以当前最优为中点、各多值轴 m 个相邻格点的全部组合 (碰到硬边界则整格平移进界); 各轴的 m 轮流分得 (每次给格点最少的轴加一个), 积不超过此数; 减仓线 / 加仓线各一个网格\n"
         "每日取曲面的连续最高点 (参数可为小数, 相邻格点间对数插值); 最近的格点落在网格边上就以它为中心移网格、补算新格点再拟 (当日至多 %d 次), 中心留到次日\n"
         "• 编辑完生效",
         cta::kStep, cta::kHops);
-  hint("中线只选模型, 参数每日以此前至多 W 日的网格曲面最高点选出, 网格随最高点移动; 所用参数 = 最高点的 5 日阻尼, 中线按所用参数逐根递推 (换参不跳线)");
+  hint("band 与分层规则人设; 减仓线 / 加仓线只选模型, 参数每日以此前至多 W 日的网格曲面最高点选出, 网格随最高点移动; 所用参数 = 最高点的 5 日阻尼, 两线按所用参数递推 (换参不跳线)");
   c.path_open = r && ImGui::CollapsingHeader("参数轨迹");
   if (r && ImGui::IsItemHovered())
-    tip("逐日参数, 每轴 ÷ 首个选参日的值 (都从 1 起, log 轴), 只看相对变化: 实线 = 阻尼后所用, 淡线 = 曲面最高点; 淡线跳得频 / 跳得大 = 岭回归选参不稳\n"
+    tip("减仓线 / 加仓线逐日参数, 每轴 ÷ 各自首个选参日的值 (都从 1 起, log 轴), 只看相对变化: 实线 = 阻尼后所用, 淡线 = 曲面最高点; 淡线跳得频 / 跳得大 = 岭回归选参不稳\n"
         "• 阻尼: 所用参数 (对数) 每日朝最高点走 1 / %.0f\n"
         "• x 与左侧两图同一视野; 展开时左图出现光标 (橙色竖线), 中栏参数看光标所在日",
         cta::kDamp);
   if (c.path_open)
     path(c, *r);
 
-  const cta::V *at = nullptr;
+  const cta::V *at[2] = {};
   const std::string where = r ? cursor_at(*r, c.path_open ? c.cursor : -1, at) : std::string{};
-  ImGui::SeparatorText("中线");
-  label("模型");
-  model_combo("##cta_center", cta::kCenters, sp.kind, "中线 (周期 n): 顺向侧满仓, 逆向侧交给分层");
-  const cta::Kind &shown = cta::kCenters[r ? r->spec.kind : sp.kind]; // 灰显参数按结果的模型
-  for (size_t a = 0; a < shown.axes.size(); ++a) {
-    const cta::Axis &ax = shown.axes[a];
-    char s[32];
-    std::snprintf(s, sizeof(s), "%s%s", ax.name, ax.day ? " (日)" : "");
-    ImGui::TextUnformatted(s);
-    ImGui::SameLine(x0 + lw);
-    if (at)
-      ImGui::TextDisabled("%.3g", (*at)[a]);
-    else
-      ImGui::TextDisabled("-");
-  }
-  if (r) {
-    hint(where.c_str());
-    if (ImGui::IsItemHovered())
-      tip("灰显 = 光标 (参数轨迹展开时图上可拖的竖线; 收起 = 末根) 处所用的参数; 周期轴以日计");
-  }
+  const auto params = [&](const cta::Kind &k, const cta::V *v) { // 灰显参数 (按结果的模型): 光标处所用
+    for (size_t a = 0; a < k.axes.size(); ++a) {
+      const cta::Axis &ax = k.axes[a];
+      char s[32];
+      std::snprintf(s, sizeof(s), "%s%s", ax.name, ax.day ? " (日)" : "");
+      ImGui::TextUnformatted(s);
+      ImGui::SameLine(x0 + lw);
+      if (v)
+        ImGui::TextDisabled("%.3g", (*v)[a]);
+      else
+        ImGui::TextDisabled("-");
+    }
+  };
 
-  ImGui::SeparatorText("分层");
-  {
-    char s[192];
-    std::snprintf(s, sizeof(s), "减仓线链: 链顶锚定上一个触发点, 往下每条隔 波动 × %.2g (每日变); 加仓线每日跟随", cta::kSpace);
-    hint(s);
-    if (ImGui::IsItemHovered())
-      tip("持有的份挂减仓线 (逆向跌到即减一份), 已减的份各挂一条加仓线 (顺向涨到即加回该份); 成交按档线价\n"
-          "• 减仓线链: 链顶锚定上一个触发点, 往下每条 = 上一条 − 当日间距 (锚定不变, 间距每日变)\n"
-          "• 链顶: 满仓随中线 = 中线; 卖出 @a 后 = a − 当日间距; 买回 @L 后 = L − 止损 × 当日间距\n"
-          "• 满仓 (只剩减仓线) 且中线上穿链顶 = 回到随中线\n"
-          "• 加仓线: 卖出 @a 即挂 a + 止损距; 每日收盘下移跟随距, 不低于 收盘 + 止损距 (不会自行触发); 减仓线不跟随\n"
-          "• 一根越过几条成交几条 (先近后远)\n"
-          "• 图上: 一份一条连续线 (恒为份数条), 绿 = 减仓线, 红 = 加仓线, 成交处换色; 同色里离收盘越近越浓\n"
-          "• 波动 (价格单位) 盘中用前一交易日收盘时的值, 每日相对变化 ≤ %.0f%% (阻尼); 中线 / 波动尚无值 (如首日) = 买入持有 (与基准同口径)",
-          cta::kSwingDamp * 100);
-  }
-  label("波动");
-  model_combo("##cta_swing", cta::kSwings, sp.swing, "分层波动度量 (价格单位, 每日重算, 阻尼后用; 定档线间距, 止损 / 跟随以间距计)");
-  label("波动窗 (日)");
+  ImGui::SeparatorText("band");
+  label("模型");
+  model_combo("##cta_band", cta::kBandKinds, sp.band, "band = 档线间距 (价格单位, 每日重算, 盘中用前一交易日收盘时的值; 人选, 不调); 止损与加仓线的下移都以它计");
+  label("窗 (日)");
   ImGui::InputInt("##cta_days", &sp.days, 20, 250);
   sp.days = std::clamp(sp.days, 2, static_cast<int>(cta::kMaxRoll));
   c.editing |= ImGui::IsItemActive();
   if (ImGui::IsItemHovered())
-    tip("波动的窗 W (交易日, 2 ~ %zu); 默认 %zu (一年); 不足 W 日 = 用已有的日 (增量窗); 编辑完生效", cta::kMaxRoll, cta::kSwingDays);
+    tip("band 的窗 W (交易日, 2 ~ %zu); 默认 %zu (一年); 不足 W 日 = 用已有的日 (增量窗); 编辑完生效", cta::kMaxRoll, cta::kBandDays);
+
+  ImGui::SeparatorText("减仓线");
+  label("模型");
+  model_combo("##cta_reduce", cta::kReduceKinds, sp.reduce,
+              "减仓线模型: 满仓时链顶随它, 往下每隔一个 band 一条减仓线; 目的是尽量保留顺向敞口\n"
+              "调参目标 = 保敞口: 它当静态档线 (第 r 份 = 线 − r × band, 跌破即出 / 涨回即入, 与加仓线无关), 分 = (顺向 − 翻转成本) / 总振幅");
+  params(cta::kReduceKinds[r ? r->spec.reduce : sp.reduce], at[0]);
+
+  ImGui::SeparatorText("加仓线");
+  label("模型");
+  model_combo("##cta_add", cta::kAddKinds, sp.add,
+              "加仓线模型: 已减的份的加仓线每日收盘怎么下移 (不低于 收盘 + 止损距), 回撤够深后下移做网格抄底\n"
+              "调参目标 = 每笔中位夏普: 在当日减仓线下跑完整分层, 窗内卖出的各笔 (ln(卖价 / 买回价) − 成本) / (band / 卖价 × √持续日) 的中位; 窗末未买回的按窗末收盘计");
+  params(cta::kAddKinds[r ? r->spec.add : sp.add], at[1]);
+  if (r) {
+    hint(where.c_str());
+    if (ImGui::IsItemHovered())
+      tip("灰显 = 光标 (参数轨迹展开时图上可拖的竖线; 收起 = 末根) 处所用的参数; 以日计的轴单位为日");
+  }
+
+  ImGui::SeparatorText("分层");
+  hint("减仓线链: 链顶锚定上一个触发点, 往下每条隔一个 band (每日变); 加仓线每日按加仓线模型下移");
+  if (ImGui::IsItemHovered())
+    tip("持有的份挂减仓线 (逆向跌到即减一份), 已减的份各挂一条加仓线 (顺向涨到即加回该份); 成交按档线价\n"
+        "• 减仓线链: 链顶锚定上一个触发点, 往下每条 = 上一条 − 当日 band (锚定不变, band 每日变)\n"
+        "• 链顶: 满仓 = 减仓线模型; 卖出 @a 后 = a − 当日 band; 买回 @L 后 = L − 止损 × 当日 band\n"
+        "• 满仓 (只剩减仓线) 且减仓线模型上穿链顶 = 回到随它\n"
+        "• 加仓线: 卖出 @a 即挂 a + 止损距; 每日收盘按加仓线模型下移, 不低于 收盘 + 止损距 (不会自行触发); 减仓线不下移\n"
+        "• 一根越过几条成交几条 (先近后远)\n"
+        "• 图上: 一份一条连续线 (恒为份数条), 绿 = 减仓线, 红 = 加仓线, 成交处换色; 同色里离收盘越近越浓\n"
+        "• 减仓线 / band 尚无值 (如首日) = 买入持有 (与基准同口径)");
   label("份数");
   ImGui::InputInt("##cta_units", &sp.rule.units, 1, 5);
   sp.rule.units = std::clamp(sp.rule.units, 1, 100);
@@ -770,13 +808,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   sp.rule.stop = std::clamp(sp.rule.stop, 0.0f, 10.0f);
   c.editing |= ImGui::IsItemActive();
   if (ImGui::IsItemHovered())
-    tip("成交一份, 该份换极性并止损 × 当日间距: 卖出 = 加仓线挂在成交价上方这么远, 买回 = 链顶挂在买入价下方这么远; 默认 %.2g; 编辑完生效", cta::kStop);
-  label("跟随 (间距)");
-  ImGui::InputFloat("##cta_trail", &sp.rule.trail, 0.1f, 0.5f, "%.2f");
-  sp.rule.trail = std::clamp(sp.rule.trail, 0.0f, 10.0f);
-  c.editing |= ImGui::IsItemActive();
-  if (ImGui::IsItemHovered())
-    tip("每日收盘各加仓线朝价格移 跟随 × 当日间距, 不低于 收盘 + 止损距; 减仓线不跟随; 0 = 不跟随; 默认 %.2g; 编辑完生效", cta::kTrail);
+    tip("成交一份, 该份换极性并止损 × 当日 band: 卖出 = 加仓线挂在成交价上方这么远, 买回 = 链顶挂在买入价下方这么远; 默认 %.2g; 编辑完生效", cta::kStop);
 
   ImGui::SeparatorText("引擎");
   {
@@ -800,18 +832,6 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
         "• 印花税 = 印花税率 × 卖出量 (多头减仓 / 融券卖出), 买入不收\n"
         "• 冲击 = 固定冲击 × |Δ仓位|, 买卖各一次, 不按金额变\n"
         "• 震荡 / 跳空另计: 分层按收盘成交比按档线价成交多付的差; 最近那档的差 = 震荡, 一根越过几档多出的部分 = 跳空");
-  label("目标年化波动");
-  ImGui::InputFloat("##cta_vol", &sp.sizing.vol, 0.05f, 0.1f, "%.2f");
-  sp.sizing.vol = std::max(sp.sizing.vol, 0.0f);
-  c.editing |= ImGui::IsItemActive();
-  if (ImGui::IsItemHovered())
-    tip("波动率定仓: 仓位 × min(1, 目标 / 近 %zu 根日内年化波动 (隔夜跳空不计)); 只作用于策略, 持有 = 满仓不动; 0 = 不调; 编辑完生效", cta::kVolSpan);
-  label("不交易带");
-  ImGui::InputFloat("##cta_buf", &sp.sizing.buffer, 0.05f, 0.1f, "%.2f");
-  sp.sizing.buffer = std::clamp(sp.sizing.buffer, 0.0f, 1.0f);
-  c.editing |= ImGui::IsItemActive();
-  if (ImGui::IsItemHovered())
-    tip("前后同向持仓且 |Δ仓位| < 带宽时不调 (省换手); 0 = 不用; 编辑完生效");
   if (r) {
     ImGui::SeparatorText("全期指标");
     stat_table(*r);

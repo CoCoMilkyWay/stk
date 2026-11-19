@@ -587,7 +587,7 @@ void Mine::replied(llm::Reply r) {
   step();
 }
 
-Seat Mine::mine_seat() { return seat(cur_, setup.gate, log.dir(), false, leg.gpu); }
+Seat Mine::mine_seat() { return seat(cur_, setup.gate, log.dir(), false, false, leg.gpu); }
 
 void Mine::step() {
   Round &rd = timeline.back();
