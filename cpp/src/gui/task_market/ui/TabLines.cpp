@@ -108,7 +108,7 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState
     ui.log_y = false;
   }
   if (ImGui::IsItemHovered())
-    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL / CTA 标的 / 展开的行 / 叠加的成分股 / 区间 (NAV 回近 1 月, VAL 回近 10 年) / log 关");
+    tip("清掉全部选择, 图回默认 (空): NAV / FLOW 选中行 / VAL / MARGIN / CTA 标的 / 展开的行 / 叠加的成分股 / 区间 (NAV 回近 1 月, VAL / MARGIN 回近 10 年) / log 关");
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
@@ -219,7 +219,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
     SavePick(ui.pick);
   }
   const std::vector<uint32_t> stocks = ui.pick.stocks(kPicks);
-  if (mk) { // 选中的个股 → 全史; 有行情键的选中行 → 连分钟: 分钟线页 = NAV 多选 ∪ VAL 标的 (两页同一份), CTA 页 = 其标的
+  if (mk) { // 选中的个股 → 全史; 有行情键的选中行 → 连分钟: 分钟线页 = NAV 多选 ∪ VAL / MARGIN 标的 (各页同一份), CTA 页 = 其标的
     for (const uint32_t id : stocks)
       mk->want({Quote::kStock, id}, false);
     for (int m = 0; m < kPicks; ++m)
@@ -241,7 +241,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
                 });
   ui.live.update(LinesLiveKey{ui.der.gen, live}, [&](LinesLive &t) { MakeLinesLive(d, live.get(), t); });
   const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];
-  const LinesAt pin = one.empty() ? LinesAt{} : d.at(one.begin()->first); // VAL 标的
+  const LinesAt pin = one.empty() ? LinesAt{} : d.at(one.begin()->first); // VAL / MARGIN / CTA 标的
   const LinesLeg lg = pin.g >= 0 ? d.row(pin).val : LinesLeg{};           // 其估值腿
   ui.roll.update(LinesRollKey{d.axis_gen, lg, ui.band_years}, [&](LinesRolls &r) { MakeLinesRoll(d, lg, ui.band_years, r); });
   const LinesRange &rg = ui.range[page];
@@ -251,7 +251,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
 
   const int action = head(page, svc, pf, ui, d, res, message, fixed_impact);
 
-  // ---- 布局 (PageLayout): 左 = [日内栏 (开日内, 切 1/3 高)] / 主图 (NAV ↔ VAL) / 区间条 自上而下 | 只一张叠加图 | CTA 两图 + 区间条 + 中栏;
+  // ---- 布局 (PageLayout): 左 = [日内栏 (开日内, 切 1/3 高)] / 主图 (NAV ↔ VAL / MARGIN) / 区间条 自上而下 | 只一张叠加图 | CTA 两图 + 区间条 + 中栏;
   //      最右 = 右图例 (各页同宽 sheet_width; CTA = 中栏与右表各半) ----
   const ImGuiStyle &st = ImGui::GetStyle();
   const ImVec2 av = ImGui::GetContentRegionAvail();

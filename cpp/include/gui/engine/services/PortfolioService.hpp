@@ -94,6 +94,10 @@ struct PortfolioBook : Book {
     assert(line < lines() && val[m].n);
     return val[m].at(static_cast<int>(line));
   }
+  const float *cap_of(size_t line) const {
+    assert(line < lines() && cap.n);
+    return cap.at(static_cast<int>(line));
+  }
 };
 
 struct PortfolioResult {

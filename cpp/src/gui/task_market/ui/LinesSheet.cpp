@@ -319,20 +319,6 @@ const SheetCol kTodayCols[kTodays] = {
              "• 账户行: (今日买入额 − 卖出额) / 今日成交额 (券商成交); 未连券商 / 今日无成交 → -\n"
              "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 不随区间"},
 };
-// 金额 y [亿元] 的显示: ≥ 1 万亿按万亿, 其余按亿 (越大小数越少); 带符号 sign
-std::string yi_text(double y, bool sign = false) {
-  const double a = std::abs(y);
-  char s[32];
-  const char *pm = !sign ? "" : y < 0 ? "-"
-                                      : "+";
-  if (a >= 1e4)
-    std::snprintf(s, sizeof(s), a >= 1e6 ? "%s%.0f万亿" : "%s%.1f万亿", pm, a / 1e4);
-  else
-    std::snprintf(s, sizeof(s), a >= 10 ? "%s%.0f亿" : a >= 1 ? "%s%.1f亿"
-                                                              : "%s%.2f亿",
-                  pm, a);
-  return s;
-}
 // 表行的源: 位置 / 行 + 基本面档案 (个股才有, 无 → nullptr) + 行情源 (QuoteHub::of, 与叠加图同一查法; 无行情键 / 行情未起 = 空)
 // + 当日 (源的当日有成交才有, 否则 nullptr) 及其前一交易日
 struct RowSrc {
@@ -711,31 +697,91 @@ Seg num_seg(const LinesView &v, int mask) {
   };
   return s;
 }
-// 各口估值分位段 [PoolVal]: 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (便宜绿 → 贵红); 说明同一模板, 只换分子 / 负值口径
+// 各口估值分位段 [PoolVal]: 区间末各口的估值分位, 底色 = 同组同口内的截面名次 (低绿 → 高红); 说明同一模板, 估值口只换分子 / 负值口径, 两融口只换余额
 const std::array<SheetCol, kPoolVals> kValCols = [] {
-  constexpr const char *num[kPoolVals] = {"归母净利TTM", "归母普通股权益MRQ", "营业总收入TTM", "经营现金流TTM", "近4季报告期税前分红"};
-  constexpr const char *neg[kPoolVals] = {"亏损计负", "负权益计负", "无收入计 0", "负现金流计负", "不分红计 0"};
+  constexpr const char *num[kValRz] = {"归母净利TTM", "归母普通股权益MRQ", "营业总收入TTM", "经营现金流TTM", "近4季报告期税前分红"};
+  constexpr const char *neg[kValRz] = {"亏损计负", "负权益计负", "无收入计 0", "负现金流计负", "不分红计 0"};
   std::array<SheetCol, kPoolVals> o;
   for (int b = 0; b < kPoolVals; ++b) {
     char s[1024];
-    std::snprintf(s, sizeof(s),
-                  "%s = %s 倒数 (%s / 总市值) 的估值分位\n"
-                  "• 算法: 区间末日 %s 在过去 N 年 (类别条旁滑条) 窗内的加权分位; 收益率越低越贵 (高 = 贵, ≤ 0 排最贵端)\n"
-                  "• 数据: 分子 = %s (%s); .加 = Σ分子 / Σ总市值, .等 = 成分 %s 的算术平均; 成分 / 财务取当日适用 (无前视)\n"
-                  "• 显示: 分位百分比, 底色 = 组内同口名次 (便宜绿 → 贵红); 绝对值看主图 Band 图例\n"
-                  "• 成分行: 该股本只 %s (%s / 该股总市值) 同式的分位, 底色 = 成分之间同口名次\n"
-                  "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 随区间末日, 估值史不满 1 年 → -",
-                  kVal[b].name, kVal[b].inv, num[b], kVal[b].name, num[b], neg[b], kVal[b].name, kVal[b].name, num[b]);
-    o[static_cast<size_t>(b)] = {kVal[b].name, s};
+    if (margin_val(b))
+      std::snprintf(s, sizeof(s),
+                    "%s分位 = %s余额占比 (%s余额 / 总市值) 的分位\n"
+                    "• 算法: 区间末日占比在过去 N 年 (类别条旁滑条, 与 VAL 同一份) 窗内的加权分位; 高 = 占比高\n"
+                    "• 数据: 成分 Σ%s余额 / Σ总市值 (不看权重, .等 / .加 同值; 非两融标的计 0); 余额 = T 日盘后两融明细, 成分 / 股本取当日适用\n"
+                    "• 显示: 分位百分比, 底色 = 组内同口名次 (低绿 → 高红); 当前占比 / 余额看主图图例\n"
+                    "• 成分行: 该股本只 %s余额 / 总市值 同式的分位, 底色 = 成分之间同口名次; 非两融标的 -\n"
+                    "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 随区间末日, 两融史不满 1 年 → -",
+                    kVal[b].name, kVal[b].name, kVal[b].name, kVal[b].name, kVal[b].name);
+    else
+      std::snprintf(s, sizeof(s),
+                    "%s = %s 倒数 (%s / 总市值) 的估值分位\n"
+                    "• 算法: 区间末日 %s 在过去 N 年 (类别条旁滑条) 窗内的加权分位; 收益率越低越贵 (高 = 贵, ≤ 0 排最贵端)\n"
+                    "• 数据: 分子 = %s (%s); .加 = Σ分子 / Σ总市值, .等 = 成分 %s 的算术平均; 成分 / 财务取当日适用 (无前视)\n"
+                    "• 显示: 分位百分比, 底色 = 组内同口名次 (便宜绿 → 贵红); 绝对值看主图 Band 图例\n"
+                    "• 成分行: 该股本只 %s (%s / 该股总市值) 同式的分位, 底色 = 成分之间同口名次\n"
+                    "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 随区间末日, 估值史不满 1 年 → -",
+                    kVal[b].name, kVal[b].inv, num[b], kVal[b].name, num[b], neg[b], kVal[b].name, kVal[b].name, num[b]);
+    o[static_cast<size_t>(b)] = {margin_val(b) ? std::string(kVal[b].name) + "分位" : std::string(kVal[b].name), s};
   }
   return o;
 }();
-// 段: 各口估值分位 (LinesView::pct)
-Seg val_seg(const LinesView &v) {
-  return {{kValCols.begin(), kValCols.end()},
+// 段: 口集 vs 各口估值分位 (LinesView::pct)
+Seg val_seg(const LinesView &v, const ValSet &vs) {
+  return {{kValCols.begin() + vs.lo, kValCols.begin() + vs.hi},
+          [&v, vs](const RowSrc &x, size_t, LinesSheet &, SheetCell *out) {
+            for (int b = vs.lo; b < vs.hi; ++b)
+              *out++ = ranked_cell(v.pct[x.at.g][x.at.r][b], "%.0f%%");
+          },
+          {}};
+}
+// MARGIN 区间末数段 [MarginNum]: 总市值 | 融资 / 融券余额 (不着色) | 融资 / 融券占比 (底色 = 组内名次, 低绿 → 高红)
+const std::array<SheetCol, kMarginNums> kMarginCols = [] {
+  std::array<SheetCol, kMarginNums> o;
+  o[kMarCap] = {"市值", "市值 = 区间末成分总市值\n"
+                        "• 算法: Σ 成分 收盘 × 当日适用总股本 (两融占比的分母; 不看权重, .等 / .加 同值)\n"
+                        "• 数据: 篮子账 (成分 = 当日持仓, 同 VAL); 取区间内 (含起点前收日) 末个有市值的日\n"
+                        "• 显示: 亿 / 万亿, 不着色\n"
+                        "• 成分行: 本只总市值\n"
+                        "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 随区间末日"};
+  for (int j = 0; j < kMarginVals; ++j) {
+    const char *n = kVal[kValRz + j].name;
+    char s[768];
+    std::snprintf(s, sizeof(s),
+                  "%s = 区间末%s余额\n"
+                  "• 算法: Σ 成分 %s余额 (非两融标的计 0; 成分全无余额 → -); 占比 × 市值列\n"
+                  "• 数据: T 日盘后两融明细 (T+1 盘前可知, 取当日适用); 同市值列的日\n"
+                  "• 显示: 亿 / 万亿, 不着色\n"
+                  "• 成分行: 本只%s余额; 非两融标的 -\n"
+                  "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 随区间末日",
+                  n, n, n, n);
+    o[static_cast<size_t>(kMarBal + j)] = {n, s};
+    std::snprintf(s, sizeof(s),
+                  "%s占比 = 区间末%s余额 / 总市值\n"
+                  "• 算法: Σ %s余额 / Σ总市值 (= %s列 / 市值列; 不看权重, .等 / .加 同值)\n"
+                  "• 数据: 同%s列\n"
+                  "• 显示: 百分比, 底色 = 组内名次 (低绿 → 高红); 历史位置看分位列 / 主图 Band\n"
+                  "• 成分行: 本只%s余额 / 总市值, 底色 = 成分之间名次\n"
+                  "• 适用: 指数 / 行业 / 概念 / 自选 + 成分行; 随区间末日",
+                  n, n, n, n, n, n);
+    o[static_cast<size_t>(kMarPct + j)] = {std::string(n) + "占比", s};
+  }
+  return o;
+}();
+// 段: MARGIN 区间末数 (LinesView::margin)
+Seg margin_seg(const LinesView &v) {
+  return {{kMarginCols.begin(), kMarginCols.end()},
           [&v](const RowSrc &x, size_t, LinesSheet &, SheetCell *out) {
-            for (int b = 0; b < kPoolVals; ++b)
-              out[b] = ranked_cell(v.pct[x.at.g][x.at.r][b], "%.0f%%");
+            const std::array<Ranked, kMarginNums> &m = v.margin[x.at.g][x.at.r];
+            const ImVec4 &txt = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            for (int k = 0; k < kMarPct; ++k)
+              out[k] = sheet_cell(m[static_cast<size_t>(k)].x, txt, "%s", yi_text(m[static_cast<size_t>(k)].x).c_str());
+            for (int j = 0; j < kMarginVals; ++j) {
+              const Ranked &p = m[static_cast<size_t>(kMarPct + j)];
+              char f[16];
+              std::snprintf(f, sizeof(f), "%%.%df%%%%", kVal[kValRz + j].prec);
+              out[kMarPct + j] = ranked_cell({100.0 * p.x, p.rank}, f);
+            }
           },
           {}};
 }
@@ -817,7 +863,9 @@ Seg seg_of(const SegDef &s, const LinesState &ui, const LinesView &v, const Quot
   case kSegNum:
     return num_seg(v, s.arg);
   case kSegVal:
-    return val_seg(v);
+    return val_seg(v, kValSets[s.arg]);
+  case kSegMargin:
+    return margin_seg(v);
   case kSegFlow:
     return flow_seg(ui.overlay.flow_ends, mk ? OverlayDays(kOverlayFlow, *mk, ui.overlay) : std::vector<misc::Ymd>{});
   }
@@ -848,7 +896,7 @@ void page_tool(PageTool t, LinesState &ui) {
     ImGui::SetNextItemWidth(ImGui::CalcTextSize("Band 滚动窗 00 年").x + 2.0f * ImGui::GetStyle().FramePadding.x);
     ImGui::SliderInt("##pf_band_years", &ui.band_years, 1, kBandYearsMax, "Band 滚动窗 %d 年", ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemHovered())
-      tip("Band 分位的滚动窗长 N: 每日取过去 N 年 (含当日) 的收益率加权分位, 拖动即时重算\n"
+      tip("Band 分位的滚动窗长 N (VAL / MARGIN 同一份): 每日取过去 N 年 (含当日) 的收益率 / 两融占比加权分位, 拖动即时重算\n"
           "• 权重 = 1 - exp(-10 u), u = 1 - 距今 / 窗跨度: 近 ~3/4 窗约等权, 窗尾段快速降到 0 (老点出窗时分位不跳)\n"
           "• 估值史不足 N 年时先扩张窗 (权重按实际史长缩放); 不满 1 年不画");
     return;

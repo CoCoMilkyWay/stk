@@ -9,7 +9,8 @@ GUI布局:
 │  > Beta                              │ Compute / Style                    │
 │  > Alpha                             │ Compute / Operators / Factors /    │
 │                                      │ Inspect                            │
-│  > Market                            │ ASSET / NAV / VAL / FLOW / CTA     │
+│  > Market                            │ ASSET / NAV / VAL / MARGIN / FLOW /│
+│                                      │ CTA                                │
 │  > Live                              │ Board / Client                     │
 │  > Features                          │ Table / Distribution / Transform / │
 │                                      │ Correlation / OrderFlow / NodeTime │
@@ -174,7 +175,7 @@ stk/
 │   │   │   │   └── ui/TabCompute.hpp                   # 🖥️ Compute 页: 库表 (一行一池, 每池各档一库) + 核布局 + Rebuild / Append / 删除 + 进度
 │   │   │   ├── engine/                                 # 🖥️ 因子引擎: Alpha 各因子服务 / Market 组合 / Agent 回测与观察同一份
 │   │   │   │   ├── EngineHub.hpp                       # 🖥️ 跨任务状态 (Alpha / Market 共用): 后端选择 + 组合 (PortfolioService / 编辑状态 / 重解析)
-│   │   │   │   ├── Table.hpp                           # 🖥️ 因子层公共类型: 层表 FACTOR_LEVELS + 持有期开关仓 HoldPoints / 两侧列 XCols ↔ YCols + K 线与估值五叶 (每进程代按层一份 table_of) / 作用域与年数上限 / EvalStat
+│   │   │   │   ├── Table.hpp                           # 🖥️ 因子层公共类型: 层表 FACTOR_LEVELS + 持有期开关仓 HoldPoints / 两侧列 XCols ↔ YCols + K 线与估值七叶 (估值五口 + 两融两口; 每进程代按层一份 table_of) / 作用域与年数上限 / EvalStat
 │   │   │   │   ├── Load.hpp                            # 🖥️ 评估域与装载层: Domain + Plan 分块 + 两侧平面 X ↔ Y (共享 read_days, 统一经 Store::pin 钉成 Block) + 进程唯一计算面 Store
 │   │   │   │   │                                       #    · 门控 / 标签取因子池 Bar 库, 盘口成本取同池 Lob 库; 评估期 span_of = 落盘日交集最近 N 年 + 10% 预热日
 │   │   │   │   │                                       #    · Store = 线程池 ex + 库 lr + 宿主平面 LRU (misc::Lru, 钉着的不逐) + 常驻执行环境 ExecSpace (CPU/GPU 内存与显存统一预算) + 计算权租约 Lease
@@ -251,18 +252,18 @@ stk/
 │   │   │   │       ├── TabFactors.hpp                  # 🖥️ 因子表: 构建器 + Run / Search
 │   │   │   │       └── TabInspect.hpp                  # 🖥️ 单因子深看: 控件只切结果立方体, 不发请求
 │   │   │   ├── task_market/                            # 🖥️ Market 任务 (行情)
-│   │   │   │   │                                       #    · ASSET = 个股表 + 行情; NAV / VAL / FLOW / CTA = 篮子 (池指数 / 行业 / 概念) + 因子组合 + 个股的 净值 / 估值 / 资金流 / 择时
+│   │   │   │   │                                       #    · ASSET = 个股表 + 行情; NAV / VAL / MARGIN / FLOW / CTA = 篮子 (池指数 / 行业 / 概念) + 因子组合 + 个股的 净值 / 估值 / 两融 / 资金流 / 择时
 │   │   │   │   ├── TaskMarket.hpp                      # 🖥️ Market 任务主界面
 │   │   │   │   ├── services/
 │   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 (价格库发布的连分钟全史) → cta/Trace 滚动调参轨迹 (band + 减仓 + 跟随)
 │   │   │   │   └── ui/
-│   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / FLOW / CTA (一行一对线 Line, 四页同一份派生 / 选中 / 区间)
+│   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / MARGIN / FLOW / CTA (一行一对线 Line, 五页同一份派生 / 选中 / 区间)
 │   │   │   │       │                                   #    · 右表 = 指数 / 行业 / 概念 / 自选 / 因子 / 策略 行 (篮子行可展开成分股); 左 = 主图 + 日内栏 + 区间条
 │   │   │   │       │                                   #    · 横轴 = 槽 (日 × 240 + 分钟槽; 集合竞价并入首槽): 日线 / 分钟线同一轴
 │   │   │   │       ├── LinesView.hpp                   # 🖥️ 行情页纯计算层 (无 ImGui): 账 → 线 (腿集合成 mix / 价格指数) → 日并集轴 → 当日尾 / 估值分位 → 视图; 行一种 LinesRow
 │   │   │   │       ├── LinesCommon.hpp                 # 🖥️ 行情页内部件; 实现分 LinesPlot.cpp (主图) / LinesSheet.cpp (右表) / LinesCta.cpp (CTA 页)
-│   │   │   │       │                                   #    · 页表 kPageDefs = 页的一切差异: 右表段 (近况 / 当日 / 数值 / 估值分位 / 资金流) / 页件 / 布局 / 叠加图 / 头 / 状态的 worker
-│   │   │   │       │                                   #    · 主图例矩阵 (NAV / VAL 同一件, 只填行列表) / 右表 (各页同一条 RenderLinesSheet)
+│   │   │   │       │                                   #    · 页表 kPageDefs = 页的一切差异: 右表段 (近况 / 当日 / 数值 / 估值分位 / 两融 / 资金流) / 页件 / 布局 / 叠加图 / 头 / 状态的 worker / 估值口集
+│   │   │   │       │                                   #    · 主图例矩阵 (NAV / VAL / MARGIN 同一件, 只填行列表) / 右表 (各页同一条 RenderLinesSheet)
 │   │   │   │       ├── TabAsset.hpp                    # 🖥️ ASSET 页: 个股表 (列定义一张表 kCols; 格 / 名次底色同 Lines 右表) + Quotes / Statistics
 │   │   │   │       ├── QuotesPanel.hpp                 # 🖥️ 行情图: 个股 (日内 + 全史分钟 K, 按视野宽并根, 宽到不足一日一根转日根) / 篮子叠加 / 资金流 同一查法 QuoteHub::of (序列按 (发布, 当日) 缓存, 都没换 → 不重算)
 │   │   │   │       │                                   #    · 叠加图两种 (涨跌幅 = NAV 日内栏 / 累计净流入 = FLOW) 同一入口 RenderOverlay(kind) + 同一份档位条 / 工具角

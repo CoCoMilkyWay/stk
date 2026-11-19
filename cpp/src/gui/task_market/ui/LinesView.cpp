@@ -840,9 +840,9 @@ LinesSlice slice_of(const LineRef &c, int d0, int d1) {
 }
 
 // ---- 估值口径 (一个定义 pct_of; roll_of 逐日在有序窗上取前缀 / last_pct 末日直扫窗 pct_at, 同按日并集轴日) ----
-// 估值 (EP / BP / SP / CP / DY 收益率) 可算: 有限 (≤ 0 照排, 在最贵端)
+// 估值 (EP / BP / SP / CP / DY 收益率; RZ / RQ 余额占比) 可算: 有限 (≤ 0 照排, 在最贵端)
 bool val_ok(double r) { return std::isfinite(r); }
-// 收益率 ↔ 贵度 (取负; 自逆, 贵度升 = 贵): 分位 / 排序一律在贵度上
+// 收益率 ↔ 贵度 (取负; 自逆, 贵度升 = 贵): 窗内排序 / band 档一律在贵度上; 当日分位的键另见 ValSeries::key
 template <class F>
 F dear_of(F x) {
   return -x;
@@ -867,19 +867,21 @@ struct ValAxis {
   }
 };
 // 一腿一口的估值 v [D] + 窗: 日 t 的窗 = [lo(t), t] = (t 的 N 年前, t] 内的可算点, 点 u 的权 = roll_w(age(u, t), span(t));
-// 首个可算日起史满 1 年 (ready) 才出
+// 首个可算日起史满 1 年 (ready) 才出; 当日分位的键 key: 估值口 = 贵度 (高 = 贵), 两融口 (up) = 占比本身 (高 = 占比高)
 struct ValSeries {
   const ValAxis &ax;
   const float *v;
   int years;
+  bool up;
   size_t first = 0; // 首个可算点 (无 = D)
-  ValSeries(const ValAxis &a, const LinesLeg &lg, int m, int years_) : ax(a), v(lg.b->val_of(lg.line, m)), years(years_) {
+  ValSeries(const ValAxis &a, const LinesLeg &lg, int m, int years_) : ax(a), v(lg.b->val_of(lg.line, m)), years(years_), up(margin_val(m)) {
     assert(lg.b->dates.size() == a.hd.size());
     while (first < size() && !ok(first))
       ++first;
   }
   size_t size() const { return ax.hd.size(); }
   bool ok(size_t t) const { return val_ok(v[t]); }
+  float key(size_t t) const { return up ? v[t] : dear_of(v[t]); }
   bool ready(size_t t) const { return first < size() && ax.hd[first] <= years_before(ax.hd[t], 1); }
   bool gone(size_t u, size_t t) const { return ax.hd[u] <= years_before(ax.hd[t], years); } // u 已出 t 的窗
   size_t lo(size_t t) const {
@@ -932,23 +934,24 @@ double w_at(const ValSeries &s, const std::vector<double> &wt, size_t u, size_t 
   assert(static_cast<size_t>(s.age(u, t)) < wt.size());
   return wt[static_cast<size_t>(s.age(u, t))];
 }
-// 日 t 的估值分位 (last_pct 的核; roll_of 在有序窗上取同一值): 窗 [lo(t), t] 内可算点里贵度 ≤ 当日的权重和 / 权重和 (%, 高 = 贵); 当日不可算 / 史不满 1 年 → NaN
+// 日 t 的估值分位 (last_pct 的核; roll_of 在有序窗上取同一值): 窗 [lo(t), t] 内可算点里键 ≤ 当日的权重和 / 权重和 (%); 当日不可算 / 史不满 1 年 → NaN
 float pct_at(const ValSeries &s, size_t t, RollW &rw) {
   if (!s.ok(t) || !s.ready(t))
     return std::numeric_limits<float>::quiet_NaN();
   const std::vector<double> &wt = rw.of(s.span(t));
-  const float m = dear_of(s.v[t]);
+  const float m = s.key(t);
   double w = 0.0, le = 0.0;
   for (size_t u = s.lo(t); u <= t; ++u)
     if (s.ok(u)) {
       const double x = w_at(s, wt, u, t);
-      w += x, le += dear_of(s.v[u]) <= m ? x : 0.0;
+      w += x, le += s.key(u) <= m ? x : 0.0;
     }
   return pct_of(le, w);
 }
 
 // 估值 s 在日并集轴各日 (at = 轴日 → 账行, −1 = 无; 有效的升序) 上的滚动分位 → o [轴日]: 窗内可算点按贵度保持有序 (逐日二分插入 / 出窗删除);
-// 出点日扫一遍窗得贵度序的累计权重 cw: 各档分位 = cw 首个 ≥ q · 总权重处的点, 当日估值分位 = 贵度 ≤ 当日处的 cw / 总权重 (pct_of); 等值线档按全史
+// 出点日扫一遍窗得贵度序的累计权重 cw: 各档分位 = cw 首个 ≥ q · 总权重处的点, 当日估值分位 = 键 ≤ 当日的权重 / 总权重 (pct_of;
+// 估值口 = 贵度 ≤ 当日处的 cw, 两融口 = 总权重 − 贵度 < 当日处的 cw); 等值线档按全史
 void roll_of(const ValSeries &s, const std::vector<int32_t> &at, RollW &rw, LinesRoll &o) {
   constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
   const size_t n = s.size(), D = at.size();
@@ -993,9 +996,14 @@ void roll_of(const ValSeries &s, const std::vector<int32_t> &at, RollW &rw, Line
     o.band[k] = wp == static_cast<int>(win.size());
     if (s.ok(tk)) {
       const float m = dear_of(v[tk]);
-      const size_t le = static_cast<size_t>(std::upper_bound(win.begin(), win.end(), m, [&](float x, size_t u) { return x < dear_of(v[u]); }) - win.begin());
-      assert(le > 0 && "当日在窗内");
-      o.pct[k] = pct_of(cw[le - 1], W);
+      if (s.up) {
+        const size_t lt = static_cast<size_t>(std::lower_bound(win.begin(), win.end(), m, [&](size_t u, float x) { return dear_of(v[u]) < x; }) - win.begin());
+        o.pct[k] = pct_of(W - (lt > 0 ? cw[lt - 1] : 0.0), W);
+      } else {
+        const size_t le = static_cast<size_t>(std::upper_bound(win.begin(), win.end(), m, [&](float x, size_t u) { return x < dear_of(v[u]); }) - win.begin());
+        assert(le > 0 && "当日在窗内");
+        o.pct[k] = pct_of(cw[le - 1], W);
+      }
     }
   }
 }
@@ -1007,6 +1015,22 @@ LinesLastPct last_pct(const ValSeries &s, const std::vector<int32_t> &at, int k1
       if (const float p = pct_at(s, static_cast<size_t>(at[static_cast<size_t>(k)]), rw); !std::isnan(p))
         return {k, p};
   return {};
+}
+
+// 估值腿 lg 在日段 [d0, d1) 内 (含起点前收日) 末个有总市值的日的 MARGIN 右表数 (MarginNum; 余额 = 占比 · 总市值); 无 → 全不可算
+std::array<Ranked, kMarginNums> margin_at(const LinesDerived &d, const LinesLeg &lg, int d0, int d1) {
+  std::array<Ranked, kMarginNums> o{};
+  const float *cap = lg.b->cap_of(lg.line);
+  for (int k = d1; k-- > std::max(d0 - 1, 0);)
+    if (const int32_t t = d.val_at[static_cast<size_t>(k)]; t >= 0 && cap[t] > 0.f) {
+      o[kMarCap].x = cap[t];
+      for (int j = 0; j < kMarginVals; ++j) {
+        const double p = lg.b->val_of(lg.line, kValRz + j)[t];
+        o[static_cast<size_t>(kMarBal + j)].x = p * cap[t], o[static_cast<size_t>(kMarPct + j)].x = p;
+      }
+      break;
+    }
+  return o;
 }
 
 // 截面名次 (NAV 数值列 / VAL 格同一份): 组内 n 格 at(i) 的 x → rank (GUI::rank_by)
@@ -1114,14 +1138,15 @@ void MakeLinesPct(const LinesDerived &d, int d1, int years, LinesPct &p) {
 
 void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, const LinesAt &pin, const LinesRolls &roll, const LinesPct &pct,
                    LinesView &v) {
-  // ---- 各组同一套: 各线切片 + NAV 数值列 + VAL 各口区间内末个可算日的估值分位 (= 区间末之前的末个可算日落在区间内, 含区间起点的前收日);
-  //      各列同组同列名次 (VAL: 分位低 = 便宜 = 好) ----
+  // ---- 各组同一套: 各线切片 + NAV 数值列 + VAL / MARGIN 各口区间内末个可算日的估值分位 (= 区间末之前的末个可算日落在区间内, 含区间起点的前收日)
+  //      + MARGIN 区间末数; 各列同组同列名次 (分位低 = 便宜 / 占比低 = 好; MARGIN 只占比列有名次) ----
   for (int g = 0; g < kRowGroups; ++g) {
     const size_t n = d.rows[g].size();
     assert(pct.rows[g].size() == n && t.tail[g].size() == n);
     v.slice[g].clear();
     v.num[g].assign(n, {});
     v.pct[g].assign(n, {});
+    v.margin[g].assign(n, {});
     for (size_t i = 0; i < n; ++i) {
       const LinesRow &r = d.rows[g][i];
       v.slice[g].push_back({slice_of({r.line[kTrade].get(), nullptr}, d0, d1), slice_of({r.line[kIdeal].get(), &t.tail[g][i]}, d0, d1)});
@@ -1132,14 +1157,18 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
       for (int b = 0; b < kPoolVals; ++b)
         if (const LinesLastPct &lp = pct.rows[g][i][b]; lp.k >= 0 && lp.k >= d0 - 1)
           v.pct[g][i][b].x = lp.pct;
+      if (r.val.b)
+        v.margin[g][i] = margin_at(d, r.val, d0, d1);
     }
     for (int k = 0; k < kNavNums; ++k)
       rank_col(n, kNavGood[k], [&](size_t i) -> Ranked & { return v.num[g][i][k]; });
     for (int b = 0; b < kPoolVals; ++b)
       rank_col(n, -1, [&](size_t i) -> Ranked & { return v.pct[g][i][b]; });
+    for (int j = 0; j < kMarginVals; ++j)
+      rank_col(n, -1, [&](size_t i) -> Ranked & { return v.margin[g][i][static_cast<size_t>(kMarPct + j)]; });
   }
 
-  // ---- VAL 标的各口 band: 标的理想线切片的日末点 (起点 + 各日末点), y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画);
+  // ---- VAL / MARGIN 标的各口 band: 标的理想线切片的日末点 (起点 + 各日末点), y = P · v / q (v = 当日收益率 / 余额占比; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画);
   //      等值线单位点位 unit = P · v (只看当日, 不看滚动分位; v ≤ 0 → 断开), 档 = 二级的全史倍数档 ----
   v.band_x.clear(), v.band_p.clear();
   for (LinesBand &bd : v.band)
@@ -1188,7 +1217,8 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
     if (last < 0)
       continue;
     bd.ok = true;
-    bd.now = hv[d.val_at[static_cast<size_t>(last)]], bd.pct = r.pct[static_cast<size_t>(last)];
+    const int32_t tl = d.val_at[static_cast<size_t>(last)];
+    bd.now = hv[tl], bd.pct = r.pct[static_cast<size_t>(last)], bd.cap = lg.b->cap_of(lg.line)[tl];
   }
 }
 

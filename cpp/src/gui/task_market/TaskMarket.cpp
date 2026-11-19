@@ -1,6 +1,6 @@
-// Task Market - 行情面: 个股 (ASSET) 与篮子 / 组合的曲线、估值、资金流、单标的回测 (NAV · VAL · FLOW · CTA).
+// Task Market - 行情面: 个股 (ASSET) 与篮子 / 组合的曲线、估值、两融、资金流、单标的回测 (NAV · VAL · MARGIN · FLOW · CTA).
 //   ASSET: 资产表 + 右栏 Quotes / Statistics (见 TabAsset.hpp), AssetInfo 建好且扫描过才可进.
-//   NAV / VAL / FLOW: 篮子账 (all 标签库建好即算) + 因子 / 策略两组 (Alpha → Factors 页编辑的组合, 无组合时只少这两组),
+//   NAV / VAL / MARGIN / FLOW: 篮子账 (all 标签库建好即算) + 因子 / 策略两组 (Alpha → Factors 页编辑的组合, 无组合时只少这两组),
 //     走 EngineHub 的 PortfolioService (见 gui/engine/EngineHub.hpp); 日内栏 / 近况列 / 分钟线取 QuoteHub 行情 (新浪当日 + 价格库), AssetInfo 建好才起.
 //   CTA 单标的回测 = CtaService (读 QuoteHub 的价格库; 行情起了, 首次画行情页建).
 //   自选首行 = 账户 (行情的账户一侧: 价格库回放 + gui/account 拼的当日; 悬停 / 持仓取自 gui/account).

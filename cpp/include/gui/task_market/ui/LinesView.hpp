@@ -1,5 +1,5 @@
-// Market 行情页 (NAV / VAL / FLOW / CTA) 的派生层 (GUI 线程, 只算不画): PortfolioService 的账 + 价格库的历史 + 当日 → 三级缓存, TabLines 只读末级画
-//   派生 LinesDerived (结果 / 内容 / fixed_impact / 成分组 / 价格库发布变) → 旁支当日尾 LinesLive (当日变) + 二级两份: 滚动分位 LinesRolls (VAL 标的 / 窗长变)
+// Market 行情页 (NAV / VAL / MARGIN / FLOW / CTA) 的派生层 (GUI 线程, 只算不画): PortfolioService 的账 + 价格库的历史 + 当日 → 三级缓存, TabLines 只读末级画
+//   派生 LinesDerived (结果 / 内容 / fixed_impact / 成分组 / 价格库发布变) → 旁支当日尾 LinesLive (当日变) + 二级两份: 滚动分位 LinesRolls (VAL / MARGIN 标的 / 窗长变)
 //   + 末点分位 LinesPct (窗长 / 区间末 / 估值行变; 不随区间起点) → 区间视图 LinesView (区间 / 当日尾变)
 //   各级一个入口 MakeLines{Derived, Live, Roll, Pct, View}; 各级的键 = 它读的东西 (上级的部分以 gen 代表; gui/util/Stage.hpp): 来源变 → 本级重算
 //   行只一种 LinesRow (篮子 / 因子 / 策略 / 成分股 / 账户): 两条线 + 可选的行情键 (近况 / 当日 / 资金流 / 日内叠加) + 可选的估值腿 (估值分位 / band);
@@ -246,8 +246,9 @@ struct LinesLive {
   std::vector<LineTail> tail[kRowGroups]; // [RowGroup][行]
 };
 
-// 二级: VAL 标的的滚动分位 (只随标的 / 窗长). 每口收益率 v (EP / BP / SP / CP / DY) 按贵度 −v (升 = 贵) 逐日在过去 N 自然年
-// (含当日; N = band_years) 窗内取 kBandQs 分位; 估值史 (首个可算日起) 不满 1 年 → 不画 (不足 N 年先扩张窗)
+// 二级: VAL / MARGIN 标的的滚动分位 (只随标的 / 窗长). 每口 v (估值五口 = 收益率 EP / BP / SP / CP / DY, 两融两口 = 余额占比 RZ / RQ)
+// 按贵度 −v (升 = 贵) 逐日在过去 N 自然年 (含当日; N = band_years) 窗内取 kBandQs 分位 (band 两页同一画法);
+// 当日分位的键: 估值口 = 贵度 (高 = 贵), 两融口 = v 本身 (高 = 占比高); 估值史 (首个可算日起) 不满 1 年 → 不画 (不足 N 年先扩张窗)
 inline constexpr int kBandYearsDef = 5, kBandYearsMax = 15;
 inline constexpr int kBandQ = 7;
 inline constexpr double kBandQs[kBandQ] = {0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95};
@@ -257,7 +258,7 @@ inline constexpr double kContourTrim = 0.02;
 // 标的一口 [日并集轴] (窗内按距今天数加权, 见 LinesView.cpp roll_w). 标的全日 ↔ 末点分位 LinesPct 各行一日, 分位同一定义 pct_of
 struct LinesRoll {
   std::vector<float> q[kBandQ]; // 窗内贵度 kBandQs 加权分位处的收益率 (便宜 → 贵 = 降序; NaN = 史不满 1 年 / 账无该日)
-  std::vector<float> pct;       // 当日贵度在窗内的加权分位 (%, 高 = 贵; NaN = 同上 / 当日不可算)
+  std::vector<float> pct;       // 当日键在窗内的加权分位 (%, 估值口高 = 贵 / 两融口高 = 占比高; NaN = 同上 / 当日不可算)
   std::vector<uint8_t> band;    // 当日 band 可画 (窗内可算点收益率全 > 0, 价格全有解; 分位照算不受限)
   std::vector<double> levels;   // 等值线倍数 (升序, kContours 档); 空 = 全史不可算
 };
@@ -265,7 +266,7 @@ using LinesRolls = std::array<LinesRoll, kPoolVals>; // [PoolVal]
 // 二级 (另一份): 各估值行各口截至区间末的末个可算日 (视图按区间起点取舍: 落在区间内 (含起点前收日) 才用)
 struct LinesLastPct {
   int k = -1;                                            // 该日 [日并集轴]; −1 = 无
-  double pct = std::numeric_limits<double>::quiet_NaN(); // 估值分位 (%, 高 = 贵; 同 LinesRoll::pct 的定义)
+  double pct = std::numeric_limits<double>::quiet_NaN(); // 估值分位 (%; 同 LinesRoll::pct 的定义)
 };
 using LinesLastPcts = std::array<LinesLastPct, kPoolVals>; // [PoolVal]
 struct LinesPct {
@@ -285,26 +286,32 @@ struct LinesSlice {
   double y(size_t i) const { return c.y(j0 + i) / base; }
   int day(size_t i) const { return c.day(j0 + i); }
 };
-// 右表一格的值 + 它在同组同列内的截面名次 (NAV 数值列 / VAL 估值分位同一份)
+// 右表一格的值 + 它在同组同列内的截面名次 (NAV 数值列 / VAL · MARGIN 估值分位 / MARGIN 区间末数同一份)
 struct Ranked {
   double x = std::numeric_limits<double>::quiet_NaN();    // NaN = 不可算
-  double rank = std::numeric_limits<double>::quiet_NaN(); // ∈ [0, 1]: 0 = 好 (NAV 见 kNavGood; VAL = 便宜), 并列取中, 组内只一个 = 0.5; NaN = 不可算
+  double rank = std::numeric_limits<double>::quiet_NaN(); // ∈ [0, 1]: 0 = 好 (NAV 见 kNavGood; VAL = 便宜; MARGIN = 占比低), 并列取中, 组内只一个 = 0.5; NaN = 不可算 / 不排
 };
-// VAL 标的的一口 band (PoolVal): 标的理想线切片的日末点上, x = LinesView::band_x
+// MARGIN 右表的区间末数 (估值行; 区间内 (含起点前收日) 末个有总市值的日, 见 Book::cap): 总市值 | 两融两口余额 [亿元] | 两融两口余额占比; 只占比有名次
+enum MarginNum : int { kMarCap,
+                       kMarBal,
+                       kMarPct = kMarBal + kMarginVals };
+inline constexpr int kMarginNums = kMarPct + kMarginVals;
+// VAL / MARGIN 标的的一口 band (PoolVal): 标的理想线切片的日末点上, x = LinesView::band_x
 struct LinesBand {
-  bool ok = false;                       // 区间内有分位点 (否则其余空)
-  std::vector<double> y[kBandQ];         // P · v / q_j (v = 当日收益率; v ≤ 0 / q_j ≤ 0 / 无分位 = NaN), 升序 = 便宜 → 贵
-  std::vector<std::pair<int, int>> segs; // y 全有限的连续段 [i0, i1) (填色按段画: PlotShaded 不跳 NaN)
-  std::vector<double> unit;              // P · v (v ≤ 0 / 不可算 = NaN; 不看分位): 倍数 m (= 1 / v) 的绝对估值等值线 y = unit · m
-  std::vector<double> levels;            // 等值线倍数 (= LinesRoll::levels)
-  double now = 0.0, pct = 0.0;           // 区间末个有分位点的收益率 (EP / BP / SP / CP / DY) / 估值分位 (%, 高 = 贵)
+  bool ok = false;                        // 区间内有分位点 (否则其余空)
+  std::vector<double> y[kBandQ];          // P · v / q_j (v = 当日收益率; v ≤ 0 / q_j ≤ 0 / 无分位 = NaN), 升序 = 便宜 → 贵
+  std::vector<std::pair<int, int>> segs;  // y 全有限的连续段 [i0, i1) (填色按段画: PlotShaded 不跳 NaN)
+  std::vector<double> unit;               // P · v (v ≤ 0 / 不可算 = NaN; 不看分位): 倍数 m (= 1 / v) 的绝对估值等值线 y = unit · m
+  std::vector<double> levels;             // 等值线倍数 (= LinesRoll::levels)
+  double now = 0.0, pct = 0.0, cap = 0.0; // 区间末个有分位点的收益率 / 余额占比 · 估值分位 (%, 见 LinesRoll::pct) · 总市值 (亿元; 余额 = now · cap)
 };
 struct LinesView {
   std::vector<std::array<LinesSlice, kPairLines>> slice[kRowGroups]; // [RowGroup][行][PairLine]
   std::vector<std::array<Ranked, kNavNums>> num[kRowGroups];         // [RowGroup][行][NavNum] NAV 右表数值列
-  std::vector<std::array<Ranked, kPoolVals>> pct[kRowGroups];        // [RowGroup][行][PoolVal] VAL 表格: 区间末个可算日的估值分位 (%, 高 = 贵)
-  std::vector<double> band_x, band_p;                                // VAL 标的理想线切片的日末点 x / 点位 (各口 band 共用; 未选 → 空)
-  LinesBand band[kPoolVals];                                         // [PoolVal] VAL 标的的
+  std::vector<std::array<Ranked, kPoolVals>> pct[kRowGroups];        // [RowGroup][行][PoolVal] VAL / MARGIN 表格: 区间末个可算日的估值分位 (%)
+  std::vector<std::array<Ranked, kMarginNums>> margin[kRowGroups];   // [RowGroup][行][MarginNum] MARGIN 表格: 区间末数
+  std::vector<double> band_x, band_p;                                // VAL / MARGIN 标的理想线切片的日末点 x / 点位 (各口 band 共用; 未选 → 空)
+  LinesBand band[kPoolVals];                                         // [PoolVal] 标的的
 };
 
 // 各级缓存 (Stage) 的键
@@ -356,7 +363,7 @@ void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string
 Quote::Ref RowRef(const std::string &id);
 // 旁支: 当日 y (日期 = d.live; 空 / d.live = 0 → 全无尾) 各行理想线的当日尾
 void MakeLinesLive(const LinesDerived &d, const Quote::Live *y, LinesLive &t);
-// 二级: VAL 标的的估值腿 lg 各口 [PoolVal], 窗长 years; 空腿 → 空
+// 二级: VAL / MARGIN 标的的估值腿 lg 各口 [PoolVal], 窗长 years; 空腿 → 空
 void MakeLinesRoll(const LinesDerived &d, const LinesLeg &lg, int years, LinesRolls &r);
 // 二级: 区间末 d1 (日并集轴下标) 之前各估值行各口的末个可算日, 窗长 years
 void MakeLinesPct(const LinesDerived &d, int d1, int years, LinesPct &p);

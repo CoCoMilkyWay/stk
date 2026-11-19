@@ -1,6 +1,6 @@
 // Table — 因子层公共类型 (各服务与装载层共用):
 //   因子层 FactorLevel (FactorLevelId / PerFactorLevel) + 持有期开关仓描述 HoldPoints ↔ 网格层 / 因子子目录 / K 线列;
-//   字段表视图 FeatureTable (X 叶 ↔ Y 门控 / 标签 / 成本 + K 线 / 复权 / 估值五叶; 每进程代按层建一次 table_of, 全仓共享);
+//   字段表视图 FeatureTable (X 叶 ↔ Y 门控 / 标签 / 成本 + K 线 / 复权 / 估值七叶; 每进程代按层建一次 table_of, 全仓共享);
 //   作用域 FactorScope (+ 年数上限 year_cap) + 请求 Request<Spec> / FactorRef; 评估结果 EvalStat + AlphaDist.
 #pragma once
 
@@ -148,7 +148,7 @@ inline std::string amt_name(int amt) { return amt == kAmtFixed ? std::string("�
 const LegCol *find_leg(const std::vector<LegCol> &cols, int key);                                                   // key 不在 → nullptr
 const LegCol &leg_of(const std::vector<LegCol> &cols, int key);                                                     // key 不在 → assert
 // X ↔ Y 两侧装载平面 (XCols / YCols ↔ Load LeafId / YSpec → XPlanes / YPlanes, load_x / load_y → Store::pin):
-//   X = 因子输入叶 = Lob 档 (只 min 层有) 及 Bar 档不细于网格的各层全部列 (含日层估值五叶 val[PoolVal])
+//   X = 因子输入叶 = Lob 档 (只 min 层有) 及 Bar 档不细于网格的各层全部列 (含日层估值七叶 val[PoolVal])
 //   Y = 门控 / 标签 = Bar 档网格层本层列; 成本盘口段 = Lob 档网格层本层列
 //   b = K 线 / 复权列定位 (K 线流与 Inspect 导出按列直读); 池成员 / 持仓权 / 行业 / 市值 / 收益 取选股表原料带 pool::Strip
 // 叶的身份 = leaves 下标 (字段表编译期定 → 同层进程内不变; 叶名只在 Dag / 解析边界, 装载 / 缓存 / 引擎全按 LeafId)
@@ -159,16 +159,22 @@ struct XCols {
   const FeatCol *find(std::string_view code) const;                     // 不在 → nullptr
   std::vector<LeafId> ids(const std::vector<std::string> &codes) const; // 须都在
 };
-// 池估值五口 (收益率口径 = 分子 / 市值, 按 Weight 平均: 等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值; Book → Portfolio VAL 页):
-// EP = 净利, BP = 权益, SP = 营收, CP = 经营现金流, DY = 分红 (高 = 便宜, 分子过 0 连续)
+// 池估值七口 (收益率口径 = 分子 / 市值; Book → Market VAL / MARGIN 页):
+//   估值五口 [kValEp, kValRz) 按 Weight 平均 (等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值):
+//     EP = 净利, BP = 权益, SP = 营收, CP = 经营现金流, DY = 分红 (高 = 便宜, 分子过 0 连续)
+//   两融两口 [kValRz, kPoolVals) 不看 Weight, 恒总量 Σ余额 / Σ市值 (非两融标的余额计 0; 成员全无余额 → NaN): RZ = 融资余额, RQ = 融券余额
 enum PoolVal : int { kValEp,
                      kValBp,
                      kValSp,
                      kValCp,
-                     kValDy };
-inline constexpr int kPoolVals = 5;
+                     kValDy,
+                     kValRz,
+                     kValRq };
+inline constexpr int kPoolVals = 7, kMarginVals = kPoolVals - kValRz;
+inline constexpr bool margin_val(int m) { return m >= kValRz; }
 // 各口的日频输入叶 (FeatureTable::val 下标 = PoolVal, bar.1d.<列>): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM
-inline constexpr const char *kPoolValCols[kPoolVals] = {"pl_npp_ttm", "bs_eq", "pl_rev_ttm", "cf_ocf_ttm", "dy_ttm"};
+// / 融资余额 / 融券余额
+inline constexpr const char *kPoolValCols[kPoolVals] = {"pl_npp_ttm", "bs_eq", "pl_rev_ttm", "cf_ocf_ttm", "dy_ttm", "rz_bal", "rq_bal"};
 struct YCols {
   Col ts;                     // ts_valid (当日有成交)
   Col cs;                     // cs_valid (标签 + 截面门控平面)
@@ -187,7 +193,7 @@ struct FeatureTable {
   XCols x;
   YCols y;
   BCols b;
-  LeafId val[kPoolVals] = {};                 // [PoolVal] bar.1d 估值五叶 (X 侧复用)
+  LeafId val[kPoolVals] = {};                 // [PoolVal] bar.1d 估值七叶 (X 侧复用)
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER; 回归目标 = label_leaf)
   // 持有期 hold 的回归目标叶名 (y.labels 的做多列); 本层无该持有期 → 空串
   std::string label_leaf(int hold) const;

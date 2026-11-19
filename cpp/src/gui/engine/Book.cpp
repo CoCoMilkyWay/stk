@@ -49,7 +49,7 @@ BookLines fold_book(misc::exec::ForkJoin &ex, int seg, const RowLines &r, int st
 
 double BasketPass::fixed_bytes(const Domain &dm) {
   const double nl = static_cast<double>(basket_table().size()), A = static_cast<double>(dm.rs.axis.size());
-  return (nl * (3 + kPoolVals) + A * (1 + kPoolVals)) * static_cast<double>(dm.stat_days()) * sizeof(float);
+  return (nl * (4 + kPoolVals) + A * (2 + kPoolVals)) * static_cast<double>(dm.stat_days()) * sizeof(float);
 }
 
 BasketPass::BasketPass(const Domain &dm, std::shared_ptr<const pool::Picks> pk, std::span<const LeafId, kPoolVals> val)
@@ -67,6 +67,8 @@ BasketPass::BasketPass(const Domain &dm, std::shared_ptr<const pool::Picks> pk, 
   Book &bk = out_[Quote::kBasket], &sk = out_[Quote::kStock];
   bk.col[kBookBuy].reset(nl, P);
   sk.col[kBookRet].reset(A, P);
+  bk.cap.reset(nl, P, kNaN);
+  sk.cap.reset(A, P, kNaN);
   for (int m = 0; m < kPoolVals; ++m) {
     bk.val[m].reset(nl, P, kNaN);
     sk.val[m].reset(A, P, kNaN);
@@ -153,7 +155,7 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
     }
   });
 
-  // 3. 个股 ret / val + 篮子账 Sleeve (buy / val, 与可成交指数在实现行 u 同行对齐)
+  // 3. 个股 ret / val / cap + 篮子账 Sleeve (buy / val / cap, 与可成交指数在实现行 u 同行对齐)
   const Leaf *lf[kPoolVals] = {};
   for (int m = 0; m < kPoolVals; ++m) {
     lf[m] = c.x.find(val_[m]);
@@ -164,7 +166,7 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
   ex.rows(n_stat, [&](int u0, int u1, int) {
     Sleeve lg;
     Members to;
-    std::vector<double> buy(nl), vs(nl), vn(nl);
+    std::vector<double> buy(nl), vs(nl), vn(nl), cs(nl), ms(kMarginVals * nl), mn(kMarginVals * nl);
     const auto step = [&](size_t u) {
       const size_t r = r_stat + u;
       members(*pk_, s.dates[r], to);
@@ -187,6 +189,7 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
         const double mc = mcap(r, a);
         if (!(mc > 0.0))
           continue;
+        sk.cap.v[a * ds_ + u] = static_cast<float>(mc);
         const double dy = r > 0 && mcap(r - 1, a) > 0.0 ? mcap(r - 1, a) : static_cast<double>(kNaN);
         for (int m = 0; m < kPoolVals; ++m)
           if (lf[m]->m[row + a])
@@ -197,12 +200,40 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
       step(u);
       for (size_t l = 0; l < nl; ++l)
         bk.col[kBookBuy].v[l * ds_ + u] = static_cast<float>(buy[l]);
-      for (int m = 0; m < kPoolVals; ++m) {
+      for (int m = 0; m < kValRz; ++m) {
         std::fill(vs.begin(), vs.end(), 0.0), std::fill(vn.begin(), vn.end(), 0.0);
         lg.hold.scatter([&](uint32_t a, double &v) { return std::isfinite(v = sk.val[m].v[a * ds_ + u]); }, vs, vn);
         for (size_t l = 0; l < nl; ++l)
           if (vn[l] > 0.0)
             bk.val[m].v[l * ds_ + u] = static_cast<float>(vs[l] / vn[l]);
+      }
+      // 总市值 + 两融口: 成员不加权求和 Σ余额 / Σ市值 (非两融标的余额计 0; 成员全无余额 → NaN)
+      std::fill(cs.begin(), cs.end(), 0.0), std::fill(ms.begin(), ms.end(), 0.0), std::fill(mn.begin(), mn.end(), 0.0);
+      for (size_t k = 0; k < lg.hold.size(); ++k) {
+        const uint32_t a = lg.hold.id[k];
+        const double mc = mcap(r, a);
+        if (!(mc > 0.0))
+          continue;
+        double bal[kMarginVals];
+        bool has[kMarginVals];
+        for (size_t j = 0; j < kMarginVals; ++j) {
+          const Leaf &f = *lf[kValRz + j];
+          has[j] = f.m[row + a] && std::isfinite(f.v[row + a]);
+          bal[j] = has[j] ? static_cast<double>(f.v[row + a]) : 0.0;
+        }
+        for (const Members::Weight &e : lg.hold.of(k)) {
+          cs[e.key] += mc;
+          for (size_t j = 0; j < kMarginVals; ++j)
+            ms[j * nl + e.key] += bal[j], mn[j * nl + e.key] += has[j] ? 1.0 : 0.0;
+        }
+      }
+      for (size_t l = 0; l < nl; ++l) {
+        if (!(cs[l] > 0.0))
+          continue;
+        bk.cap.v[l * ds_ + u] = static_cast<float>(cs[l]);
+        for (size_t j = 0; j < kMarginVals; ++j)
+          if (mn[j * nl + l] > 0.0)
+            bk.val[kValRz + j].v[l * ds_ + u] = static_cast<float>(ms[j * nl + l] / cs[l]);
       }
     }
   });

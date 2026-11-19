@@ -1,6 +1,6 @@
-// Market 行情页 (NAV / VAL / FLOW / CTA) 的内部件 (TabLines / LinesPlot / LinesSheet / LinesCta 共用):
-//   页表 (页的一切差异: 右表段 / 页件 / 布局 / 头 / 状态) / 行色 / 估值口表 / 选中 + 图与右表的入口
-//   TabLines = 头 / 布局 / 三级缓存; LinesPlot = 主图 (NAV ↔ VAL) + 区间条; LinesSheet = 右表 (各页同一骨架); LinesCta = CTA 页的图 + 中栏
+// Market 行情页 (NAV / VAL / MARGIN / FLOW / CTA) 的内部件 (TabLines / LinesPlot / LinesSheet / LinesCta 共用):
+//   页表 (页的一切差异: 右表段 / 页件 / 布局 / 头 / 状态 / 估值口集) / 行色 / 估值口表 / 选中 + 图与右表的入口
+//   TabLines = 头 / 布局 / 三级缓存; LinesPlot = 主图 (NAV ↔ VAL / MARGIN) + 区间条; LinesSheet = 右表 (各页同一骨架); LinesCta = CTA 页的图 + 中栏
 //   图与右表只读 ui 的缓存末级 (ui.der.val / ui.view.val), 写 ui 的交互态 (选中 / 展开 / 区间 / 显隐)
 #pragma once
 
@@ -11,6 +11,7 @@
 #include "imgui.h"
 
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <string>
 #include <vector>
@@ -19,12 +20,14 @@ namespace GUI::Market {
 
 inline constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-// 右表段 (各页由段拼成, 同一段各页同一份; LinesSheet.cpp): 近况 | 当日四列的前 arg 列 | NAV 数值列里位集 arg 的列 | 各口估值分位 | 资金流 (FLOW 日轴各日 + 合计)
+// 右表段 (各页由段拼成, 同一段各页同一份; LinesSheet.cpp): 近况 | 当日四列的前 arg 列 | NAV 数值列里位集 arg 的列 | 估值口集 arg (kValSets) 各口分位
+// | MARGIN 区间末数 (总市值 / 两融余额 / 占比) | 资金流 (FLOW 日轴各日 + 合计)
 enum SegKind : int { kSegNone = -1,
                      kSegRecent,
                      kSegToday,
                      kSegNum,
                      kSegVal,
+                     kSegMargin,
                      kSegFlow };
 struct SegDef {
   SegKind kind = kSegNone;
@@ -56,6 +59,16 @@ struct SpanDef {
   int days, months;
 };
 inline constexpr SpanDef kSpanDefs[kSpanIds] = {{"1周", 7, 0}, {"1月", 0, 1}, {"1年", 0, 12}, {"10年", 0, 120}};
+// 估值口集 (页表 PageDef::vals; VAL / MARGIN 主图 band + 右表分位段): 口段 [lo, hi) (PoolVal) / 首次默认开 Band 的口;
+// 两融口集 (margin()): 主图例 余额 列替 倍数 列, 无等值线, band 配色反过来 (占比高 = 价格低 = 红)
+struct ValSet {
+  int lo, hi, show;
+  constexpr bool margin() const { return margin_val(lo); }
+};
+enum ValSetId : int { kSetNone = -1,
+                      kSetVal,
+                      kSetMargin };
+inline constexpr ValSet kValSets[] = {{kValEp, kValRz, kValBp}, {kValRz, kPoolVals, kValRz}};
 
 // 页表 [LinesPage]: 页的一切差异只在这里
 struct PageDef {
@@ -72,6 +85,7 @@ struct PageDef {
   OverlayKind overlay;    // 叠加图: kLayoutPlot = 日内栏, kLayoutOverlay = 整张
   bool log, folio;        // 头: log 开关 / 组合 (名 + 失效 / 失败条目)
   PageWork work, rest;    // Tab 状态: work 在忙 → 它, 否则 rest; 页发 work 的请求
+  ValSetId vals;          // 估值口集: kLayoutPlot 页有 = 主图画标的 + 该集 band, 无 = NAV 资金曲线
 };
 inline constexpr PageDef kPageDefs[kPages] = {
     {"NAV",
@@ -125,7 +139,8 @@ inline constexpr PageDef kPageDefs[kPages] = {
      true,
      true,
      kWorkPrice,
-     kWorkPortfolio},
+     kWorkPortfolio,
+     kSetNone},
     {"VAL",
      "VAL = 估值 (Valuation)\n"
      "• 右侧单选一个池 / 申万一级行业 / 概念 / 自选 / 成分股 (▸ 展开行): 主图 = 它的指数 (成分股 = 后复权收盘) + 估值 Band\n"
@@ -163,7 +178,7 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 显示: 超长截断补 …, 悬停看全名; 选中行高亮 (主图画它)\n"
      "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 与篮子行同一个单选\n"
      "• 适用: 指数 / 行业 / 概念 / 自选",
-     {{kSegToday, kTodayTurn}, {kSegNum, kNumAll}, {kSegVal}},
+     {{kSegToday, kTodayTurn}, {kSegNum, kNumAll}, {kSegVal, kSetVal}},
      kToolBandYears,
      kLayoutPlot,
      kSpanDecade,
@@ -171,7 +186,43 @@ inline constexpr PageDef kPageDefs[kPages] = {
      true,
      false,
      kWorkPrice,
-     kWorkPortfolio},
+     kWorkPortfolio,
+     kSetVal},
+    {"MARGIN",
+     "MARGIN = 两融 (Margin Trading)\n"
+     "• 右侧单选一个池 / 申万一级行业 / 概念 / 自选 / 成分股 (▸ 展开行; 与 VAL / CTA 同一份选中): 主图 = 它的指数 (同 VAL) + 融资 / 融券 Band\n"
+     "• 占比 = 成分 Σ余额 / Σ总市值 (篮子不看权重, .等 / .加 同值; 非两融标的余额计 0; 成分股 = 本只余额 / 总市值)\n"
+     "  余额 = T 日盘后两融明细 (T+1 盘前可知); 成分 = 当日持仓 (同 VAL); 市值 = 收盘价 × 当日适用总股本\n"
+     "• 分位 = 当日占比在过去 N 年 (含当日; 类别条旁滑条, 与 VAL 同一份) 窗内的加权分位 (高 = 占比高), 逐日滚动; 史不满 1 年不画\n"
+     "• Band = 价格 × 当日占比 / q, q = 窗内各档分位的占比 (同 VAL 画法) = 余额不变时占比落到该档的价格;\n"
+     "  价格越低占比越高: 最低线 = 占比最高档 (其下红) → 最高线 = 占比最低档 (其上绿); 某档 q ≤ 0 (窗内有无余额的日子) 该档断开\n"
+     "• 主图左上图例矩阵: 行 = 口, 列 = 当前占比 / 余额 / N 年分位 / Band; 点色块开关, 点行头 / 列头开关整行 / 整列\n"
+     "• 线尾刻度 / 现价十字 / 框选 / 滚轮 / 双击同 VAL; 区间默认近 10 年 (本页一份), log 与 NAV / VAL 共用",
+     kGroupFactor,
+     kPickOne,
+     "##pf_margin_tbl",
+     "类别条选一组 (指数 = 各池, 行业 = 申万一级, 概念 = 东财题材概念), 点行 / 成分行选一个: 主图画它的价格 + 融资 / 融券 Band (与 VAL / CTA 同一份选中); 再点 = 取消\n"
+     "• 列 = 区间末 总市值 / 融资 · 融券余额 / 占比 / N 年分位; 各列怎么算: 悬停表头 (算法 / 数据 / 显示 / 适用)\n"
+     "• 表上过滤条 (各页同一份): 按只数 / 总市值 / |资金流入| 筛本组的行, 选中 / 展开行恒列\n"
+     "• 行名前 ▸ = 展开成分股 (至多一行, 各页同一份; 该行钉在表头下): 各列 = 该股本只 (底色 = 成分之间名次); 点成分行 = 选该股\n"
+     "• 列宽按内容最紧, 超出栏宽横滚 (名列不动); 名超长截断补 …, 悬停中文名看全名; 点表头排序 (组内): 升序 → 降序 → 原序; 名列按颜色排 (相似的挨着)\n"
+     "• 原序下子池 / 自选行左键 / 中键拖动调序 (子池 = 改池表序 pools.json, 即进程内重启; 全A 两行钉首)",
+     "名 = 篮子名\n"
+     "• 算法: 切片名 + .等 (等权) / .加 (总市值加权); 两融各列不看权重, 同切片两行同值\n"
+     "• 数据: 切片 = 池 (全A 起头) / 申万一级行业 / 东财题材概念\n"
+     "• 显示: 超长截断补 …, 悬停看全名; 选中行高亮 (主图画它)\n"
+     "• 成分行: 篮子名前 ▸ 展开, 缩进列出成分 (同 NAV 页); 与篮子行同一个单选\n"
+     "• 适用: 指数 / 行业 / 概念 / 自选",
+     {{kSegToday, kTodayCap}, {kSegMargin}, {kSegVal, kSetMargin}},
+     kToolBandYears,
+     kLayoutPlot,
+     kSpanDecade,
+     kOverlayNone,
+     true,
+     false,
+     kWorkPrice,
+     kWorkPortfolio,
+     kSetMargin},
     {"FLOW",
      "FLOW = 资金流 (Money Flow): 指数 / 行业 / 概念 / 自选的日内净流入, 当日随新浪快照实时动\n"
      "• 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟; 成分之和不加权, 分不出大单\n"
@@ -205,7 +256,8 @@ inline constexpr PageDef kPageDefs[kPages] = {
      false,
      false,
      kWorkPortfolio,
-     kWorkPortfolio},
+     kWorkPortfolio,
+     kSetNone},
     {"CTA",
      "CTA = 单标的 band + 减仓 + 跟随 分层择时 (方向 long / short), 减仓 / 跟随参数滚动调优\n"
      "• 右侧单选一个指数 / 行业 / 概念 / 自选 / 成分股 (与 VAL 同一份选中); 价格 = all.bar 库合成落盘的 1 分钟价 (篮子 = 同 NAV 日内栏口径的点位, 个股 = 后复权价; 价格库随行情起即备)\n"
@@ -244,20 +296,21 @@ inline constexpr PageDef kPageDefs[kPages] = {
      false,
      false,
      kWorkCta,
-     kWorkCta},
+     kWorkCta,
+     kSetNone},
 };
 
 // 线 ID 后缀 [PairLine]: 线的 ImGui ID = 行 id + 后缀 (主图例显隐 / 行刚选中回默认显隐同一份)
 inline constexpr const char *kPairId[kPairLines] = {"", "_ideal"};
 inline std::string line_id(const LinesRow &r, int l) { return r.id + kPairId[l]; }
 
-// VAL 估值口表 [PoolVal]: 名 / 倍数名 (1 / 收益率, 等值线) / 百分比小数位 (五口同为收益率, 显示 %)
+// 估值口表 [PoolVal]: 名 / 倍数名 (1 / 收益率, 等值线; 两融口无) / 百分比小数位 (七口同为占市值之比, 显示 %)
 struct ValMeta {
   const char *name, *inv;
   int prec;
 };
-inline constexpr ValMeta kVal[kPoolVals] = {{"EP", "PE", 2}, {"BP", "PB", 1}, {"SP", "PS", 1}, {"CP", "PCF", 2}, {"DY", "P/D", 2}};
-// 估值 band (VAL 主图 / CTA 价格图同一画法): 填色 / 线的 alpha (色 = band_col, 便宜绿 → 贵红)
+inline constexpr ValMeta kVal[kPoolVals] = {{"EP", "PE", 2}, {"BP", "PB", 1}, {"SP", "PS", 1}, {"CP", "PCF", 2}, {"DY", "P/D", 2}, {"融资", nullptr, 2}, {"融券", nullptr, 3}};
+// 估值 band (VAL / MARGIN 主图 / CTA 价格图同一画法): 填色 / 线的 alpha (色 = band_col, 便宜绿 → 贵红; MARGIN 占比低绿 → 高红)
 inline constexpr float kBandFillA = 0.12f, kBandLineA = 0.35f;
 // 组 g 行 r 线 l 的色 (主图 / 右表 / 日内栏 / FLOW 图同一份): 强调组 (kGroupDefs::accent) = kStratCol, 其余 = 行色相 (LinesRow::hue) 的定亮定艳色, 未定色 = 同亮度灰; 理想列 = 同色淡
 inline constexpr float kIdealAlpha = 0.5f;
@@ -269,6 +322,21 @@ inline ImVec4 row_color(const LinesDerived &d, int g, size_t r, int l) {
   return c;
 }
 inline ImVec4 row_color(const LinesDerived &d, const LinesAt &a, int l) { return row_color(d, a.g, a.r, l); }
+
+// 金额 y [亿元] 的显示 (右表 / MARGIN 主图例同一份): ≥ 1 万亿按万亿, 其余按亿 (越大小数越少); 带符号 sign
+inline std::string yi_text(double y, bool sign = false) {
+  const double a = std::abs(y);
+  char s[32];
+  const char *pm = !sign ? "" : y < 0 ? "-"
+                                      : "+";
+  if (a >= 1e4)
+    std::snprintf(s, sizeof(s), a >= 1e6 ? "%s%.0f万亿" : "%s%.1f万亿", pm, a / 1e4);
+  else
+    std::snprintf(s, sizeof(s), a >= 10 ? "%s%.0f亿" : a >= 1 ? "%s%.1f亿"
+                                                              : "%s%.2f亿",
+                  pm, a);
+  return s;
+}
 
 // 页 page 的行选中 (按页表的选中方式; NAV / FLOW 同一份)
 inline bool picked(const LinesState &ui, int page, const LinesRow &r) { return ui.pick.rows[kPageDefs[page].pick].contains(r.id); }
@@ -284,9 +352,9 @@ inline void row_tip(const LinesRow &r) {
 // ---- 图 (LinesPlot.cpp) ----
 // 页 page 的默认区间 = 页表的默认档 (PageDef::span); 日轴空 → 空段
 LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates);
-// 页 page 的主图 (size 贴边占满): NAV → 资金曲线 (选中行), VAL → 标的 pin 的理想线 + 估值 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
+// 页 page 的主图 (size 贴边占满): NAV → 资金曲线 (选中行), VAL / MARGIN → 标的 pin 的理想线 + 页的估值口集 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
 void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size);
-// 页 page 的区间条 (size): 全段策略线 (NAV) / VAL 标的理想线上拖选 ui.range[page]
+// 页 page 的区间条 (size): 全段策略线 (NAV) / VAL · MARGIN 标的理想线上拖选 ui.range[page]
 void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size);
 
 // ---- CTA 页 (LinesCta.cpp) ----

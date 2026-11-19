@@ -1,6 +1,6 @@
 // Book — 净值与篮子引擎 (Stat 契约【净值】; Inspect 分层 / Portfolio 因子线 / 池篮子 / 池整体线同一份): Load 之上.
 //   逐行批收益 RowLines → fold_book (每批资金 1/h̄, 收益在平仓行实现 / 成本在建仓行即付; 按 stride 求和) → 期收益 BookLines → compound 净值.
-//   统一账核 Book (col[kBookCols] + val[kPoolVals]): 因子账 / 篮子账 / 个股账完全同形; BasketPass 沿 Store::pin 的分块流式归约出 Baskets.
+//   统一账核 Book (col[kBookCols] + val[kPoolVals] + cap): 因子账 / 篮子账 / 个股账完全同形; BasketPass 沿 Store::pin 的分块流式归约出 Baskets.
 //   池篮子的成员 / 持仓权 = shared/Basket.hpp members / Weigh (按持仓日对齐, 与行情篮子 / Style 同一份), 换手 / 估值的持仓 = 篮子账 Sleeve (define/Members.hpp)
 #pragma once
 
@@ -71,14 +71,16 @@ enum BookCol : int { kBookRet,
 inline constexpr int kBookCols = 4;
 
 // 账核 (因子 / 篮子 kBasket / 个股 kStock 完全同形; 无该列的 BookLines n = 0):
-//   因子: col[Ret / Imp / Fix / Buy] 齐, val 空
-//   篮子: col[Ret] = 可成交指数 fold_book; col[Buy] = Sleeve::roll 增仓量; val = 持仓加权五口估值 EP / BP / SP / CP / DY
-//   个股: col[Ret] = 原料带 grow 比 − 1 (后复权); val = 五口估值
+//   因子: col[Ret / Imp / Fix / Buy] 齐, val / cap 空
+//   篮子: col[Ret] = 可成交指数 fold_book; col[Buy] = Sleeve::roll 增仓量; val = 持仓七口 (估值五口按权平均 EP / BP / SP / CP / DY, 两融两口总量 RZ / RQ);
+//         cap = 持仓成员 Σ总市值 [亿元] (两融口的分母: 余额 = val · cap)
+//   个股: col[Ret] = 原料带 grow 比 − 1 (后复权); val = 七口; cap = 本只总市值
 struct Book {
   BookLines col[kBookCols];
   BookLines val[kPoolVals];
+  BookLines cap;
   size_t bytes() const {
-    size_t n = 0;
+    size_t n = cap.v.size() * sizeof(float);
     for (const BookLines &c : col)
       n += c.v.size() * sizeof(float);
     for (const BookLines &c : val)

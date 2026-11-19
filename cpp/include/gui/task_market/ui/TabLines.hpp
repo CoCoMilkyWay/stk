@@ -1,4 +1,4 @@
-// Market 的行情页 Lines (NAV / VAL / FLOW / CTA, 左栏子页选): 一行一对线 (Line), 四页同一份派生 / 选中 / 区间.
+// Market 的行情页 Lines (NAV / VAL / MARGIN / FLOW / CTA, 左栏子页选): 一行一对线 (Line), 五页同一份派生 / 选中 / 区间.
 //   组合 (因子 / 策略两组的来源) 由 PortfolioBoxes.hpp 编辑; 篮子账不依赖组合 (all 标签库建好即算): 无组合时 NAV 只少因子 / 策略两组, 其余各页照常
 //   行情页 (横轴同叠加图 / CTA / 价格库: x = 日下标 · kSlots + 行末槽 (竞价并入首根), 刻度只到日 YY/MM/DD):
 //   NAV 右表 = 顶部类别条选一组看 (指数 / 行业 / 概念 / 自选 / 因子 / 策略, 六组同形: 一行一对线, 见 RowGroup), 点行 = 选中 (同 VAL 行高亮; 跨组保留) = 主图画该行两条线, 主图例默认只显理想列;
@@ -65,6 +65,10 @@
 //     档 = 该标的全史倍数区间 (两头剔极端分位) 20 档等分, 不随区间 / 视野变; v ≤ 0 断开; 悬停最近一条高亮 + 提示该档倍数 / 当日倍数 / 指数到该线的涨跌;
 //     主图例 = 左上自绘矩阵 (对仗 Inspect 期限结构): 行 = 口, 列 = 当前收益率 | 当前倍数 | N 年分位 | Band | 等值线, 点色块 / 行头 / 列头开关, 悬停高亮;
 //     主图恒贴合: x = 区间, y 看价格线 + 开着的 band 线 (同 NAV 留白; 等值线不撑); 滚轮同 NAV, 左键横向框选 = 区间改成该段 (任意日, 区间条同一份), 双击 = 回全段
+//   页 MARGIN = 两融 (VAL 同一布局 / 同一单选标的 / 同一滑条, 区间各一份): 口 = 融资 RZ / 融券 RQ 余额占比 v = Σ余额 / Σ总市值 (篮子不看权重, 恒总量; 成分股 = 本只);
+//     列 = 中文名 | 只数 | 区间末 总市值 | 融资 / 融券余额 (亿元) | 融资 / 融券占比 | 两口 N 年分位 (分位 = 占比本身, 高 = 占比高; 占比 / 分位底色 = 组内名次, 低绿 → 高红);
+//     主图 = 标的理想线 P + 两口滚动 Band (默认只开融资; 同 VAL 的价格 band y = P · v / q_j, 配色反过来: 占比最高档 (价格最低) 以下红 → 最低档以上绿), 无等值线;
+//     主图例 = 行 = 口, 列 = 当前占比 | 余额 | N 年分位 | Band
 //   页 FLOW = 篮子日内资金流 (只这一张图, 不看区间): 左 = 选中的篮子行 / 成分行 (NAV 同一份选中) 的累计净流入叠加 (RenderOverlay 累计净流入, 与日内栏同一张图:
 //     日轴 = 行情日及其前 n − 1 个交易日, n = 档 日内 / 2日 … 5日; 自首日开盘逐分钟累计, 跨日接续; y = 占近 5 日日均成交额 % (默认; 分母盘前已定) / 金额 亿元;
 //     开收盘开关 (默认关) = 计入首根 (开盘集合竞价并入) / 末根 (收盘集合竞价), 图与右表同一份; 当日随新浪快照动);
@@ -110,10 +114,11 @@ using namespace Quote;
 // + 上帧主图例各线显隐; 与上次 fit 的不同 → 本帧 fit
 struct LinesFitKey {
   uint64_t hist = 0, roll = 0, pct = 0; // LinesDerived::hist_gen / 二级两份 gen
-  LinesAt pin;                          // VAL 标的
+  LinesAt pin;                          // VAL / MARGIN 标的
   int d0 = 0, d1 = 0;                   // 区间
-  bool nav = true, log = false;
-  std::string rows;  // NAV 各行选中 (VAL 空)
+  int page = 0;                         // LinesPage
+  bool log = false;
+  std::string rows;  // NAV 各行选中 (VAL / MARGIN 空)
   std::string shown; // 上帧主图例各线显隐
   bool operator==(const LinesFitKey &) const = default;
 };
@@ -123,15 +128,16 @@ struct LinesRange : DayRange {
   XZoom zoom; // VAL 主图横向框选
 };
 
-// 行情页 (= Market 左栏 ASSET 之后的四个子页; 同一个右图例位; 类别条按页各一份; 页表 kPageDefs 见 LinesCommon.hpp)
+// 行情页 (= Market 左栏 ASSET 之后的五个子页; 同一个右图例位; 类别条按页各一份; 页表 kPageDefs 见 LinesCommon.hpp)
 enum LinesPage : int { kPageNav,
                        kPageVal,
+                       kPageMargin,
                        kPageFlow,
                        kPageCta,
                        kPages };
 // 右表行的选中方式 (页表按页指定; 同方式的页共用一份选中)
 enum PickMode : int { kPickMany,  // 多选 (NAV / FLOW)
-                      kPickOne }; // 单选, 再点 = 取消 (VAL / CTA)
+                      kPickOne }; // 单选, 再点 = 取消 (VAL / MARGIN / CTA)
 inline constexpr int kPicks = 2;
 
 // CTA 页: 设定 (进请求; 标的 = kPickOne 那一行) + 两图同一 x 视野 + 区间条 + 光标
@@ -209,12 +215,12 @@ struct LinesPick {
   }
 };
 
-// 行情页 (四页共用) 的 UI 态: 三级缓存 + 选中 / 区间 / 显隐 + 自选 + 叠加图档位 + CTA 设定
+// 行情页 (五页共用) 的 UI 态: 三级缓存 + 选中 / 区间 / 显隐 + 自选 + 叠加图档位 + CTA 设定
 struct LinesState {
   Stage<LinesDerKey, LinesDerived> der;
   Stage<LinesLiveKey, LinesLive> live;  // 理想线的当日尾
-  Stage<LinesRollKey, LinesRolls> roll; // VAL 标的的滚动分位
-  Stage<LinesPctKey, LinesPct> pct;     // VAL 表格各格的末点
+  Stage<LinesRollKey, LinesRolls> roll; // VAL / MARGIN 标的的滚动分位
+  Stage<LinesPctKey, LinesPct> pct;     // VAL / MARGIN 表格各格的末点
   Stage<LinesViewKey, LinesView> view;
   Stage<LinesSheetKey, LinesSheet> sheet[kPages]; // [LinesPage] 右表格
   LinesRange range[kPages];                       // [LinesPage] 区间 (各页一份; 视图按当前页的切)
@@ -224,15 +230,15 @@ struct LinesState {
   bool watch_loaded = false;      // 读过自选文件
   std::vector<std::string> watch; // 自选键 (= 文件, 自选序; 改了即存)
   std::optional<Move> pool_move;  // 右表指数组拖定的池表移动 (pool_order 的位置; 由 TaskMarket 交 move_pool)
-  int band_years = kBandYearsDef; // VAL 滚动窗 N (年; 右图例滑条)
+  int band_years = kBandYearsDef; // VAL / MARGIN 滚动窗 N (年; 右图例滑条, 两页同一份)
   bool log_y = false;
-  std::set<std::string> reveal;                                              // 待在主图例里回默认显隐的线 ID (行刚选中; 画到时消费; 理想列显, 可成交列隐)
-  std::string shown_key;                                                     // 上帧主图各线显隐 (进 fit 键)
-  LinesFitKey fit_key;                                                       // 上次 fit 的键 (BeginPlot 没起来不记: 下帧照 fit)
-  int cat[kPages] = {kGroupPool, kGroupPool, kGroupPool, kGroupPool};        // [LinesPage] 右表类别条选中组 (RowGroup)
-  BasketFilter filter[kBasketGroups] = {{}, {}, {.n_hi = 500, .flow = 5.f}}; // [BasketGroup] 默认: 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%
-  bool intraday = true;                                                      // NAV 日内栏
-  OverlayState overlay;                                                      // 叠加图 (日内栏 / FLOW) 与资金流段的档位
+  std::set<std::string> reveal;                                                   // 待在主图例里回默认显隐的线 ID (行刚选中; 画到时消费; 理想列显, 可成交列隐)
+  std::string shown_key;                                                          // 上帧主图各线显隐 (进 fit 键)
+  LinesFitKey fit_key;                                                            // 上次 fit 的键 (BeginPlot 没起来不记: 下帧照 fit)
+  int cat[kPages] = {kGroupPool, kGroupPool, kGroupPool, kGroupPool, kGroupPool}; // [LinesPage] 右表类别条选中组 (RowGroup)
+  BasketFilter filter[kBasketGroups] = {{}, {}, {.n_hi = 500, .flow = 5.f}};      // [BasketGroup] 默认: 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%
+  bool intraday = true;                                                           // NAV 日内栏
+  OverlayState overlay;                                                           // 叠加图 (日内栏 / FLOW) 与资金流段的档位
   CtaState cta;
 };
 
