@@ -340,7 +340,7 @@ stk/
 │   │   │       ├── Space.hpp                           # 🧬 参数空间: 可搜槽 → 单调坐标 + 区间 → 低差异采样
 │   │   │       └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU (复用 Stat 行核) / GPU 后端 + 对拍
 │   │   ├── cta/                                        # 📈 CTA 单资产 band + 减仓线 + 加仓线 分层择时 (header-only 纯计算; Market → CTA 页的模型层)
-│   │   │   │                                           #    band (atr / dev, 人选, 窗可设, 默认一年) = 档线间距 ─→ 分层 Ladder (减仓线链: 链顶锚定上一个触发点, 往下每条隔一个 band; 满仓随减仓线模型, 它上穿链顶即回到随它; 份数默认 20 / 止损默认 0.1 band (人设);
+│   │   │   │                                           #    band (atr / dev, 人选, 窗可设, 默认一年) = 档线间距 ─→ 分层 Ladder (减仓线链: 链顶锚定上一个触发点, 往下每条隔一个 band; 满仓随减仓线模型, 买回后先挂买入价下方的止损链, 它升过链顶且在收盘之下才回到随它; 份数默认 20 / 止损默认 0.1 band (人设);
 │   │   │   │                                           #    卖出即挂加仓线止损, 加仓线每日按加仓线模型下移) ─刀 Cut→ 成交 Fill (+ 成本) → 损益 Pnl; 减仓线 / 加仓线模型的参数滚动调优
 │   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 只读原料带 Tape (含日 K); 三张模型表: band kBandKinds (band_of) / 减仓线 kReduceKinds (price / ema / kama / mid) /
 │   │   │   │                                           #    加仓线 kAddKinds (decay / chand / sar), 一模型一核 (日首换参 + 逐根出值, 定参 = 各日同参, 窗不满用部分窗); 分层 Ladder (减仓线链 + 各份加仓线, 档线快照, 可录逐笔 Trip) 逐根出刀 Cut
