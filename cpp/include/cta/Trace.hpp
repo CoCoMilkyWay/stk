@@ -1,7 +1,7 @@
 #pragma once
 
 // 单资产的滚动调参全期轨迹 (只用本资产, 不用未来信息): band 人选固定, 减仓线 / 加仓线逐日依次选参, 分层沿两条变参线一遍跑完
-//   打分 (格点首次进网格时, 一批并行; 一个配置一个任务, 只读 Tape; Tune.hpp):
+//   打分 (格点首次进网格时, 一批并行; 一个配置一个任务, 只读日线原料带 (日 K, 每日 1 根); Tune.hpp):
 //     减仓线 = 保敞口目标 keep_of, 全期一遍出日前缀; 加仓线 = (减仓格点, 加仓格点) 对的定参完整分层 trips_of, 全期一遍出逐笔
 //   选参 (逐日, 先减仓线后加仓线): 各以此前至多自己的窗 W 日 (不足 W 日 = 自首日起全部, expanding) 网格各配置的分拟岭回归曲面 (Tune.hpp), 取连续最高点的参数 (小数);
 //         最近的格点落在网格边上 (未到硬边界) → 以它为中心移网格, 补打新格点再拟, 当日至多 kHops 次; 中心留到次日 (各日只读当日之前的窗)
@@ -32,11 +32,11 @@ inline constexpr double kDamp = 5; // 参数阻尼 (日): 所用参数 (对数) 
 // 模型与回测设定 (费率另给: 系统配置); 改了即全部重算
 struct Spec {
   size_t band = kDev;    // band 模型 (kBandKinds 下标)
-  float band_win = 1;    // band 窗 (年, kMinYears ~ kMaxYears)
+  int band_win = 1;      // band 窗 (整年, kMinYears ~ kMaxYears)
   size_t reduce = kKama; // 减仓线模型 (kReduceKinds 下标)
-  float reduce_win = 1;  // 减仓线滚动调参窗 (年)
+  int reduce_win = 1;    // 减仓线滚动调参窗 (整年)
   size_t add = kDecay;   // 加仓线模型 (kAddKinds 下标)
-  float add_win = 1;     // 加仓线滚动调参窗 (年)
+  int add_win = 1;       // 加仓线滚动调参窗 (整年)
   int grid = kGrid;      // 网格配置数上限 (减仓线 / 加仓线各自按它分到自己的参数轴; split)
   Rule rule;             // 分层规则
   int dir = kLong;       // 方向 (kDirs 下标)
@@ -118,12 +118,12 @@ struct Damp {
   }
 };
 
-// 逐日所用参数 (以根计): 未选参日沿用上一日的, 首个选参日之前 = 初始中心
-inline std::vector<P> daily_of(const Path &p) {
-  std::vector<P> o(p.sel.size(), p.grid.p(p.grid.home()));
+// 逐日所用参数 (以根计, 每日 S 根): 未选参日沿用上一日的, 首个选参日之前 = 初始中心
+inline std::vector<P> used_of(const Path &p, size_t S) {
+  std::vector<P> o(p.sel.size(), p.grid.p(p.grid.home(), S));
   for (size_t d = 0; d < o.size(); ++d)
     if (p.sel[d])
-      o[d] = p.grid.bars(p.use[d]);
+      o[d] = p.grid.bars(p.use[d], S);
     else if (d)
       o[d] = o[d - 1];
   return o;
@@ -141,7 +141,9 @@ bool trace(const Series &se, size_t S, const Spec &sp, const Rates &u, double bp
   assert(sp.reduce < std::size(kReduceKinds) && sp.add < std::size(kAddKinds) && "减仓线 / 加仓线模型");
   const float s = kDirs[sp.dir].s;
   const Col N = band_of(t, sp.band, win_of(sp.band_win));
-  Path pr{grid_of(S, kReduceKinds[sp.reduce], static_cast<size_t>(sp.grid))}, pa{grid_of(S, kAddKinds[sp.add], static_cast<size_t>(sp.grid))};
+  const Series ds = day_series(t);
+  const Tape td(ds, 1); // 打分用的日线原料带 (日下标同 t)
+  Path pr{grid_of(kReduceKinds[sp.reduce], static_cast<size_t>(sp.grid))}, pa{grid_of(kAddKinds[sp.add], static_cast<size_t>(sp.grid))};
   for (Path *p : {&pr, &pa})
     p->sel.assign(nd, 0), p->raw.resize(nd), p->use.resize(nd);
   const Grid &gr = pr.grid, &ga = pa.grid;
@@ -152,14 +154,14 @@ bool trace(const Series &se, size_t S, const Spec &sp, const Rates &u, double bp
   Q cr = gr.home(), ca = ga.home(), qr, qa; // 网格中心 / 最高点的最近格点
   Damp dr, da;
   const auto enroll_r = [&](const std::vector<Q> &g) {
-    rs.enroll(ex, g, stop, [&](const Q &q) { return keep_of(t, sp.reduce, gr.p(q), N, s, sp.rule.units, u); });
+    rs.enroll(ex, g, stop, [&](const Q &q) { return keep_of(td, sp.reduce, gr.p(q, 1), N, s, sp.rule.units, u); });
     return !stop();
   };
   const auto enroll_a = [&](const std::vector<Q> &g) {
     std::vector<std::pair<Q, Q>> ks;
     for (const Q &q : g)
       ks.push_back({qr, q});
-    as.enroll(ex, ks, stop, [&](const std::pair<Q, Q> &k) { return trips_of(t, sp.reduce, sp.add, gr.p(k.first), ga.p(k.second), N, s, sp.rule); });
+    as.enroll(ex, ks, stop, [&](const std::pair<Q, Q> &k) { return trips_of(td, sp.reduce, sp.add, gr.p(k.first, 1), ga.p(k.second, 1), N, s, sp.rule); });
     return !stop();
   };
   for (size_t d = 1; d < nd; ++d) {
@@ -178,13 +180,13 @@ bool trace(const Series &se, size_t S, const Spec &sp, const Rates &u, double bp
     if (!ok)
       continue;
     pr.raw[d] = v, pr.sel[d] = 1, pr.use[d] = dr(v, gr.na);
-    if (climb(ga, ca, qa, v, ya, enroll_a, [&](const Q &q, bool &live) { return median_of(as.at({qr, q}), t, da0, d, s, u, live, buf); }))
+    if (climb(ga, ca, qa, v, ya, enroll_a, [&](const Q &q, bool &live) { return median_of(as.at({qr, q}), td, da0, d, s, u, live, buf); }))
       pa.raw[d] = v, pa.sel[d] = 1, pa.use[d] = da(v, ga.na);
     if (stop())
       return false;
   }
 
-  const std::vector<P> pdr = daily_of(pr), pda = daily_of(pa);
+  const std::vector<P> pdr = used_of(pr, S), pda = used_of(pa, S);
   Cuts cut(n);
   Pnl strat(t), hold(t);
   Record rec{cut};

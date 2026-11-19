@@ -210,7 +210,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
     std::snprintf(gran, sizeof(gran), "每点 %zu 根 (放大到逐根才标买卖), 买 %d 次 / 卖 %d 次", step, buys, sells);
   ImGui::TextColored(kHead, "%s", name ? name : "");
   ImGui::SameLine();
-  ImGui::TextDisabled("%s  ·  窗 %.2g / %.2g / %.2g 年  ·  %s ~ %s  ·  %s", model.c_str(), r.spec.band_win, r.spec.reduce_win, r.spec.add_win,
+  ImGui::TextDisabled("%s  ·  窗 %d / %d / %d 年  ·  %s ~ %s  ·  %s", model.c_str(), r.spec.band_win, r.spec.reduce_win, r.spec.add_win,
                       misc::dash(day_of(r, lo)).c_str(), misc::dash(day_of(r, hi)).c_str(), gran);
 
   const ImGuiStyle &st = ImGui::GetStyle();
@@ -727,13 +727,13 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
     ImGui::PopStyleColor();
   };
   c.editing = false;
-  const auto years = [&](const char *id, float &y, const char *what) { // 窗 (年): 对数滑条, 松手生效
-    ImGui::SliderFloat(id, &y, cta::kMinYears, cta::kMaxYears, "%.2g 年", ImGuiSliderFlags_Logarithmic);
+  const auto years = [&](const char *id, int &y, const char *what) { // 窗 (整年): 填数 + −/+ 按钮
+    ImGui::InputInt(id, &y, 1, 1);
     y = std::clamp(y, cta::kMinYears, cta::kMaxYears);
     c.editing |= ImGui::IsItemActive();
     if (ImGui::IsItemHovered())
-      tip("%s\n• %.2g ~ %.2g 年 (1 年 = %.0f 交易日), 默认 1 年; 不足窗长 = 自首日起全部 (expanding)\n• 松手生效 (Ctrl + 点击可直接输入)", what, cta::kMinYears,
-          cta::kMaxYears, cta::kYearDays);
+      tip("%s\n• %d ~ %d 年 (整年, 1 年 = %.0f 交易日), 默认 1 年; 不足窗长 = 自首日起全部 (expanding)\n• 编辑完生效", what, cta::kMinYears, cta::kMaxYears,
+          cta::kYearDays);
   };
   const cta::V *at[2] = {};
   const std::string where = r ? cursor_at(*r, c.cursor, at) : std::string{};
@@ -794,7 +794,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   axes(ka, r && r->spec.add == sp.add ? at[1] : nullptr);
   label("模型");
   model_combo("##cta_add", cta::kAddKinds, sp.add,
-              "加仓线模型: 已减的份的加仓线每日收盘怎么下移 (不低于 收盘 + 止损距), 回撤够深后下移做网格抄底; 各份的参数在它卖出时定下, 之后不变 (各份可不同)\n"
+              "加仓线模型: 已减的份的加仓线怎么下移 (参数以日计, 逐根摊开随分钟走; 下移不越过 收盘 + 止损距), 回撤够深后下移做网格抄底; 各份的参数在它卖出时定下, 之后不变 (各份可不同)\n"
               "调参目标 = 每笔中位夏普: 在当日减仓线下跑完整分层, 窗内卖出的各笔 (ln(卖价 / 买回价) − 成本) / (band / 卖价 × √持续日) 的中位; 窗末未买回的按窗末收盘计");
   label("滚动窗 (年)");
   years("##cta_add_win", sp.add_win, "加仓线选参的滚动窗: 每日以此前这么长的窗内卖出的各笔打分, 拟曲面取最高点用到当日; 窗内无笔 = 沿用上一日的");
@@ -819,7 +819,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
         "• 减仓线链: 链顶锚定上一个触发点, 往下每条 = 上一条 − 当日 band (锚定不变, band 每日变)\n"
         "• 链顶: 满仓 = 减仓线模型; 卖出 @a 后 = a − 当日 band; 买回 @L 后 = L − 止损 × 当日 band\n"
         "• 满仓 (只剩减仓线) 且减仓线模型上穿链顶 = 回到随它\n"
-        "• 加仓线: 卖出 @a 即挂 a + 止损距; 每日收盘按加仓线模型下移, 不低于 收盘 + 止损距 (不会自行触发); 减仓线不下移\n"
+        "• 加仓线: 卖出 @a 即挂 a + 止损距; 逐根按加仓线模型下移, 下移不越过 收盘 + 止损距 (不会自行触发, 也不上移); 减仓线不下移\n"
         "• 一根越过几条成交几条 (先近后远)\n"
         "• 图上: 一份一条连续线 (恒为份数条), 绿 = 减仓线, 红 = 加仓线, 成交处换色; 同色里离收盘越近越浓\n"
         "• 减仓线 / band 尚无值 (如首日) = 买入持有 (与基准同口径)");

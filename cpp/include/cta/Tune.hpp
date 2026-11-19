@@ -5,6 +5,7 @@
 //     分 = (顺向 − 翻转成本) / 总振幅, 对数价单位, 1 ≈ 走过的路程全部顺向吃到; 敞口留得多、来回翻得少则高
 //   加仓线目标 = 每笔中位夏普: 源 Laddered (定参减仓线 + 定参加仓线的完整分层, Ladder 录逐笔) → 空汇; 窗内卖出的各笔 (Trip)
 //     夏普 = (s · ln(卖价 / 买回价) − 该笔成本) / (卖出当日 band / 卖价 · √持续日), 窗末未买回 = 按窗末前一根收盘计; 分 = 各笔的中位
+//   打分一律跑日线 (日 K 合成的原料带, 每日 1 根; 各模型以日计的参数按 1 根 / 日给): 训练每日一次, 不必逐分钟; 回测才跑原频
 //   成本与回测同一份费率; 只读 Tape, 一个配置一个任务
 //   参数轴 = 自 v0 向两侧铺的格点 (相邻之比 kStep; 间距不小于轴的基本单位), 一个配置 = 各轴格点号 Q, 以根计的参数由它查 (Grid::p); 各轴量定长 Ax (轴数之外不用)
 //   网格 = 中心周围各轴 m 个相邻格点的全部组合 (配置数可配, 由各多值轴轮流分得 m); 一点在网格内 = 各轴下标 At
@@ -293,7 +294,6 @@ inline constexpr double kStep = 1.41421356; // 相邻格点之比 (大值处; �
 //   网格 = 中心 c 周围各轴 m 个相邻格点的全部组合 (收进硬边界); 岭回归只看网格内下标, 与中心无关, 预先算好
 struct Grid {
   const Kind *model = nullptr; // 模型 (kReduceKinds / kAddKinds 的一项)
-  size_t S = 0;                // 每日根数 (以日计的轴 × S)
   size_t na = 0;               // 轴数 (≤ kAxes)
   Ax<const Axis *> ax{};       // [轴]
   Q lo{}, hi{};                // [轴] 格点号的硬边界
@@ -344,19 +344,19 @@ struct Grid {
     }
     return v;
   }
-  // 参数 v (轴的单位) → 以根计
-  P bars(const V &v) const {
+  // 参数 v (轴的单位) → 以根计 (每日 S 根: 以日计的轴 × S)
+  P bars(const V &v, size_t S) const {
     P o{};
     for (size_t a = 0; a < na; ++a)
       o[a] = static_cast<float>(v[a] * (ax[a]->day ? static_cast<double>(S) : 1.0));
     return o;
   }
-  // 配置 q 的参数 (以根计)
-  P p(const Q &q) const {
+  // 配置 q 的参数 (以根计, 每日 S 根)
+  P p(const Q &q, size_t S) const {
     V v{};
     for (size_t a = 0; a < na; ++a)
       v[a] = value(a, q[a]);
-    return bars(v);
+    return bars(v, S);
   }
 };
 
@@ -398,9 +398,9 @@ inline At split(const Kind &model, size_t n) {
   return m;
 }
 
-// S = 每日根数, model = 模型, n = 网格配置数上限 (≥ 1)
-inline Grid grid_of(size_t S, const Kind &model, size_t n) {
-  Grid g{.model = &model, .S = S, .na = model.axes.size(), .m = split(model, n)};
+// model = 模型, n = 网格配置数上限 (≥ 1)
+inline Grid grid_of(const Kind &model, size_t n) {
+  Grid g{.model = &model, .na = model.axes.size(), .m = split(model, n)};
   for (size_t k = 0; k < g.na; ++k) {
     int below;
     g.val[k] = ticks_of(*(g.ax[k] = &model.axes[k]), below);

@@ -345,7 +345,7 @@ stk/
 │   │   │   ├── Model.hpp                               # 📈 模型: 有效根 Series → 只读原料带 Tape (含日 K); 三张模型表: band kBandKinds (band_of) / 减仓线 kReduceKinds (price / ema / kama / mid) /
 │   │   │   │                                           #    加仓线 kAddKinds (decay / chand / sar), 一模型一核 (日首换参 + 逐根出值, 定参 = 各日同参, 窗不满用部分窗); 分层 Ladder (减仓线链 + 各份加仓线, 档线快照, 可录逐笔 Trip) 逐根出刀 Cut
 │   │   │   ├── Engine.hpp                              # 📈 执行: 唯一一条逐根链 drive (日 × 根: 源 → 成交 → 汇); 调参 / 策略 / 买入持有只换源与汇; 五项成本
-│   │   │   ├── Tune.hpp                                # 📈 调参目标: 减仓线 = 保敞口 (Steps 静态档线源 → Keep 汇: 顺向 − 翻转成本, 日前缀) / 加仓线 = 每笔中位夏普 (Laddered 定参完整分层录逐笔);
+│   │   │   ├── Tune.hpp                                # 📈 调参目标 (打分一律跑日线): 减仓线 = 保敞口 (Steps 静态档线源 → Keep 汇: 顺向 − 翻转成本, 日前缀) / 加仓线 = 每笔中位夏普 (Laddered 定参完整分层录逐笔);
 │   │   │   │                                           #    参数网格 Grid + 岭回归曲面
 │   │   │   ├── Metrics.hpp                             # 📈 指标: 收益统计 / 择时捕获 / 在场段; 一本账 Book
 │   │   │   └── Trace.hpp                               # 📈 设定 Spec + 滚动调参全期轨迹: 格点并行打分 → 逐日先减仓线后加仓线, 以此前窗口拟曲面取连续最高点 → 5 日阻尼 → 两条变参线 + 分层一遍跑出 Cuts 与策略账 ↔ 买入持有账
