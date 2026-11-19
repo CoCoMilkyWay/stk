@@ -91,14 +91,13 @@ struct PbBand {
 
 // ---- 区间条 (range_bar, 同 NAV / VAL): x = 有根的日 (XDays 下标), 底线 = 各日末根收盘; 选段 [d0, d1) ↔ 两图 x 视野:
 //      每帧由视野定 (含该视野的整日段), 拖了 → 视野改成该整日段, 价格 y 回跟随;
-//      左把手松手 / 双击改了左端 (段内平移不算), 或两图框选 / 双击改了视野 → 净值图锚定到 d0 ----
+//      净值图恒以视野首根的前一根为 1 (见 plots) ----
 int range_formatter(double v, char *buf, int size, void *ud) {
   const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
   const misc::Ymd y = dates[static_cast<size_t>(std::clamp(v, 0.0, static_cast<double>(dates.size() - 1)))];
   return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
-// reanchor = 本帧框选 / 双击改了视野: 净值图锚定到视野的首日
-void range(CtaState &c, const CtaResult &r, const XDays &xd, const ImVec2 &size, bool reanchor) {
+void range(CtaState &c, const CtaResult &r, const XDays &xd, const ImVec2 &size) {
   const int K = static_cast<int>(xd.dates.size());
   assert(K > 0);
   std::vector<double> b(xd.xs); // 日界 [K + 1]: 日 k 占 x ∈ [b[k], b[k + 1])
@@ -107,8 +106,6 @@ void range(CtaState &c, const CtaResult &r, const XDays &xd, const ImVec2 &size,
   rg.d0 = std::clamp(static_cast<int>(std::ranges::upper_bound(b, c.x0) - b.begin()) - 1, 0, K - 1);
   rg.d1 = std::clamp(static_cast<int>(std::ranges::lower_bound(b, c.x1) - b.begin()), rg.d0 + 1, K);
   const int d0 = rg.d0, d1 = rg.d1;
-  if (reanchor)
-    c.anchor = d0;
   push_range_style();
   if (!ImPlot::BeginPlot("##cta_range", size, ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText)) {
     ImPlot::PopStyleVar();
@@ -124,12 +121,9 @@ void range(CtaState &c, const CtaResult &r, const XDays &xd, const ImVec2 &size,
   ImPlot::SetNextLineStyle(ImGui::GetStyleColorVec4(ImGuiCol_Text), 1.0f);
   ImPlot::PlotLine("##cta_range_line", xs.data(), ys.data(), static_cast<int>(xs.size()));
   x_ticks_inside();
-  const int was = rg.drag;
   range_bar(rg, xd.dates, 1.0);
   ImPlot::EndPlot();
   ImPlot::PopStyleVar();
-  if (rg.drag == 0 && (was == 1 || (was == 0 && rg.d0 != d0)))
-    c.anchor = rg.d0;
   if (rg.d0 != d0 || rg.d1 != d1)
     c.x0 = b[static_cast<size_t>(rg.d0)], c.x1 = b[static_cast<size_t>(rg.d1)], c.fit_y = true;
 }
@@ -150,14 +144,15 @@ size_t dix(const CtaResult &r, size_t i) { return r.se->t[i] / kS - r.se->t[0] /
 //        + PB Band (同 VAL: 偏离 v / q_j 乘本图当日末根收盘, 每日一点在该日末根; 填色 + 各档线共一个图例项, 默认关);
 //      下 = 策略 / 持有净值 + 成本带 (y 轴 log / 绝对, 右上角切换); 底 = 区间条. x 同一视野 (链到 ui), 每像素取末根; 光标 = 可拖竖线 (两图同一条)
 //      左键框选放大 (价格图连 y 一起; 净值图只 x), 右键拖动平移, 滚轮缩放, 双击回全段;
-//      光标 = 橙色竖线 (同 OrderFlow 锚线): 常显 (初放视野正中), 只能拖动, 标注时刻; 框选 / 双击改了视野 → 净值图锚定到视野首日 ----
+//      光标 = 橙色竖线 (同 OrderFlow 锚线): 常显 (初放视野正中), 只能拖动, 标注时刻;
+//      净值图 (策略 / 持有 / 成本带) 恒以视野首根的前一根 = 1: 视野怎么变 (框选 / 滚轮 / 平移 / 区间条 / 双击) 都随之重新对齐 ----
 void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, const ImVec2 &size) {
   const cta::Series &se = *r.se;
   const cta::Track &tr = r.tr;
   const size_t n = se.c.size();
-  if (c.fit != r.ref) { // 换标的: 回全段, 光标回末根, 锚回首日
+  if (c.fit != r.ref) { // 换标的: 回全段, 光标重放
     c.fit = r.ref;
-    c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true, c.cursor = -1, c.anchor = 0;
+    c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true, c.cursor = -1;
   }
   const size_t step = std::max<size_t>(1, static_cast<size_t>((c.x1 - c.x0) / std::max(1.0f, size.x)));
   const std::vector<size_t> at = sample(n, c.x0, c.x1, step);
@@ -171,8 +166,8 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
   for (size_t k = 0; k < at.size(); ++k)
     xs[k] = static_cast<double>(at[k]);
   const XDays xd = x_days(r);
-  assert(c.anchor >= 0 && static_cast<size_t>(c.anchor) < xd.dates.size());
-  const size_t anc = c.anchor ? xd.last[static_cast<size_t>(c.anchor) - 1] : 0; // 锚根: 锚定日前一日末根 (锚 = 首日则首根); 净值 / 成本带在此 = 1
+  const size_t first = static_cast<size_t>(std::clamp(std::ceil(c.x0), 0.0, static_cast<double>(n - 1)));
+  const size_t anc = first ? first - 1 : 0; // 对齐根: 视野首根的前一根 (视野自首根起 = 首根); 净值 / 成本带在此 = 1
   const cta::Col &w = tr.strat.run.w;
   const std::vector<double> close = take(se.c), mid = take(tr.cut.mid);
   std::vector<double> nav = take(tr.strat.nav), hold = take(tr.hold.nav);
@@ -264,8 +259,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
   ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2));
   ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(2, 1));
 
-  const bool boxed = c.boxing && ImGui::IsMouseReleased(ImGuiMouseButton_Left); // 框选松手: 本帧起用框的 y, 净值图锚定到框的首日
-  if (boxed)
+  if (c.boxing && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) // 框选松手: 本帧起用框的 y
     c.fit_y = false;
   if (c.fit_y)
     ImPlot::SetNextAxisToFit(ImAxis_Y1);
@@ -382,7 +376,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
     ImPlot::SetupAxisScale(ImAxis_Y1, c.nav_log ? ImPlotScale_Log10 : ImPlotScale_Linear);
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_Horizontal);
     // 成本带: 逐项叠 (带下沿 = 叠回前几项, 上沿 = 再叠回本项), 带厚 = 该项把净值压下去的量; 悬停的带高亮 + 说明
-    //   基线 = 策略净值; 图例隐去策略净值时 = 1 (各沿除以策略净值, 只看成本本身); 各沿在锚根 = 1 (自锚根起不扣前几项的净值)
+    //   基线 = 策略净值; 图例隐去策略净值时 = 1 (各沿除以策略净值, 只看成本本身); 各沿在对齐根 = 1 (自对齐根起不扣前几项的净值)
     const cta::Book &sb = tr.strat;
     const bool hovered = ImPlot::IsPlotHovered(); // 锁定 setup 之后 item 才能按 label 查
     const ImPlotItem *nav_it = ImPlot::GetItem("策略净值");
@@ -416,11 +410,6 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
     ImPlot::PlotLine("持有净值", xs.data(), hold.data(), static_cast<int>(xs.size()));
     ImPlot::SetNextLineStyle(ImGui::GetStyleColorVec4(ImGuiCol_Text), 1.5f);
     ImPlot::PlotLine("策略净值", xs.data(), nav.data(), static_cast<int>(xs.size()));
-    if (c.anchor > 0) { // 锚点: 锚定日的日界
-      const double x = xd.xs[static_cast<size_t>(c.anchor)];
-      ImPlot::SetNextLineStyle(kHoldCol, 1.0f);
-      ImPlot::PlotInfLines("##cta_anchor", &x, 1, ImPlotItemFlags_NoFit);
-    }
     track(1);
     const double zx = plot_mouse_x();
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemActive()) // 拖光标时不起
@@ -458,7 +447,7 @@ void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, 
     c.x0 = -0.5, c.x1 = static_cast<double>(n) - 0.5, c.fit_y = true;
     c.zoom.cancel();
   }
-  range(c, r, xd, ImVec2(size.x, kRangeH), boxed || zoomed || reset);
+  range(c, r, xd, ImVec2(size.x, kRangeH));
 }
 
 // ---- 中栏: 状态 + 设定 (改了下帧即重发) + 光标处所用参数 + 全期指标 ----
