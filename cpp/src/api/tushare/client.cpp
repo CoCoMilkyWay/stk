@@ -103,7 +103,7 @@ struct Session {
   }
 
   // 返回的 yyjson_doc* 由调用方 yyjson_doc_free; 远端故障 → 置 down, nullptr (down 已置 → 不发, 直接 nullptr)
-  yyjson_doc *call(const tcp::resolver::results_type &ep, const std::string &token, const Query &q, std::atomic<bool> &down) {
+  yyjson_doc *call(const tcp::resolver::results_type &ep, const std::string &token, const Query &q, std::atomic<bool> &down, int timeout = kTimeoutSeconds) {
     const std::string_view api_name = q.api;
     const std::string body = build_body(token, api_name, q.params);
     const auto fail = [&](const std::string &why) -> yyjson_doc * {
@@ -121,12 +121,12 @@ struct Session {
       beast::error_code ec;
       if (!stream) {
         stream.emplace(ioc);
-        stream->expires_after(std::chrono::seconds(kTimeoutSeconds));
+        stream->expires_after(std::chrono::seconds(timeout));
         stream->connect(ep, ec);
       }
       http::response<http::string_body> res;
       if (!ec) {
-        stream->expires_after(std::chrono::seconds(kTimeoutSeconds));
+        stream->expires_after(std::chrono::seconds(timeout));
         http::request<http::string_body> req{http::verb::post, "/", 11};
         req.set(http::field::host, kHost);
         req.set(http::field::user_agent, "stk-tushare/1.0");
@@ -257,8 +257,22 @@ Client::Client(std::string token) : token_(std::move(token)) {
 
 Client::Client() : Client(kToken) {}
 
+bool Client::alive() {
+  std::call_once(probed_, [&] {
+    const tcp::resolver::results_type ep = resolve_endpoints();
+    if (ep.empty()) {
+      down_.store(true, std::memory_order_relaxed);
+      return;
+    }
+    Session s;
+    if (yyjson_doc *doc = s.call(ep, token_, {"trade_cal", {{"start_date", "20200102"}, {"end_date", "20200102"}}, {}}, down_, kProbeSeconds))
+      yyjson_doc_free(doc);
+  });
+  return !down_.load(std::memory_order_relaxed);
+}
+
 std::shared_ptr<arrow::Table> Client::query(const Query &q) {
-  if (down_.load(std::memory_order_relaxed))
+  if (!alive())
     return nullptr;
   const tcp::resolver::results_type ep = resolve_endpoints();
   if (ep.empty()) {
@@ -276,7 +290,7 @@ std::shared_ptr<arrow::Table> Client::query(const Query &q) {
 
 std::vector<std::shared_ptr<arrow::Table>> Client::batch(const std::vector<Query> &qs, const std::function<void(std::size_t)> &tick) {
   std::vector<std::shared_ptr<arrow::Table>> out(qs.size());
-  if (qs.empty() || down_.load(std::memory_order_relaxed))
+  if (qs.empty() || !alive())
     return out;
   const tcp::resolver::results_type ep = resolve_endpoints();
   if (ep.empty()) {

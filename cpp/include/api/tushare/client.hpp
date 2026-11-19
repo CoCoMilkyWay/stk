@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -33,6 +34,7 @@ inline constexpr const char *kToken = "6b5ea435a4626b1eeedefb2115bcf9e84fc64a0d2
 inline constexpr const char *kHost = "api.tushare.pro";
 inline constexpr const char *kPort = "80"; // 走 80, 省掉 SSL 依赖
 inline constexpr int kTimeoutSeconds = 60; // 单次连接 + 读写整体时长; range 接口序列化耗时可达 20s
+inline constexpr int kProbeSeconds = 5;    // 探活 (trade_cal 一日) 的整体时长: 网关挂着时 vip 接口要拖到 60s 才回 504, 探活先短路
 inline constexpr int kRetryMax = 4;        // 频率超限的额外重试次数 (共 5 次尝试), 线性间隔
 inline constexpr int kRetryIntervalSeconds = 30;
 inline constexpr int kWidth = 8; // batch 并发路数 (单条 ~0.1s 为往返延迟; 分钟限额由 Query::per_min 控速, 偶发超限由重试吸收)
@@ -49,6 +51,7 @@ public:
   // 响应 data.{fields, items} → arrow::Table (0 行 → 0 行表, schema 仍完整):
   //   num 内的列 → double, 其余 → string. 不按数据推断: 全 null 列无从推断, 同一列会跨调用漂移.
   //   num 声明的列必须出现在响应 fields 里 (拼错 / API 改名立刻暴露).
+  // 本对象首个 query / batch 先探活 (kProbeSeconds 内一条 trade_cal), 不通即判远端挂了.
   // 远端故障 (解析不了域名 / 连不上 / 读写超时 / HTTP 5xx / 回包非 JSON / code ≥ 50000) 不重发不等 → nullptr, 且本对象从此判远端挂了:
   //   其后的 query / batch 不再发请求, 一律 nullptr (一轮同步一个对象, 下轮重试). 频率超限 (40203) 隔 kRetryIntervalSeconds 重试; 其它 code != 0 → assert.
   std::shared_ptr<arrow::Table> query(const Query &q);
@@ -56,7 +59,9 @@ public:
   std::vector<std::shared_ptr<arrow::Table>> batch(const std::vector<Query> &qs, const std::function<void(std::size_t)> &tick = {});
 
 private:
+  bool alive(); // 首次调用探活 (此后只读 down_)
   std::string token_;
+  std::once_flag probed_;
   std::atomic<bool> down_{false}; // 远端挂了 (见 query)
 };
 
