@@ -178,7 +178,7 @@ void data_ctl(LiveHub &hub, BoardState &st) {
   if (ImGui::SmallButton("刷新"))
     b.request(live::Part::All);
   if (ImGui::IsItemHovered())
-    tip("客户端依次重查当日成交、持仓、挂单、信用资产与融资负债, 各样查完即更新");
+    tip("客户端依次重查当日成交、持仓、挂单、信用资产与融资负债, 一轮查完整份更新");
   ImGui::SameLine();
   ImGui::TextUnformatted("定时");
   ImGui::SameLine();
@@ -272,8 +272,8 @@ void rebal_ctl(LiveHub &hub, BoardState &st) {
   if (ImGui::IsItemHovered())
     tip("本次用掉现金、可用保证金、可融余量的比例");
   ImGui::SameLine(0, ImGui::GetFontSize());
-  const auto &p = hub.plan().plan;
-  ImGui::BeginDisabled(!p || p->orders.empty() || hub.busy());
+  const PlanView &v = hub.plan();
+  ImGui::BeginDisabled(!v.plan || !v.wait.empty() || v.plan->orders.empty() || hub.busy());
   if (ImGui::SmallButton("执行调仓"))
     st.run = true;
   ImGui::EndDisabled();
@@ -341,7 +341,7 @@ void fit_heads(std::span<const char *const> heads, const Fit &f) {
   ImGui::TableHeadersRow();
 }
 
-// 试算: 状态一行 (出错 / 等什么 / 试算时刻) + 购买力与行使一表; 未出即空格
+// 试算: 状态一行 (出错 / 试算时刻 · 等什么) + 购买力与行使一表; 未出即空格, 在等即上一份
 void plan_sheet(LiveHub &hub, BoardState &st) {
   const PlanView &v = hub.plan();
   if (!v.err.empty())
@@ -349,7 +349,7 @@ void plan_sheet(LiveHub &hub, BoardState &st) {
   else if (!v.plan)
     ImGui::TextDisabled("%s", v.wait.empty() ? "(等试算)" : v.wait.c_str());
   else
-    ImGui::TextDisabled("试算于 %s", v.plan->time.c_str());
+    ImGui::TextDisabled("试算于 %s%s%s", v.plan->time.c_str(), v.wait.empty() ? "" : " · ", v.wait.c_str());
   constexpr int kN = 8;
   constexpr const char *kHeads[kN] = {"购买力", "本次|行使", "其中|融资", "成本", "入选", "每只|目标", "卖后|现金", "卖后|保证金"};
   if (!begin_fit("##plan", kHeads, kFlags, st.plan_fit))
@@ -475,10 +475,10 @@ void info_line(LiveHub &hub, const std::set<std::string> &held) {
   if (!v.err.empty())
     return text_col(kRed, "✗ " + v.err);
   if (!v.wait.empty())
-    return ImGui::TextDisabled("%s", v.wait.c_str());
+    return ImGui::TextDisabled("%s%s", v.wait.c_str(), v.frame ? " · 表为上一份" : "");
   if (v.frame->rows.empty())
     return ImGui::TextDisabled("无持仓");
-  const auto &orders = hub.state()->orders;
+  const auto &orders = v.st->orders;
   std::string s;
   int n = 0;
   if (orders)
@@ -596,7 +596,8 @@ void confirm_run(LiveHub &hub, BoardState &st) {
   }
   if (!ImGui::BeginPopupModal("确认调仓", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     return;
-  const auto &p = hub.plan().plan;
+  const PlanView &v = hub.plan();
+  const live::rebal::Plan *p = v.plan && v.wait.empty() ? &*v.plan : nullptr;
   if (!p) {
     ImGui::TextDisabled("试算已失效");
   } else {
@@ -885,7 +886,8 @@ void plan_cells(const RowPlan &p, bool priv, Amt &amt, double &cost) {
 }
 
 void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can) {
-  const Flows flows = flows_of(*hub.state());
+  const live::State &s = *hub.board().st;
+  const Flows flows = flows_of(s);
   const std::set<std::string> listed(hub.in().codes.begin(), hub.in().codes.end());
   const auto &plan = hub.plan().plan;
   std::map<std::string, const live::rebal::Hold *> holds;
@@ -1062,7 +1064,6 @@ void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::boa
   ImGui::TableSetColumnIndex(C_POS_PCT);
   right(strf("%.2f", pos_pct));
   ImGui::TableSetColumnIndex(C_FLOW);
-  const live::State &s = *hub.state();
   if (priv)
     masked();
   else {

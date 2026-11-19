@@ -3,10 +3,10 @@
 // 单资产的滚动调参全期轨迹 (只用本资产, 不用未来信息): band 人选固定, 减仓线 / 加仓线逐日依次选参, 分层沿两条变参线一遍跑完
 //   打分 (格点首次进网格时, 一批并行; 一个配置一个任务, 只读 Tape; Tune.hpp):
 //     减仓线 = 保敞口目标 keep_of, 全期一遍出日前缀; 加仓线 = (减仓格点, 加仓格点) 对的定参完整分层 trips_of, 全期一遍出逐笔
-//   选参 (逐日, 先减仓线后加仓线): 以此前至多 W 日 (不足 W 日 = 自首日起全部, expanding) 网格各配置的分拟岭回归曲面 (Tune.hpp), 取连续最高点的参数 (小数);
+//   选参 (逐日, 先减仓线后加仓线): 各以此前至多自己的窗 W 日 (不足 W 日 = 自首日起全部, expanding) 网格各配置的分拟岭回归曲面 (Tune.hpp), 取连续最高点的参数 (小数);
 //         最近的格点落在网格边上 (未到硬边界) → 以它为中心移网格, 补打新格点再拟, 当日至多 kHops 次; 中心留到次日 (各日只读当日之前的窗)
 //         加仓线在减仓线最高点的最近格点下打分 (窗内卖出的各笔的中位夏普)
-//         (首日 / 窗内根数不足窗长一半 / 窗内各配置的减仓线都未就绪 = 未选参, 买入持有, 与基准同口径; 加仓线窗内无笔 = 沿用上一日的)
+//         (首日 / 减仓线窗内根数不足窗长一半 / 窗内各配置的减仓线都未就绪 = 未选参, 买入持有, 与基准同口径; 加仓线窗内无笔 = 沿用上一日的)
 //         阻尼: 所用参数 (对数) 每日朝最高点走 1 / kDamp, 用到当日
 //   策略 (一遍, 逐根): 源 Laddered = 变参减仓线核 + 变参加仓线核 (逐日所用参数, 状态接续) + band → 分层 Ladder
 //         (状态跨日接续; 未选参日 = Hold, 分层复位; 减仓线 / band 预热 = Hold) → 汇 = 损益 Pnl + 录刀 Record (档线快照随之交给 Cuts)
@@ -31,14 +31,15 @@ inline constexpr double kDamp = 5; // 参数阻尼 (日): 所用参数 (对数) 
 
 // 模型与回测设定 (费率另给: 系统配置); 改了即全部重算
 struct Spec {
-  size_t band = kDev;                     // band 模型 (kBandKinds 下标)
-  int days = static_cast<int>(kBandDays); // band 窗 (日; dev ≥ 2)
-  size_t reduce = kKama;                  // 减仓线模型 (kReduceKinds 下标)
-  size_t add = kDecay;                    // 加仓线模型 (kAddKinds 下标)
-  Rule rule;                              // 分层规则
-  int dir = kLong;                        // 方向 (kDirs 下标)
-  int roll = static_cast<int>(kRoll);     // 滚动窗 (日, kMinRoll ~ kMaxRoll)
-  int grid = 9;                           // 网格配置数上限 (各多值轴轮流分格点)
+  size_t band = kDev;    // band 模型 (kBandKinds 下标)
+  float band_win = 1;    // band 窗 (年, kMinYears ~ kMaxYears)
+  size_t reduce = kKama; // 减仓线模型 (kReduceKinds 下标)
+  float reduce_win = 1;  // 减仓线滚动调参窗 (年)
+  size_t add = kDecay;   // 加仓线模型 (kAddKinds 下标)
+  float add_win = 1;     // 加仓线滚动调参窗 (年)
+  int grid = kGrid;      // 网格配置数上限 (减仓线 / 加仓线各自按它分到自己的参数轴; split)
+  Rule rule;             // 分层规则
+  int dir = kLong;       // 方向 (kDirs 下标)
   bool operator==(const Spec &) const = default;
 };
 
@@ -134,12 +135,12 @@ template <class Exec, class Stop, class Tick>
 bool trace(const Series &se, size_t S, const Spec &sp, const Rates &u, double bpy, Exec &ex, Track &out, Stop stop, Tick tick) {
   const Tape t(se, S);
   const Days &days = t.days;
-  const size_t n = t.n, nd = days.size(), W = static_cast<size_t>(sp.roll);
-  assert(n > 1 && W >= kMinRoll && W <= kMaxRoll && nd > 1 && "样本须跨 2 日以上");
+  const size_t n = t.n, nd = days.size(), Wr = win_of(sp.reduce_win), Wa = win_of(sp.add_win);
+  assert(n > 1 && nd > 1 && "样本须跨 2 日以上");
   assert(static_cast<size_t>(sp.dir) < std::size(kDirs) && "方向");
   assert(sp.reduce < std::size(kReduceKinds) && sp.add < std::size(kAddKinds) && "减仓线 / 加仓线模型");
   const float s = kDirs[sp.dir].s;
-  const Col N = band_of(t, sp.band, static_cast<size_t>(sp.days));
+  const Col N = band_of(t, sp.band, win_of(sp.band_win));
   Path pr{grid_of(S, kReduceKinds[sp.reduce], static_cast<size_t>(sp.grid))}, pa{grid_of(S, kAddKinds[sp.add], static_cast<size_t>(sp.grid))};
   for (Path *p : {&pr, &pa})
     p->sel.assign(nd, 0), p->raw.resize(nd), p->use.resize(nd);
@@ -163,7 +164,7 @@ bool trace(const Series &se, size_t S, const Spec &sp, const Rates &u, double bp
   };
   for (size_t d = 1; d < nd; ++d) {
     tick();
-    const size_t d0 = d > W ? d - W : 0;
+    const size_t d0 = d > Wr ? d - Wr : 0, da0 = d > Wa ? d - Wa : 0;
     if (2 * (days.off[d] - days.off[d0]) < (d - d0) * S)
       continue;
     V v;
@@ -177,7 +178,7 @@ bool trace(const Series &se, size_t S, const Spec &sp, const Rates &u, double bp
     if (!ok)
       continue;
     pr.raw[d] = v, pr.sel[d] = 1, pr.use[d] = dr(v, gr.na);
-    if (climb(ga, ca, qa, v, ya, enroll_a, [&](const Q &q, bool &live) { return median_of(as.at({qr, q}), t, d0, d, s, u, live, buf); }))
+    if (climb(ga, ca, qa, v, ya, enroll_a, [&](const Q &q, bool &live) { return median_of(as.at({qr, q}), t, da0, d, s, u, live, buf); }))
       pa.raw[d] = v, pa.sel[d] = 1, pa.use[d] = da(v, ga.na);
     if (stop())
       return false;

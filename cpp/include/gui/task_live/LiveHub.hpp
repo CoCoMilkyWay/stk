@@ -1,6 +1,6 @@
 // Live 任务的中枢: 一个 Broker (客户端适配表 live/Clients.hpp 里选一个, 点「连接」才建) + 新浪行情 + 两融条款 + 下单 / 调仓 / 拉取事务, 券商无关
 //   快照: 后台改、GUI 每帧取, 一律不可变 shared_ptr (指针换了 = 换了一份): Broker 的 State, 中枢的 Inputs / Task / 最近几单;
-//     持仓帧按 (State, 行情) 变了才重算, 试算按 (State, Inputs) 变了才重算
+//     持仓帧按 (State, 行情) 变了才重算, 试算按 (State, Inputs) 变了才重算; 重算出的只是在等 (行情没齐等) 即留着上一份照显, 页面不跳
 //   行情: 要的码 (持仓、今日清仓、负债、调仓名单里可买的) 每帧订阅给 QuoteHub (与 Market 同一路新浪轮询, 改了即提前一轮), 随 Live 的版本取用;
 //     事务 (试算 / 下单) 另现取此刻的. 盘口列同帧复用其 5 档. 账户读到后头一次取齐其各只的行情记作读时现价 (可用保证金按它校准, 见 live/Rebal.hpp)
 //   拉取: 两融条款 (live/Terms.hpp) 与资金流水账本 (account/Ledger.hpp) 同形 — 一件事务里 拉 → 存; 读到信用账户后各每天自动至多一次:
@@ -89,12 +89,14 @@ struct Inputs {
   std::vector<live::Sec> buy;     // 名单里可买的
 };
 
-// 帧 / 等什么 / 出错原因 三选一
+// 出错 = 无帧; 在等 = 帧为上一份 (还没有即无)
 struct BoardView {
+  std::shared_ptr<const live::State> st;      // frame 由这份算出
   std::shared_ptr<const live::Quotes> quotes; // frame 各行的 quote 指进这份
   std::optional<live::board::Frame> frame;
   std::string wait, err;
 };
+// 同 BoardView: 出错 = 无试算; 在等 = 试算与「现」为上一份
 struct PlanView {
   std::optional<live::rebal::Plan> plan;
   std::optional<live::rebal::Sheet> now; // 账户「现」: 试算的, 试算没出即读时的; 没读到信用账户 = 无

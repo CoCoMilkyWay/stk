@@ -3,9 +3,9 @@
 #include "disk/Disk.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/task_agent/Config.hpp"
-#include "gui/task_agent/Mcp.hpp"
 #include "gui/task_agent/Mine.hpp"
 #include "gui/task_agent/Prompt.hpp"
+#include "gui/task_agent/Remote.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Misc.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
@@ -144,9 +144,9 @@ struct Sniffer {
 };
 
 struct Ui {
-  std::unique_ptr<Mine> mine;   // 首帧建 (Destroy 释放: 对话线程 / 评估 worker 与常驻块)
-  std::unique_ptr<Bench> bench; // Tools 页的工作台 (首次进 Tools 页建)
-  std::unique_ptr<Mcp> mcp;     // 首帧建即监听; 外部 agent 锁着时 Mine / 工作台全禁用
+  std::unique_ptr<Mine> mine;     // 首帧建 (Destroy 释放: 对话线程 / 评估 worker 与常驻块)
+  std::unique_ptr<Bench> bench;   // Tools 页的工作台 (首次进 Tools 页建)
+  std::unique_ptr<Remote> remote; // 首帧建即监听; 外部 agent 锁着时 Mine / 工作台全禁用
   Options opt;
   std::optional<Options> opt_saved; // 上次落盘的选项; operator== 判变, 改了才序列化写盘
   Sniffer sniff;
@@ -272,12 +272,12 @@ void save_ui(Ui &s) {
   s.opt_saved = s.opt;
 }
 
-// 首帧 (Update 或 Draw 先到者): 建会话台与 MCP (即监听), 读选项, 各后端嗅探模型
+// 首帧 (Update 或 Draw 先到者): 建会话台与外部 agent 接口 (即监听), 读选项, 各后端嗅探模型
 void ensure(Ui &s) {
   if (s.mine)
     return;
   s.mine = std::make_unique<Mine>();
-  s.mcp = std::make_unique<Mcp>();
+  s.remote = std::make_unique<Remote>();
   load_ui(s);
   s.sniff.cancel.store(false, std::memory_order_relaxed);
   for (int b = 0; b < kBackendN; ++b)
@@ -1751,25 +1751,25 @@ void take_back(const SharedData &data, Ui &s) {
 }
 
 // agent 锁着时的 Mine 页: 锁的说明 + 作用域一行 + 各批调用 (新批在上; 结果用各工具的展示); 人在这里只能看
-void mcp_panel(Ui &s) {
-  Mcp &x = *s.mcp;
+void remote_panel(Ui &s) {
+  Remote &x = *s.remote;
   ImGui::TextColored(kColHead, "外部 agent 锁着 Agent 模块");
   ImGui::SameLine();
-  ImGui::TextDisabled("(MCP %s; 只有它调 unlock 才解, 程序重启即解)", x.listen().c_str());
+  ImGui::TextDisabled("(接口 %s; 只有它调 unlock 才解, 程序重启即解)", x.listen().c_str());
   const Scope &sc = s.opt.sc;
   ImGui::TextDisabled("作用域 %s · 近 %d 年 · 门槛 中位 rIC ≥ %.3f · 回测 %s (外部 agent 用 scope 换; 门槛 / 回测后端在 Config 页)", catalog::label(sc).c_str(), sc.years, s.opt.gate.ric,
                       use_gpu(s) ? "GPU" : "CPU");
   ImGui::Separator();
-  ImGui::BeginChild("##mcp_flow");
+  ImGui::BeginChild("##remote_flow");
   const std::vector<Round> &tl = x.timeline();
   if (tl.empty())
-    ImGui::TextDisabled("还没有调用: 外部 agent 经 MCP 的 run 交来的调用按批列在这里 (说明书 = 仓库 AGENT.md)");
+    ImGui::TextDisabled("还没有调用: 外部 agent 经 py/agent.py run 交来的调用按批列在这里 (说明书 = 仓库 AGENT.md)");
   LabLive ll;
   x.live(ll);
   for (size_t r = tl.size(); r-- > 0;) {
     const Round &rd = tl[r];
     const bool last = r + 1 == tl.size();
-    const std::string head = "第 " + std::to_string(r + 1) + " 批 · " + std::to_string(rd.acts.size()) + " 个调用###mcp_r" + std::to_string(r);
+    const std::string head = "第 " + std::to_string(r + 1) + " 批 · " + std::to_string(rd.acts.size()) + " 个调用###remote_r" + std::to_string(r);
     if (!ImGui::CollapsingHeader(head.c_str(), last ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None))
       continue;
     for (size_t i = 0; i < rd.acts.size(); ++i) {
@@ -1779,7 +1779,7 @@ void mcp_panel(Ui &s) {
         ImGui::TextDisabled("%s · 排队", title.c_str());
       } else if (a.span.running()) {
         ImGui::TextColored(color(TaskStatus::Kind::Busy), "%s · 在跑 %.0f%%", title.c_str(), ll.frac * 100.0);
-      } else if (ImGui::TreeNodeEx((title + "###mcp_a" + std::to_string(r) + "_" + std::to_string(i)).c_str(), last ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None)) {
+      } else if (ImGui::TreeNodeEx((title + "###remote_a" + std::to_string(r) + "_" + std::to_string(i)).c_str(), last ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None)) {
         if (a.out.res)
           a.out.res->draw();
         else
@@ -1792,13 +1792,13 @@ void mcp_panel(Ui &s) {
 }
 
 // 过程 (本会话要求 + 全宽时间线 + 插话栏) / 假设板 / 候选表 / 特征表 / 算子表 (这三页不必开会话, 随作用域) / 工具表 (固定);
-// 刚进 Choose 切回过程并滚到底 (问题在那); 要跳到某个调用也切回过程; 回退确认框浮在页上; 外部 agent 锁着时只有 MCP 面板
+// 刚进 Choose 切回过程并滚到底 (问题在那); 要跳到某个调用也切回过程; 回退确认框浮在页上; 外部 agent 锁着时只有它的调用面板
 void render_mine(SharedData &data, Ui &s) {
-  if (s.mcp->locked()) {
-    mcp_panel(s);
+  if (s.remote->locked()) {
+    remote_panel(s);
     return;
   }
-  ImGui::TextDisabled("MCP %s 没被锁 (外部 agent 的头一个请求会替它锁上; 这里有会话开着 / 工作台在跑时它等着)", s.mcp->listen().c_str());
+  ImGui::TextDisabled("外部 agent 接口 %s 没被锁 (外部 agent 的头一个请求会替它锁上; 这里有会话开着 / 工作台在跑时它等着)", s.remote->listen().c_str());
   Mine &m = *s.mine;
   scope_row(data, s.opt.sc, s.pool_rows, m.lab, scope_locked(s), "1. Scope:");
   session_row(data, s);
@@ -2013,7 +2013,7 @@ TaskHandle CreateAgentTask() {
     handle.tabs.push_back(std::string("Tools/") + def(def(t).cat).en + "/" + pascal(def(t).id));
   handle.tabs.push_back("Config");
 
-  // 每帧 (无论是否选中): 收嗅探结果; 推进会话 (含评估队列与会话日志); 收工作台的后台结果; MCP 收请求、推进在跑的批
+  // 每帧 (无论是否选中): 收嗅探结果; 推进会话 (含评估队列与会话日志); 收工作台的后台结果; 外部 agent 接口收请求、推进在跑的批
   handle.Update = [state](SharedData &data) {
     Ui &s = *state;
     ensure(s);
@@ -2022,9 +2022,9 @@ TaskHandle CreateAgentTask() {
     s.mine->update();
     if (s.bench)
       s.bench->update();
-    const bool was = s.mcp->locked();
-    s.mcp->update(data, s.opt.sc, s.opt.gate, use_gpu(s), s.mine->held() || bench_busy(s));
-    if (was && !s.mcp->locked())
+    const bool was = s.remote->locked();
+    s.remote->update(data, s.opt.sc, s.opt.gate, use_gpu(s), s.mine->held() || bench_busy(s));
+    if (was && !s.remote->locked())
       take_back(data, s);
     save_ui(s);
   };
@@ -2048,8 +2048,8 @@ TaskHandle CreateAgentTask() {
       return s.bench && s.bench->running() == tool_of(idx) ? TaskStatus{TaskStatus::Kind::Busy, "running"} : TaskStatus{};
     if (idx != TAB_MINE)
       return {};
-    if (s.mcp->locked())
-      return {s.mcp->busy() ? TaskStatus::Kind::Busy : TaskStatus::Kind::Ready, "mcp"};
+    if (s.remote->locked())
+      return {s.remote->busy() ? TaskStatus::Kind::Busy : TaskStatus::Kind::Ready, "agent"};
     const Mine &m = *s.mine;
     if (m.phase() == Phase::Choose)
       return {TaskStatus::Kind::Warn, "answer"};
@@ -2077,8 +2077,8 @@ TaskHandle CreateAgentTask() {
       render_config(s);
       break;
     default:
-      if (s.mcp->locked()) {
-        wrapped(color(TaskStatus::Kind::Warn), "外部 agent 经 MCP 锁着 Agent 模块, 工作台禁用 (它调 unlock 才解; 它在做什么见 Mine 页)");
+      if (s.remote->locked()) {
+        wrapped(color(TaskStatus::Kind::Warn), "外部 agent 锁着 Agent 模块, 工作台禁用 (它调 unlock 才解; 它在做什么见 Mine 页)");
         break;
       }
       if (!s.bench)
@@ -2093,7 +2093,7 @@ TaskHandle CreateAgentTask() {
   handle.Destroy = [state]() {
     Ui &s = *state;
     s.sniff.quit();
-    s.mcp.reset(); // 析构: 未答的请求答 "程序在退出", 停网络线程
+    s.remote.reset(); // 析构: 未答的请求答 "程序在退出", 停网络线程
     s.bench.reset();
     s.mine.reset(); // 析构: 对话线程取消并 join, 评估 worker Stop
     s.seen_phase = Phase::None;

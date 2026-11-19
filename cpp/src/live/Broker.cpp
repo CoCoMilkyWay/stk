@@ -77,13 +77,13 @@ constexpr size_t idx(Part p) { return static_cast<size_t>(p); }
 
 } // namespace
 
-// mu: 发布的 State、进度、轮次与起因
+// mu: State 的底稿 (轮内逐样改) 与发布的一份 (轮末整份换上)、进度、轮次与起因
 struct Broker::Core {
   std::unique_ptr<Driver> d;
 
   mutable std::mutex mu;
   std::condition_variable cv;
-  std::shared_ptr<const State> st = std::make_shared<State>();
+  std::shared_ptr<const State> st = std::make_shared<State>(), shown = st;
   Refresh prog{.every = kEvery};
   bool stop = false;
   uint64_t asked[2] = {}, done[2] = {};  // 各范围 (下标 Part) 要过 / 刷完的轮号
@@ -107,9 +107,9 @@ struct Broker::Core {
     std::sort(kicks.begin(), kicks.end());
   }
 
-  // 改发布的 State (须持 mu)
+  // 改底稿 (须持 mu)
   template <class F>
-  void publish(F &&edit) {
+  void draft(F &&edit) {
     auto s = std::make_shared<State>(*st);
     edit(*s);
     st = std::move(s);
@@ -119,13 +119,13 @@ struct Broker::Core {
     prog.step = std::move(step);
   }
 
-  // 接上客户端; 换了进程即发布新的 who
+  // 接上客户端; 换了进程即记下新的 who
   void connect() {
     trace::Span span("接入");
     std::string who = d->connect();
     std::lock_guard lk(mu);
     if (who != st->who)
-      publish([&](State &x) { x.who = std::move(who); });
+      draft([&](State &x) { x.who = std::move(who); });
   }
   // 一次拉 / 写: 段 (who {kw}) + 接上客户端, 当前线程跑 fn
   template <class F>
@@ -156,14 +156,14 @@ struct Broker::Core {
     return std::nullopt;
   }
 
-  // 读一样、发布: fn() → 值
+  // 读一样、记进底稿: fn() → 值
   template <class T, class F>
   void put(Got<T> State::*g, F &&fn) {
     note(State::name(g));
     trace::Span span(State::name(g));
     auto v = std::make_shared<const T>(fn());
     std::lock_guard lk(mu);
-    publish([&](State &x) {
+    draft([&](State &x) {
       (x.*g).v = std::move(v);
       (x.*g).at = clock_now();
     });
@@ -221,6 +221,7 @@ struct Broker::Core {
       }
     }
     std::lock_guard lk(mu);
+    shown = st;
     if (part == Part::All) {
       last = Clock::now();
       done[idx(Part::All)] = n[idx(Part::All)];
@@ -254,7 +255,10 @@ Broker::~Broker() {
   c_->cv.notify_all();
 }
 
-std::shared_ptr<const State> Broker::state() const { return c_->snap(); }
+std::shared_ptr<const State> Broker::state() const {
+  std::lock_guard lk(c_->mu);
+  return c_->shown;
+}
 
 Refresh Broker::refresh() const {
   std::lock_guard lk(c_->mu);

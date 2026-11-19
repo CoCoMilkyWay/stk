@@ -22,10 +22,8 @@
 
 namespace cta {
 
-inline constexpr size_t kMinRoll = 20;   // 滚动调参窗下限 (日) = 一月
-inline constexpr size_t kMaxRoll = 2500; // 滚动调参窗上限 (日) = 十年
-inline constexpr size_t kRoll = 250;     // 滚动调参窗默认 (日) = 一年
-inline constexpr double kRidge = 1;      // 岭罚 λ (相对样本数; 坐标方差 ~0.4, 高次项方差更小、压得更狠)
+inline constexpr int kGrid = 20;    // 网格配置数默认 (Spec::grid)
+inline constexpr double kRidge = 1; // 岭罚 λ (相对样本数; 坐标方差 ~0.4, 高次项方差更小、压得更狠)
 
 // ---- 减仓线目标 ----
 
@@ -362,36 +360,51 @@ struct Grid {
   }
 };
 
+// 轴 a 的格点值 (轴的单位, 升序): 自 v0 向下 / 向上铺, 收进硬边界; v0 的下标 = 向下铺的个数
+inline std::vector<double> ticks_of(const Axis &a, int &below) {
+  assert(a.lo <= a.v0 && a.v0 <= a.hi && a.u > 0 && "参数轴: 中心在边界内, 单位为正");
+  std::vector<double> dn, up;
+  for (double v = a.v0, w; (w = std::min(v / kStep, v - a.u)) >= a.lo * (1 - 1e-9);)
+    dn.push_back(v = w);
+  for (double v = a.v0, w; (w = std::max(v * kStep, v + a.u)) <= a.hi * (1 + 1e-9);)
+    up.push_back(v = w);
+  below = static_cast<int>(dn.size());
+  std::vector<double> t(dn.rbegin(), dn.rend());
+  t.push_back(a.v0);
+  t.insert(t.end(), up.begin(), up.end());
+  return t;
+}
+
+// 网格配置数 n 分到模型各轴的格点数: 每次给格点最少 (未铺满整轴) 的轴加一个, 积不超过 n; 轴数之外 = 1
+inline At split(const Kind &model, size_t n) {
+  assert(n >= 1 && "网格配置数");
+  const size_t na = model.axes.size();
+  assert(na <= kAxes && "参数轴数");
+  At m, all;
+  m.fill(1), all.fill(1);
+  for (size_t k = 0; k < na; ++k) {
+    int below;
+    all[k] = ticks_of(model.axes[k], below).size();
+  }
+  for (size_t prod = 1;;) {
+    size_t a = na;
+    for (size_t b = 0; b < na; ++b)
+      if (m[b] < all[b] && (a == na || m[b] < m[a]))
+        a = b;
+    if (a == na || prod / m[a] * (m[a] + 1) > n)
+      break;
+    prod = prod / m[a] * (m[a] + 1), ++m[a];
+  }
+  return m;
+}
+
 // S = 每日根数, model = 模型, n = 网格配置数上限 (≥ 1)
 inline Grid grid_of(size_t S, const Kind &model, size_t n) {
-  assert(n >= 1 && "网格配置数");
-  const std::vector<Axis> &axes = model.axes;
-  assert(axes.size() <= kAxes && "参数轴数");
-  Grid g{.model = &model, .S = S, .na = axes.size()};
-  g.m.fill(1);
+  Grid g{.model = &model, .S = S, .na = model.axes.size(), .m = split(model, n)};
   for (size_t k = 0; k < g.na; ++k) {
-    const Axis *a = g.ax[k] = &axes[k];
-    assert(a->lo <= a->v0 && a->v0 <= a->hi && a->u > 0 && "参数轴: 中心在边界内, 单位为正");
-    std::vector<double> dn, up; // 自 v0 向下 / 向上
-    for (double v = a->v0, w; (w = std::min(v / kStep, v - a->u)) >= a->lo * (1 - 1e-9);)
-      dn.push_back(v = w);
-    for (double v = a->v0, w; (w = std::max(v * kStep, v + a->u)) <= a->hi * (1 + 1e-9);)
-      up.push_back(v = w);
-    g.lo[k] = -static_cast<int>(dn.size()), g.hi[k] = static_cast<int>(up.size());
-    std::vector<double> &t = g.val[k];
-    t.assign(dn.rbegin(), dn.rend());
-    t.push_back(a->v0);
-    t.insert(t.end(), up.begin(), up.end());
-  }
-  // 配置数分到各轴: 每次给格点最少 (未铺满整轴) 的轴加一个, 积不超过 n
-  for (size_t prod = 1;;) {
-    size_t a = g.na;
-    for (size_t b = 0; b < g.na; ++b)
-      if (g.m[b] < static_cast<size_t>(g.hi[b] - g.lo[b] + 1) && (a == g.na || g.m[b] < g.m[a]))
-        a = b;
-    if (a == g.na || prod / g.m[a] * (g.m[a] + 1) > n)
-      break;
-    prod = prod / g.m[a] * (g.m[a] + 1), ++g.m[a];
+    int below;
+    g.val[k] = ticks_of(*(g.ax[k] = &model.axes[k]), below);
+    g.lo[k] = -below, g.hi[k] = static_cast<int>(g.val[k].size()) - 1 - below;
   }
   At at{};
   do

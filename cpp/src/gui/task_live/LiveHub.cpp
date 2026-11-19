@@ -492,38 +492,46 @@ void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
 
   if (board_key_[0] != st_ || board_key_[1] != in.quotes) {
     board_key_[0] = st_, board_key_[1] = in.quotes;
-    board_ = BoardView{.quotes = in.quotes};
+    BoardView b{.st = st_, .quotes = in.quotes};
     try {
       if (!st.pos || !st.fills)
-        board_.wait = "还没读到持仓与成交 (等刷新)";
-      else if (!in.quotes || !(board_.frame = live::board::view(*st.pos, *st.fills, *in.quotes)))
-        board_.wait = "等行情";
+        b.wait = "还没读到持仓与成交 (等刷新)";
+      else if (!in.quotes || !(b.frame = live::board::view(*st.pos, *st.fills, *in.quotes)))
+        b.wait = "等行情";
     } catch (const live::Fail &e) {
-      board_.err = e.why;
+      b.err = e.why;
     }
+    if (b.wait.empty() || !board_.frame)
+      board_ = std::move(b);
+    else
+      board_.wait = std::move(b.wait);
   }
 
   if (plan_key_[0] != st_ || plan_key_[1] != in_) {
     plan_key_[0] = st_, plan_key_[1] = in_;
-    plan_ = PlanView{};
+    PlanView p;
     if (!in.terms)
-      plan_.wait = "两融条款还没拉过 (更新两融名单)";
+      p.wait = "两融条款还没拉过 (更新两融名单)";
     else if (!st.pos || !st.acct)
-      plan_.wait = "还没读到信用账户 (等刷新)";
+      p.wait = "还没读到信用账户 (等刷新)";
     else if (in.px_acct != st.acct.v || !in.quotes)
-      plan_.wait = "等账户各只的行情";
+      p.wait = "等账户各只的行情";
     else {
       try {
-        if (!(plan_.plan = live::rebal::plan(*st.pos, *st.acct, *in.px0, *in.quotes, *in.terms, in.codes, in.cfg)))
-          plan_.wait = "等行情";
+        if (!(p.plan = live::rebal::plan(*st.pos, *st.acct, *in.px0, *in.quotes, *in.terms, in.codes, in.cfg)))
+          p.wait = "等行情";
       } catch (const live::Fail &e) {
-        plan_.err = e.why;
+        p.err = e.why;
       }
     }
-    if (plan_.plan)
-      plan_.now = plan_.plan->now;
+    if (p.plan)
+      p.now = p.plan->now;
     else if (st.acct)
-      plan_.now = live::rebal::now_of(*st.acct);
+      p.now = live::rebal::now_of(*st.acct);
+    if (p.wait.empty() || !plan_.plan)
+      plan_ = std::move(p);
+    else
+      plan_.wait = std::move(p.wait);
   }
 }
 

@@ -41,7 +41,6 @@ bool CtaService::publish(const CtaRequest &req, std::string lack, std::shared_pt
 
 bool CtaService::run(CtaRequest &req) {
   const cta::Spec &sp = req.spec;
-  assert(sp.roll >= static_cast<int>(cta::kMinRoll) && sp.roll <= static_cast<int>(cta::kMaxRoll));
   assert(req.ref.ok() && req.dates && req.series && req.series->minute && "CTA 请求须有标的与其连分钟的全史");
   constexpr size_t S = Quote::kSlots;
   const std::vector<misc::Ymd> &spine = *req.dates;

@@ -35,12 +35,12 @@ GUI布局:
 
 ```
 stk/
-├── AGENT.md                                            # 🤖 外部 agent 说明书: 接入 (MCP / py/agent.py) / 锁 / 流程 / 口径 / 研究工具表 + GUI 内置会话的状态机
+├── AGENT.md                                            # 🤖 外部 agent 说明书: 接入 (py/agent.py) / 锁 / 流程 / 口径 / 研究工具表 + GUI 内置会话的状态机
 ├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + BUILD / CUDA 开关 → py/build.py (可选) → py/modes.py
 ├── py/                                                 # 🐍 Python 工具链
 │   ├── build.py                                        # 🐍 构建: CMake 配置 + 编译 (BUILD_MODE / GPU_BACKEND)
 │   ├── modes.py                                        # 🐍 运行: 五模式同签名 (tsan / debug / profile / assert / production)
-│   ├── agent.py                                        # 🐍 外部 agent 调研究工具的命令行 (一次 MCP 握手 + 一个 tools/call; 地址读 output/run/agent/mcp.json)
+│   ├── agent.py                                        # 🐍 外部 agent 调研究工具的命令行 (一个 POST {"tool", "args"} → {"ok", "text"}; 地址读 output/run/agent/remote.json)
 │   └── app/                                            # 🐍 cpp/ format · lint (clang-format / clangd)
 ├── cpp/
 │   ├── include/
@@ -293,7 +293,7 @@ stk/
 │   │   │   ├── account/
 │   │   │   │   ├── AccountHub.hpp                      # 💹 账户净值中枢 (Live 与 Market 共用): 随账本代重放 (拉归 LiveHub 事务道) / 拼账户的持仓 (券商实时持仓优先, 否则回放末日; Market 账户行的成分 / 当日四列) 与当日交给 QuoteHub (历史 = 价格库的账户侧; 当日 = 持仓 × 新浪分钟收)
 │   │   │   │   └── AccountSide.hpp                     # 💹 行情的账户一侧: 一日 day_of (持仓 × 分钟收 → 时间加权指数的逐槽点位 → 一日; 历史回放 / 当日同一核) + 账本回放 replay (价格库 worker 上调; 全史 = 紧凑形, 恒带分钟)
-│   │   │   └── task_agent/                             # 🤖 挖因子 (外部 agent 经 MCP / 内置 LLM 会话: 左翼 Chat 问模型 ↔ 右翼 Lab 问数据核; 说明书见 AGENT.md)
+│   │   │   └── task_agent/                             # 🤖 挖因子 (外部 agent 经 py/agent.py / 内置 LLM 会话: 左翼 Chat 问模型 ↔ 右翼 Lab 问数据核; 说明书见 AGENT.md)
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 + 常量占位表 kConsts (提示词模板与工具说明共用) / 入库门槛默认值 / 各目录
 │   │   │       ├── Enum.hpp                            # 🤖 枚举表 (一个枚举一行 AGENT_ROWS): def 取行 / kNum 个数 / kVals 序列 / Per<E,V> 定长表 / IdOf 反查; Named 枚举 JSON 一律写 id
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 码点 / 检索词过滤 / 数的写法 / 火花线 / Markdown 表格建表器 Table
@@ -308,9 +308,9 @@ stk/
 │   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw, Mine 与 Bench 同源共用) + 工作台 Bench (Agent → Tools, 主栏按类折叠一工具一页, 基于 Rig) + 控件 Widgets
 │   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 候选四拍 (stage / absorb / adopt / discard) + 单线程工作台 Lab (共享不可变 ViewEnv, Store 共用)
 │   │   │       ├── Prompt.hpp                          # 🤖 纯成文层: 提示词模板填充 + 工具结果成文 + 上下文纯函数 TurnsOf (研究树线性分桶收起)
-│   │   │       ├── Mcp.hpp                             # 🤖 MCP 服务 (本机 Streamable HTTP): doc / scope / run / wait / cancel / unlock → 自带 Rig 按批执行 (不查假设板, 真落记录 / 真入库); 头一个请求替 agent 锁上 Agent 模块
+│   │   │       ├── Remote.hpp                          # 🤖 外部 agent 接口 (本机 HTTP, py/agent.py 调): doc / scope / run / wait / cancel / unlock → 自带 Rig 按批执行 (不查假设板, 真落记录 / 真入库); 头一个请求替 agent 锁上 Agent 模块
 │   │   │       ├── Mine.hpp                            # 🤖 挖掘会话状态机 (Desk : Rig): 每帧对仗轮询 Chat / Lab; 停 / 续 / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
-│   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (外部 agent 锁着时 = 只读 MCP 面板; 没锁时 = 作用域 / 会话控制 / 时间线内嵌结构化图表 / 假设板 / 候选 / 记录处理 / 开放的特征与算子) / Tools / Config
+│   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (外部 agent 锁着时 = 只读调用面板; 没锁时 = 作用域 / 会话控制 / 时间线内嵌结构化图表 / 假设板 / 候选 / 记录处理 / 开放的特征与算子) / Tools / Config
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                           #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)

@@ -193,7 +193,7 @@ std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
   auto r = std::make_shared<TrialRes>();
   r->gate = s.gate;
   Cand cand{c.str("name"), c.str("name_cn"), c.str("expr"), c.str("hyp"), c.str("note")};
-  // 工作台 / MCP 不查假设 (板上没有也照回测)
+  // 工作台 / 外部 agent 不查假设 (板上没有也照回测)
   if (std::string miss = s.free ? std::string() : eval_miss(c, s.st.board, s.me.round); !miss.empty()) {
     r->st.cand = std::move(cand);
     r->st.res = {.name = r->st.cand.name, .name_cn = r->st.cand.name_cn, .tmpl = r->st.cand.expr, .note = r->st.cand.note, .error = std::move(miss), .verdict = Verdict::Unstaged, .visible = false};

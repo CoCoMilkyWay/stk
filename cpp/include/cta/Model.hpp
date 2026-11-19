@@ -32,11 +32,18 @@ namespace cta {
 using Col = std::vector<float>;
 
 inline constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
-inline constexpr size_t kBandDays = 250; // band 窗默认 (日; Spec::days)
+inline constexpr double kYearDays = 250; // 一年的交易日数 (窗以年设, 以日用)
+inline constexpr float kMinYears = 0.1f; // 窗下限 (年)
+inline constexpr float kMaxYears = 10;   // 窗上限 (年)
 inline constexpr int kUnits = 20;        // 满仓份数默认 (Rule::units)
 inline constexpr float kStop = 0.1f;     // 止损距默认 (Rule::stop)
 
 inline size_t len(float x) { return static_cast<size_t>(std::lround(x)); }
+// 窗 y 年 → 交易日 (≥ 2)
+inline size_t win_of(float y) {
+  assert(y >= kMinYears && y <= kMaxYears && "窗 (年)");
+  return std::max<size_t>(2, static_cast<size_t>(std::lround(y * kYearDays)));
+}
 
 // 一个资产的有效根 (跳过无数据的根)
 struct Series {
@@ -132,7 +139,7 @@ using Ax = std::array<T, kAxes>; // 各轴一个量 (轴序; 模型轴数之外 
 using P = Ax<float>;             // 一个模型的参数 (以根计)
 
 // ---- band ----
-//   价格单位, 日频: 日 d 盘中用前一交易日收盘时的值; 窗人设 (Spec::days), 不调
+//   价格单位, 日频: 日 d 盘中用前一交易日收盘时的值; 窗人设 (Spec::band_win), 不调
 
 // band 模型 (下标同 kBandKinds)
 enum : size_t { kAtr,

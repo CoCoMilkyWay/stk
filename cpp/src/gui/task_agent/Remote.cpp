@@ -1,5 +1,5 @@
-// Mcp — 见头文件
-#include "gui/task_agent/Mcp.hpp"
+// Remote — 见头文件
+#include "gui/task_agent/Remote.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
@@ -34,12 +34,11 @@ using tcp = boost::asio::ip::tcp;
 using json = nlohmann::ordered_json;
 using Clock = std::chrono::steady_clock;
 
-constexpr const char *kSession = "mcp";         // 全局记录的会话名
-constexpr const char *kProtocol = "2025-03-26"; // 客户端没报版本时回的 MCP 协议版本
-constexpr const char *kTools = "doc / scope / run / wait / cancel / unlock";
+constexpr const char *kSession = "remote";                                   // 全局记录的会话名
+constexpr const char *kNames = "doc / scope / run / wait / cancel / unlock"; // 本接口的工具
 constexpr const char *kLocked = "(已为你锁上 Agent 模块: 研究员在 GUI 里解不了锁, 也开不了会话、用不了工作台, 不会干扰你, 放心做. 用完调 unlock 交还; 程序重启即解锁)\n\n";
 
-// 一个 tools/call 的答复 (GUI 线程给, 网络线程写出)
+// 一个请求的答复 (GUI 线程给, 网络线程写出)
 struct Reply {
   bool error = false;
   std::string text;
@@ -51,50 +50,7 @@ struct Ask {
   Answer answer;
 };
 
-// ---- MCP 工具表 (tools/list) ----
-json schema(json props, std::initializer_list<const char *> required = {}) {
-  json s = {{"type", "object"}, {"properties", std::move(props)}, {"additionalProperties", false}};
-  for (const char *k : required)
-    s["required"].push_back(k);
-  return s;
-}
-
-json tools_json() {
-  const json job = {{"type", "integer"}, {"minimum", 1}, {"description", "作业号 = 批号 (run 交回的)"}};
-  json calls = {{"type", "array"},
-                {"minItems", 1},
-                {"maxItems", kMaxCalls},
-                {"description", "一批工具调用, 格式与 doc 里 \"回复协议\" 的 calls 相同, 按序执行"},
-                {"items", schema({{"tool", {{"type", "string"}}}, {"args", {{"type", "object"}}}}, {"tool"})}};
-  return json::array({
-      {{"name", "doc"},
-       {"description", "当前作用域的完整说明: 与 GUI 会话的差别 + 角色与做法 / 评估口径 / 判优 / 研究循环 / 回复协议 / 工具表 / 开放的特征叶与算子. 开工先读, 换作用域后再读"},
-       {"inputSchema", schema(json::object())}},
-      {{"name", "scope"},
-       {"description", "不给参数 = 看当前作用域与可选值; 给了 = 换作用域 (池 / 层 / 持有期 / 评估年数 / lob), 有批在跑时不能换"},
-       {"inputSchema", schema({{"pool", {{"type", "string"}, {"description", "股票池名"}}},
-                               {"level", {{"type", "string"}, {"description", "因子层: min / 5min / 15min / 30min / 60min / day"}}},
-                               {"hold", {{"type", "string"}, {"description", "持有期: 30m / 60m / close / T+1C (该层能搜的)"}}},
-                               {"years", {{"type", "integer"}, {"minimum", 1}, {"description", "评估期最近几年"}}},
-                               {"lob", {{"type", "boolean"}, {"description", "开放 lob (逐笔与盘口) 叶"}}}})}},
-      {{"name", "run"},
-       {"description", "交一批工具调用 (1.." + std::to_string(kMaxCalls) + " 个, eval_factor 至多 " + std::to_string(kBatch) +
-                           " 个), 按序执行; 参数不合整批退回不执行. " + std::to_string(kMcpWait) +
-                           " 秒内做完即交回全部结果原文 (调用编号 R<批>#<序>) + 假设板, 否则交回作业号与进度, 用 wait 续取"},
-       {"inputSchema", schema({{"calls", std::move(calls)}}, {"calls"})}},
-      {{"name", "wait"},
-       {"description", "续等一个作业: 做完交回全部结果原文 (同 run), 否则交回进度"},
-       {"inputSchema", schema({{"job", job}, {"seconds", {{"type", "integer"}, {"minimum", 1}, {"maximum", kMcpWaitMax}, {"description", "至多等几秒, 缺省 " + std::to_string(kMcpWait)}}}}, {"job"})}},
-      {{"name", "cancel"},
-       {"description", "取消在跑的作业: 在跑的调用作废 (落了文件的回测删掉候选), 没开的不执行; 交回已做完的结果"},
-       {"inputSchema", schema({{"job", job}}, {"job"})}},
-      {{"name", "unlock"},
-       {"description", "用完交还 Agent 模块给研究员 (头一个请求已自动替你锁上, 锁着时研究员在 GUI 里解不了); 有作业在跑时不能交还"},
-       {"inputSchema", schema(json::object())}},
-  });
-}
-
-// ---- 网络线程: Streamable HTTP (只 POST JSON-RPC, 回 application/json) ----
+// ---- 网络线程: POST {"tool", "args"} → {"ok", "text"} ----
 class Server;
 class Conn : public std::enable_shared_from_this<Conn> {
 public:
@@ -109,27 +65,18 @@ public:
 
 private:
   void handle();
-  void send(http::status st, std::string body) {
-    auto res = std::make_shared<http::response<http::string_body>>(st, req_.version());
-    if (!body.empty())
-      res->set(http::field::content_type, "application/json");
+  // 一律 200: 成败在 body 的 ok (请求本身不合也一样, 原因写 text)
+  void send(const Reply &r) {
+    auto res = std::make_shared<http::response<http::string_body>>(http::status::ok, req_.version());
+    res->set(http::field::content_type, "application/json");
     res->keep_alive(req_.keep_alive());
-    res->body() = std::move(body);
+    res->body() = json{{"ok", !r.error}, {"text", r.text}}.dump();
     res->prepare_payload();
+    // 写完: keep-alive 接着读下一个请求; 否则不再挂读, 连接随最后一个 shared_ptr 析构关掉
     http::async_write(s_, *res, [self = shared_from_this(), res](beast::error_code ec, size_t) {
-      if (ec)
-        return;
-      if (!res->keep_alive()) {
-        beast::error_code e;
-        self->s_.shutdown(tcp::socket::shutdown_send, e);
-        return;
-      }
-      self->read();
+      if (!ec && res->keep_alive())
+        self->read();
     });
-  }
-  void result(const json &id, json r) { send(http::status::ok, json{{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(r)}}.dump()); }
-  void error(const json &id, int code, const std::string &msg) {
-    send(http::status::ok, json{{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", msg}}}}.dump());
   }
 
   tcp::socket s_;
@@ -140,17 +87,14 @@ private:
 
 class Server {
 public:
-  explicit Server(std::function<void(Ask)> on) : addr_(std::string("http://") + kMcpHost + ":" + std::to_string(kMcpPort) + kMcpPath), on_(std::move(on)) {
-    const tcp::endpoint ep(net::ip::make_address(kMcpHost), static_cast<unsigned short>(kMcpPort));
-    beast::error_code ec;
-    acc_.open(ep.protocol(), ec);
-    if (!ec)
-      acc_.set_option(net::socket_base::reuse_address(true), ec);
-    if (!ec)
-      acc_.bind(ep, ec);
-    if (!ec)
-      acc_.listen(net::socket_base::max_listen_connections, ec);
-    assert(!ec && "MCP 端口监听失败 (另一个实例占着 kMcpPort?)");
+  explicit Server(std::function<void(Ask)> on)
+      : addr_(std::string("http://") + kRemoteHost + ":" + std::to_string(kRemotePort) + kRemotePath), on_(std::move(on)) {
+    const tcp::endpoint ep(net::ip::make_address(kRemoteHost), static_cast<unsigned short>(kRemotePort));
+    // 抛异常的重载: 端口被占 (另一个实例占着 kRemotePort) 即终止
+    acc_.open(ep.protocol());
+    acc_.set_option(net::socket_base::reuse_address(true));
+    acc_.bind(ep);
+    acc_.listen(net::socket_base::max_listen_connections);
     accept();
     th_ = std::thread([this] { ioc_.run(); });
   }
@@ -182,36 +126,13 @@ private:
 };
 
 void Conn::handle() {
-  if (std::string_view(req_.target().data(), req_.target().size()) != kMcpPath)
-    return send(http::status::not_found, {});
-  if (req_.method() != http::verb::post) // 不开 SSE 流 (GET) / 不管会话 (DELETE)
-    return send(http::status::method_not_allowed, {});
+  if (std::string_view(req_.target().data(), req_.target().size()) != kRemotePath || req_.method() != http::verb::post)
+    return send({true, std::string("只有 POST ") + kRemotePath});
   const json m = json::parse(req_.body(), nullptr, false);
-  if (m.is_discarded() || !m.is_object())
-    return error(nullptr, -32700, "请求不是 JSON 对象 (不收批量)");
-  if (!m.contains("id")) // 通知 / 客户端的回复
-    return send(http::status::accepted, {});
-  const json id = m["id"];
-  const std::string method = m.value("method", "");
-  const json params = m.contains("params") && m["params"].is_object() ? m["params"] : json::object();
-  if (method == "initialize")
-    return result(id, {{"protocolVersion", params.value("protocolVersion", kProtocol)},
-                       {"capabilities", {{"tools", {{"listChanged", false}}}}},
-                       {"serverInfo", {{"name", "stk"}, {"version", "1"}}},
-                       {"instructions", "A 股量化因子挖掘系统的工具 (doc / scope / run / wait / cancel / unlock). 先调 doc 读当前作用域的完整说明; 通用说明见仓库 AGENT.md. "
-                                        "头一个请求即替你锁上 Agent 模块 (研究员不会干扰), 用完调 unlock 交还"}});
-  if (method == "ping")
-    return result(id, json::object());
-  if (method == "tools/list")
-    return result(id, {{"tools", tools_json()}});
-  if (method != "tools/call")
-    return error(id, -32601, "没有方法 " + method);
-  const std::string name = params.value("name", "");
-  json args = params.contains("arguments") && params["arguments"].is_object() ? params["arguments"] : json::object();
-  srv_.call({name, std::move(args), [self = shared_from_this(), id](Reply r) {
-               self->srv_.post([self, id, r = std::move(r)] {
-                 self->result(id, {{"content", json::array({{{"type", "text"}, {"text", r.text}}})}, {"isError", r.error}});
-               });
+  if (m.is_discarded() || !m.is_object() || !m.contains("tool") || !m["tool"].is_string() || (m.contains("args") && !m["args"].is_object()))
+    return send({true, "请求须是 {\"tool\": 工具名, \"args\": {...}}"});
+  srv_.call({m["tool"].get<std::string>(), m.contains("args") ? m["args"] : json::object(), [self = shared_from_this()](Reply r) {
+               self->srv_.post([self, r = std::move(r)] { self->send(r); });
              }});
 }
 
@@ -237,7 +158,7 @@ std::string names_of(const std::vector<Choice> &cs) {
 
 } // namespace
 
-struct Mcp::Impl : Rig {
+struct Remote::Impl : Rig {
   Clock::time_point t0 = Clock::now();
   std::mutex mu;
   std::deque<Ask> asks;  // 网络线程入, GUI 线程出
@@ -286,7 +207,7 @@ struct Mcp::Impl : Rig {
         continue;
       }
       if (t->out.cancelled) {
-        abort_act(i, now());
+        abort_act(i, now(), "你");
       } else {
         Seat s = seat_at(i);
         settle_act(i, std::move(t->out.out), s, now());
@@ -301,7 +222,7 @@ struct Mcp::Impl : Rig {
     while (!j.running && j.next < acts.size()) {
       Seat s = seat_at(j.next);
       const Exec at = open_act(j.next, s, now());
-      assert(at != Exec::Human && "MCP 不开 ask_human");
+      assert(at != Exec::Human && "外部 agent 没有 ask_human");
       if (at == Exec::Sync)
         ++j.next;
       else
@@ -318,7 +239,7 @@ struct Mcp::Impl : Rig {
     assert(!jobs.empty() && !jobs.back().done);
     Job &j = jobs.back();
     if (j.running) {
-      abort_act(*j.running, now());
+      abort_act(*j.running, now(), "你");
       j.next = *j.running + 1, j.running.reset();
     }
     const size_t total = timeline.back().acts.size();
@@ -352,17 +273,17 @@ struct Mcp::Impl : Rig {
 
   std::string doc_text(const Scope &sc) const {
     const Context &c = lab.ctx();
-    return "# MCP 会话 (随作用域; 通用说明见仓库 AGENT.md)\n\n"
+    return "# 外部 agent 会话 (随作用域; 通用说明见仓库 AGENT.md)\n\n"
            "- 作用域: " +
            catalog::label(sc) + " · 近 " + std::to_string(sc.years) + " 年 (" + c.window + ") · 特征来源 " + c.srcs + " · 入库门槛 中位 rIC ≥ " + text::num(gate.ric) +
-           "\n- 本 MCP 会话已有 " + std::to_string(round()) + " 批调用, 假设板 " + std::to_string(st.board.all().size()) +
+           "\n- 本会话已有 " + std::to_string(round()) + " 批调用, 假设板 " + std::to_string(st.board.all().size()) +
            " 条\n"
            "- 你经 run 交一批调用, 格式即下文 \"回复协议\" 里的 {\"calls\": [...]} (只交 calls 数组); 结果原文同下文 \"结果\", 调用编号 R<批>#<序> 沿本会话往下记, judge 的证据照样引用它\n"
            "- 与下文 GUI 会话的差别: 没有会话约束 (eval_factor 的 hyp 可不在假设板上, 回测后不强制先诊断、不强制 judge 待判的, 但研究循环照样是正确的做法); "
            "没有 ask_human 与 finish (要问研究员写 report_issue); 上下文 / 研究树不适用 (结果只在 run / wait 里给一次, 自己记); "
            "submit_factor 达门槛即真入正式库, 全局记录真写\n"
            "- 长调用 (eval_factor / 观察) " +
-           std::to_string(kMcpWait) + " 秒内没做完, run 先交回作业号, 用 wait 续取, cancel 取消; 一次只跑一批\n- Agent 模块已替你锁上, 研究员不会干扰; 用完调 unlock 交还\n\n" +
+           std::to_string(kRemoteWait) + " 秒内没做完, run 先交回作业号, 用 wait 续取, cancel 取消; 一次只跑一批\n- Agent 模块已替你锁上, 研究员不会干扰; 用完调 unlock 交还\n\n" +
            SystemMessage(c, gate, false).text;
   }
 
@@ -398,11 +319,11 @@ struct Mcp::Impl : Rig {
         cancel_job();
         return a.answer({false, "已取消\n\n" + jobs.back().text});
       }
-      int sec = kMcpWait;
+      int sec = kRemoteWait;
       if (x.contains("seconds")) {
         if (!x["seconds"].is_number_integer())
           return fail("seconds 须是整数");
-        sec = std::clamp(x["seconds"].get<int>(), 1, kMcpWaitMax);
+        sec = std::clamp(x["seconds"].get<int>(), 1, kRemoteWaitMax);
       }
       waiters.push_back({k, now() + sec, std::move(a.answer)});
       return;
@@ -419,7 +340,7 @@ struct Mcp::Impl : Rig {
       return scope(data, sc, std::move(a));
     if (a.tool == "run")
       return run(std::move(a));
-    fail("没有工具 " + a.tool + " (只有 " + kTools + ")");
+    fail("没有工具 " + a.tool + " (只有 " + kNames + ")");
   }
 
   void scope(const SharedData &data, Scope &sc, Ask a) {
@@ -476,13 +397,13 @@ struct Mcp::Impl : Rig {
     if (!a.args.contains("calls") || !ParseCalls(json{{"calls", a.args["calls"]}}.dump(), false, cs, err))
       return a.answer({true, "整批退回 (一个都没执行), 不合处:\n" + (err.empty() ? std::string("缺 calls") : err)});
     if (std::ranges::any_of(cs, [](const Call &c) { return c.tool == Tool::Finish; }))
-      return a.answer({true, "整批退回 (一个都没执行): MCP 会话没有 finish, 去掉它"});
+      return a.answer({true, "整批退回 (一个都没执行): 外部 agent 会话没有 finish, 去掉它"});
     Round rd{.kind = Msg::Round};
     for (Call &c : cs)
       rd.acts.push_back({.call = std::move(c)});
     timeline.push_back(std::move(rd));
     jobs.emplace_back();
-    waiters.push_back({round(), now() + kMcpWait, std::move(a.answer)});
+    waiters.push_back({round(), now() + kRemoteWait, std::move(a.answer)});
     step();
   }
 
@@ -498,16 +419,16 @@ struct Mcp::Impl : Rig {
   }
 };
 
-Mcp::Mcp() : impl_(std::make_unique<Impl>()) {
+Remote::Remote() : impl_(std::make_unique<Impl>()) {
   Impl &m = *impl_;
   m.server = std::make_unique<Server>([&m](Ask a) {
     std::lock_guard<std::mutex> lock(m.mu);
     m.asks.push_back(std::move(a));
   });
-  disk::write(disk::RunAgentMcp, {}, json{{"url", m.server->listen()}}.dump(2));
+  disk::write(disk::RunAgentRemote, {}, json{{"url", m.server->listen()}}.dump(2));
 }
 
-Mcp::~Mcp() {
+Remote::~Remote() {
   Impl &m = *impl_;
   {
     std::lock_guard<std::mutex> lock(m.mu);
@@ -521,7 +442,7 @@ Mcp::~Mcp() {
   m.server.reset();
 }
 
-void Mcp::update(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool human) {
+void Remote::update(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool human) {
   Impl &m = *impl_;
   m.gate = gate, m.gpu = gpu;
   m.step();
@@ -535,10 +456,10 @@ void Mcp::update(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool h
   m.answer_waiters();
 }
 
-bool Mcp::locked() const { return impl_->locked; }
-bool Mcp::busy() const { return impl_->busy(); }
-const std::string &Mcp::listen() const { return impl_->server->listen(); }
-const std::vector<Round> &Mcp::timeline() const { return impl_->timeline; }
-void Mcp::live(LabLive &dst) const { impl_->lab.live(dst); }
+bool Remote::locked() const { return impl_->locked; }
+bool Remote::busy() const { return impl_->busy(); }
+const std::string &Remote::listen() const { return impl_->server->listen(); }
+const std::vector<Round> &Remote::timeline() const { return impl_->timeline; }
+void Remote::live(LabLive &dst) const { impl_->lab.live(dst); }
 
 } // namespace GUI::Agent

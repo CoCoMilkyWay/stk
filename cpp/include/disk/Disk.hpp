@@ -23,7 +23,7 @@
 //   features/    ② 特征 ← data              run/features/   计算日志 / 节点用时 (同 <池>/<档>)
 //   factors/     ③ 因子 ← features          run/factors/    Search 日志 / Inspect 导出 (同 <池>/<层>) + 算子表
 //   portfolios/  ④ 组合 ← factors
-//   agent/       ③ 的旁路: 挖候选 → 入库      run/agent/      Search 日志 (同会话作用域) + MCP 监听地址 mcp.json
+//   agent/       ③ 的旁路: 挖候选 → 入库      run/agent/      Search 日志 (同会话作用域) + 外部 agent 接口的地址 remote.json
 //   live/        实盘: 两融条款缓存          run/live/       事务日志 + 客户端适配的运行产物 (<客户端>/: 注入件构建 / 录制 / 交互日志)
 //                                           run/app/        进程级: TSan 报告 / 崩溃栈
 //
@@ -200,7 +200,7 @@ enum class Seg : std::uint8_t {
   X(RunExport,         RunFactorLevel,    Dir,    Lit,       "export",            "",         false)       \
   X(RunExportFile,     RunExport,         File,   Export,    "",                  ".csv",     false)       \
   X(RunAgent,          Run,               Dir,    Lit,       "agent",             "",         false)       \
-  X(RunAgentMcp,       RunAgent,          File,   Lit,       "mcp.json",          "",         false)       \
+  X(RunAgentRemote,    RunAgent,          File,   Lit,       "remote.json",       "",         false)       \
   X(RunAgentMode,      RunAgent,          Dir,    Mode,      "",                  "",         false)       \
   X(RunAgentSessions,  RunAgentMode,      Dir,    Lit,       "sessions",          "",         false)       \
   X(RunAgentPool,      RunAgentSessions,  Dir,    Pool,      "",                  "",         false)       \

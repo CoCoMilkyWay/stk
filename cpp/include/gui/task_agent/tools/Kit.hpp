@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Kit — 时间线、单趟增量账本、工具三拍契约与统一执行器 Rig: 活会话 (Mine) / 工作台 (Bench) / MCP (Mcp) 100% 同构同路
+// Kit — 时间线、单趟增量账本、工具三拍契约与统一执行器 Rig: 活会话 (Mine) / 工作台 (Bench) / 外部 agent (Remote) 100% 同构同路
 // =============================================================================
 //   时间线与账本:
 //     Round / Act     全会话唯一真相 (Act 仅持 Call + Span + ToolOut, 无旁路 Extra; Res 即唯一结构化载体)
@@ -135,7 +135,7 @@ struct Seat {
   Rounds timeline; // 末轮 = 本调用所在轮
   Ref me;          // 本调用的编号
   std::string scope, session;
-  bool free = false; // 不查假设板 (eval_factor 不必挂判为支持的假设): 工作台 / MCP
+  bool free = false; // 不查假设板 (eval_factor 不必挂判为支持的假设): 工作台 / 外部 agent
   bool dry = false;  // 不落记录: 全局记录只给编号不写, submit_factor 只查门槛不入库 (工作台)
   bool gpu = false;  // eval_factor 的回测上 GPU
 };
@@ -150,7 +150,7 @@ struct StagedLab {
 using HumanFn = ToolOut (*)(std::shared_ptr<AskRes>);
 using ImplFn = std::variant<SyncFn, LabFn, StagedLab, HumanFn>;
 
-// ---- 统一调用底座 Rig (Mine / Bench / Mcp 共用) ----
+// ---- 统一调用底座 Rig (Mine / Bench / Remote 共用) ----
 struct Rig {
   Lab lab;
   Notes notes;
@@ -170,7 +170,7 @@ struct Rig {
   void step_act(size_t i, LabStep step, double t);
   void settle_act(size_t i, ToolOut out, Seat &s, double t);
   void answer_act(size_t i, double t);
-  void abort_act(size_t i, double t);
+  void abort_act(size_t i, double t, std::string_view who = "研究员"); // who = 谁取消的 (写进结果)
 };
 
 // ---- 随机输入的取材 ----

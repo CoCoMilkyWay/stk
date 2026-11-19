@@ -39,7 +39,7 @@ std::string GateLine(const Result &r, const Gate &g);                // 有权�
 std::string ListTail(int all, int skip, int n);                      // 分页列表末尾: 共几个 / 这是第几到第几 / 接着看的 skip
 
 std::string CallTitle(const Act &a, Ref r);
-std::string ResultsText(const std::vector<Act> &acts, int round); // 一轮各调用的结果原文 (标题 = 调用编号 + 调用; round 消息与 MCP 同一份)
+std::string ResultsText(const std::vector<Act> &acts, int round); // 一轮各调用的结果原文 (标题 = 调用编号 + 调用; round 消息与外部 agent 同一份)
 std::string AnswerText(const Asked &a);
 
 // ---- 消息组装与上下文纯函数 ----
