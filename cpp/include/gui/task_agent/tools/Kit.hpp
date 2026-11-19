@@ -178,8 +178,10 @@ struct Spot {
 };
 
 struct Feed {
+  const Lab &lab;
   const Context &ctx;
   const std::vector<Result> &tried;
+  const Gate &gate;
   const Board &board;
   Rounds timeline;
   Ref me;
@@ -193,6 +195,7 @@ struct Feed {
   }
   std::string leaf();                                       // 开放的叶
   std::vector<std::string> leaves(int n);                   // 至多 n 个互不相同的开放的叶
+  std::vector<std::string> grid();                          // 开放的本层叶 (因子须含本层的叶)
   std::string factor();                                     // 可见且有权重 / 代表点的候选名; 没有就拿开放的本层叶套开放的归一根
   std::string day();                                        // 评估期内的交易日 YYYY-MM-DD
   std::pair<std::string, std::string> span(int lo, int hi); // 评估期内连续 lo..hi 个交易日的首末日
@@ -200,7 +203,7 @@ struct Feed {
   std::string clock();                                      // 本层某一行的行末时刻 (不含竞价行; 日层空)
   std::string tod(int cap, const std::string &around = {}); // 本层连续 1..cap 行的行末时段 HH:MM-HH:MM (给了 around 就罩住它; 日层空)
   Spot spot();                                              // 一只当日有逐笔的票的一天: 多半取工作台里 view_trades 明细列过的段
-  std::string hyp(bool supported);                          // 假设板上的编号 (supported: 判为支持且变体有余的优先); 板空给 H1
+  std::string hyp(bool supported);                          // 假设板上的编号 (supported: 能挂变体的优先 = 判为支持、变体有余、没有别轮待判的); 板空给 H1
   std::vector<std::string> refs(int n);                     // 做成了的调用编号 (新到旧)
 };
 nlohmann::ordered_json SampleArgs(Tool t, Feed &p);

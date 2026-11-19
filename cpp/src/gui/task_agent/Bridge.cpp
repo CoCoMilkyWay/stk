@@ -562,6 +562,39 @@ struct Lab::Impl {
     sort_results(results);
     env_cache.reset();
   }
+
+  // 落文件前的全部查验 (空 = 可落); e = 解析好的式
+  std::string vet(const Cand &c, fx::Expr &e) const {
+    if (!Engine::ValidFactorName(c.name))
+      return "英文名不合规则: 仅 [A-Za-z0-9_], ≤ 64";
+    if (!Engine::ValidFactorNameCn(c.name_cn))
+      return "中文名不合规则: 1..10 个汉字, 不含字母数字标点";
+    for (const Result &r : results)
+      if (r.name == c.name)
+        return "候选英文名 `" + c.name + "` 已用过, 换个名字";
+    for (const Result &r : context.library)
+      if (r.name == c.name)
+        return "名字 `" + c.name + "` 与正式因子库重名, 换个名字";
+
+    const std::shared_ptr<const Engine::FeatureTable> t = ft();
+    fs::Frame frame = fs::Frame::CS;
+    std::string err;
+    if (!fx::parse(c.expr, t->lookup(), t->seg, e, err) || !fx::root_frame(e, t->seg, frame, err) || !t->check_grid(e, err))
+      return err;
+    if (std::string cl = open.closed_err(*t, e); !cl.empty())
+      return cl;
+    if (e.n_ops > kMaxOps)
+      return "算子节点 " + std::to_string(e.n_ops) + " 个 > 上限 " + std::to_string(kMaxOps) + " (精简结构, 建议 " + std::to_string(kGoodOps) + " 个以内)";
+
+    const std::string tw = twin_of_expr(e);
+    for (const Result &r : results)
+      if (r.visible && r.twin == tw)
+        return "与已试候选 `" + r.name + "` 同式" + (r.tmpl == e.canon ? "" : " (只换了截面根 CsRank / CsNormRank / CsZ: 分组与 rIC 完全一样)");
+    for (const Result &r : context.library)
+      if (r.visible && r.twin == tw)
+        return "与正式库因子 `" + r.name + "` 同式" + (r.tmpl == e.canon ? "" : " (只换了截面根 CsRank / CsNormRank / CsZ)");
+    return {};
+  }
 };
 
 Engine::FactorScope FactorScopeOf(const Lab &lab, bool gpu) { return lab.impl().factor_scope(gpu); }
@@ -675,6 +708,12 @@ std::string Lab::search_log(const std::string &file) const {
   return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
 
+std::string Lab::vet(const Cand &c) const {
+  assert(impl_->data);
+  fx::Expr e;
+  return impl_->vet(c, e);
+}
+
 Staged Lab::stage(Cand c, std::string_view hyp_title) {
   assert(impl_->data && !busy());
   const auto bad = [&](std::string why) {
@@ -682,38 +721,12 @@ Staged Lab::stage(Cand c, std::string_view hyp_title) {
     s.res = {.name = s.cand.name, .name_cn = s.cand.name_cn, .tmpl = s.cand.expr, .note = s.cand.note, .error = std::move(why), .verdict = Verdict::Unstaged, .visible = false};
     return s;
   };
-  if (!Engine::ValidFactorName(c.name))
-    return bad("英文名不合规则: 仅 [A-Za-z0-9_], ≤ 64");
-  if (!Engine::ValidFactorNameCn(c.name_cn))
-    return bad("中文名不合规则: 1..10 个汉字, 不含字母数字标点");
-  for (const Result &r : impl_->results)
-    if (r.name == c.name)
-      return bad("候选英文名 `" + c.name + "` 已用过, 换个名字");
-  for (const Result &r : impl_->context.library)
-    if (r.name == c.name)
-      return bad("名字 `" + c.name + "` 与正式因子库重名, 换个名字");
-
-  const std::shared_ptr<const Engine::FeatureTable> ft = impl_->ft();
   fx::Expr e;
-  fs::Frame frame = fs::Frame::CS;
-  std::string err;
-  if (!fx::parse(c.expr, ft->lookup(), ft->seg, e, err) || !fx::root_frame(e, ft->seg, frame, err) || !ft->check_grid(e, err))
-    return bad(std::move(err));
-  if (std::string cl = impl_->open.closed_err(*ft, e); !cl.empty())
-    return bad(std::move(cl));
-  if (e.n_ops > kMaxOps)
-    return bad("算子节点 " + std::to_string(e.n_ops) + " 个 > 上限 " + std::to_string(kMaxOps) + " (精简结构, 建议 " + std::to_string(kGoodOps) + " 个以内)");
-
-  const std::string tw = twin_of_expr(e);
-  for (const Result &r : impl_->results)
-    if (r.visible && r.twin == tw)
-      return bad("与已试候选 `" + r.name + "` 同式" + (r.tmpl == e.canon ? "" : " (只换了截面根 CsRank / CsNormRank / CsZ: 分组与 rIC 完全一样)"));
-  for (const Result &r : impl_->context.library)
-    if (r.visible && r.twin == tw)
-      return bad("与正式库因子 `" + r.name + "` 同式" + (r.tmpl == e.canon ? "" : " (只换了截面根 CsRank / CsNormRank / CsZ)"));
-
+  if (std::string why = impl_->vet(c, e); !why.empty())
+    return bad(std::move(why));
   const std::string full_note = c.hyp + (hyp_title.empty() ? "" : " " + std::string(hyp_title)) + " · " + c.note;
-  const std::string file = Engine::AddFactorFile(impl_->dir, *ft, c.name, c.name_cn, e.canon, full_note, err);
+  std::string err;
+  const std::string file = Engine::AddFactorFile(impl_->dir, *impl_->ft(), c.name, c.name_cn, e.canon, full_note, err);
   if (file.empty())
     return bad(std::move(err));
   impl_->fails.erase(file);

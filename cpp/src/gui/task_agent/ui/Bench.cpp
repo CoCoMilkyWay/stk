@@ -86,10 +86,10 @@ struct Bench::Impl : Rig {
     args[tool] = x.args, raw[tool] = x.args.dump(2), json_err.clear();
   }
 
-  Feed feed() { return {lab.ctx(), lab.results(), st.board, timeline, {round(), static_cast<int>(acts().size()) + 1}, rng}; }
+  Feed feed(const Gate &g) { return {lab, lab.ctx(), lab.results(), g, st.board, timeline, {round(), static_cast<int>(acts().size()) + 1}, rng}; }
 
-  void sample() {
-    Feed f = feed();
+  void sample(const Gate &g) {
+    Feed f = feed(g);
     args[tool] = SampleArgs(tool, f);
     raw[tool] = args[tool].dump(2);
     json_err.clear();
@@ -288,7 +288,7 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   // ---- 当前输入对应的调用: 校验 + 工作台里跑过同样参数的最近一次 (在问研究员的 ask_human 恒是它) ----
   json &in = b.args[b.tool];
   if (in.is_null())
-    b.sample();
+    b.sample(gate);
   std::vector<std::string> errs;
   Call cur;
   const bool valid = b.json_err.empty() && CallOf(b.tool, in, "args", cur, errs);
@@ -308,8 +308,9 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   ImGui::TextColored(kColHead, "输入");
   ImGui::SameLine();
   if (ImGui::SmallButton("随机"))
-    b.sample();
-  tip("按本作用域取材出一组用得上的参数: 开放的叶 / 候选名 (没有就拿本层的叶套开放的归一根) / 本层的行与时段 / 当日有逐笔的票 (工作台里 view_trades 列过的段优先) / 假设板");
+    b.sample(gate);
+  tip("按本作用域取材出一组用得上的参数: 开放的叶 / 候选名 (没有就拿本层的叶套开放的归一根) / 本层的行与时段 / 当日有逐笔的票 (工作台里 view_trades 列过的段优先) / 假设板 (回测挂能挂变体的) / "
+      "回测的模板过落文件的全部查验 (本层叶 · 开放算子 · 不与已试同式 · 名字未用) / 提交取达门槛的候选");
   ImGui::SameLine();
   if (ImGui::Checkbox("JSON", &b.json_mode))
     b.raw[b.tool] = in.dump(2), b.json_err.clear();

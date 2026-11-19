@@ -23,12 +23,14 @@ ToolOut SubmitFactor(const Call &c, Seat &s) {
   return Done(std::move(r), ok);
 }
 
+// 达门槛的可见候选; 没有就退到有权重的 (会给出差在哪)
 json SampleSubmitFactor(Feed &p) {
-  std::vector<std::string> names;
+  std::vector<std::string> pass, near;
   for (const Result &r : p.tried)
     if (r.visible && r.best())
-      names.push_back(r.name);
-  return {{"name", names.empty() ? std::string("bench_0") : p.one(names)}};
+      (GateMiss(p.gate, r).empty() ? pass : near).push_back(r.name);
+  const std::vector<std::string> &v = pass.empty() ? near : pass;
+  return {{"name", v.empty() ? std::string("bench_0") : p.one(v)}};
 }
 
 } // namespace GUI::Agent

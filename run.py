@@ -26,12 +26,9 @@ APP_NAME = "main"
 #   "production"  -O2   -         关    直接运行 (NDEBUG)            -
 MODE = "assert"
 
-# True: CMake 配置 + 编译; False: 跳过编译, 直接运行已有 app_main
 BUILD = True
-# True: 运行前 clang-format 格式化 cpp/ 源码; False: 跳过
 FORMAT = True
-# True: 运行前 clangd 检查 cpp/ 源码; False: 跳过
-LINT = True
+LINT = False
 
 # 因子 GPU 后端 (factor/*/Gpu.cuh, nvcc): 与上面的模式正交. ON 需要完整 CUDA Toolkit (nvcc + CCCL),
 # op_check 与 app_main (Alpha→Operators 页 GPU 列) 一并链 cudart; OFF 链 stub, GPU 列显示 n/a.

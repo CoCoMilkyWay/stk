@@ -251,14 +251,13 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
 
   const int action = head(page, svc, pf, ui, d, res, message, fixed_impact);
 
-  // ---- 布局 (PageLayout): 左 = [日内栏 (开日内, 切 1/3 高)] / 主图 (NAV ↔ VAL) / 区间条 自上而下 | 只一张叠加图 | CTA 两图 + 中栏;
+  // ---- 布局 (PageLayout): 左 = [日内栏 (开日内, 切 1/3 高)] / 主图 (NAV ↔ VAL) / 区间条 自上而下 | 只一张叠加图 | CTA 两图 + 区间条 + 中栏;
   //      最右 = 右图例 (各页同宽 sheet_width; CTA = 中栏与右表各半) ----
-  constexpr float kBarH = 90.0f;
   const ImGuiStyle &st = ImGui::GetStyle();
   const ImVec2 av = ImGui::GetContentRegionAvail();
   const float lw = sheet_width(av.x);
   const float left = av.x - lw - st.ItemSpacing.x;
-  const float ph = av.y - kBarH - st.ItemSpacing.y;
+  const float ph = av.y - kRangeH - st.ItemSpacing.y;
   const float ih = pd.overlay != kOverlayNone && ui.intraday ? std::floor((ph - st.ItemSpacing.y) / 3.0f) : 0.0f;
   // 选中的有行情键的行 (篮子 / 成分 / 账户) 的行情叠加图 (日内栏 / FLOW 同一份选中, 线色 = 主图的), 贴边占满 size
   // 悬停联动 (ui.hover): 各图 (日内栏 / FLOW 图的条按行 id 对上) → 右表
@@ -295,7 +294,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
     if (ih > 0.0f)
       overlay_child("##pf_overlay", ImVec2(left, ih), pd.overlay);
     RenderLinesPlot(ui, page, pin, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph)); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
-    RenderLinesRange(ui, page, pin, ImVec2(left, kBarH));
+    RenderLinesRange(ui, page, pin, ImVec2(left, kRangeH));
     ImGui::EndGroup();
     break;
   case kLayoutOverlay:

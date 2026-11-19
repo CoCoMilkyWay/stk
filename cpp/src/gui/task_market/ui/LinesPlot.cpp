@@ -844,10 +844,13 @@ void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2
   const LinesDerived &d = ui.der.val;
   const bool nav = page == kPageNav;
   const int D = static_cast<int>(d.dates.size());
+  push_range_style();
   if (!ImPlot::BeginPlot("##pf_range", size,
-                         ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText))
+                         ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText)) {
+    ImPlot::PopStyleVar();
     return;
-  ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_None, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
+  }
+  ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoTickLabels, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
   if (D > 0)
     ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, x_of(d.dates.size(), kOpen), ImPlotCond_Always);
   DayAxis ax = day_axis(d.dates);
@@ -859,8 +862,10 @@ void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2
                                                                            : none;
   ImPlot::SetNextLineStyle(nav || pin.g < 0 ? kStratCol : row_color(d, pin, kTrade), 1.0f);
   ImPlot::PlotLineG("##pf_range_line", day_end_pt, const_cast<Line *>(&rc), static_cast<int>(rc.e.size()));
+  x_ticks_inside();
   range_bar(ui.range[page], d.dates, static_cast<double>(kDayW));
   ImPlot::EndPlot();
+  ImPlot::PopStyleVar();
 }
 
 } // namespace GUI::Market

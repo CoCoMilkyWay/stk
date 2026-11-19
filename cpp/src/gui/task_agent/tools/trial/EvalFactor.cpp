@@ -258,14 +258,36 @@ void CloseEvalFactor(Act &a, ToolOut out, Seat &s) {
   a.out = Done(std::move(r), ok);
 }
 
+// 模板 = 归一根 (窗口统计 (本层叶, 裸 d)); 随机拼到过 stage 的全部查验为止 (试满 kSampleTries 次仍不过就交末一个, 原因见回测结果)
 json SampleEvalFactor(Feed &p) {
-  const std::string leaf = p.leaf();
-  const bool ts = std::any_of(p.ctx.ops.begin(), p.ctx.ops.end(), [](const Op &o) { return o.name == "TsMeanRoll"; });
-  return {{"name", "bench_" + std::to_string(p.below(100000))},
-          {"name_cn", "工作台试样"},
-          {"expr", ts ? "CsRank(TsMeanRoll(" + leaf + ", d))" : "CsRank(" + leaf + ")"},
-          {"hyp", p.hyp(true)},
-          {"note", "工作台试样: 检验 " + leaf + " 的截面排序"}};
+  constexpr int kSampleTries = 64;
+  constexpr std::string_view kRoots[] = {"CsRank", "CsNormRank", "CsZ", "TsRankRoll"};
+  constexpr std::string_view kWraps[] = {"TsMeanRoll", "TsStdRoll", "TsSumRoll", "TsDeltaRoll", "TsMaxRoll", "TsMinRoll", "TsSlopeRoll", "TsZRoll", "TsWmaRoll", "TsSkewRoll"};
+  const auto open = [&](std::string_view n) { return std::ranges::any_of(p.ctx.ops, [&](const Op &o) { return o.name == n; }); };
+  std::vector<std::string_view> roots, wraps{std::string_view()};
+  for (const std::string_view r : kRoots)
+    if (open(r))
+      roots.push_back(r);
+  for (const std::string_view w : kWraps)
+    if (open(w))
+      wraps.push_back(w);
+  if (roots.empty())
+    roots.push_back(kRoots[0]);
+  std::vector<std::string> leaves = p.grid();
+  if (leaves.empty())
+    leaves.push_back(p.leaf());
+  Cand c{.name_cn = "工作台试样", .hyp = p.hyp(true)};
+  for (int i = 0; i < kSampleTries; ++i) {
+    const std::string &x = p.one(leaves);
+    const std::string_view w = p.one(wraps), r = p.one(roots);
+    const bool ts = r == "TsRankRoll";
+    c.name = "bench_" + std::to_string(p.below(1000000));
+    c.expr = std::string(r) + "(" + (w.empty() ? x : std::string(w) + "(" + x + ", d)") + (ts ? ", d=" + std::to_string(p.ctx.ts_root_d) : "") + ")";
+    c.note = "工作台试样: 检验 " + x + (w.empty() ? "" : " 的 " + std::string(w)) + " 的" + (ts ? "时序" : "截面") + "排序";
+    if (p.lab.vet(c).empty())
+      break;
+  }
+  return {{"name", c.name}, {"name_cn", c.name_cn}, {"expr", c.expr}, {"hyp", c.hyp}, {"note", c.note}};
 }
 
 } // namespace GUI::Agent

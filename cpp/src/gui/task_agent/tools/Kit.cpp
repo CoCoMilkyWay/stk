@@ -322,6 +322,14 @@ std::vector<std::string> Feed::leaves(int n) {
   return v;
 }
 
+std::vector<std::string> Feed::grid() {
+  std::vector<std::string> v;
+  for (const Leaf &l : ctx.leaves)
+    if (on_grid(l.code, ctx.grid))
+      v.push_back(l.code);
+  return v;
+}
+
 std::string Feed::factor() {
   std::vector<const Result *> ok;
   for (const Result &r : tried)
@@ -329,11 +337,8 @@ std::string Feed::factor() {
       ok.push_back(&r);
   if (!ok.empty() && coin(0.8))
     return one(ok)->name;
-  std::vector<std::string> grid;
-  for (const Leaf &l : ctx.leaves)
-    if (on_grid(l.code, ctx.grid))
-      grid.push_back(l.code);
-  const std::string x = grid.empty() ? leaf() : one(grid);
+  const std::vector<std::string> g = grid();
+  const std::string x = g.empty() ? leaf() : one(g);
   std::vector<std::string> roots;
   for (const Op &o : ctx.ops)
     if (std::ranges::contains(kCsRoots, std::string_view(o.name)))
@@ -398,7 +403,7 @@ std::string Feed::hyp(bool supported) {
     return "H1";
   if (supported)
     for (auto it = hs.rbegin(); it != hs.rend(); ++it)
-      if (it->stance == Stance::Supported && it->evals < kHypEvals)
+      if (it->stance == Stance::Supported && it->evals < kHypEvals && (!it->pending || it->pending == me.round))
         return it->id;
   return one(hs).id;
 }

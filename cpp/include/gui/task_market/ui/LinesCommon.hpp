@@ -31,10 +31,11 @@ struct SegDef {
   int arg = 0;
 };
 inline constexpr int kSegsMax = 3, kNumAll = (1 << kNavNums) - 1;
-// 页的左栏布局: 主图 + 区间条 (上方可叠日内栏) / 只一张叠加图 / CTA 两图 + 中栏
+// 页的左栏布局: 主图 + 区间条 (上方可叠日内栏) / 只一张叠加图 / CTA 两图 + 区间条 + 中栏
 enum PageLayout : int { kLayoutPlot,
                         kLayoutOverlay,
                         kLayoutCta };
+inline constexpr float kRangeH = 45.0f; // 区间条高 (NAV / VAL / CTA 同)
 // 类别条旁的页件: 无 / 日内栏开关 / Band 滚动窗滑条
 enum PageTool : int { kToolNone,
                       kToolIntraday,
@@ -67,7 +68,7 @@ struct PageDef {
   SegDef segs[kSegsMax];  // 右表名列之后的段
   PageTool tool;          // 类别条旁的页件
   PageLayout layout;      // 左栏布局
-  SpanId span;            // 区间默认档 (日轴变 / Clear 回它; 不看区间条的页 = 全段)
+  SpanId span;            // 区间默认档 (日轴变 / Clear 回它; 不看页区间的页 = 全段)
   OverlayKind overlay;    // 叠加图: kLayoutPlot = 日内栏, kLayoutOverlay = 整张
   bool log, folio;        // 头: log 开关 / 组合 (名 + 失效 / 失败条目)
   PageWork work, rest;    // Tab 状态: work 在忙 → 它, 否则 rest; 页发 work 的请求
@@ -212,8 +213,10 @@ inline constexpr PageDef kPageDefs[kPages] = {
      "• 分层 (固定) = 以上一笔成交为基准的网格: 层距 = 20 日 ATR / 2, 一份 = 5%; 满仓时档线挂在中线逆向侧随中线走, 逆向每走一层减一份 (该价冻结成档线), 顺向回到上一条冻结档线加一份, 加满才重新随中线\n"
      "• 中线只选模型, 参数滚动选出: 每日以此前至多 W 日 (不足 W 日 = 自首日起, expanding) 参数网格 (对数格点, 间距不小于参数的基本单位; 中心周围的配置数可配, 默认 9, 各参数轮流分格点) 的目标值拟岭回归曲面, 取连续最高点 (参数可为小数), 在网格边上则以它为中心移网格再拟; 所用参数 = 最高点的 5 日阻尼, 中线按所用参数逐根递推 (换参不跳线); 首日 / 中线都未就绪 = 买入持有 (与基准同口径)\n"
      "• 仓位按本根收盘调到, 成本 = 佣金 + 印花税 + 冲击 (系统设置的税佣与固定冲击) + 震荡 + 跳空; 可选目标年化波动定仓 / 不交易带\n"
-     "• 中栏 = 设定 + 参数轨迹 (各参数 ÷ 首日值随时间: 所用 / 最高点, 看选参稳不稳) + 光标处所用参数 + 全期指标 (策略 vs 买入持有); 左图 上 = 价格与中线 / 档线 (底色 = 仓位, 越满越浓), 下 = 复利净值 + 叠在策略净值之上的各项成本带 (悬停看是哪项); 不看区间条\n"
+     "• 中栏 = 设定 + 参数轨迹 (各参数 ÷ 首日值随时间: 所用 / 最高点, 看选参稳不稳) + 光标处所用参数 + 全期指标 (策略 vs 买入持有); 左图 上 = 价格与中线 / 档线 (底色 = 仓位, 越满越浓), 下 = 复利净值 + 叠在策略净值之上的各项成本带 (悬停看是哪项)\n"
+     "• 价格图图例里 PB N 年分位 (默认关; 右轴 0 ~ 100%, 高 = 贵): 标的 BP 估值分位逐日一点, 与 VAL 页同一份 (N = VAL 滑条, 默认 5)\n"
      "• 左键框选放大 / 右键拖动平移 / 滚轮缩放 / 双击回全段; 换标的回全段, 只改设定保留缩放\n"
+     "• 底部区间条 = 两图 x 视野的整日段 (同 NAV / VAL: 拖把手 / 段内平移, 双击段内回全段), 框选 / 滚轮改了视野区间条随之\n"
      "• 光标 = 橙色竖线: 参数轨迹展开时才出现 (初放视野正中), 左键拖动, 松手停住; 中栏参数看光标所在日 (收起 = 末根)",
      kGroupFactor,
      kPickOne,
@@ -283,7 +286,7 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
 void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size);
 
 // ---- CTA 页 (LinesCta.cpp) ----
-// 标的 (kPickOne) / 设定 / 成本率 (系统配置) 变 → 发请求; 画两图 (plots_size) + 其右中栏 (宽 panel_w, 同高: 设定 + 光标处参数 + 指标); name = 标的行名 (nullptr = 未选)
+// 标的 (kPickOne) / 设定 / 成本率 (系统配置) 变 → 发请求; 画两图 + 区间条 (plots_size) + 其右中栏 (宽 panel_w, 同高: 设定 + 光标处参数 + 指标); name = 标的行名 (nullptr = 未选)
 void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, const cta::Rates &rates, const char *name, const ImVec2 &plots_size,
                     float panel_w);
 

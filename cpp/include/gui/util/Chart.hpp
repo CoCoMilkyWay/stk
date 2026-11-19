@@ -237,6 +237,20 @@ inline double plot_mouse_x() {
   return std::clamp(ImPlot::GetPlotMousePos().x, r.Min, r.Max);
 }
 
+// 区间条的图: 上下边距压到 1 px (左右照常), x 刻度标签不占轴下一行 (NoTickLabels; 刻度照算, 由 x_ticks_inside 画进图区); 推到 EndPlot 之后再 PopStyleVar (setup 锁定时才读边距)
+inline void push_range_style() { ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(ImPlot::GetStyle().PlotPadding.x, 1.0f)); }
+// 当前图 X1 的刻度标签画在图区内底边, 贴各刻度线右侧 (轴设 NoTickLabels 时用; 图内、setup 锁定之后调)
+inline void x_ticks_inside() {
+  const ImPlotAxis &a = ImPlot::GetCurrentPlot()->Axes[ImAxis_X1];
+  const float yb = ImPlot::GetPlotPos().y + ImPlot::GetPlotSize().y;
+  ImDrawList &dl = *ImPlot::GetPlotDrawList();
+  ImPlot::PushPlotClipRect();
+  for (int t = 0; t < a.Ticker.TickCount(); ++t)
+    if (const ImPlotTick &k = a.Ticker.Ticks[t]; k.ShowLabel && k.TextOffset >= 0)
+      dl.AddText(ImVec2(k.PixelPos + 3.0f, yb - k.LabelSize.y - 1.0f), a.ColorTxt, a.Ticker.GetText(t));
+  ImPlot::PopPlotClipRect();
+}
+
 // 区间条的日段 [d0, d1) (日轴下标) + 拖动态
 struct DayRange {
   int d0 = 0, d1 = 0;
