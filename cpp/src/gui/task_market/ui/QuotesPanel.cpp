@@ -737,8 +737,13 @@ void charts(const char *name, StockData &c, uint64_t id, ChartState &st, const s
   ImGui::PopID();
 }
 
+// 线上的一个成交点: x 同线, y = 线在该处的值; m 指进 OverlayPick::trades (缓存键里的 picks 保活)
+struct Dot {
+  double x = 0, y = 0;
+  const TradeMark *m = nullptr;
+};
 // 篮子日内叠加的一条 (线): x = 日轴第 k 日 · kSlots + 槽, y = 收对本条在日轴内首日前收 (base) 的涨跌幅 [%] (各条同一零点, 跨日接续);
-//   缺口处一点 y = NaN, 线断开. cross = 带现价十字 (只一条时): chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x
+//   缺口处一点 y = NaN, 线断开. cross = 带现价十字 (只一条时): chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x; dots = 线上的成交点
 struct Overlay {
   size_t pick = 0; // picks 下标
   std::string name;
@@ -747,7 +752,21 @@ struct Overlay {
   bool cross = false;
   double chg = 0;
   int now = 0;
+  std::vector<Dot> dots;
 };
+// 成交点落到线 l 上: 成交日在日轴里才有; y = 线在该槽的值 (相邻点插值; 越过末点 = 末点值, 首点前 / 缺口里 = 不画)
+void dots_of(const Trades &t, std::span<const misc::Ymd> days, Overlay &l) {
+  const auto k = std::ranges::find(days, t.date);
+  if (k == days.end() || l.x.empty())
+    return;
+  for (const TradeMark &m : t.marks) {
+    const double x = static_cast<double>(static_cast<size_t>(k - days.begin()) * kSlots + static_cast<size_t>(m.slot));
+    const double y = x >= l.x.back() ? l.y.back() : line_at(l.x.size(), x, [&](size_t j) { return ImPlotPoint(l.x[j], l.y[j]); });
+    if (std::isfinite(y))
+      l.dots.push_back({x, y, &m});
+  }
+}
+constexpr float kDotMin = 2.5f, kDotMax = 4.5f; // 成交点三角的半边长 [px]: 买卖总额 0 → 图内最大 (按平方根)
 
 // 叠加图 0 轴上的净流入柱: 标的在日轴各日的每分钟净流入 (Bars::net, 分钟涨跌法) [元], x 同叠加图;
 //   历史日 = 历史分钟根, 当日 = 快照合成的根 (此刻所在根随快照动, 走完即与分钟 K 同值).
@@ -783,7 +802,8 @@ void fmt_signed(char *buf, int size, double a) {
 //   带 cross 的线另画现价十字: 过末点的横 / 竖虚线 (当日涨跌色), 右壁标末点涨跌幅 (同 y 口径), 底壁标时刻 (色底黑字).
 //   十字光标: 竖线吸附到分钟, 横线随鼠标; 提示 = 时刻 + 光标处 y + 该处各条读数 (高 → 低).
 //   悬停联动 (HoverSync): hot = 白粗线画在最上的条 (pick; −1 = 无), near = 图上悬停的条 (pick; −1 = 无).
-//   net = 0 轴上的净流入柱 (nullptr = 不画): 左下角小字 "净流入 · 名" + 末根读数, 提示另列光标处的净流入. 画完返回图区左上角
+//   net = 0 轴上的净流入柱 (nullptr = 不画): 左下角小字 "净流入 · 名" + 末根读数, 提示另列光标处的净流入.
+//   各线的成交点 (Overlay::dots): 小三角, 净买红 ▲ / 净卖绿 ▼, 大小随买卖总额; 鼠标近一点 (kNearPx 内) → 提示另列该分钟各只的买 / 卖额与股数. 画完返回图区左上角
 ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd> &days, const ImVec2 &size, const char *unit, int hot, int &near,
                     const NetBars *net = nullptr) {
   near = -1;
@@ -863,6 +883,27 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         ImPlot::SetNextLineStyle(kHotCol, kHotW);
         ImPlot::PlotLine("##hot", l.x.data(), l.y.data(), static_cast<int>(l.x.size()));
       }
+    const Dot *dot = nullptr; // 鼠标近的成交点
+    {
+      double top = 0;
+      for (const Overlay &l : ls)
+        for (const Dot &d : l.dots)
+          top = std::max(top, d.m->buy + d.m->sell);
+      ImDrawList *dl = ImPlot::GetPlotDrawList();
+      const ImVec2 mp = ImGui::GetMousePos();
+      float best = kNearPx;
+      for (const Overlay &l : ls)
+        for (const Dot &d : l.dots) {
+          const ImVec2 c = ImPlot::PlotToPixels(d.x, d.y);
+          const float r = kDotMin + (top > 0 ? (kDotMax - kDotMin) * static_cast<float>(std::sqrt((d.m->buy + d.m->sell) / top)) : 0.f), h = r * 0.8f;
+          if (d.m->buy >= d.m->sell)
+            dl->AddTriangleFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y + h), ImVec2(c.x - r, c.y + h), ImGui::ColorConvertFloat4ToU32(kUp));
+          else
+            dl->AddTriangleFilled(ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y - h), ImVec2(c.x + r, c.y - h), ImGui::ColorConvertFloat4ToU32(kDn));
+          if (const float dd = std::hypot(mp.x - c.x, mp.y - c.y); ImPlot::IsPlotHovered() && dd < best)
+            best = dd, dot = &d;
+        }
+    }
     { // 内标小字 (压在线上方): 横网格涨跌幅贴右内壁; 现价十字; 线名贴线尾, 右缘不过刻度字列
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       ImFont *font = ImGui::GetFont();
@@ -944,6 +985,22 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
           fmt_signed(amt, sizeof(amt), v);
           ImGui::TextColored(tint(v, 0), "净流入 · %s %s", net->name.c_str(), amt);
         }
+      }
+      if (dot) { // 成交点: 该分钟合计, 再逐只
+        const TradeMark &t = *dot->m;
+        const int dm = slot_label(t.slot);
+        char b[24], s[24];
+        fmt_amount(b, sizeof(b), t.buy);
+        fmt_amount(s, sizeof(s), t.sell);
+        ImGui::Separator();
+        ImGui::Text("成交 %02d:%02d 根 · 买 %s / 卖 %s", dm / 60, dm % 60, b, s);
+        for (const TradeSec &x : t.secs)
+          for (const int side : {1, -1})
+            if (const double a = side > 0 ? x.buy : x.sell; a > 0) {
+              fmt_amount(b, sizeof(b), a);
+              ImGui::TextColored(side > 0 ? kUp : kDn, "%s %s %s %s (%.0f股)", side > 0 ? "买" : "卖", x.code.c_str(), x.name.c_str(), b,
+                                 side > 0 ? x.buy_qty : x.sell_qty);
+            }
       }
       ImGui::EndTooltip();
     }
@@ -1192,8 +1249,11 @@ int RenderOverlay(OverlayKind kind, QuoteHub &mk, OverlayState &st, const std::v
       if (!src.any())
         continue;
       Overlay l{.pick = i, .name = p.name, .col = ImGui::ColorConvertU32ToFloat4(p.col)};
-      if (def.line(cx, p, src, l))
+      if (def.line(cx, p, src, l)) {
+        if (p.trades)
+          dots_of(*p.trades, c.days, l);
         c.ls.push_back(std::move(l));
+      }
     }
     c.net = {};
     if (def.net) { // 0 轴净流入柱的标的: 只一条 = 它, 否则全A.等

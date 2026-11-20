@@ -5,7 +5,10 @@
 #include "gui/account/AccountSide.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <functional>
+#include <map>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -51,9 +54,37 @@ std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const
   return h;
 }
 
+// 今日成交 → 成交点: 时刻 HH:MM:SS 落所在分钟根 (竞价并入首根), 一分钟一点, 点内同只合并
+std::shared_ptr<const Quote::Trades> trades_of(const live::Fills &f) {
+  std::map<int, Quote::TradeMark> by;
+  for (const live::Fill &x : f.rows) {
+    assert(x.time.size() == 8 && x.time[2] == ':' && x.time[5] == ':');
+    const int sec = std::stoi(x.time.substr(0, 2)) * 3600 + std::stoi(x.time.substr(3, 2)) * 60 + std::stoi(x.time.substr(6, 2));
+    Quote::TradeMark &m = by[std::clamp(Quote::sec_slot(sec), 0, Quote::kSlots - 1)];
+    auto it = std::ranges::find(m.secs, x.code, &Quote::TradeSec::code);
+    if (it == m.secs.end())
+      it = m.secs.insert(it, Quote::TradeSec{.code = x.code, .name = x.name});
+    const bool buy = x.side == live::kBuy;
+    (buy ? m.buy : m.sell) += x.amount;
+    (buy ? it->buy : it->sell) += x.amount;
+    (buy ? it->buy_qty : it->sell_qty) += x.qty;
+  }
+  auto t = std::make_shared<Quote::Trades>();
+  t->date = misc::today_ymd();
+  for (auto &[s, m] : by) {
+    m.slot = s;
+    t->marks.push_back(std::move(m));
+  }
+  return t;
+}
+
 } // namespace
 
-void AccountHub::feed(const live::Got<live::Account> &a, const live::Got<live::Fills> &f) { acct_ = a, fills_ = f; }
+void AccountHub::feed(const live::Got<live::Account> &a, const live::Got<live::Fills> &f) {
+  if (f.v != fills_.v)
+    trades_ = f ? trades_of(*f) : nullptr;
+  acct_ = a, fills_ = f;
+}
 
 account::Spot AccountHub::spot() const {
   account::Spot s;

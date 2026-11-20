@@ -73,11 +73,12 @@ struct OverlayState {
   std::shared_ptr<OverlayCache> cache[kOverlays];
 };
 
-// 叠加的一条: 标的 + 线色 (ImU32) + 线名
+// 叠加的一条: 标的 + 线色 (ImU32) + 线名 + 线上叠的成交点 (空 = 不叠)
 struct OverlayPick {
   Ref ref;
   uint32_t col;
   std::string name;
+  std::shared_ptr<const Trades> trades;
   bool operator==(const OverlayPick &) const = default;
 };
 

@@ -3,7 +3,7 @@
 // 名单: output/config/live/lists/<名>.csv, 每行首列一个 6 位代码 (可有 code 表头), 行序即排名 (首行最高); 按修改时间新在前.
 // 配置 Cfg: 名单、unit 最小调仓单元 (元, 不足即不做)、pct 行使比例 (0–100)、px 委托价、
 //   sells {代码: 卖出股数} (整步长、连同零股的整步长, 或全部可卖)、lever 融资加仓.
-// 融资加仓 (A 股加杠杆须先卖出自有部分、再融资买入, 回款留作现金日后择机买): 卖出不管最小单元 (只守整手规则);
+// 融资加仓 (A 股加杠杆须先卖出自有部分、再融资买入, 回款留作现金日后择机买): 一只卖满其非融资可卖 (按整手向下取) 或全部可卖时不管最小单元, 其余照守;
 //   买入只融资买名单里的融资标的, 不出现金腿, 费用从卖后现金出; 行使比例只作用于 X'、L. 卖出股数由页面按非融资可卖部分分配.
 // 试算:
 //   卖出: 股数 (超过可卖按全部可卖) × 参考价计额, 回款 = 额 − 滑点 − 费用;
@@ -24,7 +24,7 @@
 //     卖单与买单同形: 持仓行一单、名单行融资 / 现金两腿, 各带 不做的原因.
 //   成本 = 各单按 5 档吃出的滑点 (相对参考价, 竞价中计 0) + 费用 (佣金万 1 双向、印花税 0.05% 卖、过户费 0.001% 双向).
 //   账户 现 / 调仓后 两栏同形: 预期总资产 = 现总资产 + 融资额 − 成本, 预期净资产 = 现净资产 − 成本,
-//     杠杆 = 总资产 / 净资产, 维持担保比例 = 总资产 / 负债. 现总资产 = 读时现金 + 现持仓市值.
+//     持仓市值 = 总资产 − 现金, 杠杆 = 总资产 / 净资产, 维持担保比例 = 总资产 / 负债. 现总资产 = 读时现金 + 现持仓市值.
 //
 // 可用保证金 (券商口径) X = 现金 + S − 负债利息, 持仓部分
 //   S = Σ 折算率 × 非融资部分市值 + Σ g(融资部分市值 − 负债金额) − Σ 负债金额 × 融资保证金比例,
@@ -62,7 +62,6 @@ struct Cfg {
   PxMode px = PxMode::Sweep;
   std::map<std::string, int> sells; // 只存 > 0
   bool lever = false;
-  double sell_unit() const { return lever ? 0 : unit; } // 卖单的最小单元
 };
 
 // 不可买的原因; 可买 → 空
@@ -87,8 +86,8 @@ struct Hold {
   std::string skip;
 };
 // 能成单的卖出股数里离 x 最近的 (down = 不超过 x 的最大的): 0 不卖、起卖股数 (够起买股数且够 unit 元) 起按步长递增 (或连同零股)、
-//   全部可卖 (够 unit 元才有)
-int snap(const Hold &h, double unit, double x, bool down = false);
+//   全部可卖 (够 unit 元才有); lever = 融资加仓: 另有卖满非融资可卖 (按整手向下取) 一档, 它与全部可卖都不管 unit
+int snap(const Hold &h, double unit, double x, bool down = false, bool lever = false);
 struct Leg {
   Credit credit = Credit::Plain;
   double want = 0;
@@ -103,8 +102,8 @@ struct Target {
   std::vector<Leg> legs;
 };
 struct Sheet {
-  double assets = 0, net = 0, debt = 0, cash = 0;
-  std::optional<double> X; // 调仓后不出 (要按买后持仓与负债重算)
+  double assets = 0, net = 0, debt = 0, cash = 0, mv = 0; // mv = 持仓市值 = 总资产 − 现金
+  std::optional<double> X;                                // 调仓后不出 (要按买后持仓与负债重算)
   double L = 0, lev = 0;
   std::optional<double> maint;
 };

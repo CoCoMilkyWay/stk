@@ -60,7 +60,6 @@ const Term *term_of(const Terms &terms, const std::string &code) {
 // 各持仓行 (带可融、非融资可卖、卖出设置与卖单)
 std::vector<Hold> sells_of(const Keyed<Position> &pos, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms, const Cfg &cfg) {
   std::vector<Hold> rows;
-  const double unit = cfg.sell_unit();
   for (const Position &h : pos.list) {
     const Quote &q = quote_at(quotes, h.code);
     const Term *t = term_of(terms, h.code);
@@ -78,7 +77,8 @@ std::vector<Hold> sells_of(const Keyed<Position> &pos, const Keyed<Debt> &debts,
       const int n = std::min(v, row.avail);
       if (!(n == row.avail || n % step == 0 || n % step == row.avail % step))
         fail(strf("%s 卖 %d 股不是 %d 股的整数倍 (零股须一次卖完)", h.code.c_str(), n, step));
-      // 全部可卖可含零股
+      // 全部可卖可含零股; 融资加仓卖满非融资可卖或全部可卖不管最小单元
+      const double unit = cfg.lever && (n == row.avail || n == snap(row, 0, row.plain, true)) ? 0 : cfg.unit;
       const int min_n = n == row.avail ? least(px, unit, 1, 1) : least(px, unit, lt, step);
       row.order = leg(q, kSell, n, min_n, order_px(q, kSell, cfg.px, n * px).value_or(px), Credit::Plain, h, row.skip);
     }
@@ -268,7 +268,7 @@ std::pair<std::vector<Target>, std::vector<Order>> buys_of(const std::vector<std
 }
 
 Sheet sheet(double assets, double net, double debt, double cash, std::optional<double> X, double L) {
-  return {assets, net, debt, cash, X, L, assets / net, debt ? std::optional<double>(assets / debt) : std::nullopt};
+  return {assets, net, debt, cash, assets - cash, X, L, assets / net, debt ? std::optional<double>(assets / debt) : std::nullopt};
 }
 
 Prices prices(const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes) {
@@ -294,22 +294,24 @@ nlohmann::json to_json(const Order &o) {
 }
 
 nlohmann::json to_json(const Sheet &s) {
-  return {{"assets", s.assets}, {"net", s.net}, {"debt", s.debt}, {"cash", s.cash}, {"X", opt(s.X)}, {"L", s.L}, {"lev", s.lev}, {"maint", opt(s.maint)}};
+  return {{"assets", s.assets}, {"net", s.net}, {"debt", s.debt}, {"cash", s.cash}, {"mv", s.mv}, {"X", opt(s.X)}, {"L", s.L}, {"lev", s.lev}, {"maint", opt(s.maint)}};
 }
 
 } // namespace
 
 double fee(double amt, int s) { return amt * (kCommission + kTransfer + (s == kSell ? kStamp : 0)); }
 
-int snap(const Hold &h, double unit, double x, bool down) {
+int snap(const Hold &h, double unit, double x, bool down, bool lever) {
   const int first = least(h.px, unit, h.lot, h.step), r = h.avail % h.step;
   int best = 0;
   const auto take = [&](int c) {
     if (down ? c <= x && c > best : std::abs(c - x) <= std::abs(best - x))
       best = c;
   };
-  if (h.avail * h.px >= unit)
+  if (lever || h.avail * h.px >= unit)
     take(h.avail);
+  if (lever)
+    take(snap(h, 0, h.plain, true));
   for (const int o : {0, r}) { // 整步长 / 连同零股
     const int lo = (first - o + h.step - 1) / h.step, hi = (h.avail - o) / h.step;
     const double k = (x - o) / h.step;

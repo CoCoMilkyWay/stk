@@ -931,6 +931,13 @@ void page_tool(PageTool t, LinesState &ui) {
           "• y = 对首日前收的涨跌幅, 横网格的涨跌幅小字标在右内壁; 悬停看十字光标处时刻 / 涨跌幅与该分钟各条读数\n"
           "• 只选一行: 另带现价十字 (虚线, 标涨跌幅 / 时刻)\n"
           "• 篮子 = Market 篮子历史: all.bar 库合成历史, 当日由新浪快照合成; 档位 日内 / 2日 … 5日 叠在图左上角");
+    ImGui::SameLine();
+    if (toggle_button("交易", ui.trades))
+      ui.trades = !ui.trades;
+    if (ImGui::IsItemHovered())
+      tip("日内栏的账户线上叠券商今日成交点 (要选中账户行、Live 连着券商)\n"
+          "• 一分钟一点 (成交时刻所在的分钟根, 竞价并入首根), 点内同只多笔合并\n"
+          "• 净买红 ▲ / 净卖绿 ▼, 大小随该分钟买卖总额; 鼠标靠近一点看该分钟各只的买 / 卖额与股数");
     return;
   case kToolBandYears:
     ImGui::SetNextItemWidth(ImGui::CalcTextSize("Band 滚动窗 00 年").x + 2.0f * ImGui::GetStyle().FramePadding.x);

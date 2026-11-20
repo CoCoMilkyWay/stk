@@ -2,6 +2,7 @@
 //   拉: 归 Live 的事务道 (LiveHub, account::pull), 与两融条款同形; 落盘即账本代 +1, 这里随代重放
 //   历史: 价格库按账本在日脊上回放 (PriceView::tape[kAccount]; 时间加权指数, 分钟频); 库轴外的持仓以券商现价为今日的观测点 (spot → QuoteHub)
 //   持仓 (Quote::Holdings; Market 账户行的成分 / 当日四列): 券商实时持仓 (信用账户有净资产) 优先, 否则回放末日收后持仓; 今日成交额取券商成交
+//   成交点 (Quote::Trades; NAV 日内栏的账户线): 券商今日成交按分钟聚合 (一分钟一点, 点内同只合并)
 //   当日: 接在回放末日之后才有 (QuoteHub 每帧取, 并进 Live::days[kAccount]); 与历史同一核 (AccountSide.hpp day_of): 当日收后持仓 = 上面的持仓,
 //     末槽 = 此刻净资产 (Holdings::now), 外部进出 = 券商持仓时取末日之后账本里的 (回放持仓 = 0); 全市场外 / 当日无成交的持仓不动; 当日的外部进出不计
 #pragma once
@@ -27,6 +28,7 @@ public:
   std::shared_ptr<const Quote::Day> today(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live);
   const std::string &note() const { return note_; }                                // 账户行的悬停 (口径 + 持仓 + 累计盈亏; 随 today)
   const std::shared_ptr<const Quote::Holdings> &holdings() const { return hold_; } // 持仓 (空 = 无账户全史; 随 today, 内容不变不换)
+  const std::shared_ptr<const Quote::Trades> &trades() const { return trades_; }   // 今日成交点 (NAV 日内栏; 空 = 未读到成交; 随 feed, 成交变才换)
 
 private:
   void rehold(const Quote::PriceView *view); // 回放 / 信用账户 / 成交变了: 持仓 + 悬停 (有账户全史 ⇒ view 非空)
@@ -39,6 +41,7 @@ private:
   std::shared_ptr<const live::Fills> fl_;
   uint64_t ver_ = 0; // Live::ver
   std::shared_ptr<const Quote::Holdings> hold_;
+  std::shared_ptr<const Quote::Trades> trades_;
   std::shared_ptr<const Quote::Day> day_;
   std::string note_;
 };

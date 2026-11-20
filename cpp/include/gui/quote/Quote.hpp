@@ -188,6 +188,20 @@ struct Holdings {
   double now(const Live *y) const;                                     // 此刻净资产; y 空 = net
   bool operator==(const Holdings &) const = default;
 };
+// 账户的当日成交点 (AccountHub 给; 不可变, 成交一变才换): 券商今日成交按所在分钟根 (槽) 聚合, 一分钟一点, 点内同只合并
+struct TradeSec {
+  std::string code, name;
+  double buy = 0, sell = 0, buy_qty = 0, sell_qty = 0; // 额 [元] / 股
+};
+struct TradeMark {
+  int slot = 0;
+  double buy = 0, sell = 0;   // 本分钟买 / 卖额合计 [元]
+  std::vector<TradeSec> secs; // 首见序
+};
+struct Trades {
+  misc::Ymd date = 0;
+  std::vector<TradeMark> marks; // 槽升序
+};
 
 // 一个标的的源 (Joint 给): 日序列 = 日线 + 接得上的当日 (末项); 各处只经它读 (下标 / 分钟根 / 复权同一口径), 接续不再自判
 struct Source {

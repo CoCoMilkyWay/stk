@@ -193,7 +193,7 @@ void SyncLinesWatch(LinesState &ui) {
 
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
                    const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
-                   const std::shared_ptr<const Quote::Holdings> &hold) {
+                   const std::shared_ptr<const Quote::Holdings> &hold, const std::shared_ptr<const Quote::Trades> &trades) {
   assert(page >= 0 && page < kPages);
   const PageDef &pd = kPageDefs[page];
   PortfolioResult res;
@@ -274,7 +274,8 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
       for_each_layer([&](int g) {
         for (size_t r = 0; r < d.rows[g].size(); ++r)
           if (const LinesRow &h = d.rows[g][r]; h.ref.ok() && picked(ui, page, h)) {
-            picks.push_back({h.ref, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag});
+            picks.push_back({h.ref, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag,
+                             kind == kOverlayIntra && ui.trades && h.ref.is(Quote::kAccount) ? trades : nullptr});
             ids.push_back(&h.id);
           }
       });
