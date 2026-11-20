@@ -1,7 +1,7 @@
 // CtaService — Market→CTA 页的单 worker: 选中的一个标的 (篮子线 / 个股) 的 1 分钟后复权价 → 单资产 band + 减仓 + 跟随 模型的滚动调参全期轨迹 (cta/Trace.hpp)
 //   价格源 = 价格库发布的 PriceView (QuoteHub 的): 请求带该份的日脊 + 标的的分钟价 (不可变, 只拷指针) + 戳;
 //     有效根序列按 (标的, 戳) 留最近 kKeep 个 (只改设定不重算)
-//   请求 = 标的 + cta::Spec + 价; 新请求覆盖旧的 (换标的 / 改设定 / 库变即重算). 进度: Running = 选参日数
+//   请求 = 标的 + cta::Spec + 价 + 估值线 (band 宽度随估值); 新请求覆盖旧的 (换标的 / 改设定 / 库变 / 估值线变即重算). 进度: Running = 选参日数
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (latest)
 #pragma once
 
@@ -29,6 +29,7 @@ struct CtaRequest {
   Quote::PriceStamp stamp;                             // 价格库发布的戳
   std::shared_ptr<const std::vector<misc::Ymd>> dates; // 该戳的日脊
   std::shared_ptr<const Quote::Series> series;         // 标的在该戳的全史 (连分钟)
+  std::shared_ptr<const std::vector<float>> up, dn;    // [日脊] 估值贵线 / 便宜线对当日收盘的倍数 (空 / NaN = 无估值, band 不随估值)
   bool operator==(const CtaRequest &) const = default;
 };
 
@@ -39,7 +40,7 @@ struct CtaResult {
   std::string lack;                      // 算不了的原因 (空 = 有轨迹)
   std::vector<misc::Ymd> dates;          // 日轴: 有效根的日下标 = t / kSlots
   std::shared_ptr<const cta::Series> se; // 有效根
-  cta::Track tr;                         // [有效根] 轨迹 (策略 / 持有两本账)
+  std::shared_ptr<const cta::Track> tr;  // [有效根] 轨迹 (策略 / 持有两本账)
 };
 
 class CtaService : public Service<CtaService, CtaRequest>, public Published {

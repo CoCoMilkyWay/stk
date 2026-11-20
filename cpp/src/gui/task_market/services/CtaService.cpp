@@ -64,7 +64,8 @@ bool CtaService::run(CtaRequest &req) {
         return s;
       },
       kKeep);
-  const size_t nd = cta::days_of(*se, S).size();
+  const cta::Days days = cta::days_of(*se, S);
+  const size_t nd = days.size();
   if (nd < 2)
     return publish(req, "有效根只跨 " + std::to_string(nd) + " 日, 至少 2 日.");
   auto out = std::make_shared<CtaResult>();
@@ -72,12 +73,25 @@ bool CtaService::run(CtaRequest &req) {
   out->se = se;
   const double years = static_cast<double>((misc::to_days(out->dates.back()) - misc::to_days(out->dates.front())).count() + 1) / 365.25;
   const double bpy = static_cast<double>(out->dates.size() * S) / years;
+  cta::Col hi(nd, cta::kNaN), lo(nd, cta::kNaN); // 估值线 [日]: 日 d 盘中用前一个有根的日收盘时的 (收盘 × 倍数), 不看当日
+  if (req.up && req.dn) {
+    assert(req.up->size() == spine.size() && req.dn->size() == spine.size() && "估值线 [日脊]");
+    const size_t d0 = se->t.front() / S;
+    float ph = cta::kNaN, pl = cta::kNaN;
+    for (size_t d = 0; d < nd; ++d) {
+      hi[d] = ph, lo[d] = pl;
+      if (days.off[d] < days.off[d + 1]) {
+        const float c = se->c[days.off[d + 1] - 1];
+        ph = c * (*req.up)[d0 + d], pl = c * (*req.dn)[d0 + d];
+      }
+    }
+  }
   begin(Phase::Running, nd - 1);
   std::optional<cta::Track> tr = cta::trace(
-      *se, S, sp, req.rates, bpy, pool_, [&] { return cancel_.load(std::memory_order_relaxed); }, [&] { Progress::publish(1); });
+      *se, S, sp, req.rates, bpy, hi, lo, pool_, [&] { return cancel_.load(std::memory_order_relaxed); }, [&] { Progress::publish(1); });
   if (!tr)
     return false;
-  out->tr = std::move(*tr);
+  out->tr = std::make_shared<const cta::Track>(std::move(*tr));
   return publish(req, {}, std::move(out));
 }
 

@@ -162,6 +162,11 @@ struct CtaState {
     size_t i0 = 0, i1 = 0;
     cta::Stat hold, strat;
   } seg;
+  struct Gate { // 估值线 (进请求; band 宽度随估值): 所属日脊 / 估值版本 → [日脊] 贵线 / 便宜线对收盘的倍数; 键变了才重建
+    const void *spine = nullptr;
+    uint64_t der = 0, roll = 0;
+    std::shared_ptr<const std::vector<float>> up, dn;
+  } gate;
 };
 
 // 篮子组 (指数 / 行业 / 概念) 右表的行过滤 (各页共用, 按组各一份): 只数 / 总市值 [亿元] ∈ [lo, hi] (hi 0 = 不限), |资金流入| ≥ flow (%; 0 = 不限);

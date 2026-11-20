@@ -71,7 +71,7 @@ struct XDays {
   std::vector<size_t> last;
 };
 XDays x_days(const CtaResult &r) {
-  const cta::Days &ds = r.tr.days;
+  const cta::Days &ds = r.tr->days;
   const size_t d0 = r.se->t[0] / kS;
   XDays o;
   for (size_t d = 0; d < ds.size(); ++d)
@@ -151,7 +151,7 @@ size_t dix(const CtaResult &r, size_t i) { return r.se->t[i] / kS - r.se->t[0] /
 //      净值图 (策略 / 持有 / 成本带) 恒以视野首根的前一根 = 1, 回撤自该根起算: 视野怎么变 (框选 / 滚轮 / 平移 / 区间条 / 双击) 都随之重新对齐 ----
 void plots(CtaState &c, const CtaResult &r, const char *name, const PbBand &pb, const ImVec2 &size) {
   const cta::Series &se = *r.se;
-  const cta::Track &tr = r.tr;
+  const cta::Track &tr = *r.tr;
   const size_t n = se.c.size();
   if (c.fit != r.ref) { // 换标的: 回全段, 光标重放
     c.fit = r.ref;
@@ -552,20 +552,22 @@ void stat_table(CtaState &c, const CtaResult &r) {
   const size_t i0 = static_cast<size_t>(std::clamp(std::ceil(c.x0), 0.0, static_cast<double>(n - 1)));
   const size_t i1 = static_cast<size_t>(std::clamp(std::floor(c.x1), static_cast<double>(i0), static_cast<double>(n - 1))) + 1;
   if (c.seg.of != &r || c.seg.gen != r.gen || c.seg.i0 != i0 || c.seg.i1 != i1) {
-    const double bpy = static_cast<double>(n) / r.tr.strat.st.years;
-    c.seg = {&r, r.gen, i0, i1, cta::stat_of(r.tr.hold.run, i0, i1, bpy), cta::stat_of(r.tr.strat.run, i0, i1, bpy)};
+    const double bpy = static_cast<double>(n) / r.tr->strat.st.years;
+    c.seg = {&r, r.gen, i0, i1, cta::stat_of(r.tr->hold.run, i0, i1, bpy), cta::stat_of(r.tr->strat.run, i0, i1, bpy)};
   }
-  if (!ImGui::BeginTable("##cta_stat", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
+  constexpr int nc = 2; // 数值列: 持有 / 策略
+  if (!ImGui::BeginTable("##cta_stat", 1 + nc, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
     return;
   ImGui::TableSetupColumn("##name", ImGuiTableColumnFlags_WidthStretch, 1.4f);
-  ImGui::TableSetupColumn("##sh", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-  ImGui::TableSetupColumn("##st", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+  for (int k = 0; k < nc; ++k)
+    ImGui::TableSetupColumn("##v", ImGuiTableColumnFlags_WidthStretch, 1.0f);
   const ImVec4 dim = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), text = ImGui::GetStyleColorVec4(ImGuiCol_Text);
   ImGui::TableNextRow();
   ImGui::TableNextColumn();
-  for (const char *h : {"持有", "策略"}) {
+  static const char *const kHead[] = {"持有", "策略"};
+  for (int k = 0; k < nc; ++k) {
     ImGui::TableNextColumn();
-    right(h, dim);
+    right(kHead[k], dim);
   }
   // tree = 名作可展开的节点 (默认折叠), 返回是否展开
   const auto row = [&](const char *name, const std::string &note, const StatRow &x, auto get, bool tree = false) {
@@ -578,15 +580,15 @@ void stat_table(CtaState &c, const CtaResult &r) {
       ImGui::TextUnformatted(name);
     if (ImGui::IsItemHovered())
       tip("%s = %s", name, note.c_str());
-    const double h = get(c.seg.hold), v = get(c.seg.strat);
-    for (const bool st : {false, true}) {
+    const double h = get(c.seg.hold), vs[] = {get(c.seg.strat)};
+    for (int k = 0; k < nc; ++k) {
       ImGui::TableNextColumn();
-      const double u = st ? v : h;
+      const double u = k ? vs[k - 1] : h;
       char t[32] = "-";
       if (std::isfinite(u))
         std::snprintf(t, sizeof(t), x.fmt, u * x.mul);
-      right(t, !st ? dim : x.better && std::isfinite(h) && std::isfinite(v) ? tint(x.better * v, x.better * h)
-                                                                            : text);
+      right(t, !k ? dim : x.better && std::isfinite(h) && std::isfinite(u) ? tint(x.better * u, x.better * h)
+                                                                           : text);
     }
     return open;
   };
@@ -602,7 +604,7 @@ void stat_table(CtaState &c, const CtaResult &r) {
 }
 
 // 减仓 / 跟随 (下标 0 / 1)
-const cta::Path &path_of(const CtaResult &r, size_t k) { return k ? r.tr.follow : r.tr.reduce; }
+const cta::Path &path_of(const CtaResult &r, size_t k) { return k ? r.tr->follow : r.tr->reduce; }
 constexpr const char *kPathName[] = {"减仓", "跟随"};
 
 // 光标处 (−1 = 末根) 所在日 → v[k] = 当日所用参数 (阻尼后, 轴的单位; 减仓未选参 = 买入持有, 两者都 nullptr; 跟随未选参 = 沿用的上一个选参日, 尚无 = nullptr); 返回说明
@@ -611,10 +613,10 @@ std::string cursor_at(const CtaResult &r, int cursor, const cta::P *(&v)[2]) {
   const size_t d = dix(r, i);
   const std::string head = cursor >= 0 ? "光标 " + when(r, i) : "末根";
   v[0] = v[1] = nullptr;
-  if (!r.tr.reduce.sel[d])
+  if (!r.tr->reduce.sel[d])
     return head + ": 买入持有 (首日 / 窗内数据不足 / 减仓线未就绪, 未选参)";
-  v[0] = &r.tr.reduce.use[d];
-  const cta::Path &f = r.tr.follow;
+  v[0] = &r.tr->reduce.use[d];
+  const cta::Path &f = r.tr->follow;
   for (size_t e = d + 1; e-- > 0 && !v[1];)
     if (f.sel[e])
       v[1] = &f.use[e];
@@ -654,7 +656,7 @@ std::string grid_note(const cta::Kind &k, int n) {
 //      band 行 = band ÷ 首个有值日的 band; 图例矩阵 (同 NAV): 行 = band / 减仓 / 跟随, 列 = 各自的参数, 格 = 该参数的线 (色块 + 光标处的值; 默认全关);
 //      x 链到左侧三图 (同一视野), 未选参日断开; 窄边框, 刻度画在图内; 光标 = 橙色竖线; 悬停看当日值 ----
 void path(CtaState &c, const CtaResult &r) {
-  const cta::Track &tr = r.tr;
+  const cta::Track &tr = *r.tr;
   const cta::Series &se = *r.se;
   const size_t n = se.c.size();
   std::vector<double> xs; // 每个有根的日两点 (首根, 末根)
@@ -889,7 +891,15 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   //     跟随卖出线挂出时预期在上 = 上漂去追, 否则横着等, 追到 / 被预期上穿 = 回到随预期; 全部收复 = 锁定的回到随预期 (差额一日内消化)
   //   份数 = 满仓份数, 也是每日评的参数组合数上限; 止损距 = 成交一份后新线离成交线几个 band
   ImGui::SeparatorText("band");
-  pick("band", cta::Band::kinds, sp.band, "band = 档线间距 (价格单位), 人选, 不调", "band 的窗");
+  pick("band", cta::Band::kinds, sp.band, "band = 档线间距 (价格单位), 人选, 不调; 宽度随估值缩放", "band 的窗");
+  const auto wide = [&](const char *id, float &x, const char *what) {
+    ImGui::InputFloat(id, &x, 0.1f, 0.5f, "%.2f");
+    x = std::clamp(x, 0.1f, 10.0f);
+    c.editing |= ImGui::IsItemActive();
+    if (ImGui::IsItemHovered())
+      tip("%s; 之间按价线性 (估值线 = PB Band 首末两档, 窗 = Band 滚动窗)", what);
+  };
+  pair("高估宽", [&] { wide("##cta_wide_hi", sp.wide_hi, "价在估值贵线时 band × 此数; 默认 1"); }, "低估宽", [&] { wide("##cta_wide_lo", sp.wide_lo, "价在估值便宜线时 band × 此数 (宽 = 不易触发); 默认 2"); });
   tuned("减仓", cta::Reduce::kinds, sp.reduce, 0, "减仓模型: 快线 (5 日) 往下挪一个 band 为中线, 第 j 份的预期卖出线 = 中线 − j × band", "减仓的窗: 窗内数据不足 = 买入持有");
   tuned("跟随", cta::Follow::kinds, sp.follow, 1, "跟随模型: 卖出后的跟随买入线往下漂 (抄底), 买回后的跟随卖出线往上漂 (移动止损)",
         "跟随选参的滚动窗");
@@ -952,6 +962,29 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   }
 }
 
+// 估值线 [日脊] (band 宽度随估值): BP 收益率 ÷ 窗内最贵 / 最便宜档的分位收益率 = 贵线 / 便宜线对当日收盘的倍数 (同价格图 PB Band 的首末两档; 无 = NaN);
+//   键 (日脊 / 派生代 / 滚动分位代) 变了才重建, 请求里的指针不变 = 不重发
+void gate_of(CtaState &c, const PbBand &pb, const std::shared_ptr<const std::vector<misc::Ymd>> &spine, uint64_t der, uint64_t roll) {
+  if (c.gate.up && c.gate.spine == spine.get() && c.gate.der == der && c.gate.roll == roll)
+    return;
+  const size_t n = spine->size();
+  auto up = std::make_shared<std::vector<float>>(n, cta::kNaN), dn = std::make_shared<std::vector<float>>(n, cta::kNaN);
+  for (size_t k = 0; pb.v && k < n; ++k) {
+    const auto it = std::ranges::lower_bound(pb.dates, (*spine)[k]);
+    if (it == pb.dates.end() || *it != (*spine)[k])
+      continue;
+    const size_t j = static_cast<size_t>(it - pb.dates.begin());
+    const double v = pb.at[j] >= 0 ? pb.v[pb.at[j]] : kNaN;
+    if (!(v > 0.0) || !pb.roll.band[j])
+      continue;
+    if (const float q = pb.roll.q[kBandQ - 1][j]; q > 0.f)
+      (*up)[k] = static_cast<float>(v / q);
+    if (const float q = pb.roll.q[0][j]; q > 0.f)
+      (*dn)[k] = static_cast<float>(v / q);
+  }
+  c.gate = {spine.get(), der, roll, std::move(up), std::move(dn)};
+}
+
 } // namespace
 
 void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, const cta::Rates &rates, const char *name, const ImVec2 &plots_size,
@@ -964,8 +997,19 @@ void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, 
   const Quote::Series *se = ready && q.ok() ? v->series(q) : nullptr;
   const std::shared_ptr<const Quote::Series> m = se && se->minute ? std::shared_ptr<const Quote::Series>(mk.view, se) : nullptr;
   const bool off = ready && q.ok() && !se && v->covers(q, true); // 个股在库轴外 (篮子恒在)
+  const LinesLeg &lg = ui.roll.key.leg;                          // 滚动分位所属的估值腿 (= 本页标的的)
+  const PbBand pb{ui.der.val.dates, ui.der.val.val_at, lg.b ? leg_val(lg, kValBp) : nullptr, ui.roll.val[kValBp], ui.roll.key.years};
+  if (m)
+    gate_of(c, pb, v->dates, ui.der.gen, ui.roll.gen);
   if (m && !c.editing)
-    c.sent.send(svc, {.ref = q, .spec = c.spec, .rates = rates, .stamp = v->stamp, .dates = v->dates, .series = m});
+    c.sent.send(svc, {.ref = q,
+                      .spec = c.spec,
+                      .rates = rates,
+                      .stamp = v->stamp,
+                      .dates = v->dates,
+                      .series = m,
+                      .up = c.gate.up,
+                      .dn = c.gate.dn});
   const std::shared_ptr<const CtaResult> r = latest(svc);
   const bool mine = q.ok() && r && r->ref == q; // 本标的的 (设定改了时新的还在算, 先显旧的)
   const CtaResult *show = mine && r->lack.empty() ? r.get() : nullptr;
@@ -976,9 +1020,7 @@ void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, 
   if (!q.ok())
     ImGui::TextDisabled("右表单选一个指数 / 行业 / 概念 / 成分股 (与 VAL 同一份选中)");
   else if (show) {
-    const LinesLeg &lg = ui.roll.key.leg; // 滚动分位所属的估值腿 (= 本页标的的)
-    plots(c, *show, name, {ui.der.val.dates, ui.der.val.val_at, lg.b ? leg_val(lg, kValBp) : nullptr, ui.roll.val[kValBp], ui.roll.key.years},
-          ImGui::GetContentRegionAvail());
+    plots(c, *show, name, pb, ImGui::GetContentRegionAvail());
   } else if (!ready)
     ImGui::TextDisabled("等价格库…");
   else if (!m && !off)

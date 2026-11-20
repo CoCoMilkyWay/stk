@@ -261,7 +261,7 @@ struct LinesLive {
 // 二级: VAL / MARGIN 标的的滚动分位 (只随标的 / 窗长). 每口 v (估值五口 = 收益率 EP / BP / SP / CP / DY, 两融两口 = 余额占比 RZ / RQ)
 // 按贵度 −v (升 = 贵) 逐日在过去 N 自然年 (含当日; N = band_years) 窗内取 kBandQs 分位 (band 两页同一画法);
 // 当日分位的键: 估值口 = 贵度 (高 = 贵), 两融口 = v 本身 (高 = 占比高); 估值史 (首个可算日起) 不满 1 年 → 不画 (不足 N 年先扩张窗)
-inline constexpr int kBandYearsDef = 5, kBandYearsMax = 15;
+inline constexpr int kBandYearsDef = 1, kBandYearsMax = 15;
 inline constexpr int kBandQ = 7;
 inline constexpr double kBandQs[kBandQ] = {0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95};
 // 绝对估值等值线的档: 标的全史倍数 m (= 1 / 收益率) 区间两头各剔 kContourTrim 分位 (近 0 收益率的日子倍数极大, 不让它撑开区间), kContours 等分

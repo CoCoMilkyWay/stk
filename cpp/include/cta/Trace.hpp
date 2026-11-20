@@ -39,8 +39,9 @@ struct Pick {
 // 模型与回测设定 (费率另给: 系统配置); 改了即全部重算
 struct Spec {
   Pick band{Band::of<Dev>}, reduce{Reduce::of<Kama>}, follow{Follow::of<Sar>};
-  Rule rule;       // 分层规则 (份数也是减仓 / 跟随的网格配置数上限, 各自分到自己的参数轴; split)
-  int dir = kLong; // 方向 (kDirs 下标)
+  Rule rule;                      // 分层规则 (份数也是减仓 / 跟随的网格配置数上限, 各自分到自己的参数轴; split)
+  float wide_hi = 1, wide_lo = 2; // band 宽度倍数: 价在估值贵线 = wide_hi, 在便宜线 = wide_lo, 之间按价线性 (估值低时档线放宽, 不易触发)
+  int dir = kLong;                // 方向 (kDirs 下标)
   bool operator==(const Spec &) const = default;
 };
 
@@ -77,6 +78,17 @@ struct Scores {
     return !stop();
   }
 };
+
+// 逐日所用参数: 未选参日沿用上一日的, 首个选参日之前 = 初始中心
+inline std::vector<P> used_of(const Path &p) {
+  std::vector<P> o(p.sel.size(), p.grid.p({}));
+  for (size_t d = 0; d < o.size(); ++d)
+    if (p.sel[d])
+      o[d] = p.use[d];
+    else if (d)
+      o[d] = o[d - 1];
+  return o;
+}
 
 // 一个模型的逐日选参: 输出 Path + 网格中心 / 最高点的最近格点 + 阻尼
 struct Tuner {
@@ -120,22 +132,13 @@ struct Tuner {
       return true;
     }
   }
-  // 逐日所用参数: 未选参日沿用上一日的, 首个选参日之前 = 初始中心
-  std::vector<P> used() const {
-    std::vector<P> o(p.sel.size(), p.grid.p({}));
-    for (size_t d = 0; d < o.size(); ++d)
-      if (p.sel[d])
-        o[d] = p.use[d];
-      else if (d)
-        o[d] = o[d - 1];
-    return o;
-  }
+  std::vector<P> used() const { return used_of(p); }
 };
 
-// se = 有效根 (t = 日下标 · S + 槽), 须跨 2 日以上; S = 每日根数; sp = 设定; u = 费率; bpy = 每年根数
+// se = 有效根 (t = 日下标 · S + 槽), 须跨 2 日以上; S = 每日根数; sp = 设定; u = 费率; bpy = 每年根数; hi / lo [日] = 日 d 盘中所用的估值贵线 / 便宜线 (价格; NaN = 无)
 // ex = 执行器 (tasks); stop() → true = 放弃 (返回空), 由并行任务调用; tick() 选参每过一日 (共 days_of(se, S).size() − 1 日)
 template <class Exec, class Stop, class Tick>
-std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Rates &u, double bpy, Exec &ex, Stop stop, Tick tick) {
+std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Rates &u, double bpy, const Col &hi, const Col &lo, Exec &ex, Stop stop, Tick tick) {
   const Tape t(se, S);
   const Days &days = t.days;
   const size_t n = t.n, nd = days.size(), Wr = win_of(sp.reduce.win), Wf = win_of(sp.follow.win);
@@ -144,6 +147,18 @@ std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Rat
   const float s = kDirs[sp.dir].s;
   Col N;
   Band::with(sp.band.kind, [&]<class B>() { N = B::of(t, win_of(sp.band.win)); });
+  assert(hi.size() == nd && lo.size() == nd && "估值线 [日]");
+  { // band 宽度随估值: 日 d 用前一个有根的日收盘在 (同为日 d 盘中所用的) 估值贵线 / 便宜线之间的位置, 贵线处 × wide_hi, 便宜线处 × wide_lo, 之间按价线性; 无估值 = × 1
+    float pc = kNaN;
+    for (size_t d = 0; d < nd; ++d) {
+      if (const double span = static_cast<double>(hi[d]) - lo[d]; span > 0 && pc > 0) {
+        const double f = std::clamp((pc - lo[d]) / span, 0.0, 1.0);
+        N[d] = static_cast<float>(N[d] * (sp.wide_lo + (sp.wide_hi - sp.wide_lo) * f));
+      }
+      if (!std::isnan(t.dc[d]))
+        pc = t.dc[d];
+    }
+  }
   const Series ds = day_series(t);
   const Tape td(ds, 1); // 打分用的日线原料带 (日下标同 t)
   const Col G = bars_of(t, N), Gd = bars_of(td, N);
