@@ -42,7 +42,7 @@ stk/
 │   ├── build.py                                        # 🐍 构建: CMake 配置 + 编译 (BUILD_MODE / GPU_BACKEND)
 │   ├── modes.py                                        # 🐍 运行: 五模式同签名 (tsan / debug / profile / assert / production)
 │   ├── agent.py                                        # 🐍 外部 agent 调研究工具的命令行 (一个 POST {"tool", "args"} → {"ok", "text"}; 地址读 output/run/agent/remote.json)
-│   ├── val_rank.py                                     # 🐍 子池成分的 BP 估值 band 实时排名: 直读 all.bar L_1day (选股同 PoolSelect, 5 年加权分位同 pb_pct5y) × 新浪现价; 分 = 分位 + λ · 底档曲度负值罚分
+│   ├── val_rank.py                                     # 🐍 子池成分的 BP 估值 band 实时排名: 直读 all.bar L_1day (选股同 PoolSelect, 5 年加权分位同 pb_pct5y) × 新浪现价; 分 = 分位 + λ · 底档曲度负值罚分; 跑一次 → 覆盖调仓名单 output/config/live/lists/<名>.csv
 │   └── app/                                            # 🐍 cpp/ format · lint (clang-format / clangd)
 ├── cpp/
 │   ├── include/
