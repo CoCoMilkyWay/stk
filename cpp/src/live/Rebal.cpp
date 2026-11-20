@@ -69,10 +69,10 @@ std::vector<Hold> sells_of(const Keyed<Position> &pos, const Keyed<Debt> &debts,
     const int v = sv == cfg.sells.end() ? 0 : sv->second;
     const auto [lt, step] = lot(h.code);
     const Debt *d = debts.find(h.code);
-    const double fin = d ? std::min(d->qty, h.balance) : 0;
+    const double dq = d ? d->qty : 0;
     Hold row{.code = h.code, .name = h.name, .financeable = t && t->financeable, .value = h.balance * q.price, .sellable = 0, .avail = static_cast<int>(h.available), .px = px, .lot = lt, .step = step, .sell = v};
-    row.own = static_cast<int>(h.balance - fin);
-    row.plain = std::min(row.avail, row.own);
+    row.own = static_cast<int>(std::lround(h.balance - std::min(dq, h.balance)));
+    row.plain = std::max(0, row.avail - static_cast<int>(std::lround(dq)));
     row.sellable = row.avail * px;
     if (v > 0) {
       const int n = std::min(v, row.avail);
@@ -301,19 +301,20 @@ nlohmann::json to_json(const Sheet &s) {
 
 double fee(double amt, int s) { return amt * (kCommission + kTransfer + (s == kSell ? kStamp : 0)); }
 
-int snap(const Hold &h, double unit, double x) {
+int snap(const Hold &h, double unit, double x, bool down) {
   const int first = least(h.px, unit, h.lot, h.step), r = h.avail % h.step;
   int best = 0;
   const auto take = [&](int c) {
-    if (std::abs(c - x) <= std::abs(best - x))
+    if (down ? c <= x && c > best : std::abs(c - x) <= std::abs(best - x))
       best = c;
   };
   if (h.avail * h.px >= unit)
     take(h.avail);
   for (const int o : {0, r}) { // 整步长 / 连同零股
     const int lo = (first - o + h.step - 1) / h.step, hi = (h.avail - o) / h.step;
+    const double k = (x - o) / h.step;
     if (lo <= hi)
-      take(std::clamp(static_cast<int>(std::lround((x - o) / h.step)), lo, hi) * h.step + o);
+      take(std::clamp(static_cast<int>(down ? std::floor(k) : std::lround(k)), lo, hi) * h.step + o);
   }
   return best;
 }

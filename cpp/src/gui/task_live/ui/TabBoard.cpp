@@ -227,8 +227,35 @@ void order_ctl(LiveHub &hub, BoardState &st) {
     tip("买入方式只管持仓行买入, 卖出一律担保品卖出");
 }
 
+// 带上限的百分比滑杆 (宽 w, 整条 0–100%): 滑块拖不过 top, 上限处一道竖线、其外铺暗; 文字 txt 居中.
+// 拖动时 v = 手下的值 (截到 top), 返回是否在拖
+bool cap_slider(const char *id, float &v, float top, float w, const std::string &txt, const ImVec4 &col) {
+  const ImGuiStyle &s = ImGui::GetStyle();
+  const ImVec2 a = ImGui::GetCursorScreenPos();
+  const float h = ImGui::GetFrameHeight(), g = s.GrabMinSize, pad = 2, span = w - g - 2 * pad;
+  ImGui::InvisibleButton(id, ImVec2(w, h));
+  const bool act = ImGui::IsItemActive();
+  if (act)
+    v = std::clamp((ImGui::GetIO().MousePos.x - a.x - pad - g / 2) / span * 100, 0.f, top);
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImVec2 b(a.x + w, a.y + h);
+  dl->AddRectFilled(a, b, ImGui::GetColorU32(act ? ImGuiCol_FrameBgActive : ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered
+                                                                                                   : ImGuiCol_FrameBg),
+                    s.FrameRounding);
+  if (top < 100) {
+    const float x = a.x + pad + g / 2 + span * top / 100;
+    dl->AddRectFilled(ImVec2(x, a.y), b, ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.35f), s.FrameRounding, ImDrawFlags_RoundCornersRight);
+    dl->AddLine(ImVec2(x, a.y), ImVec2(x, b.y), ImGui::GetColorU32(kHot));
+  }
+  const float gx = a.x + pad + span * v / 100;
+  dl->AddRectFilled(ImVec2(gx, a.y + pad), ImVec2(gx + g, b.y - pad), ImGui::GetColorU32(act ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab), s.GrabRounding);
+  const ImVec2 ts = ImGui::CalcTextSize(txt.c_str());
+  dl->AddText(ImVec2(a.x + (w - ts.x) / 2, a.y + (h - ts.y) / 2), ImGui::GetColorU32(col), txt.c_str());
+  return act;
+}
+
 // 融资加仓的卖出总 bar (占 Σ 非融资持仓额): 拖动 = 各持仓卖其非融资持仓的同一比例 r, 各只至多卖到其非融资可卖部分,
-//   r 取到合计恰为 bar 值 (覆盖各只的卖出滑杆, 按整手取最近, 不管最小单元); 拖不过上限 = Σ 非融资可卖额 / Σ 非融资持仓额
+//   r 取到合计恰为 bar 值 (覆盖各只的卖出滑杆, 按整手向下取, 不碰融资部分, 不管最小单元); 拖不过上限 = Σ 非融资可卖额 / Σ 非融资持仓额
 //   (今日买入的等不可卖, 上限 < 100% 即标色: 本次融资加仓做不满). 显示 = Σ 卖出额 (各只至多计到其非融资可卖部分) / Σ 非融资持仓额
 void lever_sell(LiveHub &hub) {
   const auto &p = hub.plan().plan;
@@ -243,37 +270,36 @@ void lever_sell(LiveHub &hub) {
   float pct = own > 0 ? static_cast<float>(got / own * 100) : 0.f;
   const bool capped = std::lround(top) < 100;
   ImGui::BeginDisabled(cap <= 0 || hub.busy());
-  ImGui::SetNextItemWidth(ImGui::GetFontSize() * (capped ? 9 : 6));
-  if (capped)
-    ImGui::PushStyleColor(ImGuiCol_Text, kHot);
-  const bool hit = ImGui::SliderFloat("卖出", &pct, 0, 100, capped ? strf("%%.0f%%%% · 限 %.0f%%%%", top).c_str() : "%.0f%%");
-  if (capped)
-    ImGui::PopStyleColor();
-  if (hit) {
-    const auto sold = [&](double r) {
-      double s = 0;
-      for (const live::rebal::Hold &h : p->holds)
-        s += std::min(r * h.own, static_cast<double>(h.plain)) * h.px;
-      return s;
-    };
-    const double want = std::min(pct, top) / 100 * own;
-    double lo = 0, hi = 1;
-    for (int i = 0; i < 40; ++i)
-      (sold((lo + hi) / 2) < want ? lo : hi) = (lo + hi) / 2;
-    hub.edit_cfg([&](live::rebal::Cfg &c) {
-      for (const live::rebal::Hold &h : p->holds)
-        if (const int m = live::rebal::snap(h, 0, std::min(hi * h.own, static_cast<double>(h.plain))); m > 0)
-          c.sells[h.code] = m;
-        else
-          c.sells.erase(h.code);
-    });
-  }
-  ImGui::EndDisabled();
+  const bool drag = cap_slider("##lever_sell", pct, top, ImGui::GetFontSize() * (capped ? 9 : 6),
+                               capped ? strf("%.0f%% · 限 %.0f%%", pct, top) : strf("%.0f%%", pct), capped ? kHot : ImGui::GetStyleColorVec4(ImGuiCol_Text));
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip("非融资部分卖出比例 (占非融资持仓): 拖动即按同一比例分到各持仓的卖出滑杆 (各只至多卖到其非融资可卖部分, 按整手取最近, 不管最小单元), "
+    tip("非融资部分卖出比例 (占非融资持仓): 拖动即按同一比例分到各持仓的卖出滑杆 (各只至多卖到其非融资可卖部分, 按整手向下取, 不碰融资部分, 不管最小单元), "
         "可再逐只调 (也可拖进融资部分)\n显示 = Σ 卖出额 (各只至多计到其非融资可卖部分) / Σ 非融资持仓额\n"
-        "上限 %.0f%% = Σ 非融资可卖额 / Σ 非融资持仓额%s",
+        "上限 %.0f%% = Σ 非融资可卖额 / Σ 非融资持仓额 (非融资可卖 = 可卖 − 负债数量)%s",
         top, capped ? "\n上限不足 100%: 部分非融资仓位今日不可卖 (如今日买入), 拖不上去, 本次融资加仓做不满" : "");
+  ImGui::EndDisabled();
+  ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+  ImGui::TextUnformatted("卖出");
+  if (!drag)
+    return;
+  const auto sold = [&](double r) {
+    double s = 0;
+    for (const live::rebal::Hold &h : p->holds)
+      s += std::min(r * h.own, static_cast<double>(h.plain)) * h.px;
+    return s;
+  };
+  const double want = pct / 100 * own;
+  double lo = 0, hi = 1;
+  for (int i = 0; i < 40; ++i)
+    (sold((lo + hi) / 2) < want ? lo : hi) = (lo + hi) / 2;
+  std::map<std::string, int> to = hub.in().cfg.sells;
+  for (const live::rebal::Hold &h : p->holds)
+    if (const int m = live::rebal::snap(h, 0, std::min(hi * h.own, static_cast<double>(h.plain)), true); m > 0)
+      to[h.code] = m;
+    else
+      to.erase(h.code);
+  if (to != hub.in().cfg.sells)
+    hub.edit_cfg([&](live::rebal::Cfg &c) { c.sells = std::move(to); });
 }
 
 void rebal_ctl(LiveHub &hub, BoardState &st) {
@@ -858,7 +884,7 @@ void sell_slider(LiveHub &hub, const live::rebal::Hold &h) {
     });
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip("卖 %d 股 / 可卖 %d 股 · 非融资持仓 %d 股, 其中可卖 %d 股", n, h.avail, h.own, h.plain);
+    tip("卖 %d 股 / 可卖 %d 股 · 非融资持仓 %d 股 · 非融资可卖 %d 股 (= 可卖 − 负债数量)", n, h.avail, h.own, h.plain);
 }
 
 // 一行的调仓: 金额 (现金买 / 融资买 / 卖)、成本、悬停说明; 持仓行带卖 (h, 拖到 n 股), 名单行带两腿买 (t)

@@ -78,14 +78,17 @@ struct Hold {
   std::string code, name;
   bool financeable = false;
   double value = 0, sellable = 0;
-  int avail = 0, own = 0, plain = 0; // 可卖 / 非融资持仓 (= 持仓 − 融资部分) / 非融资可卖 (= min(可卖, 非融资持仓)) [股]
+  // 可卖 / 非融资持仓 (= 持仓 − 融资部分) / 非融资可卖 (= 可卖 − 负债数量) [股]
+  //   今日买入的不可卖, 可卖都是昨日及以前的股; 负债按全在这些股上计 (今日融资买入的会让非融资可卖少算, 宁少卖不碰融资部分)
+  int avail = 0, own = 0, plain = 0;
   double px = 0;
   int lot = 0, step = 0, sell = 0;
   std::optional<Order> order;
   std::string skip;
 };
-// 能成单的卖出股数里离 x 最近的: 0 不卖、起卖股数 (够起买股数且够 unit 元) 起按步长递增 (或连同零股)、全部可卖 (够 unit 元才有)
-int snap(const Hold &h, double unit, double x);
+// 能成单的卖出股数里离 x 最近的 (down = 不超过 x 的最大的): 0 不卖、起卖股数 (够起买股数且够 unit 元) 起按步长递增 (或连同零股)、
+//   全部可卖 (够 unit 元才有)
+int snap(const Hold &h, double unit, double x, bool down = false);
 struct Leg {
   Credit credit = Credit::Plain;
   double want = 0;
