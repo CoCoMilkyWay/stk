@@ -31,7 +31,7 @@ struct Frame {
   bool open = false; // 已落 begin
 };
 
-// 本线程: 段栈 (已落 begin 的恒为前缀) + 静默的段数 + 待并的重复事件
+// 本线程: 段栈 (已落 begin 的恒为前缀) + 静默的段数 + 待并的重复事件 + 跟随的 Track (自段 base 起) 与最近的 shim 命令
 struct Local {
   std::vector<Frame> frames;
   int quiet = 0;
@@ -39,8 +39,22 @@ struct Local {
   long rep = 0;
   Steady::time_point first, end;
   Wall::time_point end_at;
+  Track *track = nullptr;
+  size_t base = 0;
+  std::string shim;
 };
 thread_local Local L;
+
+// 跟随着即把段栈与 shim 命令整份换进 Track
+void mirror() {
+  if (!L.track)
+    return;
+  Spot s;
+  for (size_t i = L.base; i < L.frames.size(); ++i)
+    s.segs.push_back({L.frames[i].name, L.frames[i].t0});
+  s.shim = L.shim;
+  L.track->set(std::move(s));
+}
 
 std::string text(Wall::time_point at) {
   const std::time_t t = Wall::to_time_t(at);
@@ -139,6 +153,8 @@ void ev(const char *kind, Kw kw) {
 Span::Span(std::string name, Kw kw, bool loud) : unwinding_(std::uncaught_exceptions()) {
   L.frames.push_back({std::move(name), std::move(kw), Steady::now(), Wall::now(), loud});
   L.quiet += !loud;
+  L.shim.clear();
+  mirror();
 }
 
 Span::~Span() {
@@ -154,6 +170,39 @@ Span::~Span() {
     L.last = nullptr;
   }
   L.frames.pop_back();
+  assert(!L.track || L.frames.size() >= L.base);
+  L.shim.clear();
+  mirror();
+}
+
+Spot Track::now() const {
+  std::lock_guard lk(mu_);
+  return s_;
+}
+
+void Track::set(Spot s) {
+  std::lock_guard lk(mu_);
+  s_ = std::move(s);
+}
+
+Watch::Watch(Track &t) {
+  assert(!L.track);
+  L.track = &t;
+  L.base = L.frames.size();
+  L.shim.clear();
+  mirror();
+}
+
+Watch::~Watch() {
+  L.track->set({});
+  L.track = nullptr;
+}
+
+void shim_sent(std::string_view cmd) {
+  if (!L.track)
+    return;
+  L.shim = cmd;
+  mirror();
 }
 
 } // namespace trace

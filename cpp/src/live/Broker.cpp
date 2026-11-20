@@ -74,9 +74,10 @@ constexpr auto kWatchLinger = 1s; // touch 之后算有人在看的时长
 
 } // namespace
 
-// mu: State 的底稿 (轮内逐样改) 与发布的一份 (轮末整份换上)、进度、轮次与起因
+// mu: State 的底稿 (轮内逐样改) 与发布的一份 (轮末整份换上)、上轮结局、轮次与起因; 刷新线程此刻在哪另在 track
 struct Broker::Core {
   std::unique_ptr<Driver> d;
+  trace::Track track;
 
   mutable std::mutex mu;
   std::condition_variable cv;
@@ -112,10 +113,6 @@ struct Broker::Core {
     auto s = std::make_shared<State>(*st);
     edit(*s);
     st = std::move(s);
-  }
-  void note(std::string step) {
-    std::lock_guard lk(mu);
-    prog.step = std::move(step);
   }
 
   // 接上客户端; 换了进程即记下新的 who
@@ -156,7 +153,6 @@ struct Broker::Core {
   // 读一样、记进底稿: fn() → 值
   template <class T, class F>
   void put(Got<T> State::*g, F &&fn) {
-    note(State::name(g));
     trace::Span span(State::name(g));
     auto v = std::make_shared<const T>(fn());
     std::lock_guard lk(mu);
@@ -197,9 +193,9 @@ struct Broker::Core {
         return;
       n = asked;
     }
+    const trace::Watch watch(track);
     trace::Span span("刷新", {{"why", why}, {"n", n}});
     std::string down, msg;
-    note("接入");
     try { // 错误边界: 接不上报在 down, 一轮失败报在 err, 都等下一个起因再刷
       connect();
     } catch (const Fail &f) {
@@ -216,7 +212,6 @@ struct Broker::Core {
     shown = st;
     last = Clock::now();
     done = n;
-    prog.step.clear();
     prog.down = down;
     prog.err = down.empty() ? msg : "";
     cv.notify_all();
@@ -250,8 +245,13 @@ std::shared_ptr<const State> Broker::state() const {
 }
 
 Refresh Broker::refresh() const {
-  std::lock_guard lk(c_->mu);
-  return c_->prog;
+  Refresh r;
+  {
+    std::lock_guard lk(c_->mu);
+    r = c_->prog;
+  }
+  r.at = c_->track.now();
+  return r;
 }
 
 void Broker::touch() {

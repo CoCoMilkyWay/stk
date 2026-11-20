@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <map>
@@ -125,7 +126,16 @@ void order_line(const OrderJob &j, bool priv) {
            strf("%s %s", job_name(j.st), j.got.msg.c_str()));
 }
 
-// 刷新进度两行: 各样读于几时 · 行情时刻 · 接入的客户端; 次行 = 时有时无的: 接入断、在做的各路 (刷新 / 事务, 各一段「路.步…」)、
+// 一路此刻在哪: 各段「名 已用时」外 › 内, 末附最近发出的 shim 命令
+std::string where(const live::trace::Spot &s) {
+  const auto now = std::chrono::steady_clock::now();
+  std::string out;
+  for (const live::trace::Spot::Seg &g : s.segs)
+    out += strf("%s%s %.1fs", out.empty() ? "" : " › ", g.name.c_str(), std::chrono::duration<double>(now - g.t0).count());
+  return s.shim.empty() ? out : out + " · shim " + s.shim;
+}
+
+// 刷新进度两行: 各样读于几时 · 行情时刻 · 接入的客户端; 次行 = 时有时无的: 接入断、在做的各路 (刷新 = 段栈; 事务 = 「名.步」+ 段栈)、
 // 上轮刷新失败, 都没有即「空闲」
 void progress(LiveHub &hub) {
   const live::Refresh &g = hub.refresh();
@@ -144,13 +154,14 @@ void progress(LiveHub &hub) {
     sep();
     text_col(kRed, "✗ 接入: " + g.down);
   }
-  if (!g.step.empty()) {
+  if (!g.at.segs.empty()) {
     sep();
-    text_col(kHot, "刷新." + g.step + "…");
+    text_col(kHot, where(g.at) + "…");
   }
   if (const auto &t = hub.task(); t && t->st == JobSt::Run) {
     sep();
-    text_col(kHot, t->name + (t->step.empty() ? "" : "." + t->step) + "…");
+    const live::trace::Spot &a = hub.task_at();
+    text_col(kHot, t->name + (t->step.empty() ? "" : "." + t->step) + (a.segs.empty() ? "" : " : " + where(a)) + "…");
     if (!t->live.empty() && ImGui::IsItemHovered())
       tip("%s", t->live.c_str());
   }

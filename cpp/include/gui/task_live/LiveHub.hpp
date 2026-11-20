@@ -133,6 +133,7 @@ public:
   const live::Refresh &refresh() const { return prog_; }
   const Inputs &in() const { return *in_; }
   const std::shared_ptr<const Task> &task() const { return task_; } // 还没有事务 = 空
+  const live::trace::Spot &task_at() const { return task_at_; }     // 事务线程此刻在哪 (段栈空 = 不在客户端操作里)
   const std::vector<OrderJob> &orders() const { return *jobs_; }    // 新在前
   const BoardView &board() const { return board_; }
   const PlanView &plan() const { return plan_; }
@@ -156,6 +157,7 @@ private:
   live::Refresh prog_;
   std::shared_ptr<const Inputs> in_;
   std::shared_ptr<const Task> task_;
+  live::trace::Spot task_at_;
   std::shared_ptr<const std::vector<OrderJob>> jobs_;
   BoardView board_;
   PlanView plan_;

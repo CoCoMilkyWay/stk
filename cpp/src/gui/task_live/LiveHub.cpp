@@ -24,6 +24,7 @@ using live::strf;
 
 struct LiveHub::Core {
   std::unique_ptr<live::Broker> broker; // connect 时建一次, 之后只读
+  live::trace::Track track;             // 事务线程此刻在哪
 
   // mu: 三份快照 (改 = 抄一份改了换上) 与事务日志的位置
   std::mutex mu;
@@ -408,6 +409,7 @@ bool start(const std::shared_ptr<Core> &c, const char *name, std::function<void(
   for (size_t i = 0; i + kTaskKeep <= old.size(); ++i)
     disk::remove(disk::RunLiveTaskLog, old[i]);
   std::thread([c, fn = std::move(fn)] {
+    const live::trace::Watch watch(c->track);
     JobSt st = JobSt::Ok;
     std::string msg;
     try {
@@ -482,6 +484,7 @@ void LiveHub::peek() {
     task_ = c_->task;
     jobs_ = c_->jobs;
   }
+  task_at_ = c_->track.now();
   if (c_->broker) {
     st_ = c_->broker->state();
     prog_ = c_->broker->refresh();

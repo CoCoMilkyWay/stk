@@ -13,6 +13,7 @@
 // 编码: 方向 买 +1 / 卖 −1 (BySide 下标 s < 0); 市场由代码前缀定 (market_of), 新浪码 = 前缀 + 代码, AssetInfo 码 = 代码 + 后缀
 #pragma once
 
+#include "live/Trace.hpp"
 #include "misc/date.hpp"
 #include "nlohmann/json.hpp"
 
@@ -189,7 +190,7 @@ struct State {
 
 // 刷新进度
 struct Refresh {
-  std::string step; // 正做的 (空 = 闲)
+  trace::Spot at;   // 刷新线程此刻在哪 (段栈空 = 闲)
   std::string err;  // 上一轮失败原因
   std::string down; // 上一轮接不上客户端的原因 (空 = 在线)
   double every = 0; // 定时周期 [s], 0 = 不定时

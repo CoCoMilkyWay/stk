@@ -5,6 +5,8 @@
 //     段外不记 (shim 程序的命令转发、探内存、录制都在段外; 其在线用例各成一段「用例 <名>」)
 //   同一线程相邻几条除 ms 外全同的事件只记首条, 其后记一行 rep {n 又几次, ms 首条到末条}
 //   live::fail 经此: 先在当时的段路径下记一行 fail {why}, 再抛 live::Fail
+//   实时位置 Track: 线程在 Watch 作用域内时, 其段栈 (各段名 + 进入时刻) 与最近发出的 shim 命令另镜像进一个 Track,
+//     别的线程 (GUI) 随时可读作进度 (不落盘, 与段内有无事件无关)
 //   段: 刷新 {why 起因, n 轮号} › 接入 (› 引导) / 成交 / 持仓 / 挂单 / 信用账户 (只刷成交的一轮只有接入与成交);
 //     下单 {委托} › 接入 / 切换 / 开窗 / 填单 / 确认 / 回报;
 //     两融条款 › 接入 / 引导 / 标的证券 / 担保品;  资金流水 {from} › 接入 / 引导 / 窗 {lo, hi};
@@ -33,7 +35,10 @@
 #include "nlohmann/json.hpp"
 
 #include <chrono>
+#include <mutex>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace live::trace {
 
@@ -60,5 +65,34 @@ public:
 private:
   int unwinding_;
 };
+
+// 一路此刻在哪: 段栈 (外 → 内; 空 = 闲) + 最近发出的 shim 命令 (命令名 + 首个参数)
+struct Spot {
+  struct Seg {
+    std::string name;
+    std::chrono::steady_clock::time_point t0;
+  };
+  std::vector<Seg> segs;
+  std::string shim;
+};
+// 一路的实时位置: 跟随的线程写, 别的线程读
+class Track {
+public:
+  Spot now() const;
+  void set(Spot s);
+
+private:
+  mutable std::mutex mu_;
+  Spot s_;
+};
+// 当前线程在作用域内的段 (含之后进的) 与 shim 命令镜像进 t; 出作用域即清空. 一个线程同时只跟一个
+class Watch {
+public:
+  explicit Watch(Track &t);
+  ~Watch();
+  Watch(const Watch &) = delete;
+  Watch &operator=(const Watch &) = delete;
+};
+void shim_sent(std::string_view cmd); // shim::call 发出时调: 跟随着的线程记进其 Track
 
 } // namespace live::trace

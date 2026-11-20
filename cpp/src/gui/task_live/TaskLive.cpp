@@ -65,7 +65,7 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
       return {TaskStatus::Kind::Error, "down"};
     if (h.busy())
       return {TaskStatus::Kind::Busy, "running"};
-    if (!g.step.empty())
+    if (!g.at.segs.empty())
       return {TaskStatus::Kind::Busy, "refreshing"};
     if (!g.err.empty())
       return {TaskStatus::Kind::Error, "error"};

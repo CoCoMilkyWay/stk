@@ -197,6 +197,7 @@ void ensure(double timeout) {
 
 std::vector<nlohmann::json> call(const std::string &line, double timeout) {
   const std::string cmd = line.substr(0, line.find(' '));
+  trace::shim_sent(std::string_view(line).substr(0, line.find(' ', cmd.size() + 1)));
   const Clock::time_point t0 = Clock::now();
   const auto left = [&] { return timeout - std::chrono::duration<double>(Clock::now() - t0).count(); };
   std::string buf;
