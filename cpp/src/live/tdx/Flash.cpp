@@ -47,7 +47,27 @@ const Kind *kind_of(int side, Credit credit) {
   return nullptr;
 }
 
-// 本单上下文: 各步依次填写 (main 切换 / dlg 开窗 / px_s px n detail 填单 / box 确认 / msg 回报)
+// 本适配开的框: 各闪电窗 / 确认框 / 回报框
+bool ours(const std::string &title) {
+  return title == kResultTitle || std::ranges::find(kConfirmTitles, title) != kConfirmTitles.end() ||
+         std::ranges::any_of(kKinds, [&](const Kind &k) { return title == k.title; });
+}
+
+// 上一单失败、收尾之后才显示出来的闪电窗 / 确认框 / 回报框先关掉: 留着则主窗一直禁用, 切不了图表
+void sweep() {
+  const win::Tops all = win::tops();
+  win::Tops keep = all;
+  std::erase_if(keep, [](const auto &x) { return ours(x.second.title); });
+  if (keep.size() == all.size())
+    return;
+  trace::Span span("清场");
+  ui::close_new(keep);
+  for (const auto &[h, n] : win::tops())
+    if (ours(n.title))
+      fail(strf("上一单留下的「%s」关不掉", n.title.c_str()));
+}
+
+// 本单上下文: 各步依次填写 (main 切换 / dlg 开窗 / px_s px n detail 填单 / box 确认 / msg sent 回报)
 struct Ctx {
   const OrderReq &o;
   const Kind &k;
@@ -56,6 +76,7 @@ struct Ctx {
   double px = 0;
   long n = 0;
   std::string detail, msg;
+  bool sent = false; // 已点确认: 此后的 Fail = 委托可能已提交
 };
 
 bool is_num(const std::string &t) {
@@ -196,11 +217,13 @@ void confirm(Ctx &c) {
 
 // 读回报、点掉; 等回报框、确认框、闪电窗都关了才算完 (下一单紧接着切图表、开窗)
 void reply(Ctx &c) {
-  const Hwnd res = ui::popup({kResultTitle}, 10, [&] { ui::yes(c.box); });
+  const Hwnd res = ui::popup({kResultTitle}, 10, [&] { ui::yes(c.box), c.sent = true; });
   c.msg = ui::body(res);
   ui::yes(res);
-  if (c.msg.find("合同号") == std::string::npos)
+  if (c.msg.find("合同号") == std::string::npos) {
+    c.sent = false; // 回报明说没成
     fail("委托未成功: " + c.msg);
+  }
   const Hwnd mine[3] = {res, c.box, c.dlg};
   until(
       [&] {
@@ -240,6 +263,7 @@ Placed place(const OrderReq &o, const Step &step) {
   assert(k);
   assert((o.qty > 0) != (o.size > 0) && o.px > 0);
   Ctx c{.o = o, .k = *k};
+  sweep();
   const win::Tops before = win::tops();
   try {
     for (size_t i = 0; i < std::size(kStages); ++i) {
@@ -247,8 +271,10 @@ Placed place(const OrderReq &o, const Step &step) {
       step(i, c.detail);
       kStages[i].run(c);
     }
-  } catch (const Fail &) {
+  } catch (const Fail &f) {
     ui::close_new(before); // 本单弹出的各框关掉, 下一单接着做
+    if (c.sent)
+      fail("已点确认, 委托可能已提交 (先查委托再重下): " + f.why);
     throw;
   }
   trace::ev("placed", {{"qty", c.n}, {"px", c.px}, {"msg", c.msg}});

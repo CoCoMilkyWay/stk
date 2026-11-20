@@ -163,11 +163,27 @@ void settle(const Page &p, long n0, double timeout, Clock::time_point t0) {
   req::flush();
 }
 
-// before 之后新出的可见对话框
+// 无标题、无正文的对话框 = 客户端自弹的提示小窗 (如成交回报: 不模态, 关不掉, 过一会儿自己收起), 不挡界面, 一律不理;
+// 每个窗口头一回见记下其子窗口 (认它用). 调用方都持界面锁
+bool toast(const Hwnd &h, const Node &n) {
+  if (!n.title.empty() || !body(h).empty())
+    return false;
+  static std::set<Hwnd> told;
+  if (told.insert(h).second) {
+    std::vector<std::string> kids;
+    for (const Node &k : win::enum_(h))
+      if (k.depth == 1)
+        kids.push_back(strf("%s#%ld「%s」", k.cls.c_str(), k.id, win::squash(k.title).c_str()));
+    trace::ev("toast", {{"hwnd", h}, {"rect", std::vector<int>(std::begin(n.rect), std::end(n.rect))}, {"kids", kids}});
+  }
+  return true;
+}
+
+// before 之后新出的可见对话框 (提示小窗除外)
 win::Tops fresh(const win::Tops &before) {
   win::Tops out;
   for (auto &[h, n] : win::tops())
-    if (!before.contains(h) && n.cls == "#32770")
+    if (!before.contains(h) && n.cls == "#32770" && !toast(h, n))
       out.emplace(h, n);
   return out;
 }
@@ -339,7 +355,7 @@ void close_new(const win::Tops &before) {
         const win::Tops t = fresh(before);
         for (const auto &[h, n] : t)
           if (n.en) {
-            trace::ev("close", {{"title", n.title}, {"hwnd", h}});
+            trace::ev("close", {{"title", n.title}, {"hwnd", h}, {"body", body(h)}});
             win::post(h, win::kWmClose, 0);
           }
         return t.empty();
