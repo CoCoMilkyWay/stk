@@ -573,11 +573,11 @@ void info_line(LiveHub &hub, const std::set<std::string> &held) {
     return ImGui::TextDisabled("%s%s", v.wait.c_str(), v.frame ? " · 表为上一份" : "");
   if (v.frame->rows.empty())
     return ImGui::TextDisabled("无持仓");
-  const auto &orders = v.st->orders;
+  const auto &pends = v.st->pends;
   std::string s;
   int n = 0;
-  if (orders)
-    for (const live::Pending &o : orders->list)
+  if (pends)
+    for (const live::Pending &o : pends->list)
       if (!held.count(o.code)) {
         ++n;
         s += strf("%s%s %s %.0f股 @%.3f %s", s.empty() ? "" : "、", live::side_name(o.side), sec_txt(o, hub.priv()).c_str(), o.qty - o.filled, o.price,
@@ -593,23 +593,23 @@ void info_line(LiveHub &hub, const std::set<std::string> &held) {
 // 状态列: 今日成交 ●、挂单 ○, 按方向着色
 struct Flows {
   std::map<std::string, std::vector<const live::Fill *>> fills;
-  std::map<std::string, std::vector<const live::Pending *>> orders;
+  std::map<std::string, std::vector<const live::Pending *>> pends;
 };
 Flows flows_of(const live::State &s) {
   Flows f;
   if (s.fills)
     for (const live::Fill &x : s.fills->rows)
       f.fills[x.code].push_back(&x);
-  if (s.orders)
-    for (const live::Pending &x : s.orders->list)
-      f.orders[x.code].push_back(&x);
+  if (s.pends)
+    for (const live::Pending &x : s.pends->list)
+      f.pends[x.code].push_back(&x);
   return f;
 }
 void flow_cell(const Flows &f, const std::string &code, bool priv) {
   const auto fi = f.fills.find(code);
-  const auto oi = f.orders.find(code);
+  const auto oi = f.pends.find(code);
   if (priv) {
-    if (fi != f.fills.end() || oi != f.orders.end())
+    if (fi != f.fills.end() || oi != f.pends.end())
       masked();
     return;
   }
@@ -630,7 +630,7 @@ void flow_cell(const Flows &f, const std::string &code, bool priv) {
     for (const live::Fill *x : fi->second)
       tips += strf("  %s %s %.0f股 @%.3f\n", live::side_name(x->side), x->time.c_str(), x->qty, x->price);
   }
-  if (oi != f.orders.end()) {
+  if (oi != f.pends.end()) {
     mark("○", oi->second);
     tips += strf("挂单 %zu 笔\n", oi->second.size());
     for (const live::Pending *x : oi->second)
@@ -1178,7 +1178,7 @@ void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::boa
     masked();
   else {
     ImGui::Text("●%s", s.fills ? std::to_string(s.fills->rows.size()).c_str() : "-");
-    ImGui::Text("○%s", s.orders ? std::to_string(s.orders->list.size()).c_str() : "-");
+    ImGui::Text("○%s", s.pends ? std::to_string(s.pends->list.size()).c_str() : "-");
   }
   ImGui::TableSetColumnIndex(C_FIN);
   if (hub.plan().plan)

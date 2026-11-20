@@ -70,7 +70,7 @@ double value(const std::map<std::string, std::string> &c, const char *name) {
 
 } // namespace
 
-Terms pull(const Report &r) {
+Terms terms(const Report &r) {
   const Keyed<tables::Margin> mg = full<tables::Margins>(r);
   const Keyed<tables::Collat> co = full<tables::Collats>(r);
   Terms t = merge(mg, co);
@@ -78,7 +78,7 @@ Terms pull(const Report &r) {
   return t;
 }
 
-Account account() {
+Account acct() {
   const auto c = tables::read<tables::Assets>();
   Account a;
   a.assets = value(c, "担保资产");

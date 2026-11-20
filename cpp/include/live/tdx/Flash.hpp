@@ -19,7 +19,7 @@
 namespace live::tdx::flash {
 
 const std::vector<std::string> &steps();
-// 当前线程跑完 (须持界面锁); 每步开头 step(i, 概要) 报进度 (概要填单后才有)
-Placed place(const OrderReq &o, const Step &step);
+// 当前线程跑完 (须持界面锁); 每步开头 r.step(步名), 填单后 r.live(本单概要)
+Placed place(const OrderReq &o, const Report &r);
 
 } // namespace live::tdx::flash

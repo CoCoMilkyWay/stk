@@ -8,7 +8,7 @@
 
 namespace live::tdx::credit {
 
-Terms pull(const Report &r);
-Account account();
+Terms terms(const Report &r);
+Account acct();
 
 } // namespace live::tdx::credit

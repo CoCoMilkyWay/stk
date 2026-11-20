@@ -188,6 +188,12 @@ struct CashFlows {
   static void check(const Row &r); // 带股数的行有代码
 };
 
+// 各表按 Driver 的用处分三组: 读四样 (信用账户 = 信用资产 + 融资负债) / 拉两融条款 / 拉资金流水
+inline constexpr std::tuple<Fills, Positions, Pendings, Assets, Debts> kReads{};
+inline constexpr std::tuple<Margins, Collats> kTerms{};
+inline constexpr std::tuple<CashFlows> kFlows{};
+inline constexpr auto kAll = std::tuple_cat(kReads, kTerms, kFlows);
+
 // S 的各布局里插件发过的那个 (直发有入参可照搬); 都没发过 → 空
 template <class S>
 const cols::View *seen() {

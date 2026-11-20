@@ -1,14 +1,13 @@
 // 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Driver 并登记进 live/Clients.hpp, 上层 (gui/task_live) 只认这里的类型与 Broker
 //   Driver (一个客户端一份): 同步, 调用线程跑完; 刷新线程与事务线程会同时调, 自身线程安全
 //     接: connect 接上客户端 (换了进程即重接, 接上即可读) → 是谁
-//     读: fills / positions / pendings / account 四样同形, 一轮按此序
-//     拉: terms / flows 两样同形 (慢, 事务里跑, 进度经 Report)
-//     写: place 一张限价单 (逐步报进度, steps 即各步名)
-//   Broker (券商无关, 只此一份): 包一个 Driver + 刷新线程; 读由刷新线程发布, 拉 / 写由调用线程跑 (段 + 接上 + Driver), 两类同一个接入
+//     读: fills / pos / pends / acct 四样同形 (与 State 的四样同名), 一轮按此序
+//     事务: 拉 terms / flows (慢) 与写 place (一张限价单, steps 即各步名) 三样同形, 末参 Report 报进度
+//   Broker (券商无关, 只此一份): 包一个 Driver + 刷新线程; 读由刷新线程发布, 事务由调用线程跑 (段 + 接上 + Driver), 两类同一个接入
 //     读: 一轮四样逐样读进底稿, 轮末 (成败都) 整份发布 (State, 不可变; 指针换了 = 换了一份), 上层不见半轮; 有人在看 (touch) 才转
 //       起因: request 要一轮 (不等) / sync 要一轮并等完 / 有人在看而还没刷过或距上轮满 every 秒 /
 //       下单成功后隔几秒 (限价单可能稍后才成交). 失败不自动重试, 等下一个起因
-//       hush (批量下单期间不扫客户端): 只认 request / sync, 不自起、不排下单后的
+//       Hush 守卫 (批量下单期间不扫客户端): 只认 request / sync, 不自起、不排下单后的
 //   客户端状态与预期不符 (界面没弹出 / 应答不认识 / 回报失败) 是外部结局, 不是本程序的错: fail 先在当时的段下记一行 (live/Trace.hpp)
 //   再抛 Fail, 在各轮 / 各事务的边界收成原因文本; 本程序自身的不变式一律 assert
 // 编码: 方向 买 +1 / 卖 −1 (BySide 下标 s < 0); 市场由代码前缀定 (market_of), 新浪码 = 前缀 + 代码, AssetInfo 码 = 代码 + 后缀
@@ -33,13 +32,9 @@ struct Fail {
   std::string why;
 };
 [[noreturn]] void fail(std::string why);
-inline void need(bool ok, const char *why) {
+inline void need(bool ok, std::string_view why) {
   if (!ok)
-    fail(why);
-}
-inline void need(bool ok, const std::string &why) {
-  if (!ok)
-    fail(why);
+    fail(std::string(why));
 }
 std::string strf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 std::string clock_now(); // 本地时刻 HH:MM:SS
@@ -81,21 +76,23 @@ struct Position : Sec {
   std::optional<double> collateral;                      // 担保折算率
   bool operator==(const Position &) const = default;
 };
-struct Fill : Sec {
+// 一笔委托 (成交 / 挂单共有)
+struct Entrust : Sec {
   std::string time; // HH:MM:SS
   int side = kBuy;
-  double price = 0, qty = 0, amount = 0; // 价 / 股 / 元
-  std::string fill_id, order_id;
+  double price = 0, qty = 0; // 价 / 股
+  std::string order_id;
+  bool operator==(const Entrust &) const = default;
+};
+struct Fill : Entrust {
+  double amount = 0; // 元
+  std::string fill_id;
   bool operator==(const Fill &) const = default;
 };
 // 还挂着的委托
-struct Pending : Sec {
-  std::string time;
-  int side = kBuy;
+struct Pending : Entrust {
   std::string kind, status; // 委托类别 / 已报 · 部成 …
-  double price = 0, qty = 0;
-  std::string order_id;
-  double filled = 0; // 已成 [股]
+  double filled = 0;        // 已成 [股]
   bool operator==(const Pending &) const = default;
 };
 // 一只当日成交的合计: {方向: Σ 股} / {方向: Σ 元}
@@ -173,7 +170,7 @@ struct State {
   std::string who; // 客户端 (进程)
   Got<Fills> fills;
   Got<Keyed<Position>> pos;
-  Got<Keyed<Pending>> orders;
+  Got<Keyed<Pending>> pends;
   Got<Account> acct;
 
   static const char *name(Got<Fills> State::*) { return "成交"; }
@@ -185,7 +182,7 @@ struct State {
   void each(F &&f) const {
     f(name(&State::fills), fills.at);
     f(name(&State::pos), pos.at);
-    f(name(&State::orders), orders.at);
+    f(name(&State::pends), pends.at);
     f(name(&State::acct), acct.at);
   }
 };
@@ -215,9 +212,8 @@ struct Placed {
   double qty = 0, px = 0;
   std::string msg;
 };
-// 下单进度: at = steps 下标; detail 非空即更新概要
-using Step = std::function<void(size_t at, const std::string &detail)>;
-// 长事务的报告: log 记一条 (种类 + 文字给页面 + 字段落盘), live 实时进度一行 (覆盖上一行), step 走到哪一步 (短词, 状态标签的第二级); 缺省不报
+// 事务的报告: log 记一条 (种类 + 文字给页面 + 字段落盘), live 实时进度一行 (覆盖上一行; 下单即本单概要),
+//   step 走到哪一步 (短词, 状态标签的第二级; 下单即 steps 之一); 缺省不报
 struct Report {
   std::function<void(const char *kind, std::string text, nlohmann::json kw)> log = [](const char *, std::string, nlohmann::json) {};
   std::function<void(std::string line)> live = [](std::string) {};
@@ -232,15 +228,15 @@ public:
   virtual std::string connect() = 0;
 
   virtual Fills fills() = 0;
-  virtual Keyed<Position> positions() = 0;
-  virtual Keyed<Pending> pendings() = 0;
-  virtual Account account() = 0;
+  virtual Keyed<Position> pos() = 0;
+  virtual Keyed<Pending> pends() = 0;
+  virtual Account acct() = 0;
 
   virtual Terms terms(const Report &r) = 0;                                 // 两融条款全表
   virtual std::vector<CashFlow> flows(misc::Ymd from, const Report &r) = 0; // from 日起 (含; 0 = 开户起) 至昨日的资金流水
+  virtual Placed place(const OrderReq &o, const Report &r) = 0;             // 停在失败的那一步
 
-  virtual const std::vector<std::string> &steps() const = 0;
-  virtual Placed place(const OrderReq &o, const Step &step) = 0; // 停在失败的那一步
+  virtual const std::vector<std::string> &steps() const = 0; // place 的各步名
 };
 
 // 券商无关的客户端 (见文件头); 刷新线程持核心的 shared_ptr, 析构只置停 (在途的一问做完即退)
@@ -259,14 +255,25 @@ public:
   void touch();         // GUI 每帧: 有人在看
   void request();       // 要一轮 (不等)
   void sync();          // 要一轮并等它刷完; 失败 → Fail
-  void hush(bool on);   // 批量下单期间: 只跑要的轮 (request / sync), 不自起刷新、不排下单后的
   void every(double s); // 定时周期 [s], 0 = 不定时
+
+  // 批量下单期间: 只跑要的轮 (request / sync), 不自起刷新、不排下单后的; 出作用域即恢复
+  class Hush {
+  public:
+    explicit Hush(Broker &b);
+    ~Hush();
+    Hush(const Hush &) = delete;
+    Hush &operator=(const Hush &) = delete;
+
+  private:
+    Core &c_;
+  };
 
   Terms terms(const Report &r);
   std::vector<CashFlow> flows(misc::Ymd from, const Report &r);
+  Placed place(const OrderReq &o, const Report &r);
 
   const std::vector<std::string> &steps() const;
-  Placed place(const OrderReq &o, const Step &step);
 
 private:
   std::shared_ptr<Core> c_;

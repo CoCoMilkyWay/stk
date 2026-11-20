@@ -72,15 +72,16 @@ void sweep() {
       fail(strf("上一单留下的「%s」关不掉", n.title.c_str()));
 }
 
-// 本单上下文: 各步依次填写 (main 切换 / dlg 开窗 / px_s px n detail 填单 / box 确认 / msg sent 回报)
+// 本单上下文: 各步依次填写 (main 切换 / dlg 开窗 / px_s px n 填单 / box 确认 / msg sent 回报)
 struct Ctx {
   const OrderReq &o;
   const Kind &k;
+  const Report &r;
   Hwnd main, dlg, box;
   std::string px_s;
   double px = 0;
   long n = 0;
-  std::string detail, msg;
+  std::string msg;
   bool sent = false; // 已点确认: 此后的 Fail = 委托可能已提交
 };
 
@@ -232,7 +233,7 @@ void form(Ctx &c) {
     };
     until([&] { return strf("预估 %ld 股, 现为「%s」", c.n, win::text(est).c_str()); }, [&] { return shares() == c.n; }, 1);
   }
-  c.detail = strf("%ld股 @ %s (最大 %ld)", c.n, c.px_s.c_str(), cap);
+  c.r.live(strf("%ld股 @ %s (最大 %ld)", c.n, c.px_s.c_str(), cap));
 }
 
 void confirm(Ctx &c) {
@@ -288,18 +289,18 @@ const std::vector<std::string> &steps() {
   return s;
 }
 
-Placed place(const OrderReq &o, const Step &step) {
+Placed place(const OrderReq &o, const Report &r) {
   const Kind *k = kind_of(o.side, o.credit);
   assert(k);
   assert((o.qty > 0) != (o.size > 0) && o.px > 0);
-  Ctx c{.o = o, .k = *k};
+  Ctx c{.o = o, .k = *k, .r = r};
   sweep();
   const win::Tops before = win::tops();
   try {
-    for (size_t i = 0; i < std::size(kStages); ++i) {
-      trace::Span span(kStages[i].name);
-      step(i, c.detail);
-      kStages[i].run(c);
+    for (const Stage &s : kStages) {
+      trace::Span span(s.name);
+      r.step(s.name);
+      s.run(c);
     }
   } catch (const Fail &f) {
     ui::close_new(before); // 本单弹出的各框关掉, 下一单接着做

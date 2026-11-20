@@ -95,7 +95,7 @@ struct Broker::Core {
     cv.notify_all();
     return n;
   }
-  // 刚下过单: 隔几秒各刷一次 (hush 着不排)
+  // 刚下过单: 隔几秒各刷一次 (Hush 着不排)
   void kick() {
     std::lock_guard lk(mu);
     if (hushed)
@@ -126,7 +126,7 @@ struct Broker::Core {
     if (who != st->who)
       draft([&](State &x) { x.who = std::move(who); });
   }
-  // 一次拉 / 写: 段 (who {kw}) + 接上客户端, 当前线程跑 fn
+  // 一件事务 (拉 / 写): 段 (who {kw}) + 接上客户端, 当前线程跑 fn
   template <class F>
   auto txn(const char *who, trace::Kw kw, F &&fn) {
     trace::Span span(who, std::move(kw));
@@ -174,15 +174,15 @@ struct Broker::Core {
   void round() {
     for (int i = 0; i < kSyncTries; ++i) {
       put(&State::fills, [&] { return d->fills(); });
-      put(&State::pos, [&] { return d->positions(); });
+      put(&State::pos, [&] { return d->pos(); });
       const std::shared_ptr<const State> s = snap();
       if (std::all_of(s->pos->list.begin(), s->pos->list.end(), [&](const Position &h) { return synced(h, s->fills->by_code.find(h.code)); }))
         break;
       trace::ev("unsynced", {{"try", i + 1}});
     }
-    put(&State::orders, [&] { return d->pendings(); });
+    put(&State::pends, [&] { return d->pends(); });
     put(&State::acct, [&] {
-      Account a = d->account();
+      Account a = d->acct();
       a.held = snap()->pos.v;
       return a;
     });
@@ -273,13 +273,6 @@ void Broker::sync() {
     fail("刷新失败: " + c_->prog.err);
 }
 
-void Broker::hush(bool on) {
-  std::lock_guard lk(c_->mu);
-  c_->hushed = on;
-  if (on)
-    c_->kicks.clear();
-}
-
 void Broker::every(double s) {
   assert(s >= 0);
   {
@@ -287,6 +280,18 @@ void Broker::every(double s) {
     c_->prog.every = s;
   }
   c_->cv.notify_all();
+}
+
+Broker::Hush::Hush(Broker &b) : c_(*b.c_) {
+  std::lock_guard lk(c_.mu);
+  assert(!c_.hushed);
+  c_.hushed = true;
+  c_.kicks.clear();
+}
+
+Broker::Hush::~Hush() {
+  std::lock_guard lk(c_.mu);
+  c_.hushed = false;
 }
 
 Terms Broker::terms(const Report &r) {
@@ -297,12 +302,12 @@ std::vector<CashFlow> Broker::flows(misc::Ymd from, const Report &r) {
   return c_->txn("资金流水", {{"from", from}}, [&] { return c_->d->flows(from, r); });
 }
 
-const std::vector<std::string> &Broker::steps() const { return c_->d->steps(); }
-
-Placed Broker::place(const OrderReq &o, const Step &step) {
-  const Placed p = c_->txn("下单", to_json(o), [&] { return c_->d->place(o, step); });
+Placed Broker::place(const OrderReq &o, const Report &r) {
+  const Placed p = c_->txn("下单", to_json(o), [&] { return c_->d->place(o, r); });
   c_->kick();
   return p;
 }
+
+const std::vector<std::string> &Broker::steps() const { return c_->d->steps(); }
 
 } // namespace live

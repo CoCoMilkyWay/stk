@@ -33,29 +33,29 @@ public:
       req::arm(heap_);
       pid = heap_->pid();
     }
-    prime<tables::Fills, tables::Positions, tables::Pendings, tables::Assets, tables::Debts>();
+    prime(tables::kReads);
     return strf("tdxw.exe pid %d", pid);
   }
 
   Fills fills() override { return tables::read<tables::Fills>(); }
-  Keyed<Position> positions() override { return tables::read<tables::Positions>(); }
-  Keyed<Pending> pendings() override { return tables::read<tables::Pendings>(); }
-  Account account() override { return credit::account(); }
+  Keyed<Position> pos() override { return tables::read<tables::Positions>(); }
+  Keyed<Pending> pends() override { return tables::read<tables::Pendings>(); }
+  Account acct() override { return credit::acct(); }
 
   Terms terms(const Report &r) override {
-    prime<tables::Margins, tables::Collats>();
-    return credit::pull(r);
+    prime(tables::kTerms);
+    return credit::terms(r);
   }
   std::vector<CashFlow> flows(misc::Ymd from, const Report &r) override {
-    prime<tables::CashFlows>();
-    return flow::pull(from, r);
+    prime(tables::kFlows);
+    return flow::flows(from, r);
+  }
+  Placed place(const OrderReq &o, const Report &r) override {
+    const auto g = gate();
+    return flash::place(o, r);
   }
 
   const std::vector<std::string> &steps() const override { return flash::steps(); }
-  Placed place(const OrderReq &o, const Step &step) override {
-    const auto g = gate();
-    return flash::place(o, step);
-  }
 
 private:
   // 占界面锁; 被占着即等, 记下等了多久
@@ -69,9 +69,9 @@ private:
     return g;
   }
 
-  // 引导表 S…: 插件还没发过的各经界面查一次 (其引导页), 末了回持仓页 (持仓缺也由它补)
+  // 引导一组表 S…: 插件还没发过的各经界面查一次 (其引导页), 末了回持仓页 (持仓缺也由它补)
   template <class... S>
-  void prime() {
+  void prime(std::tuple<S...>) {
     std::vector<ui::Open> miss;
     ((tables::seen<S>() ? void() : miss.push_back(S::kOpen)), ...);
     if (miss.empty())

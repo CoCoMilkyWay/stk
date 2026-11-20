@@ -38,8 +38,8 @@ constexpr long kHostId = 59649, kHold = 0x271D, kCancel = 0x2716;
 
 std::string query() {
   std::string s;
-  for (const ui::Open &o : {tables::Fills::kOpen, tables::Positions::kOpen, tables::Pendings::kOpen, tables::Assets::kOpen, tables::Debts::kOpen, tables::CashFlows::kOpen})
-    s += strf("%s%s %d 条", s.empty() ? "" : " · ", o.page, ui::open(o).count.read());
+  std::apply([&](auto... t) { ((s += strf("%s%s %d 条", s.empty() ? "" : " · ", decltype(t)::kOpen.page, ui::open(decltype(t)::kOpen).count.read())), ...); },
+             std::tuple_cat(tables::kReads, tables::kFlows));
   return s;
 }
 
@@ -74,21 +74,20 @@ std::string read() {
   const Keyed<Pending> o = read_one<tables::Pendings>();
   const std::map<std::string, std::string> c = read_one<tables::Assets>();
   const Keyed<Debt> d = read_one<tables::Debts>();
-  const Account a = credit::account();
+  const Account a = credit::acct();
   return strf("成交 %zu · 持仓 %zu · 挂单 %zu · 信用资产 %zu 项 · 融资负债 %zu · 净资产 %.2f", f.rows.size(), pos.list.size(), o.list.size(), c.size(), d.list.size(), a.net);
 }
 
 std::string flows() {
-  std::ignore = ui::open(tables::CashFlows::kOpen);
+  std::apply([](auto... t) { (std::ignore = ui::open(decltype(t)::kOpen), ...); }, tables::kFlows);
   const misc::Ymd from = misc::add_days(misc::today_ymd(), -14);
-  const std::vector<CashFlow> f = flow::pull(from, {});
+  const std::vector<CashFlow> f = flow::flows(from, {});
   return strf("%d 起 %zu 条", from, f.size());
 }
 
 std::string terms() {
-  for (const ui::Open &o : {tables::Margins::kOpen, tables::Collats::kOpen})
-    std::ignore = ui::open(o);
-  const Terms t = credit::pull({});
+  std::apply([](auto... t) { (std::ignore = ui::open(decltype(t)::kOpen), ...); }, tables::kTerms);
+  const Terms t = credit::terms({});
   return strf("%zu 只", t.size());
 }
 
@@ -127,16 +126,10 @@ std::string fields() {
   const Schema s = schema(*mem::attach());
   int n = 0;
   std::string bad;
-  fields_of<tables::Positions>(s, n, bad);
-  fields_of<tables::Fills>(s, n, bad);
-  fields_of<tables::Pendings>(s, n, bad);
-  fields_of<tables::Debts>(s, n, bad);
-  fields_of<tables::Assets>(s, n, bad);
-  fields_of<tables::Margins>(s, n, bad);
-  fields_of<tables::Collats>(s, n, bad);
-  fields_of<tables::CashFlows>(s, n, bad);
+  std::apply([&](auto... t) { (fields_of<decltype(t)>(s, n, bad), ...); }, tables::kAll);
   need(bad.empty(), bad);
-  return strf("%s: 字段 %zu · 功能 %zu · 8 表 %d 列对上", std::filesystem::path(s.file).filename().c_str(), s.fields.size(), s.funcs.size(), n);
+  return strf("%s: 字段 %zu · 功能 %zu · %zu 表 %d 列对上", std::filesystem::path(s.file).filename().c_str(), s.fields.size(), s.funcs.size(),
+              std::tuple_size_v<decltype(tables::kAll)>, n);
 }
 
 struct Case {

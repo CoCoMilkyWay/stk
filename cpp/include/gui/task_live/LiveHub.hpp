@@ -151,7 +151,7 @@ private:
   std::shared_ptr<Core> c_;
   const live::Client *client_ = nullptr;
   bool priv_ = false;
-  misc::Ymd tried_[2] = {}; // 两样拉取 (条款 / 流水) 上次自动拉的日子
+  misc::Ymd tried_[2] = {}; // 两样拉取 (条款 / 流水, 同 kPulls 序) 上次自动拉的日子
   std::shared_ptr<const live::State> st_;
   live::Refresh prog_;
   std::shared_ptr<const Inputs> in_;

@@ -26,7 +26,7 @@ std::vector<CashFlow> ask(misc::Ymd lo, misc::Ymd hi) {
 
 } // namespace
 
-std::vector<CashFlow> pull(misc::Ymd from, const Report &r) {
+std::vector<CashFlow> flows(misc::Ymd from, const Report &r) {
   const misc::Ymd end = misc::add_days(misc::today_ymd(), -1);
   std::vector<std::vector<CashFlow>> wins; // 日序
   const auto one = [&](misc::Ymd lo, misc::Ymd hi) {
