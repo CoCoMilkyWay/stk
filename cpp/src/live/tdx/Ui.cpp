@@ -65,15 +65,42 @@ std::vector<Node> func_trees() {
 }
 
 // ---------- 页 ----------
-// 认页、取件只用 find / rect (不经界面线程, 客户端查大表卡着时照样答); 读表头的 detail 经界面线程
+// 认页、取件只用 find / rect (不经界面线程, 客户端查大表卡着时照样答); 读表头的 detail 经界面线程.
+// 页开过即一直留着 (隐藏), 其表头列名与查询键 / 条数标签不变: 每页头一回见时读一遍记下 (同一宿主下; 宿主换了即全忘),
+//   此后认页、等空闲都不再读 (查完大表界面线程还要卡一阵画表, 那时的 detail 要等它; find 一次就要几十 ms). 调用方都持界面锁
 
+// 记下的一页
+struct Known {
+  bool read = false;              // 表头读过
+  std::vector<std::string> cols;  // 表头列名 (没有列表 = 空)
+  bool probed = false;            // 查询键 / 条数标签找过
+  std::optional<Hwnd> key, count; // 查询键 / 条数标签 (没有 = 空)
+};
+struct Seen {
+  Hwnd host;                  // 交易栏页宿主
+  std::map<Hwnd, Known> page; // 页 → 记下的
+};
+Seen &seen() {
+  static Seen s;
+  return s;
+}
+
+// 宿主: 记下的那个还在且可见即用它 (rect 一问), 否则重找; 换了即忘掉记下的各页
 Hwnd host() {
+  Seen &k = seen();
+  if (!k.host.empty()) {
+    const Node n = win::node(k.host);
+    if (n.vis && n.cls == "AfxWnd100" && n.id == kHostId)
+      return k.host;
+  }
   std::vector<Hwnd> hs;
   for (const Node &n : win::find("AfxWnd100", kHostId))
     if (n.vis)
       hs.push_back(n.hwnd);
   if (hs.size() != 1)
     fail(strf("交易栏页宿主 (AfxWnd100 %ld) 可见的有 %zu 个", kHostId, hs.size()));
+  if (hs[0] != k.host)
+    k = {hs[0], {}};
   return hs[0];
 }
 
@@ -105,38 +132,53 @@ std::optional<Hwnd> kid(const Hwnd &dlg, const char *cls, std::span<const long> 
   return hs.empty() ? std::nullopt : std::optional<Hwnd>(hs[0]);
 }
 
-Page page_of(const Hwnd &dlg) {
-  const std::optional<Hwnd> k = kid(dlg, "Button", kKeys), c = kid(dlg, "Static", kCounts);
-  if (!k || !c)
-    fail(strf("页 %s 上没有查询键或条数标签", dlg.c_str()));
-  return {dlg, *k, Count{*c}};
+// 页 dlg 记下的查询键 / 条数标签 (头一回即找)
+const Known &probe(const Hwnd &dlg) {
+  Known &k = seen().page[dlg];
+  if (!k.probed) {
+    k.key = kid(dlg, "Button", kKeys);
+    k.count = kid(dlg, "Static", kCounts);
+    k.probed = true;
+  }
+  return k;
 }
 
-// 各页 → 其列表的表头
-std::map<Hwnd, std::vector<Hwnd>> heads(const Hwnd &host) {
+Page page_of(const Hwnd &dlg) {
+  const Known &k = probe(dlg);
+  if (!k.key || !k.count)
+    fail(strf("页 %s 上没有查询键或条数标签", dlg.c_str()));
+  return {dlg, *k.key, Count{*k.count}};
+}
+
+// 宿主下各页 → 记下的; 还没读过表头的读一遍 (列表与表头一次找齐, 各表头经界面线程至多等 timeout), 不在了的忘掉
+std::map<Hwnd, Known> &learn(const Hwnd &host, double timeout) {
+  std::map<Hwnd, Known> &by = seen().page;
   const std::set<Hwnd> ps = pages(host);
+  std::erase_if(by, [&](const auto &e) { return !ps.contains(e.first); });
+  std::set<Hwnd> fresh;
+  for (const Hwnd &p : ps)
+    if (!by[p].read)
+      fresh.insert(p);
+  if (fresh.empty())
+    return by;
   std::map<Hwnd, Hwnd> page_of_list;
   for (const Node &n : win::find("SysListView32"))
-    if (ps.contains(n.parent))
+    if (fresh.contains(n.parent))
       page_of_list[n.hwnd] = n.parent;
-  std::map<Hwnd, std::vector<Hwnd>> out;
   for (const Node &n : win::find("SysHeader32"))
     if (const auto it = page_of_list.find(n.parent); it != page_of_list.end())
-      out[it->second].push_back(n.hwnd);
-  return out;
+      for (const Item &x : win::layer_of(shim::cmd_wait(timeout, "detail", n.hwnd).at(0)).items)
+        if (x.text)
+          by[it->second].cols.push_back(*x.text);
+  for (const Hwnd &p : fresh)
+    by[p].read = true;
+  return by;
 }
 
-// 表头 hs 认得出 o 那页: 含 o.col 且不含 o.without
-bool fits(const std::vector<Hwnd> &hs, const Open &o, double timeout) {
-  bool has = false;
-  for (const Hwnd &h : hs)
-    for (const Item &it : win::layer_of(shim::cmd_wait(timeout, "detail", h).at(0)).items)
-      if (it.text) {
-        if (o.without && *it.text == o.without)
-          return false;
-        has = has || *it.text == o.col;
-      }
-  return has;
+// 表头列名 cols 认得出 o 那页: 含 o.col 且不含 o.without
+bool fits(const std::vector<std::string> &cols, const Open &o) {
+  const auto has = [&](const char *c) { return std::find(cols.begin(), cols.end(), c) != cols.end(); };
+  return has(o.col) && !(o.without && has(o.without));
 }
 std::string what(const Open &o) { return strf("表头含「%s」%s", o.col, o.without ? strf("不含「%s」", o.without).c_str() : ""); }
 
@@ -150,7 +192,7 @@ void idle(const Hwnd &host, double timeout) {
           if (s.size() != 1)
             return false;
           win::disables(host);
-          const std::optional<Hwnd> k = kid(s[0], "Button", kKeys);
+          const std::optional<Hwnd> &k = probe(s[0]).key;
           return !k || win::node(*k).en;
         },
         timeout, 0.01);
@@ -255,16 +297,18 @@ int Count::read() const {
 }
 
 // 认目标页: act 前认得出的页 (须至多一个: 多了即分不清 act 后显示的是不是它) 记下其查询键的禁用次数; act 后显示出来的页是它即是,
-// 是 act 前没有的页 (头一回开) 即禁用次数从 0 起等它查完再核表头 (查着时界面线程卡住, detail 等不到;
-// 大表 (标的证券 / 担保品) 查询键恢复后界面线程还要卡一阵画表, 核表头的 detail 随之等, 至多 timeout)
+// 是 act 前没有的页 (头一回开) 即禁用次数从 0 起等它查完再读表头核对 (查着时界面线程卡住, detail 等不到;
+// 大表 (标的证券 / 担保品) 查询键恢复后界面线程还要卡一阵画表, 读表头的 detail 随之等, 至多 timeout)
 Page query(const Open &o, const std::function<void()> &act, double timeout) {
   const Hwnd h = host();
   idle(h, timeout);
-  const std::set<Hwnd> before = pages(h);
+  std::set<Hwnd> before;
   std::map<Hwnd, long> cand;
-  for (const auto &[dlg, hs] : heads(h))
-    if (fits(hs, o, timeout))
+  for (const auto &[dlg, k] : learn(h, timeout)) {
+    before.insert(dlg);
+    if (fits(k.cols, o))
       cand[dlg] = win::disables(page_of(dlg).key);
+  }
   if (cand.size() > 1)
     fail(strf("%s的页有 %zu 个", what(o).c_str(), cand.size()));
   const Clock::time_point t0 = Clock::now();
@@ -285,7 +329,7 @@ Page query(const Open &o, const std::function<void()> &act, double timeout) {
       timeout);
   const Page p = page_of(dlg);
   settle(p, n0, timeout, t0);
-  if (!cand.contains(dlg) && !fits(heads(h)[dlg], o, timeout))
+  if (!cand.contains(dlg) && !fits(learn(h, timeout)[dlg].cols, o))
     fail(strf("新开的页 %s 不是%s的页", dlg.c_str(), what(o).c_str()));
   return p;
 }

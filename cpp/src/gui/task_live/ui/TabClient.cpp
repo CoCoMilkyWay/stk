@@ -540,10 +540,11 @@ void RenderTabClient(LiveHub &hub, ClientState &st) {
   if (ImGui::IsItemHovered())
     tip("走 gdiwatch 增量推流 + 窗口树代数变化自动更新");
   ImGui::SameLine();
-  if (st.interact)
+  const bool hot = st.interact; // 勾选本帧即改了 st.interact: Push / Pop 须按同一个值配对
+  if (hot)
     ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
   ImGui::Checkbox("交互透传", &st.interact);
-  if (st.interact)
+  if (hot)
     ImGui::PopStyleColor();
   if (ImGui::IsItemHovered())
     tip("勾选后, 画布上的鼠标点击/滚轮与键盘输入直接投递给客户端 (不动真实光标)");

@@ -201,13 +201,19 @@ int seen_func() {
   const auto it = std::find_if(S::kFuncs.begin(), S::kFuncs.end(), [](int f) { return req::seen(f); });
   return it == S::kFuncs.end() ? 0 : *it;
 }
+// 直发 S 用的功能号; 插件都没发过 → Fail
+template <class S>
+int func_of() {
+  const int f = seen_func<S>();
+  need(f != 0, "%s: 插件还没发过 (先经界面查一次), 入参无从照搬", S::kName);
+  return f;
+}
 
 // 直发读表 S 的各行: 功能号取插件发过的那个; over 覆盖入参 (字段号 → 值)
 template <class S>
 std::vector<typename S::Row> rows(const std::map<int, std::string> &over = {}) {
-  const int f = seen_func<S>();
-  need(f != 0, "%s: 插件还没发过 (先经界面查一次), 入参无从照搬", S::kName);
-  const req::Answer a = req::ask(f, over);
+  const int f = func_of<S>();
+  const req::Answer a = std::move(req::ask({req::Ask{f, over}})[0]);
   return cols::parse<S>(f, a.cols, a.rows);
 }
 
@@ -217,13 +223,26 @@ auto read(const std::map<int, std::string> &over = {}) {
   return S::Index::build(S::kName, rows<S>(over));
 }
 
+// 直发读一组表 S… (一并发出、同时在途, 分页的各自翻到底) → 各自的索引, 序同 S…
+template <class... S>
+auto read(std::tuple<S...>) {
+  const std::array<int, sizeof...(S)> f{func_of<S>()...};
+  std::vector<req::Ask> asks;
+  for (const int x : f)
+    asks.push_back({x, {}});
+  const std::vector<req::Answer> a = req::ask(std::move(asks));
+  return [&]<size_t... I>(std::index_sequence<I...>) {
+    return std::tuple{S::Index::build(S::kName, cols::parse<S>(f[I], a[I].cols, a[I].rows))...};
+  }(std::index_sequence_for<S...>{});
+}
+
 // 组合查询 (各表须插件已发过, Driver 先经界面引导):
-//   信用账户 = 信用资产 (各项「名称 → 数值」) + 各只融资负债
-//   两融条款 = 标的证券 × 担保品两表各翻页到底 (担保品近万只, 约十余页), 以 (市场, 代码) 为键, 合成时按代码归一 (跨市场同号的只留 market_of 那只)
+//   读四样 = 成交 / 持仓 / 挂单 / 信用资产 / 融资负债五表一趟直发; 信用账户 = 信用资产 (各项「名称 → 数值」) + 各只融资负债
+//   两融条款 = 标的证券 × 担保品两表一并各翻页到底 (担保品近万只, 约十余页), 以 (市场, 代码) 为键, 合成时按代码归一 (跨市场同号的只留 market_of 那只)
 //   资金流水 = from 日起 (含) 至昨日 (客户端只给到上一日), 按窗 (客户端一次至多查 30 天) 覆盖起止日入参直发, 各窗应答按日接起;
 //     from = 0 即从昨日往前逐窗查到连续几窗无流水 (开户前)
-Account read_acct();
-Terms read_terms();
-std::vector<CashFlow> read_flows(misc::Ymd from);
+Reads reads();
+Terms terms();
+std::vector<CashFlow> flows(misc::Ymd from);
 
 } // namespace live::tdx::tables

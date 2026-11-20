@@ -1,12 +1,12 @@
 // 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Driver 并登记进 live/Clients.hpp, 上层 (gui/task_live) 只认这里的类型与 Broker
 //   Driver (一个客户端一份): 同步, 调用线程跑完; 刷新线程与事务线程会同时调, 自身线程安全
 //     接: connect 接上客户端 (换了进程即重接, 接上即可读) → 是谁
-//     读: fills / pos / pends / acct 四样同形 (与 Snapshot 的四样同名), 一轮按此序
+//     读: read 一问读齐四样 (fills / pos / pends / acct, 与 Snapshot 的四样同名; 适配可让几张表同时在途, 一趟往返)
 //     事务: 拉 terms / flows (慢) 与写 place (一张限价单, steps 即各步名) 三样同形; 进度 (段 / 实时一行) 与记一条统一经 live::trace
 //     画面: mirror 可选, 给 GUI 复现客户端窗口 (live/Mirror.hpp)
 //   Broker (券商无关, 只此一份): 包一个 Driver + 刷新线程; 读由刷新线程发布, 事务由调用线程跑 (段 + 接上 + Driver), 两类同一个接入
-//     读: 一轮四样读进一份局部的 Snapshot, 轮末整份发布 (不可变; 指针换了 = 换了一份), 上层不见半轮也不见两轮的混合;
-//       成交与持仓两问之间又有成交即对不上, 连查至多几遍仍不对照样发布, 留给上层逐只标出 (synced).
+//     读: 一轮读进一份局部的 Snapshot, 轮末整份发布 (不可变; 指针换了 = 换了一份), 上层不见半轮也不见两轮的混合;
+//       成交与持仓读的那一刻之间又有成交即对不上, 重读至多几遍仍不对照样发布, 留给上层逐只标出 (synced).
 //       一轮失败 = 不发布、保留上一份完整的, 原因记在 err / down. 有人在看 (touch) 才转
 //       起因: request 要一轮 (不等) / sync 要一轮并等完 / 有人在看而还没刷过或距上轮满 every 秒 /
 //       下单成功后隔几秒 (限价单可能稍后才成交). 失败不自动重试, 等下一个起因
@@ -178,14 +178,17 @@ struct Account {
   Keyed<Debt> debts;                              // 按代码
 };
 
-// 客户端读到的一份: 四样同一轮读齐才整份发布 (见文件头); 信用账户与持仓同轮, 可用保证金按读时校准即以这一份为准
-struct Snapshot {
-  std::string who; // 客户端 (进程)
-  int at = -1;     // 本轮读完于 (当日秒)
+// 读一次的四样
+struct Reads {
   Fills fills;
   Keyed<Position> pos;
   Keyed<Pending> pends;
   Account acct;
+};
+// 客户端读到的一份: 四样同一轮读齐才整份发布 (见文件头); 信用账户与持仓同轮, 可用保证金按读时校准即以这一份为准
+struct Snapshot : Reads {
+  std::string who; // 客户端 (进程)
+  int at = -1;     // 本轮读完于 (当日秒)
 };
 
 // 两融条款 (一只)
@@ -257,10 +260,7 @@ public:
 
   virtual std::string connect() = 0;
 
-  virtual Fills fills() = 0;
-  virtual Keyed<Position> pos() = 0;
-  virtual Keyed<Pending> pends() = 0;
-  virtual Account acct() = 0;
+  virtual Reads read() = 0; // 成交 / 持仓 / 挂单 / 信用账户
 
   virtual Terms terms() = 0;                               // 两融条款全表
   virtual std::vector<CashFlow> flows(misc::Ymd from) = 0; // from 日起 (含; 0 = 开户起) 至昨日的资金流水

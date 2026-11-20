@@ -92,39 +92,53 @@ struct Draft {
   bool sent = false;
 };
 
-// 直发一问
-Answer ask_one(int func, const std::map<int, std::string> &over) {
-  State &s = state();
-  std::lock_guard lk(s.mu);
-  need(s.pid != 0, "请求层没接上 (req::arm)");
-  const auto l = s.last.find(func);
-  need(l != s.last.end() && s.user, "还没见过插件发功能 %d, 入参无从照搬", func);
-  std::string line = strf("req class=TdxW_MainFrame_Class 0x%08x %d %s", s.user, func, l->second.lp.c_str());
+// 一问的 req 参数: <功能号> <lParam> 入参… f=出参…; 须持 s.mu
+std::string req_args(const State &s, const Ask &q) {
+  const auto l = s.last.find(q.func);
+  need(l != s.last.end() && s.user, "还没见过插件发功能 %d, 入参无从照搬", q.func);
+  std::string line = strf("%d %s", q.func, l->second.lp.c_str());
   std::set<int> have;
   for (const In &i : l->second.ins) {
-    const std::string &v = over.contains(i.fid) ? over.at(i.fid) : i.v;
-    need(v.find(' ') == std::string::npos, "功能 %d 字段 %d 的值含空格: 「%s」", func, i.fid, v.c_str());
+    const std::string &v = q.over.contains(i.fid) ? q.over.at(i.fid) : i.v;
+    need(v.find_first_of(" ;") == std::string::npos, "功能 %d 字段 %d 的值含空格或分号: 「%s」", q.func, i.fid, v.c_str());
     line += strf(" %c%d=", i.is_int ? 'i' : 's', i.fid) + v;
     have.insert(i.fid);
   }
-  for (const auto &[fid, v] : over)
-    need(have.contains(fid), "功能 %d 的插件入参里没有字段 %d (%s)", func, fid, s.schema.name(fid).c_str());
-  const auto f = s.schema.funcs.find(func);
-  need(f != s.schema.funcs.end(), "协议字典里没有功能 %d", func);
+  for (const auto &[fid, v] : q.over)
+    need(have.contains(fid), "功能 %d 的插件入参里没有字段 %d (%s)", q.func, fid, s.schema.name(fid).c_str());
+  const auto f = s.schema.funcs.find(q.func);
+  need(f != s.schema.funcs.end(), "协议字典里没有功能 %d", q.func);
   // 各列按出参的字段号取、排成出参序 (服务器的列序未必同协议字典, 如担保品)
   line += " f=";
   for (size_t i = 0; i < f->second.out.size(); ++i)
     line += strf("%s%d", i ? "," : "", f->second.out[i]);
+  return line;
+}
+
+// 直发一趟: 各问一条 req 一并发出 (同时在途), 应答序同问序
+std::vector<Answer> ask_once(const std::vector<Ask> &qs) {
+  State &s = state();
+  std::lock_guard lk(s.mu);
+  need(s.pid != 0, "请求层没接上 (req::arm)");
+  std::string line = strf("req class=TdxW_MainFrame_Class 0x%08x", s.user);
+  for (size_t i = 0; i < qs.size(); ++i)
+    line += (i ? " ; " : " ") + req_args(s, qs[i]);
 
   const std::vector<json> r = shim::call(line, 30);
-  need(r.size() == 2, "req 应答 %zu 条", r.size());
-  const json &a = r[1];
-  need(a.at("ok").get<int>() == 1, "功能 %d 应答不可读 (ok = %d)", func, a.at("ok").get<int>());
-  Answer out{a.at("cols").get<int>(), {}, a.at("pos").get<std::string>()};
-  for (const json &row : a.at("data"))
-    out.rows.push_back(row.get<std::vector<std::string>>());
-  need(static_cast<int>(out.rows.size()) == a.at("rows").get<int>(), "req 应答行数与 data 不符");
-  trace::ev("ask", {{"func", func}, {"cols", out.cols}, {"rows", out.rows.size()}, {"pos", out.pos}});
+  need(r.size() == 2 * qs.size(), "req %zu 问应答 %zu 条", qs.size(), r.size());
+  std::vector<Answer> out;
+  out.reserve(qs.size());
+  for (size_t i = 0; i < qs.size(); ++i) {
+    const int func = qs[i].func;
+    const json &a = r[qs.size() + i];
+    need(a.at("ok").get<int>() == 1, "功能 %d 应答不可读 (ok = %d)", func, a.at("ok").get<int>());
+    Answer x{a.at("cols").get<int>(), {}, a.at("pos").get<std::string>()};
+    for (const json &row : a.at("data"))
+      x.rows.push_back(row.get<std::vector<std::string>>());
+    need(static_cast<int>(x.rows.size()) == a.at("rows").get<int>(), "功能 %d 应答行数与 data 不符", func);
+    trace::ev("ask", {{"func", func}, {"cols", x.cols}, {"rows", x.rows.size()}, {"pos", x.pos}});
+    out.push_back(std::move(x));
+  }
   return out;
 }
 
@@ -134,7 +148,9 @@ void arm(int pid) {
   State &s = state();
   std::lock_guard lk(s.mu);
   if (pid != s.pid) {
-    const std::vector<json> vs = shim::cmd_wait(30, "vtable", kJob), vu = shim::cmd_wait(30, "vtable", kUser); // 各模块拷出来扫, 给足时间
+    std::vector<json> vs, vu;
+    for (json &v : shim::cmd_wait(30, "vtable", kJob, kUser)) // 两类一趟扫 (各模块拷出来扫, 给足时间)
+      (v.at("cls") == kJob ? vs : vu).push_back(std::move(v));
     need(vs.size() == 1 && vu.size() == 1, "%s / %s 的主虚表有 %zu / %zu 张", kJob, kUser, vs.size(), vu.size());
     std::vector<Mod> mods;
     for (const json &m : shim::cmd("mods"))
@@ -222,24 +238,44 @@ bool seen(int func) {
   return s.user && s.last.contains(func);
 }
 
-Answer ask(int func, std::map<int, std::string> over) {
-  bool paged;
+std::vector<Answer> ask(std::vector<Ask> asks) {
+  std::vector<bool> paged(asks.size());
   {
     State &s = state();
     std::lock_guard lk(s.mu);
-    const auto l = s.last.find(func);
-    paged = l != s.last.end() && std::any_of(l->second.ins.begin(), l->second.ins.end(), [](const In &i) { return i.fid == kPosField; });
+    for (size_t i = 0; i < asks.size(); ++i) {
+      const auto l = s.last.find(asks[i].func);
+      paged[i] = l != s.last.end() && std::any_of(l->second.ins.begin(), l->second.ins.end(), [](const In &x) { return x.fid == kPosField; });
+      if (paged[i])
+        asks[i].over.try_emplace(kPageRows, kPageMax);
+    }
   }
-  if (paged)
-    over.try_emplace(kPageRows, kPageMax);
-  Answer all = ask_one(func, over);
-  for (Answer page = all; paged && !page.rows.empty();) {
-    need(!page.pos.empty(), "功能 %d 分页的应答没有定位串", func);
-    over[kPosField] = page.pos;
-    page = ask_one(func, over);
-    need(page.cols == all.cols || page.rows.empty(), "功能 %d 各页列数不一 (%d / %d)", func, all.cols, page.cols);
-    all.rows.insert(all.rows.end(), std::make_move_iterator(page.rows.begin()), std::make_move_iterator(page.rows.end()));
-    all.pos = page.pos;
+  std::vector<Answer> all = ask_once(asks);
+  // 还没到底的分页各问: 以上页的定位串接着问, 一趟一并问一页
+  std::vector<size_t> open;
+  for (size_t i = 0; i < asks.size(); ++i)
+    if (paged[i] && !all[i].rows.empty())
+      open.push_back(i);
+  while (!open.empty()) {
+    std::vector<Ask> next;
+    for (const size_t i : open) {
+      need(!all[i].pos.empty(), "功能 %d 分页的应答没有定位串", asks[i].func);
+      asks[i].over[kPosField] = all[i].pos;
+      next.push_back(asks[i]);
+    }
+    std::vector<Answer> pages = ask_once(next);
+    std::vector<size_t> still;
+    for (size_t k = 0; k < open.size(); ++k) {
+      const size_t i = open[k];
+      Answer &page = pages[k];
+      need(page.cols == all[i].cols || page.rows.empty(), "功能 %d 各页列数不一 (%d / %d)", asks[i].func, all[i].cols, page.cols);
+      if (page.rows.empty())
+        continue;
+      all[i].rows.insert(all[i].rows.end(), std::make_move_iterator(page.rows.begin()), std::make_move_iterator(page.rows.end()));
+      all[i].pos = page.pos;
+      still.push_back(i);
+    }
+    open = std::move(still);
   }
   return all;
 }

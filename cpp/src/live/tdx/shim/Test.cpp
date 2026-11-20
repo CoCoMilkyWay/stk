@@ -60,20 +60,23 @@ std::string read() {
   const Keyed<Pending> o = read_one<tables::Pendings>();
   const std::map<std::string, std::string> c = read_one<tables::Assets>();
   const Keyed<Debt> d = read_one<tables::Debts>();
-  const Account a = tables::read_acct();
-  return strf("成交 %zu · 持仓 %zu · 挂单 %zu · 信用资产 %zu 项 · 融资负债 %zu · 净资产 %.2f", f.rows.size(), pos.list.size(), o.list.size(), c.size(), d.list.size(), a.net);
+  // 一趟并发直发的五表与逐表直发的行数相同 (应答按序号认问, 不串)
+  const Reads r = tables::reads();
+  need(r.fills.rows.size() == f.rows.size() && r.pos.list.size() == pos.list.size() && r.pends.list.size() == o.list.size() && r.acct.debts.list.size() == d.list.size(),
+       "并发直发 成交 %zu · 持仓 %zu · 挂单 %zu · 融资负债 %zu, 与逐表的不符", r.fills.rows.size(), r.pos.list.size(), r.pends.list.size(), r.acct.debts.list.size());
+  return strf("成交 %zu · 持仓 %zu · 挂单 %zu · 信用资产 %zu 项 · 融资负债 %zu · 净资产 %.2f", f.rows.size(), pos.list.size(), o.list.size(), c.size(), d.list.size(), r.acct.net);
 }
 
 std::string flows() {
   std::apply([](auto... t) { ((std::ignore = ui::open(decltype(t)::kOpen)), ...); }, tables::kFlows);
   const misc::Ymd from = misc::add_days(misc::today_ymd(), -14);
-  const std::vector<CashFlow> f = tables::read_flows(from);
+  const std::vector<CashFlow> f = tables::flows(from);
   return strf("%d 起 %zu 条", from, f.size());
 }
 
 std::string terms() {
   std::apply([](auto... t) { ((std::ignore = ui::open(decltype(t)::kOpen)), ...); }, tables::kTerms);
-  const Terms t = tables::read_terms();
+  const Terms t = tables::terms();
   return strf("%zu 只", t.size());
 }
 

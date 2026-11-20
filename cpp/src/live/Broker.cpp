@@ -90,7 +90,7 @@ using Clock = std::chrono::steady_clock;
 constexpr auto kTick = 100ms;
 constexpr double kEvery = 60;     // 定时刷新周期缺省 [s]
 constexpr int kKicks[] = {1, 6};  // 下单成功后隔几秒各刷新一次 (限价单可能稍后才成交)
-constexpr int kSyncTries = 2;     // 一轮里成交与持仓对不上 (两问之间又成交) 时最多连查几遍
+constexpr int kSyncTries = 2;     // 一轮里成交与持仓对不上 (读的那一刻之间又成交) 时最多读几遍
 constexpr auto kWatchLinger = 1s; // touch 之后算有人在看的时长
 
 } // namespace
@@ -166,31 +166,21 @@ struct Broker::Core {
     return nullptr;
   }
 
-  // 一轮读进一份局部的 Snapshot: 成交、持仓两问之间又有成交即对不上, 连查至多 kSyncTries 遍, 仍不对留给上层标出; 再挂单、信用账户
+  // 一轮读进一份局部的 Snapshot: 成交与持仓读的那一刻之间又有成交即对不上, 重读至多 kSyncTries 遍, 仍不对留给上层标出
   Snapshot round(std::string who) {
     Snapshot s;
-    s.who = std::move(who);
-    for (int i = 0; i < kSyncTries; ++i) {
+    for (int i = 1;; ++i) {
       {
-        trace::Span sp("成交");
-        s.fills = d->fills();
+        trace::Span sp("读");
+        static_cast<Reads &>(s) = d->read();
       }
-      {
-        trace::Span sp("持仓");
-        s.pos = d->pos();
-      }
-      if (std::all_of(s.pos.list.begin(), s.pos.list.end(), [&](const Position &h) { return synced(h, s.fills.by_code.find(h.code)); }))
+      const bool ok = std::all_of(s.pos.list.begin(), s.pos.list.end(), [&](const Position &h) { return synced(h, s.fills.by_code.find(h.code)); });
+      if (!ok)
+        trace::ev("unsynced", {{"try", i}});
+      if (ok || i == kSyncTries)
         break;
-      trace::ev("unsynced", {{"try", i + 1}});
     }
-    {
-      trace::Span sp("挂单");
-      s.pends = d->pends();
-    }
-    {
-      trace::Span sp("信用账户");
-      s.acct = d->acct();
-    }
+    s.who = std::move(who);
     s.at = sec_now();
     return s;
   }

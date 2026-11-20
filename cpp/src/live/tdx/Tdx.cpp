@@ -68,18 +68,15 @@ public:
     return strf("tdxw.exe pid %d", pid);
   }
 
-  Fills fills() override { return tables::read<tables::Fills>(); }
-  Keyed<Position> pos() override { return tables::read<tables::Positions>(); }
-  Keyed<Pending> pends() override { return tables::read<tables::Pendings>(); }
-  Account acct() override { return tables::read_acct(); }
+  Reads read() override { return tables::reads(); }
 
   Terms terms() override {
     prime(tables::kTerms);
-    return tables::read_terms();
+    return tables::terms();
   }
   std::vector<CashFlow> flows(misc::Ymd from) override {
     prime(tables::kFlows);
-    return tables::read_flows(from);
+    return tables::flows(from);
   }
   Placed place(const OrderReq &o) override {
     const auto g = gate();

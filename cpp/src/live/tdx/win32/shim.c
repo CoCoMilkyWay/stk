@@ -5,7 +5,7 @@
 // <原因>`。 target = 0x.. 或 class=<类名>；[target] 缺省 = 本进程全部顶层窗口。
 //   ping                          {pid}
 //   mods                          本进程已加载模块 {base,size,name}…
-//   vtable <cls>                  进程内按 MSVC RTTI 找主虚表 {vt,mod}…
+//   vtable <cls> [cls…]           进程内按 MSVC RTTI 找各类的主虚表 {cls,vt,mod}…（各模块只拷一遍）
 //   memhas <hex>                  进程私有可读写堆里是否含该字节串 (至多 8192 字节) {found}
 //   treegen                       {gen}
 //   treewatch                     长连接，窗口树变更即推 {gen}（不收尾）
@@ -42,9 +42,10 @@
 //   gdidump [target]              全部窗口（或只 target）图层各一条图层记录
 //   gdiwatch 长连接，窗口绘制层变更即推变了的图层记录（不收尾） help / spy help
 //   （help 回 {cmds}）
-//   req <界面窗口> <CTcUser> <功能号> <lParam> [i<字段号>=<整数> | s<字段号>=<串>]… [f=<字段号>,…]
-//                                 只读直发查询（白名单功能号）：{job, seq} + 应答 {ok, have, cols, rows, data,
-//                                 refs, pos 定位串}；f= 给了即按这些字段号取各列，否则按列号取全部列
+//   req <界面窗口> <CTcUser> <功能号> <lParam> [i<字段号>=<整数> | s<字段号>=<串>]… [f=<字段号>,…] [; <功能号> <lParam> …]…
+//                                 只读直发查询（白名单功能号）：「;」隔开的各问一并发出、同时在途；各问 {job, seq}，
+//                                 再按序各回应答 {ok, have, cols, rows, data, refs, pos 定位串}；
+//                                 f= 给了即按这些字段号取各列，否则按列号取全部列
 //   vt hook <虚表> <槽数> / ret|only <虚表> <槽,槽…> / unhook / on / off / clear /
 //   drain  虚表追踪：经该表的调用记进入（槽、this、参数及其所指头几字节、
 //                                 返回址），ret 点名的槽另记返回（eax、参数所指），only 只记点名的槽；
@@ -2823,15 +2824,18 @@ static const char *cmd_vt(struct out *o, HWND h, char *a) {
 // 照交易插件的做法在客户端里问一问（各槽见 TDX.md「请求层」），全在界面线程里：
 // CTcUser 槽 7 (0, 0) 建 job → job 槽 7 / 9 写入参 → 槽 6 设功能号 → 槽 25 发送（回包投给
 // 本 shim 在界面线程建的消息窗，回发送序号）→ 槽 1 放到引用数剩 2（同插件发完时）。
+// 一条命令可带几问（至多 REQ_SLOTS）：界面线程里一并建好、发出，各自在途（插件开持仓页也一查两问同时在途），
+// 网络往返只等一趟；应答按发送序号认是哪一问。
 // 应答到了（0x1788，wParam = 序号）在消息窗里读完：槽 40 / 22 列数 / 39 行数，逐行槽 41
 // 移游标，给了字段号（f=）即逐个槽 44 按字段号取（应答没有该字段即空串；服务器的列序未必是协议
 // 字典的出参序，按字段号取才可靠），没给即槽 43 按列号取全部列；槽 36 取定位串，再放掉自己那份。插件读应答时 tc.dll 另替它加过一份引用、插件读完
 // 放两次，消息窗走不到那条路：放到计数恰剩 1（job 池自留的那份）为止，放过头 job 即被提前
 // 释放、tc.dll 几秒后回收时崩溃（实测 0xc0000409）。计数经槽 0 / 1 一加一减读出（槽 1 回减后的数）。
-// 只许白名单里的查询类功能号；命令等应答至多 REQ_WAIT。
+// 只许白名单里的查询类功能号；命令等各问应答至多 REQ_WAIT。
 // 入参须与插件发的全同（照请求层日志 req 的 in）：缺页面标识 0x16a 实测应答回不来、客户端随后
 // 在 mfc100 里空指针崩溃（疑 tc.dll 按页面标识把应答分发给界面），故没带即拒。
 #define REQ_MSG 0x1788
+#define REQ_SLOTS 8
 #define REQ_FIELDS 32
 #define REQ_FIDS 96
 #define REQ_VAL 128
@@ -2859,15 +2863,22 @@ struct req_field {
   int is_int;
   char s[REQ_VAL]; // GBK
 };
-static struct {
-  void *user, *job;
-  DWORD func, lp, seq, got; // got = 消息窗最近收到的 0x1788 的 wParam
-  DWORD refs[2];            // 发送后放掉之前 / 读完放掉之前的引用数
+// 一问
+struct req_slot {
+  void *job;
+  DWORD func, lp, seq;
+  DWORD refs[2]; // 发送后放掉之前 / 读完放掉之前的引用数
   int nf, nfid;
   struct req_field f[REQ_FIELDS];
   DWORD fid[REQ_FIDS]; // 按字段号取的各列（空 = 按列号取全部）
   volatile LONG done;
   struct out res; // 应答记录：界面线程里写，命令线程取
+};
+static struct {
+  void *user;
+  DWORD got; // 消息窗最近收到的 0x1788 的 wParam
+  int n;     // 本条命令的问数
+  struct req_slot s[REQ_SLOTS];
   const char *err;
 } g_req;
 static HWND g_req_wnd;
@@ -2893,22 +2904,22 @@ static DWORD req_refs(void *j) {
   return ((th_0)VSLOT(j, 1))(j);
 }
 
-static void req_read(void) {
-  void *j = g_req.job;
-  struct out *o = &g_req.res;
+static void req_read(struct req_slot *q) {
+  void *j = q->job;
+  struct out *o = &q->res;
   const DWORD ok = ((th_0)VSLOT(j, 40))(j);
   const int have = (int)((th_0)VSLOT(j, 22))(j);
   const int rows = (int)((th_0)VSLOT(j, 39))(j);
-  const int cols = g_req.nfid ? g_req.nfid : have;
+  const int cols = q->nfid ? q->nfid : have;
   emit(o, "{\"ok\":%lu,\"have\":%d,\"cols\":%d,\"rows\":%d,\"data\":[", ok, have, cols, rows);
   for (int r = 0; r < rows; r++) {
     ((th_0)VSLOT(j, 41))(j);
     put(o, r ? ",[" : "[", r ? 2 : 1);
     for (int c = 0; c < cols; c++) {
       char buf[REQ_CELL] = {0}, u[REQ_CELL * 3];
-      if (!g_req.nfid)
+      if (!q->nfid)
         ((th_get)VSLOT(j, 43))(j, (DWORD)c, buf, sizeof(buf) - 1, 0);
-      else if (!((th_get)VSLOT(j, 44))(j, g_req.fid[c], buf, sizeof(buf) - 1, 0))
+      else if (!((th_get)VSLOT(j, 44))(j, q->fid[c], buf, sizeof(buf) - 1, 0))
         buf[0] = 0; // 应答里没有该字段
       gbk2u(buf, u, sizeof(u));
       if (c)
@@ -2922,7 +2933,7 @@ static void req_read(void) {
   char u[REQ_CELL * 3] = {0};
   if (pos && mem_ok(pos, 1, 0))
     gbk2u(pos, u, sizeof(u));
-  emit(o, "],\"refs\":[%lu,%lu],\"pos\":", g_req.refs[0], g_req.refs[1]);
+  emit(o, "],\"refs\":[%lu,%lu],\"pos\":", q->refs[0], q->refs[1]);
   emit_str(o, u);
   emit(o, "}\n");
 }
@@ -2931,21 +2942,25 @@ static LRESULT CALLBACK req_wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   if (m != REQ_MSG)
     return DefWindowProcW(h, m, wp, lp);
   g_req.got = (DWORD)wp;
-  if (g_req.job && !g_req.done && (DWORD)wp == g_req.seq) {
-    void *j = g_req.job;
+  for (int i = 0; i < g_req.n; i++) {
+    struct req_slot *q = &g_req.s[i];
+    if (!q->job || q->done || (DWORD)wp != q->seq)
+      continue;
+    void *j = q->job;
     g_vt_mute = GetCurrentThreadId();
-    g_req.refs[1] = req_refs(j);
-    req_read();
-    for (DWORD n = g_req.refs[1]; n > 1; n--)
+    q->refs[1] = req_refs(j);
+    req_read(q);
+    for (DWORD n = q->refs[1]; n > 1; n--)
       ((th_0)VSLOT(j, 1))(j);
     g_vt_mute = 0;
-    g_req.job = NULL;
-    InterlockedExchange(&g_req.done, 1);
+    q->job = NULL;
+    InterlockedExchange(&q->done, 1);
+    break;
   }
   return 0;
 }
 
-// 界面线程内：建消息窗（首次）、建 job、写入参、发送
+// 界面线程内：建消息窗（首次）、各问建 job、写入参、发送
 static void req_send_in(struct out *o, HWND h) {
   (void)h;
   if (!g_req_wnd) {
@@ -2959,69 +2974,67 @@ static void req_send_in(struct out *o, HWND h) {
     assert(g_req_wnd);
   }
   g_vt_mute = GetCurrentThreadId();
-  void *u = g_req.user, *j = ((th_new)VSLOT(u, 7))(u, 0, 0);
-  if (!j) {
-    g_vt_mute = 0;
-    g_req.err = "CTcUser slot 7 returned no job";
-    return;
+  void *u = g_req.user;
+  for (int i = 0; i < g_req.n; i++) {
+    struct req_slot *q = &g_req.s[i];
+    void *j = ((th_new)VSLOT(u, 7))(u, 0, 0);
+    if (!j) {
+      g_req.err = "CTcUser slot 7 returned no job";
+      break;
+    }
+    for (int k = 0; k < q->nf; k++)
+      if (q->f[k].is_int)
+        ((th_int)VSLOT(j, 9))(j, q->f[k].fid, q->f[k].v);
+      else
+        ((th_str)VSLOT(j, 7))(j, q->f[k].fid, q->f[k].s, 0);
+    ((th_1)VSLOT(j, 6))(j, q->func);
+    q->done = 0;
+    q->job = j; // 先于发送：应答在本线程里收，发完才轮得到消息窗
+    q->seq = ((th_send)VSLOT(j, 25))(j, g_req_wnd, REQ_MSG, q->lp, 0);
+    q->refs[0] = req_refs(j);
+    for (DWORD n = q->refs[0]; n > 2; n--) // 插件发完放一份（3 → 2）：同样放到剩 2
+      ((th_0)VSLOT(j, 1))(j);
+    emit(o, "{\"job\":\"0x%08x\",\"seq\":%lu}\n", (DWORD)j, q->seq);
   }
-  for (int i = 0; i < g_req.nf; i++)
-    if (g_req.f[i].is_int)
-      ((th_int)VSLOT(j, 9))(j, g_req.f[i].fid, g_req.f[i].v);
-    else
-      ((th_str)VSLOT(j, 7))(j, g_req.f[i].fid, g_req.f[i].s, 0);
-  ((th_1)VSLOT(j, 6))(j, g_req.func);
-  g_req.job = j;
-  g_req.done = 0;
-  g_req.seq = ((th_send)VSLOT(j, 25))(j, g_req_wnd, REQ_MSG, g_req.lp, 0);
-  g_req.refs[0] = req_refs(j);
-  for (DWORD n = g_req.refs[0]; n > 2; n--) // 插件发完放一份（3 → 2）：同样放到剩 2
-    ((th_0)VSLOT(j, 1))(j);
   g_vt_mute = 0;
-  emit(o, "{\"job\":\"0x%08x\",\"seq\":%lu}\n", (DWORD)j, g_req.seq);
 }
 
-// req <界面线程的窗口> <CTcUser> <功能号> <lParam> [i<字段号>=<整数> | s<字段号>=<串>]… [f=<字段号>,…]
-// 先回 {job, seq}，再回应答 {ok, have 应答实有列数, cols, rows, data:[[各列]…], refs, pos}（UTF-8）
-static const char *cmd_req(struct out *o, HWND h, char *a) {
+// 一问的参数：<功能号> <lParam> [i<字段号>=<整数> | s<字段号>=<串>]… [f=<字段号>,…]，到「;」或串尾
+static const char *req_parse(struct req_slot *q, char *a, char **rest) {
   char *e;
-  void *user = (void *)strtoul(a, &e, 0);
-  const DWORD func = strtoul(e, &e, 0), lp = strtoul(e, &e, 0);
+  q->func = strtoul(a, &e, 0);
+  q->lp = strtoul(e, &e, 0);
+  q->nf = q->nfid = 0;
   int white = 0;
   for (size_t i = 0; i < sizeof(REQ_FUNCS) / sizeof(*REQ_FUNCS); i++)
-    white |= REQ_FUNCS[i] == func;
+    white |= REQ_FUNCS[i] == q->func;
   if (!white)
     return "func not in query whitelist";
-  if (!mem_ok(user, 4, 0) || !mem_ok(*(void **)user, 4 * 8, 0))
-    return "bad CTcUser";
-  if (g_req.job)
-    return "previous request still waiting";
-  g_req.user = user, g_req.func = func, g_req.lp = lp, g_req.nf = 0, g_req.nfid = 0;
-  g_req.err = NULL;
-  for (char *p = e; *p;) {
+  char *p = e;
+  for (;;) {
     while (*p == ' ')
       p++;
-    if (!*p)
+    if (!*p || *p == ';')
       break;
     if (p[0] == 'f' && p[1] == '=') { // f=<字段号>,<字段号>…：按字段号取的各列
       for (p += 2; *p && *p != ' ';) {
-        if (g_req.nfid == REQ_FIDS)
+        if (q->nfid == REQ_FIDS)
           return "too many f= fields";
-        g_req.fid[g_req.nfid++] = strtoul(p, &e, 0);
+        q->fid[q->nfid++] = strtoul(p, &e, 0);
         if (e == p)
           return "f=<fid>,<fid>…";
         p = e + (*e == ',');
       }
       continue;
     }
-    if ((*p != 'i' && *p != 's') || g_req.nf == REQ_FIELDS)
+    if ((*p != 'i' && *p != 's') || q->nf == REQ_FIELDS)
       return "fields: i<fid>=<int> | s<fid>=<str> | f=<fid>,…";
-    struct req_field *f = &g_req.f[g_req.nf++];
+    struct req_field *f = &q->f[q->nf++];
     f->is_int = *p == 'i';
     f->fid = strtoul(p + 1, &e, 0);
     if (*e != '=')
       return "fields: i<fid>=<int> | s<fid>=<str>";
-    char *v = e + 1, *end = v + strcspn(v, " ");
+    char *v = e + 1, *end = v + strcspn(v, " ;");
     const char keep = *end;
     *end = 0;
     if (f->is_int)
@@ -3032,25 +3045,63 @@ static const char *cmd_req(struct out *o, HWND h, char *a) {
     p = end;
   }
   int page = 0;
-  for (int i = 0; i < g_req.nf; i++)
-    page |= !g_req.f[i].is_int && g_req.f[i].fid == 0x16a && g_req.f[i].s[0];
+  for (int i = 0; i < q->nf; i++)
+    page |= !q->f[i].is_int && q->f[i].fid == 0x16a && q->f[i].s[0];
   if (!page)
     return "missing s362=<页面标识> (0x16a)";
-  g_req.res.len = 0;
-  const char *err = in_thread(o, h, req_send_in);
-  if (err || g_req.err)
-    return err ? err : g_req.err;
-  const DWORD t0 = GetTickCount();
-  while (!g_req.done && GetTickCount() - t0 < REQ_WAIT)
-    Sleep(5);
-  if (!g_req.done) {
-    g_req.job = NULL; // 应答再来即不读（job 留着那份引用）
-    static char why[96];
-    snprintf(why, sizeof(why), "no answer in %d ms (seq %lu, last 0x1788 wParam %lu)",
-             REQ_WAIT, g_req.seq, g_req.got);
-    return why;
+  *rest = *p == ';' ? p + 1 : p;
+  return NULL;
+}
+
+// req <界面线程的窗口> <CTcUser> <一问> [; <一问>]…（一问见 req_parse）
+// 先回各问 {job, seq}，再按序回各问应答 {ok, have 应答实有列数, cols, rows, data:[[各列]…], refs, pos}（UTF-8）
+static const char *cmd_req(struct out *o, HWND h, char *a) {
+  char *e;
+  void *user = (void *)strtoul(a, &e, 0);
+  if (!mem_ok(user, 4, 0) || !mem_ok(*(void **)user, 4 * 8, 0))
+    return "bad CTcUser";
+  for (int i = 0; i < g_req.n; i++)
+    if (g_req.s[i].job)
+      return "previous request still waiting";
+  g_req.user = user, g_req.n = 0, g_req.err = NULL;
+  for (char *p = e; *p;) {
+    while (*p == ' ')
+      p++;
+    if (!*p)
+      break;
+    if (g_req.n == REQ_SLOTS)
+      return "too many requests in one req";
+    struct req_slot *q = &g_req.s[g_req.n];
+    q->job = NULL;
+    q->res.len = 0;
+    const char *err = req_parse(q, p, &p);
+    if (err)
+      return err;
+    g_req.n++;
   }
-  put(o, g_req.res.buf, g_req.res.len);
+  if (!g_req.n)
+    return "usage: req <target> <CTcUser> <func> <lParam> fields… [; <func> <lParam> fields…]…";
+  const char *err = in_thread(o, h, req_send_in);
+  if (err || g_req.err) {
+    for (int i = 0; i < g_req.n; i++)
+      g_req.s[i].job = NULL; // 已发出的应答再来即不读（job 留着那份引用）
+    return err ? err : g_req.err;
+  }
+  const DWORD t0 = GetTickCount();
+  for (int i = 0; i < g_req.n; i++)
+    while (!g_req.s[i].done && GetTickCount() - t0 < REQ_WAIT)
+      Sleep(5);
+  for (int i = 0; i < g_req.n; i++)
+    if (!g_req.s[i].done) {
+      static char why[128];
+      snprintf(why, sizeof(why), "no answer in %d ms (func %lu seq %lu, last 0x1788 wParam %lu)",
+               REQ_WAIT, g_req.s[i].func, g_req.s[i].seq, g_req.got);
+      for (int k = 0; k < g_req.n; k++)
+        g_req.s[k].job = NULL; // 应答再来即不读（job 留着那份引用）
+      return why;
+    }
+  for (int i = 0; i < g_req.n; i++)
+    put(o, g_req.s[i].res.buf, g_req.s[i].res.len);
   return NULL;
 }
 
@@ -3125,19 +3176,32 @@ static const char *cmd_mods(struct out *o, HWND h, char *a) {
   return NULL;
 }
 
-// 类 cls（RTTI 名，嵌套类写 内@外）的各张主虚表：各模块拷出一份，在拷贝上找
-// TypeDescriptor 名 ".?AV<cls>@@\0" → 引它（+12 处）且 sig / off 为 0 的 COL
+// 各类（RTTI 名，嵌套类写 内@外；空格隔开，至多 VT_CLS 个）的各张主虚表：各模块只拷出一份，在拷贝上找
+// TypeDescriptor 名 ".?AV<cls>@@\0" / ".?AU…" → 引它（+12 处）且 sig / off 为 0 的 COL
 // → 引 COL 的那格之后即虚表
+#define VT_CLS 4
 static const char *cmd_vtable(struct out *o, HWND h, char *a) {
-  if (!*a || strlen(a) > 120)
-    return "usage: vtable <cls>";
   static const char *const kPref[2] = {".?AV", ".?AU"};
-  char pat[2][140];
-  size_t plen[2];
-  for (int k = 0; k < 2; k++) {
-    int n = snprintf(pat[k], sizeof(pat[k]), "%s%s@@", kPref[k], a);
-    plen[k] = (size_t)n + 1; // 含末尾 '\0'
+  char cls[VT_CLS][124], pat[VT_CLS * 2][132];
+  size_t plen[VT_CLS * 2];
+  int nc = 0;
+  for (char *p = a; *p;) {
+    while (*p == ' ')
+      p++;
+    const size_t n = strcspn(p, " ");
+    if (!n)
+      break;
+    if (nc == VT_CLS || n >= sizeof(cls[0]))
+      return "usage: vtable <cls> [cls…] (<= 4, each <= 120 chars)";
+    memcpy(cls[nc], p, n);
+    cls[nc][n] = 0;
+    for (int k = 0; k < 2; k++)
+      plen[nc * 2 + k] = (size_t)snprintf(pat[nc * 2 + k], sizeof(pat[0]), "%s%s@@", kPref[k], cls[nc]) + 1; // 含末尾 '\0'
+    nc++;
+    p += n;
   }
+  if (!nc)
+    return "usage: vtable <cls> [cls…]";
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
   if (snap == INVALID_HANDLE_VALUE)
     return "CreateToolhelp32Snapshot failed";
@@ -3152,7 +3216,7 @@ static const char *cmd_vtable(struct out *o, HWND h, char *a) {
     if (!d)
       continue;
     safe_copy(d, base, size);
-    for (int k = 0; k < 2; k++)
+    for (int k = 0; k < nc * 2; k++)
       for (const BYTE *p = d;
            (p = find_bytes(p, size - (size_t)(p - d), (const BYTE *)pat[k],
                            plen[k])) != NULL;
@@ -3168,7 +3232,9 @@ static const char *cmd_vtable(struct out *o, HWND h, char *a) {
           const DWORD col = base + (DWORD)i - 12;
           for (size_t j = 0; j + 8 <= size; j += 4)
             if (word_at(d, j) == col) {
-              emit(o, "{\"vt\":\"0x%08lx\",\"mod\":", (unsigned long)(base + j + 4));
+              emit(o, "{\"cls\":");
+              emit_str(o, cls[k / 2]);
+              emit(o, ",\"vt\":\"0x%08lx\",\"mod\":", (unsigned long)(base + j + 4));
               emit_str(o, me.szModule);
               emit(o, "}\n");
             }

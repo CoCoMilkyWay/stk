@@ -58,15 +58,6 @@ double asset_val(const std::map<std::string, std::string> &c, const char *name) 
   return v;
 }
 
-template <class S>
-auto pull_full() {
-  trace::Span span(S::kName);
-  trace::live(strf("直发查「%s」…", S::kName));
-  auto t = read<S>();
-  trace::note("rows", strf("「%s」%zu 行", S::kName, t.list.size()), {{"tab", S::kName}, {"n", t.list.size()}});
-  return t;
-}
-
 Term term_of(const Margin *m, const Collat *c, Mkt mkt) {
   Term t;
   t.name = c ? c->name : m->name;
@@ -91,10 +82,8 @@ std::vector<CashFlow> flow_window(misc::Ymd lo, misc::Ymd hi, size_t idx) {
   return rows;
 }
 
-} // namespace
-
-Account read_acct() {
-  const auto c = read<Assets>();
+// 信用资产 c + 各只融资负债 → 信用账户
+Account acct_of(const std::map<std::string, std::string> &c, Keyed<Debt> debts) {
   Account a;
   a.assets = asset_val(c, "担保资产");
   a.line = asset_val(c, "最高融资额度") - asset_val(c, "融资负债（含费用）");
@@ -103,14 +92,23 @@ Account read_acct() {
   a.avail = asset_val(c, "可用保证金");
   a.cash = asset_val(c, "现金资产");
   a.rate = asset_val(c, "融资年利率");
-  a.debts = read<Debts>();
+  a.debts = std::move(debts);
   trace::ev("acct", {{"assets", a.assets}, {"line", a.line}, {"debt", a.debt}, {"net", a.net}, {"avail", a.avail}, {"cash", a.cash}, {"debts", a.debts.list.size()}});
   return a;
 }
 
-Terms read_terms() {
-  const Keyed<Margin> mg = pull_full<Margins>();
-  const Keyed<Collat> co = pull_full<Collats>();
+} // namespace
+
+Reads reads() {
+  auto [fills, pos, pends, assets, debts] = read(kReads);
+  return {std::move(fills), std::move(pos), std::move(pends), acct_of(assets, std::move(debts))};
+}
+
+Terms terms() {
+  trace::live("直发查「标的证券」「担保品」…");
+  const auto [mg, co] = read(kTerms);
+  for (const auto &[tab, n] : {std::pair{Margins::kName, mg.list.size()}, std::pair{Collats::kName, co.list.size()}})
+    trace::note("rows", strf("「%s」%zu 行", tab, n), {{"tab", tab}, {"n", n}});
   std::map<std::string, std::set<Mkt>> mkts;
   for (const Margin &r : mg.list)
     mkts[r.code].insert(r.mkt);
@@ -130,7 +128,7 @@ Terms read_terms() {
   return out;
 }
 
-std::vector<CashFlow> read_flows(misc::Ymd from) {
+std::vector<CashFlow> flows(misc::Ymd from) {
   const misc::Ymd end = misc::add_days(misc::today_ymd(), -1);
   std::vector<std::vector<CashFlow>> wins;
   if (from) {
