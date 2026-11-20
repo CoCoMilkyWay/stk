@@ -6,26 +6,25 @@ Wine 里跑通达信客户端 `TdxW.exe`，实现 `live::Driver`（`live/Broker.
 
 ```
 TdxW.exe（Wine）
-├── 进程堆     /proc/<pid>/mem   Mem Image Schema    堆的只读访问 / 进程映像 / 协议字典
-└── shim.dll   TCP 控制通道      Shim / Win          窗口树 / 绘制层 / 消息 / 输入 / 禁用计数 / 虚表追踪 / 直发
-                                 Req / Tables        请求层日志与直发 / 各表（应答）的列声明
-                                 Credit Flow         两融条款与信用账户 / 资金流水（直发）
+└── shim.dll   TCP 控制通道      Shim / Win          窗口树 / 绘制层 / 消息 / 输入 / 禁用计数 / 虚表追踪 / 直发 / 进程内找虚表与字典
+                                 Schema / Req        协议字典 / 请求层（记下插件入参、照搬直发）
+                                 Cols / Tables       各表（应答）的列声明 + 组合查询（信用账户 / 两融条款 / 资金流水）
                                  Ui Flash            界面：引导（让插件发一次各功能）/ 闪电下单
-Tdx（Driver）  接入 + 引导 + 界面锁；刷新线程在 live::Broker
-shim（程序）   独立调试程序：命令转发 / 探内存 / 协议字典 / 录制 / 虚表追踪 / 在线用例，直接用上面各件
+Tdx（Driver）  接入 + 引导 + 界面锁 + 画面复现（Mirror）；刷新线程在 live::Broker
+shim（程序）   独立调试程序：命令转发 / 探内存（Heap Image，经 /proc/<pid>/mem）/ 协议字典 / 录制 / 虚表追踪 / 在线用例，直接用上面各件
 ```
 
 - 读一律直发（不切页、不动界面）；界面只用于引导与下单；登录会话与交易通讯由客户端自己负责。
-- 客户端与预期不符（没弹出 / 应答不认识 / 回报失败）是外部结局：`fail` 抛 `Fail`，在各轮 / 各事务边界收成原因文本；本程序自身的不变式一律 `assert`。不重试，等下一个起因。
+- 客户端与预期不符（没弹出 / 应答不认识 / 回报失败）是外部结局：`fail` 抛 `Fail`，在各轮 / 各事务 / 各单边界（`live::guard`）收成原因文本；应答畸形时库里抛的异常（JSON 取值、数值转换）同样收下，绝不越界崩进程。本程序自身的不变式一律 `assert`。不重试，等下一个起因。
 - 界面动作一律等客户端查完再走下一步（`ui::query`）：查着时客户端不理切页、页一开就挪焦点，抢在前头的动作会落空。
 - 等待经 `Until.hpp`：`poll` 等到即回、超时回空，`until` 超时即 `Fail`（报出当时状态）。
-- 交互日志经 `live/Trace.hpp`：shim 命令与应答、请求层的每个请求与直发（`Req.hpp`）、外部进程、Broker 的轮次 / 下单 / 拉取，按段（`Span`）一行一事件，落 `output/run/live/trace/<启动时刻>.jsonl`；段内有事件才落盘，相邻同样的并成一行 `rep`，`fail` 先在当时的段下记一行再抛。事件种类见其文件头。
+- 交互日志经 `live/Trace.hpp`：shim 命令与应答、直发（`Req.hpp`）、外部进程、Broker 的轮次 / 下单 / 拉取，按段（`Span`）一行一事件，落 `output/run/live/trace/<启动时刻>.jsonl`；段内有事件才落盘，相邻同样的并成一行 `rep`，`fail` 先在当时的段下记一行再抛。事件种类见其文件头。段栈另镜像进 `Track`，页面进度行逐段显示用时与最近一条 shim 命令。
 
 ## 一、各表（`Tables.hpp` `Cols.hpp`）
 
-每张表一份声明：名称 `kName`、各布局 `kViews = {{功能号, 列数}…}`（列数 = 出参数 + 1）、列（`kCols = tuple{col<&Row::成员, as::转型>("字段名", 各布局列号…)…}`，`kNone` = 该布局没有，成员 `nullptr` = 只核不存）、行级校验 `check`、索引 `Index`、引导页 `kOpen`（`ui::Open{页, 认页的列, 须不含的列}`：开过的页一直留着、人点开过的也算，认页的列须在所有可能开着的页里唯一，如撤单页与「当日委托」页只差「废单原因」）。应答（`req::ask`）恒按出参序排列，`cols::parse` 按功能号认布局、逐列转型、行级校验；`tables::rows<表>(覆盖的入参)` = 直发 + 翻页 + 解析，`tables::read<表>(…)` 再建索引（即 `State` 各样的形）。各表按 Driver 的用处分三组 `kReads`（读四样）/ `kTerms`（两融条款）/ `kFlows`（资金流水），引导与 `shim test` 都按组展开。字段名由 `shim test fields` 对协议字典逐列核。
+每张表一份声明：名称 `kName`、各布局应答它的功能号 `kFuncs`、列（`kCols = tuple{col<&Row::成员, as::转型>("字段名", 各布局列号…)…}`，`kNone` = 该布局没有，成员 `nullptr` = 只核不存）、行级校验 `check`、索引 `Index`、引导页 `kOpen`（`ui::Open{页, 认页的列, 须不含的列}`：开过的页一直留着、人点开过的也算，认页的列须在所有可能开着的页里唯一，如撤单页与「当日委托」页只差「废单原因」）。应答（`req::ask`）恒按出参序排列，`cols::parse` 按功能号认布局、逐列转型、行级校验；`tables::rows<表>(覆盖的入参)` = 直发 + 翻页 + 解析，`tables::read<表>(…)` 再建索引（即 `Snapshot` 各样的形）。逐格转型的校验在热路径上（担保品近万行），原因只在不符时才拼。各表按 Driver 的用处分三组 `kReads`（读四样）/ `kTerms`（两融条款）/ `kFlows`（资金流水），引导与 `shim test` 都按组展开。字段名由 `shim test fields` 对协议字典逐列核。
 
-- 转型 `as::*`：`text` `name`（非空）`code` `clock` `ymd` `num` `num_or`（空 = 无）`flag`（0 深 / 1 沪 / 60 北）`side`（买入 / 卖出 → ±1）`sides`（相邻两列买 / 卖）`groups`（三组「名称|数值|」）`is<"字面">`（只核）。
+- 转型 `as::*`：`text` `name`（非空）`code` `clock`（→ 当日秒）`ymd` `num` `num_or`（空 = 无）`shares` `shares_or`（整数股数）`flag`（0 深 / 1 沪 / 60 北）`side`（买入 / 卖出 → ±1）`sides_i`（相邻两列今买 / 今卖股数）`groups`（三组「名称|数值|」）`is<"字面">`（只核）。
 - 索引：`Unique<键>` → `Keyed<行>` / `Tally` 成交 → 时间序 + 按代码合计（`Fills`）/ `Pairs` 名称 → 数值原文 / `Plain` 行原序。
 
 | 表                   | 功能号      | 引导页                 | 索引                   | 行级校验                              |
@@ -39,10 +38,11 @@ shim（程序）   独立调试程序：命令转发 / 探内存 / 协议字典 
 | `Collats` 担保品     | 3220        | 功能树「担保品查询」   | `Unique<(市场, 代码)>` | 折算率在 [0, 1]                       |
 | `CashFlows` 资金流水 | 1118        | 功能树「资金流水」     | `Plain`                | 带股数的行有代码                      |
 
-- 持仓两种布局：23 列（1228）/ 18 列（1114，重登后常见，没有融资数量与担保折算率）；插件发哪个读哪个。名称一律取「长简称」（「证券名称」对 ETF 是短码名如 `5GETF`）。各功能的全部入参 / 出参：`shim probe schema <功能号>`。
+- 持仓两种布局：1228（23 列）/ 1114（18 列，重登后常见，没有融资数量与担保折算率）；插件发哪个读哪个。名称一律取「长简称」（「证券名称」对 ETF 是短码名如 `5GETF`）。各功能的全部入参 / 出参：`shim probe schema <功能号>`。
 - 标的证券 / 担保品分页（约 4300 / 8300 只）；两表跨市场同号（沪市债券与深市基金），以（市场, 代码）为键。
+- 组合查询（`Tables.cpp`）：信用账户 = 信用资产（各项「名称 → 数值」）+ 各只融资负债；两融条款 = 标的证券 × 担保品各翻页到底、按代码归一；资金流水 = 按 30 天一窗覆盖起止日入参直发、各行须在窗内，`from = 0` 即从昨日往前查到连续 6 窗无流水。
 - 客户端堆里另驻留各应答的明文（GBK，`|` 分列、行尾多一空列、首行表头只有元数据；信用资产表头的行数比实有少 1），适配不读，`shim probe tables` 可看。
-- 堆（`Heap.hpp` `mem::Heap`）：pid + 常开的 `/proc/<pid>/mem`，按址试读（`u16` / `u32` / 逐页 `bytes`）与堆段逐段读；`attach` 找进程（`comm` / `argv[0]` 为 `tdxw.exe`）、确保读权限（`ptrace_scope ≠ 0` 时用 `output/config/live/.sudo_pass` sudo 关一次，到重启前有效）。协议字典、进程映像（建在堆上）、`shim probe` 用。
+- 堆（`Heap.hpp` `mem::Heap`）：pid + 常开的 `/proc/<pid>/mem`，按址试读（`u16` / `u32` / 逐页 `bytes`）与堆段逐段读；`attach` 找进程（`comm` / `argv[0]` 为 `tdxw.exe`）、确保读权限（`ptrace_scope ≠ 0` 时用 `output/config/live/.sudo_pass` sudo 关一次，到重启前有效）。只给 `shim probe` 与其进程映像用；实盘路径不读进程堆（找虚表、认字典都经 shim 进程内做，见「请求层」），`find_pid`（扫 `/proc`，不要权限）与 `gbk` 各处共用。
 
 ## 二、消息桥（`Shim.hpp` `Win.hpp`，源码 `src/live/tdx/win32/`）
 
@@ -50,26 +50,29 @@ shim（程序）   独立调试程序：命令转发 / 探内存 / 协议字典 
 - 构建：交叉编译（clang + mingw 运行时优先，`i686-w64-mingw32-gcc` 次之）；产物按源码哈希 H 命名 `shim_<H>.dll`、端口 `20000 + H % 10000`，落 `output/run/live/tdx/shim/`。改源码即换新 DLL、新端口；客户端不重开时新旧版并存于同一进程、各听各的端口（`gdi` 钩子叠在旧版之上照常工作，`noraise` 新版报 `patched 0`、旧版照拦）。
 - 注入：DLL 拷进 wine 的 `C:\windows\temp`、写端口文件，`inject.exe` 远程加载（`WINEPREFIX` 取环境变量或 `~/.wine`，目标进程名 `SHIM_TARGET_PROC` 或 `tdxw.exe`）。`win::attach`：不在线即编译 + 注入，再开 `noraise` 与 `gdi`、跑一次 `detours`。
 - shim 活在客户端进程里：其 `assert` 失败即 abort 整个客户端，不弹框。客户端从桌面图标启动时 Wine 的输出进 systemd 日志（`journalctl --user | rg Assertion`）。
-- 协议：一行 `cmd arg...` → 0..N 行 JSON + 末行 `ok` / `err <原因>`；一次一条连接、串行应答；`target` 为 `0x..` 或 `class=<类名>`；窗口句柄是 shim 给的 `0x%08x` 串（`win::Hwnd`），原样回传。命令表见 `shim.c` 文件头。
+- 协议：一行 `cmd arg...` → 0..N 行 JSON + 末行 `ok` / `err <原因>`；`target` 为 `0x..` 或 `class=<类名>`；窗口句柄是 shim 给的 `0x%08x` 串（`win::Hwnd`），原样回传。命令表见 `shim.c` 文件头。
+- 连接：shim 每条连接一个线程逐行收，命令一律串行执行（`g_cmd_cs`）；适配这边命令走一条复用的长连接（互斥串行，经界面线程的命令回 busy 时两问之间放开连接），复用前先探一下（命令通道上对端从不主动发，可读 = 已被关）再重连；只在命令没送达时重发一次——发出后才断的执行与否不明（`post` / 点按钮重发即重做一次），即 `Fail`。推流（`treewatch` / `gdiwatch`）各走独立的 `shim::Stream` 连接。
 
 | 类别   | 命令                                            |
 | ------ | ----------------------------------------------- |
 | 窗口树 | `tree` `enum` `find` `treegen` `treewatch`      |
-| 控件   | `gettext` `settext` `rect` `detail` `highlight` |
-| 动作   | `post` `send` `regmsg` `click` `clickat`        |
-| 状态   | `disables` `idle`                               |
+| 控件   | `gettext` `settext` `rect` `detail`             |
+| 动作   | `post` `send` `regmsg` `clickat`                |
+| 状态   | `disables`                                      |
 | 输入   | `mouse` `key` `char`                            |
 | 绘制层 | `gdi` `gdidump [target]` `gdiwatch`             |
-| 虚表   | `vt hook\|ret\|unhook\|on\|off\|clear\|drain`   |
+| 虚表   | `vt hook\|ret\|only\|unhook\|on\|off\|clear\|drain` |
+| 映像   | `mods` `vtable <类名>` `memhas <hex>`           |
 | 其它   | `noraise` `detours` `spy` `ping` `help`         |
 
 - 节点 `{depth,hwnd,parent,id,class,title,rect,style,exstyle,vis,en}`：先序、depth 定父子、兄弟序即 z 序。图层 `{hwnd,off,items:[[l,t,r,b,v,文字?]]}`：客户区坐标、后出的在上（`gdi` 的 `v` 为颜色，`detail` 为状态位）。`treegen`/`treewatch`、`gdidump`/`gdiwatch` 成对，长连接无变更 1s 推心跳 `null`。
 - `find class=… [id=…] [title=…]` 不经界面线程、只读相符节点的标题，适配找窗口一律走它；`tree` 经界面线程读可见编辑框（数百到近两千节点），只给录制与小子树。
-- 输入一律进程内 `PostMessage`：不动真实光标、不抢前台；鼠标投给捕获窗口或坐标下最深子窗口，键盘投给焦点窗口。`idle` = 距最近一次真实键鼠输入（投递的不算）的毫秒数。
+- 输入一律进程内 `PostMessage`：不动真实光标、不抢前台；鼠标投给捕获窗口或坐标下最深子窗口，键盘投给焦点窗口。GUI 的 Client 页经 `live::Mirror` 透传（默认关，有事务在跑即停）。
 - 钉光标：功能树等只认 `GetCursorPos` / `GetMessagePos` 处的点击；`clickat` / `mouse` 投递前改写这两个入口，500ms 内回投递点。
 - 不抬窗：各模块 IAT 里的 `NtUserSetWindowPos` / `NtUserDeferWindowPosAndBand` 换成去掉 z 序变化的包装。
 - 修跳板：客户端里有模块用旧版 Detours（2.x：区首签名 `'Rrtd'`、跳板 32 字节）挂 user32 / win32u 的入口；它不认 `endbr32`（`F3 0F 1E FB`），搬进跳板时漏写 `1E`（留着填充的 `CC`），Wine 里以 `endbr32` 开头的入口（`MessageBoxA`）一经跳板即崩（客户端任何提示框都会带崩整个进程）。`detours` 扫全部可执行私有区，补回这样的跳板。
-- 绘制层：自绘控件（`CFQS_*` / `MHPToolBar` / `Afx*`）上的按钮只是画出来的字；`TdxW.exe` 有 VMProtect 壳、不走 IAT，故改写 gdi32 / user32 的 18 个绘制函数入口，按「后画盖先画」维护各窗口可见的文字与色块（`win::click_text` 据此点字）。
+- 绘制层：自绘控件（`CFQS_*` / `MHPToolBar` / `Afx*`）上的按钮只是画出来的字；`TdxW.exe` 有 VMProtect 壳、不走 IAT，故改写 gdi32 / user32 的 18 个绘制函数入口，按「后画盖先画」维护各窗口可见的文字与色块（`win::click_text` 据此点字；GUI 的 Client 页据此复现画面）。
+- 映像（`mods` / `vtable` / `memhas`）：进程内列模块、按 MSVC RTTI 找类的主虚表（TypeDescriptor 名 → 引它的 COL → 引 COL 的那格之后）、查某串字节在不在私有可读写段里。别的线程正改着的内存（堆段随时 decommit、模块可被卸载）一律先经 `ReadProcessMemory` 拷出再看：直接解引用撞上刚释放的页即访问违例、连同客户端一起崩。
 - 禁用计数：`disables` 回窗口被禁用（`EnableWindow(FALSE)` → 同步 `WM_ENABLE`）的累计次数；首次问到某线程即给它常挂 `WH_CALLWNDPROC`。最短约 35ms 的禁用也记得住，轮询 `en` 会漏。
 - 卡顿：查大表时界面线程卡住（担保品查询全部约 45~100s），经界面线程的命令（`gettext` `detail`）随之等；`find` `rect` `disables` 照样答。
 - 摸时序：`spy on msg=<id>` / `spy on all` 记进 512 条环形缓冲（`dump` 取、`clear` 清）；常看 `0x111` WM_COMMAND、`0x7` WM_SETFOCUS、`0x1788` 回包，配合 `rect` / `disables` / `gettext` 在客户端上做小实验。
@@ -121,12 +124,12 @@ shim（程序）   独立调试程序：命令转发 / 探内存 / 协议字典 
 | 43 / 44 | `(列号 / 字段号, buf, 长, 0)`       | 按列号 / 字段号取当前行的字段（字符串；字段号不在应答里返回 0） |
 | 36      | `()` → `char*`                      | 定位串（末行的市场 + 代码，如 `1600688`）：分页的下一页从它接   |
 
-- 协议字典（`Schema.hpp`）：TcApi 缓存 `T0002/wt_cache/TcApi_Cache/40-BRANCH-<营业部>-2.TCS`，登录时整份读进内存（目录里另有别的营业部 / 旧账户的缓存，认字典段原样在堆里的那份）。内容：INI 文本（`WTGN_<序>=<功能号>,<名称>` 列部分功能名）、字段字典（`u16` 条数 + 每条 35 字节 `{u16 字段号, u8 类型, u8, u16 宽度, GBK 名称}`，1091 个）、功能定义（`u16` 流，每条 `{0x4bd, 入参数, 功能号, 入参…, 出参数, 功能号+1, 出参…}`，505 个）。
+- 协议字典（`Schema.hpp`）：TcApi 缓存 `T0002/wt_cache/TcApi_Cache/40-BRANCH-<营业部>-2.TCS`，登录时整份读进内存（目录里另有别的营业部 / 旧账户的缓存，认字典段开头 4096 字节原样在堆里的那份：各营业部的字段字典开头可能相同，短了即分不开；经 `memhas` 进程内查）。内容：INI 文本（`WTGN_<序>=<功能号>,<名称>` 列部分功能名）、字段字典（`u16` 条数 + 每条 35 字节 `{u16 字段号, u8 类型, u8, u16 宽度, GBK 名称}`，1091 个）、功能定义（`u16` 流，每条 `{0x4bd, 入参数, 功能号, 入参…, 出参数, 功能号+1, 出参…}`，505 个）。
 - 入参：公共的有 `0x79` 资金账号、`0x7b` 股东代码、`0x7d` 账号类别、`0x7e` / `0x7f` 起止日、`0x84` 币种、`0x16a` 页面标识（`PC.Credit.<名>`，如持仓 `zjgf`、资金流水 `zjls`）；`0x580` `0x1484..0x1491`（全链路跟踪、TC 连接号、GUID 等）由 tc.dll 自填。
 - 应答：列序**未必**是出参序（担保品 3220 的服务器列序为代码 / 名称 / 长简称 / 账号类别 …，字典里账号类别在前），按字段号取才可靠。持仓页一查两问：1228 持仓 + 104 页顶资金那行（`lParam 0x324`）。插件读法：持仓页按字段号（槽 44，画表时字段号带 `0x120000`、逐显示列一次），信用 / 资金流水页按列号（槽 43）。
-- 日志（`Req.hpp`）：接入时（`Driver::connect`、`shim test`）按 RTTI 找到 job 虚表、读协议字典，常驻钩住、只记槽 1 / 6 / 7 / 9 / 18 / 22 / 25 / 39 / 40 / 41 / 43 / 44（22 / 39 / 43 / 44 记返回）。每问 `done` 后取出其间的调用，按 job 拼成请求（自首个入参起），各记一条 `req`：功能号与名称、页面标识、发起的插件、入参（字段名 → 值，密码打码）、回包目标、发出到网络线程收到 / 插件开读 / 插件读完（插件减引用）的 ms、列数行数、读法、首行（字段名 → 值）；人点的、客户端定时查的一并记，以 `ago` 区分；直发在界面线程里建 / 发 / 读 job 的那段不记（shim 按线程静音）。查询键恢复比插件读应答早几到十几 ms，故等发出不久的请求读完（至多 2s）再记。实测一问：网络往返约 0.27~0.6s，插件读 37 行持仓约 0.35s。
+- 记入参（`Req.hpp`）：接入时（`Driver::connect`、`shim test`）经 shim `vtable` 进程内按 RTTI 找到 job 与 `CTcUser` 的主虚表、读协议字典（同一进程只找一次），常驻钩住、只录 5 个入口槽：`CTcUser` 槽 7（建 job）+ job 槽 6 / 7 / 9 / 25（设功能号 / 写串入参 / 写整数入参 / 发送）；不改写返回、不等插件读应答。每问 `done` 后取出其间的调用，按 job 拼成请求（自首个入参起），插件（`Addin*`）发的记下 功能号 → 入参（原样、按序）/ 回包 `lParam` 与其建 job 所用的 `CTcUser`。直发在界面线程里建 / 发 / 读 job 的那段不录（shim 按线程静音）。要看一问的全部细节（发出到网络线程收到 / 插件开读 / 读完的 ms、读法、首行）另用 `shim vt` 追踪。实测一问：网络往返约 0.27~0.6s，插件读 37 行持仓约 0.35s。
 - 直发（`req::ask` → shim `req`）：照插件的做法在界面线程里 `CTcUser` 槽 7 `(0, 0)` 建 job、写入参、设功能号、发送（回包投给 shim 的消息窗），应答到了在消息窗里按协议字典的出参逐个字段号读完（槽 44，排成出参序；没有的字段为空串），另取定位串；每问约 0.3s（持仓 37 行约 1.2s），不切页、不动界面。只许白名单查询功能号（1228 104 1114 1100 1108 1118 3200 3216 3220 3264）。
-  - 入参原样照搬插件最近一次发同一功能号时的（请求层日志记下的；只许覆盖其中已有的字段，如资金流水的起止日 `0x7e` / `0x7f`）：缺页面标识等字段时应答回不来、客户端随后在 mfc100 里空指针崩溃。`CTcUser` 取插件建 job 时的 this（另钩其槽 7）。客户端换了进程即都要重新见过（引导，见「Driver」）。
+  - 入参原样照搬插件最近一次发同一功能号时的（请求层记下的；只许覆盖其中已有的字段，如资金流水的起止日 `0x7e` / `0x7f`）：缺页面标识等字段时应答回不来、客户端随后在 mfc100 里空指针崩溃。`CTcUser` 取插件建 job 时的 this（另钩其槽 7）。客户端换了进程即都要重新见过（引导，见「Driver」）。
   - 引用计数：插件发完放到 2、读完放两次到 1（tc.dll 替它加过一份）；消息窗走不到那条路，一律经槽 0 / 1 读出计数后放到 2 / 1。读完时多放一次 job 即被提前释放，tc.dll 几秒后回收时崩溃（`0xc0000409`）。
   - 分页（`req::ask` 遇入参带定位字串 `0x506` 的功能即翻页：标的证券 / 担保品）：起始行号不起作用；请求行数 `0x508` 要 1000（服务器至多给七百余行），以上页的定位串接着问到空页。
 - 信用委托（旧录，未复核）：功能号 `0xCA`，路由字段 `0x4C1` = `"SDX.ORDER,"`。
@@ -134,14 +137,15 @@ shim（程序）   独立调试程序：命令转发 / 探内存 / 协议字典 
 
 ## 四、Driver（`Tdx.hpp`）与 Broker（`live/Broker.hpp`）
 
-- 分工：Driver 只做同步的「接 / 四样读 (`fills` / `pos` / `pends` / `acct`，与 `State` 同名) / 三样事务 (拉 `terms` / `flows`、写 `place`，末参同一个 `Report`)」，调用线程跑完；刷新线程、发布、起因都在券商无关的 Broker，只此一份。
-- 接（`connect`）：进程换了即重开堆、shim 不在线即注入、请求层钩上，再引导刷新四样的表；接上即可读。Broker 的刷新与事务都先接一次，`who` 换了即发布。
-- 引导：插件在本客户端进程里还没发过的表（`tables::seen`），各经其引导页查一次（`ui::query` 等查完、请求层记下入参），末了回持仓页；占界面锁。客户端换进程后的首次接入会做一次；两融条款 / 资金流水在拉时引导各自的表。
-- 读：成交 / 持仓 / 挂单 / 信用资产 + 融资负债（合成信用账户）四样同形「`tables::read` → 发布」。Broker 一轮：接入 → 成交、持仓（两问之间又有成交即对不上，连查至多 2 遍）→ 挂单 → 信用账户（带同一轮的持仓）；逐样读进底稿，轮末整份发布（`State` 不可变，指针换了 = 换了一份；上层不见半轮）。批量下单期间 `Broker::Hush` 守卫：只跑要的轮，不自起、不排下单后的。一轮约 3s，不动界面，不必避让人手操作。
+- 分工：Driver 只做同步的「接 / 四样读 (`fills` / `pos` / `pends` / `acct`，与 `Snapshot` 同名) / 三样事务 (拉 `terms` / `flows`、写 `place`；进度与记一条经 `live::trace`) / 可选画面 `mirror`」，调用线程跑完；刷新线程、发布、起因都在券商无关的 Broker，只此一份。
+- 接（`connect`）：进程换了即断开复用的 shim 连接、shim 不在线即注入、请求层钩上，再引导刷新四样的表；接上即可读。Broker 的刷新与事务都先接一次。
+- 引导：插件在本客户端进程里还没发过的表（`tables::seen_func`），各经其引导页查一次（`ui::query` 等查完、请求层记下入参），末了回持仓页；占界面锁。客户端换进程后的首次接入会做一次；两融条款 / 资金流水在拉时引导各自的表。
+- 读：成交 / 持仓 / 挂单 / 信用资产 + 融资负债（合成信用账户）四样同形「`tables::read` → 发布」。Broker 一轮：接入 → 成交、持仓（两问之间又有成交即对不上，连查至多 2 遍）→ 挂单 → 信用账户（带同一轮的持仓）；读进一份局部的 `Snapshot`，轮末整份发布（不可变，指针换了 = 换了一份；上层不见半轮也不见两轮的混合）；一轮失败即不发布、保留上一份。批量下单期间（`Broker::batch`）：只跑要的轮，不自起、不排下单后的。一轮约 3s，不动界面，不必避让人手操作。
 - 起因：`request`（不等）/ `sync`（等刷完，接不上或失败即 `Fail`）/ 有人在看（`touch`）而没刷过或距上轮满 `every` 秒（缺省 60s）/ 下单成功后 1s 与 6s。接不上报在 `down`、一轮失败报在 `err`，不重试，等下一个起因。
-- 拉：两融条款（`Credit.hpp`）标的证券 / 担保品各翻页到底（约 6 / 12 页），合成 `代码 → Term`，跨市场同号的只留 `market_of` 那只；资金流水（`Flow.hpp`）按 30 天一窗覆盖起止日入参直发，各行须在窗内。两者同形：先引导其表，再直发；进度经 `Report`（记一条 / 实时一行 / 走到哪步）交回上层。
+- 拉：两融条款标的证券 / 担保品各翻页到底（约 6 / 12 页），合成 `代码 → Term`，跨市场同号的只留 `market_of` 那只；资金流水按 30 天一窗覆盖起止日入参直发，各行须在窗内（`Tables.cpp` 组合查询）。两者同形：先引导其表，再直发；进度经 `live::trace`（段 / 实时一行 / 记一条）交回上层。
 - 信用账户：担保资产、可融额度余量（最高融资额度 − 融资负债含费用）、负债总额、净资产、可用保证金、现金资产、融资年利率、各只负债（`Keyed<Debt>`）。
 - 界面锁：引导与下单一次一路（普通互斥，记被占着等了多久）；直发不占。Broker 的三样事务同形 `txn(名, 字段, fn)`——开段、接入、当前线程跑 Driver；下单成功后即排两次定点刷新。
+- 下单的收尾：任一步出错（含任何意外）即关掉本单弹出的各框（收尾自身出错也不盖掉本单的原因），点过确认的注明委托可能已提交；上层（`LiveHub`）每单一个错误边界，一单失败只记下、接着下后面的。
 
 ## 五、shim 独立程序（`src/live/tdx/shim/`，产物 `build/bin/shim`）
 
@@ -163,27 +167,25 @@ shim（程序）   独立调试程序：命令转发 / 探内存 / 协议字典 
 
 ```
 include/live/tdx/
-├── Tdx.hpp          Driver 实现
-├── Heap.hpp         进程堆（只读）/ GBK
+├── Tdx.hpp          Driver 与 Mirror 实现
+├── Heap.hpp         进程堆（只读，shim probe 用）/ find_pid / GBK
 ├── Cols.hpp         列声明与转型 / 应答解析 / 索引
-├── Tables.hpp       8 张表并排声明 / 直发读表
+├── Tables.hpp       8 张表并排声明 / 直发读表 / 组合查询（信用账户 / 两融条款 / 资金流水）
 ├── Until.hpp        轮询原语 poll / until
 ├── Shim.hpp         shim 构建、注入与控制通道
 ├── Proc.hpp         起外部进程
 ├── Win.hpp          通用 Win32：节点 / 图层 / 窗口 / 消息 / 控件 / 禁用计数 / 按绘制文字点
 ├── Ui.hpp           通达信界面
 ├── Flash.hpp        闪电下单
-├── Credit.hpp       两融条款 / 信用账户
-├── Flow.hpp         资金流水
-├── Req.hpp          请求层日志 / 直发
-├── Image.hpp        客户端进程映像（建在堆上：PE 模块 / RTTI / 按类名找虚表）
+├── Req.hpp          请求层：记下插件入参 / 直发
+├── Image.hpp        客户端进程映像（建在堆上：PE 模块 / RTTI / 按类名找虚表；shim probe 用）
 ├── Schema.hpp       协议字典（字段字典 / 功能定义）
 └── shim/Tool.hpp    shim 程序的子命令
 src/live/tdx/shim/   Main 入口 / Probe 探内存 / Rec 录制 / Vt 虚表追踪 / Test 在线用例
 src/live/tdx/win32/  shim.c 注入 DLL（命令表见文件头）/ inject.c 注入器
 ```
 
-本机（不入库）：`output/config/live/.sudo_pass`、`output/run/live/tdx/{shim,rec}/`、`output/run/live/trace/`。
+本机（不入库）：`output/config/live/.sudo_pass`（只 `shim probe` 用）、`output/run/live/tdx/{shim,rec}/`、`output/run/live/{trace,task}/`。
 
 ## 未完成
 

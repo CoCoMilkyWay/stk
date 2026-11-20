@@ -18,6 +18,7 @@ namespace live::tdx {
 
 namespace {
 
+// 画面复现: 窗口树 / 绘制层 / 控件子项 / 输入透传, 各经 shim (gdiwatch 走独立推流连接)
 class TdxMirror final : public Mirror {
 public:
   void ensure() override {
@@ -46,6 +47,7 @@ public:
   void ch(unsigned cp) override { win::ch(cp); }
 };
 
+// 通达信的 Driver (见 Tdx.hpp)
 class Tdx final : public Driver {
 public:
   std::string connect() override {
@@ -87,6 +89,7 @@ public:
   std::unique_ptr<Mirror> mirror() override { return std::make_unique<TdxMirror>(); }
 
 private:
+  // 占界面锁; 被占着即等, 记下等了多久
   std::unique_lock<std::mutex> gate() {
     std::unique_lock g(gate_, std::try_to_lock);
     if (!g) {
@@ -97,6 +100,7 @@ private:
     return g;
   }
 
+  // 引导一组表 S…: 插件还没发过的各经界面查一次 (其引导页), 末了回持仓页 (持仓缺也由它补)
   template <class... S>
   void prime(std::tuple<S...>) {
     std::vector<ui::Open> miss;
@@ -110,10 +114,10 @@ private:
     ui::show_bar();
     for (const ui::Open &o : miss)
       std::ignore = ui::open(o);
-    (need(tables::seen_func<S>() != 0, strf("经界面查过「%s」, 插件仍没发过其功能", S::kName)), ...);
+    (need(tables::seen_func<S>() != 0, "经界面查过「%s」, 插件仍没发过其功能", S::kName), ...);
   }
 
-  std::mutex gate_, work_;
+  std::mutex gate_, work_; // 界面 / 接入; 两把不嵌套
   int pid_ = 0;
 };
 

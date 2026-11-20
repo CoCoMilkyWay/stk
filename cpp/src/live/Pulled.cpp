@@ -57,7 +57,7 @@ void save_pulled(disk::Node file, const char *head, const Pulled &s) {
   out += "\n" + std::string(head) + "\n";
   for (const std::vector<std::string> &r : s.rows) {
     for (size_t i = 0; i < r.size(); ++i) {
-      need(r[i].find(',') == std::string::npos, strf("%s: 「%s」含逗号", head, r[i].c_str()));
+      need(r[i].find(',') == std::string::npos, "%s: 「%s」含逗号", head, r[i].c_str());
       out += (i ? "," : "") + r[i];
     }
     out += "\n";

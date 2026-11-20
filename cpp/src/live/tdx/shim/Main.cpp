@@ -52,7 +52,7 @@ int run(const std::string &sub, const std::vector<std::string> &rest) {
   if (sub == "test") {
     const int pid = mem::find_pid();
     live::need(pid != 0, "找不到 tdxw.exe 进程");
-    req::arm(pid);
+    req::arm(pid); // 用例各段里照搬插件入参直发 (同 Driver)
     return tool::test(rest);
   }
   std::fputs(kUsage, stderr);

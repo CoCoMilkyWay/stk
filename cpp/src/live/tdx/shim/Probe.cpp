@@ -255,7 +255,7 @@ std::string where(const Image &p, uint32_t v) {
 std::string object(const Image &p, mem::Addr addr, size_t n, size_t slots) {
   std::string out;
   const std::optional<uint32_t> vt = p.heap->u32(addr);
-  need(vt.has_value(), strf("%#llx 读不到", static_cast<unsigned long long>(addr)));
+  need(vt.has_value(), "%#llx 读不到", static_cast<unsigned long long>(addr));
   if (const std::optional<std::string> c = p.mod(*vt) ? p.rtti(*vt) : std::nullopt)
     out += "类 " + *c + "\n";
   for (size_t i = 0; i < n; ++i)
@@ -321,7 +321,7 @@ int probe(const std::vector<std::string> &a) {
         std::printf("%5d  %-12s 入 %2zu  出 %2zu\n", fn, title(fn).c_str(), f.in.size(), f.out.size());
     for (size_t i = 1; i < a.size(); ++i) {
       const int fn = std::stoi(a[i]);
-      need(s.funcs.contains(fn), strf("没有功能 %d", fn));
+      need(s.funcs.contains(fn), "没有功能 %d", fn);
       std::printf("== %d %s\n", fn, title(fn).c_str());
       for (const auto &[side, v] : {std::pair{"入", &s.funcs.at(fn).in}, std::pair{"出", &s.funcs.at(fn).out}})
         for (size_t k = 0; k < v->size(); ++k)

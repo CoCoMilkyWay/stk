@@ -1,5 +1,5 @@
 // 通达信适配: 客户端进程堆 (只读) — 定位 TdxW 进程、确保有跨进程读权限 (本机存的密码自动 sudo 放开 ptrace)、按址试读与堆段逐段读;
-//   进程映像 (Image) / 协议字典 (Schema) / shim probe 用. 账户数据不从堆里读, 一律经请求层直发 (Req.hpp). 客户端里的文本一律 GBK
+//   只给 shim probe (探内存) 与其进程映像 (Image) 用; 实盘路径不读进程堆 (虚表与字典经 shim 进程内找). find_pid / gbk 各处共用. 客户端里的文本一律 GBK
 #pragma once
 
 #include <cstdint>

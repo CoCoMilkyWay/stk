@@ -209,6 +209,8 @@ enum class Seg : std::uint8_t {
   X(RunAgentSearch,    RunAgentScope,     Dir,    Lit,       "search",            "",         false)       \
   X(RunAgentSearchLog, RunAgentSearch,    File,   Factor,    "",                  ".log",     false)       \
   X(RunLive,           Run,               Dir,    Lit,       "live",              "",         false)       \
+  X(RunLiveTask,       RunLive,           Dir,    Lit,       "task",              "",         false)       \
+  X(RunLiveTaskLog,    RunLiveTask,       File,   Stamp,     "",                  ".jsonl",   false)       \
   X(RunLiveTrace,      RunLive,           Dir,    Lit,       "trace",             "",         false)       \
   X(RunLiveTraceLog,   RunLiveTrace,      File,   Stamp,     "",                  ".jsonl",   false)       \
   X(RunLiveTdx,        RunLive,           Dir,    Lit,       "tdx",               "",         false)       \

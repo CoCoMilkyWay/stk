@@ -1,6 +1,9 @@
-// Task Live - 实盘: 券商无关中枢 LiveHub; 两页对仗:
-//   Board  持仓 · 调仓 · 闪电下单 + 右栏行情图
-//   Client 客户端窗口复现 (窗口树 + GDI 绘制层 + 控件子项 + 鼠键透传)
+// Task Live - 实盘: 券商客户端的持仓、下单与一键调仓 (中枢 LiveHub 券商无关; 客户端适配在 live/<客户端>/, 登记在 live/Clients.hpp)
+//   Board: 连接 + 持仓 · 调仓一页 (控件分组 / 持仓表行内闪电下单与卖出滑杆, 并调仓名单 / 日志) + 右栏选中行的行情图
+//     (Market 的个股面板, 与 Database / Market 共用 QuoteHub)
+//   Client: 客户端窗口复现 (窗口树 + GDI 绘制层 + 控件子项, 检查器 / 鼠键透传; 只经 live::Mirror); 有事务在跑即停拉、停透传
+//   行情走新浪 (LiveHub 把要的码订阅给 QuoteHub, 本地资产库就绪才有), 不读客户端的行情; Board 可见时才盯客户端 (见 live/Broker.hpp 的 touch)
+//   账户净值 (gui/account): 每帧交快照 (其库外持仓的现价转给价格库回放); 两融条款与资金流水由 LiveHub 每天自动拉
 #include "gui/task_live/TaskLive.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/account/AccountHub.hpp"
@@ -25,8 +28,8 @@ enum TabIdx {
 };
 
 struct TaskLiveState {
-  std::shared_ptr<Quote::QuoteHub> quote;
-  std::shared_ptr<Account::AccountHub> account;
+  std::shared_ptr<Quote::QuoteHub> quote;       // 与 Database / Market 任务共用
+  std::shared_ptr<Account::AccountHub> account; // 与 Market 任务共用
   std::unique_ptr<Live::LiveHub> hub;
   Live::BoardState board;
   Live::ClientState client;

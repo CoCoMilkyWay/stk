@@ -9,11 +9,12 @@ namespace {
 
 struct Pair {
   const Position *h = nullptr; // 空 = 今日清仓
-  const Traded *f = nullptr;   // 空 = 今日无成交
+  const Traded *f = nullptr;   // 空 = 今日没有成交
   const Sec &sec() const { return h ? static_cast<const Sec &>(*h) : static_cast<const Sec &>(*f); }
   bool synced() const { return !h || live::synced(*h, f); }
 };
 
+// 持仓 (余额 > 0) 在前、今日清仓在后; 两表市场须一致 (否则 Fail)
 std::vector<Pair> join(const Keyed<Position> &pos, const Fills &fills) {
   std::vector<Pair> out;
   for (const Position &h : pos.list)
@@ -82,6 +83,7 @@ void depth(Row &r, const Quote &q) {
     r.slips = slips(q, *x);
 }
 
+// 券商口径的资产: 持仓表的 市值 / 仓位 反推, 再随总市值 mv 平移; 持仓表无仓位 → 无
 std::optional<double> asset(const Keyed<Position> &pos, double mv) {
   const Position *top = nullptr;
   for (const Position &h : pos.list)
@@ -101,6 +103,7 @@ std::optional<double> pct(const std::optional<double> &x, const std::optional<do
   return *x / *den * 100;
 }
 
+// 方向 s 第 i 额的滑点按占比加权
 std::optional<double> agg(const std::vector<Row> &rows, int s, size_t i) {
   double num = 0, den = 0;
   for (const Row &r : rows)

@@ -36,7 +36,7 @@ std::string busy() {
   for (const win::Node &n : win::find("AfxWnd100", kHostId))
     if (n.vis)
       hosts.push_back(n.hwnd);
-  need(hosts.size() == 1, strf("交易栏页宿主可见的有 %zu 个", hosts.size()));
+  need(hosts.size() == 1, "交易栏页宿主可见的有 %zu 个", hosts.size());
   const long n0 = win::disables(hold.key);
   win::post(hosts[0], win::kWmCommand, kHold);
   until(said("持仓页查起 (查询键禁用)"), [&] { return win::disables(hold.key) > n0; }, 3, 0.005);
@@ -50,7 +50,7 @@ auto read_one() {
   trace::Span span(S::kName);
   const int n = ui::open(S::kOpen).count.read();
   std::vector<typename S::Row> rows = tables::rows<S>();
-  need(rows.size() == static_cast<size_t>(n), strf("%s页上 %d 条, 直发 %zu 行", S::kName, n, rows.size()));
+  need(rows.size() == static_cast<size_t>(n), "%s页上 %d 条, 直发 %zu 行", S::kName, n, rows.size());
   return S::Index::build(S::kName, std::move(rows));
 }
 

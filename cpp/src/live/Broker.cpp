@@ -88,13 +88,14 @@ using namespace std::chrono_literals;
 using Clock = std::chrono::steady_clock;
 
 constexpr auto kTick = 100ms;
-constexpr double kEvery = 60;
-constexpr int kKicks[] = {1, 6};
-constexpr int kSyncTries = 2;
-constexpr auto kWatchLinger = 1s;
+constexpr double kEvery = 60;     // 定时刷新周期缺省 [s]
+constexpr int kKicks[] = {1, 6};  // 下单成功后隔几秒各刷新一次 (限价单可能稍后才成交)
+constexpr int kSyncTries = 2;     // 一轮里成交与持仓对不上 (两问之间又成交) 时最多连查几遍
+constexpr auto kWatchLinger = 1s; // touch 之后算有人在看的时长
 
 } // namespace
 
+// mu: 发布的一份、进度与上轮结局、轮次与起因; 刷新线程此刻在哪另在 track
 struct Broker::Core {
   std::unique_ptr<Driver> d;
   trace::Track track;
@@ -104,12 +105,13 @@ struct Broker::Core {
   std::shared_ptr<const Snapshot> shown;
   Refresh prog{.every = kEvery};
   bool stop = false;
-  int hushed = 0; // > 0 = 批量事务期间抑制自起刷新
-  uint64_t asked = 0, done = 0;
-  std::optional<Clock::time_point> last;
+  int hushed = 0;                        // > 0 = 批量下单期间, 不自起刷新
+  uint64_t asked = 0, done = 0;          // 要过 / 刷完的轮号
+  std::optional<Clock::time_point> last; // 上一轮结束时刻
   std::vector<Clock::time_point> kicks;
   Clock::time_point touched{};
 
+  // 要一轮 → 轮号
   uint64_t want() {
     std::lock_guard lk(mu);
     const uint64_t n = ++asked;
@@ -117,6 +119,7 @@ struct Broker::Core {
     return n;
   }
 
+  // 刚下过单: 隔几秒各刷一次 (批量下单期间不排)
   void kick() {
     std::lock_guard lk(mu);
     if (hushed > 0)
@@ -127,6 +130,7 @@ struct Broker::Core {
     std::sort(kicks.begin(), kicks.end());
   }
 
+  // 接上客户端 → 是谁
   std::string connect() {
     trace::Span span("接入");
     std::string who = d->connect();
@@ -135,6 +139,7 @@ struct Broker::Core {
     return who;
   }
 
+  // 一件事务 (拉 / 写): 段 (who {kw}) + 接上客户端, 当前线程跑 fn
   template <class F>
   auto txn(const char *who, trace::Kw kw, F &&fn) {
     trace::Span span(who, std::move(kw));
@@ -144,6 +149,7 @@ struct Broker::Core {
 
   // ---------- 刷新线程 ----------
 
+  // 该刷新一轮了 → 起因; 不该 → 空 (须持 mu)
   const char *due(Clock::time_point now) {
     if (asked > done)
       return "请求";
@@ -160,7 +166,7 @@ struct Broker::Core {
     return nullptr;
   }
 
-  // 整轮读入局部 Snapshot, 轮末整份原子发布
+  // 一轮读进一份局部的 Snapshot: 成交、持仓两问之间又有成交即对不上, 连查至多 kSyncTries 遍, 仍不对留给上层标出; 再挂单、信用账户
   Snapshot round(std::string who) {
     Snapshot s;
     s.who = std::move(who);
@@ -200,18 +206,12 @@ struct Broker::Core {
     }
     const trace::Watch watch(track);
     trace::Span span("刷新", {{"why", why}, {"n", n}});
-    std::string down, msg;
+    // 错误边界: 接不上报在 down, 一轮失败报在 err (保留上一份完整快照), 都等下一个起因再刷
+    std::string who, msg;
     std::shared_ptr<const Snapshot> next;
-    try {
-      std::string who = connect();
-      try {
-        next = std::make_shared<const Snapshot>(round(std::move(who)));
-      } catch (const Fail &f) {
-        msg = f.why;
-      }
-    } catch (const Fail &f) {
-      down = f.why;
-    }
+    std::string down = guard([&] { who = connect(); });
+    if (down.empty())
+      msg = guard([&] { next = std::make_shared<const Snapshot>(round(std::move(who))); });
     std::lock_guard lk(mu);
     if (next)
       shown = std::move(next);

@@ -101,11 +101,11 @@ Closes marks(const std::vector<CashFlow> &rows, const std::vector<misc::Ymd> &da
 // 账本并入一次重查 (重查覆盖 from 日起)
 std::vector<CashFlow> merge(const std::vector<CashFlow> &old, misc::Ymd from, std::vector<CashFlow> fresh) {
   for (const CashFlow &r : fresh)
-    live::need(r.date >= from, strf("资金流水重查 %s 起, 回来 %d 的行", misc::dash(from).c_str(), r.date));
+    if (r.date < from)
+      live::fail(strf("资金流水重查 %s 起, 回来 %d 的行", misc::dash(from).c_str(), r.date));
   const auto cut = std::ranges::lower_bound(old, from, {}, &CashFlow::date);
   const size_t k = static_cast<size_t>(old.end() - cut);
-  live::need(k <= fresh.size() && std::equal(cut, old.end(), fresh.begin()),
-             strf("资金流水重查与账本对不上: %s 起账本 %zu 行不是重查 %zu 行的开头", misc::dash(from).c_str(), k, fresh.size()));
+  live::need(k <= fresh.size() && std::equal(cut, old.end(), fresh.begin()), "资金流水重查与账本对不上: %s 起账本 %zu 行不是重查 %zu 行的开头", misc::dash(from).c_str(), k, fresh.size());
   std::vector<CashFlow> out(old.begin(), cut);
   out.insert(out.end(), std::make_move_iterator(fresh.begin()), std::make_move_iterator(fresh.end()));
   check(out);

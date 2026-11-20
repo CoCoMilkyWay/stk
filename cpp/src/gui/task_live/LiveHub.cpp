@@ -11,10 +11,14 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstddef>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace GUI::Live {
@@ -22,17 +26,18 @@ namespace GUI::Live {
 using live::strf;
 
 struct LiveHub::Core {
-  std::unique_ptr<live::Broker> broker;
-  live::trace::Track track;
+  std::unique_ptr<live::Broker> broker; // connect 时建一次, 之后只读
+  live::trace::Track track;             // 事务线程此刻在哪
 
+  // mu: 三份快照 (改 = 抄一份改了换上) 与事务日志的位置
   std::mutex mu;
   std::shared_ptr<const Inputs> in;
   std::shared_ptr<const Task> task;
   std::shared_ptr<const std::vector<OrderJob>> jobs = std::make_shared<const std::vector<OrderJob>>();
-  misc::Ymd flows_pulled = 0;
+  misc::Ymd flows_pulled = 0; // 资金流水账本拉于
+  std::string task_stamp;     // 本件事务日志文件的时刻
   double task_t0 = 0;
-  bool in_order = false;    // 当前正在跑一笔下单 (用于把 Span/live 同步进 jobs.front())
-  std::string order_prefix; // 批量下单时当前单前缀 (如 "卖出 2/5")
+  bool ordering = false; // 事务线程正下着最近几单之首那单: 其各步的段、实时一行同步进这单
 };
 
 namespace {
@@ -42,6 +47,7 @@ using Lock = std::lock_guard<std::mutex>;
 
 double mono() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
+// 改核心的一份快照 m: 抄一份, f 改了换上
 template <class T, class F>
 void edit(Core &c, std::shared_ptr<const T> Core::*m, F &&f) {
   Lock lk(c.mu);
@@ -55,6 +61,7 @@ std::shared_ptr<const Inputs> inputs(Core &c) {
   return c.in;
 }
 
+// 由 raw / local / codes 派生的: 合并的条款、名单里可买的
 void derive(Inputs &x) {
   x.terms = x.raw ? std::make_shared<const live::Terms>(live::terms::merged(x.raw->terms, *x.local)) : nullptr;
   x.buy = x.terms ? live::rebal::buyable(x.codes, *x.terms) : std::vector<live::Sec>{};
@@ -62,6 +69,7 @@ void derive(Inputs &x) {
 
 // ---------- 行情 ----------
 
+// 持仓、今日成交、负债、名单里可买的, 按代码去重
 std::vector<live::Sec> watch_set(const live::Snapshot *snap, const Inputs &in) {
   std::vector<live::Sec> v;
   std::unordered_set<std::string> seen;
@@ -82,6 +90,7 @@ std::vector<live::Sec> watch_set(const live::Snapshot *snap, const Inputs &in) {
   return v;
 }
 
+// 快照各只 (持仓 / 负债) 在 q 里的现价; 缺一只 → 空
 std::shared_ptr<const live::rebal::Prices> prices_of(const live::Snapshot &s, const live::Quotes &q) {
   auto px = std::make_shared<live::rebal::Prices>();
   const auto take = [&](const std::string &code) {
@@ -95,6 +104,7 @@ std::shared_ptr<const live::rebal::Prices> prices_of(const live::Snapshot &s, co
   return all ? px : nullptr;
 }
 
+// 行情 q 整份换上; 快照是新读到的且其各只都有了即记作读时现价
 void take(Core &c, const std::shared_ptr<const live::Snapshot> &snap, std::shared_ptr<const live::Quotes> q) {
   int sec = -1;
   for (const auto &[code, x] : *q)
@@ -110,13 +120,18 @@ void take(Core &c, const std::shared_ptr<const live::Snapshot> &snap, std::share
   });
 }
 
+constexpr int kQuoteTries = 2; // 事务现取行情: 网络错至多试几次 (有界, 不卡在半路)
+
+// 现取 secs 的行情 (事务要此刻的价, 不等订阅那一路) 换上; 取不到 → Fail
 void fetch(Core &c, sina::Client &cl, const std::shared_ptr<const live::Snapshot> &snap, const std::vector<live::Sec> &secs) {
   auto q = std::make_shared<live::Quotes>();
   std::vector<std::string> syms;
   for (size_t i = 0; i < secs.size(); ++i) {
     syms.push_back(live::sina_sym(secs[i].mkt, secs[i].code));
     if (syms.size() == static_cast<size_t>(sina::kQuoteMax) || i + 1 == secs.size()) {
-      for (const sina::Quote &x : cl.quotes(syms))
+      const std::optional<std::vector<sina::Quote>> got = cl.try_quotes(syms, kQuoteTries);
+      live::need(got.has_value(), "新浪取不到行情 (%zu 只)", syms.size());
+      for (const sina::Quote &x : *got)
         (*q)[x.sym.substr(2)] = live::quote_of(x);
       syms.clear();
     }
@@ -124,12 +139,15 @@ void fetch(Core &c, sina::Client &cl, const std::shared_ptr<const live::Snapshot
   take(c, snap, std::move(q));
 }
 
-// 下单盘口源: 批量 = 后台 0.5s 轮询流, 断流 > 5s 或单笔则现取
+// 下单用的盘口: 批量 = 后台一条常驻连接每 kBookGap 秒取一遍这批各只 (超一次快照的分几批), 取用最新的一份;
+//   收到已超 kBookStale 秒或还没这只 → 当场现取. 单笔 (secs 空) = 每次现取.
+//   取行情一律有界 (try_quotes): 流取不到即留着上一份; 现取取不到即该单失败, 且 kBookStale 秒内不再现取 (断网时后面各单立刻失败、不排队等超时)
+//   后台线程持 Feed 的 shared_ptr, 析构只置停 (在途的一问做完即退)
 class Books {
 public:
   struct Book {
     live::Quote q;
-    double age = 0;
+    double age = 0; // 收到距今 [s]; 现取 = 0
     bool fed = false;
   };
   explicit Books(const std::vector<live::Sec> &secs) {
@@ -138,7 +156,6 @@ public:
       syms.push_back(live::sina_sym(s.mkt, s.code));
     std::sort(syms.begin(), syms.end());
     syms.erase(std::unique(syms.begin(), syms.end()), syms.end());
-    assert(syms.size() <= static_cast<size_t>(sina::kQuoteMax) && "一批下单的码超出一次快照");
     if (syms.empty())
       return;
     std::thread([f = feed_, syms = std::move(syms)] {
@@ -146,12 +163,22 @@ public:
       std::unique_lock lk(f->mu);
       while (!f->stop) {
         lk.unlock();
-        live::Quotes q;
-        for (const sina::Quote &x : cl.quotes(syms))
-          q[x.sym.substr(2)] = live::quote_of(x);
+        std::vector<live::Quote> got;
+        std::ignore = live::guard([&] {
+          for (size_t i = 0; i < syms.size(); i += static_cast<size_t>(sina::kQuoteMax)) {
+            const std::vector<std::string> part(syms.begin() + static_cast<std::ptrdiff_t>(i),
+                                                syms.begin() + static_cast<std::ptrdiff_t>(std::min(syms.size(), i + static_cast<size_t>(sina::kQuoteMax))));
+            if (const std::optional<std::vector<sina::Quote>> q = cl.try_quotes(part, 1))
+              for (const sina::Quote &x : *q)
+                got.push_back(live::quote_of(x));
+          }
+        });
+        const double now = mono();
         lk.lock();
-        f->q = std::move(q);
-        f->at = mono();
+        for (live::Quote &x : got) {
+          const std::string code = x.sym.substr(2);
+          f->q[code] = {std::move(x), now};
+        }
         f->cv.wait_for(lk, std::chrono::duration<double>(kBookGap), [&] { return f->stop; });
       }
     }).detach();
@@ -170,27 +197,36 @@ public:
     {
       Lock lk(feed_->mu);
       const auto i = feed_->q.find(s.code);
-      if (const double age = mono() - feed_->at; i != feed_->q.end() && age <= kBookStale)
-        return {i->second, age, true};
+      if (i != feed_->q.end())
+        if (const double age = mono() - i->second.at; age <= kBookStale)
+          return {i->second.q, age, true};
     }
+    live::need(mono() - down_ > kBookStale, "新浪 %.0fs 内刚取不到行情, 本单不再现取", kBookStale);
     if (!cl_)
       cl_.emplace(sina::kQuoteHost);
-    const std::vector<sina::Quote> got = cl_->quotes({live::sina_sym(s.mkt, s.code)});
-    live::need(!got.empty(), "新浪查无此码");
-    return {live::quote_of(got[0])};
+    const std::optional<std::vector<sina::Quote>> got = cl_->try_quotes({live::sina_sym(s.mkt, s.code)}, 1);
+    if (!got)
+      down_ = mono();
+    live::need(got.has_value(), "新浪取不到行情");
+    live::need(!got->empty(), "新浪查无此码");
+    return {live::quote_of((*got)[0])};
   }
 
 private:
-  static constexpr double kBookGap = 0.5, kBookStale = 5;
+  static constexpr double kBookGap = 0.5, kBookStale = 5; // [s]
+  struct Got {
+    live::Quote q;
+    double at = 0; // 收到于 (mono)
+  };
   struct Feed {
     std::mutex mu;
     std::condition_variable cv;
     bool stop = false;
-    live::Quotes q;
-    double at = 0;
+    std::unordered_map<std::string, Got> q; // 代码 → 最近收到的
   };
   std::shared_ptr<Feed> feed_ = std::make_shared<Feed>();
-  std::optional<sina::Client> cl_;
+  std::optional<sina::Client> cl_; // 现取的连接 (头一回现取才建)
+  double down_ = -1e9;             // 上一回现取取不到于 (mono)
 };
 
 // ---------- 事务 ----------
@@ -211,14 +247,22 @@ std::string quote_text(const live::Quote &q) {
               top(q.book[live::kBuy]).c_str(), top(q.book[live::kSell]).c_str(), live::auction(q) ? " · 竞价中" : "");
 }
 
+// 走到哪一步 (事务的第二级标签; 批量下单时即本单在批里的位置, 如「卖出 2/5」)
+void stage(Core &c, std::string s) {
+  edit(c, &Core::task, [&](Task &x) { x.step = std::move(s); });
+}
+
+// 事务里下一单: 「行情」从 books 取盘口记一条、按 mode 定委托价, 再交 broker 下; o 的量为 Qty (股或元).
+// 本单进最近几单之首, 其各步 (段名即步名) 与实时一行经事务线程的 Hooks 同步进本单; 请求与结局各记一条.
+// 成败看 st, 不抛: 本单出的任何错 (含应答畸形抛的) 都收在本单, 批量下单接着下后面的
 OrderJob exec(Core &c, Books &books, live::OrderReq o, std::string label, live::PxMode mode, const std::string &at) {
   const char *px_name = live::kPxModeNames[static_cast<int>(mode)];
   live::trace::note("order", strf("%s %s %s %s %s · %s", live::side_name(o.side), live::credit_name(o.credit), o.sec.code.c_str(), o.sec.name.c_str(), label.c_str(), px_name),
                     {{"order", live::to_json(o)}, {"mode", px_name}});
+  stage(c, at);
 
-  const auto bs = c.broker->steps();
   OrderJob j{.sec = live::sec_now(), .o = o, .label = std::move(label), .steps = {"行情"}};
-  for (const std::string_view s : bs)
+  for (const std::string_view s : c.broker->steps())
     j.steps.emplace_back(s);
   {
     Lock lk(c.mu);
@@ -227,10 +271,8 @@ OrderJob exec(Core &c, Books &books, live::OrderReq o, std::string label, live::
     if (v->size() > kOrderCap)
       v->pop_back();
     c.jobs = std::move(v);
-    c.in_order = true;
-    c.order_prefix = at;
+    c.ordering = true;
   }
-
   const auto put = [&](const auto &f) {
     OrderJob out;
     edit(c, &Core::jobs, [&](std::vector<OrderJob> &v) {
@@ -240,8 +282,8 @@ OrderJob exec(Core &c, Books &books, live::OrderReq o, std::string label, live::
     return out;
   };
 
-  OrderJob out;
-  try {
+  live::Placed p;
+  const std::string err = live::guard([&] {
     {
       live::trace::Span sp("行情");
       const Books::Book b = books.get(o.sec);
@@ -256,21 +298,18 @@ OrderJob exec(Core &c, Books &books, live::OrderReq o, std::string label, live::
       o.px = *px;
       put([&](OrderJob &y) { y.o = o; });
     }
-    const live::Placed p = c.broker->place(o);
-    out = put([&](OrderJob &y) {
-      y.st = JobSt::Ok;
+    p = c.broker->place(o);
+  });
+  const OrderJob out = put([&](OrderJob &y) {
+    y.st = err.empty() ? JobSt::Ok : JobSt::Err;
+    if (err.empty())
       y.got = p;
-    });
-  } catch (const live::Fail &e) {
-    out = put([&](OrderJob &y) {
-      y.st = JobSt::Err;
-      y.got.msg = e.why;
-    });
-  }
+    else
+      y.got.msg = err;
+  });
   {
     Lock lk(c.mu);
-    c.in_order = false;
-    c.order_prefix.clear();
+    c.ordering = false;
   }
   live::trace::note("job", strf("%s %s %s", job_name(out.st), out.detail.c_str(), out.got.msg.c_str()),
                     {{"job", {{"state", job_name(out.st)}, {"detail", out.detail}, {"msg", out.got.msg}, {"qty", out.got.qty}, {"px", out.got.px}}}});
@@ -279,6 +318,7 @@ OrderJob exec(Core &c, Books &books, live::OrderReq o, std::string label, live::
 
 std::string failed(const OrderJob &j) { return strf("%s %s 下单失败: %s", j.o.sec.code.c_str(), j.o.sec.name.c_str(), j.got.msg.c_str()); }
 
+// 各件事务的身子; 两样拉取同形: 拉 → 存, 再换上
 void terms_task(Core &c) {
   auto x = std::make_shared<const live::terms::Cache>(live::terms::pull(*c.broker));
   edit(c, &Core::in, [&](Inputs &in) {
@@ -293,6 +333,7 @@ void flows_task(Core &c) {
   c.flows_pulled = d;
 }
 
+// 刷新一轮 (成交、持仓、挂单、信用账户), 记下账户
 std::shared_ptr<const live::Snapshot> sync(Core &c) {
   live::trace::Span sp("刷新");
   c.broker->sync();
@@ -313,6 +354,7 @@ live::rebal::Plan plan_now(Core &c, sina::Client &cl) {
   assert(snap);
   fetch(c, cl, snap, watch_set(snap.get(), *inputs(c)));
   const std::shared_ptr<const Inputs> in = inputs(c);
+  live::need(in->local_err.empty(), "%s", in->local_err.c_str());
   live::need(in->terms != nullptr, "两融条款还没拉过");
   live::need(in->px_snap == snap, "账户各只的行情没取齐");
   const std::optional<live::rebal::Plan> p = live::rebal::plan(*snap, *in->px0, *in->quotes, *in->terms, in->codes, in->cfg);
@@ -322,6 +364,13 @@ live::rebal::Plan plan_now(Core &c, sina::Client &cl) {
   return *p;
 }
 
+// 执行调仓. 要紧处:
+//   · 试算现做一遍 (刷新后的账户 + 此刻行情), 页面上的那份只作预览; 各单的股数照它, 委托价下单时按新取的盘口再定
+//   · 一口气下完, 不等成交: 卖出回款 / 腾出的保证金在卖单成交前还没到账, 紧跟着的融资买单由闪电窗的最大可买封顶 (少买的事后人工补);
+//     不等是有意的 —— 等成交会在半路卡住 (卖了一半没买), 留下方向与价格敞口
+//   · 一单失败 (含任何意外) 只记下、接着下后面的, 末了一并报失败 (该补哪几单); 取行情、等界面一律有界, 不会卡在某一单
+//   · 下完即清掉卖出设置 (先于末了的刷新: 刷新失败也不留着): 再点执行不会重复卖
+//   · 末了的刷新只为页面尽早见到结果, 失败只记进结局, 不盖掉各单的结局
 void rebal_task(Core &c) {
   sina::Client cl(sina::kQuoteHost);
   if (!inputs(c)->raw)
@@ -335,7 +384,7 @@ void rebal_task(Core &c) {
   }
   const live::PxMode mode = inputs(c)->cfg.px;
   const live::rebal::Plan p = plan_now(c, cl);
-  std::vector<std::string> fails;
+  std::vector<std::string> fails; // 没下成的单: 记下接着下后面的, 末了一并报
   c.broker->batch([&] {
     Books books(std::vector<live::Sec>(p.orders.begin(), p.orders.end()));
     for (size_t i = 0; i < p.orders.size(); ++i) {
@@ -346,93 +395,96 @@ void rebal_task(Core &c) {
         fails.push_back(failed(j));
     }
   });
-  sync(c);
   edit(c, &Core::in, [](Inputs &x) { x.cfg.sells.clear(); });
+  stage(c, "");
+  const std::string after = live::guard([&] { sync(c); });
   if (!fails.empty()) {
     std::string s;
     for (const std::string &f : fails)
       s += (s.empty() ? "" : "; ") + f;
-    live::fail(strf("%zu 单没下成, 其余照下: %s", fails.size(), s.c_str()));
+    live::fail(strf("%zu 单没下成, 其余照下: %s%s", fails.size(), s.c_str(), after.empty() ? "" : ("; 末了刷新失败: " + after).c_str()));
   }
+  live::need(after.empty(), "各单已下, 末了刷新失败: %s", after.c_str());
 }
 
-// 后台起一件事务: 统一挂载 live::trace::Watch + Hooks, 零双写
+// 后台起一件事务; 已有事务在跑 → 不收, false.
+//   事务线程挂 Watch + Hooks: 段 / 实时一行 / 记一条照常经 live::trace 落交互日志, Hooks 另把记的各条落本件事务的日志文件
+//   (output/run/live/task/<时刻>.jsonl, 留最近 kTaskKeep 个: 下单留底比交互日志留得久) 并留尾巴给页面, 正下着的那单同步其各步与概要.
+//   事务的段在 Watch 之外 (进度只列其下的段, 名字已在事务名上)
 bool start(const std::shared_ptr<Core> &c, const char *name, std::function<void(Core &)> fn) {
   {
     Lock lk(c->mu);
     if (c->task && c->task->st == JobSt::Run)
       return false;
+    c->task_stamp = disk::stamp_now();
     c->task_t0 = mono();
-    c->task = std::make_shared<const Task>(Task{.name = name, .sec = live::sec_now(), .file = live::trace::file()});
+    c->task = std::make_shared<const Task>(Task{.name = name, .sec = live::sec_now(), .file = disk::path(disk::RunLiveTaskLog, {.stamp = c->task_stamp}).string()});
   }
+  const std::vector<disk::Key> old = disk::list(disk::RunLiveTaskLog);
+  for (size_t i = 0; i + kTaskKeep <= old.size(); ++i)
+    disk::remove(disk::RunLiveTaskLog, old[i]);
   std::thread([c, name = std::string(name), fn = std::move(fn)] {
     const live::trace::Hooks hooks{
-        .on_note = [&](const char *kind, std::string text) {
-          const double t = mono() - c->task_t0;
-          const std::string f = live::trace::file();
+        .on_note = [&](const char *kind, std::string text, const live::trace::Kw &kw) {
+          std::string stamp;
+          double t;
+          {
+            Lock lk(c->mu);
+            stamp = c->task_stamp;
+            t = mono() - c->task_t0;
+          }
+          live::trace::Kw line = {{"t", std::round(t * 100) / 100}, {"kind", kind}};
+          for (const auto &e : kw.items())
+            line[e.key()] = e.value();
+          disk::append(disk::RunLiveTaskLog, {.stamp = stamp}, line.dump(-1, ' ', false, live::trace::Kw::error_handler_t::replace));
           edit(*c, &Core::task, [&](Task &x) {
-            if (x.file.empty())
-              x.file = f;
             x.log.push_back({t, kind, std::move(text)});
             if (x.log.size() > kLogTail)
               x.log.pop_front();
           }); },
         .on_span = [&](std::string_view s) {
-          bool in_ord = false;
-          std::string pref;
+          bool ordering;
           {
             Lock lk(c->mu);
-            in_ord = c->in_order;
-            pref = c->order_prefix;
+            ordering = c->ordering;
           }
-          if (in_ord) {
+          if (ordering)
             edit(*c, &Core::jobs, [&](std::vector<OrderJob> &v) {
-              if (v.empty())
-                return;
               const auto it = std::find(v.front().steps.begin(), v.front().steps.end(), s);
               if (it != v.front().steps.end())
                 v.front().at = static_cast<size_t>(it - v.front().steps.begin());
-            });
-          }
-          std::string step_txt = pref.empty() ? std::string(s) : pref + " " + std::string(s);
-          edit(*c, &Core::task, [&](Task &x) { x.step = std::move(step_txt); }); },
+            }); },
         .on_live = [&](std::string line) {
-          bool in_ord = false;
+          bool ordering;
           {
             Lock lk(c->mu);
-            in_ord = c->in_order;
+            ordering = c->ordering;
           }
-          if (in_ord)
-            edit(*c, &Core::jobs, [&](std::vector<OrderJob> &v) {
-              if (!v.empty())
-                v.front().detail = line;
-            });
+          if (ordering)
+            edit(*c, &Core::jobs, [&](std::vector<OrderJob> &v) { v.front().detail = line; });
           edit(*c, &Core::task, [&](Task &x) { x.live = std::move(line); }); },
     };
-    const live::trace::Watch watch(c->track, &hooks);
-    live::trace::Span sp(name);
-    JobSt st = JobSt::Ok;
     std::string msg;
-    try {
-      fn(*c);
-      live::trace::note("ok", "");
-    } catch (const live::Fail &e) {
-      st = JobSt::Err;
-      msg = e.why;
-      live::trace::note("err", e.why, {{"err", e.why}});
+    {
+      live::trace::Span sp(name);
+      const live::trace::Watch watch(c->track, &hooks);
+      msg = live::guard([&] { fn(*c); });
+      if (msg.empty())
+        live::trace::note("ok", "");
+      else
+        live::trace::note("err", msg, {{"err", msg}});
     }
-    const std::string f = live::trace::file();
     edit(*c, &Core::task, [&](Task &t) {
-      if (t.file.empty())
-        t.file = f;
-      t.st = st;
+      t.st = msg.empty() ? JobSt::Ok : JobSt::Err;
       t.msg = std::move(msg);
       t.live.clear();
+      t.step.clear();
     });
   }).detach();
   return true;
 }
 
+// 两样拉取 (条款 / 流水; 同形: 拉 → 存, 再换上), 下标同 LiveHub::tried_
 struct Pull {
   const char *name;
   void (*run)(Core &);
@@ -518,9 +570,12 @@ void LiveHub::auto_pull() {
 void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
   Core &c = *c_;
   info_st_.update({info.pit_end, info.bar1m_end, static_cast<int64_t>(info.codes.size())}, [&](int &) {
-    auto l = std::make_shared<const live::terms::Local>(live::terms::local(info));
+    live::terms::Local l;
+    std::string err = live::guard([&] { l = live::terms::local(info); });
+    auto lp = std::make_shared<const live::terms::Local>(std::move(l));
     edit(c, &Core::in, [&](Inputs &x) {
-      x.local = std::move(l);
+      x.local = std::move(lp);
+      x.local_err = std::move(err);
       derive(x);
     });
   });
@@ -550,14 +605,12 @@ void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
 
   board_.update({snap_.get(), in.quotes.get()}, [&](BoardView &cur) {
     BoardView b{.snap = snap_, .quotes = in.quotes};
-    try {
+    b.err = live::guard([&] {
       if (!snap_)
         b.wait = "还没读到持仓与成交 (等刷新)";
       else if (!in.quotes || !(b.frame = live::board::view(*snap_, *in.quotes)))
         b.wait = "等行情";
-    } catch (const live::Fail &e) {
-      b.err = e.why;
-    }
+    });
     if (b.wait.empty() || !cur.frame)
       cur = std::move(b);
     else
@@ -566,20 +619,19 @@ void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
 
   plan_.update({snap_.get(), in_.get()}, [&](PlanView &cur) {
     PlanView p;
-    if (!in.terms)
+    if (!in.local_err.empty())
+      p.err = in.local_err;
+    else if (!in.terms)
       p.wait = "两融条款还没拉过 (更新两融名单)";
     else if (!snap_)
       p.wait = "还没读到信用账户 (等刷新)";
     else if (in.px_snap != snap_ || !in.quotes)
       p.wait = "等账户各只的行情";
-    else {
-      try {
+    else
+      p.err = live::guard([&] {
         if (!(p.plan = live::rebal::plan(*snap_, *in.px0, *in.quotes, *in.terms, in.codes, in.cfg)))
           p.wait = "等行情";
-      } catch (const live::Fail &e) {
-        p.err = e.why;
-      }
-    }
+      });
     if (p.plan)
       p.now = p.plan->now;
     else if (snap_)
@@ -595,12 +647,7 @@ std::vector<std::string> LiveHub::lists() const { return live::rebal::lists(); }
 
 void LiveHub::set_list(const std::string &name) {
   std::vector<std::string> codes;
-  std::string err;
-  try {
-    codes = live::rebal::read_list(name);
-  } catch (const live::Fail &e) {
-    err = e.why;
-  }
+  std::string err = live::guard([&] { codes = live::rebal::read_list(name); });
   edit(*c_, &Core::in, [&](Inputs &x) {
     x.cfg.list = name;
     x.codes = std::move(codes);

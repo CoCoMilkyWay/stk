@@ -6,7 +6,6 @@
 #include "imgui.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <cctype>
 #include <chrono>
@@ -15,9 +14,9 @@
 #include <deque>
 #include <limits>
 #include <mutex>
-#include <set>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -153,7 +152,11 @@ struct ClientState::Impl {
   bool live = true;
   bool want_detail = true;
   bool refresh_req = false;
+  bool hold = false; // 有事务在跑 (下单 / 调仓 / 拉取): 停拉画面、停透传, 不与事务抢 shim (闪电窗的各等待宁短勿长)
   Clock::time_point touched{};
+
+  // 该跟着拉画面 (须持 mu): 有人在看、开着实时、没事务在跑
+  bool watching() const { return live && !hold && (Clock::now() - touched) < std::chrono::seconds(2); }
 
   std::mutex in_mu;
   std::condition_variable in_cv;
@@ -175,7 +178,7 @@ struct ClientState::Impl {
 
   bool active() const {
     std::lock_guard lk(mu);
-    return !stop && live && (Clock::now() - touched) < std::chrono::seconds(2);
+    return !stop && watching();
   }
 
   void push_input(InputEv ev) {
@@ -205,15 +208,19 @@ struct ClientState::Impl {
         ev = inputs.front();
         inputs.pop_front();
       }
-      try {
+      {
+        std::lock_guard slk(mu);
+        if (hold)
+          continue; // 有事务在跑: 透传的输入丢掉, 不去动客户端界面
+      }
+      std::ignore = live::guard([&] {
         if (ev.kind == InputEv::Mouse)
           mirror->mouse(ev.m_kind, ev.x, ev.y, ev.mk, ev.delta);
         else if (ev.kind == InputEv::Key)
           mirror->key(ev.code);
         else
           mirror->ch(ev.code);
-      } catch (const live::Fail &) {
-      }
+      });
     }
   }
 
@@ -227,10 +234,7 @@ struct ClientState::Impl {
     if (with_detail) {
       for (const WinNode &n : draft.nodes)
         if (n.vis && has_detail_cls(n.cls) && n.rect[2] > n.rect[0] && n.rect[3] > n.rect[1]) {
-          try {
-            draft.detail[n.hwnd] = mirror->detail(n.hwnd);
-          } catch (const live::Fail &) {
-          }
+          std::ignore = live::guard([&] { draft.detail[n.hwnd] = mirror->detail(n.hwnd); });
         }
     }
   }
@@ -249,23 +253,23 @@ struct ClientState::Impl {
       {
         std::unique_lock lk(mu);
         cv.wait_for(lk, std::chrono::milliseconds(150), [&] {
-          return stop || refresh_req || (live && (Clock::now() - touched) < std::chrono::seconds(2));
+          return stop || (refresh_req && !hold) || watching();
         });
         if (stop)
           return;
-        force = refresh_req;
+        force = refresh_req && !hold;
         refresh_req = false;
         with_det = want_detail;
-        if (!force && (!live || (Clock::now() - touched) >= std::chrono::seconds(2)))
+        if (!force && !watching())
           continue;
       }
 
-      try {
+      std::string why = live::guard([&] {
         mirror->ensure();
         pull_full(draft, with_det);
         publish(draft);
         if (!active())
-          continue;
+          return;
 
         // 进入实时增量流: 收到 GDI 图层即局部更新并发布; 每 250ms 核一次窗口树代数
         Clock::time_point last_tree = Clock::now();
@@ -273,7 +277,7 @@ struct ClientState::Impl {
           bool req = false, det = true;
           {
             std::lock_guard lk(mu);
-            if (stop || !live || (Clock::now() - touched) >= std::chrono::seconds(2))
+            if (stop || !watching())
               return false;
             req = refresh_req;
             refresh_req = false;
@@ -297,10 +301,11 @@ struct ClientState::Impl {
             publish(draft);
           return true;
         });
-      } catch (const live::Fail &f) {
+      });
+      if (!why.empty()) {
         {
           std::lock_guard lk(mu);
-          err = f.why;
+          err = std::move(why);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
       }
@@ -508,12 +513,14 @@ void RenderTabClient(LiveHub &hub, ClientState &st) {
     im.start(std::move(m));
   }
 
-  // 每帧 touch 与同步选项
+  // 每帧 touch 与同步选项; 有事务在跑即停拉、停透传
+  const bool hold = hub.busy();
   std::shared_ptr<const MirrorFrame> fr;
   std::string err;
   {
     std::lock_guard lk(im.mu);
     im.touched = Clock::now();
+    im.hold = hold;
     im.live = st.live;
     im.want_detail = st.show_detail;
     fr = im.frame;
@@ -550,6 +557,10 @@ void RenderTabClient(LiveHub &hub, ClientState &st) {
   ImGui::Checkbox("自适应", &st.fit);
   ImGui::SameLine();
   ImGui::Checkbox("检查器", &st.inspector);
+  if (hold) {
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "· 有事务在跑: 画面暂停、透传关闭 (不与下单抢客户端)");
+  }
 
   if (fr) {
     // 顶层窗口选择
@@ -643,7 +654,7 @@ void RenderTabClient(LiveHub &hub, ClientState &st) {
   if (hovered) {
     const int sx = min_x + static_cast<int>(std::lround((io.MousePos.x - origin.x) / scale));
     const int sy = min_y + static_cast<int>(std::lround((io.MousePos.y - origin.y) / scale));
-    if (st.interact) {
+    if (st.interact && !hold) {
       unsigned mk = 0;
       if (io.KeyShift)
         mk |= 0x0004;
@@ -677,7 +688,7 @@ void RenderTabClient(LiveHub &hub, ClientState &st) {
         }
     }
   }
-  if (st.interact && focused) {
+  if (st.interact && !hold && focused) {
     for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; ++k) {
       const unsigned vk = vk_of(static_cast<ImGuiKey>(k));
       if (vk && ImGui::IsKeyPressed(static_cast<ImGuiKey>(k)))

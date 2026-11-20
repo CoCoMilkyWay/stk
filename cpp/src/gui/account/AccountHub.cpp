@@ -18,10 +18,11 @@ namespace {
 
 using live::strf;
 
+// 当日: 回放末日 (指数 idx0, 回放摘要 e) 之后, 持仓 h 按 y 的分钟收盘, 末槽 = h.now (与历史回放同一核 day_of)
 std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, const Quote::Holdings &h, const Quote::Live &y) {
   const size_t n = static_cast<size_t>(std::clamp(Quote::sec_slot(y.sec), 0, Quote::kSlots - 1)) + 1;
   account::Day d{y.date, h.now(&y), h.broker ? e.after : 0, 1, {}};
-  std::unordered_map<std::string, uint32_t> id;
+  std::unordered_map<std::string, uint32_t> id; // 代码 → 全局 id (资产轴上的)
   for (const Quote::Holding &x : h.list) {
     d.hold.push_back({x.code, x.qty, x.px});
     if (x.id != Quote::Ref::kNone)
@@ -33,6 +34,7 @@ std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, c
   }));
 }
 
+// 持仓 (见 Quote::Holdings): 快照 s 的信用账户有净资产 → 券商持仓 (计价 = 券商现价) + 今日成交; 否则回放末日 (末日净值 ≤ 0 → 空)
 std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const live::Snapshot *s) {
   auto h = std::make_shared<Quote::Holdings>();
   if (s && s->acct.net > 0) {
@@ -51,6 +53,7 @@ std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const
   return h;
 }
 
+// 今日成交 → 成交点: 时刻 (当日秒) 落所在分钟根 (竞价并入首根), 一分钟一点, 点内同只合并
 std::shared_ptr<const Quote::Trades> trades_of(const live::Fills &f) {
   std::map<int, Quote::TradeMark> by;
   for (const live::Fill &x : f.rows) {

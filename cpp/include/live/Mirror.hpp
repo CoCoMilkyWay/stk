@@ -2,6 +2,7 @@
 //   由支持画面复现的 Driver 提供 (Driver::mirror); GUI 的 Client 页只认这里的类型, 不认具体客户端
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>

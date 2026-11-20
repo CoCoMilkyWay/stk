@@ -6,7 +6,7 @@
 //   ping                          {pid}
 //   mods                          本进程已加载模块 {base,size,name}…
 //   vtable <cls>                  进程内按 MSVC RTTI 找主虚表 {vt,mod}…
-//   memhas <hex>                  进程私有可读写堆里是否含该字节串 {found}
+//   memhas <hex>                  进程私有可读写堆里是否含该字节串 (至多 8192 字节) {found}
 //   treegen                       {gen}
 //   treewatch                     长连接，窗口树变更即推 {gen}（不收尾）
 //   enum [target]                 节点记录，只展开一层
@@ -3055,7 +3055,10 @@ static const char *cmd_req(struct out *o, HWND h, char *a) {
 }
 
 // ---------- 命令：进程内映像 / 虚表 / 堆探测 ----------
-// 进程内直读：免跨进程 /proc/<pid>/mem 与 ptrace 权限
+// 进程内直读：免跨进程 /proc/<pid>/mem 与 ptrace 权限。别的线程正改着的内存
+// （堆段随时 decommit、模块可被卸载）一律先经 safe_copy 拷出再看：查完页属性到
+// 真读之间页可能已被释放，直接解引用即访问违例、连同客户端一起崩；
+// ReadProcessMemory 读本进程，读不到只返回失败。
 static int hex_val(char c) {
   if (c >= '0' && c <= '9')
     return c - '0';
@@ -3079,69 +3082,35 @@ static const BYTE *find_bytes(const BYTE *hay, size_t hlen, const BYTE *ndl,
   return NULL;
 }
 
-static int readable_prot(DWORD prot) {
-  if (prot & (PAGE_GUARD | PAGE_NOACCESS))
-    return 0;
-  DWORD p = prot & 0xff;
-  return p == PAGE_READONLY || p == PAGE_READWRITE || p == PAGE_WRITECOPY ||
-         p == PAGE_EXECUTE_READ || p == PAGE_EXECUTE_READWRITE ||
-         p == PAGE_EXECUTE_WRITECOPY;
-}
-
-// 在模块 [base, base + size) 的已提交可读区间内遍历所有 4 字节对齐的 dword == val
-typedef void (*dword_fn)(DWORD addr, void *ctx);
-static void scan_mod_dword(DWORD base, DWORD size, DWORD val, dword_fn fn,
-                           void *ctx) {
-  DWORD cur = base, end = base + size;
-  while (cur < end) {
-    MEMORY_BASIC_INFORMATION m;
-    if (!VirtualQuery((LPCVOID)(DWORD_PTR)cur, &m, sizeof(m)) || !m.RegionSize)
-      break;
-    DWORD seg_hi = (DWORD)((DWORD_PTR)m.BaseAddress + m.RegionSize);
-    if (seg_hi > end)
-      seg_hi = end;
-    if (m.State == MEM_COMMIT && readable_prot(m.Protect)) {
-      DWORD p = (cur + 3u) & ~3u;
-      for (; p + 4 <= seg_hi; p += 4)
-        if (*(const DWORD *)(DWORD_PTR)p == val)
-          fn(p, ctx);
-    }
-    cur = seg_hi;
+// [p, p + n) 拷进 dst：整段读不成即逐页读，读不到的页填 0
+static void safe_copy(BYTE *dst, DWORD_PTR p, size_t n) {
+  SIZE_T got = 0;
+  if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)p, dst, n, &got) &&
+      got == n)
+    return;
+  for (size_t off = 0; off < n;) {
+    size_t k = 4096 - (size_t)((p + off) & 4095);
+    if (k > n - off)
+      k = n - off;
+    got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(p + off), dst + off,
+                           k, &got) ||
+        got != k)
+      memset(dst + off, 0, k);
+    off += k;
   }
 }
 
-struct vt_scan_ctx {
-  struct out *o;
-  DWORD base, size;
-  const char *mod;
-};
-
-static void on_col_ref(DWORD addr, void *c) {
-  struct vt_scan_ctx *x = (struct vt_scan_ctx *)c;
-  DWORD vt = addr + 4;
-  if (mem_ok((const void *)(DWORD_PTR)vt, 4, 0)) {
-    emit(x->o, "{\"vt\":\"0x%08lx\",\"mod\":", (unsigned long)vt);
-    emit_str(x->o, x->mod);
-    emit(x->o, "}\n");
-  }
-}
-
-static void on_td_ref(DWORD addr, void *c) {
-  struct vt_scan_ctx *x = (struct vt_scan_ctx *)c;
-  if (addr < x->base + 12)
-    return;
-  DWORD col = addr - 12;
-  if (!mem_ok((const void *)(DWORD_PTR)col, 16, 0))
-    return;
-  if (*(const DWORD *)(DWORD_PTR)col != 0 ||
-      *(const DWORD *)(DWORD_PTR)(col + 4) != 0)
-    return;
-  scan_mod_dword(x->base, x->size, col, on_col_ref, c);
+static DWORD word_at(const BYTE *d, size_t i) {
+  DWORD v;
+  memcpy(&v, d + i, 4);
+  return v;
 }
 
 static const char *cmd_mods(struct out *o, HWND h, char *a) {
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
-  assert(snap != INVALID_HANDLE_VALUE);
+  if (snap == INVALID_HANDLE_VALUE)
+    return "CreateToolhelp32Snapshot failed";
   MODULEENTRY32 me;
   me.dwSize = sizeof(me);
   for (BOOL ok = Module32First(snap, &me); ok; ok = Module32Next(snap, &me)) {
@@ -3156,6 +3125,9 @@ static const char *cmd_mods(struct out *o, HWND h, char *a) {
   return NULL;
 }
 
+// 类 cls（RTTI 名，嵌套类写 内@外）的各张主虚表：各模块拷出一份，在拷贝上找
+// TypeDescriptor 名 ".?AV<cls>@@\0" → 引它（+12 处）且 sig / off 为 0 的 COL
+// → 引 COL 的那格之后即虚表
 static const char *cmd_vtable(struct out *o, HWND h, char *a) {
   if (!*a || strlen(a) > 120)
     return "usage: vtable <cls>";
@@ -3167,54 +3139,65 @@ static const char *cmd_vtable(struct out *o, HWND h, char *a) {
     plen[k] = (size_t)n + 1; // 含末尾 '\0'
   }
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
-  assert(snap != INVALID_HANDLE_VALUE);
+  if (snap == INVALID_HANDLE_VALUE)
+    return "CreateToolhelp32Snapshot failed";
   MODULEENTRY32 me;
   me.dwSize = sizeof(me);
   for (BOOL ok = Module32First(snap, &me); ok; ok = Module32Next(snap, &me)) {
     if (me.hModule == g_hMod || !_strnicmp(me.szModule, "shim_", 5))
       continue;
-    DWORD base = (DWORD)(DWORD_PTR)me.modBaseAddr, size = me.modBaseSize;
-    struct vt_scan_ctx ctx = {o, base, size, me.szModule};
-    DWORD cur = base, end = base + size;
-    while (cur < end) {
-      MEMORY_BASIC_INFORMATION m;
-      if (!VirtualQuery((LPCVOID)(DWORD_PTR)cur, &m, sizeof(m)) || !m.RegionSize)
-        break;
-      DWORD seg_hi = (DWORD)((DWORD_PTR)m.BaseAddress + m.RegionSize);
-      if (seg_hi > end)
-        seg_hi = end;
-      if (m.State == MEM_COMMIT && readable_prot(m.Protect)) {
-        const BYTE *seg = (const BYTE *)(DWORD_PTR)cur;
-        size_t slen = (size_t)(seg_hi - cur);
-        for (int k = 0; k < 2; k++) {
-          const BYTE *p = seg;
-          while ((p = find_bytes(p, (size_t)(seg + slen - p),
-                                 (const BYTE *)pat[k], plen[k])) != NULL) {
-            DWORD addr = (DWORD)(DWORD_PTR)p;
-            if (addr >= base + 8)
-              scan_mod_dword(base, size, addr - 8, on_td_ref, &ctx);
-            p++;
-          }
+    const DWORD base = (DWORD)(DWORD_PTR)me.modBaseAddr;
+    const size_t size = me.modBaseSize;
+    BYTE *d = (BYTE *)malloc(size);
+    if (!d)
+      continue;
+    safe_copy(d, base, size);
+    for (int k = 0; k < 2; k++)
+      for (const BYTE *p = d;
+           (p = find_bytes(p, size - (size_t)(p - d), (const BYTE *)pat[k],
+                           plen[k])) != NULL;
+           p++) {
+        const size_t at = (size_t)(p - d);
+        if (at < 8)
+          continue;
+        const DWORD td = base + (DWORD)at - 8;
+        for (size_t i = 12; i + 4 <= size; i += 4) {
+          if (word_at(d, i) != td || word_at(d, i - 12) != 0 ||
+              word_at(d, i - 8) != 0)
+            continue;
+          const DWORD col = base + (DWORD)i - 12;
+          for (size_t j = 0; j + 8 <= size; j += 4)
+            if (word_at(d, j) == col) {
+              emit(o, "{\"vt\":\"0x%08lx\",\"mod\":", (unsigned long)(base + j + 4));
+              emit_str(o, me.szModule);
+              emit(o, "}\n");
+            }
         }
       }
-      cur = seg_hi;
-    }
+    free(d);
   }
   CloseHandle(snap);
   return NULL;
 }
 
+// 进程私有可读写段（堆，排除超大段）里是否含这串字节：逐段按 MEMHAS_CHUNK 拷出
+// 再找（相邻块重叠 n − 1 字节，跨块的也找得到）
+#define MEMHAS_MAX 8192
+#define MEMHAS_CHUNK (1u << 20)
 static const char *cmd_memhas(struct out *o, HWND h, char *a) {
-  BYTE ndl[256];
+  static BYTE ndl[MEMHAS_MAX];
   size_t n = 0;
   for (char *p = a; *p && *p != ' '; p += 2) {
     int hi = hex_val(p[0]), lo = p[1] ? hex_val(p[1]) : -1;
     if (hi < 0 || lo < 0 || n >= sizeof(ndl))
-      return "usage: memhas <hex>";
+      return "usage: memhas <hex> (<= 8192 bytes)";
     ndl[n++] = (BYTE)((hi << 4) | lo);
   }
   if (!n)
     return "usage: memhas <hex>";
+  BYTE *buf = (BYTE *)malloc(MEMHAS_CHUNK + n);
+  if (!buf)
+    return "out of memory";
   int found = 0;
   DWORD_PTR cur = 0x10000;
   while (!found && cur < 0x7FFE0000u) {
@@ -3226,11 +3209,19 @@ static const char *cmd_memhas(struct out *o, HWND h, char *a) {
     if (m.State == MEM_COMMIT && m.Type == MEM_PRIVATE && rw &&
         !(m.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
         m.RegionSize <= (400u << 20)) {
-      if (find_bytes((const BYTE *)m.BaseAddress, m.RegionSize, ndl, n))
-        found = 1;
+      const DWORD_PTR lo = (DWORD_PTR)m.BaseAddress;
+      const size_t len = m.RegionSize;
+      for (size_t off = 0; !found && off < len; off += MEMHAS_CHUNK) {
+        size_t k = len - off;
+        if (k > MEMHAS_CHUNK + n - 1)
+          k = MEMHAS_CHUNK + n - 1;
+        safe_copy(buf, lo + off, k);
+        found = find_bytes(buf, k, ndl, n) != NULL;
+      }
     }
     cur = (DWORD_PTR)m.BaseAddress + m.RegionSize;
   }
+  free(buf);
   emit(o, "{\"found\":%d}\n", found);
   return NULL;
 }

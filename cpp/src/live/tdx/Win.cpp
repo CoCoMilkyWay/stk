@@ -14,10 +14,11 @@ namespace live::tdx::win {
 
 namespace {
 
-constexpr double kRedraw = 2;
+constexpr double kRedraw = 2; // click_text: 一处没有时等绘制层画回来 [s]
 
-int half(int a, int b) { return (a + b) >= 0 ? (a + b) / 2 : -((-(a + b) + 1) / 2); }
+int half(int a, int b) { return (a + b) >= 0 ? (a + b) / 2 : -((-(a + b) + 1) / 2); } // 向下取整
 
+// 空白: ASCII 空白、不换行空格 U+00A0、全角空格 U+3000
 size_t space_at(const std::string &s, size_t i) {
   const unsigned char c = static_cast<unsigned char>(s[i]);
   if (std::isspace(c))
@@ -80,7 +81,7 @@ void attach() {
     bool ok = !r.empty() && r.back().value("on", 0L) != 0;
     for (const json &x : r)
       ok = ok && !x.contains("skip");
-    need(ok, strf("%s on: %s", c, json(r).dump().c_str()));
+    need(ok, "%s on: %s", c, json(r).dump().c_str());
   }
   shim::cmd("detours");
 }
@@ -131,7 +132,7 @@ Layer detail(const Hwnd &h, double timeout) { return layer_of(shim::cmd_wait(tim
 // ---------- 消息与输入 ----------
 
 void post(const Hwnd &h, unsigned msg, long wp, const std::string &lp) {
-  need(shim::cmd("post", h, msg, wp, lp).at(0).at("ret").get<long>() != 0, strf("PostMessage %s %#x 失败", h.c_str(), msg));
+  need(shim::cmd("post", h, msg, wp, lp).at(0).at("ret").get<long>() != 0, "PostMessage %s %#x 失败", h.c_str(), msg);
 }
 
 void send(const Hwnd &h, unsigned msg, long wp, long lp) { shim::cmd("send", h, msg, wp, lp); }
@@ -167,7 +168,8 @@ std::map<std::string, Hwnd> ctls(const Hwnd &h, const std::vector<std::pair<std:
     for (const Node &n : kids)
       if (n.id == cid)
         hits.push_back(n.hwnd);
-    need(hits.size() == 1, strf("%s「%s」控件 %s(%ld) 命中 %zu 个", h.c_str(), title(h).c_str(), k.c_str(), cid, hits.size()));
+    if (hits.size() != 1)
+      fail(strf("%s「%s」控件 %s(%ld) 命中 %zu 个", h.c_str(), title(h).c_str(), k.c_str(), cid, hits.size()));
     out[k] = hits[0];
   }
   return out;
@@ -175,6 +177,7 @@ std::map<std::string, Hwnd> ctls(const Hwnd &h, const std::vector<std::pair<std:
 
 void command(const Hwnd &dlg, long cid) { post(dlg, kWmCommand, cid, ctls(dlg, {{"btn", cid}}).at("btn")); }
 
+// 候选窗口恰一个即只取它的图层, 否则取全部再按候选筛; 不恰一处时先把候选窗口上画着的文字记进日志
 void click_text(const std::string &cls, const std::string &ttl, const std::string &txt) {
   trace::Span span("点「" + txt + "」");
   std::map<Hwnd, Node> wins;

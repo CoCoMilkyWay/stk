@@ -2,7 +2,8 @@
 //   源码 src/live/tdx/win32/ (shim.c / inject.c), 产物落 output/run/live/tdx/shim/:
 //   按源码哈希 H 命名 shim_<H>.dll, 控制端口 = 20000 + H % 10000 (源码变即换 DLL、换端口).
 //   交叉编译 clang + mingw 运行时优先, i686-w64-mingw32-gcc 次之; 注入经 wine inject.exe.
-//   协议: 一行 `cmd arg...\n` → 0..N 行 JSON 记录 + 末行 `ok` / `err <原因>`; 长连接复用 (断线自动重连),
+//   协议: 一行 `cmd arg...\n` → 0..N 行 JSON 记录 + 末行 `ok` / `err <原因>`; 命令走一条复用的长连接 (shim 端串行执行),
+//   断了即重连, 但只在命令没送达时重发 (发出后才断的执行与否不明, 重发即可能重点一次按钮 → Fail);
 //   推送流 (treewatch / gdiwatch) 走独立 Stream 连接 (无变更 1s 心跳 null).
 #pragma once
 

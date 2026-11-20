@@ -14,7 +14,6 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
-#include <initializer_list>
 #include <iterator>
 #include <map>
 #include <memory>

@@ -135,7 +135,8 @@ std::string where(const live::trace::Spot &s) {
   return s.shim.empty() ? out : out + " · shim " + s.shim;
 }
 
-// 刷新进度两行: 读于几时 · 行情时刻 · 接入的客户端; 次行 = 接入断 / 刷新 / 事务 / 失败 / 空闲
+// 刷新进度两行: 快照读于几时 · 行情时刻 · 接入的客户端; 次行 = 时有时无的: 接入断、在做的各路 (刷新 = 段栈; 事务 = 「名.步」+ 段栈)、
+// 上轮刷新失败, 都没有即「空闲」
 void progress(LiveHub &hub) {
   const live::Refresh &g = hub.refresh();
   const auto &snap = hub.snapshot();
@@ -310,6 +311,7 @@ void lever_sell(LiveHub &hub) {
   std::map<std::string, int64_t> to = hub.in().cfg.sells;
   for (const live::rebal::Hold &h : p->holds) {
     const double x = std::min(hi * static_cast<double>(h.base), static_cast<double>(h.full));
+    // 快卖完的 (剩下不足一个最小单元, 且已过半) 即卖满, 不留碎股; 过半: 整只不足一个最小单元的小仓不至于一拉就整只卖
     const int64_t m = (static_cast<double>(h.full) - x) * h.px < unit && 2 * x >= static_cast<double>(h.full) ? h.full : live::rebal::snap(h, unit, x, true, true);
     if (m > 0)
       to[h.code] = m;
@@ -646,7 +648,8 @@ void flow_cell(const Flows &f, const std::string &code, bool priv) {
     tip("%s", tips.c_str());
 }
 
-// 买/卖镜像 6 按钮: 买侧大→小 (15W, 5W, 1W) ⇄ 卖侧小→大 (1W, 5W, 15W)
+// 下单按钮: 买卖镜像各几额一个 (买侧额由大到小 ⇄ 卖侧由小到大, 两侧额大的在外), 填充 = 该额的滑点色;
+// 未持有的 (名单股) 卖不了; 点了直接下 (解锁与否由 can 管)
 struct OrderBtn {
   int side;
   size_t idx;
@@ -657,6 +660,7 @@ void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool ca
   if (r.closed)
     return ImGui::TextDisabled("今日清仓");
   assert(r.quote);
+  // 悬停: 价格 (micro price) / 预期成交价 / 滑点 / 成本; 5 档吃不满的标 > (成交价买标 >、卖标 <, 实际更差)
   const auto btn_tip = [&](const live::Slip &x, int s) {
     if (!live::ref(*r.quote))
       return std::string("无行情");

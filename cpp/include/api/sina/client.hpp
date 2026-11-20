@@ -59,13 +59,15 @@ struct Bar {
 
 // 新浪行情 HTTP 客户端 — 与 bigquant / tushare::Client 对仗: 纯传输, 不知资产轴与缓存.
 //   一个对象 = 一条 keep-alive 连接 (单线程用; 并发 = 每线程一个对象). 闲置超 kIdle 先重建 (对端会关闲连接),
-//   要 gzip (批量快照 99K→29K、240 根分钟线 30K→5K). 复用的连接断了立即换新连接重发, 其余网络错隔 1s 无限重试 (诊断见 netlog); 回包不符 → assert.
+//   要 gzip (批量快照 99K→29K、240 根分钟线 30K→5K). 复用的连接断了立即换新连接重发, 其余网络错隔 1s 无限重试 (诊断见 netlog); 回包不符 → assert. 唯 try_quotes 有界、不符即空 (实盘下单路径).
 class Client {
 public:
   explicit Client(std::string host); // kQuoteHost / kBarHost
 
   // 批量快照 (≤ kQuoteMax 只); 回包里查无此码 (空串) 的不出现, 顺序同回包
   std::vector<Quote> quotes(const std::vector<std::string> &syms);
+  // 同上, 但有界 (下单路径用: 不卡、不崩): 网络错至多试 tries 次 (每次 ≤ kTimeoutSeconds), 网络错 / 非 200 / 回包不认识 → 空
+  std::optional<std::vector<Quote>> try_quotes(const std::vector<std::string> &syms, int tries);
 
   // sym 最近 n 根 1 分钟 K, 旧在前 (可跨日)
   std::vector<Bar> kline(std::string_view sym, int n);
@@ -73,7 +75,10 @@ public:
   std::vector<Bar> daily(std::string_view sym, int n);
 
 private:
-  std::string get(const std::string &target);
+  std::string get(const std::string &target);                             // 回包不符 → assert
+  std::optional<std::string> fetch(const std::string &target, int tries); // 网络错隔 1s 重试 (tries < 0 = 无限); 回包不符 → 空
+  static std::string list_target(const std::vector<std::string> &syms);
+  static std::optional<std::vector<Quote>> parse_quotes(std::string_view body, size_t n);
   std::vector<Bar> bars(std::string_view sym, int scale, int n);
 
   std::string host_;

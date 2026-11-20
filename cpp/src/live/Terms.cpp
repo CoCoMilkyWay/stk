@@ -18,6 +18,7 @@ namespace {
 constexpr const char *kHead = "code,name,mkt,ratio,financeable,rate,pledgeable";
 constexpr const char *kMarginTable = "cn_stock_margin_trading_detail";
 
+// 本地两融明细最新一日的代码 ("000001.SZ"): T 日盘后余额 T+1 盘前公布, 最新一日即上个交易日的交易所两融标的
 std::unordered_set<std::string> margin_codes() {
   const std::vector<disk::Key> ks = disk::list(disk::FundShard, {.name = kMarginTable});
   for (auto k = ks.rbegin(); k != ks.rend(); ++k) {
@@ -33,8 +34,7 @@ std::unordered_set<std::string> margin_codes() {
         out.emplace(ins.str(i));
     return out;
   }
-  assert(false && "本地库没有两融明细, 先在 Database 同步");
-  return {};
+  fail("本地库没有两融明细, 先在 Database 同步");
 }
 
 } // namespace

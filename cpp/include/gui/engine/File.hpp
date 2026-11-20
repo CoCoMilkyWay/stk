@@ -33,7 +33,6 @@
 #include "gui/engine/Table.hpp"       // FeatureTable / EvalStat / RowState
 
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>

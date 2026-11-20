@@ -28,13 +28,14 @@ struct Frame {
   Steady::time_point t0;
   Wall::time_point at;
   bool loud = true;
-  bool open = false;
+  bool open = false; // 已落 begin
 };
 
+// 本线程: 段栈 (已落 begin 的恒为前缀) + 静默的段数 + 待并的重复事件 + 跟随的 Track / Hooks (自段 base 起) 与实时一行、最近的 shim 命令
 struct Local {
   std::vector<Frame> frames;
   int quiet = 0;
-  Kw last;
+  Kw last; // 上一条落盘事件去掉 ms; null = 无可并
   long rep = 0;
   Steady::time_point first, end;
   Wall::time_point end_at;
@@ -45,6 +46,7 @@ struct Local {
 };
 thread_local Local L;
 
+// 跟随着即把段栈、实时一行与 shim 命令整份换进 Track
 void mirror() {
   if (!L.track)
     return;
@@ -63,6 +65,7 @@ std::string text(Wall::time_point at) {
   return strf("%02d:%02d:%02d.%03ld", tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
 }
 
+// 首次落笔才建文件, 同时删掉多出的旧文件; 逐行即刷 (断言崩了也留得下)
 class Sink {
 public:
   void put(const std::string &line) {
@@ -72,10 +75,6 @@ public:
     f_ << line << '\n';
     f_.flush();
   }
-  std::string path() const {
-    std::lock_guard lk(mu_);
-    return path_;
-  }
 
 private:
   void open() {
@@ -83,13 +82,11 @@ private:
     for (size_t i = 0; i + kKeep <= old.size(); ++i)
       disk::remove(disk::RunLiveTraceLog, old[i]);
     disk::ensure(disk::RunLiveTrace);
-    path_ = disk::path(disk::RunLiveTraceLog, {.stamp = disk::stamp_now()}).string();
-    f_.open(path_, std::ios::app);
+    f_.open(disk::path(disk::RunLiveTraceLog, {.stamp = disk::stamp_now()}), std::ios::app);
     assert(f_);
   }
 
-  mutable std::mutex mu_;
-  std::string path_;
+  std::mutex mu_;
   std::ofstream f_;
 };
 Sink &sink() {
@@ -97,6 +94,7 @@ Sink &sink() {
   return s;
 }
 
+// 一行, 段路径取前 depth 段
 void write(Wall::time_point at, const char *kind, const Kw &kw, size_t depth) {
   std::string path;
   for (size_t i = 0; i < depth; ++i)
@@ -134,8 +132,6 @@ void open_all() {
 
 bool on() { return !L.frames.empty() && !L.quiet; }
 
-std::string file() { return sink().path(); }
-
 void ev(const char *kind, Kw kw) {
   if (!on())
     return;
@@ -159,9 +155,9 @@ void ev(const char *kind, Kw kw) {
 void note(const char *kind, std::string msg, Kw kw) {
   if (!msg.empty() && !kw.contains("text"))
     kw["text"] = msg;
-  ev(kind, std::move(kw));
   if (L.hooks && L.hooks->on_note)
-    L.hooks->on_note(kind, std::move(msg));
+    L.hooks->on_note(kind, std::move(msg), kw);
+  ev(kind, std::move(kw));
 }
 
 void live(std::string line) {

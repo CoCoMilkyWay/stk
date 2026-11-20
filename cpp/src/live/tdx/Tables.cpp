@@ -39,7 +39,7 @@ void Margins::check(const Row &r) { need_row(kName, r.ratio > 0, r.code, "融资
 
 void Collats::check(const Row &r) { need_row(kName, 0 <= r.rate && r.rate <= 1, r.code, "担保折算率不在 [0, 1]"); }
 
-void CashFlows::check(const Row &r) { need_row(kName, r.qty == 0 || !r.code.empty(), misc::dense(r.date) + " " + r.kind, "带股数却没有代码"); }
+void CashFlows::check(const Row &r) { need(r.qty == 0 || !r.code.empty(), "%s %d %s 带股数却没有代码", kName, r.date, r.kind.c_str()); }
 
 // ---------- 组合查询 ----------
 
@@ -51,10 +51,10 @@ constexpr int kFlowFrom = 0x7e, kFlowTo = 0x7f;
 
 double asset_val(const std::map<std::string, std::string> &c, const char *name) {
   const auto it = c.find(name);
-  need(it != c.end(), strf("信用资产里没有「%s」", name));
+  need(it != c.end(), "信用资产里没有「%s」", name);
   char *e = nullptr;
   const double v = std::strtod(it->second.c_str(), &e);
-  need(!it->second.empty() && e && !*e, strf("信用资产「%s」读到「%s」", name, it->second.c_str()));
+  need(!it->second.empty() && e && !*e, "信用资产「%s」读到「%s」", name, it->second.c_str());
   return v;
 }
 
@@ -83,7 +83,8 @@ std::vector<CashFlow> flow_window(misc::Ymd lo, misc::Ymd hi, size_t idx) {
   trace::Span span(strf("第 %zu 窗", idx), {{"lo", lo}, {"hi", hi}});
   std::vector<CashFlow> rows = read<CashFlows>({{kFlowFrom, misc::dense(lo)}, {kFlowTo, misc::dense(hi)}});
   for (const CashFlow &r : rows)
-    need(lo <= r.date && r.date <= hi, strf("资金流水 %s ~ %s 的应答里有 %d 的行", misc::dash(lo).c_str(), misc::dash(hi).c_str(), r.date));
+    if (r.date < lo || hi < r.date)
+      fail(strf("资金流水 %s ~ %s 的应答里有 %d 的行", misc::dash(lo).c_str(), misc::dash(hi).c_str(), r.date));
   std::string text = strf("资金流水 %s ~ %s: %zu 条", misc::dash(lo).c_str(), misc::dash(hi).c_str(), rows.size());
   trace::live(text);
   trace::note("window", std::move(text), {{"lo", lo}, {"hi", hi}, {"n", rows.size()}});
@@ -120,7 +121,7 @@ Terms read_terms() {
     Mkt m = *ms.begin();
     if (ms.size() > 1) {
       m = market_of(code);
-      need(ms.contains(m), code + " 跨市场同号, 按代码定不出市场");
+      need(ms.contains(m), "%s 跨市场同号, 按代码定不出市场", code.c_str());
     }
     const std::string k = sina_sym(m, code);
     out[code] = term_of(mg.find(k), co.find(k), m);

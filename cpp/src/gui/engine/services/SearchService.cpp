@@ -4,7 +4,6 @@
 #include "factor/Dag.hpp"
 #include "factor/Search/Space.hpp"
 #include "gui/engine/Engine.hpp"
-#include "misc/exec.hpp"
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 

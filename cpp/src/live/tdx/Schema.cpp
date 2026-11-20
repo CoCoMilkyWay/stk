@@ -19,9 +19,10 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr size_t kRecord = 35, kNeedle = 64;
+constexpr size_t kRecord = 35, kNeedle = 4096; // 认份用字典段开头这么多字节 (各营业部的字段字典开头可能相同, 短了即分不开)
 constexpr int kFuncMark = 0x4bd;
 
+// 客户端目录: 进程映射里 TdxW.exe 所在
 fs::path client_dir(int pid) {
   std::ifstream in("/proc/" + std::to_string(pid) + "/maps");
   for (std::string line; std::getline(in, line);) {
@@ -60,7 +61,7 @@ std::string to_hex(std::string_view bytes) {
 }
 
 bool in_process(std::string_view needle) {
-  return shim::cmd("memhas", to_hex(needle)).at(0).at("found").get<int>() != 0;
+  return shim::cmd_wait(30, "memhas", to_hex(needle)).at(0).at("found").get<int>() != 0; // 扫全部堆段, 给足时间
 }
 
 } // namespace
@@ -79,11 +80,11 @@ Schema schema(int pid) {
       continue;
     std::string b = slurp(e.path());
     const size_t text_end = b.find(std::string_view("\r\n\0", 3));
-    if (text_end != std::string::npos && text_end + 3 + kNeedle <= b.size() && in_process(std::string_view(b).substr(text_end + 3, kNeedle)))
+    if (text_end != std::string::npos && in_process(std::string_view(b).substr(text_end + 3, kNeedle)))
       live_files.emplace_back(e.path(), std::move(b));
   }
-  need(live_files.size() == 1, strf("%s 下字典段在客户端内存里的缓存有 %zu 份%s", dir.string().c_str(), live_files.size(),
-                                    live_files.empty() ? " (客户端交易还没登录?)" : ""));
+  need(live_files.size() == 1, "%s 下字典段在客户端内存里的缓存有 %zu 份%s", dir.string().c_str(), live_files.size(),
+       live_files.empty() ? " (客户端交易还没登录?)" : "");
   const std::string_view b = live_files[0].second;
   Schema s{live_files[0].first.string(), {}, {}, {}};
 
@@ -113,6 +114,7 @@ Schema schema(int pid) {
   w.reserve((b.size() - p) / 2);
   for (size_t i = p; i + 2 <= b.size(); i += 2)
     w.push_back(u16(b, i));
+  // 逐格认: 标记、出参数之后恰是功能号 + 1、入参出参的字段号都在字典里 (同号取先见的)
   const auto known = [&](auto lo, auto hi) { return std::all_of(lo, hi, [&](int f) { return s.fields.contains(f); }); };
   for (size_t i = 0; i + 3 < w.size(); ++i) {
     const size_t nin = static_cast<size_t>(w[i + 1]), j = i + 3 + nin;

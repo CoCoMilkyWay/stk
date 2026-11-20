@@ -31,7 +31,7 @@ namespace {
 
 constexpr const char *kGcc = "i686-w64-mingw32-gcc";
 constexpr const char *kSysroot = "/usr/i686-w64-mingw32";
-constexpr std::string_view kBusy = "err target thread busy (timeout)";
+constexpr std::string_view kBusy = "err target thread busy (timeout)"; // shim.c in_thread: 界面线程 kBusyWait 秒没接
 constexpr double kBusyWait = 3;
 
 fs::path src_dir() { return disk::root() / "cpp/src/live/tdx/win32"; }
@@ -75,6 +75,7 @@ std::string target_proc() {
   return p && *p ? p : "tdxw.exe";
 }
 
+// 删掉 d 下非当前哈希的 shim_*.dll (已注入进程映射的旧 DLL 被 unlink 不受影响)
 void prune(const fs::path &d) {
   for (const auto &e : fs::directory_iterator(d)) {
     const std::string n = e.path().filename().string();
@@ -83,6 +84,7 @@ void prune(const fs::path &d) {
   }
 }
 
+// clang + lld 不会自动搜 gcc 的 libgcc 目录: 取含 libgcc.a 的目录 (win32 线程模型优先, 免拖 libwinpthread)
 fs::path libgcc_dir() {
   std::vector<fs::path> cands;
   const fs::path root = "/usr/lib/gcc/i686-w64-mingw32";
@@ -100,6 +102,7 @@ fs::path libgcc_dir() {
 
 std::vector<std::string> toolchain() {
   if (on_path("clang") && fs::is_directory(fs::path(kSysroot) / "include"))
+    // -static-libgcc: 否则 -shared 时先链 -lgcc_s, 导入 Wine 里没有的 libgcc_s_dw2-1.dll
     return {"clang", "--target=i686-w64-windows-gnu", std::string("--sysroot=") + kSysroot, "-fuse-ld=lld", "-static-libgcc", "-L" + libgcc_dir().string()};
   if (on_path(kGcc))
     return {kGcc};
@@ -174,7 +177,13 @@ bool send_line(int fd, const std::string &line) {
   return true;
 }
 
-// 复用的命令长连接 (单连接, 互斥串行, 断线自动重连)
+// 一问的结局: Unsent = 命令没送达 (连不上 / 发不出), 可重发; Lost = 发出后断线, 执行与否不明, 不可重发 (post / 点按钮等重发即重做)
+enum class Rc { Ok,
+                Unsent,
+                Lost,
+                Timeout };
+
+// 复用的命令长连接 (单连接, 互斥串行); 复用前先探一下: 命令通道上对端从不主动发, 可读 = 已被关 (shim 换了进程等), 先重连再发
 struct Link {
   std::mutex mu;
   int fd = -1;
@@ -188,17 +197,24 @@ struct Link {
     buf.clear();
   }
 
-  // 发一行、读到 ok / err 行; 0 = 正常结束 (lines 末行即 ok/err), -1 = 断线, -2 = 超时
-  int round(const std::string &line, double timeout, std::vector<std::string> &lines, size_t &bytes) {
+  bool stale() const {
+    pollfd p{fd, POLLIN, 0};
+    return ::poll(&p, 1, 0) != 0;
+  }
+
+  // 发一行、读到 ok / err 行 (lines 末行即 ok / err)
+  Rc round(const std::string &line, double timeout, std::vector<std::string> &lines, size_t &bytes) {
+    if (fd >= 0 && stale())
+      drop();
     if (fd < 0) {
       fd = dial(timeout);
       if (fd < 0)
-        return -1;
+        return Rc::Unsent;
     }
     set_timeout(fd, timeout);
     if (!send_line(fd, line)) {
       drop();
-      return -1;
+      return Rc::Unsent;
     }
     lines.clear();
     bytes = 0;
@@ -217,12 +233,12 @@ struct Link {
         const bool fin = row == "ok" || row.starts_with("err ");
         lines.push_back(std::move(row));
         if (fin)
-          return 0;
+          return Rc::Ok;
       }
       const double rem = std::chrono::duration<double>(end - Clock::now()).count();
       if (rem <= 0) {
         drop();
-        return -2;
+        return Rc::Timeout;
       }
       set_timeout(fd, rem);
       char tmp[65536];
@@ -232,7 +248,7 @@ struct Link {
         continue;
       }
       drop();
-      return (k < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) ? -2 : -1;
+      return k < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) ? Rc::Timeout : Rc::Lost;
     }
   }
 };
@@ -276,26 +292,33 @@ std::vector<nlohmann::json> call(const std::string &line, double timeout) {
   Link &l = link();
   std::vector<std::string> lines;
   size_t bytes = 0;
-  {
-    std::lock_guard lk(l.mu);
-    do {
-      int rc = l.round(line, std::max(left(), 0.1), lines, bytes);
-      if (rc == -1) // 复用旧连接已断: 立刻重连一次
+  // 经界面线程的命令 shim 里只等 kBusyWait 秒即回 busy: 界面线程卡着 (查大表) 而 timeout 没到即再问; 两问之间放开连接, 别的线程照常用
+  while (true) {
+    Rc rc;
+    {
+      std::lock_guard lk(l.mu);
+      rc = l.round(line, std::max(left(), 0.1), lines, bytes);
+      if (rc == Rc::Unsent) // 没送达才重发一次
         rc = l.round(line, std::max(left(), 0.1), lines, bytes);
-      if (rc == -2)
-        fail(strf("%s: %gs 内没应答 (客户端卡着?)", cmd.c_str(), timeout));
-      if (rc == -1)
-        fail("shim 不在线 (" + cmd + ")");
-    } while (!lines.empty() && lines.back() == kBusy && left() > kBusyWait);
+    }
+    if (rc == Rc::Timeout)
+      fail(strf("%s: %gs 内没应答 (客户端卡着?)", cmd.c_str(), timeout));
+    if (rc == Rc::Unsent)
+      fail("shim 不在线 (" + cmd + ")");
+    if (rc == Rc::Lost)
+      fail("shim 连接在应答前断开, " + cmd + " 执行与否不明");
+    if (lines.back() != kBusy || left() <= kBusyWait)
+      break;
   }
-  if (lines.empty() || lines.back() != "ok")
-    fail(cmd + ": " + (lines.empty() ? std::string("连接被关, 无应答") : lines.back()));
+  if (lines.back() != "ok")
+    fail(cmd + ": " + lines.back());
 
   std::vector<nlohmann::json> out;
   out.reserve(lines.size() - 1);
   for (size_t i = 0; i + 1 < lines.size(); ++i) {
     nlohmann::json j = nlohmann::json::parse(lines[i], nullptr, false);
-    assert(!j.is_discarded());
+    if (j.is_discarded())
+      fail(strf("%s: 应答第 %zu 行不是 JSON", cmd.c_str(), i + 1));
     out.push_back(std::move(j));
   }
   if (trace::on()) {
@@ -349,7 +372,8 @@ bool Stream::next(nlohmann::json &out, double timeout) {
       if (row.starts_with("err "))
         fail("shim 推流: " + row.substr(4));
       out = nlohmann::json::parse(row, nullptr, false);
-      assert(!out.is_discarded());
+      if (out.is_discarded())
+        fail("shim 推流: 记录不是 JSON");
       return true;
     }
     const double rem = std::chrono::duration<double>(end - Clock::now()).count();
