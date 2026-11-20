@@ -50,7 +50,9 @@ int run(const std::string &sub, const std::vector<std::string> &rest) {
   if (sub == "vt" && rest.size() >= 2)
     return tool::vt(std::stod(rest[0]), {rest.begin() + 1, rest.end()});
   if (sub == "test") {
-    req::arm(mem::attach()); // 用例各段里另记请求层日志 (同 Driver)
+    const int pid = mem::find_pid();
+    live::need(pid != 0, "找不到 tdxw.exe 进程");
+    req::arm(pid);
     return tool::test(rest);
   }
   std::fputs(kUsage, stderr);

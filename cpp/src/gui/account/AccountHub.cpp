@@ -18,11 +18,10 @@ namespace {
 
 using live::strf;
 
-// 当日: 回放末日 (指数 idx0, 回放摘要 e) 之后, 持仓 h 按 y 的分钟收盘, 末槽 = h.now (与历史回放同一核 day_of)
 std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, const Quote::Holdings &h, const Quote::Live &y) {
   const size_t n = static_cast<size_t>(std::clamp(Quote::sec_slot(y.sec), 0, Quote::kSlots - 1)) + 1;
   account::Day d{y.date, h.now(&y), h.broker ? e.after : 0, 1, {}};
-  std::unordered_map<std::string, uint32_t> id; // 代码 → 全局 id (资产轴上的)
+  std::unordered_map<std::string, uint32_t> id;
   for (const Quote::Holding &x : h.list) {
     d.hold.push_back({x.code, x.qty, x.px});
     if (x.id != Quote::Ref::kNone)
@@ -34,17 +33,15 @@ std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, c
   }));
 }
 
-// 持仓 (见 Quote::Holdings): 信用账户 a 有净资产 → 券商持仓 (计价 = 券商现价) + 今日成交 f; 否则回放末日 (末日净值 ≤ 0 → 空)
-std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const live::Account *a, const live::Fills *f) {
+std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const live::Snapshot *s) {
   auto h = std::make_shared<Quote::Holdings>();
-  if (a && a->net > 0) {
-    h->broker = true, h->net = a->net;
-    for (const live::Position &p : a->held->list)
+  if (s && s->acct.net > 0) {
+    h->broker = true, h->net = s->acct.net;
+    for (const live::Position &p : s->pos.list)
       if (p.balance != 0)
-        h->list.push_back(holding(p.code, p.balance, p.price));
-    if (f)
-      for (const live::Traded &x : f->by_code.list)
-        h->amount += x.amount[live::kBuy] + x.amount[live::kSell], h->buy += x.amount[live::kBuy];
+        h->list.push_back(holding(p.code, static_cast<double>(p.balance), p.price));
+    for (const live::Traded &x : s->fills.by_code.list)
+      h->amount += x.amount[live::kBuy] + x.amount[live::kSell], h->buy += x.amount[live::kBuy];
   } else if (e.nav > 0) {
     h->net = e.nav, h->list = e.hold;
   } else {
@@ -54,20 +51,18 @@ std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const
   return h;
 }
 
-// 今日成交 → 成交点: 时刻 HH:MM:SS 落所在分钟根 (竞价并入首根), 一分钟一点, 点内同只合并
 std::shared_ptr<const Quote::Trades> trades_of(const live::Fills &f) {
   std::map<int, Quote::TradeMark> by;
   for (const live::Fill &x : f.rows) {
-    assert(x.time.size() == 8 && x.time[2] == ':' && x.time[5] == ':');
-    const int sec = std::stoi(x.time.substr(0, 2)) * 3600 + std::stoi(x.time.substr(3, 2)) * 60 + std::stoi(x.time.substr(6, 2));
-    Quote::TradeMark &m = by[std::clamp(Quote::sec_slot(sec), 0, Quote::kSlots - 1)];
+    assert(x.sec >= 0);
+    Quote::TradeMark &m = by[std::clamp(Quote::sec_slot(x.sec), 0, Quote::kSlots - 1)];
     auto it = std::ranges::find(m.secs, x.code, &Quote::TradeSec::code);
     if (it == m.secs.end())
       it = m.secs.insert(it, Quote::TradeSec{.code = x.code, .name = x.name});
     const bool buy = x.side == live::kBuy;
     (buy ? m.buy : m.sell) += x.amount;
     (buy ? it->buy : it->sell) += x.amount;
-    (buy ? it->buy_qty : it->sell_qty) += x.qty;
+    (buy ? it->buy_qty : it->sell_qty) += static_cast<double>(x.qty);
   }
   auto t = std::make_shared<Quote::Trades>();
   t->date = misc::today_ymd();
@@ -80,19 +75,20 @@ std::shared_ptr<const Quote::Trades> trades_of(const live::Fills &f) {
 
 } // namespace
 
-void AccountHub::feed(const live::Got<live::Account> &a, const live::Got<live::Fills> &f) {
-  if (f.v != fills_.v)
-    trades_ = f ? trades_of(*f) : nullptr;
-  acct_ = a, fills_ = f;
+void AccountHub::feed(const std::shared_ptr<const live::Snapshot> &snap) {
+  if (snap == snap_)
+    return;
+  snap_ = snap;
+  trades_ = snap_ ? trades_of(snap_->fills) : nullptr;
 }
 
 account::Spot AccountHub::spot() const {
   account::Spot s;
-  if (!acct_)
+  if (!snap_)
     return s;
   s.date = misc::today_ymd();
   const AssetAxis &ax = asset_axis();
-  for (const live::Position &p : acct_->held->list)
+  for (const live::Position &p : snap_->pos.list)
     if (ax.find(account::asset_code(p.code)) >= ax.size())
       s.px[p.code] = p.price;
   return s;
@@ -101,10 +97,10 @@ account::Spot AccountHub::spot() const {
 std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live) {
   const std::shared_ptr<const Quote::Tape> t = view && view->lack.empty() ? view->tape[Quote::kAccount] : nullptr;
   const uint64_t ver = live ? live->ver : 0;
-  if (t == tape_ && acct_.v == at_ && fills_.v == fl_ && ver == ver_)
+  if (t == tape_ && snap_ == shown_snap_ && ver == ver_)
     return day_;
-  if (t != tape_ || acct_.v != at_ || fills_.v != fl_) {
-    tape_ = t, at_ = acct_.v, fl_ = fills_.v;
+  if (t != tape_ || snap_ != shown_snap_) {
+    tape_ = t, shown_snap_ = snap_;
     rehold(view.get());
   }
   ver_ = ver;
@@ -125,7 +121,7 @@ void AccountHub::rehold(const Quote::PriceView *view) {
   const Quote::Equity &e = view->equity;
   note_ = strf("账户\n资金流水逐日回放 %s ~ %s, 时间加权 (银证转账 / 担保品划入不计收益; 入金计日初, 出金计日末)", misc::dash(d.front().date).c_str(),
                misc::dash(d.back().date).c_str());
-  std::shared_ptr<const Quote::Holdings> h = holdings_of(e, acct_.v.get(), fills_.v.get());
+  std::shared_ptr<const Quote::Holdings> h = holdings_of(e, snap_.get());
   if (!(h && hold_ && *h == *hold_))
     hold_ = std::move(h);
   if (!hold_)

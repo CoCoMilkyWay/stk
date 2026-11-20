@@ -336,9 +336,7 @@ set(MATH_PRECISE
     live/Terms.cpp
     live/Trace.cpp
     live/tdx/Cols.cpp
-    live/tdx/Credit.cpp
     live/tdx/Flash.cpp
-    live/tdx/Flow.cpp
     live/tdx/Heap.cpp
     live/tdx/Proc.cpp
     live/tdx/Req.cpp
@@ -387,6 +385,7 @@ set(MATH_PRECISE
     gui/task_live/LiveHub.cpp
     gui/task_live/TaskLive.cpp
     gui/task_live/ui/TabBoard.cpp
+    gui/task_live/ui/TabClient.cpp
     gui/task_market/ui/CrossSectionAnalysis.cpp
     gui/task_market/ui/QuotesPanel.cpp
     gui/task_market/ui/TabAsset.cpp

@@ -126,9 +126,9 @@ std::map<std::string, double> holdings(const std::vector<CashFlow> &rows) {
 std::string reconcile(const std::vector<CashFlow> &rows, const live::Keyed<live::Position> &pos, const live::Fills &fills) {
   std::map<std::string, double> want = holdings(rows), got;
   for (const live::Traded &f : fills.by_code.list)
-    want[f.code] += f.qty[live::kBuy] - f.qty[live::kSell];
+    want[f.code] += static_cast<double>(f.qty[live::kBuy] - f.qty[live::kSell]);
   for (const live::Position &p : pos.list)
-    got[p.code] += p.balance;
+    got[p.code] += static_cast<double>(p.balance);
   std::set<std::string> codes;
   for (const auto &[c, n] : want)
     codes.insert(c);
@@ -161,23 +161,25 @@ void save(const Ledger &l) {
   gen.fetch_add(1, std::memory_order_release);
 }
 
-Ledger pull(live::Broker &b, const live::Report &r) {
+Ledger pull(live::Broker &b) {
   Ledger l = load();
   const misc::Ymd from = l.rows.empty() ? 0 : l.rows.back().date;
-  std::vector<CashFlow> fresh = b.flows(from, r);
+  std::vector<CashFlow> fresh = b.flows(from);
   const size_t n = fresh.size();
   l.rows = merge(l.rows, from, std::move(fresh));
-  r.step("核对");
-  r.live("刷新持仓, 核对资金流水…");
-  b.sync();
-  const std::shared_ptr<const live::State> s = b.state();
-  live::need(s->pos && s->fills && s->acct, "持仓 / 成交 / 信用账户没读到");
-  const std::string off = reconcile(l.rows, *s->pos, *s->fills);
+  {
+    live::trace::Span sp("核对");
+    live::trace::live("刷新持仓, 核对资金流水…");
+    b.sync();
+  }
+  const std::shared_ptr<const live::Snapshot> s = b.snapshot();
+  live::need(s != nullptr, "持仓 / 成交 / 信用账户没读到");
+  const std::string off = reconcile(l.rows, s->pos, s->fills);
   live::need(off.empty(), "资金流水累计的持仓 + 今日成交对不上券商持仓 (代码 流水/券商): " + off);
   l.pulled = misc::today_ymd();
-  l.rate = s->acct->rate;
-  r.log("flows", strf("资金流水账本 %zu 条 (%s起重查 %zu 条), 持仓对上", l.rows.size(), from ? misc::dash(from).c_str() : "开户", n),
-        {{"rows", l.rows.size()}, {"from", from}, {"fresh", n}});
+  l.rate = s->acct.rate;
+  live::trace::note("flows", strf("资金流水账本 %zu 条 (%s起重查 %zu 条), 持仓对上", l.rows.size(), from ? misc::dash(from).c_str() : "开户", n),
+                    {{"rows", l.rows.size()}, {"from", from}, {"fresh", n}});
   save(l);
   return l;
 }

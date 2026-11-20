@@ -37,8 +37,8 @@ struct Ledger {
 
 Ledger load(); // 没有账本 → 空
 void save(const Ledger &l);
-Ledger pull(live::Broker &b, const live::Report &r); // 客户端重查 → 并 → 核 → 存; 失败 → Fail
-uint64_t generation();                               // 账本代: 本进程起于 1, save 一次 +1 (任意线程)
+Ledger pull(live::Broker &b); // 客户端重查 → 并 → 核 → 存; 失败 → Fail
+uint64_t generation();        // 账本代: 本进程起于 1, save 一次 +1 (任意线程)
 
 // 回放要计价的证券 (计入持仓的各行的代码, 升序)
 std::vector<std::string> securities(const std::vector<CashFlow> &rows);

@@ -4,25 +4,25 @@
 // 协议：请求一行 `cmd arg...\n`；应答 0..N 行 JSON 记录，末行 `ok` 或 `err
 // <原因>`。 target = 0x.. 或 class=<类名>；[target] 缺省 = 本进程全部顶层窗口。
 //   ping                          {pid}
+//   mods                          本进程已加载模块 {base,size,name}…
+//   vtable <cls>                  进程内按 MSVC RTTI 找主虚表 {vt,mod}…
+//   memhas <hex>                  进程私有可读写堆里是否含该字节串 {found}
 //   treegen                       {gen}
 //   treewatch                     长连接，窗口树变更即推 {gen}（不收尾）
 //   enum [target]                 节点记录，只展开一层
 //   tree [target]                 节点记录，递归展开
 //   find class=<cls> [id=<n>] [title=<t>]  全树里相符的各节点记录（先序）
 //   rect <target>                 一条节点记录
-//   idle                          {ms}  距最近一次真实键鼠输入（投递的不算）
 //   gettext <target>              {text}
 //   settext <target> <utf8>       {ret}
 //   post <target> <msg> <wp> <lp> {ret}  PostMessageW
 //   send <target> <msg> <wp> <lp> {ret}  SendMessageW
 //   regmsg <name>                 {msg}  RegisterWindowMessageW
-//   click <target>                {ret}  BM_CLICK
 //   disables <target>             {n}  target 被禁用（WM_ENABLE FALSE）的累计次数；
 //                                 首次问到某线程的窗口即给该线程常挂钩子，此后才记
 //   clickat <target> <x> <y>      {client:[x,y]}  屏幕坐标投递左键按下+抬起
 //                                 （clickat / mouse 投递前把进程内光标钉在该处，
 //                                 真实光标不动）
-//   highlight <target>            控件上画闪烁框
 //   detail <target>               一条图层记录，items 为 [l,t,r,b,st,"文字"]：
 //                                 列表行/格、表头、树项、菜单项、勾选态
 //   mouse <kind> <x> <y> [mk] [delta]  {hwnd,client}  屏幕坐标投递鼠标消息
@@ -82,7 +82,8 @@
 
 static HMODULE g_hMod = NULL;
 static CRITICAL_SECTION g_cs;
-static CRITICAL_SECTION g_vt_cs; // 虚表追踪的事件环: 桩在任意线程里取, 不与命令线程的别的锁交叉
+static CRITICAL_SECTION g_cmd_cs; // 串行执行普通命令（长连接多线程收行，执行期互斥）
+static CRITICAL_SECTION g_vt_cs;  // 虚表追踪的事件环: 桩在任意线程里取, 不与命令线程的别的锁交叉
 static int g_cs_inited = 0;
 
 // ---------- 应答缓冲 / JSON ----------
@@ -539,18 +540,6 @@ static const char *cmd_find(struct out *o, HWND h, char *a) {
   return NULL;
 }
 
-// idle：距最近一次真实键鼠输入的毫秒数。GetLastInputInfo 只记硬件输入，
-// 本 shim 的 click / clickat / mouse / key / char 一律 PostMessage，不算在内。
-static const char *cmd_idle(struct out *o, HWND h, char *a) {
-  LASTINPUTINFO li;
-  li.cbSize = sizeof(li);
-  li.dwTime = 0;
-  if (!GetLastInputInfo(&li))
-    return "GetLastInputInfo failed";
-  emit(o, "{\"ms\":%lu}\n", (unsigned long)(GetTickCount() - li.dwTime));
-  return NULL;
-}
-
 static const char *cmd_rect(struct out *o, HWND h, char *a) {
   emit_node(o, h, 0);
   return NULL;
@@ -609,11 +598,6 @@ static const char *cmd_regmsg(struct out *o, HWND h, char *a) {
   return NULL;
 }
 
-static const char *cmd_click(struct out *o, HWND h, char *a) {
-  emit(o, "{\"ret\":%ld}\n", (long)SendMessageW(h, BM_CLICK, 0, 0));
-  return NULL;
-}
-
 static const char *pin_cursor(POINT p);
 
 // "<screenX> <screenY>" → 控件客户区坐标，钉光标后投递左键按下+抬起。
@@ -630,23 +614,6 @@ static const char *cmd_clickat(struct out *o, HWND h, char *a) {
   PostMessageW(h, WM_LBUTTONDOWN, MK_LBUTTON, lp);
   PostMessageW(h, WM_LBUTTONUP, 0, lp);
   emit(o, "{\"client\":[%ld,%ld]}\n", (long)p.x, (long)p.y);
-  return NULL;
-}
-
-// 在控件屏幕矩形上用 DSTINVERT 画边框并闪烁，供肉眼确认定位是否正确。
-static const char *cmd_highlight(struct out *o, HWND h, char *a) {
-  RECT r = {0, 0, 0, 0};
-  GetWindowRect(h, &r);
-  HDC dc = GetDC(NULL);
-  int t = 3, w = r.right - r.left, hgt = r.bottom - r.top, k;
-  for (k = 0; k < 6; k++) {
-    PatBlt(dc, r.left, r.top, w, t, DSTINVERT);
-    PatBlt(dc, r.left, r.bottom - t, w, t, DSTINVERT);
-    PatBlt(dc, r.left, r.top, t, hgt, DSTINVERT);
-    PatBlt(dc, r.right - t, r.top, t, hgt, DSTINVERT);
-    Sleep(150);
-  }
-  ReleaseDC(NULL, dc);
   return NULL;
 }
 
@@ -3087,6 +3054,187 @@ static const char *cmd_req(struct out *o, HWND h, char *a) {
   return NULL;
 }
 
+// ---------- 命令：进程内映像 / 虚表 / 堆探测 ----------
+// 进程内直读：免跨进程 /proc/<pid>/mem 与 ptrace 权限
+static int hex_val(char c) {
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  if (c >= 'a' && c <= 'f')
+    return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F')
+    return c - 'A' + 10;
+  return -1;
+}
+
+static const BYTE *find_bytes(const BYTE *hay, size_t hlen, const BYTE *ndl,
+                              size_t nlen) {
+  if (!nlen || nlen > hlen)
+    return NULL;
+  const BYTE *p = hay, *end = hay + hlen - nlen + 1;
+  while ((p = (const BYTE *)memchr(p, ndl[0], (size_t)(end - p))) != NULL) {
+    if (memcmp(p, ndl, nlen) == 0)
+      return p;
+    p++;
+  }
+  return NULL;
+}
+
+static int readable_prot(DWORD prot) {
+  if (prot & (PAGE_GUARD | PAGE_NOACCESS))
+    return 0;
+  DWORD p = prot & 0xff;
+  return p == PAGE_READONLY || p == PAGE_READWRITE || p == PAGE_WRITECOPY ||
+         p == PAGE_EXECUTE_READ || p == PAGE_EXECUTE_READWRITE ||
+         p == PAGE_EXECUTE_WRITECOPY;
+}
+
+// 在模块 [base, base + size) 的已提交可读区间内遍历所有 4 字节对齐的 dword == val
+typedef void (*dword_fn)(DWORD addr, void *ctx);
+static void scan_mod_dword(DWORD base, DWORD size, DWORD val, dword_fn fn,
+                           void *ctx) {
+  DWORD cur = base, end = base + size;
+  while (cur < end) {
+    MEMORY_BASIC_INFORMATION m;
+    if (!VirtualQuery((LPCVOID)(DWORD_PTR)cur, &m, sizeof(m)) || !m.RegionSize)
+      break;
+    DWORD seg_hi = (DWORD)((DWORD_PTR)m.BaseAddress + m.RegionSize);
+    if (seg_hi > end)
+      seg_hi = end;
+    if (m.State == MEM_COMMIT && readable_prot(m.Protect)) {
+      DWORD p = (cur + 3u) & ~3u;
+      for (; p + 4 <= seg_hi; p += 4)
+        if (*(const DWORD *)(DWORD_PTR)p == val)
+          fn(p, ctx);
+    }
+    cur = seg_hi;
+  }
+}
+
+struct vt_scan_ctx {
+  struct out *o;
+  DWORD base, size;
+  const char *mod;
+};
+
+static void on_col_ref(DWORD addr, void *c) {
+  struct vt_scan_ctx *x = (struct vt_scan_ctx *)c;
+  DWORD vt = addr + 4;
+  if (mem_ok((const void *)(DWORD_PTR)vt, 4, 0)) {
+    emit(x->o, "{\"vt\":\"0x%08lx\",\"mod\":", (unsigned long)vt);
+    emit_str(x->o, x->mod);
+    emit(x->o, "}\n");
+  }
+}
+
+static void on_td_ref(DWORD addr, void *c) {
+  struct vt_scan_ctx *x = (struct vt_scan_ctx *)c;
+  if (addr < x->base + 12)
+    return;
+  DWORD col = addr - 12;
+  if (!mem_ok((const void *)(DWORD_PTR)col, 16, 0))
+    return;
+  if (*(const DWORD *)(DWORD_PTR)col != 0 ||
+      *(const DWORD *)(DWORD_PTR)(col + 4) != 0)
+    return;
+  scan_mod_dword(x->base, x->size, col, on_col_ref, c);
+}
+
+static const char *cmd_mods(struct out *o, HWND h, char *a) {
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+  assert(snap != INVALID_HANDLE_VALUE);
+  MODULEENTRY32 me;
+  me.dwSize = sizeof(me);
+  for (BOOL ok = Module32First(snap, &me); ok; ok = Module32Next(snap, &me)) {
+    if (me.hModule == g_hMod || !_strnicmp(me.szModule, "shim_", 5))
+      continue;
+    emit(o, "{\"base\":\"0x%08lx\",\"size\":%lu,\"name\":",
+         (unsigned long)(DWORD_PTR)me.modBaseAddr, (unsigned long)me.modBaseSize);
+    emit_str(o, me.szModule);
+    emit(o, "}\n");
+  }
+  CloseHandle(snap);
+  return NULL;
+}
+
+static const char *cmd_vtable(struct out *o, HWND h, char *a) {
+  if (!*a || strlen(a) > 120)
+    return "usage: vtable <cls>";
+  static const char *const kPref[2] = {".?AV", ".?AU"};
+  char pat[2][140];
+  size_t plen[2];
+  for (int k = 0; k < 2; k++) {
+    int n = snprintf(pat[k], sizeof(pat[k]), "%s%s@@", kPref[k], a);
+    plen[k] = (size_t)n + 1; // 含末尾 '\0'
+  }
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+  assert(snap != INVALID_HANDLE_VALUE);
+  MODULEENTRY32 me;
+  me.dwSize = sizeof(me);
+  for (BOOL ok = Module32First(snap, &me); ok; ok = Module32Next(snap, &me)) {
+    if (me.hModule == g_hMod || !_strnicmp(me.szModule, "shim_", 5))
+      continue;
+    DWORD base = (DWORD)(DWORD_PTR)me.modBaseAddr, size = me.modBaseSize;
+    struct vt_scan_ctx ctx = {o, base, size, me.szModule};
+    DWORD cur = base, end = base + size;
+    while (cur < end) {
+      MEMORY_BASIC_INFORMATION m;
+      if (!VirtualQuery((LPCVOID)(DWORD_PTR)cur, &m, sizeof(m)) || !m.RegionSize)
+        break;
+      DWORD seg_hi = (DWORD)((DWORD_PTR)m.BaseAddress + m.RegionSize);
+      if (seg_hi > end)
+        seg_hi = end;
+      if (m.State == MEM_COMMIT && readable_prot(m.Protect)) {
+        const BYTE *seg = (const BYTE *)(DWORD_PTR)cur;
+        size_t slen = (size_t)(seg_hi - cur);
+        for (int k = 0; k < 2; k++) {
+          const BYTE *p = seg;
+          while ((p = find_bytes(p, (size_t)(seg + slen - p),
+                                 (const BYTE *)pat[k], plen[k])) != NULL) {
+            DWORD addr = (DWORD)(DWORD_PTR)p;
+            if (addr >= base + 8)
+              scan_mod_dword(base, size, addr - 8, on_td_ref, &ctx);
+            p++;
+          }
+        }
+      }
+      cur = seg_hi;
+    }
+  }
+  CloseHandle(snap);
+  return NULL;
+}
+
+static const char *cmd_memhas(struct out *o, HWND h, char *a) {
+  BYTE ndl[256];
+  size_t n = 0;
+  for (char *p = a; *p && *p != ' '; p += 2) {
+    int hi = hex_val(p[0]), lo = p[1] ? hex_val(p[1]) : -1;
+    if (hi < 0 || lo < 0 || n >= sizeof(ndl))
+      return "usage: memhas <hex>";
+    ndl[n++] = (BYTE)((hi << 4) | lo);
+  }
+  if (!n)
+    return "usage: memhas <hex>";
+  int found = 0;
+  DWORD_PTR cur = 0x10000;
+  while (!found && cur < 0x7FFE0000u) {
+    MEMORY_BASIC_INFORMATION m;
+    if (!VirtualQuery((LPCVOID)cur, &m, sizeof(m)) || !m.RegionSize)
+      break;
+    DWORD p = m.Protect & 0xff;
+    int rw = p == PAGE_READWRITE || p == PAGE_EXECUTE_READWRITE;
+    if (m.State == MEM_COMMIT && m.Type == MEM_PRIVATE && rw &&
+        !(m.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
+        m.RegionSize <= (400u << 20)) {
+      if (find_bytes((const BYTE *)m.BaseAddress, m.RegionSize, ndl, n))
+        found = 1;
+    }
+    cur = (DWORD_PTR)m.BaseAddress + m.RegionSize;
+  }
+  emit(o, "{\"found\":%d}\n", found);
+  return NULL;
+}
+
 static int redraw(HWND h, void *ctx) {
   return RedrawWindow(h, NULL, NULL,
                       RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
@@ -3242,6 +3390,9 @@ static const char *cmd_spy(struct out *o, HWND h, char *a) {
 
 static const struct cmd CMDS[] = {
     {"ping", cmd_ping, ARG_NONE},
+    {"mods", cmd_mods, ARG_NONE},
+    {"vtable", cmd_vtable, ARG_NONE},
+    {"memhas", cmd_memhas, ARG_NONE},
     {"treegen", cmd_treegen, ARG_NONE},
     {"treewatch", cmd_treewatch, ARG_NONE},
     {"gdidump", cmd_gdidump, ARG_OPT},
@@ -3250,19 +3401,16 @@ static const struct cmd CMDS[] = {
     {"enum", cmd_enum, ARG_OPT},
     {"tree", cmd_tree, ARG_OPT},
     {"find", cmd_find, ARG_NONE},
-    {"idle", cmd_idle, ARG_NONE},
     {"rect", cmd_rect, ARG_REQ},
     {"gettext", cmd_gettext, ARG_REQ},
     {"settext", cmd_settext, ARG_REQ},
     {"post", cmd_post, ARG_REQ},
     {"send", cmd_send, ARG_REQ},
     {"regmsg", cmd_regmsg, ARG_NONE},
-    {"click", cmd_click, ARG_REQ},
     {"disables", cmd_disables, ARG_REQ},
     {"vt", cmd_vt, ARG_NONE},
     {"req", cmd_req, ARG_REQ},
     {"clickat", cmd_clickat, ARG_REQ},
-    {"highlight", cmd_highlight, ARG_REQ},
     {"detail", cmd_detail, ARG_REQ},
     {"mouse", cmd_mouse, ARG_NONE},
     {"key", cmd_key, ARG_NONE},
@@ -3309,30 +3457,62 @@ static int send_all(SOCKET c, const char *s, size_t n) {
   return n == 0;
 }
 
-// 读一行命令（TCP 可能分片，读到 \n 为止），查表执行，应答末行 ok / err。
-static void handle(SOCKET c) {
-  char line[8192];
-  int n = 0, k;
-  while (n < (int)sizeof(line) - 1 &&
-         (k = recv(c, line + n, sizeof(line) - 1 - n, 0)) > 0) {
-    n += k;
-    if (memchr(line + n - k, '\n', k))
-      break;
+// 长连接逐行收命令（无锁等行，持 g_cmd_cs 串行执行），watch 接走 socket 即退出线程。
+static DWORD WINAPI client_thread(LPVOID arg) {
+  SOCKET c = (SOCKET)(DWORD_PTR)arg;
+  BOOL nd = 1;
+  setsockopt(c, IPPROTO_TCP, TCP_NODELAY, (const char *)&nd, sizeof(nd));
+  char buf[16384];
+  int len = 0;
+  for (;;) {
+    char *nl = (char *)memchr(buf, '\n', len);
+    while (!nl) {
+      if (len >= (int)sizeof(buf) - 1) {
+        closesocket(c);
+        return 0;
+      }
+      int k = recv(c, buf + len, (int)sizeof(buf) - 1 - len, 0);
+      if (k <= 0) {
+        closesocket(c);
+        return 0;
+      }
+      len += k;
+      nl = (char *)memchr(buf, '\n', len);
+    }
+    int line_len = (int)(nl - buf);
+    char line[16384];
+    memcpy(line, buf, line_len);
+    line[line_len] = 0;
+    if (line_len > 0 && line[line_len - 1] == '\r')
+      line[line_len - 1] = 0;
+    int rest = len - (line_len + 1);
+    if (rest > 0)
+      memmove(buf, nl + 1, rest);
+    len = rest;
+
+    struct out o = {c, 0, NULL, 0, 0};
+    EnterCriticalSection(&g_cmd_cs);
+    const char *err = run(&o, CMDS, line);
+    int detached = o.detach;
+    if (!detached) {
+      if (err) {
+        o.len = 0;
+        emit(&o, "err %s\n", err);
+      } else
+        put(&o, "ok\n", 3);
+    }
+    LeaveCriticalSection(&g_cmd_cs);
+    if (detached) {
+      free(o.buf);
+      return 0;
+    }
+    int sent = send_all(c, o.buf, o.len);
+    free(o.buf);
+    if (!sent) {
+      closesocket(c);
+      return 0;
+    }
   }
-  line[n] = 0;
-  line[strcspn(line, "\r\n")] = 0;
-  struct out o = {c, 0, NULL, 0, 0};
-  const char *err = run(&o, CMDS, line);
-  if (!o.detach) {
-    if (err) {
-      o.len = 0;
-      emit(&o, "err %s\n", err);
-    } else
-      put(&o, "ok\n", 3);
-    send_all(c, o.buf, o.len);
-    closesocket(c);
-  }
-  free(o.buf);
 }
 
 static int read_port(void) {
@@ -3372,7 +3552,7 @@ static DWORD WINAPI listener(LPVOID arg) {
     closesocket(srv);
     return 3;
   }
-  if (listen(srv, 8) == SOCKET_ERROR) {
+  if (listen(srv, 16) == SOCKET_ERROR) {
     closesocket(srv);
     return 4;
   }
@@ -3380,7 +3560,11 @@ static DWORD WINAPI listener(LPVOID arg) {
     SOCKET c = accept(srv, NULL, NULL);
     if (c == INVALID_SOCKET)
       break;
-    handle(c);
+    HANDLE th = CreateThread(NULL, 0, client_thread, (LPVOID)(DWORD_PTR)c, 0, NULL);
+    if (th)
+      CloseHandle(th);
+    else
+      closesocket(c);
   }
   closesocket(srv);
   return 0;
@@ -3392,6 +3576,7 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID reserved) {
     g_hMod = hMod;
     if (!g_cs_inited) {
       InitializeCriticalSection(&g_cs);
+      InitializeCriticalSection(&g_cmd_cs);
       InitializeCriticalSection(&g_vt_cs);
       InitializeCriticalSection(&g_feed_cs);
       InitializeCriticalSection(&g_gdi_cs);

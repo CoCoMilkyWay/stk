@@ -14,11 +14,10 @@ namespace live::tdx::win {
 
 namespace {
 
-constexpr double kRedraw = 2; // click_text: 一处没有时等绘制层画回来 [s]
+constexpr double kRedraw = 2;
 
-int half(int a, int b) { return (a + b) >= 0 ? (a + b) / 2 : -((-(a + b) + 1) / 2); } // 向下取整
+int half(int a, int b) { return (a + b) >= 0 ? (a + b) / 2 : -((-(a + b) + 1) / 2); }
 
-// 空白: ASCII 空白、不换行空格 U+00A0、全角空格 U+3000
 size_t space_at(const std::string &s, size_t i) {
   const unsigned char c = static_cast<unsigned char>(s[i]);
   if (std::isspace(c))
@@ -48,6 +47,7 @@ Node node_of(const json &j) {
 
 std::vector<Node> nodes_of(const std::vector<json> &recs) {
   std::vector<Node> out;
+  out.reserve(recs.size());
   for (const json &j : recs)
     out.push_back(node_of(j));
   return out;
@@ -60,7 +60,9 @@ Layer layer_of(const json &j) {
   l.hwnd = j.at("hwnd").get<std::string>();
   l.off[0] = j.at("off").at(0).get<int>();
   l.off[1] = j.at("off").at(1).get<int>();
-  for (const json &it : j.at("items")) {
+  const json &its = j.at("items");
+  l.items.reserve(its.size());
+  for (const json &it : its) {
     Item x{it.at(0).get<int>(), it.at(1).get<int>(), it.at(2).get<int>(), it.at(3).get<int>(), it.at(4).get<unsigned>(), std::nullopt};
     if (it.size() > 5)
       x.text = it.at(5).get<std::string>();
@@ -78,8 +80,7 @@ void attach() {
     bool ok = !r.empty() && r.back().value("on", 0L) != 0;
     for (const json &x : r)
       ok = ok && !x.contains("skip");
-    if (!ok)
-      fail(strf("%s on: %s", c, json(r).dump().c_str()));
+    need(ok, strf("%s on: %s", c, json(r).dump().c_str()));
   }
   shim::cmd("detours");
 }
@@ -87,6 +88,8 @@ void attach() {
 // ---------- 窗口 ----------
 
 std::vector<Node> enum_(const Hwnd &target) { return nodes_of(target.empty() ? shim::cmd("enum") : shim::cmd("enum", target)); }
+
+std::vector<Node> tree(const Hwnd &target) { return nodes_of(target.empty() ? shim::cmd_wait(10, "tree") : shim::cmd_wait(10, "tree", target)); }
 
 std::vector<Node> find(const std::string &cls, std::optional<long> id, const std::string &title) {
   assert(!cls.empty() && cls.find(' ') == std::string::npos);
@@ -110,11 +113,25 @@ Tops tops() {
 
 long disables(const Hwnd &h) { return shim::cmd("disables", h).at(0).at("n").get<long>(); }
 
-// ---------- 消息 ----------
+int64_t treegen() { return shim::cmd("treegen").at(0).at("gen").get<int64_t>(); }
+
+// ---------- 绘制与控件 ----------
+
+std::vector<Layer> gdidump(const Hwnd &target) {
+  const std::vector<json> r = target.empty() ? shim::cmd_wait(10, "gdidump") : shim::cmd_wait(10, "gdidump", target);
+  std::vector<Layer> out;
+  out.reserve(r.size());
+  for (const json &d : r)
+    out.push_back(layer_of(d));
+  return out;
+}
+
+Layer detail(const Hwnd &h, double timeout) { return layer_of(shim::cmd_wait(timeout, "detail", h).at(0)); }
+
+// ---------- 消息与输入 ----------
 
 void post(const Hwnd &h, unsigned msg, long wp, const std::string &lp) {
-  if (!shim::cmd("post", h, msg, wp, lp).at(0).at("ret").get<long>())
-    fail(strf("PostMessage %s %#x 失败", h.c_str(), msg));
+  need(shim::cmd("post", h, msg, wp, lp).at(0).at("ret").get<long>() != 0, strf("PostMessage %s %#x 失败", h.c_str(), msg));
 }
 
 void send(const Hwnd &h, unsigned msg, long wp, long lp) { shim::cmd("send", h, msg, wp, lp); }
@@ -124,15 +141,20 @@ std::string title(const Hwnd &h) { return shim::cmd("rect", h).at(0).at("title")
 std::string text(const Hwnd &h, double timeout) { return shim::cmd_wait(timeout, "gettext", h).at(0).at("text").get<std::string>(); }
 
 void settext(const Hwnd &h, const std::string &s) {
-  if (!shim::cmd("settext", h, s).at(0).at("ret").get<long>())
-    fail("写 " + h + " 失败");
+  need(shim::cmd("settext", h, s).at(0).at("ret").get<long>() != 0, "写 " + h + " 失败");
 }
 
 unsigned regmsg(const char *name) { return shim::cmd("regmsg", name).at(0).at("msg").get<unsigned>(); }
 
 void clickat(const Hwnd &h, int x, int y) { shim::cmd("clickat", h, x, y); }
 
-// ---------- 控件 ----------
+void mouse(const char *kind, int x, int y, unsigned mk, int delta) { shim::cmd("mouse", kind, x, y, mk, delta); }
+
+void key(unsigned vk) { shim::cmd("key", vk); }
+
+void ch(unsigned cp) { shim::cmd("char", cp); }
+
+// ---------- 对话框控件 ----------
 
 std::map<std::string, Hwnd> ctls(const Hwnd &h, const std::vector<std::pair<std::string, long>> &ids) {
   std::vector<Node> kids;
@@ -145,8 +167,7 @@ std::map<std::string, Hwnd> ctls(const Hwnd &h, const std::vector<std::pair<std:
     for (const Node &n : kids)
       if (n.id == cid)
         hits.push_back(n.hwnd);
-    if (hits.size() != 1)
-      fail(strf("%s「%s」控件 %s(%ld) 命中 %zu 个", h.c_str(), title(h).c_str(), k.c_str(), cid, hits.size()));
+    need(hits.size() == 1, strf("%s「%s」控件 %s(%ld) 命中 %zu 个", h.c_str(), title(h).c_str(), k.c_str(), cid, hits.size()));
     out[k] = hits[0];
   }
   return out;
@@ -154,7 +175,6 @@ std::map<std::string, Hwnd> ctls(const Hwnd &h, const std::vector<std::pair<std:
 
 void command(const Hwnd &dlg, long cid) { post(dlg, kWmCommand, cid, ctls(dlg, {{"btn", cid}}).at("btn")); }
 
-// 候选窗口恰一个即只取它的图层, 否则取全部再按候选筛; 不恰一处时先把候选窗口上画着的文字记进日志
 void click_text(const std::string &cls, const std::string &ttl, const std::string &txt) {
   trace::Span span("点「" + txt + "」");
   std::map<Hwnd, Node> wins;
@@ -173,8 +193,7 @@ void click_text(const std::string &cls, const std::string &ttl, const std::strin
         for (Node &n : find(cls, std::nullopt, ttl))
           if (n.vis)
             wins.emplace(n.hwnd, std::move(n));
-        for (const json &d : wins.size() == 1 ? shim::cmd("gdidump", wins.begin()->first) : shim::cmd("gdidump")) {
-          const Layer l = layer_of(d);
+        for (const Layer &l : gdidump(wins.size() == 1 ? wins.begin()->first : Hwnd{})) {
           const auto w = wins.find(l.hwnd);
           if (w == wins.end())
             continue;

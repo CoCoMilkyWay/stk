@@ -10,12 +10,16 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cerrno>
 #include <cstdlib>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -27,7 +31,7 @@ namespace {
 
 constexpr const char *kGcc = "i686-w64-mingw32-gcc";
 constexpr const char *kSysroot = "/usr/i686-w64-mingw32";
-constexpr std::string_view kBusy = "err target thread busy (timeout)"; // shim.c in_thread: 界面线程 kBusyWait 秒没接
+constexpr std::string_view kBusy = "err target thread busy (timeout)";
 constexpr double kBusyWait = 3;
 
 fs::path src_dir() { return disk::root() / "cpp/src/live/tdx/win32"; }
@@ -58,7 +62,6 @@ const std::string &hash() {
 }
 
 std::string dll_name() { return "shim_" + hash() + ".dll"; }
-
 int port() { return 20000 + static_cast<int>(std::stoul(hash(), nullptr, 16) % 10000); }
 
 fs::path wine_temp() {
@@ -72,7 +75,6 @@ std::string target_proc() {
   return p && *p ? p : "tdxw.exe";
 }
 
-// 删掉 d 下非当前哈希的 shim_*.dll (已注入进程映射的旧 DLL 被 unlink 不受影响)
 void prune(const fs::path &d) {
   for (const auto &e : fs::directory_iterator(d)) {
     const std::string n = e.path().filename().string();
@@ -81,7 +83,6 @@ void prune(const fs::path &d) {
   }
 }
 
-// clang + lld 不会自动搜 gcc 的 libgcc 目录: 取含 libgcc.a 的目录 (win32 线程模型优先, 免拖 libwinpthread)
 fs::path libgcc_dir() {
   std::vector<fs::path> cands;
   const fs::path root = "/usr/lib/gcc/i686-w64-mingw32";
@@ -89,8 +90,7 @@ fs::path libgcc_dir() {
     for (const auto &e : fs::directory_iterator(root))
       if (fs::exists(e.path() / "libgcc.a"))
         cands.push_back(e.path());
-  if (cands.empty())
-    fail("未找到 libgcc.a (装 gcc-mingw-w64-i686)");
+  need(!cands.empty(), "未找到 libgcc.a (装 gcc-mingw-w64-i686)");
   std::sort(cands.begin(), cands.end(), [](const fs::path &a, const fs::path &b) {
     const bool wa = a.string().find("win32") != std::string::npos, wb = b.string().find("win32") != std::string::npos;
     return wa != wb ? wa : a < b;
@@ -100,7 +100,6 @@ fs::path libgcc_dir() {
 
 std::vector<std::string> toolchain() {
   if (on_path("clang") && fs::is_directory(fs::path(kSysroot) / "include"))
-    // -static-libgcc: 否则 -shared 时先链 -lgcc_s, 导入 Wine 里没有的 libgcc_s_dw2-1.dll
     return {"clang", "--target=i686-w64-windows-gnu", std::string("--sysroot=") + kSysroot, "-fuse-ld=lld", "-static-libgcc", "-L" + libgcc_dir().string()};
   if (on_path(kGcc))
     return {kGcc};
@@ -139,12 +138,19 @@ void inject() {
     fail(strf("注入失败 rc=%d\n%s", r.rc, r.err.c_str()));
 }
 
-int connect_to(double timeout) {
+void set_timeout(int fd, double timeout) {
+  const double t = std::max(timeout, 0.05);
+  timeval tv{static_cast<time_t>(t), static_cast<suseconds_t>((t - static_cast<time_t>(t)) * 1e6)};
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+}
+
+int dial(double timeout) {
   const int s = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   assert(s >= 0);
-  timeval tv{static_cast<time_t>(timeout), static_cast<suseconds_t>((timeout - static_cast<time_t>(timeout)) * 1e6)};
-  ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-  ::setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+  int one = 1;
+  ::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+  set_timeout(s, timeout);
   sockaddr_in a{};
   a.sin_family = AF_INET;
   a.sin_port = htons(static_cast<uint16_t>(port()));
@@ -156,30 +162,90 @@ int connect_to(double timeout) {
   return s;
 }
 
-// 连上并发出一行命令 → socket
-int open_to(const std::string &line, const std::string &cmd, double timeout) {
+bool send_line(int fd, const std::string &line) {
   assert(line.find('\n') == std::string::npos);
-  const int s = connect_to(timeout);
-  if (s < 0)
-    fail("shim 不在线 (" + cmd + ")");
   const std::string req = line + "\n";
   for (size_t off = 0; off < req.size();) {
-    const ssize_t k = ::send(s, req.data() + off, req.size() - off, MSG_NOSIGNAL);
-    if (k <= 0) {
-      ::close(s);
-      fail("shim 发送失败 (" + cmd + ")");
-    }
+    const ssize_t k = ::send(fd, req.data() + off, req.size() - off, MSG_NOSIGNAL);
+    if (k <= 0)
+      return false;
     off += static_cast<size_t>(k);
   }
-  return s;
+  return true;
 }
 
-std::string_view chomp(std::string_view l) { return l.ends_with('\r') ? l.substr(0, l.size() - 1) : l; }
+// 复用的命令长连接 (单连接, 互斥串行, 断线自动重连)
+struct Link {
+  std::mutex mu;
+  int fd = -1;
+  std::string buf;
+
+  void drop() {
+    if (fd >= 0) {
+      ::close(fd);
+      fd = -1;
+    }
+    buf.clear();
+  }
+
+  // 发一行、读到 ok / err 行; 0 = 正常结束 (lines 末行即 ok/err), -1 = 断线, -2 = 超时
+  int round(const std::string &line, double timeout, std::vector<std::string> &lines, size_t &bytes) {
+    if (fd < 0) {
+      fd = dial(timeout);
+      if (fd < 0)
+        return -1;
+    }
+    set_timeout(fd, timeout);
+    if (!send_line(fd, line)) {
+      drop();
+      return -1;
+    }
+    lines.clear();
+    bytes = 0;
+    const auto end = Clock::now() + Secs(timeout);
+    while (true) {
+      while (true) {
+        const size_t nl = buf.find('\n');
+        if (nl == std::string::npos)
+          break;
+        size_t e = nl;
+        if (e > 0 && buf[e - 1] == '\r')
+          --e;
+        std::string row(buf.data(), e);
+        bytes += nl + 1;
+        buf.erase(0, nl + 1);
+        const bool fin = row == "ok" || row.starts_with("err ");
+        lines.push_back(std::move(row));
+        if (fin)
+          return 0;
+      }
+      const double rem = std::chrono::duration<double>(end - Clock::now()).count();
+      if (rem <= 0) {
+        drop();
+        return -2;
+      }
+      set_timeout(fd, rem);
+      char tmp[65536];
+      const ssize_t k = ::recv(fd, tmp, sizeof tmp, 0);
+      if (k > 0) {
+        buf.append(tmp, static_cast<size_t>(k));
+        continue;
+      }
+      drop();
+      return (k < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) ? -2 : -1;
+    }
+  }
+};
+
+Link &link() {
+  static Link l;
+  return l;
+}
 
 } // namespace
 
 bool online() {
-  const int s = connect_to(1);
+  const int s = dial(1);
   if (s < 0)
     return false;
   ::close(s);
@@ -195,40 +261,38 @@ void ensure(double timeout) {
   trace::ev("online", {{"port", port()}});
 }
 
+void reset() {
+  Link &l = link();
+  std::lock_guard lk(l.mu);
+  l.drop();
+}
+
 std::vector<nlohmann::json> call(const std::string &line, double timeout) {
   const std::string cmd = line.substr(0, line.find(' '));
   trace::shim_sent(std::string_view(line).substr(0, line.find(' ', cmd.size() + 1)));
   const Clock::time_point t0 = Clock::now();
   const auto left = [&] { return timeout - std::chrono::duration<double>(Clock::now() - t0).count(); };
-  std::string buf;
-  std::vector<std::string_view> lines;
-  // 经界面线程的命令 shim 里只等 kBusyWait 秒即回 busy: 界面线程卡着 (查大表) 而 timeout 没到即再问
-  do {
-    const int s = open_to(line, cmd, std::max(left(), 0.1));
-    buf.clear();
-    for (char tmp[65536];;) {
-      const ssize_t k = ::recv(s, tmp, sizeof tmp, 0);
-      if (k > 0) {
-        buf.append(tmp, static_cast<size_t>(k));
-        continue;
-      }
-      if (k < 0) {
-        ::close(s);
+
+  Link &l = link();
+  std::vector<std::string> lines;
+  size_t bytes = 0;
+  {
+    std::lock_guard lk(l.mu);
+    do {
+      int rc = l.round(line, std::max(left(), 0.1), lines, bytes);
+      if (rc == -1) // 复用旧连接已断: 立刻重连一次
+        rc = l.round(line, std::max(left(), 0.1), lines, bytes);
+      if (rc == -2)
         fail(strf("%s: %gs 内没应答 (客户端卡着?)", cmd.c_str(), timeout));
-      }
-      break;
-    }
-    ::close(s);
-    lines.clear();
-    for (std::string_view v = buf; !v.empty();) {
-      const size_t e = v.find('\n');
-      lines.push_back(chomp(v.substr(0, e)));
-      v = e == std::string_view::npos ? std::string_view{} : v.substr(e + 1);
-    }
-  } while (!lines.empty() && lines.back() == kBusy && left() > kBusyWait);
+      if (rc == -1)
+        fail("shim 不在线 (" + cmd + ")");
+    } while (!lines.empty() && lines.back() == kBusy && left() > kBusyWait);
+  }
   if (lines.empty() || lines.back() != "ok")
-    fail(cmd + ": " + (lines.empty() ? std::string("连接被关, 无应答") : std::string(lines.back())));
+    fail(cmd + ": " + (lines.empty() ? std::string("连接被关, 无应答") : lines.back()));
+
   std::vector<nlohmann::json> out;
+  out.reserve(lines.size() - 1);
   for (size_t i = 0; i + 1 < lines.size(); ++i) {
     nlohmann::json j = nlohmann::json::parse(lines[i], nullptr, false);
     assert(!j.is_discarded());
@@ -236,15 +300,79 @@ std::vector<nlohmann::json> call(const std::string &line, double timeout) {
   }
   if (trace::on()) {
     trace::Kw kw = {{"cmd", line}, {"ms", trace::ms_since(t0)}};
-    if (buf.size() <= trace::kRetCap) {
+    if (bytes <= trace::kRetCap) {
       kw["ret"] = nlohmann::json(out);
     } else {
       kw["n"] = out.size();
-      kw["kb"] = (buf.size() + 512) / 1024;
+      kw["kb"] = (bytes + 512) / 1024;
     }
     trace::ev("shim", std::move(kw));
   }
   return out;
+}
+
+Stream::Stream(const std::string &cmd) {
+  fd_ = dial(2);
+  need(fd_ >= 0, "shim 推流连接失败 (" + cmd + ")");
+  if (!send_line(fd_, cmd)) {
+    close();
+    fail("shim 推流发送失败 (" + cmd + ")");
+  }
+}
+
+Stream::~Stream() { close(); }
+
+void Stream::close() {
+  if (fd_ >= 0) {
+    ::close(fd_);
+    fd_ = -1;
+  }
+  buf_.clear();
+}
+
+bool Stream::next(nlohmann::json &out, double timeout) {
+  if (fd_ < 0)
+    fail("shim 推流已关");
+  const auto end = Clock::now() + Secs(timeout);
+  while (true) {
+    while (true) {
+      const size_t nl = buf_.find('\n');
+      if (nl == std::string::npos)
+        break;
+      size_t e = nl;
+      if (e > 0 && buf_[e - 1] == '\r')
+        --e;
+      std::string row(buf_.data(), e);
+      buf_.erase(0, nl + 1);
+      if (row.empty() || row == "null")
+        continue; // 1s 心跳
+      if (row.starts_with("err "))
+        fail("shim 推流: " + row.substr(4));
+      out = nlohmann::json::parse(row, nullptr, false);
+      assert(!out.is_discarded());
+      return true;
+    }
+    const double rem = std::chrono::duration<double>(end - Clock::now()).count();
+    if (rem <= 0)
+      return false;
+    pollfd pfd{fd_, POLLIN, 0};
+    const int pr = ::poll(&pfd, 1, static_cast<int>(std::max(1.0, rem * 1000.0)));
+    if (pr == 0)
+      return false;
+    if (pr < 0) {
+      if (errno == EINTR)
+        continue;
+      close();
+      fail("shim 推流 poll 失败");
+    }
+    char tmp[65536];
+    const ssize_t k = ::recv(fd_, tmp, sizeof tmp, 0);
+    if (k <= 0) {
+      close();
+      fail("shim 推流断开");
+    }
+    buf_.append(tmp, static_cast<size_t>(k));
+  }
 }
 
 } // namespace live::tdx::shim

@@ -100,15 +100,15 @@ void bar(const std::optional<double> &v, double mv, const ImVec4 &col) {
 }
 
 // 卖出滑杆的值 (配置里的股数, 至多可卖)
-int sell_n(LiveHub &hub, const live::rebal::Hold &h) {
-  const std::map<std::string, int> &sells = hub.in().cfg.sells;
+int64_t sell_n(LiveHub &hub, const live::rebal::Hold &h) {
+  const std::map<std::string, int64_t> &sells = hub.in().cfg.sells;
   const auto i = sells.find(h.code);
-  return std::min(i == sells.end() ? 0 : i->second, h.avail);
+  return std::min(i == sells.end() ? int64_t{0} : i->second, h.avail);
 }
 
 // 一单的步骤条: 已过绿 / 当前橙 / 失败红 / 未到灰
 void order_line(const OrderJob &j, bool priv) {
-  ImGui::Text("%s", j.t.c_str());
+  ImGui::Text("%s", live::fmt_sec(j.sec).c_str());
   ImGui::SameLine();
   text_col(side_col(j.o.side), strf("%s%s", live::side_name(j.o.side), j.label.c_str()));
   ImGui::SameLine();
@@ -135,15 +135,13 @@ std::string where(const live::trace::Spot &s) {
   return s.shim.empty() ? out : out + " · shim " + s.shim;
 }
 
-// 刷新进度两行: 各样读于几时 · 行情时刻 · 接入的客户端; 次行 = 时有时无的: 接入断、在做的各路 (刷新 = 段栈; 事务 = 「名.步」+ 段栈)、
-// 上轮刷新失败, 都没有即「空闲」
+// 刷新进度两行: 读于几时 · 行情时刻 · 接入的客户端; 次行 = 接入断 / 刷新 / 事务 / 失败 / 空闲
 void progress(LiveHub &hub) {
   const live::Refresh &g = hub.refresh();
-  const auto &st = hub.state();
-  std::string at;
-  (st ? *st : live::State{}).each([&](const char *n, const std::string &t) { at += strf("%s%s %s", at.empty() ? "" : " · ", n, t.empty() ? "—" : t.c_str()); });
-  ImGui::Text("%s · 读于 %s · 行情 %s · %s", hub.client().name, at.c_str(), hub.in().quote_at.empty() ? "—" : hub.in().quote_at.c_str(),
-              st && !st->who.empty() ? st->who.c_str() : "未接入");
+  const auto &snap = hub.snapshot();
+  const std::string &who = snap ? snap->who : g.who;
+  ImGui::Text("%s · 读于 %s · 行情 %s · %s", hub.client().name, live::fmt_sec(snap ? snap->at : -1).c_str(),
+              live::fmt_sec(hub.in().quote_sec).c_str(), who.empty() ? "未接入" : who.c_str());
   bool any = false;
   const auto sep = [&] {
     if (any)
@@ -309,11 +307,10 @@ void lever_sell(LiveHub &hub) {
   for (int i = 0; i < 40; ++i)
     (sold((lo + hi) / 2) < want ? lo : hi) = (lo + hi) / 2;
   const double unit = hub.in().cfg.unit;
-  std::map<std::string, int> to = hub.in().cfg.sells;
+  std::map<std::string, int64_t> to = hub.in().cfg.sells;
   for (const live::rebal::Hold &h : p->holds) {
-    const double x = std::min(hi * h.base, static_cast<double>(h.full));
-    // 快卖完的 (剩下不足一个最小单元, 且已过半) 即卖满, 不留碎股; 过半: 整只不足一个最小单元的小仓不至于一拉就整只卖
-    const int m = (h.full - x) * h.px < unit && 2 * x >= h.full ? h.full : live::rebal::snap(h, unit, x, true, true);
+    const double x = std::min(hi * static_cast<double>(h.base), static_cast<double>(h.full));
+    const int64_t m = (static_cast<double>(h.full) - x) * h.px < unit && 2 * x >= static_cast<double>(h.full) ? h.full : live::rebal::snap(h, unit, x, true, true);
     if (m > 0)
       to[h.code] = m;
     else
@@ -449,7 +446,7 @@ void plan_sheet(LiveHub &hub, BoardState &st) {
   else if (!v.plan)
     ImGui::TextDisabled("%s", v.wait.empty() ? "(等试算)" : v.wait.c_str());
   else
-    ImGui::TextDisabled("试算于 %s%s%s", v.plan->time.c_str(), v.wait.empty() ? "" : " · ", v.wait.c_str());
+    ImGui::TextDisabled("试算于 %s%s%s", live::fmt_sec(v.plan->sec).c_str(), v.wait.empty() ? "" : " · ", v.wait.c_str());
   constexpr int kN = 9;
   constexpr const char *kHeads[kN] = {"购买力", "本次|行使", "其中|融资", "成本", "入选", "每只|目标", "卖出|还款", "卖后|现金", "卖后|保证金"};
   if (!begin_fit("##plan", kHeads, kFlags, st.plan_fit))
@@ -489,7 +486,7 @@ void task_line(LiveHub &hub) {
     return ImGui::TextDisabled("无事务");
   text_col(t->st == JobSt::Err ? kRed : t->st == JobSt::Run ? kHot
                                                             : ImGui::GetStyleColorVec4(ImGuiCol_Text),
-           strf("%s %s · %s%s%s %s", t->t.c_str(), t->name.c_str(), job_name(t->st), t->live.empty() ? "" : " · ", t->live.c_str(), t->msg.c_str()));
+           strf("%s %s · %s%s%s %s", live::fmt_sec(t->sec).c_str(), t->name.c_str(), job_name(t->st), t->live.empty() ? "" : " · ", t->live.c_str(), t->msg.c_str()));
 }
 
 // 账户对照: 现 / 调仓后 / 变动%, 调仓后与现不同的格标色; 变动按该列好坏着色 (好红坏绿)
@@ -584,16 +581,15 @@ void info_line(LiveHub &hub, const std::set<std::string> &held) {
     return ImGui::TextDisabled("%s%s", v.wait.c_str(), v.frame ? " · 表为上一份" : "");
   if (v.frame->rows.empty())
     return ImGui::TextDisabled("无持仓");
-  const auto &pends = v.st->pends;
+  const auto &pends = v.snap->pends;
   std::string s;
   int n = 0;
-  if (pends)
-    for (const live::Pending &o : pends->list)
-      if (!held.count(o.code)) {
-        ++n;
-        s += strf("%s%s %s %.0f股 @%.3f %s", s.empty() ? "" : "、", live::side_name(o.side), sec_txt(o, hub.priv()).c_str(), o.qty - o.filled, o.price,
-                  o.status.c_str());
-      }
+  for (const live::Pending &o : pends.list)
+    if (!held.count(o.code)) {
+      ++n;
+      s += strf("%s%s %s %lld股 @%.3f %s", s.empty() ? "" : "、", live::side_name(o.side), sec_txt(o, hub.priv()).c_str(),
+                static_cast<long long>(o.qty - o.filled), o.price, o.status.c_str());
+    }
   if (!n)
     return ImGui::TextUnformatted("");
   ImGui::Text("表外挂单 %d 笔: %s", n, s.c_str());
@@ -606,14 +602,12 @@ struct Flows {
   std::map<std::string, std::vector<const live::Fill *>> fills;
   std::map<std::string, std::vector<const live::Pending *>> pends;
 };
-Flows flows_of(const live::State &s) {
+Flows flows_of(const live::Snapshot &s) {
   Flows f;
-  if (s.fills)
-    for (const live::Fill &x : s.fills->rows)
-      f.fills[x.code].push_back(&x);
-  if (s.pends)
-    for (const live::Pending &x : s.pends->list)
-      f.pends[x.code].push_back(&x);
+  for (const live::Fill &x : s.fills.rows)
+    f.fills[x.code].push_back(&x);
+  for (const live::Pending &x : s.pends.list)
+    f.pends[x.code].push_back(&x);
   return f;
 }
 void flow_cell(const Flows &f, const std::string &code, bool priv) {
@@ -639,25 +633,30 @@ void flow_cell(const Flows &f, const std::string &code, bool priv) {
     mark("●", fi->second);
     tips += strf("成交 %zu 笔\n", fi->second.size());
     for (const live::Fill *x : fi->second)
-      tips += strf("  %s %s %.0f股 @%.3f\n", live::side_name(x->side), x->time.c_str(), x->qty, x->price);
+      tips += strf("  %s %s %lld股 @%.3f\n", live::side_name(x->side), live::fmt_sec(x->sec).c_str(), static_cast<long long>(x->qty), x->price);
   }
   if (oi != f.pends.end()) {
     mark("○", oi->second);
     tips += strf("挂单 %zu 笔\n", oi->second.size());
     for (const live::Pending *x : oi->second)
-      tips += strf("  %s %s %.0f%s股 @%.3f %s\n", live::side_name(x->side), x->time.c_str(), x->qty - x->filled,
-                   x->filled ? strf("/%.0f", x->qty).c_str() : "", x->price, x->status.c_str());
+      tips += strf("  %s %s %lld%s股 @%.3f %s\n", live::side_name(x->side), live::fmt_sec(x->sec).c_str(), static_cast<long long>(x->qty - x->filled),
+                   x->filled ? strf("/%lld", static_cast<long long>(x->qty)).c_str() : "", x->price, x->status.c_str());
   }
   if (any && ImGui::IsItemHovered())
     tip("%s", tips.c_str());
 }
 
-// 下单按钮: 一列滑点一个, 填充 = 该额的滑点色; 未持有的 (名单股) 卖不了; 点了直接下 (解锁与否由 can 管)
+// 买/卖镜像 6 按钮: 买侧大→小 (15W, 5W, 1W) ⇄ 卖侧小→大 (1W, 5W, 15W)
+struct OrderBtn {
+  int side;
+  size_t idx;
+};
+constexpr std::array<OrderBtn, 6> kOrderBtns = {{{live::kBuy, 2}, {live::kBuy, 1}, {live::kBuy, 0}, {live::kSell, 0}, {live::kSell, 1}, {live::kSell, 2}}};
+
 void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool can) {
   if (r.closed)
     return ImGui::TextDisabled("今日清仓");
   assert(r.quote);
-  // 悬停: 价格 (micro price) / 预期成交价 / 滑点 / 成本; 5 档吃不满的标 > (成交价买标 >、卖标 <, 实际更差)
   const auto btn_tip = [&](const live::Slip &x, int s) {
     if (!live::ref(*r.quote))
       return std::string("无行情");
@@ -673,23 +672,24 @@ void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool ca
   };
   ImGui::BeginDisabled(!can);
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetFontSize() * 0.12f, ImGui::GetStyle().FramePadding.y));
-  for (size_t i = 0; i < live::kSlipCols.size(); ++i) {
-    const live::Col c = live::kSlipCols[i];
+  for (size_t i = 0; i < kOrderBtns.size(); ++i) {
+    const auto [s, k] = kOrderBtns[i];
+    const double n = live::kNotionals[k];
     if (i)
-      ImGui::SameLine(0, i == live::kSlipCols.size() / 2 ? ImGui::GetFontSize() * 0.3f : 1);
-    const live::Slip x = r.slips ? (*r.slips)[i] : live::Slip{};
+      ImGui::SameLine(0, i == kOrderBtns.size() / 2 ? ImGui::GetFontSize() * 0.3f : 1);
+    const live::Slip x = r.slips ? (*r.slips)[s][k] : live::Slip{};
     const std::optional<ImVec4> fill = slip_col(x.pct);
-    ImGui::PushStyleColor(ImGuiCol_Text, side_col(c.s));
+    ImGui::PushStyleColor(ImGuiCol_Text, side_col(s));
     if (fill)
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(fill->x, fill->y, fill->z, 0.45f));
-    ImGui::BeginDisabled(c.s < 0 && !r.market_value);
-    const bool hit = ImGui::SmallButton(strf("%s##o%zu", size_txt(c.n).c_str(), i).c_str());
+    ImGui::BeginDisabled(s < 0 && !r.market_value);
+    const bool hit = ImGui::SmallButton(strf("%s##o%zu", size_txt(n).c_str(), i).c_str());
     ImGui::EndDisabled();
     ImGui::PopStyleColor(fill ? 2 : 1);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      tip("%s", btn_tip(x, c.s).c_str());
+      tip("%s", btn_tip(x, s).c_str());
     if (hit)
-      hub.submit(r.code, c.s, c.n, c.s > 0 && st.margin ? live::Credit::Margin : live::Credit::Plain);
+      hub.submit(r.code, s, n, s > 0 && st.margin ? live::Credit::Margin : live::Credit::Plain);
   }
   ImGui::PopStyleVar();
   ImGui::EndDisabled();
@@ -863,8 +863,8 @@ void head_tip(int c, const live::board::Frame &f) {
     return tip("R = 融资标的且融资状态正常 (两融条款缓存 ∧ 本地两融明细, 试算未出即空)");
   case C_ORDER: {
     std::string s;
-    for (size_t i = 0; i < live::kSlipCols.size(); ++i)
-      s += strf("%s%s%s %s", s.empty() ? "" : " · ", live::side_name(live::kSlipCols[i].s), size_txt(live::kSlipCols[i].n).c_str(), slip_txt(f.slips[i]).c_str());
+    for (const auto [side, k] : kOrderBtns)
+      s += strf("%s%s%s %s", s.empty() ? "" : " · ", live::side_name(side), size_txt(live::kNotionals[k]).c_str(), slip_txt(f.slips[side][k]).c_str());
     return tip("滑点 p = 万分之一, 正 = 成本; 按钮填充 绿 < %.0fp ≤ 黄 < %.0fp ≤ 红, 解锁后点了直接下单\n持仓按占比加权 %s", kSlipOk, kSlipHi, s.c_str());
   }
   case C_DAY:
@@ -900,16 +900,17 @@ void head_tip(int c, const live::board::Frame &f) {
 // 卖出滑杆 (配置里的股数, 拖动即 snap 到能成单的); 本只有融资负债且在卖即标橙 (卖出回款先还它); 悬停看股数
 void sell_slider(LiveHub &hub, const live::rebal::Hold &h, bool priv) {
   const live::rebal::Cfg &cfg = hub.in().cfg;
-  int n = sell_n(hub, h);
+  int64_t n = sell_n(hub, h);
   const bool owed = h.debt > 0 && n > 0;
   if (owed) {
     ImGui::PushStyleColor(ImGuiCol_SliderGrab, kHot);
     ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, kHot);
   }
-  ImGui::BeginDisabled(live::rebal::snap(h, cfg.unit, h.avail, false, cfg.lever) == 0 || hub.busy());
+  ImGui::BeginDisabled(live::rebal::snap(h, cfg.unit, static_cast<double>(h.avail), false, cfg.lever) == 0 || hub.busy());
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4);
-  if (ImGui::SliderInt("##sell", &n, 0, h.avail, ""))
-    hub.edit_cfg([&, m = live::rebal::snap(h, cfg.unit, n, false, cfg.lever)](live::rebal::Cfg &c) {
+  const int64_t lo = 0, hi = h.avail;
+  if (ImGui::SliderScalar("##sell", ImGuiDataType_S64, &n, &lo, &hi, ""))
+    hub.edit_cfg([&, m = live::rebal::snap(h, cfg.unit, static_cast<double>(n), false, cfg.lever)](live::rebal::Cfg &c) {
       if (m > 0)
         c.sells[h.code] = m;
       else
@@ -919,7 +920,8 @@ void sell_slider(LiveHub &hub, const live::rebal::Hold &h, bool priv) {
   if (owed)
     ImGui::PopStyleColor(2);
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip("卖 %d 股 / 可卖 %d 股 / 持仓 %d 股 · 其中非融资 %d 股%s", n, h.avail, h.bal, h.own,
+    tip("卖 %lld 股 / 可卖 %lld 股 / 持仓 %lld 股 · 其中非融资 %lld 股%s", static_cast<long long>(n), static_cast<long long>(h.avail),
+        static_cast<long long>(h.bal), static_cast<long long>(h.own),
         h.debt > 0 ? strf("\n本只融资负债 %s: 担保品卖出的回款先还它 (券商自动, 负债股数按额同比减), 余下才进现金; 卖后剩下的转为非融资",
                           priv ? kMask : wan(h.debt).c_str())
                          .c_str()
@@ -937,7 +939,7 @@ struct RowPlan {
   bool owed = false;                    // 卖的这只有融资负债 (回款先还它; 卖额标橙)
   std::string tip;
 };
-RowPlan row_plan(const live::rebal::Hold *h, int n, const live::rebal::Target *t, bool priv) {
+RowPlan row_plan(const live::rebal::Hold *h, int64_t n, const live::rebal::Target *t, bool priv) {
   RowPlan p;
   const auto line = [&](const std::string &s) { p.tip += (p.tip.empty() ? "" : "\n") + s; };
   const auto take = [&](const live::rebal::Order &o) { p.slip += o.slip, p.fee += o.fee; };
@@ -958,7 +960,7 @@ RowPlan row_plan(const live::rebal::Hold *h, int n, const live::rebal::Target *t
     }
   }
   if (h && n) {
-    p.amt.sell = n * h->px;
+    p.amt.sell = static_cast<double>(n) * h->px;
     p.owed = h->debt > 0;
     if (n != std::min(h->sell, h->avail))
       p.pending = true;
@@ -1007,7 +1009,7 @@ void plan_cells(const RowPlan &p, bool priv, Amt &amt, double &cost) {
 }
 
 void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can) {
-  const live::State &s = *hub.board().st;
+  const live::Snapshot &s = *hub.board().snap;
   const Flows flows = flows_of(s);
   const std::set<std::string> listed(hub.in().codes.begin(), hub.in().codes.end());
   const auto &plan = hub.plan().plan;
@@ -1188,15 +1190,15 @@ void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::boa
   if (priv)
     masked();
   else {
-    ImGui::Text("●%s", s.fills ? std::to_string(s.fills->rows.size()).c_str() : "-");
-    ImGui::Text("○%s", s.pends ? std::to_string(s.pends->list.size()).c_str() : "-");
+    ImGui::Text("●%zu", s.fills.rows.size());
+    ImGui::Text("○%zu", s.pends.list.size());
   }
   ImGui::TableSetColumnIndex(C_FIN);
   if (hub.plan().plan)
     text_col(kHot, std::to_string(fin));
-  if (f.synced && s.acct) {
+  if (f.synced) {
     ImGui::TableSetColumnIndex(C_DAY_PCT);
-    const double ret = f.day_pnl / (s.acct->cash + f.market_value - s.acct->debt - f.day_pnl) * 100;
+    const double ret = f.day_pnl / (s.acct.cash + f.market_value - s.acct.debt - f.day_pnl) * 100;
     right(tint(ret, 0), strf("%+.2f", ret));
   }
   ImGui::TableSetColumnIndex(C_DAY);

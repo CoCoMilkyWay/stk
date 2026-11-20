@@ -1,10 +1,10 @@
 #include "live/Broker.hpp"
 
-#include "live/Trace.hpp"
 #include "misc/cross_platform.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
@@ -28,12 +28,28 @@ std::string strf(const char *fmt, ...) {
   return s;
 }
 
-std::string clock_now() {
+int sec_now() {
   const std::time_t t = std::time(nullptr);
   const std::tm tm = safe_localtime(&t);
-  char buf[16];
-  std::strftime(buf, sizeof buf, "%H:%M:%S", &tm);
-  return buf;
+  return tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec;
+}
+
+std::string fmt_sec(int sec) {
+  if (sec < 0)
+    return "—";
+  return strf("%02d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60);
+}
+
+int parse_sec(std::string_view s) {
+  const auto dig = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; };
+  if (s.size() != 8 || !dig(s[0]) || !dig(s[1]) || s[2] != ':' || !dig(s[3]) || !dig(s[4]) || s[5] != ':' || !dig(s[6]) || !dig(s[7]))
+    return -1;
+  const int h = (s[0] - '0') * 10 + (s[1] - '0');
+  const int m = (s[3] - '0') * 10 + (s[4] - '0');
+  const int c = (s[6] - '0') * 10 + (s[7] - '0');
+  if (h > 23 || m > 59 || c > 59)
+    return -1;
+  return h * 3600 + m * 60 + c;
 }
 
 Mkt market_of(std::string_view code) {
@@ -53,10 +69,15 @@ Mkt mkt_named(std::string_view s) {
   return Mkt::SZ;
 }
 
-bool synced(const Position &h, const Traded *f) { return !(h.balance > 0) || h.traded == (f ? f->qty : BySide{}); }
+bool synced(const Position &h, const Traded *f) { return h.balance <= 0 || h.traded == (f ? f->qty : Sides<int64_t>{}); }
 
 nlohmann::json to_json(const OrderReq &o) {
-  return {{"code", o.sec.code}, {"name", o.sec.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}, {"size", o.size}};
+  return {{"code", o.sec.code},
+          {"name", o.sec.name},
+          {"side", side_name(o.side)},
+          {"credit", credit_name(o.credit)},
+          {"px", o.px},
+          {o.qty.is_shares() ? "qty" : "size", o.qty.v}};
 }
 
 // ---------- Broker ----------
@@ -67,39 +88,38 @@ using namespace std::chrono_literals;
 using Clock = std::chrono::steady_clock;
 
 constexpr auto kTick = 100ms;
-constexpr double kEvery = 60;     // 定时刷新周期缺省 [s]
-constexpr int kKicks[] = {1, 6};  // 下单成功后隔几秒各刷新一次 (限价单可能稍后才成交)
-constexpr int kSyncTries = 2;     // 一轮里成交与持仓对不上 (两问之间又成交) 时最多连查几遍
-constexpr auto kWatchLinger = 1s; // touch 之后算有人在看的时长
+constexpr double kEvery = 60;
+constexpr int kKicks[] = {1, 6};
+constexpr int kSyncTries = 2;
+constexpr auto kWatchLinger = 1s;
 
 } // namespace
 
-// mu: State 的底稿 (轮内逐样改) 与发布的一份 (轮末整份换上)、上轮结局、轮次与起因; 刷新线程此刻在哪另在 track
 struct Broker::Core {
   std::unique_ptr<Driver> d;
   trace::Track track;
 
   mutable std::mutex mu;
   std::condition_variable cv;
-  std::shared_ptr<const State> st = std::make_shared<State>(), shown = st;
+  std::shared_ptr<const Snapshot> shown;
   Refresh prog{.every = kEvery};
-  bool stop = false, hushed = false;
-  uint64_t asked = 0, done = 0;          // 要过 / 刷完的轮号
-  std::optional<Clock::time_point> last; // 上一轮结束时刻
+  bool stop = false;
+  int hushed = 0; // > 0 = 批量事务期间抑制自起刷新
+  uint64_t asked = 0, done = 0;
+  std::optional<Clock::time_point> last;
   std::vector<Clock::time_point> kicks;
   Clock::time_point touched{};
 
-  // 要一轮 → 轮号
   uint64_t want() {
     std::lock_guard lk(mu);
     const uint64_t n = ++asked;
     cv.notify_all();
     return n;
   }
-  // 刚下过单: 隔几秒各刷一次 (Hush 着不排)
+
   void kick() {
     std::lock_guard lk(mu);
-    if (hushed)
+    if (hushed > 0)
       return;
     const Clock::time_point now = Clock::now();
     for (const int k : kKicks)
@@ -107,23 +127,14 @@ struct Broker::Core {
     std::sort(kicks.begin(), kicks.end());
   }
 
-  // 改底稿 (须持 mu)
-  template <class F>
-  void draft(F &&edit) {
-    auto s = std::make_shared<State>(*st);
-    edit(*s);
-    st = std::move(s);
-  }
-
-  // 接上客户端; 换了进程即记下新的 who
-  void connect() {
+  std::string connect() {
     trace::Span span("接入");
     std::string who = d->connect();
     std::lock_guard lk(mu);
-    if (who != st->who)
-      draft([&](State &x) { x.who = std::move(who); });
+    prog.who = who;
+    return who;
   }
-  // 一件事务 (拉 / 写): 段 (who {kw}) + 接上客户端, 当前线程跑 fn
+
   template <class F>
   auto txn(const char *who, trace::Kw kw, F &&fn) {
     trace::Span span(who, std::move(kw));
@@ -133,11 +144,10 @@ struct Broker::Core {
 
   // ---------- 刷新线程 ----------
 
-  // 该刷新一轮了 → 起因; 不该 → 空 (须持 mu)
   const char *due(Clock::time_point now) {
     if (asked > done)
       return "请求";
-    if (hushed || now - touched >= kWatchLinger)
+    if (hushed > 0 || now - touched >= kWatchLinger)
       return nullptr;
     if (!kicks.empty() && now >= kicks.front()) {
       kicks.erase(kicks.begin());
@@ -150,38 +160,33 @@ struct Broker::Core {
     return nullptr;
   }
 
-  // 读一样、记进底稿: fn() → 值
-  template <class T, class F>
-  void put(Got<T> State::*g, F &&fn) {
-    trace::Span span(State::name(g));
-    auto v = std::make_shared<const T>(fn());
-    std::lock_guard lk(mu);
-    draft([&](State &x) {
-      (x.*g).v = std::move(v);
-      (x.*g).at = clock_now();
-    });
-  }
-  std::shared_ptr<const State> snap() const {
-    std::lock_guard lk(mu);
-    return st;
-  }
-
-  // 一轮: 成交、持仓两问之间又有成交即对不上, 连查至多 kSyncTries 遍, 仍不对留给上层标出; 再挂单、信用账户 (带同一轮的持仓)
-  void round() {
+  // 整轮读入局部 Snapshot, 轮末整份原子发布
+  Snapshot round(std::string who) {
+    Snapshot s;
+    s.who = std::move(who);
     for (int i = 0; i < kSyncTries; ++i) {
-      put(&State::fills, [&] { return d->fills(); });
-      put(&State::pos, [&] { return d->pos(); });
-      const std::shared_ptr<const State> s = snap();
-      if (std::all_of(s->pos->list.begin(), s->pos->list.end(), [&](const Position &h) { return synced(h, s->fills->by_code.find(h.code)); }))
+      {
+        trace::Span sp("成交");
+        s.fills = d->fills();
+      }
+      {
+        trace::Span sp("持仓");
+        s.pos = d->pos();
+      }
+      if (std::all_of(s.pos.list.begin(), s.pos.list.end(), [&](const Position &h) { return synced(h, s.fills.by_code.find(h.code)); }))
         break;
       trace::ev("unsynced", {{"try", i + 1}});
     }
-    put(&State::pends, [&] { return d->pends(); });
-    put(&State::acct, [&] {
-      Account a = d->acct();
-      a.held = snap()->pos.v;
-      return a;
-    });
+    {
+      trace::Span sp("挂单");
+      s.pends = d->pends();
+    }
+    {
+      trace::Span sp("信用账户");
+      s.acct = d->acct();
+    }
+    s.at = sec_now();
+    return s;
   }
 
   void tick() {
@@ -196,24 +201,24 @@ struct Broker::Core {
     const trace::Watch watch(track);
     trace::Span span("刷新", {{"why", why}, {"n", n}});
     std::string down, msg;
-    try { // 错误边界: 接不上报在 down, 一轮失败报在 err, 都等下一个起因再刷
-      connect();
-    } catch (const Fail &f) {
-      down = f.why;
-    }
-    if (down.empty()) {
+    std::shared_ptr<const Snapshot> next;
+    try {
+      std::string who = connect();
       try {
-        round();
+        next = std::make_shared<const Snapshot>(round(std::move(who)));
       } catch (const Fail &f) {
         msg = f.why;
       }
+    } catch (const Fail &f) {
+      down = f.why;
     }
     std::lock_guard lk(mu);
-    shown = st;
+    if (next)
+      shown = std::move(next);
     last = Clock::now();
     done = n;
-    prog.down = down;
-    prog.err = down.empty() ? msg : "";
+    prog.down = std::move(down);
+    prog.err = prog.down.empty() ? std::move(msg) : "";
     cv.notify_all();
   }
 
@@ -239,7 +244,7 @@ Broker::~Broker() {
   c_->cv.notify_all();
 }
 
-std::shared_ptr<const State> Broker::state() const {
+std::shared_ptr<const Snapshot> Broker::snapshot() const {
   std::lock_guard lk(c_->mu);
   return c_->shown;
 }
@@ -265,12 +270,9 @@ void Broker::sync() {
   const uint64_t n = c_->want();
   std::unique_lock lk(c_->mu);
   c_->cv.wait(lk, [&] { return c_->done >= n || c_->stop; });
-  if (c_->stop)
-    fail("已断开");
-  if (!c_->prog.down.empty())
-    fail("接不上客户端: " + c_->prog.down);
-  if (!c_->prog.err.empty())
-    fail("刷新失败: " + c_->prog.err);
+  need(!c_->stop, "已断开");
+  need(c_->prog.down.empty(), "接不上客户端: " + c_->prog.down);
+  need(c_->prog.err.empty(), "刷新失败: " + c_->prog.err);
 }
 
 void Broker::every(double s) {
@@ -282,32 +284,38 @@ void Broker::every(double s) {
   c_->cv.notify_all();
 }
 
-Broker::Hush::Hush(Broker &b) : c_(*b.c_) {
-  std::lock_guard lk(c_.mu);
-  assert(!c_.hushed);
-  c_.hushed = true;
-  c_.kicks.clear();
+Terms Broker::terms() {
+  return c_->txn("两融条款", trace::Kw::object(), [&] { return c_->d->terms(); });
 }
 
-Broker::Hush::~Hush() {
-  std::lock_guard lk(c_.mu);
-  c_.hushed = false;
+std::vector<CashFlow> Broker::flows(misc::Ymd from) {
+  return c_->txn("资金流水", {{"from", from}}, [&] { return c_->d->flows(from); });
 }
 
-Terms Broker::terms(const Report &r) {
-  return c_->txn("两融条款", trace::Kw::object(), [&] { return c_->d->terms(r); });
-}
-
-std::vector<CashFlow> Broker::flows(misc::Ymd from, const Report &r) {
-  return c_->txn("资金流水", {{"from", from}}, [&] { return c_->d->flows(from, r); });
-}
-
-Placed Broker::place(const OrderReq &o, const Report &r) {
-  const Placed p = c_->txn("下单", to_json(o), [&] { return c_->d->place(o, r); });
+Placed Broker::place(const OrderReq &o) {
+  const Placed p = c_->txn("下单", to_json(o), [&] { return c_->d->place(o); });
   c_->kick();
   return p;
 }
 
-const std::vector<std::string> &Broker::steps() const { return c_->d->steps(); }
+void Broker::batch(const std::function<void()> &fn) {
+  {
+    std::lock_guard lk(c_->mu);
+    ++c_->hushed;
+    c_->kicks.clear();
+  }
+  struct Guard {
+    Core &c;
+    ~Guard() {
+      std::lock_guard lk(c.mu);
+      --c.hushed;
+    }
+  } g{*c_};
+  fn();
+}
+
+std::span<const std::string_view> Broker::steps() const { return c_->d->steps(); }
+
+std::unique_ptr<Mirror> Broker::mirror() const { return c_->d->mirror(); }
 
 } // namespace live

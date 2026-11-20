@@ -11,6 +11,8 @@
 #include "live/tdx/Heap.hpp"
 #include "live/tdx/Image.hpp"
 #include "live/tdx/Schema.hpp"
+#include "live/tdx/Shim.hpp"
+#include "live/tdx/Win.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -306,9 +308,12 @@ int probe(const std::vector<std::string> &a) {
                                      ? true
                                      : a[0] == "ref" && a.size() >= 2 && a.size() <= 3);
   need(ok, "用法: shim probe tables | text <词…> | obj <址> [字数 = 32] [槽数 = 0] | ref <值> [回看字节 = 0x200] | class <类名> | schema [功能号…]");
-  const mem::HeapP h = mem::attach();
   if (a[0] == "schema") {
-    const Schema s = schema(*h);
+    if (!shim::online())
+      win::attach();
+    const int pid = mem::find_pid();
+    need(pid != 0, "找不到 tdxw.exe 进程");
+    const Schema s = schema(pid);
     std::printf("%s: 字段 %zu · 功能 %zu\n", s.file.c_str(), s.fields.size(), s.funcs.size());
     const auto title = [&](int fn) { return s.titles.contains(fn) ? s.titles.at(fn) : ""; };
     if (a.size() == 1)
@@ -324,6 +329,7 @@ int probe(const std::vector<std::string> &a) {
     }
     return 0;
   }
+  const mem::HeapP h = mem::attach();
   if (a[0] == "class") {
     const Image p(h);
     for (const mem::Addr vt : p.vtables(a[1]))

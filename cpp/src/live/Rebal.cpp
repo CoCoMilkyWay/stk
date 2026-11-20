@@ -8,6 +8,7 @@
 #include <cmath>
 #include <filesystem>
 #include <set>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -17,21 +18,20 @@ namespace {
 
 double ref_of(const Quote &q, const std::string &code) {
   const auto r = ref(q);
-  if (!r)
-    fail(code + " 没有参考价");
+  need(r.has_value(), code + " 没有参考价");
   return *r;
 }
 
-// 一单最少股数: 够 lot 股、按参考价 r 计够 unit 元, 取整步长
-int least(double r, double unit, int lot, int step) { return static_cast<int>(std::ceil(std::max<double>(lot, unit / r) / step)) * step; }
+int64_t least(double r, double unit, int64_t lot_n, int64_t step) {
+  return static_cast<int64_t>(std::ceil(std::max<double>(static_cast<double>(lot_n), unit / r) / static_cast<double>(step))) * step;
+}
 
-// 一单 n 股: 参考价计额、5 档吃出滑点; 不足 min_n 股 → 原因
-std::optional<Order> leg(const Quote &q, int s, int n, int min_n, double px, Credit credit, const Sec &x, std::string &skip) {
+std::optional<Order> leg(const Quote &q, int s, int64_t n, int64_t min_n, double px, Credit credit, const Sec &x, std::string &skip) {
   if (n < min_n) {
-    skip = strf("不足最小单元 (%d 股)", min_n);
+    skip = strf("不足最小单元 (%lld 股)", static_cast<long long>(min_n));
     return std::nullopt;
   }
-  const double amt = n * *ref(q);
+  const double amt = static_cast<double>(n) * *ref(q);
   const auto [slip, full] = cost(q, s, amt);
   Order o;
   static_cast<Sec &>(o) = x;
@@ -57,32 +57,38 @@ const Term *term_of(const Terms &terms, const std::string &code) {
   return it == terms.end() ? nullptr : &it->second;
 }
 
-// 各持仓行 (带可融、负债、卖满、卖出设置与卖单及其预计还款)
 std::vector<Hold> sells_of(const Keyed<Position> &pos, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms, const Cfg &cfg) {
   std::vector<Hold> rows;
+  rows.reserve(pos.list.size());
   for (const Position &h : pos.list) {
     const Quote &q = quote_at(quotes, h.code);
     const Term *t = term_of(terms, h.code);
     const double px = ref_of(q, h.code);
     const auto sv = cfg.sells.find(h.code);
-    const int v = sv == cfg.sells.end() ? 0 : sv->second;
+    const int64_t v = sv == cfg.sells.end() ? 0 : sv->second;
     const auto [lt, step] = lot(h.code);
     const Debt *d = debts.find(h.code);
-    Hold row{.code = h.code, .name = h.name, .financeable = t && t->financeable, .value = h.balance * q.price, .sellable = 0, .avail = static_cast<int>(h.available), .px = px, .lot = lt, .step = step, .sell = v};
-    row.bal = static_cast<int>(std::lround(h.balance));
-    row.own = static_cast<int>(std::lround(h.balance - std::min(d ? d->qty : 0, h.balance)));
-    row.debt = d ? d->amount : 0;
+    Hold row{.code = h.code,
+             .name = h.name,
+             .financeable = t && t->financeable,
+             .value = static_cast<double>(h.balance) * q.price,
+             .sellable = static_cast<double>(h.available) * px,
+             .bal = h.balance,
+             .avail = h.available,
+             .own = h.balance - std::min<int64_t>(d ? d->qty : 0, h.balance),
+             .debt = d ? d->amount : 0,
+             .px = px,
+             .lot = lt,
+             .step = step,
+             .sell = v};
     if (row.own > 0)
       row.full = row.avail, row.base = row.bal;
-    row.sellable = row.avail * px;
     if (v > 0) {
-      const int n = std::min(v, row.avail);
-      if (!(n == row.avail || n % step == 0 || n % step == row.avail % step))
-        fail(strf("%s 卖 %d 股不是 %d 股的整数倍 (零股须一次卖完)", h.code.c_str(), n, step));
-      // 全部可卖可含零股 (起卖 1 股); 融资加仓卖满不管最小单元
+      const int64_t n = std::min(v, row.avail);
+      assert(n == row.avail || n % step == 0 || n % step == row.avail % step);
       const double unit = cfg.lever && n == row.avail ? 0 : cfg.unit;
-      const int min_n = n == row.avail ? least(px, unit, 1, 1) : least(px, unit, lt, step);
-      row.order = leg(q, kSell, n, min_n, order_px(q, kSell, cfg.px, n * px).value_or(px), Credit::Plain, h, row.skip);
+      const int64_t min_n = n == row.avail ? least(px, unit, 1, 1) : least(px, unit, lt, step);
+      row.order = leg(q, kSell, n, min_n, order_px(q, kSell, cfg.px, static_cast<double>(n) * px).value_or(px), Credit::Plain, h, row.skip);
       if (row.order)
         row.repay = std::min(row.order->amount - row.order->slip - row.order->fee, row.debt);
     }
@@ -91,30 +97,27 @@ std::vector<Hold> sells_of(const Keyed<Position> &pos, const Keyed<Debt> &debts,
   return rows;
 }
 
-// 卖出还款后的负债: 各只负债额 − 还款, 负债股数按额同比减 (见文件头「卖出还款」)
 Keyed<Debt> repaid(const Keyed<Debt> &debts, const std::vector<Hold> &holds) {
   Keyed<Debt> out = debts;
   for (const Hold &h : holds)
     if (h.repay > 0) {
       Debt &d = out.list[out.at.at(h.code)];
-      d.qty *= (d.amount - h.repay) / d.amount;
+      d.qty = static_cast<int64_t>(std::llround(static_cast<double>(d.qty) * (d.amount - h.repay) / d.amount));
       d.amount -= h.repay;
     }
   return out;
 }
 
-// 买 n 股的委托价: 按 n × 参考价的额定 (与下单同算); 空盘取参考价
-double buy_px(const Quote &q, PxMode mode, int n) {
+double buy_px(const Quote &q, PxMode mode, int64_t n) {
   const double r = *ref(q);
-  return order_px(q, kBuy, mode, n * r).value_or(r);
+  return order_px(q, kBuy, mode, static_cast<double>(n) * r).value_or(r);
 }
 
-// a 元能买的最多股数 (整步长): n × buy_px(n) ≤ a, 左边随 n 增, 二分 n / step
-int qty_of(const Quote &q, PxMode mode, double a, int step) {
-  int lo = 0, hi = static_cast<int>(a / (step * buy_px(q, mode, step))) + 1;
+int64_t qty_of(const Quote &q, PxMode mode, double a, int64_t step) {
+  int64_t lo = 0, hi = static_cast<int64_t>(a / (static_cast<double>(step) * buy_px(q, mode, step))) + 1;
   while (lo < hi) {
-    const int k = (lo + hi + 1) / 2;
-    if (k * step * buy_px(q, mode, k * step) <= a)
+    const int64_t k = (lo + hi + 1) / 2;
+    if (static_cast<double>(k * step) * buy_px(q, mode, k * step) <= a)
       lo = k;
     else
       hi = k - 1;
@@ -124,73 +127,53 @@ int qty_of(const Quote &q, PxMode mode, double a, int step) {
 
 struct Tgt {
   std::string code;
-  double held = 0;             // 卖后市值
-  std::optional<double> ratio; // 融资保证金比例; 非融资标的为空
-  int least = 0;               // 一单最少股数
-  double min = 0;              // 最小单元 [元]
+  double held = 0;
+  std::optional<double> ratio;
+  int64_t least = 0;
+  double min = 0;
 };
-using Legs = std::unordered_map<std::string, std::pair<double, double>>; // 代码 → (融资额, 现金额)
-// 本次可用额度: 现金 / 可用保证金 / 可融余量; lever = 融资加仓 (现金额度 0, 买入费用不占)
+
 struct Budget {
   double C = 0, X = 0, L = 0;
   bool lever = false;
 };
 
-std::unordered_map<std::string, Tgt> targets_of(const std::vector<std::string> &ok, const Terms &terms, const Quotes &quotes, const Bal &bal, const Cfg &cfg) {
-  std::unordered_map<std::string, Tgt> tgt;
-  for (const std::string &c : ok) {
-    const Term &t = terms.at(c);
-    const Quote &q = quote_at(quotes, c);
-    const double r = ref_of(q, c + " " + t.name);
-    const auto [lt, step] = lot(c);
-    const int n = least(r, cfg.unit, lt, step);
-    const auto b = bal.find(c);
-    tgt[c] = {c, (b == bal.end() ? 0 : b->second) * q.price, t.financeable ? t.ratio : std::nullopt, n, n * buy_px(q, cfg.px, n)};
+// 目标市值 V 下按序分配两腿 (零哈希、零分配: 复用 out); 返回总现金需求
+double fill(double V, std::span<const size_t> s, const std::vector<Tgt> &tgts, const Budget &b, std::vector<std::pair<double, double>> *out = nullptr) {
+  double xb = std::max(0.0, b.X), lb = b.L, need_amt = 0, cash = 0;
+  for (const size_t idx : s) {
+    const Tgt &x = tgts[idx];
+    const double m = x.min, g = V - x.held;
+    double f = 0, p = 0;
+    if (g >= m) {
+      f = x.ratio ? std::min({g, lb, xb / *x.ratio}) : 0;
+      p = g - f;
+      if (0 < p && p < m) {
+        f = g - m;
+        p = m;
+      }
+      if (f < m) {
+        f = 0;
+        p = g;
+      }
+      if (f) {
+        xb -= *x.ratio * f;
+        lb -= f;
+      }
+      need_amt += f + p;
+      cash += p;
+    }
+    if (out)
+      (*out)[idx] = {f, p};
   }
-  return tgt;
+  return cash + (b.lever ? 0 : fee(need_amt, kBuy));
 }
 
-// 目标市值 V 下各只两腿与现金需求; s 已按保证金比例从低到高排
-//   融资加仓: 现金额度 0 且不计费用 ⇒ 可行 ⇔ 各只现金腿全为 0, 即每只缺口都全融到 (融不满的那只拖低共同的 V, 而不是改用现金)
-std::pair<Legs, double> fill(double V, const std::vector<const Tgt *> &s, const Budget &b) {
-  Legs legs;
-  double xb = std::max(0.0, b.X), lb = b.L;
-  for (const Tgt *x : s) {
-    const double m = x->min, g = V - x->held;
-    if (g < m) {
-      legs[x->code] = {0, 0};
-      continue;
-    }
-    double f = x->ratio ? std::min({g, lb, xb / *x->ratio}) : 0;
-    double p = g - f;
-    if (0 < p && p < m) {
-      f = g - m;
-      p = m;
-    }
-    if (f < m) {
-      f = 0;
-      p = g;
-    }
-    legs[x->code] = {f, p};
-    if (f) {
-      xb -= *x->ratio * f;
-      lb -= f;
-    }
-  }
-  double need = 0, cash = 0;
-  for (const auto &[c, fp] : legs) {
-    need += fp.first + fp.second;
-    cash += fp.second;
-  }
-  return {std::move(legs), cash + (b.lever ? 0 : fee(need, kBuy))};
-}
-
-// s 等权补齐可行的目标市值 V: 在 [0, hi] 里二分到 kTol
-double level(const std::vector<const Tgt *> &s, const Budget &b, double hi) {
+double level(std::span<const size_t> s, const std::vector<Tgt> &tgts, const Budget &b, double hi) {
   double lo = 0;
   while (hi - lo > kTol) {
     const double mid = (lo + hi) / 2;
-    if (fill(mid, s, b).second <= b.C)
+    if (fill(mid, s, tgts, b) <= b.C)
       lo = mid;
     else
       hi = mid;
@@ -198,90 +181,39 @@ double level(const std::vector<const Tgt *> &s, const Budget &b, double hi) {
   return lo;
 }
 
-// 按 tries 的先后逐只试并入 → (入选的, 按保证金比例排; V)
-std::pair<std::vector<const Tgt *>, double> pick(const std::vector<std::string> &tries, const std::vector<std::string> &ok,
-                                                 const std::unordered_map<std::string, Tgt> &tgt, const Budget &b) {
-  std::vector<const Tgt *> by_ratio;
-  for (const std::string &c : ok)
-    by_ratio.push_back(&tgt.at(c));
-  std::stable_sort(by_ratio.begin(), by_ratio.end(), [](const Tgt *a, const Tgt *b) { return a->ratio.value_or(0) < b->ratio.value_or(0); });
-  std::unordered_set<std::string> picked;
-  double V = b.C + b.L;
-  double top = 0;
-  for (const auto &[c, x] : tgt)
+// 连续下标版入选: 先融资标的、后其余逐只试并入 → (入选下标按保证金比例升序, V)
+std::pair<std::vector<size_t>, double> pick(const std::vector<Tgt> &tgts, const Budget &b) {
+  const size_t n = tgts.size();
+  std::vector<size_t> by_ratio(n), tries(n);
+  for (size_t i = 0; i < n; ++i)
+    by_ratio[i] = tries[i] = i;
+  std::stable_sort(by_ratio.begin(), by_ratio.end(), [&](size_t a, size_t c) { return tgts[a].ratio.value_or(0) < tgts[c].ratio.value_or(0); });
+  std::stable_sort(tries.begin(), tries.end(), [&](size_t a, size_t c) { return tgts[a].ratio.has_value() && !tgts[c].ratio.has_value(); });
+
+  std::vector<uint8_t> in(n, 0);
+  double V = b.C + b.L, top = 0;
+  for (const Tgt &x : tgts)
     top = std::max(top, x.held);
   V += top;
-  for (const std::string &c : tries) {
-    std::vector<const Tgt *> s;
-    for (const Tgt *x : by_ratio)
-      if (picked.contains(x->code) || x->code == c)
-        s.push_back(x);
-    const double v = level(s, b, V);
-    if (std::all_of(s.begin(), s.end(), [&](const Tgt *x) { return x->held || v >= x->min; })) {
-      picked.insert(c);
+
+  std::vector<size_t> cur;
+  cur.reserve(n);
+  for (const size_t idx : tries) {
+    cur.clear();
+    for (const size_t j : by_ratio)
+      if (in[j] || j == idx)
+        cur.push_back(j);
+    const double v = level(cur, tgts, b, V);
+    if (std::all_of(cur.begin(), cur.end(), [&](size_t j) { return tgts[j].held > 0 || v >= tgts[j].min; })) {
+      in[idx] = 1;
       V = v;
     }
   }
-  std::vector<const Tgt *> out;
-  for (const Tgt *x : by_ratio)
-    if (picked.contains(x->code))
-      out.push_back(x);
-  return {out, picked.empty() ? 0 : V};
-}
-
-// 名单各行 (带融资 / 现金两腿) → (行, 买单), 买单融资在前; 各腿按 qty_of 折股
-std::pair<std::vector<Target>, std::vector<Order>> buys_of(const std::vector<std::string> &codes, const Terms &terms, const Quotes &quotes,
-                                                           const std::unordered_map<std::string, Tgt> &tgt, const std::vector<const Tgt *> &picked,
-                                                           double V, const Legs &legs, const Cfg &cfg) {
-  std::vector<Target> rows;
-  std::vector<Order> buys;
-  int rank = 0;
-  for (const std::string &c : codes) {
-    const Term *t = term_of(terms, c);
-    Target row{.rank = ++rank, .code = c, .name = t ? t->name : "", .why = why(t), .financeable = t && t->financeable};
-    if (t) {
-      row.ratio = t->ratio;
-      row.rate = t->rate;
-    }
-    if (!row.why.empty()) {
-      rows.push_back(std::move(row));
-      continue;
-    }
-    if (!tgt.contains(c)) {
-      row.skip = "融资加仓只买融资标的";
-      rows.push_back(std::move(row));
-      continue;
-    }
-    const Tgt &x = tgt.at(c);
-    row.held = x.held;
-    if (std::none_of(picked.begin(), picked.end(), [&](const Tgt *p) { return p->code == c; })) {
-      row.skip = "购买力不够开仓";
-      rows.push_back(std::move(row));
-      continue;
-    }
-    const auto [f, p] = legs.at(c);
-    row.need = f + p;
-    if (!*row.need && V > x.held) {
-      row.skip = "缺口不足最小单元";
-      rows.push_back(std::move(row));
-      continue;
-    }
-    const Quote &q = quote_at(quotes, c);
-    const int step = lot(c).second;
-    for (const auto [cr, part] : {std::pair{Credit::Margin, f}, std::pair{Credit::Plain, p}}) {
-      if (!part)
-        continue;
-      const int n = qty_of(q, cfg.px, part, step);
-      Leg l{.credit = cr, .want = part};
-      l.order = leg(q, kBuy, n, x.least, buy_px(q, cfg.px, n), cr, Sec{c, t->name, t->mkt}, l.skip);
-      if (l.order)
-        buys.push_back(*l.order);
-      row.legs.push_back(std::move(l));
-    }
-    rows.push_back(std::move(row));
-  }
-  std::stable_sort(buys.begin(), buys.end(), [](const Order &a, const Order &b) { return a.credit == Credit::Margin && b.credit != Credit::Margin; });
-  return {std::move(rows), std::move(buys)};
+  cur.clear();
+  for (const size_t j : by_ratio)
+    if (in[j])
+      cur.push_back(j);
+  return {std::move(cur), cur.empty() ? 0 : V};
 }
 
 Sheet sheet(double assets, double net, double debt, double cash, std::optional<double> X, double L) {
@@ -318,20 +250,20 @@ nlohmann::json to_json(const Sheet &s) {
 
 double fee(double amt, int s) { return amt * (kCommission + kTransfer + (s == kSell ? kStamp : 0)); }
 
-int snap(const Hold &h, double unit, double x, bool down, bool lever) {
-  const int first = least(h.px, unit, h.lot, h.step), r = h.avail % h.step;
-  int best = 0;
-  const auto take = [&](int c) {
-    if (down ? c <= x && c > best : std::abs(c - x) <= std::abs(best - x))
+int64_t snap(const Hold &h, double unit, double x, bool down, bool lever) {
+  const int64_t first = least(h.px, unit, h.lot, h.step), r = h.avail % h.step;
+  int64_t best = 0;
+  const auto take = [&](int64_t c) {
+    if (down ? static_cast<double>(c) <= x && c > best : std::abs(static_cast<double>(c) - x) <= std::abs(static_cast<double>(best) - x))
       best = c;
   };
-  if (lever || h.avail * h.px >= unit)
+  if (lever || static_cast<double>(h.avail) * h.px >= unit)
     take(h.avail);
-  for (const int o : {0, r}) { // 整步长 / 连同零股 (k 的范围: k · step + o ∈ [first, avail])
-    const int lo = (first - o + h.step - 1) / h.step, hi = (h.avail - o) / h.step;
-    const double k = (x - o) / h.step;
+  for (const int64_t o : {int64_t{0}, r}) {
+    const int64_t lo = (first - o + h.step - 1) / h.step, hi = (h.avail - o) / h.step;
+    const double k = (x - static_cast<double>(o)) / static_cast<double>(h.step);
     if (lo <= hi)
-      take(std::clamp(static_cast<int>(down ? std::floor(k) : std::lround(k)), lo, hi) * h.step + o);
+      take(std::clamp<int64_t>(static_cast<int64_t>(down ? std::floor(k) : std::llround(k)), lo, hi) * h.step + o);
   }
   return best;
 }
@@ -346,26 +278,23 @@ double surplus(const Bal &bal, const Keyed<Debt> &debts, const Prices &px, const
   for (const std::string &code : codes) {
     const auto b = bal.find(code);
     const Debt *d = debts.find(code);
-    const double n = b == bal.end() ? 0 : b->second;
-    const double dq = d ? d->qty : 0, amt = d ? d->amount : 0;
+    const double n = static_cast<double>(b == bal.end() ? 0 : b->second);
+    const double dq = static_cast<double>(d ? d->qty : 0), amt = d ? d->amount : 0;
     const Term *t = term_of(terms, code);
-    if (!t)
-      fail("两融条款里没有 " + code);
+    need(t != nullptr, "两融条款里没有 " + code);
     const double p = px.at(code), fin = std::min(dq, n);
     const double x = fin * p - amt;
     s += t->rate * (n - fin) * p + (x > 0 ? t->rate * x : x);
     if (amt) {
-      if (!t->ratio)
-        fail(code + " 有融资负债却不在标的表");
+      need(t->ratio.has_value(), code + " 有融资负债却不在标的表");
       s -= amt * *t->ratio;
     }
   }
   return s;
 }
 
-// 校准: 读时客户端 X 已含读时的现金与利息, 只把持仓部分 S 从 (读时持仓, 读时负债, 读时现价) 换到 (bal, debts, 现价)
-double avail(const Account &a, const Prices &px0, const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms) {
-  return a.avail + surplus(bal, debts, prices(bal, debts, quotes), terms) - surplus(balances(*a.held), a.debts, px0, terms);
+double avail(const Snapshot &s, const Prices &px0, const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms) {
+  return s.acct.avail + surplus(bal, debts, prices(bal, debts, quotes), terms) - surplus(balances(s.pos), s.acct.debts, px0, terms);
 }
 
 std::string why(const Term *t) {
@@ -386,8 +315,11 @@ std::vector<Sec> buyable(const std::vector<std::string> &codes, const Terms &ter
   return out;
 }
 
-std::optional<Plan> plan(const Keyed<Position> &pos, const Account &acct, const Prices &px0, const Quotes &quotes, const Terms &terms,
+std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Terms &terms,
                          const std::vector<std::string> &codes, const Cfg &cfg) {
+  const Keyed<Position> &pos = s.pos;
+  const Account &acct = s.acct;
+
   std::vector<std::string> ok;
   for (const std::string &c : codes)
     if (const Term *t = term_of(terms, c); why(t).empty() && (!cfg.lever || t->financeable)) {
@@ -414,41 +346,109 @@ std::optional<Plan> plan(const Keyed<Position> &pos, const Account &acct, const 
   Bal bal = balances(pos);
   for (const Order &o : sells)
     bal[o.code] -= o.qty;
-  // 卖后: 回款先还本只负债 (R), 余下进现金; 还掉的负债腾出等额可融余量
+
   const double C = acct.cash + proceeds - R;
-  const double X = avail(acct, px0, bal, repaid(acct.debts, pl.holds), quotes, terms) + proceeds - R;
+  const double X = avail(s, px0, bal, repaid(acct.debts, pl.holds), quotes, terms) + proceeds - R;
   const double L0 = std::max(0.0, acct.line), L = L0 + R;
 
-  const auto tgt = targets_of(ok, terms, quotes, bal, cfg);
-  std::vector<std::string> tries = ok;
-  std::stable_sort(tries.begin(), tries.end(), [&](const std::string &a, const std::string &b) { return tgt.at(a).ratio && !tgt.at(b).ratio; });
-  const Budget bud{cfg.lever ? 0 : C * pct, X * pct, L * pct, cfg.lever};
-  const auto [picked, V] = pick(tries, ok, tgt, bud);
-  const Legs legs = fill(V, picked, bud).first;
-  auto [targets, buys] = buys_of(codes, terms, quotes, tgt, picked, V, legs, cfg);
+  std::vector<Tgt> tgts;
+  tgts.reserve(ok.size());
+  std::unordered_map<std::string, size_t> tgt_at;
+  tgt_at.reserve(ok.size());
+  for (const std::string &c : ok) {
+    const Term &t = terms.at(c);
+    const Quote &q = quote_at(quotes, c);
+    const double r = ref_of(q, c + " " + t.name);
+    const auto [lt, step] = lot(c);
+    const int64_t n = least(r, cfg.unit, lt, step);
+    const auto b = bal.find(c);
+    tgt_at.emplace(c, tgts.size());
+    tgts.push_back({c, static_cast<double>(b == bal.end() ? 0 : b->second) * q.price, t.financeable ? t.ratio : std::nullopt, n, static_cast<double>(n) * buy_px(q, cfg.px, n)});
+  }
 
-  double F = 0, use = 0, cost = 0, buy_cost = 0;
+  const Budget bud{cfg.lever ? 0 : C * pct, X * pct, L * pct, cfg.lever};
+  const auto [picked, V] = pick(tgts, bud);
+  std::vector<std::pair<double, double>> legs(tgts.size(), {0, 0});
+  std::vector<uint8_t> is_picked(tgts.size(), 0);
+  for (const size_t j : picked)
+    is_picked[j] = 1;
+  fill(V, picked, tgts, bud, &legs);
+
+  std::vector<Target> targets;
+  targets.reserve(codes.size());
+  std::vector<Order> buys;
+  int rank = 0;
+  for (const std::string &c : codes) {
+    const Term *t = term_of(terms, c);
+    Target row{.rank = ++rank, .code = c, .name = t ? t->name : "", .why = why(t), .financeable = t && t->financeable};
+    if (t) {
+      row.ratio = t->ratio;
+      row.rate = t->rate;
+    }
+    if (!row.why.empty()) {
+      targets.push_back(std::move(row));
+      continue;
+    }
+    const auto ti = tgt_at.find(c);
+    if (ti == tgt_at.end()) {
+      row.skip = "融资加仓只买融资标的";
+      targets.push_back(std::move(row));
+      continue;
+    }
+    const size_t idx = ti->second;
+    const Tgt &x = tgts[idx];
+    row.held = x.held;
+    if (!is_picked[idx]) {
+      row.skip = "购买力不够开仓";
+      targets.push_back(std::move(row));
+      continue;
+    }
+    const auto [f, p] = legs[idx];
+    row.need = f + p;
+    if (!*row.need && V > x.held) {
+      row.skip = "缺口不足最小单元";
+      targets.push_back(std::move(row));
+      continue;
+    }
+    const Quote &q = quote_at(quotes, c);
+    const int64_t step = lot(c).second;
+    for (const auto [cr, part] : {std::pair{Credit::Margin, f}, std::pair{Credit::Plain, p}}) {
+      if (!part)
+        continue;
+      const int64_t n = qty_of(q, cfg.px, part, step);
+      Leg l{.credit = cr, .want = part};
+      l.order = leg(q, kBuy, n, x.least, buy_px(q, cfg.px, n), cr, Sec{c, t->name, t->mkt}, l.skip);
+      if (l.order)
+        buys.push_back(*l.order);
+      row.legs.push_back(std::move(l));
+    }
+    targets.push_back(std::move(row));
+  }
+  std::stable_sort(buys.begin(), buys.end(), [](const Order &a, const Order &b) { return a.credit == Credit::Margin && b.credit != Credit::Margin; });
+
+  double F = 0, use = 0, cost_all = 0, buy_cost = 0;
   for (const Order &o : sells)
-    cost += o.slip + o.fee;
+    cost_all += o.slip + o.fee;
   for (const Order &o : buys) {
     if (o.credit == Credit::Margin)
       F += o.amount;
     use += o.amount;
     buy_cost += o.slip + o.fee;
   }
-  cost += buy_cost;
+  cost_all += buy_cost;
+
   double assets = acct.cash;
   for (const Position &h : pos.list)
-    assets += h.balance * quote_at(quotes, h.code).price;
+    assets += static_cast<double>(h.balance) * quote_at(quotes, h.code).price;
   const double net = assets - acct.debt;
-  const double X_now = avail(acct, px0, balances(pos), acct.debts, quotes, terms);
+  const double X_now = avail(s, px0, balances(pos), acct.debts, quotes, terms);
 
   pl.now = sheet(assets, net, acct.debt, acct.cash, X_now, L0);
-  pl.exp = sheet(assets + F - cost - R, net - cost, acct.debt - R + F, C - (use - F) - buy_cost, std::nullopt, L - F);
+  pl.exp = sheet(assets + F - cost_all - R, net - cost_all, acct.debt - R + F, C - (use - F) - buy_cost, std::nullopt, L - F);
   pl.power = (cfg.lever ? 0 : C) + std::min(L, std::max(0.0, X));
   pl.use = use;
   pl.financed = F;
-  pl.cost = cost;
+  pl.cost = cost_all;
   pl.C = C;
   pl.X = X;
   pl.repaid = R;
@@ -459,7 +459,7 @@ std::optional<Plan> plan(const Keyed<Position> &pos, const Account &acct, const 
   pl.orders = std::move(sells);
   pl.orders.insert(pl.orders.end(), buys.begin(), buys.end());
   for (const auto &[c, q] : quotes)
-    pl.time = std::max(pl.time, quote_time(q));
+    pl.sec = std::max(pl.sec, q.sec);
   return pl;
 }
 
@@ -469,7 +469,7 @@ nlohmann::json to_json(const Plan &p) {
   nlohmann::json orders = nlohmann::json::array();
   for (const Order &o : p.orders)
     orders.push_back(to_json(o));
-  return {{"now", to_json(p.now)}, {"exp", to_json(p.exp)}, {"power", p.power}, {"use", p.use}, {"financed", p.financed}, {"cost", p.cost}, {"after_sell", {{"C", p.C}, {"X", p.X}, {"repaid", p.repaid}}}, {"V", p.V}, {"picked", p.picked}, {"buyable", p.buyable}, {"orders", orders}, {"time", p.time}};
+  return {{"now", to_json(p.now)}, {"exp", to_json(p.exp)}, {"power", p.power}, {"use", p.use}, {"financed", p.financed}, {"cost", p.cost}, {"after_sell", {{"C", p.C}, {"X", p.X}, {"repaid", p.repaid}}}, {"V", p.V}, {"picked", p.picked}, {"buyable", p.buyable}, {"orders", orders}, {"time", fmt_sec(p.sec)}};
 }
 
 nlohmann::json to_json(const Cfg &c) {
@@ -516,8 +516,7 @@ std::vector<std::string> read_list(const std::string &name) {
   std::vector<std::string> out;
   std::unordered_set<std::string> seen;
   for (const std::string &r : rows) {
-    if (r.size() != 6 || !std::all_of(r.begin(), r.end(), [](unsigned char c) { return std::isdigit(c); }))
-      fail(strf("名单 %s 里有非 6 位代码: %s", name.c_str(), r.c_str()));
+    need(r.size() == 6 && std::all_of(r.begin(), r.end(), [](unsigned char c) { return std::isdigit(c) != 0; }), strf("名单 %s 里有非 6 位代码: %s", name.c_str(), r.c_str()));
     if (seen.insert(r).second)
       out.push_back(r);
   }

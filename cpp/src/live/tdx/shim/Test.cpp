@@ -1,22 +1,10 @@
-// shim test — 在线用例: 对着活客户端跑适配代码 (Ui / Req / Tables / Credit / Flow 本身) 与客户端行为的假设 (TDX.md 实测的那些).
-//   每例自成一段: 先展开交易栏, 末了回持仓页; 只做查询类动作. 一例一行 PASS / FAIL (原因), 用时与摘要; 有 FAIL 退出码 1.
-//   失败的细节在交互日志 (output/run/live/trace/<启动时刻>.jsonl) 的「用例 <名>」段里.
-//   用例:
-//     query   各页查一次 (页签 成交 / 持仓 / 撤单、功能树 信用资产 / 融资负债汇总 / 资金流水): 认页、等到查完、条数可读
-//     busy    查着时切页签被吞: 切持仓、等其查询键禁用 (查起) 即投切撤单的命令, 撤单页 0.3s 内不显示
-//     read    直发读表: 成交 / 持仓 / 挂单 / 信用资产 / 融资负债各经引导页查一次 (插件发出, 页上 N 条), 再直发同一功能,
-//             行数须恰为 N、索引键不重; 末了合成信用账户
-//     flow    资金流水近 14 天 (引导后按窗直发, 同 Driver::flows)
-//     terms   两融条款 (引导后标的证券 / 担保品各翻页到底, 同 Driver::terms)
-//     fields  Tables.hpp 各表各布局: 列数 > 功能定义的出参数, 声明的各列号上的出参字段名恰为声明的 (协议字典, 不动界面)
+// shim test — 在线用例: 对着活客户端跑适配代码与客户端行为假设, 零 sudo / 零 ptrace
 #include "live/tdx/Schema.hpp"
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
 #include "live/Trace.hpp"
 #include "live/tdx/Cols.hpp"
-#include "live/tdx/Credit.hpp"
-#include "live/tdx/Flow.hpp"
 #include "live/tdx/Heap.hpp"
 #include "live/tdx/Tables.hpp"
 #include "live/tdx/Ui.hpp"
@@ -33,7 +21,6 @@ namespace live::tdx::tool {
 
 namespace {
 
-// 交易栏宿主与页签命令 (TDX.md「交易栏」): busy 要绕开 ui::open 的等待, 直接投
 constexpr long kHostId = 59649, kHold = 0x271D, kCancel = 0x2716;
 
 std::string query() {
@@ -58,7 +45,6 @@ std::string busy() {
   return "持仓查着时切撤单无效";
 }
 
-// 经表 S 的引导页查一次 (插件发出, 页上 n 条), 再直发读同一功能: 行数须恰为 n; 建索引 (键不重)
 template <class S>
 auto read_one() {
   trace::Span span(S::kName);
@@ -74,36 +60,33 @@ std::string read() {
   const Keyed<Pending> o = read_one<tables::Pendings>();
   const std::map<std::string, std::string> c = read_one<tables::Assets>();
   const Keyed<Debt> d = read_one<tables::Debts>();
-  const Account a = credit::acct();
+  const Account a = tables::read_acct();
   return strf("成交 %zu · 持仓 %zu · 挂单 %zu · 信用资产 %zu 项 · 融资负债 %zu · 净资产 %.2f", f.rows.size(), pos.list.size(), o.list.size(), c.size(), d.list.size(), a.net);
 }
 
 std::string flows() {
   std::apply([](auto... t) { ((std::ignore = ui::open(decltype(t)::kOpen)), ...); }, tables::kFlows);
   const misc::Ymd from = misc::add_days(misc::today_ymd(), -14);
-  const std::vector<CashFlow> f = flow::flows(from, {});
+  const std::vector<CashFlow> f = tables::read_flows(from);
   return strf("%d 起 %zu 条", from, f.size());
 }
 
 std::string terms() {
   std::apply([](auto... t) { ((std::ignore = ui::open(decltype(t)::kOpen)), ...); }, tables::kTerms);
-  const Terms t = credit::terms({});
+  const Terms t = tables::read_terms();
   return strf("%zu 只", t.size());
 }
 
-// 表 T 各布局对功能定义: 不符的各条记进 bad, 核过的列数记进 n
 template <class T>
 void fields_of(const Schema &s, int &n, std::string &bad) {
-  for (size_t v = 0; v < T::kViews.size(); ++v) {
-    const cols::View w = T::kViews[v];
-    const auto f = s.funcs.find(w.func);
+  for (size_t v = 0; v < T::kFuncs.size(); ++v) {
+    const int fn = T::kFuncs[v];
+    const auto f = s.funcs.find(fn);
     if (f == s.funcs.end()) {
-      bad += strf("%s: 没有功能 %d; ", T::kName, w.func);
+      bad += strf("%s: 没有功能 %d; ", T::kName, fn);
       continue;
     }
     const std::vector<int> &out = f->second.out;
-    if (static_cast<int>(out.size()) >= w.cols)
-      bad += strf("%s: 功能 %d 出参 %zu 个, 布局只 %d 列; ", T::kName, w.func, out.size(), w.cols);
     std::apply(
         [&](const auto &...c) {
           (
@@ -113,7 +96,7 @@ void fields_of(const Schema &s, int &n, std::string &bad) {
                   return;
                 const std::string got = at < static_cast<int>(out.size()) ? s.name(out[static_cast<size_t>(at)]) : "(越界)";
                 if (got != c.field)
-                  bad += strf("%s 功能 %d 列 %d: 字典为「%s」, 声明「%s」; ", T::kName, w.func, at, got.c_str(), c.field);
+                  bad += strf("%s 功能 %d 列 %d: 字典为「%s」, 声明「%s」; ", T::kName, fn, at, got.c_str(), c.field);
                 ++n;
               }(),
               ...);
@@ -123,7 +106,9 @@ void fields_of(const Schema &s, int &n, std::string &bad) {
 }
 
 std::string fields() {
-  const Schema s = schema(*mem::attach());
+  const int pid = mem::find_pid();
+  need(pid != 0, "找不到 tdxw.exe 进程");
+  const Schema s = schema(pid);
   int n = 0;
   std::string bad;
   std::apply([&](auto... t) { (fields_of<decltype(t)>(s, n, bad), ...); }, tables::kAll);
@@ -138,7 +123,6 @@ struct Case {
 };
 constexpr Case kCases[] = {{"query", query}, {"busy", busy}, {"read", read}, {"flow", flows}, {"terms", terms}, {"fields", fields}};
 
-// 一例: 段「用例 <名>」内展开交易栏、跑、回持仓页
 bool run(const Case &c) {
   const Clock::time_point t0 = Clock::now();
   try {

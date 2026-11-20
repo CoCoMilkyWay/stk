@@ -1,9 +1,7 @@
 #include "live/tdx/Tdx.hpp"
 
 #include "live/Trace.hpp"
-#include "live/tdx/Credit.hpp"
 #include "live/tdx/Flash.hpp"
-#include "live/tdx/Flow.hpp"
 #include "live/tdx/Heap.hpp"
 #include "live/tdx/Req.hpp"
 #include "live/tdx/Shim.hpp"
@@ -20,18 +18,49 @@ namespace live::tdx {
 
 namespace {
 
+class TdxMirror final : public Mirror {
+public:
+  void ensure() override {
+    if (!shim::online())
+      win::attach();
+  }
+  std::vector<WinNode> tree() override { return win::tree(); }
+  std::vector<DrawLayer> gdi_dump() override { return win::gdidump(); }
+  DrawLayer detail(const std::string &hwnd) override { return win::detail(hwnd); }
+  int64_t tree_gen() override { return win::treegen(); }
+  void watch_gdi(const std::function<bool(DrawLayer)> &cb) override {
+    shim::Stream st("gdiwatch");
+    nlohmann::json j;
+    while (true) {
+      if (!st.next(j, 0.25)) {
+        if (!cb(DrawLayer{})) // 心跳让调用方检查停标志
+          return;
+        continue;
+      }
+      if (!cb(win::layer_of(j)))
+        return;
+    }
+  }
+  void mouse(const char *kind, int x, int y, unsigned mk, int delta) override { win::mouse(kind, x, y, mk, delta); }
+  void key(unsigned vk) override { win::key(vk); }
+  void ch(unsigned cp) override { win::ch(cp); }
+};
+
 class Tdx final : public Driver {
 public:
   std::string connect() override {
-    int pid;
+    int pid = 0;
     {
       std::lock_guard wk(work_);
-      if (!heap_ || heap_->pid() != mem::find_pid())
-        heap_ = mem::attach();
+      pid = mem::find_pid();
+      need(pid != 0, "找不到 tdxw.exe 进程");
+      if (pid != pid_) {
+        shim::reset();
+        pid_ = pid;
+      }
       if (!shim::online())
         win::attach();
-      req::arm(heap_);
-      pid = heap_->pid();
+      req::arm(pid_);
     }
     prime(tables::kReads);
     return strf("tdxw.exe pid %d", pid);
@@ -40,25 +69,24 @@ public:
   Fills fills() override { return tables::read<tables::Fills>(); }
   Keyed<Position> pos() override { return tables::read<tables::Positions>(); }
   Keyed<Pending> pends() override { return tables::read<tables::Pendings>(); }
-  Account acct() override { return credit::acct(); }
+  Account acct() override { return tables::read_acct(); }
 
-  Terms terms(const Report &r) override {
+  Terms terms() override {
     prime(tables::kTerms);
-    return credit::terms(r);
+    return tables::read_terms();
   }
-  std::vector<CashFlow> flows(misc::Ymd from, const Report &r) override {
+  std::vector<CashFlow> flows(misc::Ymd from) override {
     prime(tables::kFlows);
-    return flow::flows(from, r);
+    return tables::read_flows(from);
   }
-  Placed place(const OrderReq &o, const Report &r) override {
+  Placed place(const OrderReq &o) override {
     const auto g = gate();
-    return flash::place(o, r);
+    return flash::place(o);
   }
-
-  const std::vector<std::string> &steps() const override { return flash::steps(); }
+  std::span<const std::string_view> steps() const override { return flash::steps(); }
+  std::unique_ptr<Mirror> mirror() override { return std::make_unique<TdxMirror>(); }
 
 private:
-  // 占界面锁; 被占着即等, 记下等了多久
   std::unique_lock<std::mutex> gate() {
     std::unique_lock g(gate_, std::try_to_lock);
     if (!g) {
@@ -69,11 +97,10 @@ private:
     return g;
   }
 
-  // 引导一组表 S…: 插件还没发过的各经界面查一次 (其引导页), 末了回持仓页 (持仓缺也由它补)
   template <class... S>
   void prime(std::tuple<S...>) {
     std::vector<ui::Open> miss;
-    ((tables::seen<S>() ? void() : miss.push_back(S::kOpen)), ...);
+    ((tables::seen_func<S>() ? void() : miss.push_back(S::kOpen)), ...);
     if (miss.empty())
       return;
     std::erase_if(miss, [](const ui::Open &o) { return std::string_view(o.page) == tables::Positions::kOpen.page; });
@@ -83,11 +110,11 @@ private:
     ui::show_bar();
     for (const ui::Open &o : miss)
       std::ignore = ui::open(o);
-    (need(tables::seen<S>(), strf("经界面查过「%s」, 插件仍没发过其功能", S::kName)), ...);
+    (need(tables::seen_func<S>() != 0, strf("经界面查过「%s」, 插件仍没发过其功能", S::kName)), ...);
   }
 
-  std::mutex gate_, work_; // 界面 / 进程堆与接入; 两把不嵌套
-  mem::HeapP heap_;
+  std::mutex gate_, work_;
+  int pid_ = 0;
 };
 
 } // namespace

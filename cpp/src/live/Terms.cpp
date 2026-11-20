@@ -2,6 +2,7 @@
 
 #include "disk/Disk.hpp"
 #include "live/Pulled.hpp"
+#include "live/Trace.hpp"
 #include "misc/parquet.hpp"
 #include "shared/AssetInfo.hpp"
 
@@ -17,7 +18,6 @@ namespace {
 constexpr const char *kHead = "code,name,mkt,ratio,financeable,rate,pledgeable";
 constexpr const char *kMarginTable = "cn_stock_margin_trading_detail";
 
-// 本地两融明细最新一日的代码 ("000001.SZ"): T 日盘后余额 T+1 盘前公布, 最新一日即上个交易日的交易所两融标的
 std::unordered_set<std::string> margin_codes() {
   const std::vector<disk::Key> ks = disk::list(disk::FundShard, {.name = kMarginTable});
   for (auto k = ks.rbegin(); k != ks.rend(); ++k) {
@@ -63,14 +63,14 @@ void save(const Cache &c) {
   save_pulled(disk::LiveTermsFile, kHead, s);
 }
 
-Cache pull(Broker &b, const Report &r) {
-  Cache c{misc::today_ymd(), b.terms(r)};
+Cache pull(Broker &b) {
+  Cache c{misc::today_ymd(), b.terms()};
   int fin = 0, pl = 0;
   for (const auto &[code, t] : c.terms) {
     fin += t.financeable;
     pl += t.pledgeable;
   }
-  r.log("terms", strf("条款 %zu 只 (融资标的 %d · 担保品 %d)", c.terms.size(), fin, pl), {{"n", c.terms.size()}, {"financeable", fin}, {"pledgeable", pl}});
+  trace::note("terms", strf("条款 %zu 只 (融资标的 %d · 担保品 %d)", c.terms.size(), fin, pl), {{"n", c.terms.size()}, {"financeable", fin}, {"pledgeable", pl}});
   save(c);
   return c;
 }
@@ -106,7 +106,7 @@ Terms merged(const Terms &raw, const Local &local) {
   return out;
 }
 
-bool missing(const Terms &raw, const Local &local, const std::vector<std::string> &codes, const State &st) {
+bool missing(const Terms &raw, const Local &local, const std::vector<std::string> &codes, const Snapshot *snap) {
   const auto miss = [&](const std::string &code) {
     if (raw.contains(code))
       return false;
@@ -114,8 +114,8 @@ bool missing(const Terms &raw, const Local &local, const std::vector<std::string
     return i == local.end() || (i->second.listed && i->second.mkt != Mkt::BJ);
   };
   return std::any_of(codes.begin(), codes.end(), miss) ||
-         (st.pos && std::any_of(st.pos->list.begin(), st.pos->list.end(), [&](const Position &p) { return miss(p.code); })) ||
-         (st.acct && std::any_of(st.acct->debts.list.begin(), st.acct->debts.list.end(), [&](const Debt &d) { return miss(d.code); }));
+         (snap && std::any_of(snap->pos.list.begin(), snap->pos.list.end(), [&](const Position &p) { return miss(p.code); })) ||
+         (snap && std::any_of(snap->acct.debts.list.begin(), snap->acct.debts.list.end(), [&](const Debt &d) { return miss(d.code); }));
 }
 
 } // namespace live::terms

@@ -1,14 +1,13 @@
-// Task Live - 实盘: 券商客户端的持仓、下单与一键调仓 (中枢 LiveHub 券商无关; 客户端适配在 live/<客户端>/, 登记在 live/Clients.hpp)
-//   Board: 连接 + 持仓 · 调仓一页 (控件分组 / 持仓表行内闪电下单与卖出滑杆, 并调仓名单 / 日志) + 右栏选中行的行情图
-//     (Market 的个股面板, 与 Database / Market 共用 QuoteHub)
-//   行情走新浪 (LiveHub 把要的码订阅给 QuoteHub, 本地资产库就绪才有), 不读客户端的行情; Board 可见时才盯客户端 (见 live/Broker.hpp 的 touch)
-//   账户净值 (gui/account): 每帧交信用账户 + 今日成交 (其库外持仓的现价转给价格库回放); 两融条款与资金流水由 LiveHub 每天自动拉
+// Task Live - 实盘: 券商无关中枢 LiveHub; 两页对仗:
+//   Board  持仓 · 调仓 · 闪电下单 + 右栏行情图
+//   Client 客户端窗口复现 (窗口树 + GDI 绘制层 + 控件子项 + 鼠键透传)
 #include "gui/task_live/TaskLive.hpp"
 #include "gui/Tasks.hpp"
 #include "gui/account/AccountHub.hpp"
 #include "gui/quote/QuoteHub.hpp"
 #include "gui/task_live/LiveHub.hpp"
 #include "gui/task_live/ui/TabBoard.hpp"
+#include "gui/task_live/ui/TabClient.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -21,14 +20,16 @@ namespace GUI::Tasks {
 
 enum TabIdx {
   TAB_BOARD = 0,
+  TAB_CLIENT = 1,
   TAB_COUNT
 };
 
 struct TaskLiveState {
-  std::shared_ptr<Quote::QuoteHub> quote;       // 与 Database / Market 任务共用
-  std::shared_ptr<Account::AccountHub> account; // 与 Market 任务共用
+  std::shared_ptr<Quote::QuoteHub> quote;
+  std::shared_ptr<Account::AccountHub> account;
   std::unique_ptr<Live::LiveHub> hub;
   Live::BoardState board;
+  Live::ClientState client;
 };
 
 TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_ptr<Account::AccountHub> account) {
@@ -39,7 +40,7 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
   TaskHandle handle;
   handle.name = "Live";
   handle.storage = state;
-  handle.tabs = {"Board"};
+  handle.tabs = {"Board", "Client"};
 
   handle.Init = [state](SharedData &) { state->hub = std::make_unique<Live::LiveHub>(); };
 
@@ -47,10 +48,10 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
     Live::LiveHub &h = *state->hub;
     h.peek();
     h.auto_pull();
-    if (!h.connected() || !h.state()->acct)
+    if (!h.connected() || !h.snapshot())
       return;
     Account::AccountHub &a = *state->account;
-    a.feed(h.state()->acct, h.state()->fills);
+    a.feed(h.snapshot());
     state->quote->spot(a.spot());
   };
 
@@ -74,20 +75,26 @@ TaskHandle CreateLiveTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_pt
     return {TaskStatus::Kind::Muted, "live"};
   };
 
-  handle.Draw = [state](SharedData &data, [[maybe_unused]] int idx) {
+  handle.Draw = [state](SharedData &data, int idx) {
     assert(idx >= 0 && idx < TAB_COUNT);
     Live::LiveHub &h = *state->hub;
-    if (data.task_state.database.asset_info_ready)
-      state->quote->frame(data);
-    h.tick(data.asset_info, *state->quote);
     ImGui::BeginChild("LiveTab", ImVec2(0, 0), false);
     ImGui::Spacing();
-    Live::RenderTabBoard(data, h, *state->quote, state->board);
+    if (idx == TAB_BOARD) {
+      if (data.task_state.database.asset_info_ready)
+        state->quote->frame(data);
+      h.tick(data.asset_info, *state->quote);
+      Live::RenderTabBoard(data, h, *state->quote, state->board);
+    } else {
+      Live::RenderTabClient(h, state->client);
+    }
     ImGui::EndChild();
   };
 
   handle.Destroy = [state]() {
+    state->client.stop();
     state->board = Live::BoardState{};
+    state->client = Live::ClientState{};
     state->hub.reset();
   };
 
