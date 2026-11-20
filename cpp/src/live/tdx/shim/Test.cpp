@@ -79,14 +79,14 @@ std::string read() {
 }
 
 std::string flows() {
-  std::apply([](auto... t) { (std::ignore = ui::open(decltype(t)::kOpen), ...); }, tables::kFlows);
+  std::apply([](auto... t) { ((std::ignore = ui::open(decltype(t)::kOpen)), ...); }, tables::kFlows);
   const misc::Ymd from = misc::add_days(misc::today_ymd(), -14);
   const std::vector<CashFlow> f = flow::flows(from, {});
   return strf("%d 起 %zu 条", from, f.size());
 }
 
 std::string terms() {
-  std::apply([](auto... t) { (std::ignore = ui::open(decltype(t)::kOpen), ...); }, tables::kTerms);
+  std::apply([](auto... t) { ((std::ignore = ui::open(decltype(t)::kOpen)), ...); }, tables::kTerms);
   const Terms t = credit::terms({});
   return strf("%zu 只", t.size());
 }
