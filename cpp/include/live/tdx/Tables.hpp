@@ -73,7 +73,8 @@ struct Fills {
 struct Pendings {
   using Row = Pending;
   static constexpr const char *kName = "挂单";
-  static constexpr ui::Open kOpen{"撤单", "委托价格"};
+  // 功能树「当日委托」页的表头 = 撤单页的 + 废单原因 (人点开过即一直留着, 只认「委托价格」即两页分不开、刷新失败)
+  static constexpr ui::Open kOpen{"撤单", "委托价格", "废单原因"};
   static constexpr std::array<cols::View, 1> kViews{{{1100, 23}}};
   static constexpr auto kCols = std::tuple{
       col<&Row::time, as::clock>("委托时间", 0),

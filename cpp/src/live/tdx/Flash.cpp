@@ -25,6 +25,11 @@ constexpr long kEst = 8915; // 闪电窗按额时的「预估金额:…(N股)」
 // 图表刚切过来、盘口还没到时开闪电窗, 客户端弹「…的价格档位上的价格为空!」: 关掉再开, 至多等 kOpenWait 秒
 const std::vector<std::string> kNotReady = {"价格档位上的价格为空"};
 constexpr double kOpenWait = 6;
+// 闪电窗开出后默认价 / 最大可买·可卖由客户端另查才填上, 至多等 kFieldWait 秒
+constexpr double kFieldWait = 1;
+// 各等待宁短勿长: 批量下单 (上百单) 一单卡住即整批停在半路, 留下方向与价格敞口; 超时即该单失败, 记下接着下后面的.
+//   实测连下几十单后客户端变慢: 刚切图表 + 盘口为空重开时, 最大可买 / 可卖 1s 多才填上、闪电窗 6s 多才出过 —— 认这几单失败
+//   (末了列出, 人工补), 不为它们拉长超时
 
 // 闪电窗: 主窗命令 id、窗标题、各控件 id (证券代码 / 价格 / 数量 / 数量单位 / 报价方式 / 最大可买·可卖·可融 (股) / 提交)
 struct Kind {
@@ -132,6 +137,8 @@ std::string after(const std::string &text, const std::string &label, bool dots, 
 }
 
 // 图表切到 sec: 主窗标题已是「…-名称]」即跳过, 否则向主窗投联动消息、等标题换过来 (客户端查着时照样处理联动)
+//   迟到的框: 上一单开窗超时 (已记失败、收尾时还没出来) 后其闪电窗可能这时才冒出来. 它是模态的, 主窗随之禁用、投的联动作废
+//   (实测: 下一单因此切不过去, 连带失败). 等的同时见到本适配的框即关掉, 关后下一轮重投联动; 不另加等待, 仍在 kLinkTimeout 内
 void go_to(const Hwnd &main, const Sec &x) {
   const std::string want = win::bare("-" + x.name + "]");
   const auto there = [&] { return win::bare(win::title(main)).ends_with(want); };
@@ -140,8 +147,31 @@ void go_to(const Hwnd &main, const Sec &x) {
   if (x.mkt == Mkt::BJ)
     fail(x.code + " 北交所没有联动前缀");
   const long wp = (x.mkt == Mkt::SH ? 7 : 6) * 1'000'000L + std::stol(x.code);
-  win::post(main, win::regmsg(kLink), wp);
-  until([&] { return strf("主窗切到「%s」, 现为「%s」(联动 %ld)", x.name.c_str(), win::title(main).c_str(), wp); }, there, kLinkTimeout);
+  const unsigned link = win::regmsg(kLink);
+  win::post(main, link, wp);
+  bool repost = false;
+  until([&] { return strf("主窗切到「%s」, 现为「%s」(联动 %ld)", x.name.c_str(), win::title(main).c_str(), wp); },
+        [&] {
+          if (there())
+            return true;
+          bool late = false;
+          for (const auto &[h, n] : win::tops())
+            if (ours(n.title)) {
+              late = true;
+              if (n.en) {
+                trace::ev("late", {{"title", n.title}, {"hwnd", h}, {"body", ui::body(h)}});
+                win::post(h, win::kWmClose, 0);
+              }
+            }
+          if (late)
+            repost = true;
+          else if (repost) {
+            win::post(main, link, wp);
+            repost = false;
+          }
+          return false;
+        },
+        kLinkTimeout);
 }
 
 void switch_to(Ctx &c) {
@@ -166,7 +196,7 @@ void form(Ctx &c) {
     fail("报价方式为「" + quote + "」, 需限价委托");
   const std::string dflt = *until(said("闪电窗默认价"), [&]() -> std::optional<std::string> {
     std::string t = win::text(ids.at("price"));
-    return t.empty() ? std::nullopt : std::optional<std::string>(t); }, 1);
+    return t.empty() ? std::nullopt : std::optional<std::string>(t); }, kFieldWait);
   const size_t dot = dflt.find('.');
   if (dot == std::string::npos)
     fail("默认价「" + dflt + "」定不出小数位");
@@ -174,7 +204,7 @@ void form(Ctx &c) {
   const std::string unit = win::text(ids.at("unit"));
   if (unit != "股" && unit != "元")
     fail("数量单位「" + unit + "」不认识");
-  until(said("闪电窗最大可买 / 可卖"), [&] { return !win::text(ids.at("max")).empty(); }, 1);
+  until(said("闪电窗最大可买 / 可卖"), [&] { return !win::text(ids.at("max")).empty(); }, kFieldWait);
   const long cap0 = max_qty(ids.at("max"));
   settext(ids.at("price"), c.px_s);
   c.px = std::stod(c.px_s);

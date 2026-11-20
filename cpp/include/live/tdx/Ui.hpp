@@ -37,12 +37,13 @@ struct Page {
   win::Hwnd dlg, key; // 页 / 查询键
   Count count;
 };
-// act 让客户端查一次: 等表头含 col 的页显示着、且其查询键 act 后禁用过且此刻可用. act 前等空闲; 各至多 timeout 秒
-Page query(const std::string &col, const std::function<void()> &act, double timeout = kQueryWait);
-// 一页: page = 交易栏页签 (持仓 / 成交 / 撤单) 或功能树上的功能名, col = 认页的列 (只此页的表头有)
+// 一页: page = 交易栏页签 (持仓 / 成交 / 撤单) 或功能树上的功能名; 认页 = 表头含 col 且不含 without (nullptr = 不看):
+//   开过的页一直留着 (隐藏), 人在客户端里点开过的页也算, 故认页的列须在所有可能开着的页里唯一 (只靠 col 分不开的另给 without)
 struct Open {
-  const char *page, *col;
+  const char *page, *col, *without = nullptr;
 };
+// act 让客户端查一次: 等认得出的那页 (见 Open) 显示着、且其查询键 act 后禁用过且此刻可用. act 前等空闲; 各至多 timeout 秒
+Page query(const Open &o, const std::function<void()> &act, double timeout = kQueryWait);
 Page open(const Open &o, double timeout = kQueryWait); // 页签即向宿主投其命令, 否则点功能树; 经 query 等查完
 
 // ---------- 弹框 ----------

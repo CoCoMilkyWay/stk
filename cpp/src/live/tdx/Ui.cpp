@@ -126,13 +126,19 @@ std::map<Hwnd, std::vector<Hwnd>> heads(const Hwnd &host) {
   return out;
 }
 
-bool has_col(const std::vector<Hwnd> &hs, const std::string &col, double timeout) {
+// 表头 hs 认得出 o 那页: 含 o.col 且不含 o.without
+bool fits(const std::vector<Hwnd> &hs, const Open &o, double timeout) {
+  bool has = false;
   for (const Hwnd &h : hs)
     for (const Item &it : win::layer_of(shim::cmd_wait(timeout, "detail", h).at(0)).items)
-      if (it.text && *it.text == col)
-        return true;
-  return false;
+      if (it.text) {
+        if (o.without && *it.text == o.without)
+          return false;
+        has = has || *it.text == o.col;
+      }
+  return has;
 }
+std::string what(const Open &o) { return strf("表头含「%s」%s", o.col, o.without ? strf("不含「%s」", o.without).c_str() : ""); }
 
 // 等客户端空闲: 恰一页显示着、其查询键可用 (没有查询键的页如下单表单不查, 即空闲).
 // 顺带给界面线程装上禁用计数 (此后新建的页也记得)
@@ -248,24 +254,24 @@ int Count::read() const {
   return *n;
 }
 
-// 认目标页: act 前表头含 col 的页 (须至多一个) 记下其查询键的禁用次数; act 后显示出来的页是它即是,
+// 认目标页: act 前认得出的页 (须至多一个: 多了即分不清 act 后显示的是不是它) 记下其查询键的禁用次数; act 后显示出来的页是它即是,
 // 是 act 前没有的页 (头一回开) 即禁用次数从 0 起等它查完再核表头 (查着时界面线程卡住, detail 等不到;
 // 大表 (标的证券 / 担保品) 查询键恢复后界面线程还要卡一阵画表, 核表头的 detail 随之等, 至多 timeout)
-Page query(const std::string &col, const std::function<void()> &act, double timeout) {
+Page query(const Open &o, const std::function<void()> &act, double timeout) {
   const Hwnd h = host();
   idle(h, timeout);
   const std::set<Hwnd> before = pages(h);
   std::map<Hwnd, long> cand;
   for (const auto &[dlg, hs] : heads(h))
-    if (has_col(hs, col, timeout))
+    if (fits(hs, o, timeout))
       cand[dlg] = win::disables(page_of(dlg).key);
   if (cand.size() > 1)
-    fail(strf("表头含「%s」的页有 %zu 个", col.c_str(), cand.size()));
+    fail(strf("%s的页有 %zu 个", what(o).c_str(), cand.size()));
   const Clock::time_point t0 = Clock::now();
   act();
   long n0 = 0;
   const Hwnd dlg = *until(
-      said("表头含「" + col + "」的页显示出来"),
+      said(what(o) + "的页显示出来"),
       [&]() -> std::optional<Hwnd> {
         const std::vector<Hwnd> s = shown(h);
         if (s.size() != 1)
@@ -279,15 +285,15 @@ Page query(const std::string &col, const std::function<void()> &act, double time
       timeout);
   const Page p = page_of(dlg);
   settle(p, n0, timeout, t0);
-  if (!cand.contains(dlg) && !has_col(heads(h)[dlg], col, timeout))
-    fail(strf("新开的页 %s 表头没有「%s」", dlg.c_str(), col.c_str()));
+  if (!cand.contains(dlg) && !fits(heads(h)[dlg], o, timeout))
+    fail(strf("新开的页 %s 不是%s的页", dlg.c_str(), what(o).c_str()));
   return p;
 }
 
 Page open(const Open &o, double timeout) {
   trace::Span span(strf("开页「%s」", o.page), {{"col", o.col}});
   const Tab *t = std::find_if(std::begin(kTabs), std::end(kTabs), [&](const Tab &x) { return x.name == o.page; });
-  return query(o.col, [&] { t != std::end(kTabs) ? win::post(host(), win::kWmCommand, t->cmd) : click_func(o.page); }, timeout);
+  return query(o, [&] { t != std::end(kTabs) ? win::post(host(), win::kWmCommand, t->cmd) : click_func(o.page); }, timeout);
 }
 
 // ---------- 弹框 ----------
