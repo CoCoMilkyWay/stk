@@ -42,6 +42,7 @@ stk/
 │   ├── build.py                                        # 🐍 构建: CMake 配置 + 编译 (BUILD_MODE / GPU_BACKEND)
 │   ├── modes.py                                        # 🐍 运行: 五模式同签名 (tsan / debug / profile / assert / production)
 │   ├── agent.py                                        # 🐍 外部 agent 调研究工具的命令行 (一个 POST {"tool", "args"} → {"ok", "text"}; 地址读 output/run/agent/remote.json)
+│   ├── val_rank.py                                     # 🐍 子池成分的 BP 估值 band 实时排名: 直读 all.bar L_1day (选股同 PoolSelect, 5 年加权分位同 pb_pct5y) × 新浪现价; 分 = 分位 + λ · 底档曲度负值罚分
 │   └── app/                                            # 🐍 cpp/ format · lint (clang-format / clangd)
 ├── cpp/
 │   ├── include/
@@ -127,7 +128,7 @@ stk/
 │   │   │       │                                       #    · PoolId / LibId (池 × 档) / PerLib<X> / ColRef = (库, 层, 列): 跨库跨层选择与分析请求的列单位
 │   │   │       │                                       #    · 行时间代数: emit 全序 = (行末秒, 层, 盘后); level_asof(src, dst, t) = 不晚于 dst 行末的最近 src 行 (−1 = 前一交易日末行)
 │   │   │       │                                       #    · 收行判据 level_closes / for_each_close: 哪层在哪秒收行的唯一判据 (写端 CoreTs / CoreCs 同一路径)
-│   │   │       ├── FeatureLib.hpp                      # 🧮 特征库: 库 LibId = 池 × 档; 每库一份清单 lib.json (A 轴 / 日期轴 / 轴外; 写端规划后落, 读端只读)
+│   │   │       ├── FeatureLib.hpp                      # 🧮 特征库: 库 LibId = 池 × 档; 每库一份清单 lib.json (A 轴 / 日期轴 / 轴外 + 各层列名与字段表指纹 (给库外读者 py/); 写端规划后落, 读端只读)
 │   │   │       │                                       #    · 池表 feature_pools (启动时定): [0] = all (全市场); 其余 = 子池表 output/config/beta/pools.json
 │   │   │       │                                       #    · 库树 lib_parent: all.bar 为根 → 子池 Bar 库 → 同池 Lob 库; 计算序 lib_order = 上游先, 本库日须落在上游日期轴上
 │   │   │       ├── FeatureDay.hpp                      # 🧮 日文件格式: write ⇄ read 互逆 (逐列编码 + 列目录)

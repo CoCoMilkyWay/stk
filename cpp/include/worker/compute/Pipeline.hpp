@@ -522,6 +522,7 @@ bool pipeline(const PipelineArgs &args) {
   // 日环深 P 启动时一次定死 (定长序号环, 无扩格, 见 FeatureStore.hpp):
   //   上限 = 内存预算 (一格 = 张量 + 源格; 此刻已用与常驻开销之外, 用到总内存 1 − kRingMemMargin) ∧ kMaxRingSlots ∧ 日期轴天数
   //   下限 = MIN_RING_SLOTS (标签悬挂 + 时序下一日 + 截面跨日) + 截面/落盘在飞核数 + 1, 不足死锁;
+  //   预算不到下限则按下限开 (余量让给下限, 只要实际可用内存装得下);
   //   日期轴整根装得下 (P = 天数, 格不复用) 则无需下限 (如续算短轴)
   const size_t per_slot = FeatureStore<T>::Slot::bytes(num_assets) + TierFeed<T>::cell_bytes(num_assets);
   const size_t fixed_bytes = num_assets * sizeof(CoreOf<T>) + (StoreRing::kPrefetchLead + 1) * TierFeed<T>::cell_bytes(num_assets);
@@ -530,16 +531,20 @@ bool pipeline(const PipelineArgs &args) {
   const size_t mem_slots = static_cast<size_t>(std::max(0.0, mem_budget)) / per_slot;
   const size_t floor_slots = CoreOf<T>::kMinRingSlots + num_cs + num_io + 1;
   const size_t cap_slots = std::max(floor_slots, kMaxRingSlots);
-  const size_t slots = std::min({mem_slots, dates.size(), cap_slots});
-  assert((slots >= floor_slots || slots == dates.size()) && slots > tail && "内存不够: 日环不到下限, 会死锁");
-
+  const size_t slots = std::min(dates.size(), std::max(floor_slots, std::min(mem_slots, cap_slots)));
+  const double avail = static_cast<double>(mu.total_bytes) - static_cast<double>(mu.used_bytes + fixed_bytes);
+  constexpr double kGB = 1024.0 * 1024.0 * 1024.0;
   std::cout << "\n=== Compute (" << tier_name(T::kId) << ") ===\n"
             << L.summary() << "\n"
             << "Assets: " << num_assets << " (组宽 " << sched.group << ")"
             << " | Ring: " << slots << " slots (内存预算 " << mem_slots << ", 下限 " << floor_slots << ")"
             << " | Dates: " << dates.size() << " (" << dates.front() << " - " << dates.back() << ")"
             << " | Tail: " << tail << "\n"
+            << "Mem: 总 " << mu.total_bytes / kGB << " GB | 已用 " << mu.used_bytes / kGB << " GB | 常驻 " << fixed_bytes / kGB
+            << " GB | 预算 (留 " << kRingMemMargin * 100.0 << "%) " << std::max(0.0, mem_budget) / kGB << " GB | 实际可用 " << avail / kGB
+            << " GB | 每格 " << per_slot / kGB << " GB → 本环需 " << slots * per_slot / kGB << " GB\n"
             << std::endl;
+  assert((slots <= mem_slots || static_cast<double>(slots * per_slot) <= avail) && slots > tail && "内存不够: 实际可用内存装不下日环下限, 会死锁");
 
   FeatureStore<T> store(num_assets, lib.axis.hash, lib.id, slots);
   feed.bind(store);

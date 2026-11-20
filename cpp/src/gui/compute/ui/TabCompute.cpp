@@ -362,7 +362,7 @@ static void render_libraries(ComputeState &state, SharedData &data, bool is_runn
 static void stage_column(ComputeState &state, TierId tier, const StageLayout::Topology &topo, int phys) {
   const StageLayout layout = StageLayout::make(topo, state.config.pf_cores[tier], state.config.cs_cores[tier], state.config.io_cores[tier]);
   ImGui::Text("%d 物理核 / %u 逻辑 CPU, 日环自动", layout.total_phys(), misc::Affinity::core_count());
-  hover_tip("日环深 = 内存预算 (一格 = 一天张量 + 源格) ∧ 日期轴天数, 至多用到 %.0f%% 内存, 启动时一次定死;\n"
+  hover_tip("日环深 = 内存预算 (一格 = 一天张量 + 源格) ∧ 日期轴天数, 至多用到 %.0f%% 内存 (不到死锁下限时按下限开), 启动时一次定死;\n"
             "时序核持续快慢由领跑核在日环边干等时领养最慢者的资产修正 (落后 ≥ 2 天才转移, 永久不归还)",
             (1.0 - kRingMemMargin) * 100.0);
   if (ImGui::BeginTable("StageLayout", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings)) {

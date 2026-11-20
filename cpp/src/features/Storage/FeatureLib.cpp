@@ -55,7 +55,8 @@ PoolId pool_id(std::string_view name) {
 }
 
 // ============================================================================
-// 特征库清单: <库>/lib.json = {"tier", "dates": [YYYYMMDD...], "codes": ["CODE.EX"...], "outside": [...] (非空才有)}
+// 特征库清单: <库>/lib.json = {"tier", "dates": [YYYYMMDD...], "codes": ["CODE.EX"...], "outside": [...] (非空才有),
+//   "levels": {层名: {"fingerprint", "cols": [列名...]}} (本档各层的字段表: 列下标 = 日文件列序; 只给库外读者 (py/), 读端不读)}
 // ============================================================================
 disk::Key lib_key(LibId id) { return {.pool = pool_def(lib_pool(id)).name, .tier = std::string(tier_name(lib_tier(id)))}; }
 
@@ -120,6 +121,16 @@ void save_lib(const FeatureLib &lib) {
       outside.push_back(table.code(a));
     j["outside"] = outside;
   }
+  nlohmann::json &levels = j["levels"];
+  for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl)
+    if (has_level(lib.tier(), lvl)) {
+      const LevelInfo &L = level_info(lib.tier(), lvl);
+      std::vector<std::string> cols;
+      cols.reserve(L.field_count);
+      for (size_t f = 0; f < L.field_count; ++f)
+        cols.push_back(L.fields[f].code);
+      levels[L.level_name] = {{"fingerprint", L.fingerprint}, {"cols", cols}};
+    }
 
   disk::write(disk::LibManifest, lib_key(lib.id), j.dump(0)); // 原子替换: 读端要么见旧清单要么见新清单
 }
