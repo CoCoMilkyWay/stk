@@ -42,7 +42,7 @@ stk/
 │   ├── build.py                                        # 🐍 构建: CMake 配置 + 编译 (BUILD_MODE / GPU_BACKEND)
 │   ├── modes.py                                        # 🐍 运行: 五模式同签名 (tsan / debug / profile / assert / production)
 │   ├── agent.py                                        # 🐍 外部 agent 调研究工具的命令行 (一个 POST {"tool", "args"} → {"ok", "text"}; 地址读 output/run/agent/remote.json)
-│   ├── val_rank.py                                     # 🐍 子池成分的 BP 估值 band 实时排名: 直读 all.bar L_1day (选股同 PoolSelect, 5 年加权分位同 pb_pct5y) × 新浪现价; 分 = 分位 + λ · 底档曲度负值罚分; 跑一次 → 覆盖调仓名单 output/config/live/lists/<名>.csv
+│   ├── val_rank.py                                     # 🐍 子池成分的 BP 估值 band 实时排名: 直读 all.bar L_1day (选股同 PoolSelect, 5 年加权分位同 pb_pct5y) × 新浪现价; 分 = 分位 + λ · 最低等值估值线 (全史 PB 0.02 分位 × 后复权 BPS) 近 3 年曲度的负值罚分; 跑一次 → 覆盖调仓名单 output/config/live/lists/<名>.csv
 │   └── app/                                            # 🐍 cpp/ format · lint (clang-format / clangd)
 ├── cpp/
 │   ├── include/
@@ -291,7 +291,7 @@ stk/
 │   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board; 每帧取中枢快照、交账户中枢信用账户与成交
 │   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 行情 (要的码订阅给 QuoteHub) + 不可变快照 (State / Inputs / Task / 最近几单, 指针即版本) + 事务道 (下单 / 执行调仓 / 两融条款与资金流水两样同形的拉取, 日志落 output/run/live)
 │   │   │   │   └── ui/
-│   │   │   │       └── TabBoard.hpp                    # 💹 持仓 · 调仓页: 数据 / 下单 / 调仓 (试算表) / 账户 现 · 调仓后 · 变动% (好红坏绿); 各表随栏宽收格距贴合 + 持仓表 (表头排序; 仓位 / 市值字色按截面仓位轻重由灰淡到亮; 行内闪电下单, 按钮即滑点色块; 卖出滑杆; 调仓名单并入: 名单里未持有的列在表末, 金额列 现金买,融资买/卖 W 买红卖绿; 合计行窄写不撑列, 当日净资产收益率落在当日% 列) + 日志 + 右栏行情图
+│   │   │   │       └── TabBoard.hpp                    # 💹 持仓 · 调仓页: 数据 / 下单 / 调仓 (普通 / 融资加仓: 卖出总 bar ⇄ 各只卖出滑杆双向同步; 试算表) / 账户 现 · 调仓后 · 变动% (好红坏绿); 各表随栏宽收格距贴合 + 持仓表 (表头排序; 仓位 / 市值字色按截面仓位轻重由灰淡到亮; 行内闪电下单, 按钮即滑点色块; 卖出滑杆; 调仓名单并入: 名单里未持有的列在表末, 金额列 现金买,融资买/卖 W 买红卖绿; 合计行窄写不撑列, 当日净资产收益率落在当日% 列) + 日志 + 右栏行情图
 │   │   │   ├── account/
 │   │   │   │   ├── AccountHub.hpp                      # 💹 账户净值中枢 (Live 与 Market 共用): 随账本代重放 (拉归 LiveHub 事务道) / 拼账户的持仓 (券商实时持仓优先, 否则回放末日; Market 账户行的成分 / 当日四列) 与当日交给 QuoteHub (历史 = 价格库的账户侧; 当日 = 持仓 × 新浪分钟收)
 │   │   │   │   └── AccountSide.hpp                     # 💹 行情的账户一侧: 一日 day_of (持仓 × 分钟收 → 时间加权指数的逐槽点位 → 一日; 历史回放 / 当日同一核) + 账本回放 replay (价格库 worker 上调; 全史 = 紧凑形, 恒带分钟)
@@ -383,7 +383,7 @@ stk/
 │   │   │   ├── Terms.hpp                               # 💹 两融条款: 拉 → 存 (与 account/Ledger 同形) + 用时合本地库 (名称 / 市场 / 融资标的 / 担保品)
 │   │   │   ├── Book.hpp                                # 💹 5 档盘口: 参考价 / 滑点 / 委托价 / 整手规则
 │   │   │   ├── Board.hpp                               # 💹 持仓页一帧: 持仓 × 当日成交 × 行情 按代码对齐 (纯函数)
-│   │   │   ├── Rebal.hpp                               # 💹 一键调仓试算 (纯函数): 名单等权补齐, 先卖、融资、再现金; 可用保证金按读时校准
+│   │   │   ├── Rebal.hpp                               # 💹 一键调仓试算 (纯函数): 名单等权补齐, 先卖、融资、再现金 (融资加仓: 卖非融资部分、只融资买标的); 可用保证金按读时校准
 │   │   │   └── tdx/                                    # 💹 通达信 (Wine 下 TdxW.exe): 读经注入的 shim 在客户端里直发请求 (不动界面), 写经 shim 驱动闪电下单窗
 │   │   │       ├── Tdx.hpp                             # 💹 Driver 实现: 接 = 堆 + shim + 请求层 + 引导; 四样读 / 两样拉 = 直发读表; 写 = 闪电窗; 引导与下单占界面锁
 │   │   │       ├── Heap.hpp / Image.hpp / Schema.hpp   # 💹 进程堆 (只读, 常开 fd) / 进程映像 (建在堆上: PE 模块 · RTTI · 虚表) / 协议字典

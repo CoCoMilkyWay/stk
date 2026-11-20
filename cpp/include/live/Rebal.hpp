@@ -1,12 +1,15 @@
 // 实盘: 一键调仓试算 — 名单按排名入选、等权补齐; 可选先卖, 再融资买入融资标的, 再现金买其余 (纯函数)
 //
 // 名单: output/config/live/lists/<名>.csv, 每行首列一个 6 位代码 (可有 code 表头), 行序即排名 (首行最高); 按修改时间新在前.
-// 配置 Cfg: 名单、unit 最小调仓单元 (元, 不足即不做)、pct 行使比例 (0–100)、px 委托价、sells {代码: 卖出股数} (整步长, 或全部可卖).
+// 配置 Cfg: 名单、unit 最小调仓单元 (元, 不足即不做)、pct 行使比例 (0–100)、px 委托价、
+//   sells {代码: 卖出股数} (整步长、连同零股的整步长, 或全部可卖)、lever 融资加仓.
+// 融资加仓 (A 股加杠杆须先卖出自有部分、再融资买入, 回款留作现金日后择机买): 卖出不管最小单元 (只守整手规则);
+//   买入只融资买名单里的融资标的, 不出现金腿, 费用从卖后现金出; 行使比例只作用于 X'、L. 卖出股数由页面按非融资可卖部分分配.
 // 试算:
 //   卖出: 股数 (超过可卖按全部可卖) × 参考价计额, 回款 = 额 − 滑点 − 费用;
 //     现金 C' = 现金 + 回款, 可用保证金 X' = 按卖后持仓重算 (avail) + 回款, L = 可融额度余量.
-//   购买力 = C' + min(L, max(0, X')) (融资保证金比例按 100% 计).
-//   行使: C'、X'、L 各 × pct 为本次可用额度, 以下都在其内.
+//   购买力 = C' + min(L, max(0, X')) (融资保证金比例按 100% 计; 融资加仓不计 C').
+//   行使: C'、X'、L 各 × pct 为本次可用额度, 以下都在其内 (融资加仓的现金额度为 0, 缺口须全融到).
 //   买入: 名单里可作担保品买入的 (否则不可买: 不在担保品表 / 担保状态非正常 / 北交所) 等权补到共同目标市值 V,
 //     缺口 need = V − 卖后市值, 不足该只最小单元即不补 (多了不卖). 融资标的先融资: 按保证金比例从低到高分,
 //     Σ 比例 × 融资额 ≤ X'、Σ 融资额 ≤ L; 其余 (含融不到的部分) 用现金, 现金买入 + 全部买入费用 ≤ C'.
@@ -58,6 +61,8 @@ struct Cfg {
   double unit = 10000, pct = 100;
   PxMode px = PxMode::Sweep;
   std::map<std::string, int> sells; // 只存 > 0
+  bool lever = false;
+  double sell_unit() const { return lever ? 0 : unit; } // 卖单的最小单元
 };
 
 // 不可买的原因; 可买 → 空
@@ -73,12 +78,14 @@ struct Hold {
   std::string code, name;
   bool financeable = false;
   double value = 0, sellable = 0;
-  int avail = 0;
+  int avail = 0, own = 0, plain = 0; // 可卖 / 非融资持仓 (= 持仓 − 融资部分) / 非融资可卖 (= min(可卖, 非融资持仓)) [股]
   double px = 0;
   int lot = 0, step = 0, sell = 0;
   std::optional<Order> order;
   std::string skip;
 };
+// 能成单的卖出股数里离 x 最近的: 0 不卖、起卖股数 (够起买股数且够 unit 元) 起按步长递增 (或连同零股)、全部可卖 (够 unit 元才有)
+int snap(const Hold &h, double unit, double x);
 struct Leg {
   Credit credit = Credit::Plain;
   double want = 0;

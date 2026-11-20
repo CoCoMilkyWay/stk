@@ -57,9 +57,10 @@ const Term *term_of(const Terms &terms, const std::string &code) {
   return it == terms.end() ? nullptr : &it->second;
 }
 
-// 各持仓行 (带可融、卖出设置与卖单)
-std::vector<Hold> sells_of(const Keyed<Position> &pos, const Quotes &quotes, const Terms &terms, const Cfg &cfg) {
+// 各持仓行 (带可融、非融资可卖、卖出设置与卖单)
+std::vector<Hold> sells_of(const Keyed<Position> &pos, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms, const Cfg &cfg) {
   std::vector<Hold> rows;
+  const double unit = cfg.sell_unit();
   for (const Position &h : pos.list) {
     const Quote &q = quote_at(quotes, h.code);
     const Term *t = term_of(terms, h.code);
@@ -67,14 +68,18 @@ std::vector<Hold> sells_of(const Keyed<Position> &pos, const Quotes &quotes, con
     const auto sv = cfg.sells.find(h.code);
     const int v = sv == cfg.sells.end() ? 0 : sv->second;
     const auto [lt, step] = lot(h.code);
+    const Debt *d = debts.find(h.code);
+    const double fin = d ? std::min(d->qty, h.balance) : 0;
     Hold row{.code = h.code, .name = h.name, .financeable = t && t->financeable, .value = h.balance * q.price, .sellable = 0, .avail = static_cast<int>(h.available), .px = px, .lot = lt, .step = step, .sell = v};
+    row.own = static_cast<int>(h.balance - fin);
+    row.plain = std::min(row.avail, row.own);
     row.sellable = row.avail * px;
     if (v > 0) {
       const int n = std::min(v, row.avail);
-      if (!(n == row.avail || n % step == 0))
-        fail(strf("%s 卖 %d 股不是 %d 股的整数倍", h.code.c_str(), n, step));
+      if (!(n == row.avail || n % step == 0 || n % step == row.avail % step))
+        fail(strf("%s 卖 %d 股不是 %d 股的整数倍 (零股须一次卖完)", h.code.c_str(), n, step));
       // 全部可卖可含零股
-      const int min_n = n == row.avail ? least(px, cfg.unit, 1, 1) : least(px, cfg.unit, lt, step);
+      const int min_n = n == row.avail ? least(px, unit, 1, 1) : least(px, unit, lt, step);
       row.order = leg(q, kSell, n, min_n, order_px(q, kSell, cfg.px, n * px).value_or(px), Credit::Plain, h, row.skip);
     }
     rows.push_back(std::move(row));
@@ -109,6 +114,11 @@ struct Tgt {
   double min = 0;              // 最小单元 [元]
 };
 using Legs = std::unordered_map<std::string, std::pair<double, double>>; // 代码 → (融资额, 现金额)
+// 本次可用额度: 现金 / 可用保证金 / 可融余量; lever = 融资加仓 (现金额度 0, 买入费用不占)
+struct Budget {
+  double C = 0, X = 0, L = 0;
+  bool lever = false;
+};
 
 std::unordered_map<std::string, Tgt> targets_of(const std::vector<std::string> &ok, const Terms &terms, const Quotes &quotes, const Bal &bal, const Cfg &cfg) {
   std::unordered_map<std::string, Tgt> tgt;
@@ -125,9 +135,9 @@ std::unordered_map<std::string, Tgt> targets_of(const std::vector<std::string> &
 }
 
 // 目标市值 V 下各只两腿与现金需求; s 已按保证金比例从低到高排
-std::pair<Legs, double> fill(double V, const std::vector<const Tgt *> &s, double X, double L) {
+std::pair<Legs, double> fill(double V, const std::vector<const Tgt *> &s, const Budget &b) {
   Legs legs;
-  double xb = std::max(0.0, X), lb = L;
+  double xb = std::max(0.0, b.X), lb = b.L;
   for (const Tgt *x : s) {
     const double m = x->min, g = V - x->held;
     if (g < m) {
@@ -155,15 +165,15 @@ std::pair<Legs, double> fill(double V, const std::vector<const Tgt *> &s, double
     need += fp.first + fp.second;
     cash += fp.second;
   }
-  return {std::move(legs), cash + fee(need, kBuy)};
+  return {std::move(legs), cash + (b.lever ? 0 : fee(need, kBuy))};
 }
 
 // s 等权补齐可行的目标市值 V: 在 [0, hi] 里二分到 kTol
-double level(const std::vector<const Tgt *> &s, double C, double X, double L, double hi) {
+double level(const std::vector<const Tgt *> &s, const Budget &b, double hi) {
   double lo = 0;
   while (hi - lo > kTol) {
     const double mid = (lo + hi) / 2;
-    if (fill(mid, s, X, L).second <= C)
+    if (fill(mid, s, b).second <= b.C)
       lo = mid;
     else
       hi = mid;
@@ -173,13 +183,13 @@ double level(const std::vector<const Tgt *> &s, double C, double X, double L, do
 
 // 按 tries 的先后逐只试并入 → (入选的, 按保证金比例排; V)
 std::pair<std::vector<const Tgt *>, double> pick(const std::vector<std::string> &tries, const std::vector<std::string> &ok,
-                                                 const std::unordered_map<std::string, Tgt> &tgt, double C, double X, double L) {
+                                                 const std::unordered_map<std::string, Tgt> &tgt, const Budget &b) {
   std::vector<const Tgt *> by_ratio;
   for (const std::string &c : ok)
     by_ratio.push_back(&tgt.at(c));
   std::stable_sort(by_ratio.begin(), by_ratio.end(), [](const Tgt *a, const Tgt *b) { return a->ratio.value_or(0) < b->ratio.value_or(0); });
   std::unordered_set<std::string> picked;
-  double V = C + L;
+  double V = b.C + b.L;
   double top = 0;
   for (const auto &[c, x] : tgt)
     top = std::max(top, x.held);
@@ -189,7 +199,7 @@ std::pair<std::vector<const Tgt *>, double> pick(const std::vector<std::string> 
     for (const Tgt *x : by_ratio)
       if (picked.contains(x->code) || x->code == c)
         s.push_back(x);
-    const double v = level(s, C, X, L, V);
+    const double v = level(s, b, V);
     if (std::all_of(s.begin(), s.end(), [&](const Tgt *x) { return x->held || v >= x->min; })) {
       picked.insert(c);
       V = v;
@@ -217,6 +227,11 @@ std::pair<std::vector<Target>, std::vector<Order>> buys_of(const std::vector<std
       row.rate = t->rate;
     }
     if (!row.why.empty()) {
+      rows.push_back(std::move(row));
+      continue;
+    }
+    if (!tgt.contains(c)) {
+      row.skip = "融资加仓只买融资标的";
       rows.push_back(std::move(row));
       continue;
     }
@@ -286,6 +301,23 @@ nlohmann::json to_json(const Sheet &s) {
 
 double fee(double amt, int s) { return amt * (kCommission + kTransfer + (s == kSell ? kStamp : 0)); }
 
+int snap(const Hold &h, double unit, double x) {
+  const int first = least(h.px, unit, h.lot, h.step), r = h.avail % h.step;
+  int best = 0;
+  const auto take = [&](int c) {
+    if (std::abs(c - x) <= std::abs(best - x))
+      best = c;
+  };
+  if (h.avail * h.px >= unit)
+    take(h.avail);
+  for (const int o : {0, r}) { // 整步长 / 连同零股
+    const int lo = (first - o + h.step - 1) / h.step, hi = (h.avail - o) / h.step;
+    if (lo <= hi)
+      take(std::clamp(static_cast<int>(std::lround((x - o) / h.step)), lo, hi) * h.step + o);
+  }
+  return best;
+}
+
 double surplus(const Bal &bal, const Keyed<Debt> &debts, const Prices &px, const Terms &terms) {
   std::set<std::string> codes;
   for (const auto &[c, n] : bal)
@@ -339,8 +371,10 @@ std::optional<Plan> plan(const Keyed<Position> &pos, const Account &acct, const 
                          const std::vector<std::string> &codes, const Cfg &cfg) {
   std::vector<std::string> ok;
   for (const std::string &c : codes)
-    if (why(term_of(terms, c)).empty())
+    if (const Term *t = term_of(terms, c); why(t).empty() && (!cfg.lever || t->financeable)) {
+      assert(!cfg.lever || t->ratio);
       ok.push_back(c);
+    }
   const auto has = [&](const std::string &c) { return quotes.contains(c); };
   if (!std::all_of(ok.begin(), ok.end(), has) || !std::all_of(pos.list.begin(), pos.list.end(), [&](const Position &h) { return has(h.code); }) ||
       !std::all_of(acct.debts.list.begin(), acct.debts.list.end(), [&](const Debt &d) { return has(d.code); }))
@@ -348,7 +382,7 @@ std::optional<Plan> plan(const Keyed<Position> &pos, const Account &acct, const 
   const double pct = cfg.pct / 100;
 
   Plan pl;
-  pl.holds = sells_of(pos, quotes, terms, cfg);
+  pl.holds = sells_of(pos, acct.debts, quotes, terms, cfg);
   std::vector<Order> sells;
   for (const Hold &h : pl.holds)
     if (h.order)
@@ -366,8 +400,9 @@ std::optional<Plan> plan(const Keyed<Position> &pos, const Account &acct, const 
   const auto tgt = targets_of(ok, terms, quotes, bal, cfg);
   std::vector<std::string> tries = ok;
   std::stable_sort(tries.begin(), tries.end(), [&](const std::string &a, const std::string &b) { return tgt.at(a).ratio && !tgt.at(b).ratio; });
-  const auto [picked, V] = pick(tries, ok, tgt, C * pct, X * pct, L * pct);
-  const Legs legs = fill(V, picked, X * pct, L * pct).first;
+  const Budget bud{cfg.lever ? 0 : C * pct, X * pct, L * pct, cfg.lever};
+  const auto [picked, V] = pick(tries, ok, tgt, bud);
+  const Legs legs = fill(V, picked, bud).first;
   auto [targets, buys] = buys_of(codes, terms, quotes, tgt, picked, V, legs, cfg);
 
   double F = 0, use = 0, cost = 0, buy_cost = 0;
@@ -388,7 +423,7 @@ std::optional<Plan> plan(const Keyed<Position> &pos, const Account &acct, const 
 
   pl.now = sheet(assets, net, acct.debt, acct.cash, X_now, L);
   pl.exp = sheet(assets + F - cost, net - cost, acct.debt + F, C - (use - F) - buy_cost, std::nullopt, L - F);
-  pl.power = C + std::min(L, std::max(0.0, X));
+  pl.power = (cfg.lever ? 0 : C) + std::min(L, std::max(0.0, X));
   pl.use = use;
   pl.financed = F;
   pl.cost = cost;
@@ -415,7 +450,7 @@ nlohmann::json to_json(const Plan &p) {
 }
 
 nlohmann::json to_json(const Cfg &c) {
-  return {{"list", c.list}, {"unit", c.unit}, {"pct", c.pct}, {"px", kPxModeNames[static_cast<int>(c.px)]}, {"sells", c.sells}};
+  return {{"list", c.list}, {"unit", c.unit}, {"pct", c.pct}, {"px", kPxModeNames[static_cast<int>(c.px)]}, {"sells", c.sells}, {"lever", c.lever}};
 }
 
 std::vector<std::string> lists() {

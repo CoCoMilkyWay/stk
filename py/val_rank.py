@@ -5,12 +5,14 @@
   成分  = 子池在源行的选股 (同 features/Panel/PoolSelect.cpp): 在市 ∧ 切片 → 键自端头取前 N (键覆盖率 < 0.8 → 断言)
   分位  = BP 近 5 年加权分位 (同 Panel/Fund.cpp build_hist 的 pb_pct5y; 高 = 贵): 窗 = (T0 − 5 自然年, T0] 的历史点 + T0 实时点,
           实时 BP = 源行归母普通股权益 MRQ / (现价 × 源行总股本); 历史点 D = 行 D 权益 / (行 D 收盘 × 行 D−1 总股本)
-  曲度  = 源行 pb_lo_curv (5 年最低档 band 价格线近 3 年二次拟合的 2c, 年⁻² · 窗内均价倍数; < 0 = 底部拐头向下)
-  分    = 分位 + λ · max(0, −曲度) · 100 (曲度 ≥ 0 不加分), 低者优先; 史不满 1 年 = 无分, 排末
-  底档  = 窗内贵度 0.05 加权分位的 BP 对应的价格 (VAL 主图最下一条 band); 距底档 = 现价 / 底档价 − 1
-  输出  = 打印排名表 + 覆盖调仓名单 output/config/live/lists/<名>.csv (code,name; 行序 = 排名, 无分的不入)
+  底线  = 最低等值估值线 (同 VAL 绝对估值等值线的最低档, 不随价格滚动): 倍数 m_lo = 全史 PB (BP > 0 的点) 的 0.02 分位,
+          线 = m_lo × 后复权 BPS (VAL: P · v); 底线价 = m_lo × 源行 BPS, 距底线 = 现价 / 底线价 − 1
+  曲度  = 底线近 3 年 (自然年) 对时间 (年) 二次 OLS 的 2c (年⁻², 线除以窗内均值; 拟合同 Panel/Fund.cpp pb_lo_curv); < 0 = 净资产拐头向下;
+          窗内首点距今不满 1 年 / 点数 < 120 → 无
+  分    = 分位 + λ · max(0, −曲度) · 100 (曲度 ≥ 0 / 无 不加分), 低者优先; 分位史不满 1 年 = 无分, 排末
+  输出  = 打印排名表 + 覆盖调仓名单 output/config/live/lists/<名>.csv (code,name; 行序 = 排名, 有分的前 --top 只)
 
-用法: python py/val_rank.py [--pool 池名] [--lam 1] [--list val]
+用法: python py/val_rank.py [--pool 池名] [--lam 1] [--list val] [--top 40]
 """
 
 import argparse
@@ -29,12 +31,9 @@ LISTS = ROOT / "output" / "config" / "live" / "lists"  # 调仓名单 (live/Reba
 LEVEL = "L_1day"
 MAGIC = 0x0000325941445446  # FeatureFileHeader::kMagic
 POOL = "size.low.100.day.eq.nost.sh_main+sz_main+star+chinext.margin.nonew+nowarn"  # 小盘100B
-HIST_YEARS, READY_YEARS, HIST_K, HIST_LO = (
-    5,
-    1,
-    10.0,
-    0.05,
-)  # Panel/Fund.cpp kHistYears / kHistReady / kHistK / kHistLo
+HIST_YEARS, READY_YEARS, HIST_K = 5, 1, 10.0  # Panel/Fund.cpp kHistYears / kHistReady / kHistK
+CURV_YEARS, CURV_MIN = 3, 120  # Panel/Fund.cpp kCurvYears / kCurvMin
+CONTOUR_TRIM = 0.02  # LinesView.hpp kContourTrim (最低等值线 = 全史倍数的此分位)
 COVER = 0.8  # PoolSelect.hpp kCover
 IND_COUNT = 32  # fund::SW2021_L1_COUNT
 SINA = "http://hq.sinajs.cn/list="
@@ -60,7 +59,7 @@ LIVE_COLS = [
     "flt_susp",
     "ind_l1",
 ]
-HIST_COLS = LIVE_COLS + ["bs_eq"]
+HIST_COLS = LIVE_COLS + ["bs_eq", "adj_factor"]
 BASE_COLS = HIST_COLS + [
     "ab_shares",
     "st_level",
@@ -70,7 +69,6 @@ BASE_COLS = HIST_COLS + [
     "flt_warn",
     "pl_npp_ttm",
     "flt_div",
-    "pb_lo_curv",
     "pb_pct5y",
 ]
 
@@ -176,46 +174,49 @@ def members(c, pool):  # 源行的选股 → 资产下标 (端头起)
     return seq[: int(n)] if end == "low" else seq[::-1][: int(n)]
 
 
-class History:  # 成分的 BP 史: 行 = 落盘日 ∈ (T0 − 5 年 − 31 天, T0), 列 = 成分; NaN = 不可算
+class History:  # 成分的估值史: 行 = T0 之前的全部落盘日, 列 = 成分; NaN = 不可算
     def __init__(self, lib, t0, mem):
-        lo = ymd_days(before(t0, HIST_YEARS)) - 31
-        days = [d for d in lib.dates if ymd_days(d) > lo and d < t0]
+        days = [d for d in lib.dates if d < t0]
         c = {k: np.empty((len(days), len(mem)), np.float32) for k in HIST_COLS}
         for r, d in enumerate(days):
             x = lib.read(d, HIST_COLS)
             for k in HIST_COLS:
                 c[k][r] = x[k][mem]
-        sh = np.vstack(
-            [c["total_shares"][:1], c["total_shares"][:-1]]
-        )  # 收盘口股本 = 前一行 (T ≤ D) 的总股本
-        mc = c["close_day"].astype(np.float64) * sh
+        prev = lambda x: np.vstack([x[:1], x[:-1]]).astype(np.float64)  # 前一行: T ≤ D 的股本 (收盘口) / 复权因子
+        sh = prev(c["total_shares"])
+        mc = c["close_day"] * sh
         with np.errstate(divide="ignore", invalid="ignore"):
             self.bp = np.where(live(c) & (mc > 0), c["bs_eq"] / mc, np.nan)
+            unit = np.where(self.bp > 0, prev(c["adj_factor"]) * c["bs_eq"] / sh, np.nan)  # 等值线的单位 = 后复权 BPS; 倍数 m 的线 = m · 单位
         self.ymd = np.array(days)
         self.dd = np.array([ymd_days(d) for d in days])
+        self.m_lo = np.array([self.lowest(self.bp[:, j]) for j in range(len(mem))])
+        self.curv = np.array([self.bend(unit[:, j], t0) for j in range(len(mem))])
 
-    def val(
-        self, j, t0, now
-    ):  # 成分 j 在 T0 实时 BP = now 下 → (分位 %, 底档 BP); 不可算 = NaN
+    @staticmethod
+    def lowest(bp):  # 最低等值线的倍数: 全史 PB (BP > 0) 的 CONTOUR_TRIM 分位 (同 VAL levels_of 的取点); 无 → NaN
+        m = np.sort(1.0 / bp[bp > 0])
+        return m[int(CONTOUR_TRIM * (m.size - 1))] if m.size else math.nan
+
+    def bend(self, u, t0):  # 底线 u 近 3 年二次 OLS 的 2c (年⁻², u 除以窗内均值); 不可算 → NaN
+        win = np.isfinite(u) & (self.ymd > before(t0, CURV_YEARS))
+        if win.sum() < CURV_MIN or self.ymd[win][0] > before(t0, READY_YEARS):
+            return math.nan
+        t = (self.dd[win] - self.dd[win][0]) / 365.25
+        return 2.0 * np.polyfit(t, u[win] / u[win].mean(), 2)[0]
+
+    def pct(self, j, t0, now):  # 成分 j 在 T0 实时 BP = now 下的 5 年加权分位 (%); 不可算 = NaN
         bp = self.bp[:, j]
         ok = np.isfinite(bp)
-        if (
-            not math.isfinite(now)
-            or not ok.any()
-            or self.ymd[ok][0] > before(t0, READY_YEARS)
-        ):
-            return math.nan, math.nan
+        if not math.isfinite(now) or not ok.any() or self.ymd[ok][0] > before(t0, READY_YEARS):
+            return math.nan
         lo, d0 = before(t0, HIST_YEARS), ymd_days(t0)
         win = ok & (self.ymd > lo)
         v = np.append(bp[win], now)
         T = d0 - max(ymd_days(lo), ymd_days(int(self.ymd[ok][0])))
         assert T > 0
         w = 1.0 - np.exp(-HIST_K * (1.0 - np.append(d0 - self.dd[win], 0) / T))
-        W = w.sum()
-        order = np.argsort(-v, kind="stable")
-        cw = np.cumsum(w[order])
-        L = v[order[min(int(np.searchsorted(cw, HIST_LO * W)), v.size - 1)]]
-        return 100.0 * w[v >= now].sum() / W, L
+        return 100.0 * w[v >= now].sum() / w.sum()
 
 
 def sina(
@@ -277,6 +278,7 @@ def main():
         default="val",
         help="写入的调仓名单名 (output/config/live/lists/<名>.csv, 覆盖)",
     )
+    ap.add_argument("--top", type=int, default=40, help="名单只写排名前几只")
     a = ap.parse_args()
 
     t0 = sina(["sh000001"])["sh000001"][3]
@@ -289,7 +291,7 @@ def main():
     eq, sh = c["bs_eq"][mem].astype(np.float64), c["total_shares"][mem].astype(
         np.float64
     )
-    curv, lib_pct = c["pb_lo_curv"][mem], c["pb_pct5y"][mem]
+    lib_pct = c["pb_pct5y"][mem]
 
     heads = [
         "名次",
@@ -302,8 +304,8 @@ def main():
         "曲度",
         "罚分",
         "分",
-        "底档价",
-        "距底档%",
+        "底线价",
+        "距底线%",
     ]
     widths = [4, 10, 10, 8, 7, 6, 6, 7, 6, 6, 8, 8]
     q = sina(syms)
@@ -312,11 +314,9 @@ def main():
     for j, s in enumerate(syms):
         name, px, pre, _ = q[s]
         now = eq[j] / (px * sh[j]) if px > 0 and sh[j] > 0 else math.nan
-        pct, L = hist.val(j, t0, now)
-        pen = (
-            100.0 * a.lam * max(0.0, -float(curv[j])) if math.isfinite(curv[j]) else 0.0
-        )
-        band = px * now / L if L > 0 else math.nan
+        pct, cv = hist.pct(j, t0, now), float(hist.curv[j])
+        pen = 100.0 * a.lam * max(0.0, -cv) if math.isfinite(cv) else 0.0
+        band = hist.m_lo[j] * eq[j] / sh[j] if eq[j] > 0 and sh[j] > 0 else math.nan
         rows.append(
             (
                 pct + pen,
@@ -326,14 +326,14 @@ def main():
                 100.0 * (px / pre - 1) if pre > 0 else math.nan,
                 pct,
                 float(lib_pct[j]),
-                float(curv[j]),
+                cv,
                 pen,
                 band,
                 100.0 * (px / band - 1),
             )
         )
     rows.sort(key=lambda r: (not math.isfinite(r[0]), r[0]))
-    ranked = [r for r in rows if math.isfinite(r[0])]
+    ranked = [r for r in rows if math.isfinite(r[0])][: a.top]
     path = LISTS / f"{a.list}.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -365,7 +365,7 @@ def main():
             num(gap, "{:+.1f}"),
         ]
         out.append("".join(pad(x, w) for x, w in zip(cells, widths)))
-    out.append(f"→ {path} ({len(ranked)} 只, 无分的 {len(rows) - len(ranked)} 只不入)")
+    out.append(f"→ {path} (前 {len(ranked)} 只)")
     print("\n".join(out))
 
 

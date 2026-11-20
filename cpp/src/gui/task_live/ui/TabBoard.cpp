@@ -98,20 +98,11 @@ void bar(const std::optional<double> &v, double mv, const ImVec4 &col) {
     tip("%s · %.0f%%", wan(*v).c_str(), f * 100);
 }
 
-// 能成单的卖出股数里离 x 最近的
-int snap(const live::rebal::Hold &h, double unit, double x) {
-  const int first = static_cast<int>(std::ceil(std::max<double>(h.lot, unit / h.px) / h.step)) * h.step;
-  const int last = static_cast<int>(std::ceil(static_cast<double>(h.avail) / h.step)) * h.step - h.step;
-  int best = 0;
-  const auto take = [&](int c) {
-    if (std::abs(c - x) <= std::abs(best - x))
-      best = c;
-  };
-  if (h.avail * h.px >= unit)
-    take(h.avail);
-  if (first <= last)
-    take(std::min(last, std::max(first, static_cast<int>(std::lround(x / h.step)) * h.step)));
-  return best;
+// 卖出滑杆的值 (配置里的股数, 至多可卖)
+int sell_n(LiveHub &hub, const live::rebal::Hold &h) {
+  const std::map<std::string, int> &sells = hub.in().cfg.sells;
+  const auto i = sells.find(h.code);
+  return std::min(i == sells.end() ? 0 : i->second, h.avail);
 }
 
 // 一单的步骤条: 已过绿 / 当前橙 / 失败红 / 未到灰
@@ -236,8 +227,65 @@ void order_ctl(LiveHub &hub, BoardState &st) {
     tip("买入方式只管持仓行买入, 卖出一律担保品卖出");
 }
 
+// 融资加仓的卖出总 bar (占 Σ 非融资持仓额): 拖动 = 各持仓卖其非融资持仓的同一比例 r, 各只至多卖到其非融资可卖部分,
+//   r 取到合计恰为 bar 值 (覆盖各只的卖出滑杆, 按整手取最近, 不管最小单元); 拖不过上限 = Σ 非融资可卖额 / Σ 非融资持仓额
+//   (今日买入的等不可卖, 上限 < 100% 即标色: 本次融资加仓做不满). 显示 = Σ 卖出额 (各只至多计到其非融资可卖部分) / Σ 非融资持仓额
+void lever_sell(LiveHub &hub) {
+  const auto &p = hub.plan().plan;
+  double own = 0, cap = 0, got = 0;
+  if (p)
+    for (const live::rebal::Hold &h : p->holds) {
+      own += h.own * h.px;
+      cap += h.plain * h.px;
+      got += std::min(sell_n(hub, h), h.plain) * h.px;
+    }
+  const float top = own > 0 ? static_cast<float>(cap / own * 100) : 0.f;
+  float pct = own > 0 ? static_cast<float>(got / own * 100) : 0.f;
+  const bool capped = std::lround(top) < 100;
+  ImGui::BeginDisabled(cap <= 0 || hub.busy());
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * (capped ? 9 : 6));
+  if (capped)
+    ImGui::PushStyleColor(ImGuiCol_Text, kHot);
+  const bool hit = ImGui::SliderFloat("卖出", &pct, 0, 100, capped ? strf("%%.0f%%%% · 限 %.0f%%%%", top).c_str() : "%.0f%%");
+  if (capped)
+    ImGui::PopStyleColor();
+  if (hit) {
+    const auto sold = [&](double r) {
+      double s = 0;
+      for (const live::rebal::Hold &h : p->holds)
+        s += std::min(r * h.own, static_cast<double>(h.plain)) * h.px;
+      return s;
+    };
+    const double want = std::min(pct, top) / 100 * own;
+    double lo = 0, hi = 1;
+    for (int i = 0; i < 40; ++i)
+      (sold((lo + hi) / 2) < want ? lo : hi) = (lo + hi) / 2;
+    hub.edit_cfg([&](live::rebal::Cfg &c) {
+      for (const live::rebal::Hold &h : p->holds)
+        if (const int m = live::rebal::snap(h, 0, std::min(hi * h.own, static_cast<double>(h.plain))); m > 0)
+          c.sells[h.code] = m;
+        else
+          c.sells.erase(h.code);
+    });
+  }
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    tip("非融资部分卖出比例 (占非融资持仓): 拖动即按同一比例分到各持仓的卖出滑杆 (各只至多卖到其非融资可卖部分, 按整手取最近, 不管最小单元), "
+        "可再逐只调 (也可拖进融资部分)\n显示 = Σ 卖出额 (各只至多计到其非融资可卖部分) / Σ 非融资持仓额\n"
+        "上限 %.0f%% = Σ 非融资可卖额 / Σ 非融资持仓额%s",
+        top, capped ? "\n上限不足 100%: 部分非融资仓位今日不可卖 (如今日买入), 拖不上去, 本次融资加仓做不满" : "");
+}
+
 void rebal_ctl(LiveHub &hub, BoardState &st) {
   const live::rebal::Cfg &cfg = hub.in().cfg;
+  if (ImGui::RadioButton("普通##rebal", !cfg.lever))
+    hub.edit_cfg([](live::rebal::Cfg &c) { c.lever = false; });
+  ImGui::SameLine();
+  if (ImGui::RadioButton("融资加仓", cfg.lever))
+    hub.edit_cfg([](live::rebal::Cfg &c) { c.lever = true; });
+  if (ImGui::IsItemHovered())
+    tip("A 股加杠杆须先卖出自有部分、再融资买入: 卖出非融资部分 (卖出总 bar) → 只融资买名单里的融资标的 (不出现金腿), 回款留作现金日后择机买");
+  ImGui::SameLine(0, ImGui::GetFontSize());
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
   if (ImGui::BeginCombo("名单", cfg.list.empty() ? "(无)" : cfg.list.c_str())) {
     for (const std::string &n : hub.lists())
@@ -265,12 +313,17 @@ void rebal_ctl(LiveHub &hub, BoardState &st) {
   if (ImGui::IsItemHovered())
     tip("元, 不足此额的单不做, 新开仓至少买这么多; 回车或点别处生效");
   ImGui::SameLine(0, ImGui::GetFontSize());
+  if (cfg.lever) {
+    lever_sell(hub);
+    ImGui::SameLine();
+  }
   int pct = static_cast<int>(std::lround(cfg.pct));
-  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
-  if (ImGui::SliderInt("行使", &pct, 0, 100, "%d%%"))
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * (cfg.lever ? 6 : 7));
+  if (ImGui::SliderInt(cfg.lever ? "融资买入" : "行使", &pct, 0, 100, "%d%%"))
     hub.edit_cfg([&](live::rebal::Cfg &c) { c.pct = pct; });
   if (ImGui::IsItemHovered())
-    tip("本次用掉现金、可用保证金、可融余量的比例");
+    tip("%s", cfg.lever ? "本次用掉卖后可用保证金、可融余量的比例 (融资购买力, 不用现金); 名单里的融资标的尽量等权补齐"
+                        : "本次用掉现金、可用保证金、可融余量的比例");
   ImGui::SameLine(0, ImGui::GetFontSize());
   const PlanView &v = hub.plan();
   ImGui::BeginDisabled(!v.plan || !v.wait.empty() || v.plan->orders.empty() || hub.busy());
@@ -366,7 +419,7 @@ void plan_sheet(LiveHub &hub, BoardState &st) {
       if (c == 3 && ImGui::IsItemHovered())
         tip("滑点 + 手续费 [元]");
       if (c == 4 && ImGui::IsItemHovered())
-        tip("入选只数 / 名单里可买只数");
+        tip("入选只数 / 名单里可买只数%s", hub.in().cfg.lever ? " (融资加仓只计融资标的)" : "");
     }
   } else
     for (int c = 0; c < kN; ++c) {
@@ -776,7 +829,8 @@ void head_tip(int c, const live::board::Frame &f) {
   case C_SELLABLE:
     return tip("可卖部分市值, 占总市值; 悬停看金额");
   case C_SELL:
-    return tip("调仓先卖的拖卖出\n只停在能成单的档: 够起买股数、够最小单元, 末档全卖");
+    return tip("调仓先卖的拖卖出\n只停在能成单的档: 够起买股数、够最小单元 (融资加仓不管), 整手或连同零股, 末档全卖\n"
+               "融资加仓: 卖出总 bar 按同一比例分到各只的非融资可卖部分, 可再逐只调 (也可拖进融资部分), 总 bar 随之变");
   case C_AMT:
     return tip("调仓金额: 现金买, 融资买 / 卖 [万], 买红卖绿, 0 占位; 卖 = 拖到的股数 × 现价\n"
                "名单先融资标的、后其余, 各按排名入选, 等权补齐; 悬停看原因与成本拆分");
@@ -789,25 +843,22 @@ void head_tip(int c, const live::board::Frame &f) {
   }
 }
 
-// 卖出滑杆 (配置里的股数, 拖动即 snap 到能成单的)
-int sell_n(LiveHub &hub, const live::rebal::Hold &h) {
-  const std::map<std::string, int> &sells = hub.in().cfg.sells;
-  const auto i = sells.find(h.code);
-  return std::min(i == sells.end() ? 0 : i->second, h.avail);
-}
+// 卖出滑杆 (配置里的股数, 拖动即 snap 到能成单的); 悬停看股数
 void sell_slider(LiveHub &hub, const live::rebal::Hold &h) {
-  const double unit = hub.in().cfg.unit;
+  const double unit = hub.in().cfg.sell_unit();
   int n = sell_n(hub, h);
-  ImGui::BeginDisabled(snap(h, unit, h.avail) == 0 || hub.busy());
+  ImGui::BeginDisabled(live::rebal::snap(h, unit, h.avail) == 0 || hub.busy());
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4);
   if (ImGui::SliderInt("##sell", &n, 0, h.avail, ""))
-    hub.edit_cfg([&, m = snap(h, unit, n)](live::rebal::Cfg &c) {
+    hub.edit_cfg([&, m = live::rebal::snap(h, unit, n)](live::rebal::Cfg &c) {
       if (m > 0)
         c.sells[h.code] = m;
       else
         c.sells.erase(h.code);
     });
   ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    tip("卖 %d 股 / 可卖 %d 股 · 非融资持仓 %d 股, 其中可卖 %d 股", n, h.avail, h.own, h.plain);
 }
 
 // 一行的调仓: 金额 (现金买 / 融资买 / 卖)、成本、悬停说明; 持仓行带卖 (h, 拖到 n 股), 名单行带两腿买 (t)
