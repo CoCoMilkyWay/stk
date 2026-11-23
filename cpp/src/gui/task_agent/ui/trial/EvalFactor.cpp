@@ -1,14 +1,17 @@
-// eval_factor 的展示: 候选 (模板 / 思路) + 结局 + 各权重表 + 最佳权重的 20 组与分年 +
-//   参数扫描 (左 = 各参数点的窗 rIC 复合图, 右 = 参数点表, 缺省中位 rIC 降序; 图 ↔ 表悬停联动)
+// eval_factor 的展示: 候选 (模板 / 思路) + 结局 + 各权重表
+//   + 参数扫描 (左 = 各参数点的窗 rIC 复合图, 右 = 参数点表, 缺省中位 rIC 降序; 图 ↔ 表悬停联动)
+//   + 写进的权重的累计 rIC + 分层图 (Inspect 同一份; 没有逐日序列 = 载入的会话 → 20 组柱) + 分年
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 #include "gui/util/Chart.hpp"     // DayAxis / band_col
 #include "gui/util/HoverSync.hpp" // near_line / hot_row / kHotCol
+#include "gui/util/Layers.hpp"
 
 #include "implot.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -20,9 +23,11 @@ using namespace ui;
 
 namespace {
 
-constexpr float kSweepH = 320.0f; // 复合图 / 点表的高
-constexpr float kLineA = 0.55f;   // 非悬停线的不透明度
-constexpr float kBestW = 2.0f;    // 中位 rIC 最高的点 (= 写进的权重) 线宽
+constexpr float kSweepH = 320.0f;  // 复合图 / 点表的高
+constexpr float kCumH = 220.0f;    // 累计 rIC 图的高
+constexpr float kLayersH = 420.0f; // 分层图的高
+constexpr float kLineA = 0.55f;    // 非悬停线的不透明度
+constexpr float kBestW = 2.0f;     // 中位 rIC 最高的点 (= 写进的权重) 线宽
 
 int date_fmt(double v, char *buf, int size, void *ud) {
   const std::vector<int> &ds = *static_cast<const std::vector<int> *>(ud);
@@ -75,6 +80,45 @@ int sweep_plot(const Sweep &sw, int hot, const ImVec2 &size) {
   });
   ImPlot::EndPlot();
   return near;
+}
+
+// 写进的权重的累计 rIC (逐日 ok 行 rIC 之和沿日累加; 色同参数扫描里的权重线)
+void cum_plot(const Daily &d, size_t n_pts) {
+  std::vector<float> cum(d.ric.size());
+  double s = 0.0;
+  for (size_t i = 0; i < d.ric.size(); ++i)
+    cum[i] = static_cast<float>(s += d.ric[i]);
+  if (!ImPlot::BeginPlot("##cum_ric", ImVec2(-1, kCumH), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus))
+    return;
+  ImPlot::SetupAxes(nullptr, "累计 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupLegend(ImPlotLocation_NorthWest);
+  DayAxis ax{d.dates, 1.0, 0.0, {}, date_fmt, const_cast<std::vector<int> *>(&d.dates)};
+  setup_day_axis(ax);
+  ImPlot::SetNextLineStyle(rank_col(0, n_pts, 1.0f), kBestW);
+  ImPlot::PlotLine("权重", cum.data(), static_cast<int>(cum.size()));
+  ImPlot::EndPlot();
+}
+
+// 写进的权重的分层图 (与 Inspect 左上同一份): 滚动窗口滑条 + 分层对数累计 / 光标日截面
+void layers_view(const TrialRes &k) {
+  const Daily &d = k.st.res.daily;
+  assert(d.lay.size() == size_t{Layer::kLayerLines} && d.ls.size() == size_t{Layer::kLsLines} && d.turn.size() == size_t{Layer::kLsLines});
+  if (!k.lay) {
+    const float *lay[Layer::kLayerLines], *ls[Layer::kLsLines];
+    for (int i = 0; i < Layer::kLayerLines; ++i)
+      lay[i] = d.lay[static_cast<size_t>(i)].data();
+    for (int i = 0; i < Layer::kLsLines; ++i)
+      ls[i] = d.ls[static_cast<size_t>(i)].data();
+    k.lay = std::make_shared<Layer::LayerDerived>();
+    Layer::derive_layers(*k.lay, d.dates, lay, ls, d.turn.data());
+  }
+  Layer::LayerDerived &l = *k.lay;
+  int w = k.win > 0 ? std::min(k.win, l.days) : l.days;
+  ImGui::SetNextItemWidth(160.f);
+  if (ImGui::SliderInt("##win", &w, 1, l.days, w >= l.days ? "窗口 全段" : "窗口 %d 天", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp))
+    k.win = w >= l.days ? 0 : w;
+  Layer::roll_layers(l, w);
+  Layer::plot_layers(l, false, k.cursor, ImVec2(-1, kLayersH));
 }
 
 // 右: 参数点表 (列头点了排序, 缺省中位 rIC 降序); plot_hot = 图上悬停的点 (该行底色亮); 返回表上悬停的点 (−1 = 无)
@@ -185,8 +229,14 @@ void TrialRes::draw() const {
       }
       ImGui::EndTable();
     }
+    sweep_view(r.sweep, hot);
+    if (!r.daily.dates.empty()) {
+      cum_plot(r.daily, r.sweep.pts.size());
+      layers_view(*this);
+    }
     if (const Weight *w = r.best(); w && !w->grp.empty()) {
-      groups_plot((GroupsHead() + "##grp").c_str(), w->grp, 180.0f);
+      if (r.daily.dates.empty())
+        groups_plot((GroupsHead() + "##grp").c_str(), w->grp, 180.0f);
       if (!w->years.empty()) {
         heading(YearsHead(w->years));
         std::vector<std::string> heads;
@@ -200,7 +250,6 @@ void TrialRes::draw() const {
         }
       }
     }
-    sweep_view(r.sweep, hot);
   }
   ImGui::PopID();
 }

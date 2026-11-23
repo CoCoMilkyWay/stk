@@ -57,6 +57,7 @@
 #include "gui/engine/services/RunService.hpp"
 #include "gui/task_alpha/services/KlineService.hpp"
 #include "gui/task_alpha/ui/TabFactors.hpp" // FactorsUIState / FactorsUIContext
+#include "gui/util/Layers.hpp"
 #include "gui/util/Stage.hpp"
 #include "math/distribution/PdfSnap.hpp" // AggPdf (KLL 成品快照)
 
@@ -66,33 +67,16 @@
 
 namespace GUI::Alpha {
 
-// 左上的线表 (= InspectResult::nav 的线序, layer_tail 见 InspectService.hpp). 簇 i 与 LS 线 i 同号: 簇 0 = 20 组, 簇 1 + j = 第 j 级尾部 (两端)
-inline constexpr int kLayerLines = kNavLayers;
-inline constexpr int kLsLines = kNavLs;
-
-// 从 result 派生的日级序列 (UI 线程持锁算一次, 选项变才重算)
-struct InspectDerived {
-  int days = 0;
-  std::vector<misc::Ymd> dates;             // [days] 轴刻度用
-  std::vector<float> pool_index;            // [T] InspectResult::pool_index 选定 hold 那条复利成的点位 (起点 1, 右上 K 线叠加)
-  std::vector<float> x_day;                 // [days + 1] 0..days (累计线横轴, 日末)
-  std::vector<double> lay_cum[kLayerLines]; // [days + 1], 前 c 日 Σ ln(1 + 日收益) (c = 0 → 0; 爆仓日起 NaN)
-  std::vector<double> ls_cum[kLsLines];     // [days + 1], 同上; [days] × kDaysPerYear / days = 全段对数年化 (图例)
-  int win = 0;                              // lay_ann / ls_ann 现按的窗口 (交易日, 1..days); 0 = 未铺
-  std::vector<float> lay_ann[kLayerLines];  // [days + 1], (cum[c] − cum[max(0, c − win)]) × kDaysPerYear / win × 100 (全部线同一系数; 爆仓日起 NaN)
-  std::vector<float> ls_ann[kLsLines];      // [days + 1], 同上
-  float ls_sharpe[kLsLines] = {};           // LS 线的年化 Sharpe: 日收益 mean / sd × √kDaysPerYear
-  float ls_turn[kLsLines] = {};             // LS 线的年换手 (倍): turn_annual(hs, InspectResult::ls_turn) (两端均, 每本资金 1, 单边)
-  // 各簇 / 各 LS 线 (按 win) 的 min / max (含 0); 左上 y 范围按图例当前显示的簇每帧合成 (layer_range), 开关图例 / 拖窗口即重贴
-  float lay_lo[kLsLines] = {}, lay_hi[kLsLines] = {};
-  float ls_lo[kLsLines] = {}, ls_hi[kLsLines] = {};
-  AggPdf ic_pdf;                // = InspectResult::ic_agg 选定 hold (n_pts = 0 → 样本不足不画)
-  std::vector<float> ic_series; // 逐行 rank IC (ok 行, 时序) = ic_pdf 的样本; 左下左半背景
-  std::vector<float> ic_cum;    // [T] 逐行 rank IC 累计 (非 ok 行持平): 右上 K 线右轴叠加
-  std::vector<float> ic_dd;     // [T] ic_cum 距此前最高 (含起点 0) 的回撤 ≥ 0: 累计线着色
-  float ic_dd_max = 0.f;        // ic_dd 全段最大值 (着色归一)
-  AlphaDist adist;              // = InspectResult::alpha_dist (左下右半, 与持有期无关)
-  factor::stat::HoldStat hs;    // 选定 hold 的二级
+// 从 result 派生的日级序列 (UI 线程持锁算一次, 选项变才重算): 分层 / LS 线 (gui/util/Layers.hpp) + K 线叠加 / 分布
+struct InspectDerived : Layer::LayerDerived {
+  std::vector<float> pool_index; // [T] InspectResult::pool_index 选定 hold 那条复利成的点位 (起点 1, 右上 K 线叠加)
+  AggPdf ic_pdf;                 // = InspectResult::ic_agg 选定 hold (n_pts = 0 → 样本不足不画)
+  std::vector<float> ic_series;  // 逐行 rank IC (ok 行, 时序) = ic_pdf 的样本; 左下左半背景
+  std::vector<float> ic_cum;     // [T] 逐行 rank IC 累计 (非 ok 行持平): 右上 K 线右轴叠加
+  std::vector<float> ic_dd;      // [T] ic_cum 距此前最高 (含起点 0) 的回撤 ≥ 0: 累计线着色
+  float ic_dd_max = 0.f;         // ic_dd 全段最大值 (着色归一)
+  AlphaDist adist;               // = InspectResult::alpha_dist (左下右半, 与持有期无关)
+  factor::stat::HoldStat hs;     // 选定 hold 的二级
   bool valid = false;
 };
 

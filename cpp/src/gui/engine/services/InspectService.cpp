@@ -22,53 +22,6 @@ namespace GUI::Engine {
 
 namespace {
 
-using factor::stat::kBot;
-using factor::stat::kTop;
-
-double tail_abs(const factor::stat::Row &r, const TailRow &tr, int e, int j, double cap) {
-  return factor::stat::book_abs(tr.sum[e][j], tr.cnt[e][j], r.mkt, cap * kTailOfGroup[j]);
-}
-
-double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double cap) {
-  if (!r.ok)
-    return 0.0;
-  if (i >= 2 * kNavLayers) {
-    const bool absolute = i < 2 * kNavLayers + kNavLs;
-    const int j = i - 2 * kNavLayers - (absolute ? 0 : kNavLs);
-    using factor::stat::end_group;
-    if (j == 0)
-      return absolute ? 0.5 * (group_abs(r, end_group(kTop), cap) - group_abs(r, end_group(kBot), cap)) : factor::stat::ls_row(r);
-    return absolute ? 0.5 * (tail_abs(r, tr, kTop, j - 1, cap) - tail_abs(r, tr, kBot, j - 1, cap)) : 0.5 * (tr.sum[kTop][j - 1] - tr.sum[kBot][j - 1]);
-  }
-  const bool absolute = i < kNavLayers;
-  const int k = absolute ? i : i - kNavLayers;
-  if (k < factor::stat::kGroups)
-    return absolute ? group_abs(r, k, cap) : r.grp[k];
-  const int e = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
-  return absolute ? tail_abs(r, tr, e, j, cap) : tr.sum[e][j];
-}
-
-struct NavP : LinesP<kNavLines> {
-  using Ext = TailExt;
-  double cap = 0.0;
-  int d = factor::stat::kFwd;
-  Ext ext() const { return {kTailThr.v, cap, d}; }
-  void init(const PassCtx &p) {
-    LinesP::init(p);
-    stride = p.seg, d = p.d;
-  }
-  void open(const Ctx &c) {
-    LinesP::open(c);
-    cap = c.L.cap;
-  }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &e) {
-    TailRow tr;
-    e.finish(r, tr);
-    for (int i = 0; i < kNavLines; ++i)
-      at(hi, i, t) = static_cast<float>(nav_value(r, tr, i, cap));
-  }
-};
-
 struct RicP : RowsP<RicP, float> {
   std::vector<float> *dst = nullptr;
   static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(H) * sh.T; }
@@ -78,27 +31,6 @@ struct RicP : RowsP<RicP, float> {
   }
   void fold(const Ctx &c, int hi, int u0, std::span<const float> g) {
     std::copy(g.begin(), g.end(), dst->begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(hi) * c.c.rows_stat() + u0));
-  }
-};
-
-struct TurnP : ProbeBase {
-  static constexpr uint8_t need = kNeedRx;
-  factor::stat::CostAcc acc[kTails][factor::stat::kMaxHold] = {};
-  static double scratch(const Shape &sh, int) { return static_cast<double>(sh.n()); }
-  void close(const Ctx &c, const RootView &v) {
-    const factor::stat::Span s = c.s();
-    std::vector<uint8_t> ec(s.n());
-    for (int j = 0; j < kTails; ++j) {
-      c.ex.rows(s.T, [&](int t0, int t1, int) {
-        for (size_t k = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; k < e; ++k)
-          ec[k] = tail_code(v.rx[k], j, c.d);
-      });
-      const factor::stat::Cost flat{};
-      factor::stat::CostAcc out[factor::stat::kMaxHold];
-      factor::cpu::stat::cost_rows(c.ex, ec.data(), s, c.L, c.L.cap * kTailOfGroup[j], &flat, 1, *c.w, out);
-      for (int hi = 0; hi < c.L.hd.n; ++hi)
-        acc[j][hi].merge(out[hi]);
-    }
   }
 };
 

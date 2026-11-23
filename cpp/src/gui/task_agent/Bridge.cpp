@@ -450,6 +450,7 @@ struct Lab::Impl {
   std::vector<Result> results;
   Fails fails;
   std::map<std::string, Sweep> sweeps;
+  std::map<std::string, std::vector<Daily>> days;
   std::shared_ptr<const ViewEnv> env_cache;
 
   Progress prog;
@@ -517,6 +518,11 @@ struct Lab::Impl {
   void attach_extras(Result &r) const {
     if (const auto it = sweeps.find(r.file); it != sweeps.end())
       r.sweep = it->second;
+    const Weight *w = r.best();
+    if (const auto it = days.find(r.file); it != days.end() && w)
+      for (const Daily &d : it->second)
+        if (d.expr == w->expr && d.sign == w->sign)
+          r.daily = d;
   }
 
   void rescan_all() {
@@ -583,7 +589,7 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   impl_->data = &data, impl_->sc = sc, impl_->is_test = test;
   impl_->dir = candidates(sc, test);
   if (!same_cand)
-    impl_->fails.clear(), impl_->sweeps.clear();
+    impl_->fails.clear(), impl_->sweeps.clear(), impl_->days.clear();
 
   const std::shared_ptr<const Engine::FeatureTable> ft = impl_->ft();
   const std::optional<Engine::FactorScope> fsc = fscope_of(data, ft, sc);
@@ -709,13 +715,14 @@ Staged Lab::stage(Cand c, std::string_view hyp_title) {
   return {std::move(c), file, result(file)};
 }
 
-const Result &Lab::absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep) {
+const Result &Lab::absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep, std::vector<Daily> days) {
   assert(impl_->data && !busy() && !file.empty());
   if (ok)
     impl_->fails.erase(file);
   else
     impl_->fails[file] = err;
   impl_->sweeps[file] = std::move(sweep);
+  impl_->days[file] = std::move(days);
   impl_->rescan_one(file);
   return result(file);
 }
@@ -744,7 +751,7 @@ void Lab::discard(const std::string &file) {
   assert(impl_->data && !busy() && !file.empty());
   Engine::DeleteFactorFile(impl_->dir, file);
   disk::remove(impl_->dir.log, impl_->dir.of(file));
-  impl_->fails.erase(file), impl_->sweeps.erase(file);
+  impl_->fails.erase(file), impl_->sweeps.erase(file), impl_->days.erase(file);
   std::erase_if(impl_->results, [&](const Result &r) { return r.file == file; });
   impl_->env_cache.reset();
 }

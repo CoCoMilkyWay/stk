@@ -1,5 +1,5 @@
 // eval_factor — 回测: 三拍对仗 OpenEvalFactor (核假设落盘, GUI) → LabTask (Search + Run, Lab) → CloseEvalFactor (入表封存, GUI)
-//               → TrialRes (结局 + 最佳权重 20 组 / 分年 + 参数扫描) → 原文; 展示见 ui/trial/EvalFactor.cpp
+//               → TrialRes (结局 + 参数扫描 + 最佳权重 20 组 / 分年; Run 顺带最佳权重的逐日序列只给展示) → 原文; 展示见 ui/trial/EvalFactor.cpp
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
@@ -32,6 +32,7 @@ constexpr size_t kSweepTop = 12;
 
 struct EvalYield final : Res {
   Sweep sweep;
+  std::vector<Daily> days;
   std::string text() const override { return {}; }
   void draw() const override {}
 };
@@ -100,6 +101,23 @@ Sweep sweep_of(const Engine::SearchResult &r) {
   return s;
 }
 
+// Run 顺带的逐日序列 → 每个算出来的权重一份
+std::vector<Daily> days_of(const std::vector<Engine::FactorRow> &rows, const std::vector<size_t> &idx, const Engine::DayLines &dl) {
+  std::vector<Daily> out;
+  for (size_t e = 0; e < idx.size(); ++e) {
+    const Engine::DayLine &x = dl.rows[e];
+    if (x.nav.n == 0)
+      continue;
+    assert(x.nav.n == Engine::kNavExcess && x.nav.P == static_cast<int>(dl.dates.size()) && x.ric.size() == dl.dates.size());
+    Daily d{.expr = rows[idx[e]].expr, .sign = rows[idx[e]].sign, .dates = dl.dates, .ric = x.ric};
+    for (int i = 0; i < Engine::kNavExcess; ++i)
+      (i < Engine::kNavLayers ? d.lay : d.ls).emplace_back(x.nav.at(i), x.nav.at(i) + x.nav.P);
+    d.turn.assign(std::begin(x.turn), std::end(x.turn));
+    out.push_back(std::move(d));
+  }
+  return out;
+}
+
 // 假设不成的原因 (空 = 可挂)
 std::string eval_miss(const Call &c, const Board &b, int round) {
   const Hyp *h = b.find(c.str("hyp"));
@@ -141,11 +159,13 @@ ToolOut run_eval(const Engine::FactorScope &fsc, const std::string &file, const 
     if (frows[i].widx >= 0 && frows[i].error.empty() && !frows[i].expr.empty())
       idx.push_back(i);
   Engine::Lease l(bay.flow);
-  const Engine::Rc rc = l ? Engine::EvalFactorFile(fsc, bay.flow, frows, idx) : Engine::Rc::Cancel;
+  Engine::DayLines dl{.hold = bay.env.hold};
+  const Engine::Rc rc = l ? Engine::EvalFactorFile(fsc, bay.flow, frows, idx, {}, {}, &dl) : Engine::Rc::Cancel;
   if (bay.cancelled())
     return {};
   if (rc != Engine::Rc::Ok)
     return {false, rc == Engine::Rc::Stale ? Engine::kStaleMsg : "Run 中止", {}, std::move(yield)};
+  yield->days = days_of(frows, idx, dl);
   return {true, {}, {}, std::move(yield)};
 }
 
@@ -176,6 +196,8 @@ std::string TrialRes::text() const {
   s += Detail(r) + GateLine(r, gate);
   if (!r.visible)
     return s;
+  if (const std::string sw = sweep_text(r.sweep); !sw.empty())
+    s += sw + "\n";
   if (const Weight *w = r.best(); w && !w->grp.empty()) {
     s += "- " + GroupsHead() + ": " + text::spark(w->grp, text::bp) + "\n";
     if (!w->years.empty()) {
@@ -185,7 +207,7 @@ std::string TrialRes::text() const {
       s += "- " + YearsHead(w->years) + ": " + text::spark(ric) + "\n";
     }
   }
-  return s + sweep_text(r.sweep);
+  return s;
 }
 
 std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
@@ -216,9 +238,10 @@ void CloseEvalFactor(Act &a, ToolOut out, Seat &s) {
   auto r = std::static_pointer_cast<TrialRes>(a.out.res);
   assert(r);
   Sweep sweep;
+  std::vector<Daily> days;
   if (auto *y = static_cast<EvalYield *>(out.res.get()))
-    sweep = std::move(y->sweep);
-  r->st.res = s.lab.absorb(r->st.file, out.ok, out.text, std::move(sweep));
+    sweep = std::move(y->sweep), days = std::move(y->days);
+  r->st.res = s.lab.absorb(r->st.file, out.ok, out.text, std::move(sweep), std::move(days));
   const bool ok = r->st.res.verdict != Verdict::Broken;
   a.out = Done(std::move(r), ok);
 }

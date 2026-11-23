@@ -8,10 +8,89 @@
 #include <cassert>
 #include <map>
 #include <tuple>
+#include <type_traits>
 
 namespace GUI::Engine {
 
+namespace {
+
 using RunProbes = EvalProbes<>;
+using DayProbes = EvalProbes<NavP, TurnP>;
+
+DayLine day_of(const DayProbes &p, const EvalStat &st, int hold) {
+  const factor::stat::HoldStat *h = st.find_hold(hold);
+  assert(h && "逐日序列的持有期须是本层标签组之一");
+  const TurnP &tp = p.at<TurnP>();
+  DayLine o{.ric = p.at<YearP>().day_ric[h - st.hold], .nav = p.at<NavP>().out};
+  o.turn[0] = static_cast<float>(factor::stat::turn_annual(*h, st.turn_of(*h)));
+  for (int j = 0; j < kTails; ++j)
+    o.turn[1 + j] = static_cast<float>(factor::stat::turn_annual(*h, tp.acc[j][0]));
+  return o;
+}
+
+template <class Ps>
+Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx, const std::function<void()> &on_plan,
+             const std::function<void(size_t)> &on_row, DayLines *day) {
+  RootSet rs{.hd = keys_of<Holds>(sc.ft->y.labels)};
+  for (const size_t i : idx)
+    rs.add(*sc.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign));
+  ForestOut o;
+  o.job.who = "Run";
+  std::vector<Ps> ps(rs.size());
+  if constexpr (std::is_same_v<Ps, DayProbes>)
+    for (Ps &p : ps)
+      p.template at<NavP>().only = p.template at<TurnP>().only = day->hold;
+  std::vector<size_t> fin;
+  int k_st = -1;
+  EvalStat st{};
+
+  const Rc rc = with_backend<Ps>(F, sc.gpu, [&](auto &eng) {
+    return eval_forest(
+        eng, F, sc, rs, std::span(ps), o, /*whole=*/false,
+        [&](int e, int k, const std::string &why) {
+          const size_t ri = idx[static_cast<size_t>(e)];
+          FactorRow &r = rows[ri];
+          assert(r.status != RowState::Done && "每行至多收尾一次");
+          if (!why.empty()) {
+            r.error = why;
+            r.status = RowState::Done;
+          } else {
+            if (k != k_st) {
+              st = EvalStat{};
+              fill_eval(ps[static_cast<size_t>(k)], o.scope(sc), o.eval_ms(k), st);
+              k_st = k;
+            }
+            static_cast<EvalStat &>(r) = st;
+            r.has_stat = true;
+            r.stat_from_file = false;
+            r.status = RowState::Done;
+            fin.push_back(ri);
+            if constexpr (std::is_same_v<Ps, DayProbes>)
+              day->rows[static_cast<size_t>(e)] = day_of(ps[static_cast<size_t>(k)], st, day->hold);
+          }
+          if (on_row)
+            on_row(ri);
+        },
+        NoOp{},
+        [&] {
+          if (on_plan)
+            on_plan();
+        });
+  });
+  if (rc == Rc::Ok && !fin.empty()) {
+    std::vector<const FactorRow *> out;
+    out.reserve(fin.size());
+    for (const size_t ri : fin)
+      out.push_back(&rows[ri]);
+    WriteFactorStats(sc.dir, out);
+  }
+  if constexpr (std::is_same_v<Ps, DayProbes>)
+    if (rc == Rc::Ok)
+      day->dates = o.job.dm.stat_dates();
+  return rc;
+}
+
+} // namespace
 
 bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool evaluate, bool gpu, RunRequest &req) {
   req = RunRequest{};
@@ -37,59 +116,14 @@ void ScanFactors(const FactorScope &sc, std::vector<FactorRow> &out) {
 }
 
 Rc EvalFactorFile(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx,
-                  const std::function<void()> &on_plan, const std::function<void(size_t)> &on_row) {
+                  const std::function<void()> &on_plan, const std::function<void(size_t)> &on_row, DayLines *day) {
   TraceN("FactorsEvaluateFile");
   if (idx.empty())
     return Rc::Ok;
-  RootSet rs{.hd = keys_of<Holds>(sc.ft->y.labels)};
-  for (const size_t i : idx)
-    rs.add(*sc.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign));
-  ForestOut o;
-  o.job.who = "Run";
-  std::vector<RunProbes> ps(rs.size());
-  std::vector<size_t> fin;
-  int k_st = -1;
-  EvalStat st{};
-
-  const Rc rc = with_backend<RunProbes>(F, sc.gpu, [&](auto &eng) {
-    return eval_forest(
-        eng, F, sc, rs, std::span(ps), o, /*whole=*/false,
-        [&](int e, int k, const std::string &why) {
-          const size_t ri = idx[static_cast<size_t>(e)];
-          FactorRow &r = rows[ri];
-          assert(r.status != RowState::Done && "每行至多收尾一次");
-          if (!why.empty()) {
-            r.error = why;
-            r.status = RowState::Done;
-          } else {
-            if (k != k_st) {
-              st = EvalStat{};
-              fill_eval(ps[static_cast<size_t>(k)], o.scope(sc), o.eval_ms(k), st);
-              k_st = k;
-            }
-            static_cast<EvalStat &>(r) = st;
-            r.has_stat = true;
-            r.stat_from_file = false;
-            r.status = RowState::Done;
-            fin.push_back(ri);
-          }
-          if (on_row)
-            on_row(ri);
-        },
-        NoOp{},
-        [&] {
-          if (on_plan)
-            on_plan();
-        });
-  });
-  if (rc == Rc::Ok && !fin.empty()) {
-    std::vector<const FactorRow *> out;
-    out.reserve(fin.size());
-    for (const size_t ri : fin)
-      out.push_back(&rows[ri]);
-    WriteFactorStats(sc.dir, out);
-  }
-  return rc;
+  if (!day)
+    return eval_file<RunProbes>(sc, F, rows, idx, on_plan, on_row, nullptr);
+  day->rows.assign(idx.size(), DayLine{});
+  return eval_file<DayProbes>(sc, F, rows, idx, on_plan, on_row, day);
 }
 
 bool RunService::run(RunRequest &req) {

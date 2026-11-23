@@ -273,6 +273,13 @@ struct MiniPdf {
 inline constexpr int kTails = 3;
 inline constexpr float kTailOfGroup[kTails] = {0.5f, 0.2f, 0.05f};
 static_assert(kTailOfGroup[0] < 1.f && kTailOfGroup[1] < kTailOfGroup[0] && kTailOfGroup[2] < kTailOfGroup[1] && kTailOfGroup[2] > 0.f);
+// 分层净值线表 (Probe NavP 出, Inspect 左上 / agent eval_factor 的分层图): 分层 = 20 组 + 两端各 kTails 级尾部, LS = 整组 + 各级尾部;
+// 全量 = 绝对分层 / 超额分层 / 绝对 LS / 超额 LS 四段 (kNavLines), 只要超额 = 超额分层 / 超额 LS 两段 (kNavExcess)
+inline constexpr int kNavLayers = factor::stat::kGroups + factor::stat::kEnds * kTails;
+inline constexpr int kNavLs = 1 + kTails;
+inline constexpr int kNavLines = 2 * (kNavLayers + kNavLs);
+inline constexpr int kNavExcess = kNavLayers + kNavLs;
+inline constexpr int layer_tail(int e, int j) { return factor::stat::kGroups + e * kTails + j; }
 // 一行的尾部分层 (TailExt 收尾; 只在 Row::ok 行有值, 其余全 0)
 struct TailRow {
   float sum[factor::stat::kEnds][kTails] = {};    // 两端尾部的超额持仓收益 Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)

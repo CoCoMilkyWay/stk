@@ -3,6 +3,7 @@
 //   薄线程壳: RunService (FactorWorker<RunService, RunRequest>)
 #pragma once
 
+#include "gui/engine/Book.hpp"
 #include "gui/engine/File.hpp"
 #include "gui/engine/Table.hpp"
 #include "gui/engine/Worker.hpp"
@@ -28,10 +29,22 @@ bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> 
 // 扫因子目录: 每权重一行 (文件级问题 widx = −1) + 跨行查重 dup_of
 void ScanFactors(const FactorScope &sc, std::vector<FactorRow> &out);
 
+// 一个求值行在一个持有期上的逐日序列 (已按权重方向): 累计 rIC 的增量 + 超额分层 / LS 日净值线 + 各 LS 线年换手
+struct DayLine {
+  std::vector<float> ric;  // [日] ok 行 rIC 之和
+  BookLines nav;           // [kNavExcess][日] 日收益 (线序见 Table.hpp kNavExcess)
+  float turn[kNavLs] = {}; // LS 线年换手 (倍; 整组 = 固定段两端, 尾部 = 该级两端)
+};
+struct DayLines {
+  int hold = 0;                 // 调用方给: 持有期键
+  std::vector<misc::Ymd> dates; // 评估期交易日
+  std::vector<DayLine> rows;    // 与 idx 同序 (算不出的行留空)
+};
+
 // 单文件评估 (须持 Lease): rows[idx] 同属一文件, 合成共享森林评全部持有期与成本段 → 填 EvalStat 或 error (status = Done) → Ok 时回写文件.
-// on_plan / on_row 可选: 值域核完开跑前 / 每行收尾时回调
+// on_plan / on_row 可选: 值域核完开跑前 / 每行收尾时回调; day 非空 = 另出 day->hold 上的逐日序列 (agent eval_factor)
 Rc EvalFactorFile(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx,
-                  const std::function<void()> &on_plan = {}, const std::function<void(size_t)> &on_row = {});
+                  const std::function<void()> &on_plan = {}, const std::function<void(size_t)> &on_row = {}, DayLines *day = nullptr);
 
 class RunService : public FactorWorker<RunService, RunRequest> {
   friend Service<RunService, RunRequest>;

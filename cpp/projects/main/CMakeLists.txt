@@ -418,6 +418,7 @@ set(MATH_PRECISE
     gui/task_market/ui/LinesSheet.cpp
     gui/task_market/ui/LinesView.cpp
     gui/task_market/ui/TabLines.cpp
+    gui/util/Layers.cpp
     # gui: microtex 头 (nums.h: POS_INF = infinity()) 的消费者, -ffinite-math-only 下是 UB
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp

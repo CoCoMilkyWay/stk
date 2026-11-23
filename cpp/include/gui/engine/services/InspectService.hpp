@@ -40,11 +40,6 @@ inline std::string inspect_key(FactorLevelId lv, const std::string &pool, int ye
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, bool reload,
                         bool gpu, InspectExport ex, int top_n, InspectRequest &req);
 
-inline constexpr int kNavLayers = factor::stat::kGroups + factor::stat::kEnds * kTails;
-inline constexpr int kNavLs = 1 + kTails;
-inline constexpr int kNavLines = 2 * (kNavLayers + kNavLs);
-inline constexpr int layer_tail(int e, int j) { return factor::stat::kGroups + e * kTails + j; }
-
 struct InspectPlanes {
   std::vector<float> ric;
   std::vector<uint16_t> rx;

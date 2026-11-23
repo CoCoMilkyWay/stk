@@ -364,6 +364,7 @@ struct YearP : RowsP<YearP, YearRow> {
   std::vector<std::vector<Day>> day;
   std::vector<YearStat> years[factor::stat::kMaxHold];
   factor::search::Roll roll[factor::stat::kMaxHold];
+  std::vector<float> day_ric[factor::stat::kMaxHold]; // [日] ok 行 rIC 之和 (累计 rIC 的逐日增量)
   static double bytes(const Shape &sh, int H) { return sizeof(Day) * static_cast<double>(H) * sh.days; }
   static YearRow of(const factor::stat::Row &r) {
     YearRow x{r.ok != 0, r.ric, factor::stat::ls_row(r), {}};
@@ -391,8 +392,9 @@ struct YearP : RowsP<YearP, YearRow> {
       const std::vector<Day> &ds = day[static_cast<size_t>(hi)];
       assert(ds.size() == dates.size() && "逐日累加与评估期日期不齐");
       std::vector<factor::search::DaySum> sums(ds.size());
+      day_ric[hi].resize(ds.size());
       for (size_t i = 0; i < ds.size(); ++i)
-        sums[i] = {ds[i].n, ds[i].ric, ds[i].ls};
+        sums[i] = {ds[i].n, ds[i].ric, ds[i].ls}, day_ric[hi][i] = static_cast<float>(ds[i].ric);
       roll[hi] = factor::search::roll_of(sums, p.hd.k[hi], seg);
       std::vector<YearStat> &out = years[hi];
       out.clear();
@@ -412,6 +414,110 @@ struct YearP : RowsP<YearP, YearRow> {
       }
     }
     std::vector<std::vector<Day>>().swap(day);
+  }
+};
+
+// 分层 / 尾部 / LS 的逐行批收益 → fold_book 日净值线 (Inspect: 全部持有期 × kNavLines; agent eval_factor: 一个持有期 × kNavExcess)
+inline double tail_abs(const factor::stat::Row &r, const TailRow &tr, int e, int j, double cap) {
+  return factor::stat::book_abs(tr.sum[e][j], tr.cnt[e][j], r.mkt, cap * kTailOfGroup[j]);
+}
+// 线 i ∈ [0, kNavLines) 在行 r 的批收益 (线序见 Table.hpp kNavLines)
+inline double nav_value(const factor::stat::Row &r, const TailRow &tr, int i, double cap) {
+  if (!r.ok)
+    return 0.0;
+  using factor::stat::kBot, factor::stat::kTop, factor::stat::end_group;
+  if (i >= 2 * kNavLayers) {
+    const bool absolute = i < 2 * kNavLayers + kNavLs;
+    const int j = i - 2 * kNavLayers - (absolute ? 0 : kNavLs);
+    if (j == 0)
+      return absolute ? 0.5 * (group_abs(r, end_group(kTop), cap) - group_abs(r, end_group(kBot), cap)) : factor::stat::ls_row(r);
+    return absolute ? 0.5 * (tail_abs(r, tr, kTop, j - 1, cap) - tail_abs(r, tr, kBot, j - 1, cap)) : 0.5 * (tr.sum[kTop][j - 1] - tr.sum[kBot][j - 1]);
+  }
+  const bool absolute = i < kNavLayers;
+  const int k = absolute ? i : i - kNavLayers;
+  if (k < factor::stat::kGroups)
+    return absolute ? group_abs(r, k, cap) : r.grp[k];
+  const int e = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
+  return absolute ? tail_abs(r, tr, e, j, cap) : tr.sum[e][j];
+}
+// 超额线 i ∈ [0, kNavExcess) 在 kNavLines 线序里的号
+inline constexpr int nav_excess(int i) { return i < kNavLayers ? kNavLayers + i : kNavLayers + kNavLs + i; }
+
+// 持有期键 only 在 hd 里的下标; only < 0 → −1
+inline int only_of(const Holds &hd, int only) {
+  if (only < 0)
+    return -1;
+  for (int i = 0; i < hd.n; ++i)
+    if (hd.k[i] == only)
+      return i;
+  assert(false && "only 须是本层标签组之一");
+  return -1;
+}
+
+struct NavP : ProbeBase {
+  static constexpr uint8_t need = kNeedRows;
+  using Ext = TailExt;
+  int only = -1; // 调用方给: 持有期键 → 只出它的 kNavExcess 条超额线; −1 = 全部持有期 × kNavLines
+  int sel = -1, t0 = 0, d = factor::stat::kFwd;
+  double cap = 0.0;
+  RowLines x;
+  BookLines out; // [线][日]; 全部持有期时线 = hi · kNavLines + i
+  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(kNavLines) * H * sh.T; }
+  Ext ext() const { return {kTailThr.v, cap, d}; }
+  void init(const PassCtx &p) {
+    d = p.d, sel = only_of(p.hd, only);
+    x.reset(only < 0 ? p.hd.n * kNavLines : kNavExcess, p.rows_stat);
+    for (int i = 0; i < x.n; ++i)
+      x.hold[static_cast<size_t>(i)] = only < 0 ? p.hd.k[i / kNavLines] : only;
+  }
+  void open(const Ctx &c) {
+    assert(x.T == c.c.rows_stat() && "净值线与作用域不符");
+    t0 = c.c.land0(), cap = c.L.cap;
+  }
+  void row(int hi, int t, const factor::stat::Row &r, const Ext &e) {
+    if (only >= 0 && hi != sel)
+      return;
+    TailRow tr;
+    e.finish(r, tr);
+    const size_t at = static_cast<size_t>(t0 + t);
+    if (only < 0)
+      for (int i = 0; i < kNavLines; ++i)
+        x.x[static_cast<size_t>(hi * kNavLines + i) * x.T + at] = static_cast<float>(nav_value(r, tr, i, cap));
+    else
+      for (int i = 0; i < kNavExcess; ++i)
+        x.x[static_cast<size_t>(i) * x.T + at] = static_cast<float>(nav_value(r, tr, nav_excess(i), cap));
+  }
+  void finish(const PassCtx &p) {
+    out = fold_book(p.ex, p.seg, x, p.seg);
+    x = RowLines{};
+  }
+};
+
+// 各级尾部 LS 的两端换手 (固定段, 无冲击): acc[j][hi]; only 同 NavP (只算该持有期, 放 acc[j][0])
+struct TurnP : ProbeBase {
+  static constexpr uint8_t need = kNeedRx;
+  int only = -1;
+  factor::stat::CostAcc acc[kTails][factor::stat::kMaxHold] = {};
+  static double scratch(const Shape &sh, int) { return static_cast<double>(sh.n()); }
+  void close(const Ctx &c, const RootView &v) {
+    const factor::stat::Span s = c.s();
+    factor::stat::Labels L = c.L;
+    if (const int i = only_of(c.L.hd, only); i >= 0) {
+      L.hd.n = 1, L.hd.k[0] = only;
+      L.l[0] = c.L.l[i];
+    }
+    std::vector<uint8_t> ec(s.n());
+    for (int j = 0; j < kTails; ++j) {
+      c.ex.rows(s.T, [&](int t0, int t1, int) {
+        for (size_t k = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; k < e; ++k)
+          ec[k] = tail_code(v.rx[k], j, c.d);
+      });
+      const factor::stat::Cost flat{};
+      factor::stat::CostAcc out[factor::stat::kMaxHold];
+      factor::cpu::stat::cost_rows(c.ex, ec.data(), s, L, L.cap * kTailOfGroup[j], &flat, 1, *c.w, out);
+      for (int hi = 0; hi < L.hd.n; ++hi)
+        acc[j][hi].merge(out[hi]);
+    }
   }
 };
 
