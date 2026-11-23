@@ -1697,7 +1697,14 @@ void Panel::build(const std::vector<Ymd> &dates) {
   assert(!table.empty() && "AssetAxis 为空");
   assert(!dates.empty() && "回测日为空");
 
-  auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = std::chrono::steady_clock::now();
+  auto t_lap = t0;
+  const auto lap = [&t_lap] {
+    const auto t = std::chrono::steady_clock::now();
+    const double s = std::chrono::duration<double>(t - t_lap).count();
+    t_lap = t;
+    return s;
+  };
   auto data = std::make_unique<Data>();
   Axes &axes = data->axes;
   Meta &meta = data->meta;
@@ -1742,7 +1749,9 @@ void Panel::build(const std::vector<Ymd> &dates) {
     meta.board[static_cast<std::size_t>(a)] = board_of(table.code(static_cast<std::size_t>(a)));
 
   // ---- PIT 池: 静态 meta + 16 张月度表一次 Scan → 全 D 轴网格 + 事件链 ----
+  const double s_axes = lap();
   std::vector<float> volume;
+  double s_scan = 0.0;
   {
     fundamental::Scan scan(cat, ids, static_cast<size_t>(misc::exec::hw()));
     fundamental::Part<fundamental::Sink> meta_p;
@@ -1766,6 +1775,7 @@ void Panel::build(const std::vector<Ymd> &dates) {
     events.add(scan, axes);
     std::atomic<std::size_t> done{0};
     scan.run(done);
+    s_scan = lap();
     grids.finish(axes, pit);
     std::move(events).finish(n_a, pit);
     volume = std::move(grids.volume);
@@ -1800,25 +1810,29 @@ void Panel::build(const std::vector<Ymd> &dates) {
   data->axes_warmup_d = first_d_of_year(axes, year_of_d(axes, 0) + 3);
 
   // ---- 全史资产态掩码 (状态机全史推进, 须在切片前) → 行情派生截面 + Fund live / base 口 ----
+  const double s_chain = lap();
   pit.univ = univ_mask(*data);
+  const double s_univ = lap();
 
   // ---- 行情派生 (全市场截面) ----
   data->market = build_market(axes, pit, volume, g0);
   std::vector<float>().swap(volume);
+  const double s_market = lap();
 
   // ---- 估值史 (逐资产全史状态机, 须在切片前、全史资产态掩码之后) ----
   data->hist = build_hist(*data, g0);
+  const double s_hist = lap();
 
   // ---- 网格切片: 其余历史只在事件链上 ----
   pit.slice(n_a, g0);
 
   d_ = std::move(data);
   pq::release_unused_memory();
+  const double s_slice = lap();
 
-  auto t1 = std::chrono::steady_clock::now();
-  double sec = std::chrono::duration<double>(t1 - t0).count();
-  std::printf("[fund::Panel] built: %d assets, D axis %d, grid [%d, %d) (%.1fs)\n",
-              n_a, n_d, pit.g0, pit.g0 + pit.n_g, sec);
+  const double sec = std::chrono::duration<double>(t_lap - t0).count();
+  std::printf("[fund::Panel] built: %d assets, D axis %d, grid [%d, %d) (%.1fs: 轴 %.1f | 扫表 %.1f | 链 %.1f | 资产态 %.1f | 行情派生 %.1f | 估值史 %.1f | 切片 %.1f)\n",
+              n_a, n_d, pit.g0, pit.g0 + pit.n_g, sec, s_axes, s_scan, s_chain, s_univ, s_market, s_hist, s_slice);
 }
 
 // ============================================================================
