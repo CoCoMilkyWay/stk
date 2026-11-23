@@ -108,8 +108,8 @@ std::vector<Daily> days_of(const std::vector<Engine::FactorRow> &rows, const std
     const Engine::DayLine &x = dl.rows[e];
     if (x.nav.n == 0)
       continue;
-    assert(x.nav.n == Engine::kNavExcess && x.nav.P == static_cast<int>(dl.dates.size()) && x.ric.size() == dl.dates.size());
-    Daily d{.expr = rows[idx[e]].expr, .sign = rows[idx[e]].sign, .dates = dl.dates, .ric = x.ric};
+    assert(x.nav.n == Engine::kNavExcess && x.nav.P == static_cast<int>(dl.dates.size()) && x.cum.size() == dl.dates.size());
+    Daily d{.expr = rows[idx[e]].expr, .sign = rows[idx[e]].sign, .dates = dl.dates, .cum = x.cum};
     for (int i = 0; i < Engine::kNavExcess; ++i)
       (i < Engine::kNavLayers ? d.lay : d.ls).emplace_back(x.nav.at(i), x.nav.at(i) + x.nav.P);
     d.turn.assign(std::begin(x.turn), std::end(x.turn));

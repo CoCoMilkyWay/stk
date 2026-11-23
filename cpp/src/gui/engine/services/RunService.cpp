@@ -21,7 +21,7 @@ DayLine day_of(const DayProbes &p, const EvalStat &st, int hold) {
   const factor::stat::HoldStat *h = st.find_hold(hold);
   assert(h && "逐日序列的持有期须是本层标签组之一");
   const TurnP &tp = p.at<TurnP>();
-  DayLine o{.ric = p.at<YearP>().day_ric[h - st.hold], .nav = p.at<NavP>().out};
+  DayLine o{.cum = p.at<YearP>().cum[h - st.hold], .nav = p.at<NavP>().out};
   o.turn[0] = static_cast<float>(factor::stat::turn_annual(*h, st.turn_of(*h)));
   for (int j = 0; j < kTails; ++j)
     o.turn[1 + j] = static_cast<float>(factor::stat::turn_annual(*h, tp.acc[j][0]));

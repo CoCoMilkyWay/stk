@@ -166,7 +166,7 @@ stk/
 │   │   │   │                                           #    · UI 侧两件: latest (持锁取结果) / Sent<Req> (内容变才发, 代 +1)
 │   │   │   ├── util/Stage.hpp                          # 🖥️ 键控缓存 Stage<Key, Val>: 键变才重算, gen 计重算次数 (下级把上级 gen 放进键即级联失效)
 │   │   │   ├── util/Sheet.hpp                          # 🖥️ 表格的列与格 (Lines 右表 / ASSET 资产表同一套): 列 = 表头 + 四行说明, 格 = 文本 + 排序键 + 名次底色
-│   │   │   ├── util/                                   # 🖥️ 其余公共件: Chart (图表件) / Sparkline (格内迷你图) / Tip / PoolTip (池列表公共件: 子池悬停 = 逐维拆解 + 拖动调池表序, 各页同一份) / HoverSync (图 ↔ 右表悬停联动: 图上最近的线 → 表行亮并滚到居中, 表行 → 图上白粗线; Beta Style / Market NAV · 日内栏 · FLOW 同一份) / Reorder (列表拖动调序: 子池 / 自选) / Color / Board (板块口径) / AssetFilter (资产筛选栏) / Latex
+│   │   │   ├── util/                                   # 🖥️ 其余公共件: Chart (图表件) / Sparkline (格内迷你图) / Tip / PoolTip (池列表公共件: 子池悬停 = 逐维拆解 + 拖动调池表序, 各页同一份) / HoverSync (图 ↔ 右表悬停联动: 图上最近的线 → 表行亮并滚到居中, 表行 → 图上白粗线; Beta Style / Market NAV · 日内栏 · FLOW 同一份) / Reorder (列表拖动调序: 子池 / 自选) / Color / Board (板块口径) / AssetFilter (资产筛选栏) / Latex / Layers (分层对数累计图 + 分层色 / 紧凑图例 / 可缩放视野: Inspect 左上与 Agent eval_factor 同一份)
 │   │   │   ├── icon_bar/                               # 🖥️ 图标栏: 网络探测 (NetworkService) / FPS
 │   │   │   ├── compute/                                # 🖥️ 特征计算 (Beta / Alpha 的 Compute 页同一份)
 │   │   │   │   ├── ComputeHub.hpp                      # 🖥️ 计算面 ComputeHub (一个服务 + 一张库表; Beta 列 all.bar, Alpha 列其余); 数据换进后自动续算; 一轮收尾即进程内重启
@@ -183,13 +183,14 @@ stk/
 │   │   │   │   ├── Book.hpp                            # 🖥️ 净值与篮子引擎: RowLines → fold_book → BookLines → compound; 统一账核 Book (因子 / 篮子 / 个股同形); 分块归约 BasketPass → Baskets
 │   │   │   │   │                                       #    · 池篮子: 收益 = 可成交指数 (Weigh 2×2 权 × Stat 行核, 母集广播概念零二分); 换手 / 估值 = 篮子账 Sleeve (members 换源 ⇄ 过日漂移, 估值持仓加权)
 │   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层 (双层对仗): 趟级 init ⇄ finish × 块级 open → row → close; 落地三形 RowsP / LandCellsP / LinesP; EvalProbes → EvalStat
+│   │   │   │   │                                       #    · 分层 / 尾部 / LS 日净值线 NavP + 尾部换手 TurnP: 全部持有期 (Inspect) 或只一个持有期的超额线 (Agent eval_factor)
 │   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎: Forest (LeafId 一步到位, 因子根 + 纯表达式根) × Backend<Cpu | Gpu> (设备侧按块驻留 Y/X 复用)
 │   │   │   │   │                                       #    · 单一管线: prepare → run_pass (按需日段跳块); 单森林 eval_forest (Run / Inspect / Portfolio) ↔ 篮子 eval_baskets
 │   │   │   │   ├── Worker.hpp                          # 🖥️ FactorWorker<D, Req>: 薄异步服务骨架 (值句柄 flow() + 统一中断收尾 settle)
 │   │   │   │   ├── File.hpp                            # 🖥️ 因子文件读写 (一因子一文件); Run 只回写 run + stats, Search 只回写 weights / search
 │   │   │   │   ├── StatJson.hpp                        # 🖥️ EvalStat ↔ JSON
 │   │   │   │   ├── services/                           # 🖥️ 纯计算核 (GUI 与 Agent 共调) + 薄线程壳:
-│   │   │   │   │   ├── RunService.hpp                  # 🖥️ ScanFactors / EvalFactorFile (单文件共享森林评估 + 回写 stats) + RunService
+│   │   │   │   │   ├── RunService.hpp                  # 🖥️ ScanFactors / EvalFactorFile (单文件共享森林评估 + 回写 stats; 可另出一个持有期的逐日序列 DayLines) + RunService
 │   │   │   │   │   ├── SearchService.hpp               # 🖥️ SearchFactor (采样 → 一趟评完 → 逐点中位 rIC 定向打分 → 最高的一个回写 weights) + SearchService
 │   │   │   │   │   ├── InspectService.hpp              # 🖥️ InspectFactor (整期一级平面 / 分层与尾部净值 / 前 N 只 CSV 导出) + InspectService
 │   │   │   │   │   └── PortfolioService.hpp            # 🖥️ EvalPortfolioGroup / EvalBasketBooks → PortfolioBook + PortfolioService
@@ -309,6 +310,8 @@ stk/
 │   │   │       ├── tools/                              # 🤖 Kit.hpp 时间线 Round/Act + 单趟增量账本 State (Board/Tally/Flags) + 实现表 kSpecs + 统一调用底座 Rig (open ⇄ step/settle/answer/abort)
 │   │   │       │                                       #    · 当场台面 Seat (Kit.hpp, GUI 线程读写会话) ↔ 后台台面 Bay (Bay.hpp, 只读快照 ViewEnv + 计算流); 后台三拍 StagedLab (eval_factor)
 │   │   │       │                                       #    · <类>.hpp 各工具的 Res 与入口 (Look / Query / Hyp / Trial / Note / Misc), <类>/<工具>.cpp 计算与原文; 观察核 look/Kernel.hpp (零分配 RankScratch)
+│   │   │       │                                       #    · eval_factor 原文与展示逐节对仗: 权重 (中位 rIC · 方向 · 每期毛 / 净多空 · 年换手) → 参数扫描 → 20 组 → 分年 rIC;
+│   │   │       │                                       #      展示另画写进的权重的累计中位 rIC 与分层图 (Run 顺带本持有期的逐日序列, 只在内存)
 │   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw, Mine 与 Bench 同源共用) + 工作台 Bench (Agent → Tools, 主栏按类折叠一工具一页, 基于 Rig) + 控件 Widgets
 │   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 候选四拍 (stage / absorb / adopt / discard) + 单线程工作台 Lab (共享不可变 ViewEnv, Store 共用)
 │   │   │       ├── Prompt.hpp                          # 🤖 纯成文层: 提示词模板填充 + 工具结果成文 + 上下文纯函数 TurnsOf (研究树线性分桶收起)
@@ -341,6 +344,7 @@ stk/
 │   │   │       ├── Config.hpp                          # 🧬 编译期常量: 可搜持有期 / 滚动窗份数 kRollParts / 采样点数
 │   │   │       ├── Contract.hpp                        # 🧬 语义契约: 分块流式 + 逐行 Tick + 目标 (滚动窗中位 rIC) + 方向
 │   │   │       │                                       #    · 目标 = 固定 h 下滚动窗 (评估期 / 10) rIC 的中位; 方向 = 它的号; 不看成本 / 多空 / 分层, 不跨 h 比
+│   │   │       │                                       #    · 展示线: 逐点窗中位 rIC (窗内逐日 rIC 的中位) / 累计中位 rIC (截至该日全部窗 rIC 的中位); 只作展示
 │   │   │       ├── Space.hpp                           # 🧬 参数空间: 可搜槽 → 单调坐标 + 区间 → 低差异采样
 │   │   │       └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU (复用 Stat 行核) / GPU 后端 + 对拍
 │   │   ├── cta/                                        # 📈 CTA 单资产 band + 减仓 + 跟随 分层择时 (header-only 纯计算; Market → CTA 页的模型层)

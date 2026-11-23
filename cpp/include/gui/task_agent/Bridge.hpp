@@ -120,7 +120,7 @@ struct Point {
   std::vector<double> v; // 各自由参数的取值 (Sweep::slots 同序)
   int sign = 1;
   double score = 0.0;      // 中位 rIC
-  std::vector<float> line; // [日] 窗 rIC (Sweep::dates 同长; 不计入的窗 NaN)
+  std::vector<float> line; // [日] 窗中位 rIC (Sweep::dates 同长; 不计入的窗 NaN)
 };
 // 一趟 Search 的全部点 (本进程内存里; 载入的会话没有)
 struct Sweep {
@@ -133,7 +133,7 @@ struct Daily {
   std::string expr; // 哪个权重 (Weight::expr / sign)
   int sign = 1;
   std::vector<int> dates;                  // 评估期交易日 YYYYMMDD
-  std::vector<float> ric;                  // [日] ok 行 rIC 之和
+  std::vector<float> cum;                  // [日] 累计中位 rIC (截至该日全部窗 rIC 的中位; 首窗前 NaN, 末日 = 中位 rIC)
   std::vector<std::vector<float>> lay, ls; // [线][日] 超额日收益: 分层 (20 组 + 两端尾部) / LS (整组 + 尾部); 线序同 Inspect
   std::vector<float> turn;                 // [LS 线] 年换手 (倍)
 };

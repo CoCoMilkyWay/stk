@@ -28,7 +28,9 @@
 //         · 滚动窗   窗长 W = round(D / kRollParts) 个交易日 (≥ 1; D = 评估期交易日数, 即窗长恒为评估期的 1/kRollParts), 以每个交易日
 //                    收尾一个窗 (满 W 日才计); 窗 rIC = 窗内 ok 行 rIC 的均值, ok 行 < kRollMinRows 的窗不计.
 //                    中位压得住少数窗的极端行情: 只有大多数时段都排得对的参数才高 (与 Beta 选池的累计中位夏普同一思路)
-//         · 窗 rIC 线 收尾日 t 的值 = 该日收尾的窗 rIC (不计入的窗 NaN; 全线的中位 = 中位 rIC); 只作展示
+//         · 展示线 (不计入的窗 NaN; 只作展示, 不进目标):
+//             窗中位 rIC 线   收尾日 t 的值 = 该窗内逐日 rIC (当日 ok 行 rIC 均值) 的中位 (抗单日极端; 与窗 rIC 的窗内逐行均值不同口径)
+//             累计中位 rIC 线 收尾日 t 的值 = 截至 t 的全部窗 rIC 的中位 (末日值 = 中位 rIC)
 //         · 年化多空 窗内 Σ 多空 / (W·S) × span_per_year (不 ok 行记 0, 与 ls_annual 同口径), 取各窗的中位 / 平均; 只作展示, 不进目标
 //         不进目标的: 分层 mono / 多空 / 成本 / 换手 / 显著性 —— 分层能力就是 rIC, 尾部行为另由观察处理.
 //   【方向】Search 自动定向: 方向 d = 正向中位 rIC 的号 (≥ 0 正向 kFwd, 否则反向 kRev; Stat 契约【方向 Dir】), sign = ±1. 反向 = 逐行 rIC /
@@ -121,13 +123,15 @@ struct Roll {
   bool ok() const { return n > 0; }
 };
 
-// 逐日和 d[D] → 滚动窗统计 (hold / seg = 持有期键 / 因子所在层); line 非空 → 填窗 rIC 线 [D] (不计入的窗 NaN)
-inline Roll roll_of(std::span<const DaySum> d, int hold, int seg, std::vector<float> *line = nullptr) {
+// 逐日和 d[D] → 滚动窗统计 (hold / seg = 持有期键 / 因子所在层); 展示线 [D] (不计入的窗 NaN):
+//   line 非空 → 窗中位 rIC 线 (窗内逐日 rIC 的中位); cum 非空 → 累计中位 rIC 线 (截至该日全部窗 rIC 的中位, 末日 = 中位 rIC)
+inline Roll roll_of(std::span<const DaySum> d, int hold, int seg, std::vector<float> *line = nullptr, std::vector<float> *cum = nullptr) {
   const int D = static_cast<int>(d.size());
   Roll r;
   r.win = roll_win(D);
-  if (line)
-    line->assign(static_cast<size_t>(D), std::numeric_limits<float>::quiet_NaN());
+  for (std::vector<float> *v : {line, cum})
+    if (v)
+      v->assign(static_cast<size_t>(D), std::numeric_limits<float>::quiet_NaN());
   std::vector<double> N(static_cast<size_t>(D) + 1, 0.0), R(N), L(N); // 前缀和 (下标 = 日 + 1)
   for (int t = 0; t < D; ++t) {
     const DaySum &x = d[static_cast<size_t>(t)];
@@ -136,17 +140,31 @@ inline Roll roll_of(std::span<const DaySum> d, int hold, int seg, std::vector<fl
     L[static_cast<size_t>(t) + 1] = L[static_cast<size_t>(t)] + x.ls;
   }
   const double ann = factor::stat::span_per_year(hold, seg) / (static_cast<double>(r.win) * seg);
+  const auto day_ric = [&](int t) { return d[static_cast<size_t>(t)].ric / d[static_cast<size_t>(t)].n; };
   misc::RunMedian<double> ric_m, ann_m;
+  std::vector<double> in_win; // 窗内有 ok 行的日的逐日 rIC (升序; 只 line 用)
   double ric_s = 0.0, ann_s = 0.0;
-  for (int t = r.win - 1; t < D; ++t) {
+  for (int t = 0; t < D; ++t) {
+    if (line) {
+      if (d[static_cast<size_t>(t)].n > 0)
+        in_win.insert(std::lower_bound(in_win.begin(), in_win.end(), day_ric(t)), day_ric(t));
+      if (const int o = t - r.win; o >= 0 && d[static_cast<size_t>(o)].n > 0)
+        in_win.erase(std::lower_bound(in_win.begin(), in_win.end(), day_ric(o)));
+    }
+    if (t < r.win - 1)
+      continue;
     const size_t a = static_cast<size_t>(t + 1 - r.win), b = static_cast<size_t>(t) + 1;
     const double n = N[b] - N[a];
     if (n >= kRollMinRows) {
       const double w_ric = (R[b] - R[a]) / n, w_ann = (L[b] - L[a]) * ann;
       ++r.n, ric_s += w_ric, ann_s += w_ann;
       ric_m.push(w_ric), ann_m.push(w_ann);
-      if (line)
-        (*line)[static_cast<size_t>(t)] = static_cast<float>(w_ric);
+      if (line) {
+        const size_t m = in_win.size();
+        (*line)[static_cast<size_t>(t)] = static_cast<float>(0.5 * (in_win[(m - 1) / 2] + in_win[m / 2]));
+      }
+      if (cum)
+        (*cum)[static_cast<size_t>(t)] = static_cast<float>(ric_m.mid());
     }
   }
   if (r.n > 0) {
@@ -156,7 +174,7 @@ inline Roll roll_of(std::span<const DaySum> d, int hold, int seg, std::vector<fl
   return r;
 }
 
-// 反向读 (见【方向】): 各量变号 (中位与取负可交换); 窗 rIC 线由调用方同样变号
+// 反向读 (见【方向】): 各量变号 (中位与取负可交换); 展示线由调用方同样变号
 inline Roll flipped(Roll r) {
   r.ric_med = -r.ric_med, r.ric_mean = -r.ric_mean;
   r.ann_med = -r.ann_med, r.ann_mean = -r.ann_mean;

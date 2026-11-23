@@ -25,7 +25,7 @@ struct TrialRes final : Res {
   Span search, run;
   Gate gate;
   mutable int hot = -1;                             // 展示: 上帧悬停的参数点 (Sweep::pts 下标; 图 ↔ 表联动)
-  mutable int cursor = -1, win = 0;                 // 展示: 分层图的光标日 / 滚动窗口 (0 = 全段)
+  mutable int cursor = -1;                          // 展示: 分层图的光标日
   mutable std::shared_ptr<Layer::LayerDerived> lay; // 展示: st.res.daily 派生的分层线 (首画时建)
   std::string text() const override;
   void draw() const override;

@@ -1,6 +1,6 @@
 // eval_factor 的展示: 候选 (模板 / 思路) + 结局 + 各权重表
-//   + 参数扫描 (左 = 各参数点的窗 rIC 复合图, 右 = 参数点表, 缺省中位 rIC 降序; 图 ↔ 表悬停联动)
-//   + 写进的权重的累计 rIC + 分层图 (Inspect 同一份; 没有逐日序列 = 载入的会话 → 20 组柱) + 分年
+//   + 左栏三图 (各参数点的窗中位 rIC / 写进的权重的累计中位 rIC / 分层图, Inspect 同一份) | 右栏参数点表 (缺省中位 rIC 降序; 窗中位 rIC 图 ↔ 表悬停联动)
+//   + 20 组柱 (只在没有逐日序列 = 载入的会话时) + 分年
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
@@ -23,9 +23,9 @@ using namespace ui;
 
 namespace {
 
-constexpr float kSweepH = 320.0f;  // 复合图 / 点表的高
-constexpr float kCumH = 220.0f;    // 累计 rIC 图的高
-constexpr float kLayersH = 420.0f; // 分层图的高
+constexpr float kSweepH = 200.0f;  // 窗中位 rIC 图的高
+constexpr float kCumH = 150.0f;    // 累计 rIC 图的高
+constexpr float kLayersH = 300.0f; // 分层图的高
 constexpr float kLineA = 0.55f;    // 非悬停线的不透明度
 constexpr float kBestW = 2.0f;     // 中位 rIC 最高的点 (= 写进的权重) 线宽
 
@@ -37,10 +37,10 @@ int date_fmt(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
 
-// 线 p 的首个有值日 (首个计入的窗之前 NaN)
-size_t first_of(const Point &p) {
+// 线的首个有值日 (首个计入的窗之前 NaN)
+size_t first_of(const std::vector<float> &line) {
   size_t d = 0;
-  while (d < p.line.size() && std::isnan(p.line[d]))
+  while (d < line.size() && std::isnan(line[d]))
     ++d;
   return d;
 }
@@ -48,18 +48,18 @@ size_t first_of(const Point &p) {
 // 名次色 (pts 已按中位 rIC 降序: 下标即名次, 0 = 最好 绿 → 末 = 红)
 ImVec4 rank_col(size_t i, size_t n, float a) { return band_col(n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.0, a); }
 
-// 左: 各点的窗 rIC (图例只列写进的权重); 悬停 (本表或上帧图) 的点白粗线画在最上; 返回图上悬停的点 (−1 = 无)
+// 左: 各点的窗中位 rIC (图例只列写进的权重); 悬停 (本表或上帧图) 的点白粗线画在最上; 返回图上悬停的点 (−1 = 无)
 int sweep_plot(const Sweep &sw, int hot, const ImVec2 &size) {
   const size_t n = sw.pts.size(), D = sw.dates.size();
   if (!ImPlot::BeginPlot("##sweep_ric", size, ImPlotFlags_NoTitle | ImPlotFlags_NoMenus))
     return -1;
-  ImPlot::SetupAxes(nullptr, "窗 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxes(nullptr, "窗中位 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
   ImPlot::SetupLegend(ImPlotLocation_NorthWest);
   DayAxis ax{sw.dates, 1.0, 0.0, {}, date_fmt, const_cast<std::vector<int> *>(&sw.dates)};
   setup_day_axis(ax);
   std::vector<size_t> from(n);
   for (size_t i = 0; i < n; ++i)
-    from[i] = first_of(sw.pts[i]);
+    from[i] = first_of(sw.pts[i].line);
   const auto draw = [&](size_t i, const ImVec4 &col, float w, const char *label) {
     if (from[i] >= D)
       return;
@@ -82,24 +82,21 @@ int sweep_plot(const Sweep &sw, int hot, const ImVec2 &size) {
   return near;
 }
 
-// 写进的权重的累计 rIC (逐日 ok 行 rIC 之和沿日累加; 色同参数扫描里的权重线)
+// 写进的权重的累计中位 rIC (截至该日全部窗 rIC 的中位, 末日 = 中位 rIC; 色同窗中位 rIC 图里的权重线)
 void cum_plot(const Daily &d, size_t n_pts) {
-  std::vector<float> cum(d.ric.size());
-  double s = 0.0;
-  for (size_t i = 0; i < d.ric.size(); ++i)
-    cum[i] = static_cast<float>(s += d.ric[i]);
   if (!ImPlot::BeginPlot("##cum_ric", ImVec2(-1, kCumH), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus))
     return;
-  ImPlot::SetupAxes(nullptr, "累计 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxes(nullptr, "累计中位 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
   ImPlot::SetupLegend(ImPlotLocation_NorthWest);
   DayAxis ax{d.dates, 1.0, 0.0, {}, date_fmt, const_cast<std::vector<int> *>(&d.dates)};
   setup_day_axis(ax);
+  const size_t at = first_of(d.cum);
   ImPlot::SetNextLineStyle(rank_col(0, n_pts, 1.0f), kBestW);
-  ImPlot::PlotLine("权重", cum.data(), static_cast<int>(cum.size()));
+  ImPlot::PlotLine("权重", d.cum.data() + at, static_cast<int>(d.cum.size() - at), 1.0, static_cast<double>(at));
   ImPlot::EndPlot();
 }
 
-// 写进的权重的分层图 (与 Inspect 左上同一份): 滚动窗口滑条 + 分层对数累计 / 光标日截面
+// 写进的权重的分层图 (与 Inspect 左上同一份, 恒全段): 分层对数累计 / 光标日截面
 void layers_view(const TrialRes &k) {
   const Daily &d = k.st.res.daily;
   assert(d.lay.size() == size_t{Layer::kLayerLines} && d.ls.size() == size_t{Layer::kLsLines} && d.turn.size() == size_t{Layer::kLsLines});
@@ -112,13 +109,8 @@ void layers_view(const TrialRes &k) {
     k.lay = std::make_shared<Layer::LayerDerived>();
     Layer::derive_layers(*k.lay, d.dates, lay, ls, d.turn.data());
   }
-  Layer::LayerDerived &l = *k.lay;
-  int w = k.win > 0 ? std::min(k.win, l.days) : l.days;
-  ImGui::SetNextItemWidth(160.f);
-  if (ImGui::SliderInt("##win", &w, 1, l.days, w >= l.days ? "窗口 全段" : "窗口 %d 天", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp))
-    k.win = w >= l.days ? 0 : w;
-  Layer::roll_layers(l, w);
-  Layer::plot_layers(l, false, k.cursor, ImVec2(-1, kLayersH));
+  Layer::roll_layers(*k.lay, k.lay->days);
+  Layer::plot_layers(*k.lay, false, k.cursor, ImVec2(-1, kLayersH));
 }
 
 // 右: 参数点表 (列头点了排序, 缺省中位 rIC 降序); plot_hot = 图上悬停的点 (该行底色亮); 返回表上悬停的点 (−1 = 无)
@@ -182,21 +174,32 @@ int sweep_table(const Sweep &sw, int plot_hot, float h) {
   return hot;
 }
 
-void sweep_view(const Sweep &sw, int &hot) {
-  if (sw.slots.empty() || sw.pts.size() < 2 || sw.dates.empty())
-    return;
+// 左 = 窗中位 rIC / 累计中位 rIC / 分层 三图上下叠, 右 = 参数点表 (与左栏等高); 无自由参数只画左栏两图
+void charts_view(const TrialRes &k) {
+  const Result &r = k.st.res;
+  const Sweep &sw = r.sweep;
+  const bool sweep = !sw.slots.empty() && sw.pts.size() >= 2 && !sw.dates.empty(), daily = !r.daily.dates.empty();
+  const auto days = [&] {
+    if (daily)
+      cum_plot(r.daily, sw.pts.size()), layers_view(k);
+  };
+  if (!sweep)
+    return days();
   heading(SweepHead(sw));
-  if (!ImGui::BeginTable("##sweep", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV))
+  if (!ImGui::BeginTable("##charts", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV))
     return;
-  ImGui::TableSetupColumn("图", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+  ImGui::TableSetupColumn("图", ImGuiTableColumnFlags_WidthStretch, 3.0f);
   ImGui::TableSetupColumn("表", ImGuiTableColumnFlags_WidthStretch, 1.0f);
   ImGui::TableNextRow();
   ImGui::TableNextColumn();
-  const int near = sweep_plot(sw, hot, ImVec2(-1, kSweepH));
+  const float y0 = ImGui::GetCursorPosY();
+  const int near = sweep_plot(sw, k.hot, ImVec2(-1, kSweepH));
+  days();
+  const float h = ImGui::GetCursorPosY() - y0 - ImGui::GetStyle().ItemSpacing.y;
   ImGui::TableNextColumn();
-  const int row = sweep_table(sw, near, kSweepH);
+  const int row = sweep_table(sw, near, h);
   ImGui::EndTable();
-  hot = near >= 0 ? near : row;
+  k.hot = near >= 0 ? near : row;
 }
 
 } // namespace
@@ -229,11 +232,7 @@ void TrialRes::draw() const {
       }
       ImGui::EndTable();
     }
-    sweep_view(r.sweep, hot);
-    if (!r.daily.dates.empty()) {
-      cum_plot(r.daily, r.sweep.pts.size());
-      layers_view(*this);
-    }
+    charts_view(*this);
     if (const Weight *w = r.best(); w && !w->grp.empty()) {
       if (r.daily.dates.empty())
         groups_plot((GroupsHead() + "##grp").c_str(), w->grp, 180.0f);

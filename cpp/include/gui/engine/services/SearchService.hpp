@@ -36,7 +36,7 @@ struct SearchCand {
   std::vector<double> v;                  // 各槽参数值 (SearchResult::slots 同序; 整数槽取整, k / w 为规范串往返值)
   int sign = 1;                           // +1 正向 / −1 取反
   factor::search::Roll roll;              // 滚动窗统计 (score = 中位 rIC)
-  std::vector<float> line;                // [日] 窗 rIC (SearchResult::dates 同长; 不计入的窗 NaN)
+  std::vector<float> line;                // [日] 窗中位 rIC (SearchResult::dates 同长; 不计入的窗 NaN)
   double mono = 0.0, ls = 0.0, ric = 0.0; // 全期: 分层单调性 / 每期真实毛多空 / rIC 均值 (只展示)
 };
 struct SearchChunk {

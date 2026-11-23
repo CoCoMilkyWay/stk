@@ -29,9 +29,9 @@ bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> 
 // 扫因子目录: 每权重一行 (文件级问题 widx = −1) + 跨行查重 dup_of
 void ScanFactors(const FactorScope &sc, std::vector<FactorRow> &out);
 
-// 一个求值行在一个持有期上的逐日序列 (已按权重方向): 累计 rIC 的增量 + 超额分层 / LS 日净值线 + 各 LS 线年换手
+// 一个求值行在一个持有期上的逐日序列 (已按权重方向): 累计中位 rIC + 超额分层 / LS 日净值线 + 各 LS 线年换手
 struct DayLine {
-  std::vector<float> ric;  // [日] ok 行 rIC 之和
+  std::vector<float> cum;  // [日] 累计中位 rIC (截至该日全部窗 rIC 的中位; 首窗前 NaN)
   BookLines nav;           // [kNavExcess][日] 日收益 (线序见 Table.hpp kNavExcess)
   float turn[kNavLs] = {}; // LS 线年换手 (倍; 整组 = 固定段两端, 尾部 = 该级两端)
 };
