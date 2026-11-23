@@ -120,8 +120,17 @@ std::vector<Daily> days_of(const std::vector<Engine::FactorRow> &rows, const std
     const Engine::DayLine &x = dl.rows[e];
     if (x.nav.n == 0)
       continue;
-    assert(x.nav.n == Engine::kNavExcess && x.nav.P == static_cast<int>(dl.dates.size()) && x.cum.size() == dl.dates.size());
-    Daily d{.expr = rows[idx[e]].expr, .sign = rows[idx[e]].sign, .dates = dl.dates, .cum = x.cum};
+    assert(x.nav.n == Engine::kNavExcess && x.nav.P == static_cast<int>(dl.dates.size()) && x.ric.size() == dl.dates.size());
+    Daily d{.expr = rows[idx[e]].expr, .sign = rows[idx[e]].sign, .dates = dl.dates};
+    double s = 0.0, s2 = 0.0;
+    int m = 0;
+    for (const float v : x.ric) {
+      if (!std::isnan(v))
+        s += v, s2 += static_cast<double>(v) * v, ++m;
+      d.cum.push_back(static_cast<float>(s));
+    }
+    const double mean = m ? s / m : 0.0, var = m > 1 ? (s2 - m * mean * mean) / (m - 1) : 0.0;
+    d.ir = var > 0.0 ? mean / std::sqrt(var) * std::sqrt(static_cast<double>(factor::stat::kDaysPerYear)) : 0.0;
     for (int i = 0; i < Engine::kNavExcess; ++i)
       (i < Engine::kNavLayers ? d.lay : d.ls).emplace_back(x.nav.at(i), x.nav.at(i) + x.nav.P);
     d.turn.assign(std::begin(x.turn), std::end(x.turn));

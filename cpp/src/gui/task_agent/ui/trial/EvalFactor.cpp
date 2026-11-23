@@ -1,5 +1,5 @@
 // eval_factor 的展示 (与原文逐节对仗): 候选 (模板 / 思路) + 符号 + 结局 + 各权重表 + 分年
-//   → 左栏三图 (各参数点的窗中位 rIC / 写进的权重的累计中位 rIC / 分层图, Inspect 同一份) | 右栏参数点表 (缺省中位 rIC 降序; 窗中位 rIC 图 ↔ 表悬停联动)
+//   → 左栏三图 (各参数点的窗中位 rIC / 写进的权重的累计 rIC / 分层图, Inspect 同一份) | 右栏参数点表 (缺省中位 rIC 降序; 窗中位 rIC 图 ↔ 表悬停联动)
 //   → 20 组柱 (只在没有逐日序列 = 载入的会话时)
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
@@ -82,17 +82,18 @@ int sweep_plot(const Sweep &sw, int hot, const ImVec2 &size) {
   return near;
 }
 
-// 写进的权重的累计中位 rIC (截至该日全部窗 rIC 的中位, 末日 = 中位 rIC; 色同窗中位 rIC 图里的权重线)
+// 写进的权重的累计 rIC (逐日 rIC 逐日累加; 图例带年化 IR; 色同窗中位 rIC 图里的权重线)
 void cum_plot(const Daily &d, size_t n_pts) {
   if (!ImPlot::BeginPlot("##cum_ric", ImVec2(-1, kCumH), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus))
     return;
-  ImPlot::SetupAxes(nullptr, "累计中位 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxes(nullptr, "累计 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
   ImPlot::SetupLegend(ImPlotLocation_NorthWest);
   DayAxis ax{d.dates, 1.0, 0.0, {}, date_fmt, const_cast<std::vector<int> *>(&d.dates)};
   setup_day_axis(ax);
-  const size_t at = first_of(d.cum);
+  char label[48];
+  std::snprintf(label, sizeof(label), "权重  IR=%+.2f", d.ir);
   ImPlot::SetNextLineStyle(rank_col(0, n_pts, 1.0f), kBestW);
-  ImPlot::PlotLine("权重", d.cum.data() + at, static_cast<int>(d.cum.size() - at), 1.0, static_cast<double>(at));
+  ImPlot::PlotLine(label, d.cum.data(), static_cast<int>(d.cum.size()));
   ImPlot::EndPlot();
 }
 
@@ -163,7 +164,7 @@ int sweep_table(const Sweep &sw, int plot_hot, float h) {
   return hot;
 }
 
-// 左 = 窗中位 rIC / 累计中位 rIC / 分层 三图上下叠, 右 = 参数点表 (与左栏等高); 无自由参数只画左栏两图
+// 左 = 窗中位 rIC / 累计 rIC / 分层 三图上下叠, 右 = 参数点表 (与左栏等高); 无自由参数只画左栏两图
 void charts_view(const TrialRes &k) {
   const Result &r = k.st.res;
   const Sweep &sw = r.sweep;

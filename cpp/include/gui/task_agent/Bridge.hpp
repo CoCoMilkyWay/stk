@@ -132,7 +132,8 @@ struct Daily {
   std::string expr; // 哪个权重 (Weight::expr / sign)
   int sign = 1;
   std::vector<int> dates;                  // 评估期交易日 YYYYMMDD
-  std::vector<float> cum;                  // [日] 累计中位 rIC (截至该日全部窗 rIC 的中位; 首窗前 NaN, 末日 = 中位 rIC)
+  std::vector<float> cum;                  // [日] 累计 rIC (逐日 rIC = 当日 ok 行均值, 逐日累加; 无 ok 行的日持平)
+  double ir = 0.0;                         // 逐日 rIC 的年化 IR (mean / sd × √kDaysPerYear; 累计线的夏普)
   std::vector<std::vector<float>> lay, ls; // [线][日] 超额日收益: 分层 (20 组 + 两端尾部) / LS (整组 + 尾部); 线序同 Inspect
   std::vector<float> turn;                 // [LS 线] 年换手 (倍)
 };

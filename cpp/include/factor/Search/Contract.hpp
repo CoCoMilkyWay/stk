@@ -28,9 +28,7 @@
 //         · 滚动窗   窗长 W = round(D / kRollParts) 个交易日 (≥ 1; D = 评估期交易日数, 即窗长恒为评估期的 1/kRollParts), 以每个交易日
 //                    收尾一个窗 (满 W 日才计); 窗 rIC = 窗内 ok 行 rIC 的均值, ok 行 < kRollMinRows 的窗不计.
 //                    中位压得住少数窗的极端行情: 只有大多数时段都排得对的参数才高 (与 Beta 选池的累计中位夏普同一思路)
-//         · 展示线 (不计入的窗 NaN; 只作展示, 不进目标):
-//             窗中位 rIC 线   收尾日 t 的值 = 该窗内逐日 rIC (当日 ok 行 rIC 均值) 的中位 (抗单日极端; 与窗 rIC 的窗内逐行均值不同口径)
-//             累计中位 rIC 线 收尾日 t 的值 = 截至 t 的全部窗 rIC 的中位 (末日值 = 中位 rIC)
+//         · 窗中位 rIC 线 收尾日 t 的值 = 该窗内逐日 rIC (当日 ok 行 rIC 均值) 的中位 (不计入的窗 NaN; 抗单日极端, 与窗 rIC 的窗内逐行均值不同口径); 只作展示
 //         · 年化多空 窗内 Σ 多空 / (W·S) × span_per_year (不 ok 行记 0, 与 ls_annual 同口径), 取各窗的中位 / 平均; 只作展示, 不进目标
 //         不进目标的: 分层 mono / 多空 / 成本 / 换手 / 显著性 —— 分层能力就是 rIC, 尾部行为另由观察处理.
 //   【方向】Search 自动定向: 方向 d = 正向中位 rIC 的号 (≥ 0 正向 kFwd, 否则反向 kRev; Stat 契约【方向 Dir】), sign = ±1. 反向 = 逐行 rIC /
@@ -123,15 +121,13 @@ struct Roll {
   bool ok() const { return n > 0; }
 };
 
-// 逐日和 d[D] → 滚动窗统计 (hold / seg = 持有期键 / 因子所在层); 展示线 [D] (不计入的窗 NaN):
-//   line 非空 → 窗中位 rIC 线 (窗内逐日 rIC 的中位); cum 非空 → 累计中位 rIC 线 (截至该日全部窗 rIC 的中位, 末日 = 中位 rIC)
-inline Roll roll_of(std::span<const DaySum> d, int hold, int seg, std::vector<float> *line = nullptr, std::vector<float> *cum = nullptr) {
+// 逐日和 d[D] → 滚动窗统计 (hold / seg = 持有期键 / 因子所在层); line 非空 → 填窗中位 rIC 线 [D] (不计入的窗 NaN)
+inline Roll roll_of(std::span<const DaySum> d, int hold, int seg, std::vector<float> *line = nullptr) {
   const int D = static_cast<int>(d.size());
   Roll r;
   r.win = roll_win(D);
-  for (std::vector<float> *v : {line, cum})
-    if (v)
-      v->assign(static_cast<size_t>(D), std::numeric_limits<float>::quiet_NaN());
+  if (line)
+    line->assign(static_cast<size_t>(D), std::numeric_limits<float>::quiet_NaN());
   std::vector<double> N(static_cast<size_t>(D) + 1, 0.0), R(N), L(N); // 前缀和 (下标 = 日 + 1)
   for (int t = 0; t < D; ++t) {
     const DaySum &x = d[static_cast<size_t>(t)];
@@ -163,8 +159,6 @@ inline Roll roll_of(std::span<const DaySum> d, int hold, int seg, std::vector<fl
         const size_t m = in_win.size();
         (*line)[static_cast<size_t>(t)] = static_cast<float>(0.5 * (in_win[(m - 1) / 2] + in_win[m / 2]));
       }
-      if (cum)
-        (*cum)[static_cast<size_t>(t)] = static_cast<float>(ric_m.mid());
     }
   }
   if (r.n > 0) {

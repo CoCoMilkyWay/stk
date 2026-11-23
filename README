@@ -311,7 +311,7 @@ stk/
 │   │   │       │                                       #    · 当场台面 Seat (Kit.hpp, GUI 线程读写会话) ↔ 后台台面 Bay (Bay.hpp, 只读快照 ViewEnv + 计算流); 后台三拍 StagedLab (eval_factor)
 │   │   │       │                                       #    · <类>.hpp 各工具的 Res 与入口 (Look / Query / Hyp / Trial / Note / Misc), <类>/<工具>.cpp 计算与原文; 观察核 look/Kernel.hpp (零分配 RankScratch)
 │   │   │       │                                       #    · eval_factor 原文与展示逐节对仗: 符号 → 权重 (中位 rIC · 每期毛 / 净多空 · 年换手) → 分年 rIC → 参数扫描 → 20 组;
-│   │   │       │                                       #      展示另画写进的权重的累计中位 rIC 与分层图 (Run 顺带本持有期的逐日序列, 只在内存)
+│   │   │       │                                       #      展示另画写进的权重的累计 rIC (逐日 rIC 累加, 图例带年化 IR) 与分层图 (Run 顺带本持有期的逐日序列, 只在内存)
 │   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw, Mine 与 Bench 同源共用) + 工作台 Bench (Agent → Tools, 主栏按类折叠一工具一页, 基于 Rig) + 控件 Widgets
 │   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 候选四拍 (stage / absorb / adopt / discard) + 单线程工作台 Lab (共享不可变 ViewEnv, Store 共用)
 │   │   │       ├── Prompt.hpp                          # 🤖 纯成文层: 提示词模板填充 + 工具结果成文 + 上下文纯函数 TurnsOf (研究树线性分桶收起)
@@ -344,7 +344,7 @@ stk/
 │   │   │       ├── Config.hpp                          # 🧬 编译期常量: 可搜持有期 / 滚动窗份数 kRollParts / 采样点数
 │   │   │       ├── Contract.hpp                        # 🧬 语义契约: 分块流式 + 逐行 Tick + 目标 (滚动窗中位 rIC) + 方向
 │   │   │       │                                       #    · 目标 = 固定 h 下滚动窗 (评估期 / 10) rIC 的中位; 方向 = 它的号; 不看成本 / 多空 / 分层, 不跨 h 比
-│   │   │       │                                       #    · 展示线: 逐点窗中位 rIC (窗内逐日 rIC 的中位) / 累计中位 rIC (截至该日全部窗 rIC 的中位); 只作展示
+│   │   │       │                                       #    · 逐点另出窗中位 rIC 线 (窗内逐日 rIC 的中位; 只作展示)
 │   │   │       ├── Space.hpp                           # 🧬 参数空间: 可搜槽 → 单调坐标 + 区间 → 低差异采样
 │   │   │       └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU (复用 Stat 行核) / GPU 后端 + 对拍
 │   │   ├── cta/                                        # 📈 CTA 单资产 band + 减仓 + 跟随 分层择时 (header-only 纯计算; Market → CTA 页的模型层)

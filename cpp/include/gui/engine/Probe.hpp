@@ -364,7 +364,7 @@ struct YearP : RowsP<YearP, YearRow> {
   std::vector<std::vector<Day>> day;
   std::vector<YearStat> years[factor::stat::kMaxHold];
   factor::search::Roll roll[factor::stat::kMaxHold];
-  std::vector<float> cum[factor::stat::kMaxHold]; // [日] 累计中位 rIC 线 (Search 契约 roll_of; 末日 = 中位 rIC)
+  std::vector<float> day_ric[factor::stat::kMaxHold]; // [日] 当日 ok 行 rIC 均值 (无 ok 行 = NaN)
   static double bytes(const Shape &sh, int H) { return sizeof(Day) * static_cast<double>(H) * sh.days; }
   static YearRow of(const factor::stat::Row &r) {
     YearRow x{r.ok != 0, r.ric, factor::stat::ls_row(r), {}};
@@ -392,9 +392,12 @@ struct YearP : RowsP<YearP, YearRow> {
       const std::vector<Day> &ds = day[static_cast<size_t>(hi)];
       assert(ds.size() == dates.size() && "逐日累加与评估期日期不齐");
       std::vector<factor::search::DaySum> sums(ds.size());
-      for (size_t i = 0; i < ds.size(); ++i)
+      day_ric[hi].resize(ds.size());
+      for (size_t i = 0; i < ds.size(); ++i) {
         sums[i] = {ds[i].n, ds[i].ric, ds[i].ls};
-      roll[hi] = factor::search::roll_of(sums, p.hd.k[hi], seg, nullptr, &cum[hi]);
+        day_ric[hi][i] = ds[i].n > 0 ? static_cast<float>(ds[i].ric / ds[i].n) : std::numeric_limits<float>::quiet_NaN();
+      }
+      roll[hi] = factor::search::roll_of(sums, p.hd.k[hi], seg);
       std::vector<YearStat> &out = years[hi];
       out.clear();
       for (size_t a = 0; a < ds.size();) {
