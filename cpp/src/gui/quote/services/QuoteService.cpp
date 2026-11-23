@@ -244,18 +244,28 @@ void QuoteService::publish() {
     dirty_ = false;
     y->date = date_, y->prev = prev_, y->sec = sec_, y->quotes = last_, y->watch = seen_;
     const Quotes &qs = *last_;
-    std::vector<uint32_t> redo; // 有成交而当日快照待建的只
-    for (uint32_t i = 0; i < tracks_.size(); ++i)
-      if (traded(qs[i].get()) && !tracks_[i].day)
+    std::vector<uint32_t> redo; // 当日快照待建的只: 有成交而待建 / 竞价段而匹配价变了
+    for (uint32_t i = 0; i < tracks_.size(); ++i) {
+      const sina::Quote *q = qs[i].get();
+      const Day *d = tracks_[i].day.get();
+      assert(!(traded(q) && d && d->call) && "首笔成交未作废竞价的 Day");
+      if (traded(q) ? !d : call_px(q) > 0 && !(d && d->candle.close == call_px(q)))
         redo.push_back(i);
+    }
     pool_.tasks(static_cast<int>(redo.size()), [&](int j, int) {
       const uint32_t i = redo[static_cast<size_t>(j)];
       const sina::Quote &q = *qs[i];
       auto d = std::make_shared<Day>();
-      d->candle = {candle_of(q), date_, q.last_close};
-      d->bars = tracks_[i].bars;
-      net_flow(d->bars, d->candle.ref);
-      d->candle.flow = day_flow(d->bars);
+      if (const float p = call_px(&q); p > 0) {
+        d->candle = {cell(p, p, p, p, 0), date_, q.last_close};
+        d->bars.add(0, d->candle);
+        d->call = true;
+      } else {
+        d->candle = {candle_of(q), date_, q.last_close};
+        d->bars = tracks_[i].bars;
+        net_flow(d->bars, d->candle.ref);
+        d->candle.flow = day_flow(d->bars);
+      }
       tracks_[i].day = std::move(d);
     });
     int fz = 0;
@@ -267,7 +277,7 @@ void QuoteService::publish() {
     freeze.resize(tracks_.size()), touched.resize(tracks_.size());
     for (size_t i = 0; i < tracks_.size(); ++i) {
       Track &t = tracks_[i];
-      if (traded(qs[i].get()))
+      if (traded(qs[i].get()) || call_px(qs[i].get()) > 0)
         (*stocks)[i] = t.day;
       freeze[i] = fill && t.gap() ? std::min(fz, t.lo) : fz;
       touched[i] = std::exchange(t.touched, kSlots);

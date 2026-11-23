@@ -95,10 +95,13 @@ struct PlotBars {
   std::vector<misc::Ymd> days; // [k]
   double ref = 0;              // 涨跌幅轴基准 (末日前收); 0 = 无
   int g = 1;
+  int call = -1; // 竞价的日 (Day::call) 的 k: 该日只一根竞价根 (空心, 无额); −1 = 无
   void push(const Candle &b, double at) {
     bars.push_back(b);
     x.push_back(at);
   }
+  // 第 i 根是竞价根 (并根不跨日 ⇒ 并后照判)
+  bool called(size_t i) const { return call >= 0 && static_cast<long>(std::floor((x[i] + 0.5) / kSlots)) == call; }
   // 第 i 根实体起点 = 上一根收 (根根首尾相接); 首根 = 前收 (无 → 开)
   double from(size_t i) const { return i ? bars[i - 1].close : bars[0].ref > 0 ? bars[0].ref
                                                                                : bars[0].open; }
@@ -145,19 +148,24 @@ void tooltip(const PlotBars &s, int i) {
   fmt_when(when, sizeof(when), s, static_cast<size_t>(i));
   if (b.ref > 0)
     std::snprintf(chg, sizeof(chg), "\n涨跌 %+.2f  %+.2f%%", b.close - b.ref, (b.close / b.ref - 1.0) * 100.0);
+  if (s.called(static_cast<size_t>(i))) {
+    ImGui::SetTooltip("%s\n竞价匹配价 %.2f%s", when, b.close, chg);
+    return;
+  }
   fmt_amount(amt, sizeof(amt), b.amount);
   ImGui::SetTooltip("%s\n高 %.2f  低 %.2f\n收 %.2f%s\n额 %s", when, b.high, b.low, b.close, chg, amt);
 }
 
-// 一根实心蜡烛 (当前轴坐标): 实体 from → close, 涨红跌绿 (close vs from), 体至少 1 px; 影线 low → high, 半宽 half
-void candle(ImDrawList *dl, double x, double half, double from, double high, double low, double close) {
+// 一根蜡烛 (当前轴坐标): 实体 from → close, 涨红跌绿 (close vs from), 体至少 1 px; 影线 low → high, 半宽 half; hollow = 空心 (竞价根)
+void candle(ImDrawList *dl, double x, double half, double from, double high, double low, double close, bool hollow) {
   const ImU32 col = ImGui::ColorConvertFloat4ToU32(close >= from ? kUp : kDn);
   const float cx = std::round(ImPlot::PlotToPixels(x, 0.0).x) + 0.5f;
   const float x0 = ImPlot::PlotToPixels(x - half, 0.0).x, x1 = ImPlot::PlotToPixels(x + half, 0.0).x;
   const float yo = ImPlot::PlotToPixels(0.0, from).y, yc = ImPlot::PlotToPixels(0.0, close).y;
   dl->AddLine(ImVec2(cx, ImPlot::PlotToPixels(0.0, high).y), ImVec2(cx, ImPlot::PlotToPixels(0.0, low).y), col);
   const float y0 = std::min(yo, yc), y1 = std::max(std::max(yo, yc), y0 + 1.f);
-  dl->AddRectFilled(ImVec2(std::min(x0, cx - 0.5f), y0), ImVec2(std::max(x1, cx + 0.5f), y1), col);
+  const ImVec2 a(std::min(x0, cx - 0.5f), y0), b(std::max(x1, cx + 0.5f), y1);
+  hollow ? dl->AddRect(a, b, col) : dl->AddRectFilled(a, b, col);
 }
 
 // 并根的槽数: span 槽在 px 宽里每根不窄于 kMinPx 的最小 kSlots 因子; days → 不够再取 kSlots 的整数倍 (几日一根)
@@ -362,7 +370,7 @@ void plot_chart(const char *id, const PlotBars &s, double win_lo, double win_hi,
       visible(lim, a, b);
       for (int i = a; i < b; ++i) {
         const Candle &k = s.bars[static_cast<size_t>(i)];
-        candle(dl, s.x[i], kBody * s.g, s.from(static_cast<size_t>(i)), k.high, k.low, k.close);
+        candle(dl, s.x[i], kBody * s.g, s.from(static_cast<size_t>(i)), k.high, k.low, k.close, s.called(static_cast<size_t>(i)));
       }
       ImPlot::EndItem();
     }
@@ -567,6 +575,8 @@ void k_bars(std::span<const Candle> days, const Source &src, double lo, double h
     s.days.push_back(c.date);
   if (nd)
     s.ref = days.back().ref;
+  if (g <= kSlots && src.joined && src.today->call)
+    s.call = static_cast<int>(src.daily.size());
   Bars b;
   for (long k = k0; k < k1; ++k) {
     const Candle &d = days[static_cast<size_t>(k)];
@@ -624,6 +634,8 @@ void intraday(const Source &src, std::span<const misc::Ymd> days, PlotBars &s) {
     at[k] = src.find(days[k]), has[k] = src.bars(at[k], bs[k]);
     if (has[k])
       end = src.adj(at[k]);
+    if (has[k] && at[k] == src.daily.size() && src.today->call)
+      s.call = static_cast<int>(k);
   }
   for (size_t k = 0; k < nd; ++k) {
     if (!has[k])
@@ -869,6 +881,8 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     for (size_t i = 0; i < ls.size(); ++i) {
       ImGui::PushID(static_cast<int>(i));
       ImPlot::SetNextLineStyle(ls[i].col, 1.5f);
+      if (ls[i].x.size() == 1) // 只一点 (竞价根 / 首根) 连不成线: 画点
+        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.f, ls[i].col, IMPLOT_AUTO, ls[i].col);
       ImPlot::PlotLine("##l", ls[i].x.data(), ls[i].y.data(), static_cast<int>(ls[i].x.size()));
       ImGui::PopID();
     }

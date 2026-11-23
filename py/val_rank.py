@@ -221,7 +221,7 @@ class History:  # 成分的估值史: 行 = T0 之前的全部落盘日, 列 = �
 
 def sina(
     syms,
-):  # 新浪快照 → {sym: (名称, 现价, 昨收, 日期)}; 现价 0 (未开盘 / 停牌) = 昨收
+):  # 新浪快照 → {sym: (名称, 现价, 昨收, 日期)}; 现价 0: 竞价段 (买一 = 卖一 = 虚拟匹配价) = 匹配价, 否则 (未开盘 / 停牌) = 昨收
     req = urllib.request.Request(SINA + ",".join(syms), headers=SINA_HEAD)
     with OPENER.open(req, timeout=5) as r:
         text = r.read().decode("gbk")
@@ -232,9 +232,10 @@ def sina(
         sym = line[line.find("hq_str_") + 7 : line.find("=")]
         f = line[line.find('"') + 1 : line.rfind('"')].split(",")
         assert len(f) > 31, f"sina: {sym} 无快照"
+        bid, ask = float(f[11]), float(f[21])
         out[sym] = (
             f[0],
-            float(f[3]) or float(f[2]),
+            float(f[3]) or (bid if bid > 0 and bid == ask else float(f[2])),
             float(f[2]),
             int(f[30].replace("-", "")),
         )

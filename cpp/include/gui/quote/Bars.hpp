@@ -103,9 +103,11 @@ struct Bars {
 };
 
 // 一个标的一个交易日 (当日 / 合成的一日 / 账户的一日); candle.date 0 = 无
+//   call = 开盘集合竞价撮合段 (当日, 尚无成交): 日根与首根 = 虚拟匹配价 (无额), 首笔成交起由真实的根取代
 struct Day {
   Candle candle; // 日根 (ref = 前收; flow = bars 的摘要)
   Bars bars;     // 分钟根
+  bool call = false;
 };
 
 // ---- 紧凑形 (见文件头) ----

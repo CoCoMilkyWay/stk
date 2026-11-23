@@ -74,6 +74,7 @@ int Fold::row(const Leg &g, float base, int freeze, Carry &k, Row &r, int &end, 
   }
   const double inv = 1.0 / base;
   ratio(g.day, inv, 1, r.data());
+  r[6] = g.day != nullptr;
   double c = k.c, px = k.px;
   int dir = k.dir;
   for (int s = k.at; s < slots_; ++s) {
@@ -125,12 +126,13 @@ void Fold::finish(misc::Ymd d, std::span<Day> out) {
   for (size_t b = 0; b < sw_.size(); ++b) {
     Day &o = out[b];
     const double *f = froze_.data() + b * kCells * kQ, *l = live_.data() + b * kCells * kQ;
-    if (!(sw_[b] > 0 && l[4] > 0)) {
+    if (!(sw_[b] > 0 && l[6] > 0)) {
       o.candle.date = 0;
       continue;
     }
     const double w = 1.0 / sw_[b];
     o.candle = {weighed(l, w), d, 1.f};
+    o.call = !(l[4] > 0);
     o.bars.has.reset(), o.bars.hole.reset();
     o.bars.net.fill(0);
     for (int s = 0; s <= end_; ++s) {

@@ -38,6 +38,8 @@
 //   末快照每轮只换变了的只 (Quotes 逐只共享), 发布只拷指针.
 //   线程: 快照 1 (每批一路并发) + 分钟 K kFillers, 随对象.
 // 当日的 Day: 有成交才有 (个股 = 本只当日有成交, 篮子 = 成员有成交); 基准 = 新浪昨收; 个股的净流入 = 本只分钟涨跌法 (net_flow).
+//   开盘集合竞价撮合段 (9:15–9:25, 尚无成交) 另有竞价的 Day (Day::call): 日根 / 首根 = 虚拟匹配价 (新浪此段现价恒 0, 买一 = 卖一 = 匹配价), 无额;
+//     只进发布, 不进 Track / 盘上缓存 / 分钟 K; 篮子照合 (成员的竞价根照计). 9:25 撮合出首笔成交即由真实的根取代.
 #pragma once
 
 #include "api/sina/client.hpp"
@@ -97,6 +99,8 @@ public:
   static constexpr int kFillers = 16;                  // 分钟 K 并发 (再高新浪会 RST)
   static constexpr int kFoldGap = 1;                   // 补根后发布的最小间隔 [s]
   static constexpr int kFoldThreads = 8;               // 发布的并行 (重建个股 Day / 篮子按段合成)
+  static constexpr int kCallOpen = 9 * 3600 + 15 * 60; // 开盘集合竞价撮合段 [kCallOpen, kCallEnd) [当日秒]
+  static constexpr int kCallEnd = 9 * 3600 + 25 * 60;
 
   // ids = 全市场 (全局 id)
   QuoteService(const std::vector<uint32_t> &ids, misc::Ymd fund_end, std::shared_ptr<const Calendar> cal);
@@ -123,7 +127,7 @@ private:
     std::bitset<kSlots> exact;      // 来自分钟 K 的根 (含确认无成交的); 快照不写
     Fill fill = Fill::Idle;         // 以下运行态, 不落盘
     int touched = kSlots;           // 上次发布后改写过根的最早槽
-    std::shared_ptr<const Day> day; // 当日快照 (发布时建; 空 = 待建)
+    std::shared_ptr<const Day> day; // 当日快照 (发布时建; 空 = 待建; 竞价段 = 竞价的 Day, 匹配价变即重建)
 
     bool gap() const { return lo <= hi; }
     void mark(int l, int h) { lo = std::min(lo, l), hi = std::max(hi, h); }
@@ -160,6 +164,10 @@ private:
   int live_slot() const;
   int done() const { return std::max(settled(), live_slot() - 1); } // 已走完的末根 (分钟 K 取得到)
   bool traded(const sina::Quote *q) const { return q && q->date == date_ && q->volume > 0 && q->price > 0; }
+  // 竞价段的虚拟匹配价 (买一 = 卖一); 不在竞价段 / 有成交 / 未撮合 → 0
+  float call_px(const sina::Quote *q) const {
+    return q && q->date == date_ && q->volume == 0 && q->sec >= kCallOpen && q->sec < kCallEnd && q->bid[0] > 0 && q->bid[0] == q->ask[0] ? q->bid[0] : 0.f;
+  }
   // 改 tracks_[i] (f(Track &) → 根有变) 的唯一入口: 计数增量跟上, 根有变 → 作废其当日快照
   template <class F>
   void touch(uint32_t i, F &&f) {
