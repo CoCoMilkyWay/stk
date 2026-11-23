@@ -88,27 +88,19 @@ struct Op {
 };
 
 // ---- 回测统计与候选结局 (均已按所评方向) ----
-struct Stat { // 全期: 分层单调性 / 每期真实毛多空 / rIC 均值
-  double mono = 0.0, ls = 0.0, ric = 0.0;
-};
-struct Roll {                           // 滚动窗 (窗长 = 评估期 / kRollParts; factor/Search/Contract.hpp【目标】): 中位 rIC = score
-  int win = 0, n = 0;                   // 窗长 (交易日) / 窗数 (0 = 无窗)
-  double ric_med = 0.0, ric_mean = 0.0; // 窗 rIC 的中位 / 平均
-  double ann_med = 0.0, ann_mean = 0.0; // 窗年化多空的中位 / 平均
-};
 struct Year {
-  int year = 0, n = 0;
-  Stat st;
+  int year = 0;
+  double ric = 0.0; // 年内 rIC 均值
 };
 struct Weight {
   std::string expr;
   int sign = 1;
   int hold_src = 0;
-  bool has = false; // 有该持有期的统计且有滚动窗
-  Stat st;
-  Roll roll;
-  double score = 0.0, valid = 0.0, turn = 0.0, rac = 0.0; // score = 中位 rIC
-  std::vector<double> grp;
+  bool has = false;              // 有该持有期的统计且有滚动窗
+  double score = 0.0;            // 中位 rIC (滚动窗 = 评估期 / kRollParts; factor/Search/Contract.hpp【目标】)
+  double gross = 0.0, net = 0.0; // 每期毛 / 净多空 (净 = 扣固定冲击的换手成本)
+  double turn = 0.0;             // 年换手 (倍, 两端单边均)
+  std::vector<double> grp;       // 20 组每期毛收益 (减组间均值)
   std::vector<Year> years;
 };
 
@@ -127,9 +119,8 @@ AGENT_ROWS(Verdict, kVerdicts, Pending);
 struct Point {
   std::vector<double> v; // 各自由参数的取值 (Sweep::slots 同序)
   int sign = 1;
-  Roll roll;
-  Stat st;
-  std::vector<float> line; // [日] 累计中位 rIC (Sweep::dates 同长; 首个窗之前 NaN)
+  double score = 0.0;      // 中位 rIC
+  std::vector<float> line; // [日] 窗 rIC (Sweep::dates 同长; 不计入的窗 NaN)
 };
 // 一趟 Search 的全部点 (本进程内存里; 载入的会话没有)
 struct Sweep {

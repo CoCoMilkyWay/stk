@@ -36,62 +36,53 @@ struct EvalYield final : Res {
   void draw() const override {}
 };
 
-std::string bp_spark(const std::vector<double> &v) {
-  const auto [lo, hi] = std::minmax_element(v.begin(), v.end());
-  return "`" + text::bars(v) + "`  [" + text::bp(*lo) + ", " + text::bp(*hi) + "] bp";
-}
-
 std::string param(double v) { return v == std::round(v) ? fmt("%.0f", v) : fmt("%.4g", v); }
 
-// 参数扫描 (pts 已按中位 rIC 降序): 参数 ≤ kSweepSlots 个时每个参数按取值分段、段内取中位 rIC 最高的点; 多了改列最高的 kSweepTop 个点
+// 参数扫描 (pts 已按中位 rIC 降序): 参数 ≤ kSweepSlots 个时每个参数按取值分段, 每段给点数 / 段内中位 rIC 的中位与最高 (及最高的点); 多了改列最高的 kSweepTop 个点
 std::string sweep_text(const Sweep &sw) {
   if (sw.slots.empty() || sw.pts.size() < 2)
     return "";
   const size_t n = sw.pts.size(), per = (n + kSweepBins - 1) / kSweepBins;
-  const Roll &r0 = sw.pts.front().roll;
-  const std::string head = "- 参数扫描 (Search 评过 " + std::to_string(n) + " 个点, 滚动窗 " + std::to_string(r0.win) + " 日; ";
-  const auto row_of = [](const Point &p, std::vector<std::string> row) {
-    row.push_back(p.sign < 0 ? "反" : "正");
-    row.push_back(fmt("%.4f", p.roll.ric_med)), row.push_back(fmt("%.4f", p.roll.ric_mean)), row.push_back(fmt("%+.1f", p.roll.ann_med * 100.0));
-    row.push_back(fmt("%.3f", p.st.mono)), row.push_back(fmt("%+.2f", p.st.ls * 1e4));
-    return row;
-  };
-  const std::vector<std::string> tail = {"向", "中位 rIC", "平均 rIC", "年化毛多空 中位 %", "全期 mono", "全期每期毛多空 bp"};
+  std::string s = "- " + SweepHead(sw);
   if (sw.slots.size() > kSweepSlots) {
     std::vector<std::string> hs = sw.slots;
-    hs.insert(hs.end(), tail.begin(), tail.end());
+    hs.push_back("向"), hs.push_back("中位 rIC");
     text::Table tbl(hs);
     for (size_t i = 0; i < std::min(n, kSweepTop); ++i) {
       std::vector<std::string> row;
       for (const double x : sw.pts[i].v)
         row.push_back(param(x));
-      tbl.add(row_of(sw.pts[i], std::move(row)));
+      row.push_back(DirCn(sw.pts[i].sign)), row.push_back(fmt("%.4f", sw.pts[i].score));
+      tbl.add(std::move(row));
     }
-    return head + "参数多, 只列中位 rIC 最高的 " + std::to_string(std::min(n, kSweepTop)) + " 个):\n\n" + tbl.str();
+    return s + ", 参数多, 只列中位 rIC 最高的 " + std::to_string(std::min(n, kSweepTop)) + " 个:\n\n" + tbl.str();
   }
-  std::string s = head + "每个参数按取值分段, 段内取中位 rIC 最高的点):\n";
+  s += ", 每个参数按取值分段:\n";
   for (size_t j = 0; j < sw.slots.size(); ++j) {
     std::vector<size_t> ix(n);
     for (size_t i = 0; i < n; ++i)
       ix[i] = i;
     const auto v = [&](size_t i) { return sw.pts[ix[i]].v[j]; };
     std::stable_sort(ix.begin(), ix.end(), [&](size_t a, size_t b) { return sw.pts[a].v[j] < sw.pts[b].v[j]; });
-    std::vector<std::string> hs = {sw.slots[j] + " 段", "最好的点"};
-    hs.insert(hs.end(), tail.begin(), tail.end());
-    text::Table tbl(hs);
+    text::Table tbl({sw.slots[j] + " 段", "点数", "中位 rIC 段内中位", "段内最高", "最高的点"});
     for (size_t a = 0; a < n;) {
       size_t b = std::min(n, a + per);
       while (b < n && v(b) == v(b - 1))
         ++b;
+      std::vector<double> sc;
       size_t best = a;
-      for (size_t i = a; i < b; ++i)
-        if (sw.pts[ix[i]].roll.ric_med > sw.pts[ix[best]].roll.ric_med)
+      for (size_t i = a; i < b; ++i) {
+        sc.push_back(sw.pts[ix[i]].score);
+        if (sw.pts[ix[i]].score > sw.pts[ix[best]].score)
           best = i;
+      }
+      std::sort(sc.begin(), sc.end());
+      const double mid = 0.5 * (sc[(sc.size() - 1) / 2] + sc[sc.size() / 2]);
       const Point &p = sw.pts[ix[best]];
       std::string at;
       for (size_t q = 0; q < sw.slots.size(); ++q)
         at += (q ? ", " : "") + (sw.slots.size() > 1 ? sw.slots[q] + "=" : std::string()) + param(p.v[q]);
-      tbl.add(row_of(p, {v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1)), at}));
+      tbl.add({v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1)), std::to_string(b - a), fmt("%.4f", mid), fmt("%.4f", p.score), at});
       a = b;
     }
     s += "\n" + tbl.str();
@@ -99,26 +90,13 @@ std::string sweep_text(const Sweep &sw) {
   return s;
 }
 
-std::string years_text(const std::vector<Year> &ys) {
-  if (ys.empty())
-    return "";
-  const auto neg = std::count_if(ys.begin(), ys.end(), [](const Year &y) { return y.st.ric < 0.0; });
-  text::Table tbl({"年", "行", "rIC", "mono", "每期毛多空 bp"});
-  for (const Year &y : ys)
-    tbl.add({std::to_string(y.year), std::to_string(y.n), fmt("%.4f", y.st.ric), fmt("%.3f", y.st.mono), fmt("%+.2f", y.st.ls * 1e4)});
-  return "- 最佳权重分年 (" + std::to_string(ys.size()) + " 年, rIC 为负 " + std::to_string(neg) + " 年; 只看是否处处成立, 不据单年挑参数):\n\n" + tbl.str() + "\n";
-}
-
 Sweep sweep_of(const Engine::SearchResult &r) {
   Sweep s{.slots = r.slots};
   for (const misc::Ymd d : r.dates)
     s.dates.push_back(static_cast<int>(d));
-  for (const Engine::SearchCand &c : r.cands) {
-    if (!c.roll.ok())
-      continue;
-    const factor::search::Roll &x = c.roll;
-    s.pts.push_back({c.v, c.sign, {x.win, x.n, x.ric_med, x.ric_mean, x.ann_med, x.ann_mean}, {c.mono, c.ls, c.ric}, c.line});
-  }
+  for (const Engine::SearchCand &c : r.cands)
+    if (c.roll.ok())
+      s.pts.push_back({c.v, c.sign, c.roll.ric_med, c.line});
   return s;
 }
 
@@ -173,6 +151,23 @@ ToolOut run_eval(const Engine::FactorScope &fsc, const std::string &file, const 
 
 } // namespace
 
+std::string GroupsHead() { return "最佳权重 20 组每期毛收益 G1 → G20 (减组间均值, bp)"; }
+
+std::string YearsHead(const std::vector<Year> &ys) {
+  assert(!ys.empty());
+  const auto neg = std::count_if(ys.begin(), ys.end(), [](const Year &y) { return y.ric < 0.0; });
+  const Year &lo = *std::min_element(ys.begin(), ys.end(), [](const Year &a, const Year &b) { return a.ric < b.ric; });
+  return "最佳权重分年 rIC (" + std::to_string(ys.size()) + " 年, 为负 " + std::to_string(neg) + " 年, 最差 " + std::to_string(lo.year) + ")";
+}
+
+std::string SweepHead(const Sweep &sw) {
+  const auto neg = std::count_if(sw.pts.begin(), sw.pts.end(), [](const Point &p) { return p.sign < 0; });
+  const size_t n = sw.pts.size();
+  const std::string dir = neg == 0 ? "全正" : static_cast<size_t>(neg) == n ? "全反"
+                                                                            : "正 " + std::to_string(n - static_cast<size_t>(neg)) + " 反 " + std::to_string(neg);
+  return "参数扫描 (Search 评过 " + std::to_string(n) + " 个点, 方向 " + dir + ")";
+}
+
 std::string TrialRes::text() const {
   const Result &r = st.res;
   std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n";
@@ -182,8 +177,13 @@ std::string TrialRes::text() const {
   if (!r.visible)
     return s;
   if (const Weight *w = r.best(); w && !w->grp.empty()) {
-    s += "- 最佳权重的 20 组每期毛收益 (减组间均值) G1 → G20: " + bp_spark(w->grp) + "\n";
-    s += years_text(w->years);
+    s += "- " + GroupsHead() + ": " + text::spark(w->grp, text::bp) + "\n";
+    if (!w->years.empty()) {
+      std::vector<double> ric;
+      for (const Year &y : w->years)
+        ric.push_back(y.ric);
+      s += "- " + YearsHead(w->years) + ": " + text::spark(ric) + "\n";
+    }
   }
   return s + sweep_text(r.sweep);
 }

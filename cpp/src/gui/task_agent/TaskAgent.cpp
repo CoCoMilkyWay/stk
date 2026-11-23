@@ -1257,15 +1257,15 @@ void results_table(Ui &s, const View &v) {
   ImGui::TableSetupColumn("名");
   ImGui::TableSetupColumn("中文");
   ImGui::TableSetupColumn("结局");
-  ImGui::TableSetupColumn("中位rIC", kDesc);
-  ImGui::TableSetupColumn("rIC", kDesc);
-  ImGui::TableSetupColumn("mono", kDesc);
-  ImGui::TableSetupColumn("多空bp", kDesc);
+  ImGui::TableSetupColumn("中位 rIC", kDesc);
+  ImGui::TableSetupColumn("每期毛多空 bp", kDesc);
+  ImGui::TableSetupColumn("每期净多空 bp", kDesc);
+  ImGui::TableSetupColumn("年换手");
   ImGui::TableSetupColumn("假设");
   ImGui::TableSetupColumn("思路");
   ImGui::TableSetupColumn("模板", ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_NoSort);
   ImGui::TableHeadersRow();
-  // 统计列: 最佳权重 (中位 rIC + 全期 rIC / mono / 多空)
+  // 统计列: 最佳权重 (中位 rIC + 每期毛 / 净多空 + 年换手)
   const auto hyp_of = [](const Result &r) { return split_note(r.note).first; };
   const auto change_of = [](const Result &r) { return split_note(r.note).second; };
   std::vector<size_t> ix;
@@ -1280,11 +1280,11 @@ void results_table(Ui &s, const View &v) {
       case 4:
         return w ? w->score : -INFINITY;
       case 5:
-        return w ? w->st.ric : -INFINITY;
+        return w ? w->gross : -INFINITY;
       case 6:
-        return w ? w->st.mono : -INFINITY;
+        return w ? w->net : -INFINITY;
       case 7:
-        return w ? w->st.ls : -INFINITY;
+        return w ? w->turn : -INFINITY;
       default:
         return static_cast<double>(r.verdict);
       }
@@ -1327,16 +1327,16 @@ void results_table(Ui &s, const View &v) {
     const Weight *w = r.best();
     ImGui::TableNextColumn();
     if (w)
-      ImGui::Text("%.4f", w->roll.ric_med);
+      ImGui::Text("%.4f", w->score);
     ImGui::TableNextColumn();
     if (w)
-      ImGui::Text("%.4f", w->st.ric);
+      ImGui::Text("%+.2f", w->gross * 1e4);
     ImGui::TableNextColumn();
     if (w)
-      ImGui::Text("%.3f", w->st.mono);
+      ImGui::Text("%+.2f", w->net * 1e4);
     ImGui::TableNextColumn();
     if (w)
-      ImGui::Text("%.2f", w->st.ls * 1e4);
+      ImGui::Text("%.0f", w->turn);
     ImGui::TableNextColumn();
     if (const std::string h = hyp_of(r); !h.empty()) {
       ImGui::TextUnformatted(text::head(h, 16).c_str());

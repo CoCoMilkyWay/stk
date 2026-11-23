@@ -1,5 +1,5 @@
 // eval_factor 的展示: 候选 (模板 / 思路) + 结局 + 各权重表 + 最佳权重的 20 组与分年 +
-//   参数扫描 (同 Beta→Style 选池: 左 = 各参数点的累计中位 rIC 复合图, 右 = 参数点表, 缺省中位 rIC 降序; 图 ↔ 表悬停联动)
+//   参数扫描 (左 = 各参数点的窗 rIC 复合图, 右 = 参数点表, 缺省中位 rIC 降序; 图 ↔ 表悬停联动)
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
@@ -32,7 +32,7 @@ int date_fmt(double v, char *buf, int size, void *ud) {
   return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
 
-// 线 p 的首个有值日 (累计中位线首窗之前 NaN)
+// 线 p 的首个有值日 (首个计入的窗之前 NaN)
 size_t first_of(const Point &p) {
   size_t d = 0;
   while (d < p.line.size() && std::isnan(p.line[d]))
@@ -43,31 +43,31 @@ size_t first_of(const Point &p) {
 // 名次色 (pts 已按中位 rIC 降序: 下标即名次, 0 = 最好 绿 → 末 = 红)
 ImVec4 rank_col(size_t i, size_t n, float a) { return band_col(n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.0, a); }
 
-// 左: 各点的累计中位 rIC; 悬停 (本表或上帧图) 的点白粗线画在最上; 返回图上悬停的点 (−1 = 无)
+// 左: 各点的窗 rIC (图例只列写进的权重); 悬停 (本表或上帧图) 的点白粗线画在最上; 返回图上悬停的点 (−1 = 无)
 int sweep_plot(const Sweep &sw, int hot, const ImVec2 &size) {
   const size_t n = sw.pts.size(), D = sw.dates.size();
-  if (!ImPlot::BeginPlot("##sweep_med", size, ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
+  if (!ImPlot::BeginPlot("##sweep_ric", size, ImPlotFlags_NoTitle | ImPlotFlags_NoMenus))
     return -1;
-  ImPlot::SetupAxes(nullptr, "累计中位 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxes(nullptr, "窗 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupLegend(ImPlotLocation_NorthWest);
   DayAxis ax{sw.dates, 1.0, 0.0, {}, date_fmt, const_cast<std::vector<int> *>(&sw.dates)};
   setup_day_axis(ax);
   std::vector<size_t> from(n);
   for (size_t i = 0; i < n; ++i)
     from[i] = first_of(sw.pts[i]);
-  const auto draw = [&](size_t i, const ImVec4 &col, float w) {
-    const Point &p = sw.pts[i];
+  const auto draw = [&](size_t i, const ImVec4 &col, float w, const char *label) {
     if (from[i] >= D)
       return;
-    char id[16];
-    std::snprintf(id, sizeof(id), "##p%zu", i);
+    char id[32];
+    std::snprintf(id, sizeof(id), "%s##p%zu", label, i);
     ImPlot::SetNextLineStyle(col, w);
-    ImPlot::PlotLine(id, p.line.data() + from[i], static_cast<int>(D - from[i]), 1.0, static_cast<double>(from[i]));
+    ImPlot::PlotLine(id, sw.pts[i].line.data() + from[i], static_cast<int>(D - from[i]), 1.0, static_cast<double>(from[i]));
   };
   for (size_t i = n; i-- > 0;) // 好的画在上
     if (static_cast<int>(i) != hot)
-      draw(i, rank_col(i, n, i == 0 ? 1.0f : kLineA), i == 0 ? kBestW : 1.0f);
+      draw(i, rank_col(i, n, i == 0 ? 1.0f : kLineA), i == 0 ? kBestW : 1.0f, i == 0 ? "权重" : "");
   if (hot >= 0 && static_cast<size_t>(hot) < n)
-    draw(static_cast<size_t>(hot), kHotCol, kHotW);
+    draw(static_cast<size_t>(hot), kHotCol, kHotW, "");
   const int near = near_line(n, [&](size_t i, double x) {
     const long d = std::lround(x);
     return d >= static_cast<long>(from[i]) && d < static_cast<long>(D) ? static_cast<double>(sw.pts[i].line[static_cast<size_t>(d)])
@@ -82,14 +82,8 @@ int sweep_table(const Sweep &sw, int plot_hot, float h) {
   const size_t P = sw.slots.size(), n = sw.pts.size();
   enum Col : int { kSign,
                    kMed,
-                   kMean,
-                   kAnnMed,
-                   kAnnMean,
-                   kRic,
-                   kMono,
-                   kLs,
                    kCols };
-  static const char *kHeads[kCols] = {"向", "中位 rIC", "平均 rIC", "年化多空 中位 %", "年化多空 平均 %", "全期 rIC", "mono", "多空 bp"};
+  static const char *kHeads[kCols] = {"向", "中位 rIC"};
   constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollX |
                                      ImGuiTableFlags_ScrollY | ImGuiTableFlags_Sortable | ImGuiTableFlags_NoSavedSettings;
   if (!ImGui::BeginTable("##sweep_tbl", static_cast<int>(P) + kCols, kFlags, ImVec2(-1, h)))
@@ -105,24 +99,7 @@ int sweep_table(const Sweep &sw, int plot_hot, float h) {
   const auto val = [&](const Point &p, int c) -> double {
     if (c < static_cast<int>(P))
       return p.v[static_cast<size_t>(c)];
-    switch (c - static_cast<int>(P)) {
-    case kMed:
-      return p.roll.ric_med;
-    case kMean:
-      return p.roll.ric_mean;
-    case kAnnMed:
-      return p.roll.ann_med;
-    case kAnnMean:
-      return p.roll.ann_mean;
-    case kRic:
-      return p.st.ric;
-    case kMono:
-      return p.st.mono;
-    case kLs:
-      return p.st.ls;
-    default:
-      return 0.0;
-    }
+    return c - static_cast<int>(P) == kMed ? p.score : 0.0;
   };
   std::vector<size_t> ord(n);
   for (size_t i = 0; i < n; ++i)
@@ -154,10 +131,7 @@ int sweep_table(const Sweep &sw, int plot_hot, float h) {
       }
       ImGui::TextColored(rank_col(i, n, 1.0f), v == std::round(v) ? "%.0f" : "%.4g", v);
     }
-    cell(p.sign < 0 ? "反" : "正");
-    cell_num(p.roll.ric_med, "%.4f", true), cell_num(p.roll.ric_mean, "%.4f", true);
-    cell_num(p.roll.ann_med * 100.0, "%+.1f", true), cell_num(p.roll.ann_mean * 100.0, "%+.1f", true);
-    cell_num(p.st.ric, "%.4f", true), cell_num(p.st.mono, "%.3f", true), cell_num(p.st.ls * 1e4, "%+.2f", true);
+    cell(DirCn(p.sign)), cell_num(p.score, "%.4f", true);
     ImGui::PopID();
   }
   ImGui::EndTable();
@@ -167,8 +141,7 @@ int sweep_table(const Sweep &sw, int plot_hot, float h) {
 void sweep_view(const Sweep &sw, int &hot) {
   if (sw.slots.empty() || sw.pts.size() < 2 || sw.dates.empty())
     return;
-  heading("参数扫描 (Search 评过 " + std::to_string(sw.pts.size()) + " 个点, 滚动窗 " + std::to_string(sw.pts.front().roll.win) +
-          " 日; 线 = 截至该日全部窗 rIC 的中位, 色 = 中位 rIC 名次, 粗线 = 写进的权重)");
+  heading(SweepHead(sw));
   if (!ImGui::BeginTable("##sweep", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV))
     return;
   ImGui::TableSetupColumn("图", ImGuiTableColumnFlags_WidthStretch, 1.0f);
@@ -198,31 +171,33 @@ void TrialRes::draw() const {
   if (const std::string g = GateLine(r, gate); !g.empty())
     wrapped(color(kind), g);
   if (r.visible) {
-    if (!r.ws.empty() && grid("##ws", {"权重", "中位 rIC", "平均 rIC", "窗", "年化多空 中位 %", "全期 rIC", "mono", "多空 bp", "有效率", "年换手", "秩自相关", "向"})) {
+    if (!r.ws.empty() && grid("##ws", {"权重", "中位 rIC", "向", "每期毛多空 bp", "每期净多空 bp", "年换手"})) {
       for (const Weight &w : r.ws) {
         ImGui::TableNextRow();
         cell(Fills(r.tmpl, w.expr));
         if (!w.has) {
           cell_dim("无该持有期统计");
-          for (int i = 0; i < 10; ++i)
+          for (int i = 0; i < 4; ++i)
             cell("");
           continue;
         }
-        cell_num(w.roll.ric_med, "%.4f", true), cell_num(w.roll.ric_mean, "%.4f", true);
-        cell(std::to_string(w.roll.n) + " × " + std::to_string(w.roll.win) + " 日");
-        cell_num(w.roll.ann_med * 100.0, "%+.1f", true), cell_num(w.st.ric, "%.4f", true), cell_num(w.st.mono, "%.3f", true), cell_num(w.st.ls * 1e4, "%+.2f", true);
-        cell_pct(w.valid), cell_num(w.turn, "%.0f"), cell_num(w.rac, "%.3f"), cell(w.sign < 0 ? "反" : "正");
+        cell_num(w.score, "%.4f", true), cell(DirCn(w.sign)), cell_num(w.gross * 1e4, "%+.2f", true), cell_num(w.net * 1e4, "%+.2f", true), cell_num(w.turn, "%.0f");
       }
       ImGui::EndTable();
     }
     if (const Weight *w = r.best(); w && !w->grp.empty()) {
-      groups_plot("最佳权重 20 组每期毛收益 (减组间均值, bp)##grp", w->grp, 180.0f);
-      if (!w->years.empty() && grid("##years", {"年", "行", "rIC", "mono", "多空 bp"})) {
-        for (const Year &y : w->years) {
+      groups_plot((GroupsHead() + "##grp").c_str(), w->grp, 180.0f);
+      if (!w->years.empty()) {
+        heading(YearsHead(w->years));
+        std::vector<std::string> heads;
+        for (const Year &y : w->years)
+          heads.push_back(std::to_string(y.year));
+        if (grid("##years", heads)) {
           ImGui::TableNextRow();
-          cell(std::to_string(y.year)), cell(std::to_string(y.n)), cell_num(y.st.ric, "%.4f", true), cell_num(y.st.mono, "%.3f", true), cell_num(y.st.ls * 1e4, "%+.2f", true);
+          for (const Year &y : w->years)
+            cell_num(y.ric, "%.4f", true);
+          ImGui::EndTable();
         }
-        ImGui::EndTable();
       }
     }
     sweep_view(r.sweep, hot);

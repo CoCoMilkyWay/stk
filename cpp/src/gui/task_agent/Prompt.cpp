@@ -311,24 +311,13 @@ std::string ListTail(int all, int skip, int n) {
 std::string LoadPrompt(Msg m) { return disk::read(disk::PromptFile, {.name = def(m).id}); }
 void SavePrompt(Msg m, const std::string &text) { disk::write(disk::PromptFile, {.name = def(m).id}, text); }
 
-std::string Text(const Stat &s) {
-  char b[128];
-  std::snprintf(b, sizeof(b), "全期 rIC %.4f · mono %.3f · 每期毛多空 %.2fbp", s.ric, s.mono, s.ls * 1e4);
-  return b;
-}
-
-std::string Text(const Roll &r) {
-  char b[160];
-  std::snprintf(b, sizeof(b), "中位 rIC %.4f (平均 %.4f; %d 个 %d 日窗) · 年化毛多空 中位 %+.1f%%", r.ric_med, r.ric_mean, r.n, r.win, r.ann_med * 100.0);
-  return b;
-}
-
 std::string Text(const Weight &w) {
   if (!w.has)
     return "无该持有期统计";
-  char t[128];
-  std::snprintf(t, sizeof(t), " · 有效率 %.0f%% · 年换手 %.0f 倍 · 隔一期秩自相关 %.3f", w.valid * 100.0, w.turn, w.rac);
-  return Text(w.roll) + " · " + Text(w.st) + t + (w.sign < 0 ? " · 取反" : "");
+  char b[192];
+  std::snprintf(b, sizeof(b), "中位 rIC %.4f (%s) · 每期毛多空 %+.2fbp · 每期净多空 %+.2fbp · 年换手 %.0f 倍", w.score, w.sign < 0 ? "反向" : "正向", w.gross * 1e4,
+                w.net * 1e4, w.turn);
+  return b;
 }
 
 std::string Brief(const Result &r) {

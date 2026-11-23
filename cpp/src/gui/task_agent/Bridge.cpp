@@ -181,8 +181,9 @@ struct SpanCache {
 
 using Fails = std::map<std::string, std::string>;
 
+// fixed = Config::fixed_impact (净多空扣固定段换手成本)
 Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, const std::string &file, int hold,
-                 const Fails &fails) {
+                 double fixed, const Fails &fails) {
   std::vector<Engine::FactorRow> rows;
   Engine::ScanFactorFile(dir, file, ft, rows);
   assert(!rows.empty());
@@ -221,18 +222,18 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
     if (rl) {
       const fs::HoldStat *h = w.find_hold(hold);
       assert(h && "RowRoll 非空须有该持有期的 HoldStat");
-      x.st = {h->mono, fs::ls_period(*h), h->ric.mean};
-      x.roll = {rl->win, rl->n, rl->ric_med, rl->ric_mean, rl->ann_med, rl->ann_mean};
-      x.score = fsearch::score_of(*rl), x.valid = w.valid_pct / 100.0;
-      x.turn = fs::turn_annual(*h, w.turn_of(*h));
-      x.rac = h->rac.mean;
+      assert(w.costs.front().amt == Engine::kAmtFixed && "成本段首个是固定段");
+      const fs::CostAcc &c = w.turn_of(*h);
+      x.score = fsearch::score_of(*rl);
+      x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, fixed);
+      x.turn = fs::turn_annual(*h, c);
       double mid = 0.0;
       for (const float g : h->grp)
         mid += g / static_cast<double>(fs::kGroups);
       for (const float g : h->grp)
         x.grp.push_back(g - mid);
       for (const Engine::YearStat &y : *w.find_years(hold))
-        x.years.push_back({y.year, y.n, {y.mono, y.ls, y.ric}});
+        x.years.push_back({y.year, y.ric});
     }
     r.ws.push_back(std::move(x));
   }
@@ -252,10 +253,11 @@ void sort_results(std::vector<Result> &v) {
   });
 }
 
-std::vector<Result> scan(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, int hold, const Fails &fails) {
+std::vector<Result> scan(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, int hold, double fixed,
+                         const Fails &fails) {
   std::vector<Result> out;
   for (const std::string &file : dir.files())
-    out.push_back(result_of(ft, spans, open, dir, file, hold, fails));
+    out.push_back(result_of(ft, spans, open, dir, file, hold, fixed, fails));
   sort_results(out);
   return out;
 }
@@ -358,12 +360,12 @@ std::string GateMiss(const Gate &g, const Result &r) {
   if (r.verdict == Verdict::Broken)
     return "BROKEN: " + r.error;
   for (const Weight &w : r.ws)
-    if (w.has && w.roll.ric_med >= g.ric)
+    if (w.has && w.score >= g.ric)
       return "";
   const Weight *w = r.best();
   if (!w)
     return "本持有期无权重";
-  return "最佳权重未达入库门槛: 中位 rIC " + num(w->roll.ric_med) + " < " + num(g.ric);
+  return "最佳权重未达入库门槛: 中位 rIC " + num(w->score) + " < " + num(g.ric);
 }
 
 namespace catalog {
@@ -469,6 +471,7 @@ struct Lab::Impl {
         }) {}
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
+  double fixed() const { return data->config.fixed_impact; }
 
   Engine::FactorScope factor_scope(bool gpu) const {
     Engine::FactorScope fsc;
@@ -517,14 +520,14 @@ struct Lab::Impl {
   }
 
   void rescan_all() {
-    results = scan(*ft(), *spans, open, dir, sc.hold, fails);
+    results = scan(*ft(), *spans, open, dir, sc.hold, fixed(), fails);
     for (Result &r : results)
       attach_extras(r);
     env_cache.reset();
   }
 
   void rescan_one(const std::string &file) {
-    Result got = result_of(*ft(), *spans, open, dir, file, sc.hold, fails);
+    Result got = result_of(*ft(), *spans, open, dir, file, sc.hold, fixed(), fails);
     attach_extras(got);
     const auto it = std::find_if(results.begin(), results.end(), [&](const Result &x) { return x.file == file; });
     if (it != results.end())
@@ -650,7 +653,7 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
       c.ops.push_back(x);
     c.all_ops.push_back(std::move(x));
   }
-  c.library = scan(*ft, *impl_->spans, impl_->open, Engine::factor_dir_of(sc.pool, level_id(sc.level)), sc.hold, {});
+  c.library = scan(*ft, *impl_->spans, impl_->open, Engine::factor_dir_of(sc.pool, level_id(sc.level)), sc.hold, impl_->fixed(), {});
   impl_->rescan_all();
 }
 
@@ -733,7 +736,7 @@ Adopted Lab::adopt(std::string name, const Gate &g, bool dry) {
   if (std::filesystem::exists(dst))
     return {std::move(name), "正式因子库已有同名文件 `" + r->file + "`"};
   disk::write(formal.file, formal.of(r->file), disk::read(impl_->dir.file, impl_->dir.of(r->file)));
-  impl_->context.library = scan(*impl_->ft(), *impl_->spans, impl_->open, formal, impl_->sc.hold, {});
+  impl_->context.library = scan(*impl_->ft(), *impl_->spans, impl_->open, formal, impl_->sc.hold, impl_->fixed(), {});
   return {std::move(name), {}};
 }
 
