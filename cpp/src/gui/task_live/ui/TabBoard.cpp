@@ -493,13 +493,13 @@ void task_line(LiveHub &hub) {
 
 // 账户对照: 现 / 调仓后 / 变动%, 调仓后与现不同的格标色; 变动按该列好坏着色 (好红坏绿)
 void sheet(const live::rebal::Sheet *n, const live::rebal::Sheet *e, bool priv, Fit &fit) {
-  constexpr int kN = 9;
-  constexpr const char *kHeads[kN + 1] = {"", "总资产", "持仓|市值", "净资产", "负债", "现金", "可用|保证金", "可融|余量", "杠杆", "维持|担保"};
-  constexpr int kGood[kN] = {1, 1, 1, -1, 1, 1, 1, -1, 1}; // 涨为好 1 / 跌为好 -1
+  constexpr int kN = 11;
+  constexpr const char *kHeads[kN + 1] = {"", "总资产", "持仓|市值", "融资|持仓", "自有|持仓", "净资产", "负债", "现金", "可用|保证金", "可融|余量", "杠杆", "维持|担保"};
+  constexpr int kGood[kN] = {1, 1, 1, 1, 1, -1, 1, 1, 1, -1, 1}; // 涨为好 1 / 跌为好 -1
   using Vals = std::array<std::optional<double>, kN>;
-  const auto vals = [](const live::rebal::Sheet &s) { return Vals{s.assets, s.mv, s.net, s.debt, s.cash, s.X, s.L, s.lev, s.maint}; };
-  const auto txt = [](int c, double v) { return c == 7 ? strf("%.2f", v) : c == 8 ? strf("%.0f%%", v * 100)
-                                                                                  : wan(v); };
+  const auto vals = [](const live::rebal::Sheet &s) { return Vals{s.assets, s.mv, s.fin, s.mv - s.fin, s.net, s.debt, s.cash, s.X, s.L, s.lev, s.maint}; };
+  const auto txt = [](int c, double v) { return c == 9 ? strf("%.2f", v) : c == 10 ? strf("%.0f%%", v * 100)
+                                                                                   : wan(v); };
   if (!begin_fit("##sheet", kHeads, kFlags, fit))
     return;
   fit_heads(kHeads, fit);

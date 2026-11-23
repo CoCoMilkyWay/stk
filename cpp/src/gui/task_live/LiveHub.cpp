@@ -635,7 +635,7 @@ void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
     if (p.plan)
       p.now = p.plan->now;
     else if (snap_)
-      p.now = live::rebal::now_of(snap_->acct);
+      p.now = live::rebal::now_of(*snap_);
     if (p.wait.empty() || !cur.plan)
       cur = std::move(p);
     else

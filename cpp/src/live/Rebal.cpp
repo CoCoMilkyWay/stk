@@ -229,8 +229,8 @@ std::pair<std::vector<size_t>, double> pick(const std::vector<Tgt> &tgts, const 
   return {std::move(cur), cur.empty() ? 0 : V};
 }
 
-Sheet sheet(double assets, double net, double debt, double cash, std::optional<double> X, double L) {
-  return {assets, net, debt, cash, assets - cash, X, L, assets / net, debt ? std::optional<double>(assets / debt) : std::nullopt};
+Sheet sheet(double assets, double net, double debt, double cash, double fin, std::optional<double> X, double L) {
+  return {assets, net, debt, cash, assets - cash, fin, X, L, assets / net, debt ? std::optional<double>(assets / debt) : std::nullopt};
 }
 
 Prices prices(const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes) {
@@ -249,6 +249,15 @@ Bal balances(const Keyed<Position> &pos) {
   return out;
 }
 
+// 融资持仓市值: Σ 融资部分 min(负债数量, 持仓) × 价 (px 须含持仓里有负债的各只)
+double fin_mv(const Bal &bal, const Keyed<Debt> &debts, const Prices &px) {
+  double v = 0;
+  for (const Debt &d : debts.list)
+    if (const auto b = bal.find(d.code); b != bal.end())
+      v += static_cast<double>(std::min(d.qty, b->second)) * px.at(d.code);
+  return v;
+}
+
 nlohmann::json opt(const std::optional<double> &x) { return x ? nlohmann::json(*x) : nlohmann::json(); }
 
 nlohmann::json to_json(const Order &o) {
@@ -256,7 +265,7 @@ nlohmann::json to_json(const Order &o) {
 }
 
 nlohmann::json to_json(const Sheet &s) {
-  return {{"assets", s.assets}, {"net", s.net}, {"debt", s.debt}, {"cash", s.cash}, {"mv", s.mv}, {"X", opt(s.X)}, {"L", s.L}, {"lev", s.lev}, {"maint", opt(s.maint)}};
+  return {{"assets", s.assets}, {"net", s.net}, {"debt", s.debt}, {"cash", s.cash}, {"mv", s.mv}, {"fin", s.fin}, {"X", opt(s.X)}, {"L", s.L}, {"lev", s.lev}, {"maint", opt(s.maint)}};
 }
 
 } // namespace
@@ -362,7 +371,8 @@ std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quo
     bal[o.code] -= o.qty;
   // 卖后: 回款先还本只负债 (R), 余下进现金; 还掉的负债腾出等额可融余量
   const double C = acct.cash + proceeds - R;
-  const double X = avail(s, px0, bal, repaid(acct.debts, pl.holds), quotes, terms) + proceeds - R;
+  const Keyed<Debt> debts1 = repaid(acct.debts, pl.holds);
+  const double X = avail(s, px0, bal, debts1, quotes, terms) + proceeds - R;
   const double L0 = std::max(0.0, acct.line), L = L0 + R;
 
   std::vector<Tgt> tgts;
@@ -458,8 +468,10 @@ std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quo
   const double net = assets - acct.debt;
   const double X_now = avail(s, px0, balances(pos), acct.debts, quotes, terms);
 
-  pl.now = sheet(assets, net, acct.debt, acct.cash, X_now, L0);
-  pl.exp = sheet(assets + F - cost_all - R, net - cost_all, acct.debt - R + F, C - (use - F) - buy_cost, std::nullopt, L - F);
+  const Bal bal0 = balances(pos);
+  pl.now = sheet(assets, net, acct.debt, acct.cash, fin_mv(bal0, acct.debts, prices(bal0, acct.debts, quotes)), X_now, L0);
+  pl.exp = sheet(assets + F - cost_all - R, net - cost_all, acct.debt - R + F, C - (use - F) - buy_cost, fin_mv(bal, debts1, prices(bal, debts1, quotes)) + F,
+                 std::nullopt, L - F);
   pl.power = (cfg.lever ? 0 : C) + std::min(L, std::max(0.0, X));
   pl.use = use;
   pl.financed = F;
@@ -478,7 +490,13 @@ std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quo
   return pl;
 }
 
-Sheet now_of(const Account &a) { return sheet(a.assets, a.net, a.debt, a.cash, a.avail, std::max(0.0, a.line)); }
+Sheet now_of(const Snapshot &s) {
+  const Account &a = s.acct;
+  Prices px;
+  for (const Position &h : s.pos.list)
+    px[h.code] = h.price;
+  return sheet(a.assets, a.net, a.debt, a.cash, fin_mv(balances(s.pos), a.debts, px), a.avail, std::max(0.0, a.line));
+}
 
 nlohmann::json to_json(const Plan &p) {
   nlohmann::json orders = nlohmann::json::array();

@@ -28,6 +28,7 @@
 //   成本 = 各单按 5 档吃出的滑点 (相对参考价, 竞价中计 0) + 费用 (佣金万 1 双向、印花税 0.05% 卖、过户费 0.001% 双向).
 //   账户 现 / 调仓后 两栏同形: 预期总资产 = 现总资产 + 融资额 − 成本 − R, 预期净资产 = 现净资产 − 成本, 预期负债 = 现负债 − R + 融资额,
 //     持仓市值 = 总资产 − 现金, 杠杆 = 总资产 / 净资产, 维持担保比例 = 总资产 / 负债. 现总资产 = 读时现金 + 现持仓市值.
+//     融资持仓 = Σ 融资部分股数 × 现价 (调仓后 = 卖后按还款后的负债重算 + 融资买入额), 自有持仓 = 持仓市值 − 融资持仓.
 //
 // 可用保证金 (券商口径) X = 现金 + S − 负债利息, 持仓部分
 //   S = Σ 折算率 × 非融资部分市值 + Σ g(融资部分市值 − 负债金额) − Σ 负债金额 × 融资保证金比例,
@@ -118,6 +119,7 @@ struct Target {
 
 struct Sheet {
   double assets = 0, net = 0, debt = 0, cash = 0, mv = 0; // mv = 持仓市值 = 总资产 − 现金
+  double fin = 0;                                         // 其中融资持仓 (各只融资部分 min(负债数量, 持仓) × 价); 自有持仓 = mv − fin
   std::optional<double> X;                                // 调仓后不出 (要按买后持仓与负债重算)
   double L = 0, lev = 0;
   std::optional<double> maint;
@@ -138,8 +140,8 @@ struct Plan {
 // 行情还没覆盖到 (持仓 / 名单里可买的 / 负债各只) → 无
 std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Terms &terms,
                          const std::vector<std::string> &codes, const Cfg &cfg);
-// 读时的账户 (客户端口径): 试算没出时账户的「现」栏
-Sheet now_of(const Account &a);
+// 读时的账户 (客户端口径; 融资持仓按券商现价): 试算没出时账户的「现」栏
+Sheet now_of(const Snapshot &s);
 // 名单里可买的 (试算要其行情)
 std::vector<Sec> buyable(const std::vector<std::string> &codes, const Terms &terms);
 
