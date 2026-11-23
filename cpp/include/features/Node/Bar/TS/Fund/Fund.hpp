@@ -13,7 +13,7 @@
   X(item##_q, CAT1, AUTO, EN " Q", CN "单季", DESC "(单季, " UNIT ")", SYM R"(^{Q}_{D})", TS(Fund, item##_q, None))            \
   X(item##_ttm, CAT1, AUTO, EN " TTM", CN "TTM", DESC "(滚动四季, " UNIT ")", SYM R"(^{TTM}_{D})", TS(Fund, item##_ttm, None)) \
   X(item##_lyr, CAT1, AUTO, EN " LYR", CN "上年", DESC "(上年年报, " UNIT ")", SYM R"(^{LYR}_{D})", TS(Fund, item##_lyr, None))
-// 估值史一口两行: item → item_pct5y (近 5 年加权分位) / item_lo_curv (5 年最低档 band 近 3 年二次拟合曲度); 口径见 Panel/Fund.cpp build_hist
+// 估值史一口两行: item → item_pct5y (近 5 年加权分位) / item_lo_curv (5 年最低档 band 近 3 年二次拟合曲度); 口径见 Panel/Fund.cpp build_univ_hist
 #define FUND_ROWS_HIST(X, CAT1, item, EN, CN, KEY, BAND, SYM)                                                                                                                                 \
   X(item##_pct5y, CAT1, AUTO, EN " Pct 5Y", CN "5年分位", "近5年(自然年,窗尾降权)" KEY "的加权分位(0~100; 史不满1年→NaN)", R"(\mathrm{pctl}_{5y}()" SYM R"())", TS(Fund, item##_pct5y, None)) \
   X(item##_lo_curv, CAT1, AUTO, EN " Low Band Curv", CN "底档曲度", BAND "近3年对时间(年)二次OLS的2c(年^-2; <0=拐头向下)", R"(2c:\ L^{lo}_{t}()" SYM R"() = a + bt + ct^2)", TS(Fund, item##_lo_curv, None))

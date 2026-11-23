@@ -3,7 +3,7 @@
 数据 = 主程序的 all.bar 特征库 (output/features/all/bar; L_1day 列名与字段表指纹读 lib.json 的 levels)
   T0    = 新浪快照日 (上证指数); 源行 = T0 之前末个已落盘日 (L_1day 行 D = D+1 盘前态)
   成分  = 子池在源行的选股 (同 features/Panel/PoolSelect.cpp): 在市 ∧ 切片 → 键自端头取前 N (键覆盖率 < 0.8 → 断言)
-  分位  = BP 近 5 年加权分位 (同 Panel/Fund.cpp build_hist 的 pb_pct5y; 高 = 贵): 窗 = (T0 − 5 自然年, T0] 的历史点 + T0 实时点,
+  分位  = BP 近 5 年加权分位 (同 Panel/Fund.cpp build_univ_hist 的 pb_pct5y; 高 = 贵): 窗 = (T0 − 5 自然年, T0] 的历史点 + T0 实时点,
           实时 BP = 源行归母普通股权益 MRQ / (现价 × 源行总股本); 历史点 D = 行 D 权益 / (行 D 收盘 × 行 D−1 总股本)
   底线  = 最低等值估值线 (同 VAL 绝对估值等值线的最低档, 不随价格滚动): 倍数 m_lo = 全史 PB (BP > 0 的点) 的 0.02 分位,
           线 = m_lo × 后复权 BPS (VAL: P · v); 底线价 = m_lo × 源行 BPS, 距底线 = 现价 / 底线价 − 1
