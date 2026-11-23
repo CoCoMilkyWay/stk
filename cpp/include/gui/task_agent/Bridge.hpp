@@ -115,10 +115,9 @@ struct VerdictDef {
 inline constexpr VerdictDef kVerdicts[] = {{"未落文件"}, {"BROKEN"}, {"有权重"}, {"无权重"}, {"未评完"}};
 AGENT_ROWS(Verdict, kVerdicts, Pending);
 
-// Search 评过的一个参数点 (已按所评方向)
+// Search 评过的一个参数点 (按写进的权重的符号读: 符号相反的点中位 rIC 为负)
 struct Point {
-  std::vector<double> v; // 各自由参数的取值 (Sweep::slots 同序)
-  int sign = 1;
+  std::vector<double> v;   // 各自由参数的取值 (Sweep::slots 同序)
   double score = 0.0;      // 中位 rIC
   std::vector<float> line; // [日] 窗中位 rIC (Sweep::dates 同长; 不计入的窗 NaN)
 };

@@ -28,9 +28,11 @@ std::string LoadPrompt(Msg m);
 void SavePrompt(Msg m, const std::string &text);
 
 // ---- 结局与工具成文 ----
+inline const char *SignCn(int sign) { return sign < 0 ? "负" : "正"; } // 权重符号: 负 = 因子已整体取反
 std::string Text(const Weight &w);
+std::string SignLine(const Result &r); // "符号: 正 / 负" (最佳权重; 无权重 → 空)
 std::string Brief(const Result &r);
-std::string Detail(const Result &r);
+std::string Detail(const Result &r); // 有权重: 先一行符号, 再逐权重一行 (与最佳权重符号不同的才另标)
 
 std::string Fills(const std::string &tmpl, const std::string &expr); // 具体式相对模板只写自由参数的取值
 std::string GateLine(const Result &r, const Gate &g);                // 有权重的候选: 是否达入库门槛一行

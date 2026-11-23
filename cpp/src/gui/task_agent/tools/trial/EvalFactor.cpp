@@ -1,5 +1,5 @@
 // eval_factor — 回测: 三拍对仗 OpenEvalFactor (核假设落盘, GUI) → LabTask (Search + Run, Lab) → CloseEvalFactor (入表封存, GUI)
-//               → TrialRes (结局 + 参数扫描 + 最佳权重 20 组 / 分年; Run 顺带最佳权重的逐日序列只给展示) → 原文; 展示见 ui/trial/EvalFactor.cpp
+//               → TrialRes (符号 + 各权重 + 门槛 + 分年 → 参数扫描 → 20 组; Run 顺带最佳权重的逐日序列只给展示) → 原文; 展示见 ui/trial/EvalFactor.cpp
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
@@ -47,13 +47,13 @@ std::string sweep_text(const Sweep &sw) {
   std::string s = "- " + SweepHead(sw);
   if (sw.slots.size() > kSweepSlots) {
     std::vector<std::string> hs = sw.slots;
-    hs.push_back("向"), hs.push_back("中位 rIC");
+    hs.push_back("中位 rIC");
     text::Table tbl(hs);
     for (size_t i = 0; i < std::min(n, kSweepTop); ++i) {
       std::vector<std::string> row;
       for (const double x : sw.pts[i].v)
         row.push_back(param(x));
-      row.push_back(DirCn(sw.pts[i].sign)), row.push_back(fmt("%.4f", sw.pts[i].score));
+      row.push_back(fmt("%.4f", sw.pts[i].score));
       tbl.add(std::move(row));
     }
     return s + ", 参数多, 只列中位 rIC 最高的 " + std::to_string(std::min(n, kSweepTop)) + " 个:\n\n" + tbl.str();
@@ -95,9 +95,21 @@ Sweep sweep_of(const Engine::SearchResult &r) {
   Sweep s{.slots = r.slots};
   for (const misc::Ymd d : r.dates)
     s.dates.push_back(static_cast<int>(d));
-  for (const Engine::SearchCand &c : r.cands)
-    if (c.roll.ok())
-      s.pts.push_back({c.v, c.sign, c.roll.ric_med, c.line});
+  int sign = 0; // 写进的权重的符号 (cands 按中位 rIC 降序, 首个有窗的即权重)
+  for (const Engine::SearchCand &c : r.cands) {
+    if (!c.roll.ok())
+      continue;
+    if (!sign)
+      sign = c.sign;
+    Point p{c.v, c.roll.ric_med, c.line};
+    if (c.sign != sign) {
+      p.score = -p.score;
+      for (float &x : p.line)
+        x = -x;
+    }
+    s.pts.push_back(std::move(p));
+  }
+  std::stable_sort(s.pts.begin(), s.pts.end(), [](const Point &a, const Point &b) { return a.score > b.score; });
   return s;
 }
 
@@ -180,13 +192,7 @@ std::string YearsHead(const std::vector<Year> &ys) {
   return "最佳权重分年 rIC (" + std::to_string(ys.size()) + " 年, 为负 " + std::to_string(neg) + " 年, 最差 " + std::to_string(lo.year) + ")";
 }
 
-std::string SweepHead(const Sweep &sw) {
-  const auto neg = std::count_if(sw.pts.begin(), sw.pts.end(), [](const Point &p) { return p.sign < 0; });
-  const size_t n = sw.pts.size();
-  const std::string dir = neg == 0 ? "全正" : static_cast<size_t>(neg) == n ? "全反"
-                                                                            : "正 " + std::to_string(n - static_cast<size_t>(neg)) + " 反 " + std::to_string(neg);
-  return "参数扫描 (Search 评过 " + std::to_string(n) + " 个点, 方向 " + dir + ")";
-}
+std::string SweepHead(const Sweep &sw) { return "参数扫描 (Search 评过 " + std::to_string(sw.pts.size()) + " 个点)"; }
 
 std::string TrialRes::text() const {
   const Result &r = st.res;
@@ -196,17 +202,17 @@ std::string TrialRes::text() const {
   s += Detail(r) + GateLine(r, gate);
   if (!r.visible)
     return s;
+  const Weight *w = r.best();
+  if (w && !w->years.empty()) {
+    std::vector<double> ric;
+    for (const Year &y : w->years)
+      ric.push_back(y.ric);
+    s += "- " + YearsHead(w->years) + ": " + text::spark(ric) + "\n";
+  }
   if (const std::string sw = sweep_text(r.sweep); !sw.empty())
     s += sw + "\n";
-  if (const Weight *w = r.best(); w && !w->grp.empty()) {
+  if (w && !w->grp.empty())
     s += "- " + GroupsHead() + ": " + text::spark(w->grp, text::bp) + "\n";
-    if (!w->years.empty()) {
-      std::vector<double> ric;
-      for (const Year &y : w->years)
-        ric.push_back(y.ric);
-      s += "- " + YearsHead(w->years) + ": " + text::spark(ric) + "\n";
-    }
-  }
   return s;
 }
 

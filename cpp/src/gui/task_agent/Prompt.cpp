@@ -315,9 +315,13 @@ std::string Text(const Weight &w) {
   if (!w.has)
     return "无该持有期统计";
   char b[192];
-  std::snprintf(b, sizeof(b), "中位 rIC %.4f (%s) · 每期毛多空 %+.2fbp · 每期净多空 %+.2fbp · 年换手 %.0f 倍", w.score, w.sign < 0 ? "反向" : "正向", w.gross * 1e4,
-                w.net * 1e4, w.turn);
+  std::snprintf(b, sizeof(b), "中位 rIC %.4f · 每期毛多空 %+.2fbp · 每期净多空 %+.2fbp · 年换手 %.0f 倍", w.score, w.gross * 1e4, w.net * 1e4, w.turn);
   return b;
+}
+
+std::string SignLine(const Result &r) {
+  const Weight *w = r.best();
+  return w ? std::string("符号: ") + SignCn(w->sign) : std::string();
 }
 
 std::string Brief(const Result &r) {
@@ -342,9 +346,10 @@ std::string Detail(const Result &r) {
   case Verdict::Broken:
     return "- " + std::string(def(r.verdict).cn) + ": " + r.error + "\n";
   case Verdict::Weights: {
-    std::string s;
+    const int sign = r.best()->sign;
+    std::string s = "- " + SignLine(r) + "\n";
     for (const Weight &w : r.ws)
-      s += "- 权重 " + Fills(r.tmpl, w.expr) + ": " + Text(w) + "\n";
+      s += "- 权重 " + Fills(r.tmpl, w.expr) + (w.sign == sign ? "" : std::string(" (符号 ") + SignCn(w.sign) + ")") + ": " + Text(w) + "\n";
     return s;
   }
   case Verdict::Null:

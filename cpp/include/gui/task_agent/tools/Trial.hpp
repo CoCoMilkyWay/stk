@@ -34,8 +34,7 @@ struct TrialRes final : Res {
 // eval_factor 原文与展示同一组节标题 (两边逐节对仗)
 std::string GroupsHead();                           // 最佳权重的 20 组
 std::string YearsHead(const std::vector<Year> &ys); // 最佳权重的分年 rIC (年数 / 为负几年 / 最差年)
-std::string SweepHead(const Sweep &sw);             // 参数扫描 (点数 / 方向)
-inline const char *DirCn(int sign) { return sign < 0 ? "反" : "正"; }
+std::string SweepHead(const Sweep &sw);             // 参数扫描 (点数)
 
 inline TrialRes *AsTrial(Act &a) { return a.call.tool == Tool::EvalFactor ? static_cast<TrialRes *>(a.out.res.get()) : nullptr; }
 inline const TrialRes *AsTrial(const Act &a) { return a.call.tool == Tool::EvalFactor ? static_cast<const TrialRes *>(a.out.res.get()) : nullptr; }

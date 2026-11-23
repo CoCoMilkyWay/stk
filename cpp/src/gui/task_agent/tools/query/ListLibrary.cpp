@@ -10,7 +10,7 @@ std::string LibraryRes::text() const {
   std::string s;
   for (const Result &r : rows) {
     const Weight &w = *r.best();
-    s += "- " + r.name + " (" + r.name_cn + "): `" + r.tmpl + "`" + (r.note.empty() ? "" : " — " + r.note) + "\n  - 最佳权重 " + Fills(r.tmpl, w.expr) + ": " + Text(w) + "\n";
+    s += "- " + r.name + " (" + r.name_cn + "): `" + r.tmpl + "`" + (r.note.empty() ? "" : " — " + r.note) + "\n  - 最佳权重 " + Fills(r.tmpl, w.expr) + ": " + SignLine(r) + " · " + Text(w) + "\n";
   }
   s += ListTail(all, skip, static_cast<int>(rows.size()));
   if (none)

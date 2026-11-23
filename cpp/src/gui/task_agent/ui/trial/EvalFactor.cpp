@@ -1,6 +1,6 @@
-// eval_factor 的展示: 候选 (模板 / 思路) + 结局 + 各权重表
-//   + 左栏三图 (各参数点的窗中位 rIC / 写进的权重的累计中位 rIC / 分层图, Inspect 同一份) | 右栏参数点表 (缺省中位 rIC 降序; 窗中位 rIC 图 ↔ 表悬停联动)
-//   + 20 组柱 (只在没有逐日序列 = 载入的会话时) + 分年
+// eval_factor 的展示 (与原文逐节对仗): 候选 (模板 / 思路) + 符号 + 结局 + 各权重表 + 分年
+//   → 左栏三图 (各参数点的窗中位 rIC / 写进的权重的累计中位 rIC / 分层图, Inspect 同一份) | 右栏参数点表 (缺省中位 rIC 降序; 窗中位 rIC 图 ↔ 表悬停联动)
+//   → 20 组柱 (只在没有逐日序列 = 载入的会话时)
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
@@ -116,27 +116,16 @@ void layers_view(const TrialRes &k) {
 // 右: 参数点表 (列头点了排序, 缺省中位 rIC 降序); plot_hot = 图上悬停的点 (该行底色亮); 返回表上悬停的点 (−1 = 无)
 int sweep_table(const Sweep &sw, int plot_hot, float h) {
   const size_t P = sw.slots.size(), n = sw.pts.size();
-  enum Col : int { kSign,
-                   kMed,
-                   kCols };
-  static const char *kHeads[kCols] = {"向", "中位 rIC"};
   constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollX |
                                      ImGuiTableFlags_ScrollY | ImGuiTableFlags_Sortable | ImGuiTableFlags_NoSavedSettings;
-  if (!ImGui::BeginTable("##sweep_tbl", static_cast<int>(P) + kCols, kFlags, ImVec2(-1, h)))
+  if (!ImGui::BeginTable("##sweep_tbl", static_cast<int>(P) + 1, kFlags, ImVec2(-1, h)))
     return -1;
   ImGui::TableSetupScrollFreeze(static_cast<int>(P), 1);
   for (const std::string &s : sw.slots)
     ImGui::TableSetupColumn(s.c_str());
-  for (int c = 0; c < kCols; ++c)
-    ImGui::TableSetupColumn(kHeads[c], c == kSign  ? ImGuiTableColumnFlags_NoSort
-                                       : c == kMed ? ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending
-                                                   : ImGuiTableColumnFlags_PreferSortDescending);
+  ImGui::TableSetupColumn("中位 rIC", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending);
   ImGui::TableHeadersRow();
-  const auto val = [&](const Point &p, int c) -> double {
-    if (c < static_cast<int>(P))
-      return p.v[static_cast<size_t>(c)];
-    return c - static_cast<int>(P) == kMed ? p.score : 0.0;
-  };
+  const auto val = [&](const Point &p, int c) { return c < static_cast<int>(P) ? p.v[static_cast<size_t>(c)] : p.score; };
   std::vector<size_t> ord(n);
   for (size_t i = 0; i < n; ++i)
     ord[i] = i;
@@ -167,7 +156,7 @@ int sweep_table(const Sweep &sw, int plot_hot, float h) {
       }
       ImGui::TextColored(rank_col(i, n, 1.0f), v == std::round(v) ? "%.0f" : "%.4g", v);
     }
-    cell(DirCn(p.sign)), cell_num(p.score, "%.4f", true);
+    cell_num(p.score, "%.4f", true);
     ImGui::PopID();
   }
   ImGui::EndTable();
@@ -214,41 +203,42 @@ void TrialRes::draw() const {
   const TaskStatus::Kind kind = r.verdict == Verdict::Weights ? (GateMiss(gate, r).empty() ? TaskStatus::Kind::Ready : TaskStatus::Kind::None)
                                 : r.verdict == Verdict::Null  ? TaskStatus::Kind::Warn
                                                               : TaskStatus::Kind::Error;
+  if (const std::string sl = SignLine(r); !sl.empty())
+    wrapped(sl);
   wrapped(color(kind), Brief(r));
   if (const std::string g = GateLine(r, gate); !g.empty())
     wrapped(color(kind), g);
   if (r.visible) {
-    if (!r.ws.empty() && grid("##ws", {"权重", "中位 rIC", "向", "每期毛多空 bp", "每期净多空 bp", "年换手"})) {
+    const Weight *best = r.best();
+    if (!r.ws.empty() && grid("##ws", {"权重", "中位 rIC", "每期毛多空 bp", "每期净多空 bp", "年换手"})) {
       for (const Weight &w : r.ws) {
         ImGui::TableNextRow();
-        cell(Fills(r.tmpl, w.expr));
+        cell(Fills(r.tmpl, w.expr) + (best && w.sign != best->sign ? std::string(" (符号 ") + SignCn(w.sign) + ")" : std::string()));
         if (!w.has) {
           cell_dim("无该持有期统计");
-          for (int i = 0; i < 4; ++i)
+          for (int i = 0; i < 3; ++i)
             cell("");
           continue;
         }
-        cell_num(w.score, "%.4f", true), cell(DirCn(w.sign)), cell_num(w.gross * 1e4, "%+.2f", true), cell_num(w.net * 1e4, "%+.2f", true), cell_num(w.turn, "%.0f");
+        cell_num(w.score, "%.4f", true), cell_num(w.gross * 1e4, "%+.2f", true), cell_num(w.net * 1e4, "%+.2f", true), cell_num(w.turn, "%.0f");
       }
       ImGui::EndTable();
     }
-    charts_view(*this);
-    if (const Weight *w = r.best(); w && !w->grp.empty()) {
-      if (r.daily.dates.empty())
-        groups_plot((GroupsHead() + "##grp").c_str(), w->grp, 180.0f);
-      if (!w->years.empty()) {
-        heading(YearsHead(w->years));
-        std::vector<std::string> heads;
-        for (const Year &y : w->years)
-          heads.push_back(std::to_string(y.year));
-        if (grid("##years", heads)) {
-          ImGui::TableNextRow();
-          for (const Year &y : w->years)
-            cell_num(y.ric, "%.4f", true);
-          ImGui::EndTable();
-        }
+    if (best && !best->years.empty()) {
+      heading(YearsHead(best->years));
+      std::vector<std::string> heads;
+      for (const Year &y : best->years)
+        heads.push_back(std::to_string(y.year));
+      if (grid("##years", heads)) {
+        ImGui::TableNextRow();
+        for (const Year &y : best->years)
+          cell_num(y.ric, "%.4f", true);
+        ImGui::EndTable();
       }
     }
+    charts_view(*this);
+    if (best && !best->grp.empty() && r.daily.dates.empty())
+      groups_plot((GroupsHead() + "##grp").c_str(), best->grp, 180.0f);
   }
   ImGui::PopID();
 }
