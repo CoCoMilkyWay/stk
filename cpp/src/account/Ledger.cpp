@@ -199,7 +199,8 @@ double growth(double nav0, double nav, double flow) {
   return base > 0 ? 1 + (nav - nav0 - flow) / base : 1;
 }
 
-void intraday(const Day &d, double nav0, double idx0, const std::function<std::span<const float>(const std::string &)> &path, std::span<double> out) {
+void intraday(const Day &d, double nav0, double idx0, std::span<const Trade> trades, const std::function<std::span<const float>(const std::string &)> &path,
+              std::span<double> out) {
   assert(!out.empty());
   std::ranges::fill(out, d.nav);
   for (const Hold &h : d.hold)
@@ -208,6 +209,13 @@ void intraday(const Day &d, double nav0, double idx0, const std::function<std::s
       for (size_t s = 0; s < out.size(); ++s)
         out[s] += h.qty * (p[s] - p.back());
     }
+  for (const Trade &t : trades) {
+    assert(t.slot >= 0 && t.qty != 0 && t.px > 0);
+    const std::span<const float> p = path(t.code);
+    assert(p.empty() || p.size() == out.size());
+    for (size_t s = 0; s < out.size() && static_cast<int>(s) < t.slot; ++s)
+      out[s] -= t.cash + t.qty * (p.empty() ? t.px : p[s]);
+  }
   for (double &x : out)
     x = idx0 * growth(nav0, x, d.flow);
 }

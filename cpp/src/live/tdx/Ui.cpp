@@ -296,7 +296,8 @@ int Count::read() const {
   return *n;
 }
 
-// 认目标页: act 前认得出的页 (须至多一个: 多了即分不清 act 后显示的是不是它) 记下其查询键的禁用次数; act 后显示出来的页是它即是,
+// 认目标页: act 前认得出的页 (列对得上且有查询键与条数标签, 下单页里嵌的同列持仓表不算; 须至多一个: 多了即分不清 act 后显示的是不是它)
+//   记下其查询键的禁用次数; act 后显示出来的页是它即是,
 // 是 act 前没有的页 (头一回开) 即禁用次数从 0 起等它查完再读表头核对 (查着时界面线程卡住, detail 等不到;
 // 大表 (标的证券 / 担保品) 查询键恢复后界面线程还要卡一阵画表, 读表头的 detail 随之等, 至多 timeout)
 Page query(const Open &o, const std::function<void()> &act, double timeout) {
@@ -306,8 +307,10 @@ Page query(const Open &o, const std::function<void()> &act, double timeout) {
   std::map<Hwnd, long> cand;
   for (const auto &[dlg, k] : learn(h, timeout)) {
     before.insert(dlg);
-    if (fits(k.cols, o))
-      cand[dlg] = win::disables(page_of(dlg).key);
+    if (!fits(k.cols, o))
+      continue;
+    if (const Known &q = probe(dlg); q.key && q.count)
+      cand[dlg] = win::disables(*q.key);
   }
   if (cand.size() > 1)
     fail(strf("%s的页有 %zu 个", what(o).c_str(), cand.size()));

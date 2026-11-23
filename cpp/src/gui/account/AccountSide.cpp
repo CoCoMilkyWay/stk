@@ -43,7 +43,7 @@ Quote::Holding holding(const std::string &code, double qty, double px) {
   return {code, id < ax.size() ? static_cast<uint32_t>(id) : Quote::Ref::kNone, qty, px};
 }
 
-Quote::Day day_of(const account::Day &d, double nav0, double idx0, size_t n, const DayOf &of) {
+Quote::Day day_of(const account::Day &d, double nav0, double idx0, std::span<const account::Trade> trades, size_t n, const DayOf &of) {
   assert(n >= 1 && n <= static_cast<size_t>(kSlots));
   std::array<float, kSlots> p;
   std::array<double, kSlots> idx;
@@ -56,7 +56,7 @@ Quote::Day day_of(const account::Day &d, double nav0, double idx0, size_t n, con
     return ps;
   };
   const std::span<double> is = std::span(idx).first(n);
-  account::intraday(d, nav0, idx0, path, is);
+  account::intraday(d, nav0, idx0, trades, path, is);
   return path_day(d.date, static_cast<float>(idx0), is);
 }
 
@@ -99,7 +99,7 @@ Replay replay(const account::Ledger &l, const std::vector<misc::Ymd> &dates, con
       at.candle = h.daily[j];
       return &at;
     };
-    const Quote::Day y = k > 0 ? day_of(d, ds[k - 1].nav, ds[k - 1].index, static_cast<size_t>(kSlots), of) : path_day(d.date, 1.f, flat);
+    const Quote::Day y = k > 0 ? day_of(d, ds[k - 1].nav, ds[k - 1].index, {}, static_cast<size_t>(kSlots), of) : path_day(d.date, 1.f, flat);
     Quote::Packed &m = (*block)[k];
     se->daily.push_back(y.candle), se->adj.push_back(1.0);
     se->mins.push_back(y.bars.has.any() ? Quote::Series::Mins{&m, Quote::pack(y.bars, y.bars.net, false, m), 1.0} : Quote::Series::Mins{});

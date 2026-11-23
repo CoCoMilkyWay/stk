@@ -3,6 +3,7 @@
 #include "account/Ledger.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/account/AccountSide.hpp"
+#include "live/Rebal.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -18,8 +19,20 @@ namespace {
 
 using live::strf;
 
-// 当日: 回放末日 (指数 idx0, 回放摘要 e) 之后, 持仓 h 按 y 的分钟收盘, 末槽 = h.now (与历史回放同一核 day_of)
-std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, const Quote::Holdings &h, const Quote::Live &y) {
+// 今日成交 → 日内回推的成交: 槽同成交点 (竞价并入首根), 至多到此刻的槽 last (券商时钟领先新浪也算已发生); 费用按费率估 (live::rebal::fee)
+std::vector<account::Trade> trades_in(const live::Fills &f, int last) {
+  std::vector<account::Trade> out;
+  out.reserve(f.rows.size());
+  for (const live::Fill &x : f.rows) {
+    const bool buy = x.side == live::kBuy;
+    const double q = static_cast<double>(x.qty);
+    out.push_back({std::clamp(Quote::sec_slot(x.sec), 0, last), x.code, buy ? q : -q, x.price, (buy ? -x.amount : x.amount) - live::rebal::fee(x.amount, x.side)});
+  }
+  return out;
+}
+
+// 当日: 回放末日 (指数 idx0, 回放摘要 e) 之后, 持仓 h 按 y 的分钟收盘, 末槽 = h.now; 券商持仓时今日成交 f 按时刻回推 (与历史回放同一核 day_of)
+std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, const Quote::Holdings &h, const live::Fills *f, const Quote::Live &y) {
   const size_t n = static_cast<size_t>(std::clamp(Quote::sec_slot(y.sec), 0, Quote::kSlots - 1)) + 1;
   account::Day d{y.date, h.now(&y), h.broker ? e.after : 0, 1, {}};
   std::unordered_map<std::string, uint32_t> id; // 代码 → 全局 id (资产轴上的)
@@ -28,7 +41,11 @@ std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, c
     if (x.id != Quote::Ref::kNone)
       id.emplace(x.code, x.id);
   }
-  return std::make_shared<const Quote::Day>(day_of(d, e.nav, idx0, n, [&](const std::string &code) -> const Quote::Day * {
+  const std::vector<account::Trade> trades = h.broker && f ? trades_in(*f, static_cast<int>(n) - 1) : std::vector<account::Trade>{};
+  for (const account::Trade &t : trades)
+    if (const Quote::Holding x = holding(t.code, 0, 0); x.id != Quote::Ref::kNone)
+      id.emplace(t.code, x.id);
+  return std::make_shared<const Quote::Day>(day_of(d, e.nav, idx0, trades, n, [&](const std::string &code) -> const Quote::Day * {
     const auto it = id.find(code);
     return it != id.end() ? y.at({Quote::kStock, it->second}) : nullptr;
   }));
@@ -109,7 +126,7 @@ std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const 
   ver_ = ver;
   day_ = nullptr;
   if (hold_ && live && view->equity.nav > 0 && view->joins(live->prev))
-    day_ = today_of(view->equity, t->line(0)->daily.back().close, *hold_, *live);
+    day_ = today_of(view->equity, t->line(0)->daily.back().close, *hold_, shown_snap_ ? &shown_snap_->fills : nullptr, *live);
   return day_;
 }
 
@@ -135,7 +152,8 @@ void AccountHub::rehold(const Quote::PriceView *view) {
   for (const Quote::Holding &k : x.list)
     if (k.id == Quote::Ref::kNone)
       note_ += strf("\n• 库轴外 %s 仓位 %.1f%% (不列成分)", k.code.c_str(), 100 * x.weight(k));
-  note_ += "\n当日 (接得上日脊) = 持仓 × 新浪分钟收, 末槽 = 净资产 + 各只自计价起的涨跌";
+  note_ += x.broker ? "\n当日 (接得上日脊) = 持仓 × 新浪分钟收, 今日成交按时刻回推 (费用按费率估), 末槽 = 净资产 + 各只自计价起的涨跌"
+                    : "\n当日 (接得上日脊) = 持仓 × 新浪分钟收, 末槽 = 净资产 + 各只自计价起的涨跌";
   const double in = e.in + (x.broker ? e.after : 0);
   note_ += strf("\n累计盈亏 %+.0f = 净资产 %.0f − 累计净转入 %.0f (净资产计于%s)", x.net - in, x.net, in, x.broker ? "券商现价" : "末日收盘");
 }

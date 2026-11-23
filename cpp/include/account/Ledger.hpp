@@ -56,9 +56,17 @@ struct Day {
 };
 // 一段的净值增长倍数: 盈亏 (nav − nav0 − flow) / 基数; 段内进出时点不知, 入金计段初、出金计段末 (段内在场的资金都进基数); 基数 ≤ 0 → 1
 double growth(double nav0, double nav, double flow);
-// 一日的分钟指数 (历史回放 / 当日同一份): 持仓 d.hold 按各只分钟收计价, 末槽对齐 d.nav: nav_s = d.nav + Σ 股 × (收_s − 末收),
-//   out[s] = idx0 × growth(nav0, nav_s, d.flow); path(代码) = 该只 [out.size()] 逐槽收 (无根沿用上一根, 首根前 = 前收; 空 = 无分钟 → 不动)
-void intraday(const Day &d, double nav0, double idx0, const std::function<std::span<const float>(const std::string &)> &path, std::span<double> out);
+// 当日一笔成交 (日内回推用): 所在槽 / 股 (买正卖负) / 成交价 / 现金腿 (买 −额 − 费, 卖 +额 − 费; 融资买入同记: 现金与负债合看)
+struct Trade {
+  int slot = 0;
+  std::string code;
+  double qty = 0, px = 0, cash = 0;
+};
+// 一日的分钟指数 (历史回放 / 当日同一份): 持仓 d.hold 按各只分钟收计价, 末槽对齐 d.nav; 槽 s 尚未发生的成交 (槽晚于 s) 退回:
+//   nav_s = d.nav + Σ 股 × (收_s − 末收) − Σ_{槽 > s 的成交} (现金腿 + 股 × 收_s) (该只无分钟按成交价), out[s] = idx0 × growth(nav0, nav_s, d.flow);
+//   path(代码) = 该只 [out.size()] 逐槽收 (无根沿用上一根, 首根前 = 前收; 空 = 无分钟 → 不动); trades 空 = 不回推 (历史流水无成交时刻)
+void intraday(const Day &d, double nav0, double idx0, std::span<const Trade> trades, const std::function<std::span<const float>(const std::string &)> &path,
+              std::span<double> out);
 // 流水代码 → 资产码 (AssetInfo; 代码 + 市场后缀)
 std::string asset_code(const std::string &code);
 // 券商现价: date 日的观测点 (只用于 px 里全无收盘的证券; date 不晚于其末笔成交 → 不用)
