@@ -230,13 +230,17 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
       x.lng = fs::end_period(*h, fs::kTop), x.sht = -fs::end_period(*h, fs::kBot);
       x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, fixed), x.cost = x.gross - x.net;
       x.turn = fs::turn_annual(*h, c);
+      assert(h->n_all > 0 && "有滚动窗须有统计行");
+      const double n = static_cast<double>(h->n_all);
+      x.buy = 0.5 * (c.book[fs::kTop].buy + c.book[fs::kBot].buy) / n, x.sell = 0.5 * (c.book[fs::kTop].sell + c.book[fs::kBot].sell) / n;
+      x.impact = fixed;
       double mid = 0.0;
       for (const float g : h->grp)
         mid += g / static_cast<double>(fs::kGroups);
       for (const float g : h->grp)
         x.grp.push_back(g - mid);
       for (const Engine::YearStat &y : *w.find_years(hold))
-        x.years.push_back({y.year, y.wins ? y.ric_med : std::numeric_limits<double>::quiet_NaN(), y.turn});
+        x.years.push_back({y.year, y.ric, y.wins ? y.ric_med : std::numeric_limits<double>::quiet_NaN(), y.turn});
     }
     r.ws.push_back(std::move(x));
   }

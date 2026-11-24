@@ -1,5 +1,5 @@
 // eval_factor — 回测: 三拍对仗 OpenEvalFactor (核假设落盘, GUI) → LabTask (Search + Run, Lab) → CloseEvalFactor (入表封存, GUI)
-//               → TrialRes (最佳权重的具体式 (负号前置) + 频率 / 预测周期 + 各权重统计与门槛 + 分年 → 参数扫描 → 20 组; Run 顺带最佳权重的逐日序列只给展示)
+//               → TrialRes (最佳权重的具体式 (负号前置) + 频率 / 预测周期 + 各权重统计与门槛 + 分年 → 累计分层 (Run 顺带的最佳权重逐日序列) / 分年 rIC 两张正负柱图)
 //               → 原文; 展示见 ui/trial/EvalFactor.cpp
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
@@ -8,6 +8,7 @@
 #include "gui/task_agent/tools/Trial.hpp"
 
 #include "factor/Expr.hpp"
+#include "factor/Stat/Contract.hpp"
 #include "gui/engine/File.hpp"
 #include "gui/engine/Load.hpp"
 #include "gui/engine/services/RunService.hpp"
@@ -27,10 +28,6 @@ namespace {
 
 namespace fx = factor::expr;
 
-constexpr size_t kSweepBins = 6;
-constexpr size_t kSweepSlots = 3;
-constexpr size_t kSweepTop = 12;
-
 struct EvalYield final : Res {
   Sweep sweep;
   std::vector<Daily> days;
@@ -38,58 +35,24 @@ struct EvalYield final : Res {
   void draw() const override {}
 };
 
-std::string param(double v) { return v == std::round(v) ? fmt("%.0f", v) : fmt("%.4g", v); }
+// 累计分层: 20 组各自超额日收益的对数累计 Σ ln(1 + r) (评估期全段; 与展示的分层图同口径)
+std::string layers_text(const Daily &d) {
+  std::vector<double> v;
+  for (int k = 0; k < factor::stat::kGroups; ++k) {
+    double c = 0.0;
+    for (const float r : d.lay[static_cast<size_t>(k)])
+      c += std::log1p(static_cast<double>(r));
+    v.push_back(c);
+  }
+  return text::vbars("累计分层 G1 → G20 (各组超额的对数累计, 评估期全段)", v, text::chg);
+}
 
-// 参数扫描 (pts 已按中位 rIC 降序): 参数 ≤ kSweepSlots 个时每个参数按取值分段, 每段给点数 / 段内中位 rIC 的中位与最高 (及最高的点); 多了改列最高的 kSweepTop 个点
-std::string sweep_text(const Sweep &sw) {
-  if (sw.slots.empty() || sw.pts.size() < 2)
-    return "";
-  const size_t n = sw.pts.size(), per = (n + kSweepBins - 1) / kSweepBins;
-  std::string s = "- " + SweepHead(sw);
-  if (sw.slots.size() > kSweepSlots) {
-    std::vector<std::string> hs = sw.slots;
-    hs.push_back("中位 rIC");
-    text::Table tbl(hs);
-    for (size_t i = 0; i < std::min(n, kSweepTop); ++i) {
-      std::vector<std::string> row;
-      for (const double x : sw.pts[i].v)
-        row.push_back(param(x));
-      row.push_back(fmt("%.4f", sw.pts[i].score));
-      tbl.add(std::move(row));
-    }
-    return s + ", 参数多, 只列中位 rIC 最高的 " + std::to_string(std::min(n, kSweepTop)) + " 个:\n\n" + tbl.str();
-  }
-  s += ", 每个参数按取值分段:\n";
-  for (size_t j = 0; j < sw.slots.size(); ++j) {
-    std::vector<size_t> ix(n);
-    for (size_t i = 0; i < n; ++i)
-      ix[i] = i;
-    const auto v = [&](size_t i) { return sw.pts[ix[i]].v[j]; };
-    std::stable_sort(ix.begin(), ix.end(), [&](size_t a, size_t b) { return sw.pts[a].v[j] < sw.pts[b].v[j]; });
-    text::Table tbl({sw.slots[j] + " 段", "点数", "中位 rIC 段内中位", "段内最高", "最高的点"});
-    for (size_t a = 0; a < n;) {
-      size_t b = std::min(n, a + per);
-      while (b < n && v(b) == v(b - 1))
-        ++b;
-      std::vector<double> sc;
-      size_t best = a;
-      for (size_t i = a; i < b; ++i) {
-        sc.push_back(sw.pts[ix[i]].score);
-        if (sw.pts[ix[i]].score > sw.pts[ix[best]].score)
-          best = i;
-      }
-      std::sort(sc.begin(), sc.end());
-      const double mid = 0.5 * (sc[(sc.size() - 1) / 2] + sc[sc.size() / 2]);
-      const Point &p = sw.pts[ix[best]];
-      std::string at;
-      for (size_t q = 0; q < sw.slots.size(); ++q)
-        at += (q ? ", " : "") + (sw.slots.size() > 1 ? sw.slots[q] + "=" : std::string()) + param(p.v[q]);
-      tbl.add({v(a) == v(b - 1) ? param(v(a)) : param(v(a)) + "–" + param(v(b - 1)), std::to_string(b - a), fmt("%.4f", mid), fmt("%.4f", p.score), at});
-      a = b;
-    }
-    s += "\n" + tbl.str();
-  }
-  return s;
+// 分年 rIC: 年内 ok 行 rIC 均值 (与主行 rIC 同口径)
+std::string years_ric_text(const std::vector<Year> &ys) {
+  std::vector<double> v;
+  for (const Year &y : ys)
+    v.push_back(y.ric);
+  return text::vbars("分年 rIC " + std::to_string(ys.front().year) + " → " + std::to_string(ys.back().year) + " (年内 rIC 均值)", v, [](double x) { return fmt("%+.3f", x); });
 }
 
 Sweep sweep_of(const Engine::SearchResult &r) {
@@ -206,7 +169,8 @@ std::string WeightLine(const TrialRes &k, const Weight &w) {
   if (!w.has)
     return head + "无该持有期统计";
   std::string s = head + fmt("rIC %.3f", w.ric) + fmt(" · 中位 rIC %.3f", w.score) + fmt(" · 每期毛多 %+.2fbp", w.lng * 1e4) + fmt(" · 毛空 %+.2fbp", w.sht * 1e4) +
-                  fmt(" · 成本 %.2fbp", w.cost * 1e4) + fmt(" · 净多空 %+.2fbp", w.net * 1e4) + fmt(" · 年换手 %.0f 倍", w.turn);
+                  fmt(" · 净多空 %+.2fbp", w.net * 1e4) + fmt(" · 成本 %.2fbp", w.cost * 1e4) + fmt(" (单边换手 买 %.0f%%", w.buy * 100) +
+                  fmt(" / 卖 %.0f%%", w.sell * 100) + fmt(", × 固定冲击 %.0fbp)", w.impact * 1e4);
   if (&w == best)
     s += GateMiss(k.gate, k.st.res).empty() ? " · 达入库门槛" : fmt(" · 未达入库门槛 %.3f", k.gate.ric);
   return s;
@@ -239,10 +203,10 @@ std::string TrialRes::text() const {
       s += "- " + WeightLine(*this, x) + "\n";
   if (!w->years.empty())
     s += "- " + YearsLine(w->years) + "\n";
-  if (const std::string sw = sweep_text(r.sweep); !sw.empty())
-    s += sw + "\n";
-  if (!w->grp.empty())
-    s += "- " + GroupsHead() + ": " + text::spark(w->grp, text::bp) + "\n";
+  if (!r.daily.dates.empty())
+    s += layers_text(r.daily);
+  if (!w->years.empty())
+    s += years_ric_text(w->years);
   return s;
 }
 

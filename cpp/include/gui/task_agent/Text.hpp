@@ -261,4 +261,26 @@ inline std::string spark(const std::vector<double> &v, std::string (*f)(double) 
   return "`" + bars(v) + "`" + (lo <= hi ? "  [" + f(lo) + ", " + f(hi) + "]" : "") + (w > 1 ? " (每字 = 相邻 " + std::to_string(w) + " 个的均值)" : "");
 }
 
+// ---- 正负柱 (一个值一列一字, 共两行: 上行 |值| 的柱 (8 档, 非零至少 1 档), 下行对齐写号 + / −; 零写空, 非有限值上行写 ·) ----
+//   返回 "- 题 (…):" + 两行代码块 (柱行后接 [f(最小), f(最大)]; 满格 = 两者绝对值较大者)
+inline std::string vbars(const std::string &title, const std::vector<double> &v, std::string (*f)(double)) {
+  static constexpr const char *kBar[8] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
+  assert(!v.empty());
+  double lo = INFINITY, hi = -INFINITY;
+  for (const double x : v)
+    if (std::isfinite(x))
+      lo = std::min(lo, x), hi = std::max(hi, x);
+  const double top = lo <= hi ? std::max(std::abs(lo), std::abs(hi)) : 0.0;
+  const auto bar = [&](double x) { return kBar[std::clamp(static_cast<int>(std::ceil(x / top * 8.0)), 1, 8) - 1]; };
+  std::string up, sign;
+  for (const double x : v) {
+    const bool ok = std::isfinite(x) && x != 0.0;
+    up += !std::isfinite(x) ? "·" : ok ? bar(std::abs(x))
+                                       : " ";
+    sign += !ok ? " " : x > 0.0 ? "+"
+                                : "-";
+  }
+  return "- " + title + " (上行柱高 ∝ |值|, 下行是号):\n```\n" + up + (lo <= hi ? "  [" + f(lo) + ", " + f(hi) + "]" : "") + "\n" + sign + "\n```\n";
+}
+
 } // namespace GUI::Agent::text
