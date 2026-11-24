@@ -28,6 +28,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -225,7 +226,9 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
       assert(w.costs.front().amt == Engine::kAmtFixed && "成本段首个是固定段");
       const fs::CostAcc &c = w.turn_of(*h);
       x.score = fsearch::score_of(*rl);
-      x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, fixed);
+      x.ric = h->ric.mean;
+      x.lng = fs::end_period(*h, fs::kTop), x.sht = -fs::end_period(*h, fs::kBot);
+      x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, fixed), x.cost = x.gross - x.net;
       x.turn = fs::turn_annual(*h, c);
       double mid = 0.0;
       for (const float g : h->grp)
@@ -233,7 +236,7 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
       for (const float g : h->grp)
         x.grp.push_back(g - mid);
       for (const Engine::YearStat &y : *w.find_years(hold))
-        x.years.push_back({y.year, y.ric});
+        x.years.push_back({y.year, y.wins ? y.ric_med : std::numeric_limits<double>::quiet_NaN(), y.turn});
     }
     r.ws.push_back(std::move(x));
   }

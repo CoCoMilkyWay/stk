@@ -285,6 +285,7 @@ void Mine::load(const SharedData &data, const std::string &dir) {
     for (Act &a : rd.acts)
       if (TrialRes *k = AsTrial(a)) {
         k->gate = setup.gate;
+        k->level = lab.ctx().level, k->hold = lab.ctx().hold;
         if (k->st.ok())
           if (const auto it = std::ranges::find(rs, k->st.file, &Result::file); it != rs.end())
             k->st.res = *it;

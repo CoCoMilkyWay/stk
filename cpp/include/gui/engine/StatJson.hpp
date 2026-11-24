@@ -291,7 +291,7 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   return j;
 }
 
-// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / costs / 小图 / 分年 (years[hold] = [[年, 行, mono, ls, ric] …]) /
+// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / costs / 小图 / 分年 (years[hold] = [[年, 行, 窗数, mono, ls, ric, 中位 rIC, 年换手] …]) /
 // 滚动窗 (roll[hold] = [窗长, 窗数, 中位 rIC, 平均 rIC, 中位年化多空, 平均年化多空]) 各一段
 inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   nlohmann::ordered_json j;
@@ -315,7 +315,7 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   for (int k = 0; k < st.n_hold; ++k) {
     nlohmann::ordered_json ys = nlohmann::ordered_json::array();
     for (const YearStat &y : st.years[k])
-      ys.push_back(nlohmann::ordered_json::array({y.year, y.n, sig4(y.mono), sig4(y.ls), sig4(y.ric)}));
+      ys.push_back(nlohmann::ordered_json::array({y.year, y.n, y.wins, sig4(y.mono), sig4(y.ls), sig4(y.ric), sig4(y.ric_med), sig4(y.turn)}));
     years.push_back(ys);
   }
   j["years"] = years;
@@ -399,12 +399,13 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
     if (!ys.is_array())
       return false;
     for (const nlohmann::json &y : ys) {
-      if (!y.is_array() || y.size() != 5)
+      if (!y.is_array() || y.size() != 8)
         return false;
       const auto e = [&](size_t i) -> const nlohmann::json & { return y[i]; };
-      if (!e(0).is_number_integer() || !e(1).is_number_integer() || !e(2).is_number() || !e(3).is_number() || !e(4).is_number())
-        return false;
-      t.years[k].push_back({e(0).get<int>(), e(1).get<int>(), e(2).get<float>(), e(3).get<float>(), e(4).get<float>()});
+      for (size_t i = 0; i < 8; ++i)
+        if (i < 3 ? !e(i).is_number_integer() : !e(i).is_number())
+          return false;
+      t.years[k].push_back({e(0).get<int>(), e(1).get<int>(), e(2).get<int>(), e(3).get<float>(), e(4).get<float>(), e(5).get<float>(), e(6).get<float>(), e(7).get<float>()});
     }
   }
   const auto rit = j.find("roll");

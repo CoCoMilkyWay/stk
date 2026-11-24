@@ -1,5 +1,6 @@
 // eval_factor — 回测: 三拍对仗 OpenEvalFactor (核假设落盘, GUI) → LabTask (Search + Run, Lab) → CloseEvalFactor (入表封存, GUI)
-//               → TrialRes (符号 + 各权重 + 门槛 + 分年 → 参数扫描 → 20 组; Run 顺带最佳权重的逐日序列只给展示) → 原文; 展示见 ui/trial/EvalFactor.cpp
+//               → TrialRes (最佳权重的具体式 + 频率 / 预测周期 / 符号 + 各权重统计与门槛 + 分年 → 参数扫描 → 20 组; Run 顺带最佳权重的逐日序列只给展示)
+//               → 原文; 展示见 ui/trial/EvalFactor.cpp
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
@@ -192,35 +193,66 @@ ToolOut run_eval(const Engine::FactorScope &fsc, const std::string &file, const 
 
 } // namespace
 
-std::string GroupsHead() { return "最佳权重 20 组每期毛收益 G1 → G20 (减组间均值, bp)"; }
+const Weight *TrialRes::shown() const { return st.res.visible && st.res.verdict == Verdict::Weights ? st.res.best() : nullptr; }
 
-std::string YearsHead(const std::vector<Year> &ys) {
-  assert(!ys.empty());
-  const auto neg = std::count_if(ys.begin(), ys.end(), [](const Year &y) { return y.ric < 0.0; });
-  const Year &lo = *std::min_element(ys.begin(), ys.end(), [](const Year &a, const Year &b) { return a.ric < b.ric; });
-  return "最佳权重分年 rIC (" + std::to_string(ys.size()) + " 年, 为负 " + std::to_string(neg) + " 年, 最差 " + std::to_string(lo.year) + ")";
+std::string ScopeLine(const TrialRes &k) {
+  const Weight *w = k.shown();
+  assert(w);
+  return "频率 " + k.level + " · 预测周期 " + k.hold + " · 符号 " + SignCn(w->sign);
 }
+
+std::string WeightLine(const TrialRes &k, const Weight &w) {
+  const Weight *best = k.shown();
+  assert(best);
+  const std::string head = &w == best ? std::string() : "另一权重 `" + w.expr + "`" + (w.sign == best->sign ? "" : std::string(" (符号 ") + SignCn(w.sign) + ")") + ": ";
+  if (!w.has)
+    return head + "无该持有期统计";
+  std::string s = head + fmt("rIC %.3f", w.ric) + fmt(" · 中位 rIC %.3f", w.score) + fmt(" · 每期毛多 %+.2fbp", w.lng * 1e4) + fmt(" · 毛空 %+.2fbp", w.sht * 1e4) +
+                  fmt(" · 成本 %.2fbp", w.cost * 1e4) + fmt(" · 净多空 %+.2fbp", w.net * 1e4) + fmt(" · 年换手 %.0f 倍", w.turn);
+  if (&w == best)
+    s += GateMiss(k.gate, k.st.res).empty() ? " · 达入库门槛" : fmt(" · 未达入库门槛 %.3f", k.gate.ric);
+  return s;
+}
+
+std::string YearsLine(const std::vector<Year> &ys) {
+  assert(!ys.empty());
+  int neg = 0;
+  const Year *lo = nullptr;
+  for (const Year &y : ys)
+    if (std::isfinite(y.med)) {
+      neg += y.med < 0.0;
+      if (!lo || y.med < lo->med)
+        lo = &y;
+    }
+  std::string s = "最佳权重分年 (" + std::to_string(ys.size()) + " 年, 中位 rIC 为负 " + std::to_string(neg) + " 年" + (lo ? ", 最差 " + std::to_string(lo->year) : "") +
+                  "; 年换手按年内行数年化, 不足一年的同样):";
+  for (size_t i = 0; i < ys.size(); ++i)
+    s += (i ? "; " : " ") + std::to_string(ys[i].year) + " 中位 rIC " + text::r3(ys[i].med) + fmt(" / 年换手 %.0f 倍", ys[i].turn);
+  return s;
+}
+
+std::string GroupsHead() { return "最佳权重 20 组每期毛收益 G1 → G20 (减组间均值, bp)"; }
 
 std::string SweepHead(const Sweep &sw) { return "参数扫描 (Search 评过 " + std::to_string(sw.pts.size()) + " 个点)"; }
 
 std::string TrialRes::text() const {
   const Result &r = st.res;
-  std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + st.cand.expr + "`\n";
+  const Weight *w = shown();
+  std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + (w ? w->expr : st.cand.expr) + "`\n";
   if (!st.cand.note.empty())
     s += "- 思路 (" + st.cand.hyp + "): " + st.cand.note + "\n";
-  s += Detail(r) + GateLine(r, gate);
-  if (!r.visible)
-    return s;
-  const Weight *w = r.best();
-  if (w && !w->years.empty()) {
-    std::vector<double> ric;
-    for (const Year &y : w->years)
-      ric.push_back(y.ric);
-    s += "- " + YearsHead(w->years) + ": " + text::spark(ric) + "\n";
-  }
+  if (!w)
+    return s + Detail(r);
+  s += "- " + ScopeLine(*this) + "\n";
+  s += "- " + WeightLine(*this, *w) + "\n";
+  for (const Weight &x : r.ws)
+    if (&x != w)
+      s += "- " + WeightLine(*this, x) + "\n";
+  if (!w->years.empty())
+    s += "- " + YearsLine(w->years) + "\n";
   if (const std::string sw = sweep_text(r.sweep); !sw.empty())
     s += sw + "\n";
-  if (w && !w->grp.empty())
+  if (!w->grp.empty())
     s += "- " + GroupsHead() + ": " + text::spark(w->grp, text::bp) + "\n";
   return s;
 }
@@ -229,6 +261,7 @@ std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
   const Call &c = a.call;
   auto r = std::make_shared<TrialRes>();
   r->gate = s.gate;
+  r->level = s.lab.ctx().level, r->hold = s.lab.ctx().hold;
   Cand cand{c.str("name"), c.str("name_cn"), c.str("expr"), c.str("hyp"), c.str("note")};
   // 工作台 / 外部 agent 不查假设 (板上没有也照回测)
   if (std::string miss = s.free ? std::string() : eval_miss(c, s.st.board, s.me.round); !miss.empty()) {

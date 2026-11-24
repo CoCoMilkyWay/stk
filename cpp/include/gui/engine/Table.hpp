@@ -299,8 +299,10 @@ struct AlphaDist {
 };
 // 一个持有期一个自然年的分层统计 (Probe YearP 逐日攒、按年合; 已定向, 毛收益): 与 HoldStat 同口径, 只取判稳定性的几项
 struct YearStat {
-  int year = 0, n = 0;                   // 年 / 年内有统计 (ok) 的行数
+  int year = 0, n = 0, wins = 0;         // 年 / 年内有统计 (ok) 的行数 / 年内收尾的滚动窗数
   float mono = 0.f, ls = 0.f, ric = 0.f; // 分层单调性 / 每期毛多空均值 / rIC 均值
+  float ric_med = 0.f;                   // 年内收尾的滚动窗 rIC 的中位 (wins = 0 → 0)
+  float turn = 0.f;                      // 年换手 (Probe CostP; 倍, 两端单边均, 段 0): 年内 Σ Δw⁺ / 年内统计行 × span_per_year, 不足一年的年同样年化
 };
 // 一个根的评估结果 (Run 行 / Inspect 结果同一份; Probe fill_eval 填全部: scope / eval_ms 由调用方给, 其余取探针;
 // StatJson scope_json + eval_json ⇄ load_eval)

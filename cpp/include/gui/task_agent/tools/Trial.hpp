@@ -24,17 +24,21 @@ struct TrialRes final : Res {
   Staged st;
   Span search, run;
   Gate gate;
+  std::string level, hold;                          // 频率 (因子层) / 预测周期 (持有期) = 会话作用域的 Context::level / hold
   mutable int hot = -1;                             // 展示: 上帧悬停的参数点 (Sweep::pts 下标; 图 ↔ 表联动)
   mutable int cursor = -1;                          // 展示: 分层图的光标日
   mutable std::shared_ptr<Layer::LayerDerived> lay; // 展示: st.res.daily 派生的分层线 (首画时建)
+  const Weight *shown() const;                      // 可展示统计的最佳权重 (有权重且在当前评估期上; 否则空)
   std::string text() const override;
   void draw() const override;
 };
 
-// eval_factor 原文与展示同一组节标题 (两边逐节对仗)
-std::string GroupsHead();                           // 最佳权重的 20 组
-std::string YearsHead(const std::vector<Year> &ys); // 最佳权重的分年 rIC (年数 / 为负几年 / 最差年)
-std::string SweepHead(const Sweep &sw);             // 参数扫描 (点数)
+// eval_factor 原文与展示同一组节 (两边逐节对仗; 都只在 shown() 非空时)
+std::string ScopeLine(const TrialRes &k);                   // 频率 · 预测周期 · 符号
+std::string WeightLine(const TrialRes &k, const Weight &w); // 一个权重的统计: 最佳权重接门槛; 其余先写具体式 (符号与最佳不同另标)
+std::string YearsLine(const std::vector<Year> &ys);         // 最佳权重分年: 中位 rIC / 年换手
+std::string GroupsHead();                                   // 最佳权重的 20 组
+std::string SweepHead(const Sweep &sw);                     // 参数扫描 (点数)
 
 inline TrialRes *AsTrial(Act &a) { return a.call.tool == Tool::EvalFactor ? static_cast<TrialRes *>(a.out.res.get()) : nullptr; }
 inline const TrialRes *AsTrial(const Act &a) { return a.call.tool == Tool::EvalFactor ? static_cast<const TrialRes *>(a.out.res.get()) : nullptr; }

@@ -383,7 +383,7 @@ inline uint16_t oriented(uint16_t x, int d) { return x == kRankNone || d == kFwd
 
 // ---- 二级输出: 每持有期一份 ----
 // 二级口径戳: 字段不变但口径变时 +1, 落盘 stat 与之不符读取即作废 (下次 Run 重算)
-inline constexpr int kStatSemver = 4;
+inline constexpr int kStatSemver = 5;
 // 一个逐行量 (rIC / rAC / LS) 沿 t 的矩 (见文件头【二级 HoldStat】)
 struct Moments {
   float mean = 0.f, sd = 0.f, ir = 0.f, t = 0.f, pos = 0.f, skew = 0.f, kurt = 0.f;

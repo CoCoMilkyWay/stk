@@ -66,11 +66,48 @@ void CostP::close(const Ctx &c, const RootView &v) {
   factor::stat::Cost cs[factor::stat::kMaxCost];
   const int C = fill_costs(y, cs), H = c.L.hd.n;
   assert(v.ec && C >= 1 && costs.size() == static_cast<size_t>(C));
+  assert(day_buy.size() == static_cast<size_t>(H));
+  const factor::stat::Span s = c.s();
+  const size_t T = static_cast<size_t>(s.T);
+  row_buy.assign(static_cast<size_t>(H) * T, 0.0);
   factor::stat::CostAcc acc[factor::stat::kMaxCost * factor::stat::kMaxHold] = {};
-  factor::cpu::stat::cost_rows(c.ex, v.ec, c.s(), c.L, c.L.cap, cs, C, *c.w, acc);
+  factor::cpu::stat::cost_rows(c.ex, v.ec, s, c.L, c.L.cap, cs, C, *c.w, acc, [&](size_t j, int t, const factor::stat::CostAcc &r) {
+    if (j < static_cast<size_t>(H)) // 段 0 (j = 段 · H + 持有期)
+      row_buy[j * T + static_cast<size_t>(t)] = r.book[factor::stat::kTop].buy + r.book[factor::stat::kBot].buy;
+  });
   for (int k = 0; k < C; ++k)
     for (int i = 0; i < H; ++i)
       costs[static_cast<size_t>(k)].acc[i].merge(acc[k * H + i]);
+  const int u0 = c.c.land0();
+  for (int i = 0; i < H; ++i)
+    for (int t = s.t_lo; t < s.t_hi(); ++t) {
+      const size_t d = static_cast<size_t>((u0 + t) / seg);
+      assert(u0 + t >= 0 && d < day_buy[static_cast<size_t>(i)].size() && "统计行落在评估期内");
+      day_buy[static_cast<size_t>(i)][d] += row_buy[static_cast<size_t>(i) * T + static_cast<size_t>(t)];
+    }
+  if (c.last)
+    std::vector<double>().swap(row_buy);
+}
+
+void CostP::finish(const PassCtx &p) {
+  const std::vector<misc::Ymd> dates = p.dm.stat_dates();
+  for (int hi = 0; hi < p.hd.n; ++hi) {
+    const std::vector<double> &ds = day_buy[static_cast<size_t>(hi)];
+    assert(ds.size() == dates.size() && "逐日增仓量与评估期日期不齐");
+    const double spy = factor::stat::span_per_year(p.hd.k[hi], seg);
+    std::vector<YearTurn> &out = year_turn[hi];
+    out.clear();
+    for (size_t a = 0; a < ds.size();) {
+      const int y = dates[a] / 10000;
+      double buy = 0.0;
+      size_t b = a;
+      for (; b < ds.size() && dates[b] / 10000 == y; ++b)
+        buy += ds[b];
+      out.push_back({y, static_cast<float>(0.5 * buy / (static_cast<double>(b - a) * seg) * spy)});
+      a = b;
+    }
+  }
+  std::vector<std::vector<double>>().swap(day_buy);
 }
 
 void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, int d, AlphaDist &o) {

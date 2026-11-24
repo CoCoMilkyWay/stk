@@ -90,7 +90,8 @@ struct Op {
 // ---- 回测统计与候选结局 (均已按所评方向) ----
 struct Year {
   int year = 0;
-  double ric = 0.0; // 年内 rIC 均值
+  double med = 0.0;  // 年内收尾的滚动窗 rIC 的中位 (年内无窗 NaN)
+  double turn = 0.0; // 年换手 (倍; 按年内行数年化, 不足一年的同样)
 };
 struct Weight {
   std::string expr;
@@ -98,7 +99,10 @@ struct Weight {
   int hold_src = 0;
   bool has = false;              // 有该持有期的统计且有滚动窗
   double score = 0.0;            // 中位 rIC (滚动窗 = 评估期 / kRollParts; factor/Search/Contract.hpp【目标】)
+  double ric = 0.0;              // rIC (评估期 ok 行均值)
+  double lng = 0.0, sht = 0.0;   // 每期毛多 / 毛空 (超额; 做多端 G20 / 做空端 −G1; 毛多空 = 两者之半)
   double gross = 0.0, net = 0.0; // 每期毛 / 净多空 (净 = 扣固定冲击的换手成本)
+  double cost = 0.0;             // 每期成本 (= 毛多空 − 净多空)
   double turn = 0.0;             // 年换手 (倍, 两端单边均)
   std::vector<double> grp;       // 20 组每期毛收益 (减组间均值)
   std::vector<Year> years;

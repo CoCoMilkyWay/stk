@@ -1,4 +1,4 @@
-// eval_factor 的展示 (与原文逐节对仗): 候选 (模板 / 思路) + 符号 + 结局 + 各权重表 + 分年
+// eval_factor 的展示 (与原文逐节对仗): 候选 (最佳权重的具体式 / 思路) + 频率 · 预测周期 · 符号 + 各权重统计 (最佳接门槛; 无权重 = 结局一行) + 分年
 //   → 左栏三图 (各参数点的窗中位 rIC / 写进的权重的累计 rIC / 分层图, Inspect 同一份) | 右栏参数点表 (缺省中位 rIC 降序; 窗中位 rIC 图 ↔ 表悬停联动)
 //   → 20 组柱 (只在没有逐日序列 = 载入的会话时)
 #include "gui/task_agent/Prompt.hpp"
@@ -197,46 +197,26 @@ void charts_view(const TrialRes &k) {
 void TrialRes::draw() const {
   const Result &r = st.res;
   ImGui::PushID(this);
+  const Weight *best = shown();
   heading(st.cand.name + "  " + st.cand.name_cn);
-  wrapped(kColExpr, st.cand.expr);
+  wrapped(kColExpr, best ? best->expr : st.cand.expr);
   if (!st.cand.note.empty())
     wrapped_dim("思路 (" + st.cand.hyp + "): " + st.cand.note);
   const TaskStatus::Kind kind = r.verdict == Verdict::Weights ? (GateMiss(gate, r).empty() ? TaskStatus::Kind::Ready : TaskStatus::Kind::None)
                                 : r.verdict == Verdict::Null  ? TaskStatus::Kind::Warn
                                                               : TaskStatus::Kind::Error;
-  if (const std::string sl = SignLine(r); !sl.empty())
-    wrapped(sl);
-  wrapped(color(kind), Brief(r));
-  if (const std::string g = GateLine(r, gate); !g.empty())
-    wrapped(color(kind), g);
+  if (!best) {
+    wrapped(color(kind), Brief(r));
+  } else {
+    wrapped(ScopeLine(*this));
+    wrapped(color(kind), WeightLine(*this, *best));
+    for (const Weight &w : r.ws)
+      if (&w != best)
+        wrapped(WeightLine(*this, w));
+    if (!best->years.empty())
+      wrapped(YearsLine(best->years));
+  }
   if (r.visible) {
-    const Weight *best = r.best();
-    if (!r.ws.empty() && grid("##ws", {"权重", "中位 rIC", "每期毛多空 bp", "每期净多空 bp", "年换手"})) {
-      for (const Weight &w : r.ws) {
-        ImGui::TableNextRow();
-        cell(Fills(r.tmpl, w.expr) + (best && w.sign != best->sign ? std::string(" (符号 ") + SignCn(w.sign) + ")" : std::string()));
-        if (!w.has) {
-          cell_dim("无该持有期统计");
-          for (int i = 0; i < 3; ++i)
-            cell("");
-          continue;
-        }
-        cell_num(w.score, "%.4f", true), cell_num(w.gross * 1e4, "%+.2f", true), cell_num(w.net * 1e4, "%+.2f", true), cell_num(w.turn, "%.0f");
-      }
-      ImGui::EndTable();
-    }
-    if (best && !best->years.empty()) {
-      heading(YearsHead(best->years));
-      std::vector<std::string> heads;
-      for (const Year &y : best->years)
-        heads.push_back(std::to_string(y.year));
-      if (grid("##years", heads)) {
-        ImGui::TableNextRow();
-        for (const Year &y : best->years)
-          cell_num(y.ric, "%.4f", true);
-        ImGui::EndTable();
-      }
-    }
     charts_view(*this);
     if (best && !best->grp.empty() && r.daily.dates.empty())
       groups_plot((GroupsHead() + "##grp").c_str(), best->grp, 180.0f);

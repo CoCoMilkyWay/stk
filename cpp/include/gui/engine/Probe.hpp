@@ -224,17 +224,37 @@ struct HoldP : ProbeBase {
   }
 };
 
-// 换手成本 CostTier[C]: init 定段, close 按块续攒
+// 换手成本 CostTier[C]: init 定段, close 按块续攒; 另按日攒段 0 两端增仓量 → finish 折成分年年换手 (YearStat::turn 同口径)
 struct CostP : ProbeBase {
   static constexpr uint8_t need = kNeedEc;
   static constexpr Segs segs = Segs::All;
+  struct YearTurn {
+    int year = 0;
+    float turn = 0.f;
+  };
   std::vector<CostTier> costs;
+  int seg = 0;
+  std::vector<double> row_buy;                             // [hd][块行] 段 0 两端增仓量之和 (close 内暂存)
+  std::vector<std::vector<double>> day_buy;                // [hd][日] 同上按日合
+  std::vector<YearTurn> year_turn[factor::stat::kMaxHold]; // [hd] 年升序
+  static double bytes(const Shape &sh, int H) { return sizeof(double) * static_cast<double>(H) * sh.days; }
+  static double scratch(const Shape &sh, int H) { return sizeof(double) * static_cast<double>(H) * sh.T; }
   void init(const PassCtx &p) {
     costs.assign(static_cast<size_t>(p.ad.n), CostTier{});
     for (int k = 0; k < p.ad.n; ++k)
       costs[static_cast<size_t>(k)].amt = p.ad.k[k];
+    seg = p.seg;
+    day_buy.assign(static_cast<size_t>(p.hd.n), std::vector<double>(static_cast<size_t>(p.days_stat), 0.0));
   }
   void close(const Ctx &c, const RootView &v);
+  void finish(const PassCtx &p);
+  float turn_in(int hi, int year) const {
+    for (const YearTurn &y : year_turn[hi])
+      if (y.year == year)
+        return y.turn;
+    assert(false && "分年换手缺该年");
+    return 0.f;
+  }
 };
 
 // 池内有效率 / 可秩率
@@ -397,22 +417,34 @@ struct YearP : RowsP<YearP, YearRow> {
         sums[i] = {ds[i].n, ds[i].ric, ds[i].ls};
         day_ric[hi][i] = ds[i].n > 0 ? static_cast<float>(ds[i].ric / ds[i].n) : std::numeric_limits<float>::quiet_NaN();
       }
-      roll[hi] = factor::search::roll_of(sums, p.hd.k[hi], seg);
+      std::vector<double> wins;
+      roll[hi] = factor::search::roll_of(sums, p.hd.k[hi], seg, nullptr, &wins);
       std::vector<YearStat> &out = years[hi];
       out.clear();
       for (size_t a = 0; a < ds.size();) {
         const int y = dates[a] / 10000;
         Day s;
+        std::vector<double> w;
         size_t b = a;
         for (; b < ds.size() && dates[b] / 10000 == y; ++b) {
           s.n += ds[b].n, s.ric += ds[b].ric, s.ls += ds[b].ls;
           for (int k = 0; k < factor::stat::kGroups; ++k)
             s.g[k] += ds[b].g[k];
+          if (!std::isnan(wins[b]))
+            w.push_back(wins[b]);
         }
         a = b;
         if (s.n < 3)
           continue;
-        out.push_back({y, s.n, static_cast<float>(factor::stat::mono_of(s.g, factor::stat::kGroups)), static_cast<float>(s.ls / s.n), static_cast<float>(s.ric / s.n)});
+        std::sort(w.begin(), w.end());
+        const double med = w.empty() ? 0.0 : 0.5 * (w[(w.size() - 1) / 2] + w[w.size() / 2]);
+        out.push_back({.year = y,
+                       .n = s.n,
+                       .wins = static_cast<int>(w.size()),
+                       .mono = static_cast<float>(factor::stat::mono_of(s.g, factor::stat::kGroups)),
+                       .ls = static_cast<float>(s.ls / s.n),
+                       .ric = static_cast<float>(s.ric / s.n),
+                       .ric_med = static_cast<float>(med)});
       }
     }
     std::vector<std::vector<Day>>().swap(day);
@@ -543,6 +575,8 @@ void fill_eval(const Ps &p, const StatScope &scope, double eval_ms, EvalStat &st
   for (int hi = 0; hi < h.n_hold; ++hi) {
     st.ic_pdf[hi] = mini_pdf_of(ic.pdf[hi]);
     st.years[hi] = yr.years[hi];
+    for (YearStat &y : st.years[hi])
+      y.turn = c.turn_in(hi, y.year);
     st.roll[hi] = yr.roll[hi];
   }
   st.alpha_pdf = mini_pdf_of(p.template at<AlphaP>().d.pdf);

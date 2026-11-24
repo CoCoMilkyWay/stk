@@ -121,13 +121,15 @@ struct Roll {
   bool ok() const { return n > 0; }
 };
 
-// 逐日和 d[D] → 滚动窗统计 (hold / seg = 持有期键 / 因子所在层); line 非空 → 填窗中位 rIC 线 [D] (不计入的窗 NaN)
-inline Roll roll_of(std::span<const DaySum> d, int hold, int seg, std::vector<float> *line = nullptr) {
+// 逐日和 d[D] → 滚动窗统计 (hold / seg = 持有期键 / 因子所在层); line 非空 → 填窗中位 rIC 线 [D]; wins 非空 → 填收尾日的窗 rIC [D] (分年中位用; 都是不计入的窗 NaN)
+inline Roll roll_of(std::span<const DaySum> d, int hold, int seg, std::vector<float> *line = nullptr, std::vector<double> *wins = nullptr) {
   const int D = static_cast<int>(d.size());
   Roll r;
   r.win = roll_win(D);
   if (line)
     line->assign(static_cast<size_t>(D), std::numeric_limits<float>::quiet_NaN());
+  if (wins)
+    wins->assign(static_cast<size_t>(D), std::numeric_limits<double>::quiet_NaN());
   std::vector<double> N(static_cast<size_t>(D) + 1, 0.0), R(N), L(N); // 前缀和 (下标 = 日 + 1)
   for (int t = 0; t < D; ++t) {
     const DaySum &x = d[static_cast<size_t>(t)];
@@ -155,6 +157,8 @@ inline Roll roll_of(std::span<const DaySum> d, int hold, int seg, std::vector<fl
       const double w_ric = (R[b] - R[a]) / n, w_ann = (L[b] - L[a]) * ann;
       ++r.n, ric_s += w_ric, ann_s += w_ann;
       ric_m.push(w_ric), ann_m.push(w_ann);
+      if (wins)
+        (*wins)[static_cast<size_t>(t)] = w_ric;
       if (line) {
         const size_t m = in_win.size();
         (*line)[static_cast<size_t>(t)] = static_cast<float>(0.5 * (in_win[(m - 1) / 2] + in_win[m / 2]));
