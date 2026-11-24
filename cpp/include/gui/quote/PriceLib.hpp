@@ -43,7 +43,7 @@
 // 线程: 库只 worker 读写, 外面只经 PriceView 读; 合成线程池随对象 (全部核, 按可用内存封顶; 两侧按日并行合成, 篮子全表按篮子并行读)
 #pragma once
 
-#include "account/Ledger.hpp" // Spot
+#include "account/Nav.hpp" // Spot
 #include "define/Members.hpp"
 #include "disk/Disk.hpp"
 #include "gui/quote/Quote.hpp" // Side / PerMarket / Series / Tape / PriceView
@@ -80,7 +80,7 @@ struct PriceRequest {
   std::vector<Want> wants; // (侧, 键) 升序, 一个标的一项 (连分钟的盖过不连的)
   misc::Ymd mark = 0;      // 基本面段末日 (AssetInfo::quote_end)
   misc::Ymd live = 0;      // 新浪行情日 (换日 = 可能多一份归档)
-  uint64_t ledger = 0;     // 账本代 (account::generation)
+  uint64_t ledger = 0;     // 账本代 (live::flows::generation)
   account::Spot spot;      // 库外持仓的券商现价 (AccountHub::spot)
   bool operator==(const PriceRequest &) const = default;
 };

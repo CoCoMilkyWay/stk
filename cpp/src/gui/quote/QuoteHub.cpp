@@ -1,7 +1,7 @@
 #include "gui/quote/QuoteHub.hpp"
 
-#include "account/Ledger.hpp"
 #include "imgui.h"
+#include "live/Flows.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -42,7 +42,7 @@ void QuoteHub::frame(const SharedData &data) {
   ws.erase(std::ranges::unique(ws, {}, &Want::ref).begin(), ws.end());
   want_.mark = mark;
   want_.live = status.date;
-  want_.ledger = account::generation();
+  want_.ledger = live::flows::generation();
   if (!sent_ || !(*sent_ == want_)) {
     sent_ = want_;
     price_->Request(want_);

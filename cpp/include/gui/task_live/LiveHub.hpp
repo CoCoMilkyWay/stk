@@ -4,9 +4,9 @@
 //   行情: 要的码 (持仓、今日清仓、负债、调仓名单里可买的) 每帧订阅给 QuoteHub (与 Market 同一路新浪轮询, 改了即提前一轮), 随 Live 的版本取用;
 //     事务另取: 试算现取此刻的; 单笔下单现取该只; 批量下单起一路只取这批盘口的连续流 (见执行调仓). 盘口列同帧复用其 5 档.
 //     快照读到后头一次取齐其各只的行情记作读时现价 (可用保证金按它校准, 见 live/Rebal.hpp). 事务里取行情一律有界 (取不到即该步失败, 不卡)
-//   拉取: 两融条款 (live/Terms.hpp) 与资金流水账本 (account/Ledger.hpp) 同形 — 一件事务里 拉 → 存; 读到快照后各每天自动至多一次:
+//   拉取: 两融条款 (live/Terms.hpp) 与资金流水账本 (live/Flows.hpp) 同形 — 一件事务里 拉 → 存; 读到快照后各每天自动至多一次:
 //     条款缓存缺、满 kTermsAge 天、或名单 / 持仓 / 负债里有缓存没有的代码; 账本今天还没拉过. 条款另可人点; 失败了等明天或人点
-//   下单: 一单即一件「下单」事务 (调仓的各单在「执行调仓」事务里), 留最近 kOrderCap 单; 步骤 = 「行情」(按新取的盘口定委托价) + broker 的各步;
+//   下单: 一单即一件「下单」事务 (调仓的各单在「执行调仓」事务里), 留最近 kOrderCap 单; 步骤 = 「行情」(按新取的盘口定委托价, 按额的单另按它折股) + broker 的各步;
 //     请求、取到的盘口、结局各记一条, 各步即本单的步骤
 //   事务: 后台一次一件 (下单 / 执行调仓 / 两样拉取). 事务线程挂 live::trace::Watch + Hooks: 段 / 实时一行 / 记一条照常落交互日志,
 //     记的各条另落 output/run/live/task/<时刻>.jsonl (一事务一文件, 留最近 kTaskKeep 个) 并留尾巴给页面; 进度行即其段栈.
@@ -61,10 +61,9 @@ inline const char *job_name(JobSt s) { return s == JobSt::Run ? "进行中" : s 
 struct OrderJob {
   int sec = -1; // 起于 (当日秒)
   JobSt st = JobSt::Run;
-  live::OrderReq o;               // 委托价「行情」一步才定
-  std::string label;              // 量: N股 / xW
-  std::vector<std::string> steps; // 「行情」+ broker 的各步
-  size_t at = 0;
+  live::OrderReq o;  // 委托价 (按额的连同股数)「行情」一步才定
+  std::string label; // 量: N股 / xW
+  size_t at = 0;     // 走到 LiveHub::steps 的哪一步
   std::string detail;
   live::Placed got; // 回报; 失败 = msg 为原因
 };
@@ -141,6 +140,7 @@ public:
   const std::shared_ptr<const Task> &task() const { return task_; } // 还没有事务 = 空
   const live::trace::Spot &task_at() const { return task_at_; }     // 事务线程此刻在哪 (段栈空 = 不在客户端操作里)
   const std::vector<OrderJob> &orders() const { return *jobs_; }    // 新在前
+  const std::vector<std::string> &steps() const;                    // 下单各步: 「行情」+ broker 的各步
   const BoardView &board() const { return board_.val; }
   const PlanView &plan() const { return plan_.val; }
   bool busy() const { return task_ && task_->st == JobSt::Run; } // 有事务在跑

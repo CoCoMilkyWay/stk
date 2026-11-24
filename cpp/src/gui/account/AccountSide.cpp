@@ -39,7 +39,7 @@ Quote::Day path_day(misc::Ymd d, float ref, std::span<const double> v) {
 
 Quote::Holding holding(const std::string &code, double qty, double px) {
   const AssetAxis &ax = asset_axis();
-  const size_t id = ax.find(account::asset_code(code));
+  const size_t id = ax.find(live::asset_sym(live::market_of(code), code));
   return {code, id < ax.size() ? static_cast<uint32_t>(id) : Quote::Ref::kNone, qty, px};
 }
 
@@ -60,7 +60,7 @@ Quote::Day day_of(const account::Day &d, double nav0, double idx0, std::span<con
   return path_day(d.date, static_cast<float>(idx0), is);
 }
 
-Replay replay(const account::Ledger &l, const std::vector<misc::Ymd> &dates, const account::Spot &spot, const Minutes &minutes) {
+Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, const account::Spot &spot, const Minutes &minutes) {
   Replay o;
   const size_t D = dates.size();
   const size_t i0 = l.rows.empty() ? D : static_cast<size_t>(std::ranges::lower_bound(dates, l.rows.front().date) - dates.begin());
@@ -71,7 +71,7 @@ Replay replay(const account::Ledger &l, const std::vector<misc::Ymd> &dates, con
   std::unordered_map<std::string, Quote::Series> held;
   account::Closes px;
   for (const std::string &s : account::securities(l.rows))
-    if (const size_t id = ax.find(account::asset_code(s)); id < ax.size())
+    if (const size_t id = ax.find(live::asset_sym(live::market_of(s), s)); id < ax.size())
       if (Quote::Series se; minutes(static_cast<uint32_t>(id), i0, se)) {
         for (const Quote::Candle &c : se.daily)
           px[s][c.date] = c.close;

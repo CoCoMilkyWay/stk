@@ -68,7 +68,7 @@ public:
     return strf("tdxw.exe pid %d", pid);
   }
 
-  Reads read() override { return tables::reads(); }
+  Snapshot read() override { return tables::reads(); }
 
   Terms terms() override {
     prime(tables::kTerms);

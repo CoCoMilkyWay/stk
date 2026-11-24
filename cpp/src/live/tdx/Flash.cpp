@@ -97,20 +97,16 @@ int64_t max_qty(const Hwnd &h) {
   return static_cast<int64_t>(std::stod(t));
 }
 
-// 股数: 按股即用, 按元即 元 / 价 按 lot 折股; 再以闪电窗给的最大可买 / 可卖 cap 封顶 (钱或券不够就按能做的最大量):
-// 买入按步长取整、须够起买量; 按额卖出不足起卖量即抬到起卖量, 可卖不足即全卖 (零股只能一次卖完)
-int64_t order_qty(const OrderReq &o, double px, int64_t cap) {
-  const auto [first, step] = lot(o.sec.code);
-  int64_t n = o.qty.is_shares() ? static_cast<int64_t>(std::llround(o.qty.v)) : static_cast<int64_t>(o.qty.v / px) / step * step;
+// 股数以闪电窗给的最大可买 / 可卖 cap 封顶 (钱或券不够就按能做的最大量): 买入须够起买量、封顶按步长取整; 卖出可卖不足即全卖 (零股只能一次卖完)
+int64_t order_qty(const OrderReq &o, int64_t cap) {
   if (o.side == kBuy) {
-    need(n >= first, "%g %s 按 %g 不足起买量 %lld 股", o.qty.v, o.qty.is_shares() ? "股" : "元", px, static_cast<long long>(first));
+    const auto [first, step] = lot(o.code);
+    need(o.qty >= first, "%lld 股不足起买量 %lld 股", static_cast<long long>(o.qty), static_cast<long long>(first));
     cap = cap / step * step;
     need(cap >= first, "最大可买 %lld 股, 不足起买量 %lld 股", static_cast<long long>(cap), static_cast<long long>(first));
-  } else if (!o.qty.is_shares()) {
-    n = std::max(n, first);
   }
   need(cap >= 1, "最大可卖为 0");
-  return std::min(n, cap);
+  return std::min(o.qty, cap);
 }
 
 // 写入后客户端的 EN_CHANGE 处理会先改写一下, 等读回恰为 s
@@ -173,7 +169,7 @@ void go_to(const Hwnd &main, const Sec &x) {
 
 void switch_to(Ctx &c) {
   c.main = ui::main_wnd();
-  go_to(c.main, c.o.sec);
+  go_to(c.main, c.o);
 }
 
 void open(Ctx &c) {
@@ -185,7 +181,7 @@ void open(Ctx &c) {
 void form(Ctx &c) {
   const auto ids = win::ctls(c.dlg, {{"code", c.k.code}, {"price", c.k.price}, {"qty", c.k.qty}, {"unit", c.k.unit}, {"quote", c.k.quote}, {"max", c.k.max}});
   const std::string got = win::text(ids.at("code"));
-  need(got == c.o.sec.code, "闪电窗证券 " + got + " ≠ " + c.o.sec.code);
+  need(got == c.o.code, "闪电窗证券 " + got + " ≠ " + c.o.code);
   const std::string quote = win::text(ids.at("quote"));
   need(quote.find("限价") != std::string::npos, "报价方式为「" + quote + "」, 需限价委托");
   const std::string dflt = *until(said("闪电窗默认价"), [&]() -> std::optional<std::string> {
@@ -203,7 +199,7 @@ void form(Ctx &c) {
   // 最大可买按默认价算; 改价后客户端未必即时重算, 按价反比折一份, 与重读的取小
   int64_t cap = max_qty(ids.at("max"));
   cap = std::min(cap, c.o.side == kBuy ? static_cast<int64_t>(static_cast<double>(cap0) * std::stod(dflt) / c.px) : cap0);
-  c.n = order_qty(c.o, c.px, cap);
+  c.n = order_qty(c.o, cap);
   trace::ev("form", {{"px", c.px_s}, {"dflt", dflt}, {"unit", unit}, {"cap0", cap0}, {"cap", cap}, {"n", c.n}});
   if (unit == "股") {
     settext(ids.at("qty"), std::to_string(c.n));
@@ -233,7 +229,7 @@ void confirm(Ctx &c) {
   const std::string code = after(b, "股票代码:", false, 6, "");
   const std::string px = after(b, "委托价格:", true, 0, "");
   const std::string qty = after(b, "委托数量:", false, 0, "股");
-  need(code == c.o.sec.code && is_num(px) && std::stod(px) == std::stod(c.px_s) && std::stoll(qty) == c.n, "确认框 (%s, %s, %s) ≠ 预期 (%s, %s, %lld): %s", code.c_str(), px.c_str(), qty.c_str(), c.o.sec.code.c_str(), c.px_s.c_str(), static_cast<long long>(c.n), b.c_str());
+  need(code == c.o.code && is_num(px) && std::stod(px) == std::stod(c.px_s) && std::stoll(qty) == c.n, "确认框 (%s, %s, %s) ≠ 预期 (%s, %s, %lld): %s", code.c_str(), px.c_str(), qty.c_str(), c.o.code.c_str(), c.px_s.c_str(), static_cast<long long>(c.n), b.c_str());
 }
 
 // 读回报、点掉; 等回报框、确认框、闪电窗都关了才算完 (下一单紧接着切图表、开窗)
@@ -280,7 +276,7 @@ std::span<const std::string_view> steps() { return kStepNames; }
 Placed place(const OrderReq &o) {
   const Kind *k = kind_of(o.side, o.credit);
   need(k != nullptr, "没有%s%s的闪电窗", credit_name(o.credit), side_name(o.side));
-  need(o.qty.v > 0 && o.px > 0, "委托量 %g / 价 %g 不为正", o.qty.v, o.px);
+  need(o.qty > 0 && o.px > 0, "委托量 %lld / 价 %g 不为正", static_cast<long long>(o.qty), o.px);
   Ctx c{.o = o, .k = *k};
   sweep();
   const win::Tops before = win::tops();

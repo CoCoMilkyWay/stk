@@ -1,6 +1,5 @@
 #include "gui/quote/PriceLib.hpp"
 
-#include "account/Ledger.hpp"
 #include "features/Bar1mDay.hpp"
 #include "features/Panel/PoolSelect.hpp" // all_bar / picks / extends
 #include "features/Storage/FeatureLib.hpp"
@@ -9,6 +8,7 @@
 #include "gui/account/AccountSide.hpp" // 账户一侧的回放
 #include "gui/quote/BasketRow.hpp"
 #include "gui/quote/services/QuoteService.hpp" // 新浪归档
+#include "live/Flows.hpp"                      // 资金流水账本
 #include "misc/cross_platform.hpp"             // memory_usage
 #include "misc/snap.hpp"
 #include "shared/Basket.hpp" // basket_table
@@ -1386,7 +1386,7 @@ bool PriceLib::series(Ref ref, bool minute, Series &out, size_t from) const {
 
 void PriceLib::replay(uint64_t ledger, const account::Spot &spot) {
   ledger_ = ledger, spot_ = spot;
-  Account::Replay r = Account::replay(account::load(), dates_, spot, [&](uint32_t id, size_t from, Series &s) { return series({kStock, id}, true, s, from); });
+  Account::Replay r = Account::replay(live::flows::load(), dates_, spot, [&](uint32_t id, size_t from, Series &s) { return series({kStock, id}, true, s, from); });
   auto t = std::make_shared<Tape>();
   t->keys = {0};
   t->list = {std::move(r.se)};

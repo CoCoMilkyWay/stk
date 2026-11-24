@@ -1,6 +1,5 @@
 #include "gui/account/AccountHub.hpp"
 
-#include "account/Ledger.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/account/AccountSide.hpp"
 #include "live/Rebal.hpp"
@@ -70,6 +69,16 @@ std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const
   return h;
 }
 
+// 快照里库轴外持仓 (ETF / LOF) 的券商现价, 记于今日
+account::Spot spot_of(const live::Snapshot &s) {
+  account::Spot o{.date = misc::today_ymd()};
+  const AssetAxis &ax = asset_axis();
+  for (const live::Position &p : s.pos.list)
+    if (ax.find(live::asset_sym(p.mkt, p.code)) >= ax.size())
+      o.px[p.code] = p.price;
+  return o;
+}
+
 // 今日成交 → 成交点: 时刻 (当日秒) 落所在分钟根 (竞价并入首根), 一分钟一点, 点内同只合并
 std::shared_ptr<const Quote::Trades> trades_of(const live::Fills &f) {
   std::map<int, Quote::TradeMark> by;
@@ -99,19 +108,8 @@ void AccountHub::feed(const std::shared_ptr<const live::Snapshot> &snap) {
   if (snap == snap_)
     return;
   snap_ = snap;
+  spot_ = snap_ ? spot_of(*snap_) : account::Spot{};
   trades_ = snap_ ? trades_of(snap_->fills) : nullptr;
-}
-
-account::Spot AccountHub::spot() const {
-  account::Spot s;
-  if (!snap_)
-    return s;
-  s.date = misc::today_ymd();
-  const AssetAxis &ax = asset_axis();
-  for (const live::Position &p : snap_->pos.list)
-    if (ax.find(account::asset_code(p.code)) >= ax.size())
-      s.px[p.code] = p.price;
-  return s;
 }
 
 std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live) {

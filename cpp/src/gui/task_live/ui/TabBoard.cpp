@@ -107,18 +107,18 @@ int64_t sell_n(LiveHub &hub, const live::rebal::Hold &h) {
 }
 
 // 一单的步骤条: 已过绿 / 当前橙 / 失败红 / 未到灰
-void order_line(const OrderJob &j, bool priv) {
+void order_line(const OrderJob &j, const std::vector<std::string> &steps, bool priv) {
   ImGui::Text("%s", live::fmt_sec(j.sec).c_str());
   ImGui::SameLine();
   text_col(side_col(j.o.side), strf("%s%s", live::side_name(j.o.side), j.label.c_str()));
   ImGui::SameLine();
-  ImGui::Text("%s %s ·", sec_txt(j.o.sec, priv).c_str(), j.detail.c_str());
-  for (size_t i = 0; i < j.steps.size(); ++i) {
+  ImGui::Text("%s %s ·", sec_txt(j.o, priv).c_str(), j.detail.c_str());
+  for (size_t i = 0; i < steps.size(); ++i) {
     const ImVec4 c = i < j.at || j.st == JobSt::Ok ? kGreen : i > j.at         ? grey()
                                                           : j.st == JobSt::Err ? kRed
                                                                                : kHot;
     ImGui::SameLine();
-    text_col(c, j.steps[i] + (i + 1 < j.steps.size() ? " ›" : " ·"));
+    text_col(c, steps[i] + (i + 1 < steps.size() ? " ›" : " ·"));
   }
   ImGui::SameLine();
   text_col(j.st == JobSt::Ok ? kGreen : j.st == JobSt::Err ? kRed
@@ -140,9 +140,8 @@ std::string where(const live::trace::Spot &s) {
 void progress(LiveHub &hub) {
   const live::Refresh &g = hub.refresh();
   const auto &snap = hub.snapshot();
-  const std::string &who = snap ? snap->who : g.who;
   ImGui::Text("%s · 读于 %s · 行情 %s · %s", hub.client().name, live::fmt_sec(snap ? snap->at : -1).c_str(),
-              live::fmt_sec(hub.in().quote_sec).c_str(), who.empty() ? "未接入" : who.c_str());
+              live::fmt_sec(hub.in().quote_sec).c_str(), g.who.empty() ? "未接入" : g.who.c_str());
   bool any = false;
   const auto sep = [&] {
     if (any)
@@ -575,7 +574,7 @@ void groups(LiveHub &hub, BoardState &st) {
   order_ctl(hub, st);
   for (size_t i = 0; i < kOrderLines; ++i)
     if (i < hub.orders().size())
-      order_line(hub.orders()[i], hub.priv());
+      order_line(hub.orders()[i], hub.steps(), hub.priv());
     else if (i == 0)
       ImGui::TextDisabled("还没下过单");
     else
@@ -782,7 +781,7 @@ std::optional<uint32_t> id_of(const SharedData &data, BoardState &st, const std:
     for (uint32_t i = 0; i < codes.size(); ++i)
       st.ids.emplace(codes[i], i);
   }
-  const auto i = st.ids.find(code + live::kMktSuffix[static_cast<int>(live::market_of(code))]);
+  const auto i = st.ids.find(live::asset_sym(live::market_of(code), code));
   return i == st.ids.end() ? std::nullopt : std::optional<uint32_t>(i->second);
 }
 

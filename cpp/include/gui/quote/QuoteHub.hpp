@@ -35,8 +35,12 @@ struct QuoteHub {
   // 每帧用前调 (AssetInfo 已建, task_state.database.asset_info_ready; 一帧多调只首次生效): 首次起全部服务 (全市场 = 在市股);
   //   上帧登记的要求 + 基本面段末日 + 行情日 → 价格库请求; 基本面段末日 → 新浪; 取本帧三份
   void frame(const SharedData &data);
-  void want(Ref r, bool minute);                            // 本帧要 r 的全史 (minute = 连分钟)
-  void spot(account::Spot s) { want_.spot = std::move(s); } // 账户回放用的券商现价 (留到下次给)
+  void want(Ref r, bool minute); // 本帧要 r 的全史 (minute = 连分钟)
+  // 账户回放用的券商现价 (留到下次给; 变了才抄)
+  void spot(const account::Spot &s) {
+    if (!(want_.spot == s))
+      want_.spot = s;
+  }
 
   Joint joint(Side s) const { return {s, view, live}; }
   Source of(Ref r) const { return joint(r.side).of(r.key); }

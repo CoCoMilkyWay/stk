@@ -241,7 +241,7 @@ auto read(std::tuple<S...>) {
 //   两融条款 = 标的证券 × 担保品两表一并各翻页到底 (担保品近万只, 约十余页), 以 (市场, 代码) 为键, 合成时按代码归一 (跨市场同号的只留 market_of 那只)
 //   资金流水 = from 日起 (含) 至昨日 (客户端只给到上一日), 按窗 (客户端一次至多查 30 天) 覆盖起止日入参直发, 各窗应答按日接起;
 //     from = 0 即从昨日往前逐窗查到连续几窗无流水 (开户前)
-Reads reads();
+Snapshot reads();
 Terms terms();
 std::vector<CashFlow> flows(misc::Ymd from);
 

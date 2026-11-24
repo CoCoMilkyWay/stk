@@ -1,7 +1,7 @@
 // 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Driver 并登记进 live/Clients.hpp, 上层 (gui/task_live) 只认这里的类型与 Broker
 //   Driver (一个客户端一份): 同步, 调用线程跑完; 刷新线程与事务线程会同时调, 自身线程安全
 //     接: connect 接上客户端 (换了进程即重接, 接上即可读) → 是谁
-//     读: read 一问读齐四样 (fills / pos / pends / acct, 与 Snapshot 的四样同名; 适配可让几张表同时在途, 一趟往返)
+//     读: read 一问读齐 Snapshot 的四样 (fills / pos / pends / acct; 适配可让几张表同时在途, 一趟往返)
 //     事务: 拉 terms / flows (慢) 与写 place (一张限价单, steps 即各步名) 三样同形; 进度 (段 / 实时一行) 与记一条统一经 live::trace
 //     画面: mirror 可选, 给 GUI 复现客户端窗口 (live/Mirror.hpp)
 //   Broker (券商无关, 只此一份): 包一个 Driver + 刷新线程; 读由刷新线程发布, 事务由调用线程跑 (段 + 接上 + Driver), 两类同一个接入
@@ -97,6 +97,7 @@ Mkt market_of(std::string_view code);                                           
 inline const char *mkt_name(Mkt m) { return kMktSuffix[static_cast<int>(m)] + 1; } // SZ / SH / BJ
 Mkt mkt_named(std::string_view s);                                                 // mkt_name 的逆
 inline std::string sina_sym(Mkt m, const std::string &code) { return kMktPrefix[static_cast<int>(m)] + code; }
+inline std::string asset_sym(Mkt m, const std::string &code) { return code + kMktSuffix[static_cast<int>(m)]; }
 
 struct Sec {
   std::string code, name;
@@ -178,17 +179,13 @@ struct Account {
   Keyed<Debt> debts;                              // 按代码
 };
 
-// 读一次的四样
-struct Reads {
+// 客户端读到的一份: 四样同一轮读齐才整份发布 (见文件头); 信用账户与持仓同轮, 可用保证金按读时校准即以这一份为准
+struct Snapshot {
   Fills fills;
   Keyed<Position> pos;
   Keyed<Pending> pends;
   Account acct;
-};
-// 客户端读到的一份: 四样同一轮读齐才整份发布 (见文件头); 信用账户与持仓同轮, 可用保证金按读时校准即以这一份为准
-struct Snapshot : Reads {
-  std::string who; // 客户端 (进程)
-  int at = -1;     // 本轮读完于 (当日秒)
+  int at = -1; // 本轮读完于 (当日秒); Driver::read 不填, Broker 填
 };
 
 // 两融条款 (一只)
@@ -226,23 +223,12 @@ enum class Credit : uint8_t { Plain,    // 普通 (担保品买卖)
                               Margin }; // 融资买入
 inline const char *credit_name(Credit c) { return c == Credit::Margin ? "融资" : "普通"; }
 
-// 下单量: 按股或按元, 二选一显式标记
-struct Qty {
-  enum Kind : uint8_t { Shares,
-                        Yuan } kind = Shares;
-  double v = 0;
-  static Qty shares(int64_t n) { return {Shares, static_cast<double>(n)}; }
-  static Qty yuan(double a) { return {Yuan, a}; }
-  bool is_shares() const { return kind == Shares; }
-};
-
-// 一张限价单: px = 委托价 (未舍入, 客户端按其报价精度舍入)
-struct OrderReq {
-  Sec sec;
+// 一张限价单: px = 委托价 (未舍入, 客户端按其报价精度舍入); qty = 股数 (客户端按其最大可买 / 可卖封顶)
+struct OrderReq : Sec {
   int side = kBuy;
   Credit credit = Credit::Plain;
   double px = 0;
-  Qty qty;
+  int64_t qty = 0;
 };
 nlohmann::json to_json(const OrderReq &o);
 
@@ -260,7 +246,7 @@ public:
 
   virtual std::string connect() = 0;
 
-  virtual Reads read() = 0; // 成交 / 持仓 / 挂单 / 信用账户
+  virtual Snapshot read() = 0; // 成交 / 持仓 / 挂单 / 信用账户
 
   virtual Terms terms() = 0;                               // 两融条款全表
   virtual std::vector<CashFlow> flows(misc::Ymd from) = 0; // from 日起 (含; 0 = 开户起) 至昨日的资金流水

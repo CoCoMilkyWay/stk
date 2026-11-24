@@ -261,7 +261,9 @@ double fin_mv(const Bal &bal, const Keyed<Debt> &debts, const Prices &px) {
 nlohmann::json opt(const std::optional<double> &x) { return x ? nlohmann::json(*x) : nlohmann::json(); }
 
 nlohmann::json to_json(const Order &o) {
-  return {{"code", o.code}, {"name", o.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"qty", o.qty}, {"px", o.px}, {"amount", o.amount}, {"slip", o.slip}, {"fee", o.fee}, {"full", o.full}};
+  nlohmann::json j = live::to_json(static_cast<const OrderReq &>(o));
+  j.update({{"amount", o.amount}, {"slip", o.slip}, {"fee", o.fee}, {"full", o.full}});
+  return j;
 }
 
 nlohmann::json to_json(const Sheet &s) {

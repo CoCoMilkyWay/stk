@@ -54,6 +54,8 @@ std::optional<double> ref(const Quote &q); // 参考价 = 现价 (含昨收兜�
 // 竞价中盘口只一档虚拟撮合价: 扫档 / 对手价 / 本方价都取它, 对手价 ±1% 照偏 (集合竞价按单一价成交, 偏出去不多花钱、更易成)
 std::optional<double> order_px(const Quote &q, int s, PxMode mode, double notional);
 std::pair<int64_t, int64_t> lot(std::string_view code); // (起买股数, 递增步长): 科创板起 200 零股递增, 北交所起 100 零股递增, 其余整手
+// 方向 s 按额 yuan 元、委托价 px 折股: 向下取整步长; 卖出不足起卖量即抬到起卖量 (可卖不足由客户端的最大可卖封顶)
+int64_t shares_of(std::string_view code, int s, double yuan, double px);
 // 吃 notional 元相对参考价的滑点 [元, 正 = 成本] 与 5 档是否吃满; 无参考价或竞价中 → 无
 std::pair<std::optional<double>, bool> cost(const Quote &q, int s, double notional);
 Slips slips(const Quote &q, double r); // 各方向 × 各额的滑点, 相对参考价 r

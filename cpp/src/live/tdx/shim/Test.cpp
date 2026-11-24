@@ -61,7 +61,7 @@ std::string read() {
   const std::map<std::string, std::string> c = read_one<tables::Assets>();
   const Keyed<Debt> d = read_one<tables::Debts>();
   // 一趟并发直发的五表与逐表直发的行数相同 (应答按序号认问, 不串)
-  const Reads r = tables::reads();
+  const Snapshot r = tables::reads();
   need(r.fills.rows.size() == f.rows.size() && r.pos.list.size() == pos.list.size() && r.pends.list.size() == o.list.size() && r.acct.debts.list.size() == d.list.size(),
        "并发直发 成交 %zu · 持仓 %zu · 挂单 %zu · 融资负债 %zu, 与逐表的不符", r.fills.rows.size(), r.pos.list.size(), r.pends.list.size(), r.acct.debts.list.size());
   return strf("成交 %zu · 持仓 %zu · 挂单 %zu · 信用资产 %zu 项 · 融资负债 %zu · 净资产 %.2f", f.rows.size(), pos.list.size(), o.list.size(), c.size(), d.list.size(), r.acct.net);

@@ -1,9 +1,9 @@
 #include "gui/task_live/LiveHub.hpp"
 
-#include "account/Ledger.hpp"
 #include "api/sina/client.hpp"
 #include "disk/Disk.hpp"
 #include "gui/quote/QuoteHub.hpp"
+#include "live/Flows.hpp"
 #include "shared/AssetInfo.hpp"
 
 #include <algorithm>
@@ -27,6 +27,7 @@ using live::strf;
 
 struct LiveHub::Core {
   std::unique_ptr<live::Broker> broker; // connect 时建一次, 之后只读
+  std::vector<std::string> steps;       // 下单各步, 同 broker 建一次
   live::trace::Track track;             // 事务线程此刻在哪
 
   // mu: 三份快照 (改 = 抄一份改了换上) 与事务日志的位置
@@ -252,18 +253,17 @@ void stage(Core &c, std::string s) {
   edit(c, &Core::task, [&](Task &x) { x.step = std::move(s); });
 }
 
-// 事务里下一单: 「行情」从 books 取盘口记一条、按 mode 定委托价, 再交 broker 下; o 的量为 Qty (股或元).
+// 事务里下一单: 「行情」从 books 取盘口记一条、按 mode 定委托价 (yuan > 0 = 按额: 额定价、按委托价折股; 否则按 o.qty 股), 再交 broker 下.
 // 本单进最近几单之首, 其各步 (段名即步名) 与实时一行经事务线程的 Hooks 同步进本单; 请求与结局各记一条.
 // 成败看 st, 不抛: 本单出的任何错 (含应答畸形抛的) 都收在本单, 批量下单接着下后面的
-OrderJob exec(Core &c, Books &books, live::OrderReq o, std::string label, live::PxMode mode, const std::string &at) {
+OrderJob exec(Core &c, Books &books, live::OrderReq o, double yuan, live::PxMode mode, const std::string &at) {
   const char *px_name = live::kPxModeNames[static_cast<int>(mode)];
-  live::trace::note("order", strf("%s %s %s %s %s · %s", live::side_name(o.side), live::credit_name(o.credit), o.sec.code.c_str(), o.sec.name.c_str(), label.c_str(), px_name),
-                    {{"order", live::to_json(o)}, {"mode", px_name}});
+  std::string label = yuan > 0 ? strf("%gW", yuan / 1e4) : strf("%lld股", static_cast<long long>(o.qty));
+  live::trace::note("order", strf("%s %s %s %s %s · %s", live::side_name(o.side), live::credit_name(o.credit), o.code.c_str(), o.name.c_str(), label.c_str(), px_name),
+                    {{"order", live::to_json(o)}, {"yuan", yuan}, {"mode", px_name}});
   stage(c, at);
 
-  OrderJob j{.sec = live::sec_now(), .o = o, .label = std::move(label), .steps = {"行情"}};
-  for (const std::string_view s : c.broker->steps())
-    j.steps.emplace_back(s);
+  OrderJob j{.sec = live::sec_now(), .o = o, .label = std::move(label)};
   {
     Lock lk(c.mu);
     auto v = std::make_shared<std::vector<OrderJob>>(*c.jobs);
@@ -286,16 +286,17 @@ OrderJob exec(Core &c, Books &books, live::OrderReq o, std::string label, live::
   const std::string err = live::guard([&] {
     {
       live::trace::Span sp("行情");
-      const Books::Book b = books.get(o.sec);
+      const Books::Book b = books.get(o);
       const live::Quote &q = b.q;
       live::trace::note("quote", quote_text(q) + (b.fed ? strf(" · 流 %.1fs 前", b.age) : " · 现取"),
                         {{"quote", quote_json(q)}, {"fed", b.fed}, {"age", std::round(b.age * 100) / 100}});
       const std::optional<double> ref = live::ref(q);
       live::need(ref.has_value(), "无参考价");
-      const double notional = o.qty.is_shares() ? o.qty.v * *ref : o.qty.v;
-      const std::optional<double> px = live::order_px(q, o.side, mode, notional);
+      const std::optional<double> px = live::order_px(q, o.side, mode, yuan > 0 ? yuan : static_cast<double>(o.qty) * *ref);
       live::need(px.has_value(), "盘口为空 (竞价还没撮合出价 / 停牌), 定不了委托价");
       o.px = *px;
+      if (yuan > 0)
+        o.qty = live::shares_of(o.code, o.side, yuan, o.px);
       put([&](OrderJob &y) { y.o = o; });
     }
     p = c.broker->place(o);
@@ -316,9 +317,14 @@ OrderJob exec(Core &c, Books &books, live::OrderReq o, std::string label, live::
   return out;
 }
 
-std::string failed(const OrderJob &j) { return strf("%s %s 下单失败: %s", j.o.sec.code.c_str(), j.o.sec.name.c_str(), j.got.msg.c_str()); }
+std::string failed(const OrderJob &j) { return strf("%s %s 下单失败: %s", j.o.code.c_str(), j.o.name.c_str(), j.got.msg.c_str()); }
 
-// 各件事务的身子; 两样拉取同形: 拉 → 存, 再换上
+// 各件事务的身子; 两样拉取同形: 今天 d 该拉了 (快照 s 读到后) / 拉 → 存, 再换上
+bool terms_due(Core &c, const live::Snapshot &s, misc::Ymd d) {
+  const std::shared_ptr<const Inputs> in = inputs(c);
+  return !in->raw || misc::add_days(in->raw->pulled, kTermsAge) <= d || live::terms::missing(in->raw->terms, *in->local, in->codes, &s);
+}
+
 void terms_task(Core &c) {
   auto x = std::make_shared<const live::terms::Cache>(live::terms::pull(*c.broker));
   edit(c, &Core::in, [&](Inputs &in) {
@@ -327,8 +333,13 @@ void terms_task(Core &c) {
   });
 }
 
+bool flows_due(Core &c, const live::Snapshot &, misc::Ymd d) {
+  Lock lk(c.mu);
+  return c.flows_pulled < d;
+}
+
 void flows_task(Core &c) {
-  const misc::Ymd d = account::pull(*c.broker).pulled;
+  const misc::Ymd d = live::flows::pull(*c.broker).pulled;
   Lock lk(c.mu);
   c.flows_pulled = d;
 }
@@ -389,8 +400,7 @@ void rebal_task(Core &c) {
     Books books(std::vector<live::Sec>(p.orders.begin(), p.orders.end()));
     for (size_t i = 0; i < p.orders.size(); ++i) {
       const live::rebal::Order &o = p.orders[i];
-      const OrderJob j = exec(c, books, {o, o.side, o.credit, 0, live::Qty::shares(o.qty)}, strf("%lld股", static_cast<long long>(o.qty)), mode,
-                              strf("%s %zu/%zu", live::side_name(o.side), i + 1, p.orders.size()));
+      const OrderJob j = exec(c, books, o, 0, mode, strf("%s %zu/%zu", live::side_name(o.side), i + 1, p.orders.size()));
       if (j.st != JobSt::Ok)
         fails.push_back(failed(j));
     }
@@ -448,12 +458,8 @@ bool start(const std::shared_ptr<Core> &c, const char *name, std::function<void(
             Lock lk(c->mu);
             ordering = c->ordering;
           }
-          if (ordering)
-            edit(*c, &Core::jobs, [&](std::vector<OrderJob> &v) {
-              const auto it = std::find(v.front().steps.begin(), v.front().steps.end(), s);
-              if (it != v.front().steps.end())
-                v.front().at = static_cast<size_t>(it - v.front().steps.begin());
-            }); },
+          if (const auto it = std::find(c->steps.begin(), c->steps.end(), s); ordering && it != c->steps.end())
+            edit(*c, &Core::jobs, [&](std::vector<OrderJob> &v) { v.front().at = static_cast<size_t>(it - c->steps.begin()); }); },
         .on_live = [&](std::string line) {
           bool ordering;
           {
@@ -484,12 +490,13 @@ bool start(const std::shared_ptr<Core> &c, const char *name, std::function<void(
   return true;
 }
 
-// 两样拉取 (条款 / 流水; 同形: 拉 → 存, 再换上), 下标同 LiveHub::tried_
+// 两样拉取 (条款 / 流水; 同形: 该拉了 / 拉 → 存, 再换上), 下标同 LiveHub::tried_
 struct Pull {
   const char *name;
+  bool (*due)(Core &, const live::Snapshot &, misc::Ymd);
   void (*run)(Core &);
 };
-constexpr Pull kPulls[] = {{"更新两融名单", terms_task}, {"更新资金流水", flows_task}};
+constexpr Pull kPulls[] = {{"更新两融名单", terms_due, terms_task}, {"更新资金流水", flows_due, flows_task}};
 
 } // namespace
 
@@ -500,7 +507,7 @@ LiveHub::LiveHub() : c_(std::make_shared<Core>()) {
   in->local = std::make_shared<const live::terms::Local>();
   derive(*in);
   c_->in = std::move(in);
-  c_->flows_pulled = account::load().pulled;
+  c_->flows_pulled = live::flows::load().pulled;
   if (const std::vector<std::string> names = live::rebal::lists(); !names.empty())
     set_list(names[0]);
   if (disk::exists(disk::LiveUiFile))
@@ -514,7 +521,15 @@ void LiveHub::connect(size_t client) {
   assert(!connected() && client < live::clients().size());
   client_ = &live::clients()[client];
   c_->broker = std::make_unique<live::Broker>(client_->make());
+  c_->steps = {"行情"};
+  for (const std::string_view s : c_->broker->steps())
+    c_->steps.emplace_back(s);
   peek();
+}
+
+const std::vector<std::string> &LiveHub::steps() const {
+  assert(connected());
+  return c_->steps;
 }
 
 const live::Client &LiveHub::client() const {
@@ -550,17 +565,9 @@ void LiveHub::auto_pull() {
   if (!connected() || !snap_)
     return;
   const misc::Ymd d = misc::today_ymd();
-  const Inputs &x = *in_;
-  bool flows;
-  {
-    Lock lk(c_->mu);
-    flows = c_->flows_pulled < d;
-  }
-  const bool due[] = {tried_[0] < d && (!x.raw || misc::add_days(x.raw->pulled, kTermsAge) <= d || live::terms::missing(x.raw->terms, *x.local, x.codes, snap_.get())),
-                      tried_[1] < d && flows};
-  static_assert(std::extent_v<decltype(due)> == std::size(kPulls));
+  static_assert(std::size(kPulls) == std::extent_v<decltype(tried_)>);
   for (size_t i = 0; i < std::size(kPulls); ++i)
-    if (due[i]) {
+    if (tried_[i] < d && kPulls[i].due(*c_, *snap_, d)) {
       if (start(c_, kPulls[i].name, kPulls[i].run))
         tried_[i] = d;
       return;
@@ -675,10 +682,10 @@ void LiveHub::submit(const std::string &code, int side, double size, live::Credi
     assert(i != in_->buy.end() && side == live::kBuy);
     sec = &*i;
   }
-  const live::OrderReq o{*sec, side, credit, 0, live::Qty::yuan(size)};
-  start(c_, "下单", [o, mode = in_->cfg.px](Core &c) {
+  const live::OrderReq o{*sec, side, credit};
+  start(c_, "下单", [o, size, mode = in_->cfg.px](Core &c) {
     Books books(std::vector<live::Sec>{});
-    const OrderJob j = exec(c, books, o, strf("%gW", o.qty.v / 1e4), mode, "");
+    const OrderJob j = exec(c, books, o, size, mode, "");
     live::need(j.st == JobSt::Ok, failed(j));
   });
 }

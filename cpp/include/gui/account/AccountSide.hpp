@@ -4,8 +4,9 @@
 //   全史 = 各日按 Series 的紧凑形打包 (篮子口径步长), 恒带分钟, 复权 1
 #pragma once
 
-#include "account/Ledger.hpp"
+#include "account/Nav.hpp"
 #include "gui/quote/Quote.hpp"
+#include "live/Flows.hpp"
 #include "misc/date.hpp"
 
 #include <cstddef>
@@ -35,6 +36,6 @@ struct Replay {
 };
 // minutes(全局 id, 自日脊第 from 日, out) = 个股连分钟的全史 (价格库给; 无 → false)
 using Minutes = std::function<bool(uint32_t id, size_t from, Quote::Series &out)>;
-Replay replay(const account::Ledger &l, const std::vector<misc::Ymd> &dates, const account::Spot &spot, const Minutes &minutes);
+Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, const account::Spot &spot, const Minutes &minutes);
 
 } // namespace GUI::Account

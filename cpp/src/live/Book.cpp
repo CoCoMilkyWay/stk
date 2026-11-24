@@ -71,6 +71,12 @@ std::pair<int64_t, int64_t> lot(std::string_view code) {
   return {first, odd ? 1 : 100};
 }
 
+int64_t shares_of(std::string_view code, int s, double yuan, double px) {
+  const auto [first, step] = lot(code);
+  const int64_t n = static_cast<int64_t>(yuan / px) / step * step;
+  return s == kSell ? std::max(n, first) : n;
+}
+
 std::pair<std::optional<double>, bool> cost(const Quote &q, int s, double notional) {
   const auto r = ref(q);
   if (!r || auction(q))

@@ -48,15 +48,25 @@ size_t first_of(const std::vector<float> &line) {
 // 名次色 (pts 已按中位 rIC 降序: 下标即名次, 0 = 最好 绿 → 末 = 红)
 ImVec4 rank_col(size_t i, size_t n, float a) { return band_col(n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.0, a); }
 
-// 左: 各点的窗中位 rIC (图例只列写进的权重); 悬停 (本表或上帧图) 的点白粗线画在最上; 返回图上悬停的点 (−1 = 无)
+// 左: 各点的窗中位 rIC (图例只列写进的权重; 纵轴含 0, 画 0 线); 悬停 (本表或上帧图) 的点白粗线画在最上; 返回图上悬停的点 (−1 = 无)
 int sweep_plot(const Sweep &sw, int hot, const ImVec2 &size) {
   const size_t n = sw.pts.size(), D = sw.dates.size();
+  float lo = 0.f, hi = 0.f;
+  for (const Point &p : sw.pts)
+    for (const float x : p.line)
+      if (!std::isnan(x))
+        lo = std::min(lo, x), hi = std::max(hi, x);
   if (!ImPlot::BeginPlot("##sweep_ric", size, ImPlotFlags_NoTitle | ImPlotFlags_NoMenus))
     return -1;
-  ImPlot::SetupAxes(nullptr, "窗中位 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+  ImPlot::SetupAxes(nullptr, "窗中位 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_None);
+  const float m = (hi > lo ? hi - lo : 1.f) * 0.05f;
+  ImPlot::SetupAxisLimits(ImAxis_Y1, lo - m, hi + m, ImPlotCond_Always);
   ImPlot::SetupLegend(ImPlotLocation_NorthWest);
   DayAxis ax{sw.dates, 1.0, 0.0, {}, date_fmt, const_cast<std::vector<int> *>(&sw.dates)};
   setup_day_axis(ax);
+  const double zero = 0.0;
+  ImPlot::SetNextLineStyle(ImVec4(0.6f, 0.6f, 0.6f, 0.8f), 1.0f);
+  ImPlot::PlotInfLines("##zero", &zero, 1, ImPlotInfLinesFlags_Horizontal);
   std::vector<size_t> from(n);
   for (size_t i = 0; i < n; ++i)
     from[i] = first_of(sw.pts[i].line);

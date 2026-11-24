@@ -331,6 +331,7 @@ set(MATH_PRECISE
     live/Book.cpp
     live/Broker.cpp
     live/Clients.cpp
+    live/Flows.cpp
     live/Pulled.cpp
     live/Rebal.cpp
     live/Terms.cpp
@@ -352,7 +353,7 @@ set(MATH_PRECISE
     live/tdx/shim/Test.cpp
     live/tdx/shim/Vt.cpp
     # account: 账户净值 (资金流水回放)
-    account/Ledger.cpp
+    account/Nav.cpp
     # gui
     gui/account/AccountHub.cpp
     gui/account/AccountSide.cpp

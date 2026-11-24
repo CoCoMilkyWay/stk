@@ -99,7 +99,7 @@ Account acct_of(const std::map<std::string, std::string> &c, Keyed<Debt> debts) 
 
 } // namespace
 
-Reads reads() {
+Snapshot reads() {
   auto [fills, pos, pends, assets, debts] = read(kReads);
   return {std::move(fills), std::move(pos), std::move(pends), acct_of(assets, std::move(debts))};
 }

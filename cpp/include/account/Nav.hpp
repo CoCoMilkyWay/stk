@@ -1,10 +1,7 @@
-// 账户净值: 券商资金流水 (live::CashFlow) 的本地账本与逐日回放. 券商无关, 只认 live/Broker.hpp (与两融条款 live/Terms.hpp 同形: 拉 → 存 → 用)
-//   账本 output/live/flows.csv (live/Pulled.hpp): 首行另带 rate,<融资年利率>; 流水原序 (截至拉的前一日)
-//   拉: 重查账本末日起的资金流水并入账本 (账本末日起的各行须恰为重查的开头几行, 名称除外; 余额链断开 / 有不认识的带股数业务 → Fail),
-//     流水累计的持仓 + 今日成交对上券商持仓才落盘
+// 账户净值: 资金流水账本 (live/Flows.hpp) 的逐日回放 → 时间加权指数. 券商无关, 只认 live/Broker.hpp 的 CashFlow
 //   回放 (逐交易日, 当日的流水全记完后计):
 //     现金     = 末个发生金额非 0 行的剩余金额
-//     持仓     = 买卖 / 融资买入 / 担保品划入 / 新股入账 的股数累计 (申购途中的配号、中签与回冲不计; 其余带股数的业务不认识 → Fail);
+//     持仓     = 计入持仓的各行 (live::flows::holds) 的股数累计;
 //                市值按当日收盘, 无收盘沿用上一收盘 (未上市新股 = 入账价);
 //                库里全无收盘的 (ETF / LOF 等) 以各日成交均价 + 券商现价 (Spot) 为观测点, 相邻两点间按自然日线性插值, 末点之后持平
 //     融资负债 = 融资借款 + 偿还融资负债 / 费用 (发生金额带号相加)
@@ -17,7 +14,6 @@
 #include "live/Broker.hpp"
 #include "misc/date.hpp"
 
-#include <cstdint>
 #include <functional>
 #include <map>
 #include <span>
@@ -28,17 +24,6 @@
 namespace account {
 
 using live::CashFlow;
-
-struct Ledger {
-  misc::Ymd pulled = 0; // 拉于 (0 = 还没有账本)
-  double rate = 0;      // 融资年利率
-  std::vector<CashFlow> rows;
-};
-
-Ledger load(); // 没有账本 → 空
-void save(const Ledger &l);
-Ledger pull(live::Broker &b); // 客户端重查 → 并 → 核 → 存; 失败 → Fail
-uint64_t generation();        // 账本代: 本进程起于 1, save 一次 +1 (任意线程)
 
 // 回放要计价的证券 (计入持仓的各行的代码, 升序)
 std::vector<std::string> securities(const std::vector<CashFlow> &rows);
@@ -67,8 +52,6 @@ struct Trade {
 //   path(代码) = 该只 [out.size()] 逐槽收 (无根沿用上一根, 首根前 = 前收; 空 = 无分钟 → 不动); trades 空 = 不回推 (历史流水无成交时刻)
 void intraday(const Day &d, double nav0, double idx0, std::span<const Trade> trades, const std::function<std::span<const float>(const std::string &)> &path,
               std::span<double> out);
-// 流水代码 → 资产码 (AssetInfo; 代码 + 市场后缀)
-std::string asset_code(const std::string &code);
 // 券商现价: date 日的观测点 (只用于 px 里全无收盘的证券; date 不晚于其末笔成交 → 不用)
 struct Spot {
   misc::Ymd date = 0;

@@ -72,12 +72,7 @@ Mkt mkt_named(std::string_view s) {
 bool synced(const Position &h, const Traded *f) { return h.balance <= 0 || h.traded == (f ? f->qty : Sides<int64_t>{}); }
 
 nlohmann::json to_json(const OrderReq &o) {
-  return {{"code", o.sec.code},
-          {"name", o.sec.name},
-          {"side", side_name(o.side)},
-          {"credit", credit_name(o.credit)},
-          {"px", o.px},
-          {o.qty.is_shares() ? "qty" : "size", o.qty.v}};
+  return {{"code", o.code}, {"name", o.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}};
 }
 
 // ---------- Broker ----------
@@ -130,13 +125,12 @@ struct Broker::Core {
     std::sort(kicks.begin(), kicks.end());
   }
 
-  // 接上客户端 → 是谁
-  std::string connect() {
+  // 接上客户端, 记下是谁
+  void connect() {
     trace::Span span("接入");
     std::string who = d->connect();
     std::lock_guard lk(mu);
-    prog.who = who;
-    return who;
+    prog.who = std::move(who);
   }
 
   // 一件事务 (拉 / 写): 段 (who {kw}) + 接上客户端, 当前线程跑 fn
@@ -167,12 +161,12 @@ struct Broker::Core {
   }
 
   // 一轮读进一份局部的 Snapshot: 成交与持仓读的那一刻之间又有成交即对不上, 重读至多 kSyncTries 遍, 仍不对留给上层标出
-  Snapshot round(std::string who) {
+  Snapshot round() {
     Snapshot s;
     for (int i = 1;; ++i) {
       {
         trace::Span sp("读");
-        static_cast<Reads &>(s) = d->read();
+        s = d->read();
       }
       const bool ok = std::all_of(s.pos.list.begin(), s.pos.list.end(), [&](const Position &h) { return synced(h, s.fills.by_code.find(h.code)); });
       if (!ok)
@@ -180,7 +174,6 @@ struct Broker::Core {
       if (ok || i == kSyncTries)
         break;
     }
-    s.who = std::move(who);
     s.at = sec_now();
     return s;
   }
@@ -197,11 +190,11 @@ struct Broker::Core {
     const trace::Watch watch(track);
     trace::Span span("刷新", {{"why", why}, {"n", n}});
     // 错误边界: 接不上报在 down, 一轮失败报在 err (保留上一份完整快照), 都等下一个起因再刷
-    std::string who, msg;
+    std::string msg;
     std::shared_ptr<const Snapshot> next;
-    std::string down = guard([&] { who = connect(); });
+    std::string down = guard([&] { connect(); });
     if (down.empty())
-      msg = guard([&] { next = std::make_shared<const Snapshot>(round(std::move(who))); });
+      msg = guard([&] { next = std::make_shared<const Snapshot>(round()); });
     std::lock_guard lk(mu);
     if (next)
       shown = std::move(next);

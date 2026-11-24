@@ -80,11 +80,9 @@ struct Cfg {
 // 不可买的原因; 可买 → 空
 std::string why(const Term *t);
 
-struct Order : Sec {
-  int side = kBuy;
-  Credit credit = Credit::Plain;
-  int64_t qty = 0;
-  double px = 0, amount = 0, slip = 0, fee = 0;
+// 试算的一单: 限价单 (委托价按试算时的盘口, 下单时按新取的盘口再定) + 参考价计的额 / 滑点 / 费用 / 5 档吃满
+struct Order : OrderReq {
+  double amount = 0, slip = 0, fee = 0;
   bool full = false;
 };
 
