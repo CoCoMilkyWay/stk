@@ -144,6 +144,18 @@ Tally TallyOf(Rounds rs, double now) {
   return t;
 }
 
+std::string RuleMiss(const State &s, const std::vector<Call> &cs) {
+  if (s.flags.evaled && std::ranges::any_of(cs, [](const Call &c) { return c.tool == Tool::EvalFactor; }))
+    return "上一条回复有落了文件的回测, 这一条不能再回测: 先读本批结果 —— 用观察诊断变体为什么好 / 为什么差, 对挂了变体的假设 judge; 回测留到下一条";
+  std::string owe;
+  for (const Hyp &h : s.board.all())
+    if (h.pending && std::ranges::none_of(cs, [&](const Call &c) { return c.tool == Tool::Judge && c.str("hyp") == h.id; }))
+      owe += (owe.empty() ? "" : ", ") + h.id;
+  if (!owe.empty())
+    return "假设板上待判的 " + owe + " 本条没有 judge: 它们的变体回测完了, 每个发一个 judge —— 对照 expect 写测出来是什么、为什么、得到什么认识、有没有更好的特征、下一步用什么工具查什么";
+  return {};
+}
+
 // =============================================================================
 // 工具实现表 (AGENT_TOOLS 唯一展开, 零手工下标补丁, 编译期核对签名 = ToolMeta::exec)
 // =============================================================================

@@ -76,12 +76,12 @@ inline const ConstDef *const_of(std::string_view key) {
 // 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重达到才拷进正式因子库
 inline constexpr double kGateRic = 0.03; // 中位 rIC (滚动窗 rIC 的中位, 同 Search 的目标)
 
-// ---- 外部 agent 接口 (gui/task_agent/Remote.hpp): 本机 HTTP, 程序一开即监听; agent 的头一个请求即替它锁上 Agent 模块 ----
+// ---- 外部 agent 接口 (gui/task_agent/Remote.hpp): 本机 MCP (Streamable HTTP), 程序一开即监听; 外部 agent 经它当会话的大脑 ----
 inline constexpr const char *kRemoteHost = "127.0.0.1";
 inline constexpr int kRemotePort = 47821; // 避开常见调试端口 (8000 / 8080 / 8765 …)
-inline constexpr const char *kRemotePath = "/call";
-inline constexpr int kRemoteWait = 25;    // run / wait 缺省等多少秒 (没做完先交回作业号与进度)
-inline constexpr int kRemoteWaitMax = 50; // wait 至多等多少秒 (py/agent.py 的请求限时之内)
+inline constexpr const char *kRemotePath = "/mcp";
+inline constexpr int kRemoteWait = 25;    // 交批 (run / 直接调研究工具 / cancel) 与 wait 缺省等多少秒 (下一条消息还没发出先交回进度)
+inline constexpr int kRemoteWaitMax = 50; // wait 至多等多少秒 (py/agent.py 与常见 MCP 客户端的请求限时之内)
 
 // ---- 落盘 (disk::, 布局见 disk/Disk.hpp; <模式> = main | test, test = 自检会话) ----
 //   output/agent/<模式>/sessions/<池>/<层>/<持有期>/
@@ -89,7 +89,7 @@ inline constexpr int kRemoteWaitMax = 50; // wait 至多等多少秒 (py/agent.p
 //     chat/<时间>/                      一段会话的存档与可读日志 (session.json / brief.json / system.md / log.md)
 //   output/agent/<模式>/notes/<类>.jsonl 全局记录, 一类一个文件 (特征申请 / 工具申请 / 发现 / 建议与 bug; gui/task_agent/Notes.hpp)
 //   output/run/agent/
-//     remote.json                       外部 agent 接口的监听地址 {"url": …} (程序一开即写; py/agent.py 读它)
+//     remote.json                       外部 agent 的 MCP 地址 {"url": …} (程序一开即写; py/agent.py 读它)
 //     <模式>/sessions/<池>/<层>/<持有期>/search/ 候选的 Search 日志
 //   output/data/doc/resources-{tag,proc}/ 研报库: 标注 + tag_stat.md / 全文 (gui/task_agent/Docs.hpp, 只读)
 //   output/config/agent/

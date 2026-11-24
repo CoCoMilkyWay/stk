@@ -1,13 +1,16 @@
 #pragma once
 
 // =============================================================================
-// Mine — 挖掘会话状态机、计数与存档/可读日志 (基于双翼 Chat ⇄ Rig 对仗底座; 无 ImGui, 界面见 TaskAgent)
+// Mine — 挖掘会话 (唯一一套) 的状态机、计数与存档/可读日志 (基于双翼 Chat ⇄ Rig 对仗底座; 无 ImGui, 界面见 TaskAgent)
 // =============================================================================
+//   大脑 (Leg::mcp 二选一, 继续时可换; 状态机 / 消息 / 约束 / 日志 / 界面完全同一套):
+//     大模型    发出 = Chat 问模型 (上下文 TurnsOf 纯函数折叠), 收成的回复即一批调用
+//     外部 agent 发出 = 交给它 (经 MCP, gui/task_agent/Remote.hpp 取 TextOf), 它 reply 交来的一批 (calls JSON) 即回复
 //   双翼对仗:
 //     左翼 Chat (问大模型): send(ChatReq) → Think / Write / Restart / End(Reply)
 //     右翼 Lab  (问数据核): send(Tool, LabTask) → Search / Run / Look / Docs / End(LabOut)
 //   调用执行统一走 Rig (open_act → step_act / settle_act / answer_act / abort_act, 与工作台 Bench 同一底座)
-//   唯一真相: timeline (std::vector<Round>); st (Board + Tally + Flags + staged + adopted) 增量维护, 上下文 TurnsOf 纯函数折叠
+//   唯一真相: timeline (std::vector<Round>); st (Board + Tally + Flags + staged + adopted) 增量维护
 // =============================================================================
 
 #include "gui/task_agent/Bridge.hpp"
@@ -63,11 +66,13 @@ struct Desk : Rig {
     Scope sc;
     Gate gate;
     bool ask = true;
+    bool strict = true; // 守会话约束 (RuleMiss + eval_factor 须挂判为支持的假设)
     bool test = false;
     std::string remark;
   };
   struct Leg {
     llm::Options llm;
+    bool mcp = false; // 大脑 = 外部 agent (经 MCP 交批); 否则 = 大模型 llm
     bool gpu = false;
     Budget budget;
   };
@@ -112,6 +117,8 @@ public:
   void stop();
   void cancel();
   void close();
+  void reply(std::string calls); // 外部 agent 交来一批 (calls JSON = 大模型的一条回复); 须 waiting()
+  void drop();                   // 外部 agent 作废本批余下的调用 (在跑的作废, 没开的不做), 接着发结果
   void queue(std::string m);
   std::string unqueue();
   void save() const;
@@ -125,6 +132,9 @@ public:
   bool held() const { return phase_ != Phase::None; }
   bool idle() const { return !chat.busy() && !lab.busy(); }
   bool stopping() const { return stop_ && live(); }
+  bool mcp() const { return held() && leg.mcp; }                                                                 // 会话的大脑是外部 agent
+  bool waiting() const { return phase_ == Phase::Think && !timeline.empty() && timeline.back().span.running(); } // 本条已发出, 在等大脑交这一批
+  std::string brain() const;                                                                                     // 大脑一句: 后端 / 模型, 或外部 agent
   size_t acting() const { return cur_; }
   Cont cont() const;
   std::string hint() const;
@@ -150,7 +160,6 @@ private:
   void discard(int k);
   void unsend();
   std::string over() const;
-  std::string rule_miss(const std::vector<Call> &cs) const;
   std::string make_log_head() const;
   std::string report_of(const std::string &why) const;
 

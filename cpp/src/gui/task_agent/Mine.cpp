@@ -34,8 +34,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, backend, net, model)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Span, t0, t1)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Cand, name, name_cn, expr, hyp, note)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Pick, on, other, text)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Setup, sc, gate, ask, test, remark)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Leg, llm, gpu, budget)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Setup, sc, gate, ask, strict, test, remark)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Leg, llm, mcp, gpu, budget)
 
 void to_json(json &j, const Act &a) {
   j = {{"tool", a.call.tool}, {"args", a.call.args}, {"span", a.span}, {"out", a.out.text}, {"gist", a.out.gist}, {"ok", a.out.ok}};
@@ -223,8 +223,8 @@ double Desk::now() const { return t_end >= 0.0 ? t_end : std::chrono::duration<d
 std::string Mine::make_log_head() const {
   const Context &c = lab.ctx();
   std::string h = "# 会话日志 · " + catalog::label(setup.sc) + " (近 " + std::to_string(setup.sc.years) + " 年)\n\n";
-  h += "- 模式: " + std::string(setup.test ? "自检" : "正式") + " · 后端: " + def(leg.llm.backend).name + " / " + leg.llm.model +
-       " · 评估: " + (leg.gpu ? "GPU" : "CPU") + " · 门槛: 中位 rIC ≥ " + text::num(setup.gate.ric) + "\n";
+  h += "- 模式: " + std::string(setup.test ? "自检" : "正式") + " · 大脑: " + brain() + " · 评估: " + (leg.gpu ? "GPU" : "CPU") + " · 门槛: 中位 rIC ≥ " +
+       text::num(setup.gate.ric) + " · 会话约束: " + (setup.strict ? "守" : "不守") + " · 提问: " + (setup.ask ? "可" : "关") + "\n";
   h += "- 来源: " + c.srcs + " · 开放: 叶 " + std::to_string(c.leaves.size()) + " 个, 算子 " + std::to_string(c.ops.size()) + " 个 · 评估期: " + c.window + "\n";
   if (!setup.remark.empty())
     h += "- 本会话要求: " + text::flat(setup.remark) + "\n";
@@ -325,7 +325,7 @@ void Mine::resume(const SharedData &data, Leg l) {
   stop_ = false, retries_ = 0;
   reason.clear();
   depart();
-  log.append_log("\n> **继续 (" + text::local("%H:%M:%S") + ")** · 后端 " + def(leg.llm.backend).name + " / " + leg.llm.model + "\n");
+  log.append_log("\n> **继续 (" + text::local("%H:%M:%S") + ")** · 大脑 " + brain() + "\n");
   switch (cont()) {
   case Cont::Resend:
     unsend();
@@ -418,8 +418,7 @@ void Mine::save() const {
                       {"cands", c.staged()},
                       {"weights", c.n(Verdict::Weights)},
                       {"hyps", st.board.all().size()},
-                      {"backend", def(leg.llm.backend).name},
-                      {"model", leg.llm.model},
+                      {"brain", brain()},
                       {"remark", setup.remark},
                       {"elapsed", now()}};
   log.save(session, brief);
@@ -544,18 +543,6 @@ void Mine::on_lab(Lab::Tick t) {
   step();
 }
 
-std::string Mine::rule_miss(const std::vector<Call> &cs) const {
-  if (flags().evaled && std::any_of(cs.begin(), cs.end(), [](const Call &c) { return c.tool == Tool::EvalFactor; }))
-    return "上一条回复有落了文件的回测, 这一条不能再回测: 先读本批结果 —— 用观察诊断变体为什么好 / 为什么差, 对挂了变体的假设 judge; 回测留到下一条";
-  std::string owe;
-  for (const Hyp &h : st.board.all())
-    if (h.pending && std::none_of(cs.begin(), cs.end(), [&](const Call &c) { return c.tool == Tool::Judge && c.str("hyp") == h.id; }))
-      owe += (owe.empty() ? "" : ", ") + h.id;
-  if (!owe.empty())
-    return "假设板上待判的 " + owe + " 本条没有 judge: 它们的变体回测完了, 每个发一个 judge —— 对照 expect 写测出来是什么、为什么、得到什么认识、有没有更好的特征、下一步用什么工具查什么";
-  return {};
-}
-
 void Mine::replied(llm::Reply r) {
   Round &rd = timeline.back();
   rd.reply = std::move(r);
@@ -568,7 +555,7 @@ void Mine::replied(llm::Reply r) {
   }
   std::vector<Call> cs;
   std::string error;
-  if (!ParseCalls(x.text, setup.ask && !flags().asked, cs, error) || !(error = rule_miss(cs)).empty()) {
+  if (!ParseCalls(x.text, setup.ask && !flags().asked, cs, error) || (setup.strict && !(error = RuleMiss(st, cs)).empty())) {
     rd.error = error;
     CloseReply(st, rd);
     log.append_log(fmt_round_reply(round(), rd));
@@ -588,7 +575,31 @@ void Mine::replied(llm::Reply r) {
   step();
 }
 
-Seat Mine::mine_seat() { return seat(cur_, setup.gate, log.dir(), false, false, leg.gpu); }
+Seat Mine::mine_seat() { return seat(cur_, setup.gate, log.dir(), !setup.strict, false, leg.gpu); }
+
+std::string Mine::brain() const { return leg.mcp ? std::string("外部 agent (MCP)") : std::string(def(leg.llm.backend).name) + " / " + leg.llm.model; }
+
+void Mine::reply(std::string calls) {
+  assert(leg.mcp && waiting());
+  Round &rd = timeline.back();
+  const double t = now();
+  rd.span.end(t);
+  replied({.text = std::move(calls), .end = llm::End::Ok, .seconds = rd.span.len(t)});
+}
+
+void Mine::drop() {
+  assert(leg.mcp && (phase_ == Phase::Act || phase_ == Phase::Choose));
+  Round &rd = timeline.back();
+  if (cur_ < rd.acts.size() && rd.acts[cur_].span.running()) {
+    abort_act(cur_, now(), "你");
+    log_act(cur_++);
+  }
+  if (const size_t left = rd.acts.size() - cur_; left > 0)
+    log.append_log("> 你作废了本批余下的 " + std::to_string(left) + " 个调用 (没执行)\n\n");
+  rd.acts.resize(cur_);
+  save();
+  step();
+}
 
 void Mine::step() {
   Round &rd = timeline.back();
@@ -646,8 +657,8 @@ void Mine::send() {
   }
   rd.span.begin(now());
   log.append_log(fmt_round_send(round(), rd));
-  llm::Turns t = TurnsOf(timeline);
-  chat.send({leg.llm, system_ptr, std::move(t)});
+  if (!leg.mcp)
+    chat.send({leg.llm, system_ptr, TurnsOf(timeline)});
   save();
 }
 

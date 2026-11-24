@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Kit — 时间线、单趟增量账本、工具三拍契约与统一执行器 Rig: 活会话 (Mine) / 工作台 (Bench) / 外部 agent (Remote) 100% 同构同路
+// Kit — 时间线、单趟增量账本、工具三拍契约与统一执行器 Rig: 会话 (Mine, 大脑是大模型或外部 agent) / 工作台 (Bench) 100% 同构同路
 // =============================================================================
 //   时间线与账本:
 //     Round / Act     全会话唯一真相 (Act 仅持 Call + Span + ToolOut, 无旁路 Extra; Res 即唯一结构化载体)
@@ -125,6 +125,8 @@ void ApplyAct(State &s, const Act &a, Ref at);
 State StateOf(Rounds rs);
 Tally TallyAt(const State &s, Rounds rs, double now);
 Tally TallyOf(Rounds rs, double now);
+// 会话约束 (回测后的下一条只诊断 / 待判的先 judge): 账本 s 之后交来 cs 不守的原因; 守 → 空
+std::string RuleMiss(const State &s, const std::vector<Call> &cs);
 
 // ---- 台面与三拍工具签名 ----
 struct Seat {
@@ -135,7 +137,7 @@ struct Seat {
   Rounds timeline; // 末轮 = 本调用所在轮
   Ref me;          // 本调用的编号
   std::string scope, session;
-  bool free = false; // 不查假设板 (eval_factor 不必挂判为支持的假设): 工作台 / 外部 agent
+  bool free = false; // 不查假设板 (eval_factor 不必挂判为支持的假设): 工作台 / 不守会话约束的会话
   bool dry = false;  // 不落记录: 全局记录只给编号不写, submit_factor 只查门槛不入库 (工作台)
   bool gpu = false;  // eval_factor 的回测上 GPU
 };
@@ -150,7 +152,7 @@ struct StagedLab {
 using HumanFn = ToolOut (*)(std::shared_ptr<AskRes>);
 using ImplFn = std::variant<SyncFn, LabFn, StagedLab, HumanFn>;
 
-// ---- 统一调用底座 Rig (Mine / Bench / Remote 共用) ----
+// ---- 统一调用底座 Rig (Mine / Bench 共用) ----
 struct Rig {
   Lab lab;
   Notes notes;

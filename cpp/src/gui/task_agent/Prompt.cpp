@@ -456,6 +456,11 @@ std::string MemoText(const std::string &memo) {
 
 std::string TextOf(const Round &rd) { return rd.memo.empty() ? rd.user : rd.user + MemoText(rd.memo); }
 
+std::string TreeText(Rounds rs) {
+  assert(!rs.empty());
+  return tree_of(rs);
+}
+
 llm::Turns TurnsOf(Rounds rs) {
   assert(!rs.empty());
   size_t j = rs.size() - 1;

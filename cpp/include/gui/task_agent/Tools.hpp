@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Tools — agent 的工具真相表: 系统提示的 "工具" 节 / 回复解析 / 参数校验 / 界面都从同一张表出
+// Tools — agent 的工具真相表: 系统提示的 "工具" 节 / 回复解析 / 参数校验 / MCP 的参数 Schema / 界面都从同一张表出
 // =============================================================================
 //   回复 = {"calls": [{"tool": 名, "args": {...}}, ...]}; 系统按序执行, 下一条消息按序交回结果
 //   执行方式 Exec (唯一分派轴):
@@ -149,6 +149,7 @@ struct Call {
 bool CallOf(Tool t, const nlohmann::ordered_json &args, const std::string &path, Call &out, std::vector<std::string> &errs);
 bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &error);
 std::string ToolsDoc(bool ask);
+nlohmann::ordered_json ArgsSchema(Tool t); // 参数表 → JSON Schema (MCP tools/list 的 inputSchema)
 
 // ---- 工具的结构化结果 (唯一载体: Mine 时间线与 Bench 工作台共用) ----
 struct Res {

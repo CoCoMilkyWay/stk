@@ -1,24 +1,23 @@
 #pragma once
 
 // =============================================================================
-// Remote — 外部 agent 经 py/agent.py 调本模块的工具 (说明书 = 仓库 AGENT.md)
+// Remote — 外部 agent 的 MCP 接口: 外部 agent 当会话 (Mine) 的大脑 (说明书 = 仓库 AGENT.md)
 // =============================================================================
-//   传输  本机 HTTP (kRemoteHost:kRemotePort kRemotePath): 网络线程 (asio 单 io_context) 收 POST {"tool": 名, "args": {...}} → 回 {"ok": 真假, "text": 原文};
-//         请求入队交 GUI 线程, 答复由 GUI 线程投回网络线程写出; 监听即把地址写进 output/run/agent/remote.json (py/agent.py 读它)
-//   执行  GUI 线程每帧 update: 取请求 → 自带的 Rig (Lab + Notes + 时间线; 与 Mine / Bench 同一执行路径) 按序执行一批调用
-//         口径 = 不查假设板 (Seat::free) + 真落全局记录 / 达门槛真入正式库; 一批 = 时间线的一轮 = 一个作业, 调用编号 R<批>#<序>
-//   工具  doc (随作用域的完整说明) / scope (看与换作用域) / run (交一批调用) / wait (续取) / cancel (取消在跑的批) / unlock (交还);
-//         run / wait 至多等 kRemoteWait / kRemoteWaitMax 秒, 没做完交回作业号与进度
-//   锁    只在内存 (程序一开 = 没锁): agent 的头一个请求即替它锁上 (研究员在 GUI 里有会话 / 工作台在跑时退回让它稍后);
-//         锁着时 Agent 模块的 GUI (Mine / 工作台) 全禁用, 人解不了, 只有 agent 调 unlock 才解; 锁上时重绑作用域、重读全局记录
+//   传输  MCP Streamable HTTP 的最小子集: 本机 kRemoteHost:kRemotePort kRemotePath 收 POST 的 JSON-RPC 2.0 (一条一个请求, 回 application/json;
+//         不开 SSE 流, GET 回 405); 通知与应答 (没有 id / 没有 method) 回 202; Origin 不是本机的回 403 (防 DNS 重绑)
+//         网络线程 (asio 单 io_context) 当场答 initialize / ping / tools/list; tools/call 入队交 GUI 线程, 答复由 GUI 线程投回网络线程写出
+//         监听即把地址写进 output/run/agent/remote.json (py/agent.py 读它)
+//   工具  tools/list = 接口工具 + 研究工具表的各工具 (inputSchema 由同一张参数表出; 直接调 = 只有它一个调用的批)
+//         open    开会话 (大脑 = 外部 agent; 作用域 / 本会话要求 / 自检可给, 其余规则取 Config 页的) → 首条消息;
+//                 已有研究员开好的、在等外部 agent 的会话 → 接上它, 交回在等的那条消息
+//         doc     系统提示 / recap 研究树 (TreeText) / run 交一批 (Mine::reply) / wait 续等 / cancel 作废本批余下的 (Mine::drop)
+//         一批交出后至多等 kRemoteWait 秒 (wait 至多 kRemoteWaitMax): 下一条消息发出即交回它 (TextOf; 重发要求 isError), 停下 / 关掉 / 回退即交回原因, 超时交回进度
 // =============================================================================
 
-#include "gui/task_agent/Bridge.hpp"
-#include "gui/task_agent/tools/Kit.hpp"
+#include "gui/task_agent/Mine.hpp"
 
 #include <memory>
 #include <string>
-#include <vector>
 
 struct SharedData;
 
@@ -31,14 +30,10 @@ public:
   Remote(const Remote &) = delete;
   Remote &operator=(const Remote &) = delete;
 
-  // GUI 线程每帧: sc / gate / gpu = Agent 模块的作用域 (scope 工具就地改它) / 入库门槛 / 回测上 GPU; human = 研究员在 GUI 里用着 (有会话 / 工作台在跑)
-  void update(SharedData &data, Scope &sc, const Gate &gate, bool gpu, bool human);
-  bool locked() const; // agent 锁着 Agent 模块
-  bool busy() const;   // 有批在跑 (或 Lab 在收尾)
-
-  const std::string &listen() const; // 监听地址 "http://127.0.0.1:47821/call"
-  const std::vector<Round> &timeline() const;
-  void live(LabLive &dst) const;
+  // GUI 线程每帧 (Mine::update 之后): 收到的 tools/call 交会话 m; sc = Agent 模块的作用域 (open 换它); setup / leg = Config 页此刻的 (open 时取);
+  // bench = 工作台有调用在跑 (不开会话)
+  void update(SharedData &data, Mine &m, Scope &sc, const Mine::Setup &setup, const Mine::Leg &leg, bool bench);
+  const std::string &listen() const; // 监听地址 "http://127.0.0.1:47821/mcp"
 
 private:
   struct Impl;

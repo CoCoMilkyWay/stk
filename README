@@ -36,12 +36,12 @@ GUI布局:
 
 ```
 stk/
-├── AGENT.md                                            # 🤖 外部 agent 说明书: 接入 (py/agent.py) / 锁 / 流程 / 口径 / 研究工具表 + GUI 内置会话的状态机
+├── AGENT.md                                            # 🤖 外部 agent 说明书: 接入 (MCP / py/agent.py) / 会话怎么走 (open → doc → 逐批) / 接口工具 / 研究员能做的 + 会话的状态机 (做法与口径全在系统提示 doc)
 ├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + BUILD / CUDA 开关 → py/build.py (可选) → py/modes.py
 ├── py/                                                 # 🐍 Python 工具链
 │   ├── build.py                                        # 🐍 构建: CMake 配置 + 编译 (BUILD_MODE / GPU_BACKEND)
 │   ├── modes.py                                        # 🐍 运行: 五模式同签名 (tsan / debug / profile / assert / production)
-│   ├── agent.py                                        # 🐍 外部 agent 调研究工具的命令行 (一个 POST {"tool", "args"} → {"ok", "text"}; 地址读 output/run/agent/remote.json)
+│   ├── agent.py                                        # 🐍 外部 agent 调研究工具的命令行 = 最小 MCP 客户端 (一个 tools/call → 结果文本; 地址读 output/run/agent/remote.json)
 │   ├── val_rank.py                                     # 🐍 子池成分的 BP 估值 band 实时排名: 直读 all.bar L_1day (选股同 PoolSelect, 5 年加权分位同 pb_pct5y) × 新浪现价; 分 = 分位 + λ · 最低等值估值线 (全史 PB 0.02 分位 × 后复权 BPS) 近 3 年曲度的负值罚分; 跑一次 → 覆盖调仓名单 output/config/live/lists/<名>.csv
 │   └── app/                                            # 🐍 cpp/ format · lint (clang-format / clangd)
 ├── cpp/
@@ -293,18 +293,18 @@ stk/
 │   │   │   │   ├── TaskLive.hpp                        # 💹 Live 任务主界面: Board / Client; 每帧取中枢快照、交账户中枢快照 (持仓 / 成交 / 信用账户同一轮)
 │   │   │   │   ├── LiveHub.hpp                         # 💹 中枢: 一个 Broker + 行情 (要的码订阅给 QuoteHub) + 不可变快照 (Snapshot / Inputs / Task / 最近几单, 指针即版本; Stage 按键重算) + 事务道 (下单 / 执行调仓 / 两融条款与资金流水两样同形的拉取; 事务线程挂 trace Watch + Hooks, 各条落 output/run/live/task; 一单出错只记下接着下, 取行情有界不卡)
 │   │   │   │   └── ui/
-│   │   │   │       ├── TabBoard.hpp                    # 💹 持仓 · 调仓页: 数据 / 下单 / 调仓 (普通 / 融资加仓 / 担保减仓: 卖出总 bar ⇄ 各只卖出滑杆双向同步; 试算表) / 账户 现 · 调仓后 · 变动% (好红坏绿); 各表随栏宽收格距贴合 + 持仓表 (表头排序; 仓位 / 市值字色按截面仓位轻重由灰淡到亮; 行内闪电下单, 买卖镜像的按钮即滑点色块; 卖出滑杆; 调仓名单并入: 名单里未持有的列在表末, 金额列 现金买,融资买/卖 W 买红卖绿; 合计行窄写不撑列, 当日净资产收益率落在当日% 列) + 进度行 (刷新 / 事务的段栈逐段用时) + 日志 + 右栏行情图
+│   │   │   │       ├── TabBoard.hpp                    # 💹 持仓 · 调仓页: 数据 / 下单 / 调仓 (模式表: 普通 / 融资加仓 / 融资减仓 / 担保减仓; 卖出总 bar ⇄ 各只卖出滑杆双向同步; 普通另有卖超配 / 不融资; 试算表) / 账户 现 · 调仓后 · 变动% (好红坏绿); 各表随栏宽收格距贴合 + 持仓表 (表头排序; 仓位 / 市值字色按截面仓位轻重由灰淡到亮; 行内闪电下单, 买卖镜像的按钮即滑点色块; 卖出滑杆; 调仓名单并入: 名单里未持有的列在表末, 金额列 现金买,融资买/卖 W 买红卖绿; 合计行窄写不撑列, 当日净资产收益率落在当日% 列) + 进度行 (刷新 / 事务的段栈逐段用时) + 日志 + 右栏行情图
 │   │   │   │       └── TabClient.hpp                   # 💹 客户端窗口复现页: 经 live::Mirror 后台收 gdiwatch 推流与窗口树变化, 实时渲染窗口树 + GDI 绘制层 (色块 / 文字) + 标准控件子项; 检查器 / 鼠键透传 (默认关); 有事务在跑即停拉、停透传
 │   │   │   ├── account/
 │   │   │   │   ├── AccountHub.hpp                      # 💹 账户净值中枢 (Live 与 Market 共用): 随账本代重放 (拉归 LiveHub 事务道) / 拼账户的持仓 (券商实时持仓优先, 否则回放末日; Market 账户行的成分 / 当日四列) 与当日交给 QuoteHub (历史 = 价格库的账户侧; 当日 = 持仓 × 新浪分钟收)
 │   │   │   │   └── AccountSide.hpp                     # 💹 行情的账户一侧: 一日 day_of (持仓 × 分钟收 → 时间加权指数的逐槽点位 → 一日; 历史回放 / 当日同一核) + 账本回放 replay (价格库 worker 上调; 全史 = 紧凑形, 恒带分钟)
-│   │   │   └── task_agent/                             # 🤖 挖因子 (外部 agent 经 py/agent.py / 内置 LLM 会话: 左翼 Chat 问模型 ↔ 右翼 Lab 问数据核; 说明书见 AGENT.md)
+│   │   │   └── task_agent/                             # 🤖 挖因子 (一套会话, 大脑 = 内置大模型或经 MCP 的外部 agent: 左翼大脑 ↔ 右翼 Lab 问数据核; 说明书见 AGENT.md)
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 + 常量占位表 kConsts (提示词模板与工具说明共用) / 入库门槛默认值 / 各目录
 │   │   │       ├── Enum.hpp                            # 🤖 枚举表 (一个枚举一行 AGENT_ROWS): def 取行 / kNum 个数 / kVals 序列 / Per<E,V> 定长表 / IdOf 反查; Named 枚举 JSON 一律写 id
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 码点 / 检索词过滤 / 数的写法 / 火花线 / Markdown 表格建表器 Table
 │   │   │       ├── Async.hpp                           # 🤖 通用单线程异步管道 Async<Req, Step, Out, Live>: Chat 与 Lab 共用同一套 Tick / send / poll / live / busy / cancel
 │   │   │       ├── Llm.hpp                             # 🤖 左翼 · 大模型传输与 Chat: 驱动表 kDrivers 分派 Zhipu / Cursor (HTTPS) / Devin (本机 devin acp 子进程) (零异常控制流, 不留对话态)
-│   │   │       ├── Tools.hpp                           # 🤖 工具真相表: AGENT_TOOLS (挂入 AGENT_ROWS) + 编译期类型化参数表 ArgDef → 系统提示工具节 / 回复解析 ParseCalls / 参数校验 / Res 唯一结构化载体
+│   │   │       ├── Tools.hpp                           # 🤖 工具真相表: AGENT_TOOLS (挂入 AGENT_ROWS) + 编译期类型化参数表 ArgDef → 系统提示工具节 / 回复解析 ParseCalls / 参数校验 / MCP 参数 Schema / Res 唯一结构化载体
 │   │   │       ├── Notes.hpp                           # 🤖 研究记录双板: 会话假设板 Board (H1, H2 …) ↔ 跨会话全局记录 Notes (F / T / I / R, jsonl 累积, 研究员标处理)
 │   │   │       ├── Docs.hpp                            # 🤖 研报库工具 (只读 output/data/doc, 按篇懒加载并看取消旗): search_docs / search_factors / read_doc
 │   │   │       ├── tools/                              # 🤖 Kit.hpp 时间线 Round/Act + 单趟增量账本 State (Board/Tally/Flags) + 实现表 kSpecs + 统一调用底座 Rig (open ⇄ step/settle/answer/abort)
@@ -314,10 +314,12 @@ stk/
 │   │   │       │                                       #      展示另画写进的权重的累计 rIC (逐日 rIC 累加, 图例带年化 IR) 与分层图 (Run 顺带本持有期的逐日序列, 只在内存)
 │   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw, Mine 与 Bench 同源共用) + 工作台 Bench (Agent → Tools, 主栏按类折叠一工具一页, 基于 Rig) + 控件 Widgets
 │   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 候选四拍 (stage / absorb / adopt / discard) + 单线程工作台 Lab (共享不可变 ViewEnv, Store 共用)
-│   │   │       ├── Prompt.hpp                          # 🤖 纯成文层: 提示词模板填充 + 工具结果成文 + 上下文纯函数 TurnsOf (研究树线性分桶收起)
-│   │   │       ├── Remote.hpp                          # 🤖 外部 agent 接口 (本机 HTTP, py/agent.py 调): doc / scope / run / wait / cancel / unlock → 自带 Rig 按批执行 (不查假设板, 真落记录 / 真入库); 头一个请求替 agent 锁上 Agent 模块
-│   │   │       ├── Mine.hpp                            # 🤖 挖掘会话状态机 (Desk : Rig): 每帧对仗轮询 Chat / Lab; 停 / 续 / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
-│   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (外部 agent 锁着时 = 只读调用面板; 没锁时 = 作用域 / 会话控制 / 时间线内嵌结构化图表 / 假设板 / 候选 / 记录处理 / 开放的特征与算子) / Tools / Config
+│   │   │       ├── Prompt.hpp                          # 🤖 纯成文层: 提示词模板填充 + 工具结果成文 + 研究树 TreeText + 上下文纯函数 TurnsOf (研究树线性分桶收起)
+│   │   │       ├── Mine.hpp                            # 🤖 挖掘会话 (唯一一套) 的状态机 (Desk : Rig): 大脑 = 大模型 (Chat) 或外部 agent (reply 交批); 每帧对仗轮询 Chat / Lab; 会话约束 RuleMiss;
+│   │   │       │                                       #    停 / 续 (可换大脑) / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
+│   │   │       ├── Remote.hpp                          # 🤖 外部 agent 的 MCP 接口 (本机 Streamable HTTP · JSON-RPC: initialize / ping / tools/list / tools/call): 外部 agent 当 Mine 的大脑;
+│   │   │       │                                       #    open (开会话 / 接上在等的) / doc / recap / run (= 一条回复) / wait / cancel + 研究工具直调; inputSchema 出自参数表
+│   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (作用域 / 会话控制 / 时间线内嵌结构化图表 / 假设板 / 候选 / 记录处理 / 开放的特征与算子; 两种大脑同一个页) / Tools / Config
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                           #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)
@@ -390,7 +392,7 @@ stk/
 │   │   │   ├── Terms.hpp / Flows.hpp                   # 💹 两样拉来的表, 同形 拉 → 存 → 用: 两融条款 (整份换; 用时合本地库: 名称 / 市场 / 融资标的 / 担保品) / 资金流水账本 (重查末日起 → 并 → 核持仓 → 存; 账本代)
 │   │   │   ├── Book.hpp                                # 💹 5 档盘口: 参考价 / 买卖镜像各额滑点 / 委托价 / 整手规则
 │   │   │   ├── Board.hpp                               # 💹 持仓页一帧: 快照的持仓 × 当日成交 × 行情 按代码对齐 (纯函数)
-│   │   │   ├── Rebal.hpp                               # 💹 一键调仓试算 (纯函数): 名单等权补齐, 先卖、融资、再现金 (融资加仓: 卖净自有部分、只融资买标的; 担保减仓: 按比例卖非融资标的、只卖不买); 卖出回款先还本只融资负债 (券商行为) 计入试算; 可用保证金按读时校准; 二分里零哈希零分配
+│   │   │   ├── Rebal.hpp                               # 💹 一键调仓试算 (纯函数): 名单等权补齐, 先卖、融资、再现金; 模式 = 声明表一行 (卖出 bar 分给谁 × 买谁 × 现金腿 × 融资腿): 普通 / 融资加仓 ⇄ 融资减仓 / 担保减仓; 每单分融资腿与现金腿 (买 = 借 / 付, 卖 = 还 / 进), 卖出回款先还本只融资负债 (券商行为) 计入试算; 可用保证金按读时校准; 二分里零哈希零分配
 │   │   │   └── tdx/                                    # 💹 通达信 (Wine 下 TdxW.exe): 读经注入的 shim 在客户端里直发请求 (不动界面、不要 sudo), 写经 shim 驱动闪电下单窗
 │   │   │       ├── Tdx.hpp                             # 💹 Driver 与 Mirror 实现: 接 = shim + 请求层 + 引导; 读 / 两样拉 = 直发读表 (几表同时在途); 写 = 闪电窗; 引导与下单占界面锁; 画面 = 窗口树 / 绘制层推流
 │   │   │       ├── Schema.hpp / Req.hpp                # 💹 协议字典 (哪份在堆里经 shim memhas 进程内查) / 请求层 (进程内按 RTTI 找虚表, 只录 5 个入口槽; 照搬插件入参直发, 自动翻页)
