@@ -379,11 +379,12 @@ void Mine::start() {
 void Mine::stop() {
   assert(live() && !stop_);
   stop_ = true;
-  update(); // 已到的先收: 回复 / 调用收尾随即按 Stop 停下
+  const bool receiving = chat.busy(); // 先取: busy 落下与 End 入队在同一把锁内, 此刻不忙则下面的 update 必收到 End
+  update();                           // 已到的先收: 回复 / 调用收尾随即按 Stop 停下
   if (phase_ == Phase::Choose)
     return pause("按 Stop");
-  if (phase_ == Phase::Think && !chat.busy()) { // 没有在收的回复 (外部 agent 还没交批): 本条退回待发, 即停
-    unsend();
+  if (phase_ == Phase::Think && !receiving) { // 没有在收的回复 (外部 agent 还没交批): 本条作废, 继续即重发
+    drop("按 Stop 时本条还没收到回复, 继续即重发");
     pause("按 Stop");
   }
 }
@@ -391,15 +392,10 @@ void Mine::stop() {
 void Mine::cancel() {
   assert(live());
   Round &rd = timeline.back();
-  const double t = now();
-  if (phase_ == Phase::Think) {
-    rd.think.end(t), rd.write.end(t), rd.span.end(t);
-    rd.error = "按 Cancel 作废了在收的回复";
-    CloseReply(st, rd);
-    log.append_log(fmt_round_reply(round(), rd));
-  }
+  if (phase_ == Phase::Think)
+    drop("按 Cancel 作废了在收的回复");
   if (phase_ == Phase::Act && cur_ < rd.acts.size() && rd.acts[cur_].span.running()) {
-    abort_act(cur_, t);
+    abort_act(cur_, now());
     log_act(cur_++);
   }
   pause("按 Cancel");
@@ -678,6 +674,16 @@ void Mine::send() {
   save();
 }
 
+// 本条的回复作废 (没收到或收到一半): 记为没收成, 继续即重发
+void Mine::drop(std::string why) {
+  Round &rd = timeline.back();
+  const double t = now();
+  rd.think.end(t), rd.write.end(t), rd.span.end(t);
+  rd.error = std::move(why);
+  CloseReply(st, rd);
+  log.append_log(fmt_round_reply(round(), rd));
+}
+
 std::string Mine::over() const {
   const Budget &b = leg.budget;
   const int rounds = round() - from_.round, used = tokens(tally().usage) - from_.tokens;
@@ -702,6 +708,7 @@ void Mine::pause(std::string why) {
   log.report(report);
   phase_ = Phase::Pause;
   stop_ = false;
+  ++halts_;
   save();
 }
 

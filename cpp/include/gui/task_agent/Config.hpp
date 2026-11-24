@@ -82,7 +82,7 @@ inline constexpr double kGateRic = 0.03; // 中位 rIC (滚动窗 rIC 的中位,
 inline constexpr const char *kRemoteHost = "127.0.0.1";
 inline constexpr int kRemotePort = 47821; // 避开常见调试端口 (8000 / 8080 / 8765 …)
 inline constexpr const char *kRemotePath = "/mcp";
-inline constexpr int kRemoteWait = 25; // run / 直接调研究工具一次至多等多少秒 (还没做完先交回进度, 调无参 run 续等)
+inline constexpr int kRemoteWait = 25; // run 一次至多等多少秒 (没变化先交回此刻的状态, 调无参 run 续等)
 
 // ---- 落盘 (disk::, 布局见 disk/Disk.hpp; <模式> = main | test, test = 自检会话) ----
 //   output/agent/<模式>/sessions/<池>/<层>/<持有期>/

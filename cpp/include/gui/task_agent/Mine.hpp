@@ -135,6 +135,7 @@ public:
   bool waiting() const { return phase_ == Phase::Think && !timeline.empty() && timeline.back().span.running(); } // 本条已发出, 在等大脑交这一批
   std::string brain() const;                                                                                     // 大脑一句: 后端 / 模型, 或 MCP
   size_t acting() const { return cur_; }
+  int halts() const { return halts_; } // 停下的次数 (每次 pause 加一; 外部 agent 的等待据此认出新的停下)
   Cont cont() const;
   std::string hint() const;
 
@@ -144,6 +145,7 @@ private:
   bool go(Phase next);
   void post(Message m);
   void send();
+  void drop(std::string why);
   void pause(std::string why);
 
   void on_chat(Chat::Tick t);
@@ -166,6 +168,7 @@ private:
   bool stop_ = false;
   size_t cur_ = 0;
   int retries_ = 0;
+  int halts_ = 0;
   struct From {
     int round = 0;
     double t = 0.0;

@@ -617,54 +617,6 @@ std::string ToolsDoc(bool ask) {
   return s;
 }
 
-json ArgsSchema(Tool t) {
-  json props = json::object(), req = json::array();
-  for (const ArgDef &a : doc(t).args) {
-    json p = json::object();
-    switch (a.type) {
-    case Arg::Str:
-      p["type"] = "string";
-      if (!a.choices.empty()) {
-        json e = json::array();
-        if (a.empty_ok())
-          e.push_back("");
-        for (const sv c : a.choices)
-          e.push_back(c);
-        p["enum"] = std::move(e);
-      }
-      break;
-    case Arg::Int:
-      p["type"] = "integer", p["minimum"] = a.lo, p["maximum"] = a.hi;
-      break;
-    case Arg::Strs:
-      p["type"] = "array", p["minItems"] = a.lo, p["maxItems"] = a.hi;
-      p["items"] = {{"type", "string"}, {"minLength", 1}};
-      break;
-    case Arg::Questions:
-      p["type"] = "array", p["minItems"] = a.lo, p["maxItems"] = a.hi;
-      p["items"] = {{"type", "object"},
-                    {"properties",
-                     {{"prompt", {{"type", "string"}, {"minLength", 1}}},
-                      {"options", {{"type", "array"}, {"items", {{"type", "string"}, {"minLength", 1}}}, {"minItems", 2}, {"maxItems", 5}}},
-                      {"multiple", {{"type", "boolean"}, {"default", false}}},
-                      {"recommended", {{"type", "array"}, {"items", {{"type", "integer"}, {"minimum", 0}}}, {"minItems", 1}}}}},
-                    {"required", json::array({"prompt", "options", "recommended"})}};
-      break;
-    }
-    p["description"] = std::string(a.cn) + ": " + ToolText(a.desc);
-    if (a.required())
-      req.push_back(a.key);
-    else
-      p["default"] = DefaultJson(a);
-    props[a.key] = std::move(p);
-  }
-  json s = {{"type", "object"}, {"properties", std::move(props)}};
-  if (!req.empty())
-    s["required"] = std::move(req);
-  s["additionalProperties"] = false;
-  return s;
-}
-
 Asked::Asked(Questions q) : qs(std::move(q)) {
   for (const Question &x : qs)
     picks.push_back({x.recommended, false, {}});

@@ -107,8 +107,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy
 
 llm::Net net_of(const Options &o, int backend) { return {o.via_proxy[backend], o.proxy_host, o.proxy_port}; }
 Mine::Setup setup_of(const Options &o) { return {.sc = o.sc, .gate = o.gate, .ask = o.ask, .strict = o.strict}; }
+// 大脑是外部 agent 时没有网络 / 模型 (与外部 open 开的会话存档同一份)
 Mine::Leg leg_of(const Options &o, bool gpu) {
-  return {.llm = {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model}, .gpu = gpu, .budget = o.budget};
+  const llm::Options opt = is_mcp(o.backend) ? llm::Options{.backend = llm::Backend::Mcp} : llm::Options{static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model};
+  return {.llm = opt, .gpu = gpu, .budget = o.budget};
 }
 
 // 模型嗅探: 每后端一个后台 llm::models (按该后端当前连接方式); cancel 须声明在 jobs 前 (future 析构 join 时它还活着)
@@ -456,7 +458,7 @@ void session_row(const SharedData &data, Ui &s) {
     begin_session(false);
   ImGui::EndDisabled();
   tip(why_not ? why_not
-              : "按当前作用域与 Config 开新会话: 打包规则与工具表发给大脑 (内置模型; 或 MCP: 等外部 agent 调 open 接上), 它调工具看数据、回测、提交\n"
+              : "按当前作用域与 Config 开新会话: 打包规则与工具表发给大脑 (内置模型; 或 MCP: 等外部 agent 调无参 open 接上), 它调工具看数据、回测、提交\n"
                 "资产轴与标签就绪才开得成; 停着的会话已存盘, 换下也能再载入");
   ImGui::SameLine();
   ImGui::BeginDisabled(!can_new);
@@ -507,7 +509,7 @@ void session_row(const SharedData &data, Ui &s) {
   if (ImGui::Button("Stop", ImVec2(60, 0)))
     m.stop();
   ImGui::EndDisabled();
-  tip("停下: 在收回复的等它收齐 (不执行其中的调用), 没在收的 (外部 agent 还没交批) 即停, 在做的调用做完; 之后可继续 / 回退");
+  tip("停下: 在收回复的等它收齐 (不执行其中的调用), 没在收的 (外部 agent 还没交批) 即停 (本条记为没收成, 继续即重发), 在做的调用做完; 之后可继续 / 回退");
   ImGui::SameLine();
   ImGui::BeginDisabled(!m.live());
   if (ImGui::Button("Cancel", ImVec2(60, 0)))
@@ -1042,7 +1044,7 @@ void context_block(Ui &s, const Mine &m, size_t i) {
 bool round_block(Ui &s, Mine &m, size_t i, const Flow &f, bool fresh) {
   Round &rd = m.timeline[i];
   const bool replied = rd.span.ended(), last = i + 1 == m.timeline.size();
-  const llm::Reply &r = replied || !rd.span.began() || m.mcp() ? rd.reply : s.chat_live.reply;
+  const llm::Reply &r = replied || !rd.span.began() ? rd.reply : s.chat_live.reply;
   const bool receiving = rd.span.running() && f.stage != Flow::Idle;
   const int k = static_cast<int>(i) + 1;
 
@@ -1766,7 +1768,7 @@ void remark_panel(Ui &s, const Mine &m) {
 // 过程 (本会话要求 + 全宽时间线 + 插话栏) / 假设板 / 候选表 / 特征表 / 算子表 (这三页不必开会话, 随作用域) / 工具表 (固定);
 // 刚进 Choose 切回过程并滚到底 (问题在那); 要跳到某个调用也切回过程; 回退确认框浮在页上. 大脑是大模型还是外部 agent, 这里都一样
 void render_mine(SharedData &data, Ui &s) {
-  ImGui::TextDisabled("外部 agent 的 MCP 接口 %s: 它调 open 开会话 (没有运行中的内置会话时), 或接上由 MCP 当大脑、还没 finish 的会话", s.remote->listen().c_str());
+  ImGui::TextDisabled("外部 agent 的 MCP 接口 %s: 它调 open 同这里按 New (没有会话在跑时), 或无参 open 接上由 MCP 当大脑、还没 finish 的会话", s.remote->listen().c_str());
   Mine &m = *s.mine;
   scope_row(data, s.opt.sc, s.pool_rows, m.lab, scope_locked(s), "1. Scope:");
   session_row(data, s);
@@ -1848,7 +1850,7 @@ void render_config(Ui &s) {
   ImGui::SameLine();
   if (is_mcp(o.backend)) {
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "MCP 接口 %s (无需 key / 模型)", s.remote->listen().c_str());
-    ImGui::TextDisabled("New / 继续 后等外部 agent (Devin / Cursor 等, 见仓库 AGENT.md) 调 open 接上; 下次 New / 继续 生效 (可换后端接上)");
+    ImGui::TextDisabled("New / 继续 后等外部 agent (Devin / Cursor 等, 见仓库 AGENT.md) 调无参 open 接上; 下次 New / 继续 生效 (可换后端接上)");
   } else {
     if (has_key(o.backend))
       ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "key 已填");
@@ -1934,6 +1936,7 @@ void render_config(Ui &s) {
   limit("分钟##budget_minutes", o.budget.minutes);
   ImGui::SameLine();
   limit("千 token (输入 + 输出)##budget_ktokens", o.budget.ktokens);
+  tip("只计上报 token 用量的后端 (现为 Zhipu); 其余大脑不受此限");
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "入库门槛");
@@ -2069,7 +2072,7 @@ TaskHandle CreateAgentTask() {
   handle.Destroy = [state]() {
     Ui &s = *state;
     s.sniff.quit();
-    s.remote.reset(); // 析构: 未答的请求答 "程序在退出", 停网络线程
+    s.remote.reset(); // 析构: 停网络线程, 未答的请求随连接关掉
     s.bench.reset();
     s.mine.reset(); // 析构: 对话线程取消并 join, 评估 worker Stop
     s.seen_phase = Phase::None;

@@ -7,11 +7,12 @@
 //         不开 SSE 流, GET 回 405); 通知与应答 (没有 id / 没有 method) 回 202; Origin 不是本机的回 403 (防 DNS 重绑)
 //         网络线程 (asio 单 io_context) 当场答 initialize / ping / tools/list; tools/call 入队交 GUI 线程, 答复由 GUI 线程投回网络线程写出
 //         监听即把地址写进 output/run/agent/remote.json (py/agent.py 读它), 退出时删除
-//   工具  tools/list = 接口工具 (open / doc / run) + 研究工具表的各工具 (inputSchema 由同一张参数表出; 直接调 = 只有它一个调用的 run)
-//         open    无会话 / 停着的内置会话 / 已 finish 的 MCP 会话 → 开会话 (大脑 = MCP; 作用域 / 本会话要求 / 自检可给, 其余规则取 Config 页的) → 首条消息;
-//                 已有还没 finish 的 MCP 会话 → 接上它, 不另开 (带参数退回): 交回此刻的状态 (待答消息 / 进度 / 停下原因)
+//   工具  tools/list = open / doc / run; 研究工具只经 run 的 calls 交 (= 内置模型的一条回复), 参数表在系统提示里
+//         open    无参且有没 finish 的 MCP 会话 → 接上它, 交回此刻的状态 (待答消息 / 进度 / 停下原因);
+//                 其余同 GUI 的 New (有会话在跑则退回, 停着的换下): 开会话 (大脑 = MCP; 作用域 / 本会话要求 / 自检可给, 其余规则取 Config 页的) → 首条消息
 //         doc     本会话的系统提示
 //         run     给 calls = 交一批调用 (Mine::reply); 不给 calls = 续等或取当前状态 (执行中 / 停着都等到有变化). 超 kRemoteWait 秒交回此刻的状态
+//                 停下只交回停下原因 (本轮结果随继续后的下一条消息给, 只给一次); finish 收尾的那批刚停下时附它的结果
 //   消息  交给外部 agent 的每条消息 = llm::Flat(TurnsOf(timeline)): 首条 + 研究树 + 上一批 + 本条, 与内置单轮后端每轮收到的同一份 (system 由 doc 取)
 // =============================================================================
 
