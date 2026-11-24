@@ -1,7 +1,8 @@
-"""子池成分的 BP 估值 band 实时排名 (新浪现价)
+"""小盘100A / 小盘100B 成分的 BP 估值 band 实时排名 (新浪现价)
 
 数据 = 主程序的 all.bar 特征库 (output/features/all/bar; L_1day 列名与字段表指纹读 lib.json 的 levels)
   T0    = 新浪快照日 (上证指数); 源行 = T0 之前末个已落盘日 (L_1day 行 D = D+1 盘前态)
+  池    = A = 小盘100A (非融资标的), B = 小盘100B (融资标的); 两池各自排名
   成分  = 子池在源行的选股 (同 features/Panel/PoolSelect.cpp): 在市 ∧ 切片 → 键自端头取前 N (键覆盖率 < 0.8 → 断言)
   分位  = BP 近 5 年加权分位 (同 Panel/Fund.cpp build_univ_hist 的 pb_pct5y; 高 = 贵): 窗 = (T0 − 5 自然年, T0] 的历史点 + T0 实时点,
           实时 BP = 源行归母普通股权益 MRQ / (现价 × 源行总股本); 历史点 D = 行 D 权益 / (行 D 收盘 × 行 D−1 总股本)
@@ -10,9 +11,9 @@
   曲度  = 底线近 3 年 (自然年) 对时间 (年) 二次 OLS 的 2c (年⁻², 线除以窗内均值; 拟合同 Panel/Fund.cpp pb_lo_curv); < 0 = 净资产拐头向下;
           窗内首点距今不满 1 年 / 点数 < 120 → 无
   分    = 分位 + λ · max(0, −曲度) · 100 (曲度 ≥ 0 / 无 不加分), 低者优先; 分位史不满 1 年 = 无分, 排末
-  输出  = 打印排名表 + 覆盖调仓名单 output/config/live/lists/<名>.csv (code,name; 行序 = 排名, 有分的前 --top 只)
+  输出  = 每池打印排名表 + 覆盖调仓名单 output/config/live/lists/<名><池>.csv (例 valA / valB; code,name; 行序 = 排名, 有分的前 --top 只)
 
-用法: python py/val_rank.py [--pool 池名] [--lam 1] [--list val] [--top 40]
+用法: python py/val_rank.py [--lam 1] [--list val] [--top 40]
 """
 
 import argparse
@@ -30,7 +31,10 @@ LIB = ROOT / "output" / "features" / "all" / "bar"
 LISTS = ROOT / "output" / "config" / "live" / "lists"  # 调仓名单 (live/Rebal.hpp: 首列 6 位代码, 行序 = 排名)
 LEVEL = "L_1day"
 MAGIC = 0x0000325941445446  # FeatureFileHeader::kMagic
-POOL = "size.low.100.day.eq.nost.sh_main+sz_main+star+chinext.margin.nonew+nowarn"  # 小盘100B
+POOLS = (  # (名单后缀, 子池名; output/config/beta/pools.json)
+    ("A", "size.low.100.day.eq.nost.sh_main+sz_main+star+chinext.nonmargin.nowarn"),  # 小盘100A
+    ("B", "size.low.100.day.eq.nost.sh_main+sz_main+star+chinext.margin.nonew+nowarn"),  # 小盘100B
+)
 HIST_YEARS, READY_YEARS, HIST_K = 5, 1, 10.0  # Panel/Fund.cpp kHistYears / kHistReady / kHistK
 CURV_YEARS, CURV_MIN = 3, 120  # Panel/Fund.cpp kCurvYears / kCurvMin
 CONTOUR_TRIM = 0.02  # LinesView.hpp kContourTrim (最低等值线 = 全史倍数的此分位)
@@ -261,12 +265,7 @@ def num(x, fmt):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="子池成分的 BP 估值 band 实时排名 (新浪现价)"
-    )
-    ap.add_argument(
-        "--pool",
-        default=POOL,
-        help="子池名 (output/config/beta/pools.json; 缺省 = 小盘100B)",
+        description="小盘100A / 小盘100B 成分的 BP 估值 band 实时排名 (新浪现价)"
     )
     ap.add_argument(
         "--lam",
@@ -277,16 +276,18 @@ def main():
     ap.add_argument(
         "--list",
         default="val",
-        help="写入的调仓名单名 (output/config/live/lists/<名>.csv, 覆盖)",
+        help="调仓名单名前缀 (output/config/live/lists/<名><池>.csv, 池 = A / B, 覆盖)",
     )
-    ap.add_argument("--top", type=int, default=40, help="名单只写排名前几只")
+    ap.add_argument("--top", type=int, default=40, help="每份名单只写排名前几只")
     a = ap.parse_args()
 
     t0 = sina(["sh000001"])["sh000001"][3]
     lib = Lib()
     base = max(d for d in lib.dates if d < t0)
     c = lib.read(base, BASE_COLS)
-    mem = members(c, a.pool)
+    mems = [members(c, pool) for _, pool in POOLS]
+    mem = np.concatenate(mems)  # 两池拼成一份: 估值史与快照各取一趟
+    assert np.unique(mem).size == mem.size, "两池成分重叠"
     hist = History(lib, t0, mem)
     syms = [sym_of(lib.codes[i]) for i in mem]
     eq, sh = c["bs_eq"][mem].astype(np.float64), c["total_shares"][mem].astype(
@@ -333,40 +334,43 @@ def main():
                 100.0 * (px / band - 1),
             )
         )
-    rows.sort(key=lambda r: (not math.isfinite(r[0]), r[0]))
-    ranked = [r for r in rows if math.isfinite(r[0])][: a.top]
-    path = LISTS / f"{a.list}.csv"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(
-        "code,name\n" + "".join(f"{r[1][:6]},{r[2]}\n" for r in ranked),
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+    LISTS.mkdir(parents=True, exist_ok=True)
+    out, off = [], 0
+    for (tag, pool), m in zip(POOLS, mems):
+        part = sorted(rows[off : off + m.size], key=lambda r: (not math.isfinite(r[0]), r[0]))
+        off += m.size
+        ranked = [r for r in part if math.isfinite(r[0])][: a.top]
+        path = LISTS / f"{a.list}{tag}.csv"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(
+            "code,name\n" + "".join(f"{r[1][:6]},{r[2]}\n" for r in ranked),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
 
-    out = [
-        f"{a.pool}  ·  {len(mem)} 只  ·  T0 {t0}  ·  源行 {base} (库末 {lib.dates[-1]})  ·  λ = {a.lam:g}  ·  {datetime.datetime.now():%H:%M:%S}",
-        "".join(pad(h, w) for h, w in zip(heads, widths)),
-    ]
-    for k, (score, code, name, px, chg, pct, lp, cv, pen, band, gap) in enumerate(
-        rows, 1
-    ):
-        cells = [
-            str(k),
-            code,
-            name,
-            f"{px:.2f}",
-            num(chg, "{:+.2f}"),
-            num(pct, "{:.1f}"),
-            num(lp, "{:.1f}"),
-            num(cv, "{:+.3f}"),
-            f"{pen:.1f}",
-            num(score, "{:.1f}"),
-            num(band, "{:.2f}"),
-            num(gap, "{:+.1f}"),
+        out += [
+            f"小盘100{tag}  {pool}  ·  {m.size} 只  ·  T0 {t0}  ·  源行 {base} (库末 {lib.dates[-1]})  ·  λ = {a.lam:g}  ·  {datetime.datetime.now():%H:%M:%S}",
+            "".join(pad(h, w) for h, w in zip(heads, widths)),
         ]
-        out.append("".join(pad(x, w) for x, w in zip(cells, widths)))
-    out.append(f"→ {path} (前 {len(ranked)} 只)")
+        for k, (score, code, name, px, chg, pct, lp, cv, pen, band, gap) in enumerate(
+            part, 1
+        ):
+            cells = [
+                str(k),
+                code,
+                name,
+                f"{px:.2f}",
+                num(chg, "{:+.2f}"),
+                num(pct, "{:.1f}"),
+                num(lp, "{:.1f}"),
+                num(cv, "{:+.3f}"),
+                f"{pen:.1f}",
+                num(score, "{:.1f}"),
+                num(band, "{:.2f}"),
+                num(gap, "{:+.1f}"),
+            ]
+            out.append("".join(pad(x, w) for x, w in zip(cells, widths)))
+        out += [f"→ {path} (前 {len(ranked)} 只)", ""]
     print("\n".join(out))
 
 

@@ -206,7 +206,7 @@ using Terms = std::map<std::string, Term>;
 //   发生金额 0 的行 (申购配号等) 不动资金、其 balance 不算数; 股数为本行带的证券变动 (买卖 / 划入 / 入账等, 无 = 0)
 struct CashFlow {
   misc::Ymd date = 0;
-  std::string code, name; // 无证券的行 (利息 / 转账) 为空
+  std::string code, name; // 无证券的行 (利息 / 转账) 为空; 名称 = 证券现名 (改名后旧行随之变)
   double price = 0, qty = 0;
   std::string kind; // 业务名称
   double amount = 0, balance = 0;

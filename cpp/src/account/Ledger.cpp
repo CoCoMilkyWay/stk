@@ -98,14 +98,25 @@ Closes marks(const std::vector<CashFlow> &rows, const std::vector<misc::Ymd> &da
   return out;
 }
 
+std::string show(const CashFlow &r) {
+  return strf("%d|%s|%s|%.10g|%.10g|%s|%.10g|%.10g", r.date, r.code.c_str(), r.name.c_str(), r.price, r.qty, r.kind.c_str(), r.amount, r.balance);
+}
+
+// 同一条流水: 名称除外 (券商给证券现名, 改名后旧行随之变)
+bool same(const CashFlow &a, const CashFlow &b) {
+  return a.date == b.date && a.code == b.code && a.price == b.price && a.qty == b.qty && a.kind == b.kind && a.amount == b.amount && a.balance == b.balance;
+}
+
 // 账本并入一次重查 (重查覆盖 from 日起)
 std::vector<CashFlow> merge(const std::vector<CashFlow> &old, misc::Ymd from, std::vector<CashFlow> fresh) {
   for (const CashFlow &r : fresh)
     if (r.date < from)
       live::fail(strf("资金流水重查 %s 起, 回来 %d 的行", misc::dash(from).c_str(), r.date));
   const auto cut = std::ranges::lower_bound(old, from, {}, &CashFlow::date);
-  const size_t k = static_cast<size_t>(old.end() - cut);
-  live::need(k <= fresh.size() && std::equal(cut, old.end(), fresh.begin()), "资金流水重查与账本对不上: %s 起账本 %zu 行不是重查 %zu 行的开头", misc::dash(from).c_str(), k, fresh.size());
+  const auto [o, f] = std::mismatch(cut, old.end(), fresh.begin(), fresh.end(), same);
+  if (o != old.end())
+    live::fail(strf("资金流水重查与账本对不上: %s 起账本 %zu 行不是重查 %zu 行的开头, 第 %zu 行起不同: 账本 %s / 重查 %s", misc::dash(from).c_str(),
+                    static_cast<size_t>(old.end() - cut), fresh.size(), static_cast<size_t>(o - cut), show(*o).c_str(), f == fresh.end() ? "(无)" : show(*f).c_str()));
   std::vector<CashFlow> out(old.begin(), cut);
   out.insert(out.end(), std::make_move_iterator(fresh.begin()), std::make_move_iterator(fresh.end()));
   check(out);
