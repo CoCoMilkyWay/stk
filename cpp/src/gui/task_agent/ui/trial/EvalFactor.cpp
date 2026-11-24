@@ -1,4 +1,4 @@
-// eval_factor 的展示 (与原文逐节对仗): 候选 (最佳权重的具体式 / 思路) + 频率 · 预测周期 · 符号 + 各权重统计 (最佳接门槛; 无权重 = 结局一行) + 分年
+// eval_factor 的展示 (与原文逐节对仗): 候选 (最佳权重的具体式, 负号前置 / 思路) + 频率 · 预测周期 + 各权重统计 (最佳接门槛; 无权重 = 结局一行) + 分年
 //   → 左栏三图 (各参数点的窗中位 rIC / 写进的权重的累计 rIC / 分层图, Inspect 同一份) | 右栏参数点表 (缺省中位 rIC 降序; 窗中位 rIC 图 ↔ 表悬停联动)
 //   → 20 组柱 (只在没有逐日序列 = 载入的会话时)
 #include "gui/task_agent/Prompt.hpp"
@@ -199,7 +199,7 @@ void TrialRes::draw() const {
   ImGui::PushID(this);
   const Weight *best = shown();
   heading(st.cand.name + "  " + st.cand.name_cn);
-  wrapped(kColExpr, best ? best->expr : st.cand.expr);
+  wrapped(kColExpr, best ? Formula(*best) : st.cand.expr);
   if (!st.cand.note.empty())
     wrapped_dim("思路 (" + st.cand.hyp + "): " + st.cand.note);
   const TaskStatus::Kind kind = r.verdict == Verdict::Weights ? (GateMiss(gate, r).empty() ? TaskStatus::Kind::Ready : TaskStatus::Kind::None)

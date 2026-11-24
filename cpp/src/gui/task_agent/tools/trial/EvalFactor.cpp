@@ -1,5 +1,5 @@
 // eval_factor — 回测: 三拍对仗 OpenEvalFactor (核假设落盘, GUI) → LabTask (Search + Run, Lab) → CloseEvalFactor (入表封存, GUI)
-//               → TrialRes (最佳权重的具体式 + 频率 / 预测周期 / 符号 + 各权重统计与门槛 + 分年 → 参数扫描 → 20 组; Run 顺带最佳权重的逐日序列只给展示)
+//               → TrialRes (最佳权重的具体式 (负号前置) + 频率 / 预测周期 + 各权重统计与门槛 + 分年 → 参数扫描 → 20 组; Run 顺带最佳权重的逐日序列只给展示)
 //               → 原文; 展示见 ui/trial/EvalFactor.cpp
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
@@ -195,16 +195,14 @@ ToolOut run_eval(const Engine::FactorScope &fsc, const std::string &file, const 
 
 const Weight *TrialRes::shown() const { return st.res.visible && st.res.verdict == Verdict::Weights ? st.res.best() : nullptr; }
 
-std::string ScopeLine(const TrialRes &k) {
-  const Weight *w = k.shown();
-  assert(w);
-  return "频率 " + k.level + " · 预测周期 " + k.hold + " · 符号 " + SignCn(w->sign);
-}
+std::string Formula(const Weight &w) { return (w.sign < 0 ? "-" : "") + w.expr; }
+
+std::string ScopeLine(const TrialRes &k) { return "频率 " + k.level + " · 预测周期 " + k.hold; }
 
 std::string WeightLine(const TrialRes &k, const Weight &w) {
   const Weight *best = k.shown();
   assert(best);
-  const std::string head = &w == best ? std::string() : "另一权重 `" + w.expr + "`" + (w.sign == best->sign ? "" : std::string(" (符号 ") + SignCn(w.sign) + ")") + ": ";
+  const std::string head = &w == best ? std::string() : "另一权重 `" + Formula(w) + "`: ";
   if (!w.has)
     return head + "无该持有期统计";
   std::string s = head + fmt("rIC %.3f", w.ric) + fmt(" · 中位 rIC %.3f", w.score) + fmt(" · 每期毛多 %+.2fbp", w.lng * 1e4) + fmt(" · 毛空 %+.2fbp", w.sht * 1e4) +
@@ -216,18 +214,9 @@ std::string WeightLine(const TrialRes &k, const Weight &w) {
 
 std::string YearsLine(const std::vector<Year> &ys) {
   assert(!ys.empty());
-  int neg = 0;
-  const Year *lo = nullptr;
-  for (const Year &y : ys)
-    if (std::isfinite(y.med)) {
-      neg += y.med < 0.0;
-      if (!lo || y.med < lo->med)
-        lo = &y;
-    }
-  std::string s = "最佳权重分年 (" + std::to_string(ys.size()) + " 年, 中位 rIC 为负 " + std::to_string(neg) + " 年" + (lo ? ", 最差 " + std::to_string(lo->year) : "") +
-                  "; 年换手按年内行数年化, 不足一年的同样):";
+  std::string s = "年份(中位rIC,年换手):";
   for (size_t i = 0; i < ys.size(); ++i)
-    s += (i ? "; " : " ") + std::to_string(ys[i].year) + " 中位 rIC " + text::r3(ys[i].med) + fmt(" / 年换手 %.0f 倍", ys[i].turn);
+    s += (i ? ", " : " ") + std::to_string(ys[i].year) + "(" + text::r3(ys[i].med) + fmt(",%.0f)", ys[i].turn);
   return s;
 }
 
@@ -238,7 +227,7 @@ std::string SweepHead(const Sweep &sw) { return "参数扫描 (Search 评过 " +
 std::string TrialRes::text() const {
   const Result &r = st.res;
   const Weight *w = shown();
-  std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + (w ? w->expr : st.cand.expr) + "`\n";
+  std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + (w ? Formula(*w) : st.cand.expr) + "`\n";
   if (!st.cand.note.empty())
     s += "- 思路 (" + st.cand.hyp + "): " + st.cand.note + "\n";
   if (!w)

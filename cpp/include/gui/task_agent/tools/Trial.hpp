@@ -34,9 +34,10 @@ struct TrialRes final : Res {
 };
 
 // eval_factor 原文与展示同一组节 (两边逐节对仗; 都只在 shown() 非空时)
-std::string ScopeLine(const TrialRes &k);                   // 频率 · 预测周期 · 符号
-std::string WeightLine(const TrialRes &k, const Weight &w); // 一个权重的统计: 最佳权重接门槛; 其余先写具体式 (符号与最佳不同另标)
-std::string YearsLine(const std::vector<Year> &ys);         // 最佳权重分年: 中位 rIC / 年换手
+std::string Formula(const Weight &w);                       // 权重的具体式, 符号为负 (已整体取反) 即前置 -
+std::string ScopeLine(const TrialRes &k);                   // 频率 · 预测周期
+std::string WeightLine(const TrialRes &k, const Weight &w); // 一个权重的统计: 最佳权重接门槛; 其余先写具体式
+std::string YearsLine(const std::vector<Year> &ys);         // 最佳权重分年: 年份(中位rIC,年换手), …
 std::string GroupsHead();                                   // 最佳权重的 20 组
 std::string SweepHead(const Sweep &sw);                     // 参数扫描 (点数)
 

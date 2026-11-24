@@ -84,15 +84,15 @@ std::vector<Hold> sells_of(const Keyed<Position> &pos, const Keyed<Debt> &debts,
              .lot = lt,
              .step = step,
              .sell = v};
-    if (row.own > 0)
+    if (cfg.mode == Mode::Lever ? row.own > 0 : cfg.mode == Mode::Trim && !row.financeable)
       row.full = row.avail, row.base = row.bal;
     if (v > 0) {
       const int64_t n = std::min(v, row.avail);
       // 卖出设置是先前按当时的可卖定的, 可卖其后变了 (又有成交) 即可能不再合步长: 报出来, 不下
       need(n == row.avail || n % step == 0 || n % step == row.avail % step, "%s 卖 %lld 股不是 %lld 股的整数倍 (零股须一次卖完; 可卖已变, 重设卖出)",
            h.code.c_str(), static_cast<long long>(n), static_cast<long long>(step));
-      // 全部可卖可含零股 (起卖 1 股); 融资加仓卖满不管最小单元
-      const double unit = cfg.lever && n == row.avail ? 0 : cfg.unit;
+      // 全部可卖可含零股 (起卖 1 股); 融资加仓 / 担保减仓卖满不管最小单元
+      const double unit = cfg.mode != Mode::Plain && n == row.avail ? 0 : cfg.unit;
       const int64_t min_n = n == row.avail ? least(px, unit, 1, 1) : least(px, unit, lt, step);
       row.order = leg(q, kSell, n, min_n, order_px(q, kSell, cfg.px, static_cast<double>(n) * px).value_or(px), Credit::Plain, h, row.skip);
       if (row.order)
@@ -272,14 +272,14 @@ nlohmann::json to_json(const Sheet &s) {
 
 double fee(double amt, int s) { return amt * (kCommission + kTransfer + (s == kSell ? kStamp : 0)); }
 
-int64_t snap(const Hold &h, double unit, double x, bool down, bool lever) {
+int64_t snap(const Hold &h, double unit, double x, bool down, bool by_bar) {
   const int64_t first = least(h.px, unit, h.lot, h.step), r = h.avail % h.step;
   int64_t best = 0;
   const auto take = [&](int64_t c) {
     if (down ? static_cast<double>(c) <= x && c > best : std::abs(static_cast<double>(c) - x) <= std::abs(static_cast<double>(best) - x))
       best = c;
   };
-  if (lever || static_cast<double>(h.avail) * h.px >= unit)
+  if (by_bar || static_cast<double>(h.avail) * h.px >= unit)
     take(h.avail);
   for (const int64_t o : {int64_t{0}, r}) { // 整步长 / 连同零股 (k 的范围: k · step + o ∈ [first, avail])
     const int64_t lo = (first - o + h.step - 1) / h.step, hi = (h.avail - o) / h.step;
@@ -345,8 +345,8 @@ std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quo
 
   std::vector<std::string> ok;
   for (const std::string &c : codes)
-    if (const Term *t = term_of(terms, c); why(t).empty() && (!cfg.lever || t->financeable)) {
-      assert(!cfg.lever || t->ratio);
+    if (const Term *t = term_of(terms, c); why(t).empty() && cfg.mode != Mode::Trim && (cfg.mode != Mode::Lever || t->financeable)) {
+      assert(cfg.mode != Mode::Lever || t->ratio);
       ok.push_back(c);
     }
   const auto has = [&](const std::string &c) { return quotes.contains(c); };
@@ -390,7 +390,8 @@ std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quo
     tgts.push_back({c, static_cast<double>(b == bal.end() ? 0 : b->second) * q.price, t.financeable ? t.ratio : std::nullopt, n, static_cast<double>(n) * buy_px(q, cfg.px, n)});
   }
 
-  const Budget bud{cfg.lever ? 0 : C * pct, X * pct, L * pct, cfg.lever};
+  const bool lever = cfg.mode == Mode::Lever;
+  const Budget bud{lever ? 0 : C * pct, X * pct, L * pct, lever};
   const auto [picked, V] = pick(tgts, bud);
   std::vector<std::pair<double, double>> legs(tgts.size(), {0, 0});
   std::vector<uint8_t> is_picked(tgts.size(), 0);
@@ -416,7 +417,7 @@ std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quo
     }
     const auto ti = tgt_at.find(c);
     if (ti == tgt_at.end()) {
-      row.skip = "融资加仓只买融资标的";
+      row.skip = lever ? "融资加仓只买融资标的" : "担保减仓只卖不买";
       targets.push_back(std::move(row));
       continue;
     }
@@ -471,8 +472,8 @@ std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quo
   const Bal bal0 = balances(pos);
   pl.now = sheet(assets, net, acct.debt, acct.cash, fin_mv(bal0, acct.debts, prices(bal0, acct.debts, quotes)), X_now, L0);
   pl.exp = sheet(assets + F - cost_all - R, net - cost_all, acct.debt - R + F, C - (use - F) - buy_cost, fin_mv(bal, debts1, prices(bal, debts1, quotes)) + F,
-                 std::nullopt, L - F);
-  pl.power = (cfg.lever ? 0 : C) + std::min(L, std::max(0.0, X));
+                 buys.empty() ? std::optional<double>(X) : std::nullopt, L - F);
+  pl.power = (lever ? 0 : C) + std::min(L, std::max(0.0, X));
   pl.use = use;
   pl.financed = F;
   pl.cost = cost_all;
@@ -506,7 +507,7 @@ nlohmann::json to_json(const Plan &p) {
 }
 
 nlohmann::json to_json(const Cfg &c) {
-  return {{"list", c.list}, {"unit", c.unit}, {"pct", c.pct}, {"px", kPxModeNames[static_cast<int>(c.px)]}, {"sells", c.sells}, {"lever", c.lever}};
+  return {{"list", c.list}, {"unit", c.unit}, {"pct", c.pct}, {"px", kPxModeNames[static_cast<int>(c.px)]}, {"sells", c.sells}, {"mode", kModeNames[static_cast<int>(c.mode)]}};
 }
 
 std::vector<std::string> lists() {

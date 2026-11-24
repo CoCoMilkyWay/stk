@@ -2,9 +2,11 @@
 //
 // 名单: output/config/live/lists/<名>.csv, 每行首列一个 6 位代码 (可有 code 表头), 行序即排名 (首行最高); 按修改时间新在前.
 // 配置 Cfg: 名单、unit 最小调仓单元 (元, 不足即不做)、pct 行使比例 (0–100)、px 委托价、
-//   sells {代码: 卖出股数} (整步长、连同零股的整步长, 或全部可卖)、lever 融资加仓.
-// 融资加仓 (A 股加杠杆须先卖出自有部分、再融资买入, 回款留作现金日后择机买): 卖满 (全部可卖) 时不管最小单元, 其余照守;
-//   买入只融资买名单里的融资标的, 不出现金腿, 费用从卖后现金出; 行使比例只作用于 X'、L. 卖出股数由页面分配 (见 Hold::full).
+//   sells {代码: 卖出股数} (整步长、连同零股的整步长, 或全部可卖)、mode 普通 / 融资加仓 / 担保减仓.
+// 融资加仓与担保减仓的卖出股数由页面按同一比例分配 (见 Hold::full), 卖满 (全部可卖) 时不管最小单元, 其余照守.
+// 融资加仓 (A 股加杠杆须先卖出自有部分、再融资买入, 回款留作现金日后择机买):
+//   买入只融资买名单里的融资标的, 不出现金腿, 费用从卖后现金出; 行使比例只作用于 X'、L.
+// 担保减仓: 只卖非融资标的的持仓, 只卖不买, 回款留作现金.
 // 卖出还款 (券商行为, 国金实测, 控制不了): 担保品卖出一只有融资负债的票, 回款先自动偿还本只的负债 (负债额 − min(回款, 负债额),
 //   负债股数按额同比减), 余下才进现金. 故混合持仓 (有负债也有自有部分) 只卖自有部分做不到: 卖后剩下的反倒大半成了自有.
 //   实测 5 只中 4 只吻合; 600218 卖 200 股只还了 70 元 (疑为部成), 未核实.
@@ -29,6 +31,7 @@
 //   账户 现 / 调仓后 两栏同形: 预期总资产 = 现总资产 + 融资额 − 成本 − R, 预期净资产 = 现净资产 − 成本, 预期负债 = 现负债 − R + 融资额,
 //     持仓市值 = 总资产 − 现金, 杠杆 = 总资产 / 净资产, 维持担保比例 = 总资产 / 负债. 现总资产 = 读时现金 + 现持仓市值.
 //     融资持仓 = Σ 融资部分股数 × 现价 (调仓后 = 卖后按还款后的负债重算 + 融资买入额), 自有持仓 = 持仓市值 − 融资持仓.
+//     调仓后的可用保证金只在没有买单时出 (担保减仓、只卖): 即卖后 X'.
 //
 // 可用保证金 (券商口径) X = 现金 + S − 负债利息, 持仓部分
 //   S = Σ 折算率 × 非融资部分市值 + Σ g(融资部分市值 − 负债金额) − Σ 负债金额 × 融资保证金比例,
@@ -61,12 +64,17 @@ double surplus(const Bal &bal, const Keyed<Debt> &debts, const Prices &px, const
 // 持仓为 bal、负债为 debts、行情为 quotes 时的可用保证金 (不含现金变动); 读时 = 快照 s 的持仓与负债 × 读时现价 px0
 double avail(const Snapshot &s, const Prices &px0, const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms);
 
+enum class Mode : uint8_t { Plain,
+                            Lever,
+                            Trim };
+inline constexpr const char *kModeNames[3] = {"普通", "融资加仓", "担保减仓"};
+
 struct Cfg {
   std::string list;
   double unit = 10000, pct = 100;
   PxMode px = PxMode::Sweep;
   std::map<std::string, int64_t> sells; // 只存 > 0
-  bool lever = false;
+  Mode mode = Mode::Plain;
 };
 
 // 不可买的原因; 可买 → 空
@@ -87,8 +95,9 @@ struct Hold {
   // 持仓 / 可卖 / 非融资持仓 (= 持仓 − 融资部分, 融资部分 = min(负债数量, 持仓)) [股]; 可卖不含今日买入的 (T+1)
   int64_t bal = 0, avail = 0, own = 0;
   double debt = 0; // 本只融资负债额 [元]; > 0 即卖出回款先还它 (见文件头「卖出还款」)
-  // 融资加仓的卖满 full 与其分母 base [股]: 有自有部分 (own > 0) 即 全部可卖 / 持仓, 否则 (纯融资, 已是要的形) 0 / 0.
-  //   混合持仓也整只卖: 只卖自有部分做不到 (回款先还本只负债), 卖净了再融资买回. base 含今日买入的 ⇒ full < base 即今日卖不满
+  // 卖出总 bar 的卖满 full 与其分母 base [股]: 要卖的即 全部可卖 / 持仓, 不卖的 0 / 0. base 含今日买入的 ⇒ full < base 即今日卖不满
+  //   融资加仓: 有自有部分 (own > 0) 的要卖, 纯融资的已是要的形; 混合持仓也整只卖: 只卖自有部分做不到 (回款先还本只负债), 卖净了再融资买回
+  //   担保减仓: 非融资标的要卖, 融资标的不卖; 普通: 都 0 / 0
   int64_t full = 0, base = 0;
   double px = 0;
   int64_t lot = 0, step = 0, sell = 0;
@@ -98,9 +107,9 @@ struct Hold {
 };
 
 // 能成单的卖出股数里离 x 最近的 (down = 不超过 x 的最大的): 0 不卖、起卖股数 (够起买股数且够 unit 元) 起按步长递增 (或连同零股)、
-//   全部可卖 (够 unit 元才有; lever = 融资加仓: 不管 unit, 卖满即可零碎)
+//   全部可卖 (够 unit 元才有; by_bar = 有卖出总 bar 的模式 (融资加仓 / 担保减仓): 不管 unit, 卖满即可零碎)
 //   零股: 沪深主板 / 创业板步长 100, 不足 100 的零股只能一次卖完 ⇒ 部分卖出的股数 ≡ 0 或 ≡ 可卖 % 100 (连同全部零股); 科创板步长 1
-int64_t snap(const Hold &h, double unit, double x, bool down = false, bool lever = false);
+int64_t snap(const Hold &h, double unit, double x, bool down = false, bool by_bar = false);
 
 struct Leg {
   Credit credit = Credit::Plain;
@@ -120,7 +129,7 @@ struct Target {
 struct Sheet {
   double assets = 0, net = 0, debt = 0, cash = 0, mv = 0; // mv = 持仓市值 = 总资产 − 现金
   double fin = 0;                                         // 其中融资持仓 (各只融资部分 min(负债数量, 持仓) × 价); 自有持仓 = mv − fin
-  std::optional<double> X;                                // 调仓后不出 (要按买后持仓与负债重算)
+  std::optional<double> X;                                // 调仓后只在没有买单时出 (= 卖后 X'); 有买单不出 (要按买后持仓与负债重算)
   double L = 0, lev = 0;
   std::optional<double> maint;
 };

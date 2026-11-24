@@ -265,11 +265,12 @@ bool cap_slider(const char *id, float &v, float top, float w, const std::string 
   return act;
 }
 
-// 融资加仓的卖出总 bar (占 Σ base 额, 见 Hold::full / base): 拖动 = 各持仓卖其 base 的同一比例 r, 各只至多卖到 full,
+// 卖出总 bar (融资加仓 / 担保减仓; 占 Σ base 额, 见 Hold::full / base): 拖动 = 各持仓卖其 base 的同一比例 r, 各只至多卖到 full,
 //   r 取到合计恰为 bar 值 (各只先截到 full 再合计, 故按 r 二分而非直接按 bar 值分; 覆盖各只的卖出滑杆, 按能成单的档向下取, 照守最小单元;
-//   卖满不管最小单元; 剩下不足一个最小单元且已过半的即卖满, 不留碎股). 纯融资的持仓不卖; 混合持仓也整只卖 (只卖自有部分做不到)
-//   拖不过上限 = Σ full 额 / Σ base 额 (今日买入的不可卖, 上限 < 100% 即标色: 本次融资加仓做不满). 显示 = Σ min(卖出, full) 额 / Σ base 额
-void lever_sell(LiveHub &hub) {
+//   卖满不管最小单元; 剩下不足一个最小单元且已过半的即卖满, 不留碎股). 融资加仓: 纯融资的持仓不卖, 混合持仓也整只卖 (只卖自有部分做不到);
+//   担保减仓: 只卖非融资标的. 拖不过上限 = Σ full 额 / Σ base 额 (今日买入的不可卖, 上限 < 100% 即标色: 本次做不满). 显示 = Σ min(卖出, full) 额 / Σ base 额
+void bar_sell(LiveHub &hub) {
+  const bool lever = hub.in().cfg.mode == live::rebal::Mode::Lever;
   const auto &p = hub.plan().plan;
   double base = 0, cap = 0, got = 0;
   if (p)
@@ -282,16 +283,20 @@ void lever_sell(LiveHub &hub) {
   float pct = base > 0 ? static_cast<float>(got / base * 100) : 0.f;
   const bool capped = std::lround(top) < 100;
   ImGui::BeginDisabled(cap <= 0 || hub.busy());
-  const bool drag = cap_slider("##lever_sell", pct, top, ImGui::GetFontSize() * (capped ? 9 : 6),
+  const bool drag = cap_slider("##bar_sell", pct, top, ImGui::GetFontSize() * (capped ? 9 : 6),
                                capped ? strf("%.0f%% · 限 %.0f%%", pct, top) : strf("%.0f%%", pct), capped ? kHot : ImGui::GetStyleColorVec4(ImGuiCol_Text));
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip("自有部分卖出比例: 拖动即按同一比例分到各持仓的卖出滑杆 (按能成单的档向下取, 照守最小单元; 卖满不管; 剩下不足一个最小单元且已过半的即卖满, 不留碎股), "
+    tip("%s卖出比例: 拖动即按同一比例分到各持仓的卖出滑杆 (按能成单的档向下取, 照守最小单元; 卖满不管; 剩下不足一个最小单元且已过半的即卖满, 不留碎股), "
         "可再逐只调\n"
-        "• 拉满 = 有自有部分的持仓全部可卖都卖; 纯融资的不卖\n"
-        "• 混合持仓 (有融资负债也有自有部分) 也整只卖: 券商把回款先还本只负债, 只卖自有部分做不到; 其卖出标橙\n"
-        "显示 = Σ 卖出额 / Σ 有自有部分的持仓市值\n"
+        "%s"
+        "显示 = Σ 卖出额 / Σ %s持仓市值\n"
         "上限 %.0f%% = Σ 其可卖额 / Σ 其持仓额%s",
-        top, capped ? "\n上限不足 100%: 部分仓位今日不可卖 (今日买入), 拖不上去, 本次融资加仓做不满" : "");
+        lever ? "自有部分" : "非融资标的",
+        lever ? "• 拉满 = 有自有部分的持仓全部可卖都卖; 纯融资的不卖\n"
+                "• 混合持仓 (有融资负债也有自有部分) 也整只卖: 券商把回款先还本只负债, 只卖自有部分做不到; 其卖出标橙\n"
+              : "• 拉满 = 非融资标的的持仓全部可卖都卖; 融资标的不卖\n",
+        lever ? "有自有部分的" : "非融资标的的", top,
+        capped ? strf("\n上限不足 100%%: 部分仓位今日不可卖 (今日买入), 拖不上去, 本次%s做不满", lever ? "融资加仓" : "担保减仓").c_str() : "");
   ImGui::EndDisabled();
   ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
   ImGui::TextUnformatted("卖出");
@@ -323,14 +328,20 @@ void lever_sell(LiveHub &hub) {
 }
 
 void rebal_ctl(LiveHub &hub, BoardState &st) {
+  using live::rebal::Mode;
   const live::rebal::Cfg &cfg = hub.in().cfg;
-  if (ImGui::RadioButton("普通##rebal", !cfg.lever))
-    hub.edit_cfg([](live::rebal::Cfg &c) { c.lever = false; });
+  const auto mode_btn = [&](const char *label, Mode m, const char *hint) {
+    if (ImGui::RadioButton(label, cfg.mode == m))
+      hub.edit_cfg([m](live::rebal::Cfg &c) { c.mode = m; });
+    if (hint && ImGui::IsItemHovered())
+      tip("%s", hint);
+  };
+  mode_btn("普通##rebal", Mode::Plain, nullptr);
   ImGui::SameLine();
-  if (ImGui::RadioButton("融资加仓", cfg.lever))
-    hub.edit_cfg([](live::rebal::Cfg &c) { c.lever = true; });
-  if (ImGui::IsItemHovered())
-    tip("A 股加杠杆须先卖出自有部分、再融资买入: 卖出有自有部分的持仓 (卖出总 bar; 混合持仓整只卖, 回款先还其负债) → 只融资买名单里的融资标的 (不出现金腿), 回款留作现金日后择机买");
+  mode_btn("融资加仓", Mode::Lever,
+           "A 股加杠杆须先卖出自有部分、再融资买入: 卖出有自有部分的持仓 (卖出总 bar; 混合持仓整只卖, 回款先还其负债) → 只融资买名单里的融资标的 (不出现金腿), 回款留作现金日后择机买");
+  ImGui::SameLine();
+  mode_btn("担保减仓", Mode::Trim, "按同一比例卖出非融资标的的持仓 (卖出总 bar), 融资标的不卖; 只卖不买, 回款留作现金");
   ImGui::SameLine(0, ImGui::GetFontSize());
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
   if (ImGui::BeginCombo("名单", cfg.list.empty() ? "(无)" : cfg.list.c_str())) {
@@ -359,17 +370,20 @@ void rebal_ctl(LiveHub &hub, BoardState &st) {
   if (ImGui::IsItemHovered())
     tip("元, 不足此额的单不做, 新开仓至少买这么多; 回车或点别处生效");
   ImGui::SameLine(0, ImGui::GetFontSize());
-  if (cfg.lever) {
-    lever_sell(hub);
+  if (cfg.mode != Mode::Plain) {
+    bar_sell(hub);
     ImGui::SameLine();
   }
-  int pct = static_cast<int>(std::lround(cfg.pct));
-  ImGui::SetNextItemWidth(ImGui::GetFontSize() * (cfg.lever ? 6 : 7));
-  if (ImGui::SliderInt(cfg.lever ? "融资买入" : "行使", &pct, 0, 100, "%d%%"))
-    hub.edit_cfg([&](live::rebal::Cfg &c) { c.pct = pct; });
-  if (ImGui::IsItemHovered())
-    tip("%s", cfg.lever ? "本次用掉卖后可用保证金、可融余量的比例 (融资购买力, 不用现金); 名单里的融资标的尽量等权补齐"
-                        : "本次用掉现金、可用保证金、可融余量的比例");
+  if (cfg.mode != Mode::Trim) {
+    const bool lever = cfg.mode == Mode::Lever;
+    int pct = static_cast<int>(std::lround(cfg.pct));
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * (lever ? 6 : 7));
+    if (ImGui::SliderInt(lever ? "融资买入" : "行使", &pct, 0, 100, "%d%%"))
+      hub.edit_cfg([&](live::rebal::Cfg &c) { c.pct = pct; });
+    if (ImGui::IsItemHovered())
+      tip("%s", lever ? "本次用掉卖后可用保证金、可融余量的比例 (融资购买力, 不用现金); 名单里的融资标的尽量等权补齐"
+                      : "本次用掉现金、可用保证金、可融余量的比例");
+  }
   ImGui::SameLine(0, ImGui::GetFontSize());
   const PlanView &v = hub.plan();
   ImGui::BeginDisabled(!v.plan || !v.wait.empty() || v.plan->orders.empty() || hub.busy());
@@ -468,7 +482,9 @@ void plan_sheet(LiveHub &hub, BoardState &st) {
       if (c == 3 && ImGui::IsItemHovered())
         tip("滑点 + 手续费 [元]");
       if (c == 4 && ImGui::IsItemHovered())
-        tip("入选只数 / 名单里可买只数%s", hub.in().cfg.lever ? " (融资加仓只计融资标的)" : "");
+        tip("入选只数 / 名单里可买只数%s", hub.in().cfg.mode == live::rebal::Mode::Lever  ? " (融资加仓只计融资标的)"
+                                           : hub.in().cfg.mode == live::rebal::Mode::Trim ? " (担保减仓不买)"
+                                                                                          : "");
       if (c == 6 && ImGui::IsItemHovered())
         tip("卖出的票里有融资负债的, 担保品卖出回款先还本只负债 (券商自动, 每只至多还清): 这部分不进现金, 负债等额减, 可融余量等额增\n"
             "卖后现金 / 保证金、购买力与账户「调仓后」都已按它算");
@@ -886,8 +902,8 @@ void head_tip(int c, const live::board::Frame &f) {
   case C_SELLABLE:
     return tip("可卖部分市值, 占总市值; 悬停看金额");
   case C_SELL:
-    return tip("调仓先卖的拖卖出\n只停在能成单的档: 够起买股数、够最小单元, 整手或连同零股 (零股只能一次卖完), 末档全卖 (融资加仓卖满不管最小单元)\n"
-               "融资加仓: 卖出总 bar 按同一比例分到各只, 可再逐只调, 总 bar 随之变\n"
+    return tip("调仓先卖的拖卖出\n只停在能成单的档: 够起买股数、够最小单元, 整手或连同零股 (零股只能一次卖完), 末档全卖 (融资加仓 / 担保减仓卖满不管最小单元)\n"
+               "融资加仓 / 担保减仓: 卖出总 bar 按同一比例分到各只 (担保减仓只分给非融资标的), 可再逐只调, 总 bar 随之变\n"
                "橙 = 本只有融资负债: 担保品卖出的回款先还本只负债 (券商自动), 余下才进现金, 卖后剩下的转为非融资");
   case C_AMT:
     return tip("调仓金额: 现金买, 融资买 / 卖 [万], 买红卖绿, 0 占位; 卖 = 拖到的股数 × 现价\n"
@@ -910,11 +926,12 @@ void sell_slider(LiveHub &hub, const live::rebal::Hold &h, bool priv) {
     ImGui::PushStyleColor(ImGuiCol_SliderGrab, kHot);
     ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, kHot);
   }
-  ImGui::BeginDisabled(live::rebal::snap(h, cfg.unit, static_cast<double>(h.avail), false, cfg.lever) == 0 || hub.busy());
+  const bool by_bar = cfg.mode != live::rebal::Mode::Plain;
+  ImGui::BeginDisabled(live::rebal::snap(h, cfg.unit, static_cast<double>(h.avail), false, by_bar) == 0 || hub.busy());
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4);
   const int64_t lo = 0, hi = h.avail;
   if (ImGui::SliderScalar("##sell", ImGuiDataType_S64, &n, &lo, &hi, ""))
-    hub.edit_cfg([&, m = live::rebal::snap(h, cfg.unit, static_cast<double>(n), false, cfg.lever)](live::rebal::Cfg &c) {
+    hub.edit_cfg([&, m = live::rebal::snap(h, cfg.unit, static_cast<double>(n), false, by_bar)](live::rebal::Cfg &c) {
       if (m > 0)
         c.sells[h.code] = m;
       else
