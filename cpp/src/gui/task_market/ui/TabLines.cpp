@@ -274,8 +274,9 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
       for_each_layer([&](int g) {
         for (size_t r = 0; r < d.rows[g].size(); ++r)
           if (const LinesRow &h = d.rows[g][r]; h.ref.ok() && picked(ui, page, h)) {
-            picks.push_back({h.ref, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag,
-                             kind == kOverlayIntra && ui.trades && h.ref.is(Quote::kAccount) ? trades : nullptr});
+            const bool acct = kind == kOverlayIntra && h.ref.is(Quote::kAccount);
+            picks.push_back({h.ref, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag, acct && ui.trades ? trades : nullptr,
+                             acct ? hold : nullptr});
             ids.push_back(&h.id);
           }
       });

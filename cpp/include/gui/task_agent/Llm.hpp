@@ -27,9 +27,8 @@ namespace GUI::Agent::llm {
 
 enum class Backend : uint8_t { Zhipu,
                                Cursor,
-                               Devin,
-                               Mcp }; // 下标 = kBackends
-AGENT_ROWS(Backend, kBackends, Mcp);
+                               Devin }; // 下标 = kBackends
+AGENT_ROWS(Backend, kBackends, Devin);
 
 // 该后端的 key (首次调用读 output/config/agent/keys.json); 空 = 未填
 const std::string &key(Backend b);

@@ -21,7 +21,7 @@ from pathlib import Path
 ENDPOINT = (
     Path(__file__).resolve().parent.parent / "output" / "run" / "agent" / "remote.json"
 )
-TIMEOUT = 60  # 秒: 服务端 run 至多等 25 秒即交回
+TIMEOUT = 360  # 秒: 服务端 run 执行中至多等 300 秒即交回
 OPENER = urllib.request.build_opener(
     urllib.request.ProxyHandler({})
 )  # 本机地址不走代理

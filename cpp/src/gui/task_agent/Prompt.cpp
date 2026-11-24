@@ -45,7 +45,7 @@ Message fill(Msg m, const KV &kv) {
 std::string or_none(std::string s, const char *none) { return s.empty() ? none : s; }
 
 std::string remark_text(const std::string &r) {
-  return r.empty() ? "" : "\n## 研究员对本会话的要求\n\n" + r + "\n\n只对这一段会话; 与上文的做法冲突处以它为准, 回复协议与会话约束照旧.\n";
+  return r.empty() ? "" : "\n## 研究员对本会话的要求\n\n" + r + "\n\n只对这一段会话; 与上文的做法冲突处以它为准, 调用协议与会话约束照旧.\n";
 }
 
 int visible(const std::vector<Result> &rs) {
@@ -451,7 +451,7 @@ Message RetryMessage(const std::string &error) {
 }
 
 std::string MemoText(const std::string &memo) {
-  return "\n# 研究员插话\n\n" + memo + "\n\n这是研究员在会话中途给的意见: 与上文的做法冲突处以它为准, 回复协议与会话约束照旧.\n";
+  return "\n# 研究员插话\n\n" + memo + "\n\n这是研究员在会话中途给的意见: 与上文的做法冲突处以它为准, 调用协议与会话约束照旧.\n";
 }
 
 std::string TextOf(const Round &rd) { return rd.memo.empty() ? rd.user : rd.user + MemoText(rd.memo); }

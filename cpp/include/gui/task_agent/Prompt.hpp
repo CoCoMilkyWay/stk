@@ -50,6 +50,6 @@ Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board
 Message RetryMessage(const std::string &error);
 std::string MemoText(const std::string &memo);
 std::string TextOf(const Round &rd);
-llm::Turns TurnsOf(Rounds rounds); // 大脑每轮收到的上下文 (内置模型与外部 agent 同一份; 单轮后端与外部 agent 取 llm::Flat)
+llm::Turns TurnsOf(Rounds rounds); // 折叠出的完整对话上下文 (无状态后端每轮用; 外部 agent 仅在接上历史会话或回退后补齐)
 
 } // namespace GUI::Agent

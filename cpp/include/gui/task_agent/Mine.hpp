@@ -3,9 +3,9 @@
 // =============================================================================
 // Mine — 挖掘会话 (唯一一套) 的状态机、计数与存档/可读日志 (基于双翼 Chat ⇄ Rig 对仗底座; 无 ImGui, 界面见 TaskAgent)
 // =============================================================================
-//   大脑 (Leg::llm.backend 决定, 继续时可换; 状态机 / 消息 / 约束 / 日志 / 界面完全同一套):
-//     内置大模型 发出 = Chat 问模型 (上下文 TurnsOf 纯函数折叠), 收成的回复即一批调用
-//     外部 agent (Backend::Mcp) 发出 = 交给它 (经 MCP, gui/task_agent/Remote.hpp 取 Flat(TurnsOf), 与内置单轮后端同一份), 它 reply 交来的一批 (calls JSON) 即回复
+//   大脑 (Setup::remote 区分; 状态机 / 消息 / 约束 / 日志 / 界面完全同一套):
+//     内置大模型 发出 = Chat 问模型 (无状态请求, 由 TurnsOf 折叠上下文), 收成的回复即一批调用
+//     外部 agent (Setup::remote) 发出 = 交给它 (经 MCP, gui/task_agent/Remote.hpp 默认交回本条增量, 断链/回退时补研究树), 它 reply 交来的一批 (calls JSON) 即回复
 //   双翼对仗:
 //     左翼 Chat (问大模型): send(ChatReq) → Think / Write / Restart / End(Reply)
 //     右翼 Lab  (问数据核): send(Tool, LabTask) → Search / Run / Look / Docs / End(LabOut)
@@ -68,6 +68,7 @@ struct Desk : Rig {
     bool ask = true;
     bool strict = true; // 守会话约束 (RuleMiss + eval_factor 须挂判为支持的假设)
     bool test = false;
+    bool remote = false; // 由外部 agent 经 MCP 驱动 (无内置模型)
     std::string remark;
   };
   struct Leg {
@@ -117,7 +118,7 @@ public:
   void stop();
   void cancel();
   void close();
-  void reply(std::string calls); // 外部 agent 交来一批 (calls JSON = 大模型的一条回复); 须 mcp() && waiting()
+  void reply(std::string calls); // 外部 agent 交来一批 (calls JSON = 大模型的一条回复); 须 remote() && waiting()
   void queue(std::string m);
   std::string unqueue();
   void save() const;
@@ -131,11 +132,11 @@ public:
   bool held() const { return phase_ != Phase::None; }
   bool idle() const { return !chat.busy() && !lab.busy(); }
   bool stopping() const { return stop_ && live(); }
-  bool mcp() const { return held() && leg.llm.backend == llm::Backend::Mcp; }                                    // 会话的大脑是外部 agent
+  bool remote() const { return held() && setup.remote; }                                                         // 会话由外部 agent 驱动
   bool waiting() const { return phase_ == Phase::Think && !timeline.empty() && timeline.back().span.running(); } // 本条已发出, 在等大脑交这一批
-  std::string brain() const;                                                                                     // 大脑一句: 后端 / 模型, 或 MCP
+  std::string brain() const;                                                                                     // 大脑一句: 后端 / 模型, 或外部 agent
   size_t acting() const { return cur_; }
-  int halts() const { return halts_; } // 停下的次数 (每次 pause 加一; 外部 agent 的等待据此认出新的停下)
+  int rev() const { return rev_; } // 时间线代号 (开 / 载入 / 回退递增; 外部 agent 据此判是否需补研究树)
   Cont cont() const;
   std::string hint() const;
 
@@ -168,7 +169,7 @@ private:
   bool stop_ = false;
   size_t cur_ = 0;
   int retries_ = 0;
-  int halts_ = 0;
+  int rev_ = 0;
   struct From {
     int round = 0;
     double t = 0.0;

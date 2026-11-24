@@ -755,8 +755,12 @@ struct Dot {
   const TradeMark *m = nullptr;
 };
 // 篮子日内叠加的一条 (线): x = 日轴第 k 日 · kSlots + 槽, y = 收对本条在日轴内首日前收 (base) 的涨跌幅 [%] (各条同一零点, 跨日接续);
-//   缺口处一点 y = NaN, 线断开. cross = 带现价十字 (只一条时): chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x; dots = 线上的成交点
+//   缺口处一点 y = NaN, 线断开. cross = 带现价十字 (只一条时): chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x; dots = 线上的成交点;
+//   acct = 账户前复权净资产与窗内回撤 (与 x / y 逐点对应; 非账户空)
 struct Overlay {
+  struct AcctPt {
+    double adj = 0, dd_pct = 0, dd_adj = 0, dd_real = 0;
+  };
   size_t pick = 0; // picks 下标
   std::string name;
   ImVec4 col;
@@ -765,6 +769,7 @@ struct Overlay {
   double chg = 0;
   int now = 0;
   std::vector<Dot> dots;
+  std::vector<AcctPt> acct;
 };
 // 成交点落到线 l 上: 成交日在日轴里才有; y = 线在该槽的值 (相邻点插值; 越过末点 = 末点值, 首点前 / 缺口里 = 不画)
 void dots_of(const Trades &t, std::span<const misc::Ymd> days, Overlay &l) {
@@ -990,6 +995,13 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         ImGui::TextColored(l->col, "%s", l->name.c_str());
         ImGui::SameLine();
         ImGui::TextColored(tint(y, 0), "%+.2f%s", y, unit);
+        if (!l->acct.empty()) {
+          const Overlay::AcctPt &a = l->acct[j];
+          ImGui::TextDisabled("  复权净资产 %s", yuan_text(a.adj).c_str());
+          ImGui::TextColored(a.dd_adj < -0.5 ? kDn : kFlat, "  复权回撤 %.2f%% (%s)", 100.0 * a.dd_pct, yuan_text(a.dd_adj).c_str());
+          ImGui::SameLine();
+          ImGui::TextColored(a.dd_real < -0.5 ? kDn : kFlat, "真正回撤 %s", yuan_text(a.dd_real).c_str());
+        }
       }
       if (net) { // 光标所在分钟的净流入
         const auto it = std::lower_bound(net->x.begin(), net->x.end(), x);
@@ -1083,14 +1095,16 @@ void overlay_tools(const ImVec2 &corner, const char *note, const char *hint, con
 }
 
 // ---- 叠加图两种 (OverlayKind): 同一条路 RenderOverlay, 差异只在 kOverlayDefs ----
-// 一张叠加图的公共输入: 日轴 (各条按日落位, 某条缺的日留空; 当日未接上 → 当日空) / 只一条
+// 一张叠加图的公共输入: 日轴 (各条按日落位, 某条缺的日留空; 当日未接上 → 当日空) / 只一条 / 价格库与当日 (账户前复权净资产与回撤)
 struct OverlayCtx {
   const OverlayState &st;
+  const PriceView &view;
+  const Live *live;
   std::span<const misc::Ymd> days;
   bool one;
 };
 
-// 涨跌幅: y = 收对本条在日轴内首日前收的涨跌幅 [%] (收盘线, 缺口处插 NaN 断开); 只一条另带现价十字
+// 涨跌幅: y = 收对本条在日轴内首日前收的涨跌幅 [%] (收盘线, 缺口处插 NaN 断开); 只一条另带现价十字; 账户线同步算前复权净资产与窗内回撤
 bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Overlay &l) {
   PlotBars s;
   intraday(src, cx.days, s);
@@ -1104,13 +1118,52 @@ bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Ove
     l.chg = e.ref > 0 ? (e.close / e.ref - 1.0) * 100.0 : 0.0;
     l.now = static_cast<int>(s.x.back());
   }
+  const Equity &eq = cx.view.equity;
+  const std::vector<EquityDay> *ed = p.ref.is(kAccount) && eq.days && !eq.days->empty() ? eq.days.get() : nullptr;
+  const double e_now = ed ? (src.joined && p.hold ? p.hold->now(cx.live) : eq.nav) : 0.0;
+  const double idx_now = ed && src.last() ? src.last()->close : 0.0;
+  const bool acct = ed && e_now > 0.0 && idx_now > 0.0;
+  const double today_base = acct ? eq.today_base(p.hold && p.hold->broker) : 0.0;
+  const misc::Ymd today_d = src.joined ? src.today->candle.date : 0;
+  double ahi = 0.0, phi = 0.0;
+  size_t ei = 0;
+  if (acct) {
+    ahi = e_now * (base / idx_now);
+    const misc::Ymd d0 = s.bars.front().date;
+    if (d0 == today_d) {
+      phi = ed->back().pnl;
+    } else {
+      const auto it = std::ranges::lower_bound(*ed, d0, {}, &EquityDay::date);
+      assert(it != ed->end() && it->date == d0 && "日内账户点所属日须在回放日内");
+      ei = static_cast<size_t>(it - ed->begin());
+      phi = ei > 0 ? (*ed)[ei - 1].pnl : 0.0;
+    }
+  }
   for (size_t i = 0, c = 0; i < s.bars.size(); ++i) {
     const bool cut = c < s.cut.size() && s.cut[c] < s.x[i];
-    if (cut && i > 0)
+    if (cut && i > 0) {
       l.x.push_back(s.cut[c]), l.y.push_back(std::numeric_limits<double>::quiet_NaN());
+      if (acct)
+        l.acct.push_back({});
+    }
     while (c < s.cut.size() && s.cut[c] < s.x[i])
       ++c;
     l.x.push_back(s.x[i]), l.y.push_back(pct(s.bars[i].close));
+    if (acct) {
+      const Candle &b = s.bars[i];
+      double pnl = 0.0;
+      if (b.date == today_d) {
+        pnl = ed->back().pnl + (today_base > 0.0 && b.ref > 0.0 ? today_base * (b.close / b.ref - 1.0) : 0.0);
+      } else {
+        while (ei + 1 < ed->size() && (*ed)[ei].date < b.date)
+          ++ei;
+        assert((*ed)[ei].date == b.date && "日内账户点所属日须在回放日内");
+        pnl = ei > 0 && (*ed)[ei].base > 0.0 && b.ref > 0.0 ? (*ed)[ei - 1].pnl + (*ed)[ei].base * (b.close / b.ref - 1.0) : (*ed)[ei].pnl;
+      }
+      const double adj = e_now * (b.close / idx_now);
+      ahi = std::max(ahi, adj), phi = std::max(phi, pnl);
+      l.acct.push_back({adj, ahi > 0.0 ? adj / ahi - 1.0 : 0.0, adj - ahi, pnl - phi});
+    }
   }
   return true;
 }
@@ -1255,7 +1308,7 @@ int RenderOverlay(OverlayKind kind, QuoteHub &mk, OverlayState &st, const std::v
   st.cache[kind]->update({mk.view, mk.live, picks, st.span[kind], st.flow_unit, st.flow_ends}, [&](OverlayData &c) {
     c.days = OverlayDays(kind, mk, st);
     c.gap = coverage(*mk.view, mk.live.get(), c.note, sizeof(c.note));
-    const OverlayCtx cx{st, c.days, picks.size() == 1};
+    const OverlayCtx cx{st, *mk.view, mk.live.get(), c.days, picks.size() == 1};
     c.ls.clear();
     for (size_t i = 0; i < picks.size(); ++i) {
       const OverlayPick &p = picks[i];

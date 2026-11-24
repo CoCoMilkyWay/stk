@@ -35,7 +35,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, backend, net, model)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Span, t0, t1)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Cand, name, name_cn, expr, hyp, note)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Pick, on, other, text)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Setup, sc, gate, ask, strict, test, remark)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Setup, sc, gate, ask, strict, test, remote, remark)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Leg, llm, gpu, budget)
 
 void to_json(json &j, const Act &a) {
@@ -264,6 +264,7 @@ void Mine::open(const SharedData &data, Setup s, Leg l) {
   restate();
   memo.clear(), reason.clear(), report.clear();
   cur_ = 0, stop_ = false, retries_ = 0;
+  ++rev_;
   t0 = Clock::now(), t_end = -1.0;
   phase_ = Phase::Think;
   depart();
@@ -329,7 +330,10 @@ void Mine::load(const SharedData &data, const std::string &dir) {
       cur_ = 0;
     }
     reason = "上次没停稳就退出了, 末轮作废重来";
+  } else if (reason.empty()) {
+    reason = "上次在等你答问题时退出了";
   }
+  ++rev_;
   restate();
   phase_ = Phase::Pause;
   report = report_of(reason);
@@ -342,7 +346,10 @@ void Mine::load(const SharedData &data, const std::string &dir) {
 void Mine::resume(const SharedData &data, Leg l) {
   assert(phase_ == Phase::Pause && idle() && !timeline.empty());
   flush();
-  leg = std::move(l);
+  if (setup.remote)
+    leg.gpu = l.gpu, leg.budget = l.budget;
+  else
+    leg = std::move(l);
   assert(catalog::ready(data, setup.sc, leg.gpu));
   t0 = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(t_end)), t_end = -1.0;
   stop_ = false, retries_ = 0;
@@ -465,6 +472,7 @@ void Mine::rewind(int k) {
   unsend();
   restate();
   cur_ = 0, retries_ = 0;
+  ++rev_;
   reason = "回退到第 " + std::to_string(k) + " 条发出前, 继续即重发";
   report = report_of(reason);
   log.report(report);
@@ -602,11 +610,11 @@ void Mine::replied(llm::Reply r) {
 Seat Mine::mine_seat() { return seat(cur_, setup.gate, log.dir(), !setup.strict, false, leg.gpu); }
 
 std::string Mine::brain() const {
-  return leg.llm.backend == llm::Backend::Mcp ? std::string("外部 agent (MCP)") : std::string(def(leg.llm.backend).name) + " / " + leg.llm.model;
+  return setup.remote ? std::string("外部 agent") : std::string(def(leg.llm.backend).name) + " / " + leg.llm.model;
 }
 
 void Mine::reply(std::string calls) {
-  assert(mcp() && waiting());
+  assert(remote() && waiting());
   Round &rd = timeline.back();
   const double t = now();
   rd.span.end(t);
@@ -669,7 +677,7 @@ void Mine::send() {
   }
   rd.span.begin(now());
   log.append_log(fmt_round_send(round(), rd));
-  if (leg.llm.backend != llm::Backend::Mcp)
+  if (!setup.remote)
     chat.send({leg.llm, system_ptr, TurnsOf(timeline)});
   save();
 }
@@ -708,7 +716,6 @@ void Mine::pause(std::string why) {
   log.report(report);
   phase_ = Phase::Pause;
   stop_ = false;
-  ++halts_;
   save();
 }
 

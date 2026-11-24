@@ -308,10 +308,67 @@ ImRect nav_legend(LinesState &ui, const std::vector<NavRow> &rows) {
   return h.box;
 }
 
+// 账户悬停读数 (NAV 主图: 单账户线全图带竖线吸附, 多线近线触发): 复权净资产 (从此刻净资产往前推) + 区间复权 / 真正回撤 (起点 = 当前缩放起点)
+void acct_hover(const LinesDerived &d, const LinesView &v, size_t n_lim, bool cross) {
+  const LinesSlice &as = v.slice[kGroupAccount][0][kIdeal];
+  const size_t n = std::min(n_lim, as.size());
+  if (n == 0)
+    return;
+  const double mx = ImPlot::GetPlotMousePos().x;
+  const auto ix = std::views::iota(size_t{0}, n);
+  size_t i = static_cast<size_t>(std::ranges::lower_bound(ix, mx, {}, [&](size_t j) { return as.x(j); }) - ix.begin());
+  if (i == n || (i > 0 && as.x(i) - mx > mx - as.x(i - 1)))
+    --i;
+  const double px = as.x(i), py = as.y(i);
+  if (cross) {
+    ImPlot::SetNextLineStyle(ImVec4(0.85f, 0.85f, 0.85f, 0.5f), 1.0f);
+    ImPlot::PlotInfLines("##acct_cx", &px, 1, ImPlotItemFlags_NoFit | ImPlotItemFlags_NoLegend);
+  }
+  {
+    const ImVec2 pt = ImPlot::PlotToPixels(px, py);
+    ImDrawList *dl = ImPlot::GetPlotDrawList();
+    ImPlot::PushPlotClipRect();
+    dl->AddCircleFilled(pt, 4.0f, ImGui::ColorConvertFloat4ToU32(row_color(d, kGroupAccount, 0, kTrade)));
+    dl->AddCircle(pt, 4.0f, IM_COL32(255, 255, 255, 230), 0, 1.5f);
+    ImPlot::PopPlotClipRect();
+  }
+  const size_t j = as.j0 + i;
+  char when[32];
+  if (j == 0) {
+    std::snprintf(when, sizeof(when), "%s 前收", misc::dash(d.dates[static_cast<size_t>(as.c.c->f)]).c_str());
+  } else {
+    const int day_i = as.day(i);
+    assert(day_i >= 0 && static_cast<size_t>(day_i) < d.dates.size());
+    const int mn = Quote::slot_label(std::clamp(static_cast<int>(std::lround(as.c.x(j))) % static_cast<int>(kDayW), 0, static_cast<int>(kDayW) - 1));
+    std::snprintf(when, sizeof(when), "%s %02d:%02d", misc::dash(d.dates[static_cast<size_t>(day_i)]).c_str(), mn / 60, mn % 60);
+  }
+  const int f0 = as.day(0);
+  const std::string from = f0 >= 0 ? misc::dash(d.dates[static_cast<size_t>(f0)]) : misc::dash(d.dates[static_cast<size_t>(as.c.c->f)]) + " 前收";
+  const double adj = v.acct.scale * py, ahi = v.acct.adj_hi[i];
+  const double dd_pct = ahi > 0.0 ? adj / ahi - 1.0 : 0.0, dd_adj = adj - ahi;
+  const double dd_real = v.acct.pnl[i] - v.acct.pnl_hi[i];
+  const double seg_chg = py - 1.0, seg_pnl = v.acct.pnl[i] - v.acct.pnl[0];
+  ImGui::BeginTooltip();
+  ImGui::TextUnformatted(when);
+  ImGui::SameLine();
+  ImGui::TextDisabled("起 %s", from.c_str());
+  ImGui::Text("复权净资产 %s", yuan_text(adj).c_str());
+  ImGui::SameLine();
+  ImGui::TextColored(tint(seg_chg, 0.0), "%+.2f%%", 100.0 * seg_chg);
+  ImGui::TextColored(dd_adj < -0.5 ? kDn : kFlat, "复权回撤 %.2f%% (%s)", 100.0 * dd_pct, yuan_text(dd_adj).c_str());
+  ImGui::TextColored(dd_real < -0.5 ? kDn : kFlat, "真正回撤 %s", yuan_text(dd_real).c_str());
+  ImGui::SameLine();
+  ImGui::TextDisabled("区间盈亏");
+  ImGui::SameLine(0, 4);
+  ImGui::TextColored(tint(seg_pnl, 0.0), "%s", yuan_text(seg_pnl, true).c_str());
+  ImGui::EndTooltip();
+}
+
 // ---- NAV 主图: 画选中行的两条线, 按组表画层 (for_each_layer; 策略在最上层) + 图例矩阵 (最上层, nav_legend);
 //      日内形未到的行 (minute_wait) 整行不画、不进图例, 到了一次画成分钟线;
 //      行刚选中 → ui.reveal 强制回默认显隐一次 (理想列显, 可成交列隐);
-//      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示; 鼠标在图例矩阵上不算), hot 行显示的线白粗线画在最上 ----
+//      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示; 鼠标在图例矩阵上不算), hot 行显示的线白粗线画在最上;
+//      账户线悬停 (只显账户线时全图带竖线吸附, 多线时近线触发) 显示前复权净资产与区间复权 / 真正回撤 ----
 void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf) {
   static ImRect s_box;      // 上帧图例矩阵 (悬停找线避开)
   std::vector<NavRow> rows; // 画序, 只含选中行的
@@ -345,14 +402,18 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
         on.push_back({x.row, x.s[l]});
       }
     }
-  const int k = s_box.Contains(ImGui::GetMousePos()) ? -1 : near_line(on.size(), [&](size_t j, double x) {
+  const bool in_box = s_box.Contains(ImGui::GetMousePos());
+  const int k = in_box ? -1 : near_line(on.size(), [&](size_t j, double x) {
     const LinesSlice &s = *on[j].s;
     return line_at(s.size(), x, [&](size_t i) { return slice_pt(s, i); });
   });
+  const bool only_acct = !on.empty() && std::ranges::all_of(on, [](const On &x) { return x.row->ref.is(Quote::kAccount); });
+  const bool hit_acct = k >= 0 && on[static_cast<size_t>(k)].row->ref.is(Quote::kAccount);
   if (k >= 0) {
     const LinesRow &r = *on[static_cast<size_t>(k)].row;
     ui.hover.plot = r.id;
-    row_tip(r);
+    if (!hit_acct || !v.acct.ok())
+      row_tip(r);
   }
   const std::optional<std::string> &hot = ui.hover.hot();
   for (size_t j = 0; j < on.size(); ++j)
@@ -362,6 +423,8 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
       ImPlot::SetNextLineStyle(kHotCol, kHotW);
       plot_slice(pf, id, *on[j].s, ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit);
     }
+  if (v.acct.ok() && ImPlot::IsPlotHovered() && !in_box && (only_acct || hit_acct))
+    acct_hover(d, v, hit_acct ? on[static_cast<size_t>(k)].s->size() : v.slice[kGroupAccount][0][kIdeal].size(), only_acct);
   s_box = nav_legend(ui, rows);
 }
 

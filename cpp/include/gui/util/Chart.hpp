@@ -30,6 +30,23 @@ inline ImVec4 tint(double v, double ref) { return v > ref ? kUp : v < ref ? kDn
 inline constexpr ImVec4 kHead(0.4f, 0.8f, 1.0f, 1.0f);       // 节标题
 inline constexpr ImVec4 kStratCol(1.0f, 0.55f, 0.15f, 1.0f); // 强调 (策略线 / 新选)
 
+// 金额 [元] 显示 (账户净资产 / 回撤 / 盈亏): ≥ 1 亿按亿, ≥ 1 万按万, 其余按元; sign = 正数带 "+"; |v| < 0.5 视作 0
+inline std::string yuan_text(double v, bool sign = false) {
+  const double a = std::abs(v);
+  if (a < 0.5)
+    return "0";
+  const char *pm = v < 0 ? "-" : sign ? "+"
+                                      : "";
+  char s[32];
+  if (a >= 1e8)
+    std::snprintf(s, sizeof(s), "%s%.2f亿", pm, a / 1e8);
+  else if (a >= 1e4)
+    std::snprintf(s, sizeof(s), "%s%.2f万", pm, a / 1e4);
+  else
+    std::snprintf(s, sizeof(s), "%s%.0f元", pm, a);
+  return s;
+}
+
 // 好 → 差色: u ∈ [0, 1] (0 = 最便宜 / 名次最好 绿 → 1 = 最贵 / 最差 红) 按色相渐变 (VAL band / 各右表名次底色同一份)
 inline ImVec4 band_col(double u, float a) {
   ImVec4 c(0.f, 0.f, 0.f, a);

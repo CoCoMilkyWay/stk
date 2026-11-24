@@ -78,14 +78,13 @@ std::string pascal(std::string_view id) {
 
 constexpr int kBackendN = static_cast<int>(kNum<llm::Backend>); // 界面按下标 (int) 选后端
 
-bool is_mcp(int backend) { return static_cast<llm::Backend>(backend) == llm::Backend::Mcp; }
 bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
 // Mine / Tools / Config 页的选项 (ui.json 读写同一份字段清单): 作用域 (Mine 与 Tools 页共用, 含开放的叶 / 算子) / 后端 / 连接 / 模型 / 评估后端 / 预算 (下次 New / 继续生效) /
 // 入库门槛 / 可否提问 / 会话约束 (下次开会话生效: New 或外部 agent 的 open) + Config 页在看的模板
 struct Options {
   Scope sc;
-  int backend = 0;   // llm::Backend 下标 (含 MCP)
+  int backend = 0;   // llm::Backend 下标
   std::string model; // 该后端嗅探表里的 id; 空 = 还没嗅探到
   std::array<bool, kBackendN> via_proxy = [] {
     std::array<bool, kBackendN> a{};
@@ -107,10 +106,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy
 
 llm::Net net_of(const Options &o, int backend) { return {o.via_proxy[backend], o.proxy_host, o.proxy_port}; }
 Mine::Setup setup_of(const Options &o) { return {.sc = o.sc, .gate = o.gate, .ask = o.ask, .strict = o.strict}; }
-// 大脑是外部 agent 时没有网络 / 模型 (与外部 open 开的会话存档同一份)
 Mine::Leg leg_of(const Options &o, bool gpu) {
-  const llm::Options opt = is_mcp(o.backend) ? llm::Options{.backend = llm::Backend::Mcp} : llm::Options{static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model};
-  return {.llm = opt, .gpu = gpu, .budget = o.budget};
+  return {.llm = {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model}, .gpu = gpu, .budget = o.budget};
 }
 
 // 模型嗅探: 每后端一个后台 llm::models (按该后端当前连接方式); cancel 须声明在 jobs 前 (future 析构 join 时它还活着)
@@ -333,8 +330,8 @@ struct Flow {
                          Write } stage = Idle;
   double since = 0.0, quiet = 0.0, writing = 0.0; // 本轮发出至今 / 距上个增量 / 正文已写
   std::string topic;
-  bool mcp = false; // 大脑是外部 agent: 只有等它交批, 没有流
-  bool stalled() const { return stage != Idle && !mcp && quiet > kQuietS; }
+  bool remote = false; // 外部 agent 驱动: 只有等它交批, 没有流
+  bool stalled() const { return stage != Idle && !remote && quiet > kQuietS; }
 };
 // 阶段由末轮的 Span 定, 静默由镜像 s.chat_live 的增量量 (外部 agent: 恒为等)
 Flow flow_of(Ui &s, const Mine &m) {
@@ -342,8 +339,8 @@ Flow flow_of(Ui &s, const Mine &m) {
   if (m.timeline.empty() || !m.timeline.back().span.running())
     return f;
   const Round &rd = m.timeline.back();
-  if (m.mcp()) {
-    f.stage = Flow::Wait, f.mcp = true, f.since = rd.span.len(m.now());
+  if (m.remote()) {
+    f.stage = Flow::Wait, f.remote = true, f.since = rd.span.len(m.now());
     return f;
   }
   const llm::Reply &live = s.chat_live.reply;
@@ -364,7 +361,7 @@ Flow flow_of(Ui &s, const Mine &m) {
 }
 // 阶段一句 (进行时) + 用时 + 静默
 std::string doing(const Flow &f) {
-  std::string h = f.mcp                    ? "等外部 agent 交这一批… " + dur(f.since)
+  std::string h = f.remote                 ? "等外部 agent 交这一批… " + dur(f.since)
                   : f.stage == Flow::Wait  ? "等待首包… " + dur(f.since)
                   : f.stage == Flow::Think ? "思考中… " + dur(f.since)
                                            : "输出中… " + dur(f.writing);
@@ -391,24 +388,24 @@ void load_session(const SharedData &data, Ui &s, const Saved &x) {
   s.mine->load(data, x.dir);
 }
 
-// 会话换了 (不论哪个入口开的 / 载入的): 作用域跟它, 本会话要求折起, 过程页从头钉底
+// 会话换了 (不论哪个入口开的 / 载入的): 清上下文缓存, 本会话要求折起, 过程页从头钉底 (不覆写 ui.json 的默认作用域)
 void follow(Ui &s) {
   const Mine &m = *s.mine;
   const std::string dir = m.held() ? m.log.dir() : std::string();
   if (dir == s.seen_dir)
     return;
   s.seen_dir = dir;
+  s.ctx.clear();
   if (dir.empty())
     return;
-  s.opt.sc = m.setup.sc;
   s.message.clear();
   s.fold_remark = true, s.flow_rounds = 0, s.pinned = true;
 }
 
 // 载入菜单: 本作用域存过的会话, 新到旧; 一行 = 时刻 / 轮数 / 停下原因 / 候选与入库 / 大脑, 悬浮看目录与要求
-void saved_menu(const SharedData &data, Ui &s) {
+void saved_menu(const SharedData &data, Ui &s, const Scope &sc) {
   if (s.saved.empty()) {
-    ImGui::TextDisabled("本作用域 (%s) 还没有存过的会话", catalog::label(s.opt.sc).c_str());
+    ImGui::TextDisabled("本作用域 (%s) 还没有存过的会话", catalog::label(sc).c_str());
     return;
   }
   for (const Saved &x : s.saved) {
@@ -426,18 +423,17 @@ void saved_menu(const SharedData &data, Ui &s) {
   }
 }
 
-void session_row(const SharedData &data, Ui &s) {
+void session_row(const SharedData &data, Ui &s, const Scope &active_sc) {
   Mine &m = *s.mine;
   const Options &o = s.opt;
-  const bool has_hold = !catalog::holds(data, o.sc.level).empty();
+  const bool has_hold = !catalog::holds(data, active_sc.level).empty();
   const bool keyed = has_key(o.backend);
-  const bool bound = m.lab.scope() == o.sc;
+  const bool bound = m.lab.scope() == active_sc;
   const bool has_leaves = bound && !m.lab.ctx().leaves.empty(), has_ops = bound && !m.lab.ctx().ops.empty();
-  const char *llm_not = bench_busy(s)       ? "Tools 页的调用在跑 (不并跑, 等它做完或取消)"
-                        : is_mcp(o.backend) ? nullptr
-                        : !keyed            ? "所选后端的 key 未填 (output/config/agent/keys.json)"
-                        : !model_ok(s)      ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
-                                            : nullptr;
+  const char *llm_not = bench_busy(s)  ? "Tools 页的调用在跑 (不并跑, 等它做完或取消)"
+                        : !keyed       ? "所选后端的 key 未填 (output/config/agent/keys.json)"
+                        : !model_ok(s) ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
+                                       : nullptr;
 
   ImGui::TextColored(kColHead, "2. Session:");
   ImGui::SameLine();
@@ -448,6 +444,7 @@ void session_row(const SharedData &data, Ui &s) {
                                                   : nullptr;
   const auto begin_session = [&](bool test) {
     Mine::Setup st = setup_of(o);
+    st.sc = active_sc;
     st.test = test;
     st.remark = std::string(text::trim(s.remark));
     if (std::string err = m.try_open(data, std::move(st), leg_of(o, use_gpu(s))); !err.empty())
@@ -458,7 +455,7 @@ void session_row(const SharedData &data, Ui &s) {
     begin_session(false);
   ImGui::EndDisabled();
   tip(why_not ? why_not
-              : "按当前作用域与 Config 开新会话: 打包规则与工具表发给大脑 (内置模型; 或 MCP: 等外部 agent 调无参 open 接上), 它调工具看数据、回测、提交\n"
+              : "按当前作用域与 Config 开新会话: 打包规则与工具表发给内置大模型, 它调工具看数据、回测、提交\n"
                 "资产轴与标签就绪才开得成; 停着的会话已存盘, 换下也能再载入");
   ImGui::SameLine();
   ImGui::BeginDisabled(!can_new);
@@ -471,17 +468,20 @@ void session_row(const SharedData &data, Ui &s) {
   ImGui::SameLine();
   ImGui::BeginDisabled(m.live() || !m.idle() || bench_busy(s));
   if (ImGui::Button("载入", ImVec2(60, 0))) {
-    s.saved = SavedSessions(o.sc);
+    s.saved = SavedSessions(active_sc);
     ImGui::OpenPopup("##saved");
   }
   ImGui::EndDisabled();
   tip("载入本作用域 (池 / 层 / 持有期) 存过的一段会话: 停在它停下处, 可继续, 也可右键某一轮回退");
   if (ImGui::BeginPopup("##saved")) {
-    saved_menu(data, s);
+    saved_menu(data, s, active_sc);
     ImGui::EndPopup();
   }
   ImGui::SameLine();
-  const bool can_resume = m.phase() == Phase::Pause && m.idle() && !llm_not;
+  const char *resume_not = bench_busy(s) ? "Tools 页的调用在跑 (不并跑, 等它做完或取消)"
+                           : m.remote()  ? nullptr
+                                         : llm_not;
+  const bool can_resume = m.phase() == Phase::Pause && m.idle() && !resume_not;
   ImGui::BeginDisabled(!can_resume);
   if (ImGui::Button("继续", ImVec2(60, 0))) {
     const bool gpu = use_gpu(s);
@@ -494,9 +494,11 @@ void session_row(const SharedData &data, Ui &s) {
     }
   }
   ImGui::EndDisabled();
-  const std::string resume_tip = m.phase() != Phase::Pause ? std::string("会话停着时可用: 接着停下处走")
-                                 : llm_not                 ? std::string(llm_not)
-                                                           : "继续 = " + m.hint() + "\n大脑 (可换) / 后端 / 模型 / 评估后端 / 预算按 Config 当前的; 本段预算从此刻起算";
+  const std::string resume_tip =
+      m.phase() != Phase::Pause ? std::string("会话停着时可用: 接着停下处走")
+      : resume_not              ? std::string(resume_not)
+      : m.remote()              ? "继续 = " + m.hint() + "\n恢复外部会话 (等外部 agent 调无参 run 接着做); 评估后端 / 预算按 Config 当前的, 本段预算从此刻起算"
+                                : "继续 = " + m.hint() + "\n后端 / 模型 / 评估后端 / 预算按 Config 当前的; 本段预算从此刻起算";
   tip(resume_tip.c_str());
   ImGui::SameLine();
   ImGui::BeginDisabled(m.phase() != Phase::Choose);
@@ -704,7 +706,7 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
     }
   }
   if (m.stopping())
-    what += " · 在做的调用做完即停", kind = TaskStatus::Kind::Warn;
+    what += m.phase() == Phase::Think ? " · 等本条回复收齐即停" : " · 在做的调用做完即停", kind = TaskStatus::Kind::Warn;
   if (frac >= 0.0f) {
     ImGui::ProgressBar(frac, ImVec2(120, 0), "");
     ImGui::SameLine();
@@ -1241,9 +1243,8 @@ struct View {
   const Lab &lab;
 };
 
-View view_of(const SharedData &data, Ui &s) {
+View view_of(const SharedData &data, Ui &s, const Scope &sc) {
   Mine &m = *s.mine;
-  const Scope &sc = s.opt.sc;
   if (!m.held() && !m.lab.busy() && m.lab.scope() != sc && !catalog::holds(data, sc.level).empty())
     m.lab.bind(data, sc, false);
   if (!m.notes.loaded(m.lab.test()))
@@ -1618,8 +1619,7 @@ void pick_end(const Open &o, const std::string &key) {
 }
 
 // 本层全部叶 (来源未开放的不列), 逐行勾开放给 agent 的
-void leaves_panel(Ui &s, const Context &c, bool locked) {
-  Scope &sc = s.opt.sc;
+void leaves_panel(Ui &s, Scope &sc, const Context &c, bool locked) {
   const Open &open = sc.leaves_of(c.level);
   s.leaf_filter.Draw("过滤##leaf", 240);
   const auto pass = [&](const Leaf &l) {
@@ -1670,8 +1670,8 @@ void leaves_panel(Ui &s, const Context &c, bool locked) {
 }
 
 // 全部算子, 逐行勾开放给 agent 的
-void ops_panel(Ui &s, const Context &c, bool locked) {
-  Open &open = s.opt.sc.ops;
+void ops_panel(Ui &s, Scope &sc, const Context &c, bool locked) {
+  Open &open = sc.ops;
   s.op_filter.Draw("过滤##op", 240);
   const auto pass = [&](const Op &o) { return s.op_filter.PassFilter((o.name + ' ' + o.name_cn + ' ' + o.note).c_str()); };
   std::vector<std::string> all, shown;
@@ -1768,10 +1768,12 @@ void remark_panel(Ui &s, const Mine &m) {
 // 过程 (本会话要求 + 全宽时间线 + 插话栏) / 假设板 / 候选表 / 特征表 / 算子表 (这三页不必开会话, 随作用域) / 工具表 (固定);
 // 刚进 Choose 切回过程并滚到底 (问题在那); 要跳到某个调用也切回过程; 回退确认框浮在页上. 大脑是大模型还是外部 agent, 这里都一样
 void render_mine(SharedData &data, Ui &s) {
-  ImGui::TextDisabled("外部 agent 的 MCP 接口 %s: 它调 open 同这里按 New (没有会话在跑时), 或无参 open 接上由 MCP 当大脑、还没 finish 的会话", s.remote->listen().c_str());
+  ImGui::TextDisabled("外部 agent 的 MCP 接口 %s: open 同这里按 New 开新会话, 无参 run 接上已有外部会话", s.remote->listen().c_str());
   Mine &m = *s.mine;
-  scope_row(data, s.opt.sc, s.pool_rows, m.lab, scope_locked(s), "1. Scope:");
-  session_row(data, s);
+  Scope shown = m.held() ? m.setup.sc : s.opt.sc;
+  Scope &sc = m.held() ? shown : s.opt.sc;
+  scope_row(data, sc, s.pool_rows, m.lab, scope_locked(s), "1. Scope:");
+  session_row(data, s, sc);
   follow(s);
   m.chat.live(s.chat_live);
   m.lab.live(s.lab_live);
@@ -1794,7 +1796,7 @@ void render_mine(SharedData &data, Ui &s) {
     hyps_panel(s, m);
     ImGui::EndTabItem();
   }
-  const View v = view_of(data, s);
+  const View v = view_of(data, s, sc);
   if (ImGui::BeginTabItem("候选###cands")) {
     if (ImGui::BeginTabBar("##cand_tabs")) {
       const std::string factors = "因子 (" + std::to_string(v.results.size()) + ")###factors";
@@ -1813,7 +1815,6 @@ void render_mine(SharedData &data, Ui &s) {
     }
     ImGui::EndTabItem();
   }
-  const Scope &sc = s.opt.sc;
   const Open &leaves_open = sc.leaves_of(v.ctx.level);
   int leaves_n = 0, leaves_on = 0, ops_on = 0;
   for (const Leaf &l : v.ctx.all_leaves)
@@ -1824,11 +1825,11 @@ void render_mine(SharedData &data, Ui &s) {
   const std::string leaves = "特征 (" + std::to_string(leaves_on) + "/" + std::to_string(leaves_n) + ")###leaves";
   const std::string ops = "算子 (" + std::to_string(ops_on) + "/" + std::to_string(v.ctx.all_ops.size()) + ")###ops";
   if (ImGui::BeginTabItem(leaves.c_str())) {
-    leaves_panel(s, v.ctx, scope_locked(s));
+    leaves_panel(s, sc, v.ctx, scope_locked(s));
     ImGui::EndTabItem();
   }
   if (ImGui::BeginTabItem(ops.c_str())) {
-    ops_panel(s, v.ctx, scope_locked(s));
+    ops_panel(s, sc, v.ctx, scope_locked(s));
     ImGui::EndTabItem();
   }
   const std::string tools = "工具 (" + std::to_string(kNum<Tool>) + ")###tools";
@@ -1846,68 +1847,63 @@ void render_config(Ui &s) {
   ImGui::TextColored(kColHead, "大脑");
   ImGui::SetNextItemWidth(120);
   if (ImGui::Combo("后端", &o.backend, [](void *, int i) { return kBackends[i].name; }, nullptr, kBackendN))
-    o.model = is_mcp(o.backend) ? std::string() : first_model(s, o.backend);
+    o.model = first_model(s, o.backend);
   ImGui::SameLine();
-  if (is_mcp(o.backend)) {
-    ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "MCP 接口 %s (无需 key / 模型)", s.remote->listen().c_str());
-    ImGui::TextDisabled("New / 继续 后等外部 agent (Devin / Cursor 等, 见仓库 AGENT.md) 调无参 open 接上; 下次 New / 继续 生效 (可换后端接上)");
-  } else {
-    if (has_key(o.backend))
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "key 已填");
-    else
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "key 未填 (output/config/agent/keys.json)");
-    ImGui::BeginDisabled(s.sniff.any());
-    int via = o.via_proxy[o.backend];
-    bool toggled = ImGui::RadioButton("直连", &via, 0);
-    ImGui::SameLine();
-    toggled |= ImGui::RadioButton("代理", &via, 1);
-    if (toggled && static_cast<bool>(via) != o.via_proxy[o.backend]) {
-      o.via_proxy[o.backend] = via;
-      sniff(s, o.backend);
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(140);
-    input_text("##proxy_host", o.proxy_host);
-    bool addr = ImGui::IsItemDeactivatedAfterEdit();
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(70);
-    ImGui::InputInt("HTTP 代理##proxy_port", &o.proxy_port, 0, 0);
-    o.proxy_port = std::clamp(o.proxy_port, 1, 65535);
-    addr |= ImGui::IsItemDeactivatedAfterEdit();
-    if (addr)
-      for (int b = 0; b < kBackendN; ++b)
-        if (!is_mcp(b) && o.via_proxy[b])
-          sniff(s, b);
-    ImGui::EndDisabled();
-    tip("各后端分别选直连 / 代理, 代理地址共用 (HTTPS 后端 CONNECT, Devin 子进程经 HTTPS_PROXY); 改了即重新嗅探模型");
-    const std::vector<llm::Model> &ms = s.sniff.got[o.backend].list;
-    const std::string &sniff_err = s.sniff.got[o.backend].error;
-    const auto cur = std::find_if(ms.begin(), ms.end(), [&](const llm::Model &m) { return m.id == o.model; });
-    ImGui::SetNextItemWidth(320);
-    ImGui::BeginDisabled(ms.empty());
-    if (ImGui::BeginCombo("模型", cur == ms.end() ? o.model.c_str() : model_label(*cur).c_str())) {
-      for (const llm::Model &m : ms)
-        if (ImGui::Selectable(model_label(m).c_str(), m.id == o.model))
-          o.model = m.id;
-      ImGui::EndCombo();
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (s.sniff.busy(o.backend)) {
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "嗅探中");
-    } else if (has_key(o.backend)) {
-      if (ImGui::SmallButton("重新嗅探"))
-        sniff(s, o.backend);
-      ImGui::SameLine();
-      if (!sniff_err.empty())
-        ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "嗅探失败: %s", sniff_err.c_str());
-      else if (ms.empty())
-        ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "该后端无可用模型");
-      else
-        ImGui::TextDisabled("%zu 个可用", ms.size());
-    }
-    ImGui::TextDisabled("下次 New / 继续 生效 (继续时换了后端或模型, 对话历史照时间线重开)");
+  if (has_key(o.backend))
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "key 已填");
+  else
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "key 未填 (output/config/agent/keys.json)");
+  ImGui::BeginDisabled(s.sniff.any());
+  int via = o.via_proxy[o.backend];
+  bool toggled = ImGui::RadioButton("直连", &via, 0);
+  ImGui::SameLine();
+  toggled |= ImGui::RadioButton("代理", &via, 1);
+  if (toggled && static_cast<bool>(via) != o.via_proxy[o.backend]) {
+    o.via_proxy[o.backend] = via;
+    sniff(s, o.backend);
   }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(140);
+  input_text("##proxy_host", o.proxy_host);
+  bool addr = ImGui::IsItemDeactivatedAfterEdit();
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(70);
+  ImGui::InputInt("HTTP 代理##proxy_port", &o.proxy_port, 0, 0);
+  o.proxy_port = std::clamp(o.proxy_port, 1, 65535);
+  addr |= ImGui::IsItemDeactivatedAfterEdit();
+  if (addr)
+    for (int b = 0; b < kBackendN; ++b)
+      if (o.via_proxy[b])
+        sniff(s, b);
+  ImGui::EndDisabled();
+  tip("各后端分别选直连 / 代理, 代理地址共用 (HTTPS 后端 CONNECT, Devin 子进程经 HTTPS_PROXY); 改了即重新嗅探模型");
+  const std::vector<llm::Model> &ms = s.sniff.got[o.backend].list;
+  const std::string &sniff_err = s.sniff.got[o.backend].error;
+  const auto cur = std::find_if(ms.begin(), ms.end(), [&](const llm::Model &m) { return m.id == o.model; });
+  ImGui::SetNextItemWidth(320);
+  ImGui::BeginDisabled(ms.empty());
+  if (ImGui::BeginCombo("模型", cur == ms.end() ? o.model.c_str() : model_label(*cur).c_str())) {
+    for (const llm::Model &m : ms)
+      if (ImGui::Selectable(model_label(m).c_str(), m.id == o.model))
+        o.model = m.id;
+    ImGui::EndCombo();
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (s.sniff.busy(o.backend)) {
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "嗅探中");
+  } else if (has_key(o.backend)) {
+    if (ImGui::SmallButton("重新嗅探"))
+      sniff(s, o.backend);
+    ImGui::SameLine();
+    if (!sniff_err.empty())
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "嗅探失败: %s", sniff_err.c_str());
+    else if (ms.empty())
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "该后端无可用模型");
+    else
+      ImGui::TextDisabled("%zu 个可用", ms.size());
+  }
+  ImGui::TextDisabled("下次 New / 继续 生效 (内置会话继续时换了后端或模型, 对话历史照时间线重开); 外部 agent 经本机 MCP 接口 %s 接入", s.remote->listen().c_str());
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "评估");
@@ -2019,8 +2015,6 @@ TaskHandle CreateAgentTask() {
       return {};
     if (idx == TAB_CONFIG) {
       const int b = s.opt.backend;
-      if (is_mcp(b))
-        return {};
       if (!has_key(b))
         return {TaskStatus::Kind::Warn, "no key"};
       if (s.sniff.busy(b))
@@ -2037,7 +2031,7 @@ TaskHandle CreateAgentTask() {
     if (m.phase() == Phase::Choose)
       return {TaskStatus::Kind::Warn, "answer"};
     if (m.phase() == Phase::Think)
-      return {TaskStatus::Kind::Busy, m.mcp() ? "agent" : "asking"};
+      return {TaskStatus::Kind::Busy, m.remote() ? "agent" : "asking"};
     if (m.phase() == Phase::Act)
       return {TaskStatus::Kind::Busy, "call " + std::to_string(m.acting() + 1) + "/" + std::to_string(m.timeline.back().acts.size())};
     if (m.phase() == Phase::Pause)
@@ -2062,7 +2056,7 @@ TaskHandle CreateAgentTask() {
     default:
       if (!s.bench)
         s.bench = std::make_unique<Bench>();
-      s.bench->draw(data, tool_of(idx), s.opt.sc, s.opt.gate, use_gpu(s), s.mine->live() || !s.mine->idle());
+      s.bench->draw(data, tool_of(idx), s.mine->held() ? s.mine->setup.sc : s.opt.sc, s.opt.gate, use_gpu(s), s.mine->live() || !s.mine->idle());
       break;
     }
     ImGui::EndChild();

@@ -1095,6 +1095,7 @@ void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string
 void MakeLinesLive(const LinesDerived &d, const Quote::Live *y, LinesLive &t) {
   for (int g = 0; g < kRowGroups; ++g)
     t.tail[g].assign(d.rows[g].size(), {});
+  t.acct_now = d.view ? d.view->equity.nav : 0.0;
   if (!y || !d.live)
     return;
   assert(y->date == d.live);
@@ -1111,6 +1112,8 @@ void MakeLinesLive(const LinesDerived &d, const Quote::Live *y, LinesLive &t) {
         t.tail[g][r] = tail_of(*w.line[kIdeal], di, *day, w.src[kIdeal].minutes != nullptr);
       }
     }
+  if (!d.rows[kGroupAccount].empty() && t.tail[kGroupAccount][0].k >= 0 && d.hold)
+    t.acct_now = d.hold->now(y);
 }
 
 void MakeLinesRoll(const LinesDerived &d, const LinesLeg &lg, int years, LinesRolls &r) {
@@ -1168,6 +1171,46 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
       rank_col(n, -1, [&](size_t i) -> Ranked & { return v.pct[g][i][b]; });
     for (int j = 0; j < kMarginVals; ++j)
       rank_col(n, -1, [&](size_t i) -> Ranked & { return v.margin[g][i][static_cast<size_t>(kMarPct + j)]; });
+  }
+
+  // ---- 账户前复权净资产与区间回撤 (与账户理想线切片逐点对仗, 从当前净资产往前推) ----
+  v.acct = {};
+  if (!d.rows[kGroupAccount].empty() && d.view && d.view->equity.days && !d.view->equity.days->empty() && t.acct_now > 0.0) {
+    const LinesSlice &sl = v.slice[kGroupAccount][0][kIdeal];
+    const size_t n = sl.size();
+    const double idx_now = sl.c.size() > 0 ? sl.c.y(sl.c.size() - 1) : 0.0;
+    if (n > 0 && idx_now > 0.0) {
+      const Quote::Equity &eq = d.view->equity;
+      const std::vector<Quote::EquityDay> &ed = *eq.days;
+      const double today_base = eq.today_base(d.hold && d.hold->broker);
+      const size_t hist_n = sl.c.c->x.size();
+      v.acct.scale = t.acct_now * sl.base / idx_now;
+      v.acct.adj_hi.resize(n), v.acct.pnl.resize(n), v.acct.pnl_hi.resize(n);
+      size_t ei = 0;
+      double ahi = -std::numeric_limits<double>::infinity(), phi = -std::numeric_limits<double>::infinity();
+      for (size_t i = 0; i < n; ++i) {
+        const size_t j = sl.j0 + i;
+        const double idx = sl.c.y(j);
+        double p = 0.0;
+        if (j >= hist_n) {
+          const double ref = sl.c.c->e.back();
+          p = ed.back().pnl + (today_base > 0.0 && ref > 0.0 ? today_base * (idx / ref - 1.0) : 0.0);
+        } else if (j > 0) {
+          const int k = sl.c.day(j);
+          const misc::Ymd day = d.dates[static_cast<size_t>(k)];
+          while (ei + 1 < ed.size() && ed[ei].date < day)
+            ++ei;
+          assert(ed[ei].date == day && "账户线点所属日须在回放日内");
+          if (ei > 0) {
+            const double ref = sl.c.c->end(k);
+            p = ed[ei].base > 0.0 && ref > 0.0 ? ed[ei - 1].pnl + ed[ei].base * (idx / ref - 1.0) : ed[ei].pnl;
+          }
+        }
+        const double adj = v.acct.scale * sl.y(i);
+        ahi = std::max(ahi, adj), phi = std::max(phi, p);
+        v.acct.adj_hi[i] = ahi, v.acct.pnl[i] = p, v.acct.pnl_hi[i] = phi;
+      }
+    }
   }
 
   // ---- VAL / MARGIN 标的各口 band: 标的理想线切片的日末点 (起点 + 各日末点);

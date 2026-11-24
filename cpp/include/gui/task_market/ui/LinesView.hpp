@@ -256,6 +256,7 @@ struct LinesDerived {
 // 一级旁支: 理想线的当日尾 (派生 / 当日变才重算, 只几个点): 有行情键、理想线接着价格历史、派生的当日 (live) 有该键当日的行
 struct LinesLive {
   std::vector<LineTail> tail[kRowGroups]; // [RowGroup][行]
+  double acct_now = 0.0;                  // 账户线末点对应的净资产 (接上当日 = Holdings::now, 否则回放末日 Equity::nav)
 };
 
 // 二级: VAL / MARGIN 标的的滚动分位 (只随标的 / 窗长). 每口 v (估值五口 = 收益率 EP / BP / SP / CP / DY, 两融两口 = 余额占比 RZ / RQ)
@@ -321,11 +322,20 @@ struct LinesBand {
   double now = 0.0, pct = 0.0;                           // 区间末个有分位点的收益率 / 余额占比 · 估值分位 (%, 见 LinesRoll::pct)
   double bal = std::numeric_limits<double>::quiet_NaN(); // 两融口: 同日余额 (亿元, Book::bal)
 };
+// 账户前复权净资产与区间回撤 (与账户理想线切片逐点对仗, 起始点 = 当前区间起点):
+//   前复权净资产 E_adj(i) = scale · sl.y(i) (= E_now · I(i) / I_now, 末点对齐此刻净资产 E_now);
+//   复权回撤 = 对区间内最高复权净资产 adj_hi[i]; 真正回撤 = 剔除出入金后的累计真实盈亏 pnl[i] 对区间内最高值 pnl_hi[i]
+struct AccountView {
+  double scale = 0.0; // E_now · sl.base / I_now (≤ 0 = 无)
+  std::vector<double> adj_hi, pnl, pnl_hi;
+  bool ok() const { return scale > 0.0 && !adj_hi.empty(); }
+};
 struct LinesView {
   std::vector<std::array<LinesSlice, kPairLines>> slice[kRowGroups]; // [RowGroup][行][PairLine]
   std::vector<std::array<Ranked, kNavNums>> num[kRowGroups];         // [RowGroup][行][NavNum] NAV 右表数值列
   std::vector<std::array<Ranked, kPoolVals>> pct[kRowGroups];        // [RowGroup][行][PoolVal] VAL / MARGIN 表格: 区间末个可算日的估值分位 (%)
   std::vector<std::array<Ranked, kMarginNums>> margin[kRowGroups];   // [RowGroup][行][MarginNum] MARGIN 表格: 区间末数
+  AccountView acct;                                                  // 账户前复权净资产与区间回撤 (悬停读数)
   std::vector<double> band_x, band_p;                                // VAL / MARGIN 标的理想线切片的日末点 x / 点位 (各口 band 共用; 未选 → 空)
   LinesBand band[kPoolVals];                                         // [PoolVal] 标的的
 };

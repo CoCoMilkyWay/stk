@@ -759,9 +759,11 @@ constexpr Driver kDrivers[] = {
     {https_models<Backend::Zhipu, zhipu_models>, zhipu_send},
     {https_models<Backend::Cursor, cursor_models>, cursor_send},
     {devin_models, devin_send},
-    {nullptr, nullptr},
 };
 static_assert(std::size(kDrivers) == kNum<Backend>);
+
+constexpr std::string_view kJsonOnly =
+    "\n\n---\n\n# 输出格式\n每条回复只输出一个 JSON 对象 `{\"calls\": [...]}`，不要任何其他文字.\n";
 
 } // namespace
 
@@ -770,17 +772,15 @@ const std::string &key(Backend b) {
     if (!disk::exists(disk::AgentKeyFile)) {
       json j;
       for (const BackendDef &d : kBackends)
-        if (d.fake)
-          j[d.id] = d.fake;
+        j[d.id] = d.fake;
       disk::write(disk::AgentKeyFile, {}, j.dump(2) + "\n");
     }
     const json j = json::parse(disk::read(disk::AgentKeyFile), nullptr, false);
     assert(!j.is_discarded() && j.is_object() && "output/config/agent/keys.json 须是 JSON 对象");
     std::array<std::string, kNum<Backend>> k;
     for (size_t i = 0; i < k.size(); ++i)
-      if (kBackends[i].fake)
-        if (std::string s = str_of(j, kBackends[i].id); s != kBackends[i].fake)
-          k[i] = std::move(s);
+      if (std::string s = str_of(j, kBackends[i].id); s != kBackends[i].fake)
+        k[i] = std::move(s);
     return k;
   }();
   return keys[static_cast<size_t>(b)];
@@ -808,8 +808,9 @@ Reply send(const Options &o, std::string_view system, const Turns &t, const Delt
   assert(!t.empty() && t.front().user && t.back().user);
   for (size_t i = 1; i < t.size(); ++i)
     assert(t[i].user != t[i - 1].user && "user / assistant 交替");
+  const std::string sys = system.empty() ? std::string() : std::string(system) + std::string(kJsonOnly);
   const Clock::time_point t0 = Clock::now();
-  Reply r = d.send(o, system, t, on_delta, cancel);
+  Reply r = d.send(o, sys, t, on_delta, cancel);
   r.seconds = std::chrono::duration<double>(Clock::now() - t0).count();
   return r;
 }

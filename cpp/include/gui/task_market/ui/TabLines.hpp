@@ -25,7 +25,7 @@
 //     (RenderOverlay 涨跌幅: Market 篮子历史同一份, 当日由新浪快照合成; 对首日前收的涨跌幅, 横网格 (含 0 轴) 涨跌幅小字内标在右壁,
 //      线名中文小字贴线尾, 读数看十字光标); 只一条另带现价十字 (标涨跌幅 / 时刻);
 //     0 轴上叠每分钟净流入半透明红绿柱 (日轴各日, 同 FLOW 口径; 只选一条看它, 否则看全A.等);
-//     「交易」开关 (日内旁, 默认关): 账户线上叠券商今日成交点 (一分钟一点, 点内同只合并; 净买红 ▲ / 净卖绿 ▼, 大小随买卖总额; 悬停看各只买 / 卖额与股数)
+//     「交易」开关 (日内旁, 默认开): 账户线上叠券商今日成交点 (一分钟一点, 点内同只合并; 净买红 ▲ / 净卖绿 ▼, 大小随买卖总额; 悬停看各只买 / 卖额与股数)
 //   主图 / 日内栏贴边 (窄内边距, 不标轴名), 图区让给线
 //   悬停联动 (NAV 主图 / 日内栏 / FLOW 图 ↔ 右表, 同 Beta→Style: gui/util/HoverSync.hpp): 图上悬停最近一条线 = 右表该行底色亮并滚到居中
 //     (悬停止回原位; 主图另出行的悬停提示); 右表悬停一行 = 图上该行的线白粗线画在最上; 主图与日内栏互相跟着亮
@@ -254,7 +254,7 @@ struct LinesState {
   int cat[kPages] = {kGroupPool, kGroupPool, kGroupPool, kGroupPool, kGroupPool}; // [LinesPage] 右表类别条选中组 (RowGroup)
   BasketFilter filter[kBasketGroups] = {{}, {}, {.n_hi = 500, .flow = 5.f}};      // [BasketGroup] 默认: 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%
   bool intraday = true;                                                           // NAV 日内栏
-  bool trades = false;                                                            // NAV 日内栏的账户线叠今日成交点
+  bool trades = true;                                                             // NAV 日内栏的账户线叠今日成交点
   OverlayState overlay;                                                           // 叠加图 (日内栏 / FLOW) 与资金流段的档位
   CtaState cta;
 };
