@@ -9,8 +9,8 @@
 //     Lab    交右翼 worker 后台执行 (回测 eval_factor / 观察 view_* / 盘口重放 view_book / 研报库 search_docs · search_factors · read_doc)
 //     Human  等研究员点选答案 (ask_human)
 //   校验两层:
-//     协议层 (ParseCalls + RuleMiss): JSON 结构 / 工具名 / 参数类型与范围 / 回复级约束 → 不合则整条退回重发
-//     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 假设 / 证据 / 研报 id 不成 → 仅该调用 ok=false 写原因, 其余照做
+//     协议层 (ParseCalls): JSON 结构 / 工具名 / 参数类型与范围 / 批限额 → 不合则整批原地退回重发
+//     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 假设 / 研报 id 不成 → 仅该调用 ok=false 写原因, 其余照做
 //   工具清单 AGENT_TOOLS (唯一顺序 = Tool 的值): 一行一个工具 (枚举, id, 中文名, 执行, 类, 研究树留原文);
 //     Tool 挂入 AGENT_ROWS (Named + Tabled): def(t) 编译期取元数据, IdOf / FindId / JSON 序列化与其他枚举同一套
 //     说明表 doc(t) (Tools.cpp) 存编译期类型化参数表 ArgDef 与成文说明; 实现表 kSpecs (tools/Kit.cpp) 按清单拼名并编译期核签名
@@ -41,17 +41,18 @@ struct ExecDef {
 inline constexpr ExecDef kExecs[] = {{"当场"}, {"后台"}, {"等人"}};
 AGENT_ROWS(Exec, kExecs, Human);
 
-enum class Cat : uint8_t { Look,  // view_*
-                           Hyp,   // hypothesize / judge
-                           Trial, // eval_factor / submit_factor
-                           Query, // search_* / read_doc / list_*
-                           Note,  // request_* / note_insight / report_issue
-                           Misc };
+enum class Cat : uint8_t { Look,      // view_*
+                           Hyp,       // hypothesize / judge
+                           Trial,     // eval_factor / submit_factor
+                           Query,     // search_* / read_doc / list_*
+                           Note,      // request_* / note_insight / report_issue
+                           Misc,      // finish / ask_human
+                           Session }; // 会话内核调试 (仅工作台, 不进 agent 工具表)
 struct CatDef {
   const char *en, *cn; // en = 主栏 Tools 下的组名
 };
-inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Hypothesis", "假设"}, {"Trial", "回测"}, {"Query", "检索"}, {"Note", "记录"}, {"Misc", "其他"}};
-AGENT_ROWS(Cat, kCats, Misc);
+inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Hypothesis", "假设"}, {"Trial", "回测"}, {"Query", "检索"}, {"Note", "记录"}, {"Misc", "其他"}, {"Session", "会话"}};
+AGENT_ROWS(Cat, kCats, Session);
 
 // 工具清单: X(枚举, id, 中文名, 执行, 类, 研究树留结论原文)
 #define AGENT_TOOLS(X)                                                \
@@ -81,7 +82,11 @@ AGENT_ROWS(Cat, kCats, Misc);
   X(NoteInsight, "note_insight", "记发现", Sync, Note, true)          \
   X(ReportIssue, "report_issue", "报问题", Sync, Note, true)          \
   X(Finish, "finish", "结束", Sync, Misc, true)                       \
-  X(AskHuman, "ask_human", "问研究员", Human, Misc, true)
+  X(AskHuman, "ask_human", "问研究员", Human, Misc, true)             \
+  X(BuildContext, "build_context", "拼上下文", Sync, Session, false)  \
+  X(CheckBatch, "check_batch", "核整批调用", Sync, Session, false)    \
+  X(StepState, "step_state", "看状态转移", Sync, Session, false)      \
+  X(ProbeBrain, "probe_brain", "试跑大模型", Lab, Session, false)
 
 #define AGENT_TOOL_ID(T, id, cn, E, C, keep) T,
 enum class Tool : uint8_t { AGENT_TOOLS(AGENT_TOOL_ID) };
@@ -96,7 +101,15 @@ struct ToolMeta {
 #define AGENT_TOOL_META(T, id, cn, E, C, keep) {id, cn, Exec::E, Cat::C, keep},
 inline constexpr ToolMeta kTools[] = {AGENT_TOOLS(AGENT_TOOL_META)};
 #undef AGENT_TOOL_META
-AGENT_ROWS(Tool, kTools, AskHuman);
+AGENT_ROWS(Tool, kTools, ProbeBrain);
+
+constexpr bool IsAgentTool(Tool t) { return def(t).cat != Cat::Session; }
+inline constexpr size_t kAgentTools = [] {
+  size_t n = 0;
+  for (const Tool t : kVals<Tool>)
+    n += IsAgentTool(t);
+  return n;
+}();
 
 enum class Arg : uint8_t { Str,
                            Int,

@@ -1,29 +1,33 @@
 // 实盘: 一键调仓试算 — 名单按排名入选、等权补齐; 先卖, 再融资买入融资标的, 再现金买其余 (纯函数)
 //
 // 名单: output/config/live/lists/<名>.csv, 每行首列一个 6 位代码 (可有 code 表头), 行序即排名 (首行最高); 按修改时间新在前.
-// 配置 Cfg: 名单、unit 最小调仓单元 (元, 不足即不做)、pct 行使比例 (0–100)、px 委托价、
-//   sells {代码: 卖出股数} (整步长、连同零股的整步长, 或全部可卖)、mode、sell_over 卖超配、no_margin 不融资.
-// 模式 = 声明表 kModes 的一行, 四个维度: 卖出总 bar 分给谁 (Bar) × 买谁 (Buy) × 买入的现金腿 × 融资腿; 试算与页面只查表.
-//   普通      不分 (逐只手拖)       × 名单里可买的 × 现金 ✓ 融资 ✓   补到等权 (敞口 ↑)
-//   融资加仓  有自有部分的 (整只)   × 其中融资标的 × 现金 ✗ 融资 ✓   A 股加杠杆须先卖出自有部分、再融资买入; 回款留作现金 (杠杆 ↑)
-//   融资减仓  融资部分              × 名单里可买的 × 现金 ✓ 融资 ✗   卖出回款先还本只负债 (见「卖出还款」), 再现金买回 (杠杆 ↓)
-//   担保减仓  非融资标的 (整只)     × 不买                           回款留作现金 (敞口 ↓)
-//   融资加仓 ⇄ 融资减仓 镜像 (自有部分 ⇄ 融资部分, 融资腿 ⇄ 现金腿), 担保减仓 ⇄ 普通 镜像 (只卖 ⇄ 只买).
-//   有 bar 的模式卖出股数由页面按同一比例分配 (见 Hold::full / base), 卖满 (全部可卖) 时不管最小单元, 其余照守.
-//   普通另有两个开关 (缺省关): sell_over 卖超配 = 卖出不看 sells, 名单外的清掉、名单里超配的减到 W, W 与补到的 V 自洽 (二分 W 取 V ≥ W 的最大者;
-//     减过的不再补); no_margin 不融资 = 关掉融资腿 (只用现金买).
+// 配置 Cfg (名单另交, 见 plan 的 codes): 卖的方式 how + 卖 sell / 买 buy 两侧同形 (Side = 部分 × 范围), unit 最小调仓单元 (元, 不足即不做)、
+//   pct 行使比例 (0–100)、px 委托价、sells {代码: 卖出股数} (整步长、连同零股的整步长, 或全部可卖; 手拖与按比例用).
+// 两侧同形 Side:
+//   部分 Parts {own, fin}: 持仓的自有部分 / 融资部分 (融资部分 = min(负债数量, 持仓)). 卖 = 卖哪部分 (自有卖了进现金, 融资卖了还负债);
+//     买 = 买成哪部分 (自有 = 现金买入, 融资 = 融资买入). 两侧镜像: 自有 ⇄ 现金, 融资 ⇄ 负债.
+//   范围 Scope: 全部 / 融资标的 / 非融资标的 (按合并后的两融条款); 卖 = 动哪些持仓, 买 = 补名单里哪些 (融资部分只买得到融资标的).
+// 卖的方式 How (kHows 一行一个; 买恒为等权补齐, 与卖超配对偶):
+//   手拖    逐只拖各持仓的卖出滑杆 (sells); 不认部分与范围
+//   按比例  卖出总 bar 按同一比例分给范围内各持仓的所选部分, 写进各只滑杆 (可再逐只调):
+//             只融资 = 卖到盖住融资部分; 只自有 = 有自有部分的持仓整只卖 (混合持仓回款先还其负债, 只卖自有部分做不到, 见「卖出还款」);
+//             两部分 = 整只卖. 卖满 (全部可卖) 不管最小单元, 其余照守 (见 Hold::span / part / full)
+//   卖超配  试算自定, 不看 sells: 范围内名单外的清掉、名单里超配的减到 W, W 与补到的 V 自洽 (二分 W 取 V ≥ W 的最大者; 减过的不再补);
+//           按市值减不分部分; 须有买入部分
+//   常用的几个点: 手拖 × 买两部分 = 补到等权 (敞口 ↑); 卖自有 × 买融资 = A 股加杠杆 (先卖自有、再融资买, 回款留作现金; 杠杆 ↑);
+//   卖融资 × 买自有 = 去杠杆 (卖了还款、现金买回; 杠杆 ↓); 卖非融资标的 × 不买 = 担保减仓 (回款留作现金; 敞口 ↓).
 // 卖出还款 (券商行为, 国金实测, 控制不了): 担保品卖出一只有融资负债的票, 回款先自动偿还本只的负债 (负债额 − min(回款, 负债额),
 //   负债股数按额同比减), 余下才进现金. 故混合持仓 (有负债也有自有部分) 只卖自有部分做不到: 卖后剩下的反倒大半成了自有.
 //   实测 5 只中 4 只吻合; 600218 卖 200 股只还了 70 元 (疑为部成), 未核实.
-// 腿: 每单的额分融资腿 fin 与现金腿, 买卖镜像 — 买 = 融资买入 (负债 +) / 现金付, 卖 = 回款先还本只负债 (负债 −) / 余下进现金.
-//   F = Σ 买单 fin, R = Σ 卖单 fin; 账户各项都按腿汇总.
+// 腿: 每单的额分融资腿 fin 与自有腿, 买卖镜像 — 买 = 融资买入 (负债 +) / 现金付, 卖 = 回款先还本只负债 (负债 −) / 余下进现金.
+//   F = Σ 买单 fin, R = Σ 卖单 fin (Plan::fin 的买 / 卖两侧); 账户各项都按腿汇总.
 // 试算:
 //   卖出: 股数 (超过可卖按全部可卖) × 参考价计额, 回款 = 额 − 滑点 − 费用; 卖单 fin = min(回款, 本只负债额);
 //     现金 C' = 现金 + 回款 − R, 负债按还款减 (见上), 可用保证金 X' = 按卖后持仓与负债重算 (avail) + 回款 − R, L' = 可融额度余量 + R.
 //   购买力 = 现金腿 C' + 融资腿 min(L', max(0, X')) (融资保证金比例按 100% 计; 没有的腿不计).
 //   行使: C'、X'、L' 各 × pct 为本次可用额度, 以下都在其内 (没有现金腿 = 现金额度 0, 缺口须全融到; 没有融资腿 = 融资额度 0).
-//   买入: 名单里可作担保品买入的 (否则不可买: 不在担保品表 / 担保状态非正常 / 北交所) 等权补到共同目标市值 V,
-//     缺口 need = V − 卖后市值, 不足该只最小单元即不补 (多了不卖, 除非 sell_over). 融资标的先融资: 按保证金比例从低到高分,
+//   买入: 名单里可作担保品买入的 (否则不可买: 不在担保品表 / 担保状态非正常 / 北交所) 在买的范围内、所选部分买得到的 (只融资 = 只融资标的) 等权补到共同目标市值 V,
+//     缺口 need = V − 卖后市值, 不足该只最小单元即不补 (多了不卖, 除非卖超配). 融资标的先融资: 按保证金比例从低到高分,
 //     Σ 比例 × 融资额 ≤ X'、Σ 融资额 ≤ L'; 其余 (含融不到的部分) 用现金, 现金买入 + 全部买入费用 ≤ C' (没有现金腿: 费用从卖后现金出, 不占额度).
 //     每只的融资腿、现金腿也各为 0 或够一个最小单元: 融不满时融资腿让出一个最小单元给现金腿, 融资腿不足一个最小单元即全用现金.
 //     V 在 [0, 上界] 里二分取可行的 (精度 kTol), 并入下一只时以上一个 V 为上界; 各只按下标存, 二分里不建表 (零哈希、零分配);
@@ -71,46 +75,54 @@ double surplus(const Bal &bal, const Keyed<Debt> &debts, const Prices &px, const
 // 持仓为 bal、负债为 debts、行情为 quotes 时的可用保证金 (不含现金变动); 读时 = 快照 s 的持仓与负债 × 读时现价 px0
 double avail(const Snapshot &s, const Prices &px0, const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms);
 
-// 卖出总 bar 分给谁: 不分 (逐只手拖) / 有自有部分的持仓 (整只) / 持仓的融资部分 / 非融资标的的持仓 (整只)
-enum class Bar : uint8_t { None,
-                           Own,
-                           Fin,
-                           Plain };
-// 买谁: 不买 / 名单里可买的 / 其中融资标的
-enum class Buy : uint8_t { None,
-                           All,
-                           Financeable };
+// 部分 (卖买同形, 见文件头): 自有 / 融资
+struct Parts {
+  bool own = true, fin = true;
+  bool any() const { return own || fin; }
+  bool operator==(const Parts &) const = default;
+};
+// 范围 (卖买同形, 见文件头): 全部 / 融资标的 / 非融资标的
+enum class Scope : uint8_t { All,
+                             Fin,
+                             NonFin };
+inline constexpr const char *kScopeNames[3] = {"全部", "融资标的", "非融资标的"};
+inline bool in_scope(Scope s, bool financeable) { return s == Scope::All || (s == Scope::Fin) == financeable; }
+// 一侧 = 部分 × 范围
+struct Side {
+  Parts parts;
+  Scope scope = Scope::All;
+  bool operator==(const Side &) const = default;
+};
 
-enum class Mode : uint8_t { Plain,
-                            Lever,
-                            Delever,
-                            Trim };
-struct ModeSpec {
+// 卖的方式 (见文件头): name 单选的名字 / hint 悬停 / parts · scope 认不认卖一侧的部分 · 范围
+enum class How : uint8_t { Hand,
+                           Bar,
+                           Over };
+struct HowSpec {
   const char *name, *hint;
-  Bar bar;
-  Buy buy;
-  bool cash, margin; // 买入的现金腿 / 融资腿
+  bool parts, scope;
 };
-inline constexpr ModeSpec kModes[] = {
-    {"普通", "名单等权补齐: 先融资标的融资买、其余现金买; 卖出逐只手拖", Bar::None, Buy::All, true, true},
-    {"融资加仓", "A 股加杠杆须先卖出自有部分、再融资买入: 卖出有自有部分的持仓 (卖出总 bar; 混合持仓整只卖, 回款先还其负债) → 只融资买名单里的融资标的 (不出现金腿), 回款留作现金日后择机买",
-     Bar::Own, Buy::Financeable, false, true},
-    {"融资减仓", "去杠杆: 按同一比例卖出各持仓的融资部分 (卖出总 bar; 回款先还本只负债) → 现金买名单 (不融资); 行使 0 即只卖还款", Bar::Fin, Buy::All, true, false},
-    {"担保减仓", "按同一比例卖出非融资标的的持仓 (卖出总 bar), 融资标的不卖; 只卖不买, 回款留作现金", Bar::Plain, Buy::None, false, false},
+inline constexpr HowSpec kHows[] = {
+    {"手拖", "逐只拖各持仓的卖出滑杆; 不看部分与范围", false, false},
+    {"按比例",
+     "卖出总 bar 按同一比例分给范围内各持仓的所选部分, 写进各只卖出滑杆 (可再逐只调)\n"
+     "• 只融资 = 卖到盖住融资部分 (回款先还本只负债)\n"
+     "• 只自有 = 有自有部分的持仓整只卖: 混合持仓 (有负债也有自有部分) 回款先还其负债, 只卖自有部分做不到; 其卖出标橙\n"
+     "• 两部分 = 整只卖",
+     true, true},
+    {"卖超配", "卖出由试算自定 (不看各只卖出滑杆): 范围内名单外的持仓清掉, 名单里超配的减到 W, 再把其余补到 V; W 取与 V 自洽的 (二分), 减过的不再补\n按市值减不分部分; 须有买入部分",
+     false, true},
 };
-inline const ModeSpec &spec(Mode m) { return kModes[static_cast<int>(m)]; }
+inline const HowSpec &spec(How h) { return kHows[static_cast<int>(h)]; }
 
 struct Cfg {
-  std::string list;
+  How how = How::Hand;
+  Side sell, buy;
   double unit = 10000, pct = 100;
   PxMode px = PxMode::Sweep;
   std::map<std::string, int64_t> sells; // 只存 > 0
-  Mode mode = Mode::Plain;
-  bool sell_over = false; // 卖超配 (只普通): 名单外的清掉、超配的减到 W, 不看 sells
-  bool no_margin = false; // 不融资 (只普通): 关掉融资腿
 };
-inline bool auto_sells(const Cfg &c) { return spec(c.mode).bar == Bar::None && c.sell_over; } // 卖出由试算自定 (sell_over 生效)
-inline bool margin_leg(const Cfg &c) { return spec(c.mode).margin && !(spec(c.mode).cash && c.no_margin); }
+inline bool valid(const Cfg &c) { return c.how != How::Over || c.buy.parts.any(); } // 卖超配须有买入部分 (V 定 W)
 
 // 不可买的原因; 可买 → 空
 std::string why(const Term *t);
@@ -137,16 +149,17 @@ struct Hold {
   // 持仓 / 可卖 / 非融资持仓 (= 持仓 − 融资部分, 融资部分 = min(负债数量, 持仓)) [股]; 可卖不含今日买入的 (T+1)
   int64_t bal = 0, avail = 0, own = 0;
   double debt = 0; // 本只融资负债额 [元]; > 0 即卖出回款先还它 (见文件头「卖出还款」)
-  // 卖出总 bar 的卖满 full 与其分母 base [股] (见 Bar): 要卖的即 全部可卖 / 持仓 (融资部分: 盖住融资部分的可卖股数 / 融资部分), 不卖的 0 / 0.
-  //   base 含今日买入的 ⇒ full < base 即今日卖不满
-  int64_t full = 0, base = 0;
+  // 卖出总 bar 的三段口径 [股] (按比例时; 否则皆 0): span = 计入 bar 全长的 (卖的范围内 = 持仓, 外 = 0) ⊇ part = 其中所选部分
+  //   (只融资 = 融资部分, 只自有 = 有自有部分即持仓, 两部分 = 持仓) ⊇ full = 其中今日卖得满的 (盖住所选部分的可卖股数, 至多可卖).
+  //   part − full = T+1 未解禁 (今日买入), span − part = 所选部分里没有仓位; 拖 bar 即各只卖 part 的同一比例, 至多 full
+  int64_t span = 0, part = 0, full = 0;
   double px = 0;
-  int64_t lot = 0, step = 0, sell = 0; // sell = 卖出股数 (sells 里的, 或 sell_over 自定的)
+  int64_t lot = 0, step = 0, sell = 0; // sell = 卖出股数 (sells 里的, 或卖超配自定的)
   Leg leg;                             // 卖
 };
 
 // 能成单的卖出股数里离 x 最近的 (down = 不超过 x 的最大的): 0 不卖、起卖股数 (够起买股数且够 unit 元) 起按步长递增 (或连同零股)、
-//   全部可卖 (够 unit 元才有; by_bar = 有卖出总 bar 的模式: 不管 unit, 卖满即可零碎)
+//   全部可卖 (够 unit 元才有; by_bar = 按比例卖: 不管 unit, 卖满即可零碎)
 //   零股: 沪深主板 / 创业板步长 100, 不足 100 的零股只能一次卖完 ⇒ 部分卖出的股数 ≡ 0 或 ≡ 可卖 % 100 (连同全部零股); 科创板步长 1
 int64_t snap(const Hold &h, double unit, double x, bool down = false, bool by_bar = false);
 
@@ -168,8 +181,9 @@ struct Sheet {
 
 struct Plan {
   Sheet now, exp;
-  double power = 0, use = 0, financed = 0, cost = 0;
-  double C = 0, X = 0, repaid = 0; // 卖后 (现金 / 可用保证金) / 卖出还款 R
+  double power = 0, use = 0, cost = 0;
+  Sides<double> fin;   // 融资腿额: 买 = 融资买入 F / 卖 = 卖出还款 R
+  double C = 0, X = 0; // 卖后 现金 / 可用保证金
   double V = 0;
   int picked = 0, buyable = 0;
   std::vector<Hold> holds;

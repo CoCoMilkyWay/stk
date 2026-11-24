@@ -33,6 +33,23 @@ struct Budget {
   bool operator==(const Budget &) const = default;
 };
 
+// 停下后按继续的四种动作 (唯一真相表)
+enum class Cont : uint8_t { Send,
+                            Resend,
+                            Acts,
+                            Results };
+struct ContDef {
+  const char *id, *cn;
+};
+inline constexpr ContDef kConts[] = {{"send", "发出待发消息"}, {"resend", "重发未收成轮"}, {"acts", "续跑余下调用"}, {"results", "发本轮结果"}};
+AGENT_ROWS(Cont, kConts, Results);
+
+// 状态机纯函数 (Mine 与 Tools/Session/* 共用)
+Cont ContOf(Rounds timeline, size_t cur);
+std::string HintOf(Rounds timeline, size_t cur, bool done);
+std::string BudgetMiss(const Budget &b, int d_rounds, double d_secs, int d_tokens);
+std::string ReportOf(Rounds timeline, const State &st, const Notes &notes, const std::string &dir, const std::string &why, const std::string &remark, bool test, double now);
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Open, all, on)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, years, leaves, ops)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, ric)
@@ -66,7 +83,6 @@ struct Desk : Rig {
     Scope sc;
     Gate gate;
     bool ask = true;
-    bool strict = true; // 守会话约束 (RuleMiss + eval_factor 须挂判为支持的假设)
     bool test = false;
     bool remote = false; // 由外部 agent 经 MCP 驱动 (无内置模型)
     std::string remark;
@@ -101,11 +117,6 @@ public:
                                Act,
                                Choose,
                                Pause };
-  enum class Cont : uint8_t { Send,
-                              Resend,
-                              Retry,
-                              Acts,
-                              Results };
   struct Loss {
     int rounds = 0, files = 0, notes = 0;
   };
@@ -118,7 +129,7 @@ public:
   void stop();
   void cancel();
   void close();
-  void reply(std::string calls); // 外部 agent 交来一批 (calls JSON = 大模型的一条回复); 须 remote() && waiting()
+  std::string reply(std::string calls); // 外部 agent 交来一批 (calls JSON): 通过返回空并开始执行; 不合协议原地返回重发提示 (不污染 timeline)
   void queue(std::string m);
   std::string unqueue();
   void save() const;
@@ -170,6 +181,7 @@ private:
   size_t cur_ = 0;
   int retries_ = 0;
   int rev_ = 0;
+  std::string retry_reply_, retry_error_; // 本轮内置模型回复未过协议时的原地重试缓存 (不进 timeline)
   struct From {
     int round = 0;
     double t = 0.0;

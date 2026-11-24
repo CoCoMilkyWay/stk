@@ -82,8 +82,8 @@ std::vector<CashFlow> flow_window(misc::Ymd lo, misc::Ymd hi, size_t idx) {
   return rows;
 }
 
-// 信用资产 c + 各只融资负债 → 信用账户
-Account acct_of(const std::map<std::string, std::string> &c, Keyed<Debt> debts) {
+// 信用资产 c → 信用账户
+Account acct_of(const std::map<std::string, std::string> &c) {
   Account a;
   a.assets = asset_val(c, "担保资产");
   a.line = asset_val(c, "最高融资额度") - asset_val(c, "融资负债（含费用）");
@@ -92,16 +92,15 @@ Account acct_of(const std::map<std::string, std::string> &c, Keyed<Debt> debts) 
   a.avail = asset_val(c, "可用保证金");
   a.cash = asset_val(c, "现金资产");
   a.rate = asset_val(c, "融资年利率");
-  a.debts = std::move(debts);
-  trace::ev("acct", {{"assets", a.assets}, {"line", a.line}, {"debt", a.debt}, {"net", a.net}, {"avail", a.avail}, {"cash", a.cash}, {"debts", a.debts.list.size()}});
+  trace::ev("acct", {{"assets", a.assets}, {"line", a.line}, {"debt", a.debt}, {"net", a.net}, {"avail", a.avail}, {"cash", a.cash}});
   return a;
 }
 
 } // namespace
 
 Snapshot reads() {
-  auto [fills, pos, pends, assets, debts] = read(kReads);
-  return {std::move(fills), std::move(pos), std::move(pends), acct_of(assets, std::move(debts))};
+  auto [fills, pos, pends, debts, assets] = read(kReads);
+  return {std::move(fills), std::move(pos), std::move(pends), std::move(debts), acct_of(assets)};
 }
 
 Terms terms() {

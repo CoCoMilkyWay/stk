@@ -21,8 +21,7 @@ struct Cache {
   Terms terms;
 };
 
-Cache load(); // 没有缓存 → 空
-void save(const Cache &c);
+Cache load();          // 没有缓存 → 空
 Cache pull(Broker &b); // 客户端重查全表 → 存; 失败 → Fail
 
 // 本地库的一只个股

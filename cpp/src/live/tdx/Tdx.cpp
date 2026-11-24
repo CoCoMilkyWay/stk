@@ -18,13 +18,27 @@ namespace live::tdx {
 
 namespace {
 
+// 接上客户端 (Driver 与画面复现同一路, 一次一路): 进程换了即重连 shim 通道、shim 不在线即注入、请求层钩上 → pid
+int attach() {
+  static std::mutex mu;
+  static int pid = 0;
+  std::lock_guard lk(mu);
+  const int p = mem::find_pid();
+  need(p != 0, "找不到 tdxw.exe 进程");
+  if (p != pid) {
+    shim::reset();
+    pid = p;
+  }
+  if (!shim::online())
+    win::attach();
+  req::arm(pid);
+  return pid;
+}
+
 // 画面复现: 窗口树 / 绘制层 / 控件子项 / 输入透传, 各经 shim (gdiwatch 走独立推流连接)
 class TdxMirror final : public Mirror {
 public:
-  void ensure() override {
-    if (!shim::online())
-      win::attach();
-  }
+  void ensure() override { attach(); }
   std::vector<WinNode> tree() override { return win::tree(); }
   std::vector<DrawLayer> gdi_dump() override { return win::gdidump(); }
   DrawLayer detail(const std::string &hwnd) override { return win::detail(hwnd); }
@@ -51,19 +65,7 @@ public:
 class Tdx final : public Driver {
 public:
   std::string connect() override {
-    int pid = 0;
-    {
-      std::lock_guard wk(work_);
-      pid = mem::find_pid();
-      need(pid != 0, "找不到 tdxw.exe 进程");
-      if (pid != pid_) {
-        shim::reset();
-        pid_ = pid;
-      }
-      if (!shim::online())
-        win::attach();
-      req::arm(pid_);
-    }
+    const int pid = attach();
     prime(tables::kReads);
     return strf("tdxw.exe pid %d", pid);
   }
@@ -114,8 +116,7 @@ private:
     (need(tables::seen_func<S>() != 0, "经界面查过「%s」, 插件仍没发过其功能", S::kName), ...);
   }
 
-  std::mutex gate_, work_; // 界面 / 接入; 两把不嵌套
-  int pid_ = 0;
+  std::mutex gate_; // 界面锁; 与接入的锁不嵌套
 };
 
 } // namespace

@@ -5,7 +5,7 @@ namespace GUI::Agent {
 
 using json = nlohmann::ordered_json;
 
-std::string HypRes::text() const { return "已记为 " + id + " (待检验): 用观察按 expect / refute 检验它, 再 judge; 判为支持才能挂 eval_factor 的变体"; }
+std::string HypRes::text() const { return "已记为 " + id + " (待检验)"; }
 
 ToolOut Hypothesize(const Call &c, Seat &s) {
   auto r = std::make_shared<HypRes>();

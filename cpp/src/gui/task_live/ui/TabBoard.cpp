@@ -2,7 +2,6 @@
 
 #include "gui/util/Chart.hpp"
 #include "gui/util/Tip.hpp"
-#include "live/Clients.hpp"
 #include "shared/SharedData.hpp"
 
 #include "imgui.h"
@@ -101,20 +100,12 @@ void bar(const std::optional<double> &v, double mv, const ImVec4 &col) {
 
 // 卖出滑杆的值: 试算自定的 (卖超配), 否则配置里的股数, 至多可卖
 int64_t sell_n(LiveHub &hub, const live::rebal::Hold &h) {
-  if (live::rebal::auto_sells(hub.in().cfg))
+  if (hub.in().cfg.how == live::rebal::How::Over)
     return std::min(h.sell, h.avail);
   const std::map<std::string, int64_t> &sells = hub.in().cfg.sells;
   const auto i = sells.find(h.code);
   return std::min(i == sells.end() ? int64_t{0} : i->second, h.avail);
 }
-
-// 卖出总 bar 分给谁 (live::rebal::Bar 序): 名词 / 拉满时卖什么
-constexpr const char *kBarWho[] = {"", "有自有部分的持仓", "持仓的融资部分", "非融资标的的持仓"};
-constexpr const char *kBarFull[] = {"",
-                                    "有自有部分的持仓全部可卖都卖; 纯融资的不卖\n"
-                                    "• 混合持仓 (有融资负债也有自有部分) 也整只卖: 券商把回款先还本只负债, 只卖自有部分做不到; 其卖出标橙",
-                                    "各持仓卖到盖住其融资部分 (回款先还本只负债); 没有负债的不卖",
-                                    "非融资标的的持仓全部可卖都卖; 融资标的不卖"};
 
 // 一单的步骤条: 已过绿 / 当前橙 / 失败红 / 未到灰
 void order_line(const OrderJob &j, const std::vector<std::string> &steps, bool priv) {
@@ -122,7 +113,7 @@ void order_line(const OrderJob &j, const std::vector<std::string> &steps, bool p
   ImGui::SameLine();
   text_col(side_col(j.o.side), strf("%s%s", live::side_name(j.o.side), j.label.c_str()));
   ImGui::SameLine();
-  ImGui::Text("%s %s ·", sec_txt(j.o, priv).c_str(), j.detail.c_str());
+  ImGui::Text("%s %s ·", sec_txt(j.o, priv).c_str(), j.live.c_str());
   for (size_t i = 0; i < steps.size(); ++i) {
     const ImVec4 c = i < j.at || j.st == JobSt::Ok ? kGreen : i > j.at         ? grey()
                                                           : j.st == JobSt::Err ? kRed
@@ -133,16 +124,16 @@ void order_line(const OrderJob &j, const std::vector<std::string> &steps, bool p
   ImGui::SameLine();
   text_col(j.st == JobSt::Ok ? kGreen : j.st == JobSt::Err ? kRed
                                                            : kHot,
-           strf("%s %s", job_name(j.st), j.got.msg.c_str()));
+           strf("%s %s", job_name(j.st), j.msg.c_str()));
 }
 
-// 一路此刻在哪: 各段「名 已用时」外 › 内, 末附最近发出的 shim 命令
+// 一路此刻在哪: 各段「名 已用时」外 › 内, 末附最近发给客户端的命令
 std::string where(const live::trace::Spot &s) {
   const auto now = std::chrono::steady_clock::now();
   std::string out;
   for (const live::trace::Spot::Seg &g : s.segs)
     out += strf("%s%s %.1fs", out.empty() ? "" : " › ", g.name.c_str(), std::chrono::duration<double>(now - g.t0).count());
-  return s.shim.empty() ? out : out + " · shim " + s.shim;
+  return s.cmd.empty() ? out : out + " · " + s.cmd;
 }
 
 // 刷新进度两行: 快照读于几时 · 行情时刻 · 接入的客户端; 次行 = 时有时无的: 接入断、在做的各路 (刷新 = 段栈; 事务 = 「名.步」+ 段栈)、
@@ -151,7 +142,7 @@ void progress(LiveHub &hub) {
   const live::Refresh &g = hub.refresh();
   const auto &snap = hub.snapshot();
   ImGui::Text("%s · 读于 %s · 行情 %s · %s", hub.client().name, live::fmt_sec(snap ? snap->at : -1).c_str(),
-              live::fmt_sec(hub.in().quote_sec).c_str(), g.who.empty() ? "未接入" : g.who.c_str());
+              live::fmt_sec(hub.in().px.sec).c_str(), g.who.empty() ? "未接入" : g.who.c_str());
   bool any = false;
   const auto sep = [&] {
     if (any)
@@ -183,10 +174,27 @@ void progress(LiveHub &hub) {
     ImGui::TextDisabled("空闲");
 }
 
+// 一样拉取 (两样同形, 口径见 PullSpec): 按钮 (有事务在跑即禁) + 拉于哪天 · more, 没拉过标红
+void pull_ctl(LiveHub &hub, Pull p, const std::string &more) {
+  const PullSpec &s = spec(p);
+  ImGui::BeginDisabled(hub.busy());
+  if (ImGui::SmallButton(s.name))
+    hub.pull(p);
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    tip("%s\n读到快照后还没拉过、拉过满 %d 天%s%s即后台自动拉 (每天至多一次)", s.hint, s.age, *s.also ? "、或" : "", s.also);
+  ImGui::SameLine();
+  if (const misc::Ymd d = hub.pulled(p))
+    ImGui::Text("✓ %s%s", misc::dash(d).substr(5).c_str(), more.c_str());
+  else
+    text_col(kRed, "未拉过");
+  if (ImGui::IsItemHovered())
+    tip("%s", s.at);
+}
+
 void data_ctl(LiveHub &hub, BoardState &st) {
-  live::Broker &b = hub.broker();
   if (ImGui::SmallButton("刷新"))
-    b.request();
+    hub.request();
   if (ImGui::IsItemHovered())
     tip("客户端依次重查当日成交、持仓、挂单、信用资产与融资负债, 一轮查完整份更新");
   ImGui::SameLine();
@@ -197,28 +205,16 @@ void data_ctl(LiveHub &hub, BoardState &st) {
   if (ImGui::InputInt("s##every", &every, 0, 0))
     st.every = every;
   if (ImGui::IsItemDeactivatedAfterEdit())
-    b.every(std::max(0, every));
+    hub.every(std::max(0, every));
   if (!ImGui::IsItemActive())
     st.every.reset();
   if (ImGui::IsItemHovered())
     tip("定时刷新周期 [s], 0 = 不定时; 回车或点别处生效. 本页可见时才刷");
   ImGui::SameLine(0, ImGui::GetFontSize());
-  ImGui::BeginDisabled(hub.busy());
-  if (ImGui::SmallButton("更新两融名单"))
-    hub.pull_terms();
-  ImGui::EndDisabled();
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip("客户端重查融资标的与担保品两张全表 (慢, 期间独占客户端界面), 整份换掉缓存 output/live/terms.csv\n"
-        "平时只用缓存; 读到信用账户后缓存缺、满 %d 天、或名单 / 持仓 / 负债里有缓存没有的代码即后台自动拉 (每天至多一次)\n"
-        "个股的名称、融资标的、担保品另经本地库核 (Database 同步的两融明细 / 在市)",
-        kTermsAge);
-  ImGui::SameLine();
-  if (const Inputs &in = hub.in(); in.terms)
-    ImGui::Text("✓ %s · %zu 只", misc::dash(in.raw->pulled).substr(5).c_str(), in.terms->size());
-  else
-    text_col(kRed, "未拉过");
-  if (ImGui::IsItemHovered())
-    tip("两融条款缓存拉于哪天 · 只数");
+  const Inputs::Terms &terms = hub.in().terms;
+  pull_ctl(hub, Pull::Terms, terms.merged ? strf(" · %zu 只", terms.merged->size()) : "");
+  ImGui::SameLine(0, ImGui::GetFontSize());
+  pull_ctl(hub, Pull::Flows, "");
   ImGui::SameLine(0, ImGui::GetFontSize());
   bool priv = hub.priv();
   if (ImGui::Checkbox("隐私", &priv))
@@ -237,19 +233,20 @@ void order_ctl(LiveHub &hub, BoardState &st) {
   ImGui::SameLine(0, ImGui::GetFontSize());
   ImGui::TextUnformatted("买入");
   ImGui::SameLine();
-  if (ImGui::RadioButton("普通", !st.margin))
-    st.margin = false;
+  if (ImGui::RadioButton("普通", !st.fin))
+    st.fin = false;
   ImGui::SameLine();
-  if (ImGui::RadioButton("融资", st.margin))
-    st.margin = true;
+  if (ImGui::RadioButton("融资", st.fin))
+    st.fin = true;
   if (ImGui::IsItemHovered())
     tip("买入方式只管持仓行买入, 卖出一律担保品卖出");
 }
 
-// 带上限的百分比滑杆 (宽 w, 整条 0–100%): 滑块拖不过 top, 上限处一道竖线、其外铺暗; 文字 txt 居中.
-// 拖动时 v = 手下的值 (截到 top), 返回是否在拖.
+// 带禁区的百分比滑杆 (宽 w, 整条 0–100%): 滑块拖不过 top, 上限处一道竖线; 禁区两段分色: [top, mid) 橙 (T+1 未解禁), [mid, 100] 灰 (没有仓位);
+// 文字 txt 居中. 拖动时 v = 手下的值 (截到 top), 返回是否在拖.
 //   自画而不用 SliderFloat: 后者在拖的那一帧按鼠标位置画滑块, 事后截值也挡不住它画过上限
-bool cap_slider(const char *id, float &v, float top, float w, const std::string &txt, const ImVec4 &col) {
+bool cap_slider(const char *id, float &v, float top, float mid, float w, const std::string &txt, const ImVec4 &col) {
+  assert(0 <= top && top <= mid && mid <= 100.5f);
   const ImGuiStyle &s = ImGui::GetStyle();
   const ImVec2 a = ImGui::GetCursorScreenPos();
   const float h = ImGui::GetFrameHeight(), g = s.GrabMinSize, pad = 2, span = w - g - 2 * pad;
@@ -262,11 +259,17 @@ bool cap_slider(const char *id, float &v, float top, float w, const std::string 
   dl->AddRectFilled(a, b, ImGui::GetColorU32(act ? ImGuiCol_FrameBgActive : ImGui::IsItemHovered() ? ImGuiCol_FrameBgHovered
                                                                                                    : ImGuiCol_FrameBg),
                     s.FrameRounding);
-  if (top < 100) {
-    const float x = a.x + pad + g / 2 + span * top / 100;
-    dl->AddRectFilled(ImVec2(x, a.y), b, ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.35f), s.FrameRounding, ImDrawFlags_RoundCornersRight);
-    dl->AddLine(ImVec2(x, a.y), ImVec2(x, b.y), ImGui::GetColorU32(kHot));
-  }
+  const auto at = [&](float p) { return a.x + pad + g / 2 + span * p / 100; };
+  const auto zone = [&](float lo, float hi, ImU32 c) {
+    if (hi - lo < 0.5f)
+      return;
+    const bool end = hi >= 100;
+    dl->AddRectFilled(ImVec2(at(lo), a.y), ImVec2(end ? b.x : at(hi), b.y), c, end ? s.FrameRounding : 0, ImDrawFlags_RoundCornersRight);
+  };
+  zone(top, mid, ImGui::GetColorU32(ImVec4(kHot.x, kHot.y, kHot.z, kHot.w * 0.35f)));
+  zone(mid, 100, ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.35f));
+  if (top < 100)
+    dl->AddLine(ImVec2(at(top), a.y), ImVec2(at(top), b.y), ImGui::GetColorU32(kHot));
   const float gx = a.x + pad + span * v / 100;
   dl->AddRectFilled(ImVec2(gx, a.y + pad), ImVec2(gx + g, b.y - pad), ImGui::GetColorU32(act ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab), s.GrabRounding);
   const ImVec2 ts = ImGui::CalcTextSize(txt.c_str());
@@ -274,35 +277,38 @@ bool cap_slider(const char *id, float &v, float top, float w, const std::string 
   return act;
 }
 
-// 卖出总 bar (有 bar 的模式; 占 Σ base 额, 见 Hold::full / base, 分给谁见 live::rebal::Bar): 拖动 = 各持仓卖其 base 的同一比例 r, 各只至多卖到 full,
-//   r 取到合计恰为 bar 值 (各只先截到 full 再合计, 故按 r 二分而非直接按 bar 值分; 覆盖各只的卖出滑杆, 按能成单的档向下取, 照守最小单元;
-//   卖满不管最小单元; 剩下不足一个最小单元且已过半的即卖满, 不留碎股).
-//   拖不过上限 = Σ full 额 / Σ base 额 (今日买入的不可卖, 上限 < 100% 即标色: 本次做不满). 显示 = Σ min(卖出, full) 额 / Σ base 额
+// 卖出总 bar (按比例时可拖; 三段口径见 Hold::span / part / full): 全长 = Σ span 额 (卖的范围内全部持仓), 自左 可拖 (Σ full) | 橙 T+1 未解禁 | 灰 所选部分没有仓位.
+//   拖动 = 各持仓卖其 part 的同一比例 r, 各只至多卖到 full; r 取到合计恰为 bar 值 (各只先截到 full 再合计, 故按 r 二分而非直接按 bar 值分;
+//   覆盖各只的卖出滑杆, 按能成单的档向下取, 照守最小单元; 卖满不管最小单元; 剩下不足一个最小单元且已过半的即卖满, 不留碎股).
+//   显示 = Σ min(卖出, full) 额 / 全长
 void bar_sell(LiveHub &hub) {
-  const live::rebal::ModeSpec &sp = live::rebal::spec(hub.in().cfg.mode);
-  const int b = static_cast<int>(sp.bar);
+  const bool on = hub.in().cfg.how == live::rebal::How::Bar;
   const auto &p = hub.plan().plan;
-  double base = 0, cap = 0, got = 0;
+  double all = 0, part = 0, cap = 0, got = 0; // Σ span / Σ max(part, full) / Σ full / Σ min(卖出, full) 额
   if (p)
     for (const live::rebal::Hold &h : p->holds) {
-      base += h.base * h.px;
+      all += h.span * h.px;
+      part += std::max(h.part, h.full) * h.px;
       cap += h.full * h.px;
       got += std::min(sell_n(hub, h), h.full) * h.px;
     }
-  const float top = base > 0 ? static_cast<float>(cap / base * 100) : 0.f;
-  float pct = base > 0 ? static_cast<float>(got / base * 100) : 0.f;
-  const bool capped = std::lround(top) < 100;
-  ImGui::BeginDisabled(cap <= 0 || hub.busy());
-  const bool drag = cap_slider("##bar_sell", pct, top, ImGui::GetFontSize() * (capped ? 9 : 6),
-                               capped ? strf("%.0f%% · 限 %.0f%%", pct, top) : strf("%.0f%%", pct), capped ? kHot : ImGui::GetStyleColorVec4(ImGuiCol_Text));
+  const auto of = [&](double x) { return all > 0 ? static_cast<float>(std::min(x / all, 1.0) * 100) : 0.f; };
+  const float top = of(cap), mid = of(part);
+  float pct = of(got);
+  const bool locked = mid - top >= 0.5f;
+  ImGui::BeginDisabled(!on || cap <= 0 || hub.busy());
+  const bool drag = cap_slider("##bar_sell", pct, top, mid, ImGui::GetFontSize() * 9,
+                               !on || all <= 0 ? std::string("—") : top < 99.5f ? strf("%.0f%% · 限 %.0f%%", pct, top)
+                                                                                : strf("%.0f%%", pct),
+                               locked ? kHot : ImGui::GetStyleColorVec4(ImGuiCol_Text));
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip("%s卖出比例: 拖动即按同一比例分到各持仓的卖出滑杆 (按能成单的档向下取, 照守最小单元; 卖满不管; 剩下不足一个最小单元且已过半的即卖满, 不留碎股), "
-        "可再逐只调\n"
-        "• 拉满 = %s\n"
-        "显示 = Σ 卖出额 / Σ %s市值\n"
-        "上限 %.0f%% = Σ 其可卖额 / Σ 其市值%s",
-        sp.name, kBarFull[b], kBarWho[b], top,
-        capped ? strf("\n上限不足 100%%: 部分仓位今日不可卖 (今日买入), 拖不上去, 本次%s做不满", sp.name).c_str() : "");
+    tip("卖出比例 (按比例时): 拖动即按同一比例分到范围内各持仓所选部分的卖出滑杆 (按能成单的档向下取, 照守最小单元; 卖满不管; "
+        "剩下不足一个最小单元且已过半的即卖满, 不留碎股), 可再逐只调\n"
+        "全长 = 卖的范围内全部持仓市值; 显示 = Σ 卖出额 / 全长\n"
+        "可拖 %.0f%% = 所选部分里今日卖得满的\n"
+        "橙 %.0f%% = 所选部分里今日买入的 (T+1 未解禁, 今日卖不了)\n"
+        "灰 %.0f%% = 范围内持仓里所选部分没有仓位的 (如只选融资部分, 而这些持仓没有负债)",
+        top, mid - top, 100 - mid);
   ImGui::EndDisabled();
   ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
   ImGui::TextUnformatted("卖出");
@@ -311,17 +317,17 @@ void bar_sell(LiveHub &hub) {
   const auto sold = [&](double r) {
     double s = 0;
     for (const live::rebal::Hold &h : p->holds)
-      s += std::min(r * h.base, static_cast<double>(h.full)) * h.px;
+      s += std::min(r * h.part, static_cast<double>(h.full)) * h.px;
     return s;
   };
-  const double want = pct / 100 * base;
+  const double want = pct / 100 * all;
   double lo = 0, hi = 1;
   for (int i = 0; i < 40; ++i)
     (sold((lo + hi) / 2) < want ? lo : hi) = (lo + hi) / 2;
   const double unit = hub.in().cfg.unit;
   std::map<std::string, int64_t> to = hub.in().cfg.sells;
   for (const live::rebal::Hold &h : p->holds) {
-    const double x = std::min(hi * static_cast<double>(h.base), static_cast<double>(h.full));
+    const double x = std::min(hi * static_cast<double>(h.part), static_cast<double>(h.full));
     // 快卖完的 (剩下不足一个最小单元, 且已过半) 即卖满, 不留碎股; 过半: 整只不足一个最小单元的小仓不至于一拉就整只卖
     const int64_t m = (static_cast<double>(h.full) - x) * h.px < unit && 2 * x >= static_cast<double>(h.full) ? h.full : live::rebal::snap(h, unit, x, true, true);
     if (m > 0)
@@ -333,37 +339,70 @@ void bar_sell(LiveHub &hub) {
     hub.edit_cfg([&](live::rebal::Cfg &c) { c.sells = std::move(to); });
 }
 
+// 一侧的 部分 (自有 / 融资两个开关) · 范围 (下拉) 两格, 卖买同形; parts_on / scope_on = 这一侧此刻认不认它们, keep = 部分至少留一个
+void side_ctl(LiveHub &hub, const char *id, live::rebal::Side live::rebal::Cfg::*m, bool parts_on, bool scope_on, bool keep, const char *own_tip,
+              const char *fin_tip, const char *scope_tip) {
+  using live::rebal::Parts;
+  const live::rebal::Side &sd = hub.in().cfg.*m;
+  ImGui::TableNextColumn();
+  const auto box = [&](const char *name, bool Parts::*part, bool other, const char *hint) {
+    bool on = sd.parts.*part;
+    ImGui::BeginDisabled(!parts_on || (keep && on && !other));
+    if (ImGui::Checkbox(strf("%s##%s", name, id).c_str(), &on))
+      hub.edit_cfg([m, part, on](live::rebal::Cfg &c) { (c.*m).parts.*part = on; });
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      tip("%s", hint);
+  };
+  box("自有", &Parts::own, sd.parts.fin, own_tip);
+  ImGui::SameLine();
+  box("融资", &Parts::fin, sd.parts.own, fin_tip);
+  ImGui::TableNextColumn();
+  int scope = static_cast<int>(sd.scope);
+  ImGui::BeginDisabled(!scope_on);
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
+  if (ImGui::Combo(strf("##scope_%s", id).c_str(), &scope, live::rebal::kScopeNames, IM_ARRAYSIZE(live::rebal::kScopeNames)))
+    hub.edit_cfg([m, scope](live::rebal::Cfg &c) { (c.*m).scope = static_cast<live::rebal::Scope>(scope); });
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    tip("%s", scope_tip);
+}
+
+// 调仓配置两行对仗 (列对齐): 侧 | 方式 | 部分 | 范围 | 比例 | 其余
+//   卖: 手拖 / 按比例 / 卖超配 | 自有 融资 | 范围 | 卖出总 bar | 最小单元
+//   买: 等权补齐 (恒)          | 自有 融资 | 范围 | 行使比例   | 名单 · 执行
+//   卖超配须有买入部分 (两头互锁): 买的两部分都关时它禁用, 选着它时买的最后一个部分关不掉
 void rebal_ctl(LiveHub &hub, BoardState &st) {
-  using live::rebal::Bar;
-  using live::rebal::Buy;
+  using live::rebal::How;
   const live::rebal::Cfg &cfg = hub.in().cfg;
-  const live::rebal::ModeSpec &sp = live::rebal::spec(cfg.mode);
-  for (size_t i = 0; i < std::size(live::rebal::kModes); ++i) {
-    const live::rebal::ModeSpec &m = live::rebal::kModes[i];
+  const live::rebal::HowSpec &how = live::rebal::spec(cfg.how);
+  const live::rebal::Parts buy = cfg.buy.parts;
+  if (!ImGui::BeginTable("##rebal", 6, ImGuiTableFlags_SizingFixedFit))
+    return;
+  // ---- 卖 ----
+  ImGui::TableNextRow();
+  ImGui::TableNextColumn();
+  ImGui::TextUnformatted("卖");
+  ImGui::TableNextColumn();
+  for (size_t i = 0; i < std::size(live::rebal::kHows); ++i) {
+    const How h = static_cast<How>(i);
+    const live::rebal::HowSpec &x = live::rebal::kHows[i];
     if (i)
       ImGui::SameLine();
-    if (ImGui::RadioButton(strf("%s##rebal", m.name).c_str(), &m == &sp))
-      hub.edit_cfg([i](live::rebal::Cfg &c) { c.mode = static_cast<live::rebal::Mode>(i); });
-    if (ImGui::IsItemHovered())
-      tip("%s", m.hint);
+    ImGui::BeginDisabled(h == How::Over && !buy.any());
+    if (ImGui::RadioButton(strf("%s##how", x.name).c_str(), cfg.how == h))
+      hub.edit_cfg([h](live::rebal::Cfg &c) { c.how = h; });
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      tip("%s", x.hint);
   }
-  ImGui::SameLine(0, ImGui::GetFontSize());
-  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
-  if (ImGui::BeginCombo("名单", cfg.list.empty() ? "(无)" : cfg.list.c_str())) {
-    for (const std::string &n : hub.lists())
-      if (ImGui::Selectable(n.c_str(), n == cfg.list))
-        hub.set_list(n);
-    ImGui::EndCombo();
-  }
-  if (ImGui::IsItemHovered())
-    tip("output/config/live/lists/<名>.csv, 名为字母数字下划线; 每行首列一个 6 位代码 (可有 code 表头), 行序即排名; 新在前\n选中即重读");
-  ImGui::SameLine();
-  ImGui::TextDisabled("%zu 只", hub.in().codes.size());
-  if (!hub.in().list_err.empty()) {
-    ImGui::SameLine();
-    text_col(kRed, "✗ " + hub.in().list_err);
-  }
-  ImGui::SameLine(0, ImGui::GetFontSize());
+  side_ctl(hub, "sell", &live::rebal::Cfg::sell, how.parts, how.scope, false,
+           "卖自有部分: 回款进现金 (与买成自有 = 现金买入镜像)\n只选自有 = 有自有部分的持仓整只卖: 混合持仓 (有负债也有自有部分) 回款先还其负债, 只卖自有部分做不到\n两部分都选 = 整只卖",
+           "卖融资部分: 卖到盖住融资部分, 回款先还本只负债 (与买成融资 = 融资买入镜像)\n两部分都选 = 整只卖",
+           "卖的范围: 只动这些持仓 (按两融条款); 按比例与卖超配认它, 手拖不看");
+  ImGui::TableNextColumn();
+  bar_sell(hub);
+  ImGui::TableNextColumn();
   double unit = st.unit.value_or(cfg.unit);
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
   if (ImGui::InputDouble("最小单元", &unit, 0, 0, "%.0f"))
@@ -373,39 +412,49 @@ void rebal_ctl(LiveHub &hub, BoardState &st) {
   if (!ImGui::IsItemActive())
     st.unit.reset();
   if (ImGui::IsItemHovered())
-    tip("元, 不足此额的单不做, 新开仓至少买这么多; 回车或点别处生效");
-  ImGui::SameLine(0, ImGui::GetFontSize());
-  if (sp.bar != Bar::None) {
-    bar_sell(hub);
-    ImGui::SameLine();
-  } else {
-    bool over = cfg.sell_over;
-    if (ImGui::Checkbox("卖超配", &over))
-      hub.edit_cfg([over](live::rebal::Cfg &c) { c.sell_over = over; });
-    if (ImGui::IsItemHovered())
-      tip("卖出由试算自定 (不看各只卖出滑杆): 名单外的持仓清掉, 名单里超配的减到 W, 再把其余补到 V; W 取与 V 自洽的 (二分), 减过的不再补");
-    ImGui::SameLine();
-  }
-  if (sp.cash && sp.margin) {
-    bool cash_only = cfg.no_margin;
-    if (ImGui::Checkbox("不融资", &cash_only))
-      hub.edit_cfg([cash_only](live::rebal::Cfg &c) { c.no_margin = cash_only; });
-    if (ImGui::IsItemHovered())
-      tip("关掉融资腿: 买入只用现金");
-    ImGui::SameLine();
-  }
-  if (sp.buy != Buy::None) {
-    const bool margin = live::rebal::margin_leg(cfg);
-    const char *label = sp.cash && margin ? "行使" : margin ? "融资买入"
+    tip("元, 不足此额的单不做, 新开仓至少买这么多 (卖买同用); 回车或点别处生效");
+  // ---- 买 ----
+  ImGui::TableNextRow();
+  ImGui::TableNextColumn();
+  ImGui::TextUnformatted("买");
+  ImGui::TableNextColumn();
+  ImGui::TextDisabled("等权补齐");
+  if (ImGui::IsItemHovered())
+    tip("买恒为名单按排名入选、等权补到共同目标市值 V (与卖超配对偶: 卖超配 = 卖的一侧也按 V 自定)");
+  side_ctl(hub, "buy", &live::rebal::Cfg::buy, true, true, cfg.how == How::Over,
+           "买成自有 = 现金买入: 用卖后现金买 (融不到的部分也用它); 与卖自有部分 (回款进现金) 镜像",
+           "买成融资 = 融资买入: 只买得到融资标的, 按保证金比例从低到高先融; 与卖融资部分 (回款还负债) 镜像\n只选融资 = 只买融资标的, 回款留作现金",
+           "买的范围: 只补名单里这些 (按两融条款); 买成融资另只买得到融资标的");
+  ImGui::TableNextColumn();
+  const char *label = buy.own && buy.fin ? "行使" : buy.fin ? "融资买入"
                                                             : "现金买入";
-    int pct = static_cast<int>(std::lround(cfg.pct));
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
-    if (ImGui::SliderInt(label, &pct, 0, 100, "%d%%"))
-      hub.edit_cfg([&](live::rebal::Cfg &c) { c.pct = pct; });
-    if (ImGui::IsItemHovered())
-      tip("%s", sp.cash && margin ? "本次用掉卖后现金、可用保证金、可融余量的比例"
-                : margin          ? "本次用掉卖后可用保证金、可融余量的比例 (融资购买力, 不用现金); 名单里的融资标的尽量等权补齐"
-                                  : "本次用掉卖后现金的比例 (不融资); 0 = 只卖");
+  int pct = static_cast<int>(std::lround(cfg.pct));
+  ImGui::BeginDisabled(!buy.any());
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9);
+  if (ImGui::SliderInt(label, &pct, 0, 100, "%d%%"))
+    hub.edit_cfg([&](live::rebal::Cfg &c) { c.pct = pct; });
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    tip("%s", !buy.any()           ? "买的两部分都关: 不买"
+              : buy.own && buy.fin ? "本次用掉卖后现金、可用保证金、可融余量的比例"
+              : buy.fin            ? "本次用掉卖后可用保证金、可融余量的比例 (融资购买力, 不用现金); 名单里的融资标的尽量等权补齐"
+                                   : "本次用掉卖后现金的比例 (不融资); 0 = 只卖");
+  ImGui::TableNextColumn();
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
+  const Inputs::List &list = hub.in().list;
+  if (ImGui::BeginCombo("名单", list.name.empty() ? "(无)" : list.name.c_str())) {
+    for (const std::string &n : hub.lists())
+      if (ImGui::Selectable(n.c_str(), n == list.name))
+        hub.set_list(n);
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered())
+    tip("output/config/live/lists/<名>.csv, 名为字母数字下划线; 每行首列一个 6 位代码 (可有 code 表头), 行序即排名; 新在前\n选中即重读");
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu 只", list.codes.size());
+  if (!list.err.empty()) {
+    ImGui::SameLine();
+    text_col(kRed, "✗ " + list.err);
   }
   ImGui::SameLine(0, ImGui::GetFontSize());
   const PlanView &v = hub.plan();
@@ -413,6 +462,7 @@ void rebal_ctl(LiveHub &hub, BoardState &st) {
   if (ImGui::SmallButton("执行调仓"))
     st.run = true;
   ImGui::EndDisabled();
+  ImGui::EndTable();
 }
 
 // 表头: '|' 处可折行, wrap 即折成两行, 否则去掉
@@ -495,19 +545,20 @@ void plan_sheet(LiveHub &hub, BoardState &st) {
   if (v.plan) {
     const live::rebal::Plan &p = *v.plan;
     const auto w = [&](double x) { return hub.priv() ? std::string(kMask) : wan(x); };
-    const std::array<std::string, kN> cells{w(p.power), w(p.use), w(p.financed), strf("%.0f", p.cost), strf("%d/%d", p.picked, p.buyable), w(p.V), w(p.repaid), w(p.C), w(p.X)};
+    const std::array<std::string, kN> cells{w(p.power), w(p.use), w(p.fin[live::kBuy]), strf("%.0f", p.cost), strf("%d/%d", p.picked, p.buyable), w(p.V), w(p.fin[live::kSell]), w(p.C), w(p.X)};
     for (int c = 0; c < kN; ++c) {
       ImGui::TableSetColumnIndex(c);
-      if (c == 6 && p.repaid > 0)
+      if (c == 6 && p.fin[live::kSell] > 0)
         right(kHot, cells[c]);
       else
         right(cells[c]);
       if (c == 3 && ImGui::IsItemHovered())
         tip("滑点 + 手续费 [元]");
       if (c == 4 && ImGui::IsItemHovered()) {
-        const live::rebal::ModeSpec &sp = live::rebal::spec(hub.in().cfg.mode);
-        const std::string note = sp.buy == live::rebal::Buy::All ? "" : strf(" (%s%s)", sp.name, sp.buy == live::rebal::Buy::None ? "不买" : "只计融资标的");
-        tip("入选只数 / 名单里可买只数%s", note.c_str());
+        const live::rebal::Side &b = hub.in().cfg.buy;
+        tip("入选只数 / 名单里买得了的只数 (买的范围: %s%s)", live::rebal::kScopeNames[static_cast<int>(b.scope)],
+            b.parts.own ? "" : b.parts.fin ? "; 只买融资部分: 只计融资标的"
+                                           : "; 买的两部分都关: 不买");
       }
       if (c == 6 && ImGui::IsItemHovered())
         tip("卖出的票里有融资负债的, 担保品卖出回款先还本只负债 (券商自动, 每只至多还清): 这部分不进现金, 负债等额减, 可融余量等额增\n"
@@ -733,7 +784,7 @@ void order_cell(LiveHub &hub, BoardState &st, const live::board::Row &r, bool ca
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       tip("%s", btn_tip(x, s).c_str());
     if (hit)
-      hub.submit(r.code, s, n, s > 0 && st.margin ? live::Credit::Margin : live::Credit::Plain);
+      hub.submit(r.code, s, n, s > 0 && st.fin ? live::Credit::Margin : live::Credit::Plain);
   }
   ImGui::PopStyleVar();
   ImGui::EndDisabled();
@@ -926,9 +977,9 @@ void head_tip(int c, const live::board::Frame &f) {
   case C_SELLABLE:
     return tip("可卖部分市值, 占总市值; 悬停看金额");
   case C_SELL:
-    return tip("调仓先卖的拖卖出\n只停在能成单的档: 够起买股数、够最小单元, 整手或连同零股 (零股只能一次卖完), 末档全卖 (有卖出总 bar 的模式卖满不管最小单元)\n"
-               "有卖出总 bar 的模式: 按同一比例分到各只 (融资加仓 = 有自有部分的, 融资减仓 = 各只融资部分, 担保减仓 = 非融资标的), 可再逐只调, 总 bar 随之变\n"
-               "普通勾了卖超配: 卖出由试算自定, 滑杆只显示\n"
+    return tip("调仓先卖的拖卖出\n只停在能成单的档: 够起买股数、够最小单元, 整手或连同零股 (零股只能一次卖完), 末档全卖 (按比例卖的卖满不管最小单元)\n"
+               "卖 = 按比例: 卖出总 bar 按同一比例分到范围内各只的所选部分, 可再逐只调, 总 bar 随之变\n"
+               "卖 = 卖超配: 卖出由试算自定, 滑杆只显示\n"
                "橙 = 本只有融资负债: 担保品卖出的回款先还本只负债 (券商自动), 余下才进现金, 卖后剩下的转为非融资");
   case C_AMT:
     return tip("调仓金额: 现金买, 融资买 / 卖 [万], 买红卖绿, 0 占位; 卖 = 拖到的股数 × 现价\n"
@@ -951,8 +1002,8 @@ void sell_slider(LiveHub &hub, const live::rebal::Hold &h, bool priv) {
     ImGui::PushStyleColor(ImGuiCol_SliderGrab, kHot);
     ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, kHot);
   }
-  const bool by_bar = live::rebal::spec(cfg.mode).bar != live::rebal::Bar::None;
-  ImGui::BeginDisabled(live::rebal::auto_sells(cfg) || live::rebal::snap(h, cfg.unit, static_cast<double>(h.avail), false, by_bar) == 0 || hub.busy());
+  const bool by_bar = cfg.how == live::rebal::How::Bar;
+  ImGui::BeginDisabled(cfg.how == live::rebal::How::Over || live::rebal::snap(h, cfg.unit, static_cast<double>(h.avail), false, by_bar) == 0 || hub.busy());
   ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4);
   const int64_t lo = 0, hi = h.avail;
   if (ImGui::SliderScalar("##sell", ImGuiDataType_S64, &n, &lo, &hi, ""))
@@ -974,9 +1025,9 @@ void sell_slider(LiveHub &hub, const live::rebal::Hold &h, bool priv) {
                    : "");
 }
 
-// 一行的调仓: 金额 (现金买 / 融资买 / 卖)、成本、悬停说明; 持仓行带卖 (h, 拖到 n 股), 名单行带两腿买 (t)
+// 一行的调仓: 金额 (买成自有 = 现金买 / 买成融资 = 融资买 / 卖)、成本、悬停说明; 持仓行带卖 (h, 拖到 n 股), 名单行带两腿买 (t)
 struct Amt {
-  double buy = 0, fin = 0, sell = 0;
+  double own = 0, fin = 0, sell = 0;
 };
 struct RowPlan {
   Amt amt;
@@ -999,7 +1050,7 @@ RowPlan row_plan(const live::rebal::Hold *h, int64_t n, const live::rebal::Targe
     for (const live::rebal::Leg &l : t->legs) {
       const bool fin = l.credit == live::Credit::Margin;
       if (l.order) {
-        (fin ? p.amt.fin : p.amt.buy) += l.order->amount;
+        (fin ? p.amt.fin : p.amt.own) += l.order->amount;
         take(*l.order);
       } else if (!l.skip.empty())
         fails.push_back(strf("%s %s 不成单: %s", fin ? "融买" : "买", priv ? kMask : wan(l.want).c_str(), l.skip.c_str()));
@@ -1026,14 +1077,14 @@ RowPlan row_plan(const live::rebal::Hold *h, int64_t n, const live::rebal::Targe
 }
 // 金额格: 现金买,融资买/卖 W, 买红卖绿 (owed = 卖的这只有融资负债: 卖额橙), 0 占位不着色; 全 0 不出. 返回是否悬停
 bool amt_cell(const Amt &a, bool priv, bool owed = false) {
-  if (!a.buy && !a.fin && !a.sell)
+  if (!a.own && !a.fin && !a.sell)
     return false;
   if (priv) {
     masked_num();
     return ImGui::IsItemHovered();
   }
   const auto num = [](double v, const ImVec4 &c) { return v ? Seg{c, strf("%.1f", v / 1e4)} : Seg{grey(), "0"}; };
-  return right_segs(std::array{num(a.buy, side_col(live::kBuy)), Seg{grey(), ","}, num(a.fin, side_col(live::kBuy)), Seg{grey(), "/"},
+  return right_segs(std::array{num(a.own, side_col(live::kBuy)), Seg{grey(), ","}, num(a.fin, side_col(live::kBuy)), Seg{grey(), "/"},
                                num(a.sell, owed ? kHot : side_col(live::kSell)), Seg{grey(), "W"}});
 }
 // 金额与成本两格, 悬停出说明; 计入合计
@@ -1050,14 +1101,14 @@ void plan_cells(const RowPlan &p, bool priv, Amt &amt, double &cost) {
   hov |= (p.pending || p.slip || p.fee || p.failed) && ImGui::IsItemHovered();
   if (hov && !p.tip.empty())
     tip("%s", p.tip.c_str());
-  amt.buy += p.amt.buy, amt.fin += p.amt.fin, amt.sell += p.amt.sell;
+  amt.own += p.amt.own, amt.fin += p.amt.fin, amt.sell += p.amt.sell;
   cost += p.slip + p.fee;
 }
 
 void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::board::Frame &f, bool can) {
   const live::Snapshot &s = *hub.board().snap;
   const Flows flows = flows_of(s);
-  const std::set<std::string> listed(hub.in().codes.begin(), hub.in().codes.end());
+  const std::set<std::string> listed(hub.in().list.codes.begin(), hub.in().list.codes.end());
   const auto &plan = hub.plan().plan;
   std::map<std::string, const live::rebal::Hold *> holds;
   std::map<std::string, const live::rebal::Target *> tgts;
@@ -1209,7 +1260,7 @@ void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::boa
       const RowPlan rp = row_plan(nullptr, 0, &t, priv);
       code_cell(t.code);
       cap_cell(t.code);
-      name_cell(rp.amt.buy || rp.amt.fin ? kAcc : grey(), t.name, rp, true);
+      name_cell(rp.amt.own || rp.amt.fin ? kAcc : grey(), t.name, rp, true);
       ImGui::TableSetColumnIndex(C_FLOW);
       flow_cell(flows, t.code, priv);
       ImGui::TableSetColumnIndex(C_FIN);
@@ -1319,17 +1370,7 @@ void chart(SharedData &data, Quote::QuoteHub &quote, BoardState &st, bool priv) 
 } // namespace
 
 void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, BoardState &st) {
-  if (!hub.connected()) {
-    ImGui::TextUnformatted("接券商客户端:");
-    for (size_t i = 0; i < live::clients().size(); ++i) {
-      const live::Client &c = live::clients()[i];
-      if (ImGui::Button(strf("连接%s", c.name).c_str()))
-        hub.connect(i);
-      ImGui::SameLine();
-      ImGui::TextWrapped("%s", c.about);
-    }
-    return;
-  }
+  assert(hub.connected());
   const BoardView &v = hub.board();
   std::set<std::string> held;
   if (v.frame)

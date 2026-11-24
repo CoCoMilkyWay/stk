@@ -12,6 +12,7 @@
 // =============================================================================
 
 #include "gui/task_agent/Bridge.hpp"
+#include "gui/task_agent/Llm.hpp"
 
 #include <memory>
 #include <optional>
@@ -28,8 +29,8 @@ public:
   Bench &operator=(const Bench &) = delete;
 
   void update(); // 每帧: 收后台结果
-  // sc = Mine 页的作用域; blocked = Mine 页的会话在走 (不能 Run)
-  void draw(const SharedData &data, Tool tool, const Scope &sc, const Gate &gate, bool gpu, bool blocked);
+  // sc = Mine 页的作用域; llm = Config 页当前大模型选项 (probe_brain 用); blocked = Mine 页的会话在走 (不能 Run)
+  void draw(const SharedData &data, Tool tool, const Scope &sc, const Gate &gate, bool gpu, const llm::Options &llm, bool blocked);
   bool busy() const;                   // 有调用在跑 (含等研究员答)
   std::optional<Tool> running() const; // 在跑的调用的工具 (主栏该行标 running)
 

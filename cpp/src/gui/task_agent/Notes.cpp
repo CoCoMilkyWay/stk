@@ -1,7 +1,6 @@
 // Notes — 见头文件
 #include "gui/task_agent/Notes.hpp"
 #include "disk/Disk.hpp"
-#include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Note.hpp"
 
@@ -38,13 +37,12 @@ void Board::add(const Call &c, Ref at) {
 void Board::judge(const Call &c, Ref at) {
   assert(c.tool == Tool::Judge);
   Hyp &h = hyp(c.str("hyp"));
-  h.stance = IdOf<Stance>(c.str("verdict")), h.judged = at, h.verdict = c.args, h.pending = 0;
+  h.stance = IdOf<Stance>(c.str("verdict")), h.judged = at, h.verdict = c.args;
 }
 
-void Board::vary(const Call &c, Ref at) {
+void Board::vary(const Call &c) {
   assert(c.tool == Tool::EvalFactor);
-  Hyp &h = hyp(c.str("hyp"));
-  ++h.evals, h.pending = at.round;
+  ++hyp(c.str("hyp")).evals;
 }
 
 const Hyp *Board::find(const std::string &id) const {
@@ -60,16 +58,12 @@ Hyp &Board::hyp(const std::string &id) {
 
 std::string Board::text() const {
   if (hyps_.empty())
-    return "(还没有假设: 先看数据, 用 hypothesize 写下机制假设与它的预测)\n";
+    return {};
   text::Table tbl({"编号", "假设", "判定", "变体", "提出 / 最近判定"});
-  std::string owe;
-  for (const Hyp &h : hyps_) {
-    tbl.add({h.id, text::head(h.title(), 40), def(h.stance).cn, std::to_string(h.evals) + "/" + std::to_string(kHypEvals),
+  for (const Hyp &h : hyps_)
+    tbl.add({h.id, text::head(h.title(), 40), def(h.stance).cn, std::to_string(h.evals),
              RefText(h.at) + (h.judged.round ? " / " + RefText(h.judged) : "")});
-    if (h.pending)
-      owe += (owe.empty() ? "" : ", ") + h.id + " (第 " + std::to_string(h.pending) + " 轮回测的变体)";
-  }
-  return tbl.str() + (owe.empty() ? "" : "\n待判: " + owe + " —— 本条回复须对它们各发一个 judge\n");
+  return tbl.str();
 }
 
 std::string Board::report() const {

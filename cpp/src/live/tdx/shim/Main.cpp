@@ -11,7 +11,7 @@
 //   界面动作只做查询类 (切页 / 开查询页 / 点查询), 不下单; 交互日志照常落 output/run/live/trace/
 #include "live/tdx/shim/Tool.hpp"
 
-#include "live/Broker.hpp"
+#include "live/Base.hpp"
 #include "live/tdx/Heap.hpp"
 #include "live/tdx/Req.hpp"
 #include "live/tdx/Shim.hpp"

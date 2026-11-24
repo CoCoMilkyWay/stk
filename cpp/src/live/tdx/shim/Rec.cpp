@@ -7,7 +7,7 @@
 #include "live/tdx/shim/Tool.hpp"
 
 #include "disk/Disk.hpp"
-#include "live/Broker.hpp"
+#include "live/Base.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/Win.hpp"
 

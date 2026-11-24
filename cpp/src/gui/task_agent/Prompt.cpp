@@ -9,11 +9,8 @@
 #include <cassert>
 #include <cctype>
 #include <cstdio>
-#include <initializer_list>
-#include <set>
 #include <sstream>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 
 namespace GUI::Agent {
@@ -45,7 +42,7 @@ Message fill(Msg m, const KV &kv) {
 std::string or_none(std::string s, const char *none) { return s.empty() ? none : s; }
 
 std::string remark_text(const std::string &r) {
-  return r.empty() ? "" : "\n## 研究员对本会话的要求\n\n" + r + "\n\n只对这一段会话; 与上文的做法冲突处以它为准, 调用协议与会话约束照旧.\n";
+  return r.empty() ? "" : "\n## 研究员对本会话的要求\n\n" + r + "\n\n只对这一段会话; 与上文的做法冲突处以它为准, 调用协议照旧.\n";
 }
 
 int visible(const std::vector<Result> &rs) {
@@ -125,7 +122,7 @@ std::string rows_of(const Context &c) {
          " … " + c.clock.back() + ", 午休不占行; 末行含收盘竞价).";
 }
 
-// ---- 研究树折叠 (TurnsOf 内部调用) ----
+// ---- 研究树折叠 (按轮摘要, 透明无黑盒) ----
 std::string under(std::string_view s) {
   std::string o;
   for (size_t i = 0; i < s.size();) {
@@ -137,125 +134,49 @@ std::string under(std::string_view s) {
   return o;
 }
 
-std::string fields(const nlohmann::ordered_json &args, std::initializer_list<std::string_view> keys) {
-  std::string s;
-  for (const auto &[k, v] : args.items())
-    if (v.is_string() && std::ranges::contains(keys, std::string_view(k)))
-      s += "  - " + k + ": " + v.get_ref<const std::string &>() + "\n";
-  return s;
-}
-
 std::string why_of(const Act &a) { return text::head(std::string_view(a.out.text).substr(0, a.out.text.find('\n')), kWhyChars); }
-
-std::string tree_of(Rounds msgs) {
-  const Rounds done = msgs.first(msgs.size() - 1);
-  const Board board = StateOf(done).board;
-  struct Step {
-    Ref at;
-    const Act *a;
-  };
-  std::vector<Step> steps;
-  for (size_t i = 0; i < done.size(); ++i)
-    for (size_t k = 0; k < done[i].acts.size(); ++k)
-      if (const Act &a = done[i].acts[k]; a.span.ended())
-        steps.push_back({{static_cast<int>(i) + 1, static_cast<int>(k) + 1}, &a});
-  const auto act_at = [&](Ref r) -> const Act * {
-    if (r.round < 1 || static_cast<size_t>(r.round) > done.size())
-      return nullptr;
-    const std::vector<Act> &as = done[static_cast<size_t>(r.round) - 1].acts;
-    return r.call >= 1 && static_cast<size_t>(r.call) <= as.size() && as[static_cast<size_t>(r.call) - 1].span.ended() ? &as[static_cast<size_t>(r.call) - 1] : nullptr;
-  };
-  const auto on = [](const Act &a, Tool t) { return a.call.tool == t && a.out.ok; };
-  const auto staged = [](const Act &a) {
-    const TrialRes *k = AsTrial(a);
-    return k && k->st.ok();
-  };
-  const auto gist_of = [](const Act &a, const char *sep) { return a.out.gist.empty() ? std::string() : std::string(sep) + a.out.gist; };
-
-  std::set<Ref> cited;
-  std::unordered_map<std::string, std::vector<Step>> by_hyp;
-  for (const Step &s : steps) {
-    const Act &a = *s.a;
-    if (on(a, Tool::Judge)) {
-      for (const std::string &e : a.call.strs("evidence"))
-        if (Ref r; RefOf(e, r))
-          cited.insert(r);
-      by_hyp[a.call.str("hyp")].push_back(s);
-    } else if (staged(a)) {
-      by_hyp[a.call.str("hyp")].push_back(s);
-    }
-  }
-
-  std::string hyps;
-  for (const Hyp &h : board.all()) {
-    const bool closed = h.stance == Stance::Refuted || (h.evals >= kHypEvals && !h.pending);
-    hyps += "\n### " + h.id + " " + h.title() + " — " + def(h.stance).cn + " · 变体 " + std::to_string(h.evals) + "/" + std::to_string(kHypEvals) + " · 提出 " +
-            RefText(h.at) + (closed ? " · 结案" : "") + "\n\n";
-    if (!closed)
-      hyps += "- 预测\n" + fields(h.fields, {"actor", "why", "expect", "refute"});
-    const auto hit = by_hyp.find(h.id);
-    if (hit == by_hyp.end())
-      continue;
-    for (const Step &s : hit->second) {
-      const Act &a = *s.a;
-      if (on(a, Tool::Judge)) {
-        const bool last = s.at == h.judged;
-        std::string ev;
-        for (const std::string &e : a.call.strs("evidence")) {
-          Ref r;
-          const Act *x = RefOf(e, r) ? act_at(r) : nullptr;
-          ev += (ev.empty() ? "" : "; ") + (x ? CallTitle(*x, r) + gist_of(*x, " → ") : e);
-        }
-        hyps += "- [" + RefText(s.at) + "] 判 " + def(IdOf<Stance>(a.call.str("verdict"))).cn + " · 证据 " + ev + "\n";
-        if (!closed || last)
-          hyps += fields(a.call.args, {"result", "insight"});
-        if (!closed && last)
-          hyps += fields(a.call.args, {"why", "better_feature", "next"});
-      } else {
-        const TrialRes &k = *AsTrial(a);
-        hyps += "- [" + RefText(s.at) + "] 变体 " + k.st.cand.name + " `" + k.st.cand.expr + "` · " + text::head(k.st.cand.note, 60) + " → " + Brief(k.st.res) + "\n";
-      }
-    }
-  }
-
-  std::string rest, notes;
-  size_t next = 0;
-  for (size_t i = 0; i < msgs.size(); ++i) {
-    if (i > 0 && !msgs[i].memo.empty())
-      notes += "- 研究员插话 (随第 " + std::to_string(i + 1) + " 条消息)\n" + under(msgs[i].memo);
-    for (; next < steps.size() && static_cast<size_t>(steps[next].at.round) == i + 1; ++next) {
-      const Step &s = steps[next];
-      const Act &a = *s.a;
-      if (on(a, Tool::Hypothesize) || on(a, Tool::Judge) || staged(a))
-        continue;
-      if (!a.out.ok)
-        rest += "- " + CallTitle(a, s.at) + ": " + why_of(a) + "\n";
-      else if (def(a.call.tool).keep)
-        notes += "- " + CallTitle(a, s.at) + "\n" + under(a.out.text);
-      else if (!cited.contains(s.at))
-        rest += "- " + CallTitle(a, s.at) + gist_of(a, ": ") + "\n";
-    }
-  }
-  if (hyps.empty() && rest.empty() && notes.empty())
-    return {};
-  std::string s = "# 研究树 (第 1–" + std::to_string(done.size()) +
-                  " 轮的各步与结论)\n\n"
-                  "各调用的原文只在交回它的那条消息里给一次, 此后收在这里: 假设留预测、各次判定的结论与变体的一行结局, 被引作证据的调用写在那次判定的证据里, "
-                  "其余观察留调用一行与关键数 (rIC / mono / 多空等; 已有的不必重看), 查询只留调用一行; 被退回的回复与重发要求不留. 调用编号照旧可作 judge 的证据; 要细节就重调.\n";
-  if (!hyps.empty())
-    s += "\n## 假设\n" + hyps;
-  if (!rest.empty())
-    s += "\n## 其余各步 (观察留关键数, 其余只留调用)\n\n" + rest;
-  if (!notes.empty())
-    s += "\n## 记录 (提交 / 全局记录 / 问答 / 插话)\n\n" + notes;
-  return s;
-}
 
 } // namespace
 
 // =============================================================================
 // 公开函数
 // =============================================================================
+std::string TreeOf(Rounds msgs) {
+  if (msgs.size() <= 1)
+    return {};
+  const Rounds done = msgs.first(msgs.size() - 1);
+  std::string body;
+  for (size_t i = 0; i < done.size(); ++i) {
+    const int n = static_cast<int>(i) + 1;
+    std::string lines;
+    if (i > 0 && !done[i].memo.empty())
+      lines += "- 研究员插话\n" + under(done[i].memo);
+    for (size_t k = 0; k < done[i].acts.size(); ++k) {
+      const Act &a = done[i].acts[k];
+      if (!a.span.ended())
+        continue;
+      const Ref at{n, static_cast<int>(k) + 1};
+      if (!a.out.ok) {
+        lines += "- " + CallTitle(a, at) + ": " + why_of(a) + "\n";
+      } else if (const TrialRes *tr = AsTrial(a); tr && tr->st.ok()) {
+        lines += "- [" + RefText(at) + "] 回测 " + tr->st.cand.name + " `" + tr->st.cand.expr + "` · " + text::head(tr->st.cand.note, 60) + " → " + Brief(tr->st.res) + "\n";
+      } else if (def(a.call.tool).keep) {
+        lines += "- " + CallTitle(a, at) + "\n" + under(a.out.text);
+      } else {
+        lines += "- " + CallTitle(a, at) + (a.out.gist.empty() ? std::string() : ": " + a.out.gist) + "\n";
+      }
+    }
+    if (!lines.empty())
+      body += "\n## 第 " + std::to_string(n) + " 轮\n" + lines;
+  }
+  if (body.empty())
+    return {};
+  return "# 研究树 (第 1–" + std::to_string(done.size()) +
+         " 轮摘要)\n\n"
+         "各调用的原文只在交回它的那条消息里给一次, 此后按轮收在这里 (回测留模板与结局, 观察留关键数, 记录 / 问答 / 假设留原文, 查询只留调用一行); 要细节就重调.\n" +
+         body;
+}
+
 std::string CallTitle(const Act &a, Ref r) { return "[" + RefText(r) + "] " + a.call.text(kTitleChars) + (a.out.ok ? "" : " — 没做成"); }
 
 std::string ResultsText(const std::vector<Act> &acts, int round) {
@@ -391,7 +312,7 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask) {
                             {"ts_root_d", std::to_string(c.ts_root_d)},
                             {"max_d", std::to_string(c.max_d)},
                             {"gate_ric", num(g.ric)},
-                            {"ask", ask ? "可以用 ask_human 向研究员提一次问 (整个会话只一次)" : "研究员不参与决策, 没有 ask_human; 疑问写 report_issue"},
+                            {"ask", ask ? "遇到关键分岔可用 ask_human 问研究员" : "研究员不参与决策, 没有 ask_human; 疑问写 report_issue"},
                             {"tools", ToolsDoc(ask)},
                             {"leaves", leaves_text(c.leaves)},
                             {"ops", ops.str()}});
@@ -403,81 +324,68 @@ Message FirstMessage(const Context &c, int tried, const std::string &notes, bool
                            {"tried", std::to_string(tried)},
                            {"library", std::to_string(visible(c.library))},
                            {"notes", notes},
-                           {"start", ask ? "要研究员定的事 (从哪个因子起步、往哪个方向挖) 可以先看几眼数据再用 ask_human 一次问完, 也可以不问"
+                           {"start", ask ? "要研究员定的事 (从哪个因子起步、往哪个方向挖) 可以先看几眼数据再用 ask_human 问, 也可以不问"
                                          : "自己定下要做的那一个因子 (新起, 或从已试候选 / 正式库里挑) 和方向"}});
 }
 
 Message TestMessage(bool ask, const std::string &remark) {
   std::string tools;
   for (const Tool t : kVals<Tool>)
-    if (t != Tool::AskHuman || ask)
+    if (IsAgentTool(t) && (t != Tool::AskHuman || ask))
       tools += (tools.empty() ? "" : ", ") + std::string(def(t).id);
   return fill(Msg::Test, {{"tools", tools},
                           {"remark", remark_text(remark)},
                           {"ask", ask ? "ask_human 也要测: 问 1 道题 (例: 先测哪类工具), 研究员答完再接着测" : "本会话没有 ask_human, 不测它"}});
 }
 
-Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool evaled, bool test) {
-  const std::string s = ResultsText(acts, round);
+std::string NextStep(bool test) {
   const std::string batch = std::to_string(kBatch);
-  std::string next;
-  if (test) {
-    next = "按自检的做法接着调还没调过的工具与取值 (eval_factor 至多 " + batch +
+  if (test)
+    return "按自检的做法接着调还没调过的工具与取值 (eval_factor 至多 " + batch +
            " 个); 对照工具说明查上面每个结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish.";
-  } else {
-    next = "先对照, 再发调用:\n"
-           "- **判**: 结果对照各假设的 expect / refute, 哪个被支持、哪个落空、哪个还不清; 证据够的 judge, 不够的补哪个观察\n"
-           "- **因**: 为什么是这样, 错在假设的哪一环 (谁 / 什么行为 / 什么盘面 / 何时兑现)\n"
-           "- **料**: 有没有更直接捕捉这一现象的特征\n"
-           "- **缺**: 想刻画的维度现有叶没有或只能近似 → request_feature; 想看的现有工具看不到 → request_tool; 规则或工具可以更好 → report_issue (idea); 都在本条提\n"
-           "- **记**: 值得跨会话留下的认识用 note_insight 记\n\n";
-    const bool open = std::ranges::any_of(board.all(), [](const Hyp &h) { return h.stance == Stance::Supported && h.evals < kHypEvals; });
-    const std::string done = "研究透了就按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish.";
-    next += evaled ? "本条只诊断 (上一条有落了文件的回测, 本条不能回测): 用观察查本批变体的结果说明了什么 (与预期哪里不符、为什么), 再对挂了变体的假设 judge; 观察排在 judge 前面, 判支持才引用得到."
-            : open ? "本条可回测: 只挂判为支持的假设 (至多 " + batch + " 个 eval_factor, 各写清 hyp 与 note), 每个变体只改一处以检验一个问题; " + done
-                   : "假设板上还没有能挂变体的假设 (判为支持且变体有余): 本条用观察检验假设并 judge, 或提新假设; 同条里判为支持的, 排在 judge 后面的 eval_factor 即可挂它; " + done;
-  }
-  return fill(Msg::Round, {{"results", s}, {"board", board.text()}, {"next", next}});
+  return "根据本批结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或发下一批回测 (至多 " + batch +
+         " 个 eval_factor); 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish.";
 }
 
-Message RetryMessage(const std::string &error) {
+Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool test) {
+  const std::string b = board.text();
+  return fill(Msg::Round, {{"results", ResultsText(acts, round)},
+                           {"board", b.empty() ? std::string() : "# 假设板\n\n" + b + "\n"},
+                           {"next", NextStep(test)}});
+}
+
+std::string RetryText(const std::string &error) {
   std::string list;
   for (size_t i = 0; i <= error.size();) {
     const size_t e = std::min(error.find('\n', i), error.size());
     list += (list.empty() ? "- " : "\n- ") + error.substr(i, e - i);
     i = e + 1;
   }
-  return fill(Msg::Retry, {{"error", list}});
+  return "上一批调用未通过校验, 一个调用都没执行. 不合处 (一行一处, 全部改掉):\n\n" + list + "\n\n改正后整批重交 `{\"calls\": [...]}`.";
 }
 
 std::string MemoText(const std::string &memo) {
-  return "\n# 研究员插话\n\n" + memo + "\n\n这是研究员在会话中途给的意见: 与上文的做法冲突处以它为准, 调用协议与会话约束照旧.\n";
+  return "\n# 研究员插话\n\n" + memo + "\n\n这是研究员在会话中途给的意见: 与上文的做法冲突处以它为准, 调用协议照旧.\n";
 }
 
 std::string TextOf(const Round &rd) { return rd.memo.empty() ? rd.user : rd.user + MemoText(rd.memo); }
 
-llm::Turns TurnsOf(Rounds rs) {
+llm::Turns TurnsOf(Rounds rs, std::string_view retry_reply, std::string_view retry_error) {
   assert(!rs.empty());
-  size_t j = rs.size() - 1;
-  while (rs[j].kind == Msg::Retry) {
-    assert(j > 0 && "重发要求前面有被退回的那条");
-    --j;
-  }
   llm::Turns t;
-  if (j == 0) {
+  if (rs.size() == 1) {
     t.push_back({true, TextOf(rs[0])});
   } else {
-    const Round &p = rs[j - 1];
-    assert(p.reply.ok() && !p.acts.empty() && "本条前一轮的回复合格且执行了");
-    const std::string tree = tree_of(rs.first(j));
+    const Round &p = rs[rs.size() - 2];
+    assert(p.reply.ok() && !p.acts.empty() && "前一轮的回复合格且执行了");
+    const std::string tree = TreeOf(rs);
     t.push_back({true, TextOf(rs[0]) + (tree.empty() ? "" : "\n---\n\n" + tree)});
     t.push_back({false, p.reply.text});
-    t.push_back({true, TextOf(rs[j])});
+    t.push_back({true, TextOf(rs.back())});
   }
-  for (size_t i = j; i + 1 < rs.size(); ++i) {
-    assert(rs[i].reply.ok() && rs[i].acts.empty() && !rs[i].error.empty() && "重发之前的回复被退回");
-    t.push_back({false, rs[i].reply.text});
-    t.push_back({true, TextOf(rs[i + 1])});
+  if (!retry_error.empty()) {
+    t.push_back({false, std::string(retry_reply)});
+    t.push_back({true, RetryText(std::string(retry_error))});
   }
   return t;
 }

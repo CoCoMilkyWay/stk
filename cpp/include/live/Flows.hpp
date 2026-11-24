@@ -21,10 +21,9 @@ struct Cache {
   std::vector<CashFlow> rows;
 };
 
-Cache load(); // 没有账本 → 空
-void save(const Cache &c);
+Cache load();          // 没有账本 → 空
 Cache pull(Broker &b); // 客户端重查 → 并 → 核 → 存; 失败 → Fail
-uint64_t generation(); // 账本代: 本进程起于 1, save 一次 +1 (任意线程)
+uint64_t generation(); // 账本代: 本进程起于 1, 存一次 +1 (任意线程)
 
 // 计入持仓的行: 买卖 / 融资买入 / 担保品划入 / 新股入账 (申购途中的配号、中签与回冲不计; 其余带股数的业务不认识 → Fail)
 bool holds(const CashFlow &r);

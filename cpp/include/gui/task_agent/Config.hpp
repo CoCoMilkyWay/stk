@@ -47,7 +47,6 @@ inline constexpr int kCancelTimeoutSeconds = 5;  // 取消后通知远端停 run
 // ---- 挖掘 ----
 inline constexpr int kMaxCalls = 12;   // 一条回复的工具调用数上限 (gui/task_agent/Tools.hpp)
 inline constexpr int kBatch = 3;       // 一条回复的 eval_factor 数上限 (提示词 {{batch}})
-inline constexpr int kHypEvals = 3;    // 一个假设至多挂几个落了文件的变体 (提示词 {{hyp_evals}})
 inline constexpr int kMaxOps = 10;     // 一个表达式的算子节点数上限 (超了不落文件; 提示词 {{max_ops}})
 inline constexpr int kGoodOps = 5;     // 建议的算子数 (提示词 {{good_ops}})
 inline constexpr int kEvidence = 6;    // judge 的证据至多引用几个调用
@@ -65,7 +64,7 @@ struct ConstDef {
   const char *key;
   int value;
 };
-inline constexpr ConstDef kConsts[] = {{"max_calls", kMaxCalls}, {"batch", kBatch}, {"hyp_evals", kHypEvals}, {"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}};
+inline constexpr ConstDef kConsts[] = {{"max_calls", kMaxCalls}, {"batch", kBatch}, {"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}};
 inline const ConstDef *const_of(std::string_view key) {
   for (const ConstDef &c : kConsts)
     if (key == c.key)

@@ -11,9 +11,12 @@ void HypRes::draw() const {
   for (const ArgDef &a : doc(Tool::Hypothesize).args) {
     if (!fields.contains(a.key))
       continue;
+    const std::string &v = fields.at(a.key).get_ref<const std::string &>();
+    if (v.empty())
+      continue;
     ImGui::TextColored(kColHead, "%s", a.cn);
     ImGui::Indent();
-    wrapped(fields.at(a.key).get<std::string>());
+    wrapped(v);
     ImGui::Unindent();
   }
 }

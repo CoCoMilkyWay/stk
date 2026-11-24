@@ -103,20 +103,6 @@ std::vector<Daily> days_of(const std::vector<Engine::FactorRow> &rows, const std
   return out;
 }
 
-// 假设不成的原因 (空 = 可挂)
-std::string eval_miss(const Call &c, const Board &b, int round) {
-  const Hyp *h = b.find(c.str("hyp"));
-  if (!h)
-    return "假设板上没有 " + c.str("hyp") + ": 先 hypothesize, 用观察检验并 judge 为支持, 再挂变体";
-  if (h->stance != Stance::Supported)
-    return h->id + " 的判定是 " + def(h->stance).cn + ": 只有判为支持的假设能挂变体";
-  if (h->pending && h->pending != round)
-    return h->id + " 有第 " + std::to_string(h->pending) + " 轮回测过的变体还没判: 先 judge 它";
-  if (h->evals >= kHypEvals)
-    return h->id + " 的 " + std::to_string(kHypEvals) + " 个变体已用完: 回到观察与研报找还没解释的现象, 提新假设";
-  return {};
-}
-
 ToolOut run_eval(const Engine::FactorScope &fsc, const std::string &file, const std::string &tmpl, Bay &bay) {
   const Engine::FeatureTable &ft = *fsc.ft;
   factor::stat::Frame frame = factor::stat::Frame::CS;
@@ -193,7 +179,7 @@ std::string TrialRes::text() const {
   const Weight *w = shown();
   std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + (w ? Formula(*w) : st.cand.expr) + "`\n";
   if (!st.cand.note.empty())
-    s += "- 思路 (" + st.cand.hyp + "): " + st.cand.note + "\n";
+    s += "- 思路" + (st.cand.hyp.empty() ? std::string() : " (" + st.cand.hyp + ")") + ": " + st.cand.note + "\n";
   if (!w)
     return s + Detail(r);
   s += "- " + ScopeLine(*this) + "\n";
@@ -216,15 +202,8 @@ std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
   r->gate = s.gate;
   r->level = s.lab.ctx().level, r->hold = s.lab.ctx().hold;
   Cand cand{c.str("name"), c.str("name_cn"), c.str("expr"), c.str("hyp"), c.str("note")};
-  // 工作台 / 不守会话约束的会话不查假设 (板上没有也照回测)
-  if (std::string miss = s.free ? std::string() : eval_miss(c, s.st.board, s.me.round); !miss.empty()) {
-    r->st.cand = std::move(cand);
-    r->st.res = {.name = r->st.cand.name, .name_cn = r->st.cand.name_cn, .tmpl = r->st.cand.expr, .note = r->st.cand.note, .error = std::move(miss), .verdict = Verdict::Unstaged, .visible = false};
-  } else {
-    const Hyp *h = s.st.board.find(cand.hyp);
-    assert(h || s.free);
-    r->st = s.lab.stage(std::move(cand), h ? h->title() : std::string());
-  }
+  const Hyp *h = cand.hyp.empty() ? nullptr : s.st.board.find(cand.hyp);
+  r->st = s.lab.stage(std::move(cand), h ? h->title() : std::string());
   if (!r->st.ok()) {
     a.out = Done(std::move(r), false);
     return std::nullopt;
@@ -265,7 +244,7 @@ json SampleEvalFactor(Feed &p) {
   std::vector<std::string> leaves = p.grid();
   if (leaves.empty())
     leaves.push_back(p.leaf());
-  Cand c{.name_cn = "工作台试样", .hyp = p.hyp(true)};
+  Cand c{.name_cn = "工作台试样", .hyp = p.hyp()};
   for (int i = 0; i < kSampleTries; ++i) {
     const std::string &x = p.one(leaves);
     const std::string_view w = p.one(wraps), r = p.one(roots);

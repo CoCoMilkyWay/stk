@@ -17,6 +17,7 @@
 
 #include "define/Csr.hpp"
 #include "gui/quote/Bars.hpp"
+#include "live/Sides.hpp"
 #include "misc/date.hpp"
 
 #include <algorithm>
@@ -196,14 +197,14 @@ struct Holdings {
   double now(const Live *y) const;                                     // 此刻净资产; y 空 = net
   bool operator==(const Holdings &) const = default;
 };
-// 账户的当日成交点 (AccountHub 给; 不可变, 成交一变才换): 券商今日成交按所在分钟根 (槽) 聚合, 一分钟一点, 点内同只合并
+// 账户的当日成交点 (AccountHub 给; 不可变, 成交一变才换): 券商今日成交按所在分钟根 (槽) 聚合, 一分钟一点, 点内同只合并; 买卖镜像 (live::Sides)
 struct TradeSec {
   std::string code, name;
-  double buy = 0, sell = 0, buy_qty = 0, sell_qty = 0; // 额 [元] / 股
+  live::Sides<double> amount, qty; // 额 [元] / 股
 };
 struct TradeMark {
   int slot = 0;
-  double buy = 0, sell = 0;   // 本分钟买 / 卖额合计 [元]
+  live::Sides<double> amount; // 本分钟合计 [元]
   std::vector<TradeSec> secs; // 首见序
 };
 struct Trades {

@@ -1,7 +1,7 @@
 #include "live/Trace.hpp"
 
 #include "disk/Disk.hpp"
-#include "live/Broker.hpp"
+#include "live/Base.hpp"
 #include "misc/cross_platform.hpp"
 
 #include <cassert>
@@ -13,9 +13,7 @@
 
 #include <unistd.h>
 
-namespace live {
-
-namespace trace {
+namespace live::trace {
 
 namespace {
 
@@ -31,7 +29,7 @@ struct Frame {
   bool open = false; // 已落 begin
 };
 
-// 本线程: 段栈 (已落 begin 的恒为前缀) + 静默的段数 + 待并的重复事件 + 跟随的 Track / Hooks (自段 base 起) 与实时一行、最近的 shim 命令
+// 本线程: 段栈 (已落 begin 的恒为前缀) + 静默的段数 + 待并的重复事件 + 跟随的 Track / Hooks (自段 base 起) 与实时一行、最近发给客户端的命令
 struct Local {
   std::vector<Frame> frames;
   int quiet = 0;
@@ -42,11 +40,11 @@ struct Local {
   Track *track = nullptr;
   const Hooks *hooks = nullptr;
   size_t base = 0;
-  std::string live, shim;
+  std::string live, cmd;
 };
 thread_local Local L;
 
-// 跟随着即把段栈、实时一行与 shim 命令整份换进 Track
+// 跟随着即把段栈、实时一行与命令整份换进 Track
 void mirror() {
   if (!L.track)
     return;
@@ -54,7 +52,7 @@ void mirror() {
   for (size_t i = L.base; i < L.frames.size(); ++i)
     s.segs.push_back({L.frames[i].name, L.frames[i].t0});
   s.live = L.live;
-  s.shim = L.shim;
+  s.cmd = L.cmd;
   L.track->set(std::move(s));
 }
 
@@ -172,7 +170,7 @@ void live(std::string line) {
 Span::Span(std::string name, Kw kw, bool loud) : unwinding_(std::uncaught_exceptions()) {
   L.frames.push_back({std::move(name), std::move(kw), Steady::now(), Wall::now(), loud});
   L.quiet += !loud;
-  L.shim.clear();
+  L.cmd.clear();
   mirror();
   if (L.hooks && L.hooks->on_span)
     L.hooks->on_span(L.frames.back().name);
@@ -192,7 +190,7 @@ Span::~Span() {
   }
   L.frames.pop_back();
   assert(!L.track || L.frames.size() >= L.base);
-  L.shim.clear();
+  L.cmd.clear();
   mirror();
 }
 
@@ -212,7 +210,7 @@ Watch::Watch(Track &t, const Hooks *hooks) {
   L.hooks = hooks;
   L.base = L.frames.size();
   L.live.clear();
-  L.shim.clear();
+  L.cmd.clear();
   mirror();
 }
 
@@ -221,21 +219,14 @@ Watch::~Watch() {
   L.track = nullptr;
   L.hooks = nullptr;
   L.live.clear();
-  L.shim.clear();
+  L.cmd.clear();
 }
 
-void shim_sent(std::string_view cmd) {
+void sent(std::string_view cmd) {
   if (!L.track)
     return;
-  L.shim = cmd;
+  L.cmd = cmd;
   mirror();
 }
 
-} // namespace trace
-
-void fail(std::string why) {
-  trace::ev("fail", {{"why", why}});
-  throw Fail{std::move(why)};
-}
-
-} // namespace live
+} // namespace live::trace

@@ -2,12 +2,13 @@
 #include "gui/task_agent/tools/Kit.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Hyp.hpp"   // IWYU pragma: keep
-#include "gui/task_agent/tools/Look.hpp"  // IWYU pragma: keep
-#include "gui/task_agent/tools/Misc.hpp"  // IWYU pragma: keep
-#include "gui/task_agent/tools/Note.hpp"  // IWYU pragma: keep
-#include "gui/task_agent/tools/Query.hpp" // IWYU pragma: keep
-#include "gui/task_agent/tools/Trial.hpp" // IWYU pragma: keep
+#include "gui/task_agent/tools/Hyp.hpp"     // IWYU pragma: keep
+#include "gui/task_agent/tools/Look.hpp"    // IWYU pragma: keep
+#include "gui/task_agent/tools/Misc.hpp"    // IWYU pragma: keep
+#include "gui/task_agent/tools/Note.hpp"    // IWYU pragma: keep
+#include "gui/task_agent/tools/Query.hpp"   // IWYU pragma: keep
+#include "gui/task_agent/tools/Session.hpp" // IWYU pragma: keep
+#include "gui/task_agent/tools/Trial.hpp"   // IWYU pragma: keep
 
 #include <algorithm>
 #include <cassert>
@@ -53,11 +54,6 @@ void CloseReply(State &s, const Round &rd) {
   assert(rd.span.ended());
   s.tally.llm_s += rd.span.len(0.0);
   s.tally.usage += rd.reply.usage;
-  if (!rd.acts.empty()) {
-    s.flags.evaled = false;
-    if (std::ranges::any_of(rd.acts, [](const Act &a) { return a.call.tool == Tool::AskHuman; }))
-      s.flags.asked = true;
-  }
 }
 
 void ApplyAct(State &s, const Act &a, Ref at) {
@@ -78,10 +74,9 @@ void ApplyAct(State &s, const Act &a, Ref at) {
     break;
   case Tool::EvalFactor:
     if (const TrialRes *x = AsTrial(a); x && x->st.ok()) {
-      if (s.board.find(c.str("hyp"))) // 工作台的回测可不挂板上的假设
-        s.board.vary(c, at);
+      if (const std::string h = c.str("hyp"); !h.empty() && s.board.find(h))
+        s.board.vary(c);
       s.staged.insert(x->st.file);
-      s.flags.evaled = true;
     }
     break;
   case Tool::SubmitFactor:
@@ -144,16 +139,10 @@ Tally TallyOf(Rounds rs, double now) {
   return t;
 }
 
-std::string RuleMiss(const State &s, const std::vector<Call> &cs) {
-  if (s.flags.evaled && std::ranges::any_of(cs, [](const Call &c) { return c.tool == Tool::EvalFactor; }))
-    return "上一条回复有落了文件的回测, 这一条不能再回测: 先读本批结果 —— 用观察诊断变体为什么好 / 为什么差, 对挂了变体的假设 judge; 回测留到下一条";
-  std::string owe;
-  for (const Hyp &h : s.board.all())
-    if (h.pending && std::ranges::none_of(cs, [&](const Call &c) { return c.tool == Tool::Judge && c.str("hyp") == h.id; }))
-      owe += (owe.empty() ? "" : ", ") + h.id;
-  if (!owe.empty())
-    return "假设板上待判的 " + owe + " 本条没有 judge: 它们的变体回测完了, 每个发一个 judge —— 对照 expect 写测出来是什么、为什么、得到什么认识、有没有更好的特征、下一步用什么工具查什么";
-  return {};
+BatchCheck VetBatch(std::string_view reply, bool ask) {
+  BatchCheck out;
+  ParseCalls(reply, ask, out.calls, out.error);
+  return out;
 }
 
 // =============================================================================
@@ -195,6 +184,8 @@ void finish_act(Act &a, State &st, Ref at, double t) {
   if (TrialRes *r = AsTrial(a))
     r->search.end(t), r->run.end(t);
   a.span.end(t);
+  if (!IsAgentTool(a.call.tool))
+    return;
   ApplyAct(st, a, at);
   clip(a.out.text);
 }
@@ -204,8 +195,8 @@ void finish_act(Act &a, State &st, Ref at, double t) {
 // =============================================================================
 // 统一调用底座 Rig: open ⇄ step / settle / answer / abort
 // =============================================================================
-Seat Rig::seat(size_t i, const Gate &gate, std::string_view session, bool free, bool dry, bool gpu) {
-  return {lab, notes, gate, st, timeline, {round(), static_cast<int>(i) + 1}, catalog::label(lab.scope()), std::string(session), free, dry, gpu};
+Seat Rig::seat(size_t i, const Gate &gate, std::string_view session, bool dry, bool gpu, llm::Options llm) {
+  return {lab, notes, gate, st, timeline, {round(), static_cast<int>(i) + 1}, catalog::label(lab.scope()), std::string(session), dry, gpu, std::move(llm)};
 }
 
 void Rig::flush() {
@@ -216,8 +207,7 @@ void Rig::flush() {
   doomed.clear();
 }
 
-Exec Rig::open_act(size_t i, Seat &s, double t) {
-  Act &a = timeline.back().acts[i];
+Exec Rig::open_act(Act &a, Seat &s, double t) {
   a.span.begin(t);
   const ImplFn &fn = kSpecs[a.call.tool].fn;
   if (const auto *sync = std::get_if<SyncFn>(&fn)) {
@@ -244,8 +234,8 @@ Exec Rig::open_act(size_t i, Seat &s, double t) {
   return Exec::Human;
 }
 
-void Rig::step_act(size_t i, LabStep step, double t) {
-  TrialRes *r = AsTrial(timeline.back().acts[i]);
+void Rig::step_act(Act &a, LabStep step, double t) {
+  TrialRes *r = AsTrial(a);
   if (!r)
     return;
   r->search.end(t), r->run.end(t);
@@ -255,8 +245,7 @@ void Rig::step_act(size_t i, LabStep step, double t) {
     r->run.begin(t);
 }
 
-void Rig::settle_act(size_t i, ToolOut out, Seat &s, double t) {
-  Act &a = timeline.back().acts[i];
+void Rig::settle_act(Act &a, ToolOut out, Seat &s, double t) {
   assert(def(a.call.tool).exec == Exec::Lab && a.span.running());
   if (const auto *staged = std::get_if<StagedLab>(&kSpecs[a.call.tool].fn))
     staged->close(a, std::move(out), s);
@@ -265,17 +254,15 @@ void Rig::settle_act(size_t i, ToolOut out, Seat &s, double t) {
   finish_act(a, st, s.me, t);
 }
 
-void Rig::answer_act(size_t i, double t) {
-  Act &a = timeline.back().acts[i];
+void Rig::answer_act(Act &a, Ref at, double t) {
   assert(def(a.call.tool).exec == Exec::Human && a.span.running());
   auto r = std::static_pointer_cast<AskRes>(a.out.res);
   assert(r);
   a.out = std::get<HumanFn>(kSpecs[a.call.tool].fn)(std::move(r));
-  finish_act(a, st, {round(), static_cast<int>(i) + 1}, t);
+  finish_act(a, st, at, t);
 }
 
-void Rig::abort_act(size_t i, double t) {
-  Act &a = timeline.back().acts[i];
+void Rig::abort_act(Act &a, Ref at, double t) {
   assert(a.span.running());
   lab.cancel();
   if (TrialRes *r = AsTrial(a); r && r->st.ok()) {
@@ -291,7 +278,7 @@ void Rig::abort_act(size_t i, double t) {
   } else {
     a.out = Fail("研究员取消了这个调用, 没做完");
   }
-  finish_act(a, st, {round(), static_cast<int>(i) + 1}, t);
+  finish_act(a, st, at, t);
   flush();
 }
 
@@ -410,15 +397,9 @@ Spot Feed::spot() {
   return {code(), day(), clock()};
 }
 
-std::string Feed::hyp(bool supported) {
+std::string Feed::hyp() {
   const std::vector<Hyp> &hs = board.all();
-  if (hs.empty())
-    return "H1";
-  if (supported)
-    for (auto it = hs.rbegin(); it != hs.rend(); ++it)
-      if (it->stance == Stance::Supported && it->evals < kHypEvals && (!it->pending || it->pending == me.round))
-        return it->id;
-  return one(hs).id;
+  return hs.empty() ? std::string() : hs.back().id;
 }
 
 std::vector<std::string> Feed::refs(int n) {

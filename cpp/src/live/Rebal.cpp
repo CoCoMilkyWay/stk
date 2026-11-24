@@ -63,7 +63,6 @@ const Term *term_of(const Terms &terms, const std::string &code) {
 // 各持仓行 (带可融、负债、卖满、卖出股数 want 与卖单, 其融资腿 = 预计还款)
 std::vector<Hold> sells_of(const Keyed<Position> &pos, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms, const Cfg &cfg,
                            const std::map<std::string, int64_t> &want) {
-  const Bar bar = spec(cfg.mode).bar;
   std::vector<Hold> rows;
   rows.reserve(pos.list.size());
   for (const Position &h : pos.list) {
@@ -87,31 +86,24 @@ std::vector<Hold> sells_of(const Keyed<Position> &pos, const Keyed<Debt> &debts,
              .lot = lt,
              .step = step,
              .sell = v};
-    // 融资部分的卖满: 盖住融资部分的最少整步长股数 (超过可卖即全部可卖)
-    const int64_t fin = row.bal - row.own;
-    switch (bar) {
-    case Bar::None:
-      break;
-    case Bar::Own:
-      if (row.own > 0)
-        row.full = row.avail, row.base = row.bal;
-      break;
-    case Bar::Fin:
-      if (fin > 0)
-        row.full = std::min(row.avail, (fin + step - 1) / step * step), row.base = fin;
-      break;
-    case Bar::Plain:
-      if (!row.financeable)
-        row.full = row.avail, row.base = row.bal;
-      break;
+    // 按比例: 卖的范围内即计入 bar 全长; 所选部分 part 与其今日卖得满的 full (只融资: 盖住融资部分的最少整步长股数, 超过可卖即全部可卖)
+    if (cfg.how == How::Bar && in_scope(cfg.sell.scope, row.financeable)) {
+      const Parts p = cfg.sell.parts;
+      const int64_t fin = row.bal - row.own;
+      row.span = row.bal;
+      row.part = p.own && p.fin ? row.bal : p.own ? (row.own > 0 ? row.bal : 0)
+                                        : p.fin   ? fin
+                                                  : 0;
+      row.full = p.fin && !p.own ? std::min(row.avail, (fin + step - 1) / step * step) : row.part > 0 ? row.avail
+                                                                                                      : 0;
     }
     if (v > 0) {
       const int64_t n = std::min(v, row.avail);
       // 卖出设置是先前按当时的可卖定的, 可卖其后变了 (又有成交) 即可能不再合步长: 报出来, 不下
       need(n == row.avail || n % step == 0 || n % step == row.avail % step, "%s 卖 %lld 股不是 %lld 股的整数倍 (零股须一次卖完; 可卖已变, 重设卖出)",
            h.code.c_str(), static_cast<long long>(n), static_cast<long long>(step));
-      // 全部可卖可含零股 (起卖 1 股); 有卖出总 bar 的模式卖满不管最小单元
-      const double unit = bar != Bar::None && n == row.avail ? 0 : cfg.unit;
+      // 全部可卖可含零股 (起卖 1 股); 按比例卖的卖满不管最小单元
+      const double unit = cfg.how == How::Bar && n == row.avail ? 0 : cfg.unit;
       const int64_t min_n = n == row.avail ? least(px, unit, 1, 1) : least(px, unit, lt, step);
       row.leg = {Credit::Plain, static_cast<double>(n) * px};
       row.leg.order = leg(q, kSell, n, min_n, order_px(q, kSell, cfg.px, static_cast<double>(n) * px).value_or(px), Credit::Plain, h, row.leg.skip);
@@ -163,15 +155,15 @@ struct Tgt {
   double min = 0;              // 最小单元 [元]
 };
 
-// 本次可用额度: 现金 / 可用保证金 / 可融余量; cash = 有现金腿 (没有: 现金额度 0, 买入费用从卖后现金出、不占额度).
-//   没有融资腿由各只不带保证金比例表达 (Tgt::ratio 空)
+// 本次可用额度, 两部分并排: 自有 (现金腿) C / 融资 (融资腿) X (可用保证金) · L (可融余量); 关了的部分额度 0.
+//   不买自有: 缺口须全融到, 买入费用从卖后现金出、不占额度; 不买融资: 不融, 也不先排融资标的
 struct Budget {
+  Parts parts;
   double C = 0, X = 0, L = 0;
-  bool cash = true;
 };
 
 // 目标市值 V 下 s 各只 (tgts 的下标, 已按保证金比例从低到高排) 的两腿 (融资额, 现金额) 写进 out (给了才写) → 现金需求
-//   没有现金腿: 现金额度 0 且不计费用 ⇒ 可行 ⇔ 各只现金腿全为 0, 即每只缺口都全融到 (融不满的那只拖低共同的 V, 而不是改用现金)
+//   不买自有: 现金额度 0 且不计费用 ⇒ 可行 ⇔ 各只现金腿全为 0, 即每只缺口都全融到 (融不满的那只拖低共同的 V, 而不是改用现金)
 double fill(double V, std::span<const size_t> s, const std::vector<Tgt> &tgts, const Budget &b, std::vector<std::pair<double, double>> *out = nullptr) {
   double xb = std::max(0.0, b.X), lb = b.L, need_amt = 0, pay = 0;
   for (const size_t idx : s) {
@@ -199,7 +191,7 @@ double fill(double V, std::span<const size_t> s, const std::vector<Tgt> &tgts, c
     if (out)
       (*out)[idx] = {f, p};
   }
-  return pay + (b.cash ? fee(need_amt, kBuy) : 0);
+  return pay + (b.parts.own ? fee(need_amt, kBuy) : 0);
 }
 
 // s 等权补齐可行的目标市值 V: 在 [0, hi] 里二分到 kTol
@@ -215,16 +207,17 @@ double level(std::span<const size_t> s, const std::vector<Tgt> &tgts, const Budg
   return lo;
 }
 
-// 先可融的 (带保证金比例)、后其余, 各按名单序逐只试并入 → (入选的下标, 按保证金比例排; V)
+// 买融资部分时先融资标的 (带保证金比例)、后其余, 否则只按名单序, 逐只试并入 → (入选的下标, 按保证金比例排; V)
 std::pair<std::vector<size_t>, double> pick(const std::vector<Tgt> &tgts, const Budget &b) {
   const size_t n = tgts.size();
   std::vector<size_t> by_ratio(n), tries(n);
   for (size_t i = 0; i < n; ++i)
     by_ratio[i] = tries[i] = i;
   std::stable_sort(by_ratio.begin(), by_ratio.end(), [&](size_t a, size_t c) { return tgts[a].ratio.value_or(0) < tgts[c].ratio.value_or(0); });
-  std::stable_sort(tries.begin(), tries.end(), [&](size_t a, size_t c) { return tgts[a].ratio.has_value() && !tgts[c].ratio.has_value(); });
+  if (b.parts.fin)
+    std::stable_sort(tries.begin(), tries.end(), [&](size_t a, size_t c) { return tgts[a].ratio.has_value() && !tgts[c].ratio.has_value(); });
 
-  std::vector<uint8_t> in(n, 0);
+  std::vector<uint8_t> took(n, 0);
   double V = b.C + b.L, top = 0;
   for (const Tgt &x : tgts)
     top = std::max(top, x.held);
@@ -235,17 +228,17 @@ std::pair<std::vector<size_t>, double> pick(const std::vector<Tgt> &tgts, const 
   for (const size_t idx : tries) {
     cur.clear();
     for (const size_t j : by_ratio)
-      if (in[j] || j == idx)
+      if (took[j] || j == idx)
         cur.push_back(j);
     const double v = level(cur, tgts, b, V);
     if (std::all_of(cur.begin(), cur.end(), [&](size_t j) { return tgts[j].held > 0 || v >= tgts[j].min; })) {
-      in[idx] = 1;
+      took[idx] = 1;
       V = v;
     }
   }
   cur.clear();
   for (const size_t j : by_ratio)
-    if (in[j])
+    if (took[j])
       cur.push_back(j);
   return {std::move(cur), cur.empty() ? 0 : V};
 }
@@ -340,7 +333,7 @@ double surplus(const Bal &bal, const Keyed<Debt> &debts, const Prices &px, const
 
 // 校准: 读时客户端 X 已含读时的现金与利息, 只把持仓部分 S 从 (读时持仓, 读时负债, 读时现价) 换到 (bal, debts, 现价)
 double avail(const Snapshot &s, const Prices &px0, const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms) {
-  return s.acct.avail + surplus(bal, debts, prices(bal, debts, quotes), terms) - surplus(balances(s.pos), s.acct.debts, px0, terms);
+  return s.acct.avail + surplus(bal, debts, prices(bal, debts, quotes), terms) - surplus(balances(s.pos), s.debts, px0, terms);
 }
 
 std::string why(const Term *t) {
@@ -363,50 +356,51 @@ std::vector<Sec> buyable(const std::vector<std::string> &codes, const Terms &ter
 
 namespace {
 
-// 名单里本模式要买的 (可买 ∧ 按 Buy 筛), 去掉 skip 里的
-std::vector<std::string> wanted(const std::vector<std::string> &codes, const Terms &terms, Buy buy, const std::set<std::string> &skip = {}) {
+// 名单里买一侧 b 买得了的 (可买 ∧ 在范围内 ∧ 买自有或是融资标的), 去掉 skip 里的
+std::vector<std::string> wanted(const std::vector<std::string> &codes, const Terms &terms, const Side &b, const std::set<std::string> &skip = {}) {
   std::vector<std::string> ok;
   for (const std::string &c : codes)
-    if (const Term *t = term_of(terms, c); why(t).empty() && buy != Buy::None && (buy != Buy::Financeable || t->financeable) && !skip.contains(c)) {
-      assert(buy != Buy::Financeable || t->ratio);
+    if (const Term *t = term_of(terms, c); why(t).empty() && in_scope(b.scope, t->financeable) && (b.parts.own || (b.parts.fin && t->financeable)) && !skip.contains(c)) {
+      assert(b.parts.own || t->ratio);
       ok.push_back(c);
     }
   return ok;
 }
 
-// 卖超配的卖出股数: 名单外的清掉 (全部可卖), 名单里市值超过 W 的减到 W (按能成单的档向下取) → (卖出, 减过的名单股)
-std::pair<std::map<std::string, int64_t>, std::set<std::string>> over(const Keyed<Position> &pos, const Quotes &quotes, const std::set<std::string> &listed,
-                                                                      double unit, double W) {
+// 卖超配的卖出股数: 卖的范围 scope 内, 名单外的清掉 (全部可卖), 名单里市值超过 W 的减到 W (按能成单的档向下取) → (卖出, 减过的名单股)
+std::pair<std::map<std::string, int64_t>, std::set<std::string>> over(const Keyed<Position> &pos, const Quotes &quotes, const Terms &terms, Scope scope,
+                                                                      const std::set<std::string> &listed, double unit, double W) {
   std::pair<std::map<std::string, int64_t>, std::set<std::string>> out;
   for (const Position &h : pos.list) {
+    if (const Term *t = term_of(terms, h.code); !in_scope(scope, t && t->financeable))
+      continue;
     const Quote &q = quote_at(quotes, h.code);
     const auto [lt, step] = lot(h.code);
     const Hold x{.avail = h.available, .px = ref_of(q, h.code), .lot = lt, .step = step};
-    const bool in = listed.contains(h.code);
+    const bool on = listed.contains(h.code);
     const double v = static_cast<double>(h.balance) * q.price;
-    const int64_t n = !in ? snap(x, unit, static_cast<double>(x.avail)) : v > W ? snap(x, unit, (v - W) / x.px, true)
+    const int64_t n = !on ? snap(x, unit, static_cast<double>(x.avail)) : v > W ? snap(x, unit, (v - W) / x.px, true)
                                                                                 : 0;
     if (n <= 0)
       continue;
     out.first[h.code] = n;
-    if (in)
+    if (on)
       out.second.insert(h.code);
   }
   return out;
 }
 
-// 卖 want (代码 → 股), 名单里 trimmed 的不补, 其余按模式等权补齐 (quotes 已覆盖持仓、负债与要买的各只)
+// 卖 want (代码 → 股), 名单里 trimmed 的不补, 其余按买一侧等权补齐 (quotes 已覆盖持仓、负债与要买的各只)
 Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Terms &terms, const std::vector<std::string> &codes, const Cfg &cfg,
            const std::map<std::string, int64_t> &want, const std::set<std::string> &trimmed) {
   const Keyed<Position> &pos = s.pos;
   const Account &acct = s.acct;
-  const ModeSpec &sp = spec(cfg.mode);
-  const bool margin = margin_leg(cfg);
-  const std::vector<std::string> ok = wanted(codes, terms, sp.buy, trimmed);
+  const Parts parts = cfg.buy.parts;
+  const std::vector<std::string> ok = wanted(codes, terms, cfg.buy, trimmed);
   const double pct = cfg.pct / 100;
 
   Plan pl;
-  pl.holds = sells_of(pos, acct.debts, quotes, terms, cfg, want);
+  pl.holds = sells_of(pos, s.debts, quotes, terms, cfg, want);
   std::vector<Order> sells;
   for (const Hold &h : pl.holds)
     if (h.leg.order)
@@ -419,7 +413,7 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
     bal[o.code] -= o.qty;
   // 卖后: 回款先还本只负债 (R), 余下进现金; 还掉的负债腾出等额可融余量
   const double C = acct.cash + proceeds - R;
-  const Keyed<Debt> debts1 = repaid(acct.debts, pl.holds);
+  const Keyed<Debt> debts1 = repaid(s.debts, pl.holds);
   const double X = avail(s, px0, bal, debts1, quotes, terms) + proceeds - R;
   const double L0 = std::max(0.0, acct.line), L = L0 + R;
 
@@ -435,17 +429,17 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
     const int64_t n = least(r, cfg.unit, lt, step);
     const auto b = bal.find(c);
     tgt_at.emplace(c, tgts.size());
-    tgts.push_back({c, static_cast<double>(b == bal.end() ? 0 : b->second) * q.price, margin && t.financeable ? t.ratio : std::nullopt, n,
+    tgts.push_back({c, static_cast<double>(b == bal.end() ? 0 : b->second) * q.price, t.financeable ? t.ratio : std::nullopt, n,
                     static_cast<double>(n) * buy_px(q, cfg.px, n)});
   }
 
-  const Budget bud{sp.cash ? C * pct : 0, margin ? X * pct : 0, margin ? L * pct : 0, sp.cash};
+  const Budget bud{parts, parts.own ? C * pct : 0, parts.fin ? X * pct : 0, parts.fin ? L * pct : 0};
   const auto [picked, V] = pick(tgts, bud);
-  std::vector<std::pair<double, double>> legs(tgts.size(), {0, 0});
+  std::vector<std::pair<double, double>> alloc(tgts.size(), {0, 0});
   std::vector<uint8_t> is_picked(tgts.size(), 0);
   for (const size_t j : picked)
     is_picked[j] = 1;
-  fill(V, picked, tgts, bud, &legs);
+  fill(V, picked, tgts, bud, &alloc);
 
   // 名单各行 (带融资 / 现金两腿) 与买单 (融资在前); 各腿按 qty_of 折股
   std::vector<Target> targets;
@@ -465,9 +459,10 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
     }
     const auto ti = tgt_at.find(c);
     if (ti == tgt_at.end()) {
-      row.skip = trimmed.contains(c)          ? std::string("超配已减, 不补")
-                 : sp.buy == Buy::Financeable ? strf("%s只买融资标的", sp.name)
-                                              : strf("%s只卖不买", sp.name);
+      row.skip = trimmed.contains(c)                         ? std::string("超配已减, 不补")
+                 : !in_scope(cfg.buy.scope, row.financeable) ? strf("不在买的范围 (%s)", kScopeNames[static_cast<int>(cfg.buy.scope)])
+                 : parts.any()                               ? std::string("只买融资部分, 非融资标的买不了")
+                                                             : std::string("买的两部分都关, 不买");
       targets.push_back(std::move(row));
       continue;
     }
@@ -479,7 +474,7 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
       targets.push_back(std::move(row));
       continue;
     }
-    const auto [f, p] = legs[idx];
+    const auto [f, p] = alloc[idx];
     row.need = f + p;
     if (!*row.need && V > x.held) {
       row.skip = "缺口不足最小单元";
@@ -513,22 +508,21 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
   for (const Position &h : pos.list)
     assets += static_cast<double>(h.balance) * quote_at(quotes, h.code).price;
   const double net = assets - acct.debt;
-  const double X_now = avail(s, px0, balances(pos), acct.debts, quotes, terms);
+  const double X_now = avail(s, px0, balances(pos), s.debts, quotes, terms);
 
   const Bal bal0 = balances(pos);
-  pl.now = sheet(assets, net, acct.debt, acct.cash, fin_mv(bal0, acct.debts, prices(bal0, acct.debts, quotes)), X_now, L0);
+  pl.now = sheet(assets, net, acct.debt, acct.cash, fin_mv(bal0, s.debts, prices(bal0, s.debts, quotes)), X_now, L0);
   pl.exp = sheet(assets + F - cost_all - R, net - cost_all, acct.debt - R + F, C - (use - F) - buy_cost, fin_mv(bal, debts1, prices(bal, debts1, quotes)) + F,
                  buys.empty() ? std::optional<double>(X) : std::nullopt, L - F);
-  pl.power = (sp.cash ? C : 0) + (margin ? std::min(L, std::max(0.0, X)) : 0);
+  pl.power = (parts.own ? C : 0) + (parts.fin ? std::min(L, std::max(0.0, X)) : 0);
   pl.use = use;
-  pl.financed = F;
   pl.cost = cost_all;
+  pl.fin[kBuy] = F, pl.fin[kSell] = R;
   pl.C = C;
   pl.X = X;
-  pl.repaid = R;
   pl.V = V;
   pl.picked = static_cast<int>(picked.size());
-  pl.buyable = static_cast<int>(trimmed.empty() ? ok.size() : wanted(codes, terms, sp.buy).size());
+  pl.buyable = static_cast<int>(trimmed.empty() ? ok.size() : wanted(codes, terms, cfg.buy).size());
   pl.targets = std::move(targets);
   pl.orders = std::move(sells);
   pl.orders.insert(pl.orders.end(), buys.begin(), buys.end());
@@ -541,22 +535,23 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
 
 std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Terms &terms,
                          const std::vector<std::string> &codes, const Cfg &cfg) {
-  const std::vector<std::string> ok = wanted(codes, terms, spec(cfg.mode).buy);
+  assert(valid(cfg));
+  const std::vector<std::string> ok = wanted(codes, terms, cfg.buy);
   const auto has = [&](const std::string &c) { return quotes.contains(c); };
   if (!std::all_of(ok.begin(), ok.end(), has) || !std::all_of(s.pos.list.begin(), s.pos.list.end(), [&](const Position &h) { return has(h.code); }) ||
-      !std::all_of(s.acct.debts.list.begin(), s.acct.debts.list.end(), [&](const Debt &d) { return has(d.code); }))
+      !std::all_of(s.debts.list.begin(), s.debts.list.end(), [&](const Debt &d) { return has(d.code); }))
     return std::nullopt;
-  if (!auto_sells(cfg))
+  if (cfg.how != How::Over)
     return solve(s, px0, quotes, terms, codes, cfg, cfg.sells, {});
-  // 卖超配: 减到 W 与补到 V 自洽. V(W) 随 W 减 (减得多 → 回款多、补的只数少), 二分取 V ≥ W 的最大 W; W 不低于名单持仓最大市值即不减
+  // 卖超配: 减到 W 与补到 V 自洽. V(W) 随 W 减 (减得多 → 回款多、补的只数少), 二分取 V ≥ W 的最大 W; W 不低于卖的范围内名单持仓的最大市值即不减
   const std::set<std::string> listed(codes.begin(), codes.end());
   const auto at = [&](double W) {
-    const auto [want, trimmed] = over(s.pos, quotes, listed, cfg.unit, W);
+    const auto [want, trimmed] = over(s.pos, quotes, terms, cfg.sell.scope, listed, cfg.unit, W);
     return solve(s, px0, quotes, terms, codes, cfg, want, trimmed);
   };
   double lo = 0, hi = 0;
   for (const Position &h : s.pos.list)
-    if (listed.contains(h.code))
+    if (const Term *t = term_of(terms, h.code); listed.contains(h.code) && in_scope(cfg.sell.scope, t && t->financeable))
       hi = std::max(hi, static_cast<double>(h.balance) * quotes.at(h.code).price);
   if (Plan p = at(hi); p.V >= hi)
     return p;
@@ -578,18 +573,19 @@ Sheet now_of(const Snapshot &s) {
   Prices px;
   for (const Position &h : s.pos.list)
     px[h.code] = h.price;
-  return sheet(a.assets, a.net, a.debt, a.cash, fin_mv(balances(s.pos), a.debts, px), a.avail, std::max(0.0, a.line));
+  return sheet(a.assets, a.net, a.debt, a.cash, fin_mv(balances(s.pos), s.debts, px), a.avail, std::max(0.0, a.line));
 }
 
 nlohmann::json to_json(const Plan &p) {
   nlohmann::json orders = nlohmann::json::array();
   for (const Order &o : p.orders)
     orders.push_back(to_json(o));
-  return {{"now", to_json(p.now)}, {"exp", to_json(p.exp)}, {"power", p.power}, {"use", p.use}, {"financed", p.financed}, {"cost", p.cost}, {"after_sell", {{"C", p.C}, {"X", p.X}, {"repaid", p.repaid}}}, {"V", p.V}, {"picked", p.picked}, {"buyable", p.buyable}, {"orders", orders}, {"time", fmt_sec(p.sec)}};
+  return {{"now", to_json(p.now)}, {"exp", to_json(p.exp)}, {"power", p.power}, {"use", p.use}, {"cost", p.cost}, {"fin", {{"buy", p.fin[kBuy]}, {"sell", p.fin[kSell]}}}, {"after_sell", {{"C", p.C}, {"X", p.X}}}, {"V", p.V}, {"picked", p.picked}, {"buyable", p.buyable}, {"orders", orders}, {"time", fmt_sec(p.sec)}};
 }
 
 nlohmann::json to_json(const Cfg &c) {
-  return {{"list", c.list}, {"unit", c.unit}, {"pct", c.pct}, {"px", kPxModeNames[static_cast<int>(c.px)]}, {"sells", c.sells}, {"mode", spec(c.mode).name}, {"sell_over", c.sell_over}, {"no_margin", c.no_margin}};
+  const auto side = [](const Side &s) { return nlohmann::json{{"own", s.parts.own}, {"fin", s.parts.fin}, {"scope", kScopeNames[static_cast<int>(s.scope)]}}; };
+  return {{"how", spec(c.how).name}, {"sell", side(c.sell)}, {"buy", side(c.buy)}, {"unit", c.unit}, {"pct", c.pct}, {"px", kPxModeNames[static_cast<int>(c.px)]}, {"sells", c.sells}};
 }
 
 std::vector<std::string> lists() {

@@ -1,73 +1,13 @@
 #include "live/Broker.hpp"
 
-#include "misc/cross_platform.hpp"
-
 #include <algorithm>
 #include <cassert>
-#include <cctype>
 #include <chrono>
 #include <condition_variable>
-#include <cstdarg>
-#include <cstdio>
-#include <ctime>
 #include <mutex>
 #include <thread>
 
 namespace live {
-
-std::string strf(const char *fmt, ...) {
-  va_list a, b;
-  va_start(a, fmt);
-  va_copy(b, a);
-  const int n = std::vsnprintf(nullptr, 0, fmt, a);
-  va_end(a);
-  assert(n >= 0);
-  std::string s(static_cast<size_t>(n), '\0');
-  std::vsnprintf(s.data(), s.size() + 1, fmt, b);
-  va_end(b);
-  return s;
-}
-
-int sec_now() {
-  const std::time_t t = std::time(nullptr);
-  const std::tm tm = safe_localtime(&t);
-  return tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec;
-}
-
-std::string fmt_sec(int sec) {
-  if (sec < 0)
-    return "—";
-  return strf("%02d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60);
-}
-
-int parse_sec(std::string_view s) {
-  const auto dig = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; };
-  if (s.size() != 8 || !dig(s[0]) || !dig(s[1]) || s[2] != ':' || !dig(s[3]) || !dig(s[4]) || s[5] != ':' || !dig(s[6]) || !dig(s[7]))
-    return -1;
-  const int h = (s[0] - '0') * 10 + (s[1] - '0');
-  const int m = (s[3] - '0') * 10 + (s[4] - '0');
-  const int c = (s[6] - '0') * 10 + (s[7] - '0');
-  if (h > 23 || m > 59 || c > 59)
-    return -1;
-  return h * 3600 + m * 60 + c;
-}
-
-Mkt market_of(std::string_view code) {
-  assert(code.size() == 6);
-  if (code.starts_with("4") || code.starts_with("8") || code.starts_with("92"))
-    return Mkt::BJ;
-  if (code.starts_with("5") || code.starts_with("6") || code.starts_with("9"))
-    return Mkt::SH;
-  return Mkt::SZ;
-}
-
-Mkt mkt_named(std::string_view s) {
-  for (const Mkt m : {Mkt::SZ, Mkt::SH, Mkt::BJ})
-    if (s == mkt_name(m))
-      return m;
-  assert(false && "市场名");
-  return Mkt::SZ;
-}
 
 bool synced(const Position &h, const Traded *f) { return h.balance <= 0 || h.traded == (f ? f->qty : Sides<int64_t>{}); }
 
@@ -100,7 +40,7 @@ struct Broker::Core {
   std::shared_ptr<const Snapshot> shown;
   Refresh prog{.every = kEvery};
   bool stop = false;
-  int hushed = 0;                        // > 0 = 批量下单期间, 不自起刷新
+  bool hushed = false;                   // 批量下单期间, 不自起刷新 (事务一次一件, 不嵌套)
   uint64_t asked = 0, done = 0;          // 要过 / 刷完的轮号
   std::optional<Clock::time_point> last; // 上一轮结束时刻
   std::vector<Clock::time_point> kicks;
@@ -117,7 +57,7 @@ struct Broker::Core {
   // 刚下过单: 隔几秒各刷一次 (批量下单期间不排)
   void kick() {
     std::lock_guard lk(mu);
-    if (hushed > 0)
+    if (hushed)
       return;
     const Clock::time_point now = Clock::now();
     for (const int k : kKicks)
@@ -133,10 +73,10 @@ struct Broker::Core {
     prog.who = std::move(who);
   }
 
-  // 一件事务 (拉 / 写): 段 (who {kw}) + 接上客户端, 当前线程跑 fn
+  // 一件事务 (拉 / 写): 段 (name {kw}) + 接上客户端, 当前线程跑 fn
   template <class F>
-  auto txn(const char *who, trace::Kw kw, F &&fn) {
-    trace::Span span(who, std::move(kw));
+  auto txn(const char *name, trace::Kw kw, F &&fn) {
+    trace::Span span(name, std::move(kw));
     connect();
     return fn();
   }
@@ -147,7 +87,7 @@ struct Broker::Core {
   const char *due(Clock::time_point now) {
     if (asked > done)
       return "请求";
-    if (hushed > 0 || now - touched >= kWatchLinger)
+    if (hushed || now - touched >= kWatchLinger)
       return nullptr;
     if (!kicks.empty() && now >= kicks.front()) {
       kicks.erase(kicks.begin());
@@ -284,14 +224,15 @@ Placed Broker::place(const OrderReq &o) {
 void Broker::batch(const std::function<void()> &fn) {
   {
     std::lock_guard lk(c_->mu);
-    ++c_->hushed;
+    assert(!c_->hushed && "批量下单不嵌套");
+    c_->hushed = true;
     c_->kicks.clear();
   }
   struct Guard {
     Core &c;
     ~Guard() {
       std::lock_guard lk(c.mu);
-      --c.hushed;
+      c.hushed = false;
     }
   } g{*c_};
   fn();

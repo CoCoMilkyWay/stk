@@ -81,7 +81,7 @@ constexpr int kBackendN = static_cast<int>(kNum<llm::Backend>); // 界面按下�
 bool has_key(int backend) { return !llm::key(static_cast<llm::Backend>(backend)).empty(); }
 
 // Mine / Tools / Config 页的选项 (ui.json 读写同一份字段清单): 作用域 (Mine 与 Tools 页共用, 含开放的叶 / 算子) / 后端 / 连接 / 模型 / 评估后端 / 预算 (下次 New / 继续生效) /
-// 入库门槛 / 可否提问 / 会话约束 (下次开会话生效: New 或外部 agent 的 open) + Config 页在看的模板
+// 入库门槛 / 可否提问 (下次开会话生效: New 或外部 agent 的 open) + Config 页在看的模板
 struct Options {
   Scope sc;
   int backend = 0;   // llm::Backend 下标
@@ -97,15 +97,14 @@ struct Options {
   int gpu = -1; // -1 = 未定 (有 GPU 默认 GPU)
   Gate gate{kGateRic};
   Budget budget;
-  bool ask = true;    // agent 可用 ask_human 向人提一次问
-  bool strict = true; // 守会话约束
-  int prompt = 0;     // Msg 下标
+  bool ask = true; // agent 可用 ask_human 向人提问
+  int prompt = 0;  // Msg 下标
   bool operator==(const Options &) const = default;
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, budget, ask, strict, prompt)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, sc, backend, model, via_proxy, proxy_host, proxy_port, gpu, gate, budget, ask, prompt)
 
 llm::Net net_of(const Options &o, int backend) { return {o.via_proxy[backend], o.proxy_host, o.proxy_port}; }
-Mine::Setup setup_of(const Options &o) { return {.sc = o.sc, .gate = o.gate, .ask = o.ask, .strict = o.strict}; }
+Mine::Setup setup_of(const Options &o) { return {.sc = o.sc, .gate = o.gate, .ask = o.ask}; }
 Mine::Leg leg_of(const Options &o, bool gpu) {
   return {.llm = {static_cast<llm::Backend>(o.backend), net_of(o, o.backend), o.model}, .gpu = gpu, .budget = o.budget};
 }
@@ -245,7 +244,7 @@ bool ui_json_valid(const nlohmann::json &j) {
          j["backend"].is_number_integer() && j.contains("model") && j["model"].is_string() && j.contains("via_proxy") && j["via_proxy"].is_array() &&
          j["via_proxy"].size() == kBackendN && j.contains("proxy_host") && j["proxy_host"].is_string() && j.contains("proxy_port") &&
          j["proxy_port"].is_number_integer() && j.contains("gpu") && j["gpu"].is_number_integer() && j.contains("ask") && j["ask"].is_boolean() &&
-         j.contains("strict") && j["strict"].is_boolean() && j.contains("prompt") && j["prompt"].is_number_integer();
+         j.contains("prompt") && j["prompt"].is_number_integer();
 }
 void load_ui(Ui &s) {
   bool ok = false;
@@ -528,8 +527,8 @@ void session_row(const SharedData &data, Ui &s, const Scope &active_sc) {
   if (m.held()) {
     const Mine::Setup &st = m.setup;
     ImGui::SameLine();
-    ImGui::TextDisabled("%s%s · 近 %d 年 · %s · %s · %s · %s", st.test ? "自检 · " : "", catalog::label(st.sc).c_str(), st.sc.years, m.brain().c_str(), m.leg.gpu ? "GPU" : "CPU",
-                        st.ask ? "可提问" : "不提问", st.strict ? "守约束" : "不守约束");
+    ImGui::TextDisabled("%s%s · 近 %d 年 · %s · %s · %s", st.test ? "自检 · " : "", catalog::label(st.sc).c_str(), st.sc.years, m.brain().c_str(), m.leg.gpu ? "GPU" : "CPU",
+                        st.ask ? "可提问" : "不提问");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s", m.log.dir().c_str());
   }
@@ -540,7 +539,7 @@ void session_row(const SharedData &data, Ui &s, const Scope &active_sc) {
 }
 
 // ---- 工具用量条: 按类拼接, 类内一工具一段 (同色相深浅相间), 段宽 = 次数占比; 类段够宽写类名与占比, 悬浮看各类各工具的次数 / 占比 / 失败数 (表格) ----
-constexpr Per<Cat, ImVec4> kCatCols{{{{0.35f, 0.78f, 0.45f, 1.0f}, {0.85f, 0.80f, 0.35f, 1.0f}, {0.95f, 0.62f, 0.25f, 1.0f}, {0.38f, 0.62f, 0.95f, 1.0f}, {0.72f, 0.52f, 0.92f, 1.0f}, {0.58f, 0.58f, 0.58f, 1.0f}}}};
+constexpr Per<Cat, ImVec4> kCatCols{{{{0.35f, 0.78f, 0.45f, 1.0f}, {0.85f, 0.80f, 0.35f, 1.0f}, {0.95f, 0.62f, 0.25f, 1.0f}, {0.38f, 0.62f, 0.95f, 1.0f}, {0.72f, 0.52f, 0.92f, 1.0f}, {0.58f, 0.58f, 0.58f, 1.0f}, {0.45f, 0.72f, 0.75f, 1.0f}}}};
 
 ImU32 shade(ImVec4 c, int i) {
   const float f = 1.0f - 0.2f * static_cast<float>(i % 3);
@@ -628,20 +627,16 @@ void tools_bar(const Tally &c) {
   ImGui::EndTooltip();
 }
 
-// 假设板一句: 个数 (各判定的个数) + 待判的
+// 假设板一句: 个数 (各判定的个数)
 std::string board_brief(const Board &b) {
   Per<Stance, int> n{};
-  std::string owe;
-  for (const Hyp &h : b.all()) {
+  for (const Hyp &h : b.all())
     ++n[h.stance];
-    if (h.pending)
-      owe += (owe.empty() ? "" : " ") + h.id;
-  }
   std::string s;
   for (const Stance st : kVals<Stance>)
     if (n[st])
       s += (s.empty() ? "" : " · ") + std::string(def(st).cn) + " " + std::to_string(n[st]);
-  return std::to_string(b.all().size()) + (s.empty() ? "" : " (" + s + ")") + (owe.empty() ? "" : " · 待判 " + owe);
+  return std::to_string(b.all().size()) + (s.empty() ? "" : " (" + s + ")");
 }
 
 // ---- 现在在干什么 (点了跳到当前轮) + 会话累计 (一行要点, 悬浮看全) ----
@@ -1494,9 +1489,9 @@ void hyps_panel(Ui &s, const Mine &m) {
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(h.id.c_str());
     ImGui::TableNextColumn();
-    ImGui::TextColored(color(kind_of(h.stance)), "%s%s", def(h.stance).cn, h.pending ? " · 待判" : "");
+    ImGui::TextColored(color(kind_of(h.stance)), "%s", def(h.stance).cn);
     ImGui::TableNextColumn();
-    ImGui::Text("%d/%d", h.evals, kHypEvals);
+    ImGui::Text("%d", h.evals);
     ImGui::TableNextColumn();
     ref_button(s, h.at, 0);
     ImGui::TableNextColumn();
@@ -1715,10 +1710,12 @@ void ops_panel(Ui &s, Scope &sc, const Context &c, bool locked) {
 void tools_panel(Ui &s) {
   s.tool_filter.Draw("过滤##tool", 240);
   ImGui::SameLine();
-  ImGui::TextDisabled("%zu 个工具; 悬浮参数看类型与说明, 悬浮说明看返回", kNum<Tool>);
+  ImGui::TextDisabled("%zu 个工具; 悬浮参数看类型与说明, 悬浮说明看返回", kAgentTools);
   if (!begin_table("##tools", {"工具", "中文名", "执行", "参数", "说明"}))
     return;
   for (const Tool t : kVals<Tool>) {
+    if (!IsAgentTool(t))
+      continue;
     const ToolMeta &m = def(t);
     const ToolDoc &d = doc(t);
     const std::string desc = ToolText(d.desc);
@@ -1832,7 +1829,7 @@ void render_mine(SharedData &data, Ui &s) {
     ops_panel(s, sc, v.ctx, scope_locked(s));
     ImGui::EndTabItem();
   }
-  const std::string tools = "工具 (" + std::to_string(kNum<Tool>) + ")###tools";
+  const std::string tools = "工具 (" + std::to_string(kAgentTools) + ")###tools";
   if (ImGui::BeginTabItem(tools.c_str())) {
     tools_panel(s);
     ImGui::EndTabItem();
@@ -1944,15 +1941,7 @@ void render_config(Ui &s) {
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "提问");
   ImGui::Checkbox("允许 agent 向你提问 (ask_human)", &o.ask);
-  tip("开: agent 可在任一轮提一次问题 (每题带推荐), 等你选答后接着做\n关: 工具表里没有 ask_human, agent 自定因子与方向, 全自动挖掘");
-  ImGui::SameLine();
-  ImGui::TextDisabled("下次开会话生效 (New / 外部 agent 的 open)");
-
-  ImGui::Spacing();
-  ImGui::TextColored(kColHead, "会话约束");
-  ImGui::Checkbox("守会话约束", &o.strict);
-  tip("开: eval_factor 须挂判为支持的假设、每个假设至多几个变体; 有落了文件的回测的下一条只诊断; 有变体回测完的假设下一条须 judge; 不守整条退回\n"
-      "关: 不查, 只按研究工具表校验参数");
+  tip("开: agent 可在关键分岔向你提问 (每题带推荐), 等你选答后接着做\n关: 工具表里没有 ask_human, agent 自定方向, 全自动挖掘");
   ImGui::SameLine();
   ImGui::TextDisabled("下次开会话生效 (New / 外部 agent 的 open)");
 
@@ -2056,7 +2045,7 @@ TaskHandle CreateAgentTask() {
     default:
       if (!s.bench)
         s.bench = std::make_unique<Bench>();
-      s.bench->draw(data, tool_of(idx), s.mine->held() ? s.mine->setup.sc : s.opt.sc, s.opt.gate, use_gpu(s), s.mine->live() || !s.mine->idle());
+      s.bench->draw(data, tool_of(idx), s.mine->held() ? s.mine->setup.sc : s.opt.sc, s.opt.gate, use_gpu(s), leg_of(s.opt, use_gpu(s)).llm, s.mine->live() || !s.mine->idle());
       break;
     }
     ImGui::EndChild();

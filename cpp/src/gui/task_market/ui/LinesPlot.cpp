@@ -240,7 +240,7 @@ void thin(const LinesSlice &s, double x0, double x1, float w, Thinned &t) {
     i = j;
   }
 }
-void plot_slice(const PlotFrame &pf, const char *label, const LinesSlice &s, ImPlotLineFlags flags = 0) {
+const Thinned *plot_slice(const PlotFrame &pf, const char *label, const LinesSlice &s, ImPlotLineFlags flags = 0) {
   const bool fit = fit_x() && s.size() > 0;
   const double x0 = fit ? s.x(0) : pf.lim.X.Min, x1 = fit ? s.x(s.size() - 1) : pf.lim.X.Max;
   const float w = std::max(1.0f, ImPlot::GetPlotSize().x);
@@ -251,6 +251,7 @@ void plot_slice(const PlotFrame &pf, const char *label, const LinesSlice &s, ImP
   }
   t.frame = ImGui::GetFrameCount();
   ImPlot::PlotLine(label, t.x.data(), t.y.data(), static_cast<int>(t.x.size()), flags);
+  return &t;
 }
 // 本帧没画到的 label 的抽稀点丢掉
 void thin_prune() {
@@ -308,21 +309,78 @@ ImRect nav_legend(LinesState &ui, const std::vector<NavRow> &rows) {
   return h.box;
 }
 
-// 账户悬停读数 (NAV 主图: 单账户线全图带竖线吸附, 多线近线触发): 复权净资产 (从此刻净资产往前推) + 区间复权 / 真正回撤 (起点 = 当前缩放起点)
-void acct_hover(const LinesDerived &d, const LinesView &v, size_t n_lim, bool cross) {
+// 当前图数据坐标 → 相对鼠标的像素偏移 (支持 log_y; NAV 邻域选线 / 选点共用)
+constexpr float kPickPx = 6.0f;      // 选点水平搜索半宽 [px]
+constexpr double kPickXWeight = 1.5; // 选点横距权: |dy| + kPickXWeight · |dx| (震荡挤在一起时优先贴近鼠标价格水平)
+struct PlotScale {
+  double mx = 0.0, ym = 0.0, sx = 0.0, sy = 0.0, x_lo = 0.0, x_hi = 0.0;
+  bool log = false;
+  static double map_y(double y, bool log) { return log ? std::log(std::max(y, 1e-30)) : y; }
+  PlotScale(bool log_, float radius_px) : log(log_) {
+    const ImPlotRect lim = ImPlot::GetPlotLimits();
+    const ImVec2 sz = ImPlot::GetPlotSize();
+    const ImPlotPoint mp = ImPlot::GetPlotMousePos();
+    mx = mp.x, ym = map_y(mp.y, log);
+    const double dx = lim.X.Max - lim.X.Min, dy = map_y(lim.Y.Max, log) - map_y(lim.Y.Min, log);
+    sx = dx > 0.0 ? sz.x / dx : 0.0;
+    sy = dy > 0.0 ? sz.y / dy : 0.0;
+    const double rx = sx > 0.0 ? radius_px / sx : 0.0;
+    x_lo = mx - rx, x_hi = mx + rx;
+  }
+  double px_dx(double x) const { return (x - mx) * sx; }
+  double px_dy(double y) const { return (map_y(y, log) - ym) * sy; }
+};
+// 原点 (鼠标) 到像素线段 (ax, ay)-(bx, by) 的距离
+double seg_dist(double ax, double ay, double bx, double by) {
+  const double ux = bx - ax, uy = by - ay, uu = ux * ux + uy * uy;
+  const double t = uu > 0.0 ? std::clamp(-(ax * ux + ay * uy) / uu, 0.0, 1.0) : 0.0;
+  return std::hypot(ax + t * ux, ay + t * uy);
+}
+// 抽稀线 t 在鼠标 ±kNearPx 像素内到鼠标的最近像素距 (震荡挤成竖带 / 稀疏斜线皆准)
+double thin_dist(const Thinned &t, const PlotScale &sc) {
+  const size_t m = t.x.size();
+  if (m == 0)
+    return DBL_MAX;
+  if (m == 1)
+    return std::hypot(sc.px_dx(t.x[0]), sc.px_dy(t.y[0]));
+  const size_t lo = static_cast<size_t>(std::ranges::lower_bound(t.x, sc.x_lo) - t.x.begin());
+  const size_t hi = static_cast<size_t>(std::ranges::upper_bound(t.x, sc.x_hi) - t.x.begin());
+  const size_t a = lo > 0 ? lo - 1 : 0, b = std::min(hi + 1, m);
+  double best = DBL_MAX;
+  for (size_t q = a; q + 1 < b; ++q)
+    best = std::min(best, seg_dist(sc.px_dx(t.x[q]), sc.px_dy(t.y[q]), sc.px_dx(t.x[q + 1]), sc.px_dy(t.y[q + 1])));
+  return best;
+}
+
+// 账户悬停读数 (NAV 主图: 单账户线全图带十字线吸附, 多线近线触发):
+//   在鼠标 ±kPickPx 像素内选价格水平最贴近鼠标的采样点 (zoom out 震荡挤在一起时稳选波峰 / 波谷 / 目标价位; 稀疏时退回按 x 最近);
+//   显示前复权净资产 (从此刻净资产往前推) + 区间复权 / 真正回撤 (起点 = 当前缩放起点)
+void acct_hover(const LinesDerived &d, const LinesView &v, size_t n_lim, bool cross, bool log) {
   const LinesSlice &as = v.slice[kGroupAccount][0][kIdeal];
   const size_t n = std::min(n_lim, as.size());
   if (n == 0)
     return;
-  const double mx = ImPlot::GetPlotMousePos().x;
+  const PlotScale sc(log, kPickPx);
   const auto ix = std::views::iota(size_t{0}, n);
-  size_t i = static_cast<size_t>(std::ranges::lower_bound(ix, mx, {}, [&](size_t j) { return as.x(j); }) - ix.begin());
-  if (i == n || (i > 0 && as.x(i) - mx > mx - as.x(i - 1)))
-    --i;
+  const size_t lo = static_cast<size_t>(std::ranges::lower_bound(ix, sc.x_lo, {}, [&](size_t j) { return as.x(j); }) - ix.begin());
+  const size_t hi = static_cast<size_t>(std::ranges::upper_bound(ix, sc.x_hi, {}, [&](size_t j) { return as.x(j); }) - ix.begin());
+  size_t i = 0;
+  if (lo < hi) {
+    double best = DBL_MAX;
+    for (size_t j = lo; j < hi; ++j)
+      if (const double s = std::abs(sc.px_dy(as.y(j))) + kPickXWeight * std::abs(sc.px_dx(as.x(j))); s < best)
+        best = s, i = j;
+  } else {
+    i = lo;
+    if (i == n || (i > 0 && as.x(i) - sc.mx > sc.mx - as.x(i - 1)))
+      --i;
+  }
   const double px = as.x(i), py = as.y(i);
   if (cross) {
     ImPlot::SetNextLineStyle(ImVec4(0.85f, 0.85f, 0.85f, 0.5f), 1.0f);
     ImPlot::PlotInfLines("##acct_cx", &px, 1, ImPlotItemFlags_NoFit | ImPlotItemFlags_NoLegend);
+    ImPlot::SetNextLineStyle(ImVec4(0.85f, 0.85f, 0.85f, 0.35f), 1.0f);
+    ImPlot::PlotInfLines("##acct_cy", &py, 1, ImPlotInfLinesFlags(ImPlotInfLinesFlags_Horizontal) | ImPlotItemFlags_NoFit | ImPlotItemFlags_NoLegend);
   }
   {
     const ImVec2 pt = ImPlot::PlotToPixels(px, py);
@@ -368,7 +426,7 @@ void acct_hover(const LinesDerived &d, const LinesView &v, size_t n_lim, bool cr
 //      日内形未到的行 (minute_wait) 整行不画、不进图例, 到了一次画成分钟线;
 //      行刚选中 → ui.reveal 强制回默认显隐一次 (理想列显, 可成交列隐);
 //      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示; 鼠标在图例矩阵上不算), hot 行显示的线白粗线画在最上;
-//      账户线悬停 (只显账户线时全图带竖线吸附, 多线时近线触发) 显示前复权净资产与区间复权 / 真正回撤 ----
+//      账户线悬停 (只显账户线时全图带十字线吸附, 多线时近线触发) 显示前复权净资产与区间复权 / 真正回撤 ----
 void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf) {
   static ImRect s_box;      // 上帧图例矩阵 (悬停找线避开)
   std::vector<NavRow> rows; // 画序, 只含选中行的
@@ -387,6 +445,7 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
   struct On {
     const LinesRow *row;
     const LinesSlice *s;
+    const Thinned *thin;
   };
   std::vector<On> on; // 显示的线
   for (const NavRow &x : rows)
@@ -395,18 +454,22 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
       if (ui.reveal.erase(line_id(*x.row, l)))
         ImPlot::HideNextItem(l == kTrade, ImPlotCond_Always);
       ImPlot::SetNextLineStyle(x.col[l], row_width(x.g));
-      plot_slice(pf, lb, *x.s[l]);
+      const Thinned *th = plot_slice(pf, lb, *x.s[l]);
       if (pf.item(lb)) {
         push_tag(pf.tags, pf.lim, *x.s[l], ImGui::ColorConvertFloat4ToU32(x.col[l]), x.row->tag + kPairTag[pair_kind(*x.row)][l]);
         pf.lines.push_back(x.s[l]);
-        on.push_back({x.row, x.s[l]});
+        on.push_back({x.row, x.s[l], th});
       }
     }
   const bool in_box = s_box.Contains(ImGui::GetMousePos());
-  const int k = in_box ? -1 : near_line(on.size(), [&](size_t j, double x) {
-    const LinesSlice &s = *on[j].s;
-    return line_at(s.size(), x, [&](size_t i) { return slice_pt(s, i); });
-  });
+  int k = -1;
+  if (ImPlot::IsPlotHovered() && !in_box) {
+    const PlotScale sc(ui.log_y, kNearPx);
+    double best = kNearPx;
+    for (size_t j = 0; j < on.size(); ++j)
+      if (const double dd = thin_dist(*on[j].thin, sc); dd < best)
+        best = dd, k = static_cast<int>(j);
+  }
   const bool only_acct = !on.empty() && std::ranges::all_of(on, [](const On &x) { return x.row->ref.is(Quote::kAccount); });
   const bool hit_acct = k >= 0 && on[static_cast<size_t>(k)].row->ref.is(Quote::kAccount);
   if (k >= 0) {
@@ -424,7 +487,7 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
       plot_slice(pf, id, *on[j].s, ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit);
     }
   if (v.acct.ok() && ImPlot::IsPlotHovered() && !in_box && (only_acct || hit_acct))
-    acct_hover(d, v, hit_acct ? on[static_cast<size_t>(k)].s->size() : v.slice[kGroupAccount][0][kIdeal].size(), only_acct);
+    acct_hover(d, v, hit_acct ? on[static_cast<size_t>(k)].s->size() : v.slice[kGroupAccount][0][kIdeal].size(), only_acct, ui.log_y);
   s_box = nav_legend(ui, rows);
 }
 

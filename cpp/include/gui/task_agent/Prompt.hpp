@@ -7,9 +7,8 @@
 //     system  静态前缀 (会话内逐字节不变): 作用域 / 行与时刻 / 语法与口径 / 入库门槛 / 做法 / 协议 / 工具表 / 特征族卡与叶表 / 算子表
 //     first   首条 user: 已试候选 / 正式库 / 全局记录规模 + 能否提问 + 开工 (+ 本会话要求)
 //     test    自检会话首条: 把每个工具调一遍, 问题记 report_issue, 末了总评再 finish (+ 本会话要求)
-//     round   每条回复各调用的结果 (带调用编号 R<轮>#<序>) + 假设板 + 下一步; 原文只在本条给一次, 此后收进研究树
-//     retry   回复不合协议: 原因 + 重发要求
-//   时间线与状态账本见 tools/Kit.hpp; TurnsOf(Rounds) 纯函数线性分桶折叠出完整对话上下文 (首条 + 研究树 + 上一批回复 + 本条)
+//     round   每轮各调用的结果 (带调用编号 R<轮>#<序>) + 假设板 (非空时) + 下一步; 原文只在本条给一次, 此后收进研究树
+//   时间线与状态账本见 tools/Kit.hpp; TurnsOf(Rounds) 纯函数折叠出无状态后端的对话上下文 (首条 + 研究树 + 上一批回复 + 本条)
 // =============================================================================
 
 #include "gui/task_agent/Bridge.hpp"
@@ -41,15 +40,17 @@ std::string ListTail(int all, int skip, int n);                      // 分页�
 std::string CallTitle(const Act &a, Ref r);
 std::string ResultsText(const std::vector<Act> &acts, int round); // 一轮各调用的结果原文 (标题 = 调用编号 + 调用; round 消息的结果节)
 std::string AnswerText(const Asked &a);
+std::string TreeOf(Rounds rs);   // 研究树折叠 (第 1..N-1 轮按轮摘要)
+std::string NextStep(bool test); // round 消息末尾的 "下一步" 提示
 
 // ---- 消息组装与上下文纯函数 ----
 Message SystemMessage(const Context &c, const Gate &g, bool ask);
 Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark);
 Message TestMessage(bool ask, const std::string &remark);
-Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool evaled, bool test);
-Message RetryMessage(const std::string &error);
+Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool test);
+std::string RetryText(const std::string &error); // 协议不合的整批退回提示 (原地重发, 不进 timeline)
 std::string MemoText(const std::string &memo);
 std::string TextOf(const Round &rd);
-llm::Turns TurnsOf(Rounds rounds); // 折叠出的完整对话上下文 (无状态后端每轮用; 外部 agent 仅在接上历史会话或回退后补齐)
+llm::Turns TurnsOf(Rounds rounds, std::string_view retry_reply = {}, std::string_view retry_error = {}); // 折叠出的完整对话上下文 (无状态后端每轮用; 外部 agent 仅在接上历史会话或回退后补齐)
 
 } // namespace GUI::Agent

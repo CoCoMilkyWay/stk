@@ -43,6 +43,8 @@ void QuoteHub::frame(const SharedData &data) {
   want_.mark = mark;
   want_.live = status.date;
   want_.ledger = live::flows::generation();
+  if (const account::Spot &s = acct_.spot(); !(want_.spot == s))
+    want_.spot = s;
   if (!sent_ || !(*sent_ == want_)) {
     sent_ = want_;
     price_->Request(want_);
@@ -50,7 +52,7 @@ void QuoteHub::frame(const SharedData &data) {
   ws.clear();
   view = latest(*price_);
   const std::shared_ptr<const Live> y = quote_->live();
-  std::shared_ptr<const Day> a = today_(view, y);
+  std::shared_ptr<const Day> a = acct_.today(view, y);
   if (y != sina_ || a != account_) {
     sina_ = y, account_ = std::move(a);
     if (y && account_) {

@@ -37,6 +37,14 @@ std::unordered_set<std::string> margin_codes() {
   fail("本地库没有两融明细, 先在 Database 同步");
 }
 
+void save(const Cache &c) {
+  Pulled s{c.pulled, {}, {}};
+  for (const auto &[code, t] : c.terms)
+    s.rows.push_back({code, t.name, mkt_name(t.mkt), t.ratio ? strf("%.10g", *t.ratio) : "", strf("%d", t.financeable), strf("%.10g", t.rate),
+                      strf("%d", t.pledgeable)});
+  save_pulled(disk::LiveTermsFile, kHead, s);
+}
+
 } // namespace
 
 Cache load() {
@@ -53,14 +61,6 @@ Cache load() {
     t.pledgeable = f[6] == "1";
   }
   return c;
-}
-
-void save(const Cache &c) {
-  Pulled s{c.pulled, {}, {}};
-  for (const auto &[code, t] : c.terms)
-    s.rows.push_back({code, t.name, mkt_name(t.mkt), t.ratio ? strf("%.10g", *t.ratio) : "", strf("%d", t.financeable), strf("%.10g", t.rate),
-                      strf("%d", t.pledgeable)});
-  save_pulled(disk::LiveTermsFile, kHead, s);
 }
 
 Cache pull(Broker &b) {
@@ -115,7 +115,7 @@ bool missing(const Terms &raw, const Local &local, const std::vector<std::string
   };
   return std::any_of(codes.begin(), codes.end(), miss) ||
          (snap && std::any_of(snap->pos.list.begin(), snap->pos.list.end(), [&](const Position &p) { return miss(p.code); })) ||
-         (snap && std::any_of(snap->acct.debts.list.begin(), snap->acct.debts.list.end(), [&](const Debt &d) { return miss(d.code); }));
+         (snap && std::any_of(snap->debts.list.begin(), snap->debts.list.end(), [&](const Debt &d) { return miss(d.code); }));
 }
 
 } // namespace live::terms

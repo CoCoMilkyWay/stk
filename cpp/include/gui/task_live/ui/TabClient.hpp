@@ -1,5 +1,5 @@
-// Tab Client - 客户端窗口复现页: 实时渲染客户端窗口树 + GDI 绘制层 (色块 / 文字) + 标准控件子项, 支持检查与鼠键透传
-//   完全券商无关, 只经 live::Mirror 驱动 (Broker::mirror); 后台线程收 gdiwatch 增量流与窗口树变化, 发布不可变 MirrorFrame 给 GUI 60fps 绘制
+// Tab Client - 客户端窗口复现页 (须已连接): 实时渲染客户端窗口树 + GDI 绘制层 (色块 / 文字) + 标准控件子项, 支持检查与鼠键透传
+//   完全券商无关, 只经 live::Mirror 驱动 (LiveHub::mirror); 后台线程收 gdiwatch 增量流与窗口树变化, 发布不可变 MirrorFrame 给 GUI 60fps 绘制
 #pragma once
 
 #include "gui/task_live/LiveHub.hpp"

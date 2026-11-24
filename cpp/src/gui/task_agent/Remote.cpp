@@ -68,7 +68,7 @@ json tools_list() {
   ts.push_back(tool("open",
                     "开新挖掘会话, 你当大脑 (同研究员在 GUI 里按 New: 有会话在跑则退回, 停着的已存盘会话换下): "
                     "作用域可给 pool / level / hold / years / lob (缺省 = 研究员在 GUI 里选的), remark = 用户交代的本会话要求 (原话), test = 自检会话; "
-                    "门槛 / 提问 / 会话约束 / 预算取研究员在 Config 页定的. 交回首条消息; 系统提示用 doc 取. 接上已有外部会话用无参 run",
+                    "门槛 / 提问 / 预算取研究员在 Config 页定的. 交回首条消息; 系统提示用 doc 取. 接上已有外部会话用无参 run",
                     schema({{"pool", {{"type", "string"}, {"description", "池名 (all 或子池)"}}},
                             {"level", {{"type", "string"}, {"description", "层: min / 5min / 15min / 30min / 60min / day"}}},
                             {"hold", {{"type", "string"}, {"description", "持有期: 30m / 60m / close / T+1C (该层能用的)"}}},
@@ -84,7 +84,7 @@ json tools_list() {
                     "后台执行中至多等 " +
                         std::to_string(kRemoteWait) +
                         " 秒 (未完交回进度, 再调无参 run 续等); 做完即交回下一条消息 (常规为本条增量: 各调用结果 + 假设板 + 下一步; 接上有历史的会话或研究员回退后自动附完整研究树); "
-                        "遇到 ask_human 或会话停下即刻交回状态 (finish 收尾那批的结果自动附一次). 不合协议或不守会话约束 → 整批退回, 交回重发要求 (isError)",
+                        "遇到 ask_human 或会话停下即刻交回状态 (finish 收尾那批的结果自动附一次). 不合协议 → 原地退回并给重发要求 (isError, 不占轮次)",
                     schema({{"calls",
                              {{"type", "array"},
                               {"minItems", 1},
@@ -308,12 +308,12 @@ struct Remote::Impl {
     return {false, (fresh ? ResultsText(m.timeline.back().acts, m.round()) : std::string()) + "会话结束: " + m.reason + ". 要再挖就 open 开新会话."};
   }
 
-  // 交回待答消息: 连续推进只给本条增量, 首次接上有历史轮次的会话或研究员回退后补完整研究树; 重发要求 = isError
+  // 交回待答消息: 连续推进只给本条增量, 首次接上有历史轮次的会话或研究员回退后补完整研究树
   Reply deliver(const Mine &m) {
     const bool continuous = synced.dir == m.log.dir() && synced.rev == m.rev() && (synced.round == m.round() - 1 || synced.round == m.round());
     synced = {m.log.dir(), m.rev(), m.round()};
     const std::string body = continuous || m.round() <= 1 ? TextOf(m.timeline.back()) : llm::Flat(TurnsOf(m.timeline));
-    return {m.timeline.back().kind == Msg::Retry, body};
+    return {false, body};
   }
 
   // 会话此刻交给外部 agent 的: 等交批 → 消息; ask_human → 等人提示; 执行中 → 进度; 停着 → 停下原因
@@ -347,11 +347,12 @@ struct Remote::Impl {
     });
   }
 
-  // 交一批调用: 进后台执行则等, 其余 (当场做完 / 重发 / ask_human / 停下) 立刻交回
+  // 交一批调用: 不合协议原地返回 isError; 进后台执行则等, 其余 (当场做完 / ask_human / 停下) 立刻交回
   void submit(Mine &m, json calls, Answer answer) {
     if (!m.waiting() || !m.idle())
       return answer({true, "这批没收下: " + state(m).text});
-    m.reply(json{{"calls", std::move(calls)}}.dump());
+    if (std::string err = m.reply(json{{"calls", std::move(calls)}}.dump()); !err.empty())
+      return answer(m.phase() == Mine::Phase::Pause ? halted(m) : Reply{true, std::move(err)});
     if (m.phase() == Mine::Phase::Act)
       return enqueue(m, std::move(answer));
     answer(state(m));

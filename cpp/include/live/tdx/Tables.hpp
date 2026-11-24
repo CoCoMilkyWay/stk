@@ -82,7 +82,6 @@ struct Pendings {
       col<&Row::code, as::code>("证券代码", 1),
       col<&Row::name, as::text>("长简称", 3),
       col<&Row::side, as::side>("买卖方向", 5),   // 列 4 是买卖标志
-      col<&Row::kind, as::text>("委托类别", 6),   // 信用交易 / …
       col<&Row::status, as::text>("状态说明", 7), // 已报 / 部成 / …
       col<&Row::price, as::num>("委托价格", 8),
       col<&Row::qty, as::shares>("委托数量", 9), // [股]
@@ -189,8 +188,8 @@ struct CashFlows {
   static void check(const Row &r); // 带股数的行有代码
 };
 
-// 各表按 Driver 的用处分三组: 读四样 (信用账户 = 信用资产 + 融资负债) / 拉两融条款 / 拉资金流水
-inline constexpr std::tuple<Fills, Positions, Pendings, Assets, Debts> kReads{};
+// 各表按 Driver 的用处分三组: 读五样 (序同 Snapshot) / 拉两融条款 / 拉资金流水
+inline constexpr std::tuple<Fills, Positions, Pendings, Debts, Assets> kReads{};
 inline constexpr std::tuple<Margins, Collats> kTerms{};
 inline constexpr std::tuple<CashFlows> kFlows{};
 inline constexpr auto kAll = std::tuple_cat(kReads, kTerms, kFlows);
@@ -237,7 +236,7 @@ auto read(std::tuple<S...>) {
 }
 
 // 组合查询 (各表须插件已发过, Driver 先经界面引导):
-//   读四样 = 成交 / 持仓 / 挂单 / 信用资产 / 融资负债五表一趟直发; 信用账户 = 信用资产 (各项「名称 → 数值」) + 各只融资负债
+//   读五样 = 成交 / 持仓 / 挂单 / 融资负债 / 信用资产五表一趟直发; 信用账户取自信用资产的各项「名称 → 数值」
 //   两融条款 = 标的证券 × 担保品两表一并各翻页到底 (担保品近万只, 约十余页), 以 (市场, 代码) 为键, 合成时按代码归一 (跨市场同号的只留 market_of 那只)
 //   资金流水 = from 日起 (含) 至昨日 (客户端只给到上一日), 按窗 (客户端一次至多查 30 天) 覆盖起止日入参直发, 各窗应答按日接起;
 //     from = 0 即从昨日往前逐窗查到连续几窗无流水 (开户前)

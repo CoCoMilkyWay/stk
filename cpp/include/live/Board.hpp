@@ -37,7 +37,6 @@ struct Frame {
   double market_value = 0, pnl = 0, day_pnl = 0;                     // 合计 (分)
   Sides<std::array<std::optional<double>, kNotionals.size()>> slips; // [方向][额] 按占比加权
   bool synced = false;
-  int sec = -1; // 行情最新时刻 (当日秒)
 };
 
 // 持仓 (余额 > 0) 在前、今日清仓在后; 有一只没行情 → 无; 两表市场不一致 → Fail. Row::quote 指向 quotes

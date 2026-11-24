@@ -7,7 +7,7 @@
 //   schema [功能号…]: 协议字典 (Schema.hpp): 空 = 各功能一行 (功能号 / 名称 / 入参数 / 出参数), 给了即列各功能的入参与出参 (字段号 + 名称)
 #include "live/tdx/shim/Tool.hpp"
 
-#include "live/Broker.hpp"
+#include "live/Base.hpp"
 #include "live/tdx/Heap.hpp"
 #include "live/tdx/Image.hpp"
 #include "live/tdx/Schema.hpp"

@@ -907,15 +907,16 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
       double top = 0;
       for (const Overlay &l : ls)
         for (const Dot &d : l.dots)
-          top = std::max(top, d.m->buy + d.m->sell);
+          top = std::max(top, d.m->amount[live::kBuy] + d.m->amount[live::kSell]);
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       const ImVec2 mp = ImGui::GetMousePos();
       float best = kNearPx;
       for (const Overlay &l : ls)
         for (const Dot &d : l.dots) {
           const ImVec2 c = ImPlot::PlotToPixels(d.x, d.y);
-          const float r = kDotMin + (top > 0 ? (kDotMax - kDotMin) * static_cast<float>(std::sqrt((d.m->buy + d.m->sell) / top)) : 0.f), h = r * 0.8f;
-          if (d.m->buy >= d.m->sell)
+          const live::Sides<double> &a = d.m->amount;
+          const float r = kDotMin + (top > 0 ? (kDotMax - kDotMin) * static_cast<float>(std::sqrt((a[live::kBuy] + a[live::kSell]) / top)) : 0.f), h = r * 0.8f;
+          if (a[live::kBuy] >= a[live::kSell])
             dl->AddTriangleFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y + h), ImVec2(c.x - r, c.y + h), ImGui::ColorConvertFloat4ToU32(kUp));
           else
             dl->AddTriangleFilled(ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y - h), ImVec2(c.x + r, c.y - h), ImGui::ColorConvertFloat4ToU32(kDn));
@@ -1016,16 +1017,15 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         const TradeMark &t = *dot->m;
         const int dm = slot_label(t.slot);
         char b[24], s[24];
-        fmt_amount(b, sizeof(b), t.buy);
-        fmt_amount(s, sizeof(s), t.sell);
+        fmt_amount(b, sizeof(b), t.amount[live::kBuy]);
+        fmt_amount(s, sizeof(s), t.amount[live::kSell]);
         ImGui::Separator();
         ImGui::Text("成交 %02d:%02d 根 · 买 %s / 卖 %s", dm / 60, dm % 60, b, s);
         for (const TradeSec &x : t.secs)
-          for (const int side : {1, -1})
-            if (const double a = side > 0 ? x.buy : x.sell; a > 0) {
+          for (const int side : live::kSides)
+            if (const double a = x.amount[side]; a > 0) {
               fmt_amount(b, sizeof(b), a);
-              ImGui::TextColored(side > 0 ? kUp : kDn, "%s %s %s %s (%.0f股)", side > 0 ? "买" : "卖", x.code.c_str(), x.name.c_str(), b,
-                                 side > 0 ? x.buy_qty : x.sell_qty);
+              ImGui::TextColored(side > 0 ? kUp : kDn, "%s %s %s %s (%.0f股)", side > 0 ? "买" : "卖", x.code.c_str(), x.name.c_str(), b, x.qty[side]);
             }
       }
       ImGui::EndTooltip();

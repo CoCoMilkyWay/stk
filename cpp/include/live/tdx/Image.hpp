@@ -1,7 +1,7 @@
 // 通达信适配: 客户端进程的映像 (建在进程堆的只读访问上): PE 模块 / MSVC RTTI 类名 / 按类名找虚表
 #pragma once
 
-#include "live/Broker.hpp"
+#include "live/Base.hpp"
 #include "live/tdx/Heap.hpp"
 
 #include <cstring>

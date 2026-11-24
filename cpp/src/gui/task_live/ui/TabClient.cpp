@@ -1,7 +1,6 @@
 #include "gui/task_live/ui/TabClient.hpp"
 
 #include "gui/util/Tip.hpp"
-#include "live/Clients.hpp"
 
 #include "imgui.h"
 
@@ -491,21 +490,10 @@ void draw_tree_node(const MirrorFrame &fr, const TreeView &tv, size_t idx, Clien
 } // namespace
 
 void RenderTabClient(LiveHub &hub, ClientState &st) {
-  if (!hub.connected()) {
-    ImGui::TextUnformatted("接券商客户端:");
-    for (size_t i = 0; i < live::clients().size(); ++i) {
-      const live::Client &c = live::clients()[i];
-      if (ImGui::Button(strf("连接%s", c.name).c_str()))
-        hub.connect(i);
-      ImGui::SameLine();
-      ImGui::TextWrapped("%s", c.about);
-    }
-    return;
-  }
-
+  assert(hub.connected());
   ClientState::Impl &im = *st.impl;
   if (!im.mirror) {
-    std::unique_ptr<Mirror> m = hub.broker().mirror();
+    std::unique_ptr<Mirror> m = hub.mirror();
     if (!m) {
       ImGui::TextDisabled("当前客户端 (%s) 不支持窗口复现", hub.client().name);
       return;

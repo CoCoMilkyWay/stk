@@ -46,6 +46,11 @@ constexpr sv kVerdicts[] = {"supported", "refuted", "unclear"};
 constexpr sv kNoteKindChoices[] = {"feature", "tool", "insight", "issue"};
 constexpr sv kNoteScopes[] = {"all", "here"};
 constexpr sv kIssueTypes[] = {"bug", "idea", "question"};
+constexpr sv kYesNo[] = {"yes", "no"};
+constexpr sv kCtxKinds[] = {"round", "first", "test"};
+constexpr sv kCtxViews[] = {"full", "delta", "tree", "system"};
+constexpr sv kStepActions[] = {"status", "rewind", "report"};
+constexpr sv kBrainBackends[] = {"zhipu", "cursor", "devin"};
 
 constexpr ArgDef kFeatureArgs[] = {{"exprs", "特征式", Arg::Strs, {}, 1, 4, {}, kExprsDesc}};
 constexpr ArgDef kLayersArgs[] = {
@@ -121,25 +126,25 @@ constexpr ArgDef kReadArgs[] = {
     {"skip", "跳过", Arg::Int, int{0}, 0, 1000000, {}, "text: 跳过该节开头多少字 (接着读上次没读完的; 上次结果末尾会给)"}};
 constexpr ArgDef kHypArgs[] = {
     {"title", "标题", Arg::Str, {}, 0, 0, {}, "一句话: 什么机制 (例: 秒级吃光新挂卖单的买方在不推价地吸筹)"},
-    {"actor", "谁在做什么", Arg::Str, {}, 0, 0, {}, "因子高 = 什么状态: 谁在做什么 (lob: 主动方还是被动方、哪一侧、大单还是小单、成交还是挂撤) / 价量处在什么位置 (bar) / 什么样的票 (fund), 在什么条件下"},
-    {"why", "为什么", Arg::Str, {}, 0, 0, {}, "为什么这预示本持有期的收益 (信息 / 流动性冲击 / 行为偏差 …), 收益何时兑现; 借鉴研报的写研报 id 与借的是什么"},
-    {"expect", "预期", Arg::Str, {}, 0, 0, {}, "若假设成立, 哪个观察 (工具 + 参数) 会看到什么: 一个方向, 写出量级 (例: view_layers cond=价差 的高段 mono 比低段高 0.1 以上)"},
-    {"refute", "算落空", Arg::Str, {}, 0, 0, {}, "看到什么就算落空 (同一观察的反面, 或另一个观察); 不能写成 \"若…则升, 若…则降\" 两头都说"}};
+    {"why", "为什么", Arg::Str, {}, 0, 0, {}, "为什么这预示本持有期的收益 (信息 / 流动性冲击 / 行为偏差 …), 收益何时兑现; 借鉴研报的写研报 id"},
+    {"actor", "谁在做什么", Arg::Str, sv{""}, 0, 0, {}, "可选: 因子高 = 什么状态 (资金行为 / 价量位置 / 票的特征, 在什么条件下)"},
+    {"expect", "预期", Arg::Str, sv{""}, 0, 0, {}, "可选: 若假设成立, 哪个观察会看到什么 (一个方向, 带量级)"},
+    {"refute", "算落空", Arg::Str, sv{""}, 0, 0, {}, "可选: 看到什么就算落空"}};
 constexpr ArgDef kJudgeArgs[] = {
-    {"hyp", "假设", Arg::Str, {}, 0, 0, {}, "假设编号 (假设板上的, 如 H3)"},
-    {"verdict", "判定", Arg::Str, {}, 0, 0, kVerdicts, "supported 支持 (证据里须有观察调用) / refuted 落空 / unclear 不清 (证据不够; next 写还差什么)"},
-    {"evidence", "证据", Arg::Strs, {}, 1, kEvidence, {}, "证据: 调用编号 (结果标题里的 R<轮>#<序>), 须是该假设提出之后做成的调用; 再判时至少一个在上次判定之后"},
-    {"result", "测出来", Arg::Str, {}, 0, 0, {}, "测出来是什么: 对照 expect / refute 写看到的数 (哪个调用、哪一行); 判变体时写各变体相对基准的变化"},
-    {"why", "为什么", Arg::Str, {}, 0, 0, {}, "为什么是这个结果: 机制上怎么解释; 落空的说清错在假设的哪一环 (谁 / 什么行为 / 什么盘面 / 何时兑现)"},
-    {"insight", "认识", Arg::Str, {}, 0, 0, {}, "得到了什么认识 (对这个因子、这类叶、这个市场); 值得跨会话留下的另用 note_insight 记"},
-    {"better_feature", "更好的特征", Arg::Str, {}, 0, 0, {}, "这个现象有没有更直接捕捉它的特征: 现有叶里哪个更贴切, 或缺什么样的量 (缺的或只能近似的, 同一条回复里 request_feature 申请)"},
-    {"next", "下一步", Arg::Str, {}, 0, 0, {}, "下一步: 用哪个工具 (参数) 查什么, 想确认或排除什么; 或据此挂什么变体、提什么新假设"}};
+    {"hyp", "假设", Arg::Str, {}, 0, 0, {}, "假设编号 (假设板上的, 如 H1)"},
+    {"verdict", "判定", Arg::Str, {}, 0, 0, kVerdicts, "supported 支持 / refuted 落空 / unclear 不清"},
+    {"result", "测出来", Arg::Str, {}, 0, 0, {}, "测出来是什么: 写看到的数与结论"},
+    {"evidence", "证据", Arg::Strs, EmptyArr{}, 0, kEvidence, {}, "可选: 引用的调用编号 (结果标题里的 R<轮>#<序>)"},
+    {"why", "为什么", Arg::Str, sv{""}, 0, 0, {}, "可选: 机制上怎么解释"},
+    {"insight", "认识", Arg::Str, sv{""}, 0, 0, {}, "可选: 得到了什么认识"},
+    {"better_feature", "更好的特征", Arg::Str, sv{""}, 0, 0, {}, "可选: 有没有更直接捕捉它的特征"},
+    {"next", "下一步", Arg::Str, sv{""}, 0, 0, {}, "可选: 下一步打算查什么或怎么改"}};
 constexpr ArgDef kEvalArgs[] = {
     {"name", "英文名", Arg::Str, {}, 0, 0, {}, "英文名: 仅 [A-Za-z0-9_], ≤ 64, 作文件名, 不能与已有的重复"},
     {"name_cn", "中文名", Arg::Str, {}, 0, 0, {}, "中文名: 1..10 个汉字, 不含字母数字标点"},
     {"expr", "模板", Arg::Str, {}, 0, 0, {}, "模板 (待搜参数写裸键 d / k / k2 / w)"},
-    {"hyp", "假设", Arg::Str, {}, 0, 0, {}, "挂在哪个假设上 (假设板上判为支持的, 如 H3)"},
-    {"note", "思路", Arg::Str, {}, 0, 0, {}, "相对哪个基准改了哪一处、检验什么机制问题、预期看到什么变化 (可证伪的一个方向)"}};
+    {"note", "思路", Arg::Str, {}, 0, 0, {}, "思路: 检验什么机制或相对基准改了哪一处"},
+    {"hyp", "假设", Arg::Str, sv{""}, 0, 0, {}, "可选: 归类到哪个假设 (假设板上的编号, 如 H1; 可空)"}};
 constexpr ArgDef kTopArgs[] = {{"top", "个数", Arg::Int, int{20}, 1, kListTop, {}, "列几个"},
                                {"skip", "跳过", Arg::Int, int{0}, 0, 9999, {}, "跳过排在前面的几个 (接着看上次没列到的; 结果末尾会给)"}};
 constexpr ArgDef kNameArgs[] = {{"name", "英文名", Arg::Str, {}, 0, 0, {}, "已评候选的英文名 (本作用域历次会话的都可以)"}};
@@ -173,6 +178,29 @@ constexpr ArgDef kIssueArgs[] = {
     {"detail", "详情", Arg::Str, {}, 0, 0, {}, "bug: 工具 + 参数 + 看到了什么 + 预期是什么; idea: 现在怎样、改成怎样、为什么; question: 问什么、卡在哪"},
     {"ref", "附议", Arg::Str, sv{""}, 0, 0, {}, kRefDesc}};
 constexpr ArgDef kAskArgs[] = {{"questions", "问题", Arg::Questions, {}, 1, 8, {}, "问题数组, 每题 {\"prompt\": 题干, \"options\": [2..5 个字符串], \"multiple\": 可多选 (缺省 false), \"recommended\": [推荐的选项下标]}"}};
+constexpr ArgDef kBuildContextArgs[] = {
+    {"kind", "消息类", Arg::Str, sv{"round"}, 0, 0, kCtxKinds, "生成哪类消息: round 本轮结果 / first 首条 / test 自检首条"},
+    {"view", "输出面", Arg::Str, sv{"full"}, 0, 0, kCtxViews, "原文给哪一层: full 完整上下文 Flat(TurnsOf) / delta 本条增量 TextOf / tree 研究树 TreeOf / system 系统提示"},
+    {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本会话是否开放 ask_human"},
+    {"memo", "插话", Arg::Str, sv{""}, 0, 0, {}, "可选: 随本条附带的研究员插话"},
+    {"remark", "会话要求", Arg::Str, sv{""}, 0, 0, {}, "可选: 首条 / 自检首条末尾的本会话要求"}};
+constexpr ArgDef kCheckBatchArgs[] = {
+    {"reply", "回复原文", Arg::Str, {}, 0, 0, {}, "待校验的一批调用 JSON (或带文字的原始回复, 含 {\"calls\": [...]})"},
+    {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本轮是否开放 ask_human"}};
+constexpr ArgDef kStepStateArgs[] = {
+    {"action", "检查项", Arg::Str, sv{"status"}, 0, 0, kStepActions, "看哪一面: status 账本 · Cont · 转移表 · 预算 / rewind 回退损失预估 / report 停下报告"},
+    {"round", "目标轮", Arg::Int, int{1}, 1, 999, {}, "rewind 时要回退到的轮次 (1..当前轮数)"},
+    {"cur", "当前序", Arg::Int, int{-1}, -1, 99, {}, "末轮执行到的调用下标 (-1 = 末轮已执行完的个数)"},
+    {"max_rounds", "轮数上限", Arg::Int, int{0}, 0, 999, {}, "模拟预算: 每段最多几轮 (0 = 不限)"},
+    {"max_minutes", "分钟上限", Arg::Int, int{0}, 0, 9999, {}, "模拟预算: 每段最多几分钟 (0 = 不限)"},
+    {"max_ktokens", "千token上限", Arg::Int, int{0}, 0, 99999, {}, "模拟预算: 每段最多几千 token (0 = 不限)"},
+    {"why", "停下原因", Arg::Str, sv{""}, 0, 0, {}, "可选: report 的停下原因 (空 = 调试预览)"}};
+constexpr ArgDef kProbeBrainArgs[] = {
+    {"backend", "后端", Arg::Str, sv{""}, 0, 0, kBrainBackends, "可选: zhipu / cursor / devin; 空 = 用 Config 页当前选中 (代理同 Config)"},
+    {"model", "模型", Arg::Str, sv{""}, 0, 0, {}, "可选: 模型 id; 空 = 用 Config 页当前选中"},
+    {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本轮是否开放 ask_human"},
+    {"memo", "插话", Arg::Str, sv{""}, 0, 0, {}, "可选: 随本轮附带的插话"},
+    {"prompt", "覆盖正文", Arg::Str, sv{""}, 0, 0, {}, "可选: 覆盖发出的 user 正文; 空 = 照快照时间线折出 TurnsOf"}};
 
 constexpr ToolDoc kDocs[] = {
     {Tool::ViewFeature, kFeatureArgs,
@@ -235,18 +263,14 @@ constexpr ToolDoc kDocs[] = {
      "再用 text 从那节读原文 (图片已去, 表格与公式保留), 每次读到字数上限为止, 末尾给接着读的 from / skip",
      "标注卡 / 目录 / 原文一段"},
     {Tool::Hypothesize, kHypArgs,
-     "写下一个机制假设与它可证伪的预测, 记上假设板 (编号 H1, H2 …, 待检验). 之后用观察检验它, 再 judge; 只有判为支持的假设才能挂 eval_factor 的变体 (每个至多 {{hyp_evals}} 个). "
-     "观察到新现象、上一个假设落空或变体用完、想换方向时提新的",
+     "在会话假设板记下一条机制假设 (编号 H1, H2 …; 可选研究笔记工具, 方便梳理机制与归类变体, 不强卡回测)",
      "编号"},
     {Tool::Judge, kJudgeArgs,
-     "对照假设的 expect / refute 给它下判定, 证据写调用编号. 两个时点: 检验它的观察做完后 (判为支持才能挂变体); 它的变体回测完的下一条回复 (系统强制: 待判的不判, 整条退回). "
-     "判支持须引用观察: 同一条回复里把观察排在 judge 前面, 就能引用它们. "
-     "每次都写清测出来是什么、为什么、得到什么认识、有没有更好的特征、下一步用什么工具查什么",
-     "判定后的假设板一行; 证据不成 (编号不存在 / 在提出之前 / 没做成 / 判支持却没有观察 / 再判没有新证据) 写原因, 不改判定"},
+     "在会话假设板给一条假设记下判定 (支持 / 落空 / 不清) 与结论, 可附引用的调用编号",
+     "判定后的假设板一行; 假设或证据编号不存在写原因, 不改判定"},
     {Tool::EvalFactor, kEvalArgs,
-     "把一个模板落成候选文件并回测: Search (采样自由参数, 每点按中位 rIC 定方向打分, 最高的一个成权重) → 权重全量分层回测. 一条回复至多 {{batch}} 个, "
-     "每个变体相对基准只改一处以检验一个问题; 须挂在判为支持的假设上 (每个假设至多 {{hyp_evals}} 个, 有变体回测过还没判的先 judge), "
-     "上一条回复有落了文件的回测时本条不能回测. 与已有候选同式 (含只换截面根 CsRank / CsNormRank / CsZ) 或算子超 {{max_ops}} 个的不落",
+     "把一个模板落成候选文件并回测: Search (采样自由参数, 每点按中位 rIC 定方向打分, 最高的一个成权重) → 权重全量分层回测. 一批至多 {{batch}} 个. "
+     "与已有候选同式 (含只换截面根 CsRank / CsNormRank / CsZ) 或算子超 {{max_ops}} 个的不落",
      "结局: 未落文件的原因 / BROKEN / 无权重 (没有一个点算得出滚动窗 rIC) / 最佳权重的具体式 (负 = 已整体取反, 式前写 -) + 频率 · 预测周期 + 各权重的统计 "
      "(rIC · 中位 rIC · 每期毛多 / 毛空 / 净多空 · 成本 = 每期单边换手 买 / 卖 × 固定冲击) + 是否达入库门槛 + 最佳权重的分年中位 rIC 与年换手; "
      "最后两张正负柱图 (上行 |值| 的柱, 下行对齐写号): 最佳权重的累计分层 (G1 → G20 各组超额的对数累计) 与分年 rIC (年内 rIC 均值)"},
@@ -270,11 +294,23 @@ constexpr ToolDoc kDocs[] = {
      "编号"},
     {Tool::ReportIssue, kIssueArgs,
      "报工具结果不对 (bug)、对规则 / 系统 / 工具的改进建议 (idea: 哪条规则卡住了你、哪个结果不好读、哪里浪费了轮次)、想问研究员的疑问 (question). 全局记录, 研究员会看; 提完照常接着做", "编号"},
-    {Tool::Finish, {}, "宣布挖完: 须是本条回复的最后一个调用, 前面的调用照常执行, 全部做完后会话结束", "会话结束"},
+    {Tool::Finish, {}, "宣布挖完: 须是本批的最后一个调用, 前面的调用照常执行, 全部做完后会话结束", "会话结束"},
     {Tool::AskHuman, kAskArgs,
-     "向研究员提问 (每题带推荐), 等他选答; 整个会话只有一次机会. 只问研究员才能定的事 (从哪个因子起步、往哪个方向挖); 系统提示已定的不问也不确认. "
+     "向研究员提问 (每题带推荐), 等他选答. 只在关键分岔问研究员才能定的事 (起步方向、换手与 rIC 取舍等); 系统提示已定的不问也不确认. "
      "研究员每题都能选 \"其他\" 自己写, 还能附言, 所以选项不必穷举, 不要列 \"其他\" / \"由你决定\" 之类的兜底项",
      "每题的选择 (没照推荐的附上推荐) + 附言"},
+    {Tool::BuildContext, kBuildContextArgs,
+     "独立调试上下文与研究树折叠: 按工作台当前快照 (空白或载入的历史会话某轮) 拼出系统提示 / 首条 / 研究树 / 本条增量 / 完整上下文, 与真会话走同一份纯函数",
+     "对应层的完整原文 + 账本标志 / 假设板 / 各段字数与折叠视图"},
+    {Tool::CheckBatch, kCheckBatchArgs,
+     "独立调试协议校验: 对一批调用 JSON 跑 ParseCalls, 并对 eval_factor 做落盘前核验 (lab.vet)",
+     "通过 = 规范化调用清单; 不通过 = 重发要求原文"},
+    {Tool::StepState, kStepStateArgs,
+     "独立透视会话状态机: 按当前快照计算账本 State、续跑动作 Cont、完整状态转移表、预算核对、回退损失预估与停下报告",
+     "状态摘要 / 回退损失 / 停下报告原文"},
+    {Tool::ProbeBrain, kProbeBrainArgs,
+     "独立试跑单轮内置大模型: 拿当前快照的 system + TurnsOf 直接走 llm::send (支持取消与代理), 收到回复后自动过 ParseCalls 校验",
+     "模型原始回复正文 + 思考过程 / token / 校验结果"},
 };
 static_assert(std::size(kDocs) == kNum<Tool>);
 constexpr bool docs_in_order() {
@@ -551,7 +587,7 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
   if (!object_of(reply, j, error))
     return false;
   if (!j.contains("calls") || !j["calls"].is_array()) {
-    error = "缺数组 calls (每次回复 = 一串工具调用)";
+    error = "缺数组 calls (每批 = 一串工具调用)";
     return false;
   }
   const json &cs = j["calls"];
@@ -570,8 +606,8 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
     }
     const std::string &name = c["tool"].get_ref<const std::string &>();
     const std::optional<Tool> tid = FindId<Tool>(name);
-    if (!tid || (*tid == Tool::AskHuman && !ask)) {
-      errs.push_back(p + ".tool: " + (tid ? "ask_human 本会话不可用 (研究员没开提问, 或已问过一次; 一条回复也只能有一个)" : "没有工具 " + name));
+    if (!tid || !IsAgentTool(*tid) || (*tid == Tool::AskHuman && !ask)) {
+      errs.push_back(p + ".tool: " + (tid && IsAgentTool(*tid) ? "ask_human 本会话不可用 (研究员没开提问, 或同批只能有一个)" : "没有工具 " + name));
       continue;
     }
     const Tool t = *tid;
@@ -580,7 +616,7 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
     if (t == Tool::Finish && i + 1 != cs.size())
       errs.push_back(p + ": finish 须是最后一个调用");
     if (t == Tool::EvalFactor && ++evals > kBatch)
-      errs.push_back(p + ": 一条回复至多 " + std::to_string(kBatch) + " 个 eval_factor (这是第 " + std::to_string(evals) + " 个)");
+      errs.push_back(p + ": 一批至多 " + std::to_string(kBatch) + " 个 eval_factor (这是第 " + std::to_string(evals) + " 个)");
     const json &args = c.contains("args") ? c["args"] : json::object();
     if (!args.is_object()) {
       errs.push_back(p + ".args 须是 JSON 对象");
@@ -600,7 +636,7 @@ bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::s
 std::string ToolsDoc(bool ask) {
   std::string s;
   for (const Tool t : kVals<Tool>) {
-    if (t == Tool::AskHuman && !ask)
+    if (!IsAgentTool(t) || (t == Tool::AskHuman && !ask))
       continue;
     const ToolMeta &m = def(t);
     const ToolDoc &d = doc(t);

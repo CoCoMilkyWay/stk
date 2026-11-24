@@ -96,6 +96,14 @@ std::string reconcile(const std::vector<CashFlow> &rows, const Snapshot &s) {
   return out;
 }
 
+void save(const Cache &c) {
+  Pulled s{c.pulled, {{kRate, strf("%.6g", c.rate)}}, {}};
+  for (const CashFlow &r : c.rows)
+    s.rows.push_back({misc::dense(r.date), r.code, r.name, strf("%.4f", r.price), strf("%.2f", r.qty), r.kind, strf("%.2f", r.amount), strf("%.2f", r.balance)});
+  save_pulled(disk::LiveFlowsFile, kHead, s);
+  gen.fetch_add(1, std::memory_order_release);
+}
+
 } // namespace
 
 bool holds(const CashFlow &r) {
@@ -114,14 +122,6 @@ Cache load() {
     assert(c.rows.back().date > 0 && "资金流水账本: 日期");
   }
   return c;
-}
-
-void save(const Cache &c) {
-  Pulled s{c.pulled, {{kRate, strf("%.6g", c.rate)}}, {}};
-  for (const CashFlow &r : c.rows)
-    s.rows.push_back({misc::dense(r.date), r.code, r.name, strf("%.4f", r.price), strf("%.2f", r.qty), r.kind, strf("%.2f", r.amount), strf("%.2f", r.balance)});
-  save_pulled(disk::LiveFlowsFile, kHead, s);
-  gen.fetch_add(1, std::memory_order_release);
 }
 
 Cache pull(Broker &b) {

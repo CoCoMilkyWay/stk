@@ -55,12 +55,11 @@ struct Span {
 enum class Msg : uint8_t { System,
                            First,
                            Round,
-                           Retry,
                            Test };
 struct MsgDef {
   const char *id, *cn;
 };
-inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"retry", "重发"}, {"test", "自检"}};
+inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"test", "自检"}};
 AGENT_ROWS(Msg, kMsgs, Test);
 
 struct Message {
@@ -106,9 +105,7 @@ struct Tally {
 };
 
 struct Flags {
-  bool evaled = false; // 末个有调用的轮里有落了文件的回测 (下一条回复不能回测)
-  bool asked = false;  // 已有 ask_human 调用 (整段会话只问一次)
-  bool done = false;   // 末轮的 finish 已做完: 本条做完即结束会话
+  bool done = false; // 末轮的 finish 已做完: 本条做完即结束会话
 };
 
 struct State {
@@ -125,8 +122,14 @@ void ApplyAct(State &s, const Act &a, Ref at);
 State StateOf(Rounds rs);
 Tally TallyAt(const State &s, Rounds rs, double now);
 Tally TallyOf(Rounds rs, double now);
-// 会话约束 (回测后的下一条只诊断 / 待判的先 judge): 账本 s 之后交来 cs 不守的原因; 守 → 空
-std::string RuleMiss(const State &s, const std::vector<Call> &cs);
+
+// 整批核验 (协议解析 ParseCalls): Mine 与 Tools/Session/* 共用
+struct BatchCheck {
+  std::vector<Call> calls;
+  std::string error; // 非空 = 整批退回原因
+  bool ok() const { return error.empty(); }
+};
+BatchCheck VetBatch(std::string_view reply, bool ask);
 
 // ---- 台面与三拍工具签名 ----
 struct Seat {
@@ -137,9 +140,9 @@ struct Seat {
   Rounds timeline; // 末轮 = 本调用所在轮
   Ref me;          // 本调用的编号
   std::string scope, session;
-  bool free = false; // 不查假设板 (eval_factor 不必挂判为支持的假设): 工作台 / 不守会话约束的会话
-  bool dry = false;  // 不落记录: 全局记录只给编号不写, submit_factor 只查门槛不入库 (工作台)
-  bool gpu = false;  // eval_factor 的回测上 GPU
+  bool dry = false; // 不落记录: 全局记录只给编号不写, submit_factor 只查门槛不入库 (工作台)
+  bool gpu = false; // eval_factor 的回测上 GPU
+  llm::Options llm; // Config 页当前后端 / 代理 / 模型 (probe_brain 用)
 };
 
 struct AskRes;
@@ -164,15 +167,21 @@ struct Rig {
   Tally tally(double now) const { return TallyAt(st, timeline, now); }
   const Flags &flags() const { return st.flags; }
 
-  Seat seat(size_t i, const Gate &gate, std::string_view session, bool free, bool dry, bool gpu);
+  Seat seat(size_t i, const Gate &gate, std::string_view session, bool dry, bool gpu, llm::Options llm = {});
   void restate() { st = StateOf(timeline); }
   void flush();
 
-  Exec open_act(size_t i, Seat &s, double t); // Sync (含未落文件的 eval_factor) 当场收尾并返回 Exec::Sync
-  void step_act(size_t i, LabStep step, double t);
-  void settle_act(size_t i, ToolOut out, Seat &s, double t);
-  void answer_act(size_t i, double t);
-  void abort_act(size_t i, double t);
+  Exec open_act(Act &a, Seat &s, double t); // Sync (含未落文件的 eval_factor) 当场收尾并返回 Exec::Sync
+  void step_act(Act &a, LabStep step, double t);
+  void settle_act(Act &a, ToolOut out, Seat &s, double t);
+  void answer_act(Act &a, Ref at, double t);
+  void abort_act(Act &a, Ref at, double t);
+
+  Exec open_act(size_t i, Seat &s, double t) { return open_act(timeline.back().acts[i], s, t); }
+  void step_act(size_t i, LabStep step, double t) { step_act(timeline.back().acts[i], step, t); }
+  void settle_act(size_t i, ToolOut out, Seat &s, double t) { settle_act(timeline.back().acts[i], std::move(out), s, t); }
+  void answer_act(size_t i, double t) { answer_act(timeline.back().acts[i], {round(), static_cast<int>(i) + 1}, t); }
+  void abort_act(size_t i, double t) { abort_act(timeline.back().acts[i], {round(), static_cast<int>(i) + 1}, t); }
 };
 
 // ---- 随机输入的取材 ----
@@ -206,7 +215,7 @@ struct Feed {
   std::string clock();                                      // 本层某一行的行末时刻 (不含竞价行; 日层空)
   std::string tod(int cap, const std::string &around = {}); // 本层连续 1..cap 行的行末时段 HH:MM-HH:MM (给了 around 就罩住它; 日层空)
   Spot spot();                                              // 一只当日有逐笔的票的一天: 多半取工作台里 view_trades 明细列过的段
-  std::string hyp(bool supported);                          // 假设板上的编号 (supported: 能挂变体的优先 = 判为支持、变体有余、没有别轮待判的); 板空给 H1
+  std::string hyp();                                        // 假设板上最新一条的编号; 板空给空串
   std::vector<std::string> refs(int n);                     // 做成了的调用编号 (新到旧)
 };
 nlohmann::ordered_json SampleArgs(Tool t, Feed &p);

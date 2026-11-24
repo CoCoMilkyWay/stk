@@ -327,6 +327,7 @@ set(MATH_PRECISE
     # worker: compute 的 Bar 档管线 (TS: Fund 缺失值 / cs_valid 依赖 NaN 比较)
     worker/compute/FeedBar.cpp
     # live: 实盘 (nlohmann 落盘 / 回包 JSON; 行情与账户缺失 = 无)
+    live/Base.cpp
     live/Board.cpp
     live/Book.cpp
     live/Broker.cpp
@@ -383,6 +384,7 @@ set(MATH_PRECISE
     gui/task_features/ui/TabOrderFlow.cpp
     gui/task_features/ui/TabTable.cpp
     gui/task_features/ui/TabTransform.cpp
+    gui/task_live/Books.cpp
     gui/task_live/LiveHub.cpp
     gui/task_live/TaskLive.cpp
     gui/task_live/ui/TabBoard.cpp
@@ -461,6 +463,10 @@ set(MATH_PRECISE
     gui/task_agent/tools/query/SearchDocs.cpp
     gui/task_agent/tools/query/SearchFactors.cpp
     gui/task_agent/tools/query/SearchLeaves.cpp
+    gui/task_agent/tools/session/BuildContext.cpp
+    gui/task_agent/tools/session/CheckBatch.cpp
+    gui/task_agent/tools/session/ProbeBrain.cpp
+    gui/task_agent/tools/session/StepState.cpp
     gui/task_agent/tools/trial/EvalFactor.cpp
     gui/task_agent/tools/trial/SubmitFactor.cpp
     gui/task_agent/ui/Bench.cpp
@@ -490,6 +496,10 @@ set(MATH_PRECISE
     gui/task_agent/ui/query/SearchDocs.cpp
     gui/task_agent/ui/query/SearchFactors.cpp
     gui/task_agent/ui/query/SearchLeaves.cpp
+    gui/task_agent/ui/session/BuildContext.cpp
+    gui/task_agent/ui/session/CheckBatch.cpp
+    gui/task_agent/ui/session/ProbeBrain.cpp
+    gui/task_agent/ui/session/StepState.cpp
     gui/task_agent/ui/trial/EvalFactor.cpp
     gui/task_agent/ui/trial/SubmitFactor.cpp
     # factor: 因子契约头的消费者 = GPU 后端与 op_check 本体

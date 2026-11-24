@@ -153,8 +153,6 @@ std::optional<Frame> view(const Snapshot &s, const Quotes &quotes) {
   for (const int side : kSides)
     for (size_t i = 0; i < kNotionals.size(); ++i)
       fr.slips[side][i] = agg(fr.rows, side, i);
-  for (const auto &[code, q] : quotes)
-    fr.sec = std::max(fr.sec, q.sec);
   return fr;
 }
 

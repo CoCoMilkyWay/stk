@@ -22,11 +22,8 @@ using live::strf;
 std::vector<account::Trade> trades_in(const live::Fills &f, int last) {
   std::vector<account::Trade> out;
   out.reserve(f.rows.size());
-  for (const live::Fill &x : f.rows) {
-    const bool buy = x.side == live::kBuy;
-    const double q = static_cast<double>(x.qty);
-    out.push_back({std::clamp(Quote::sec_slot(x.sec), 0, last), x.code, buy ? q : -q, x.price, (buy ? -x.amount : x.amount) - live::rebal::fee(x.amount, x.side)});
-  }
+  for (const live::Fill &x : f.rows)
+    out.push_back({std::clamp(Quote::sec_slot(x.sec), 0, last), x.code, x.side * static_cast<double>(x.qty), x.price, -x.side * x.amount - live::rebal::fee(x.amount, x.side)});
   return out;
 }
 
@@ -69,6 +66,25 @@ std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const
   return h;
 }
 
+// 账户行的悬停: 口径 (回放 se 的首末日) + 持仓 h (可空) + 累计盈亏
+std::string note_of(const Quote::Series &se, const Quote::Equity &e, const Quote::Holdings *h) {
+  const std::vector<Quote::Candle> &d = se.daily;
+  std::string s = strf("账户\n资金流水逐日回放 %s ~ %s, 时间加权 (银证转账 / 担保品划入不计收益; 入金计日初, 出金计日末)", misc::dash(d.front().date).c_str(),
+                       misc::dash(d.back().date).c_str());
+  if (!h)
+    return s;
+  s += strf("\n持仓 = %s %zu 只 (▸ 展开 = 其中个股, 市值降序; 仓位 = 市值 / 净资产)", h->broker ? "券商实时持仓" : misc::dash(d.back().date).append(" 收后持仓").c_str(),
+            h->list.size());
+  for (const Quote::Holding &k : h->list)
+    if (k.id == Quote::Ref::kNone)
+      s += strf("\n• 库轴外 %s 仓位 %.1f%% (不列成分)", k.code.c_str(), 100 * h->weight(k));
+  s += h->broker ? "\n当日 (接得上日脊) = 持仓 × 新浪分钟收, 今日成交按时刻回推 (费用按费率估), 末槽 = 净资产 + 各只自计价起的涨跌"
+                 : "\n当日 (接得上日脊) = 持仓 × 新浪分钟收, 末槽 = 净资产 + 各只自计价起的涨跌";
+  const double in = e.in + (h->broker ? e.after : 0);
+  s += strf("\n累计盈亏 %+.0f = 净资产 %.0f − 累计净转入 %.0f (净资产计于%s)", h->net - in, h->net, in, h->broker ? "券商现价" : "末日收盘");
+  return s;
+}
+
 // 快照里库轴外持仓 (ETF / LOF) 的券商现价, 记于今日
 account::Spot spot_of(const live::Snapshot &s) {
   account::Spot o{.date = misc::today_ymd()};
@@ -88,10 +104,9 @@ std::shared_ptr<const Quote::Trades> trades_of(const live::Fills &f) {
     auto it = std::ranges::find(m.secs, x.code, &Quote::TradeSec::code);
     if (it == m.secs.end())
       it = m.secs.insert(it, Quote::TradeSec{.code = x.code, .name = x.name});
-    const bool buy = x.side == live::kBuy;
-    (buy ? m.buy : m.sell) += x.amount;
-    (buy ? it->buy : it->sell) += x.amount;
-    (buy ? it->buy_qty : it->sell_qty) += static_cast<double>(x.qty);
+    m.amount[x.side] += x.amount;
+    it->amount[x.side] += x.amount;
+    it->qty[x.side] += static_cast<double>(x.qty);
   }
   auto t = std::make_shared<Quote::Trades>();
   t->date = misc::today_ymd();
@@ -105,55 +120,27 @@ std::shared_ptr<const Quote::Trades> trades_of(const live::Fills &f) {
 } // namespace
 
 void AccountHub::feed(const std::shared_ptr<const live::Snapshot> &snap) {
-  if (snap == snap_)
-    return;
-  snap_ = snap;
-  spot_ = snap_ ? spot_of(*snap_) : account::Spot{};
-  trades_ = snap_ ? trades_of(snap_->fills) : nullptr;
+  fed_.update(snap.get(), [&](Fed &f) { f = {snap, snap ? spot_of(*snap) : account::Spot{}, snap ? trades_of(snap->fills) : nullptr}; });
 }
 
 std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live) {
   const std::shared_ptr<const Quote::Tape> t = view && view->lack.empty() ? view->tape[Quote::kAccount] : nullptr;
-  const uint64_t ver = live ? live->ver : 0;
-  if (t == tape_ && snap_ == shown_snap_ && ver == ver_)
-    return day_;
-  if (t != tape_ || snap_ != shown_snap_) {
-    tape_ = t, shown_snap_ = snap_;
-    rehold(view.get());
-  }
-  ver_ = ver;
-  day_ = nullptr;
-  if (hold_ && live && view->equity.nav > 0 && view->joins(live->prev))
-    day_ = today_of(view->equity, t->line(0)->daily.back().close, *hold_, shown_snap_ ? &shown_snap_->fills : nullptr, *live);
-  return day_;
-}
-
-void AccountHub::rehold(const Quote::PriceView *view) {
-  note_.clear();
-  const Quote::Series *se = tape_ ? tape_->line(0) : nullptr;
-  if (!se) {
-    hold_ = nullptr;
-    return;
-  }
-  const std::vector<Quote::Candle> &d = se->daily;
-  const Quote::Equity &e = view->equity;
-  note_ = strf("账户\n资金流水逐日回放 %s ~ %s, 时间加权 (银证转账 / 担保品划入不计收益; 入金计日初, 出金计日末)", misc::dash(d.front().date).c_str(),
-               misc::dash(d.back().date).c_str());
-  std::shared_ptr<const Quote::Holdings> h = holdings_of(e, snap_.get());
-  if (!(h && hold_ && *h == *hold_))
-    hold_ = std::move(h);
-  if (!hold_)
-    return;
-  const Quote::Holdings &x = *hold_;
-  note_ += strf("\n持仓 = %s %zu 只 (▸ 展开 = 其中个股, 市值降序; 仓位 = 市值 / 净资产)", x.broker ? "券商实时持仓" : misc::dash(d.back().date).append(" 收后持仓").c_str(),
-                x.list.size());
-  for (const Quote::Holding &k : x.list)
-    if (k.id == Quote::Ref::kNone)
-      note_ += strf("\n• 库轴外 %s 仓位 %.1f%% (不列成分)", k.code.c_str(), 100 * x.weight(k));
-  note_ += x.broker ? "\n当日 (接得上日脊) = 持仓 × 新浪分钟收, 今日成交按时刻回推 (费用按费率估), 末槽 = 净资产 + 各只自计价起的涨跌"
-                    : "\n当日 (接得上日脊) = 持仓 × 新浪分钟收, 末槽 = 净资产 + 各只自计价起的涨跌";
-  const double in = e.in + (x.broker ? e.after : 0);
-  note_ += strf("\n累计盈亏 %+.0f = 净资产 %.0f − 累计净转入 %.0f (净资产计于%s)", x.net - in, x.net, in, x.broker ? "券商现价" : "末日收盘");
+  const Fed &f = fed_.val;
+  held_.update({t.get(), fed_.gen}, [&](Held &x) {
+    x.tape = t;
+    const Quote::Series *se = t ? t->line(0) : nullptr;
+    std::shared_ptr<const Quote::Holdings> h = se ? holdings_of(view->equity, f.snap.get()) : nullptr;
+    if (!(h && x.hold && *h == *x.hold))
+      x.hold = std::move(h);
+    x.note = se ? note_of(*se, view->equity, x.hold.get()) : "";
+  });
+  const Held &x = held_.val;
+  day_.update({held_.gen, live ? live->ver : 0}, [&](std::shared_ptr<const Quote::Day> &d) {
+    d = x.hold && live && view->equity.nav > 0 && view->joins(live->prev)
+            ? today_of(view->equity, x.tape->line(0)->daily.back().close, *x.hold, f.snap ? &f.snap->fills : nullptr, *live)
+            : nullptr;
+  });
+  return day_.val;
 }
 
 } // namespace GUI::Account

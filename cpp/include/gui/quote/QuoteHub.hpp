@@ -2,8 +2,8 @@
 //   Database 的 Sync 页只读新浪状态. CreateAllTasks 建, 各任务各持一个 shared_ptr.
 //   首次用到才起 (之前不碰网络); 价格库的交接交给新浪 ⇒ 依赖者后建先拆 (成员序即析构序)
 //   一帧一份 (frame 取, 各处只读): 新浪状态 / 当日 (Live) / 历史 (PriceView); 读行情只经 joint / of (接续判据只此一处)
-//   账户当日由 today 给 (AccountHub), 并进 Live::days[kAccount]: 与新浪的那份或账户当日有一变才另拼一份
-//   要的全史各处每帧登记 (want), 下帧首并成一个价格库请求 (连同基本面段末日 / 行情日 / 账本代 / 券商现价), 变了才发;
+//   账户一侧由 AccountHub 给 (AccountFeed, frame 时取): 当日并进 Live::days[kAccount] (与新浪的那份或账户当日有一变才另拼一份) / 券商现价进价格库请求
+//   要的全史各处每帧登记 (want), 下帧首并成一个价格库请求 (连同基本面段末日 / 行情日 / 账本代 / 券商现价; 后两样同为账户回放的输入), 变了才发;
 //     价格库发布的是它留着的全部 (不只本帧要的), 切页不闪
 //   交易日历一份 (AssetInfo 的交易日), 新浪与价格库共用
 #pragma once
@@ -24,9 +24,12 @@ struct SharedData;
 namespace GUI::Quote {
 
 struct QuoteHub {
-  // 账户当日: (本帧历史, 新浪的当日; 皆可空) → 账户的当日 Day (空 = 无)
-  using Today = std::function<std::shared_ptr<const Day>(const std::shared_ptr<const PriceView> &, const std::shared_ptr<const Live> &)>;
-  explicit QuoteHub(Today today) : today_(std::move(today)) {}
+  // 账户一侧 (AccountHub 给, frame 时取): today = (本帧历史, 新浪的当日; 皆可空) → 账户的当日 Day (空 = 无); spot = 回放用的券商现价
+  struct AccountFeed {
+    std::function<std::shared_ptr<const Day>(const std::shared_ptr<const PriceView> &, const std::shared_ptr<const Live> &)> today;
+    std::function<const account::Spot &()> spot;
+  };
+  explicit QuoteHub(AccountFeed acct) : acct_(std::move(acct)) {}
 
   // 本帧 (GUI 线程, frame 取)
   QuoteStatus status;
@@ -36,11 +39,6 @@ struct QuoteHub {
   //   上帧登记的要求 + 基本面段末日 + 行情日 → 价格库请求; 基本面段末日 → 新浪; 取本帧三份
   void frame(const SharedData &data);
   void want(Ref r, bool minute); // 本帧要 r 的全史 (minute = 连分钟)
-  // 账户回放用的券商现价 (留到下次给; 变了才抄)
-  void spot(const account::Spot &s) {
-    if (!(want_.spot == s))
-      want_.spot = s;
-  }
 
   Joint joint(Side s) const { return {s, view, live}; }
   Source of(Ref r) const { return joint(r.side).of(r.key); }
@@ -56,7 +54,7 @@ struct QuoteHub {
   void watch(std::vector<std::string> syms) { quote_->watch(std::move(syms)); } // 订阅码 (新浪码): 快照进 Live::watch
 
 private:
-  const Today today_;
+  const AccountFeed acct_;
   std::shared_ptr<const Live> sina_;   // 新浪的当日 (live 由它 + 账户当日拼成)
   std::shared_ptr<const Day> account_; // 账户的当日
   std::shared_ptr<const Calendar> cal_;

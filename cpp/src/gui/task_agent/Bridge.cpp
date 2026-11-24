@@ -720,7 +720,7 @@ Staged Lab::stage(Cand c, std::string_view hyp_title) {
   fx::Expr e;
   if (std::string why = impl_->vet(c, e); !why.empty())
     return bad(std::move(why));
-  const std::string full_note = c.hyp + (hyp_title.empty() ? "" : " " + std::string(hyp_title)) + " · " + c.note;
+  const std::string full_note = c.hyp.empty() ? c.note : c.hyp + (hyp_title.empty() ? "" : " " + std::string(hyp_title)) + " · " + c.note;
   std::string err;
   const std::string file = Engine::AddFactorFile(impl_->dir, *impl_->ft(), c.name, c.name_cn, e.canon, full_note, err);
   if (file.empty())
@@ -774,7 +774,7 @@ void Lab::discard(const std::string &file) {
 void Lab::send(Tool tool, LabTask task) {
   assert(impl_->data && !busy() && task);
   std::shared_ptr<const ViewEnv> env;
-  if (def(tool).cat != Cat::Query)
+  if (def(tool).cat != Cat::Query && def(tool).cat != Cat::Session)
     env = impl_->view_env();
   impl_->worker.send({tool, std::move(env), std::move(task)});
 }

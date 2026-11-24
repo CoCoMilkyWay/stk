@@ -1,7 +1,7 @@
 #include "live/tdx/Shim.hpp"
 
 #include "disk/Disk.hpp"
-#include "live/Broker.hpp"
+#include "live/Base.hpp"
 #include "live/Trace.hpp"
 #include "live/tdx/Proc.hpp"
 #include "live/tdx/Until.hpp"
@@ -285,7 +285,7 @@ void reset() {
 
 std::vector<nlohmann::json> call(const std::string &line, double timeout) {
   const std::string cmd = line.substr(0, line.find(' '));
-  trace::shim_sent(std::string_view(line).substr(0, line.find(' ', cmd.size() + 1)));
+  trace::sent("shim " + line.substr(0, line.find(' ', cmd.size() + 1)));
   const Clock::time_point t0 = Clock::now();
   const auto left = [&] { return timeout - std::chrono::duration<double>(Clock::now() - t0).count(); };
 

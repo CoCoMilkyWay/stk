@@ -3,9 +3,8 @@
 // =============================================================================
 // Notes — 研究记录双板: 会话内假设板 Board (H1, H2 …) ↔ 跨会话全局记录板 Notes (F / T / I / R)
 // =============================================================================
-//   Board  会话内假设与判定 (时间线折叠的纯内存状态):
-//            hypothesize 记一条 (待检验) → 观察检验 → judge 判 (支持 / 落空 / 不清, 证据写调用编号 R<轮>#<序>) → 支持的挂 eval_factor 变体 (至多 kHypEvals 个)
-//            有变体回测过即待判 (pending): 下一条回复须 judge 它
+//   Board  会话内假设与判定 (时间线折叠的纯内存记录板, 无硬约束):
+//            hypothesize 记一条 → judge 记判定 (支持 / 落空 / 不清); eval_factor 可选填 hyp 归类计数
 //   Notes  跨会话全局记录 (output/agent/<main|test>/notes/<类>.jsonl):
 //            特征申请 (F) / 工具申请 (T) / 发现 (I) / 建议与 bug (R); 研究员逐条标处理 (待办 / 已做 / 不做 / 搁置 + 回复); 回退时 drop 删掉对应轮提的
 // =============================================================================
@@ -47,8 +46,7 @@ struct Hyp {
   Stance stance = Stance::Open;
   Ref judged;                     // 最近判定处 (round 0 = 未判)
   nlohmann::ordered_json verdict; // 最近 judge 参数
-  int evals = 0;                  // 已落文件的变体数
-  int pending = 0;                // 回测过尚未判的变体所在轮 (0 = 无)
+  int evals = 0;                  // 挂在该假设下的已落盘变体数
   std::string title() const { return fields.at("title").get<std::string>(); }
 };
 
@@ -56,7 +54,7 @@ class Board {
 public:
   void add(const Call &c, Ref at);
   void judge(const Call &c, Ref at);
-  void vary(const Call &c, Ref at);
+  void vary(const Call &c);
   std::string next() const { return "H" + std::to_string(hyps_.size() + 1); }
   const Hyp *find(const std::string &id) const;
   const std::vector<Hyp> &all() const { return hyps_; }
