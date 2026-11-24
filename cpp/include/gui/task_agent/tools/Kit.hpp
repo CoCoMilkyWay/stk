@@ -172,7 +172,7 @@ struct Rig {
   void step_act(size_t i, LabStep step, double t);
   void settle_act(size_t i, ToolOut out, Seat &s, double t);
   void answer_act(size_t i, double t);
-  void abort_act(size_t i, double t, std::string_view who = "研究员"); // who = 谁取消的 (写进结果)
+  void abort_act(size_t i, double t);
 };
 
 // ---- 随机输入的取材 ----

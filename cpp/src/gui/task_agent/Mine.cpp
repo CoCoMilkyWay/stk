@@ -1,6 +1,7 @@
 // Mine — 见头文件
 #include "gui/task_agent/Mine.hpp"
 #include "disk/Disk.hpp"
+#include "factor/Stat/Contract.hpp" // hold_name
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
@@ -35,7 +36,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Span, t0, t1)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Cand, name, name_cn, expr, hyp, note)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Pick, on, other, text)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Setup, sc, gate, ask, strict, test, remark)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Leg, llm, mcp, gpu, budget)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Leg, llm, gpu, budget)
 
 void to_json(json &j, const Act &a) {
   j = {{"tool", a.call.tool}, {"args", a.call.args}, {"span", a.span}, {"out", a.out.text}, {"gist", a.out.gist}, {"ok", a.out.ok}};
@@ -124,8 +125,10 @@ std::string fmt_round_reply(int n, const Round &rd) {
   if (!rd.span.ended())
     return {};
   const llm::Reply &r = rd.reply;
-  std::string s = "### R" + std::to_string(n) + " Agent 回复 (" + text::fmt("%.1fs", r.seconds) + " · 输入 " + std::to_string(r.usage.prompt) + " [缓存 " +
-                  std::to_string(r.usage.cached) + "] / 输出 " + std::to_string(r.usage.completion) + ")\n\n";
+  std::string s = "### R" + std::to_string(n) + " Agent 回复 (" + text::fmt("%.1fs", r.seconds);
+  if (r.usage.prompt > 0)
+    s += " · 输入 " + std::to_string(r.usage.prompt) + " [缓存 " + std::to_string(r.usage.cached) + "] / 输出 " + std::to_string(r.usage.completion);
+  s += ")\n\n";
   if (!r.thinking.empty())
     s += "<details>\n<summary>思考过程 (" + std::to_string(text::chars(r.thinking)) + " 字)</summary>\n\n" + r.thinking +
          (r.thinking.ends_with('\n') ? "" : "\n") + "\n</details>\n\n";
@@ -267,6 +270,26 @@ void Mine::open(const SharedData &data, Setup s, Leg l) {
   const int tried = static_cast<int>(std::ranges::count_if(lab.results(), [](const Result &r) { return r.visible; }));
   post(setup.test ? TestMessage(setup.ask, setup.remark)
                   : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask, setup.remark));
+}
+
+std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
+  assert(!live() && idle());
+  const std::vector<Choice> hs = catalog::holds(data, s.sc.level);
+  if (std::none_of(hs.begin(), hs.end(), [&](const Choice &h) { return h.key == s.sc.hold; })) {
+    std::string opts;
+    for (const Choice &h : hs)
+      opts += (opts.empty() ? "" : " / ") + h.name;
+    return opts.empty() ? "该层无可搜持有期 (标签未建)"
+                        : "持有期 " + factor::stat::hold_name(s.sc.hold) + " 在该层不可搜 (可选 " + opts + ")";
+  }
+  if (!catalog::ready(data, s.sc, l.gpu))
+    return "作用域 " + catalog::label(s.sc) + " 的数据未就绪 (资产轴未扫或标签库未建)";
+  if (std::string miss = catalog::open_miss(data, s.sc); !miss.empty())
+    return miss;
+  if (phase_ == Phase::Pause)
+    close();
+  open(data, std::move(s), std::move(l));
+  return {};
 }
 
 void Mine::load(const SharedData &data, const std::string &dir) {
@@ -577,28 +600,16 @@ void Mine::replied(llm::Reply r) {
 
 Seat Mine::mine_seat() { return seat(cur_, setup.gate, log.dir(), !setup.strict, false, leg.gpu); }
 
-std::string Mine::brain() const { return leg.mcp ? std::string("外部 agent (MCP)") : std::string(def(leg.llm.backend).name) + " / " + leg.llm.model; }
+std::string Mine::brain() const {
+  return leg.llm.backend == llm::Backend::Mcp ? std::string("外部 agent (MCP)") : std::string(def(leg.llm.backend).name) + " / " + leg.llm.model;
+}
 
 void Mine::reply(std::string calls) {
-  assert(leg.mcp && waiting());
+  assert(mcp() && waiting());
   Round &rd = timeline.back();
   const double t = now();
   rd.span.end(t);
   replied({.text = std::move(calls), .end = llm::End::Ok, .seconds = rd.span.len(t)});
-}
-
-void Mine::drop() {
-  assert(leg.mcp && (phase_ == Phase::Act || phase_ == Phase::Choose));
-  Round &rd = timeline.back();
-  if (cur_ < rd.acts.size() && rd.acts[cur_].span.running()) {
-    abort_act(cur_, now(), "你");
-    log_act(cur_++);
-  }
-  if (const size_t left = rd.acts.size() - cur_; left > 0)
-    log.append_log("> 你作废了本批余下的 " + std::to_string(left) + " 个调用 (没执行)\n\n");
-  rd.acts.resize(cur_);
-  save();
-  step();
 }
 
 void Mine::step() {
@@ -657,7 +668,7 @@ void Mine::send() {
   }
   rd.span.begin(now());
   log.append_log(fmt_round_send(round(), rd));
-  if (!leg.mcp)
+  if (leg.llm.backend != llm::Backend::Mcp)
     chat.send({leg.llm, system_ptr, TurnsOf(timeline)});
   save();
 }

@@ -274,7 +274,7 @@ void Rig::answer_act(size_t i, double t) {
   finish_act(a, st, {round(), static_cast<int>(i) + 1}, t);
 }
 
-void Rig::abort_act(size_t i, double t, std::string_view who) {
+void Rig::abort_act(size_t i, double t) {
   Act &a = timeline.back().acts[i];
   assert(a.span.running());
   lab.cancel();
@@ -284,12 +284,12 @@ void Rig::abort_act(size_t i, double t, std::string_view who) {
                        .name_cn = r->st.cand.name_cn,
                        .tmpl = r->st.cand.expr,
                        .note = r->st.cand.note,
-                       .error = std::string(who) + "取消了这次回测",
+                       .error = "研究员取消了这次回测",
                        .verdict = Verdict::Unstaged,
                        .visible = false};
     a.out = {false, r->text(), {}, a.out.res};
   } else {
-    a.out = Fail(std::string(who) + "取消了这个调用, 没做完");
+    a.out = Fail("研究员取消了这个调用, 没做完");
   }
   finish_act(a, st, {round(), static_cast<int>(i) + 1}, t);
   flush();

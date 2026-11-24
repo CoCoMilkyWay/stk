@@ -214,6 +214,7 @@ std::vector<Choice> holds(const SharedData &data, int level);
 std::string hold_desc(int hold, int level);
 bool gpu();
 bool ready(const SharedData &data, const Scope &sc, bool gpu);
+std::string open_miss(const SharedData &data, const Scope &sc); // 没有开放的叶或算子时的原因 (空 = 都有)
 std::string label(const Scope &sc);
 disk::Key key(const Scope &sc, bool test);
 } // namespace catalog

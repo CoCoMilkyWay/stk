@@ -755,7 +755,12 @@ struct Driver {
   Models (*models)(const Net &, const std::atomic<bool> &);
   Reply (*send)(const Options &, std::string_view, const Turns &, const Delta &, const std::atomic<bool> &);
 };
-constexpr Driver kDrivers[] = {{https_models<Backend::Zhipu, zhipu_models>, zhipu_send}, {https_models<Backend::Cursor, cursor_models>, cursor_send}, {devin_models, devin_send}};
+constexpr Driver kDrivers[] = {
+    {https_models<Backend::Zhipu, zhipu_models>, zhipu_send},
+    {https_models<Backend::Cursor, cursor_models>, cursor_send},
+    {devin_models, devin_send},
+    {nullptr, nullptr},
+};
 static_assert(std::size(kDrivers) == kNum<Backend>);
 
 } // namespace
@@ -765,23 +770,26 @@ const std::string &key(Backend b) {
     if (!disk::exists(disk::AgentKeyFile)) {
       json j;
       for (const BackendDef &d : kBackends)
-        j[d.id] = d.fake;
+        if (d.fake)
+          j[d.id] = d.fake;
       disk::write(disk::AgentKeyFile, {}, j.dump(2) + "\n");
     }
     const json j = json::parse(disk::read(disk::AgentKeyFile), nullptr, false);
     assert(!j.is_discarded() && j.is_object() && "output/config/agent/keys.json 须是 JSON 对象");
     std::array<std::string, kNum<Backend>> k;
     for (size_t i = 0; i < k.size(); ++i)
-      if (std::string s = str_of(j, kBackends[i].id); s != kBackends[i].fake)
-        k[i] = std::move(s);
+      if (kBackends[i].fake)
+        if (std::string s = str_of(j, kBackends[i].id); s != kBackends[i].fake)
+          k[i] = std::move(s);
     return k;
   }();
   return keys[static_cast<size_t>(b)];
 }
 
 Models models(Backend b, const Net &net, const std::atomic<bool> &cancel) {
-  assert(!key(b).empty() && valid(net));
-  return kDrivers[static_cast<size_t>(b)].models(net, cancel);
+  const Driver &d = kDrivers[static_cast<size_t>(b)];
+  assert(d.models && !key(b).empty() && valid(net));
+  return d.models(net, cancel);
 }
 
 std::string Flat(const Turns &t) {
@@ -795,12 +803,13 @@ std::string Flat(const Turns &t) {
 }
 
 Reply send(const Options &o, std::string_view system, const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
-  assert(valid(o.net) && !key(o.backend).empty() && !o.model.empty());
+  const Driver &d = kDrivers[static_cast<size_t>(o.backend)];
+  assert(d.send && valid(o.net) && !key(o.backend).empty() && !o.model.empty());
   assert(!t.empty() && t.front().user && t.back().user);
   for (size_t i = 1; i < t.size(); ++i)
     assert(t[i].user != t[i - 1].user && "user / assistant 交替");
   const Clock::time_point t0 = Clock::now();
-  Reply r = kDrivers[static_cast<size_t>(o.backend)].send(o, system, t, on_delta, cancel);
+  Reply r = d.send(o, system, t, on_delta, cancel);
   r.seconds = std::chrono::duration<double>(Clock::now() - t0).count();
   return r;
 }

@@ -50,7 +50,7 @@ Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board
 Message RetryMessage(const std::string &error);
 std::string MemoText(const std::string &memo);
 std::string TextOf(const Round &rd);
-std::string TreeText(Rounds rounds); // 末轮之前各轮的研究树 (TurnsOf 首条后附的那份; 没有可收的步骤 → 空)
+std::string TreeText(Rounds rounds); // 已完各轮的研究树 (接手进行中会话时附在待答消息前; 没有可收的步骤 → 空)
 llm::Turns TurnsOf(Rounds rounds);
 
 } // namespace GUI::Agent
