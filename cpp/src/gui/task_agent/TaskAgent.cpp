@@ -163,6 +163,7 @@ struct Ui {
   Phase seen_phase = Phase::None;          // 刚进 Choose: 切到过程页一次
   size_t flow_rounds = 0;                  // 过程页上一帧画过的轮数
   std::string message;
+  std::string seen_dir; // 界面在跟的会话目录 (空 = 无会话); 换了 = 刚开 / 载入了一段 (New / Test / 载入 / 外部 agent 的 open 同一处跟上)
   // 本会话要求 (只随下次 New / Test 发, 不落 ui.json); fold_remark = 刚开会话, 下一帧把它折起
   std::string remark;
   bool fold_remark = false;
@@ -385,9 +386,20 @@ void load_session(const SharedData &data, Ui &s, const Saved &x) {
     s.message = "这段会话的作用域未就绪 (资产轴未扫描或标签库未建)";
     return;
   }
-  s.message.clear();
   s.mine->load(data, x.dir);
-  s.opt.sc = s.mine->setup.sc;
+}
+
+// 会话换了 (不论哪个入口开的 / 载入的): 作用域跟它, 本会话要求折起, 过程页从头钉底
+void follow(Ui &s) {
+  const Mine &m = *s.mine;
+  const std::string dir = m.held() ? m.log.dir() : std::string();
+  if (dir == s.seen_dir)
+    return;
+  s.seen_dir = dir;
+  if (dir.empty())
+    return;
+  s.opt.sc = m.setup.sc;
+  s.message.clear();
   s.fold_remark = true, s.flow_rounds = 0, s.pinned = true;
 }
 
@@ -436,12 +448,8 @@ void session_row(const SharedData &data, Ui &s) {
     Mine::Setup st = setup_of(o);
     st.test = test;
     st.remark = std::string(text::trim(s.remark));
-    if (std::string err = m.try_open(data, std::move(st), leg_of(o, use_gpu(s))); !err.empty()) {
+    if (std::string err = m.try_open(data, std::move(st), leg_of(o, use_gpu(s))); !err.empty())
       s.message = std::move(err);
-      return;
-    }
-    s.message.clear();
-    s.fold_remark = true, s.flow_rounds = 0, s.pinned = true;
   };
   ImGui::BeginDisabled(!can_new);
   if (ImGui::Button("New", ImVec2(60, 0)))
@@ -499,7 +507,7 @@ void session_row(const SharedData &data, Ui &s) {
   if (ImGui::Button("Stop", ImVec2(60, 0)))
     m.stop();
   ImGui::EndDisabled();
-  tip("停下: 在收回复的等它收齐 (不执行其中的调用), 在做的调用做完; 之后可继续 / 回退");
+  tip("停下: 在收回复的等它收齐 (不执行其中的调用), 没在收的 (外部 agent 还没交批) 即停, 在做的调用做完; 之后可继续 / 回退");
   ImGui::SameLine();
   ImGui::BeginDisabled(!m.live());
   if (ImGui::Button("Cancel", ImVec2(60, 0)))
@@ -1065,8 +1073,7 @@ bool round_block(Ui &s, Mine &m, size_t i, const Flow &f, bool fresh) {
   }
   const std::string sent = TextOf(rd);
   fold("send", ImGuiTreeNodeFlags_None, (rd.span.began() ? "发出 " : "待发 ") + chars(sent) + (rd.memo.empty() ? "" : " · 附插话"), sent, false, kBoxLines, false);
-  if (!m.mcp())
-    context_block(s, m, i);
+  context_block(s, m, i);
   if (receiving && f.stage == Flow::Wait)
     ImGui::TextColored(color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), "%s", doing(f).c_str());
   if (!r.thinking.empty()) {
@@ -1759,10 +1766,11 @@ void remark_panel(Ui &s, const Mine &m) {
 // 过程 (本会话要求 + 全宽时间线 + 插话栏) / 假设板 / 候选表 / 特征表 / 算子表 (这三页不必开会话, 随作用域) / 工具表 (固定);
 // 刚进 Choose 切回过程并滚到底 (问题在那); 要跳到某个调用也切回过程; 回退确认框浮在页上. 大脑是大模型还是外部 agent, 这里都一样
 void render_mine(SharedData &data, Ui &s) {
-  ImGui::TextDisabled("外部 agent 的 MCP 接口 %s: 它调 open 开会话 (没有运行中会话时), 或接上后端选 MCP 时 New 开的会话", s.remote->listen().c_str());
+  ImGui::TextDisabled("外部 agent 的 MCP 接口 %s: 它调 open 开会话 (没有运行中的内置会话时), 或接上由 MCP 当大脑、还没 finish 的会话", s.remote->listen().c_str());
   Mine &m = *s.mine;
   scope_row(data, s.opt.sc, s.pool_rows, m.lab, scope_locked(s), "1. Scope:");
   session_row(data, s);
+  follow(s);
   m.chat.live(s.chat_live);
   m.lab.live(s.lab_live);
   const Flow f = flow_of(s, m);
@@ -1925,11 +1933,7 @@ void render_config(Ui &s) {
   ImGui::SameLine();
   limit("分钟##budget_minutes", o.budget.minutes);
   ImGui::SameLine();
-  ImGui::BeginDisabled(is_mcp(o.backend));
   limit("千 token (输入 + 输出)##budget_ktokens", o.budget.ktokens);
-  ImGui::EndDisabled();
-  if (is_mcp(o.backend))
-    tip("MCP 模式无 token 统计, 仅轮数与分钟生效");
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "入库门槛");
@@ -2000,8 +2004,8 @@ TaskHandle CreateAgentTask() {
     s.mine->update();
     if (s.bench)
       s.bench->update();
-    if (s.remote->update(data, *s.mine, s.opt.sc, setup_of(s.opt), leg_of(s.opt, use_gpu(s)), bench_busy(s)))
-      s.fold_remark = true, s.flow_rounds = 0, s.pinned = true, s.message.clear();
+    s.remote->update(data, *s.mine, setup_of(s.opt), leg_of(s.opt, use_gpu(s)), bench_busy(s));
+    follow(s);
     save_ui(s);
   };
 

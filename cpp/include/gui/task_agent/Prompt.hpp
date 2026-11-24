@@ -9,7 +9,7 @@
 //     test    自检会话首条: 把每个工具调一遍, 问题记 report_issue, 末了总评再 finish (+ 本会话要求)
 //     round   每条回复各调用的结果 (带调用编号 R<轮>#<序>) + 假设板 + 下一步; 原文只在本条给一次, 此后收进研究树
 //     retry   回复不合协议: 原因 + 重发要求
-//   时间线与状态账本见 tools/Kit.hpp; TurnsOf(Rounds) 纯函数线性分桶折叠出完整对话上下文
+//   时间线与状态账本见 tools/Kit.hpp; TurnsOf(Rounds) 纯函数线性分桶折叠出完整对话上下文 (首条 + 研究树 + 上一批回复 + 本条)
 // =============================================================================
 
 #include "gui/task_agent/Bridge.hpp"
@@ -50,7 +50,6 @@ Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board
 Message RetryMessage(const std::string &error);
 std::string MemoText(const std::string &memo);
 std::string TextOf(const Round &rd);
-std::string TreeText(Rounds rounds); // 已完各轮的研究树 (接手进行中会话时附在待答消息前; 没有可收的步骤 → 空)
-llm::Turns TurnsOf(Rounds rounds);
+llm::Turns TurnsOf(Rounds rounds); // 大脑每轮收到的上下文 (内置模型与外部 agent 同一份; 单轮后端与外部 agent 取 llm::Flat)
 
 } // namespace GUI::Agent

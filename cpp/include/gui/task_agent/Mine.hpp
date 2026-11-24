@@ -5,7 +5,7 @@
 // =============================================================================
 //   大脑 (Leg::llm.backend 决定, 继续时可换; 状态机 / 消息 / 约束 / 日志 / 界面完全同一套):
 //     内置大模型 发出 = Chat 问模型 (上下文 TurnsOf 纯函数折叠), 收成的回复即一批调用
-//     外部 agent (Backend::Mcp) 发出 = 交给它 (经 MCP, gui/task_agent/Remote.hpp 取 TextOf), 它 reply 交来的一批 (calls JSON) 即回复
+//     外部 agent (Backend::Mcp) 发出 = 交给它 (经 MCP, gui/task_agent/Remote.hpp 取 Flat(TurnsOf), 与内置单轮后端同一份), 它 reply 交来的一批 (calls JSON) 即回复
 //   双翼对仗:
 //     左翼 Chat (问大模型): send(ChatReq) → Think / Write / Restart / End(Reply)
 //     右翼 Lab  (问数据核): send(Tool, LabTask) → Search / Run / Look / Docs / End(LabOut)
@@ -131,7 +131,7 @@ public:
   bool held() const { return phase_ != Phase::None; }
   bool idle() const { return !chat.busy() && !lab.busy(); }
   bool stopping() const { return stop_ && live(); }
-  bool mcp() const { return held() && leg.llm.backend == llm::Backend::Mcp; }                                     // 会话的大脑是外部 agent
+  bool mcp() const { return held() && leg.llm.backend == llm::Backend::Mcp; }                                    // 会话的大脑是外部 agent
   bool waiting() const { return phase_ == Phase::Think && !timeline.empty() && timeline.back().span.running(); } // 本条已发出, 在等大脑交这一批
   std::string brain() const;                                                                                     // 大脑一句: 后端 / 模型, 或 MCP
   size_t acting() const { return cur_; }

@@ -13,7 +13,6 @@
 #include <boost/beast/http.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -39,7 +38,8 @@ using Clock = std::chrono::steady_clock;
 constexpr std::string_view kProtocols[] = {"2025-06-18", "2025-03-26", "2024-11-05"}; // 认的 MCP 版本 (首个 = 客户端要的不认时给的)
 constexpr const char *kInstructions =
     "A 股量化因子挖掘系统的研究工具: 你当挖掘会话的大脑 (说明书 = 仓库 AGENT.md). 先 open 开会话 (用户交代的要求原话写进 remark) 拿首条消息, 再 doc 读系统提示; "
-    "此后每批调用用 run 交 (或直接调某个研究工具 = 只有它一个调用的 run), 交回的就是下一条消息, 没做完调无参 run 续等; 挖完 finish.";
+    "此后每批调用用 run 交 (或直接调某个研究工具 = 只有它一个调用的 run), 交回的就是下一条消息 (完整上下文: 首条 + 研究树 + 你上一批 + 本条, 以它为准), "
+    "没做完调无参 run 续等; 挖完 finish.";
 constexpr const char *kFaces = "open / doc / run"; // 接口工具
 
 // 一个接口请求: 工具 (接口工具或研究工具名) + 参数; 答复由 GUI 线程给, 网络线程写出
@@ -63,17 +63,17 @@ json schema(json props, json required) {
 }
 json tool(const char *name, std::string desc, json input) { return {{"name", name}, {"description", std::move(desc)}, {"inputSchema", std::move(input)}}; }
 
-// tools/list: 接口工具 + 研究工具 (按是否开放 ask_human 预建两份)
-json tools_list(bool ask) {
+// tools/list: 接口工具 + 研究工具 (只由编译期的表出, 建一次; ask_human 可否用由会话规则定, 同内置模型)
+json tools_list() {
   json ids = json::array();
   for (const Tool t : kVals<Tool>)
-    if (t != Tool::AskHuman || ask)
-      ids.push_back(def(t).id);
+    ids.push_back(def(t).id);
   json ts = json::array();
   ts.push_back(tool("open",
                     "开挖掘会话, 你当大脑: 作用域可给 pool / level / hold / years / lob (缺省 = 研究员在 GUI 里选的), remark = 用户交代的本会话要求 (原话), test = 自检会话; "
                     "门槛 / 提问 / 会话约束 / 预算取研究员在 Config 页定的. 交回首条消息; 系统提示用 doc 取. "
-                    "已有在等外部 agent 的会话时 = 接上它, 交回研究树 (若有) + 在等的那条消息 (参数不用; 上下文丢了同样可调无参 open 取回)",
+                    "已有由外部 agent 当大脑、还没 finish 的会话时 = 接上它, 不另开 (须无参数, 带参数退回): 在等你交批 → 交回待答的消息 (完整上下文); "
+                    "执行中 → 进度; 停着 → 停下原因",
                     schema({{"pool", {{"type", "string"}, {"description", "池名 (all 或子池)"}}},
                             {"level", {{"type", "string"}, {"description", "层: min / 5min / 15min / 30min / 60min / day"}}},
                             {"hold", {{"type", "string"}, {"description", "持有期: 30m / 60m / close / T+1C (该层能用的)"}}},
@@ -86,8 +86,9 @@ json tools_list(bool ask) {
                     schema(json::object(), json::array())));
   ts.push_back(tool("run",
                     "给 calls = 交一批研究工具调用 (= 系统提示里的一条回复), 按序执行; 不给 calls (空参数 {}) = 续等或取当前状态. "
-                    "做完即交回下一条消息 (各调用结果 + 假设板 + 下一步), 停下即交回本轮结果与停下原因, " +
-                        std::to_string(kRemoteWait) + " 秒没做完交回进度 (再调无参 run 续等). 不合协议或不守会话约束 → 整批退回, 交回重发要求 (isError)",
+                    "做完即交回下一条消息 (完整上下文: 首条 + 研究树 + 你上一批 + 本条的各调用结果 / 假设板 / 下一步, 与内置模型每轮收到的同一份), "
+                    "停下即交回本轮已做完的结果与停下原因 (停着时续等到研究员继续 / 关掉), " +
+                        std::to_string(kRemoteWait) + " 秒没变化交回进度 (再调无参 run 续等). 不合协议或不守会话约束 → 整批退回, 交回重发要求 (isError)",
                     schema({{"calls",
                              {{"type", "array"},
                               {"minItems", 1},
@@ -96,8 +97,7 @@ json tools_list(bool ask) {
                               {"items", schema({{"tool", {{"type", "string"}, {"enum", ids}}}, {"args", {{"type", "object"}}}}, json::array({"tool"}))}}}},
                            json::array())));
   for (const Tool t : kVals<Tool>)
-    if (t != Tool::AskHuman || ask)
-      ts.push_back(tool(def(t).id, std::string(def(t).cn) + ": " + ToolText(doc(t).desc) + "\n返回: " + ToolText(doc(t).out) + "\n(直接调 = 只有它一个调用的 run)", ArgsSchema(t)));
+    ts.push_back(tool(def(t).id, std::string(def(t).cn) + ": " + ToolText(doc(t).desc) + "\n返回: " + ToolText(doc(t).out) + "\n(直接调 = 只有它一个调用的 run)", ArgsSchema(t)));
   return {{"tools", std::move(ts)}};
 }
 
@@ -165,10 +165,7 @@ private:
 class Server {
 public:
   explicit Server(std::function<void(Ask)> on)
-      : addr_(std::string("http://") + kRemoteHost + ":" + std::to_string(kRemotePort) + kRemotePath),
-        tools_ask_(tools_list(true)),
-        tools_no_ask_(tools_list(false)),
-        on_(std::move(on)) {
+      : addr_(std::string("http://") + kRemoteHost + ":" + std::to_string(kRemotePort) + kRemotePath), tools_(tools_list()), on_(std::move(on)) {
     const tcp::endpoint ep(net::ip::make_address(kRemoteHost), static_cast<unsigned short>(kRemotePort));
     // 抛异常的重载: 端口被占 (另一个实例占着 kRemotePort) 即终止
     acc_.open(ep.protocol());
@@ -187,8 +184,7 @@ public:
     th_.join();
   }
   const std::string &listen() const { return addr_; }
-  void set_ask(bool on) { ask_.store(on, std::memory_order_relaxed); }
-  const json &tools() const { return ask_.load(std::memory_order_relaxed) ? tools_ask_ : tools_no_ask_; }
+  const json &tools() const { return tools_; }
   // GUI 线程投回答复: 在网络线程上写出
   void post(std::function<void()> f) { net::post(ioc_, std::move(f)); }
   void call(Ask a) { on_(std::move(a)); }
@@ -205,8 +201,7 @@ private:
   }
 
   std::string addr_;
-  const json tools_ask_, tools_no_ask_; // 建好即只读 (网络线程按 ask_ 选)
-  std::atomic<bool> ask_{true};
+  const json tools_; // 建好即只读 (网络线程读)
   std::function<void(Ask)> on_;
   net::io_context ioc_{1};
   tcp::acceptor acc_{ioc_};
@@ -252,8 +247,10 @@ void Conn::handle() {
 }
 
 // ---- GUI 线程: 外部 agent 当会话的大脑 ----
+// 无参 run / 一批交出后在等会话变化的
 struct Waiter {
-  std::string dir; // 哪段会话 (会话目录)
+  std::string dir;     // 哪段会话 (会话目录)
+  bool paused = false; // 等起时会话停着 (等到它离开停着才因停下交回)
   Clock::time_point until;
   Answer answer;
 };
@@ -307,18 +304,24 @@ Reply pause_reply(const Mine &m) {
     }
   }
   if (m.flags().done)
-    s += "会话结束: " + m.reason + ".";
+    s += "会话结束: " + m.reason + ". 要再挖就 open 开新会话.";
   else
-    s += "会话停下: " + m.reason + ". 研究员按继续后, 调无参 run 取下一条消息 (也可能关掉或回退).";
+    s += "会话停下: " + m.reason + ". 调无参 run 续等: 研究员按继续即交回下一条消息 (他也可能回退或关掉).";
   return {err, std::move(s)};
 }
 
-std::string busy_text(const Mine &m) {
+// 交给外部 agent 的消息 = 内置单轮后端每轮收到的同一份 (system 之外): 首条 + 研究树 + 上一批 + 本条; 重发要求 = isError
+Reply message(const Mine &m) { return {m.timeline.back().kind == Msg::Retry, llm::Flat(TurnsOf(m.timeline))}; }
+
+// 会话此刻交给外部 agent 的: 在等它交批 → 消息; 执行中 → 进度; 停着 → 停下原因; 其余 → 收尾中
+Reply state(const Mine &m) {
+  if (m.waiting() && m.idle())
+    return message(m);
   if (m.phase() == Mine::Phase::Act || m.phase() == Mine::Phase::Choose)
-    return progress(m);
+    return {false, progress(m)};
   if (m.phase() == Mine::Phase::Pause)
-    return pause_reply(m).text;
-  return "上一批还在收尾: 稍后再试";
+    return pause_reply(m);
+  return {false, "上一批还在收尾: 稍后再试"};
 }
 
 } // namespace
@@ -330,10 +333,10 @@ struct Remote::Impl {
   std::vector<Waiter> waiters;
 
   void enqueue(const Mine &m, Answer answer) {
-    waiters.push_back({m.log.dir(), Clock::now() + std::chrono::seconds(kRemoteWait), std::move(answer)});
+    waiters.push_back({m.log.dir(), m.phase() == Mine::Phase::Pause, Clock::now() + std::chrono::seconds(kRemoteWait), std::move(answer)});
   }
 
-  // 在等执行完成的 waiter: 进入 Think → 交回下一条消息; 进入 Pause → 交回本轮结果 + 停下原因; 关掉 / 换会话 / 换大脑 → 报错; 超时 → 进度
+  // 在等的: 关掉 / 换会话 / 换大脑 → 报错; 轮到外部 agent 交批 → 下一条消息; 新停下 (等起后才停的) 或超时 → 此刻的状态
   void answer_waiters(const Mine &m) {
     const Clock::time_point now = Clock::now();
     std::erase_if(waiters, [&](Waiter &w) {
@@ -345,64 +348,47 @@ struct Remote::Impl {
         return done({true, "会话已被研究员关掉或换了一段: 要接着挖就 open"});
       if (!m.mcp())
         return done({true, "会话大脑已由研究员换成 " + m.brain() + ", 不再由外部 agent 驱动"});
-      if (m.phase() == Mine::Phase::Think)
-        if (const Round &nx = m.timeline.back(); nx.span.began())
-          return done({nx.kind == Msg::Retry, TextOf(nx)});
-      if (m.phase() == Mine::Phase::Pause)
-        return done(pause_reply(m));
-      if (now >= w.until)
-        return done({false, progress(m)});
+      if (m.phase() != Mine::Phase::Pause)
+        w.paused = false;
+      if (m.waiting() && m.idle())
+        return done(message(m));
+      if ((m.phase() == Mine::Phase::Pause && !w.paused) || now >= w.until)
+        return done(state(m));
       return false;
     });
   }
 
-  // 交一批调用 (run 与单研究工具直调共用同一条路径): 同步收尾 / 停下则当场交回, 否则挂入 waiters
-  void submit_calls(Mine &m, json calls, Answer answer) {
+  // 交一批调用 (run 与单研究工具直调共用同一条路径): 当场收尾 / 停下即交回, 否则等
+  void submit(Mine &m, json calls, Answer answer) {
     if (!m.waiting() || !m.idle())
-      return answer({true, busy_text(m)});
-    const int k = m.round();
+      return answer({true, "这批没收下: " + state(m).text});
     m.reply(json{{"calls", std::move(calls)}}.dump());
-    if (m.round() > k) {
-      const Round &nx = m.timeline.back();
-      return answer({nx.kind == Msg::Retry, TextOf(nx)});
-    }
-    if (m.phase() == Mine::Phase::Pause)
-      return answer(pause_reply(m));
-    enqueue(m, std::move(answer));
-  }
-
-  // 续等或取当前状态 (无参 run)
-  void poll_state(const Mine &m, Answer answer) {
     if (m.phase() == Mine::Phase::Act || m.phase() == Mine::Phase::Choose)
       return enqueue(m, std::move(answer));
-    if (m.phase() == Mine::Phase::Pause)
-      return answer(pause_reply(m));
-    if (m.waiting()) {
-      const Round &rd = m.timeline.back();
-      return answer({rd.kind == Msg::Retry, TextOf(rd)});
-    }
-    answer({false, "上一批还在收尾: 稍后再试"});
+    answer(state(m));
   }
 
-  bool open(SharedData &data, Mine &m, Scope &sc, const Mine::Setup &base, const Mine::Leg &leg, bool bench, Ask a) {
-    const auto fail = [&](std::string why) {
-      a.answer({true, std::move(why)});
-      return false;
-    };
+  // 无参 run: 轮到外部 agent 即交回消息; 执行中 / 停着 → 等变化
+  void poll(const Mine &m, Answer answer) {
+    if (m.waiting() && m.idle())
+      return answer(message(m));
+    if (m.phase() == Mine::Phase::Act || m.phase() == Mine::Phase::Choose || m.phase() == Mine::Phase::Pause)
+      return enqueue(m, std::move(answer));
+    answer(state(m));
+  }
+
+  void open(SharedData &data, Mine &m, const Mine::Setup &base, const Mine::Leg &leg, bool bench, Ask a) {
+    const auto fail = [&](std::string why) { a.answer({true, std::move(why)}); };
     const json &x = a.args;
-    if (m.mcp() && m.waiting() && m.idle()) {
-      std::string out;
+    if (m.mcp() && !(m.phase() == Mine::Phase::Pause && m.flags().done)) {
       if (!x.empty())
-        out += "(已有在等外部 agent 的会话, 接上它; 你给的参数没用上)\n\n";
-      if (const std::string tree = TreeText(m.timeline); !tree.empty())
-        out += tree + "\n---\n\n";
-      out += TextOf(m.timeline.back());
-      a.answer({false, std::move(out)});
-      return false;
+        return fail("已有一段由外部 agent 当大脑、还没 finish 的会话 (" + catalog::label(m.setup.sc) +
+                    "; 本会话要求: " + (m.setup.remark.empty() ? std::string("无") : m.setup.remark) +
+                    "), 没按你的参数另开: 调无参 open 接上它; 要另开请研究员在 GUI 里关掉它");
+      return a.answer(state(m));
     }
     if (m.live())
-      return fail(m.mcp() ? "会话已开着, 不用再 open: " + progress(m)
-                          : "研究员在 GUI 里开着内置会话 (大脑 " + m.brain() + "): 等他停下再 open");
+      return fail("研究员在 GUI 里开着内置会话 (大脑 " + m.brain() + "): 等他停下再 open");
     if (bench)
       return fail("研究员在用工作台 (Tools 页有调用在跑): 稍后再试");
     if (!m.idle())
@@ -456,42 +442,27 @@ struct Remote::Impl {
     l.llm.backend = llm::Backend::Mcp;
     if (std::string err = m.try_open(data, std::move(s), std::move(l)); !err.empty())
       return fail(std::move(err));
-    sc = m.setup.sc;
-    a.answer({false, TextOf(m.timeline.back())});
-    return true;
+    a.answer(message(m));
   }
 
-  bool handle(SharedData &data, Mine &m, Scope &sc, const Mine::Setup &base, const Mine::Leg &leg, bool bench, Ask a) {
-    const auto fail = [&](std::string why) {
-      a.answer({true, std::move(why)});
-      return false;
-    };
+  void handle(SharedData &data, Mine &m, const Mine::Setup &base, const Mine::Leg &leg, bool bench, Ask a) {
+    const auto fail = [&](std::string why) { a.answer({true, std::move(why)}); };
     const json &x = a.args;
     if (a.tool == "open")
-      return open(data, m, sc, base, leg, bench, std::move(a));
+      return open(data, m, base, leg, bench, std::move(a));
     if (!m.mcp())
       return fail(m.held() ? "研究员在 GUI 里有内置会话 (大脑 " + m.brain() + "): 停着时可 open 开新会话, 在跑时等他停下" : std::string("还没有会话: 先 open"));
-    if (a.tool == "doc") {
-      if (!x.empty())
-        return fail("doc 不收参数");
-      a.answer({false, m.system});
-      return false;
-    }
+    if (a.tool == "doc")
+      return x.empty() ? a.answer({false, m.system}) : fail("doc 不收参数");
     if (a.tool == "run") {
       for (const auto &[k, v] : x.items())
         if (k != "calls")
           return fail("run 没有参数 " + k + " (只有可选的 calls)");
-      if (!x.contains("calls"))
-        poll_state(m, std::move(a.answer));
-      else
-        submit_calls(m, x["calls"], std::move(a.answer));
-      return false;
+      return x.contains("calls") ? submit(m, x["calls"], std::move(a.answer)) : poll(m, std::move(a.answer));
     }
-    if (FindId<Tool>(a.tool)) {
-      submit_calls(m, json::array({json{{"tool", a.tool}, {"args", x}}}), std::move(a.answer));
-      return false;
-    }
-    return fail("没有工具 " + a.tool + " (接口工具 " + kFaces + ", 或研究工具表里的工具名)");
+    if (FindId<Tool>(a.tool))
+      return submit(m, json::array({json{{"tool", a.tool}, {"args", x}}}), std::move(a.answer));
+    fail("没有工具 " + a.tool + " (接口工具 " + kFaces + ", 或研究工具表里的工具名)");
   }
 };
 
@@ -513,19 +484,16 @@ Remote::~Remote() {
   m.server.reset();
 }
 
-bool Remote::update(SharedData &data, Mine &m, Scope &sc, const Mine::Setup &setup, const Mine::Leg &leg, bool bench) {
+void Remote::update(SharedData &data, Mine &m, const Mine::Setup &setup, const Mine::Leg &leg, bool bench) {
   Impl &r = *impl_;
-  r.server->set_ask(m.held() ? (m.setup.ask && !m.flags().asked) : setup.ask);
   std::deque<Ask> got;
   {
     std::lock_guard<std::mutex> lock(r.mu);
     got.swap(r.asks);
   }
-  bool opened = false;
   for (Ask &a : got)
-    opened |= r.handle(data, m, sc, setup, leg, bench, std::move(a));
+    r.handle(data, m, setup, leg, bench, std::move(a));
   r.answer_waiters(m);
-  return opened;
 }
 
 const std::string &Remote::listen() const { return impl_->server->listen(); }

@@ -318,7 +318,7 @@ stk/
 │   │   │       ├── Mine.hpp                            # 🤖 挖掘会话 (唯一一套) 的状态机 (Desk : Rig): 大脑 = 大模型 (Chat) 或外部 agent (reply 交批); 每帧对仗轮询 Chat / Lab; 会话约束 RuleMiss;
 │   │   │       │                                       #    停 / 续 (可换大脑) / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
 │   │   │       ├── Remote.hpp                          # 🤖 外部 agent 的 MCP 接口 (本机 Streamable HTTP · JSON-RPC: initialize / ping / tools/list / tools/call): 外部 agent 当 Mine 的大脑;
-│   │   │       │                                       #    open (开会话 / 接上并附研究树) / doc / run (交批或无参续等) + 研究工具直调 (与 run 同路); inputSchema 出自参数表, ask_human 随开关显隐
+│   │   │       │                                       #    open (开会话 / 接上没 finish 的) / doc / run (交批或无参续等) + 研究工具直调 (与 run 同路); 每条消息 = Flat(TurnsOf), 与内置单轮后端同一份
 │   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (作用域 / 会话控制 / 时间线内嵌结构化图表 / 假设板 / 候选 / 记录处理 / 开放的特征与算子; 两种大脑同一个页) / Tools / Config
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存

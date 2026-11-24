@@ -147,8 +147,8 @@ std::string fields(const nlohmann::ordered_json &args, std::initializer_list<std
 
 std::string why_of(const Act &a) { return text::head(std::string_view(a.out.text).substr(0, a.out.text.find('\n')), kWhyChars); }
 
-std::string tree_of(Rounds msgs, size_t done_n, size_t memo_n) {
-  const Rounds done = msgs.first(done_n);
+std::string tree_of(Rounds msgs) {
+  const Rounds done = msgs.first(msgs.size() - 1);
   const Board board = StateOf(done).board;
   struct Step {
     Ref at;
@@ -220,7 +220,7 @@ std::string tree_of(Rounds msgs, size_t done_n, size_t memo_n) {
 
   std::string rest, notes;
   size_t next = 0;
-  for (size_t i = 0; i < memo_n; ++i) {
+  for (size_t i = 0; i < msgs.size(); ++i) {
     if (i > 0 && !msgs[i].memo.empty())
       notes += "- 研究员插话 (随第 " + std::to_string(i + 1) + " 条消息)\n" + under(msgs[i].memo);
     for (; next < steps.size() && static_cast<size_t>(steps[next].at.round) == i + 1; ++next) {
@@ -456,12 +456,6 @@ std::string MemoText(const std::string &memo) {
 
 std::string TextOf(const Round &rd) { return rd.memo.empty() ? rd.user : rd.user + MemoText(rd.memo); }
 
-std::string TreeText(Rounds rs) {
-  assert(!rs.empty());
-  const size_t n = rs.back().span.ended() ? rs.size() : rs.size() - 1;
-  return tree_of(rs, n, n);
-}
-
 llm::Turns TurnsOf(Rounds rs) {
   assert(!rs.empty());
   size_t j = rs.size() - 1;
@@ -475,7 +469,7 @@ llm::Turns TurnsOf(Rounds rs) {
   } else {
     const Round &p = rs[j - 1];
     assert(p.reply.ok() && !p.acts.empty() && "本条前一轮的回复合格且执行了");
-    const std::string tree = tree_of(rs, j - 1, j);
+    const std::string tree = tree_of(rs.first(j));
     t.push_back({true, TextOf(rs[0]) + (tree.empty() ? "" : "\n---\n\n" + tree)});
     t.push_back({false, p.reply.text});
     t.push_back({true, TextOf(rs[j])});

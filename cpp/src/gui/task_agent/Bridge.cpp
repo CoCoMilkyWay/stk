@@ -421,11 +421,10 @@ bool ready(const SharedData &data, const Scope &sc, bool gpu) {
   return Engine::MakeFactorScope(data, table(data, sc.level), sc.pool, sc.years, gpu, probe);
 }
 std::string open_miss(const SharedData &data, const Scope &sc) {
-  const std::shared_ptr<const Engine::FeatureTable> ft = table(data, sc.level);
-  const Open &pick = sc.leaves_of(Engine::factor_level(ft->lv).name);
-  if (std::ranges::none_of(ft->x.leaves, [&](const Engine::FeatCol &l) { return l.allowed && sc.has(src_of(l)) && pick.has(l.code); }))
+  const Opened o = opened_of(*table(data, sc.level), sc, false);
+  if (!std::ranges::contains(o.leaves, 1))
     return "作用域 " + label(sc) + " 没有开放的特征叶 (在 Mine 页的特征页勾, 或换层)";
-  if (std::ranges::none_of(fx::kOps, [&](const fx::OpInfo &o) { return sc.ops.has(o.name); }))
+  if (!std::ranges::contains(o.ops, 1))
     return "作用域 " + label(sc) + " 没有开放的算子 (在 Mine 页的算子页勾)";
   return {};
 }

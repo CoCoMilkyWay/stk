@@ -379,8 +379,13 @@ void Mine::start() {
 void Mine::stop() {
   assert(live() && !stop_);
   stop_ = true;
+  update(); // 已到的先收: 回复 / 调用收尾随即按 Stop 停下
   if (phase_ == Phase::Choose)
+    return pause("按 Stop");
+  if (phase_ == Phase::Think && !chat.busy()) { // 没有在收的回复 (外部 agent 还没交批): 本条退回待发, 即停
+    unsend();
     pause("按 Stop");
+  }
 }
 
 void Mine::cancel() {
