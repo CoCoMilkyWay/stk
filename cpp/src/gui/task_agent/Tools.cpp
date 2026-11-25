@@ -193,7 +193,6 @@ constexpr ArgDef kStepStateArgs[] = {
     {"cur", "当前序", Arg::Int, int{-1}, -1, 99, {}, "末轮执行到的调用下标 (-1 = 末轮已执行完的个数)"},
     {"max_rounds", "轮数上限", Arg::Int, int{0}, 0, 999, {}, "模拟预算: 每段最多几轮 (0 = 不限)"},
     {"max_minutes", "分钟上限", Arg::Int, int{0}, 0, 9999, {}, "模拟预算: 每段最多几分钟 (0 = 不限)"},
-    {"max_ktokens", "千token上限", Arg::Int, int{0}, 0, 99999, {}, "模拟预算: 每段最多几千 token (0 = 不限)"},
     {"why", "停下原因", Arg::Str, sv{""}, 0, 0, {}, "可选: report 的停下原因 (空 = 调试预览)"}};
 constexpr ArgDef kProbeBrainArgs[] = {
     {"backend", "后端", Arg::Str, sv{""}, 0, 0, kBrainBackends, "可选: zhipu / cursor / devin; 空 = 用 Config 页当前选中 (代理同 Config)"},

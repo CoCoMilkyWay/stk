@@ -73,6 +73,12 @@ struct Act {
   ToolOut out; // out.res 为唯一结构化载体 (TrialRes / AskRes 在挂起期即驻留)
 };
 
+// 只进可读日志的一笔 (停下 / 继续 / 退回的批 / 作废的回复): at = 记下时本轮已做完几个调用 (-1 = 回复收成之前)
+struct LogMark {
+  int at = -1;
+  std::string md;
+};
+
 struct Round {
   Msg kind = Msg::First;
   std::string user;
@@ -81,6 +87,7 @@ struct Round {
   llm::Reply reply;
   std::string error;
   std::vector<Act> acts;
+  std::vector<LogMark> marks;
 };
 using Rounds = std::span<const Round>;
 
@@ -105,7 +112,7 @@ struct Tally {
 };
 
 struct Flags {
-  bool done = false; // 末轮的 finish 已做完: 本条做完即结束会话
+  bool done = false; // 末个发出的轮里 finish 已做完: 会话结束 (再发出一条即作罢)
 };
 
 struct State {
@@ -116,7 +123,7 @@ struct State {
   Flags flags;
 };
 
-void OpenRound(State &s);
+void OpenRound(State &s); // 本轮发出 (之前的 finish 作罢)
 void CloseReply(State &s, const Round &rd);
 void ApplyAct(State &s, const Act &a, Ref at);
 State StateOf(Rounds rs);

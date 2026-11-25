@@ -69,7 +69,8 @@ void from_json(const json &j, Act &a) {
   }
 }
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Round, kind, user, memo, span, think, write, reply, error, acts)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LogMark, at, md)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Round, kind, user, memo, span, think, write, reply, error, acts, marks)
 
 // =============================================================================
 // 可读研究日志 log.md 与会话目录 Journal
@@ -86,14 +87,6 @@ void replace_file(const fs::path &p, const std::string &s) {
   const fs::path tmp = p.string() + ".tmp";
   write_file(tmp, s);
   fs::rename(tmp, p);
-}
-
-void append_text(const fs::path &p, const std::string &s) {
-  if (s.empty())
-    return;
-  std::ofstream f(p, std::ios::binary | std::ios::app);
-  assert(f.is_open());
-  f << s;
 }
 
 json read_json(const fs::path &p) {
@@ -153,13 +146,38 @@ std::string fmt_act_done(Ref at, const Act &a) {
   return s + "\n";
 }
 
+std::string fmt_marks(const Round &rd, int at) {
+  std::string s;
+  for (const LogMark &m : rd.marks)
+    if (m.at == at)
+      s += m.md;
+  return s;
+}
+
+// 整份 log.md: 每轮 = 发出 · 回复前的笔 · 回复 · (调用 · 其后的笔)*; 未发出的轮有笔才写
+std::string fmt_log(const std::string &head, Rounds timeline) {
+  std::string md = head;
+  for (size_t i = 0; i < timeline.size(); ++i) {
+    const int n = static_cast<int>(i) + 1;
+    const Round &rd = timeline[i];
+    if (!rd.span.began() && rd.marks.empty())
+      continue;
+    md += fmt_round_send(n, rd) + fmt_marks(rd, -1);
+    if (!rd.reply.ok())
+      continue;
+    md += fmt_round_reply(n, rd) + fmt_marks(rd, 0);
+    for (size_t j = 0; j < rd.acts.size(); ++j)
+      md += fmt_act_done({n, static_cast<int>(j) + 1}, rd.acts[j]) + fmt_marks(rd, static_cast<int>(j) + 1);
+  }
+  return md;
+}
+
 } // namespace
 
 void Journal::open(std::string dir, const std::string &system, const std::string &head) {
   dir_ = std::move(dir), head_ = head;
   fs::create_directories(dir_);
   write_file(fs::path(dir_) / "system.md", system);
-  write_file(fs::path(dir_) / kLogFile, head_);
 }
 
 void Journal::reopen(std::string dir, std::string head) {
@@ -175,48 +193,17 @@ std::string Journal::system() const {
   return s.str();
 }
 
-void Journal::append_log(const std::string &md) const {
-  assert(!dir_.empty());
-  append_text(fs::path(dir_) / kLogFile, md);
-}
-
-void Journal::rewrite_log(Rounds timeline, const std::string &stop_reason) const {
-  assert(!dir_.empty());
-  std::string md = head_;
-  for (size_t i = 0; i < timeline.size(); ++i) {
-    const int n = static_cast<int>(i) + 1;
-    const Round &rd = timeline[i];
-    if (!rd.span.began())
-      continue;
-    md += fmt_round_send(n, rd);
-    md += fmt_round_reply(n, rd);
-    for (size_t j = 0; j < rd.acts.size(); ++j)
-      md += fmt_act_done({n, static_cast<int>(j) + 1}, rd.acts[j]);
-  }
-  if (!stop_reason.empty())
-    md += "---\n\n**停下**: " + stop_reason + "\n\n";
-  replace_file(fs::path(dir_) / kLogFile, md);
-}
-
 void Journal::report(const std::string &text) const {
   assert(!dir_.empty());
   replace_file(fs::path(dir_) / "report.md", text);
 }
 
-void Journal::save(const json &session, const json &brief) const {
+void Journal::save(const json &session, const json &brief, Rounds timeline) const {
   assert(!dir_.empty());
   replace_file(fs::path(dir_) / kSessionFile, session.dump());
   replace_file(fs::path(dir_) / kBriefFile, brief.dump(2));
+  replace_file(fs::path(dir_) / kLogFile, fmt_log(head_, timeline));
 }
-
-// =============================================================================
-// 工具校验与执行辅助
-// =============================================================================
-namespace {
-
-int tokens(const llm::Usage &u) { return u.prompt + u.completion; }
-
-} // namespace
 
 // =============================================================================
 // Mine 状态机实现
@@ -240,32 +227,32 @@ void Mine::bind(const SharedData &data) {
   flush();
   lab.bind(data, setup.sc, setup.test);
   notes.load(setup.test);
-  system_ptr = std::make_shared<const std::string>(system);
+  fresh();
+}
+
+void Mine::fresh() {
   stop_ = false, retries_ = 0;
   retry_reply_.clear(), retry_error_.clear();
 }
 
-void Mine::depart() { from_ = {round(), now(), tokens(tally().usage)}; }
+void Mine::depart() { from_ = {sent(), now()}; }
+
+int Mine::sent() const { return round() - static_cast<int>(!timeline.empty() && !timeline.back().span.began()); }
 
 void Mine::open(const SharedData &data, Setup s, Leg l) {
   setup = std::move(s), leg = std::move(l);
-  assert(!live() && idle() && catalog::ready(data, setup.sc, leg.gpu));
-  flush();
-  lab.bind(data, setup.sc, setup.test);
-  notes.load(setup.test);
+  bind(data);
   const Context &ctx = lab.ctx();
   assert(!ctx.leaves.empty() && !ctx.ops.empty() && "须有开放的叶与算子");
-  system = SystemMessage(ctx, setup.gate, setup.ask).text;
-  system_ptr = std::make_shared<const std::string>(system);
+  system = std::make_shared<const std::string>(SystemMessage(ctx, setup.gate, setup.ask).text);
   disk::Key key = catalog::key(setup.sc, setup.test);
   key.stamp = disk::stamp_now();
-  log.open(disk::path(disk::AgentChat, key).string(), system, make_log_head());
+  log.open(disk::path(disk::AgentChat, key).string(), *system, make_log_head());
 
   timeline.clear();
   restate();
   memo.clear(), reason.clear(), report.clear();
-  cur_ = 0, stop_ = false, retries_ = 0;
-  retry_reply_.clear(), retry_error_.clear();
+  cur_ = 0;
   ++rev_;
   t0 = Clock::now(), t_end = -1.0;
   phase_ = Phase::Think;
@@ -273,6 +260,7 @@ void Mine::open(const SharedData &data, Setup s, Leg l) {
   const int tried = static_cast<int>(std::ranges::count_if(lab.results(), [](const Result &r) { return r.visible; }));
   post(setup.test ? TestMessage(setup.ask, setup.remark)
                   : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask, setup.remark));
+  send();
 }
 
 std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
@@ -301,7 +289,7 @@ void Mine::load(const SharedData &data, const std::string &dir) {
   j.at("leg").get_to(leg);
   leg.gpu = leg.gpu && catalog::gpu();
   log.reopen(dir, j.at("log_head").get<std::string>());
-  system = log.system();
+  system = std::make_shared<const std::string>(log.system());
   bind(data);
   j.at("timeline").get_to(timeline);
   assert(!timeline.empty() && "开会话即发首条");
@@ -324,12 +312,12 @@ void Mine::load(const SharedData &data, const std::string &dir) {
     return redo(round(), "上次没停稳就退出了, 末轮作废重来");
   ++rev_;
   restate();
-  if (reason.empty())
+  if (reason.empty()) {
     reason = "上次在等你答问题时退出了";
+    mark("---\n\n**停下**: " + reason + "\n\n");
+  }
   report = report_of(reason);
   log.report(report);
-  if (!fs::exists(fs::path(dir) / kLogFile))
-    log.rewrite_log(timeline, reason);
   save();
 }
 
@@ -342,32 +330,22 @@ void Mine::resume(const SharedData &data, Leg l) {
     leg = std::move(l);
   assert(catalog::ready(data, setup.sc, leg.gpu));
   t0 = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(t_end)), t_end = -1.0;
-  stop_ = false, retries_ = 0;
-  retry_reply_.clear(), retry_error_.clear();
+  fresh();
   reason.clear();
   depart();
-  log.append_log("\n> **继续 (" + text::local("%H:%M:%S") + ")** · 大脑 " + brain() + "\n");
-  switch (cont()) {
-  case Cont::Resend:
-    unsend();
-    restate();
-    [[fallthrough]];
-  case Cont::Send:
-    phase_ = Phase::Think;
-    return send();
-  case Cont::Acts:
+  mark("\n> **继续 (" + text::local("%H:%M:%S") + ")** · 大脑 " + brain() + "\n");
+  if (cont() == Cont::Acts) {
     if (Act &a = timeline.back().acts[cur_]; a.span.began())
       a = Act{.call = a.call};
     return step();
-  case Cont::Results:
-    return next();
   }
+  phase_ = Phase::Think;
+  send();
 }
 
 void Mine::start() {
   assert(phase_ == Phase::Choose);
-  answer_act(cur_, now());
-  log_act(cur_++);
+  answer_act(cur_++, now());
   step();
 }
 
@@ -391,7 +369,8 @@ void Mine::cancel() {
     drop("按 Cancel 作废了在收的回复");
   if (phase_ == Phase::Act && cur_ < rd.acts.size() && rd.acts[cur_].span.running()) {
     abort_act(cur_, now());
-    log_act(cur_++);
+    if (++cur_ == rd.acts.size())
+      wrap();
   }
   pause("按 Cancel");
 }
@@ -429,7 +408,7 @@ void Mine::save() const {
                         {"timeline", timeline}};
   const json brief = {{"sc", setup.sc},
                       {"test", setup.test},
-                      {"rounds", round()},
+                      {"rounds", sent()},
                       {"live", live()},
                       {"reason", reason},
                       {"adopted", st.adopted},
@@ -439,7 +418,7 @@ void Mine::save() const {
                       {"brain", brain()},
                       {"remark", setup.remark},
                       {"elapsed", now()}};
-  log.save(session, brief);
+  log.save(session, brief, timeline);
 }
 
 // ---- 回退 ----
@@ -460,20 +439,22 @@ void Mine::redo(int k, std::string why) {
   if (!rd.memo.empty())
     memo = rd.memo + (memo.empty() ? "" : "\n\n" + memo), rd.memo.clear();
   unsend();
+  rd.marks.clear();
   restate();
-  cur_ = 0, retries_ = 0;
-  retry_reply_.clear(), retry_error_.clear();
+  cur_ = 0;
+  fresh();
   ++rev_;
   reason = std::move(why);
   report = report_of(reason);
+  mark("---\n\n**停下**: " + reason + "\n\n");
   log.report(report);
-  log.rewrite_log(timeline, reason);
   save();
 }
 
+// 末轮退回待发 (插话与日志笔留着)
 void Mine::unsend() {
   Round &rd = timeline.back();
-  rd = Round{.kind = rd.kind, .user = std::move(rd.user), .memo = std::move(rd.memo)};
+  rd = Round{.kind = rd.kind, .user = std::move(rd.user), .memo = std::move(rd.memo), .marks = std::move(rd.marks)};
 }
 
 std::vector<std::string> Mine::staged_from(int k) const {
@@ -491,37 +472,23 @@ void Mine::discard(int k) {
   notes.drop(log.dir(), k);
 }
 
-Cont ContOf(Rounds timeline, size_t cur) {
+Cont ContOf(Rounds timeline) {
   assert(!timeline.empty());
-  const Round &rd = timeline.back();
-  return !rd.span.began()       ? Cont::Send
-         : !rd.reply.ok()       ? Cont::Resend
-         : cur < rd.acts.size() ? Cont::Acts
-                                : Cont::Results;
+  return timeline.back().span.began() ? Cont::Acts : Cont::Send;
 }
 
 std::string HintOf(Rounds timeline, size_t cur, bool done) {
   const std::string n = std::to_string(timeline.size());
-  switch (ContOf(timeline, cur)) {
-  case Cont::Send:
-    return "发出待发的第 " + n + " 条消息";
-  case Cont::Resend:
-    return "重发第 " + n + " 条消息 (它的回复没收成)";
-  case Cont::Acts:
+  if (ContOf(timeline) == Cont::Acts)
     return "接着执行第 " + n + " 轮第 " + std::to_string(cur + 1) + " 个调用起 (共 " + std::to_string(timeline.back().acts.size()) + " 个)";
-  case Cont::Results:
-    return "发第 " + n + " 轮的结果" + (done ? ", 让 agent 接着挖 (它已宣布挖完)" : "");
-  }
-  return {};
+  return "发出第 " + n + " 条消息" + (done ? " (agent 已宣布挖完, 发出即让它接着挖)" : "");
 }
 
-std::string BudgetMiss(const Budget &b, int d_rounds, double d_secs, int d_tokens) {
+std::string BudgetMiss(const Budget &b, int d_rounds, double d_secs) {
   if (b.rounds > 0 && d_rounds >= b.rounds)
     return "本段 " + std::to_string(d_rounds) + " 轮, 上限 " + std::to_string(b.rounds) + " 轮";
   if (b.minutes > 0 && d_secs >= b.minutes * 60.0)
     return "本段 " + std::to_string(static_cast<int>(d_secs / 60.0)) + " 分钟, 上限 " + std::to_string(b.minutes) + " 分钟";
-  if (b.ktokens > 0 && d_tokens >= b.ktokens * 1000)
-    return "本段 " + std::to_string(d_tokens / 1000) + "k token, 上限 " + std::to_string(b.ktokens) + "k";
   return {};
 }
 
@@ -529,7 +496,7 @@ std::string ReportOf(Rounds timeline, const State &st, const Notes &notes, const
   const Tally c = TallyAt(st, timeline, now);
   std::string r = std::string(test ? "# 自检报告\n\n- 自检会话: 候选 / 日志 / 全局记录在 agent/test 目录, 提交只查门槛不拷进正式库"
                                    : "# 停下报告\n") +
-                  "\n- 停下原因: " + why + "\n- 轮数: " + std::to_string(timeline.size()) + "\n- 调用: " + std::to_string(c.all()) + " (观察 " +
+                  "\n- 停下原因: " + why + "\n- 轮数: " + std::to_string(std::ranges::count_if(timeline, [](const Round &rd) { return rd.span.began(); })) + "\n- 调用: " + std::to_string(c.all()) + " (观察 " +
                   std::to_string(c.n(Cat::Look)) + ", 查研报 " + std::to_string(c.docs()) + ", 假设 " + std::to_string(c.n(Tool::Hypothesize)) + ", 判定 " +
                   std::to_string(c.n(Tool::Judge)) + ", 回测 " + std::to_string(c.n(Tool::EvalFactor)) + ")\n" +
                   (remark.empty() ? "" : "- 本会话要求: " + remark + "\n") + "\n";
@@ -555,7 +522,7 @@ std::string ReportOf(Rounds timeline, const State &st, const Notes &notes, const
   return r;
 }
 
-Cont Mine::cont() const { return ContOf(timeline, cur_); }
+Cont Mine::cont() const { return ContOf(timeline); }
 
 std::string Mine::hint() const { return phase_ != Phase::Pause ? std::string() : HintOf(timeline, cur_, flags().done); }
 
@@ -600,9 +567,7 @@ void Mine::on_lab(Lab::Tick t) {
   if (t.out.cancelled)
     return;
   Seat s = mine_seat();
-  settle_act(cur_, std::move(t.out.out), s, now());
-  log_act(cur_++);
-  save();
+  settle_act(cur_++, std::move(t.out.out), s, now());
   step();
 }
 
@@ -623,19 +588,21 @@ void Mine::replied(llm::Reply r) {
   retry_reply_ = std::move(text), retry_error_ = std::move(err);
   Round &rd = timeline.back();
   rd.span.t1 = -1.0, rd.think = {}, rd.write = {};
-  chat.send({leg.llm, system_ptr, TurnsOf(timeline, retry_reply_, retry_error_)});
+  chat.send({leg.llm, system, TurnsOf(timeline, retry_reply_, retry_error_)});
 }
 
 // 大脑交来一批 (内置模型的回复 / 外部 agent 的 calls): 合协议即入本轮并执行 (返回空); 不合返回原因, 连续 kMaxRetries 批不合即作废本条并停下
 std::string Mine::take(llm::Reply r) {
   BatchCheck got = VetBatch(r.text, setup.ask);
   if (!got.ok()) {
-    log.append_log("> **本批未通过校验 (" + std::to_string(retries_ + 1) + "/" + std::to_string(kMaxRetries) + ")**: " + got.error + "\n\n");
-    if (++retries_ >= kMaxRetries) {
-      r.end = llm::End::Error, r.error = got.error;
-      drop(got.error, std::move(r));
-      pause("连续 " + std::to_string(kMaxRetries) + " 批不合协议");
+    mark("> **本批未通过校验 (" + std::to_string(retries_ + 1) + "/" + std::to_string(kMaxRetries) + ")**: " + got.error + "\n\n");
+    if (++retries_ < kMaxRetries) {
+      save();
+      return got.error;
     }
+    r.end = llm::End::Error, r.error = got.error;
+    drop(got.error, std::move(r));
+    pause("连续 " + std::to_string(kMaxRetries) + " 批不合协议");
     return got.error;
   }
   retries_ = 0;
@@ -646,9 +613,7 @@ std::string Mine::take(llm::Reply r) {
   for (Call &c : got.calls)
     rd.acts.push_back({.call = std::move(c)});
   CloseReply(st, rd);
-  log.append_log(fmt_round_reply(round(), rd));
   cur_ = 0;
-  save();
   step();
   return {};
 }
@@ -673,7 +638,7 @@ void Mine::step() {
     Seat s = mine_seat();
     const Exec at = open_act(cur_, s, now());
     if (at == Exec::Sync) {
-      log_act(cur_++);
+      ++cur_;
       continue;
     }
     if (at == Exec::Human)
@@ -681,21 +646,17 @@ void Mine::step() {
     save();
     return;
   }
+  wrap();
   if (flags().done)
     return pause("agent 宣布挖完");
   if (const std::string budget = over(); !budget.empty())
     return pause("本段预算用完 (" + budget + ")");
-  next();
+  if (go(Phase::Think))
+    send();
 }
 
-void Mine::next() {
-  if (!go(Phase::Think))
-    return;
-  const Round &rd = timeline.back();
-  post(RoundMessage(rd.acts, round(), st.board, setup.test));
-}
-
-void Mine::log_act(size_t i) { log.append_log(fmt_act_done({round(), static_cast<int>(i) + 1}, timeline.back().acts[i])); }
+// 本轮调用都做完: 下一条 (本轮结果) 入时间线待发
+void Mine::wrap() { post(RoundMessage(timeline.back().acts, round(), st.board, setup.test)); }
 
 bool Mine::go(Phase next_ph) {
   if (stop_) {
@@ -706,11 +667,7 @@ bool Mine::go(Phase next_ph) {
   return true;
 }
 
-void Mine::post(Message m) {
-  timeline.push_back({.kind = m.kind, .user = std::move(m.text)});
-  OpenRound(st);
-  send();
-}
+void Mine::post(Message m) { timeline.push_back({.kind = m.kind, .user = std::move(m.text)}); }
 
 void Mine::send() {
   Round &rd = timeline.back();
@@ -720,13 +677,13 @@ void Mine::send() {
     memo.clear();
   }
   rd.span.begin(now());
-  log.append_log(fmt_round_send(round(), rd));
+  OpenRound(st);
   if (!setup.remote)
-    chat.send({leg.llm, system_ptr, TurnsOf(timeline)});
+    chat.send({leg.llm, system, TurnsOf(timeline)});
   save();
 }
 
-// 本条的回复作废 (没收到 / 收到一半 / 失败 / 连续不合协议; r = 收到的那条, 须非 Ok): 记为没收成, 继续即重发
+// 本条的回复作废 (没收到 / 收到一半 / 失败 / 连续不合协议; r = 收到的那条, 须非 Ok): 原文记进日志, 本条退回待发
 void Mine::drop(std::string why, llm::Reply r) {
   assert(!r.ok());
   Round &rd = timeline.back();
@@ -734,11 +691,17 @@ void Mine::drop(std::string why, llm::Reply r) {
   rd.think.end(t), rd.write.end(t), rd.span.end(t);
   rd.reply = std::move(r);
   rd.error = std::move(why);
-  CloseReply(st, rd);
-  log.append_log(fmt_round_reply(round(), rd));
+  mark(fmt_round_reply(round(), rd));
+  unsend();
+  restate();
 }
 
-std::string Mine::over() const { return BudgetMiss(leg.budget, round() - from_.round, now() - from_.t, tokens(tally().usage) - from_.tokens); }
+void Mine::mark(std::string md) {
+  Round &rd = timeline.back();
+  rd.marks.push_back({rd.reply.ok() ? static_cast<int>(cur_) : -1, std::move(md)});
+}
+
+std::string Mine::over() const { return BudgetMiss(leg.budget, sent() - from_.round, now() - from_.t); }
 
 void Mine::pause(std::string why) {
   assert(live());
@@ -747,7 +710,7 @@ void Mine::pause(std::string why) {
   t_end = now();
   reason = std::move(why);
   report = report_of(reason);
-  log.append_log("---\n\n**停下 (" + text::local("%H:%M:%S") + ")**: " + reason + "\n\n");
+  mark("---\n\n**停下 (" + text::local("%H:%M:%S") + ")**: " + reason + "\n\n");
   log.report(report);
   phase_ = Phase::Pause;
   stop_ = false;
@@ -784,7 +747,7 @@ std::vector<Seen> SeenCalls(const Scope &sc, Tool t) {
           continue;
         out.push_back({s.dir, s.stamp, s.test, {n, 1}, {{"reply", rd.reply.text}, {"ask", "yes"}}, rd.error.empty() ? "通过 (" + std::to_string(rd.acts.size()) + " 个调用)" : RetryText(rd.error), rd.error.empty()});
       } else if (t == Tool::StepState) {
-        out.push_back({s.dir, s.stamp, s.test, {n, 0}, {{"action", "status"}, {"round", n}, {"cur", -1}, {"max_rounds", 0}, {"max_minutes", 0}, {"max_ktokens", 0}, {"why", ""}}, HintOf(prefix, rd.acts.size(), false), rd.error.empty()});
+        out.push_back({s.dir, s.stamp, s.test, {n, 0}, {{"action", "status"}, {"round", n}, {"cur", -1}, {"max_rounds", 0}, {"max_minutes", 0}, {"why", ""}}, HintOf(prefix, rd.acts.size(), false), rd.error.empty()});
       } else if (t == Tool::ProbeBrain) {
         out.push_back({s.dir, s.stamp, s.test, {n, 1}, {{"backend", ""}, {"model", ""}, {"ask", "yes"}, {"memo", rd.memo}, {"prompt", ""}}, rd.reply.text, rd.reply.ok() && rd.error.empty()});
       }

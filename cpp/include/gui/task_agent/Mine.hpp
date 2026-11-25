@@ -29,33 +29,31 @@
 namespace GUI::Agent {
 
 struct Budget {
-  int rounds = 0, minutes = 0, ktokens = 0; // 0 = 不限
+  int rounds = 0, minutes = 0; // 0 = 不限
   bool operator==(const Budget &) const = default;
 };
 
-// 停下后按继续的四种动作 (唯一真相表)
+// 停下后按继续的两种动作 (唯一真相表): 停着时末轮只会是 待发 (未发出) 或 调用待跑 (回复已收成)
 enum class Cont : uint8_t { Send,
-                            Resend,
-                            Acts,
-                            Results };
+                            Acts };
 struct ContDef {
   const char *id, *cn;
 };
-inline constexpr ContDef kConts[] = {{"send", "发出待发消息"}, {"resend", "重发未收成轮"}, {"acts", "续跑余下调用"}, {"results", "发本轮结果"}};
-AGENT_ROWS(Cont, kConts, Results);
+inline constexpr ContDef kConts[] = {{"send", "发出待发消息"}, {"acts", "续跑余下调用"}};
+AGENT_ROWS(Cont, kConts, Acts);
 
 // 状态机纯函数 (Mine 与 Tools/Session/* 共用)
-Cont ContOf(Rounds timeline, size_t cur);
+Cont ContOf(Rounds timeline);
 std::string HintOf(Rounds timeline, size_t cur, bool done);
-std::string BudgetMiss(const Budget &b, int d_rounds, double d_secs, int d_tokens);
+std::string BudgetMiss(const Budget &b, int d_rounds, double d_secs);
 std::string ReportOf(Rounds timeline, const State &st, const Notes &notes, const std::string &dir, const std::string &why, const std::string &remark, bool test, double now);
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Open, all, on)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, years, leaves, ops)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, ric)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Budget, rounds, minutes, ktokens)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Budget, rounds, minutes)
 
-// ---- 会话目录日志器 (只 GUI 线程写) ----
+// ---- 会话目录日志器 (只 GUI 线程写): log.md 随存档按时间线整份重写 ----
 class Journal {
 public:
   void open(std::string dir, const std::string &system, const std::string &head);
@@ -64,10 +62,8 @@ public:
   const std::string &head() const { return head_; }
   std::string system() const;
 
-  void append_log(const std::string &md) const;
-  void rewrite_log(Rounds timeline, const std::string &stop_reason) const;
   void report(const std::string &text) const;
-  void save(const nlohmann::ordered_json &session, const nlohmann::ordered_json &brief) const;
+  void save(const nlohmann::ordered_json &session, const nlohmann::ordered_json &brief, Rounds timeline) const;
 
 private:
   std::string dir_, head_;
@@ -105,8 +101,7 @@ public:
   Chat chat;
   Setup setup;
   Leg leg;
-  std::string system;
-  std::shared_ptr<const std::string> system_ptr;
+  std::shared_ptr<const std::string> system; // 系统提示 (会话内不变; 与 Chat 请求共享)
   Journal log;
   std::string memo;
   std::string reason, report;
@@ -146,11 +141,14 @@ public:
 
 private:
   void bind(const SharedData &data);
+  void fresh();
   void depart();
+  int sent() const;
   bool go(Phase next);
   void post(Message m);
   void send();
   void drop(std::string why, llm::Reply r = {});
+  void mark(std::string md);
   void pause(std::string why);
 
   void on_chat(Chat::Tick t);
@@ -160,8 +158,7 @@ private:
 
   void step();
   Seat mine_seat();
-  void next();
-  void log_act(size_t i);
+  void wrap();
 
   std::vector<std::string> staged_from(int k) const;
   void discard(int k);
@@ -178,9 +175,8 @@ private:
   int rev_ = 0;
   std::string retry_reply_, retry_error_; // 本轮内置模型回复未过协议时的原地重试缓存 (不进 timeline)
   struct From {
-    int round = 0;
+    int round = 0; // 已发出的轮数
     double t = 0.0;
-    int tokens = 0;
   } from_;
   std::chrono::steady_clock::time_point t0;
   double t_end = -1.0;

@@ -13,6 +13,7 @@
 #include <boost/beast/http.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -297,11 +298,13 @@ struct Remote::Impl {
     waiters.push_back({m.log.dir(), Clock::now() + std::chrono::seconds(kRemoteWait), std::move(answer)});
   }
 
-  // 停着的交回: 停下原因; finish 结束时附末批调用的结果
+  // 停着的交回: 停下原因; finish 结束时附末批调用的结果 (末轮是待发的下一条, 末批在它前一轮)
   Reply halted(const Mine &m) {
     if (!m.flags().done)
       return {false, "会话停下: " + m.reason + ". 等研究员在 GUI 处理 (继续 / 回退 / 关闭) 后再调无参 run 接着做."};
-    return {false, ResultsText(m.timeline.back().acts, m.round()) + "会话结束: " + m.reason + ". 要再挖就 open 开新会话."};
+    const int n = m.round() - 1;
+    assert(n >= 1);
+    return {false, ResultsText(m.timeline[static_cast<size_t>(n) - 1].acts, n) + "会话结束: " + m.reason + ". 要再挖就 open 开新会话."};
   }
 
   // 交回待答消息: 连续推进只给本条增量, 首次接上有历史轮次的会话或研究员回退后补完整研究树
@@ -436,7 +439,7 @@ struct Remote::Impl {
     if (!m.remote())
       return fail(m.held() ? "研究员在 GUI 里有内置会话 (大脑 " + m.brain() + "): 停着时可 open 开新会话, 在跑时等他停下" : std::string("还没有外部会话: 先 open"));
     if (a.tool == "doc")
-      return x.empty() ? a.answer({false, m.system}) : fail("doc 不收参数");
+      return x.empty() ? a.answer({false, *m.system}) : fail("doc 不收参数");
     if (a.tool == "run") {
       for (const auto &[k, v] : x.items())
         if (k != "calls")

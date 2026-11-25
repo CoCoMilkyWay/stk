@@ -41,16 +41,15 @@ ToolOut StepState(const Call &c, Seat &s) {
   const int cur_arg = c.num("cur");
   r->cur = cur_arg < 0 ? ended : std::min(static_cast<size_t>(cur_arg), r->acts);
 
-  const Cont ct = ContOf(s.timeline, r->cur);
+  const Cont ct = ContOf(s.timeline);
   r->cont_id = def(ct).id, r->cont_cn = def(ct).cn;
   r->flags = s.st.flags;
   r->hint = HintOf(s.timeline, r->cur, r->flags.done);
   r->tally = TallyAt(s.st, s.timeline, 0.0);
   r->hyps = s.st.board.all().size();
 
-  r->budget = {c.num("max_rounds"), c.num("max_minutes"), c.num("max_ktokens")};
-  const int tok = r->tally.usage.prompt + r->tally.usage.completion;
-  r->budget_miss = BudgetMiss(r->budget, r->round, r->tally.llm_s + r->tally.act_s, tok);
+  r->budget = {c.num("max_rounds"), c.num("max_minutes")};
+  r->budget_miss = BudgetMiss(r->budget, r->round, r->tally.llm_s + r->tally.act_s);
 
   r->rewind_k = std::clamp(c.num("round"), 1, r->round);
   r->loss_rounds = r->round - r->rewind_k + 1;
@@ -72,7 +71,6 @@ json SampleStepState(Feed &p) {
           {"cur", -1},
           {"max_rounds", 0},
           {"max_minutes", 0},
-          {"max_ktokens", 0},
           {"why", ""}};
 }
 

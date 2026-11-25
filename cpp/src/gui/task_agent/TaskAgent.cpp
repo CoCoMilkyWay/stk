@@ -240,7 +240,7 @@ bool ui_json_valid(const nlohmann::json &j) {
                         sc["hold"].is_number_integer() && sc.contains("lob") && sc["lob"].is_boolean() && sc.contains("years") && sc["years"].is_number_integer() &&
                         sc.contains("leaves") && sc["leaves"].is_object() && sc.contains("ops") && sc["ops"].is_object();
   return scope_ok && gt.contains("ric") && gt["ric"].is_number() && bg.contains("rounds") && bg["rounds"].is_number_integer() && bg.contains("minutes") &&
-         bg["minutes"].is_number_integer() && bg.contains("ktokens") && bg["ktokens"].is_number_integer() && j.contains("backend") &&
+         bg["minutes"].is_number_integer() && j.contains("backend") &&
          j["backend"].is_number_integer() && j.contains("model") && j["model"].is_string() && j.contains("via_proxy") && j["via_proxy"].is_array() &&
          j["via_proxy"].size() == kBackendN && j.contains("proxy_host") && j["proxy_host"].is_string() && j.contains("proxy_port") &&
          j["proxy_port"].is_number_integer() && j.contains("gpu") && j["gpu"].is_number_integer() && j.contains("ask") && j["ask"].is_boolean() &&
@@ -258,7 +258,7 @@ void load_ui(Ui &s) {
   }
   const Options &o = s.opt;
   ok = ok && o.backend >= 0 && o.backend < kBackendN && o.proxy_port > 0 && o.proxy_port < 65536 && o.gpu >= -1 && o.gpu <= 1 &&
-       o.prompt >= 0 && o.prompt < static_cast<int>(kNum<Msg>) && o.sc.years >= 1 && o.budget.rounds >= 0 && o.budget.minutes >= 0 && o.budget.ktokens >= 0;
+       o.prompt >= 0 && o.prompt < static_cast<int>(kNum<Msg>) && o.sc.years >= 1 && o.budget.rounds >= 0 && o.budget.minutes >= 0;
   if (!ok)
     s.opt = Options{};
   if (!catalog::gpu())
@@ -1927,9 +1927,6 @@ void render_config(Ui &s) {
   limit("轮##budget_rounds", o.budget.rounds);
   ImGui::SameLine();
   limit("分钟##budget_minutes", o.budget.minutes);
-  ImGui::SameLine();
-  limit("千 token (输入 + 输出)##budget_ktokens", o.budget.ktokens);
-  tip("只计上报 token 用量的后端 (现为 Zhipu); 其余大脑不受此限");
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "入库门槛");

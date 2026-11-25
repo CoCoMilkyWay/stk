@@ -97,7 +97,8 @@ State StateOf(Rounds rs) {
   State s;
   for (size_t i = 0; i < rs.size(); ++i) {
     const Round &rd = rs[i];
-    OpenRound(s);
+    if (rd.span.began())
+      OpenRound(s);
     if (rd.span.ended())
       CloseReply(s, rd);
     for (size_t j = 0; j < rd.acts.size(); ++j)
