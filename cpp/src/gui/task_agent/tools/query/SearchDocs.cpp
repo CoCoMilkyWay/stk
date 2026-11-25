@@ -39,6 +39,8 @@ std::string DocsRes::text() const {
   return out;
 }
 
+std::string DocsRes::title() const { return "命中 " + std::to_string(hit) + " 篇" + (loose ? " (放宽)" : "") + " " + cond; }
+
 ToolOut SearchDocs(const Call &c, Bay &bay) {
   const Lib &L = lib();
   const std::string scope = c.str("scope"), stage = c.str("stage"), ap = c.str("approach"), asset = c.str("asset"), freq = c.str("freq"), genre = c.str("genre");

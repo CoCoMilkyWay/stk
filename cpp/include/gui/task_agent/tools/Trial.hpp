@@ -30,7 +30,7 @@ struct TrialRes final : Res {
   const Weight *shown() const;                      // 可展示统计的最佳权重 (有权重且在当前评估期上; 否则空)
   std::string text() const override;
   std::string gist() const override;  // 折叠后的一行: 名 + 模板 + 思路 + 结局 (落了文件才有)
-  std::string title() const override; // 英文名 + 中文名
+  std::string title() const override; // 英文名 + 中文名 + 结局
   Effect effect() const override;
   bool abort() override;
   nlohmann::ordered_json save() const override;
@@ -51,6 +51,7 @@ struct SubmitRes final : Res {
   bool test = false, dry = false;
   std::optional<Result> cand;
   std::string text() const override;
+  std::string title() const override;
   Effect effect() const override;
   void draw() const override;
 };

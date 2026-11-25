@@ -64,6 +64,13 @@ std::string NotesRes::text() const {
   return s;
 }
 
+std::string NotesRes::title() const {
+  std::string s;
+  for (const Group &g : groups)
+    s += (s.empty() ? "" : " · ") + std::string(def(g.kind).cn) + " " + std::to_string(g.hit) + " 条";
+  return s + (here ? " · 只看本作用域" : "") + (query ? " · query 命中" : "");
+}
+
 ToolOut ListNotes(const Call &c, Seat &s) {
   auto res = std::make_shared<NotesRes>();
   NotesRes &R = *res;

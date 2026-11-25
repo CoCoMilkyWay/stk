@@ -271,6 +271,15 @@ inline bool rows_in(const char *key, const std::string &s, const std::vector<std
   }
   return true;
 }
+// 抽样行的步长: 至少 want, 且与每日行数 seg 互素 (有公因子时抽到的行只落在固定几个时段上)
+inline int row_step(int want, int seg) {
+  int s = std::max(1, want);
+  while (std::gcd(s, seg) != 1)
+    ++s;
+  return s;
+}
+// 全局统计行 u 开仓: 段末尾部 (清仓点越过收盘竞价前最后可成交锚点, st::tail_masked) 的行回测不开仓, 观察里的标签统计同样不计
+inline bool opens(int u, const ViewEnv &env) { return !st::tail_masked(u, env.hold, factor::geo_of(env.fsc.ft->seg)); }
 inline int row_at(const std::vector<std::string> &clock, const std::string &hm) {
   if (clock.size() == 1)
     return 0;
@@ -306,7 +315,7 @@ struct Layer {
         tl[e][j] += o.tl[e][j], tc[e][j] += o.tc[e][j];
     ric.merge(o.ric);
   }
-  double grp(int k) const { return rows ? g[k] / rows : kNaN; }
+  double grp(int k) const { return ok ? g[k] / rows : kNaN; }
   double tail(int e, int j) const { return rows ? tl[e][j] / rows : kNaN; }
   double tail_held(int e, int j) const { return ok ? tc[e][j] / ok : kNaN; }
   std::vector<double> grps() const {

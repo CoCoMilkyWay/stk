@@ -70,6 +70,8 @@ std::string LayersRes::text() const {
   return s;
 }
 
+std::string LayersRes::title() const { return "`" + label + "` · mono " + r3(all.mono) + " · 多空 " + bp(all.ls) + "bp · rIC " + r3(all.ric); }
+
 std::string LayersRes::gist() const {
   const Tail &t = tails.back();
   std::string g = "mono " + r3(all.mono) + " · 多空 " + bp(all.ls) + "bp · rIC " + r3(all.ric) + " · 组内最极端 " + fmt("%g%%", t.frac * 100.0) + ": G20 " + bp(t.top) +
@@ -121,7 +123,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
     if (cond.empty() || !cv.feat_pl[0])
       return;
     const int A = cv.blk.y.sh.A, total_T = static_cast<int>(cv.dates.size()) * seg;
-    const int rstep = std::max(1, static_cast<int>(static_cast<size_t>(total_T) * static_cast<size_t>(A) / kCsCells));
+    const int rstep = row_step(static_cast<int>(static_cast<size_t>(total_T) * static_cast<size_t>(A) / kCsCells), seg);
     const factor::check::Plane *cp = cv.feat_pl[0];
     const Engine::LegPlane &lb = *cv.blk.y.labels[0];
     const uint16_t *lv = lb.v[st::kLong].data();
@@ -137,7 +139,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
       const size_t ut = static_cast<size_t>(tid);
       for (int r = r0; r < r1; ++r) {
         const int t = cv.t_lo + r, u = cv.u0 + r;
-        if (u % rstep != 0)
+        if (u % rstep != 0 || !opens(u, env))
           continue;
         const float mkt = row_mkt(cv.blk, t);
         if (!std::isfinite(mkt))

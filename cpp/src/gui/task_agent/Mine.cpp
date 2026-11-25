@@ -54,6 +54,16 @@ std::string budget_miss(const Budget &b, int d_steps, double d_secs) {
   return {};
 }
 
+// 本段预算还剩多少 (空 = 不限)
+std::string budget_left(const Budget &b, int d_steps, double d_secs) {
+  std::string s;
+  if (b.steps > 0)
+    s = std::to_string(std::max(0, b.steps - d_steps)) + " 步";
+  if (b.minutes > 0)
+    s += (s.empty() ? "" : " · ") + std::to_string(std::max(0, static_cast<int>(b.minutes - d_secs / 60.0))) + " 分钟";
+  return s;
+}
+
 } // namespace
 
 // =============================================================================
@@ -117,7 +127,7 @@ std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
   depart();
   const int tried = static_cast<int>(std::ranges::count_if(desk.results(), [](const Result &r) { return r.visible; }));
   post(setup.test ? TestMessage(setup.ask, setup.remark)
-                  : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask, setup.remark));
+                  : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask, setup.remark, budget_left(leg.budget, 0, 0.0)));
   advance();
   return {};
 }
@@ -143,7 +153,7 @@ void Mine::load(const SharedData &data, const std::string &dir) {
     reason = ask ? "上次在等你答问题时退出了" : "上次没停稳就退出了, 末步作废重来";
     if (!ask)
       return redo(step(), reason);
-    mark("---\n\n**停下**: " + reason + "\n\n");
+    mark(Beat::Pause, reason, "---\n\n**停下**: " + reason + "\n\n");
   }
   report = report_of(reason);
   log.report(report);
@@ -160,7 +170,7 @@ void Mine::resume(const SharedData &data, Leg l) {
   t0 = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(t_end)), t_end = -1.0;
   depart();
   reason.clear();
-  mark("\n> **继续 (" + text::local("%H:%M:%S") + ")** · 大脑 " + brain() + "\n");
+  mark(Beat::Resume, brain(), "\n> **继续 (" + text::local("%H:%M:%S") + ")** · 大脑 " + brain() + "\n");
   advance();
 }
 
@@ -245,7 +255,7 @@ void Mine::redo(int k, std::string why) {
   told_ = -1;
   reason = std::move(why);
   report = report_of(reason);
-  mark("---\n\n**停下**: " + reason + "\n\n");
+  mark(Beat::Pause, reason, "---\n\n**停下**: " + reason + "\n\n");
   log.report(report);
   save();
 }
@@ -325,7 +335,7 @@ void Mine::advance() {
         return save();
       continue;
     }
-    post(sp.act ? ResultMessage(*sp.act, step(), setup.test) : RetryMessage(sp.error));
+    post(sp.act ? ResultMessage(*sp.act, step(), setup.test, budget_left(leg.budget, sent() - from_.step, now() - from_.t)) : RetryMessage(sp.error));
     if (Finished(timeline))
       return pause("agent 宣布挖完");
     if (invalid_run(timeline) >= kMaxRetries)
@@ -389,16 +399,16 @@ void Mine::drop(std::string why, llm::Reply r) {
   sp.think.end(t), sp.write.end(t), sp.span.end(t);
   sp.reply = std::move(r);
   sp.error = std::move(why);
-  mark(ReplyLog(step(), sp));
+  mark(Beat::Drop, sp.error, ReplyLog(step(), sp));
   unsend();
   told_ = -1;
 }
 
-void Mine::mark(std::string md) {
+void Mine::mark(Beat k, std::string line, std::string md) {
   Step &sp = timeline.back();
   const LogAt at = !sp.reply.ok() ? LogAt::Sent : sp.act && sp.act->span.ended() ? LogAt::Done
                                                                                  : LogAt::Replied;
-  sp.marks.push_back({at, std::move(md)});
+  sp.marks.push_back({at, k, std::move(line), std::move(md)});
 }
 
 std::string Mine::over() const { return budget_miss(leg.budget, sent() - from_.step, now() - from_.t); }
@@ -410,7 +420,7 @@ void Mine::pause(std::string why) {
   t_end = now();
   reason = std::move(why);
   report = report_of(reason);
-  mark("---\n\n**停下 (" + text::local("%H:%M:%S") + ")**: " + reason + "\n\n");
+  mark(Beat::Pause, reason, "---\n\n**停下 (" + text::local("%H:%M:%S") + ")**: " + reason + "\n\n");
   log.report(report);
   save();
 }

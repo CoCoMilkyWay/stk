@@ -19,10 +19,10 @@ using json = nlohmann::ordered_json;
 // =============================================================================
 // 时间线 JSON 契约 (读写严格成对)
 // =============================================================================
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LogMark, at, md)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LogMark, at, kind, line, md)
 
 void to_json(json &j, const Act &a) {
-  j = {{"tool", a.call.tool}, {"args", a.call.args}, {"span", a.span}, {"laps", a.laps}, {"out", a.out.text}, {"gist", a.out.gist}, {"ok", a.out.ok}, {"fx", a.out.fx}};
+  j = {{"tool", a.call.tool}, {"args", a.call.args}, {"span", a.span}, {"laps", a.laps}, {"out", a.out.text}, {"gist", a.out.gist}, {"title", a.out.title}, {"ok", a.out.ok}, {"fx", a.out.fx}};
   if (json r = a.out.res ? a.out.res->save() : json(); !r.is_null())
     j["res"] = std::move(r);
 }
@@ -30,7 +30,7 @@ void from_json(const json &j, Act &a) {
   a = Act{.call = {j.at("tool").get<Tool>(), j.at("args")},
           .span = j.at("span").get<Span>(),
           .laps = j.at("laps").get<std::vector<Lap>>(),
-          .out = {.ok = j.at("ok").get<bool>(), .text = j.at("out").get<std::string>(), .gist = j.at("gist").get<std::string>(), .fx = j.at("fx").get<Effect>()}};
+          .out = {.ok = j.at("ok").get<bool>(), .text = j.at("out").get<std::string>(), .gist = j.at("gist").get<std::string>(), .title = j.at("title").get<std::string>(), .fx = j.at("fx").get<Effect>()}};
 }
 
 void to_json(json &j, const Step &sp) {

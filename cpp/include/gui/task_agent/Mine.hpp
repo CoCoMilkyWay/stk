@@ -102,7 +102,7 @@ private:
   void send();
   void got(llm::Reply r);
   void drop(std::string why, llm::Reply r = {});
-  void mark(std::string md);
+  void mark(Beat k, std::string line, std::string md);
   void pause(std::string why);
 
   void heard(Chat::Tick t);

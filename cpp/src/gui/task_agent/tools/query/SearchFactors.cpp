@@ -33,6 +33,10 @@ std::string FactorsRes::text() const {
   return out;
 }
 
+std::string FactorsRes::title() const {
+  return "命中 " + std::to_string(hit) + " 个因子 (出自 " + std::to_string(docs) + " 篇)" + (loose ? " (放宽)" : "") + " " + cond;
+}
+
 ToolOut SearchFactors(const Call &c, Bay &) {
   const Lib &L = lib();
   const std::string family = c.str("family"), period = c.str("period"), horizon = c.str("horizon"), ap = c.str("approach"), asset = c.str("asset"), sort = c.str("sort");

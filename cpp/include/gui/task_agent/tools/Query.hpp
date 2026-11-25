@@ -28,6 +28,7 @@ struct LeavesRes : Res {
   };
   std::vector<Row> rows;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -50,6 +51,7 @@ struct DocsRes : Res {
   };
   std::vector<Doc> docs;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -65,6 +67,7 @@ struct FactorsRes : Res {
   };
   std::vector<Row> list;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -91,6 +94,7 @@ struct ReadRes : Res {
   std::string body;
   bool end = false;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -99,6 +103,7 @@ struct TriedRes : Res {
   int all = 0, skip = 0;
   Gate gate;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -106,6 +111,7 @@ struct LibraryRes : Res {
   std::vector<Result> rows;
   int all = 0, skip = 0, none = 0; // none = 本持有期无统计 (不列) 的个数
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -124,6 +130,7 @@ struct NotesRes : Res {
   };
   std::vector<Group> groups; // kind 空 = 四类各一组; 否则只那一类
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 

@@ -65,6 +65,8 @@ std::string ExplainRes::text() const {
   return s + ltbl.str();
 }
 
+std::string ExplainRes::title() const { return "`" + label + "` · " + gist(); }
+
 std::string ExplainRes::gist() const {
   return "rIC " + r3(fric) + " → 剥全部基准剩 " + r3(rric) + " (R² " + r3(r2) + ") · 剩余部分 mono " + r3(rest.mono) + " · 多空 " + bp(rest.ls) + "bp";
 }
@@ -137,7 +139,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
         }
         const size_t m = b_names.size();
         const int T = cv.blk.y.sh.T, A = cv.blk.y.sh.A, n_stat = cv.t_hi - cv.t_lo, total_T = static_cast<int>(cv.dates.size()) * seg;
-        const int rstep = std::max(1, (total_T - lag) / kExplainRows);
+        const int rstep = row_step((total_T - lag) / kExplainRows, seg);
         const Px px(cv.blk, cv.bm, cfg.bars, env.open);
         const std::vector<float> e = block_excess_steps(F.S.ex, cv.blk, px, cv.blk.land0());
         std::vector<double> cum(e.size());
@@ -189,7 +191,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
           st::Row w;
           for (int r = r0; r < r1; ++r) {
             const int t = cv.t_lo + r, u = cv.u0 + r;
-            if (u < lag || (u - lag) % rstep != 0)
+            if (u < lag || (u - lag) % rstep != 0 || !opens(u, env))
               continue;
             const float mkt = row_mkt(cv.blk, t);
             if (!std::isfinite(mkt))

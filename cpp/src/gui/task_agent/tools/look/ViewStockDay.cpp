@@ -67,6 +67,11 @@ std::string StockDayRes::text() const {
   return s;
 }
 
+std::string StockDayRes::title() const {
+  return code + " · " + date + " · " + (first < 0 ? std::string("当日无成交") : "收 " + num(last) + " (" + chg(last / pre - 1.0) + ")") + " · 在池 " + std::to_string(in) + " / " +
+         std::to_string(seg) + " 行";
+}
+
 ToolOut ViewStockDay(const Call &c, Bay &bay) {
   const ViewEnv &env = bay.env;
   Engine::FactorFlow &F = bay.flow;
@@ -134,7 +139,7 @@ ToolOut ViewStockDay(const Call &c, Bay &bay) {
           last = std::isfinite(R.close[q]) ? R.close[q] : last;
           R.in += cv.blk.y.gate[cell_k];
           const float mkt = row_mkt(cv.blk, t);
-          R.ex[q] = lb.m[cell_k] ? static_cast<double>(h2f(lv[cell_k])) - mkt : kNaN;
+          R.ex[q] = lb.m[cell_k] && opens(u0 + k, env) ? static_cast<double>(h2f(lv[cell_k])) - mkt : kNaN;
           if (has_fac)
             R.rank[q] = rank_of_r16(cv.rx[cell_k]), R.grp[q] = grp_of_r16(cv.rx[cell_k]);
           for (size_t i = 0; i < feats.size(); ++i)

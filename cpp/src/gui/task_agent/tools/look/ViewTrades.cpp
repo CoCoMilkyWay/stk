@@ -38,6 +38,10 @@ std::string TradesRes::text() const {
   return s;
 }
 
+std::string TradesRes::title() const {
+  return "`" + label + "` · " + side + " · " + (!cells ? std::string("本端没有真持有过的格") : str(segs) + " 段 · 段超额均值 " + bp(seg_mean) + "bp · 胜率 " + pct(seg_up));
+}
+
 ToolOut ViewTrades(const Call &c, Bay &bay) {
   const ViewEnv &env = bay.env;
   Engine::FactorFlow &F = bay.flow;
@@ -123,7 +127,7 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
         std::uniform_int_distribution<int> pick_r(0, n_stat - 1), pick_a(0, A - 1);
         for (size_t got = 0, tries = 0; got < want_b && nb < kBase && tries < want_b * 20; ++tries) {
           const int r = pick_r(rng), u = cv.u0 + r, ymd = cv.dates[static_cast<size_t>(u / seg)], kr = u % seg;
-          if (ymd < ymd0 || ymd > ymd1 || kr < k0 || kr >= k1)
+          if (ymd < ymd0 || ymd > ymd1 || kr < k0 || kr >= k1 || !opens(u, env))
             continue;
           const int t = cv.t_lo + r, a = pick_a(rng);
           const size_t k = static_cast<size_t>(t) * static_cast<size_t>(A) + static_cast<size_t>(a);

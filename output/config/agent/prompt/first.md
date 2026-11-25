@@ -4,6 +4,7 @@
 - 已试候选: 本作用域 (持有期 {{hold}}) {{tried}} 个 → list_tried
 - 正式因子库: 同评估期 {{library}} 个 → list_library
 - 全局记录: {{notes}} → list_notes (先看发现: 前人证实或证伪过什么)
+- 本段预算: {{budget}}
 
 ## 起步
 {{start}}. 先把这四样看一遍:

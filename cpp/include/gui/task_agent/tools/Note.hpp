@@ -18,6 +18,7 @@ struct NoteRes final : Res {
   nlohmann::ordered_json fields;
   bool dry = false;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 

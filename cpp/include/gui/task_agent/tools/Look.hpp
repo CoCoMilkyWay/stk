@@ -58,6 +58,7 @@ struct FeatureRes : Res {
   std::vector<double> corr; // [good × good] 两两截面秩相关
   std::string text() const override;
   std::string gist() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -79,6 +80,7 @@ struct LayersRes : Res {
   std::vector<LayerRow> conds; // 全体 (同口径) / 低 / 中 / 高
   std::string text() const override;
   std::string gist() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -107,6 +109,7 @@ struct TradesRes : Res {
   };
   std::vector<Seg> list;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -124,6 +127,7 @@ struct HoldersRes : Res {
   };
   std::vector<Row> rows;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -146,6 +150,7 @@ struct ResponseRes : Res {
   };
   std::vector<Part> parts;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -163,6 +168,7 @@ struct ExplainRes : Res {
   std::string head() const; // 标题 + E 行
   std::string text() const override;
   std::string gist() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -185,6 +191,7 @@ struct SnapshotRes : Res {
   };
   std::vector<Cell> cells; // 高 n 只 + 池中位 + 低 n 只
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -212,6 +219,7 @@ struct StockDayRes : Res {
   std::string rows; // 逐行时段 (空 = 不附逐行表)
   int r0 = 0, r1 = 0;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -230,6 +238,7 @@ struct StockDaysRes : Res {
   std::vector<Day> days;
   size_t n_feats = 0;
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 
@@ -271,6 +280,7 @@ struct BookRes : Res {
   };
   std::vector<Level> profile; // 卖 (远 → 近) 再买 (近 → 远)
   std::string text() const override;
+  std::string title() const override;
   void draw() const override;
 };
 

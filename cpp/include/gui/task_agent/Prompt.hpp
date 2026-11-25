@@ -44,13 +44,13 @@ std::string StageOf(const Act &a, double frac); // 在跑的调用此刻在做�
 std::string ResultText(const Act &a, int step); // 一个调用的结果原文 (标题 = 调用编号 + 调用; result 消息的结果节)
 std::string BriefOf(const Act &a, int step);    // 折叠后留的结论 (回测留模板与结局, 观察留关键数, 记录 / 问答留原文, 查询只留调用一行)
 std::string AnswerText(const Asked &a);
-std::string NextStep(bool test); // result 消息末尾的 "下一步" 提示
+std::string NextStep(bool test, const std::string &left); // result 消息末尾的 "下一步" 提示 (left = 本段预算还剩多少, 空 = 不限)
 
 // ---- 消息组装与上下文纯函数 ----
 Message SystemMessage(const Context &c, const Gate &g, bool ask);
-Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark);
+Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark, const std::string &left);
 Message TestMessage(bool ask, const std::string &remark);
-Message ResultMessage(const Act &a, int step, bool test);
+Message ResultMessage(const Act &a, int step, bool test, const std::string &left);
 Message RetryMessage(const std::string &error); // 上一条回复不合协议的重交要求 (error 一行一处)
 std::string MemoText(const std::string &memo);
 std::string TextOf(const Step &sp);

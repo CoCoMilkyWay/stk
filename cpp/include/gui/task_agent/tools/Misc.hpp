@@ -16,6 +16,7 @@ namespace GUI::Agent {
 
 struct FinishRes final : Res {
   std::string text() const override;
+  std::string title() const override;
   Effect effect() const override;
   void draw() const override;
 };
@@ -26,7 +27,7 @@ struct AskRes final : Res {
   explicit AskRes(Asked a) : asked(std::move(a)) {}
   explicit AskRes(Questions q) : asked(std::move(q)) {}
   std::string text() const override;
-  std::string title() const override; // 几个问题
+  std::string title() const override; // 几个问题 + 首个问题
   nlohmann::ordered_json save() const override;
   static ResPtr load(const Call &c, const nlohmann::ordered_json &j, Seat &s);
   void draw() const override;

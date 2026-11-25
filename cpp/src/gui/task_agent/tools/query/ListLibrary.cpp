@@ -18,6 +18,11 @@ std::string LibraryRes::text() const {
   return s.empty() ? "(空)\n" : s;
 }
 
+std::string LibraryRes::title() const {
+  return "共 " + std::to_string(all) + " 个 · 列 " + std::to_string(rows.size()) + " 个" + (none ? " · 另有 " + std::to_string(none) + " 个无统计" : "") +
+         (rows.empty() ? "" : " · 首个 " + rows.front().name + " " + Text(*rows.front().best()));
+}
+
 ToolOut ListLibrary(const Call &c, Seat &s) {
   auto res = std::make_shared<LibraryRes>();
   LibraryRes &R = *res;

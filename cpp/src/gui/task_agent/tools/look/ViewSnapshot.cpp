@@ -42,6 +42,10 @@ std::string SnapshotRes::text() const {
   return s + tbl.str();
 }
 
+std::string SnapshotRes::title() const {
+  return "`" + label + "` · " + when + " · " + str(n) + " 只 · " + (row_ok ? "rIC " + r3(ric) + " · G20 " + bp(g20) + " / G1 " + bp(g1) + "bp" : std::string("本行无统计"));
+}
+
 ToolOut ViewSnapshot(const Call &c, Bay &bay) {
   const ViewEnv &env = bay.env;
   Engine::FactorFlow &F = bay.flow;
@@ -106,7 +110,7 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
               x.amt += v;
           const double cl = px(Close, t, a), prev = k_row == 0 ? px.pre(t, a) : px(Close, t - 1, a);
           x.step = cl / prev - 1.0;
-          x.ex = lb.m[q] ? static_cast<double>(h2f(lv[q])) - mkt : kNaN;
+          x.ex = lb.m[q] && opens(u_want, env) ? static_cast<double>(h2f(lv[q])) - mkt : kNaN;
           x.m = mark_of(px, t, a);
           for (size_t i = 0; i < feats.size(); ++i)
             x.fv.push_back(cv.feat_pl[i] && cv.feat_pl[i]->m[q] ? static_cast<double>(cv.feat_pl[i]->v[q]) : kNaN);

@@ -84,7 +84,7 @@ struct Res {
   virtual ~Res() = default;
   virtual std::string text() const = 0;                           // 交给 agent 的原文
   virtual std::string gist() const { return {}; }                 // 上下文折叠后留的一行关键数 (无则空)
-  virtual std::string title() const { return {}; }                // 时间线上这个调用一行里代替调用原文的一句 (无则空)
+  virtual std::string title() const = 0;                          // 时间线上这个调用一行的结论 (对象 + 关键结果)
   virtual Effect effect() const { return {}; }                    // 对会话账本的作用
   virtual bool abort() { return false; }                          // 作废: true = 已改成作废后的样子 (原文照它); false = 只记一句没做完
   virtual nlohmann::ordered_json save() const { return nullptr; } // 存档 (null = 不存)
@@ -94,17 +94,17 @@ using ResPtr = std::shared_ptr<Res>;
 
 struct ToolOut {
   bool ok = true;
-  std::string text, gist;
+  std::string text, gist, title; // title = 结果的一行结论 (随存档; 没有结果的 = 空)
   Effect fx;
   ResPtr res;
 };
 template <class R>
 ToolOut Done(std::shared_ptr<R> r, bool ok = true) {
-  std::string text = r->text(), gist = r->gist();
+  std::string text = r->text(), gist = r->gist(), title = r->title();
   Effect fx = r->effect();
-  return {ok, std::move(text), std::move(gist), std::move(fx), std::move(r)};
+  return {ok, std::move(text), std::move(gist), std::move(title), std::move(fx), std::move(r)};
 }
-inline ToolOut Fail(std::string why) { return {false, std::move(why), {}, {}, {}}; }
+inline ToolOut Fail(std::string why) { return {false, std::move(why), {}, {}, {}, {}}; }
 
 // ---- 动作与时间线 ----
 // 后台调用的一段 (eval_factor = Search / Run; 其余后台工具没有分段)
@@ -123,13 +123,22 @@ struct Act {
 
 inline std::string StepTag(int step) { return "#" + std::to_string(step); } // 调用编号 = 它所在的步
 
-// 只进可读日志的一笔 (停下 / 继续 / 作废的回复), 记在这一步走到的位置之后
+// 会话流程的一笔 (停下 / 继续 / 作废的回复), 记在这一步走到的位置之后; 进可读日志, 界面上与调用同列
 enum class LogAt : uint8_t { Sent,    // 发出之后 (回复收成之前)
                              Replied, // 回复收成之后 (调用做完之前)
                              Done };  // 调用做完之后
+enum class Beat : uint8_t { Pause,
+                            Resume,
+                            Drop };
+struct BeatDef {
+  const char *id, *cn;
+};
+inline constexpr BeatDef kBeats[] = {{"pause", "停下"}, {"resume", "继续"}, {"drop", "作废回复"}};
+AGENT_ROWS(Beat, kBeats, Drop);
 struct LogMark {
   LogAt at = LogAt::Sent;
-  std::string md;
+  Beat kind = Beat::Pause;
+  std::string line, md; // 一行 (停下原因 / 继续的大脑 / 作废的原因) / 日志里的一节
 };
 
 struct Step {

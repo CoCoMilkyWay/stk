@@ -12,6 +12,8 @@ std::string SubmitRes::text() const {
                                                         : "已入库";
 }
 
+std::string SubmitRes::title() const { return name + " · " + text(); }
+
 Effect SubmitRes::effect() const { return {.adopted = why.empty() ? name : std::string()}; }
 
 ToolOut SubmitFactor(const Call &c, Seat &s) {

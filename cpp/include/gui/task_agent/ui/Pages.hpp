@@ -23,6 +23,7 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -117,7 +118,6 @@ struct Ui {
   ImGuiTextFilter leaf_filter, op_filter, tool_filter, note_filter, cand_filter;
   std::vector<catalog::PoolRow> pool_rows; // 池下拉 (打开时扫)
   Phase seen_phase = Phase::None;          // 刚进 Choose: 切到过程页一次
-  size_t flow_steps = 0;                   // 过程页上一帧画过的步数
   std::string message;
   std::string seen_dir; // 界面在跟的会话目录 (空 = 无会话); 换了 = 刚开 / 载入了一段 (New / Test / 载入 / 外部 agent 的 open 同一处跟上)
   // 本会话要求 (只随下次 New / Test 发, 不落 ui.json); fold_remark = 刚开会话, 下一帧把它折起
@@ -132,9 +132,8 @@ struct Ui {
   // 在收那一步: 增量总量与它上次变的时刻 (量静默)
   size_t live_n = 0;
   double live_t = 0.0;
-  // 在收那一步思考块的自动开合: 思考时开, 转正文收; 人点过就不再动
-  size_t think_step = SIZE_MAX;
-  bool think_open = false, think_touched = false;
+  // 过程页展开着看 prompt (与 agent 往来的原文) 的条目 (键 = 条目标题的 id; 其余看展示)
+  std::set<ImGuiID> raw;
   // 载入菜单的会话一览 (打开菜单时扫)
   std::vector<Saved> saved;
   // 插话的草稿 (按 "插话" 进 Mine::memo 排队)

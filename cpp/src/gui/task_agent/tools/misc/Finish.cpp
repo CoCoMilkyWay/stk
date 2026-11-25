@@ -7,6 +7,8 @@ using json = nlohmann::ordered_json;
 
 std::string FinishRes::text() const { return "本条回复的调用做完后会话结束"; }
 
+std::string FinishRes::title() const { return "会话结束"; }
+
 Effect FinishRes::effect() const { return {.finish = true}; }
 
 ToolOut Finish(const Call &, Seat &) { return Done(std::make_shared<FinishRes>()); }

@@ -160,6 +160,10 @@ std::string BookRes::text() const {
   return s + ptbl.str();
 }
 
+std::string BookRes::title() const {
+  return head.substr(3) + " · " + (traded ? "收 " + px2(close) + " · 成交额 " + w4(amt) : std::string("无成交")) + " · 窗口主动买 " + w4(taker[0]) + " / 卖 " + w4(taker[1]);
+}
+
 ToolOut ViewBook(const Call &c, Bay &bay) {
   TraceN("AgentBookReplay");
   const ViewEnv &env = bay.env;

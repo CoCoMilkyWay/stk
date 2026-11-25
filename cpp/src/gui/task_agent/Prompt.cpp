@@ -4,6 +4,8 @@
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
 
+#include "factor/Stat/Contract.hpp"
+
 #include <algorithm>
 #include <cassert>
 #include <cctype>
@@ -20,6 +22,7 @@ namespace GUI::Agent {
 // =============================================================================
 namespace {
 
+namespace st = factor::stat;
 using text::cell;
 using text::num;
 using KV = std::vector<std::pair<std::string_view, std::string>>;
@@ -118,8 +121,15 @@ std::string rows_of(const Context &c) {
   const size_t o = static_cast<size_t>(c.open);
   const std::string open = o == 1 ? "第 0 行 = 集合竞价段 [09:15, 09:30)"
                                   : "第 0.." + std::to_string(o - 1) + " 行 = 集合竞价段 [09:15, 09:30) 逐分钟一行 (行末 " + c.clock[0] + " … " + c.clock[o - 1] + ")";
+  std::string tail;
+  for (int k = 0; k < c.seg; ++k)
+    if (st::tail_masked(k, st::hold_from_name(c.hold_key), factor::geo_of(c.seg)))
+      tail += (tail.empty() ? "" : " / ") + c.clock[static_cast<size_t>(k)];
   return "本层 (" + c.level + ") 每天 " + std::to_string(c.seg) + " 行: " + open + "; 第 " + std::to_string(o) + " 行起连续竞价 (行末 " + c.clock[o] + ", " + c.clock[o + 1] +
-         " … " + c.clock.back() + ", 午休不占行; 末行含收盘竞价).";
+         " … " + c.clock.back() + ", 午休不占行; 末行含收盘竞价)." +
+         (tail.empty() ? ""
+                       : "\n- **不开仓的行**: 持有期 " + c.hold + " 下, 行末 " + tail +
+                             " 的行持有期越过 14:57 收盘竞价 (持有期被截短或建仓即平), 不开仓: 回测与观察都不统计这些行 (\"有统计\" 的行数因此少于总行数, 时段表里这几行写 —), 因子在这些行上的值不影响结果.");
 }
 
 // ---- 折叠成结论 (透明无黑盒) ----
@@ -301,9 +311,10 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask) {
                             {"ops", ops.str()}});
 }
 
-Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark) {
+Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark, const std::string &left) {
   return fill(Msg::First, {{"hold", c.hold},
                            {"remark", remark_text(remark)},
+                           {"budget", left.empty() ? "不限" : left + " (用完会话即停下, 收手前留出 submit_factor 与 finish 的步数)"},
                            {"tried", std::to_string(tried)},
                            {"library", std::to_string(visible(c.library))},
                            {"notes", notes},
@@ -321,13 +332,16 @@ Message TestMessage(bool ask, const std::string &remark) {
                           {"ask", ask ? "ask_human 也要测: 问 1 道题 (例: 先测哪类工具), 研究员答完再接着测" : "本会话没有 ask_human, 不测它"}});
 }
 
-std::string NextStep(bool test) {
+std::string NextStep(bool test, const std::string &left) {
+  const std::string budget = left.empty() ? "" : "\n\n本段预算还剩 " + left + "; 用完会话即停下, 收手前留出 submit_factor 与 finish 的步数.";
   if (test)
-    return "按自检的做法接着调还没调过的工具与取值; 对照工具说明查上面的结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish.";
-  return "根据结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或回测下一个变体; 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish.";
+    return "按自检的做法接着调还没调过的工具与取值; 对照工具说明查上面的结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish." + budget;
+  return "根据结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或回测下一个变体; 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish." + budget;
 }
 
-Message ResultMessage(const Act &a, int step, bool test) { return fill(Msg::Result, {{"result", ResultText(a, step)}, {"next", NextStep(test)}}); }
+Message ResultMessage(const Act &a, int step, bool test, const std::string &left) {
+  return fill(Msg::Result, {{"result", ResultText(a, step)}, {"next", NextStep(test, left)}});
+}
 
 Message RetryMessage(const std::string &error) {
   std::string list;

@@ -57,6 +57,14 @@ std::string ReadRes::text() const {
   return o;
 }
 
+std::string ReadRes::title() const {
+  const std::string what = part == "outline" ? "目录 " + std::to_string(total) + " 节 · " + std::to_string(chars) + " 字"
+                           : part == "text"  ? "原文第 " + std::to_string(sec) + " 节起" + (end ? " (读完)" : "")
+                           : from > 0        ? "标注卡的因子, 第 " + std::to_string(from) + " 个起 (共 " + std::to_string(total) + ")"
+                                             : "标注卡 · 结论 " + std::to_string(findings.size()) + " 条 · 因子 " + std::to_string(total);
+  return id + " · " + what;
+}
+
 ToolOut ReadDoc(const Call &c, Bay &) {
   const Lib &L = lib();
   std::string error;

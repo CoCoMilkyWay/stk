@@ -74,6 +74,10 @@ std::string ResponseRes::text() const {
   return s;
 }
 
+std::string ResponseRes::title() const {
+  return "`" + label + "` · " + side + " · " + (!events ? std::string("本端没有真持有过的格") : str(events) + " 段 · " + pts.back().name + " 累计超额 " + bp(pts.back().ex) + "bp");
+}
+
 ToolOut ViewResponse(const Call &c, Bay &bay) {
   const ViewEnv &env = bay.env;
   Engine::FactorFlow &F = bay.flow;
@@ -156,7 +160,7 @@ ToolOut ViewResponse(const Call &c, Bay &bay) {
     // 开仓行因子分位与此前收益的截面秩相关
     const int nt = F.S.ex.threads();
     for (size_t li = 0; li < lags.size(); ++li) {
-      const int w = lags[li].second, rstep = std::max(1, (total_T - w) / kCorrRows);
+      const int w = lags[li].second, rstep = row_step((total_T - w) / kCorrRows, seg);
       std::vector<Mean> tr(static_cast<size_t>(nt));
       F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
         std::vector<double> xs, ys;

@@ -17,6 +17,10 @@ std::string HoldersRes::text() const {
   return s + tbl.str();
 }
 
+std::string HoldersRes::title() const {
+  return "`" + label + "` · " + side + " · " + (!total ? std::string("本端没有行") : "前 10 只占 " + pct(top10) + " · 凑满一半要 " + str(half) + " 只");
+}
+
 ToolOut ViewHolders(const Call &c, Bay &bay) {
   const ViewEnv &env = bay.env;
   Engine::FactorFlow &F = bay.flow;

@@ -14,6 +14,10 @@ std::string TriedRes::text() const {
   return s.empty() ? "(无)\n" : s;
 }
 
+std::string TriedRes::title() const {
+  return "共 " + std::to_string(all) + " 个 · 列 " + std::to_string(rows.size()) + " 个" + (rows.empty() ? "" : " · 首个 " + rows.front().name + " " + Brief(rows.front()));
+}
+
 ToolOut ListTried(const Call &c, Seat &s) {
   auto res = std::make_shared<TriedRes>();
   TriedRes &R = *res;

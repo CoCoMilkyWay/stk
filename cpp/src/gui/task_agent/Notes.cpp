@@ -144,6 +144,8 @@ std::string NoteRes::text() const {
   return "已记为 " + id + (ref.empty() ? "" : " (附议 " + ref + ")") + "; 全局可见: 研究员在界面里看, 后续会话用 list_notes 查得到";
 }
 
+std::string NoteRes::title() const { return miss.empty() ? id + " · " + fields.at("title").get<std::string>() : miss; }
+
 ToolOut FileNote(const Call &c, Seat &s) {
   auto r = std::make_shared<NoteRes>();
   const NoteKind k = NoteOf(c.tool);

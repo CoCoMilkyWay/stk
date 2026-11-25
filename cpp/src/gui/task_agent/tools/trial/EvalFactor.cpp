@@ -47,6 +47,16 @@ std::string years_ric_text(const std::vector<Year> &ys) {
   return text::vbars("分年 rIC " + std::to_string(ys.front().year) + " → " + std::to_string(ys.back().year) + " (年内 rIC 均值)", v, [](double x) { return fmt("%+.3f", x); });
 }
 
+// Search 概况: 自由参数个数 / 算出滚动窗的点数 / 中位 rIC 最高 · 次高 · 各点中位 (最佳点是孤峰还是一片高地)
+std::string sweep_line(const Sweep &sw) {
+  const std::vector<Point> &ps = sw.pts;
+  std::string s = sw.slots.empty() ? std::string("Search: 无自由参数, 只评 1 个点")
+                                   : "Search: 自由参数 " + std::to_string(sw.slots.size()) + " 个, 算出滚动窗的点 " + std::to_string(ps.size()) + " 个";
+  if (ps.size() >= 2)
+    s += fmt(" · 中位 rIC 最高 %.3f", ps[0].score) + fmt(" / 次高 %.3f", ps[1].score) + fmt(" / 各点中位 %.3f", ps[ps.size() / 2].score);
+  return s;
+}
+
 Sweep sweep_of(const Engine::SearchResult &r) {
   Sweep s{.slots = r.slots};
   for (const misc::Ymd d : r.dates)
@@ -192,6 +202,8 @@ std::string TrialRes::text() const {
       s += "- " + WeightLine(*this, x) + "\n";
   if (!w->years.empty())
     s += "- " + YearsLine(w->years) + "\n";
+  if (r.sweep && !r.sweep->pts.empty())
+    s += "- " + sweep_line(*r.sweep) + "\n";
   if (r.daily)
     s += layers_text(*r.daily);
   if (!w->years.empty())
@@ -199,7 +211,7 @@ std::string TrialRes::text() const {
   return s;
 }
 
-std::string TrialRes::title() const { return st.cand.name + "  " + st.cand.name_cn; }
+std::string TrialRes::title() const { return st.cand.name + " " + st.cand.name_cn + " · " + Brief(st.res); }
 
 std::string TrialRes::gist() const {
   return st.ok() ? st.cand.name + " `" + st.cand.expr + "` · " + text::head(st.cand.note, 60) + " → " + Brief(st.res) : std::string();

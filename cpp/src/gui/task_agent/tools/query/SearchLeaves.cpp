@@ -20,6 +20,10 @@ std::string LeavesRes::text() const {
          ". 同组的叶只差计量 (amt 额 / vol 量 / n 笔) 或阈值 / 窗口 (带数字的词), 列出整组; 公式与说明按组内首个命中的写, 其余照族卡换词\n\n" + tbl.str();
 }
 
+std::string LeavesRes::title() const {
+  return "`" + query + "` · " + (!hit ? std::string("无命中") : std::string(loose ? "放宽后" : "") + "命中 " + std::to_string(hit) + " 个叶 (" + std::to_string(groups) + " 组)");
+}
+
 ToolOut SearchLeaves(const Call &c, Seat &s) {
   const std::vector<Leaf> &leaves = s.desk.ctx().leaves;
   const std::string query = c.str("query");

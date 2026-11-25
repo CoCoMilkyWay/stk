@@ -69,6 +69,14 @@ std::string FeatureRes::text() const {
   return s;
 }
 
+std::string FeatureRes::title() const {
+  std::string s;
+  for (const Feat &f : feats)
+    s += (s.empty() ? "" : "; ") + text::head(f.raw, kGistExpr) + (!f.err.empty() ? std::string(" 没算成") : f.ok < 100 ? std::string(" 有效格太少")
+                                                                                                                        : " rIC " + r3(f.ric));
+  return s;
+}
+
 std::string FeatureRes::gist() const {
   std::string g;
   for (const size_t i : good)
@@ -124,8 +132,8 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
     const int total_T = static_cast<int>(cv.dates.size()) * seg;
     const size_t total_N = static_cast<size_t>(total_T) * static_cast<size_t>(A);
     const size_t st_smp = std::max<size_t>(1, total_N / kSample);
-    const int rstep = std::max(1, static_cast<int>(total_N / kCsCells));
-    const int cstep = std::max(1, total_T / kCorrRows);
+    const int rstep = row_step(static_cast<int>(total_N / kCsCells), seg);
+    const int cstep = row_step(total_T / kCorrRows, seg);
     const Engine::LegPlane &lb = *cv.blk.y.labels[0];
     const uint16_t *lv = lb.v[st::kLong].data();
     const int nt = F.S.ex.threads();
@@ -237,7 +245,7 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
             std::nth_element(cs.begin(), mid, cs.end());
             ac.med[static_cast<size_t>(u)] = *mid;
           }
-          if (u % rstep != 0)
+          if (u % rstep != 0 || !opens(u, env))
             continue;
           xa.clear(), ya.clear();
           for (int a = 0; a < A; ++a)

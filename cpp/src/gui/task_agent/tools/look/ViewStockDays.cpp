@@ -44,6 +44,10 @@ std::string StockDaysRes::text() const {
   return s + "\n" + tbl.str();
 }
 
+std::string StockDaysRes::title() const {
+  return code + " · " + days.front().date + " ~ " + days.back().date + " (" + std::to_string(days.size()) + " 日) · 收 " + num(days.front().close) + " → " + num(days.back().close);
+}
+
 ToolOut ViewStockDays(const Call &c, Bay &bay) {
   const ViewEnv &env = bay.env;
   Engine::FactorFlow &F = bay.flow;
@@ -126,7 +130,7 @@ ToolOut ViewStockDays(const Call &c, Bay &bay) {
           rec.amp = hi > lo ? (hi - lo) / pre : kNaN;
           const size_t kl = static_cast<size_t>(tl) * static_cast<size_t>(A) + static_cast<size_t>(a);
           const float mkt = row_mkt(cv.blk, tl);
-          rec.close_ex = lb.m[kl] ? static_cast<double>(h2f(lv[kl])) - mkt : kNaN;
+          rec.close_ex = lb.m[kl] && opens(d * seg + seg - 1, env) ? static_cast<double>(h2f(lv[kl])) - mkt : kNaN;
           if (has_fac)
             rec.fac_mean = mean_of(rks), rec.fac_close = rank_of_r16(cv.rx[kl]);
           for (size_t j = 0; j < feats.size(); ++j)
