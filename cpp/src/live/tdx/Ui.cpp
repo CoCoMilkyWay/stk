@@ -260,12 +260,10 @@ void show_bar() {
     return !func_trees().empty(); }, 5);
 }
 
-void click_func(const std::string &name) {
-  trace::Span span("功能树「" + name + "」");
-  const std::vector<Node> trees = func_trees();
-  if (trees.size() != 1)
-    fail(strf("交易功能树命中 %zu 个", trees.size()));
-  const Node &t = trees[0];
+namespace {
+
+// 功能树上找 name 并点它; 翻到底都没有 → false
+bool click_item(const Node &t, const std::string &name) {
   win::send(t.hwnd, win::kWmVscroll, win::kSbTop, 0);
   std::optional<std::vector<std::string>> seen;
   while (true) {
@@ -275,15 +273,31 @@ void click_func(const std::string &name) {
       if (it.text && *it.text == name) {
         const auto [x, y] = win::center(it);
         win::clickat(t.hwnd, t.rect[0] + x, t.rect[1] + y);
-        return;
+        return true;
       }
       names.push_back(it.text.value_or(""));
     }
     if (seen && names == *seen)
-      fail("交易功能树里没有「" + name + "」");
+      return false;
     seen = std::move(names);
     win::send(t.hwnd, win::kWmVscroll, win::kSbPagedown, 0);
   }
+}
+
+} // namespace
+
+void click_func(const std::string &name, const std::string &parent) {
+  trace::Span span("功能树「" + name + "」");
+  const std::vector<Node> trees = func_trees();
+  if (trees.size() != 1)
+    fail(strf("交易功能树命中 %zu 个", trees.size()));
+  const Node &t = trees[0];
+  if (click_item(t, name))
+    return;
+  if (parent.empty() || !click_item(t, parent))
+    fail("交易功能树里没有「" + name + "」");
+  if (!poll([&] { return click_item(t, name); }, 2, 0.2))
+    fail(strf("交易功能树点开「%s」后仍没有「%s」", parent.c_str(), name.c_str()));
 }
 
 // ---------- 页 ----------
@@ -341,6 +355,25 @@ Page open(const Open &o, double timeout) {
   trace::Span span(strf("开页「%s」", o.page), {{"col", o.col}});
   const Tab *t = std::find_if(std::begin(kTabs), std::end(kTabs), [&](const Tab &x) { return x.name == o.page; });
   return query(o, [&] { t != std::end(kTabs) ? win::post(host(), win::kWmCommand, t->cmd) : click_func(o.page); }, timeout);
+}
+
+Hwnd form(const std::string &page, const std::string &parent, long mark, const std::string &text, double timeout) {
+  trace::Span span("开页「" + page + "」", {{"mark", mark}, {"text", text}});
+  const Hwnd h = host();
+  idle(h, timeout);
+  click_func(page, parent);
+  return *until(
+      said(strf("「%s」页 (控件 %ld「%s」) 显示出来", page.c_str(), mark, text.c_str())),
+      [&]() -> std::optional<Hwnd> {
+        const std::vector<Hwnd> s = shown(h);
+        if (s.size() != 1)
+          return std::nullopt;
+        for (const Node &n : win::enum_(s[0]))
+          if (n.depth == 1 && n.id == mark && n.vis && n.title == text)
+            return s[0];
+        return std::nullopt;
+      },
+      timeout, 0.05);
 }
 
 // ---------- 弹框 ----------

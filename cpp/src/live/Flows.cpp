@@ -19,10 +19,12 @@ namespace {
 
 constexpr const char *kRate = "rate";
 constexpr const char *kHead = "date,code,name,price,qty,kind,amount,balance";
+constexpr const char *kDealHead = "date,time,code,name,side,price,qty,amount,fill,order";
 constexpr double kCent = 0.005; // 余额链容差 [元]
 
 std::atomic<uint64_t> gen{1};
 
+const std::set<std::string> kTrades = {"证券买入", "证券卖出", "融资买入"};
 const std::set<std::string> kHolds = {"证券买入", "证券卖出", "融资买入", "担保品划入", "新股入账"};
 const std::set<std::string> kPass = {"申购配号", "市值申购中签", "托管转出", "新股申购确认缴款"};
 
@@ -96,10 +98,24 @@ std::string reconcile(const std::vector<CashFlow> &rows, const Snapshot &s) {
   return out;
 }
 
+// 历史成交并入一次重查 (重查覆盖 from 日起)
+std::vector<Deal> merge_deals(const std::vector<Deal> &old, misc::Ymd from, std::vector<Deal> fresh) {
+  for (const Deal &d : fresh)
+    if (d.date < from)
+      fail(strf("历史成交重查 %s 起, 回来 %d 的行", misc::dash(from).c_str(), d.date));
+  std::vector<Deal> out(old.begin(), std::ranges::lower_bound(old, from, {}, &Deal::date));
+  out.insert(out.end(), std::make_move_iterator(fresh.begin()), std::make_move_iterator(fresh.end()));
+  return out;
+}
+
 void save(const Cache &c) {
   Pulled s{c.pulled, {{kRate, strf("%.6g", c.rate)}}, {}};
   for (const CashFlow &r : c.rows)
     s.rows.push_back({misc::dense(r.date), r.code, r.name, strf("%.4f", r.price), strf("%.2f", r.qty), r.kind, strf("%.2f", r.amount), strf("%.2f", r.balance)});
+  Pulled d{c.pulled, {}, {}};
+  for (const Deal &x : c.deals)
+    d.rows.push_back({misc::dense(x.date), fmt_sec(x.sec), x.code, x.name, side_name(x.side), strf("%.4f", x.price), std::to_string(x.qty), strf("%.2f", x.amount), x.fill_id, x.order_id});
+  save_pulled(disk::LiveDealsFile, kDealHead, d);
   save_pulled(disk::LiveFlowsFile, kHead, s);
   gen.fetch_add(1, std::memory_order_release);
 }
@@ -114,12 +130,36 @@ bool holds(const CashFlow &r) {
   return false;
 }
 
+bool traded(const CashFlow &r) { return kTrades.contains(r.kind); }
+
+void match(const std::vector<CashFlow> &rows, const std::vector<Deal> &deals, misc::Ymd from) {
+  std::map<std::pair<misc::Ymd, std::string>, std::pair<double, double>> by; // → (流水, 成交)
+  for (const CashFlow &r : rows)
+    if (r.date >= from && traded(r))
+      by[{r.date, r.code}].first += r.qty;
+  for (const Deal &d : deals)
+    if (d.date >= from)
+      by[{d.date, d.code}].second += static_cast<double>(d.side * d.qty);
+  std::string off;
+  for (const auto &[k, v] : by)
+    if (std::fabs(v.first - v.second) >= kShare)
+      off += strf("%s%d %s %.0f/%.0f", off.empty() ? "" : " · ", k.first, k.second.c_str(), v.first, v.second);
+  need(off.empty(), "历史成交对不上资金流水的买卖 (日 代码 流水/成交): " + off);
+}
+
 Cache load() {
   const Pulled s = load_pulled(disk::LiveFlowsFile, kHead);
-  Cache c{s.pulled, s.pulled ? std::stod(s.meta.at(kRate)) : 0, {}};
+  Cache c{s.pulled, s.pulled ? std::stod(s.meta.at(kRate)) : 0, {}, {}};
   for (const std::vector<std::string> &f : s.rows) {
     c.rows.push_back({misc::parse_ymd(f[0]), f[1], f[2], std::stod(f[3]), std::stod(f[4]), f[5], std::stod(f[6]), std::stod(f[7])});
     assert(c.rows.back().date > 0 && "资金流水账本: 日期");
+  }
+  for (const std::vector<std::string> &f : load_pulled(disk::LiveDealsFile, kDealHead).rows) {
+    Deal d;
+    d.date = misc::parse_ymd(f[0]), d.sec = parse_sec(f[1]), d.code = f[2], d.name = f[3], d.mkt = market_of(f[2]);
+    d.side = f[4] == side_name(kBuy) ? kBuy : kSell, d.price = std::stod(f[5]), d.qty = std::stoll(f[6]), d.amount = std::stod(f[7]), d.fill_id = f[8], d.order_id = f[9];
+    assert(d.date > 0 && d.sec >= 0 && (f[4] == side_name(kBuy) || f[4] == side_name(kSell)) && "历史成交账本: 日期 / 时刻 / 方向");
+    c.deals.push_back(std::move(d));
   }
   return c;
 }
@@ -130,6 +170,11 @@ Cache pull(Broker &b) {
   std::vector<CashFlow> fresh = b.flows(from);
   const size_t n = fresh.size();
   c.rows = merge(c.rows, from, std::move(fresh));
+  if (!c.rows.empty()) {
+    const misc::Ymd since = c.deals.empty() ? c.rows.front().date : c.deals.back().date;
+    c.deals = merge_deals(c.deals, since, b.deals(since));
+    match(c.rows, c.deals, c.deals.empty() ? since : c.deals.front().date);
+  }
   {
     trace::Span sp("核对");
     trace::live("刷新持仓, 核对资金流水…");

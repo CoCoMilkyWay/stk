@@ -631,6 +631,89 @@ void sheet(const live::rebal::Sheet *n, const live::rebal::Sheet *e, bool priv, 
   end_fit(kHeads, fit);
 }
 
+// 已清仓仍负债 (快照的; 可空) 与其合计
+std::vector<const live::Debt *> orphans_of(const live::Snapshot *s, double &owe) {
+  std::vector<const live::Debt *> os = s ? live::orphans(*s) : std::vector<const live::Debt *>{};
+  owe = 0;
+  for (const live::Debt *d : os)
+    owe += d->amount;
+  return os;
+}
+// 还款额 [元]: 输入框改过的, 否则 min(现金, 已清仓仍负债)
+double pay_of(const BoardState &st, const live::Snapshot *s, double owe) { return st.pay ? *st.pay * 1e4 : s ? std::min(s->acct.cash, owe)
+                                                                                                             : 0; }
+
+// 现金还款一行: 已清仓仍负债 只数 · 合计 (悬停列各只) · 还款额 [W] · 现金还款 (点了先确认)
+void repay_ctl(LiveHub &hub, BoardState &st) {
+  const live::Snapshot *s = hub.snapshot().get();
+  double owe = 0;
+  const std::vector<const live::Debt *> os = orphans_of(s, owe);
+  const bool priv = hub.priv();
+  ImGui::TextUnformatted("已清仓仍负债");
+  ImGui::SameLine();
+  if (os.empty())
+    ImGui::TextDisabled("无");
+  else
+    text_col(kHot, strf("%zu 只 %s", os.size(), priv ? kMask : wan(owe).c_str()));
+  if (ImGui::IsItemHovered()) {
+    std::string t = "持仓里已无、融资负债还在的 (卖出回款没还清的融资合约); 持仓着的负债不在此列, 归调仓管\n"
+                    "现金还它们: 省利息, 可融余量 + 本金, 可用保证金也随之增";
+    for (const live::Debt *d : os)
+      t += strf("\n  %s 负债 %s", sec_txt(*d, priv).c_str(), priv ? kMask : wan(d->amount).c_str());
+    tip("%s", t.c_str());
+  }
+  ImGui::SameLine(0, ImGui::GetFontSize());
+  const double pay = pay_of(st, s, owe);
+  ImGui::BeginDisabled(os.empty() || hub.busy());
+  if (priv) {
+    ImGui::TextDisabled("还 %s", kMask);
+  } else {
+    double w = pay / 1e4;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
+    if (ImGui::InputDouble("W##pay", &w, 0, 0, "%.2f"))
+      st.pay = std::max(0.0, w);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      tip("还款额 [万元], 默认 = min(现金, 已清仓仍负债); 各合约至多还到其应还 (本金 + 费用 + 利息, 利息先抵), 额度另以现金封顶");
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(pay < 0.01);
+  if (ImGui::SmallButton("现金还款"))
+    st.pay_ask = true;
+  ImGui::EndDisabled();
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    tip("客户端「融资业务 › 现金还款」页逐笔指定合约还 (已清仓仍负债的各只, 按开仓日期), 做完刷新一轮; 点了先确认");
+}
+
+void confirm_repay(LiveHub &hub, BoardState &st) {
+  if (st.pay_ask) {
+    ImGui::OpenPopup("确认现金还款");
+    st.pay_ask = false;
+  }
+  if (!ImGui::BeginPopupModal("确认现金还款", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    return;
+  const live::Snapshot *s = hub.snapshot().get();
+  double owe = 0;
+  const std::vector<const live::Debt *> os = orphans_of(s, owe);
+  const double pay = pay_of(st, s, owe);
+  const bool priv = hub.priv();
+  ImGui::Text("用现金还已清仓仍负债的融资合约 (指定合约, 按开仓日期逐笔), 共至多 %s?", priv ? kMask : wan(pay).c_str());
+  for (const live::Debt *d : os)
+    ImGui::Text("  %s 负债 %s", sec_txt(*d, priv).c_str(), priv ? kMask : wan(d->amount).c_str());
+  ImGui::TextDisabled("持仓着的负债不动; 额度另以现金封顶 (现金 %s)", priv || !s ? kMask : wan(s->acct.cash).c_str());
+  ImGui::BeginDisabled(os.empty() || pay < 0.01 || hub.busy());
+  if (ImGui::Button("还款")) {
+    hub.repay(pay);
+    st.pay.reset();
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("取消"))
+    ImGui::CloseCurrentPopup();
+  ImGui::EndPopup();
+}
+
 // 控件分组: 一行一组, 左格组名, 右格控件行与定高的状态行
 void groups(LiveHub &hub, BoardState &st) {
   if (!ImGui::BeginTable("##groups", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_BordersOuterH))
@@ -662,6 +745,7 @@ void groups(LiveHub &hub, BoardState &st) {
   row("账户");
   const PlanView &v = hub.plan();
   sheet(v.now ? &*v.now : nullptr, v.plan ? &v.plan->exp : nullptr, hub.priv(), st.acct_fit);
+  repay_ctl(hub, st);
   ImGui::EndTable();
 }
 
@@ -1397,6 +1481,7 @@ void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, Boar
   chart(data, quote, st, hub.priv());
   ImGui::EndChild();
   confirm_run(hub, st);
+  confirm_repay(hub, st);
 }
 
 } // namespace GUI::Live

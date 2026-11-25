@@ -3,6 +3,7 @@
 #include "live/tdx/shim/Tool.hpp"
 
 #include "live/Broker.hpp"
+#include "live/Flows.hpp"
 #include "live/Trace.hpp"
 #include "live/tdx/Cols.hpp"
 #include "live/tdx/Heap.hpp"
@@ -67,11 +68,27 @@ std::string read() {
   return strf("成交 %zu · 持仓 %zu · 挂单 %zu · 融资负债 %zu · 信用资产 %zu 项 · 净资产 %.2f", f.rows.size(), pos.list.size(), o.list.size(), d.list.size(), c.size(), r.acct.net);
 }
 
+// 已清仓仍负债 (现金还款的对象)
+std::string debts() {
+  std::apply([](auto... t) { ((std::ignore = ui::open(decltype(t)::kOpen)), ...); }, tables::kReads);
+  const Snapshot r = tables::reads();
+  std::string s;
+  double sum = 0;
+  for (const Debt *d : orphans(r)) {
+    s += strf("\n    %s %s %.2f", d->code.c_str(), d->name.c_str(), d->amount);
+    sum += d->amount;
+  }
+  return strf("负债 %zu 只 · 持仓 %zu 只 · 现金 %.2f · 负债 %.2f; 已清仓仍负债 %.2f:%s", r.debts.list.size(), r.pos.list.size(), r.acct.cash, r.acct.debt, sum, s.c_str());
+}
+
+// 资金流水与历史成交同窗各查, 逐 (日, 代码) 对上
 std::string flows() {
   std::apply([](auto... t) { ((std::ignore = ui::open(decltype(t)::kOpen)), ...); }, tables::kFlows);
   const misc::Ymd from = misc::add_days(misc::today_ymd(), -14);
   const std::vector<CashFlow> f = tables::flows(from);
-  return strf("%d 起 %zu 条", from, f.size());
+  const std::vector<Deal> d = tables::deals(from);
+  flows::match(f, d, from);
+  return strf("%d 起 流水 %zu 条 · 历史成交 %zu 笔, 买卖对上", from, f.size(), d.size());
 }
 
 std::string terms() {
@@ -124,7 +141,7 @@ struct Case {
   const char *name;
   std::string (*fn)();
 };
-constexpr Case kCases[] = {{"query", query}, {"busy", busy}, {"read", read}, {"flow", flows}, {"terms", terms}, {"fields", fields}};
+constexpr Case kCases[] = {{"query", query}, {"busy", busy}, {"read", read}, {"debts", debts}, {"flow", flows}, {"terms", terms}, {"fields", fields}};
 
 bool run(const Case &c) {
   const Clock::time_point t0 = Clock::now();

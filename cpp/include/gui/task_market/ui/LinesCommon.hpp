@@ -554,8 +554,9 @@ inline std::string lg_num(const char *fmt, double v) {
 // ---- 图 (LinesPlot.cpp) ----
 // 页 page 的默认区间 = 页表的默认档 (PageDef::span); 日轴空 → 空段
 LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates);
-// 页 page 的主图 (size 贴边占满): NAV → 资金曲线 (选中行), VAL / MARGIN → 标的 pin 的理想线 + 页的估值口集 band; 内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
-void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size);
+// 页 page 的主图 (size 贴边占满): NAV → 资金曲线 (选中行; 账户线上叠成交点 trades, 空 = 不叠), VAL / MARGIN → 标的 pin 的理想线 + 页的估值口集 band;
+//   内容 / 显隐变 → 重新 fit; 线尾小字 / 刻度 / 现价十字
+void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size, const Quote::Trades *trades);
 // 页 page 的区间条 (size): 全段策略线 (NAV) / VAL · MARGIN 标的理想线上拖选 ui.range[page]
 void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size);
 

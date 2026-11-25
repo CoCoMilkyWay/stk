@@ -178,6 +178,7 @@ enum class Seg : std::uint8_t {
   X(Live,              Output,            Dir,    Lit,       "live",              "",         false)       \
   X(LiveTermsFile,     Live,              File,   Lit,       "terms.csv",         "",         false)       \
   X(LiveFlowsFile,     Live,              File,   Lit,       "flows.csv",         "",         false)       \
+  X(LiveDealsFile,     Live,              File,   Lit,       "deals.csv",         "",         false)       \
   /* 运行产物 (各段的同构镜像) */                                                                           \
   X(Run,               Output,            Dir,    Lit,       "run",               "",         false)       \
   X(RunData,           Run,               Dir,    Lit,       "data",              "",         false)       \

@@ -2,7 +2,7 @@
 //   Driver (一个客户端一份): 同步, 调用线程跑完; 刷新线程与事务线程会同时调, 自身线程安全
 //     接: connect 接上客户端 (换了进程即重接, 接上即可读) → 是谁
 //     读: read 一问读齐 Snapshot 的五样 (fills / pos / pends / debts / acct; 适配可让几张表同时在途, 一趟往返)
-//     事务: 拉 terms / flows (慢) 与写 place (一张限价单, steps 即各步名, 其前 unsent 步不报出委托) 三样同形; 进度 (段 / 实时一行) 与记一条统一经 live::trace
+//     事务: 拉 terms / flows / deals (慢) 与写 place (一张限价单, steps 即各步名, 其前 unsent 步不报出委托) / repay (现金还款) 同形; 进度 (段 / 实时一行) 与记一条统一经 live::trace
 //     画面: mirror 可选, 给 GUI 复现客户端窗口 (live/Mirror.hpp)
 //   Broker (券商无关, 只此一份): 包一个 Driver + 刷新线程; 读由刷新线程发布, 事务由调用线程跑 (段 + 接上 + Driver), 两类同一个接入
 //     读: 一轮读进一份局部的 Snapshot, 轮末整份发布 (不可变; 指针换了 = 换了一份), 上层不见半轮也不见两轮的混合;
@@ -65,6 +65,12 @@ struct Fill : Entrust {
   bool operator==(const Fill &) const = default;
 };
 
+// 一笔历史成交 (券商口径, 截至上一交易日): 成交日 + 同当日成交
+struct Deal : Fill {
+  misc::Ymd date = 0;
+  bool operator==(const Deal &) const = default;
+};
+
 // 还挂着的委托
 struct Pending : Entrust {
   std::string status; // 已报 · 部成 …
@@ -122,6 +128,9 @@ struct Snapshot {
   int at = -1; // 本轮读完于 (当日秒); Driver::read 不填, Broker 填
 };
 
+// 已清仓仍负债: 融资负债里本只已无持仓 (余额 0) 的, 序同 debts
+std::vector<const Debt *> orphans(const Snapshot &s);
+
 // 两融条款 (一只)
 struct Term {
   std::string name;
@@ -173,6 +182,13 @@ struct Placed {
   std::string msg;
 };
 
+// 现金还款 (指定合约) 的一笔: 证券 / 合约编号 / 该合约应还 (本金 + 费用 + 利息) / 实还 [元] / 回报原文
+struct Repaid : Sec {
+  std::string contract;
+  double due = 0, amount = 0;
+  std::string msg;
+};
+
 // 客户端适配 (见文件头); 同步, 自身线程安全; 外部失败 → Fail
 class Driver {
 public:
@@ -184,7 +200,10 @@ public:
 
   virtual Terms terms() = 0;                               // 两融条款全表
   virtual std::vector<CashFlow> flows(misc::Ymd from) = 0; // from 日起 (含; 0 = 开户起) 至昨日的资金流水
+  virtual std::vector<Deal> deals(misc::Ymd from) = 0;     // from 日起 (含, > 0) 至昨日的历史成交
   virtual Placed place(const OrderReq &o) = 0;             // 停在失败的那一步
+  // 现金还款: codes 各只的融资合约依次指定合约还, 至多共 cap 元; 停在失败的那一笔 (此前各笔已还, 各记一条)
+  virtual std::vector<Repaid> repay(const std::vector<std::string> &codes, double cap) = 0;
 
   virtual std::span<const std::string_view> steps() const = 0; // place 的各步名 (即其各步的段名)
   virtual size_t unsent() const = 0;                           // steps 的前几步不报出委托: place 停在其中 = 什么都没报, 原样重下不会重复
@@ -211,7 +230,9 @@ public:
 
   Terms terms();
   std::vector<CashFlow> flows(misc::Ymd from);
+  std::vector<Deal> deals(misc::Ymd from);
   Placed place(const OrderReq &o);
+  std::vector<Repaid> repay(const std::vector<std::string> &codes, double cap);
   // 批量下单期间: 只跑要的轮 (request / sync), 不自起刷新、不排下单后的; fn 跑完 (成败都) 即恢复
   void batch(const std::function<void()> &fn);
 

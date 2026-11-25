@@ -269,8 +269,8 @@ constexpr PullDef kPullDefs[] = {
      terms_miss,
      terms_run},
     {{"更新资金流水", 1,
-      "客户端重查账本末日起的资金流水 (慢, 一窗 30 天), 并入账本; 再刷新一轮核对 (流水累计的持仓 + 今日成交 = 券商持仓) 才落 output/live/flows.csv\n"
-      "账户净值 (Market 自选首行「账户」) 随账本重放",
+      "客户端重查账本末日起的资金流水与历史成交 (慢, 一窗 30 天), 并入账本; 历史成交逐日逐只对上流水的买卖, 再刷新一轮核对 (流水累计的持仓 + 今日成交 = 券商持仓)\n"
+      "才落 output/live/flows.csv · deals.csv; 账户净值 (Market 自选首行「账户」) 随账本重放, 历史成交另给日内回推与成交点",
       "", "资金流水账本拉于哪天 (账本截至其前一日)"},
      flows_miss,
      flows_run},
@@ -379,6 +379,26 @@ void rebal_task(Core &c) {
     live::fail(strf("%zu 单没下成, 其余照下: %s%s", fails.size(), s.c_str(), after.empty() ? "" : ("; 末了刷新失败: " + after).c_str()));
   }
   live::need(after.empty(), "各单已下, 末了刷新失败: %s", after.c_str());
+}
+
+// 现金还款: 刷新后的已清仓仍负债各只, 共至多 cap 元 (另以现金封顶); 各笔 broker 各记一条; 末了的刷新失败只记进结局
+void repay_task(Core &c, double cap) {
+  const auto snap = sync(c);
+  std::vector<std::string> codes;
+  double owe = 0;
+  for (const live::Debt *d : live::orphans(*snap))
+    codes.push_back(d->code), owe += d->amount;
+  live::need(!codes.empty(), "没有已清仓仍负债的");
+  cap = std::min(cap, snap->acct.cash);
+  live::need(cap >= 0.01, "现金 %s, 还不了", wan(snap->acct.cash).c_str());
+  live::trace::note("repay", strf("已清仓仍负债 %zu 只共 %s, 现金还至多 %s", codes.size(), wan(owe).c_str(), wan(cap).c_str()), {{"codes", codes}, {"owe", owe}, {"cap", cap}});
+  const std::vector<live::Repaid> r = c.broker->repay(codes, cap);
+  double sum = 0;
+  for (const live::Repaid &x : r)
+    sum += x.amount;
+  live::trace::note("repay", strf("已还 %zu 笔共 %s", r.size(), wan(sum).c_str()), {{"n", r.size()}, {"sum", sum}});
+  const std::string after = live::guard([&] { sync(c); });
+  live::need(after.empty(), "已还 %zu 笔共 %s, 末了刷新失败: %s", r.size(), wan(sum).c_str(), after.c_str());
 }
 
 // 后台起一件事务; 已有事务在跑 → 不收, false.
@@ -660,6 +680,11 @@ void LiveHub::pull(Pull p) {
 void LiveHub::run() {
   assert(connected());
   start(c_, "执行调仓", rebal_task);
+}
+
+void LiveHub::repay(double cap) {
+  assert(connected() && cap > 0);
+  start(c_, "现金还款", [cap](Core &c) { repay_task(c, cap); });
 }
 
 } // namespace GUI::Live

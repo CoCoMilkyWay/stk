@@ -3,7 +3,10 @@
 #include "api/sina/client.hpp"
 #include "features/Panel/PoolSelect.hpp" // pool::next_day
 
+#include <algorithm>
 #include <cassert>
+#include <map>
+#include <utility>
 
 namespace GUI::Quote {
 
@@ -154,6 +157,30 @@ Source Joint::of(uint32_t key) const {
     }
   }
   o.joined = o.today && (o.daily.empty() || view->joins(live->prev));
+  return o;
+}
+
+Trades rebin(const Trades &t, int span) {
+  assert(span >= 1 && kSlots % span == 0);
+  std::map<std::pair<misc::Ymd, int>, TradeMark> by;
+  for (const TradeMark &m : t.marks) {
+    const int s = m.slot / span * span;
+    TradeMark &b = by[{m.date, s}];
+    b.date = m.date, b.slot = s, b.span = span;
+    for (const int side : live::kSides)
+      b.amount[side] += m.amount[side];
+    for (const TradeSec &x : m.secs) {
+      auto it = std::ranges::find(b.secs, x.code, &TradeSec::code);
+      if (it == b.secs.end())
+        it = b.secs.insert(it, TradeSec{.code = x.code, .name = x.name});
+      for (const int side : live::kSides)
+        it->amount[side] += x.amount[side], it->qty[side] += x.qty[side];
+    }
+  }
+  Trades o;
+  o.marks.reserve(by.size());
+  for (auto &[k, m] : by)
+    o.marks.push_back(std::move(m));
   return o;
 }
 

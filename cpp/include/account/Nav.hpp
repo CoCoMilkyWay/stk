@@ -49,7 +49,7 @@ struct Trade {
 };
 // 一日的分钟指数 (历史回放 / 当日同一份): 持仓 d.hold 按各只分钟收计价, 末槽对齐 d.nav; 槽 s 尚未发生的成交 (槽晚于 s) 退回:
 //   nav_s = d.nav + Σ 股 × (收_s − 末收) − Σ_{槽 > s 的成交} (现金腿 + 股 × 收_s) (该只无分钟按成交价), out[s] = idx0 × growth(nav0, nav_s, d.flow);
-//   path(代码) = 该只 [out.size()] 逐槽收 (无根沿用上一根, 首根前 = 前收; 空 = 无分钟 → 不动); trades 空 = 不回推 (历史流水无成交时刻)
+//   path(代码) = 该只 [out.size()] 逐槽收 (无根沿用上一根, 首根前 = 前收; 空 = 无分钟 → 不动); trades 空 = 不回推 (资金流水无成交时刻, 时刻取历史成交 / 券商今日成交)
 void intraday(const Day &d, double nav0, double idx0, std::span<const Trade> trades, const std::function<std::span<const float>(const std::string &)> &path,
               std::span<double> out);
 // 券商现价: date 日的观测点 (只用于 px 里全无收盘的证券; date 不晚于其末笔成交 → 不用)

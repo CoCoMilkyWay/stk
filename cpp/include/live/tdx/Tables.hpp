@@ -52,7 +52,7 @@ struct Positions {
 struct Fills {
   using Row = Fill;
   static constexpr const char *kName = "成交";
-  static constexpr ui::Open kOpen{"成交", "成交编号"};
+  static constexpr ui::Open kOpen{"成交", "成交编号", "成交日期"};
   static constexpr std::array<int, 1> kFuncs{1108};
   static constexpr auto kCols = std::tuple{
       col<&Row::sec, as::clock>("成交时间", 0),
@@ -188,10 +188,39 @@ struct CashFlows {
   static void check(const Row &r); // 带股数的行有代码
 };
 
-// 各表按 Driver 的用处分三组: 读五样 (序同 Snapshot) / 拉两融条款 / 拉资金流水
+// 页上的表头没有买卖标志、账号类别两列 (应答里有); 认页: 资金流水 / 交割单也有成交日期, 以发生金额分开
+struct Deals {
+  using Row = Deal;
+  static constexpr const char *kName = "历史成交";
+  static constexpr ui::Open kOpen{"历史成交", "成交日期", "发生金额"};
+  static constexpr std::array<int, 1> kFuncs{1110};
+  static constexpr auto kCols = std::tuple{
+      col<&Row::date, as::ymd>("成交日期", 0),
+      col<&Row::sec, as::clock>("成交时间", 1),
+      col<&Row::code, as::code>("证券代码", 2),
+      col<&Row::name, as::text>("长简称", 4),
+      col<&Row::side, as::side>("买卖方向", 6), // 列 5 是买卖标志 (0 / 1, 只分买卖)
+      col<&Row::price, as::num>("成交价格", 7),
+      col<&Row::qty, as::shares>("成交数量", 8),
+      col<&Row::amount, as::num>("成交金额", 9),
+      col<&Row::fill_id, as::text>("成交编号", 10),
+      col<&Row::order_id, as::text>("委托编号", 11),
+      col<&Row::mkt, as::flag>("账号类别", 13),
+  };
+  using Index = cols::Plain;
+  // 同成交, 但卖出的成交数量为负 (组合查询里取绝对值)、早些的行成交金额为 0 (组合查询里补成价 × 量);
+  //   不是成交的行不核, 组合查询里剔掉: 买卖标志不分业务, 只能按量价与时刻认 — 费用一类的记账量 0, 申购配号价 0,
+  //   担保品划入 / 基金申购确认 / 新股申购与入账 / 指定交易记在盘后或半夜 (15:00:02 / 16:00:00 / 18:… / 00:00:0x),
+  //   成交在 09:15 ~ 15:00:01 (收盘集合竞价的有记作 15:00:01 的)
+  static void check(const Row &r);
+  static bool dealt(const Row &r) { return r.qty != 0 && r.price > 0 && kOpenSec <= r.sec && r.sec <= kCloseSec; }
+  static constexpr int kOpenSec = 9 * 3600 + 15 * 60, kCloseSec = 15 * 3600 + 1;
+};
+
+// 各表按 Driver 的用处分三组: 读五样 (序同 Snapshot) / 拉两融条款 / 拉资金流水与历史成交
 inline constexpr std::tuple<Fills, Positions, Pendings, Debts, Assets> kReads{};
 inline constexpr std::tuple<Margins, Collats> kTerms{};
-inline constexpr std::tuple<CashFlows> kFlows{};
+inline constexpr std::tuple<CashFlows, Deals> kFlows{};
 inline constexpr auto kAll = std::tuple_cat(kReads, kTerms, kFlows);
 
 // S 的各功能号里插件发过的那个 (直发有入参可照搬); 都没发过 → 0
@@ -240,8 +269,10 @@ auto read(std::tuple<S...>) {
 //   两融条款 = 标的证券 × 担保品两表一并各翻页到底 (担保品近万只, 约十余页), 以 (市场, 代码) 为键, 合成时按代码归一 (跨市场同号的只留 market_of 那只)
 //   资金流水 = from 日起 (含) 至昨日 (客户端只给到上一日), 按窗 (客户端一次至多查 30 天) 覆盖起止日入参直发, 各窗应答按日接起;
 //     from = 0 即从昨日往前逐窗查到连续几窗无流水 (开户前)
+//   历史成交 = 同资金流水 (同一对起止日入参, 同窗), from > 0
 Snapshot reads();
 Terms terms();
 std::vector<CashFlow> flows(misc::Ymd from);
+std::vector<Deal> deals(misc::Ymd from);
 
 } // namespace live::tdx::tables

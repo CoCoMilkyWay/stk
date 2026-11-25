@@ -341,6 +341,7 @@ set(MATH_PRECISE
     live/tdx/Flash.cpp
     live/tdx/Heap.cpp
     live/tdx/Proc.cpp
+    live/tdx/Repay.cpp
     live/tdx/Req.cpp
     live/tdx/Schema.cpp
     live/tdx/Shim.cpp

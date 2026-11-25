@@ -3,6 +3,7 @@
 #include "live/Trace.hpp"
 #include "live/tdx/Flash.hpp"
 #include "live/tdx/Heap.hpp"
+#include "live/tdx/Repay.hpp"
 #include "live/tdx/Req.hpp"
 #include "live/tdx/Shim.hpp"
 #include "live/tdx/Tables.hpp"
@@ -80,9 +81,18 @@ public:
     prime(tables::kFlows);
     return tables::flows(from);
   }
+  std::vector<Deal> deals(misc::Ymd from) override {
+    prime(tables::kFlows);
+    return tables::deals(from);
+  }
   Placed place(const OrderReq &o) override {
     const auto g = gate();
     return flash::place(o);
+  }
+  std::vector<Repaid> repay(const std::vector<std::string> &codes, double cap) override {
+    const auto g = gate();
+    ui::show_bar();
+    return tdx::repay::run(codes, cap);
   }
   std::span<const std::string_view> steps() const override { return flash::steps(); }
   size_t unsent() const override { return flash::unsent(); }

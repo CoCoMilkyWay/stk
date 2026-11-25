@@ -193,7 +193,7 @@ void SyncLinesWatch(LinesState &ui) {
 
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
                    const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
-                   const std::shared_ptr<const Quote::Holdings> &hold, const std::shared_ptr<const Quote::Trades> &trades) {
+                   const std::shared_ptr<const Quote::Holdings> &hold, const Quote::TradeBins &trades) {
   assert(page >= 0 && page < kPages);
   const PageDef &pd = kPageDefs[page];
   PortfolioResult res;
@@ -275,7 +275,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
         for (size_t r = 0; r < d.rows[g].size(); ++r)
           if (const LinesRow &h = d.rows[g][r]; h.ref.ok() && picked(ui, page, h)) {
             const bool acct = kind == kOverlayIntra && h.ref.is(Quote::kAccount);
-            picks.push_back({h.ref, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag, acct && ui.trades ? trades : nullptr,
+            picks.push_back({h.ref, ImGui::ColorConvertFloat4ToU32(row_color(d, g, r, kTrade)), h.tag, acct && ui.trades ? trades[Quote::kBinIntra] : nullptr,
                              acct ? hold : nullptr});
             ids.push_back(&h.id);
           }
@@ -297,7 +297,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
     ImGui::BeginGroup();
     if (ih > 0.0f)
       overlay_child("##pf_overlay", ImVec2(left, ih), pd.overlay);
-    RenderLinesPlot(ui, page, pin, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph)); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
+    RenderLinesPlot(ui, page, pin, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph), ui.trades ? trades[Quote::kBinDay].get() : nullptr); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
     RenderLinesRange(ui, page, pin, ImVec2(left, kRangeH));
     ImGui::EndGroup();
     break;

@@ -2846,16 +2846,16 @@ typedef void *(__attribute__((thiscall)) * th_new)(void *, DWORD, DWORD);
 typedef DWORD(__attribute__((thiscall)) * th_0)(void *);
 typedef DWORD(__attribute__((thiscall)) * th_1)(void *, DWORD);
 typedef DWORD(__attribute__((thiscall)) * th_str)(void *, DWORD, const char *,
-                                                 DWORD);
+                                                  DWORD);
 typedef DWORD(__attribute__((thiscall)) * th_int)(void *, DWORD, DWORD);
 typedef DWORD(__attribute__((thiscall)) * th_send)(void *, HWND, DWORD, DWORD,
-                                                  DWORD);
+                                                   DWORD);
 typedef DWORD(__attribute__((thiscall)) * th_get)(void *, DWORD, char *, DWORD,
-                                                 DWORD);
+                                                  DWORD);
 #define VSLOT(obj, k) ((*(void ***)(obj))[k])
 
-// 持仓 / 资金 / 精简持仓 / 撤单 / 成交 / 资金流水 / 信用资产 / 标的证券 / 担保品 / 融资负债
-static const DWORD REQ_FUNCS[] = {1228, 104,  1114, 1100, 1108,
+// 持仓 / 资金 / 精简持仓 / 撤单 / 成交 / 历史成交 / 资金流水 / 信用资产 / 标的证券 / 担保品 / 融资负债
+static const DWORD REQ_FUNCS[] = {1228, 104, 1114, 1100, 1108, 1110,
                                   1118, 3200, 3216, 3220, 3264};
 
 struct req_field {

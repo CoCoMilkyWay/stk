@@ -4,10 +4,12 @@
 #include "misc/date.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdlib>
 #include <iterator>
 #include <map>
 #include <set>
+#include <tuple>
 
 namespace live::tdx::tables {
 
@@ -24,6 +26,13 @@ void Positions::check(const Row &r) {
 void Fills::check(const Row &r) {
   need_row(kName, r.qty > 0 && r.price > 0 && !r.fill_id.empty(), r.code, "成交行数值异常");
   need_row(kName, cols::isclose(r.price * static_cast<double>(r.qty), r.amount, 1e-4, 0.02), r.code, "金额 ≠ 价 × 量");
+}
+
+void Deals::check(const Row &r) {
+  if (!dealt(r))
+    return;
+  need_row(kName, (r.qty > 0) == (r.side == kBuy) && !r.fill_id.empty(), r.code, "成交行数值异常");
+  need_row(kName, r.amount == 0 || cols::isclose(r.price * static_cast<double>(std::abs(r.qty)), r.amount, 1e-4, 0.02), r.code, "金额 ≠ 价 × 量");
 }
 
 void Pendings::check(const Row &r) {
@@ -70,16 +79,32 @@ Term term_of(const Margin *m, const Collat *c, Mkt mkt) {
   return t;
 }
 
-std::vector<CashFlow> flow_window(misc::Ymd lo, misc::Ymd hi, size_t idx) {
+// 按日起止的表 S 的一窗 [lo, hi]
+template <class S>
+std::vector<typename S::Row> window(misc::Ymd lo, misc::Ymd hi, size_t idx) {
   trace::Span span(strf("第 %zu 窗", idx), {{"lo", lo}, {"hi", hi}});
-  std::vector<CashFlow> rows = read<CashFlows>({{kFlowFrom, misc::dense(lo)}, {kFlowTo, misc::dense(hi)}});
-  for (const CashFlow &r : rows)
+  std::vector<typename S::Row> rows = read<S>({{kFlowFrom, misc::dense(lo)}, {kFlowTo, misc::dense(hi)}});
+  for (const typename S::Row &r : rows)
     if (r.date < lo || hi < r.date)
-      fail(strf("资金流水 %s ~ %s 的应答里有 %d 的行", misc::dash(lo).c_str(), misc::dash(hi).c_str(), r.date));
-  std::string text = strf("资金流水 %s ~ %s: %zu 条", misc::dash(lo).c_str(), misc::dash(hi).c_str(), rows.size());
+      fail(strf("%s %s ~ %s 的应答里有 %d 的行", S::kName, misc::dash(lo).c_str(), misc::dash(hi).c_str(), r.date));
+  std::string text = strf("%s %s ~ %s: %zu 条", S::kName, misc::dash(lo).c_str(), misc::dash(hi).c_str(), rows.size());
   trace::live(text);
-  trace::note("window", std::move(text), {{"lo", lo}, {"hi", hi}, {"n", rows.size()}});
+  trace::note("window", std::move(text), {{"tab", S::kName}, {"lo", lo}, {"hi", hi}, {"n", rows.size()}});
   return rows;
+}
+
+// 表 S 自 from 日 (> 0) 起至 end 逐窗查, 各窗接起
+template <class S>
+std::vector<typename S::Row> windows(misc::Ymd from, misc::Ymd end) {
+  std::vector<typename S::Row> out;
+  size_t idx = 0;
+  for (misc::Ymd lo = from; lo <= end;) {
+    const misc::Ymd hi = std::min(misc::add_days(lo, kFlowSpan - 1), end);
+    std::vector<typename S::Row> w = window<S>(lo, hi, ++idx);
+    out.insert(out.end(), std::make_move_iterator(w.begin()), std::make_move_iterator(w.end()));
+    lo = misc::add_days(hi, 1);
+  }
+  return out;
 }
 
 // 信用资产 c → 信用账户
@@ -129,26 +154,36 @@ Terms terms() {
 
 std::vector<CashFlow> flows(misc::Ymd from) {
   const misc::Ymd end = misc::add_days(misc::today_ymd(), -1);
-  std::vector<std::vector<CashFlow>> wins;
+  std::vector<CashFlow> out;
   if (from) {
-    for (misc::Ymd lo = from; lo <= end;) {
-      const misc::Ymd hi = std::min(misc::add_days(lo, kFlowSpan - 1), end);
-      wins.push_back(flow_window(lo, hi, wins.size() + 1));
-      lo = misc::add_days(hi, 1);
-    }
+    out = windows<CashFlows>(from, end);
   } else {
+    std::vector<std::vector<CashFlow>> wins;
     misc::Ymd hi = end;
     for (int idle = 0; idle < kFlowIdle;) {
       const misc::Ymd lo = misc::add_days(hi, 1 - kFlowSpan);
-      wins.insert(wins.begin(), flow_window(lo, hi, wins.size() + 1));
+      wins.insert(wins.begin(), window<CashFlows>(lo, hi, wins.size() + 1));
       idle = wins.front().empty() ? idle + 1 : 0;
       hi = misc::add_days(lo, -1);
     }
+    for (std::vector<CashFlow> &w : wins)
+      out.insert(out.end(), std::make_move_iterator(w.begin()), std::make_move_iterator(w.end()));
   }
-  std::vector<CashFlow> out;
-  for (std::vector<CashFlow> &w : wins)
-    out.insert(out.end(), std::make_move_iterator(w.begin()), std::make_move_iterator(w.end()));
   trace::ev("flows", {{"n", out.size()}});
+  return out;
+}
+
+std::vector<Deal> deals(misc::Ymd from) {
+  assert(from > 0);
+  std::vector<Deal> out = windows<Deals>(from, misc::add_days(misc::today_ymd(), -1));
+  std::erase_if(out, [](const Deal &d) { return !Deals::dealt(d); });
+  for (Deal &d : out) {
+    d.qty = std::abs(d.qty);
+    if (d.amount == 0)
+      d.amount = d.price * static_cast<double>(d.qty);
+  }
+  std::stable_sort(out.begin(), out.end(), [](const Deal &a, const Deal &b) { return std::tie(a.date, a.sec) < std::tie(b.date, b.sec); });
+  trace::ev("deals", {{"n", out.size()}});
   return out;
 }
 

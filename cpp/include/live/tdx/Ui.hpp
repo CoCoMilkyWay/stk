@@ -24,8 +24,9 @@ win::Hwnd main_wnd(); // 通达信主窗 (须唯一)
 
 // ---------- 交易栏 ----------
 
-void show_bar();                          // 交易栏收起了即点顶栏「交易」, 等功能树出来; 用交易栏的事务开头各调一次
-void click_func(const std::string &name); // 点交易功能树上的 name: 树只给可见项, 滚到顶后逐页往下找, 翻不动即到底
+void show_bar(); // 交易栏收起了即点顶栏「交易」, 等功能树出来; 用交易栏的事务开头各调一次
+// 点交易功能树上的 name: 树只给可见项, 滚到顶后逐页往下找, 翻不动即到底; 找不到而给了 parent (name 的上级, 收着) 即点它展开再找一遍
+void click_func(const std::string &name, const std::string &parent = "");
 
 // ---------- 页 ----------
 
@@ -46,6 +47,9 @@ struct Open {
 // act 让客户端查一次: 等认得出的那页 (见 Open) 显示着、且其查询键 act 后禁用过且此刻可用. act 前等空闲; 各至多 timeout 秒
 Page query(const Open &o, const std::function<void()> &act, double timeout = kQueryWait);
 Page open(const Open &o, double timeout = kQueryWait); // 页签即向宿主投其命令, 否则点功能树; 经 query 等查完
+// 表单页 (还款一类, 没有查询键、不查): 等空闲后点功能树 parent › page, 等显示着的页上有可见的、id 为 mark 且字为 text 的控件 (认页;
+//   信用交易各表单页共用一套控件, 只显隐与标签不同) → 页
+win::Hwnd form(const std::string &page, const std::string &parent, long mark, const std::string &text, double timeout = kQueryWait);
 
 // ---------- 弹框 ----------
 

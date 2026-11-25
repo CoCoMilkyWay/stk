@@ -138,12 +138,14 @@ struct EquityDay {
   misc::Ymd date = 0;
   double base = 0, pnl = 0;
 };
+struct Trades; // 账户的成交点 (见下)
 // 账户回放的摘要 (PriceView 给; 随账户侧的 Tape 一并换): 回放末日净值 / 其后账本里的外部进出 / 回放各日外部进出之和 (累计净转入) / 末日收后持仓 / 逐日基数与累计真实盈亏;
 //   账户全史 = 时间加权指数 (前收 = 前一日指数, 恒带分钟); 当日 = 末日指数 × growth(nav, 净资产_s, 进出) (account::intraday)
 struct Equity {
   double nav = 0, after = 0, in = 0;
   std::vector<Holding> hold; // 计价 = 末日收盘
   std::shared_ptr<const std::vector<EquityDay>> days;
+  std::shared_ptr<const Trades> trades; // 回放各日的历史成交点 (一分钟一档; 无账本 = 空)
   // 当日资金基数 (同 account::growth: 券商持仓计入末日后进出 after, 回放持仓不计)
   double today_base(bool broker) const { return std::max(nav + std::max(broker ? after : 0.0, 0.0), 0.0); }
 };
@@ -197,20 +199,31 @@ struct Holdings {
   double now(const Live *y) const;                                     // 此刻净资产; y 空 = net
   bool operator==(const Holdings &) const = default;
 };
-// 账户的当日成交点 (AccountHub 给; 不可变, 成交一变才换): 券商今日成交按所在分钟根 (槽) 聚合, 一分钟一点, 点内同只合并; 买卖镜像 (live::Sides)
+// 账户的成交点 (不可变): 每笔成交落 (日, 所在分钟根的槽; 竞价并入首根), 再按 (日, 档) 聚合 (档 = 每 span 槽, 上下午各自整除不跨午休), 档内同只合并; 买卖镜像 (live::Sides)
+//   历史 = 账本的历史成交 (价格库回放时出, 一分钟一档, Equity::trades), 当日 = 券商今日成交; AccountHub 并起来再按两档 (TradeBin) 各聚合一份
 struct TradeSec {
   std::string code, name;
   live::Sides<double> amount, qty; // 额 [元] / 股
 };
 struct TradeMark {
-  int slot = 0;
-  live::Sides<double> amount; // 本分钟合计 [元]
-  std::vector<TradeSec> secs; // 首见序
+  misc::Ymd date = 0;
+  int slot = 0, span = 1;                                // 档的首槽 / 槽数
+  live::Sides<double> amount;                            // 本档合计 [元]
+  std::vector<TradeSec> secs;                            // 首见序
+  double mid() const { return slot + (span - 1) / 2.0; } // 画在档的中间
 };
 struct Trades {
-  misc::Ymd date = 0;
-  std::vector<TradeMark> marks; // 槽升序
+  std::vector<TradeMark> marks; // (日, 槽) 升序
 };
+// 成交点的两档 [槽]: NAV 日内栏 / NAV 主图
+enum TradeBin : int { kBinIntra,
+                      kBinDay,
+                      kTradeBins };
+inline constexpr int kBinSlots[kTradeBins] = {5, 30};
+using TradeBins = std::array<std::shared_ptr<const Trades>, kTradeBins>; // [TradeBin]
+static_assert(kSlots / 2 % kBinSlots[kBinDay] == 0 && kBinSlots[kBinDay] % kBinSlots[kBinIntra] == 0, "成交点的档: 上下午各自整除");
+// t 的各点 (任意档) 按 span 槽一档重聚合
+Trades rebin(const Trades &t, int span);
 
 // 一个标的的源 (Joint 给): 日序列 = 日线 + 接得上的当日 (末项); 各处只经它读 (下标 / 分钟根 / 复权同一口径), 接续不再自判
 struct Source {

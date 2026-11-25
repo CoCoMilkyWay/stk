@@ -135,7 +135,7 @@ void post(const Hwnd &h, unsigned msg, long wp, const std::string &lp) {
   need(shim::cmd("post", h, msg, wp, lp).at(0).at("ret").get<long>() != 0, "PostMessage %s %#x 失败", h.c_str(), msg);
 }
 
-void send(const Hwnd &h, unsigned msg, long wp, long lp) { shim::cmd("send", h, msg, wp, lp); }
+long send(const Hwnd &h, unsigned msg, long wp, long lp) { return shim::cmd("send", h, msg, wp, lp).at(0).at("ret").get<long>(); }
 
 std::string title(const Hwnd &h) { return shim::cmd("rect", h).at(0).at("title").get<std::string>(); }
 

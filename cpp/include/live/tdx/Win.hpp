@@ -55,7 +55,7 @@ Layer detail(const Hwnd &h, double timeout = 5);     // 标准控件的子项 (�
 // ---------- 消息与输入 ----------
 
 void post(const Hwnd &h, unsigned msg, long wp, const std::string &lp = "0");
-void send(const Hwnd &h, unsigned msg, long wp, long lp);
+long send(const Hwnd &h, unsigned msg, long wp, long lp); // → 返回值
 std::string title(const Hwnd &h);
 std::string text(const Hwnd &h, double timeout = 5);
 void settext(const Hwnd &h, const std::string &s);

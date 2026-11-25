@@ -11,6 +11,14 @@ namespace live {
 
 bool synced(const Position &h, const Traded *f) { return h.balance <= 0 || h.traded == (f ? f->qty : Sides<int64_t>{}); }
 
+std::vector<const Debt *> orphans(const Snapshot &s) {
+  std::vector<const Debt *> out;
+  for (const Debt &d : s.debts.list)
+    if (const Position *p = s.pos.find(d.code); d.amount > 0 && (!p || p->balance == 0))
+      out.push_back(&d);
+  return out;
+}
+
 nlohmann::json to_json(const OrderReq &o) {
   return {{"code", o.code}, {"name", o.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}};
 }
@@ -215,10 +223,18 @@ std::vector<CashFlow> Broker::flows(misc::Ymd from) {
   return c_->txn("资金流水", {{"from", from}}, [&] { return c_->d->flows(from); });
 }
 
+std::vector<Deal> Broker::deals(misc::Ymd from) {
+  return c_->txn("历史成交", {{"from", from}}, [&] { return c_->d->deals(from); });
+}
+
 Placed Broker::place(const OrderReq &o) {
   const Placed p = c_->txn("下单", to_json(o), [&] { return c_->d->place(o); });
   c_->kick();
   return p;
+}
+
+std::vector<Repaid> Broker::repay(const std::vector<std::string> &codes, double cap) {
+  return c_->txn("现金还款", {{"codes", codes}, {"cap", cap}}, [&] { return c_->d->repay(codes, cap); });
 }
 
 void Broker::batch(const std::function<void()> &fn) {

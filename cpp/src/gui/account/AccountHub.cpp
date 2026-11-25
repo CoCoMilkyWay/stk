@@ -2,7 +2,6 @@
 
 #include "fundamental/AssetAxis.hpp"
 #include "gui/account/AccountSide.hpp"
-#include "live/Rebal.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -18,12 +17,12 @@ namespace {
 
 using live::strf;
 
-// 今日成交 → 日内回推的成交: 槽同成交点 (竞价并入首根), 至多到此刻的槽 last (券商时钟领先新浪也算已发生); 费用按费率估 (live::rebal::fee)
+// 今日成交 → 日内回推的成交 (槽至多到此刻的槽 last)
 std::vector<account::Trade> trades_in(const live::Fills &f, int last) {
   std::vector<account::Trade> out;
   out.reserve(f.rows.size());
   for (const live::Fill &x : f.rows)
-    out.push_back({std::clamp(Quote::sec_slot(x.sec), 0, last), x.code, x.side * static_cast<double>(x.qty), x.price, -x.side * x.amount - live::rebal::fee(x.amount, x.side)});
+    out.push_back(trade_of(x, last));
   return out;
 }
 
@@ -95,32 +94,30 @@ account::Spot spot_of(const live::Snapshot &s) {
   return o;
 }
 
-// 今日成交 → 成交点: 时刻 (当日秒) 落所在分钟根 (竞价并入首根), 一分钟一点, 点内同只合并
-std::shared_ptr<const Quote::Trades> trades_of(const live::Fills &f) {
-  std::map<int, Quote::TradeMark> by;
-  for (const live::Fill &x : f.rows) {
-    assert(x.sec >= 0);
-    Quote::TradeMark &m = by[std::clamp(Quote::sec_slot(x.sec), 0, Quote::kSlots - 1)];
-    auto it = std::ranges::find(m.secs, x.code, &Quote::TradeSec::code);
-    if (it == m.secs.end())
-      it = m.secs.insert(it, Quote::TradeSec{.code = x.code, .name = x.name});
-    m.amount[x.side] += x.amount;
-    it->amount[x.side] += x.amount;
-    it->qty[x.side] += static_cast<double>(x.qty);
-  }
-  auto t = std::make_shared<Quote::Trades>();
-  t->date = misc::today_ymd();
-  for (auto &[s, m] : by) {
-    m.slot = s;
-    t->marks.push_back(std::move(m));
-  }
-  return t;
+// 成交点两档: 历史 h (回放的, 今日不取; 可空) + 今日成交 f (可空) 并起来, 各按档聚合; 都没有 → 空
+Quote::TradeBins trades_of(const Quote::Trades *h, const live::Fills *f) {
+  const misc::Ymd today = misc::today_ymd();
+  Quote::Trades all;
+  if (h)
+    for (const Quote::TradeMark &m : h->marks)
+      if (m.date < today)
+        all.marks.push_back(m);
+  if (f)
+    for (const live::Fill &x : f->rows) {
+      assert(x.sec >= 0);
+      all.marks.push_back(mark_of(today, x));
+    }
+  Quote::TradeBins out;
+  if (!all.marks.empty())
+    for (int b = 0; b < Quote::kTradeBins; ++b)
+      out[b] = std::make_shared<const Quote::Trades>(Quote::rebin(all, Quote::kBinSlots[b]));
+  return out;
 }
 
 } // namespace
 
 void AccountHub::feed(const std::shared_ptr<const live::Snapshot> &snap) {
-  fed_.update(snap.get(), [&](Fed &f) { f = {snap, snap ? spot_of(*snap) : account::Spot{}, snap ? trades_of(snap->fills) : nullptr}; });
+  fed_.update(snap.get(), [&](Fed &f) { f = {snap, snap ? spot_of(*snap) : account::Spot{}}; });
 }
 
 std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live) {
@@ -133,6 +130,7 @@ std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const 
     if (!(h && x.hold && *h == *x.hold))
       x.hold = std::move(h);
     x.note = se ? note_of(*se, view->equity, x.hold.get()) : "";
+    x.trades = trades_of(t ? view->equity.trades.get() : nullptr, f.snap ? &f.snap->fills : nullptr);
   });
   const Held &x = held_.val;
   day_.update({held_.gen, live ? live->ver : 0}, [&](std::shared_ptr<const Quote::Day> &d) {

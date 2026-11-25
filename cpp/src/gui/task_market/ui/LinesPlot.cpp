@@ -422,12 +422,34 @@ void acct_hover(const LinesDerived &d, const LinesView &v, size_t n_lim, bool cr
   ImGui::EndTooltip();
 }
 
+// 账户线 s 上的成交点: 各档 (日在日轴里) 画在档的中间, 只取切片内的; y = 切片在该处的值 (相邻点插值)
+std::vector<TradeDot> nav_dots(const LinesDerived &d, const LinesSlice &s, const Quote::Trades &t) {
+  std::vector<TradeDot> out;
+  const size_t n = s.size();
+  if (n == 0)
+    return out;
+  const auto r = std::views::iota(size_t{0}, n);
+  for (const Quote::TradeMark &m : t.marks) {
+    const auto di = std::ranges::lower_bound(d.dates, m.date);
+    if (di == d.dates.end() || *di != m.date)
+      continue;
+    const double x = x_of(static_cast<size_t>(di - d.dates.begin()), m.mid());
+    if (x < s.x(0) || x > s.x(n - 1))
+      continue;
+    const size_t j = static_cast<size_t>(std::ranges::partition_point(r, [&](size_t k) { return s.x(k) < x; }) - r.begin());
+    const double y = j == 0 || s.x(j) == x ? s.y(j) : s.y(j - 1) + (s.y(j) - s.y(j - 1)) * (x - s.x(j - 1)) / (s.x(j) - s.x(j - 1));
+    out.push_back({x, y, &m});
+  }
+  return out;
+}
+
 // ---- NAV 主图: 画选中行的两条线, 按组表画层 (for_each_layer; 策略在最上层) + 图例矩阵 (最上层, nav_legend);
 //      日内形未到的行 (minute_wait) 整行不画、不进图例, 到了一次画成分钟线;
 //      行刚选中 → ui.reveal 强制回默认显隐一次 (理想列显, 可成交列隐);
 //      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示; 鼠标在图例矩阵上不算), hot 行显示的线白粗线画在最上;
+//      账户线上叠成交点 (trades: 30 分钟一档; 空 = 不叠), 鼠标近一点 → 提示该档成交 (代替账户线悬停);
 //      账户线悬停 (只显账户线时全图带十字线吸附, 多线时近线触发) 显示前复权净资产与区间复权 / 真正回撤 ----
-void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf) {
+void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf, const Quote::Trades *trades) {
   static ImRect s_box;      // 上帧图例矩阵 (悬停找线避开)
   std::vector<NavRow> rows; // 画序, 只含选中行的
   for_each_layer([&](int g) {
@@ -486,7 +508,17 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
       ImPlot::SetNextLineStyle(kHotCol, kHotW);
       plot_slice(pf, id, *on[j].s, ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit);
     }
-  if (v.acct.ok() && ImPlot::IsPlotHovered() && !in_box && (only_acct || hit_acct))
+  bool on_dot = false;
+  if (const auto a = std::ranges::find_if(on, [](const On &x) { return x.row->ref.is(Quote::kAccount); }); trades && a != on.end()) {
+    const std::vector<TradeDot> dots = nav_dots(d, *a->s, *trades);
+    if (const TradeDot *dot = PlotTradeDots(dots); dot && !in_box) {
+      on_dot = true;
+      ImGui::BeginTooltip();
+      TradeTip(*dot->m);
+      ImGui::EndTooltip();
+    }
+  }
+  if (v.acct.ok() && ImPlot::IsPlotHovered() && !in_box && !on_dot && (only_acct || hit_acct))
     acct_hover(d, v, hit_acct ? on[static_cast<size_t>(k)].s->size() : v.slice[kGroupAccount][0][kIdeal].size(), only_acct, ui.log_y);
   s_box = nav_legend(ui, rows);
 }
@@ -779,7 +811,7 @@ LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates) {
 // ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) ↔ MARGIN (plot_margin: 左轴占比 + 右轴价格) 同一框: 贴边 (窄内边距, 不标轴名); y 恒贴合 + 留白 (fit_margin, 各轴各留);
 //      x: 恒贴合 (视野只随区间; 滚轮 = 钉住右端缩放区间, wheel_x); x 右端留出线尾小字 / 刻度 / 十字标签;
 //      左上角 = 区间档位条 (span_bar) + 其下图例矩阵 ----
-void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size) {
+void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size, const Quote::Trades *trades) {
   const LinesDerived &d = ui.der.val;
   const LinesView &v = ui.view.val;
   const ValSetId vals = kPageDefs[page].vals;
@@ -820,7 +852,7 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
     const ImPlotRect cur = ImPlot::GetPlotLimits(); // 先锁 setup, FitThisFrame 才定
     PlotFrame pf{fit_x() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}, ui.view.gen};
     if (nav)
-      plot_nav(ui, d, v, pf);
+      plot_nav(ui, d, v, pf, trades);
     else if (pin.g >= 0 && !wait && mg)
       plot_margin(ui, range, d, v, pin, pf);
     else if (pin.g >= 0 && !wait)

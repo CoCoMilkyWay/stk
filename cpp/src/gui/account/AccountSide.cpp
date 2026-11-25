@@ -1,10 +1,12 @@
 #include "gui/account/AccountSide.hpp"
 
 #include "fundamental/AssetAxis.hpp"
+#include "live/Rebal.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <map>
 #include <span>
 #include <unordered_map>
 
@@ -36,6 +38,18 @@ Quote::Day path_day(misc::Ymd d, float ref, std::span<const double> v) {
 }
 
 } // namespace
+
+account::Trade trade_of(const live::Fill &x, int last) {
+  return {std::clamp(Quote::sec_slot(x.sec), 0, last), x.code, x.side * static_cast<double>(x.qty), x.price, -x.side * x.amount - live::rebal::fee(x.amount, x.side)};
+}
+
+Quote::TradeMark mark_of(misc::Ymd d, const live::Fill &x) {
+  Quote::TradeMark m{.date = d, .slot = std::clamp(Quote::sec_slot(x.sec), 0, kSlots - 1)};
+  m.amount[x.side] = x.amount;
+  m.secs.push_back({x.code, x.name});
+  m.secs.back().amount[x.side] = x.amount, m.secs.back().qty[x.side] = static_cast<double>(x.qty);
+  return m;
+}
 
 Quote::Holding holding(const std::string &code, double qty, double px) {
   const AssetAxis &ax = asset_axis();
@@ -79,6 +93,13 @@ Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, 
       }
   const std::vector<account::Day> ds = account::replay(l.rows, l.rate, std::vector<misc::Ymd>(dates.begin() + static_cast<ptrdiff_t>(i0), dates.end()), px, spot);
   assert(ds.size() == D - i0 && "账户回放: 日数与日脊不符");
+  std::map<misc::Ymd, std::vector<account::Trade>> trades; // 日 → 该日的历史成交 (回推用)
+  Quote::Trades marks;
+  for (const live::Deal &x : l.deals)
+    if (x.date >= ds.front().date && x.date <= ds.back().date) {
+      trades[x.date].push_back(trade_of(x, kSlots - 1));
+      marks.marks.push_back(mark_of(x.date, x));
+    }
   auto block = std::make_shared<std::vector<Quote::Packed>>(ds.size());
   auto se = std::make_shared<Quote::Series>();
   se->minute = true;
@@ -99,7 +120,9 @@ Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, 
       at.candle = h.daily[j];
       return &at;
     };
-    const Quote::Day y = k > 0 ? day_of(d, ds[k - 1].nav, ds[k - 1].index, {}, static_cast<size_t>(kSlots), of) : path_day(d.date, 1.f, flat);
+    const auto t = trades.find(d.date);
+    const std::span<const account::Trade> ts = t != trades.end() ? std::span<const account::Trade>(t->second) : std::span<const account::Trade>{};
+    const Quote::Day y = k > 0 ? day_of(d, ds[k - 1].nav, ds[k - 1].index, ts, static_cast<size_t>(kSlots), of) : path_day(d.date, 1.f, flat);
     Quote::Packed &m = (*block)[k];
     se->daily.push_back(y.candle), se->adj.push_back(1.0);
     se->mins.push_back(y.bars.has.any() ? Quote::Series::Mins{&m, Quote::pack(y.bars, y.bars.net, false, m), 1.0} : Quote::Series::Mins{});
@@ -117,7 +140,7 @@ Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, 
     }
     days->push_back({ds[k].date, base, pnl});
   }
-  o.eq = {ds.back().nav, account::flow_after(l.rows, ds.back().date), 0, {}, std::move(days)};
+  o.eq = {ds.back().nav, account::flow_after(l.rows, ds.back().date), 0, {}, std::move(days), std::make_shared<const Quote::Trades>(Quote::rebin(marks, 1))};
   for (const account::Day &d : ds)
     o.eq.in += d.flow;
   for (const account::Hold &h : ds.back().hold)

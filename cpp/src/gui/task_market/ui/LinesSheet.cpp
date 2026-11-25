@@ -935,9 +935,9 @@ void page_tool(PageTool t, LinesState &ui) {
     if (toggle_button("交易", ui.trades))
       ui.trades = !ui.trades;
     if (ImGui::IsItemHovered())
-      tip("日内栏的账户线上叠券商今日成交点 (要选中账户行、Live 连着券商)\n"
-          "• 一分钟一点 (成交时刻所在的分钟根, 竞价并入首根), 点内同只多笔合并\n"
-          "• 净买红 ▲ / 净卖绿 ▼, 大小随该分钟买卖总额; 鼠标靠近一点看该分钟各只的买 / 卖额与股数");
+      tip("日内栏与主图的账户线上叠成交点 (要选中账户行): 账本的历史成交 (Live「更新资金流水」同拉) + 券商今日成交 (Live 连着券商)\n"
+          "• 日内栏 5 分钟一档、主图 30 分钟一档 (成交时刻所在的分钟根, 竞价并入首根), 档内同只多笔合并\n"
+          "• 净买红 ▲ / 净卖绿 ▼, 大小随该档买卖总额 (按图内最大); 鼠标靠近一点看该档各只的买 / 卖额与股数");
     return;
   case kToolBandYears:
     ImGui::SetNextItemWidth(ImGui::CalcTextSize("Band 滚动窗 00 年").x + 2.0f * ImGui::GetStyle().FramePadding.x);
