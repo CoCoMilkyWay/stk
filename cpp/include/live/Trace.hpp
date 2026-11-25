@@ -24,7 +24,7 @@
 //     popup {title, hwnd}                等到的弹框                        form {px, dflt, unit, cap0, cap, n}  填单的价、默认价、单位、最大量、股数
 //     gate {ms}                          界面锁被占着, 等了 ms             unsynced {try}  持仓与成交对不上
 //     acct {assets, line, debt, net, avail, cash}  读到的信用账户      placed {qty, px, msg}  委托回报
-//     terms {n}  两融条款只数            flows {n}  资金流水总条数
+//     terms {n}  两融条款只数            ledger {flows, deals}  账本一段的资金流水条数 / 历史成交笔数
 //     note 各条 (事务里): order / quote / job / acct / plan / terms / window / flows / ok / err {…, text}
 #pragma once
 
@@ -55,10 +55,9 @@ inline long ms_since(std::chrono::steady_clock::time_point t0) {
   return static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
 }
 
-// loud = false: 段内一概不记 (连同嵌套的段), 仍镜像进 Track
 class Span {
 public:
-  explicit Span(std::string name, Kw kw = Kw::object(), bool loud = true);
+  explicit Span(std::string name, Kw kw = Kw::object());
   ~Span();
   Span(const Span &) = delete;
   Span &operator=(const Span &) = delete;

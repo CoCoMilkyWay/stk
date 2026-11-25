@@ -3,15 +3,15 @@
 // =============================================================================
 // Tools — agent 的工具真相表: 系统提示的 "工具" 节 / 回复解析 / 参数校验 / 界面都从同一张表出
 // =============================================================================
-//   回复 = {"calls": [{"tool": 名, "args": {...}}, ...]}; 系统按序执行, 下一条消息按序交回结果
+//   回复 = 一个调用 {"tool": 名, "args": {...}}; 系统执行后, 下一条消息交回它的结果
 //   执行方式 Exec (唯一分派轴):
 //     Sync   GUI 线程当场做完 (查特征叶 / 列候选与正式库 / 全局记录 / 提交 / 结束)
 //     Lab    交右翼 worker 后台执行 (回测 eval_factor / 观察 view_* / 盘口重放 view_book / 研报库 search_docs · search_factors · read_doc)
 //     Human  等研究员点选答案 (ask_human)
 //   校验两层:
-//     协议层 (ParseCalls): JSON 结构 / 工具名 / 参数类型与范围 / 批限额 → 不合则整批不执行, 记成一轮错批, 下一条 = 重交要求
-//     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 研报 id 不成 → 仅该调用 ok=false 写原因, 其余照做
-//   工具清单 AGENT_TOOLS (唯一顺序 = Tool 的值): 一行一个工具 (枚举, id, 中文名, 执行, 类, 研究树留原文);
+//     协议层 (ParseCall): JSON 结构 / 工具名 / 参数类型与范围 → 不合则不执行, 记成一步错, 下一条 = 重交要求
+//     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 研报 id 不成 → 该调用 ok=false 写原因
+//   工具清单 AGENT_TOOLS (唯一顺序 = Tool 的值): 一行一个工具 (枚举, id, 中文名, 执行, 类, 折叠后留原文);
 //     Tool 挂入 AGENT_ROWS (Named + Tabled): def(t) 编译期取元数据, IdOf / FindId / JSON 序列化与其他枚举同一套
 //     说明表 doc(t) (Tools.cpp) 存编译期类型化参数表 ArgDef 与成文说明; 实现表 kSpecs (tools/Kit.cpp) 按清单拼名并编译期核签名
 //   每个工具四面对仗: 输入 Call → 结构化结果 Res (唯一载体, tools/<类>.hpp) → 原文 text()/gist() (tools/<类>/<工具>.cpp) ↔ 展示 draw() (ui/<类>/<工具>.cpp)
@@ -53,7 +53,7 @@ struct CatDef {
 inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Trial", "回测"}, {"Query", "检索"}, {"Note", "记录"}, {"Misc", "其他"}, {"Session", "会话"}};
 AGENT_ROWS(Cat, kCats, Session);
 
-// 工具清单: X(枚举, id, 中文名, 执行, 类, 研究树留结论原文)
+// 工具清单: X(枚举, id, 中文名, 执行, 类, 上下文折叠后仍留原文)
 #define AGENT_TOOLS(X)                                                \
   X(ViewFeature, "view_feature", "看特征", Lab, Look, false)          \
   X(ViewLayers, "view_layers", "看分层", Lab, Look, false)            \
@@ -81,7 +81,7 @@ AGENT_ROWS(Cat, kCats, Session);
   X(Finish, "finish", "结束", Sync, Misc, true)                       \
   X(AskHuman, "ask_human", "问研究员", Human, Misc, true)             \
   X(BuildContext, "build_context", "拼上下文", Sync, Session, false)  \
-  X(CheckBatch, "check_batch", "核整批调用", Sync, Session, false)    \
+  X(CheckCall, "check_call", "核调用", Sync, Session, false)          \
   X(ProbeBrain, "probe_brain", "试跑大模型", Lab, Session, false)
 
 #define AGENT_TOOL_ID(T, id, cn, E, C, keep) T,
@@ -156,7 +156,15 @@ struct Call {
 
 // 一个调用的参数按参数表校验并补缺省 (path = 报错里参数的前缀); 不合的各条进 errs
 bool CallOf(Tool t, const nlohmann::ordered_json &args, const std::string &path, Call &out, std::vector<std::string> &errs);
-bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &error);
+
+// 大脑的一条回复 ↔ 一个调用 (协议层): 解析 (不合 = error 一行一处) / 写回协议形
+struct CallCheck {
+  Call call;
+  std::string error;
+  bool ok() const { return error.empty(); }
+};
+CallCheck ParseCall(std::string_view reply, bool ask);
+std::string CallJson(const Call &c);
 std::string ToolsDoc(bool ask);
 
 // ---- 工具的结构化结果 (唯一载体: Mine 时间线与 Bench 工作台共用) ----

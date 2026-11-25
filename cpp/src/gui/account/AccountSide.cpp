@@ -37,24 +37,6 @@ Quote::Day path_day(misc::Ymd d, float ref, std::span<const double> v) {
   return y;
 }
 
-// 回放末日 last 收后仍持有的各只的开仓日: 逐行累计计入持仓的股数, 由 0 (不足 kShare) 转正的那日即开仓
-std::shared_ptr<const Quote::Opens> opens_of(const std::vector<live::CashFlow> &rows, misc::Ymd last) {
-  std::unordered_map<std::string, std::pair<double, misc::Ymd>> q; // 代码 → (股, 开仓日)
-  for (const live::CashFlow &r : rows) {
-    if (r.date > last || !live::flows::holds(r))
-      continue;
-    auto &[n, d] = q[r.code];
-    if (n < live::flows::kShare && r.qty > 0)
-      d = r.date;
-    n += r.qty;
-  }
-  auto out = std::make_shared<Quote::Opens>();
-  for (const auto &[code, x] : q)
-    if (x.first >= live::flows::kShare)
-      out->emplace(code, x.second);
-  return out;
-}
-
 } // namespace
 
 account::Trade trade_of(const live::Fill &x, int last) {
@@ -69,10 +51,10 @@ Quote::TradeMark mark_of(misc::Ymd d, const live::Fill &x) {
   return m;
 }
 
-Quote::Holding holding(const std::string &code, double qty, double px) {
+Quote::Holding holding(account::Hold h) {
   const AssetAxis &ax = asset_axis();
-  const size_t id = ax.find(live::asset_sym(live::market_of(code), code));
-  return {code, id < ax.size() ? static_cast<uint32_t>(id) : Quote::Ref::kNone, qty, px};
+  const size_t id = ax.find(live::asset_sym(live::market_of(h.code), h.code));
+  return {std::move(h), id < ax.size() ? static_cast<uint32_t>(id) : Quote::Ref::kNone};
 }
 
 Quote::Day day_of(const account::Day &d, double nav0, double idx0, std::span<const account::Trade> trades, size_t n, const DayOf &of) {
@@ -158,11 +140,11 @@ Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, 
     }
     days->push_back({ds[k].date, base, pnl});
   }
-  o.eq = {ds.back().nav, account::flow_after(l.rows, ds.back().date), 0, {}, std::move(days), std::make_shared<const Quote::Trades>(Quote::rebin(marks, 1)), opens_of(l.rows, ds.back().date)};
+  o.eq = {ds.back().nav, account::flow_after(l.rows, ds.back().date), 0, {}, std::move(days), std::make_shared<const Quote::Trades>(Quote::rebin(marks, 1))};
   for (const account::Day &d : ds)
     o.eq.in += d.flow;
   for (const account::Hold &h : ds.back().hold)
-    o.eq.hold.push_back(holding(h.code, h.qty, h.px));
+    o.eq.hold.push_back(holding(h));
   return o;
 }
 

@@ -159,35 +159,35 @@ struct Ui {
   ImGuiTextFilter leaf_filter, op_filter, tool_filter, note_filter, cand_filter;
   std::vector<catalog::PoolRow> pool_rows; // 池下拉 (打开时扫)
   Phase seen_phase = Phase::None;          // 刚进 Choose: 切到过程页一次
-  size_t flow_rounds = 0;                  // 过程页上一帧画过的轮数
+  size_t flow_steps = 0;                   // 过程页上一帧画过的步数
   std::string message;
   std::string seen_dir; // 界面在跟的会话目录 (空 = 无会话); 换了 = 刚开 / 载入了一段 (New / Test / 载入 / 外部 agent 的 open 同一处跟上)
   // 本会话要求 (只随下次 New / Test 发, 不落 ui.json); fold_remark = 刚开会话, 下一帧把它折起
   std::string remark;
   bool fold_remark = false;
-  // 过程页的跟随: pinned = 钉在底部跟新内容 (人往上滚 / 点开合即放开, 回到底部再钉); jump = 点了状态行, 跳到当前轮
+  // 过程页的跟随: pinned = 钉在底部跟新内容 (人往上滚 / 点开合即放开, 回到底部再钉); jump = 点了状态行, 跳到当前一步
   bool pinned = true, jump = false;
   float flow_y = 0.0f; // 上一帧的滚动位置
   // 两个 worker 在跑那件事的样子 (每帧 live 同步)
   ChatLive chat_live;
   LabLive lab_live;
-  // 在收那轮: 增量总量与它上次变的时刻 (量静默)
+  // 在收那一步: 增量总量与它上次变的时刻 (量静默)
   size_t live_n = 0;
   double live_t = 0.0;
-  // 在收那轮思考块的自动开合: 思考时开, 转正文收; 人点过就不再动
-  size_t think_round = SIZE_MAX;
+  // 在收那一步思考块的自动开合: 思考时开, 转正文收; 人点过就不再动
+  size_t think_step = SIZE_MAX;
   bool think_open = false, think_touched = false;
   // 载入菜单的会话一览 (打开菜单时扫)
   std::vector<Saved> saved;
   // 插话的草稿 (按 "插话" 进 Mine::memo 排队)
   std::string memo;
-  // 过程页各轮展开着的 "agent 看到的上下文" (收起即丢): 键 = 轮; sig = 算它时的样子 (轮数 / 这轮发出时刻 / 消息与插话字节数), 变了重算
+  // 过程页各步展开着的 "agent 看到的上下文" (收起即丢): 键 = 步; sig = 算它时的样子 (步数 / 这一步发出时刻 / 消息与插话字节数), 变了重算
   struct Ctx {
     std::tuple<size_t, double, size_t, size_t> sig;
     std::string body;
   };
   std::unordered_map<size_t, Ctx> ctx;
-  // 回退确认框: 回到第 k 轮; loss = 会丢的; open = 下一帧打开
+  // 回退确认框: 回到第 k 步; loss = 会丢的; open = 下一帧打开
   struct Rewind {
     int k = 0;
     Mine::Loss loss;
@@ -235,7 +235,7 @@ bool ui_json_valid(const nlohmann::json &j) {
   const bool scope_ok = sc.contains("pool") && sc["pool"].is_string() && sc.contains("level") && sc["level"].is_number_integer() && sc.contains("hold") &&
                         sc["hold"].is_number_integer() && sc.contains("lob") && sc["lob"].is_boolean() && sc.contains("years") && sc["years"].is_number_integer() &&
                         sc.contains("leaves") && sc["leaves"].is_object() && sc.contains("ops") && sc["ops"].is_object();
-  return scope_ok && gt.contains("ric") && gt["ric"].is_number() && bg.contains("rounds") && bg["rounds"].is_number_integer() && bg.contains("minutes") &&
+  return scope_ok && gt.contains("ric") && gt["ric"].is_number() && bg.contains("steps") && bg["steps"].is_number_integer() && bg.contains("minutes") &&
          bg["minutes"].is_number_integer() && j.contains("backend") &&
          j["backend"].is_number_integer() && j.contains("model") && j["model"].is_string() && j.contains("via_proxy") && j["via_proxy"].is_array() &&
          j["via_proxy"].size() == kBackendN && j.contains("proxy_host") && j["proxy_host"].is_string() && j.contains("proxy_port") &&
@@ -254,7 +254,7 @@ void load_ui(Ui &s) {
   }
   const Options &o = s.opt;
   ok = ok && o.backend >= 0 && o.backend < kBackendN && o.proxy_port > 0 && o.proxy_port < 65536 && o.gpu >= -1 && o.gpu <= 1 &&
-       o.prompt >= 0 && o.prompt < static_cast<int>(kNum<Msg>) && o.sc.years >= 1 && o.budget.rounds >= 0 && o.budget.minutes >= 0;
+       o.prompt >= 0 && o.prompt < static_cast<int>(kNum<Msg>) && o.sc.years >= 1 && o.budget.steps >= 0 && o.budget.minutes >= 0;
   if (!ok)
     s.opt = Options{};
   if (!catalog::gpu())
@@ -316,24 +316,24 @@ std::string topic(std::string_view s, bool live) {
   return live ? text::head(tail, kTopicChars) : std::string();
 }
 
-// 在收那轮此刻的样子 (每帧量): 等首包 → 思考 → 正文; quiet = 多久没来新增量
+// 在收那一步此刻的样子 (每帧量): 等首包 → 思考 → 正文; quiet = 多久没来新增量
 constexpr double kQuietS = 20.0; // 静默超过这么久标黄
 struct Flow {
   enum Stage : uint8_t { Idle,
                          Wait,
                          Think,
                          Write } stage = Idle;
-  double since = 0.0, quiet = 0.0, writing = 0.0; // 本轮发出至今 / 距上个增量 / 正文已写
+  double since = 0.0, quiet = 0.0, writing = 0.0; // 本条发出至今 / 距上个增量 / 正文已写
   std::string topic;
   bool remote = false; // 外部 agent 驱动: 只有等它交批, 没有流
   bool stalled() const { return stage != Idle && !remote && quiet > kQuietS; }
 };
-// 阶段由末轮的 Span 定, 静默由镜像 s.chat_live 的增量量 (外部 agent: 恒为等)
+// 阶段由末步的 Span 定, 静默由镜像 s.chat_live 的增量量 (外部 agent: 恒为等)
 Flow flow_of(Ui &s, const Mine &m) {
   Flow f;
   if (m.timeline.empty() || !m.timeline.back().span.running())
     return f;
-  const Round &rd = m.timeline.back();
+  const Step &rd = m.timeline.back();
   if (m.remote()) {
     f.stage = Flow::Wait, f.remote = true, f.since = rd.span.len(m.now());
     return f;
@@ -356,7 +356,7 @@ Flow flow_of(Ui &s, const Mine &m) {
 }
 // 阶段一句 (进行时) + 用时 + 静默
 std::string doing(const Flow &f) {
-  std::string h = f.remote                 ? "等外部 agent 交这一批… " + dur(f.since)
+  std::string h = f.remote                 ? "等外部 agent 交调用… " + dur(f.since)
                   : f.stage == Flow::Wait  ? "等待首包… " + dur(f.since)
                   : f.stage == Flow::Think ? "思考中… " + dur(f.since)
                                            : "输出中… " + dur(f.writing);
@@ -366,12 +366,7 @@ std::string doing(const Flow &f) {
 }
 
 // 在做的调用 (Act / Choose 中; 否则空)
-const Act *acting(const Mine &m) {
-  if (m.phase() != Phase::Act && m.phase() != Phase::Choose)
-    return nullptr;
-  const std::vector<Act> &as = m.timeline.back().acts;
-  return m.acting() < as.size() ? &as[m.acting()] : nullptr;
-}
+const Act *acting(const Mine &m) { return m.phase() == Phase::Act || m.phase() == Phase::Choose ? m.acting() : nullptr; }
 const char *step_name(const TrialRes &k) { return k.run.began() ? "Run" : "Search"; }
 
 // ---- 会话行: New / Test / 载入 / 继续 / 交答案 / Cancel / 关闭 ----
@@ -394,10 +389,10 @@ void follow(Ui &s) {
   if (dir.empty())
     return;
   s.message.clear();
-  s.fold_remark = true, s.flow_rounds = 0, s.pinned = true;
+  s.fold_remark = true, s.flow_steps = 0, s.pinned = true;
 }
 
-// 载入菜单: 本作用域存过的会话, 新到旧; 一行 = 时刻 / 轮数 / 停下原因 / 候选与入库 / 大脑, 悬浮看目录与要求
+// 载入菜单: 本作用域存过的会话, 新到旧; 一行 = 时刻 / 步数 / 停下原因 / 候选与入库 / 大脑, 悬浮看目录与要求
 void saved_menu(const SharedData &data, Ui &s, const Scope &sc) {
   if (s.saved.empty()) {
     ImGui::TextDisabled("本作用域 (%s) 还没有存过的会话", catalog::label(sc).c_str());
@@ -405,8 +400,8 @@ void saved_menu(const SharedData &data, Ui &s, const Scope &sc) {
   }
   for (const Saved &x : s.saved) {
     const nlohmann::ordered_json &b = x.brief;
-    const std::string why = b.at("live").get<bool>() ? "没停稳就退出了" : b.at("reason").get<std::string>();
-    const std::string label = stamp_text(x.stamp) + (x.test ? " · 自检" : "") + " · " + std::to_string(b.at("rounds").get<int>()) + " 轮 · " + text::head(why, 24) + " · 候选 " +
+    const std::string reason = b.at("reason").get<std::string>(), why = reason.empty() ? "没停稳就退出了" : reason;
+    const std::string label = stamp_text(x.stamp) + (x.test ? " · 自检" : "") + " · " + std::to_string(b.at("steps").get<int>()) + " 步 · " + text::head(why, 24) + " · 候选 " +
                               std::to_string(b.at("cands").get<int>()) + " · 入库 " + std::to_string(b.at("adopted").size()) + " · " + b.at("brain").get<std::string>() + "###" + x.dir;
     if (ImGui::Selectable(label.c_str())) {
       load_session(data, s, x);
@@ -467,7 +462,7 @@ void session_row(const SharedData &data, Ui &s, const Scope &active_sc) {
     ImGui::OpenPopup("##saved");
   }
   ImGui::EndDisabled();
-  tip("载入本作用域 (池 / 层 / 持有期) 存过的一段会话: 停在它停下处, 可继续, 也可右键某一轮回退");
+  tip("载入本作用域 (池 / 层 / 持有期) 存过的一段会话: 停在它停下处, 可继续, 也可右键某一步回退");
   if (ImGui::BeginPopup("##saved")) {
     saved_menu(data, s, active_sc);
     ImGui::EndPopup();
@@ -617,7 +612,7 @@ void tools_bar(const Tally &c) {
   ImGui::EndTooltip();
 }
 
-// ---- 现在在干什么 (点了跳到当前轮) + 会话累计 (一行要点, 悬浮看全) ----
+// ---- 现在在干什么 (点了跳到当前一步) + 会话累计 (一行要点, 悬浮看全) ----
 void now_row(Ui &s, const Mine &m, const Flow &f) {
   const Phase ph = m.phase();
   if (ph == Phase::None) {
@@ -633,7 +628,7 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
   TaskStatus::Kind kind = TaskStatus::Kind::Busy;
   float frac = -1.0f; // 在做那步的进度 (−1 = 不画)
   if (f.stage != Flow::Idle) {
-    what = "第 " + std::to_string(m.timeline.size()) + " 轮 · agent " + doing(f);
+    what = StepTag(m.step()) + " · agent " + doing(f);
     if (!f.topic.empty())
       what += " · " + f.topic;
     if (!live.thinking.empty())
@@ -652,8 +647,7 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
         what = "处理回复";
         break;
       }
-      what = "第 " + std::to_string(m.timeline.size()) + " 轮 · 调用 " + std::to_string(m.acting() + 1) + "/" + std::to_string(m.timeline.back().acts.size()) + " " +
-             text::head(a->call.text(), kTopicChars);
+      what = StepTag(m.step()) + " " + def(a->call.tool).cn + " · " + text::head(a->call.text(), kTopicChars);
       if (const TrialRes *k = AsTrial(*a)) {
         char pct[32];
         std::snprintf(pct, sizeof(pct), " %.0f%%", ll.frac * 100.0);
@@ -688,13 +682,13 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
       s.jump = true;
     if (ImGui::IsItemHovered()) {
       ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-      ImGui::SetTooltip("点击跳到当前轮");
+      ImGui::SetTooltip("点击跳到当前一步");
     }
   }
-  ImGui::TextDisabled("用时 %s · token %s · %zu 轮 · 候选 %d · 入库 %d", dur(t).c_str(), kilo(all.usage.prompt + all.usage.completion).c_str(), m.timeline.size(),
+  ImGui::TextDisabled("用时 %s · token %s · 调用 %d · 候选 %d · 入库 %d", dur(t).c_str(), kilo(all.usage.prompt + all.usage.completion).c_str(), all.all(),
                       all.staged(), all.adopted);
   tip_long("用时 " + dur(t) + " (LLM " + dur(all.llm_s) + " · 执行 " + dur(all.act_s) + ")\ntoken 输入 " + kilo(all.usage.prompt) + " (缓存 " + kilo(all.usage.cached) + ") / 输出 " +
-           kilo(all.usage.completion) + "\n" + std::to_string(m.timeline.size()) + " 轮 · 调用 " + std::to_string(all.all()) + " (观察 " + std::to_string(all.n(Cat::Look)) +
+           kilo(all.usage.completion) + "\n" + std::to_string(m.timeline.size()) + " 步 · 调用 " + std::to_string(all.all()) + " (观察 " + std::to_string(all.n(Cat::Look)) +
            " · 查研报 " + std::to_string(all.docs()) + " · 没做成 " + std::to_string(all.failed()) + ")\n候选 " + std::to_string(all.staged()) + " (有参数组 " +
            std::to_string(all.n(Verdict::Weights)) + ") · 提交 " + std::to_string(all.n(Tool::SubmitFactor)) + " · 入库 " + std::to_string(all.adopted) +
            (m.memo.empty() ? "" : "\n插话已排队, 随下一条发出"));

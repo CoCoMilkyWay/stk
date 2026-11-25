@@ -1,4 +1,4 @@
-// 账户净值: 资金流水账本 (live/Flows.hpp) 的逐日回放 → 时间加权指数. 券商无关, 只认 live/Broker.hpp 的 CashFlow
+// 账户净值: 资金流水账本 (live/Flows.hpp) 的逐日回放 → 时间加权指数. 券商无关, 只认 live::CashFlow (live/Broker.hpp)
 //   回放 (逐交易日, 当日的流水全记完后计):
 //     现金     = 末个发生金额非 0 行的剩余金额
 //     持仓     = 计入持仓的各行 (live::flows::holds) 的股数累计;
@@ -11,7 +11,6 @@
 //     指数     = 时间加权: idx_t = idx_{t−1} × growth(净值_{t−1}, 净值_t, 进出_t)
 #pragma once
 
-#include "live/Broker.hpp"
 #include "misc/date.hpp"
 
 #include <functional>
@@ -20,6 +19,10 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+namespace live {
+struct CashFlow;
+}
 
 namespace account {
 
@@ -33,6 +36,7 @@ using Closes = std::unordered_map<std::string, std::map<misc::Ymd, double>>; // 
 struct Hold {
   std::string code;
   double qty = 0, px = 0;
+  bool operator==(const Hold &) const = default;
 };
 struct Day {
   misc::Ymd date = 0;

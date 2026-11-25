@@ -3,7 +3,6 @@
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Trial.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -12,6 +11,7 @@
 #include <sstream>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace GUI::Agent {
 
@@ -122,7 +122,7 @@ std::string rows_of(const Context &c) {
          " … " + c.clock.back() + ", 午休不占行; 末行含收盘竞价).";
 }
 
-// ---- 研究树折叠 (按轮摘要, 透明无黑盒) ----
+// ---- 折叠成结论 (透明无黑盒) ----
 std::string under(std::string_view s) {
   std::string o;
   for (size_t i = 0; i < s.size();) {
@@ -136,59 +136,35 @@ std::string under(std::string_view s) {
 
 std::string why_of(const Act &a) { return text::head(std::string_view(a.out.text).substr(0, a.out.text.find('\n')), kWhyChars); }
 
+std::string first_line(const std::string &s) { return text::head(std::string_view(s).substr(0, s.find('\n')), kWhyChars); }
+
+// 第 i 条消息 (i ≥ 1) 折成结论: 上一步的调用一行 (或重交要求一行) + 原样的插话
+std::string folded(Steps ss, size_t i) {
+  const Step &prev = ss[i - 1];
+  const std::string body = prev.act ? BriefOf(*prev.act, static_cast<int>(i)) : "- (上一条回复不合协议: " + first_line(prev.error) + ")\n";
+  return "(已折叠, 只留结论)\n" + body + (ss[i].memo.empty() ? "" : MemoText(ss[i].memo));
+}
+
 } // namespace
 
 // =============================================================================
 // 公开函数
 // =============================================================================
-std::string TreeOf(Rounds msgs) {
-  if (msgs.size() <= 1)
-    return {};
-  const Rounds done = msgs.first(msgs.size() - 1);
-  std::string body;
-  for (size_t i = 0; i < done.size(); ++i) {
-    const int n = static_cast<int>(i) + 1;
-    std::string lines;
-    if (i > 0 && !done[i].memo.empty())
-      lines += "- 研究员插话\n" + under(done[i].memo);
-    for (size_t k = 0; k < done[i].acts.size(); ++k) {
-      const Act &a = done[i].acts[k];
-      if (!a.span.ended())
-        continue;
-      const Ref at{n, static_cast<int>(k) + 1};
-      if (!a.out.ok) {
-        lines += "- " + CallTitle(a, at) + ": " + why_of(a) + "\n";
-      } else if (const TrialRes *tr = AsTrial(a); tr && tr->st.ok()) {
-        lines += "- [" + RefText(at) + "] 回测 " + tr->st.cand.name + " `" + tr->st.cand.expr + "` · " + text::head(tr->st.cand.note, 60) + " → " + Brief(tr->st.res) + "\n";
-      } else if (def(a.call.tool).keep) {
-        lines += "- " + CallTitle(a, at) + "\n" + under(a.out.text);
-      } else {
-        lines += "- " + CallTitle(a, at) + (a.out.gist.empty() ? std::string() : ": " + a.out.gist) + "\n";
-      }
-    }
-    if (!lines.empty())
-      body += "\n## 第 " + std::to_string(n) + " 轮\n" + lines;
-  }
-  if (body.empty())
-    return {};
-  return "# 研究树 (第 1–" + std::to_string(done.size()) +
-         " 轮摘要)\n\n"
-         "各调用的原文只在交回它的那条消息里给一次, 此后按轮收在这里 (回测留模板与结局, 观察留关键数, 记录 / 问答留原文, 查询只留调用一行); 要细节就重调.\n" +
-         body;
+std::string CallTitle(const Act &a, int step) { return "[" + StepTag(step) + "] " + a.call.text(kTitleChars) + (a.out.ok ? "" : " — 没做成"); }
+
+std::string ResultText(const Act &a, int step) {
+  std::string s = "## " + CallTitle(a, step) + "\n\n" + a.out.text;
+  if (!s.ends_with('\n'))
+    s += '\n';
+  return s + '\n';
 }
 
-std::string CallTitle(const Act &a, Ref r) { return "[" + RefText(r) + "] " + a.call.text(kTitleChars) + (a.out.ok ? "" : " — 没做成"); }
-
-std::string ResultsText(const std::vector<Act> &acts, int round) {
-  std::string s;
-  for (size_t i = 0; i < acts.size(); ++i) {
-    const Act &a = acts[i];
-    s += "## " + CallTitle(a, {round, static_cast<int>(i) + 1}) + "\n\n" + a.out.text;
-    if (!s.ends_with('\n'))
-      s += '\n';
-    s += '\n';
-  }
-  return s;
+std::string BriefOf(const Act &a, int step) {
+  if (!a.out.ok)
+    return "- " + CallTitle(a, step) + ": " + why_of(a) + "\n";
+  if (def(a.call.tool).keep)
+    return "- " + CallTitle(a, step) + "\n" + under(a.out.text);
+  return "- " + CallTitle(a, step) + (a.out.gist.empty() ? std::string() : ": " + a.out.gist) + "\n";
 }
 
 std::string Fills(const std::string &tmpl, const std::string &expr) {
@@ -339,17 +315,12 @@ Message TestMessage(bool ask, const std::string &remark) {
 }
 
 std::string NextStep(bool test) {
-  const std::string batch = std::to_string(kBatch);
   if (test)
-    return "按自检的做法接着调还没调过的工具与取值 (eval_factor 至多 " + batch +
-           " 个); 对照工具说明查上面每个结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish.";
-  return "根据本批结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或发下一批回测 (至多 " + batch +
-         " 个 eval_factor); 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish.";
+    return "按自检的做法接着调还没调过的工具与取值; 对照工具说明查上面的结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish.";
+  return "根据结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或回测下一个变体; 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish.";
 }
 
-Message RoundMessage(const std::vector<Act> &acts, int round, bool test) {
-  return fill(Msg::Round, {{"results", ResultsText(acts, round)}, {"next", NextStep(test)}});
-}
+Message ResultMessage(const Act &a, int step, bool test) { return fill(Msg::Result, {{"result", ResultText(a, step)}, {"next", NextStep(test)}}); }
 
 Message RetryMessage(const std::string &error) {
   std::string list;
@@ -365,28 +336,31 @@ std::string MemoText(const std::string &memo) {
   return "\n# 研究员插话\n\n" + memo + "\n\n这是研究员在会话中途给的意见: 与上文的做法冲突处以它为准, 调用协议照旧.\n";
 }
 
-std::string TextOf(const Round &rd) { return rd.memo.empty() ? rd.user : rd.user + MemoText(rd.memo); }
+std::string TextOf(const Step &sp) { return sp.memo.empty() ? sp.user : sp.user + MemoText(sp.memo); }
 
-// 本段 = 末条连同它前面连着的错批 (各批与其后的重交要求逐条照列); 段前 = 首条 + 研究树 + 段前一批的回复
-llm::Turns TurnsOf(Rounds rs) {
-  assert(!rs.empty());
-  size_t k = rs.size() - 1;
-  while (k > 0 && !rs[k - 1].error.empty())
-    --k;
+// 原样留着的 = 第 fold 条起的消息与回复 (首条恒原样, 不计); fold 取 kFoldSteps 的倍数里使之不超 kCtxChars 的最小者, 末条恒原样
+size_t FoldOf(Steps ss) {
+  const size_t n = ss.size();
+  std::vector<size_t> tail(n + 1, 0);
+  for (size_t i = n; i-- > 1;)
+    tail[i] = tail[i + 1] + text::chars(TextOf(ss[i])) + text::chars(ss[i].reply.text);
+  constexpr size_t kJump = kFoldSteps;
+  size_t fold = 0;
+  while (fold + kJump <= n - 1 && tail[std::max<size_t>(fold, 1)] > static_cast<size_t>(kCtxChars))
+    fold += kJump;
+  return fold;
+}
+
+llm::Turns TurnsOf(Steps ss) {
+  assert(!ss.empty());
+  const size_t fold = FoldOf(ss);
   llm::Turns t;
-  if (k == 0) {
-    t.push_back({true, TextOf(rs[0])});
-  } else {
-    const Round &p = rs[k - 1];
-    assert(p.reply.ok() && !p.acts.empty() && "段前一批的回复合格且执行了");
-    const std::string tree = TreeOf(rs.first(k + 1));
-    t.push_back({true, TextOf(rs[0]) + (tree.empty() ? "" : "\n---\n\n" + tree)});
-    t.push_back({false, p.reply.text});
-    t.push_back({true, TextOf(rs[k])});
-  }
-  for (size_t i = k; i + 1 < rs.size(); ++i) {
-    t.push_back({false, rs[i].reply.text});
-    t.push_back({true, TextOf(rs[i + 1])});
+  for (size_t i = 0; i < ss.size(); ++i) {
+    t.push_back({true, i > 0 && i < fold ? folded(ss, i) : TextOf(ss[i])});
+    if (i + 1 == ss.size())
+      break;
+    assert(ss[i].span.ended() && (ss[i].act || !ss[i].error.empty()) && "此前各步都收成了回复");
+    t.push_back({false, ss[i].reply.text.empty() ? std::string("(空回复)") : ss[i].reply.text});
   }
   return t;
 }

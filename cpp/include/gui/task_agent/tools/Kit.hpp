@@ -4,9 +4,9 @@
 // Kit — 时间线、单趟增量账本、工具三拍契约与统一执行器 Rig: 会话 (Mine, 大脑是大模型或外部 agent) / 工作台 (Bench) 100% 同构同路
 // =============================================================================
 //   时间线与账本:
-//     Round / Act     全会话唯一真相 (Act 仅持 Call + Span + ToolOut, 无旁路 Extra; Res 即唯一结构化载体)
+//     Step / Act      全会话唯一真相: 一步 = 发给大脑的一条消息 → 它交来的一个调用 → 执行 (调用编号 #<步>); Act 仅持 Call + Span + ToolOut, Res 即唯一结构化载体
 //     State           单趟增量账本 = 计数 Tally + 结束旗 done + 已落文件 staged + 已入库 adopted
-//                     OpenRound / CloseReply / ApplyAct 增量 O(1) 推进; StateOf(Rounds) 纯函数全量重算; TallyAt(now) O(1) 补在跑项秒数
+//                     OpenStep / CloseReply / ApplyAct 增量 O(1) 推进; StateOf(Steps) 纯函数全量重算; TallyAt(now) O(1) 补在跑项秒数
 //   三态四形契约 (kSpecs 由 AGENT_TOOLS 拼名, 编译期核对签名 = ToolMeta::exec):
 //     SyncFn      (Call, Seat) → ToolOut                   当场一次到位
 //     LabFn       (Call, Bay)  → ToolOut                   后台纯计算直通
@@ -54,13 +54,13 @@ struct Span {
 
 enum class Msg : uint8_t { System,
                            First,
-                           Round,
+                           Result,
                            Test,
                            Retry };
 struct MsgDef {
   const char *id, *cn;
 };
-inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"test", "自检"}, {"retry", "重交"}};
+inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首条"}, {"result", "结果"}, {"test", "自检"}, {"retry", "重交"}};
 AGENT_ROWS(Msg, kMsgs, Retry);
 
 struct Message {
@@ -74,23 +74,28 @@ struct Act {
   ToolOut out; // out.res 为唯一结构化载体 (TrialRes / AskRes 在挂起期即驻留)
 };
 
-// 只进可读日志的一笔 (停下 / 继续 / 退回的批 / 作废的回复): at = 记下时本轮已做完几个调用 (-1 = 回复收成之前)
+inline std::string StepTag(int step) { return "#" + std::to_string(step); } // 调用编号 = 它所在的步
+
+// 只进可读日志的一笔 (停下 / 继续 / 作废的回复), 记在这一步走到的位置之后
+enum class LogAt : uint8_t { Sent,    // 发出之后 (回复收成之前)
+                             Replied, // 回复收成之后 (调用做完之前)
+                             Done };  // 调用做完之后
 struct LogMark {
-  int at = -1;
+  LogAt at = LogAt::Sent;
   std::string md;
 };
 
-struct Round {
+struct Step {
   Msg kind = Msg::First;
-  std::string user;
-  std::string memo;
-  Span span, think, write;
+  std::string user;        // 发出的消息 (不含插话)
+  std::string memo;        // 随它发出的研究员插话
+  Span span, think, write; // 发出 → 回复收齐 / 其中的思考 / 正文
   llm::Reply reply;
-  std::string error;
-  std::vector<Act> acts;
+  std::string error;      // 非空 = 回复不合协议 (无调用; 下一条 = 重交要求)
+  std::optional<Act> act; // 回复交来的调用
   std::vector<LogMark> marks;
 };
-using Rounds = std::span<const Round>;
+using Steps = std::span<const Step>;
 
 // ---- 计数与单趟增量账本 State ----
 struct Tally {
@@ -115,24 +120,16 @@ struct Tally {
 struct State {
   std::set<std::string> staged;  // 本会话落了文件的候选文件名 (*.json)
   std::set<std::string> adopted; // submit_factor 做成的英文名
-  Tally tally;                   // 已收尾轮与调用的精确累计
-  bool done = false;             // 末个发出的轮里 finish 已做完: 会话结束 (再发出一条即作罢)
+  Tally tally;                   // 已收尾的回复与调用的精确累计
+  bool done = false;             // 末个发出的一步之前 finish 已做完: 会话结束 (再发出一条即作罢)
 };
 
-void OpenRound(State &s); // 本轮发出 (之前的 finish 作罢)
-void CloseReply(State &s, const Round &rd);
+void OpenStep(State &s); // 这一步发出 (之前的 finish 作罢)
+void CloseReply(State &s, const Step &sp);
 void ApplyAct(State &s, const Act &a);
-State StateOf(Rounds rs);
-Tally TallyAt(const State &s, Rounds rs, double now);
-Tally TallyOf(Rounds rs, double now);
-
-// 整批核验 (协议解析 ParseCalls): Mine 与 Tools/Session/* 共用
-struct BatchCheck {
-  std::vector<Call> calls;
-  std::string error; // 非空 = 整批不合协议的原因
-  bool ok() const { return error.empty(); }
-};
-BatchCheck VetBatch(std::string_view reply, bool ask);
+State StateOf(Steps ss);
+Tally TallyAt(const State &s, Steps ss, double now);
+Tally TallyOf(Steps ss, double now);
 
 // ---- 台面与三拍工具签名 ----
 struct Seat {
@@ -140,8 +137,8 @@ struct Seat {
   Notes &notes;
   const Gate &gate;
   const State &st;
-  Rounds timeline; // 末轮 = 本调用所在轮
-  Ref me;          // 本调用的编号
+  Steps timeline; // 末步 = 本调用所在的步
+  int me;         // 本调用的编号 (= 步)
   std::string scope, session;
   bool dry = false; // 不落记录: 全局记录只给编号不写, submit_factor 只查门槛不入库 (工作台)
   bool gpu = false; // eval_factor 的回测上 GPU
@@ -162,14 +159,14 @@ using ImplFn = std::variant<SyncFn, LabFn, StagedLab, HumanFn>;
 struct Rig {
   Lab lab;
   Notes notes;
-  std::vector<Round> timeline;
+  std::vector<Step> timeline;
   State st;
   std::vector<std::string> doomed;
 
-  int round() const { return static_cast<int>(timeline.size()); }
+  int step() const { return static_cast<int>(timeline.size()); }
   Tally tally(double now) const { return TallyAt(st, timeline, now); }
 
-  Seat seat(size_t i, const Gate &gate, std::string_view session, bool dry, bool gpu, llm::Options llm = {});
+  Seat seat(const Gate &gate, std::string_view session, bool dry, bool gpu, llm::Options llm = {}); // 本调用 = 末步的
   void restate() { st = StateOf(timeline); }
   void flush();
 
@@ -178,12 +175,6 @@ struct Rig {
   void settle_act(Act &a, ToolOut out, Seat &s, double t);
   void answer_act(Act &a, double t);
   void abort_act(Act &a, double t);
-
-  Exec open_act(size_t i, Seat &s, double t) { return open_act(timeline.back().acts[i], s, t); }
-  void step_act(size_t i, LabStep step, double t) { step_act(timeline.back().acts[i], step, t); }
-  void settle_act(size_t i, ToolOut out, Seat &s, double t) { settle_act(timeline.back().acts[i], std::move(out), s, t); }
-  void answer_act(size_t i, double t) { answer_act(timeline.back().acts[i], t); }
-  void abort_act(size_t i, double t) { abort_act(timeline.back().acts[i], t); }
 };
 
 // ---- 随机输入的取材 ----
@@ -196,8 +187,8 @@ struct Feed {
   const Context &ctx;
   const std::vector<Result> &tried;
   const Gate &gate;
-  Rounds timeline;
-  Ref me;
+  Steps timeline;
+  int me;
   std::mt19937_64 &rng;
 
   int below(int n); // [0, n)

@@ -46,8 +46,8 @@ constexpr sv kNoteKindChoices[] = {"feature", "tool", "insight", "issue"};
 constexpr sv kNoteScopes[] = {"all", "here"};
 constexpr sv kIssueTypes[] = {"bug", "idea", "question"};
 constexpr sv kYesNo[] = {"yes", "no"};
-constexpr sv kCtxKinds[] = {"round", "first", "test"};
-constexpr sv kCtxViews[] = {"full", "delta", "tree", "system"};
+constexpr sv kCtxKinds[] = {"result", "first", "test"};
+constexpr sv kCtxViews[] = {"full", "delta", "system"};
 constexpr sv kBrainBackends[] = {"zhipu", "cursor", "devin"};
 
 constexpr ArgDef kFeatureArgs[] = {{"exprs", "特征式", Arg::Strs, {}, 1, 4, {}, kExprsDesc}};
@@ -161,19 +161,19 @@ constexpr ArgDef kIssueArgs[] = {
     {"ref", "附议", Arg::Str, sv{""}, 0, 0, {}, kRefDesc}};
 constexpr ArgDef kAskArgs[] = {{"questions", "问题", Arg::Questions, {}, 1, 8, {}, "问题数组, 每题 {\"prompt\": 题干, \"options\": [2..5 个字符串], \"multiple\": 可多选 (缺省 false), \"recommended\": [推荐的选项下标]}"}};
 constexpr ArgDef kBuildContextArgs[] = {
-    {"kind", "消息类", Arg::Str, sv{"round"}, 0, 0, kCtxKinds, "生成哪类消息: round 本轮结果 / first 首条 / test 自检首条"},
-    {"view", "输出面", Arg::Str, sv{"full"}, 0, 0, kCtxViews, "原文给哪一层: full 完整上下文 Flat(TurnsOf) / delta 本条增量 TextOf / tree 研究树 TreeOf / system 系统提示"},
+    {"kind", "消息类", Arg::Str, sv{"result"}, 0, 0, kCtxKinds, "生成哪类消息: result 下一条 (末个调用的结果) / first 首条 / test 自检首条"},
+    {"view", "输出面", Arg::Str, sv{"full"}, 0, 0, kCtxViews, "原文给哪一层: full 完整上下文 Flat(TurnsOf) / delta 本条增量 TextOf / system 系统提示"},
     {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本会话是否开放 ask_human"},
     {"memo", "插话", Arg::Str, sv{""}, 0, 0, {}, "可选: 随本条附带的研究员插话"},
     {"remark", "会话要求", Arg::Str, sv{""}, 0, 0, {}, "可选: 首条 / 自检首条末尾的本会话要求"}};
-constexpr ArgDef kCheckBatchArgs[] = {
-    {"reply", "回复原文", Arg::Str, {}, 0, 0, {}, "待校验的一批调用 JSON (或带文字的原始回复, 含 {\"calls\": [...]})"},
-    {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本轮是否开放 ask_human"}};
+constexpr ArgDef kCheckCallArgs[] = {
+    {"reply", "回复原文", Arg::Str, {}, 0, 0, {}, "待校验的回复: 一个调用 {\"tool\": ..., \"args\": {...}} (或带文字的原始回复)"},
+    {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本会话是否开放 ask_human"}};
 constexpr ArgDef kProbeBrainArgs[] = {
     {"backend", "后端", Arg::Str, sv{""}, 0, 0, kBrainBackends, "可选: zhipu / cursor / devin; 空 = 用 Config 页当前选中 (代理同 Config)"},
     {"model", "模型", Arg::Str, sv{""}, 0, 0, {}, "可选: 模型 id; 空 = 用 Config 页当前选中"},
-    {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本轮是否开放 ask_human"},
-    {"memo", "插话", Arg::Str, sv{""}, 0, 0, {}, "可选: 随本轮附带的插话"},
+    {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本会话是否开放 ask_human"},
+    {"memo", "插话", Arg::Str, sv{""}, 0, 0, {}, "可选: 随本条附带的插话"},
     {"prompt", "覆盖正文", Arg::Str, sv{""}, 0, 0, {}, "可选: 覆盖发出的 user 正文; 空 = 照快照时间线折出 TurnsOf"}};
 
 constexpr ToolDoc kDocs[] = {
@@ -237,7 +237,7 @@ constexpr ToolDoc kDocs[] = {
      "再用 text 从那节读原文 (图片已去, 表格与公式保留), 每次读到字数上限为止, 末尾给接着读的 from / skip",
      "标注卡 / 目录 / 原文一段"},
     {Tool::EvalFactor, kEvalArgs,
-     "把一个模板落成候选文件并回测: Search (采样自由参数, 每点按中位 rIC 定方向打分, 最高的一个成权重) → 权重全量分层回测. 一批至多 {{batch}} 个. "
+     "把一个模板落成候选文件并回测: Search (采样自由参数, 每点按中位 rIC 定方向打分, 最高的一个成权重) → 权重全量分层回测. "
      "与已有候选同式 (含只换截面根 CsRank / CsNormRank / CsZ) 或算子超 {{max_ops}} 个的不落",
      "结局: 未落文件的原因 / BROKEN / 无权重 (没有一个点算得出滚动窗 rIC) / 最佳权重的具体式 (负 = 已整体取反, 式前写 -) + 频率 · 预测周期 + 各权重的统计 "
      "(rIC · 中位 rIC · 每期毛多 / 毛空 / 净多空 · 成本 = 每期单边换手 买 / 卖 × 固定冲击) + 是否达入库门槛 + 最佳权重的分年中位 rIC 与年换手; "
@@ -261,20 +261,20 @@ constexpr ToolDoc kDocs[] = {
      "记下一条被观察 / 回测证实或证伪的规律 (市场微观结构、某类叶或算子的脾性、哪条路走不通), 对别的因子与后续会话也有用的才记. 全局记录, 后续会话的 agent 经 list_notes 看得到",
      "编号"},
     {Tool::ReportIssue, kIssueArgs,
-     "报工具结果不对 (bug)、对规则 / 系统 / 工具的改进建议 (idea: 哪条规则卡住了你、哪个结果不好读、哪里浪费了轮次)、想问研究员的疑问 (question). 全局记录, 研究员会看; 提完照常接着做", "编号"},
-    {Tool::Finish, {}, "宣布挖完: 须是本批的最后一个调用, 前面的调用照常执行, 全部做完后会话结束", "会话结束"},
+     "报工具结果不对 (bug)、对规则 / 系统 / 工具的改进建议 (idea: 哪条规则卡住了你、哪个结果不好读、哪里浪费了步数)、想问研究员的疑问 (question). 全局记录, 研究员会看; 提完照常接着做", "编号"},
+    {Tool::Finish, {}, "宣布挖完: 做完即会话结束", "会话结束"},
     {Tool::AskHuman, kAskArgs,
      "向研究员提问 (每题带推荐), 等他选答. 只在关键分岔问研究员才能定的事 (起步方向、换手与 rIC 取舍等); 系统提示已定的不问也不确认. "
      "研究员每题都能选 \"其他\" 自己写, 还能附言, 所以选项不必穷举, 不要列 \"其他\" / \"由你决定\" 之类的兜底项",
      "每题的选择 (没照推荐的附上推荐) + 附言"},
     {Tool::BuildContext, kBuildContextArgs,
-     "独立调试上下文与研究树折叠: 按工作台当前快照 (空白或载入的历史会话某轮) 拼出系统提示 / 首条 / 研究树 / 本条增量 / 完整上下文, 与真会话走同一份纯函数",
-     "对应层的完整原文 + 账本标志 / 各段字数与折叠视图"},
-    {Tool::CheckBatch, kCheckBatchArgs,
-     "独立调试协议校验: 对一批调用 JSON 跑 ParseCalls, 并对 eval_factor 做落盘前核验 (lab.vet)",
-     "通过 = 规范化调用清单; 不通过 = 重发要求原文"},
+     "独立调试上下文与折叠: 按工作台当前快照 (空白或载入的历史会话某步) 拼出系统提示 / 首条 / 本条增量 / 完整上下文 (远处折成结论), 与真会话走同一份纯函数",
+     "对应层的完整原文 + 账本标志 / 各段字数与折叠点"},
+    {Tool::CheckCall, kCheckCallArgs,
+     "独立调试协议校验: 对一条回复跑 ParseCall, 是 eval_factor 再做落盘前核验 (lab.vet)",
+     "通过 = 规范化的调用; 不通过 = 重交要求原文"},
     {Tool::ProbeBrain, kProbeBrainArgs,
-     "独立试跑单轮内置大模型: 拿当前快照的 system + TurnsOf 直接走 llm::send (支持取消与代理), 收到回复后自动过 ParseCalls 校验",
+     "独立试跑一步内置大模型: 拿当前快照的 system + TurnsOf 直接走 llm::send (新开一段对话, 支持取消与代理), 收到回复后自动过 ParseCall 校验",
      "模型原始回复正文 + 思考过程 / token / 校验结果"},
 };
 static_assert(std::size(kDocs) == kNum<Tool>);
@@ -546,57 +546,33 @@ bool CallOf(Tool t, const json &args, const std::string &path, Call &out, std::v
   return errs.size() == n0;
 }
 
-bool ParseCalls(std::string_view reply, bool ask, std::vector<Call> &out, std::string &error) {
-  out.clear(), error.clear();
+CallCheck ParseCall(std::string_view reply, bool ask) {
+  CallCheck out;
   json j;
-  if (!object_of(reply, j, error))
-    return false;
-  if (!j.contains("calls") || !j["calls"].is_array()) {
-    error = "缺数组 calls (每批 = 一串工具调用)";
-    return false;
+  if (!object_of(reply, j, out.error))
+    return out;
+  if (!j.contains("tool") || !j["tool"].is_string()) {
+    out.error = "须是一个调用 {\"tool\": 工具名, \"args\": {...}}";
+    return out;
   }
-  const json &cs = j["calls"];
-  if (cs.empty() || cs.size() > static_cast<size_t>(kMaxCalls)) {
-    error = "calls 须有 1.." + std::to_string(kMaxCalls) + " 个调用 (收到 " + std::to_string(cs.size()) + " 个; 多的留到下一条)";
-    return false;
+  const std::string &name = j["tool"].get_ref<const std::string &>();
+  const std::optional<Tool> tid = FindId<Tool>(name);
+  if (!tid || !IsAgentTool(*tid) || (*tid == Tool::AskHuman && !ask)) {
+    out.error = "tool: " + (tid && IsAgentTool(*tid) ? std::string("ask_human 本会话不可用 (研究员没开提问)") : "没有工具 " + name);
+    return out;
+  }
+  const json &args = j.contains("args") ? j["args"] : json::object();
+  if (!args.is_object()) {
+    out.error = "args 须是 JSON 对象";
+    return out;
   }
   std::vector<std::string> errs;
-  int evals = 0;
-  for (size_t i = 0; i < cs.size(); ++i) {
-    const std::string p = at("calls", i);
-    const json &c = cs[i];
-    if (!c.is_object() || !c.contains("tool") || !c["tool"].is_string()) {
-      errs.push_back(p + " 须是 {\"tool\": 工具名, \"args\": {...}}");
-      continue;
-    }
-    const std::string &name = c["tool"].get_ref<const std::string &>();
-    const std::optional<Tool> tid = FindId<Tool>(name);
-    if (!tid || !IsAgentTool(*tid) || (*tid == Tool::AskHuman && !ask)) {
-      errs.push_back(p + ".tool: " + (tid && IsAgentTool(*tid) ? "ask_human 本会话不可用 (研究员没开提问, 或同批只能有一个)" : "没有工具 " + name));
-      continue;
-    }
-    const Tool t = *tid;
-    if (t == Tool::AskHuman)
-      ask = false;
-    if (t == Tool::Finish && i + 1 != cs.size())
-      errs.push_back(p + ": finish 须是最后一个调用");
-    if (t == Tool::EvalFactor && ++evals > kBatch)
-      errs.push_back(p + ": 一批至多 " + std::to_string(kBatch) + " 个 eval_factor (这是第 " + std::to_string(evals) + " 个)");
-    const json &args = c.contains("args") ? c["args"] : json::object();
-    if (!args.is_object()) {
-      errs.push_back(p + ".args 须是 JSON 对象");
-      continue;
-    }
-    if (Call call; CallOf(t, args, p + ".args", call, errs))
-      out.push_back(std::move(call));
-  }
-  if (errs.empty())
-    return true;
-  out.clear();
-  for (const std::string &e : errs)
-    error += (error.empty() ? "" : "\n") + e;
-  return false;
+  if (!CallOf(*tid, args, "args", out.call, errs))
+    out.error = text::join(errs, "\n");
+  return out;
 }
+
+std::string CallJson(const Call &c) { return json{{"tool", def(c.tool).id}, {"args", c.args}}.dump(); }
 
 std::string ToolsDoc(bool ask) {
   std::string s;

@@ -25,14 +25,12 @@ struct Frame {
   Kw kw;
   Steady::time_point t0;
   Wall::time_point at;
-  bool loud = true;
   bool open = false; // 已落 begin
 };
 
-// 本线程: 段栈 (已落 begin 的恒为前缀) + 静默的段数 + 待并的重复事件 + 跟随的 Track / Hooks (自段 base 起) 与实时一行、最近发给客户端的命令
+// 本线程: 段栈 (已落 begin 的恒为前缀) + 待并的重复事件 + 跟随的 Track / Hooks (自段 base 起) 与实时一行、最近发给客户端的命令
 struct Local {
   std::vector<Frame> frames;
-  int quiet = 0;
   Kw last; // 上一条落盘事件去掉 ms; null = 无可并
   long rep = 0;
   Steady::time_point first, end;
@@ -128,7 +126,7 @@ void open_all() {
 
 } // namespace
 
-bool on() { return !L.frames.empty() && !L.quiet; }
+bool on() { return !L.frames.empty(); }
 
 void ev(const char *kind, Kw kw) {
   if (!on())
@@ -167,9 +165,8 @@ void live(std::string line) {
   mirror();
 }
 
-Span::Span(std::string name, Kw kw, bool loud) : unwinding_(std::uncaught_exceptions()) {
-  L.frames.push_back({std::move(name), std::move(kw), Steady::now(), Wall::now(), loud});
-  L.quiet += !loud;
+Span::Span(std::string name, Kw kw) : unwinding_(std::uncaught_exceptions()) {
+  L.frames.push_back({std::move(name), std::move(kw), Steady::now(), Wall::now()});
   L.cmd.clear();
   mirror();
   if (L.hooks && L.hooks->on_span)
@@ -179,7 +176,6 @@ Span::Span(std::string name, Kw kw, bool loud) : unwinding_(std::uncaught_except
 Span::~Span() {
   assert(!L.frames.empty());
   const Frame &f = L.frames.back();
-  L.quiet -= !f.loud;
   if (f.open) {
     flush();
     Kw kw = {{"ms", ms_since(f.t0)}};

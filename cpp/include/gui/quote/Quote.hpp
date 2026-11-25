@@ -15,6 +15,7 @@
 // 接续: 当日接在历史之后 ⇔ 当日的前一交易日 = 日脊末日 (PriceView::joins; 各侧同一判据); 否则 (历史落后) 不接.
 #pragma once
 
+#include "account/Nav.hpp"
 #include "define/Csr.hpp"
 #include "gui/quote/Bars.hpp"
 #include "live/Sides.hpp"
@@ -30,7 +31,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace sina {
@@ -70,11 +70,9 @@ struct Ref {
   bool is(Side s) const { return ok() && side == s; }
   auto operator<=>(const Ref &) const = default;
 };
-// 账户的一只持仓: 流水代码 / 全局 id (Ref::kNone = 资产轴外, 如 ETF / LOF) / 股 / 计价 (券商现价 / 回放末日收盘)
-struct Holding {
-  std::string code;
+// 账户的一只持仓 = 回放的持仓 (流水代码 / 股 / 计价: 券商现价 / 回放末日收盘) + 全局 id (Ref::kNone = 资产轴外, 如 ETF / LOF)
+struct Holding : account::Hold {
   uint32_t id = Ref::kNone;
-  double qty = 0, px = 0;
   bool operator==(const Holding &) const = default;
 };
 
@@ -140,8 +138,6 @@ struct EquityDay {
   double base = 0, pnl = 0;
 };
 struct Trades; // 账户的成交点 (见下)
-// 回放末日收后仍持有的各只的本段开仓日 (段 = 自股数由 0 买入起; 资金流水口径): 流水代码 → 开仓日
-using Opens = std::unordered_map<std::string, misc::Ymd>;
 // 账户回放的摘要 (PriceView 给; 随账户侧的 Tape 一并换): 回放末日净值 / 其后账本里的外部进出 / 回放各日外部进出之和 (累计净转入) / 末日收后持仓 / 逐日基数与累计真实盈亏;
 //   账户全史 = 时间加权指数 (前收 = 前一日指数, 恒带分钟); 当日 = 末日指数 × growth(nav, 净资产_s, 进出) (account::intraday)
 struct Equity {
@@ -149,7 +145,6 @@ struct Equity {
   std::vector<Holding> hold; // 计价 = 末日收盘
   std::shared_ptr<const std::vector<EquityDay>> days;
   std::shared_ptr<const Trades> trades; // 回放各日的历史成交点 (一分钟一档; 无账本 = 空)
-  std::shared_ptr<const Opens> opens;   // 末日仍持有的各只的开仓日 (无账本 = 空)
   // 当日资金基数 (同 account::growth: 券商持仓计入末日后进出 after, 回放持仓不计)
   double today_base(bool broker) const { return std::max(nav + std::max(broker ? after : 0.0, 0.0), 0.0); }
 };
@@ -228,26 +223,6 @@ using TradeBins = std::array<std::shared_ptr<const Trades>, kTradeBins>; // [Tra
 static_assert(kSlots / 2 % kBinSlots[kBinDay] == 0 && kBinSlots[kBinDay] % kBinSlots[kBinIntra] == 0, "成交点的档: 上下午各自整除");
 // t 的各点 (任意档) 按 span 槽一档重聚合
 Trades rebin(const Trades &t, int span);
-
-// 账户的持仓成本 (AccountHub 给; 不可变, 随持仓 / 成交换): 现持有的各只一条, 画在 NAV 账户线上 (主图 / 日内栏同一份):
-//   成本线位 = 本段 (开仓起) 各笔买入时刻的账户指数按买入额加权 (卖出不动), 自首笔买入向右; 只本段买入合计 ≥ kCostLine 的画线;
-//   线与净值曲线之间染色: 某处被几条 (含不画线的) 覆盖, 色 = 覆盖它们的现仓位之和 / 现总仓位 (绿轻 → 红重)
-inline constexpr double kCostLine = 1e5; // [元]
-struct CostBuy {
-  misc::Ymd date = 0;
-  int slot = 0;
-  double amount = 0; // [元]
-};
-struct Cost {
-  std::string code;
-  double weight = 0;         // 现仓位 (市值 / 净资产)
-  std::vector<CostBuy> buys; // 本段各笔买入 (日, 槽) 升序; 非空
-  double bought() const;     // 买入合计 [元]
-};
-struct Costs {
-  double total = 0; // 现总仓位 (各只仓位之和, 含无买入可算的; 融资可超 1)
-  std::vector<Cost> list;
-};
 
 // 一个标的的源 (Joint 给): 日序列 = 日线 + 接得上的当日 (末项); 各处只经它读 (下标 / 分钟根 / 复权同一口径), 接续不再自判
 struct Source {

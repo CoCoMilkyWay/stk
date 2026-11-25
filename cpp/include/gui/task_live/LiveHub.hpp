@@ -126,18 +126,19 @@ struct Inputs {
   std::array<misc::Ymd, 2> pulled{}; // kPulls 序 (0 = 还没拉过)
 };
 
-// 出错 = 无帧; 在等 = 帧为上一份 (还没有即无)
+// 持仓帧 / 试算两样视图同形: 出了 (ready) / 在等 (wait) / 出错 (err); 出错 = 没出, 在等 = 留着上一份照显 (还没有即没出)
 struct BoardView {
   std::shared_ptr<const live::Snapshot> snap; // frame 由这份算出
   std::shared_ptr<const live::Quotes> quotes; // frame 各行的 quote 指进这份
   std::optional<live::board::Frame> frame;
   std::string wait, err;
+  bool ready() const { return frame.has_value(); }
 };
-// 同 BoardView: 出错 = 无试算; 在等 = 试算与「现」为上一份
 struct PlanView {
   std::optional<live::rebal::Plan> plan;
   std::optional<live::rebal::Sheet> now; // 账户「现」: 试算的, 试算没出即读时的; 没读到快照 = 无
   std::string wait, err;
+  bool ready() const { return plan.has_value(); }
 };
 
 class LiveHub {

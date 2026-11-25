@@ -63,12 +63,9 @@ misc::Ymd ymd::get(const char *tab, const Cells &f, int c) {
 
 double num::get(const char *tab, const Cells &f, int c) {
   const std::string &s = cell(f, c);
-  char *e = nullptr;
-  const double v = std::strtod(s.c_str(), &e);
-  while (e && *e && std::isspace(static_cast<unsigned char>(*e)))
-    ++e;
-  need(!s.empty() && e && !*e, "%s列「%s」不是数", tab, s.c_str());
-  return v;
+  const std::optional<double> v = parse_num(s);
+  need(v.has_value(), "%s列「%s」不是数", tab, s.c_str());
+  return *v;
 }
 
 std::optional<double> num_or::get(const char *tab, const Cells &f, int c) {

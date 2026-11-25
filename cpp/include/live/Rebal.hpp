@@ -79,7 +79,6 @@ double avail(const Snapshot &s, const Prices &px0, const Bal &bal, const Keyed<D
 struct Parts {
   bool own = true, fin = true;
   bool any() const { return own || fin; }
-  bool operator==(const Parts &) const = default;
 };
 // 范围 (卖买同形, 见文件头): 全部 / 融资标的 / 非融资标的
 enum class Scope : uint8_t { All,
@@ -91,7 +90,6 @@ inline bool in_scope(Scope s, bool financeable) { return s == Scope::All || (s =
 struct Side {
   Parts parts;
   Scope scope = Scope::All;
-  bool operator==(const Side &) const = default;
 };
 
 // 卖的方式 (见文件头): name 单选的名字 / hint 悬停 / parts · scope 认不认卖一侧的部分 · 范围

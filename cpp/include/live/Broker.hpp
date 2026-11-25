@@ -2,7 +2,7 @@
 //   Driver (一个客户端一份): 同步, 调用线程跑完; 刷新线程与事务线程会同时调, 自身线程安全
 //     接: connect 接上客户端 (换了进程即重接, 接上即可读) → 是谁
 //     读: read 一问读齐 Snapshot 的五样 (fills / pos / pends / debts / acct; 适配可让几张表同时在途, 一趟往返)
-//     事务: 拉 terms / flows / deals (慢) 与写 place (一张限价单, 各步见 steps) / repay (现金还款) 同形; 进度 (段 / 实时一行) 与记一条统一经 live::trace
+//     事务: 两样拉 terms / ledger (慢) 与两样写 place (一张限价单, 各步见 steps) / repay (现金还款) 同形; 进度 (段 / 实时一行) 与记一条统一经 live::trace
 //     画面: mirror 可选, 给 GUI 复现客户端窗口 (live/Mirror.hpp)
 //   Broker (券商无关, 只此一份): 包一个 Driver + 刷新线程; 读由刷新线程发布, 事务由调用线程跑 (段 + 接上 + Driver), 两类同一个接入
 //     读: 一轮读进一份局部的 Snapshot, 轮末整份发布 (不可变; 指针换了 = 换了一份), 上层不见半轮也不见两轮的混合;
@@ -34,7 +34,6 @@ namespace live {
 struct Sec {
   std::string code, name;
   Mkt mkt = Mkt::SZ;
-  bool operator==(const Sec &) const = default;
 };
 
 // 一只持仓 (券商口径); financed / collateral 精简视图没有
@@ -44,7 +43,6 @@ struct Position : Sec {
   std::optional<int64_t> financed;                       // 融资数量 [股]
   double cost = 0, price = 0, market_value = 0, pnl = 0; // 参考成本价 / 现价 / 市值 / 参考浮动盈亏 (券商口径, ≠ (现价 − 成本价) × 量)
   std::optional<double> position_pct, collateral;        // 仓位 [%] / 担保折算率
-  bool operator==(const Position &) const = default;
 };
 
 // 一笔委托 (成交 / 挂单共有)
@@ -54,40 +52,34 @@ struct Entrust : Sec {
   double price = 0;
   int64_t qty = 0; // [股]
   std::string order_id;
-  bool operator==(const Entrust &) const = default;
 };
 
 struct Fill : Entrust {
   double amount = 0; // [元]
   std::string fill_id;
-  bool operator==(const Fill &) const = default;
 };
 
 // 一笔历史成交 (券商口径, 截至上一交易日): 成交日 + 同当日成交
 struct Deal : Fill {
   misc::Ymd date = 0;
-  bool operator==(const Deal &) const = default;
 };
 
 // 还挂着的委托
 struct Pending : Entrust {
   std::string status; // 已报 · 部成 …
   int64_t filled = 0; // 已成 [股]
-  bool operator==(const Pending &) const = default;
 };
 
 // 一只当日成交的合计: {方向: Σ 股} / {方向: Σ 元}
 struct Traded : Sec {
   Sides<int64_t> qty;
   Sides<double> amount;
-  bool operator==(const Traded &) const = default;
 };
 
 // 一只融资负债
 struct Debt : Sec {
   int64_t qty = 0;   // 负债数量 [股]
   double amount = 0; // 负债金额 [元]
-  bool operator==(const Debt &) const = default;
 };
 
 // 按键索引的表 (键多为代码): list 首见序, at = 键 → 下标
@@ -99,7 +91,6 @@ struct Keyed {
     const auto i = at.find(key);
     return i == at.end() ? nullptr : &list[i->second];
   }
-  bool operator==(const Keyed &o) const { return list == o.list; }
 };
 
 struct Fills {
@@ -150,7 +141,12 @@ struct CashFlow {
   double price = 0, qty = 0;
   std::string kind; // 业务名称
   double amount = 0, balance = 0;
-  bool operator==(const CashFlow &) const = default;
+};
+
+// 资金流水账本的一段 (同段同拉, 截至上一交易日): 资金流水 (原序) + 历史成交 ((日, 时刻) 序); 资金流水没有时刻, 历史成交没有现金 / 负债 / 利息 / 转账, 缺一不可
+struct Ledger {
+  std::vector<CashFlow> flows;
+  std::vector<Deal> deals;
 };
 
 // 刷新进度
@@ -204,10 +200,9 @@ public:
 
   virtual Snapshot read() = 0; // 成交 / 持仓 / 挂单 / 融资负债 / 信用账户
 
-  virtual Terms terms() = 0;                               // 两融条款全表
-  virtual std::vector<CashFlow> flows(misc::Ymd from) = 0; // from 日起 (含; 0 = 开户起) 至昨日的资金流水
-  virtual std::vector<Deal> deals(misc::Ymd from) = 0;     // from 日起 (含, > 0) 至昨日的历史成交
-  virtual Placed place(const OrderReq &o) = 0;             // 停在失败的那一步
+  virtual Terms terms() = 0;                   // 两融条款全表
+  virtual Ledger ledger(misc::Ymd from) = 0;   // from 日起 (含; 0 = 开户起) 至昨日的账本
+  virtual Placed place(const OrderReq &o) = 0; // 停在失败的那一步
   // 现金还款: codes 各只 (按给的序) 的融资合约逐笔指定合约还, 至多共 cap 元 (∞ = 各合约还到应还); 停在失败的那一笔 (此前各笔已还, 各记一条)
   virtual std::vector<Repaid> repay(const std::vector<std::string> &codes, double cap) = 0;
 
@@ -234,8 +229,7 @@ public:
   void every(double s); // 定时周期 [s], 0 = 不定时
 
   Terms terms();
-  std::vector<CashFlow> flows(misc::Ymd from);
-  std::vector<Deal> deals(misc::Ymd from);
+  Ledger ledger(misc::Ymd from);
   Placed place(const OrderReq &o);
   std::vector<Repaid> repay(const std::vector<std::string> &codes, double cap);
   // 批量下单期间: 只跑要的轮 (request / sync), 不自起刷新、不排下单后的; fn 跑完 (成败都) 即恢复

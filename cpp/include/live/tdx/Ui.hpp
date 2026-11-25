@@ -1,4 +1,4 @@
-// 通达信适配: 客户端界面里通达信特有的件 — 主窗、交易栏与功能树、交易栏下的页与查一次、条数标签、弹框; 通用 Win32 操作见 Win.hpp
+// 通达信适配: 客户端界面里通达信特有的件 — 主窗、交易栏与功能树、交易栏下的页与查一次、条数标签、弹框、提交 (闪电下单 / 现金还款同形); 通用 Win32 操作见 Win.hpp
 //   页: 交易栏下宿主 (AfxWnd100 59649) 的对话框子窗口. 页签页 (持仓 / 成交 / 撤单) 与功能树开的查询页同一形:
 //     列表 (表头列名认页) + 查询键 (Button 1140 或 144) + 条数标签 (Static 1243 或 166); 开过的页留着 (隐藏), 再开即显示.
 //   查一次: 切到页 (切页签 / 点功能树, 已在该页也算) 或点页上的查询类按键, 客户端即重查该页.
@@ -61,5 +61,19 @@ std::string body(const win::Hwnd &box); // 确认 / 提示框 / 系统 MessageBo
 void yes(const win::Hwnd &box);         // 点确认
 // before 之后新出的可见对话框一律关掉 (WM_CLOSE = 取消 / 关提示), 等至多 3s; 关不完只记一笔, 不 Fail (失败的收尾里用)
 void close_new(const win::Tops &before);
+// 框正文 text 里首个「label 空格* 数字串 unit」的数字串 (dots: 可含小数点); take > 0 = 只取开头 take 位 (须够, 不看 unit); 没有 → Fail
+std::string field(const std::string &text, const std::string &label, bool dots, size_t take = 0, const std::string &unit = "");
+
+// ---------- 提交 (闪电下单 / 现金还款同形: 清场 → 各步 → 确认框 → 提交 → 回报; 一笔一个边界) ----------
+
+inline constexpr const char *kResult = "提示"; // 回报框 (及客户端别的提示框) 的标题
+
+// 标题在 ours (本适配开的框) 里的、上一笔收尾之后才显示出来的先关掉 (留着则主窗一直禁用); 关不掉 → Fail
+void sweep(const std::vector<std::string> &ours);
+// 提交: 点确认框 box 的确认 (sent 随即置真), 等「提示」回报框、读正文、点掉; 正文不含 ok → sent 复原, Fail「what未成功: 正文」;
+//   再等回报框、box 与 also 各框都关了 → 回报原文
+std::string submit(const win::Hwnd &box, bool &sent, const std::string &ok, const char *what, const std::vector<win::Hwnd> &also = {});
+// 一笔的错误边界: 跑 fn; 出错即关掉其间新出的框、再 tidy (收尾自身出错不盖原因) → 原因 (已点确认 (sent) 的冠以「已点确认, 可能已提交 (redo): 」); 成了 = 空
+std::string attempt(const bool &sent, const char *redo, const std::function<void()> &fn, const std::function<void()> &tidy = {});
 
 } // namespace live::tdx::ui

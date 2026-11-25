@@ -66,6 +66,21 @@ std::shared_ptr<const Inputs> inputs(Core &c) {
   return c.in;
 }
 
+// 视图 (BoardView / PlanView) 换上重算的 next: 只是在等且已有上一份即留着上一份照显、只换 wait, 否则整份换
+template <class V>
+void settle(V &cur, V next) {
+  if (next.wait.empty() || !cur.ready())
+    cur = std::move(next);
+  else
+    cur.wait = std::move(next.wait);
+}
+
+// 显示名 (见 LiveHub::name_of): 本地库 l 有的个股 (交易所 + 代码对得上) 取本地简称, 否则 fallback
+const std::string &local_name(const live::terms::Local &l, const std::string &code, const std::string &fallback) {
+  const auto i = l.find(code);
+  return i != l.end() && i->second.mkt == live::market_of(code) && !i->second.name.empty() ? i->second.name : fallback;
+}
+
 // 两组的派生: 条款 = 券商的合本地库; 名单里可买的 (随条款)
 void derive(Inputs &x) {
   x.terms.merged = x.terms.raw ? std::make_shared<const live::Terms>(live::terms::merged(x.terms.raw->terms, *x.terms.local)) : nullptr;
@@ -156,11 +171,9 @@ void stage(Core &c, std::string s) {
 // 事务里下一单: 「行情」从 books 取盘口记一条、按 mode 定委托价 (yuan > 0 = 按额: 额定价、按委托价折股; 否则按 o.qty 股), 再交 broker 下.
 // 本单进最近几单之首, 其各步 (段名即步名) 与实时一行经事务线程的 Hooks 同步进本单; 请求与结局各记一条.
 // 成败看 st, 不抛: 本单出的任何错 (含应答畸形抛的) 都收在本单, 批量下单接着下后面的.
-// 名称换成合并条款的 (本地库简称): 券商表给的可能是全称, 客户端切图表按标题里的简称认
+// 名称换成显示名 (本地库简称): 券商表给的可能是全称, 客户端切图表按标题里的简称认
 OrderJob exec(Core &c, Books &books, live::OrderReq o, double yuan, live::PxMode mode, const std::string &at) {
-  if (const std::shared_ptr<const live::Terms> t = inputs(c)->terms.merged)
-    if (const auto i = t->find(o.code); i != t->end())
-      o.name = i->second.name;
+  o.name = local_name(*inputs(c)->terms.local, o.code, o.name);
   const char *px_name = live::kPxModeNames[static_cast<int>(mode)];
   std::string label = yuan > 0 ? strf("%gW", yuan / 1e4) : strf("%lld股", static_cast<long long>(o.qty));
   live::trace::note("order", strf("%s %s %s %s %s · %s", live::side_name(o.side), live::credit_name(o.credit), o.code.c_str(), o.name.c_str(), label.c_str(), px_name),
@@ -225,7 +238,7 @@ std::optional<live::OrderReq> redo(const Core &c, const OrderJob &j) {
   return o;
 }
 
-// 两样拉取 (同形, 下标 kPulls 序): miss = 拉过之后、快照 s 读到后另该拉的情形 (PullSpec::also); run = 拉 → 存, 换上 → 拉于
+// 两样拉取 (同形, 下标 kPulls 序): miss = 拉过之后、快照 s 读到后另该拉的情形 (PullSpec::also; 空 = 无); run = 拉 → 存, 换上 → 拉于
 bool terms_miss(Core &c, const live::Snapshot &s) {
   const std::shared_ptr<const Inputs> in = inputs(c);
   assert(in->terms.raw && "拉过才核缺");
@@ -234,7 +247,6 @@ bool terms_miss(Core &c, const live::Snapshot &s) {
     codes.push_back(x->code);
   return live::terms::missing(in->terms.raw->terms, *in->terms.local, codes);
 }
-bool flows_miss(Core &, const live::Snapshot &) { return live::flows::partial(); }
 
 misc::Ymd terms_run(Core &c) {
   auto x = std::make_shared<const live::terms::Cache>(live::terms::pull(*c.broker));
@@ -261,8 +273,8 @@ constexpr PullDef kPullDefs[] = {
     {{"更新资金流水", 1,
       "客户端重查账本末日起的资金流水与历史成交 (慢, 一窗 30 天), 并入账本; 历史成交逐日逐只对上流水的买卖, 再刷新一轮核对 (流水累计的持仓 + 今日成交 = 券商持仓)\n"
       "才落 output/live/flows.csv · deals.csv; 账户净值 (Market 自选首行「账户」) 随账本重放, 历史成交另给日内回推与成交点",
-      "账本缺历史成交 (deals.csv 还没落过)", "资金流水账本拉于哪天 (账本截至其前一日)"},
-     flows_miss,
+      "", "资金流水账本拉于哪天 (账本截至其前一日)"},
+     nullptr,
      flows_run},
 };
 static_assert(std::size(kPullDefs) == std::size(kPulls));
@@ -272,7 +284,7 @@ const PullDef &def(Pull p) { return kPullDefs[static_cast<int>(p)]; }
 // p 该拉了 (今天 d, 快照 s 读到后): 还没拉过、拉过满 age 天, 或另该拉
 bool due(Core &c, Pull p, const live::Snapshot &s, misc::Ymd d) {
   const misc::Ymd at = inputs(c)->pulled[static_cast<int>(p)];
-  return !at || misc::add_days(at, def(p).age) <= d || def(p).miss(c, s);
+  return !at || misc::add_days(at, def(p).age) <= d || (def(p).miss && def(p).miss(c, s));
 }
 
 // 拉 p (事务里), 记下拉于
@@ -522,12 +534,7 @@ void LiveHub::update() {
   }
 }
 
-const std::string &LiveHub::name_of(const std::string &code, const std::string &fallback) const {
-  if (const live::terms::Local *l = in_->terms.local.get())
-    if (const auto i = l->find(code); i != l->end() && i->second.mkt == live::market_of(code) && !i->second.name.empty())
-      return i->second.name;
-  return fallback;
-}
+const std::string &LiveHub::name_of(const std::string &code, const std::string &fallback) const { return local_name(*in_->terms.local, code, fallback); }
 
 void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
   Core &c = *c_;
@@ -575,10 +582,7 @@ void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
     if (b.frame)
       for (live::board::Row &r : b.frame->rows)
         r.name = name_of(r.code, r.name);
-    if (b.wait.empty() || !cur.frame)
-      cur = std::move(b);
-    else
-      cur.wait = std::move(b.wait);
+    settle(cur, std::move(b));
   });
 
   plan_.update({snap_.get(), in_.get()}, [&](PlanView &cur) {
@@ -600,10 +604,7 @@ void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
       p.now = p.plan->now;
     else if (snap_)
       p.now = live::rebal::now_of(*snap_);
-    if (p.wait.empty() || !cur.plan)
-      cur = std::move(p);
-    else
-      cur.wait = std::move(p.wait);
+    settle(cur, std::move(p));
   });
 }
 

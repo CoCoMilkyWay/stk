@@ -30,6 +30,7 @@ struct TrialRes final : Res {
   mutable std::shared_ptr<Layer::LayerDerived> lay; // 展示: st.res.daily 派生的分层线 (首画时建)
   const Weight *shown() const;                      // 可展示统计的最佳权重 (有权重且在当前评估期上; 否则空)
   std::string text() const override;
+  std::string gist() const override; // 研究树一行: 名 + 模板 + 思路 + 结局 (落了文件才有)
   void draw() const override;
 };
 

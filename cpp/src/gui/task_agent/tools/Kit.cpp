@@ -47,12 +47,12 @@ int Tally::failed(Cat c) const {
 int Tally::all() const { return std::accumulate(calls.begin(), calls.end(), 0); }
 int Tally::failed() const { return std::accumulate(fails.begin(), fails.end(), 0); }
 
-void OpenRound(State &s) { s.done = false; }
+void OpenStep(State &s) { s.done = false; }
 
-void CloseReply(State &s, const Round &rd) {
-  assert(rd.span.ended());
-  s.tally.llm_s += rd.span.len(0.0);
-  s.tally.usage += rd.reply.usage;
+void CloseReply(State &s, const Step &sp) {
+  assert(sp.span.ended());
+  s.tally.llm_s += sp.span.len(0.0);
+  s.tally.usage += sp.reply.usage;
 }
 
 void ApplyAct(State &s, const Act &a) {
@@ -82,56 +82,47 @@ void ApplyAct(State &s, const Act &a) {
   }
 }
 
-State StateOf(Rounds rs) {
+State StateOf(Steps ss) {
   State s;
-  for (const Round &rd : rs) {
-    if (rd.span.began())
-      OpenRound(s);
-    if (rd.span.ended())
-      CloseReply(s, rd);
-    for (const Act &a : rd.acts)
-      if (a.span.ended())
-        ApplyAct(s, a);
+  for (const Step &sp : ss) {
+    if (sp.span.began())
+      OpenStep(s);
+    if (sp.span.ended())
+      CloseReply(s, sp);
+    if (sp.act && sp.act->span.ended())
+      ApplyAct(s, *sp.act);
   }
   return s;
 }
 
-Tally TallyAt(const State &s, Rounds rs, double now) {
+Tally TallyAt(const State &s, Steps ss, double now) {
   Tally t = s.tally;
-  if (rs.empty())
+  if (ss.empty())
     return t;
-  const Round &rd = rs.back();
-  if (rd.span.running())
-    t.llm_s += rd.span.len(now);
-  for (const Act &a : rd.acts)
-    if (a.span.running())
-      ++t.calls[a.call.tool], t.act_s += a.span.len(now);
+  const Step &sp = ss.back();
+  if (sp.span.running())
+    t.llm_s += sp.span.len(now);
+  if (sp.act && sp.act->span.running())
+    ++t.calls[sp.act->call.tool], t.act_s += sp.act->span.len(now);
   return t;
 }
 
-Tally TallyOf(Rounds rs, double now) {
+Tally TallyOf(Steps ss, double now) {
   Tally t;
-  for (const Round &rd : rs) {
-    t.llm_s += rd.span.len(now), t.usage += rd.reply.usage;
-    for (const Act &a : rd.acts) {
-      if (!a.span.began())
-        continue;
-      ++t.calls[a.call.tool], t.act_s += a.span.len(now);
-      if (!a.span.ended())
-        continue;
-      t.fails[a.call.tool] += !a.out.ok;
-      if (const TrialRes *x = AsTrial(a))
-        ++t.verdicts[x->st.res.verdict];
-      t.adopted += a.call.tool == Tool::SubmitFactor && a.out.ok;
-    }
+  for (const Step &sp : ss) {
+    t.llm_s += sp.span.len(now), t.usage += sp.reply.usage;
+    if (!sp.act || !sp.act->span.began())
+      continue;
+    const Act &a = *sp.act;
+    ++t.calls[a.call.tool], t.act_s += a.span.len(now);
+    if (!a.span.ended())
+      continue;
+    t.fails[a.call.tool] += !a.out.ok;
+    if (const TrialRes *x = AsTrial(a))
+      ++t.verdicts[x->st.res.verdict];
+    t.adopted += a.call.tool == Tool::SubmitFactor && a.out.ok;
   }
   return t;
-}
-
-BatchCheck VetBatch(std::string_view reply, bool ask) {
-  BatchCheck out;
-  ParseCalls(reply, ask, out.calls, out.error);
-  return out;
 }
 
 // =============================================================================
@@ -184,8 +175,8 @@ void finish_act(Act &a, State &st, double t) {
 // =============================================================================
 // 统一调用底座 Rig: open ⇄ step / settle / answer / abort
 // =============================================================================
-Seat Rig::seat(size_t i, const Gate &gate, std::string_view session, bool dry, bool gpu, llm::Options llm) {
-  return {lab, notes, gate, st, timeline, {round(), static_cast<int>(i) + 1}, catalog::label(lab.scope()), std::string(session), dry, gpu, std::move(llm)};
+Seat Rig::seat(const Gate &gate, std::string_view session, bool dry, bool gpu, llm::Options llm) {
+  return {lab, notes, gate, st, timeline, step(), catalog::label(lab.scope()), std::string(session), dry, gpu, std::move(llm)};
 }
 
 void Rig::flush() {
@@ -369,11 +360,10 @@ std::string Feed::tod(int cap, const std::string &around) {
 
 Spot Feed::spot() {
   std::vector<Spot> seen;
-  for (const Round &rd : timeline)
-    for (const Act &a : rd.acts)
-      if (const auto *t = dynamic_cast<const TradesRes *>(a.out.res.get()))
-        for (const TradesRes::Seg &s : t->list)
-          seen.push_back({s.code, s.date, ctx.clock.size() > 1 ? s.time.substr(0, 5) : std::string()});
+  for (const Step &sp : timeline)
+    if (const auto *t = sp.act ? dynamic_cast<const TradesRes *>(sp.act->out.res.get()) : nullptr)
+      for (const TradesRes::Seg &s : t->list)
+        seen.push_back({s.code, s.date, ctx.clock.size() > 1 ? s.time.substr(0, 5) : std::string()});
   if (!seen.empty() && coin(kSpotSeen))
     return one(seen);
   const size_t D = ctx.days.size(), N = ctx.codes.size();
@@ -389,9 +379,8 @@ Spot Feed::spot() {
 std::vector<std::string> Feed::refs(int n) {
   std::vector<std::string> out;
   for (size_t i = timeline.size(); i-- > 0 && static_cast<int>(out.size()) < n;)
-    for (size_t j = timeline[i].acts.size(); j-- > 0 && static_cast<int>(out.size()) < n;)
-      if (const Act &a = timeline[i].acts[j]; a.span.ended() && a.out.ok)
-        out.push_back(RefText({static_cast<int>(i) + 1, static_cast<int>(j) + 1}));
+    if (const std::optional<Act> &a = timeline[i].act; a && a->span.ended() && a->out.ok)
+      out.push_back(StepTag(static_cast<int>(i) + 1));
   return out;
 }
 

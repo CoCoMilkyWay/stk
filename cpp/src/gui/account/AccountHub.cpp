@@ -29,16 +29,14 @@ std::vector<account::Trade> trades_in(const live::Fills &f, int last) {
 // 当日: 回放末日 (指数 idx0, 回放摘要 e) 之后, 持仓 h 按 y 的分钟收盘, 末槽 = h.now; 券商持仓时今日成交 f 按时刻回推 (与历史回放同一核 day_of)
 std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, const Quote::Holdings &h, const live::Fills *f, const Quote::Live &y) {
   const size_t n = static_cast<size_t>(std::clamp(Quote::sec_slot(y.sec), 0, Quote::kSlots - 1)) + 1;
-  account::Day d{y.date, h.now(&y), h.broker ? e.after : 0, 1, {}};
+  account::Day d{y.date, h.now(&y), h.broker ? e.after : 0, 1, std::vector<account::Hold>(h.list.begin(), h.list.end())};
   std::unordered_map<std::string, uint32_t> id; // 代码 → 全局 id (资产轴上的)
-  for (const Quote::Holding &x : h.list) {
-    d.hold.push_back({x.code, x.qty, x.px});
+  for (const Quote::Holding &x : h.list)
     if (x.id != Quote::Ref::kNone)
       id.emplace(x.code, x.id);
-  }
   const std::vector<account::Trade> trades = h.broker && f ? trades_in(*f, static_cast<int>(n) - 1) : std::vector<account::Trade>{};
   for (const account::Trade &t : trades)
-    if (const Quote::Holding x = holding(t.code, 0, 0); x.id != Quote::Ref::kNone)
+    if (const Quote::Holding x = holding({t.code}); x.id != Quote::Ref::kNone)
       id.emplace(t.code, x.id);
   return std::make_shared<const Quote::Day>(day_of(d, e.nav, idx0, trades, n, [&](const std::string &code) -> const Quote::Day * {
     const auto it = id.find(code);
@@ -53,7 +51,7 @@ std::shared_ptr<const Quote::Holdings> holdings_of(const Quote::Equity &e, const
     h->broker = true, h->net = s->acct.net;
     for (const live::Position &p : s->pos.list)
       if (p.balance != 0)
-        h->list.push_back(holding(p.code, static_cast<double>(p.balance), p.price));
+        h->list.push_back(holding({p.code, static_cast<double>(p.balance), p.price}));
     for (const live::Traded &x : s->fills.by_code.list)
       h->amount += x.amount[live::kBuy] + x.amount[live::kSell], h->buy += x.amount[live::kBuy];
   } else if (e.nav > 0) {
@@ -94,8 +92,8 @@ account::Spot spot_of(const live::Snapshot &s) {
   return o;
 }
 
-// 全部成交点 (一分钟一档): 历史 h (回放的, 今日不取; 可空) + 今日成交 f (可空)
-Quote::Trades marks_of(const Quote::Trades *h, const live::Fills *f) {
+// 成交点两档: 历史 h (回放的, 今日不取; 可空) + 今日成交 f (可空) 并起来, 各按档聚合; 都没有 → 空
+Quote::TradeBins trades_of(const Quote::Trades *h, const live::Fills *f) {
   const misc::Ymd today = misc::today_ymd();
   Quote::Trades all;
   if (h)
@@ -107,37 +105,10 @@ Quote::Trades marks_of(const Quote::Trades *h, const live::Fills *f) {
       assert(x.sec >= 0);
       all.marks.push_back(mark_of(today, x));
     }
-  return all;
-}
-
-// 成交点两档: 全部成交点各按档聚合; 无 → 空
-Quote::TradeBins trades_of(const Quote::Trades &all) {
   Quote::TradeBins out;
   if (!all.marks.empty())
     for (int b = 0; b < Quote::kTradeBins; ++b)
       out[b] = std::make_shared<const Quote::Trades>(Quote::rebin(all, Quote::kBinSlots[b]));
-  return out;
-}
-
-// 持仓成本: 持仓 h 的各只 × 本段买入 (开仓日 = 回放的 opens, 回放末日后才开的 = 今日; all = 一分钟一档的成交点); 本段无买入可算的只计进总仓位
-std::shared_ptr<const Quote::Costs> costs_of(const Quote::Holdings &h, const Quote::Opens *opens, const Quote::Trades &all) {
-  auto out = std::make_shared<Quote::Costs>();
-  const misc::Ymd today = misc::today_ymd();
-  for (const Quote::Holding &x : h.list) {
-    out->total += h.weight(x);
-    misc::Ymd open = today;
-    if (opens)
-      if (const auto o = opens->find(x.code); o != opens->end())
-        open = o->second;
-    Quote::Cost c{.code = x.code, .weight = h.weight(x)};
-    for (const Quote::TradeMark &m : all.marks)
-      if (m.date >= open)
-        for (const Quote::TradeSec &s : m.secs)
-          if (s.code == x.code && s.amount[live::kBuy] > 0)
-            c.buys.push_back({m.date, m.slot, s.amount[live::kBuy]});
-    if (!c.buys.empty())
-      out->list.push_back(std::move(c));
-  }
   return out;
 }
 
@@ -157,9 +128,7 @@ std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const 
     if (!(h && x.hold && *h == *x.hold))
       x.hold = std::move(h);
     x.note = se ? note_of(*se, view->equity, x.hold.get()) : "";
-    const Quote::Trades all = marks_of(t ? view->equity.trades.get() : nullptr, f.snap ? &f.snap->fills : nullptr);
-    x.trades = trades_of(all);
-    x.costs = x.hold ? costs_of(*x.hold, view->equity.opens.get(), all) : nullptr;
+    x.trades = trades_of(t ? view->equity.trades.get() : nullptr, f.snap ? &f.snap->fills : nullptr);
   });
   const Held &x = held_.val;
   day_.update({held_.gen, live ? live->ver : 0}, [&](std::shared_ptr<const Quote::Day> &d) {

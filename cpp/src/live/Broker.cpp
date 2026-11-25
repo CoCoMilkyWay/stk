@@ -230,12 +230,8 @@ Terms Broker::terms() {
   return c_->txn("两融条款", trace::Kw::object(), [&] { return c_->d->terms(); });
 }
 
-std::vector<CashFlow> Broker::flows(misc::Ymd from) {
-  return c_->txn("资金流水", {{"from", from}}, [&] { return c_->d->flows(from); });
-}
-
-std::vector<Deal> Broker::deals(misc::Ymd from) {
-  return c_->txn("历史成交", {{"from", from}}, [&] { return c_->d->deals(from); });
+Ledger Broker::ledger(misc::Ymd from) {
+  return c_->txn("资金流水", {{"from", from}}, [&] { return c_->d->ledger(from); });
 }
 
 Placed Broker::place(const OrderReq &o) {

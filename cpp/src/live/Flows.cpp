@@ -53,18 +53,26 @@ bool same(const CashFlow &a, const CashFlow &b) {
   return a.date == b.date && a.code == b.code && a.price == b.price && a.qty == b.qty && a.kind == b.kind && a.amount == b.amount && a.balance == b.balance;
 }
 
-// 账本并入一次重查 (重查覆盖 from 日起)
-std::vector<CashFlow> merge(const std::vector<CashFlow> &old, misc::Ymd from, std::vector<CashFlow> fresh) {
-  for (const CashFlow &r : fresh)
+// 账本的一样 (流水 / 历史成交) 并入一次重查: from 日起整段换成重查的 (重查回来的须都不早于 from)
+template <class T>
+std::vector<T> splice(const char *what, const std::vector<T> &old, misc::Ymd from, std::vector<T> fresh) {
+  for (const T &r : fresh)
     if (r.date < from)
-      fail(strf("资金流水重查 %s 起, 回来 %d 的行", misc::dash(from).c_str(), r.date));
+      fail(strf("%s重查 %s 起, 回来 %d 的行", what, misc::dash(from).c_str(), r.date));
+  std::vector<T> out(old.begin(), std::ranges::lower_bound(old, from, {}, &T::date));
+  out.insert(out.end(), std::make_move_iterator(fresh.begin()), std::make_move_iterator(fresh.end()));
+  return out;
+}
+
+// 流水另核: 账本 from 日起的各行须恰为重查的开头几行; 并后核日序 / 余额链 / 业务分类
+std::vector<CashFlow> merge(const std::vector<CashFlow> &old, misc::Ymd from, std::vector<CashFlow> fresh) {
   const auto cut = std::ranges::lower_bound(old, from, {}, &CashFlow::date);
-  const auto [o, f] = std::mismatch(cut, old.end(), fresh.begin(), fresh.end(), same);
+  std::vector<CashFlow> out = splice("资金流水", old, from, std::move(fresh));
+  const auto at = out.begin() + (cut - old.begin()); // 重查的首行
+  const auto [o, f] = std::mismatch(cut, old.end(), at, out.end(), same);
   if (o != old.end())
     fail(strf("资金流水重查与账本对不上: %s 起账本 %zu 行不是重查 %zu 行的开头, 第 %zu 行起不同: 账本 %s / 重查 %s", misc::dash(from).c_str(),
-              static_cast<size_t>(old.end() - cut), fresh.size(), static_cast<size_t>(o - cut), show(*o).c_str(), f == fresh.end() ? "(无)" : show(*f).c_str()));
-  std::vector<CashFlow> out(old.begin(), cut);
-  out.insert(out.end(), std::make_move_iterator(fresh.begin()), std::make_move_iterator(fresh.end()));
+              static_cast<size_t>(old.end() - cut), static_cast<size_t>(out.end() - at), static_cast<size_t>(o - cut), show(*o).c_str(), f == out.end() ? "(无)" : show(*f).c_str()));
   check(out);
   return out;
 }
@@ -98,16 +106,6 @@ std::string reconcile(const std::vector<CashFlow> &rows, const Snapshot &s) {
   return out;
 }
 
-// 历史成交并入一次重查 (重查覆盖 from 日起)
-std::vector<Deal> merge_deals(const std::vector<Deal> &old, misc::Ymd from, std::vector<Deal> fresh) {
-  for (const Deal &d : fresh)
-    if (d.date < from)
-      fail(strf("历史成交重查 %s 起, 回来 %d 的行", misc::dash(from).c_str(), d.date));
-  std::vector<Deal> out(old.begin(), std::ranges::lower_bound(old, from, {}, &Deal::date));
-  out.insert(out.end(), std::make_move_iterator(fresh.begin()), std::make_move_iterator(fresh.end()));
-  return out;
-}
-
 void save(const Cache &c) {
   Pulled s{c.pulled, {{kRate, strf("%.6g", c.rate)}}, {}};
   for (const CashFlow &r : c.rows)
@@ -132,14 +130,13 @@ bool holds(const CashFlow &r) {
 
 bool traded(const CashFlow &r) { return kTrades.contains(r.kind); }
 
-void match(const std::vector<CashFlow> &rows, const std::vector<Deal> &deals, misc::Ymd from) {
+void match(const std::vector<CashFlow> &rows, const std::vector<Deal> &deals) {
   std::map<std::pair<misc::Ymd, std::string>, std::pair<double, double>> by; // → (流水, 成交)
   for (const CashFlow &r : rows)
-    if (r.date >= from && traded(r))
+    if (traded(r))
       by[{r.date, r.code}].first += r.qty;
   for (const Deal &d : deals)
-    if (d.date >= from)
-      by[{d.date, d.code}].second += static_cast<double>(d.side * d.qty);
+    by[{d.date, d.code}].second += static_cast<double>(d.side * d.qty);
   std::string off;
   for (const auto &[k, v] : by)
     if (std::fabs(v.first - v.second) >= kShare)
@@ -167,14 +164,11 @@ Cache load() {
 Cache pull(Broker &b) {
   Cache c = load();
   const misc::Ymd from = c.rows.empty() ? 0 : c.rows.back().date;
-  std::vector<CashFlow> fresh = b.flows(from);
-  const size_t n = fresh.size();
-  c.rows = merge(c.rows, from, std::move(fresh));
-  if (!c.rows.empty()) {
-    const misc::Ymd since = c.deals.empty() ? c.rows.front().date : c.deals.back().date;
-    c.deals = merge_deals(c.deals, since, b.deals(since));
-    match(c.rows, c.deals, c.deals.empty() ? since : c.deals.front().date);
-  }
+  Ledger l = b.ledger(from);
+  const size_t n = l.flows.size();
+  c.rows = merge(c.rows, from, std::move(l.flows));
+  c.deals = splice("历史成交", c.deals, from, std::move(l.deals));
+  match(c.rows, c.deals);
   {
     trace::Span sp("核对");
     trace::live("刷新持仓, 核对资金流水…");
@@ -191,8 +185,6 @@ Cache pull(Broker &b) {
   save(c);
   return c;
 }
-
-bool partial() { return disk::exists(disk::LiveFlowsFile) && !disk::exists(disk::LiveDealsFile); }
 
 uint64_t generation() { return gen.load(std::memory_order_acquire); }
 

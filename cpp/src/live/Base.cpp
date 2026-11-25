@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <utility>
 
@@ -27,6 +28,17 @@ std::string strf(const char *fmt, ...) {
   std::vsnprintf(s.data(), s.size() + 1, fmt, b);
   va_end(b);
   return s;
+}
+
+std::optional<double> parse_num(std::string_view s) {
+  const std::string t(s);
+  char *e = nullptr;
+  const double v = std::strtod(t.c_str(), &e);
+  if (e == t.c_str())
+    return std::nullopt;
+  while (*e && std::isspace(static_cast<unsigned char>(*e)))
+    ++e;
+  return *e ? std::nullopt : std::optional<double>(v);
 }
 
 int sec_now() {

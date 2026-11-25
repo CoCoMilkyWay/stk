@@ -3,10 +3,8 @@
 //     → 时间加权指数的逐槽点位 → 根根首尾相接的一日 (开 = 上一槽, 首槽 = 前收; 收 = 本槽; 高 / 低 = 两者之极; 额 0; 日根包住全路径)
 //   全史 = 各日按 Series 的紧凑形打包 (篮子口径步长), 恒带分钟, 复权 1
 //   成交 (历史成交 / 今日成交同形) 两用: 日内回推的成交 (trade_of) / 成交点 (mark_of, 一笔一点; 聚合见 Quote::rebin)
-//   摘要另带末日仍持有的各只的开仓日 (Quote::Opens; AccountHub 据此取本段买入, 出 NAV 账户线的持仓成本)
 #pragma once
 
-#include "account/Nav.hpp"
 #include "gui/quote/Quote.hpp"
 #include "live/Flows.hpp"
 #include "misc/date.hpp"
@@ -21,8 +19,8 @@
 
 namespace GUI::Account {
 
-// 流水代码的一只持仓 (全局 id 在资产轴上查, 不在 = Ref::kNone)
-Quote::Holding holding(const std::string &code, double qty, double px);
+// 回放口径的一只持仓 + 全局 id (按流水代码在资产轴上查, 不在 = Ref::kNone)
+Quote::Holding holding(account::Hold h);
 
 // 一笔成交 → 日内回推的成交: 槽 = 所在分钟根 (竞价并入首根), 至多到 last (券商时钟领先新浪也算已发生); 费用按费率估 (live::rebal::fee)
 account::Trade trade_of(const live::Fill &x, int last);

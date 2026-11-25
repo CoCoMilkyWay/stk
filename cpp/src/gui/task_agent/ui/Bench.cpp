@@ -26,6 +26,48 @@ using namespace ui;
 using json = nlohmann::ordered_json;
 using Clock = std::chrono::steady_clock;
 
+namespace {
+
+// 存过的会话里某个工具做完的调用 ("载入日志" 的输入, 带当时交给 agent 的原文作对照); at = 所在的步
+struct Seen {
+  std::string dir, stamp;
+  bool test = false;
+  int at = 0;
+  json args;
+  std::string out;
+  bool ok = true;
+};
+
+// 本作用域存过的各会话里 t 做完的调用; 会话调试工具 (不进时间线) 按步现拼参数与原文
+std::vector<Seen> seen_calls(const Scope &sc, Tool t) {
+  std::vector<Seen> out;
+  for (const Saved &s : SavedSessions(sc)) {
+    const std::vector<Step> ss = TimelineOf(s.dir);
+    for (size_t i = 0; i < ss.size(); ++i) {
+      const Step &sp = ss[i];
+      const int n = static_cast<int>(i) + 1;
+      if (IsAgentTool(t)) {
+        if (sp.act && sp.act->call.tool == t && sp.act->span.ended())
+          out.push_back({s.dir, s.stamp, s.test, n, sp.act->call.args, sp.act->out.text, sp.act->out.ok});
+        continue;
+      }
+      if (!sp.span.began())
+        continue;
+      if (t == Tool::BuildContext) {
+        out.push_back({s.dir, s.stamp, s.test, n, {{"kind", def(sp.kind).id}, {"view", "full"}, {"ask", "yes"}, {"memo", sp.memo}, {"remark", ""}}, llm::Flat(TurnsOf(Steps(ss).first(i + 1))), sp.error.empty()});
+      } else if (t == Tool::CheckCall) {
+        if (!sp.reply.text.empty())
+          out.push_back({s.dir, s.stamp, s.test, n, {{"reply", sp.reply.text}, {"ask", "yes"}}, sp.act ? "通过: " + sp.act->call.text() : RetryMessage(sp.error).text, sp.error.empty()});
+      } else if (t == Tool::ProbeBrain) {
+        out.push_back({s.dir, s.stamp, s.test, n, {{"backend", ""}, {"model", ""}, {"ask", "yes"}, {"memo", sp.memo}, {"prompt", ""}}, sp.reply.text, sp.reply.ok() && sp.error.empty()});
+      }
+    }
+  }
+  return out;
+}
+
+} // namespace
+
 struct Bench::Impl : Rig {
   std::mt19937_64 rng{std::random_device{}()};
   // 输入: 每个工具各一份
@@ -35,16 +77,16 @@ struct Bench::Impl : Rig {
   bool json_mode = false;
   std::string json_err;
   std::vector<Seen> seen;
-  // 载入的日志调用: 快照 = 它所在会话在它之前的时间线 (前几轮 + 本轮它之前的调用; 没有 = 空白); 输入还是它的参数时, 原文栏对照它当时的原文
+  // 载入的日志调用: 快照 = 它所在会话到它那一步为止 (那一步的回复与调用清掉, 停在消息发出后; 没有 = 空白); 输入还是它的参数时, 原文栏对照它当时的原文
   struct Loaded {
     Tool tool;
     Seen at;
   };
   std::optional<Loaded> loaded;
-  std::vector<Round> snap;
-  // 工作台轮的调用: 前 base 个是快照里本轮已有的; 会话调试工具 (Cat::Session) 放独立 probes, 不污染快照时间线
+  std::vector<Step> snap;
+  // 工作台的调用一个一步, 接着快照往下编号 (首个填进快照里待答的那一步); 下标 < base 的步是快照里的; 会话调试工具 (Cat::Session) 放独立 probes, 不污染快照时间线
   size_t base = 0;
-  std::vector<std::string> origin; // 与工作台轮的调用一一对应 (日志里当时的原文; 空 = 不是载入的)
+  std::vector<std::string> origin; // 与时间线的步一一对应 (日志里当时的原文; 空 = 不是载入的)
   std::vector<Act> probes;
   std::vector<std::string> probe_origin;
   std::string session_dir; // 快照来自的会话目录 (空 = 空白工作台)
@@ -57,24 +99,22 @@ struct Bench::Impl : Rig {
   Clock::time_point t0 = Clock::now();
   LabLive live;
 
-  Impl() { timeline.push_back(Round{.kind = Msg::Round}); }
-
   double now() const { return std::chrono::duration<double>(Clock::now() - t0).count(); }
   bool held() const { return running.has_value() || lab.busy(); }
-  std::vector<Act> &acts() { return timeline.back().acts; }
-  Act &act_of(size_t i, bool probe) { return probe ? probes[i] : acts()[i]; }
-  Seat bench_seat(size_t i) { return seat(i, gate, session_dir, true, gpu, llm); }
+  bool pending() const { return !timeline.empty() && !timeline.back().act; } // 末步待答 (下一个调用填进它)
+  int next() const { return step() + !pending(); }                           // 下一个调用的编号
+  Act &act_of(size_t i, bool probe) { return probe ? probes[i] : *timeline[i].act; }
+  bool has(size_t i, bool probe) const { return probe ? i < probes.size() : i >= base && i < timeline.size() && timeline[i].act; }
+  size_t end(bool probe) const { return probe ? probes.size() : timeline.size(); }
+  Seat bench_seat() { return seat(gate, session_dir, true, gpu, llm); }
 
   void reset() {
     assert(!held());
     flush();
-    if (snap.empty())
-      timeline.assign(1, Round{.kind = Msg::Round});
-    else
-      timeline = snap;
+    timeline = snap;
     restate();
-    base = acts().size();
-    origin.assign(base, {});
+    base = timeline.size() - pending();
+    origin.assign(timeline.size(), {});
     probes.clear(), probe_origin.clear();
   }
 
@@ -84,20 +124,17 @@ struct Bench::Impl : Rig {
   }
 
   void load(const Seen &x) {
-    std::vector<Round> rs = TimelineOf(x.dir);
-    assert(x.at.round >= 1 && static_cast<size_t>(x.at.round) <= rs.size() && x.at.call >= 0);
-    rs.resize(static_cast<size_t>(x.at.round));
-    if (x.at.call >= 1) {
-      rs.back().acts.resize(static_cast<size_t>(x.at.call - 1));
-      if (!IsAgentTool(tool) && x.at.call == 1)
-        rs.back().span.t1 = -1.0, rs.back().reply = {}, rs.back().error.clear();
-    }
-    snap = std::move(rs), loaded = Loaded{tool, x}, session_dir = x.dir;
+    std::vector<Step> ss = TimelineOf(x.dir);
+    assert(x.at >= 1 && static_cast<size_t>(x.at) <= ss.size());
+    ss.resize(static_cast<size_t>(x.at));
+    Step &sp = ss.back();
+    sp.span.t1 = -1.0, sp.think = {}, sp.write = {}, sp.reply = {}, sp.error.clear(), sp.act.reset();
+    snap = std::move(ss), loaded = Loaded{tool, x}, session_dir = x.dir;
     reset();
     args[tool] = x.args, raw[tool] = x.args.dump(2), json_err.clear();
   }
 
-  Feed feed(const Gate &g) { return {lab, lab.ctx(), lab.results(), g, timeline, {round(), static_cast<int>(acts().size()) + 1}, rng}; }
+  Feed feed(const Gate &g) { return {lab, lab.ctx(), lab.results(), g, timeline, next(), rng}; }
 
   void sample(const Gate &g) {
     Feed f = feed(g);
@@ -108,13 +145,19 @@ struct Bench::Impl : Rig {
 
   void run(Call c, std::string org) {
     const bool probe = !IsAgentTool(c.tool);
-    std::vector<Act> &pool = probe ? probes : acts();
-    std::vector<std::string> &orgs = probe ? probe_origin : origin;
-    pool.push_back({.call = std::move(c)});
-    orgs.push_back(std::move(org));
-    const size_t i = pool.size() - 1;
-    Seat s = bench_seat(i);
-    const Exec at = open_act(pool[i], s, now());
+    size_t i = 0;
+    if (probe) {
+      probes.push_back({.call = std::move(c)}), probe_origin.push_back(std::move(org));
+      i = probes.size() - 1;
+    } else {
+      if (!pending())
+        timeline.push_back({.kind = Msg::Result});
+      timeline.back().act = Act{.call = std::move(c)};
+      origin.resize(timeline.size()), origin.back() = std::move(org);
+      i = timeline.size() - 1;
+    }
+    Seat s = bench_seat();
+    const Exec at = open_act(act_of(i, probe), s, now());
     if (at != Exec::Sync)
       running = i, running_probe = probe, choosing = at == Exec::Human;
   }
@@ -144,7 +187,7 @@ struct Bench::Impl : Rig {
       if (t->out.cancelled) {
         abort_act(a, now());
       } else {
-        Seat s = bench_seat(i);
+        Seat s = bench_seat();
         settle_act(a, std::move(t->out.out), s, now());
       }
       running.reset(), running_probe = false;
@@ -160,7 +203,7 @@ void Bench::update() { impl_->poll(); }
 bool Bench::busy() const { return impl_->held(); }
 std::optional<Tool> Bench::running() const {
   const Impl &b = *impl_;
-  return b.running ? std::optional((b.running_probe ? b.probes : b.timeline.back().acts)[*b.running].call.tool) : std::nullopt;
+  return b.running ? std::optional((b.running_probe ? b.probes[*b.running] : *b.timeline[*b.running].act).call.tool) : std::nullopt;
 }
 
 namespace {
@@ -245,8 +288,6 @@ std::string call_line(Tool t, const json &args) { return Call{t, args}.text(80);
 // 文本框填满所在栏余下的高 (下面另留 keep 行)
 float fill_lines(float keep) { return std::max(3.0f, ImGui::GetContentRegionAvail().y / ImGui::GetTextLineHeightWithSpacing() - keep); }
 
-std::string seen_ref(Ref r) { return r.call > 0 ? RefText(r) : "R" + std::to_string(r.round); }
-
 } // namespace
 
 void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate &gate, bool gpu, const llm::Options &llm, bool blocked) {
@@ -280,23 +321,21 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   if (ctx.ops.empty())
     warn(label + "没有开放的算子 (Mine 页算子页一个没勾)");
 
-  // ---- 工作台: 第几轮 / 快照 / 门槛 ----
+  // ---- 工作台: 下一个调用的编号 / 快照 / 门槛 ----
   ImGui::TextColored(kColHead, "工作台:");
   ImGui::SameLine();
-  const std::string at = b.loaded ? "快照 = " + stamp_text(b.loaded->at.stamp) + (b.loaded->at.test ? " 自检" : "") + " 会话 " + seen_ref(b.loaded->at.at) +
-                                        (b.loaded->at.at.call > 0 ? " 之前" : "")
-                                  : "空白";
-  ImGui::TextDisabled("第 %d 轮 · %s · 门槛 中位 rIC ≥ %.3f (Config 页)", b.round(), at.c_str(), gate.ric);
+  const std::string at = b.loaded ? "快照 = " + stamp_text(b.loaded->at.stamp) + (b.loaded->at.test ? " 自检" : "") + " 会话 " + StepTag(b.loaded->at.at) + " 之前" : "空白";
+  ImGui::TextDisabled("下一个 %s · %s · 门槛 中位 rIC ≥ %.3f (Config 页)", StepTag(b.next()).c_str(), at.c_str(), gate.ric);
   tip(("作用域 = Mine 页的 " + catalog::label(sc) + " · 评估期 " + ctx.window +
        "\n会话类工具 (提交 / 记录 / 会话内核调试) 跑在快照上: 输入栏载入日志, 就取那段会话在它之前的时间线折出账本,\n"
-       "工作台接着那一轮往下编号 (会话调试工具独立存放, 不污染快照); 只在内存, 不落盘")
+       "工作台接着那一步往下编号 (会话调试工具独立存放, 不污染快照); 只在内存, 不落盘")
           .c_str());
   ImGui::SameLine();
   ImGui::BeginDisabled(held);
   if (ImGui::SmallButton("清空"))
     b.clear();
   ImGui::EndDisabled();
-  tip("丢掉工作台的调用与快照, 回到空白的第 1 轮 (已落的候选文件不动)");
+  tip("丢掉工作台的调用与快照, 回到空白 (已落的候选文件不动)");
 
   const ToolMeta &m = def(b.tool);
   const ToolDoc &d = doc(b.tool);
@@ -308,9 +347,7 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
 
   // ---- 当前输入对应的调用: 校验 + 工作台里跑过同样参数的最近一次 (在问研究员的 ask_human 恒是它) ----
   const bool probe = !IsAgentTool(b.tool);
-  std::vector<Act> &as = probe ? b.probes : b.acts();
   const std::vector<std::string> &orgs = probe ? b.probe_origin : b.origin;
-  const size_t base = probe ? 0 : b.base;
   json &in = b.args[b.tool];
   if (in.is_null())
     b.sample(gate);
@@ -318,12 +355,13 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   Call cur;
   const bool valid = b.json_err.empty() && CallOf(b.tool, in, "args", cur, errs);
   std::optional<size_t> hit;
-  if (b.choosing && !b.running_probe && !probe && b.acts()[*b.running].call.tool == b.tool)
+  if (b.choosing && !b.running_probe && !probe && b.act_of(*b.running, false).call.tool == b.tool)
     hit = b.running;
   else if (valid)
-    for (size_t i = as.size(); i-- > base && !hit;)
-      if (const Call &c = as[i].call; c.tool == b.tool && c.args == cur.args)
-        hit = i;
+    for (size_t i = b.end(probe); i-- > 0 && !hit;)
+      if (b.has(i, probe))
+        if (const Call &c = b.act_of(i, probe).call; c.tool == b.tool && c.args == cur.args)
+          hit = i;
   const bool from_log = valid && b.loaded && b.loaded->tool == b.tool && b.loaded->at.args == cur.args;
 
   const float top = std::max(ImGui::GetContentRegionAvail().y * 0.4f, ImGui::GetTextLineHeightWithSpacing() * 12.0f);
@@ -342,16 +380,16 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   ImGui::SameLine();
   ImGui::BeginDisabled(held);
   ImGui::SetNextItemWidth(-1);
-  const std::string log_label = from_log ? "日志 " + stamp_text(b.loaded->at.stamp) + " · " + seen_ref(b.loaded->at.at) : std::string("载入日志…");
+  const std::string log_label = from_log ? "日志 " + stamp_text(b.loaded->at.stamp) + " · " + StepTag(b.loaded->at.at) : std::string("载入日志…");
   std::optional<Seen> pick; // 选中的日志调用: 本帧画完再换快照 (换了时间线, 上面算的 hit 就作废)
   if (ImGui::BeginCombo("##seen", log_label.c_str(), ImGuiComboFlags_HeightLarge)) {
     if (ImGui::IsWindowAppearing())
-      b.seen = SeenCalls(sc, b.tool);
+      b.seen = seen_calls(sc, b.tool);
     if (b.seen.empty())
       ImGui::TextDisabled("本作用域的会话里没有可载入的 %s 记录", m.id);
     for (size_t i = 0; i < b.seen.size() && i < 200; ++i) {
       const Seen &x = b.seen[b.seen.size() - 1 - i];
-      const std::string label = stamp_text(x.stamp) + (x.test ? " · 自检" : "") + " · " + seen_ref(x.at) + (x.ok ? "" : " · 没做成") + " · " + call_line(b.tool, x.args) +
+      const std::string label = stamp_text(x.stamp) + (x.test ? " · 自检" : "") + " · " + StepTag(x.at) + (x.ok ? "" : " · 没做成") + " · " + call_line(b.tool, x.args) +
                                 "###seen" + std::to_string(i);
       if (ImGui::Selectable(label.c_str()))
         pick = x;
@@ -383,11 +421,11 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
     ImGui::SameLine();
     ImGui::ProgressBar(static_cast<float>(b.live.frac), ImVec2(90, 0));
   }
+  const auto tag_of = [&](size_t i) { return probe ? "P#" + std::to_string(i + 1) : StepTag(static_cast<int>(i) + 1); };
   const auto label_of = [&](size_t i) {
-    const Act &a = as[i];
+    const Act &a = b.act_of(i, probe);
     const std::string state = !a.span.ended() ? " · 执行中…" : (a.out.ok ? "" : " · 没做成") + std::string(" · ") + dur(a.span.len(a.span.t1));
-    const std::string tag = probe ? "P#" + std::to_string(i + 1) : RefText({b.round(), static_cast<int>(i) + 1});
-    return tag + " " + a.call.text(80) + state;
+    return tag_of(i) + " " + a.call.text(80) + state;
   };
   ImGui::SameLine();
   ImGui::SetNextItemWidth(-1);
@@ -395,12 +433,12 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
                                                                        : "(未跑) " + cur.text(80);
   if (ImGui::BeginCombo("##acts", preview.c_str(), ImGuiComboFlags_HeightLarge)) {
     bool any = false;
-    for (size_t i = as.size(); i-- > base;) {
-      if (as[i].call.tool != b.tool)
+    for (size_t i = b.end(probe); i-- > 0;) {
+      if (!b.has(i, probe) || b.act_of(i, probe).call.tool != b.tool)
         continue;
       any = true;
       if (ImGui::Selectable((label_of(i) + "###act" + std::to_string(i)).c_str(), hit == i))
-        in = as[i].call.args, b.raw[b.tool] = in.dump(2), b.json_err.clear();
+        in = b.act_of(i, probe).call.args, b.raw[b.tool] = in.dump(2), b.json_err.clear();
     }
     if (!any)
       ImGui::TextDisabled("工作台里还没跑过 %s", m.id);
@@ -428,16 +466,16 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   ImGui::SameLine();
   ImGui::BeginChild("##bench_out", ImVec2(0, top), ImGuiChildFlags_Borders);
   ImGui::TextColored(kColHead, probe ? "原文" : "原文 (交给 agent 的)");
-  if (hit && as[*hit].span.ended()) {
-    const Act &a = as[*hit];
-    const std::string title = probe ? "## P#" + std::to_string(*hit + 1) + " " + a.call.text(40) : "## " + CallTitle(a, {b.round(), static_cast<int>(*hit) + 1});
+  if (hit && b.act_of(*hit, probe).span.ended()) {
+    const Act &a = b.act_of(*hit, probe);
+    const std::string title = probe ? "## P#" + std::to_string(*hit + 1) + " " + a.call.text(40) : "## " + CallTitle(a, static_cast<int>(*hit) + 1);
     const std::string &org = orgs[*hit];
     ImGui::SameLine();
     ImGui::TextDisabled("%s", chars(a.out.text).c_str());
     copy_button("复制##out", title + "\n\n" + a.out.text);
     wrapped_dim(title);
     if (!a.out.gist.empty())
-      wrapped(color(TaskStatus::Kind::Ready), "研究树里留的关键数: " + a.out.gist);
+      wrapped(color(TaskStatus::Kind::Ready), "折叠后留的关键数: " + a.out.gist);
     box(a.out.text, false, fill_lines(org.empty() ? 0.5f : 2.0f), false);
     if (!org.empty())
       fold("origin", ImGuiTreeNodeFlags_None, "日志里当时的原文 · " + chars(org), org, true, kBoxLines, false);
@@ -446,7 +484,7 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
     ImGui::SameLine();
     ImGui::TextDisabled("%s", chars(x.out).c_str());
     copy_button("复制##log", x.out);
-    wrapped_dim("日志里 " + seen_ref(x.at) + " 当时的原文 (工作台还没跑; 按 Run 重跑对照)");
+    wrapped_dim("日志里 " + StepTag(x.at) + " 当时的原文 (工作台还没跑; 按 Run 重跑对照)");
     box(x.out, true, fill_lines(0.5f), false);
   } else {
     ImGui::TextDisabled("%s", hit ? "执行中…" : "这组参数还没跑");
@@ -458,9 +496,9 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   ImGui::TextColored(kColHead, "展示");
   if (!hit) {
     ImGui::TextDisabled("%s", valid ? "这组参数还没跑: 按 Run" : "参数不合, 改好再 Run");
-  } else if (Act &a = as[*hit]; b.choosing && !b.running_probe && !probe && b.running == hit) {
+  } else if (Act &a = b.act_of(*hit, probe); b.choosing && !b.running_probe && !probe && b.running == hit) {
     if (edit_asked(AsAsk(a)->asked)) {
-      b.answer_act(*hit, b.now());
+      b.answer_act(a, b.now());
       b.running.reset(), b.choosing = false;
     }
   } else if (!a.span.ended()) {

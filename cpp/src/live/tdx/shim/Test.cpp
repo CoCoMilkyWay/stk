@@ -27,7 +27,7 @@ constexpr long kHostId = 59649, kHold = 0x271D, kCancel = 0x2716;
 std::string query() {
   std::string s;
   std::apply([&](auto... t) { ((s += strf("%s%s %d 条", s.empty() ? "" : " · ", decltype(t)::kOpen.page, ui::open(decltype(t)::kOpen).count.read())), ...); },
-             std::tuple_cat(tables::kReads, tables::kFlows));
+             std::tuple_cat(tables::kReads, tables::kLedger));
   return s;
 }
 
@@ -81,14 +81,13 @@ std::string debts() {
   return strf("负债 %zu 只 · 持仓 %zu 只 · 现金 %.2f · 负债 %.2f; 已清仓仍负债 %.2f:%s", r.debts.list.size(), r.pos.list.size(), r.acct.cash, r.acct.debt, sum, s.c_str());
 }
 
-// 资金流水与历史成交同窗各查, 逐 (日, 代码) 对上
-std::string flows() {
-  std::apply([](auto... t) { ((std::ignore = ui::open(decltype(t)::kOpen)), ...); }, tables::kFlows);
+// 账本一段 (资金流水与历史成交同窗), 逐 (日, 代码) 对上
+std::string ledger() {
+  std::apply([](auto... t) { ((std::ignore = ui::open(decltype(t)::kOpen)), ...); }, tables::kLedger);
   const misc::Ymd from = misc::add_days(misc::today_ymd(), -14);
-  const std::vector<CashFlow> f = tables::flows(from);
-  const std::vector<Deal> d = tables::deals(from);
-  flows::match(f, d, from);
-  return strf("%d 起 流水 %zu 条 · 历史成交 %zu 笔, 买卖对上", from, f.size(), d.size());
+  const Ledger l = tables::ledger(from);
+  flows::match(l.flows, l.deals);
+  return strf("%d 起 流水 %zu 条 · 历史成交 %zu 笔, 买卖对上", from, l.flows.size(), l.deals.size());
 }
 
 std::string terms() {
@@ -141,7 +140,7 @@ struct Case {
   const char *name;
   std::string (*fn)();
 };
-constexpr Case kCases[] = {{"query", query}, {"busy", busy}, {"read", read}, {"debts", debts}, {"flow", flows}, {"terms", terms}, {"fields", fields}};
+constexpr Case kCases[] = {{"query", query}, {"busy", busy}, {"read", read}, {"debts", debts}, {"ledger", ledger}, {"terms", terms}, {"fields", fields}};
 
 bool run(const Case &c) {
   const Clock::time_point t0 = Clock::now();

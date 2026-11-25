@@ -21,6 +21,12 @@ const std::string kPledge = "担保品划入";
 
 bool debt(const CashFlow &r) { return r.kind == "融资借款" || r.kind.ends_with("偿还融资负债") || r.kind.ends_with("偿还融资费用"); }
 bool interest(const CashFlow &r) { return r.kind.ends_with("偿还融资利息"); }
+// 一行的外部进出: 银证转账 = 发生金额, 担保品划入 = 股 × 计价 px() (只在要时求); 其余 0
+template <class Px>
+double flow_of(const CashFlow &r, Px &&px) {
+  return kBank.contains(r.kind) ? r.amount : r.kind == kPledge ? r.qty * px()
+                                                               : 0;
+}
 
 std::optional<double> close_on(const Closes &px, const std::string &code, misc::Ymd d) {
   const auto c = px.find(code);
@@ -132,10 +138,7 @@ std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const st
         owe += r.amount;
       if (interest(r))
         acc += r.amount;
-      if (kBank.contains(r.kind))
-        flow += r.amount;
-      if (r.kind == kPledge)
-        flow += r.qty * price_on(r.code, d).value_or(r.price);
+      flow += flow_of(r, [&] { return price_on(r.code, d).value_or(r.price); });
     }
     double mv = 0;
     std::vector<Hold> held;
@@ -161,8 +164,7 @@ double flow_after(const std::vector<CashFlow> &rows, misc::Ymd d) {
   double f = 0;
   for (const CashFlow &r : rows)
     if (r.date > d)
-      f += kBank.contains(r.kind) ? r.amount : r.kind == kPledge ? r.qty * r.price
-                                                                 : 0;
+      f += flow_of(r, [&] { return r.price; });
   return f;
 }
 

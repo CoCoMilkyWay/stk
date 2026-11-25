@@ -1,4 +1,4 @@
-// 通达信适配: 各表 (请求层直发的应答) 并排声明: 列 / 索引 (含义见 Cols.hpp) + 行级校验 + 引导页; 末了几样组合查询 (信用账户 / 两融条款 / 资金流水).
+// 通达信适配: 各表 (请求层直发的应答) 并排声明: 列 / 索引 (含义见 Cols.hpp) + 行级校验 + 引导页; 末了三样组合查询 (读五样 / 两融条款 / 账本).
 // 应答的列序 = 客户端功能定义里该功能号的出参序 (req::ask 按出参的字段号逐个取); 各列的字段名对协议字典核 (shim test fields).
 // 「证券名称」对 ETF 是短码名 (如 5GETF), 各表名称一律取其后的「长简称」.
 // 引导页 kOpen: 界面上查一次即让插件发出该功能 (直发照搬插件的入参, 每个客户端进程须先见过一次); 页签或功能树页 + 认页的列 (ui::open).
@@ -111,7 +111,6 @@ struct Debts {
 
 struct Asset {
   std::array<std::pair<std::string, std::string>, 3> kv; // 三组 (名称, 数值原文)
-  bool operator==(const Asset &) const = default;
 };
 struct Assets {
   using Row = Asset;
@@ -128,7 +127,6 @@ struct Assets {
 struct Margin : Sec {
   double ratio = 0;           // 融资保证金比例
   std::string remark, status; // 融资标的,融券标的 / 融资状态
-  bool operator==(const Margin &) const = default;
 };
 struct Margins {
   using Row = Margin;
@@ -150,7 +148,6 @@ struct Margins {
 struct Collat : Sec {
   double rate = 0;            // 担保折算率
   std::string status, remark; // 担保状态
-  bool operator==(const Collat &) const = default;
 };
 struct Collats {
   using Row = Collat;
@@ -217,11 +214,11 @@ struct Deals {
   static constexpr int kOpenSec = 9 * 3600 + 15 * 60, kCloseSec = 15 * 3600 + 1;
 };
 
-// 各表按 Driver 的用处分三组: 读五样 (序同 Snapshot) / 拉两融条款 / 拉资金流水与历史成交
+// 各表按 Driver 的用处分三组: 读五样 (序同 Snapshot) / 拉两融条款 / 拉账本 (序同 Ledger)
 inline constexpr std::tuple<Fills, Positions, Pendings, Debts, Assets> kReads{};
 inline constexpr std::tuple<Margins, Collats> kTerms{};
-inline constexpr std::tuple<CashFlows, Deals> kFlows{};
-inline constexpr auto kAll = std::tuple_cat(kReads, kTerms, kFlows);
+inline constexpr std::tuple<CashFlows, Deals> kLedger{};
+inline constexpr auto kAll = std::tuple_cat(kReads, kTerms, kLedger);
 
 // S 的各功能号里插件发过的那个 (直发有入参可照搬); 都没发过 → 0
 template <class S>
@@ -267,12 +264,10 @@ auto read(std::tuple<S...>) {
 // 组合查询 (各表须插件已发过, Driver 先经界面引导):
 //   读五样 = 成交 / 持仓 / 挂单 / 融资负债 / 信用资产五表一趟直发; 信用账户取自信用资产的各项「名称 → 数值」
 //   两融条款 = 标的证券 × 担保品两表一并各翻页到底 (担保品近万只, 约十余页), 以 (市场, 代码) 为键, 合成时按代码归一 (跨市场同号的只留 market_of 那只)
-//   资金流水 = from 日起 (含) 至昨日 (客户端只给到上一日), 按窗 (客户端一次至多查 30 天) 覆盖起止日入参直发, 各窗应答按日接起;
-//     from = 0 即从昨日往前逐窗查到连续几窗无流水 (开户前)
-//   历史成交 = 同资金流水 (同一对起止日入参, 同窗), from > 0
+//   账本 = 资金流水与历史成交 from 日起 (含) 至昨日 (客户端只给到上一日), 同一对起止日入参按窗 (客户端一次至多查 30 天) 直发, 各窗应答按日接起;
+//     from = 0 即资金流水从昨日往前逐窗查到连续几窗无流水 (开户前), 历史成交自其首日起
 Snapshot reads();
 Terms terms();
-std::vector<CashFlow> flows(misc::Ymd from);
-std::vector<Deal> deals(misc::Ymd from);
+Ledger ledger(misc::Ymd from);
 
 } // namespace live::tdx::tables

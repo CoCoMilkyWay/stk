@@ -77,13 +77,9 @@ public:
     prime(tables::kTerms);
     return tables::terms();
   }
-  std::vector<CashFlow> flows(misc::Ymd from) override {
-    prime(tables::kFlows);
-    return tables::flows(from);
-  }
-  std::vector<Deal> deals(misc::Ymd from) override {
-    prime(tables::kFlows);
-    return tables::deals(from);
+  Ledger ledger(misc::Ymd from) override {
+    prime(tables::kLedger);
+    return tables::ledger(from);
   }
   Placed place(const OrderReq &o) override {
     const auto g = gate();

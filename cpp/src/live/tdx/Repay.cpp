@@ -6,12 +6,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <iterator>
 #include <map>
 #include <optional>
 #include <set>
-#include <tuple>
 
 namespace live::tdx::repay {
 
@@ -27,44 +25,14 @@ const std::string kPickTitle = "选择合约", kIdCol = "流水号", kCodeCol = 
 constexpr long kPickList = 155;
 constexpr double kListWait = 10;
 const std::string kOne = "共有1笔合约";
-const std::string kConfirmTitle = "交易确认", kResultTitle = "提示", kKind = "现金还款", kDone = "已提交";
+const std::string kConfirmTitle = "交易确认", kKind = "现金还款", kDone = "已提交";
 constexpr unsigned kBmGetCheck = 0xF0;
 constexpr double kCent = 0.005;
 constexpr double kFieldWait = 3;  // 页开出后可用金额由客户端另查才填上, 至多等几秒
 constexpr double kSettleWait = 5; // 提交后页重查 (可用金额减下来), 至多等几秒
 
-// 本适配开的框
-bool ours(const std::string &title) { return title == kPickTitle || title == kConfirmTitle || title == kResultTitle; }
-
-// 上一笔收尾之后才显示出来的框先关掉
-void sweep() {
-  const win::Tops all = win::tops();
-  win::Tops keep = all;
-  std::erase_if(keep, [](const auto &x) { return ours(x.second.title); });
-  if (keep.size() == all.size())
-    return;
-  trace::Span span("清场");
-  ui::close_new(keep);
-  for (const auto &[h, n] : win::tops())
-    need(!ours(n.title), "上一笔留下的「%s」关不掉", n.title.c_str());
-}
-
-// 文字 → 金额 (整串须是数); 不是 → 无
-std::optional<double> money(const std::string &t) {
-  char *e = nullptr;
-  const double v = std::strtod(t.c_str(), &e);
-  return !t.empty() && e && !*e ? std::optional<double>(v) : std::nullopt;
-}
-
-// 正文里「label 空格* 数」的数; 没有 → Fail
-double after(const std::string &text, const std::string &label) {
-  const size_t at = text.find(label);
-  need(at != std::string::npos, "确认框缺「%s」: %s", label.c_str(), text.c_str());
-  char *e = nullptr;
-  const double v = std::strtod(text.c_str() + at + label.size(), &e);
-  need(e != text.c_str() + at + label.size(), "确认框「%s」后不是数: %s", label.c_str(), text.c_str());
-  return v;
-}
+// 本适配开的框: 选择合约框 / 确认框 / 回报框
+const std::vector<std::string> kOurs = {kPickTitle, kConfirmTitle, ui::kResult};
 
 // 窗口的中心 (屏幕坐标)
 std::pair<int, int> mid(const Hwnd &h) {
@@ -184,7 +152,7 @@ bool choose(Ctx &c) {
   if (const auto n = hit->cell.find(kNameCol); n != hit->cell.end())
     c.r.name = n->second;
   trace::live(strf("合约 %s %s %s", c.r.code.c_str(), c.r.name.c_str(), c.r.contract.c_str()));
-  const Hwnd ask = ui::popup({kResultTitle}, 5, [&] {
+  const Hwnd ask = ui::popup({ui::kResult}, 5, [&] {
     for (const char *k : {"ldown", "lup", "ldbl", "lup"})
       win::mouse(k, hit->x, hit->y);
   });
@@ -195,7 +163,7 @@ bool choose(Ctx &c) {
       said("还款金额框填上合约应还"), [&]() -> std::optional<double> {
         if (win::tops().contains(box) || win::tops().contains(ask))
           return std::nullopt;
-        const std::optional<double> v = money(win::text(c.amount));
+        const std::optional<double> v = parse_num(win::text(c.amount));
         return v && *v > 0 ? v : std::nullopt;
       },
       3);
@@ -208,7 +176,7 @@ void fill(Ctx &c) {
   if (c.r.amount < c.r.due - kCent) {
     win::settext(c.amount, c.amt_s);
     until([&] { return "写入「" + c.amt_s + "」后读回「" + win::text(c.amount) + "」"; },
-          [&] { const std::optional<double> v = money(win::text(c.amount)); return v && std::abs(*v - c.r.amount) < kCent; }, 1);
+          [&] { const std::optional<double> v = parse_num(win::text(c.amount)); return v && std::abs(*v - c.r.amount) < kCent; }, 1);
   }
   trace::live(strf("%s %s 应还 %.2f 还 %s", c.r.code.c_str(), c.r.contract.c_str(), c.r.due, c.amt_s.c_str()));
 }
@@ -216,21 +184,16 @@ void fill(Ctx &c) {
 void confirm(Ctx &c) {
   c.box = ui::popup({kConfirmTitle}, 5, [&] { win::command(c.dlg, kOk); });
   const std::string b = ui::body(c.box);
-  need(b.find(kKind) != std::string::npos && std::abs(after(b, "还款金额:") - c.r.amount) < kCent, "确认框 ≠ 预期 (%s %s 元): %s", kKind.c_str(), c.amt_s.c_str(), b.c_str());
+  const std::optional<double> amt = parse_num(ui::field(b, "还款金额:", true));
+  need(b.find(kKind) != std::string::npos && amt && std::abs(*amt - c.r.amount) < kCent, "确认框 ≠ 预期 (%s %s 元): %s", kKind.c_str(), c.amt_s.c_str(), b.c_str());
 }
 
+// 提交、读回报; 等回报框、确认框关了
 void reply(Ctx &c) {
-  const Hwnd res = ui::popup({kResultTitle}, 10, [&] { ui::yes(c.box), c.sent = true; });
-  c.r.msg = ui::body(res);
-  ui::yes(res);
-  if (c.r.msg.find(kDone) == std::string::npos) {
-    c.sent = false;
-    fail("还款未成功: " + c.r.msg);
-  }
-  until(said("回报框 / 确认框关掉"), [&] { const win::Tops t = win::tops(); return !t.contains(res) && !t.contains(c.box); }, 3);
+  c.r.msg = ui::submit(c.box, c.sent, kDone, "还款");
   // 提交后页另查一遍 (其间不理切页、点勾选框): 等可用金额减下来再往下做; 没等到只记一笔
   const double want = c.cash - c.r.amount;
-  const bool seen = poll([&] { const std::optional<double> v = money(win::text(c.avail)); return v && std::abs(*v - want) < kCent; }, kSettleWait, 0.2);
+  const bool seen = poll([&] { const std::optional<double> v = parse_num(win::text(c.avail)); return v && std::abs(*v - want) < kCent; }, kSettleWait, 0.2);
   trace::ev("avail", {{"want", want}, {"seen", seen}, {"now", win::text(c.avail)}});
 }
 
@@ -238,34 +201,30 @@ void reply(Ctx &c) {
 
 std::vector<Repaid> run(const std::vector<std::string> &codes, double cap) {
   need(!codes.empty() && cap > 0, "现金还款: 没有要还的合约 / 额度 %.2f", cap);
-  sweep();
+  ui::sweep(kOurs);
   const Hwnd dlg = ui::form(kPage, kParent, kMark, kMarkText);
   const auto ids = win::ctls(dlg, {{"amount", kAmount}, {"ok", kOk}, {"pick", kPick}, {"avail", kAvail}});
   unpick(ids.at("pick"));
-  const std::optional<double> avail = until([&] { return "可用金额填上, 现为「" + win::text(ids.at("avail")) + "」"; }, [&] { return money(win::text(ids.at("avail"))); }, kFieldWait);
+  const std::optional<double> avail = until([&] { return "可用金额填上, 现为「" + win::text(ids.at("avail")) + "」"; }, [&] { return parse_num(win::text(ids.at("avail"))); }, kFieldWait);
   std::set<std::string> done;
   std::vector<Repaid> out;
   double left = std::min(cap, *avail), cash = *avail;
   trace::note("repay", strf("现金还款 %zu 只, 额度 %.2f (可用金额 %.2f)", codes.size(), left, *avail), {{"codes", codes}, {"cap", cap}, {"avail", *avail}});
   while (left >= 0.01) {
     Ctx c{dlg, ids.at("amount"), ids.at("ok"), ids.at("pick"), ids.at("avail"), codes, done, left, cash, {}, {}, {}, false};
-    const win::Tops before = win::tops();
     bool more = true;
-    const std::string err = guard([&] {
-      trace::Span span(strf("第 %zu 笔", out.size() + 1));
-      if (!(more = choose(c)))
-        return;
-      fill(c);
-      confirm(c);
-      reply(c);
-    });
-    if (!err.empty()) {
-      std::ignore = guard([&] {
-        ui::close_new(before);
-        unpick(c.pick);
-      });
-      fail(strf("%s%s %s: %s", c.sent ? "已点确认, 还款可能已提交 (先查负债再重还): " : "", c.r.code.c_str(), c.r.contract.c_str(), err.c_str()));
-    }
+    const std::string err = ui::attempt(
+        c.sent, "先查负债再重还",
+        [&] {
+          trace::Span span(strf("第 %zu 笔", out.size() + 1));
+          if (!(more = choose(c)))
+            return;
+          fill(c);
+          confirm(c);
+          reply(c);
+        },
+        [&] { unpick(c.pick); });
+    need(err.empty(), "%s %s: %s", c.r.code.c_str(), c.r.contract.c_str(), err.c_str());
     if (!more)
       break;
     done.insert(c.r.contract);

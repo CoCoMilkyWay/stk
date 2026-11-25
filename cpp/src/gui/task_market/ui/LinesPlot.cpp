@@ -443,47 +443,13 @@ std::vector<TradeDot> nav_dots(const LinesDerived &d, const LinesSlice &s, const
   return out;
 }
 
-// 账户线 (在画的切片 s) 上叠持仓成本: 线位 = 各笔买入处账户线 (整条, 含当日尾; 切片同一归一) 的值按额加权, 起点 = 首笔买入 (日轴外 = −∞)
-void plot_costs(const LinesDerived &d, const LinesSlice &s, const Quote::Costs &cs) {
-  const LineRef &c = s.c;
-  const size_t n = c.size();
-  if (n == 0 || s.size() == 0)
-    return;
-  const auto r = std::views::iota(size_t{0}, n);
-  const auto at = [&](double x) { // 整条线在 x 处的值 (相邻点插值; 出点域 → NaN)
-    if (x < c.x(0) || x > c.x(n - 1))
-      return std::numeric_limits<double>::quiet_NaN();
-    const size_t j = static_cast<size_t>(std::ranges::partition_point(r, [&](size_t k) { return c.x(k) < x; }) - r.begin());
-    const double y = j == 0 || c.x(j) == x ? c.y(j) : c.y(j - 1) + (c.y(j) - c.y(j - 1)) * (x - c.x(j - 1)) / (c.x(j) - c.x(j - 1));
-    return y / s.base;
-  };
-  std::vector<CostLevel> lv;
-  for (const Quote::Cost &k : cs.list) {
-    double sum = 0, amt = 0, x0 = std::numeric_limits<double>::infinity();
-    for (const Quote::CostBuy &b : k.buys) {
-      const auto di = std::ranges::lower_bound(d.dates, b.date);
-      if (di == d.dates.end() || *di != b.date) {
-        x0 = -std::numeric_limits<double>::infinity();
-        continue;
-      }
-      const double x = x_of(static_cast<size_t>(di - d.dates.begin()), b.slot);
-      x0 = std::min(x0, x);
-      if (const double y = at(x); std::isfinite(y))
-        sum += b.amount * y, amt += b.amount;
-    }
-    if (amt > 0)
-      lv.push_back({x0, sum / amt, k.weight, k.bought() >= Quote::kCostLine});
-  }
-  PlotCosts(lv, cs.total, s.size(), [&](size_t i) { return s.x(i); }, [&](size_t i) { return s.y(i); });
-}
-
 // ---- NAV 主图: 画选中行的两条线, 按组表画层 (for_each_layer; 策略在最上层) + 图例矩阵 (最上层, nav_legend);
 //      日内形未到的行 (minute_wait) 整行不画、不进图例, 到了一次画成分钟线;
 //      行刚选中 → ui.reveal 强制回默认显隐一次 (理想列显, 可成交列隐);
 //      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示; 鼠标在图例矩阵上不算), hot 行显示的线白粗线画在最上;
-//      账户线上叠成交点 (trades: 30 分钟一档, 红 / 绿小圆点; 空 = 不叠), 鼠标近一点 → 提示该档成交 (代替账户线悬停); 账户线下压持仓成本 (costs; 空 = 不叠, 显示的那条线上);
+//      账户线上叠成交点 (trades: 30 分钟一档, 红 / 绿小圆点; 空 = 不叠), 鼠标近一点 → 提示该档成交 (代替账户线悬停);
 //      账户线悬停 (只显账户线时全图带十字线吸附, 多线时近线触发) 显示前复权净资产与区间复权 / 真正回撤 ----
-void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf, const Quote::Trades *trades, const Quote::Costs *costs) {
+void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf, const Quote::Trades *trades) {
   static ImRect s_box;      // 上帧图例矩阵 (悬停找线避开)
   std::vector<NavRow> rows; // 画序, 只含选中行的
   for_each_layer([&](int g) {
@@ -498,13 +464,6 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
         rows.push_back(std::move(x));
       }
   });
-  // 持仓成本压在各线之下: 账户行显示着的一条 (显隐取上帧的图例; 头一帧未登记 = 显)
-  if (const auto a = std::ranges::find_if(rows, [](const NavRow &x) { return x.row->ref.is(Quote::kAccount); }); costs && a != rows.end())
-    for (int l = kPairLines; l-- > 0;)
-      if (const ImPlotItem *it = ImPlot::GetItem(a->lb[l].c_str()); !it || it->Show) {
-        plot_costs(d, *a->s[l], *costs);
-        break;
-      }
   struct On {
     const LinesRow *row;
     const LinesSlice *s;
@@ -852,8 +811,7 @@ LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates) {
 // ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) ↔ MARGIN (plot_margin: 左轴占比 + 右轴价格) 同一框: 贴边 (窄内边距, 不标轴名); y 恒贴合 + 留白 (fit_margin, 各轴各留);
 //      x: 恒贴合 (视野只随区间; 滚轮 = 钉住右端缩放区间, wheel_x); x 右端留出线尾小字 / 刻度 / 十字标签;
 //      左上角 = 区间档位条 (span_bar) + 其下图例矩阵 ----
-void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size, const Quote::Trades *trades,
-                     const std::shared_ptr<const Quote::Costs> &costs) {
+void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size, const Quote::Trades *trades) {
   const LinesDerived &d = ui.der.val;
   const LinesView &v = ui.view.val;
   const ValSetId vals = kPageDefs[page].vals;
@@ -894,7 +852,7 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
     const ImPlotRect cur = ImPlot::GetPlotLimits(); // 先锁 setup, FitThisFrame 才定
     PlotFrame pf{fit_x() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}, ui.view.gen};
     if (nav)
-      plot_nav(ui, d, v, pf, trades, costs.get());
+      plot_nav(ui, d, v, pf, trades);
     else if (pin.g >= 0 && !wait && mg)
       plot_margin(ui, range, d, v, pin, pf);
     else if (pin.g >= 0 && !wait)

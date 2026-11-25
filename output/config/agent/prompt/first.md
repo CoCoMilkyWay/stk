@@ -6,7 +6,7 @@
 - 全局记录: {{notes}} → list_notes (先看发现: 前人证实或证伪过什么)
 
 ## 起步
-{{start}}. 第一批把互不依赖的调用一次发齐 (至多 {{max_calls}} 个), 覆盖四样:
+{{start}}. 先把这四样看一遍:
 - **前人**: list_notes 看发现, list_tried / list_library 看已有的起点
 - **研报**: search_docs 查同方向的研究
 - **原料**: lob / bar / fund 三类各读要用的族卡, search_leaves 查清叶, view_feature 看它们

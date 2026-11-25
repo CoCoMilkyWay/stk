@@ -13,6 +13,7 @@
 #include <set>
 #include <span>
 #include <string_view>
+#include <tuple>
 
 namespace live::tdx::ui {
 
@@ -449,6 +450,74 @@ void close_new(const win::Tops &before) {
       3, kAgainGap);
   if (!done)
     trace::ev("left", {{"titles", left()}});
+}
+
+std::string field(const std::string &text, const std::string &label, bool dots, size_t take, const std::string &unit) {
+  for (size_t at = text.find(label); at != std::string::npos; at = text.find(label, at + 1)) {
+    size_t i = at + label.size();
+    while (i < text.size() && text[i] == ' ')
+      ++i;
+    const size_t s = i;
+    while (i < text.size() && (std::isdigit(static_cast<unsigned char>(text[i])) || (dots && text[i] == '.')))
+      ++i;
+    if (take ? i - s >= take : i > s && text.compare(i, unit.size(), unit) == 0)
+      return text.substr(s, take ? take : i - s);
+  }
+  fail(strf("框里缺「%s」: %s", label.c_str(), text.c_str()));
+}
+
+// ---------- 提交 ----------
+
+void sweep(const std::vector<std::string> &ours) {
+  const auto mine = [&](const Node &n) { return std::ranges::find(ours, n.title) != ours.end(); };
+  const win::Tops all = win::tops();
+  win::Tops keep = all;
+  std::erase_if(keep, [&](const auto &x) { return mine(x.second); });
+  if (keep.size() == all.size())
+    return;
+  trace::Span span("清场");
+  close_new(keep);
+  for (const auto &[h, n] : win::tops())
+    need(!mine(n), "上一笔留下的「%s」关不掉", n.title.c_str());
+}
+
+std::string submit(const Hwnd &box, bool &sent, const std::string &ok, const char *what, const std::vector<Hwnd> &also) {
+  const Hwnd res = popup({kResult}, 10, [&] { yes(box), sent = true; });
+  std::string msg = body(res);
+  yes(res);
+  if (msg.find(ok) == std::string::npos) {
+    sent = false; // 回报明说没成
+    fail(strf("%s未成功: %s", what, msg.c_str()));
+  }
+  std::vector<Hwnd> mine = {res, box};
+  mine.insert(mine.end(), also.begin(), also.end());
+  until(
+      [&] {
+        std::string s;
+        for (const auto &[h, n] : win::tops())
+          if (std::ranges::find(mine, h) != mine.end())
+            s += "「" + n.title + "」";
+        return "回报框 / 确认框等关掉, 还开着: " + s;
+      },
+      [&] {
+        const win::Tops t = win::tops();
+        return std::ranges::none_of(mine, [&](const Hwnd &h) { return t.contains(h); });
+      },
+      3);
+  return msg;
+}
+
+std::string attempt(const bool &sent, const char *redo, const std::function<void()> &fn, const std::function<void()> &tidy) {
+  const win::Tops before = win::tops();
+  const std::string err = guard(fn);
+  if (err.empty())
+    return err;
+  std::ignore = guard([&] {
+    close_new(before);
+    if (tidy)
+      tidy();
+  });
+  return sent ? strf("已点确认, 可能已提交 (%s): %s", redo, err.c_str()) : err;
 }
 
 } // namespace live::tdx::ui

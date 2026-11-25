@@ -6,9 +6,8 @@
 #include "live/tdx/Until.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
-#include <tuple>
+#include <optional>
 
 namespace live::tdx::flash {
 
@@ -20,7 +19,6 @@ namespace {
 constexpr const char *kLink = "Stock";
 constexpr double kLinkTimeout = 6; // 投联动后等标题换过来至多几秒
 const std::vector<std::string> kConfirmTitles = {"买入交易确认", "卖出交易确认", "交易确认"};
-const std::string kResultTitle = "提示";
 constexpr long kEst = 8915; // 闪电窗按额时的「预估金额:…(N股)」
 // 图表刚切过来、盘口还没到时开闪电窗, 客户端弹「…的价格档位上的价格为空!」: 关掉再开, 至多等 kOpenWait 秒
 const std::vector<std::string> kNotReady = {"价格档位上的价格为空"};
@@ -54,23 +52,14 @@ const Kind *kind_of(int side, Credit credit) {
 }
 
 // 本适配开的框: 各闪电窗 / 确认框 / 回报框
-bool ours(const std::string &title) {
-  return title == kResultTitle || std::ranges::find(kConfirmTitles, title) != kConfirmTitles.end() ||
-         std::ranges::any_of(kKinds, [&](const Kind &k) { return title == k.title; });
-}
-
-// 上一单失败、收尾之后才显示出来的闪电窗 / 确认框 / 回报框先关掉: 留着则主窗一直禁用, 切不了图表
-void sweep() {
-  const win::Tops all = win::tops();
-  win::Tops keep = all;
-  std::erase_if(keep, [](const auto &x) { return ours(x.second.title); });
-  if (keep.size() == all.size())
-    return;
-  trace::Span span("清场");
-  ui::close_new(keep);
-  for (const auto &[h, n] : win::tops())
-    need(!ours(n.title), "上一单留下的「%s」关不掉", n.title.c_str());
-}
+const std::vector<std::string> kOurs = [] {
+  std::vector<std::string> t = kConfirmTitles;
+  t.emplace_back(ui::kResult);
+  for (const Kind &k : kKinds)
+    t.emplace_back(k.title);
+  return t;
+}();
+bool ours(const std::string &title) { return std::ranges::find(kOurs, title) != kOurs.end(); }
 
 // 本单上下文: 各步依次填写 (main 切换 / dlg 开窗 / px_s px n 填单 / box 确认 / msg sent 回报)
 struct Ctx {
@@ -84,16 +73,17 @@ struct Ctx {
   bool sent = false; // 已点确认: 此后的 Fail = 委托可能已提交
 };
 
-bool is_num(const std::string &t) {
-  const size_t dot = t.find('.');
-  const auto digits = [](std::string_view s) { return !s.empty() && std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isdigit(c); }); };
-  return dot == std::string::npos ? digits(t) : digits(std::string_view(t).substr(0, dot)) && digits(std::string_view(t).substr(dot + 1));
+// 整串是非负整数 → 值; 否则 → -1
+int64_t whole(const std::string &t) {
+  const std::optional<double> v = parse_num(t);
+  return v && *v >= 0 && *v == std::floor(*v) ? static_cast<int64_t>(*v) : -1;
 }
 
 int64_t max_qty(const Hwnd &h) {
   const std::string t = win::text(h);
-  need(is_num(t), "最大可买 / 可卖读到「" + t + "」");
-  return static_cast<int64_t>(std::stod(t));
+  const int64_t n = whole(t);
+  need(n >= 0, "最大可买 / 可卖读到「" + t + "」");
+  return n;
 }
 
 // 股数以闪电窗给的最大可买 / 可卖 cap 封顶 (钱或券不够就按能做的最大量): 买入须够起买量、封顶按步长取整; 卖出可卖不足即全卖 (零股只能一次卖完)
@@ -112,21 +102,6 @@ int64_t order_qty(const OrderReq &o, int64_t cap) {
 void settext(const Hwnd &h, const std::string &s) {
   win::settext(h, s);
   until([&] { return "写入「" + s + "」后读回「" + win::text(h) + "」"; }, [&] { return win::text(h) == s; }, 1);
-}
-
-// 正文里首个「label 空格* 数字串 unit」的数字串 (dots: 可含小数点); take > 0 = 只取开头 take 位 (须够, 不看 unit)
-std::string after(const std::string &text, const std::string &label, bool dots, size_t take, const std::string &unit) {
-  for (size_t at = text.find(label); at != std::string::npos; at = text.find(label, at + 1)) {
-    size_t i = at + label.size();
-    while (i < text.size() && text[i] == ' ')
-      ++i;
-    const size_t s = i;
-    while (i < text.size() && (std::isdigit(static_cast<unsigned char>(text[i])) || (dots && text[i] == '.')))
-      ++i;
-    if (take ? i - s >= take : i > s && text.compare(i, unit.size(), unit) == 0)
-      return text.substr(s, take ? take : i - s);
-  }
-  fail("确认框缺" + label + " " + text);
 }
 
 // 图表标题里的名称与 name 认作同一只: 去掉除权除息前缀 (XD / XR / DR) 后一方是另一方的开头 (客户端名称限 8 字节, 加了前缀即截掉尾字)
@@ -228,10 +203,7 @@ void form(Ctx &c) {
       const size_t op = t.rfind('(');
       if (!t.ends_with(tail) || op == std::string::npos || op + 1 + tail.size() > t.size())
         return -1;
-      const std::string d = t.substr(op + 1, t.size() - op - 1 - tail.size());
-      if (!is_num(d) || d.find('.') != std::string::npos || d.size() > 12)
-        return -1;
-      return std::stoll(d);
+      return whole(t.substr(op + 1, t.size() - op - 1 - tail.size()));
     };
     until([&] { return strf("预估 %lld 股, 现为「%s」", static_cast<long long>(c.n), win::text(est).c_str()); }, [&] { return shares() == c.n; }, 1);
   }
@@ -241,36 +213,14 @@ void form(Ctx &c) {
 void confirm(Ctx &c) {
   c.box = ui::popup(kConfirmTitles, 5, [&] { win::command(c.dlg, c.k.ok); });
   const std::string b = ui::body(c.box);
-  const std::string code = after(b, "股票代码:", false, 6, "");
-  const std::string px = after(b, "委托价格:", true, 0, "");
-  const std::string qty = after(b, "委托数量:", false, 0, "股");
-  need(code == c.o.code && is_num(px) && std::stod(px) == std::stod(c.px_s) && std::stoll(qty) == c.n, "确认框 (%s, %s, %s) ≠ 预期 (%s, %s, %lld): %s", code.c_str(), px.c_str(), qty.c_str(), c.o.code.c_str(), c.px_s.c_str(), static_cast<long long>(c.n), b.c_str());
+  const std::string code = ui::field(b, "股票代码:", false, 6);
+  const std::string px = ui::field(b, "委托价格:", true);
+  const std::string qty = ui::field(b, "委托数量:", false, 0, "股");
+  need(code == c.o.code && parse_num(px) == std::stod(c.px_s) && whole(qty) == c.n, "确认框 (%s, %s, %s) ≠ 预期 (%s, %s, %lld): %s", code.c_str(), px.c_str(), qty.c_str(), c.o.code.c_str(), c.px_s.c_str(), static_cast<long long>(c.n), b.c_str());
 }
 
-// 读回报、点掉; 等回报框、确认框、闪电窗都关了才算完 (下一单紧接着切图表、开窗)
-void reply(Ctx &c) {
-  const Hwnd res = ui::popup({kResultTitle}, 10, [&] { ui::yes(c.box), c.sent = true; });
-  c.msg = ui::body(res);
-  ui::yes(res);
-  if (c.msg.find("合同号") == std::string::npos) {
-    c.sent = false; // 回报明说没成
-    fail("委托未成功: " + c.msg);
-  }
-  const Hwnd mine[3] = {res, c.box, c.dlg};
-  until(
-      [&] {
-        std::string s;
-        for (const auto &[h, n] : win::tops())
-          if (std::find(std::begin(mine), std::end(mine), h) != std::end(mine))
-            s += "「" + n.title + "」";
-        return "回报框 / 确认框 / 闪电窗关掉, 还开着: " + s;
-      },
-      [&] {
-        const win::Tops t = win::tops();
-        return std::none_of(std::begin(mine), std::end(mine), [&](const Hwnd &h) { return t.contains(h); });
-      },
-      3);
-}
+// 提交、读回报; 等回报框、确认框、闪电窗都关了才算完 (下一单紧接着切图表、开窗)
+void reply(Ctx &c) { c.msg = ui::submit(c.box, c.sent, "合同号", "委托", {c.dlg}); }
 
 struct Stage {
   std::string_view name;
@@ -293,18 +243,14 @@ Placed place(const OrderReq &o) {
   need(k != nullptr, "没有%s%s的闪电窗", credit_name(o.credit), side_name(o.side));
   need(o.qty > 0 && o.px > 0, "委托量 %lld / 价 %g 不为正", static_cast<long long>(o.qty), o.px);
   Ctx c{.o = o, .k = *k};
-  sweep();
-  const win::Tops before = win::tops();
-  const std::string err = guard([&] {
+  ui::sweep(kOurs);
+  const std::string err = ui::attempt(c.sent, "先查委托再重下", [&] {
     for (const Stage &s : kStages) {
       trace::Span span(std::string(s.name));
       s.run(c);
     }
   });
-  if (!err.empty()) {
-    std::ignore = guard([&] { ui::close_new(before); }); // 本单弹出的各框关掉, 下一单接着做; 收尾自身出错也不盖掉本单的原因
-    fail(c.sent ? "已点确认, 委托可能已提交 (先查委托再重下): " + err : err);
-  }
+  need(err.empty(), err);
   trace::ev("placed", {{"qty", c.n}, {"px", c.px}, {"msg", c.msg}});
   return {c.n, c.px, c.msg};
 }

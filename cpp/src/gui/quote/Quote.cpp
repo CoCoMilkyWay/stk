@@ -160,13 +160,6 @@ Source Joint::of(uint32_t key) const {
   return o;
 }
 
-double Cost::bought() const {
-  double s = 0;
-  for (const CostBuy &b : buys)
-    s += b.amount;
-  return s;
-}
-
 Trades rebin(const Trades &t, int span) {
   assert(span >= 1 && kSlots % span == 0);
   std::map<std::pair<misc::Ymd, int>, TradeMark> by;

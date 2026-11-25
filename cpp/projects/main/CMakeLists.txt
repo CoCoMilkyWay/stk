@@ -463,7 +463,7 @@ set(MATH_PRECISE
     gui/task_agent/tools/query/SearchFactors.cpp
     gui/task_agent/tools/query/SearchLeaves.cpp
     gui/task_agent/tools/session/BuildContext.cpp
-    gui/task_agent/tools/session/CheckBatch.cpp
+    gui/task_agent/tools/session/CheckCall.cpp
     gui/task_agent/tools/session/ProbeBrain.cpp
     gui/task_agent/tools/trial/EvalFactor.cpp
     gui/task_agent/tools/trial/SubmitFactor.cpp
@@ -493,7 +493,7 @@ set(MATH_PRECISE
     gui/task_agent/ui/query/SearchFactors.cpp
     gui/task_agent/ui/query/SearchLeaves.cpp
     gui/task_agent/ui/session/BuildContext.cpp
-    gui/task_agent/ui/session/CheckBatch.cpp
+    gui/task_agent/ui/session/CheckCall.cpp
     gui/task_agent/ui/session/ProbeBrain.cpp
     gui/task_agent/ui/trial/EvalFactor.cpp
     gui/task_agent/ui/trial/SubmitFactor.cpp

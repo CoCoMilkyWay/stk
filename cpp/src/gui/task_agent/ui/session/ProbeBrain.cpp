@@ -1,4 +1,4 @@
-// probe_brain 的展示: 后端/模型/用时/token + 思考过程 + VetBatch 校验结果表 + 发出的上下文
+// probe_brain 的展示: 后端/模型/用时/token + 思考过程 + ParseCall 校验结果 + 发出的上下文
 #include "gui/task_agent/tools/Session.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
@@ -24,23 +24,12 @@ void ProbeBrainRes::draw() const {
 
   if (reply.ok()) {
     if (!check.ok()) {
-      heading("VetBatch 未通过 (ask=" + std::string(ask ? "yes" : "no") + ")");
+      heading("ParseCall 未通过 (ask=" + std::string(ask ? "yes" : "no") + ")");
       wrapped(color(TaskStatus::Kind::Error), check.error);
     } else {
-      heading("VetBatch 通过 · " + std::to_string(check.calls.size()) + " 个调用");
-      if (grid("##probe_calls", {"#", "工具", "执行", "调用"})) {
-        for (size_t i = 0; i < check.calls.size(); ++i) {
-          const Call &c = check.calls[i];
-          const ToolMeta &m = def(c.tool);
-          ImGui::TableNextRow();
-          cell(std::to_string(i + 1));
-          cell(std::string(m.id) + " (" + m.cn + ")");
-          cell_dim(def(m.exec).cn);
-          ImGui::TableNextColumn();
-          wrapped(c.text());
-        }
-        ImGui::EndTable();
-      }
+      const ToolMeta &m = def(check.call.tool);
+      heading("ParseCall 通过 · " + std::string(m.id) + " (" + m.cn + ") · " + def(m.exec).cn);
+      wrapped(check.call.text());
     }
   }
 

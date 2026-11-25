@@ -39,7 +39,7 @@ using Clock = std::chrono::steady_clock;
 constexpr std::string_view kProtocols[] = {"2025-06-18", "2025-03-26", "2024-11-05"}; // 认的 MCP 版本 (首个 = 客户端要的不认时给的)
 constexpr const char *kInstructions =
     "A 股量化因子挖掘系统的研究工具: 你当挖掘会话的大脑 (说明书 = 仓库 AGENT.md). 先 open 开会话 (用户交代的要求原话写进 remark) 拿首条消息, 再 doc 读系统提示; "
-    "此后每批研究工具调用用 run 交, 交回的就是下一条消息 (常规为本条增量; 接上历史会话或研究员回退后自动附完整研究树), 超时未做完调无参 run 续等; 接上已有外部会话也用无参 run; 挖完 finish. "
+    "此后每个研究工具调用用 run 交 ({\"tool\": ..., \"args\": {...}}), 交回的就是下一条消息 (常规为本条增量; 接上历史会话或研究员回退后自动给完整上下文), 超时未做完调无参 run 续等; 接上已有外部会话也用无参 run; 挖完 finish. "
     "规矩 (同内置模型): 只经 open / doc / run 取信息与行动 (不读仓库与 output, 不上网); 不并行调 run; 一直循环到 finish、ask_human 或会话停下 (ask_human / 停下时等研究员在 GUI 处理后再调无参 run 接着做).";
 
 // 一个接口请求: 工具 (open / doc / run) + 参数; 答复由 GUI 线程给, 网络线程写出
@@ -63,7 +63,7 @@ json schema(json props, json required) {
 }
 json tool(const char *name, std::string desc, json input) { return {{"name", name}, {"description", std::move(desc)}, {"inputSchema", std::move(input)}}; }
 
-// tools/list: 只有 open / doc / run (建一次); 研究工具只经 run 的 calls 交, 工具名与参数表唯一以系统提示 (doc) 为准
+// tools/list: 只有 open / doc / run (建一次); 研究工具只经 run 交, 工具名与参数表唯一以系统提示 (doc) 为准
 json tools_list() {
   json ts = json::array();
   ts.push_back(tool("open",
@@ -81,17 +81,13 @@ json tools_list() {
   ts.push_back(tool("doc", "本会话的系统提示: 角色与做法 / 评估口径 / 判优 / 研究循环 / 调用协议 / 研究工具表 (参数逐个) / 开放的特征叶 (按族) 与算子. open 后先读",
                     schema(json::object(), json::array())));
   ts.push_back(tool("run",
-                    "给 calls = 交一批研究工具调用, 按序执行; 不给 calls (空参数 {}) = 接上已有外部会话 / 续等执行中的调用 / 取当前状态. "
+                    "给 tool (+ args) = 交一个研究工具调用; 都不给 (空参数 {}) = 接上已有外部会话 / 续等执行中的调用 / 取当前状态. "
                     "后台执行中至多等 " +
                         std::to_string(kRemoteWait) +
-                        " 秒 (未完交回进度, 再调无参 run 续等); 做完即交回下一条消息 (常规为本条增量: 各调用结果 + 下一步; 接上有历史的会话或研究员回退后自动附完整研究树); "
-                        "遇到 ask_human 或会话停下即刻交回状态 (finish 收尾那批的结果随结束提示交回). 不合协议的一批不执行, 交回的下一条即重交要求 (记一轮)",
-                    schema({{"calls",
-                             {{"type", "array"},
-                              {"minItems", 1},
-                              {"maxItems", kMaxCalls},
-                              {"description", "调用序列 (不给 = 接上 / 续等 / 取状态); 工具名与参数见系统提示 (doc) 的研究工具表"},
-                              {"items", schema({{"tool", {{"type", "string"}}}, {"args", {{"type", "object"}}}}, json::array({"tool"}))}}}},
+                        " 秒 (未完交回进度, 再调无参 run 续等); 做完即交回下一条消息 (常规为本条增量: 它的结果 + 下一步; 接上有历史的会话或研究员回退后自动给完整上下文); "
+                        "遇到 ask_human 或会话停下即刻交回状态 (finish 的结果随结束提示交回). 不合协议的调用不执行, 交回的下一条即重交要求 (记一步)",
+                    schema({{"tool", {{"type", "string"}, {"description", "研究工具名 (不给 = 接上 / 续等 / 取状态); 工具名与参数见系统提示 (doc) 的研究工具表"}}},
+                            {"args", {{"type", "object"}, {"description", "该工具的参数"}}}},
                            json::array())));
   return {{"tools", std::move(ts)}};
 }
@@ -260,25 +256,20 @@ std::string names_of(const std::vector<Choice> &cs) {
 
 // 后台调用执行中的进度 (超时交回)
 std::string progress(const Mine &m) {
-  const std::vector<Act> &as = m.timeline.back().acts;
-  const size_t i = m.acting();
-  std::string at = "第 " + std::to_string(i + 1) + "/" + std::to_string(as.size()) + " 个调用";
-  if (i < as.size()) {
-    const Act &a = as[i];
-    at += " " + CallTitle(a, {m.round(), static_cast<int>(i) + 1});
-    const TrialRes *r = AsTrial(a);
-    LabLive ll;
-    m.lab.live(ll);
-    if (r)
-      at += std::string(r->run.began() ? " (阶段 Run" : " (阶段 Search") + text::fmt(", 进度 %.0f%%)", ll.frac * 100.0);
-    else
-      at += ll.frac > 0.0 ? text::fmt(" (进度 %.0f%%)", ll.frac * 100.0) : std::string(" (执行中)");
-  }
-  return "第 " + std::to_string(m.round()) + " 轮还在跑: " + at + ". 结果等本批全部做完一起给; 调无参 run 续等";
+  const Act *a = m.acting();
+  assert(a);
+  std::string at = CallTitle(*a, m.step());
+  LabLive ll;
+  m.lab.live(ll);
+  if (const TrialRes *r = AsTrial(*a))
+    at += std::string(r->run.began() ? " (阶段 Run" : " (阶段 Search") + text::fmt(", 进度 %.0f%%)", ll.frac * 100.0);
+  else
+    at += ll.frac > 0.0 ? text::fmt(" (进度 %.0f%%)", ll.frac * 100.0) : std::string(" (执行中)");
+  return "还在跑: " + at + ". 做完即交回结果; 调无参 run 续等";
 }
 
 Reply choosing(const Mine &m) {
-  return {false, "第 " + std::to_string(m.round()) + " 轮的 ask_human 已发到 GUI, 请研究员在 Mine 页点选并按 交答案. 答完后再调无参 run 获取答案与下一条消息."};
+  return {false, StepTag(m.step()) + " 的 ask_human 已发到 GUI, 请研究员在 Mine 页点选并按 交答案. 答完后再调无参 run 获取答案与下一条消息."};
 }
 
 } // namespace
@@ -288,38 +279,25 @@ struct Remote::Impl {
   std::mutex mu;
   std::deque<Ask> asks; // 网络线程入, GUI 线程出
   std::vector<Waiter> waiters;
-  struct Cursor {
-    std::string dir;
-    int rev = 0;
-    int round = 0;
-  } synced; // 外部 agent 已连续收到的时间线位点 (断链 / 回退时自动补完整研究树)
 
   void enqueue(const Mine &m, Answer answer) {
     waiters.push_back({m.log.dir(), Clock::now() + std::chrono::seconds(kRemoteWait), std::move(answer)});
   }
 
-  // 停着的交回: 停下原因; finish 结束时附末批调用的结果 (末轮是待发的下一条, 末批在它前一轮)
+  // 停着的交回: 停下原因; finish 结束时附 finish 那一步的结果 (末步是待发的下一条, finish 在它前一步)
   Reply halted(const Mine &m) {
     if (!m.st.done)
       return {false, "会话停下: " + m.reason + ". 等研究员在 GUI 处理 (继续 / 回退 / 关闭) 后再调无参 run 接着做."};
-    const int n = m.round() - 1;
-    assert(n >= 1);
-    return {false, ResultsText(m.timeline[static_cast<size_t>(n) - 1].acts, n) + "会话结束: " + m.reason + ". 要再挖就 open 开新会话."};
+    const int n = m.step() - 1;
+    assert(n >= 1 && m.timeline[static_cast<size_t>(n) - 1].act);
+    return {false, ResultText(*m.timeline[static_cast<size_t>(n) - 1].act, n) + "会话结束: " + m.reason + ". 要再挖就 open 开新会话."};
   }
 
-  // 交回待答消息: 连续推进只给本条增量, 首次接上有历史轮次的会话或研究员回退后补完整研究树
-  Reply deliver(const Mine &m) {
-    const bool continuous = synced.dir == m.log.dir() && synced.rev == m.rev() && (synced.round == m.round() - 1 || synced.round == m.round());
-    synced = {m.log.dir(), m.rev(), m.round()};
-    const std::string body = continuous || m.round() <= 1 ? TextOf(m.timeline.back()) : llm::Flat(TurnsOf(m.timeline));
-    return {false, body};
-  }
-
-  // 外部会话此刻交给外部 agent 的: 等交批 → 消息; ask_human → 等人提示; 执行中 → 进度; 停着 → 停下原因
-  Reply state(const Mine &m) {
+  // 外部会话此刻交给外部 agent 的: 等交调用 → 消息 (Mine::deliver: 连着只给本条, 否则完整上下文); ask_human → 等人提示; 执行中 → 进度; 停着 → 停下原因
+  Reply state(Mine &m) {
     switch (m.phase()) {
     case Mine::Phase::Think:
-      return deliver(m);
+      return {false, m.deliver()};
     case Mine::Phase::Choose:
       return choosing(m);
     case Mine::Phase::Act:
@@ -334,7 +312,7 @@ struct Remote::Impl {
   }
 
   // 在等的 (均为 Act): 关掉 / 换会话 → 报错; 离开 Act (做完 / ask_human / 停下) 或超时 → 交回此刻的状态
-  void answer_waiters(const Mine &m) {
+  void answer_waiters(Mine &m) {
     const Clock::time_point now = Clock::now();
     std::erase_if(waiters, [&](const Waiter &w) {
       const auto done = [&](Reply r) {
@@ -349,18 +327,18 @@ struct Remote::Impl {
     });
   }
 
-  // 交一批调用 (不合协议的也收成一轮, 交回的下一条即重交要求): 进后台执行则等, 其余 (当场做完 / ask_human / 停下) 立刻交回
-  void submit(Mine &m, json calls, Answer answer) {
-    if (!m.waiting() || !m.idle())
-      return answer({true, "这批没收下: " + state(m).text});
-    m.reply(json{{"calls", std::move(calls)}}.dump());
+  // 交一个调用 (不合协议的也收成一步, 交回的下一条即重交要求): 进后台执行则等, 其余 (当场做完 / ask_human / 停下) 立刻交回
+  void submit(Mine &m, const json &call, Answer answer) {
+    if (m.phase() != Mine::Phase::Think || !m.idle())
+      return answer({true, "这个调用没收下: " + state(m).text});
+    m.reply(call.dump());
     if (m.phase() == Mine::Phase::Act)
       return enqueue(m, std::move(answer));
     answer(state(m));
   }
 
   // 无参 run: 后台执行中则续等, 其余 (待答 / ask_human / 停着) 立刻交回状态
-  void poll(const Mine &m, Answer answer) {
+  void poll(Mine &m, Answer answer) {
     if (m.phase() == Mine::Phase::Act)
       return enqueue(m, std::move(answer));
     answer(state(m));
@@ -430,7 +408,7 @@ struct Remote::Impl {
     l.llm = {};
     if (std::string err = m.try_open(data, std::move(s), std::move(l)); !err.empty())
       return fail(std::move(err));
-    a.answer(deliver(m));
+    a.answer({false, m.deliver()});
   }
 
   void handle(SharedData &data, Mine &m, const Mine::Setup &base, const Mine::Leg &leg, bool bench, Ask a) {
@@ -444,11 +422,13 @@ struct Remote::Impl {
       return x.empty() ? a.answer({false, *m.system}) : fail("doc 不收参数");
     if (a.tool == "run") {
       for (const auto &[k, v] : x.items())
-        if (k != "calls")
-          return fail("run 没有参数 " + k + " (只有可选的 calls)");
-      return x.contains("calls") ? submit(m, x["calls"], std::move(a.answer)) : poll(m, std::move(a.answer));
+        if (k != "tool" && k != "args")
+          return fail("run 没有参数 " + k + " (只有可选的 tool / args)");
+      if (!x.contains("tool"))
+        return x.contains("args") ? fail("args 须随 tool 一起给") : poll(m, std::move(a.answer));
+      return submit(m, x, std::move(a.answer));
     }
-    fail("没有工具 " + a.tool + " (只有 open / doc / run; 研究工具放进 run 的 calls 交)");
+    fail("没有工具 " + a.tool + " (只有 open / doc / run; 研究工具经 run 的 tool / args 交)");
   }
 };
 

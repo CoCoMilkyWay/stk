@@ -1,4 +1,4 @@
-// probe_brain — 试跑大模型: 三拍对仗 OpenProbeBrain (备上下文与模型选项, GUI) → LabTask (llm::send + VetBatch, Lab) → CloseProbeBrain (封存, GUI);
+// probe_brain — 试跑大模型: 三拍对仗 OpenProbeBrain (备上下文与模型选项, GUI) → LabTask (新开一段对话 llm::send + ParseCall, Lab) → CloseProbeBrain (封存, GUI);
 //               展示见 ui/session/ProbeBrain.cpp
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Bay.hpp"
@@ -17,17 +17,10 @@ namespace {
 
 struct BrainYield final : Res {
   llm::Reply reply;
-  BatchCheck check;
+  CallCheck check;
   std::string text() const override { return {}; }
   void draw() const override {}
 };
-
-std::string calls_json(const std::vector<Act> &acts) {
-  json arr = json::array();
-  for (const Act &a : acts)
-    arr.push_back({{"tool", def(a.call.tool).id}, {"args", a.call.args}});
-  return json{{"calls", std::move(arr)}}.dump();
-}
 
 } // namespace
 
@@ -70,23 +63,7 @@ std::optional<LabTask> OpenProbeBrain(Act &a, Seat &s) {
   if (!prompt.empty()) {
     turns.push_back({true, memo.empty() ? prompt : prompt + MemoText(memo)});
   } else {
-    const int tried = static_cast<int>(std::ranges::count_if(s.lab.results(), [](const Result &x) { return x.visible; }));
-    const auto make_first = [&] { return FirstMessage(ctx, tried, NotesBrief(s.notes, s.scope), r->ask, {}); };
-    std::vector<Round> rs(s.timeline.begin(), s.timeline.end());
-    if (rs.empty() || (rs.size() == 1 && rs[0].user.empty() && rs[0].acts.empty())) {
-      Message m = make_first();
-      rs = {Round{.kind = m.kind, .user = std::move(m.text), .memo = memo}};
-    } else if (!rs.back().acts.empty()) {
-      if (rs.size() == 1 && rs[0].user.empty())
-        rs[0].kind = Msg::First, rs[0].user = make_first().text;
-      if (!rs.back().reply.ok())
-        rs.back().reply = {.text = calls_json(rs.back().acts), .end = llm::End::Ok};
-      Message nm = RoundMessage(rs.back().acts, static_cast<int>(rs.size()), s.lab.test());
-      rs.push_back(Round{.kind = nm.kind, .user = std::move(nm.text), .memo = memo});
-    } else if (!memo.empty()) {
-      rs.back().memo += (rs.back().memo.empty() ? "" : "\n\n") + memo;
-    }
-    turns = TurnsOf(rs);
+    turns = TurnsOf(PendingOf(s, r->ask, memo));
   }
 
   r->system_chars = system.size();
@@ -98,11 +75,12 @@ std::optional<LabTask> OpenProbeBrain(Act &a, Seat &s) {
 
   return LabTask([opt, system = std::move(system), turns = std::move(turns), ask](Bay &bay) -> ToolOut {
     auto y = std::make_shared<BrainYield>();
-    y->reply = llm::send(opt, system, turns, [](llm::Part, std::string_view) {}, bay.cancel);
+    llm::Link link;
+    y->reply = llm::send(link, opt, system, turns, true, [](llm::Part, std::string_view) {}, bay.cancel);
     if (bay.cancelled())
       return {};
     if (y->reply.ok())
-      y->check = VetBatch(y->reply.text, ask);
+      y->check = ParseCall(y->reply.text, ask);
     return {y->reply.ok(), {}, {}, std::move(y)};
   });
 }

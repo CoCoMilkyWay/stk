@@ -70,7 +70,23 @@ void from_json(const json &j, Act &a) {
 }
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LogMark, at, md)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Round, kind, user, memo, span, think, write, reply, error, acts, marks)
+
+void to_json(json &j, const Step &sp) {
+  j = {{"kind", sp.kind}, {"user", sp.user}, {"memo", sp.memo}, {"span", sp.span}, {"think", sp.think}, {"write", sp.write}, {"reply", sp.reply}, {"error", sp.error}, {"act", sp.act ? json(*sp.act) : json(nullptr)}, {"marks", sp.marks}};
+}
+void from_json(const json &j, Step &sp) {
+  sp = Step{.kind = j.at("kind").get<Msg>(),
+            .user = j.at("user").get<std::string>(),
+            .memo = j.at("memo").get<std::string>(),
+            .span = j.at("span").get<Span>(),
+            .think = j.at("think").get<Span>(),
+            .write = j.at("write").get<Span>(),
+            .reply = j.at("reply").get<llm::Reply>(),
+            .error = j.at("error").get<std::string>(),
+            .marks = j.at("marks").get<std::vector<LogMark>>()};
+  if (const json &a = j.at("act"); !a.is_null())
+    sp.act = a.get<Act>();
+}
 
 // =============================================================================
 // 可读研究日志 log.md 与会话目录 Journal
@@ -105,69 +121,65 @@ std::string quote_md(const std::string &s) {
   return o;
 }
 
-std::string fmt_round_send(int n, const Round &rd) {
-  std::string s = "\n---\n\n## 第 " + std::to_string(n) + " 轮 · " + def(rd.kind).cn + "\n\n";
+std::string fmt_step_send(int n, const Step &sp) {
+  std::string s = "\n---\n\n## 第 " + std::to_string(n) + " 步 · " + def(sp.kind).cn + "\n\n";
   if (n == 1)
-    s += rd.user + (rd.user.ends_with('\n') ? "\n" : "\n\n");
-  if (!rd.memo.empty())
-    s += "> **研究员插话**\n" + quote_md(rd.memo) + "\n";
+    s += sp.user + (sp.user.ends_with('\n') ? "\n" : "\n\n");
+  if (!sp.memo.empty())
+    s += "> **研究员插话**\n" + quote_md(sp.memo) + "\n";
   return s;
 }
 
-std::string fmt_round_reply(int n, const Round &rd) {
-  if (!rd.span.ended())
+std::string fmt_step_reply(int n, const Step &sp) {
+  if (!sp.span.ended())
     return {};
-  const llm::Reply &r = rd.reply;
-  std::string s = "### R" + std::to_string(n) + " Agent 回复 (" + text::fmt("%.1fs", r.seconds);
+  const llm::Reply &r = sp.reply;
+  std::string s = "### " + StepTag(n) + " Agent 回复 (" + text::fmt("%.1fs", r.seconds);
   if (r.usage.prompt > 0)
     s += " · 输入 " + std::to_string(r.usage.prompt) + " [缓存 " + std::to_string(r.usage.cached) + "] / 输出 " + std::to_string(r.usage.completion);
   s += ")\n\n";
   if (!r.thinking.empty())
     s += "<details>\n<summary>思考过程 (" + std::to_string(text::chars(r.thinking)) + " 字)</summary>\n\n" + r.thinking +
          (r.thinking.ends_with('\n') ? "" : "\n") + "\n</details>\n\n";
-  if (!r.ok() || !rd.error.empty()) {
-    s += "> **未通过**: " + rd.error + "\n\n";
+  if (!sp.act) {
+    s += "> **未通过**: " + sp.error + "\n\n";
     if (!r.text.empty())
       s += "```json\n" + r.text + (r.text.ends_with('\n') ? "" : "\n") + "```\n\n";
-    return s;
   }
-  for (size_t i = 0; i < rd.acts.size(); ++i)
-    s += std::to_string(i + 1) + ". `" + RefText({n, static_cast<int>(i) + 1}) + "` `" + rd.acts[i].call.text(100) + "`\n";
-  return s + "\n";
+  return s;
 }
 
-std::string fmt_act_done(Ref at, const Act &a) {
+std::string fmt_act_done(int n, const Act &a) {
   if (!a.span.ended())
     return {};
-  std::string s = "#### [" + RefText(at) + "] `" + a.call.text(100) + "` (" + text::fmt("%.1fs", a.span.len(a.span.t1)) +
-                  (a.out.ok ? "" : " · 没做成") + ")\n\n" + a.out.text;
+  std::string s = "#### [" + StepTag(n) + "] `" + a.call.text(100) + "` (" + text::fmt("%.1fs", a.span.len(a.span.t1)) + (a.out.ok ? "" : " · 没做成") + ")\n\n" + a.out.text;
   if (!s.ends_with('\n'))
     s += '\n';
   return s + "\n";
 }
 
-std::string fmt_marks(const Round &rd, int at) {
+std::string fmt_marks(const Step &sp, LogAt at) {
   std::string s;
-  for (const LogMark &m : rd.marks)
+  for (const LogMark &m : sp.marks)
     if (m.at == at)
       s += m.md;
   return s;
 }
 
-// 整份 log.md: 每轮 = 发出 · 回复前的笔 · 回复 · (调用 · 其后的笔)*; 未发出的轮有笔才写
-std::string fmt_log(const std::string &head, Rounds timeline) {
+// 整份 log.md: 每步 = 发出 · 其后的笔 · 回复 · 其后的笔 · 调用 · 其后的笔; 未发出的步有笔才写
+std::string fmt_log(const std::string &head, Steps timeline) {
   std::string md = head;
   for (size_t i = 0; i < timeline.size(); ++i) {
     const int n = static_cast<int>(i) + 1;
-    const Round &rd = timeline[i];
-    if (!rd.span.began() && rd.marks.empty())
+    const Step &sp = timeline[i];
+    if (!sp.span.began() && sp.marks.empty())
       continue;
-    md += fmt_round_send(n, rd) + fmt_marks(rd, -1);
-    if (!rd.reply.ok())
+    md += fmt_step_send(n, sp) + fmt_marks(sp, LogAt::Sent);
+    if (!sp.reply.ok())
       continue;
-    md += fmt_round_reply(n, rd) + fmt_marks(rd, 0);
-    for (size_t j = 0; j < rd.acts.size(); ++j)
-      md += fmt_act_done({n, static_cast<int>(j) + 1}, rd.acts[j]) + fmt_marks(rd, static_cast<int>(j) + 1);
+    md += fmt_step_reply(n, sp) + fmt_marks(sp, LogAt::Replied);
+    if (sp.act)
+      md += fmt_act_done(n, *sp.act) + fmt_marks(sp, LogAt::Done);
   }
   return md;
 }
@@ -198,7 +210,7 @@ void Journal::report(const std::string &text) const {
   replace_file(fs::path(dir_) / "report.md", text);
 }
 
-void Journal::save(const json &session, const json &brief, Rounds timeline) const {
+void Journal::save(const json &session, const json &brief, Steps timeline) const {
   assert(!dir_.empty());
   replace_file(fs::path(dir_) / kSessionFile, session.dump());
   replace_file(fs::path(dir_) / kBriefFile, brief.dump(2));
@@ -210,42 +222,31 @@ void Journal::save(const json &session, const json &brief, Rounds timeline) cons
 // =============================================================================
 namespace {
 
-// 末轮执行到的调用 (首个没做完的; = acts.size() 即都做完)
-size_t acting_of(const Round &rd) {
-  size_t i = 0;
-  while (i < rd.acts.size() && rd.acts[i].span.ended())
-    ++i;
-  return i;
-}
-
-// 末轮在等研究员答 ask_human
-bool asking(const Round &rd) {
-  const size_t i = acting_of(rd);
-  return rd.span.ended() && i < rd.acts.size() && def(rd.acts[i].call.tool).exec == Exec::Human && rd.acts[i].span.running();
-}
+// 这一步在等研究员答 ask_human
+bool asking(const Step &sp) { return sp.span.ended() && sp.act && def(sp.act->call.tool).exec == Exec::Human && sp.act->span.running(); }
 
 // 停着时按继续会做什么
-std::string hint_of(Rounds timeline, bool done) {
-  const Round &rd = timeline.back();
+std::string hint_of(Steps timeline, bool done) {
+  const Step &sp = timeline.back();
   const std::string n = std::to_string(timeline.size());
-  if (!rd.span.began())
+  if (!sp.span.began())
     return "发出第 " + n + " 条消息" + (done ? " (agent 已宣布挖完, 发出即让它接着挖)" : "");
-  if (const size_t i = acting_of(rd); i < rd.acts.size())
-    return "接着执行第 " + n + " 轮第 " + std::to_string(i + 1) + " 个调用起 (共 " + std::to_string(rd.acts.size()) + " 个)";
-  return "发第 " + n + " 轮的结果";
+  if (sp.act && !sp.act->span.ended())
+    return "接着执行第 " + n + " 步的调用";
+  return "发第 " + n + " 步的结果";
 }
 
-// 末尾 (待发的一条之前) 连着几批不合协议
-int invalid_run(Rounds timeline) {
+// 末尾 (待发的一条之前) 连着几步不合协议
+int invalid_run(Steps timeline) {
   int n = 0;
   for (size_t i = timeline.size() - 1; i-- > 0 && !timeline[i].error.empty();)
     ++n;
   return n;
 }
 
-std::string budget_miss(const Budget &b, int d_rounds, double d_secs) {
-  if (b.rounds > 0 && d_rounds >= b.rounds)
-    return "本段 " + std::to_string(d_rounds) + " 轮, 上限 " + std::to_string(b.rounds) + " 轮";
+std::string budget_miss(const Budget &b, int d_steps, double d_secs) {
+  if (b.steps > 0 && d_steps >= b.steps)
+    return "本段 " + std::to_string(d_steps) + " 步, 上限 " + std::to_string(b.steps) + " 步";
   if (b.minutes > 0 && d_secs >= b.minutes * 60.0)
     return "本段 " + std::to_string(static_cast<int>(d_secs / 60.0)) + " 分钟, 上限 " + std::to_string(b.minutes) + " 分钟";
   return {};
@@ -279,7 +280,7 @@ void Mine::bind(const SharedData &data) {
 
 void Mine::depart() { from_ = {sent(), now()}; }
 
-int Mine::sent() const { return round() - static_cast<int>(!timeline.empty() && !timeline.back().span.began()); }
+int Mine::sent() const { return step() - static_cast<int>(!timeline.empty() && !timeline.back().span.began()); }
 
 std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
   assert(!live() && idle());
@@ -311,7 +312,7 @@ std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
   memo.clear(), reason.clear(), report.clear();
   ++rev_;
   t0 = Clock::now(), t_end = -1.0;
-  held_ = true, paused_ = false;
+  held_ = true;
   depart();
   const int tried = static_cast<int>(std::ranges::count_if(lab.results(), [](const Result &r) { return r.visible; }));
   post(setup.test ? TestMessage(setup.ask, setup.remark)
@@ -331,23 +332,23 @@ void Mine::load(const SharedData &data, const std::string &dir) {
   j.at("timeline").get_to(timeline);
   assert(!timeline.empty() && "开会话即发首条");
   const std::vector<Result> &rs = lab.results();
-  for (Round &rd : timeline)
-    for (Act &a : rd.acts)
-      if (TrialRes *k = AsTrial(a)) {
-        k->gate = setup.gate;
-        k->level = lab.ctx().level, k->hold = lab.ctx().hold;
-        if (k->st.ok())
-          if (const auto it = std::ranges::find(rs, k->st.file, &Result::file); it != rs.end())
-            k->st.res = *it;
-      }
+  for (Step &sp : timeline)
+    if (TrialRes *k = sp.act ? AsTrial(*sp.act) : nullptr) {
+      k->gate = setup.gate;
+      k->level = lab.ctx().level, k->hold = lab.ctx().hold;
+      if (k->st.ok())
+        if (const auto it = std::ranges::find(rs, k->st.file, &Result::file); it != rs.end())
+          k->st.res = *it;
+    }
   memo = j.at("memo").get<std::string>();
   reason = j.at("reason").get<std::string>();
   t_end = j.at("elapsed").get<double>();
-  held_ = true, paused_ = true;
-  if (reason.empty()) { // 没停下就退出了 (在跑时 reason 恒空): 在等答的 ask_human 原样接着等, 其余末轮作废重来
-    if (!asking(timeline.back()))
-      return redo(round(), "上次没停稳就退出了, 末轮作废重来");
-    reason = "上次在等你答问题时退出了";
+  held_ = true;
+  if (reason.empty()) { // 没停下就退出了: 在等答的 ask_human 原样接着等, 其余末步作废重来
+    const bool ask = asking(timeline.back());
+    reason = ask ? "上次在等你答问题时退出了" : "上次没停稳就退出了, 末步作废重来";
+    if (!ask)
+      return redo(step(), reason);
     mark("---\n\n**停下**: " + reason + "\n\n");
   }
   ++rev_;
@@ -366,27 +367,26 @@ void Mine::resume(const SharedData &data, Leg l) {
     leg = std::move(l);
   assert(catalog::ready(data, setup.sc, leg.gpu));
   t0 = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(t_end)), t_end = -1.0;
-  reason.clear();
   depart();
-  paused_ = false;
+  reason.clear();
   mark("\n> **继续 (" + text::local("%H:%M:%S") + ")** · 大脑 " + brain() + "\n");
   advance();
 }
 
 void Mine::answer() {
   assert(phase() == Phase::Choose);
-  answer_act(acting(), now());
+  answer_act(act(), now());
   advance();
 }
 
 // 在收的回复 / 在跑的调用 (含等研究员答的 ask_human) 作废, 停下
 void Mine::cancel() {
   assert(live());
-  const Round &rd = timeline.back();
-  if (!rd.span.ended())
+  const Step &sp = timeline.back();
+  if (!sp.span.ended())
     drop("按 Cancel 作废了在收的回复");
-  else if (const size_t i = acting(); i < rd.acts.size() && rd.acts[i].span.running())
-    abort_act(i, now());
+  else if (sp.act && sp.act->span.running())
+    abort_act(act(), now());
   pause("按 Cancel");
 }
 
@@ -421,8 +421,7 @@ void Mine::save() const {
                         {"timeline", timeline}};
   const json brief = {{"sc", setup.sc},
                       {"test", setup.test},
-                      {"rounds", sent()},
-                      {"live", live()},
+                      {"steps", sent()},
                       {"reason", reason},
                       {"adopted", st.adopted},
                       {"cands", c.staged()},
@@ -435,23 +434,23 @@ void Mine::save() const {
 
 // ---- 回退 ----
 Mine::Loss Mine::loss(int k) const {
-  assert(phase() == Phase::Pause && k >= 1 && k <= round());
-  return {.rounds = round() - k + 1, .files = static_cast<int>(staged_from(k).size()), .notes = static_cast<int>(notes.filed(log.dir(), k).size())};
+  assert(phase() == Phase::Pause && k >= 1 && k <= step());
+  return {.steps = step() - k + 1, .files = static_cast<int>(staged_from(k).size()), .notes = static_cast<int>(notes.filed(log.dir(), k).size())};
 }
 
 void Mine::rewind(int k) { redo(k, "回退到第 " + std::to_string(k) + " 条发出前, 继续即重发"); }
 
-// 第 k 轮起作废 (落的候选文件与提的全局记录一并删), 停在第 k 条发出前
+// 第 k 步起作废 (落的候选文件与提的全局记录一并删), 停在第 k 条发出前
 void Mine::redo(int k, std::string why) {
-  assert(phase() == Phase::Pause && idle() && k >= 1 && k <= round());
+  assert(phase() == Phase::Pause && idle() && k >= 1 && k <= step());
   flush();
   discard(k);
   timeline.resize(static_cast<size_t>(k));
-  Round &rd = timeline.back();
-  if (!rd.memo.empty())
-    memo = rd.memo + (memo.empty() ? "" : "\n\n" + memo), rd.memo.clear();
+  Step &sp = timeline.back();
+  if (!sp.memo.empty())
+    memo = sp.memo + (memo.empty() ? "" : "\n\n" + memo), sp.memo.clear();
   unsend();
-  rd.marks.clear();
+  sp.marks.clear();
   restate();
   ++rev_;
   reason = std::move(why);
@@ -461,18 +460,17 @@ void Mine::redo(int k, std::string why) {
   save();
 }
 
-// 末轮退回待发 (插话与日志笔留着)
+// 末步退回待发 (插话与日志笔留着)
 void Mine::unsend() {
-  Round &rd = timeline.back();
-  rd = Round{.kind = rd.kind, .user = std::move(rd.user), .memo = std::move(rd.memo), .marks = std::move(rd.marks)};
+  Step &sp = timeline.back();
+  sp = Step{.kind = sp.kind, .user = std::move(sp.user), .memo = std::move(sp.memo), .marks = std::move(sp.marks)};
 }
 
 std::vector<std::string> Mine::staged_from(int k) const {
   std::vector<std::string> out;
   for (size_t i = static_cast<size_t>(k) - 1; i < timeline.size(); ++i)
-    for (const Act &a : timeline[i].acts)
-      if (const TrialRes *t = AsTrial(a); t && t->st.ok())
-        out.push_back(t->st.file);
+    if (const TrialRes *t = timeline[i].act ? AsTrial(*timeline[i].act) : nullptr; t && t->st.ok())
+      out.push_back(t->st.file);
   return out;
 }
 
@@ -485,14 +483,17 @@ void Mine::discard(int k) {
 Mine::Phase Mine::phase() const {
   if (!held_)
     return Phase::None;
-  if (paused_)
+  if (!reason.empty())
     return Phase::Pause;
-  const Round &rd = timeline.back();
-  return !rd.span.ended() ? Phase::Think : asking(rd) ? Phase::Choose
+  const Step &sp = timeline.back();
+  return !sp.span.ended() ? Phase::Think : asking(sp) ? Phase::Choose
                                                       : Phase::Act;
 }
 
-size_t Mine::acting() const { return timeline.empty() ? 0 : acting_of(timeline.back()); }
+const Act *Mine::acting() const {
+  const Step *sp = timeline.empty() ? nullptr : &timeline.back();
+  return sp && sp->act && !sp->act->span.ended() ? &*sp->act : nullptr;
+}
 
 std::string Mine::hint() const { return phase() != Phase::Pause ? std::string() : hint_of(timeline, st.done); }
 
@@ -510,20 +511,20 @@ void Mine::update() {
 void Mine::on_chat(Chat::Tick t) {
   if (phase() != Phase::Think)
     return;
-  Round &rd = timeline.back();
+  Step &sp = timeline.back();
   const double now_s = now();
   switch (t.step) {
   case ChatStep::Think:
-    rd.think.begin(now_s);
+    sp.think.begin(now_s);
     break;
   case ChatStep::Write:
-    rd.think.end(now_s), rd.write.begin(now_s);
+    sp.think.end(now_s), sp.write.begin(now_s);
     break;
   case ChatStep::Restart:
-    rd.think = {}, rd.write = {};
+    sp.think = {}, sp.write = {};
     break;
   case ChatStep::End:
-    rd.think.end(now_s), rd.write.end(now_s), rd.span.end(now_s);
+    sp.think.end(now_s), sp.write.end(now_s), sp.span.end(now_s);
     got(std::move(t.out));
     break;
   }
@@ -533,108 +534,128 @@ void Mine::on_lab(Lab::Tick t) {
   if (phase() != Phase::Act)
     return;
   if (t.step != LabStep::End)
-    return step_act(acting(), t.step, now());
+    return step_act(act(), t.step, now());
   if (t.out.cancelled)
     return;
-  const size_t i = acting();
-  Seat s = seat_of(i);
-  settle_act(i, std::move(t.out.out), s, now());
+  Seat s = seat_of();
+  settle_act(act(), std::move(t.out.out), s, now());
   advance();
 }
 
 // 主循环: 推进到要等的地方 (大脑回复 / 后台调用 / 研究员答) 或停下
 void Mine::advance() {
   for (;;) {
-    const Round &rd = timeline.back();
-    if (!rd.span.began())
+    const Step &sp = timeline.back();
+    if (!sp.span.began())
       return send();
-    if (!rd.span.ended())
+    if (!sp.span.ended())
       return;
-    if (const size_t i = acting_of(rd); i < rd.acts.size()) {
-      if (rd.acts[i].span.running())
+    if (sp.act && !sp.act->span.ended()) {
+      if (sp.act->span.running())
         return;
-      Seat s = seat_of(i);
-      if (open_act(i, s, now()) != Exec::Sync)
+      Seat s = seat_of();
+      if (open_act(act(), s, now()) != Exec::Sync)
         return save();
       continue;
     }
-    post(rd.error.empty() ? RoundMessage(rd.acts, round(), setup.test) : RetryMessage(rd.error));
+    post(sp.act ? ResultMessage(*sp.act, step(), setup.test) : RetryMessage(sp.error));
     if (st.done)
       return pause("agent 宣布挖完");
     if (invalid_run(timeline) >= kMaxRetries)
-      return pause("连续 " + std::to_string(kMaxRetries) + " 批不合协议");
+      return pause("连续 " + std::to_string(kMaxRetries) + " 条回复不合协议");
     if (const std::string budget = over(); !budget.empty())
       return pause("本段预算用完 (" + budget + ")");
   }
 }
 
-// 大脑交来一条 (内置模型的回复 / 外部 agent 的 calls): 没收成即作废本条并停下; 收成的照收 (不合协议的无调用, error = 原因)
+// 大脑交来一条 (内置模型的回复 / 外部 agent 交的调用): 没收成即作废本条并停下; 收成的照收 (不合协议的无调用, error = 原因)
 void Mine::got(llm::Reply r) {
   if (!r.ok()) {
     const std::string why = "回复失败 (" + std::string(def(r.end).id) + (r.error.empty() ? "" : ": " + r.error) + ")";
     drop(why, std::move(r));
     return pause(why);
   }
-  BatchCheck b = VetBatch(r.text, setup.ask);
-  Round &rd = timeline.back();
-  rd.span.end(now());
-  rd.reply = std::move(r);
-  rd.error = std::move(b.error);
-  for (Call &c : b.calls)
-    rd.acts.push_back({.call = std::move(c)});
-  CloseReply(st, rd);
+  CallCheck c = ParseCall(r.text, setup.ask);
+  Step &sp = timeline.back();
+  sp.span.end(now());
+  sp.reply = std::move(r);
+  if (c.ok())
+    sp.act = Act{.call = std::move(c.call)};
+  else
+    sp.error = std::move(c.error);
+  CloseReply(st, sp);
   advance();
 }
 
-Seat Mine::seat_of(size_t i) { return seat(i, setup.gate, log.dir(), false, leg.gpu); }
+Seat Mine::seat_of() { return seat(setup.gate, log.dir(), false, leg.gpu); }
 
 std::string Mine::brain() const {
   return setup.remote ? std::string("外部 agent") : std::string(def(leg.llm.backend).name) + " / " + leg.llm.model;
 }
 
-void Mine::reply(std::string calls) {
-  assert(remote() && waiting());
-  got({.text = std::move(calls), .end = llm::End::Ok, .seconds = timeline.back().span.len(now())});
+void Mine::reply(std::string call) {
+  assert(remote() && phase() == Phase::Think);
+  got({.text = std::move(call), .end = llm::End::Ok, .seconds = timeline.back().span.len(now())});
+}
+
+// 交给大脑的上下文: 它已连着收到上一步 (或本步, 外部 agent 重取) → 不新开 (有状态的大脑只取末条); 否则新开整份. 记下它已收到本步
+llm::Turns Mine::told(bool &fresh) {
+  fresh = !(told_.rev == rev_ && (told_.step == step() - 1 || told_.step == step()));
+  told_ = {rev_, step()};
+  return TurnsOf(timeline);
+}
+
+std::string Mine::deliver() {
+  assert(remote() && phase() == Phase::Think);
+  bool fresh = true;
+  const llm::Turns t = told(fresh);
+  return fresh ? llm::Flat(t) : t.back().text;
 }
 
 void Mine::post(Message m) { timeline.push_back({.kind = m.kind, .user = std::move(m.text)}); }
 
 void Mine::send() {
-  Round &rd = timeline.back();
-  assert(!rd.span.began());
+  Step &sp = timeline.back();
+  assert(!sp.span.began());
   if (!memo.empty()) {
-    rd.memo += (rd.memo.empty() ? "" : "\n\n") + memo;
+    sp.memo += (sp.memo.empty() ? "" : "\n\n") + memo;
     memo.clear();
   }
-  rd.span.begin(now());
-  OpenRound(st);
-  if (!setup.remote)
-    chat.send({leg.llm, system, TurnsOf(timeline)});
+  sp.span.begin(now());
+  OpenStep(st);
+  if (!setup.remote) {
+    bool fresh = true;
+    llm::Turns t = told(fresh);
+    chat.send({leg.llm, system, std::move(t), fresh});
+  }
   save();
 }
 
-// 本条的回复作废 (没收到 / 收到一半 / 回复失败; r = 收到的那条, 须非 Ok): 原文记进日志, 本条退回待发
+// 本条的回复作废 (没收到 / 收到一半 / 回复失败; r = 收到的那条, 须非 Ok): 原文记进日志, 本条退回待发; 大脑那段对话不再算连着
 void Mine::drop(std::string why, llm::Reply r) {
   assert(!r.ok());
-  Round &rd = timeline.back();
+  Step &sp = timeline.back();
   const double t = now();
-  rd.think.end(t), rd.write.end(t), rd.span.end(t);
-  rd.reply = std::move(r);
-  rd.error = std::move(why);
-  mark(fmt_round_reply(round(), rd));
+  sp.think.end(t), sp.write.end(t), sp.span.end(t);
+  sp.reply = std::move(r);
+  sp.error = std::move(why);
+  mark(fmt_step_reply(step(), sp));
   unsend();
   restate();
+  told_ = {};
 }
 
 void Mine::mark(std::string md) {
-  Round &rd = timeline.back();
-  rd.marks.push_back({rd.reply.ok() ? static_cast<int>(acting_of(rd)) : -1, std::move(md)});
+  Step &sp = timeline.back();
+  const LogAt at = !sp.reply.ok() ? LogAt::Sent : sp.act && sp.act->span.ended() ? LogAt::Done
+                                                                                 : LogAt::Replied;
+  sp.marks.push_back({at, std::move(md)});
 }
 
-std::string Mine::over() const { return budget_miss(leg.budget, sent() - from_.round, now() - from_.t); }
+std::string Mine::over() const { return budget_miss(leg.budget, sent() - from_.step, now() - from_.t); }
 
 void Mine::pause(std::string why) {
-  assert(live());
+  assert(live() && !why.empty());
   chat.cancel();
   lab.cancel();
   t_end = now();
@@ -642,7 +663,6 @@ void Mine::pause(std::string why) {
   report = report_of(reason);
   mark("---\n\n**停下 (" + text::local("%H:%M:%S") + ")**: " + reason + "\n\n");
   log.report(report);
-  paused_ = true;
   save();
 }
 
@@ -650,14 +670,13 @@ std::string Mine::report_of(const std::string &why) const {
   const Tally c = tally();
   const bool test = setup.test;
   std::string r = std::string(test ? "# 自检报告\n\n- 自检会话: 候选 / 日志 / 全局记录在 agent/test 目录, 提交只查门槛不拷进正式库" : "# 停下报告\n") +
-                  "\n- 停下原因: " + why + "\n- 轮数: " + std::to_string(sent()) + "\n- 调用: " + std::to_string(c.all()) + " (观察 " +
+                  "\n- 停下原因: " + why + "\n- 步数: " + std::to_string(sent()) + "\n- 调用: " + std::to_string(c.all()) + " (观察 " +
                   std::to_string(c.n(Cat::Look)) + ", 查研报 " + std::to_string(c.docs()) + ", 回测 " + std::to_string(c.n(Tool::EvalFactor)) + ")\n" +
                   (setup.remark.empty() ? "" : "- 本会话要求: " + setup.remark + "\n") + "\n";
   std::string in, out;
   for (size_t i = 0; i < timeline.size(); ++i)
-    for (const Act &a : timeline[i].acts)
-      if (a.span.ended() && a.call.tool == Tool::SubmitFactor)
-        (a.out.ok ? in : out) += "- 第 " + std::to_string(i + 1) + " 轮 " + a.call.str("name") + (a.out.ok ? "" : " — " + a.out.text) + "\n";
+    if (const std::optional<Act> &a = timeline[i].act; a && a->span.ended() && a->call.tool == Tool::SubmitFactor)
+      (a->out.ok ? in : out) += "- " + StepTag(static_cast<int>(i) + 1) + " " + a->call.str("name") + (a->out.ok ? "" : " — " + a->out.text) + "\n";
   r += std::string(test ? "## 达门槛 (" : "## 入库 (") + std::to_string(c.adopted) + ")\n\n" + (in.empty() ? "(无)\n" : in) + "\n";
   r += "## 未入库的提交 (" + std::to_string(c.n(Tool::SubmitFactor) - c.adopted) + ")\n\n" + (out.empty() ? "(无)\n" : out);
   const std::vector<const Note *> filed = notes.filed(log.dir());
@@ -667,45 +686,14 @@ std::string Mine::report_of(const std::string &why) const {
     for (const Note *x : filed)
       if (x->kind == k) {
         ++n;
-        s += "\n### " + x->id + " " + x->title() + " (第 " + std::to_string(x->round) + " 轮" + (x->ref.empty() ? "" : ", 附议 " + x->ref) + ")\n\n" + x->body();
+        s += "\n### " + x->id + " " + x->title() + " (" + StepTag(x->step) + (x->ref.empty() ? "" : ", 附议 " + x->ref) + ")\n\n" + x->body();
       }
     r += "\n## " + std::string(def(k).cn) + " (" + std::to_string(n) + ")\n" + (s.empty() ? "\n(无)\n" : s);
   }
   return r;
 }
 
-std::vector<Round> TimelineOf(const std::string &dir) { return read_json(fs::path(dir) / kSessionFile).at("timeline").get<std::vector<Round>>(); }
-
-std::vector<Seen> SeenCalls(const Scope &sc, Tool t) {
-  std::vector<Seen> out;
-  for (const Saved &s : SavedSessions(sc)) {
-    const std::vector<Round> rs = TimelineOf(s.dir);
-    if (IsAgentTool(t)) {
-      for (size_t i = 0; i < rs.size(); ++i)
-        for (size_t j = 0; j < rs[i].acts.size(); ++j)
-          if (const Act &a = rs[i].acts[j]; a.call.tool == t && a.span.ended())
-            out.push_back({s.dir, s.stamp, s.test, {static_cast<int>(i) + 1, static_cast<int>(j) + 1}, a.call.args, a.out.text, a.out.ok});
-      continue;
-    }
-    for (size_t i = 0; i < rs.size(); ++i) {
-      const Round &rd = rs[i];
-      if (!rd.span.began())
-        continue;
-      const int n = static_cast<int>(i) + 1;
-      const Rounds prefix(rs.data(), i + 1);
-      if (t == Tool::BuildContext) {
-        out.push_back({s.dir, s.stamp, s.test, {n, 0}, {{"kind", def(rd.kind).id}, {"view", "full"}, {"ask", "yes"}, {"memo", rd.memo}, {"remark", ""}}, llm::Flat(TurnsOf(prefix)), rd.error.empty()});
-      } else if (t == Tool::CheckBatch) {
-        if (rd.reply.text.empty())
-          continue;
-        out.push_back({s.dir, s.stamp, s.test, {n, 1}, {{"reply", rd.reply.text}, {"ask", "yes"}}, rd.error.empty() ? "通过 (" + std::to_string(rd.acts.size()) + " 个调用)" : RetryMessage(rd.error).text, rd.error.empty()});
-      } else if (t == Tool::ProbeBrain) {
-        out.push_back({s.dir, s.stamp, s.test, {n, 1}, {{"backend", ""}, {"model", ""}, {"ask", "yes"}, {"memo", rd.memo}, {"prompt", ""}}, rd.reply.text, rd.reply.ok() && rd.error.empty()});
-      }
-    }
-  }
-  return out;
-}
+std::vector<Step> TimelineOf(const std::string &dir) { return read_json(fs::path(dir) / kSessionFile).at("timeline").get<std::vector<Step>>(); }
 
 std::vector<Saved> SavedSessions(const Scope &sc) {
   std::vector<Saved> out;

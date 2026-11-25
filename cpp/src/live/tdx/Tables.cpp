@@ -61,10 +61,9 @@ constexpr int kFlowFrom = 0x7e, kFlowTo = 0x7f;
 double asset_val(const std::map<std::string, std::string> &c, const char *name) {
   const auto it = c.find(name);
   need(it != c.end(), "信用资产里没有「%s」", name);
-  char *e = nullptr;
-  const double v = std::strtod(it->second.c_str(), &e);
-  need(!it->second.empty() && e && !*e, "信用资产「%s」读到「%s」", name, it->second.c_str());
-  return v;
+  const std::optional<double> v = parse_num(it->second);
+  need(v.has_value(), "信用资产「%s」读到「%s」", name, it->second.c_str());
+  return *v;
 }
 
 Term term_of(const Margin *m, const Collat *c, Mkt mkt) {
@@ -104,6 +103,38 @@ std::vector<typename S::Row> windows(misc::Ymd from, misc::Ymd end) {
     out.insert(out.end(), std::make_move_iterator(w.begin()), std::make_move_iterator(w.end()));
     lo = misc::add_days(hi, 1);
   }
+  return out;
+}
+
+// 资金流水 from 日起 (含) 至 end: from = 0 即从 end 往前逐窗查到连续 kFlowIdle 窗无流水
+std::vector<CashFlow> flows(misc::Ymd from, misc::Ymd end) {
+  if (from)
+    return windows<CashFlows>(from, end);
+  std::vector<std::vector<CashFlow>> wins;
+  misc::Ymd hi = end;
+  for (int idle = 0; idle < kFlowIdle;) {
+    const misc::Ymd lo = misc::add_days(hi, 1 - kFlowSpan);
+    wins.insert(wins.begin(), window<CashFlows>(lo, hi, wins.size() + 1));
+    idle = wins.front().empty() ? idle + 1 : 0;
+    hi = misc::add_days(lo, -1);
+  }
+  std::vector<CashFlow> out;
+  for (std::vector<CashFlow> &w : wins)
+    out.insert(out.end(), std::make_move_iterator(w.begin()), std::make_move_iterator(w.end()));
+  return out;
+}
+
+// 历史成交 from 日起 (含, > 0) 至 end: 剔掉不是成交的行, 卖出的量取绝对值、金额 0 的补成价 × 量, (日, 时刻) 序
+std::vector<Deal> deals(misc::Ymd from, misc::Ymd end) {
+  assert(from > 0);
+  std::vector<Deal> out = windows<Deals>(from, end);
+  std::erase_if(out, [](const Deal &d) { return !Deals::dealt(d); });
+  for (Deal &d : out) {
+    d.qty = std::abs(d.qty);
+    if (d.amount == 0)
+      d.amount = d.price * static_cast<double>(d.qty);
+  }
+  std::stable_sort(out.begin(), out.end(), [](const Deal &a, const Deal &b) { return std::tie(a.date, a.sec) < std::tie(b.date, b.sec); });
   return out;
 }
 
@@ -152,39 +183,14 @@ Terms terms() {
   return out;
 }
 
-std::vector<CashFlow> flows(misc::Ymd from) {
+Ledger ledger(misc::Ymd from) {
   const misc::Ymd end = misc::add_days(misc::today_ymd(), -1);
-  std::vector<CashFlow> out;
-  if (from) {
-    out = windows<CashFlows>(from, end);
-  } else {
-    std::vector<std::vector<CashFlow>> wins;
-    misc::Ymd hi = end;
-    for (int idle = 0; idle < kFlowIdle;) {
-      const misc::Ymd lo = misc::add_days(hi, 1 - kFlowSpan);
-      wins.insert(wins.begin(), window<CashFlows>(lo, hi, wins.size() + 1));
-      idle = wins.front().empty() ? idle + 1 : 0;
-      hi = misc::add_days(lo, -1);
-    }
-    for (std::vector<CashFlow> &w : wins)
-      out.insert(out.end(), std::make_move_iterator(w.begin()), std::make_move_iterator(w.end()));
-  }
-  trace::ev("flows", {{"n", out.size()}});
-  return out;
-}
-
-std::vector<Deal> deals(misc::Ymd from) {
-  assert(from > 0);
-  std::vector<Deal> out = windows<Deals>(from, misc::add_days(misc::today_ymd(), -1));
-  std::erase_if(out, [](const Deal &d) { return !Deals::dealt(d); });
-  for (Deal &d : out) {
-    d.qty = std::abs(d.qty);
-    if (d.amount == 0)
-      d.amount = d.price * static_cast<double>(d.qty);
-  }
-  std::stable_sort(out.begin(), out.end(), [](const Deal &a, const Deal &b) { return std::tie(a.date, a.sec) < std::tie(b.date, b.sec); });
-  trace::ev("deals", {{"n", out.size()}});
-  return out;
+  Ledger l{flows(from, end), {}};
+  if (const misc::Ymd lo = from ? from : l.flows.empty() ? 0
+                                                         : l.flows.front().date)
+    l.deals = deals(lo, end);
+  trace::ev("ledger", {{"flows", l.flows.size()}, {"deals", l.deals.size()}});
+  return l;
 }
 
 } // namespace live::tdx::tables

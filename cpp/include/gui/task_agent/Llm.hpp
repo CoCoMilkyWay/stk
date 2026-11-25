@@ -1,12 +1,15 @@
 #pragma once
 
 // =============================================================================
-// Llm — 左翼 · 大模型传输与异步对话管道 Chat (纯传输, 不知因子, 不留对话态)
+// Llm — 左翼 · 大模型传输与异步对话管道 Chat (纯传输, 不知因子)
 // =============================================================================
-//   三后端由驱动表 kDrivers 分派, 同一签名 models(net, cancel) / send(opt, system, turns, on_delta, cancel):
-//     Zhipu   chat/completions: system + Turns 逐条作 messages; stream=true, JSON 模式 + 思考; system 不变命中平台缓存
-//     Cursor  Cloud Agents API: POST /v1/agents 建无仓库单轮 agent, prompt = system + Flat(Turns); SSE 流支持断线按 Last-Event-ID 续传
-//     Devin   本机 devin acp 子进程: authenticate (key) → session/new → 选模型 → session/prompt, prompt 同 Cursor; 思考 / 正文分片流式, 工具权限一律拒, 收尾删会话
+//   三后端由驱动表 kDrivers 分派, 同一签名 models(net, cancel) / send(link, opt, system, turns, fresh, on_delta, cancel):
+//     Zhipu   无状态: chat/completions 每次带 system + 全部 Turns 作 messages (只追加, 前缀命中平台缓存); stream=true, JSON 模式 + 思考
+//     Cursor  有状态: Cloud Agents API 一段对话一个无仓库 agent: 新开 = POST /v1/agents (prompt = system + Flat(Turns)), 其后 POST /v1/agents/{id}/runs 只发本条;
+//             SSE 流支持断线按 Last-Event-ID 续传
+//     Devin   有状态: 本机 devin acp 子进程一段对话一个会话: 新开 = authenticate (key) → session/new → 选模型 → session/prompt (同 Cursor), 其后 session/prompt 只发本条;
+//             思考 / 正文分片流式, 工具权限一律拒; 换会话时删旧会话
+//   Link = 有状态后端的那段对话 (只在 Chat 的 worker 上用): fresh (调用方说大脑没连着收到上一步) / 没有 / 换了后端或模型 / 上次失败或取消 → 新开一段并灌整份 Turns
 //   HTTPS: asio ssl::stream (OpenSSL) + beast http, 全程 error_code 返回值流转, 零异常控制流
 //   Chat:  Async<ChatReq, ChatStep, Reply, ChatLive>, 与右翼 Lab 同构同接口 (send / poll / live / busy / cancel)
 // =============================================================================
@@ -98,8 +101,19 @@ enum class Part : uint8_t { Text,
                             Restart };
 using Delta = std::function<void(Part part, std::string_view chunk)>;
 
-// 发送整份对话 (阻塞到整轮收齐)
-Reply send(const Options &o, std::string_view system, const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel);
+// 有状态后端的那段对话 (见文件头); 析构即弃 (Devin 子进程即杀)
+class Link {
+public:
+  Link();
+  ~Link();
+  Link(const Link &) = delete;
+  Link &operator=(const Link &) = delete;
+  struct Impl;
+  std::unique_ptr<Impl> impl;
+};
+
+// 发一条 (阻塞到回复收齐): t = 完整对话 (首末都是 user); 连着的有状态对话只发 t 的末条
+Reply send(Link &link, const Options &o, std::string_view system, const Turns &t, bool fresh, const Delta &on_delta, const std::atomic<bool> &cancel);
 
 } // namespace GUI::Agent::llm
 
@@ -118,6 +132,7 @@ struct ChatReq {
   llm::Options opt;
   std::shared_ptr<const std::string> system;
   llm::Turns turns;
+  bool fresh = true; // 大脑没连着收到上一步: 新开一段对话
 };
 struct ChatLive {
   uint64_t gen = 0;

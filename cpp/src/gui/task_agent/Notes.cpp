@@ -12,11 +12,6 @@
 namespace GUI::Agent {
 
 // =============================================================================
-// 调用编号
-// =============================================================================
-std::string RefText(Ref r) { return "R" + std::to_string(r.round) + "#" + std::to_string(r.call); }
-
-// =============================================================================
 // 跨会话全局记录板 Notes
 // =============================================================================
 namespace {
@@ -26,7 +21,7 @@ using json = nlohmann::ordered_json;
 disk::Key note_key(bool test, NoteKind k) { return {.test = test, .name = def(k).id}; }
 
 json line_of(const Note &x) {
-  return {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"round", x.round}, {"ref", x.ref}, {"state", x.state}, {"reply", x.reply}, {"fields", x.fields}};
+  return {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"step", x.step}, {"ref", x.ref}, {"state", x.state}, {"reply", x.reply}, {"fields", x.fields}};
 }
 
 } // namespace
@@ -59,7 +54,7 @@ void Notes::load(bool test) {
                    .scope = j.at("scope").get<std::string>(),
                    .session = j.at("session").get<std::string>(),
                    .ref = j.at("ref").get<std::string>(),
-                   .round = j.at("round").get<int>(),
+                   .step = j.at("step").get<int>(),
                    .state = j.at("state").get<NoteState>(),
                    .reply = j.at("reply").get<std::string>(),
                    .fields = j.at("fields")});
@@ -91,7 +86,7 @@ std::string Notes::next(NoteKind k) const {
   return def(k).prefix + std::to_string(no + 1);
 }
 
-const Note &Notes::add(const Call &c, std::string scope, std::string session, int round) {
+const Note &Notes::add(const Call &c, std::string scope, std::string session, int step) {
   assert(test_ >= 0 && "先 load");
   const NoteKind k = NoteOf(c.tool);
   std::vector<Note> &v = notes_[k];
@@ -101,7 +96,7 @@ const Note &Notes::add(const Call &c, std::string scope, std::string session, in
          .scope = std::move(scope),
          .session = std::move(session),
          .ref = c.str("ref"),
-         .round = round,
+         .step = step,
          .fields = c.args};
   x.fields.erase("ref");
   assert(x.ref.empty() || find(k, x.ref));
@@ -130,7 +125,7 @@ std::vector<const Note *> Notes::filed(const std::string &session, int from) con
   std::vector<const Note *> out;
   for (const std::vector<Note> &v : notes_)
     for (const Note &x : v)
-      if (x.session == session && x.round >= from)
+      if (x.session == session && x.step >= from)
         out.push_back(&x);
   return out;
 }
@@ -138,7 +133,7 @@ std::vector<const Note *> Notes::filed(const std::string &session, int from) con
 void Notes::drop(const std::string &session, int from) {
   assert(test_ >= 0 && "先 load");
   for (const NoteKind k : kVals<NoteKind>)
-    if (std::erase_if(notes_[k], [&](const Note &x) { return x.session == session && x.round >= from; }) > 0)
+    if (std::erase_if(notes_[k], [&](const Note &x) { return x.session == session && x.step >= from; }) > 0)
       rewrite(k);
 }
 
@@ -158,7 +153,7 @@ ToolOut FileNote(const Call &c, Seat &s) {
     r->miss = "没有" + std::string(def(k).cn) + " " + r->ref + ": ref 写 list_notes 里同类已有一条的编号 (编号首字母 " + def(k).prefix + "), 新提的不写";
     return Done(std::move(r), false);
   }
-  r->id = s.dry ? s.notes.next(k) : s.notes.add(c, s.scope, s.session, s.me.round).id;
+  r->id = s.dry ? s.notes.next(k) : s.notes.add(c, s.scope, s.session, s.me).id;
   return Done(std::move(r));
 }
 

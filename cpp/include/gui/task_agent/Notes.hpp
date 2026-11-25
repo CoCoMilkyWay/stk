@@ -1,10 +1,10 @@
 #pragma once
 
 // =============================================================================
-// Notes — 调用编号 R<轮>#<序> 与跨会话全局记录板 Notes (F / T / I / R)
+// Notes — 跨会话全局记录板 (F / T / I / R)
 // =============================================================================
 //   Notes  跨会话全局记录 (output/agent/<main|test>/notes/<类>.jsonl):
-//            特征申请 (F) / 工具申请 (T) / 发现 (I) / 建议与 bug (R); 研究员逐条标处理 (待办 / 已做 / 不做 / 搁置 + 回复); 回退时 drop 删掉对应轮提的
+//            特征申请 (F) / 工具申请 (T) / 发现 (I) / 建议与 bug (R); 研究员逐条标处理 (待办 / 已做 / 不做 / 搁置 + 回复); 回退时 drop 删掉对应步提的
 // =============================================================================
 
 #include "gui/task_agent/Enum.hpp"
@@ -17,14 +17,6 @@
 
 namespace GUI::Agent {
 
-// ---- 调用编号 R<轮>#<序> ----
-struct Ref {
-  int round = 0, call = 0; // round 0 = 无
-  auto operator<=>(const Ref &) const = default;
-};
-std::string RefText(Ref r);
-
-// ---- 跨会话全局记录板 Notes ----
 enum class NoteKind : uint8_t { Feature,
                                 ToolReq,
                                 Insight,
@@ -54,7 +46,7 @@ AGENT_ROWS(NoteState, kNoteStates, Parked);
 struct Note {
   NoteKind kind;
   std::string id, time, scope, session, ref;
-  int round = 0;
+  int step = 0; // 会话里提它的那一步
   NoteState state = NoteState::Open;
   std::string reply;
   nlohmann::ordered_json fields;
@@ -71,7 +63,7 @@ public:
   int backers(const Note &n) const;
   int open(NoteKind k) const;
   std::string next(NoteKind k) const; // 下一条的编号
-  const Note &add(const Call &c, std::string scope, std::string session, int round);
+  const Note &add(const Call &c, std::string scope, std::string session, int step);
   void set(NoteKind k, const std::string &id, NoteState s, std::string reply);
   std::vector<const Note *> filed(const std::string &session, int from = 1) const;
   void drop(const std::string &session, int from);

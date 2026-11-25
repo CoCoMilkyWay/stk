@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <exception>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -23,6 +24,7 @@ struct Fail {
 };
 [[noreturn]] void fail(std::string why);
 std::string strf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+std::optional<double> parse_num(std::string_view s); // 整串是数 (可带尾随空白) → 值; 空 / 非法 → 无 (客户端各处的数字文字同一解析)
 // ok 不成立即 fail: 原因原样, 或 printf 格式 + 参数 (只在不成立时才拼, 逐行逐格的校验照用; 参数只收标量与 C 串)
 inline void need(bool ok, std::string_view why) {
   if (!ok)

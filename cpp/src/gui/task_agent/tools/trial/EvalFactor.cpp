@@ -195,6 +195,10 @@ std::string TrialRes::text() const {
   return s;
 }
 
+std::string TrialRes::gist() const {
+  return st.ok() ? st.cand.name + " `" + st.cand.expr + "` · " + text::head(st.cand.note, 60) + " → " + Brief(st.res) : std::string();
+}
+
 std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
   const Call &c = a.call;
   auto r = std::make_shared<TrialRes>();

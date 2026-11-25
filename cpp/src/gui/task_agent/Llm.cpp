@@ -317,8 +317,23 @@ Reply fail_reply(Err err, const std::string &why) {
   return err == Err::Cancel ? Reply{.end = End::Cancelled} : Reply{.end = End::Error, .error = why};
 }
 
-// 单轮 agent 后端 (Cursor / Devin) 的整份 prompt: system + Flat(Turns)
+// 有状态后端 (Cursor / Devin) 新开一段对话时灌的整份 prompt: system + Flat(Turns)
 std::string agent_prompt(std::string_view system, const Turns &t) { return (system.empty() ? std::string() : std::string(system) + "\n\n---\n\n") + Flat(t); }
+
+struct Acp;
+
+} // namespace
+
+// 有状态后端的那段对话: 开它时的选项 + Cursor 的 agent / Devin 的子进程与会话 (空 = 没有)
+struct Link::Impl {
+  Options opt;
+  std::string agent;
+  std::unique_ptr<Acp> acp;
+  std::string session;
+  ~Impl();
+};
+
+namespace {
 
 // ---- Zhipu 驱动 ----
 std::string zhipu_busy(const Resp &r) {
@@ -343,7 +358,7 @@ std::vector<Model> zhipu_models(const json &j) {
   return out;
 }
 
-Reply zhipu_send(const Options &o, std::string_view system, const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
+Reply zhipu_send(Link::Impl &, const Options &o, std::string_view system, const Turns &t, bool, const Delta &on_delta, const std::atomic<bool> &cancel) {
   json msgs = json::array();
   if (!system.empty())
     msgs.push_back({{"role", "system"}, {"content", system}});
@@ -416,20 +431,22 @@ std::vector<Model> cursor_models(const json &j) {
   return out;
 }
 
-Reply cursor_send(const Options &o, std::string_view system, const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
+// 连着 = 同一个 agent 追加一个 run (只发本条); 否则新建 agent 灌整份. 没收成即弃这个 agent (下次新开)
+Reply cursor_send(Link::Impl &l, const Options &o, std::string_view system, const Turns &t, bool fresh, const Delta &on_delta, const std::atomic<bool> &cancel) {
+  const bool cont = !fresh && !l.agent.empty() && l.opt == o;
   json body;
-  body["prompt"]["text"] = agent_prompt(system, t);
-  if (o.model != "default")
+  body["prompt"]["text"] = cont ? t.back().text : agent_prompt(system, t);
+  if (!cont && o.model != "default")
     body["model"]["id"] = o.model;
-  const std::string payload = body.dump();
+  const std::string payload = body.dump(), held = std::exchange(l.agent, {}), target = cont ? "/v1/agents/" + held + "/runs" : std::string("/v1/agents");
   const Resp made = retried(
-      "cursor", Resend::Unsent, cancel, [&](int) { return request(Backend::Cursor, o.net, http::verb::post, "/v1/agents", payload, {}, nullptr, &cancel); }, never);
+      "cursor", Resend::Unsent, cancel, [&](int) { return request(Backend::Cursor, o.net, http::verb::post, target, payload, {}, nullptr, &cancel); }, never);
   std::string why;
   if (!check_2xx("cursor", made, why))
     return fail_reply(made.err, why);
   const json j = parse_json(made.body);
-  assert(j.contains("run") && j.contains("agent"));
-  const std::string agent = str_of(j["agent"], "id");
+  assert(j.contains("run") && (cont || j.contains("agent")));
+  const std::string agent = cont ? held : str_of(j["agent"], "id");
   Reply r;
   r.id = str_of(j["run"], "id");
   assert(!agent.empty() && !r.id.empty());
@@ -487,11 +504,13 @@ Reply cursor_send(const Options &o, std::string_view system, const Turns &t, con
   r.end = status == "FINISHED" ? End::Ok : End::Cut;
   if (!r.ok())
     r.error = status;
+  else
+    l.agent = agent, l.opt = o;
   return r;
 }
 
 // ---- Devin 驱动 ----
-// 一轮一个本机 devin acp 子进程: socketpair 当 stdin / stdout (写带 MSG_NOSIGNAL, 子进程先退也不吃 SIGPIPE), 逐行 JSON-RPC
+// 一段对话一个本机 devin acp 子进程: socketpair 当 stdin / stdout (写带 MSG_NOSIGNAL, 子进程先退也不吃 SIGPIPE), 逐行 JSON-RPC
 struct Rpc {
   Err err = Err::None;
   json result;
@@ -516,7 +535,7 @@ std::string devin_home() {
 }
 
 struct Acp {
-  const std::atomic<bool> &cancel;
+  const std::atomic<bool> *cancel; // 当前请求的取消旗 (跨请求留着的子进程每次换上; 空 = 弃置即杀)
   const std::string cwd = devin_home();
   pid_t pid = -1;
   int fd = -1, next = 0;
@@ -524,7 +543,7 @@ struct Acp {
   std::function<void(const json &)> on_update; // session/update 的 update
 
   // 代理按 net 定: 先抹掉继承来的代理环境变量, 走代理再设上
-  Acp(const Net &net, const std::atomic<bool> &cancel) : cancel(cancel) {
+  Acp(const Net &net, const std::atomic<bool> &cancel) : cancel(&cancel) {
     int sp[2];
     [[maybe_unused]] const int made = ::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sp);
     assert(made == 0);
@@ -553,14 +572,14 @@ struct Acp {
     if (rc != 0)
       pid = -1, dead = std::string("起不来 ") + kDevinExe + ": " + std::strerror(rc);
   }
-  // 关 stdin 即让 devin 自行退出; 取消即杀, 否则限时不退再杀
+  // 关 stdin 即让 devin 自行退出; 取消或弃置即杀, 否则限时不退再杀
   ~Acp() {
     ::close(fd);
     if (pid < 0)
       return;
     const Clock::time_point end = Clock::now() + std::chrono::seconds(kCancelTimeoutSeconds);
     while (::waitpid(pid, nullptr, WNOHANG) == 0) {
-      if (cancel.load(std::memory_order_relaxed) || Clock::now() > end) {
+      if (!cancel || cancel->load(std::memory_order_relaxed) || Clock::now() > end) {
         ::kill(pid, SIGKILL);
         ::waitpid(pid, nullptr, 0);
         return;
@@ -589,7 +608,7 @@ struct Acp {
         m = parse_json(line);
         return Err::None;
       }
-      if (cancel.load(std::memory_order_relaxed))
+      if (cancel->load(std::memory_order_relaxed))
         return Err::Cancel;
       if (!dead.empty()) {
         why = dead;
@@ -665,7 +684,7 @@ struct Acp {
       return r;
     return call("session/new", {{"cwd", cwd}, {"mcpServers", json::array()}});
   }
-  // 删掉本轮会话 (devin 会把会话落本机), 限时
+  // 删掉会话 (devin 会把会话落本机), 限时
   void drop(const std::string &session) { call("session/delete", {{"sessionId", session}}, kCancelTimeoutSeconds); }
 };
 
@@ -702,17 +721,36 @@ Models devin_models(const Net &net, const std::atomic<bool> &cancel) {
   return out;
 }
 
-Reply devin_send(const Options &o, std::string_view system, const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
-  Acp a(o.net, cancel);
-  const Rpc s = a.open();
+// 新开: 换下旧会话 (删掉) → 起子进程开会话、选模型; 连着: 同一会话接着 prompt (只发本条). 没收成即弃 (下次新开)
+Rpc devin_open(Link::Impl &l, const Options &o, const std::atomic<bool> &cancel) {
+  if (l.acp) {
+    l.acp->cancel = &cancel;
+    if (l.acp->dead.empty())
+      l.acp->drop(l.session);
+    l.acp.reset();
+  }
+  l.acp = std::make_unique<Acp>(o.net, cancel), l.opt = o;
+  Rpc s = l.acp->open();
   if (!s.ok())
-    return fail_reply(s.err, s.why);
-  Reply r;
-  r.id = str_of(s.result, "sessionId");
-  assert(!r.id.empty());
+    return s;
+  l.session = str_of(s.result, "sessionId");
+  assert(!l.session.empty());
   if (const json &m = model_option(s.result); str_of(m, "currentValue") != o.model)
-    if (const Rpc x = a.call("session/set_config_option", {{"sessionId", r.id}, {"configId", m["id"]}, {"value", o.model}}); !x.ok())
-      return fail_reply(x.err, x.why);
+    return l.acp->call("session/set_config_option", {{"sessionId", l.session}, {"configId", m["id"]}, {"value", o.model}});
+  return s;
+}
+
+Reply devin_send(Link::Impl &l, const Options &o, std::string_view system, const Turns &t, bool fresh, const Delta &on_delta, const std::atomic<bool> &cancel) {
+  const bool cont = !fresh && l.acp && l.acp->dead.empty() && l.opt == o;
+  if (!cont)
+    if (const Rpc s = devin_open(l, o, cancel); !s.ok()) {
+      l.acp.reset();
+      return fail_reply(s.err, s.why);
+    }
+  Acp &a = *l.acp;
+  a.cancel = &cancel;
+  Reply r;
+  r.id = l.session;
   // 正文 = 末一段话: 调工具前说的话归入思考 (只改收成的 Reply, 在收的样子不回改)
   a.on_update = [&](const json &u) {
     const std::string kind = str_of(u, "sessionUpdate");
@@ -723,19 +761,30 @@ Reply devin_send(const Options &o, std::string_view system, const Turns &t, cons
       put(r, on_delta, Part::Thinking, "\n[" + str_of(u, "title") + "]\n");
     }
   };
-  json text = {{"type", "text"}, {"text", agent_prompt(system, t)}};
+  json text = {{"type", "text"}, {"text", cont ? t.back().text : agent_prompt(system, t)}};
   const Rpc p = a.call("session/prompt", {{"sessionId", r.id}, {"prompt", json::array({std::move(text)})}});
-  if (!p.ok()) {
+  a.on_update = nullptr;
+  const std::string stop = p.ok() ? str_of(p.result, "stopReason") : std::string();
+  if (!p.ok())
     r.end = p.err == Err::Cancel ? End::Cancelled : End::Error, r.error = p.why;
-    return r;
+  else
+    r.end = stop == "end_turn" ? End::Ok : End::Cut;
+  if (!r.ok()) {
+    if (r.error.empty())
+      r.error = stop;
+    l.acp.reset();
   }
-  a.drop(r.id);
-  const std::string stop = str_of(p.result, "stopReason");
-  r.end = stop == "end_turn" ? End::Ok : End::Cut;
-  if (!r.ok())
-    r.error = stop;
   return r;
 }
+
+} // namespace
+
+Link::Impl::~Impl() {
+  if (acp)
+    acp->cancel = nullptr;
+}
+
+namespace {
 
 // ---- 后端驱动表 (下标 = Backend, 与 kBackends 一一对应) ----
 template <Backend B, std::vector<Model> (*Parse)(const json &)>
@@ -753,7 +802,7 @@ Models https_models(const Net &net, const std::atomic<bool> &cancel) {
 
 struct Driver {
   Models (*models)(const Net &, const std::atomic<bool> &);
-  Reply (*send)(const Options &, std::string_view, const Turns &, const Delta &, const std::atomic<bool> &);
+  Reply (*send)(Link::Impl &, const Options &, std::string_view, const Turns &, bool, const Delta &, const std::atomic<bool> &);
 };
 constexpr Driver kDrivers[] = {
     {https_models<Backend::Zhipu, zhipu_models>, zhipu_send},
@@ -763,7 +812,7 @@ constexpr Driver kDrivers[] = {
 static_assert(std::size(kDrivers) == kNum<Backend>);
 
 constexpr std::string_view kJsonOnly =
-    "\n\n---\n\n# 输出格式\n每条回复只输出一个 JSON 对象 `{\"calls\": [...]}`，不要任何其他文字.\n";
+    "\n\n---\n\n# 输出格式\n每条回复只输出一个 JSON 对象 `{\"tool\": ..., \"args\": {...}}` (一个调用)，不要任何其他文字.\n";
 
 } // namespace
 
@@ -802,7 +851,10 @@ std::string Flat(const Turns &t) {
   return s + "# 本条消息\n\n" + t.back().text;
 }
 
-Reply send(const Options &o, std::string_view system, const Turns &t, const Delta &on_delta, const std::atomic<bool> &cancel) {
+Link::Link() : impl(std::make_unique<Impl>()) {}
+Link::~Link() = default;
+
+Reply send(Link &link, const Options &o, std::string_view system, const Turns &t, bool fresh, const Delta &on_delta, const std::atomic<bool> &cancel) {
   const Driver &d = kDrivers[static_cast<size_t>(o.backend)];
   assert(d.send && valid(o.net) && !key(o.backend).empty() && !o.model.empty());
   assert(!t.empty() && t.front().user && t.back().user);
@@ -810,7 +862,7 @@ Reply send(const Options &o, std::string_view system, const Turns &t, const Delt
     assert(t[i].user != t[i - 1].user && "user / assistant 交替");
   const std::string sys = system.empty() ? std::string() : std::string(system) + std::string(kJsonOnly);
   const Clock::time_point t0 = Clock::now();
-  Reply r = d.send(o, sys, t, on_delta, cancel);
+  Reply r = d.send(*link.impl, o, sys, t, fresh, on_delta, cancel);
   r.seconds = std::chrono::duration<double>(Clock::now() - t0).count();
   return r;
 }
@@ -820,7 +872,7 @@ Reply send(const Options &o, std::string_view system, const Turns &t, const Delt
 namespace GUI::Agent {
 
 Chat::Chat()
-    : Async([](ChatReq &req, const Pipe &pipe) {
+    : Async([link = std::make_shared<llm::Link>()](ChatReq &req, const Pipe &pipe) {
         assert(req.system);
         const auto on_delta = [&](llm::Part part, std::string_view chunk) {
           if (part == llm::Part::Restart) {
@@ -837,7 +889,7 @@ Chat::Chat()
           if (first)
             pipe.step(part == llm::Part::Text ? ChatStep::Write : ChatStep::Think);
         };
-        return llm::send(req.opt, *req.system, req.turns, on_delta, pipe.cancel);
+        return llm::send(*link, req.opt, *req.system, req.turns, req.fresh, on_delta, pipe.cancel);
       }) {}
 
 } // namespace GUI::Agent
