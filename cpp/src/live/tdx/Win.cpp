@@ -129,6 +129,24 @@ std::vector<Layer> gdidump(const Hwnd &target) {
 
 Layer detail(const Hwnd &h, double timeout) { return layer_of(shim::cmd_wait(timeout, "detail", h).at(0)); }
 
+bool pages(const Hwnd &h, const std::function<bool(const Layer &)> &fn) {
+  send(h, kWmVscroll, kSbTop, 0);
+  std::optional<std::vector<std::string>> seen;
+  while (true) {
+    const Layer l = detail(h);
+    std::vector<std::string> texts;
+    texts.reserve(l.items.size());
+    for (const Item &it : l.items)
+      texts.push_back(it.text.value_or(""));
+    if (seen && texts == *seen)
+      return false;
+    if (fn(l))
+      return true;
+    seen = std::move(texts);
+    send(h, kWmVscroll, kSbPagedown, 0);
+  }
+}
+
 // ---------- 消息与输入 ----------
 
 void post(const Hwnd &h, unsigned msg, long wp, const std::string &lp) {

@@ -13,19 +13,15 @@ namespace account {
 
 namespace {
 
-using live::flows::holds;
-using live::flows::kShare;
+namespace flows = live::flows;
+using flows::kShare;
+using flows::moves;
 
-const std::set<std::string> kBank = {"银行转存", "银行转取"};
-const std::string kPledge = "担保品划入";
-
-bool debt(const CashFlow &r) { return r.kind == "融资借款" || r.kind.ends_with("偿还融资负债") || r.kind.ends_with("偿还融资费用"); }
-bool interest(const CashFlow &r) { return r.kind.ends_with("偿还融资利息"); }
-// 一行的外部进出: 银证转账 = 发生金额, 担保品划入 = 股 × 计价 px() (只在要时求); 其余 0
+// 一行 (所动的账 m) 的外部进出: 银证转账 = 发生金额, 担保品划入 = 股 × 计价 px() (只在要时求); 其余 0
 template <class Px>
-double flow_of(const CashFlow &r, Px &&px) {
-  return kBank.contains(r.kind) ? r.amount : r.kind == kPledge ? r.qty * px()
-                                                               : 0;
+double flow_of(const CashFlow &r, uint8_t m, Px &&px) {
+  return (m & flows::kBank) ? r.amount : (m & flows::kPledge) ? r.qty * px()
+                                                              : 0;
 }
 
 std::optional<double> close_on(const Closes &px, const std::string &code, misc::Ymd d) {
@@ -40,7 +36,7 @@ std::optional<double> close_on(const Closes &px, const std::string &code, misc::
 Closes marks(const std::vector<CashFlow> &rows, const std::vector<misc::Ymd> &days, const Closes &px, const Spot &spot) {
   std::map<std::string, std::map<misc::Ymd, std::pair<double, double>>> obs; // 代码 → 日 → (Σ 股 × 价, Σ 股)
   for (const CashFlow &r : rows)
-    if (holds(r) && r.price > 0 && r.qty != 0 && !px.contains(r.code)) {
+    if ((moves(r) & flows::kHold) && r.price > 0 && r.qty != 0 && !px.contains(r.code)) {
       auto &[v, q] = obs[r.code][r.date];
       v += std::fabs(r.qty) * r.price, q += std::fabs(r.qty);
     }
@@ -75,7 +71,7 @@ Closes marks(const std::vector<CashFlow> &rows, const std::vector<misc::Ymd> &da
 std::vector<std::string> securities(const std::vector<CashFlow> &rows) {
   std::set<std::string> s;
   for (const CashFlow &r : rows)
-    if (holds(r))
+    if (moves(r) & flows::kHold)
       s.insert(r.code);
   return {s.begin(), s.end()};
 }
@@ -128,17 +124,18 @@ std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const st
     double flow = 0;
     for (; i < rows.size() && rows[i].date <= d; ++i) {
       const CashFlow &r = rows[i];
+      const uint8_t m = moves(r);
       if (r.amount != 0)
         cash = r.balance;
-      if (holds(r)) {
+      if (m & flows::kHold) {
         hold[r.code] += r.qty;
         last.emplace(r.code, r.price);
       }
-      if (debt(r))
+      if (m & flows::kDebt)
         owe += r.amount;
-      if (interest(r))
+      if (m & flows::kInterest)
         acc += r.amount;
-      flow += flow_of(r, [&] { return price_on(r.code, d).value_or(r.price); });
+      flow += flow_of(r, m, [&] { return price_on(r.code, d).value_or(r.price); });
     }
     double mv = 0;
     std::vector<Hold> held;
@@ -164,7 +161,7 @@ double flow_after(const std::vector<CashFlow> &rows, misc::Ymd d) {
   double f = 0;
   for (const CashFlow &r : rows)
     if (r.date > d)
-      f += flow_of(r, [&] { return r.price; });
+      f += flow_of(r, moves(r), [&] { return r.price; });
   return f;
 }
 

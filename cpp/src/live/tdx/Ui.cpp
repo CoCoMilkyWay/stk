@@ -263,26 +263,16 @@ void show_bar() {
 
 namespace {
 
-// 功能树上找 name 并点它; 翻到底都没有 → false
+// 功能树上找 name 并点它 (树只给可见项: 逐页找); 翻到底都没有 → false
 bool click_item(const Node &t, const std::string &name) {
-  win::send(t.hwnd, win::kWmVscroll, win::kSbTop, 0);
-  std::optional<std::vector<std::string>> seen;
-  while (true) {
-    const std::vector<Item> items = win::layer_of(shim::cmd("detail", t.hwnd).at(0)).items;
-    std::vector<std::string> names;
-    for (const Item &it : items) {
-      if (it.text && *it.text == name) {
-        const auto [x, y] = win::center(it);
-        win::clickat(t.hwnd, t.rect[0] + x, t.rect[1] + y);
-        return true;
-      }
-      names.push_back(it.text.value_or(""));
-    }
-    if (seen && names == *seen)
+  return win::pages(t.hwnd, [&](const win::Layer &l) {
+    const auto it = std::ranges::find_if(l.items, [&](const Item &x) { return x.text == name; });
+    if (it == l.items.end())
       return false;
-    seen = std::move(names);
-    win::send(t.hwnd, win::kWmVscroll, win::kSbPagedown, 0);
-  }
+    const auto [x, y] = win::center(*it);
+    win::clickat(t.hwnd, t.rect[0] + x, t.rect[1] + y);
+    return true;
+  });
 }
 
 } // namespace

@@ -46,7 +46,7 @@ struct Row {
   int x = 0, y = 0;
 };
 
-// 列表 list 自顶逐页往下读, 每页给 fn (该页各行); fn 回 true 即停在这页 (行的坐标此刻有效), 回 true; 翻到底 → false
+// 列表 list 逐页读 (win::pages), 每页按表头拼成各行给 fn; fn 回 true 即停在这页 (行的坐标此刻有效), 回 true; 翻到底 → false
 template <class F>
 bool scan(const Hwnd &list, F &&fn) {
   std::optional<Hwnd> head;
@@ -59,10 +59,7 @@ bool scan(const Hwnd &list, F &&fn) {
     if (it.text)
       cols[it.l] = *it.text;
   const win::Node ln = win::node(list);
-  win::send(list, win::kWmVscroll, win::kSbTop, 0);
-  std::optional<std::vector<std::string>> seen;
-  while (true) {
-    const win::Layer l = win::detail(list);
+  return win::pages(list, [&](const win::Layer &l) {
     std::map<int, Row> rows; // 行上缘 → 行
     for (const win::Item &it : l.items)
       if (it.text && !it.text->empty())
@@ -74,18 +71,10 @@ bool scan(const Hwnd &list, F &&fn) {
             r.x = ln.rect[0] + l.off[0] + (it.l + it.r) / 2, r.y = ln.rect[1] + l.off[1] + (it.t + it.b) / 2;
         }
     std::vector<Row> page;
-    std::vector<std::string> keys;
-    for (auto &[t, r] : rows) {
-      keys.push_back(r.cell[kIdCol]);
+    for (auto &[t, r] : rows)
       page.push_back(std::move(r));
-    }
-    if (seen && keys == *seen)
-      return false;
-    if (fn(page))
-      return true;
-    seen = std::move(keys);
-    win::send(list, win::kWmVscroll, win::kSbPagedown, 0);
-  }
+    return fn(page);
+  });
 }
 
 // 「启用指定合约」勾着即点掉 (框关了却还勾着的收尾)

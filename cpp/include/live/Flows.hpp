@@ -28,10 +28,21 @@ Cache load();          // 没有账本 → 空
 Cache pull(Broker &b); // 客户端重查 → 并 → 核 → 存; 失败 → Fail
 uint64_t generation(); // 账本代: 本进程起于 1, 存一次 +1 (任意线程)
 
-// 计入持仓的行: 买卖 / 融资买入 / 担保品划入 / 新股入账 (申购途中的配号、中签与回冲不计; 其余带股数的业务不认识 → Fail)
-bool holds(const CashFlow &r);
-// 其中的成交行 (买卖 / 融资买入: 与历史成交对应)
-bool traded(const CashFlow &r);
+// 一行动的账 (位集; 账本的核对与回放 account/Nav.hpp 同一张业务表):
+//   持仓   股数计入持仓: 买卖 / 融资买入 / 担保品划入 / 新股入账
+//   成交   与历史成交对应: 买卖 / 融资买入
+//   略过   带股数而不计: 申购途中的配号、中签与回冲 (其余带股数的业务不认识 → Fail)
+//   负债   发生金额带号计入融资负债: 融资借款 / 偿还融资负债 · 费用
+//   利息   抵减应计利息: 偿还融资利息
+//   进出   外部进出: 银证转账 (按发生金额) / 担保品划入 (按股 × 计价)
+enum Move : uint8_t { kHold = 1,
+                      kTrade = 2,
+                      kPass = 4,
+                      kDebt = 8,
+                      kInterest = 16,
+                      kBank = 32,
+                      kPledge = 64 };
+uint8_t moves(const CashFlow &r);
 // 历史成交对资金流水: 逐 (日, 代码) 的成交股数 (买正卖负) 等于流水里成交行的股数; 不等 → Fail
 void match(const std::vector<CashFlow> &rows, const std::vector<Deal> &deals);
 

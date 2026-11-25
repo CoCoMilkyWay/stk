@@ -23,7 +23,7 @@
 //   F = Σ 买单 fin, R = Σ 卖单 fin (Plan::fin 的买 / 卖两侧); 账户各项都按腿汇总.
 // 试算:
 //   卖出: 股数 (超过可卖按全部可卖) × 参考价计额, 回款 = 额 − 滑点 − 费用; 卖单 fin = min(回款, 本只负债额);
-//     现金 C' = 现金 + 回款 − R, 负债按还款减 (见上), 可用保证金 X' = 按卖后持仓与负债重算 (avail) + 回款 − R, L' = 可融额度余量 + R.
+//     现金 C' = 现金 + 回款 − R, 负债按还款减 (见上), 可用保证金 X' = 按卖后持仓与负债重算 (见末段「可用保证金」) + 回款 − R, L' = 可融额度余量 + R.
 //   购买力 = 现金腿 C' + 融资腿 min(L', max(0, X')) (融资保证金比例按 100% 计; 没有的腿不计).
 //   行使: C'、X'、L' 各 × pct 为本次可用额度, 以下都在其内 (没有现金腿 = 现金额度 0, 缺口须全融到; 没有融资腿 = 融资额度 0).
 //   买入: 名单里可作担保品买入的 (否则不可买: 不在担保品表 / 担保状态非正常 / 北交所) 在买的范围内、所选部分买得到的 (只融资 = 只融资标的) 等权补到共同目标市值 V,
@@ -190,6 +190,18 @@ std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quo
 Sheet now_of(const Snapshot &s);
 // 名单里可买的 (试算要其行情)
 std::vector<Sec> buyable(const std::vector<std::string> &codes, const Terms &terms);
+
+// 卖出股数: 卖超配 = 试算自定的, 否则 c.sells 里的; 至多可卖 (试算未随配置重算时, 滑杆照配置显示)
+int64_t selling(const Hold &h, const Cfg &c);
+// 卖出总 bar (按比例) 的读 ⇄ 写, 三段口径见 Hold::span / part / full:
+//   gauge  各段额: all = Σ span (全长) / part = Σ max(part, full) / cap = Σ full (可拖上限) / got = Σ min(卖出, full) (显示)
+//   spread 拖到 pct (0–100, 占全长) → 新的卖出设置: 各持仓卖其 part 的同一比例 r, 至多 full, 合计恰为 pct × 全长;
+//          按能成单的档向下取 (snap, 照守最小单元; 卖满不管), 剩下不足一个最小单元且已过半的即卖满; 其余代码的设置照旧
+struct Gauge {
+  double all = 0, part = 0, cap = 0, got = 0;
+};
+Gauge gauge(const Plan &p, const Cfg &c);
+std::map<std::string, int64_t> spread(const Plan &p, const Cfg &c, double pct);
 
 nlohmann::json to_json(const Plan &p);
 nlohmann::json to_json(const Cfg &c);

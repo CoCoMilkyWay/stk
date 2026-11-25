@@ -1,5 +1,6 @@
 #include "gui/task_live/ui/TabBoard.hpp"
 
+#include "fundamental/AssetAxis.hpp"
 #include "gui/util/Chart.hpp"
 #include "gui/util/Tip.hpp"
 #include "shared/SharedData.hpp"
@@ -12,10 +13,12 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <map>
 #include <set>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace GUI::Live {
@@ -98,15 +101,6 @@ void bar(const std::optional<double> &v, double mv, const ImVec4 &col) {
   ImGui::PopStyleColor();
   if (ImGui::IsItemHovered())
     tip("%s · %.0f%%", wan(*v).c_str(), f * 100);
-}
-
-// 卖出滑杆的值: 试算自定的 (卖超配), 否则配置里的股数, 至多可卖
-int64_t sell_n(LiveHub &hub, const live::rebal::Hold &h) {
-  if (hub.in().cfg.how == live::rebal::How::Over)
-    return std::min(h.sell, h.avail);
-  const std::map<std::string, int64_t> &sells = hub.in().cfg.sells;
-  const auto i = sells.find(h.code);
-  return std::min(i == sells.end() ? int64_t{0} : i->second, h.avail);
 }
 
 // 一单的步骤条: 已过绿 / 当前橙 / 失败红 / 未到灰
@@ -279,29 +273,20 @@ bool cap_slider(const char *id, float &v, float top, float mid, float w, const s
   return act;
 }
 
-// 卖出总 bar (按比例时可拖; 三段口径见 Hold::span / part / full): 全长 = Σ span 额 (卖的范围内全部持仓), 自左 可拖 (Σ full) | 橙 T+1 未解禁 | 灰 所选部分没有仓位.
-//   拖动 = 各持仓卖其 part 的同一比例 r, 各只至多卖到 full; r 取到合计恰为 bar 值 (各只先截到 full 再合计, 故按 r 二分而非直接按 bar 值分;
-//   覆盖各只的卖出滑杆, 按能成单的档向下取, 照守最小单元; 卖满不管最小单元; 剩下不足一个最小单元且已过半的即卖满, 不留碎股).
-//   显示 = Σ min(卖出, full) 额 / 全长
+// 卖出总 bar (按比例时可拖; 读 ⇄ 写即 live::rebal::gauge ⇄ spread): 自左 可拖 | 橙 T+1 未解禁 | 灰 所选部分没有仓位; 拖动即改各只的卖出设置
 void bar_sell(LiveHub &hub) {
-  const bool on = hub.in().cfg.how == live::rebal::How::Bar;
+  const live::rebal::Cfg &cfg = hub.in().cfg;
+  const bool on = cfg.how == live::rebal::How::Bar;
   const auto &p = hub.plan().plan;
-  double all = 0, part = 0, cap = 0, got = 0; // Σ span / Σ max(part, full) / Σ full / Σ min(卖出, full) 额
-  if (p)
-    for (const live::rebal::Hold &h : p->holds) {
-      all += h.span * h.px;
-      part += std::max(h.part, h.full) * h.px;
-      cap += h.full * h.px;
-      got += std::min(sell_n(hub, h), h.full) * h.px;
-    }
-  const auto of = [&](double x) { return all > 0 ? static_cast<float>(std::min(x / all, 1.0) * 100) : 0.f; };
-  const float top = of(cap), mid = of(part);
-  float pct = of(got);
+  const live::rebal::Gauge g = p ? live::rebal::gauge(*p, cfg) : live::rebal::Gauge{};
+  const auto of = [&](double x) { return g.all > 0 ? static_cast<float>(std::min(x / g.all, 1.0) * 100) : 0.f; };
+  const float top = of(g.cap), mid = of(g.part);
+  float pct = of(g.got);
   const bool locked = mid - top >= 0.5f;
-  ImGui::BeginDisabled(!on || cap <= 0 || hub.busy());
+  ImGui::BeginDisabled(!on || g.cap <= 0 || hub.busy());
   const bool drag = cap_slider("##bar_sell", pct, top, mid, ImGui::GetFontSize() * 9,
-                               !on || all <= 0 ? std::string("—") : top < 99.5f ? strf("%.0f%% · 限 %.0f%%", pct, top)
-                                                                                : strf("%.0f%%", pct),
+                               !on || g.all <= 0 ? std::string("—") : top < 99.5f ? strf("%.0f%% · 限 %.0f%%", pct, top)
+                                                                                  : strf("%.0f%%", pct),
                                locked ? kHot : ImGui::GetStyleColorVec4(ImGuiCol_Text));
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     tip("卖出比例 (按比例时): 拖动即按同一比例分到范围内各持仓所选部分的卖出滑杆 (按能成单的档向下取, 照守最小单元; 卖满不管; "
@@ -316,28 +301,7 @@ void bar_sell(LiveHub &hub) {
   ImGui::TextUnformatted("卖出");
   if (!drag)
     return;
-  const auto sold = [&](double r) {
-    double s = 0;
-    for (const live::rebal::Hold &h : p->holds)
-      s += std::min(r * h.part, static_cast<double>(h.full)) * h.px;
-    return s;
-  };
-  const double want = pct / 100 * all;
-  double lo = 0, hi = 1;
-  for (int i = 0; i < 40; ++i)
-    (sold((lo + hi) / 2) < want ? lo : hi) = (lo + hi) / 2;
-  const double unit = hub.in().cfg.unit;
-  std::map<std::string, int64_t> to = hub.in().cfg.sells;
-  for (const live::rebal::Hold &h : p->holds) {
-    const double x = std::min(hi * static_cast<double>(h.part), static_cast<double>(h.full));
-    // 快卖完的 (剩下不足一个最小单元, 且已过半) 即卖满, 不留碎股; 过半: 整只不足一个最小单元的小仓不至于一拉就整只卖
-    const int64_t m = (static_cast<double>(h.full) - x) * h.px < unit && 2 * x >= static_cast<double>(h.full) ? h.full : live::rebal::snap(h, unit, x, true, true);
-    if (m > 0)
-      to[h.code] = m;
-    else
-      to.erase(h.code);
-  }
-  if (to != hub.in().cfg.sells)
+  if (std::map<std::string, int64_t> to = live::rebal::spread(*p, cfg, pct); to != cfg.sells)
     hub.edit_cfg([&](live::rebal::Cfg &c) { c.sells = std::move(to); });
 }
 
@@ -949,23 +913,18 @@ constexpr const char *kHeads[C_COUNT] = {"代码", "仓位%", "总市值", "名�
 
 using Caps = std::unordered_map<std::string, double>; // 代码 → 总市值 [亿元]
 
-// 代码 → 全局 id; 资产库没就绪或本地库没有 → 无 (id 表随 AssetInfo 的代码数变了即重建)
-std::optional<uint32_t> id_of(const SharedData &data, BoardState &st, const std::string &code) {
+// 代码 → 全局 id (资产轴, 账户一侧同一查法); 资产库没就绪或本地库没有 → 无
+std::optional<uint32_t> id_of(const SharedData &data, const std::string &code) {
   if (!data.task_state.database.asset_info_ready)
     return std::nullopt;
-  const std::vector<std::string> &codes = data.asset_info.codes;
-  if (st.ids.size() != codes.size()) {
-    st.ids.clear();
-    for (uint32_t i = 0; i < codes.size(); ++i)
-      st.ids.emplace(codes[i], i);
-  }
-  const auto i = st.ids.find(live::asset_sym(live::market_of(code), code));
-  return i == st.ids.end() ? std::nullopt : std::optional<uint32_t>(i->second);
+  const AssetAxis &ax = asset_axis();
+  const size_t id = ax.find(live::asset_sym(live::market_of(code), code));
+  return id < ax.size() ? std::optional<uint32_t>(static_cast<uint32_t>(id)) : std::nullopt;
 }
 
 // 本地库最新收盘的总市值; 没有即不记
-void add_cap(Caps &caps, const SharedData &data, BoardState &st, const std::string &code) {
-  const std::optional<uint32_t> id = id_of(data, st, code);
+void add_cap(Caps &caps, const SharedData &data, const std::string &code) {
+  const std::optional<uint32_t> id = id_of(data, code);
   if (!id || *id >= data.asset_info.stocks.size())
     return;
   if (const StockInfo *s = data.asset_info.find(*id); s && std::isfinite(s->mcap))
@@ -1098,7 +1057,7 @@ void head_tip(int c, const live::board::Frame &f) {
 // 卖出滑杆 (配置里的股数, 拖动即 snap 到能成单的); 本只有融资负债且在卖即标橙 (卖出回款先还它); 悬停看股数
 void sell_slider(LiveHub &hub, const live::rebal::Hold &h, bool priv) {
   const live::rebal::Cfg &cfg = hub.in().cfg;
-  int64_t n = sell_n(hub, h);
+  int64_t n = live::rebal::selling(h, cfg);
   const bool owed = h.debt > 0 && n > 0;
   if (owed) {
     ImGui::PushStyleColor(ImGuiCol_SliderGrab, kHot);
@@ -1216,13 +1175,13 @@ void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::boa
   std::map<std::string, const live::rebal::Target *> tgts;
   Caps caps;
   for (const live::board::Row &r : f.rows)
-    add_cap(caps, data, st, r.code);
+    add_cap(caps, data, r.code);
   if (plan) {
     for (const live::rebal::Hold &h : plan->holds)
       holds.emplace(h.code, &h);
     for (const live::rebal::Target &t : plan->targets) {
       tgts.emplace(t.code, &t);
-      add_cap(caps, data, st, t.code);
+      add_cap(caps, data, t.code);
     }
   }
   const auto lookup = [](const auto &m, const std::string &c) { const auto i = m.find(c); return i == m.end() ? nullptr : i->second; };
@@ -1305,7 +1264,7 @@ void table(const SharedData &data, LiveHub &hub, BoardState &st, const live::boa
     const double mv = r.market_value.value_or(0);
     const live::rebal::Hold *h = lookup(holds, r.code);
     const live::rebal::Target *t = lookup(tgts, r.code);
-    const RowPlan rp = row_plan(h, h ? sell_n(hub, *h) : 0, t, priv);
+    const RowPlan rp = row_plan(h, h ? live::rebal::selling(*h, hub.in().cfg) : 0, t, priv);
 
     code_cell(r.code);
     const ImVec4 wc = weight_col(r.position_pct, top);
@@ -1458,7 +1417,7 @@ void chart(SharedData &data, Quote::QuoteHub &quote, BoardState &st, bool priv) 
     return ImGui::TextDisabled("行情图要本地资产库就绪 (见 Database)");
   quote.frame(data);
   const std::vector<std::string> &codes = data.asset_info.codes;
-  const std::optional<uint32_t> id = st.sel.empty() ? std::nullopt : id_of(data, st, st.sel);
+  const std::optional<uint32_t> id = st.sel.empty() ? std::nullopt : id_of(data, st.sel);
   Market::Want(quote, st.stock, id ? *id : Quote::Ref::kNone);
   std::string title;
   if (const uint32_t k = st.stock.shown; k != Quote::Ref::kNone) {

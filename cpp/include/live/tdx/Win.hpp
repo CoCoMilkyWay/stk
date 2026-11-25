@@ -7,6 +7,7 @@
 #include "nlohmann/json.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -51,6 +52,8 @@ int64_t treegen(); // 窗口树代数: 本进程窗口有建 / 毁 / 显隐 / �
 
 std::vector<Layer> gdidump(const Hwnd &target = ""); // 绘制层 (空 = 全部窗口)
 Layer detail(const Hwnd &h, double timeout = 5);     // 标准控件的子项 (列表行 / 格、表头、树项、菜单项、勾选态)
+// 列表 / 树 h 自顶逐页往下: 每页的子项 (detail) 交 fn, fn 回 true 即停在这页 (项的坐标此刻有效) → true; 翻到与上页相同即到底 → false
+bool pages(const Hwnd &h, const std::function<bool(const Layer &)> &fn);
 
 // ---------- 消息与输入 ----------
 

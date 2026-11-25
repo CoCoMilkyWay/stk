@@ -22,7 +22,7 @@ namespace GUI::Account {
 // 回放口径的一只持仓 + 全局 id (按流水代码在资产轴上查, 不在 = Ref::kNone)
 Quote::Holding holding(account::Hold h);
 
-// 一笔成交 → 日内回推的成交: 槽 = 所在分钟根 (竞价并入首根), 至多到 last (券商时钟领先新浪也算已发生); 费用按费率估 (live::rebal::fee)
+// 一笔成交 → 日内回推的成交: 槽 = 所在分钟根 (竞价并入首根), 至多到 last (券商时钟领先新浪也算已发生); 费用按费率估 (live::fee)
 account::Trade trade_of(const live::Fill &x, int last);
 // d 日的一笔成交 → 成交点 (一分钟一档)
 Quote::TradeMark mark_of(misc::Ymd d, const live::Fill &x);

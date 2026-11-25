@@ -393,11 +393,11 @@ std::vector<Sec> buyable(const std::vector<std::string> &codes, const Terms &ter
 
 namespace {
 
-// 名单里买一侧 b 买得了的 (可买 ∧ 在范围内 ∧ 买自有或是融资标的), 去掉 skip 里的
-std::vector<std::string> wanted(const std::vector<std::string> &codes, const Terms &terms, const Side &b, const std::set<std::string> &skip = {}) {
+// 名单里买一侧 b 买得了的 (可买 ∧ 在范围内 ∧ 买自有或是融资标的)
+std::vector<std::string> wanted(const std::vector<std::string> &codes, const Terms &terms, const Side &b) {
   std::vector<std::string> ok;
   for (const std::string &c : codes)
-    if (const Term *t = term_of(terms, c); why(t).empty() && in_scope(b.scope, t->financeable) && (b.parts.own || (b.parts.fin && t->financeable)) && !skip.contains(c)) {
+    if (const Term *t = term_of(terms, c); why(t).empty() && in_scope(b.scope, t->financeable) && (b.parts.own || (b.parts.fin && t->financeable))) {
       assert(b.parts.own || t->ratio);
       ok.push_back(c);
     }
@@ -427,13 +427,16 @@ std::pair<std::map<std::string, int64_t>, std::set<std::string>> over(const Keye
   return out;
 }
 
-// 卖 want (代码 → 股), 名单里 trimmed 的不补, 其余按买一侧等权补齐 (quotes 已覆盖持仓、负债与要买的各只)
-Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Terms &terms, const std::vector<std::string> &codes, const Cfg &cfg,
-           const std::map<std::string, int64_t> &want, const std::set<std::string> &trimmed) {
+// 卖 want (代码 → 股), 买得了的 buy (wanted) 里 trimmed 的不补, 其余按买一侧等权补齐 (quotes 已覆盖持仓、负债与要买的各只)
+Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Terms &terms, const std::vector<std::string> &codes, const std::vector<std::string> &buy,
+           const Cfg &cfg, const std::map<std::string, int64_t> &want, const std::set<std::string> &trimmed) {
   const Keyed<Position> &pos = s.pos;
   const Account &acct = s.acct;
   const Parts parts = cfg.buy.parts;
-  const std::vector<std::string> ok = wanted(codes, terms, cfg.buy, trimmed);
+  std::vector<std::string> ok;
+  for (const std::string &c : buy)
+    if (!trimmed.contains(c))
+      ok.push_back(c);
   const double pct = cfg.pct / 100;
 
   Plan pl;
@@ -445,13 +448,19 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
   double proceeds = 0, R = 0;
   for (const Order &o : sells)
     proceeds += o.amount - o.slip - o.fee, R += o.fin;
-  Bal bal = balances(pos);
+  const Bal bal0 = balances(pos);
+  Bal bal = bal0;
   for (const Order &o : sells)
     bal[o.code] -= o.qty;
   // 卖后: 回款先还本只负债 (R), 余下进现金; 还掉的负债腾出等额可融余量
   const double C = acct.cash + proceeds - R;
   const Keyed<Debt> debts1 = repaid(s.debts, pl.holds);
-  const double X = avail(s, px0, bal, debts1, quotes, terms) + proceeds - R;
+  // 可用保证金按读时校准: 读时客户端 X 已含读时的现金与利息, 只把持仓部分 S 从 (读时持仓, 读时负债, 读时现价 px0) 换到 (持仓, 负债, 现价 px);
+  //   卖前卖后同一组代码 (卖光的留 0 股, 还清的留 0 负债), 现价同一份
+  const Prices px = prices(bal0, s.debts, quotes);
+  const double S0 = surplus(bal0, s.debts, px0, terms);
+  const double X_now = acct.avail + surplus(bal0, s.debts, px, terms) - S0;
+  const double X = acct.avail + surplus(bal, debts1, px, terms) - S0 + proceeds - R;
   const double L0 = std::max(0.0, acct.line), L = L0 + R;
 
   std::vector<Tgt> tgts;
@@ -543,13 +552,10 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
 
   double assets = acct.cash;
   for (const Position &h : pos.list)
-    assets += static_cast<double>(h.balance) * quote_at(quotes, h.code).price;
+    assets += static_cast<double>(h.balance) * px.at(h.code);
   const double net = assets - acct.debt;
-  const double X_now = avail(s, px0, balances(pos), s.debts, quotes, terms);
-
-  const Bal bal0 = balances(pos);
-  pl.now = sheet(assets, net, acct.debt, acct.cash, fin_mv(bal0, s.debts, prices(bal0, s.debts, quotes)), X_now, L0);
-  pl.exp = sheet(assets + F - cost_all - R, net - cost_all, acct.debt - R + F, C - (use - F) - buy_cost, fin_mv(bal, debts1, prices(bal, debts1, quotes)) + F,
+  pl.now = sheet(assets, net, acct.debt, acct.cash, fin_mv(bal0, s.debts, px), X_now, L0);
+  pl.exp = sheet(assets + F - cost_all - R, net - cost_all, acct.debt - R + F, C - (use - F) - buy_cost, fin_mv(bal, debts1, px) + F,
                  buys.empty() ? std::optional<double>(X) : std::nullopt, L - F);
   pl.power = (parts.own ? C : 0) + (parts.fin ? std::min(L, std::max(0.0, X)) : 0);
   pl.use = use;
@@ -559,7 +565,7 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
   pl.X = X;
   pl.V = V;
   pl.picked = static_cast<int>(picked.size());
-  pl.buyable = static_cast<int>(trimmed.empty() ? ok.size() : wanted(codes, terms, cfg.buy).size());
+  pl.buyable = static_cast<int>(buy.size());
   pl.targets = std::move(targets);
   pl.orders = std::move(sells);
   pl.orders.insert(pl.orders.end(), buys.begin(), buys.end());
@@ -573,17 +579,17 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
 std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Terms &terms,
                          const std::vector<std::string> &codes, const Cfg &cfg) {
   assert(valid(cfg));
-  const std::vector<std::string> ok = wanted(codes, terms, cfg.buy);
+  const std::vector<std::string> buy = wanted(codes, terms, cfg.buy);
   const auto has = [&](const std::string &c) { return quotes.contains(c); };
-  if (!std::ranges::all_of(ok, has) || !std::ranges::all_of(held(s), [&](const Sec *x) { return has(x->code); }))
+  if (!std::ranges::all_of(buy, has) || !std::ranges::all_of(held(s), [&](const Sec *x) { return has(x->code); }))
     return std::nullopt;
   if (cfg.how != How::Over)
-    return solve(s, px0, quotes, terms, codes, cfg, cfg.sells, {});
+    return solve(s, px0, quotes, terms, codes, buy, cfg, cfg.sells, {});
   // 卖超配: 减到 W 与补到 V 自洽. V(W) 随 W 减 (减得多 → 回款多、补的只数少), 二分取 V ≥ W 的最大 W; W 不低于卖的范围内名单持仓的最大市值即不减
   const std::set<std::string> listed(codes.begin(), codes.end());
   const auto at = [&](double W) {
     const auto [want, trimmed] = over(s.pos, quotes, terms, cfg.sell.scope, listed, cfg.unit, W);
-    return solve(s, px0, quotes, terms, codes, cfg, want, trimmed);
+    return solve(s, px0, quotes, terms, codes, buy, cfg, want, trimmed);
   };
   double lo = 0, hi = 0;
   for (const Position &h : s.pos.list)

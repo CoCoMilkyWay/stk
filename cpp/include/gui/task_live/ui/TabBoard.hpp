@@ -38,10 +38,8 @@
 #include "gui/task_live/LiveHub.hpp"
 #include "gui/task_market/ui/QuotesPanel.hpp"
 
-#include <cstdint>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 struct SharedData;
@@ -67,9 +65,8 @@ struct BoardState {
   std::optional<double> unit; // 最小调仓单元输入框编辑中的值 (无 = 显示当前配置)
   std::optional<float> pay;   // 还款比例拖过的值 [%] (无 = 默认 现金够还到的; 还了即复原)
   Market::StockState stock;
-  std::unordered_map<std::string, uint32_t> ids; // "000001.SZ" → 全局 id
-  float split = 0.66f;                           // 左右分栏比
-  Fit pos_fit, acct_fit, plan_fit;               // 持仓 / 账户 / 试算表
+  float split = 0.66f;             // 左右分栏比
+  Fit pos_fit, acct_fit, plan_fit; // 持仓 / 账户 / 试算表
 };
 
 void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, BoardState &st);

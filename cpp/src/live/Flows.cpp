@@ -12,6 +12,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 
 namespace live::flows {
 
@@ -24,9 +25,29 @@ constexpr double kCent = 0.005; // 余额链容差 [元]
 
 std::atomic<uint64_t> gen{1};
 
-const std::set<std::string> kTrades = {"证券买入", "证券卖出", "融资买入"};
-const std::set<std::string> kHolds = {"证券买入", "证券卖出", "融资买入", "担保品划入", "新股入账"};
-const std::set<std::string> kPass = {"申购配号", "市值申购中签", "托管转出", "新股申购确认缴款"};
+// 业务表: 业务名 (suffix = 只比结尾, 如各种「…偿还融资负债」) → 所动的账 (见 Move); 表外的 = 不动账
+struct Biz {
+  std::string_view name;
+  bool suffix;
+  uint8_t moves;
+};
+constexpr Biz kBiz[] = {
+    {"证券买入", false, kHold | kTrade},
+    {"证券卖出", false, kHold | kTrade},
+    {"融资买入", false, kHold | kTrade},
+    {"担保品划入", false, kHold | kPledge},
+    {"新股入账", false, kHold},
+    {"申购配号", false, kPass},
+    {"市值申购中签", false, kPass},
+    {"托管转出", false, kPass},
+    {"新股申购确认缴款", false, kPass},
+    {"融资借款", false, kDebt},
+    {"偿还融资负债", true, kDebt},
+    {"偿还融资费用", true, kDebt},
+    {"偿还融资利息", true, kInterest},
+    {"银行转存", false, kBank},
+    {"银行转取", false, kBank},
+};
 
 // 日序、余额链 (动资金的行: 上一行剩余 + 本行发生 = 本行剩余)、业务分类
 void check(const std::vector<CashFlow> &rows) {
@@ -35,7 +56,7 @@ void check(const std::vector<CashFlow> &rows) {
     const CashFlow &r = rows[i];
     if (i > 0 && rows[i - 1].date > r.date)
       fail(strf("资金流水第 %zu 行日期 %d 早于上一行 %d", i, r.date, rows[i - 1].date));
-    holds(r);
+    moves(r);
     if (r.amount == 0)
       continue;
     if (prev && std::fabs(prev->balance + r.amount - r.balance) > kCent)
@@ -81,7 +102,7 @@ std::vector<CashFlow> merge(const std::vector<CashFlow> &old, misc::Ymd from, st
 std::map<std::string, double> holdings(const std::vector<CashFlow> &rows) {
   std::map<std::string, double> h;
   for (const CashFlow &r : rows)
-    if (holds(r))
+    if (moves(r) & kHold)
       h[r.code] += r.qty;
   std::erase_if(h, [](const auto &x) { return std::fabs(x.second) < kShare; });
   return h;
@@ -120,20 +141,19 @@ void save(const Cache &c) {
 
 } // namespace
 
-bool holds(const CashFlow &r) {
-  if (kHolds.contains(r.kind))
-    return true;
-  if (r.qty != 0 && !kPass.contains(r.kind))
+uint8_t moves(const CashFlow &r) {
+  const std::string_view k = r.kind;
+  const auto b = std::ranges::find_if(kBiz, [&](const Biz &x) { return x.suffix ? k.ends_with(x.name) : k == x.name; });
+  const uint8_t m = b == std::end(kBiz) ? 0 : b->moves;
+  if (r.qty != 0 && !(m & (kHold | kPass)))
     fail(strf("资金流水 %d %s %s: 业务「%s」带股数 %.0f, 不认识", r.date, r.code.c_str(), r.name.c_str(), r.kind.c_str(), r.qty));
-  return false;
+  return m;
 }
-
-bool traded(const CashFlow &r) { return kTrades.contains(r.kind); }
 
 void match(const std::vector<CashFlow> &rows, const std::vector<Deal> &deals) {
   std::map<std::pair<misc::Ymd, std::string>, std::pair<double, double>> by; // → (流水, 成交)
   for (const CashFlow &r : rows)
-    if (traded(r))
+    if (moves(r) & kTrade)
       by[{r.date, r.code}].first += r.qty;
   for (const Deal &d : deals)
     by[{d.date, d.code}].second += static_cast<double>(d.side * d.qty);

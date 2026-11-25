@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <sstream>
 
 #include <arpa/inet.h>
@@ -165,6 +166,16 @@ int dial(double timeout) {
   return s;
 }
 
+// 收到的字节 buf 里取出一整行 (去掉行尾 \r); 还没收齐一行 → 无. 命令长连接与推流同用
+std::optional<std::string> pop_line(std::string &buf) {
+  const size_t nl = buf.find('\n');
+  if (nl == std::string::npos)
+    return std::nullopt;
+  std::string row(buf.data(), nl > 0 && buf[nl - 1] == '\r' ? nl - 1 : nl);
+  buf.erase(0, nl + 1);
+  return row;
+}
+
 bool send_line(int fd, const std::string &line) {
   assert(line.find('\n') == std::string::npos);
   const std::string req = line + "\n";
@@ -220,18 +231,10 @@ struct Link {
     bytes = 0;
     const auto end = Clock::now() + Secs(timeout);
     while (true) {
-      while (true) {
-        const size_t nl = buf.find('\n');
-        if (nl == std::string::npos)
-          break;
-        size_t e = nl;
-        if (e > 0 && buf[e - 1] == '\r')
-          --e;
-        std::string row(buf.data(), e);
-        bytes += nl + 1;
-        buf.erase(0, nl + 1);
-        const bool fin = row == "ok" || row.starts_with("err ");
-        lines.push_back(std::move(row));
+      while (std::optional<std::string> row = pop_line(buf)) {
+        bytes += row->size() + 1;
+        const bool fin = *row == "ok" || row->starts_with("err ");
+        lines.push_back(std::move(*row));
         if (fin)
           return Rc::Ok;
       }
@@ -358,20 +361,12 @@ bool Stream::next(nlohmann::json &out, double timeout) {
     fail("shim 推流已关");
   const auto end = Clock::now() + Secs(timeout);
   while (true) {
-    while (true) {
-      const size_t nl = buf_.find('\n');
-      if (nl == std::string::npos)
-        break;
-      size_t e = nl;
-      if (e > 0 && buf_[e - 1] == '\r')
-        --e;
-      std::string row(buf_.data(), e);
-      buf_.erase(0, nl + 1);
-      if (row.empty() || row == "null")
+    while (const std::optional<std::string> row = pop_line(buf_)) {
+      if (row->empty() || *row == "null")
         continue; // 1s 心跳
-      if (row.starts_with("err "))
-        fail("shim 推流: " + row.substr(4));
-      out = nlohmann::json::parse(row, nullptr, false);
+      if (row->starts_with("err "))
+        fail("shim 推流: " + row->substr(4));
+      out = nlohmann::json::parse(*row, nullptr, false);
       if (out.is_discarded())
         fail("shim 推流: 记录不是 JSON");
       return true;
