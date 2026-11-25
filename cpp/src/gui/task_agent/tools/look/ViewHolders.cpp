@@ -1,4 +1,5 @@
 // view_holders — 看常客: 输入 factor / side / n → HoldersRes (集中度 + 资产表) → 原文; 展示见 ui/look/ViewHolders.cpp
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 namespace GUI::Agent {
@@ -6,8 +7,10 @@ namespace GUI::Agent {
 using namespace look;
 using json = nlohmann::ordered_json;
 
+std::string HoldersRes::headline() const { return "因子 `" + label + "` · " + side + " 的常客"; }
+
 std::string HoldersRes::text() const {
-  std::string s = period + "## 因子 `" + label + "` · " + side + " 的常客\n";
+  std::string s = text_head();
   if (!total)
     return s + "本端没有行\n";
   s += "本端共 " + str(total) + " 行 · 落过本端的资产 " + str(any) + " / " + std::to_string(active) + " · 前 10 只占 " + pct(top10) + " · 凑满一半要 " + str(half) + " 只\n\n";

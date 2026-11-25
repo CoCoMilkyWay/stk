@@ -133,19 +133,6 @@ void ensure(Ui &s) {
   for (int b = 0; b < kBackendN; ++b)
     sniff(s, b);
 }
-// 作用域的池 / 层 / 持有期不在目录里 (首次启动或改过名 / 删了) → 取首个
-void fix_scope(const SharedData &data, Scope &sc) {
-  const std::vector<Choice> pools = catalog::pools();
-  const std::vector<Choice> lvs = catalog::levels();
-  if (std::none_of(pools.begin(), pools.end(), [&](const Choice &p) { return p.name == sc.pool; }))
-    sc.pool = pools.front().name;
-  if (std::none_of(lvs.begin(), lvs.end(), [&](const Choice &l) { return l.key == sc.level; }))
-    sc.level = lvs.front().key;
-  const std::vector<Choice> hs = catalog::holds(data, sc.level);
-  if (!hs.empty() && std::none_of(hs.begin(), hs.end(), [&](const Choice &h) { return h.key == sc.hold; }))
-    sc.hold = hs.front().key;
-}
-
 } // namespace
 
 } // namespace GUI::Agent::page
@@ -169,7 +156,7 @@ TaskHandle CreateAgentTask() {
   handle.Update = [state](SharedData &data) {
     Ui &s = *state;
     ensure(s);
-    fix_scope(data, s.opt.sc);
+    catalog::fit(data, s.opt.sc);
     poll_sniff(s);
     s.mine->update();
     if (s.bench)
@@ -214,7 +201,7 @@ TaskHandle CreateAgentTask() {
     assert(idx >= 0 && idx < TAB_COUNT);
     Ui &s = *state;
     ensure(s);
-    fix_scope(data, s.opt.sc);
+    catalog::fit(data, s.opt.sc);
     ImGui::BeginChild("AgentTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     switch (idx) {

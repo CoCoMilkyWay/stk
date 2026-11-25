@@ -1,4 +1,5 @@
 // view_snapshot — 看截面快照: 输入 factor / date / time / n / exprs → SnapshotRes (本行概况 + 截面秩相关 + 两端表) → 原文; 展示见 ui/look/ViewSnapshot.cpp
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 namespace GUI::Agent {
@@ -6,8 +7,10 @@ namespace GUI::Agent {
 using namespace look;
 using json = nlohmann::ordered_json;
 
+std::string SnapshotRes::headline() const { return "因子 `" + label + "` · " + when + " 那一行的截面 (" + level + "; 分位 / 组号已定向: G20 = 做多端)"; }
+
 std::string SnapshotRes::text() const {
-  std::string s = period + "## 因子 `" + label + "` · " + when + " 那一行的截面 (" + level + "; 分位 / 组号已定向: G20 = 做多端)\n";
+  std::string s = text_head();
   s += "在池且有秩 " + str(n) + " 只 · 本行" +
        (row_ok ? "有统计: rIC " + r3(ric) + " · G20 超额 " + bp(g20) + "bp (真持有 " + std::to_string(c20) + " 只) · G1 超额 " + bp(g1) + "bp (" + std::to_string(c1) + " 只)"
                : std::string("无统计 (建不了仓 / 标签无效)")) +

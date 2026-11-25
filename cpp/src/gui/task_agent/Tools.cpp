@@ -258,16 +258,6 @@ constexpr bool docs_in_order() {
 }
 static_assert(docs_in_order(), "kDocs 下标 = Tool");
 
-std::string choices_text(Choices cs) {
-  std::string s;
-  for (size_t i = 0; i < cs.size(); ++i) {
-    if (i)
-      s += '|';
-    s += cs[i];
-  }
-  return s;
-}
-
 std::string def_literal(const ArgVal &v) {
   if (const auto *s = std::get_if<sv>(&v))
     return "\"" + std::string(*s) + "\"";
@@ -358,7 +348,7 @@ bool check(const ArgDef &a, const json &v, const std::string &path, std::string 
       return true;
     if (!a.choices.empty()) {
       if (!std::ranges::contains(a.choices, sv(s)))
-        return fail("须是 " + choices_text(a.choices) + " 之一");
+        return fail("须是 " + text::join(a.choices, "|") + " 之一");
     } else if (s.empty()) {
       return fail("不能为空");
     }
@@ -420,7 +410,7 @@ std::string ToolText(const char *s) {
 std::string ArgType(const ArgDef &a) {
   switch (a.type) {
   case Arg::Str:
-    return !a.choices.empty() ? "取 " + choices_text(a.choices) : "字符串";
+    return !a.choices.empty() ? "取 " + text::join(a.choices, "|") : "字符串";
   case Arg::Int:
     return "整数 " + std::to_string(a.lo) + ".." + std::to_string(a.hi);
   case Arg::Bool:
@@ -515,12 +505,8 @@ std::string Call::text(size_t cap) const {
 bool ArgsOf(ArgDefs spec, std::string_view owner, const json &args, const std::string &path, json &out, std::vector<std::string> &errs) {
   const size_t n0 = errs.size();
   for (const auto &[k, v] : args.items())
-    if (std::none_of(spec.begin(), spec.end(), [&](const ArgDef &a) { return k == a.key; })) {
-      std::string keys;
-      for (const ArgDef &a : spec)
-        keys += (keys.empty() ? "" : " / ") + std::string(a.key);
-      errs.push_back(path + "." + k + ": " + std::string(owner) + " 没有这个参数 (它的参数: " + (keys.empty() ? "无" : keys) + ")");
-    }
+    if (std::none_of(spec.begin(), spec.end(), [&](const ArgDef &a) { return k == a.key; }))
+      errs.push_back(path + "." + k + ": " + std::string(owner) + " 没有这个参数 (它的参数: " + (spec.empty() ? "无" : text::join(spec, " / ", &ArgDef::key)) + ")");
   out = json::object();
   for (const ArgDef &a : spec) {
     const std::string ap = path + "." + a.key;

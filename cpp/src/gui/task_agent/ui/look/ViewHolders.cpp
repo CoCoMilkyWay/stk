@@ -9,9 +9,7 @@ namespace GUI::Agent {
 using namespace ui;
 
 void HoldersRes::draw() const {
-  if (!period.empty())
-    wrapped(color(TaskStatus::Kind::Warn), period);
-  heading("因子 " + label + " · " + side + " 的常客");
+  draw_head();
   if (!total) {
     ImGui::TextDisabled("本端没有行");
     return;

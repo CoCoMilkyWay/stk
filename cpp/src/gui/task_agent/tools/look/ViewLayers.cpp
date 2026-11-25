@@ -1,4 +1,5 @@
 // view_layers — 看分层: 输入 factor / split / cond → LayersRes (20 组 + 尾部 + 切分 + 条件三段) → 原文; 展示见 ui/look/ViewLayers.cpp
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 #include <map>
@@ -8,8 +9,10 @@ namespace GUI::Agent {
 using namespace look;
 using json = nlohmann::ordered_json;
 
+std::string LayersRes::headline() const { return "因子 `" + label + "` (组号已定向: G20 = 做多端)"; }
+
 std::string LayersRes::text() const {
-  std::string s = period + "## 因子 `" + label + "` (组号已定向: G20 = 做多端)\n";
+  std::string s = text_head();
   s += "有统计行 " + std::to_string(all.ok) + " / " + std::to_string(all.rows) + " · mono " + r3(all.mono) + " · 每期多空 " + bp(all.ls) + "bp · rIC 均值 " + r3(all.ric) +
        " (t " + fmt("%.1f", ric_t) + ", 正 " + pct(ric_up) + ")\n";
   s += "20 组每期超额 G1 → G20: " + spark(all.grp, bp) + " bp\n\n";

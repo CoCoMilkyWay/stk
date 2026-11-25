@@ -4,7 +4,8 @@
 // 观察 (view_*) 的结果: 每个工具一个 Res; 计算与原文在 tools/look/<工具>.cpp (计算核 tools/look/Kernel.hpp), 展示在 ui/look/<工具>.cpp
 // =============================================================================
 //   全部纯后台 (Pure 形): 读台面 Bay 的观察口径, 在本件的计算流上分块流式全核归约; view_book 逐笔重放进 worker 线程常驻的订单簿
-//   收益一律是超额 (毛 − 本行在池均值); 分位 / 组号已定向 (高 = 做多端 G20); period = 观察的日段与评估期不同时的提示 (同则空)
+//   收益一律是超额 (毛 − 本行在池均值); 分位 / 组号已定向 (高 = 做多端 G20)
+//   公共头 LookRes: 日段提示 period + 标题 headline, 原文 text_head ⇄ 展示 draw_head 逐字对仗
 // =============================================================================
 
 #include "gui/task_agent/tools/Kit.hpp"
@@ -29,7 +30,17 @@ struct LayerRow {
 };
 void DrawLayerTable(const char *id, const std::vector<LayerRow> &rows); // ui/look/ViewLayers.cpp
 
-struct FeatureRes : Res {
+struct LookRes : Res {
+  std::string period;                                 // 观察的日段与评估期不同时的提示 (同则空)
+  virtual std::string headline() const { return {}; } // 标题一行 (空 = 没有)
+  std::string text_head() const {
+    const std::string h = headline();
+    return period + (h.empty() ? "" : "## " + h + "\n");
+  }
+  void draw_head() const; // ui/look/ViewLayers.cpp
+};
+
+struct FeatureRes : LookRes {
   struct Feat {
     std::string raw, err;  // err = 没算成的原因
     size_t in = 0, ok = 0; // 池内格 / 有效格 (不到 100 只报个数)
@@ -48,7 +59,6 @@ struct FeatureRes : Res {
     double h_lo = NAN, h_hi = NAN;
     std::vector<double> hist; // 1~99% 分位间等宽分箱的抽样频数
   };
-  std::string period;
   int seg = 1;
   std::vector<std::string> clock, parts; // 本层行末时刻 / 时段名
   std::vector<int> part_end;             // 各时段末行
@@ -62,8 +72,8 @@ struct FeatureRes : Res {
   void draw() const override;
 };
 
-struct LayersRes : Res {
-  std::string period, label, split, cond;
+struct LayersRes : LookRes {
+  std::string label, split, cond;
   int seg = 1;
   LayerRow all;
   double ric_t = NAN, ric_up = NAN;
@@ -78,14 +88,15 @@ struct LayersRes : Res {
   bool has_cond = false;        // 条件三段有可用的行
   double cond_rho = NAN, cond_ric = NAN;
   std::vector<LayerRow> conds; // 全体 (同口径) / 低 / 中 / 高
+  std::string headline() const override;
   std::string text() const override;
   std::string gist() const override;
   std::string title() const override;
   void draw() const override;
 };
 
-struct TradesRes : Res {
-  std::string period, label, side, merge, sort, win; // win = " · 只看 … 的行 (N 行)" 或空
+struct TradesRes : LookRes {
+  std::string label, side, merge, sort, win; // win = " · 只看 … 的行 (N 行)" 或空
   int seg = 1, win_rows = 0;
   size_t cells = 0, segs = 0;
   double cell_mean = NAN, cell_up = NAN, seg_mean = NAN, seg_med = NAN, seg_p10 = NAN, seg_p90 = NAN, seg_up = NAN, worst = NAN, best = NAN;
@@ -108,13 +119,14 @@ struct TradesRes : Res {
     double rank = NAN, ex = NAN, chg = NAN, pos = NAN;
   };
   std::vector<Seg> list;
+  std::string headline() const override;
   std::string text() const override;
   std::string title() const override;
   void draw() const override;
 };
 
-struct HoldersRes : Res {
-  std::string period, label, side;
+struct HoldersRes : LookRes {
+  std::string label, side;
   size_t total = 0, any = 0, half = 0;
   int active = 0;
   double top10 = NAN;
@@ -126,13 +138,14 @@ struct HoldersRes : Res {
     double ex = NAN;
   };
   std::vector<Row> rows;
+  std::string headline() const override;
   std::string text() const override;
   std::string title() const override;
   void draw() const override;
 };
 
-struct ResponseRes : Res {
-  std::string period, label, side;
+struct ResponseRes : LookRes {
+  std::string label, side;
   size_t events = 0, kept = 0;
   struct Pt {
     std::string name;
@@ -149,13 +162,14 @@ struct ResponseRes : Res {
     std::vector<double> ex; // [pts]
   };
   std::vector<Part> parts;
+  std::string headline() const override;
   std::string text() const override;
   std::string title() const override;
   void draw() const override;
 };
 
-struct ExplainRes : Res {
-  std::string period, label;
+struct ExplainRes : LookRes {
+  std::string label;
   std::vector<std::string> exprs; // E 行 (没算成的写原因)
   size_t rows = 0;
   double fric = NAN, r2 = NAN, rric = NAN;
@@ -165,15 +179,16 @@ struct ExplainRes : Res {
   };
   std::vector<Base> bases;
   LayerRow orig, rest;
-  std::string head() const; // 标题 + E 行
+  std::string lead() const; // 头 + E 行
+  std::string headline() const override;
   std::string text() const override;
   std::string gist() const override;
   std::string title() const override;
   void draw() const override;
 };
 
-struct SnapshotRes : Res {
-  std::string period, label, when, level;
+struct SnapshotRes : LookRes {
+  std::string label, when, level;
   int seg = 1;
   size_t n = 0;
   bool row_ok = false;
@@ -190,13 +205,14 @@ struct SnapshotRes : Res {
     std::vector<double> fv;
   };
   std::vector<Cell> cells; // 高 n 只 + 池中位 + 低 n 只
+  std::string headline() const override;
   std::string text() const override;
   std::string title() const override;
   void draw() const override;
 };
 
-struct StockDayRes : Res {
-  std::string period, code, date, level;
+struct StockDayRes : LookRes {
+  std::string code, date, level;
   int seg = 1;
   std::vector<std::string> clock;
   double pre = NAN, hi = NAN, lo = NAN, last = NAN, lim_up = NAN, lim_dn = NAN;
@@ -218,13 +234,14 @@ struct StockDayRes : Res {
   std::vector<Part> parts;
   std::string rows; // 逐行时段 (空 = 不附逐行表)
   int r0 = 0, r1 = 0;
+  std::string headline() const override;
   std::string text() const override;
   std::string title() const override;
   void draw() const override;
 };
 
-struct StockDaysRes : Res {
-  std::string period, code, level;
+struct StockDaysRes : LookRes {
+  std::string code, level;
   std::vector<std::string> exprs;
   bool has_fac = false;
   std::string fac;
@@ -237,13 +254,14 @@ struct StockDaysRes : Res {
   };
   std::vector<Day> days;
   size_t n_feats = 0;
+  std::string headline() const override;
   std::string text() const override;
   std::string title() const override;
   void draw() const override;
 };
 
-struct BookRes : Res {
-  std::string head;
+struct BookRes : LookRes {
+  std::string what; // 代码 · 日 · 窗口
   size_t orders = 0;
   bool traded = false;
   double open = 0, high = 0, low = 0, close = 0, amt = 0;
@@ -279,6 +297,7 @@ struct BookRes : Res {
     double price = 0, amount = 0;
   };
   std::vector<Level> profile; // 卖 (远 → 近) 再买 (近 → 远)
+  std::string headline() const override;
   std::string text() const override;
   std::string title() const override;
   void draw() const override;

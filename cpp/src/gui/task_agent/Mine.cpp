@@ -1,7 +1,6 @@
 // Mine — 见头文件
 #include "gui/task_agent/Mine.hpp"
 #include "disk/Disk.hpp"
-#include "factor/Stat/Contract.hpp" // hold_name
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
@@ -25,7 +24,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Mine::Leg, llm, gpu, budget)
 namespace {
 
 // 这一步在等研究员答 ask_human
-bool asking(const Step &sp) { return sp.span.ended() && sp.act && def(sp.act->call.tool).exec == Exec::Human && sp.act->span.running(); }
+bool asking(const Step &sp) { return sp.span.ended() && sp.act && def(sp.act->call.tool).form == Form::Human && sp.act->span.running(); }
 
 // 停着时按继续会做什么
 std::string hint_of(Steps timeline, bool done) {
@@ -97,14 +96,8 @@ int Mine::sent() const { return step() - static_cast<int>(!timeline.empty() && !
 
 std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
   assert(!live() && idle());
-  const std::vector<Choice> hs = catalog::holds(data, s.sc.level);
-  if (std::none_of(hs.begin(), hs.end(), [&](const Choice &h) { return h.key == s.sc.hold; })) {
-    std::string opts;
-    for (const Choice &h : hs)
-      opts += (opts.empty() ? "" : " / ") + h.name;
-    return opts.empty() ? "该层无可搜持有期 (标签未建)"
-                        : "持有期 " + factor::stat::hold_name(s.sc.hold) + " 在该层不可搜 (可选 " + opts + ")";
-  }
+  if (std::string miss = catalog::hold_miss(data, s.sc); !miss.empty())
+    return miss;
   if (!catalog::ready(data, s.sc, l.gpu))
     return "作用域 " + catalog::label(s.sc) + " 的数据未就绪 (资产轴未扫或标签库未建)";
   if (std::string miss = catalog::open_miss(data, s.sc); !miss.empty())
@@ -116,10 +109,10 @@ std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
   bind(data);
   const Context &ctx = desk.ctx();
   assert(!ctx.leaves.empty() && !ctx.ops.empty() && "须有开放的叶与算子");
-  system = std::make_shared<const std::string>(SystemMessage(ctx, setup.gate, setup.ask).text);
+  system = std::make_shared<const std::string>(SystemMessage(ctx, setup.gate, setup.ask));
   disk::Key key = catalog::key(setup.sc, setup.test);
   key.stamp = disk::stamp_now();
-  log.open(disk::path(disk::AgentChat, key).string(), *system, make_log_head());
+  log.open(std::move(key), *system, make_log_head());
   timeline.clear();
   memo.clear(), reason.clear(), report.clear();
   t0 = Clock::now(), t_end = -1.0;
@@ -132,12 +125,12 @@ std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
   return {};
 }
 
-void Mine::load(const SharedData &data, const std::string &dir) {
-  const json j = SessionOf(dir);
+void Mine::load(const SharedData &data, const disk::Key &key) {
+  const json j = SessionOf(key);
   j.at("setup").get_to(setup);
   j.at("leg").get_to(leg);
   leg.gpu = leg.gpu && catalog::gpu();
-  log.reopen(dir, j.at("log_head").get<std::string>());
+  log.reopen(key, j.at("log_head").get<std::string>());
   system = std::make_shared<const std::string>(log.system());
   bind(data);
   j.at("timeline").get_to(timeline);
@@ -263,7 +256,7 @@ void Mine::redo(int k, std::string why) {
 // 末步退回待发 (插话与日志笔留着)
 void Mine::unsend() {
   Step &sp = timeline.back();
-  sp = Step{.kind = sp.kind, .user = std::move(sp.user), .memo = std::move(sp.memo), .marks = std::move(sp.marks)};
+  sp = Step{.user = std::move(sp.user), .memo = std::move(sp.memo), .marks = std::move(sp.marks)};
 }
 
 std::set<std::string> Mine::staged_from(int k) const { return StagedOf(Steps(timeline).subspan(static_cast<size_t>(k) - 1)); }
@@ -376,7 +369,7 @@ bool Mine::fresh() {
   return f;
 }
 
-void Mine::post(Message m) { timeline.push_back({.kind = m.kind, .user = std::move(m.text)}); }
+void Mine::post(std::string user) { timeline.push_back({.user = std::move(user)}); }
 
 void Mine::send() {
   Step &sp = timeline.back();

@@ -1,4 +1,5 @@
 // submit_factor — 提交入库: 输入 name → SubmitRes (入库 / 达门槛不拷 / 未入库的原因) → 原文; 展示见 ui/trial/SubmitFactor.cpp
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 
 namespace GUI::Agent {

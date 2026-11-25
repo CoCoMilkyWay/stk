@@ -1,4 +1,5 @@
 // view_trades — 看交割单: 输入 factor / side / sort / n / merge / from / to / tod → TradesRes (段收益分布 / 开仓时段 / 盘面标签 / 明细) → 原文; 展示见 ui/look/ViewTrades.cpp
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 #include <random>
@@ -8,8 +9,10 @@ namespace GUI::Agent {
 using namespace look;
 using json = nlohmann::ordered_json;
 
+std::string TradesRes::headline() const { return "因子 `" + label + "` · " + side + " · 合并 " + merge + win; }
+
 std::string TradesRes::text() const {
-  std::string s = period + "## 因子 `" + label + "` · " + side + " · 合并 " + merge + win + "\n";
+  std::string s = text_head();
   if (!cells)
     return s + "本端没有真持有过的格\n";
   s += "真持有 " + str(cells) + " 格 (每行平均 " + fmt("%.1f", static_cast<double>(cells) / win_rows) + " 只) → " + str(segs) + " 段, 段均 " +

@@ -3,7 +3,7 @@
 // =============================================================================
 // 记录 (request_feature / request_tool / note_insight / report_issue) 的结果: 四个工具共持唯一结构 NoteRes
 // =============================================================================
-//   四个工具同一套落记录 (FileNote, Notes.cpp): ref 须是同类已有的一条; dry (工作台) 只给编号不落盘
+//   四个工具同一套落记录与原文 (tools/note/Note.cpp) ⇄ 同一个展示 (ui/note/Note.cpp): ref 须是同类已有的一条; dry (工作台) 只给编号不落盘
 // =============================================================================
 
 #include "gui/task_agent/tools/Kit.hpp"
@@ -21,7 +21,5 @@ struct NoteRes final : Res {
   std::string title() const override;
   void draw() const override;
 };
-
-ToolOut FileNote(const Call &c, Seat &s);
 
 } // namespace GUI::Agent

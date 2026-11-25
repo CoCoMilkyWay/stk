@@ -1,5 +1,6 @@
 // list_notes — 查全局记录: 输入 kind / scope / query / n → NotesRes (各类条数与标题, 或一类逐条全文) → 原文; 展示见 ui/query/ListNotes.cpp
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/Query.hpp"
 
 #include <algorithm>

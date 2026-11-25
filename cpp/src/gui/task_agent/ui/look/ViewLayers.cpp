@@ -1,8 +1,9 @@
-// view_layers 的展示: 概况 + 20 组柱 + 各组真持有只数 + 尾部表 + 切分各段 (表 + mono 条) + 条件三段
+// view_layers 的展示: 概况 + 20 组柱 + 各组真持有只数 + 尾部表 + 切分各段 (表 + mono 条) + 条件三段; 另有观察共用的分层表与公共头
 #include "gui/task_agent/tools/Look.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
 #include <cstdio>
+#include <string>
 
 namespace GUI::Agent {
 
@@ -23,10 +24,17 @@ void DrawLayerTable(const char *id, const std::vector<LayerRow> &rows) {
   ImGui::EndTable();
 }
 
-void LayersRes::draw() const {
+void LookRes::draw_head() const {
   if (!period.empty())
     wrapped(color(TaskStatus::Kind::Warn), period);
-  heading("因子 " + label);
+  if (std::string h = headline(); !h.empty()) {
+    std::erase(h, '`');
+    heading(h);
+  }
+}
+
+void LayersRes::draw() const {
+  draw_head();
   char b[256];
   std::snprintf(b, sizeof(b), "有统计行 %d / %d · mono %.3f · 每期多空 %+.1fbp · rIC %.4f (t %.1f, 正 %.0f%%)", all.ok, all.rows, all.mono, all.ls * 1e4, all.ric, ric_t, ric_up * 100.0);
   ImGui::TextUnformatted(b);

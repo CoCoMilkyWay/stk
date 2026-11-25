@@ -105,7 +105,7 @@ void load_session(const SharedData &data, Ui &s, const Saved &x) {
     s.message = "这段会话的作用域未就绪 (资产轴未扫描或标签库未建)";
     return;
   }
-  s.mine->load(data, x.dir);
+  s.mine->load(data, x.key);
 }
 
 // 载入菜单: 本作用域存过的会话, 新到旧; 一行 = 时刻 / 步数 / 停下原因 / 候选与入库 / 大脑, 悬浮看目录与要求
@@ -117,7 +117,7 @@ void saved_menu(const SharedData &data, Ui &s, const Scope &sc) {
   for (const Saved &x : s.saved) {
     const nlohmann::ordered_json &b = x.brief;
     const std::string reason = b.at("reason").get<std::string>(), why = reason.empty() ? "没停稳就退出了" : reason;
-    const std::string label = stamp_text(x.stamp) + (x.test ? " · 自检" : "") + " · " + std::to_string(b.at("steps").get<int>()) + " 步 · " + text::head(why, 24) + " · 候选 " +
+    const std::string label = stamp_text(x.key.stamp) + (x.key.test ? " · 自检" : "") + " · " + std::to_string(b.at("steps").get<int>()) + " 步 · " + text::head(why, 24) + " · 候选 " +
                               std::to_string(b.at("cands").get<int>()) + " · 入库 " + std::to_string(b.at("adopted").size()) + " · " + b.at("brain").get<std::string>() + "###" + x.dir;
     if (ImGui::Selectable(label.c_str())) {
       load_session(data, s, x);
@@ -378,7 +378,7 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
         break;
       }
       what = std::string(def(a->call.tool).id) + " · " + def(a->call.tool).cn + " · " + text::head(a->call.text(), kTopicChars) + " · " + StageOf(*a, ll.frac) + " " + dur(a->span.len(t));
-      if (def(a->call.tool).exec == Exec::Lab)
+      if (def(a->call.tool).lab())
         frac = static_cast<float>(ll.frac);
       break;
     }
@@ -484,8 +484,8 @@ struct Head {
   ImVec4 col; // 条目色: 英文名 / 中文名 / 展开底色
   const char *id, *cn;
   std::string think, run, line; // 思考用时 / 执行用时 / 一行结论 (空 = 不写)
-  ImVec4 tone;            // 结论的色 (状态)
-  std::string tip;        // 悬浮看的全文 (空 = 无)
+  ImVec4 tone;                  // 结论的色 (状态)
+  std::string tip;              // 悬浮看的全文 (空 = 无)
 };
 
 std::string first_line(const std::string &s) { return std::string(text::trim(std::string_view(s).substr(0, s.find('\n')))); }
@@ -616,7 +616,7 @@ void exchange(Ui &s, const Mine &m, size_t i) {
     return;
   }
   const Step &nx = m.timeline[i + 1];
-  raw_part("back", std::string(nx.span.began() ? "交回的 prompt · " : "待交回的 prompt · ") + def(nx.kind).cn + (nx.memo.empty() ? "" : " · 附插话"), TextOf(nx));
+  raw_part("back", std::string(nx.span.began() ? "交回的 prompt · " : "待交回的 prompt · ") + def(KindOf(m.timeline, i + 1)).cn + (nx.memo.empty() ? "" : " · 附插话"), TextOf(nx));
 }
 
 // 调用用了多久 (后台分段的逐段写, 如 eval_factor 的 Search / Run)
@@ -683,11 +683,11 @@ void retry_entry(Ui &s, const Mine &m, const Cols &c, size_t i) {
 void wait_entry(Ui &s, const Mine &m, const Cols &c, const Flow &f, size_t i) {
   const Step &sp = m.timeline[i];
   const llm::Reply &live = s.chat_live.reply;
-  const std::string sent = TextOf(sp);
+  const std::string sent = TextOf(sp), kind = def(KindOf(m.timeline, i)).cn;
   if (!sp.span.began()) {
-    const Head h{color(TaskStatus::Kind::Warn), kLanes[3].first, kLanes[3].second, "", "", std::string(def(sp.kind).cn) + " · " + chars(sent) + (m.live() ? "" : " · 按 继续 发出"),
+    const Head h{color(TaskStatus::Kind::Warn), kLanes[3].first, kLanes[3].second, "", "", kind + " · " + chars(sent) + (m.live() ? "" : " · 按 继续 发出"),
                  color(TaskStatus::Kind::Warn), ""};
-    entry(s, m, c, h, static_cast<int>(i) + 1, true, [&] { wrapped_dim("这条消息还没发给 agent (" + std::string(def(sp.kind).cn) + "); 原文见 prompt"); }, [&] { raw_part("send", "待发的 prompt", sent); });
+    entry(s, m, c, h, static_cast<int>(i) + 1, true, [&] { wrapped_dim("这条消息还没发给 agent (" + kind + "); 原文见 prompt"); }, [&] { raw_part("send", "待发的 prompt", sent); });
     return;
   }
   const Head h{color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), kLanes[4].first, kLanes[4].second, dur(f.since), "",
@@ -707,7 +707,7 @@ void wait_entry(Ui &s, const Mine &m, const Cols &c, const Flow &f, size_t i) {
       },
       [&] {
         context_block(s, m, i);
-        raw_part("send", std::string("发出的 prompt · ") + def(sp.kind).cn + (sp.memo.empty() ? "" : " · 附插话"), sent);
+        raw_part("send", "发出的 prompt · " + kind + (sp.memo.empty() ? "" : " · 附插话"), sent);
         stream();
       });
 }
@@ -724,13 +724,13 @@ void start_entry(Ui &s, const Mine &m, const Cols &c) {
       s, m, c, h, 1, false,
       [&] {
         wrapped(scope + " · " + (st.ask ? "可提问" : "不提问"));
-        wrapped_dim("系统提示 " + chars(*m.system) + " · " + def(sp.kind).cn + " " + chars(sp.user) + "; 原文见 prompt");
+        wrapped_dim("系统提示 " + chars(*m.system) + " · 首条 " + chars(sp.user) + "; 原文见 prompt");
         if (!st.remark.empty())
           wrapped("本会话要求: " + st.remark);
       },
       [&] {
         raw_part("system", "系统提示 (system)", *m.system);
-        raw_part("first", std::string(def(sp.kind).cn) + " (首条 user)", sp.user);
+        raw_part("first", std::string(st.test ? "自检首条" : "首条") + " (user)", sp.user);
       });
 }
 
@@ -1330,7 +1330,7 @@ void tools_panel(Ui &s) {
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(m.cn);
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(def(m.exec).cn);
+    ImGui::TextUnformatted(def(m.form).cn);
     ImGui::TableNextColumn();
     std::string keys, args;
     for (const ArgDef &a : d.args)

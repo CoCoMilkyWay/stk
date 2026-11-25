@@ -345,19 +345,9 @@ std::string KinName(const std::vector<const Leaf *> &g) {
   size_t all = 1;
   for (const std::vector<std::string> &v : at)
     all *= v.size();
-  std::string s;
-  if (all != g.size()) {
-    for (const Leaf *l : g)
-      s += (s.empty() ? "" : ", ") + LeafCol(l->code);
-    return s;
-  }
-  for (size_t k = 0; k < W; ++k) {
-    std::string w;
-    for (const std::string &x : at[k])
-      w += (w.empty() ? "" : ",") + x;
-    s += (k ? "_" : "") + (at[k].size() > 1 ? "{" + w + "}" : w);
-  }
-  return s;
+  if (all != g.size())
+    return text::join(g, ", ", [](const Leaf *l) { return LeafCol(l->code); });
+  return text::join(at, "_", [](const std::vector<std::string> &v) { return v.size() > 1 ? "{" + text::join(v, ",") + "}" : v.front(); });
 }
 
 const Weight *Result::best() const {
@@ -417,11 +407,27 @@ std::vector<Choice> holds(const SharedData &data, int level) {
   return out;
 }
 std::string hold_desc(int hold, int level) { return Engine::hold_desc(hold, level_id(level)); }
+void fit(const SharedData &data, Scope &sc) {
+  if (const std::vector<Choice> ps = pools(); !std::ranges::contains(ps, sc.pool, &Choice::name))
+    sc.pool = ps.front().name;
+  if (const std::vector<Choice> ls = levels(); !std::ranges::contains(ls, sc.level, &Choice::key))
+    sc.level = ls.front().key;
+  if (const std::vector<Choice> hs = holds(data, sc.level); !hs.empty() && !std::ranges::contains(hs, sc.hold, &Choice::key))
+    sc.hold = hs.front().key;
+}
 bool gpu() { return factor::gpu::available(); }
 
 bool ready(const SharedData &data, const Scope &sc, bool gpu) {
   Engine::FactorScope probe;
   return Engine::MakeFactorScope(data, table(data, sc.level), sc.pool, sc.years, gpu, probe);
+}
+std::string hold_miss(const SharedData &data, const Scope &sc) {
+  const std::vector<Choice> hs = holds(data, sc.level);
+  if (hs.empty())
+    return "该层无可搜持有期 (标签未建)";
+  if (std::ranges::contains(hs, sc.hold, &Choice::key))
+    return {};
+  return "持有期 " + fs::hold_name(sc.hold) + " 在该层不可搜 (可选 " + text::join(hs, " / ", &Choice::name) + ")";
 }
 std::string open_miss(const SharedData &data, const Scope &sc) {
   const Opened o = opened_of(*table(data, sc.level), sc, false);

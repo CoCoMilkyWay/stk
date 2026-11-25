@@ -1,6 +1,7 @@
 // search_factors — 查研报因子: 输入 query / family / period / horizon / approach / asset / sort / n → FactorsRes (分面 + 周期矩阵 + 因子行) → 原文; 展示见 ui/query/SearchFactors.cpp
 #include "gui/task_agent/Docs.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Feed.hpp"
 
 #include <algorithm>
 #include <cmath>

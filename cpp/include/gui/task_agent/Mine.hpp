@@ -72,7 +72,7 @@ public:
   Tally tally() const { return Rig::tally(now()); }
 
   std::string try_open(const SharedData &data, Setup s, Leg l); // 校验作用域 / 数据就绪 / 开放叶与算子后开会话 (停着的先关闭); 失败返回原因且不动现状
-  void load(const SharedData &data, const std::string &dir);
+  void load(const SharedData &data, const disk::Key &key);
   void resume(const SharedData &data, Leg l);
   void answer(); // 交 ask_human 的答案
   void cancel();
@@ -98,7 +98,7 @@ private:
   void depart();
   int sent() const;
   void advance();
-  void post(Message m);
+  void post(std::string user);
   void send();
   void got(llm::Reply r);
   void drop(std::string why, llm::Reply r = {});

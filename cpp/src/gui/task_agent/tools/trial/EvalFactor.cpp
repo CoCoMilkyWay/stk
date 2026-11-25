@@ -4,6 +4,7 @@
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Bay.hpp"
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 
 #include "factor/Expr.hpp"

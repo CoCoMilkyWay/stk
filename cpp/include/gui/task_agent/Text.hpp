@@ -61,12 +61,16 @@ inline std::string flat(std::string_view s) {
   }
   return o;
 }
-inline std::string join(std::span<const std::string> v, std::string_view sep) {
+// 一列逐项 (经投影 p 取串) 以 sep 连
+template <class R, class P = std::identity>
+std::string join(const R &v, std::string_view sep, P p = {}) {
   std::string s;
-  for (size_t i = 0; i < v.size(); ++i) {
-    if (i)
+  bool first = true;
+  for (const auto &x : v) {
+    if (!first)
       s += sep;
-    s += v[i];
+    first = false;
+    s += std::invoke(p, x);
   }
   return s;
 }

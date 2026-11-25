@@ -47,11 +47,11 @@ std::string AnswerText(const Asked &a);
 std::string NextStep(bool test, const std::string &left); // result 消息末尾的 "下一步" 提示 (left = 本段预算还剩多少, 空 = 不限)
 
 // ---- 消息组装与上下文纯函数 ----
-Message SystemMessage(const Context &c, const Gate &g, bool ask);
-Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark, const std::string &left);
-Message TestMessage(bool ask, const std::string &remark);
-Message ResultMessage(const Act &a, int step, bool test, const std::string &left);
-Message RetryMessage(const std::string &error); // 上一条回复不合协议的重交要求 (error 一行一处)
+std::string SystemMessage(const Context &c, const Gate &g, bool ask);
+std::string FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark, const std::string &left);
+std::string TestMessage(bool ask, const std::string &remark);
+std::string ResultMessage(const Act &a, int step, bool test, const std::string &left);
+std::string RetryMessage(const std::string &error); // 上一条回复不合协议的重交要求 (error 一行一处)
 std::string MemoText(const std::string &memo);
 std::string TextOf(const Step &sp);
 size_t FoldOf(Steps ss);      // 第 2..fold 条消息 (下标 [1, fold)) 折成结论; 0 = 不折

@@ -2,6 +2,7 @@
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Docs.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Feed.hpp"
 
 namespace GUI::Agent {
 

@@ -308,12 +308,14 @@ stk/
 │   │   │       ├── Tools.hpp                           # 🤖 工具真相表: AGENT_TOOLS (一行 = 枚举 / id / 中文名 / 形 / 类 / 折叠留原文 / 结果类型; 挂入 AGENT_ROWS) + 编译期类型化参数表 ArgDef → 系统提示工具节 / 回复解析 ParseCall (一条回复一个调用) / 参数校验 ArgsOf (接口工具 open / run 同表, 另出 inputSchema)
 │   │   │       ├── Notes.hpp                           # 🤖 跨会话全局记录 Notes (F / T / I / R, jsonl 累积, 研究员标处理)
 │   │   │       ├── Docs.hpp                            # 🤖 研报库工具 (只读 output/data/doc, 按篇懒加载并看取消旗): search_docs / search_factors / read_doc
-│   │   │       ├── tools/                              # 🤖 Kit.hpp 时间线 Step/Act (一步一个调用, 编号 #<步>; Act = Call + 时段 + 后台分段 Lap + 产出 ToolOut) + 账本 = 时间线的纯折叠 (TallyOf / Finished / AdoptedOf / StagedOf, 只读产出的 Effect) + 统一调用底座 Rig (open → pump / answer, abort, restore)
+│   │   │       ├── tools/                              # 🤖 Kit.hpp 时间线 Step/Act (一步一个调用, 编号 #<步>; 步发出的消息种类由时间线推出 KindOf; Act = Call + 时段 + 后台分段 Lap + 产出 ToolOut) + 账本 = 时间线的纯折叠 (TallyOf / Finished / AdoptedOf / StagedOf, 只读产出的 Effect) + 统一调用底座 Rig (open → pump / answer, abort, restore)
 │   │   │       │                                       #    · 工具契约: 一律 Call 进 → ToolOut 出 (原文 / 折叠一行 / 账本作用 Effect / 结构化结果 Res), 不碰时间线; 四形 = 四个函数类型, 清单按形生成全部声明 (签名不合即编译错) 与实现表 kSpecs:
 │   │   │       │                                       #      Sync (Call, Seat) → ToolOut / Pure (Call, Bay) → ToolOut / Lab (Call, Seat) → Prep (先给的产出 + 后台任务, GUI 收尾 Commit (ToolOut, Desk)) / Human (Call, Seat) → 问卷
 │   │   │       │                                       #    · Res 四面: text / gist / title / draw + 账本作用 effect / 作废 abort / 存档 save (要复原的另给 static load, 实现表按结果类型探到); All.hpp = 清单的结果类型列 → As<T>
 │   │   │       │                                       #    · 当场台面 Seat (Kit.hpp, GUI 线程, 可写候选台 Desk 与全局记录) ↔ 后台台面 Bay (Bay.hpp, 只读快照 ViewEnv + 计算流)
-│   │   │       │                                       #    · <类>.hpp 各工具的 Res (Look / Query / Trial / Note / Misc), <类>/<工具>.cpp 计算与原文; 观察核 look/Kernel.hpp (零分配 RankScratch)
+│   │   │       │                                       #    · <类>.hpp 各工具的 Res (Look / Query / Trial / Note / Misc), <类>/<工具>.cpp 计算与原文 (记录四工具同一个 note/Note.cpp); 观察核 look/Kernel.hpp (零分配 RankScratch)
+│   │   │       │                                       #    · 观察公共头 LookRes: 日段提示 period + 标题 headline, 原文 text_head ⇄ 展示 draw_head 逐字对仗
+│   │   │       │                                       #    · 工作台随机输入 Feed.hpp: 清单一行一个 Sample<工具>(Feed&) (与工具函数同处), 按本作用域取材
 │   │   │       │                                       #    · eval_factor 原文与展示逐节对仗: 最佳权重具体式 (负号前置) → 频率 · 预测周期 → 权重 (rIC · 中位 rIC · 每期毛多 / 毛空 / 净多空 · 成本 = 单边换手 买 / 卖 × 固定冲击) → 分年 (中位 rIC · 年换手) → 原文末尾累计分层 / 分年 rIC 两张正负柱图;
 │   │   │       │                                       #      展示另画写进的权重的累计 rIC (逐日 rIC 累加, 图例带年化 IR) 与分层图 (Run 顺带本持有期的逐日序列, 只在内存)
 │   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw, Mine 与 Bench 同源共用) + 三页: MinePage / 工作台 Bench (Agent → Tools, 主栏按类折叠一工具一页, 基于 Rig) / ConfigPage + 共享台面 Pages (Ui) + 控件 Widgets
@@ -321,7 +323,7 @@ stk/
 │   │   │       ├── Prompt.hpp                          # 🤖 纯成文层 (底座之上, 工具之下, 不认具体工具): 提示词模板填充 + 候选结局与调用成文 + 上下文纯函数 TurnsOf (只追加的整段对话; 近处过长即把远处的结果整块折成结论, kFoldSteps 一跳保前缀命中缓存)
 │   │   │       ├── Mine.hpp                            # 🤖 挖掘会话 (唯一一套) 的主循环 advance (Mine : Rig): 只认时间线, 一步一个调用 (未发 → 发; 在等 → 等; 调用 → 做; 做完 → 下一条);
 │   │   │       │                                       #    大脑 = Chat 或 Inbox, 只在 mind() 一处选其一, 发出 / 收到 / 作废同一条路 (连着只给本条, 否则完整上下文); 不合协议记一步 (下一条 = 重交要求); Cancel / 续 / 回退 + 停下报告
-│   │   │       ├── Journal.hpp                         # 🤖 会话目录的存档与可读日志: 时间线 JSON 契约 (读写成对; 结构化结果只存 Res::save 给的, 载入在当前台面复原) / log.md 成文 / 存过的会话一览
+│   │   │       ├── Journal.hpp                         # 🤖 会话目录的存档与可读日志 (目录与各文件均为 disk:: 节点, 一律经 disk:: 读写): 时间线 JSON 契约 (读写成对; 结构化结果只存 Res::save 给的, 载入在当前台面复原) / log.md 成文 / 存过的会话一览
 │   │   │       ├── Remote.hpp                          # 🤖 外部 agent 的 MCP 接口 (本机 Streamable HTTP · JSON-RPC: initialize / ping / tools/list / tools/call): 外部 agent 当 Mine 的大脑;
 │   │   │       │                                       #    open (同 New 开新会话) / doc / run (交一个调用或无参接上 / 续等), 研究工具只经 run 交; 只取会话信箱 Inbox 的信 / 投回复 (与内置大脑同一个游标); 执行中长等, 停下 / 等人即返
 │   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面外壳 (页签 / 每帧推进 / 选项落盘): Mine (作用域 / 会话控制 / 调用流 (一步一行, 调用为主体, 大脑那一侧折在里面) / 候选 / 记录处理 / 开放的特征与算子; 两种大脑同一个页) / Tools / Config, 各页在 ui/

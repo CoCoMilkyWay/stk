@@ -1,4 +1,5 @@
 // view_response — 看响应: 输入 factor / side / split → ResponseRes (开仓前后各时点的累计超额 / 因子分位 / 与此前收益的相关 / 按开仓时段) → 原文; 展示见 ui/look/ViewResponse.cpp
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 namespace GUI::Agent {
@@ -44,8 +45,10 @@ std::vector<RespPt> points_of(int seg) {
 
 } // namespace
 
+std::string ResponseRes::headline() const { return "因子 `" + label + "` · " + side + " · 开仓前后的累计超额"; }
+
 std::string ResponseRes::text() const {
-  std::string s = period + "## 因子 `" + label + "` · " + side + " · 开仓前后的累计超额\n";
+  std::string s = text_head();
   if (!events)
     return s + "本端没有真持有过的格\n";
   s += "事件 = 真持有段 (同 view_trades merge=run) 的开仓行, 共 " + str(events) + " 段" + (kept < events ? " (等距抽 " + str(kept) + " 段)" : "") + " · 零点 = 开仓行收盘价\n";

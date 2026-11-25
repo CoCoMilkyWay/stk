@@ -19,7 +19,7 @@ std::string hms(int c) {
 } // namespace
 
 void BookRes::draw() const {
-  heading(head);
+  draw_head();
   char b[320];
   if (traded)
     std::snprintf(b, sizeof(b), "逐笔 %zu 条 · 开 %.2f 高 %.2f 低 %.2f 收 %.2f · 成交额 %.0f 万 · 大单门槛 %.1f 万%s", orders, open, high, low, close, amt / 1e4, big / 1e4,

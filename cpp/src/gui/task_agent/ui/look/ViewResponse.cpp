@@ -11,9 +11,7 @@ namespace GUI::Agent {
 using namespace ui;
 
 void ResponseRes::draw() const {
-  if (!period.empty())
-    wrapped(color(TaskStatus::Kind::Warn), period);
-  heading("因子 " + label + " · " + side + " · 开仓前后的累计超额");
+  draw_head();
   if (!events) {
     ImGui::TextDisabled("本端没有真持有过的格");
     return;

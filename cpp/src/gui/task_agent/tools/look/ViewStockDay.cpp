@@ -1,5 +1,6 @@
 // view_stock_day — 看个股一天: 输入 code / date / factor / exprs / rows → StockDayRes (当日概况 + 逐行序列 + 分段表 + 逐行表) → 原文; 展示见 ui/look/ViewStockDay.cpp
 #include "gui/task_agent/Config.hpp"
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 namespace GUI::Agent {
@@ -7,8 +8,10 @@ namespace GUI::Agent {
 using namespace look;
 using json = nlohmann::ordered_json;
 
+std::string StockDayRes::headline() const { return code + " · " + date + " · " + level + " (每天 " + std::to_string(seg) + " 行)"; }
+
 std::string StockDayRes::text() const {
-  std::string s = period + "## " + code + " · " + date + " · " + level + " (每天 " + std::to_string(seg) + " 行)\n";
+  std::string s = text_head();
   const std::string open_str = first < 0 ? "当日无成交"
                                          : "首个有成交行 (" + clock[static_cast<size_t>(first)] + ") 收 " + num(close[static_cast<size_t>(first)]) + " (" +
                                                chg(close[static_cast<size_t>(first)] / pre - 1.0) + ")";

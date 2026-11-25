@@ -9,9 +9,7 @@ namespace GUI::Agent {
 using namespace ui;
 
 void ExplainRes::draw() const {
-  if (!period.empty())
-    wrapped(color(TaskStatus::Kind::Warn), period);
-  heading("因子 " + label + " 的成分");
+  draw_head();
   for (const std::string &e : exprs)
     wrapped_dim(e);
   char b[256];

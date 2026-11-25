@@ -1,4 +1,5 @@
 // finish — 结束: 无参数 → FinishRes → 原文; 展示见 ui/misc/Finish.cpp
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/Misc.hpp"
 
 namespace GUI::Agent {

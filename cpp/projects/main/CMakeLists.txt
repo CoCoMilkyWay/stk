@@ -439,6 +439,7 @@ set(MATH_PRECISE
     gui/task_agent/Remote.cpp
     gui/task_agent/TaskAgent.cpp
     gui/task_agent/Tools.cpp
+    gui/task_agent/tools/Feed.cpp
     gui/task_agent/tools/Kit.cpp
     gui/task_agent/tools/look/ViewBook.cpp
     gui/task_agent/tools/look/ViewExplain.cpp
@@ -452,10 +453,7 @@ set(MATH_PRECISE
     gui/task_agent/tools/look/ViewTrades.cpp
     gui/task_agent/tools/misc/AskHuman.cpp
     gui/task_agent/tools/misc/Finish.cpp
-    gui/task_agent/tools/note/NoteInsight.cpp
-    gui/task_agent/tools/note/ReportIssue.cpp
-    gui/task_agent/tools/note/RequestFeature.cpp
-    gui/task_agent/tools/note/RequestTool.cpp
+    gui/task_agent/tools/note/Note.cpp
     gui/task_agent/tools/query/ListLibrary.cpp
     gui/task_agent/tools/query/ListNotes.cpp
     gui/task_agent/tools/query/ListTried.cpp

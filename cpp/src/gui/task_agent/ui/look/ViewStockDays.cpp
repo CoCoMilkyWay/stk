@@ -7,11 +7,7 @@ namespace GUI::Agent {
 using namespace ui;
 
 void StockDaysRes::draw() const {
-  if (!period.empty())
-    wrapped(color(TaskStatus::Kind::Warn), period);
-  if (days.empty())
-    return;
-  heading(code + " · " + days.front().date + " ~ " + days.back().date + " (" + std::to_string(days.size()) + " 日) · " + level);
+  draw_head();
   for (const std::string &e : exprs)
     wrapped_dim(e);
   std::vector<double> cl, ch, rk;

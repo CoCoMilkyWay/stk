@@ -1,6 +1,7 @@
 // ask_human — 问研究员: 输入 questions → 研究员逐题点选 + 附言 → AskRes → 原文; 展示见 ui/misc/AskHuman.cpp
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/Misc.hpp"
 
 #include <cassert>

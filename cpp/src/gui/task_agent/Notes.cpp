@@ -2,7 +2,6 @@
 #include "gui/task_agent/Notes.hpp"
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Note.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -135,28 +134,6 @@ void Notes::drop(const std::string &session, int from) {
   for (const NoteKind k : kVals<NoteKind>)
     if (std::erase_if(notes_[k], [&](const Note &x) { return x.session == session && x.step >= from; }) > 0)
       rewrite(k);
-}
-
-// ---- 记录工具 (request_feature / request_tool / note_insight / report_issue) 的落记录与原文 ----
-std::string NoteRes::text() const {
-  if (!miss.empty())
-    return miss;
-  return "已记为 " + id + (ref.empty() ? "" : " (附议 " + ref + ")") + "; 全局可见: 研究员在界面里看, 后续会话用 list_notes 查得到";
-}
-
-std::string NoteRes::title() const { return miss.empty() ? id + " · " + fields.at("title").get<std::string>() : miss; }
-
-ToolOut FileNote(const Call &c, Seat &s) {
-  auto r = std::make_shared<NoteRes>();
-  const NoteKind k = NoteOf(c.tool);
-  r->kind = k, r->ref = c.str("ref"), r->fields = c.args, r->dry = s.dry;
-  r->fields.erase("ref");
-  if (!r->ref.empty() && !s.notes.find(k, r->ref)) {
-    r->miss = "没有" + std::string(def(k).cn) + " " + r->ref + ": ref 写 list_notes 里同类已有一条的编号 (编号首字母 " + def(k).prefix + "), 新提的不写";
-    return Done(std::move(r), false);
-  }
-  r->id = s.dry ? s.notes.next(k) : s.notes.add(c, s.scope, s.session, s.me).id;
-  return Done(std::move(r));
 }
 
 std::string NotesBrief(const Notes &notes, const std::string &scope) {

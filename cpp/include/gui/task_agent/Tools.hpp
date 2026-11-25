@@ -4,11 +4,11 @@
 // Tools — agent 的工具真相表: 系统提示的 "工具" 节 / 回复解析 / 参数校验 / 界面都从同一张表出
 // =============================================================================
 //   回复 = 一个调用 {"tool": 名, "args": {...}}; 系统执行后, 下一条消息交回它的结果
-//   实现形 Form (清单一列, 即工具函数的签名, 见 tools/Kit.hpp) → 执行方式 Exec (运行时唯一分派轴):
-//     Sync   → Sync   GUI 线程当场做完 (查特征叶 / 列候选与正式库 / 全局记录 / 提交 / 结束)
-//     Pure   → Lab    纯后台: 交右翼 worker 算完即是结果 (观察 view_* / 盘口重放 view_book / 研报库 search_docs · search_factors · read_doc)
-//     Lab    → Lab    GUI 备料 → 后台 → GUI 收尾 (回测 eval_factor)
-//     Human  → Human  等研究员点选答案 (ask_human)
+//   形 Form (清单一列 = 工具函数的签名, 见 tools/Kit.hpp; 也是运行时唯一分派轴, lab = 交右翼后台):
+//     Sync   当场   GUI 线程当场做完 (查特征叶 / 列候选与正式库 / 全局记录 / 提交 / 结束)
+//     Pure   后台   纯后台: 交右翼 worker 算完即是结果 (观察 view_* / 盘口重放 view_book / 研报库 search_docs · search_factors · read_doc)
+//     Lab    后台   GUI 备料 → 后台 → GUI 收尾 (回测 eval_factor)
+//     Human  等人   等研究员点选答案 (ask_human)
 //   校验两层:
 //     协议层 (ParseCall): JSON 结构 / 工具名 / 参数类型与范围 → 不合则不执行, 记成一步错, 下一条 = 重交要求
 //     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 研报 id 不成 → 该调用 ok=false 写原因
@@ -33,23 +33,15 @@
 
 namespace GUI::Agent {
 
-enum class Exec : uint8_t { Sync,
-                            Lab,
-                            Human };
-struct ExecDef {
-  const char *cn;
-};
-inline constexpr ExecDef kExecs[] = {{"当场"}, {"后台"}, {"等人"}};
-AGENT_ROWS(Exec, kExecs, Human);
-
 enum class Form : uint8_t { Sync,
                             Pure,
                             Lab,
                             Human };
 struct FormDef {
-  Exec exec;
+  const char *cn;
+  bool lab; // 交右翼后台
 };
-inline constexpr FormDef kForms[] = {{Exec::Sync}, {Exec::Lab}, {Exec::Lab}, {Exec::Human}};
+inline constexpr FormDef kForms[] = {{"当场", false}, {"后台", true}, {"后台", true}, {"等人", false}};
 AGENT_ROWS(Form, kForms, Human);
 
 enum class Cat : uint8_t { Look,   // view_*
@@ -97,11 +89,12 @@ enum class Tool : uint8_t { AGENT_TOOLS(AGENT_TOOL_ID) };
 
 struct ToolMeta {
   const char *id, *cn;
-  Exec exec; // = 形的执行方式
+  Form form;
   Cat cat;
   bool keep;
+  constexpr bool lab() const { return def(form).lab; }
 };
-#define AGENT_TOOL_META(T, id, cn, F, C, keep, R) {id, cn, def(Form::F).exec, Cat::C, keep},
+#define AGENT_TOOL_META(T, id, cn, F, C, keep, R) {id, cn, Form::F, Cat::C, keep},
 inline constexpr ToolMeta kTools[] = {AGENT_TOOLS(AGENT_TOOL_META)};
 #undef AGENT_TOOL_META
 AGENT_ROWS(Tool, kTools, AskHuman);

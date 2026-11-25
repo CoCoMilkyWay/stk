@@ -1,5 +1,6 @@
 // view_book — 看盘口重放: 输入 code / date / time / step / at / big / n → BookRes (当日与窗口概况 / 逐秒序列 / 逐时表 / 大单事件 / 全簿剖面) → 原文; 展示见 ui/look/ViewBook.cpp
 #include "gui/task_agent/Config.hpp"
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 #include "features/OrderBook/LimitOrderBook.hpp"
@@ -95,8 +96,10 @@ float quantile_of(const L2::FrameView &v, float q) {
 
 } // namespace
 
+std::string BookRes::headline() const { return what + " (额 万元; 价差 / 距盘口按 0.01 元一跳)"; }
+
 std::string BookRes::text() const {
-  std::string s = head + " (额 万元; 价差 / 距盘口按 0.01 元一跳)\n";
+  std::string s = text_head();
   s += "当日: 逐笔 " + str(orders) + " 条 · " +
        (traded ? "开 " + px2(open) + " 高 " + px2(high) + " 低 " + px2(low) + " 收 " + px2(close) + " · 成交额 " + w4(amt) : std::string("无成交")) + " · 大单门槛 " + w4(big) +
        (big_given ? " (给定)" : " (当日新挂单额 " + fmt("%.0f", kBigQuantile * 100.0) + " 分位)") + "\n";
@@ -161,7 +164,7 @@ std::string BookRes::text() const {
 }
 
 std::string BookRes::title() const {
-  return head.substr(3) + " · " + (traded ? "收 " + px2(close) + " · 成交额 " + w4(amt) : std::string("无成交")) + " · 窗口主动买 " + w4(taker[0]) + " / 卖 " + w4(taker[1]);
+  return what + " · " + (traded ? "收 " + px2(close) + " · 成交额 " + w4(amt) : std::string("无成交")) + " · 窗口主动买 " + w4(taker[0]) + " / 卖 " + w4(taker[1]);
 }
 
 ToolOut ViewBook(const Call &c, Bay &bay) {
@@ -198,7 +201,7 @@ ToolOut ViewBook(const Call &c, Bay &bay) {
   }
 
   assert(env.orders && "逐笔帧目录未扫描");
-  const std::string head_s = "## " + code + " · " + misc::dash(date) + " · " + hms(from) + "–" + hms(to) + " 逐笔重放";
+  const std::string what = code + " · " + misc::dash(date) + " · " + hms(from) + "–" + hms(to) + " 逐笔重放";
   const size_t didx = env.orders->day_idx(date);
   const FrameRef &ref = env.orders->at(didx, asset_id);
   L2::FrameView view;
@@ -210,7 +213,7 @@ ToolOut ViewBook(const Call &c, Bay &bay) {
                             : ds.empty()                  ? "逐笔库没有任何日文件"
                                                           : "逐笔日文件里没有这一天 (逐笔共 " + str(ds.size()) + " 天: " + misc::dash(ds.front()) + " ~ " +
                                                misc::dash(ds.back()) + "; 非交易日或该日未编码)";
-    return Fail(head_s + "\n没重放成: " + why);
+    return Fail("## " + what + "\n没重放成: " + why);
   }
 
   const int s0 = trade_sec(from), s1 = trade_sec(to - 1) + 1, at_s = trade_sec(at_clock);
@@ -368,7 +371,7 @@ ToolOut ViewBook(const Call &c, Bay &bay) {
   auto res = std::make_shared<BookRes>();
   BookRes &B = *res;
   const int n = static_cast<int>(secs.size()), sp = step_of(c.num("step"), n), R_rows = (n + sp - 1) / sp;
-  B.head = head_s, B.orders = n_ord;
+  B.what = what, B.orders = n_ord;
   B.traded = day_close > 0, B.open = day_open, B.high = day_high, B.low = day_low, B.close = day_close, B.amt = day_amt;
   B.big = big, B.big_given = c.num("big") > 0;
   B.from = from, B.step = sp, B.call = from < kOpenCall || to > kCloseCall;

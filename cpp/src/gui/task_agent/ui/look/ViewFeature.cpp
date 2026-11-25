@@ -9,8 +9,7 @@ namespace GUI::Agent {
 using namespace ui;
 
 void FeatureRes::draw() const {
-  if (!period.empty())
-    wrapped(color(TaskStatus::Kind::Warn), period);
+  draw_head();
   char b[256];
   for (size_t i = 0; i < feats.size(); ++i) {
     const Feat &f = feats[i];

@@ -9,9 +9,7 @@ namespace GUI::Agent {
 using namespace ui;
 
 void TradesRes::draw() const {
-  if (!period.empty())
-    wrapped(color(TaskStatus::Kind::Warn), period);
-  heading("因子 " + label + " · " + side + " · 合并 " + merge + win);
+  draw_head();
   if (!cells) {
     ImGui::TextDisabled("本端没有真持有过的格");
     return;

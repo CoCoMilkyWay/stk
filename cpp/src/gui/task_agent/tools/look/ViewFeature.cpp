@@ -1,4 +1,5 @@
 // view_feature — 看特征: 输入 exprs → FeatureRes (分布 / 方差来源 / 持续性 / 日内轮廓 / rIC / 两两相关) → 原文; 展示见 ui/look/ViewFeature.cpp
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 namespace GUI::Agent {
@@ -7,7 +8,7 @@ using namespace look;
 using json = nlohmann::ordered_json;
 
 std::string FeatureRes::text() const {
-  std::string s = period;
+  std::string s = text_head();
   for (size_t i = 0; i < feats.size(); ++i) {
     const Feat &f = feats[i];
     s += "## E" + str(i + 1) + " `" + f.raw + "`\n";

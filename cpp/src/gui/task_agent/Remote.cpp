@@ -91,13 +91,6 @@ constexpr ApiDef kApis[] = {
      kRunArgs}};
 AGENT_ROWS(Api, kApis, Run);
 
-std::string api_names() {
-  std::string s;
-  for (const Api a : kVals<Api>)
-    s += (s.empty() ? "" : " / ") + std::string(def(a).id);
-  return s;
-}
-
 json tools_list() {
   json ts = json::array();
   for (const Api a : kVals<Api>)
@@ -260,13 +253,6 @@ struct Waiter {
   Answer answer;
 };
 
-std::string names_of(const std::vector<Choice> &cs) {
-  std::string s;
-  for (const Choice &c : cs)
-    s += (s.empty() ? "" : " / ") + c.name;
-  return s;
-}
-
 // 后台调用执行中的进度 (超时交回)
 std::string progress(const Mine &m) {
   const Act *a = m.acting();
@@ -367,24 +353,23 @@ struct Remote::Impl {
     s.remote = true;
     std::string why;
     // 名 → 选项 (不给 = 照研究员选的)
-    const auto pick = [&](const char *key, const std::vector<Choice> &cs) -> const Choice * {
+    const auto pick = [&](const char *key, const std::vector<Choice> &cs) -> std::optional<Choice> {
       if (!x.contains(key))
-        return nullptr;
-      const auto it = std::find_if(cs.begin(), cs.end(), [&](const Choice &c) { return c.name == x[key].get_ref<const std::string &>(); });
-      if (it == cs.end())
-        why += (why.empty() ? "" : "; ") + (std::string(key) + " 须是这些之一: " + names_of(cs));
-      return it == cs.end() ? nullptr : &*it;
+        return std::nullopt;
+      const auto it = std::ranges::find(cs, x[key].get_ref<const std::string &>(), &Choice::name);
+      if (it != cs.end())
+        return *it;
+      why += (why.empty() ? "" : "; ") + (std::string(key) + " 须是这些之一: " + text::join(cs, " / ", &Choice::name));
+      return std::nullopt;
     };
-    if (const Choice *p = pick("pool", catalog::pools()))
+    if (const std::optional<Choice> p = pick("pool", catalog::pools()))
       s.sc.pool = p->name;
-    const Choice *lv = pick("level", catalog::levels());
-    if (lv)
-      s.sc.level = lv->key;
-    const std::vector<Choice> hs = catalog::holds(data, s.sc.level);
-    if (const Choice *h = pick("hold", hs))
+    if (const std::optional<Choice> l = pick("level", catalog::levels()))
+      s.sc.level = l->key;
+    if (const std::optional<Choice> h = pick("hold", catalog::holds(data, s.sc.level)))
       s.sc.hold = h->key;
-    else if (lv && !hs.empty() && std::none_of(hs.begin(), hs.end(), [&](const Choice &c) { return c.key == s.sc.hold; }))
-      s.sc.hold = hs.front().key;
+    else
+      catalog::fit(data, s.sc);
     if (!why.empty())
       return fail("没开成, 参数不合: " + why);
     if (x.contains("years"))
@@ -404,7 +389,7 @@ struct Remote::Impl {
     const auto fail = [&](std::string why) { a.answer({true, std::move(why)}); };
     const std::optional<Api> api = FindId<Api>(a.tool);
     if (!api)
-      return fail("没有工具 " + a.tool + " (只有 " + api_names() + "; 研究工具经 run 的 tool / args 交)");
+      return fail("没有工具 " + a.tool + " (只有 " + text::join(kApis, " / ", &ApiDef::id) + "; 研究工具经 run 的 tool / args 交)");
     json x;
     if (std::vector<std::string> errs; !ArgsOf(def(*api).args, a.tool, a.args, a.tool, x, errs))
       return fail(a.tool + " 的参数不合: " + text::join(errs, "; "));

@@ -1,5 +1,6 @@
 // list_library — 列正式库: 输入 top / skip → LibraryRes (同评估期、本持有期有统计的正式因子, score (中位 rIC) 降序) → 原文; 展示见 ui/query/ListLibrary.cpp
 #include "gui/task_agent/Prompt.hpp"
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/Query.hpp"
 
 namespace GUI::Agent {

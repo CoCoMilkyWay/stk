@@ -1,5 +1,6 @@
 // search_leaves — 查特征叶: 输入 query / n → LeavesRes (命中的组行) → 原文; 展示见 ui/query/SearchLeaves.cpp
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/Query.hpp"
 
 #include <string_view>

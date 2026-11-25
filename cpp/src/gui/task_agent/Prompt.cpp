@@ -30,16 +30,16 @@ using KV = std::vector<std::pair<std::string_view, std::string>>;
 constexpr size_t kTitleChars = 40;
 constexpr size_t kWhyChars = 80;
 
-Message fill(Msg m, const KV &kv) {
-  return {m, text::fill(LoadPrompt(m), [&](std::string_view key) -> std::string {
-            if (const auto it = std::find_if(kv.begin(), kv.end(), [&](const auto &p) { return p.first == key; }); it != kv.end())
-              return it->second;
-            const ConstDef *c = const_of(key);
-            if (!c)
-              std::fprintf(stderr, "[agent] %s.md: 未知占位 {{%.*s}}\n", def(m).id, static_cast<int>(key.size()), key.data());
-            assert(c && "模板占位键未知");
-            return std::to_string(c->value);
-          })};
+std::string fill(Msg m, const KV &kv) {
+  return text::fill(LoadPrompt(m), [&](std::string_view key) -> std::string {
+    if (const auto it = std::find_if(kv.begin(), kv.end(), [&](const auto &p) { return p.first == key; }); it != kv.end())
+      return it->second;
+    const ConstDef *c = const_of(key);
+    if (!c)
+      std::fprintf(stderr, "[agent] %s.md: 未知占位 {{%.*s}}\n", def(m).id, static_cast<int>(key.size()), key.data());
+    assert(c && "模板占位键未知");
+    return std::to_string(c->value);
+  });
 }
 
 std::string or_none(std::string s, const char *none) { return s.empty() ? none : s; }
@@ -166,7 +166,7 @@ std::string StageOf(const Act &a, double frac) {
   const std::string pct = text::fmt(" %.0f%%", frac * 100.0);
   if (!a.laps.empty())
     return def(a.laps.back().step).name + pct;
-  return def(a.call.tool).exec == Exec::Lab && frac > 0.0 ? "执行中" + pct : std::string("执行中");
+  return def(a.call.tool).lab() && frac > 0.0 ? "执行中" + pct : std::string("执行中");
 }
 
 std::string ResultText(const Act &a, int step) {
@@ -287,7 +287,7 @@ std::string AnswerText(const Asked &a) {
   return s + "附言: " + or_none(a.note, "(无)") + "\n";
 }
 
-Message SystemMessage(const Context &c, const Gate &g, bool ask) {
+std::string SystemMessage(const Context &c, const Gate &g, bool ask) {
   text::Table ops({"算子", "中文名", "签名 (元与参数的值域)", "输出域", "定义", "说明"});
   for (const Op &o : c.ops)
     ops.add({o.name, o.name_cn, "$" + o.sig + "$", o.out, "$" + o.tex + "$", o.note});
@@ -311,7 +311,7 @@ Message SystemMessage(const Context &c, const Gate &g, bool ask) {
                             {"ops", ops.str()}});
 }
 
-Message FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark, const std::string &left) {
+std::string FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark, const std::string &left) {
   return fill(Msg::First, {{"hold", c.hold},
                            {"remark", remark_text(remark)},
                            {"budget", left.empty() ? "不限" : left + " (用完会话即停下, 收手前留出 submit_factor 与 finish 的步数)"},
@@ -322,7 +322,7 @@ Message FirstMessage(const Context &c, int tried, const std::string &notes, bool
                                          : "自己定下要做的那一个因子 (新起, 或从已试候选 / 正式库里挑) 和方向"}});
 }
 
-Message TestMessage(bool ask, const std::string &remark) {
+std::string TestMessage(bool ask, const std::string &remark) {
   std::string tools;
   for (const Tool t : kVals<Tool>)
     if (t != Tool::AskHuman || ask)
@@ -339,11 +339,11 @@ std::string NextStep(bool test, const std::string &left) {
   return "根据结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或回测下一个变体; 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish." + budget;
 }
 
-Message ResultMessage(const Act &a, int step, bool test, const std::string &left) {
+std::string ResultMessage(const Act &a, int step, bool test, const std::string &left) {
   return fill(Msg::Result, {{"result", ResultText(a, step)}, {"next", NextStep(test, left)}});
 }
 
-Message RetryMessage(const std::string &error) {
+std::string RetryMessage(const std::string &error) {
   std::string list;
   for (size_t i = 0; i <= error.size();) {
     const size_t e = std::min(error.find('\n', i), error.size());

@@ -9,9 +9,7 @@ namespace GUI::Agent {
 using namespace ui;
 
 void SnapshotRes::draw() const {
-  if (!period.empty())
-    wrapped(color(TaskStatus::Kind::Warn), period);
-  heading("因子 " + label + " · " + when + " (" + level + ")");
+  draw_head();
   char b[256];
   if (row_ok)
     std::snprintf(b, sizeof(b), "在池且有秩 %zu 只 · rIC %.3f · G20 %+.1fbp (%d 只) · G1 %+.1fbp (%d 只)", n, ric, g20 * 1e4, c20, g1 * 1e4, c1);

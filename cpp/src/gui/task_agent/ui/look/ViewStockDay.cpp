@@ -13,9 +13,7 @@ namespace GUI::Agent {
 using namespace ui;
 
 void StockDayRes::draw() const {
-  if (!period.empty())
-    wrapped(color(TaskStatus::Kind::Warn), period);
-  heading(code + " · " + date + " · " + level);
+  draw_head();
   char b[320];
   std::snprintf(b, sizeof(b), "昨收 %.2f · 高 %.2f (%+.2f%%) · 低 %.2f (%+.2f%%) · 收 %.2f (%+.2f%%) · 涨停 %.2f / 跌停 %.2f · 在池 %d / %d 行", pre, hi, (hi / pre - 1) * 100, lo,
                 (lo / pre - 1) * 100, last, (last / pre - 1) * 100, lim_up, lim_dn, in, seg);

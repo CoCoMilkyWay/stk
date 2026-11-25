@@ -171,7 +171,12 @@ enum class Seg : std::uint8_t {
   X(AgentFactors,      AgentScope,        Dir,    Lit,       "factors",           "",         false)       \
   X(AgentFactorFile,   AgentFactors,      File,   Factor,    "",                  ".json",    false)       \
   X(AgentChats,        AgentScope,        Dir,    Lit,       "chat",              "",         false)       \
-  X(AgentChat,         AgentChats,        Bundle, Stamp,     "",                  "",         false)       \
+  X(AgentChat,         AgentChats,        Dir,    Stamp,     "",                  "",         false)       \
+  X(AgentChatSystem,   AgentChat,         File,   Lit,       "system.md",         "",         false)       \
+  X(AgentChatSession,  AgentChat,         File,   Lit,       "session.json",      "",         false)       \
+  X(AgentChatBrief,    AgentChat,         File,   Lit,       "brief.json",        "",         false)       \
+  X(AgentChatLog,      AgentChat,         File,   Lit,       "log.md",            "",         false)       \
+  X(AgentChatReport,   AgentChat,         File,   Lit,       "report.md",         "",         false)       \
   X(AgentNotes,        AgentMode,         Dir,    Lit,       "notes",             "",         false)       \
   X(AgentNoteFile,     AgentNotes,        File,   Note,      "",                  ".jsonl",   false)       \
   /* 实盘 */                                                                                              \

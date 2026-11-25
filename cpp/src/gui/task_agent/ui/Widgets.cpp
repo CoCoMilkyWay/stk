@@ -269,8 +269,7 @@ void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, 
     ImGui::EndDisabled();
     return;
   }
-  if (std::none_of(hs.begin(), hs.end(), [&](const Choice &c) { return c.key == o.hold; }))
-    o.hold = hs.front().key;
+  catalog::fit(data, o);
   for (const Choice &h : hs) {
     ImGui::SameLine();
     if (ImGui::RadioButton((h.name + "##hd").c_str(), o.hold == h.key))

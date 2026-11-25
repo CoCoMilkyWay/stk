@@ -1,4 +1,5 @@
 // view_explain — 看成分: 输入 factor / exprs → ExplainRes (各基准的相关 / 自身 rIC / 只剥它后的 rIC + 全剥离对照) → 原文; 展示见 ui/look/ViewExplain.cpp
+#include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
 namespace GUI::Agent {
@@ -42,15 +43,12 @@ void resid_into(const std::vector<std::vector<double>> &X, std::span<const doubl
 
 } // namespace
 
-std::string ExplainRes::head() const {
-  std::string s = period + "## 因子 `" + label + "` 的成分\n";
-  for (const std::string &e : exprs)
-    s += e;
-  return s;
-}
+std::string ExplainRes::headline() const { return "因子 `" + label + "` 的成分"; }
+
+std::string ExplainRes::lead() const { return text_head() + text::join(exprs, ""); }
 
 std::string ExplainRes::text() const {
-  std::string s = head();
+  std::string s = lead();
   s += "抽 " + str(rows) + " 行, 每行取在池、标签有效且全部基准有值的格; 收益类基准是对数收益减同行在池均值 (跨日按昨收接); 相关与 rIC 都是逐行截面 Spearman 的均值\n";
   s += "因子 rIC (同口径) " + r3(fric) + "\n\n";
   text::Table btbl({"基准", "与因子的截面秩相关", "基准自身 rIC", "只剥它后的因子 rIC"});
@@ -287,7 +285,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
   for (size_t i = 0; i < feats.size(); ++i)
     R.exprs.push_back(expr_line(i, feats[i], "没算成, 不进基准"));
   if (!fric.n)
-    return Fail(R.head() + "没有可用的行 (每行至少要 " + std::to_string(kMinCs) + " 个在池、标签有效且全部基准有值的格)\n");
+    return Fail(R.lead() + "没有可用的行 (每行至少要 " + std::to_string(kMinCs) + " 个在池、标签有效且全部基准有值的格)\n");
   R.rows = fric.n, R.fric = fric.mean(), R.r2 = r2.mean(), R.rric = rric.mean();
   for (size_t j = 0; j < b_names.size(); ++j)
     R.bases.push_back({b_names[j], corr[j].mean(), bric[j].mean(), sric[j].mean()});
