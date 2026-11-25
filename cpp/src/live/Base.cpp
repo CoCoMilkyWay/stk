@@ -53,6 +53,14 @@ int parse_sec(std::string_view s) {
   return h * 3600 + m * 60 + c;
 }
 
+std::string quiet(int sec) {
+  constexpr int kSpans[][2] = {{9 * 3600 + 25 * 60, 9 * 3600 + 30 * 60}, {11 * 3600 + 30 * 60, 13 * 3600}};
+  for (const auto &[lo, hi] : kSpans)
+    if (lo <= sec && sec < hi)
+      return strf("%s 在只收单不撮合的 %s ~ %s, 盘口不作数, %s 后再下", fmt_sec(sec).c_str(), fmt_sec(lo).c_str(), fmt_sec(hi).c_str(), fmt_sec(hi).c_str());
+  return {};
+}
+
 Mkt market_of(std::string_view code) {
   assert(code.size() == 6);
   if (code.starts_with("4") || code.starts_with("8") || code.starts_with("92"))

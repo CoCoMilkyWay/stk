@@ -2,7 +2,7 @@
 //   Driver (一个客户端一份): 同步, 调用线程跑完; 刷新线程与事务线程会同时调, 自身线程安全
 //     接: connect 接上客户端 (换了进程即重接, 接上即可读) → 是谁
 //     读: read 一问读齐 Snapshot 的五样 (fills / pos / pends / debts / acct; 适配可让几张表同时在途, 一趟往返)
-//     事务: 拉 terms / flows (慢) 与写 place (一张限价单, steps 即各步名) 三样同形; 进度 (段 / 实时一行) 与记一条统一经 live::trace
+//     事务: 拉 terms / flows (慢) 与写 place (一张限价单, steps 即各步名, 其前 unsent 步不报出委托) 三样同形; 进度 (段 / 实时一行) 与记一条统一经 live::trace
 //     画面: mirror 可选, 给 GUI 复现客户端窗口 (live/Mirror.hpp)
 //   Broker (券商无关, 只此一份): 包一个 Driver + 刷新线程; 读由刷新线程发布, 事务由调用线程跑 (段 + 接上 + Driver), 两类同一个接入
 //     读: 一轮读进一份局部的 Snapshot, 轮末整份发布 (不可变; 指针换了 = 换了一份), 上层不见半轮也不见两轮的混合;
@@ -187,6 +187,7 @@ public:
   virtual Placed place(const OrderReq &o) = 0;             // 停在失败的那一步
 
   virtual std::span<const std::string_view> steps() const = 0; // place 的各步名 (即其各步的段名)
+  virtual size_t unsent() const = 0;                           // steps 的前几步不报出委托: place 停在其中 = 什么都没报, 原样重下不会重复
   virtual std::unique_ptr<Mirror> mirror() { return nullptr; } // 不支持复现画面 = 空
 };
 
@@ -215,6 +216,7 @@ public:
   void batch(const std::function<void()> &fn);
 
   std::span<const std::string_view> steps() const;
+  size_t unsent() const;
   std::unique_ptr<Mirror> mirror() const;
 
 private:

@@ -56,6 +56,9 @@ std::string guard(F &&fn) {
 int sec_now();                       // 本地当日秒 0..86399
 std::string fmt_sec(int sec);        // 当日秒 → HH:MM:SS (< 0 → "—")
 int parse_sec(std::string_view str); // HH:MM:SS → 当日秒 (非法 → -1)
+// 只收单不撮合的静默段 [09:25, 09:30) / [11:30, 13:00) 的原因, 不在其中 = 空: 盘口是静止的挂单 (不交叉, 不按竞价看),
+// 按它定的扫档 / 对手价到开撮时多已不对, 开撮头几秒盘口又最薄 —— 不下单. 集合竞价 (盘口交叉) 照下, 见 live/Book.hpp order_px
+std::string quiet(int sec);
 
 // ---------- 市场 ----------
 

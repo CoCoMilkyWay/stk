@@ -19,6 +19,7 @@
 namespace live::tdx::flash {
 
 std::span<const std::string_view> steps();
+size_t unsent();                 // 回报之前的各步 (回报一步才点确认报出)
 Placed place(const OrderReq &o); // 当前线程跑完 (须持界面锁)
 
 } // namespace live::tdx::flash

@@ -130,12 +130,28 @@ std::string after(const std::string &text, const std::string &label, bool dots, 
   fail("确认框缺" + label + " " + text);
 }
 
-// 图表切到 sec: 主窗标题已是「…-名称]」即跳过, 否则向主窗投联动消息、等标题换过来 (客户端查着时照样处理联动)
+// 图表标题里的名称与 name 认作同一只: 去掉除权除息前缀 (XD / XR / DR) 后一方是另一方的开头 (客户端名称限 8 字节, 加了前缀即截掉尾字)
+bool same_name(std::string a, std::string b) {
+  const auto strip = [](std::string &s) {
+    for (const char *p : {"XD", "XR", "DR"})
+      if (s.starts_with(p))
+        return void(s.erase(0, 2));
+  };
+  strip(a);
+  strip(b);
+  return !a.empty() && !b.empty() && (a.starts_with(b) || b.starts_with(a));
+}
+
+// 图表切到 sec: 主窗标题已是「…-名称]」(same_name; 认宽了也有填单 / 确认两处按代码核) 即跳过, 否则向主窗投联动消息、等标题换过来 (客户端查着时照样处理联动)
 //   迟到的框: 上一单开窗超时 (已记失败、收尾时还没出来) 后其闪电窗可能这时才冒出来. 它是模态的, 主窗随之禁用、投的联动作废
 //   (实测: 下一单因此切不过去, 连带失败). 等的同时见到本适配的框即关掉, 关后下一轮重投联动; 不另加等待, 仍在 kLinkTimeout 内
 void go_to(const Hwnd &main, const Sec &x) {
-  const std::string want = win::bare("-" + x.name + "]");
-  const auto there = [&] { return win::bare(win::title(main)).ends_with(want); };
+  const std::string want = win::bare(x.name);
+  const auto there = [&] {
+    const std::string t = win::bare(win::title(main));
+    const size_t dash = t.rfind('-');
+    return t.ends_with("]") && dash != std::string::npos && same_name(t.substr(dash + 1, t.size() - dash - 2), want);
+  };
   if (there())
     return;
   need(x.mkt != Mkt::BJ, x.code + " 北交所没有联动前缀");
@@ -272,6 +288,12 @@ constexpr auto kStepNames = [] {
 } // namespace
 
 std::span<const std::string_view> steps() { return kStepNames; }
+
+size_t unsent() {
+  constexpr size_t n = std::size(kStages) - 1;
+  static_assert(kStages[n].name == "回报");
+  return n;
+}
 
 Placed place(const OrderReq &o) {
   const Kind *k = kind_of(o.side, o.credit);

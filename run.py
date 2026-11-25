@@ -127,7 +127,7 @@ def main():
         subprocess.run([sys.executable, "py/app/cpp/lint.py"], check=True)
 
     print("\nSyncing remote...")
-    _sync_remote(fetch)
+    # _sync_remote(fetch)
 
     print("\nScanning untracked...")
     _prune_untracked()

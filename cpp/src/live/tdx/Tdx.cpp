@@ -85,6 +85,7 @@ public:
     return flash::place(o);
   }
   std::span<const std::string_view> steps() const override { return flash::steps(); }
+  size_t unsent() const override { return flash::unsent(); }
   std::unique_ptr<Mirror> mirror() override { return std::make_unique<TdxMirror>(); }
 
 private:

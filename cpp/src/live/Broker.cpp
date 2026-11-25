@@ -240,6 +240,8 @@ void Broker::batch(const std::function<void()> &fn) {
 
 std::span<const std::string_view> Broker::steps() const { return c_->d->steps(); }
 
+size_t Broker::unsent() const { return c_->d->unsent(); }
+
 std::unique_ptr<Mirror> Broker::mirror() const { return c_->d->mirror(); }
 
 } // namespace live

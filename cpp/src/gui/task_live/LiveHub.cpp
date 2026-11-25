@@ -24,6 +24,7 @@ using live::strf;
 struct LiveHub::Core {
   std::unique_ptr<live::Broker> broker; // connect 时建一次, 之后只读
   std::vector<std::string> steps;       // 下单各步, 同 broker 建一次
+  size_t unsent = 0;                    // steps 的前几步不报出委托 (「行情」+ broker 的)
   live::trace::Track track;             // 事务线程此刻在哪
 
   // mu: 三份快照 (改 = 抄一份改了换上)、两样拉取的拉于与事务日志的位置
@@ -161,8 +162,12 @@ void stage(Core &c, std::string s) {
 
 // 事务里下一单: 「行情」从 books 取盘口记一条、按 mode 定委托价 (yuan > 0 = 按额: 额定价、按委托价折股; 否则按 o.qty 股), 再交 broker 下.
 // 本单进最近几单之首, 其各步 (段名即步名) 与实时一行经事务线程的 Hooks 同步进本单; 请求与结局各记一条.
-// 成败看 st, 不抛: 本单出的任何错 (含应答畸形抛的) 都收在本单, 批量下单接着下后面的
+// 成败看 st, 不抛: 本单出的任何错 (含应答畸形抛的) 都收在本单, 批量下单接着下后面的.
+// 名称换成合并条款的 (本地库简称): 券商表给的可能是全称, 客户端切图表按标题里的简称认
 OrderJob exec(Core &c, Books &books, live::OrderReq o, double yuan, live::PxMode mode, const std::string &at) {
+  if (const std::shared_ptr<const live::Terms> t = inputs(c)->terms.merged)
+    if (const auto i = t->find(o.code); i != t->end())
+      o.name = i->second.name;
   const char *px_name = live::kPxModeNames[static_cast<int>(mode)];
   std::string label = yuan > 0 ? strf("%gW", yuan / 1e4) : strf("%lld股", static_cast<long long>(o.qty));
   live::trace::note("order", strf("%s %s %s %s %s · %s", live::side_name(o.side), live::credit_name(o.credit), o.code.c_str(), o.name.c_str(), label.c_str(), px_name),
@@ -189,6 +194,8 @@ OrderJob exec(Core &c, Books &books, live::OrderReq o, double yuan, live::PxMode
 
   live::Placed p;
   const std::string err = live::guard([&] {
+    const std::string q = live::quiet(live::sec_now());
+    live::need(q.empty(), q);
     {
       live::trace::Span sp("行情");
       const Books::Book b = books.get(o);
@@ -217,6 +224,19 @@ OrderJob exec(Core &c, Books &books, live::OrderReq o, double yuan, live::PxMode
 }
 
 std::string failed(const OrderJob &j) { return strf("%s %s 下单失败: %s", j.o.code.c_str(), j.o.name.c_str(), j.msg.c_str()); }
+
+// 批里一单下完, 末了要不要重下一次 (空 = 不): 停在报出委托之前的原样重下 (客户端一时没跟上 / 钱券那时还没到账; 每次至多费几秒);
+// 买单被最大可买封顶少买的重下余量 (够起买量): 前面的卖单陆续成交, 回款与腾出的保证金随之到账
+std::optional<live::OrderReq> redo(const Core &c, const OrderJob &j) {
+  if (j.st == JobSt::Err)
+    return j.at < c.unsent ? std::optional<live::OrderReq>(j.o) : std::nullopt;
+  const int64_t rest = j.o.qty - j.got.qty;
+  if (j.o.side != live::kBuy || rest < live::lot(j.o.code).first)
+    return std::nullopt;
+  live::OrderReq o = j.o;
+  o.qty = rest;
+  return o;
+}
 
 // 两样拉取 (同形, 下标 kPulls 序): miss = 拉过之后、快照 s 读到后另该拉的情形 (PullSpec::also); run = 拉 → 存, 换上 → 拉于
 bool terms_miss(Core &c, const live::Snapshot &s) {
@@ -308,13 +328,17 @@ live::rebal::Plan plan_now(Core &c, sina::Client &cl) {
 }
 
 // 执行调仓. 要紧处:
+//   · 只收单不撮合的静默段 (live::quiet) 不起: 盘口不作数; 各单下前另核一次 (批跨进静默段即其后各单失败)
 //   · 试算现做一遍 (刷新后的账户 + 此刻行情), 页面上的那份只作预览; 各单的股数照它, 委托价下单时按新取的盘口再定
-//   · 一口气下完, 不等成交: 卖出回款 / 腾出的保证金在卖单成交前还没到账, 紧跟着的融资买单由闪电窗的最大可买封顶 (少买的事后人工补);
+//   · 一口气下完, 不等成交: 卖出回款 / 腾出的保证金在卖单成交前还没到账, 紧跟着的融资买单由闪电窗的最大可买封顶 (少买的余量批末重下);
 //     不等是有意的 —— 等成交会在半路卡住 (卖了一半没买), 留下方向与价格敞口
-//   · 一单失败 (含任何意外) 只记下、接着下后面的, 末了一并报失败 (该补哪几单); 取行情、等界面一律有界, 不会卡在某一单
+//   · 一单失败 (含任何意外) 只记下、接着下后面的; 批末把没报出就停下的与封顶少买的余量按原序重下一轮 (redo, 只一轮),
+//     仍没下成的末了一并报失败 (该补哪几单); 取行情、等界面一律有界, 不会卡在某一单
 //   · 下完即清掉卖出设置 (先于末了的刷新: 刷新失败也不留着): 再点执行不会重复卖
 //   · 末了的刷新只为页面尽早见到结果, 失败只记进结局, 不盖掉各单的结局
 void rebal_task(Core &c) {
+  const std::string q = live::quiet(live::sec_now());
+  live::need(q.empty(), q);
   sina::Client cl(sina::kQuoteHost);
   if (!inputs(c)->terms.raw)
     pull_run(c, Pull::Terms);
@@ -330,9 +354,17 @@ void rebal_task(Core &c) {
   std::vector<std::string> fails; // 没下成的单: 记下接着下后面的, 末了一并报
   c.broker->batch([&] {
     Books books(std::vector<live::Sec>(p.orders.begin(), p.orders.end()));
+    std::vector<live::OrderReq> again; // 末了重下的 (见 redo), 原序
     for (size_t i = 0; i < p.orders.size(); ++i) {
       const live::rebal::Order &o = p.orders[i];
       const OrderJob j = exec(c, books, o, 0, mode, strf("%s %zu/%zu", live::side_name(o.side), i + 1, p.orders.size()));
+      if (std::optional<live::OrderReq> r = redo(c, j))
+        again.push_back(std::move(*r));
+      else if (j.st != JobSt::Ok)
+        fails.push_back(failed(j));
+    }
+    for (size_t i = 0; i < again.size(); ++i) {
+      const OrderJob j = exec(c, books, again[i], 0, mode, strf("重下 %zu/%zu", i + 1, again.size()));
       if (j.st != JobSt::Ok)
         fails.push_back(failed(j));
     }
@@ -442,6 +474,7 @@ void LiveHub::connect(size_t client) {
   c_->steps = {"行情"};
   for (const std::string_view s : c_->broker->steps())
     c_->steps.emplace_back(s);
+  c_->unsent = 1 + c_->broker->unsent();
   peek();
 }
 
