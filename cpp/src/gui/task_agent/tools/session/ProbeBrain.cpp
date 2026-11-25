@@ -4,7 +4,6 @@
 #include "gui/task_agent/tools/Bay.hpp"
 #include "gui/task_agent/tools/Session.hpp"
 
-#include <algorithm>
 #include <cassert>
 #include <utility>
 #include <vector>

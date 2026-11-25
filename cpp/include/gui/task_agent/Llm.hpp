@@ -75,7 +75,7 @@ struct Usage {
   }
 };
 
-// 一轮的结局: Ok 正常收尾 / Cut 平台截断或拒答 / Error 接口失败 / Cancelled 本地取消
+// 一条回复的结局: Ok 正常收尾 / Cut 平台截断或拒答 / Error 接口失败 / Cancelled 本地取消
 enum class End : uint8_t { Ok,
                            Cut,
                            Error,

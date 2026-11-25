@@ -1,4 +1,4 @@
-// 实盘各层的底: 错误边界 + 当日秒 + 市场 (券商无关, 适配与上层同用)
+// 实盘各层的底: 错误边界 + 当日秒 + 市场 + 费率 (券商无关, 适配、上层与账户同用)
 //   客户端状态与预期不符 (界面没弹出 / 应答不认识 / 回报失败) 是外部结局, 不是本程序的错: fail 先在当时的段下记一行 (live/Trace.hpp)
 //   再抛 Fail, 在各轮 / 各事务 / 各单的边界 (guard) 收成原因文本; 应答畸形时库里抛的异常同样收下, 绝不越过边界崩掉进程.
 //   本程序自身的不变式一律 assert
@@ -6,6 +6,7 @@
 //   市场由代码前缀定 (market_of), 新浪码 = 前缀 + 代码, AssetInfo 码 = 代码 + 后缀
 #pragma once
 
+#include "live/Sides.hpp"
 #include "live/Trace.hpp"
 
 #include <cstdint>
@@ -74,5 +75,11 @@ inline const char *mkt_name(Mkt m) { return kMktSuffix[static_cast<int>(m)] + 1;
 Mkt mkt_named(std::string_view s);                                                 // mkt_name 的逆
 inline std::string sina_sym(Mkt m, const std::string &code) { return kMktPrefix[static_cast<int>(m)] + code; }
 inline std::string asset_sym(Mkt m, const std::string &code) { return code + kMktSuffix[static_cast<int>(m)]; }
+
+// ---------- 费率 ----------
+
+// 佣金万 1 双向 · 印花税 0.05% 卖 · 过户费 0.001% 双向 (调仓试算与账户日内回推同用)
+inline constexpr double kCommission = 1e-4, kStamp = 5e-4, kTransfer = 1e-5;
+inline double fee(double amt, int s) { return amt * (kCommission + kTransfer + (s == kSell ? kStamp : 0)); }
 
 } // namespace live

@@ -171,7 +171,7 @@ std::string ToolsDoc(bool ask);
 struct Res {
   virtual ~Res() = default;
   virtual std::string text() const = 0;           // 交给 agent 的原文
-  virtual std::string gist() const { return {}; } // 收进研究树后留的一行关键数 (无则空)
+  virtual std::string gist() const { return {}; } // 上下文折叠后留的一行关键数 (无则空)
   virtual void draw() const = 0;                  // 结构化展示
 };
 using ResPtr = std::shared_ptr<Res>;

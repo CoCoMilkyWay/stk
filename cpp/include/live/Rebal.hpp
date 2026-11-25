@@ -63,17 +63,10 @@
 
 namespace live::rebal {
 
-inline constexpr double kCommission = 1e-4, kStamp = 5e-4, kTransfer = 1e-5;
 inline constexpr double kTol = 1; // V 二分精度 [元]
 
 using Prices = std::map<std::string, double>; // 代码 → 价
 using Bal = std::map<std::string, int64_t>;   // 代码 → 股
-
-double fee(double amt, int s);
-// 持仓部分 S: px 须含 bal 与 debts 各只; 条款缺 → Fail
-double surplus(const Bal &bal, const Keyed<Debt> &debts, const Prices &px, const Terms &terms);
-// 持仓为 bal、负债为 debts、行情为 quotes 时的可用保证金 (不含现金变动); 读时 = 快照 s 的持仓与负债 × 读时现价 px0
-double avail(const Snapshot &s, const Prices &px0, const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms);
 
 // 部分 (卖买同形, 见文件头): 自有 / 融资
 struct Parts {

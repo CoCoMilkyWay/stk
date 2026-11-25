@@ -284,28 +284,7 @@ nlohmann::json to_json(const Sheet &s) {
   return {{"assets", s.assets}, {"net", s.net}, {"debt", s.debt}, {"cash", s.cash}, {"mv", s.mv}, {"fin", s.fin}, {"X", opt(s.X)}, {"L", s.L}, {"lev", s.lev}, {"maint", opt(s.maint)}};
 }
 
-} // namespace
-
-double fee(double amt, int s) { return amt * (kCommission + kTransfer + (s == kSell ? kStamp : 0)); }
-
-int64_t snap(const Hold &h, double unit, double x, bool down, bool by_bar) {
-  const int64_t first = least(h.px, unit, h.lot, h.step), r = h.avail % h.step;
-  int64_t best = 0;
-  const auto take = [&](int64_t c) {
-    if (down ? static_cast<double>(c) <= x && c > best : std::abs(static_cast<double>(c) - x) <= std::abs(static_cast<double>(best) - x))
-      best = c;
-  };
-  if (by_bar || static_cast<double>(h.avail) * h.px >= unit)
-    take(h.avail);
-  for (const int64_t o : {int64_t{0}, r}) { // 整步长 / 连同零股 (k 的范围: k · step + o ∈ [first, avail])
-    const int64_t lo = (first - o + h.step - 1) / h.step, hi = (h.avail - o) / h.step;
-    const double k = (x - static_cast<double>(o)) / static_cast<double>(h.step);
-    if (lo <= hi)
-      take(std::clamp<int64_t>(static_cast<int64_t>(down ? std::floor(k) : std::llround(k)), lo, hi) * h.step + o);
-  }
-  return best;
-}
-
+// 持仓部分 S (见文件头「可用保证金」): px 须含 bal 与 debts 各只; 条款缺 → Fail
 double surplus(const Bal &bal, const Keyed<Debt> &debts, const Prices &px, const Terms &terms) {
   std::set<std::string> codes;
   for (const auto &[c, n] : bal)
@@ -331,9 +310,67 @@ double surplus(const Bal &bal, const Keyed<Debt> &debts, const Prices &px, const
   return s;
 }
 
-// 校准: 读时客户端 X 已含读时的现金与利息, 只把持仓部分 S 从 (读时持仓, 读时负债, 读时现价) 换到 (bal, debts, 现价)
-double avail(const Snapshot &s, const Prices &px0, const Bal &bal, const Keyed<Debt> &debts, const Quotes &quotes, const Terms &terms) {
-  return s.acct.avail + surplus(bal, debts, prices(bal, debts, quotes), terms) - surplus(balances(s.pos), s.debts, px0, terms);
+} // namespace
+
+int64_t snap(const Hold &h, double unit, double x, bool down, bool by_bar) {
+  const int64_t first = least(h.px, unit, h.lot, h.step), r = h.avail % h.step;
+  int64_t best = 0;
+  const auto take = [&](int64_t c) {
+    if (down ? static_cast<double>(c) <= x && c > best : std::abs(static_cast<double>(c) - x) <= std::abs(static_cast<double>(best) - x))
+      best = c;
+  };
+  if (by_bar || static_cast<double>(h.avail) * h.px >= unit)
+    take(h.avail);
+  for (const int64_t o : {int64_t{0}, r}) { // 整步长 / 连同零股 (k 的范围: k · step + o ∈ [first, avail])
+    const int64_t lo = (first - o + h.step - 1) / h.step, hi = (h.avail - o) / h.step;
+    const double k = (x - static_cast<double>(o)) / static_cast<double>(h.step);
+    if (lo <= hi)
+      take(std::clamp<int64_t>(static_cast<int64_t>(down ? std::floor(k) : std::llround(k)), lo, hi) * h.step + o);
+  }
+  return best;
+}
+
+int64_t selling(const Hold &h, const Cfg &c) {
+  if (c.how == How::Over)
+    return std::min(h.sell, h.avail);
+  const auto i = c.sells.find(h.code);
+  return std::min(i == c.sells.end() ? int64_t{0} : i->second, h.avail);
+}
+
+Gauge gauge(const Plan &p, const Cfg &c) {
+  Gauge g;
+  for (const Hold &h : p.holds) {
+    g.all += static_cast<double>(h.span) * h.px;
+    g.part += static_cast<double>(std::max(h.part, h.full)) * h.px;
+    g.cap += static_cast<double>(h.full) * h.px;
+    g.got += static_cast<double>(std::min(selling(h, c), h.full)) * h.px;
+  }
+  return g;
+}
+
+std::map<std::string, int64_t> spread(const Plan &p, const Cfg &c, double pct) {
+  const auto sold = [&](double r) {
+    double s = 0;
+    for (const Hold &h : p.holds)
+      s += std::min(r * static_cast<double>(h.part), static_cast<double>(h.full)) * h.px;
+    return s;
+  };
+  // 各只先截到 full 再合计: 合计随 r 增, 二分 r 到合计恰为 pct × 全长
+  const double want = pct / 100 * gauge(p, c).all;
+  double lo = 0, hi = 1;
+  for (int i = 0; i < 40; ++i)
+    (sold((lo + hi) / 2) < want ? lo : hi) = (lo + hi) / 2;
+  std::map<std::string, int64_t> to = c.sells;
+  for (const Hold &h : p.holds) {
+    const double x = std::min(hi * static_cast<double>(h.part), static_cast<double>(h.full));
+    // 快卖完的 (剩下不足一个最小单元, 且已过半) 即卖满, 不留碎股; 过半: 整只不足一个最小单元的小仓不至于一拉就整只卖
+    const int64_t m = (static_cast<double>(h.full) - x) * h.px < c.unit && 2 * x >= static_cast<double>(h.full) ? h.full : snap(h, c.unit, x, true, true);
+    if (m > 0)
+      to[h.code] = m;
+    else
+      to.erase(h.code);
+  }
+  return to;
 }
 
 std::string why(const Term *t) {

@@ -325,7 +325,7 @@ struct Flow {
                          Write } stage = Idle;
   double since = 0.0, quiet = 0.0, writing = 0.0; // 本条发出至今 / 距上个增量 / 正文已写
   std::string topic;
-  bool remote = false; // 外部 agent 驱动: 只有等它交批, 没有流
+  bool remote = false; // 外部 agent 驱动: 只有等它交调用, 没有流
   bool stalled() const { return stage != Idle && !remote && quiet > kQuietS; }
 };
 // 阶段由末步的 Span 定, 静默由镜像 s.chat_live 的增量量 (外部 agent: 恒为等)
@@ -729,23 +729,99 @@ void result_line(const Names &in, const Result &r) {
   tip_long(detail(r));
 }
 
-// 时间线的树: 组 (每 kGroupRounds 轮, 超过一组才分) → 轮 → 调用 / 文本块; 每层标题即摘要.
-// 新一轮来时只留最近 kOpenRounds 轮 (及其所在组) 展开, 更早的自动折叠; 人手动开合的保持到下一轮来
-constexpr size_t kGroupRounds = 10, kOpenRounds = 2;
+// 时间线 = 调用流: 组 (每 kGroupSteps 步, 超过一组才分) → 一步一行, 主体是它的调用 (标题 = 编号 + 调用 + 状态 / 结局), 展开 = 结果, 末尾附大脑那一侧
+// (发出的消息 / 上下文 / 思考 / 回复原文); 还没交来调用的步 (待发 / 在收 / 不合协议) 标题写它在干什么. 新一步来时只留最近一组展开; 人手动开合的保持
+constexpr size_t kGroupSteps = 20;
 constexpr ImGuiTreeNodeFlags kNode = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DrawLinesFull;
 constexpr size_t kCallChars = 96; // 调用一行在标题里的字数
 
+void context_block(Ui &s, const Mine &m, size_t i);
+
+// 过程页的一步那一行: open() 在标题项之前 (s.jump 时末步展开), head() 紧跟标题项 (停着时右键回退; s.jump 时滚到它), brain() 在展开体末尾
+struct Row {
+  Ui &s;
+  Mine &m;
+  size_t i;
+  const Flow &f;
+  bool last() const { return i + 1 == m.timeline.size(); }
+  bool receiving() const { return last() && m.timeline[i].span.running() && f.stage != Flow::Idle; }
+  void open() const {
+    if (s.jump && last())
+      ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+  }
+  void head() const;
+  void brain() const;
+};
+
+void Row::head() const {
+  const int k = static_cast<int>(i) + 1;
+  const bool editable = m.phase() == Phase::Pause && m.idle();
+  if (editable && ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##rewind_menu"))
+    ImGui::SetTooltip("右键: 从这一步重来 (丢这一步的回复与调用及其后各步, 继续即重发这条消息)");
+  if (editable && ImGui::BeginPopupContextItem("##rewind_menu")) {
+    ImGui::TextDisabled("%s · 回退", StepTag(k).c_str());
+    if (ImGui::MenuItem(("从 " + StepTag(k) + " 重来…").c_str()))
+      s.rewind = {.k = k, .loss = m.loss(k), .open = true};
+    ImGui::EndPopup();
+  }
+  if (s.jump && last())
+    ImGui::SetScrollHereY(0.0f);
+}
+
+// 大脑那一侧: 发出的消息 (+ 插话) · 看到的上下文 · 思考 (在收的那一步思考时自动展开) · 在写的正文 · 回复一行 (+ 不合协议的原因) · 回复原文
+void Row::brain() const {
+  const Step &sp = m.timeline[i];
+  const bool live = receiving();
+  const llm::Reply &r = sp.span.ended() || !sp.span.began() ? sp.reply : s.chat_live.reply;
+  const std::string sent = TextOf(sp);
+  fold("send", ImGuiTreeNodeFlags_None, std::string(sp.span.began() ? "发出的消息 " : "待发的消息 ") + def(sp.kind).cn + " · " + chars(sent) + (sp.memo.empty() ? "" : " · 附插话"), sent, false,
+       kBoxLines, false);
+  context_block(s, m, i);
+  if (live && f.stage == Flow::Wait)
+    ImGui::TextColored(color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), "%s", doing(f).c_str());
+  if (!r.thinking.empty()) {
+    const bool now = live && f.stage == Flow::Think;
+    if (last()) {
+      if (s.think_step != i)
+        s.think_step = i, s.think_open = false, s.think_touched = false;
+      if (!s.think_touched && s.think_open != now) {
+        ImGui::SetNextItemOpen(now, ImGuiCond_Always);
+        s.think_open = now;
+      }
+    }
+    std::string label = now ? doing(f) : "思考了 " + dur(sp.think.len(m.now()));
+    if (const std::string t = now ? f.topic : topic(r.thinking, false); !t.empty())
+      label += " · " + t;
+    if (fold("think", ImGuiTreeNodeFlags_None, label + " · " + chars(r.thinking), r.thinking, true, kThinkLines, true) && last())
+      s.think_touched = true;
+  }
+  if (live && f.stage == Flow::Write)
+    fold("text_live", ImGuiTreeNodeFlags_DefaultOpen, doing(f) + " · " + chars(r.text), r.text, false, kThinkLines, true);
+  if (!sp.span.ended())
+    return;
+  std::string line = "回复 · " + dur(sp.span.len(m.now())) + (sp.think.began() ? " (思考 " + dur(sp.think.len(m.now())) + ")" : "");
+  if (r.usage.prompt > 0)
+    line += " · token 输入 " + kilo(r.usage.prompt) + " (缓存 " + kilo(r.usage.cached) + ") / 输出 " + kilo(r.usage.completion);
+  ImGui::TextColored(color(sp.error.empty() ? TaskStatus::Kind::None : TaskStatus::Kind::Error), "%s", line.c_str());
+  if (!sp.error.empty())
+    wrapped(color(TaskStatus::Kind::Error), "不合协议: " + sp.error);
+  fold("text", ImGuiTreeNodeFlags_None, "回复原文 " + chars(r.text), r.text, false, kBoxLines, false);
+}
+
 // eval_factor 调用: 标题 = 名 + 回测状态 / 用时 + 结局一行 (悬浮看表达式); 展开 = 表达式, 思路, 结局全文.
 // 默认收起; 定论那刻 (换节点 id, 开合重定) 未落 / BROKEN / 有参数组的自动展开
-void cand_block(const Mine &m, const Act &a, const std::string &ref, const LabLive &ll) {
+void cand_block(const Row &row, const Act &a, const std::string &ref) {
+  const Mine &m = row.m;
+  const LabLive &ll = row.s.lab_live;
   const TrialRes &k = *AsTrial(a);
   const Staged &st = k.st;
   const Result &res = st.res;
   const bool done = a.span.ended();
   if (done)
     ImGui::SetNextItemOpen(res.verdict == Verdict::Unstaged || res.verdict == Verdict::Broken || res.verdict == Verdict::Weights, ImGuiCond_Once);
+  row.open();
   ImGui::PushStyleColor(ImGuiCol_Text, kColHead);
-  const bool open = ImGui::TreeNodeEx(done ? "settled" : "cand", ImGuiTreeNodeFlags_DrawLinesFull, "%s 回测 %s  %s", ref.c_str(), st.cand.name.c_str(), st.cand.name_cn.c_str());
+  const bool open = ImGui::TreeNodeEx(done ? "settled" : "cand", kNode, "%s 回测 %s  %s", ref.c_str(), st.cand.name.c_str(), st.cand.name_cn.c_str());
   ImGui::PopStyleColor();
   if (!open && ImGui::IsItemHovered()) {
     ImGui::BeginTooltip();
@@ -756,6 +832,7 @@ void cand_block(const Mine &m, const Act &a, const std::string &ref, const LabLi
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
   }
+  row.head();
   ImGui::SameLine();
   const double t = m.now();
   if (done) {
@@ -784,15 +861,16 @@ void cand_block(const Mine &m, const Act &a, const std::string &ref, const LabLi
       if (!st.cand.note.empty())
         wrapped_dim(st.cand.note);
     }
+    row.brain();
     ImGui::TreePop();
   }
 }
 
-// 一个调用 (标题带调用编号 R<轮>#<序>): eval_factor 同候选; ask_human = 问答 (edit = 在问它);
-// 其余 = 调用一行 + 状态 / 用时, 展开 = 交给 agent 的结果. 返回 = 按了交答案
-bool act_block(Ui &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
-  const std::string rt = RefText({static_cast<int>(r) + 1, static_cast<int>(i) + 1});
-  ImGui::PushID(static_cast<int>(i));
+// 一步的调用 (标题带调用编号 #<步>): eval_factor 同候选; ask_human = 问答 (edit = 在问它);
+// 其余 = 调用一行 + 状态 / 用时, 展开 = 交给 agent 的结果; 展开体末尾都附大脑那一侧. 返回 = 按了交答案
+bool act_block(const Row &row, Act &a, bool edit) {
+  const Mine &m = row.m;
+  const std::string rt = StepTag(static_cast<int>(row.i) + 1);
   bool start = false;
   const double t = m.now();
   std::string state;
@@ -804,11 +882,13 @@ bool act_block(Ui &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
   else
     state = m.live() ? " · 排队" : " · 未做", kind = TaskStatus::Kind::Muted;
   if (AsTrial(a)) {
-    cand_block(m, a, rt, s.lab_live);
+    cand_block(row, a, rt);
   } else if (AskRes *q = AsAsk(a)) {
+    row.open();
     ImGui::PushStyleColor(ImGuiCol_Text, color(edit ? TaskStatus::Kind::Warn : TaskStatus::Kind::None));
     const bool open = ImGui::TreeNodeEx("ask", kNode | ImGuiTreeNodeFlags_DefaultOpen, "%s 问研究员 · %zu 个问题%s", rt.c_str(), q->asked.qs.size(), edit ? " · 等你答" : "");
     ImGui::PopStyleColor();
+    row.head();
     if (open) {
       if (edit) {
         start = edit_asked(q->asked);
@@ -817,175 +897,83 @@ bool act_block(Ui &s, const Mine &m, Act &a, size_t r, size_t i, bool edit) {
         if (!a.out.text.empty())
           fold("raw", ImGuiTreeNodeFlags_None, "原文 · " + chars(a.out.text), a.out.text, true, kBoxLines, false);
       }
+      row.brain();
       ImGui::TreePop();
     }
   } else {
     const ToolMeta &tm = def(a.call.tool);
     const std::string label = rt + " " + tm.cn + " · " + text::head(a.call.text(), kCallChars) + state;
-    if (a.out.res) {
-      ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
-      const bool open = ImGui::TreeNodeEx("act", ImGuiTreeNodeFlags_None, "%s", label.c_str());
-      ImGui::PopStyleColor();
+    row.open();
+    ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
+    const bool open = ImGui::TreeNodeEx("act", kNode, "%s", label.c_str());
+    ImGui::PopStyleColor();
+    row.head();
+    if (a.span.ended())
       copy_button("复制##act", a.out.text);
-      if (open) {
-        a.out.res->draw();
-        if (!a.out.text.empty())
-          fold("raw", ImGuiTreeNodeFlags_None, "原文 · " + chars(a.out.text), a.out.text, true, kBoxLines, false);
-        ImGui::TreePop();
-      }
-    } else {
-      ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
-      fold("act", ImGuiTreeNodeFlags_None, label, a.out.text, false, kBoxLines, false);
-      ImGui::PopStyleColor();
+    if (open) {
+      if (!a.out.res)
+        box(a.out.text, false, kBoxLines, false);
+      else if (a.out.res->draw(); !a.out.text.empty())
+        fold("raw", ImGuiTreeNodeFlags_None, "原文 · " + chars(a.out.text), a.out.text, true, kBoxLines, false);
+      row.brain();
+      ImGui::TreePop();
     }
   }
-  ImGui::PopID();
   return start;
 }
 
-// 一轮的标题 (折起来也看得出这轮干了什么)
-std::string round_head(const Mine &m, size_t i, const Flow *live, TaskStatus::Kind &kind) {
-  const Round &rd = m.timeline[i];
-  std::string h = "第 " + std::to_string(i + 1) + " 轮 · " + def(rd.kind).cn;
-  kind = TaskStatus::Kind::None;
-  if (!rd.span.began()) {
-    kind = TaskStatus::Kind::Warn;
-    return h + " · 待发 (按 继续 发出)";
-  }
-  h += " · +" + dur(rd.span.t0);
-  if (live) {
-    kind = live->stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy;
-    return h + " · " + doing(*live) + (live->topic.empty() ? "" : " · " + live->topic);
-  }
-  const bool replied = rd.span.ended();
-  if (replied)
-    h += " · 回复 " + dur(rd.span.len(m.now()));
-  if (!rd.error.empty()) {
-    kind = TaskStatus::Kind::Error;
-    return h + (rd.reply.ok() ? " · 不合协议" : " · 没收成");
-  }
-  if (rd.acts.empty())
-    return h;
-  const Tally c = TallyOf(Rounds(m.timeline).subspan(i, 1), m.now());
-  h += " · 调用 " + std::to_string(c.all());
-  if (const int n = c.n(Cat::Look); n > 0)
-    h += " · 观察 " + std::to_string(n);
-  if (const int n = c.docs(); n > 0)
-    h += " · 查研报 " + std::to_string(n);
-  if (c.n(Tool::EvalFactor) > 0) {
-    const int u = c.n(Verdict::Unstaged);
-    h += " · 候选 " + std::to_string(c.staged()) + (u ? " (未落 " + std::to_string(u) + ")" : "") + " · 有权重 " + std::to_string(c.n(Verdict::Weights));
-  }
-  if (const int n = c.n(Tool::SubmitFactor); n > 0)
-    h += " · 提交 " + std::to_string(n) + " (入库 " + std::to_string(c.adopted) + ")";
-  if (const int n = c.n(Cat::Note); n > 0)
-    h += " · 记录 " + std::to_string(n);
-  if (std::any_of(rd.acts.begin(), rd.acts.end(), [](const Act &a) { return a.call.tool == Tool::Finish; }))
-    h += " · 宣布挖完";
-  if (i + 1 == m.timeline.size() && m.phase() == Phase::Choose)
-    h += " · 等你答", kind = TaskStatus::Kind::Warn;
-  else if (i + 1 == m.timeline.size() && m.phase() == Phase::Act)
-    h += " · 执行中… " + std::to_string(m.acting()) + "/" + std::to_string(rd.acts.size()), kind = TaskStatus::Kind::Busy;
-  else if (c.adopted > 0)
-    kind = TaskStatus::Kind::Ready;
-  return h;
-}
-
-// agent 在第 i 轮看到的整份上下文 (system 之外): 照时间线现算, 展开时算一次 (时间线变了重算)
+// agent 在第 i 步看到的完整上下文 (system 之外; 新开一段对话时整份给, 连着时只给本条): 照时间线现算, 展开时算一次 (时间线变了重算)
 void context_block(Ui &s, const Mine &m, size_t i) {
-  const bool open = ImGui::TreeNodeEx("context", ImGuiTreeNodeFlags_None, "agent 看到的上下文 (首条 + 研究树 + 上一轮的回复 + 本条; system 之外)");
+  const bool open = ImGui::TreeNodeEx("context", ImGuiTreeNodeFlags_None, "agent 看到的完整上下文 (远处折成结论; system 之外)");
   if (!open) {
     s.ctx.erase(i);
     return;
   }
-  const Round &rd = m.timeline[i];
-  const auto sig = std::tuple(m.timeline.size(), rd.span.t0, rd.user.size(), rd.memo.size());
+  const Step &sp = m.timeline[i];
+  const auto sig = std::tuple(m.timeline.size(), sp.span.t0, sp.user.size(), sp.memo.size());
   Ui::Ctx &c = s.ctx[i];
   if (c.body.empty() || c.sig != sig)
-    c = {sig, llm::Flat(TurnsOf(Rounds(m.timeline).first(i + 1)))};
+    c = {sig, llm::Flat(TurnsOf(Steps(m.timeline).first(i + 1)))};
   copy_button("复制##context", c.body);
   box(c.body, false, kBoxLines, false);
   ImGui::TreePop();
 }
 
-// 一轮: 发出 → 思考 → 回复 (逐个调用 + 原文); 在收的一轮画 live; 待发的只有消息. fresh = 新一轮刚来 (重定开合); s.jump = 末轮展开并滚到它.
-// 停着时标题右键回退. 返回 = 按了交答案
-bool round_block(Ui &s, Mine &m, size_t i, const Flow &f, bool fresh) {
-  Round &rd = m.timeline[i];
-  const bool replied = rd.span.ended(), last = i + 1 == m.timeline.size();
-  const llm::Reply &r = replied || !rd.span.began() ? rd.reply : s.chat_live.reply;
-  const bool receiving = rd.span.running() && f.stage != Flow::Idle;
-  const int k = static_cast<int>(i) + 1;
-
-  TaskStatus::Kind kind = TaskStatus::Kind::None;
-  const std::string head = round_head(m, i, receiving ? &f : nullptr, kind);
-  if (s.jump && last)
-    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-  else if (fresh)
-    ImGui::SetNextItemOpen(i + kOpenRounds >= m.timeline.size(), ImGuiCond_Always);
-  ImGui::PushID(static_cast<int>(i));
-  ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
-  const bool open = ImGui::TreeNodeEx("round", kNode, "%s", head.c_str());
-  ImGui::PopStyleColor();
-  const bool editable = m.phase() == Phase::Pause && m.idle();
-  if (editable && ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##rewind_menu"))
-    ImGui::SetTooltip("右键: 从这轮重来 (丢这轮的回复与执行及其后各轮, 继续即重发这条)");
-  if (editable && ImGui::BeginPopupContextItem("##rewind_menu")) {
-    ImGui::TextDisabled("第 %d 轮 · 回退", k);
-    if (ImGui::MenuItem(("从第 " + std::to_string(k) + " 轮重来…").c_str()))
-      s.rewind = {.k = k, .loss = m.loss(k), .open = true};
-    ImGui::EndPopup();
-  }
-  if (s.jump && last)
-    ImGui::SetScrollHereY(0.0f);
-  if (!open) {
-    ImGui::PopID();
-    return false;
-  }
-  const std::string sent = TextOf(rd);
-  fold("send", ImGuiTreeNodeFlags_None, (rd.span.began() ? "发出 " : "待发 ") + chars(sent) + (rd.memo.empty() ? "" : " · 附插话"), sent, false, kBoxLines, false);
-  context_block(s, m, i);
-  if (receiving && f.stage == Flow::Wait)
-    ImGui::TextColored(color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), "%s", doing(f).c_str());
-  if (!r.thinking.empty()) {
-    const bool now = receiving && f.stage == Flow::Think;
-    if (last) {
-      if (s.think_round != i)
-        s.think_round = i, s.think_open = false, s.think_touched = false;
-      if (!s.think_touched && s.think_open != now) {
-        ImGui::SetNextItemOpen(now, ImGuiCond_Always);
-        s.think_open = now;
-      }
-    }
-    std::string label = now ? doing(f) : "思考了 " + dur(rd.think.len(m.now()));
-    if (const std::string t = now ? f.topic : topic(r.thinking, false); !t.empty())
-      label += " · " + t;
-    if (fold("think", ImGuiTreeNodeFlags_None, label + " · " + chars(r.thinking), r.thinking, true, kThinkLines, true) && last)
-      s.think_touched = true;
-  }
-  if (receiving && f.stage == Flow::Write)
-    fold("text_live", ImGuiTreeNodeFlags_DefaultOpen, doing(f) + " · " + chars(r.text), r.text, false, kThinkLines, true);
+// 一步: 有调用即画调用 (act_block); 还没有的 (待发 / 在收 / 不合协议) 标题写它在干什么, 展开 = 大脑那一侧. 返回 = 按了交答案
+bool step_block(const Row &row) {
+  Step &sp = row.m.timeline[row.i];
+  ImGui::PushID(static_cast<int>(row.i));
   bool start = false;
-  if (replied) {
-    std::string line = "回复 · " + dur(rd.span.len(m.now())) + (rd.think.began() ? " (思考 " + dur(rd.think.len(m.now())) + ")" : "");
-    if (r.usage.prompt > 0)
-      line += " · token 输入 " + kilo(r.usage.prompt) + " (缓存 " + kilo(r.usage.cached) + ") / 输出 " + kilo(r.usage.completion);
-    ImGui::TextColored(color(r.ok() ? TaskStatus::Kind::None : TaskStatus::Kind::Error), "%s", line.c_str());
-    if (!rd.error.empty())
-      wrapped(color(TaskStatus::Kind::Error), (r.ok() ? "不合协议: " : "") + rd.error);
-    for (size_t j = 0; j < rd.acts.size(); ++j)
-      start |= act_block(s, m, rd.acts[j], i, j, last && m.phase() == Phase::Choose && j == m.acting());
-    fold("text", ImGuiTreeNodeFlags_None, "原文 " + chars(r.text), r.text, false, kBoxLines, false);
+  if (sp.act) {
+    start = act_block(row, *sp.act, row.last() && row.m.phase() == Phase::Choose);
+  } else {
+    const std::string tag = StepTag(static_cast<int>(row.i) + 1);
+    std::string head;
+    TaskStatus::Kind kind = TaskStatus::Kind::None;
+    if (!sp.span.began())
+      head = tag + " · 待发" + (row.m.live() ? "" : " (按 继续 发出)") + " · " + def(sp.kind).cn, kind = TaskStatus::Kind::Warn;
+    else if (row.receiving())
+      head = tag + " · " + doing(row.f) + (row.f.topic.empty() ? "" : " · " + row.f.topic), kind = row.f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy;
+    else
+      head = tag + " · 回复不合协议: " + text::head(std::string_view(sp.error).substr(0, sp.error.find('\n')), kCallChars), kind = TaskStatus::Kind::Error;
+    row.open();
+    ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
+    const bool open = ImGui::TreeNodeEx("step", kNode | (row.receiving() ? ImGuiTreeNodeFlags_DefaultOpen : 0), "%s", head.c_str());
+    ImGui::PopStyleColor();
+    row.head();
+    if (open) {
+      row.brain();
+      ImGui::TreePop();
+    }
   }
-  ImGui::TreePop();
   ImGui::PopID();
   return start;
 }
 
-// 一组轮的标题: 轮次 / 起始时刻 / 调用 / 观察 / 查研报 / 候选 / 有权重 / 入库
+// 一组步的标题: 编号段 / 起始时刻 / 调用 / 观察 / 查研报 / 候选 / 有权重 / 入库
 std::string group_head(const Mine &m, size_t g0, size_t g1) {
-  const Tally c = TallyOf(Rounds(m.timeline).subspan(g0, g1 - g0), m.now());
-  return "第 " + std::to_string(g0 + 1) + "–" + std::to_string(g1) + " 轮 · +" + dur(m.timeline[g0].span.t0) + " · 调用 " + std::to_string(c.all()) + " · 观察 " +
+  const Tally c = TallyOf(Steps(m.timeline).subspan(g0, g1 - g0), m.now());
+  return StepTag(static_cast<int>(g0) + 1) + "–" + std::to_string(g1) + " · +" + dur(m.timeline[g0].span.t0) + " · 调用 " + std::to_string(c.all()) + " · 观察 " +
          std::to_string(c.n(Cat::Look)) + " · 查研报 " + std::to_string(c.docs()) + " · 候选 " + std::to_string(c.staged()) + " · 有权重 " + std::to_string(c.n(Verdict::Weights)) +
          " · 入库 " + std::to_string(c.adopted);
 }
@@ -995,18 +983,17 @@ constexpr size_t kSummaryRows = 5;
 void summary_block(const Mine &m) {
   const Tally c = m.tally();
   std::vector<const Result *> hits;
-  for (const Round &rd : m.timeline)
-    for (const Act &a : rd.acts)
-      if (const TrialRes *k = AsTrial(a); k && k->st.res.verdict == Verdict::Weights)
-        hits.push_back(&k->st.res);
+  for (const Step &sp : m.timeline)
+    if (const TrialRes *k = sp.act ? AsTrial(*sp.act) : nullptr; k && k->st.res.verdict == Verdict::Weights)
+      hits.push_back(&k->st.res);
   std::stable_sort(hits.begin(), hits.end(), [&](const Result *a, const Result *b) {
     const bool ia = m.st.adopted.count(a->name) > 0, ib = m.st.adopted.count(b->name) > 0;
     return ia != ib ? ia : a->best()->score > b->best()->score;
   });
   ImGui::SeparatorText(("停下 · +" + dur(m.now())).c_str());
   wrapped(color(TaskStatus::Kind::Ready), m.reason);
-  wrapped_dim("按 继续 = " + m.hint() + "; 右键某一轮的标题可回退到那轮; 关闭 = 放下这段 (已存盘, 可再载入)");
-  ImGui::TextDisabled("%zu 轮 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.all(), c.n(Cat::Look), c.docs(), c.staged(), c.n(Verdict::Weights),
+  wrapped_dim("按 继续 = " + m.hint() + "; 右键某一步的标题可回退到那一步; 关闭 = 放下这段 (已存盘, 可再载入)");
+  ImGui::TextDisabled("%zu 步 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.all(), c.n(Cat::Look), c.docs(), c.staged(), c.n(Verdict::Weights),
                       c.n(Tool::SubmitFactor), c.adopted);
   const auto row = [&](size_t i) {
     const Result &r = *hits[i];
@@ -1025,8 +1012,8 @@ void summary_block(const Mine &m) {
   fold("report", ImGuiTreeNodeFlags_None, "停下报告", m.report, false, kBoxLines, false);
 }
 
-// 过程: 全会话 (分组 → 逐轮) + 停下汇总. 钉在底部时跟新内容走; 放开后右下角给 "回到最新".
-// s.flow_rounds = 上一帧画过的轮数 (变了 = 新一轮来, 重定开合); bottom = 底下留给插话栏的高
+// 过程: 全会话的调用流 (分组 → 逐步) + 停下汇总. 钉在底部时跟新内容走; 放开后右下角给 "回到最新".
+// s.flow_steps = 上一帧画过的步数 (变了 = 新一步来, 只留末组展开); bottom = 底下留给插话栏的高
 void timeline_panel(Ui &s, Mine &m, const Flow &f, bool to_end, float bottom) {
   ImGui::BeginChild("##flow", ImVec2(0, -bottom), false);
   const float y = ImGui::GetScrollY();
@@ -1038,20 +1025,20 @@ void timeline_panel(Ui &s, Mine &m, const Flow &f, bool to_end, float bottom) {
     s.pinned = false; // 点开合 = 在读: 不把读的地方拖走
   bool start = false;
   if (m.phase() == Phase::None) {
-    ImGui::TextDisabled("选好作用域按 New (或载入存过的): 系统把规则与工具表打包发给 agent, 它每条回复发一串工具调用 (看数据 / 回测 / 提交), 系统执行后把结果交回");
+    ImGui::TextDisabled("选好作用域按 New (或载入存过的): 系统把规则与工具表打包发给 agent, 它每条回复交一个工具调用 (看数据 / 回测 / 提交), 系统执行后把结果交回");
   } else {
     const size_t n = m.timeline.size();
-    const bool fresh = n != s.flow_rounds, grouped = n > kGroupRounds;
-    s.flow_rounds = n;
-    for (size_t g0 = 0; g0 < n; g0 += kGroupRounds) {
-      const size_t g1 = std::min(n, g0 + kGroupRounds);
+    const bool fresh = n != s.flow_steps, grouped = n > kGroupSteps;
+    s.flow_steps = n;
+    for (size_t g0 = 0; g0 < n; g0 += kGroupSteps) {
+      const size_t g1 = std::min(n, g0 + kGroupSteps);
       ImGui::PushID(static_cast<int>(g0));
       bool open = true;
       if (grouped) {
         if (s.jump && g1 == n)
           ImGui::SetNextItemOpen(true, ImGuiCond_Always);
         else if (fresh)
-          ImGui::SetNextItemOpen(g1 + kOpenRounds > n, ImGuiCond_Always);
+          ImGui::SetNextItemOpen(g1 == n, ImGuiCond_Always);
         const bool busy = g1 == n && (m.live() || !m.idle());
         ImGui::PushStyleColor(ImGuiCol_Text, color(busy ? TaskStatus::Kind::Busy : TaskStatus::Kind::None));
         open = ImGui::TreeNodeEx("group", kNode | ImGuiTreeNodeFlags_Framed, "%s", group_head(m, g0, g1).c_str());
@@ -1059,7 +1046,7 @@ void timeline_panel(Ui &s, Mine &m, const Flow &f, bool to_end, float bottom) {
       }
       if (open) {
         for (size_t i = g0; i < g1; ++i)
-          start |= round_block(s, m, i, f, fresh);
+          start |= step_block({s, m, i, f});
         if (grouped)
           ImGui::TreePop();
       }
@@ -1270,7 +1257,7 @@ void notes_table(Ui &s, const View &v, NoteKind k) {
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(x.id.c_str());
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("%s · 第 %d 轮", x.session.c_str(), x.round);
+      ImGui::SetTooltip("%s · %s", x.session.c_str(), StepTag(x.step).c_str());
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(x.time.c_str());
     ImGui::TableNextColumn();
@@ -1345,7 +1332,7 @@ void memo_bar(Ui &s, Mine &m) {
   tip("给 agent 的意见: 排队, 随下一条发出的消息附上 (不打断在收的回复与在跑的调用; 停着时随继续发出)");
 }
 
-// 回退确认框: 写明会丢的轮数 / 候选文件 / 全局记录
+// 回退确认框: 写明会丢的步数 / 候选文件 / 全局记录
 void rewind_modal(Ui &s, Mine &m) {
   Ui::Rewind &r = s.rewind;
   if (r.open)
@@ -1353,22 +1340,22 @@ void rewind_modal(Ui &s, Mine &m) {
   ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 48.0f, ImGui::GetFontSize() * 12.0f), ImGuiCond_Appearing);
   if (!ImGui::BeginPopupModal("回退###rewind"))
     return;
-  if (m.phase() != Phase::Pause || r.k < 1 || r.k > m.round()) {
+  if (m.phase() != Phase::Pause || r.k < 1 || r.k > m.step()) {
     ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
     return;
   }
   const std::string k = std::to_string(r.k);
   const Mine::Loss &l = r.loss;
-  ImGui::TextColored(kColHead, "%s", ("从第 " + k + " 轮重来").c_str());
-  wrapped_dim("状态回到第 " + k + " 条发出时, 按 继续 重发它, agent 重答; 它随附的插话退回排队 (可撤回改写), 要改方向就再插话");
-  wrapped(color(TaskStatus::Kind::Warn), "将丢弃: 第 " + k + " 轮起 " + std::to_string(l.rounds) + " 轮的回复与执行 · 候选文件 " + std::to_string(l.files) + " 个 (连同 Search 日志) · 本会话的全局记录 " +
+  ImGui::TextColored(kColHead, "%s", ("从 " + StepTag(r.k) + " 重来").c_str());
+  wrapped_dim("状态回到第 " + k + " 条消息发出时, 按 继续 重发它, agent 重答; 它随附的插话退回排队 (可撤回改写), 要改方向就再插话");
+  wrapped(color(TaskStatus::Kind::Warn), "将丢弃: " + StepTag(r.k) + " 起 " + std::to_string(l.steps) + " 步的回复与调用 · 候选文件 " + std::to_string(l.files) + " 个 (连同 Search 日志) · 本会话的全局记录 " +
                                              std::to_string(l.notes) + " 条; 已入正式库的不动; 不可撤销");
   ImGui::BeginDisabled(!m.idle());
   if (ImGui::Button("确定", ImVec2(100, 0))) {
     m.rewind(r.k);
     ImGui::CloseCurrentPopup();
-    s.flow_rounds = 0, s.pinned = true;
+    s.flow_steps = 0, s.pinned = true;
   }
   ImGui::EndDisabled();
   ImGui::SameLine();
@@ -1726,7 +1713,7 @@ void render_config(Ui &s) {
     ImGui::InputInt(label, &v, 1, 10);
     v = std::max(v, 0);
   };
-  limit("轮##budget_rounds", o.budget.rounds);
+  limit("步##budget_steps", o.budget.steps);
   ImGui::SameLine();
   limit("分钟##budget_minutes", o.budget.minutes);
 
@@ -1821,7 +1808,7 @@ TaskHandle CreateAgentTask() {
     if (m.phase() == Phase::Think)
       return {TaskStatus::Kind::Busy, m.remote() ? "agent" : "asking"};
     if (m.phase() == Phase::Act)
-      return {TaskStatus::Kind::Busy, "call " + std::to_string(m.acting() + 1) + "/" + std::to_string(m.timeline.back().acts.size())};
+      return {TaskStatus::Kind::Busy, StepTag(m.step()) + (m.acting() ? std::string(" ") + def(m.acting()->call.tool).id : std::string())};
     if (m.phase() == Phase::Pause)
       return {TaskStatus::Kind::Ready, "paused"};
     return {};

@@ -1,12 +1,12 @@
 """外部 agent 调项目研究工具的命令行: 最小的 MCP 客户端 (说明书见仓库 AGENT.md)
 
 用法: python py/agent.py <工具> [参数]
-  工具 = open / doc / run (研究工具放进 run 的 calls 交); list = 列工具
+  工具 = open / doc / run (研究工具经 run 的 tool / args 交, 一次一个); list = 列工具
   参数 = JSON 对象 (缺省 {}) / @文件 (读该文件的 JSON) / - (读标准输入)
 例:
   python py/agent.py open '{"remark": "用户交代的要求原话"}'
   python py/agent.py doc
-  python py/agent.py run '{"calls": [{"tool": "list_tried", "args": {}}]}'
+  python py/agent.py run '{"tool": "list_tried", "args": {}}'
   python py/agent.py run
 
 一次调用 = 一个 JSON-RPC tools/call (MCP Streamable HTTP, POST) → 打印结果文本. 退出码 0 = 做成 / 1 = 工具报错 (原文写原因).
