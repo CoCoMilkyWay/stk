@@ -131,6 +131,7 @@ std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const 
       x.hold = std::move(h);
     x.note = se ? note_of(*se, view->equity, x.hold.get()) : "";
     x.trades = trades_of(t ? view->equity.trades.get() : nullptr, f.snap ? &f.snap->fills : nullptr);
+    x.positions = t ? view->equity.positions : nullptr;
   });
   const Held &x = held_.val;
   day_.update({held_.gen, live ? live->ver : 0}, [&](std::shared_ptr<const Quote::Day> &d) {

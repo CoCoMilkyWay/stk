@@ -631,7 +631,7 @@ void sheet(const live::rebal::Sheet *n, const live::rebal::Sheet *e, bool priv, 
   end_fit(kHeads, fit);
 }
 
-// 已清仓仍负债 (快照的; 可空) 与其合计
+// 已清仓仍负债 (快照的, 欠款升序; 可空) 与其合计
 std::vector<const live::Debt *> orphans_of(const live::Snapshot *s, double &owe) {
   std::vector<const live::Debt *> os = s ? live::orphans(*s) : std::vector<const live::Debt *>{};
   owe = 0;
@@ -639,11 +639,25 @@ std::vector<const live::Debt *> orphans_of(const live::Snapshot *s, double &owe)
     owe += d->amount;
   return os;
 }
-// 还款额 [元]: 输入框改过的, 否则 min(现金, 已清仓仍负债)
-double pay_of(const BoardState &st, const live::Snapshot *s, double owe) { return st.pay ? *st.pay * 1e4 : s ? std::min(s->acct.cash, owe)
-                                                                                                             : 0; }
+// 还款比例 (全长 = 已清仓仍负债合计): top = 现金够还到的 [%]; pct = 拖过的 (截到 top), 否则 top;
+//   pct 到 100% = 全部还清 (cap = ∞: 各合约还到应还, 含其后计的利息, 不留尾巴), 否则 cap = pct × 合计 [元]
+struct Pay {
+  float top = 0, pct = 0;
+  double cap = 0;
+  bool full() const { return pct >= 100; }
+  double amount(double owe) const { return full() ? owe : cap; } // 显示的额
+};
+Pay pay_of(const BoardState &st, const live::Snapshot *s, double owe) {
+  Pay p;
+  if (!s || owe <= 0)
+    return p;
+  p.top = static_cast<float>(std::min(s->acct.cash / owe, 1.0) * 100);
+  p.pct = st.pay ? std::min(*st.pay, p.top) : p.top;
+  p.cap = p.full() ? HUGE_VAL : p.pct / 100 * owe;
+  return p;
+}
 
-// 现金还款一行: 已清仓仍负债 只数 · 合计 (悬停列各只) · 还款额 [W] · 现金还款 (点了先确认)
+// 现金还款一行: 已清仓仍负债 只数 · 合计 (悬停列各只) · 还款比例 bar · 现金还款 (点了先确认)
 void repay_ctl(LiveHub &hub, BoardState &st) {
   const live::Snapshot *s = hub.snapshot().get();
   double owe = 0;
@@ -663,26 +677,23 @@ void repay_ctl(LiveHub &hub, BoardState &st) {
     tip("%s", t.c_str());
   }
   ImGui::SameLine(0, ImGui::GetFontSize());
-  const double pay = pay_of(st, s, owe);
+  const Pay pay = pay_of(st, s, owe);
   ImGui::BeginDisabled(os.empty() || hub.busy());
-  if (priv) {
-    ImGui::TextDisabled("还 %s", kMask);
-  } else {
-    double w = pay / 1e4;
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
-    if (ImGui::InputDouble("W##pay", &w, 0, 0, "%.2f"))
-      st.pay = std::max(0.0, w);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      tip("还款额 [万元], 默认 = min(现金, 已清仓仍负债); 各合约至多还到其应还 (本金 + 费用 + 利息, 利息先抵), 额度另以现金封顶");
-  }
+  float pct = pay.pct;
+  const std::string txt = os.empty() ? std::string("—") : strf("%.0f%% · %s", pct, priv ? kMask : wan(pay.amount(owe)).c_str());
+  if (cap_slider("##pay", pct, pay.top, pay.top, ImGui::GetFontSize() * 9, txt, ImGui::GetStyleColorVec4(ImGuiCol_Text)))
+    st.pay = pct;
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    tip("还款比例: 全长 = 已清仓仍负债合计, 默认 = 现金够还到的; 灰 = 现金不够还的\n"
+        "欠款少的先还 (逐只还清再下一只, 只内按开仓日期), 少点几笔; 拖到 100%% = 全部还清 (各合约还到应还, 含利息, 不留尾巴)");
   ImGui::SameLine();
-  ImGui::BeginDisabled(pay < 0.01);
+  ImGui::BeginDisabled(pay.amount(owe) < 0.01);
   if (ImGui::SmallButton("现金还款"))
     st.pay_ask = true;
   ImGui::EndDisabled();
   ImGui::EndDisabled();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    tip("客户端「融资业务 › 现金还款」页逐笔指定合约还 (已清仓仍负债的各只, 按开仓日期), 做完刷新一轮; 点了先确认");
+    tip("客户端「融资业务 › 现金还款」页逐笔指定合约还 (已清仓仍负债的各只, 欠款少的先还), 做完刷新一轮; 点了先确认");
 }
 
 void confirm_repay(LiveHub &hub, BoardState &st) {
@@ -695,15 +706,18 @@ void confirm_repay(LiveHub &hub, BoardState &st) {
   const live::Snapshot *s = hub.snapshot().get();
   double owe = 0;
   const std::vector<const live::Debt *> os = orphans_of(s, owe);
-  const double pay = pay_of(st, s, owe);
+  const Pay pay = pay_of(st, s, owe);
   const bool priv = hub.priv();
-  ImGui::Text("用现金还已清仓仍负债的融资合约 (指定合约, 按开仓日期逐笔), 共至多 %s?", priv ? kMask : wan(pay).c_str());
+  if (pay.full())
+    ImGui::Text("用现金把已清仓仍负债的融资合约全部还清 (指定合约, 欠款少的先还; 各合约还到应还, 含利息), 约 %s?", priv ? kMask : wan(owe).c_str());
+  else
+    ImGui::Text("用现金还已清仓仍负债的融资合约 (指定合约, 欠款少的先还), 共至多 %s (%.0f%%)?", priv ? kMask : wan(pay.cap).c_str(), pay.pct);
   for (const live::Debt *d : os)
     ImGui::Text("  %s 负债 %s", sec_txt(*d, priv).c_str(), priv ? kMask : wan(d->amount).c_str());
   ImGui::TextDisabled("持仓着的负债不动; 额度另以现金封顶 (现金 %s)", priv || !s ? kMask : wan(s->acct.cash).c_str());
-  ImGui::BeginDisabled(os.empty() || pay < 0.01 || hub.busy());
+  ImGui::BeginDisabled(os.empty() || pay.amount(owe) < 0.01 || hub.busy());
   if (ImGui::Button("还款")) {
-    hub.repay(pay);
+    hub.repay(pay.cap);
     st.pay.reset();
     ImGui::CloseCurrentPopup();
   }

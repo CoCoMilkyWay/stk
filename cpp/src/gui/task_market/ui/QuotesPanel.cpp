@@ -19,6 +19,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
@@ -766,6 +767,7 @@ struct Overlay {
   int now = 0;
   std::vector<TradeDot> dots;
   std::vector<AcctPt> acct;
+  const std::vector<PosSeg> *poss = nullptr; // 持仓段 (成本线 / 仓位色带; 调用方保活, 同 dots)
 };
 // 成交点落到线 l 上: 成交日在日轴里才有, x = 档的中间; y = 线在该处的值 (相邻点插值; 越过末点 = 末点值, 首点前 / 缺口里 = 不画)
 void dots_of(const Trades &t, std::span<const misc::Ymd> days, Overlay &l) {
@@ -881,6 +883,9 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
       }
       ImPlot::EndItem();
     }
+    for (const Overlay &l : ls) // 成本带 / 成本细线压在线下 (图坐标 = 涨跌幅 ⇒ b = −100)
+      if (l.poss)
+        PlotPositions(*l.poss, days, l.x.size(), [&](size_t j) { return l.x[j]; }, [&](size_t j) { return l.y[j]; }, -100.0);
     for (size_t i = 0; i < ls.size(); ++i) {
       ImGui::PushID(static_cast<int>(i));
       ImPlot::SetNextLineStyle(ls[i].col, 1.5f);
@@ -1288,6 +1293,9 @@ int RenderOverlay(OverlayKind kind, QuoteHub &mk, OverlayState &st, const std::v
       if (def.line(cx, p, src, l)) {
         if (p.trades)
           dots_of(*p.trades, c.days, l);
+        if (kind == kOverlayIntra && p.poss && p.ref.is(kStock))
+          if (const auto it = p.poss->find(p.ref.key); it != p.poss->end())
+            l.poss = &it->second;
         c.ls.push_back(std::move(l));
       }
     }
@@ -1353,6 +1361,114 @@ void TradeTip(const TradeMark &m) {
 
 std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const OverlayState &st) {
   return day_axis(mk.calendar().days, mk.live ? mk.live->date : 0, kIntraDays[st.span[kind]]);
+}
+
+// 仓位色: 仓位 / kPosWCap 归一 (20% 即满色) → band_col (绿轻 → 红重), 透明度随仓位
+constexpr double kPosWCap = 0.2;
+void PlotPositions(std::span<const PosSeg> segs, std::span<const misc::Ymd> days, size_t n, const std::function<double(size_t)> &x,
+                   const std::function<double(size_t)> &y, double b) {
+  if (segs.empty() || days.empty() || n == 0)
+    return;
+  constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
+  const int nd = static_cast<int>(days.size());
+  const ImPlotRect lim = ImPlot::GetPlotLimits();
+  const auto r = std::views::iota(size_t{0}, n);
+  // 线在 xv 处的值 (相邻点线性插值; 出点域 / 邻点 NaN → NaN)
+  const auto at = [&](double xv) -> double {
+    if (xv < x(0) || xv > x(n - 1))
+      return NaN;
+    const size_t j = static_cast<size_t>(std::ranges::partition_point(r, [&](size_t k) { return x(k) < xv; }) - r.begin());
+    if (j == 0 || x(j) == xv)
+      return y(j);
+    const double y0 = y(j - 1), y1 = y(j);
+    return std::isfinite(y0) && std::isfinite(y1) ? y0 + (y1 - y0) * (xv - x(j - 1)) / (x(j) - x(j - 1)) : NaN;
+  };
+  ImDrawList *dl = ImPlot::GetPlotDrawList();
+  const ImU32 lc = ImGui::ColorConvertFloat4ToU32(ImVec4(0.75f, 0.75f, 0.75f, 0.5f)); // 成本细线: 淡灰
+  for (const PosSeg &seg : segs) {
+    if (seg.open > days.back() || (seg.close && seg.close < days.front()))
+      continue;
+    // 段在日轴上的范围 [k0, k1] (段首在轴前 → 0; 仍持仓 / 清仓在轴末后 → nd − 1)
+    const int k0 = seg.open <= days.front() ? 0 : static_cast<int>(std::ranges::lower_bound(days, seg.open) - days.begin());
+    const int k1 = !seg.close || seg.close >= days.back() ? nd - 1 : static_cast<int>(std::ranges::lower_bound(days, seg.close) - days.begin());
+    if (k0 > k1)
+      continue;
+    const double x0 = k0 * static_cast<double>(kSlots), x1 = (k1 + 1) * static_cast<double>(kSlots) - 1;
+    if (x1 < lim.X.Min || x0 > lim.X.Max)
+      continue;
+    // 逐日成本线位: level(k) = b + ratio(日) × (线在日末处的值 − b); 缺比 / 线值 = NaN (当日不画)
+    std::vector<double> level(static_cast<size_t>(k1 - k0 + 1), NaN);
+    for (int k = k0; k <= k1; ++k) {
+      const misc::Ymd day = days[static_cast<size_t>(k)];
+      const auto ri = std::ranges::lower_bound(seg.ratio, day, {}, [](const std::pair<misc::Ymd, double> &p) { return p.first; });
+      if (ri == seg.ratio.end() || ri->first != day)
+        continue;
+      if (const double yc = at(k * static_cast<double>(kSlots) + (kSlots - 1)); std::isfinite(yc))
+        level[static_cast<size_t>(k - k0)] = b + ri->second * (yc - b);
+    }
+    // 成本带: 段内各点 (曲线 / 成本线位都有限的连续段), 色 = 仓位
+    const double w = std::clamp(seg.weight / kPosWCap, 0.0, 1.0);
+    const ImVec4 fc = band_col(w, 1.0f);
+    const float fa = static_cast<float>(0.08 + 0.22 * w);
+    if (x(n - 1) >= x0 && x(0) <= x1) {
+      // 只画视野内 (外沿一日); 点太密按图宽抽稀 (分钟线全史几十万点, 抽稀视觉无损)
+      const double xa = std::max(x0, lim.X.Min - static_cast<double>(kSlots)), xb = std::min(x1, lim.X.Max + static_cast<double>(kSlots));
+      const size_t i0 = static_cast<size_t>(std::ranges::partition_point(r, [&](size_t k) { return x(k) < xa; }) - r.begin());
+      const size_t i1 = static_cast<size_t>(std::ranges::partition_point(r, [&](size_t k) { return x(k) <= xb; }) - r.begin());
+      const size_t budget = static_cast<size_t>(std::max(ImPlot::GetPlotSize().x, 1.f)) * 2;
+      const size_t step = i1 > i0 ? std::max<size_t>(1, (i1 - i0) / std::max(budget, size_t{1})) : 1;
+      std::vector<double> cx, cy, cl;
+      size_t i = i0;
+      while (i < i1) {
+        while (i < i1) { // 跳过断点
+          const double xv = x(i);
+          const int k = std::clamp(static_cast<int>(xv / kSlots), k0, k1) - k0;
+          if (std::isfinite(y(i)) && std::isfinite(level[static_cast<size_t>(k)]))
+            break;
+          i += step;
+        }
+        cx.clear(), cy.clear(), cl.clear();
+        while (i < i1) {
+          const double xv = x(i);
+          const int k = std::clamp(static_cast<int>(xv / kSlots), k0, k1) - k0;
+          if (!std::isfinite(y(i)) || !std::isfinite(level[static_cast<size_t>(k)]))
+            break;
+          cx.push_back(xv), cy.push_back(y(i)), cl.push_back(level[static_cast<size_t>(k)]);
+          i += step;
+        }
+        if (cx.size() >= 2) {
+          ImPlot::SetNextFillStyle(fc, fa);
+          ImPlot::PlotShaded("##pos", cx.data(), cy.data(), cl.data(), static_cast<int>(cx.size()), ImPlotItemFlags_NoFit);
+        }
+      }
+    }
+    // 成本细线: 只画仍持仓的段 (到右侧), 买入 ≥ 10 万的日, 自该日首笔买入槽起到段末 (逐日阶梯)
+    ImPlot::PushPlotClipRect();
+    if (!seg.close)
+      for (const PosSeg::Line &ln : seg.lines) {
+        if (ln.date > days[static_cast<size_t>(k1)])
+          continue;
+        // 锚在段在轴内的首日前 → 钳到该日起画 (锚在轴内时必恰是交易日)
+        int kl = k0;
+        if (ln.date > days[static_cast<size_t>(k0)]) {
+          kl = static_cast<int>(std::ranges::lower_bound(days, ln.date) - days.begin());
+          if (kl > k1 || days[static_cast<size_t>(kl)] != ln.date)
+            continue;
+        }
+        for (int k = kl; k <= k1; ++k) {
+          const double lv = level[static_cast<size_t>(k - k0)];
+          if (!std::isfinite(lv))
+            continue;
+          // 首日: 锚日在轴内 → 自买入槽起, 钳来的 → 自日起点起
+          const double xs = k == kl && days[static_cast<size_t>(kl)] == ln.date ? kl * static_cast<double>(kSlots) + ln.slot : k * static_cast<double>(kSlots);
+          const double xa = std::max(xs, static_cast<double>(lim.X.Min));
+          const double xb = std::min((k + 1) * static_cast<double>(kSlots) - 1, lim.X.Max);
+          if (xa < xb)
+            dl->AddLine(ImPlot::PlotToPixels(xa, lv), ImPlot::PlotToPixels(xb, lv), lc, 1.0f);
+        }
+      }
+    ImPlot::PopPlotClipRect();
+  }
 }
 
 Recent RecentOf(std::span<const Mark> m) {

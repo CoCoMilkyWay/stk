@@ -91,7 +91,7 @@ Opened opened_of(const Engine::FeatureTable &ft, const Scope &sc, bool has_lob) 
   o.leaves.assign(ft.x.leaves.size(), 0);
   for (size_t i = 0; i < ft.x.leaves.size(); ++i) {
     const Engine::FeatCol &l = ft.x.leaves[i];
-    if (l.allowed && sc.has(src_of(l)) && pick.has(l.code))
+    if (l.allowed && sc.has(src_of(l)) && (src_of(l) != Src::Lob || has_lob) && pick.has(l.code))
       o.leaves[i] = 1;
   }
   o.ops.assign(std::size(fx::kOps), 0);
@@ -160,14 +160,14 @@ Period period_of(const std::optional<Engine::FactorScope> &fsc, const Engine::Fe
 
 struct SpanCache {
   Period bar_only, with_lob;
-  bool has_lob = false;
+  bool has_lob = false; // 本层有 lob 叶且 lob 库与标签库有共同落盘日 (否则 lob 叶一律不开放)
 
   SpanCache(const std::optional<Engine::FactorScope> &fsc, const Engine::FeatureTable &ft) {
     bar_only = period_of(fsc, ft, {});
     for (size_t i = 0; i < ft.x.leaves.size(); ++i)
       if (ft.x.leaves[i].allowed && ft.x.leaves[i].tier == TierId::Lob) {
         with_lob = period_of(fsc, ft, {static_cast<Engine::LeafId>(i)});
-        has_lob = true;
+        has_lob = with_lob.days > 0;
         break;
       }
   }
@@ -285,7 +285,9 @@ std::string Opened::closed_err(const Engine::FeatureTable &ft, const fx::Expr &e
       os += (os.empty() ? "" : ", ") + std::string(name);
     } else {
       const Src s = src_of(*ft.x.find(name));
-      const char *why = s == Src::Lob && !lob_open ? (!has_lob ? " (lob 在本层无落盘)" : " (lob 来源未开放)") : "";
+      const char *why = s != Src::Lob ? "" : !has_lob ? " (lob 特征库在本层未建或无落盘)"
+                                         : !lob_open  ? " (lob 来源未开放)"
+                                                      : "";
       ls += (ls.empty() ? "" : ", ") + std::string(name) + why;
     }
   }
@@ -616,14 +618,13 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   c.pool = sc.pool, c.pool_cn = catalog::pool_cn(sc.pool);
   c.level = Engine::factor_level(level_id(sc.level)).name;
   c.hold = fs::hold_name(sc.hold), c.hold_key = fs::hold_token(sc.hold), c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
-  Per<Src, bool> has{}, on{};
+  Per<Src, bool> on{};
   std::vector<Engine::LeafId> opened_ids;
   for (size_t i = 0; i < ft->x.leaves.size(); ++i) {
     const Engine::FeatCol &l = ft->x.leaves[i];
     if (!l.allowed)
       continue;
     const Src src = src_of(l);
-    has[src] = true;
     const FeatureMetadata &m = meta_of(*ft, l);
     const size_t tf = static_cast<size_t>(m.ts_tf);
     Leaf x{l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf], family_of(m), src};
@@ -639,7 +640,7 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   for (const Src s : kVals<Src>)
     if (on[s])
       c.srcs += (c.srcs.empty() ? "" : " / ") + std::string(def(s).id);
-  c.has_lob = has[Src::Lob];
+  c.has_lob = impl_->spans->has_lob;
   Engine::Domain dm;
   const Period base = period_of(fsc, *ft, opened_ids, &dm);
   if (base.days > 0) {

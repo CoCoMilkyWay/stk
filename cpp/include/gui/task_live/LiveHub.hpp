@@ -19,7 +19,7 @@
 //     (后台每 0.5s 取一遍这批, 每单取最新的定扫档价; 断流超 5s 即该单现取); 钱券不够的单由闪电窗的最大可买 / 可卖封顶 → 末了刷新一轮.
 //     一单没下成 (含任何意外) 只记下、接着下后面的; 停在报出委托之前的 (Driver::unsent) 与买单封顶少买的余量批末按原序重下一轮,
 //     仍有没下成的即事务失败、列出各单; 检查一遍里失败即停. 每单下前都核静默段 (单笔下单同)
-//   现金还款 = 刷新 → 已清仓仍负债的各只 (持仓里已无、融资负债还在; 持仓着的负债归调仓管) 交 broker 指定合约逐笔还 (额度另以现金封顶) → 末了刷新一轮
+//   现金还款 = 刷新 → 已清仓仍负债的各只 (持仓里已无、融资负债还在; 持仓着的负债归调仓管) 按欠款从少到多交 broker 指定合约逐笔还 (额度另以现金封顶; 全部还清 = 各合约还到应还, 不留利息尾巴) → 末了刷新一轮
 //   错误边界 (live::guard): 各事务、各单、各帧的持仓帧 / 试算; 外部结局与应答畸形一律收成原因文本, 不越界崩进程
 //   后台线程各持核心的 shared_ptr (在途的客户端操作做完即退)
 #pragma once
@@ -185,7 +185,7 @@ public:
   void submit(const std::string &code, int side, double size, live::Credit credit);
   void pull(Pull p);      // 后台拉 p
   void run();             // 后台执行调仓
-  void repay(double cap); // 后台现金还款: 已清仓仍负债 (live::orphans) 的融资合约, 共至多 cap 元 (另以现金封顶)
+  void repay(double cap); // 后台现金还款: 已清仓仍负债 (live::orphans, 欠款少的先还) 的融资合约, 共至多 cap 元 (∞ = 全部还清; 另以现金封顶)
 
 private:
   using PtrPair = std::pair<const void *, const void *>;

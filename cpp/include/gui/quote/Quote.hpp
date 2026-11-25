@@ -30,6 +30,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace sina {
@@ -139,13 +140,31 @@ struct EquityDay {
   double base = 0, pnl = 0;
 };
 struct Trades; // 账户的成交点 (见下)
+// 一只的一段持仓 (开仓到清仓; 成本线 / 仓位色带共用): 成本随买入加权摊 (卖出不动), 股数归零即分段;
+//   lines = 买入额 ≥ 10 万的日 → 自该日首笔买入的槽向右画出成本细线;
+//   weight = 仓位 (市值 / 净资产): 仍持仓 = 回放末日, 已清仓 = 清仓日;
+//   ratio = 逐日 成本价 ÷ 当日收盘: 成本恒用成本变的那一日的复权因子换算 (成本线跨除权日连续),
+//           渲染处 成本线位 = ratio(其日) × 线在该日收盘处的值 —— 与图的归一化 / 复权口径无关 (同日复权空间一致)
+struct PosSeg {
+  misc::Ymd open = 0, close = 0; // 开仓 / 清仓日; close = 0 = 仍持仓
+  double weight = 0;             // 仓位 (市值 / 净资产)
+  struct Line {
+    misc::Ymd date = 0; // 买入日
+    int slot = -1;      // 当日首笔买入的槽
+  };
+  std::vector<Line> lines;                         // 买入额 ≥ 10 万的日, 升序
+  std::vector<std::pair<misc::Ymd, double>> ratio; // 逐日 (交易日) 成本价 ÷ 当日收盘, 升序
+};
+// 全局 id → 各段 (开仓日升序)
+using Positions = std::unordered_map<uint32_t, std::vector<PosSeg>>;
 // 账户回放的摘要 (PriceView 给; 随账户侧的 Tape 一并换): 回放末日净值 / 其后账本里的外部进出 / 回放各日外部进出之和 (累计净转入) / 末日收后持仓 / 逐日基数与累计真实盈亏;
 //   账户全史 = 时间加权指数 (前收 = 前一日指数, 恒带分钟); 当日 = 末日指数 × growth(nav, 净资产_s, 进出) (account::intraday)
 struct Equity {
   double nav = 0, after = 0, in = 0;
   std::vector<Holding> hold; // 计价 = 末日收盘
   std::shared_ptr<const std::vector<EquityDay>> days;
-  std::shared_ptr<const Trades> trades; // 回放各日的历史成交点 (一分钟一档; 无账本 = 空)
+  std::shared_ptr<const Trades> trades;       // 回放各日的历史成交点 (一分钟一档; 无账本 = 空)
+  std::shared_ptr<const Positions> positions; // 回放出的各只持仓段 (无账本 = 空)
   // 当日资金基数 (同 account::growth: 券商持仓计入末日后进出 after, 回放持仓不计)
   double today_base(bool broker) const { return std::max(nav + std::max(broker ? after : 0.0, 0.0), 0.0); }
 };

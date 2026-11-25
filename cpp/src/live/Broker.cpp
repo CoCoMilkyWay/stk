@@ -16,6 +16,7 @@ std::vector<const Debt *> orphans(const Snapshot &s) {
   for (const Debt &d : s.debts.list)
     if (const Position *p = s.pos.find(d.code); d.amount > 0 && (!p || p->balance == 0))
       out.push_back(&d);
+  std::ranges::stable_sort(out, {}, &Debt::amount);
   return out;
 }
 

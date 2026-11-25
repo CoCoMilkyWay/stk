@@ -381,7 +381,7 @@ void rebal_task(Core &c) {
   live::need(after.empty(), "各单已下, 末了刷新失败: %s", after.c_str());
 }
 
-// 现金还款: 刷新后的已清仓仍负债各只, 共至多 cap 元 (另以现金封顶); 各笔 broker 各记一条; 末了的刷新失败只记进结局
+// 现金还款: 刷新后的已清仓仍负债各只 (欠款少的先还), 共至多 cap 元 (∞ = 全部还清; 另以现金封顶); 各笔 broker 各记一条; 末了的刷新失败只记进结局
 void repay_task(Core &c, double cap) {
   const auto snap = sync(c);
   std::vector<std::string> codes;
@@ -389,10 +389,11 @@ void repay_task(Core &c, double cap) {
   for (const live::Debt *d : live::orphans(*snap))
     codes.push_back(d->code), owe += d->amount;
   live::need(!codes.empty(), "没有已清仓仍负债的");
-  cap = std::min(cap, snap->acct.cash);
-  live::need(cap >= 0.01, "现金 %s, 还不了", wan(snap->acct.cash).c_str());
-  live::trace::note("repay", strf("已清仓仍负债 %zu 只共 %s, 现金还至多 %s", codes.size(), wan(owe).c_str(), wan(cap).c_str()), {{"codes", codes}, {"owe", owe}, {"cap", cap}});
-  const std::vector<live::Repaid> r = c.broker->repay(codes, cap);
+  live::need(snap->acct.cash >= 0.01, "现金 %s, 还不了", wan(snap->acct.cash).c_str());
+  const bool full = std::isinf(cap);
+  live::trace::note("repay", strf("已清仓仍负债 %zu 只共 %s, 现金还%s", codes.size(), wan(owe).c_str(), full ? "清" : ("至多 " + wan(cap)).c_str()),
+                    {{"codes", codes}, {"owe", owe}, {"full", full}});
+  const std::vector<live::Repaid> r = c.broker->repay(codes, full ? cap : std::min(cap, snap->acct.cash));
   double sum = 0;
   for (const live::Repaid &x : r)
     sum += x.amount;

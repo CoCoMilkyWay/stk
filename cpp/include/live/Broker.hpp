@@ -128,7 +128,7 @@ struct Snapshot {
   int at = -1; // 本轮读完于 (当日秒); Driver::read 不填, Broker 填
 };
 
-// 已清仓仍负债: 融资负债里本只已无持仓 (余额 0) 的, 序同 debts
+// 已清仓仍负债: 融资负债里本只已无持仓 (余额 0) 的, 负债金额升序 (现金还款按此序还)
 std::vector<const Debt *> orphans(const Snapshot &s);
 
 // 两融条款 (一只)
@@ -202,7 +202,7 @@ public:
   virtual std::vector<CashFlow> flows(misc::Ymd from) = 0; // from 日起 (含; 0 = 开户起) 至昨日的资金流水
   virtual std::vector<Deal> deals(misc::Ymd from) = 0;     // from 日起 (含, > 0) 至昨日的历史成交
   virtual Placed place(const OrderReq &o) = 0;             // 停在失败的那一步
-  // 现金还款: codes 各只的融资合约依次指定合约还, 至多共 cap 元; 停在失败的那一笔 (此前各笔已还, 各记一条)
+  // 现金还款: codes 各只 (按给的序) 的融资合约逐笔指定合约还, 至多共 cap 元 (∞ = 各合约还到应还); 停在失败的那一笔 (此前各笔已还, 各记一条)
   virtual std::vector<Repaid> repay(const std::vector<std::string> &codes, double cap) = 0;
 
   virtual std::span<const std::string_view> steps() const = 0; // place 的各步名 (即其各步的段名)

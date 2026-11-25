@@ -26,7 +26,8 @@
 //      线名中文小字贴线尾, 读数看十字光标); 只一条另带现价十字 (标涨跌幅 / 时刻);
 //     0 轴上叠每分钟净流入半透明红绿柱 (日轴各日, 同 FLOW 口径; 只选一条看它, 否则看全A.等);
 //     「交易」开关 (日内旁, 默认开): 日内栏与主图的账户线上叠成交点 (账本的历史成交 + 券商今日成交; 日内栏 5 分钟一档、主图 30 分钟一档, 档内同只合并;
-//       净买红 ▲ / 净卖绿 ▼, 大小随买卖总额 (按图内最大); 悬停看该档各只买 / 卖额与股数)
+//       净买红 ▲ / 净卖绿 ▼, 大小随买卖总额 (按图内最大); 悬停看该档各只买 / 卖额与股数); 个股线上叠持仓段 (账本回放, Quote::PosSeg):
+//       成本细线 (只画买入 ≥ 10 万的日, 自该日首笔买入槽到段末) + 线与成本线间填色 (仓位色带, 绿轻 → 红重; 10 万以下开仓没线也染色)
 //   主图 / 日内栏贴边 (窄内边距, 不标轴名), 图区让给线
 //   悬停联动 (NAV 主图 / 日内栏 / FLOW 图 ↔ 右表, 同 Beta→Style: gui/util/HoverSync.hpp): 图上悬停最近一条线 = 右表该行底色亮并滚到居中
 //     (悬停止回原位; 主图另出行的悬停提示); 右表悬停一行 = 图上该行的线白粗线画在最上; 主图与日内栏互相跟着亮
@@ -255,7 +256,7 @@ struct LinesState {
   int cat[kPages] = {kGroupPool, kGroupPool, kGroupPool, kGroupPool, kGroupPool}; // [LinesPage] 右表类别条选中组 (RowGroup)
   BasketFilter filter[kBasketGroups] = {{}, {}, {.n_hi = 500, .flow = 5.f}};      // [BasketGroup] 默认: 指数 / 行业不滤, 概念 只数 ≤ 500 且 |流入| ≥ 5%
   bool intraday = true;                                                           // NAV 日内栏
-  bool trades = true;                                                             // NAV 日内栏 / 主图的账户线叠成交点
+  bool trades = true;                                                             // 账户线叠成交点 + 个股线叠持仓段 (成本线 / 仓位色带)
   OverlayState overlay;                                                           // 叠加图 (日内栏 / FLOW) 与资金流段的档位
   CtaState cta;
 };
@@ -274,10 +275,12 @@ void SavePick(const LinesPick &pick); // 原子替换
 void SyncLinesWatch(LinesState &ui);
 // 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (本帧已 frame; nullptr = AssetInfo 未建, 日内栏 / 指数行业近况 / 成分行当日空着;
 // 本页要的个股全历史 / 分钟价登记给它); infos = 基本面档案 (成分行名 / 估值); cta = CTA 页的服务 (算 mk 价格库发布的分钟价, mk 空时同空);
-// account / hold = 账户行的悬停 / 持仓 (成分 + 当日四列; 账户的全史 / 当日走 mk); trades = 账户成交点两档 (「交易」开时叠在日内栏 / 主图的账户线上).
+// account / hold = 账户行的悬停 / 持仓 (成分 + 当日四列; 账户的全史 / 当日走 mk); trades = 账户成交点两档 (「交易」开时叠在日内栏 / 主图的账户线上);
+// poss = 账户持仓段 (「交易」开时叠在个股线上: 成本线 + 仓位色带).
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
                    const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
-                   const std::shared_ptr<const Quote::Holdings> &hold, const Quote::TradeBins &trades);
+                   const std::shared_ptr<const Quote::Holdings> &hold, const Quote::TradeBins &trades,
+                   const std::shared_ptr<const Quote::Positions> &poss);
 
 } // namespace GUI::Market

@@ -132,7 +132,7 @@ void unpick(const Hwnd &pick) {
 // 本笔上下文: 页与控件; 选约填上的合约 / 应还; 填额后的额; 确认框; 回报
 struct Ctx {
   Hwnd dlg, amount, ok, pick, avail;
-  const std::set<std::string> &codes;
+  const std::vector<std::string> &codes; // 还的序
   const std::set<std::string> &done;
   double left = 0, cash = 0; // 余下额度 / 可用金额
   Repaid r;
@@ -150,18 +150,28 @@ bool choose(Ctx &c) {
   });
   const Hwnd list = win::ctls(box, {{"list", kPickList}}).at("list");
   until(said("选择合约列表查完 (有行)"), [&] { return !win::detail(list).items.empty(); }, kListWait, 0.2);
-  std::optional<Row> hit;
+  // 行的 codes 序 (不在 codes 里 / 已还过 = codes.size())
+  const auto rank = [&](const Row &r) {
+    const auto id = r.cell.find(kIdCol), code = r.cell.find(kCodeCol);
+    need(id != r.cell.end() && code != r.cell.end() && r.x > 0, "选择合约列表的行缺「%s」或「%s」", kIdCol.c_str(), kCodeCol.c_str());
+    return c.done.contains(id->second) ? c.codes.size() : static_cast<size_t>(std::ranges::find(c.codes, code->second) - c.codes.begin());
+  };
+  size_t best = c.codes.size(); // 通读: 还有未还合约的、序最前的一只
   scan(list, [&](const std::vector<Row> &page) {
-    for (const Row &r : page) {
-      const auto id = r.cell.find(kIdCol), code = r.cell.find(kCodeCol);
-      need(id != r.cell.end() && code != r.cell.end() && r.x > 0, "选择合约列表的行缺「%s」或「%s」", kIdCol.c_str(), kCodeCol.c_str());
-      if (c.codes.contains(code->second) && !c.done.contains(id->second)) {
-        hit = r;
-        return true;
-      }
-    }
+    for (const Row &r : page)
+      best = std::min(best, rank(r));
     return false;
   });
+  std::optional<Row> hit;
+  if (best < c.codes.size())
+    scan(list, [&](const std::vector<Row> &page) {
+      for (const Row &r : page)
+        if (rank(r) == best) {
+          hit = r;
+          return true;
+        }
+      return false;
+    });
   if (!hit) {
     win::post(box, win::kWmClose, 0);
     until(said("「选择合约」关掉"), [&] { return !win::tops().contains(box); }, 3);
@@ -233,13 +243,12 @@ std::vector<Repaid> run(const std::vector<std::string> &codes, double cap) {
   const auto ids = win::ctls(dlg, {{"amount", kAmount}, {"ok", kOk}, {"pick", kPick}, {"avail", kAvail}});
   unpick(ids.at("pick"));
   const std::optional<double> avail = until([&] { return "可用金额填上, 现为「" + win::text(ids.at("avail")) + "」"; }, [&] { return money(win::text(ids.at("avail"))); }, kFieldWait);
-  const std::set<std::string> want(codes.begin(), codes.end());
   std::set<std::string> done;
   std::vector<Repaid> out;
   double left = std::min(cap, *avail), cash = *avail;
   trace::note("repay", strf("现金还款 %zu 只, 额度 %.2f (可用金额 %.2f)", codes.size(), left, *avail), {{"codes", codes}, {"cap", cap}, {"avail", *avail}});
   while (left >= 0.01) {
-    Ctx c{dlg, ids.at("amount"), ids.at("ok"), ids.at("pick"), ids.at("avail"), want, done, left, cash, {}, {}, {}, false};
+    Ctx c{dlg, ids.at("amount"), ids.at("ok"), ids.at("pick"), ids.at("avail"), codes, done, left, cash, {}, {}, {}, false};
     const win::Tops before = win::tops();
     bool more = true;
     const std::string err = guard([&] {

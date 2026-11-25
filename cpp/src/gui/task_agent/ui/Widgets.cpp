@@ -277,14 +277,14 @@ void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, 
       o.hold = h.key;
   }
   ImGui::TextDisabled("   %s", catalog::hold_desc(o.hold, o.level).c_str());
-  // 特征来源: bar 恒开放, lob 可选 (本层无 lob 叶则不可改) + 开放的合起来的评估期 (Lab 绑到此作用域后才有)
+  // 特征来源: bar 恒开放, lob 可选 (本层无 lob 叶或 lob 库未建则不可改) + 开放的合起来的评估期 (Lab 绑到此作用域后才有)
   const Context *c = lab.scope() == o ? &lab.ctx() : nullptr;
   ImGui::TextDisabled("   Src  bar +");
   ImGui::SameLine();
   ImGui::BeginDisabled(c && !c->has_lob);
   ImGui::Checkbox("lob##src", &o.lob);
   ImGui::EndDisabled();
-  tip(c && !c->has_lob ? "本层无 lob 叶" : "开放 lob (逐笔与盘口) 叶; bar (价量与基本面) 恒开放");
+  tip(c && !c->has_lob ? "本层无 lob 叶, 或 lob 特征库未建" : "开放 lob (逐笔与盘口) 叶; bar (价量与基本面) 恒开放");
   ImGui::SameLine();
   ImGui::TextDisabled("|");
   ImGui::SameLine();

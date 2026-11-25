@@ -443,13 +443,24 @@ std::vector<TradeDot> nav_dots(const LinesDerived &d, const LinesSlice &s, const
   return out;
 }
 
+// 行的个股线上叠持仓段 (成本带 + 成本细线; 在画的切片 s 上): 无持仓段 / 非个股 / 线在画外 → 不画
+void plot_positions(const LinesRow &row, const LinesSlice &s, const std::shared_ptr<const Quote::Positions> &poss, const std::vector<misc::Ymd> &dates) {
+  if (!poss || !row.ref.is(Quote::kStock) || s.size() == 0)
+    return;
+  const auto it = poss->find(row.ref.key);
+  if (it == poss->end())
+    return;
+  PlotPositions(it->second, dates, s.size(), [&](size_t i) { return s.x(i); }, [&](size_t i) { return s.y(i); }, 0.0);
+}
+
 // ---- NAV 主图: 画选中行的两条线, 按组表画层 (for_each_layer; 策略在最上层) + 图例矩阵 (最上层, nav_legend);
 //      日内形未到的行 (minute_wait) 整行不画、不进图例, 到了一次画成分钟线;
 //      行刚选中 → ui.reveal 强制回默认显隐一次 (理想列显, 可成交列隐);
 //      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示; 鼠标在图例矩阵上不算), hot 行显示的线白粗线画在最上;
 //      账户线上叠成交点 (trades: 30 分钟一档; 空 = 不叠), 鼠标近一点 → 提示该档成交 (代替账户线悬停);
 //      账户线悬停 (只显账户线时全图带十字线吸附, 多线时近线触发) 显示前复权净资产与区间复权 / 真正回撤 ----
-void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf, const Quote::Trades *trades) {
+void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf, const Quote::Trades *trades,
+              const std::shared_ptr<const Quote::Positions> &poss) {
   static ImRect s_box;      // 上帧图例矩阵 (悬停找线避开)
   std::vector<NavRow> rows; // 画序, 只含选中行的
   for_each_layer([&](int g) {
@@ -507,6 +518,12 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
       std::snprintf(id, sizeof(id), "##pf_hot%zu", j);
       ImPlot::SetNextLineStyle(kHotCol, kHotW);
       plot_slice(pf, id, *on[j].s, ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit);
+    }
+  std::vector<const LinesRow *> done; // 持仓段: 每条个股行一次 (首条在显的切片)
+  for (const On &o : on)
+    if (o.row->ref.is(Quote::kStock) && std::ranges::find(done, o.row) == done.end()) {
+      plot_positions(*o.row, *o.s, poss, d.dates);
+      done.push_back(o.row);
     }
   bool on_dot = false;
   if (const auto a = std::ranges::find_if(on, [](const On &x) { return x.row->ref.is(Quote::kAccount); }); trades && a != on.end()) {
@@ -694,7 +711,8 @@ void plot_band(const char *lb, const LinesBand &bd, const double *bx, int bn, fl
 //      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的理想线 (常显; 有分钟价则画到分钟) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
 //      标的日内形未到 (minute_wait) 整图不画, 到了一次画成;
 //      价格线 + 开着的 band 线进 fit, band 填色 (到图顶 / 底) / 等值线不进; 框选改 rg ----
-void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf) {
+void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf,
+              const std::shared_ptr<const Quote::Positions> &poss) {
   static LgHover s_hl; // 上帧图例矩阵
   const ValSet &vs = kValSets[kSetVal];
   const LinesSlice &sl = v.slice[pin.g][pin.r][kIdeal];
@@ -738,6 +756,7 @@ void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const Lines
         pf.marks.push_back({ImPlot::PlotToPixels(p.x, p.y * (1.0 + m.r)), ImGui::ColorConvertFloat4ToU32(band_col(m.u, kBandTagA)), t});
       }
   }
+  plot_positions(d.row(pin), sl, poss, d.dates);
   hover_contour(d, v, on, s_hl.box);
   s_hl = val_legend(v, ui.roll.key.years, vs);
   zoom_x(rg, static_cast<int>(d.dates.size()), s_hl.box);
@@ -749,7 +768,8 @@ void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const Lines
 //      价格线 / 占比线 / 开着的 band 线各进各轴的 fit, 填色不进; 线尾小字 = 价格 (右轴) + 占比 (视野内末个可算点); 无现价十字 / 刻度;
 //      框选 / 滚轮同 VAL ----
 constexpr float kMarginPxA = 0.35f; // 背景价格线的 alpha
-void plot_margin(LinesState &ui, LinesRange &rg, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf) {
+void plot_margin(LinesState &ui, LinesRange &rg, const LinesDerived &d, const LinesView &v, const LinesAt &pin, PlotFrame &pf,
+                 const std::shared_ptr<const Quote::Positions> &poss) {
   static LgHover s_hl; // 上帧图例矩阵
   const ValSet &vs = kValSets[kSetMargin];
   const LinesSlice &sl = v.slice[pin.g][pin.r][kIdeal];
@@ -788,6 +808,9 @@ void plot_margin(LinesState &ui, LinesRange &rg, const LinesDerived &d, const Li
         break;
       }
   }
+  ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2); // 持仓段在价格轴 (右轴)
+  plot_positions(d.row(pin), sl, poss, d.dates);
+  ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
   s_hl = val_legend(v, ui.roll.key.years, vs);
   // 两口单选: 图例刚点开另一口 → 换到它 (原口隐); 都关 → −1
   int pick = -1;
@@ -811,7 +834,8 @@ LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates) {
 // ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) ↔ MARGIN (plot_margin: 左轴占比 + 右轴价格) 同一框: 贴边 (窄内边距, 不标轴名); y 恒贴合 + 留白 (fit_margin, 各轴各留);
 //      x: 恒贴合 (视野只随区间; 滚轮 = 钉住右端缩放区间, wheel_x); x 右端留出线尾小字 / 刻度 / 十字标签;
 //      左上角 = 区间档位条 (span_bar) + 其下图例矩阵 ----
-void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size, const Quote::Trades *trades) {
+void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size, const Quote::Trades *trades,
+                     const std::shared_ptr<const Quote::Positions> &poss) {
   const LinesDerived &d = ui.der.val;
   const LinesView &v = ui.view.val;
   const ValSetId vals = kPageDefs[page].vals;
@@ -852,11 +876,11 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
     const ImPlotRect cur = ImPlot::GetPlotLimits(); // 先锁 setup, FitThisFrame 才定
     PlotFrame pf{fit_x() ? ImPlotRect(-DBL_MAX, DBL_MAX, -DBL_MAX, DBL_MAX) : cur, {}, {}, {}, {}, ui.view.gen};
     if (nav)
-      plot_nav(ui, d, v, pf, trades);
+      plot_nav(ui, d, v, pf, trades, poss);
     else if (pin.g >= 0 && !wait && mg)
-      plot_margin(ui, range, d, v, pin, pf);
+      plot_margin(ui, range, d, v, pin, pf, poss);
     else if (pin.g >= 0 && !wait)
-      plot_val(ui, range, d, v, pin, pf);
+      plot_val(ui, range, d, v, pin, pf, poss);
     wheel_x(range);
     if (wait)
       plot_hint("分钟线载入中…");
