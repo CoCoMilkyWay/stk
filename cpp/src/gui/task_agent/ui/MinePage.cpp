@@ -449,20 +449,23 @@ void result_line(const Names &in, const Result &r) {
 
 // ---- 时间线 = 与 agent 的全部交互, 一件一条 ----
 // 条目: 工具调用 (agent 的回复 → 执行 → 交回的 prompt) 与流程 (开场 / 插话 / 不合协议 / 待发 · 等回复 / 停下 / 继续 / 作废回复), 同一种格式:
-// 标题一行 = 英文名 · 中文名 · 用时 · 一行结论, 一律折叠; 展开 = 底色略异的区块, 右端切换 展示 (人读的) / prompt (与 agent 往来的原文)
+// 标题一行 = 英文名 · 中文名 · 思考用时 (agent 拿到上一条到交来本调用) · 执行用时 (本调用) · 一行结论, 一律折叠; 展开 = 底色略异的区块, 右端切换 展示 (人读的) / prompt (与 agent 往来的原文)
 constexpr ImGuiTreeNodeFlags kNode = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DrawLinesFull;
 constexpr ImGuiTreeNodeFlags kEntry = kNode | ImGuiTreeNodeFlags_AllowOverlap;
 constexpr size_t kCallChars = 96; // 调用原文在一行结论里的字数
 constexpr float kTint = 0.10f;    // 展开区块的底色 = 条目色的这么多不透明度
+
+// 两段用时的色: 思考 = 大脑 (紫) / 执行 = 系统 (蓝)
+constexpr ImVec4 kColThink(0.72f, 0.6f, 0.9f, 0.85f), kColRun(0.5f, 0.7f, 0.95f, 0.85f);
 
 // 流程条目的色 (工具条目用工具色; 待发 / 等回复用状态色)
 constexpr ImVec4 kColStart(0.95f, 0.55f, 0.75f, 1.0f), kColMemo(0.95f, 0.85f, 0.35f, 1.0f), kColRetry(0.95f, 0.35f, 0.35f, 1.0f), kColBeat(0.9f, 0.9f, 0.9f, 1.0f),
     kColDrop(0.85f, 0.45f, 0.45f, 1.0f);
 constexpr std::pair<const char *, const char *> kLanes[] = {{"start", "开场"}, {"memo", "插话"}, {"retry", "不合协议"}, {"send", "待发"}, {"reply", "等回复"}};
 
-// 标题的列宽 (英文名 / 中文名 / 用时 各取最宽的, 各条对齐)
+// 标题的列宽 (英文名 / 中文名 / 两段用时 各取最宽的, 各条对齐)
 struct Cols {
-  float id = 0.0f, cn = 0.0f, took = 0.0f;
+  float id = 0.0f, cn = 0.0f, took = 0.0f; // took = 一段用时的宽
 };
 Cols cols_of() {
   Cols c;
@@ -480,7 +483,7 @@ Cols cols_of() {
 struct Head {
   ImVec4 col; // 条目色: 英文名 / 中文名 / 展开底色
   const char *id, *cn;
-  std::string took, line; // 用时 / 一行结论
+  std::string think, run, line; // 思考用时 / 执行用时 / 一行结论 (空 = 不写)
   ImVec4 tone;            // 结论的色 (状态)
   std::string tip;        // 悬浮看的全文 (空 = 无)
 };
@@ -532,13 +535,15 @@ void entry(Ui &s, const Mine &m, const Cols &c, const Head &h, int k, bool now, 
   }
   if (s.jump && now)
     ImGui::SetScrollHereY(0.0f);
-  const float sp = st.ItemInnerSpacing.x * 2.0f, x = x0 + ImGui::GetTreeNodeToLabelSpacing(), xl = x + c.id + c.cn + c.took + 3.0f * sp;
+  const float sp = st.ItemInnerSpacing.x * 2.0f, x = x0 + ImGui::GetTreeNodeToLabelSpacing(), xl = x + c.id + c.cn + 2.0f * c.took + 4.0f * sp;
   ImGui::SameLine(x);
   ImGui::TextColored(h.col, "%s", h.id);
   ImGui::SameLine(x + c.id + sp);
   ImGui::TextColored(h.col, "%s", h.cn);
   ImGui::SameLine(x + c.id + c.cn + 2.0f * sp);
-  ImGui::TextDisabled("%s", h.took.c_str());
+  ImGui::TextColored(kColThink, "%s", h.think.c_str());
+  ImGui::SameLine(x + c.id + c.cn + c.took + 3.0f * sp);
+  ImGui::TextColored(kColRun, "%s", h.run.c_str());
   constexpr const char *kModes[] = {"展示", "prompt"};
   const float modes = ImGui::CalcTextSize(kModes[0]).x + ImGui::CalcTextSize(kModes[1]).x + 4.0f * st.FramePadding.x + st.ItemSpacing.x;
   const float xr = open ? right - modes : right;
@@ -634,8 +639,8 @@ bool call_entry(Ui &s, Mine &m, const Cols &c, const Names &adopted, size_t i) {
   const std::string full = a.call.text(), call = text::head(full, kCallChars);
   const std::string what = text::flat(!a.out.title.empty() ? a.out.title : a.out.res ? a.out.res->title()
                                                                                      : call);
-  Head h{tool_col(a.call.tool), meta.id, meta.cn, a.span.began() ? dur(a.span.len(t)) : std::string(), what, color(TaskStatus::Kind::None),
-         full + (a.laps.empty() ? "" : "\n" + took(a, t))};
+  Head h{tool_col(a.call.tool), meta.id, meta.cn, dur(m.timeline[i].span.len(t)), a.span.began() ? dur(a.span.len(t)) : std::string(), what, color(TaskStatus::Kind::None),
+         full + "\n\n思考 " + dur(m.timeline[i].span.len(t)) + " (agent 拿到上一条到交来本调用)" + (a.span.began() ? " · 执行 " + took(a, t) : std::string())};
   if (a.span.ended()) {
     if (!a.out.ok && a.out.title.empty())
       h.line = "没做成: " + first_line(a.out.text);
@@ -648,7 +653,7 @@ bool call_entry(Ui &s, Mine &m, const Cols &c, const Names &adopted, size_t i) {
   } else if (a.span.running() && m.live()) {
     h.line = StageOf(a, s.lab_live.frac) + " · " + what, h.tone = color(TaskStatus::Kind::Busy);
   } else {
-    h.took = m.live() ? "排队" : "未做", h.tone = color(TaskStatus::Kind::Muted);
+    h.run = m.live() ? "排队" : "未做", h.tone = color(TaskStatus::Kind::Muted);
   }
   bool start = false;
   entry(
@@ -670,7 +675,7 @@ bool call_entry(Ui &s, Mine &m, const Cols &c, const Names &adopted, size_t i) {
 // 第 i 步的回复不合协议: 展示 = 不合之处; prompt = 原回复与交回的重交要求
 void retry_entry(Ui &s, const Mine &m, const Cols &c, size_t i) {
   const Step &sp = m.timeline[i];
-  const Head h{kColRetry, kLanes[2].first, kLanes[2].second, dur(sp.span.len(m.now())), first_line(sp.error), color(TaskStatus::Kind::Error), sp.error};
+  const Head h{kColRetry, kLanes[2].first, kLanes[2].second, dur(sp.span.len(m.now())), "", first_line(sp.error), color(TaskStatus::Kind::Error), sp.error};
   entry(s, m, c, h, static_cast<int>(i) + 1, i + 1 == m.timeline.size(), [&] { wrapped(color(TaskStatus::Kind::Error), sp.error); }, [&] { exchange(s, m, i); });
 }
 
@@ -680,12 +685,12 @@ void wait_entry(Ui &s, const Mine &m, const Cols &c, const Flow &f, size_t i) {
   const llm::Reply &live = s.chat_live.reply;
   const std::string sent = TextOf(sp);
   if (!sp.span.began()) {
-    const Head h{color(TaskStatus::Kind::Warn), kLanes[3].first, kLanes[3].second, "", std::string(def(sp.kind).cn) + " · " + chars(sent) + (m.live() ? "" : " · 按 继续 发出"),
+    const Head h{color(TaskStatus::Kind::Warn), kLanes[3].first, kLanes[3].second, "", "", std::string(def(sp.kind).cn) + " · " + chars(sent) + (m.live() ? "" : " · 按 继续 发出"),
                  color(TaskStatus::Kind::Warn), ""};
     entry(s, m, c, h, static_cast<int>(i) + 1, true, [&] { wrapped_dim("这条消息还没发给 agent (" + std::string(def(sp.kind).cn) + "); 原文见 prompt"); }, [&] { raw_part("send", "待发的 prompt", sent); });
     return;
   }
-  const Head h{color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), kLanes[4].first, kLanes[4].second, dur(f.since),
+  const Head h{color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), kLanes[4].first, kLanes[4].second, dur(f.since), "",
                doing(f) + (f.topic.empty() ? "" : " · " + f.topic), color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), ""};
   const auto stream = [&] {
     if (!live.thinking.empty())
@@ -713,7 +718,7 @@ void start_entry(Ui &s, const Mine &m, const Cols &c) {
   const Mine::Setup &st = m.setup;
   assert(m.system && "开会话即有系统提示");
   const std::string scope = std::string(st.test ? "自检 · " : "") + catalog::label(st.sc) + " · 近 " + std::to_string(st.sc.years) + " 年 · " + m.brain();
-  const Head h{kColStart, kLanes[0].first, kLanes[0].second, "", scope + (st.remark.empty() ? "" : " · 要求: " + text::flat(st.remark)), color(TaskStatus::Kind::None),
+  const Head h{kColStart, kLanes[0].first, kLanes[0].second, "", "", scope + (st.remark.empty() ? "" : " · 要求: " + text::flat(st.remark)), color(TaskStatus::Kind::None),
                st.remark};
   entry(
       s, m, c, h, 1, false,
@@ -732,7 +737,7 @@ void start_entry(Ui &s, const Mine &m, const Cols &c) {
 // 研究员插话: 随第 i 条消息发出
 void memo_entry(Ui &s, const Mine &m, const Cols &c, size_t i) {
   const std::string &memo = m.timeline[i].memo;
-  const Head h{kColMemo, kLanes[1].first, kLanes[1].second, "", text::flat(memo), color(TaskStatus::Kind::None), memo};
+  const Head h{kColMemo, kLanes[1].first, kLanes[1].second, "", "", text::flat(memo), color(TaskStatus::Kind::None), memo};
   entry(s, m, c, h, static_cast<int>(i) + 1, false, [&] { wrapped(memo); }, [&] { raw_part("memo", "附在消息末尾", MemoText(memo)); });
 }
 
@@ -772,7 +777,7 @@ void summary_block(const Mine &m) {
 // 流程的一笔 (停下 / 继续 / 作废的回复): 展示 = 一行 (停着时末一笔停下 = 停下汇总); prompt = 日志里的一节 (作废的回复原文在这)
 void beat_entry(Ui &s, const Mine &m, const Cols &c, const LogMark &x, bool current) {
   const bool drop = x.kind == Beat::Drop;
-  const Head h{drop ? kColDrop : kColBeat, def(x.kind).id, def(x.kind).cn, "", text::flat(x.line),
+  const Head h{drop ? kColDrop : kColBeat, def(x.kind).id, def(x.kind).cn, "", "", text::flat(x.line),
                color(drop ? TaskStatus::Kind::Error : current ? TaskStatus::Kind::Ready
                                                               : TaskStatus::Kind::None),
                x.line};
