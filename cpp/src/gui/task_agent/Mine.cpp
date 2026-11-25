@@ -35,8 +35,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, backend, net, model)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Span, t0, t1)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Cand, name, name_cn, expr, hyp, note)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Pick, on, other, text)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Setup, sc, gate, ask, test, remote, remark)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Desk::Leg, llm, gpu, budget)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Mine::Setup, sc, gate, ask, test, remote, remark)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Mine::Leg, llm, gpu, budget)
 
 void to_json(json &j, const Act &a) {
   j = {{"tool", a.call.tool}, {"args", a.call.args}, {"span", a.span}, {"out", a.out.text}, {"gist", a.out.gist}, {"ok", a.out.ok}};
@@ -219,9 +219,9 @@ int tokens(const llm::Usage &u) { return u.prompt + u.completion; }
 } // namespace
 
 // =============================================================================
-// Desk & Mine 状态机实现
+// Mine 状态机实现
 // =============================================================================
-double Desk::now() const { return t_end >= 0.0 ? t_end : std::chrono::duration<double>(Clock::now() - t0).count(); }
+double Mine::now() const { return t_end >= 0.0 ? t_end : std::chrono::duration<double>(Clock::now() - t0).count(); }
 
 std::string Mine::make_log_head() const {
   const Context &c = lab.ctx();
@@ -300,10 +300,9 @@ void Mine::load(const SharedData &data, const std::string &dir) {
   j.at("setup").get_to(setup);
   j.at("leg").get_to(leg);
   leg.gpu = leg.gpu && catalog::gpu();
-  log.reopen(dir, {});
+  log.reopen(dir, j.at("log_head").get<std::string>());
   system = log.system();
   bind(data);
-  log.reopen(dir, j.value("log_head", make_log_head()));
   j.at("timeline").get_to(timeline);
   assert(!timeline.empty() && "开会话即发首条");
   const std::vector<Result> &rs = lab.results();
@@ -320,27 +319,16 @@ void Mine::load(const SharedData &data, const std::string &dir) {
   memo = j.at("memo").get<std::string>();
   reason = j.at("reason").get<std::string>();
   t_end = j.at("elapsed").get<double>();
-  const bool clean = j.at("clean").get<bool>();
-  if (!clean) {
-    Round &rd = timeline.back();
-    if (!rd.span.ended()) {
-      unsend();
-    } else if (cur_ < rd.acts.size()) {
-      discard(round());
-      for (Act &a : rd.acts)
-        a = Act{.call = a.call};
-      cur_ = 0;
-    }
-    reason = "上次没停稳就退出了, 末轮作废重来";
-  } else if (reason.empty()) {
-    reason = "上次在等你答问题时退出了";
-  }
+  phase_ = Phase::Pause;
+  if (!j.at("clean").get<bool>())
+    return redo(round(), "上次没停稳就退出了, 末轮作废重来");
   ++rev_;
   restate();
-  phase_ = Phase::Pause;
+  if (reason.empty())
+    reason = "上次在等你答问题时退出了";
   report = report_of(reason);
   log.report(report);
-  if (!clean || !fs::exists(fs::path(dir) / kLogFile))
+  if (!fs::exists(fs::path(dir) / kLogFile))
     log.rewrite_log(timeline, reason);
   save();
 }
@@ -438,7 +426,6 @@ void Mine::save() const {
                         {"cur", cur_},
                         {"memo", memo},
                         {"reason", reason},
-                        {"report", report},
                         {"timeline", timeline}};
   const json brief = {{"sc", setup.sc},
                       {"test", setup.test},
@@ -461,7 +448,10 @@ Mine::Loss Mine::loss(int k) const {
   return {.rounds = round() - k + 1, .files = static_cast<int>(staged_from(k).size()), .notes = static_cast<int>(notes.filed(log.dir(), k).size())};
 }
 
-void Mine::rewind(int k) {
+void Mine::rewind(int k) { redo(k, "回退到第 " + std::to_string(k) + " 条发出前, 继续即重发"); }
+
+// 第 k 轮起作废 (落的候选文件与提的全局记录一并删), 停在第 k 条发出前
+void Mine::redo(int k, std::string why) {
   assert(phase_ == Phase::Pause && idle() && k >= 1 && k <= round());
   flush();
   discard(k);
@@ -474,7 +464,7 @@ void Mine::rewind(int k) {
   cur_ = 0, retries_ = 0;
   retry_reply_.clear(), retry_error_.clear();
   ++rev_;
-  reason = "回退到第 " + std::to_string(k) + " 条发出前, 继续即重发";
+  reason = std::move(why);
   report = report_of(reason);
   log.report(report);
   log.rewrite_log(timeline, reason);
@@ -617,37 +607,41 @@ void Mine::on_lab(Lab::Tick t) {
 }
 
 void Mine::replied(llm::Reply r) {
-  Round &rd = timeline.back();
   if (!r.ok()) {
-    rd.reply = std::move(r);
-    rd.error = "回复失败 (" + std::string(def(rd.reply.end).id) + (rd.reply.error.empty() ? "" : ": " + rd.reply.error) + ")";
-    CloseReply(st, rd);
-    log.append_log(fmt_round_reply(round(), rd));
-    return pause(rd.error);
+    const std::string why = "回复失败 (" + std::string(def(r.end).id) + (r.error.empty() ? "" : ": " + r.error) + ")";
+    drop(why, std::move(r));
+    return pause(why);
   }
+  std::string text = r.text;
+  std::string err = take(std::move(r));
+  if (err.empty() || phase_ == Phase::Pause)
+    return;
+  if (stop_) {
+    drop("按 Stop (本条回复未通过校验, 继续即重发)");
+    return pause("按 Stop");
+  }
+  retry_reply_ = std::move(text), retry_error_ = std::move(err);
+  Round &rd = timeline.back();
+  rd.span.t1 = -1.0, rd.think = {}, rd.write = {};
+  chat.send({leg.llm, system_ptr, TurnsOf(timeline, retry_reply_, retry_error_)});
+}
+
+// 大脑交来一批 (内置模型的回复 / 外部 agent 的 calls): 合协议即入本轮并执行 (返回空); 不合返回原因, 连续 kMaxRetries 批不合即作废本条并停下
+std::string Mine::take(llm::Reply r) {
   BatchCheck got = VetBatch(r.text, setup.ask);
   if (!got.ok()) {
-    log.append_log("> **本轮回复未通过校验 (" + std::to_string(retries_ + 1) + "/" + std::to_string(kMaxRetries) + ")**: " + got.error + "\n\n");
+    log.append_log("> **本批未通过校验 (" + std::to_string(retries_ + 1) + "/" + std::to_string(kMaxRetries) + ")**: " + got.error + "\n\n");
     if (++retries_ >= kMaxRetries) {
-      rd.reply = std::move(r);
-      rd.reply.end = llm::End::Error, rd.reply.error = got.error;
-      rd.error = got.error;
-      CloseReply(st, rd);
-      log.append_log(fmt_round_reply(round(), rd));
-      return pause("连续 " + std::to_string(kMaxRetries) + " 条回复不合协议");
+      r.end = llm::End::Error, r.error = got.error;
+      drop(got.error, std::move(r));
+      pause("连续 " + std::to_string(kMaxRetries) + " 批不合协议");
     }
-    if (stop_) {
-      rd.error = "按 Stop (本条回复未通过校验, 继续即重发)";
-      CloseReply(st, rd);
-      return pause("按 Stop");
-    }
-    retry_reply_ = r.text, retry_error_ = got.error;
-    rd.span.t1 = -1.0, rd.think = {}, rd.write = {};
-    chat.send({leg.llm, system_ptr, TurnsOf(timeline, retry_reply_, retry_error_)});
-    return;
+    return got.error;
   }
   retries_ = 0;
   retry_reply_.clear(), retry_error_.clear();
+  Round &rd = timeline.back();
+  rd.span.end(now());
   rd.reply = std::move(r);
   for (Call &c : got.calls)
     rd.acts.push_back({.call = std::move(c)});
@@ -656,6 +650,7 @@ void Mine::replied(llm::Reply r) {
   cur_ = 0;
   save();
   step();
+  return {};
 }
 
 Seat Mine::mine_seat() { return seat(cur_, setup.gate, log.dir(), false, leg.gpu); }
@@ -666,27 +661,8 @@ std::string Mine::brain() const {
 
 std::string Mine::reply(std::string calls) {
   assert(remote() && waiting());
-  BatchCheck got = VetBatch(calls, setup.ask);
-  if (!got.ok()) {
-    if (++retries_ >= kMaxRetries) {
-      drop("连续 " + std::to_string(kMaxRetries) + " 批不合协议: " + got.error);
-      pause("连续 " + std::to_string(kMaxRetries) + " 批不合协议");
-    }
-    return RetryText(got.error);
-  }
-  retries_ = 0;
-  Round &rd = timeline.back();
-  const double t = now();
-  rd.span.end(t);
-  rd.reply = {.text = std::move(calls), .end = llm::End::Ok, .seconds = rd.span.len(t)};
-  for (Call &c : got.calls)
-    rd.acts.push_back({.call = std::move(c)});
-  CloseReply(st, rd);
-  log.append_log(fmt_round_reply(round(), rd));
-  cur_ = 0;
-  save();
-  step();
-  return {};
+  const std::string err = take({.text = std::move(calls), .end = llm::End::Ok, .seconds = timeline.back().span.len(now())});
+  return err.empty() ? err : RetryText(err);
 }
 
 void Mine::step() {
@@ -750,11 +726,13 @@ void Mine::send() {
   save();
 }
 
-// 本条的回复作废 (没收到或收到一半): 记为没收成, 继续即重发
-void Mine::drop(std::string why) {
+// 本条的回复作废 (没收到 / 收到一半 / 失败 / 连续不合协议; r = 收到的那条, 须非 Ok): 记为没收成, 继续即重发
+void Mine::drop(std::string why, llm::Reply r) {
+  assert(!r.ok());
   Round &rd = timeline.back();
   const double t = now();
   rd.think.end(t), rd.write.end(t), rd.span.end(t);
+  rd.reply = std::move(r);
   rd.error = std::move(why);
   CloseReply(st, rd);
   log.append_log(fmt_round_reply(round(), rd));

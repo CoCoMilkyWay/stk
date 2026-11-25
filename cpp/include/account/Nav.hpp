@@ -8,8 +8,7 @@
 //     应计利息 = 逐自然日 上一交易日末负债 × 年利率 / 360, 偿还融资利息抵减
 //     净值     = 现金 + 市值 − 融资负债 − 应计利息
 //     外部进出 = 银证转账 + 担保品划入 (按当日收盘计价)
-//     指数     = 时间加权: idx_t = idx_{t−1} × growth(基数_t, 净值_{t−1}, 净值_t, 进出_t); 基数 = 前日净值 + 当日入金, 有下限 (base_of):
-//                资金极少时 (近乎清空 / 开户试水) 几十元的利息、零头即成几十 % 的涨跌, 指数失真且累乘不回; 基数取到下限即按下限摊薄
+//     指数     = 时间加权: idx_t = idx_{t−1} × growth(净值_{t−1}, 净值_t, 进出_t)
 #pragma once
 
 #include "live/Broker.hpp"
@@ -38,15 +37,10 @@ struct Hold {
 struct Day {
   misc::Ymd date = 0;
   double nav = 0, flow = 0, index = 1; // 净值 / 外部进出 / 指数
-  double base = 0, peak = 0;           // 当日资金基数 (base_of; 首日 0) / 至当日的净值峰值 (次日基数下限所据)
   std::vector<Hold> hold;              // 当日收后持仓 (回放 = 代码升序)
 };
-// 基数下限 = max(kFloorRel × 此前净值峰值, kFloorAbs) [元]
-inline constexpr double kFloorRel = 0.05, kFloorAbs = 1e4;
-// 一段的资金基数: 段初净值 nav0 + 段内入金 (段内进出时点不知, 入金计段初、出金计段末: 段内在场的资金都进基数), 至少取下限 (peak = 此前净值峰值)
-double base_of(double nav0, double flow, double peak);
-// 一段的净值增长倍数: 1 + 盈亏 (nav − nav0 − flow) / 基数 base (> 0)
-double growth(double base, double nav0, double nav, double flow);
+// 一段的净值增长倍数: 盈亏 (nav − nav0 − flow) / 基数; 段内进出时点不知, 入金计段初、出金计段末 (段内在场的资金都进基数); 基数 ≤ 0 → 1
+double growth(double nav0, double nav, double flow);
 // 当日一笔成交 (日内回推用): 所在槽 / 股 (买正卖负) / 成交价 / 现金腿 (买 −额 − 费, 卖 +额 − 费; 融资买入同记: 现金与负债合看)
 struct Trade {
   int slot = 0;
@@ -54,7 +48,7 @@ struct Trade {
   double qty = 0, px = 0, cash = 0;
 };
 // 一日的分钟指数 (历史回放 / 当日同一份): 持仓 d.hold 按各只分钟收计价, 末槽对齐 d.nav; 槽 s 尚未发生的成交 (槽晚于 s) 退回:
-//   nav_s = d.nav + Σ 股 × (收_s − 末收) − Σ_{槽 > s 的成交} (现金腿 + 股 × 收_s) (该只无分钟按成交价), out[s] = idx0 × growth(d.base, nav0, nav_s, d.flow);
+//   nav_s = d.nav + Σ 股 × (收_s − 末收) − Σ_{槽 > s 的成交} (现金腿 + 股 × 收_s) (该只无分钟按成交价), out[s] = idx0 × growth(nav0, nav_s, d.flow);
 //   path(代码) = 该只 [out.size()] 逐槽收 (无根沿用上一根, 首根前 = 前收; 空 = 无分钟 → 不动); trades 空 = 不回推 (资金流水无成交时刻, 时刻取历史成交 / 券商今日成交)
 void intraday(const Day &d, double nav0, double idx0, std::span<const Trade> trades, const std::function<std::span<const float>(const std::string &)> &path,
               std::span<double> out);

@@ -84,7 +84,7 @@ json tools_list() {
                     "后台执行中至多等 " +
                         std::to_string(kRemoteWait) +
                         " 秒 (未完交回进度, 再调无参 run 续等); 做完即交回下一条消息 (常规为本条增量: 各调用结果 + 假设板 + 下一步; 接上有历史的会话或研究员回退后自动附完整研究树); "
-                        "遇到 ask_human 或会话停下即刻交回状态 (finish 收尾那批的结果自动附一次). 不合协议 → 原地退回并给重发要求 (isError, 不占轮次)",
+                        "遇到 ask_human 或会话停下即刻交回状态 (finish 收尾那批的结果随结束提示交回). 不合协议 → 原地退回并给重发要求 (isError, 不占轮次)",
                     schema({{"calls",
                              {{"type", "array"},
                               {"minItems", 1},
@@ -291,21 +291,17 @@ struct Remote::Impl {
     std::string dir;
     int rev = 0;
     int round = 0;
-  } synced;                                // 外部 agent 已连续收到的时间线位点 (断链 / 回退时自动补完整研究树)
-  std::pair<std::string, int> finish_sent; // 已交回过 finish 末批结果的 (会话目录, 轮次)
+  } synced; // 外部 agent 已连续收到的时间线位点 (断链 / 回退时自动补完整研究树)
 
   void enqueue(const Mine &m, Answer answer) {
     waiters.push_back({m.log.dir(), Clock::now() + std::chrono::seconds(kRemoteWait), std::move(answer)});
   }
 
-  // 停着的交回: 停下原因; finish 结束时恰好附一次末批调用的结果 (之后再调只给结束提示)
+  // 停着的交回: 停下原因; finish 结束时附末批调用的结果
   Reply halted(const Mine &m) {
     if (!m.flags().done)
       return {false, "会话停下: " + m.reason + ". 等研究员在 GUI 处理 (继续 / 回退 / 关闭) 后再调无参 run 接着做."};
-    const std::pair<std::string, int> key{m.log.dir(), m.round()};
-    const bool fresh = finish_sent != key;
-    finish_sent = key;
-    return {false, (fresh ? ResultsText(m.timeline.back().acts, m.round()) : std::string()) + "会话结束: " + m.reason + ". 要再挖就 open 开新会话."};
+    return {false, ResultsText(m.timeline.back().acts, m.round()) + "会话结束: " + m.reason + ". 要再挖就 open 开新会话."};
   }
 
   // 交回待答消息: 连续推进只给本条增量, 首次接上有历史轮次的会话或研究员回退后补完整研究树

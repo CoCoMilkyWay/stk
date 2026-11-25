@@ -134,7 +134,7 @@ struct Census {
   Csr<Constituent> cons;           // 成分 (权降序)
   std::vector<float> overlap;      // [篮子 × 篮子] 两篮子权重向量的余弦 (成员重合; 无成员 = 0)
 };
-// 账户回放的一日摘要 (与账户 Series::daily 同序): 当日资金基数 (account::base_of, 指数涨跌 × 它 = 当日盈亏; 首日为 0) / 收后累计真实盈亏 (首日末 = 0)
+// 账户回放的一日摘要 (与账户 Series::daily 同序): 当日资金基数 (前日末净值 + max(外部进出, 0); 首日 / ≤ 0 为 0) / 收后累计真实盈亏 (首日末 = 0)
 struct EquityDay {
   misc::Ymd date = 0;
   double base = 0, pnl = 0;
@@ -157,17 +157,16 @@ struct PosSeg {
 };
 // 全局 id → 各段 (开仓日升序)
 using Positions = std::unordered_map<uint32_t, std::vector<PosSeg>>;
-// 账户回放的摘要 (PriceView 给; 随账户侧的 Tape 一并换): 回放末日净值 / 其后账本里的外部进出 / 回放各日外部进出之和 (累计净转入) / 至末日的净值峰值 /
-//   末日收后持仓 / 逐日基数与累计真实盈亏;
-//   账户全史 = 时间加权指数 (前收 = 前一日指数, 恒带分钟); 当日 = 末日指数 × growth(当日基数, nav, 净资产_s, 进出) (account::intraday)
+// 账户回放的摘要 (PriceView 给; 随账户侧的 Tape 一并换): 回放末日净值 / 其后账本里的外部进出 / 回放各日外部进出之和 (累计净转入) / 末日收后持仓 / 逐日基数与累计真实盈亏;
+//   账户全史 = 时间加权指数 (前收 = 前一日指数, 恒带分钟); 当日 = 末日指数 × growth(nav, 净资产_s, 进出) (account::intraday)
 struct Equity {
-  double nav = 0, after = 0, in = 0, peak = 0;
+  double nav = 0, after = 0, in = 0;
   std::vector<Holding> hold; // 计价 = 末日收盘
   std::shared_ptr<const std::vector<EquityDay>> days;
   std::shared_ptr<const Trades> trades;       // 回放各日的历史成交点 (一分钟一档; 无账本 = 空)
   std::shared_ptr<const Positions> positions; // 回放出的各只持仓段 (无账本 = 空)
-  // 当日资金基数 (account::base_of, 下限据 peak; 券商持仓计入末日后进出 after, 回放持仓不计)
-  double today_base(bool broker) const;
+  // 当日资金基数 (同 account::growth: 券商持仓计入末日后进出 after, 回放持仓不计)
+  double today_base(bool broker) const { return std::max(nav + std::max(broker ? after : 0.0, 0.0), 0.0); }
 };
 // 价格库的戳 = 日脊的摘要: 库轴指纹 + 篮子表指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用, 换戳即清)
 struct PriceStamp {

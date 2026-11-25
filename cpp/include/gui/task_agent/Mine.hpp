@@ -77,8 +77,9 @@ inline constexpr const char *kSessionFile = "session.json";
 inline constexpr const char *kBriefFile = "brief.json";
 inline constexpr const char *kLogFile = "log.md";
 
-// ---- 会话台面与状态机 (Desk : Rig) ----
-struct Desk : Rig {
+// ---- 会话台面与状态机 (Mine : Rig) ----
+class Mine : public Rig {
+public:
   struct Setup {
     Scope sc;
     Gate gate;
@@ -92,6 +93,14 @@ struct Desk : Rig {
     bool gpu = false;
     Budget budget;
   };
+  enum class Phase : uint8_t { None,
+                               Think,
+                               Act,
+                               Choose,
+                               Pause };
+  struct Loss {
+    int rounds = 0, files = 0, notes = 0;
+  };
 
   Chat chat;
   Setup setup;
@@ -104,22 +113,6 @@ struct Desk : Rig {
 
   double now() const;
   Tally tally() const { return Rig::tally(now()); }
-
-protected:
-  std::chrono::steady_clock::time_point t0;
-  double t_end = -1.0;
-};
-
-class Mine : public Desk {
-public:
-  enum class Phase : uint8_t { None,
-                               Think,
-                               Act,
-                               Choose,
-                               Pause };
-  struct Loss {
-    int rounds = 0, files = 0, notes = 0;
-  };
 
   void open(const SharedData &data, Setup s, Leg l);
   std::string try_open(const SharedData &data, Setup s, Leg l); // 校验作用域 / 数据就绪 / 开放叶与算子后开会话 (停着的先关闭); 失败返回原因且不动现状
@@ -157,12 +150,13 @@ private:
   bool go(Phase next);
   void post(Message m);
   void send();
-  void drop(std::string why);
+  void drop(std::string why, llm::Reply r = {});
   void pause(std::string why);
 
   void on_chat(Chat::Tick t);
   void on_lab(Lab::Tick t);
   void replied(llm::Reply r);
+  std::string take(llm::Reply r);
 
   void step();
   Seat mine_seat();
@@ -171,6 +165,7 @@ private:
 
   std::vector<std::string> staged_from(int k) const;
   void discard(int k);
+  void redo(int k, std::string why);
   void unsend();
   std::string over() const;
   std::string make_log_head() const;
@@ -187,6 +182,8 @@ private:
     double t = 0.0;
     int tokens = 0;
   } from_;
+  std::chrono::steady_clock::time_point t0;
+  double t_end = -1.0;
 };
 
 struct Saved {

@@ -1,4 +1,4 @@
-// step_state — 看状态转移: 透视账本 State、续跑判定 Cont、转移表、预算核对、回退损失与停下报告; 展示见 ui/session/StepState.cpp
+// step_state — 看状态机: 透视账本 State、续跑判定 Cont、预算核对、回退损失与停下报告; 展示见 ui/session/StepState.cpp
 #include "gui/task_agent/tools/Session.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 
@@ -25,10 +25,7 @@ std::string StepStateRes::text() const {
   std::string s = "状态机透视 (第 " + std::to_string(round) + " 轮 · 调用 " + std::to_string(cur) + "/" + std::to_string(acts) + ")\n- 续跑判定 Cont: " + cont_id + " (" + cont_cn +
                   ")\n- 下一步提示: " + hint + "\n- 流程旗 done: " + std::string(flags.done ? "true" : "false") + "\n- 假设板: " + std::to_string(hyps) + " 条 · 候选 " +
                   std::to_string(tally.staged()) + " · 入库 " + std::to_string(tally.adopted) + "\n- 预算核对: " + (budget_miss.empty() ? std::string("未超限") : "已超限 — " + budget_miss) +
-                  "\n\n活跃转移:\n";
-  for (const Edge &e : edges)
-    if (e.active)
-      s += "- " + e.from + " --[" + e.event + "]--> " + e.to + " (" + e.cond + ")\n";
+                  "\n";
   return s;
 }
 
@@ -54,17 +51,6 @@ ToolOut StepState(const Call &c, Seat &s) {
   r->budget = {c.num("max_rounds"), c.num("max_minutes"), c.num("max_ktokens")};
   const int tok = r->tally.usage.prompt + r->tally.usage.completion;
   r->budget_miss = BudgetMiss(r->budget, r->round, r->tally.llm_s + r->tally.act_s, tok);
-
-  const bool finished_acts = ct == Cont::Results;
-  r->edges = {
-      {"Pause", "继续", "Think", "Cont::Send (发出待发消息)", ct == Cont::Send},
-      {"Pause", "继续", "Think", "Cont::Resend (重发未收成轮)", ct == Cont::Resend},
-      {"Pause", "继续", "Act / Choose", "Cont::Acts (续跑第 " + std::to_string(r->cur + 1) + "/" + std::to_string(r->acts) + " 个调用)", ct == Cont::Acts},
-      {"Pause", "继续", "Think", "Cont::Results (发本轮结果)", ct == Cont::Results},
-      {"Act", "全做完", "Pause", "flags.done == true (agent 宣布挖完)", finished_acts && r->flags.done},
-      {"Act", "全做完", "Pause", "预算用完 (" + (r->budget_miss.empty() ? "未设/未超" : r->budget_miss) + ")", finished_acts && !r->flags.done && !r->budget_miss.empty()},
-      {"Act", "全做完", "Think", "没 finish 且预算未满 → post(RoundMessage)", finished_acts && !r->flags.done && r->budget_miss.empty()},
-  };
 
   r->rewind_k = std::clamp(c.num("round"), 1, r->round);
   r->loss_rounds = r->round - r->rewind_k + 1;

@@ -584,7 +584,9 @@ void task_line(LiveHub &hub) {
            strf("%s %s · %s%s%s %s", live::fmt_sec(t->sec).c_str(), t->name.c_str(), job_name(t->st), t->live.empty() ? "" : " · ", t->live.c_str(), t->msg.c_str()));
 }
 
-// 账户对照: 现 / 调仓后 / 变动%, 调仓后与现不同的格标色; 变动按该列好坏着色 (好红坏绿)
+// 账户对照: 现 / 调仓后 / 变动%, 调仓后与现不同的格标色; 变动按该列好坏着色 (好红坏绿);
+//   变动 = 相对现值, 现值近 0 (如现金几乎用光) 时比例无意义: 超 kChgClip 只写 >+1000% / <-1000%
+constexpr double kChgClip = 1000; // [%]
 void sheet(const live::rebal::Sheet *n, const live::rebal::Sheet *e, bool priv, Fit &fit) {
   constexpr int kN = 11;
   constexpr const char *kHeads[kN + 1] = {"", "总资产", "持仓|市值", "融资|持仓", "自有|持仓", "净资产", "负债", "现金", "可用|保证金", "可融|余量", "杠杆", "维持|担保"};
@@ -624,7 +626,7 @@ void sheet(const live::rebal::Sheet *n, const live::rebal::Sheet *e, bool priv, 
       continue;
     }
     const double d = (*exp[c] - *now[c]) / std::abs(*now[c]) * 100;
-    const std::string s = strf("%+.1f%%", d);
+    const std::string s = std::abs(d) > kChgClip ? (d > 0 ? ">+1000%" : "<-1000%") : strf("%+.1f%%", d);
     if (s == "+0.0%" || s == "-0.0%")
       right(grey(), "0");
     else

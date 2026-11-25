@@ -74,11 +74,9 @@ std::vector<std::string> securities(const std::vector<CashFlow> &rows) {
   return {s.begin(), s.end()};
 }
 
-double base_of(double nav0, double flow, double peak) { return std::max({nav0 + std::max(flow, 0.0), kFloorRel * peak, kFloorAbs}); }
-
-double growth(double base, double nav0, double nav, double flow) {
-  assert(base > 0);
-  return 1 + (nav - nav0 - flow) / base;
+double growth(double nav0, double nav, double flow) {
+  const double base = nav0 + std::max(flow, 0.0);
+  return base > 0 ? 1 + (nav - nav0 - flow) / base : 1;
 }
 
 void intraday(const Day &d, double nav0, double idx0, std::span<const Trade> trades, const std::function<std::span<const float>(const std::string &)> &path,
@@ -99,7 +97,7 @@ void intraday(const Day &d, double nav0, double idx0, std::span<const Trade> tra
       out[s] -= t.cash + t.qty * (p.empty() ? t.px : p[s]);
   }
   for (double &x : out)
-    x = idx0 * growth(d.base, nav0, x, d.flow);
+    x = idx0 * growth(nav0, x, d.flow);
 }
 
 std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const std::vector<misc::Ymd> &days, const Closes &px, const Spot &spot) {
@@ -113,7 +111,7 @@ std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const st
   };
   std::map<std::string, double> hold;
   std::unordered_map<std::string, double> last; // 代码 → 上一收盘 (起于入账价)
-  double cash = 0, owe = 0, acc = 0, idx = 1, nav0 = 0, peak = 0;
+  double cash = 0, owe = 0, acc = 0, idx = 1, nav0 = 0;
   misc::Ymd prev = 0;
   size_t i = 0;
   for (const misc::Ymd d : days) {
@@ -150,11 +148,9 @@ std::vector<Day> replay(const std::vector<CashFlow> &rows, double rate, const st
       held.push_back({code, q, last.at(code)});
     }
     const double nav = cash + mv - owe - acc;
-    const double base = prev ? base_of(nav0, flow, peak) : 0;
     if (prev)
-      idx *= growth(base, nav0, nav, flow);
-    peak = std::max(peak, nav);
-    out.push_back({d, nav, flow, idx, base, peak, std::move(held)});
+      idx *= growth(nav0, nav, flow);
+    out.push_back({d, nav, flow, idx, std::move(held)});
     prev = d;
     nav0 = nav;
   }

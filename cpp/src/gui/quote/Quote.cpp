@@ -1,7 +1,5 @@
 #include "gui/quote/Quote.hpp"
 
-#include "account/Nav.hpp" // base_of
-
 #include "api/sina/client.hpp"
 #include "features/Panel/PoolSelect.hpp" // pool::next_day
 
@@ -13,8 +11,6 @@
 namespace GUI::Quote {
 
 misc::Ymd Calendar::next(misc::Ymd d) const { return pool::next_day(days, d); }
-
-double Equity::today_base(bool broker) const { return account::base_of(nav, broker ? after : 0.0, peak); }
 
 misc::Ymd Calendar::prev(misc::Ymd d) const {
   const auto it = std::ranges::lower_bound(days, d);
