@@ -4,7 +4,7 @@
 // Bay — 后台工具的只读计算台面 (Lab 线程): 与当场工具的会话台面 Seat (tools/Kit.hpp) 严格对仗
 // =============================================================================
 //   Opened   稠密下标位表 ([LeafId] / [OpId]), O(1) 判开放, Bridge 与观察核共用同一份
-//   ViewEnv  观察口径不可变快照 (Lab 缓存 shared_ptr<const ViewEnv>, 仅作用域 / 候选变动时刷新, 跨线程零拷贝)
+//   ViewEnv  观察口径不可变快照 (Desk 缓存 shared_ptr<const ViewEnv>, 仅作用域 / 候选变动时刷新, 随 LabReq 跨线程零拷贝)
 //   Bay      全部后台工具统一收这四件: env / flow / cancel / step (无任何单工具专属字段)
 // =============================================================================
 
@@ -68,7 +68,5 @@ struct Bay {
   const std::function<void(LabStep)> &step;
   bool cancelled() const { return cancel.load(std::memory_order_relaxed); }
 };
-
-Engine::FactorScope FactorScopeOf(const Lab &lab, bool gpu);
 
 } // namespace GUI::Agent

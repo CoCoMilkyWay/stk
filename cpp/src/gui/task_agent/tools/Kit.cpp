@@ -2,19 +2,13 @@
 #include "gui/task_agent/tools/Kit.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Look.hpp"  // IWYU pragma: keep
-#include "gui/task_agent/tools/Misc.hpp"  // IWYU pragma: keep
-#include "gui/task_agent/tools/Note.hpp"  // IWYU pragma: keep
-#include "gui/task_agent/tools/Query.hpp" // IWYU pragma: keep
-#include "gui/task_agent/tools/Trial.hpp" // IWYU pragma: keep
+#include "gui/task_agent/tools/All.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <numeric>
-#include <type_traits>
 #include <utility>
-#include <variant>
 
 namespace GUI::Agent {
 
@@ -51,16 +45,16 @@ Tally TallyOf(Steps ss, double now) {
     if (!a.span.ended())
       continue;
     t.fails[a.call.tool] += !a.out.ok;
-    if (const TrialRes *x = AsTrial(a))
-      ++t.verdicts[x->st.res.verdict];
-    t.adopted += a.call.tool == Tool::SubmitFactor && a.out.ok;
+    if (a.out.fx.verdict)
+      ++t.verdicts[*a.out.fx.verdict];
+    t.adopted += !a.out.fx.adopted.empty();
   }
   return t;
 }
 
 bool Finished(Steps ss) {
   for (size_t i = ss.size(); i-- > 0;) {
-    if (const std::optional<Act> &a = ss[i].act; a && a->call.tool == Tool::Finish && a->span.ended())
+    if (const std::optional<Act> &a = ss[i].act; a && a->span.ended() && a->out.fx.finish)
       return true;
     if (ss[i].span.began())
       return false;
@@ -68,57 +62,75 @@ bool Finished(Steps ss) {
   return false;
 }
 
-std::set<std::string> AdoptedOf(Steps ss) {
+namespace {
+
+// 做完的调用的账本作用里取一项 (非空的)
+template <class F>
+std::set<std::string> effects(Steps ss, F &&f) {
   std::set<std::string> out;
   for (const Step &sp : ss)
-    if (const std::optional<Act> &a = sp.act; a && a->call.tool == Tool::SubmitFactor && a->span.ended() && a->out.ok)
-      out.insert(a->call.str("name"));
+    if (const std::optional<Act> &a = sp.act; a && a->span.ended())
+      if (const std::string &x = f(a->out.fx); !x.empty())
+        out.insert(x);
   return out;
 }
 
+} // namespace
+
+std::set<std::string> AdoptedOf(Steps ss) {
+  return effects(ss, [](const Effect &e) -> const std::string & { return e.adopted; });
+}
 std::set<std::string> StagedOf(Steps ss) {
-  std::set<std::string> out;
-  for (const Step &sp : ss)
-    if (const TrialRes *x = sp.act && sp.act->span.ended() ? AsTrial(*sp.act) : nullptr; x && x->st.ok())
-      out.insert(x->st.file);
-  return out;
+  return effects(ss, [](const Effect &e) -> const std::string & { return e.staged; });
 }
 
 // =============================================================================
-// 工具实现表 (AGENT_TOOLS 唯一展开, 编译期核对 ImplFn 的下标 = ToolMeta::exec)
+// 工具实现表 (AGENT_TOOLS 唯一展开): 四形一律包成 开拍 (Call, Seat) → Prep; 存档复原按结果类型探 R::load
 // =============================================================================
 namespace {
 
-// 纯后台工具: 备料 = 带上调用, 收尾 = 搬进结果
-template <PureFn F>
-LabTask pure(Act &a, Seat &) {
-  return [c = a.call](Bay &bay) -> Commit { return [out = F(c, bay)](Act &x, Lab &) mutable { x.out = std::move(out); }; };
+using OpenFn = Prep (*)(const Call &, Seat &);
+using RestoreFn = ResPtr (*)(const Call &, const json &, Seat &);
+
+// Sync / Human: 当场交出 (Human 交的是问卷)
+template <SyncSig *F>
+Prep now(const Call &c, Seat &s) {
+  return {F(c, s), {}};
 }
 
-template <auto F>
-constexpr ImplFn impl() {
-  if constexpr (std::is_same_v<decltype(F), PureFn>)
-    return LabFn(&pure<F>);
+// Pure: 备料 = 带上调用, 收尾 = 搬进结果
+template <PureSig *F>
+Prep pure(const Call &c, Seat &) {
+  return {{}, [c](Bay &bay) -> Commit { return [out = F(c, bay)](ToolOut &o, Desk &) mutable { o = std::move(out); }; }};
+}
+
+template <Form K, auto F>
+constexpr OpenFn open_of() {
+  if constexpr (K == Form::Pure)
+    return &pure<F>;
+  else if constexpr (K == Form::Lab)
+    return F;
   else
-    return ImplFn(F);
+    return &now<F>;
+}
+
+template <class R>
+constexpr RestoreFn restore_of() {
+  if constexpr (requires(const Call &c, const json &j, Seat &s) { R::load(c, j, s); })
+    return &R::load;
+  else
+    return nullptr;
 }
 
 struct Spec {
-  ImplFn fn;
+  OpenFn open;
   json (*sample)(Feed &);
+  RestoreFn restore;
 };
 
-#define AGENT_TOOL_SPEC(T, id, cn, E, C, keep) Spec{impl<&T>(), &Sample##T},
+#define AGENT_TOOL_SPEC(T, id, cn, F, C, keep, R) Spec{open_of<Form::F, &T>(), &Sample##T, restore_of<R>()},
 constexpr Per<Tool, Spec> kSpecs{{{AGENT_TOOLS(AGENT_TOOL_SPEC)}}};
 #undef AGENT_TOOL_SPEC
-
-constexpr bool specs_match() {
-  for (const Tool t : kVals<Tool>)
-    if (static_cast<Exec>(kSpecs[t].fn.index()) != def(t).exec)
-      return false;
-  return true;
-}
-static_assert(specs_match(), "实现形 = 清单的执行");
 
 void clip(std::string &s) {
   const size_t n = text::chars(s), cut = text::fwd(s, 0, static_cast<size_t>(kOutChars));
@@ -128,10 +140,10 @@ void clip(std::string &s) {
   s += "\n…(截断: 共 " + std::to_string(n) + " 字, 只给前 " + std::to_string(kOutChars) + " 字; 缩小范围或分几次看)\n";
 }
 
-// 收尾: 时段封口, 原文按 kOutChars 截断
+// 收尾: 时段封口 (含末段), 原文按 kOutChars 截断
 void seal(Act &a, double t) {
-  if (TrialRes *r = AsTrial(a))
-    r->search.end(t), r->run.end(t);
+  if (!a.laps.empty())
+    a.laps.back().span.end(t);
   a.span.end(t);
   clip(a.out.text);
 }
@@ -152,37 +164,31 @@ const Act *Rig::acting() const {
 }
 
 Seat Rig::seat(const Gate &gate, std::string_view session, bool dry, bool gpu) {
-  return {lab, notes, gate, step(), catalog::label(lab.scope()), std::string(session), dry, gpu};
+  return {desk, notes, gate, step(), catalog::label(desk.scope()), std::string(session), dry, gpu};
 }
 
 void Rig::flush() {
   if (doomed.empty() || lab.busy())
     return;
   for (const std::string &f : doomed)
-    lab.discard(f);
+    desk.discard(f);
   doomed.clear();
 }
 
 bool Rig::open_act(Seat &s, double t) {
   Act &a = last(timeline);
   a.span.begin(t);
-  const ImplFn &fn = kSpecs[a.call.tool].fn;
-  if (const SyncFn *f = std::get_if<SyncFn>(&fn)) {
-    a.out = (*f)(a.call, s);
-    seal(a, t);
-    return true;
-  }
-  if (const HumanFn *f = std::get_if<HumanFn>(&fn)) {
-    a.out.res = (*f)(a.call);
+  const ToolMeta &m = def(a.call.tool);
+  Prep p = kSpecs[a.call.tool].open(a.call, s);
+  a.out = std::move(p.out);
+  if (p.task) {
+    lab.send({m.cat, m.cat == Cat::Query ? nullptr : desk.env(), std::move(p.task)}); // 研报库不看作用域
     return false;
   }
-  LabTask task = std::get<LabFn>(fn)(a, s);
-  if (!task) {
-    seal(a, t);
-    return true;
-  }
-  lab.send(a.call.tool, std::move(task));
-  return false;
+  if (m.exec == Exec::Human)
+    return false;
+  seal(a, t);
+  return true;
 }
 
 bool Rig::pump_act(double t) {
@@ -193,16 +199,16 @@ bool Rig::pump_act(double t) {
     if (!a.span.running() || def(a.call.tool).exec != Exec::Lab)
       continue;
     if (k->step == LabStep::End) {
-      assert(k->done && "在跑的调用没被取消, 后台须交回收尾");
-      k->done(a, lab);
+      assert(k->out && "在跑的调用没被取消, 后台须交回收尾");
+      k->out(a.out, desk);
       seal(a, t);
       flush();
       return true;
     }
-    TrialRes *r = AsTrial(a);
-    assert(r && "只有 eval_factor 分段");
-    r->search.end(t), r->run.end(t);
-    (k->step == LabStep::Search ? r->search : r->run).begin(t);
+    if (!a.laps.empty())
+      a.laps.back().span.end(t);
+    a.laps.push_back({k->step, {}});
+    a.laps.back().span.begin(t);
   }
   flush();
   return false;
@@ -219,21 +225,21 @@ void Rig::abort_act(double t) {
   Act &a = last(timeline);
   assert(a.span.running());
   lab.cancel();
-  if (TrialRes *r = AsTrial(a); r && r->st.ok()) {
-    doomed.push_back(std::exchange(r->st.file, {}));
-    r->st.res = Result{.name = r->st.cand.name,
-                       .name_cn = r->st.cand.name_cn,
-                       .tmpl = r->st.cand.expr,
-                       .note = r->st.cand.note,
-                       .error = "研究员取消了这次回测",
-                       .verdict = Verdict::Unstaged,
-                       .visible = false};
-    a.out = {false, r->text(), {}, a.out.res};
-  } else {
-    a.out = Fail("研究员取消了这个调用, 没做完");
-  }
+  if (std::string f = a.out.res ? a.out.res->effect().staged : std::string(); !f.empty())
+    doomed.push_back(std::move(f));
+  a.out = a.out.res && a.out.res->abort() ? Done(a.out.res, false) : Fail("研究员取消了这个调用, 没做完");
   seal(a, t);
   flush();
+}
+
+void Rig::restore(const json &saved, Seat &s) {
+  assert(saved.size() == timeline.size());
+  for (size_t i = 0; i < timeline.size(); ++i)
+    if (std::optional<Act> &a = timeline[i].act; a && saved[i].at("act").contains("res")) {
+      const RestoreFn fn = kSpecs[a->call.tool].restore;
+      assert(fn && "存了结果的工具须给 load");
+      a->out.res = fn(a->call, saved[i].at("act").at("res"), s);
+    }
 }
 
 // =============================================================================
@@ -335,7 +341,7 @@ std::string Feed::tod(int cap, const std::string &around) {
 Spot Feed::spot() {
   std::vector<Spot> seen;
   for (const Step &sp : timeline)
-    if (const auto *t = sp.act ? dynamic_cast<const TradesRes *>(sp.act->out.res.get()) : nullptr)
+    if (const TradesRes *t = sp.act ? As<Tool::ViewTrades>(*sp.act) : nullptr)
       for (const TradesRes::Seg &s : t->list)
         seen.push_back({s.code, s.date, ctx.clock.size() > 1 ? s.time.substr(0, 5) : std::string()});
   if (!seen.empty() && coin(kSpotSeen))

@@ -2,6 +2,8 @@
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Misc.hpp"
 
+#include <cassert>
+
 namespace GUI::Agent {
 
 using json = nlohmann::ordered_json;
@@ -10,7 +12,17 @@ std::string AskRes::text() const { return AnswerText(asked); }
 
 std::string AskRes::title() const { return std::to_string(asked.qs.size()) + " 个问题"; }
 
-ResPtr AskHuman(const Call &c) { return std::make_shared<AskRes>(QuestionsOf(c)); }
+json AskRes::save() const { return {{"picks", asked.picks}, {"note", asked.note}}; }
+
+ResPtr AskRes::load(const Call &c, const json &j, Seat &) {
+  auto q = std::make_shared<AskRes>(QuestionsOf(c));
+  j.at("picks").get_to(q->asked.picks);
+  j.at("note").get_to(q->asked.note);
+  assert(q->asked.picks.size() == q->asked.qs.size());
+  return q;
+}
+
+ToolOut AskHuman(const Call &c, Seat &) { return {.res = std::make_shared<AskRes>(QuestionsOf(c))}; }
 
 json SampleAskHuman(Feed &p) {
   return {{"questions",

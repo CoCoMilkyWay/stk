@@ -1,16 +1,17 @@
 #pragma once
 
 // =============================================================================
-// Bridge — 右翼 · agent 与因子引擎的桥及单线程异步工作台 Lab (与左翼 Chat 同构对仗)
+// Bridge — 右翼 · agent 与因子引擎的桥: 候选台 Desk (GUI 线程) + 单线程异步工作台 Lab (与左翼 Chat 同形)
 // =============================================================================
 //   agent 会话层与界面只认这里的值类型, 不碰 FactorRow / EvalStat / SearchResult / LimitOrderBook:
 //     catalog   无状态作用域目录 (池 / 因子层 / 持有期 / GPU 可用 / 就绪判据 / 落盘键)
-//     Lab       候选四拍 (stage / absorb / adopt / discard) + 单线程 Async 工作台:
-//                 send(Tool, LabTask) → 共享不可变快照 ViewEnv (零跨线程拷贝) → worker 跑 LabTask → 交回 GUI 线程的收尾 Commit
-//   异步五件与左翼 Chat 逐字同构: Tick / send / cancel / busy / poll / live
+//     Desk      作用域上下文 Context + 候选目录四拍 (stage / absorb / adopt / discard) + 观察口径快照 env (共享不可变 ViewEnv, 跨线程零拷贝)
+//     Lab       纯传输: Async<LabReq, LabStep, Commit>, worker 跑 LabTask → 交回 GUI 线程的收尾 Commit (ToolOut, Desk)
+//   左右两翼同形: Chat (大模型) ⇄ Lab (数据 / 引擎) 都是 Async 管道, send / poll / live / busy / cancel 逐字同构; 有状态的一侧 (对话 Link ⇄ 候选台 Desk) 各自在管道外
 // =============================================================================
 
 #include "disk/Disk.hpp"
+#include "gui/task_agent/Async.hpp"
 #include "gui/task_agent/Enum.hpp"
 #include "gui/task_agent/Tools.hpp"
 
@@ -18,7 +19,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -26,6 +26,11 @@
 #include <vector>
 
 struct SharedData;
+struct Progress;
+
+namespace GUI::Engine {
+struct FactorScope;
+}
 
 namespace GUI::Agent {
 
@@ -45,6 +50,7 @@ struct Open {
   bool has(const std::string &k) const { return all || on.contains(k); }
   bool operator==(const Open &) const = default;
 };
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Open, all, on)
 
 inline constexpr int kEvalYears = 1;
 struct Scope {
@@ -63,6 +69,7 @@ struct Scope {
   }
   bool operator==(const Scope &) const = default;
 };
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, years, leaves, ops)
 
 struct Choice {
   int key = 0;
@@ -117,9 +124,9 @@ enum class Verdict : uint8_t { Unstaged,
                                Null,
                                Pending };
 struct VerdictDef {
-  const char *cn;
+  const char *id, *cn;
 };
-inline constexpr VerdictDef kVerdicts[] = {{"未落文件"}, {"BROKEN"}, {"有权重"}, {"无权重"}, {"未评完"}};
+inline constexpr VerdictDef kVerdicts[] = {{"unstaged", "未落文件"}, {"broken", "BROKEN"}, {"weights", "有权重"}, {"null", "无权重"}, {"pending", "未评完"}};
 AGENT_ROWS(Verdict, kVerdicts, Pending);
 
 // Search 评过的一个参数点 (按写进的权重的符号读: 符号相反的点中位 rIC 为负)
@@ -180,11 +187,13 @@ struct Gate {
   double ric = 0.0; // 中位 rIC 下限
   bool operator==(const Gate &) const = default;
 };
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, ric)
 std::string GateMiss(const Gate &g, const Result &r);
 
 struct Cand {
   std::string name, name_cn, expr, note;
 };
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Cand, name, name_cn, expr, note)
 struct Staged {
   Cand cand;
   std::string file;
@@ -219,32 +228,15 @@ std::string label(const Scope &sc);
 disk::Key key(const Scope &sc, bool test);
 } // namespace catalog
 
-// ---- 右翼异步工作台 Lab (与左翼 Chat 完全对仗: Tick / send / cancel / busy / poll / live) ----
-enum class LabStep : uint8_t { Search, // eval_factor 的两段 (其余后台工具只有 End)
-                               Run,
-                               End };
+// ---- 候选台 Desk (GUI 线程; 删文件 discard 须在 Lab 闲着时, 见 Rig::flush) ----
+struct ViewEnv;
 
-struct Act;
-struct Bay;
-class Lab;
-using Commit = std::function<void(Act &, Lab &)>; // 后台做完交回: GUI 线程把结果收进调用 (可动候选目录); 空 = 取消了
-using LabTask = std::function<Commit(Bay &)>;     // 后台计算
-
-struct LabLive {
-  double frac = 0.0;
-};
-
-class Lab {
+class Desk {
 public:
-  struct Tick {
-    LabStep step;
-    Commit done{}; // step = End 时
-  };
-
-  Lab();
-  ~Lab();
-  Lab(const Lab &) = delete;
-  Lab &operator=(const Lab &) = delete;
+  Desk();
+  ~Desk();
+  Desk(const Desk &) = delete;
+  Desk &operator=(const Desk &) = delete;
 
   void bind(const SharedData &data, const Scope &sc, bool test);
   const Scope &scope() const;
@@ -261,17 +253,46 @@ public:
   Adopted adopt(std::string name, const Gate &g, bool dry); // dry = 只查门槛不拷进正式库 (工作台; 自检会话恒不拷)
   void discard(const std::string &file);
 
-  void send(Tool tool, LabTask task);
-  void cancel();
-  bool busy() const;
-  std::optional<Tick> poll();
-  void live(LabLive &dst) const;
-
-  struct Impl;
-  const Impl &impl() const { return *impl_; }
+  std::shared_ptr<const ViewEnv> env();             // 观察口径快照 (作用域 / 候选变了才重建)
+  Engine::FactorScope factor_scope(bool gpu) const; // 本作用域的评估域 (eval_factor 备料)
 
 private:
+  struct Impl;
   std::unique_ptr<Impl> impl_;
+};
+
+// ---- 工作台 Lab (与左翼 Chat 同形: send / poll / live / busy / cancel) ----
+enum class LabStep : uint8_t { Search, // eval_factor 的两段 (其余后台工具只有 End)
+                               Run,
+                               End };
+struct LabStepDef {
+  const char *id, *name;
+};
+inline constexpr LabStepDef kLabSteps[] = {{"search", "Search"}, {"run", "Run"}, {"end", "End"}};
+AGENT_ROWS(LabStep, kLabSteps, End);
+
+struct ToolOut;
+struct Bay;
+using Commit = std::function<void(ToolOut &, Desk &)>; // 后台做完交回: GUI 线程把结果收进调用的产出 (可动候选台); 空 = 取消了
+using LabTask = std::function<Commit(Bay &)>;          // 后台计算
+
+struct LabReq {
+  Cat cat = Cat::Look;                // 定计算权优先级 (回测 = 批量, 其余 = 交互)
+  std::shared_ptr<const ViewEnv> env; // 观察口径 (研报库不要 = 空)
+  LabTask task;
+};
+struct LabLive {
+  double frac = 0.0;
+};
+
+class Lab : public Async<LabReq, LabStep, Commit> {
+public:
+  Lab();
+  void live(LabLive &dst) const; // 在跑那件的进度 (引擎的进度面)
+
+private:
+  explicit Lab(std::shared_ptr<Progress> prog);
+  std::shared_ptr<Progress> prog_;
 };
 
 } // namespace GUI::Agent

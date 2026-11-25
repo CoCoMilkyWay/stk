@@ -1,4 +1,4 @@
-// request_feature — 申请特征: 输入 title / define / mechanism / gap / ref → FeatureNoteRes (编号或 ref 不成的原因) → 原文; 展示见 ui/note/RequestFeature.cpp
+// request_feature — 申请特征: 输入 title / define / mechanism / gap / ref → NoteRes (编号或 ref 不成的原因) → 原文; 展示见 ui/note/Note.cpp
 #include "gui/task_agent/tools/Note.hpp"
 
 namespace GUI::Agent {

@@ -19,7 +19,7 @@ ToolOut ListTried(const Call &c, Seat &s) {
   TriedRes &R = *res;
   R.skip = c.num("skip"), R.gate = s.gate;
   const int top = c.num("top");
-  for (const Result &r : s.lab.results())
+  for (const Result &r : s.desk.results())
     if (r.visible && R.all++ >= R.skip && static_cast<int>(R.rows.size()) < top)
       R.rows.push_back(r);
   return Done(std::move(res));

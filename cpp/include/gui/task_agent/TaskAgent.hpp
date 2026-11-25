@@ -11,7 +11,7 @@
 //           (排队, 随下一条发出) /
 //           候选 (子页: 因子 = 候选目录, 列头排序, 本会话的标出, 点一行看思路 / 结局 / Search 日志; 各类全局记录, 新到旧, 研究员逐条标处理并回一句) /
 //           特征 / 算子 (本层全部叶 / 全部算子, 逐行勾开放给 agent 的: 默认全开, 全选 / 全清只动过滤出的行; 有会话时只读) / 工具 (发给 agent 的同一份表);
-//           这几页不必开会话: 数据取 Lab (会话中候选随评估实时更新; 无会话时随作用域重绑) 与 Rig::notes
+//           这几页不必开会话: 数据取候选台 Desk (会话中候选随评估实时更新; 无会话时随作用域重绑) 与 Rig::notes
 //   Config  大脑后端 (Zhipu / Cursor / Devin), 直连或代理 / 模型 (嗅探), 评估后端, 预算 (每段的步数 / 分钟上限), 入库门槛, 提问, 提示词模板 (查看 / 编辑 / 保存)
 //   选项 (作用域 + Config) 改了即写 output/config/agent/ui.json, 首次 Draw 读回; 与项目只经 gui/task_agent/Bridge.hpp; 配置 gui/task_agent/Config.hpp
 //   这里只是外壳 (页签 / 每帧推进 / 选项落盘); 三页 Mine = ui/MinePage.cpp, Tools = ui/Bench.cpp, Config = ui/ConfigPage.cpp, 共享台面 Ui 见 ui/Pages.hpp

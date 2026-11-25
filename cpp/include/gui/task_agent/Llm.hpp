@@ -11,7 +11,9 @@
 //             思考 / 正文分片流式, 工具权限一律拒; 换会话时删旧会话
 //   Link = 有状态后端的那段对话 (只在 Chat 的 worker 上用): fresh (调用方说大脑没连着收到上一步) / 没有 / 换了后端或模型 / 上次失败或取消 → 新开一段并灌整份 Turns
 //   HTTPS: asio ssl::stream (OpenSSL) + beast http, 全程 error_code 返回值流转, 零异常控制流
-//   Chat:  Async<ChatReq, ChatStep, Reply, ChatLive>, 与右翼 Lab 同构同接口 (send / poll / live / busy / cancel)
+//   大脑两形, 接口逐字同形 (send(ChatReq) / poll → Tick / busy / cancel), 会话只在发出时按大脑选其一:
+//     Chat   内置大模型: Async<ChatReq, ChatStep, Reply, ChatLive>, 与右翼 Lab 同构 (另有 live 看在收的流)
+//     Inbox  外部 agent (经 MCP, gui/task_agent/Remote.hpp): GUI 线程内的信箱, 发出 = 存下交给它的本条 (letter), 它交来的调用 = 一条 End
 // =============================================================================
 
 #include "gui/task_agent/Async.hpp"
@@ -19,9 +21,11 @@
 #include "gui/task_agent/Enum.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -42,6 +46,7 @@ struct Net {
   int port = 0;
   bool operator==(const Net &) const = default;
 };
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Net, proxy, host, port)
 
 struct Model {
   std::string id, name; // name = 显示名 (Zhipu 不给, = id)
@@ -58,6 +63,7 @@ struct Options {
   std::string model;
   bool operator==(const Options &) const = default;
 };
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Options, backend, net, model)
 
 // 一次请求的对话 (system 之外): user / assistant 按序交替, 首末都是 user
 struct Turn {
@@ -74,6 +80,7 @@ struct Usage {
     return *this;
   }
 };
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Usage, prompt, cached, completion)
 
 // 一条回复的结局: Ok 正常收尾 / Cut 平台截断或拒答 / Error 接口失败 / Cancelled 本地取消
 enum class End : uint8_t { Ok,
@@ -95,6 +102,7 @@ struct Reply {
   double seconds = 0.0;
   bool ok() const { return end == End::Ok; }
 };
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Reply, text, thinking, end, error, usage, id, seconds)
 
 enum class Part : uint8_t { Text,
                             Thinking,
@@ -144,6 +152,24 @@ inline void sync_live(ChatLive &dst, const ChatLive &src, uint64_t gen) {
 
 struct Chat : Async<ChatReq, ChatStep, llm::Reply, ChatLive> {
   Chat();
+};
+
+class Inbox {
+public:
+  using Tick = Chat::Tick;
+  void send(ChatReq req); // 存下交给它的本条: 新开一段 (fresh) = 完整上下文, 否则只本条
+  std::optional<Tick> poll();
+  bool busy() const { return busy_; }
+  void cancel();
+
+  const std::string &letter() const; // 在等它交调用: 交给它的本条
+  void reply(std::string call);      // 它交来的调用 ({"tool", "args"} JSON 原文; 不合协议的也收)
+
+private:
+  std::string letter_;
+  std::chrono::steady_clock::time_point t0_;
+  std::optional<Tick> tick_;
+  bool busy_ = false;
 };
 
 } // namespace GUI::Agent

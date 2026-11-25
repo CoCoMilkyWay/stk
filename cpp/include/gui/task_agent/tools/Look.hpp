@@ -3,7 +3,7 @@
 // =============================================================================
 // 观察 (view_*) 的结果: 每个工具一个 Res; 计算与原文在 tools/look/<工具>.cpp (计算核 tools/look/Kernel.hpp), 展示在 ui/look/<工具>.cpp
 // =============================================================================
-//   全部纯后台 (PureFn): 读台面 Bay 的观察口径, 在本件的计算流上分块流式全核归约; view_book 逐笔重放进 worker 线程常驻的订单簿
+//   全部纯后台 (Pure 形): 读台面 Bay 的观察口径, 在本件的计算流上分块流式全核归约; view_book 逐笔重放进 worker 线程常驻的订单簿
 //   收益一律是超额 (毛 − 本行在池均值); 分位 / 组号已定向 (高 = 做多端 G20); period = 观察的日段与评估期不同时的提示 (同则空)
 // =============================================================================
 
@@ -15,13 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace GUI::Engine {
-struct FactorFlow;
-}
-
 namespace GUI::Agent {
-
-struct ViewEnv;
 
 inline constexpr int kGroupN = 20; // 分层组数
 inline constexpr const char *kBookKinds[] = {"新挂", "撤单", "被吃完", "扫单"};
@@ -279,27 +273,5 @@ struct BookRes : Res {
   std::string text() const override;
   void draw() const override;
 };
-
-ToolOut ViewFeature(const Call &c, Bay &bay);
-ToolOut ViewLayers(const Call &c, Bay &bay);
-ToolOut ViewTrades(const Call &c, Bay &bay);
-ToolOut ViewHolders(const Call &c, Bay &bay);
-ToolOut ViewResponse(const Call &c, Bay &bay);
-ToolOut ViewExplain(const Call &c, Bay &bay);
-ToolOut ViewSnapshot(const Call &c, Bay &bay);
-ToolOut ViewStockDay(const Call &c, Bay &bay);
-ToolOut ViewStockDays(const Call &c, Bay &bay);
-ToolOut ViewBook(const Call &c, Bay &bay);
-
-nlohmann::ordered_json SampleViewFeature(Feed &p);
-nlohmann::ordered_json SampleViewLayers(Feed &p);
-nlohmann::ordered_json SampleViewTrades(Feed &p);
-nlohmann::ordered_json SampleViewHolders(Feed &p);
-nlohmann::ordered_json SampleViewResponse(Feed &p);
-nlohmann::ordered_json SampleViewExplain(Feed &p);
-nlohmann::ordered_json SampleViewSnapshot(Feed &p);
-nlohmann::ordered_json SampleViewStockDay(Feed &p);
-nlohmann::ordered_json SampleViewStockDays(Feed &p);
-nlohmann::ordered_json SampleViewBook(Feed &p);
 
 } // namespace GUI::Agent

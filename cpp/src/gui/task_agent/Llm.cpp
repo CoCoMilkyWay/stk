@@ -892,4 +892,31 @@ Chat::Chat()
         return llm::send(*link, req.opt, *req.system, req.turns, req.fresh, on_delta, pipe.cancel);
       }) {}
 
+void Inbox::send(ChatReq req) {
+  assert(!busy_ && "外部 agent 还没交上一条的调用");
+  letter_ = req.fresh ? llm::Flat(req.turns) : req.turns.back().text;
+  t0_ = std::chrono::steady_clock::now();
+  tick_.reset();
+  busy_ = true;
+}
+
+std::optional<Inbox::Tick> Inbox::poll() { return std::exchange(tick_, std::nullopt); }
+
+void Inbox::cancel() {
+  busy_ = false;
+  tick_.reset();
+}
+
+const std::string &Inbox::letter() const {
+  assert(busy_);
+  return letter_;
+}
+
+void Inbox::reply(std::string call) {
+  assert(busy_);
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
+  tick_ = Tick{ChatStep::End, {.text = std::move(call), .end = llm::End::Ok, .seconds = s}};
+  busy_ = false;
+}
+
 } // namespace GUI::Agent

@@ -12,11 +12,13 @@ std::string SubmitRes::text() const {
                                                         : "已入库";
 }
 
+Effect SubmitRes::effect() const { return {.adopted = why.empty() ? name : std::string()}; }
+
 ToolOut SubmitFactor(const Call &c, Seat &s) {
   auto r = std::make_shared<SubmitRes>();
-  const Adopted x = s.lab.adopt(c.str("name"), s.gate, s.dry);
-  r->name = x.name, r->why = x.error, r->test = s.lab.test(), r->dry = s.dry;
-  for (const Result &t : s.lab.results())
+  const Adopted x = s.desk.adopt(c.str("name"), s.gate, s.dry);
+  r->name = x.name, r->why = x.error, r->test = s.desk.test(), r->dry = s.dry;
+  for (const Result &t : s.desk.results())
     if (t.name == r->name)
       r->cand = t;
   const bool ok = x.ok();

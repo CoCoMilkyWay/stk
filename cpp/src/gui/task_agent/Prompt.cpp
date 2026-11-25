@@ -3,7 +3,6 @@
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Trial.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -155,8 +154,8 @@ std::string CallTitle(const Act &a, int step) { return "[" + StepTag(step) + "] 
 
 std::string StageOf(const Act &a, double frac) {
   const std::string pct = text::fmt(" %.0f%%", frac * 100.0);
-  if (const TrialRes *r = AsTrial(a))
-    return (r->run.began() ? "Run" : "Search") + pct;
+  if (!a.laps.empty())
+    return def(a.laps.back().step).name + pct;
   return def(a.call.tool).exec == Exec::Lab && frac > 0.0 ? "执行中" + pct : std::string("执行中");
 }
 

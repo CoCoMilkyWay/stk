@@ -208,7 +208,7 @@ bool begin_table(const char *id, std::initializer_list<const char *> heads, floa
 }
 
 // ---- 作用域行 ----
-void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, const Lab &lab, bool locked, const char *title) {
+void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, const Desk &desk, bool locked, const char *title) {
   ImGui::TextColored(kColHead, "%s", title);
   ImGui::SameLine();
   ImGui::BeginDisabled(locked);
@@ -277,8 +277,8 @@ void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, 
       o.hold = h.key;
   }
   ImGui::TextDisabled("   %s", catalog::hold_desc(o.hold, o.level).c_str());
-  // 特征来源: bar 恒开放, lob 可选 (本层无 lob 叶或 lob 库未建则不可改) + 开放的合起来的评估期 (Lab 绑到此作用域后才有)
-  const Context *c = lab.scope() == o ? &lab.ctx() : nullptr;
+  // 特征来源: bar 恒开放, lob 可选 (本层无 lob 叶或 lob 库未建则不可改) + 开放的合起来的评估期 (候选台绑到此作用域后才有)
+  const Context *c = desk.scope() == o ? &desk.ctx() : nullptr;
   ImGui::TextDisabled("   Src  bar +");
   ImGui::SameLine();
   ImGui::BeginDisabled(c && !c->has_lob);

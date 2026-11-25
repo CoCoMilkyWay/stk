@@ -21,7 +21,7 @@ std::string LeavesRes::text() const {
 }
 
 ToolOut SearchLeaves(const Call &c, Seat &s) {
-  const std::vector<Leaf> &leaves = s.lab.ctx().leaves;
+  const std::vector<Leaf> &leaves = s.desk.ctx().leaves;
   const std::string query = c.str("query");
   const int n = c.num("n");
   text::Filter f;

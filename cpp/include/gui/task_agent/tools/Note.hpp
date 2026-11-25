@@ -23,14 +23,4 @@ struct NoteRes final : Res {
 
 ToolOut FileNote(const Call &c, Seat &s);
 
-ToolOut RequestFeature(const Call &c, Seat &s);
-ToolOut RequestTool(const Call &c, Seat &s);
-ToolOut NoteInsight(const Call &c, Seat &s);
-ToolOut ReportIssue(const Call &c, Seat &s);
-
-nlohmann::ordered_json SampleRequestFeature(Feed &p);
-nlohmann::ordered_json SampleRequestTool(Feed &p);
-nlohmann::ordered_json SampleNoteInsight(Feed &p);
-nlohmann::ordered_json SampleReportIssue(Feed &p);
-
 } // namespace GUI::Agent

@@ -1,8 +1,7 @@
 // Mine 页 — 见 gui/task_agent/TaskAgent.hpp
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Misc.hpp"
-#include "gui/task_agent/tools/Trial.hpp"
+#include "gui/task_agent/tools/All.hpp"
 #include "gui/task_agent/ui/Pages.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
@@ -134,8 +133,8 @@ void session_row(const SharedData &data, Ui &s, const Scope &active_sc) {
   const Options &o = s.opt;
   const bool has_hold = !catalog::holds(data, active_sc.level).empty();
   const bool keyed = has_key(o.backend);
-  const bool bound = m.lab.scope() == active_sc;
-  const bool has_leaves = bound && !m.lab.ctx().leaves.empty(), has_ops = bound && !m.lab.ctx().ops.empty();
+  const bool bound = m.desk.scope() == active_sc;
+  const bool has_leaves = bound && !m.desk.ctx().leaves.empty(), has_ops = bound && !m.desk.ctx().ops.empty();
   const char *llm_not = bench_busy(s)  ? "Tools 页的调用在跑 (不并跑, 等它做完或取消)"
                         : !keyed       ? "所选后端的 key 未填 (output/config/agent/keys.json)"
                         : !model_ok(s) ? "模型未就绪 (Config 页: 嗅探中 / 嗅探失败 / 无可用模型)"
@@ -513,12 +512,14 @@ void Row::brain() const {
   fold("text", ImGuiTreeNodeFlags_None, "回复原文 " + chars(r.text), r.text, false, kBoxLines, false);
 }
 
-// 调用用了多久 (eval_factor 分 Search / Run)
+// 调用用了多久 (后台分段的逐段写, 如 eval_factor 的 Search / Run)
 std::string took(const Act &a, double t) {
-  const TrialRes *k = AsTrial(a);
-  if (!k || !k->search.began())
+  if (a.laps.empty())
     return dur(a.span.len(t));
-  return "Search " + dur(k->search.len(t)) + (k->run.began() ? " · Run " + dur(k->run.len(t)) : std::string());
+  std::string s;
+  for (const Lap &l : a.laps)
+    s += (s.empty() ? "" : " · ") + std::string(def(l.step).name) + " " + dur(l.span.len(t));
+  return s;
 }
 
 // 一步的调用: 标题 = 编号 + 中文名 · 主语 (Res::title, 无则调用原文) + 状态 / 结局 (回测写候选结局, 入库另标), 悬浮看调用全文;
@@ -526,7 +527,7 @@ std::string took(const Act &a, double t) {
 bool act_block(const Row &row, Act &a, bool edit) {
   const Mine &m = row.m;
   const double t = m.now();
-  const TrialRes *k = AsTrial(a);
+  const TrialRes *k = As<Tool::EvalFactor>(a);
   const bool done = a.span.ended();
   std::string state;
   TaskStatus::Kind kind = TaskStatus::Kind::None;
@@ -546,7 +547,7 @@ bool act_block(const Row &row, Act &a, bool edit) {
     ImGui::SetNextItemOpen(k->st.res.verdict == Verdict::Unstaged || k->st.res.verdict == Verdict::Broken || k->st.res.verdict == Verdict::Weights, ImGuiCond_Once);
   row.open();
   ImGui::PushStyleColor(ImGuiCol_Text, color(kind));
-  const bool open = ImGui::TreeNodeEx(done && k ? "settled" : "act", kNode | (AsAsk(a) ? ImGuiTreeNodeFlags_DefaultOpen : 0), "%s", label.c_str());
+  const bool open = ImGui::TreeNodeEx(done && k ? "settled" : "act", kNode | (As<Tool::AskHuman>(a) ? ImGuiTreeNodeFlags_DefaultOpen : 0), "%s", label.c_str());
   ImGui::PopStyleColor();
   if (!open && ImGui::IsItemHovered())
     tip_long(a.call.text());
@@ -556,7 +557,7 @@ bool act_block(const Row &row, Act &a, bool edit) {
   bool start = false;
   if (open) {
     if (edit) {
-      start = edit_asked(AsAsk(a)->asked);
+      start = edit_asked(As<Tool::AskHuman>(a)->asked);
     } else if (a.out.res) {
       a.out.res->draw();
       if (done && !a.out.text.empty())
@@ -633,7 +634,7 @@ void summary_block(const Mine &m) {
   const Names in = AdoptedOf(m.timeline);
   std::vector<const Result *> hits;
   for (const Step &sp : m.timeline)
-    if (const TrialRes *k = sp.act ? AsTrial(*sp.act) : nullptr; k && k->st.res.verdict == Verdict::Weights)
+    if (const TrialRes *k = sp.act ? As<Tool::EvalFactor>(*sp.act) : nullptr; k && k->st.res.verdict == Verdict::Weights)
       hits.push_back(&k->st.res);
   std::stable_sort(hits.begin(), hits.end(), [&](const Result *a, const Result *b) {
     const bool ia = in.count(a->name) > 0, ib = in.count(b->name) > 0;
@@ -730,8 +731,8 @@ void timeline_panel(Ui &s, Mine &m, const Flow &f, bool to_end, float bottom) {
   }
 }
 
-// 特征 / 算子 / 候选 三页的数据 = Lab (会话中候选随评估实时更新). 无会话时随作用域重绑; 绑不上 (该层无可搜持有期 / 评估在收尾) = 空表
-// 全局记录不随作用域, 随 Lab 的候选目录 (自检的 / 正式的) 读; 研究员在记录页标处理
+// 特征 / 算子 / 候选 三页的数据 = 候选台 Desk (会话中候选随评估实时更新). 无会话时随作用域重绑; 绑不上 (该层无可搜持有期 / 评估在收尾) = 空表
+// 全局记录不随作用域, 随候选台的候选目录 (自检的 / 正式的) 读; 研究员在记录页标处理
 struct View {
   const Context &ctx;
   const std::vector<Result> &results;
@@ -739,21 +740,21 @@ struct View {
   Names staged; // 本会话落了文件的候选
   bool test;    // 候选与全局记录是自检会话的 (agent/test 目录)
   Notes &notes;
-  const Lab &lab;
+  const Desk &desk;
 };
 
 View view_of(const SharedData &data, Ui &s, const Scope &sc) {
   Mine &m = *s.mine;
-  if (!m.held() && !m.lab.busy() && m.lab.scope() != sc && !catalog::holds(data, sc.level).empty())
-    m.lab.bind(data, sc, false);
-  if (!m.notes.loaded(m.lab.test()))
-    m.notes.load(m.lab.test());
+  if (!m.held() && !m.lab.busy() && m.desk.scope() != sc && !catalog::holds(data, sc.level).empty())
+    m.desk.bind(data, sc, false);
+  if (!m.notes.loaded(m.desk.test()))
+    m.notes.load(m.desk.test());
   static const Context kNoCtx;
   static const std::vector<Result> kNoResults;
-  if (m.lab.scope() != sc)
-    return {kNoCtx, kNoResults, {}, {}, m.lab.test(), m.notes, m.lab};
+  if (m.desk.scope() != sc)
+    return {kNoCtx, kNoResults, {}, {}, m.desk.test(), m.notes, m.desk};
   const bool mine = m.held() && m.setup.sc == sc;
-  return {m.lab.ctx(), m.lab.results(), mine ? AdoptedOf(m.timeline) : Names(), mine ? StagedOf(m.timeline) : Names(), m.lab.test(), m.notes, m.lab};
+  return {m.desk.ctx(), m.desk.results(), mine ? AdoptedOf(m.timeline) : Names(), mine ? StagedOf(m.timeline) : Names(), m.desk.test(), m.notes, m.desk};
 }
 
 // 候选表: 列头点了排序 (默认 = 本持有期 score (中位 rIC) 降序); 本会话落的标 ●; 点一行在下面看详情与 Search 日志
@@ -863,7 +864,7 @@ void results_table(Ui &s, const View &v) {
     return;
   const Result &r = *now_picked;
   if (s.pick_log_of != s.pick)
-    s.pick_log = v.lab.search_log(r.file), s.pick_log_of = s.pick;
+    s.pick_log = v.desk.search_log(r.file), s.pick_log_of = s.pick;
   ImGui::BeginChild("##pick", ImVec2(-1, -1), ImGuiChildFlags_Borders);
   ImGui::TextColored(kColHead, "%s  %s", r.name.c_str(), r.name_cn.c_str());
   ImGui::SameLine();
@@ -1226,7 +1227,7 @@ void render_mine(SharedData &data, Ui &s) {
   Mine &m = *s.mine;
   Scope shown = m.held() ? m.setup.sc : s.opt.sc;
   Scope &sc = m.held() ? shown : s.opt.sc;
-  scope_row(data, sc, s.pool_rows, m.lab, scope_locked(s), "1. Scope:");
+  scope_row(data, sc, s.pool_rows, m.desk, scope_locked(s), "1. Scope:");
   session_row(data, s, sc);
   follow(s);
   m.chat.live(s.chat_live);

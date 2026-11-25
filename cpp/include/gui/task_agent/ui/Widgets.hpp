@@ -51,7 +51,7 @@ inline constexpr ImGuiTableFlags kTableFlags = ImGuiTableFlags_SizingFixedFit | 
 bool begin_table(const char *id, std::initializer_list<const char *> heads, float h = -1.0f);
 
 // ---- 作用域行 ----
-void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, const Lab &lab, bool locked, const char *title);
+void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, const Desk &desk, bool locked, const char *title);
 
 // ---- ask_human 的逐题点选 (edit_asked 在问它, 返回按了交答案; draw_asked 只读展示) ----
 bool edit_asked(Asked &a);

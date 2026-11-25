@@ -97,12 +97,12 @@ std::vector<Daily> days_of(const std::vector<Engine::FactorRow> &rows, const std
 
 // GUI 线程收尾: 候选目录按这趟的结局重扫, 入表封存 (BROKEN 之外都算做成)
 Commit absorb(bool ok, std::string err, Sweep sweep, std::vector<Daily> days) {
-  return [ok, err = std::move(err), sweep = std::move(sweep), days = std::move(days)](Act &a, Lab &lab) mutable {
-    auto r = std::static_pointer_cast<TrialRes>(a.out.res);
+  return [ok, err = std::move(err), sweep = std::move(sweep), days = std::move(days)](ToolOut &o, Desk &desk) mutable {
+    auto r = std::static_pointer_cast<TrialRes>(o.res);
     assert(r);
-    r->st.res = lab.absorb(r->st.file, ok, err, std::move(sweep), std::move(days));
+    r->st.res = desk.absorb(r->st.file, ok, err, std::move(sweep), std::move(days));
     const bool fine = r->st.res.verdict != Verdict::Broken;
-    a.out = Done(std::move(r), fine);
+    o = Done(std::move(r), fine);
   };
 }
 
@@ -205,20 +205,46 @@ std::string TrialRes::gist() const {
   return st.ok() ? st.cand.name + " `" + st.cand.expr + "` · " + text::head(st.cand.note, 60) + " → " + Brief(st.res) : std::string();
 }
 
-LabTask EvalFactor(Act &a, Seat &s) {
-  const Call &c = a.call;
+Effect TrialRes::effect() const { return {.staged = st.file, .verdict = st.res.verdict}; }
+
+bool TrialRes::abort() {
+  st.file.clear();
+  st.res = Result{.name = st.cand.name,
+                  .name_cn = st.cand.name_cn,
+                  .tmpl = st.cand.expr,
+                  .note = st.cand.note,
+                  .error = "研究员取消了这次回测",
+                  .verdict = Verdict::Unstaged,
+                  .visible = false};
+  return true;
+}
+
+json TrialRes::save() const { return {{"cand", st.cand}, {"file", st.file}, {"error", st.res.error}}; }
+
+ResPtr TrialRes::load(const Call &, const json &j, Seat &s) {
+  auto k = std::make_shared<TrialRes>();
+  k->gate = s.gate;
+  k->level = s.desk.ctx().level, k->hold = s.desk.ctx().hold;
+  j.at("cand").get_to(k->st.cand);
+  j.at("file").get_to(k->st.file);
+  const std::vector<Result> &rs = s.desk.results();
+  const auto it = k->st.ok() ? std::ranges::find(rs, k->st.file, &Result::file) : rs.end();
+  k->st.res = it != rs.end() ? *it
+              : k->st.ok()   ? Result{.error = "候选文件已不在", .verdict = Verdict::Pending}
+                             : Result{.error = j.at("error").get<std::string>(), .verdict = Verdict::Unstaged};
+  return k;
+}
+
+Prep EvalFactor(const Call &c, Seat &s) {
   auto r = std::make_shared<TrialRes>();
   r->gate = s.gate;
-  r->level = s.lab.ctx().level, r->hold = s.lab.ctx().hold;
-  r->st = s.lab.stage({c.str("name"), c.str("name_cn"), c.str("expr"), c.str("note")});
-  if (!r->st.ok()) {
-    a.out = Done(std::move(r), false);
-    return {};
-  }
-  const Engine::FactorScope fsc = FactorScopeOf(s.lab, s.gpu);
+  r->level = s.desk.ctx().level, r->hold = s.desk.ctx().hold;
+  r->st = s.desk.stage({c.str("name"), c.str("name_cn"), c.str("expr"), c.str("note")});
+  if (!r->st.ok())
+    return {Done(std::move(r), false), {}};
+  const Engine::FactorScope fsc = s.desk.factor_scope(s.gpu);
   const std::string file = r->st.file, tmpl = r->st.res.tmpl;
-  a.out.res = std::move(r);
-  return [fsc, file, tmpl](Bay &bay) { return run_eval(fsc, file, tmpl, bay); };
+  return {{.res = std::move(r)}, [fsc, file, tmpl](Bay &bay) { return run_eval(fsc, file, tmpl, bay); }};
 }
 
 // 模板 = 归一根 (窗口统计 (本层叶, 裸 d)); 随机拼到过 stage 的全部查验为止 (试满 kSampleTries 次仍不过就交末一个, 原因见回测结果)
@@ -247,7 +273,7 @@ json SampleEvalFactor(Feed &p) {
     c.name = "bench_" + std::to_string(p.below(1000000));
     c.expr = std::string(r) + "(" + (w.empty() ? x : std::string(w) + "(" + x + ", d)") + (ts ? ", d=" + std::to_string(p.ctx.ts_root_d) : "") + ")";
     c.note = "工作台试样: 检验 " + x + (w.empty() ? "" : " 的 " + std::string(w)) + " 的" + (ts ? "时序" : "截面") + "排序";
-    if (p.lab.vet(c).empty())
+    if (p.desk.vet(c).empty())
       break;
   }
   return {{"name", c.name}, {"name_cn", c.name_cn}, {"expr", c.expr}, {"note", c.note}};

@@ -3,8 +3,8 @@
 // =============================================================================
 // 回测 (eval_factor / submit_factor) 的结果: 计算与原文在 tools/trial/<工具>.cpp, 展示在 ui/trial/<工具>.cpp
 // =============================================================================
-//   eval_factor   后台 (LabFn): 核验落盘 (GUI) → Search + Run (Lab) → 入表封存 (GUI 收尾 Commit)
-//   submit_factor 当场 (SyncFn): 查门槛并拷进正式库 (自检会话 / 工作台只查门槛)
+//   eval_factor   Lab 形: 核验落盘 (GUI 备料) → Search + Run (Lab) → 入表封存 (GUI 收尾 Commit); 账本作用 = 落下的候选文件 + 结局; 作废 = 删候选记未落; 存档复原
+//   submit_factor Sync 形: 查门槛并拷进正式库 (自检会话 / 工作台只查门槛); 账本作用 = 入库的英文名
 // =============================================================================
 
 #include "gui/task_agent/tools/Kit.hpp"
@@ -22,7 +22,6 @@ namespace GUI::Agent {
 
 struct TrialRes final : Res {
   Staged st;
-  Span search, run;
   Gate gate;
   std::string level, hold;                          // 频率 (因子层) / 预测周期 (持有期) = 会话作用域的 Context::level / hold
   mutable int hot = -1;                             // 展示: 上帧悬停的参数点 (Sweep::pts 下标; 图 ↔ 表联动)
@@ -32,6 +31,10 @@ struct TrialRes final : Res {
   std::string text() const override;
   std::string gist() const override;  // 折叠后的一行: 名 + 模板 + 思路 + 结局 (落了文件才有)
   std::string title() const override; // 英文名 + 中文名
+  Effect effect() const override;
+  bool abort() override;
+  nlohmann::ordered_json save() const override;
+  static ResPtr load(const Call &c, const nlohmann::ordered_json &j, Seat &s); // 候选的结局取候选台此刻的
   void draw() const override;
 };
 
@@ -43,21 +46,13 @@ std::string YearsLine(const std::vector<Year> &ys);         // 最佳权重分�
 std::string GroupsHead();                                   // 最佳权重的 20 组
 std::string SweepHead(const Sweep &sw);                     // 参数扫描 (点数)
 
-inline TrialRes *AsTrial(Act &a) { return a.call.tool == Tool::EvalFactor ? static_cast<TrialRes *>(a.out.res.get()) : nullptr; }
-inline const TrialRes *AsTrial(const Act &a) { return a.call.tool == Tool::EvalFactor ? static_cast<const TrialRes *>(a.out.res.get()) : nullptr; }
-
 struct SubmitRes final : Res {
   std::string name, why; // why 非空 = 未入库
   bool test = false, dry = false;
   std::optional<Result> cand;
   std::string text() const override;
+  Effect effect() const override;
   void draw() const override;
 };
-
-LabTask EvalFactor(Act &a, Seat &s);
-ToolOut SubmitFactor(const Call &c, Seat &s);
-
-nlohmann::ordered_json SampleEvalFactor(Feed &p);
-nlohmann::ordered_json SampleSubmitFactor(Feed &p);
 
 } // namespace GUI::Agent

@@ -17,6 +17,7 @@
 #include "gui/util/PoolTip.hpp"
 #include "misc/date.hpp"
 #include "orders/OrdersDay.hpp"
+#include "shared/Progress.hpp"
 #include "shared/SharedData.hpp"
 
 #include <algorithm>
@@ -143,7 +144,7 @@ struct Period {
   std::string text() const { return misc::dash(start) + " ~ " + misc::dash(end) + ", " + std::to_string(days) + " 天"; }
 };
 
-// out 非空: 另交回评估域 (Lab::bind 取评估期交易日与池轴代码)
+// out 非空: 另交回评估域 (Desk::bind 取评估期交易日与池轴代码)
 Period period_of(const std::optional<Engine::FactorScope> &fsc, const Engine::FeatureTable &ft, const std::vector<Engine::LeafId> &leaves, Engine::Domain *out = nullptr) {
   Period s;
   if (!fsc)
@@ -440,21 +441,9 @@ disk::Key key(const Scope &sc, bool test) {
 } // namespace catalog
 
 // =============================================================================
-// Lab 实现: 单线程 Async worker (与左翼 Chat 同构, 零共享可变态)
+// Desk 实现: 候选台 (GUI 线程)
 // =============================================================================
-namespace {
-
-struct Job {
-  Tool tool = Tool::ViewFeature;
-  std::shared_ptr<const ViewEnv> env;
-  LabTask task;
-};
-
-Engine::Prio prio_of(Cat c) { return c == Cat::Trial ? Engine::Prio::Batch : Engine::Prio::Interactive; }
-
-} // namespace
-
-struct Lab::Impl {
+struct Desk::Impl {
   const SharedData *data = nullptr;
   Scope sc;
   bool is_test = false;
@@ -467,22 +456,6 @@ struct Lab::Impl {
   std::map<std::string, Sweep> sweeps;
   std::map<std::string, std::vector<Daily>> days;
   std::shared_ptr<const ViewEnv> env_cache;
-
-  Progress prog;
-  Async<Job, LabStep, Commit> worker;
-
-  Impl()
-      : worker([this](Job &j, const auto &pipe) -> Commit {
-          prog.begin(Phase::Loading, 0);
-          Engine::FactorFlow flow(pipe.cancel, prog, prio_of(def(j.tool).cat));
-          const std::function<void(LabStep)> step = [&](LabStep s) { pipe.step(s); };
-          static const ViewEnv kNoEnv;
-          Bay bay{j.env ? *j.env : kNoEnv, flow, pipe.cancel, step};
-          Commit done = j.task(bay);
-          if (bay.cancelled())
-            return {};
-          return done;
-        }) {}
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
   double fixed() const { return data->config.fixed_impact; }
@@ -591,13 +564,10 @@ struct Lab::Impl {
   }
 };
 
-Engine::FactorScope FactorScopeOf(const Lab &lab, bool gpu) { return lab.impl().factor_scope(gpu); }
+Desk::Desk() : impl_(std::make_unique<Impl>()) {}
+Desk::~Desk() = default;
 
-Lab::Lab() : impl_(std::make_unique<Impl>()) {}
-Lab::~Lab() = default;
-
-void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
-  assert(!busy() && "worker 正忙, 不能换作用域");
+void Desk::bind(const SharedData &data, const Scope &sc, bool test) {
   const bool same_cand = impl_->data && catalog::key(impl_->sc, impl_->is_test) == catalog::key(sc, test);
   impl_->data = &data, impl_->sc = sc, impl_->is_test = test;
   impl_->dir = candidates(sc, test);
@@ -675,25 +645,25 @@ void Lab::bind(const SharedData &data, const Scope &sc, bool test) {
   impl_->rescan_all();
 }
 
-const Scope &Lab::scope() const { return impl_->sc; }
-bool Lab::test() const { return impl_->is_test; }
-const Context &Lab::ctx() const { return impl_->context; }
-const std::vector<Result> &Lab::results() const { return impl_->results; }
+const Scope &Desk::scope() const { return impl_->sc; }
+bool Desk::test() const { return impl_->is_test; }
+const Context &Desk::ctx() const { return impl_->context; }
+const std::vector<Result> &Desk::results() const { return impl_->results; }
 
-const Result *Lab::tried(std::string_view name) const {
+const Result *Desk::tried(std::string_view name) const {
   for (const Result &r : impl_->results)
     if (r.visible && r.name == name)
       return &r;
   return nullptr;
 }
 
-const Result &Lab::result(const std::string &file) const {
+const Result &Desk::result(const std::string &file) const {
   const auto it = std::find_if(impl_->results.begin(), impl_->results.end(), [&](const Result &r) { return r.file == file; });
   assert(it != impl_->results.end() && "候选文件不在候选目录里");
   return *it;
 }
 
-std::string Lab::search_log(const std::string &file) const {
+std::string Desk::search_log(const std::string &file) const {
   const std::filesystem::path p = impl_->dir.log_path(file);
   if (!std::filesystem::exists(p))
     return {};
@@ -701,14 +671,14 @@ std::string Lab::search_log(const std::string &file) const {
   return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
 
-std::string Lab::vet(const Cand &c) const {
+std::string Desk::vet(const Cand &c) const {
   assert(impl_->data);
   fx::Expr e;
   return impl_->vet(c, e);
 }
 
-Staged Lab::stage(Cand c) {
-  assert(impl_->data && !busy());
+Staged Desk::stage(Cand c) {
+  assert(impl_->data);
   const auto bad = [&](std::string why) {
     Staged s{.cand = std::move(c)};
     s.res = {.name = s.cand.name, .name_cn = s.cand.name_cn, .tmpl = s.cand.expr, .note = s.cand.note, .error = std::move(why), .verdict = Verdict::Unstaged, .visible = false};
@@ -726,8 +696,8 @@ Staged Lab::stage(Cand c) {
   return {std::move(c), file, result(file)};
 }
 
-const Result &Lab::absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep, std::vector<Daily> days) {
-  assert(impl_->data && !busy() && !file.empty());
+const Result &Desk::absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep, std::vector<Daily> days) {
+  assert(impl_->data && !file.empty());
   if (ok)
     impl_->fails.erase(file);
   else
@@ -738,8 +708,8 @@ const Result &Lab::absorb(const std::string &file, bool ok, const std::string &e
   return result(file);
 }
 
-Adopted Lab::adopt(std::string name, const Gate &g, bool dry) {
-  assert(impl_->data && !busy());
+Adopted Desk::adopt(std::string name, const Gate &g, bool dry) {
+  assert(impl_->data);
   const Result *r = tried(name);
   if (!r) {
     const auto any = std::find_if(impl_->results.begin(), impl_->results.end(), [&](const Result &x) { return x.name == name; });
@@ -758,8 +728,8 @@ Adopted Lab::adopt(std::string name, const Gate &g, bool dry) {
   return {std::move(name), {}};
 }
 
-void Lab::discard(const std::string &file) {
-  assert(impl_->data && !busy() && !file.empty());
+void Desk::discard(const std::string &file) {
+  assert(impl_->data && !file.empty());
   Engine::DeleteFactorFile(impl_->dir, file);
   disk::remove(impl_->dir.log, impl_->dir.of(file));
   impl_->fails.erase(file), impl_->sweeps.erase(file), impl_->days.erase(file);
@@ -767,25 +737,33 @@ void Lab::discard(const std::string &file) {
   impl_->env_cache.reset();
 }
 
-void Lab::send(Tool tool, LabTask task) {
-  assert(impl_->data && !busy() && task);
-  std::shared_ptr<const ViewEnv> env;
-  if (def(tool).cat != Cat::Query)
-    env = impl_->view_env();
-  impl_->worker.send({tool, std::move(env), std::move(task)});
+std::shared_ptr<const ViewEnv> Desk::env() {
+  assert(impl_->data);
+  return impl_->view_env();
 }
 
-void Lab::cancel() { impl_->worker.cancel(); }
-bool Lab::busy() const { return impl_->worker.busy(); }
+Engine::FactorScope Desk::factor_scope(bool gpu) const { return impl_->factor_scope(gpu); }
 
-std::optional<Lab::Tick> Lab::poll() {
-  auto t = impl_->worker.poll();
-  return t ? std::optional<Tick>(Tick{t->step, std::move(t->out)}) : std::nullopt;
-}
+// =============================================================================
+// Lab 实现: 单线程 Async worker (与左翼 Chat 同形; 进度面与 worker 同持, 同 Chat 的对话 Link)
+// =============================================================================
+Lab::Lab() : Lab(std::make_shared<Progress>()) {}
+
+Lab::Lab(std::shared_ptr<Progress> prog)
+    : Async([prog](LabReq &r, const Pipe &pipe) -> Commit {
+        prog->begin(Phase::Loading, 0);
+        Engine::FactorFlow flow(pipe.cancel, *prog, r.cat == Cat::Trial ? Engine::Prio::Batch : Engine::Prio::Interactive);
+        const std::function<void(LabStep)> step = [&](LabStep s) { pipe.step(s); };
+        static const ViewEnv kNoEnv;
+        Bay bay{r.env ? *r.env : kNoEnv, flow, pipe.cancel, step};
+        Commit done = r.task(bay);
+        return bay.cancelled() ? Commit{} : done;
+      }),
+      prog_(std::move(prog)) {}
 
 void Lab::live(LabLive &dst) const {
-  const size_t tot = impl_->prog.total.load(std::memory_order_relaxed);
-  const size_t dn = impl_->prog.done.load(std::memory_order_relaxed);
+  const size_t tot = prog_->total.load(std::memory_order_relaxed);
+  const size_t dn = prog_->done.load(std::memory_order_relaxed);
   dst.frac = tot > 0 ? std::clamp(static_cast<double>(dn) / static_cast<double>(tot), 0.0, 1.0) : 0.0;
 }
 

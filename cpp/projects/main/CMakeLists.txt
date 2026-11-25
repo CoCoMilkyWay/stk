@@ -431,6 +431,7 @@ set(MATH_PRECISE
     #      ui = 统计结果的展示 (NaN = 缺); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
     gui/task_agent/Bridge.cpp
     gui/task_agent/Docs.cpp
+    gui/task_agent/Journal.cpp
     gui/task_agent/Llm.cpp
     gui/task_agent/Mine.cpp
     gui/task_agent/Notes.cpp

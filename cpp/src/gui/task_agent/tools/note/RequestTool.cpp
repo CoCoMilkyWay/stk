@@ -1,4 +1,4 @@
-// request_tool — 申请工具: 输入 title / want / purpose / gap / ref → ToolNoteRes (编号或 ref 不成的原因) → 原文; 展示见 ui/note/RequestTool.cpp
+// request_tool — 申请工具: 输入 title / want / purpose / gap / ref → NoteRes (编号或 ref 不成的原因) → 原文; 展示见 ui/note/Note.cpp
 #include "gui/task_agent/tools/Note.hpp"
 
 namespace GUI::Agent {

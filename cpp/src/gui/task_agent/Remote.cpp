@@ -284,11 +284,11 @@ struct Remote::Impl {
     return {false, ResultText(*m.timeline[static_cast<size_t>(n) - 1].act, n) + "会话结束: " + m.reason + ". 要再挖就 open 开新会话."};
   }
 
-  // 外部会话此刻交给外部 agent 的: 等交调用 → 消息 (Mine::deliver: 连着只给本条, 否则完整上下文); ask_human → 等人提示; 执行中 → 进度; 停着 → 停下原因
-  Reply state(Mine &m) {
+  // 外部会话此刻交给外部 agent 的: 等交调用 → 信箱里的本条 (连着只给本条, 否则完整上下文); ask_human → 等人提示; 执行中 → 进度; 停着 → 停下原因
+  Reply state(const Mine &m) {
     switch (m.phase()) {
     case Mine::Phase::Think:
-      return {false, m.deliver()};
+      return {false, m.inbox.letter()};
     case Mine::Phase::Choose:
       return choosing(m);
     case Mine::Phase::Act:
@@ -318,11 +318,12 @@ struct Remote::Impl {
     });
   }
 
-  // 交一个调用 (不合协议的也收成一步, 交回的下一条即重交要求): 进后台执行则等, 其余 (当场做完 / ask_human / 停下) 立刻交回
+  // 交一个调用 (投进信箱, 会话当场收下; 不合协议的也收成一步, 交回的下一条即重交要求): 进后台执行则等, 其余 (当场做完 / ask_human / 停下) 立刻交回
   void submit(Mine &m, const json &call, Answer answer) {
     if (m.phase() != Mine::Phase::Think || !m.idle())
       return answer({true, "这个调用没收下: " + state(m).text});
-    m.reply(call.dump());
+    m.inbox.reply(call.dump());
+    m.update();
     if (m.phase() == Mine::Phase::Act)
       return enqueue(m, std::move(answer));
     answer(state(m));
@@ -379,7 +380,7 @@ struct Remote::Impl {
     l.llm = {};
     if (std::string err = m.try_open(data, std::move(s), std::move(l)); !err.empty())
       return fail(std::move(err));
-    answer({false, m.deliver()});
+    answer(state(m));
   }
 
   void handle(SharedData &data, Mine &m, const Mine::Setup &base, const Mine::Leg &leg, bool bench, Ask a) {

@@ -23,7 +23,7 @@ ToolOut ListLibrary(const Call &c, Seat &s) {
   LibraryRes &R = *res;
   R.skip = c.num("skip");
   const int top = c.num("top");
-  for (const Result &r : s.lab.ctx().library) {
+  for (const Result &r : s.desk.ctx().library) {
     if (!r.visible)
       continue;
     if (!r.best()) {

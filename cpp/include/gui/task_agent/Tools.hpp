@@ -4,17 +4,19 @@
 // Tools — agent 的工具真相表: 系统提示的 "工具" 节 / 回复解析 / 参数校验 / 界面都从同一张表出
 // =============================================================================
 //   回复 = 一个调用 {"tool": 名, "args": {...}}; 系统执行后, 下一条消息交回它的结果
-//   执行方式 Exec (唯一分派轴):
-//     Sync   GUI 线程当场做完 (查特征叶 / 列候选与正式库 / 全局记录 / 提交 / 结束)
-//     Lab    交右翼 worker 后台执行 (回测 eval_factor / 观察 view_* / 盘口重放 view_book / 研报库 search_docs · search_factors · read_doc)
-//     Human  等研究员点选答案 (ask_human)
+//   实现形 Form (清单一列, 即工具函数的签名, 见 tools/Kit.hpp) → 执行方式 Exec (运行时唯一分派轴):
+//     Sync   → Sync   GUI 线程当场做完 (查特征叶 / 列候选与正式库 / 全局记录 / 提交 / 结束)
+//     Pure   → Lab    纯后台: 交右翼 worker 算完即是结果 (观察 view_* / 盘口重放 view_book / 研报库 search_docs · search_factors · read_doc)
+//     Lab    → Lab    GUI 备料 → 后台 → GUI 收尾 (回测 eval_factor)
+//     Human  → Human  等研究员点选答案 (ask_human)
 //   校验两层:
 //     协议层 (ParseCall): JSON 结构 / 工具名 / 参数类型与范围 → 不合则不执行, 记成一步错, 下一条 = 重交要求
 //     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 研报 id 不成 → 该调用 ok=false 写原因
-//   工具清单 AGENT_TOOLS (唯一顺序 = Tool 的值): 一行一个工具 (枚举, id, 中文名, 执行, 类, 折叠后留原文);
+//   工具清单 AGENT_TOOLS (唯一顺序 = Tool 的值): 一行一个工具 (枚举, id, 中文名, 形, 类, 折叠后留原文, 结果类型);
 //     Tool 挂入 AGENT_ROWS (Named + Tabled): def(t) 编译期取元数据, IdOf / FindId / JSON 序列化与其他枚举同一套
-//     说明表 doc(t) (Tools.cpp) 存编译期类型化参数表 ArgDef 与成文说明; 实现表 kSpecs (tools/Kit.cpp) 按清单拼名并编译期核签名
-//   每个工具四面对仗: 输入 Call → 结构化结果 Res (唯一载体, tools/<类>.hpp) → 原文 text()/gist() (tools/<类>/<工具>.cpp) ↔ 展示 draw() (ui/<类>/<工具>.cpp)
+//     说明表 doc(t) (Tools.cpp) 存编译期类型化参数表 ArgDef 与成文说明; 工具函数的声明与实现表 kSpecs (tools/Kit.hpp / Kit.cpp) 由清单生成, 签名不合即编译错
+//   每个工具四面对仗: 输入 Call → 结构化结果 Res (唯一载体, 基类 tools/Kit.hpp, 各工具的 tools/<类>.hpp) → 原文 text()/gist() (tools/<类>/<工具>.cpp) ↔ 展示 draw() (ui/<类>/<工具>.cpp)
+//   这里是协议层 (清单 / 参数 / 解析), 执行层 (结果 / 产出 / 时间线 / 底座) 在 tools/Kit.hpp
 //   参数表 ArgDef 同时描述外部 agent 接口工具 (open / run, Remote.cpp) 的参数: 校验 ArgsOf 与 inputSchema SchemaOf 同表出
 // =============================================================================
 
@@ -23,11 +25,9 @@
 
 #include <cstdint>
 #include <initializer_list>
-#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <variant>
 #include <vector>
 
@@ -42,6 +42,16 @@ struct ExecDef {
 inline constexpr ExecDef kExecs[] = {{"当场"}, {"后台"}, {"等人"}};
 AGENT_ROWS(Exec, kExecs, Human);
 
+enum class Form : uint8_t { Sync,
+                            Pure,
+                            Lab,
+                            Human };
+struct FormDef {
+  Exec exec;
+};
+inline constexpr FormDef kForms[] = {{Exec::Sync}, {Exec::Lab}, {Exec::Lab}, {Exec::Human}};
+AGENT_ROWS(Form, kForms, Human);
+
 enum class Cat : uint8_t { Look,   // view_*
                            Trial,  // eval_factor / submit_factor
                            Query,  // search_* / read_doc / list_*
@@ -53,45 +63,45 @@ struct CatDef {
 inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Trial", "回测"}, {"Query", "检索"}, {"Note", "记录"}, {"Misc", "其他"}};
 AGENT_ROWS(Cat, kCats, Misc);
 
-// 工具清单: X(枚举, id, 中文名, 执行, 类, 上下文折叠后仍留原文)
-#define AGENT_TOOLS(X)                                                \
-  X(ViewFeature, "view_feature", "看特征", Lab, Look, false)          \
-  X(ViewLayers, "view_layers", "看分层", Lab, Look, false)            \
-  X(ViewTrades, "view_trades", "看交割单", Lab, Look, false)          \
-  X(ViewHolders, "view_holders", "看常客", Lab, Look, false)          \
-  X(ViewResponse, "view_response", "看响应", Lab, Look, false)        \
-  X(ViewExplain, "view_explain", "看成分", Lab, Look, false)          \
-  X(ViewSnapshot, "view_snapshot", "看截面快照", Lab, Look, false)    \
-  X(ViewStockDay, "view_stock_day", "看个股一天", Lab, Look, false)   \
-  X(ViewStockDays, "view_stock_days", "看个股多日", Lab, Look, false) \
-  X(ViewBook, "view_book", "看盘口重放", Lab, Look, false)            \
-  X(SearchLeaves, "search_leaves", "查特征叶", Sync, Query, false)    \
-  X(SearchDocs, "search_docs", "查研报", Lab, Query, false)           \
-  X(SearchFactors, "search_factors", "查研报因子", Lab, Query, false) \
-  X(ReadDoc, "read_doc", "读研报", Lab, Query, false)                 \
-  X(EvalFactor, "eval_factor", "回测", Lab, Trial, false)             \
-  X(ListTried, "list_tried", "列已试", Sync, Query, false)            \
-  X(ListLibrary, "list_library", "列正式库", Sync, Query, false)      \
-  X(ListNotes, "list_notes", "查全局记录", Sync, Query, false)        \
-  X(SubmitFactor, "submit_factor", "提交入库", Sync, Trial, true)     \
-  X(RequestFeature, "request_feature", "申请特征", Sync, Note, true)  \
-  X(RequestTool, "request_tool", "申请工具", Sync, Note, true)        \
-  X(NoteInsight, "note_insight", "记发现", Sync, Note, true)          \
-  X(ReportIssue, "report_issue", "报问题", Sync, Note, true)          \
-  X(Finish, "finish", "结束", Sync, Misc, true)                       \
-  X(AskHuman, "ask_human", "问研究员", Human, Misc, true)
+// 工具清单: X(枚举, id, 中文名, 形, 类, 上下文折叠后仍留原文, 结果类型 (tools/<类>.hpp))
+#define AGENT_TOOLS(X)                                                               \
+  X(ViewFeature, "view_feature", "看特征", Pure, Look, false, FeatureRes)            \
+  X(ViewLayers, "view_layers", "看分层", Pure, Look, false, LayersRes)               \
+  X(ViewTrades, "view_trades", "看交割单", Pure, Look, false, TradesRes)             \
+  X(ViewHolders, "view_holders", "看常客", Pure, Look, false, HoldersRes)            \
+  X(ViewResponse, "view_response", "看响应", Pure, Look, false, ResponseRes)         \
+  X(ViewExplain, "view_explain", "看成分", Pure, Look, false, ExplainRes)            \
+  X(ViewSnapshot, "view_snapshot", "看截面快照", Pure, Look, false, SnapshotRes)     \
+  X(ViewStockDay, "view_stock_day", "看个股一天", Pure, Look, false, StockDayRes)    \
+  X(ViewStockDays, "view_stock_days", "看个股多日", Pure, Look, false, StockDaysRes) \
+  X(ViewBook, "view_book", "看盘口重放", Pure, Look, false, BookRes)                 \
+  X(SearchLeaves, "search_leaves", "查特征叶", Sync, Query, false, LeavesRes)        \
+  X(SearchDocs, "search_docs", "查研报", Pure, Query, false, DocsRes)                \
+  X(SearchFactors, "search_factors", "查研报因子", Pure, Query, false, FactorsRes)   \
+  X(ReadDoc, "read_doc", "读研报", Pure, Query, false, ReadRes)                      \
+  X(EvalFactor, "eval_factor", "回测", Lab, Trial, false, TrialRes)                  \
+  X(ListTried, "list_tried", "列已试", Sync, Query, false, TriedRes)                 \
+  X(ListLibrary, "list_library", "列正式库", Sync, Query, false, LibraryRes)         \
+  X(ListNotes, "list_notes", "查全局记录", Sync, Query, false, NotesRes)             \
+  X(SubmitFactor, "submit_factor", "提交入库", Sync, Trial, true, SubmitRes)         \
+  X(RequestFeature, "request_feature", "申请特征", Sync, Note, true, NoteRes)        \
+  X(RequestTool, "request_tool", "申请工具", Sync, Note, true, NoteRes)              \
+  X(NoteInsight, "note_insight", "记发现", Sync, Note, true, NoteRes)                \
+  X(ReportIssue, "report_issue", "报问题", Sync, Note, true, NoteRes)                \
+  X(Finish, "finish", "结束", Sync, Misc, true, FinishRes)                           \
+  X(AskHuman, "ask_human", "问研究员", Human, Misc, true, AskRes)
 
-#define AGENT_TOOL_ID(T, id, cn, E, C, keep) T,
+#define AGENT_TOOL_ID(T, id, cn, F, C, keep, R) T,
 enum class Tool : uint8_t { AGENT_TOOLS(AGENT_TOOL_ID) };
 #undef AGENT_TOOL_ID
 
 struct ToolMeta {
   const char *id, *cn;
-  Exec exec;
+  Exec exec; // = 形的执行方式
   Cat cat;
   bool keep;
 };
-#define AGENT_TOOL_META(T, id, cn, E, C, keep) {id, cn, Exec::E, Cat::C, keep},
+#define AGENT_TOOL_META(T, id, cn, F, C, keep, R) {id, cn, def(Form::F).exec, Cat::C, keep},
 inline constexpr ToolMeta kTools[] = {AGENT_TOOLS(AGENT_TOOL_META)};
 #undef AGENT_TOOL_META
 AGENT_ROWS(Tool, kTools, AskHuman);
@@ -163,28 +173,6 @@ CallCheck ParseCall(std::string_view reply, bool ask);
 std::string CallJson(const Call &c);
 std::string ToolsDoc(bool ask);
 
-// ---- 工具的结构化结果 (唯一载体: Mine 时间线与 Bench 工作台共用) ----
-struct Res {
-  virtual ~Res() = default;
-  virtual std::string text() const = 0;            // 交给 agent 的原文
-  virtual std::string gist() const { return {}; }  // 上下文折叠后留的一行关键数 (无则空)
-  virtual std::string title() const { return {}; } // 时间线上这个调用一行里代替调用原文的一句 (无则空)
-  virtual void draw() const = 0;                   // 结构化展示
-};
-using ResPtr = std::shared_ptr<Res>;
-
-struct ToolOut {
-  bool ok = true;
-  std::string text, gist;
-  ResPtr res;
-};
-template <class R>
-ToolOut Done(std::shared_ptr<R> r, bool ok = true) {
-  std::string text = r->text(), gist = r->gist();
-  return {ok, std::move(text), std::move(gist), std::move(r)};
-}
-inline ToolOut Fail(std::string why) { return {false, std::move(why), {}, {}}; }
-
 // ---- ask_human: 问题与答复 ----
 struct Question {
   std::string prompt;
@@ -199,6 +187,7 @@ struct Pick {
   bool other = false;
   std::string text;
 };
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Pick, on, other, text)
 struct Asked {
   Questions qs;
   std::vector<Pick> picks;

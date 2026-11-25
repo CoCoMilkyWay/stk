@@ -1,10 +1,9 @@
 // Bench — 见头文件
 #include "gui/task_agent/ui/Bench.hpp"
-#include "gui/task_agent/Mine.hpp"
+#include "gui/task_agent/Journal.hpp"
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Kit.hpp"
-#include "gui/task_agent/tools/Misc.hpp"
+#include "gui/task_agent/tools/All.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
 #include "imgui.h"
@@ -110,7 +109,7 @@ struct Bench::Impl : Rig {
     args[tool] = x.args, raw[tool] = x.args.dump(2), json_err.clear();
   }
 
-  Feed feed(const Gate &g) { return {lab, lab.ctx(), lab.results(), g, timeline, next(), rng}; }
+  Feed feed(const Gate &g) { return {desk, desk.ctx(), desk.results(), g, timeline, next(), rng}; }
 
   void sample(const Gate &g) {
     Feed f = feed(g);
@@ -254,17 +253,17 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
     warn(label + (hs.empty() ? "该层无可搜持有期 (标签未建)" : "持有期在该层不可搜") + "; 到 Mine 页改");
     return;
   }
-  if (!held && b.lab.scope() != sc) {
-    b.lab.bind(data, sc, false);
+  if (!held && b.desk.scope() != sc) {
+    b.desk.bind(data, sc, false);
     if (!b.notes.loaded(false))
       b.notes.load(false);
     b.clear();
   }
-  if (b.lab.scope() != sc) {
+  if (b.desk.scope() != sc) {
     warn(label + "与工作台在跑的调用所用的不同, 等它做完或取消");
     return;
   }
-  const Context &ctx = b.lab.ctx();
+  const Context &ctx = b.desk.ctx();
   if (ctx.days.empty())
     warn(label + "评估期未就绪 (开放的叶与标签库没有共同的落盘日): 观察与回测不能跑");
   if (ctx.leaves.empty())
@@ -446,7 +445,7 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   if (!hit) {
     ImGui::TextDisabled("%s", valid ? "这组参数还没跑: 按 Run" : "参数不合, 改好再 Run");
   } else if (Act &a = b.act_of(*hit); b.choosing() && *hit + 1 == n) {
-    if (edit_asked(AsAsk(a)->asked))
+    if (edit_asked(As<Tool::AskHuman>(a)->asked))
       b.answer_act(b.now());
   } else if (!a.span.ended()) {
     ImGui::TextColored(color(TaskStatus::Kind::Busy), "执行中… %.0f%%", b.live.frac * 100.0);

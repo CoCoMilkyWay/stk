@@ -1,4 +1,4 @@
-// report_issue — 报问题: 输入 type / title / detail / ref → IssueNoteRes (编号或 ref 不成的原因) → 原文; 展示见 ui/note/ReportIssue.cpp
+// report_issue — 报问题: 输入 type / title / detail / ref → NoteRes (编号或 ref 不成的原因) → 原文; 展示见 ui/note/Note.cpp
 #include "gui/task_agent/tools/Note.hpp"
 
 namespace GUI::Agent {
