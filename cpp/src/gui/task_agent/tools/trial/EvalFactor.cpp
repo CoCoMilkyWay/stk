@@ -1,7 +1,6 @@
 // eval_factor — 回测: 三拍对仗 OpenEvalFactor (核验落盘, GUI) → LabTask (Search + Run, Lab) → CloseEvalFactor (入表封存, GUI)
 //               → TrialRes (最佳权重的具体式 (负号前置) + 频率 / 预测周期 + 各权重统计与门槛 + 分年 → 累计分层 (Run 顺带的最佳权重逐日序列) / 分年 rIC 两张正负柱图)
 //               → 原文; 展示见 ui/trial/EvalFactor.cpp
-#include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Bay.hpp"
