@@ -77,6 +77,8 @@ void pnl_opt(const std::optional<double> &v, const std::string &s) {
 void masked() { ImGui::TextDisabled("%s", kMask); } // 隐私下遮住的格: 不出悬停提示
 void masked_num() { right(grey(), kMask); }
 std::string sec_txt(const live::Sec &s, bool priv) { return priv ? kMask : s.code + " " + s.name; }
+// 快照里的一只 (券商名) 换本地简称
+std::string sec_txt(const LiveHub &hub, const live::Sec &s) { return hub.priv() ? kMask : s.code + " " + hub.name_of(s.code, s.name); }
 
 // 仓位轻重的字色: 占比相对截面最重的一只, 越轻越灰淡
 ImVec4 weight_col(const std::optional<double> &w, double top) {
@@ -673,7 +675,7 @@ void repay_ctl(LiveHub &hub, BoardState &st) {
     std::string t = "持仓里已无、融资负债还在的 (卖出回款没还清的融资合约); 持仓着的负债不在此列, 归调仓管\n"
                     "现金还它们: 省利息, 可融余量 + 本金, 可用保证金也随之增";
     for (const live::Debt *d : os)
-      t += strf("\n  %s 负债 %s", sec_txt(*d, priv).c_str(), priv ? kMask : wan(d->amount).c_str());
+      t += strf("\n  %s 负债 %s", sec_txt(hub, *d).c_str(), priv ? kMask : wan(d->amount).c_str());
     tip("%s", t.c_str());
   }
   ImGui::SameLine(0, ImGui::GetFontSize());
@@ -713,7 +715,7 @@ void confirm_repay(LiveHub &hub, BoardState &st) {
   else
     ImGui::Text("用现金还已清仓仍负债的融资合约 (指定合约, 欠款少的先还), 共至多 %s (%.0f%%)?", priv ? kMask : wan(pay.cap).c_str(), pay.pct);
   for (const live::Debt *d : os)
-    ImGui::Text("  %s 负债 %s", sec_txt(*d, priv).c_str(), priv ? kMask : wan(d->amount).c_str());
+    ImGui::Text("  %s 负债 %s", sec_txt(hub, *d).c_str(), priv ? kMask : wan(d->amount).c_str());
   ImGui::TextDisabled("持仓着的负债不动; 额度另以现金封顶 (现金 %s)", priv || !s ? kMask : wan(s->acct.cash).c_str());
   ImGui::BeginDisabled(os.empty() || pay.amount(owe) < 0.01 || hub.busy());
   if (ImGui::Button("还款")) {
@@ -778,7 +780,7 @@ void info_line(LiveHub &hub, const std::set<std::string> &held) {
   for (const live::Pending &o : pends.list)
     if (!held.count(o.code)) {
       ++n;
-      s += strf("%s%s %s %lld股 @%.3f %s", s.empty() ? "" : "、", live::side_name(o.side), sec_txt(o, hub.priv()).c_str(),
+      s += strf("%s%s %s %lld股 @%.3f %s", s.empty() ? "" : "、", live::side_name(o.side), sec_txt(hub, o).c_str(),
                 static_cast<long long>(o.qty - o.filled), o.price, o.status.c_str());
     }
   if (!n)

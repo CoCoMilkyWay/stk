@@ -1127,12 +1127,12 @@ bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Ove
       const Candle &b = s.bars[i];
       double pnl = 0.0;
       if (b.date == today_d) {
-        pnl = ed->back().pnl + (today_base > 0.0 && b.ref > 0.0 ? today_base * (b.close / b.ref - 1.0) : 0.0);
+        pnl = ed->back().pnl + (b.ref > 0.0 ? today_base * (b.close / b.ref - 1.0) : 0.0);
       } else {
         while (ei + 1 < ed->size() && (*ed)[ei].date < b.date)
           ++ei;
         assert((*ed)[ei].date == b.date && "日内账户点所属日须在回放日内");
-        pnl = ei > 0 && (*ed)[ei].base > 0.0 && b.ref > 0.0 ? (*ed)[ei - 1].pnl + (*ed)[ei].base * (b.close / b.ref - 1.0) : (*ed)[ei].pnl;
+        pnl = ei > 0 && b.ref > 0.0 ? (*ed)[ei - 1].pnl + (*ed)[ei].base * (b.close / b.ref - 1.0) : (*ed)[ei].pnl;
       }
       const double adj = e_now * (b.close / idx_now);
       ahi = std::max(ahi, adj), phi = std::max(phi, pnl);

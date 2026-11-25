@@ -1194,7 +1194,7 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
         double p = 0.0;
         if (j >= hist_n) {
           const double ref = sl.c.c->e.back();
-          p = ed.back().pnl + (today_base > 0.0 && ref > 0.0 ? today_base * (idx / ref - 1.0) : 0.0);
+          p = ed.back().pnl + (ref > 0.0 ? today_base * (idx / ref - 1.0) : 0.0);
         } else if (j > 0) {
           const int k = sl.c.day(j);
           const misc::Ymd day = d.dates[static_cast<size_t>(k)];
@@ -1203,7 +1203,7 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
           assert(ed[ei].date == day && "账户线点所属日须在回放日内");
           if (ei > 0) {
             const double ref = sl.c.c->end(k);
-            p = ed[ei].base > 0.0 && ref > 0.0 ? ed[ei - 1].pnl + ed[ei].base * (idx / ref - 1.0) : ed[ei].pnl;
+            p = ref > 0.0 ? ed[ei - 1].pnl + ed[ei].base * (idx / ref - 1.0) : ed[ei].pnl;
           }
         }
         const double adj = v.acct.scale * sl.y(i);

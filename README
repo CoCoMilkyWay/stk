@@ -406,7 +406,7 @@ stk/
 │   │   │       ├── Repay.hpp                           # 💹 现金还款: 「融资业务 › 现金还款」页指定合约逐笔还 (选择合约框双击 → 应还自填 → 可改小 → 交易确认 → 回报), 每笔等页重查完
 │   │   │       ├── Heap.hpp / Image.hpp                # 💹 跨进程只读探堆 / 进程映像 (PE 模块 · RTTI · 虚表): 只给 shim probe 用
 │   │   │       └── shim/Tool.hpp                       # 💹 shim 独立程序的子命令: cmd 转发 / probe 探内存 / rec 录制 / vt 虚表追踪 / test 在线用例 (源见 src/live/tdx/shim/)
-│   │   ├── account/Nav.hpp                             # 💹 账户净值 (券商无关, 只认 live/Broker.hpp 的资金流水): 账本 (live/Flows.hpp) 逐交易日回放 → 时间加权指数 / 日内回推
+│   │   ├── account/Nav.hpp                             # 💹 账户净值 (券商无关, 只认 live/Broker.hpp 的资金流水): 账本 (live/Flows.hpp) 逐交易日回放 → 时间加权指数 (资金基数有下限: 资金极少时不放大涨跌) / 日内回推
 │   │   ├── disk/                                       # 💽 落盘: output/ 的唯一布局 + 唯一路径入口
 │   │   │   ├── Disk.hpp                                # 💽 段表 DISK_SEGS (字段 × 写法 × 值域) × 布局表 DISK_LAYOUT (一行一节点); name ⇄ parse / path ⇄ list / read ⇄ write (原子) / ensure ⇄ remove (墓碑)
 │   │   │   └── Sweep.hpp                               # 💽 开机整理: 残留 (含空目录) 直接清 / 基石 (orders / fundamental + output/config 下本机配置) 自动迁入布局 / 其余不合布局的按 (节点, 名字) 归组逐组问删

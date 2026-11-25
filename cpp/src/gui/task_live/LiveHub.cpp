@@ -544,6 +544,13 @@ void LiveHub::update() {
   }
 }
 
+const std::string &LiveHub::name_of(const std::string &code, const std::string &fallback) const {
+  if (const live::terms::Local *l = in_->terms.local.get())
+    if (const auto i = l->find(code); i != l->end() && i->second.mkt == live::market_of(code) && !i->second.name.empty())
+      return i->second.name;
+  return fallback;
+}
+
 void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
   Core &c = *c_;
   info_st_.update({info.pit_end, info.bar1m_end, static_cast<int64_t>(info.codes.size())}, [&](int &) {
@@ -579,7 +586,7 @@ void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
   }
   const Inputs &in = *in_;
 
-  board_.update({snap_.get(), in.px.quotes.get()}, [&](BoardView &cur) {
+  board_.update({snap_.get(), in.px.quotes.get(), in.terms.local.get()}, [&](BoardView &cur) {
     BoardView b{.snap = snap_, .quotes = in.px.quotes};
     b.err = live::guard([&] {
       if (!snap_)
@@ -587,6 +594,9 @@ void LiveHub::tick(const AssetInfo &info, Quote::QuoteHub &quote) {
       else if (!in.px.quotes || !(b.frame = live::board::view(*snap_, *in.px.quotes)))
         b.wait = "等行情";
     });
+    if (b.frame)
+      for (live::board::Row &r : b.frame->rows)
+        r.name = name_of(r.code, r.name);
     if (b.wait.empty() || !cur.frame)
       cur = std::move(b);
     else

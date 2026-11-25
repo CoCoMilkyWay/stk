@@ -248,14 +248,11 @@ Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, 
   days->reserve(ds.size());
   double pnl = 0;
   for (size_t k = 0; k < ds.size(); ++k) {
-    double base = 0;
-    if (k > 0) {
+    if (k > 0)
       pnl += ds[k].nav - ds[k - 1].nav - ds[k].flow;
-      base = std::max(ds[k - 1].nav + std::max(ds[k].flow, 0.0), 0.0);
-    }
-    days->push_back({ds[k].date, base, pnl});
+    days->push_back({ds[k].date, ds[k].base, pnl});
   }
-  o.eq = {ds.back().nav, account::flow_after(l.rows, ds.back().date), 0, {}, std::move(days), std::make_shared<const Quote::Trades>(Quote::rebin(marks, 1)), positions_of(l, ds, held, ax)};
+  o.eq = {ds.back().nav, account::flow_after(l.rows, ds.back().date), 0, ds.back().peak, {}, std::move(days), std::make_shared<const Quote::Trades>(Quote::rebin(marks, 1)), positions_of(l, ds, held, ax)};
   for (const account::Day &d : ds)
     o.eq.in += d.flow;
   for (const account::Hold &h : ds.back().hold)

@@ -1,7 +1,7 @@
 // Live 任务的中枢: 一个 Broker (客户端适配表 live/Clients.hpp 里选一个, 点「连接」才建) + 新浪行情 + 两融条款 + 下单 / 调仓 / 拉取事务, 券商无关;
 //   页面只认中枢, 不碰 Broker (刷新 / 定时 / 画面都经中枢转)
 //   快照: 后台改、GUI 每帧取, 一律不可变 shared_ptr (指针换了 = 换了一份): Broker 的 Snapshot, 中枢的 Inputs / Task / 最近几单;
-//     持仓帧按 (Snapshot, 行情) 变了才重算, 试算按 (Snapshot, Inputs) 变了才重算 (GUI::Stage); 重算出的只是在等 (行情没齐等) 即留着上一份照显, 页面不跳
+//     持仓帧按 (Snapshot, 行情, 本地库) 变了才重算 (名称: 本地库有的个股换本地简称, 否则券商的长简称), 试算按 (Snapshot, Inputs) 变了才重算 (GUI::Stage); 重算出的只是在等 (行情没齐等) 即留着上一份照显, 页面不跳
 //   每帧两个入口: update (任务级, 无论哪页) 取快照、两样拉取该拉了即起事务; tick (Board 可见时, update 之后) 盯客户端、订阅行情、重算
 //   输入 Inputs 三组同形 (行情 / 两融条款 / 调仓名单: 原料 → 派生) + 调仓配置, 改一样即整份换
 //   行情: 要的码 (持仓、今日清仓、负债、调仓名单里可买的) 每帧订阅给 QuoteHub (与 Market 同一路新浪轮询, 改了即提前一轮), 随 Live 的版本取用;
@@ -170,6 +170,8 @@ public:
   const std::vector<std::string> &steps() const;                          // 下单各步: 「行情」+ broker 的各步
   const BoardView &board() const { return board_.val; }
   const PlanView &plan() const { return plan_.val; }
+  // 显示名: 本地库有的个股 (交易所 + 代码对得上) 取本地简称 (券商表给的是长简称), 否则 fallback
+  const std::string &name_of(const std::string &code, const std::string &fallback) const;
   bool busy() const { return task_ && task_->st == JobSt::Run; } // 有事务在跑
 
   // 客户端 (须已连接): 要一轮刷新 (不等) / 定时周期 [s] (0 = 不定时) / 复现画面 (不支持 = 空)
@@ -203,11 +205,11 @@ private:
   std::shared_ptr<const Task> task_;
   live::trace::Spot task_at_;
   std::shared_ptr<const std::vector<OrderJob>> jobs_;
-  Stage<std::array<int64_t, 3>, int> info_st_; // AssetInfo 的 (pit_end, bar1m_end, 代码数): 变了即重合条款
-  Stage<PtrPair, BoardView> board_;            // (Snapshot, 行情) → 持仓帧
-  Stage<PtrPair, PlanView> plan_;              // (Snapshot, Inputs) → 试算
-  std::vector<std::string> watch_;             // 订阅给 QuoteHub 的码 (变了才交: 交要过服务的锁)
-  uint64_t live_ver_ = 0;                      // 取用过的 Live 版本
+  Stage<std::array<int64_t, 3>, int> info_st_;          // AssetInfo 的 (pit_end, bar1m_end, 代码数): 变了即重合条款
+  Stage<std::array<const void *, 3>, BoardView> board_; // (Snapshot, 行情, 本地库个股) → 持仓帧 (名称换本地简称)
+  Stage<PtrPair, PlanView> plan_;                       // (Snapshot, Inputs) → 试算
+  std::vector<std::string> watch_;                      // 订阅给 QuoteHub 的码 (变了才交: 交要过服务的锁)
+  uint64_t live_ver_ = 0;                               // 取用过的 Live 版本
 };
 
 } // namespace GUI::Live

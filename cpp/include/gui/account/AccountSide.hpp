@@ -34,7 +34,7 @@ Quote::TradeMark mark_of(misc::Ymd d, const live::Fill &x);
 using DayOf = std::function<const Quote::Day *(const std::string &code)>;
 
 // 账户一日 d (前一日净值 nav0 / 指数 idx0 = 本日前收) 的槽 [0, n): 持仓 d.hold 按 of 的分钟收计价, 槽晚于 s 的成交 trades 退回,
-//   点位 = idx0 × growth(nav0, nav_s, d.flow) (account::intraday)
+//   点位 = idx0 × growth(d.base, nav0, nav_s, d.flow) (account::intraday)
 Quote::Day day_of(const account::Day &d, double nav0, double idx0, std::span<const account::Trade> trades, size_t n, const DayOf &of);
 
 // 账本的回放: 账户全史 (日脊上自首条流水所在日起; 首日平于 1; 各日按该日的历史成交回推) + 摘要 (含末日收后持仓、回放各日的历史成交点);
