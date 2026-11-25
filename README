@@ -305,23 +305,23 @@ stk/
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 码点 / 检索词过滤 / 数的写法 / 火花线 / Markdown 表格建表器 Table
 │   │   │       ├── Async.hpp                           # 🤖 通用单线程异步管道 Async<Req, Step, Out, Live>: Chat 与 Lab 共用同一套 Tick / send / poll / live / busy / cancel
 │   │   │       ├── Llm.hpp                             # 🤖 左翼 · 内置大脑后端表 (Zhipu / Cursor / Devin) 与异步对话管道 Chat (零异常控制流; Zhipu 无状态全量 / Cursor · Devin 留着一段对话只发本条; 传输层补纯 JSON 格式约束)
-│   │   │       ├── Tools.hpp                           # 🤖 工具真相表: AGENT_TOOLS (挂入 AGENT_ROWS) + 编译期类型化参数表 ArgDef → 系统提示工具节 / 回复解析 ParseCall (一条回复一个调用) / 参数校验 / Res 唯一结构化载体
+│   │   │       ├── Tools.hpp                           # 🤖 工具真相表: AGENT_TOOLS (挂入 AGENT_ROWS) + 编译期类型化参数表 ArgDef → 系统提示工具节 / 回复解析 ParseCall (一条回复一个调用) / 参数校验 ArgsOf (接口工具 open / run 同表, 另出 inputSchema) / Res 唯一结构化载体
 │   │   │       ├── Notes.hpp                           # 🤖 跨会话全局记录 Notes (F / T / I / R, jsonl 累积, 研究员标处理)
 │   │   │       ├── Docs.hpp                            # 🤖 研报库工具 (只读 output/data/doc, 按篇懒加载并看取消旗): search_docs / search_factors / read_doc
-│   │   │       ├── tools/                              # 🤖 Kit.hpp 时间线 Step/Act (一步一个调用, 编号 #<步>) + 单趟增量账本 State (Tally / 结束旗) + 实现表 kSpecs + 统一调用底座 Rig (open ⇄ step/settle/answer/abort)
-│   │   │       │                                       #    · 当场台面 Seat (Kit.hpp, GUI 线程读写会话) ↔ 后台台面 Bay (Bay.hpp, 只读快照 ViewEnv + 计算流); 后台三拍 StagedLab (eval_factor)
-│   │   │       │                                       #    · <类>.hpp 各工具的 Res 与入口 (Look / Query / Trial / Note / Misc / Session), <类>/<工具>.cpp 计算与原文; 观察核 look/Kernel.hpp (零分配 RankScratch)
-│   │   │       │                                       #    · Session (build_context / check_call / probe_brain): 会话内核纯函数与单步大模型调试 (不进 agent 工具表, 复用同一套工作台 Bench)
+│   │   │       ├── tools/                              # 🤖 Kit.hpp 时间线 Step/Act (一步一个调用, 编号 #<步>) + 账本 = 时间线的纯折叠 (TallyOf / Finished / AdoptedOf / StagedOf) + 实现表 kSpecs + 统一调用底座 Rig (open → pump / answer, abort)
+│   │   │       │                                       #    · 三态 = Exec 三值, 实现形一一对应: Sync (Call, Seat) → ToolOut / Lab (Act, Seat) → LabTask (后台算完交回 GUI 线程的收尾 Commit) / Human (Call) → 问卷; 纯后台 (Call, Bay) → ToolOut 自动包成 Lab
+│   │   │       │                                       #    · 当场台面 Seat (Kit.hpp, GUI 线程读写会话) ↔ 后台台面 Bay (Bay.hpp, 只读快照 ViewEnv + 计算流)
+│   │   │       │                                       #    · <类>.hpp 各工具的 Res 与入口 (Look / Query / Trial / Note / Misc), <类>/<工具>.cpp 计算与原文; 观察核 look/Kernel.hpp (零分配 RankScratch)
 │   │   │       │                                       #    · eval_factor 原文与展示逐节对仗: 最佳权重具体式 (负号前置) → 频率 · 预测周期 → 权重 (rIC · 中位 rIC · 每期毛多 / 毛空 / 净多空 · 成本 = 单边换手 买 / 卖 × 固定冲击) → 分年 (中位 rIC · 年换手) → 原文末尾累计分层 / 分年 rIC 两张正负柱图;
 │   │   │       │                                       #      展示另画写进的权重的累计 rIC (逐日 rIC 累加, 图例带年化 IR) 与分层图 (Run 顺带本持有期的逐日序列, 只在内存)
-│   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw, Mine 与 Bench 同源共用) + 工作台 Bench (Agent → Tools, 主栏按类折叠一工具一页, 基于 Rig) + 控件 Widgets
+│   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw, Mine 与 Bench 同源共用) + 三页: MinePage / 工作台 Bench (Agent → Tools, 主栏按类折叠一工具一页, 基于 Rig) / ConfigPage + 共享台面 Pages (Ui) + 控件 Widgets
 │   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 候选四拍 (stage / absorb / adopt / discard) + 单线程工作台 Lab (共享不可变 ViewEnv, Store 共用)
 │   │   │       ├── Prompt.hpp                          # 🤖 纯成文层: 提示词模板填充 + 工具结果成文 + 上下文纯函数 TurnsOf (只追加的整段对话; 近处过长即把远处的结果整块折成结论, kFoldSteps 一跳保前缀命中缓存)
 │   │   │       ├── Mine.hpp                            # 🤖 挖掘会话 (唯一一套) 的主循环 advance (Mine : Rig): 只认时间线, 一步一个调用 (未发 → 发; 在等 → 等; 调用 → 做; 做完 → 下一条);
 │   │   │       │                                       #    大脑 = 内置大模型 (Chat) 或外部 agent (reply 交调用), 交给它的一律经 deliver (连着只给本条, 否则完整上下文); 不合协议记一步 (下一条 = 重交要求); Cancel / 续 / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
 │   │   │       ├── Remote.hpp                          # 🤖 外部 agent 的 MCP 接口 (本机 Streamable HTTP · JSON-RPC: initialize / ping / tools/list / tools/call): 外部 agent 当 Mine 的大脑;
 │   │   │       │                                       #    open (同 New 开新会话) / doc / run (交一个调用或无参接上 / 续等), 研究工具只经 run 交; 与内置大脑同一个游标: 连着只推本条, 断链 / 回退时给完整上下文; 执行中长等, 停下 / 等人即返
-│   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (作用域 / 会话控制 / 调用流 (一步一行, 调用为主体, 大脑那一侧折在里面) / 候选 / 记录处理 / 开放的特征与算子; 两种大脑同一个页) / Tools / Config
+│   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面外壳 (页签 / 每帧推进 / 选项落盘): Mine (作用域 / 会话控制 / 调用流 (一步一行, 调用为主体, 大脑那一侧折在里面) / 候选 / 记录处理 / 开放的特征与算子; 两种大脑同一个页) / Tools / Config, 各页在 ui/
 │   │   ├── factor/                                     # 🧬 因子算子基建: 因子 = 特征的 TS / CS 算子组合; Stat = 因子评估器 (不入 OpTable)
 │   │   │   │                                           #    · 分层: 算子核 (无线程 / 无分配) → 流程 run<Exec> → 应用层管线程 / 内存
 │   │   │   │                                           #    · 并行: 搜索 = 因子间 (每线程 Serial); 交互 = 因子内 (ForkJoin)

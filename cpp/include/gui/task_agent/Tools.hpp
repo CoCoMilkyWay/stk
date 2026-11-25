@@ -15,6 +15,7 @@
 //     Tool 挂入 AGENT_ROWS (Named + Tabled): def(t) 编译期取元数据, IdOf / FindId / JSON 序列化与其他枚举同一套
 //     说明表 doc(t) (Tools.cpp) 存编译期类型化参数表 ArgDef 与成文说明; 实现表 kSpecs (tools/Kit.cpp) 按清单拼名并编译期核签名
 //   每个工具四面对仗: 输入 Call → 结构化结果 Res (唯一载体, tools/<类>.hpp) → 原文 text()/gist() (tools/<类>/<工具>.cpp) ↔ 展示 draw() (ui/<类>/<工具>.cpp)
+//   参数表 ArgDef 同时描述外部 agent 接口工具 (open / run, Remote.cpp) 的参数: 校验 ArgsOf 与 inputSchema SchemaOf 同表出
 // =============================================================================
 
 #include "gui/task_agent/Enum.hpp"
@@ -97,29 +98,34 @@ AGENT_ROWS(Tool, kTools, AskHuman);
 
 enum class Arg : uint8_t { Str,
                            Int,
+                           Bool,
                            Strs,
+                           Obj,
                            Questions };
 struct EmptyArr {};
-using ArgVal = std::variant<std::monostate, std::string_view, int, EmptyArr>; // monostate = 必填
+struct Unset {};                                                                           // 可不给: 不给即不填 (由收参的一方定)
+using ArgVal = std::variant<std::monostate, std::string_view, int, bool, EmptyArr, Unset>; // monostate = 必填
 using Choices = std::span<const std::string_view>;
 
 struct ArgDef {
   const char *key, *cn;
   Arg type;
-  ArgVal def; // 缺省值; monostate = 必填
+  ArgVal def; // 缺省值; monostate = 必填, Unset = 可不给
   int lo = 0, hi = 0;
   Choices choices; // Str 可选集 (缺省为 "" 时另许空串); 空 = 任意串
   const char *desc = "";
   constexpr bool required() const { return std::holds_alternative<std::monostate>(def); }
+  constexpr bool unset() const { return std::holds_alternative<Unset>(def); }
   constexpr bool empty_ok() const {
     const auto *s = std::get_if<std::string_view>(&def);
     return s && s->empty();
   }
 };
+using ArgDefs = std::span<const ArgDef>;
 
 struct ToolDoc {
   Tool id;
-  std::span<const ArgDef> args;
+  ArgDefs args;
   const char *desc = "", *out = "";
 };
 
@@ -142,8 +148,10 @@ struct Call {
   std::string text(size_t cap = 0) const;
 };
 
-// 一个调用的参数按参数表校验并补缺省 (path = 报错里参数的前缀); 不合的各条进 errs
+// 一组参数按参数表校验并补缺省 (owner = 报错里参数表的属主, path = 参数的前缀; 键按参数表序); 不合的各条进 errs
+bool ArgsOf(ArgDefs spec, std::string_view owner, const nlohmann::ordered_json &args, const std::string &path, nlohmann::ordered_json &out, std::vector<std::string> &errs);
 bool CallOf(Tool t, const nlohmann::ordered_json &args, const std::string &path, Call &out, std::vector<std::string> &errs);
+nlohmann::ordered_json SchemaOf(ArgDefs spec); // 参数表的 JSON Schema (外部 agent 接口的 inputSchema)
 
 // 大脑的一条回复 ↔ 一个调用 (协议层): 解析 (不合 = error 一行一处) / 写回协议形
 struct CallCheck {
@@ -158,9 +166,10 @@ std::string ToolsDoc(bool ask);
 // ---- 工具的结构化结果 (唯一载体: Mine 时间线与 Bench 工作台共用) ----
 struct Res {
   virtual ~Res() = default;
-  virtual std::string text() const = 0;           // 交给 agent 的原文
-  virtual std::string gist() const { return {}; } // 上下文折叠后留的一行关键数 (无则空)
-  virtual void draw() const = 0;                  // 结构化展示
+  virtual std::string text() const = 0;            // 交给 agent 的原文
+  virtual std::string gist() const { return {}; }  // 上下文折叠后留的一行关键数 (无则空)
+  virtual std::string title() const { return {}; } // 时间线上这个调用一行里代替调用原文的一句 (无则空)
+  virtual void draw() const = 0;                   // 结构化展示
 };
 using ResPtr = std::shared_ptr<Res>;
 

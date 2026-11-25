@@ -212,9 +212,10 @@ void TrialRes::draw() const {
   wrapped(kColExpr, best ? Formula(*best) : st.cand.expr);
   if (!st.cand.note.empty())
     wrapped_dim("思路: " + st.cand.note);
-  const TaskStatus::Kind kind = r.verdict == Verdict::Weights ? (GateMiss(gate, r).empty() ? TaskStatus::Kind::Ready : TaskStatus::Kind::None)
-                                : r.verdict == Verdict::Null  ? TaskStatus::Kind::Warn
-                                                              : TaskStatus::Kind::Error;
+  const TaskStatus::Kind kind = r.verdict == Verdict::Weights   ? (GateMiss(gate, r).empty() ? TaskStatus::Kind::Ready : TaskStatus::Kind::None)
+                                : r.verdict == Verdict::Null    ? TaskStatus::Kind::Warn
+                                : r.verdict == Verdict::Pending ? TaskStatus::Kind::Muted
+                                                                : TaskStatus::Kind::Error;
   if (!best) {
     wrapped(color(kind), Brief(r));
   } else {

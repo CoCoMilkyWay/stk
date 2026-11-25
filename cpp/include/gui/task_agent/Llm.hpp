@@ -123,11 +123,6 @@ enum class ChatStep : uint8_t { Think,
                                 Write,
                                 Restart,
                                 End };
-struct ChatStepDef {
-  const char *cn;
-};
-inline constexpr ChatStepDef kChatSteps[] = {{"思考"}, {"输出"}, {"重试"}, {"完"}};
-AGENT_ROWS(ChatStep, kChatSteps, End);
 struct ChatReq {
   llm::Options opt;
   std::shared_ptr<const std::string> system;

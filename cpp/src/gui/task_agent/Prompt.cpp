@@ -3,6 +3,7 @@
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
+#include "gui/task_agent/tools/Trial.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -151,6 +152,13 @@ std::string folded(Steps ss, size_t i) {
 // 公开函数
 // =============================================================================
 std::string CallTitle(const Act &a, int step) { return "[" + StepTag(step) + "] " + a.call.text(kTitleChars) + (a.out.ok ? "" : " — 没做成"); }
+
+std::string StageOf(const Act &a, double frac) {
+  const std::string pct = text::fmt(" %.0f%%", frac * 100.0);
+  if (const TrialRes *r = AsTrial(a))
+    return (r->run.began() ? "Run" : "Search") + pct;
+  return def(a.call.tool).exec == Exec::Lab && frac > 0.0 ? "执行中" + pct : std::string("执行中");
+}
 
 std::string ResultText(const Act &a, int step) {
   std::string s = "## " + CallTitle(a, step) + "\n\n" + a.out.text;

@@ -1,4 +1,4 @@
-// eval_factor — 回测: 三拍对仗 OpenEvalFactor (核验落盘, GUI) → LabTask (Search + Run, Lab) → CloseEvalFactor (入表封存, GUI)
+// eval_factor — 回测: 核验落盘 (GUI) → Search + Run (Lab) → 入表封存 (GUI 收尾 Commit)
 //               → TrialRes (最佳权重的具体式 (负号前置) + 频率 / 预测周期 + 各权重统计与门槛 + 分年 → 累计分层 (Run 顺带的最佳权重逐日序列) / 分年 rIC 两张正负柱图)
 //               → 原文; 展示见 ui/trial/EvalFactor.cpp
 #include "gui/task_agent/Prompt.hpp"
@@ -26,13 +26,6 @@ using text::fmt;
 namespace {
 
 namespace fx = factor::expr;
-
-struct EvalYield final : Res {
-  Sweep sweep;
-  std::vector<Daily> days;
-  std::string text() const override { return {}; }
-  void draw() const override {}
-};
 
 // 累计分层: 20 组各自超额日收益的对数累计 Σ ln(1 + r) (评估期全段; 与展示的分层图同口径)
 std::string layers_text(const Daily &d) {
@@ -102,7 +95,19 @@ std::vector<Daily> days_of(const std::vector<Engine::FactorRow> &rows, const std
   return out;
 }
 
-ToolOut run_eval(const Engine::FactorScope &fsc, const std::string &file, const std::string &tmpl, Bay &bay) {
+// GUI 线程收尾: 候选目录按这趟的结局重扫, 入表封存 (BROKEN 之外都算做成)
+Commit absorb(bool ok, std::string err, Sweep sweep, std::vector<Daily> days) {
+  return [ok, err = std::move(err), sweep = std::move(sweep), days = std::move(days)](Act &a, Lab &lab) mutable {
+    auto r = std::static_pointer_cast<TrialRes>(a.out.res);
+    assert(r);
+    r->st.res = lab.absorb(r->st.file, ok, err, std::move(sweep), std::move(days));
+    const bool fine = r->st.res.verdict != Verdict::Broken;
+    a.out = Done(std::move(r), fine);
+  };
+}
+
+Commit run_eval(const Engine::FactorScope &fsc, const std::string &file, const std::string &tmpl, Bay &bay) {
+  bay.step(LabStep::Search);
   const Engine::FeatureTable &ft = *fsc.ft;
   factor::stat::Frame frame = factor::stat::Frame::CS;
   std::string dummy;
@@ -115,12 +120,12 @@ ToolOut run_eval(const Engine::FactorScope &fsc, const std::string &file, const 
   if (bay.cancelled())
     return {};
   if (src != Engine::Rc::Ok || !sres.wrote)
-    return Fail(src == Engine::Rc::Stale ? Engine::kStaleMsg : why.empty() ? "Search 中止"
-                                                                           : why);
-  auto yield = std::make_shared<EvalYield>();
-  yield->sweep = sweep_of(sres);
+    return absorb(false, src == Engine::Rc::Stale ? Engine::kStaleMsg : why.empty() ? "Search 中止"
+                                                                                    : why,
+                  {}, {});
+  Sweep sweep = sweep_of(sres);
   if (sres.n_weights == 0)
-    return {true, {}, {}, std::move(yield)};
+    return absorb(true, {}, std::move(sweep), {});
   bay.step(LabStep::Run);
   std::vector<Engine::FactorRow> frows;
   Engine::ScanFactorFile(fsc.dir, ssp.file, ft, frows);
@@ -134,9 +139,8 @@ ToolOut run_eval(const Engine::FactorScope &fsc, const std::string &file, const 
   if (bay.cancelled())
     return {};
   if (rc != Engine::Rc::Ok)
-    return {false, rc == Engine::Rc::Stale ? Engine::kStaleMsg : "Run 中止", {}, std::move(yield)};
-  yield->days = days_of(frows, idx, dl);
-  return {true, {}, {}, std::move(yield)};
+    return absorb(false, rc == Engine::Rc::Stale ? Engine::kStaleMsg : "Run 中止", std::move(sweep), {});
+  return absorb(true, {}, std::move(sweep), days_of(frows, idx, dl));
 }
 
 } // namespace
@@ -195,11 +199,13 @@ std::string TrialRes::text() const {
   return s;
 }
 
+std::string TrialRes::title() const { return st.cand.name + "  " + st.cand.name_cn; }
+
 std::string TrialRes::gist() const {
   return st.ok() ? st.cand.name + " `" + st.cand.expr + "` · " + text::head(st.cand.note, 60) + " → " + Brief(st.res) : std::string();
 }
 
-std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
+LabTask EvalFactor(Act &a, Seat &s) {
   const Call &c = a.call;
   auto r = std::make_shared<TrialRes>();
   r->gate = s.gate;
@@ -207,24 +213,12 @@ std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
   r->st = s.lab.stage({c.str("name"), c.str("name_cn"), c.str("expr"), c.str("note")});
   if (!r->st.ok()) {
     a.out = Done(std::move(r), false);
-    return std::nullopt;
+    return {};
   }
   const Engine::FactorScope fsc = FactorScopeOf(s.lab, s.gpu);
   const std::string file = r->st.file, tmpl = r->st.res.tmpl;
   a.out.res = std::move(r);
-  return LabTask([fsc, file, tmpl](Bay &bay) { return run_eval(fsc, file, tmpl, bay); });
-}
-
-void CloseEvalFactor(Act &a, ToolOut out, Seat &s) {
-  auto r = std::static_pointer_cast<TrialRes>(a.out.res);
-  assert(r);
-  Sweep sweep;
-  std::vector<Daily> days;
-  if (auto *y = static_cast<EvalYield *>(out.res.get()))
-    sweep = std::move(y->sweep), days = std::move(y->days);
-  r->st.res = s.lab.absorb(r->st.file, out.ok, out.text, std::move(sweep), std::move(days));
-  const bool ok = r->st.res.verdict != Verdict::Broken;
-  a.out = Done(std::move(r), ok);
+  return [fsc, file, tmpl](Bay &bay) { return run_eval(fsc, file, tmpl, bay); };
 }
 
 // 模板 = 归一根 (窗口统计 (本层叶, 裸 d)); 随机拼到过 stage 的全部查验为止 (试满 kSampleTries 次仍不过就交末一个, 原因见回测结果)

@@ -8,7 +8,9 @@ using json = nlohmann::ordered_json;
 
 std::string AskRes::text() const { return AnswerText(asked); }
 
-ToolOut AskHuman(std::shared_ptr<AskRes> r) { return Done(std::move(r)); }
+std::string AskRes::title() const { return std::to_string(asked.qs.size()) + " 个问题"; }
+
+ResPtr AskHuman(const Call &c) { return std::make_shared<AskRes>(QuestionsOf(c)); }
 
 json SampleAskHuman(Feed &p) {
   return {{"questions",

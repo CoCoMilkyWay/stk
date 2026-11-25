@@ -465,6 +465,8 @@ set(MATH_PRECISE
     gui/task_agent/tools/trial/EvalFactor.cpp
     gui/task_agent/tools/trial/SubmitFactor.cpp
     gui/task_agent/ui/Bench.cpp
+    gui/task_agent/ui/ConfigPage.cpp
+    gui/task_agent/ui/MinePage.cpp
     gui/task_agent/ui/Widgets.cpp
     gui/task_agent/ui/look/ViewBook.cpp
     gui/task_agent/ui/look/ViewExplain.cpp

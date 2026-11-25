@@ -6,12 +6,12 @@
 //   主循环 advance (唯一状态 = 时间线 + 停下原因 (非空 = 停着); 阶段由末步推出), 一步一个调用:
 //     末步未发出 → 交大脑; 在等回复 / 在跑的调用 (后台 Lab 或等研究员答的 ask_human) → 等;
 //     调用未做 → 启动它; 做完 → 下一条入时间线 (它的结果; 不合协议 = 重交要求), finish / 连续不合 / 预算到了即停
-//   大脑 (Setup::remote 区分, 只在发出时分叉; 收到一律走 got), 交给它的一律经 deliver: 连着收到上一步的只给本条, 否则 (首次 / 载入 / 回退 / 作废过) 给整份 TurnsOf:
+//   大脑 (Setup::remote 区分, 只在发出时分叉; 收到一律走 got), 游标 told_ 记它连着收到第几步: 连着的只给本条, 否则 (首次 / 载入 / 回退 / 作废过) 给整份 TurnsOf:
 //     内置大模型 = Chat (无状态后端每次全量, 有状态后端连着时只发本条, 见 gui/task_agent/Llm.hpp)
 //     外部 agent = 经 MCP 交给它 (gui/task_agent/Remote.hpp), 它 reply 交来的一个调用即回复
 //   不合协议的回复照收成一步 (无调用, Step::error = 原因), 下一条即重交要求
 //   停下只有 Cancel (在收的回复 / 在跑的调用作废) 与系统停 (finish / 预算 / 连续不合 / 回复失败); 继续 = 接着 advance
-//   调用执行统一走 Rig (open_act → step_act / settle_act / answer_act / abort_act, 与工作台 Bench 同一底座)
+//   调用执行统一走 Rig (open_act → pump_act / answer_act, abort_act; 与工作台 Bench 同一底座); 账本即时间线的纯折叠 (tools/Kit.hpp)
 // =============================================================================
 
 #include "gui/task_agent/Bridge.hpp"
@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -115,7 +116,6 @@ public:
   bool idle() const { return !chat.busy() && !lab.busy(); }
   bool remote() const { return held() && setup.remote; } // 会话由外部 agent 驱动
   std::string brain() const;                             // 大脑一句: 后端 / 模型, 或外部 agent
-  const Act *acting() const;                             // 末步在跑或待做的调用 (没有 = 空)
   std::string hint() const;
 
 private:
@@ -131,12 +131,10 @@ private:
   void pause(std::string why);
 
   void on_chat(Chat::Tick t);
-  void on_lab(Lab::Tick t);
   Seat seat_of();
-  Act &act() { return *timeline.back().act; }
-  llm::Turns told(bool &fresh);
+  bool fresh();
 
-  std::vector<std::string> staged_from(int k) const;
+  std::set<std::string> staged_from(int k) const;
   void discard(int k);
   void redo(int k, std::string why);
   void unsend();
@@ -145,10 +143,7 @@ private:
   std::string report_of(const std::string &why) const;
 
   bool held_ = false;
-  int rev_ = 0; // 时间线代号 (开 / 载入 / 回退递增)
-  struct Told {
-    int rev = -1, step = 0; // 大脑连着收到的: rev_ 下到第几步 (rev = -1 = 没连着)
-  } told_;
+  int told_ = -1; // 大脑连着收到的末步 (-1 = 没连着: 开 / 载入 / 回退 / 作废回复后)
   struct From {
     int step = 0; // 已发出的步数
     double t = 0.0;

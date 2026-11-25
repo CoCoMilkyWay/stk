@@ -4,7 +4,7 @@
 // 检索 (search_* / read_doc / list_*) 的结果: 每个工具一个 Res; 计算与原文在 tools/query/<工具>.cpp, 展示在 ui/query/<工具>.cpp
 // =============================================================================
 //   search_leaves / list_*                    当场 (SyncFn): 读 Lab 的上下文与候选 / 全局记录
-//   search_docs / search_factors / read_doc   后台 (LabFn): 只看台面 Bay 的取消旗, 研报库见 Docs.hpp
+//   search_docs / search_factors / read_doc   纯后台 (PureFn): 只看台面 Bay 的取消旗, 研报库见 Docs.hpp
 // =============================================================================
 
 #include "gui/task_agent/tools/Kit.hpp"

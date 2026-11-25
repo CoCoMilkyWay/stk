@@ -14,6 +14,7 @@
 //           这几页不必开会话: 数据取 Lab (会话中候选随评估实时更新; 无会话时随作用域重绑) 与 Rig::notes
 //   Config  大脑后端 (Zhipu / Cursor / Devin), 直连或代理 / 模型 (嗅探), 评估后端, 预算 (每段的步数 / 分钟上限), 入库门槛, 提问, 提示词模板 (查看 / 编辑 / 保存)
 //   选项 (作用域 + Config) 改了即写 output/config/agent/ui.json, 首次 Draw 读回; 与项目只经 gui/task_agent/Bridge.hpp; 配置 gui/task_agent/Config.hpp
+//   这里只是外壳 (页签 / 每帧推进 / 选项落盘); 三页 Mine = ui/MinePage.cpp, Tools = ui/Bench.cpp, Config = ui/ConfigPage.cpp, 共享台面 Ui 见 ui/Pages.hpp
 // =============================================================================
 
 namespace GUI {

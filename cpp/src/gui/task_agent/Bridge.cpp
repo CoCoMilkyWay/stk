@@ -479,7 +479,9 @@ struct Lab::Impl {
           static const ViewEnv kNoEnv;
           Bay bay{j.env ? *j.env : kNoEnv, flow, pipe.cancel, step};
           Commit done = j.task(bay);
-          return bay.cancelled() ? Commit() : done;
+          if (bay.cancelled())
+            return {};
+          return done;
         }) {}
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }

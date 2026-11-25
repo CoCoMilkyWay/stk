@@ -273,6 +273,8 @@ std::string def_literal(const ArgVal &v) {
     return "\"" + std::string(*s) + "\"";
   if (const auto *n = std::get_if<int>(&v))
     return std::to_string(*n);
+  if (const auto *b = std::get_if<bool>(&v))
+    return *b ? "true" : "false";
   return "[]";
 }
 
@@ -366,6 +368,10 @@ bool check(const ArgDef &a, const json &v, const std::string &path, std::string 
     if (!v.is_number_integer() || v.get<int64_t>() < a.lo || v.get<int64_t>() > a.hi)
       return fail("须是 " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 的整数");
     return true;
+  case Arg::Bool:
+    return v.is_boolean() || fail("须是布尔");
+  case Arg::Obj:
+    return v.is_object() || fail("须是 JSON 对象");
   case Arg::Strs:
     if (!v.is_array() || v.size() < static_cast<size_t>(a.lo) || v.size() > static_cast<size_t>(a.hi))
       return fail("须是 " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 个字符串的数组");
@@ -417,8 +423,12 @@ std::string ArgType(const ArgDef &a) {
     return !a.choices.empty() ? "取 " + choices_text(a.choices) : "字符串";
   case Arg::Int:
     return "整数 " + std::to_string(a.lo) + ".." + std::to_string(a.hi);
+  case Arg::Bool:
+    return "布尔";
   case Arg::Strs:
     return "字符串数组, " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 个";
+  case Arg::Obj:
+    return "JSON 对象";
   case Arg::Questions:
     return "数组, " + std::to_string(a.lo) + ".." + std::to_string(a.hi) + " 题";
   }
@@ -427,36 +437,45 @@ std::string ArgType(const ArgDef &a) {
 }
 
 std::string ArgText(const ArgDef &a) {
-  return "`" + std::string(a.key) + "` (" + ArgType(a) + (a.required() ? std::string(", 必填") : ", 缺省 " + def_literal(a.def)) + "): " + ToolText(a.desc);
+  return "`" + std::string(a.key) + "` (" + ArgType(a) + (a.required() ? std::string(", 必填") : a.unset() ? std::string(", 可不给")
+                                                                                                           : ", 缺省 " + def_literal(a.def)) +
+         "): " + ToolText(a.desc);
 }
 
 json DefaultJson(const ArgDef &a) {
-  assert(!a.required());
+  assert(!a.required() && !a.unset());
   if (const auto *s = std::get_if<sv>(&a.def))
     return json(*s);
   if (const auto *n = std::get_if<int>(&a.def))
     return json(*n);
+  if (const auto *b = std::get_if<bool>(&a.def))
+    return json(*b);
   return json::array();
 }
 
 json SeedJson(const ArgDef &a) {
-  if (!a.required())
+  if (!a.required() && !a.unset())
     return DefaultJson(a);
-  if (a.type == Arg::Int)
-    return json(a.lo);
-  if (a.type == Arg::Str)
+  switch (a.type) {
+  case Arg::Str:
     return json(a.choices.empty() ? sv{} : a.choices.front());
+  case Arg::Int:
+    return json(a.lo);
+  case Arg::Bool:
+    return json(false);
+  case Arg::Obj:
+    return json::object();
+  case Arg::Strs:
+  case Arg::Questions:
+    break;
+  }
   return json::array();
 }
 
 bool IsDefault(const ArgDef &a, const json &v) {
-  if (a.required())
+  if (a.required() || a.unset())
     return false;
-  if (const auto *s = std::get_if<sv>(&a.def))
-    return v.is_string() && v.get_ref<const std::string &>() == *s;
-  if (const auto *n = std::get_if<int>(&a.def))
-    return v.is_number_integer() && v.get<int64_t>() == *n;
-  return v.is_array() && v.empty();
+  return v == DefaultJson(a);
 }
 
 std::string FieldsText(Tool t, const json &args, std::initializer_list<std::string_view> skip, std::string_view bullet) {
@@ -478,6 +497,8 @@ std::string Call::text(size_t cap) const {
   std::string s = std::string(def(tool).id) + "(";
   bool first = true;
   for (const ArgDef &a : doc(tool).args) {
+    if (!args.contains(a.key))
+      continue;
     const json &v = args.at(a.key);
     if (a.type == Arg::Questions) {
       s += (first ? "" : ", ") + std::to_string(v.size()) + " 个问题";
@@ -491,31 +512,78 @@ std::string Call::text(size_t cap) const {
   return s + ")";
 }
 
-bool CallOf(Tool t, const json &args, const std::string &path, Call &out, std::vector<std::string> &errs) {
-  const std::span<const ArgDef> spec = doc(t).args;
+bool ArgsOf(ArgDefs spec, std::string_view owner, const json &args, const std::string &path, json &out, std::vector<std::string> &errs) {
   const size_t n0 = errs.size();
   for (const auto &[k, v] : args.items())
     if (std::none_of(spec.begin(), spec.end(), [&](const ArgDef &a) { return k == a.key; })) {
       std::string keys;
       for (const ArgDef &a : spec)
         keys += (keys.empty() ? "" : " / ") + std::string(a.key);
-      errs.push_back(path + "." + k + ": " + def(t).id + " 没有这个参数 (它的参数: " + (keys.empty() ? "无" : keys) + ")");
+      errs.push_back(path + "." + k + ": " + std::string(owner) + " 没有这个参数 (它的参数: " + (keys.empty() ? "无" : keys) + ")");
     }
-  out = Call{t, json::object()};
+  out = json::object();
   for (const ArgDef &a : spec) {
     const std::string ap = path + "." + a.key;
     if (!args.contains(a.key)) {
-      if (!a.required())
-        out.args[a.key] = DefaultJson(a);
-      else
+      if (a.required())
         errs.push_back("缺参数 " + ap);
+      else if (!a.unset())
+        out[a.key] = DefaultJson(a);
     } else if (std::string why; !check(a, args[a.key], ap, why)) {
       errs.push_back(std::move(why));
     } else {
-      out.args[a.key] = args[a.key];
+      out[a.key] = args[a.key];
     }
   }
   return errs.size() == n0;
+}
+
+bool CallOf(Tool t, const json &args, const std::string &path, Call &out, std::vector<std::string> &errs) {
+  out.tool = t;
+  return ArgsOf(doc(t).args, def(t).id, args, path, out.args, errs);
+}
+
+json SchemaOf(ArgDefs spec) {
+  json props = json::object(), req = json::array();
+  for (const ArgDef &a : spec) {
+    json p = {{"description", ToolText(a.desc)}};
+    switch (a.type) {
+    case Arg::Str:
+      p["type"] = "string";
+      if (!a.choices.empty()) {
+        json e = a.empty_ok() ? json::array({""}) : json::array();
+        for (const sv c : a.choices)
+          e.push_back(c);
+        p["enum"] = std::move(e);
+      }
+      break;
+    case Arg::Int:
+      p["type"] = "integer", p["minimum"] = a.lo, p["maximum"] = a.hi;
+      break;
+    case Arg::Bool:
+      p["type"] = "boolean";
+      break;
+    case Arg::Strs:
+      p["type"] = "array", p["items"] = {{"type", "string"}}, p["minItems"] = a.lo, p["maxItems"] = a.hi;
+      break;
+    case Arg::Obj:
+      p["type"] = "object";
+      break;
+    case Arg::Questions:
+      p["type"] = "array", p["items"] = {{"type", "object"}}, p["minItems"] = a.lo, p["maxItems"] = a.hi;
+      break;
+    }
+    if (a.required())
+      req.push_back(a.key);
+    else if (!a.unset())
+      p["default"] = DefaultJson(a);
+    props[a.key] = std::move(p);
+  }
+  json s = {{"type", "object"}, {"properties", std::move(props)}};
+  if (!req.empty())
+    s["required"] = std::move(req);
+  s["additionalProperties"] = false;
+  return s;
 }
 
 CallCheck ParseCall(std::string_view reply, bool ask) {

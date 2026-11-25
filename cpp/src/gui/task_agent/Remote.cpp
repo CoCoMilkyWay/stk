@@ -3,7 +3,6 @@
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Trial.hpp"
 
 #include "disk/Disk.hpp"
 #include "nlohmann/json.hpp"
@@ -18,7 +17,6 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
-#include <limits>
 #include <mutex>
 #include <string_view>
 #include <thread>
@@ -54,41 +52,39 @@ struct Ask {
   Answer answer;
 };
 
-json schema(json props, json required) {
-  json s = {{"type", "object"}, {"properties", std::move(props)}};
-  if (!required.empty())
-    s["required"] = std::move(required);
-  s["additionalProperties"] = false;
-  return s;
-}
-json tool(const char *name, std::string desc, json input) { return {{"name", name}, {"description", std::move(desc)}, {"inputSchema", std::move(input)}}; }
+using sv = std::string_view;
+
+// 接口工具的参数表 (同研究工具的 ArgDef: 校验 ArgsOf 与 inputSchema SchemaOf 同表出); 作用域不给 = 研究员在 GUI 里选的
+constexpr ArgDef kOpenArgs[] = {
+    {"pool", "池", Arg::Str, Unset{}, 0, 0, {}, "池名 (all 或子池)"},
+    {"level", "层", Arg::Str, Unset{}, 0, 0, {}, "层: min / 5min / 15min / 30min / 60min / day"},
+    {"hold", "持有期", Arg::Str, Unset{}, 0, 0, {}, "持有期: 30m / 60m / close / T+1C (该层能用的; 只给 level 且原持有期在该层不可用 = 该层首个)"},
+    {"years", "年数", Arg::Int, Unset{}, 1, 100, {}, "评估期年数"},
+    {"lob", "lob", Arg::Bool, Unset{}, 0, 0, {}, "开放 lob 特征叶"},
+    {"remark", "本会话要求", Arg::Str, sv{""}, 0, 0, {}, "本会话要求: 用户交代的原话 (只对这一段会话; 与系统提示的做法冲突处以它为准)"},
+    {"test", "自检", Arg::Bool, false, 0, 0, {}, "自检会话: 把每个工具调一遍, 问题记 report_issue; 候选 / 日志 / 全局记录进 test 目录, 提交只查门槛"}};
+constexpr ArgDef kRunArgs[] = {
+    {"tool", "工具", Arg::Str, Unset{}, 0, 0, {}, "研究工具名 (不给 = 接上 / 续等 / 取状态); 工具名与参数见系统提示 (doc) 的研究工具表"},
+    {"args", "参数", Arg::Obj, Unset{}, 0, 0, {}, "该工具的参数"}};
+
+json tool(const char *name, std::string desc, ArgDefs args) { return {{"name", name}, {"description", std::move(desc)}, {"inputSchema", SchemaOf(args)}}; }
 
 // tools/list: 只有 open / doc / run (建一次); 研究工具只经 run 交, 工具名与参数表唯一以系统提示 (doc) 为准
 json tools_list() {
   json ts = json::array();
   ts.push_back(tool("open",
                     "开新挖掘会话, 你当大脑 (同研究员在 GUI 里按 New: 有会话在跑则退回, 停着的已存盘会话换下): "
-                    "作用域可给 pool / level / hold / years / lob (缺省 = 研究员在 GUI 里选的), remark = 用户交代的本会话要求 (原话), test = 自检会话; "
+                    "作用域可给 pool / level / hold / years / lob (不给 = 研究员在 GUI 里选的), remark = 用户交代的本会话要求 (原话), test = 自检会话; "
                     "门槛 / 提问 / 预算取研究员在 Config 页定的. 交回首条消息; 系统提示用 doc 取. 接上已有外部会话用无参 run",
-                    schema({{"pool", {{"type", "string"}, {"description", "池名 (all 或子池)"}}},
-                            {"level", {{"type", "string"}, {"description", "层: min / 5min / 15min / 30min / 60min / day"}}},
-                            {"hold", {{"type", "string"}, {"description", "持有期: 30m / 60m / close / T+1C (该层能用的)"}}},
-                            {"years", {{"type", "integer"}, {"minimum", 1}, {"description", "评估期年数"}}},
-                            {"lob", {{"type", "boolean"}, {"description", "开放 lob 特征叶"}}},
-                            {"remark", {{"type", "string"}, {"description", "本会话要求: 用户交代的原话 (只对这一段会话; 与系统提示的做法冲突处以它为准)"}}},
-                            {"test", {{"type", "boolean"}, {"default", false}, {"description", "自检会话: 把每个工具调一遍, 问题记 report_issue; 候选 / 日志 / 全局记录进 test 目录, 提交只查门槛"}}}},
-                           json::array())));
-  ts.push_back(tool("doc", "本会话的系统提示: 角色与做法 / 评估口径 / 判优 / 研究循环 / 调用协议 / 研究工具表 (参数逐个) / 开放的特征叶 (按族) 与算子. open 后先读",
-                    schema(json::object(), json::array())));
+                    kOpenArgs));
+  ts.push_back(tool("doc", "本会话的系统提示: 角色与做法 / 评估口径 / 判优 / 研究循环 / 调用协议 / 研究工具表 (参数逐个) / 开放的特征叶 (按族) 与算子. open 后先读", {}));
   ts.push_back(tool("run",
                     "给 tool (+ args) = 交一个研究工具调用; 都不给 (空参数 {}) = 接上已有外部会话 / 续等执行中的调用 / 取当前状态. "
                     "后台执行中至多等 " +
                         std::to_string(kRemoteWait) +
                         " 秒 (未完交回进度, 再调无参 run 续等); 做完即交回下一条消息 (常规为本条增量: 它的结果 + 下一步; 接上有历史的会话或研究员回退后自动给完整上下文); "
                         "遇到 ask_human 或会话停下即刻交回状态 (finish 的结果随结束提示交回). 不合协议的调用不执行, 交回的下一条即重交要求 (记一步)",
-                    schema({{"tool", {{"type", "string"}, {"description", "研究工具名 (不给 = 接上 / 续等 / 取状态); 工具名与参数见系统提示 (doc) 的研究工具表"}}},
-                            {"args", {{"type", "object"}, {"description", "该工具的参数"}}}},
-                           json::array())));
+                    kRunArgs));
   return {{"tools", std::move(ts)}};
 }
 
@@ -258,14 +254,9 @@ std::string names_of(const std::vector<Choice> &cs) {
 std::string progress(const Mine &m) {
   const Act *a = m.acting();
   assert(a);
-  std::string at = CallTitle(*a, m.step());
   LabLive ll;
   m.lab.live(ll);
-  if (const TrialRes *r = AsTrial(*a))
-    at += std::string(r->run.began() ? " (阶段 Run" : " (阶段 Search") + text::fmt(", 进度 %.0f%%)", ll.frac * 100.0);
-  else
-    at += ll.frac > 0.0 ? text::fmt(" (进度 %.0f%%)", ll.frac * 100.0) : std::string(" (执行中)");
-  return "还在跑: " + at + ". 做完即交回结果; 调无参 run 续等";
+  return "还在跑: " + CallTitle(*a, m.step()) + " (" + StageOf(*a, ll.frac) + "). 做完即交回结果; 调无参 run 续等";
 }
 
 Reply choosing(const Mine &m) {
@@ -286,7 +277,7 @@ struct Remote::Impl {
 
   // 停着的交回: 停下原因; finish 结束时附 finish 那一步的结果 (末步是待发的下一条, finish 在它前一步)
   Reply halted(const Mine &m) {
-    if (!m.st.done)
+    if (!Finished(m.timeline))
       return {false, "会话停下: " + m.reason + ". 等研究员在 GUI 处理 (继续 / 回退 / 关闭) 后再调无参 run 接着做."};
     const int n = m.step() - 1;
     assert(n >= 1 && m.timeline[static_cast<size_t>(n) - 1].act);
@@ -344,10 +335,9 @@ struct Remote::Impl {
     answer(state(m));
   }
 
-  // 同 GUI 的 New 开新外部会话: 有会话在跑则退回, 停着的 (已存盘) 换下
-  void open(SharedData &data, Mine &m, const Mine::Setup &base, const Mine::Leg &leg, bool bench, Ask a) {
-    const auto fail = [&](std::string why) { a.answer({true, std::move(why)}); };
-    const json &x = a.args;
+  // 同 GUI 的 New 开新外部会话: 有会话在跑则退回, 停着的 (已存盘) 换下; x = 按 kOpenArgs 校验过的参数
+  void open(SharedData &data, Mine &m, const Mine::Setup &base, const Mine::Leg &leg, bool bench, const json &x, const Answer &answer) {
+    const auto fail = [&](std::string why) { answer({true, std::move(why)}); };
     if (m.live())
       return fail("有会话在跑 (" + catalog::label(m.setup.sc) + " · 大脑 " + m.brain() + "): " +
                   (m.remote() ? "这是外部会话, 调无参 run 接上; 要另开先 finish 或请研究员停下" : "研究员在用, 等他停下再 open"));
@@ -358,15 +348,11 @@ struct Remote::Impl {
     Mine::Setup s = base;
     s.remote = true;
     std::string why;
-    constexpr std::string_view keys[] = {"pool", "level", "hold", "years", "lob", "remark", "test"};
-    for (const auto &[k, v] : x.items())
-      if (!std::ranges::contains(keys, std::string_view(k)))
-        why += (why.empty() ? "" : "; ") + ("没有参数 " + k);
-    // 名 → 选项 (缺 = 照研究员选的)
+    // 名 → 选项 (不给 = 照研究员选的)
     const auto pick = [&](const char *key, const std::vector<Choice> &cs) -> const Choice * {
       if (!x.contains(key))
         return nullptr;
-      const auto it = !x[key].is_string() ? cs.end() : std::find_if(cs.begin(), cs.end(), [&](const Choice &c) { return c.name == x[key].get_ref<const std::string &>(); });
+      const auto it = std::find_if(cs.begin(), cs.end(), [&](const Choice &c) { return c.name == x[key].get_ref<const std::string &>(); });
       if (it == cs.end())
         why += (why.empty() ? "" : "; ") + (std::string(key) + " 须是这些之一: " + names_of(cs));
       return it == cs.end() ? nullptr : &*it;
@@ -381,54 +367,39 @@ struct Remote::Impl {
       s.sc.hold = h->key;
     else if (lv && !hs.empty() && std::none_of(hs.begin(), hs.end(), [&](const Choice &c) { return c.key == s.sc.hold; }))
       s.sc.hold = hs.front().key;
-    if (x.contains("years")) {
-      const int64_t y = x["years"].is_number_integer() ? x["years"].get<int64_t>() : 0;
-      if (y < 1 || y > std::numeric_limits<int>::max())
-        why += (why.empty() ? "" : "; ") + std::string("years 须是 ≥ 1 的整数");
-      else
-        s.sc.years = static_cast<int>(y);
-    }
-    const std::pair<const char *, bool *> flags[] = {{"lob", &s.sc.lob}, {"test", &s.test}};
-    for (const auto &[key, to] : flags)
-      if (x.contains(key)) {
-        if (!x[key].is_boolean())
-          why += (why.empty() ? "" : "; ") + (std::string(key) + " 须是布尔");
-        else
-          *to = x[key].get<bool>();
-      }
-    if (x.contains("remark")) {
-      if (!x["remark"].is_string())
-        why += (why.empty() ? "" : "; ") + std::string("remark 须是字符串");
-      else
-        s.remark = std::string(text::trim(x["remark"].get_ref<const std::string &>()));
-    }
     if (!why.empty())
       return fail("没开成, 参数不合: " + why);
+    if (x.contains("years"))
+      s.sc.years = x["years"].get<int>();
+    if (x.contains("lob"))
+      s.sc.lob = x["lob"].get<bool>();
+    s.test = x["test"].get<bool>();
+    s.remark = std::string(text::trim(x["remark"].get_ref<const std::string &>()));
     Mine::Leg l = leg;
     l.llm = {};
     if (std::string err = m.try_open(data, std::move(s), std::move(l)); !err.empty())
       return fail(std::move(err));
-    a.answer({false, m.deliver()});
+    answer({false, m.deliver()});
   }
 
   void handle(SharedData &data, Mine &m, const Mine::Setup &base, const Mine::Leg &leg, bool bench, Ask a) {
     const auto fail = [&](std::string why) { a.answer({true, std::move(why)}); };
-    const json &x = a.args;
+    constexpr std::pair<sv, ArgDefs> kApi[] = {{"open", kOpenArgs}, {"doc", {}}, {"run", kRunArgs}};
+    const auto spec = std::ranges::find(kApi, sv(a.tool), &std::pair<sv, ArgDefs>::first);
+    if (spec == std::end(kApi))
+      return fail("没有工具 " + a.tool + " (只有 open / doc / run; 研究工具经 run 的 tool / args 交)");
+    json x;
+    if (std::vector<std::string> errs; !ArgsOf(spec->second, a.tool, a.args, a.tool, x, errs))
+      return fail(a.tool + " 的参数不合: " + text::join(errs, "; "));
     if (a.tool == "open")
-      return open(data, m, base, leg, bench, std::move(a));
+      return open(data, m, base, leg, bench, x, a.answer);
     if (!m.remote())
       return fail(m.held() ? "研究员在 GUI 里有内置会话 (大脑 " + m.brain() + "): 停着时可 open 开新会话, 在跑时等他停下" : std::string("还没有外部会话: 先 open"));
     if (a.tool == "doc")
-      return x.empty() ? a.answer({false, *m.system}) : fail("doc 不收参数");
-    if (a.tool == "run") {
-      for (const auto &[k, v] : x.items())
-        if (k != "tool" && k != "args")
-          return fail("run 没有参数 " + k + " (只有可选的 tool / args)");
-      if (!x.contains("tool"))
-        return x.contains("args") ? fail("args 须随 tool 一起给") : poll(m, std::move(a.answer));
-      return submit(m, x, std::move(a.answer));
-    }
-    fail("没有工具 " + a.tool + " (只有 open / doc / run; 研究工具经 run 的 tool / args 交)");
+      return a.answer({false, *m.system});
+    if (!x.contains("tool"))
+      return x.contains("args") ? fail("args 须随 tool 一起给") : poll(m, std::move(a.answer));
+    submit(m, x, std::move(a.answer));
   }
 };
 

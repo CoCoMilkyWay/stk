@@ -39,6 +39,7 @@ std::string GateLine(const Result &r, const Gate &g);                // 有权�
 std::string ListTail(int all, int skip, int n);                      // 分页列表末尾: 共几个 / 这是第几到第几 / 接着看的 skip
 
 std::string CallTitle(const Act &a, int step);
+std::string StageOf(const Act &a, double frac); // 在跑的调用此刻在做什么: eval_factor 写阶段 (Search / Run), 后台的带进度
 std::string ResultText(const Act &a, int step); // 一个调用的结果原文 (标题 = 调用编号 + 调用; result 消息的结果节)
 std::string BriefOf(const Act &a, int step);    // 折叠后留的结论 (回测留模板与结局, 观察留关键数, 记录 / 问答留原文, 查询只留调用一行)
 std::string AnswerText(const Asked &a);

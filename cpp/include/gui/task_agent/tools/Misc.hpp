@@ -4,7 +4,7 @@
 // 其他 (finish / ask_human) 的结果: 计算与原文在 tools/misc/<工具>.cpp, 展示在 ui/misc/<工具>.cpp
 // =============================================================================
 //   finish     当场 (SyncFn): 宣布挖完 (本条做完即结束会话)
-//   ask_human  等人 (HumanFn): 研究员逐题点选 + 附言, 交答案时成文
+//   ask_human  等人 (HumanFn): 建问卷 (已按推荐预选) → 研究员逐题点选 + 附言, 交答案时成文
 // =============================================================================
 
 #include "gui/task_agent/tools/Kit.hpp"
@@ -24,6 +24,7 @@ struct AskRes final : Res {
   explicit AskRes(Asked a) : asked(std::move(a)) {}
   explicit AskRes(Questions q) : asked(std::move(q)) {}
   std::string text() const override;
+  std::string title() const override; // 几个问题
   void draw() const override;
 };
 
@@ -31,7 +32,7 @@ inline AskRes *AsAsk(Act &a) { return a.call.tool == Tool::AskHuman ? static_cas
 inline const AskRes *AsAsk(const Act &a) { return a.call.tool == Tool::AskHuman ? static_cast<const AskRes *>(a.out.res.get()) : nullptr; }
 
 ToolOut Finish(const Call &c, Seat &s);
-ToolOut AskHuman(std::shared_ptr<AskRes> r);
+ResPtr AskHuman(const Call &c);
 
 nlohmann::ordered_json SampleFinish(Feed &p);
 nlohmann::ordered_json SampleAskHuman(Feed &p);

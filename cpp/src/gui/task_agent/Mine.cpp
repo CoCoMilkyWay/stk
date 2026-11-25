@@ -276,6 +276,7 @@ void Mine::bind(const SharedData &data) {
   flush();
   lab.bind(data, setup.sc, setup.test);
   notes.load(setup.test);
+  told_ = -1;
 }
 
 void Mine::depart() { from_ = {sent(), now()}; }
@@ -308,9 +309,7 @@ std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
   key.stamp = disk::stamp_now();
   log.open(disk::path(disk::AgentChat, key).string(), *system, make_log_head());
   timeline.clear();
-  restate();
   memo.clear(), reason.clear(), report.clear();
-  ++rev_;
   t0 = Clock::now(), t_end = -1.0;
   held_ = true;
   depart();
@@ -351,8 +350,6 @@ void Mine::load(const SharedData &data, const std::string &dir) {
       return redo(step(), reason);
     mark("---\n\n**停下**: " + reason + "\n\n");
   }
-  ++rev_;
-  restate();
   report = report_of(reason);
   log.report(report);
   save();
@@ -375,7 +372,7 @@ void Mine::resume(const SharedData &data, Leg l) {
 
 void Mine::answer() {
   assert(phase() == Phase::Choose);
-  answer_act(act(), now());
+  answer_act(now());
   advance();
 }
 
@@ -386,7 +383,7 @@ void Mine::cancel() {
   if (!sp.span.ended())
     drop("按 Cancel 作废了在收的回复");
   else if (sp.act && sp.act->span.running())
-    abort_act(act(), now());
+    abort_act(now());
   pause("按 Cancel");
 }
 
@@ -423,7 +420,7 @@ void Mine::save() const {
                       {"test", setup.test},
                       {"steps", sent()},
                       {"reason", reason},
-                      {"adopted", st.adopted},
+                      {"adopted", AdoptedOf(timeline)},
                       {"cands", c.staged()},
                       {"weights", c.n(Verdict::Weights)},
                       {"brain", brain()},
@@ -451,8 +448,7 @@ void Mine::redo(int k, std::string why) {
     memo = sp.memo + (memo.empty() ? "" : "\n\n" + memo), sp.memo.clear();
   unsend();
   sp.marks.clear();
-  restate();
-  ++rev_;
+  told_ = -1;
   reason = std::move(why);
   report = report_of(reason);
   mark("---\n\n**停下**: " + reason + "\n\n");
@@ -466,13 +462,7 @@ void Mine::unsend() {
   sp = Step{.kind = sp.kind, .user = std::move(sp.user), .memo = std::move(sp.memo), .marks = std::move(sp.marks)};
 }
 
-std::vector<std::string> Mine::staged_from(int k) const {
-  std::vector<std::string> out;
-  for (size_t i = static_cast<size_t>(k) - 1; i < timeline.size(); ++i)
-    if (const TrialRes *t = timeline[i].act ? AsTrial(*timeline[i].act) : nullptr; t && t->st.ok())
-      out.push_back(t->st.file);
-  return out;
-}
+std::set<std::string> Mine::staged_from(int k) const { return StagedOf(Steps(timeline).subspan(static_cast<size_t>(k) - 1)); }
 
 void Mine::discard(int k) {
   for (const std::string &f : staged_from(k))
@@ -490,12 +480,7 @@ Mine::Phase Mine::phase() const {
                                                       : Phase::Act;
 }
 
-const Act *Mine::acting() const {
-  const Step *sp = timeline.empty() ? nullptr : &timeline.back();
-  return sp && sp->act && !sp->act->span.ended() ? &*sp->act : nullptr;
-}
-
-std::string Mine::hint() const { return phase() != Phase::Pause ? std::string() : hint_of(timeline, st.done); }
+std::string Mine::hint() const { return phase() != Phase::Pause ? std::string() : hint_of(timeline, Finished(timeline)); }
 
 // =============================================================================
 // 主循环与双翼轮询
@@ -503,9 +488,8 @@ std::string Mine::hint() const { return phase() != Phase::Pause ? std::string() 
 void Mine::update() {
   while (std::optional<Chat::Tick> t = chat.poll())
     on_chat(std::move(*t));
-  while (std::optional<Lab::Tick> t = lab.poll())
-    on_lab(std::move(*t));
-  flush();
+  while (pump_act(now()))
+    advance();
 }
 
 void Mine::on_chat(Chat::Tick t) {
@@ -530,18 +514,6 @@ void Mine::on_chat(Chat::Tick t) {
   }
 }
 
-void Mine::on_lab(Lab::Tick t) {
-  if (phase() != Phase::Act)
-    return;
-  if (t.step != LabStep::End)
-    return step_act(act(), t.step, now());
-  if (t.out.cancelled)
-    return;
-  Seat s = seat_of();
-  settle_act(act(), std::move(t.out.out), s, now());
-  advance();
-}
-
 // 主循环: 推进到要等的地方 (大脑回复 / 后台调用 / 研究员答) 或停下
 void Mine::advance() {
   for (;;) {
@@ -554,12 +526,12 @@ void Mine::advance() {
       if (sp.act->span.running())
         return;
       Seat s = seat_of();
-      if (open_act(act(), s, now()) != Exec::Sync)
+      if (!open_act(s, now()))
         return save();
       continue;
     }
     post(sp.act ? ResultMessage(*sp.act, step(), setup.test) : RetryMessage(sp.error));
-    if (st.done)
+    if (Finished(timeline))
       return pause("agent 宣布挖完");
     if (invalid_run(timeline) >= kMaxRetries)
       return pause("连续 " + std::to_string(kMaxRetries) + " 条回复不合协议");
@@ -583,7 +555,6 @@ void Mine::got(llm::Reply r) {
     sp.act = Act{.call = std::move(c.call)};
   else
     sp.error = std::move(c.error);
-  CloseReply(st, sp);
   advance();
 }
 
@@ -598,18 +569,18 @@ void Mine::reply(std::string call) {
   got({.text = std::move(call), .end = llm::End::Ok, .seconds = timeline.back().span.len(now())});
 }
 
-// 交给大脑的上下文: 它已连着收到上一步 (或本步, 外部 agent 重取) → 不新开 (有状态的大脑只取末条); 否则新开整份. 记下它已收到本步
-llm::Turns Mine::told(bool &fresh) {
-  fresh = !(told_.rev == rev_ && (told_.step == step() - 1 || told_.step == step()));
-  told_ = {rev_, step()};
-  return TurnsOf(timeline);
+// 大脑这回是否新开一段: 它已连着收到上一步 (或本步, 外部 agent 重取) → 不新开 (有状态的大脑只取末条); 否则新开整份. 记下它已收到本步
+bool Mine::fresh() {
+  const bool f = told_ != step() - 1 && told_ != step();
+  told_ = step();
+  return f;
 }
 
 std::string Mine::deliver() {
   assert(remote() && phase() == Phase::Think);
-  bool fresh = true;
-  const llm::Turns t = told(fresh);
-  return fresh ? llm::Flat(t) : t.back().text;
+  const bool f = fresh();
+  const llm::Turns t = TurnsOf(timeline);
+  return f ? llm::Flat(t) : t.back().text;
 }
 
 void Mine::post(Message m) { timeline.push_back({.kind = m.kind, .user = std::move(m.text)}); }
@@ -622,11 +593,9 @@ void Mine::send() {
     memo.clear();
   }
   sp.span.begin(now());
-  OpenStep(st);
   if (!setup.remote) {
-    bool fresh = true;
-    llm::Turns t = told(fresh);
-    chat.send({leg.llm, system, std::move(t), fresh});
+    const bool f = fresh();
+    chat.send({leg.llm, system, TurnsOf(timeline), f});
   }
   save();
 }
@@ -641,8 +610,7 @@ void Mine::drop(std::string why, llm::Reply r) {
   sp.error = std::move(why);
   mark(fmt_step_reply(step(), sp));
   unsend();
-  restate();
-  told_ = {};
+  told_ = -1;
 }
 
 void Mine::mark(std::string md) {

@@ -3,7 +3,7 @@
 // =============================================================================
 // 回测 (eval_factor / submit_factor) 的结果: 计算与原文在 tools/trial/<工具>.cpp, 展示在 ui/trial/<工具>.cpp
 // =============================================================================
-//   eval_factor   后台三拍对仗 (StagedLab): OpenEvalFactor 核验落盘 (GUI) → LabTask 跑 Search + Run (Lab) → CloseEvalFactor 入表封存 (GUI)
+//   eval_factor   后台 (LabFn): 核验落盘 (GUI) → Search + Run (Lab) → 入表封存 (GUI 收尾 Commit)
 //   submit_factor 当场 (SyncFn): 查门槛并拷进正式库 (自检会话 / 工作台只查门槛)
 // =============================================================================
 
@@ -30,7 +30,8 @@ struct TrialRes final : Res {
   mutable std::shared_ptr<Layer::LayerDerived> lay; // 展示: st.res.daily 派生的分层线 (首画时建)
   const Weight *shown() const;                      // 可展示统计的最佳权重 (有权重且在当前评估期上; 否则空)
   std::string text() const override;
-  std::string gist() const override; // 折叠后的一行: 名 + 模板 + 思路 + 结局 (落了文件才有)
+  std::string gist() const override;  // 折叠后的一行: 名 + 模板 + 思路 + 结局 (落了文件才有)
+  std::string title() const override; // 英文名 + 中文名
   void draw() const override;
 };
 
@@ -53,10 +54,7 @@ struct SubmitRes final : Res {
   void draw() const override;
 };
 
-std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s);
-void CloseEvalFactor(Act &a, ToolOut out, Seat &s);
-inline constexpr StagedLab EvalFactor{OpenEvalFactor, CloseEvalFactor};
-
+LabTask EvalFactor(Act &a, Seat &s);
 ToolOut SubmitFactor(const Call &c, Seat &s);
 
 nlohmann::ordered_json SampleEvalFactor(Feed &p);
