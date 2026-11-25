@@ -481,7 +481,7 @@ void plot_costs(const LinesDerived &d, const LinesSlice &s, const Quote::Costs &
 //      日内形未到的行 (minute_wait) 整行不画、不进图例, 到了一次画成分钟线;
 //      行刚选中 → ui.reveal 强制回默认显隐一次 (理想列显, 可成交列隐);
 //      悬停联动 (ui.hover): 显示的线里鼠标处最近的一条 → 其行 (+ 行的悬停提示; 鼠标在图例矩阵上不算), hot 行显示的线白粗线画在最上;
-//      账户线上叠成交点 (trades: 30 分钟一档; 空 = 不叠), 鼠标近一点 → 提示该档成交 (代替账户线悬停); 账户线下压持仓成本 (costs; 空 = 不叠, 显示的那条线上);
+//      账户线上叠成交点 (trades: 30 分钟一档, 红 / 绿小圆点; 空 = 不叠), 鼠标近一点 → 提示该档成交 (代替账户线悬停); 账户线下压持仓成本 (costs; 空 = 不叠, 显示的那条线上);
 //      账户线悬停 (只显账户线时全图带十字线吸附, 多线时近线触发) 显示前复权净资产与区间复权 / 真正回撤 ----
 void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFrame &pf, const Quote::Trades *trades, const Quote::Costs *costs) {
   static ImRect s_box;      // 上帧图例矩阵 (悬停找线避开)
@@ -552,7 +552,7 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
   bool on_dot = false;
   if (const auto a = std::ranges::find_if(on, [](const On &x) { return x.row->ref.is(Quote::kAccount); }); trades && a != on.end()) {
     const std::vector<TradeDot> dots = nav_dots(d, *a->s, *trades);
-    if (const TradeDot *dot = PlotTradeDots(dots); dot && !in_box) {
+    if (const TradeDot *dot = PlotTradeDots(dots, true); dot && !in_box) {
       on_dot = true;
       ImGui::BeginTooltip();
       TradeTip(*dot->m);

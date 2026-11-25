@@ -74,13 +74,14 @@ struct OverlayState {
   std::shared_ptr<OverlayCache> cache[kOverlays];
 };
 
-// 线上的一个成交点 (日内栏 / NAV 主图的账户线同一画法): 线上的位置 + 所在的档 (调用方保活)
+// 线上的一个成交点 (日内栏 / NAV 主图的账户线同一核): 线上的位置 + 所在的档 (调用方保活)
 struct TradeDot {
   double x = 0, y = 0;
   const TradeMark *m = nullptr;
 };
-// 当前图里画成交点: 小三角, 净买红 ▲ / 净卖绿 ▼, 大小随买卖总额 (0 → dots 里最大, 按平方根); 返回鼠标近的一点 (图悬停且 kNearPx 内; 无 = nullptr)
-const TradeDot *PlotTradeDots(std::span<const TradeDot> dots);
+// 当前图里画成交点: 日内栏 = 小三角, 净买红 ▲ / 净卖绿 ▼, 大小随买卖总额 (0 → dots 里最大, 按平方根);
+//   tiny (NAV 主图, 点密) = 定大的小圆点, 净买红 / 净卖绿; 返回鼠标近的一点 (图悬停且 kNearPx 内; 无 = nullptr)
+const TradeDot *PlotTradeDots(std::span<const TradeDot> dots, bool tiny);
 // 悬停提示里一档成交: 日 时段 · 买 / 卖合计, 再逐只
 void TradeTip(const TradeMark &m);
 

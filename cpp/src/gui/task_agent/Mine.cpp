@@ -488,7 +488,8 @@ Mine::Phase Mine::phase() const {
   if (paused_)
     return Phase::Pause;
   const Round &rd = timeline.back();
-  return !rd.span.ended() ? Phase::Think : asking(rd) ? Phase::Choose : Phase::Act;
+  return !rd.span.ended() ? Phase::Think : asking(rd) ? Phase::Choose
+                                                      : Phase::Act;
 }
 
 size_t Mine::acting() const { return timeline.empty() ? 0 : acting_of(timeline.back()); }

@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cassert>
 #include <sstream>
-#include <string_view>
 #include <utility>
 
 namespace GUI::Agent {

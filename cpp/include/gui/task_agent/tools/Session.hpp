@@ -9,7 +9,6 @@
 //   probe_brain    后台三拍 (StagedLab): 拿快照上下文直接调 llm::send 单轮试跑并自动过 VetBatch
 // =============================================================================
 
-#include "gui/task_agent/Mine.hpp"
 #include "gui/task_agent/tools/Kit.hpp"
 
 #include <optional>

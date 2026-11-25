@@ -6,6 +6,7 @@
 
 #include "api/sina/client.hpp"
 #include "live/Book.hpp"
+#include "live/Broker.hpp"
 
 #include <chrono>
 #include <memory>

@@ -439,8 +439,6 @@ set(MATH_PRECISE
     gui/task_agent/TaskAgent.cpp
     gui/task_agent/Tools.cpp
     gui/task_agent/tools/Kit.cpp
-    gui/task_agent/tools/hyp/Hypothesize.cpp
-    gui/task_agent/tools/hyp/Judge.cpp
     gui/task_agent/tools/look/ViewBook.cpp
     gui/task_agent/tools/look/ViewExplain.cpp
     gui/task_agent/tools/look/ViewFeature.cpp
@@ -467,13 +465,10 @@ set(MATH_PRECISE
     gui/task_agent/tools/session/BuildContext.cpp
     gui/task_agent/tools/session/CheckBatch.cpp
     gui/task_agent/tools/session/ProbeBrain.cpp
-    gui/task_agent/tools/session/StepState.cpp
     gui/task_agent/tools/trial/EvalFactor.cpp
     gui/task_agent/tools/trial/SubmitFactor.cpp
     gui/task_agent/ui/Bench.cpp
     gui/task_agent/ui/Widgets.cpp
-    gui/task_agent/ui/hyp/Hypothesize.cpp
-    gui/task_agent/ui/hyp/Judge.cpp
     gui/task_agent/ui/look/ViewBook.cpp
     gui/task_agent/ui/look/ViewExplain.cpp
     gui/task_agent/ui/look/ViewFeature.cpp
@@ -500,7 +495,6 @@ set(MATH_PRECISE
     gui/task_agent/ui/session/BuildContext.cpp
     gui/task_agent/ui/session/CheckBatch.cpp
     gui/task_agent/ui/session/ProbeBrain.cpp
-    gui/task_agent/ui/session/StepState.cpp
     gui/task_agent/ui/trial/EvalFactor.cpp
     gui/task_agent/ui/trial/SubmitFactor.cpp
     # factor: 因子契约头的消费者 = GPU 后端与 op_check 本体

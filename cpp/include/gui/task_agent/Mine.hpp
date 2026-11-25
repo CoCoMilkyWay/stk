@@ -114,11 +114,11 @@ public:
   bool live() const { return held_ && !paused_; }
   bool held() const { return held_; }
   bool idle() const { return !chat.busy() && !lab.busy(); }
-  bool remote() const { return held() && setup.remote; }                             // 会话由外部 agent 驱动
-  bool waiting() const { return live() && timeline.back().span.running(); }          // 本条已发出, 在等大脑交这一批
-  std::string brain() const;                                                         // 大脑一句: 后端 / 模型, 或外部 agent
-  size_t acting() const;                                                             // 末轮执行到的调用 (首个没做完的; = acts.size() 即都做完)
-  int rev() const { return rev_; }                                                   // 时间线代号 (开 / 载入 / 回退递增; 外部 agent 据此判是否需补研究树)
+  bool remote() const { return held() && setup.remote; }                    // 会话由外部 agent 驱动
+  bool waiting() const { return live() && timeline.back().span.running(); } // 本条已发出, 在等大脑交这一批
+  std::string brain() const;                                                // 大脑一句: 后端 / 模型, 或外部 agent
+  size_t acting() const;                                                    // 末轮执行到的调用 (首个没做完的; = acts.size() 即都做完)
+  int rev() const { return rev_; }                                          // 时间线代号 (开 / 载入 / 回退递增; 外部 agent 据此判是否需补研究树)
   std::string hint() const;
 
 private:

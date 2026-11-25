@@ -234,7 +234,7 @@ bool terms_miss(Core &c, const live::Snapshot &s) {
     codes.push_back(x->code);
   return live::terms::missing(in->terms.raw->terms, *in->terms.local, codes);
 }
-bool flows_miss(Core &, const live::Snapshot &) { return false; }
+bool flows_miss(Core &, const live::Snapshot &) { return live::flows::partial(); }
 
 misc::Ymd terms_run(Core &c) {
   auto x = std::make_shared<const live::terms::Cache>(live::terms::pull(*c.broker));
@@ -261,7 +261,7 @@ constexpr PullDef kPullDefs[] = {
     {{"更新资金流水", 1,
       "客户端重查账本末日起的资金流水与历史成交 (慢, 一窗 30 天), 并入账本; 历史成交逐日逐只对上流水的买卖, 再刷新一轮核对 (流水累计的持仓 + 今日成交 = 券商持仓)\n"
       "才落 output/live/flows.csv · deals.csv; 账户净值 (Market 自选首行「账户」) 随账本重放, 历史成交另给日内回推与成交点",
-      "", "资金流水账本拉于哪天 (账本截至其前一日)"},
+      "账本缺历史成交 (deals.csv 还没落过)", "资金流水账本拉于哪天 (账本截至其前一日)"},
      flows_miss,
      flows_run},
 };

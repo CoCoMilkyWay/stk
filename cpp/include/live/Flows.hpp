@@ -27,6 +27,7 @@ struct Cache {
 
 Cache load();          // 没有账本 → 空
 Cache pull(Broker &b); // 客户端重查 → 并 → 核 → 存; 失败 → Fail
+bool partial();        // 有资金流水而缺历史成交 (deals.csv 还没落过): 该补拉 (pull 即自流水首日起拉全)
 uint64_t generation(); // 账本代: 本进程起于 1, 存一次 +1 (任意线程)
 
 // 计入持仓的行: 买卖 / 融资买入 / 担保品划入 / 新股入账 (申购途中的配号、中签与回冲不计; 其余带股数的业务不认识 → Fail)

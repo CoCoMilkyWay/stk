@@ -192,6 +192,8 @@ Cache pull(Broker &b) {
   return c;
 }
 
+bool partial() { return disk::exists(disk::LiveFlowsFile) && !disk::exists(disk::LiveDealsFile); }
+
 uint64_t generation() { return gen.load(std::memory_order_acquire); }
 
 } // namespace live::flows

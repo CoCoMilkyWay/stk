@@ -908,8 +908,8 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
     std::vector<TradeDot> dots;
     for (const Overlay &l : ls)
       dots.insert(dots.end(), l.dots.begin(), l.dots.end());
-    const TradeDot *dot = PlotTradeDots(dots); // 鼠标近的成交点
-    {                                          // 内标小字 (压在线上方): 横网格涨跌幅贴右内壁; 现价十字; 线名贴线尾, 右缘不过刻度字列
+    const TradeDot *dot = PlotTradeDots(dots, false); // 鼠标近的成交点
+    {                                                 // 内标小字 (压在线上方): 横网格涨跌幅贴右内壁; 现价十字; 线名贴线尾, 右缘不过刻度字列
       ImDrawList *dl = ImPlot::GetPlotDrawList();
       ImFont *font = ImGui::GetFont();
       const ImVec2 pos = ImPlot::GetPlotPos(), psz = ImPlot::GetPlotSize();
@@ -1344,7 +1344,8 @@ int RenderOverlay(OverlayKind kind, QuoteHub &mk, OverlayState &st, const std::v
   return near;
 }
 
-const TradeDot *PlotTradeDots(std::span<const TradeDot> dots) {
+constexpr float kDotTiny = 1.8f; // 主图成交点的圆点半径 [px]
+const TradeDot *PlotTradeDots(std::span<const TradeDot> dots, bool tiny) {
   double top = 0;
   for (const TradeDot &d : dots)
     top = std::max(top, d.m->amount[live::kBuy] + d.m->amount[live::kSell]);
@@ -1357,11 +1358,15 @@ const TradeDot *PlotTradeDots(std::span<const TradeDot> dots) {
   for (const TradeDot &d : dots) {
     const ImVec2 c = ImPlot::PlotToPixels(d.x, d.y);
     const live::Sides<double> &a = d.m->amount;
+    const bool buy = a[live::kBuy] >= a[live::kSell];
+    const ImU32 col = ImGui::ColorConvertFloat4ToU32(buy ? kUp : kDn);
     const float r = kDotMin + (top > 0 ? (kDotMax - kDotMin) * static_cast<float>(std::sqrt((a[live::kBuy] + a[live::kSell]) / top)) : 0.f), h = r * 0.8f;
-    if (a[live::kBuy] >= a[live::kSell])
-      dl->AddTriangleFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y + h), ImVec2(c.x - r, c.y + h), ImGui::ColorConvertFloat4ToU32(kUp));
+    if (tiny)
+      dl->AddCircleFilled(c, kDotTiny, col);
+    else if (buy)
+      dl->AddTriangleFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y + h), ImVec2(c.x - r, c.y + h), col);
     else
-      dl->AddTriangleFilled(ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y - h), ImVec2(c.x + r, c.y - h), ImGui::ColorConvertFloat4ToU32(kDn));
+      dl->AddTriangleFilled(ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y - h), ImVec2(c.x + r, c.y - h), col);
     if (const float dd = std::hypot(mp.x - c.x, mp.y - c.y); hov && dd < best)
       best = dd, near = &d;
   }
@@ -1387,7 +1392,7 @@ std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const O
   return day_axis(mk.calendar().days, mk.live ? mk.live->date : 0, kIntraDays[st.span[kind]]);
 }
 
-constexpr float kCostCol = 2.f, kCostA = 0.28f; // 持仓成本色带: 像素列宽 / 透明度
+constexpr float kCostCol = 2.f, kCostA = 0.12f; // 持仓成本色带: 像素列宽 / 透明度
 void PlotCosts(std::span<const CostLevel> cs, double total, size_t n, const std::function<double(size_t)> &x, const std::function<double(size_t)> &y) {
   if (cs.empty() || n == 0 || !(total > 0))
     return;

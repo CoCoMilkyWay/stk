@@ -28,7 +28,7 @@ MODE = "assert"
 
 BUILD = True
 FORMAT = True
-LINT = False
+LINT = True
 
 # 因子 GPU 后端 (factor/*/Gpu.cuh, nvcc): 与上面的模式正交. ON 需要完整 CUDA Toolkit (nvcc + CCCL),
 # op_check 与 app_main (Alpha→Operators 页 GPU 列) 一并链 cudart; OFF 链 stub, GPU 列显示 n/a.
