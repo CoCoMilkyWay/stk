@@ -109,7 +109,7 @@ void cum_plot(const Daily &d, size_t n_pts) {
 
 // 写进的权重的分层图 (与 Inspect 左上同一份, 恒全段): 分层对数累计 / 光标日截面
 void layers_view(const TrialRes &k) {
-  const Daily &d = k.st.res.daily;
+  const Daily &d = *k.st.res.daily;
   assert(d.lay.size() == size_t{Layer::kLayerLines} && d.ls.size() == size_t{Layer::kLsLines} && d.turn.size() == size_t{Layer::kLsLines});
   if (!k.lay) {
     const float *lay[Layer::kLayerLines], *ls[Layer::kLsLines];
@@ -177,14 +177,13 @@ int sweep_table(const Sweep &sw, int plot_hot, float h) {
 // 左 = 窗中位 rIC / 累计 rIC / 分层 三图上下叠, 右 = 参数点表 (与左栏等高); 无自由参数只画左栏两图
 void charts_view(const TrialRes &k) {
   const Result &r = k.st.res;
-  const Sweep &sw = r.sweep;
-  const bool sweep = !sw.slots.empty() && sw.pts.size() >= 2 && !sw.dates.empty(), daily = !r.daily.dates.empty();
   const auto days = [&] {
-    if (daily)
-      cum_plot(r.daily, sw.pts.size()), layers_view(k);
+    if (r.daily)
+      cum_plot(*r.daily, r.sweep ? r.sweep->pts.size() : 0), layers_view(k);
   };
-  if (!sweep)
+  if (!r.sweep || r.sweep->slots.empty() || r.sweep->pts.size() < 2 || r.sweep->dates.empty())
     return days();
+  const Sweep &sw = *r.sweep;
   heading(SweepHead(sw));
   if (!ImGui::BeginTable("##charts", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV))
     return;
@@ -229,7 +228,7 @@ void TrialRes::draw() const {
   }
   if (r.visible) {
     charts_view(*this);
-    if (best && !best->grp.empty() && r.daily.dates.empty())
+    if (best && !best->grp.empty() && !r.daily)
       groups_plot((GroupsHead() + "##grp").c_str(), best->grp, 180.0f);
   }
   ImGui::PopID();

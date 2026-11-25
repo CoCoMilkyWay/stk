@@ -16,6 +16,7 @@
 #include "factor/Stat/Host.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/engine/Engine.hpp"
+#include "misc/date.hpp"
 #include "misc/profiler.hpp"
 
 #include <algorithm>
@@ -72,11 +73,6 @@ inline std::string rk(double x) { return std::isfinite(x) ? fmt("%.0f", x * 100.
 inline std::string str(size_t n) { return std::to_string(n); }
 inline std::string gname(int k) { return "G" + std::to_string(k + 1); }
 
-inline std::string date_of(int ymd) {
-  char b[16];
-  std::snprintf(b, sizeof(b), "%04d-%02d-%02d", ymd / 10000, ymd / 100 % 100, ymd % 100);
-  return b;
-}
 inline int ymd_of(const std::string &s) {
   std::string d;
   for (const char ch : s) {
@@ -95,7 +91,7 @@ inline int day_index(const std::vector<misc::Ymd> &dates, const std::string &arg
   const int ymd = ymd_of(arg);
   const auto it = std::find(dates.begin(), dates.end(), ymd);
   if (it == dates.end()) {
-    err = "日期 " + arg + " 不是观察的日段 (" + date_of(dates.front()) + " ~ " + date_of(dates.back()) + ") 里的交易日";
+    err = "日期 " + arg + " 不是观察的日段 (" + misc::dash(dates.front()) + " ~ " + misc::dash(dates.back()) + ") 里的交易日";
     return -1;
   }
   return static_cast<int>(it - dates.begin());
@@ -826,7 +822,7 @@ inline bool whole(const std::vector<misc::Ymd> &, size_t &, size_t &, std::strin
 inline std::string period_note(const std::vector<misc::Ymd> &dates, const ViewEnv &env) {
   if (dates.front() == env.first && dates.back() == env.last)
     return {};
-  return "注意: 本观察的日段为 " + date_of(dates.front()) + " ~ " + date_of(dates.back()) + " (" + str(dates.size()) +
+  return "注意: 本观察的日段为 " + misc::dash(dates.front()) + " ~ " + misc::dash(dates.back()) + " (" + str(dates.size()) +
          " 天), 与评估期不同 (用到的叶落盘日更短), 与别的观察不可直接比\n\n";
 }
 

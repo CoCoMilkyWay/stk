@@ -190,16 +190,11 @@ const Lib *loaded() { return g_loaded.load(std::memory_order_acquire); }
 bool has(const std::vector<std::string> &v, const std::string &x) { return std::find(v.begin(), v.end(), x) != v.end(); }
 
 int count_in(const std::string &hay, const std::vector<std::string> &ws) {
-  int total = 0;
-  for (const std::string &w : ws) {
-    int k = 0;
-    for (size_t p = hay.find(w); p != std::string::npos; p = hay.find(w, p + w.size()))
+  int k = 0;
+  for (const std::string &w : ws)
+    for (size_t p = text::find_word(hay, w); p != std::string::npos; p = text::find_word(hay, w, p + w.size()))
       ++k;
-    if (k == 0)
-      return 0;
-    total += k;
-  }
-  return total;
+  return k;
 }
 
 Ranks ranked(const Count &c) {
@@ -239,7 +234,7 @@ int value_rank(const std::string &v) { return v == "high" ? 0 : v == "medium" ? 
 std::vector<std::string> snippets(const Text &t, const std::string &w) {
   std::vector<std::string> o;
   size_t last = std::string::npos;
-  for (size_t p = t.low.find(w); p != std::string::npos && static_cast<int>(o.size()) < kSnips; p = t.low.find(w, p + w.size())) {
+  for (size_t p = text::find_word(t.low, w); p != std::string::npos && static_cast<int>(o.size()) < kSnips; p = text::find_word(t.low, w, p + w.size())) {
     const size_t sec = t.section(p);
     if (sec == last)
       continue;

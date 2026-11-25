@@ -144,7 +144,7 @@ ToolOut ViewStockDays(const Call &c, Bay &bay) {
     R.exprs.push_back(expr_line(i, feats[i]));
   for (int i = 0; i < n_days; ++i) {
     const DayRec &r = recs[static_cast<size_t>(i)];
-    R.days.push_back({date_of(dates[static_cast<size_t>(d0 + i)]), r.close, r.chg_d, r.amp, r.amean.n ? r.amean.sum : kNaN, r.in, r.up, r.dn, r.fac_mean, r.fac_close,
+    R.days.push_back({misc::dash(dates[static_cast<size_t>(d0 + i)]), r.close, r.chg_d, r.amp, r.amean.n ? r.amean.sum : kNaN, r.in, r.up, r.dn, r.fac_mean, r.fac_close,
                       r.close_ex, r.fv});
   }
   return Done(std::move(res));

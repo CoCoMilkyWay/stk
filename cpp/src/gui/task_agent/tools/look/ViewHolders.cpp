@@ -46,20 +46,22 @@ ToolOut ViewHolders(const Call &c, Bay &bay) {
         ws[static_cast<size_t>(a)].a = a;
       last_day.assign(static_cast<size_t>(A), -1);
     }
+    // 按资产条带并行, 条带内逐行扫 (行主序 [T][A]: 一行里条带连续)
     F.S.ex.rows(A, [&](int a0, int a1, int) {
-      for (int a = a0; a < a1; ++a) {
-        Who &w = ws[static_cast<size_t>(a)];
-        int &ld = last_day[static_cast<size_t>(a)];
-        for (int r = 0; r < n_stat; ++r) {
-          const int t = cv.t_lo + r, u = cv.u0 + r;
-          const size_t k = static_cast<size_t>(t) * static_cast<size_t>(A) + static_cast<size_t>(a);
+      for (int r = 0; r < n_stat; ++r) {
+        const int t = cv.t_lo + r, u = cv.u0 + r;
+        const size_t row = static_cast<size_t>(t) * static_cast<size_t>(A);
+        for (int a = a0; a < a1; ++a) {
+          Who &w = ws[static_cast<size_t>(a)];
+          int &ld = last_day[static_cast<size_t>(a)];
+          const size_t k = row + static_cast<size_t>(a);
           w.in += cv.blk.y.gate[k];
           if (grp_of_r16(cv.rx[k]) != g_want)
             continue;
           ++w.side;
           if (u / seg != ld)
             ++w.days, ld = u / seg;
-          if (u % seg == 0 || grp_of_r16(cv.rx[static_cast<size_t>(t - 1) * static_cast<size_t>(A) + static_cast<size_t>(a)]) != g_want)
+          if (u % seg == 0 || grp_of_r16(cv.rx[k - static_cast<size_t>(A)]) != g_want)
             ++w.runs;
         }
       }
@@ -104,6 +106,6 @@ ToolOut ViewHolders(const Call &c, Bay &bay) {
   return Done(std::move(res));
 }
 
-json SampleViewHolders(Feed &p) { return {{"factor", p.factor()}, {"side", p.coin(0.5) ? "top" : "bottom"}, {"n", 10 + p.below(11)}}; }
+json SampleViewHolders(Feed &p) { return {{"factor", p.factor()}, {"side", p.pick(Tool::ViewHolders, "side")}, {"n", 10 + p.below(11)}}; }
 
 } // namespace GUI::Agent

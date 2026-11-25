@@ -3,10 +3,10 @@
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/All.hpp"
+#include "misc/date.hpp"
 
 #include <algorithm>
 #include <cassert>
-#include <cstdio>
 #include <numeric>
 #include <utility>
 
@@ -64,12 +64,12 @@ bool Finished(Steps ss) {
 
 namespace {
 
-// 做完的调用的账本作用里取一项 (非空的)
+// 开拍了的调用的账本作用里取一项 (非空的; 作用开拍即有, 在跑的也算)
 template <class F>
 std::set<std::string> effects(Steps ss, F &&f) {
   std::set<std::string> out;
   for (const Step &sp : ss)
-    if (const std::optional<Act> &a = sp.act; a && a->span.ended())
+    if (const std::optional<Act> &a = sp.act; a && a->span.began())
       if (const std::string &x = f(a->out.fx); !x.empty())
         out.insert(x);
   return out;
@@ -181,6 +181,8 @@ bool Rig::open_act(Seat &s, double t) {
   const ToolMeta &m = def(a.call.tool);
   Prep p = kSpecs[a.call.tool].open(a.call, s);
   a.out = std::move(p.out);
+  if (a.out.res)
+    a.out.fx = a.out.res->effect();
   if (p.task) {
     lab.send({m.cat, m.cat == Cat::Query ? nullptr : desk.env(), std::move(p.task)}); // 研报库不看作用域
     return false;
@@ -225,8 +227,8 @@ void Rig::abort_act(double t) {
   Act &a = last(timeline);
   assert(a.span.running());
   lab.cancel();
-  if (std::string f = a.out.res ? a.out.res->effect().staged : std::string(); !f.empty())
-    doomed.push_back(std::move(f));
+  if (!a.out.fx.staged.empty())
+    doomed.push_back(a.out.fx.staged);
   a.out = a.out.res && a.out.res->abort() ? Done(a.out.res, false) : Fail("研究员取消了这个调用, 没做完");
   seal(a, t);
   flush();
@@ -251,12 +253,6 @@ constexpr int kSpotTries = 64;    // 挑当日有逐笔的票: 随机试几次
 constexpr double kSpotSeen = 0.7; // 工作台有 view_trades 明细时取它的段的概率
 constexpr std::string_view kCsRoots[] = {"CsRank", "CsNormRank", "CsZ"};
 
-std::string dash(int ymd) {
-  char b[16];
-  std::snprintf(b, sizeof(b), "%04d-%02d-%02d", ymd / 10000, ymd / 100 % 100, ymd % 100);
-  return b;
-}
-
 // 叶名 档.层.列 的层段是 grid
 bool on_grid(const std::string &code, const std::string &grid) {
   const size_t p = code.find('.');
@@ -270,6 +266,14 @@ int Feed::below(int n) {
   return std::uniform_int_distribution<int>(0, n - 1)(rng);
 }
 bool Feed::coin(double p) { return std::uniform_real_distribution<double>(0.0, 1.0)(rng) < p; }
+
+std::string Feed::pick(Tool t, std::string_view key) {
+  const ArgDefs as = doc(t).args;
+  const auto a = std::ranges::find_if(as, [&](const ArgDef &x) { return key == x.key; });
+  assert(a != as.end() && !a->choices.empty() && "参数表里须有这个带可选集的参数");
+  const int e = a->empty_ok(), i = below(static_cast<int>(a->choices.size()) + e) - e;
+  return i < 0 ? std::string() : std::string(a->choices[static_cast<size_t>(i)]);
+}
 
 std::string Feed::leaf() { return ctx.leaves.empty() ? std::string("bar.1d.close") : one(ctx.leaves).code; }
 
@@ -308,7 +312,7 @@ std::string Feed::factor() {
   return roots.empty() ? "CsRank(" + x + ")" : one(roots);
 }
 
-std::string Feed::day() { return ctx.days.empty() ? std::string() : dash(one(ctx.days)); }
+std::string Feed::day() { return ctx.days.empty() ? std::string() : misc::dash(one(ctx.days)); }
 
 std::pair<std::string, std::string> Feed::span(int lo, int hi) {
   assert(lo >= 1 && lo <= hi);
@@ -316,7 +320,7 @@ std::pair<std::string, std::string> Feed::span(int lo, int hi) {
   if (D == 0)
     return {};
   const int n = std::min(D, lo + below(hi - lo + 1)), d0 = below(D - n + 1);
-  return {dash(ctx.days[static_cast<size_t>(d0)]), dash(ctx.days[static_cast<size_t>(d0 + n - 1)])};
+  return {misc::dash(ctx.days[static_cast<size_t>(d0)]), misc::dash(ctx.days[static_cast<size_t>(d0 + n - 1)])};
 }
 
 std::string Feed::code() { return ctx.codes.empty() ? std::string("000001.SZ") : one(ctx.codes); }
@@ -351,7 +355,7 @@ Spot Feed::spot() {
   for (int i = 0; i < kSpotTries && D > 0 && N > 0; ++i) {
     const size_t d = static_cast<size_t>(below(static_cast<int>(D))), a = static_cast<size_t>(below(static_cast<int>(N)));
     if (ctx.traded[d * N + a])
-      return {ctx.codes[a], dash(ctx.days[d]), clock()};
+      return {ctx.codes[a], misc::dash(ctx.days[d]), clock()};
   }
   return {code(), day(), clock()};
 }

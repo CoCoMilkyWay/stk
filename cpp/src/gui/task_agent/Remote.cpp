@@ -18,6 +18,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -67,24 +68,40 @@ constexpr ArgDef kRunArgs[] = {
     {"tool", "工具", Arg::Str, Unset{}, 0, 0, {}, "研究工具名 (不给 = 接上 / 续等 / 取状态); 工具名与参数见系统提示 (doc) 的研究工具表"},
     {"args", "参数", Arg::Obj, Unset{}, 0, 0, {}, "该工具的参数"}};
 
-json tool(const char *name, std::string desc, ArgDefs args) { return {{"name", name}, {"description", std::move(desc)}, {"inputSchema", SchemaOf(args)}}; }
+// 接口工具表 (唯一真相, 下标 = Api): tools/list 与分派同表出; 研究工具只经 run 交, 工具名与参数表唯一以系统提示 (doc) 为准
+enum class Api : uint8_t { Open,
+                           Doc,
+                           Run };
+struct ApiDef {
+  const char *id;
+  const char *desc; // {{键}} 占位同研究工具说明 (ToolText)
+  ArgDefs args;
+};
+constexpr ApiDef kApis[] = {
+    {"open",
+     "开新挖掘会话, 你当大脑 (同研究员在 GUI 里按 New: 有会话在跑则退回, 停着的已存盘会话换下): "
+     "作用域可给 pool / level / hold / years / lob (不给 = 研究员在 GUI 里选的), remark = 用户交代的本会话要求 (原话), test = 自检会话; "
+     "门槛 / 提问 / 预算取研究员在 Config 页定的. 交回首条消息; 系统提示用 doc 取. 接上已有外部会话用无参 run",
+     kOpenArgs},
+    {"doc", "本会话的系统提示: 角色与做法 / 评估口径 / 判优 / 研究循环 / 调用协议 / 研究工具表 (参数逐个) / 开放的特征叶 (按族) 与算子. open 后先读", {}},
+    {"run",
+     "给 tool (+ args) = 交一个研究工具调用; 都不给 (空参数 {}) = 接上已有外部会话 / 续等执行中的调用 / 取当前状态. "
+     "后台执行中至多等 {{remote_wait}} 秒 (未完交回进度, 再调无参 run 续等); 做完即交回下一条消息 (常规为本条增量: 它的结果 + 下一步; 接上有历史的会话或研究员回退后自动给完整上下文); "
+     "遇到 ask_human 或会话停下即刻交回状态 (finish 的结果随结束提示交回). 不合协议的调用不执行, 交回的下一条即重交要求 (记一步)",
+     kRunArgs}};
+AGENT_ROWS(Api, kApis, Run);
 
-// tools/list: 只有 open / doc / run (建一次); 研究工具只经 run 交, 工具名与参数表唯一以系统提示 (doc) 为准
+std::string api_names() {
+  std::string s;
+  for (const Api a : kVals<Api>)
+    s += (s.empty() ? "" : " / ") + std::string(def(a).id);
+  return s;
+}
+
 json tools_list() {
   json ts = json::array();
-  ts.push_back(tool("open",
-                    "开新挖掘会话, 你当大脑 (同研究员在 GUI 里按 New: 有会话在跑则退回, 停着的已存盘会话换下): "
-                    "作用域可给 pool / level / hold / years / lob (不给 = 研究员在 GUI 里选的), remark = 用户交代的本会话要求 (原话), test = 自检会话; "
-                    "门槛 / 提问 / 预算取研究员在 Config 页定的. 交回首条消息; 系统提示用 doc 取. 接上已有外部会话用无参 run",
-                    kOpenArgs));
-  ts.push_back(tool("doc", "本会话的系统提示: 角色与做法 / 评估口径 / 判优 / 研究循环 / 调用协议 / 研究工具表 (参数逐个) / 开放的特征叶 (按族) 与算子. open 后先读", {}));
-  ts.push_back(tool("run",
-                    "给 tool (+ args) = 交一个研究工具调用; 都不给 (空参数 {}) = 接上已有外部会话 / 续等执行中的调用 / 取当前状态. "
-                    "后台执行中至多等 " +
-                        std::to_string(kRemoteWait) +
-                        " 秒 (未完交回进度, 再调无参 run 续等); 做完即交回下一条消息 (常规为本条增量: 它的结果 + 下一步; 接上有历史的会话或研究员回退后自动给完整上下文); "
-                        "遇到 ask_human 或会话停下即刻交回状态 (finish 的结果随结束提示交回). 不合协议的调用不执行, 交回的下一条即重交要求 (记一步)",
-                    kRunArgs));
+  for (const Api a : kVals<Api>)
+    ts.push_back({{"name", def(a).id}, {"description", ToolText(def(a).desc)}, {"inputSchema", SchemaOf(def(a).args)}});
   return {{"tools", std::move(ts)}};
 }
 
@@ -385,18 +402,17 @@ struct Remote::Impl {
 
   void handle(SharedData &data, Mine &m, const Mine::Setup &base, const Mine::Leg &leg, bool bench, Ask a) {
     const auto fail = [&](std::string why) { a.answer({true, std::move(why)}); };
-    constexpr std::pair<sv, ArgDefs> kApi[] = {{"open", kOpenArgs}, {"doc", {}}, {"run", kRunArgs}};
-    const auto spec = std::ranges::find(kApi, sv(a.tool), &std::pair<sv, ArgDefs>::first);
-    if (spec == std::end(kApi))
-      return fail("没有工具 " + a.tool + " (只有 open / doc / run; 研究工具经 run 的 tool / args 交)");
+    const std::optional<Api> api = FindId<Api>(a.tool);
+    if (!api)
+      return fail("没有工具 " + a.tool + " (只有 " + api_names() + "; 研究工具经 run 的 tool / args 交)");
     json x;
-    if (std::vector<std::string> errs; !ArgsOf(spec->second, a.tool, a.args, a.tool, x, errs))
+    if (std::vector<std::string> errs; !ArgsOf(def(*api).args, a.tool, a.args, a.tool, x, errs))
       return fail(a.tool + " 的参数不合: " + text::join(errs, "; "));
-    if (a.tool == "open")
+    if (*api == Api::Open)
       return open(data, m, base, leg, bench, x, a.answer);
     if (!m.remote())
       return fail(m.held() ? "研究员在 GUI 里有内置会话 (大脑 " + m.brain() + "): 停着时可 open 开新会话, 在跑时等他停下" : std::string("还没有外部会话: 先 open"));
-    if (a.tool == "doc")
+    if (*api == Api::Doc)
       return a.answer({false, *m.system});
     if (!x.contains("tool"))
       return x.contains("args") ? fail("args 须随 tool 一起给") : poll(m, std::move(a.answer));

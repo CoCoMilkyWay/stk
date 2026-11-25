@@ -192,7 +192,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
       r->splits.push_back(row_of(ps[i].name, by_tod[i]));
   else if (split == "month")
     for (const auto &[m, b] : by_month)
-      r->splits.push_back(row_of(date_of(m * 100 + 1).substr(0, 7), b));
+      r->splits.push_back(row_of(misc::dash_ym(m), b));
   if (!cond.empty()) {
     r->cond_err = feats[0].err;
     r->has_cond = cond_b[0].ok > 0;

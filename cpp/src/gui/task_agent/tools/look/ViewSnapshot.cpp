@@ -113,7 +113,7 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
           cs.push_back(std::move(x));
         }
 
-        const std::string when = date_of(dates[static_cast<size_t>(target_d)]) + (seg > 1 ? " " + env.clock[static_cast<size_t>(k_row)] : "");
+        const std::string when = misc::dash(dates[static_cast<size_t>(target_d)]) + (seg > 1 ? " " + env.clock[static_cast<size_t>(k_row)] : "");
         if (cs.size() < static_cast<size_t>(kMinCs)) {
           thin = "## 因子 `" + fac.label + "` · " + when + " 那一行的截面 (" + env.level + "; 分位 / 组号已定向: G20 = 做多端)\n本行在池且因子有秩的只有 " + str(cs.size()) + " 只";
           return;

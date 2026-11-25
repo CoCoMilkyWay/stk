@@ -453,8 +453,8 @@ struct Desk::Impl {
   std::optional<SpanCache> spans;
   std::vector<Result> results;
   Fails fails;
-  std::map<std::string, Sweep> sweeps;
-  std::map<std::string, std::vector<Daily>> days;
+  std::map<std::string, std::shared_ptr<const Sweep>> sweeps;
+  std::map<std::string, std::vector<std::shared_ptr<const Daily>>> days;
   std::shared_ptr<const ViewEnv> env_cache;
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
@@ -506,8 +506,8 @@ struct Desk::Impl {
       r.sweep = it->second;
     const Weight *w = r.best();
     if (const auto it = days.find(r.file); it != days.end() && w)
-      for (const Daily &d : it->second)
-        if (d.expr == w->expr && d.sign == w->sign)
+      for (const std::shared_ptr<const Daily> &d : it->second)
+        if (d->expr == w->expr && d->sign == w->sign)
           r.daily = d;
   }
 
@@ -702,8 +702,11 @@ const Result &Desk::absorb(const std::string &file, bool ok, const std::string &
     impl_->fails.erase(file);
   else
     impl_->fails[file] = err;
-  impl_->sweeps[file] = std::move(sweep);
-  impl_->days[file] = std::move(days);
+  impl_->sweeps[file] = std::make_shared<const Sweep>(std::move(sweep));
+  std::vector<std::shared_ptr<const Daily>> &ds = impl_->days[file];
+  ds.clear();
+  for (Daily &d : days)
+    ds.push_back(std::make_shared<const Daily>(std::move(d)));
   impl_->rescan_one(file);
   return result(file);
 }

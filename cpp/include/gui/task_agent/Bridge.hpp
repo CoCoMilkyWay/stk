@@ -156,8 +156,8 @@ struct Result {
   std::string file, name, name_cn, tmpl, twin, note, error;
   Verdict verdict = Verdict::Pending;
   std::vector<Weight> ws;
-  Sweep sweep;
-  Daily daily; // 最佳权重的 (dates 空 = 没有)
+  std::shared_ptr<const Sweep> sweep; // 空 = 没有 (共享不可变: 候选台 / 调用结果 / 列表拷 Result 不拷它)
+  std::shared_ptr<const Daily> daily; // 最佳权重的; 空 = 没有 (同上)
   int ops = 0;
   bool visible = true;
   const Weight *best() const;

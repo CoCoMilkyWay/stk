@@ -170,7 +170,7 @@ ToolOut ViewStockDay(const Call &c, Bay &bay) {
 
   if (rc != Engine::Rc::Ok)
     return Fail(std::move(err));
-  R.period = period_note(dates, env), R.code = code, R.date = date_of(dates[static_cast<size_t>(target_d)]), R.level = env.level, R.seg = seg, R.clock = env.clock;
+  R.period = period_note(dates, env), R.code = code, R.date = misc::dash(dates[static_cast<size_t>(target_d)]), R.level = env.level, R.seg = seg, R.clock = env.clock;
   for (size_t i = 0; i < feats.size(); ++i)
     R.exprs.push_back(expr_line(i, feats[i]));
   R.has_fac = has_fac, R.fac = fac.label;

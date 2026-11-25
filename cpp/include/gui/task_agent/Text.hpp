@@ -130,16 +130,17 @@ inline std::vector<std::string> words(std::string_view q) {
 }
 // hay 含词 w: 至多 kShortWord 个 ASCII 字母数字的短词只认整词 (两侧不接同类字符: 字母不接字母、数字不接数字; ep 不中 repay, 30 中 lag30), 其余按子串
 inline constexpr size_t kShortWord = 3;
-inline bool has_word(std::string_view hay, std::string_view w) {
+// hay 里字节位 pos 起词 w 的下一处 (没有 = npos); 过滤 / 计数 / 片段同一口径
+inline size_t find_word(std::string_view hay, std::string_view w, size_t pos = 0) {
   const auto cls = [](char ch) { return ch >= 'a' && ch <= 'z' ? 1 : ch >= '0' && ch <= '9' ? 2
                                                                                             : 0; };
-  if (w.size() > kShortWord || std::any_of(w.begin(), w.end(), [&](char ch) { return cls(ch) == 0; }))
-    return hay.find(w) != std::string_view::npos;
-  for (size_t p = hay.find(w); p != std::string_view::npos; p = hay.find(w, p + 1))
-    if ((p == 0 || cls(hay[p - 1]) != cls(w.front())) && (p + w.size() == hay.size() || cls(hay[p + w.size()]) != cls(w.back())))
-      return true;
-  return false;
+  const bool whole = w.size() <= kShortWord && std::none_of(w.begin(), w.end(), [&](char ch) { return cls(ch) == 0; });
+  for (size_t p = hay.find(w, pos); p != std::string_view::npos; p = hay.find(w, p + 1))
+    if (!whole || ((p == 0 || cls(hay[p - 1]) != cls(w.front())) && (p + w.size() == hay.size() || cls(hay[p + w.size()]) != cls(w.back()))))
+      return p;
+  return std::string_view::npos;
 }
+inline bool has_word(std::string_view hay, std::string_view w) { return find_word(hay, w) != std::string_view::npos; }
 // 具名条件的合取: 第 i 项满足全部条件才命中; 检索词另可放宽为析取 (hits)
 struct Filter {
   struct Cond {

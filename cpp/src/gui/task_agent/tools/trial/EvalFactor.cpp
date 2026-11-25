@@ -192,8 +192,8 @@ std::string TrialRes::text() const {
       s += "- " + WeightLine(*this, x) + "\n";
   if (!w->years.empty())
     s += "- " + YearsLine(w->years) + "\n";
-  if (!r.daily.dates.empty())
-    s += layers_text(r.daily);
+  if (r.daily)
+    s += layers_text(*r.daily);
   if (!w->years.empty())
     s += years_ric_text(w->years);
   return s;

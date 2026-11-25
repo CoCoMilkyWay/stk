@@ -98,8 +98,7 @@ ToolOut ListNotes(const Call &c, Seat &s) {
 }
 
 json SampleListNotes(Feed &p) {
-  static const char *kKinds[] = {"", "feature", "tool", "insight", "issue"};
-  return {{"kind", kKinds[p.below(5)]}, {"scope", p.coin(0.3) ? "here" : "all"}, {"query", ""}, {"n", 10 + p.below(10)}};
+  return {{"kind", p.pick(Tool::ListNotes, "kind")}, {"scope", p.coin(0.3) ? "here" : "all"}, {"query", ""}, {"n", 10 + p.below(10)}};
 }
 
 } // namespace GUI::Agent

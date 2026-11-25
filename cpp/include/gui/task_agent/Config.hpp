@@ -59,19 +59,6 @@ inline constexpr int kMaxRetries = 5;  // 连续这么多步不合协议即停�
 inline constexpr int kCtxChars = 60000;
 inline constexpr int kFoldSteps = 10;
 
-// 常量占位 {{键}} (提示词模板与工具说明同一张表; 模板另有随作用域的键, 见 gui/task_agent/Prompt.hpp)
-struct ConstDef {
-  const char *key;
-  int value;
-};
-inline constexpr ConstDef kConsts[] = {{"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}, {"max_retries", kMaxRetries}};
-inline const ConstDef *const_of(std::string_view key) {
-  for (const ConstDef &c : kConsts)
-    if (key == c.key)
-      return &c;
-  return nullptr;
-}
-
 // 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重达到才拷进正式因子库
 inline constexpr double kGateRic = 0.03; // 中位 rIC (滚动窗 rIC 的中位, 同 Search 的目标)
 
@@ -80,6 +67,19 @@ inline constexpr const char *kRemoteHost = "127.0.0.1";
 inline constexpr int kRemotePort = 47821; // 避开常见调试端口 (8000 / 8080 / 8765 …)
 inline constexpr const char *kRemotePath = "/mcp";
 inline constexpr int kRemoteWait = 300; // run 执行中至多等多少秒 (未完先交回进度, 调无参 run 续等)
+
+// 常量占位 {{键}} (提示词模板 / 研究工具说明 / 接口工具说明同一张表; 模板另有随作用域的键, 见 gui/task_agent/Prompt.hpp)
+struct ConstDef {
+  const char *key;
+  int value;
+};
+inline constexpr ConstDef kConsts[] = {{"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}, {"max_retries", kMaxRetries}, {"remote_wait", kRemoteWait}};
+inline const ConstDef *const_of(std::string_view key) {
+  for (const ConstDef &c : kConsts)
+    if (key == c.key)
+      return &c;
+  return nullptr;
+}
 
 // ---- 落盘 (disk::, 布局见 disk/Disk.hpp; <模式> = main | test, test = 自检会话) ----
 //   output/agent/<模式>/sessions/<池>/<层>/<持有期>/

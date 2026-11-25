@@ -170,26 +170,28 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
           ac.bounds_ready = true;
       }
 
-      // 2) 按资产列全核并行: 单趟攒方差分解 (ANOVA 恒等式) + 三档滞后自相关
+      // 2) 按资产条带全核并行, 条带内逐行扫 (行主序 [T][A]: 一行里条带连续): 单趟攒方差分解 (ANOVA 恒等式) + 三档滞后自相关
       std::vector<double> t_sx(static_cast<size_t>(nt), 0.0), t_sxx(static_cast<size_t>(nt), 0.0), t_dsq(static_cast<size_t>(nt), 0.0);
       std::vector<size_t> t_n(static_cast<size_t>(nt), 0);
       const auto clamp_v = [&](float v) { return std::clamp(static_cast<double>(v), ac.lo, ac.hi); };
       F.S.ex.rows(A, [&](int a0, int a1, int tid) {
         double lsx = 0.0, lsxx = 0.0, ldsq = 0.0;
         size_t ln = 0;
-        for (int a = a0; a < a1; ++a) {
-          const size_t ua = static_cast<size_t>(a);
-          for (int d = 0; d < days_stat; ++d) {
-            double ds = 0.0;
-            int dn = 0;
-            for (int r = 0; r < seg; ++r) {
-              const int t = cv.t_lo + d * seg + r, u = cv.u0 + d * seg + r;
-              const size_t k1 = static_cast<size_t>(t) * static_cast<size_t>(A) + ua;
+        const size_t W = static_cast<size_t>(a1 - a0);
+        std::vector<double> ds(W);
+        std::vector<int> dn(W);
+        for (int d = 0; d < days_stat; ++d) {
+          std::fill(ds.begin(), ds.end(), 0.0), std::fill(dn.begin(), dn.end(), 0);
+          for (int r = 0; r < seg; ++r) {
+            const int t = cv.t_lo + d * seg + r, u = cv.u0 + d * seg + r;
+            const size_t row = static_cast<size_t>(t) * static_cast<size_t>(A);
+            for (int a = a0; a < a1; ++a) {
+              const size_t ua = static_cast<size_t>(a), j = static_cast<size_t>(a - a0), k1 = row + ua;
               if (!cv.blk.y.gate[k1] || !pl->m[k1] || !std::isfinite(pl->v[k1]))
                 continue;
               const double x = clamp_v(pl->v[k1]);
               ac.sa[ua] += x, ++ac.na[ua];
-              ds += x, ++dn;
+              ds[j] += x, ++dn[j];
               lsx += x, lsxx += x * x, ++ln;
               for (size_t li = 0; li < lags.size(); ++li) {
                 const int lag = lags[li].first;
@@ -203,9 +205,10 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
                 la.xy += x * y, la.x += x, la.y += y, la.xx += x * x, la.yy += y * y, ++la.n;
               }
             }
-            if (dn > 0)
-              ldsq += ds * ds / dn;
           }
+          for (size_t j = 0; j < W; ++j)
+            if (dn[j] > 0)
+              ldsq += ds[j] * ds[j] / dn[j];
         }
         const size_t ut = static_cast<size_t>(tid);
         t_sx[ut] += lsx, t_sxx[ut] += lsxx, t_dsq[ut] += ldsq, t_n[ut] += ln;

@@ -131,10 +131,9 @@ ToolOut ReadDoc(const Call &c, Bay &) {
 }
 
 json SampleReadDoc(Feed &p) {
-  static const char *kParts[] = {"card", "outline", "text"};
   const Lib *L = loaded();
   const std::string id = L && !L->docs.empty() ? L->docs[static_cast<size_t>(p.below(static_cast<int>(L->docs.size())))].id : std::string("2024");
-  return {{"id", id}, {"part", kParts[p.below(3)]}, {"from", 0}, {"skip", 0}};
+  return {{"id", id}, {"part", p.pick(Tool::ReadDoc, "part")}, {"from", 0}, {"skip", 0}};
 }
 
 } // namespace GUI::Agent

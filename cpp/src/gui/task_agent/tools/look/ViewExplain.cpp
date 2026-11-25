@@ -142,22 +142,26 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
         const std::vector<float> e = block_excess_steps(F.S.ex, cv.blk, px, cv.blk.land0());
         std::vector<double> cum(e.size());
         std::vector<float> damt(seg > 1 ? e.size() : 0), dhi(seg > 1 ? e.size() : 0), dlo(seg > 1 ? e.size() : 0);
+        // 按资产条带并行, 条带内逐行扫 (行主序 [T][A]: 一行里条带连续); 各资产的累计态按条带内下标存
         F.S.ex.rows(A, [&](int a0, int a1, int) {
-          for (int a = a0; a < a1; ++a) {
-            double acc = 0.0, amt_s = 0.0;
-            float hi = -INFINITY, lo = INFINITY;
-            for (int t = 0; t < T; ++t) {
-              const size_t k = static_cast<size_t>(t) * static_cast<size_t>(A) + static_cast<size_t>(a);
-              cum[k] = acc += e[k];
+          const size_t W = static_cast<size_t>(a1 - a0);
+          std::vector<double> acc(W, 0.0), amt_s(W, 0.0);
+          std::vector<float> hi(W, -INFINITY), lo(W, INFINITY);
+          for (int t = 0; t < T; ++t) {
+            const size_t row = static_cast<size_t>(t) * static_cast<size_t>(A);
+            const bool day0 = t % seg == 0;
+            for (int a = a0; a < a1; ++a) {
+              const size_t j = static_cast<size_t>(a - a0), k = row + static_cast<size_t>(a);
+              cum[k] = acc[j] += e[k];
               if (seg <= 1)
                 continue;
-              if (t % seg == 0)
-                amt_s = 0.0, hi = -INFINITY, lo = INFINITY;
+              if (day0)
+                amt_s[j] = 0.0, hi[j] = -INFINITY, lo[j] = INFINITY;
               if (const double av = px(Amount, t, a); std::isfinite(av))
-                amt_s += av;
+                amt_s[j] += av;
               if (px.traded(t, a))
-                hi = std::fmax(hi, static_cast<float>(px(High, t, a))), lo = std::fmin(lo, static_cast<float>(px(Low, t, a)));
-              damt[k] = static_cast<float>(amt_s), dhi[k] = hi, dlo[k] = lo;
+                hi[j] = std::fmax(hi[j], static_cast<float>(px(High, t, a))), lo[j] = std::fmin(lo[j], static_cast<float>(px(Low, t, a)));
+              damt[k] = static_cast<float>(amt_s[j]), dhi[k] = hi[j], dlo[k] = lo[j];
             }
           }
         });

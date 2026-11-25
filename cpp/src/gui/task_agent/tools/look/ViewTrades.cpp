@@ -87,8 +87,8 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
         if (a >= b || k0 >= k1) {
           std::string win = (!from.empty() || !to.empty() ? (from.empty() ? "…" : from) + " ~ " + (to.empty() ? "…" : to) + " " : "") +
                             (!tod.empty() ? "行末 " + tod + " " : "");
-          why = "## 因子 `" + fac.label + "` · " + side_cn + " · 合并 " + merge + " · 只看 " + win + "的行 (0 行)\n窗口里没有行 (观察的日段 " + date_of(ds.front()) +
-                " ~ " + date_of(ds.back()) + ")";
+          why = "## 因子 `" + fac.label + "` · " + side_cn + " · 合并 " + merge + " · 只看 " + win + "的行 (0 行)\n窗口里没有行 (观察的日段 " + misc::dash(ds.front()) +
+                " ~ " + misc::dash(ds.back()) + ")";
           return false;
         }
         lo = a, hi = b;
@@ -233,16 +233,15 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
   for (const size_t i : ix) {
     const Trade &x = ts[i];
     const std::string &c0 = env.clock[static_cast<size_t>(x.u0 % seg)], &c1 = env.clock[static_cast<size_t>(x.u1 % seg)];
-    R.list.push_back({ax.code(pa.global(static_cast<size_t>(x.a))), date_of(dates[static_cast<size_t>(x.u0 / seg)]), x.n > 1 ? c0 + "–" + c1 : c0, tags_of(x.mk.m), x.n,
+    R.list.push_back({ax.code(pa.global(static_cast<size_t>(x.a))), misc::dash(dates[static_cast<size_t>(x.u0 / seg)]), x.n > 1 ? c0 + "–" + c1 : c0, tags_of(x.mk.m), x.n,
                       x.rank, x.ex, x.mk.chg, x.mk.pos});
   }
   return Done(std::move(res));
 }
 
 json SampleViewTrades(Feed &p) {
-  static const char *kSorts[] = {"random", "worst", "best"};
-  static const char *kMerges[] = {"none", "run", "day"};
-  json j = {{"factor", p.factor()}, {"side", p.coin(0.5) ? "top" : "bottom"}, {"sort", kSorts[p.below(3)]}, {"n", 6 + p.below(10)}, {"merge", kMerges[p.below(3)]}};
+  constexpr Tool T = Tool::ViewTrades;
+  json j = {{"factor", p.factor()}, {"side", p.pick(T, "side")}, {"sort", p.pick(T, "sort")}, {"n", 6 + p.below(10)}, {"merge", p.pick(T, "merge")}};
   if (p.coin(0.3) && !p.ctx.days.empty()) {
     const auto [a, b] = p.span(20, 60);
     j["from"] = a, j["to"] = b;

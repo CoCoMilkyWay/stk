@@ -118,9 +118,8 @@ ToolOut SearchFactors(const Call &c, Bay &) {
 
 json SampleSearchFactors(Feed &p) {
   static const char *kFamilies[] = {"", "momentum", "reversal", "liquidity", "microstructure", "volatility", "value"};
-  static const char *kSorts[] = {"ic", "icir", "ls", "new"};
   static const char *kPeriods_[] = {"", "second", "intraday", "daily"};
-  return {{"family", kFamilies[p.below(7)]}, {"period", kPeriods_[p.below(4)]}, {"sort", kSorts[p.below(4)]}, {"n", 6 + p.below(10)}};
+  return {{"family", kFamilies[p.below(7)]}, {"period", kPeriods_[p.below(4)]}, {"sort", p.pick(Tool::SearchFactors, "sort")}, {"n", 6 + p.below(10)}};
 }
 
 } // namespace GUI::Agent

@@ -70,7 +70,7 @@ struct Message {
 };
 
 // ---- 工具的产出 ----
-// 一个调用对会话账本的作用 (做完时由结果给出; 账本 / 回退 / 作废只读它)
+// 一个调用对会话账本的作用 (由结果给出: 开拍即取一次, 做完再取; 账本 / 回退 / 作废只读它)
 struct Effect {
   std::string staged;             // 落下的候选文件 (回退 / 作废时删)
   std::string adopted;            // 入库 (自检 / 工作台 = 达门槛) 的候选英文名
@@ -166,7 +166,7 @@ struct Tally {
 Tally TallyOf(Steps ss, double now);       // 发出的回复与开始的调用 (在跑的计到 now; 失败 / 结局 / 入库只计做完的)
 bool Finished(Steps ss);                   // 末个发出的一步之前 finish 已做完: 会话结束 (再发出一条即作罢)
 std::set<std::string> AdoptedOf(Steps ss); // 做成的入库的英文名
-std::set<std::string> StagedOf(Steps ss);  // 做完的调用落下的候选文件
+std::set<std::string> StagedOf(Steps ss);  // 开拍了的调用落下的候选文件 (回测备料即落, 在跑的也算)
 
 // ---- 台面与四形 ----
 struct Seat {
@@ -206,6 +206,7 @@ struct Feed {
 
   int below(int n); // [0, n)
   bool coin(double p);
+  std::string pick(Tool t, std::string_view key); // 参数表里该参数可选集的一项 (缺省为空串的另含空串)
   template <class T>
   const T &one(const std::vector<T> &v) {
     return v[static_cast<size_t>(below(static_cast<int>(v.size())))];
