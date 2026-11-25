@@ -2,17 +2,17 @@
 #include "gui/task_agent/tools/Kit.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Look.hpp"    // IWYU pragma: keep
-#include "gui/task_agent/tools/Misc.hpp"    // IWYU pragma: keep
-#include "gui/task_agent/tools/Note.hpp"    // IWYU pragma: keep
-#include "gui/task_agent/tools/Query.hpp"   // IWYU pragma: keep
-#include "gui/task_agent/tools/Session.hpp" // IWYU pragma: keep
-#include "gui/task_agent/tools/Trial.hpp"   // IWYU pragma: keep
+#include "gui/task_agent/tools/Look.hpp"  // IWYU pragma: keep
+#include "gui/task_agent/tools/Misc.hpp"  // IWYU pragma: keep
+#include "gui/task_agent/tools/Note.hpp"  // IWYU pragma: keep
+#include "gui/task_agent/tools/Query.hpp" // IWYU pragma: keep
+#include "gui/task_agent/tools/Trial.hpp" // IWYU pragma: keep
 
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <numeric>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -21,15 +21,8 @@ namespace GUI::Agent {
 using json = nlohmann::ordered_json;
 
 // =============================================================================
-// 计数 Tally 与单趟增量账本 State
+// 账本: 时间线的纯折叠
 // =============================================================================
-int Tally::n(Exec e) const {
-  int s = 0;
-  for (const Tool t : kVals<Tool>)
-    s += def(t).exec == e ? n(t) : 0;
-  return s;
-}
-
 int Tally::n(Cat c) const {
   int s = 0;
   for (const Tool t : kVals<Tool>)
@@ -46,66 +39,6 @@ int Tally::failed(Cat c) const {
 
 int Tally::all() const { return std::accumulate(calls.begin(), calls.end(), 0); }
 int Tally::failed() const { return std::accumulate(fails.begin(), fails.end(), 0); }
-
-void OpenStep(State &s) { s.done = false; }
-
-void CloseReply(State &s, const Step &sp) {
-  assert(sp.span.ended());
-  s.tally.llm_s += sp.span.len(0.0);
-  s.tally.usage += sp.reply.usage;
-}
-
-void ApplyAct(State &s, const Act &a) {
-  assert(a.span.ended());
-  const Call &c = a.call;
-  ++s.tally.calls[c.tool];
-  s.tally.act_s += a.span.len(0.0);
-  s.tally.fails[c.tool] += !a.out.ok;
-  if (const TrialRes *x = AsTrial(a))
-    ++s.tally.verdicts[x->st.res.verdict];
-  switch (c.tool) {
-  case Tool::EvalFactor:
-    if (const TrialRes *x = AsTrial(a); x && x->st.ok())
-      s.staged.insert(x->st.file);
-    break;
-  case Tool::SubmitFactor:
-    if (a.out.ok) {
-      s.adopted.insert(c.str("name"));
-      ++s.tally.adopted;
-    }
-    break;
-  case Tool::Finish:
-    s.done = true;
-    break;
-  default:
-    break;
-  }
-}
-
-State StateOf(Steps ss) {
-  State s;
-  for (const Step &sp : ss) {
-    if (sp.span.began())
-      OpenStep(s);
-    if (sp.span.ended())
-      CloseReply(s, sp);
-    if (sp.act && sp.act->span.ended())
-      ApplyAct(s, *sp.act);
-  }
-  return s;
-}
-
-Tally TallyAt(const State &s, Steps ss, double now) {
-  Tally t = s.tally;
-  if (ss.empty())
-    return t;
-  const Step &sp = ss.back();
-  if (sp.span.running())
-    t.llm_s += sp.span.len(now);
-  if (sp.act && sp.act->span.running())
-    ++t.calls[sp.act->call.tool], t.act_s += sp.act->span.len(now);
-  return t;
-}
 
 Tally TallyOf(Steps ss, double now) {
   Tally t;
@@ -125,32 +58,67 @@ Tally TallyOf(Steps ss, double now) {
   return t;
 }
 
+bool Finished(Steps ss) {
+  for (size_t i = ss.size(); i-- > 0;) {
+    if (const std::optional<Act> &a = ss[i].act; a && a->call.tool == Tool::Finish && a->span.ended())
+      return true;
+    if (ss[i].span.began())
+      return false;
+  }
+  return false;
+}
+
+std::set<std::string> AdoptedOf(Steps ss) {
+  std::set<std::string> out;
+  for (const Step &sp : ss)
+    if (const std::optional<Act> &a = sp.act; a && a->call.tool == Tool::SubmitFactor && a->span.ended() && a->out.ok)
+      out.insert(a->call.str("name"));
+  return out;
+}
+
+std::set<std::string> StagedOf(Steps ss) {
+  std::set<std::string> out;
+  for (const Step &sp : ss)
+    if (const TrialRes *x = sp.act && sp.act->span.ended() ? AsTrial(*sp.act) : nullptr; x && x->st.ok())
+      out.insert(x->st.file);
+  return out;
+}
+
 // =============================================================================
-// 工具实现表 (AGENT_TOOLS 唯一展开, 零手工下标补丁, 编译期核对签名 = ToolMeta::exec)
+// 工具实现表 (AGENT_TOOLS 唯一展开, 编译期核对 ImplFn 的下标 = ToolMeta::exec)
 // =============================================================================
 namespace {
+
+// 纯后台工具: 备料 = 带上调用, 收尾 = 搬进结果
+template <PureFn F>
+LabTask pure(Act &a, Seat &) {
+  return [c = a.call](Bay &bay) -> Commit { return [out = F(c, bay)](Act &x, Lab &) mutable { x.out = std::move(out); }; };
+}
+
+template <auto F>
+constexpr ImplFn impl() {
+  if constexpr (std::is_same_v<decltype(F), PureFn>)
+    return LabFn(&pure<F>);
+  else
+    return ImplFn(F);
+}
 
 struct Spec {
   ImplFn fn;
   json (*sample)(Feed &);
 };
 
-#define AGENT_TOOL_SPEC(T, id, cn, E, C, keep) Spec{ImplFn(T), &Sample##T},
+#define AGENT_TOOL_SPEC(T, id, cn, E, C, keep) Spec{impl<&T>(), &Sample##T},
 constexpr Per<Tool, Spec> kSpecs{{{AGENT_TOOLS(AGENT_TOOL_SPEC)}}};
 #undef AGENT_TOOL_SPEC
 
-constexpr Exec exec_of(const ImplFn &f) {
-  return std::holds_alternative<SyncFn>(f)    ? Exec::Sync
-         : std::holds_alternative<HumanFn>(f) ? Exec::Human
-                                              : Exec::Lab;
-}
 constexpr bool specs_match() {
   for (const Tool t : kVals<Tool>)
-    if (exec_of(kSpecs[t].fn) != def(t).exec)
+    if (static_cast<Exec>(kSpecs[t].fn.index()) != def(t).exec)
       return false;
   return true;
 }
-static_assert(specs_match(), "实现的签名 = 清单的执行");
+static_assert(specs_match(), "实现形 = 清单的执行");
 
 void clip(std::string &s) {
   const size_t n = text::chars(s), cut = text::fwd(s, 0, static_cast<size_t>(kOutChars));
@@ -160,23 +128,31 @@ void clip(std::string &s) {
   s += "\n…(截断: 共 " + std::to_string(n) + " 字, 只给前 " + std::to_string(kOutChars) + " 字; 缩小范围或分几次看)\n";
 }
 
-void finish_act(Act &a, State &st, double t) {
+// 收尾: 时段封口, 原文按 kOutChars 截断
+void seal(Act &a, double t) {
   if (TrialRes *r = AsTrial(a))
     r->search.end(t), r->run.end(t);
   a.span.end(t);
-  if (!IsAgentTool(a.call.tool))
-    return;
-  ApplyAct(st, a);
   clip(a.out.text);
+}
+
+Act &last(std::vector<Step> &tl) {
+  assert(!tl.empty() && tl.back().act);
+  return *tl.back().act;
 }
 
 } // namespace
 
 // =============================================================================
-// 统一调用底座 Rig: open ⇄ step / settle / answer / abort
+// 统一调用底座 Rig: open → pump / answer → 收尾; abort 随时作废
 // =============================================================================
-Seat Rig::seat(const Gate &gate, std::string_view session, bool dry, bool gpu, llm::Options llm) {
-  return {lab, notes, gate, st, timeline, step(), catalog::label(lab.scope()), std::string(session), dry, gpu, std::move(llm)};
+const Act *Rig::acting() const {
+  const Step *sp = timeline.empty() ? nullptr : &timeline.back();
+  return sp && sp->act && !sp->act->span.ended() ? &*sp->act : nullptr;
+}
+
+Seat Rig::seat(const Gate &gate, std::string_view session, bool dry, bool gpu) {
+  return {lab, notes, gate, step(), catalog::label(lab.scope()), std::string(session), dry, gpu};
 }
 
 void Rig::flush() {
@@ -187,62 +163,60 @@ void Rig::flush() {
   doomed.clear();
 }
 
-Exec Rig::open_act(Act &a, Seat &s, double t) {
+bool Rig::open_act(Seat &s, double t) {
+  Act &a = last(timeline);
   a.span.begin(t);
   const ImplFn &fn = kSpecs[a.call.tool].fn;
-  if (const auto *sync = std::get_if<SyncFn>(&fn)) {
-    a.out = (*sync)(a.call, s);
-    finish_act(a, st, t);
-    return Exec::Sync;
+  if (const SyncFn *f = std::get_if<SyncFn>(&fn)) {
+    a.out = (*f)(a.call, s);
+    seal(a, t);
+    return true;
   }
-  if (const auto *direct = std::get_if<LabFn>(&fn)) {
-    const Call call = a.call;
-    const LabFn f = *direct;
-    lab.send(call.tool, [call, f](Bay &bay) { return f(call, bay); });
-    return Exec::Lab;
+  if (const HumanFn *f = std::get_if<HumanFn>(&fn)) {
+    a.out.res = (*f)(a.call);
+    return false;
   }
-  if (const auto *staged = std::get_if<StagedLab>(&fn)) {
-    std::optional<LabTask> task = staged->open(a, s);
-    if (!task) {
-      finish_act(a, st, t);
-      return Exec::Sync;
+  LabTask task = std::get<LabFn>(fn)(a, s);
+  if (!task) {
+    seal(a, t);
+    return true;
+  }
+  lab.send(a.call.tool, std::move(task));
+  return false;
+}
+
+bool Rig::pump_act(double t) {
+  while (std::optional<Lab::Tick> k = lab.poll()) {
+    if (timeline.empty() || !timeline.back().act)
+      continue;
+    Act &a = *timeline.back().act;
+    if (!a.span.running() || def(a.call.tool).exec != Exec::Lab)
+      continue;
+    if (k->step == LabStep::End) {
+      assert(k->done && "在跑的调用没被取消, 后台须交回收尾");
+      k->done(a, lab);
+      seal(a, t);
+      flush();
+      return true;
     }
-    lab.send(a.call.tool, std::move(*task));
-    return Exec::Lab;
+    TrialRes *r = AsTrial(a);
+    assert(r && "只有 eval_factor 分段");
+    r->search.end(t), r->run.end(t);
+    (k->step == LabStep::Search ? r->search : r->run).begin(t);
   }
-  a.out.res = std::make_shared<AskRes>(QuestionsOf(a.call));
-  return Exec::Human;
+  flush();
+  return false;
 }
 
-void Rig::step_act(Act &a, LabStep step, double t) {
-  TrialRes *r = AsTrial(a);
-  if (!r)
-    return;
-  r->search.end(t), r->run.end(t);
-  if (step == LabStep::Search)
-    r->search.begin(t);
-  else if (step == LabStep::Run)
-    r->run.begin(t);
+void Rig::answer_act(double t) {
+  Act &a = last(timeline);
+  assert(def(a.call.tool).exec == Exec::Human && a.span.running() && a.out.res);
+  a.out = Done(a.out.res);
+  seal(a, t);
 }
 
-void Rig::settle_act(Act &a, ToolOut out, Seat &s, double t) {
-  assert(def(a.call.tool).exec == Exec::Lab && a.span.running());
-  if (const auto *staged = std::get_if<StagedLab>(&kSpecs[a.call.tool].fn))
-    staged->close(a, std::move(out), s);
-  else
-    a.out = std::move(out);
-  finish_act(a, st, t);
-}
-
-void Rig::answer_act(Act &a, double t) {
-  assert(def(a.call.tool).exec == Exec::Human && a.span.running());
-  auto r = std::static_pointer_cast<AskRes>(a.out.res);
-  assert(r);
-  a.out = std::get<HumanFn>(kSpecs[a.call.tool].fn)(std::move(r));
-  finish_act(a, st, t);
-}
-
-void Rig::abort_act(Act &a, double t) {
+void Rig::abort_act(double t) {
+  Act &a = last(timeline);
   assert(a.span.running());
   lab.cancel();
   if (TrialRes *r = AsTrial(a); r && r->st.ok()) {
@@ -258,7 +232,7 @@ void Rig::abort_act(Act &a, double t) {
   } else {
     a.out = Fail("研究员取消了这个调用, 没做完");
   }
-  finish_act(a, st, t);
+  seal(a, t);
   flush();
 }
 

@@ -6,7 +6,7 @@
 //   agent 会话层与界面只认这里的值类型, 不碰 FactorRow / EvalStat / SearchResult / LimitOrderBook:
 //     catalog   无状态作用域目录 (池 / 因子层 / 持有期 / GPU 可用 / 就绪判据 / 落盘键)
 //     Lab       候选四拍 (stage / absorb / adopt / discard) + 单线程 Async 工作台:
-//                 send(Tool, LabTask) → 共享不可变快照 ViewEnv (零跨线程拷贝) → worker 跑 LabTask → LabOut
+//                 send(Tool, LabTask) → 共享不可变快照 ViewEnv (零跨线程拷贝) → worker 跑 LabTask → 交回 GUI 线程的收尾 Commit
 //   异步五件与左翼 Chat 逐字同构: Tick / send / cancel / busy / poll / live
 // =============================================================================
 
@@ -220,33 +220,25 @@ disk::Key key(const Scope &sc, bool test);
 } // namespace catalog
 
 // ---- 右翼异步工作台 Lab (与左翼 Chat 完全对仗: Tick / send / cancel / busy / poll / live) ----
-enum class LabStep : uint8_t { Search,
+enum class LabStep : uint8_t { Search, // eval_factor 的两段 (其余后台工具只有 End)
                                Run,
-                               Look,
-                               Docs,
                                End };
-struct LabStepDef {
-  const char *cn;
-};
-inline constexpr LabStepDef kLabSteps[] = {{"Search"}, {"Run"}, {"观察"}, {"查研报"}, {"完"}};
-AGENT_ROWS(LabStep, kLabSteps, End);
 
+struct Act;
 struct Bay;
-using LabTask = std::function<ToolOut(Bay &)>;
+class Lab;
+using Commit = std::function<void(Act &, Lab &)>; // 后台做完交回: GUI 线程把结果收进调用 (可动候选目录); 空 = 取消了
+using LabTask = std::function<Commit(Bay &)>;     // 后台计算
 
 struct LabLive {
   double frac = 0.0;
-};
-struct LabOut {
-  bool cancelled = false;
-  ToolOut out;
 };
 
 class Lab {
 public:
   struct Tick {
     LabStep step;
-    LabOut out{};
+    Commit done{}; // step = End 时
   };
 
   Lab();

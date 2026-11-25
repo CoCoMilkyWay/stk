@@ -450,8 +450,6 @@ struct Job {
   LabTask task;
 };
 
-LabStep first_step(Cat c) { return c == Cat::Look ? LabStep::Look : c == Cat::Query ? LabStep::Docs
-                                                                                    : LabStep::Search; }
 Engine::Prio prio_of(Cat c) { return c == Cat::Trial ? Engine::Prio::Batch : Engine::Prio::Interactive; }
 
 } // namespace
@@ -471,21 +469,17 @@ struct Lab::Impl {
   std::shared_ptr<const ViewEnv> env_cache;
 
   Progress prog;
-  Async<Job, LabStep, LabOut> worker;
+  Async<Job, LabStep, Commit> worker;
 
   Impl()
-      : worker([this](Job &j, const auto &pipe) -> LabOut {
+      : worker([this](Job &j, const auto &pipe) -> Commit {
           prog.begin(Phase::Loading, 0);
-          const Cat cat = def(j.tool).cat;
-          pipe.step(first_step(cat));
-          Engine::FactorFlow flow(pipe.cancel, prog, prio_of(cat));
+          Engine::FactorFlow flow(pipe.cancel, prog, prio_of(def(j.tool).cat));
           const std::function<void(LabStep)> step = [&](LabStep s) { pipe.step(s); };
           static const ViewEnv kNoEnv;
           Bay bay{j.env ? *j.env : kNoEnv, flow, pipe.cancel, step};
-          ToolOut out = j.task(bay);
-          if (bay.cancelled())
-            return {.cancelled = true};
-          return {.cancelled = false, .out = std::move(out)};
+          Commit done = j.task(bay);
+          return bay.cancelled() ? Commit() : done;
         }) {}
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
@@ -774,7 +768,7 @@ void Lab::discard(const std::string &file) {
 void Lab::send(Tool tool, LabTask task) {
   assert(impl_->data && !busy() && task);
   std::shared_ptr<const ViewEnv> env;
-  if (def(tool).cat != Cat::Query && def(tool).cat != Cat::Session)
+  if (def(tool).cat != Cat::Query)
     env = impl_->view_env();
   impl_->worker.send({tool, std::move(env), std::move(task)});
 }

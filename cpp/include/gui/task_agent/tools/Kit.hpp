@@ -1,18 +1,17 @@
 #pragma once
 
 // =============================================================================
-// Kit — 时间线、单趟增量账本、工具三拍契约与统一执行器 Rig: 会话 (Mine, 大脑是大模型或外部 agent) / 工作台 (Bench) 100% 同构同路
+// Kit — 时间线、账本、工具三态与统一执行器 Rig: 会话 (Mine, 大脑是大模型或外部 agent) / 工作台 (Bench) 100% 同构同路
 // =============================================================================
 //   时间线与账本:
 //     Step / Act      全会话唯一真相: 一步 = 发给大脑的一条消息 → 它交来的一个调用 → 执行 (调用编号 #<步>); Act 仅持 Call + Span + ToolOut, Res 即唯一结构化载体
-//     State           单趟增量账本 = 计数 Tally + 结束旗 done + 已落文件 staged + 已入库 adopted
-//                     OpenStep / CloseReply / ApplyAct 增量 O(1) 推进; StateOf(Steps) 纯函数全量重算; TallyAt(now) O(1) 补在跑项秒数
-//   三态四形契约 (kSpecs 由 AGENT_TOOLS 拼名, 编译期核对签名 = ToolMeta::exec):
-//     SyncFn      (Call, Seat) → ToolOut                   当场一次到位
-//     LabFn       (Call, Bay)  → ToolOut                   后台纯计算直通
-//     StagedLab   open(Act, Seat) → LabTask ⇄ close(...)   后台三拍 (eval_factor: GUI 核验落盘 → Lab 回测 → GUI 入表封存)
-//     HumanFn     (shared_ptr<AskRes>) → ToolOut           等人三拍 (ask_human: GUI 建问卷 → 人点选 → GUI 封存)
-//   Rig             实验台底座 (Lab + Notes + timeline + State + doomed): 统一驱动单调用 open / step / settle / answer / abort
+//     Tally           时间线的纯折叠 TallyOf(Steps, now) (在跑的补到 now); Finished / AdoptedOf / StagedOf 同为纯函数, 无增量态
+//   三态 = Exec 三值, 实现形一一对应 (ImplFn 的下标 = Exec; kSpecs 由 AGENT_TOOLS 拼名, 编译期核对):
+//     Sync   SyncFn   (Call, Seat) → ToolOut      当场做完
+//     Lab    LabFn    (Act, Seat) → LabTask       GUI 备料 → Lab 计算 (Bay) → GUI 收尾 (Commit); 交空 = 备料即收尾
+//                     纯后台的 PureFn (Call, Bay) → ToolOut 由 pure<F> 包成 LabFn (备料 / 收尾都只是搬运)
+//     Human  HumanFn  (Call) → Res                建问卷 → 人点选 → 交答案即成文
+//   Rig             实验台底座 (Lab + Notes + 时间线 + doomed): 末步调用的一生 open → pump (Lab) / answer (Human) → 收尾; abort 随时作废
 // =============================================================================
 
 #include "gui/task_agent/Bridge.hpp"
@@ -22,7 +21,6 @@
 #include "nlohmann/json.hpp"
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <random>
 #include <set>
@@ -97,7 +95,7 @@ struct Step {
 };
 using Steps = std::span<const Step>;
 
-// ---- 计数与单趟增量账本 State ----
+// ---- 账本: 时间线的纯折叠 ----
 struct Tally {
   Per<Tool, int> calls{}, fails{};
   Per<Verdict, int> verdicts{};
@@ -107,7 +105,6 @@ struct Tally {
 
   int n(Tool t) const { return calls[t]; }
   int n(Verdict v) const { return verdicts[v]; }
-  int n(Exec e) const;
   int n(Cat c) const;
   int docs() const { return n(Tool::SearchDocs) + n(Tool::SearchFactors) + n(Tool::ReadDoc); }
   int all() const;
@@ -117,64 +114,46 @@ struct Tally {
   int staged() const { return n(Tool::EvalFactor) - n(Verdict::Unstaged); }
 };
 
-struct State {
-  std::set<std::string> staged;  // 本会话落了文件的候选文件名 (*.json)
-  std::set<std::string> adopted; // submit_factor 做成的英文名
-  Tally tally;                   // 已收尾的回复与调用的精确累计
-  bool done = false;             // 末个发出的一步之前 finish 已做完: 会话结束 (再发出一条即作罢)
-};
+Tally TallyOf(Steps ss, double now);       // 发出的回复与开始的调用 (在跑的计到 now; 失败 / 结局 / 入库只计做完的)
+bool Finished(Steps ss);                   // 末个发出的一步之前 finish 已做完: 会话结束 (再发出一条即作罢)
+std::set<std::string> AdoptedOf(Steps ss); // submit_factor 做成的英文名
+std::set<std::string> StagedOf(Steps ss);  // eval_factor 落了文件的候选文件名
 
-void OpenStep(State &s); // 这一步发出 (之前的 finish 作罢)
-void CloseReply(State &s, const Step &sp);
-void ApplyAct(State &s, const Act &a);
-State StateOf(Steps ss);
-Tally TallyAt(const State &s, Steps ss, double now);
-Tally TallyOf(Steps ss, double now);
-
-// ---- 台面与三拍工具签名 ----
+// ---- 台面与三态的实现形 ----
 struct Seat {
   Lab &lab;
   Notes &notes;
   const Gate &gate;
-  const State &st;
-  Steps timeline; // 末步 = 本调用所在的步
-  int me;         // 本调用的编号 (= 步)
+  int me; // 本调用的编号 (= 步)
   std::string scope, session;
   bool dry = false; // 不落记录: 全局记录只给编号不写, submit_factor 只查门槛不入库 (工作台)
   bool gpu = false; // eval_factor 的回测上 GPU
-  llm::Options llm; // Config 页当前后端 / 代理 / 模型 (probe_brain 用)
 };
 
-struct AskRes;
 using SyncFn = ToolOut (*)(const Call &, Seat &);
-using LabFn = ToolOut (*)(const Call &, Bay &);
-struct StagedLab {
-  std::optional<LabTask> (*open)(Act &, Seat &);
-  void (*close)(Act &, ToolOut, Seat &);
-};
-using HumanFn = ToolOut (*)(std::shared_ptr<AskRes>);
-using ImplFn = std::variant<SyncFn, LabFn, StagedLab, HumanFn>;
+using LabFn = LabTask (*)(Act &, Seat &);
+using HumanFn = ResPtr (*)(const Call &);
+using ImplFn = std::variant<SyncFn, LabFn, HumanFn>; // 下标 = Exec
+using PureFn = ToolOut (*)(const Call &, Bay &);
 
-// ---- 统一调用底座 Rig (Mine / Bench 共用) ----
+// ---- 统一调用底座 Rig (Mine / Bench 共用): 只驱动末步的调用 ----
 struct Rig {
   Lab lab;
   Notes notes;
   std::vector<Step> timeline;
-  State st;
   std::vector<std::string> doomed;
 
   int step() const { return static_cast<int>(timeline.size()); }
-  Tally tally(double now) const { return TallyAt(st, timeline, now); }
+  Tally tally(double now) const { return TallyOf(timeline, now); }
+  const Act *acting() const; // 末步在跑或待做的调用 (没有 = 空)
 
-  Seat seat(const Gate &gate, std::string_view session, bool dry, bool gpu, llm::Options llm = {}); // 本调用 = 末步的
-  void restate() { st = StateOf(timeline); }
+  Seat seat(const Gate &gate, std::string_view session, bool dry, bool gpu); // 本调用 = 末步的
   void flush();
 
-  Exec open_act(Act &a, Seat &s, double t); // Sync (含未落文件的 eval_factor) 当场收尾并返回 Exec::Sync
-  void step_act(Act &a, LabStep step, double t);
-  void settle_act(Act &a, ToolOut out, Seat &s, double t);
-  void answer_act(Act &a, double t);
-  void abort_act(Act &a, double t);
+  bool open_act(Seat &s, double t); // 开拍; true = 当场做完 (Sync, 或备料即收尾的 Lab)
+  bool pump_act(double t);          // 收 Lab 的 tick (阶段 / 收尾); true = 末步调用刚做完
+  void answer_act(double t);        // 交 ask_human 的答案
+  void abort_act(double t);         // 作废在跑的 (落了文件的回测删候选)
 };
 
 // ---- 随机输入的取材 ----

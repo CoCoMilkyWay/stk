@@ -1504,12 +1504,10 @@ void ops_panel(Ui &s, Scope &sc, const Context &c, bool locked) {
 void tools_panel(Ui &s) {
   s.tool_filter.Draw("过滤##tool", 240);
   ImGui::SameLine();
-  ImGui::TextDisabled("%zu 个工具; 悬浮参数看类型与说明, 悬浮说明看返回", kAgentTools);
+  ImGui::TextDisabled("%zu 个工具; 悬浮参数看类型与说明, 悬浮说明看返回", kNum<Tool>);
   if (!begin_table("##tools", {"工具", "中文名", "执行", "参数", "说明"}))
     return;
   for (const Tool t : kVals<Tool>) {
-    if (!IsAgentTool(t))
-      continue;
     const ToolMeta &m = def(t);
     const ToolDoc &d = doc(t);
     const std::string desc = ToolText(d.desc);
@@ -1618,7 +1616,7 @@ void render_mine(SharedData &data, Ui &s) {
     ops_panel(s, sc, v.ctx, scope_locked(s));
     ImGui::EndTabItem();
   }
-  const std::string tools = "工具 (" + std::to_string(kAgentTools) + ")###tools";
+  const std::string tools = "工具 (" + std::to_string(kNum<Tool>) + ")###tools";
   if (ImGui::BeginTabItem(tools.c_str())) {
     tools_panel(s);
     ImGui::EndTabItem();
@@ -1831,7 +1829,7 @@ TaskHandle CreateAgentTask() {
     default:
       if (!s.bench)
         s.bench = std::make_unique<Bench>();
-      s.bench->draw(data, tool_of(idx), s.mine->held() ? s.mine->setup.sc : s.opt.sc, s.opt.gate, use_gpu(s), leg_of(s.opt, use_gpu(s)).llm, s.mine->live() || !s.mine->idle());
+      s.bench->draw(data, tool_of(idx), s.mine->held() ? s.mine->setup.sc : s.opt.sc, s.opt.gate, use_gpu(s), s.mine->live() || !s.mine->idle());
       break;
     }
     ImGui::EndChild();

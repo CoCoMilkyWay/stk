@@ -45,10 +45,6 @@ constexpr sv kReadParts[] = {"card", "outline", "text"};
 constexpr sv kNoteKindChoices[] = {"feature", "tool", "insight", "issue"};
 constexpr sv kNoteScopes[] = {"all", "here"};
 constexpr sv kIssueTypes[] = {"bug", "idea", "question"};
-constexpr sv kYesNo[] = {"yes", "no"};
-constexpr sv kCtxKinds[] = {"result", "first", "test"};
-constexpr sv kCtxViews[] = {"full", "delta", "system"};
-constexpr sv kBrainBackends[] = {"zhipu", "cursor", "devin"};
 
 constexpr ArgDef kFeatureArgs[] = {{"exprs", "特征式", Arg::Strs, {}, 1, 4, {}, kExprsDesc}};
 constexpr ArgDef kLayersArgs[] = {
@@ -160,21 +156,6 @@ constexpr ArgDef kIssueArgs[] = {
     {"detail", "详情", Arg::Str, {}, 0, 0, {}, "bug: 工具 + 参数 + 看到了什么 + 预期是什么; idea: 现在怎样、改成怎样、为什么; question: 问什么、卡在哪"},
     {"ref", "附议", Arg::Str, sv{""}, 0, 0, {}, kRefDesc}};
 constexpr ArgDef kAskArgs[] = {{"questions", "问题", Arg::Questions, {}, 1, 8, {}, "问题数组, 每题 {\"prompt\": 题干, \"options\": [2..5 个字符串], \"multiple\": 可多选 (缺省 false), \"recommended\": [推荐的选项下标]}"}};
-constexpr ArgDef kBuildContextArgs[] = {
-    {"kind", "消息类", Arg::Str, sv{"result"}, 0, 0, kCtxKinds, "生成哪类消息: result 下一条 (末个调用的结果) / first 首条 / test 自检首条"},
-    {"view", "输出面", Arg::Str, sv{"full"}, 0, 0, kCtxViews, "原文给哪一层: full 完整上下文 Flat(TurnsOf) / delta 本条增量 TextOf / system 系统提示"},
-    {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本会话是否开放 ask_human"},
-    {"memo", "插话", Arg::Str, sv{""}, 0, 0, {}, "可选: 随本条附带的研究员插话"},
-    {"remark", "会话要求", Arg::Str, sv{""}, 0, 0, {}, "可选: 首条 / 自检首条末尾的本会话要求"}};
-constexpr ArgDef kCheckCallArgs[] = {
-    {"reply", "回复原文", Arg::Str, {}, 0, 0, {}, "待校验的回复: 一个调用 {\"tool\": ..., \"args\": {...}} (或带文字的原始回复)"},
-    {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本会话是否开放 ask_human"}};
-constexpr ArgDef kProbeBrainArgs[] = {
-    {"backend", "后端", Arg::Str, sv{""}, 0, 0, kBrainBackends, "可选: zhipu / cursor / devin; 空 = 用 Config 页当前选中 (代理同 Config)"},
-    {"model", "模型", Arg::Str, sv{""}, 0, 0, {}, "可选: 模型 id; 空 = 用 Config 页当前选中"},
-    {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本会话是否开放 ask_human"},
-    {"memo", "插话", Arg::Str, sv{""}, 0, 0, {}, "可选: 随本条附带的插话"},
-    {"prompt", "覆盖正文", Arg::Str, sv{""}, 0, 0, {}, "可选: 覆盖发出的 user 正文; 空 = 照快照时间线折出 TurnsOf"}};
 
 constexpr ToolDoc kDocs[] = {
     {Tool::ViewFeature, kFeatureArgs,
@@ -267,15 +248,6 @@ constexpr ToolDoc kDocs[] = {
      "向研究员提问 (每题带推荐), 等他选答. 只在关键分岔问研究员才能定的事 (起步方向、换手与 rIC 取舍等); 系统提示已定的不问也不确认. "
      "研究员每题都能选 \"其他\" 自己写, 还能附言, 所以选项不必穷举, 不要列 \"其他\" / \"由你决定\" 之类的兜底项",
      "每题的选择 (没照推荐的附上推荐) + 附言"},
-    {Tool::BuildContext, kBuildContextArgs,
-     "独立调试上下文与折叠: 按工作台当前快照 (空白或载入的历史会话某步) 拼出系统提示 / 首条 / 本条增量 / 完整上下文 (远处折成结论), 与真会话走同一份纯函数",
-     "对应层的完整原文 + 账本标志 / 各段字数与折叠点"},
-    {Tool::CheckCall, kCheckCallArgs,
-     "独立调试协议校验: 对一条回复跑 ParseCall, 是 eval_factor 再做落盘前核验 (lab.vet)",
-     "通过 = 规范化的调用; 不通过 = 重交要求原文"},
-    {Tool::ProbeBrain, kProbeBrainArgs,
-     "独立试跑一步内置大模型: 拿当前快照的 system + TurnsOf 直接走 llm::send (新开一段对话, 支持取消与代理), 收到回复后自动过 ParseCall 校验",
-     "模型原始回复正文 + 思考过程 / token / 校验结果"},
 };
 static_assert(std::size(kDocs) == kNum<Tool>);
 constexpr bool docs_in_order() {
@@ -557,8 +529,8 @@ CallCheck ParseCall(std::string_view reply, bool ask) {
   }
   const std::string &name = j["tool"].get_ref<const std::string &>();
   const std::optional<Tool> tid = FindId<Tool>(name);
-  if (!tid || !IsAgentTool(*tid) || (*tid == Tool::AskHuman && !ask)) {
-    out.error = "tool: " + (tid && IsAgentTool(*tid) ? std::string("ask_human 本会话不可用 (研究员没开提问)") : "没有工具 " + name);
+  if (!tid || (*tid == Tool::AskHuman && !ask)) {
+    out.error = "tool: " + (tid ? std::string("ask_human 本会话不可用 (研究员没开提问)") : "没有工具 " + name);
     return out;
   }
   const json &args = j.contains("args") ? j["args"] : json::object();
@@ -577,7 +549,7 @@ std::string CallJson(const Call &c) { return json{{"tool", def(c.tool).id}, {"ar
 std::string ToolsDoc(bool ask) {
   std::string s;
   for (const Tool t : kVals<Tool>) {
-    if (!IsAgentTool(t) || (t == Tool::AskHuman && !ask))
+    if (t == Tool::AskHuman && !ask)
       continue;
     const ToolMeta &m = def(t);
     const ToolDoc &d = doc(t);

@@ -41,17 +41,16 @@ struct ExecDef {
 inline constexpr ExecDef kExecs[] = {{"当场"}, {"后台"}, {"等人"}};
 AGENT_ROWS(Exec, kExecs, Human);
 
-enum class Cat : uint8_t { Look,      // view_*
-                           Trial,     // eval_factor / submit_factor
-                           Query,     // search_* / read_doc / list_*
-                           Note,      // request_* / note_insight / report_issue
-                           Misc,      // finish / ask_human
-                           Session }; // 会话内核调试 (仅工作台, 不进 agent 工具表)
+enum class Cat : uint8_t { Look,   // view_*
+                           Trial,  // eval_factor / submit_factor
+                           Query,  // search_* / read_doc / list_*
+                           Note,   // request_* / note_insight / report_issue
+                           Misc }; // finish / ask_human
 struct CatDef {
   const char *en, *cn; // en = 主栏 Tools 下的组名
 };
-inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Trial", "回测"}, {"Query", "检索"}, {"Note", "记录"}, {"Misc", "其他"}, {"Session", "会话"}};
-AGENT_ROWS(Cat, kCats, Session);
+inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Trial", "回测"}, {"Query", "检索"}, {"Note", "记录"}, {"Misc", "其他"}};
+AGENT_ROWS(Cat, kCats, Misc);
 
 // 工具清单: X(枚举, id, 中文名, 执行, 类, 上下文折叠后仍留原文)
 #define AGENT_TOOLS(X)                                                \
@@ -79,10 +78,7 @@ AGENT_ROWS(Cat, kCats, Session);
   X(NoteInsight, "note_insight", "记发现", Sync, Note, true)          \
   X(ReportIssue, "report_issue", "报问题", Sync, Note, true)          \
   X(Finish, "finish", "结束", Sync, Misc, true)                       \
-  X(AskHuman, "ask_human", "问研究员", Human, Misc, true)             \
-  X(BuildContext, "build_context", "拼上下文", Sync, Session, false)  \
-  X(CheckCall, "check_call", "核调用", Sync, Session, false)          \
-  X(ProbeBrain, "probe_brain", "试跑大模型", Lab, Session, false)
+  X(AskHuman, "ask_human", "问研究员", Human, Misc, true)
 
 #define AGENT_TOOL_ID(T, id, cn, E, C, keep) T,
 enum class Tool : uint8_t { AGENT_TOOLS(AGENT_TOOL_ID) };
@@ -97,15 +93,7 @@ struct ToolMeta {
 #define AGENT_TOOL_META(T, id, cn, E, C, keep) {id, cn, Exec::E, Cat::C, keep},
 inline constexpr ToolMeta kTools[] = {AGENT_TOOLS(AGENT_TOOL_META)};
 #undef AGENT_TOOL_META
-AGENT_ROWS(Tool, kTools, ProbeBrain);
-
-constexpr bool IsAgentTool(Tool t) { return def(t).cat != Cat::Session; }
-inline constexpr size_t kAgentTools = [] {
-  size_t n = 0;
-  for (const Tool t : kVals<Tool>)
-    n += IsAgentTool(t);
-  return n;
-}();
+AGENT_ROWS(Tool, kTools, AskHuman);
 
 enum class Arg : uint8_t { Str,
                            Int,

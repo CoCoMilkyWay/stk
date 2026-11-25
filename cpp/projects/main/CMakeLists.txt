@@ -462,9 +462,6 @@ set(MATH_PRECISE
     gui/task_agent/tools/query/SearchDocs.cpp
     gui/task_agent/tools/query/SearchFactors.cpp
     gui/task_agent/tools/query/SearchLeaves.cpp
-    gui/task_agent/tools/session/BuildContext.cpp
-    gui/task_agent/tools/session/CheckCall.cpp
-    gui/task_agent/tools/session/ProbeBrain.cpp
     gui/task_agent/tools/trial/EvalFactor.cpp
     gui/task_agent/tools/trial/SubmitFactor.cpp
     gui/task_agent/ui/Bench.cpp
@@ -481,10 +478,7 @@ set(MATH_PRECISE
     gui/task_agent/ui/look/ViewTrades.cpp
     gui/task_agent/ui/misc/AskHuman.cpp
     gui/task_agent/ui/misc/Finish.cpp
-    gui/task_agent/ui/note/NoteInsight.cpp
-    gui/task_agent/ui/note/ReportIssue.cpp
-    gui/task_agent/ui/note/RequestFeature.cpp
-    gui/task_agent/ui/note/RequestTool.cpp
+    gui/task_agent/ui/note/Note.cpp
     gui/task_agent/ui/query/ListLibrary.cpp
     gui/task_agent/ui/query/ListNotes.cpp
     gui/task_agent/ui/query/ListTried.cpp
@@ -492,9 +486,6 @@ set(MATH_PRECISE
     gui/task_agent/ui/query/SearchDocs.cpp
     gui/task_agent/ui/query/SearchFactors.cpp
     gui/task_agent/ui/query/SearchLeaves.cpp
-    gui/task_agent/ui/session/BuildContext.cpp
-    gui/task_agent/ui/session/CheckCall.cpp
-    gui/task_agent/ui/session/ProbeBrain.cpp
     gui/task_agent/ui/trial/EvalFactor.cpp
     gui/task_agent/ui/trial/SubmitFactor.cpp
     # factor: 因子契约头的消费者 = GPU 后端与 op_check 本体

@@ -307,7 +307,7 @@ Message FirstMessage(const Context &c, int tried, const std::string &notes, bool
 Message TestMessage(bool ask, const std::string &remark) {
   std::string tools;
   for (const Tool t : kVals<Tool>)
-    if (IsAgentTool(t) && (t != Tool::AskHuman || ask))
+    if (t != Tool::AskHuman || ask)
       tools += (tools.empty() ? "" : ", ") + std::string(def(t).id);
   return fill(Msg::Test, {{"tools", tools},
                           {"remark", remark_text(remark)},
