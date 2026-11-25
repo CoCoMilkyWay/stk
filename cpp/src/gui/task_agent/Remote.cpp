@@ -85,7 +85,7 @@ json tools_list() {
                     "后台执行中至多等 " +
                         std::to_string(kRemoteWait) +
                         " 秒 (未完交回进度, 再调无参 run 续等); 做完即交回下一条消息 (常规为本条增量: 各调用结果 + 假设板 + 下一步; 接上有历史的会话或研究员回退后自动附完整研究树); "
-                        "遇到 ask_human 或会话停下即刻交回状态 (finish 收尾那批的结果随结束提示交回). 不合协议 → 原地退回并给重发要求 (isError, 不占轮次)",
+                        "遇到 ask_human 或会话停下即刻交回状态 (finish 收尾那批的结果随结束提示交回). 不合协议的一批不执行, 交回的下一条即重交要求 (记一轮)",
                     schema({{"calls",
                              {{"type", "array"},
                               {"minItems", 1},
@@ -346,12 +346,11 @@ struct Remote::Impl {
     });
   }
 
-  // 交一批调用: 不合协议原地返回 isError; 进后台执行则等, 其余 (当场做完 / ask_human / 停下) 立刻交回
+  // 交一批调用 (不合协议的也收成一轮, 交回的下一条即重交要求): 进后台执行则等, 其余 (当场做完 / ask_human / 停下) 立刻交回
   void submit(Mine &m, json calls, Answer answer) {
     if (!m.waiting() || !m.idle())
       return answer({true, "这批没收下: " + state(m).text});
-    if (std::string err = m.reply(json{{"calls", std::move(calls)}}.dump()); !err.empty())
-      return answer(m.phase() == Mine::Phase::Pause ? halted(m) : Reply{true, std::move(err)});
+    m.reply(json{{"calls", std::move(calls)}}.dump());
     if (m.phase() == Mine::Phase::Act)
       return enqueue(m, std::move(answer));
     answer(state(m));

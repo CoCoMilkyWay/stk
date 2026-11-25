@@ -206,7 +206,7 @@ void Journal::save(const json &session, const json &brief, Rounds timeline) cons
 }
 
 // =============================================================================
-// Mine 状态机实现
+// Mine 主循环实现
 // =============================================================================
 double Mine::now() const { return t_end >= 0.0 ? t_end : std::chrono::duration<double>(Clock::now() - t0).count(); }
 
@@ -227,12 +227,6 @@ void Mine::bind(const SharedData &data) {
   flush();
   lab.bind(data, setup.sc, setup.test);
   notes.load(setup.test);
-  fresh();
-}
-
-void Mine::fresh() {
-  stop_ = false, retries_ = 0;
-  retry_reply_.clear(), retry_error_.clear();
 }
 
 void Mine::depart() { from_ = {sent(), now()}; }
@@ -252,15 +246,14 @@ void Mine::open(const SharedData &data, Setup s, Leg l) {
   timeline.clear();
   restate();
   memo.clear(), reason.clear(), report.clear();
-  cur_ = 0;
   ++rev_;
   t0 = Clock::now(), t_end = -1.0;
-  phase_ = Phase::Think;
+  held_ = true, paused_ = false;
   depart();
   const int tried = static_cast<int>(std::ranges::count_if(lab.results(), [](const Result &r) { return r.visible; }));
   post(setup.test ? TestMessage(setup.ask, setup.remark)
                   : FirstMessage(ctx, tried, NotesBrief(notes, catalog::label(setup.sc)), setup.ask, setup.remark));
-  send();
+  advance();
 }
 
 std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
@@ -277,7 +270,7 @@ std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
     return "作用域 " + catalog::label(s.sc) + " 的数据未就绪 (资产轴未扫或标签库未建)";
   if (std::string miss = catalog::open_miss(data, s.sc); !miss.empty())
     return miss;
-  if (phase_ == Phase::Pause)
+  if (held())
     close();
   open(data, std::move(s), std::move(l));
   return {};
@@ -303,11 +296,10 @@ void Mine::load(const SharedData &data, const std::string &dir) {
           if (const auto it = std::ranges::find(rs, k->st.file, &Result::file); it != rs.end())
             k->st.res = *it;
       }
-  cur_ = j.at("cur").get<size_t>();
   memo = j.at("memo").get<std::string>();
   reason = j.at("reason").get<std::string>();
   t_end = j.at("elapsed").get<double>();
-  phase_ = Phase::Pause;
+  held_ = true, paused_ = true;
   if (!j.at("clean").get<bool>())
     return redo(round(), "上次没停稳就退出了, 末轮作废重来");
   ++rev_;
@@ -322,7 +314,7 @@ void Mine::load(const SharedData &data, const std::string &dir) {
 }
 
 void Mine::resume(const SharedData &data, Leg l) {
-  assert(phase_ == Phase::Pause && idle() && !timeline.empty());
+  assert(phase() == Phase::Pause && idle() && !timeline.empty());
   flush();
   if (setup.remote)
     leg.gpu = l.gpu, leg.budget = l.budget;
@@ -330,55 +322,34 @@ void Mine::resume(const SharedData &data, Leg l) {
     leg = std::move(l);
   assert(catalog::ready(data, setup.sc, leg.gpu));
   t0 = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(t_end)), t_end = -1.0;
-  fresh();
   reason.clear();
   depart();
+  paused_ = false;
   mark("\n> **继续 (" + text::local("%H:%M:%S") + ")** · 大脑 " + brain() + "\n");
-  if (cont() == Cont::Acts) {
-    if (Act &a = timeline.back().acts[cur_]; a.span.began())
-      a = Act{.call = a.call};
-    return step();
-  }
-  phase_ = Phase::Think;
-  send();
+  advance();
 }
 
-void Mine::start() {
-  assert(phase_ == Phase::Choose);
-  answer_act(cur_++, now());
-  step();
+void Mine::answer() {
+  assert(phase() == Phase::Choose);
+  answer_act(acting(), now());
+  advance();
 }
 
-void Mine::stop() {
-  assert(live() && !stop_);
-  stop_ = true;
-  const bool receiving = chat.busy(); // 先取: busy 落下与 End 入队在同一把锁内, 此刻不忙则下面的 update 必收到 End
-  update();                           // 已到的先收: 回复 / 调用收尾随即按 Stop 停下
-  if (phase_ == Phase::Choose)
-    return pause("按 Stop");
-  if (phase_ == Phase::Think && !receiving) { // 没有在收的回复 (外部 agent 还没交批): 本条作废, 继续即重发
-    drop("按 Stop 时本条还没收到回复, 继续即重发");
-    pause("按 Stop");
-  }
-}
-
+// 在收的回复 / 在跑的调用 (含等研究员答的 ask_human) 作废, 停下
 void Mine::cancel() {
   assert(live());
-  Round &rd = timeline.back();
-  if (phase_ == Phase::Think)
+  const Round &rd = timeline.back();
+  if (!rd.span.ended())
     drop("按 Cancel 作废了在收的回复");
-  if (phase_ == Phase::Act && cur_ < rd.acts.size() && rd.acts[cur_].span.running()) {
-    abort_act(cur_, now());
-    if (++cur_ == rd.acts.size())
-      wrap();
-  }
+  else if (const size_t i = acting(); i < rd.acts.size() && rd.acts[i].span.running())
+    abort_act(i, now());
   pause("按 Cancel");
 }
 
 void Mine::close() {
-  assert(phase_ == Phase::Pause && idle());
+  assert(phase() == Phase::Pause && idle());
   flush();
-  phase_ = Phase::None;
+  held_ = false;
 }
 
 void Mine::queue(std::string m) {
@@ -401,8 +372,7 @@ void Mine::save() const {
                         {"leg", leg},
                         {"log_head", log.head()},
                         {"elapsed", now()},
-                        {"clean", phase_ == Phase::Pause || phase_ == Phase::Choose},
-                        {"cur", cur_},
+                        {"clean", phase() == Phase::Pause || phase() == Phase::Choose},
                         {"memo", memo},
                         {"reason", reason},
                         {"timeline", timeline}};
@@ -423,7 +393,7 @@ void Mine::save() const {
 
 // ---- 回退 ----
 Mine::Loss Mine::loss(int k) const {
-  assert(phase_ == Phase::Pause && k >= 1 && k <= round());
+  assert(phase() == Phase::Pause && k >= 1 && k <= round());
   return {.rounds = round() - k + 1, .files = static_cast<int>(staged_from(k).size()), .notes = static_cast<int>(notes.filed(log.dir(), k).size())};
 }
 
@@ -431,7 +401,7 @@ void Mine::rewind(int k) { redo(k, "回退到第 " + std::to_string(k) + " 条�
 
 // 第 k 轮起作废 (落的候选文件与提的全局记录一并删), 停在第 k 条发出前
 void Mine::redo(int k, std::string why) {
-  assert(phase_ == Phase::Pause && idle() && k >= 1 && k <= round());
+  assert(phase() == Phase::Pause && idle() && k >= 1 && k <= round());
   flush();
   discard(k);
   timeline.resize(static_cast<size_t>(k));
@@ -441,8 +411,6 @@ void Mine::redo(int k, std::string why) {
   unsend();
   rd.marks.clear();
   restate();
-  cur_ = 0;
-  fresh();
   ++rev_;
   reason = std::move(why);
   report = report_of(reason);
@@ -472,16 +440,29 @@ void Mine::discard(int k) {
   notes.drop(log.dir(), k);
 }
 
-Cont ContOf(Rounds timeline) {
-  assert(!timeline.empty());
-  return timeline.back().span.began() ? Cont::Acts : Cont::Send;
+size_t ActingOf(const Round &rd) {
+  size_t i = 0;
+  while (i < rd.acts.size() && rd.acts[i].span.ended())
+    ++i;
+  return i;
 }
 
-std::string HintOf(Rounds timeline, size_t cur, bool done) {
+std::string HintOf(Rounds timeline, bool done) {
+  assert(!timeline.empty());
+  const Round &rd = timeline.back();
   const std::string n = std::to_string(timeline.size());
-  if (ContOf(timeline) == Cont::Acts)
-    return "接着执行第 " + n + " 轮第 " + std::to_string(cur + 1) + " 个调用起 (共 " + std::to_string(timeline.back().acts.size()) + " 个)";
-  return "发出第 " + n + " 条消息" + (done ? " (agent 已宣布挖完, 发出即让它接着挖)" : "");
+  if (!rd.span.began())
+    return "发出第 " + n + " 条消息" + (done ? " (agent 已宣布挖完, 发出即让它接着挖)" : "");
+  if (const size_t i = ActingOf(rd); i < rd.acts.size())
+    return "接着执行第 " + n + " 轮第 " + std::to_string(i + 1) + " 个调用起 (共 " + std::to_string(rd.acts.size()) + " 个)";
+  return "发第 " + n + " 轮的结果";
+}
+
+int InvalidRun(Rounds timeline) {
+  int n = 0;
+  for (size_t i = timeline.size() - 1; i-- > 0 && !timeline[i].error.empty();)
+    ++n;
+  return n;
 }
 
 std::string BudgetMiss(const Budget &b, int d_rounds, double d_secs) {
@@ -522,12 +503,22 @@ std::string ReportOf(Rounds timeline, const State &st, const Notes &notes, const
   return r;
 }
 
-Cont Mine::cont() const { return ContOf(timeline); }
+Mine::Phase Mine::phase() const {
+  if (!held_)
+    return Phase::None;
+  if (paused_)
+    return Phase::Pause;
+  const Round &rd = timeline.back();
+  if (!rd.span.ended())
+    return Phase::Think;
+  const size_t i = ActingOf(rd);
+  return i < rd.acts.size() && def(rd.acts[i].call.tool).exec == Exec::Human && rd.acts[i].span.running() ? Phase::Choose : Phase::Act;
+}
 
-std::string Mine::hint() const { return phase_ != Phase::Pause ? std::string() : HintOf(timeline, cur_, flags().done); }
+std::string Mine::hint() const { return phase() != Phase::Pause ? std::string() : HintOf(timeline, flags().done); }
 
 // =============================================================================
-// 双翼对仗轮询与状态转移
+// 主循环与双翼轮询
 // =============================================================================
 void Mine::update() {
   while (std::optional<Chat::Tick> t = chat.poll())
@@ -538,7 +529,7 @@ void Mine::update() {
 }
 
 void Mine::on_chat(Chat::Tick t) {
-  if (phase_ != Phase::Think)
+  if (phase() != Phase::Think)
     return;
   Round &rd = timeline.back();
   const double now_s = now();
@@ -554,117 +545,77 @@ void Mine::on_chat(Chat::Tick t) {
     break;
   case ChatStep::End:
     rd.think.end(now_s), rd.write.end(now_s), rd.span.end(now_s);
-    replied(std::move(t.out));
+    got(std::move(t.out));
     break;
   }
 }
 
 void Mine::on_lab(Lab::Tick t) {
-  if (phase_ != Phase::Act)
+  if (phase() != Phase::Act)
     return;
   if (t.step != LabStep::End)
-    return step_act(cur_, t.step, now());
+    return step_act(acting(), t.step, now());
   if (t.out.cancelled)
     return;
-  Seat s = mine_seat();
-  settle_act(cur_++, std::move(t.out.out), s, now());
-  step();
+  const size_t i = acting();
+  Seat s = seat_of(i);
+  settle_act(i, std::move(t.out.out), s, now());
+  advance();
 }
 
-void Mine::replied(llm::Reply r) {
+// 主循环: 推进到要等的地方 (大脑回复 / 后台调用 / 研究员答) 或停下
+void Mine::advance() {
+  for (;;) {
+    const Round &rd = timeline.back();
+    if (!rd.span.began())
+      return send();
+    if (!rd.span.ended())
+      return;
+    if (const size_t i = ActingOf(rd); i < rd.acts.size()) {
+      if (rd.acts[i].span.running())
+        return;
+      Seat s = seat_of(i);
+      if (open_act(i, s, now()) != Exec::Sync)
+        return save();
+      continue;
+    }
+    post(rd.error.empty() ? RoundMessage(rd.acts, round(), st.board, setup.test) : RetryMessage(rd.error));
+    if (flags().done)
+      return pause("agent 宣布挖完");
+    if (InvalidRun(timeline) >= kMaxRetries)
+      return pause("连续 " + std::to_string(kMaxRetries) + " 批不合协议");
+    if (const std::string budget = over(); !budget.empty())
+      return pause("本段预算用完 (" + budget + ")");
+  }
+}
+
+// 大脑交来一条 (内置模型的回复 / 外部 agent 的 calls): 没收成即作废本条并停下; 收成的照收 (不合协议的无调用, error = 原因)
+void Mine::got(llm::Reply r) {
   if (!r.ok()) {
     const std::string why = "回复失败 (" + std::string(def(r.end).id) + (r.error.empty() ? "" : ": " + r.error) + ")";
     drop(why, std::move(r));
     return pause(why);
   }
-  std::string text = r.text;
-  std::string err = take(std::move(r));
-  if (err.empty() || phase_ == Phase::Pause)
-    return;
-  if (stop_) {
-    drop("按 Stop (本条回复未通过校验, 继续即重发)");
-    return pause("按 Stop");
-  }
-  retry_reply_ = std::move(text), retry_error_ = std::move(err);
-  Round &rd = timeline.back();
-  rd.span.t1 = -1.0, rd.think = {}, rd.write = {};
-  chat.send({leg.llm, system, TurnsOf(timeline, retry_reply_, retry_error_)});
-}
-
-// 大脑交来一批 (内置模型的回复 / 外部 agent 的 calls): 合协议即入本轮并执行 (返回空); 不合返回原因, 连续 kMaxRetries 批不合即作废本条并停下
-std::string Mine::take(llm::Reply r) {
-  BatchCheck got = VetBatch(r.text, setup.ask);
-  if (!got.ok()) {
-    mark("> **本批未通过校验 (" + std::to_string(retries_ + 1) + "/" + std::to_string(kMaxRetries) + ")**: " + got.error + "\n\n");
-    if (++retries_ < kMaxRetries) {
-      save();
-      return got.error;
-    }
-    r.end = llm::End::Error, r.error = got.error;
-    drop(got.error, std::move(r));
-    pause("连续 " + std::to_string(kMaxRetries) + " 批不合协议");
-    return got.error;
-  }
-  retries_ = 0;
-  retry_reply_.clear(), retry_error_.clear();
+  BatchCheck b = VetBatch(r.text, setup.ask);
   Round &rd = timeline.back();
   rd.span.end(now());
   rd.reply = std::move(r);
-  for (Call &c : got.calls)
+  rd.error = std::move(b.error);
+  for (Call &c : b.calls)
     rd.acts.push_back({.call = std::move(c)});
   CloseReply(st, rd);
-  cur_ = 0;
-  step();
-  return {};
+  advance();
 }
 
-Seat Mine::mine_seat() { return seat(cur_, setup.gate, log.dir(), false, leg.gpu); }
+Seat Mine::seat_of(size_t i) { return seat(i, setup.gate, log.dir(), false, leg.gpu); }
 
 std::string Mine::brain() const {
   return setup.remote ? std::string("外部 agent") : std::string(def(leg.llm.backend).name) + " / " + leg.llm.model;
 }
 
-std::string Mine::reply(std::string calls) {
+void Mine::reply(std::string calls) {
   assert(remote() && waiting());
-  const std::string err = take({.text = std::move(calls), .end = llm::End::Ok, .seconds = timeline.back().span.len(now())});
-  return err.empty() ? err : RetryText(err);
-}
-
-void Mine::step() {
-  Round &rd = timeline.back();
-  while (cur_ < rd.acts.size()) {
-    if (!go(Phase::Act))
-      return;
-    Seat s = mine_seat();
-    const Exec at = open_act(cur_, s, now());
-    if (at == Exec::Sync) {
-      ++cur_;
-      continue;
-    }
-    if (at == Exec::Human)
-      go(Phase::Choose);
-    save();
-    return;
-  }
-  wrap();
-  if (flags().done)
-    return pause("agent 宣布挖完");
-  if (const std::string budget = over(); !budget.empty())
-    return pause("本段预算用完 (" + budget + ")");
-  if (go(Phase::Think))
-    send();
-}
-
-// 本轮调用都做完: 下一条 (本轮结果) 入时间线待发
-void Mine::wrap() { post(RoundMessage(timeline.back().acts, round(), st.board, setup.test)); }
-
-bool Mine::go(Phase next_ph) {
-  if (stop_) {
-    pause("按 Stop");
-    return false;
-  }
-  phase_ = next_ph;
-  return true;
+  got({.text = std::move(calls), .end = llm::End::Ok, .seconds = timeline.back().span.len(now())});
 }
 
 void Mine::post(Message m) { timeline.push_back({.kind = m.kind, .user = std::move(m.text)}); }
@@ -683,7 +634,7 @@ void Mine::send() {
   save();
 }
 
-// 本条的回复作废 (没收到 / 收到一半 / 失败 / 连续不合协议; r = 收到的那条, 须非 Ok): 原文记进日志, 本条退回待发
+// 本条的回复作废 (没收到 / 收到一半 / 回复失败; r = 收到的那条, 须非 Ok): 原文记进日志, 本条退回待发
 void Mine::drop(std::string why, llm::Reply r) {
   assert(!r.ok());
   Round &rd = timeline.back();
@@ -698,7 +649,7 @@ void Mine::drop(std::string why, llm::Reply r) {
 
 void Mine::mark(std::string md) {
   Round &rd = timeline.back();
-  rd.marks.push_back({rd.reply.ok() ? static_cast<int>(cur_) : -1, std::move(md)});
+  rd.marks.push_back({rd.reply.ok() ? static_cast<int>(ActingOf(rd)) : -1, std::move(md)});
 }
 
 std::string Mine::over() const { return BudgetMiss(leg.budget, sent() - from_.round, now() - from_.t); }
@@ -712,8 +663,7 @@ void Mine::pause(std::string why) {
   report = report_of(reason);
   mark("---\n\n**停下 (" + text::local("%H:%M:%S") + ")**: " + reason + "\n\n");
   log.report(report);
-  phase_ = Phase::Pause;
-  stop_ = false;
+  paused_ = true;
   save();
 }
 
@@ -745,9 +695,9 @@ std::vector<Seen> SeenCalls(const Scope &sc, Tool t) {
       } else if (t == Tool::CheckBatch) {
         if (rd.reply.text.empty())
           continue;
-        out.push_back({s.dir, s.stamp, s.test, {n, 1}, {{"reply", rd.reply.text}, {"ask", "yes"}}, rd.error.empty() ? "通过 (" + std::to_string(rd.acts.size()) + " 个调用)" : RetryText(rd.error), rd.error.empty()});
+        out.push_back({s.dir, s.stamp, s.test, {n, 1}, {{"reply", rd.reply.text}, {"ask", "yes"}}, rd.error.empty() ? "通过 (" + std::to_string(rd.acts.size()) + " 个调用)" : RetryMessage(rd.error).text, rd.error.empty()});
       } else if (t == Tool::StepState) {
-        out.push_back({s.dir, s.stamp, s.test, {n, 0}, {{"action", "status"}, {"round", n}, {"cur", -1}, {"max_rounds", 0}, {"max_minutes", 0}, {"why", ""}}, HintOf(prefix, rd.acts.size(), false), rd.error.empty()});
+        out.push_back({s.dir, s.stamp, s.test, {n, 0}, {{"action", "status"}, {"round", n}, {"max_rounds", 0}, {"max_minutes", 0}, {"why", ""}}, HintOf(prefix, false), rd.error.empty()});
       } else if (t == Tool::ProbeBrain) {
         out.push_back({s.dir, s.stamp, s.test, {n, 1}, {{"backend", ""}, {"model", ""}, {"ask", "yes"}, {"memo", rd.memo}, {"prompt", ""}}, rd.reply.text, rd.reply.ok() && rd.error.empty()});
       }

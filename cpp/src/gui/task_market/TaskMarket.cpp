@@ -103,7 +103,7 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
     const int action = Market::RenderTabLines(idx - kTabLines, *e.portfolio_service, state->cta_service.get(), e.portfolio_ui, ui, data.config.fixed_impact,
                                               {data.config.commission, data.config.stamp, data.config.fixed_impact}, mk, data.asset_info.stocks,
                                               state->account->note(), state->account->holdings(), state->account->trades(),
-                                              state->account->positions());
+                                              state->account->costs());
     if (action == -1)
       e.portfolio_service->RequestCancel();
     Engine::SyncPortfolio(data, e, action == 1);

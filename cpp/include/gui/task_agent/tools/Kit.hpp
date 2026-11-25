@@ -55,12 +55,13 @@ struct Span {
 enum class Msg : uint8_t { System,
                            First,
                            Round,
-                           Test };
+                           Test,
+                           Retry };
 struct MsgDef {
   const char *id, *cn;
 };
-inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"test", "自检"}};
-AGENT_ROWS(Msg, kMsgs, Test);
+inline constexpr MsgDef kMsgs[] = {{"system", "系统提示"}, {"first", "首轮"}, {"round", "结果"}, {"test", "自检"}, {"retry", "重交"}};
+AGENT_ROWS(Msg, kMsgs, Retry);
 
 struct Message {
   Msg kind = Msg::First;
@@ -133,7 +134,7 @@ Tally TallyOf(Rounds rs, double now);
 // 整批核验 (协议解析 ParseCalls): Mine 与 Tools/Session/* 共用
 struct BatchCheck {
   std::vector<Call> calls;
-  std::string error; // 非空 = 整批退回原因
+  std::string error; // 非空 = 整批不合协议的原因
   bool ok() const { return error.empty(); }
 };
 BatchCheck VetBatch(std::string_view reply, bool ask);

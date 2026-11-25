@@ -3,7 +3,7 @@
 //   个股 = ASSET 右栏 (Live 持仓页右栏同一面板): 选中标的 (Want), 日内 (右挂盘口: 当日最新快照五档) + K 线;
 //   叠加图 (OverlayState; 两种 OverlayKind 同一入口 RenderOverlay, 同一份选中 / 档位条 / 工具角): 条 = 篮子线 / 个股 (右表点中的成分股: 个股历史 + 新浪当日);
 //     y 以 0 轴居中 (上下对称); 刻度区全空: 横网格 (含 0 轴) y 值小字内标在右壁, 线名小字贴线尾; 不画量, 读数看十字光标;
-//     涨跌幅 (NAV 日内栏) = 对首日前收的涨跌幅; 恒画收盘线, 单条另带现价十字 (虚线, 标涨跌幅 / 时刻); 个股线叠持仓段 (成本细线 + 仓位色带, 同主图同一核 PlotPositions);
+//     涨跌幅 (NAV 日内栏) = 对首日前收的涨跌幅; 恒画收盘线, 单条另带现价十字 (虚线, 标涨跌幅 / 时刻); 账户线叠持仓成本 (成本线 + 仓位色带, 同主图同一核 PlotCosts);
 //       0 轴上叠每分钟净流入 (Bars::net) 半透明红绿柱 (日轴各日, 柱高自成比例), 当日此刻所在根随快照动, 标的 = 只一条时它, 否则全A.等;
 //     累计净流入 (FLOW 页) = 自日轴首日首根起逐槽累计的净流入 (Bars::net; 占近 5 日日均成交额 % / 金额 亿元);
 //   近况 (Recent): 一个标的的近况两列 (NAV 右表 / ASSET 表). 以下为个股图:
@@ -84,22 +84,23 @@ const TradeDot *PlotTradeDots(std::span<const TradeDot> dots);
 // 悬停提示里一档成交: 日 时段 · 买 / 卖合计, 再逐只
 void TradeTip(const TradeMark &m);
 
-// 持仓段画进当前图 (日内栏 / NAV · VAL 主图同一核; 须在开着的 ImPlot 图里, 当前轴 = 线所在的轴):
-//   成本带 = 线与成本线之间填色 (成本线逐日阶梯: 成本随买入加权变), 色 = 仓位 (绿轻 → 红重, 深浅随仓位);
-//   成本细线 = 只画仍持仓的段, 买入 ≥ 10 万的日, 淡细, 自该日首笔买入槽起到日轴末;
-//   x = 日下标 · kSlots + 槽, days[下标] = 日; 线上的点经 x(i) / y(i) 取 (x 严格升序, 可 NaN 断开);
-//   图坐标 = a · (价 / 基准) + b (主图归一化 b = 0; 日内栏涨跌幅 b = −100) ⇒ 成本线位 = b + ratio(日) × (线在日末处的值 − b)
-void PlotPositions(std::span<const PosSeg> segs, std::span<const misc::Ymd> days, size_t n, const std::function<double(size_t)> &x,
-                   const std::function<double(size_t)> &y, double b);
+// 账户线上一只的持仓成本 (图坐标; 见 Quote::Costs): 线位 y, 自 x0 起 (首笔买入; 在图的日轴之前 = −∞), 现仓位 w, 画不画线
+struct CostLevel {
+  double x0 = 0, y = 0, w = 0;
+  bool line = false;
+};
+// 当前图里账户线 (点经 x(i) / y(i), x 升序, y 可 NaN 断开) 上画持仓成本 (主图 / 日内栏同一核; 当前轴 = 账户线的轴):
+//   逐像素列: 曲线与各条已起的线位之间, 被覆盖处色 = 覆盖它的各只仓位之和 / total (绿轻 → 红重; 压在线下, 半透明); 再画要画的线 (淡细, 起点到曲线末)
+void PlotCosts(std::span<const CostLevel> cs, double total, size_t n, const std::function<double(size_t)> &x, const std::function<double(size_t)> &y);
 
-// 叠加的一条: 标的 + 线色 (ImU32) + 线名 + 线上叠的成交点 (日内栏一档) / 持仓 (只日内栏的账户线有, 其余空) / 持仓段 (个股线的成本线 + 仓位色带)
+// 叠加的一条: 标的 + 线色 (ImU32) + 线名 + 线上叠的成交点 (日内栏一档) / 持仓 / 持仓成本 (后三样只日内栏的账户线有, 其余空)
 struct OverlayPick {
   Ref ref;
   uint32_t col;
   std::string name;
   std::shared_ptr<const Trades> trades;
   std::shared_ptr<const Holdings> hold;
-  std::shared_ptr<const Positions> poss;
+  std::shared_ptr<const Costs> costs;
   bool operator==(const OverlayPick &) const = default;
 };
 

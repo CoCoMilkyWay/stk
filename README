@@ -30,7 +30,7 @@ GUI布局:
   ④ 组合  因子 ─► output/portfolios (Market 组合)
   ⑤ 实盘  券商客户端 (live/<客户端>/, 登记于 live/Clients.hpp, 现只有通达信) ─(Driver 适配 ─► Broker: 刷新线程读成交 / 持仓 / 挂单 / 负债 / 信用账户; 调用线程下单 / 现金还款 / 拉两融条款 / 资金流水 · 历史成交)─► Live 持仓页 / 一键调仓 / 现金还款 (已清仓仍负债);
           摸客户端 / 在线用例另有独立程序 shim (cmd 转发 / 探内存 / 录制 / 用例, 与 app_main 共用适配代码); 行情走新浪 (订阅进 QuoteService 同一路, 不读客户端的), 两融条款缓存落 output/live (live/Terms.hpp; 个股另经本地库核; 与资金流水同形 拉 → 存, 每天自动一次), 调仓名单 output/config/live/lists
-          资金流水 + 历史成交 (live/Flows.hpp; 每天自动补一次) ─► output/live/flows.csv · deals.csv ─(PriceLib 按 account/ 回放 × 日脊个股日根 / 分钟根, 日内按成交时刻回推; 当日 × 新浪分钟收)─► Market 自选首行「账户」(时间加权净值, 分钟频; ▸ 展开 = 持仓个股 + 仓位, 同篮子; 账户线叠成交点, 个股线叠持仓段成本线 / 仓位色带)
+          资金流水 + 历史成交 (live/Flows.hpp; 每天自动补一次) ─► output/live/flows.csv · deals.csv ─(PriceLib 按 account/ 回放 × 日脊个股日根 / 分钟根, 日内按成交时刻回推; 当日 × 新浪分钟收)─► Market 自选首行「账户」(时间加权净值, 分钟频; ▸ 展开 = 持仓个股 + 仓位, 同篮子; 账户线叠成交点与持仓成本线 / 仓位色带)
   人定的配置落 output/config/ (一任务一目录); 各段的运行产物 (日志 / 用时 / 导出 / 采样) 落 output/run/ 下的同构位置; output/ 的布局唯一由 disk/Disk.hpp 定
 ```
 
@@ -260,7 +260,7 @@ stk/
 │   │   │   │   ├── services/
 │   │   │   │   │   └── CtaService.hpp                  # 🖥️ CTA: 一个标的 → 1 分钟后复权价 (价格库发布的连分钟全史) → cta/Trace 滚动调参轨迹 (band + 减仓 + 跟随)
 │   │   │   │   └── ui/
-│   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / MARGIN / FLOW / CTA (一行一对线 Line, 五页同一份派生 / 选中 / 区间; NAV 账户线叠成交点: 日内栏 5 分钟 / 主图 30 分钟一档; 个股线叠持仓段: 成本细线 + 仓位色带, 与成交点同一开关)
+│   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / MARGIN / FLOW / CTA (一行一对线 Line, 五页同一份派生 / 选中 / 区间; NAV 账户线叠成交点: 日内栏 5 分钟 / 主图 30 分钟一档; 账户线另叠持仓成本: 现持有各只的买入加权线 + 与净值曲线间的仓位色带, 与成交点同一开关)
 │   │   │   │       │                                   #    · 右表 = 指数 / 行业 / 概念 / 自选 / 因子 / 策略 行 (篮子行可展开成分股); 左 = 主图 + 日内栏 + 区间条
 │   │   │   │       │                                   #    · 横轴 = 槽 (日 × 240 + 分钟槽; 集合竞价并入首槽): 日线 / 分钟线同一轴
 │   │   │   │       ├── LinesView.hpp                   # 🖥️ 行情页纯计算层 (无 ImGui): 账 → 线 (腿集合成 mix / 价格指数) → 日并集轴 → 当日尾 / 估值分位 → 视图; 行一种 LinesRow
@@ -317,8 +317,8 @@ stk/
 │   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw, Mine 与 Bench 同源共用) + 工作台 Bench (Agent → Tools, 主栏按类折叠一工具一页, 基于 Rig) + 控件 Widgets
 │   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 候选四拍 (stage / absorb / adopt / discard) + 单线程工作台 Lab (共享不可变 ViewEnv, Store 共用)
 │   │   │       ├── Prompt.hpp                          # 🤖 纯成文层: 提示词模板填充 + 工具结果成文 + 上下文纯函数 TurnsOf (首条 + 按轮研究树 + 上一批 + 本条)
-│   │   │       ├── Mine.hpp                            # 🤖 挖掘会话 (唯一一套) 的薄调度状态机 (Mine : Rig): 大脑 = 内置大模型 (Chat) 或外部 agent (reply 交批); 每帧对仗轮询 Chat / Lab; 协议退回原地重试;
-│   │   │       │                                       #    停 / 续 / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
+│   │   │       ├── Mine.hpp                            # 🤖 挖掘会话 (唯一一套) 的主循环 advance (Mine : Rig): 只认时间线 (未发 → 发; 在等 → 等; 有调用 → 做; 做完 → 下一条);
+│   │   │       │                                       #    大脑 = 内置大模型 (Chat) 或外部 agent (reply 交批); 错批记一轮 (下一条 = 重交要求); Cancel / 续 / 回退; 可读研究日志 log.md + 停下报告 + 成对 JSON 存档
 │   │   │       ├── Remote.hpp                          # 🤖 外部 agent 的 MCP 接口 (本机 Streamable HTTP · JSON-RPC: initialize / ping / tools/list / tools/call): 外部 agent 当 Mine 的大脑;
 │   │   │       │                                       #    open (同 New 开新会话) / doc / run (交批或无参接上 / 续等), 研究工具只经 run 交; 常规只推本条增量, 断链 / 回退时补研究树; 执行中长等, 停下 / 等人即返
 │   │   │       └── TaskAgent.hpp                       # 🤖 Agent 任务界面: Mine (作用域 / 会话控制 / 时间线内嵌结构化图表 / 假设板 / 候选 / 记录处理 / 开放的特征与算子; 两种大脑同一个页) / Tools / Config

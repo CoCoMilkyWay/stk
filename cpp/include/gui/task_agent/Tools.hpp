@@ -9,7 +9,7 @@
 //     Lab    交右翼 worker 后台执行 (回测 eval_factor / 观察 view_* / 盘口重放 view_book / 研报库 search_docs · search_factors · read_doc)
 //     Human  等研究员点选答案 (ask_human)
 //   校验两层:
-//     协议层 (ParseCalls): JSON 结构 / 工具名 / 参数类型与范围 / 批限额 → 不合则整批原地退回重发
+//     协议层 (ParseCalls): JSON 结构 / 工具名 / 参数类型与范围 / 批限额 → 不合则整批不执行, 记成一轮错批, 下一条 = 重交要求
 //     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 假设 / 研报 id 不成 → 仅该调用 ok=false 写原因, 其余照做
 //   工具清单 AGENT_TOOLS (唯一顺序 = Tool 的值): 一行一个工具 (枚举, id, 中文名, 执行, 类, 研究树留原文);
 //     Tool 挂入 AGENT_ROWS (Named + Tabled): def(t) 编译期取元数据, IdOf / FindId / JSON 序列化与其他枚举同一套

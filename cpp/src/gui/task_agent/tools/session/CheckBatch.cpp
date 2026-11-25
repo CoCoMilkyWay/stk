@@ -30,7 +30,7 @@ ToolOut CheckBatch(const Call &c, Seat &s) {
   r->ask = ask;
   if (!chk.ok()) {
     r->error = std::move(chk.error);
-    r->retry_text = RetryText(r->error);
+    r->retry_text = RetryMessage(r->error).text;
     return Done(std::move(r), false);
   }
   const int round = static_cast<int>(s.timeline.size());

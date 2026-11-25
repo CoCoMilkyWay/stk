@@ -1,16 +1,17 @@
 #pragma once
 
 // =============================================================================
-// Mine — 挖掘会话 (唯一一套) 的状态机、计数与存档/可读日志 (基于双翼 Chat ⇄ Rig 对仗底座; 无 ImGui, 界面见 TaskAgent)
+// Mine — 挖掘会话 (唯一一套) 的主循环、计数与存档/可读日志 (基于双翼 Chat ⇄ Rig 对仗底座; 无 ImGui, 界面见 TaskAgent)
 // =============================================================================
-//   大脑 (Setup::remote 区分; 状态机 / 消息 / 约束 / 日志 / 界面完全同一套):
-//     内置大模型 发出 = Chat 问模型 (无状态请求, 由 TurnsOf 折叠上下文), 收成的回复即一批调用
-//     外部 agent (Setup::remote) 发出 = 交给它 (经 MCP, gui/task_agent/Remote.hpp 默认交回本条增量, 断链/回退时补研究树), 它 reply 交来的一批 (calls JSON) 即回复
-//   双翼对仗:
-//     左翼 Chat (问大模型): send(ChatReq) → Think / Write / Restart / End(Reply)
-//     右翼 Lab  (问数据核): send(Tool, LabTask) → Search / Run / Look / Docs / End(LabOut)
+//   主循环 advance (唯一状态 = 时间线 + 停着与否; 阶段与执行位置都由末轮推出):
+//     末轮未发出 → 交大脑; 在等回复 / 在跑的调用 (后台 Lab 或等研究员答的 ask_human) → 等;
+//     有调用未做 → 启动它; 都做完 → 下一条入时间线 (本轮结果; 错批 = 重交要求), finish / 连续错批 / 预算到了即停
+//   大脑 (Setup::remote 区分, 只在发出时分叉; 收到一律走 got):
+//     内置大模型 = Chat 问模型 (无状态请求, 由 TurnsOf 折叠上下文)
+//     外部 agent = 交给它 (经 MCP, gui/task_agent/Remote.hpp 默认交回本条增量, 断链/回退时补研究树), 它 reply 交来的一批 (calls JSON) 即回复
+//   不合协议的一批照收成一轮 (无调用, Round::error = 原因), 下一条即重交要求
+//   停下只有 Cancel (在收的回复 / 在跑的调用作废) 与系统停 (finish / 预算 / 连续错批 / 回复失败); 继续 = 接着 advance
 //   调用执行统一走 Rig (open_act → step_act / settle_act / answer_act / abort_act, 与工作台 Bench 同一底座)
-//   唯一真相: timeline (std::vector<Round>); st (Board + Tally + Flags + staged + adopted) 增量维护
 // =============================================================================
 
 #include "gui/task_agent/Bridge.hpp"
@@ -33,18 +34,10 @@ struct Budget {
   bool operator==(const Budget &) const = default;
 };
 
-// 停下后按继续的两种动作 (唯一真相表): 停着时末轮只会是 待发 (未发出) 或 调用待跑 (回复已收成)
-enum class Cont : uint8_t { Send,
-                            Acts };
-struct ContDef {
-  const char *id, *cn;
-};
-inline constexpr ContDef kConts[] = {{"send", "发出待发消息"}, {"acts", "续跑余下调用"}};
-AGENT_ROWS(Cont, kConts, Acts);
-
-// 状态机纯函数 (Mine 与 Tools/Session/* 共用)
-Cont ContOf(Rounds timeline);
-std::string HintOf(Rounds timeline, size_t cur, bool done);
+// 主循环纯函数 (Mine 与 Tools/Session/* 共用)
+size_t ActingOf(const Round &rd);               // 末轮执行到的调用 (首个没做完的; = acts.size() 即都做完)
+std::string HintOf(Rounds timeline, bool done); // 停着时按继续会做什么
+int InvalidRun(Rounds timeline);                // 末尾 (待发的一条之前) 连着几批不合协议
 std::string BudgetMiss(const Budget &b, int d_rounds, double d_secs);
 std::string ReportOf(Rounds timeline, const State &st, const Notes &notes, const std::string &dir, const std::string &why, const std::string &remark, bool test, double now);
 
@@ -73,7 +66,7 @@ inline constexpr const char *kSessionFile = "session.json";
 inline constexpr const char *kBriefFile = "brief.json";
 inline constexpr const char *kLogFile = "log.md";
 
-// ---- 会话台面与状态机 (Mine : Rig) ----
+// ---- 会话台面与主循环 (Mine : Rig) ----
 class Mine : public Rig {
 public:
   struct Setup {
@@ -113,11 +106,10 @@ public:
   std::string try_open(const SharedData &data, Setup s, Leg l); // 校验作用域 / 数据就绪 / 开放叶与算子后开会话 (停着的先关闭); 失败返回原因且不动现状
   void load(const SharedData &data, const std::string &dir);
   void resume(const SharedData &data, Leg l);
-  void start();
-  void stop();
+  void answer(); // 交 ask_human 的答案
   void cancel();
   void close();
-  std::string reply(std::string calls); // 外部 agent 交来一批 (calls JSON): 通过返回空并开始执行; 不合协议原地返回重发提示 (不污染 timeline)
+  void reply(std::string calls); // 外部 agent 交来一批 (calls JSON; 不合协议的也收成一轮)
   void queue(std::string m);
   std::string unqueue();
   void save() const;
@@ -126,39 +118,32 @@ public:
   Loss loss(int k) const;
   void rewind(int k);
 
-  Phase phase() const { return phase_; }
-  bool live() const { return phase_ == Phase::Think || phase_ == Phase::Act || phase_ == Phase::Choose; }
-  bool held() const { return phase_ != Phase::None; }
+  Phase phase() const;
+  bool live() const { return held_ && !paused_; }
+  bool held() const { return held_; }
   bool idle() const { return !chat.busy() && !lab.busy(); }
-  bool stopping() const { return stop_ && live(); }
-  bool remote() const { return held() && setup.remote; }                                                         // 会话由外部 agent 驱动
-  bool waiting() const { return phase_ == Phase::Think && !timeline.empty() && timeline.back().span.running(); } // 本条已发出, 在等大脑交这一批
-  std::string brain() const;                                                                                     // 大脑一句: 后端 / 模型, 或外部 agent
-  size_t acting() const { return cur_; }
-  int rev() const { return rev_; } // 时间线代号 (开 / 载入 / 回退递增; 外部 agent 据此判是否需补研究树)
-  Cont cont() const;
+  bool remote() const { return held() && setup.remote; }                             // 会话由外部 agent 驱动
+  bool waiting() const { return live() && timeline.back().span.running(); }          // 本条已发出, 在等大脑交这一批
+  std::string brain() const;                                                         // 大脑一句: 后端 / 模型, 或外部 agent
+  size_t acting() const { return timeline.empty() ? 0 : ActingOf(timeline.back()); } // 末轮执行到的调用
+  int rev() const { return rev_; }                                                   // 时间线代号 (开 / 载入 / 回退递增; 外部 agent 据此判是否需补研究树)
   std::string hint() const;
 
 private:
   void bind(const SharedData &data);
-  void fresh();
   void depart();
   int sent() const;
-  bool go(Phase next);
+  void advance();
   void post(Message m);
   void send();
+  void got(llm::Reply r);
   void drop(std::string why, llm::Reply r = {});
   void mark(std::string md);
   void pause(std::string why);
 
   void on_chat(Chat::Tick t);
   void on_lab(Lab::Tick t);
-  void replied(llm::Reply r);
-  std::string take(llm::Reply r);
-
-  void step();
-  Seat mine_seat();
-  void wrap();
+  Seat seat_of(size_t i);
 
   std::vector<std::string> staged_from(int k) const;
   void discard(int k);
@@ -168,12 +153,8 @@ private:
   std::string make_log_head() const;
   std::string report_of(const std::string &why) const;
 
-  Phase phase_ = Phase::None;
-  bool stop_ = false;
-  size_t cur_ = 0;
-  int retries_ = 0;
+  bool held_ = false, paused_ = false;
   int rev_ = 0;
-  std::string retry_reply_, retry_error_; // 本轮内置模型回复未过协议时的原地重试缓存 (不进 timeline)
   struct From {
     int round = 0; // 已发出的轮数
     double t = 0.0;

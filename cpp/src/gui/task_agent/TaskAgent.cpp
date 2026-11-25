@@ -378,7 +378,7 @@ const Act *acting(const Mine &m) {
 }
 const char *step_name(const TrialRes &k) { return k.run.began() ? "Run" : "Search"; }
 
-// ---- 会话行: New / Test / 载入 / 继续 / 交答案 / Stop / Cancel / 关闭 ----
+// ---- 会话行: New / Test / 载入 / 继续 / 交答案 / Cancel / 关闭 ----
 void load_session(const SharedData &data, Ui &s, const Saved &x) {
   if (!catalog::ready(data, x.sc, false)) {
     s.message = "这段会话的作用域未就绪 (资产轴未扫描或标签库未建)";
@@ -502,21 +502,15 @@ void session_row(const SharedData &data, Ui &s, const Scope &active_sc) {
   ImGui::SameLine();
   ImGui::BeginDisabled(m.phase() != Phase::Choose);
   if (ImGui::Button("交答案", ImVec2(60, 0)))
-    m.start();
+    m.answer();
   ImGui::EndDisabled();
   tip("agent 用 ask_human 提问时可用: 把选好的答案与附言交给 agent, 接着执行余下的调用");
-  ImGui::SameLine();
-  ImGui::BeginDisabled(!m.live() || m.stopping());
-  if (ImGui::Button("Stop", ImVec2(60, 0)))
-    m.stop();
-  ImGui::EndDisabled();
-  tip("停下: 在收回复的等它收齐 (不执行其中的调用), 没在收的 (外部 agent 还没交批) 即停 (本条记为没收成, 继续即重发), 在做的调用做完; 之后可继续 / 回退");
   ImGui::SameLine();
   ImGui::BeginDisabled(!m.live());
   if (ImGui::Button("Cancel", ImVec2(60, 0)))
     m.cancel();
   ImGui::EndDisabled();
-  tip("立即停下: 在收的回复作废; 在跑的调用作废 (落了文件的回测删掉候选); 之后可继续 / 回退");
+  tip("立即停下: 在收的回复作废 (继续即重发本条); 在跑的调用作废 (落了文件的回测删掉候选; 在等你答的 ask_human 记为没答); 之后可继续 / 回退");
   ImGui::SameLine();
   ImGui::BeginDisabled(m.phase() != Phase::Pause || !m.idle());
   if (ImGui::Button("关闭", ImVec2(60, 0)))
@@ -700,8 +694,6 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
       break;
     }
   }
-  if (m.stopping())
-    what += m.phase() == Phase::Think ? " · 等本条回复收齐即停" : " · 在做的调用做完即停", kind = TaskStatus::Kind::Warn;
   if (frac >= 0.0f) {
     ImGui::ProgressBar(frac, ImVec2(120, 0), "");
     ImGui::SameLine();
@@ -1198,7 +1190,7 @@ void timeline_panel(Ui &s, Mine &m, const Flow &f, bool to_end, float bottom) {
     }
   }
   if (start) {
-    m.start();
+    m.answer();
     s.pinned = true;
   }
   if (m.phase() == Phase::Pause)

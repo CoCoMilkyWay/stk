@@ -1,4 +1,4 @@
-// step_state — 看状态机: 透视账本 State、续跑判定 Cont、预算核对、回退损失与停下报告; 展示见 ui/session/StepState.cpp
+// step_state — 看主循环: 透视账本 State、执行位置与继续提示、预算核对、回退损失与停下报告; 展示见 ui/session/StepState.cpp
 #include "gui/task_agent/tools/Session.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
 
@@ -22,8 +22,7 @@ std::string StepStateRes::text() const {
            std::to_string(loss_notes) + " 条 (仅已落盘会话可计)\n"
                                         "- 已入正式库的不动\n";
   }
-  std::string s = "状态机透视 (第 " + std::to_string(round) + " 轮 · 调用 " + std::to_string(cur) + "/" + std::to_string(acts) + ")\n- 续跑判定 Cont: " + cont_id + " (" + cont_cn +
-                  ")\n- 下一步提示: " + hint + "\n- 流程旗 done: " + std::string(flags.done ? "true" : "false") + "\n- 假设板: " + std::to_string(hyps) + " 条 · 候选 " +
+  std::string s = "主循环透视 (第 " + std::to_string(round) + " 轮 · 调用 " + std::to_string(cur) + "/" + std::to_string(acts) + ")\n- 继续提示: " + hint + "\n- 流程旗 done: " + std::string(flags.done ? "true" : "false") + "\n- 假设板: " + std::to_string(hyps) + " 条 · 候选 " +
                   std::to_string(tally.staged()) + " · 入库 " + std::to_string(tally.adopted) + "\n- 预算核对: " + (budget_miss.empty() ? std::string("未超限") : "已超限 — " + budget_miss) +
                   "\n";
   return s;
@@ -35,16 +34,9 @@ ToolOut StepState(const Call &c, Seat &s) {
   r->round = static_cast<int>(s.timeline.size());
   const Round &rd = s.timeline.back();
   r->acts = rd.acts.size();
-  size_t ended = 0;
-  for (const Act &a : rd.acts)
-    ended += a.span.ended();
-  const int cur_arg = c.num("cur");
-  r->cur = cur_arg < 0 ? ended : std::min(static_cast<size_t>(cur_arg), r->acts);
-
-  const Cont ct = ContOf(s.timeline);
-  r->cont_id = def(ct).id, r->cont_cn = def(ct).cn;
+  r->cur = ActingOf(rd);
   r->flags = s.st.flags;
-  r->hint = HintOf(s.timeline, r->cur, r->flags.done);
+  r->hint = HintOf(s.timeline, r->flags.done);
   r->tally = TallyAt(s.st, s.timeline, 0.0);
   r->hyps = s.st.board.all().size();
 
@@ -68,7 +60,6 @@ ToolOut StepState(const Call &c, Seat &s) {
 json SampleStepState(Feed &p) {
   return {{"action", "status"},
           {"round", std::max(1, static_cast<int>(p.timeline.size()))},
-          {"cur", -1},
           {"max_rounds", 0},
           {"max_minutes", 0},
           {"why", ""}};

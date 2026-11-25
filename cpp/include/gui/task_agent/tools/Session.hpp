@@ -6,7 +6,7 @@
 // =============================================================================
 //   build_context  当场 (SyncFn): 按工作台快照拼出 system / 首条 / 研究树 / 本条增量 / 完整上下文 TurnsOf
 //   check_batch    当场 (SyncFn): 跑 VetBatch (ParseCalls) + eval_factor 落盘核验 (vet)
-//   step_state     当场 (SyncFn): 透视账本 State、续跑判定 Cont、预算核对、回退损失与停下报告
+//   step_state     当场 (SyncFn): 透视账本 State、执行位置与继续提示、预算核对、回退损失与停下报告
 //   probe_brain    后台三拍 (StagedLab): 拿快照上下文直接调 llm::send 单轮试跑并自动过 VetBatch
 // =============================================================================
 
@@ -44,7 +44,7 @@ struct CheckBatchRes final : Res {
 };
 
 struct StepStateRes final : Res {
-  std::string action, cont_id, cont_cn, hint, budget_miss, report;
+  std::string action, hint, budget_miss, report;
   int round = 0, rewind_k = 0;
   int loss_rounds = 0, loss_files = 0, loss_notes = 0;
   size_t cur = 0, acts = 0, hyps = 0;

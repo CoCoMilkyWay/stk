@@ -37,118 +37,21 @@ Quote::Day path_day(misc::Ymd d, float ref, std::span<const double> v) {
   return y;
 }
 
-// 逐日扫流水出各只的持仓段 (成本线 / 仓位色带): 买入按额加权摊成本 (卖出不动), 股数归零即清仓分段;
-//   线锚 = 买入额 ≥ 10 万的日 (历史成交), 记该日首笔买入槽; 仓位 = 股数 × 收盘 / 净资产 (清仓段 = 清仓日开盘股数, 仍持仓 = 末日);
-//   ratio(日) = 成本 × adj(成本定日) ÷ (当日收盘 × adj(当日)) —— 成本在连复权空间里是恒定水平线, 跨除权日连续
-std::shared_ptr<Quote::Positions> positions_of(const live::flows::Cache &l, const std::vector<account::Day> &ds,
-                                               const std::unordered_map<std::string, Quote::Series> &held, const AssetAxis &ax) {
-  using live::flows::holds;
-  using live::flows::kShare;
-  // 代码 → 日 → {首笔买入槽, 当日买入额} (历史成交)
-  std::map<std::string, std::map<misc::Ymd, std::pair<int, double>>> buys;
-  for (const live::Deal &x : l.deals) {
-    if (x.side != live::kBuy)
+// 回放末日 last 收后仍持有的各只的开仓日: 逐行累计计入持仓的股数, 由 0 (不足 kShare) 转正的那日即开仓
+std::shared_ptr<const Quote::Opens> opens_of(const std::vector<live::CashFlow> &rows, misc::Ymd last) {
+  std::unordered_map<std::string, std::pair<double, misc::Ymd>> q; // 代码 → (股, 开仓日)
+  for (const live::CashFlow &r : rows) {
+    if (r.date > last || !live::flows::holds(r))
       continue;
-    auto &[slot, amt] = buys[x.code][x.date];
-    const int s = std::clamp(Quote::sec_slot(x.sec), 0, kSlots - 1);
-    slot = amt == 0.0 ? s : std::min(slot, s);
-    amt += x.amount;
+    auto &[n, d] = q[r.code];
+    if (n < live::flows::kShare && r.qty > 0)
+      d = r.date;
+    n += r.qty;
   }
-  struct Raw {
-    misc::Ymd open = 0, close = 0;
-    double wqty = 0;                                 // 仓位计的股数
-    std::vector<std::pair<misc::Ymd, double>> steps; // 成本变了的日 → 新成本 [原价]
-  };
-  struct Pos {
-    misc::Ymd last = 0; // 末个有流水的日
-    double qty = 0, cost = 0, start = 0;
-    bool open = false;
-    Raw *cur = nullptr;
-  };
-  std::map<std::string, std::vector<Raw>> raw;
-  std::map<std::string, Pos> ps;
-  for (const live::CashFlow &r : l.rows) {
-    if (!holds(r) || r.qty == 0)
-      continue;
-    Pos &p = ps[r.code];
-    if (p.last != r.date) {
-      p.last = r.date;
-      p.start = p.qty;
-    }
-    const double q = static_cast<double>(r.qty);
-    if (r.qty > 0) {
-      if (!p.open) {
-        p.open = true;
-        raw[r.code].push_back({.open = r.date});
-        p.cur = &raw[r.code].back();
-      }
-      if (r.price > 0) // 划入等无价行: 只加股数, 成本不动
-        p.cost = (p.cost * p.qty + r.price * q) / (p.qty + q);
-      p.qty += q;
-      if (!p.cur->steps.empty() && p.cur->steps.back().first == r.date)
-        p.cur->steps.back().second = p.cost;
-      else if (p.cost > 0)
-        p.cur->steps.push_back({r.date, p.cost});
-    } else {
-      p.qty += q;
-      if (p.open && p.qty < kShare) {
-        p.open = false;
-        p.cur->close = r.date;
-        p.cur->wqty = p.start;
-        p.qty = p.cost = 0, p.cur = nullptr;
-      }
-    }
-  }
-  for (auto &[c, p] : ps)
-    if (p.open)
-      p.cur->wqty = p.qty;
-  // 日 → 净资产 (回放)
-  std::map<misc::Ymd, double> nav;
-  for (const account::Day &x : ds)
-    nav[x.date] = x.nav;
-  auto out = std::make_shared<Quote::Positions>();
-  for (const auto &[code, segs] : raw) {
-    const auto hi = held.find(code);
-    const size_t id = ax.find(live::asset_sym(live::market_of(code), code));
-    if (hi == held.end() || id >= ax.size())
-      continue;
-    const Quote::Series &h = hi->second;
-    // 最后日序 ≤ day 的日根下标; 无 (在库段之前) → daily.size()
-    const auto at_or_before = [&](misc::Ymd day) -> size_t {
-      const auto it = std::ranges::lower_bound(h.daily, day, {}, [](const Quote::Candle &c) { return c.date; });
-      if (it != h.daily.end() && it->date == day)
-        return static_cast<size_t>(it - h.daily.begin());
-      if (it == h.daily.begin())
-        return h.daily.size();
-      return static_cast<size_t>(it - h.daily.begin() - 1);
-    };
-    std::vector<Quote::PosSeg> &dst = (*out)[static_cast<uint32_t>(id)];
-    for (const Raw &r : segs) {
-      const misc::Ymd end = r.close ? r.close : ds.back().date;
-      Quote::PosSeg s{.open = r.open, .close = r.close};
-      if (const size_t wi = at_or_before(end); wi < h.daily.size())
-        if (const auto ni = nav.find(end); ni != nav.end() && ni->second > 0)
-          s.weight = r.wqty * h.daily[wi].close / ni->second;
-      size_t sp = 0; // 成本步 (steps 升序)
-      const size_t c0 = static_cast<size_t>(std::ranges::lower_bound(h.daily, r.open, {}, [](const Quote::Candle &c) { return c.date; }) - h.daily.begin());
-      for (size_t ci = c0; ci < h.daily.size() && h.daily[ci].date <= end; ++ci) {
-        while (sp + 1 < r.steps.size() && r.steps[sp + 1].first <= h.daily[ci].date)
-          ++sp;
-        if (sp >= r.steps.size() || r.steps[sp].first > h.daily[ci].date)
-          continue;
-        const size_t si = at_or_before(r.steps[sp].first);
-        if (si < h.daily.size() && h.daily[ci].close > 0 && h.adj[ci] > 0)
-          s.ratio.push_back({h.daily[ci].date, r.steps[sp].second * h.adj[si] / (h.daily[ci].close * h.adj[ci])});
-      }
-      if (s.ratio.empty())
-        continue;
-      if (const auto bi = buys.find(code); bi != buys.end())
-        for (const auto &[bd, sa] : bi->second)
-          if (bd >= r.open && bd <= end && sa.second >= 1e5)
-            s.lines.push_back({bd, sa.first});
-      dst.push_back(std::move(s));
-    }
-  }
+  auto out = std::make_shared<Quote::Opens>();
+  for (const auto &[code, x] : q)
+    if (x.first >= live::flows::kShare)
+      out->emplace(code, x.second);
   return out;
 }
 
@@ -255,7 +158,7 @@ Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, 
     }
     days->push_back({ds[k].date, base, pnl});
   }
-  o.eq = {ds.back().nav, account::flow_after(l.rows, ds.back().date), 0, {}, std::move(days), std::make_shared<const Quote::Trades>(Quote::rebin(marks, 1)), positions_of(l, ds, held, ax)};
+  o.eq = {ds.back().nav, account::flow_after(l.rows, ds.back().date), 0, {}, std::move(days), std::make_shared<const Quote::Trades>(Quote::rebin(marks, 1)), opens_of(l.rows, ds.back().date)};
   for (const account::Day &d : ds)
     o.eq.in += d.flow;
   for (const account::Hold &h : ds.back().hold)

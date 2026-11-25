@@ -57,14 +57,14 @@ inline constexpr int kStockDays = 60;  // view_stock_days 一次至多看几日
 inline constexpr int kStockRows = 40;  // view_stock_day 逐行时段一次至多几行 (逐行表要装进 kOutChars)
 inline constexpr int kBookMins = 30;   // view_book 一次重放的窗口至多几分钟 (交易时段内)
 inline constexpr int kBookRows = 30;   // view_book 逐时表至多几行 (每行 step 秒; 表要与事件 / 剖面一起装进 kOutChars)
-inline constexpr int kMaxRetries = 5;  // 连续这么多条回复不合协议即停下, 等研究员 (多半是模型或提示词出了问题)
+inline constexpr int kMaxRetries = 5;  // 连续这么多批不合协议即停下, 等研究员 (多半是模型或提示词出了问题; 提示词 {{max_retries}})
 
 // 常量占位 {{键}} (提示词模板与工具说明同一张表; 模板另有随作用域的键, 见 gui/task_agent/Prompt.hpp)
 struct ConstDef {
   const char *key;
   int value;
 };
-inline constexpr ConstDef kConsts[] = {{"max_calls", kMaxCalls}, {"batch", kBatch}, {"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}};
+inline constexpr ConstDef kConsts[] = {{"max_calls", kMaxCalls}, {"batch", kBatch}, {"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}, {"max_retries", kMaxRetries}};
 inline const ConstDef *const_of(std::string_view key) {
   for (const ConstDef &c : kConsts)
     if (key == c.key)

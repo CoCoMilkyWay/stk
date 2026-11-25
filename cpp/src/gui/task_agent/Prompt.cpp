@@ -354,14 +354,14 @@ Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board
                            {"next", NextStep(test)}});
 }
 
-std::string RetryText(const std::string &error) {
+Message RetryMessage(const std::string &error) {
   std::string list;
   for (size_t i = 0; i <= error.size();) {
     const size_t e = std::min(error.find('\n', i), error.size());
     list += (list.empty() ? "- " : "\n- ") + error.substr(i, e - i);
     i = e + 1;
   }
-  return "上一批调用未通过校验, 一个调用都没执行. 不合处 (一行一处, 全部改掉):\n\n" + list + "\n\n改正后整批重交 `{\"calls\": [...]}`.";
+  return fill(Msg::Retry, {{"errors", list}});
 }
 
 std::string MemoText(const std::string &memo) {
@@ -370,22 +370,26 @@ std::string MemoText(const std::string &memo) {
 
 std::string TextOf(const Round &rd) { return rd.memo.empty() ? rd.user : rd.user + MemoText(rd.memo); }
 
-llm::Turns TurnsOf(Rounds rs, std::string_view retry_reply, std::string_view retry_error) {
+// 本段 = 末条连同它前面连着的错批 (各批与其后的重交要求逐条照列); 段前 = 首条 + 研究树 + 段前一批的回复
+llm::Turns TurnsOf(Rounds rs) {
   assert(!rs.empty());
+  size_t k = rs.size() - 1;
+  while (k > 0 && !rs[k - 1].error.empty())
+    --k;
   llm::Turns t;
-  if (rs.size() == 1) {
+  if (k == 0) {
     t.push_back({true, TextOf(rs[0])});
   } else {
-    const Round &p = rs[rs.size() - 2];
-    assert(p.reply.ok() && !p.acts.empty() && "前一轮的回复合格且执行了");
-    const std::string tree = TreeOf(rs);
+    const Round &p = rs[k - 1];
+    assert(p.reply.ok() && !p.acts.empty() && "段前一批的回复合格且执行了");
+    const std::string tree = TreeOf(rs.first(k + 1));
     t.push_back({true, TextOf(rs[0]) + (tree.empty() ? "" : "\n---\n\n" + tree)});
     t.push_back({false, p.reply.text});
-    t.push_back({true, TextOf(rs.back())});
+    t.push_back({true, TextOf(rs[k])});
   }
-  if (!retry_error.empty()) {
-    t.push_back({false, std::string(retry_reply)});
-    t.push_back({true, RetryText(std::string(retry_error))});
+  for (size_t i = k; i + 1 < rs.size(); ++i) {
+    t.push_back({false, rs[i].reply.text});
+    t.push_back({true, TextOf(rs[i + 1])});
   }
   return t;
 }

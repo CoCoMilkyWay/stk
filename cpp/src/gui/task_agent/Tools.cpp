@@ -188,9 +188,8 @@ constexpr ArgDef kCheckBatchArgs[] = {
     {"reply", "回复原文", Arg::Str, {}, 0, 0, {}, "待校验的一批调用 JSON (或带文字的原始回复, 含 {\"calls\": [...]})"},
     {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本轮是否开放 ask_human"}};
 constexpr ArgDef kStepStateArgs[] = {
-    {"action", "检查项", Arg::Str, sv{"status"}, 0, 0, kStepActions, "看哪一面: status 账本 · Cont · 预算 / rewind 回退损失预估 / report 停下报告"},
+    {"action", "检查项", Arg::Str, sv{"status"}, 0, 0, kStepActions, "看哪一面: status 账本 · 继续提示 · 预算 / rewind 回退损失预估 / report 停下报告"},
     {"round", "目标轮", Arg::Int, int{1}, 1, 999, {}, "rewind 时要回退到的轮次 (1..当前轮数)"},
-    {"cur", "当前序", Arg::Int, int{-1}, -1, 99, {}, "末轮执行到的调用下标 (-1 = 末轮已执行完的个数)"},
     {"max_rounds", "轮数上限", Arg::Int, int{0}, 0, 999, {}, "模拟预算: 每段最多几轮 (0 = 不限)"},
     {"max_minutes", "分钟上限", Arg::Int, int{0}, 0, 9999, {}, "模拟预算: 每段最多几分钟 (0 = 不限)"},
     {"why", "停下原因", Arg::Str, sv{""}, 0, 0, {}, "可选: report 的停下原因 (空 = 调试预览)"}};
@@ -305,7 +304,7 @@ constexpr ToolDoc kDocs[] = {
      "独立调试协议校验: 对一批调用 JSON 跑 ParseCalls, 并对 eval_factor 做落盘前核验 (lab.vet)",
      "通过 = 规范化调用清单; 不通过 = 重发要求原文"},
     {Tool::StepState, kStepStateArgs,
-     "独立透视会话状态机: 按当前快照计算账本 State、续跑动作 Cont、预算核对、回退损失预估与停下报告",
+     "独立透视会话主循环: 按当前快照计算账本 State、执行位置与继续提示、预算核对、回退损失预估与停下报告",
      "状态摘要 / 回退损失 / 停下报告原文"},
     {Tool::ProbeBrain, kProbeBrainArgs,
      "独立试跑单轮内置大模型: 拿当前快照的 system + TurnsOf 直接走 llm::send (支持取消与代理), 收到回复后自动过 ParseCalls 校验",
