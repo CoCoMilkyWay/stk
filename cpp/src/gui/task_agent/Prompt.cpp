@@ -173,7 +173,7 @@ std::string TreeOf(Rounds msgs) {
     return {};
   return "# 研究树 (第 1–" + std::to_string(done.size()) +
          " 轮摘要)\n\n"
-         "各调用的原文只在交回它的那条消息里给一次, 此后按轮收在这里 (回测留模板与结局, 观察留关键数, 记录 / 问答 / 假设留原文, 查询只留调用一行); 要细节就重调.\n" +
+         "各调用的原文只在交回它的那条消息里给一次, 此后按轮收在这里 (回测留模板与结局, 观察留关键数, 记录 / 问答留原文, 查询只留调用一行); 要细节就重调.\n" +
          body;
 }
 
@@ -347,11 +347,8 @@ std::string NextStep(bool test) {
          " 个 eval_factor); 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish.";
 }
 
-Message RoundMessage(const std::vector<Act> &acts, int round, const Board &board, bool test) {
-  const std::string b = board.text();
-  return fill(Msg::Round, {{"results", ResultsText(acts, round)},
-                           {"board", b.empty() ? std::string() : "# 假设板\n\n" + b + "\n"},
-                           {"next", NextStep(test)}});
+Message RoundMessage(const std::vector<Act> &acts, int round, bool test) {
+  return fill(Msg::Round, {{"results", ResultsText(acts, round)}, {"next", NextStep(test)}});
 }
 
 Message RetryMessage(const std::string &error) {

@@ -1,4 +1,4 @@
-// eval_factor — 回测: 三拍对仗 OpenEvalFactor (核假设落盘, GUI) → LabTask (Search + Run, Lab) → CloseEvalFactor (入表封存, GUI)
+// eval_factor — 回测: 三拍对仗 OpenEvalFactor (核验落盘, GUI) → LabTask (Search + Run, Lab) → CloseEvalFactor (入表封存, GUI)
 //               → TrialRes (最佳权重的具体式 (负号前置) + 频率 / 预测周期 + 各权重统计与门槛 + 分年 → 累计分层 (Run 顺带的最佳权重逐日序列) / 分年 rIC 两张正负柱图)
 //               → 原文; 展示见 ui/trial/EvalFactor.cpp
 #include "gui/task_agent/Config.hpp"
@@ -179,7 +179,7 @@ std::string TrialRes::text() const {
   const Weight *w = shown();
   std::string s = "### " + st.cand.name + " (" + st.cand.name_cn + ")\n`" + (w ? Formula(*w) : st.cand.expr) + "`\n";
   if (!st.cand.note.empty())
-    s += "- 思路" + (st.cand.hyp.empty() ? std::string() : " (" + st.cand.hyp + ")") + ": " + st.cand.note + "\n";
+    s += "- 思路: " + st.cand.note + "\n";
   if (!w)
     return s + Detail(r);
   s += "- " + ScopeLine(*this) + "\n";
@@ -201,9 +201,7 @@ std::optional<LabTask> OpenEvalFactor(Act &a, Seat &s) {
   auto r = std::make_shared<TrialRes>();
   r->gate = s.gate;
   r->level = s.lab.ctx().level, r->hold = s.lab.ctx().hold;
-  Cand cand{c.str("name"), c.str("name_cn"), c.str("expr"), c.str("hyp"), c.str("note")};
-  const Hyp *h = cand.hyp.empty() ? nullptr : s.st.board.find(cand.hyp);
-  r->st = s.lab.stage(std::move(cand), h ? h->title() : std::string());
+  r->st = s.lab.stage({c.str("name"), c.str("name_cn"), c.str("expr"), c.str("note")});
   if (!r->st.ok()) {
     a.out = Done(std::move(r), false);
     return std::nullopt;
@@ -244,7 +242,7 @@ json SampleEvalFactor(Feed &p) {
   std::vector<std::string> leaves = p.grid();
   if (leaves.empty())
     leaves.push_back(p.leaf());
-  Cand c{.name_cn = "工作台试样", .hyp = p.hyp()};
+  Cand c{.name_cn = "工作台试样"};
   for (int i = 0; i < kSampleTries; ++i) {
     const std::string &x = p.one(leaves);
     const std::string_view w = p.one(wraps), r = p.one(roots);
@@ -255,7 +253,7 @@ json SampleEvalFactor(Feed &p) {
     if (p.lab.vet(c).empty())
       break;
   }
-  return {{"name", c.name}, {"name_cn", c.name_cn}, {"expr", c.expr}, {"hyp", c.hyp}, {"note", c.note}};
+  return {{"name", c.name}, {"name_cn", c.name_cn}, {"expr", c.expr}, {"note", c.note}};
 }
 
 } // namespace GUI::Agent

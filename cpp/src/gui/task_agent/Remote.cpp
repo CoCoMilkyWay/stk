@@ -84,7 +84,7 @@ json tools_list() {
                     "给 calls = 交一批研究工具调用, 按序执行; 不给 calls (空参数 {}) = 接上已有外部会话 / 续等执行中的调用 / 取当前状态. "
                     "后台执行中至多等 " +
                         std::to_string(kRemoteWait) +
-                        " 秒 (未完交回进度, 再调无参 run 续等); 做完即交回下一条消息 (常规为本条增量: 各调用结果 + 假设板 + 下一步; 接上有历史的会话或研究员回退后自动附完整研究树); "
+                        " 秒 (未完交回进度, 再调无参 run 续等); 做完即交回下一条消息 (常规为本条增量: 各调用结果 + 下一步; 接上有历史的会话或研究员回退后自动附完整研究树); "
                         "遇到 ask_human 或会话停下即刻交回状态 (finish 收尾那批的结果随结束提示交回). 不合协议的一批不执行, 交回的下一条即重交要求 (记一轮)",
                     schema({{"calls",
                              {{"type", "array"},
@@ -300,7 +300,7 @@ struct Remote::Impl {
 
   // 停着的交回: 停下原因; finish 结束时附末批调用的结果 (末轮是待发的下一条, 末批在它前一轮)
   Reply halted(const Mine &m) {
-    if (!m.flags().done)
+    if (!m.st.done)
       return {false, "会话停下: " + m.reason + ". 等研究员在 GUI 处理 (继续 / 回退 / 关闭) 后再调无参 run 接着做."};
     const int n = m.round() - 1;
     assert(n >= 1);
@@ -315,20 +315,25 @@ struct Remote::Impl {
     return {false, body};
   }
 
-  // 会话此刻交给外部 agent 的: 等交批 → 消息; ask_human → 等人提示; 执行中 → 进度; 停着 → 停下原因
+  // 外部会话此刻交给外部 agent 的: 等交批 → 消息; ask_human → 等人提示; 执行中 → 进度; 停着 → 停下原因
   Reply state(const Mine &m) {
-    if (m.waiting() && m.idle())
+    switch (m.phase()) {
+    case Mine::Phase::Think:
       return deliver(m);
-    if (m.phase() == Mine::Phase::Choose)
+    case Mine::Phase::Choose:
       return choosing(m);
-    if (m.phase() == Mine::Phase::Act)
+    case Mine::Phase::Act:
       return {false, progress(m)};
-    if (m.phase() == Mine::Phase::Pause)
+    case Mine::Phase::Pause:
       return halted(m);
-    return {false, "上一批还在收尾: 稍后再试"};
+    case Mine::Phase::None:
+      break;
+    }
+    assert(false && "外部会话在开着");
+    return {};
   }
 
-  // 在等的 (均为 Act): 关掉 / 换会话 / 不再是外部会话 → 报错; 离开 Act (做完 / ask_human / 停下) 或超时 → 交回此刻的状态
+  // 在等的 (均为 Act): 关掉 / 换会话 → 报错; 离开 Act (做完 / ask_human / 停下) 或超时 → 交回此刻的状态
   void answer_waiters(const Mine &m) {
     const Clock::time_point now = Clock::now();
     std::erase_if(waiters, [&](const Waiter &w) {
@@ -338,8 +343,6 @@ struct Remote::Impl {
       };
       if (!m.held() || m.log.dir() != w.dir)
         return done({true, "会话已被研究员关掉或换了一段: 要接着挖就 open"});
-      if (!m.remote())
-        return done({true, "会话不再由外部 agent 驱动"});
       if (m.phase() != Mine::Phase::Act || now >= w.until)
         return done(state(m));
       return false;

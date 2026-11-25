@@ -49,7 +49,6 @@ inline constexpr int kMaxCalls = 12;   // 一条回复的工具调用数上限 (
 inline constexpr int kBatch = 3;       // 一条回复的 eval_factor 数上限 (提示词 {{batch}})
 inline constexpr int kMaxOps = 10;     // 一个表达式的算子节点数上限 (超了不落文件; 提示词 {{max_ops}})
 inline constexpr int kGoodOps = 5;     // 建议的算子数 (提示词 {{good_ops}})
-inline constexpr int kEvidence = 6;    // judge 的证据至多引用几个调用
 inline constexpr int kListTop = 80;    // list_tried / list_library 一次至多列几个 (只列可见的: 同评估期且不超 kMaxOps; 按该持有期 score 降序)
 inline constexpr int kNotesTop = 40;   // list_notes 一次至多列几条 (新到旧)
 inline constexpr int kOutChars = 6000; // 一个调用的结果交给 agent 的字数上限 (超了截断并说明; 提示词 {{out_chars}})

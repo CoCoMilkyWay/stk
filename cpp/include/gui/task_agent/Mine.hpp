@@ -34,13 +34,6 @@ struct Budget {
   bool operator==(const Budget &) const = default;
 };
 
-// 主循环纯函数 (Mine 与 Tools/Session/* 共用)
-size_t ActingOf(const Round &rd);               // 末轮执行到的调用 (首个没做完的; = acts.size() 即都做完)
-std::string HintOf(Rounds timeline, bool done); // 停着时按继续会做什么
-int InvalidRun(Rounds timeline);                // 末尾 (待发的一条之前) 连着几批不合协议
-std::string BudgetMiss(const Budget &b, int d_rounds, double d_secs);
-std::string ReportOf(Rounds timeline, const State &st, const Notes &notes, const std::string &dir, const std::string &why, const std::string &remark, bool test, double now);
-
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Open, all, on)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, years, leaves, ops)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, ric)
@@ -102,7 +95,6 @@ public:
   double now() const;
   Tally tally() const { return Rig::tally(now()); }
 
-  void open(const SharedData &data, Setup s, Leg l);
   std::string try_open(const SharedData &data, Setup s, Leg l); // 校验作用域 / 数据就绪 / 开放叶与算子后开会话 (停着的先关闭); 失败返回原因且不动现状
   void load(const SharedData &data, const std::string &dir);
   void resume(const SharedData &data, Leg l);
@@ -125,7 +117,7 @@ public:
   bool remote() const { return held() && setup.remote; }                             // 会话由外部 agent 驱动
   bool waiting() const { return live() && timeline.back().span.running(); }          // 本条已发出, 在等大脑交这一批
   std::string brain() const;                                                         // 大脑一句: 后端 / 模型, 或外部 agent
-  size_t acting() const { return timeline.empty() ? 0 : ActingOf(timeline.back()); } // 末轮执行到的调用
+  size_t acting() const;                                                             // 末轮执行到的调用 (首个没做完的; = acts.size() 即都做完)
   int rev() const { return rev_; }                                                   // 时间线代号 (开 / 载入 / 回退递增; 外部 agent 据此判是否需补研究树)
   std::string hint() const;
 

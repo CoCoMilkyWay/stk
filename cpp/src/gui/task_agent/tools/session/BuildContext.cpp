@@ -35,8 +35,7 @@ ToolOut BuildContext(const Call &c, Seat &s) {
 
   auto r = std::make_shared<BuildContextRes>();
   r->kind = kind, r->view = view;
-  r->flags = s.st.flags;
-  r->board_text = s.st.board.text();
+  r->done = s.st.done;
   r->next_step = NextStep(s.lab.test());
   r->system = SystemMessage(ctx, s.gate, ask).text;
 
@@ -57,7 +56,7 @@ ToolOut BuildContext(const Call &c, Seat &s) {
         rs[0].kind = Msg::First, rs[0].user = make_first().text;
       if (!rs.back().reply.ok())
         rs.back().reply = {.text = calls_json(rs.back().acts), .end = llm::End::Ok};
-      Message nm = RoundMessage(rs.back().acts, static_cast<int>(rs.size()), s.st.board, s.lab.test());
+      Message nm = RoundMessage(rs.back().acts, static_cast<int>(rs.size()), s.lab.test());
       rs.push_back(Round{.kind = nm.kind, .user = std::move(nm.text), .memo = memo});
     } else if (!memo.empty()) {
       rs.back().memo += (rs.back().memo.empty() ? "" : "\n\n") + memo;

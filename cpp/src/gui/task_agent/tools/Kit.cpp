@@ -2,7 +2,6 @@
 #include "gui/task_agent/tools/Kit.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/Hyp.hpp"     // IWYU pragma: keep
 #include "gui/task_agent/tools/Look.hpp"    // IWYU pragma: keep
 #include "gui/task_agent/tools/Misc.hpp"    // IWYU pragma: keep
 #include "gui/task_agent/tools/Note.hpp"    // IWYU pragma: keep
@@ -48,7 +47,7 @@ int Tally::failed(Cat c) const {
 int Tally::all() const { return std::accumulate(calls.begin(), calls.end(), 0); }
 int Tally::failed() const { return std::accumulate(fails.begin(), fails.end(), 0); }
 
-void OpenRound(State &s) { s.flags.done = false; }
+void OpenRound(State &s) { s.done = false; }
 
 void CloseReply(State &s, const Round &rd) {
   assert(rd.span.ended());
@@ -56,7 +55,7 @@ void CloseReply(State &s, const Round &rd) {
   s.tally.usage += rd.reply.usage;
 }
 
-void ApplyAct(State &s, const Act &a, Ref at) {
+void ApplyAct(State &s, const Act &a) {
   assert(a.span.ended());
   const Call &c = a.call;
   ++s.tally.calls[c.tool];
@@ -65,19 +64,9 @@ void ApplyAct(State &s, const Act &a, Ref at) {
   if (const TrialRes *x = AsTrial(a))
     ++s.tally.verdicts[x->st.res.verdict];
   switch (c.tool) {
-  case Tool::Hypothesize:
-    s.board.add(c, at);
-    break;
-  case Tool::Judge:
-    if (a.out.ok)
-      s.board.judge(c, at);
-    break;
   case Tool::EvalFactor:
-    if (const TrialRes *x = AsTrial(a); x && x->st.ok()) {
-      if (const std::string h = c.str("hyp"); !h.empty() && s.board.find(h))
-        s.board.vary(c);
+    if (const TrialRes *x = AsTrial(a); x && x->st.ok())
       s.staged.insert(x->st.file);
-    }
     break;
   case Tool::SubmitFactor:
     if (a.out.ok) {
@@ -86,7 +75,7 @@ void ApplyAct(State &s, const Act &a, Ref at) {
     }
     break;
   case Tool::Finish:
-    s.flags.done = true;
+    s.done = true;
     break;
   default:
     break;
@@ -95,15 +84,14 @@ void ApplyAct(State &s, const Act &a, Ref at) {
 
 State StateOf(Rounds rs) {
   State s;
-  for (size_t i = 0; i < rs.size(); ++i) {
-    const Round &rd = rs[i];
+  for (const Round &rd : rs) {
     if (rd.span.began())
       OpenRound(s);
     if (rd.span.ended())
       CloseReply(s, rd);
-    for (size_t j = 0; j < rd.acts.size(); ++j)
-      if (const Act &a = rd.acts[j]; a.span.ended())
-        ApplyAct(s, a, {static_cast<int>(i) + 1, static_cast<int>(j) + 1});
+    for (const Act &a : rd.acts)
+      if (a.span.ended())
+        ApplyAct(s, a);
   }
   return s;
 }
@@ -181,13 +169,13 @@ void clip(std::string &s) {
   s += "\n…(截断: 共 " + std::to_string(n) + " 字, 只给前 " + std::to_string(kOutChars) + " 字; 缩小范围或分几次看)\n";
 }
 
-void finish_act(Act &a, State &st, Ref at, double t) {
+void finish_act(Act &a, State &st, double t) {
   if (TrialRes *r = AsTrial(a))
     r->search.end(t), r->run.end(t);
   a.span.end(t);
   if (!IsAgentTool(a.call.tool))
     return;
-  ApplyAct(st, a, at);
+  ApplyAct(st, a);
   clip(a.out.text);
 }
 
@@ -213,7 +201,7 @@ Exec Rig::open_act(Act &a, Seat &s, double t) {
   const ImplFn &fn = kSpecs[a.call.tool].fn;
   if (const auto *sync = std::get_if<SyncFn>(&fn)) {
     a.out = (*sync)(a.call, s);
-    finish_act(a, st, s.me, t);
+    finish_act(a, st, t);
     return Exec::Sync;
   }
   if (const auto *direct = std::get_if<LabFn>(&fn)) {
@@ -225,7 +213,7 @@ Exec Rig::open_act(Act &a, Seat &s, double t) {
   if (const auto *staged = std::get_if<StagedLab>(&fn)) {
     std::optional<LabTask> task = staged->open(a, s);
     if (!task) {
-      finish_act(a, st, s.me, t);
+      finish_act(a, st, t);
       return Exec::Sync;
     }
     lab.send(a.call.tool, std::move(*task));
@@ -252,18 +240,18 @@ void Rig::settle_act(Act &a, ToolOut out, Seat &s, double t) {
     staged->close(a, std::move(out), s);
   else
     a.out = std::move(out);
-  finish_act(a, st, s.me, t);
+  finish_act(a, st, t);
 }
 
-void Rig::answer_act(Act &a, Ref at, double t) {
+void Rig::answer_act(Act &a, double t) {
   assert(def(a.call.tool).exec == Exec::Human && a.span.running());
   auto r = std::static_pointer_cast<AskRes>(a.out.res);
   assert(r);
   a.out = std::get<HumanFn>(kSpecs[a.call.tool].fn)(std::move(r));
-  finish_act(a, st, at, t);
+  finish_act(a, st, t);
 }
 
-void Rig::abort_act(Act &a, Ref at, double t) {
+void Rig::abort_act(Act &a, double t) {
   assert(a.span.running());
   lab.cancel();
   if (TrialRes *r = AsTrial(a); r && r->st.ok()) {
@@ -279,7 +267,7 @@ void Rig::abort_act(Act &a, Ref at, double t) {
   } else {
     a.out = Fail("研究员取消了这个调用, 没做完");
   }
-  finish_act(a, st, at, t);
+  finish_act(a, st, t);
   flush();
 }
 
@@ -396,11 +384,6 @@ Spot Feed::spot() {
       return {ctx.codes[a], dash(ctx.days[d]), clock()};
   }
   return {code(), day(), clock()};
-}
-
-std::string Feed::hyp() {
-  const std::vector<Hyp> &hs = board.all();
-  return hs.empty() ? std::string() : hs.back().id;
 }
 
 std::vector<std::string> Feed::refs(int n) {

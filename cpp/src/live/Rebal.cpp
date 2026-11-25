@@ -538,8 +538,7 @@ std::optional<Plan> plan(const Snapshot &s, const Prices &px0, const Quotes &quo
   assert(valid(cfg));
   const std::vector<std::string> ok = wanted(codes, terms, cfg.buy);
   const auto has = [&](const std::string &c) { return quotes.contains(c); };
-  if (!std::all_of(ok.begin(), ok.end(), has) || !std::all_of(s.pos.list.begin(), s.pos.list.end(), [&](const Position &h) { return has(h.code); }) ||
-      !std::all_of(s.debts.list.begin(), s.debts.list.end(), [&](const Debt &d) { return has(d.code); }))
+  if (!std::ranges::all_of(ok, has) || !std::ranges::all_of(held(s), [&](const Sec *x) { return has(x->code); }))
     return std::nullopt;
   if (cfg.how != How::Over)
     return solve(s, px0, quotes, terms, codes, cfg, cfg.sells, {});

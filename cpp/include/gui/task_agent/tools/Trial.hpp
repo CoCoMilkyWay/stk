@@ -3,7 +3,7 @@
 // =============================================================================
 // 回测 (eval_factor / submit_factor) 的结果: 计算与原文在 tools/trial/<工具>.cpp, 展示在 ui/trial/<工具>.cpp
 // =============================================================================
-//   eval_factor   后台三拍对仗 (StagedLab): OpenEvalFactor 核假设落盘 (GUI) → LabTask 跑 Search + Run (Lab) → CloseEvalFactor 入表封存 (GUI)
+//   eval_factor   后台三拍对仗 (StagedLab): OpenEvalFactor 核验落盘 (GUI) → LabTask 跑 Search + Run (Lab) → CloseEvalFactor 入表封存 (GUI)
 //   submit_factor 当场 (SyncFn): 查门槛并拷进正式库 (自检会话 / 工作台只查门槛)
 // =============================================================================
 

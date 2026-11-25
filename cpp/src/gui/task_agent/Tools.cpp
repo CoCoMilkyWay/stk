@@ -42,14 +42,12 @@ constexpr sv kFamilies[] = {"size", "value", "growth", "quality", "dividend", "c
 constexpr sv kPeriods[] = {"second", "intraday", "daily", "weekly", "monthly", "quarterly", "event", "na"};
 constexpr sv kFactorSorts[] = {"ic", "icir", "ls", "new"};
 constexpr sv kReadParts[] = {"card", "outline", "text"};
-constexpr sv kVerdicts[] = {"supported", "refuted", "unclear"};
 constexpr sv kNoteKindChoices[] = {"feature", "tool", "insight", "issue"};
 constexpr sv kNoteScopes[] = {"all", "here"};
 constexpr sv kIssueTypes[] = {"bug", "idea", "question"};
 constexpr sv kYesNo[] = {"yes", "no"};
 constexpr sv kCtxKinds[] = {"round", "first", "test"};
 constexpr sv kCtxViews[] = {"full", "delta", "tree", "system"};
-constexpr sv kStepActions[] = {"status", "rewind", "report"};
 constexpr sv kBrainBackends[] = {"zhipu", "cursor", "devin"};
 
 constexpr ArgDef kFeatureArgs[] = {{"exprs", "特征式", Arg::Strs, {}, 1, 4, {}, kExprsDesc}};
@@ -124,27 +122,11 @@ constexpr ArgDef kReadArgs[] = {
     {"part", "部分", Arg::Str, sv{"card"}, 0, 0, kReadParts, "读哪部分: card 标注卡 / outline 目录 / text 原文"},
     {"from", "起点", Arg::Int, int{0}, 0, 999, {}, "text: 从第几节读起 (outline 的节号); card: 从第几个因子列起 (0 = 整卡; 因子多时卡末尾会给)"},
     {"skip", "跳过", Arg::Int, int{0}, 0, 1000000, {}, "text: 跳过该节开头多少字 (接着读上次没读完的; 上次结果末尾会给)"}};
-constexpr ArgDef kHypArgs[] = {
-    {"title", "标题", Arg::Str, {}, 0, 0, {}, "一句话: 什么机制 (例: 秒级吃光新挂卖单的买方在不推价地吸筹)"},
-    {"why", "为什么", Arg::Str, {}, 0, 0, {}, "为什么这预示本持有期的收益 (信息 / 流动性冲击 / 行为偏差 …), 收益何时兑现; 借鉴研报的写研报 id"},
-    {"actor", "谁在做什么", Arg::Str, sv{""}, 0, 0, {}, "可选: 因子高 = 什么状态 (资金行为 / 价量位置 / 票的特征, 在什么条件下)"},
-    {"expect", "预期", Arg::Str, sv{""}, 0, 0, {}, "可选: 若假设成立, 哪个观察会看到什么 (一个方向, 带量级)"},
-    {"refute", "算落空", Arg::Str, sv{""}, 0, 0, {}, "可选: 看到什么就算落空"}};
-constexpr ArgDef kJudgeArgs[] = {
-    {"hyp", "假设", Arg::Str, {}, 0, 0, {}, "假设编号 (假设板上的, 如 H1)"},
-    {"verdict", "判定", Arg::Str, {}, 0, 0, kVerdicts, "supported 支持 / refuted 落空 / unclear 不清"},
-    {"result", "测出来", Arg::Str, {}, 0, 0, {}, "测出来是什么: 写看到的数与结论"},
-    {"evidence", "证据", Arg::Strs, EmptyArr{}, 0, kEvidence, {}, "可选: 引用的调用编号 (结果标题里的 R<轮>#<序>)"},
-    {"why", "为什么", Arg::Str, sv{""}, 0, 0, {}, "可选: 机制上怎么解释"},
-    {"insight", "认识", Arg::Str, sv{""}, 0, 0, {}, "可选: 得到了什么认识"},
-    {"better_feature", "更好的特征", Arg::Str, sv{""}, 0, 0, {}, "可选: 有没有更直接捕捉它的特征"},
-    {"next", "下一步", Arg::Str, sv{""}, 0, 0, {}, "可选: 下一步打算查什么或怎么改"}};
 constexpr ArgDef kEvalArgs[] = {
     {"name", "英文名", Arg::Str, {}, 0, 0, {}, "英文名: 仅 [A-Za-z0-9_], ≤ 64, 作文件名, 不能与已有的重复"},
     {"name_cn", "中文名", Arg::Str, {}, 0, 0, {}, "中文名: 1..10 个汉字, 不含字母数字标点"},
     {"expr", "模板", Arg::Str, {}, 0, 0, {}, "模板 (待搜参数写裸键 d / k / k2 / w)"},
-    {"note", "思路", Arg::Str, {}, 0, 0, {}, "思路: 检验什么机制或相对基准改了哪一处"},
-    {"hyp", "假设", Arg::Str, sv{""}, 0, 0, {}, "可选: 归类到哪个假设 (假设板上的编号, 如 H1; 可空)"}};
+    {"note", "思路", Arg::Str, {}, 0, 0, {}, "思路: 检验什么机制或相对基准改了哪一处"}};
 constexpr ArgDef kTopArgs[] = {{"top", "个数", Arg::Int, int{20}, 1, kListTop, {}, "列几个"},
                                {"skip", "跳过", Arg::Int, int{0}, 0, 9999, {}, "跳过排在前面的几个 (接着看上次没列到的; 结果末尾会给)"}};
 constexpr ArgDef kNameArgs[] = {{"name", "英文名", Arg::Str, {}, 0, 0, {}, "已评候选的英文名 (本作用域历次会话的都可以)"}};
@@ -157,13 +139,13 @@ constexpr ArgDef kNotesArgs[] = {
 constexpr ArgDef kFeatureReqArgs[] = {
     {"title", "标题", Arg::Str, {}, 0, 0, {}, "一句话: 要的是什么量 (例: 撤单前挂单存续时长的分布)"},
     {"define", "定义", Arg::Str, {}, 0, 0, {}, "怎么算: 哪类原料 (lob 逐笔 / 委托 / 撤单 / 快照; bar K 线 / 量额; fund 财务 / 估值 / 风格)、口径 (哪一侧 / 哪个周期)、窗口与归一、在哪个时点可见"},
-    {"mechanism", "机制", Arg::Str, {}, 0, 0, {}, "它刻画的是什么 (谁的什么行为 / 什么价量状态 / 什么样的票), 为什么可能预示后续收益; 你打算拿它验证哪个假设"},
+    {"mechanism", "机制", Arg::Str, {}, 0, 0, {}, "它刻画的是什么 (谁的什么行为 / 什么价量状态 / 什么样的票), 为什么可能预示后续收益; 你打算拿它验证什么"},
     {"gap", "缺口", Arg::Str, {}, 0, 0, {}, "现有的叶为什么不够: 读过哪些族卡、查过哪些叶, 差在哪 (口径 / 维度 / 时点 / 根本没有)"},
     {"ref", "附议", Arg::Str, sv{""}, 0, 0, {}, kRefDesc}};
 constexpr ArgDef kToolReqArgs[] = {
     {"title", "标题", Arg::Str, {}, 0, 0, {}, "一句话: 要个什么工具"},
     {"want", "想看", Arg::Str, {}, 0, 0, {}, "想给什么参数、看到什么 (哪几张表 / 哪些统计 / 怎么切)"},
-    {"purpose", "用途", Arg::Str, {}, 0, 0, {}, "拿它验证什么假设、决定什么改动"},
+    {"purpose", "用途", Arg::Str, {}, 0, 0, {}, "拿它验证什么机制、决定什么改动"},
     {"gap", "缺口", Arg::Str, {}, 0, 0, {}, "现有工具哪里看不到: 试过哪些调用, 差在哪"},
     {"ref", "附议", Arg::Str, sv{""}, 0, 0, {}, kRefDesc}};
 constexpr ArgDef kInsightArgs[] = {
@@ -187,12 +169,6 @@ constexpr ArgDef kBuildContextArgs[] = {
 constexpr ArgDef kCheckBatchArgs[] = {
     {"reply", "回复原文", Arg::Str, {}, 0, 0, {}, "待校验的一批调用 JSON (或带文字的原始回复, 含 {\"calls\": [...]})"},
     {"ask", "可提问", Arg::Str, sv{"yes"}, 0, 0, kYesNo, "本轮是否开放 ask_human"}};
-constexpr ArgDef kStepStateArgs[] = {
-    {"action", "检查项", Arg::Str, sv{"status"}, 0, 0, kStepActions, "看哪一面: status 账本 · 继续提示 · 预算 / rewind 回退损失预估 / report 停下报告"},
-    {"round", "目标轮", Arg::Int, int{1}, 1, 999, {}, "rewind 时要回退到的轮次 (1..当前轮数)"},
-    {"max_rounds", "轮数上限", Arg::Int, int{0}, 0, 999, {}, "模拟预算: 每段最多几轮 (0 = 不限)"},
-    {"max_minutes", "分钟上限", Arg::Int, int{0}, 0, 9999, {}, "模拟预算: 每段最多几分钟 (0 = 不限)"},
-    {"why", "停下原因", Arg::Str, sv{""}, 0, 0, {}, "可选: report 的停下原因 (空 = 调试预览)"}};
 constexpr ArgDef kProbeBrainArgs[] = {
     {"backend", "后端", Arg::Str, sv{""}, 0, 0, kBrainBackends, "可选: zhipu / cursor / devin; 空 = 用 Config 页当前选中 (代理同 Config)"},
     {"model", "模型", Arg::Str, sv{""}, 0, 0, {}, "可选: 模型 id; 空 = 用 Config 页当前选中"},
@@ -260,12 +236,6 @@ constexpr ToolDoc kDocs[] = {
      "读一篇研报: card 是标注卡 (各阶段的流派与设定 / 结论 / 库内前作与被引 / 因子与公式; 因子多读不完时末尾给接着读的 from), 先看它判断值不值得细读; 要细节看 outline (节号 · 标题 · 字数) 挑节, "
      "再用 text 从那节读原文 (图片已去, 表格与公式保留), 每次读到字数上限为止, 末尾给接着读的 from / skip",
      "标注卡 / 目录 / 原文一段"},
-    {Tool::Hypothesize, kHypArgs,
-     "在会话假设板记下一条机制假设 (编号 H1, H2 …; 可选研究笔记工具, 方便梳理机制与归类变体, 不强卡回测)",
-     "编号"},
-    {Tool::Judge, kJudgeArgs,
-     "在会话假设板给一条假设记下判定 (支持 / 落空 / 不清) 与结论, 可附引用的调用编号",
-     "判定后的假设板一行; 假设或证据编号不存在写原因, 不改判定"},
     {Tool::EvalFactor, kEvalArgs,
      "把一个模板落成候选文件并回测: Search (采样自由参数, 每点按中位 rIC 定方向打分, 最高的一个成权重) → 权重全量分层回测. 一批至多 {{batch}} 个. "
      "与已有候选同式 (含只换截面根 CsRank / CsNormRank / CsZ) 或算子超 {{max_ops}} 个的不落",
@@ -286,7 +256,7 @@ constexpr ToolDoc kDocs[] = {
      "申请一个新特征叶: 想刻画的量 (lob / bar / fund 任一类) 现有叶没有、只能近似, 或信号卡在天花板要新信息源. 全局记录, 研究员据此加叶; 提完本会话照常用现有的叶接着做",
      "编号"},
     {Tool::RequestTool, kToolReqArgs,
-     "申请一个新工具或给现有工具加功能: 验证假设要看的东西现有工具看不到, 或要拼几个调用、绕弯才看到. 全局记录, 研究员据此加工具; 提完照常接着做", "编号"},
+     "申请一个新工具或给现有工具加功能: 验证机制要看的东西现有工具看不到, 或要拼几个调用、绕弯才看到. 全局记录, 研究员据此加工具; 提完照常接着做", "编号"},
     {Tool::NoteInsight, kInsightArgs,
      "记下一条被观察 / 回测证实或证伪的规律 (市场微观结构、某类叶或算子的脾性、哪条路走不通), 对别的因子与后续会话也有用的才记. 全局记录, 后续会话的 agent 经 list_notes 看得到",
      "编号"},
@@ -299,13 +269,10 @@ constexpr ToolDoc kDocs[] = {
      "每题的选择 (没照推荐的附上推荐) + 附言"},
     {Tool::BuildContext, kBuildContextArgs,
      "独立调试上下文与研究树折叠: 按工作台当前快照 (空白或载入的历史会话某轮) 拼出系统提示 / 首条 / 研究树 / 本条增量 / 完整上下文, 与真会话走同一份纯函数",
-     "对应层的完整原文 + 账本标志 / 假设板 / 各段字数与折叠视图"},
+     "对应层的完整原文 + 账本标志 / 各段字数与折叠视图"},
     {Tool::CheckBatch, kCheckBatchArgs,
      "独立调试协议校验: 对一批调用 JSON 跑 ParseCalls, 并对 eval_factor 做落盘前核验 (lab.vet)",
      "通过 = 规范化调用清单; 不通过 = 重发要求原文"},
-    {Tool::StepState, kStepStateArgs,
-     "独立透视会话主循环: 按当前快照计算账本 State、执行位置与继续提示、预算核对、回退损失预估与停下报告",
-     "状态摘要 / 回退损失 / 停下报告原文"},
     {Tool::ProbeBrain, kProbeBrainArgs,
      "独立试跑单轮内置大模型: 拿当前快照的 system + TurnsOf 直接走 llm::send (支持取消与代理), 收到回复后自动过 ParseCalls 校验",
      "模型原始回复正文 + 思考过程 / token / 校验结果"},

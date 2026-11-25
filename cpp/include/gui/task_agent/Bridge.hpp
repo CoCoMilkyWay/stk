@@ -183,7 +183,7 @@ struct Gate {
 std::string GateMiss(const Gate &g, const Result &r);
 
 struct Cand {
-  std::string name, name_cn, expr, hyp, note;
+  std::string name, name_cn, expr, note;
 };
 struct Staged {
   Cand cand;
@@ -263,8 +263,8 @@ public:
   const Result &result(const std::string &file) const; // 候选目录里按文件取 (不论可见)
   std::string search_log(const std::string &file) const;
 
-  std::string vet(const Cand &c) const; // stage 落文件前的全部查验 (空 = 可落; 不写盘, 不查假设)
-  Staged stage(Cand c, std::string_view hyp_title);
+  std::string vet(const Cand &c) const; // stage 落文件前的全部查验 (空 = 可落; 不写盘)
+  Staged stage(Cand c);
   const Result &absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep, std::vector<Daily> days);
   Adopted adopt(std::string name, const Gate &g, bool dry); // dry = 只查门槛不拷进正式库 (工作台; 自检会话恒不拷)
   void discard(const std::string &file);

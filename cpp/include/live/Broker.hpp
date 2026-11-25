@@ -2,7 +2,7 @@
 //   Driver (一个客户端一份): 同步, 调用线程跑完; 刷新线程与事务线程会同时调, 自身线程安全
 //     接: connect 接上客户端 (换了进程即重接, 接上即可读) → 是谁
 //     读: read 一问读齐 Snapshot 的五样 (fills / pos / pends / debts / acct; 适配可让几张表同时在途, 一趟往返)
-//     事务: 拉 terms / flows / deals (慢) 与写 place (一张限价单, steps 即各步名, 其前 unsent 步不报出委托) / repay (现金还款) 同形; 进度 (段 / 实时一行) 与记一条统一经 live::trace
+//     事务: 拉 terms / flows / deals (慢) 与写 place (一张限价单, 各步见 steps) / repay (现金还款) 同形; 进度 (段 / 实时一行) 与记一条统一经 live::trace
 //     画面: mirror 可选, 给 GUI 复现客户端窗口 (live/Mirror.hpp)
 //   Broker (券商无关, 只此一份): 包一个 Driver + 刷新线程; 读由刷新线程发布, 事务由调用线程跑 (段 + 接上 + Driver), 两类同一个接入
 //     读: 一轮读进一份局部的 Snapshot, 轮末整份发布 (不可变; 指针换了 = 换了一份), 上层不见半轮也不见两轮的混合;
@@ -25,9 +25,7 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <span>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -128,6 +126,8 @@ struct Snapshot {
   int at = -1; // 本轮读完于 (当日秒); Driver::read 不填, Broker 填
 };
 
+// 账户里的各只: 持仓 ∪ 融资负债, 按代码去重 (持仓在前)
+std::vector<const Sec *> held(const Snapshot &s);
 // 已清仓仍负债: 融资负债里本只已无持仓 (余额 0) 的, 负债金额升序 (现金还款按此序还)
 std::vector<const Debt *> orphans(const Snapshot &s);
 
@@ -175,6 +175,12 @@ struct OrderReq : Sec {
 };
 nlohmann::json to_json(const OrderReq &o);
 
+// 下单的各步: 各步名 (即其段名, 序即其序) + 前 unsent 步不报出委托 (place 停在其中 = 什么都没报, 原样重下不会重复)
+struct Steps {
+  std::vector<std::string> names;
+  size_t unsent = 0;
+};
+
 // 委托回报: 实际股数 / 价, 回报原文
 struct Placed {
   int64_t qty = 0;
@@ -205,8 +211,7 @@ public:
   // 现金还款: codes 各只 (按给的序) 的融资合约逐笔指定合约还, 至多共 cap 元 (∞ = 各合约还到应还); 停在失败的那一笔 (此前各笔已还, 各记一条)
   virtual std::vector<Repaid> repay(const std::vector<std::string> &codes, double cap) = 0;
 
-  virtual std::span<const std::string_view> steps() const = 0; // place 的各步名 (即其各步的段名)
-  virtual size_t unsent() const = 0;                           // steps 的前几步不报出委托: place 停在其中 = 什么都没报, 原样重下不会重复
+  virtual Steps steps() const = 0;                             // place 的各步
   virtual std::unique_ptr<Mirror> mirror() { return nullptr; } // 不支持复现画面 = 空
 };
 
@@ -236,8 +241,7 @@ public:
   // 批量下单期间: 只跑要的轮 (request / sync), 不自起刷新、不排下单后的; fn 跑完 (成败都) 即恢复
   void batch(const std::function<void()> &fn);
 
-  std::span<const std::string_view> steps() const;
-  size_t unsent() const;
+  Steps steps() const;
   std::unique_ptr<Mirror> mirror() const;
 
 private:

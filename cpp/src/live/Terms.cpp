@@ -106,16 +106,13 @@ Terms merged(const Terms &raw, const Local &local) {
   return out;
 }
 
-bool missing(const Terms &raw, const Local &local, const std::vector<std::string> &codes, const Snapshot *snap) {
-  const auto miss = [&](const std::string &code) {
+bool missing(const Terms &raw, const Local &local, const std::vector<std::string> &codes) {
+  return std::ranges::any_of(codes, [&](const std::string &code) {
     if (raw.contains(code))
       return false;
     const auto i = local.find(code);
     return i == local.end() || (i->second.listed && i->second.mkt != Mkt::BJ);
-  };
-  return std::any_of(codes.begin(), codes.end(), miss) ||
-         (snap && std::any_of(snap->pos.list.begin(), snap->pos.list.end(), [&](const Position &p) { return miss(p.code); })) ||
-         (snap && std::any_of(snap->debts.list.begin(), snap->debts.list.end(), [&](const Debt &d) { return miss(d.code); }));
+  });
 }
 
 } // namespace live::terms

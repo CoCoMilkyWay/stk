@@ -12,5 +12,5 @@
 - **原料**: lob / bar / fund 三类各读要用的族卡, search_leaves 查清叶, view_feature 看它们
 - **起点**: 起点因子的分层 / 交割单 / 成分 (view_layers / view_trades / view_explain)
 
-之后先看数据理解现象, 再有针对性地改动与回测 (可用 hypothesize / judge 梳理假设). 回测是检验想法的实验, 看它说明了什么, 不追指标.
+之后先看数据理解现象, 再有针对性地改动与回测. 回测是检验想法的实验, 看它说明了什么, 不追指标.
 {{remark}}

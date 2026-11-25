@@ -97,7 +97,7 @@ struct Bench::Impl : Rig {
     args[tool] = x.args, raw[tool] = x.args.dump(2), json_err.clear();
   }
 
-  Feed feed(const Gate &g) { return {lab, lab.ctx(), lab.results(), g, st.board, timeline, {round(), static_cast<int>(acts().size()) + 1}, rng}; }
+  Feed feed(const Gate &g) { return {lab, lab.ctx(), lab.results(), g, timeline, {round(), static_cast<int>(acts().size()) + 1}, rng}; }
 
   void sample(const Gate &g) {
     Feed f = feed(g);
@@ -127,7 +127,7 @@ struct Bench::Impl : Rig {
     const size_t i = *running;
     const bool probe = running_probe;
     running.reset(), running_probe = false, choosing = false;
-    abort_act(act_of(i, probe), {round(), static_cast<int>(i) + 1}, now());
+    abort_act(act_of(i, probe), now());
   }
 
   void poll() {
@@ -142,7 +142,7 @@ struct Bench::Impl : Rig {
         continue;
       }
       if (t->out.cancelled) {
-        abort_act(a, {round(), static_cast<int>(i) + 1}, now());
+        abort_act(a, now());
       } else {
         Seat s = bench_seat(i);
         settle_act(a, std::move(t->out.out), s, now());
@@ -168,7 +168,7 @@ namespace {
 bool long_field(Tool t, const ArgDef &a) {
   const Cat cat = def(t).cat;
   const std::string_view k = a.key;
-  return cat == Cat::Hyp || cat == Cat::Note || k == "note" || k == "expr" || k == "reply" || k == "memo" || k == "remark" || k == "prompt";
+  return cat == Cat::Note || k == "note" || k == "expr" || k == "reply" || k == "memo" || k == "remark" || k == "prompt";
 }
 
 // 表单: 参数表逐项一个控件 (缺的按 SeedJson 补上); 返回 = 改了
@@ -280,15 +280,15 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   if (ctx.ops.empty())
     warn(label + "没有开放的算子 (Mine 页算子页一个没勾)");
 
-  // ---- 工作台: 第几轮 / 快照 / 假设板 / 门槛 ----
+  // ---- 工作台: 第几轮 / 快照 / 门槛 ----
   ImGui::TextColored(kColHead, "工作台:");
   ImGui::SameLine();
   const std::string at = b.loaded ? "快照 = " + stamp_text(b.loaded->at.stamp) + (b.loaded->at.test ? " 自检" : "") + " 会话 " + seen_ref(b.loaded->at.at) +
                                         (b.loaded->at.at.call > 0 ? " 之前" : "")
                                   : "空白";
-  ImGui::TextDisabled("第 %d 轮 · %s · 假设 %zu · 门槛 中位 rIC ≥ %.3f (Config 页)", b.round(), at.c_str(), b.st.board.all().size(), gate.ric);
+  ImGui::TextDisabled("第 %d 轮 · %s · 门槛 中位 rIC ≥ %.3f (Config 页)", b.round(), at.c_str(), gate.ric);
   tip(("作用域 = Mine 页的 " + catalog::label(sc) + " · 评估期 " + ctx.window +
-       "\n会话类工具 (假设 / 判定 / 回测挂假设 / 提交 / 记录 / 会话内核调试) 跑在快照上: 输入栏载入日志, 就取那段会话在它之前的时间线折出假设板,\n"
+       "\n会话类工具 (提交 / 记录 / 会话内核调试) 跑在快照上: 输入栏载入日志, 就取那段会话在它之前的时间线折出账本,\n"
        "工作台接着那一轮往下编号 (会话调试工具独立存放, 不污染快照); 只在内存, 不落盘")
           .c_str());
   ImGui::SameLine();
@@ -334,7 +334,7 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   ImGui::SameLine();
   if (ImGui::SmallButton("随机"))
     b.sample(gate);
-  tip("按本作用域取材出一组用得上的参数: 开放的叶 / 候选名 (没有就拿本层的叶套开放的归一根) / 本层的行与时段 / 当日有逐笔的票 (工作台里 view_trades 列过的段优先) / 假设板 (回测挂能挂变体的; 工作台回测不查假设, 板空也能跑) / "
+  tip("按本作用域取材出一组用得上的参数: 开放的叶 / 候选名 (没有就拿本层的叶套开放的归一根) / 本层的行与时段 / 当日有逐笔的票 (工作台里 view_trades 列过的段优先) / "
       "回测的模板过落文件的全部查验 (本层叶 · 开放算子 · 不与已试同式 · 名字未用) / 提交取达门槛的候选");
   ImGui::SameLine();
   if (ImGui::Checkbox("JSON", &b.json_mode))

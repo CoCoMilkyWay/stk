@@ -94,8 +94,7 @@ public:
     ui::show_bar();
     return tdx::repay::run(codes, cap);
   }
-  std::span<const std::string_view> steps() const override { return flash::steps(); }
-  size_t unsent() const override { return flash::unsent(); }
+  Steps steps() const override { return flash::steps(); }
   std::unique_ptr<Mirror> mirror() override { return std::make_unique<TdxMirror>(); }
 
 private:

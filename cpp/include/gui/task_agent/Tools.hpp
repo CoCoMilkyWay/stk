@@ -5,12 +5,12 @@
 // =============================================================================
 //   回复 = {"calls": [{"tool": 名, "args": {...}}, ...]}; 系统按序执行, 下一条消息按序交回结果
 //   执行方式 Exec (唯一分派轴):
-//     Sync   GUI 线程当场做完 (查特征叶 / 列候选与正式库 / 全局记录 / 假设与判定 / 提交 / 结束)
+//     Sync   GUI 线程当场做完 (查特征叶 / 列候选与正式库 / 全局记录 / 提交 / 结束)
 //     Lab    交右翼 worker 后台执行 (回测 eval_factor / 观察 view_* / 盘口重放 view_book / 研报库 search_docs · search_factors · read_doc)
 //     Human  等研究员点选答案 (ask_human)
 //   校验两层:
 //     协议层 (ParseCalls): JSON 结构 / 工具名 / 参数类型与范围 / 批限额 → 不合则整批不执行, 记成一轮错批, 下一条 = 重交要求
-//     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 假设 / 研报 id 不成 → 仅该调用 ok=false 写原因, 其余照做
+//     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 研报 id 不成 → 仅该调用 ok=false 写原因, 其余照做
 //   工具清单 AGENT_TOOLS (唯一顺序 = Tool 的值): 一行一个工具 (枚举, id, 中文名, 执行, 类, 研究树留原文);
 //     Tool 挂入 AGENT_ROWS (Named + Tabled): def(t) 编译期取元数据, IdOf / FindId / JSON 序列化与其他枚举同一套
 //     说明表 doc(t) (Tools.cpp) 存编译期类型化参数表 ArgDef 与成文说明; 实现表 kSpecs (tools/Kit.cpp) 按清单拼名并编译期核签名
@@ -42,7 +42,6 @@ inline constexpr ExecDef kExecs[] = {{"当场"}, {"后台"}, {"等人"}};
 AGENT_ROWS(Exec, kExecs, Human);
 
 enum class Cat : uint8_t { Look,      // view_*
-                           Hyp,       // hypothesize / judge
                            Trial,     // eval_factor / submit_factor
                            Query,     // search_* / read_doc / list_*
                            Note,      // request_* / note_insight / report_issue
@@ -51,7 +50,7 @@ enum class Cat : uint8_t { Look,      // view_*
 struct CatDef {
   const char *en, *cn; // en = 主栏 Tools 下的组名
 };
-inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Hypothesis", "假设"}, {"Trial", "回测"}, {"Query", "检索"}, {"Note", "记录"}, {"Misc", "其他"}, {"Session", "会话"}};
+inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Trial", "回测"}, {"Query", "检索"}, {"Note", "记录"}, {"Misc", "其他"}, {"Session", "会话"}};
 AGENT_ROWS(Cat, kCats, Session);
 
 // 工具清单: X(枚举, id, 中文名, 执行, 类, 研究树留结论原文)
@@ -70,8 +69,6 @@ AGENT_ROWS(Cat, kCats, Session);
   X(SearchDocs, "search_docs", "查研报", Lab, Query, false)           \
   X(SearchFactors, "search_factors", "查研报因子", Lab, Query, false) \
   X(ReadDoc, "read_doc", "读研报", Lab, Query, false)                 \
-  X(Hypothesize, "hypothesize", "提假设", Sync, Hyp, true)            \
-  X(Judge, "judge", "判假设", Sync, Hyp, true)                        \
   X(EvalFactor, "eval_factor", "回测", Lab, Trial, false)             \
   X(ListTried, "list_tried", "列已试", Sync, Query, false)            \
   X(ListLibrary, "list_library", "列正式库", Sync, Query, false)      \
@@ -85,7 +82,6 @@ AGENT_ROWS(Cat, kCats, Session);
   X(AskHuman, "ask_human", "问研究员", Human, Misc, true)             \
   X(BuildContext, "build_context", "拼上下文", Sync, Session, false)  \
   X(CheckBatch, "check_batch", "核整批调用", Sync, Session, false)    \
-  X(StepState, "step_state", "看状态转移", Sync, Session, false)      \
   X(ProbeBrain, "probe_brain", "试跑大模型", Lab, Session, false)
 
 #define AGENT_TOOL_ID(T, id, cn, E, C, keep) T,

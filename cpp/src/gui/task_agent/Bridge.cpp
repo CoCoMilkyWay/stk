@@ -711,7 +711,7 @@ std::string Lab::vet(const Cand &c) const {
   return impl_->vet(c, e);
 }
 
-Staged Lab::stage(Cand c, std::string_view hyp_title) {
+Staged Lab::stage(Cand c) {
   assert(impl_->data && !busy());
   const auto bad = [&](std::string why) {
     Staged s{.cand = std::move(c)};
@@ -721,9 +721,8 @@ Staged Lab::stage(Cand c, std::string_view hyp_title) {
   fx::Expr e;
   if (std::string why = impl_->vet(c, e); !why.empty())
     return bad(std::move(why));
-  const std::string full_note = c.hyp.empty() ? c.note : c.hyp + (hyp_title.empty() ? "" : " " + std::string(hyp_title)) + " · " + c.note;
   std::string err;
-  const std::string file = Engine::AddFactorFile(impl_->dir, *impl_->ft(), c.name, c.name_cn, e.canon, full_note, err);
+  const std::string file = Engine::AddFactorFile(impl_->dir, *impl_->ft(), c.name, c.name_cn, e.canon, c.note, err);
   if (file.empty())
     return bad(std::move(err));
   impl_->fails.erase(file);

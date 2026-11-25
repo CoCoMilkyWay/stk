@@ -11,6 +11,16 @@ namespace live {
 
 bool synced(const Position &h, const Traded *f) { return h.balance <= 0 || h.traded == (f ? f->qty : Sides<int64_t>{}); }
 
+std::vector<const Sec *> held(const Snapshot &s) {
+  std::vector<const Sec *> out;
+  for (const Position &p : s.pos.list)
+    out.push_back(&p);
+  for (const Debt &d : s.debts.list)
+    if (!s.pos.find(d.code))
+      out.push_back(&d);
+  return out;
+}
+
 std::vector<const Debt *> orphans(const Snapshot &s) {
   std::vector<const Debt *> out;
   for (const Debt &d : s.debts.list)
@@ -255,9 +265,7 @@ void Broker::batch(const std::function<void()> &fn) {
   fn();
 }
 
-std::span<const std::string_view> Broker::steps() const { return c_->d->steps(); }
-
-size_t Broker::unsent() const { return c_->d->unsent(); }
+Steps Broker::steps() const { return c_->d->steps(); }
 
 std::unique_ptr<Mirror> Broker::mirror() const { return c_->d->mirror(); }
 

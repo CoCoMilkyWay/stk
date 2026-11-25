@@ -211,7 +211,7 @@ void TrialRes::draw() const {
   heading(st.cand.name + "  " + st.cand.name_cn);
   wrapped(kColExpr, best ? Formula(*best) : st.cand.expr);
   if (!st.cand.note.empty())
-    wrapped_dim("思路 (" + st.cand.hyp + "): " + st.cand.note);
+    wrapped_dim("思路: " + st.cand.note);
   const TaskStatus::Kind kind = r.verdict == Verdict::Weights ? (GateMiss(gate, r).empty() ? TaskStatus::Kind::Ready : TaskStatus::Kind::None)
                                 : r.verdict == Verdict::Null  ? TaskStatus::Kind::Warn
                                                               : TaskStatus::Kind::Error;

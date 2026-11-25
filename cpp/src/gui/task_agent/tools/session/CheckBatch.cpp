@@ -38,7 +38,7 @@ ToolOut CheckBatch(const Call &c, Seat &s) {
     Call &call = chk.calls[i];
     std::string pre;
     if (call.tool == Tool::EvalFactor)
-      pre = s.lab.vet(Cand{call.str("name"), call.str("name_cn"), call.str("expr"), call.str("hyp"), call.str("note")});
+      pre = s.lab.vet(Cand{call.str("name"), call.str("name_cn"), call.str("expr"), call.str("note")});
     r->items.push_back({{round, static_cast<int>(i) + 1}, std::move(call), std::move(pre)});
   }
   return Done(std::move(r), true);

@@ -35,7 +35,7 @@ using Local = std::unordered_map<std::string, Stock>; // 代码 → 个股
 
 Local local(const AssetInfo &info);                 // AssetInfo + 本地两融明细; AssetInfo 还没建 → 空; 本地库没有两融明细 → Fail
 Terms merged(const Terms &raw, const Local &local); // 券商条款合本地库
-// 要用条款而缓存里没有的代码 (名单 / 持仓 / 负债); 本地库认得且北交所或已退市的本就不在券商表里, 不算
-bool missing(const Terms &raw, const Local &local, const std::vector<std::string> &codes, const Snapshot *snap);
+// 要用条款的代码 (名单 / 账户里的各只) 有缓存里没有的; 本地库认得且北交所或已退市的本就不在券商表里, 不算
+bool missing(const Terms &raw, const Local &local, const std::vector<std::string> &codes);
 
 } // namespace live::terms

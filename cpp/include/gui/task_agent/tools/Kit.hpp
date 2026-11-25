@@ -5,12 +5,12 @@
 // =============================================================================
 //   时间线与账本:
 //     Round / Act     全会话唯一真相 (Act 仅持 Call + Span + ToolOut, 无旁路 Extra; Res 即唯一结构化载体)
-//     State           单趟增量账本 = 假设板 Board + 计数 Tally + 流程旗 Flags + 已落文件 staged + 已入库 adopted
+//     State           单趟增量账本 = 计数 Tally + 结束旗 done + 已落文件 staged + 已入库 adopted
 //                     OpenRound / CloseReply / ApplyAct 增量 O(1) 推进; StateOf(Rounds) 纯函数全量重算; TallyAt(now) O(1) 补在跑项秒数
 //   三态四形契约 (kSpecs 由 AGENT_TOOLS 拼名, 编译期核对签名 = ToolMeta::exec):
 //     SyncFn      (Call, Seat) → ToolOut                   当场一次到位
 //     LabFn       (Call, Bay)  → ToolOut                   后台纯计算直通
-//     StagedLab   open(Act, Seat) → LabTask ⇄ close(...)   后台三拍 (eval_factor: GUI 核假设落盘 → Lab 回测 → GUI 入表封存)
+//     StagedLab   open(Act, Seat) → LabTask ⇄ close(...)   后台三拍 (eval_factor: GUI 核验落盘 → Lab 回测 → GUI 入表封存)
 //     HumanFn     (shared_ptr<AskRes>) → ToolOut           等人三拍 (ask_human: GUI 建问卷 → 人点选 → GUI 封存)
 //   Rig             实验台底座 (Lab + Notes + timeline + State + doomed): 统一驱动单调用 open / step / settle / answer / abort
 // =============================================================================
@@ -92,7 +92,7 @@ struct Round {
 };
 using Rounds = std::span<const Round>;
 
-// ---- 计数、流程旗与单趟增量账本 State ----
+// ---- 计数与单趟增量账本 State ----
 struct Tally {
   Per<Tool, int> calls{}, fails{};
   Per<Verdict, int> verdicts{};
@@ -112,21 +112,16 @@ struct Tally {
   int staged() const { return n(Tool::EvalFactor) - n(Verdict::Unstaged); }
 };
 
-struct Flags {
-  bool done = false; // 末个发出的轮里 finish 已做完: 会话结束 (再发出一条即作罢)
-};
-
 struct State {
-  Board board;
   std::set<std::string> staged;  // 本会话落了文件的候选文件名 (*.json)
   std::set<std::string> adopted; // submit_factor 做成的英文名
   Tally tally;                   // 已收尾轮与调用的精确累计
-  Flags flags;
+  bool done = false;             // 末个发出的轮里 finish 已做完: 会话结束 (再发出一条即作罢)
 };
 
 void OpenRound(State &s); // 本轮发出 (之前的 finish 作罢)
 void CloseReply(State &s, const Round &rd);
-void ApplyAct(State &s, const Act &a, Ref at);
+void ApplyAct(State &s, const Act &a);
 State StateOf(Rounds rs);
 Tally TallyAt(const State &s, Rounds rs, double now);
 Tally TallyOf(Rounds rs, double now);
@@ -173,7 +168,6 @@ struct Rig {
 
   int round() const { return static_cast<int>(timeline.size()); }
   Tally tally(double now) const { return TallyAt(st, timeline, now); }
-  const Flags &flags() const { return st.flags; }
 
   Seat seat(size_t i, const Gate &gate, std::string_view session, bool dry, bool gpu, llm::Options llm = {});
   void restate() { st = StateOf(timeline); }
@@ -182,14 +176,14 @@ struct Rig {
   Exec open_act(Act &a, Seat &s, double t); // Sync (含未落文件的 eval_factor) 当场收尾并返回 Exec::Sync
   void step_act(Act &a, LabStep step, double t);
   void settle_act(Act &a, ToolOut out, Seat &s, double t);
-  void answer_act(Act &a, Ref at, double t);
-  void abort_act(Act &a, Ref at, double t);
+  void answer_act(Act &a, double t);
+  void abort_act(Act &a, double t);
 
   Exec open_act(size_t i, Seat &s, double t) { return open_act(timeline.back().acts[i], s, t); }
   void step_act(size_t i, LabStep step, double t) { step_act(timeline.back().acts[i], step, t); }
   void settle_act(size_t i, ToolOut out, Seat &s, double t) { settle_act(timeline.back().acts[i], std::move(out), s, t); }
-  void answer_act(size_t i, double t) { answer_act(timeline.back().acts[i], {round(), static_cast<int>(i) + 1}, t); }
-  void abort_act(size_t i, double t) { abort_act(timeline.back().acts[i], {round(), static_cast<int>(i) + 1}, t); }
+  void answer_act(size_t i, double t) { answer_act(timeline.back().acts[i], t); }
+  void abort_act(size_t i, double t) { abort_act(timeline.back().acts[i], t); }
 };
 
 // ---- 随机输入的取材 ----
@@ -202,7 +196,6 @@ struct Feed {
   const Context &ctx;
   const std::vector<Result> &tried;
   const Gate &gate;
-  const Board &board;
   Rounds timeline;
   Ref me;
   std::mt19937_64 &rng;
@@ -223,7 +216,6 @@ struct Feed {
   std::string clock();                                      // 本层某一行的行末时刻 (不含竞价行; 日层空)
   std::string tod(int cap, const std::string &around = {}); // 本层连续 1..cap 行的行末时段 HH:MM-HH:MM (给了 around 就罩住它; 日层空)
   Spot spot();                                              // 一只当日有逐笔的票的一天: 多半取工作台里 view_trades 明细列过的段
-  std::string hyp();                                        // 假设板上最新一条的编号; 板空给空串
   std::vector<std::string> refs(int n);                     // 做成了的调用编号 (新到旧)
 };
 nlohmann::ordered_json SampleArgs(Tool t, Feed &p);

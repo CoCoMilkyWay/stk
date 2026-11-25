@@ -3,7 +3,7 @@
 //   快照: 后台改、GUI 每帧取, 一律不可变 shared_ptr (指针换了 = 换了一份): Broker 的 Snapshot, 中枢的 Inputs / Task / 最近几单;
 //     持仓帧按 (Snapshot, 行情, 本地库) 变了才重算 (名称: 本地库有的个股换本地简称, 否则券商的长简称), 试算按 (Snapshot, Inputs) 变了才重算 (GUI::Stage); 重算出的只是在等 (行情没齐等) 即留着上一份照显, 页面不跳
 //   每帧两个入口: update (任务级, 无论哪页) 取快照、两样拉取该拉了即起事务; tick (Board 可见时, update 之后) 盯客户端、订阅行情、重算
-//   输入 Inputs 三组同形 (行情 / 两融条款 / 调仓名单: 原料 → 派生) + 调仓配置, 改一样即整份换
+//   输入 Inputs 三组同形 (行情 / 两融条款 / 调仓名单: 原料 → 派生) + 调仓配置 + 两样拉取的拉于, 改一样即整份换
 //   行情: 要的码 (持仓、今日清仓、负债、调仓名单里可买的) 每帧订阅给 QuoteHub (与 Market 同一路新浪轮询, 改了即提前一轮), 随 Live 的版本取用;
 //     事务另取: 试算现取此刻的; 单笔下单现取该只; 批量下单起一路只取这批盘口的连续流 (见执行调仓). 三处同一个取法 (gui/task_live/Books.hpp). 盘口列同帧复用其 5 档.
 //     快照读到后头一次取齐其各只的行情记作读时现价 (可用保证金按它校准, 见 live/Rebal.hpp). 事务里取行情一律有界 (取不到即该步失败, 不卡)
@@ -17,7 +17,7 @@
 //     执行调仓 = 检查一遍 (静默段即停 (live::quiet) → 条款缓存还没有即先拉 → 刷新 → 还有挂单即停 (免得重复下单、冻结的钱券没算进试算) → 试算) →
 //     一口气下完试算的各单 (卖 → 融资买 → 现金买, 不等成交): 其间 broker 不自起刷新 (不扫客户端), 盘口只经一路连续流
 //     (后台每 0.5s 取一遍这批, 每单取最新的定扫档价; 断流超 5s 即该单现取); 钱券不够的单由闪电窗的最大可买 / 可卖封顶 → 末了刷新一轮.
-//     一单没下成 (含任何意外) 只记下、接着下后面的; 停在报出委托之前的 (Driver::unsent) 与买单封顶少买的余量批末按原序重下一轮,
+//     一单没下成 (含任何意外) 只记下、接着下后面的; 停在报出委托之前的 (Steps::unsent) 与买单封顶少买的余量批末按原序重下一轮,
 //     仍有没下成的即事务失败、列出各单; 检查一遍里失败即停. 每单下前都核静默段 (单笔下单同)
 //   现金还款 = 刷新 → 已清仓仍负债的各只 (持仓里已无、融资负债还在; 持仓着的负债归调仓管) 按欠款从少到多交 broker 指定合约逐笔还 (额度另以现金封顶; 全部还清 = 各合约还到应还, 不留利息尾巴) → 末了刷新一轮
 //   错误边界 (live::guard): 各事务、各单、各帧的持仓帧 / 试算; 外部结局与应答畸形一律收成原因文本, 不越界崩进程
@@ -99,7 +99,7 @@ struct Task : Job {
   std::deque<LogLine> log;
 };
 
-// 持仓帧 / 试算的输入: 三组同形 (原料 → 派生; 合不了 / 读不出的原因) + 调仓配置
+// 持仓帧 / 试算的输入: 三组同形 (原料 → 派生; 合不了 / 读不出的原因) + 调仓配置; 另带两样拉取的拉于
 struct Inputs {
   // 行情: 订阅的或事务现取的, 最新一份 → 最新时刻 / 快照的读时现价
   struct Px {
@@ -123,6 +123,7 @@ struct Inputs {
     std::string err; // 读不出的原因
   } list;
   live::rebal::Cfg cfg;
+  std::array<misc::Ymd, 2> pulled{}; // kPulls 序 (0 = 还没拉过)
 };
 
 // 出错 = 无帧; 在等 = 帧为上一份 (还没有即无)
@@ -163,7 +164,7 @@ public:
   const std::shared_ptr<const live::Snapshot> &snapshot() const { return snap_; } // 还没成功刷过 = 空
   const live::Refresh &refresh() const { return prog_; }
   const Inputs &in() const { return *in_; }
-  misc::Ymd pulled(Pull p) const { return pulled_[static_cast<int>(p)]; } // 拉于 (0 = 还没拉过)
+  misc::Ymd pulled(Pull p) const { return in_->pulled[static_cast<int>(p)]; } // 拉于 (0 = 还没拉过)
   const std::shared_ptr<const Task> &task() const { return task_; }       // 还没有事务 = 空
   const live::trace::Spot &task_at() const { return task_at_; }           // 事务线程此刻在哪 (段栈空 = 不在客户端操作里)
   const std::vector<OrderJob> &orders() const { return *jobs_; }          // 新在前
@@ -197,8 +198,7 @@ private:
   std::shared_ptr<Core> c_;
   const live::Client *client_ = nullptr;
   bool priv_ = false;
-  std::array<misc::Ymd, 2> tried_{};  // 两样拉取 (kPulls 序) 上次自动拉的日子
-  std::array<misc::Ymd, 2> pulled_{}; // 两样拉取的拉于
+  std::array<misc::Ymd, 2> tried_{}; // 两样拉取 (kPulls 序) 上次自动拉的日子
   std::shared_ptr<const live::Snapshot> snap_;
   live::Refresh prog_;
   std::shared_ptr<const Inputs> in_;

@@ -6,7 +6,6 @@
 #include "live/tdx/Until.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cmath>
 #include <tuple>
@@ -278,21 +277,15 @@ struct Stage {
   void (*run)(Ctx &);
 };
 constexpr Stage kStages[] = {{"切换", switch_to}, {"开窗", open}, {"填单", form}, {"确认", confirm}, {"回报", reply}};
-constexpr auto kStepNames = [] {
-  std::array<std::string_view, std::size(kStages)> a{};
-  for (size_t i = 0; i < a.size(); ++i)
-    a[i] = kStages[i].name;
-  return a;
-}();
 
 } // namespace
 
-std::span<const std::string_view> steps() { return kStepNames; }
-
-size_t unsent() {
-  constexpr size_t n = std::size(kStages) - 1;
-  static_assert(kStages[n].name == "回报");
-  return n;
+Steps steps() {
+  static_assert(kStages[std::size(kStages) - 1].name == "回报");
+  Steps s{.unsent = std::size(kStages) - 1};
+  for (const Stage &x : kStages)
+    s.names.emplace_back(x.name);
+  return s;
 }
 
 Placed place(const OrderReq &o) {

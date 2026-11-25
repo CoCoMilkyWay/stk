@@ -23,18 +23,14 @@ using live::strf;
 
 struct LiveHub::Core {
   std::unique_ptr<live::Broker> broker; // connect 时建一次, 之后只读
-  std::vector<std::string> steps;       // 下单各步, 同 broker 建一次
-  size_t unsent = 0;                    // steps 的前几步不报出委托 (「行情」+ broker 的)
+  live::Steps steps;                    // 下单各步: 「行情」+ broker 的各步, 同 broker 建一次
   live::trace::Track track;             // 事务线程此刻在哪
 
-  // mu: 三份快照 (改 = 抄一份改了换上)、两样拉取的拉于与事务日志的位置
+  // mu: 三份快照 (改 = 抄一份改了换上)
   std::mutex mu;
   std::shared_ptr<const Inputs> in;
   std::shared_ptr<const Task> task;
   std::shared_ptr<const std::vector<OrderJob>> jobs = std::make_shared<const std::vector<OrderJob>>();
-  std::array<misc::Ymd, 2> pulled{}; // kPulls 序
-  std::string task_stamp;            // 本件事务日志文件的时刻
-  double task_t0 = 0;
 };
 
 namespace {
@@ -53,15 +49,16 @@ void edit(Core &c, std::shared_ptr<const T> Core::*m, F &&f) {
   c.*m = std::move(x);
 }
 
-// 改正下着的那单 (最近几单之首, 在跑): 同 edit; 不在下单即不动
+// 改正下着的那单 (最近几单之首, 在跑): 同 edit → 改后的本单; 不在下单即不动 → 空
 template <class F>
-void ordering(Core &c, F &&f) {
+std::optional<OrderJob> ordering(Core &c, F &&f) {
   Lock lk(c.mu);
   if (c.jobs->empty() || c.jobs->front().st != JobSt::Run)
-    return;
+    return std::nullopt;
   auto v = std::make_shared<std::vector<OrderJob>>(*c.jobs);
   f(v->front());
   c.jobs = std::move(v);
+  return c.jobs->front();
 }
 
 std::shared_ptr<const Inputs> inputs(Core &c) {
@@ -86,30 +83,26 @@ std::vector<live::Sec> watch_set(const live::Snapshot *snap, const Inputs &in) {
       v.push_back(s);
   };
   if (snap) {
-    for (const live::Position &p : snap->pos.list)
-      add(p);
+    for (const live::Sec *s : live::held(*snap))
+      add(*s);
     for (const live::Traded &f : snap->fills.by_code.list)
       add(f);
-    for (const live::Debt &d : snap->debts.list)
-      add(d);
   }
   for (const live::Sec &s : in.list.buy)
     add(s);
   return v;
 }
 
-// 快照各只 (持仓 / 负债) 在 q 里的现价; 缺一只 → 空
+// 账户里各只 (live::held) 在 q 里的现价; 缺一只 → 空
 std::shared_ptr<const live::rebal::Prices> prices_of(const live::Snapshot &s, const live::Quotes &q) {
   auto px = std::make_shared<live::rebal::Prices>();
-  const auto take = [&](const std::string &code) {
-    const auto i = q.find(code);
-    if (i != q.end())
-      (*px)[code] = i->second.price;
-    return i != q.end();
-  };
-  const bool all = std::all_of(s.pos.list.begin(), s.pos.list.end(), [&](const live::Position &p) { return take(p.code); }) &&
-                   std::all_of(s.debts.list.begin(), s.debts.list.end(), [&](const live::Debt &d) { return take(d.code); });
-  return all ? px : nullptr;
+  for (const live::Sec *x : live::held(s)) {
+    const auto i = q.find(x->code);
+    if (i == q.end())
+      return nullptr;
+    (*px)[x->code] = i->second.price;
+  }
+  return px;
 }
 
 // 行情 q 整份换上; 快照是新读到的且其各只都有了即记作读时现价
@@ -183,14 +176,6 @@ OrderJob exec(Core &c, Books &books, live::OrderReq o, double yuan, live::PxMode
     if (v.size() > kOrderCap)
       v.pop_back();
   });
-  const auto put = [&](const auto &f) {
-    OrderJob out;
-    edit(c, &Core::jobs, [&](std::vector<OrderJob> &v) {
-      f(v.front());
-      out = v.front();
-    });
-    return out;
-  };
 
   live::Placed p;
   const std::string err = live::guard([&] {
@@ -209,15 +194,17 @@ OrderJob exec(Core &c, Books &books, live::OrderReq o, double yuan, live::PxMode
       o.px = *px;
       if (yuan > 0)
         o.qty = live::shares_of(o.code, o.side, yuan, o.px);
-      put([&](OrderJob &y) { y.o = o; });
+      ordering(c, [&](OrderJob &y) { y.o = o; });
     }
     p = c.broker->place(o);
   });
-  const OrderJob out = put([&](OrderJob &y) {
+  const std::optional<OrderJob> got = ordering(c, [&](OrderJob &y) {
     y.st = err.empty() ? JobSt::Ok : JobSt::Err;
     y.got = p;
     y.msg = err.empty() ? p.msg : err;
   });
+  assert(got && "本单在跑");
+  const OrderJob &out = *got;
   live::trace::note("job", strf("%s %s %s", job_name(out.st), out.live.c_str(), out.msg.c_str()),
                     {{"job", {{"state", job_name(out.st)}, {"live", out.live}, {"msg", out.msg}, {"qty", out.got.qty}, {"px", out.got.px}}}});
   return out;
@@ -229,7 +216,7 @@ std::string failed(const OrderJob &j) { return strf("%s %s 下单失败: %s", j.
 // 买单被最大可买封顶少买的重下余量 (够起买量): 前面的卖单陆续成交, 回款与腾出的保证金随之到账
 std::optional<live::OrderReq> redo(const Core &c, const OrderJob &j) {
   if (j.st == JobSt::Err)
-    return j.at < c.unsent ? std::optional<live::OrderReq>(j.o) : std::nullopt;
+    return j.at < c.steps.unsent ? std::optional<live::OrderReq>(j.o) : std::nullopt;
   const int64_t rest = j.o.qty - j.got.qty;
   if (j.o.side != live::kBuy || rest < live::lot(j.o.code).first)
     return std::nullopt;
@@ -242,7 +229,10 @@ std::optional<live::OrderReq> redo(const Core &c, const OrderJob &j) {
 bool terms_miss(Core &c, const live::Snapshot &s) {
   const std::shared_ptr<const Inputs> in = inputs(c);
   assert(in->terms.raw && "拉过才核缺");
-  return live::terms::missing(in->terms.raw->terms, *in->terms.local, in->list.codes, &s);
+  std::vector<std::string> codes = in->list.codes;
+  for (const live::Sec *x : live::held(s))
+    codes.push_back(x->code);
+  return live::terms::missing(in->terms.raw->terms, *in->terms.local, codes);
 }
 bool flows_miss(Core &, const live::Snapshot &) { return false; }
 
@@ -281,19 +271,14 @@ const PullDef &def(Pull p) { return kPullDefs[static_cast<int>(p)]; }
 
 // p 该拉了 (今天 d, 快照 s 读到后): 还没拉过、拉过满 age 天, 或另该拉
 bool due(Core &c, Pull p, const live::Snapshot &s, misc::Ymd d) {
-  misc::Ymd at;
-  {
-    Lock lk(c.mu);
-    at = c.pulled[static_cast<int>(p)];
-  }
+  const misc::Ymd at = inputs(c)->pulled[static_cast<int>(p)];
   return !at || misc::add_days(at, def(p).age) <= d || def(p).miss(c, s);
 }
 
 // 拉 p (事务里), 记下拉于
 void pull_run(Core &c, Pull p) {
   const misc::Ymd d = def(p).run(c);
-  Lock lk(c.mu);
-  c.pulled[static_cast<int>(p)] = d;
+  edit(c, &Core::in, [&](Inputs &x) { x.pulled[static_cast<int>(p)] = d; });
 }
 
 // 刷新一轮 (成交、持仓、挂单、信用账户), 记下账户
@@ -407,31 +392,25 @@ void repay_task(Core &c, double cap) {
 //   (output/run/live/task/<时刻>.jsonl, 留最近 kTaskKeep 个: 下单留底比交互日志留得久) 并留尾巴给页面, 正下着的那单同步其各步与实时一行.
 //   事务的段在 Watch 之外 (进度只列其下的段, 名字已在事务名上)
 bool start(const std::shared_ptr<Core> &c, const char *name, std::function<void(Core &)> fn) {
+  const std::string stamp = disk::stamp_now();
+  const double t0 = mono();
   {
     Lock lk(c->mu);
     if (c->task && c->task->st == JobSt::Run)
       return false;
-    c->task_stamp = disk::stamp_now();
-    c->task_t0 = mono();
     auto t = std::make_shared<Task>();
     t->sec = live::sec_now();
     t->name = name;
-    t->file = disk::path(disk::RunLiveTaskLog, {.stamp = c->task_stamp}).string();
+    t->file = disk::path(disk::RunLiveTaskLog, {.stamp = stamp}).string();
     c->task = std::move(t);
   }
   const std::vector<disk::Key> old = disk::list(disk::RunLiveTaskLog);
   for (size_t i = 0; i + kTaskKeep <= old.size(); ++i)
     disk::remove(disk::RunLiveTaskLog, old[i]);
-  std::thread([c, name = std::string(name), fn = std::move(fn)] {
+  std::thread([c, name = std::string(name), fn = std::move(fn), stamp, t0] {
     const live::trace::Hooks hooks{
         .on_note = [&](const char *kind, std::string text, const live::trace::Kw &kw) {
-          std::string stamp;
-          double t;
-          {
-            Lock lk(c->mu);
-            stamp = c->task_stamp;
-            t = mono() - c->task_t0;
-          }
+          const double t = mono() - t0;
           live::trace::Kw line = {{"t", std::round(t * 100) / 100}, {"kind", kind}};
           for (const auto &e : kw.items())
             line[e.key()] = e.value();
@@ -442,8 +421,9 @@ bool start(const std::shared_ptr<Core> &c, const char *name, std::function<void(
               x.log.pop_front();
           }); },
         .on_span = [&](std::string_view s) {
-          if (const auto it = std::find(c->steps.begin(), c->steps.end(), s); it != c->steps.end())
-            ordering(*c, [&](OrderJob &j) { j.at = static_cast<size_t>(it - c->steps.begin()); }); },
+          const std::vector<std::string> &n = c->steps.names;
+          if (const auto it = std::find(n.begin(), n.end(), s); it != n.end())
+            ordering(*c, [&](OrderJob &j) { j.at = static_cast<size_t>(it - n.begin()); }); },
         .on_live = [&](std::string line) {
           ordering(*c, [&](OrderJob &j) { j.live = line; });
           edit(*c, &Core::task, [&](Task &x) { x.live = std::move(line); }); },
@@ -477,7 +457,7 @@ LiveHub::LiveHub() : c_(std::make_shared<Core>()) {
     in->terms.raw = std::make_shared<const live::terms::Cache>(std::move(x));
   in->terms.local = std::make_shared<const live::terms::Local>();
   derive(*in);
-  c_->pulled = {in->terms.raw ? in->terms.raw->pulled : 0, live::flows::load().pulled};
+  in->pulled = {in->terms.raw ? in->terms.raw->pulled : 0, live::flows::load().pulled};
   c_->in = std::move(in);
   if (const std::vector<std::string> names = live::rebal::lists(); !names.empty())
     set_list(names[0]);
@@ -492,16 +472,15 @@ void LiveHub::connect(size_t client) {
   assert(!connected() && client < live::clients().size());
   client_ = &live::clients()[client];
   c_->broker = std::make_unique<live::Broker>(client_->make());
-  c_->steps = {"行情"};
-  for (const std::string_view s : c_->broker->steps())
-    c_->steps.emplace_back(s);
-  c_->unsent = 1 + c_->broker->unsent();
+  c_->steps = c_->broker->steps();
+  c_->steps.names.insert(c_->steps.names.begin(), "行情");
+  ++c_->steps.unsent;
   peek();
 }
 
 const std::vector<std::string> &LiveHub::steps() const {
   assert(connected());
-  return c_->steps;
+  return c_->steps.names;
 }
 
 const live::Client &LiveHub::client() const {
@@ -520,7 +499,6 @@ void LiveHub::peek() {
     in_ = c_->in;
     task_ = c_->task;
     jobs_ = c_->jobs;
-    pulled_ = c_->pulled;
   }
   task_at_ = c_->track.now();
   if (c_->broker) {

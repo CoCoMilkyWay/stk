@@ -1,4 +1,4 @@
-// build_context 的展示: 轮次与账本标志 + 各段字数表 + 分段折叠 (系统提示 / 首条 / 研究树 / 上一批回复 / 本条消息 / 下一步 / 假设板)
+// build_context 的展示: 轮次与账本标志 + 各段字数表 + 分段折叠 (系统提示 / 首条 / 研究树 / 上一批回复 / 本条消息 / 下一步)
 #include "gui/task_agent/tools/Session.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
@@ -11,11 +11,11 @@ using namespace ui;
 
 void BuildContextRes::draw() const {
   heading("上下文构成 · 第 " + std::to_string(round) + " 轮 · kind=" + kind + " · view=" + view + " · Turns=" + std::to_string(turns));
-  ImGui::TextDisabled("Flags: done=%s", flags.done ? "true" : "false");
+  ImGui::TextDisabled("done=%s", done ? "true" : "false");
   if (grid("##ctx_parts", {"段", "字数", "说明"})) {
     const std::pair<const char *, const std::string *> rows[] = {
-        {"System", &system}, {"First", &first}, {"研究树", &tree}, {"上一批回复", &prev_reply}, {"本条增量", &current}, {"下一步", &next_step}, {"假设板", &board_text}};
-    const char *notes[] = {"静态系统提示 (会话内不变)", "首条消息", "前 N-1 轮折叠 (TurnsOf)", "上轮模型回复 JSON", "外部 agent 常规收到的增量", "RoundMessage 动态生成", "当前假设板"};
+        {"System", &system}, {"First", &first}, {"研究树", &tree}, {"上一批回复", &prev_reply}, {"本条增量", &current}, {"下一步", &next_step}};
+    const char *notes[] = {"静态系统提示 (会话内不变)", "首条消息", "前 N-1 轮折叠 (TurnsOf)", "上轮模型回复 JSON", "外部 agent 常规收到的增量", "RoundMessage 动态生成"};
     for (size_t i = 0; i < std::size(rows); ++i) {
       ImGui::TableNextRow();
       cell(rows[i].first);
@@ -26,8 +26,6 @@ void BuildContextRes::draw() const {
   }
   if (!next_step.empty())
     fold("next", ImGuiTreeNodeFlags_DefaultOpen, "下一步指导语 · " + chars(next_step), next_step, false, kBoxLines, false);
-  if (!board_text.empty())
-    fold("board", ImGuiTreeNodeFlags_None, "假设板 · " + chars(board_text), board_text, false, kBoxLines, false);
   if (!tree.empty())
     fold("tree", ImGuiTreeNodeFlags_None, "研究树 · " + chars(tree), tree, false, kBoxLines, false);
   if (!prev_reply.empty())
