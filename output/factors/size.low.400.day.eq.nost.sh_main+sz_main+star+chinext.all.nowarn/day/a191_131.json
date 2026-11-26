@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#131",
- "expr": "CsRank(TsPow(CsRank(TsDeltaRoll(TsMul(bar.1d.vwap_day, bar.1d.adj_factor), d)), TsRankRoll(TsCorrRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsMeanRoll(bar.1d.volume_day, d), d), d)))",
+ "expr": "CsRank(TsPow(CsRank(TsDeltaRoll(bar.1d.vwap_adj_day, d)), TsRankRoll(TsCorrRoll(bar.1d.close_adj_day, TsMeanRoll(bar.1d.volume_day, d), d), d)))",
  "note": "均价变动以收盘均量相关位置为指数：动量遇量价拥挤，赚回撤"
 }

@@ -1,6 +1,8 @@
 // Feed — 见头文件
 #include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/All.hpp"
+
+#include "factor/Expr.hpp"
 #include "misc/date.hpp"
 
 #include <algorithm>
@@ -14,7 +16,6 @@ namespace {
 
 constexpr int kSpotTries = 64;    // 挑当日有逐笔的票: 随机试几次
 constexpr double kSpotSeen = 0.7; // 工作台有 view_trades 明细时取它的段的概率
-constexpr std::string_view kCsRoots[] = {"CsRank", "CsNormRank", "CsZ"};
 
 // 叶名 档.层.列 的层段是 grid
 bool on_grid(const std::string &code, const std::string &grid) {
@@ -68,9 +69,9 @@ std::string Feed::factor() {
   const std::string x = g.empty() ? leaf() : one(g);
   std::vector<std::string> roots;
   for (const Op &o : ctx.ops)
-    if (std::ranges::contains(kCsRoots, std::string_view(o.name)))
+    if (const int i = factor::expr::op_index(o.name); factor::expr::cs_root(i))
       roots.push_back(o.name + "(" + x + ")");
-    else if (o.name == "TsRankRoll")
+    else if (i == factor::expr::kTsRoot)
       roots.push_back("TsRankRoll(" + x + ", d=" + std::to_string(ctx.ts_root_d) + ")");
   return roots.empty() ? "CsRank(" + x + ")" : one(roots);
 }

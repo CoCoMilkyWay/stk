@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#116",
- "expr": "CsRank(TsSlopeRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d))",
+ "expr": "CsRank(TsSlopeRoll(bar.1d.close_adj_day, d))",
  "note": "收盘对期序的斜率：趋势斜率陡者回落，赚趋势回复"
 }

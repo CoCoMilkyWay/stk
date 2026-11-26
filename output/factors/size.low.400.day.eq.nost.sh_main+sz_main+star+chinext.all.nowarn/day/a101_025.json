@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A101#025",
- "expr": "CsRank(TsMul(TsMul(TsMul(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsMeanRoll(bar.1d.amount_day, d)), bar.1d.vwap_day), TsSub(bar.1d.high_day, bar.1d.close_day)))",
+ "expr": "CsRank(TsMul(TsMul(TsMul(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), TsMeanRoll(bar.1d.amount_day, d)), bar.1d.vwap_day), TsSub(bar.1d.high_day, bar.1d.close_day)))",
  "note": "下跌、放量、上影长者强：放量下杀后抛压出尽，赚恐慌修复"
 }

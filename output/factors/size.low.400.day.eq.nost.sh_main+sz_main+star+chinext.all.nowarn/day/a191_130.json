@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#130",
- "expr": "CsRank(TsDiv(CsRank(TsWmaRoll(TsCorrRoll(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMeanRoll(bar.1d.volume_day, d), d), d)), CsRank(TsWmaRoll(TsCorrRoll(CsRank(bar.1d.vwap_day), CsRank(bar.1d.volume_day), d), d))))",
+ "expr": "CsRank(TsDiv(CsRank(TsWmaRoll(TsCorrRoll(TsAdd(bar.1d.high_adj_day, bar.1d.low_adj_day), TsMeanRoll(bar.1d.volume_day, d), d), d)), CsRank(TsWmaRoll(TsCorrRoll(CsRank(bar.1d.vwap_day), CsRank(bar.1d.volume_day), d), d))))",
  "note": "中点均量相关对均价量秩相关：量价同步强弱对比，赚拥挤回落"
 }

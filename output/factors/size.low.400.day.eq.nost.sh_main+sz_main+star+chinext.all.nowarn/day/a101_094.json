@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A101#094",
- "expr": "CsRank(TsPow(CsRank(TsSub(TsMul(bar.1d.vwap_day, bar.1d.adj_factor), TsMinRoll(TsMul(bar.1d.vwap_day, bar.1d.adj_factor), d))), TsRankRoll(TsCorrRoll(TsRankRoll(TsMul(bar.1d.vwap_day, bar.1d.adj_factor), d), TsRankRoll(TsMeanRoll(bar.1d.amount_day, d), d), d), d)))",
+ "expr": "CsRank(TsPow(CsRank(TsSub(bar.1d.vwap_adj_day, TsMinRoll(bar.1d.vwap_adj_day, d))), TsRankRoll(TsCorrRoll(TsRankRoll(bar.1d.vwap_adj_day, d), TsRankRoll(TsMeanRoll(bar.1d.amount_day, d), d), d), d)))",
  "note": "低位程度以量价位置同步为指数：底部放量同步，赚底部反弹"
 }

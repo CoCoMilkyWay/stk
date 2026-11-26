@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#031",
- "expr": "CsRank(TsDiv(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d)))",
+ "expr": "CsRank(TsDiv(bar.1d.close_adj_day, TsMeanRoll(bar.1d.close_adj_day, d)))",
  "note": "偏离均线：乖离越大越回落，赚乖离回归"
 }

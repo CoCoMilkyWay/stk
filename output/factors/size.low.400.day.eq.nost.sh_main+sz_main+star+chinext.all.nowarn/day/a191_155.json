@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#155",
- "expr": "CsRank(TsSub(TsSub(TsMeanEma(bar.1d.volume_day, k=0.153846), TsMeanEma(bar.1d.volume_day, k=0.0740741)), TsMeanEma(TsSub(TsMeanEma(bar.1d.volume_day, k=0.153846), TsMeanEma(bar.1d.volume_day, k=0.0740741)), k)))",
+ "expr": "CsRank(TsSub(TsSub(TsMeanEma(bar.1d.volume_day, k:t1), TsMeanEma(bar.1d.volume_day, k:t2)), TsMeanEma(TsSub(TsMeanEma(bar.1d.volume_day, k:t1), TsMeanEma(bar.1d.volume_day, k:t2)), k)))",
  "note": "量能 MACD 柱：量能加速，赚量能冲击反转"
 }

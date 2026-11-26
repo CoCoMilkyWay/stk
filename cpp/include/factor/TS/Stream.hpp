@@ -71,6 +71,9 @@ struct Clip {
 struct Gt { // 指示: 严格大于. 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
   static Val apply(Val x, Val, Val, int, const Param &p) { return mk(x.v > p.k ? 1.f : 0.f, x.m); }
 };
+struct Const { // 元数 0: 常数 k, 恒有效
+  static Val apply(Val, Val, Val, int, const Param &p) { return mk(p.k, true); }
+};
 struct TodMask { // 元数 0: 只看段内位置, 恒有效
   static Val apply(Val, Val, Val, int t_seg, const Param &p) {
     return mk((t_seg >= static_cast<int>(p.k) && t_seg < static_cast<int>(p.k2)) ? 1.f : 0.f, true);
@@ -489,6 +492,7 @@ using TsNeg = Point<pt::Neg>;
 using TsRecip = Point<pt::Recip>;
 using TsClip = Point<pt::Clip>;
 using TsGt = Point<pt::Gt>;
+using TsConst = Point<pt::Const>;
 using TsTodMask = Point<pt::TodMask>;
 using TsAdd = Point<pt::Add>;
 using TsSub = Point<pt::Sub>;

@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#052",
- "expr": "CsRank(TsDiv(TsSumRoll(TsRelu(TsLinFix(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsDelayRoll(TsAdd(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMul(bar.1d.close_day, bar.1d.adj_factor)), d=1), w=[1, -0.333333])), d), TsSumRoll(TsRelu(TsLinFix(TsDelayRoll(TsAdd(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMul(bar.1d.close_day, bar.1d.adj_factor)), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor), w=[0.333333, -1])), d)))",
+ "expr": "CsRank(TsDiv(TsSumRoll(TsRelu(TsLinFix(bar.1d.high_adj_day, TsDelayRoll(TsAdd(TsAdd(bar.1d.high_adj_day, bar.1d.low_adj_day), bar.1d.close_adj_day), d=1), w=[1, -0.333333])), d), TsSumRoll(TsRelu(TsLinFix(TsDelayRoll(TsAdd(TsAdd(bar.1d.high_adj_day, bar.1d.low_adj_day), bar.1d.close_adj_day), d=1), bar.1d.low_adj_day, w=[0.333333, -1])), d)))",
  "note": "高点高于昨日中枢与低点低于昨日中枢之比：上冲力度对下探力度，赚多空失衡回归"
 }

@@ -99,8 +99,9 @@
 //   流式 TS struct::kT 与本表 T 窗列不符 → op_check static_assert 错 (A 域/核类是纯语义列, 无实现侧载荷).
 // =============================================================================
 
-// ---- 0 元 × SELF (1) ----
-#define OP_TS0(X) \
+// ---- 0 元 × SELF (2) ----
+#define OP_TS0(X)                                                                                                                                                                                                    \
+  X(TsConst, "时常数", 0, POINT, SELF, MAP, ANY, OP_IN0(), REAL, R"tex(k)tex", "常数序列 (k 只许写死); 造常数分支 / 常数项, 如 1 + x、x > 1、±1 分支")                                                                  \
   X(TsTodMask, "时段掩", 0, POINT, SELF, MAP, TOD, OP_IN0(), BIN, R"tex(\mathbf{1}[k \le t_D < k_2])tex", "选日内时段 (k / k2 = 本层行号, 从集合竞价段起数); 造 0/1 掩码, 配 TsMask 做分时段统计")
 
 // ---- 1 元 × SELF (38 = POINT 9 + EXPAND 12 + ROLL 16 + EXPO 1) ----

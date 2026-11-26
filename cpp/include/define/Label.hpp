@@ -181,7 +181,7 @@ static_assert(kPendDays == 9, "LABEL_DELAY_NOTE 的天数随 kPendDays − 1 改
 //     |--------|-------|-------------------|------------------------|-----------------------------|-----------|----------------------------|
 //     | <n>m   | <n>m  | 行长 ≤ n 的分钟层 | C(行) @ E              | C(行)+n @ E (过 14:57 掩)   | n / N     | n / N · J / S              |
 //     | close  | close | 非 day            | C(行) @ E              | C(D) @ 收盘撮合             | S         | Σ_{j<J} (S − 1 − j) / S    |
-//     | T+1O   | t1o   | 全部              | C(行) @ E; day 层 C(D) | O(D+1) @ 开盘撮合           | S         | (S + 1) / 2                |
+//     | T+1O   | t1o   | 全部              | C(行) @ E; day 层 C(D) | O(D+1) @ 开盘撮合           | S         | (S + 1) / 2 + open_row     |
 //     | T+N    | t<N>  | 全部              | C(行) @ E; day 层 C(D) | D+N 日同一行 @ E (day: C)   | N · S     | N · S                      |
 //
 //   【协议表 2: 开关仓策略】
@@ -194,13 +194,22 @@ static_assert(kPendDays == 9, "LABEL_DELAY_NOTE 的天数随 kPendDays − 1 改
 //     | 尾部       | 分钟型 / 收盘型 minute(t) + n > kLastAnchorRow 的行不开仓 (opens 为假)                                    | Hold              |
 //     | 仓位       | 每行一批, 资金 1/h̄, 批内按目标权 (等权 1 / max(只数, cap) 或外给权); 全日平均满仓                        | Stat【换手】/ 净值 |
 //     | 换手       | 前一批的权随价漂移到交接点, 与本批目标权逐格之差 (只在交接时; 否则整建整平, 平仓量亦随价漂移)            | Stat【换手】      |
-//     | 成本       | 两侧逐格费率: 税佣 (Fee::tax) + 冲击 (盘口段 = 真实买 / 卖冲击封顶 max_impact; 固定段 = Fee::impact)     | Stat【换手】      |
+//     | 成本       | 两侧逐格费率: 税佣 (Fee::tax) + 冲击 (盘口段 = 真实买 / 卖冲击封顶 max_impact; 固定段 = Fee::impact);     | Stat【换手】      |
+//     |            | 整批平仓 (不交接) 恒在撮合价点: 盘口段冲击 0, 固定段照付 Fee::impact                                     |                   |
 //     | 净值       | 行 t 的批收益在 exit(t) 实现 × 1/h̄, 日内求和, 跨日复利; 成本在建仓行即付                                  | 净值 fold_ledger  |
+//     | 记日       | 排序统计 (rIC / 分组) 记在建仓日 (预测时点); 钱 (日收益 / 净值 / 年化) 记在平仓日 = 建仓日 + hold_days      | Stat Fold / 净值  |
 //     | 复权       | 标签价 × 当日复权比: 跨日收益不含除权缺口                                                                 | 标签              |
 // =============================================================================
 
 // 行 t 按收盘价建仓: 行末分钟越过最后可成交锚点, 价点 E 退化为 C(D) (日层每行都是). t = 绝对行号
 FACTOR_HD constexpr bool close_entry(int t, const Geo &g) { return g.minute(t % g.S) > kLastAnchorRow; }
+// 开盘撮合价 O(D) 所在的段内行: 末分钟不早于 09:25 撮合 bar 的首行 (L_1min = 行 10; 分钟箱 / 日 = 行 0)
+FACTOR_HD constexpr int open_row(const Geo &g) {
+  int j = 0;
+  while (g.minute(j) < kAuctionMin)
+    ++j;
+  return j;
+}
 // 持有期在层 g 上是否合法: 分钟型 n 是行长 N 的整数倍且首行 minute(0) + n ≤ kLastAnchorRow; close 要求 S > 1; 日级型各层皆可
 FACTOR_HD constexpr bool hold_ok(HoldId h, const Geo &g) {
   switch (hold_kind(h)) {
@@ -225,14 +234,14 @@ struct Hold {
   }
   // 交接: 行 t 建仓与行 t − h 平仓是同一价点 (偏移型恒是, 锚点型从不). t = 绝对行号
   FACTOR_HD constexpr bool nets(int t) const { return hold_offset(id) && t >= h && opens(t) && opens(t - h); }
-  // 平仓行: 行 t 这一批的收益在哪一行实现. 偏移型 = t + h; 收盘型 = 当日末行; T+N 开盘型 = D+N 日首行. 顺延不改实现行
+  // 平仓行: 行 t 这一批的平仓价点所在行 (收益在此实现). 偏移型 = t + h; 收盘型 = 当日末行; T+N 开盘型 = D+N 日 open_row. 顺延不改实现行
   FACTOR_HD constexpr int exit(int t) const {
     if (hold_offset(id))
       return t + h;
     const int d = t / g.S + hold_days(id);
-    return hold_kind(id) == HoldKind::Open ? d * g.S : d * g.S + g.S - 1;
+    return hold_kind(id) == HoldKind::Open ? d * g.S + open_row(g) : d * g.S + g.S - 1;
   }
-  // 行 s 的标签在哪一行收盘时已实现 (N 元回归的样本行): 平仓行的价点成交即知; 分钟价点 E 至迟下一行收盘可知 (+1)
+  // 行 s 的标签在哪一行收盘时已实现 (N 元回归的样本行): 撮合价点在平仓行收盘即知; 分钟价点 E 至迟下一行收盘可知 (+1)
   FACTOR_HD constexpr int known(int s) const {
     const bool at_e = hold_offset(id) && (hold_kind(id) == HoldKind::Min || !close_entry(s, g));
     return exit(s) + (at_e ? 1 : 0);

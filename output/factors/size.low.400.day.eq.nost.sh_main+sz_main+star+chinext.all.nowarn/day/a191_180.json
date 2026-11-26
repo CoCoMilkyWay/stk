@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#180",
- "expr": "CsRank(TsWhere(TsSub(bar.1d.volume_day, TsMeanRoll(bar.1d.volume_day, d)), TsMul(TsNeg(TsRankRoll(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=7)), d)), TsSign(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=7))), TsNeg(bar.1d.volume_day)))",
+ "expr": "CsRank(TsWhere(TsSub(bar.1d.volume_day, TsMeanRoll(bar.1d.volume_day, d)), TsMul(TsNeg(TsRankRoll(TsAbs(TsDeltaRoll(bar.1d.close_adj_day, d:t1)), d)), TsSign(TsDeltaRoll(bar.1d.close_adj_day, d:t1))), TsNeg(bar.1d.volume_day)))",
  "note": "放量时逆周走势、缩量时按量能：放量极端是冲击，赚冲击反转"
 }

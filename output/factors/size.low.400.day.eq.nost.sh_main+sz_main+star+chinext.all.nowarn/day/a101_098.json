@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A101#098",
- "expr": "CsRank(TsLinFix(CsRank(TsWmaRoll(TsCorrRoll(TsMul(bar.1d.vwap_day, bar.1d.adj_factor), TsSumRoll(TsMeanRoll(bar.1d.amount_day, d), d), d), d)), CsRank(TsWmaRoll(TsRankRoll(TsNeg(TsArgMinRoll(TsCorrRoll(CsRank(bar.1d.open_day), CsRank(TsMeanRoll(bar.1d.amount_day, d)), d), d)), d), d)), w))",
+ "expr": "CsRank(TsLinFix(CsRank(TsWmaRoll(TsCorrRoll(bar.1d.vwap_adj_day, TsSumRoll(TsMeanRoll(bar.1d.amount_day, d), d), d), d)), CsRank(TsWmaRoll(TsRankRoll(TsNeg(TsArgMinRoll(TsCorrRoll(CsRank(bar.1d.open_day), CsRank(TsMeanRoll(bar.1d.amount_day, d)), d), d)), d), d)), w))",
  "note": "量价同步强而开盘量价背离刚过：同步与背离错配，赚错配修复"
 }

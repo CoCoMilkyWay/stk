@@ -114,8 +114,7 @@ int open_of(const std::vector<std::string> &clock) {
 // 同式键: 截面根 CsRank / CsNormRank / CsZ 互换不改截面排序与分组
 std::string twin_of_expr(const fx::Expr &e) {
   const fx::Node &r = e.root();
-  const std::string_view nm = r.op >= 0 ? std::string_view(fx::kOps[r.op].name) : std::string_view();
-  return nm == "CsRank" || nm == "CsNormRank" || nm == "CsZ" ? "Cs:" + fx::to_string(e, r.args[0]) : e.canon;
+  return fx::cs_root(r.op) ? "Cs:" + fx::to_string(e, r.args[0]) : e.canon;
 }
 
 // 评估期两档缓存 (仅 Bar 库 / 含 Lob 库): bind 时各算至多一次, 扫上百个因子文件零重复 span_of

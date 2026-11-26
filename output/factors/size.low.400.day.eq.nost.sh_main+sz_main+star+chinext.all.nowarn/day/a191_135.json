@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#135",
- "expr": "CsRank(TsMeanEma(TsDelayRoll(TsDiv(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d)), d), k))",
+ "expr": "CsRank(TsMeanEma(TsDelayRoll(TsDiv(bar.1d.close_adj_day, TsDelayRoll(bar.1d.close_adj_day, d)), d), k))",
  "note": "滞后月度收益的平滑：中期涨幅，赚中期动量偏差"
 }

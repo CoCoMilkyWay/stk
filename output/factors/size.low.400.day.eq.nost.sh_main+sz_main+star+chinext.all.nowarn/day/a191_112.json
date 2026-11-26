@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#112",
- "expr": "CsRank(TsImb(TsSumRoll(TsRelu(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), d), TsSumRoll(TsRelu(TsNeg(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1))), d)))",
+ "expr": "CsRank(TsImb(TsSumRoll(TsRelu(TsDeltaRoll(bar.1d.close_adj_day, d=1)), d), TsSumRoll(TsRelu(TsNeg(TsDeltaRoll(bar.1d.close_adj_day, d=1))), d)))",
  "note": "CMO：涨幅和对跌幅和的失衡，赚超买超卖回归"
 }

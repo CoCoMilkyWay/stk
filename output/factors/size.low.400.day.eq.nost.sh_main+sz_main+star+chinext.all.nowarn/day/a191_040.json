@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#040",
- "expr": "CsRank(TsDiv(TsSumRoll(TsMul(bar.1d.volume_day, TsGt(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1), k=0)), d), TsSumRoll(TsMul(bar.1d.volume_day, TsSub(TsGt(bar.1d.close_day, k=0), TsGt(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1), k=0))), d)))",
+ "expr": "CsRank(TsDiv(TsSumRoll(TsMul(bar.1d.volume_day, TsGt(TsDeltaRoll(bar.1d.close_adj_day, d=1), k=0)), d), TsSumRoll(TsMul(bar.1d.volume_day, TsSub(TsConst(k=1), TsGt(TsDeltaRoll(bar.1d.close_adj_day, d=1), k=0))), d)))",
  "note": "涨日量对跌日量之比：买量压倒卖量即过热，赚量能失衡回归"
 }

@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#172",
- "expr": "CsRank(TsMeanRoll(TsAbs(TsImb(TsSumRoll(TsMul(TsSub(TsDelayRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMul(TsGt(TsSub(TsDelayRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor)), k=0), TsGt(TsSub(TsSub(TsDelayRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsDeltaRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=1)), k=0))), d), TsSumRoll(TsMul(TsDeltaRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=1), TsMul(TsGt(TsDeltaRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=1), k=0), TsGt(TsSub(TsDeltaRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=1), TsSub(TsDelayRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor))), k=0))), d))), d))",
+ "expr": "CsRank(TsMeanRoll(TsAbs(TsImb(TsSumRoll(TsMul(TsSub(TsDelayRoll(bar.1d.low_adj_day, d=1), bar.1d.low_adj_day), TsMul(TsGt(TsSub(TsDelayRoll(bar.1d.low_adj_day, d=1), bar.1d.low_adj_day), k=0), TsGt(TsSub(TsSub(TsDelayRoll(bar.1d.low_adj_day, d=1), bar.1d.low_adj_day), TsDeltaRoll(bar.1d.high_adj_day, d=1)), k=0))), d:x), TsSumRoll(TsMul(TsDeltaRoll(bar.1d.high_adj_day, d=1), TsMul(TsGt(TsDeltaRoll(bar.1d.high_adj_day, d=1), k=0), TsGt(TsSub(TsDeltaRoll(bar.1d.high_adj_day, d=1), TsSub(TsDelayRoll(bar.1d.low_adj_day, d=1), bar.1d.low_adj_day)), k=0))), d:x))), d))",
  "note": "ADX 型方向强度：趋势强者，赚趋势延续"
 }

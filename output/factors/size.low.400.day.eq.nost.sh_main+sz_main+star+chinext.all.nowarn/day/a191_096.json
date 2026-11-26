@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#096",
- "expr": "CsRank(TsMeanEma(TsMeanEma(TsDiv(TsSub(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsMinRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=9)), TsSub(TsMaxRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=9), TsMinRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=9))), k), k))",
+ "expr": "CsRank(TsMeanEma(TsMeanEma(TsDiv(TsSub(bar.1d.close_adj_day, TsMinRoll(bar.1d.low_adj_day, d:st)), TsSub(TsMaxRoll(bar.1d.high_adj_day, d:st), TsMinRoll(bar.1d.low_adj_day, d:st))), k), k))",
  "note": "随机指标双重平滑：区间位置的慢线，赚超买超卖回归"
 }

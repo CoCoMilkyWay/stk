@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#002",
- "expr": "CsRank(TsNeg(TsDeltaRoll(TsDiv(TsSub(TsSub(bar.1d.close_day, bar.1d.low_day), TsSub(bar.1d.high_day, bar.1d.close_day)), TsSub(bar.1d.high_day, bar.1d.low_day)), d)))",
+ "expr": "CsRank(TsDeltaRoll(TsDiv(TsSub(TsSub(bar.1d.close_day, bar.1d.low_day), TsSub(bar.1d.high_day, bar.1d.close_day)), TsSub(bar.1d.high_day, bar.1d.low_day)), d))",
  "note": "收盘强度骤升弱、骤降强：日内多空突变次日回摆，赚强度反转"
 }

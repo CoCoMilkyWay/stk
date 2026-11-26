@@ -117,16 +117,6 @@ __device__ __forceinline__ DVal fuse_step(const FuseStep &st, const In *in, cons
   const bool ok = m && dev::fin(v);
   return DVal{ok ? v : 0.f, static_cast<uint8_t>(ok ? 1 : 0)};
 }
-// 分派表按 (A 域, T 窗) 展开, N 元 POINT × SELF 也落到这里: 它不进融合 (Dag pointwise 只收定元), 此支只为不实例化 Op::F
-template <int NARY, class Op>
-__device__ __forceinline__ DVal fuse_op(const FuseStep &st, const In *in, const DVal *r, int i, int t_seg) {
-  if constexpr (NARY == kNary) {
-    assert(false && "N 元算子不进融合");
-    return DVal{0.f, 0};
-  } else {
-    return fuse_step<NARY, typename Op::F>(st, in, r, i, t_seg);
-  }
-}
 
 __global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, int S) {
   const int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -138,24 +128,21 @@ __global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, in
     for (int s = 0; s < a.f.n; ++s) {
       const FuseStep &st = a.f.s[s];
       switch (st.op) {
-#define G_FUSE_SELF_POINT(Name, ar)                      \
-  case kIdx##Name:                                       \
-    r[s] = fuse_op<ar, ts::Name>(st, a.in, r, i, t % S); \
+// 只展开定元 TS 块 (OP_TS0..3): 融合步只装定元 POINT × SELF (Dag pointwise), N 元与 CS 不进
+#define G_FUSE_POINT(Name, ar)                                \
+  case kIdx##Name:                                            \
+    r[s] = fuse_step<ar, ts::Name::F>(st, a.in, r, i, t % S); \
     break;
-#define G_FUSE_SELF_EXPAND(Name, ar)
-#define G_FUSE_SELF_ROLL(Name, ar)
-#define G_FUSE_SELF_EXPO(Name, ar)
-#define G_FUSE_ALL_POINT(Name, ar)
-#define G_FUSE_ALL_EXPAND(Name, ar)
-#define G_FUSE_ALL_ROLL(Name, ar)
-#define G_FUSE_ALL_EXPO(Name, ar)
-#define G_FUSE_GROUP_POINT(Name, ar)
-#define G_FUSE_GROUP_EXPAND(Name, ar)
-#define G_FUSE_GROUP_ROLL(Name, ar)
-#define G_FUSE_GROUP_EXPO(Name, ar)
-#define G_FUSE(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op_tex, note) G_FUSE_##a##_##t(Name, ar)
-        OP_ALL(G_FUSE)
+#define G_FUSE_EXPAND(Name, ar)
+#define G_FUSE_ROLL(Name, ar)
+#define G_FUSE_EXPO(Name, ar)
+#define G_FUSE(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op_tex, note) G_FUSE_##t(Name, ar)
+        OP_TS0(G_FUSE) OP_TS1(G_FUSE) OP_TS2(G_FUSE) OP_TS3(G_FUSE)
 #undef G_FUSE
+#undef G_FUSE_EXPO
+#undef G_FUSE_ROLL
+#undef G_FUSE_EXPAND
+#undef G_FUSE_POINT
       default:
         assert(false && "融合步只装定元 POINT × SELF 算子");
       }

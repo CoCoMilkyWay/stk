@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#177",
- "expr": "CsRank(TsNeg(TsArgMaxRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d)))",
+ "expr": "CsRank(TsArgMaxRoll(bar.1d.high_adj_day, d))",
  "note": "近期高点越新越弱：刚创新高易回落，赚追高回吐"
 }

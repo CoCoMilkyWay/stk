@@ -6,12 +6,14 @@
 //   两个消费者共用同一份 (口径必须一致, 否则 GUI 里"过"而 op_check 里"挂"):
 //     src/factor/op_check.cpp                     命令行三方对拍 (profile × d 全扫)
 //     src/gui/task_alpha/services/OperatorsService  GUI Operators 表 (单张量, 逐算子对拍 + 计时)
-//   本头只依赖 Contract.hpp; 驱动是模板, 具体的 Stream / Cpu struct 由消费者 include 后实例化.
+//   本头只依赖 Contract.hpp / OpTable.hpp (按名字的参数表在编译期对表, 名字不在 OpTable 即编译错);
+//   驱动是模板, 具体的 Stream / Cpu struct 由消费者 include 后实例化.
 //   Arena (每线程暂存) 也在此, EvalCpu 共用.
 //   依赖受控浮点: 消费者 TU 必须编进 -fno-fast-math (CMake MATH_PRECISE).
 // =============================================================================
 
 #include "factor/Contract.hpp"
+#include "factor/OpTable.hpp"
 #include "misc/exec.hpp"
 
 #include <algorithm>
@@ -21,9 +23,28 @@
 #include <cstring>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace factor::check {
+
+// OpTable 的算子名 (按名字的参数 / 容差表在编译期对它, 写错即编译错)
+#define FACTOR_CHECK_NAME(Name, ...) #Name,
+inline constexpr std::string_view kOpNames[] = {OP_ALL(FACTOR_CHECK_NAME)};
+#undef FACTOR_CHECK_NAME
+constexpr bool known(std::string_view n) {
+  for (const std::string_view k : kOpNames)
+    if (k == n)
+      return true;
+  return false;
+}
+template <class Row, size_t N>
+constexpr bool all_known(const Row (&t)[N]) {
+  for (const Row &r : t)
+    if (!known(r.e_name))
+      return false;
+  return true;
+}
 
 // ---- 造数 ----
 //   每个算子按"输入配方"拿到合适的数据: 配方由 OpTable in 列的 Dom 逐元推出 (gen_of), 不按算子名列.
@@ -229,6 +250,7 @@ inline constexpr DParam kDParams[] = {
     {"TsBetaRoll", 60},
     {"TsResidRoll", 60},
 };
+static_assert(all_known(kDParams), "kDParams 的算子名须在 OpTable 里");
 inline int default_d(const std::string &name) {
   for (const DParam &q : kDParams)
     if (name == q.e_name)
@@ -243,6 +265,7 @@ struct KParam {
 };
 inline constexpr KParam kKParams[] = {
     {"TsClip", 2.f, 0.f},
+    {"TsConst", 1.5f, 0.f},
     {"TsGt", 0.f, 0.f}, // 正态数据下约一半过阈
     {"TsTodMask", 30.f, 90.f},
     {"TsQuantileRoll", 0.25f, 0.f}, // 非 0.5: 打一般分位的取整边界
@@ -252,6 +275,7 @@ inline constexpr KParam kKParams[] = {
     {"CsBucket", 5.f, 0.f},
     {"CsLinRankRoll", 0.1f, 0.f}, // 岭强度 0.1 × 平均特征方差
 };
+static_assert(all_known(kKParams) && known("TsTodMask"), "kKParams 的算子名须在 OpTable 里");
 inline void set_k(const std::string &name, Param &p, int S) {
   assert(is_seg(S));
   p.k = 1.f, p.k2 = 0.f;
@@ -268,16 +292,25 @@ inline void set_k(const std::string &name, Param &p, int S) {
 struct Tol {
   double atol, rtol;
 };
-// GPU 走 fp32 与完全不同的并行序, 容差比 cpu↔stream 宽; 个别算子再单独放宽.
+// GPU 走 fp32 与完全不同的并行序, 容差比 cpu↔stream 宽; 个别算子再单独放宽 (kGpuTols).
 // TINY profile 把 atol 一起按量级缩 (否则 atol 比数据还大, 比较空转); rtol 本来就无量纲.
+struct TolParam {
+  const char *e_name;
+  Tol t;
+};
+inline constexpr TolParam kGpuTols[] = {
+    {"CsNormRank", {1e-3, 1e-2}}, // 两侧用不同的正态分位实现 (Wichura AS241 vs normcdfinvf)
+    {"TsSkewCum", {1e-2, 1e-2}},  // 三四阶矩在 fp32 上只剩两三位有效位, 这是已知代价
+    {"TsKurtCum", {1e-2, 1e-2}},
+    {"TsSkewRoll", {1e-2, 1e-2}},
+    {"TsKurtRoll", {1e-2, 1e-2}},
+};
+static_assert(all_known(kGpuTols), "kGpuTols 的算子名须在 OpTable 里");
 inline Tol tol_of(const std::string &name, bool gpu, Profile pr) {
-  Tol t{1e-3, 1e-3};
-  if (!gpu)
-    t = {1e-5, 1e-4};
-  else if (name == "CsNormRank") // 两侧用不同的正态分位实现 (Wichura AS241 vs normcdfinvf)
-    t = {1e-3, 1e-2};
-  else if (name == "TsSkewCum" || name == "TsKurtCum" || name == "TsSkewRoll" || name == "TsKurtRoll")
-    t = {1e-2, 1e-2}; // 三四阶矩在 fp32 上只剩两三位有效位, 这是已知代价
+  Tol t = gpu ? Tol{1e-3, 1e-3} : Tol{1e-5, 1e-4};
+  for (const TolParam &q : kGpuTols)
+    if (gpu && name == q.e_name)
+      t = q.t;
   if (pr == Profile::TINY)
     t.atol *= kTinyScale;
   return t;

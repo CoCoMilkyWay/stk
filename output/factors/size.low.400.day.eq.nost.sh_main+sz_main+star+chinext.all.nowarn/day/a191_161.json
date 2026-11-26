@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#161",
- "expr": "CsRank(TsMeanRoll(TsMax(TsMax(TsSub(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsAbs(TsSub(TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1), TsMul(bar.1d.high_day, bar.1d.adj_factor)))), TsAbs(TsSub(TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor)))), d))",
+ "expr": "CsRank(TsMeanRoll(TsMax(TsMax(TsSub(bar.1d.high_adj_day, bar.1d.low_adj_day), TsAbs(TsSub(TsDelayRoll(bar.1d.close_adj_day, d=1), bar.1d.high_adj_day))), TsAbs(TsSub(TsDelayRoll(bar.1d.close_adj_day, d=1), bar.1d.low_adj_day))), d))",
  "note": "平均真实波幅：波动大者弱，赚低波溢价"
 }

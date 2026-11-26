@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#185",
- "expr": "CsRank(TsNeg(TsAbs(TsLogRatio(bar.1d.open_day, bar.1d.close_day))))",
+ "expr": "CsRank(TsAbs(TsLogRatio(bar.1d.open_day, bar.1d.close_day)))",
  "note": "日内涨跌幅大小：盘中单边越极端越反转，赚日内超调回补"
 }

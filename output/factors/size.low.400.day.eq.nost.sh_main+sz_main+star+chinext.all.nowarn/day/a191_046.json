@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#046",
- "expr": "CsRank(TsDiv(TsLinFix(TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d), w), TsMul(bar.1d.close_day, bar.1d.adj_factor)))",
+ "expr": "CsRank(TsDiv(TsLinFix(TsMeanRoll(bar.1d.close_adj_day, d), TsMeanRoll(bar.1d.close_adj_day, d), TsMeanRoll(bar.1d.close_adj_day, d), TsMeanRoll(bar.1d.close_adj_day, d), w), bar.1d.close_adj_day))",
  "note": "多条均线均值相对收盘：远离均线簇者回归，赚乖离回归"
 }

@@ -263,18 +263,20 @@ Prep EvalFactor(const Call &c, Seat &s) {
 // 模板 = 归一根 (窗口统计 (本层叶, 裸 d)); 随机拼到过 stage 的全部查验为止 (试满 kSampleTries 次仍不过就交末一个, 原因见回测结果)
 json SampleEvalFactor(Feed &p) {
   constexpr int kSampleTries = 64;
-  constexpr std::string_view kRoots[] = {"CsRank", "CsNormRank", "CsZ", "TsRankRoll"};
   constexpr std::string_view kWraps[] = {"TsMeanRoll", "TsStdRoll", "TsSumRoll", "TsDeltaRoll", "TsMaxRoll", "TsMinRoll", "TsSlopeRoll", "TsZRoll", "TsWmaRoll", "TsSkewRoll"};
+  static_assert(std::ranges::all_of(kWraps, [](std::string_view n) { return fx::op_index(n) >= 0; }), "试样窗口算子须都在 OpTable 里");
   const auto open = [&](std::string_view n) { return std::ranges::any_of(p.ctx.ops, [&](const Op &o) { return o.name == n; }); };
   std::vector<std::string_view> roots, wraps{std::string_view()};
-  for (const std::string_view r : kRoots)
-    if (open(r))
-      roots.push_back(r);
+  for (const int i : fx::kCsRoots)
+    if (open(fx::kOps[i].name))
+      roots.push_back(fx::kOps[i].name);
+  if (open(fx::kOps[fx::kTsRoot].name))
+    roots.push_back(fx::kOps[fx::kTsRoot].name);
   for (const std::string_view w : kWraps)
     if (open(w))
       wraps.push_back(w);
   if (roots.empty())
-    roots.push_back(kRoots[0]);
+    roots.push_back(fx::kOps[fx::kCsRoots[0]].name);
   std::vector<std::string> leaves = p.grid();
   if (leaves.empty())
     leaves.push_back(p.leaf());
@@ -282,7 +284,7 @@ json SampleEvalFactor(Feed &p) {
   for (int i = 0; i < kSampleTries; ++i) {
     const std::string &x = p.one(leaves);
     const std::string_view w = p.one(wraps), r = p.one(roots);
-    const bool ts = r == "TsRankRoll";
+    const bool ts = r == fx::kOps[fx::kTsRoot].name;
     c.name = "bench_" + std::to_string(p.below(1000000));
     c.expr = std::string(r) + "(" + (w.empty() ? x : std::string(w) + "(" + x + ", d)") + (ts ? ", d=" + std::to_string(p.ctx.ts_root_d) : "") + ")";
     c.note = "工作台试样: 检验 " + x + (w.empty() ? "" : " 的 " + std::string(w)) + " 的" + (ts ? "时序" : "截面") + "排序";

@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// TS 算子的挖掘 CPU 后端 (factor::cpu::ts, 61 个, 对应 OpTable 的 OP_TS0..3 + OP_TSN)
+// TS 算子的挖掘 CPU 后端 (factor::cpu::ts, 62 个, 对应 OpTable 的 OP_TS0..3 + OP_TSN)
 // =============================================================================
 //   定位: 因子挖掘无 GPU 时的 fallback —— 整张量批量直算, 不逐点因果推进, 吞吐必须 ≥ stream.
 //   语义与流式一致 (掩码逐位相等, 值在对拍容差内); 独立第二实现, **不得** include 任何
@@ -344,7 +344,7 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
   static void run(const Call &c, Range rg, void *)
 
 // =============================================================================
-// POINT (22 = 定元 21 + N 元 1): 逐点无状态, 单遍. 表达式与流式严格同式 (三后端要位级一致).
+// POINT (23 = 定元 22 + N 元 1): 逐点无状态, 单遍. 表达式与流式严格同式 (三后端要位级一致).
 // =============================================================================
 //   逐点算子接受任意行窗 (c.t0 = 行 0 的全局行号; 融合块按小块调用)
 #define CP_P1(Name, V, M)                                                                   \
@@ -395,25 +395,40 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
     }                                                                                       \
   };
 
+// 标量版 (式内有 log / pow 等无向量版的 libm 调用): 向量化器会把它逐 lane 标量化再 insert 拼回, 比纯标量循环还慢, 故显式关掉
+#define CP_P1S(Name, V, M)                                                                  \
+  struct Name {                                                                             \
+    CP_STATELESS {                                                                          \
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi); \
+      for (int t = 0; t < T; ++t)                                                           \
+        _Pragma("clang loop vectorize(disable)") for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) { \
+          const float x = xv[i];                                                            \
+          const bool mx = xm[i] != 0;                                                       \
+          const bool m = (M);                                                               \
+          detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m);                      \
+        }                                                                                   \
+    }                                                                                       \
+  };
+
+#define CP_P2S(Name, V, M)                                                                  \
+  struct Name {                                                                             \
+    CP_STATELESS {                                                                          \
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi); \
+      for (int t = 0; t < T; ++t)                                                           \
+        _Pragma("clang loop vectorize(disable)") for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) { \
+          const float x = xv[i], y = yv[i];                                                 \
+          const bool mx = xm[i] != 0, my = ym[i] != 0;                                      \
+          const bool m = (M);                                                               \
+          detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m);                      \
+        }                                                                                   \
+    }                                                                                       \
+  };
+
 CP_P1(TsAbs, std::fabs(x), mx)
 CP_P1(TsSign, x > 0.f ? 1.f : (x < 0.f ? -1.f : 0.f), mx)
 CP_P1(TsSqrt, std::copysign(std::sqrt(std::fabs(x)), x), mx)
 
-// TsLog: log1p 无向量版 (libm 标量调用是下限). 不禁向量化的话, 向量化器会把 log1pf 逐 lane 标量化再 insert
-// 拼回去, 比纯标量循环还慢 —— 故此处显式关掉向量化器, 走干净的标量循环.
-struct TsLog {
-  CP_STATELESS {
-    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
-    for (int t = 0; t < T; ++t) {
-#pragma clang loop vectorize(disable)
-      for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {
-        const float x = xv[i];
-        const bool m = xm[i] != 0;
-        detail::put(ov, om, i, m ? static_cast<double>(std::copysign(std::log1p(std::fabs(x)), x)) : 0.0, m);
-      }
-    }
-  }
-};
+CP_P1S(TsLog, std::copysign(std::log1p(std::fabs(x)), x), mx)
 CP_P1(TsRelu, std::fmax(0.f, x), mx)
 CP_P1(TsNeg, -x, mx)
 CP_P1(TsRecip, x != 0.f ? 1.f / x : 0.f, mx) // x = 0 → 0, 溢出由 mk 转无效
@@ -438,6 +453,16 @@ struct TsClip {
   }
 };
 
+// TsConst: 元数 0, 不读输入指针; 整格写常数 k
+struct TsConst {
+  CP_STATELESS {
+    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
+    const double k = c.p.k;
+    for (int t = 0; t < T; ++t)
+      FACTOR_COLS for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) detail::put(ov, om, i, k, true);
+  }
+};
+
 // TsTodMask: 元数 0, 完全不读输入指针 (调用方传 nullptr); 段内位置按全局行号 (c.t0 + t)
 struct TsTodMask {
   CP_STATELESS {
@@ -459,35 +484,12 @@ CP_P2(TsMul, x *y, mx &&my)
 CP_P2(TsDiv, y != 0.f ? x / y : 0.f, mx &&my) // y = 0 → 0, 溢出由 mk 转无效
 CP_P2(TsMax, std::fmax(x, y), mx &&my)
 CP_P2(TsMin, std::fmin(x, y), mx &&my)
-// TsPow: sign(x)·|x|^y, x = 0 → 0 (含负次幂); pow 无向量版, 关向量化器同 TsLog; 溢出由 mk 转无效
-struct TsPow {
-  CP_STATELESS {
-    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
-    for (int t = 0; t < T; ++t) {
-#pragma clang loop vectorize(disable)
-      for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {
-        const bool m = xm[i] && ym[i];
-        const double b = xv[i];
-        detail::put(ov, om, i, m && xv[i] != 0.f ? std::copysign(std::pow(std::fabs(b), static_cast<double>(yv[i])), b) : 0.0, m);
-      }
-    }
-  }
-};
+// TsPow: sign(x)·|x|^y, x = 0 → 0 (含负次幂); 溢出由 mk 转无效
+CP_P2S(TsPow, x != 0.f ? std::copysign(std::pow(std::fabs(static_cast<double>(x)), static_cast<double>(y)), static_cast<double>(x)) : 0.0, mx &&my)
 // TsImb: 和相消 (scale = |x| + |y|) → 0, 分母不钳位
 CP_P2(TsImb, den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)) ? (x - y) / (x + y) : 0.f, mx &&my)
-// TsLogRatio: 非正侧饱和到 ∓kLogCap (见 Contract::log_ratio); log 无向量版, 关向量化器同 TsLog
-struct TsLogRatio {
-  CP_STATELESS {
-    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
-    for (int t = 0; t < T; ++t) {
-#pragma clang loop vectorize(disable)
-      for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {
-        const bool m = xm[i] && ym[i];
-        detail::put(ov, om, i, m ? static_cast<double>(log_ratio(xv[i], yv[i])) : 0.0, m);
-      }
-    }
-  }
-};
+// TsLogRatio: 非正侧饱和到 ∓kLogCap (见 Contract::log_ratio)
+CP_P2S(TsLogRatio, log_ratio(x, y), mx &&my)
 // TsMask: y 当掩码, y ≤ 0 → 无效 (不是补 0), 让下游窗只吃子集
 CP_P2(TsMask, x, mx && my && y > 0.f)
 // TsWhere: 未被选中的那支不要求有效

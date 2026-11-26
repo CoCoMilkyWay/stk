@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#189",
- "expr": "CsRank(TsMeanRoll(TsAbs(TsSub(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d))), d))",
+ "expr": "CsRank(TsMeanRoll(TsAbs(TsSub(bar.1d.close_adj_day, TsMeanRoll(bar.1d.close_adj_day, d))), d))",
  "note": "平均乖离幅度：价格偏离均线的平均程度，赚低波溢价"
 }

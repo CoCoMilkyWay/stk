@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#103",
- "expr": "CsRank(TsNeg(TsArgMinRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d)))",
+ "expr": "CsRank(TsArgMinRoll(bar.1d.low_adj_day, d))",
  "note": "近期低点越新越弱：刚创新低仍在下行，赚低点惯性"
 }

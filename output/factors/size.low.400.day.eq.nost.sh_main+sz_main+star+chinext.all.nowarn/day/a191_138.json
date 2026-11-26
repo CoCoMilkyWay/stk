@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#138",
- "expr": "CsRank(TsLinFix(CsRank(TsWmaRoll(TsDeltaRoll(TsLinFix(TsMul(bar.1d.low_day, bar.1d.adj_factor), TsMul(bar.1d.vwap_day, bar.1d.adj_factor), w), d), d)), TsRankRoll(TsWmaRoll(TsRankRoll(TsCorrRoll(TsRankRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d), TsRankRoll(TsMeanRoll(bar.1d.volume_day, d), d), d), d), d), d), w))",
+ "expr": "CsRank(TsLinFix(CsRank(TsWmaRoll(TsDeltaRoll(TsLinFix(bar.1d.low_adj_day, bar.1d.vwap_adj_day, w), d), d)), TsRankRoll(TsWmaRoll(TsRankRoll(TsCorrRoll(TsRankRoll(bar.1d.low_adj_day, d), TsRankRoll(TsMeanRoll(bar.1d.volume_day, d), d), d), d), d), d), w))",
  "note": "低均混合价变动对低价均量位置相关：价量错配，赚回归"
 }

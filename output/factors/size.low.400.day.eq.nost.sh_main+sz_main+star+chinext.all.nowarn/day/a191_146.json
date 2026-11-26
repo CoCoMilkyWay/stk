@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#146",
- "expr": "CsRank(TsDiv(TsMul(TsMeanRoll(TsSub(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k=0.0327869)), d), TsSub(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k=0.0327869))), TsMeanEma(TsMul(TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k=0.0327869), TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k=0.0327869)), k)))",
+ "expr": "CsRank(TsDiv(TsMul(TsMeanRoll(TsSub(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k:t1)), d), TsSub(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k:t1))), TsMeanEma(TsMul(TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k:t1), TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k:t1)), k)))",
  "note": "超额收益的均值乘当下超额除基准波动：收益异常的持续度，赚异常回归"
 }

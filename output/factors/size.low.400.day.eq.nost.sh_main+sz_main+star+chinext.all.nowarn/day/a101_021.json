@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A101#021",
- "expr": "CsRank(TsWhere(TsSub(TsDiv(TsSub(TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=2), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=8)), TsStdRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=8)), TsGt(bar.1d.close_day, k=0)), TsNeg(TsDiv(TsSub(TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=2), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=8)), TsStdRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=8))), TsWhere(TsSub(TsNeg(TsDiv(TsSub(TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=2), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=8)), TsStdRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=8))), TsGt(bar.1d.close_day, k=0)), TsNeg(TsDiv(TsSub(TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=2), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=8)), TsStdRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=8))), TsImb(bar.1d.amount_day, TsMeanRoll(bar.1d.amount_day, d)))))",
+ "expr": "CsRank(TsWhere(TsSub(TsAbs(TsDiv(TsSub(TsMeanRoll(bar.1d.close_adj_day, d:t1), TsMeanRoll(bar.1d.close_adj_day, d:n)), TsStdRoll(bar.1d.close_adj_day, d:n))), TsConst(k=1)), TsNeg(TsDiv(TsSub(TsMeanRoll(bar.1d.close_adj_day, d:t1), TsMeanRoll(bar.1d.close_adj_day, d:n)), TsStdRoll(bar.1d.close_adj_day, d:n))), TsImb(bar.1d.amount_day, TsMeanRoll(bar.1d.amount_day, d))))",
  "note": "均线带外逆势、带内随量：极端偏离做回复、常态跟随量能，赚偏离回归"
 }

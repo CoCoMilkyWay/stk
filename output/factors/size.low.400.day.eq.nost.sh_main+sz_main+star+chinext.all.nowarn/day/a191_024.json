@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#024",
- "expr": "CsRank(TsMeanEma(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d), k))",
+ "expr": "CsRank(TsMeanEma(TsDeltaRoll(bar.1d.close_adj_day, d), k))",
  "note": "周变动的平滑：持续上冲，赚短期回撤"
 }

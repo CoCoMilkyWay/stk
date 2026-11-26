@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#129",
- "expr": "CsRank(TsSumRoll(TsRelu(TsNeg(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1))), d))",
+ "expr": "CsRank(TsSumRoll(TsRelu(TsNeg(TsDeltaRoll(bar.1d.close_adj_day, d=1))), d))",
  "note": "跌幅累积：近期持续下跌，赚超跌修复"
 }

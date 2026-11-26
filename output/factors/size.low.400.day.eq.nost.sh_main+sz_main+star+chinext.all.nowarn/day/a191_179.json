@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#179",
- "expr": "CsRank(TsMul(CsRank(TsCorrRoll(TsMul(bar.1d.vwap_day, bar.1d.adj_factor), bar.1d.volume_day, d)), CsRank(TsCorrRoll(CsRank(bar.1d.low_day), CsRank(TsMeanRoll(bar.1d.volume_day, d)), d))))",
+ "expr": "CsRank(TsMul(CsRank(TsCorrRoll(bar.1d.vwap_adj_day, bar.1d.volume_day, d)), CsRank(TsCorrRoll(CsRank(bar.1d.low_day), CsRank(TsMeanRoll(bar.1d.volume_day, d)), d))))",
  "note": "均价量相关乘低价均量秩相关：价量同步与底部同步共振，赚拥挤回撤"
 }

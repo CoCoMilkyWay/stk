@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#014",
- "expr": "CsRank(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d))",
+ "expr": "CsRank(TsDeltaRoll(bar.1d.close_adj_day, d))",
  "note": "一周价格变动：短期涨跌，赚周度反转"
 }

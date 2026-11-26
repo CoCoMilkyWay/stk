@@ -18,7 +18,9 @@
 //     N 元定权的 w 一元一个, 个数 = 特征元数; 裸 w = 全部分量自由.
 //     N 元回归的目标 (h 持有期的做多标签列) 不写: h 具体时由 FeatureLookup::label 查出, 作末元叶 (Node::target) 补进树,
 //       不进规范串 (h 已说明它); h 自由时没有这一叶 —— Search 先把 h 落到所搜持有期再解析 (bind_hold), h 不作搜索维.
-//     裸键名 (无 '=') = **自由参数** (Node::free 位): 值待参数搜索定, 同名裸键各节点独立, 不编号.
+//     裸键名 (无 '=') = **自由参数** (Node::free 位): 值待参数搜索定, 各节点独立.
+//     带名裸键 键:名 (只 d / k / w, 如 d:fast) = **绑定的自由参数**: 同键同名的各处是同一个搜索维 (重复子式的窗 / 权一起搜;
+//       各处须同 k 域 / 同特征元数). 绑定后同一子式的各处规范串相同, Dag 去重只算一次.
 //       含自由参数的树是**模板** (is_template), 只能进 Search (Search/Space.hpp 的槽 = 自由参数, 写数字的不搜); 评估 / Dag 只接具体树.
 //       自由参数在树里带一个合法占位值 (free_value), 只为 check_params / 规范串往返, 无业务含义; 规范串里仍打裸键名.
 //     无标量常量元 (OpTable 无常量输入; 阈值一律走 k)
@@ -72,8 +74,6 @@ inline constexpr OpInfo kOps[] = {OP_ALL(FACTOR_EXPR_OPINFO)};
 inline constexpr int kOpCount = static_cast<int>(sizeof(kOps) / sizeof(kOps[0]));
 
 inline constexpr bool nary(const OpInfo &o) { return o.arity == kNary; }
-// 第 s 个特征元的自变量值域 (N 元各元同 in[0]; 回归目标叶不经此校验)
-inline constexpr Dom in_of(const OpInfo &o, int s) { return nary(o) ? o.in[0] : o.in[s]; }
 
 // 名字 → kOps 下标; 不在表 → -1
 constexpr int op_index(std::string_view name) {
@@ -82,6 +82,19 @@ constexpr int op_index(std::string_view name) {
       return i;
   return -1;
 }
+
+// ---- 归一根 (alpha 口径的唯一判据, 见文末 root_frame): 名字编译期落成下标, 表里没有即编译错 ----
+inline constexpr int kCsRoots[] = {op_index("CsRank"), op_index("CsNormRank"), op_index("CsZ")}; // 截面口径
+inline constexpr int kTsRoot = op_index("TsRankRoll");                                          // 时序口径 (d 写死 ts_norm_d)
+constexpr bool cs_root(int op) {
+  for (const int r : kCsRoots)
+    if (r == op)
+      return true;
+  return false;
+}
+static_assert(kTsRoot >= 0 && kCsRoots[0] >= 0 && kCsRoots[1] >= 0 && kCsRoots[2] >= 0, "归一根须都在 OpTable 里");
+// 第 s 个特征元的自变量值域 (N 元各元同 in[0]; 回归目标叶不经此校验)
+inline constexpr Dom in_of(const OpInfo &o, int s) { return nary(o) ? o.in[0] : o.in[s]; }
 
 // 参数列是否声明了 key ("d" / "k" / "k2" / "h" / "w"; 逗号分隔, 无空格)
 constexpr bool declares(const char *params, std::string_view key) {
@@ -321,6 +334,10 @@ inline constexpr uint8_t free_bit(std::string_view key) { return key == "d" ? kF
                                                                                    : key == "h"   ? kFreeH
                                                                                                   : kFreeW; }
 
+// 可绑定的自由参数键 → Node::tag 下标; 其余键 → -1
+constexpr int tag_ix(std::string_view key) { return key == "d" ? 0 : key == "k" ? 1 : key == "w" ? 2 : -1; }
+inline std::string tag_text(const std::string &t) { return t.empty() ? std::string() : ":" + t; }
+
 struct Node {
   int op = -1;         // kOps 下标; -1 = 特征叶
   std::string feat;    // 叶: 特征 code
@@ -329,6 +346,7 @@ struct Node {
   int n_args = 0;      // 子节点数 (定元 = arity; N 元 = 特征元数, 回归另加 1 个目标叶 (h 自由时无))
   Param p;             // 本节点参数 (只有 OpTable 声明的字段有意义; 自由参数处是占位值)
   uint8_t free = 0;    // 自由参数位 (kFreeD / kFreeK / kFreeK2 / kFreeH / kFreeW); 非 0 ⇒ 模板
+  std::string tag[3];  // 自由 d / k / w 的绑定名 (tag_ix 下标; 空 = 独立)
   Node() { std::fill(args, args + kMaxIn, -1); }
 };
 
@@ -402,11 +420,11 @@ inline void to_string_rec(const Expr &e, int i, std::string &s) {
   if (declares(o.params, "d")) {
     sep(s, first);
     std::snprintf(buf, sizeof(buf), "d=%d", n.p.d);
-    s += (n.free & kFreeD) ? "d" : buf;
+    s += (n.free & kFreeD) ? "d" + tag_text(n.tag[0]) : std::string(buf);
   }
   if (declares(o.params, "k")) {
     sep(s, first);
-    s += (n.free & kFreeK) ? std::string("k") : "k=" + k_text(n.p.k);
+    s += (n.free & kFreeK) ? "k" + tag_text(n.tag[1]) : "k=" + k_text(n.p.k);
   }
   if (declares(o.params, "k2")) {
     sep(s, first);
@@ -419,7 +437,7 @@ inline void to_string_rec(const Expr &e, int i, std::string &s) {
   if (declares(o.params, "w")) {
     sep(s, first);
     if (n.free & kFreeW) {
-      s += 'w';
+      s += "w" + tag_text(n.tag[2]);
     } else {
       s += "w=[";
       for (int a = 0; a < n.n_args; ++a)
@@ -508,6 +526,8 @@ public:
     skip_ws();
     if (i_ != s_.size())
       return fail(i_, "表达式末尾有多余字符");
+    if (!bound_ok())
+      return false;
     e_.canon = to_string(e_);
     return true;
   }
@@ -612,7 +632,24 @@ private:
   }
   static bool is_param_key(std::string_view id) { return id == "d" || id == "k" || id == "k2" || id == "h" || id == "w"; }
   static bool is_num0(char c) { return (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.'; }
-  static constexpr const char *kKeysHint = "参数键只有 d / k / k2 / h / w, 不同节点的同名裸键各自独立, 不必编号";
+  static constexpr const char *kKeysHint = "参数键只有 d / k / k2 / h / w; 裸键各节点独立, 要多处同搜写 键:名 (如 d:fast)";
+
+  // 绑定组一致: 同键同名的各处 k 域相同 (k) / 特征元数相同 (w); d 恒同域
+  bool bound_ok() {
+    const auto &ns = e_.nodes;
+    for (size_t i = 0; i < ns.size(); ++i)
+      for (int t = 1; t < 3; ++t)
+        for (size_t j = i + 1; ns[i].op >= 0 && !ns[i].tag[t].empty() && j < ns.size(); ++j) {
+          if (ns[j].op < 0 || ns[j].tag[t] != ns[i].tag[t])
+            continue;
+          const bool same = t == 1 ? kOps[ns[i].op].kdom == kOps[ns[j].op].kdom : ns[i].n_args == ns[j].n_args;
+          if (!same) {
+            err_ = std::string("绑定 ") + (t == 1 ? "k:" : "w:") + ns[i].tag[t] + " 的各处须" + (t == 1 ? "同 k 域" : "同特征元数") + " (" + kOps[ns[i].op].name + " / " + kOps[ns[j].op].name + ")";
+            return false;
+          }
+        }
+    return true;
+  }
   // pos 处多出的序列项像什么写错了 (数字 = 参数没写键; 无点的名字 = 编了号的参数键); 都不像 → 空
   std::string stray(size_t pos) {
     const size_t save = i_;
@@ -681,6 +718,7 @@ private:
     bool got_d = false, got_k = false, got_k2 = false, got_h = false, got_w = false, seen_param = false;
     Param p;
     uint8_t free = 0;
+    std::string tag[3];
     if (!eat(')')) {
       while (true) {
         skip_ws();
@@ -698,7 +736,14 @@ private:
           if (got)
             return fail(pos, "参数 " + std::string(key) + " 重复");
           got = true;
-          if (!eat('=')) { // 裸键名 = 自由参数
+          if (eat(':')) { // 带名裸键 = 绑定的自由参数
+            std::string_view nm;
+            if (tag_ix(key) < 0 || !ident(nm))
+              return fail(pos, "绑定写成 键:名 (只 d / k / w, 如 d:fast); 同键同名的各处是同一个搜索维");
+            free |= free_bit(key);
+            free_value(o, key, p, seg_);
+            tag[tag_ix(key)] = std::string(nm);
+          } else if (!eat('=')) { // 裸键名 = 自由参数
             free |= free_bit(key);
             free_value(o, key, p, seg_);
           } else if (key == "h") {
@@ -764,6 +809,8 @@ private:
       return fail(pos0, std::string(o.name) + " 缺参数 w");
     if (const char *why = check_params(o, p, seg_))
       return fail(pos0, std::string(o.name) + ": " + why);
+    if ((free & kFreeK) && o.arity == 0 && (o.kdom == KDom::ANY || o.kdom == KDom::GE0)) // 搜 k 要输入分布的分位表, 0 元无输入
+      return fail(pos0, std::string(o.name) + " 的 k 须写死 (无输入可定搜索区间)");
     for (int s = 0; s < n_args; ++s) { // 值域: 子.out ⊆ 本元.in (OpTable in / out 列, 逐元同一规则)
       const Node &c = e_.nodes[static_cast<size_t>(e_.nodes[static_cast<size_t>(out)].args[s])];
       if (!arg_ok(c, o, s))
@@ -783,6 +830,8 @@ private:
     Node &n = e_.nodes[static_cast<size_t>(out)];
     n.p = p;
     n.free = free;
+    for (int t = 0; t < 3; ++t)
+      n.tag[t] = std::move(tag[t]);
     n.n_args = n_args;
     return true;
   }
@@ -844,12 +893,11 @@ inline bool varies_a(const Expr &e, int i) {
 // seg = 因子所在层的每段行数 (TS 根的 d = stat::ts_norm_d(seg))
 inline bool root_frame(const Expr &e, int seg, stat::Frame &out, std::string &err) {
   const Node &r = e.root();
-  const std::string_view nm = r.op >= 0 ? std::string_view(kOps[r.op].name) : std::string_view();
   const int nd = stat::ts_norm_d(seg);
   stat::Frame f;
-  if (nm == "CsRank" || nm == "CsNormRank" || nm == "CsZ") {
+  if (cs_root(r.op)) {
     f = stat::Frame::CS;
-  } else if (nm == "TsRankRoll") {
+  } else if (r.op == kTsRoot) {
     if (r.free & kFreeD) {
       err = "TS 口径根 TsRankRoll 的 d 是口径定义, 须写死 " + std::to_string(nd) + ", 不能是自由参数";
       return false;

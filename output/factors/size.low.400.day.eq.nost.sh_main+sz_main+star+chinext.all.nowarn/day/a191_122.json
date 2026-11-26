@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#122",
- "expr": "CsRank(TsDiv(TsDeltaRoll(TsMeanEma(TsMeanEma(TsMeanEma(TsLog(TsMul(bar.1d.close_day, bar.1d.adj_factor)), k=0.153846), k=0.153846), k=0.153846), d=1), TsDelayRoll(TsMeanEma(TsMeanEma(TsMeanEma(TsLog(TsMul(bar.1d.close_day, bar.1d.adj_factor)), k=0.153846), k=0.153846), k=0.153846), d=1)))",
+ "expr": "CsRank(TsDiv(TsDeltaRoll(TsMeanEma(TsMeanEma(TsMeanEma(TsLog(bar.1d.close_adj_day), k:q), k:q), k:q), d=1), TsDelayRoll(TsMeanEma(TsMeanEma(TsMeanEma(TsLog(bar.1d.close_adj_day), k:q), k:q), k:q), d=1)))",
  "note": "TRIX：三重平滑对数价的变化率，赚中期动量偏差"
 }

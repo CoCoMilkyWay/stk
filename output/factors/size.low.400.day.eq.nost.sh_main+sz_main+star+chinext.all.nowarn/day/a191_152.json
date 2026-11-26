@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#152",
- "expr": "CsRank(TsMeanEma(TsSub(TsMeanRoll(TsDelayRoll(TsMeanEma(TsDelayRoll(TsDiv(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=9)), d=1), k=0.111111), d=1), d), TsMeanRoll(TsDelayRoll(TsMeanEma(TsDelayRoll(TsDiv(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=9)), d=1), k=0.111111), d=1), d)), k))",
+ "expr": "CsRank(TsMeanEma(TsSub(TsMeanRoll(TsDelayRoll(TsMeanEma(TsDelayRoll(TsDiv(bar.1d.close_adj_day, TsDelayRoll(bar.1d.close_adj_day, d:t1)), d=1), k:t2), d=1), d), TsMeanRoll(TsDelayRoll(TsMeanEma(TsDelayRoll(TsDiv(bar.1d.close_adj_day, TsDelayRoll(bar.1d.close_adj_day, d:t1)), d=1), k:t2), d=1), d)), k))",
  "note": "月度动量平滑的短长均差：动量加速，赚动量加速回归"
 }

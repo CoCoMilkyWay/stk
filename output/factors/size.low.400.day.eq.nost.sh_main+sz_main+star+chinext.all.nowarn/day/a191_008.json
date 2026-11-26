@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#008",
- "expr": "CsRank(TsDeltaRoll(TsLinFix(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor), TsMul(bar.1d.vwap_day, bar.1d.adj_factor), w), d))",
+ "expr": "CsRank(TsDeltaRoll(TsLinFix(bar.1d.high_adj_day, bar.1d.low_adj_day, bar.1d.vwap_adj_day, w), d))",
  "note": "中点均价混合价短期上移则弱：价格重心上移过快，赚回落"
 }

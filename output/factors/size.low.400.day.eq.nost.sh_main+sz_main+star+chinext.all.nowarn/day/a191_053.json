@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#053",
- "expr": "CsRank(TsMeanRoll(TsGt(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1), k=0), d))",
+ "expr": "CsRank(TsMeanRoll(TsGt(TsDeltaRoll(bar.1d.close_adj_day, d=1), k=0), d))",
  "note": "近期收涨日占比：连涨频繁是追涨，赚胜率回归"
 }

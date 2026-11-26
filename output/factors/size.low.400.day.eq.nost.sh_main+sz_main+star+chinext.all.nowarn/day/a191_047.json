@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#047",
- "expr": "CsRank(TsMeanEma(TsDiv(TsSub(TsMaxRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=6), TsMul(bar.1d.close_day, bar.1d.adj_factor)), TsSub(TsMaxRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=6), TsMinRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=6))), k))",
+ "expr": "CsRank(TsMeanEma(TsDiv(TsSub(TsMaxRoll(bar.1d.high_adj_day, d:h), bar.1d.close_adj_day), TsSub(TsMaxRoll(bar.1d.high_adj_day, d:h), TsMinRoll(bar.1d.low_adj_day, d:h))), k))",
  "note": "收盘距近期高点的相对位置平滑：回撤深者反弹，赚超跌修复"
 }

@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#168",
- "expr": "CsRank(TsNeg(TsDiv(bar.1d.volume_day, TsMeanRoll(bar.1d.volume_day, d))))",
+ "expr": "CsRank(TsDiv(bar.1d.volume_day, TsMeanRoll(bar.1d.volume_day, d)))",
  "note": "当日量对均量：放量冲击，赚量能冲击反转"
 }

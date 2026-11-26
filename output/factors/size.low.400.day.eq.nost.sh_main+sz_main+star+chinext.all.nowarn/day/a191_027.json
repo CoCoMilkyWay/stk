@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#027",
- "expr": "CsRank(TsMeanEma(TsLinFix(TsLogRatio(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d)), TsLogRatio(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d)), w), k))",
+ "expr": "CsRank(TsMeanEma(TsLinFix(TsLogRatio(bar.1d.close_adj_day, TsDelayRoll(bar.1d.close_adj_day, d)), TsLogRatio(bar.1d.close_adj_day, TsDelayRoll(bar.1d.close_adj_day, d)), w), k))",
  "note": "多尺度收益的平滑：短中期涨幅合成，赚超涨回撤"
 }

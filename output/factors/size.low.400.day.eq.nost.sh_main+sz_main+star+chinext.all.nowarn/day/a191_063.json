@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#063",
- "expr": "CsRank(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k), TsMeanEma(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k)))",
+ "expr": "CsRank(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k:r), TsMeanEma(TsAbs(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k:r)))",
  "note": "RSI：涨幅占总波动比例越高越弱，赚超买回撤"
 }

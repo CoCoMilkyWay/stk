@@ -1236,7 +1236,7 @@ inline dim3 g_roll(int T, int A, int C) { return dim3(static_cast<unsigned>((A +
 // 非逐点算子从行 0 起算 (段界 / 窗口历史); 下标是 int
 #define FACTOR_TS_CHECK(c) assert((c).t0 == 0 && (c).o.v && (c).o.m && static_cast<long long>((c).T) * (c).A < (1LL << 31))
 
-// ---- POINT (定元 21): 接受任意行窗 (c.t0 = 行 0 的全局行号) ----
+// ---- POINT (定元 22): 接受任意行窗 (c.t0 = 行 0 的全局行号) ----
 #define FACTOR_TS_POINT(Name, NARY, BODY)                                                                                                       \
   struct Name {                                                                                                                                 \
     struct F {                                                                                                                                  \
@@ -1264,6 +1264,8 @@ FACTOR_TS_POINT(TsNeg, 1, { v = -x.v; m = x.m; })
 FACTOR_TS_POINT(TsRecip, 1, { v = x.v != 0.f ? 1.f / x.v : 0.f; m = x.m; }) // x = 0 → 0; 溢出 → 出口转无效
 FACTOR_TS_POINT(TsGt, 1, { v = x.v > p.k ? 1.f : 0.f; m = x.m; })    // 指示; 套 Sum 窗 = 计数, 套 Mean 窗 = 占比
 FACTOR_TS_POINT(TsClip, 1, { assert(p.k >= 0.f); v = fminf(fmaxf(x.v, -p.k), p.k); m = x.m; })
+// 元数 0: 不读输入, 常数 k
+FACTOR_TS_POINT(TsConst, 0, { v = p.k; m = true; })
 // 元数 0: 不读输入, 纯段内位置 t_seg (唯一读 S 的 POINT 算子)
 FACTOR_TS_POINT(TsTodMask, 0, { v = (t_seg >= static_cast<int>(p.k) && t_seg < static_cast<int>(p.k2)) ? 1.f : 0.f; m = true; })
 FACTOR_TS_POINT(TsAdd, 2, { v = x.v + y.v; m = x.m && y.m; })

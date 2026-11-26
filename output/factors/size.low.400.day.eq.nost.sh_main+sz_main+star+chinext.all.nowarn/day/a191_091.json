@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#091",
- "expr": "CsRank(TsMul(CsRank(TsSub(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsMaxRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d))), CsRank(TsCorrRoll(TsMeanRoll(bar.1d.volume_day, d), TsMul(bar.1d.low_day, bar.1d.adj_factor), d))))",
+ "expr": "CsRank(TsMul(CsRank(TsSub(bar.1d.close_adj_day, TsMaxRoll(bar.1d.close_adj_day, d))), CsRank(TsCorrRoll(TsMeanRoll(bar.1d.volume_day, d), bar.1d.low_adj_day, d))))",
  "note": "收盘距近期高点乘均量与低价相关：回撤遇底部量价同步，赚反弹"
 }

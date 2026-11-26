@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#164",
- "expr": "CsRank(TsMeanEma(TsDiv(TsSub(TsWhere(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1), TsRecip(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), TsGt(bar.1d.close_day, k=0)), TsMinRoll(TsWhere(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1), TsRecip(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), TsGt(bar.1d.close_day, k=0)), d)), TsSub(bar.1d.high_day, bar.1d.low_day)), k))",
+ "expr": "CsRank(TsMeanEma(TsDiv(TsSub(TsWhere(TsDeltaRoll(bar.1d.close_adj_day, d=1), TsRecip(TsDeltaRoll(bar.1d.close_adj_day, d=1)), TsConst(k=1)), TsMinRoll(TsWhere(TsDeltaRoll(bar.1d.close_adj_day, d=1), TsRecip(TsDeltaRoll(bar.1d.close_adj_day, d=1)), TsConst(k=1)), d)), TsSub(bar.1d.high_day, bar.1d.low_day)), k))",
  "note": "涨幅倒数的区间位置除振幅：小涨频繁且低波者强，赚稳步上涨"
 }

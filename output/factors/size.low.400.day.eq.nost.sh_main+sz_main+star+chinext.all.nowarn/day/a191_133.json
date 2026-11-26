@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#133",
- "expr": "CsRank(TsSub(TsArgMinRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d), TsArgMaxRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d)))",
+ "expr": "CsRank(TsSub(TsArgMinRoll(bar.1d.low_adj_day, d), TsArgMaxRoll(bar.1d.high_adj_day, d)))",
  "note": "Aroon：高点新于低点则强势，赚高低点新旧的动量"
 }

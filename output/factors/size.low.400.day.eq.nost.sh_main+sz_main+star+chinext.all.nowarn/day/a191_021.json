@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#021",
- "expr": "CsRank(TsSlopeRoll(TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d), d))",
+ "expr": "CsRank(TsSlopeRoll(TsMeanRoll(bar.1d.close_adj_day, d), d))",
  "note": "均价对期序的斜率：短期趋势斜率，赚趋势延续或回复"
 }

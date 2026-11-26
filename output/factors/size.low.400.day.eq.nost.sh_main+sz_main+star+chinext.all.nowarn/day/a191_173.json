@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#173",
- "expr": "CsRank(TsLinFix(TsMeanEma(TsMul(bar.1d.close_day, bar.1d.adj_factor), k=0.153846), TsMeanEma(TsMeanEma(TsMul(bar.1d.close_day, bar.1d.adj_factor), k=0.153846), k), TsMeanEma(TsMeanEma(TsMeanEma(TsLog(TsMul(bar.1d.close_day, bar.1d.adj_factor)), k), k), k), w))",
+ "expr": "CsRank(TsLinFix(TsMeanEma(bar.1d.close_adj_day, k:a), TsMeanEma(TsMeanEma(bar.1d.close_adj_day, k:a), k), TsMeanEma(TsMeanEma(TsMeanEma(TsLog(bar.1d.close_adj_day), k), k), k), w))",
  "note": "三重平滑价组合：中期趋势水平，赚趋势偏差"
 }

@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#003",
- "expr": "CsRank(TsSumRoll(TsMul(TsSub(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsWhere(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1), TsMin(TsMul(bar.1d.low_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), TsMax(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)))), TsGt(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0)), d))",
+ "expr": "CsRank(TsSumRoll(TsMul(TsSub(bar.1d.close_adj_day, TsWhere(TsDeltaRoll(bar.1d.close_adj_day, d=1), TsMin(bar.1d.low_adj_day, TsDelayRoll(bar.1d.close_adj_day, d=1)), TsMax(bar.1d.high_adj_day, TsDelayRoll(bar.1d.close_adj_day, d=1)))), TsGt(TsAbs(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k=0)), d))",
  "note": "收于真实区间上沿累积高则弱：连续收强是追涨，赚追涨回吐"
 }

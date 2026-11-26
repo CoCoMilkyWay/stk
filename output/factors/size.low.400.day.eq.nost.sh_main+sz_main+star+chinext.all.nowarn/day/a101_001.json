@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A101#001",
- "expr": "CsRank(TsNeg(TsArgMaxRoll(TsMul(TsWhere(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d=20), TsMul(bar.1d.close_day, bar.1d.adj_factor)), TsAbs(TsWhere(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d=20), TsMul(bar.1d.close_day, bar.1d.adj_factor)))), d)))",
+ "expr": "CsRank(TsArgMaxRoll(TsMul(TsWhere(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d:t1), bar.1d.close_adj_day), TsAbs(TsWhere(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d:t1), bar.1d.close_adj_day))), d))",
  "note": "近期极端日越新越反转：刚现的高波或高价被追，赚追极值的回吐"
 }

@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#162",
- "expr": "CsRank(TsDiv(TsSub(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333), TsMeanEma(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333)), TsMinRoll(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333), TsMeanEma(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333)), d=12)), TsSub(TsMaxRoll(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333), TsMeanEma(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333)), d=12), TsMinRoll(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333), TsMeanEma(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333)), d=12))))",
+ "expr": "CsRank(TsDiv(TsSub(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k:r), TsMeanEma(TsAbs(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k:r)), TsMinRoll(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k:r), TsMeanEma(TsAbs(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k:r)), d:m)), TsSub(TsMaxRoll(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k:r), TsMeanEma(TsAbs(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k:r)), d:m), TsMinRoll(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k:r), TsMeanEma(TsAbs(TsDeltaRoll(bar.1d.close_adj_day, d=1)), k:r)), d:m))))",
  "note": "RSI 的区间位置：超买程度的相对值，赚超买回撤"
 }

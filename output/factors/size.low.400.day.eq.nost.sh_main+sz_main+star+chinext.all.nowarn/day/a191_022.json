@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#022",
- "expr": "CsRank(TsMeanEma(TsDeltaRoll(TsDiv(TsSub(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=6)), TsMeanRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=6)), d), k))",
+ "expr": "CsRank(TsMeanEma(TsDeltaRoll(TsDiv(TsSub(bar.1d.close_adj_day, TsMeanRoll(bar.1d.close_adj_day, d:t1)), TsMeanRoll(bar.1d.close_adj_day, d:t1)), d), k))",
  "note": "偏离均线程度的变化：乖离加速，赚乖离回归"
 }

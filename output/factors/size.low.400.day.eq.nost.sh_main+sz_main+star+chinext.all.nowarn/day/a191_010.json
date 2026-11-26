@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#010",
- "expr": "CsRank(TsMaxRoll(TsMul(TsWhere(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d=20), TsMul(bar.1d.close_day, bar.1d.adj_factor)), TsWhere(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d=20), TsMul(bar.1d.close_day, bar.1d.adj_factor))), d))",
+ "expr": "CsRank(TsMaxRoll(TsMul(TsWhere(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d:t1), bar.1d.close_adj_day), TsWhere(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d:t1), bar.1d.close_adj_day)), d))",
  "note": "下跌日波动与上涨日价位的近期峰值：极端状态刚过，赚极端回归"
 }

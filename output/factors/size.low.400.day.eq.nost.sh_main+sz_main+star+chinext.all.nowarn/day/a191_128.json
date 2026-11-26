@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#128",
- "expr": "CsRank(TsDiv(TsSumRoll(TsMul(TsMul(TsAdd(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMul(bar.1d.close_day, bar.1d.adj_factor)), bar.1d.volume_day), TsGt(TsDeltaRoll(TsAdd(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMul(bar.1d.close_day, bar.1d.adj_factor)), d=1), k=0)), d), TsSumRoll(TsMul(TsMul(TsAdd(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMul(bar.1d.close_day, bar.1d.adj_factor)), bar.1d.volume_day), TsGt(TsNeg(TsDeltaRoll(TsAdd(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMul(bar.1d.close_day, bar.1d.adj_factor)), d=1)), k=0)), d)))",
+ "expr": "CsRank(TsDiv(TsSumRoll(TsMul(TsMul(TsAdd(TsAdd(bar.1d.high_adj_day, bar.1d.low_adj_day), bar.1d.close_adj_day), bar.1d.volume_day), TsGt(TsDeltaRoll(TsAdd(TsAdd(bar.1d.high_adj_day, bar.1d.low_adj_day), bar.1d.close_adj_day), d=1), k=0)), d), TsSumRoll(TsMul(TsMul(TsAdd(TsAdd(bar.1d.high_adj_day, bar.1d.low_adj_day), bar.1d.close_adj_day), bar.1d.volume_day), TsGt(TsNeg(TsDeltaRoll(TsAdd(TsAdd(bar.1d.high_adj_day, bar.1d.low_adj_day), bar.1d.close_adj_day), d=1)), k=0)), d)))",
  "note": "MFI：正资金流对负资金流之比，赚资金流向失衡回归"
 }

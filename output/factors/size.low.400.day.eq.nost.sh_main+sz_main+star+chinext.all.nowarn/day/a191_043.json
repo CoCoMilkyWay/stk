@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#043",
- "expr": "CsRank(TsSumRoll(TsMul(bar.1d.volume_day, TsSign(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1))), d))",
+ "expr": "CsRank(TsSumRoll(TsMul(bar.1d.volume_day, TsSign(TsDeltaRoll(bar.1d.close_adj_day, d=1))), d))",
  "note": "OBV 型量能累积：放量方向持续，赚量能方向的延续或反转"
 }

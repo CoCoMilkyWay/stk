@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#169",
- "expr": "CsRank(TsMeanEma(TsSub(TsMeanRoll(TsDelayRoll(TsMeanEma(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1), k=0.111111), d=1), d), TsMeanRoll(TsDelayRoll(TsMeanEma(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1), k=0.111111), d=1), d)), k))",
+ "expr": "CsRank(TsMeanEma(TsSub(TsMeanRoll(TsDelayRoll(TsMeanEma(TsDeltaRoll(bar.1d.close_adj_day, d=1), k:t1), d=1), d), TsMeanRoll(TsDelayRoll(TsMeanEma(TsDeltaRoll(bar.1d.close_adj_day, d=1), k:t1), d=1), d)), k))",
  "note": "日变动平滑的短长均差：动量加速，赚加速回归"
 }

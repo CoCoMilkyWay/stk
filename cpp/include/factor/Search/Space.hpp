@@ -4,6 +4,7 @@
 // Search 的参数空间 (纯逻辑, 无后端, 无 IO; 点从哪来, 点有多好见 Contract.hpp【目标】): 表达式 → 可搜参数槽 → 统一坐标 + 闭区间 → 低差异采样
 // =============================================================================
 //   【槽】模板表达式 (Expr.hpp 自由参数: 裸键名 d / k / k2 / w) 的每个自由参数各一槽, 裸 w 每个特征元一槽 (N 元节点直接作根的输入时首元的权定为 1, 不是槽);
+//     绑定的自由参数 (键:名) 同键同名的各处合一槽 (首见节点定区间, 其余为 peers, 落值一并写);
 //     写了数字的参数固定不搜 (TS 口径根的 d 必是数字).
 //     h (N 元回归的持有期) 不是槽: 调用方先落到所搜持有期 (expr::bind_hold), 这里只收 h 已具体的树.
 //   【坐标与区间】每槽一维坐标 u, 单调; 区间两端全由已有常数推出 (不设跨度常数). 变换按参数含义选 (见 to_v):
@@ -47,7 +48,9 @@ inline constexpr const char *key_name(Key k) { return k == Key::D ? "d" : k == K
                                                                                       : "w"; }
 
 struct Slot {
-  int node = -1; // Expr::nodes 下标 (算子节点)
+  int node = -1;          // Expr::nodes 下标 (算子节点; 绑定组的首见节点)
+  std::vector<int> peers; // 绑定组的其余节点 (同键同名, put 一并落值)
+  std::string tag;        // 绑定名 (空 = 独立)
   Key key = Key::D;
   int wi = 0;                    // w 槽: 特征元下标
   bool top = false;              // w 槽: N 元节点直接作根的输入 (首元的权定为 1, 不是槽; 坐标 tan)
@@ -121,12 +124,21 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
     const expr::OpInfo &o = expr::kOps[n.op];
     const bool top = e.nodes[0].op >= 0 && e.nodes[0].args[0] == static_cast<int>(i); // 直接作根 (归一算子, 一元) 的输入
     const auto add = [&](Key key, int wi = 0) {
+      const int ti = expr::tag_ix(key_name(key));
+      const std::string tg = ti >= 0 ? n.tag[ti] : std::string(); // k2 不可绑定
+      if (!tg.empty())
+        for (Slot &q : out)
+          if (q.key == key && q.wi == wi && q.tag == tg) {
+            q.peers.push_back(static_cast<int>(i));
+            return;
+          }
       Slot s;
+      s.tag = tg;
       s.node = static_cast<int>(i);
       s.key = key;
       s.wi = wi;
       s.kdom = o.kdom;
-      s.name = std::string(o.name) + "." + key_name(key) + (key == Key::W ? std::to_string(wi + 1) : "");
+      s.name = std::string(o.name) + "." + key_name(key) + (key == Key::W ? std::to_string(wi + 1) : "") + expr::tag_text(tg);
       if (key == Key::D) {
         s.integer = true;
         s.u_lo = 0.0, s.u_hi = std::log2(static_cast<double>(kMaxD));
@@ -186,16 +198,34 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
   return out;
 }
 
-// 模板的可搜槽数 (= slots_of(e, …).size(); 不依赖区间端点, 装库前定采样点数用)
+// 模板的可搜槽数 (= slots_of(e, …).size(); 不依赖区间端点, 装库前定采样点数用). 绑定组只计一次
 inline int slot_count(const expr::Expr &e) {
   int c = 0;
+  std::vector<std::string> seen; // 已计的绑定组 "键:名:元"
   for (size_t i = 0; i < e.nodes.size(); ++i) {
     const expr::Node &n = e.nodes[i];
     if (n.op < 0 || !n.free)
       continue;
     const bool top = e.nodes[0].op >= 0 && e.nodes[0].args[0] == static_cast<int>(i);
-    c += ((n.free & expr::kFreeD) ? 1 : 0) + ((n.free & expr::kFreeK) ? 1 : 0) + ((n.free & expr::kFreeK2) ? 1 : 0) +
-         ((n.free & expr::kFreeW) ? n.n_args - (top ? 1 : 0) : 0);
+    const auto one = [&](const char *key, int wi) {
+      const std::string &tg = n.tag[expr::tag_ix(key)];
+      if (!tg.empty()) {
+        const std::string id = std::string(key) + ":" + tg + ":" + std::to_string(wi);
+        if (std::find(seen.begin(), seen.end(), id) != seen.end())
+          return;
+        seen.push_back(id);
+      }
+      ++c;
+    };
+    if (n.free & expr::kFreeD)
+      one("d", 0);
+    if (n.free & expr::kFreeK)
+      one("k", 0);
+    if (n.free & expr::kFreeK2)
+      ++c;
+    if (n.free & expr::kFreeW)
+      for (int j = top ? 1 : 0; j < n.n_args; ++j)
+        one("w", j);
   }
   return c;
 }
@@ -225,18 +255,23 @@ inline bool in_range(const Slot &s, double u) { return u >= s.u_lo - 1e-9 && u <
 
 // 槽参数落值 v 并清自由位 (不刷 canon); k / k2 / w 落规范串往返值 (expr::kv_of), 评的与写进 weights 的同一个式子; 作根输入的 w 槽连带首元的权落 1
 inline void put(expr::Expr &e, const Slot &s, double v) {
-  expr::Node &n = e.nodes[static_cast<size_t>(s.node)];
-  if (s.key == Key::D) {
-    n.p.d = static_cast<int>(v), n.free &= static_cast<uint8_t>(~expr::kFreeD);
-  } else if (s.key == Key::K) {
-    n.p.k = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeK);
-  } else if (s.key == Key::K2) {
-    n.p.k2 = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeK2);
-  } else {
-    if (s.top)
-      n.p.w[0] = expr::kv_of(1.0);
-    n.p.w[s.wi] = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeW);
-  }
+  const auto one = [&](int ni) {
+    expr::Node &n = e.nodes[static_cast<size_t>(ni)];
+    if (s.key == Key::D) {
+      n.p.d = static_cast<int>(v), n.free &= static_cast<uint8_t>(~expr::kFreeD);
+    } else if (s.key == Key::K) {
+      n.p.k = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeK);
+    } else if (s.key == Key::K2) {
+      n.p.k2 = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeK2);
+    } else {
+      if (s.top)
+        n.p.w[0] = expr::kv_of(1.0);
+      n.p.w[s.wi] = expr::kv_of(v), n.free &= static_cast<uint8_t>(~expr::kFreeW);
+    }
+  };
+  one(s.node);
+  for (const int q : s.peers)
+    one(q);
 }
 
 // 坐标 u[P] → 具体表达式 (base 模板的拷贝, 槽参数落值并清自由位, 刷新 canon); 任一槽出界 / 参数值域不合 → false.
@@ -254,11 +289,12 @@ inline bool apply(const expr::Expr &base, const std::vector<Slot> &slots, const 
     put(out, s, v);
   }
   assert(!out.is_template() && "槽须覆盖模板的全部自由参数");
-  for (const Slot &s : slots) {
-    const expr::Node &n = out.nodes[static_cast<size_t>(s.node)];
-    if (expr::check_params(expr::kOps[n.op], n.p, seg))
-      return false;
-  }
+  for (const Slot &s : slots)
+    for (size_t j = 0; j <= s.peers.size(); ++j) {
+      const expr::Node &n = out.nodes[static_cast<size_t>(j == 0 ? s.node : s.peers[j - 1])];
+      if (expr::check_params(expr::kOps[n.op], n.p, seg))
+        return false;
+    }
   out.canon = expr::to_string(out);
   return true;
 }

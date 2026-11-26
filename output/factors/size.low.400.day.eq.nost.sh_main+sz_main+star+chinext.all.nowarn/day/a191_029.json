@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#029",
- "expr": "CsRank(TsMul(TsLogRatio(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d)), bar.1d.volume_day))",
+ "expr": "CsRank(TsMul(TsLogRatio(bar.1d.close_adj_day, TsDelayRoll(bar.1d.close_adj_day, d)), bar.1d.volume_day))",
  "note": "周收益乘量：放量涨跌，赚放量冲击反转"
 }

@@ -153,6 +153,8 @@ void set_op(BuildNode &n, int op, int seg) {
   const std::string name = o.name;
   n.p = factor::Param{};
   n.free = 0;
+  for (std::string &t : n.tag)
+    t.clear();
   n.p.d = factor::check::default_d(name);
   factor::check::set_k(name, n.p, seg);
   if (factor::expr::declares(o.params, "h")) {
@@ -215,12 +217,12 @@ void to_source(const BuildNode &n, std::string &s, bool &complete) {
   if (factor::expr::declares(o.params, "d")) {
     sep();
     std::snprintf(buf, sizeof(buf), "d=%d", n.p.d);
-    s += (n.free & factor::expr::kFreeD) ? "d" : buf;
+    s += (n.free & factor::expr::kFreeD) ? "d" + factor::expr::tag_text(n.tag[0]) : std::string(buf);
   }
   if (factor::expr::declares(o.params, "k")) {
     sep();
     std::snprintf(buf, sizeof(buf), "k=%g", static_cast<double>(n.p.k));
-    s += (n.free & factor::expr::kFreeK) ? "k" : buf;
+    s += (n.free & factor::expr::kFreeK) ? "k" + factor::expr::tag_text(n.tag[1]) : std::string(buf);
   }
   if (factor::expr::declares(o.params, "k2")) {
     sep();
@@ -234,7 +236,7 @@ void to_source(const BuildNode &n, std::string &s, bool &complete) {
   if (factor::expr::declares(o.params, "w")) {
     sep();
     if (n.free & factor::expr::kFreeW) {
-      s += 'w';
+      s += "w" + factor::expr::tag_text(n.tag[2]);
     } else {
       s += "w=[";
       for (size_t a = 0; a < n.args.size(); ++a)
@@ -264,6 +266,8 @@ void from_expr(const factor::expr::Expr &e, int i, int seg, BuildNode &n) {
   if (!(x.free & factor::expr::kFreeW))
     std::copy(x.p.w, x.p.w + x.n_args, n.p.w);
   n.free = x.free;
+  for (int t = 0; t < 3; ++t)
+    n.tag[t] = x.tag[t];
   int na = 0; // 特征元数 (目标叶不进构建器, 由 h 推出)
   while (na < x.n_args && !e.nodes[static_cast<size_t>(x.args[na])].target)
     ++na;

@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A191#109",
- "expr": "CsRank(TsDiv(TsMeanEma(TsSub(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), k=0.2), TsMeanEma(TsMeanEma(TsSub(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), k=0.2), k)))",
+ "expr": "CsRank(TsDiv(TsMeanEma(TsSub(bar.1d.high_adj_day, bar.1d.low_adj_day), k:t1), TsMeanEma(TsMeanEma(TsSub(bar.1d.high_adj_day, bar.1d.low_adj_day), k:t1), k)))",
  "note": "振幅相对其平滑：振幅突然放大，赚波动冲击反转"
 }

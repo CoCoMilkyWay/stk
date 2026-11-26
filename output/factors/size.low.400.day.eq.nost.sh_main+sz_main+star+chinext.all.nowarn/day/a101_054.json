@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A101#054",
- "expr": "CsRank(TsDiv(TsMul(TsNeg(TsSub(bar.1d.low_day, bar.1d.close_day)), TsMul(TsMul(TsMul(TsMul(bar.1d.open_day, bar.1d.open_day), bar.1d.open_day), bar.1d.open_day), bar.1d.open_day)), TsMul(TsSub(bar.1d.low_day, bar.1d.high_day), TsMul(TsMul(TsMul(TsMul(bar.1d.close_day, bar.1d.close_day), bar.1d.close_day), bar.1d.close_day), bar.1d.close_day))))",
+ "expr": "CsRank(TsDiv(TsMul(TsSub(bar.1d.low_day, bar.1d.close_day), TsMul(TsMul(TsMul(TsMul(bar.1d.open_day, bar.1d.open_day), bar.1d.open_day), bar.1d.open_day), bar.1d.open_day)), TsMul(TsSub(bar.1d.low_day, bar.1d.high_day), TsMul(TsMul(TsMul(TsMul(bar.1d.close_day, bar.1d.close_day), bar.1d.close_day), bar.1d.close_day), bar.1d.close_day))))",
  "note": "收盘贴低点、开盘远高于收盘：日内深度回落，赚次日修复"
 }

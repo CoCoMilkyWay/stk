@@ -1,6 +1,6 @@
 {
  "type": "alpha",
  "name_cn": "A101#088",
- "expr": "CsRank(TsMin(CsRank(TsWmaRoll(CsLinRankFix(bar.1d.open_day, bar.1d.low_day, bar.1d.high_day, bar.1d.close_day, w), d)), TsRankRoll(TsWmaRoll(TsCorrRoll(TsRankRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d), TsRankRoll(TsMeanRoll(bar.1d.amount_day, d), d), d), d), d)))",
+ "expr": "CsRank(TsMin(CsRank(TsWmaRoll(CsLinRankFix(bar.1d.open_day, bar.1d.low_day, bar.1d.high_day, bar.1d.close_day, w), d)), TsRankRoll(TsWmaRoll(TsCorrRoll(TsRankRoll(bar.1d.close_adj_day, d), TsRankRoll(TsMeanRoll(bar.1d.amount_day, d), d), d), d), d)))",
  "note": "日内偏弱且量价不同步者强：日内超跌无拥挤，赚日内修复"
 }
