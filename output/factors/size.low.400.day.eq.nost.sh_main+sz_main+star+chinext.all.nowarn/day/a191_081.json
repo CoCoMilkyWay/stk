@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#081",
  "expr": "CsRank(TsMeanEma(bar.1d.volume_day, k))",
- "note": "价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "平滑成交量：量能高位者弱，赚注意力溢价回吐"
 }

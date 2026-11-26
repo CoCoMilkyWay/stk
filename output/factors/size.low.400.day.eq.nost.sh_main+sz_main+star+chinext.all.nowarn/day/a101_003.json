@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A101#003",
  "expr": "CsRank(TsCorrRoll(CsRank(bar.1d.open_day), CsRank(bar.1d.volume_day), d))",
- "note": "价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "高开放量弱、低开缩量强：开盘追涨是冲动单，赚追涨回吐"
 }

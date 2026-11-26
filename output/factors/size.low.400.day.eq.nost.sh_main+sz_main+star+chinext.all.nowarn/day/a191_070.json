@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#070",
  "expr": "CsRank(TsStdRoll(bar.1d.amount_day, d))",
- "note": "#95 只差窗, 不另建; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "成交额波动：交易活跃度不稳者弱，赚注意力溢价回吐"
 }

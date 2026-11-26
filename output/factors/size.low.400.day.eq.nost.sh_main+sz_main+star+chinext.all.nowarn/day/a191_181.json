@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#181",
  "expr": "CsRank(TsDiv(TsSumRoll(TsSub(TsSub(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), TsMeanRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d)), TsMul(TsSub(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsMeanRoll(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), d=20)), TsSub(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsMeanRoll(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), d=20)))), d), TsSumRoll(TsMul(TsMul(TsSub(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsMeanRoll(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), d=20)), TsSub(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsMeanRoll(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), d=20))), TsSub(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsMeanRoll(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), d=20))), d)))",
- "note": "基准 → 池内等权日收益; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "个股超额与市场偏离的协偏度：市场异动时的个股异常，赚协偏度溢价"
 }

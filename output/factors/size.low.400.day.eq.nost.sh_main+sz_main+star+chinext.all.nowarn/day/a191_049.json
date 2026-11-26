@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#049",
  "expr": "CsRank(TsImb(TsSumRoll(TsMul(TsMax(TsAbs(TsDeltaRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=1)), TsAbs(TsDeltaRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=1))), TsGt(TsSub(TsDelayRoll(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), d=1), TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor))), k=0)), d), TsSumRoll(TsMul(TsMax(TsAbs(TsDeltaRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=1)), TsAbs(TsDeltaRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=1))), TsGt(TsSub(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsDelayRoll(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), d=1)), k=0)), d)))",
- "note": "A/(A+B) 同序于失衡; #50 / #51 与本式同序或反序, 不另建; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "中枢下移日与上移日波动的失衡：下行动能占优，赚动能失衡回归"
 }

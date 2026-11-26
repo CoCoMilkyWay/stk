@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A101#078",
  "expr": "CsRank(TsPow(CsRank(TsCorrRoll(TsSumRoll(TsLinFix(TsMul(bar.1d.low_day, bar.1d.adj_factor), TsMul(bar.1d.vwap_day, bar.1d.adj_factor), w), d), TsSumRoll(TsMeanRoll(bar.1d.amount_day, d), d), d)), CsRank(TsCorrRoll(CsRank(bar.1d.vwap_day), CsRank(bar.1d.volume_day), d))))",
- "note": "价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "长期量价同步以短期量价同步为指数：双重拥挤，赚拥挤回撤"
 }

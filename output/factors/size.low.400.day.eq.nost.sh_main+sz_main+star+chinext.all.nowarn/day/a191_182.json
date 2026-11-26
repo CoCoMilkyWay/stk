@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#182",
  "expr": "CsRank(TsMeanRoll(TsGt(TsMul(TsLogRatio(bar.1d.close_day, bar.1d.open_day), CsMean(TsLogRatio(bar.1d.close_day, bar.1d.open_day))), k=0), d))",
- "note": "基准 → 池内等权日内收益; 同向日占比; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "与市场同向日的占比：跟随市场者弱、独立者强，赚个股特质溢价"
 }

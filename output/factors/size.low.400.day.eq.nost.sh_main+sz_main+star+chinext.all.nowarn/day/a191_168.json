@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#168",
  "expr": "CsRank(TsNeg(TsDiv(bar.1d.volume_day, TsMeanRoll(bar.1d.volume_day, d))))",
- "note": "价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "当日量对均量：放量冲击，赚量能冲击反转"
 }

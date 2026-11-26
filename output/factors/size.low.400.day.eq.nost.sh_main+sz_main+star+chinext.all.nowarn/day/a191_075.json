@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#075",
  "expr": "CsRank(TsDiv(TsSumRoll(TsMul(TsGt(TsSub(bar.1d.close_day, bar.1d.open_day), k=0), TsGt(TsNeg(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.open_day))), k=0)), d), TsSumRoll(TsGt(TsNeg(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.open_day))), k=0), d)))",
- "note": "基准指数 → 池内等权日内收益代理; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "市场下跌日个股收阳的比例：逆市抗跌者强，赚抗跌溢价"
 }

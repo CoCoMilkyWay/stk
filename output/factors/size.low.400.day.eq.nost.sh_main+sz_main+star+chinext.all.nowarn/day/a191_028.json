@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#028",
  "expr": "CsRank(TsLinFix(TsMeanEma(TsDiv(TsSub(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsMinRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=9)), TsSub(TsMaxRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=9), TsMinRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=9))), k=0.333333), TsMeanEma(TsMeanEma(TsDiv(TsSub(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsMinRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=9)), TsSub(TsMaxRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=9), TsMinRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=9))), k=0.333333), k), w))",
- "note": "首层 SMA 出现两次, 系数固定 1/3; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "KDJ 型随机指标：区间位置及其平滑之差，赚超买超卖回归"
 }

@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A101#014",
  "expr": "CsRank(TsMul(TsNeg(CsRank(TsDeltaRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d))), TsCorrRoll(TsMul(bar.1d.open_day, bar.1d.adj_factor), bar.1d.volume_day, d)))",
- "note": "价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "收益突变叠加开盘量价同向：追涨结构遇加速，赚过度反应回落"
 }

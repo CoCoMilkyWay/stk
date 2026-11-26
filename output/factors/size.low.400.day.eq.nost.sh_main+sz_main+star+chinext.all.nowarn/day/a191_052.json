@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#052",
  "expr": "CsRank(TsDiv(TsSumRoll(TsRelu(TsLinFix(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsDelayRoll(TsAdd(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMul(bar.1d.close_day, bar.1d.adj_factor)), d=1), w=[1, -0.333333])), d), TsSumRoll(TsRelu(TsLinFix(TsDelayRoll(TsAdd(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMul(bar.1d.close_day, bar.1d.adj_factor)), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor), w=[0.333333, -1])), d)))",
- "note": "TP = (H+L+C)/3; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "高点高于昨日中枢与低点低于昨日中枢之比：上冲力度对下探力度，赚多空失衡回归"
 }

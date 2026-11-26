@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A101#033",
  "expr": "CsRank(TsDiv(bar.1d.open_day, bar.1d.close_day))",
- "note": "rank(o/c − 1) = rank(o/c); 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "盘中涨跌越大越反转：日内单边是情绪交易，赚日内超调回补"
 }

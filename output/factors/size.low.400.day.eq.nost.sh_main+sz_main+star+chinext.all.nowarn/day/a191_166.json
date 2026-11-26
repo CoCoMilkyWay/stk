@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#166",
  "expr": "CsRank(TsSkewRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d))",
- "note": "原式即收益偏度 (分子书写有误), 用滚动偏度; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "收益偏度：右偏是彩票股，赚彩票溢价回吐"
 }

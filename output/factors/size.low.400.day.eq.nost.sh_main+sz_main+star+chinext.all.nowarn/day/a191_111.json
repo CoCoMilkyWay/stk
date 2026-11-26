@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#111",
  "expr": "CsRank(TsSub(TsMeanEma(TsMul(bar.1d.volume_day, TsDiv(TsSub(TsSub(bar.1d.close_day, bar.1d.low_day), TsSub(bar.1d.high_day, bar.1d.close_day)), TsSub(bar.1d.high_day, bar.1d.low_day))), k), TsMeanEma(TsMul(bar.1d.volume_day, TsDiv(TsSub(TsSub(bar.1d.close_day, bar.1d.low_day), TsSub(bar.1d.high_day, bar.1d.close_day)), TsSub(bar.1d.high_day, bar.1d.low_day))), k)))",
- "note": "价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "量乘收盘强度的快慢平滑差：资金流向加速，赚加速回归"
 }

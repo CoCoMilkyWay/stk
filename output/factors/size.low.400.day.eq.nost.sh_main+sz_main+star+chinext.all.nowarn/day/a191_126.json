@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#126",
  "expr": "CsRank(TsLinFix(bar.1d.close_day, bar.1d.high_day, bar.1d.low_day, w))",
- "note": "价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "典型价水平：价格水平效应，赚低价溢价"
 }

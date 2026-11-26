@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#010",
  "expr": "CsRank(TsMaxRoll(TsMul(TsWhere(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d=20), TsMul(bar.1d.close_day, bar.1d.adj_factor)), TsWhere(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), TsStdRoll(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), d=20), TsMul(bar.1d.close_day, bar.1d.adj_factor))), d))",
- "note": "MAX(x,5) = 滚动最大; std 窗固定 (式内两次); 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "下跌日波动与上涨日价位的近期峰值：极端状态刚过，赚极端回归"
 }

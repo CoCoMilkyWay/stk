@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#015",
  "expr": "CsRank(TsLogRatio(bar.1d.open_day, bar.1d.pre_close))",
- "note": "开盘 / 前收 − 1 → 对数比 (同序); 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "隔夜跳空：开盘缺口是过度反应，赚缺口回补"
 }

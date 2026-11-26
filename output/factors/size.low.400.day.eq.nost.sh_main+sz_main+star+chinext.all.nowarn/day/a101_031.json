@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A101#031",
  "expr": "CsRank(TsLinFix(CsRank(TsWmaRoll(TsNeg(CsRank(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d))), d)), CsRank(TsNeg(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d))), TsSign(TsCorrRoll(TsMeanRoll(bar.1d.amount_day, d), TsMul(bar.1d.low_day, bar.1d.adj_factor), d)), w))",
- "note": "sign(scale(x)) = sign(x); 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "中期跌势衰减、短期反转、量价确认：多尺度反转合成，赚超跌修复"
 }

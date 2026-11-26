@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#027",
  "expr": "CsRank(TsMeanEma(TsLinFix(TsLogRatio(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d)), TsLogRatio(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d)), w), k))",
- "note": "WMA(0.9^i) → 指数均值, 系数自由; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "多尺度收益的平滑：短中期涨幅合成，赚超涨回撤"
 }

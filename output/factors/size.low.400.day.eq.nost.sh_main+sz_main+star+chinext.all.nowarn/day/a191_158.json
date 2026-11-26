@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#158",
  "expr": "CsRank(TsDiv(TsSub(bar.1d.high_day, bar.1d.low_day), bar.1d.close_day))",
- "note": "(H − SMA) − (L − SMA) = H − L; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "振幅相对收盘：日内波动大者弱，赚低波溢价"
 }

@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#078",
  "expr": "CsRank(TsDiv(TsSub(TsLinFix(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor), TsMul(bar.1d.close_day, bar.1d.adj_factor), w=[0.333333, 0.333333, 0.333333]), TsMeanRoll(TsLinFix(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor), TsMul(bar.1d.close_day, bar.1d.adj_factor), w=[0.333333, 0.333333, 0.333333]), d=12)), TsMeanRoll(TsAbs(TsSub(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsMeanRoll(TsLinFix(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor), TsMul(bar.1d.close_day, bar.1d.adj_factor), w=[0.333333, 0.333333, 0.333333]), d=12))), d)))",
- "note": "CCI; TP 均值出现两次, 窗固定 12; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "CCI：典型价偏离均值的标准化，赚超买超卖回归"
 }

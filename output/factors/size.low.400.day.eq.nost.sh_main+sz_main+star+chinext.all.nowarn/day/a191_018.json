@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#018",
  "expr": "CsRank(TsDiv(TsMul(bar.1d.close_day, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d)))",
- "note": "#20 / #88 同序, 不另建; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "一周涨幅：短期超涨超跌，赚周度反转"
 }

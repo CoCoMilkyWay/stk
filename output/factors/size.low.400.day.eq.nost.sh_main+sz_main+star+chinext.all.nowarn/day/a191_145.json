@@ -2,5 +2,5 @@
  "type": "alpha",
  "name_cn": "A191#145",
  "expr": "CsRank(TsDiv(TsSub(TsMeanRoll(bar.1d.volume_day, d), TsMeanRoll(bar.1d.volume_day, d)), TsMeanRoll(bar.1d.volume_day, d)))",
- "note": "价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+ "note": "短长均量之差相对中期均量：量能加速，赚量能冲击反转"
 }
