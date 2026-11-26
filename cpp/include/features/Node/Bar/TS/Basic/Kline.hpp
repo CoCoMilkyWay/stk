@@ -62,9 +62,9 @@ private:
 
 #define NODE_AdjDay(N) N(AdjDay, (AdjDay), (KlineDay.out(KlineDay.open), KlineDay.out(KlineDay.high), KlineDay.out(KlineDay.low), KlineDay.out(KlineDay.close), VwapDay.out(VwapDay.value), Fund.out(Fund.adj_ratio)), onClose)
 
-#define FIELDS_L_1day_AdjDay(X, CAT1)                                                                                                                   \
-  X(open_adj_day, CAT1, AUTO, "Open Adj (day)", "日开盘后复权", "日开盘价 × 复权比(首日归一); 跨日价格运算用", R"(P^{\mathrm{open}}_D \cdot \mathrm{adj}_D)", TS(AdjDay, open, None))   \
-  X(high_adj_day, CAT1, AUTO, "High Adj (day)", "日最高后复权", "日最高价 × 复权比(首日归一); 跨日价格运算用", R"(P^{\mathrm{high}}_D \cdot \mathrm{adj}_D)", TS(AdjDay, high, None))   \
-  X(low_adj_day, CAT1, AUTO, "Low Adj (day)", "日最低后复权", "日最低价 × 复权比(首日归一); 跨日价格运算用", R"(P^{\mathrm{low}}_D \cdot \mathrm{adj}_D)", TS(AdjDay, low, None))       \
+#define FIELDS_L_1day_AdjDay(X, CAT1)                                                                                                                                                     \
+  X(open_adj_day, CAT1, AUTO, "Open Adj (day)", "日开盘后复权", "日开盘价 × 复权比(首日归一); 跨日价格运算用", R"(P^{\mathrm{open}}_D \cdot \mathrm{adj}_D)", TS(AdjDay, open, None))     \
+  X(high_adj_day, CAT1, AUTO, "High Adj (day)", "日最高后复权", "日最高价 × 复权比(首日归一); 跨日价格运算用", R"(P^{\mathrm{high}}_D \cdot \mathrm{adj}_D)", TS(AdjDay, high, None))     \
+  X(low_adj_day, CAT1, AUTO, "Low Adj (day)", "日最低后复权", "日最低价 × 复权比(首日归一); 跨日价格运算用", R"(P^{\mathrm{low}}_D \cdot \mathrm{adj}_D)", TS(AdjDay, low, None))         \
   X(close_adj_day, CAT1, AUTO, "Close Adj (day)", "日收盘后复权", "日收盘价 × 复权比(首日归一); 跨日价格运算用", R"(P^{\mathrm{close}}_D \cdot \mathrm{adj}_D)", TS(AdjDay, close, None)) \
   X(vwap_adj_day, CAT1, AUTO, "VWAP Adj (day)", "日均价后复权", "日均价 × 复权比(首日归一); 跨日价格运算用", R"(\mathrm{VWAP}_D \cdot \mathrm{adj}_D)", TS(AdjDay, vwap, None))

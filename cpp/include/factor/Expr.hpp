@@ -85,7 +85,7 @@ constexpr int op_index(std::string_view name) {
 
 // ---- 归一根 (alpha 口径的唯一判据, 见文末 root_frame): 名字编译期落成下标, 表里没有即编译错 ----
 inline constexpr int kCsRoots[] = {op_index("CsRank"), op_index("CsNormRank"), op_index("CsZ")}; // 截面口径
-inline constexpr int kTsRoot = op_index("TsRankRoll");                                          // 时序口径 (d 写死 ts_norm_d)
+inline constexpr int kTsRoot = op_index("TsRankRoll");                                           // 时序口径 (d 写死 ts_norm_d)
 constexpr bool cs_root(int op) {
   for (const int r : kCsRoots)
     if (r == op)
@@ -335,7 +335,9 @@ inline constexpr uint8_t free_bit(std::string_view key) { return key == "d" ? kF
                                                                                                   : kFreeW; }
 
 // 可绑定的自由参数键 → Node::tag 下标; 其余键 → -1
-constexpr int tag_ix(std::string_view key) { return key == "d" ? 0 : key == "k" ? 1 : key == "w" ? 2 : -1; }
+constexpr int tag_ix(std::string_view key) { return key == "d" ? 0 : key == "k" ? 1
+                                                                 : key == "w"   ? 2
+                                                                                : -1; }
 inline std::string tag_text(const std::string &t) { return t.empty() ? std::string() : ":" + t; }
 
 struct Node {

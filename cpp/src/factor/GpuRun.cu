@@ -137,14 +137,14 @@ __global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, in
 #define G_FUSE_ROLL(Name, ar)
 #define G_FUSE_EXPO(Name, ar)
 #define G_FUSE(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op_tex, note) G_FUSE_##t(Name, ar)
-        OP_TS0(G_FUSE) OP_TS1(G_FUSE) OP_TS2(G_FUSE) OP_TS3(G_FUSE)
+        OP_TS0(G_FUSE)
+        OP_TS1(G_FUSE) OP_TS2(G_FUSE) OP_TS3(G_FUSE)
 #undef G_FUSE
 #undef G_FUSE_EXPO
 #undef G_FUSE_ROLL
 #undef G_FUSE_EXPAND
 #undef G_FUSE_POINT
-      default:
-        assert(false && "融合步只装定元 POINT × SELF 算子");
+            default : assert(false && "融合步只装定元 POINT × SELF 算子");
       }
     }
     ov[i] = r[a.f.n - 1].v;

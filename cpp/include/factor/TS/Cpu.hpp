@@ -396,32 +396,32 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
   };
 
 // 标量版 (式内有 log / pow 等无向量版的 libm 调用): 向量化器会把它逐 lane 标量化再 insert 拼回, 比纯标量循环还慢, 故显式关掉
-#define CP_P1S(Name, V, M)                                                                  \
-  struct Name {                                                                             \
-    CP_STATELESS {                                                                          \
-      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi); \
-      for (int t = 0; t < T; ++t)                                                           \
+#define CP_P1S(Name, V, M)                                                                                            \
+  struct Name {                                                                                                       \
+    CP_STATELESS {                                                                                                    \
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);                           \
+      for (int t = 0; t < T; ++t)                                                                                     \
         _Pragma("clang loop vectorize(disable)") for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) { \
-          const float x = xv[i];                                                            \
-          const bool mx = xm[i] != 0;                                                       \
-          const bool m = (M);                                                               \
-          detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m);                      \
-        }                                                                                   \
-    }                                                                                       \
+          const float x = xv[i];                                                                                      \
+          const bool mx = xm[i] != 0;                                                                                 \
+          const bool m = (M);                                                                                         \
+          detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m);                                                \
+        }                                                                                                             \
+    }                                                                                                                 \
   };
 
-#define CP_P2S(Name, V, M)                                                                  \
-  struct Name {                                                                             \
-    CP_STATELESS {                                                                          \
-      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi); \
-      for (int t = 0; t < T; ++t)                                                           \
+#define CP_P2S(Name, V, M)                                                                                            \
+  struct Name {                                                                                                       \
+    CP_STATELESS {                                                                                                    \
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);                           \
+      for (int t = 0; t < T; ++t)                                                                                     \
         _Pragma("clang loop vectorize(disable)") for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) { \
-          const float x = xv[i], y = yv[i];                                                 \
-          const bool mx = xm[i] != 0, my = ym[i] != 0;                                      \
-          const bool m = (M);                                                               \
-          detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m);                      \
-        }                                                                                   \
-    }                                                                                       \
+          const float x = xv[i], y = yv[i];                                                                           \
+          const bool mx = xm[i] != 0, my = ym[i] != 0;                                                                \
+          const bool m = (M);                                                                                         \
+          detail::put(ov, om, i, m ? static_cast<double>(V) : 0.0, m);                                                \
+        }                                                                                                             \
+    }                                                                                                                 \
   };
 
 CP_P1(TsAbs, std::fabs(x), mx)
