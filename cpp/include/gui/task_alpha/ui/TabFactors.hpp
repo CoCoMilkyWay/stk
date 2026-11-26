@@ -1,7 +1,7 @@
 // Alpha→Factors: output/factors/<池>/<层>/ 下一因子一文件的整体面板. 顶部 = 作用域 / 后端 / 持有期 + Run / Cancel /
 // Rescan + 状态, 下一行 Search (高光因子的模板参数搜索: 进度 / 每持有期的终选); 中间 = 加因子构建器 (从根往里逐槽下拉选算子 / 特征,
 // 参数手填或勾成自由参数, 即时校验); 下面 = 表 (一行一权重, 多权重因子折成父行 + 可展开的子行: BROKEN 红 + 原因, 有效行显示规范串 /
-// 结构规模 / 选定持有期的 Stat 列 / 耗时; 首列勾选 → 模板载入构建器编辑, 点行高光 → 给 Inspect 页).
+// 结构规模 / 选定持有期的 Stat 列 / 耗时; 首列勾选 → 模板载入构建器编辑, 点行选中 (Ctrl 多选 / Shift 片选) → Run / Search 批量的对象, 锚点给 Inspect 页).
 #pragma once
 
 #include "gui/engine/Table.hpp"
@@ -41,10 +41,11 @@ struct SearchJob {
 };
 
 struct FactorsUIState {
-  int hold_idx = 0;          // FeatureTable::y.list 下标 (表列显示哪个持有期; 多权重因子的父行取该 h 下 score 最高的权重)
-  BuildNode build;           // 加因子构建器的根
-  char name_buf[64] = "";    // name_en = 文件名主干, 必填
-  char name_cn_buf[64] = ""; // name_cn, 必填, 汉字 / [A-Za-z0-9#] ≤10 字 (≤30 字节)
+  int hold_idx = 0;            // FeatureTable::y.list 下标 (表列显示哪个持有期; 多权重因子的父行取该 h 下 score 最高的权重)
+  bool hold_defaulted = false; // 本作用域已按多数 *h 定过默认 Hold (DefaultHold; 换池 / 换层由 TaskAlpha 复位)
+  BuildNode build;             // 加因子构建器的根
+  char name_buf[64] = "";      // name_en = 文件名主干, 必填
+  char name_cn_buf[64] = "";   // name_cn, 必填, 汉字 / [A-Za-z0-9#] ≤10 字 (≤30 字节)
   char note_buf[256] = "";
   char filter_buf[64] = ""; // 下拉里的过滤框 (打开时清空)
   std::string add_err;      // 即时校验结果 (空 = 合法 / 未填完)
@@ -57,17 +58,20 @@ struct FactorsUIState {
   // 扫出表后默认高光当前 Hold 下 rIC 最高的有效权重 (InspectAutoRequest 置, 每作用域一次: 之后用户取消高光不再自动补; 换池 / 换层由 TaskAlpha 复位)
   std::string view_file;
   bool view_defaulted = false;
+  // 多选 (行 key, 选序): 恒含锚点 view_file (view_file 空 → 空); 单击 = 只选本行, Ctrl 单击 = 本行进出, Shift 单击 = 锚点到本行 (显示序) 片选 (同按 Ctrl 并进已选).
+  // 选中行所在文件 = Run / Search 的批量对象
+  std::vector<std::string> picked;
   std::vector<std::string> expanded; // 展开的多权重因子文件
-  // Search (对象 = 高光行所在文件的模板, 只搜当前 Hold, 须在 Search/Config kSearchHolds): 点下时把行 + 当前 Hold 键拷给 search_one (TaskAlpha 据此建请求)
-  SearchJob search_one;
-  // Run (对象 = 高光行所在文件, 只评它的全部权重) / Run all (整目录): 点 Run 时把文件名记进 run_file (TaskAlpha 据此建请求 only_file)
-  std::string run_file;
-  // Search all (当前池 / 层下全部可搜模板文件 × 本层 kSearchHolds 内各档逐个搜, 不看 Hold 选择; 一个文件的各档搜完且落过盘即只 Run 该文件, 结果立刻进表):
-  // 点下时把 (各文件首个可搜行, 档) 拷进队列, TaskAlpha 逐个出队; 每文件首档 fresh (该文件 weights 整份覆盖), 它没落盘 (中途放弃) 则 fresh
-  // 顺延给同文件下一档. Cancel = 取消在跑的 Search + 清空队列. search_all_n > 0 期间视同 Search 在跑 (队列项之间 / 单文件 Run 时服务空闲, 不许插别的请求 / 换池换层)
+  // Run (对象 = 选中行所在文件, 只评它们的全部权重) / Run all (整目录): 点 Run 时把文件名记进 run_files (TaskAlpha 据此建请求 only_files)
+  std::vector<std::string> run_files;
+  // Search 队列 (一个文件的各档搜完且落过盘即只 Run 该文件, 结果立刻进表), 点下时把 (各文件首个可搜行, 档) 拷进队列, TaskAlpha 逐个出队:
+  //   · Search     选中行所在文件 × 当前 Hold (须在 Search/Config kSearchHolds), 只换该 Hold 的权重
+  //   · Search all 当前池 / 层下全部可搜文件 × 本层 kSearchHolds 内各档, 不看 Hold 选择; 每文件首档 fresh (该文件 weights 整份覆盖), 它没落盘 (中途放弃)
+  //                则 fresh 顺延给同文件下一档
+  // Cancel = 取消在跑的 Search + 清空队列. search_n > 0 期间视同 Search 在跑 (队列项之间 / 单文件 Run 时服务空闲, 不许插别的请求 / 换池换层)
   std::vector<SearchJob> search_queue;
   SearchJob search_cur;  // 在跑的那一项 (fresh 顺延用)
-  int search_all_n = 0;  // 本轮队列项总数; 0 = 没在 Search all
+  int search_n = 0;      // 本轮队列项总数; 0 = 队列没在跑
   int popup = 0;         // 本帧要开的弹窗: 1 Save 确认, 2 删除确认, 3 不能加 (表格里置, EndTable 后开)
   std::string popup_msg; // 弹窗正文
   // 表列宽贴合 (对仗 TabOperators)
@@ -90,6 +94,8 @@ struct FactorsUIContext {
   const std::vector<AssetItem> *assets = nullptr; // 全局资产轴 (data.asset.items): Inspect 右上按全局 id 显示代码 / 名称
 };
 
+// 默认 Hold = 本作用域表里多数权重的 *h (每作用域一次; 都是手填权重 → 不动); 本作用域的表还没扫出 → 下帧再试. Factors / Inspect 两页每帧先调
+void DefaultHold(RunService &svc, FactorsUIState &ui, const FactorsUIContext &ctx);
 // hold_points 分色一行 (时点 / 价各一色), 从当前光标处画; 返回排版宽. draw = false 只量不画 (调用方定宽占位用)
 float hold_points_line(const HoldPoints &p, bool draw = true);
 // 紧凑切换控件 (替代下拉): "label ◂ value ▸", 方形箭头循环切, 值占位定宽 (最宽一项, 居中) → 按钮位置不随值跳;
@@ -105,8 +111,8 @@ inline constexpr const char *kHoldRulesTip = "• 新进成交不了 → 不建�
 // 悬停值给说明. h = e.hold[] 之一; 占满当前可用宽
 void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h);
 
-// 返回值: 1 = Run 高光行所在文件 (ui.run_file), 5 = Run all (整目录), 2 = Rescan (含 Add 成功后), -1 = Cancel, 3 = Search 高光行 (ui.search_one),
-// 4 = Search all (ui.search_queue 已填), -3 = 取消 Search (Search all 的队列已清), 0 = 无.
+// 返回值: 1 = Run 选中行所在文件 (ui.run_files), 5 = Run all (整目录), 2 = Rescan (含 Add 成功后), -1 = Cancel,
+// 4 = Search / Search all (ui.search_queue 已填), -3 = 取消 Search (队列已清), 0 = 无.
 // backend = EngineHub::backend (首帧按 GPU 可用性定); pui: 1. 区右侧组合两小框 (PortfolioBoxes RenderPortfolioBoxes)
 int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int &backend, PortfolioUIState &pui, const FactorsUIContext &ctx);
 

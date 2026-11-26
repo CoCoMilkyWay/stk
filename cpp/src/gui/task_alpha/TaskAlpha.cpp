@@ -82,11 +82,11 @@ struct TaskAlphaState {
   Phase prev_run_phase = Phase::Idle; // Update 每帧: 进 Done → EngineHub::files_gen +1
   Alpha::FactorsUIState factors_ui;
   std::string factors_scanned_dir;                       // 上次扫描的目录 (池切换 → 自动重扫)
-  std::unique_ptr<Engine::SearchService> search_service; // Factors 页 Search (与 run_service 同建); 写了 weights 的那一轮结束 → 自动 Run
+  std::unique_ptr<Engine::SearchService> search_service; // Factors 页 Search 队列 (与 run_service 同建); 一个文件搜完且写了 weights → 自动只 Run 该文件
   Phase prev_search_phase = Phase::Idle;
-  // Search all 逐文件同步: dirty = 当前文件有档落了盘、还没 Run; run = 在等的单文件 Run (发请求时 run_service 的 epoch; 之后进 Done / Cancelled 即它结束)
-  bool search_all_dirty = false;
-  std::optional<uint64_t> search_all_run;
+  // Search 队列逐文件同步: dirty = 当前文件有档落了盘、还没 Run; run = 在等的单文件 Run (发请求时 run_service 的 epoch; 之后进 Done / Cancelled 即它结束)
+  bool search_dirty = false;
+  std::optional<uint64_t> search_run;
 
   std::unique_ptr<Engine::InspectService> inspect_service; // 首次进 Factors / Inspect 页建 (构造即起 worker); 缓存 (标签 + 特征平面) 随它活到任务 Destroy
   std::unique_ptr<Alpha::KlineService> kline_service;      // Inspect 右上选中资产的分钟 K 线流 (与 inspect_service 同生灭)
@@ -111,8 +111,8 @@ static std::shared_ptr<const Engine::FeatureTable> level_table(const SharedData 
 static void reset_level_services(TaskAlphaState &s) {
   s.search_service.reset();
   s.prev_search_phase = Phase::Idle;
-  s.search_all_dirty = false;
-  s.search_all_run.reset();
+  s.search_dirty = false;
+  s.search_run.reset();
   s.run_service.reset();
   s.prev_run_phase = Phase::Idle;
   s.factors_scanned_dir.clear();
@@ -121,33 +121,33 @@ static void reset_level_services(TaskAlphaState &s) {
   s.inspect_ui = Alpha::InspectUIState{};
 }
 
-// Search all 推进一步 (上一项搜完 / 单文件 Run 完时调): 当前文件的档都搜完且落过盘 → 只 Run 该文件 (结果立刻进因子表), Run 完再回来接着出队;
+// Search 队列推进一步 (上一项搜完 / 单文件 Run 完时调): 当前文件的档都搜完且落过盘 → 只 Run 该文件 (结果立刻进因子表), Run 完再回来接着出队;
 // 否则出队一个发 Search; 队空 = 收尾. 请求建不成 (资产轴 / 区间) = 整轮放弃.
 // wrote = 上一项落盘了 (Run 完回来给 false); 没落盘的 fresh 项把 fresh 顺延给同文件下一档 (该文件仍须整份覆盖)
-static void search_all_next(const SharedData &data, TaskAlphaState &s, bool wrote) {
+static void search_next(const SharedData &data, TaskAlphaState &s, bool wrote) {
   Alpha::FactorsUIState &ui = s.factors_ui;
-  assert(ui.search_all_n > 0 && s.run_service && s.search_service && !s.search_all_run);
+  assert(ui.search_n > 0 && s.run_service && s.search_service && !s.search_run);
   const auto quit = [&] {
     ui.search_queue.clear();
-    ui.search_all_n = 0;
+    ui.search_n = 0;
   };
   const std::string file = ui.search_cur.row.file; // 空 = 整轮刚开始
   const bool same = !ui.search_queue.empty() && ui.search_queue.front().row.file == file;
-  s.search_all_dirty = s.search_all_dirty || (wrote && !file.empty());
+  s.search_dirty = s.search_dirty || (wrote && !file.empty());
   if (!wrote && ui.search_cur.fresh && same)
     ui.search_queue.front().fresh = true;
-  if (s.search_all_dirty && !same) {
-    s.search_all_dirty = false;
+  if (s.search_dirty && !same) {
+    s.search_dirty = false;
     Engine::RunRequest req;
     if (!Engine::MakeRunRequest(data, level_table(data, s), s.pool, s.years, /*evaluate=*/true, s.engine->gpu(), req))
       return quit();
-    req.spec.only_file = file;
-    s.search_all_run = s.run_service->epoch.load(std::memory_order_acquire);
+    req.spec.only_files = {file};
+    s.search_run = s.run_service->epoch.load(std::memory_order_acquire);
     s.run_service->Request(req);
     return;
   }
   if (ui.search_queue.empty()) {
-    ui.search_all_n = 0;
+    ui.search_n = 0;
     return;
   }
   ui.search_cur = std::move(ui.search_queue.front());
@@ -195,52 +195,36 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
       if (fst == Phase::Done && state->prev_run_phase != Phase::Done)
         ++state->engine->files_gen;
       state->prev_run_phase = fst;
-      // Search all 等的单文件 Run 结束 (epoch 过了发请求那刻 = 已开跑过) → 接着搜; Run 被取消 → 整轮放弃; 整轮已取消 → 只清掉等待
-      if (state->search_all_run && state->run_service->epoch.load(std::memory_order_acquire) != *state->search_all_run &&
+      // Search 队列等的单文件 Run 结束 (epoch 过了发请求那刻 = 已开跑过) → 接着搜; Run 被取消 → 整轮放弃; 整轮已取消 → 只清掉等待
+      if (state->search_run && state->run_service->epoch.load(std::memory_order_acquire) != *state->search_run &&
           (fst == Phase::Done || fst == Phase::Cancelled)) {
-        state->search_all_run.reset();
-        if (state->factors_ui.search_all_n > 0) {
+        state->search_run.reset();
+        if (state->factors_ui.search_n > 0) {
           if (fst == Phase::Done) {
-            search_all_next(data, *state, /*wrote=*/false);
+            search_next(data, *state, /*wrote=*/false);
           } else {
             state->factors_ui.search_queue.clear();
-            state->factors_ui.search_all_n = 0;
+            state->factors_ui.search_n = 0;
           }
         }
       }
     }
-    // Search all: 一项搜完 (忙 → Done / Cancelled, 含 Loading 期就放弃的) → 推进 (该文件搜完且落过盘先单文件 Run); 被取消 → 整轮放弃
-    // 单个 Search 写了 weights 的那一轮 (Running → Done) 结束: 重扫 + 只 Run 该因子文件 (Search 跑时 Run 被禁, 不会撞)
+    // Search 队列: 一项搜完 (忙 → Done / Cancelled, 含 Loading 期就放弃的) → 推进 (该文件搜完且落过盘先单文件 Run; Search 跑时 Run 被禁, 不会撞); 被取消 → 整轮放弃
     if (state->search_service && state->run_service) {
       const Phase sst = state->search_service->phase.load(std::memory_order_acquire);
       const Phase prev = state->prev_search_phase;
       const bool finished = (sst == Phase::Done || sst == Phase::Cancelled) && (prev == Phase::Scanning || prev == Phase::Loading || prev == Phase::Running);
-      if (finished && state->factors_ui.search_all_n > 0) {
+      if (finished && state->factors_ui.search_n > 0) {
         if (sst == Phase::Done) {
           bool wrote = false;
           {
             std::lock_guard<std::mutex> lock(state->search_service->mutex);
             wrote = state->search_service->result.wrote;
           }
-          search_all_next(data, *state, wrote);
+          search_next(data, *state, wrote);
         } else {
           state->factors_ui.search_queue.clear();
-          state->factors_ui.search_all_n = 0;
-        }
-      } else if (sst == Phase::Done && prev == Phase::Running) {
-        bool wrote = false;
-        std::string file;
-        {
-          std::lock_guard<std::mutex> lock(state->search_service->mutex);
-          wrote = state->search_service->result.wrote;
-          file = state->search_service->result.file;
-        }
-        if (wrote) {
-          Engine::RunRequest req;
-          if (Engine::MakeRunRequest(data, level_table(data, *state), state->pool, state->years, /*evaluate=*/true, state->engine->gpu(), req)) {
-            req.spec.only_file = file;
-            state->run_service->Request(req);
-          }
+          state->factors_ui.search_n = 0;
         }
       }
       state->prev_search_phase = sst;
@@ -431,25 +415,26 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
       }
       {
         const bool busy = (state->run_service && state->run_service->busy()) || (state->search_service && state->search_service->busy()) ||
-                          (state->inspect_service && state->inspect_service->busy()) || state->factors_ui.search_all_n > 0;
+                          (state->inspect_service && state->inspect_service->busy()) || state->factors_ui.search_n > 0;
         const Engine::FactorLevelId want_lv = state->want_lv;
         const std::string want_pool = pool_def(state->want_pool).name;
         const int want_years = state->want_years;
         if (!busy) {
-          if (want_lv != state->lv || want_pool != state->pool) { // 换作用域: 高光作废, 新表扫出后重新默认高光 (rIC 最高)
+          if (want_lv != state->lv || want_pool != state->pool) { // 换作用域: 高光作废, 新表扫出后重新默认 Hold (多数 *h) 与高光 (rIC 最高)
             state->factors_ui.view_file.clear();
             state->factors_ui.view_defaulted = false;
+            state->factors_ui.hold_defaulted = false;
           }
           if (want_lv != state->lv) {
             reset_level_services(*state);
             state->lv = want_lv;
           }
           if (want_pool != state->pool) {
-            state->prev_search_phase = Phase::Idle; // 旧池那轮 Search 的结束不再触发 Update 的自动 Run
+            state->prev_search_phase = Phase::Idle; // 旧池那轮 Search 的结束不再推进队列
             state->pool = want_pool;
           }
           state->years = want_years;
-        } else if (want_lv != state->lv || want_pool != state->pool || want_years != state->years) { // 换作用域 = 取消旧作用域在跑的 (Search all 整轮放弃), 停下那帧再切
+        } else if (want_lv != state->lv || want_pool != state->pool || want_years != state->years) { // 换作用域 = 取消旧作用域在跑的 (Search 队列整轮放弃), 停下那帧再切
           if (state->run_service)
             state->run_service->RequestCancel();
           if (state->search_service)
@@ -457,7 +442,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           if (state->inspect_service)
             state->inspect_service->RequestCancel();
           state->factors_ui.search_queue.clear();
-          state->factors_ui.search_all_n = 0;
+          state->factors_ui.search_n = 0;
           ImGui::SameLine();
           ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "(取消中, 停下后切到 %s / %s / %d 年)", want_pool.c_str(), Engine::factor_level(want_lv).name,
                              want_years);
@@ -484,6 +469,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
         state->kline_service = std::make_unique<Alpha::KlineService>();
       }
       auto &is = *state->inspect_service;
+      Alpha::DefaultHold(fs, state->factors_ui, ctx);
       int iaction = 0; // Inspect 请求: 1 起算 / -1 取消
       if (idx == TAB_INSPECT) {
         iaction = Alpha::RenderTabInspect(fs, is, *state->kline_service, state->factors_ui, state->inspect_ui, ctx);
@@ -493,21 +479,16 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           Engine::RunRequest req;
           if (Engine::MakeRunRequest(data, ft, state->pool, state->years, /*evaluate=*/action != 2, state->engine->gpu(), req)) {
             if (action == 1)
-              req.spec.only_file = state->factors_ui.run_file;
+              req.spec.only_files = state->factors_ui.run_files;
             fs.Request(req);
           }
         } else if (action == -1) {
           fs.RequestCancel();
-        } else if (action == 3) {
-          Engine::SearchRequest req;
-          if (Engine::MakeSearchRequest(data, ft, state->pool, state->years, state->factors_ui.search_one.row, state->factors_ui.search_one.hold,
-                                        state->factors_ui.search_one.fresh, state->engine->gpu(), req))
-            ss.Request(req);
         } else if (action == 4) {
           state->factors_ui.search_cur = Alpha::SearchJob{};
-          state->search_all_dirty = false;
-          state->search_all_run.reset();
-          search_all_next(data, *state, /*wrote=*/true);
+          state->search_dirty = false;
+          state->search_run.reset();
+          search_next(data, *state, /*wrote=*/true);
         } else if (action == -3) {
           ss.RequestCancel();
         }
@@ -538,10 +519,10 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
     state->operators_started = false;
     state->search_service.reset(); // 析构 Stop() join worker
     state->prev_search_phase = Phase::Idle;
-    state->factors_ui.search_queue.clear(); // Search all 随服务一起作废
-    state->factors_ui.search_all_n = 0;
-    state->search_all_dirty = false;
-    state->search_all_run.reset();
+    state->factors_ui.search_queue.clear(); // Search 队列随服务一起作废
+    state->factors_ui.search_n = 0;
+    state->search_dirty = false;
+    state->search_run.reset();
     state->run_service.reset();
     state->prev_run_phase = Phase::Idle;
     state->factors_scanned_dir.clear();

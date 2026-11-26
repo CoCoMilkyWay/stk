@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -519,14 +520,14 @@ std::string period_text(misc::Ymd lo, misc::Ymd hi) {
 }
 
 // ============================================================================
-// Stat 指标表: 主表 Stat 列 / 排序键 / 行悬停转置表 都从这一张表展开 (加指标 = 加一行)
+// Stat 指标表: 主表 Stat 列 / 排序键 / 持有期对比卡片 都从这一张表展开 (加指标 = 加一行)
 //   group  分组, 按重要性排: 覆盖 (有效 / 可秩 / 触发 / 利用) → 形态 (单调) → LS (能不能赚) → rIC (整体相关) → rAC (留仓程度) → 换手 → 样本;
-//          悬停表按组出标题行, 主表列同序; 组底色 (bg) 主表列 / 悬停表行共用; 覆盖组只在主表的 cover% 列 (四项合一格, 无底色, 格子不弹悬停, 不进悬停表)
-//   col    非空 = 进主表 (列名), 空 = 只在悬停表 (覆盖组: 只在 cover% 列)
-//   desc / range / best  说明 / 取值范围 / 最优 (悬停表三列, 主表列提示也由它们拼); 文案压短, 悬停表宽度由它们定
+//          卡片按组出标题行, 主表列同序; 组底色 (bg) 主表列 / 卡片行共用; 覆盖组只在主表的 cover% 列 (四项合一格, 无底色, 不进卡片)
+//   col    非空 = 进主表 (列名), 空 = 只在卡片 (覆盖组: 只在 cover% 列)
+//   desc / range / best  说明 / 取值范围 / 最优 (卡片三列, 主表列提示也由它们拼); 文案压短, 卡片宽度由它们定
 //   get    (HoldStat, 该行 FactorRow: 满仓 cap = scope.n_full, 行级 val% / rank%) → double (整数计数也走这里, fmt 用 %.0f)
-//   grade  固定区间着色 (主表 / 悬停表共用, 不随样本变): line(差端, 好端) 线性 (好端 < 差端 即越小越好); band(a, b) 中点最好 → 两端差;
-//          区间外钳位到端色; 默认不着色 (诊断量 / 尺度随 h 变的)
+//   grade  line(差端, 好端) (好端 < 差端 即越小越好); band(a, b) 中点最好 → 两端差; 默认不着色 (诊断量 / 尺度随 h 变的).
+//          固定区间着色 (区间外钳位到端色): cover% 列 / 卡片 / Inspect 面板; 主表 Stat 列只取 line 的好坏方向, 按本页截面最差 → 最好渐变
 //   lag    样本 = ok_rac 行 (n_rac; rAC 系), 否则 ok 行 (n); 对应行数 < 3 → 空
 //   公式见 factor/Stat/Contract.hpp【持仓口径】/ Fold.hpp【三级 HoldStat】(rIC / rAC 同一套矩; t 值按 n/h 折算重叠持有期; LS% / SR = 日净值 LS
 //   (不触发记 0, 每批 1/h̄) 的复利年化 / Sharpe, 与 Inspect 累计线 / Market / Beta 同一份 Daily)
@@ -545,7 +546,7 @@ enum class Group : uint8_t { Cover,
 struct GroupInfo {
   const char *name, *desc;
   ImVec4 bg; // 组底色 (淡)
-  bool tip;  // 进悬停表 + 主表带底色 + 格子弹悬停; false = 只在主表显示
+  bool tip;  // 进卡片 + 主表带底色; false = 只在主表显示
 };
 constexpr GroupInfo kGroupInfo[static_cast<size_t>(Group::kCount)] = {
     {"覆盖", "有效 / 可秩 / 触发 / 利用", ImVec4(), false},
@@ -569,7 +570,7 @@ constexpr Grade line(double bad, double good) { return {Grade::Line, bad, good};
 constexpr Grade band(double a, double b) { return {Grade::Band, a, b}; }
 struct Metric {
   Group group;
-  const char *name; // 悬停表行名 (组内短名)
+  const char *name; // 卡片行名 (组内短名)
   const char *col;  // 主表列名; nullptr = 不进主表
   const char *desc, *range, *best;
   const char *fmt;
@@ -631,11 +632,11 @@ constexpr Metric kMetrics[] = {
 constexpr bool grades_ok() {
   for (const Metric &m : kMetrics)
     if ((m.grade.kind == Grade::Line && m.grade.a == m.grade.b) || (m.grade.kind == Grade::Band && !(m.grade.a < m.grade.b)) ||
-        (m.col && m.grade.kind == Grade::None))
+        (m.col && m.grade.kind != Grade::Line))
       return false;
   return true;
 }
-static_assert(grades_ok(), "着色区间: Line 两端不等, Band a < b, 主表列都须有区间");
+static_assert(grades_ok(), "着色区间: Line 两端不等, Band a < b, 主表列都须是 Line (截面渐变取它的好坏方向)");
 constexpr int kNumMetrics = static_cast<int>(std::size(kMetrics));
 constexpr int count_cols() {
   int n = 0;
@@ -672,7 +673,7 @@ double metric_key(const HS *h, const Metric &m, const FR &r) { return h ? m.get(
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Fixed 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn *h frame period status time cover% | mono LS% SR rIC rICIR rIC>0 rAC turn | layer~ ic~ alpha~ expr ops feats slots note
+//   edit type name_en name_cn *h frame period status time cover% holds | mono LS% SR rIC rICIR rIC>0 rAC turn | layer~ ic~ alpha~ expr ops feats slots
 // ============================================================================
 enum Fixed : int { Edit,
                    Type,
@@ -684,6 +685,7 @@ enum Fixed : int { Edit,
                    Status,
                    Time,
                    Cover,
+                   HoldCmp,
                    Layers,
                    IcPdf,
                    AlphaPdf,
@@ -691,7 +693,6 @@ enum Fixed : int { Edit,
                    Ops,
                    Feats,
                    Slots,
-                   Note,
                    kNumFixed };
 struct FixedCol {
   Fixed id; // 须 = 数组下标 (下方 static_assert)
@@ -699,8 +700,8 @@ struct FixedCol {
   bool sortable;
 };
 // 列提示只写用户要知道的; 细节:
-//   name_en = 文件名主干 <因子目录>/<name_en>.json; name_cn 缺 / 不合 → BROKEN
-//   *h: 父行 = 其代表权重的; 手填权重 = -
+//   name_en = 文件名主干 <因子目录>/<name_en>.json; name_cn 缺 / 不合 → BROKEN; 两列悬停 = note
+//   *h: 父行 = 其代表权重的; 手填权重 = -; 与当前 Hold 同 → 绿, 否则红
 //   frame: 标签取超额 (减截面均值); 只做多, 一组满仓 cap 只, 不足按只数/cap 建仓, 超出均分, 空组记 0; CS 根 = CsRank / CsNormRank / CsZ, TS 根 = TsRankRoll 5 日 (组可空 → long / flat)
 //   period: 结束 = 所用库最近落盘日; 用了 lob.* 的只有 Lob 库建库以来的几个月
 //   status BROKEN 原因: 文件 / type / name_cn / 表达式不合, 根非归一, 权重不是模板的实例, 组 id 不合; 文件不动, 手动处理
@@ -713,9 +714,9 @@ struct FixedCol {
 constexpr FixedCol kFixedCols[kNumFixed] = {
     {Edit, "edit", "勾选 = 载入上方构建器编辑 (同时只勾一个)", true},
     {Type, "type", "因子类型: alpha / beta (beta 未实现)", true},
-    {NameEn, "name_en", "英文名 (= 文件名)", true},
-    {NameCn, "name_cn", "中文名", true},
-    {HoldSrc, "*h", "该权重是在哪个持有期下搜出来的", true},
+    {NameEn, "name_en", "英文名 (= 文件名); 悬停看备注", true},
+    {NameCn, "name_cn", "中文名; 悬停看备注", true},
+    {HoldSrc, "*h", "该权重是在哪个持有期下搜出来的 (绿 = 与当前 Hold 同, 红 = 不同)", true},
     {Frame, "frame",
      "口径\n"
      "• CS: 每期截面排序分 20 组, 多空对冲\n"
@@ -739,6 +740,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• trig: 触发率, 有持仓的行占比\n"
      "• util: 利用率, 每端平均只数 / 满仓只数 (≈ 100 最好)",
      false},
+    {HoldCmp, "holds", "点按钮: 全部持有期的 Stat 对比卡片", false},
     {Layers, "layer~", "终期分层: G1 → G20 各组每期超额均值 (当前 Hold; 红 > 0, 绿 < 0; 按本行最大幅度缩放); 悬停放大\n• 排序 = mono", true},
     {IcPdf, "ic~", "rIC 分布 (当前 Hold; 红 > 0, 绿 < 0); 悬停放大", false},
     {AlphaPdf, "alpha~", "因子值分布 (归一前; 红 > 0, 绿 < 0); 悬停放大", false},
@@ -746,7 +748,6 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
     {Ops, "ops", "算子节点数", true},
     {Feats, "feats", "用到的特征数", true},
     {Slots, "slots", "峰值同时存活的中间量个数 (决定内存 / 显存)", true},
-    {Note, "note", "备注", false},
 };
 constexpr bool fixed_cols_ordered() {
   for (int i = 0; i < kNumFixed; ++i)
@@ -757,11 +758,11 @@ constexpr bool fixed_cols_ordered() {
 static_assert(fixed_cols_ordered(), "kFixedCols 顺序须与 Fixed 枚举一致");
 constexpr ImVec4 kEditColor(1.0f, 0.75f, 0.3f, 1.0f); // 编辑中的行 / 标题
 
-// 显示顺序: Stat 列夹在 cover% 与 layer~ 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
+// 显示顺序: Stat 列夹在 holds 与 layer~ 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
 struct ColRef {
   int fixed = -1, stat = -1;
 };
-constexpr int kStatInsertAfter = Cover;
+constexpr int kStatInsertAfter = HoldCmp;
 constexpr int kNumCols = kNumFixed + kNumStatCols;
 constexpr std::array<ColRef, kNumCols> col_layout() {
   std::array<ColRef, kNumCols> a{};
@@ -806,7 +807,7 @@ const Metric &metric_of(Group g, std::string_view name) {
 const Metric &kMono = metric_of(Group::Shape, "mono"); // 默认排序 / layer~ 列的排序键
 // 默认排序列 = mono 降序 (分层是因子最要紧的)
 bool col_default_sort(int c) { return col_metric(c) == &kMono; }
-// 列提示: Stat 列由指标表拼 (只拼一次). 显示的是选定持有期的值, 样本 < 3 为空; 字色 = grade 固定区间 (红 = 差端 → 绿 = 好端, 外侧钳位)
+// 列提示: Stat 列由指标表拼 (只拼一次). 显示的是选定持有期的值, 样本 < 3 为空; 字色 = 本页截面渐变 (最差红 → 最好绿)
 const std::string &col_tip(int c) {
   static const std::array<std::string, kNumCols> tips = [] {
     std::array<std::string, kNumCols> a;
@@ -818,16 +819,22 @@ const std::string &col_tip(int c) {
       }
       const Metric &m = *col_metric(i);
       const GroupInfo &g = kGroupInfo[static_cast<size_t>(m.group)];
-      a[static_cast<size_t>(i)] = std::string(m.desc) + "\n• 范围 " + m.range + ", 最优 " + m.best + (g.tip ? "\n• 悬停格子看全部持有期" : "");
+      a[static_cast<size_t>(i)] = std::string(m.desc) + "\n• 范围 " + m.range + ", 最优 " + m.best + "\n• 字色 = 本页截面: 最差红 → 最好绿" +
+                                  (g.tip ? "\n• holds 列按钮看全部持有期" : "");
     }
     return a;
   }();
   return tips[static_cast<size_t>(c)];
 }
 
-constexpr int kTipFixedCols = 2; // 悬停表前置列: 指标 / 说明 (范围 / 最优在列头提示里)
+constexpr int kTipFixedCols = 2; // 卡片前置列: 指标 / 说明 (范围 / 最优在列头提示里)
 
-// 固定区间着色 (主表 / 悬停表共用一套): 值按 grade 映射到 [0, 1] (0 = 差端及以外, 1 = 好端及以外), 红 → 文字色 → 绿 三段插值; 无区间 → 不着色 (nullopt)
+// 好坏度 t ∈ [0, 1] → 红 → 文字色 → 绿 三段插值
+ImVec4 bad_good(float t) {
+  const ImVec4 bad = StatusColor(TaskStatus::Kind::Error), mid = ImGui::GetStyleColorVec4(ImGuiCol_Text), good = StatusColor(TaskStatus::Kind::Ready);
+  return t < 0.5f ? ImLerp(bad, mid, t * 2.f) : ImLerp(mid, good, (t - 0.5f) * 2.f);
+}
+// 固定区间着色 (cover% / 卡片 / Inspect 面板): 值按 grade 映射到 [0, 1] (0 = 差端及以外, 1 = 好端及以外); 无区间 → 不着色 (nullopt)
 double grade_t(const Grade &g, double v) {
   switch (g.kind) {
   case Grade::Line:
@@ -843,13 +850,22 @@ double grade_t(const Grade &g, double v) {
 std::optional<ImVec4> grade_color(const Metric &m, const HS *h, const FR &r) {
   if (m.grade.kind == Grade::None || !h || !has_value(*h, m))
     return std::nullopt;
-  const float t = static_cast<float>(grade_t(m.grade, m.get(*h, r)));
-  const ImVec4 bad = StatusColor(TaskStatus::Kind::Error), mid = ImGui::GetStyleColorVec4(ImGuiCol_Text), good = StatusColor(TaskStatus::Kind::Ready);
-  return t < 0.5f ? ImLerp(bad, mid, t * 2.f) : ImLerp(mid, good, (t - 0.5f) * 2.f);
+  return bad_good(static_cast<float>(grade_t(m.grade, m.get(*h, r))));
+}
+// 本页截面渐变 (主表 Stat 列): [lo, hi] = 本页各行的值域, 好坏方向取 grade (Line); 值域退化 → 不着色
+struct Spread {
+  double lo = std::numeric_limits<double>::infinity(), hi = -std::numeric_limits<double>::infinity();
+  void add(double v) { lo = std::min(lo, v), hi = std::max(hi, v); }
+};
+std::optional<ImVec4> spread_color(const Metric &m, const HS *h, const FR &r, const Spread &s) {
+  if (!h || !has_value(*h, m) || !(s.lo < s.hi))
+    return std::nullopt;
+  const double t = (m.get(*h, r) - s.lo) / (s.hi - s.lo);
+  return bad_good(static_cast<float>(m.grade.b > m.grade.a ? t : 1.0 - t));
 }
 
-// Stat 列悬停: 精简头部 + 转置表 (行 = kMetrics 按组, 列 = 持有期), 有区间的指标按固定区间着色
-void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
+// 持有期对比卡片: 精简头部 + 转置表 (行 = kMetrics 按组, 列 = 持有期), 有区间的指标按固定区间着色
+void stat_card(const FactorRow &r, const FactorsUIContext &ctx) {
   ImGui::TextDisabled("%s%s | %s | %s %s %s..%s | 满仓 %.1f | %.3f ms", r.stat_from_file ? "文件" : "本轮",
                       !scope_matches(r, ctx) ? " (作用域≠当前, 需重跑)" : "", factor::stat::frame_name(r.frame), r.scope.pool.c_str(),
                       years_text(r.scope.years).c_str(), misc::dash(r.scope.start_date).c_str(), misc::dash(r.scope.end_date).c_str(), r.scope.n_full,
@@ -891,6 +907,21 @@ void stat_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
     }
   }
   ImGui::EndTable();
+}
+// holds 列一格: 小按钮, 点开对比卡片 (弹窗, 点别处关); 无 stat → "-"
+void hold_cmp_cell(const FactorRow &r, const FactorsUIContext &ctx) {
+  if (!r.has_stat) {
+    ImGui::TextDisabled("-");
+    return;
+  }
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 0.0f));
+  if (ImGui::SmallButton("…"))
+    ImGui::OpenPopup("holds");
+  ImGui::PopStyleVar();
+  if (ImGui::BeginPopup("holds")) {
+    stat_card(r, ctx);
+    ImGui::EndPopup();
+  }
 }
 
 // status 列: BROKEN / 未搜索 / 无权重 / … / running / no stat / ok / ≠scope (+ dup)
@@ -1078,6 +1109,11 @@ void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool e
     else
       ImGui::TextDisabled("-");
   };
+  const auto named = [&](const std::string &s) { // 名字一格 + 悬停备注
+    text(s, editing);
+    if (!r.note.empty() && ImGui::IsItemHovered())
+      tip("%s", r.note.c_str());
+  };
   switch (c) {
   case Type:
     if (r.kind == FactorKind::Beta)
@@ -1090,11 +1126,14 @@ void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool e
       ImGui::TextDisabled("  #%d", r.widx);
       return;
     }
-    return text(r.name_en, editing);
+    return named(r.name_en);
   case NameCn:
-    return kind == RowKind::Child ? ImGui::TextDisabled("") : text(r.name_cn, editing);
+    return kind == RowKind::Child ? ImGui::TextDisabled("") : named(r.name_cn);
   case HoldSrc:
-    return r.widx >= 0 && r.hold_src >= 0 ? ImGui::TextUnformatted(hold_name(static_cast<HoldId>(r.hold_src)).c_str()) : ImGui::TextDisabled("-");
+    if (r.widx < 0 || r.hold_src < 0)
+      return ImGui::TextDisabled("-");
+    return ImGui::TextColored(StatusColor(r.hold_src == hold ? TaskStatus::Kind::Ready : TaskStatus::Kind::Error), "%s",
+                              hold_name(static_cast<HoldId>(r.hold_src)).c_str());
   case Frame:
     return ok ? ImGui::TextUnformatted(factor::stat::frame_name(r.frame)) : ImGui::TextDisabled("-");
   case Period:
@@ -1105,6 +1144,8 @@ void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool e
     return num(r.has_stat, "%.1f", r.eval_ms);
   case Cover:
     return cover_cell(hold_of(r, hold), r);
+  case HoldCmp:
+    return hold_cmp_cell(r, ctx);
   case Layers:
     return layers_cell(hold_of(r, hold), hold);
   case IcPdf: {
@@ -1129,8 +1170,6 @@ void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool e
     return num(ok && !r.expr.empty(), "%d", r.n_feats);
   case Slots:
     return num(ok && !r.expr.empty(), "%d", r.n_slots);
-  case Note:
-    return text(r.note);
   case Edit:
   case kNumFixed:
     break;
@@ -1138,28 +1177,27 @@ void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool e
   assert(false);
 }
 
-// 表格行只保留 Stat 列 (mono … rAC, 覆盖组除外) 的期限对比 hover; 其它格子不弹冗余提示.
-// 位置自己定: ImGui 的 tooltip 定位在四个方向都放不下时退化为贴鼠标右下 (大半出屏, 看着像没触发); 这里用上一帧的窗口尺寸把左上角夹回视口
-void row_tooltip(const FactorRow &r, const FactorsUIContext &ctx) {
-  static ImVec2 s_size;                          // 上一帧尺寸 (首帧 0 → 不夹, ImGui 的 AlwaysAutoResize 首帧本就隐藏)
-  const int hc = ImGui::TableGetHoveredColumn(); // 须在 BeginTooltip 前取 (tooltip 窗口里没有当前表)
-  const Metric *hm = hc >= 0 && hc < kNumCols ? col_metric(hc) : nullptr;
-  const bool on_stat = hm && group_tip(hm->group);
-  if (!r.has_stat || !on_stat)
-    return;
-  const ImGuiViewport *vp = ImGui::GetMainViewport();
-  const ImVec2 mouse = ImGui::GetMousePos();
-  ImVec2 pos(mouse.x + 16.f, mouse.y + 16.f);
-  pos.x = std::max(vp->WorkPos.x, std::min(pos.x, vp->WorkPos.x + vp->WorkSize.x - s_size.x));
-  pos.y = std::max(vp->WorkPos.y, std::min(pos.y, vp->WorkPos.y + vp->WorkSize.y - s_size.y));
-  ImGui::SetNextWindowPos(pos);
-  ImGui::BeginTooltip();
-  stat_tooltip(r, ctx);
-  s_size = ImGui::GetWindowSize();
-  ImGui::EndTooltip();
-}
-
 } // namespace
+
+void DefaultHold(RunService &svc, FactorsUIState &ui, const FactorsUIContext &ctx) {
+  if (ui.hold_defaulted)
+    return;
+  const Holds &hl = ctx.ft->y.list;
+  std::lock_guard<std::mutex> lock(svc.mutex);
+  if (!(svc.current.scope.dir == ctx.dir))
+    return;
+  int cnt[kHoldCount] = {};
+  for (const FactorRow &r : svc.rows)
+    if (r.widx >= 0 && r.hold_src >= 0)
+      ++cnt[r.hold_src];
+  int best = -1;
+  for (int i = 0; i < hl.n; ++i)
+    if (cnt[hl.k[i]] > 0 && (best < 0 || cnt[hl.k[i]] > cnt[hl.k[best]]))
+      best = i;
+  if (best >= 0)
+    ui.hold_idx = best;
+  ui.hold_defaulted = true;
+}
 
 void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h) {
   assert(&h >= e.hold && &h < e.hold + e.n_hold);
@@ -1213,8 +1251,8 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   const Phase st = svc.phase.load(std::memory_order_acquire);
   const bool busy = svc.busy();
   const Phase sst = ss.phase.load(std::memory_order_acquire);
-  const bool sbusy = ss.busy();                // Search 在跑: 它要写因子文件, Run 让路
-  const bool all_active = ui.search_all_n > 0; // Search all 整轮 (含队列项之间的空闲帧与收尾 Run) 同样让路
+  const bool sbusy = ss.busy();              // Search 在跑: 它要写因子文件, Run 让路
+  const bool queue_active = ui.search_n > 0; // Search 队列整轮 (含队列项之间的空闲帧与收尾 Run) 同样让路
   const FeatureTable &ft = *ctx.ft;
   const bool gpu_ok = factor::gpu::available();
   if (!gpu_ok)
@@ -1277,7 +1315,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     hold_tip();
   ImGui::SameLine();
 
-  // 短锁拷快照 (Run / Search 的对象 = 高光行)
+  // 短锁拷快照 (Run / Search 的对象 = 选中行所在文件)
   static std::vector<FactorRow> s_rows;
   std::string message;
   {
@@ -1289,28 +1327,52 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   for (const FactorRow &r : s_rows)
     if (r.key == ui.view_file)
       view_row = &r;
+  // 多选恒含锚点: 锚点在别处换了 (Inspect 箭头 / 默认高光 / 换作用域清空) → 多选随之只剩它
+  if (ui.view_file.empty())
+    ui.picked.clear();
+  else if (std::find(ui.picked.begin(), ui.picked.end(), ui.view_file) == ui.picked.end())
+    ui.picked = {ui.view_file};
+  // 批量对象: 选中行所在文件 (去重, 选序) → 可 Run 的文件 / 各文件首个可搜行
+  const auto runnable = [](const FactorRow &r) { return r.error.empty() && !r.expr.empty(); };
+  const auto searchable = [](const FactorRow &r) { return r.error.empty() && !r.tmpl.empty(); }; // 无自由参数的只评模板本身 (定方向)
+  std::vector<std::string> pick_files;
+  for (const std::string &k : ui.picked)
+    for (const FactorRow &r : s_rows)
+      if (r.key == k && std::find(pick_files.begin(), pick_files.end(), r.file) == pick_files.end())
+        pick_files.push_back(r.file);
+  std::vector<std::string> run_files;
+  std::vector<const FactorRow *> search_rows;
+  for (const std::string &f : pick_files) {
+    const auto in_file = [&](auto pred) { return std::find_if(s_rows.begin(), s_rows.end(), [&](const FactorRow &r) { return r.file == f && pred(r); }); };
+    if (in_file(runnable) != s_rows.end())
+      run_files.push_back(f);
+    if (const auto it = in_file(searchable); it != s_rows.end())
+      search_rows.push_back(&*it);
+  }
+  // 批量对象的说法: 一个 → 文件名, 多个 → 个数
+  const auto picked_text = [](const auto &v, const std::string &one) { return v.size() == 1 ? one : "选中的 " + std::to_string(v.size()) + " 个因子"; };
 
-  // Run (高光行所在文件) / Run all (整目录): 同一份评估, 对象不同
-  const bool can_run_all = !busy && !sbusy && !all_active && ctx.axis_ready && !(ft.y.list.n == 0);
-  const bool can_run = can_run_all && view_row && view_row->error.empty() && !view_row->expr.empty();
+  // Run (选中行所在文件) / Run all (整目录): 同一份评估, 对象不同
+  const bool can_run_all = !busy && !sbusy && !queue_active && ctx.axis_ready && !(ft.y.list.n == 0);
+  const bool can_run = can_run_all && !run_files.empty();
   if (!can_run)
     ImGui::BeginDisabled();
   if (ImGui::Button("Run", ImVec2(60, 0))) {
-    ui.run_file = view_row->file;
+    ui.run_files = run_files;
     action = 1;
   }
   if (!can_run)
     ImGui::EndDisabled();
-  // 读特征库 → 共享 DAG eval → Stat, 结果回写该因子文件 stats[i], 其余文件不动
+  // 读特征库 → 共享 DAG eval → Stat, 结果回写各因子文件 stats[i], 其余文件不动
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
     if (!ctx.axis_ready)
       tip("资产轴未就绪: 先在 Database 页扫描");
-    else if (!view_row)
-      tip("先在表格里点一行");
-    else if (!can_run_all || !view_row->error.empty() || view_row->expr.empty())
-      tip("%s 无可评权重 (BROKEN / 未搜索)", view_row->file.c_str());
+    else if (pick_files.empty())
+      tip("先在表格里点一行 (Ctrl 多选 / Shift 片选)");
+    else if (run_files.empty())
+      tip("%s 无可评权重 (BROKEN / 未搜索)", picked_text(pick_files, pick_files.front()).c_str());
     else
-      tip("评估 %s, 结果写回文件", view_row->file.c_str());
+      tip("评估 %s, 结果写回文件", picked_text(run_files, run_files.front()).c_str());
   }
   ImGui::SameLine();
   if (!can_run_all)
@@ -1329,11 +1391,11 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   if (!busy)
     ImGui::EndDisabled();
   ImGui::SameLine();
-  if (busy || all_active)
+  if (busy || queue_active)
     ImGui::BeginDisabled();
   if (ImGui::Button("Rescan", ImVec2(60, 0)))
     action = 2;
-  if (busy || all_active)
+  if (busy || queue_active)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
     tip("重新读取目录 (不评估)");
@@ -1376,20 +1438,21 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       hold_tip();
   }
 
-  // ---- Search: 对高光行所在文件的模板搜全部自由参数, 只搜当前 Hold (限 Search/Config kSearchHolds), 目标 = 该 h 的中位窗目标
-  //      (Stat/Roll.hpp); 结果替换文件里同 h 的 weights, 随后 TaskAlpha 自动 Run (因子表从新 stat 算) ----
+  // ---- Search: 对选中行所在文件的模板逐个搜全部自由参数, 只搜当前 Hold (限 Search/Config kSearchHolds), 目标 = 该 h 的中位窗目标
+  //      (Stat/Roll.hpp); 结果替换文件里同 h 的 weights, 每个文件搜完 TaskAlpha 自动只 Run 它 (因子表从新 stat 算) ----
   {
-    const auto searchable = [](const FactorRow &r) { return r.error.empty() && !r.tmpl.empty(); }; // 无自由参数的只评模板本身 (定方向)
-    const bool tmpl_ok = view_row && searchable(*view_row);
     const bool hold_ok = !(ft.y.list.n == 0) && factor::search::search_hold(cur_hold);
-    const bool can_search = !busy && !sbusy && !all_active && ctx.axis_ready && hold_ok && tmpl_ok;
+    const bool can_search = !busy && !sbusy && !queue_active && ctx.axis_ready && hold_ok && !search_rows.empty();
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "   Search:");
     ImGui::SameLine();
     if (!can_search)
       ImGui::BeginDisabled();
     if (ImGui::Button("Search", ImVec2(70, 0))) {
-      ui.search_one = SearchJob{*view_row, cur_hold, false};
-      action = 3;
+      ui.search_queue.clear();
+      for (const FactorRow *p : search_rows)
+        ui.search_queue.push_back(SearchJob{*p, cur_hold, false});
+      ui.search_n = static_cast<int>(ui.search_queue.size());
+      action = 4;
     }
     if (!can_search)
       ImGui::EndDisabled();
@@ -1399,16 +1462,16 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       if (!hold_ok)
         tip("Search 只搜 %s 档 (当前 Hold %s)", search_range.c_str(), (ft.y.list.n == 0) ? "-" : hold_name(cur_hold).c_str());
-      else if (!view_row)
-        tip("先在表格里点一行");
-      else if (!tmpl_ok)
-        tip("%s BROKEN, 不能搜", view_row->file.c_str());
+      else if (pick_files.empty())
+        tip("先在表格里点一行 (Ctrl 多选 / Shift 片选)");
+      else if (search_rows.empty())
+        tip("%s BROKEN, 不能搜", picked_text(pick_files, pick_files.front()).c_str());
       else
-        tip("搜 %s 的自由参数 (只搜当前 Hold %s; 无自由参数 = 只评模板本身定方向)\n"
+        tip("逐个搜 %s 的自由参数 (只搜当前 Hold %s; 无自由参数 = 只评模板本身定方向)\n"
             "• 目标 = 中位 %s: 滚动窗 (评估期 / %d) %s 的中位, 不看成本; 方向随它的号\n"
-            "• %d × (1 + log2 自由参数个数) 个采样点里最高的一个替换该 Hold 的权重, 然后自动 Run",
-            view_row->file.c_str(), hold_name(cur_hold).c_str(), factor::stat::kTargetName, factor::stat::kRollParts, factor::stat::kTargetName,
-            factor::search::kInit);
+            "• %d × (1 + log2 自由参数个数) 个采样点里最高的一个替换该 Hold 的权重, 每个搜完立刻只 Run 该文件",
+            picked_text(search_rows, search_rows.front()->file).c_str(), hold_name(cur_hold).c_str(), factor::stat::kTargetName, factor::stat::kRollParts,
+            factor::stat::kTargetName, factor::search::kInit);
     }
     // Search all: 各文件首个可搜行 (按文件去重, 表序) × 本层 kSearchHolds 内各档 (标签组序), 不看 Hold 选择
     std::vector<const FactorRow *> all_rows;
@@ -1422,7 +1485,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
         all_holds.push_back(lh);
         holds_desc += (holds_desc.empty() ? "" : " ") + hold_name(lh);
       }
-    const bool can_search_all = !busy && !sbusy && !all_active && ctx.axis_ready && !all_holds.empty() && !all_rows.empty();
+    const bool can_search_all = !busy && !sbusy && !queue_active && ctx.axis_ready && !all_holds.empty() && !all_rows.empty();
     ImGui::SameLine();
     if (!can_search_all)
       ImGui::BeginDisabled();
@@ -1431,7 +1494,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       for (const FactorRow *p : all_rows)
         for (const HoldId h : all_holds)
           ui.search_queue.push_back(SearchJob{*p, h, h == all_holds.front()});
-      ui.search_all_n = static_cast<int>(ui.search_queue.size());
+      ui.search_n = static_cast<int>(ui.search_queue.size());
       action = 4;
     }
     if (!can_search_all)
@@ -1443,18 +1506,18 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
           "• 各文件 weights 整份覆盖: 只剩本轮搜出的",
           static_cast<int>(all_rows.size()), holds_desc.empty() ? ("本层无 " + search_range + " 档").c_str() : holds_desc.c_str());
     ImGui::SameLine();
-    if (!sbusy && !all_active)
+    if (!sbusy && !queue_active)
       ImGui::BeginDisabled();
     if (ImGui::Button("Cancel##opt", ImVec2(60, 0))) {
       ui.search_queue.clear();
-      ui.search_all_n = 0;
+      ui.search_n = 0;
       action = -3;
     }
-    if (!sbusy && !all_active)
+    if (!sbusy && !queue_active)
       ImGui::EndDisabled();
-    if (all_active) {
+    if (queue_active) {
       ImGui::SameLine();
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "[%d/%d]", ui.search_all_n - static_cast<int>(ui.search_queue.size()), ui.search_all_n);
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Busy), "[%d/%d]", ui.search_n - static_cast<int>(ui.search_queue.size()), ui.search_n);
     }
     ImGui::SameLine();
     ImGui::Text("状态:");
@@ -1541,12 +1604,11 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     if (!edit_row && !busy)
       ui.edit_file.clear();
   }
-  if (!ui.view_file.empty() && !busy) { // 高光行同理 (按 key: 权重没了也退)
-    bool found = false;
-    for (const FactorRow &r : s_rows)
-      found = found || r.key == ui.view_file;
-    if (!found)
-      ui.view_file.clear();
+  if (!ui.view_file.empty() && !busy) { // 高光行 / 多选同理 (按 key: 权重没了也退)
+    const auto gone = [&](const std::string &k) { return std::none_of(s_rows.begin(), s_rows.end(), [&](const FactorRow &r) { return r.key == k; }); };
+    std::erase_if(ui.picked, gone);
+    if (gone(ui.view_file))
+      ui.view_file = ui.picked.empty() ? std::string{} : ui.picked.back();
   }
   if (edit_row)
     ImGui::TextColored(kEditColor, "2. Edit %s:", ui.edit_file.c_str());
@@ -1771,8 +1833,9 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   ImGui::Text("%d 因子 / %d 权重 (%d BROKEN)", static_cast<int>(groups.size()), n_weights, broken);
   if (ImGui::IsItemHovered())
     tip("一行一权重; 多权重因子折成一行 (= 当前 Hold 下最好的权重), ▸ 展开\n"
-        "• 点行 → Search / Inspect 的对象; 勾首列 → 编辑\n"
-        "• 悬停 Stat 列看全部持有期");
+        "• 点行选中 → Run / Search / Inspect 的对象; Ctrl 点 = 多选, Shift 点 = 片选 (Run / Search 批量跑选中的)\n"
+        "• 勾首列 → 编辑\n"
+        "• holds 列按钮看全部持有期; Stat 列字色 = 本页截面最差红 → 最好绿");
   ImGui::SameLine();
   ImGui::TextDisabled("Stat 列 = h %s (毛价格收益)", hold_name(cur_hold).c_str());
 
@@ -1897,6 +1960,30 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       for (int k : korder[static_cast<size_t>(gi)])
         order.push_back({k, RowKind::Child, nk});
     }
+    const auto is_picked = [&](const std::string &key) { return std::find(ui.picked.begin(), ui.picked.end(), key) != ui.picked.end(); };
+    // key 在显示序的位置 (片选的锚点): 本行显示着 → 它; 藏在折叠的父行里 → 父行; 没有 → −1
+    const auto shown_at = [&](const std::string &key) {
+      const auto row_at = [&](auto pred) {
+        for (size_t oi = 0; oi < order.size(); ++oi)
+          if (pred(order[oi], s_rows[static_cast<size_t>(order[oi].idx)]))
+            return static_cast<int>(oi);
+        return -1;
+      };
+      const auto kit = std::find_if(s_rows.begin(), s_rows.end(), [&](const FactorRow &x) { return x.key == key; });
+      const int at = row_at([&](const Shown &, const FactorRow &x) { return x.key == key; });
+      return at >= 0 || kit == s_rows.end() ? at : row_at([&](const Shown &s, const FactorRow &x) { return s.kind == RowKind::Parent && x.file == kit->file; });
+    };
+    // Stat 列的本页截面值域: 显示着的行在当前 Hold 下的值 (≠scope 的灰行不计)
+    std::array<Spread, kNumStatCols> spread;
+    for (const Shown &s : order) {
+      const FactorRow &r = s_rows[static_cast<size_t>(s.idx)];
+      const HS *h = hold_of(r, cur_hold);
+      if (!h || !scope_matches(r, ctx))
+        continue;
+      for (int i = 0; i < kNumStatCols; ++i)
+        if (const Metric &m = kMetrics[kStatColMetric[static_cast<size_t>(i)]]; has_value(*h, m))
+          spread[static_cast<size_t>(i)].add(m.get(*h, r));
+    }
 
     for (size_t oi = 0; oi < order.size(); ++oi) {
       const auto [idx, kind, n_kids] = order[oi];
@@ -1904,25 +1991,48 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       const HS *h = hold_of(r, cur_hold);
       const bool editing = kind != RowKind::Child && ui.edit_file == r.file;
       const bool viewing = ui.view_file == r.key;
-      // 折叠的父行: 高光的权重藏在里面 → 父行也亮 (点它 = 换成高光代表权重)
-      bool group_viewing = viewing;
-      if (kind == RowKind::Parent && !viewing && !ui.view_file.empty())
+      // 折叠的父行: 选中的权重藏在里面 → 父行也亮 (点它 = 换成选中代表权重)
+      bool group_picked = is_picked(r.key);
+      if (kind == RowKind::Parent && !group_picked)
         for (const FactorRow &k : s_rows)
-          group_viewing = group_viewing || (k.file == r.file && k.key == ui.view_file);
+          group_picked = group_picked || (k.file == r.file && is_picked(k.key));
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(col_of(Edit));
       ImGui::PushID(static_cast<int>(oi));
-      // 整行可点 (先提交, AllowOverlap 让后面的勾选框盖在上面): 点行高光 → Inspect 页的对象, Hold 切到它搜出来的持有期 (手填权重无, 不动); 再点 → 取消
+      // 整行可点 (先提交, AllowOverlap 让后面的勾选框盖在上面): 单击 = 只选本行 (锚点 → Inspect 页的对象, Hold 切到它搜出来的持有期; 手填权重无, 不动),
+      // 再点唯一选中的行 → 取消; Ctrl = 本行进出 (进 = 成为锚点; 出的是锚点 → 锚点退到最后选的); Shift = 锚点到本行片选, 锚点不动 (同按 Ctrl = 并进已选)
       const ImVec2 cell_pos = ImGui::GetCursorPos();
-      if (ImGui::Selectable("##row", group_viewing, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
-        ui.view_file = viewing ? std::string{} : r.key;
-        if (!viewing)
-          for (size_t i = 0; i < static_cast<size_t>(ft.y.list.n); ++i)
-            if (ft.y.list.k[i] == r.hold_src)
-              ui.hold_idx = static_cast<int>(i);
+      if (ImGui::Selectable("##row", group_picked, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
+        const ImGuiIO &io = ImGui::GetIO();
+        const int anchor = io.KeyShift && !ui.view_file.empty() ? shown_at(ui.view_file) : -1;
+        if (anchor >= 0) {
+          if (!io.KeyCtrl)
+            ui.picked = {ui.view_file};
+          const size_t lo = std::min(static_cast<size_t>(anchor), oi), hi = std::max(static_cast<size_t>(anchor), oi);
+          for (size_t i = lo; i <= hi; ++i)
+            if (const std::string &k = s_rows[static_cast<size_t>(order[i].idx)].key; !is_picked(k))
+              ui.picked.push_back(k);
+        } else if (io.KeyCtrl) {
+          if (const auto it = std::find(ui.picked.begin(), ui.picked.end(), r.key); it == ui.picked.end()) {
+            ui.picked.push_back(r.key);
+            ui.view_file = r.key;
+          } else {
+            ui.picked.erase(it);
+            if (viewing)
+              ui.view_file = ui.picked.empty() ? std::string{} : ui.picked.back();
+          }
+        } else {
+          const bool only = viewing && ui.picked.size() == 1;
+          ui.view_file = only ? std::string{} : r.key;
+          ui.picked.clear();
+          if (!only) {
+            ui.picked.push_back(r.key);
+            for (size_t i = 0; i < static_cast<size_t>(ft.y.list.n); ++i)
+              if (ft.y.list.k[i] == r.hold_src)
+                ui.hold_idx = static_cast<int>(i);
+          }
+        }
       }
-      if (ImGui::IsItemHovered())
-        row_tooltip(r, ctx);
       if (kind != RowKind::Child) {
         // 勾选框 = 编辑模式 (同时只勾一个文件): 勾 → 模板载入构建器; 取消勾 → 回添加模式 (内容留作模板); 勾另一行 → 切换
         // 无 FramePadding → 方框 = 字高, 行高不变; 回到格起点画 (Selectable 已占满整格宽)
@@ -1969,7 +2079,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
           const Metric &m = *col_metric(c);
           if (group_tip(m.group))
             ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, group_bg(m.group));
-          const std::optional<ImVec4> col = grade_color(m, h, r);
+          const std::optional<ImVec4> col = spread_color(m, h, r, spread[static_cast<size_t>(kColLayout[static_cast<size_t>(c)].stat)]);
           metric_cell(h, m, r, col ? &*col : nullptr);
         }
       }

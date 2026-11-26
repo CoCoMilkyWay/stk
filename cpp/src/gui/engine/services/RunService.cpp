@@ -5,6 +5,7 @@
 #include "misc/profiler.hpp"
 #include "shared/SharedData.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <map>
 #include <tuple>
@@ -139,7 +140,8 @@ bool RunService::run(RunRequest &req) {
   TraceN("FactorsEvaluate");
   std::vector<std::vector<size_t>> files;
   for (size_t i = 0; i < work.size(); ++i) {
-    if (!work[i].error.empty() || work[i].expr.empty() || (!req.spec.only_file.empty() && work[i].file != req.spec.only_file)) {
+    const std::vector<std::string> &only = req.spec.only_files;
+    if (!work[i].error.empty() || work[i].expr.empty() || (!only.empty() && std::find(only.begin(), only.end(), work[i].file) == only.end())) {
       work[i].status = RowState::Done;
       continue;
     }

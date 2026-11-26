@@ -20,8 +20,8 @@ struct SharedData;
 namespace GUI::Engine {
 
 struct RunSpec {
-  bool evaluate = false; // false = 只扫描解析 (不读库)
-  std::string only_file; // 非空 = 只评这个因子文件的权重; 空 = Run all
+  bool evaluate = false;               // false = 只扫描解析 (不读库)
+  std::vector<std::string> only_files; // 非空 = 只评这些因子文件的权重; 空 = Run all
 };
 using RunRequest = Request<RunSpec>;
 bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool evaluate, bool gpu, RunRequest &req);
