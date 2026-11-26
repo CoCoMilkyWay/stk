@@ -4,9 +4,9 @@
  "expr": "CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.15m.amount_15min, TsTodMask(k=15, k2=17)), d), TsSumRoll(bar.15m.amount_15min, d))))",
  "note": "近 d 箱 14:30-15:00 (箱 15..16) 成交额 / 全部成交额 取负 (分子分母两个 d 各自搜); 中信建投 逐鹿alpha-019 尾盘流动性 IC -0.0911 (周)",
  "search": [
-  {"hold":30,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.15m.amount_15min, TsTodMask(k=15, k2=17)), d=5), TsSumRoll(bar.15m.amount_15min, d=99))))","sign":-1,"mono":0.8316,"ls":8.655e-05,"ric":0.0003259,"g":1.951e-08,"se":1.675e-07,"mu":0.0,"peak":false}},
-  {"hold":60,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.15m.amount_15min, TsTodMask(k=15, k2=17)), d=5), TsSumRoll(bar.15m.amount_15min, d=99))))","sign":-1,"mono":0.9023,"ls":0.0001418,"ric":0.002751,"g":3.176e-07,"se":4.529e-07,"mu":0.0,"peak":false}},
-  {"hold":1000,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.15m.amount_15min, TsTodMask(k=15, k2=17)), d=1), TsSumRoll(bar.15m.amount_15min, d=163))))","sign":-1,"mono":0.9594,"ls":8.099e-05,"ric":0.03689,"g":2.75e-06,"se":1.21e-06,"mu":1.432e-09,"peak":true}},
-  {"hold":2001,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsDiv(TsSumRoll(TsMask(bar.15m.amount_15min, TsTodMask(k=15, k2=17)), d=3), TsSumRoll(bar.15m.amount_15min, d=2))))","sign":-1,"mono":0.8571,"ls":0.0003143,"ric":0.02935,"g":6.776e-06,"se":3.08e-06,"mu":0.0,"peak":false}}
+  {"hold":"30m","start_date":"2024-11-18","end_date":"2026-11-17","days":485},
+  {"hold":"60m","start_date":"2024-11-18","end_date":"2026-11-17","days":485},
+  {"hold":"close","start_date":"2024-11-18","end_date":"2026-11-17","days":485},
+  {"hold":"t1","start_date":"2024-11-18","end_date":"2026-11-17","days":485}
  ]
 }

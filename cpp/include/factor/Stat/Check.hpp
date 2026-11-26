@@ -202,6 +202,8 @@ inline Diff compare_days(const Day *ref, const Day *got, size_t n, Tol tol) {
     }
     detail::cmp1(d, ref[i].ric, got[i].ric, tol, at);
     detail::cmp1(d, ref[i].ls, got[i].ls, tol, at);
+    for (int k = 0; k < kGroups; ++k)
+      detail::cmp1(d, ref[i].grp[k], got[i].grp[k], tol, at);
   }
   return d;
 }

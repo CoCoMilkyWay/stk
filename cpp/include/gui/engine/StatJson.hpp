@@ -1,8 +1,9 @@
 // Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: 因子文件 stats[i].holds[] 每项 = 按 hold_cols() 列序的数组
-// (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / end_n / ann / sharpe,
+// (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 逐行量的矩 <ric|rac|ls>_<矩>, 标量 beta / mono / end_n / ann / sharpe,
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
+// 文件只落读文件行的地方 (因子表列 / 悬停表 / Inspect 期限结构 / agent 结果) 用得到的字段, 不多不少; 没落的字段载入后为 0, 文件行上不可读.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
-// 换手流水 (TurnStat, 因子文件 stats[i].turn[hold]) 同款 turn_json / load_turn: 一行 = turn_cols() 列序 (层级 × 两端 × Flow 字段), 装过的金额段 stats[i].amts;
+// 换手流水 (TurnStat, 因子文件 stats[i].turn[hold]) 同款 turn_json / load_turn: 一行 = turn_cols() 列序 (整组两端 × Flow 字段), 装过的金额段 stats[i].amts;
 // 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf; 分年 (YearStat) / 滚动窗 (Roll) 在 eval_json 内联;
 // 一个根的评估结果 (EvalStat) 两半写 scope_json (文件顶层 run) + eval_json (stats[i]), 一次读 load_eval.
 #pragma once
@@ -19,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace GUI::Engine {
@@ -59,42 +61,23 @@ inline bool json_ll(const nlohmann::json &j, const char *key, long long &out) {
   return true;
 }
 
-// HoldStat 的浮点字段 = 逐行量 (ric / rac / ls) × 七个矩 + 标量 (beta / mono / end_n) (键与字段同序)
-inline constexpr const char *kSeriesKeys[] = {"ric", "rac", "ls"};
-inline constexpr const char *kMomentKeys[] = {"mean", "sd", "ir", "t", "pos", "skew", "kurt"};
-inline constexpr const char *kScalarKeys[] = {"beta", "mono", "end_n", "ann", "sharpe"};
-// TurnStat 的层级 (整组 / 尾部 j) × 两端 (与 factor::stat::End 同序) × Flow 字段 (量 / 不可成交量 / 各盘口段冲击, 各两侧)
-inline constexpr const char *kLevelKeys[factor::stat::kLevels] = {"all", "tail0", "tail1", "tail2"};
+// TurnStat 整组 (lv[0]) 的两端 (与 factor::stat::End 同序) × Flow 字段 (量 / 不可成交量 / 各盘口段冲击, 各两侧)
 inline constexpr const char *kEndKeys[factor::stat::kEnds] = {"top", "bot"};
 inline constexpr const char *kSideKeys[kSides] = {"buy", "sell"};
 
 namespace detail {
-template <class M>
-auto moment_field(M &m, int q) -> decltype(&m.mean) {
-  decltype(&m.mean) f[] = {&m.mean, &m.sd, &m.ir, &m.t, &m.pos, &m.skew, &m.kurt};
-  static_assert(sizeof(f) / sizeof(f[0]) == sizeof(kMomentKeys) / sizeof(kMomentKeys[0]));
-  return f[q];
-}
-template <class H>
-auto series_of(H &h, int s) -> decltype(&h.ric) {
-  decltype(&h.ric) f[] = {&h.ric, &h.rac, &h.ls};
-  static_assert(sizeof(f) / sizeof(f[0]) == sizeof(kSeriesKeys) / sizeof(kSeriesKeys[0]));
-  return f[s];
-}
-template <class H>
-auto scalar_field(H &h, int q) -> decltype(&h.mono) {
-  decltype(&h.mono) f[] = {&h.beta, &h.mono, &h.end_n, &h.ann, &h.sharpe};
-  static_assert(sizeof(f) / sizeof(f[0]) == sizeof(kScalarKeys) / sizeof(kScalarKeys[0]));
-  return f[q];
-}
-// 逐个 (键, 字段) 访问 HoldStat 的全部浮点字段; H = HoldStat 或 const HoldStat
+// 逐个 (键, 字段) 访问 HoldStat 落文件的浮点字段 = 文件行的读者 (因子表列 / 悬停表 / 期限结构 / agent) 要的, 其余 (矩的 skew / kurt 等) 不落;
+// H = HoldStat 或 const HoldStat
 template <class H, class F>
 void for_each_field(H &h, F &&f) {
-  for (int s = 0; s < static_cast<int>(sizeof(kSeriesKeys) / sizeof(kSeriesKeys[0])); ++s)
-    for (int q = 0; q < static_cast<int>(sizeof(kMomentKeys) / sizeof(kMomentKeys[0])); ++q)
-      f(std::string(kSeriesKeys[s]) + "_" + kMomentKeys[q], *moment_field(*series_of(h, s), q));
-  for (int q = 0; q < static_cast<int>(sizeof(kScalarKeys) / sizeof(kScalarKeys[0])); ++q)
-    f(std::string(kScalarKeys[q]), *scalar_field(h, q));
+  using P = decltype(&h.mono);
+  const std::pair<const char *, P> fs[] = {
+      {"ric_mean", &h.ric.mean}, {"ric_sd", &h.ric.sd}, {"ric_ir", &h.ric.ir}, {"ric_t", &h.ric.t}, {"ric_pos", &h.ric.pos},
+      {"rac_mean", &h.rac.mean}, {"rac_sd", &h.rac.sd},
+      {"ls_mean", &h.ls.mean}, {"ls_sd", &h.ls.sd}, {"ls_ir", &h.ls.ir}, {"ls_t", &h.ls.t}, {"ls_pos", &h.ls.pos},
+      {"beta", &h.beta}, {"mono", &h.mono}, {"end_n", &h.end_n}, {"ann", &h.ann}, {"sharpe", &h.sharpe}};
+  for (const auto &[k, p] : fs)
+    f(std::string(k), *p);
 }
 } // namespace detail
 
@@ -118,10 +101,9 @@ inline std::vector<std::string> flow_keys() {
 }
 inline std::vector<std::string> turn_cols() {
   std::vector<std::string> c;
-  for (const char *l : kLevelKeys)
-    for (const char *e : kEndKeys)
-      for (const std::string &f : flow_keys())
-        c.push_back(std::string(l) + "." + e + "." + f);
+  for (const char *e : kEndKeys)
+    for (const std::string &f : flow_keys())
+      c.push_back(std::string(e) + "." + f);
   return c;
 }
 inline nlohmann::ordered_json cols_json(const std::vector<std::string> &cols) {
@@ -205,12 +187,11 @@ void for_each_flow(F &f, Fn &&fn) {
 }
 } // namespace detail
 
-// 一个持有期的换手流水 (Table.hpp TurnStat; 因子文件 stat.turn[hold]): 量 / 冲击和 4 位有效
+// 一个持有期的换手流水 (Table.hpp TurnStat; 因子文件 stat.turn[hold]): 只落整组 lv[0] (年换手 / 成本 / 期限结构净线; 尾部级只 Inspect 现算现用), 量 / 冲击和 4 位有效
 inline nlohmann::ordered_json turn_json(const TurnStat &t) {
   nlohmann::ordered_json o = nlohmann::ordered_json::array();
-  for (const factor::stat::Ends &l : t.lv)
-    for (const factor::stat::Flow &f : l.e)
-      detail::for_each_flow(f, [&](double v) { o.push_back(sig4(v)); });
+  for (const factor::stat::Flow &f : t.lv[0].e)
+    detail::for_each_flow(f, [&](double v) { o.push_back(sig4(v)); });
   return o;
 }
 inline bool load_turn(const nlohmann::json &o, TurnStat &dst) {
@@ -219,13 +200,12 @@ inline bool load_turn(const nlohmann::json &o, TurnStat &dst) {
   TurnStat t;
   size_t i = 0;
   bool ok = true;
-  for (factor::stat::Ends &l : t.lv)
-    for (factor::stat::Flow &f : l.e)
-      detail::for_each_flow(f, [&](double &v) {
-        const nlohmann::json &e = o[i++];
-        ok = ok && e.is_number();
-        v = ok ? e.get<double>() : 0.0;
-      });
+  for (factor::stat::Flow &f : t.lv[0].e)
+    detail::for_each_flow(f, [&](double &v) {
+      const nlohmann::json &e = o[i++];
+      ok = ok && e.is_number();
+      v = ok ? e.get<double>() : 0.0;
+    });
   if (!ok)
     return false;
   dst = t;
@@ -264,7 +244,8 @@ inline bool load_mini_pdf(const nlohmann::json &o, MiniPdf &dst) {
   return true;
 }
 
-// 结果作用域头 ↔ 因子文件顶层 run (一轮评估内全部权重同一份; f = 根口径; time 各权重各自, 在 eval_json)
+// 结果作用域头 ↔ 因子文件顶层 run (一轮评估内全部权重同一份; f = 根口径): 只落文件行的读者要的 (作用域比对 / 评估期 / 满仓 cap) 与 stat 的口径键
+// (stat_ver / frame / max_impact: 换了即旧 stat 不再对应); 形状 T / A、后端、评估时刻只 Inspect 现算现显
 inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame f) {
   nlohmann::ordered_json j;
   j["stat_ver"] = factor::stat::kStatSemver;
@@ -273,20 +254,16 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   j["end_date"] = misc::dash(s.end_date);
   j["years"] = s.years;
   j["days"] = s.days;
-  j["T"] = s.T;
-  j["A"] = s.A;
-  j["backend"] = s.backend;
   j["frame"] = factor::stat::frame_name(f);
   j["max_impact"] = s.max_impact;
   j["n_full"] = sig4(s.n_full);
   return j;
 }
 
-// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / amts (金额段万元, 0 = 固定段) / turn / 小图 / 分年 (years[hold] = [[年, 行, 窗数, mono, ls, ric, 中位 rIC, 年换手] …]) /
-// 滚动窗 (roll[hold] = [窗长, 窗数, 中位 rIC, 平均 rIC, 中位年化多空, 平均年化多空]) 各一段
+// 一个根的评估结果 ↔ stats[i] (scope_json 之外的, 同样只落文件行的读者要的): 标量首段, holds / amts (金额段万元, 0 = 固定段) / turn / 小图 /
+// 分年 (years[hold] = [[年, 窗数, rIC, 中位 rIC, 年换手] …]; agent 分年) / 滚动窗 (roll[hold] = [窗数, 中位 rIC]; 父行代表权重 / agent score) 各一段
 inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   nlohmann::ordered_json j;
-  j["time"] = st.scope.time;
   j["valid_pct"] = sig4(st.valid_pct);
   j["rank_pct"] = sig4(st.rank_pct);
   j["eval_ms"] = sig4(st.eval_ms);
@@ -309,14 +286,14 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   for (int k = 0; k < st.n_hold; ++k) {
     nlohmann::ordered_json ys = nlohmann::ordered_json::array();
     for (const YearStat &y : st.years[k])
-      ys.push_back(nlohmann::ordered_json::array({y.year, y.n, y.wins, sig4(y.mono), sig4(y.ls), sig4(y.ric), sig4(y.ric_med), sig4(y.turn)}));
+      ys.push_back(nlohmann::ordered_json::array({y.year, y.wins, sig4(y.ric), sig4(y.ric_med), sig4(y.turn)}));
     years.push_back(ys);
   }
   j["years"] = years;
   nlohmann::ordered_json roll = nlohmann::ordered_json::array();
   for (int k = 0; k < st.n_hold; ++k) {
     const factor::stat::Roll &r = st.roll[k];
-    roll.push_back(nlohmann::ordered_json::array({r.win, r.n, sig4(r.ric_med), sig4(r.ric_mean), sig4(r.ann_med), sig4(r.ann_mean)}));
+    roll.push_back(nlohmann::ordered_json::array({r.n, sig4(r.ric_med)}));
   }
   j["roll"] = roll;
   return j;
@@ -345,10 +322,9 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
     return true;
   };
   StatScope &sc = t.scope;
-  if (!str(run, "pool", sc.pool) || !ymd(run, "start_date", sc.start_date) || !ymd(run, "end_date", sc.end_date) || !str(run, "backend", sc.backend) ||
-      !str(j, "time", sc.time))
+  if (!str(run, "pool", sc.pool) || !ymd(run, "start_date", sc.start_date) || !ymd(run, "end_date", sc.end_date))
     return false;
-  if (!json_int(run, "years", sc.years) || sc.years < 0 || !json_int(run, "days", sc.days) || !json_int(run, "T", sc.T) || !json_int(run, "A", sc.A))
+  if (!json_int(run, "years", sc.years) || sc.years < 0 || !json_int(run, "days", sc.days))
     return false;
   if (!json_num(run, "max_impact", sc.max_impact) || !json_num(run, "n_full", sc.n_full) || !(sc.n_full > 0.0))
     return false;
@@ -405,13 +381,12 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
     if (!ys.is_array())
       return false;
     for (const nlohmann::json &y : ys) {
-      if (!y.is_array() || y.size() != 8)
+      if (!y.is_array() || y.size() != 5)
         return false;
-      const auto e = [&](size_t i) -> const nlohmann::json & { return y[i]; };
-      for (size_t i = 0; i < 8; ++i)
-        if (i < 3 ? !e(i).is_number_integer() : !e(i).is_number())
+      for (size_t i = 0; i < 5; ++i)
+        if (i < 2 ? !y[i].is_number_integer() : !y[i].is_number())
           return false;
-      t.years[k].push_back({e(0).get<int>(), e(1).get<int>(), e(2).get<int>(), e(3).get<float>(), e(4).get<float>(), e(5).get<float>(), e(6).get<float>(), e(7).get<float>()});
+      t.years[k].push_back({.year = y[0].get<int>(), .wins = y[1].get<int>(), .ric = y[2].get<float>(), .ric_med = y[3].get<float>(), .turn = y[4].get<float>()});
     }
   }
   const auto rit = j.find("roll");
@@ -419,12 +394,9 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
     return false;
   for (size_t k = 0; k < H; ++k) {
     const nlohmann::json &r = (*rit)[k];
-    if (!r.is_array() || r.size() != 6 || !r[0].is_number_integer() || !r[1].is_number_integer())
+    if (!r.is_array() || r.size() != 2 || !r[0].is_number_integer() || !r[1].is_number())
       return false;
-    for (size_t i = 2; i < 6; ++i)
-      if (!r[i].is_number())
-        return false;
-    t.roll[k] = {r[0].get<int>(), r[1].get<int>(), r[2].get<double>(), r[3].get<double>(), r[4].get<double>(), r[5].get<double>()};
+    t.roll[k] = {.n = r[0].get<int>(), .ric_med = r[1].get<double>()};
   }
   dst = std::move(t);
   return true;

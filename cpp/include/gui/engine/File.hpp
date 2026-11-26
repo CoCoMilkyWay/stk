@@ -12,16 +12,16 @@
 //         "expr": "CsRank(TsMeanRoll(TsLog(amt), d=35))" }, … ], //   模板的一个实例 (结构同模板, 固定参数相同, 自由参数落值)
 //     "search": [                                             // 可选: Search 的结局, 每持有期至多一项, 一行一个 (换模板即丢)
 //       { "hold": "30m", "start_date", "end_date", "days" }, … ], // 评估期 (所用库落盘日交集的最近 N 年)
-//     —— 以下 Run 写 (评估派生, 换掉 / 清空 weights 时一起删; StatJson scope_json / eval_json) ——
-//     "run": { scope… (含 "years"), "frame", "max_impact", "n_full" }, // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
+//     —— 以下 Run 写 (评估派生, 换掉 / 清空 weights 时一起删; StatJson scope_json / eval_json; 只落读文件行的地方用得到的, 不多不少) ——
+//     "run": { "stat_ver", "pool", "start_date", "end_date", "years", "days", "frame", "max_impact", "n_full" }, // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
 //     "hold_cols": [...], "turn_cols": [...],                 // holds / turn 数组的列名 (StatJson), 与代码不符 → 全部 stats 忽略
 //     "stats": [                                              // 与 weights 同长同序 (没评的位置 null), 一行一个, 数值表密排
-//       { "time", "valid_pct", "rank_pct", "eval_ms",
-//         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径), 载入时显示
-//         "amts": [万元…], "turn": [[TurnStat]…],               //   装过的金额段 (0 = 固定段) / 每持有期换手流水 (成本 / 年换手 / Inspect 净线从它算)
+//       { "valid_pct", "rank_pct", "eval_ms",                 //   因子表 覆盖 / time 列
+//         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径): 因子表 Stat 列 / 悬停表 / 分层小图 (grp) / 期限结构
+//         "amts": [万元…], "turn": [[整组两端流水]…],            //   装过的金额段 (0 = 固定段) / 每持有期整组换手流水 (年换手 / 成本 / 期限结构净线)
 //         "ic_pdf": [{lo, hi, y}…], "alpha_pdf": {lo, hi, y},  //   每持有期逐行 rIC 分布 / alpha 分布 (MiniPdf; 因子表小图)
-//         "years": [[[年, 行, 窗数, mono, ls, ric, 中位 rIC, 年换手]…]…], // 每持有期分年
-//         "roll": [[窗长, 窗数, 中位 rIC, 平均 rIC, 中位年化多空, 平均年化多空]…] }, … ] } //   每持有期滚动窗 (中位 rIC = 因子表 score)
+//         "years": [[[年, 窗数, rIC, 中位 rIC, 年换手]…]…],       //   每持有期分年 (agent 结果)
+//         "roll": [[窗数, 中位 rIC]…] }, … ] }                 //   每持有期滚动窗 (中位 rIC = 父行代表权重 / agent score)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   表里一行 = 一个权重 (FactorRow::widx); 模板含自由参数而无 weights → 一行 "未搜索" (不评); 模板本身具体而无 weights → 没搜过则视作唯一权重

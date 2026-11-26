@@ -1,16 +1,17 @@
 #pragma once
 
-// 表格格内迷你图 (Features 预览 Dist / PSD 列, Factors 因子表 rIC / alpha 分布列共用)
+// 表格格内迷你图 (Features 预览 Dist / PSD 列, Factors 因子表 rIC / alpha 分布列 / 分层列共用)
 
 #include "imgui.h"
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <vector>
 
 inline constexpr float kSparkWidth = 96.0f;                 // 迷你图列宽 (px)
-inline const ImVec4 kSparkPosColor{1.0f, 0.3f, 0.3f, 1.0f}; // 分布: x > 0 段 (红)
-inline const ImVec4 kSparkNegColor{0.2f, 0.8f, 0.4f, 1.0f}; // 分布: x < 0 段 (绿)
+inline const ImVec4 kSparkPosColor{1.0f, 0.3f, 0.3f, 1.0f}; // 分布: x > 0 段 / 柱: y > 0 (红)
+inline const ImVec4 kSparkNegColor{0.2f, 0.8f, 0.4f, 1.0f}; // 分布: x < 0 段 / 柱: y < 0 (绿)
 
 // 迷你折线: 当前光标处画 size 大小的 polyline (x/y 各自按数据范围归一化, 铺满格子),
 // 返回是否 hover. neg_color 非空 → 以 x = 0 为界两色 (左 neg_color, 右 color),
@@ -65,6 +66,27 @@ inline bool sparkline(const char *id, const float *xs, const float *ys, int n, I
     dl->PushClipRect(ImVec2(xz, p0.y), ImVec2(p0.x + size.x, p0.y + size.y), true);
     dl->AddPolyline(pts.data(), n, ImGui::GetColorU32(color), 0, 1.0f);
     dl->PopClipRect();
+  }
+  return hovered;
+}
+
+// 迷你上下柱: 当前光标处画 size 大小的 n 根柱 (等宽, 自左而右), 以格中线为 0, 按 max|y| 缩放到半格高;
+// y > 0 向上 pos_color, y < 0 向下 neg_color. 返回是否 hover
+inline bool sparkbars(const char *id, const float *ys, int n, ImVec2 size, const ImVec4 &pos_color, const ImVec4 &neg_color) {
+  assert(n >= 1);
+  const ImVec2 p0 = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton(id, size);
+  const bool hovered = ImGui::IsItemHovered();
+  float m = 0.0f;
+  for (int i = 0; i < n; ++i)
+    m = std::max(m, std::fabs(ys[i]));
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const float mid = p0.y + 0.5f * size.y, half = 0.5f * size.y - 1.0f, w = size.x / n;
+  dl->AddLine(ImVec2(p0.x, mid), ImVec2(p0.x + size.x, mid), ImGui::GetColorU32(ImGuiCol_TextDisabled), 1.0f);
+  const ImU32 up = ImGui::GetColorU32(pos_color), down = ImGui::GetColorU32(neg_color);
+  for (int i = 0; i < n && m > 0.0f; ++i) {
+    const float x = p0.x + i * w, y = mid - ys[i] / m * half;
+    dl->AddRectFilled(ImVec2(x + 0.5f, std::min(y, mid)), ImVec2(x + w - 0.5f, std::max(y, mid)), ys[i] > 0.0f ? up : down);
   }
   return hovered;
 }

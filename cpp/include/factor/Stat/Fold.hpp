@@ -3,7 +3,7 @@
 // =============================================================================
 // Fold — Stat 的二级 / 三级 (契约 factor/Stat/Contract.hpp): Day (逐日) / Accum → HoldStat (每持有期) + 派生量 (毛 ⇄ 净)
 // =============================================================================
-//   【二级 Day】逐统计日 (建仓日): ok 行数 / Σ rIC / Σ ls_row (行序累加, 两后端逐位同); 块内统计行按整日对齐.
+//   【二级 Day】逐统计日 (建仓日): ok 行数 / Σ rIC / Σ ls_row / 各组 Σ grp (行序累加, 两后端逐位同); 块内统计行按整日对齐.
 //     日净值 LS 的日收益 (钱按平仓日, define/Label.hpp 协议表 2【记日】) = 建仓日 i − hold_days 的 Σ ls_row / h̄ (每批资金 1/h̄, 不 ok 行记 0)
 //     → Daily (define/Annual.hpp): 复利年化 ann / Sharpe (全仓同一口径)
 //   【三级 HoldStat (每 hold)】只用 ok 行 (n) / ok_rac 行 (n_rac); n_all = 攒过的全部行:
@@ -24,15 +24,26 @@
 
 namespace factor::stat {
 
-// ---- 二级输出 (逐日): 一个统计日的 ok 行数 / Σ rIC / Σ 多空 ----
+// ---- 二级输出 (逐日): 一个统计日的 ok 行数 / Σ rIC / Σ 多空 / 各组 Σ 持仓收益 (窗 mono / 分年 mono 的原料) ----
 struct Day {
   int n = 0;
   double ric = 0.0, ls = 0.0;
-  FACTOR_HD void add(const Row &r) {
+  double grp[kGroups] = {};
+  FACTOR_HD void add_head(const Row &r) { // 标量三项 (GPU 批核 lane 0 攒; 组和 lane q 攒 grp[q])
     if (r.ok)
       ++n, ric += r.ric, ls += ls_row(r);
   }
-  void merge(const Day &o) { n += o.n, ric += o.ric, ls += o.ls; }
+  FACTOR_HD void add(const Row &r) {
+    add_head(r);
+    if (r.ok)
+      for (int k = 0; k < kGroups; ++k)
+        grp[k] += r.grp[k];
+  }
+  void merge(const Day &o) {
+    n += o.n, ric += o.ric, ls += o.ls;
+    for (int k = 0; k < kGroups; ++k)
+      grp[k] += o.grp[k];
+  }
 };
 // 日净值 LS 第 i 日的收益 (钱按平仓日): 建仓日 i − n 的 Σ ls_row / h̄ (n = hold_days, 序列首 n 日为 0; 平仓越过序列末的不计)
 inline double ls_day(std::span<const Day> d, size_t i, size_t n, double span) { return i >= n ? d[i - n].ls / span : 0.0; }

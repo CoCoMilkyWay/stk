@@ -207,7 +207,7 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId lv);
 // 按层缓存的字段表 (每进程代一份, Alpha / Market / Agent 线程安全共享): 首次用到该层时建
 std::shared_ptr<const FeatureTable> table_of(const Feature &feature, FactorLevelId lv);
 
-// 本地时间 "YYYY-MM-DD HH:MM" (stat.time / search.time 落盘用)
+// 本地时间 "YYYY-MM-DD HH:MM" (StatScope::time: Inspect 结果的评估时刻)
 std::string now_string();
 
 // ---- 请求 (GUI 线程解析 config, worker 不碰) = 作用域 + 服务自己的 Spec (与 reader::Request<Spec> 对仗) ----
@@ -253,7 +253,7 @@ struct StatScope {
 };
 // 一个持有期的换手 = Stat/Book.hpp 因子账集的流水: 层级 l (0 = 整组, 1 + j = 尾部 j) × 两端各一本 (Run / Inspect 同一份 book_rows):
 // 两端按 Δw 记两侧成交量; 各金额段同一份量 + 不可成交量, 盘口段另各一份真实冲击 (Config::max_impact 封顶, 盘口缺 = 封顶);
-// 成本 / 净多空 / 年换手由 Book.hpp 的派生量按金额段与 Fee 现算 (落 stat.turn; Inspect 期限结构净线从它算)
+// 成本 / 净多空 / 年换手由 Book.hpp 的派生量按金额段与 Fee 现算 (整组 lv[0] 落 stat.turn; Inspect 期限结构净线从它算)
 struct TurnStat {
   factor::stat::Ends lv[factor::stat::kLevels];
 };
@@ -285,11 +285,11 @@ struct AlphaDist {
   float gmean[factor::stat::kGroups] = {};            // 组均值
   std::vector<float> series;                          // 逐行截面均值 (有样本的行, 时序)
 };
-// 一个持有期一个自然年的分层统计 (Probe years_of: HoldP / GrpP / TurnP 的逐日按年合; 已定向, 毛收益): 与 HoldStat 同口径, 只取判稳定性的几项
+// 一个持有期一个自然年的分层统计 (Probe years_of: HoldP / TurnP 的逐日按年合; 已定向, 毛收益): 与 HoldStat 同口径, 只取判稳定性的几项
 struct YearStat {
   int year = 0, n = 0, wins = 0;         // 年 / 年内有统计 (ok) 的行数 / 年内收尾的滚动窗数
   float mono = 0.f, ls = 0.f, ric = 0.f; // 分层单调性 / 每期毛多空均值 / rIC 均值
-  float ric_med = 0.f;                   // 年内收尾的滚动窗 rIC 的中位 (wins = 0 → 0)
+  float med = 0.f;                       // 年内收尾的滚动窗目标 (Stat/Roll.hpp kTarget) 的中位 (wins = 0 → 0)
   float turn = 0.f;                      // 年换手 (Probe TurnP; 倍, 整组两端单边均): 年内 Σ Δw⁺ / 年内统计行 × span_per_year, 不足一年的年同样年化
 };
 // 一个根的评估结果 (Run 行 / Inspect 结果同一份; Probe fill_eval 填全部: scope / eval_ms 由调用方给, 其余取探针;
@@ -304,7 +304,7 @@ struct EvalStat {
   TurnStat turn[kHoldCount];               // [hold] 换手流水 (年换手 / 成本 / Inspect 净线从它算)
   MiniPdf ic_pdf[kHoldCount];              // [hold] 逐行 rIC (ok 行) 分布 (Probe IcPdfP; 因子表小图)
   std::vector<YearStat> years[kHoldCount]; // [hold] 分年 (年升序, 只列有统计行 ≥ 3 的年)
-  factor::stat::Roll roll[kHoldCount];     // [hold] 滚动窗统计 (Probe HoldP; 中位 rIC = 因子表 score, Stat/Roll.hpp)
+  factor::stat::Roll roll[kHoldCount];     // [hold] 滚动窗统计 (Probe HoldP; 中位窗目标 = 父行代表权重的 score, Stat/Roll.hpp)
   MiniPdf alpha_pdf;                       // alpha 分布 (截尾; Probe AlphaP; 与持有期无关)
   const factor::stat::HoldStat *find_hold(HoldId hold_m) const {
     for (int j = 0; j < n_hold; ++j)

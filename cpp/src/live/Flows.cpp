@@ -165,13 +165,14 @@ void match(const std::vector<CashFlow> &rows, const std::vector<Deal> &deals) {
 }
 
 Cache load() {
-  const Pulled s = load_pulled(disk::LiveFlowsFile, kHead);
+  const Pulled s = load_pulled(disk::LiveFlowsFile, kHead), t = load_pulled(disk::LiveDealsFile, kDealHead);
+  assert(s.pulled == t.pulled && "资金流水 flows.csv 与历史成交 deals.csv 同拉同存 (拉于须同, 缺一不可)");
   Cache c{s.pulled, s.pulled ? std::stod(s.meta.at(kRate)) : 0, {}, {}};
   for (const std::vector<std::string> &f : s.rows) {
     c.rows.push_back({misc::parse_ymd(f[0]), f[1], f[2], std::stod(f[3]), std::stod(f[4]), f[5], std::stod(f[6]), std::stod(f[7])});
     assert(c.rows.back().date > 0 && "资金流水账本: 日期");
   }
-  for (const std::vector<std::string> &f : load_pulled(disk::LiveDealsFile, kDealHead).rows) {
+  for (const std::vector<std::string> &f : t.rows) {
     Deal d;
     d.date = misc::parse_ymd(f[0]), d.sec = parse_sec(f[1]), d.code = f[2], d.name = f[3], d.mkt = market_of(f[2]);
     d.side = f[4] == side_name(kBuy) ? kBuy : kSell, d.price = std::stod(f[5]), d.qty = std::stoll(f[6]), d.amount = std::stod(f[7]), d.fill_id = f[8], d.order_id = f[9];

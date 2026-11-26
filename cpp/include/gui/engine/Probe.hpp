@@ -2,8 +2,8 @@
 //   趟级: init(PassCtx) ⇄ finish(PassCtx)    (首块前一次定形/置初值, 末块后好根一次收尾)
 //   块级: open(Ctx)     ⇄ close(Ctx, RootView) (中间夹逐统计行 row(hi, t, r))
 //   落地三形 (行轴 = 评估期 rows_stat): RowsP<D, Got> (逐行暂存 → 折) / LandCellsP<V> (逐格) / LinesP (净值线 → fold_ledger).
-//   通用六探针: HoldP (三级 + 逐日 + 滚动窗) / TurnP (账集流水) / CoverP / AlphaP / IcPdfP / GrpP (逐日组和) → EvalProbes<X...> → fill_eval;
-//   分年一律 by_year (逐日原料取 HoldP / GrpP / TurnP 三处, 只在 fill_eval 汇成 YearStat).
+//   通用五探针: HoldP (三级 + 逐日 + 滚动窗) / TurnP (账集流水) / CoverP / AlphaP / IcPdfP → EvalProbes<X...> → fill_eval;
+//   分年一律 by_year (逐日原料取 HoldP / TurnP 两处, 只在 fill_eval 汇成 YearStat).
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
@@ -147,14 +147,14 @@ void by_year(const std::vector<misc::Ymd> &dates, Fn &&fn) {
 }
 
 // 三级 HoldStat[H] (毛) + 逐日 Day[H][评估期日] + 滚动窗: 块间 Accum 续攒, 各块二级 Day 拼回评估期 →
-//   日净值 LS (Fold ls_daily: 钱按平仓日) → finish_all; 滚动窗 roll_of (正向, 行已按所评方向) + 收尾日的窗 rIC wins
+//   日净值 LS (Fold ls_daily: 钱按平仓日) → finish_all; 滚动窗 roll_of (正向, 行已按所评方向) + 收尾日的窗目标 wins
 struct HoldP : ProbeBase {
   int seg = 0, n_hold = 0;
   factor::stat::Accum acc[kHoldCount];
   std::vector<factor::stat::Day> day[kHoldCount]; // [hd][评估期日]
   factor::stat::HoldStat hold[kHoldCount];
   factor::stat::Roll roll[kHoldCount];
-  std::vector<double> wins[kHoldCount]; // [hd][评估期日] 收尾日的窗 rIC (不计入 = NaN)
+  std::vector<double> wins[kHoldCount]; // [hd][评估期日] 收尾日的窗目标 (Stat/Roll.hpp kTarget; 不计入 = NaN)
   static double bytes(const Shape &sh, int H) { return sizeof(factor::stat::Day) * static_cast<double>(H) * sh.days; }
   void init(const PassCtx &p) {
     seg = p.seg;
@@ -318,34 +318,6 @@ struct IcPdfP : RowsP<IcPdfP, float> {
   }
 };
 
-// 逐日组和 (分年 mono 的原料; 行已按所评方向, 见 ProbeSink): ok 行的 Row::grp 按日合
-struct GrpRow {
-  bool ok = false;
-  float g[factor::stat::kGroups] = {};
-};
-struct GrpP : RowsP<GrpP, GrpRow> {
-  int seg = 0;
-  std::vector<std::vector<std::array<double, factor::stat::kGroups>>> day; // [hd][评估期日][组]
-  static double bytes(const Shape &sh, int H) { return sizeof(double) * factor::stat::kGroups * static_cast<double>(H) * sh.days; }
-  static GrpRow of(const factor::stat::Row &r) {
-    GrpRow x{r.ok != 0, {}};
-    std::copy_n(r.grp, factor::stat::kGroups, x.g);
-    return x;
-  }
-  void init(const PassCtx &p) {
-    seg = p.seg;
-    day.assign(static_cast<size_t>(p.hd.n), std::vector<std::array<double, factor::stat::kGroups>>(static_cast<size_t>(p.days_stat)));
-  }
-  void fold(const Ctx &, int hi, int u0, std::span<const GrpRow> g) {
-    for (size_t i = 0; i < g.size(); ++i)
-      if (g[i].ok) {
-        std::array<double, factor::stat::kGroups> &d = day[static_cast<size_t>(hi)][static_cast<size_t>((u0 + static_cast<int>(i)) / seg)];
-        for (int k = 0; k < factor::stat::kGroups; ++k)
-          d[static_cast<size_t>(k)] += g[i].g[k];
-      }
-  }
-};
-
 // 分层 / 尾部 / LS 的逐行批收益 → fold_ledger 日净值线 (Inspect: 全部持有期 × kNavLines; agent eval_factor: 一个持有期 × kNavExcess)
 inline double tail_abs(const factor::stat::Row &r, int e, int j, double cap) {
   return r.ok ? factor::stat::book_abs(r.tail[e][j], r.tail_n[e][j], r.mkt, cap * factor::stat::tail_frac(j)) : 0.0;
@@ -408,10 +380,10 @@ struct NavP : LinesP {
 };
 
 template <class... X>
-using EvalProbes = Probes<HoldP, TurnP, CoverP, AlphaP, IcPdfP, GrpP, X...>;
+using EvalProbes = Probes<HoldP, TurnP, CoverP, AlphaP, IcPdfP, X...>;
 
-// 一个持有期的分年 (评估期日 dates 按自然年; 只列 ok 行 ≥ 3 的年): 逐日 Day + 窗 rIC (HoldP) / 组和 (GrpP) / 整组两端买量 (TurnP)
-std::vector<YearStat> years_of(const std::vector<misc::Ymd> &dates, const HoldP &h, const GrpP &g, const TurnP &c, int hi, HoldId hold);
+// 一个持有期的分年 (评估期日 dates 按自然年; 只列 ok 行 ≥ 3 的年): 逐日 Day (含组和) + 窗目标 (HoldP) / 整组两端买量 (TurnP)
+std::vector<YearStat> years_of(const std::vector<misc::Ymd> &dates, const HoldP &h, const TurnP &c, int hi, HoldId hold);
 
 template <class Ps>
 void fill_eval(const Ps &p, const PassCtx &pc, const StatScope &scope, double eval_ms, EvalStat &st) {
@@ -419,7 +391,6 @@ void fill_eval(const Ps &p, const PassCtx &pc, const StatScope &scope, double ev
   const TurnP &c = p.template at<TurnP>();
   const IcPdfP &ic = p.template at<IcPdfP>();
   const CoverP &cv = p.template at<CoverP>();
-  const GrpP &g = p.template at<GrpP>();
   const std::vector<misc::Ymd> dates = pc.dm.stat_dates();
   st.scope = scope;
   st.eval_ms = eval_ms;
@@ -431,7 +402,7 @@ void fill_eval(const Ps &p, const PassCtx &pc, const StatScope &scope, double ev
   std::copy_n(c.turn, h.n_hold, st.turn);
   for (int hi = 0; hi < h.n_hold; ++hi) {
     st.ic_pdf[hi] = mini_pdf_of(ic.pdf[hi]);
-    st.years[hi] = years_of(dates, h, g, c, hi, pc.hd.k[hi]);
+    st.years[hi] = years_of(dates, h, c, hi, pc.hd.k[hi]);
     st.roll[hi] = h.roll[hi];
   }
   st.alpha_pdf = mini_pdf_of(p.template at<AlphaP>().d.pdf);

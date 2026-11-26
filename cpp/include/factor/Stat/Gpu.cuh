@@ -12,7 +12,7 @@
 //     reduce_parts 每 h 一线程沿 tb 升序 merge (固定序 → 逐次确定) → acc[h]
 //   【批 C > 1: 逐候选并行】
 //     stat_batch   grid (⌈C/kWarps⌉, NB, H) × kWB, 一 warp 一候选, 一块管整日的 R 行 × 一个持有期:
-//                  每行一次 row_stat → 折进 warp 私有的分片累加器 (Accum 两半) + lane 0 顺序攒当日 Day → 分片 Slice[c][h][tb] / day[c][h][d].
+//                  每行一次 row_stat → 折进 warp 私有的分片累加器 (Accum 两半) + 当日 Day (lane 0 攒标量, lane q 攒组 q) → 分片 Slice[c][h][tb] / day[c][h][d].
 //                  同 block 的 kWarps 个候选同一 (t, h): 标签行一次进 L1 共用. 不落 Row.
 //     reduce_slices 每 (c, h) 一线程沿 tb 升序 merge → acc[c][h]
 //   换手在宿主算 (成本平面上显存装不下), 回传已定向的 rx 即可 (Stat/Book.hpp book_rows).
@@ -127,7 +127,8 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
 
   Accum::Head head; // warp 私有分片 (lane 0 攒 head, lane q < kGroups 攒 grp = 组 q)
   Accum::Grp grp;
-  Day cur;
+  Day cur;          // 当日: lane 0 攒标量三项
+  double gd = 0.0;  // 当日: lane q < kGroups 攒组 q
   for (int t = t_beg; t < t_end; ++t) {
     const size_t base = static_cast<size_t>(t) * A;
     const uint16_t *xr = rxc + base;
@@ -135,11 +136,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
     const Row r = dev::row_stat(xr, xl, lb.at(base), factor::stat::chain_of(t, s, hd), L.cap, hd.opens(s.t0_abs + t), sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0) {
       head.add(r);
-      cur.add(r);
-      if ((t - s.t_lo + 1) % S == 0) { // 日末: 落当日
-        dy[(t - s.t_lo) / S] = cur;
-        cur = Day{};
-      }
+      cur.add_head(r);
     }
     if (r.ok) {
       float gq = 0.f; // lane q 取 grp[q] / cnt[q] (编译期展开的 select, Row 留在寄存器)
@@ -149,6 +146,15 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
         if (q == lane)
           gq = r.grp[q], cq = r.cnt[q];
       grp.add(gq, cq);
+      gd += gq;
+    }
+    if ((t - s.t_lo + 1) % S == 0) { // 日末: 落当日 (每字段恰由一个 lane 写)
+      Day &o = dy[(t - s.t_lo) / S];
+      if (lane == 0)
+        o.n = cur.n, o.ric = cur.ric, o.ls = cur.ls;
+      if (lane < kGroups)
+        o.grp[lane] = gd;
+      cur = Day{}, gd = 0.0;
     }
   }
   Accum &P = part[(static_cast<size_t>(c) * H + hi) * NB + tb]; // 每字段恰由一个 lane 写

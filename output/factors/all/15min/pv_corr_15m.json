@@ -4,9 +4,9 @@
  "expr": "CsRank(TsNeg(TsCorrRoll(TsMask(bar.15m.close_15min, TsTodMask(k=1, k2=17)), bar.15m.volume_15min, d)))",
  "note": "近 d 箱 corr(15 分钟收盘价, 成交量) 取负 (掩首箱竞价量); 长江 高频因子-016 corr(成交量, 收盘价) IC 0.0617 方向负, 海通 选股因子-069 高频量价相关性",
  "search": [
-  {"hold":30,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsCorrRoll(TsMask(bar.15m.close_15min, TsTodMask(k=1, k2=17)), bar.15m.volume_15min, d=14)))","sign":1,"mono":0.988,"ls":7.603e-05,"ric":0.02574,"g":1.911e-06,"se":6.196e-07,"mu":1.125e-07,"peak":false}},
-  {"hold":60,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsCorrRoll(TsMask(bar.15m.close_15min, TsTodMask(k=1, k2=17)), bar.15m.volume_15min, d=11)))","sign":1,"mono":0.9639,"ls":9.529e-05,"ric":0.0256,"g":2.267e-06,"se":1.053e-06,"mu":1.617e-10,"peak":false}},
-  {"hold":1000,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsCorrRoll(TsMask(bar.15m.close_15min, TsTodMask(k=1, k2=17)), bar.15m.volume_15min, d=13)))","sign":1,"mono":0.6962,"ls":0.0001018,"ric":0.02117,"g":1.045e-06,"se":1.324e-06,"mu":0.0,"peak":false}},
-  {"hold":2001,"start_date":"2024-11-18","end_date":"2026-11-17","days":485,"top":{"expr":"CsRank(TsNeg(TsCorrRoll(TsMask(bar.15m.close_15min, TsTodMask(k=1, k2=17)), bar.15m.volume_15min, d=5)))","sign":1,"mono":0.9068,"ls":0.000371,"ric":0.01781,"g":5.434e-06,"se":3.116e-06,"mu":0.0,"peak":false}}
+  {"hold":"30m","start_date":"2024-11-18","end_date":"2026-11-17","days":485},
+  {"hold":"60m","start_date":"2024-11-18","end_date":"2026-11-17","days":485},
+  {"hold":"close","start_date":"2024-11-18","end_date":"2026-11-17","days":485},
+  {"hold":"t1","start_date":"2024-11-18","end_date":"2026-11-17","days":485}
  ]
 }

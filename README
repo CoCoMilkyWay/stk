@@ -200,7 +200,7 @@ stk/
 │   │   │   │   ├── Ledger.hpp                          # 🖥️ 净值与账核: RowLines → fold_ledger → LedgerLines → compound; 账 Ledger = 五列 (收益 | 冲击 / 固定冲击量 / 买 / 卖, 一切账恒齐) + 画像 (篮子 / 个股)
 │   │   │   │   │                                       #    · 收益与换手同一核 (Stat/Book.hpp book_rows): 因子组合 = 顶端整组 (FactorBooks); 池篮子 = 持仓权 Weigh (BasketTable::each 枚举) + 个股 = 自身 (BasketBooks); 池均 = MaskBook; 分块归约 BasketPass → Baskets
 │   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层 (双层对仗): 趟级 init ⇄ finish × 块级 open → row → close; 落地三形 RowsP / LandCellsP / LinesP; EvalProbes → EvalStat
-│   │   │   │   │                                       #    · 通用六探针 HoldP (三级 + 逐日 + 滚动窗) / TurnP (账集流水 TurnStat) / CoverP / AlphaP / IcPdfP / GrpP (逐日组和); 分年只在 fill_eval 由三份逐日汇成
+│   │   │   │   │                                       #    · 通用五探针 HoldP (三级 + 逐日 (含组和) + 滚动窗) / TurnP (账集流水 TurnStat) / CoverP / AlphaP / IcPdfP; 分年只在 fill_eval 由两份逐日汇成
 │   │   │   │   │                                       #    · 分层 / 尾部 / LS 日净值线 NavP: 全部持有期 (Inspect) 或只一个持有期的超额线 (Agent eval_factor)
 │   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎: Forest (LeafId 一步到位, 因子根 + 纯表达式根) × Backend<Cpu | Gpu> (设备侧按块驻留 Y/X 复用)
 │   │   │   │   │                                       #    · 单一管线 (作业层 ⇄ 块层): Need (森林 forest_need ⇄ 篮子 basket_need) → open_job (唯一的作业入口) → for_blocks (唯一的块循环) → eval_block (唯一的块内评估) → run_pass;
@@ -210,7 +210,7 @@ stk/
 │   │   │   │   ├── StatJson.hpp                        # 🖥️ EvalStat ↔ JSON
 │   │   │   │   ├── services/                           # 🖥️ 纯计算核 (GUI 与 Agent 共调) + 薄线程壳:
 │   │   │   │   │   ├── RunService.hpp                  # 🖥️ ScanFactors / EvalFactorFile (单文件共享森林评估 + 回写 stats; 可另出一个持有期的逐日序列 DayLines) + RunService
-│   │   │   │   │   ├── SearchService.hpp               # 🖥️ SearchFactor (采样 → 一趟评完 → 逐点中位 rIC 定向打分 → 最高的一个回写 weights) + SearchService
+│   │   │   │   │   ├── SearchService.hpp               # 🖥️ SearchFactor (采样 → 一趟评完 → 逐点中位窗目标 (Stat/Roll.hpp kTarget: mono | rIC) 定向打分 → 最高的一个回写 weights) + SearchService
 │   │   │   │   │   ├── InspectService.hpp              # 🖥️ InspectFactor (整期一级平面 / 分层与尾部净值 / 前 N 只 CSV 导出) + InspectService
 │   │   │   │   │   └── PortfolioService.hpp            # 🖥️ EvalPortfolioGroup / EvalBasketLedgers → PortfolioLedger + PortfolioService
 │   │   │   │   └── ui/PortfolioBoxes.hpp               # 🖥️ Alpha → Factors 的组合小框 + 当前组合 (Lines 页因子 / 策略两组的来源)

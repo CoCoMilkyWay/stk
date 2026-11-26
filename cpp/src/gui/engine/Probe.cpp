@@ -94,21 +94,18 @@ void TurnP::close(const Ctx &c, const RootView &v) {
     std::vector<double>().swap(row_buy);
 }
 
-std::vector<YearStat> years_of(const std::vector<misc::Ymd> &dates, const HoldP &h, const GrpP &g, const TurnP &c, int hi, HoldId hold) {
+std::vector<YearStat> years_of(const std::vector<misc::Ymd> &dates, const HoldP &h, const TurnP &c, int hi, HoldId hold) {
   const std::vector<factor::stat::Day> &ds = h.day[hi];
-  const std::vector<std::array<double, factor::stat::kGroups>> &gs = g.day[static_cast<size_t>(hi)];
   const std::vector<double> &buy = c.day_buy[static_cast<size_t>(hi)], &wins = h.wins[hi];
-  assert(ds.size() == dates.size() && gs.size() == dates.size() && buy.size() == dates.size() && wins.size() == dates.size() && "逐日原料与评估期日期不齐");
+  assert(ds.size() == dates.size() && buy.size() == dates.size() && wins.size() == dates.size() && "逐日原料与评估期日期不齐");
   const double spy = factor::stat::span_per_year(hold, h.seg);
   std::vector<YearStat> out;
   by_year(dates, [&](int y, size_t a, size_t b) {
     factor::stat::Day s;
-    double gy[factor::stat::kGroups] = {}, by = 0.0;
+    double by = 0.0;
     std::vector<double> w;
     for (size_t i = a; i < b; ++i) {
       s.merge(ds[i]);
-      for (int k = 0; k < factor::stat::kGroups; ++k)
-        gy[k] += gs[i][static_cast<size_t>(k)];
       by += buy[i];
       if (!std::isnan(wins[i]))
         w.push_back(wins[i]);
@@ -120,10 +117,10 @@ std::vector<YearStat> years_of(const std::vector<misc::Ymd> &dates, const HoldP 
     out.push_back({.year = y,
                    .n = s.n,
                    .wins = static_cast<int>(w.size()),
-                   .mono = static_cast<float>(factor::stat::mono_of(gy, factor::stat::kGroups)),
+                   .mono = static_cast<float>(factor::stat::mono_of(s.grp, factor::stat::kGroups)),
                    .ls = static_cast<float>(s.ls / s.n),
                    .ric = static_cast<float>(s.ric / s.n),
-                   .ric_med = static_cast<float>(med),
+                   .med = static_cast<float>(med),
                    .turn = static_cast<float>(0.5 * by / (static_cast<double>(b - a) * h.seg) * spy)});
   });
   return out;

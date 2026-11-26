@@ -520,9 +520,9 @@ std::string period_text(misc::Ymd lo, misc::Ymd hi) {
 
 // ============================================================================
 // Stat 指标表: 主表 Stat 列 / 排序键 / 行悬停转置表 都从这一张表展开 (加指标 = 加一行)
-//   group  分组, 按重要性排: 覆盖 (有效 / 可秩 / 触发 / 利用) → 形态 (单调 / 换手) → LS (能不能赚) → rIC (整体相关) → rAC (留仓程度) → 样本;
-//          悬停表按组出标题行, 主表列同序; 组底色 (bg) 主表列 / 悬停表行共用; 覆盖组只在主表 (无底色, 格子不弹悬停, 不进悬停表)
-//   col    非空 = 进主表 (列名), 空 = 只在悬停表
+//   group  分组, 按重要性排: 覆盖 (有效 / 可秩 / 触发 / 利用) → 形态 (单调) → LS (能不能赚) → rIC (整体相关) → rAC (留仓程度) → 换手 → 样本;
+//          悬停表按组出标题行, 主表列同序; 组底色 (bg) 主表列 / 悬停表行共用; 覆盖组只在主表的 cover% 列 (四项合一格, 无底色, 格子不弹悬停, 不进悬停表)
+//   col    非空 = 进主表 (列名), 空 = 只在悬停表 (覆盖组: 只在 cover% 列)
 //   desc / range / best  说明 / 取值范围 / 最优 (悬停表三列, 主表列提示也由它们拼); 文案压短, 悬停表宽度由它们定
 //   get    (HoldStat, 该行 FactorRow: 满仓 cap = scope.n_full, 行级 val% / rank%) → double (整数计数也走这里, fmt 用 %.0f)
 //   grade  固定区间着色 (主表 / 悬停表共用, 不随样本变): line(差端, 好端) 线性 (好端 < 差端 即越小越好); band(a, b) 中点最好 → 两端差;
@@ -538,6 +538,7 @@ enum class Group : uint8_t { Cover,
                              LS,
                              RIC,
                              RAC,
+                             Turn,
                              Sample,
                              kCount };
 struct GroupInfo {
@@ -547,10 +548,11 @@ struct GroupInfo {
 };
 constexpr GroupInfo kGroupInfo[static_cast<size_t>(Group::kCount)] = {
     {"覆盖", "有效 / 可秩 / 触发 / 利用", ImVec4(), false},
-    {"形态", "分层单调 / 换手", ImVec4(0.70f, 0.45f, 0.95f, 0.10f), true},
+    {"形态", "分层单调", ImVec4(0.70f, 0.45f, 0.95f, 0.10f), true},
     {"LS", "顶底多空超额 ½ (做多 G20 − 做多 G1)", ImVec4(0.35f, 0.85f, 0.45f, 0.10f), true},
     {"rIC", "因子秩 × 标签秩 截面相关 (rank IC)", ImVec4(0.35f, 0.65f, 1.00f, 0.10f), true},
     {"rAC", "因子秩 lag=h 截面自相关 (rank AC)", ImVec4(1.00f, 0.65f, 0.25f, 0.10f), true},
+    {"换手", "LS 年换手 (整组两端单边均, 同 Inspect 图例)", ImVec4(0.95f, 0.40f, 0.65f, 0.10f), true},
     {"样本", "有效 t 行数", ImVec4(0.60f, 0.60f, 0.60f, 0.08f), true},
 };
 ImU32 group_bg(Group g) { return ImGui::GetColorU32(kGroupInfo[static_cast<size_t>(g)].bg); }
@@ -578,18 +580,16 @@ struct Metric {
 //   mono  组均值对组号 Spearman;  turn  两端均 Σ Δw⁺ / 行数 × 每年满仓轮数 (单边)
 //   LS% / SR  日净值 LS 的复利年化 / Sharpe: LS = ½ (做多 G20 − 做多 G1), 不触发记 0, 每批 1/h̄, 全日平均满仓;  LS 组 mean .. β 都只统计 ok 行
 constexpr Metric kMetrics[] = {
-    {Group::Cover, "val%", "val%", "有效率: 池内格中因子有值的占比", "[0, 100]", "越大", "%.1f",
+    {Group::Cover, "val%", nullptr, "有效率: 池内格中因子有值的占比", "[0, 100]", "越大", "%.1f",
      [](const HS &, const FR &r) { return static_cast<double>(r.valid_pct); }, line(90, 100)},
-    {Group::Cover, "rank%", "rank%", "可秩率: 并列不过多的格占比", "[0, 100]", "越大", "%.1f",
+    {Group::Cover, "rank%", nullptr, "可秩率: 并列不过多的格占比", "[0, 100]", "越大", "%.1f",
      [](const HS &, const FR &r) { return static_cast<double>(r.rank_pct); }, line(60, 90)},
-    {Group::Cover, "trig%", "trig%", "触发率: 有持仓的行占比", "[0, 100]", "越大", "%.1f",
+    {Group::Cover, "trig%", nullptr, "触发率: 有持仓的行占比", "[0, 100]", "越大", "%.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::trigger_of(h); }, line(80, 90)},
-    {Group::Cover, "util%", "util%", "利用率: 每端平均只数 / 满仓只数", "[0, ∞)", "≈ 100", "%.1f",
+    {Group::Cover, "util%", nullptr, "利用率: 每端平均只数 / 满仓只数", "[0, ∞)", "≈ 100", "%.1f",
      [](const HS &h, const FR &r) { return 100.0 * factor::stat::util_of(h, r.scope.n_full); }, band(80, 120)},
     {Group::Shape, "mono", "mono", "分层单调性", "[-1, 1]", "越大, 1 严格单调", "%+.3f",
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
-    {Group::Shape, "turn", "turn", "年化单边换手 (倍/年)", "[0, ∞)", "越小", "%.1f",
-     [](const HS &h, const FR &r) { return factor::stat::turn_annual(h, r.turn_of(h).lv[0]); }, line(1000, 100)},
     {Group::LS, "LS%", "LS%", "日净值多空复利年化 %", "(-∞, ∞)", "越大", "%+.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h); }, line(10, 50)},
     {Group::LS, "SR", "SR", "日净值多空 Sharpe", "(-∞, ∞)", "越大", "%+.2f",
@@ -606,7 +606,7 @@ constexpr Metric kMetrics[] = {
      [](const HS &h, const FR &) { return 100.0 * factor::stat::end_period(h, factor::stat::kTop) * factor::stat::span_per_year(h); }},
     {Group::LS, "G1%", nullptr, "做多 G1 的满仓年化超额 %", "(-∞, ∞)", "越小", "%+.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::end_period(h, factor::stat::kBot) * factor::stat::span_per_year(h); }},
-    {Group::RIC, "med", "rIC中位", "滚动窗 rIC 的中位 (窗 = 评估期 / 10; score)", "[-1, 1]", "越大", "%+.4f",
+    {Group::RIC, "med", nullptr, "滚动窗 rIC 的中位 (窗 = 评估期 / 10; 挑父行代表权重)", "[-1, 1]", "越大", "%+.4f",
      [](const HS &h, const FR &r) { return r.roll_of(h).ric_med; }, line(0.03, 0.05)},
     {Group::RIC, "mean", "rIC", "rIC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h, const FR &) { return static_cast<double>(h.ric.mean); },
      line(0.03, 0.05)},
@@ -619,6 +619,8 @@ constexpr Metric kMetrics[] = {
     {Group::RAC, "mean", "rAC", "rAC 均值", "[-1, 1]", "越大", "%+.3f", [](const HS &h, const FR &) { return static_cast<double>(h.rac.mean); },
      line(0.8, 1), true},
     {Group::RAC, "sd", nullptr, "rAC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h, const FR &) { return static_cast<double>(h.rac.sd); }, {}, true},
+    {Group::Turn, "turn", "turn", "LS 年化单边换手 (倍/年)", "[0, ∞)", "越小", "%.0f",
+     [](const HS &h, const FR &r) { return factor::stat::turn_annual(h, r.turn_of(h).lv[0]); }, line(1000, 100)},
     {Group::Sample, "n", nullptr, "有效行数", "[0, T]", "越大, <3 标签侧空", "%.0f", [](const HS &h, const FR &) { return static_cast<double>(h.n); }},
     {Group::Sample, "n_rac", nullptr, "rAC 可算行数", "[0, T]", "越大, <3 rAC 空", "%.0f",
      [](const HS &h, const FR &) { return static_cast<double>(h.n_rac); }},
@@ -667,7 +669,7 @@ double metric_key(const HS *h, const Metric &m, const FR &r) { return h ? m.get(
 
 // ============================================================================
 // 主表列模型: 固定列 (kFixedCols, 按 Fixed 枚举寻址) 与 Stat 列 (kMetrics 里 col 非空的, 同序) 穿插, 显示顺序 = kColLayout:
-//   edit type name_en name_cn *h frame period status time | val% rank% trig% util% mono turn LS% SR rIC中位 rIC rICIR rIC>0 rAC | ic~ alpha~ expr ops feats slots note
+//   edit type name_en name_cn *h frame period status time cover% | mono LS% SR rIC rICIR rIC>0 rAC turn | layer~ ic~ alpha~ expr ops feats slots note
 // ============================================================================
 enum Fixed : int { Edit,
                    Type,
@@ -678,6 +680,8 @@ enum Fixed : int { Edit,
                    Period,
                    Status,
                    Time,
+                   Cover,
+                   Layers,
                    IcPdf,
                    AlphaPdf,
                    Expr,
@@ -698,6 +702,8 @@ struct FixedCol {
 //   period: 结束 = 所用库最近落盘日; 用了 lob.* 的只有 Lob 库建库以来的几个月
 //   status BROKEN 原因: 文件 / type / name_cn / 表达式不合, 根非归一, 权重不是模板的实例, 组 id 不合; 文件不动, 手动处理
 //   time = 子树全部算子节点之和 (共享节点算给每个用它的因子); CPU 全核 wall / GPU 纯 kernel
+//   cover% = 覆盖组四项 (kMetrics 同序) 取整, 各自按 grade 着色; 每项右对齐到 3 位数字宽 (比例字体下逐行对齐)
+//   layer~ = HoldStat::grp (组每期超额均值, 已定向), 按本行 max|·| 缩放 (看形状, 行间不比幅度); 排序键 = mono
 //   ic~ / alpha~: KLL PDF 峰值归一; ic~ x 域 ±max|rIC| 0 居中; alpha~ 池内有效格截尾 ≈ [P0.4, P99.6], 与持有期无关; Run 时算, 落文件 stat
 //   expr: 规范串 = 解析后重新序列化; 父行 / 未搜索行 = 模板, 子行 / 单权重行 = 具体串, 解析不过 = 文件原串 (红)
 //   slots: 内存 / 显存 = slots × T·A × 5B
@@ -723,6 +729,14 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• dup: 与另一行同持有期同表达式",
      false},
     {Time, "time", "评估耗时 (ms)", true},
+    {Cover, "cover%",
+     "覆盖 % {val, rank, trig, util} (当前 Hold; 红 = 差 → 绿 = 好)\n"
+     "• val: 有效率, 池内格中因子有值的占比\n"
+     "• rank: 可秩率, 并列不过多的格占比\n"
+     "• trig: 触发率, 有持仓的行占比\n"
+     "• util: 利用率, 每端平均只数 / 满仓只数 (≈ 100 最好)",
+     false},
+    {Layers, "layer~", "终期分层: G1 → G20 各组每期超额均值 (当前 Hold; 红 > 0, 绿 < 0; 按本行最大幅度缩放); 悬停放大\n• 排序 = mono", true},
     {IcPdf, "ic~", "rIC 分布 (当前 Hold; 红 > 0, 绿 < 0); 悬停放大", false},
     {AlphaPdf, "alpha~", "因子值分布 (归一前; 红 > 0, 绿 < 0); 悬停放大", false},
     {Expr, "expr", "表达式 (多权重因子的父行显示模板)", false},
@@ -740,11 +754,11 @@ constexpr bool fixed_cols_ordered() {
 static_assert(fixed_cols_ordered(), "kFixedCols 顺序须与 Fixed 枚举一致");
 constexpr ImVec4 kEditColor(1.0f, 0.75f, 0.3f, 1.0f); // 编辑中的行 / 标题
 
-// 显示顺序: Stat 列夹在 time 与 Expr 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
+// 显示顺序: Stat 列夹在 cover% 与 layer~ 之间. 一列 = 固定列 (fixed ≥ 0) 或 Stat 列 (stat ≥ 0, 主表第 stat 个 Stat 列 → kMetrics[kStatColMetric[stat]])
 struct ColRef {
   int fixed = -1, stat = -1;
 };
-constexpr int kStatInsertAfter = Time;
+constexpr int kStatInsertAfter = Cover;
 constexpr int kNumCols = kNumFixed + kNumStatCols;
 constexpr std::array<ColRef, kNumCols> col_layout() {
   std::array<ColRef, kNumCols> a{};
@@ -778,11 +792,17 @@ bool col_sortable(int c) {
   const ColRef &r = kColLayout[static_cast<size_t>(c)];
   return r.fixed >= 0 ? kFixedCols[r.fixed].sortable : true;
 }
-// 默认排序列 = 中位 rIC 降序 (因子表 score, 与 Search 同一目标)
-bool col_default_sort(int c) {
-  const Metric *m = col_metric(c);
-  return m && m->group == Group::RIC && std::string_view(m->col) == "rIC中位";
+// 指标表里的一项 (组 + 组内短名; 不在表里 → assert)
+const Metric &metric_of(Group g, std::string_view name) {
+  for (const Metric &m : kMetrics)
+    if (m.group == g && name == m.name)
+      return m;
+  assert(false && "指标不在 kMetrics");
+  return kMetrics[0];
 }
+const Metric &kMono = metric_of(Group::Shape, "mono"); // 默认排序 / layer~ 列的排序键
+// 默认排序列 = mono 降序 (分层是因子最要紧的)
+bool col_default_sort(int c) { return col_metric(c) == &kMono; }
 // 列提示: Stat 列由指标表拼 (只拼一次). 显示的是选定持有期的值, 样本 < 3 为空; 字色 = grade 固定区间 (红 = 差端 → 绿 = 好端, 外侧钳位)
 const std::string &col_tip(int c) {
   static const std::array<std::string, kNumCols> tips = [] {
@@ -974,7 +994,71 @@ void mini_pdf_cell(const MiniPdf *p, const char *id, const char *title, bool cen
   ImGui::EndTooltip();
 }
 
-// 固定列一格 (edit 列是勾选框, 在表循环里单独画); hold = 因子表选定持有期 (ic~ 列)
+// cover% 一格: {val,rank,trig,util} 取整, 各按 grade 着色, 每项右对齐到 3 位数字宽 (行间对齐); 无该持有期 → "-"
+void cover_cell(const HS *h, const FR &r) {
+  if (!h) {
+    ImGui::TextDisabled("-");
+    return;
+  }
+  const float slot = ImGui::CalcTextSize("000").x;
+  ImGui::TextUnformatted("{");
+  bool first = true;
+  for (const Metric &m : kMetrics) {
+    if (m.group != Group::Cover)
+      continue;
+    ImGui::SameLine(0, 0);
+    if (!first) {
+      ImGui::TextUnformatted(",");
+      ImGui::SameLine(0, 0);
+    }
+    first = false;
+    char buf[16] = "-";
+    if (has_value(*h, m))
+      std::snprintf(buf, sizeof(buf), "%.0f", m.get(*h, r));
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos(ImVec2(p.x + std::max(0.f, slot - ImGui::CalcTextSize(buf).x), p.y));
+    if (const std::optional<ImVec4> c = grade_color(m, h, r))
+      ImGui::TextColored(*c, "%s", buf);
+    else
+      ImGui::TextDisabled("%s", buf);
+  }
+  ImGui::SameLine(0, 0);
+  ImGui::TextUnformatted("}");
+}
+
+// layer~ 一格: 选定持有期 G1 → G20 每期超额均值 (HoldStat::grp) 的上下柱, 0 为界红绿; 悬停 ImPlot 放大 (bp/期)
+void layers_cell(const HS *h, HoldId hold) {
+  if (!h || !has_value(*h, kMono)) {
+    ImGui::TextDisabled("-");
+    return;
+  }
+  const ImVec2 size(kSparkWidth, ImGui::GetTextLineHeight());
+  if (!ImGui::IsRectVisible(size)) {
+    ImGui::Dummy(size);
+    return;
+  }
+  if (!sparkbars("##layers", h->grp, factor::stat::kGroups, size, kSparkPosColor, kSparkNegColor))
+    return;
+  constexpr int K = factor::stat::kGroups;
+  double xs[K], up[K], down[K];
+  for (int k = 0; k < K; ++k) {
+    const double v = 1e4 * h->grp[k];
+    xs[k] = k + 1, up[k] = std::max(v, 0.0), down[k] = std::min(v, 0.0);
+  }
+  ImGui::BeginTooltip();
+  ImGui::Text("终期分层 (%s, G1 → G20 每期超额均值; mono %+.3f)", hold_name(hold).c_str(), h->mono);
+  if (ImPlot::BeginPlot("##layers", ImVec2(360, 200), ImPlotFlags_NoLegend)) {
+    ImPlot::SetupAxes("组", "bp / 期", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+    ImPlot::SetNextFillStyle(kSparkPosColor);
+    ImPlot::PlotBars("##up", xs, up, K, 0.7);
+    ImPlot::SetNextFillStyle(kSparkNegColor);
+    ImPlot::PlotBars("##down", xs, down, K, 0.7);
+    ImPlot::EndPlot();
+  }
+  ImGui::EndTooltip();
+}
+
+// 固定列一格 (edit 列是勾选框, 在表循环里单独画); hold = 因子表选定持有期 (cover% / layer~ / ic~ 列)
 void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool editing, RowKind kind, HoldId hold) {
   const bool ok = r.error.empty();
   const auto text = [&](const std::string &s, bool hi = false) {
@@ -1016,6 +1100,10 @@ void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool e
     return status_cell(r, ctx);
   case Time:
     return num(r.has_stat, "%.1f", r.eval_ms);
+  case Cover:
+    return cover_cell(hold_of(r, hold), r);
+  case Layers:
+    return layers_cell(hold_of(r, hold), hold);
   case IcPdf: {
     const std::string title = "rIC 分布 (" + hold_name(hold) + ", 峰值归一)";
     return mini_pdf_cell(r.has_stat ? r.find_ic_pdf(hold) : nullptr, "##ic_pdf", title.c_str(), true);
@@ -1084,16 +1172,9 @@ void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h) {
       {Group::RIC, {{Group::RIC, "mean", "mean"}, {Group::RIC, "t", "t"}, {Group::RIC, "pos", "> 0"}}},
       {Group::LS, {{Group::LS, "LS%", "年化%"}, {Group::LS, "SR", "SR"}, {Group::LS, "β", "β"}}},
       {Group::Cover, {{Group::Cover, "val%", "val%"}, {Group::Cover, "trig%", "trig%"}, {Group::Cover, "util%", "util%"}}},
-      {Group::Shape, {{Group::Shape, "mono", "mono"}, {Group::Shape, "turn", "turn"}, {Group::RAC, "mean", "rAC"}}},
+      {Group::Shape, {{Group::Shape, "mono", "mono"}, {Group::Turn, "turn", "turn"}, {Group::RAC, "mean", "rAC"}}},
   };
   constexpr int kRows = static_cast<int>(std::size(kCols[0].cells));
-  const auto metric = [](const Cell &c) -> const Metric & {
-    for (const Metric &m : kMetrics)
-      if (m.group == c.g && std::string_view(m.name) == c.name)
-        return m;
-    assert(false && "面板指标不在 kMetrics");
-    return kMetrics[0];
-  };
   ImGui::TextDisabled("%s  n=%d%s", hold_name(h.hold).c_str(), h.n, h.n >= 3 ? "" : "  (有效行不足)");
   if (!ImGui::BeginTable("##hold_stat", static_cast<int>(std::size(kCols)), ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV))
     return;
@@ -1110,7 +1191,7 @@ void hold_stat_panel(const EvalStat &e, const factor::stat::HoldStat &h) {
       for (const Cell &k : c.cells)
         lw = std::max(lw, ImGui::CalcTextSize(k.label).x);
       const Cell &k = c.cells[r];
-      const Metric &m = metric(k);
+      const Metric &m = metric_of(k.g, k.name);
       const float x0 = ImGui::GetCursorScreenPos().x;
       ImGui::TextDisabled("%s", k.label);
       ImGui::SameLine();
@@ -1771,6 +1852,8 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
           return r.has_stat ? static_cast<double>(r.scope.days) : -1.0;
         case Time:
           return r.has_stat ? r.eval_ms : -1.0;
+        case Layers:
+          return metric_key(hold_of(r, cur_hold), kMono, r);
         case Ops:
           return r.n_ops;
         case Feats:
