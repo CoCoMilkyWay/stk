@@ -25,9 +25,6 @@
 
 namespace cta {
 
-// 成本率 = 全仓同一份费率表 (define/Fee.hpp)
-using Rates = Fee;
-
 // 成本分项 (下标; 序 = 净值图上自策略净值向上的叠放序)
 enum : size_t { kCommission,
                 kStamp,
@@ -51,7 +48,7 @@ inline constexpr CostItem kCosts[kNC] = {{"佣金", "佣金率 × |Δ仓位|"},
                                          {"跳空", "越线差的跳空部分: 一根越过几档时, 远处的档比最近那档多付的部分"}};
 
 // 一根的成本: 前根仓位 p → 本根的刀 x 的仓位 (本根收盘成交)
-inline Costs costs_of(const Rates &u, const Cut &x, float p) {
+inline Costs costs_of(const Fee &u, const Cut &x, float p) {
   const double dw = std::fabs(x.w - p);
   return {{(u.commission + u.transfer) * dw, u.stamp * std::max(0.0f, p - x.w), u.impact * dw, x.chop, x.gap}};
 }
@@ -103,7 +100,7 @@ struct Laddered {
 
 // 逐日 src.day(d) → 逐根 src 出刀 → 成交 (成本按费率 u + 刀的越线差) → sink(Fill); 前根起始 = 空仓
 template <class Source, class Sink>
-void drive(const Tape &t, const Rates &u, Source &&src, Sink &&sink) {
+void drive(const Tape &t, const Fee &u, Source &&src, Sink &&sink) {
   assert(t.days.off.back() == t.n && "日轴覆盖全部根");
   float p = 0;
   for (size_t d = 0; d < t.days.size(); ++d) {

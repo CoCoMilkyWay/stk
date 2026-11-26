@@ -206,7 +206,7 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
     if (rl) {
       const fs::HoldStat *h = w.find_hold(hold);
       assert(h && "RowRoll 非空须有该持有期的 HoldStat");
-      assert(w.costs.front().amt == Engine::kAmtFixed && "成本段首个是固定段");
+      assert(w.costs.front().amt == kAmtFixed && "成本段首个是固定段");
       const fs::CostAcc &c = w.turn_of(*h);
       x.score = fs::score_of(*rl);
       x.ric = h->ric.mean;
@@ -398,8 +398,8 @@ void fit(const SharedData &data, Scope &sc) {
     sc.pool = ps.front().name;
   if (const std::vector<Choice> ls = levels(); !std::ranges::contains(ls, sc.level, &Choice::key))
     sc.level = ls.front().key;
-  if (const std::vector<Choice> hs = holds(data, sc.level); !hs.empty() && !std::ranges::contains(hs, sc.hold, &Choice::key))
-    sc.hold = hs.front().key;
+  if (const std::vector<Choice> hs = holds(data, sc.level); !hs.empty() && !std::ranges::contains(hs, static_cast<int>(sc.hold), &Choice::key))
+    sc.hold = static_cast<HoldId>(hs.front().key);
 }
 bool gpu() { return factor::gpu::available(); }
 
@@ -411,7 +411,7 @@ std::string hold_miss(const SharedData &data, const Scope &sc) {
   const std::vector<Choice> hs = holds(data, sc.level);
   if (hs.empty())
     return "该层无可搜持有期 (标签未建)";
-  if (std::ranges::contains(hs, sc.hold, &Choice::key))
+  if (std::ranges::contains(hs, static_cast<int>(sc.hold), &Choice::key))
     return {};
   return "持有期 " + hold_name(sc.hold) + " 在该层不可搜 (可选 " + text::join(hs, " / ", &Choice::name) + ")";
 }

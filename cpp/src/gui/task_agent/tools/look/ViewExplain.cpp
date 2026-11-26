@@ -170,8 +170,8 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
           return cum[static_cast<size_t>(t1) * static_cast<size_t>(A) + static_cast<size_t>(a)] - cum[static_cast<size_t>(t0) * static_cast<size_t>(A) + static_cast<size_t>(a)];
         };
 
-        const Engine::LegPlane &lb = *cv.blk.y.labels[0];
-        const uint16_t *lv = lb.v[st::kLong].data();
+        const Engine::LabPlane &lb = *cv.blk.y.labels[0];
+        const uint16_t *lv = lb.lv.data();
         const int nt = F.S.ex.threads();
         struct ThreadAcc {
           Mean fric, r2, rric;
@@ -184,7 +184,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
 
         F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
           ThreadAcc &loc = ta[static_cast<size_t>(tid)];
-          std::vector<double> fxv, ey, rf, rf_raw, ry, res, one(m);
+          std::vector<double> fxv, ey, hy, rf, rf_raw, ry, res, one(m);
           std::vector<uint8_t> buy;
           std::vector<std::vector<double>> bv(m), X(m);
           RankScratch rs;
@@ -199,7 +199,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
             assert(t >= lag);
             const int t_day0 = t - t % seg;
             const size_t base = static_cast<size_t>(t) * static_cast<size_t>(A);
-            fxv.clear(), ey.clear(), buy.clear();
+            fxv.clear(), ey.clear(), hy.clear(), buy.clear();
             for (std::vector<double> &v : bv)
               v.clear();
 
@@ -236,7 +236,9 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
                 continue;
               fxv.push_back(rank_of_r16(cv.rx[k]));
               ey.push_back(static_cast<double>(h2f(lv[k])) - mkt);
-              buy.push_back(buyable(cv.blk, k));
+              float hr = 0.f;
+              const bool h = held_cell(cv.blk, cv.rx, env.hold, t, k, hr);
+              hy.push_back(h ? static_cast<double>(hr) - mkt : 0.0), buy.push_back(h ? 1 : 0);
               for (size_t j = 0; j < m; ++j)
                 bv[j].push_back(one[j]);
             }
@@ -268,9 +270,9 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
               loc.r2.add(1.0 - dot(res, res) / tot);
             rs.rank_into(res, rs.a);
             loc.rric.add(pearson(rs.a, ry));
-            if (rs.approx_ranked(rf_raw, ey, ry, buy, w))
+            if (rs.approx_ranked(rf_raw, hy, ry, buy, w))
               loc.orig.add(w);
-            if (rs.approx_ranked(rs.a, ey, ry, buy, w))
+            if (rs.approx_ranked(rs.a, hy, ry, buy, w))
               loc.rest.add(w);
           }
         });

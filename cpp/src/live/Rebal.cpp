@@ -28,7 +28,7 @@ int64_t least(double r, double unit, int64_t lot_n, int64_t step) {
 }
 
 // 一单 n 股: 参考价计额、5 档吃出滑点; 融资买入的融资腿即全额 (卖单的融资腿 = 还款, 由持仓行定); 不足 min_n 股 → 原因
-std::optional<Order> leg(const Quote &q, int s, int64_t n, int64_t min_n, double px, Credit credit, const Sec &x, std::string &skip) {
+std::optional<Order> leg(const Quote &q, int s, int64_t n, int64_t min_n, double px, Credit credit, const Sec &x, const Fee &f, std::string &skip) {
   if (n < min_n) {
     skip = strf("不足最小单元 (%lld 股)", static_cast<long long>(min_n));
     return std::nullopt;
@@ -43,7 +43,7 @@ std::optional<Order> leg(const Quote &q, int s, int64_t n, int64_t min_n, double
   o.px = px;
   o.amount = amt;
   o.slip = slip.value_or(0);
-  o.fee = fee(amt, s);
+  o.fee = fee(amt, s, f);
   o.fin = s == kBuy && credit == Credit::Margin ? amt : 0;
   o.full = full;
   return o;
@@ -106,7 +106,7 @@ std::vector<Hold> sells_of(const Keyed<Position> &pos, const Keyed<Debt> &debts,
       const double unit = cfg.how == How::Bar && n == row.avail ? 0 : cfg.unit;
       const int64_t min_n = n == row.avail ? least(px, unit, 1, 1) : least(px, unit, lt, step);
       row.leg = {Credit::Plain, static_cast<double>(n) * px};
-      row.leg.order = leg(q, kSell, n, min_n, order_px(q, kSell, cfg.px, static_cast<double>(n) * px).value_or(px), Credit::Plain, h, row.leg.skip);
+      row.leg.order = leg(q, kSell, n, min_n, order_px(q, kSell, cfg.px, static_cast<double>(n) * px).value_or(px), Credit::Plain, h, cfg.fee, row.leg.skip);
       if (Order *o = row.leg.order ? &*row.leg.order : nullptr)
         o->fin = std::min(o->amount - o->slip - o->fee, row.debt);
     }
@@ -160,6 +160,7 @@ struct Tgt {
 struct Budget {
   Parts parts;
   double C = 0, X = 0, L = 0;
+  Fee fee;
 };
 
 // 目标市值 V 下 s 各只 (tgts 的下标, 已按保证金比例从低到高排) 的两腿 (融资额, 现金额) 写进 out (给了才写) → 现金需求
@@ -191,7 +192,7 @@ double fill(double V, std::span<const size_t> s, const std::vector<Tgt> &tgts, c
     if (out)
       (*out)[idx] = {f, p};
   }
-  return pay + (b.parts.own ? fee(need_amt, kBuy) : 0);
+  return pay + (b.parts.own ? fee(need_amt, kBuy, b.fee) : 0);
 }
 
 // s 等权补齐可行的目标市值 V: 在 [0, hi] 里二分到 kTol
@@ -479,7 +480,7 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
                     static_cast<double>(n) * buy_px(q, cfg.px, n)});
   }
 
-  const Budget bud{parts, parts.own ? C * pct : 0, parts.fin ? X * pct : 0, parts.fin ? L * pct : 0};
+  const Budget bud{parts, parts.own ? C * pct : 0, parts.fin ? X * pct : 0, parts.fin ? L * pct : 0, cfg.fee};
   const auto [picked, V] = pick(tgts, bud);
   std::vector<std::pair<double, double>> alloc(tgts.size(), {0, 0});
   std::vector<uint8_t> is_picked(tgts.size(), 0);
@@ -534,7 +535,7 @@ Plan solve(const Snapshot &s, const Prices &px0, const Quotes &quotes, const Ter
         continue;
       const int64_t n = qty_of(q, cfg.px, part, step);
       Leg l{.credit = cr, .want = part};
-      l.order = leg(q, kBuy, n, x.least, buy_px(q, cfg.px, n), cr, Sec{c, t->name, t->mkt}, l.skip);
+      l.order = leg(q, kBuy, n, x.least, buy_px(q, cfg.px, n), cr, Sec{c, t->name, t->mkt}, cfg.fee, l.skip);
       if (l.order)
         buys.push_back(*l.order);
       row.legs.push_back(std::move(l));

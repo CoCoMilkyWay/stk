@@ -88,8 +88,8 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
           return;
         const int r_idx = u_want - cv.u0, t = cv.t_lo + r_idx, t0 = t - k_row, A = cv.blk.y.sh.A;
         const Px px(cv.blk, cv.bm, cfg.bars, env.open);
-        const Engine::LegPlane &lb = *cv.blk.y.labels[0];
-        const uint16_t *lv = lb.v[st::kLong].data();
+        const Engine::LabPlane &lb = *cv.blk.y.labels[0];
+        const uint16_t *lv = lb.lv.data();
         const float mkt = row_mkt(cv.blk, t);
 
         struct Cell {

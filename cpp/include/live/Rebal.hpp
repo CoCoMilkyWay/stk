@@ -112,6 +112,7 @@ struct Cfg {
   double unit = 10000, pct = 100;
   PxMode px = PxMode::Sweep;
   std::map<std::string, int64_t> sells; // 只存 > 0
+  Fee fee;                              // 费率 (= Config::fee, 不落盘)
 };
 inline bool valid(const Cfg &c) { return c.how != How::Over || c.buy.parts.any(); } // 卖超配须有买入部分 (V 定 W)
 

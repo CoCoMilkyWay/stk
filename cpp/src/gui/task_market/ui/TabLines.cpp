@@ -193,7 +193,7 @@ void SyncLinesWatch(LinesState &ui) {
 }
 
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, const Fee &fee,
-                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
+                   const Fee &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
                    const std::shared_ptr<const Quote::Holdings> &hold, const Quote::TradeBins &trades) {
   assert(page >= 0 && page < kPages);
   const PageDef &pd = kPageDefs[page];

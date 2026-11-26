@@ -122,8 +122,11 @@ std::string rows_of(const Context &c) {
   const std::string open = o == 1 ? "第 0 行 = 集合竞价段 [09:15, 09:30)"
                                   : "第 0.." + std::to_string(o - 1) + " 行 = 集合竞价段 [09:15, 09:30) 逐分钟一行 (行末 " + c.clock[0] + " … " + c.clock[o - 1] + ")";
   std::string tail;
+  HoldId hold = kHoldT1;
+  [[maybe_unused]] const bool known = hold_parse(c.hold_key, hold);
+  assert(known && "Context::hold_key 须是持有期 token");
   for (int k = 0; k < c.seg; ++k)
-    if (st::tail_masked(k, st::hold_from_name(c.hold_key), factor::geo_of(c.seg)))
+    if (st::tail_masked(k, hold, factor::geo_of(c.seg)))
       tail += (tail.empty() ? "" : " / ") + c.clock[static_cast<size_t>(k)];
   return "本层 (" + c.level + ") 每天 " + std::to_string(c.seg) + " 行: " + open + "; 第 " + std::to_string(o) + " 行起连续竞价 (行末 " + c.clock[o] + ", " + c.clock[o + 1] +
          " … " + c.clock.back() + ", 午休不占行; 末行含收盘竞价)." +

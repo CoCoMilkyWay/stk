@@ -80,6 +80,6 @@ inline std::string asset_sym(Mkt m, const std::string &code) { return code + kMk
 // ---------- 费率 ----------
 
 // 一笔的税佣 (define/Fee.hpp 同一份费率表; 调仓试算与账户日内回推同用)
-inline double fee(double amt, int s, const Fee &f = Fee{}) { return amt * f.tax(s == kSell); }
+inline double fee(double amt, int s, const Fee &f) { return amt * f.tax(s == kSell); }
 
 } // namespace live

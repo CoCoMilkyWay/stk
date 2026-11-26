@@ -1432,6 +1432,8 @@ void chart(SharedData &data, Quote::QuoteHub &quote, BoardState &st, bool priv) 
 
 void RenderTabBoard(SharedData &data, LiveHub &hub, Quote::QuoteHub &quote, BoardState &st) {
   assert(hub.connected());
+  if (hub.in().cfg.fee != data.config.fee) // 调仓试算的费率 = 系统配置 (同一份费率表)
+    hub.edit_cfg([&](live::rebal::Cfg &c) { c.fee = data.config.fee; });
   const BoardView &v = hub.board();
   std::set<std::string> held;
   if (v.frame)

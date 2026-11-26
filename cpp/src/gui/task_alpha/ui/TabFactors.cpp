@@ -229,7 +229,7 @@ void to_source(const BuildNode &n, std::string &s, bool &complete) {
   }
   if (factor::expr::declares(o.params, "h")) {
     sep();
-    s += (n.free & factor::expr::kFreeH) ? std::string("h") : "h=" + factor::stat::hold_token(n.p.h);
+    s += (n.free & factor::expr::kFreeH) ? std::string("h") : "h=" + std::string(hold_token(n.p.h));
   }
   if (factor::expr::declares(o.params, "w")) {
     sep();
@@ -1338,7 +1338,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     if (ImGui::Button("Search all", ImVec2(90, 0))) {
       ui.search_queue.clear();
       for (const FactorRow *p : all_rows)
-        for (const int h : all_holds)
+        for (const HoldId h : all_holds)
           ui.search_queue.push_back(SearchJob{*p, h, h == all_holds.front()});
       ui.search_all_n = static_cast<int>(ui.search_queue.size());
       action = 4;

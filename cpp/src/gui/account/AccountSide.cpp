@@ -39,7 +39,7 @@ Quote::Day path_day(misc::Ymd d, float ref, std::span<const double> v) {
 } // namespace
 
 account::Trade trade_of(const live::Fill &x, int last) {
-  return {std::clamp(Quote::sec_slot(x.sec), 0, last), x.code, x.side * static_cast<double>(x.qty), x.price, -x.side * x.amount - live::fee(x.amount, x.side)};
+  return {std::clamp(Quote::sec_slot(x.sec), 0, last), x.code, x.side * static_cast<double>(x.qty), x.price, -x.side * x.amount - live::fee(x.amount, x.side, Fee{})}; // 历史成交的费用按标准费率估 (define/Fee.hpp)
 }
 
 Quote::TradeMark mark_of(misc::Ymd d, const live::Fill &x) {

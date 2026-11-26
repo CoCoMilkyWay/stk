@@ -1,5 +1,7 @@
 #include "features/Panel/PoolSelect.hpp"
 
+#include "factor/Stat/Contract.hpp" // 可成交账: kEoBuy / hold_ret (仓位感知同一口径)
+
 #include "define/Members.hpp"
 #include "features/Panel/Fund.hpp" // fund::Board / SW2021_L1_COUNT
 #include "features/Storage/FeatureRead.hpp"
@@ -54,8 +56,11 @@ constexpr ColDef kDayColDefs[kDayCols] = {
     {"bs_eq", ts::TfId::None},
     {"pl_npp_ttm", ts::TfId::None},
     {"flt_div", ts::TfId::None},
+    {"lb_t1", ts::TfId::None},
+    {"lb_nom_t1", ts::TfId::None},
+    {"lb_entry_ok", ts::TfId::None},
 };
-static_assert(kFltNew == 0 && kFltWarn == 1 && kFltPb == 2 && kFltPe == 3 && kFltDiv == 4 && kFilters == 5, "过滤项 = kDayColDefs 末五列, 同序");
+static_assert(kFltNew == 0 && kFltWarn == 1 && kFltPb == 2 && kFltPe == 3 && kFltDiv == 4 && kFilters == 5, "过滤项 = kDayColDefs 自 kColFilter0 起五列, 同序");
 
 // 划分维的类: 列值 → 类 (−1 = 不在市)
 constexpr int flag(float x) { return x > 0.5f ? 1 : 0; }
@@ -140,6 +145,8 @@ void fill_row(const FeatureRead::DayColumns &c, Strip &t, size_t r, float *pre, 
     t.mcap[i] = mc;
     t.ind[i] = ind >= 1.0f && ind < static_cast<float>(fund::SW2021_L1_COUNT) ? static_cast<uint8_t>(ind + 0.5f) : 0;
     pre[a] = v(kColPre) > 0.0f ? v(kColPre) : 0.0f;
+    t.lv[i] = c.get(0, kColLab, a), t.nv[i] = c.get(0, kColNom, a);
+    t.eo[i] = std::isfinite(v(kColEntry)) ? static_cast<uint8_t>(v(kColEntry) + 0.5f) : 0;
     close[a] = v(kColTs) > 0.5f && px > 0.0f ? px : 0.0f;
     cls[a] = kOut;
     if (!(mc > 0.0f && v(kColListAge) >= 0.0f && !(v(kColDelistAge) >= 0.0f) && !flag(v(kColSusp)) && t.ind[i]))
@@ -364,7 +371,7 @@ std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel, 
   t->axis = lib.axis, t->dates = std::move(rows);
   if (!keep)
     t->line = ++lines;
-  t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->ind.resize(R * A), t->mcap.resize(R * A), t->grow.resize(R * A);
+  t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->ind.resize(R * A), t->mcap.resize(R * A), t->grow.resize(R * A), t->lv.resize(R * A), t->nv.resize(R * A), t->eo.resize(R * A);
   t->pre.resize(A);
   std::vector<float> pre((R - lo) * A), close((R - lo) * A); // [新行 · A]
   const FeatureRead rd(lib);
@@ -474,14 +481,30 @@ void perf(const Strip &t, Rebal rb, const Pick &pick, Perf &b) {
   for (int w = 0; w < kWeights; ++w)
     b.ret[w].assign(D, 0.0f), b.buy[w].assign(D, 0.0f);
   b.first = D;
-  std::vector<Aid> nx; // 新选的成员 (资产下标升序)
-  Sleeve lg;           // [键 = Weight] 持仓随价漂移到前一日收盘
-  Members to;          // 新源行的目标权 (源行 = 前一日)
+  const size_t A = t.A();
+  std::vector<Aid> nx;                   // 新选的成员 (资产下标升序)
+  std::vector<uint8_t> in(A, 0), nin(A); // 本日 / 次日成员
+  std::vector<int16_t> age(A, -1);       // 真持有链: 距最近可买建仓的交易日数 (−1 = 未持有)
+  std::vector<float> cell(A, 0.0f);      // 行 d−1 这一批的格收益 (非真持有 = 0)
+  Sleeve lg;                             // [键 = Weight] 持仓随可成交收益漂移到前一日收盘
+  Members to;                            // 新源行的目标权 (源行 = 前一日)
   size_t src = SIZE_MAX;
+  const auto members = [&](size_t d, std::vector<uint8_t> &m) { // 交易日 d 的成员位
+    std::fill(m.begin(), m.end(), uint8_t{0});
+    if (d >= D || src_of(rb, t.dates, t.dates[d]) == SIZE_MAX)
+      return;
+    std::vector<Aid> o;
+    pick(src_of(rb, t.dates, t.dates[d]), o);
+    for (const Aid a : o)
+      m[a] = 1;
+  };
   for (size_t d = 1; d < D; ++d) {
     if (const size_t r = src_of(rb, t.dates, t.dates[d]); r != src) {
       src = r;
       pick(r, nx);
+      std::fill(in.begin(), in.end(), uint8_t{0});
+      for (const Aid a : nx)
+        in[a] = 1;
       to.clear();
       for (const Aid a : nx) {
         for (int w = 0; w < kWeights; ++w)
@@ -498,8 +521,29 @@ void perf(const Strip &t, Rebal rb, const Pick &pick, Perf &b) {
     }
     if (!lg.hold.size())
       continue;
+    // 行 d−1 收盘的一批: 真持有链前推 + 格收益 (次日源不变 = 同一成员集; 换源 = 次日新选)
+    const size_t r0 = d - 1;
+    if (d + 1 < D && src_of(rb, t.dates, t.dates[d + 1]) == src)
+      nin = in;
+    else
+      members(d + 1, nin);
+    for (size_t a = 0; a < A; ++a) {
+      const size_t i = r0 * A + a;
+      const bool lab = in[a] && std::isfinite(static_cast<float>(t.lv[i])) && std::isfinite(static_cast<float>(t.nv[i]));
+      age[a] = !lab                                 ? int16_t{-1}
+               : (t.eo[i] & factor::stat::kEoBuy)   ? int16_t{0}
+               : age[a] >= 0 && age[a] < kChainDays ? static_cast<int16_t>(age[a] + 1)
+                                                    : int16_t{-1};
+      if (age[a] < 0) {
+        cell[a] = 0.0f;
+        continue;
+      }
+      const bool cont = nin[a] && d < D && t.eo[d * A + a] != 0;
+      const float y[2] = {static_cast<float>(t.lv[i]), static_cast<float>(t.nv[i])};
+      cell[a] = factor::stat::hold_ret(cont, cont ? t.eo[d * A + a] : 0, y);
+    }
     double ret[kWeights];
-    lg.pass([&](uint32_t a) { return t.rel(d - 1, d, a); }, ret);
+    lg.pass([&](uint32_t a) { return 1.0f + cell[a]; }, ret);
     for (int w = 0; w < kWeights; ++w)
       b.ret[w][d] = static_cast<float>(ret[w]);
   }

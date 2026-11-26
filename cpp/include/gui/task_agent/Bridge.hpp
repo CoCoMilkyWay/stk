@@ -10,6 +10,7 @@
 //   左右两翼同形: Chat (大模型) ⇄ Lab (数据 / 引擎) 都是 Async 管道, send / poll / live / busy / cancel 逐字同构; 有状态的一侧 (对话 Link ⇄ 候选台 Desk) 各自在管道外
 // =============================================================================
 
+#include "define/Label.hpp"
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Async.hpp"
 #include "gui/task_agent/Enum.hpp"
@@ -72,7 +73,7 @@ struct Scope {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, years, leaves, ops)
 
 struct Choice {
-  HoldId key = kHoldT1;
+  int key = 0; // 池 / 层下标, 或 HoldId
   std::string name;
 };
 

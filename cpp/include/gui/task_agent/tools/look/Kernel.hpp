@@ -160,18 +160,19 @@ struct RankScratch {
     rank_into(x, a), rank_into(y, b);
     return pearson(a, b);
   }
-  // 近似分层: 全部格按 rx 的秩分 20 组, 组超额只收开仓价点可买的格 (buy; 与真持有同一建仓判据, 交接续持链不追); ric 用全部格 (同 Row)
-  bool approx_ranked(std::span<const double> rx, std::span<const double> y, std::span<const double> ry, std::span<const uint8_t> buy, st::Row &w) const {
+  // 子截面分层: 格按 rx 的秩分 20 组, 组超额只收全截面分组下真持有的格 (held; hy = 其做多收益 − mkt, 续持取名义值,
+  //   Stat 契约【仓位感知】); ric 用全部格 (同 Row)
+  bool approx_ranked(std::span<const double> rx, std::span<const double> hy, std::span<const double> ry, std::span<const uint8_t> held, st::Row &w) const {
     const size_t n = rx.size();
-    assert(y.size() == n && ry.size() == n && buy.size() == n);
+    assert(hy.size() == n && ry.size() == n && held.size() == n);
     if (n < static_cast<size_t>(kMinCs))
       return false;
     w = {};
     double s[kGroups] = {};
     for (size_t i = 0; i < n; ++i) {
       const int k = std::min(static_cast<int>(rx[i] * kGroups / static_cast<double>(n)), kG20);
-      if (buy[i])
-        s[k] += y[i], ++w.cnt[k];
+      if (held[i])
+        s[k] += hy[i], ++w.cnt[k];
     }
     for (int k = 0; k < kGroups; ++k)
       w.grp[k] = static_cast<float>(w.cnt[k] ? s[k] / w.cnt[k] : 0.0);
@@ -179,11 +180,12 @@ struct RankScratch {
     w.ok = 1;
     return true;
   }
-  bool approx_row(std::span<const double> x, std::span<const double> y, std::span<const uint8_t> buy, st::Row &w) {
+  // y = 做多标签超额 (只定 ric 的秩), hy / held 同 approx_ranked
+  bool approx_row(std::span<const double> x, std::span<const double> y, std::span<const double> hy, std::span<const uint8_t> held, st::Row &w) {
     if (x.size() < static_cast<size_t>(kMinCs))
       return false;
     rank_into(x, a), rank_into(y, b);
-    return approx_ranked(a, y, b, buy, w);
+    return approx_ranked(a, hy, b, held, w);
   }
 };
 
@@ -623,15 +625,29 @@ struct ChunkView {
   std::span<const factor::check::Plane *> feat_pl; // 与 feats 对齐 (坏式或解析失败为 nullptr)
 };
 
-// 格 k 的开仓价点可买 (真持有的建仓判据, Contract【仓位感知】)
-inline uint8_t buyable(const Engine::Block &blk, size_t k) { return blk.y.eo[k] & st::kEoBuy ? 1 : 0; }
+// 格 k (块内行 t) 在全截面分组 (rx 已定向) 下是否真持有; 是 → ret = 其做多收益 (续持取名义值). Stat 契约【仓位感知】同一份
+inline bool held_cell(const Engine::Block &blk, const uint16_t *rx, HoldId hold, int t, size_t k, float &ret) {
+  const st::Label lb = Engine::label_of(*blk.y.labels[0], blk.y.eo, nullptr);
+  if (rx[k] == st::kRankNone || !lb.m[k])
+    return false;
+  float y[2];
+  st::label_cell(lb, static_cast<ptrdiff_t>(k), factor::cpu::stat::H2F{}, y);
+  const st::Chain ch = st::chain_of(t, blk.span(), hold);
+  const int g = st::grp_of(rx[k]);
+  const auto in = [g](uint16_t v) { return v != st::kRankNone && st::grp_of(v) == g; };
+  const st::Cell<uint16_t> cl{ch, rx + k, lb.m + k, lb.eo + k, y};
+  if (!cl.held(in))
+    return false;
+  ret = cl.ret(cl.continues(in));
+  return true;
+}
 
 // 一行逐行池内标签均值 mkt(t)
 inline float row_mkt(const Engine::Block &blk, int t) {
   const int A = blk.y.sh.A;
   const size_t base = static_cast<size_t>(t) * static_cast<size_t>(A);
-  const Engine::LegPlane &lb = *blk.y.labels[0];
-  const uint16_t *lv = lb.v[st::kLong].data();
+  const Engine::LabPlane &lb = *blk.y.labels[0];
+  const uint16_t *lv = lb.lv.data();
   double sum = 0.0;
   size_t cnt = 0;
   for (int a = 0; a < A; ++a)

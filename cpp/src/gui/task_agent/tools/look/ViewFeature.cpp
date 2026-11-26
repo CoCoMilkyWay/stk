@@ -135,8 +135,8 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
     const size_t st_smp = std::max<size_t>(1, total_N / kSample);
     const int rstep = row_step(static_cast<int>(total_N / kCsCells), seg);
     const int cstep = row_step(total_T / kCorrRows, seg);
-    const Engine::LegPlane &lb = *cv.blk.y.labels[0];
-    const uint16_t *lv = lb.v[st::kLong].data();
+    const Engine::LabPlane &lb = *cv.blk.y.labels[0];
+    const uint16_t *lv = lb.lv.data();
     const int nt = F.S.ex.threads();
 
     for (size_t i = 0; i < F_n; ++i) {

@@ -374,7 +374,7 @@ struct YearP : RowsP<YearP, YearRow> {
                        .ric_med = static_cast<float>(med)});
       }
     }
-    std::vector<std::vector<Day>>().swap(day);
+    std::vector<std::vector<DayG>>().swap(day);
   }
 };
 

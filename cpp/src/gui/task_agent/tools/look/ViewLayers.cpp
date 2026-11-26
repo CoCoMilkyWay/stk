@@ -129,16 +129,16 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
     const int A = cv.blk.y.sh.A, total_T = static_cast<int>(cv.dates.size()) * seg;
     const int rstep = row_step(static_cast<int>(static_cast<size_t>(total_T) * static_cast<size_t>(A) / kCsCells), seg);
     const factor::check::Plane *cp = cv.feat_pl[0];
-    const Engine::LegPlane &lb = *cv.blk.y.labels[0];
-    const uint16_t *lv = lb.v[st::kLong].data();
+    const Engine::LabPlane &lb = *cv.blk.y.labels[0];
+    const uint16_t *lv = lb.lv.data();
     const int nt = F.S.ex.threads();
     std::vector<std::array<Layer, 4>> tb(static_cast<size_t>(nt));
     std::vector<Mean> trho(static_cast<size_t>(nt)), tric(static_cast<size_t>(nt));
 
     F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
-      std::vector<double> cval, fxv, ey, rc_v, rf_v, ry_v;
+      std::vector<double> cval, fxv, ey, hy, rc_v, rf_v, ry_v;
       std::vector<uint8_t> buy;
-      std::array<std::vector<double>, 3> px, py;
+      std::array<std::vector<double>, 3> px, py, ph;
       std::array<std::vector<uint8_t>, 3> pb;
       RankScratch rs;
       st::Row w;
@@ -151,11 +151,15 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
         if (!std::isfinite(mkt))
           continue;
         const size_t base = static_cast<size_t>(t) * static_cast<size_t>(A);
-        cval.clear(), fxv.clear(), ey.clear(), buy.clear();
+        cval.clear(), fxv.clear(), ey.clear(), hy.clear(), buy.clear();
         for (int a = 0; a < A; ++a) {
           const size_t k = base + static_cast<size_t>(a);
-          if (cv.blk.y.gate[k] && cv.rx[k] != st::kRankNone && lb.m[k] && cp->m[k] && std::isfinite(cp->v[k]))
-            cval.push_back(cp->v[k]), fxv.push_back(rank_of_r16(cv.rx[k])), ey.push_back(static_cast<double>(h2f(lv[k])) - mkt), buy.push_back(buyable(cv.blk, k));
+          if (cv.blk.y.gate[k] && cv.rx[k] != st::kRankNone && lb.m[k] && cp->m[k] && std::isfinite(cp->v[k])) {
+            float hr = 0.f;
+            const bool h = held_cell(cv.blk, cv.rx, env.hold, t, k, hr);
+            cval.push_back(cp->v[k]), fxv.push_back(rank_of_r16(cv.rx[k])), ey.push_back(static_cast<double>(h2f(lv[k])) - mkt);
+            hy.push_back(h ? static_cast<double>(hr) - mkt : 0.0), buy.push_back(h ? 1 : 0);
+          }
         }
         const size_t n = cval.size();
         if (n < 3 * static_cast<size_t>(kMinCs))
@@ -163,15 +167,15 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
         rs.rank_into(cval, rc_v), rs.rank_into(fxv, rf_v), rs.rank_into(ey, ry_v);
         trho[ut].add(pearson(rc_v, rf_v)), tric[ut].add(pearson(rc_v, ry_v));
         for (size_t j = 0; j < 3; ++j)
-          px[j].clear(), py[j].clear(), pb[j].clear();
+          px[j].clear(), py[j].clear(), ph[j].clear(), pb[j].clear();
         for (size_t i = 0; i < n; ++i) {
           const size_t j = std::min<size_t>(2, static_cast<size_t>(rc_v[i] * 3.0 / static_cast<double>(n)));
-          px[j].push_back(fxv[i]), py[j].push_back(ey[i]), pb[j].push_back(buy[i]);
+          px[j].push_back(fxv[i]), py[j].push_back(ey[i]), ph[j].push_back(hy[i]), pb[j].push_back(buy[i]);
         }
-        if (rs.approx_ranked(rf_v, ey, ry_v, buy, w))
+        if (rs.approx_ranked(rf_v, hy, ry_v, buy, w))
           tb[ut][0].add(w);
         for (size_t j = 0; j < 3; ++j)
-          if (rs.approx_row(px[j], py[j], pb[j], w))
+          if (rs.approx_row(px[j], py[j], ph[j], pb[j], w))
             tb[ut][j + 1].add(w);
       }
     });

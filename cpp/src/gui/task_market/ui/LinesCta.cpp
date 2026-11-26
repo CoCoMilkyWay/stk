@@ -797,7 +797,7 @@ void path(CtaState &c, const CtaResult &r) {
   ImPlot::PopStyleVar();
 }
 
-void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::Rates &rates, const CtaResult *r, const std::string &lack) {
+void panel(const CtaService &svc, const Progress &lib, CtaState &c, const Fee &rates, const CtaResult *r, const std::string &lack) {
   // 状态: 价格库合成 / 进度 / 算不了的原因 / 全期跨度
   const Phase ph = svc.phase.load(std::memory_order_acquire);
   const size_t done = svc.done.load(std::memory_order_relaxed), total = svc.total.load(std::memory_order_relaxed);
@@ -986,7 +986,7 @@ void gate_of(CtaState &c, const PbBand &pb, const std::shared_ptr<const std::vec
 
 } // namespace
 
-void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, const cta::Rates &rates, const char *name, const ImVec2 &plots_size,
+void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, const Fee &rates, const char *name, const ImVec2 &plots_size,
                     float panel_w) {
   CtaState &c = ui.cta;
   const std::map<std::string, Quote::Ref> &one = ui.pick.rows[kPickOne];

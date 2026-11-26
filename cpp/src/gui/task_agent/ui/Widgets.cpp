@@ -272,8 +272,8 @@ void scope_row(SharedData &data, Scope &o, std::vector<catalog::PoolRow> &rows, 
   catalog::fit(data, o);
   for (const Choice &h : hs) {
     ImGui::SameLine();
-    if (ImGui::RadioButton((h.name + "##hd").c_str(), o.hold == h.key))
-      o.hold = h.key;
+    if (ImGui::RadioButton((h.name + "##hd").c_str(), o.hold == static_cast<HoldId>(h.key)))
+      o.hold = static_cast<HoldId>(h.key);
   }
   ImGui::TextDisabled("   %s", catalog::hold_desc(o.hold, o.level).c_str());
   // 特征来源: bar 恒开放, lob 可选 (本层无 lob 叶或 lob 库未建则不可改) + 开放的合起来的评估期 (候选台绑到此作用域后才有)

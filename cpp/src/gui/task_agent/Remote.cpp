@@ -365,7 +365,7 @@ struct Remote::Impl {
     if (const std::optional<Choice> l = pick("level", catalog::levels()))
       s.sc.level = l->key;
     if (const std::optional<Choice> h = pick("hold", catalog::holds(data, s.sc.level)))
-      s.sc.hold = h->key;
+      s.sc.hold = static_cast<HoldId>(h->key);
     else
       catalog::fit(data, s.sc);
     if (!why.empty())

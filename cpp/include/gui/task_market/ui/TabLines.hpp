@@ -277,7 +277,7 @@ void SyncLinesWatch(LinesState &ui);
 // account / hold = 账户行的悬停 / 持仓 (成分 + 当日四列; 账户的全史 / 当日走 mk); trades = 账户成交点两档 (「交易」开时叠在日内栏 / 主图的账户线上).
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, const Fee &fee,
-                   const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
+                   const Fee &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
                    const std::shared_ptr<const Quote::Holdings> &hold, const Quote::TradeBins &trades);
 
 } // namespace GUI::Market

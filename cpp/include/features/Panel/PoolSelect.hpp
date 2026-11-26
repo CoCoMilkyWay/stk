@@ -25,7 +25,8 @@ namespace pool {
 // all.bar 层 level 里 code 的列下标 (落盘变换须是 tf)
 size_t bar_col(size_t level, std::string_view code, ts::TfId tf = ts::TfId::None);
 
-// all.bar L_1day 日行 (原料带 / 行情篮子合成同一张列表): 列序 = DayCol; 行情篮子的日根只读前 kQuoteCols 列; 过滤项 f 的列 = kColFilter0 + f
+// all.bar L_1day 日行 (原料带 / 行情篮子合成同一张列表): 列序 = DayCol; 行情篮子的日根只读前 kQuoteCols 列; 过滤项 f 的列 = kColFilter0 + f;
+// 末三列 = T+1 标签 (lb_t1 做多 / lb_nom_t1 名义 / lb_entry_ok 建仓可成交码, define/Label.hpp): 选池回测的可成交账
 enum DayCol : size_t { kColTs,
                        kColOpen,
                        kColHigh,
@@ -43,7 +44,10 @@ enum DayCol : size_t { kColTs,
                        kColBoard,
                        kColMargin,
                        kColFilter0,
-                       kDayCols = kColFilter0 + kFilters };
+                       kColLab = kColFilter0 + kFilters,
+                       kColNom,
+                       kColEntry,
+                       kDayCols };
 std::vector<size_t> day_cols(size_t n = kDayCols); // 前 n 列的库列下标
 
 // 周序号 (周一起)
@@ -122,6 +126,8 @@ struct Strip {
   std::vector<uint8_t> ind;     // [行 · A] 申万一级 (0 = 未知; 在市者已知)
   std::vector<float> mcap;      // [行 · A] 收盘总市值 = close_day × total_shares (缺 → 0)
   std::vector<float> grow;      // [行 · A] 累计增长 Π_{0 < k ≤ 行} (1 + 日收益) (首行 1) = 后复权收盘价 (除权除息日不断)
+  std::vector<_Float16> lv, nv; // [行 · A] 行收盘建仓的 T+1 做多 / 名义收益 (无标签 = NaN)
+  std::vector<uint8_t> eo;      // [行 · A] 行收盘建仓价点的可成交码 (kEoBuy | kEoSell; 无 = 0)
   std::vector<float> pre;       // [A] 末行前收 (续行的收益)
   size_t A() const { return axis.size(); }
   size_t days() const { return dates.size(); }
@@ -159,6 +165,8 @@ private:
 
 // 篮子账 (两种权重同一趟; 账核 = define/Members.hpp Sleeve, 键 = 权重): 交易日 d 的成员 = pick(源行 r, out)
 //   (r = src_of(rb, 行, d); 换源才重选), 目标权 = Strip::omega; 换源 = roll (增仓), 逐日 = pass (收益 + 随价漂移)
+//   收益 = 可成交账 (Stat 契约【仓位感知】同一口径): 行 d−1 收盘这一批, 成员真持有 (建仓价点可买, 或沿连续成员链回走 ≤ kChainDays 日到可买) 才计
+//     T+1 标签 (次日仍是成员 = 续持取名义值), 否则该份资金不动 (收益 0)
 struct Perf {
   std::vector<float> ret[kWeights]; // [Weight][日] 日收益 (首日 / 未建仓 0)
   std::vector<float> buy[kWeights]; // [Weight][日] 增仓量 Σ (w − w̃)⁺ (w = 目标权, w̃ = 漂移后的权; 建仓 = 1; 不换源 0)

@@ -562,7 +562,7 @@ void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2
 
 // ---- CTA 页 (LinesCta.cpp) ----
 // 标的 (kPickOne) / 设定 / 成本率 (系统配置) 变 → 发请求; 画两图 + 区间条 (plots_size) + 其右中栏 (宽 panel_w, 同高: 设定 + 光标处参数 + 指标); name = 标的行名 (nullptr = 未选)
-void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, const cta::Rates &rates, const char *name, const ImVec2 &plots_size,
+void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, const Fee &rates, const char *name, const ImVec2 &plots_size,
                     float panel_w);
 
 // ---- 右表 (LinesSheet.cpp) ----

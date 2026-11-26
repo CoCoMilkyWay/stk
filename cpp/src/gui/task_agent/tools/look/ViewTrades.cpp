@@ -106,7 +106,7 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
       [&](const ChunkView &cv) {
         const int A = cv.blk.y.sh.A, n_stat = cv.t_hi - cv.t_lo;
         const Px px(cv.blk, cv.bm, cfg.bars, env.open);
-        const Engine::LegPlane &lb = *cv.blk.y.labels[0];
+        const Engine::LabPlane &lb = *cv.blk.y.labels[0];
 
         std::vector<std::pair<int, HeldCell>> flat;
         for (int r = 0; r < n_stat; ++r) {

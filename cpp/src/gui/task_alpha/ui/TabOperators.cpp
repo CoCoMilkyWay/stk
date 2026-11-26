@@ -72,7 +72,7 @@ std::string subst_operand(const OperatorRow &r) {
   for_each_param(r, [&](const char *name, double v) {
     char val[32];
     if (std::strcmp(name, "h") == 0)
-      std::snprintf(val, sizeof(val), "\\mathrm{%s}", factor::stat::hold_token(r.param.h).c_str());
+      std::snprintf(val, sizeof(val), "\\mathrm{%s}", std::string(hold_token(r.param.h)).c_str());
     else
       std::snprintf(val, sizeof(val), "%g", v);
     if (name[0] == 'w')

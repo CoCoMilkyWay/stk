@@ -899,7 +899,7 @@ void plot_tod(const InspectDerived &d, const InspectUIState::TodOcc &occ, const 
 // 悬停: 就近命中一个可见数据点 (组 × 金额段 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 = 画的年化
 void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *costs, int n_cost, const float *pool_ann, const factor::stat::Fee &fee, int sel_hold,
                const char *source, const ImVec2 &size) {
-  assert(n_hold >= 1 && n_cost >= 1 && fee.fixed >= 0.0);
+  assert(n_hold >= 1 && n_cost >= 1 && fee.impact >= 0.0);
   char title[128];
   std::snprintf(title, sizeof(title), "期限结构(%s)###term", source);
   {
@@ -1376,7 +1376,7 @@ bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &
       }
     }
   }
-  if (fui.view_file.empty() || !ctx.axis_ready || ctx.(ft->y.list.n == 0))
+  if (fui.view_file.empty() || !ctx.axis_ready || ctx.ft->y.list.n == 0)
     return false;
   if (isvc.busy())
     return false;
