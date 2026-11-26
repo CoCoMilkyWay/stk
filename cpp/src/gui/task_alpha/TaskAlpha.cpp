@@ -149,7 +149,7 @@ static Alpha::FactorsUIContext factors_context(const SharedData &data, std::shar
   c.years = years;
   c.dir = Engine::factor_dir_of(pool, c.lv);
   c.ft = std::move(ft);
-  c.fee = fee_of(data.config);
+  c.fee = Engine::fee_of(data.config);
   c.axis_ready = !data.asset.items.empty();
   c.assets = &data.asset.items;
   return c;

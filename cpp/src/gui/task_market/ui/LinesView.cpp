@@ -714,7 +714,7 @@ void push_quote(LinesDerived &d, int g, LinesRow r, const factor::stat::Fee &fee
     r.val = leg_of(d.quotes[r.ref.side], r.ref.key);
     r.src[kTrade] = mix_src(legs_of(r.val), true, fee);
     if (r.ref.is(Quote::kStock))
-      r.src[kIdeal] = mix_src(legs_of(r.val), false, 0.0);
+      r.src[kIdeal] = mix_src(legs_of(r.val), false, {});
   }
   if (d.view) {
     const Quote::Series *se = d.view->series(r.ref);
@@ -730,7 +730,7 @@ void push_quote(LinesDerived &d, int g, LinesRow r, const factor::stat::Fee &fee
 // 无行情键的行 r (已取名) 进组 g: 可成交 / 理想 = 腿集 legs 扣 / 不扣成本合成
 void push_book(LinesDerived &d, int g, LinesRow r, std::vector<LinesLeg> legs, const factor::stat::Fee &fee, const Reuse &ru) {
   r.src[kTrade] = mix_src(legs, true, fee);
-  r.src[kIdeal] = mix_src(std::move(legs), false, 0.0);
+  r.src[kIdeal] = mix_src(std::move(legs), false, {});
   push(d, g, std::move(r), ru);
 }
 
