@@ -6,7 +6,6 @@
 //   分年一律 by_year (逐日原料取 HoldP / GrpP / TurnP 三处, 只在 fill_eval 汇成 YearStat).
 #pragma once
 
-#include "factor/Stat/Book.hpp" // book_rows / FactorBooks
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Cpu.hpp" // Workspace
 #include "factor/Stat/Fold.hpp"

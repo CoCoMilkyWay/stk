@@ -167,8 +167,8 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
     wt.emplace_back(*pk_, s.holding_after(rc + static_cast<size_t>(t)));
 
   // 2. 篮子账 + 个股账 (同一账集): 收益 (平仓行) / 四列流水 (建仓行); 只付固定冲击
-  const BasketBooks bk{bt, ct, s, in.data(), s.ind.data() + rc * A, lab.m.data(), wt, t_w, static_cast<int>(A)};
-  st::book_rows(ex, sp, hd, lb, bk, st::Cost{}, [&](int, int t, const double *ret, const st::Flow *flow) {
+  const BasketBooks books{bt, ct, s, in.data(), s.ind.data() + rc * A, lab.m.data(), wt, t_w, static_cast<int>(A)};
+  st::book_rows(ex, sp, hd, lb, books, st::Cost{}, [&](int, int t, const double *ret, const st::Flow *flow) {
     const size_t u = static_cast<size_t>(c.land0() + t);
     for (size_t b = 0; b < B; ++b) {
       rx_.x[(kLedgerRet * B + b) * ds_ + u] = static_cast<float>(ret[b]);

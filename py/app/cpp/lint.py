@@ -13,7 +13,8 @@ see in Cursor.
 A translation unit's diagnostics depend only on its own text, the files it
 transitively #includes, the compile flags and clangd itself, so each file's
 diagnostic counts are cached under a hash of exactly that; unchanged files are
-skipped.
+skipped. Each result is saved as soon as it lands, so an interrupted run keeps
+its progress.
 
 Usage:
     python py/app/cpp/lint.py              # lint all files
@@ -26,6 +27,7 @@ import json
 import os
 import re
 import select
+import shlex
 import subprocess
 import sys
 import time
@@ -49,12 +51,10 @@ CLANGD_FILE = CPP_DIR / ".clangd"
 COMPILE_COMMANDS = CPP_DIR / "compile_commands.json"
 
 # Per file: [hash of itself + its transitive project #includes, diagnostic counts by severity].
-# Invalidated when clangd version, .clangd or compile_commands.json changes.
-CACHE_FILE = Path(__file__).resolve().parent / \
-    "__pycache__" / "lint_cache.json"
+# Invalidated when clangd version, .clangd or the set of compile flags changes.
+CACHE_FILE = Path(__file__).resolve().parent / "__pycache__" / "lint_cache.json"
 
-INCLUDE_RE = re.compile(
-    rb'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"\n]+)[>"]', re.MULTILINE)
+INCLUDE_RE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"\n]+)[>"]', re.MULTILINE)
 
 # Concurrent preamble/AST builds inside clangd. Lower if memory runs out.
 CLANGD_JOBS = os.cpu_count()
@@ -67,13 +67,9 @@ SEV_COUNT = 4
 # Seconds to wait for the shutdown reply, then for the process to exit, before killing clangd.
 SHUTDOWN_TIMEOUT_S = 5.0
 
-# Max wall-clock seconds to wait for clangd to report on all opened files.
-# (clangd may stay silent on headers it can't build a TU for.)
-DRAIN_TIMEOUT_S = 120.0
-
-# Once clangd has reported on at least one file, a quiet window this long
-# with no new diagnostics means we consider it done.
-DRAIN_QUIET_S = 2.0
+# Give up on the still-pending files once clangd reports nothing new for this long
+# (it may stay silent on headers it can't build a TU for).
+IDLE_TIMEOUT_S = 30.0
 
 
 def file_uri(path: Path) -> str:
@@ -84,6 +80,24 @@ def file_uri(path: Path) -> str:
 
 def rel_str(path: Path) -> str:
     return str(path.relative_to(PROJECT_ROOT))
+
+
+def compile_flags_hash() -> str:
+    # 每条命令去掉 -o 产物与输入文件, 只留编译参数去重: 增删源文件不变, 改宏 / 选项才变
+    flags = set()
+    for e in json.loads(COMPILE_COMMANDS.read_text()):
+        args = e["arguments"] if "arguments" in e else shlex.split(e["command"])
+        drop = {i + 1 for i, a in enumerate(args) if a == "-o"}
+        flags.add(
+            "\0".join(
+                a
+                for i, a in enumerate(args)
+                if i not in drop and a not in ("-o", "-c", e["file"])
+            )
+        )
+    return hashlib.blake2b(
+        "\n".join(sorted(flags)).encode(), digest_size=16
+    ).hexdigest()
 
 
 # ============================================================================
@@ -124,8 +138,7 @@ def dep_hashes(sources: list) -> dict:
                 seen.add(d)
                 stack.append(d)
         joined = "".join(own[d] for d in sorted(seen)).encode()
-        hashes[rel_str(p)] = hashlib.blake2b(
-            joined, digest_size=16).hexdigest()
+        hashes[rel_str(p)] = hashlib.blake2b(joined, digest_size=16).hexdigest()
     return hashes
 
 
@@ -161,8 +174,7 @@ class LspClient:
     def request(self, method: str, params: dict) -> int:
         msg_id = self._next_id
         self._next_id += 1
-        self._send({"jsonrpc": "2.0", "id": msg_id,
-                   "method": method, "params": params})
+        self._send({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
         return msg_id
 
     def notify(self, method: str, params: dict) -> None:
@@ -283,7 +295,7 @@ def count_by_severity(diags: list) -> list:
 
 def print_diags(rel: str, counts: list, include_errors: bool) -> int:
     min_sev = SEV_ERROR if include_errors else SEV_WARNING
-    n = sum(counts[min_sev - 1:])
+    n = sum(counts[min_sev - 1 :])
     if not n:
         return 0
     # clear the bottom status line, print the file result above it, then
@@ -293,12 +305,9 @@ def print_diags(rel: str, counts: list, include_errors: bool) -> int:
     return n
 
 
-def lint_all(client: LspClient, paths: list, include_errors: bool) -> tuple:
-    """didOpen every file at once, print diagnostics incrementally as they land.
-    Returns (shown diagnostic total, {path: counts by severity} for files clangd reported on).
-    """
+def lint_all(client: LspClient, paths: list):
+    """didOpen every file at once, yield (path, counts by severity) as clangd reports on each."""
     uri_to_path = {}
-    results = {}
     pending = set()
     for path in paths:
         uri = file_uri(path)
@@ -318,20 +327,21 @@ def lint_all(client: LspClient, paths: list, include_errors: bool) -> tuple:
         )
 
     total_files = len(paths)
-    total = 0
-    reported = 0
-    status(f"0/{total_files} files checked ...")
-    deadline = time.time() + DRAIN_TIMEOUT_S
+
+    def progress():
+        status(
+            f"{total_files - len(pending)}/{total_files} files checked, "
+            f"{len(pending)} pending ..."
+        )
+
+    progress()
     last_recv = time.time()
-    while pending and time.time() < deadline:
+    while pending:
         msg = client.read_message(timeout=2.0)
         if msg is None:
-            if reported > 0 and time.time() - last_recv > DRAIN_QUIET_S:
+            if time.time() - last_recv > IDLE_TIMEOUT_S:
                 break
-            status(
-                f"{reported}/{total_files} files checked, "
-                f"{len(pending)} pending ..."
-            )
+            progress()
             continue
         if msg.get("method") != "textDocument/publishDiagnostics":
             continue
@@ -339,19 +349,15 @@ def lint_all(client: LspClient, paths: list, include_errors: bool) -> tuple:
         uri = params.get("uri")
         if uri not in pending:
             continue
-        path = uri_to_path[uri]
-        results[path] = count_by_severity(params.get("diagnostics", []))
-        total += print_diags(rel_str(path), results[path], include_errors)
         pending.discard(uri)
         client.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
-        reported += 1
         last_recv = time.time()
-        status(f"{reported}/{total_files} files checked, {len(pending)} pending ...")
+        yield uri_to_path[uri], count_by_severity(params.get("diagnostics", []))
+        progress()
 
     clear_status()
     for uri in pending:
         client.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
-    return total, results
 
 
 # ============================================================================
@@ -369,8 +375,7 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     target = (PROJECT_ROOT / args[0]).resolve() if args else CPP_DIR
     assert target.exists(), f"target not found: {target}"
-    files = list(iter_sources(target, LINT_EXTENSIONS)
-                 ) if target.is_dir() else [target]
+    files = list(iter_sources(target, LINT_EXTENSIONS)) if target.is_dir() else [target]
     assert files, f"No C/C++ source files to lint under {target}"
     print(f"Linting {len(files)} file(s) with clangd ...", flush=True)
 
@@ -381,14 +386,11 @@ def main():
     print(f"Using: {version}")
 
     assert CLANGD_FILE.is_file(), f"clangd config not found: {CLANGD_FILE}"
-    assert COMPILE_COMMANDS.is_file(
-    ), f"compile database not found: {COMPILE_COMMANDS}"
-    cache_key = "|".join(
-        [version, file_hash(CLANGD_FILE), file_hash(COMPILE_COMMANDS)])
+    assert COMPILE_COMMANDS.is_file(), f"compile database not found: {COMPILE_COMMANDS}"
+    cache_key = "|".join([version, file_hash(CLANGD_FILE), compile_flags_hash()])
     cache = load_cache(CACHE_FILE, cache_key)
     deps = dep_hashes(list(iter_sources(CPP_DIR, FORMAT_EXTENSIONS)))
-    assert all(
-        rel_str(p) in deps for p in files), "target outside the lintable sources"
+    assert all(rel_str(p) in deps for p in files), "target outside the lintable sources"
     valid = {rel: v for rel, v in cache.items() if deps.get(rel) == v[0]}
     todo = [p for p in files if rel_str(p) not in valid]
     print(f"{len(files) - len(todo)} cached, {len(todo)} to check")
@@ -398,21 +400,21 @@ def main():
         for p in files
         if rel_str(p) in valid
     )
-    results = {}
+    save_cache(CACHE_FILE, cache_key, valid)
+    checked = 0
     if todo:
         client = LspClient(binary, CPP_DIR)
         client.initialize()
-        checked, results = lint_all(client, todo, include_errors)
+        for p, counts in lint_all(client, todo):
+            total += print_diags(rel_str(p), counts, include_errors)
+            valid[rel_str(p)] = [deps[rel_str(p)], counts]
+            save_cache(CACHE_FILE, cache_key, valid)
+            checked += 1
         client.shutdown()
-        total += checked
-
-    for p, counts in results.items():
-        valid[rel_str(p)] = [deps[rel_str(p)], counts]
-    save_cache(CACHE_FILE, cache_key, valid)
 
     print(
         f"Done. {total} diagnostic(s) across linted files, "
-        f"{len(results)}/{len(todo)} checked.",
+        f"{checked}/{len(todo)} checked.",
         flush=True,
     )
 

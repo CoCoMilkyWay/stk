@@ -1,6 +1,8 @@
 // Probe — 见头文件. include Stat 账集头 (book_rows), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Probe.hpp"
 
+#include "factor/Stat/Book.hpp" // book_rows / FactorBooks
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>

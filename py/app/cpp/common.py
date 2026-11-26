@@ -45,8 +45,11 @@ def load_cache(cache_file: Path, key: str) -> dict:
 
 
 def save_cache(cache_file: Path, key: str, files: dict):
+    # 先写临时文件再 rename: 写到一半被打断也不会留下半截 JSON
     cache_file.parent.mkdir(exist_ok=True)
-    cache_file.write_text(json.dumps({"key": key, "files": files}, indent=0))
+    tmp = cache_file.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"key": key, "files": files}, indent=0))
+    os.replace(tmp, cache_file)
 
 
 def iter_sources(root: Path, extensions: set[str]):

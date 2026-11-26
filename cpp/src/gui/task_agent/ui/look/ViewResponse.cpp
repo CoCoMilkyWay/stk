@@ -1,12 +1,9 @@
 // view_response 的图: 累计超额路径 (带 ± 标准误, 各开仓时段) + 各时点因子分位 (节与表见 tools/look/ViewResponse.cpp)
 #include "gui/task_agent/tools/Look.hpp"
-#include "gui/task_agent/ui/Widgets.hpp"
 
 #include "implot.h"
 
 namespace GUI::Agent {
-
-using namespace ui;
 
 void ResponseRes::plot(int) const {
   const size_t P = pts.size();
