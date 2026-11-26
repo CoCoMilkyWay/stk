@@ -103,7 +103,7 @@ Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
   j.spec.y = {Holds::of(hold_bit(kHoldT1)), {}, 0.f};
   j.spec.ry = false;
   j.bands = {factor::stat::kChainDays + 1, 1};
-  j.b = {.load = cell_bytes(*j.ft, j.spec, val.size()), .work = static_cast<double>(sizeof(PoolMask)), .fixed = BasketPass::fixed_bytes(j.dm)};
+  j.b = {.load = cell_bytes(j.spec, val.size()), .work = static_cast<double>(sizeof(PoolMask)), .fixed = BasketPass::fixed_bytes(j.dm)};
   j.P = plan_chunks(j.dm, 1, j.b, j.bands, F.S.budget());
   BasketPass pass(j.dm, std::move(pk), val);
   const size_t n = j.P.chunks.size();

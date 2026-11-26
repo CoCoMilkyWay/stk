@@ -1,13 +1,14 @@
 // Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: 因子文件 stats[i].holds[] 每项 = 按 hold_cols() 列序的数组
-// (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / end_n,
+// (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / end_n / ann / sharpe,
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
-// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两端各 vol / imp / fix × 买卖, w, n + rows);
+// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两端各 vol / imp / fix × 买卖);
 // 一个金额段 (CostTier) cost_json / load_cost; 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf; 分年 (YearStat) / 滚动窗 (Roll) 在 eval_json 内联;
 // 一个根的评估结果 (EvalStat) 两半写 scope_json (文件顶层 run) + eval_json (stats[i]), 一次读 load_eval.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
+#include "factor/Stat/Fold.hpp"
 #include "gui/engine/Table.hpp" // CostTier / MiniPdf / EvalStat
 #include "misc/date.hpp"
 
@@ -61,10 +62,10 @@ inline bool json_ll(const nlohmann::json &j, const char *key, long long &out) {
 // HoldStat 的浮点字段 = 逐行量 (ric / rac / ls) × 七个矩 + 标量 (beta / mono / end_n) (键与字段同序)
 inline constexpr const char *kSeriesKeys[] = {"ric", "rac", "ls"};
 inline constexpr const char *kMomentKeys[] = {"mean", "sd", "ir", "t", "pos", "skew", "kurt"};
-inline constexpr const char *kScalarKeys[] = {"beta", "mono", "end_n"};
-// CostAcc 的两端 (与 factor::stat::End 同序) × 每本字段 (与 CostBook 同序)
+inline constexpr const char *kScalarKeys[] = {"beta", "mono", "end_n", "ann", "sharpe"};
+// CostAcc 的两端 (与 factor::stat::End 同序) × 每本字段 (与 Turn 同序)
 inline constexpr const char *kEndKeys[factor::stat::kEnds] = {"top", "bot"};
-inline constexpr const char *kCostBookKeys[] = {"vol_buy", "vol_sell", "imp_buy", "imp_sell", "fix_buy", "fix_sell", "w", "n"};
+inline constexpr const char *kTurnKeys[] = {"vol_buy", "vol_sell", "imp_buy", "imp_sell", "fix_buy", "fix_sell"};
 
 namespace detail {
 template <class M>
@@ -81,7 +82,7 @@ auto series_of(H &h, int s) -> decltype(&h.ric) {
 }
 template <class H>
 auto scalar_field(H &h, int q) -> decltype(&h.mono) {
-  decltype(&h.mono) f[] = {&h.beta, &h.mono, &h.end_n};
+  decltype(&h.mono) f[] = {&h.beta, &h.mono, &h.end_n, &h.ann, &h.sharpe};
   static_assert(sizeof(f) / sizeof(f[0]) == sizeof(kScalarKeys) / sizeof(kScalarKeys[0]));
   return f[q];
 }
@@ -107,9 +108,8 @@ inline std::vector<std::string> hold_cols() {
 inline std::vector<std::string> acc_cols() {
   std::vector<std::string> c;
   for (const char *e : kEndKeys)
-    for (const char *k : kCostBookKeys)
+    for (const char *k : kTurnKeys)
       c.push_back(std::string(e) + "." + k);
-  c.push_back("rows");
   return c;
 }
 inline nlohmann::ordered_json cols_json(const std::vector<std::string> &cols) {
@@ -179,17 +179,13 @@ inline bool load_hold(const nlohmann::json &o, int seg, factor::stat::HoldStat &
   return true;
 }
 
-// 换手成本累加器 (契约 CostAcc; 因子文件 stat.costs[].acc[]): 计数整数精确, 量 / 冲击和 4 位有效
+// 换手成本累加器 (Stat/Turn.hpp CostAcc; 因子文件 stat.costs[].acc[]): 量 / 冲击和 4 位有效
 inline nlohmann::ordered_json cost_acc_json(const factor::stat::CostAcc &c) {
   nlohmann::ordered_json o = nlohmann::ordered_json::array();
-  for (const factor::stat::CostBook &g : c.book) {
+  for (const factor::stat::Turn &g : c.book)
     for (const double *f : {g.vol, g.imp, g.fix})
-      for (int s = 0; s < factor::stat::kSides; ++s)
+      for (int s = 0; s < kSides; ++s)
         o.push_back(sig4(f[s]));
-    o.push_back(sig4(g.w));
-    o.push_back(g.n);
-  }
-  o.push_back(c.rows);
   return o;
 }
 
@@ -203,21 +199,11 @@ inline bool load_cost_acc(const nlohmann::json &o, factor::stat::CostAcc &dst) {
     v = e.is_number() ? e.get<double>() : 0.0;
     return e.is_number();
   };
-  const auto ll = [&](long long &v) {
-    const nlohmann::json &e = o[i++];
-    v = e.is_number_integer() ? e.get<long long>() : 0;
-    return e.is_number_integer();
-  };
-  for (factor::stat::CostBook &g : c.book) {
+  for (factor::stat::Turn &g : c.book)
     for (double *f : {g.vol, g.imp, g.fix})
-      for (int s = 0; s < factor::stat::kSides; ++s)
+      for (int s = 0; s < kSides; ++s)
         if (!num(f[s]))
           return false;
-    if (!num(g.w) || !ll(g.n))
-      return false;
-  }
-  if (!ll(c.rows))
-    return false;
   dst = c;
   return true;
 }

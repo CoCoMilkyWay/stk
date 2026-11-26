@@ -9,6 +9,7 @@
 
 #include "factor/Check.hpp" // check::Plane
 #include "factor/Stat/Contract.hpp"
+#include "factor/Stat/Turn.hpp"
 #include "features/Storage/FeaturePlane.hpp" // Day / LibReaders
 #include "gui/engine/Table.hpp"              // FeatureTable / FactorScope / StatScope
 #include "misc/epoch.hpp"
@@ -50,7 +51,7 @@ inline constexpr double kWarmFrac = 0.1;
 constexpr size_t warm_days(int seg) { return static_cast<size_t>((factor::kMaxD + seg - 1) / seg); }
 struct Domain {
   PoolId pool = kAllPool;       // 因子池
-  LibMask used = 0;             // 所用库: 标签库 ∪ 叶所在库
+  LibMask used = 0;             // 所用库: 标签库 ∪ 叶所在库 ∪ (盘口成本时) Lob 库
   reader::ReadScope rs;         // main = 标签库, libs = used 各库清单, axis = A 轴, to = A → 各库轴
   std::vector<misc::Ymd> dates; // 装载日 = 预热 [0, warm) + 评估期 [warm, n) (升序; 评估期非空)
   std::vector<Day> days;        // [dates] 当日 + 承接日及其落盘位
@@ -62,7 +63,7 @@ struct Domain {
   bool uses(const Col &c) const { return used & lib_bit(lib_id(pool, c.tier)); }
 };
 void open_libs(const FactorScope &sc, LibReaders &lr);
-LibMask used_libs(const FeatureTable &ft, PoolId pool, std::span<const LeafId> leaves);
+LibMask used_libs(const FeatureTable &ft, PoolId pool, std::span<const LeafId> leaves, bool lob_cost);
 bool span_of(const FeatureTable &ft, const FactorScope &sc, std::span<const LeafId> leaves, size_t keep, Domain &dm, std::string &why);
 bool domain_of(const FeatureTable &ft, const FactorScope &sc, std::span<const LeafId> leaves, size_t keep, Domain &dm, std::string &why);
 StatScope stat_scope(const FactorScope &sc, const Domain &dm, int seg, double n_full, const char *backend);
@@ -124,7 +125,7 @@ struct BlockSpec {
   bool ry = false;
 };
 inline constexpr double kPlaneBytes = 5.0;
-double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx);
+double cell_bytes(const BlockSpec &s, size_t nx);
 
 struct Leaf : factor::check::Plane {
   mutable std::map<factor::Dom, std::string> dom;

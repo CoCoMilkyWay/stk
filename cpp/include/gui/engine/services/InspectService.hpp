@@ -4,7 +4,7 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/engine/Book.hpp"
+#include "gui/engine/Ledger.hpp"
 #include "gui/engine/File.hpp"
 #include "gui/engine/Worker.hpp"
 #include "gui/util/Stage.hpp"
@@ -55,10 +55,10 @@ struct InspectResult : EvalStat {
   std::vector<misc::Ymd> dates;
   factor::stat::Holds hd;
   reader::ReadScope read_scope;
-  BookLines pool_index;
+  LedgerLines pool_index;
   float pool_ann[kHoldCount] = {};
   InspectPlanes pl;
-  BookLines nav;
+  LedgerLines nav;
   factor::stat::CostAcc ls_turn[kTails][kHoldCount] = {};
   AggPdf ic_agg[kHoldCount];
   AlphaDist alpha_dist;
@@ -71,7 +71,7 @@ struct InspectResult : EvalStat {
 
 struct InspectCache {
   InspectPlanes pl;
-  Stage<uint64_t, BookLines> pool;
+  Stage<uint64_t, LedgerLines> pool;
 };
 
 // 单因子评估纯计算核 (须持 Lease): 结果填进 out (一级平面在 cache.pl, 调用方按需与结果交换以复用容量);

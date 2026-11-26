@@ -3,7 +3,7 @@
 //   薄线程壳: RunService (FactorWorker<RunService, RunRequest>)
 #pragma once
 
-#include "gui/engine/Book.hpp"
+#include "gui/engine/Ledger.hpp"
 #include "gui/engine/File.hpp"
 #include "gui/engine/Table.hpp"
 #include "gui/engine/Worker.hpp"
@@ -32,7 +32,7 @@ void ScanFactors(const FactorScope &sc, std::vector<FactorRow> &out);
 // 一个求值行在一个持有期上的逐日序列 (已按权重方向): 逐日 rIC + 超额分层 / LS 日净值线 + 各 LS 线年换手
 struct DayLine {
   std::vector<float> ric;  // [日] 当日 ok 行 rIC 均值 (无 ok 行 = NaN)
-  BookLines nav;           // [kNavExcess][日] 日收益 (线序见 Table.hpp kNavExcess)
+  LedgerLines nav;           // [kNavExcess][日] 日收益 (线序见 Table.hpp kNavExcess)
   float turn[kNavLs] = {}; // LS 线年换手 (倍; 整组 = 固定段两端, 尾部 = 该级两端)
 };
 struct DayLines {

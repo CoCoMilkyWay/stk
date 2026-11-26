@@ -4,12 +4,14 @@
 // TS 流式实现 (实盘: 每分钟一次 push, O(1) 或 O(d) 状态; 语义契约见 factor/Contract.hpp)
 // =============================================================================
 //   统一接口 (Contract【调用形状】; 每个资产一个对象, 各自推进, 晚到的资产不拖别人):
-//     explicit Op(const Param &);  Val step(Val x, Val y, Val z, int t_seg);  static constexpr T kT (op_check 对表)
-//     元数不到的元传 Val{}; t_seg = 段内位置 (t % S, Contract【层几何】), 每行必推 (缺数据推 m = 0).
-//   结构 = 两节, 对应 OpTable 的 T 窗列:
+//     explicit Op(const Param &);  Val step(const Val (&x)[kMaxIn], int n, int t_seg);  static constexpr T kT (op_check 对表)
+//     x 前 n 个是输入 (定元算子 n = 元数, 只读前三个), 其余槽恒 Val{}; t_seg = 段内位置 (t % S, Contract【层几何】),
+//     每行必推 (缺数据推 m = 0).
+//   结构 = 三节, 对应 OpTable 的 (元数, T 窗) 列:
 //     节一  POINT             无状态纯函数 pt::*: static Val apply(x, y, z, t_seg, p), 经 Point<F> 适配
 //     节二  EXPAND/ROLL/EXPO  有状态: 核 core::* × 窗 Expand / Roll / Ema
 //           EXPAND 在 t_seg = 0 归零; ROLL / EXPO 不看 t_seg —— 契约说它们跨段不重置.
+//     节三  N 元 POINT        无状态, 读 x[0..n)
 //
 //   节二只写一份公式: **统计核 core::* × 窗适配 Expand/Roll/Ema**.
 //   命名 Ts<核><窗>: *Cum 与 *Roll 就是同一个核挂在两个窗上 (见文件末尾的实例化清单),
@@ -93,16 +95,16 @@ struct Max {
 struct Min {
   static Val apply(Val x, Val y, Val, int, const Param &) { return mk(std::fmin(x.v, y.v), x.m && y.m); }
 };
+struct Pow { // sign(x)·|x|^y; x = 0 → 0 (含负次幂); 溢出由 mk 转无效
+  static Val apply(Val x, Val y, Val, int, const Param &) {
+    const double b = x.v;
+    return mk(x.v != 0.f ? std::copysign(std::pow(std::fabs(b), static_cast<double>(y.v)), b) : 0.0, x.m && y.m);
+  }
+};
 struct Imb { // 和在两侧量级下相消 (双边皆 0 / x ≈ −y) → 0 (无失衡)
   static Val apply(Val x, Val y, Val, int, const Param &) {
     const bool ok = den_ok(static_cast<double>(x.v) + y.v, std::fabs(x.v) + std::fabs(y.v));
     return mk(ok ? (x.v - y.v) / (x.v + y.v) : 0.f, x.m && y.m);
-  }
-};
-struct Share { // 同上 → 0.5 (对半)
-  static Val apply(Val x, Val y, Val, int, const Param &) {
-    const bool ok = den_ok(static_cast<double>(x.v) + y.v, std::fabs(x.v) + std::fabs(y.v));
-    return mk(ok ? x.v / (x.v + y.v) : 0.5f, x.m && y.m);
   }
 };
 struct LogRatio { // ln(clamp(x/y, ε, 1/ε)): 非正侧饱和到 ∓kLogCap (见 log_ratio)
@@ -127,7 +129,7 @@ class Point {
 public:
   static constexpr T kT = T::POINT;
   explicit Point(const Param &p) : p_(p) {}
-  Val step(Val x, Val y, Val z, int t_seg) const { return F::apply(x, y, z, t_seg, p_); }
+  Val step(const Val (&x)[kMaxIn], int, int t_seg) const { return F::apply(x[0], x[1], x[2], t_seg, p_); }
 
 private:
   Param p_;
@@ -183,9 +185,6 @@ struct MomAcc {
   }
   bool disp() const { return spread(lo, hi); }
   bool ok(int need) const { return n >= need && disp(); } // 退化 (样本不足 / 全并列) → 中性值 0
-};
-struct Var : MomAcc {
-  Val get(const Ctx &) const { return mk(ok(2) ? m2 / (n - 1) : 0.0, true); }
 };
 struct Std : MomAcc {
   Val get(const Ctx &) const { return mk(ok(2) ? std::sqrt(m2 / (n - 1)) : 0.0, true); }
@@ -247,23 +246,6 @@ struct Entropy { // 只对正值定义: ln S − Σ x ln x / S; 无正样本 →
     s += x.v, sxlnx += static_cast<double>(x.v) * std::log(x.v), ++npos;
   }
   Val get(const Ctx &) const { return mk(npos >= 1 ? std::log(s) - sxlnx / s : 0.0, true); }
-};
-
-struct Product { // Π(1+x) − 1 精确: 对数域累 ln|1+x|, 零因子 (x = −1) 计数, 负因子 (x < −1) 计奇偶; 空窗 = 空积 − 1 = 0
-  double sl = 0;
-  int zero = 0, neg = 0;
-  void reset(const Param &) { *this = {}; }
-  void add(int, Val x, Val) {
-    if (!x.m)
-      return;
-    if (x.v > -1.f)
-      sl += std::log1p(x.v);
-    else if (x.v < -1.f)
-      sl += std::log(-1.0 - x.v), ++neg;
-    else
-      ++zero;
-  }
-  Val get(const Ctx &) const { return mk(zero > 0 ? -1.0 : (neg & 1 ? -std::exp(sl) - 1.0 : std::expm1(sl)), true); }
 };
 
 struct Wma { // 线性权 w = i+1 (最旧 1 … 最新 d), 只在有效点上累权; n ≥ 1 ⇒ Σw ≥ 1; 空窗 → 0
@@ -395,13 +377,13 @@ class Expand {
 public:
   static constexpr T kT = T::EXPAND;
   explicit Expand(const Param &p) : p_(p) { c_.reset(p_); }
-  Val step(Val x, Val y, Val, int t_seg) {
+  Val step(const Val (&x)[kMaxIn], int, int t_seg) {
     if (t_seg == 0)
       c_.reset(p_), i_ = 0;
     assert(i_ == t_seg && "每行必推: 段内位置须连续");
-    c_.add(i_, x, y);
+    c_.add(i_, x[0], x[1]);
     ++i_;
-    return c_.get(Ctx{i_, x, y, p_});
+    return c_.get(Ctx{i_, x[0], x[1], p_});
   }
 
 private:
@@ -420,8 +402,8 @@ public:
   explicit Roll(const Param &p) : p_(p), L_(p.d + Extra), bx_(static_cast<size_t>(L_)), by_(static_cast<size_t>(L_)) {
     assert(p.d >= 1);
   }
-  Val step(Val x, Val y, Val, int) {
-    bx_[head_] = x, by_[head_] = y;
+  Val step(const Val (&x)[kMaxIn], int, int) {
+    bx_[head_] = x[0], by_[head_] = x[1];
     if (++head_ == L_)
       head_ = 0;
     n_ = std::min(n_ + 1, L_);
@@ -432,7 +414,7 @@ public:
       if (++j == L_)
         j = 0;
     }
-    return c_.get(Ctx{p_.d, x, y, p_});
+    return c_.get(Ctx{p_.d, x[0], x[1], p_});
   }
 
 private:
@@ -448,8 +430,8 @@ class Ema {
 public:
   static constexpr T kT = T::EXPO;
   explicit Ema(const Param &p) : q_(1.0 - p.k), bx_(static_cast<size_t>(kMaxD)) { assert(p.k > 0.f && p.k <= 1.f); }
-  Val step(Val x, Val, Val, int) { // 窗内无有效样本 → 0
-    bx_[head_] = x;
+  Val step(const Val (&x)[kMaxIn], int, int) { // 窗内无有效样本 → 0
+    bx_[head_] = x[0];
     if (++head_ == kMaxD)
       head_ = 0;
     n_ = std::min(n_ + 1, kMaxD);
@@ -473,6 +455,26 @@ private:
   int head_ = 0, n_ = 0;
 };
 
+// =========================== 节三: N 元 POINT (无状态) ===========================
+
+// x[0..n) 特征元, 权 p.w[0..n) (Contract【N 元】): Σ w_i x_i, double 按元序累加; 任一元无效 → 无效
+class LinFix {
+public:
+  static constexpr T kT = T::POINT;
+  explicit LinFix(const Param &p) : p_(p) {}
+  Val step(const Val (&x)[kMaxIn], int n, int) const {
+    assert(n >= 2 && n <= kLrN && "至少 2 个特征元");
+    double v = 0.0;
+    bool m = true;
+    for (int i = 0; i < n; ++i)
+      v += static_cast<double>(p_.w[i]) * x[i].v, m = m && x[i].m;
+    return mk(v, m);
+  }
+
+private:
+  Param p_;
+};
+
 // =========================== 实例化: 核 × 窗 ===========================
 //   Ts<核>Cum / Ts<核>Roll = 同一个核挂两个窗; 公式只有核那一份. 此处按核分组, 同核不同窗相邻
 //   (全局 idx 序只归 OpTable 管, 实现文件不跟着排).
@@ -494,8 +496,8 @@ using TsMul = Point<pt::Mul>;
 using TsDiv = Point<pt::Div>;
 using TsMax = Point<pt::Max>;
 using TsMin = Point<pt::Min>;
+using TsPow = Point<pt::Pow>;
 using TsImb = Point<pt::Imb>;
-using TsShare = Point<pt::Share>;
 using TsLogRatio = Point<pt::LogRatio>;
 using TsMask = Point<pt::Mask>;
 using TsWhere = Point<pt::Where>;
@@ -506,8 +508,6 @@ using TsSumRoll = Roll<core::Sum>;
 using TsMeanCum = Expand<core::Mean>;
 using TsMeanRoll = Roll<core::Mean>;
 using TsMeanEma = Ema;
-using TsVarCum = Expand<core::Var>;
-using TsVarRoll = Roll<core::Var>;
 using TsStdCum = Expand<core::Std>;
 using TsStdRoll = Roll<core::Std>;
 using TsSkewCum = Expand<core::Skew>;
@@ -527,7 +527,6 @@ using TsRankRoll = Roll<core::Rank>;
 using TsQuantileRoll = Roll<core::Quantile>;
 using TsZRoll = Roll<core::Z>;
 using TsWmaRoll = Roll<core::Wma>;
-using TsProductRoll = Roll<core::Product>;
 using TsSlopeRoll = Roll<core::Slope>;
 using TsHhiCum = Expand<core::Hhi>;
 using TsEntropyCum = Expand<core::Entropy>;
@@ -541,5 +540,6 @@ using TsResidCum = Expand<core::Resid>;
 using TsResidRoll = Roll<core::Resid>;
 using TsWMeanCum = Expand<core::WMean>;
 using TsWMeanRoll = Roll<core::WMean>;
+using TsLinFix = LinFix;
 
 } // namespace factor::ts

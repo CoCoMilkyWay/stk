@@ -10,7 +10,7 @@
 //   样本集 = 池内 ∧ 有效 (统计量只由池内算出); 输出对每个 x 有效的资产写 "池内统计量作用于自己的 x".
 //   广播型 (CsMean/CsStd/CsQuantile/CsBeta/CsCorr) 对全行写同一个值, 掩码恒真 (空池行 → 中性值),
 //   哪怕该资产自己的 x 是缺失的 —— 它描述的是截面而不是资产.
-//   相对型 (Demean/Z/Rank/NormRank/Winsor/Bucket/Resid/Group*) 描述资产自身, x 缺失即无效; 统计量退化 → 契约第 6 条中性值.
+//   相对型 (Z/Rank/NormRank/Winsor/Bucket/Resid/Group*) 描述资产自身, x 缺失即无效; 统计量退化 → 契约第 6 条中性值.
 //   GROUP: 组内池成员统计量; 该组无池内成员 → 回退全池统计量.
 //
 //   【precise-math】依赖受控浮点, 编进 -fno-fast-math TU.
@@ -187,15 +187,6 @@ struct CsStd { // n < 2 / 全并列 → 0
     CS_ROW;
     const auto s = detail::moments(xv, xm, g, A);
     detail::broadcast(ov, om, A, mk(s.n >= 2 && s.disp() ? std::sqrt(s.m2 / (s.n - 1)) : 0.0, true));
-  }
-};
-
-struct CsDemean { // 空池 → μ = 0, 即 x 原值
-  CS_SIG {
-    CS_ROW;
-    const auto s = detail::moments(xv, xm, g, A);
-    for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i, mk(xv[i] - s.mean, xm[i]));
   }
 };
 
@@ -480,7 +471,7 @@ struct CsLinRankRoll {
     }
     assert(t == next_ && "逐行顺序推");
     ++next_;
-    const int u = factor::stat::label_last(t, c.p.h, c.geo);
+    const int u = hold_on(c.p.h, c.geo).last(t);
     for (int s = std::max(done_ + 1, u - d + 1); s <= u; ++s)
       moments(c, s, n, &ring_[static_cast<size_t>(s % d) * M]);
     done_ = std::max(done_, u);
@@ -509,7 +500,7 @@ private:
   void moments(const Call &c, int s, int n, double *out) {
     const int M = lr_moms(n), A = c.A;
     std::fill(out, out + M, 0.0);
-    if (factor::stat::tail_masked(s, c.p.h, c.geo))
+    if (!hold_on(c.p.h, c.geo).opens(s))
       return;
     const size_t r = static_cast<size_t>(s) * A;
     for (int i = 0; i <= n; ++i)

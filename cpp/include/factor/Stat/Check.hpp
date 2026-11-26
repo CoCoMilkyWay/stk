@@ -5,7 +5,7 @@
 // =============================================================================
 //   两个消费者共用 (口径必须一致): src/factor/op_check.cpp 与 GUI OperatorsService (都链 GpuRun 的实现或桩).
 //   无 golden: cpu ↔ gpu 两方 match 即过. 一级 Row 逐 (h, t) 比 (ok / ok_rac / 计数逐位相等, 有效字段容差内),
-//   二级 Day 逐 (h, 日) 比, 三级 HoldStat 逐字段比 (n / n_rac 逐位相等).
+//   二级 Day 逐 (h, 日) 比, 三级 HoldStat 逐字段比 (n / n_rac 逐位相等; 日净值 ann / sharpe 由各自的 Day 折).
 //   批: 候选 = 从 x 派生的 kCands 张平面 (CS {x, −x, x²}; TS {x, 1−x, x²}); 参考 = 单候选 CPU 逐张评; 另比 分块 (两块带前后带, merge) ≡ 整块.
 //   造数沿用 factor/Check.hpp 的 Profile, 两口径各一份 (Data::frame):
 //     x     CS: NORM (按 profile); TS: 同一 NORM 经 Φ 映到 (0,1) 当分位 (TsRankRoll 的输出形状)
@@ -18,6 +18,7 @@
 #include "factor/GpuRun.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Cpu.hpp"
+#include "factor/Stat/Fold.hpp"
 #include "misc/exec.hpp"
 
 #include <chrono>
@@ -222,7 +223,7 @@ inline Diff compare_stat(const HoldStat *ref, const HoldStat *got, int H, Tol to
     cmp_mom(a.ric, b.ric);
     cmp_mom(a.rac, b.rac);
     cmp_mom(a.ls, b.ls);
-    const float fa[] = {a.beta, a.mono, a.end_n}, fb[] = {b.beta, b.mono, b.end_n};
+    const float fa[] = {a.beta, a.mono, a.end_n, a.ann, a.sharpe}, fb[] = {b.beta, b.mono, b.end_n, b.ann, b.sharpe};
     for (size_t j = 0; j < sizeof(fa) / sizeof(fa[0]); ++j)
       detail::cmp1(d, fa[j], fb[j], tol, i);
     for (int k = 0; k < kGroups; ++k)
@@ -245,6 +246,14 @@ struct Result {
   double prep_ms = 0.0, eval_ms = 0.0; // 预处理 (标签 rank, 常驻期一次) / 评估 (每因子一次)
 };
 
+// 逐日 day[H][D] → 各持有期的日净值 LS (三级 ann / sharpe 的原料)
+inline std::vector<Daily> dailies(const Data &d, const Day *day, int D) {
+  std::vector<Daily> dl(static_cast<size_t>(d.hd.n));
+  for (int i = 0; i < d.hd.n; ++i)
+    add_days(dl[static_cast<size_t>(i)], day + static_cast<size_t>(i) * D, D, d.hd.k[i], d.seg);
+  return dl;
+}
+
 // CPU 驱动 (ForkJoin(threads) 切日): 预处理 + 评估 (含三级) 各计时 (wall)
 inline void run_cpu(const Data &d, Result &r, int threads) {
   using Clock = std::chrono::steady_clock;
@@ -266,7 +275,7 @@ inline void run_cpu(const Data &d, Result &r, int threads) {
   t0 = Clock::now();
   factor::cpu::stat::run(ex, factor::stat::Plane{d.x.v.data(), d.x.m.data()}, d.g.m.data(), d.frame, d.dir, s, labels_of(d, ry), rx.data(), w, acc.data(),
                          r.day.data(), factor::cpu::stat::LandRows{r.rows.data(), d.T});
-  finish_all(acc.data(), d.hd, d.seg, r.stat.data());
+  finish_all(acc.data(), dailies(d, r.day.data(), s.days()).data(), d.hd, d.seg, r.stat.data());
   r.eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
@@ -284,7 +293,7 @@ inline void run_gpu(const Data &d, Result &r) {
   const uint8_t *xm = d.x.m.data();
   factor::gpu::run_stat(1, &xv, &xm, d.g.m.data(), d.frame, d.dir, d.T, d.A, d.seg, 0, 0, 0, d.hd, d.cap, lab.data(), acc.data(), r.day.data(), r.rows.data(),
                         &r.prep_ms, &r.eval_ms);
-  finish_all(acc.data(), d.hd, d.seg, r.stat.data());
+  finish_all(acc.data(), dailies(d, r.day.data(), d.span().days()).data(), d.hd, d.seg, r.stat.data());
 }
 
 // ---- 批: 一块 = 行 [row0, row0 + rows), 统计 [t_lo, rows − t_back) (t0_abs = row0; 全按整日) ----
@@ -354,7 +363,7 @@ inline Diff compare_block(const Data &d, const Result *ref, const Block &b, Tol 
   for (int c = 0; c < kCands; ++c) {
     if (whole) {
       std::vector<HoldStat> st(static_cast<size_t>(H));
-      finish_all(b.acc.data() + static_cast<size_t>(c) * H, d.hd, S, st.data());
+      finish_all(b.acc.data() + static_cast<size_t>(c) * H, dailies(d, b.day.data() + static_cast<size_t>(c) * H * D, D).data(), d.hd, S, st.data());
       merge_into(out, compare_stat(ref[c].stat.data(), st.data(), H, tol));
     }
     for (int i = 0; i < H; ++i)
@@ -373,8 +382,8 @@ inline Diff compare_merge(const Data &d, const Block &full, const Block &c1, con
       acc[static_cast<size_t>(i)] = c1.acc[static_cast<size_t>(c) * H + i];
       acc[static_cast<size_t>(i)].merge(c2.acc[static_cast<size_t>(c) * H + i]);
     }
-    finish_all(full.acc.data() + static_cast<size_t>(c) * H, d.hd, d.seg, a.data());
-    finish_all(acc.data(), d.hd, d.seg, m.data());
+    finish_all(full.acc.data() + static_cast<size_t>(c) * H, nullptr, d.hd, d.seg, a.data());
+    finish_all(acc.data(), nullptr, d.hd, d.seg, m.data());
     merge_into(out, compare_stat(a.data(), m.data(), H, tol));
   }
   return out;

@@ -7,7 +7,9 @@
 #include "disk/Disk.hpp"
 #include "factor/Expr.hpp"
 #include "factor/Stat/Contract.hpp"
+#include "factor/Stat/Fold.hpp"            // HoldStat
 #include "factor/Stat/Roll.hpp"            // Roll (因子表 score)
+#include "factor/Stat/Turn.hpp"            // CostAcc
 #include "features/Storage/FeatureLib.hpp" // FeatureLib (请求的库清单)
 #include "math/distribution/PdfSnap.hpp"   // AggPdf
 #include "orders/L2DataType.hpp"           // L2::ValidType
@@ -39,7 +41,7 @@ enum class RowState : uint8_t { Pending,
 //   标签库 (门控 ts / cs_valid + 标签 + K 线, 恒取网格层本层列, 同行) = 因子池的 Bar 库 (label_lib); 截面 = 该库 cs_valid
 //   (all: 当日活跃; 子池: 当日成员 = all Bar 库选股表在 D 之前调仓行选出的).
 //   特征叶写全名 档.层.列 (kLevelToken): bar.* / lob.* = 因子池的 Bar / Lob 库; 叶可来自任意不细于网格的层 (level_asof 投影).
-//   成本: 固定段恒有; 评估域含 Lob 库 (用了 lob.* 叶) 时另有盘口段 (Lob 库网格层的建仓冲击列, 只 min 层有)
+//   成本: 固定段恒有; 作用域开盘口成本 (Config::lob_cost) 时另有盘口段 (Lob 库 L_1min 的建仓冲击列, 分钟各层按行末分钟取; 日层无), 评估域并入 Lob 库
 //   评估期 = 标签库 + 所用库 落盘日的交集的最近 N 年 (FactorScope::years; 不看 config 区间)
 //   层间的差别全在表里 (网格层 / 名 / K 线列名式); 层几何 Geo 由网格层定 (行数 = level_valid_rows, 行末分钟与 level_end_sec 对账),
 //   服务 / 装载 / UI 不按层分支
@@ -139,7 +141,7 @@ struct FeatCol : Col {
 };
 // X ↔ Y 两侧装载平面 (XCols / YCols ↔ Load LeafId / YSpec → XPlanes / YPlanes, load_x / load_y → Store::pin):
 //   X = 因子输入叶 = Lob 档 (只 min 层有) 及 Bar 档不细于网格的各层全部列 (含日层估值七叶 val[PoolVal])
-//   Y = 门控 / 标签 = Bar 档网格层本层列; 成本盘口段 = Lob 档网格层本层列
+//   Y = 门控 / 标签 = Bar 档网格层本层列; 成本盘口段 = Lob 档 L_1min 列 (level_asof 投影到网格行)
 //   b = K 线 / 复权列定位 (K 线流与 Inspect 导出按列直读); 池成员 / 持仓权 / 行业 / 市值 / 收益 取选股表原料带 pool::Strip
 // 叶的身份 = leaves 下标 (字段表编译期定 → 同层进程内不变; 叶名只在 Dag / 解析边界, 装载 / 缓存 / 引擎全按 LeafId)
 using LeafId = uint32_t;
@@ -149,7 +151,7 @@ struct XCols {
   const FeatCol *find(std::string_view code) const;                     // 不在 → nullptr
   std::vector<LeafId> ids(const std::vector<std::string> &codes) const; // 须都在
 };
-// 池估值七口 (收益率口径 = 分子 / 市值, 按 Weight 平均: 等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值; Book → Market VAL / MARGIN 页):
+// 池估值七口 (收益率口径 = 分子 / 市值, 按 Weight 平均: 等权 = 个股均值, 加权 = 整体法 Σ分子 / Σ市值; Ledger → Market VAL / MARGIN 页):
 //   估值五口 [kValEp, kValRz): EP = 净利, BP = 权益, SP = 营收, CP = 经营现金流, DY = 分红 (高 = 便宜, 分子过 0 连续; 个股不可算 → 不计入)
 //   两融两口 [kValRz, kPoolVals): RZ = 融资余额, RQ = 融券余额 (非两融标的计 0 照入平均; 成员全无余额 → NaN)
 enum PoolVal : int { kValEp,
@@ -161,7 +163,7 @@ enum PoolVal : int { kValEp,
                      kValRq };
 inline constexpr int kPoolVals = 7, kMarginVals = kPoolVals - kValRz;
 inline constexpr bool margin_val(int m) { return m >= kValRz; }
-// 各口的日频输入叶 (Book pool_val_leaves 的下标 = PoolVal, bar.1d.<列>): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM
+// 各口的日频输入叶 (Ledger pool_val_leaves 的下标 = PoolVal, bar.1d.<列>): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM
 // / 融资余额 / 融券余额
 inline constexpr const char *kPoolValCols[kPoolVals] = {"pl_npp_ttm", "bs_eq", "pl_rev_ttm", "cf_ocf_ttm", "dy_ttm", "rz_bal", "rq_bal"};
 // 一个持有期的标签列: lb_<h> 做多收益 / lb_nom_<h> 名义收益 (只偏移型)
@@ -175,8 +177,8 @@ struct YCols {
   HoldSet holds = 0;                         // 本层合法 (hold_ok) 的持有期 = 有标签列的
   Holds list;                                // holds 的有序视图 (UI 按下标切持有期)
   LabCols lab[kHoldCount];                   // [HoldId]
-  AmtSet amts = 0;                           // 固定段 (恒在) + 盘口段 (Lob 档本层有冲击列的; 评估域含 Lob 库才可用, 见 y_spec)
-  Col cost[kAmtCount][factor::stat::kSides]; // [AmtId][买 / 卖] Lob 档本层冲击列 lb_cost_<buy|sell>_<a>w; 固定段无列
+  AmtSet amts = 0;          // 固定段 (恒在) + 盘口段 (非日层; 作用域开盘口成本才装, 见 y_spec)
+  Col cost[kAmtCount][kSides]; // [AmtId][买 / 卖] Lob 档 L_1min 冲击列 lb_cost_<buy|sell>_<a>w; 固定段无列
   bool has(HoldId h) const { return (holds & hold_bit(h)) != 0; }
 };
 struct BCols {
@@ -219,9 +221,10 @@ struct FactorScope {
   PerLib<FeatureLib> libs;                // factor_libs
   int years = 0;                          // 评估期只留最近几年 (0 = 全期: Market 组合)
   double max_impact = 0.0;                // Config::max_impact (买入冲击封顶, 成本装载时生效)
+  bool lob_cost = false;                  // Config::lob_cost (盘口段成本; 评估域并入 Lob 库)
   bool gpu = false;
 };
-// 层 / 池 / 目录 / 字段表 / 年数 / 封顶 / 后端恒填; 资产轴未就绪 (数据库未扫) / 标签库未建 → false (libs 不可用)
+// 层 / 池 / 目录 / 字段表 / 年数 / 封顶 / 成本口径 / 后端恒填; 资产轴未就绪 (数据库未扫) / 标签库未建 → false (libs 不可用)
 bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool gpu, FactorScope &sc);
 // 评估年数上限 (池 × 因子层; 本次运行内只降不升, 线程安全): 整期一块的作业装不下时记下装得下的最多年数, UI 年数随之封顶 (0 = 未触顶)
 void cap_years(const std::string &pool, FactorLevelId lv, int years);
@@ -248,7 +251,7 @@ struct StatScope {
   double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)
   double n_full = 0.0;     // 满仓一组只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
 };
-// 一个金额段的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
+// 一个金额段的换手成本 = Stat/Turn.hpp 的 CostAcc (整组层级), 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp turn_rows):
 // 两端按 Δw 扣: 盘口段 = 两侧量付真实买 / 卖冲击; 固定段 = 两侧量都付固定冲击; 税佣两侧另按 Fee (同一价点交接只算差额); 均摊成本 cost(端, Fee) 随 h 变.
 // 两侧冲击按 Config::max_impact 封顶后进 (装载时; 盘口缺 = 封顶).
 // Run 每因子每金额段都攒 (落 stat.costs), 年换手取段 0 (各段同一份 Δw), Inspect 期限结构净线从它算
@@ -289,7 +292,7 @@ struct YearStat {
   int year = 0, n = 0, wins = 0;         // 年 / 年内有统计 (ok) 的行数 / 年内收尾的滚动窗数
   float mono = 0.f, ls = 0.f, ric = 0.f; // 分层单调性 / 每期毛多空均值 / rIC 均值
   float ric_med = 0.f;                   // 年内收尾的滚动窗 rIC 的中位 (wins = 0 → 0)
-  float turn = 0.f;                      // 年换手 (Probe CostP; 倍, 两端单边均, 段 0): 年内 Σ Δw⁺ / 年内统计行 × span_per_year, 不足一年的年同样年化
+  float turn = 0.f;                      // 年换手 (Probe TurnP; 倍, 两端单边均, 段 0): 年内 Σ Δw⁺ / 年内统计行 × span_per_year, 不足一年的年同样年化
 };
 // 一个根的评估结果 (Run 行 / Inspect 结果同一份; Probe fill_eval 填全部: scope / eval_ms 由调用方给, 其余取探针;
 // StatJson scope_json + eval_json ⇄ load_eval)

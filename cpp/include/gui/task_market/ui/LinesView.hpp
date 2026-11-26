@@ -9,6 +9,8 @@
 //   组的属性只在组表 kGroupDefs
 #pragma once
 
+#include "define/Annual.hpp"
+
 #include "gui/engine/services/PortfolioService.hpp"
 #include "gui/quote/Quote.hpp"  // PriceView / Series / Tape / Live / Side / 槽代数 (价格指数 / 日内形 / 行情键 / 横轴)
 #include "shared/AssetInfo.hpp" // StockInfos (成分行名 / 悬停)
@@ -41,11 +43,12 @@ constexpr double x_of(size_t di, double slot) { return static_cast<double>(di * 
 //   点: x 严格升序, 首点 = 首个活跃日首根前 kStartDx 格的起点 (前收 = 前一日末), 其后各点在所在日的行末槽;
 //   带日内形的线 (LineSrc::minutes) 各日换成该日各槽 (锚 = 当日末点, 末点不变 ⇒ 日末视图同不带);
 //   日末视图: 活跃日 [f, l] (起点所在日 ~ 末点所在日); end(k) = 第 k − 1 日末点位 (k = f 为前收; 活跃日内无点的日持平, l 之后持平),
-//   s1 / s2 = 活跃日的日收益 / 平方的前缀和 (下标同 e)
+//   d = 活跃日的日收益前缀 Daily (define/Annual.hpp; 下标同 e): 窗 = 前缀相减 → 复利年化 / Sharpe
 struct Line {
   std::vector<double> x, y;
   int f = 0, l = -1;                                      // 无点 = e 空; 只有起点 = l = f − 1
-  std::vector<double> e, s1, s2;                          // [l − f + 2]: 下标 k − f
+  std::vector<double> e;                                  // [l − f + 2]: 下标 k − f
+  std::vector<Daily> d;                                   // 同上
   double turn = std::numeric_limits<double>::quiet_NaN(); // 年换手 (腿集增仓量自首次建仓起、在有腿的日上的日均 × 每年交易日, 倍/年; 价格指数 / 无仓位 = NaN)
   double end(int k) const {
     if (e.empty() || k < f)
@@ -73,9 +76,13 @@ struct LineRef {
   int day(size_t j) const { return j < c->x.size() ? c->day(j) : t->k; }
   int l() const { return tail() ? t->k : c->l; }
   double end(int k) const { return tail() && k > t->k ? t->y.back() : c->end(k); }
-  // 日收益 / 平方的前缀和: 活跃日 [f, k) (k ∈ [f, l + 1])
-  double s1(int k) const { return c->s1[static_cast<size_t>(std::min(k, c->l + 1) - c->f)] + (tail() && k > t->k ? t->r : 0.0); }
-  double s2(int k) const { return c->s2[static_cast<size_t>(std::min(k, c->l + 1) - c->f)] + (tail() && k > t->k ? t->r * t->r : 0.0); }
+  // 日收益前缀: 活跃日 [f, k) (k ∈ [f, l + 1])
+  Daily daily(int k) const {
+    Daily o = c->d[static_cast<size_t>(std::min(k, c->l + 1) - c->f)];
+    if (tail() && k > t->k)
+      o.add(t->r);
+    return o;
+  }
 };
 
 // 成对线的两条 (一行两条, 同色, 理想列淡): 有行情键的行 (篮子 / 成分股) = 可成交 / 理想; 因子 / 策略 = 有冲击 / 无冲击.
@@ -84,9 +91,9 @@ enum PairLine : int { kTrade,   // 可成交 / 有冲击
                       kIdeal }; // 理想 / 无冲击
 inline constexpr int kPairLines = 2;
 
-// 腿 = 账的一线 (逐行增量 + 增仓量 + 估值); b = nullptr = 无; alt = 估值取另一种权重 (Book::alt; 只篮子行的估值腿, 见 val_leg)
+// 腿 = 账的一线 (逐行增量 + 增仓量 + 估值); b = nullptr = 无; alt = 估值取另一种权重 (Ledger::alt; 只篮子行的估值腿, 见 val_leg)
 struct LinesLeg {
-  const PortfolioBook *b = nullptr;
+  const PortfolioLedger *b = nullptr;
   size_t line = 0;
   bool alt = false;
   bool operator==(const LinesLeg &) const = default;
@@ -232,8 +239,8 @@ struct LinesDerived {
   int n_ready = 0, n_error = 0, n_wait = 0;                      // 已算成 / 算失败 / 未到的因子数
   size_t n_cons = 0;                                             // 成分组前 n_cons 行 = 展开行的成分
   std::vector<std::string> watch_lost;                           // 找不到行的自选键 (自选序)
-  std::vector<std::shared_ptr<const PortfolioBook>> books;       // [因子行] 因子账 (因子 / 策略行的腿)
-  Quote::PerMarket<std::shared_ptr<const PortfolioBook>> quotes; // [Side] 行情两侧的账 (有行情键的行的腿 / 估值腿; 同有同无, 同日轴; 没算成 = 空)
+  std::vector<std::shared_ptr<const PortfolioLedger>> books;       // [因子行] 因子账 (因子 / 策略行的腿)
+  Quote::PerMarket<std::shared_ptr<const PortfolioLedger>> quotes; // [Side] 行情两侧的账 (有行情键的行的腿 / 估值腿; 同有同无, 同日轴; 没算成 = 空)
   std::shared_ptr<const Quote::PriceView> view;                  // 理想线的价格历史 / 日内形 / 成分表的源 (价格库在用的发布; 空 = 未发布)
   std::shared_ptr<const Quote::Holdings> hold;                   // 账户的持仓 (账户行的成分 / 当日四列; 空 = 无)
   misc::Ymd live = 0;                                            // 当日 (接得上日脊才有; 已并进日轴)
@@ -304,7 +311,7 @@ struct Ranked {
   double x = std::numeric_limits<double>::quiet_NaN();    // NaN = 不可算
   double rank = std::numeric_limits<double>::quiet_NaN(); // ∈ [0, 1]: 0 = 好 (NAV 见 kNavGood; VAL = 便宜; MARGIN = 占比低), 并列取中, 组内只一个 = 0.5; NaN = 不可算 / 不排
 };
-// MARGIN 右表的区间末数 (估值行; 区间内 (含起点前收日) 末个有总市值的日, 见 Book::cap): 总市值 | 两融两口余额 [亿元] | 两融两口余额占比; 只占比有名次
+// MARGIN 右表的区间末数 (估值行; 区间内 (含起点前收日) 末个有总市值的日, 见 Ledger::cap): 总市值 | 两融两口余额 [亿元] | 两融两口余额占比; 只占比有名次
 enum MarginNum : int { kMarCap,
                        kMarBal,
                        kMarPct = kMarBal + kMarginVals };
@@ -320,7 +327,7 @@ struct LinesBand {
   std::vector<double> levels;                            // 估值口: 等值线倍数 (= LinesRoll::levels)
   std::vector<double> ratio;                             // 两融口: 当日占比 (%; 不可算 = NaN)
   double now = 0.0, pct = 0.0;                           // 区间末个有分位点的收益率 / 余额占比 · 估值分位 (%, 见 LinesRoll::pct)
-  double bal = std::numeric_limits<double>::quiet_NaN(); // 两融口: 同日余额 (亿元, Book::bal)
+  double bal = std::numeric_limits<double>::quiet_NaN(); // 两融口: 同日余额 (亿元, Ledger::bal)
 };
 // 账户前复权净资产与区间回撤 (与账户理想线切片逐点对仗, 起始点 = 当前区间起点):
 //   前复权净资产 E_adj(i) = scale · sl.y(i) (= E_now · I(i) / I_now, 末点对齐此刻净资产 E_now);

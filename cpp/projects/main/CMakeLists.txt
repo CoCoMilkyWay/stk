@@ -395,7 +395,7 @@ set(MATH_PRECISE
     gui/task_market/ui/TabAsset.cpp
     # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) / CTA 模型 (cta/: NaN = 未就绪) 的消费者; Tasks 经 EngineHub 建因子引擎
     gui/Tasks.cpp
-    gui/engine/Book.cpp
+    gui/engine/Ledger.cpp
     gui/engine/Engine.cpp
     gui/engine/EngineHub.cpp
     gui/engine/File.cpp

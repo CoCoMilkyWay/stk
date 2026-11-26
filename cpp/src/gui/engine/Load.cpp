@@ -59,10 +59,12 @@ std::string Domain::key() const {
   return k + "|" + std::to_string(dates.front()) + "-" + std::to_string(dates.back()) + "#" + std::to_string(dates.size());
 }
 
-LibMask used_libs(const FeatureTable &ft, PoolId pool, std::span<const LeafId> leaves) {
+LibMask used_libs(const FeatureTable &ft, PoolId pool, std::span<const LeafId> leaves, bool lob_cost) {
   const LibId lab = label_lib(pool);
   assert(ft.y.ts.ref(pool).lib == lab && ft.y.cs.ref(pool).lib == lab && "门控 / 标签 / K 线在标签库");
   LibMask m = lib_bit(lab);
+  if (lob_cost && ft.y.amts != amt_bit(kAmtFixed))
+    m |= lib_bit(ft.y.cost[1][kBuy].ref(pool).lib);
   for (const LeafId id : leaves) {
     const FeatCol &c = ft.x.leaves[id];
     assert(c.allowed || c.target);
@@ -79,7 +81,7 @@ bool span_of(const FeatureTable &ft, const FactorScope &sc, std::span<const Leaf
   const PerLib<FeatureLib> &libs = sc.libs;
   dm = Domain{};
   dm.pool = pool;
-  dm.used = used_libs(ft, pool, leaves);
+  dm.used = used_libs(ft, pool, leaves, sc.lob_cost);
   for (const LibId l : lib_ids())
     if (dm.used & lib_bit(l)) {
       assert(!libs[l].dir.empty() && "请求没带该库清单 (factor_libs)");
@@ -387,11 +389,10 @@ void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, size_t VR, size_t A,
 
 } // namespace
 
-double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx) {
+double cell_bytes(const BlockSpec &s, size_t nx) {
   int books = 0;
   for (int c = 0; c < s.y.ad.n; ++c)
     books += s.y.ad.k[c] != kAmtFixed;
-  (void)ft;
   return kCellBytes<Leaf> * static_cast<double>(nx) + kCellBytes<YCore> + kCellBytes<LabPlane> * s.y.hd.n + kCellBytes<U16> * factor::stat::kSides * books;
 }
 

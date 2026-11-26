@@ -1,8 +1,7 @@
 #include "features/Panel/PoolSelect.hpp"
 
-#include "factor/Stat/Contract.hpp" // 可成交账: kEoBuy / hold_ret (仓位感知同一口径)
+#include "factor/Stat/Host.hpp" // 篮子账: 仓位感知 walk + 换手 turn_row (Stat 同一核)
 
-#include "define/Members.hpp"
 #include "features/Panel/Fund.hpp" // fund::Board / SW2021_L1_COUNT
 #include "features/Storage/FeatureRead.hpp"
 #include "misc/epoch.hpp"
@@ -477,75 +476,62 @@ void Selector::at(const Order &o, std::vector<Aid> &out) const {
 }
 
 void perf(const Strip &t, Rebal rb, const Pick &pick, Perf &b) {
-  const size_t D = t.days();
+  namespace st = factor::stat;
+  namespace cs = factor::cpu::stat;
+  const size_t D = t.days(), A = t.A();
   for (int w = 0; w < kWeights; ++w)
     b.ret[w].assign(D, 0.0f), b.buy[w].assign(D, 0.0f);
   b.first = D;
-  const size_t A = t.A();
-  std::vector<Aid> nx;                   // 新选的成员 (资产下标升序)
-  std::vector<uint8_t> in(A, 0), nin(A); // 本日 / 次日成员
-  std::vector<int16_t> age(A, -1);       // 真持有链: 距最近可买建仓的交易日数 (−1 = 未持有)
-  std::vector<float> cell(A, 0.0f);      // 行 d−1 这一批的格收益 (非真持有 = 0)
-  Sleeve lg;                             // [键 = Weight] 持仓随可成交收益漂移到前一日收盘
-  Members to;                            // 新源行的目标权 (源行 = 前一日)
-  size_t src = SIZE_MAX;
-  const auto members = [&](size_t d, std::vector<uint8_t> &m) { // 交易日 d 的成员位
-    std::fill(m.begin(), m.end(), uint8_t{0});
-    if (d >= D || src_of(rb, t.dates, t.dates[d]) == SIZE_MAX)
-      return;
-    std::vector<Aid> o;
-    pick(src_of(rb, t.dates, t.dates[d]), o);
-    for (const Aid a : o)
-      m[a] = 1;
-  };
-  for (size_t d = 1; d < D; ++d) {
-    if (const size_t r = src_of(rb, t.dates, t.dates[d]); r != src) {
-      src = r;
-      pick(r, nx);
-      std::fill(in.begin(), in.end(), uint8_t{0});
-      for (const Aid a : nx)
-        in[a] = 1;
-      to.clear();
-      for (const Aid a : nx) {
-        for (int w = 0; w < kWeights; ++w)
-          if (const float om = t.omega(r, r, a, static_cast<Weight>(w)); om > 0.0f)
-            to.add(static_cast<uint32_t>(w), om);
-        to.next(a);
-      }
-      double buy[kWeights] = {};
-      lg.roll(to, buy);
-      for (int w = 0; w < kWeights; ++w)
-        b.buy[w][d] = static_cast<float>(buy[w]);
-      if (b.first == D && lg.hold.size())
-        b.first = d;
-    }
-    if (!lg.hold.size())
+  // 批 = 行 r 收盘建仓 (持仓日 r + 1): 成员位 mem / 源行 src / 标签有效位 lm (T+1 做多与名义两腿都有)
+  std::vector<uint8_t> mem(D * A, 0), lm(D * A, 0);
+  std::vector<size_t> src(D, SIZE_MAX);
+  std::vector<Aid> o;
+  for (size_t r = 0; r + 1 < D; ++r) {
+    src[r] = src_of(rb, t.dates, t.dates[r + 1]);
+    if (src[r] == SIZE_MAX)
       continue;
-    // 行 d−1 收盘的一批: 真持有链前推 + 格收益 (次日源不变 = 同一成员集; 换源 = 次日新选)
-    const size_t r0 = d - 1;
-    if (d + 1 < D && src_of(rb, t.dates, t.dates[d + 1]) == src)
-      nin = in;
-    else
-      members(d + 1, nin);
+    if (r == 0 || src[r] != src[r - 1])
+      pick(src[r], o);
+    for (const Aid a : o)
+      mem[r * A + a] = 1;
+  }
+  for (size_t i = 0; i < D * A; ++i)
+    lm[i] = std::isfinite(static_cast<float>(t.lv[i])) && std::isfinite(static_cast<float>(t.nv[i]));
+  // 篮子账 (键 = 权重; Stat 仓位感知 + 换手同一核): 本批 ⇄ 交接的前一批两列格位 → 收益 (持仓日 r + 1) / 买量
+  const st::Span sp{static_cast<int>(D), static_cast<int>(A), geo_of(1)};
+  const Hold hd = hold_on(kHoldT1, sp.g);
+  const st::Cost flat{};
+  const std::vector<double> cap(kWeights, 0.0);
+  cs::TurnWork tw;
+  const auto slots = [&](const st::Chain &ch, size_t r, std::vector<st::Slot> &out, auto &&r_of) {
     for (size_t a = 0; a < A; ++a) {
-      const size_t i = r0 * A + a;
-      const bool lab = in[a] && std::isfinite(static_cast<float>(t.lv[i])) && std::isfinite(static_cast<float>(t.nv[i]));
-      age[a] = !lab                                 ? int16_t{-1}
-               : (t.eo[i] & factor::stat::kEoBuy)   ? int16_t{0}
-               : age[a] >= 0 && age[a] < kChainDays ? static_cast<int16_t>(age[a] + 1)
-                                                    : int16_t{-1};
-      if (age[a] < 0) {
-        cell[a] = 0.0f;
+      const size_t i = r * A + a;
+      if (!mem[i] || !lm[i])
         continue;
-      }
-      const bool cont = nin[a] && d < D && t.eo[d * A + a] != 0;
+      const st::Pos p = st::walk(ch, lm.data() + i, t.eo.data() + i, st::InMask{mem.data() + i});
+      if (p.held < 0)
+        continue;
       const float y[2] = {static_cast<float>(t.lv[i]), static_cast<float>(t.nv[i])};
-      cell[a] = factor::stat::hold_ret(cont, cont ? t.eo[d * A + a] : 0, y);
+      for (int w = 0; w < kWeights; ++w)
+        if (const float om = t.omega(src[r], r, a, static_cast<Weight>(w)); om > 0.0f)
+          out.push_back({static_cast<uint32_t>(a), static_cast<uint32_t>(w), om, r_of(p, a, y)});
     }
-    double ret[kWeights];
-    lg.pass([&](uint32_t a) { return 1.0f + cell[a]; }, ret);
+  };
+  for (size_t r = 0; r + 1 < D; ++r) {
+    if (src[r] == SIZE_MAX)
+      continue;
+    if (b.first == D)
+      b.first = r + 1;
+    const st::Chain ch = st::chain_of(static_cast<int>(r), sp, hd);
+    tw.cur.clear(), tw.pre.clear();
+    slots(ch, r, tw.cur, [](const st::Pos &p, size_t, const float(&y)[2]) { return st::ret_at(p, 0, y); });
+    if (ch.nets(static_cast<int>(r)) && src[r - 1] != SIZE_MAX)
+      slots(ch.back(), r - 1, tw.pre, [&](const st::Pos &, size_t a, const float(&y)[2]) { return st::hold_ret(true, t.eo[r * A + a], y); });
+    double ret[kWeights] = {};
+    st::Turn flow[kWeights] = {};
+    cs::turn_row(tw.cur, tw.pre, !hd.nets(static_cast<int>(r) + hd.h), t.eo.data() + r * A, &flat, 1, cap, tw, ret, flow);
     for (int w = 0; w < kWeights; ++w)
-      b.ret[w][d] = static_cast<float>(ret[w]);
+      b.ret[w][r + 1] = static_cast<float>(ret[w]), b.buy[w][r + 1] = static_cast<float>(flow[w].vol[kBuy]);
   }
 }
 

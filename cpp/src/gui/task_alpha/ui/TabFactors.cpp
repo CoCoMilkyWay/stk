@@ -274,7 +274,7 @@ void from_expr(const factor::expr::Expr &e, int i, int seg, BuildNode &n) {
 
 // 候选列表 (槽下拉 / 套一层弹窗公用): 过滤框 + 算子段 (+ 槽模式: <清空> + 特征段).
 // need = 本槽值域 (父算子该元的 in 域, 根 = REAL); 严格域 (组 id 的 INT) 只列 out ⊆ need 的算子 (与 parse 同规则).
-// wrap 模式只列 arity ≥ 1 的算子 (要装得下当前节点), 无叶 / 无清空.
+// wrap 模式只列 arity ≥ 1 的算子 (要装得下当前节点), 无叶 / 无清空. 本层退化的算子 (layer_ok) 不列.
 // 选中 → 返回 true: op ≥ 0 算子; op < 0 且 feat 非空 = 叶; 都空 = 清空
 bool pick_list(const FeatureTable &ft, char *filter, size_t filter_cap, factor::Dom need, bool wrap, int cur_op, const std::string &cur_feat, int &op,
                std::string &feat) {
@@ -295,6 +295,8 @@ bool pick_list(const FeatureTable &ft, char *filter, size_t filter_cap, factor::
   for (int i = 0; i < factor::expr::kOpCount; ++i) {
     const factor::expr::OpInfo &o = factor::expr::kOps[i];
     if (wrap && o.arity == 0)
+      continue;
+    if (factor::expr::layer_ok(o, ft.seg))
       continue;
     if (factor::dom_strict(need) && !factor::dom_sub(o.out, need))
       continue;

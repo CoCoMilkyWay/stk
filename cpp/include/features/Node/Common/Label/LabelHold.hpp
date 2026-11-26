@@ -47,7 +47,7 @@ struct LabelPx {
 inline constexpr std::array<size_t, kHoldCount + 1> kLabelCol = [] {
   std::array<size_t, kHoldCount + 1> c{};
   for (size_t h = 0; h < kHoldCount; ++h)
-    c[h + 1] = c[h] + (hold_kind(static_cast<HoldId>(h)) == HoldKind::Min || hold_kind(static_cast<HoldId>(h)) == HoldKind::Same ? 2 : 1);
+    c[h + 1] = c[h] + (hold_offset(static_cast<HoldId>(h)) ? 2 : 1);
   return c;
 }();
 constexpr size_t label_legs(size_t h) { return kLabelCol[h + 1] - kLabelCol[h]; }

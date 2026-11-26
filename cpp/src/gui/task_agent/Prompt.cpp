@@ -126,7 +126,7 @@ std::string rows_of(const Context &c) {
   [[maybe_unused]] const bool known = hold_parse(c.hold_key, hold);
   assert(known && "Context::hold_key 须是持有期 token");
   for (int k = 0; k < c.seg; ++k)
-    if (st::tail_masked(k, hold, factor::geo_of(c.seg)))
+    if (!hold_on(hold, geo_of(c.seg)).opens(k))
       tail += (tail.empty() ? "" : " / ") + c.clock[static_cast<size_t>(k)];
   return "本层 (" + c.level + ") 每天 " + std::to_string(c.seg) + " 行: " + open + "; 第 " + std::to_string(o) + " 行起连续竞价 (行末 " + c.clock[o] + ", " + c.clock[o + 1] +
          " … " + c.clock.back() + ", 午休不占行; 末行含收盘竞价)." +

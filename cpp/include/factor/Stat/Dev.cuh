@@ -27,6 +27,7 @@
 // =============================================================================
 
 #include "factor/Stat/Contract.hpp"
+#include "factor/Stat/Pos.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -127,7 +128,7 @@ __device__ __forceinline__ void lag_row(const uint16_t *rx, const uint16_t *rlag
 }
 
 // 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓
-// → r 的 ric / mkt / grp / cnt / ok (全 lane 同值; 组按契约【仓位感知】, 与 Host.hpp 同式). gs / gc = 本 warp 的分组槽,
+// → r 的 ric / mkt / grp / cnt / ok (全 lane 同值; 组与尾部按 Pos.hpp 一次 walk 出层级, 与 Host.hpp 同式). gs / gc = 本 warp 的分组槽,
 // 连续调用间的槽复用由函数内首个 __syncwarp 保护. 调用方已排除段末尾部
 __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, Row &r, float (*gs)[32],
                                           uint16_t (*gc)[32], int lane) {
@@ -151,26 +152,21 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
     if (!ok)
       continue;
     const int g = factor::stat::grp_of(x);
-    const auto in = [g](uint16_t v) { return v != kRankNone && factor::stat::grp_of(v) == g; };
-    const factor::stat::Cell<uint16_t> cl{c, rx + a, lb.m + a, lb.eo + a, yv};
-    if (cl.held(in)) { // 自己的槽, 无竞争
-      gs[g][lane] += cl.ret(cl.continues(in));
-      gc[g][lane] += 1;
-    }
+    const factor::stat::Pos p = factor::stat::walk(c, lb.m + a, lb.eo + a, factor::stat::InRank{rx + a, g});
+    if (p.held < 0)
+      continue;
+    gs[g][lane] += factor::stat::ret_at(p, 0, yv); // 自己的槽, 无竞争
+    gc[g][lane] += 1;
 #pragma unroll
     for (int e = 0; e < kEnds; ++e) {
       if (g != factor::stat::end_group(e))
         continue;
 #pragma unroll
-      for (int j = 0; j < kTails; ++j) {
-        if (!factor::stat::in_tail(e, x, j))
-          continue;
-        const auto it = [e, j](uint16_t v) { return v != kRankNone && factor::stat::in_tail(e, v, j); };
-        if (cl.held(it)) {
-          ts[e * kTails + j] += cl.ret(cl.continues(it));
+      for (int j = 0; j < kTails; ++j)
+        if (j < p.held) {
+          ts[e * kTails + j] += factor::stat::ret_at(p, 1 + j, yv);
           tc[e * kTails + j] += 1;
         }
-      }
     }
   }
   warp_sum(s);
@@ -207,13 +203,13 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
 }
 
 // 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; cap = 满仓;
-// tail = 段末尾部 (tail_masked)
-__device__ __forceinline__ Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, double cap, bool tail,
+// opens = 开仓行 (Hold::opens)
+__device__ __forceinline__ Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, double cap, bool opens,
                                         float (*gs)[32], uint16_t (*gc)[32], int lane) {
   Row r;
   if (rlag)
     lag_row(rx, rlag, c.A, r, lane);
-  if (!tail)
+  if (opens)
     label_row(rx, lb, c, cap, r, gs, gc, lane);
   return r;
 }

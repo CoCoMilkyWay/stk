@@ -104,7 +104,7 @@ inline void fill_seg(Plane &p, Gen g, Profile pr, int t0, int t1, int A, int S, 
         break;
       }
       if (g != Gen::GROUP) {
-        // 常值 (0 号资产给 0: NORM 打 Σ = 0 的相消分支, POS 打 LogRatio 的非正饱和 / Entropy 无正样本; SMALL 保持 |x| 小, 免得 Π(1+x) 溢出)
+        // 常值 (0 号资产给 0: NORM 打 Σ = 0 的相消分支, POS 打 LogRatio 的非正饱和 / Entropy 无正样本; SMALL 保持 |x| 小, 仍像收益)
         const float c = g == Gen::SMALL ? 0.02f : (a == 0 ? 0.f : 1.5f);
         // 常值列: 第 0/1 号资产整列常值 → 全并列退化 (spread 为假)
         if (pr == Profile::CONSTCOL && a < 2)
@@ -350,15 +350,17 @@ void run_cpu_cs(const Data &d, const Param &p, int S, Plane &o) {
 template <class Op>
 void run_stream_ts(const Data &d, const Param &p, int S, Plane &o) {
   o.ensure(static_cast<size_t>(d.T) * d.A);
-  assert(d.n <= 3);
+  assert(d.n >= 0 && d.n <= kMaxIn);
   for (int a = 0; a < d.n; ++a)
     assert(d.in[a]);
-  const auto val = [&](int s, size_t i) { return s < d.n ? Val{d.in[s]->v[i], d.in[s]->m[i] != 0} : Val{}; };
   std::vector<Op> ops(static_cast<size_t>(d.A), Op(p));
+  Val x[kMaxIn] = {}; // 槽 ≥ d.n 恒 Val{}
   for (int t = 0; t < d.T; ++t)
     for (int a = 0; a < d.A; ++a) {
       const size_t i = static_cast<size_t>(t) * d.A + a;
-      const Val r = ops[static_cast<size_t>(a)].step(val(0, i), val(1, i), val(2, i), t % S);
+      for (int s = 0; s < d.n; ++s)
+        x[s] = Val{d.in[s]->v[i], d.in[s]->m[i] != 0};
+      const Val r = ops[static_cast<size_t>(a)].step(x, d.n, t % S);
       o.v[i] = r.v, o.m[i] = r.m;
     }
 }

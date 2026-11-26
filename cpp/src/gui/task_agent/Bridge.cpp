@@ -97,7 +97,8 @@ Opened opened_of(const Engine::FeatureTable &ft, const Scope &sc, bool has_lob) 
   }
   o.ops.assign(std::size(fx::kOps), 0);
   for (size_t i = 0; i < std::size(fx::kOps); ++i)
-    o.ops[i] = sc.ops.has(fx::kOps[i].name);
+    o.ops[i] = sc.ops.has(fx::kOps[i].name) && !fx::layer_ok(fx::kOps[i], ft.seg); // 本层退化的算子不开放
+
   return o;
 }
 

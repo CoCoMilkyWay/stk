@@ -283,8 +283,8 @@ inline int row_step(int want, int seg) {
     ++s;
   return s;
 }
-// 全局统计行 u 开仓: 段末尾部 (清仓点越过收盘竞价前最后可成交锚点, st::tail_masked) 的行回测不开仓, 观察里的标签统计同样不计
-inline bool opens(int u, const ViewEnv &env) { return !st::tail_masked(u, env.hold, factor::geo_of(env.fsc.ft->seg)); }
+// 全局统计行 u 开仓: 段末尾部 (清仓点越过收盘竞价前最后可成交锚点, Hold::opens) 的行回测不开仓, 观察里的标签统计同样不计
+inline bool opens(int u, const ViewEnv &env) { return hold_on(env.hold, geo_of(env.fsc.ft->seg)).opens(u); }
 inline int row_at(const std::vector<std::string> &clock, const std::string &hm) {
   if (clock.size() == 1)
     return 0;

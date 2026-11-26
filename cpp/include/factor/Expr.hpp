@@ -12,6 +12,7 @@
 //   例:  CsRank(TsMeanRoll(TsLog(bar.5m.amt_todz_5d), d=30))      TsTodMask(k=15, k2=255)      CsRank(TsMeanRoll(TsLog(lob.1m.amt), d))
 //        CsRank(CsLinRankRoll(bar.1d.mcap, bar.1d.sp_neu, bar.1d.cp_neu, d=60, k=0.1, h=t1))
 //        CsRank(CsLinRankFix(bar.1d.mcap, bar.1d.sp_neu, bar.1d.cp_neu, w=[-1, 0.5, 0.5]))
+//        CsRank(TsCorrRoll(TsLinFix(bar.1d.open_day, bar.1d.vwap_day, w), bar.1d.volume_day, d))
 //   规矩:
 //     序列参数在前 (个数 = 元数; N 元算子 2..kLrN 个), 命名参数在后 (= OpTable 参数列声明的全部字段, 不多不少, 无隐含默认)
 //     N 元定权的 w 一元一个, 个数 = 特征元数; 裸 w = 全部分量自由.
@@ -23,7 +24,7 @@
 //     无标量常量元 (OpTable 无常量输入; 阈值一律走 k)
 //     PascalCase 算子 / snake_case 特征, 大小写敏感, 词法上无歧义 (裸 d / k / k2 / h / w 是参数关键字, 不作特征名)
 //   静态校验 (parse 内一次做完):
-//     算子在 OpTable / 元数对 / 参数声明齐且无多余 / 参数值域 (d ∈ [1, kMaxD]; k 按 OpTable k域 列; h 本层合法且有标签列; w 有限) /
+//     算子在 OpTable / 算子在本层有意义 (layer_ok: 日层拒 Cum 与日内时段) / 元数对 / 参数声明齐且无多余 / 参数值域 (d ∈ [1, kMaxD]; k 按 OpTable k域 列; h 本层合法且有标签列; w 有限) /
 //     特征存在且可作输入 (LB 标签 / META 门控列不许: 前视) / 逐元值域: 父算子该元 in 为严格域 (INT, 即组 id) 时
 //     子算子 out ⊆ in (OpTable in / out 列; 特征叶放行 —— 其整数性与 [0, kMaxGroup) 值域在 eval 前按数据查)
 //   类型信息只读 OpTable 的 (k域, in, out) 列, 本头不点任何算子名 (根归一算子集除外: 那是口径定义, 不是类型)
@@ -100,15 +101,15 @@ constexpr bool declares(const char *params, std::string_view key) {
 // ---- 参数值域 (d 上限 kMaxD 见 Contract.hpp) ----
 
 // 表的静态一致性: TOD 只许 0 元 POINT (t_D 是隐含输入); GROUP 域的组 id 元 (末元) 必须要求 INT;
-// N 元只许 ALL 域, 特征元不是组 id / 广播; 回归 ROLL × GT0 (窗 d / 岭强度 k / 持有期 h), 定权 POINT × NONE (权 w)
+// N 元特征元不是组 id / 广播; 定权 POINT × NONE (权 w; SELF 或 ALL), 回归 ROLL × GT0 (窗 d / 岭强度 k / 持有期 h; 只 ALL)
 constexpr bool table_consistent() {
   for (int i = 0; i < kOpCount; ++i) {
     const OpInfo &o = kOps[i];
     if (o.kdom == KDom::TOD && !(o.arity == 0 && o.t == T::POINT))
       return false;
     if (nary(o)) {
-      if (!(o.a == A::ALL && o.in[0] != Dom::INT && o.in[0] != Dom::BCAST &&
-            ((o.t == T::ROLL && o.kdom == KDom::GT0) || (o.t == T::POINT && o.kdom == KDom::NONE))))
+      if (!(o.in[0] != Dom::INT && o.in[0] != Dom::BCAST &&
+            ((o.t == T::POINT && o.kdom == KDom::NONE && o.a != A::GROUP) || (o.t == T::ROLL && o.kdom == KDom::GT0 && o.a == A::ALL))))
         return false;
       continue;
     }
@@ -152,12 +153,23 @@ inline bool dom_holds(Dom d, float v) {
   return false;
 }
 
+// 算子在本层是否有意义: nullptr = 有, 否则一句话原因. 日层 (seg = 1, 每段一行) 上段内 expanding 恒是单点
+// (均值 = x, 标准差 / 偏度 / 峰度 / Arg = 0, 秩 = 0.5), 日内时段掩码无时段可选, 两者必然退化
+inline const char *layer_ok(const OpInfo &o, int seg) {
+  assert(is_seg(seg));
+  if (seg == 1 && o.t == T::EXPAND)
+    return "日层每日一行, 段内 expanding (…Cum) 恒是单点; 跨日统计用 …Roll";
+  if (seg == 1 && o.kdom == KDom::TOD)
+    return "日层每日一行, 无日内时段可选";
+  return nullptr;
+}
+
 // 参数值域校验: nullptr = 合法, 否则一句话原因 (只查该算子声明的字段; k 按 OpTable k域 列; seg = 本层每段行数, TOD 上界 / h 合法性)
 inline const char *check_params(const OpInfo &o, const Param &p, int seg) {
   assert(is_seg(seg));
   if (has_d(o.t) && (p.d < 1 || p.d > kMaxD))
     return "d 须为 1..kMaxD (255 行) 的整数; 更长的窗口请降到更粗的层上做";
-  if (has_h(o.t, o.arity) && !stat::hold_ok(p.h, geo_of(seg)))
+  if (has_h(o.t, o.arity) && !hold_ok(p.h, geo_of(seg)))
     return "h 须为本层合法的持有期 (日内持有期须为本层行宽的整倍数)";
   if (has_w(o.t, o.arity))
     for (const float w : p.w)
@@ -655,6 +667,8 @@ private:
     if (op < 0)
       return fail(pos0, "未知算子 " + std::string(id));
     const OpInfo &o = kOps[op];
+    if (const char *why = layer_ok(o, seg_))
+      return fail(pos0, std::string(o.name) + ": " + why);
     out = static_cast<int>(e_.nodes.size());
     {
       Node n;

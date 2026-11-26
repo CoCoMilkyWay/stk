@@ -78,7 +78,7 @@ inline constexpr int32_t kKeyMin = std::numeric_limits<int32_t>::min(); // hi �
 inline constexpr float kInfF = std::numeric_limits<float>::infinity();  // 空池不缩尾的 clamp 边界
 
 // ---- 一元矩 (两遍中心化, 不用 Σx²−nμ²; lo/hi 给全并列判据) ----
-//   need_m2 = false: 只要 n / mean / lo / hi (Mean / Demean), 省第二遍
+//   need_m2 = false: 只要 n / mean / lo / hi (Mean), 省第二遍
 struct M1 {
   int n = 0;
   double mean = 0.0, m2 = 0.0;
@@ -319,19 +319,6 @@ struct CsStd { // n < 2 / 全并列 → 0
       const detail::M1 s = detail::moments(xv + r, xm + r, g + r, A);
       const bool ok = s.n >= 2 && s.disp();
       detail::bcast(ov, om, r, A, ok ? s.sd() : 0.0, true);
-    }
-  }
-};
-
-struct CsDemean { // 空池 → μ = 0, 即 x 原值
-  CP_SCRATCH0
-  CP_SIG {
-    CP_UNPACK;
-    for (int t = rg.lo; t < rg.hi; ++t) {
-      const size_t r = static_cast<size_t>(t) * A;
-      const detail::M1 s = detail::moments(xv + r, xm + r, g + r, A, /*need_m2=*/false);
-      FACTOR_COLS for (int a = 0; a < A; ++a)
-          detail::put(ov, om, r + a, static_cast<double>(xv[r + a]) - s.mean, xm[r + a]);
     }
   }
 };
@@ -756,7 +743,7 @@ struct CsLinRankRoll { // xs[0..n) 特征元, xs[n] = h 持有期做多标签 (C
     detail::Hist h;
     const auto moments = [&](int s, double *out) { // 标签行 s 的矩 (样本 = 池内 ∧ 全部元与标签有效; 段末尾部行恒 0)
       std::fill_n(out, M, 0.0);
-      if (factor::stat::tail_masked(s, p.h, c.geo))
+      if (!hold_on(p.h, c.geo).opens(s))
         return;
       const size_t r = static_cast<size_t>(s) * A;
       for (int i = 0; i <= n; ++i) {
@@ -782,7 +769,7 @@ struct CsLinRankRoll { // xs[0..n) 特征元, xs[n] = h 持有期做多标签 (C
     };
     int done = -1; // 已入环的最末标签行
     for (int t = rg.lo; t < rg.hi; ++t) {
-      const int u = factor::stat::label_last(t, p.h, c.geo);
+      const int u = hold_on(p.h, c.geo).last(t);
       for (int s = std::max(done + 1, u - d + 1); s <= u; ++s)
         moments(s, ring + static_cast<size_t>(s % d) * M);
       done = std::max(done, u);

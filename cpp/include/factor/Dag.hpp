@@ -12,7 +12,7 @@
 //           根节点算完要先被调用方消费 (Stat), 再被覆盖: plan 把根视作"自己消费自己", 无后续消费者时其槽在自己执行完即回收,
 //           后面的节点可能覆盖它 ⇒ 多根森林只能边走边消费 (walk), 不能走完再按根取 (eval 只给单树).
 //           keep_roots = true: 根的槽永不回收 (每根独占一槽, 全部根同时存活到走完), 调用方一批一起消费 (Search GPU 批评估要 C 张根平面同在).
-//   fuse:   逐点链融合 (build / build_forest 默认开): 非根、只有一个消费者且消费者也是逐点 (POINT × SELF) 的逐点节点
+//   fuse:   逐点链融合 (build / build_forest 默认开): 非根、只有一个消费者且消费者也是逐点 (定元 POINT × SELF) 的逐点节点
 //           并进消费者, 一组 = 一个融合节点 (Contract Fuse 程序, 外部输入走 in[0..n_in)), 中间量不落平面.
 //           被并的节点不再出现在 nodes / keys 里 —— 要按 Expr 子树找中间节点的调用方传 fuse = false.
 //   本头只管结构与槽计划, 不含任何后端, 也不含并行策略 (Run 与 search 的并行方案不同, 各在自己的 evaluator 里).
@@ -112,9 +112,10 @@ struct DagBuilder {
   }
 };
 
+// 可融合的逐点算子 = 定元 POINT × SELF (融合步只有 3 个实参槽; N 元 TsLinFix 自成节点)
 inline bool pointwise(int op) {
   const expr::OpInfo &o = expr::kOps[op];
-  return o.t == T::POINT && o.a == A::SELF;
+  return o.t == T::POINT && o.a == A::SELF && !expr::nary(o);
 }
 
 // 逐点链融合 (文件头 fuse; plan 之前调). 组 = 一个未被并的逐点节点 r + 递归并进来的上游;

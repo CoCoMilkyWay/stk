@@ -110,6 +110,7 @@ bool Config::LoadFromFile() {
   try_assign(fee.impact, new_impact, new_impact >= 0.0 && new_impact < 0.05, "固定冲击比率越界 (20bp = 0.0020)");
   try_assign(max_impact, new_max_impact,
              new_max_impact > 0.0 && new_max_impact <= 0.2, "买入冲击封顶越界 (1% = 0.01)");
+  lob_cost = j.value("lob_cost", lob_cost);
 
   return true;
 }
@@ -130,6 +131,7 @@ bool Config::SaveToFile() {
   j["transfer"] = fee.transfer;
   j["impact"] = fee.impact;
   j["max_impact"] = max_impact;
+  j["lob_cost"] = lob_cost;
   disk::write(disk::SettingsFile, {}, j.dump(2)); // Pretty print with 2 spaces indent
   if (log_callback) {
     log_callback("Config auto-saved to: " + filepath);

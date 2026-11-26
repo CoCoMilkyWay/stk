@@ -15,7 +15,7 @@ namespace GUI::Engine {
 namespace {
 
 using RunProbes = EvalProbes<>;
-using DayProbes = EvalProbes<NavP, TurnP>;
+using DayProbes = EvalProbes<NavP>;
 
 DayLine day_of(const DayProbes &p, const EvalStat &st, HoldId hold) {
   const factor::stat::HoldStat *h = st.find_hold(hold);
@@ -24,7 +24,7 @@ DayLine day_of(const DayProbes &p, const EvalStat &st, HoldId hold) {
   DayLine o{.ric = p.at<YearP>().day_ric[h - st.hold], .nav = p.at<NavP>().out};
   o.turn[0] = static_cast<float>(factor::stat::turn_annual(*h, st.turn_of(*h)));
   for (int j = 0; j < kTails; ++j)
-    o.turn[1 + j] = static_cast<float>(factor::stat::turn_annual(*h, tp.acc[j][0]));
+    o.turn[1 + j] = static_cast<float>(factor::stat::turn_annual(*h, tp.tails[j][h - st.hold]));
   return o;
 }
 
@@ -39,7 +39,7 @@ Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows,
   std::vector<Ps> ps(rs.size());
   if constexpr (std::is_same_v<Ps, DayProbes>)
     for (Ps &p : ps)
-      p.template at<NavP>().only = p.template at<TurnP>().only = day->hold;
+      p.template at<NavP>().only = day->hold;
   std::vector<size_t> fin;
   int k_st = -1;
   EvalStat st{};

@@ -10,12 +10,13 @@
 //                   EXTREME 极值及 arg 族 (半群不可逆) / ORDER 序统计 / RECUR 递推
 //   类型约束 (非归约核不消费集合, 部分格子空): MAP ⇒ POINT×SELF; SHIFT ⇒ SELF 纯滞后 (不看整窗);
 //   RECUR ⇔ EXPO 一一绑定; 归约核 (MOMENT / EXTREME / ORDER) 与窗/域自由组合. 复合算子标主导 (最重) 一级.
-//   现库只填积空间里的"十字": SELF×任意窗 (Ts 前缀) ∪ POINT×{ALL, GROUP} (Cs 前缀), 外加 N 元 {POINT, ROLL}×ALL (CsLinRank*);
+//   现库只填积空间里的"十字": SELF×任意窗 (Ts 前缀) ∪ POINT×{ALL, GROUP} (Cs 前缀), 外加 N 元 POINT×SELF (TsLinFix) / {POINT, ROLL}×ALL (CsLinRank*);
 //   十字外 (如 EXPAND×GROUP 段内组均值) 是合法格子, 未填; 其命名按计算顺序 TsCs<核> / CsTs<核>.
-//   【N 元】元数 N (kNary) 的算子: 2..kLrN 个特征元, 各元取池内截面秩 x̃ = pct − 1/2, 输出 Σ w_i·x̃_i (任一元无效 → 无效).
-//     定权 POINT (CsLinRankFix): w = 参数 w, 一元一个, 逐行无状态.
+//   【N 元】元数 N (kNary) 的算子: 2..kLrN 个特征元, 输出 Σ w_i·x̃_i (任一元无效 → 无效); x̃ 按 A 域:
+//     SELF x̃ = 原值 (TsLinFix); ALL x̃ = 池内截面秩 pct − 1/2 (CsLinRank*).
+//     定权 POINT (TsLinFix / CsLinRankFix): w = 参数 w, 一元一个, 逐行无状态; Σ 一律 double 按元序累加 (三后端同序).
 //   【N 元回归】ROLL (CsLinRankRoll): 特征元后接末元回归目标 (h 持有期的做多标签, 表达式不写, 解析时补);
-//     窗 = 行 t 收盘时**已实现**的最近 d 个标签行 (stat::label_known), 截面秩化后池化岭回归出 w (见 OpTable 该行).
+//     窗 = 行 t 收盘时**已实现**的最近 d 个标签行 (Hold::known / Hold::last, define/Label.hpp), 截面秩化后池化岭回归出 w (见 OpTable 该行).
 //   CPU / GPU 具体怎么算 (逐格融合 / scan / van Herk / 直方图 …) 是后端私事, 不进表不进分类.
 //
 //   【三后端】同名 struct, 三处**完全独立**实现, 不共享一行算法代码 (否则对拍空转):
@@ -29,7 +30,7 @@
 //   【调用形状】三后端同一个 Call (下文): 输入表 xs[0..n) (前三元别名 x/y/z) + 输出 o 的 SoA 指针, 池掩码 g, 形状 T×A (行距恒 A),
 //     层几何 geo, 参数 p. 定元算子读 x/y/z (元数不到的槽为空), N 元算子读 xs; g 只 CS 读 (TS 不读, 调用方有就给).
 //     架构层只认这一个形状, 算子的特殊性全在算子内部.
-//     流式  TS 一资产一个对象: Op(p), Val step(x, y, z, t_seg) 逐点推 (资产可晚到, 互不等待; 元数不到的元传 Val{});
+//     流式  TS 一资产一个对象: Op(p), Val step(x[kMaxIn], n, t_seg) 逐点推 (资产可晚到, 互不等待; x 前 n 个是输入, 其余槽恒 Val{});
 //           CS 一个对象推全部截面: Op op; void step(Call, t) 推第 t 行 (暂存是成员, 跨行复用)
 //     CPU   scratch(Call) = 每线程暂存字节; run(Call, Range, ws): TS 的 Range = 资产列 [lo, hi) (全 T 行), CS 的 Range = 行 [lo, hi)
 //     GPU   scratch(Call) = 设备暂存字节; run(Call, ws, stream): 整张量
@@ -44,12 +45,7 @@
 //     Expo 窗 = 最近 kMaxD 行 (同 Roll 跨段不 reset, 未满窗取已有前缀), 权 (1−k)^行龄, 按有效格的权和归一.
 //     各窗回看都有限 (≤ kMaxD 行) ⇒ 分块评估只要前带盖住回看, 块内值与整张量一致.
 //
-//   【层几何 Geo】因子在哪一层上算 (L_1min / 分钟箱 n / 日), 只由三个数刻画: S = 每段行数, N = 每行分钟数, M0 = 行 0 的末分钟.
-//     行 t_seg 覆盖的最后一分钟 (L_1min 分钟号 0..254) = minute(t_seg) = M0 + t_seg·N:
-//       L_1min  S 255, N 1,   M0 0
-//       分钟箱 n (5 / 15 / 30 / 60)  S = 1 + 240/n, N = n, M0 = 14 (首箱 = 09:15–09:30 集合竞价 15 分钟, 其后每箱 n 分钟)
-//       日     S 1,   N 255, M0 254 (收盘行)
-//     S 两两不同, 故 S 唯一确定层 (geo_of). 与 features/TimeIndex 的对账在 GUI 侧 (gui/engine/Load).
+//   【层几何 Geo】因子在哪一层上算 (L_1min / 分钟箱 n / 日): S / N / M0 三个数, 见 define/Geo.hpp.
 //     Roll 窗未满 (t < d−1) **不是无效**: 窗 = 已有前缀 [max(0, t−d+1), t], 同公式 (expanding 直到满窗);
 //     TsDelayRoll / TsDeltaRoll 的滞后夹到序列头: 取 x_{max(t−d, 0)}, 满窗后与 x_{t−d} 无缝衔接.
 //     窗内位置 (Wma 权 / Arg 距今期数) 以**最新一格 = d−1** 锚定, 未满窗时最旧格的位置 = d−n, 三后端同口径.
@@ -64,30 +60,30 @@
 //   【数值 / 退化契约】全程 branchless, 任何后端都不产 NaN / inf. 退化**不置无效**, 给该统计量的连续极限 / 中性值
 //   (与 CS 池外资产"池内统计量连续外推"同一思路: 掩码只表达"这一格的输入有没有", 不表达"统计量好不好算"):
 //     1. 入口: 落盘用 NaN 表缺失 → Val{0, false}. 之后 v 恒为有限值.
-//     2. 全并列判据 = **精确** spread(lo, hi) = hi > lo (Var/Std/Skew/Kurt/Z/Corr/Beta/Resid/序统计族).
+//     2. 全并列判据 = **精确** spread(lo, hi) = hi > lo (Std/Skew/Kurt/Z/Corr/Beta/Resid/序统计族).
 //        比的是同一份 fp32 输入的极值, 无舍入 → 三后端逐位一致, 且与量级无关: 价格 50 元窗内一跳 0.01 有离散度;
 //        常值窗哪怕滑窗累加器残留 1e-14 也判全并列 (GPU 侧用"最近变动位置 > 窗内首个有效位置"等价实现, 无需减法).
-//     3. 相消判据 den_ok(): 分母相对两侧量级 < kRelEps (Imb/Share/Hhi/WMean 的 Σ ≈ 0 是数值无意义, 不是并列).
+//     3. 相消判据 den_ok(): 分母相对两侧量级 < kRelEps (Imb/Hhi/WMean 的 Σ ≈ 0 是数值无意义, 不是并列).
 //        这是唯一保留阈值的判据; 恰落在阈值带内的输入三后端可能不一致, 造数刻意避开.
 //     4. 逐点除法 (Div/Recip): 三后端同序 IEEE 运算, 直接判 y ≠ 0.
 //     5. **没有分母钳位**: 退化走 select 给中性值, 非退化分母原样; 绝对 eps 钳位只会在小量级输入上把正确值改错.
 //     6. 中性值表 (n = 窗/截面内有效样本数; "全并列" 指 spread 为假; 判据只决定 select 哪支, 掩码不动):
 //          Sum                  n = 0 → 0 (空和)                 Mean / Max / Min / ArgMax / ArgMin / Wma / Quantile   n = 0 → 0
-//          Var / Std            n < 2 或全并列 → 0                Skew (n < 3) / Kurt (n < 4) / 全并列 → 0
+//          Std                  n < 2 或全并列 → 0                Skew (n < 3) / Kurt (n < 4) / 全并列 → 0
 //          Z                    σ 退化 → 0 (x = μ)               Cov (n < 2) / Corr (无离散度) / Beta (y 无离散度) / Slope (n < 2) → 0
 //          Resid                y 无离散度 → β = 0, 即 x − μ^x    Rank   全并列或 n ≤ 1 → 0.5 (精确秩的 pct_of 自然给出, 见【精确秩】)
 //          Hhi                  Σx 相消 → 1/n (均匀的极限)        Entropy 无正样本 → 0 (单样本熵 = 0 的极限)
-//          WMean                Σy 相消 → Σx/n (等权的极限)       Product 精确算 Π(1+x) − 1 (含 1+x ≤ 0: 零因子 → −1, 负因子计奇偶)
-//          Imb / Share          和相消 → 0 / 0.5                 Div / Recip  除数 0 → 0
+//          WMean                Σy 相消 → Σx/n (等权的极限)
+//          Imb                  和相消 → 0                       Div / Recip  除数 0 → 0;  Pow  底数 0 → 0 (含负次幂)
 //          Ema                  窗内无有效样本 → 0                 LogRatio 比值夹到 [ε, 1/ε] (ε = kRelEps): x ≤ 0 → −kLogCap, y ≤ 0 → +kLogCap, 双非正 → 0
-//          CS 同表: 空池行广播 0, Demean / Winsor → x 原值, Z → 0, Resid → x − μ^x, Rank / GroupRank → 0.5 (Rank 的池外格见【精确秩】),
+//          CS 同表: 空池行广播 0, Winsor → x 原值, Z → 0, Resid → x − μ^x, Rank / GroupRank → 0.5 (Rank 的池外格见【精确秩】),
 //                   NormRank → Φ⁻¹(0.5) = 0, Bucket → floor(0.5·k), GroupMean 组空 → 全池, 全池空 → 0.
 //                   Group*: 组 id 格有效但 < 0 (未知行业) = 无组 → 以全池为组 (GroupMean 全池均值, GroupRank 全池分位, GroupResid 按全池去均值);
 //                           只有组 id 格**无效**才无效.
 //     7. 掩码为假**只剩**四种来源 (消费端只看 m; m = false 时 v = 0):
 //          a. 入口 NaN (第 1 条);
 //          b. 逐点算子的输入格无效 (含 TsMask y ≤ 0 —— 它的用途就是把点踢出下游窗);
-//          c. 相对型算子 (Ts Z / Rank / Resid; Cs Demean / Z / Rank / NormRank / Winsor / Bucket / Resid / Group*) 描述的是
+//          c. 相对型算子 (Ts Z / Rank / Resid; Cs Z / Rank / NormRank / Winsor / Bucket / Resid / Group*) 描述的是
 //             资产自身这一格, 该格 x_t (二元还要 y_t, 分组还要组 id 格) 无效即无效; 窗内其余样本无效不影响;
 //          d. 出口溢出 (inf) 由 mk() 转成无效 —— 溢出是数据属性, 不是 bug.
 //     8. 累加: CPU 用 double; GPU 幂和用 double, 按段/按块分块, 禁全局长 cumsum.
@@ -105,7 +101,8 @@
 #include <cstdint>
 
 #include "define/HostDev.hpp" // FACTOR_HD: 两后端共用的契约公式 (Stat/Contract.hpp【一份公式】)
-#include "define/Label.hpp"   // HoldId (N 元回归的目标持有期)
+#include "define/Geo.hpp"
+#include "define/Label.hpp" // HoldId / Hold (N 元回归的目标持有期)
 
 namespace factor {
 
@@ -128,44 +125,14 @@ inline constexpr float kLogCap = 13.815510557964274f; // −ln kRelEps: LogRatio
 inline constexpr int kBuckets = 256;                  // 序统计近似的直方图桶数
 inline constexpr int kMaxGroup = 1024;                // 分组列 id 上限 (三后端同一上限; GPU 用作片上槽数)
 
-// ---- 层几何 (见文件头【层几何 Geo】) ----
-struct Geo {
-  int S = 0, N = 0, M0 = 0;                                                  // 每段行数 / 每行分钟数 / 行 0 的末分钟
-  FACTOR_HD constexpr int minute(int t_seg) const { return M0 + t_seg * N; } // 行 t_seg 的末分钟 (L_1min 分钟号)
-};
-// 全部层 (S, N, M0), 细 → 粗; 加层只改这一行
-#define FACTOR_GEOS(X) X(255, 1, 0) X(49, 5, 14) X(17, 15, 14) X(9, 30, 14) X(5, 60, 14) X(1, 255, 254)
-#define FACTOR_GEO_ROW(S, N, M0) Geo{S, N, M0},
-inline constexpr Geo kGeos[] = {FACTOR_GEOS(FACTOR_GEO_ROW)};
-#undef FACTOR_GEO_ROW
-inline constexpr int kGeoCount = static_cast<int>(sizeof(kGeos) / sizeof(kGeos[0]));
-inline constexpr int kSegMax = 255; // 最大段长 (= L_1min; GPU EXPAND 块容量 256 须盖住)
-inline constexpr int kMaxD = 255;   // 窗长 / 滞后 d 的上限 (行, 各层同一个): 长窗口应降到更粗的层上做, 不在细层上拉长
-constexpr bool geos_consistent() {
-  for (int i = 0; i < kGeoCount; ++i) {
-    const Geo &g = kGeos[i];
-    if (g.S < 1 || g.S > kSegMax || g.minute(g.S - 1) != kSegMax - 1) // 末行 = 收盘分钟 254
-      return false;
-    for (int j = 0; j < i; ++j)
-      if (kGeos[j].S == g.S)
-        return false;
-  }
-  return true;
-}
-static_assert(geos_consistent(), "层几何: S 须两两不同且 ∈ [1, kSegMax], 末行末分钟 = 254");
-constexpr bool is_seg(int S) {
-  for (const Geo &g : kGeos)
-    if (g.S == S)
-      return true;
-  return false;
-}
-constexpr Geo geo_of(int S) {
-  for (const Geo &g : kGeos)
-    if (g.S == S)
-      return g;
-  assert(false && "seg 不是任何层的每日行数 (kGeos)");
-  return {};
-}
+// ---- 层几何 (见文件头【层几何 Geo】; 定义在 define/Geo.hpp) ----
+using ::Geo;
+using ::geo_of;
+using ::is_seg;
+using ::kGeoCount;
+using ::kGeos;
+using ::kSegMax;
+inline constexpr int kMaxD = 255; // 窗长 / 滞后 d 的上限 (行, 各层同一个): 长窗口应降到更粗的层上做, 不在细层上拉长
 // ---- 调用形状 (文件头【调用形状】; 指针是宿主还是设备地址由后端定) ----
 struct In {
   const float *v = nullptr;
@@ -224,7 +191,7 @@ struct Bump {
 #define FACTOR_COLS
 #endif
 
-// ---- 逐点链融合程序 (Dag 产出, CPU / GPU evaluator 执行; 只装 POINT × SELF 算子, 每步结果过 mk 与单算子逐位同) ----
+// ---- 逐点链融合程序 (Dag 产出, CPU / GPU evaluator 执行; 只装定元 POINT × SELF 算子 (≤ 3 元), 每步结果过 mk 与单算子逐位同) ----
 inline constexpr int kFuseIn = 8, kFuseLen = 16; // 外部输入 / 步数上限 (GPU 走 kernel 参数区)
 struct FuseStep {
   int op = -1;     // OpTable 行序下标 (= expr::kOps 下标)

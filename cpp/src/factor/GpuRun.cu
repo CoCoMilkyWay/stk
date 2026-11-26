@@ -117,6 +117,16 @@ __device__ __forceinline__ DVal fuse_step(const FuseStep &st, const In *in, cons
   const bool ok = m && dev::fin(v);
   return DVal{ok ? v : 0.f, static_cast<uint8_t>(ok ? 1 : 0)};
 }
+// 分派表按 (A 域, T 窗) 展开, N 元 POINT × SELF 也落到这里: 它不进融合 (Dag pointwise 只收定元), 此支只为不实例化 Op::F
+template <int NARY, class Op>
+__device__ __forceinline__ DVal fuse_op(const FuseStep &st, const In *in, const DVal *r, int i, int t_seg) {
+  if constexpr (NARY == kNary) {
+    assert(false && "N 元算子不进融合");
+    return DVal{0.f, 0};
+  } else {
+    return fuse_step<NARY, typename Op::F>(st, in, r, i, t_seg);
+  }
+}
 
 __global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, int S) {
   const int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -128,9 +138,9 @@ __global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, in
     for (int s = 0; s < a.f.n; ++s) {
       const FuseStep &st = a.f.s[s];
       switch (st.op) {
-#define G_FUSE_SELF_POINT(Name, ar)                           \
-  case kIdx##Name:                                            \
-    r[s] = fuse_step<ar, ts::Name::F>(st, a.in, r, i, t % S); \
+#define G_FUSE_SELF_POINT(Name, ar)                        \
+  case kIdx##Name:                                         \
+    r[s] = fuse_op<ar, ts::Name>(st, a.in, r, i, t % S); \
     break;
 #define G_FUSE_SELF_EXPAND(Name, ar)
 #define G_FUSE_SELF_ROLL(Name, ar)
@@ -147,7 +157,7 @@ __global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, in
         OP_ALL(G_FUSE)
 #undef G_FUSE
       default:
-        assert(false && "融合步只装 POINT × SELF 算子");
+        assert(false && "融合步只装定元 POINT × SELF 算子");
       }
     }
     ov[i] = r[a.f.n - 1].v;
@@ -442,13 +452,12 @@ struct DevLabels {
 
 } // namespace
 
-// Stat 常驻会话: 标签 + rx[Cmax] / ec 工作区 + 一级 / 分片 / 出口, open 时全部就位, load 可按同形状新块覆盖标签
+// Stat 常驻会话: 标签 + rx[Cmax] 工作区 + 一级 / 分片 / 出口, open 时全部就位, load 可按同形状新块覆盖标签
 struct StatSession {
   factor::stat::Span s;
   int Cmax = 0;
   DevLabels lab;
   DevBuf<uint16_t> rx;
-  DevBuf<uint8_t> ec;
   DevBuf<factor::stat::Row> rows;
   DevBuf<factor::stat::Accum> part, acc;
   DevBuf<factor::stat::Day> day;
@@ -465,7 +474,7 @@ StatSession *stat_open(int T, int A, int seg, int Cmax, const factor::stat::Hold
   const size_t n = s->s.n();
   const int H = hd.n, NB = stat::n_parts(s->s), NBB = stat::n_batch_parts(s->s), D = s->s.days();
   s->lab.alloc(hd, seg, n, cap);
-  s->rx.alloc(static_cast<size_t>(Cmax) * n), s->ec.alloc(n);
+  s->rx.alloc(static_cast<size_t>(Cmax) * n);
   s->rows.zalloc(static_cast<size_t>(H) * T);
   const size_t P = static_cast<size_t>(H) * std::max(static_cast<size_t>(NB), static_cast<size_t>(Cmax) * NBB);
   s->part.zalloc(P), s->acc.zalloc(static_cast<size_t>(Cmax) * H), s->day.zalloc(static_cast<size_t>(Cmax) * H * D);
@@ -482,9 +491,9 @@ void stat_load(StatSession *s, const factor::stat::Label *lab, double *prep_ms) 
 }
 
 void stat_eval(StatSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, factor::stat::Dir d, int t0_abs, int t_lo, int t_back,
-               factor::stat::Accum *acc, factor::stat::Day *day, factor::stat::Row *rows, uint8_t *ec, uint16_t *rx, double *eval_ms) {
+               factor::stat::Accum *acc, factor::stat::Day *day, factor::stat::Row *rows, uint16_t *rx, double *eval_ms) {
   assert(s && s->loaded && x && C >= 1 && C <= s->Cmax && g && g->m && acc && day);
-  assert((C == 1 || (!rows && !ec && !rx)) && "一级 / 端码 / r16 只单候选可拷回");
+  assert((C == 1 || (!rows && !rx)) && "一级 / r16 只单候选可拷回");
   factor::stat::Span sp = s->s; // 分片数随 t_lo / t_back 只减 (open 按两者 = 0 的上界分配)
   sp.t0_abs = t0_abs, sp.t_lo = t_lo, sp.t_back = t_back;
   factor::stat::assert_span(sp);
@@ -508,22 +517,18 @@ void stat_eval(StatSession *s, const DevPlane *const *x, int C, const DevPlane *
   s->day.down(day, static_cast<size_t>(C) * H * D); // [C][H][D] 按本次统计日数密排
   if (rows)
     s->rows.down(rows, H * static_cast<size_t>(s->s.T));
-  if (ec) {
-    stat::end_codes(s->rx.p, s->s, s->ec.p, nullptr);
-    s->ec.down(ec, s->s.n());
-  }
   if (rx)
     s->rx.down(rx, s->s.n());
 }
 
 void stat_close(StatSession *s) {
   assert(s);
-  s->day.free_(), s->acc.free_(), s->part.free_(), s->rows.free_(), s->ec.free_(), s->rx.free_(), s->lab.free_();
+  s->day.free_(), s->acc.free_(), s->part.free_(), s->rows.free_(), s->rx.free_(), s->lab.free_();
   delete s;
 }
 
 size_t stat_bytes(const StatSession *s) {
-  return s ? s->lab.bytes() + s->rx.bytes() + s->ec.bytes() + s->rows.bytes() + s->part.bytes() + s->acc.bytes() + s->day.bytes() : 0;
+  return s ? s->lab.bytes() + s->rx.bytes() + s->rows.bytes() + s->part.bytes() + s->acc.bytes() + s->day.bytes() : 0;
 }
 
 void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, factor::stat::Dir d, int T, int A, int seg,
@@ -545,7 +550,7 @@ void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uin
   const DevPlane gp{nullptr, g.p};
   StatSession *s = stat_open(T, A, seg, C, hd, cap);
   stat_load(s, lab, prep_ms);
-  stat_eval(s, xpp.data(), C, &gp, f, d, t0_abs, t_lo, t_back, acc, day, rows, nullptr, nullptr, eval_ms);
+  stat_eval(s, xpp.data(), C, &gp, f, d, t0_abs, t_lo, t_back, acc, day, rows, nullptr, eval_ms);
   stat_close(s);
   for (int c = 0; c < C; ++c)
     x[static_cast<size_t>(c)].free_(), m[static_cast<size_t>(c)].free_();

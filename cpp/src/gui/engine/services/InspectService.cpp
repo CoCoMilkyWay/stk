@@ -52,7 +52,7 @@ struct RxAllP : LandCellsP<uint16_t> {
   }
 };
 
-using InspectProbes = EvalProbes<RxP, RxAllP, RicP, NavP, TurnP>;
+using InspectProbes = EvalProbes<RxP, RxAllP, RicP, NavP>;
 
 struct Leg {
   uint32_t a = 0;
@@ -234,7 +234,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
 
   const Rc rc = with_backend<InspectProbes>(F, sc.gpu, [&](auto &eng) {
     return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/true, NoOp{}, [&](const Block &c, size_t, double) {
-      cache.pool.update(c.gen, [&](BookLines &b) { b = pool_line(F.S.ex, c); });
+      cache.pool.update(c.gen, [&](LedgerLines &b) { b = pool_line(F.S.ex, c); });
       assert(cache.pool.val.P == c.rows_stat() && cache.pool.val.n == c.y.hd.n);
     });
   });
@@ -265,7 +265,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
     double s = 0.0;
     for (int t = 0; t < res.pool_index.P; ++t)
       s += v[t];
-    res.pool_ann[hi] = static_cast<float>(s / days * factor::stat::kDaysPerYear);
+    res.pool_ann[hi] = static_cast<float>(per_year(s, days));
   }
   res.hd = o.job.spec.y.hd;
   fill_eval(p, o.scope(sc), o.eval_ms(0), res);
@@ -273,7 +273,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
   std::copy_n(p.at<IcPdfP>().pdf, res.hd.n, res.ic_agg);
   res.nav = std::move(p.at<NavP>().out);
   for (int j = 0; j < kTails; ++j)
-    std::copy_n(p.at<TurnP>().acc[j], res.hd.n, res.ls_turn[j]);
+    std::copy_n(p.at<TurnP>().tails[j], res.hd.n, res.ls_turn[j]);
 
   std::vector<Leg> legs;
   if (req.spec.ex != InspectExport::None) {

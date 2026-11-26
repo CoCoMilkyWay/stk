@@ -1,14 +1,15 @@
-// Probe — 探针层 (一个根的一种输出; 双层严格对仗生命周期): Load / Book 之上, Engine 之下.
+// Probe — 探针层 (一个根的一种输出; 双层严格对仗生命周期): Load / Ledger 之上, Engine 之下.
 //   趟级: init(PassCtx) ⇄ finish(PassCtx)    (首块前一次定形/置初值, 末块后好根一次收尾)
 //   块级: open(Ctx)     ⇄ close(Ctx, RootView) (中间夹逐统计行 row(hi, t, r))
-//   落地三形 (行轴 = 评估期 rows_stat): RowsP<D, Got> (逐行暂存 → 折) / LandCellsP<V> (逐格) / LinesP<K> (净值线 → fold_book).
-//   通用六探针: HoldP / CostP / CoverP / AlphaP / IcPdfP / YearP → EvalProbes<X...> → fill_eval.
+//   落地三形 (行轴 = 评估期 rows_stat): RowsP<D, Got> (逐行暂存 → 折) / LandCellsP<V> (逐格) / LinesP (净值线 → fold_ledger).
+//   通用六探针: HoldP / TurnP / CoverP / AlphaP / IcPdfP / YearP → EvalProbes<X...> → fill_eval; 分年一律 by_year.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "factor/Stat/Cpu.hpp"  // Workspace
+#include "factor/Stat/Cpu.hpp"  // Workspace / turn_rows
+#include "factor/Stat/Fold.hpp"
 #include "factor/Stat/Roll.hpp" // Day / roll_of
-#include "gui/engine/Book.hpp"  // RowLines / fold_book
+#include "gui/engine/Ledger.hpp"  // RowLines / fold_ledger
 #include "gui/engine/Load.hpp"
 #include "math/distribution/PdfSnap.hpp" // AggPdf / KLLcache
 #include "misc/date.hpp"
@@ -45,10 +46,9 @@ inline double group_abs(const factor::stat::Row &r, int k, double cap) {
 enum Need : uint8_t {
   kNeedRows = 1,
   kNeedRx = 2,
-  kNeedEc = 4,
-  kNeedMask = 8,
-  kNeedAlpha = 16,
-  kNeedX = 32
+  kNeedMask = 4,
+  kNeedAlpha = 8,
+  kNeedX = 16
 };
 
 struct RootView {
@@ -56,7 +56,6 @@ struct RootView {
   factor::stat::Plane alpha;
   factor::stat::Frame f = factor::stat::Frame::CS;
   const uint16_t *rx = nullptr;
-  const uint8_t *ec = nullptr;
   const factor::stat::Accum *acc = nullptr; // [H] 本块三级 (已定向)
   const factor::stat::Day *day = nullptr;   // [H][D] 本块二级 (已定向, D = 本块统计日数)
 };
@@ -136,32 +135,49 @@ struct ProbeBase {
 
 // ---- 通用探针与三种落地基类 ----
 
-// 二级 HoldStat[H] (毛): 块间 Accum 续攒 → finish_all
+// 分年: 评估期日 dates 按自然年切段, 逐段 fn(年, [a, b))
+template <class Fn>
+void by_year(const std::vector<misc::Ymd> &dates, Fn &&fn) {
+  for (size_t a = 0, b; a < dates.size(); a = b) {
+    const int y = dates[a] / 10000;
+    for (b = a; b < dates.size() && dates[b] / 10000 == y; ++b)
+      ;
+    fn(y, a, b);
+  }
+}
+
+// 三级 HoldStat[H] (毛): 块间 Accum 续攒 + 二级 Day 折日净值 LS (Daily) → finish_all
 struct HoldP : ProbeBase {
   factor::stat::Accum acc[kHoldCount];
+  factor::stat::Daily dl[kHoldCount];
   int n_hold = 0;
   factor::stat::HoldStat hold[kHoldCount];
   void close(const Ctx &c, const RootView &v) {
-    for (int i = 0; i < c.L.hd.n; ++i)
+    const int D = c.s().days();
+    for (int i = 0; i < c.L.hd.n; ++i) {
       acc[i].merge(v.acc[i]);
+      factor::stat::add_days(dl[i], v.day + static_cast<size_t>(i) * D, D, c.L.hd.k[i], c.s().g.S);
+    }
   }
   void finish(const PassCtx &p) {
     n_hold = p.hd.n;
-    factor::stat::finish_all(acc, p.hd, p.seg, hold);
+    factor::stat::finish_all(acc, dl, p.hd, p.seg, hold);
   }
 };
 
-// 换手成本 CostTier[C]: init 定段, close 按块续攒; 另按日攒段 0 两端增仓量 → finish 折成分年年换手 (YearStat::turn 同口径)
-struct CostP : ProbeBase {
-  static constexpr uint8_t need = kNeedEc;
+// 换手 (Stat/Turn.hpp 因子账集, 一趟 turn_rows): 各金额段 × 各持有期 × 各层级 → costs[C] (整组层级) / tails[j][hd] (尾部层级, 段 0);
+//   另按日攒段 0 整组两端买量 → finish 折成分年年换手 (YearStat::turn 同口径)
+struct TurnP : ProbeBase {
+  static constexpr uint8_t need = kNeedRx;
   static constexpr Segs segs = Segs::All;
   struct YearTurn {
     int year = 0;
     float turn = 0.f;
   };
   std::vector<CostTier> costs;
+  factor::stat::CostAcc tails[kTails][kHoldCount] = {};
   int seg = 0;
-  std::vector<double> row_buy;                 // [hd][块行] 段 0 两端增仓量之和 (close 内暂存)
+  std::vector<double> row_buy;                 // [hd][块行] 段 0 整组两端买量之和 (close 内暂存)
   std::vector<std::vector<double>> day_buy;    // [hd][日] 同上按日合
   std::vector<YearTurn> year_turn[kHoldCount]; // [hd] 年升序
   static double bytes(const Shape &sh, int H) { return sizeof(double) * static_cast<double>(H) * sh.days; }
@@ -245,26 +261,26 @@ struct LandCellsP : ProbeBase {
   V *at(const Ctx &c) const { return dst->data() + static_cast<size_t>(c.c.land0() + c.c.t_lo) * c.s().A; }
 };
 
-// 落地基类 3: 净值线 [hd.n · K] (init 一次定形, finish 一次 fold_book)
-template <int K>
+// 落地基类 3: 净值线 (init 由派生类 lines() 定形, finish 一次 fold_ledger; stride = 每几行并一点)
 struct LinesP : ProbeBase {
   static constexpr uint8_t need = kNeedRows;
   RowLines x;
-  BookLines out;
+  LedgerLines out;
   int stride = 1, t0 = 0;
-  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(K) * H * sh.T; }
-  void init(const PassCtx &p) {
-    x.reset(p.hd.n * K, p.rows_stat);
-    for (int i = 0; i < x.n; ++i)
-      x.hold[static_cast<size_t>(i)] = p.hd.k[i / K];
+  // n 条线, 线 i 的持有期 hold_of(i)
+  template <class HoldOf>
+  void lines(const PassCtx &p, int n, HoldOf &&hold_of) {
+    x.reset(n, p.rows_stat);
+    for (int i = 0; i < n; ++i)
+      x.hold[static_cast<size_t>(i)] = hold_of(i);
   }
   void open(const Ctx &c) {
-    assert(x.n == c.L.hd.n * K && x.T == c.c.rows_stat() && "净值线与作用域不符");
+    assert(x.T == c.c.rows_stat() && "净值线与作用域不符");
     t0 = c.c.land0();
   }
-  float &at(int hi, int k, int t) { return x.x[static_cast<size_t>(hi * K + k) * x.T + static_cast<size_t>(t0 + t)]; }
+  float &at(int i, int t) { return x.x[static_cast<size_t>(i) * x.T + static_cast<size_t>(t0 + t)]; }
   void finish(const PassCtx &p) {
-    out = fold_book(p.ex, p.seg, x, stride);
+    out = fold_ledger(p.ex, p.seg, x, stride);
     x = RowLines{};
   }
 };
@@ -348,21 +364,18 @@ struct YearP : RowsP<YearP, YearRow> {
       roll[hi] = factor::stat::roll_of(sums, p.hd.k[hi], seg, nullptr, &wins);
       std::vector<YearStat> &out = years[hi];
       out.clear();
-      for (size_t a = 0; a < ds.size();) {
-        const int y = dates[a] / 10000;
+      by_year(dates, [&](int y, size_t a, size_t b) {
         DayG s;
         std::vector<double> w;
-        size_t b = a;
-        for (; b < ds.size() && dates[b] / 10000 == y; ++b) {
-          s.n += ds[b].n, s.ric += ds[b].ric, s.ls += ds[b].ls;
+        for (size_t i = a; i < b; ++i) {
+          s.n += ds[i].n, s.ric += ds[i].ric, s.ls += ds[i].ls;
           for (int k = 0; k < factor::stat::kGroups; ++k)
-            s.g[k] += ds[b].g[k];
-          if (!std::isnan(wins[b]))
-            w.push_back(wins[b]);
+            s.g[k] += ds[i].g[k];
+          if (!std::isnan(wins[i]))
+            w.push_back(wins[i]);
         }
-        a = b;
         if (s.n < 3)
-          continue;
+          return;
         std::sort(w.begin(), w.end());
         const double med = w.empty() ? 0.0 : 0.5 * (w[(w.size() - 1) / 2] + w[w.size() / 2]);
         out.push_back({.year = y,
@@ -372,13 +385,13 @@ struct YearP : RowsP<YearP, YearRow> {
                        .ls = static_cast<float>(s.ls / s.n),
                        .ric = static_cast<float>(s.ric / s.n),
                        .ric_med = static_cast<float>(med)});
-      }
+      });
     }
     std::vector<std::vector<DayG>>().swap(day);
   }
 };
 
-// 分层 / 尾部 / LS 的逐行批收益 → fold_book 日净值线 (Inspect: 全部持有期 × kNavLines; agent eval_factor: 一个持有期 × kNavExcess)
+// 分层 / 尾部 / LS 的逐行批收益 → fold_ledger 日净值线 (Inspect: 全部持有期 × kNavLines; agent eval_factor: 一个持有期 × kNavExcess)
 inline double tail_abs(const factor::stat::Row &r, int e, int j, double cap) {
   return r.ok ? factor::stat::book_abs(r.tail[e][j], r.tail_n[e][j], r.mkt, cap * factor::stat::tail_frac(j)) : 0.0;
 }
@@ -413,76 +426,39 @@ inline int only_of(const Holds &hd, int only) {
   return i;
 }
 
-struct NavP : ProbeBase {
-  static constexpr uint8_t need = kNeedRows;
+struct NavP : LinesP {
   int only = -1; // 调用方给: HoldId → 只出它的 kNavExcess 条超额线; −1 = 全部持有期 × kNavLines
-  int sel = -1, t0 = 0;
+  int sel = -1;
   double cap = 0.0;
-  RowLines x;
-  BookLines out; // [线][日]; 全部持有期时线 = hi · kNavLines + i
   static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(kNavLines) * H * sh.T; }
   void init(const PassCtx &p) {
     sel = only_of(p.hd, only);
-    x.reset(only < 0 ? p.hd.n * kNavLines : kNavExcess, p.rows_stat);
-    for (int i = 0; i < x.n; ++i)
-      x.hold[static_cast<size_t>(i)] = only < 0 ? p.hd.k[i / kNavLines] : static_cast<HoldId>(only);
+    stride = p.seg;
+    lines(p, only < 0 ? p.hd.n * kNavLines : kNavExcess, [&](int i) { return only < 0 ? p.hd.k[i / kNavLines] : static_cast<HoldId>(only); });
   }
   void open(const Ctx &c) {
-    assert(x.T == c.c.rows_stat() && "净值线与作用域不符");
-    t0 = c.c.land0(), cap = c.L.cap;
+    LinesP::open(c);
+    cap = c.L.cap;
   }
   void row(int hi, int t, const factor::stat::Row &r) {
     if (only >= 0 && hi != sel)
       return;
-    const size_t at = static_cast<size_t>(t0 + t);
     if (only < 0)
       for (int i = 0; i < kNavLines; ++i)
-        x.x[static_cast<size_t>(hi * kNavLines + i) * x.T + at] = static_cast<float>(nav_value(r, i, cap));
+        at(hi * kNavLines + i, t) = static_cast<float>(nav_value(r, i, cap));
     else
       for (int i = 0; i < kNavExcess; ++i)
-        x.x[static_cast<size_t>(i) * x.T + at] = static_cast<float>(nav_value(r, nav_excess(i), cap));
-  }
-  void finish(const PassCtx &p) {
-    out = fold_book(p.ex, p.seg, x, p.seg);
-    x = RowLines{};
-  }
-};
-
-// 各级尾部 LS 的两端换手 (固定段, 无冲击): acc[j][hi]; only 同 NavP (只算该持有期, 放 acc[j][0])
-struct TurnP : ProbeBase {
-  static constexpr uint8_t need = kNeedRx;
-  int only = -1;
-  factor::stat::CostAcc acc[kTails][kHoldCount] = {};
-  static double scratch(const Shape &sh, int) { return static_cast<double>(sh.n()); }
-  void close(const Ctx &c, const RootView &v) {
-    const factor::stat::Span s = c.s();
-    factor::stat::Labels L = c.L;
-    if (const int i = only_of(c.L.hd, only); i >= 0) {
-      L.hd.n = 1, L.hd.k[0] = static_cast<HoldId>(only);
-      L.l[0] = c.L.l[i];
-    }
-    std::vector<uint8_t> ec(s.n());
-    for (int j = 0; j < kTails; ++j) {
-      c.ex.rows(s.T, [&](int t0, int t1, int) {
-        for (size_t k = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; k < e; ++k)
-          ec[k] = factor::stat::tail_code(v.rx[k], j);
-      });
-      const factor::stat::Cost flat{};
-      factor::stat::CostAcc out[kHoldCount];
-      factor::cpu::stat::cost_rows(c.ex, ec.data(), s, L, L.cap * factor::stat::tail_frac(j), &flat, 1, *c.w, out);
-      for (int hi = 0; hi < L.hd.n; ++hi)
-        acc[j][hi].merge(out[hi]);
-    }
+        at(i, t) = static_cast<float>(nav_value(r, nav_excess(i), cap));
   }
 };
 
 template <class... X>
-using EvalProbes = Probes<HoldP, CostP, CoverP, AlphaP, IcPdfP, YearP, X...>;
+using EvalProbes = Probes<HoldP, TurnP, CoverP, AlphaP, IcPdfP, YearP, X...>;
 
 template <class Ps>
 void fill_eval(const Ps &p, const StatScope &scope, double eval_ms, EvalStat &st) {
   const HoldP &h = p.template at<HoldP>();
-  const CostP &c = p.template at<CostP>();
+  const TurnP &c = p.template at<TurnP>();
   const IcPdfP &ic = p.template at<IcPdfP>();
   const CoverP &cv = p.template at<CoverP>();
   const YearP &yr = p.template at<YearP>();

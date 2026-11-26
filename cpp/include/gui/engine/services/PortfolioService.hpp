@@ -1,10 +1,10 @@
 // PortfolioService — 因子组合回测与行情两侧 (篮子 + 个股) 账本:
-//   纯计算核: EvalPortfolioGroup (同域因子共享森林出 G20 多头账) ↔ EvalBasketBooks (all 日层一趟出篮子账 + 个股账)
+//   纯计算核: EvalPortfolioGroup (同域因子共享森林出 G20 多头账) ↔ EvalBasketLedgers (all 日层一趟出篮子账 + 个股账)
 //   薄线程壳: PortfolioService (FactorWorker<PortfolioService, PortfolioRequest>)
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "gui/engine/Book.hpp"
+#include "gui/engine/Ledger.hpp"
 #include "gui/engine/Table.hpp"
 #include "gui/engine/Worker.hpp"
 #include "gui/quote/Quote.hpp"
@@ -73,14 +73,14 @@ struct PortfolioRequest {
 };
 void MakePortfolioRequest(const SharedData &data, std::vector<PortfolioItem> &items, bool reload, bool gpu, PortfolioRequest &req);
 
-// ---- 账与结果 (账列与核 Book 见 gui/engine/Book.hpp) ----
-struct PortfolioBook : Book {
+// ---- 账与结果 (账列与核 Ledger 见 gui/engine/Ledger.hpp) ----
+struct PortfolioLedger : Ledger {
   std::vector<misc::Ymd> dates;
   FactorLevelId lv = 0;
   AmtId amt = kAmtFixed;
   std::vector<uint32_t> keys;
   std::string error;
-  size_t bytes() const { return Book::bytes() + dates.size() * sizeof(misc::Ymd) + keys.size() * sizeof(uint32_t); }
+  size_t bytes() const { return Ledger::bytes() + dates.size() * sizeof(misc::Ymd) + keys.size() * sizeof(uint32_t); }
   size_t lines() const { return keys.size(); }
   size_t line_of(uint32_t key) const {
     const auto it = std::lower_bound(keys.begin(), keys.end(), key);
@@ -91,7 +91,7 @@ struct PortfolioBook : Book {
     return col[k].n ? col[k].at(static_cast<int>(line)) : nullptr;
   }
   const float *val_of(size_t line, int m, bool other = false) const { // other = 另一种权重 (Profile::alt; 只篮子账有)
-    const BookLines &x = other ? pf.alt[m] : pf.val[m];
+    const LedgerLines &x = other ? pf.alt[m] : pf.val[m];
     assert(line < lines() && x.n);
     return x.at(static_cast<int>(line));
   }
@@ -106,14 +106,14 @@ struct PortfolioBook : Book {
 };
 
 struct PortfolioResult {
-  std::map<std::string, std::shared_ptr<const PortfolioBook>> factors;
-  Quote::PerMarket<std::shared_ptr<const PortfolioBook>> quotes;
+  std::map<std::string, std::shared_ptr<const PortfolioLedger>> factors;
+  Quote::PerMarket<std::shared_ptr<const PortfolioLedger>> quotes;
 };
 
 // 纯计算核 (须持 Lease): 同评估域因子共享一张森林 ↔ 行情两侧账一趟算出
 Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
-                      const std::function<void(size_t, std::shared_ptr<const PortfolioBook>)> &on_book);
-Rc EvalBasketBooks(const BasketTask &t, FactorFlow &F, Quote::PerMarket<std::shared_ptr<const PortfolioBook>> &out);
+                      const std::function<void(size_t, std::shared_ptr<const PortfolioLedger>)> &on_book);
+Rc EvalBasketLedgers(const BasketTask &t, FactorFlow &F, Quote::PerMarket<std::shared_ptr<const PortfolioLedger>> &out);
 
 class PortfolioService : public FactorWorker<PortfolioService, PortfolioRequest> {
   friend Service<PortfolioService, PortfolioRequest>;
@@ -133,7 +133,7 @@ private:
   template <class Set>
   void put(Set &&set);
 
-  misc::Lru<std::string, PortfolioBook> cache_;
+  misc::Lru<std::string, PortfolioLedger> cache_;
   std::string quotes_sig_;
 };
 

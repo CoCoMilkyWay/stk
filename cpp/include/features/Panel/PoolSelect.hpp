@@ -163,13 +163,13 @@ private:
   std::vector<uint16_t> cls_; // 切片内的类
 };
 
-// 篮子账 (两种权重同一趟; 账核 = define/Members.hpp Sleeve, 键 = 权重): 交易日 d 的成员 = pick(源行 r, out)
-//   (r = src_of(rb, 行, d); 换源才重选), 目标权 = Strip::omega; 换源 = roll (增仓), 逐日 = pass (收益 + 随价漂移)
-//   收益 = 可成交账 (Stat 契约【仓位感知】同一口径): 行 d−1 收盘这一批, 成员真持有 (建仓价点可买, 或沿连续成员链回走 ≤ kChainDays 日到可买) 才计
-//     T+1 标签 (次日仍是成员 = 续持取名义值), 否则该份资金不动 (收益 0)
+// 篮子账 (两种权重同一趟, 键 = 权重; 账核 = factor/Stat 仓位感知 walk + 换手 turn_row, 与因子账 / 行情篮子同一份): 行 r 收盘建仓的一批
+//   (持仓日 r + 1) 的成员 = pick(源行 src_of(rb, 行, r + 1 日)) (换源才重选), 目标权 = Strip::omega (源行目标权随价漂移到行 r 收盘);
+//   收益 = 真持有成员 (建仓价点可买, 或沿交接链回走 ≤ kChainDays 日到可买) 按目标权归一的 T+1 标签 (次日仍是成员 = 续持取名义值);
+//   买量 = 本批目标权对前一批漂移到交接点的增仓 Σ Δ⁺ (本格不可买记 0)
 struct Perf {
   std::vector<float> ret[kWeights]; // [Weight][日] 日收益 (首日 / 未建仓 0)
-  std::vector<float> buy[kWeights]; // [Weight][日] 增仓量 Σ (w − w̃)⁺ (w = 目标权, w̃ = 漂移后的权; 建仓 = 1; 不换源 0)
+  std::vector<float> buy[kWeights]; // [Weight][日] 增仓量 Σ Δ⁺ (目标权 − 前一批漂移到交接点的权; 首建 = 1)
   size_t first = 0;                 // 首个有仓日 (无 → days)
 };
 using Pick = std::function<void(size_t r, std::vector<Aid> &out)>;

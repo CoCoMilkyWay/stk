@@ -9,6 +9,7 @@
 
 #include "factor/Contract.hpp"
 #include "factor/Stat/Contract.hpp"
+#include "factor/Stat/Fold.hpp"
 
 #include <cstdint>
 
@@ -63,7 +64,7 @@ void run(int op, int n_in, const float *const *v, const uint8_t *const *m, const
 // 显存 open 时一次分配 (标签 / ry / rx[Cmax] / 一级 / 分片 / 出口). 流程: open → 每块 load (上传宿主标签 hd.n 组, ry 预处理; 各候选共用) →
 // 每批 eval (C ≤ Cmax 张设备常驻候选平面 (DAG 根槽) + 池掩码 g (只用 g->m), 口径 f / 方向 d 逐批给) → close.
 //   出口 acc[C][hd.n] 宿主 + day[C][hd.n][D] 宿主 (D = 统计日数, 契约二级 Day); C = 1 走逐行并行, 另可拷回一级 rows[hd.n][T] /
-//   端码 ec [T][A] (宿主侧换手成本 cost_rows 要) / 已定向 r16 rx [T][A] (宿主侧探针要); C > 1 走逐候选并行, 只出 acc / day.
+//   已定向 r16 rx [T][A] (宿主侧换手 turn_rows 与探针要); C > 1 走逐候选并行, 只出 acc / day.
 //   t0_abs / t_lo / t_back = 契约【分块流式】(整日对齐). prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent).
 // run_stat 一次性版 (op_check 用): 宿主指针进出, 内部 open + 上传 + load + eval + close.
 int stat_max_batch(); // 一批候选上限 (= Stat/Contract.hpp kMaxBatch); 未编译 CUDA → 0
@@ -71,8 +72,7 @@ struct StatSession;
 StatSession *stat_open(int T, int A, int seg, int Cmax, const factor::stat::Holds &hd, double cap);
 void stat_load(StatSession *s, const factor::stat::Label *lab, double *prep_ms = nullptr);
 void stat_eval(StatSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, factor::stat::Dir d, int t0_abs, int t_lo, int t_back,
-               factor::stat::Accum *acc, factor::stat::Day *day, factor::stat::Row *rows = nullptr, uint8_t *ec = nullptr, uint16_t *rx = nullptr,
-               double *eval_ms = nullptr);
+               factor::stat::Accum *acc, factor::stat::Day *day, factor::stat::Row *rows = nullptr, uint16_t *rx = nullptr, double *eval_ms = nullptr);
 void stat_close(StatSession *s);
 size_t stat_bytes(const StatSession *s);
 void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, factor::stat::Dir d, int T, int A, int seg,

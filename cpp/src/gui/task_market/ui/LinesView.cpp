@@ -241,20 +241,18 @@ struct Levels {
   void push(misc::Ymd d, double s, double v) { date.push_back(d), slot.push_back(s), lv.push_back(v); }
 };
 
-// 腿 (fold_book 已实现口径, 与池指数对齐): 行 t 的增量 (cost: 毛 − 真实冲击 − 固定份数 · 固定冲击 − 两侧量 · 税佣; 否则 = 毛; 账无成本列 → 恒 = 毛) /
-// 增仓量 (账无增仓列 → 0)
-struct BookLine {
-  const float *c[kBookCols];
-  explicit BookLine(const LinesLeg &lg) {
-    for (int k = 0; k < kBookCols; ++k)
+// 腿 (fold_ledger 已实现口径, 与池指数对齐; 账五列恒齐): 行 t 的增量 (cost: 毛 − 真实冲击 − 固定份数 · 固定冲击 − 两侧量 · 税佣; 否则 = 毛) / 增仓量
+struct LedgerLine {
+  const float *c[kLedgerCols];
+  explicit LedgerLine(const LinesLeg &lg) {
+    for (int k = 0; k < kLedgerCols; ++k)
       c[k] = lg.b->at(k, lg.line);
-    assert(!c[kBookImp] == !c[kBookFix] && "成本两列同有同无");
   }
   double inc(size_t t, bool cost, const Fee &f) const {
-    const double r = c[kBookRet][t];
-    return cost && c[kBookImp] ? r - f.cost(c[kBookImp][t], c[kBookFix][t], c[kBookBuy][t], c[kBookSell][t]) : r;
+    const double r = c[kLedgerRet][t];
+    return cost ? r - f.cost(c[kLedgerImp][t], c[kLedgerFix][t], c[kLedgerBuy][t], c[kLedgerSell][t]) : r;
   }
-  double buy(size_t t) const { return c[kBookBuy] ? c[kBookBuy][t] : 0.0; }
+  double buy(size_t t) const { return c[kLedgerBuy][t]; }
 };
 
 // 腿集合成 (线源 s 的 legs): 稠密格 [日并集轴][M] (M = 各腿层的行末槽之并; 行末分钟经 row_slot, 竞价段并入首根), 腿的行 t 落进 (所在日, 行末槽) 的格;
@@ -302,11 +300,11 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
   std::vector<uint8_t> hit(X, 0);
   std::vector<double> buy(D, 0.0);
   for (size_t q = 0; q < legs.size(); ++q) {
-    const PortfolioBook &b = *legs[q].b;
+    const PortfolioLedger &b = *legs[q].b;
     const factor::Geo g = factor_level(b.lv).geo();
     const size_t S = static_cast<size_t>(g.S);
-    assert(static_cast<size_t>(b.col[kBookRet].P) == b.dates.size() * S);
-    const BookLine bl(legs[q]);
+    assert(static_cast<size_t>(b.col[kLedgerRet].P) == b.dates.size() * S);
+    const LedgerLine bl(legs[q]);
     size_t at = SIZE_MAX; // 在攒的格
     double k = 0.0;       // 其份额
     double run = 0.0;     // 本腿在该格的复利增长 Π (1 + r) − 1
@@ -408,12 +406,13 @@ Line project(const std::vector<misc::Ymd> &axis, const Levels &s) {
   c.e.assign(n, kNaN);
   for (size_t j = 0; j < c.x.size(); ++j)
     c.e[j == 0 ? 0 : static_cast<size_t>(day[j] - c.f + 1)] = c.y[j];
-  c.s1.assign(n, 0.0), c.s2.assign(n, 0.0);
+  c.d.assign(n, Daily{});
   for (size_t k = 1; k < n; ++k) {
     if (std::isnan(c.e[k]))
       c.e[k] = c.e[k - 1];
     const double r = c.e[k - 1] > 0 ? c.e[k] / c.e[k - 1] - 1.0 : 0.0;
-    c.s1[k] = c.s1[k - 1] + r, c.s2[k] = c.s2[k - 1] + r * r;
+    c.d[k] = c.d[k - 1];
+    c.d[k].add(r);
   }
   return c;
 }
@@ -488,13 +487,12 @@ LineTail tail_of(const Line &c, size_t k, const Quote::Day &y, bool minutes) {
   o.r = c.e.back() > 0 ? o.y.back() / c.e.back() - 1.0 : 0.0;
   return o;
 }
-// 腿集合成的线源: cost = 扣成本; 腿账都无成本列 → 不扣 (扣与不扣同一线源 ⇒ 两条线共用一份)
+// 腿集合成的线源: cost = 扣成本 (不扣时费率记默认, 线源相等 ⇒ 同一份线)
 LineSrc mix_src(std::vector<LinesLeg> legs, bool cost, const Fee &fee) {
-  cost = cost && std::ranges::any_of(legs, [](const LinesLeg &lg) { return lg.b->col[kBookImp].n > 0; });
   return {std::move(legs), cost, cost ? fee : Fee{}};
 }
 // 账 b 线键 key 的腿; 账空 / 不在 → 空腿
-LinesLeg leg_of(const std::shared_ptr<const PortfolioBook> &b, uint32_t key) {
+LinesLeg leg_of(const std::shared_ptr<const PortfolioLedger> &b, uint32_t key) {
   if (!b)
     return {};
   const size_t line = b->line_of(key);
@@ -587,7 +585,7 @@ std::vector<const PortfolioItem *> ready_of(const std::vector<PortfolioItem> &it
 // 行情两侧的账 (同有同无, 同日轴; 没算成 → 空) + 价格库的发布 + 当日 → d;
 // 日轴并入账日与日脊 (两侧同一条), 当日 (接得上日脊才给) 再并其日; 日轴 → 两侧账的行 (val_at)
 void bind_quotes(const PortfolioResult &res, const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, LinesDerived &d) {
-  const PortfolioBook *s = res.quotes[Quote::kStock].get(), *b = res.quotes[Quote::kBasket].get();
+  const PortfolioLedger *s = res.quotes[Quote::kStock].get(), *b = res.quotes[Quote::kBasket].get();
   assert(!s == !b && (!b || (s->error == b->error && s->dates == b->dates)));
   if (b && b->error.empty())
     d.quotes = res.quotes;
@@ -674,7 +672,7 @@ LinesRow stock_row(const StockInfos &infos, uint32_t id, double share, const cha
   return r;
 }
 // 因子条目 it (账 b) 的行
-LinesRow factor_row(const PortfolioItem &it, const PortfolioBook &b) {
+LinesRow factor_row(const PortfolioItem &it, const PortfolioLedger &b) {
   LinesRow r;
   r.id = it.e.key();
   r.en = std::filesystem::path(it.e.file).stem().string();
@@ -815,7 +813,7 @@ size_t lower(const LineRef &c, double v) {
   return i < n || !c.tail() ? i : n + static_cast<size_t>(std::ranges::lower_bound(c.t->x, v) - c.t->x.begin());
 }
 // 线 c (+ 尾) 在日段 [d0, d1) 的切片 (见 LinesSlice); 整条在区间外 → 空. 年化 / 夏普只读日末视图: 有效日段 [a, b) = [d0, d1) ∩ [f, l + 1),
-// 年化 = end(b) / end(a) 按 b − a 个交易日复利折年 (%); 夏普 = 同段日收益的 mean / sd (ddof = 1) × √每年交易日
+// 年化 / 夏普 = 同段日收益前缀之差 Daily 的复利年化 (%) / Sharpe (define/Annual.hpp, 全仓同一口径)
 LinesSlice slice_of(const LineRef &c, int d0, int d1) {
   LinesSlice s;
   const double x0 = x_of(static_cast<size_t>(d0), kOpen), x1 = x_of(static_cast<size_t>(d1), kOpen);
@@ -830,11 +828,10 @@ LinesSlice slice_of(const LineRef &c, int d0, int d1) {
   if (b <= a)
     return s;
   const double n = b - a;
-  s.ann = static_cast<float>(100.0 * factor::stat::ann_geo(c.end(b) / s.base, n));
-  const double s1 = c.s1(b) - c.s1(a), s2 = c.s2(b) - c.s2(a);
-  const double var = n >= 2.0 ? (s2 - s1 * s1 / n) / (n - 1.0) : 0.0;
-  if (var > 0.0)
-    s.sharpe = static_cast<float>(ann_ir(s1 / n, std::sqrt(var)));
+  const Daily w = c.daily(b) - c.daily(a);
+  assert(w.n == n);
+  s.ann = static_cast<float>(100.0 * w.ann());
+  s.sharpe = static_cast<float>(w.sharpe());
   return s;
 }
 
@@ -860,7 +857,7 @@ int days_of(misc::Ymd d) { return static_cast<int>(misc::to_days(d).time_since_e
 struct ValAxis {
   const std::vector<misc::Ymd> &hd;
   std::vector<int> dd; // [D] 日历天
-  explicit ValAxis(const PortfolioBook &b) : hd(b.dates), dd(b.dates.size()) {
+  explicit ValAxis(const PortfolioLedger &b) : hd(b.dates), dd(b.dates.size()) {
     for (size_t i = 0; i < hd.size(); ++i)
       dd[i] = days_of(hd[i]);
   }

@@ -13,13 +13,13 @@
 //                   sink 每行一次 (线程内, 行不相交): DropRows 丢弃 / LandRows 落地 rows[i·T + t] / 调用方自定
 //     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
 //     run_batch     一批候选: 候选串行, 候选内全核切日 (C 小也能跑满核, 只留一张 [T][A] 的 r16)
-//     end_codes     rx → 端码 ec[T][A] (契约【换手成本】)
-//     cost_rows     ec × 标签 × C ≥ 1 个金额段 → CostAcc[C][H]  ← exec.rows(每 t 一次 cost_row → [tid]) → merge
-//   标签秩 ry / r16(x) 平面 rx / 端码 ec 由调用方持有; Workspace (Scratch[tid] / Accum[tid][H] / CostAcc[tid][C][H]) 由调用方持有, ensure 幂等.
+//     turn_rows     rx × 标签 × C ≥ 1 个金额段 → 因子账集换手 CostAcc[C][H][kLevels]  ← exec.rows(每 t 每 h 一次 factor_slots + turn_row → [tid]) → merge
+//   标签秩 ry / r16(x) 平面 rx 由调用方持有; Workspace (Scratch / Accum / CostAcc / TurnWork 各 [tid]) 由调用方持有, ensure 幂等.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
 
 #include "factor/Stat/Contract.hpp"
+#include "factor/Stat/Fold.hpp"
 #include "factor/Stat/Host.hpp"
 
 #include <algorithm>
@@ -32,7 +32,11 @@ namespace factor::cpu::stat {
 
 using factor::stat::Accum;
 using factor::stat::Batch;
+using factor::stat::CostAcc;
 using factor::stat::Day;
+using factor::stat::Hold;
+using factor::stat::hold_on;
+using factor::stat::HoldId;
 using factor::stat::Holds;
 using factor::stat::HoldStat;
 using factor::stat::kAmtCount;
@@ -63,11 +67,12 @@ inline void rank_y_rows(const Label &lb, int t0, int t1, int A, uint16_t *ry, Sc
 // 流程 (Exec 出线程, 见 misc/exec.hpp)
 // -----------------------------------------------------------------------------
 
-// 调用方持有; ensure 幂等 (形状对得上零分配). C = 金额段数 (只 cost_rows 用; 不算成本给 0)
+// 调用方持有; ensure 幂等 (形状对得上零分配). C = 金额段数 (只 turn_rows 用; 不算换手给 0)
 struct Workspace {
   std::vector<Scratch> sc;   // [tid]
   std::vector<Accum> acc;    // [tid][H]
-  std::vector<CostAcc> cacc; // [tid][C][H]
+  std::vector<CostAcc> cacc; // [tid][C][H][kLevels]
+  std::vector<TurnWork> tw;  // [tid]
   int A = 0, H = 0, C = 0, threads = 0;
   void ensure(int A_, int H_, int C_, int threads_) {
     assert(A_ >= 1 && A_ <= kMaxA && H_ >= 1 && H_ <= kHoldCount && C_ >= 0 && threads_ >= 1);
@@ -78,8 +83,10 @@ struct Workspace {
         s.reserve(A_);
     if (acc.size() < static_cast<size_t>(threads_) * H_)
       acc.resize(static_cast<size_t>(threads_) * H_);
-    if (cacc.size() < static_cast<size_t>(threads_) * C_ * H_)
-      cacc.resize(static_cast<size_t>(threads_) * C_ * H_);
+    if (cacc.size() < static_cast<size_t>(threads_) * C_ * H_ * kLevels)
+      cacc.resize(static_cast<size_t>(threads_) * C_ * H_ * kLevels);
+    if (tw.size() < static_cast<size_t>(threads_))
+      tw.resize(static_cast<size_t>(threads_));
     A = A_, H = H_, C = C_, threads = threads_;
   }
 };
@@ -125,10 +132,9 @@ inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels
       for (int t = s.t_lo + dd * S; t < s.t_lo + (dd + 1) * S; ++t) {
         const size_t base = static_cast<size_t>(t) * A;
         for (int i = 0; i < H; ++i) {
-          const HoldId hold = L.hd.k[i];
-          const int h = factor::stat::hold_rows(hold, s.g);
-          const Row r = row_stat(rx + base, t >= h ? rx + base - static_cast<size_t>(h) * A : nullptr, L.l[i].at(base), factor::stat::chain_of(t, s, hold), L.cap,
-                                 factor::stat::tail_masked(s.t0_abs + t, hold, s.g));
+          const Hold hd = hold_on(L.hd.k[i], s.g);
+          const Row r = row_stat(rx + base, t >= hd.h ? rx + base - static_cast<size_t>(hd.h) * A : nullptr, L.l[i].at(base), factor::stat::chain_of(t, s, hd), L.cap,
+                                 hd.opens(s.t0_abs + t));
           sink.row(i, t, r);
           a[i].add(r);
           day[static_cast<size_t>(i) * D + dd].add(r);
@@ -161,59 +167,49 @@ inline void run_batch(Exec &ex, const Batch &B, const uint8_t *g, Frame f, int d
     run(ex, B.x[c], g, f, d, s, L, rx, w, acc + c * H, day + c * H * D, DropRows{});
 }
 
-// 端码: rx (已定向) → ec [T][A]
-template <class Exec>
-inline void end_codes(Exec &ex, const uint16_t *rx, const Span &s, uint8_t *ec) {
-  factor::stat::assert_span(s);
-  assert(rx && ec);
-  ex.rows(s.T, [&](int t0, int t1, int) {
-    for (size_t i = static_cast<size_t>(t0) * s.A, e = static_cast<size_t>(t1) * s.A; i < e; ++i)
-      ec[i] = factor::stat::end_code(rx[i]);
-  });
-}
-
-// 换手成本 (契约【换手成本】): ec × L 的标签 / 可成交码 × c[C] (块形平面, 未偏) → out[k·H + i] (覆盖). 统计行 [t_lo, t_hi), 每 t 一次
-// cost_row; 本行尾部 → 不攒; 交接链 chain_of; 本批平仓不交接 (hold_nets(t + h) 假) → settle;
-// cap = 一端满仓 (端码 = 两端组 → L.cap; 尾部另给). C ≥ 1 (固定段 = 空 Cost). land 非 NoLand → 另逐行 land(k·H + i, t, 本行) (线程内, 行不相交)
+// 因子账集的换手 (契约 Turn.hpp; 本 b = e · kLevels + l): rx (已定向) × L 的标签 / 可成交码 × c[C] (块形平面, 未偏)
+//   → out[(k·H + i)·kLevels + l] (CostAcc 两端; 覆盖). 统计行 [t_lo, t_hi), 开仓行 (Hold::opens) 才攒; 交接 Hold::nets(t) → 只交易差额;
+//   本批平仓不交接 (nets(t + h) 假) → settle. 满仓 = L.cap · level_frac(l). land 非 NoLand → 另逐行 land(k, i, t, ret[kBooks], row[kBooks])
+//   (本行该金额段的本批收益与两侧流水; 线程内, 行不相交)
+inline constexpr int kBooks = kEnds * kLevels;
 struct NoLand {
-  void operator()(size_t, int, const CostAcc &) const {}
+  void operator()(int, int, int, const double *, const Turn *) const {}
 };
 template <class Exec, class Land = NoLand>
-inline void cost_rows(Exec &ex, const uint8_t *ec, const Span &s, const Labels &L, double cap, const Cost *c, int C, Workspace &w, CostAcc *out,
-                      const Land &land = {}) {
+inline void turn_rows(Exec &ex, const uint16_t *rx, const Span &s, const Labels &L, const Cost *c, int C, Workspace &w, CostAcc *out, const Land &land = {}) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, s.g.S, false);
   const int H = L.hd.n, A = s.A, nt = ex.threads();
-  assert(ec && c && out && cap > 0.0 && C >= 1 && C <= kAmtCount && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
-  const size_t per = static_cast<size_t>(C) * H;
+  assert(rx && c && out && C >= 1 && C <= kAmtCount && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
+  const size_t per = static_cast<size_t>(C) * H * kLevels;
   std::fill(w.cacc.begin(), w.cacc.begin() + static_cast<size_t>(nt) * per, CostAcc{});
+  double cap[kBooks];
+  for (int b = 0; b < kBooks; ++b)
+    cap[b] = L.cap * factor::stat::level_frac(b % kLevels);
   ex.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int tid) {
     CostAcc *acc = w.cacc.data() + static_cast<size_t>(tid) * per;
+    TurnWork &tw = w.tw[static_cast<size_t>(tid)];
     for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t) {
       const size_t base = static_cast<size_t>(t) * A;
       const int ta = s.t0_abs + t;
-      CostHold ch[kHoldCount];
-      for (int i = 0; i < H; ++i) {
-        const HoldId hold = L.hd.k[i];
-        const int h = factor::stat::hold_rows(hold, s.g);
-        if (factor::stat::tail_masked(ta, hold, s.g))
-          continue;
-        CostHold &q = ch[i];
-        q.lb = L.l[i].at(base);
-        q.c = factor::stat::chain_of(t, s, hold);
-        q.settle = !factor::stat::hold_nets(ta + h, hold, s.g);
-      }
       Cost cr[kAmtCount];
       for (int k = 0; k < C; ++k)
         cr[k] = c[k].at(base);
-      if constexpr (std::is_same_v<Land, NoLand>) {
-        cost_row(ec + base, ch, H, cr, C, A, cap, acc);
-      } else {
-        CostAcc row[static_cast<int>(kAmtCount) * static_cast<int>(kHoldCount)] = {};
-        cost_row(ec + base, ch, H, cr, C, A, cap, row);
-        for (size_t j = 0; j < per; ++j) {
-          acc[j].merge(row[j]);
-          land(j, t, row[j]);
+      for (int i = 0; i < H; ++i) {
+        const Hold hd = hold_on(L.hd.k[i], s.g);
+        if (!hd.opens(ta))
+          continue;
+        const Label lb = L.l[i].at(base);
+        const factor::stat::Chain ch = factor::stat::chain_of(t, s, hd);
+        factor_slots(rx + base, lb, ch, ch.nets(t), tw);
+        double ret[kBooks] = {};
+        Turn row[static_cast<size_t>(kAmtCount) * kBooks] = {};
+        turn_row(tw.cur, tw.pre, !hd.nets(ta + hd.h), lb.eo, cr, C, cap, tw, ret, row);
+        for (int k = 0; k < C; ++k) {
+          for (int b = 0; b < kBooks; ++b)
+            acc[(static_cast<size_t>(k) * H + i) * kLevels + b % kLevels].book[b / kLevels].merge(row[k * kBooks + b]);
+          if constexpr (!std::is_same_v<Land, NoLand>)
+            land(k, i, t, ret, row + k * kBooks);
         }
       }
     }

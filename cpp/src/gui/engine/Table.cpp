@@ -1,4 +1,4 @@
-// Table — 见头文件. include 因子契约头 (Stat/Contract.hpp: hold_ok / hold_from_name), 依赖受控浮点: CMake MATH_PRECISE 源.
+// Table — 见头文件. include 因子契约头 (define/Label.hpp: hold_ok / close_entry), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Table.hpp"
 
 #include "features/Storage/FeatureLib.hpp"
@@ -102,9 +102,8 @@ FactorLevelId factor_level_of(std::string_view name) {
 }
 
 HoldPoints hold_points(HoldId hold, FactorLevelId lv) {
-  namespace st = factor::stat;
   const FactorLevel &L = factor_level(lv);
-  const bool at_close = st::close_entry(0, L.geo());
+  const bool at_close = close_entry(0, L.geo());
   const std::string px = "次分钟VWAP", close_px = "收盘撮合价", open_px = "开盘撮合价";
   const std::string at = at_close ? "C(T)" : "C(" + std::string(L.name) + ")";
   const HoldPoint open{at, at_close ? close_px : px};
@@ -205,19 +204,20 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
   t.b.adj_factor = daily("adj_factor");
   t.y.entry = named("lb_entry_ok");
   // 档 tier 层 lvl 的列 code 的下标; 无 → −1
-  const auto find = [&](TierId tier, const std::string &code) {
-    const auto &list = feature.meta(tier).features[lv.lvl];
+  const auto find_at = [&](TierId tier, size_t lvl, const std::string &code) {
+    const auto &list = feature.meta(tier).features[lvl];
     for (size_t i = 0; i < list.size(); ++i)
       if (code == list[i].code)
         return static_cast<int>(i);
     return -1;
   };
+  const auto find = [&](TierId tier, const std::string &code) { return find_at(tier, lv.lvl, code); };
   // 标签: 本层合法的持有期 (hold_ok) 恰是落了列的 (字段表 HOLDS_FROM_<LVL> 与之一致); 名义列只偏移型
   for (int i = 0; i < kHoldCount; ++i) {
     const HoldId h = static_cast<HoldId>(i);
     const std::string tok(hold_token(h));
     const int lv_col = find(TierId::Bar, "lb_" + tok);
-    assert((lv_col >= 0) == factor::stat::hold_ok(h, lv.geo()) && "本层的标签列与持有期合法性不符 (HOLDS_FROM_<LVL> ⇄ hold_ok)");
+    assert((lv_col >= 0) == hold_ok(h, lv.geo()) && "本层的标签列与持有期合法性不符 (HOLDS_FROM_<LVL> ⇄ hold_ok)");
     if (lv_col < 0)
       continue;
     t.y.holds |= hold_bit(h);
@@ -229,16 +229,16 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
   }
   assert(t.y.holds && "本层无合法持有期");
   t.y.list = Holds::of(t.y.holds);
-  // 成本: 固定段恒在; 盘口段 = Lob 档本层的两侧冲击列
+  // 成本: 固定段恒在; 盘口段 = Lob 档 L_1min 的两侧冲击列 (分钟各层的行 = 其行末分钟那一行, 读计划 level_asof 投影; 日层只有收盘建仓, 无盘口段)
   t.y.amts = amt_bit(kAmtFixed);
-  if (has_level(TierId::Lob, lv.lvl)) {
+  if (lv.lvl != L_1day) {
     for (int a = 1; a < kAmtCount; ++a) {
       const std::string w = std::to_string(kAmtWan[a]) + "w";
-      const int b = find(TierId::Lob, "lb_cost_buy_" + w), sl = find(TierId::Lob, "lb_cost_sell_" + w);
+      const int b = find_at(TierId::Lob, L_1min, "lb_cost_buy_" + w), sl = find_at(TierId::Lob, L_1min, "lb_cost_sell_" + w);
       assert(b >= 0 && sl >= 0 && "冲击成本列不齐: 某金额段缺 buy 或 sell");
       t.y.amts |= amt_bit(static_cast<AmtId>(a));
-      t.y.cost[a][factor::stat::kBuy] = Col{TierId::Lob, lv.lvl, static_cast<uint32_t>(b)};
-      t.y.cost[a][factor::stat::kSell] = Col{TierId::Lob, lv.lvl, static_cast<uint32_t>(sl)};
+      t.y.cost[a][kBuy] = Col{TierId::Lob, L_1min, static_cast<uint32_t>(b)};
+      t.y.cost[a][kSell] = Col{TierId::Lob, L_1min, static_cast<uint32_t>(sl)};
     }
   }
   return t;
@@ -270,6 +270,7 @@ bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable>
   sc.ft = std::move(ft);
   sc.years = years;
   sc.max_impact = data.config.max_impact;
+  sc.lob_cost = data.config.lob_cost;
   sc.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库

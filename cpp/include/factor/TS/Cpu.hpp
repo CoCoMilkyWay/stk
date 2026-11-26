@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// TS 算子的挖掘 CPU 后端 (factor::cpu::ts, 62 个, 对应 OpTable 的 OP_TS = OP_TS0..3)
+// TS 算子的挖掘 CPU 后端 (factor::cpu::ts, 61 个, 对应 OpTable 的 OP_TS0..3 + OP_TSN)
 // =============================================================================
 //   定位: 因子挖掘无 GPU 时的 fallback —— 整张量批量直算, 不逐点因果推进, 吞吐必须 ≥ stream.
 //   语义与流式一致 (掩码逐位相等, 值在对拍容差内); 独立第二实现, **不得** include 任何
@@ -262,8 +262,7 @@ inline float hist_quantile(const int *h, int n, float lo, float hi, double q) {
 }
 
 // ---- 一元矩核的退化判据与求值 (EXPAND 与 ROLL 共用公式, 窗形只是状态推进方式不同); 退化 → 0 ----
-enum class Mom { VAR,
-                 STD,
+enum class Mom { STD,
                  SKEW,
                  KURT,
                  Z };
@@ -275,16 +274,14 @@ inline bool mom_ok(int n, bool sp) {
   else if constexpr (K == Mom::KURT)
     return n >= 4 && sp;
   else
-    return n >= 2 && sp; // VAR / STD / Z
+    return n >= 2 && sp; // STD / Z
 }
 
 template <Mom K>
 inline double mom_val(double s1, double s2, double s3, double s4, int n, float x) {
   (void)s3, (void)s4, (void)x;
   const double m2 = std::fmax(c2_of(s1, s2, n), 0.0);
-  if constexpr (K == Mom::VAR)
-    return m2 / (n - 1);
-  else if constexpr (K == Mom::STD)
+  if constexpr (K == Mom::STD)
     return std::sqrt(m2 / (n - 1));
   else if constexpr (K == Mom::Z)
     return (x - s1 / n) / std::sqrt(m2 / (n - 1));
@@ -347,7 +344,7 @@ inline void pair_put(float *ov, uint8_t *om, size_t i, int n, bool spx, bool spy
   static void run(const Call &c, Range rg, void *)
 
 // =============================================================================
-// POINT (21): 逐点无状态, 单遍. 表达式与流式严格同式 (三后端要位级一致).
+// POINT (22 = 定元 21 + N 元 1): 逐点无状态, 单遍. 表达式与流式严格同式 (三后端要位级一致).
 // =============================================================================
 //   逐点算子接受任意行窗 (c.t0 = 行 0 的全局行号; 融合块按小块调用)
 #define CP_P1(Name, V, M)                                                                   \
@@ -462,9 +459,22 @@ CP_P2(TsMul, x *y, mx &&my)
 CP_P2(TsDiv, y != 0.f ? x / y : 0.f, mx &&my) // y = 0 → 0, 溢出由 mk 转无效
 CP_P2(TsMax, std::fmax(x, y), mx &&my)
 CP_P2(TsMin, std::fmin(x, y), mx &&my)
-// TsImb / TsShare: 和相消 (scale = |x| + |y|) → 0 / 0.5, 分母不钳位
+// TsPow: sign(x)·|x|^y, x = 0 → 0 (含负次幂); pow 无向量版, 关向量化器同 TsLog; 溢出由 mk 转无效
+struct TsPow {
+  CP_STATELESS {
+    const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::span(c, rg.lo, rg.hi);
+    for (int t = 0; t < T; ++t) {
+#pragma clang loop vectorize(disable)
+      for (size_t i = static_cast<size_t>(t) * A, e = i + w; i < e; ++i) {
+        const bool m = xm[i] && ym[i];
+        const double b = xv[i];
+        detail::put(ov, om, i, m && xv[i] != 0.f ? std::copysign(std::pow(std::fabs(b), static_cast<double>(yv[i])), b) : 0.0, m);
+      }
+    }
+  }
+};
+// TsImb: 和相消 (scale = |x| + |y|) → 0, 分母不钳位
 CP_P2(TsImb, den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)) ? (x - y) / (x + y) : 0.f, mx &&my)
-CP_P2(TsShare, den_ok(static_cast<double>(x) + y, std::fabs(x) + std::fabs(y)) ? x / (x + y) : 0.5f, mx &&my)
 // TsLogRatio: 非正侧饱和到 ∓kLogCap (见 Contract::log_ratio); log 无向量版, 关向量化器同 TsLog
 struct TsLogRatio {
   CP_STATELESS {
@@ -483,8 +493,38 @@ CP_P2(TsMask, x, mx && my && y > 0.f)
 // TsWhere: 未被选中的那支不要求有效
 CP_P3(TsWhere, x > 0.f ? y : z, mx && (x > 0.f ? my : mz))
 
+// TsLinFix: xs[0..n) 特征元, 权 p.w[0..n) (Contract【N 元】). 每行按 kTileA 列切块, 栈上 double 行缓冲按元序累加 (与流式同序),
+// 掩码逐元求与; 每元一趟连续列循环 (向量化)
+struct TsLinFix {
+  CP_STATELESS {
+    assert(c.n >= 2 && c.n <= kLrN && c.o.v && c.o.m && 0 <= rg.lo && rg.lo <= rg.hi && rg.hi <= c.A && "至少 2 个特征元");
+    const int n = c.n, A = c.A;
+    double acc[kTileA];
+    uint8_t ok[kTileA];
+    for (int t = 0; t < c.T; ++t)
+      for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+        const int cols = std::min(kTileA, rg.hi - a0);
+        const size_t r = static_cast<size_t>(t) * A + a0;
+        std::fill_n(acc, cols, 0.0);
+        std::fill_n(ok, cols, uint8_t{1});
+        for (int i = 0; i < n; ++i) {
+          const double wi = static_cast<double>(c.p.w[i]);
+          const float *xv = c.xs[i].v + r;
+          const uint8_t *xm = c.xs[i].m + r;
+          FACTOR_COLS for (int a = 0; a < cols; ++a) {
+            acc[a] += wi * xv[a];
+            ok[a] = static_cast<uint8_t>(ok[a] & static_cast<uint8_t>(xm[a] != 0));
+          }
+        }
+        float *ov = c.o.v + r;
+        uint8_t *om = c.o.m + r;
+        FACTOR_COLS for (int a = 0; a < cols; ++a) detail::put(ov, om, static_cast<size_t>(a), ok[a] ? acc[a] : 0.0, ok[a] != 0);
+      }
+  }
+};
+
 // =============================================================================
-// EXPAND (18): 沿 t 递推, 段界 reset. 状态 = 跨资产数组.
+// EXPAND (17): 沿 t 递推, 段界 reset. 状态 = 跨资产数组.
 // =============================================================================
 
 // ---- Sum / Mean ----
@@ -839,7 +879,7 @@ struct TsWMeanCum {
 // TsArgMaxCum / TsArgMinCum / TsMaxCum / TsMinCum 由 ExpExt 实例化 (见文件末尾)
 
 // =============================================================================
-// ROLL (23): 滑动加减 + van Herk 极值; 未满窗 (t < d−1) = 已有前缀, 累加器本来就只装了前缀, 无需判据
+// ROLL (21): 滑动加减 + van Herk 极值; 未满窗 (t < d−1) = 已有前缀, 累加器本来就只装了前缀, 无需判据
 // =============================================================================
 
 // ---- Delay / Delta: 纯移位取值, 滞后夹到序列头 (t < d 取第 0 行) ----
@@ -1203,49 +1243,6 @@ struct TsSlopeRoll {
   }
 };
 
-// ---- ProductRoll: Π(1+x) − 1 精确. 滑动加减 Σ ln|1+x| (log 确定性 ⇒ 出窗减去的正是入窗加上的),
-//      零因子 (x = −1) 计数, 负因子 (x < −1) 计奇偶; 空窗 = 空积 − 1 = 0 ----
-//   ln|1+x| 的取值与 Stream 同式: x > −1 用 log1p(x), x < −1 用 log(−1 − x), x = −1 不进对数
-inline double log_abs1p(float x) { return x > -1.f ? std::log1p(static_cast<double>(x)) : (x < -1.f ? std::log(-1.0 - x) : 0.0); }
-struct TsProductRoll {
-  static auto carve(Bump &b, const Call &) { return std::tuple{b.take<int>(kTileA), b.take<int>(kTileA), b.take<double>(kTileA)}; }
-  CP_SCRATCH
-  CP_RUN {
-    Bump b{static_cast<char *>(ws)};
-    const auto [zero, neg, sl] = carve(b, c);
-    const int d = c.p.d;
-    assert(d >= 1);
-    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
-      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, w] = detail::tile(c, a0, rg.hi);
-      std::fill_n(zero, w, 0);
-      std::fill_n(neg, w, 0);
-      std::fill_n(sl, w, 0.0);
-      for (int t = 0; t < T; ++t) {
-        if (t >= d) {
-          const size_t q = static_cast<size_t>(t - d) * A;
-          for (int a = 0; a < w; ++a) {
-            const float xo = xv[q + a];
-            const bool mo = xm[q + a] != 0;
-            sl[a] -= mo ? log_abs1p(xo) : 0.0;
-            zero[a] -= mo && xo == -1.f;
-            neg[a] -= mo && xo < -1.f;
-          }
-        }
-        const size_t r = static_cast<size_t>(t) * A;
-        for (int a = 0; a < w; ++a) {
-          const float x = xv[r + a];
-          const bool m = xm[r + a] != 0;
-          sl[a] += m ? log_abs1p(x) : 0.0;
-          zero[a] += m && x == -1.f;
-          neg[a] += m && x < -1.f;
-          const double v = zero[a] > 0 ? -1.0 : (neg[a] & 1 ? -std::exp(sl[a]) - 1.0 : std::expm1(sl[a]));
-          detail::put(ov, om, r + a, v, true);
-        }
-      }
-    }
-  }
-};
-
 // ---- Cov / Corr / Beta / Resid (Roll): 滑动加减二元幂和 + van Herk 双有效极值 ----
 template <detail::Pair K>
 struct RollPair {
@@ -1432,8 +1429,6 @@ using TsSumCum = ExpSum<false>;
 using TsMeanCum = ExpSum<true>;
 using TsSumRoll = RollSum<false>;
 using TsMeanRoll = RollSum<true>;
-using TsVarCum = ExpMom<detail::Mom::VAR>;
-using TsVarRoll = RollMom<detail::Mom::VAR>;
 using TsStdCum = ExpMom<detail::Mom::STD>;
 using TsStdRoll = RollMom<detail::Mom::STD>;
 using TsSkewCum = ExpMom<detail::Mom::SKEW>;

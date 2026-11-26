@@ -2,6 +2,7 @@
 #include "gui/util/Layers.hpp"
 #include "gui/util/Chart.hpp" // DayAxis (日轴刻度)
 
+#include "define/Annual.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "implot_internal.h" // GImPlot (按 ID 查上帧 item 的显隐)
 
@@ -163,7 +164,7 @@ void empty_plot(const char *title, const ImVec2 &size, const char *hint) {
   }
 }
 
-// 前缀对数和 cum[c] = Σ_{d<c} ln(1 + r_d); 某日 r_d ≤ −100% (单只级尾部 / LS 空头暴涨) = 爆仓, 该线此后 NaN 不画; LS Sharpe = 日收益 mean / sd × √kDaysPerYear
+// 前缀对数和 cum[c] = Σ_{d<c} ln(1 + r_d); 某日 r_d ≤ −100% (单只级尾部 / LS 空头暴涨) = 爆仓, 该线此后 NaN 不画; LS Sharpe = 日收益 Daily (define/Annual.hpp, 全仓同一口径)
 void derive_layers(LayerDerived &d, std::vector<misc::Ymd> dates, const float *const *lay, const float *const *ls, const float *turn) {
   d = LayerDerived{};
   d.days = static_cast<int>(dates.size());
@@ -188,25 +189,24 @@ void derive_layers(LayerDerived &d, std::vector<misc::Ymd> dates, const float *c
   for (int i = 0; i < kLsLines; ++i) {
     cum_of(ls[i], d.ls_cum[i]);
     d.ls_turn[i] = turn[i];
-    factor::stat::MomAcc m;
+    Daily m;
     for (int day = 0; day < d.days; ++day)
       m.add(ls[i][day]);
-    d.ls_sharpe[i] = static_cast<float>(factor::stat::ann_sharpe(m.finish(1), m.n, d.days, factor::stat::kDaysPerYear));
+    d.ls_sharpe[i] = static_cast<float>(m.sharpe());
   }
 }
 
-// 第 c 日 = (cum[c] − cum[max(0, c − win)]) × kDaysPerYear / win × 100 % (起点前不足 win 日按 0 补, 全部线同一系数; win = days 即从起点的对数累计)
+// 第 c 日 = 窗 [max(0, c − win), c) 对数和按 win 日复利年化 × 100 % (ann_log; 起点前不足 win 日按 0 补, 全部线同一折算; win = days 即从起点累计)
 void roll_layers(LayerDerived &d, int win) {
   assert(d.days >= 1 && win >= 1 && win <= d.days);
   if (d.win == win)
     return;
   d.win = win;
-  const double ka = 100.0 * factor::stat::kDaysPerYear / win;
   const size_t n = static_cast<size_t>(d.days) + 1, w = static_cast<size_t>(win);
   const auto roll = [&](const std::vector<double> &cum, std::vector<float> &ann, float &lo, float &hi) {
     ann.resize(n);
     for (size_t c = 0; c < n; ++c) {
-      const float v = static_cast<float>((cum[c] - cum[c < w ? 0 : c - w]) * ka);
+      const float v = static_cast<float>(100.0 * ann_log(cum[c] - cum[c < w ? 0 : c - w], win));
       ann[c] = v;
       lo = std::min(lo, v), hi = std::max(hi, v); // NaN (爆仓) 不进极值
     }
@@ -291,15 +291,15 @@ void plot_layers(const LayerDerived &d, bool absolute, int &cursor_day, const Im
         ImPlot::PlotLine(id, d.x_day.data(), d.lay_ann[k].data(), n);
       }
       ImPlot::PopStyleVar();
-      // 图例 (对仗 Portfolio, 等宽字体逐列定宽): "LS <tag:4>  对数年化=<+8.2f>%  夏普=<+6.2f>  年换手=<7.1f>倍", 值恒为全段 (不随窗口):
-      // ls_cum 末点 × kDaysPerYear / days / ls_sharpe / ls_turn; tag = 占组比例 (顶底 = 100%, 整组); 末点 NaN = 爆仓 (某日收益 ≤ −100%)
+      // 图例 (对仗 Portfolio, 等宽字体逐列定宽): "LS <tag:4>  年化=<+8.2f>%  夏普=<+6.2f>  年换手=<7.1f>倍", 值恒为全段 (不随窗口):
+      // ann_log(ls_cum 末点, days) / ls_sharpe / ls_turn; tag = 占组比例 (顶底 = 100%, 整组); 末点 NaN = 爆仓 (某日收益 ≤ −100%)
       char ll[128];
       const auto ls_label = [&](const char *tag, int i, const char *id) {
-        const double a = d.ls_cum[i].back() * 100.0 * factor::stat::kDaysPerYear / d.days;
+        const double a = 100.0 * ann_log(d.ls_cum[i].back(), d.days);
         if (std::isnan(a))
-          std::snprintf(ll, sizeof(ll), "LS %4s  对数年化=  爆仓    夏普=%+6.2f  年换手=%7.1f倍###%s", tag, d.ls_sharpe[i], d.ls_turn[i], id);
+          std::snprintf(ll, sizeof(ll), "LS %4s  年化=  爆仓    夏普=%+6.2f  年换手=%7.1f倍###%s", tag, d.ls_sharpe[i], d.ls_turn[i], id);
         else
-          std::snprintf(ll, sizeof(ll), "LS %4s  对数年化=%+8.2f%%  夏普=%+6.2f  年换手=%7.1f倍###%s", tag, a, d.ls_sharpe[i], d.ls_turn[i], id);
+          std::snprintf(ll, sizeof(ll), "LS %4s  年化=%+8.2f%%  夏普=%+6.2f  年换手=%7.1f倍###%s", tag, a, d.ls_sharpe[i], d.ls_turn[i], id);
       };
       ls_label("100%", 0, "ls");
       ImPlot::SetNextLineStyle(kColLS, 2.5f);

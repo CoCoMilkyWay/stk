@@ -8,11 +8,11 @@
 //     · 滚动窗   窗长 W = round(D / kRollParts) 个交易日 (≥ 1; D = 评估期交易日数), 以每个交易日收尾一个窗 (满 W 日才计);
 //                窗 rIC = 窗内 ok 行 rIC 的均值, ok 行 < kRollMinRows 的窗不计. 中位压得住少数窗的极端行情
 //     · 窗中位 rIC 线 收尾日 t 的值 = 该窗内逐日 rIC (当日 ok 行 rIC 均值) 的中位 (不计入的窗 NaN); 只作展示
-//     · 年化多空 窗内 Σ 多空 / (W·S) × span_per_year (不 ok 行记 0, 与 ls_annual 同口径), 取各窗的中位 / 平均; 只作展示
+//     · 年化多空 窗内日净值 LS (逐日 Σ ls_row / h̄, 不 ok 行记 0) 的复利年化 (与 ls_annual 同口径), 取各窗的中位 / 平均; 只作展示
 //   【方向】Search 自动定向: 方向 = 正向中位 rIC 的号 (sign_of); 反向读 = 各量变号 (flipped). sign 落进 weights, Run 按 sign 评一致.
 // =============================================================================
 
-#include "factor/Stat/Contract.hpp"
+#include "factor/Stat/Fold.hpp"
 #include "misc/median.hpp"
 
 #include <algorithm>
@@ -50,14 +50,16 @@ inline Roll roll_of(std::span<const Day> d, HoldId hold, int seg, std::vector<fl
     line->assign(static_cast<size_t>(D), std::numeric_limits<float>::quiet_NaN());
   if (wins)
     wins->assign(static_cast<size_t>(D), std::numeric_limits<double>::quiet_NaN());
-  std::vector<double> N(static_cast<size_t>(D) + 1, 0.0), R(N), L(N); // 前缀和 (下标 = 日 + 1)
+  std::vector<double> N(static_cast<size_t>(D) + 1, 0.0), R(N);           // 前缀和 (下标 = 日 + 1)
+  std::vector<Daily> L(static_cast<size_t>(D) + 1);                        // 日净值 LS 前缀
+  const double span = hold_on(hold, geo_of(seg)).span();
   for (int t = 0; t < D; ++t) {
     const Day &x = d[static_cast<size_t>(t)];
     N[static_cast<size_t>(t) + 1] = N[static_cast<size_t>(t)] + x.n;
     R[static_cast<size_t>(t) + 1] = R[static_cast<size_t>(t)] + x.ric;
-    L[static_cast<size_t>(t) + 1] = L[static_cast<size_t>(t)] + x.ls;
+    L[static_cast<size_t>(t) + 1] = L[static_cast<size_t>(t)];
+    L[static_cast<size_t>(t) + 1].add(x.ls / span);
   }
-  const double ann = span_per_year(hold, seg) / (static_cast<double>(r.win) * seg);
   const auto day_ric = [&](int t) { return d[static_cast<size_t>(t)].ric / d[static_cast<size_t>(t)].n; };
   misc::RunMedian<double> ric_m, ann_m;
   std::vector<double> in_win; // 窗内有 ok 行的日的逐日 rIC (升序; 只 line 用)
@@ -74,7 +76,7 @@ inline Roll roll_of(std::span<const Day> d, HoldId hold, int seg, std::vector<fl
     const size_t a = static_cast<size_t>(t + 1 - r.win), b = static_cast<size_t>(t) + 1;
     const double n = N[b] - N[a];
     if (n >= kRollMinRows) {
-      const double w_ric = (R[b] - R[a]) / n, w_ann = (L[b] - L[a]) * ann;
+      const double w_ric = (R[b] - R[a]) / n, w_ann = (L[b] - L[a]).ann();
       ++r.n, ric_s += w_ric, ann_s += w_ann;
       ric_m.push(w_ric), ann_m.push(w_ann);
       if (wins)

@@ -181,7 +181,6 @@ public:
     std::vector<factor::check::Arena>().swap(sc_);
     std::vector<const factor::check::Plane *>().swap(in_);
     std::vector<uint16_t>().swap(rx_);
-    std::vector<uint8_t>().swap(ec_);
     std::vector<factor::stat::Day>().swap(day_);
   }
   void release() {
@@ -189,7 +188,7 @@ public:
     c_ = nullptr, d_ = nullptr;
   }
   double host_bytes() const {
-    double b = static_cast<double>(hp_.bytes()) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) + static_cast<double>(ec_.capacity()) +
+    double b = static_cast<double>(hp_.bytes()) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) +
                static_cast<double>(day_.capacity()) * sizeof(factor::stat::Day);
     for (const factor::check::Arena &a : sc_)
       b += static_cast<double>(a.buf.capacity());
@@ -254,11 +253,6 @@ private:
     v.day = day_.data();
     v.x = {(need & kNeedX) != 0 ? rp->v.data() : nullptr, (need & kNeedMask) != 0 ? rp->m.data() : nullptr};
     v.rx = (need & kNeedRx) != 0 ? rx_.data() : nullptr;
-    if ((need & kNeedEc) != 0) {
-      ec_.resize(s.n());
-      factor::cpu::stat::end_codes(ex_, rx_.data(), s, ec_.data());
-      v.ec = ec_.data();
-    }
     if ((need & kNeedAlpha) != 0) {
       const factor::check::Plane *ap = plane(F.d.nodes[static_cast<size_t>(i)].in[0]);
       v.alpha = {ap->v.data(), ap->m.data()};
@@ -271,7 +265,6 @@ private:
   std::vector<factor::check::Arena> sc_;
   factor::cpu::stat::Workspace w_;
   std::vector<uint16_t> rx_;
-  std::vector<uint8_t> ec_;
   std::vector<factor::stat::Day> day_; // [H][D]
   factor::stat::Accum acc_[kHoldCount];
 };
@@ -328,7 +321,6 @@ public:
     std::vector<factor::stat::Day>().swap(day_);
     std::vector<factor::stat::Row>().swap(rows_);
     std::vector<uint16_t>().swap(rx_);
-    std::vector<uint8_t>().swap(ec_);
     std::vector<float>().swap(xv_);
     std::vector<uint8_t>().swap(mask_);
     std::vector<float>().swap(av_);
@@ -341,7 +333,7 @@ public:
   }
   double host_bytes() const {
     return static_cast<double>(rows_.capacity()) * sizeof(factor::stat::Row) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) +
-           static_cast<double>(ec_.capacity()) + static_cast<double>(xv_.capacity() + av_.capacity()) * sizeof(float) +
+           static_cast<double>(xv_.capacity() + av_.capacity()) * sizeof(float) +
            static_cast<double>(mask_.capacity() + am_.capacity()) + static_cast<double>(day_.capacity()) * sizeof(factor::stat::Day) +
            static_cast<double>(acc_.capacity()) * sizeof(factor::stat::Accum);
   }
@@ -560,15 +552,13 @@ private:
     const factor::stat::Span s = c_->span();
     const size_t n = s.n();
     const int i = F.d.roots[static_cast<size_t>(k)], H = cx.L.hd.n;
-    const bool rows = (need & kNeedRows) != 0, rx = (need & kNeedRx) != 0, ec = (need & kNeedEc) != 0;
+    const bool rows = (need & kNeedRows) != 0, rx = (need & kNeedRx) != 0;
     acc_.resize(static_cast<size_t>(H));
     day_.resize(static_cast<size_t>(H) * s.days());
     if (rows)
       rows_.resize(static_cast<size_t>(H) * s.T);
     if (rx)
       rx_.resize(n);
-    if (ec)
-      ec_.resize(n);
     if ((need & kNeedX) != 0)
       xv_.resize(n);
     if ((need & kNeedMask) != 0)
@@ -583,11 +573,10 @@ private:
       v.x = {xv, xm};
     }
     factor::gpu::stat_eval(stat_, &rp, 1, gate_, v.f, cx.d, s.t0_abs, s.t_lo, s.t_back, acc_.data(), day_.data(), rows ? rows_.data() : nullptr,
-                           ec ? ec_.data() : nullptr, rx ? rx_.data() : nullptr);
+                           rx ? rx_.data() : nullptr);
     v.acc = acc_.data();
     v.day = day_.data();
     v.rx = rx ? rx_.data() : nullptr;
-    v.ec = ec ? ec_.data() : nullptr;
     if (rows) {
       const ProbeSink<Ps> sink{&p};
       ex_.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int) {
@@ -630,7 +619,6 @@ private:
   std::vector<factor::stat::Day> day_;   // [C][H][D]
   std::vector<factor::stat::Row> rows_;
   std::vector<uint16_t> rx_;
-  std::vector<uint8_t> ec_;
   std::vector<float> xv_;
   std::vector<uint8_t> mask_;
   std::vector<float> av_;
@@ -734,7 +722,7 @@ Budget budget_of(const Job &j, const factor::Dag &d, size_t nx, int H, int R) {
   const int seg = j.ft->seg, days = static_cast<int>(j.dm.days.size()), A = static_cast<int>(j.dm.rs.axis.size());
   const Shape sh{days * seg, A, days, seg};
   Budget b = E::template budget<Ps>(d, j.spec.y.hd.n);
-  b.load += cell_bytes(*j.ft, j.spec, nx);
+  b.load += cell_bytes(j.spec, nx);
   b.fixed = R * Ps::bytes(sh, H) + Ps::scratch(sh, H);
   return b;
 }

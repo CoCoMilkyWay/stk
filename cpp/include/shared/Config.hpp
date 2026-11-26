@@ -33,6 +33,8 @@ struct Config {
   // 冲击封顶 (比率): lb_cost_buy / sell_* 装载时 min(·, max_impact) 再进组均 (gui/engine/Load). 深度吃穿 / 涨跌停成交的格冲击可到百分之几,
   //   原值进均值把期限结构净线整体砸穿 (过罚); 封顶后那些格最多扣这么多, 可执行性另议. 两侧同封. 默认 1%
   double max_impact = 0.01;
+  // 成本口径: false = 固定段 (两侧量 × Fee::impact); true = 盘口段 (Lob 库 L_1min 的买 / 卖冲击列, 分钟层各层按行末分钟取; 评估域并入 Lob 库)
+  bool lob_cost = false;
 
   // Config file path (output/config/settings/settings.json)
   std::string filepath;

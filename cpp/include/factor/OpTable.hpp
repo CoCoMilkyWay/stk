@@ -5,13 +5,13 @@
 // =============================================================================
 //   命名 = 域_核_窗 (代码里 PascalCase, 文档里 snake_case, 一一对应):
 //     域   Ts (A 域 = SELF) / Cs (A 域 = ALL | GROUP) —— 前缀只是 A 域的缩写, 不是独立分类
-//     核   统计量本身 (Mean / Var / Rank / Corr …), 与窗正交
+//     核   统计量本身 (Mean / Std / Rank / Corr …), 与窗正交
 //     窗   Cum 段内 expanding / Roll 最近 d 期 / Ema 指数递推; 无窗后缀 = 逐点 (N 元逐点写 Fix 定权, 与 Roll 回归对举)
 //
 //   【行序 = 全局 idx】全库唯一算子序, code 与 UI 统一按它 (operators.json 的 idx /
 //   op_check 输出序 / GUI Operators 表默认序), 序键 (枚举序见 Contract.hpp):
 //     元数 (N 元在末) → A 域 (Ts 前 Cs 后) → TS 按 T 窗 / CS 按 ALL → GROUP → 核类 → 名字字母序
-//   表按 (元数 × 域) 切成 OP_TS0..3 / OP_CS1..3 / OP_CSN 八块, 块内按上述序键排;
+//   表按 (元数 × 域) 切成 OP_TS0..3 / OP_CS1..3 / OP_TSN / OP_CSN 九块, 块内按上述序键排;
 //   OP_ALL 交错拼出 idx 序 (各后端的下标分派表都由它展开).
 //   加算子按序键插行, idx 顺延, 不另设编号.
 //
@@ -76,16 +76,20 @@
 //   【核 × 窗 为什么不是满格】格子空不空按"这个统计量在这个时间尺度上有没有意义"定, 不为对称而补:
 //     Cum (段内 = 当日) 专收**日内分布形状**: Hhi / Entropy 只有 Cum —— 度量"当日成交怎么摊在各分钟上",
 //       跨日滚动窗算集中度没有对应的研报语义.
-//     Roll (最近 d 分钟, 跨段) 专收**时序动态**: Quantile / Z / Wma / Product / Slope 只有 Roll ——
-//       分位 / 标准分 / 衰减权 / 累乘收益 / 趋势斜率都要求窗长固定, 段内 expanding 的窗长随 t_D 变,
+//     Roll (最近 d 分钟, 跨段) 专收**时序动态**: Quantile / Z / Wma / Slope 只有 Roll ——
+//       分位 / 标准分 / 衰减权 / 趋势斜率都要求窗长固定, 段内 expanding 的窗长随 t_D 变,
 //       出来的值前半段和后半段不可比 (自带一条 t_D 的伪趋势).
 //     Delay / Delta 是 SHIFT 核, 只看一格, 天生只有 Roll; MeanEma 是 RECUR 核, 与 EXPO 窗一一绑定.
-//     其余归约核 (Sum / Mean / Var / Std / Skew / Kurt / Max / Min / ArgMax / ArgMin / Rank /
+//     其余归约核 (Sum / Mean / Std / Skew / Kurt / Max / Min / ArgMax / ArgMin / Rank /
 //     Cov / Corr / Beta / Resid / WMean) Cum 与 Roll **成对齐全**, 缺一即为 bug.
+//     日层 (每段 1 行) 上 Cum 与 TsTodMask 必然退化, parse 按层拒收 (Expr.hpp layer_ok).
 //
 //   【不入表的组合】能由现有行拼出来的一律不给独立算子 (表只收不可约的核):
 //     计数   Σ1[x > k]     = TsGt + TsSum{Cum,Roll};  占比同理换 TsMean{Cum,Roll}
-//     小于   1[x < k]      = TsGt(TsNeg(x), k=−k);  平方 = TsMul(x, x)
+//     小于   1[x < k]      = TsGt(TsNeg(x), k=−k);  平方 = TsMul(x, x);  方差 = TsMul(σ, σ)
+//     份额   x / (x + y)   = TsImb 的仿射 (1 + Imb) / 2, 秩与 Search 下无差别
+//     去均   x − μ         = TsSub(x, CsMean(x)) (池内统计与掩码逐格相同)
+//     累乘收益 Π(1 + r) − 1 = 对数收益求和 TsSumRoll(TsLogRatio(…)) (单调同序)
 //     中位   med           = TsQuantileRoll(k=0.5) / CsQuantile(k=0.5)
 //     子集统计  只在某时段/某条件上统计 = TsMask(x, 掩码) 再套窗 (掩码由 TsTodMask / TsGt 造)
 //     超前相关  corr(x_s, y_{s+k}) = TsCorr{Cum,Roll}(TsDelayRoll(x, k), y) —— 换边即换符号方向
@@ -99,7 +103,7 @@
 #define OP_TS0(X) \
   X(TsTodMask, "时段掩", 0, POINT, SELF, MAP, TOD, OP_IN0(), BIN, R"tex(\mathbf{1}[k \le t_D < k_2])tex", "选日内时段 (k / k2 = 本层行号, 从集合竞价段起数); 造 0/1 掩码, 配 TsMask 做分时段统计")
 
-// ---- 1 元 × SELF (41 = POINT 9 + EXPAND 13 + ROLL 18 + EXPO 1) ----
+// ---- 1 元 × SELF (38 = POINT 9 + EXPAND 12 + ROLL 16 + EXPO 1) ----
 #define OP_TS1(X)                                                                                                                                                                                                          \
   X(TsAbs, "时绝对值", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), NONNEG, R"tex(|x_t|)tex", "取幅度, 弃方向")                                                                                                                \
   X(TsClip, "时截断", 1, POINT, SELF, MAP, GE0, OP_IN1(REAL), REAL, R"tex(\operatorname{clamp}(x_t,\,-k,\,k))tex", "对称截到 ±k; 压极端值")                                                                                \
@@ -117,7 +121,6 @@
   X(TsSkewCum, "时累偏度", 1, EXPAND, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(m_3 / m_2^{3/2})tex", "当日至今的偏度; 量不对称")                                                                                      \
   X(TsStdCum, "时累标差", 1, EXPAND, SELF, MOMENT, NONE, OP_IN1(REAL), NONNEG, R"tex(\sigma_t = (\sigma_t^2)^{1/2})tex", "当日至今的标准差; 量离散")                                                                       \
   X(TsSumCum, "时累和", 1, EXPAND, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(\Sigma_{W_t}\,x_s)tex", "当日至今的和; 日内总量")                                                                                         \
-  X(TsVarCum, "时累方差", 1, EXPAND, SELF, MOMENT, NONE, OP_IN1(REAL), NONNEG, R"tex(\sigma_t^2 = \Sigma_{W_t}(x_s - \mu_t)^2 / (n-1))tex", "当日至今的方差; 量离散")                                                      \
   X(TsArgMaxCum, "时累最大位", 1, EXPAND, SELF, EXTREME, NONE, OP_IN1(REAL), NONNEG, R"tex(t - \mathrm{min}\{s \in W_t : x_s = \mathrm{max}_{W_t}\,x\})tex", "当日最高点距今期数; 量高点新旧")                             \
   X(TsArgMinCum, "时累最小位", 1, EXPAND, SELF, EXTREME, NONE, OP_IN1(REAL), NONNEG, R"tex(t - \mathrm{min}\{s \in W_t : x_s = \mathrm{min}_{W_t}\,x\})tex", "当日最低点距今期数; 量低点新旧")                             \
   X(TsMaxCum, "时累最大", 1, EXPAND, SELF, EXTREME, NONE, OP_IN1(REAL), REAL, R"tex(\mathrm{max}_{W_t}\,x_s)tex", "当日至今的最高; 日内高点")                                                                              \
@@ -127,12 +130,10 @@
   X(TsDeltaRoll, "时滚差分", 1, ROLL, SELF, SHIFT, NONE, OP_IN1(REAL), REAL, R"tex(x_t - x_{t-d})tex", "本值减 d 期前; 量变化")                                                                                            \
   X(TsKurtRoll, "时滚峰度", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(m_4 / m_2^{2} - 3)tex", "近 d 期的峰度; 量尖峰厚尾")                                                                                    \
   X(TsMeanRoll, "时滚均值", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(\mu_t = (1/n)\,\Sigma_{W_t}\,x_s)tex", "近 d 期的均值; 平滑基线")                                                                       \
-  X(TsProductRoll, "时滚乘积", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(RET), REAL, R"tex(\Pi_{W_t}(1 + x_s) - 1)tex", "近 d 期的复利累乘; 聚合收益率")                                                                         \
   X(TsSkewRoll, "时滚偏度", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(m_3 / m_2^{3/2})tex", "近 d 期的偏度; 量不对称")                                                                                        \
   X(TsSlopeRoll, "时滚斜率", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(\Sigma_i (i - \bar i)(x_{s_i} - \mu_t) \;/\; \Sigma_i (i - \bar i)^2,\; i = 0..d-1)tex", "近 d 期对期序的 OLS 斜率; 量趋势方向与快慢") \
   X(TsStdRoll, "时滚标差", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), NONNEG, R"tex(\sigma_t = (\sigma_t^2)^{1/2})tex", "近 d 期的标准差; 量近期波动")                                                                     \
   X(TsSumRoll, "时滚和", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(\Sigma_{W_t}\,x_s)tex", "近 d 期的和; 近期总量")                                                                                           \
-  X(TsVarRoll, "时滚方差", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), NONNEG, R"tex(\sigma_t^2 = \Sigma_{W_t}(x_s - \mu_t)^2 / (n-1))tex", "近 d 期的方差; 量近期波动")                                                    \
   X(TsWmaRoll, "时滚线权均", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(\Sigma_{i=1..d}\,i\,x_{t-d+i} \;/\; \Sigma_{i=1..d}\,i)tex", "近 d 期的线性衰减均值; 越新权越大的平滑")                                \
   X(TsZRoll, "时滚标分", 1, ROLL, SELF, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex((x_t - \mu_t) / \sigma_t)tex", "本值对近 d 期的标准分; 量偏离基线幅度")                                                                    \
   X(TsArgMaxRoll, "时滚最大位", 1, ROLL, SELF, EXTREME, NONE, OP_IN1(REAL), NONNEG, R"tex(t - \mathrm{min}\{s \in W_t : x_s = \mathrm{max}_{W_t}\,x\})tex", "近 d 期最高点距今期数; 量高点新旧")                           \
@@ -143,9 +144,8 @@
   X(TsRankRoll, "时滚秩", 1, ROLL, SELF, ORDER, NONE, OP_IN1(REAL), UNIT, R"tex(\mathrm{pct}(x_t;\,\{x_s : s \in W_t\}))tex", "本值在近 d 期的分位; 近期相对位置")                                                         \
   X(TsMeanEma, "时指均值", 1, EXPO, SELF, RECUR, OPEN0_CLOSED1, OP_IN1(REAL), REAL, R"tex(\Sigma_{j<D}\,(1-k)^j\,x_{t-j} \;/\; \Sigma_{j<D}\,(1-k)^j,\; D = 255)tex", "指数衰减均值, 窗 = 最近 255 期 (只计有效格); 对标 d 期取 k = 2/(d+1)")
 
-// ---- 1 元 × 截面 (9 = ALL 9) ----
+// ---- 1 元 × 截面 (8 = ALL 8) ----
 #define OP_CS1(X)                                                                                                                                                                                          \
-  X(CsDemean, "截去均", 1, POINT, ALL, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex(x_a - \mu)tex", "减截面均值; 去市场水平")                                                                                   \
   X(CsMean, "截均值", 1, POINT, ALL, MOMENT, NONE, OP_IN1(REAL), BCAST, R"tex(\mu = (1/N)\,\Sigma_a\,x_a)tex", "截面均值广播; 造市场基准")                                                                 \
   X(CsStd, "截标差", 1, POINT, ALL, MOMENT, NONE, OP_IN1(REAL), BCAST, R"tex(\sigma = (\Sigma_a (x_a - \mu)^2 / (N-1))^{1/2})tex", "截面标准差广播; 量截面分化")                                           \
   X(CsZ, "截标分", 1, POINT, ALL, MOMENT, NONE, OP_IN1(REAL), REAL, R"tex((x_a - \mu) / \sigma)tex", "截面标准分; 去水平去量纲")                                                                           \
@@ -165,7 +165,7 @@
   X(TsMax, "时最大", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\max(x_t,\,y_t))tex", "逐点取大; 信号取强")                                                                                      \
   X(TsMin, "时最小", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\min(x_t,\,y_t))tex", "逐点取小; 信号取弱")                                                                                      \
   X(TsMul, "时乘", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t \cdot y_t)tex", "逐点积; 信号交互")                                                                                            \
-  X(TsShare, "时占比", 2, POINT, SELF, MAP, NONE, OP_IN2(NONNEG, NONNEG), UNIT, R"tex(x_t / (x_t + y_t))tex", "占比 ∈ [0,1]; 量单边份额; 两边都为 0 记 0.5")                                                     \
+  X(TsPow, "时幂", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\operatorname{sign}(x_t)\,|x_t|^{y_t})tex", "保号幂, 指数也是序列 (如秩的秩次幂); 常数次幂用 TsMul 连乘 / TsSqrt; x = 0 记 0")         \
   X(TsSub, "时减", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t - y_t)tex", "逐点差; 量信号差距")                                                                                              \
   X(TsBetaCum, "时累贝塔", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\beta_t = \mathrm{cov}_{W_t}(x, y) \;/\; \mathrm{var}_{W_t}(y))tex", "当日至今 x 对 y 的回归斜率; 量敏感度")           \
   X(TsCorrCum, "时累相关", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), SIGNED, R"tex(\mathrm{cov}_{W_t}(x, y) \;/\; (\sigma^x_t\,\sigma^y_t))tex", "当日至今的相关系数; 量联动强弱")                      \
@@ -194,6 +194,11 @@
 #define OP_CS3(X) \
   X(CsGroupResid, "组残差", 3, POINT, GROUP, MOMENT, NONE, OP_IN3(REAL, REAL, INT), REAL, R"tex(\tilde x_a - \hat\beta\,\tilde y_a,\; \tilde x_a = x_a - \bar x_{G(a)},\; G(a) = \{b : z_b = z_a\})tex", "组内 demean 后 x 对 y 的回归残差; 组与 y 双重中性化, z = 组 id (负 = 未知 → 全池)")
 
+// ---- N 元 × SELF (1) ----
+//   x_i 取原值 (不秩化): 只在各元同量纲时有意义 (价格之间 / 同一量的几条均线 / 示性 × 常数造分支)
+#define OP_TSN(X) \
+  X(TsLinFix, "时固线性加权", factor::kNary, POINT, SELF, MAP, NONE, OP_INN(REAL), REAL, R"tex(\Sigma_i\,w_i\,x_{i,t})tex", "N 个同量纲序列原值的定权线性合成 (价格混合 / 均线组合 / 加常数分支); 权写死或留裸 w 交 Search 搜")
+
 // ---- N 元 × 截面 (2) ----
 //   x̃ / r̃ = 本行池内截面 pct − 1/2 (r^h 同); 回归: G 与 Σ x̃ r̃ 沿 L_t 各行的样本 (池内 ∧ 全部元与标签有效) 池化; 无样本 → w = 0
 #define OP_CSN(X)                                                                                                                                                                                                                                                                                                                                                                                           \
@@ -202,4 +207,4 @@
 
 // ---- 拼装: OP_ALL 展开序 = 全局 idx 序;
 //      需要按 A 域分派时用 X_##域 token 粘贴 (见 op_check / OperatorsService) ----
-#define OP_ALL(X) OP_TS0(X) OP_TS1(X) OP_CS1(X) OP_TS2(X) OP_CS2(X) OP_TS3(X) OP_CS3(X) OP_CSN(X)
+#define OP_ALL(X) OP_TS0(X) OP_TS1(X) OP_CS1(X) OP_TS2(X) OP_CS2(X) OP_TS3(X) OP_CS3(X) OP_TSN(X) OP_CSN(X)

@@ -361,6 +361,15 @@ private:
             cfg.max_impact = last_max_impact;
           }
         }
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("盘口成本");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("关 = 固定冲击 (两侧量 × 固定冲击); 开 = 盘口段 (Lob 库 L_1min 的买 / 卖冲击列, 分钟各层按行末分钟取, 日层无盘口段),\n"
+                            "评估域并入同池 Lob 库 (须已算, 落盘日取交集). Run / Inspect / 组合下次计算生效");
+        ImGui::TableNextColumn();
+        changed |= ImGui::Checkbox("##lob_cost", &cfg.lob_cost);
 
         ImGui::EndTable();
       }

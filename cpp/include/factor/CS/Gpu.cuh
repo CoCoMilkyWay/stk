@@ -486,11 +486,6 @@ FACTOR_CS_RED(CsStd, 1, {
   v = (s.cnt >= 2 && s.sx()) ? sqrtf(fmaxf(s.M2x, 0.f) / static_cast<float>(max(s.cnt - 1, 1))) : 0.f;
   m = true;
 })
-// x − 截面均值 (相对型); 空池 → μ = 0, 即 x 原值
-FACTOR_CS_RED(CsDemean, 1, {
-  v = x.v - s.mx;
-  m = x.m;
-})
 // (x − μ)/σ (相对型); σ 退化 → 0
 FACTOR_CS_RED(CsZ, 1, {
   const float sd = sqrtf(fmaxf(s.M2x, 0.f) / static_cast<float>(max(s.cnt - 1, 1)));
@@ -883,7 +878,7 @@ __global__ void lr_mom(const LrArgs a, const uint8_t *gm, int A, Geo geo, int ho
   __shared__ LrSh sh;
   const int s = blockIdx.x, n = a.n, M = lr_moms(n), base = s * A;
   double *out = mom + static_cast<size_t>(s) * M;
-  if (factor::stat::tail_masked(s, hold, geo)) { // 段末尾部行恒 0 (块内一致)
+  if (!hold_on(static_cast<HoldId>(hold), geo).opens(s)) { // 段末尾部行恒 0 (块内一致)
     for (int m = threadIdx.x; m < M; m += kCB)
       out[m] = 0.0;
     return;
@@ -923,7 +918,7 @@ __global__ void lr_fit(const LrArgs a, const uint8_t *gm, float *ov, uint8_t *om
   __shared__ LrSh sh;
   const int t = blockIdx.x, n = a.n, M = lr_moms(n), base = t * A, d = p.d;
   if (threadIdx.x == 0)
-    sh.u = factor::stat::label_last(t, p.h, geo);
+    sh.u = hold_on(p.h, geo).last(t);
   __syncthreads();
   const int u = sh.u, s0 = max(0, u - d + 1), G = kCB / M;
   if (threadIdx.x < G * M) {

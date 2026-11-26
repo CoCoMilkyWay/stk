@@ -75,12 +75,11 @@ inline std::vector<Trip> trips_of(const Ctx &x, size_t reduce, size_t follow, co
 
 // 根段 [i0, i1) 内卖出的各笔的中位夏普 (无笔 = NaN); 顺向 s, 费率 u; buf = 暂存
 inline double median_of(const std::vector<Trip> &tr, const Tape &t, size_t i0, size_t i1, float s, const Fee &u, std::vector<double> &buf) {
-  const double one = u.commission + u.transfer + u.impact; // 单边佣金 + 冲击
   buf.clear();
   for (auto it = std::ranges::lower_bound(tr, i0, {}, &Trip::i0); it != tr.end() && it->i0 < i1; ++it) {
     const bool shut = it->i1 < i1;
     const size_t j = shut ? it->i1 : i1 - 1;
-    const double a = t.c[it->i0], cost = shut ? 2 * one + u.stamp : one + (s > 0 ? u.stamp : 0);
+    const double a = t.c[it->i0], cost = shut ? u.rate(kBuy) + u.rate(kSell) : u.rate(s > 0 ? kSell : kBuy);
     const double tau = static_cast<double>(std::max<size_t>(j - it->i0, 1)) / static_cast<double>(t.S);
     buf.push_back((s * std::log(a / t.c[j]) - cost) / (it->g / a * std::sqrt(tau)));
   }

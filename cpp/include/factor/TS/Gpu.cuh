@@ -13,7 +13,7 @@
 //     ROLL / EXTREME / RECUR 的分块长只是性能参数, 与层无关 (取 kSegMax).
 //
 //   【调用形状】(Contract) static size_t scratch(const Call &) + static void run(const Call &, void *ws, cudaStream_t);
-//     POINT 的 F::apply 另给融合核 (GpuRun 的 run_fused) 逐步调用.
+//     定元 POINT 的 F::apply 另给融合核 (GpuRun 的 run_fused) 逐步调用; N 元 POINT 自成 kernel, 不进融合.
 //
 //   【核配置总则】
 //     POINT : 2D 网格逐格融合, grid(⌈A/256⌉, min(T,512)) × 256 线程, 纯带宽.
@@ -164,6 +164,27 @@ __global__ void point(const float *xv, const uint8_t *xm, const float *yv, const
     bool m = false;
     Op::apply(x, y, z, (t0 + t) % S, p, v, m);
     dev::store(ov, om, i, v, m);
+  }
+}
+
+// N 元 POINT (TsLinFix): 特征元设备指针走 kernel 参数区; Σ w_i x_i 用 fp64 按元序累加 (与 host 同序, 积在 fp64 里精确)
+struct LinArgs {
+  In x[kLrN];
+  int n;
+};
+__global__ void lin_fix(const LinArgs a, float *ov, uint8_t *om, int T, int A, Param p) {
+  const int col = blockIdx.x * blockDim.x + threadIdx.x;
+  if (col >= A)
+    return;
+  for (int t = blockIdx.y; t < T; t += gridDim.y) {
+    const int i = t * A + col;
+    double v = 0.0;
+    bool m = true;
+    for (int j = 0; j < a.n; ++j) {
+      v += static_cast<double>(p.w[j]) * a.x[j].v[i];
+      m = m && a.x[j].m[i] != 0;
+    }
+    dev::store(ov, om, i, static_cast<float>(v), m);
   }
 }
 
@@ -470,7 +491,7 @@ struct FnMean : FnSum {
 // ---- 方差族 (两遍: z = (x−μ)/σ 上累幂和; ddof=1; 全并列由核给的 sx 判); 样本不足 / 全并列 → 0 ----
 //      emit 的末步 (开方 / 有界比值) 在 fp32 做: 相消已在 mom_of 的 fp64 里完成, 末步条件数 ~1,
 //      fp32 的 1e-7 相对误差远在对拍容差 (1e-3 / 1e-2) 之内; sm_75 fp64 sqrt / div / pow 各是几十条 1/32 速率指令
-struct FnVar {
+struct FnStd {
   static constexpr int kArity = 1;
   static constexpr bool kSpread = true;
   using Ref = Ref1;
@@ -482,20 +503,11 @@ struct FnVar {
     Mom q;
     mom_of(s, r, q);
     const bool ok = s.n >= 2 && sx;
-    v = ok ? static_cast<float>(q.M2 * rcp_int(max(s.n - 1, 1))) : 0.f; // M2/(n−1)
-    m = true;
-  }
-};
-struct FnStd : FnVar {
-  __device__ static void emit(const StZ &s, DVal, DVal, int, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
-    Mom q;
-    mom_of(s, r, q);
-    const bool ok = s.n >= 2 && sx;
     v = ok ? sqrtf(fmaxf(static_cast<float>(q.M2 * rcp_int(max(s.n - 1, 1))), 0.f)) : 0.f;
     m = true;
   }
 };
-struct FnSkew : FnVar {
+struct FnSkew : FnStd {
   __device__ static void emit(const StZ &s, DVal, DVal, int, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
     Mom q;
     mom_of(s, r, q);
@@ -506,7 +518,7 @@ struct FnSkew : FnVar {
     m = true;
   }
 };
-struct FnKurt : FnVar {
+struct FnKurt : FnStd {
   __device__ static void emit(const StZ &s, DVal, DVal, int, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
     Mom q;
     mom_of(s, r, q);
@@ -518,7 +530,7 @@ struct FnKurt : FnVar {
   }
 };
 // 相对型: 描述 x_t 自身, x_t 无效则无效; σ 退化 → 0 (x = μ)
-struct FnZ : FnVar {
+struct FnZ : FnStd {
   __device__ static void emit(const StZ &s, DVal x, DVal, int, bool sx, bool, const Ref1 &r, const Param &, float &v, bool &m) {
     Mom q;
     mom_of(s, r, q);
@@ -771,36 +783,6 @@ struct FnSlope {
     const double inv = rcp_int(max(s.n, 1));
     const double sxx = s.sss - s.ss * s.ss * inv;                                                 // Σ(i−ī)² (相消在 fp64)
     v = s.n >= 2 ? static_cast<float>(s.ssx - s.ss * s.sx * inv) / static_cast<float>(sxx) : 0.f; // n < 2 → 0 (无趋势); sxx ≥ 1/2
-    m = true;
-  }
-};
-
-// ---- TsProductRoll: Π(1+x) − 1 精确. 累 Σ ln|1+x| (x > −1 用 log1p, x < −1 用 log(−1−x), 与 host 同式),
-//      零因子 (x = −1) 与负因子 (x < −1) 用可加减的计数表达; 空窗 = 空积 − 1 = 0 ----
-struct FnProduct {
-  static constexpr int kArity = 1;
-  static constexpr bool kSpread = false;
-  using Ref = RefNone;
-  struct St {
-    int zero, neg;
-    double sl;
-  };
-  FACTOR_TS_PRE_NONE
-  __device__ static void init(St &s, const Param &) { s = St{0, 0, 0.0}; }
-  __device__ static void upd(St &s, DVal x, DVal, int, int w, const Ref &, const Param &) {
-    const int g = x.m ? w : 0;
-    const double fg = static_cast<double>(g);
-    const bool gt = x.v > -1.f, lt = x.v < -1.f;
-    s.zero += (x.m && x.v == -1.f) ? w : 0;
-    s.neg += (x.m && lt) ? w : 0;
-    // 两支都算成有限值再 select (零因子参数换 0 → log1p 0 = 0), 不让 −inf / NaN 进滑窗累加器
-    // fp32 对数 (1 ulp): 进窗 / 出窗同值精确相消, 累加器仍 fp64
-    const float l = gt ? log1pf(x.v) : (lt ? logf(-1.f - x.v) : 0.f);
-    s.sl += fg * static_cast<double>(l);
-  }
-  __device__ static void emit(const St &s, DVal, DVal, int, bool, bool, const Ref &, const Param &, float &v, bool &m) {
-    const float sl = static_cast<float>(s.sl);
-    v = s.zero > 0 ? -1.f : ((s.neg & 1) ? -expf(sl) - 1.f : expm1f(sl));
     m = true;
   }
 };
@@ -1254,7 +1236,7 @@ inline dim3 g_roll(int T, int A, int C) { return dim3(static_cast<unsigned>((A +
 // 非逐点算子从行 0 起算 (段界 / 窗口历史); 下标是 int
 #define FACTOR_TS_CHECK(c) assert((c).t0 == 0 && (c).o.v && (c).o.m && static_cast<long long>((c).T) * (c).A < (1LL << 31))
 
-// ---- POINT (21): 接受任意行窗 (c.t0 = 行 0 的全局行号) ----
+// ---- POINT (定元 21): 接受任意行窗 (c.t0 = 行 0 的全局行号) ----
 #define FACTOR_TS_POINT(Name, NARY, BODY)                                                                                                       \
   struct Name {                                                                                                                                 \
     struct F {                                                                                                                                  \
@@ -1290,12 +1272,29 @@ FACTOR_TS_POINT(TsMul, 2, { v = x.v * y.v; m = x.m && y.m; })
 FACTOR_TS_POINT(TsDiv, 2, { v = y.v != 0.f ? x.v / y.v : 0.f; m = x.m && y.m; }) // y = 0 → 0; 溢出 → 出口转无效
 FACTOR_TS_POINT(TsMax, 2, { v = fmaxf(x.v, y.v); m = x.m && y.m; })
 FACTOR_TS_POINT(TsMin, 2, { v = fminf(x.v, y.v); m = x.m && y.m; })
-// Imb / Share: 和相消 (双边皆 0 / x ≈ −y) → 0 / 0.5
+// sign(x)·|x|^y, fp64 pow 同 host; x = 0 → 0 (含负次幂); 溢出 → 出口转无效
+FACTOR_TS_POINT(TsPow, 2, { const double b = x.v; v = x.v != 0.f ? static_cast<float>(copysign(pow(fabs(b), static_cast<double>(y.v)), b)) : 0.f; m = x.m && y.m; })
+// Imb: 和相消 (双边皆 0 / x ≈ −y) → 0
 FACTOR_TS_POINT(TsImb, 2, { v = dev::den_ok(x.v + y.v, fabsf(x.v) + fabsf(y.v)) ? (x.v - y.v) / (x.v + y.v) : 0.f; m = x.m && y.m; })
-FACTOR_TS_POINT(TsShare, 2, { v = dev::den_ok(x.v + y.v, fabsf(x.v) + fabsf(y.v)) ? x.v / (x.v + y.v) : 0.5f; m = x.m && y.m; })
 FACTOR_TS_POINT(TsLogRatio, 2, { v = dev::log_ratio(x.v, y.v); m = x.m && y.m; }) // 非正侧饱和到 ∓kLogCap
 FACTOR_TS_POINT(TsMask, 2, { v = x.v; m = x.m && y.m && y.v > 0.f; })     // y 当掩码, y ≤ 0 → 无效 (不补 0)
 FACTOR_TS_POINT(TsWhere, 3, { v = x.v > 0.f ? y.v : z.v; m = x.m && (x.v > 0.f ? y.m : z.m); })
+
+// ---- N 元 POINT (1): 读 xs[0..n), 不进融合 (Dag pointwise 只收定元) ----
+struct TsLinFix {
+  FACTOR_TS_NOWS
+  FACTOR_TS_RUN {
+    (void)ws;
+    assert(c.o.v && c.o.m && static_cast<long long>(c.T) * c.A < (1LL << 31));
+    assert(c.n >= 2 && c.n <= kLrN && "至少 2 个特征元");
+    k::LinArgs a;
+    for (int i = 0; i < c.n; ++i)
+      a.x[i] = c.xs[i];
+    a.n = c.n;
+    k::lin_fix<<<k::g_pt(c.T, c.A), kPB, 0, stream>>>(a, c.o.v, c.o.m, c.T, c.A, c.p);
+    FACTOR_CUDA_OK(cudaGetLastError());
+  }
+};
 
 // ---- GATHER (2): d 只改地址 ----
 #define FACTOR_TS_GATHER(Name, DELTA)                                                                       \
@@ -1326,8 +1325,7 @@ FACTOR_TS_GATHER(TsDeltaRoll, true)  // x_t − x_{max(t−d,0)}
   };
 FACTOR_TS_EXPAND(TsSumCum, FnSum)   // Σ_{s≤t} x_s
 FACTOR_TS_EXPAND(TsMeanCum, FnMean) // Σx/n
-FACTOR_TS_EXPAND(TsVarCum, FnVar)   // M2/(n−1)
-FACTOR_TS_EXPAND(TsStdCum, FnStd)   // √TsVarCum
+FACTOR_TS_EXPAND(TsStdCum, FnStd)   // √(M2/(n−1))
 FACTOR_TS_EXPAND(TsSkewCum, FnSkew) // m3/m2^1.5
 FACTOR_TS_EXPAND(TsKurtCum, FnKurt) // m4/m2²−3
 FACTOR_TS_EXPAND(TsMaxCum, FnExtCum<true>)
@@ -1357,13 +1355,11 @@ FACTOR_TS_EXPAND(TsWMeanCum, FnWMean)
   };
 FACTOR_TS_ROLL(TsSumRoll, FnSum)
 FACTOR_TS_ROLL(TsMeanRoll, FnMean)
-FACTOR_TS_ROLL(TsVarRoll, FnVar)
 FACTOR_TS_ROLL(TsStdRoll, FnStd)
 FACTOR_TS_ROLL(TsSkewRoll, FnSkew)
 FACTOR_TS_ROLL(TsKurtRoll, FnKurt)
 FACTOR_TS_ROLL(TsZRoll, FnZ)
 FACTOR_TS_ROLL(TsWmaRoll, FnWma)
-FACTOR_TS_ROLL(TsProductRoll, FnProduct)
 FACTOR_TS_ROLL(TsSlopeRoll, FnSlope)
 FACTOR_TS_ROLL(TsCovRoll, FnCov)
 FACTOR_TS_ROLL(TsCorrRoll, FnCorr)

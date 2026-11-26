@@ -201,7 +201,7 @@ inline int slot_count(const expr::Expr &e) {
 }
 
 // 模板子树 i 的最长回看行数 = 沿各条到叶的路径累加窗长: ROLL 取 d (自由 d 取上界 kMaxD; 用 d 而非 d−1 以盖住 Delay / Delta 的 x_{t−d}),
-// EXPO 取 kMaxD; N 元回归再加标签实现的滞后 (stat::label_reach). EXPAND 段内 reset (块首对齐段首) 不计. seg = 因子所在层
+// EXPO 取 kMaxD; N 元回归再加标签实现的滞后 (Hold::reach). EXPAND 段内 reset (块首对齐段首) 不计. seg = 因子所在层
 inline int lookback(const expr::Expr &e, int seg, int i = 0) {
   const expr::Node &n = e.nodes[static_cast<size_t>(i)];
   if (n.op < 0)
@@ -212,7 +212,7 @@ inline int lookback(const expr::Expr &e, int seg, int i = 0) {
     m = std::max(m, lookback(e, seg, n.args[a]));
   const int own = o.t == T::ROLL ? ((n.free & expr::kFreeD) ? kMaxD : n.p.d) : o.t == T::EXPO ? kMaxD
                                                                                               : 0;
-  return m + own + (has_h(o.t, o.arity) ? factor::stat::label_reach(n.p.h, geo_of(seg)) : 0);
+  return m + own + (has_h(o.t, o.arity) ? hold_on(n.p.h, geo_of(seg)).reach() : 0);
 }
 
 // 阈值槽装上分位表 (升序, ≥ 2 个且不全等: 常量输入调用方先拦)

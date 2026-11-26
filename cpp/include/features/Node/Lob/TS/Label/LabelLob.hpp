@@ -46,10 +46,7 @@
 // ---- 配置 ----
 constexpr size_t LABEL_DELAY_SECONDS = 3; // 下单延迟 (秒)
 
-#define LABEL_LIST_ONE(v, ...) v,
-inline constexpr size_t LABEL_AMOUNT_WAN[] = {LABEL_AMTS(LABEL_LIST_ONE)};
-#undef LABEL_LIST_ONE
-inline constexpr size_t LABEL_AMT_COUNT = std::size(LABEL_AMOUNT_WAN);
+inline constexpr size_t LABEL_AMT_COUNT = kAmtCount - 1; // 盘口段 (kAmtWan[1..], 固定段无列)
 // LB 块输出口 (字段表 LB(port) 的 port): 枚举值 = LB 块偏移 [cost_buy × 各金额, cost_sell × 各金额]
 #define LABEL_OUT_BUY(a, ...) cost_buy_##a##w,
 #define LABEL_OUT_SELL(a, ...) cost_sell_##a##w,
@@ -76,7 +73,7 @@ public:
   static_assert(Out::cost_sell_5w == AMT_COUNT);
   static_assert([] {
     for (size_t a = 1; a < AMT_COUNT; ++a)
-      if (LABEL_AMOUNT_WAN[a] <= LABEL_AMOUNT_WAN[a - 1])
+      if (kAmtWan[a + 1] <= kAmtWan[a])
         return false;
     return true;
   }(),
@@ -225,7 +222,7 @@ private:
     snap.buy = has_a;
     snap.sell = has_b;
     for (size_t a = 0; a < AMT_COUNT; ++a) {
-      const float amt = static_cast<float>(LABEL_AMOUNT_WAN[a]) * 10000.0f;
+      const float amt = static_cast<float>(kAmtWan[a + 1]) * 10000.0f;
       const float vb = has_a ? calc_vwap(ask_price_, ask_qty_, amt, true, lim_up_) : 0.0f;  // 吃 ask (买入): 余量按涨停
       const float vs = has_b ? calc_vwap(bid_price_, bid_qty_, amt, false, lim_dn_) : 0.0f; // 吃 bid (卖出): 余量按跌停
       assert((!has_a || vb > 1e-6f) && (!has_b || vs > 1e-6f) && "materialize: 有挂单的一侧须吃得到");
