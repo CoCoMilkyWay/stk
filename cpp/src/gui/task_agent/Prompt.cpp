@@ -22,7 +22,6 @@ namespace GUI::Agent {
 // =============================================================================
 namespace {
 
-namespace st = factor::stat;
 using text::cell;
 using text::num;
 using KV = std::vector<std::pair<std::string_view, std::string>>;

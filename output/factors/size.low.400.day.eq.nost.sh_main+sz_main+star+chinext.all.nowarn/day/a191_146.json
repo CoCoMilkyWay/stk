@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "A191#146",
+ "expr": "CsRank(TsDiv(TsMul(TsMeanRoll(TsSub(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k=0.0327869)), d), TsSub(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k=0.0327869))), TsMeanEma(TsMul(TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k=0.0327869), TsMeanEma(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), k=0.0327869)), k)))",
+ "note": "超额 E 出现多次, 指数系数固定 2/61; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+}

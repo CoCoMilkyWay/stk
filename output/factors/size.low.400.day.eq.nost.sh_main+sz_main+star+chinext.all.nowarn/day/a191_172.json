@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "A191#172",
+ "expr": "CsRank(TsMeanRoll(TsAbs(TsImb(TsSumRoll(TsMul(TsSub(TsDelayRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsMul(TsGt(TsSub(TsDelayRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor)), k=0), TsGt(TsSub(TsSub(TsDelayRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor)), TsDeltaRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=1)), k=0))), d), TsSumRoll(TsMul(TsDeltaRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=1), TsMul(TsGt(TsDeltaRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=1), k=0), TsGt(TsSub(TsDeltaRoll(TsMul(bar.1d.high_day, bar.1d.adj_factor), d=1), TsSub(TsDelayRoll(TsMul(bar.1d.low_day, bar.1d.adj_factor), d=1), TsMul(bar.1d.low_day, bar.1d.adj_factor))), k=0))), d))), d))",
+ "note": "ADX 型; 原式 LD / HD 命名互换, 按式照写; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+}

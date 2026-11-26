@@ -13,7 +13,9 @@
 
 #include "factor/Expr.hpp"
 #include "factor/Search/Space.hpp"
+#include "factor/Stat/Fold.hpp"
 #include "factor/Stat/Host.hpp"
+#include "factor/Stat/Pos.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/engine/Engine.hpp"
 #include "misc/date.hpp"
@@ -161,7 +163,7 @@ struct RankScratch {
     return pearson(a, b);
   }
   // 子截面分层: 格按 rx 的秩分 20 组, 组超额只收全截面分组下真持有的格 (held; hy = 其做多收益 − mkt, 续持取名义值,
-  //   Stat 契约【仓位感知】); ric 用全部格 (同 Row)
+  //   Stat 仓位感知); 组收益 = Σ hy / max(真持有只数, 子截面满仓 n / 20) (与 Stat【持仓口径】同式); ric 用全部格 (同 Row)
   bool approx_ranked(std::span<const double> rx, std::span<const double> hy, std::span<const double> ry, std::span<const uint8_t> held, st::Row &w) const {
     const size_t n = rx.size();
     assert(hy.size() == n && ry.size() == n && held.size() == n);
@@ -174,8 +176,9 @@ struct RankScratch {
       if (held[i])
         s[k] += hy[i], ++w.cnt[k];
     }
+    const double cap = static_cast<double>(n) / kGroups;
     for (int k = 0; k < kGroups; ++k)
-      w.grp[k] = static_cast<float>(w.cnt[k] ? s[k] / w.cnt[k] : 0.0);
+      w.grp[k] = static_cast<float>(s[k] / st::book_den(w.cnt[k], cap));
     w.ric = static_cast<float>(pearson(rx, ry));
     w.ok = 1;
     return true;
@@ -625,20 +628,18 @@ struct ChunkView {
   std::span<const factor::check::Plane *> feat_pl; // 与 feats 对齐 (坏式或解析失败为 nullptr)
 };
 
-// 格 k (块内行 t) 在全截面分组 (rx 已定向) 下是否真持有; 是 → ret = 其做多收益 (续持取名义值). Stat 契约【仓位感知】同一份
+// 格 k (块内行 t) 在全截面分组 (rx 已定向) 下是否真持有; 是 → ret = 其做多收益 (续持取名义值). Stat 仓位感知 (factor/Stat/Pos.hpp)同一份
 inline bool held_cell(const Engine::Block &blk, const uint16_t *rx, HoldId hold, int t, size_t k, float &ret) {
   const st::Label lb = Engine::label_of(*blk.y.labels[0], blk.y.eo, nullptr);
   if (rx[k] == st::kRankNone || !lb.m[k])
     return false;
   float y[2];
   st::label_cell(lb, static_cast<ptrdiff_t>(k), factor::cpu::stat::H2F{}, y);
-  const st::Chain ch = st::chain_of(t, blk.span(), hold);
-  const int g = st::grp_of(rx[k]);
-  const auto in = [g](uint16_t v) { return v != st::kRankNone && st::grp_of(v) == g; };
-  const st::Cell<uint16_t> cl{ch, rx + k, lb.m + k, lb.eo + k, y};
-  if (!cl.held(in))
+  const st::Chain ch = st::chain_of(t, blk.span(), hold_on(hold, geo_of(blk.y.sh.seg)));
+  const st::Pos p = st::walk(ch, lb.m + k, lb.eo + k, st::InRank{rx + k, st::grp_of(rx[k])});
+  if (p.held < 0)
     return false;
-  ret = cl.ret(cl.continues(in));
+  ret = st::ret_at(p, 0, y);
   return true;
 }
 
@@ -776,7 +777,7 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
       const factor::check::Plane *rp = eng.plane(fr.d.roots[0]);
       st::Accum acc[kHoldCount];
       rx = eng.run_root(rp, cfg.fac->frame, cfg.fac->dir, span, L, acc, Sink{t_lo, rows});
-      if (cfg.fac->ends) { // 两端组真持有的格 (契约【仓位感知】; rx 已定向: 高端 = G20)
+      if (cfg.fac->ends) { // 两端组真持有的格 (Stat/Pos.hpp; rx 已定向: 高端 = G20)
         const st::Label &lb = L.l[0];
         const int only = cfg.fac->only_end;
         F.S.ex.rows(n_stat, [&](int r0, int r1, int) {
@@ -784,7 +785,7 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
             const size_t base = static_cast<size_t>(t) * static_cast<size_t>(sh.A);
             if (!rows[static_cast<size_t>(t - t_lo)].ok)
               continue;
-            const st::Chain ch = st::chain_of(t, span, env.hold);
+            const st::Chain ch = st::chain_of(t, span, hold_on(env.hold, span.g));
             for (int a = 0; a < sh.A; ++a) {
               const size_t k = base + static_cast<size_t>(a);
               if (rx[k] == st::kRankNone || lb.ry[k] == st::kRankNone)
@@ -795,10 +796,9 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
                   continue;
                 float y[2];
                 st::label_cell(lb, static_cast<ptrdiff_t>(k), factor::cpu::stat::H2F{}, y);
-                const st::Cell<uint16_t> cl{ch, rx + k, lb.m + k, lb.eo + k, y};
-                const auto in = [g](uint16_t v) { return v != st::kRankNone && st::grp_of(v) == g; };
-                if (cl.held(in))
-                  cells[static_cast<size_t>(t - t_lo)].push_back({t, a, static_cast<uint8_t>(e), cl.ret(cl.continues(in))});
+                const st::Pos p = st::walk(ch, lb.m + k, lb.eo + k, st::InRank{rx + k, g});
+                if (p.held >= 0)
+                  cells[static_cast<size_t>(t - t_lo)].push_back({t, a, static_cast<uint8_t>(e), st::ret_at(p, 0, y)});
               }
             }
           }

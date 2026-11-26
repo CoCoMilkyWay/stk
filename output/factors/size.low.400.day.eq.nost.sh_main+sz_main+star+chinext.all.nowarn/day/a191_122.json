@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "A191#122",
+ "expr": "CsRank(TsDiv(TsDeltaRoll(TsMeanEma(TsMeanEma(TsMeanEma(TsLog(TsMul(bar.1d.close_day, bar.1d.adj_factor)), k=0.153846), k=0.153846), k=0.153846), d=1), TsDelayRoll(TsMeanEma(TsMeanEma(TsMeanEma(TsLog(TsMul(bar.1d.close_day, bar.1d.adj_factor)), k=0.153846), k=0.153846), k=0.153846), d=1)))",
+ "note": "TRIX; 三重指数均值出现两次, 系数固定 2/13; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+}

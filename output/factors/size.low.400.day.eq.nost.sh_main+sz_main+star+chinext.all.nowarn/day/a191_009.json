@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "A191#009",
+ "expr": "CsRank(TsMeanEma(TsDiv(TsMul(TsDeltaRoll(TsAdd(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), d), TsSub(bar.1d.high_day, bar.1d.low_day)), bar.1d.volume_day), k))",
+ "note": "SMA(A,n,m) → 指数均值, 系数自由; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+}

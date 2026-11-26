@@ -524,9 +524,9 @@ void perf(const Strip &t, Rebal rb, const Pick &pick, Perf &b) {
       b.first = r + 1;
     const st::Chain ch = st::chain_of(static_cast<int>(r), sp, hd);
     tw.cur.clear(), tw.pre.clear();
-    slots(ch, r, tw.cur, [](const st::Pos &p, size_t, const float(&y)[2]) { return st::ret_at(p, 0, y); });
+    slots(ch, r, tw.cur, [](const st::Pos &p, size_t, const float (&y)[2]) { return st::ret_at(p, 0, y); });
     if (ch.nets(static_cast<int>(r)) && src[r - 1] != SIZE_MAX)
-      slots(ch.back(), r - 1, tw.pre, [&](const st::Pos &, size_t a, const float(&y)[2]) { return st::hold_ret(true, t.eo[r * A + a], y); });
+      slots(ch.back(), r - 1, tw.pre, [&](const st::Pos &, size_t a, const float (&y)[2]) { return st::hold_ret(true, t.eo[r * A + a], y); });
     double ret[kWeights] = {};
     st::Turn flow[kWeights] = {};
     cs::turn_row(tw.cur, tw.pre, !hd.nets(static_cast<int>(r) + hd.h), t.eo.data() + r * A, &flat, 1, cap, tw, ret, flow);

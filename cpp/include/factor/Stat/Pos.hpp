@@ -82,7 +82,7 @@ struct InRank {
     if (x == kRankNone || grp_of(x) != g)
       return -1;
     const int e = g == end_group(kTop) ? kTop : g == end_group(kBot) ? kBot
-                                                                      : -1;
+                                                                     : -1;
     int l = 0;
     if (e >= 0)
       for (int j = 0; j < kTails; ++j)

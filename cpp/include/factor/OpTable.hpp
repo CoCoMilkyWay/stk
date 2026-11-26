@@ -165,7 +165,7 @@
   X(TsMax, "时最大", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\max(x_t,\,y_t))tex", "逐点取大; 信号取强")                                                                                      \
   X(TsMin, "时最小", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\min(x_t,\,y_t))tex", "逐点取小; 信号取弱")                                                                                      \
   X(TsMul, "时乘", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t \cdot y_t)tex", "逐点积; 信号交互")                                                                                            \
-  X(TsPow, "时幂", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\operatorname{sign}(x_t)\,|x_t|^{y_t})tex", "保号幂, 指数也是序列 (如秩的秩次幂); 常数次幂用 TsMul 连乘 / TsSqrt; x = 0 记 0")         \
+  X(TsPow, "时幂", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\operatorname{sign}(x_t)\,|x_t|^{y_t})tex", "保号幂, 指数也是序列 (如秩的秩次幂); 常数次幂用 TsMul 连乘 / TsSqrt; x = 0 记 0")     \
   X(TsSub, "时减", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t - y_t)tex", "逐点差; 量信号差距")                                                                                              \
   X(TsBetaCum, "时累贝塔", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\beta_t = \mathrm{cov}_{W_t}(x, y) \;/\; \mathrm{var}_{W_t}(y))tex", "当日至今 x 对 y 的回归斜率; 量敏感度")           \
   X(TsCorrCum, "时累相关", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), SIGNED, R"tex(\mathrm{cov}_{W_t}(x, y) \;/\; (\sigma^x_t\,\sigma^y_t))tex", "当日至今的相关系数; 量联动强弱")                      \

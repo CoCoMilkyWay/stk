@@ -6,10 +6,10 @@
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
-#include "factor/Stat/Cpu.hpp"  // Workspace / turn_rows
+#include "factor/Stat/Cpu.hpp" // Workspace / turn_rows
 #include "factor/Stat/Fold.hpp"
-#include "factor/Stat/Roll.hpp" // Day / roll_of
-#include "gui/engine/Ledger.hpp"  // RowLines / fold_ledger
+#include "factor/Stat/Roll.hpp"  // Day / roll_of
+#include "gui/engine/Ledger.hpp" // RowLines / fold_ledger
 #include "gui/engine/Load.hpp"
 #include "math/distribution/PdfSnap.hpp" // AggPdf / KLLcache
 #include "misc/date.hpp"

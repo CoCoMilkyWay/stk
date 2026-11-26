@@ -35,6 +35,6 @@ struct Daily {
   double mean() const { return n > 0.0 ? s1 / n : 0.0; }
   double sd() const { return n >= 2.0 ? std::sqrt(std::fmax(s2 - s1 * s1 / n, 0.0) / (n - 1.0)) : 0.0; }
   double log_ann() const { return n > 0.0 ? lg / n * kDaysPerYear : 0.0; } // 对数年化 (跨窗平均 / 取中位在对数空间)
-  double ann() const { return n > 0.0 ? ann_log(lg, n) : 0.0; }           // 复利年化
+  double ann() const { return n > 0.0 ? ann_log(lg, n) : 0.0; }            // 复利年化
   double sharpe() const { return ann_ir(mean(), sd()); }
 };

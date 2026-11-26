@@ -57,9 +57,9 @@ struct HoldStat {
   int n_all = 0, n_trig = 0; // 攒过的全部行 (真实收益的分母) / 触发行 (ok 且两端至少一端非空)
   Moments ric, rac, ls;      // 逐行量 (ric / ls: ok 行; rac: ok_rac 行)
   float beta = 0.f, mono = 0.f;
-  float end_n = 0.f;            // 平均每触发行一端成员数 (util_of 的分子)
+  float end_n = 0.f;             // 平均每触发行一端成员数 (util_of 的分子)
   float ann = 0.f, sharpe = 0.f; // 日净值 LS 的复利年化 / Sharpe (Daily)
-  float grp[kGroups] = {};      // 组每行持仓收益的均值 (Σ / n_all)
+  float grp[kGroups] = {};       // 组每行持仓收益的均值 (Σ / n_all)
 };
 // 每年满仓轮数 = kDaysPerYear · S / h̄: 金额口径的年化 (均值超额 / 均摊成本 / 换手 = 满仓一年) 走这一个
 inline double span_per_year(HoldId h, int seg) { return static_cast<double>(kDaysPerYear) * seg / hold_on(h, geo_of(seg)).span(); }

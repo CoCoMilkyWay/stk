@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "A191#144",
+ "expr": "CsRank(TsMeanRoll(TsMask(TsDiv(TsAbs(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), bar.1d.amount_day), TsGt(TsNeg(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), k=0)), d))",
+ "note": "SUMIF / COUNT = 下跌日上的均值; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+}

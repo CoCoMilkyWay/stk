@@ -166,7 +166,7 @@ inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::C
     gs[g] += factor::stat::ret_at(p, 0, y);
     ++gc[g];
     const int e = g == factor::stat::end_group(factor::stat::kTop) ? factor::stat::kTop : g == factor::stat::end_group(factor::stat::kBot) ? factor::stat::kBot
-                                                                                                                                         : -1;
+                                                                                                                                           : -1;
     if (e < 0)
       continue;
     for (int j = 0; j < kTails && j < p.held; ++j) {

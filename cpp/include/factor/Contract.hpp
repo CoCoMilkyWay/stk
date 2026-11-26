@@ -100,9 +100,9 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "define/HostDev.hpp" // FACTOR_HD: 两后端共用的契约公式 (Stat/Contract.hpp【一份公式】)
 #include "define/Geo.hpp"
-#include "define/Label.hpp" // HoldId / Hold (N 元回归的目标持有期)
+#include "define/HostDev.hpp" // FACTOR_HD: 两后端共用的契约公式 (Stat/Contract.hpp【一份公式】)
+#include "define/Label.hpp"   // HoldId / Hold (N 元回归的目标持有期)
 
 namespace factor {
 

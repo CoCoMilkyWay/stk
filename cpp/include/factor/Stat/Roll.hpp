@@ -50,8 +50,8 @@ inline Roll roll_of(std::span<const Day> d, HoldId hold, int seg, std::vector<fl
     line->assign(static_cast<size_t>(D), std::numeric_limits<float>::quiet_NaN());
   if (wins)
     wins->assign(static_cast<size_t>(D), std::numeric_limits<double>::quiet_NaN());
-  std::vector<double> N(static_cast<size_t>(D) + 1, 0.0), R(N);           // 前缀和 (下标 = 日 + 1)
-  std::vector<Daily> L(static_cast<size_t>(D) + 1);                        // 日净值 LS 前缀
+  std::vector<double> N(static_cast<size_t>(D) + 1, 0.0), R(N); // 前缀和 (下标 = 日 + 1)
+  std::vector<Daily> L(static_cast<size_t>(D) + 1);             // 日净值 LS 前缀
   const double span = hold_on(hold, geo_of(seg)).span();
   for (int t = 0; t < D; ++t) {
     const Day &x = d[static_cast<size_t>(t)];

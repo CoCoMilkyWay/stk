@@ -138,8 +138,8 @@ __global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, in
     for (int s = 0; s < a.f.n; ++s) {
       const FuseStep &st = a.f.s[s];
       switch (st.op) {
-#define G_FUSE_SELF_POINT(Name, ar)                        \
-  case kIdx##Name:                                         \
+#define G_FUSE_SELF_POINT(Name, ar)                      \
+  case kIdx##Name:                                       \
     r[s] = fuse_op<ar, ts::Name>(st, a.in, r, i, t % S); \
     break;
 #define G_FUSE_SELF_EXPAND(Name, ar)

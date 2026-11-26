@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "A191#162",
+ "expr": "CsRank(TsDiv(TsSub(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333), TsMeanEma(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333)), TsMinRoll(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333), TsMeanEma(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333)), d=12)), TsSub(TsMaxRoll(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333), TsMeanEma(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333)), d=12), TsMinRoll(TsDiv(TsMeanEma(TsRelu(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333), TsMeanEma(TsAbs(TsDeltaRoll(TsMul(bar.1d.close_day, bar.1d.adj_factor), d=1)), k=0.0833333)), d=12))))",
+ "note": "RSI 出现多次, 参数固定; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+}

@@ -94,7 +94,7 @@ struct PerFactorLevel {
   constexpr const X &operator[](FactorLevelId l) const { return v[l]; }
 };
 // 叶名里的层段 (档.层.列 的中段) = kLevelToken (FeatureLevels.hpp, ALL_LEVELS 表), 下标 = FeatureLevel
-// 持有期在因子层 lv 上的开 / 清仓 = Stat/Contract.hpp【协议表 1】的一行: 各一个 时点 @ 价 (UI 凡显示开关仓处同一份; 由层表 + Geo 推, 不按层分支)
+// 持有期在因子层 lv 上的开 / 清仓 = define/Label.hpp【协议表 1】的一行: 各一个 时点 @ 价 (UI 凡显示开关仓处同一份; 由层表 + Geo 推, 不按层分支)
 struct HoldPoint {
   std::string at, px;
 };
@@ -171,13 +171,13 @@ struct LabCols {
   Col lv, nv;
 };
 struct YCols {
-  Col ts;                                    // ts_valid (当日有成交)
-  Col cs;                                    // cs_valid (标签 + 截面门控平面)
-  Col entry;                                 // lb_entry_ok 建仓可成交码 (各持有期共用; Stat 契约【仓位感知】)
-  HoldSet holds = 0;                         // 本层合法 (hold_ok) 的持有期 = 有标签列的
-  Holds list;                                // holds 的有序视图 (UI 按下标切持有期)
-  LabCols lab[kHoldCount];                   // [HoldId]
-  AmtSet amts = 0;          // 固定段 (恒在) + 盘口段 (非日层; 作用域开盘口成本才装, 见 y_spec)
+  Col ts;                      // ts_valid (当日有成交)
+  Col cs;                      // cs_valid (标签 + 截面门控平面)
+  Col entry;                   // lb_entry_ok 建仓可成交码 (各持有期共用; Stat 仓位感知 (factor/Stat/Pos.hpp))
+  HoldSet holds = 0;           // 本层合法 (hold_ok) 的持有期 = 有标签列的
+  Holds list;                  // holds 的有序视图 (UI 按下标切持有期)
+  LabCols lab[kHoldCount];     // [HoldId]
+  AmtSet amts = 0;             // 固定段 (恒在) + 盘口段 (非日层; 作用域开盘口成本才装, 见 y_spec)
   Col cost[kAmtCount][kSides]; // [AmtId][买 / 卖] Lob 档 L_1min 冲击列 lb_cost_<buy|sell>_<a>w; 固定段无列
   bool has(HoldId h) const { return (holds & hold_bit(h)) != 0; }
 };

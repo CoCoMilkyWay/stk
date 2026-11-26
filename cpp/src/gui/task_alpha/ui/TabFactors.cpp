@@ -524,8 +524,8 @@ std::string period_text(misc::Ymd lo, misc::Ymd hi) {
 //   grade  固定区间着色 (主表 / 悬停表共用, 不随样本变): line(差端, 好端) 线性 (好端 < 差端 即越小越好); band(a, b) 中点最好 → 两端差;
 //          区间外钳位到端色; 默认不着色 (诊断量 / 尺度随 h 变的)
 //   lag    样本 = ok_rac 行 (n_rac; rAC 系), 否则 ok 行 (n); 对应行数 < 3 → 空
-//   公式见 factor/Stat/Contract.hpp【持仓口径】【二级 HoldStat】(rIC / rAC 同一套矩; t 值按 n/h 折算重叠持有期; LS% / SR 是不触发记 0 的真实收益,
-//   与 Inspect 累计线 / 图例同一份 ls_annual / ann_sharpe)
+//   公式见 factor/Stat/Contract.hpp【持仓口径】/ Fold.hpp【三级 HoldStat】(rIC / rAC 同一套矩; t 值按 n/h 折算重叠持有期; LS% / SR = 日净值 LS
+//   (不触发记 0, 每批 1/h̄) 的复利年化 / Sharpe, 与 Inspect 累计线 / Market / Beta 同一份 Daily)
 // ============================================================================
 using HS = factor::stat::HoldStat;
 using FR = EvalStat;
@@ -572,7 +572,7 @@ struct Metric {
 // 各指标的精确定义 (UI 只写一句话):
 //   val%  池内格中根平面有效的占比;  rank%  并列块 ≤ ⌈有效数/20⌉ 只的格 / 有效格;  trig%  至少一端非空的行 / ok 行;  util%  触发行平均每端只数 / 满仓 cap
 //   mono  组均值对组号 Spearman;  turn  两端均 Σ Δw⁺ / 行数 × 每年满仓轮数 (单边)
-//   LS% / SR  满仓年化真实收益 / Sharpe: LS = ½ (做多 G20 − 做多 G1), 不触发记 0, 每批 1/h̄, 全日平均满仓;  LS 组 mean .. β 都只统计 ok 行
+//   LS% / SR  日净值 LS 的复利年化 / Sharpe: LS = ½ (做多 G20 − 做多 G1), 不触发记 0, 每批 1/h̄, 全日平均满仓;  LS 组 mean .. β 都只统计 ok 行
 constexpr Metric kMetrics[] = {
     {Group::Cover, "val%", "val%", "有效率: 池内格中因子有值的占比", "[0, 100]", "越大", "%.1f",
      [](const HS &, const FR &r) { return static_cast<double>(r.valid_pct); }, line(90, 100)},
@@ -586,9 +586,9 @@ constexpr Metric kMetrics[] = {
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
     {Group::Shape, "turn", "turn", "年化单边换手 (倍/年)", "[0, ∞)", "越小", "%.1f",
      [](const HS &h, const FR &r) { return factor::stat::turn_annual(h, r.turn_of(h)); }, line(1000, 100)},
-    {Group::LS, "LS%", "LS%", "满仓年化多空收益 %", "(-∞, ∞)", "越大", "%+.1f",
+    {Group::LS, "LS%", "LS%", "日净值多空复利年化 %", "(-∞, ∞)", "越大", "%+.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h); }, line(10, 50)},
-    {Group::LS, "SR", "SR", "年化 Sharpe", "(-∞, ∞)", "越大", "%+.2f",
+    {Group::LS, "SR", "SR", "日净值多空 Sharpe", "(-∞, ∞)", "越大", "%+.2f",
      [](const HS &h, const FR &) { return factor::stat::sharpe_of(h); }, line(5, 10)},
     {Group::LS, "mean", nullptr, "每期多空 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.mean); }},
     {Group::LS, "sd", nullptr, "每期多空 标准差", "[0, ∞)", "越小", "%.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.sd); }},

@@ -891,7 +891,7 @@ void plot_tod(const InspectDerived &d, const InspectUIState::TodOcc &occ, const 
 // 图例 = 自绘矩阵 (ImPlot 图例只能单列 / 单行), 左上: 行 = 组 (G20 / G1 / LS / 池均), 列 = 金额段 (无冲击 / 固定冲击 / 各金额), 格 = 该线色块;
 //   点格切该线, 点行头 / 列头切整行 / 整列 (有显示的 → 全隐, 否则全显); 悬停格 / 头 → 对应线加粗 (下帧)
 // 口径 = Stat 契约【持仓口径】的每期真实收益 (所评方向; 端 = end_period = HoldStat::grp 两端; ls_period = Σ ls / 全部行, 不触发行记 0).
-// 净线 = 毛二级 − 该端该持有期均摊换手成本 (Stat 契约【换手成本】CostAcc::cost(端), 含税佣与冲击 (Fee); 两端都是做多账本, 成本都使线下移;
+// 净线 = 毛二级 − 该端该持有期均摊换手成本 (Stat 换手 (factor/Stat/Turn.hpp)CostAcc::cost(端), 含税佣与冲击 (Fee); 两端都是做多账本, 成本都使线下移;
 // LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (交接与否 / 每期换手量随 h 变), 所以每 (金额段, h) 一份 CostAcc.
 //   毛 G20 / G1 / LS 的样本是 J ∧ ok 行, 成本的样本是端成员 ∧ 标签有效格 (与组计数同口径)
 // hs[n_hold] 毛二级; costs[n_cost] 评估域的金额段 (固定段 + 有 Lob 库时的盘口段). n < 3 的持有期不作节点.

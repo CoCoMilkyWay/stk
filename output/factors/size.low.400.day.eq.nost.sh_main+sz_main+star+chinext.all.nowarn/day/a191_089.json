@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "A191#089",
+ "expr": "CsRank(TsSub(TsSub(TsMeanEma(TsMul(bar.1d.close_day, bar.1d.adj_factor), k=0.153846), TsMeanEma(TsMul(bar.1d.close_day, bar.1d.adj_factor), k=0.0740741)), TsMeanEma(TsSub(TsMeanEma(TsMul(bar.1d.close_day, bar.1d.adj_factor), k=0.153846), TsMeanEma(TsMul(bar.1d.close_day, bar.1d.adj_factor), k=0.0740741)), k)))",
+ "note": "MACD; DIF 出现两次, 快慢系数固定; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+}

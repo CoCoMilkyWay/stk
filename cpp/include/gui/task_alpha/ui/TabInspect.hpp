@@ -9,7 +9,7 @@
 //   服务一次算出毛口径一级 Row[H][T] + 二级 HoldStat[H] + 各金额段 × 各持有期的换手成本 CostTier[C], 换 Hold / 超额|绝对 / 改费率都只是切片
 //   (UI 持锁派生 / 现算), 不发请求, 零延时
 // 下面 2×2 四图:
-//   左上 分层滚动对数累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日的 前 W 日 Σ ln(1 + 日收益) × kDaysPerYear / W
+//   左上 分层滚动对数累计 (1×2 子图共 y 轴, 无缝相接, 刻度 %): 左 3/4 时序 = 20 组沿交易日的 前 W 日 Σ ln(1 + 日收益) 按 W 日复利年化 (ann_log)
 //        (InspectResult::nav 日收益; W = 控件行窗口滑条 (交易日, 对数刻度), 起点前不足 W 日按 0 补; W 拉满 = days → 从起点的对数累计:
 //        全部线同一系数 → 线间差 / 斜率比不变, 匀速 = 直线, 末点 = 全段对数年化; W < days 时图上淡色带标出光标日的窗口 [光标 − W, 光标];
 //        拖滑条只做前缀差 (InspectDerived::lay_cum), 不发请求;
@@ -48,7 +48,7 @@
 //        三组 × (毛 + 全部金额段) 一次画全, 图例 = 左上矩阵 (行 = G20 / G1 / LS / 池均, 列 = 金额段; 点格 / 行头 / 列头切), 默认只显 LS (固定冲击除外); 另画池均线 ("池均 无冲击"
 //        = InspectResult::pool_ann: 池等权做多的绝对算术年化, 随池一代只算一次, 换因子共享). 口径 = 全库全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产.
 //        净线 <amt>w = 毛 − 该端该持有期的均摊换手成本 (两端都是做多账本, 成本都使线下移; LS = net_ls_period.
-//        CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 cost_rows: 两端按 Δw, 两侧各付 lb_cost_<buy|sell>_<amt>w (固定段 = 固定冲击) 及
+//        CostTier[c].acc[h] = Stat 契约 CostAcc, 与 Run 同一份 turn_rows: 两端按 Δw, 两侧各付 lb_cost_<buy|sell>_<amt>w (固定段 = 固定冲击) 及
 //        Config 费率 (冲击 + 税佣), 原值扣, 不被截面去均值吃掉), UI 现算. 毛用 HoldStat:
 //        Inspect 算过用算的, 没算过用 Factors 表里 (stat: 毛 + 各金额段成本, 同一份 CostTier) 的, 所以进页即有
 // 触发: 高光因子 (文件 / 规范串 / 作用域) 变 且 服务空闲 → 自动起算 (InspectAutoRequest, Factors / Inspect 两页都每帧调: 在 Factors 页点行

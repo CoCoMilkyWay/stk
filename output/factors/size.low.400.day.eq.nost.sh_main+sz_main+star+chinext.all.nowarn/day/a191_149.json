@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "A191#149",
+ "expr": "CsRank(TsBetaRoll(TsMask(TsLogRatio(bar.1d.close_day, bar.1d.pre_close), TsGt(TsNeg(CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close))), k=0)), CsMean(TsLogRatio(bar.1d.close_day, bar.1d.pre_close)), d))",
+ "note": "基准 → 池内等权日收益; 只取基准下跌日; 价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+}

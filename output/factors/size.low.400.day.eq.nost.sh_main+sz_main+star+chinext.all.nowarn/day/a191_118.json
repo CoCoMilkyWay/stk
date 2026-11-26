@@ -1,0 +1,6 @@
+{
+ "type": "alpha",
+ "name_cn": "A191#118",
+ "expr": "CsRank(TsDiv(TsSumRoll(TsSub(TsMul(bar.1d.high_day, bar.1d.adj_factor), TsMul(bar.1d.open_day, bar.1d.adj_factor)), d), TsSumRoll(TsSub(TsMul(bar.1d.open_day, bar.1d.adj_factor), TsMul(bar.1d.low_day, bar.1d.adj_factor)), d)))",
+ "note": "价格跨日一律后复权 (×adj_factor), 同日比较用原价; 量额为对数落盘值; 窗长 / 权 / 阈值未写数字的交 Search"
+}

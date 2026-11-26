@@ -45,7 +45,7 @@ struct LayerDerived {
   std::vector<double> lay_cum[kLayerLines];           // [days + 1] 前 c 日 Σ ln(1 + 日收益) (爆仓日起 NaN)
   std::vector<double> ls_cum[kLsLines];               // 同上
   int win = 0;                                        // lay_ann / ls_ann 现按的窗口 (交易日); 0 = 未铺
-  std::vector<float> lay_ann[kLayerLines];            // [days + 1] (cum[c] − cum[max(0, c − win)]) × kDaysPerYear / win × 100
+  std::vector<float> lay_ann[kLayerLines];            // [days + 1] ann_log(cum[c] − cum[max(0, c − win)], win) × 100 (复利年化)
   std::vector<float> ls_ann[kLsLines];                // 同上
   float ls_sharpe[kLsLines] = {};                     // 日收益年化 Sharpe
   float ls_turn[kLsLines] = {};                       // 年换手 (倍)

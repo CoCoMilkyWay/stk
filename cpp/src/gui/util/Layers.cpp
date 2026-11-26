@@ -266,7 +266,7 @@ void plot_layers(const LayerDerived &d, bool absolute, int &cursor_day, const Im
         }
         yr = layer_range(d, show);
       }
-      ImPlot::SetupAxes(nullptr, absolute ? "对数年化(%)" : "超额对数年化(%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+      ImPlot::SetupAxes(nullptr, absolute ? "年化(%)" : "超额年化(%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
       ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
       DayAxis day_ax{d.dates, 1.0, 0.0, {}, date_formatter, const_cast<std::vector<misc::Ymd> *>(&d.dates)}; // 日 i 的日界 = 前一日收 x = i
       setup_day_axis(day_ax);
