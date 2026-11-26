@@ -32,16 +32,25 @@ GUI布局:
           摸客户端 / 在线用例另有独立程序 shim (cmd 转发 / 探内存 / 录制 / 用例, 与 app_main 共用适配代码); 行情走新浪 (订阅进 QuoteService 同一路, 不读客户端的), 两融条款缓存落 output/live (live/Terms.hpp; 个股另经本地库核; 与资金流水同形 拉 → 存, 每天自动一次), 调仓名单 output/config/live/lists
           资金流水 + 历史成交 (live/Flows.hpp; 每天自动补一次) ─► output/live/flows.csv · deals.csv ─(PriceLib 按 account/ 回放 × 日脊个股日根 / 分钟根, 日内按成交时刻回推; 当日 × 新浪分钟收)─► Market 自选首行「账户」(时间加权净值, 分钟频; ▸ 展开 = 持仓个股 + 仓位, 同篮子; 账户线叠成交点)
   人定的配置落 output/config/ (一任务一目录); 各段的运行产物 (日志 / 用时 / 导出 / 采样) 落 output/run/ 下的同构位置; output/ 的布局唯一由 disk/Disk.hpp 定
+
+挖因子 (Agent → Mine): 一段会话 = 一个大脑围绕一个因子思路, 一步一个研究工具调用 (看数据 / 查研报 / 回测 / 入库 / 全局记录 / 提问 / 结束); 系统只管循环: 发消息 → 收一个调用 → 执行 → 下一条交回它的结果
+  大脑    内置大模型 (Config 页选后端 Zhipu / Cursor / Devin) 或外部 agent, 同一套循环 / 消息 / 日志 / 存档; 研究上的做法与口径全在系统提示 (output/config/agent/prompt)
+  外部    程序一开即在本机起 MCP (Streamable HTTP, 地址写在 output/run/agent/remote.json); 两种接法各一份对仗的入口 entry/agent_{mcp,cli}.md (接入 / 会话怎么走 / 守的规矩, 各只写自己那条):
+          · MCP: 配成 HTTP MCP 服务器 (例: devin mcp add stk http://127.0.0.1:47821/mcp); 入口 agent_mcp.md = initialize 的 instructions, 对 agent 说 "读 entry/agent_mcp.md, 照它挖因子"
+          · 命令行: py/agent.py (最小 MCP 客户端); 入口 agent_cli.md = python py/agent.py 不带参数打印的, 对 agent 说 "跑 python py/agent.py, 照它挖因子"
+  研究员  Config 页定入库门槛 / 可否 ask_human / 预算 (步数 / 分钟); Mine 页实时看每个调用: 答 ask_human / 插话 (随下一条发出) / Cancel / 右键某一步回退 / 继续
 ```
 
 ```
 stk/
-├── AGENT.md                                            # 🤖 外部 agent 说明书: 接入 (MCP / py/agent.py) / 会话怎么走 (open → doc → 逐个调用) / 接口工具 / 研究员能做的 + 会话的主循环 (做法与口径全在系统提示 doc)
 ├── run.py                                              # 🚀 主入口: 选模式 (TSAN / DEBUG / PROFILE / ASSERT / PRODUCTION) + BUILD / CUDA 开关 → py/build.py (可选) → py/modes.py
+├── entry/                                              # 🤖 外部 agent 挖因子的入口, 两种接法一份一个, 逐节对仗 (接入 / 会话怎么走 / 守的规矩), 各只写自己那条
+│   ├── agent_mcp.md                                    # 🤖 MCP 接法: = initialize 的 instructions (每次现读)
+│   └── agent_cli.md                                    # 🤖 命令行接法: = python py/agent.py 不带参数打印的
 ├── py/                                                 # 🐍 Python 工具链
 │   ├── build.py                                        # 🐍 构建: CMake 配置 + 编译 (BUILD_MODE / GPU_BACKEND)
 │   ├── modes.py                                        # 🐍 运行: 五模式同签名 (tsan / debug / profile / assert / production)
-│   ├── agent.py                                        # 🐍 外部 agent 调研究工具的命令行 = 最小 MCP 客户端 (一个 tools/call → 结果文本; 地址读 output/run/agent/remote.json)
+│   ├── agent.py                                        # 🐍 外部 agent 挖因子的命令行入口 = 最小 MCP 客户端 (不带参数 = 打印入口 entry/agent_cli.md; 一个 tools/call → 结果文本; 地址读 output/run/agent/remote.json)
 │   ├── val_rank.py                                     # 🐍 子池成分的 BP 估值 band 实时排名: 直读 all.bar L_1day (选股同 PoolSelect, 5 年加权分位同 pb_pct5y) × 新浪现价; 分 = 分位 + λ · 最低等值估值线 (全史 PB 0.02 分位 × 后复权 BPS) 近 3 年曲度的负值罚分; 跑一次 → 覆盖调仓名单 output/config/live/lists/<名>.csv
 │   └── app/                                            # 🐍 cpp/ format · lint (clang-format / clangd)
 ├── cpp/
@@ -299,7 +308,7 @@ stk/
 │   │   │   ├── account/
 │   │   │   │   ├── AccountHub.hpp                      # 💹 账户净值中枢 (Live 与 Market 共用; Live 交快照, QuoteHub 经 AccountFeed 取当日与券商现价): 随账本代重放 (拉归 LiveHub 事务道) / 拼账户的持仓 (券商实时持仓优先, 否则回放末日; Market 账户行的成分 / 当日四列) 与当日 (历史 = 价格库的账户侧; 当日 = 持仓 × 新浪分钟收) / 成交点两档 (回放的历史成交 + 券商今日成交, 5 / 30 分钟一档); 三级 Stage: 快照 → (回放, 快照) → (持仓, 新浪当日)
 │   │   │   │   └── AccountSide.hpp                     # 💹 行情的账户一侧: 一日 day_of (持仓 × 分钟收, 按成交时刻回推 → 时间加权指数的逐槽点位 → 一日; 历史回放 (历史成交) / 当日 (今日成交) 同一核) + 账本回放 replay (价格库 worker 上调; 全史 = 紧凑形, 恒带分钟; 另出历史成交点)
-│   │   │   └── task_agent/                             # 🤖 挖因子 (一套会话, 大脑 = 内置大模型或经 MCP 的外部 agent: 左翼大脑 (Chat | Inbox) ↔ 右翼 Lab 问数据核, 两翼同一 Async 形; 说明书见 AGENT.md)
+│   │   │   └── task_agent/                             # 🤖 挖因子 (一套会话, 大脑 = 内置大模型或经 MCP 的外部 agent: 左翼大脑 (Chat | Inbox) ↔ 右翼 Lab 问数据核, 两翼同一 Async 形; 会话与接法见文首 "挖因子")
 │   │   │       ├── Config.hpp                          # 🤖 配置: 后端表 / 超时重试 / 各上限 + 常量占位表 kConsts (提示词模板与工具说明共用) / 入库门槛默认值 / 各目录
 │   │   │       ├── Enum.hpp                            # 🤖 枚举表 (一个枚举一行 AGENT_ROWS): def 取行 / kNum 个数 / kVals 序列 / Per<E,V> 定长表 / IdOf 反查; Named 枚举 JSON 一律写 id
 │   │   │       ├── Text.hpp                            # 🤖 成文公共件: UTF-8 码点 / 检索词过滤 / 数的写法 / 火花线 / Markdown 表格建表器 Table
@@ -313,7 +322,7 @@ stk/
 │   │   │       │                                       #      Sync (Call, Seat) → ToolOut / Pure (Call, Bay) → ToolOut / Lab (Call, Seat) → Prep (先给的产出 + 后台任务, GUI 收尾 Commit (ToolOut, Desk)) / Human (Call, Seat) → 问卷
 │   │   │       │                                       #    · Res 四面: text / gist / title / draw + 账本作用 effect / 作废 abort / 存档 save (要复原的另给 static load, 实现表按结果类型探到); All.hpp = 清单的结果类型列 → As<T>
 │   │   │       │                                       #    · 当场台面 Seat (Kit.hpp, GUI 线程, 可写候选台 Desk 与全局记录) ↔ 后台台面 Bay (Bay.hpp, 只读快照 ViewEnv + 计算流)
-│   │   │       │                                       #    · <类>.hpp 各工具的 Res (Look / Query / Trial / Note / Misc), <类>/<工具>.cpp 计算与原文 (记录四工具同一个 note/Note.cpp); 观察核 look/Kernel.hpp (零分配 RankScratch)
+│   │   │       │                                       #    · <类>.hpp 各工具的 Res (Look / Trial / Query / Doc / Note / Misc), <类>/<工具>.cpp 计算与原文 (记录四工具同一个 note/Note.cpp); 观察核 look/Kernel.hpp (零分配 RankScratch)
 │   │   │       │                                       #    · 观察公共头 LookRes: 日段提示 period + 标题 headline, 原文 text_head ⇄ 展示 draw_head 逐字对仗
 │   │   │       │                                       #    · 工作台随机输入 Feed.hpp: 清单一行一个 Sample<工具>(Feed&) (与工具函数同处), 按本作用域取材
 │   │   │       │                                       #    · eval_factor 原文与展示逐节对仗: 最佳权重具体式 (负号前置) → 频率 · 预测周期 → 权重 (rIC · 中位 rIC · 每期毛多 / 毛空 / 净多空 · 成本 = 单边换手 买 / 卖 × 固定冲击) → 分年 (中位 rIC · 年换手) → 原文末尾累计分层 / 分年 rIC 两张正负柱图;
@@ -465,7 +474,7 @@ stk/
     │   ├── beta/pools.json                             # ⚙️ 子池表: Beta → Style 选定的子池 (池名 = features/Panel/PoolSpec.hpp 规范串; 无文件 = 缺省池表; 文件序 = 池表序, 各页池列表左键 / 中键拖动可调); 写入即进程内重启生效
     │   ├── market/watch.json                           # ⚙️ Market 自选: 篮子键 / 个股代码 (本机; 文件序 = 自选序, 右表自选组拖动可调)
     │   ├── market/ui.json                              # ⚙️ Market NAV / FLOW 选中的行 (行 id) + 所属组合 (本机; 改了即存, 重开读回)
-    │   ├── agent/                                      # ⚙️ Agent: prompt/<名>.md 提示词模板 (system / first / round / retry / test) · families.md 特征族卡
+    │   ├── agent/                                      # ⚙️ Agent: prompt/<名>.md 提示词模板 (system / first / result / test / retry) · families.md 特征族卡
     │   │                                               #    · keys.json 后端 key · ui.json Mine / Config 页选项 (本机)
     │   └── live/                                       # ⚙️ Live: lists/<名>.csv 调仓名单 (名 = 字母数字下划线; 每行首列一个 6 位代码, 行序即排名)
     │                                                   #    · ui.json 页面选项 (隐私) · .sudo_pass 放开 ptrace 读客户端内存用的 sudo 密码 (本机)

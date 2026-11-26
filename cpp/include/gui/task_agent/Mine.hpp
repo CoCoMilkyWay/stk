@@ -104,6 +104,8 @@ private:
   void drop(std::string why, llm::Reply r = {});
   void mark(Beat k, std::string line, std::string md);
   void pause(std::string why);
+  void halt(std::string why);
+  void take(Leg l);
 
   void heard(Chat::Tick t);
   Seat seat_of();

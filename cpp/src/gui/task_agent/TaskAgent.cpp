@@ -78,42 +78,18 @@ void poll_sniff(Ui &s) {
 }
 
 // ---- 选项落盘 (output/config/agent/ui.json) ----
-bool ui_json_valid(const nlohmann::json &j) {
-  if (!j.is_object() || !j.contains("sc") || !j["sc"].is_object() || !j.contains("gate") || !j["gate"].is_object() || !j.contains("budget") ||
-      !j["budget"].is_object())
-    return false;
-  const auto &sc = j["sc"], &gt = j["gate"], &bg = j["budget"];
-  const bool scope_ok = sc.contains("pool") && sc["pool"].is_string() && sc.contains("level") && sc["level"].is_number_integer() && sc.contains("hold") &&
-                        sc["hold"].is_number_integer() && sc.contains("lob") && sc["lob"].is_boolean() && sc.contains("years") && sc["years"].is_number_integer() &&
-                        sc.contains("leaves") && sc["leaves"].is_object() && sc.contains("ops") && sc["ops"].is_object();
-  return scope_ok && gt.contains("ric") && gt["ric"].is_number() && bg.contains("steps") && bg["steps"].is_number_integer() && bg.contains("minutes") &&
-         bg["minutes"].is_number_integer() && j.contains("backend") &&
-         j["backend"].is_number_integer() && j.contains("model") && j["model"].is_string() && j.contains("via_proxy") && j["via_proxy"].is_array() &&
-         j["via_proxy"].size() == kBackendN && j.contains("proxy_host") && j["proxy_host"].is_string() && j.contains("proxy_port") &&
-         j["proxy_port"].is_number_integer() && j.contains("gpu") && j["gpu"].is_number_integer() && j.contains("ask") && j["ask"].is_boolean() &&
-         j.contains("prompt") && j["prompt"].is_number_integer();
-}
+// 无文件 = 默认值; 有文件即按字段清单读回 (形状或值域不合即终止, 删文件恢复默认)
 void load_ui(Ui &s) {
-  bool ok = false;
-  if (disk::exists(disk::AgentUiFile)) {
-    const nlohmann::json j = nlohmann::json::parse(disk::read(disk::AgentUiFile), nullptr, false);
-    if (ui_json_valid(j)) {
-      j.get_to(s.opt);
-      s.opt.prompt = std::clamp(s.opt.prompt, 0, static_cast<int>(kNum<Msg>) - 1);
-      ok = true;
-    }
-  }
+  const bool saved = disk::exists(disk::AgentUiFile);
+  if (saved)
+    nlohmann::json::parse(disk::read(disk::AgentUiFile)).get_to(s.opt);
   const Options &o = s.opt;
-  ok = ok && o.backend >= 0 && o.backend < kBackendN && o.proxy_port > 0 && o.proxy_port < 65536 && o.gpu >= -1 && o.gpu <= 1 &&
-       o.prompt >= 0 && o.prompt < static_cast<int>(kNum<Msg>) && o.sc.years >= 1 && o.budget.steps >= 0 && o.budget.minutes >= 0;
-  if (!ok)
-    s.opt = Options{};
+  assert(o.backend >= 0 && o.backend < kBackendN && o.proxy_port > 0 && o.proxy_port < 65536 && o.gpu >= -1 && o.gpu <= 1 && o.prompt >= 0 &&
+         o.prompt < static_cast<int>(kNum<Msg>) && o.sc.years >= 1 && o.budget.steps >= 0 && o.budget.minutes >= 0 && "ui.json 的值越界");
   if (!catalog::gpu())
     s.opt.gpu = 0;
-  if (ok)
+  if (saved)
     s.opt_saved = s.opt;
-  else
-    s.opt_saved.reset();
 }
 void save_ui(Ui &s) {
   if (s.opt_saved && *s.opt_saved == s.opt)
@@ -122,7 +98,7 @@ void save_ui(Ui &s) {
   s.opt_saved = s.opt;
 }
 
-// 首帧 (Update 或 Draw 先到者): 建会话台与外部 agent 接口 (即监听), 读选项, 各后端嗅探模型
+// 首帧 Update (帧首全部任务先 Update 再 Draw): 建会话台与外部 agent 接口 (即监听), 读选项, 各后端嗅探模型
 void ensure(Ui &s) {
   if (s.mine)
     return;
@@ -200,8 +176,7 @@ TaskHandle CreateAgentTask() {
   handle.Draw = [state](SharedData &data, int idx) {
     assert(idx >= 0 && idx < TAB_COUNT);
     Ui &s = *state;
-    ensure(s);
-    catalog::fit(data, s.opt.sc);
+    assert(s.mine && "帧首 Update 已建");
     ImGui::BeginChild("AgentTab", ImVec2(0, 0), false);
     ImGui::Spacing();
     switch (idx) {

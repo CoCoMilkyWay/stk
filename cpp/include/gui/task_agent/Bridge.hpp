@@ -82,10 +82,9 @@ struct Leaf {
   std::string tf, tf_def;
   std::string family;
   Src src = Src::Bar;
-  std::string kin, hay; // 同组键 (LeafKin + "|" + tf) / 小写检索串
+  std::string kin, hay; // 同组键 (计量词换成 * 的叶名 + "|" + tf) / 小写检索串
 };
 std::pair<std::string, std::vector<std::string>> LeafWords(const std::string &code);
-std::string LeafKin(const std::string &code);
 std::string LeafCol(const std::string &code);                                          // 叶名去掉 档.层. 的列名
 std::vector<std::vector<const Leaf *>> KinGroups(const std::vector<const Leaf *> &ls); // 按同组键分组 (组序 = 首见序)
 std::string KinName(const std::vector<const Leaf *> &g);                               // 一组叶写成花括号式 (不成积的逐个列)

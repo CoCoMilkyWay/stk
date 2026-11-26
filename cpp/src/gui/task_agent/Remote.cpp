@@ -36,10 +36,6 @@ using json = nlohmann::ordered_json;
 using Clock = std::chrono::steady_clock;
 
 constexpr std::string_view kProtocols[] = {"2025-06-18", "2025-03-26", "2024-11-05"}; // 认的 MCP 版本 (首个 = 客户端要的不认时给的)
-constexpr const char *kInstructions =
-    "A 股量化因子挖掘系统的研究工具: 你当挖掘会话的大脑 (说明书 = 仓库 AGENT.md). 先 open 开会话 (用户交代的要求原话写进 remark) 拿首条消息, 再 doc 读系统提示; "
-    "此后每个研究工具调用用 run 交 ({\"tool\": ..., \"args\": {...}}), 交回的就是下一条消息 (常规为本条增量; 接上历史会话或研究员回退后自动给完整上下文), 超时未做完调无参 run 续等; 接上已有外部会话也用无参 run; 挖完 finish. "
-    "规矩 (同内置模型): 只经 open / doc / run 取信息与行动 (不读仓库与 output, 不上网); 不并行调 run; 一直循环到 finish、ask_human 或会话停下 (ask_human / 停下时等研究员在 GUI 处理后再调无参 run 接着做).";
 
 // 一个接口请求: 工具 (open / doc / run) + 参数; 答复由 GUI 线程给, 网络线程写出
 struct Reply {
@@ -79,9 +75,10 @@ struct ApiDef {
 };
 constexpr ApiDef kApis[] = {
     {"open",
-     "开新挖掘会话, 你当大脑 (同研究员在 GUI 里按 New: 有会话在跑则退回, 停着的已存盘会话换下): "
+     "挖因子的入口, 先调它: 开新挖掘会话, 你当大脑 (同研究员在 GUI 里按 New: 有会话在跑则退回, 停着的已存盘会话换下). "
      "作用域可给 pool / level / hold / years / lob (不给 = 研究员在 GUI 里选的), remark = 用户交代的本会话要求 (原话), test = 自检会话; "
-     "门槛 / 提问 / 预算取研究员在 Config 页定的. 交回首条消息; 系统提示用 doc 取. 接上已有外部会话用无参 run",
+     "门槛 / 提问 / 预算取研究员在 Config 页定的. 交回首条消息; 接着 doc 读系统提示, 此后照每条消息的下一步用 run 逐个交调用, 直到 finish 或会话停下. "
+     "只经 open / doc / run 取信息与行动, 不读仓库源码与 output/ 下的数据. 接上已有外部会话用无参 run",
      kOpenArgs},
     {"doc", "本会话的系统提示: 角色与做法 / 评估口径 / 判优 / 研究循环 / 调用协议 / 研究工具表 (参数逐个) / 开放的特征叶 (按族) 与算子. open 后先读", {}},
     {"run",
@@ -98,6 +95,7 @@ json tools_list() {
   return {{"tools", std::move(ts)}};
 }
 
+// instructions = 入口 entry/agent_mcp.md 原文 (每次现读: 改了即生效)
 json initialize(const json &p) {
   const std::string want = p.is_object() && p.contains("protocolVersion") && p["protocolVersion"].is_string() ? p["protocolVersion"].get<std::string>() : std::string();
   json caps = json::object();
@@ -105,7 +103,7 @@ json initialize(const json &p) {
   return {{"protocolVersion", std::ranges::contains(kProtocols, std::string_view(want)) ? want : std::string(kProtocols[0])},
           {"capabilities", std::move(caps)},
           {"serverInfo", {{"name", "stk-agent"}, {"version", "1"}}},
-          {"instructions", kInstructions}};
+          {"instructions", disk::read(disk::EntryAgentMcp, {})}};
 }
 
 // 本机的 Origin (scheme://host[:port]): 127.0.0.1 / localhost / [::1]
@@ -378,9 +376,7 @@ struct Remote::Impl {
       s.sc.lob = x["lob"].get<bool>();
     s.test = x["test"].get<bool>();
     s.remark = std::string(text::trim(x["remark"].get_ref<const std::string &>()));
-    Mine::Leg l = leg;
-    l.llm = {};
-    if (std::string err = m.try_open(data, std::move(s), std::move(l)); !err.empty())
+    if (std::string err = m.try_open(data, std::move(s), leg); !err.empty())
       return fail(std::move(err));
     answer(state(m));
   }

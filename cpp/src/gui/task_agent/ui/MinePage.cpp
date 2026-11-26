@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <optional>
 #include <set>
@@ -240,7 +241,8 @@ void session_row(const SharedData &data, Ui &s, const Scope &active_sc) {
 }
 
 // ---- 工具用量条: 按类拼接, 类内一工具一段 (色 = 工具色, 与时间线同), 段宽 = 次数占比; 类段够宽写类名与占比, 悬浮看各类各工具的次数 / 占比 / 失败数 (表格) ----
-constexpr Per<Cat, ImVec4> kCatCols{{{{0.35f, 0.78f, 0.45f, 1.0f}, {0.95f, 0.62f, 0.25f, 1.0f}, {0.38f, 0.62f, 0.95f, 1.0f}, {0.72f, 0.52f, 0.92f, 1.0f}, {0.58f, 0.58f, 0.58f, 1.0f}}}};
+constexpr Per<Cat, ImVec4> kCatCols{
+    {{{0.35f, 0.78f, 0.45f, 1.0f}, {0.95f, 0.62f, 0.25f, 1.0f}, {0.38f, 0.62f, 0.95f, 1.0f}, {0.30f, 0.80f, 0.80f, 1.0f}, {0.72f, 0.52f, 0.92f, 1.0f}, {0.58f, 0.58f, 0.58f, 1.0f}}}};
 
 // 工具色: 类色的色相左右摆、明度三档相间 (按工具在类内的序, 恒定)
 ImVec4 tool_col(Tool t) {
@@ -407,7 +409,7 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
                       all.staged(), all.adopted);
   tip_long("用时 " + dur(t) + " (LLM " + dur(all.llm_s) + " · 执行 " + dur(all.act_s) + ")\ntoken 输入 " + kilo(all.usage.prompt) + " (缓存 " + kilo(all.usage.cached) + ") / 输出 " +
            kilo(all.usage.completion) + "\n" + std::to_string(m.timeline.size()) + " 步 · 调用 " + std::to_string(all.all()) + " (观察 " + std::to_string(all.n(Cat::Look)) +
-           " · 查研报 " + std::to_string(all.docs()) + " · 没做成 " + std::to_string(all.failed()) + ")\n候选 " + std::to_string(all.staged()) + " (有参数组 " +
+           " · 查研报 " + std::to_string(all.n(Cat::Doc)) + " · 没做成 " + std::to_string(all.failed()) + ")\n候选 " + std::to_string(all.staged()) + " (有参数组 " +
            std::to_string(all.n(Verdict::Weights)) + ") · 提交 " + std::to_string(all.n(Tool::SubmitFactor)) + " · 入库 " + std::to_string(all.adopted) +
            (m.memo.empty() ? "" : "\n插话已排队, 随下一条发出"));
   tools_bar(all);
@@ -461,7 +463,16 @@ constexpr ImVec4 kColThink(0.72f, 0.6f, 0.9f, 0.85f), kColRun(0.5f, 0.7f, 0.95f,
 // 流程条目的色 (工具条目用工具色; 待发 / 等回复用状态色)
 constexpr ImVec4 kColStart(0.95f, 0.55f, 0.75f, 1.0f), kColMemo(0.95f, 0.85f, 0.35f, 1.0f), kColRetry(0.95f, 0.35f, 0.35f, 1.0f), kColBeat(0.9f, 0.9f, 0.9f, 1.0f),
     kColDrop(0.85f, 0.45f, 0.45f, 1.0f);
-constexpr std::pair<const char *, const char *> kLanes[] = {{"start", "开场"}, {"memo", "插话"}, {"retry", "不合协议"}, {"send", "待发"}, {"reply", "等回复"}};
+enum class Lane : uint8_t { Start,
+                            Memo,
+                            Retry,
+                            Send,
+                            Reply };
+struct LaneDef {
+  const char *id, *cn;
+};
+constexpr LaneDef kLanes[] = {{"start", "开场"}, {"memo", "插话"}, {"retry", "不合协议"}, {"send", "待发"}, {"reply", "等回复"}};
+AGENT_ROWS(Lane, kLanes, Reply);
 
 // 标题的列宽 (英文名 / 中文名 / 两段用时 各取最宽的, 各条对齐)
 struct Cols {
@@ -474,8 +485,8 @@ Cols cols_of() {
     fit(c.id, def(t).id), fit(c.cn, def(t).cn);
   for (const Beat b : kVals<Beat>)
     fit(c.id, def(b).id), fit(c.cn, def(b).cn);
-  for (const auto &[id, cn] : kLanes)
-    fit(c.id, id), fit(c.cn, cn);
+  for (const Lane l : kVals<Lane>)
+    fit(c.id, def(l).id), fit(c.cn, def(l).cn);
   fit(c.took, "00m00s");
   return c;
 }
@@ -675,7 +686,7 @@ bool call_entry(Ui &s, Mine &m, const Cols &c, const Names &adopted, size_t i) {
 // 第 i 步的回复不合协议: 展示 = 不合之处; prompt = 原回复与交回的重交要求
 void retry_entry(Ui &s, const Mine &m, const Cols &c, size_t i) {
   const Step &sp = m.timeline[i];
-  const Head h{kColRetry, kLanes[2].first, kLanes[2].second, dur(sp.span.len(m.now())), "", first_line(sp.error), color(TaskStatus::Kind::Error), sp.error};
+  const Head h{kColRetry, def(Lane::Retry).id, def(Lane::Retry).cn, dur(sp.span.len(m.now())), "", first_line(sp.error), color(TaskStatus::Kind::Error), sp.error};
   entry(s, m, c, h, static_cast<int>(i) + 1, i + 1 == m.timeline.size(), [&] { wrapped(color(TaskStatus::Kind::Error), sp.error); }, [&] { exchange(s, m, i); });
 }
 
@@ -685,12 +696,12 @@ void wait_entry(Ui &s, const Mine &m, const Cols &c, const Flow &f, size_t i) {
   const llm::Reply &live = s.chat_live.reply;
   const std::string sent = TextOf(sp), kind = def(KindOf(m.timeline, i)).cn;
   if (!sp.span.began()) {
-    const Head h{color(TaskStatus::Kind::Warn), kLanes[3].first, kLanes[3].second, "", "", kind + " · " + chars(sent) + (m.live() ? "" : " · 按 继续 发出"),
+    const Head h{color(TaskStatus::Kind::Warn), def(Lane::Send).id, def(Lane::Send).cn, "", "", kind + " · " + chars(sent) + (m.live() ? "" : " · 按 继续 发出"),
                  color(TaskStatus::Kind::Warn), ""};
     entry(s, m, c, h, static_cast<int>(i) + 1, true, [&] { wrapped_dim("这条消息还没发给 agent (" + kind + "); 原文见 prompt"); }, [&] { raw_part("send", "待发的 prompt", sent); });
     return;
   }
-  const Head h{color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), kLanes[4].first, kLanes[4].second, dur(f.since), "",
+  const Head h{color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), def(Lane::Reply).id, def(Lane::Reply).cn, dur(f.since), "",
                doing(f) + (f.topic.empty() ? "" : " · " + f.topic), color(f.stalled() ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy), ""};
   const auto stream = [&] {
     if (!live.thinking.empty())
@@ -718,7 +729,7 @@ void start_entry(Ui &s, const Mine &m, const Cols &c) {
   const Mine::Setup &st = m.setup;
   assert(m.system && "开会话即有系统提示");
   const std::string scope = std::string(st.test ? "自检 · " : "") + catalog::label(st.sc) + " · 近 " + std::to_string(st.sc.years) + " 年 · " + m.brain();
-  const Head h{kColStart, kLanes[0].first, kLanes[0].second, "", "", scope + (st.remark.empty() ? "" : " · 要求: " + text::flat(st.remark)), color(TaskStatus::Kind::None),
+  const Head h{kColStart, def(Lane::Start).id, def(Lane::Start).cn, "", "", scope + (st.remark.empty() ? "" : " · 要求: " + text::flat(st.remark)), color(TaskStatus::Kind::None),
                st.remark};
   entry(
       s, m, c, h, 1, false,
@@ -737,7 +748,7 @@ void start_entry(Ui &s, const Mine &m, const Cols &c) {
 // 研究员插话: 随第 i 条消息发出
 void memo_entry(Ui &s, const Mine &m, const Cols &c, size_t i) {
   const std::string &memo = m.timeline[i].memo;
-  const Head h{kColMemo, kLanes[1].first, kLanes[1].second, "", "", text::flat(memo), color(TaskStatus::Kind::None), memo};
+  const Head h{kColMemo, def(Lane::Memo).id, def(Lane::Memo).cn, "", "", text::flat(memo), color(TaskStatus::Kind::None), memo};
   entry(s, m, c, h, static_cast<int>(i) + 1, false, [&] { wrapped(memo); }, [&] { raw_part("memo", "附在消息末尾", MemoText(memo)); });
 }
 
@@ -756,7 +767,7 @@ void summary_block(const Mine &m) {
   });
   wrapped(color(TaskStatus::Kind::Ready), m.reason + " · +" + dur(m.now()));
   wrapped_dim("按 继续 = " + m.hint() + "; 右键某一条的标题可回退到那一步; 关闭 = 放下这段 (已存盘, 可再载入)");
-  ImGui::TextDisabled("%zu 步 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.all(), c.n(Cat::Look), c.docs(), c.staged(), c.n(Verdict::Weights),
+  ImGui::TextDisabled("%zu 步 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.all(), c.n(Cat::Look), c.n(Cat::Doc), c.staged(), c.n(Verdict::Weights),
                       c.n(Tool::SubmitFactor), c.adopted);
   const auto row = [&](size_t i) {
     const Result &r = *hits[i];

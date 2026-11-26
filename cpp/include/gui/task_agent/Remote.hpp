@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Remote — 外部 agent 的 MCP 接口: 外部 agent 当会话 (Mine) 的大脑 (说明书 = 仓库 AGENT.md)
+// Remote — 外部 agent 的 MCP 接口: 外部 agent 当会话 (Mine) 的大脑 (入口 = entry/agent_mcp.md, initialize 的 instructions 即它原文; 命令行 py/agent.py 是同一接口的另一接法, 入口 entry/agent_cli.md)
 // =============================================================================
 //   传输  MCP Streamable HTTP 的最小子集: 本机 kRemoteHost:kRemotePort kRemotePath 收 POST 的 JSON-RPC 2.0 (一条一个请求, 回 application/json;
 //         不开 SSE 流, GET 回 405); 通知与应答 (没有 id / 没有 method) 回 202; Origin 不是本机的回 403 (防 DNS 重绑)

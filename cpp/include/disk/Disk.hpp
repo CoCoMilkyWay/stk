@@ -9,7 +9,7 @@
 #include <vector>
 
 // ============================================================================
-// 落盘 — 仓库下 output/ 的唯一布局 + 唯一路径入口
+// 落盘 — 仓库下 output/ 的唯一布局 + 唯一路径入口 (另收仓库内程序要读的 entry/: 外部 agent 的入口, 不归 sweep)
 //
 // 两张表: 段表 DISK_SEGS (一行一种段) × 布局表 DISK_LAYOUT (一行一节点); 盘上只许出现表里的节点.
 //   节点名 = 前缀 + 段 + 后缀. 段 = 键 Key 的一个字段 × 写法 × 值域; 键沿父链累积, 子节点可依赖祖先已定的字段.
@@ -87,6 +87,9 @@ enum class Seg : std::uint8_t {
 #define DISK_LAYOUT(X)                                                                                   \
   /* 节点               父                 类      段         前缀 / 字面          后缀        基石 */        \
   X(Root,              Root,              Dir,    Lit,       "",                  "",         false)       \
+  /* ======== entry/ (仓库内, 外部 agent 的入口) ======== */                                                 \
+  X(Entry,             Root,              Dir,    Lit,       "entry",             "",         false)       \
+  X(EntryAgentMcp,     Entry,             File,   Lit,       "agent_mcp.md",      "",         false)       \
   /* ======== output/ ======== */                                                                        \
   X(Output,            Root,              Dir,    Lit,       "output",            "",         false)       \
   X(OutputIgnore,      Output,            File,   Lit,       ".gitignore",        "",         false)       \

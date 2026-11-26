@@ -1,5 +1,5 @@
 // search_docs 的展示: 命中概况 + 阶段 → 流派树 + 机构 / 年份 / 价值 + 研报表 (结论与片段)
-#include "gui/task_agent/tools/Query.hpp"
+#include "gui/task_agent/tools/Doc.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
 namespace GUI::Agent {

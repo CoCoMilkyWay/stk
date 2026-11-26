@@ -427,7 +427,7 @@ set(MATH_PRECISE
     gui/task_tools/TaskTools.cpp
     gui/task_tools/ui/TabLatex.cpp
     gui/util/Latex.cpp
-    # gui: task_agent 的 Bridge / tools/look / tools/trial = 因子契约头与观察统计的消费者; Docs / tools/query = 研报统计 (原文没给 = NaN);
+    # gui: task_agent 的 Bridge / tools/look / tools/trial = 因子契约头与观察统计的消费者; Docs / tools/doc = 研报统计 (原文没给 = NaN);
     #      ui = 统计结果的展示 (NaN = 缺); 其余 = nlohmann 消费者 (请求 / 回复 / 落盘 JSON, isfinite)
     gui/task_agent/Bridge.cpp
     gui/task_agent/Docs.cpp
@@ -441,6 +441,9 @@ set(MATH_PRECISE
     gui/task_agent/Tools.cpp
     gui/task_agent/tools/Feed.cpp
     gui/task_agent/tools/Kit.cpp
+    gui/task_agent/tools/doc/ReadDoc.cpp
+    gui/task_agent/tools/doc/SearchDocs.cpp
+    gui/task_agent/tools/doc/SearchFactors.cpp
     gui/task_agent/tools/look/ViewBook.cpp
     gui/task_agent/tools/look/ViewExplain.cpp
     gui/task_agent/tools/look/ViewFeature.cpp
@@ -457,9 +460,6 @@ set(MATH_PRECISE
     gui/task_agent/tools/query/ListLibrary.cpp
     gui/task_agent/tools/query/ListNotes.cpp
     gui/task_agent/tools/query/ListTried.cpp
-    gui/task_agent/tools/query/ReadDoc.cpp
-    gui/task_agent/tools/query/SearchDocs.cpp
-    gui/task_agent/tools/query/SearchFactors.cpp
     gui/task_agent/tools/query/SearchLeaves.cpp
     gui/task_agent/tools/trial/EvalFactor.cpp
     gui/task_agent/tools/trial/SubmitFactor.cpp
@@ -467,6 +467,9 @@ set(MATH_PRECISE
     gui/task_agent/ui/ConfigPage.cpp
     gui/task_agent/ui/MinePage.cpp
     gui/task_agent/ui/Widgets.cpp
+    gui/task_agent/ui/doc/ReadDoc.cpp
+    gui/task_agent/ui/doc/SearchDocs.cpp
+    gui/task_agent/ui/doc/SearchFactors.cpp
     gui/task_agent/ui/look/ViewBook.cpp
     gui/task_agent/ui/look/ViewExplain.cpp
     gui/task_agent/ui/look/ViewFeature.cpp
@@ -483,9 +486,6 @@ set(MATH_PRECISE
     gui/task_agent/ui/query/ListLibrary.cpp
     gui/task_agent/ui/query/ListNotes.cpp
     gui/task_agent/ui/query/ListTried.cpp
-    gui/task_agent/ui/query/ReadDoc.cpp
-    gui/task_agent/ui/query/SearchDocs.cpp
-    gui/task_agent/ui/query/SearchFactors.cpp
     gui/task_agent/ui/query/SearchLeaves.cpp
     gui/task_agent/ui/trial/EvalFactor.cpp
     gui/task_agent/ui/trial/SubmitFactor.cpp

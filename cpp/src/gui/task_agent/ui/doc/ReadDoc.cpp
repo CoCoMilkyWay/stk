@@ -1,5 +1,5 @@
 // read_doc 的展示: 标注卡 (阶段 / 结论 / 引用 / 全部因子) · 目录表 · 原文一段
-#include "gui/task_agent/tools/Query.hpp"
+#include "gui/task_agent/tools/Doc.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
 namespace GUI::Agent {

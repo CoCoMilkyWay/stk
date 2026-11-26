@@ -35,7 +35,7 @@ inline constexpr BackendDef kBackends[] = {
 };
 inline constexpr const char *kZhipuChat = "/api/paas/v4/chat/completions";
 inline constexpr const char *kZhipuEffort = "high"; // reasoning_effort
-inline constexpr const char *kDevinExe = "devin";   // 按 PATH 找; 工作区 = 系统临时目录下的 stk-devin (仓库外, 免读进仓库的 AGENT.md 等项目规则)
+inline constexpr const char *kDevinExe = "devin";   // 按 PATH 找; 工作区 = 系统临时目录下的 stk-devin (仓库外: 只经研究工具见到系统, 不读仓库)
 
 inline constexpr const char *kProxyHost = "127.0.0.1";
 inline constexpr int kProxyPort = 10808;
@@ -55,7 +55,7 @@ inline constexpr int kStockRows = 40;  // view_stock_day 逐行时段一次至�
 inline constexpr int kBookMins = 30;   // view_book 一次重放的窗口至多几分钟 (交易时段内)
 inline constexpr int kBookRows = 30;   // view_book 逐时表至多几行 (每行 step 秒; 表要与事件 / 剖面一起装进 kOutChars)
 inline constexpr int kMaxRetries = 5;  // 连续这么多步不合协议即停下, 等研究员 (多半是模型或提示词出了问题; 提示词 {{max_retries}})
-// 上下文折叠 (gui/task_agent/Prompt.hpp FoldOf): 原样留着的近处超 kCtxChars 字, 即把更早的结果整块折成结论; 折叠点按 kFoldSteps 步一跳 (其间前缀不变, 命中平台缓存)
+// 上下文折叠 (gui/task_agent/Prompt.hpp TurnsOf): 原样留着的近处超 kCtxChars 字, 即把更早的结果整块折成结论; 折叠点按 kFoldSteps 步一跳 (其间前缀不变, 命中平台缓存)
 inline constexpr int kCtxChars = 60000;
 inline constexpr int kFoldSteps = 10;
 

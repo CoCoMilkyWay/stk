@@ -1,4 +1,4 @@
-// search_docs — 查研报: 输入 query / scope / stage / approach / asset / freq / genre / n → DocsRes (分面 + 研报行) → 原文; 展示见 ui/query/SearchDocs.cpp
+// search_docs — 查研报: 输入 query / scope / stage / approach / asset / freq / genre / n → DocsRes (分面 + 研报行) → 原文; 展示见 ui/doc/SearchDocs.cpp
 #include "gui/task_agent/Docs.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Bay.hpp"

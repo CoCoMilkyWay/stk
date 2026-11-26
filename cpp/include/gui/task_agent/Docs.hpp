@@ -7,11 +7,11 @@
 //     resources-tag/report/<机构>/<系列>/<id>.json        标注索引, 首次调用加载一次
 //     resources-tag/tag_stat.md                          阶段 → 流派分面树骨架
 //     resources-proc/report/<机构>/<系列>/<id>/report.md  全文 (去图片行); 按篇懒加载并缓存, 全文检索逐篇看取消旗
-//   三个工具各一个后台入口 (tools/query/<工具>.cpp, 声明见 tools/Query.hpp)
+//   三个工具各一个后台入口 (tools/doc/<工具>.cpp, 声明见 tools/Doc.hpp)
 // =============================================================================
 
 #include "gui/task_agent/Tools.hpp"
-#include "gui/task_agent/tools/Query.hpp"
+#include "gui/task_agent/tools/Doc.hpp"
 #include "nlohmann/json.hpp"
 
 #include <array>

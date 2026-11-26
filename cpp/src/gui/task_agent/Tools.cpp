@@ -258,16 +258,6 @@ constexpr bool docs_in_order() {
 }
 static_assert(docs_in_order(), "kDocs 下标 = Tool");
 
-std::string def_literal(const ArgVal &v) {
-  if (const auto *s = std::get_if<sv>(&v))
-    return "\"" + std::string(*s) + "\"";
-  if (const auto *n = std::get_if<int>(&v))
-    return std::to_string(*n);
-  if (const auto *b = std::get_if<bool>(&v))
-    return *b ? "true" : "false";
-  return "[]";
-}
-
 bool object_of(std::string_view text, json &j, std::string &error) {
   const size_t a = text.find('{'), b = text.rfind('}');
   if (a == std::string_view::npos || b == std::string_view::npos || b < a) {
@@ -395,19 +385,7 @@ std::string brief(const json &v) {
                                               : "[" + joined(v) + "]";
 }
 
-} // namespace
-
-const ToolDoc &doc(Tool t) { return kDocs[static_cast<size_t>(t)]; }
-
-std::string ToolText(const char *s) {
-  return text::fill(s, [](std::string_view key) {
-    const ConstDef *c = const_of(key);
-    assert(c && "工具说明的占位须是常量 (Config kConsts)");
-    return std::to_string(c->value);
-  });
-}
-
-std::string ArgType(const ArgDef &a) {
+std::string arg_type(const ArgDef &a) {
   switch (a.type) {
   case Arg::Str:
     return !a.choices.empty() ? "取 " + text::join(a.choices, "|") : "字符串";
@@ -426,13 +404,7 @@ std::string ArgType(const ArgDef &a) {
   return {};
 }
 
-std::string ArgText(const ArgDef &a) {
-  return "`" + std::string(a.key) + "` (" + ArgType(a) + (a.required() ? std::string(", 必填") : a.unset() ? std::string(", 可不给")
-                                                                                                           : ", 缺省 " + def_literal(a.def)) +
-         "): " + ToolText(a.desc);
-}
-
-json DefaultJson(const ArgDef &a) {
+json default_json(const ArgDef &a) {
   assert(!a.required() && !a.unset());
   if (const auto *s = std::get_if<sv>(&a.def))
     return json(*s);
@@ -443,9 +415,33 @@ json DefaultJson(const ArgDef &a) {
   return json::array();
 }
 
+bool is_default(const ArgDef &a, const json &v) {
+  if (a.required() || a.unset())
+    return false;
+  return v == default_json(a);
+}
+
+} // namespace
+
+const ToolDoc &doc(Tool t) { return kDocs[static_cast<size_t>(t)]; }
+
+std::string ToolText(const char *s) {
+  return text::fill(s, [](std::string_view key) {
+    const ConstDef *c = const_of(key);
+    assert(c && "工具说明的占位须是常量 (Config kConsts)");
+    return std::to_string(c->value);
+  });
+}
+
+std::string ArgText(const ArgDef &a) {
+  return "`" + std::string(a.key) + "` (" + arg_type(a) + (a.required() ? std::string(", 必填") : a.unset() ? std::string(", 可不给")
+                                                                                                            : ", 缺省 " + default_json(a).dump()) +
+         "): " + ToolText(a.desc);
+}
+
 json SeedJson(const ArgDef &a) {
   if (!a.required() && !a.unset())
-    return DefaultJson(a);
+    return default_json(a);
   switch (a.type) {
   case Arg::Str:
     return json(a.choices.empty() ? sv{} : a.choices.front());
@@ -460,12 +456,6 @@ json SeedJson(const ArgDef &a) {
     break;
   }
   return json::array();
-}
-
-bool IsDefault(const ArgDef &a, const json &v) {
-  if (a.required() || a.unset())
-    return false;
-  return v == DefaultJson(a);
 }
 
 std::string FieldsText(Tool t, const json &args, std::initializer_list<std::string_view> skip, std::string_view bullet) {
@@ -493,7 +483,7 @@ std::string Call::text(size_t cap) const {
     if (a.type == Arg::Questions) {
       s += (first ? "" : ", ") + std::to_string(v.size()) + " 个问题";
     } else {
-      if (IsDefault(a, v))
+      if (is_default(a, v))
         continue;
       s += (first ? "" : ", ") + std::string(a.key) + "=" + (cap ? text::head(brief(v), cap) : brief(v));
     }
@@ -514,7 +504,7 @@ bool ArgsOf(ArgDefs spec, std::string_view owner, const json &args, const std::s
       if (a.required())
         errs.push_back("缺参数 " + ap);
       else if (!a.unset())
-        out[a.key] = DefaultJson(a);
+        out[a.key] = default_json(a);
     } else if (std::string why; !check(a, args[a.key], ap, why)) {
       errs.push_back(std::move(why));
     } else {
@@ -562,7 +552,7 @@ json SchemaOf(ArgDefs spec) {
     if (a.required())
       req.push_back(a.key);
     else if (!a.unset())
-      p["default"] = DefaultJson(a);
+      p["default"] = default_json(a);
     props[a.key] = std::move(p);
   }
   json s = {{"type", "object"}, {"properties", std::move(props)}};
@@ -597,8 +587,6 @@ CallCheck ParseCall(std::string_view reply, bool ask) {
     out.error = text::join(errs, "\n");
   return out;
 }
-
-std::string CallJson(const Call &c) { return json{{"tool", def(c.tool).id}, {"args", c.args}}.dump(); }
 
 std::string ToolsDoc(bool ask) {
   std::string s;

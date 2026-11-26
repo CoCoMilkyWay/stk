@@ -1,16 +1,7 @@
-"""外部 agent 调项目研究工具的命令行: 最小的 MCP 客户端 (说明书见仓库 AGENT.md)
+"""挖因子的命令行入口: python py/agent.py [<工具> [参数]]
 
-用法: python py/agent.py <工具> [参数]
-  工具 = open / doc / run (研究工具经 run 的 tool / args 交, 一次一个); list = 列工具
-  参数 = JSON 对象 (缺省 {}) / @文件 (读该文件的 JSON) / - (读标准输入)
-例:
-  python py/agent.py open '{"remark": "用户交代的要求原话"}'
-  python py/agent.py doc
-  python py/agent.py run '{"tool": "list_tried", "args": {}}'
-  python py/agent.py run
-
-一次调用 = 一个 JSON-RPC tools/call (MCP Streamable HTTP, POST) → 打印结果文本. 退出码 0 = 做成 / 1 = 工具报错 (原文写原因).
-地址读 output/run/agent/remote.json (程序一开即写, 退出即删); 别的 MCP 客户端直接连这个地址.
+不带参数 = 打印入口说明 entry/agent_cli.md (外部 agent 照它走; 用法与例子全在那里)
+带工具 = 一个 JSON-RPC tools/call (系统的 MCP 接口, 地址读 output/run/agent/remote.json) → 打印结果原文; 退出码 1 = 工具报错
 """
 
 import json
@@ -18,9 +9,9 @@ import sys
 import urllib.request
 from pathlib import Path
 
-ENDPOINT = (
-    Path(__file__).resolve().parent.parent / "output" / "run" / "agent" / "remote.json"
-)
+ROOT = Path(__file__).resolve().parent.parent
+ENDPOINT = ROOT / "output" / "run" / "agent" / "remote.json"
+ENTRY = ROOT / "entry" / "agent_cli.md"
 TIMEOUT = 360  # 秒: 服务端 run 执行中至多等 300 秒即交回
 OPENER = urllib.request.build_opener(
     urllib.request.ProxyHandler({})
@@ -46,14 +37,17 @@ def rpc(url, method, params):
 
 
 def main():
-    assert len(sys.argv) in (2, 3), __doc__
-    tool, arg = sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else "{}"
-    assert ENDPOINT.is_file(), f"没有 {ENDPOINT}: 程序没开过 (python run.py)"
-    url = json.loads(ENDPOINT.read_text())["url"]
-    if tool == "list":
-        for t in rpc(url, "tools/list", {})["tools"]:
-            print(f'{t["name"]}: {t["description"].splitlines()[0]}')
+    assert len(sys.argv) in (
+        1,
+        2,
+        3,
+    ), f"用法见 {ENTRY} (python py/agent.py 不带参数即打印)"
+    if len(sys.argv) == 1:
+        print(ENTRY.read_text())
         return
+    assert ENDPOINT.is_file(), "系统没开着: 请研究员开 (python run.py)"
+    url = json.loads(ENDPOINT.read_text())["url"]
+    tool, arg = sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else "{}"
     text = (
         sys.stdin.read()
         if arg == "-"

@@ -1,4 +1,4 @@
-// read_doc — 读研报: 输入 id / part / from / skip → ReadRes (标注卡 / 目录 / 原文一段) → 原文; 展示见 ui/query/ReadDoc.cpp
+// read_doc — 读研报: 输入 id / part / from / skip → ReadRes (标注卡 / 目录 / 原文一段) → 原文; 展示见 ui/doc/ReadDoc.cpp
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Docs.hpp"
 #include "gui/task_agent/Text.hpp"

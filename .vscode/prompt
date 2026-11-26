@@ -1,9 +1,9 @@
-@AGENT.md @config/agent/prompt @cpp/src/agent @output/agent/global/test/<池>/<层>/<持有期>/chat/<时间> @output/agent/global/test
+@cpp/src/gui/task_agent/Remote.cpp @config/agent/prompt @cpp/src/agent @output/agent/global/test/<池>/<层>/<持有期>/chat/<时间> @output/agent/global/test
 
 继续优化 agent 工具 (类 MCP) 与第三方 LLM agent 的交互. 先读材料再下结论, 不要凭印象.
 
 材料:
-- 设计: AGENT.md; 工具表在 cpp/src/agent/Tools.cpp (kTools); 观察成文在 Views.cpp; 回测结局文本在 Prompt.cpp; 状态机在 Mine.cpp / Acts.cpp; 与项目的接口在 Bridge.cpp
+- 设计: README 文首 "挖因子" + Mine.hpp / Remote.hpp 头注释; 外部 agent 两种接法的入口 entry/agent_{mcp,cli}.md, 接口工具表在 Remote.cpp (kApis); 工具表在 cpp/src/agent/Tools.cpp (kTools); 观察成文在 Views.cpp; 回测结局文本在 Prompt.cpp; 状态机在 Mine.cpp / Acts.cpp; 与项目的接口在 Bridge.cpp
 - 提示词: config/agent/prompt/{system,first,round,retry,test}.md
 - 最近一次会话日志 (上面 @ 的目录): 每轮的 user / reply、events.jsonl、结束报告里的全局记录
 - 自检会话的全局记录: output/agent/global/test/{feature,tool,insight,issue}.jsonl

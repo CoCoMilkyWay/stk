@@ -10,7 +10,7 @@
 //     result  上一个调用的结果 (标题带调用编号 #<步>) + 下一步
 //     retry   上一条回复不合协议: 逐条列出不合处, 要求改正重交
 //   时间线与状态账本见 tools/Kit.hpp; TurnsOf(Steps) 纯函数给出只追加的完整对话 (每步 = 消息 + 回复):
-//     原样留着的近处超 kCtxChars 字, 即把更早的结果整块折成结论 (FoldOf; 折叠点 kFoldSteps 步一跳, 其间前缀不变)
+//     原样留着的近处超 kCtxChars 字, 即把更早的结果整块折成结论 (折叠点 kFoldSteps 步一跳, 其间前缀不变)
 //   分层: 底座 tools/Kit.hpp < 成文 Prompt < 各工具 (工具的原文借这里的候选结局成文; 这里不认具体工具)
 // =============================================================================
 
@@ -29,7 +29,6 @@ std::string LoadPrompt(Msg m);
 void SavePrompt(Msg m, const std::string &text);
 
 // ---- 结局与工具成文 ----
-inline const char *SignCn(int sign) { return sign < 0 ? "负" : "正"; } // 权重符号: 负 = 因子已整体取反
 std::string Text(const Weight &w);
 std::string SignLine(const Result &r); // "符号: 正 / 负" (最佳权重; 无权重 → 空)
 std::string Brief(const Result &r);
@@ -42,9 +41,6 @@ std::string ListTail(int all, int skip, int n);                      // 分页�
 std::string CallTitle(const Act &a, int step);
 std::string StageOf(const Act &a, double frac); // 在跑的调用此刻在做什么: eval_factor 写阶段 (Search / Run), 后台的带进度
 std::string ResultText(const Act &a, int step); // 一个调用的结果原文 (标题 = 调用编号 + 调用; result 消息的结果节)
-std::string BriefOf(const Act &a, int step);    // 折叠后留的结论 (回测留模板与结局, 观察留关键数, 记录 / 问答留原文, 查询只留调用一行)
-std::string AnswerText(const Asked &a);
-std::string NextStep(bool test, const std::string &left); // result 消息末尾的 "下一步" 提示 (left = 本段预算还剩多少, 空 = 不限)
 
 // ---- 消息组装与上下文纯函数 ----
 std::string SystemMessage(const Context &c, const Gate &g, bool ask);
@@ -54,7 +50,6 @@ std::string ResultMessage(const Act &a, int step, bool test, const std::string &
 std::string RetryMessage(const std::string &error); // 上一条回复不合协议的重交要求 (error 一行一处)
 std::string MemoText(const std::string &memo);
 std::string TextOf(const Step &sp);
-size_t FoldOf(Steps ss);      // 第 2..fold 条消息 (下标 [1, fold)) 折成结论; 0 = 不折
 llm::Turns TurnsOf(Steps ss); // 完整对话 (内置无状态后端每步用; 有状态的大脑只在新开一段对话时用, 其后只收本条)
 
 } // namespace GUI::Agent

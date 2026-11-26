@@ -4,11 +4,12 @@
 // Tools — agent 的工具真相表: 系统提示的 "工具" 节 / 回复解析 / 参数校验 / 界面都从同一张表出
 // =============================================================================
 //   回复 = 一个调用 {"tool": 名, "args": {...}}; 系统执行后, 下一条消息交回它的结果
-//   形 Form (清单一列 = 工具函数的签名, 见 tools/Kit.hpp; 也是运行时唯一分派轴, lab = 交右翼后台):
+//   形 Form (清单一列 = 工具函数的签名, 见 tools/Kit.hpp; 也是执行的唯一分派轴, lab = 交右翼后台):
 //     Sync   当场   GUI 线程当场做完 (查特征叶 / 列候选与正式库 / 全局记录 / 提交 / 结束)
 //     Pure   后台   纯后台: 交右翼 worker 算完即是结果 (观察 view_* / 盘口重放 view_book / 研报库 search_docs · search_factors · read_doc)
 //     Lab    后台   GUI 备料 → 后台 → GUI 收尾 (回测 eval_factor)
 //     Human  等人   等研究员点选答案 (ask_human)
+//   类 Cat (清单一列 = 界面分组与账本计数; 后台的口径也按它: Doc 不带观察快照, Trial 占批量计算权, 其余交互)
 //   校验两层:
 //     协议层 (ParseCall): JSON 结构 / 工具名 / 参数类型与范围 → 不合则不执行, 记成一步错, 下一条 = 重交要求
 //     数据层 (执行期): 因子 / 特征 / 代码 / 日期 / 研报 id 不成 → 该调用 ok=false 写原因
@@ -46,13 +47,14 @@ AGENT_ROWS(Form, kForms, Human);
 
 enum class Cat : uint8_t { Look,   // view_*
                            Trial,  // eval_factor / submit_factor
-                           Query,  // search_* / read_doc / list_*
+                           Query,  // search_leaves / list_*
+                           Doc,    // search_docs / search_factors / read_doc
                            Note,   // request_* / note_insight / report_issue
                            Misc }; // finish / ask_human
 struct CatDef {
   const char *en, *cn; // en = 主栏 Tools 下的组名
 };
-inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Trial", "回测"}, {"Query", "检索"}, {"Note", "记录"}, {"Misc", "其他"}};
+inline constexpr CatDef kCats[] = {{"Look", "观察"}, {"Trial", "回测"}, {"Query", "检索"}, {"Doc", "研报"}, {"Note", "记录"}, {"Misc", "其他"}};
 AGENT_ROWS(Cat, kCats, Misc);
 
 // 工具清单: X(枚举, id, 中文名, 形, 类, 上下文折叠后仍留原文, 结果类型 (tools/<类>.hpp))
@@ -68,9 +70,9 @@ AGENT_ROWS(Cat, kCats, Misc);
   X(ViewStockDays, "view_stock_days", "看个股多日", Pure, Look, false, StockDaysRes) \
   X(ViewBook, "view_book", "看盘口重放", Pure, Look, false, BookRes)                 \
   X(SearchLeaves, "search_leaves", "查特征叶", Sync, Query, false, LeavesRes)        \
-  X(SearchDocs, "search_docs", "查研报", Pure, Query, false, DocsRes)                \
-  X(SearchFactors, "search_factors", "查研报因子", Pure, Query, false, FactorsRes)   \
-  X(ReadDoc, "read_doc", "读研报", Pure, Query, false, ReadRes)                      \
+  X(SearchDocs, "search_docs", "查研报", Pure, Doc, false, DocsRes)                  \
+  X(SearchFactors, "search_factors", "查研报因子", Pure, Doc, false, FactorsRes)     \
+  X(ReadDoc, "read_doc", "读研报", Pure, Doc, false, ReadRes)                        \
   X(EvalFactor, "eval_factor", "回测", Lab, Trial, false, TrialRes)                  \
   X(ListTried, "list_tried", "列已试", Sync, Query, false, TriedRes)                 \
   X(ListLibrary, "list_library", "列正式库", Sync, Query, false, LibraryRes)         \
@@ -134,11 +136,8 @@ struct ToolDoc {
 
 const ToolDoc &doc(Tool t);
 std::string ToolText(const char *s);
-std::string ArgType(const ArgDef &a);
 std::string ArgText(const ArgDef &a);
-nlohmann::ordered_json DefaultJson(const ArgDef &a);
 nlohmann::ordered_json SeedJson(const ArgDef &a);
-bool IsDefault(const ArgDef &a, const nlohmann::ordered_json &v);
 std::string FieldsText(Tool t, const nlohmann::ordered_json &args, std::initializer_list<std::string_view> skip, std::string_view bullet = "");
 
 // 一个已通过参数表校验的调用 (缺省已补齐, 键按参数表序)
@@ -156,14 +155,13 @@ bool ArgsOf(ArgDefs spec, std::string_view owner, const nlohmann::ordered_json &
 bool CallOf(Tool t, const nlohmann::ordered_json &args, const std::string &path, Call &out, std::vector<std::string> &errs);
 nlohmann::ordered_json SchemaOf(ArgDefs spec); // 参数表的 JSON Schema (外部 agent 接口的 inputSchema)
 
-// 大脑的一条回复 ↔ 一个调用 (协议层): 解析 (不合 = error 一行一处) / 写回协议形
+// 大脑的一条回复 → 一个调用 (协议层): 解析 (不合 = error 一行一处)
 struct CallCheck {
   Call call;
   std::string error;
   bool ok() const { return error.empty(); }
 };
 CallCheck ParseCall(std::string_view reply, bool ask);
-std::string CallJson(const Call &c);
 std::string ToolsDoc(bool ask);
 
 // ---- ask_human: 问题与答复 ----

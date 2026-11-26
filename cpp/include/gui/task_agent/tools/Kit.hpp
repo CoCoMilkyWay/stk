@@ -162,7 +162,6 @@ struct Tally {
   int n(Tool t) const { return calls[t]; }
   int n(Verdict v) const { return verdicts[v]; }
   int n(Cat c) const;
-  int docs() const { return n(Tool::SearchDocs) + n(Tool::SearchFactors) + n(Tool::ReadDoc); }
   int all() const;
   int failed(Tool t) const { return fails[t]; }
   int failed(Cat c) const;

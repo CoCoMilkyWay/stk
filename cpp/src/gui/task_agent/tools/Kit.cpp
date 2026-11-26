@@ -181,7 +181,7 @@ bool Rig::open_act(Seat &s, double t) {
   if (a.out.res)
     a.out.fx = a.out.res->effect();
   if (p.task) {
-    lab.send({m.cat, m.cat == Cat::Query ? nullptr : desk.env(), std::move(p.task)}); // 研报库不看作用域
+    lab.send({m.cat, m.cat == Cat::Doc ? nullptr : desk.env(), std::move(p.task)}); // 研报库不看作用域
     return false;
   }
   if (m.form == Form::Human)

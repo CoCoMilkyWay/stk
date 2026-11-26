@@ -311,13 +311,15 @@ std::pair<std::string, std::vector<std::string>> LeafWords(const std::string &co
   return {code.substr(0, dot), ws};
 }
 
-std::string LeafKin(const std::string &code) {
+namespace {
+std::string leaf_kin(const std::string &code) {
   const auto [g, ws] = LeafWords(code);
   std::string s = g + ".";
   for (size_t k = 0; k < ws.size(); ++k)
     s += (k ? "_" : "") + (measure_word(ws[k]) ? std::string("*") : ws[k]);
   return s;
 }
+} // namespace
 
 std::string LeafCol(const std::string &code) { return code.substr(code.find('.', code.find('.') + 1) + 1); }
 
@@ -600,7 +602,7 @@ void Desk::bind(const SharedData &data, const Scope &sc, bool test) {
     const FeatureMetadata &m = meta_of(*ft, l);
     const size_t tf = static_cast<size_t>(m.ts_tf);
     Leaf x{l.code, m.name_cn, m.formula, m.description, m.ts_tf == ts::TfId::None ? "" : ts::TF_NAMES[tf], kTfDef[tf], family_of(m), src};
-    x.kin = LeafKin(x.code) + "|" + x.tf;
+    x.kin = leaf_kin(x.code) + "|" + x.tf;
     x.hay = text::lower(x.code + "\n" + x.name_cn + "\n" + x.formula + "\n" + x.desc + "\n" + x.tf + "\n" + x.family);
     if (impl_->open.leaves[i]) {
       on[src] = true;

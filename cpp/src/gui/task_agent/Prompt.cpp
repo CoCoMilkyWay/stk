@@ -42,7 +42,7 @@ std::string fill(Msg m, const KV &kv) {
   });
 }
 
-std::string or_none(std::string s, const char *none) { return s.empty() ? none : s; }
+const char *sign_cn(int sign) { return sign < 0 ? "负" : "正"; } // 权重符号: 负 = 因子已整体取反
 
 std::string remark_text(const std::string &r) {
   return r.empty() ? "" : "\n## 研究员对本会话的要求\n\n" + r + "\n\n只对这一段会话; 与上文的做法冲突处以它为准, 调用协议照旧.\n";
@@ -148,11 +148,41 @@ std::string why_of(const Act &a) { return text::head(std::string_view(a.out.text
 
 std::string first_line(const std::string &s) { return text::head(std::string_view(s).substr(0, s.find('\n')), kWhyChars); }
 
+// 折叠后留的结论: 回测留模板与结局, 观察留关键数, 记录 / 问答留原文, 查询只留调用一行
+std::string brief_of(const Act &a, int step) {
+  if (!a.out.ok)
+    return "- " + CallTitle(a, step) + ": " + why_of(a) + "\n";
+  if (def(a.call.tool).keep)
+    return "- " + CallTitle(a, step) + "\n" + under(a.out.text);
+  return "- " + CallTitle(a, step) + (a.out.gist.empty() ? std::string() : ": " + a.out.gist) + "\n";
+}
+
 // 第 i 条消息 (i ≥ 1) 折成结论: 上一步的调用一行 (或重交要求一行) + 原样的插话
 std::string folded(Steps ss, size_t i) {
   const Step &prev = ss[i - 1];
-  const std::string body = prev.act ? BriefOf(*prev.act, static_cast<int>(i)) : "- (上一条回复不合协议: " + first_line(prev.error) + ")\n";
+  const std::string body = prev.act ? brief_of(*prev.act, static_cast<int>(i)) : "- (上一条回复不合协议: " + first_line(prev.error) + ")\n";
   return "(已折叠, 只留结论)\n" + body + (ss[i].memo.empty() ? "" : MemoText(ss[i].memo));
+}
+
+// result 消息末尾的 "下一步" 提示 (left = 本段预算还剩多少, 空 = 不限)
+std::string next_step(bool test, const std::string &left) {
+  const std::string budget = left.empty() ? "" : "\n\n本段预算还剩 " + left + "; 用完会话即停下, 收手前留出 submit_factor 与 finish 的步数.";
+  if (test)
+    return "按自检的做法接着调还没调过的工具与取值; 对照工具说明查上面的结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish." + budget;
+  return "根据结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或回测下一个变体; 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish." + budget;
+}
+
+// 第 2..fold 条消息 (下标 [1, fold)) 折成结论, 0 = 不折; 原样留着的 = 第 fold 条起的消息与回复 (首条恒原样, 不计); fold 取 kFoldSteps 的倍数里使之不超 kCtxChars 的最小者, 末条恒原样
+size_t fold_of(Steps ss) {
+  const size_t n = ss.size();
+  std::vector<size_t> tail(n + 1, 0);
+  for (size_t i = n; i-- > 1;)
+    tail[i] = tail[i + 1] + text::chars(TextOf(ss[i])) + text::chars(ss[i].reply.text);
+  constexpr size_t kJump = kFoldSteps;
+  size_t fold = 0;
+  while (fold + kJump <= n - 1 && tail[std::max<size_t>(fold, 1)] > static_cast<size_t>(kCtxChars))
+    fold += kJump;
+  return fold;
 }
 
 } // namespace
@@ -174,14 +204,6 @@ std::string ResultText(const Act &a, int step) {
   if (!s.ends_with('\n'))
     s += '\n';
   return s + '\n';
-}
-
-std::string BriefOf(const Act &a, int step) {
-  if (!a.out.ok)
-    return "- " + CallTitle(a, step) + ": " + why_of(a) + "\n";
-  if (def(a.call.tool).keep)
-    return "- " + CallTitle(a, step) + "\n" + under(a.out.text);
-  return "- " + CallTitle(a, step) + (a.out.gist.empty() ? std::string() : ": " + a.out.gist) + "\n";
 }
 
 std::string Fills(const std::string &tmpl, const std::string &expr) {
@@ -235,7 +257,7 @@ std::string Text(const Weight &w) {
 
 std::string SignLine(const Result &r) {
   const Weight *w = r.best();
-  return w ? std::string("符号: ") + SignCn(w->sign) : std::string();
+  return w ? std::string("符号: ") + sign_cn(w->sign) : std::string();
 }
 
 std::string Brief(const Result &r) {
@@ -263,7 +285,7 @@ std::string Detail(const Result &r) {
     const int sign = r.best()->sign;
     std::string s = "- " + SignLine(r) + "\n";
     for (const Weight &w : r.ws)
-      s += "- 权重 " + Fills(r.tmpl, w.expr) + (w.sign == sign ? "" : std::string(" (符号 ") + SignCn(w.sign) + ")") + ": " + Text(w) + "\n";
+      s += "- 权重 " + Fills(r.tmpl, w.expr) + (w.sign == sign ? "" : std::string(" (符号 ") + sign_cn(w.sign) + ")") + ": " + Text(w) + "\n";
     return s;
   }
   case Verdict::Null:
@@ -272,19 +294,6 @@ std::string Detail(const Result &r) {
     return "- " + std::string(def(r.verdict).cn) + "\n";
   }
   return {};
-}
-
-std::string AnswerText(const Asked &a) {
-  assert(a.picks.size() == a.qs.size());
-  std::string s;
-  for (size_t i = 0; i < a.qs.size(); ++i) {
-    const Question &q = a.qs[i];
-    const Pick &p = a.picks[i];
-    s += std::to_string(i + 1) + ". " + q.prompt + "\n- " + or_none(Answered(q, p), "(未选, 你自定)") + "\n";
-    if (p.on != q.recommended || (p.other && !p.text.empty()))
-      s += "- (未照你的推荐: " + Picked(q, q.recommended) + ")\n";
-  }
-  return s + "附言: " + or_none(a.note, "(无)") + "\n";
 }
 
 std::string SystemMessage(const Context &c, const Gate &g, bool ask) {
@@ -332,15 +341,8 @@ std::string TestMessage(bool ask, const std::string &remark) {
                           {"ask", ask ? "ask_human 也要测: 问 1 道题 (例: 先测哪类工具), 研究员答完再接着测" : "本会话没有 ask_human, 不测它"}});
 }
 
-std::string NextStep(bool test, const std::string &left) {
-  const std::string budget = left.empty() ? "" : "\n\n本段预算还剩 " + left + "; 用完会话即停下, 收手前留出 submit_factor 与 finish 的步数.";
-  if (test)
-    return "按自检的做法接着调还没调过的工具与取值; 对照工具说明查上面的结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish." + budget;
-  return "根据结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或回测下一个变体; 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish." + budget;
-}
-
 std::string ResultMessage(const Act &a, int step, bool test, const std::string &left) {
-  return fill(Msg::Result, {{"result", ResultText(a, step)}, {"next", NextStep(test, left)}});
+  return fill(Msg::Result, {{"result", ResultText(a, step)}, {"next", next_step(test, left)}});
 }
 
 std::string RetryMessage(const std::string &error) {
@@ -359,22 +361,9 @@ std::string MemoText(const std::string &memo) {
 
 std::string TextOf(const Step &sp) { return sp.memo.empty() ? sp.user : sp.user + MemoText(sp.memo); }
 
-// 原样留着的 = 第 fold 条起的消息与回复 (首条恒原样, 不计); fold 取 kFoldSteps 的倍数里使之不超 kCtxChars 的最小者, 末条恒原样
-size_t FoldOf(Steps ss) {
-  const size_t n = ss.size();
-  std::vector<size_t> tail(n + 1, 0);
-  for (size_t i = n; i-- > 1;)
-    tail[i] = tail[i + 1] + text::chars(TextOf(ss[i])) + text::chars(ss[i].reply.text);
-  constexpr size_t kJump = kFoldSteps;
-  size_t fold = 0;
-  while (fold + kJump <= n - 1 && tail[std::max<size_t>(fold, 1)] > static_cast<size_t>(kCtxChars))
-    fold += kJump;
-  return fold;
-}
-
 llm::Turns TurnsOf(Steps ss) {
   assert(!ss.empty());
-  const size_t fold = FoldOf(ss);
+  const size_t fold = fold_of(ss);
   llm::Turns t;
   for (size_t i = 0; i < ss.size(); ++i) {
     t.push_back({true, i > 0 && i < fold ? folded(ss, i) : TextOf(ss[i])});

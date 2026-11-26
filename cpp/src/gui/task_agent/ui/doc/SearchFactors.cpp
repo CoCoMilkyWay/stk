@@ -1,5 +1,5 @@
 // search_factors 的展示: 命中概况 + 类别 / 出处流派条 + 数据周期 × 预测期矩阵 + 因子表
-#include "gui/task_agent/tools/Query.hpp"
+#include "gui/task_agent/tools/Doc.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
 namespace GUI::Agent {

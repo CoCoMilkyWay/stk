@@ -105,7 +105,8 @@ std::string Mine::try_open(const SharedData &data, Setup s, Leg l) {
   if (held())
     close();
 
-  setup = std::move(s), leg = std::move(l);
+  setup = std::move(s);
+  take(std::move(l));
   bind(data);
   const Context &ctx = desk.ctx();
   assert(!ctx.leaves.empty() && !ctx.ops.empty() && "须有开放的叶与算子");
@@ -141,24 +142,18 @@ void Mine::load(const SharedData &data, const disk::Key &key) {
   reason = j.at("reason").get<std::string>();
   t_end = j.at("elapsed").get<double>();
   held_ = true;
-  if (reason.empty()) { // 没停下就退出了: 在等答的 ask_human 原样接着等, 其余末步作废重来
-    const bool ask = asking(timeline.back());
-    reason = ask ? "上次在等你答问题时退出了" : "上次没停稳就退出了, 末步作废重来";
-    if (!ask)
-      return redo(step(), reason);
-    mark(Beat::Pause, reason, "---\n\n**停下**: " + reason + "\n\n");
-  }
-  report = report_of(reason);
-  log.report(report);
-  save();
+  if (!reason.empty())
+    report = report_of(reason);
+  else if (asking(timeline.back())) // 没停下就退出了: 在等答的 ask_human 原样接着等, 其余末步作废重来
+    halt("上次在等你答问题时退出了");
+  else
+    redo(step(), "上次没停稳就退出了, 末步作废重来");
 }
 
 void Mine::resume(const SharedData &data, Leg l) {
   assert(phase() == Phase::Pause && idle() && !timeline.empty());
   flush();
-  leg = std::move(l);
-  if (setup.remote)
-    leg.llm = {};
+  take(std::move(l));
   assert(catalog::ready(data, setup.sc, leg.gpu));
   t0 = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(t_end)), t_end = -1.0;
   depart();
@@ -232,11 +227,14 @@ Mine::Loss Mine::loss(int k) const {
   return {.steps = step() - k + 1, .files = static_cast<int>(staged_from(k).size()), .notes = static_cast<int>(notes.filed(log.dir(), k).size())};
 }
 
-void Mine::rewind(int k) { redo(k, "回退到第 " + std::to_string(k) + " 条发出前, 继续即重发"); }
+void Mine::rewind(int k) {
+  assert(phase() == Phase::Pause);
+  redo(k, "回退到第 " + std::to_string(k) + " 条发出前, 继续即重发");
+}
 
 // 第 k 步起作废 (落的候选文件与提的全局记录一并删), 停在第 k 条发出前
 void Mine::redo(int k, std::string why) {
-  assert(phase() == Phase::Pause && idle() && k >= 1 && k <= step());
+  assert(held_ && idle() && k >= 1 && k <= step());
   flush();
   discard(k);
   timeline.resize(static_cast<size_t>(k));
@@ -246,11 +244,7 @@ void Mine::redo(int k, std::string why) {
   unsend();
   sp.marks.clear();
   told_ = -1;
-  reason = std::move(why);
-  report = report_of(reason);
-  mark(Beat::Pause, reason, "---\n\n**停下**: " + reason + "\n\n");
-  log.report(report);
-  save();
+  halt(std::move(why));
 }
 
 // 末步退回待发 (插话与日志笔留着)
@@ -411,6 +405,11 @@ void Mine::pause(std::string why) {
   mind([](auto &b) { b.cancel(); });
   lab.cancel();
   t_end = now();
+  halt(std::move(why));
+}
+
+// 停在 why: 记一笔停下 + 停下报告 + 存档 (停下的唯一出口)
+void Mine::halt(std::string why) {
   reason = std::move(why);
   report = report_of(reason);
   mark(Beat::Pause, reason, "---\n\n**停下 (" + text::local("%H:%M:%S") + ")**: " + reason + "\n\n");
@@ -418,12 +417,19 @@ void Mine::pause(std::string why) {
   save();
 }
 
+// 本段的运行选项: 外部 agent 驱动的会话没有内置模型
+void Mine::take(Leg l) {
+  leg = std::move(l);
+  if (setup.remote)
+    leg.llm = {};
+}
+
 std::string Mine::report_of(const std::string &why) const {
   const Tally c = tally();
   const bool test = setup.test;
   std::string r = std::string(test ? "# 自检报告\n\n- 自检会话: 候选 / 日志 / 全局记录在 agent/test 目录, 提交只查门槛不拷进正式库" : "# 停下报告\n") +
                   "\n- 停下原因: " + why + "\n- 步数: " + std::to_string(sent()) + "\n- 调用: " + std::to_string(c.all()) + " (观察 " +
-                  std::to_string(c.n(Cat::Look)) + ", 查研报 " + std::to_string(c.docs()) + ", 回测 " + std::to_string(c.n(Tool::EvalFactor)) + ")\n" +
+                  std::to_string(c.n(Cat::Look)) + ", 查研报 " + std::to_string(c.n(Cat::Doc)) + ", 回测 " + std::to_string(c.n(Tool::EvalFactor)) + ")\n" +
                   (setup.remark.empty() ? "" : "- 本会话要求: " + setup.remark + "\n") + "\n";
   std::string in, out;
   for (size_t i = 0; i < timeline.size(); ++i)
