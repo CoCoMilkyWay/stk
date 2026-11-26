@@ -1,15 +1,17 @@
-// Engine — 因子评估引擎与统一管线 (Run / Search / Inspect / Portfolio / Agent 观察共用):
+// Engine — 因子评估引擎与统一管线 (Run / Search / Inspect / Portfolio / 篮子 / Agent 观察共用):
 //   森林 Forest: 去重算子 DAG + 一次性解析的 LeafId 表 + 因子根 (经 Stat) + 可选纯表达式根 (直取平面, 不经 Stat).
 //   双后端同构 Backend<Cpu | Gpu> (挂在进程唯一 Store::exec 上跨文件 / 跨趟常驻复用, 内存与显存纳入 Store 统一预算):
 //     budget<Ps>(d, H) / batch_of(P, b) / kRanks
 //     bind(blk) / release() / drop()
-//     walk(cancel, F, need, on_node) / eval<Ps>(cancel, F, need, ps, last, on_node, on_step)
-//   单一分块流式管线:
-//     prepare    → 评估域 + 规格 + 前后带 (+ 调用方另加的 Extra) + 预算 (fit_years / plan_chunks)
-//     for_blocks → 逐块 load_block → on_block (唯一的块循环: run_pass / eval_baskets / Agent 观察流同一条)
-//     run_pass   → init(PassCtx) → for_blocks { 逐批 plant + plan_forest + eval(open → row → close) } → finish(PassCtx)
-//     eval_forest  = 单森林单趟作业 (Run / Inspect / Portfolio)
-//     eval_baskets = 池篮子与个股账作业 (Portfolio 行情两侧)
+//     walk_dag(cancel, d, leaves, need, visit) / eval<Ps>(cancel, F, need, ps, last, on_node, on_step)
+//   单一分块流式管线 (作业层 ⇄ 块层):
+//     Need       = 一个作业对装载与预算的全部要求: 森林作业 forest_need ⇄ 篮子作业 basket_need
+//     open_job   → 评估域 + 两侧规格 + 前后带 + 预算 (整期一块装不下即封顶年数) + 分块计划 (唯一的作业入口)
+//     for_blocks → 逐块 load_block → on_block (唯一的块循环)
+//     eval_block → 一块一森林: 值域核 → 走 DAG + 各因子根 Stat 进探针 (唯一的块内评估: run_pass / Agent 观察流同一条)
+//     run_pass   → init → for_blocks { on_block → bind → 逐批 plant + eval_block } → 好根 finish
+//     eval_forest  = 单森林单趟作业 (Run / Inspect / Portfolio): open_job → run_pass → 逐条目回调
+//     eval_baskets = 池篮子与个股账作业 (Portfolio 行情两侧): open_job → for_blocks { BasketPass }
 #pragma once
 
 #include "factor/EvalCpu.hpp"
@@ -26,6 +28,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -207,18 +210,6 @@ public:
   }
   const factor::check::Plane *plane(int i) const { return factor::cpu::plane_at(*d_, in_, hp_, i); }
 
-  // 一个根平面的 Stat (rx_ / day_ / w_ 常驻复用; 探针与流式观察同一条): → 已定向的 rx (块形), acc[H], 逐日 day()[H][D]
-  template <class Sink>
-  uint16_t *run_root(const factor::check::Plane *rp, factor::stat::Frame f, factor::stat::Dir d, const factor::stat::Span &s, const factor::stat::Labels &L,
-                     factor::stat::Accum *acc, const Sink &sink) {
-    w_.ensure(s.A, L.hd.n, ex_.threads());
-    rx_.resize(s.n());
-    day_.resize(static_cast<size_t>(L.hd.n) * s.days());
-    factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, d, s, L, rx_.data(), w_, acc, day_.data(), sink);
-    return rx_.data();
-  }
-  const factor::stat::Day *day() const { return day_.data(); }
-
   template <class Ps>
   Forest plant(const FeatureTable &ft, std::span<const Root> rs, int batch, int &C) const {
     assert(!rs.empty() && batch >= 1);
@@ -231,6 +222,15 @@ private:
     const factor::stat::Labels L = labels_of(c_->y);
     factor::stat::assert_labels(L, c_->y.sh.seg, false);
     return L;
+  }
+  // 一个根平面的 Stat (rx_ / day_ / w_ 常驻复用): → 已定向的 rx_ (块形), acc[H], 逐日 day_[H][D]
+  template <class Sink>
+  void run_root(const factor::check::Plane *rp, factor::stat::Frame f, factor::stat::Dir d, const factor::stat::Span &s, const factor::stat::Labels &L,
+                factor::stat::Accum *acc, const Sink &sink) {
+    w_.ensure(s.A, L.hd.n, ex_.threads());
+    rx_.resize(s.n());
+    day_.resize(static_cast<size_t>(L.hd.n) * s.days());
+    factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, d, s, L, rx_.data(), w_, acc, day_.data(), sink);
   }
   template <class Ps>
   factor::cpu::stat::Workspace *ready(const Forest &, const std::vector<int> &) {
@@ -660,7 +660,7 @@ auto with_backend(FactorFlow &F, bool use_gpu, Fn &&fn) {
   return fn(es.cpu);
 }
 
-// ---- 统一评估管线: Job → prepare → run_pass (eval_forest / eval_baskets) ----
+// ---- 作业层: Need → open_job → Job ----
 struct Job {
   const char *who = "";
   const FeatureTable *ft = nullptr;
@@ -680,53 +680,45 @@ struct Job {
   StatScope scope(const FactorScope &sc, const char *backend) const { return stat_scope(sc, dm, ft->seg, n_full, backend); }
 };
 
-inline bool open_job(FactorFlow &F, const FactorScope &sc, std::span<const LeafId> leaves, Job &j) {
-  assert(sc.ft && sc.lv == sc.ft->lv && "作用域层与字段表层不符");
-  j.ft = sc.ft.get();
-  j.spec.x.assign(leaves.begin(), leaves.end());
-  if (!domain_of(*sc.ft, sc, j.spec.x, SIZE_MAX, j.dm, j.why))
-    return false;
-  open_libs(sc, F.S.lr);
-  return true;
-}
+// 一个作业对装载与预算的全部要求 (森林作业 forest_need ⇄ 篮子作业 basket_need; 唯一消费方 open_job)
+struct Need {
+  std::vector<LeafId> x;                  // X 叶
+  Holds hd;                               // Y 标签的持有期
+  Segs segs = Segs::None;                 // Y 成本段
+  bool ry = false;                        // Y 标签秩 (Stat 根 · CPU)
+  Bands bands;                            // 前后带 (front < 0 = 整期一块: 装不下即封顶年数)
+  std::function<Budget(const Job &)> bud; // 装载 load 之外的预算 (load 由两侧规格现推); 随评估域重算
+};
 
-template <class B>
-bool fit_years(FactorFlow &F, const FactorScope &sc, Job &j, B &&bud) {
-  const double host = F.S.budget();
-  const double vram = bud().dev > 0.0 ? F.S.vram() : 0.0;
-  const auto fits = [&] {
-    const Budget b = bud();
-    const double n = cells_of(j.dm, j.ft->seg);
-    return b.host(n) <= host && (b.dev <= 0.0 || b.vram(n) <= vram);
-  };
-  if (fits())
-    return true;
-  assert(sc.years > 0 && "全期整期一块装不下内存 / 显存预算");
-  const size_t days = j.dm.stat_days();
-  FactorScope s = sc;
-  for (s.years = sc.years - 1; s.years >= 1; --s.years) {
-    std::string why;
-    [[maybe_unused]] const bool ok = domain_of(*sc.ft, s, j.spec.x, SIZE_MAX, j.dm, why);
-    assert(ok && "近期子期是整期的后缀, 评估域必成");
-    if (fits())
-      break;
-  }
-  assert(s.years >= 1 && "1 年的整期装载都放不下内存 / 显存 (因子层太细)");
-  cap_years(sc.pool, sc.lv, s.years);
-  j.why = "评估期近 " + std::to_string(sc.years) + " 年 (" + std::to_string(days) + " 天) 整段装不下内存 / 显存预算, 本作用域最多 " + std::to_string(s.years) + " 年";
-  std::fprintf(stderr, "[factors] %s: %s, 评估年数封顶 %d 年\n", j.who, j.why.c_str(), s.years);
-  return false;
-}
+// 调用方另加的前后带 (日) / 每格宿主工作量 (字节)
+struct Extra {
+  int front = 0, back = 0;
+  double work = 0.0;
+};
 
+// 森林作业: R = 因子根数 (0 = 只有纯表达式根: 不装标签秩, 前带只够回看); look < 0 = 整期一块
 template <class E, class Ps>
-Budget budget_of(const Job &j, const factor::Dag &d, size_t nx, int H, int R) {
-  const int seg = j.ft->seg, days = static_cast<int>(j.dm.days.size()), A = static_cast<int>(j.dm.rs.axis.size());
-  const Shape sh{days * seg, A, days, seg};
-  Budget b = E::template budget<Ps>(d, j.spec.y.hd.n);
-  b.load += cell_bytes(j.spec, nx);
-  b.fixed = R * Ps::bytes(sh, H) + Ps::scratch(sh, H);
-  return b;
+Need forest_need(const FeatureTable &ft, const factor::Dag &d, std::vector<LeafId> x, int look, const Holds &hd, int R, const Extra &e = {}) {
+  Need n{std::move(x), hd, Ps::segs, E::kRanks && R > 0, {}, {}};
+  if (look >= 0) {
+    n.bands = R > 0 ? bands_of(look, hd, ft.seg) : Bands{(look + ft.seg - 1) / ft.seg, 0};
+    n.bands.front = std::max(n.bands.front, e.front), n.bands.back = std::max(n.bands.back, e.back);
+  }
+  n.bud = [&d, H = hd.n, R, w = e.work](const Job &j) {
+    const int seg = j.ft->seg, days = static_cast<int>(j.dm.days.size());
+    const Shape sh{days * seg, static_cast<int>(j.dm.rs.axis.size()), days, seg};
+    Budget b = E::template budget<Ps>(d, H);
+    b.work += w;
+    b.fixed = R * Ps::bytes(sh, H) + Ps::scratch(sh, H);
+    return b;
+  };
+  return n;
 }
+// 篮子作业: all 池日层的估值七叶 + T+1 标签 (无因子根: 不装标签秩 / 盘口段)
+Need basket_need(const FeatureTable &ft);
+
+// 唯一的作业入口: 评估域 → 两侧规格 → 前后带 → 预算 (整期一块装不下即封顶年数, Empty) → 分块计划
+Rc open_job(FactorFlow &F, const FactorScope &sc, Need n, Job &j);
 
 inline Rc load_block(FactorFlow &F, Job &j, size_t k, Block &c) {
   assert(k < j.P.chunks.size());
@@ -736,40 +728,16 @@ inline Rc load_block(FactorFlow &F, Job &j, size_t k, Block &c) {
   return rc;
 }
 
-// 调用方另加的前后带 (日) / 每格宿主工作量 (字节)
-struct Extra {
-  int front = 0, back = 0;
-  double work = 0.0;
+// ---- 块层: for_blocks → eval_block → run_pass / eval_forest ----
+struct NoOp {
+  template <class... A>
+  void operator()(A &&...) const {}
 };
-
-// R = 因子根数 (0 = 只有纯表达式根: 不装标签秩, 前带只够回看); look < 0 = 整期一块
-template <class E, class Ps>
-Rc prepare(FactorFlow &F, const FactorScope &sc, const factor::Dag &d, std::span<const LeafId> leaves, int look, const Holds &hd, int R, Job &j, const Extra &x = {}) {
-  if (!open_job(F, sc, leaves, j))
-    return Rc::Empty;
-  const int seg = j.ft->seg;
-  j.spec.y = y_spec(*j.ft, j.dm, hd, Ps::segs, sc.max_impact);
-  j.spec.ry = E::kRanks && R > 0;
-  if (look >= 0) {
-    j.bands = R > 0 ? bands_of(look, hd, seg) : Bands{(look + seg - 1) / seg, 0};
-    j.bands.front = std::max(j.bands.front, x.front), j.bands.back = std::max(j.bands.back, x.back);
-  }
-  const auto bud = [&] {
-    Budget b = budget_of<E, Ps>(j, d, j.spec.x.size(), hd.n, R);
-    b.work += x.work;
-    return b;
-  };
-  if (j.bands.front < 0 && !fit_years(F, sc, j, bud))
-    return Rc::Empty;
-  j.b = bud();
-  j.P = plan_chunks(j.dm, seg, j.b, j.bands, F.S.budget(), j.b.dev > 0.0 ? F.S.vram() : 0.0);
-  return Rc::Ok;
-}
-
-// 唯一的块循环: 计划里 want(块) 的块逐个 load_block → on_block(块, 块号, 末块, 装载秒) → Rc; 装载失败 / on_block 非 Ok / 取消即返回
 struct AllChunks {
   bool operator()(const Chunk &) const { return true; }
 };
+
+// 唯一的块循环: 计划里 want(块) 的块逐个 load_block → on_block(块, 块号, 末块, 装载秒) → Rc; 装载失败 / on_block 非 Ok / 取消即返回
 template <class OnBlock, class Want = AllChunks>
 Rc for_blocks(FactorFlow &F, Job &j, OnBlock &&on_block, Want &&want = {}) {
   using Clock = std::chrono::steady_clock;
@@ -790,43 +758,79 @@ Rc for_blocks(FactorFlow &F, Job &j, OnBlock &&on_block, Want &&want = {}) {
   return Rc::Ok;
 }
 
-int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const Forest &F, std::vector<std::string> &why, std::vector<uint8_t> &need);
+// 值域核: dead [d.roots] 进出 (已坏的根不再核, 新坏的填因); need [节点] = 好根子树; → 好根数
+int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const Forest &F, std::span<std::string> dead, std::vector<uint8_t> &need);
 
-struct PassHooks {
-  void block(const Block &, size_t, double) {}
-  void plan(size_t, const Forest &, const std::vector<std::string> &, const std::vector<uint8_t> &) {}
-  void node(size_t, const Forest &, int, double) {}
-  void step(int) {}
-  void root(int) {}
+// 唯一的块内评估 (先 bind): 值域核 → 走 DAG + 各好因子根 Stat 进探针 ps [F.size()]; ms[k] += 因子根 k 子树算子 wall.
+//   进度: 批作业 (Search) 由 run_pass 按 候选 × 块 计; 其余本批 = 要算的算子节点 + 好因子根
+template <class E, class Ps>
+Rc eval_block(E &eng, FactorFlow &F, const Block &c, const Forest &Fr, std::span<std::string> dead, std::span<Ps> ps, bool last, std::span<double> ms) {
+  assert(ps.size() == Fr.size() && ms.size() == Fr.size() && dead.size() == Fr.d.roots.size());
+  constexpr bool by_node = !kBatched<Ps>;
+  const std::vector<factor::DagNode> &nd = Fr.d.nodes;
+  std::vector<uint8_t> need;
+  if (plan_forest(eng.ex(), c, Fr, dead, need) == 0)
+    return Rc::Ok;
+  if constexpr (by_node) {
+    size_t n = 0;
+    for (size_t i = 0; i < nd.size(); ++i)
+      n += need[i] && nd[i].op >= 0;
+    for (size_t k = 0; k < Fr.size(); ++k)
+      n += dead[k].empty();
+    F.prog.begin(Phase::Running, n);
+  }
+  std::vector<double> wall(nd.size(), 0.0);
+  const bool ok = eng.eval(
+      F.cancel, Fr, need.data(), ps, last,
+      [&](int i, double t) {
+        if (nd[static_cast<size_t>(i)].op < 0)
+          return;
+        wall[static_cast<size_t>(i)] += t;
+        if (by_node)
+          F.prog.publish(1);
+      },
+      [&](int) { F.prog.publish(1); });
+  for (size_t k = 0; k < Fr.size(); ++k)
+    if (dead[k].empty())
+      for (const int i : Fr.d.subtree(Fr.d.roots[k]))
+        ms[k] += wall[static_cast<size_t>(i)];
+  return ok ? Rc::Ok : Rc::Cancel;
+}
+
+// 一趟各因子根的结局: dead[k] 空 = 好根 (已 finish); ms[k] = 子树算子 wall (各块各批累加)
+struct Pass {
+  std::vector<std::string> dead;
+  std::vector<double> ms;
 };
 
-// 单趟分块流式执行: init → for_blocks { 逐批 plant + plan_forest + eval(open → row → close) } → 好根 finish
-template <class E, class Plant, class Ps, class H>
-Rc run_pass(E &eng, FactorFlow &F, Job &j, std::span<const Root> roots, Plant &&plant, std::span<Ps> ps, std::vector<std::string> &dead, H &&hk) {
-  const size_t R = roots.size();
-  assert(ps.size() == R);
-  dead.assign(R, {});
+// 单趟分块流式执行: init → for_blocks { on_block(块, 块号, 装载秒) → bind → 逐批 plant + eval_block } → 好根 finish
+template <class E, class Ps, class Plant, class OnBlock = NoOp>
+Rc run_pass(E &eng, FactorFlow &F, Job &j, std::span<const Root> roots, Plant &&plant, std::span<Ps> ps, Pass &out, OnBlock &&on_block = {}) {
+  const size_t R = roots.size(), n = j.P.chunks.size();
+  assert(R >= 1 && ps.size() == R);
+  out.dead.assign(R, {});
+  out.ms.assign(R, 0.0);
   for (size_t k = 0; k < R; ++k)
     ps[k].init(j.pass_ctx(eng.ex(), roots[k].d));
 
   const Rc rc = for_blocks(F, j, [&](const Block &c, size_t ci, bool last, double load_s) {
-    hk.block(c, ci, load_s);
+    on_block(c, ci, load_s);
     eng.bind(c);
+    if constexpr (kBatched<Ps>) {
+      F.prog.begin(Phase::Running, R * n);
+      F.prog.publish(R * ci);
+    }
     for (size_t b0 = 0; b0 < R;) {
       int C = 0;
       const Forest &Fr = plant(b0, C);
-      assert(C >= 1 && b0 + static_cast<size_t>(C) <= R && Fr.size() == static_cast<size_t>(C));
-      std::vector<std::string> why(dead.begin() + static_cast<ptrdiff_t>(b0), dead.begin() + static_cast<ptrdiff_t>(b0) + C);
-      std::vector<uint8_t> need;
-      const int good = plan_forest(eng.ex(), c, Fr, why, need);
-      std::copy_n(why.begin(), C, dead.begin() + static_cast<ptrdiff_t>(b0));
-      hk.plan(b0, Fr, why, need);
-      if (good > 0 && !eng.eval(F.cancel, Fr, need.data(), ps.subspan(b0, static_cast<size_t>(C)), last, [&](int i, double ms) { hk.node(b0, Fr, i, ms); }, [&](int k) { hk.step(static_cast<int>(b0) + k); }))
+      const size_t m = static_cast<size_t>(C);
+      assert(C >= 1 && b0 + m <= R && Fr.size() == m);
+      if (eval_block(eng, F, c, Fr, std::span(out.dead).subspan(b0, m), ps.subspan(b0, m), last, std::span(out.ms).subspan(b0, m)) != Rc::Ok)
         return Rc::Cancel;
-      b0 += static_cast<size_t>(C);
+      b0 += m;
     }
-    if (R > 0 && std::none_of(dead.begin(), dead.end(), [](const std::string &s) { return s.empty(); })) {
-      j.why = dead[0];
+    if (std::none_of(out.dead.begin(), out.dead.end(), [](const std::string &s) { return s.empty(); })) {
+      j.why = out.dead[0];
       return Rc::Broken;
     }
     return Rc::Ok;
@@ -835,37 +839,30 @@ Rc run_pass(E &eng, FactorFlow &F, Job &j, std::span<const Root> roots, Plant &&
     return rc;
 
   for (size_t k = 0; k < R; ++k)
-    if (dead[k].empty()) {
+    if (out.dead[k].empty())
       ps[k].finish(j.pass_ctx(eng.ex(), roots[k].d));
-      hk.root(static_cast<int>(k));
-    }
   return Rc::Ok;
 }
 
-// 单森林单趟作业 (Run / Inspect / Portfolio 共用): 根去重共享一张森林, 未中断时每条目恰回调一次 on_entry(e, k, why)
+// 单森林单趟作业 (Run / Inspect / Portfolio 共用): 根去重共享一张森林; 未中断时跑完逐条目回调 on_entry(e, k, why) (why 空 = 好根)
 struct ForestOut {
   Job job;
   Forest fr;
-  std::vector<double> ms;
-  std::vector<std::string> dead;
+  Pass pass;
   const char *backend = "";
-  double eval_ms(int k) const {
-    double s = 0.0;
-    for (const int i : fr.d.subtree(fr.d.roots[static_cast<size_t>(k)]))
-      s += ms[static_cast<size_t>(i)];
-    return s;
+  // 根 k 在结局 rc 下的坏因 (空 = 好根)
+  std::string why(int k, Rc rc) const {
+    const size_t i = static_cast<size_t>(k);
+    return i < pass.dead.size() && !pass.dead[i].empty() ? pass.dead[i] : rc == Rc::Ok ? std::string()
+                                                                                       : job.why;
   }
+  double eval_ms(int k) const { return pass.ms[static_cast<size_t>(k)]; }
   StatScope scope(const FactorScope &sc) const { return job.scope(sc, backend); }
 };
 
-struct NoOp {
-  template <class... A>
-  void operator()(A &&...) const {}
-};
-
-template <class E, class Ps, class OnEntry = NoOp, class OnBlock = NoOp, class OnPlan = NoOp>
-Rc eval_forest(E &eng, FactorFlow &F, const FactorScope &sc, const RootSet &rs, std::span<Ps> ps, ForestOut &o, bool whole,
-               OnEntry &&on_entry = {}, OnBlock &&on_block = {}, OnPlan &&on_plan = {}) {
+template <class E, class Ps, class OnEntry = NoOp, class OnBlock = NoOp>
+Rc eval_forest(E &eng, FactorFlow &F, const FactorScope &sc, const RootSet &rs, std::span<Ps> ps, ForestOut &o, bool whole, OnEntry &&on_entry = {},
+               OnBlock &&on_block = {}) {
   static_assert(!kBatched<Ps>, "eval_forest 逐根评 (批核只 Search)");
   assert(rs.size() > 0 && rs.hd.n > 0 && ps.size() == rs.size() && o.fr.size() == 0);
   o.fr = plant_forest(*sc.ft, rs.r, /*keep_roots=*/false);
@@ -874,60 +871,18 @@ Rc eval_forest(E &eng, FactorFlow &F, const FactorScope &sc, const RootSet &rs, 
   if (!whole)
     for (const Root &r : rs.r)
       look = std::max(look, factor::search::space::lookback(*r.e, sc.ft->seg));
-  std::vector<uint8_t> fin(rs.of.size(), 0);
-  const auto emit = [&](size_t e, const std::string &why) {
-    if (!fin[e])
-      fin[e] = 1, on_entry(static_cast<int>(e), rs.of[e], why);
-  };
-  Rc rc = prepare<E, Ps>(F, sc, o.fr.d, o.fr.leaves, look, rs.hd, static_cast<int>(rs.size()), o.job);
+  Rc rc = open_job(F, sc, forest_need<E, Ps>(*sc.ft, o.fr.d, o.fr.leaves, look, rs.hd, static_cast<int>(rs.size())), o.job);
   if (rc == Rc::Ok) {
-    o.ms.assign(o.fr.d.nodes.size(), 0.0);
-    using EmitFn = decltype(emit);
-    struct Hooks : PassHooks {
-      Progress &prog;
-      const RootSet &rs;
-      ForestOut &o;
-      const EmitFn &emit_fn;
-      OnBlock &blk_fn;
-      OnPlan &plan_fn;
-      void block(const Block &c, size_t ci, double s) { blk_fn(c, ci, s); }
-      void plan(size_t, const Forest &Fr, const std::vector<std::string> &why, const std::vector<uint8_t> &need) {
-        size_t n_run = 0;
-        for (size_t i = 0; i < Fr.d.nodes.size(); ++i)
-          n_run += need[i] && Fr.d.nodes[i].op >= 0;
-        for (const std::string &w : why)
-          n_run += w.empty();
-        prog.begin(Phase::Running, n_run);
-        for (size_t e = 0; e < rs.of.size(); ++e)
-          if (const std::string &w = why[static_cast<size_t>(rs.of[e])]; !w.empty())
-            emit_fn(e, w);
-        plan_fn();
-      }
-      void node(size_t, const Forest &Fr, int i, double ms) {
-        if (Fr.d.nodes[static_cast<size_t>(i)].op >= 0) {
-          o.ms[static_cast<size_t>(i)] += ms;
-          prog.publish(1);
-        }
-      }
-      void step(int) { prog.publish(1); }
-      void root(int k) {
-        for (size_t e = 0; e < rs.of.size(); ++e)
-          if (rs.of[e] == k)
-            emit_fn(e, {});
-      }
-    } hk{{}, F.prog, rs, o, emit, on_block, on_plan};
-    const auto plant_one = [&](size_t b0, int &C) -> const Forest & {
+    const auto plant = [&](size_t b0, int &C) -> const Forest & {
       assert(b0 == 0);
       C = static_cast<int>(o.fr.size());
       return o.fr;
     };
-    rc = run_pass(eng, F, o.job, std::span<const Root>(rs.r), plant_one, ps, o.dead, hk);
+    rc = run_pass(eng, F, o.job, std::span<const Root>(rs.r), plant, ps, o.pass, on_block);
   }
   if (!aborted(rc))
-    for (size_t e = 0; e < rs.of.size(); ++e) {
-      assert((rc != Rc::Ok || fin[e]) && "Ok: 条目都已有终局");
-      emit(e, o.job.why);
-    }
+    for (size_t e = 0; e < rs.of.size(); ++e)
+      on_entry(static_cast<int>(e), rs.of[e], o.why(rs.of[e], rc));
   return rc;
 }
 

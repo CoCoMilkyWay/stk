@@ -118,7 +118,7 @@ ToolOut ViewResponse(const Call &c, Bay &bay) {
 
   std::vector<misc::Ymd> dates;
   Engine::Job job;
-  StreamCfg cfg{.fac = &fac, .bars = bit(Close) | bit(PreClose), .extra_front = seg == 1 ? 20 : 1, .extra_back = seg == 1 ? 5 : 2, .extra_work = sizeof(float)};
+  StreamCfg cfg{.fac = &fac, .bars = bit(Close) | bit(PreClose), .extra = {.front = seg == 1 ? 20 : 1, .back = seg == 1 ? 5 : 2, .work = sizeof(float)}};
   const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, win, [&](const ChunkView &cv) {
     const int A = cv.blk.y.sh.A, n_stat = cv.t_hi - cv.t_lo, total_T = static_cast<int>(cv.dates.size()) * seg;
     const Px px(cv.blk, cv.bm, cfg.bars, env.open);

@@ -42,9 +42,9 @@ struct DayLines {
 };
 
 // 单文件评估 (须持 Lease): rows[idx] 同属一文件, 合成共享森林评全部持有期与成本段 → 填 EvalStat 或 error (status = Done) → Ok 时回写文件.
-// on_plan / on_row 可选: 值域核完开跑前 / 每行收尾时回调; day 非空 = 另出 day->hold 上的逐日序列 (agent eval_factor)
-Rc EvalFactorFile(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx,
-                  const std::function<void()> &on_plan = {}, const std::function<void(size_t)> &on_row = {}, DayLines *day = nullptr);
+// on_row 可选: 跑完逐行收尾时回调; day 非空 = 另出 day->hold 上的逐日序列 (agent eval_factor)
+Rc EvalFactorFile(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx, const std::function<void(size_t)> &on_row = {},
+                  DayLines *day = nullptr);
 
 class RunService : public FactorWorker<RunService, RunRequest> {
   friend Service<RunService, RunRequest>;

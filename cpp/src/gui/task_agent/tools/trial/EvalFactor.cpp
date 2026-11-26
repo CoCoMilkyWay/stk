@@ -146,7 +146,7 @@ Commit run_eval(const Engine::FactorScope &fsc, const std::string &file, const s
       idx.push_back(i);
   Engine::Lease l(bay.flow);
   Engine::DayLines dl{.hold = bay.env.hold};
-  const Engine::Rc rc = l ? Engine::EvalFactorFile(fsc, bay.flow, frows, idx, {}, {}, &dl) : Engine::Rc::Cancel;
+  const Engine::Rc rc = l ? Engine::EvalFactorFile(fsc, bay.flow, frows, idx, {}, &dl) : Engine::Rc::Cancel;
   if (bay.cancelled())
     return {};
   if (rc != Engine::Rc::Ok)

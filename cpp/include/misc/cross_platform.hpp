@@ -17,12 +17,14 @@
 #include <windows.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
+#include <sys/ioctl.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
 #else
 #if defined(__GLIBC__)
 #include <malloc.h>
 #endif
+#include <sys/ioctl.h>
 #include <unistd.h>
 #endif
 
@@ -195,6 +197,30 @@ inline int safe_getpid() {
   return static_cast<int>(GetCurrentProcessId());
 #else
   return static_cast<int>(getpid());
+#endif
+}
+
+// stdout 所连终端的行数; 0 = 不是终端 (重定向到文件 / 管道)
+inline int terminal_rows() {
+#ifdef _WIN32
+  CONSOLE_SCREEN_BUFFER_INFO info;
+  if (!_isatty(_fileno(stdout)) || !GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info))
+    return 0;
+  return info.srWindow.Bottom - info.srWindow.Top + 1;
+#else
+  winsize ws{};
+  if (!isatty(STDOUT_FILENO) || ::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0)
+    return 0;
+  return ws.ws_row;
+#endif
+}
+
+// 直写 stdout 的 fd: 绕过 stdio 缓冲与锁, 信号处理里也能用
+inline void stdout_write(const char *s, std::size_t n) {
+#ifdef _WIN32
+  _write(1, s, static_cast<unsigned int>(n));
+#else
+  [[maybe_unused]] const ssize_t w = ::write(STDOUT_FILENO, s, n);
 #endif
 }
 

@@ -44,7 +44,7 @@ struct FactorsUIState {
   int hold_idx = 0;          // FeatureTable::y.list 下标 (表列显示哪个持有期; 多权重因子的父行取该 h 下 score 最高的权重)
   BuildNode build;           // 加因子构建器的根
   char name_buf[64] = "";    // name_en = 文件名主干, 必填
-  char name_cn_buf[64] = ""; // name_cn, 必填, 纯汉字 ≤10 字 (≤30 字节)
+  char name_cn_buf[64] = ""; // name_cn, 必填, 汉字 / [A-Za-z0-9#] ≤10 字 (≤30 字节)
   char note_buf[256] = "";
   char filter_buf[64] = ""; // 下拉里的过滤框 (打开时清空)
   std::string add_err;      // 即时校验结果 (空 = 合法 / 未填完)

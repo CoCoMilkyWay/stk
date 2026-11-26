@@ -43,7 +43,7 @@ inline double group_abs(const factor::stat::Row &r, int k, double cap) {
 }
 
 // ---- 探针契约与折叠容器 Probes<P...> ----
-enum Need : uint8_t {
+enum NeedBit : uint8_t {
   kNeedRows = 1,
   kNeedRx = 2,
   kNeedMask = 4,

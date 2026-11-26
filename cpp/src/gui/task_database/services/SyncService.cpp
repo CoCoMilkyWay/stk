@@ -17,6 +17,7 @@
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
@@ -78,6 +79,149 @@ void log_line(std::string_view s) {
   std::string line(s);
   line.push_back('\n');
   std::cout << line << std::flush;
+}
+
+// 终端底行计时: 本轮总时长 + 在飞各步 (各自已等多久), 后台每 100ms 重画.
+// 底行由滚动区 (DECSTBM) 让出, 任何来源的输出 (cout / printf / stderr / 三方库) 都在其上滚动, 压不到它
+namespace tick {
+
+using Clock = std::chrono::steady_clock;
+using Handler = void (*)(int);
+
+// 还原滚动区 + 清底行, 光标原位; 单次 write, 致命信号里照样能用
+constexpr std::string_view kRestore = "\0337\033[r\033[999;1H\033[2K\0338";
+constexpr int kFatal[] = {SIGABRT, SIGINT, SIGTERM, SIGSEGV};
+
+struct Live {
+  std::string what;
+  Clock::time_point t0;
+};
+std::mutex mu;
+std::map<std::uint64_t, Live> live; // 在飞步, 键 = 起步序
+std::uint64_t seq = 0;
+
+void put(std::string_view s) { stdout_write(s.data(), s.size()); }
+
+std::string dur(Clock::duration d) {
+  const double s = std::chrono::duration<double>(d).count();
+  const int n = static_cast<int>(s);
+  char buf[24];
+  if (n < 60)
+    std::snprintf(buf, sizeof(buf), "%.1fs", s);
+  else if (n < 3600)
+    std::snprintf(buf, sizeof(buf), "%dm%02ds", n / 60, n % 60);
+  else
+    std::snprintf(buf, sizeof(buf), "%dh%02dm", n / 3600, n % 3600 / 60);
+  return buf;
+}
+
+void on_fatal(int sig) {
+  put(kRestore);
+  std::signal(sig, SIG_DFL);
+  std::raise(sig);
+}
+
+// 一步在飞 (RAII); to = 换说明并重新计时
+class Step {
+public:
+  explicit Step(std::string what) {
+    std::lock_guard lk(mu);
+    id_ = seq++;
+    live.emplace(id_, Live{std::move(what), Clock::now()});
+  }
+  ~Step() {
+    std::lock_guard lk(mu);
+    live.erase(id_);
+  }
+  Step(const Step &) = delete;
+  Step &operator=(const Step &) = delete;
+  void to(std::string what) {
+    std::lock_guard lk(mu);
+    live.at(id_) = {std::move(what), Clock::now()};
+  }
+
+private:
+  std::uint64_t id_;
+};
+
+template <class F>
+decltype(auto) timed(std::string what, F &&f) {
+  const Step st(std::move(what));
+  return f();
+}
+
+// 一轮常驻底行 (RAII); stdout 不是终端则不画
+class Bar {
+public:
+  explicit Bar(std::string title) : title_(std::move(title)) {
+    if (terminal_rows() < 2)
+      return;
+    for (std::size_t i = 0; i < std::size(kFatal); ++i)
+      prev_[i] = std::signal(kFatal[i], on_fatal);
+    thread_ = std::thread([this] {
+      std::unique_lock lk(stop_mu_);
+      int rows = 0;
+      do
+        draw(rows);
+      while (!stop_cv_.wait_for(lk, std::chrono::milliseconds(100), [this] { return stop_; }));
+    });
+  }
+  ~Bar() {
+    if (!thread_.joinable())
+      return;
+    {
+      std::lock_guard lk(stop_mu_);
+      stop_ = true;
+    }
+    stop_cv_.notify_one();
+    thread_.join();
+    put(kRestore);
+    for (std::size_t i = 0; i < std::size(kFatal); ++i)
+      std::signal(kFatal[i], prev_[i]);
+  }
+  Bar(const Bar &) = delete;
+  Bar &operator=(const Bar &) = delete;
+
+private:
+  void draw(int &rows) const {
+    std::string out;
+    if (const int r = terminal_rows(); r != rows) { // 首画 / 终端改高: 先换行腾出底行, 滚动区收到其上
+      rows = r;
+      out = "\n\0337\033[1;" + std::to_string(rows - 1) + "r\0338\033[1A";
+    }
+    // 关自动换行画底行: 超宽截断, 不折行
+    out += "\0337\033[" + std::to_string(rows) + ";1H\033[?7l\033[2K\033[7m " + title_ + " " +
+           dur(Clock::now() - t0_) + " \033[0m";
+    {
+      std::lock_guard lk(mu);
+      const Clock::time_point now = Clock::now();
+      for (const auto &[_, l] : live) {
+        const Clock::duration d = now - l.t0;
+        const char *color = d >= std::chrono::seconds(60)   ? "\033[31m"
+                            : d >= std::chrono::seconds(10) ? "\033[33m"
+                                                            : "\033[2m";
+        out += "  " + l.what + " " + color + dur(d) + "\033[0m";
+      }
+    }
+    out += "\033[?7h\0338";
+    put(out);
+  }
+
+  std::string title_;
+  Clock::time_point t0_ = Clock::now();
+  Handler prev_[std::size(kFatal)] = {};
+  std::mutex stop_mu_;
+  std::condition_variable stop_cv_;
+  bool stop_ = false;
+  std::thread thread_;
+};
+
+} // namespace tick
+
+// 取 BigQuant 周配额 (首取 = preflight, 终端打印一行), 计入底行
+bigquant::Quota quota_of(bigquant::Client &c, bool first) {
+  return tick::timed(first ? "bigquant.preflight" : "bigquant.quota",
+                     [&] { return first ? bigquant::preflight(c) : c.quota(); });
 }
 
 // 单表核对统计: 分片槽与修复流量同源于 frozen(s, r)
@@ -227,7 +371,7 @@ Outcome pipe_tasks(Clients &clients, const std::atomic<bool> &cancel, std::strin
         continue;
       }
       const std::int64_t rows = cur->tbl->num_rows();
-      fundamental::put(cur->task, cur->tbl);
+      tick::timed(std::string(tag) + " 落盘 " + cur->lbl, [&] { fundamental::put(cur->task, cur->tbl); });
       cur->tbl.reset();
       log_line("[" + std::string(tag) + "] " + cur->lbl + " ... " + std::to_string(rows) + " rows");
       on_done(rows);
@@ -242,7 +386,8 @@ Outcome pipe_tasks(Clients &clients, const std::atomic<bool> &cancel, std::strin
     }
     const std::string lbl = fundamental::label(t);
     on_start(t, lbl);
-    std::shared_ptr<arrow::Table> tbl = fundamental::fetch(clients, t);
+    std::shared_ptr<arrow::Table> tbl =
+        tick::timed(std::string(tag) + " " + lbl, [&] { return fundamental::fetch(clients, t); });
     {
       std::unique_lock lk(mu);
       cv.wait(lk, [&] { return !slot.has_value(); });
@@ -276,6 +421,8 @@ SyncService::SyncService() { Start(); }
 SyncService::~SyncService() { Stop(); }
 
 bool SyncService::run(SyncRequest &req) {
+  static constexpr const char *kOpName[] = {"sync", "audit", "repair"};
+  const tick::Bar bar(kOpName[static_cast<std::size_t>(req.op)]);
   if (!book_)
     book_ = std::make_unique<Book>();
   {
@@ -297,7 +444,9 @@ bool SyncService::run(SyncRequest &req) {
 }
 
 SyncResult SyncService::build_and_publish(std::uint64_t seq, const Round &r) {
-  const auto say = [this](std::string m) {
+  tick::Step st("AssetInfo 构建");
+  const auto say = [this, &st](std::string m) {
+    st.to("AssetInfo 构建: " + m);
     std::lock_guard lk(mutex);
     state.message = std::move(m);
     publish();
@@ -338,7 +487,8 @@ bool SyncService::run_sync(const SyncRequest &req) {
     publish();
   };
   const auto say = [&](std::string m) { edit([&](SyncState &s) { s.message = std::move(m); }); };
-  const auto set_quota = [&](const bigquant::Quota &q, bool start) {
+  const auto set_quota = [&](bigquant::Client &c, bool start) {
+    const bigquant::Quota q = quota_of(c, start);
     edit([&](SyncState &s) {
       if (start)
         s.quota_start = q.used;
@@ -383,7 +533,7 @@ bool SyncService::run_sync(const SyncRequest &req) {
         req.fundamental ? fundamental::sync::plan(fundamental::spec("all_trading_days"), *r) : std::vector<Task>{};
     if (!cal_tasks.empty()) {
       say("preflight: BigQuant 周配额");
-      set_quota(bigquant::preflight(bq_clients.bq), true);
+      set_quota(bq_clients.bq, true);
       preflighted = true;
       edit([n = cal_tasks.size()](SyncState &s) { s.lanes[kLaneBq] = {LaneRun::Syncing, n}; });
       begin(Phase::Loading, cal_tasks.size());
@@ -421,7 +571,7 @@ bool SyncService::run_sync(const SyncRequest &req) {
       } else {
         if ((!bq_tasks.empty() || !bar1m_tasks.empty()) && !preflighted) {
           say("preflight: BigQuant 周配额");
-          set_quota(bigquant::preflight(bq_clients.bq), true);
+          set_quota(bq_clients.bq, true);
           preflighted = true;
         }
         total.store(cal_done + rem, std::memory_order_relaxed);
@@ -449,7 +599,7 @@ bool SyncService::run_sync(const SyncRequest &req) {
           tu_thread.join();
 
         if (preflighted)
-          set_quota(bq_clients.bq.quota(), false);
+          set_quota(bq_clients.bq, false);
         wrote = true;
       }
     }
@@ -468,7 +618,8 @@ bool SyncService::run_audit(const SyncRequest &req) {
     state.tables = std::move(snap);
     publish();
   };
-  const auto set_quota = [this](const bigquant::Quota &q, bool start) {
+  const auto set_quota = [this](bigquant::Client &c, bool start) {
+    const bigquant::Quota q = quota_of(c, start);
     std::lock_guard lk(mutex);
     if (start)
       state.quota_start = q.used;
@@ -479,7 +630,7 @@ bool SyncService::run_audit(const SyncRequest &req) {
 
   const Round r;
   Clients clients;
-  set_quota(bigquant::preflight(clients.bq), true);
+  set_quota(clients.bq, true);
 
   std::vector<std::vector<Unit>> tables;
   for (const Spec &s : fundamental::SPECS) {
@@ -511,9 +662,10 @@ bool SyncService::run_audit(const SyncRequest &req) {
       state.message = lbl;
       publish();
     }
-    const fundamental::audit::Result res = fundamental::audit::run(clients, u);
+    const fundamental::audit::Result res =
+        tick::timed("bigquant.audit " + lbl, [&] { return fundamental::audit::run(clients, u); });
     book_->put(u, res, stamp_hm(std::time(nullptr)));
-    set_quota(clients.bq.quota(), false);
+    set_quota(clients.bq, false);
     std::vector<TableStat> snap = snapshot_tables(*book_, r);
     {
       std::lock_guard lk(mutex);
@@ -549,7 +701,8 @@ bool SyncService::run_repair(const SyncRequest &req) {
     years.insert(ym / 100);
   }
 
-  const auto set_quota = [this](const bigquant::Quota &q, bool start) {
+  const auto set_quota = [this](bigquant::Client &c, bool start) {
+    const bigquant::Quota q = quota_of(c, start);
     std::lock_guard lk(mutex);
     if (start)
       state.quota_start = q.used;
@@ -559,7 +712,7 @@ bool SyncService::run_repair(const SyncRequest &req) {
   };
 
   Clients clients;
-  set_quota(bigquant::preflight(clients.bq), true);
+  set_quota(clients.bq, true);
   begin(Phase::Running, tasks.size() + years.size());
 
   const Outcome pulled = pipe_tasks(
@@ -570,7 +723,7 @@ bool SyncService::run_repair(const SyncRequest &req) {
         publish();
       },
       [this](std::int64_t) { publish(1); });
-  set_quota(clients.bq.quota(), false);
+  set_quota(clients.bq, false);
 
   r = std::make_unique<Round>();
   if (pulled == Outcome::Done) {
@@ -586,9 +739,10 @@ bool SyncService::run_repair(const SyncRequest &req) {
         state.message = "复核 " + lbl;
         publish();
       }
-      const fundamental::audit::Result res = fundamental::audit::run(clients, u);
+      const fundamental::audit::Result res =
+          tick::timed("bigquant.repair 复核 " + lbl, [&] { return fundamental::audit::run(clients, u); });
       book_->put(u, res, stamp_hm(std::time(nullptr)));
-      set_quota(clients.bq.quota(), false);
+      set_quota(clients.bq, false);
       publish(1);
       log_line("[bigquant.repair] " + lbl + " ... " + std::to_string(res.diffs.size()) + " 处不一致");
     }

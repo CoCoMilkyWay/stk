@@ -133,7 +133,7 @@ constexpr ArgDef kReadArgs[] = {
     {"skip", "跳过", Arg::Int, int{0}, 0, 1000000, {}, "text: 跳过该节开头多少字 (接着读上次没读完的; 上次结果末尾会给)"}};
 constexpr ArgDef kEvalArgs[] = {
     {"name", "英文名", Arg::Str, {}, 0, 0, {}, "英文名: 仅 [A-Za-z0-9_], ≤ 64, 作文件名, 不能与已有的重复"},
-    {"name_cn", "中文名", Arg::Str, {}, 0, 0, {}, "中文名: 1..10 个汉字, 不含字母数字标点"},
+    {"name_cn", "中文名", Arg::Str, {}, 0, 0, {}, "中文名: 1..10 字, 每字为汉字或 ASCII 字母数字 / #"},
     {"expr", "模板", Arg::Str, {}, 0, 0, {}, "模板 (待搜参数写裸键 d / k / k2 / w)"},
     {"note", "思路", Arg::Str, {}, 0, 0, {}, "思路: 检验什么机制或相对基准改了哪一处"}};
 constexpr ArgDef kListArgs[] = {{"query", "关键词", Arg::Str, sv{""}, 0, 0, {}, kListQueryDesc},

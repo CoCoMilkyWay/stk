@@ -1,4 +1,5 @@
 #include "disk/Sweep.hpp"
+#include "features/Storage/FeatureRead.hpp"
 #include "gui/Gui.hpp"
 #ifdef _WIN32
 #include <windows.h>
@@ -12,5 +13,6 @@ int main() {
 #endif
 
   disk::sweep();
+  FeatureRead::sweep_stale();
   return GUI::RunGUI();
 }

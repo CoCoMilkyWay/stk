@@ -526,7 +526,7 @@ struct Desk::Impl {
     if (!Engine::ValidFactorName(c.name))
       return "英文名不合规则: 仅 [A-Za-z0-9_], ≤ 64";
     if (!Engine::ValidFactorNameCn(c.name_cn))
-      return "中文名不合规则: 1..10 个汉字, 不含字母数字标点";
+      return "中文名不合规则: 1..10 字, 每字为汉字或 ASCII 字母数字 / #";
     for (const Result &r : results)
       if (r.name == c.name)
         return "候选英文名 `" + c.name + "` 已用过, 换个名字";

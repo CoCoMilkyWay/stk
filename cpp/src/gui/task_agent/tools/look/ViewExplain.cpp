@@ -112,8 +112,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
   StreamCfg cfg{.fac = &fac,
                 .feats = &feats,
                 .bars = bit(Close) | bit(High) | bit(Low) | bit(Volume) | bit(Amount) | bit(PreClose),
-                .extra_front = seg > 1 ? 7 : 22,
-                .extra_work = sizeof(double) + (seg > 1 ? 3.0 * sizeof(float) : 0.0)};
+                .extra = {.front = seg > 1 ? 7 : 22, .work = sizeof(double) + (seg > 1 ? 3.0 * sizeof(float) : 0.0)}};
   const Engine::Rc rc = run_stream(
       env, F, cfg, dates, job, err,
       [&](const std::vector<misc::Ymd> &ds, size_t &lo, size_t &hi, std::string &why) {

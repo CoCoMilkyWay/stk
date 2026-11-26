@@ -203,7 +203,8 @@ stk/
 │   │   │   │   │                                       #    · 通用六探针 HoldP (三级 + 逐日 + 滚动窗) / TurnP (账集流水 TurnStat) / CoverP / AlphaP / IcPdfP / GrpP (逐日组和); 分年只在 fill_eval 由三份逐日汇成
 │   │   │   │   │                                       #    · 分层 / 尾部 / LS 日净值线 NavP: 全部持有期 (Inspect) 或只一个持有期的超额线 (Agent eval_factor)
 │   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎: Forest (LeafId 一步到位, 因子根 + 纯表达式根) × Backend<Cpu | Gpu> (设备侧按块驻留 Y/X 复用)
-│   │   │   │   │                                       #    · 单一管线: prepare (+ Extra 前后带) → for_blocks (唯一的块循环) → run_pass; 单森林 eval_forest (Run / Inspect / Portfolio) ↔ 篮子 eval_baskets ↔ Agent 观察流同一块循环
+│   │   │   │   │                                       #    · 单一管线 (作业层 ⇄ 块层): Need (森林 forest_need ⇄ 篮子 basket_need) → open_job (唯一的作业入口) → for_blocks (唯一的块循环) → eval_block (唯一的块内评估) → run_pass;
+│   │   │   │   │                                       #      单森林 eval_forest (Run / Inspect / Portfolio) ↔ 批 Search ↔ 篮子 eval_baskets ↔ Agent 观察流 (LookP) 同一条
 │   │   │   │   ├── Worker.hpp                          # 🖥️ FactorWorker<D, Req>: 薄异步服务骨架 (值句柄 flow() + 统一中断收尾 settle)
 │   │   │   │   ├── File.hpp                            # 🖥️ 因子文件读写 (一因子一文件); Run 只回写 run + stats, Search 只回写 weights / search
 │   │   │   │   ├── StatJson.hpp                        # 🖥️ EvalStat ↔ JSON
@@ -251,6 +252,7 @@ stk/
 │   │   │   │   │   │                                   #    · 共享状态 (AssetInfo / Asset::items / 扫描产物) 只在帧首换进; 特征计算在飞 = 冻结
 │   │   │   │   │   │                                   #    · 唯一刷新链: 同步 → AssetInfo 重建 → 覆盖扫描
 │   │   │   │   │   ├── SyncService.hpp                 # 🖥️ 数据集统一后台流: 同步三道 (BigQuant 轨 ∥ Tushare 轨, 轨内 fetch/put 流水) · 远端核对 · 差异修复 → 构建 AssetInfo
+│   │   │   │   │   │                                   #    · 终端底行常驻计时 (滚动区让出末行, 每 100ms 重画): 本轮总时长 + 在飞各步 (拉取 / 落盘 / 配额 / 核对 / 构建) 各自已等多久
 │   │   │   │   │   ├── ScanService.hpp                 # 🖥️ L2 binary / archive 扫盘 + 回测区间覆盖: 待编码 = archive 有 binary 无
 │   │   │   │   │   ├── EncodeService.hpp               # 🖥️ 编码: CSV 归档 → output/data/orders (按天流水并行)
 │   │   │   │   │   └── FileCheckService.hpp            # 🖥️ 归档核查 ⇄ 修复 (Check / Repair 两请求, 顺序逐个, 单盘); 结论交 Encode 页

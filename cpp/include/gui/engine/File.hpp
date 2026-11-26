@@ -3,7 +3,7 @@
 //
 // 因子文件 (独立落盘, 格式破碎也**绝不删**: 表里标 BROKEN + 原因, 人手动处理):
 //   { "type":   "alpha",                                      // 必有: alpha (选股 / 择时, 走 Stat) | beta (风险暴露, 不评估)
-//     "name_cn": "三十分钟动量",                                // 必有: 中文名, 纯汉字 1..10 字 (英文名 = 文件名主干 name_en)
+//     "name_cn": "三十分钟动量",                                // 必有: 中文名, 汉字 / ASCII 字母数字 / # 共 1..10 字 (如 A101#001; 英文名 = 文件名主干 name_en)
 //     "expr":   "CsRank(TsMeanRoll(TsLog(amt), d))",         // 必有: **模板**, 裸键名 d / k / k2 / w = 待搜参数 (Expr.hpp 自由参数), 数字 = 固定
 //     "note":   "…",                                          // 可选, 人 / agent 写的一句话
 //     "weights": [                                            // 可选: 参数搜索 (SearchService) 写的全部权重, 每项一个具体表达式, 一行一个
@@ -88,7 +88,7 @@ void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTa
 
 // 英文名 = 文件名主干: 非空, ≤64, 仅 [A-Za-z0-9_]
 bool ValidFactorName(std::string_view name);
-// 中文名 (文件 name_cn 键): 合法 UTF-8, 纯汉字 (CJK 统一表意文字 U+4E00..U+9FFF), 1..10 字
+// 中文名 (文件 name_cn 键): 合法 UTF-8, 每字为汉字 (CJK 统一表意文字 U+4E00..U+9FFF) 或 [A-Za-z0-9#], 1..10 字
 bool ValidFactorNameCn(std::string_view name);
 
 // 新因子文件: 两个名字合法 (调用方保证, 断言) 且模板合法 (parse 过 + root_frame 过) →

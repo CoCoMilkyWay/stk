@@ -237,7 +237,7 @@ struct Searcher {
     const Clock::time_point t_plan = Clock::now();
     const int n_slots = space::slot_count(e0);
     n_pts = n_slots > 0 ? fsearch::n_init(n_slots) : 1;
-    if (!check(Engine::prepare<E, SearchProbes>(F, scope, f0.d, f0.leaves, look, hd, n_pts, job)))
+    if (!check(open_job(F, scope, forest_need<E, SearchProbes>(ft, f0.d, f0.leaves, look, hd, n_pts), job)))
       return false;
     lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, fs::hold_reach(hd, seg), kChainDays, job.bands.front,
        job.bands.back);
@@ -286,7 +286,7 @@ struct Searcher {
       return false;
     loaded(c, 0, std::chrono::duration<double>(Clock::now() - t_load).count());
     {
-      std::vector<std::string> why;
+      std::vector<std::string> why(f0.d.roots.size());
       std::vector<uint8_t> need;
       if (plan_forest(F.S.ex, c, f0, why, need) == 0) {
         job.why = why[0];
@@ -404,27 +404,19 @@ struct Searcher {
       roots.push_back({&ents[static_cast<size_t>(id)].e, sp.frame, fs::kFwd});
     std::vector<SearchProbes> ps(ids.size());
     const Clock::time_point t_pass = Clock::now();
-    struct Hooks : PassHooks {
-      Searcher &S;
-      size_t n;
-      double load_s = 0.0;
-      void block(const Block &c, size_t ci, double s) {
-        S.loaded(c, ci, s);
-        load_s += s;
-        if (S.live)
-          S.live->chunk.store(static_cast<int>(ci), std::memory_order_relaxed);
-        S.F.prog.begin(Phase::Running, n * static_cast<size_t>(S.n_chunks));
-        S.F.prog.publish(n * ci);
-      }
-      void step(int) { S.F.prog.publish(1); }
-    } hooks{{}, *this, ids.size()};
+    double load_s = 0.0;
     Forest fr;
-    std::vector<std::string> dead;
+    Pass pass;
     const auto plant = [&](size_t b0, int &C) -> const Forest & {
       fr = eng.template plant<SearchProbes>(ft, std::span<const Root>(roots).subspan(b0), batch, C);
       return fr;
     };
-    const Rc rc = Engine::run_pass(eng, F, job, std::span<const Root>(roots), plant, std::span(ps), dead, hooks);
+    const Rc rc = Engine::run_pass(eng, F, job, std::span<const Root>(roots), plant, std::span(ps), pass, [&](const Block &c, size_t ci, double s) {
+      loaded(c, ci, s);
+      load_s += s;
+      if (live)
+        live->chunk.store(static_cast<int>(ci), std::memory_order_relaxed);
+    });
     if (rc != Rc::Ok)
       return rc;
     if (live)
@@ -433,7 +425,7 @@ struct Searcher {
     for (size_t k = 0; k < ids.size(); ++k) {
       Entry &en = ents[static_cast<size_t>(ids[k])];
       en.evaled = true;
-      if (!dead[k].empty())
+      if (!pass.dead[k].empty())
         continue;
       SearchCand &c = en.c;
       const HoldP &hp = ps[k].at<HoldP>();
@@ -447,8 +439,8 @@ struct Searcher {
       n_ok += c.roll.ok();
     }
     const double pass_s = std::chrono::duration<double>(Clock::now() - t_pass).count();
-    lg("评完: %d 候选 × %d 块, %.1fs (装载 %.1fs, 评估 %.1fs, %.1f ms/候选·块) | 有滚动窗 %d", static_cast<int>(ids.size()), n_chunks, pass_s, hooks.load_s,
-       pass_s - hooks.load_s, 1e3 * (pass_s - hooks.load_s) / (static_cast<double>(ids.size()) * n_chunks), n_ok);
+    lg("评完: %d 候选 × %d 块, %.1fs (装载 %.1fs, 评估 %.1fs, %.1f ms/候选·块) | 有滚动窗 %d", static_cast<int>(ids.size()), n_chunks, pass_s, load_s, pass_s - load_s,
+       1e3 * (pass_s - load_s) / (static_cast<double>(ids.size()) * n_chunks), n_ok);
     emit_pass();
     return Rc::Ok;
   }

@@ -148,7 +148,9 @@ bool ValidFactorNameCn(std::string_view name) {
   int n = 0;
   for (auto it = name.begin(); it != name.end(); ++n) {
     const utf8::utfchar32_t cp = utf8::next(it, name.end());
-    if (cp < 0x4E00 || cp > 0x9FFF)
+    const bool cjk = cp >= 0x4E00 && cp <= 0x9FFF;
+    const bool ascii = (cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') || (cp >= '0' && cp <= '9') || cp == '#';
+    if (!cjk && !ascii)
       return false;
   }
   return n <= 10;
@@ -187,7 +189,7 @@ void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTa
   if (const auto it = j.find("name_cn"); it != j.end() && it->is_string())
     r.name_cn = it->get<std::string>();
   if (!ValidFactorNameCn(r.name_cn)) {
-    r.error = "缺 name_cn 键或值不合 (纯汉字, 1..10 字)";
+    r.error = "缺 name_cn 键或值不合 (汉字 / ASCII 字母数字 / #, 1..10 字)";
     emit(r);
     return;
   }

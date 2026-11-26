@@ -67,7 +67,7 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
   std::string thin; // 本行有秩的太少时的原文
   std::vector<misc::Ymd> dates;
   Engine::Job job;
-  StreamCfg cfg{.fac = &fac, .feats = &feats, .bars = kAllBars, .extra_front = seg == 1 ? 1 : 0};
+  StreamCfg cfg{.fac = &fac, .feats = &feats, .bars = kAllBars, .extra = {.front = seg == 1 ? 1 : 0}};
   const Engine::Rc rc = run_stream(
       env, F, cfg, dates, job, err,
       [&](const std::vector<misc::Ymd> &ds, size_t &lo, size_t &hi, std::string &why) {

@@ -88,7 +88,7 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
 
   std::vector<misc::Ymd> dates;
   Engine::Job job;
-  StreamCfg cfg{.fac = &fac, .bars = bit(Close) | bit(High) | bit(Low) | bit(Volume) | bit(PreClose) | bit(LimUp) | bit(LimDn), .extra_front = seg == 1 ? 1 : 0};
+  StreamCfg cfg{.fac = &fac, .bars = bit(Close) | bit(High) | bit(Low) | bit(Volume) | bit(PreClose) | bit(LimUp) | bit(LimDn), .extra = {.front = seg == 1 ? 1 : 0}};
   const Engine::Rc rc = run_stream(
       env, F, cfg, dates, job, err,
       [&](const std::vector<misc::Ymd> &ds, size_t &lo, size_t &hi, std::string &why) {

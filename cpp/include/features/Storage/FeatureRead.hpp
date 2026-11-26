@@ -4,6 +4,7 @@
 #include "features/Storage/FeatureLib.hpp"
 #include "misc/epoch.hpp"
 #include "misc/profiler.hpp"
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cstdint>
@@ -68,6 +69,28 @@ public:
     auto &r = stale_registry();
     std::lock_guard<std::mutex> lock(r.mutex);
     return r.libs.count(lib) != 0;
+  }
+
+  // 启动自检: 各已建库取末个落盘日逐层核头 (FeatureDay::probe), 头不全 / 格式版本 / 字段表指纹不符即判废删库 ——
+  // 皆不依赖池轴, 不必等 AssetInfo 就绪后首个读者撞上
+  static void sweep_stale() {
+    for (const LibId l : lib_ids()) {
+      const FeatureLib lib = load_lib(l);
+      if (!lib.ready())
+        continue;
+      const auto d = std::find_if(lib.dates.rbegin(), lib.dates.rend(), [&](misc::Ymd x) { return has_date(l, x); });
+      if (d == lib.dates.rend())
+        continue;
+      for (size_t lvl = 0; lvl < LEVEL_COUNT; ++lvl) {
+        if (!has_level(lib.tier(), lvl))
+          continue;
+        const FeatureDay::Status st = FeatureDay::probe(lib_day_file(l, *d, lvl), level_info(lib.tier(), lvl));
+        if (st == FeatureDay::Status::Short || st == FeatureDay::Status::Format || st == FeatureDay::Status::Fields) {
+          FeatureRead(lib).mark_stale(FeatureDay::why(st), /*wipe=*/true);
+          break;
+        }
+      }
+    }
   }
 
   // 字段表指纹不符 → 旧库已删, 本次构建产出无效 (调用方重算)

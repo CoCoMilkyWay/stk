@@ -31,8 +31,8 @@ DayLine day_of(const DayProbes &p, const EvalStat &st, HoldId hold) {
 }
 
 template <class Ps>
-Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx, const std::function<void()> &on_plan,
-             const std::function<void(size_t)> &on_row, DayLines *day) {
+Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx, const std::function<void(size_t)> &on_row,
+             DayLines *day) {
   RootSet rs{.hd = Holds::of(sc.ft->y.holds)};
   for (const size_t i : idx)
     rs.add(*sc.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign));
@@ -43,41 +43,28 @@ Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows,
     for (Ps &p : ps)
       p.template at<NavP>().only = day->hold;
   std::vector<size_t> fin;
-  int k_st = -1;
-  EvalStat st{};
 
   const Rc rc = with_backend<Ps>(F, sc.gpu, [&](auto &eng) {
-    return eval_forest(
-        eng, F, sc, rs, std::span(ps), o, /*whole=*/false,
-        [&](int e, int k, const std::string &why) {
-          const size_t ri = idx[static_cast<size_t>(e)];
-          FactorRow &r = rows[ri];
-          assert(r.status != RowState::Done && "每行至多收尾一次");
-          if (!why.empty()) {
-            r.error = why;
-            r.status = RowState::Done;
-          } else {
-            if (k != k_st) {
-              st = EvalStat{};
-              fill_eval(ps[static_cast<size_t>(k)], o.job.pass_ctx(F.S.ex, rs.r[static_cast<size_t>(k)].d), o.scope(sc), o.eval_ms(k), st);
-              k_st = k;
-            }
-            static_cast<EvalStat &>(r) = st;
-            r.has_stat = true;
-            r.stat_from_file = false;
-            r.status = RowState::Done;
-            fin.push_back(ri);
-            if constexpr (std::is_same_v<Ps, DayProbes>)
-              day->rows[static_cast<size_t>(e)] = day_of(ps[static_cast<size_t>(k)], st, day->hold);
-          }
-          if (on_row)
-            on_row(ri);
-        },
-        NoOp{},
-        [&] {
-          if (on_plan)
-            on_plan();
-        });
+    return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/false, [&](int e, int k, const std::string &why) {
+      const size_t ri = idx[static_cast<size_t>(e)];
+      FactorRow &r = rows[ri];
+      assert(r.status != RowState::Done && "每行至多收尾一次");
+      r.status = RowState::Done;
+      if (!why.empty()) {
+        r.error = why;
+      } else {
+        const Ps &p = ps[static_cast<size_t>(k)];
+        static_cast<EvalStat &>(r) = EvalStat{};
+        fill_eval(p, o.job.pass_ctx(F.S.ex, rs.r[static_cast<size_t>(k)].d), o.scope(sc), o.eval_ms(k), r);
+        r.has_stat = true;
+        r.stat_from_file = false;
+        fin.push_back(ri);
+        if constexpr (std::is_same_v<Ps, DayProbes>)
+          day->rows[static_cast<size_t>(e)] = day_of(p, r, day->hold);
+      }
+      if (on_row)
+        on_row(ri);
+    });
   });
   if (rc == Rc::Ok && !fin.empty()) {
     std::vector<const FactorRow *> out;
@@ -117,15 +104,15 @@ void ScanFactors(const FactorScope &sc, std::vector<FactorRow> &out) {
   }
 }
 
-Rc EvalFactorFile(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx,
-                  const std::function<void()> &on_plan, const std::function<void(size_t)> &on_row, DayLines *day) {
+Rc EvalFactorFile(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx, const std::function<void(size_t)> &on_row,
+                  DayLines *day) {
   TraceN("FactorsEvaluateFile");
   if (idx.empty())
     return Rc::Ok;
   if (!day)
-    return eval_file<RunProbes>(sc, F, rows, idx, on_plan, on_row, nullptr);
+    return eval_file<RunProbes>(sc, F, rows, idx, on_row, nullptr);
   day->rows.assign(idx.size(), DayLine{});
-  return eval_file<DayProbes>(sc, F, rows, idx, on_plan, on_row, day);
+  return eval_file<DayProbes>(sc, F, rows, idx, on_row, day);
 }
 
 bool RunService::run(RunRequest &req) {
@@ -173,23 +160,21 @@ bool RunService::run(RunRequest &req) {
   FactorFlow F = flow();
   for (const std::vector<size_t> &f : files) {
     Lease l(F);
-    const Rc rc = l ? EvalFactorFile(
-                          req.scope, F, work, f,
-                          [&] {
-                            std::lock_guard<std::mutex> lock(mutex);
-                            for (const size_t i : f)
-                              if (rows[i].status != RowState::Done)
-                                rows[i].status = RowState::Running;
-                          },
-                          [&](size_t i) {
-                            {
-                              std::lock_guard<std::mutex> lock(mutex);
-                              rows[i] = work[i];
-                            }
-                            if (!work[i].error.empty())
-                              broken_.fetch_add(1, std::memory_order_relaxed);
-                            publish();
-                          })
+    if (l) {
+      std::lock_guard<std::mutex> lock(mutex);
+      for (const size_t i : f)
+        rows[i].status = RowState::Running;
+    }
+    const Rc rc = l ? EvalFactorFile(req.scope, F, work, f,
+                                     [&](size_t i) {
+                                       {
+                                         std::lock_guard<std::mutex> lock(mutex);
+                                         rows[i] = work[i];
+                                       }
+                                       if (!work[i].error.empty())
+                                         broken_.fetch_add(1, std::memory_order_relaxed);
+                                       publish();
+                                     })
                     : Rc::Cancel;
     if (!settle(rc)) {
       std::lock_guard<std::mutex> lock(mutex);

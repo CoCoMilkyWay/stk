@@ -125,7 +125,7 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
 
   std::vector<misc::Ymd> dates;
   Engine::Job job;
-  StreamCfg cfg{.feats = &feats, .extra_front = seg > 1 ? 5 : 20};
+  StreamCfg cfg{.feats = &feats, .extra = {.front = seg > 1 ? 5 : 20}};
   const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, win, [&](const ChunkView &cv) {
     const int A = cv.blk.y.sh.A, n_stat = cv.t_hi - cv.t_lo, days_stat = n_stat / seg;
     const int total_T = static_cast<int>(cv.dates.size()) * seg;

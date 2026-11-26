@@ -78,6 +78,7 @@ struct FeatureDay {
   enum class Status : uint8_t {
     Ok,
     Missing,  // 文件不在 (库被外部清除)
+    Short,    // 文件短于头 (损坏)
     Format,   // magic 不符 (旧格式版本)
     AxisSize, // 池轴大小不符
     AxisHash, // 池轴指纹不符
@@ -90,6 +91,8 @@ struct FeatureDay {
       return "";
     case Status::Missing:
       return "特征库已被清除";
+    case Status::Short:
+      return "日文件短于头 (特征库损坏)";
     case Status::Format:
       return "日文件格式版本不符 (特征库是旧格式写的)";
     case Status::AxisSize:
@@ -218,6 +221,20 @@ struct FeatureDay {
     file_close(fd);
   }
 
+  // 一层一天只核头里与池轴无关的几项 (头完整 / magic / 字段表指纹): 不需库清单的池轴, 启动自检用
+  static Status probe(const std::string &path, const LevelInfo &L) {
+    const int fd = file_open_read(path.c_str());
+    if (fd < 0)
+      return Status::Missing;
+    FeatureFileHeader head{};
+    const size_t got = file_pread(fd, &head, sizeof(head), 0);
+    file_close(fd);
+    return got != sizeof(head)                       ? Status::Short
+           : head.magic != FeatureFileHeader::kMagic ? Status::Format
+           : head.fingerprint != L.fingerprint       ? Status::Fields
+                                                     : Status::Ok;
+  }
+
   // 一层一天整层读回 layer [T][F][A] (write 的逆): 按 write 的同一列组, 一组 read 进 s.column 再散回 layer. 非 Ok 时 layer 不动.
   static Status read_layer(const std::string &path, const LevelInfo &L, feature_storage_t *layer, size_t A,
                            std::uint64_t axis_hash, Scratch &s) {
@@ -249,13 +266,12 @@ private:
       return Status::Missing;
     FeatureFileHeader head{};
     const size_t got = file_pread(fd, &head, sizeof(head), 0);
-    assert(got == sizeof(head) && "特征日文件短于头 (损坏)");
-    (void)got;
-    const Status st = head.magic != FeatureFileHeader::kMagic ? Status::Format
-                      : head.A != A                           ? Status::AxisSize
-                      : head.axis_hash != axis_hash           ? Status::AxisHash
-                      : head.fingerprint != L.fingerprint     ? Status::Fields
-                                                              : Status::Ok;
+    const Status st = got != sizeof(head)                       ? Status::Short
+                      : head.magic != FeatureFileHeader::kMagic ? Status::Format
+                      : head.A != A                             ? Status::AxisSize
+                      : head.axis_hash != axis_hash             ? Status::AxisHash
+                      : head.fingerprint != L.fingerprint       ? Status::Fields
+                                                                : Status::Ok;
     if (st != Status::Ok) {
       file_close(fd);
       fd = -1;

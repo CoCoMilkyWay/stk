@@ -1542,7 +1542,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   name_input("##name_cn", "name_cn (必填)", ui.name_cn_buf, sizeof(ui.name_cn_buf), ValidFactorNameCn, 150, ImGuiInputTextFlags_None);
   const bool name_cn_ok = ValidFactorNameCn(ui.name_cn_buf);
   if (ImGui::IsItemHovered())
-    tip("中文名: 纯汉字, 1..10 字");
+    tip("中文名: 汉字 / ASCII 字母数字 / #, 1..10 字");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(std::max(200.0f, ImGui::GetContentRegionAvail().x - (edit_row ? 300.0f : 240.0f)));
   ImGui::InputTextWithHint("##note", "note (可选: 一句话说明, 落文件 note 键)", ui.note_buf, sizeof(ui.note_buf));
