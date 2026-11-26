@@ -227,7 +227,7 @@ ToolOut ViewBook(const Call &c, Bay &bay) {
     const std::string why = didx != OrdersCatalog::kNoDay ? (ref.tombstone() ? "当日该股逐笔为空 (停牌或没有委托)" : "当日日文件里没有该股 (未上市 / 已退市, 或未编码)")
                             : ds.empty()                  ? "逐笔库没有任何日文件"
                                                           : "逐笔日文件里没有这一天 (逐笔共 " + str(ds.size()) + " 天: " + misc::dash(ds.front()) + " ~ " +
-                                                                misc::dash(ds.back()) + "; 非交易日或该日未编码); 最近的有逐笔日: " + near();
+                                               misc::dash(ds.back()) + "; 非交易日或该日未编码); 最近的有逐笔日: " + near();
     return Fail("## " + what + "\n没重放成: " + why);
   }
 
