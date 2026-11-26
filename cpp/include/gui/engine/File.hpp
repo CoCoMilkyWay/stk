@@ -105,7 +105,7 @@ std::string UpdateFactorFile(const FactorDir &dir, const FeatureTable &feats, st
 void DeleteFactorFile(const FactorDir &dir, std::string_view file);
 
 // 参数搜索落盘 (SearchService worker 调, 服务空闲时): weights 里持有期 = mk.hold 的项换成 ws (每项 {hold, sign, expr}, 无 stat; 可空 = 清掉该 h),
-// search 里该 h 的项换成 mk; 不可搜档 (search_hold 假) 的项一并丢掉, 别的项原样留; fresh → 原有 weights / search 全丢, 只剩本趟的;
+// search 里该 h 的项换成 mk; 不可搜档 (search_hold 假) 的项与同式的手填权重一并丢掉, 别的项原样留; fresh → 原有 weights / search 全丢, 只剩本趟的;
 // weights 为空 → 删 weights 键. 全部 stat 清掉 (调用方随后 Run 重算, 因子表 score / util 等全部由 stat 来), 其他键保留.
 // 文件须存在且是对象 (扫描时已解析过)
 struct SearchWeight {

@@ -1379,7 +1379,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   // ---- Search: 对高光行所在文件的模板搜全部自由参数, 只搜当前 Hold (限 Search/Config kSearchHolds), 目标 = 该 h 的中位窗目标
   //      (Stat/Roll.hpp); 结果替换文件里同 h 的 weights, 随后 TaskAlpha 自动 Run (因子表从新 stat 算) ----
   {
-    const auto searchable = [](const FactorRow &r) { return r.error.empty() && !r.tmpl.empty() && r.tmpl != r.expr; }; // 模板有自由参数
+    const auto searchable = [](const FactorRow &r) { return r.error.empty() && !r.tmpl.empty(); }; // 无自由参数的只评模板本身 (定方向)
     const bool tmpl_ok = view_row && searchable(*view_row);
     const bool hold_ok = !(ft.y.list.n == 0) && factor::search::search_hold(cur_hold);
     const bool can_search = !busy && !sbusy && !all_active && ctx.axis_ready && hold_ok && tmpl_ok;
@@ -1402,9 +1402,9 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       else if (!view_row)
         tip("先在表格里点一行");
       else if (!tmpl_ok)
-        tip("%s 的模板没有自由参数: 勾选编辑, 把要搜的参数勾成自由, 再 Save", view_row->file.c_str());
+        tip("%s BROKEN, 不能搜", view_row->file.c_str());
       else
-        tip("搜 %s 的自由参数 (只搜当前 Hold %s)\n"
+        tip("搜 %s 的自由参数 (只搜当前 Hold %s; 无自由参数 = 只评模板本身定方向)\n"
             "• 目标 = 中位 %s: 滚动窗 (评估期 / %d) %s 的中位, 不看成本; 方向随它的号\n"
             "• %d × (1 + log2 自由参数个数) 个采样点里最高的一个替换该 Hold 的权重, 然后自动 Run",
             view_row->file.c_str(), hold_name(cur_hold).c_str(), factor::stat::kTargetName, factor::stat::kRollParts, factor::stat::kTargetName,
@@ -1436,7 +1436,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     }
     if (!can_search_all)
       ImGui::EndDisabled();
-    // 各文件 weights 整份覆盖 (只剩本轮搜出的); 跳过无自由参数 / BROKEN; 一个文件的各档搜完即只 Run 该文件 (结果立刻进表);
+    // 各文件 weights 整份覆盖 (只剩本轮搜出的); 跳过 BROKEN; 一个文件的各档搜完即只 Run 该文件 (结果立刻进表);
     // Cancel = 取消在跑的 Search 并清空队列 (已写入的保留; 在跑的单文件 Run 照常跑完)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       tip("逐个 Search 全部模板 (%d 个) × 持有期 (%s), 每个文件搜完立刻只 Run 该文件, 结果随即进表\n"

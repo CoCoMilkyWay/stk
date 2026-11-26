@@ -396,11 +396,16 @@ void WriteFactorSearch(const FactorDir &dir, std::string_view file, bool fresh, 
         marks.push_back(o);
   marks.push_back(search_json(mk));
   j["search"] = std::move(marks);
+  // 手填权重 (hold null) 与本趟搜出的同式 → 由搜出的取代
+  const auto superseded = [&](const ojson &o) {
+    return o.is_object() && o.contains("hold") && o["hold"].is_null() && o.contains("expr") &&
+           std::any_of(ws.begin(), ws.end(), [&](const SearchWeight &w) { return o["expr"] == w.expr; });
+  };
   ojson arr = ojson::array();
   if (!fresh && j.contains("weights")) {
     assert(j["weights"].is_array() && "搜索落盘: weights 扫描时已校验过");
     for (const ojson &o : j["weights"])
-      if (HoldId h = kHoldT1; !o.is_object() || !json_hold(o, h) || keep(o))
+      if (HoldId h = kHoldT1; (!o.is_object() || !json_hold(o, h) || keep(o)) && !superseded(o))
         arr.push_back(o);
   }
   for (const SearchWeight &w : ws) {
