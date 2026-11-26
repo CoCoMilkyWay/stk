@@ -35,12 +35,12 @@ struct BuildNode {
 // 一次 Search 的对象: 模板行 + 持有期键 (search_hold) + 落盘前是否清空文件全部 weights (SearchSpec::fresh)
 struct SearchJob {
   FactorRow row;
-  int hold = 0;
+  HoldId hold = kHoldT1;
   bool fresh = false;
 };
 
 struct FactorsUIState {
-  int hold_idx = 0;          // FeatureTable::labels 下标 (表列显示哪个持有期; 多权重因子的父行取该 h 下 score 最高的权重)
+  int hold_idx = 0;          // FeatureTable::y.list 下标 (表列显示哪个持有期; 多权重因子的父行取该 h 下 score 最高的权重)
   BuildNode build;           // 加因子构建器的根
   char name_buf[64] = "";    // name_en = 文件名主干, 必填
   char name_cn_buf[64] = ""; // name_cn, 必填, 纯汉字 ≤10 字 (≤30 字节)
@@ -94,7 +94,7 @@ float hold_points_line(const HoldPoints &p, bool draw = true);
 // 紧凑切换控件 (替代下拉): "label ◂ value ▸", 方形箭头循环切, 值占位定宽 (最宽一项, 居中) → 按钮位置不随值跳;
 // 只有两项时省掉箭头, 定宽按钮点一下 toggle. 返回是否切了. 整体一个 Group, 调用方紧接着 IsItemHovered() 对整个控件生效
 bool cycler(const char *label, int &idx, const char *const *values, int n);
-// 持有期切换 "Hold ◂ 周期名 ▸" (cycler, idx = ft.y.labels 下标); 不足两项只显示名字. 返回是否切了
+// 持有期切换 "Hold ◂ 周期名 ▸" (cycler, idx = ft.y.list 下标); 不足两项只显示名字. 返回是否切了
 bool hold_cycler(int &hold_idx, const FeatureTable &ft);
 // Hold 提示的公共尾段 = Stat/Contract.hpp【协议表 1 / 2】的 UI 摘要. 细节: 开仓 = 本层行收盘 C(层) 出信号, 日层 = 当日收盘建仓;
 // 次分钟VWAP = 之后首个有成交连续竞价分钟 (各分钟层); 收盘 / 开盘撮合价 = 集合竞价单一价;

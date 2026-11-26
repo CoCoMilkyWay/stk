@@ -17,7 +17,7 @@ namespace {
 using RunProbes = EvalProbes<>;
 using DayProbes = EvalProbes<NavP, TurnP>;
 
-DayLine day_of(const DayProbes &p, const EvalStat &st, int hold) {
+DayLine day_of(const DayProbes &p, const EvalStat &st, HoldId hold) {
   const factor::stat::HoldStat *h = st.find_hold(hold);
   assert(h && "逐日序列的持有期须是本层标签组之一");
   const TurnP &tp = p.at<TurnP>();
@@ -31,7 +31,7 @@ DayLine day_of(const DayProbes &p, const EvalStat &st, int hold) {
 template <class Ps>
 Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx, const std::function<void()> &on_plan,
              const std::function<void(size_t)> &on_row, DayLines *day) {
-  RootSet rs{.hd = keys_of<Holds>(sc.ft->y.labels)};
+  RootSet rs{.hd = Holds::of(sc.ft->y.holds)};
   for (const size_t i : idx)
     rs.add(*sc.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign));
   ForestOut o;

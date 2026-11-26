@@ -27,7 +27,7 @@ BookLines fold_book(misc::exec::ForkJoin &ex, int seg, const RowLines &r, int st
   ex.rows(n, [&](int i0, int i1, int) {
     std::vector<double> inc(static_cast<size_t>(T));
     for (int i = i0; i < i1; ++i) {
-      const int hd = r.hold[static_cast<size_t>(i)];
+      const HoldId hd = r.hold[static_cast<size_t>(i)];
       const bool at_exit = r.at_exit[static_cast<size_t>(i)];
       const double h = factor::stat::hold_span(hd, g);
       const float *x = r.x.data() + static_cast<size_t>(i) * T;
@@ -62,11 +62,10 @@ BasketPass::BasketPass(const Domain &dm, std::shared_ptr<const pool::Picks> pk, 
   assert(r0_ + dm.dates.size() <= s.days() && std::equal(dm.dates.begin(), dm.dates.end(), s.dates.begin() + static_cast<std::ptrdiff_t>(r0_)) &&
          "评估日 = 原料带的连续行");
   const int nl = static_cast<int>(basket_table().size()), A = static_cast<int>(s.A()), P = static_cast<int>(ds_);
-  rx_.reset(nl, P);
-  std::fill(rx_.hold.begin(), rx_.hold.end(), factor::stat::hold_same(1));
+  rx_.reset(nl + A, P); // [篮子 | 个股] 逐行批收益, 一并 fold
+  std::fill(rx_.hold.begin(), rx_.hold.end(), kHoldT1);
   Book &bk = out_[Quote::kBasket], &sk = out_[Quote::kStock];
   bk.col[kBookBuy].reset(nl, P);
-  sk.col[kBookRet].reset(A, P);
   bk.cap.reset(nl, P, kNaN);
   sk.cap.reset(A, P, kNaN);
   for (int j = 0; j < kMarginVals; ++j) {
@@ -85,8 +84,9 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
   const BasketTable &bt = basket_table();
   const ConceptTable &ct = concepts();
   const YPlanes &y = c.y;
-  assert(y.sh.seg == 1 && y.hd.n == 1 && y.hd.k[0] == factor::stat::hold_same(1) && y.eo && y.labels[0]);
-  const LegPlane &lab = *y.labels[0];
+  assert(y.sh.seg == 1 && y.hd.n == 1 && y.hd.k[0] == kHoldT1 && y.eo && y.labels[0]);
+  const LabPlane &lab = *y.labels[0];
+  const factor::stat::Label lb = label_of(lab, y.eo, nullptr);
   const factor::stat::Span sp = c.span();
   const size_t T = static_cast<size_t>(sp.T), A = static_cast<size_t>(sp.A), nl = bt.size();
   const size_t rc = r0_ + c.ck.d0, r_stat = r0_ + warm_;
@@ -108,7 +108,7 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
   for (int t = t_lo; t < t_hi; ++t)
     wt.emplace_back(*pk_, s.holding_after(rc + static_cast<size_t>(t)));
 
-  // 2. 可成交篮子批收益 → rx_ (子池按位集; 母集算一次直接广播给该股全部概念, 零二分)
+  // 2. 可成交篮子批收益 → rx_ (子池按位集; 母集算一次直接广播给该股全部概念, 零二分) + 单只个股的可成交批收益 (成员 = 标签有效, 同一核)
   const uint8_t *ind_base = s.ind.data() + rc * A;
   const PoolMask base_bit = pool_bit(kBasketBase);
   ex.rows(n_stat, [&](int u0, int u1, int) {
@@ -118,12 +118,21 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
       const factor::stat::Chain ch = factor::stat::chain_of(t, sp, y.hd.k[0]);
       const Weigh &w = wt[static_cast<size_t>(t - t_lo)];
       const size_t row = static_cast<size_t>(t) * A;
+      const size_t u_row = static_cast<size_t>(c.land0() + t);
       for (size_t a = 0; a < A; ++a) {
         const size_t i = row + a;
-        const PoolMask pm = in[i];
-        if (!pm || !lab.m[i])
+        if (!lab.m[i])
           continue;
-        const float lv[factor::stat::kLegs] = {factor::cpu::stat::h2f(lab.v[factor::stat::kLong][i]), factor::cpu::stat::h2f(lab.v[factor::stat::kShort][i])};
+        float lv[2];
+        factor::stat::label_cell(lb, static_cast<ptrdiff_t>(i), factor::cpu::stat::H2F{}, lv);
+        {
+          const factor::stat::Cell<uint8_t> one{ch, lab.m.data() + i, lab.m.data() + i, y.eo + i, lv};
+          const auto self = [](uint8_t v) { return v != 0; };
+          rx_.x[(nl + a) * ds_ + u_row] = one.held(self) ? one.ret(one.continues(self)) : 0.f;
+        }
+        const PoolMask pm = in[i];
+        if (!pm)
+          continue;
         const factor::stat::Cell<PoolMask> cl{ch, in.data() + i, lab.m.data() + i, y.eo + i, lv};
         const Weigh::Cell wc = w.of(a);
         const auto add = [&](size_t l, double om, float r) { acc[2 * l] += om * r, acc[2 * l + 1] += om; };
@@ -190,8 +199,6 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
     for (int t = t_lo + u0; t < t_lo + u1; ++t) {
       const size_t u = static_cast<size_t>(c.land0() + t), r = r_stat + u, row = static_cast<size_t>(t) * A;
       for (size_t a = 0; a < A; ++a) {
-        if (u > 0 && r > 0)
-          sk.col[kBookRet].v[a * ds_ + u] = s.rel(r - 1, r, a) - 1.f;
         const double mc = mcap(r, a);
         if (!(mc > 0.0))
           continue;
@@ -262,7 +269,10 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
 }
 
 Baskets BasketPass::finish(misc::exec::ForkJoin &ex) {
-  out_[Quote::kBasket].col[kBookRet] = fold_book(ex, 1, rx_, 1);
+  const BookLines all = fold_book(ex, 1, rx_, 1);
+  const int nl = static_cast<int>(basket_table().size());
+  out_[Quote::kBasket].col[kBookRet] = all.slice(0, nl);
+  out_[Quote::kStock].col[kBookRet] = all.slice(nl, all.n - nl);
   rx_ = RowLines{};
   return std::move(out_);
 }
@@ -284,11 +294,12 @@ BookLines pool_line(misc::exec::ForkJoin &ex, const Block &c) {
       for (size_t a = 0; a < nA; ++a) {
         const size_t i = row + a;
         for (size_t hi = 0; hi < H; ++hi) {
-          const LegPlane &lab = *y.labels[hi];
+          const LabPlane &lab = *y.labels[hi];
           if (!lab.m[i])
             continue;
           const factor::stat::Chain ch = factor::stat::chain_of(t, sp, y.hd.k[hi]);
-          const float lv[factor::stat::kLegs] = {factor::cpu::stat::h2f(lab.v[factor::stat::kLong][i]), factor::cpu::stat::h2f(lab.v[factor::stat::kShort][i])};
+          float lv[2];
+          factor::stat::label_cell(label_of(lab, y.eo, nullptr), static_cast<ptrdiff_t>(i), factor::cpu::stat::H2F{}, lv);
           const factor::stat::Cell<uint8_t> cl{ch, lab.m.data() + i, lab.m.data() + i, y.eo + i, lv};
           const auto pred = [](uint8_t v) { return v != 0; };
           if (cl.held(pred))

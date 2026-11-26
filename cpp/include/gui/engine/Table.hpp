@@ -6,8 +6,8 @@
 
 #include "disk/Disk.hpp"
 #include "factor/Expr.hpp"
-#include "factor/Search/Contract.hpp" // Roll (因子表 score)
 #include "factor/Stat/Contract.hpp"
+#include "factor/Stat/Roll.hpp"            // Roll (因子表 score)
 #include "features/Storage/FeatureLib.hpp" // FeatureLib (请求的库清单)
 #include "math/distribution/PdfSnap.hpp"   // AggPdf
 #include "orders/L2DataType.hpp"           // L2::ValidType
@@ -99,10 +99,9 @@ struct HoldPoint {
 struct HoldPoints {
   HoldPoint open, close;
 };
-HoldPoints hold_points(int hold, FactorLevelId lv);
-std::string hold_desc(int hold, FactorLevelId lv);     // "开仓: C(层) @ 价, 清仓: 点 @ 价"
+HoldPoints hold_points(HoldId hold, FactorLevelId lv);
+std::string hold_desc(HoldId hold, FactorLevelId lv);  // "开仓: C(层) @ 价, 清仓: 点 @ 价"
 std::vector<std::string> row_clocks(FactorLevelId lv); // [seg] 各行的行末时刻 HH:MM (日层 = 15:00)
-factor::stat::Fee fee_of(const Config &c);             // 换手成本费率 = Config 固定冲击 / 佣金 / 印花税 (Stat 契约【换手成本】)
 // 因子目录: 一组因子文件 <名>.json (file 节点, 键定到目录) + 各自的 Search 日志 <名>.log (log 节点, 同键, 在 run/ 下同构位置).
 //   正式 = output/factors/<池>/<层>/; Agent 候选 = 会话作用域的 factors/ (gui/task_agent/Bridge.cpp)
 struct FactorDir {
@@ -138,18 +137,6 @@ struct FeatCol : Col {
   bool allowed = false; // 可作因子输入 (TS / CS 特征); 标签 / ts_valid / cs_valid 不许 (前视)
   bool target = false;  // N 元回归的目标叶 (网格层本层的做多标签列, y.labels 收的持有期; 不可写进表达式, 由 h 推出)
 };
-// 两侧列 (标签 / 成本同形): 标签 key = 持有期键 (Stat/Contract.hpp), 侧 = lb_long_<name> / lb_short_<name>;
-// 成本 key = 金额段 (万), 侧 = Lob 库网格层 lb_cost_buy_<amt>w / lb_cost_sell_<amt>w (盘口段; 组合只做多, 装载只取买入侧);
-// 固定段 key kAmtFixed, 侧无列 (Stat 契约【换手成本】)
-struct LegCol {
-  int key = 0;
-  Col leg[factor::stat::kLegs];
-  bool flat() const { return !leg[factor::stat::kLong].has(); }
-};
-inline constexpr int kAmtFixed = 0;
-inline std::string amt_name(int amt) { return amt == kAmtFixed ? std::string("固定") : std::to_string(amt) + "w"; } // 金额段的 UI 名
-const LegCol *find_leg(const std::vector<LegCol> &cols, int key);                                                   // key 不在 → nullptr
-const LegCol &leg_of(const std::vector<LegCol> &cols, int key);                                                     // key 不在 → assert
 // X ↔ Y 两侧装载平面 (XCols / YCols ↔ Load LeafId / YSpec → XPlanes / YPlanes, load_x / load_y → Store::pin):
 //   X = 因子输入叶 = Lob 档 (只 min 层有) 及 Bar 档不细于网格的各层全部列 (含日层估值七叶 val[PoolVal])
 //   Y = 门控 / 标签 = Bar 档网格层本层列; 成本盘口段 = Lob 档网格层本层列
@@ -177,12 +164,20 @@ inline constexpr bool margin_val(int m) { return m >= kValRz; }
 // 各口的日频输入叶 (FeatureTable::val 下标 = PoolVal, bar.1d.<列>): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM
 // / 融资余额 / 融券余额
 inline constexpr const char *kPoolValCols[kPoolVals] = {"pl_npp_ttm", "bs_eq", "pl_rev_ttm", "cf_ocf_ttm", "dy_ttm", "rz_bal", "rq_bal"};
+// 一个持有期的标签列: lb_<h> 做多收益 / lb_nom_<h> 名义收益 (只偏移型)
+struct LabCols {
+  Col lv, nv;
+};
 struct YCols {
-  Col ts;                     // ts_valid (当日有成交)
-  Col cs;                     // cs_valid (标签 + 截面门控平面)
-  Col entry;                  // lb_entry_ok 建仓可成交码 (各持有期共用; Stat 契约【仓位感知】)
-  std::vector<LegCol> labels; // 按 key 升序; long / short 都齐且本层合法 (hold_ok) 才收
-  std::vector<LegCol> costs;  // 按 key 升序: 固定段 (恒在, 首个) + 盘口段 (Lob 档本层冲击列; 评估域含 Lob 库才可用, 见 y_spec). Run / Inspect / Portfolio 每段攒 CostAcc; Search 不看成本
+  Col ts;                                    // ts_valid (当日有成交)
+  Col cs;                                    // cs_valid (标签 + 截面门控平面)
+  Col entry;                                 // lb_entry_ok 建仓可成交码 (各持有期共用; Stat 契约【仓位感知】)
+  HoldSet holds = 0;                         // 本层合法 (hold_ok) 的持有期 = 有标签列的
+  Holds list;                                // holds 的有序视图 (UI 按下标切持有期)
+  LabCols lab[kHoldCount];                   // [HoldId]
+  AmtSet amts = 0;                           // 固定段 (恒在) + 盘口段 (Lob 档本层有冲击列的; 评估域含 Lob 库才可用, 见 y_spec)
+  Col cost[kAmtCount][factor::stat::kSides]; // [AmtId][买 / 卖] Lob 档本层冲击列 lb_cost_<buy|sell>_<a>w; 固定段无列
+  bool has(HoldId h) const { return (holds & hold_bit(h)) != 0; }
 };
 struct BCols {
   Col ohlc[4];    // open high low close (K 线, 不复权; 列名 FactorLevel::kline)
@@ -197,17 +192,16 @@ struct FeatureTable {
   BCols b;
   LeafId val[kPoolVals] = {};                 // [PoolVal] bar.1d 估值七叶 (X 侧复用)
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER; 回归目标 = label_leaf)
-  // 持有期 hold 的回归目标叶名 (y.labels 的做多列); 本层无该持有期 → 空串
-  std::string label_leaf(int hold) const;
+  // 持有期 hold 的回归目标叶名 (y.lab 的做多列); 本层无该持有期 → 空串
+  std::string label_leaf(HoldId hold) const;
   // 因子层 = 最细叶层: 无叶落在网格层 → false + err (该放更粗的层目录). parse 过的模板调 (目标叶不计)
   bool check_grid(const factor::expr::Expr &e, std::string &err) const;
   // 已校验过的规范串 (scan / 构建器出的模板 / 权重) 再解析; 不成 → assert
   factor::expr::Expr reparse(std::string_view canon) const;
   // 模板的自由 h 落为 hold 再解析 (Search / 权重比对按所评持有期; 无自由 h 即 reparse)
-  factor::expr::Expr reparse_at(std::string_view canon, int hold) const;
+  factor::expr::Expr reparse_at(std::string_view canon, HoldId hold) const;
 };
-// LB 列按 code 识别: Bar 档 lb_<long|short>_<name> 标签 (name = <n>m / close / t<N>o / t<N> → 持有期键, Stat/Contract.hpp) + lb_entry_ok;
-// Lob 档 lb_cost_<buy|sell>_<amt>w 建仓冲击 (盘口段)
+// LB 列按协议表 (define/Label.hpp) 拼名定位: Bar 档 lb_<token> / lb_nom_<token> 标签 + lb_entry_ok; Lob 档 lb_cost_<buy|sell>_<a>w 建仓冲击 (盘口段)
 FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId lv);
 // 按层缓存的字段表 (每进程代一份, Alpha / Market / Agent 线程安全共享): 首次用到该层时建
 std::shared_ptr<const FeatureTable> table_of(const Feature &feature, FactorLevelId lv);
@@ -260,8 +254,8 @@ struct StatScope {
 // 两侧冲击按 Config::max_impact 封顶后进 (装载时; 盘口缺 = 封顶).
 // Run 每因子每金额段都攒 (落 stat.costs), 年换手取段 0 (各段同一份 Δw), Inspect 期限结构净线从它算
 struct CostTier {
-  int amt = 0;                                            // 万 (= FeatureTable::y.costs[c].key; kAmtFixed = 固定段)
-  factor::stat::CostAcc acc[factor::stat::kMaxHold] = {}; // [hd.n], 与 hold 同序
+  AmtId amt = kAmtFixed;                      // 金额段 (kAmtFixed = 固定段)
+  factor::stat::CostAcc acc[kHoldCount] = {}; // [hd.n], 与 hold 同序
 };
 // 因子表迷你 PDF: Inspect 同款 KLL PDF (AggPdf) 线性插值到 [lo, hi] 上等距 kMiniPdfPts 点, y 按峰值归一到 [0, 1]; lo == hi → 无 (不画)
 inline constexpr int kMiniPdfPts = 32;
@@ -270,12 +264,8 @@ struct MiniPdf {
   float y[kMiniPdfPts] = {};
   bool has() const { return hi > lo; }
 };
-// 尾部分层 (不进 Stat 契约 / Search; Inspect 净值线与 Lens 逐行同一份, 逐格扩展 TailExt 在 Probe): 两端组 (顶 / 底) 内更极端的一截,
-// 占该组 kTailOfGroup[j] (= 整截面 kTailOfGroup[j] / kGroups: 2.5% / 1% / 0.25%), j 越大越极端. 阈值按 r16 定 (tail_thresholds), 与 grp_of 的组边界同口径
-// (q = 1 即整组). 逐行只在 Row::ok 行有值
-inline constexpr int kTails = 3;
-inline constexpr float kTailOfGroup[kTails] = {0.5f, 0.2f, 0.05f};
-static_assert(kTailOfGroup[0] < 1.f && kTailOfGroup[1] < kTailOfGroup[0] && kTailOfGroup[2] < kTailOfGroup[1] && kTailOfGroup[2] > 0.f);
+// 尾部分层 (Stat 契约【尾部】, Row::tail): 两端组内更极端的一截, 占该组 tail_frac(j)
+using factor::stat::kTails;
 // 分层净值线表 (Probe NavP 出, Inspect 左上 / agent eval_factor 的分层图): 分层 = 20 组 + 两端各 kTails 级尾部, LS = 整组 + 各级尾部;
 // 全量 = 绝对分层 / 超额分层 / 绝对 LS / 超额 LS 四段 (kNavLines), 只要超额 = 超额分层 / 超额 LS 两段 (kNavExcess)
 inline constexpr int kNavLayers = factor::stat::kGroups + factor::stat::kEnds * kTails;
@@ -283,11 +273,6 @@ inline constexpr int kNavLs = 1 + kTails;
 inline constexpr int kNavLines = 2 * (kNavLayers + kNavLs);
 inline constexpr int kNavExcess = kNavLayers + kNavLs;
 inline constexpr int layer_tail(int e, int j) { return factor::stat::kGroups + e * kTails + j; }
-// 一行的尾部分层 (TailExt 收尾; 只在 Row::ok 行有值, 其余全 0)
-struct TailRow {
-  float sum[factor::stat::kEnds][kTails] = {};    // 两端尾部的超额持仓收益 Σe / max(cnt, cap_j) (cap_j = 满仓 · kTailOfGroup[j]; 与 Row::grp 同口径)
-  uint16_t cnt[factor::stat::kEnds][kTails] = {}; // 两端尾部真持有只数 (与 Row::cnt 同口径)
-};
 // alpha 分布 (Inspect 左下右半图 / Run 落因子表小图, 同一份 Probe alpha_dist): 样本 = 池内有效格 (rx 有效 ∧ alpha 有效), 组号 = grp_of(rx)
 // (与 Stat 同一组); 按所评方向取值 (反向 = −alpha, 组倒序, 与 oriented 同读法). 与持有期无关
 struct AlphaDist {
@@ -314,27 +299,27 @@ struct EvalStat {
   double eval_ms = 0;                    // 子树算子节点 wall 之和 (与 hold 无关: 因子平面只算一遍, Stat 按持有期复用它)
   float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (Probe CoverP)
   int n_hold = 0;
-  factor::stat::HoldStat hold[factor::stat::kMaxHold]; // [hold], 毛收益口径
-  std::vector<CostTier> costs;                         // [amt] = FeatureTable::y.costs 序 (非空), 每金额段 [n_hold] CostAcc (年换手 / Inspect 净线从它算)
-  MiniPdf ic_pdf[factor::stat::kMaxHold];              // [hold] 逐行 rIC (ok 行) 分布 (Probe IcPdfP; 因子表小图)
-  std::vector<YearStat> years[factor::stat::kMaxHold]; // [hold] 分年 (年升序, 只列有统计行 ≥ 3 的年)
-  factor::search::Roll roll[factor::stat::kMaxHold];   // [hold] 滚动窗统计 (Probe YearP; 中位 rIC = 因子表 score, Search 契约【目标】)
-  MiniPdf alpha_pdf;                                   // alpha 分布 (截尾; Probe AlphaP; 与持有期无关)
-  const factor::stat::HoldStat *find_hold(int hold_m) const {
+  factor::stat::HoldStat hold[kHoldCount]; // [hold], 毛收益口径
+  std::vector<CostTier> costs;             // 金额段升序 (首个 = 固定段), 每金额段 [n_hold] CostAcc (年换手 / Inspect 净线从它算)
+  MiniPdf ic_pdf[kHoldCount];              // [hold] 逐行 rIC (ok 行) 分布 (Probe IcPdfP; 因子表小图)
+  std::vector<YearStat> years[kHoldCount]; // [hold] 分年 (年升序, 只列有统计行 ≥ 3 的年)
+  factor::stat::Roll roll[kHoldCount];     // [hold] 滚动窗统计 (Probe YearP; 中位 rIC = 因子表 score, Stat/Roll.hpp)
+  MiniPdf alpha_pdf;                       // alpha 分布 (截尾; Probe AlphaP; 与持有期无关)
+  const factor::stat::HoldStat *find_hold(HoldId hold_m) const {
     for (int j = 0; j < n_hold; ++j)
       if (hold[j].hold == hold_m)
         return &hold[j];
     return nullptr;
   }
-  const factor::search::Roll &roll_of(const factor::stat::HoldStat &h) const { // h = 本行 hold[] 之一
+  const factor::stat::Roll &roll_of(const factor::stat::HoldStat &h) const { // h = 本行 hold[] 之一
     assert(&h >= hold && &h < hold + n_hold);
     return roll[&h - hold];
   }
-  const MiniPdf *find_ic_pdf(int hold_m) const {
+  const MiniPdf *find_ic_pdf(HoldId hold_m) const {
     const factor::stat::HoldStat *h = find_hold(hold_m);
     return h ? &ic_pdf[h - hold] : nullptr;
   }
-  const std::vector<YearStat> *find_years(int hold_m) const {
+  const std::vector<YearStat> *find_years(HoldId hold_m) const {
     const factor::stat::HoldStat *h = find_hold(hold_m);
     return h ? &years[h - hold] : nullptr;
   }

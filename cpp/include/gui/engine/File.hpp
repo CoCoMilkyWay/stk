@@ -7,11 +7,11 @@
 //     "expr":   "CsRank(TsMeanRoll(TsLog(amt), d))",         // 必有: **模板**, 裸键名 d / k / k2 / w = 待搜参数 (Expr.hpp 自由参数), 数字 = 固定
 //     "note":   "…",                                          // 可选, 人 / agent 写的一句话
 //     "weights": [                                            // 可选: 参数搜索 (SearchService) 写的全部权重, 每项一个具体表达式, 一行一个
-//       { "hold": 30,                                         //   搜索时的持有期 (0 = 手填)
+//       { "hold": "30m",                                      //   搜索时的持有期 token (null = 手填)
 //         "sign": -1,                                         //   可选, ±1 (缺 = +1): −1 = 取反才是好因子, 按反向评估 (Stat 契约【方向 Dir】)
 //         "expr": "CsRank(TsMeanRoll(TsLog(amt), d=35))" }, … ], //   模板的一个实例 (结构同模板, 固定参数相同, 自由参数落值)
 //     "search": [                                             // 可选: Search 的结局, 每持有期至多一项, 一行一个 (换模板即丢)
-//       { "hold": 30, "start_date", "end_date", "days" }, … ], //   评估期 (所用库落盘日交集的最近 N 年)
+//       { "hold": "30m", "start_date", "end_date", "days" }, … ], // 评估期 (所用库落盘日交集的最近 N 年)
 //     —— 以下 Run 写 (评估派生, 换掉 / 清空 weights 时一起删; StatJson scope_json / eval_json) ——
 //     "run": { scope… (含 "years"), "frame", "max_impact", "n_full" }, // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
 //     "hold_cols": [...], "acc_cols": [...],                  // holds / acc 数组的列名 (StatJson), 与代码不符 → 全部 stats 忽略
@@ -25,12 +25,12 @@
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).
 //   表里一行 = 一个权重 (FactorRow::widx); 模板含自由参数而无 weights → 一行 "未搜索" (不评); 模板本身具体而无 weights → 没搜过则视作唯一权重
-//   (hold 0), 搜过 (有 search) 则同 "搜过无权重" 一行 (不评).
+//   (hold null), 搜过 (有 search) 则同 "搜过无权重" 一行 (不评).
 // 出错策略: 因子文件 / 表达式不合法是正常输入 → 行 error; 回写的文件扫描时已解析过 → 不合即 assert.
 #pragma once
 
-#include "factor/Search/Contract.hpp" // Roll (因子表 score 与 Search 同一份目标)
-#include "gui/engine/Table.hpp"       // FeatureTable / EvalStat / RowState
+#include "factor/Stat/Roll.hpp" // Roll (因子表 score 与 Search 同一份目标)
+#include "gui/engine/Table.hpp" // FeatureTable / EvalStat / RowState
 
 #include <cstdint>
 #include <string>
@@ -46,7 +46,7 @@ inline constexpr const char *kind_name(FactorKind k) { return k == FactorKind::A
 
 // 一趟 Search 的结局 (文件 search[] 一项): 搜时的评估期
 struct SearchMark {
-  int hold = 0;
+  HoldId hold = kHoldT1;
   misc::Ymd start_date = 0, end_date = 0; // 评估期首末
   int days = 0;
 };
@@ -58,7 +58,7 @@ inline std::string row_key(std::string_view file, int widx) { return std::string
 struct FactorRow : EvalStat {
   std::string file;    // 文件名 (不含目录) = 因子 (父) 身份 (edit_file / Search / 删除)
   int widx = -1;       // weights 下标; −1 = 文件级行
-  int hold_src = 0;    // 该权重搜索时的持有期 (0 = 手填: 文件 expr 本身具体、无 weights 且没搜过, 视作唯一权重)
+  int hold_src = -1;   // 该权重搜索时的持有期 (HoldId; −1 = 手填: 文件 expr 本身具体、无 weights 且没搜过, 视作唯一权重)
   int sign = 1;        // 该权重的方向 (weights[].sign; dir_of → Stat 方向); expr 不带方向
   std::string key;     // row_key(file, widx)
   std::string name_en; // = 文件名主干 (去 .json)
@@ -78,9 +78,9 @@ struct FactorRow : EvalStat {
   bool stat_from_file = false;         // stat 来自文件 (非本进程算的); EvalStat::eval_ms = time 列
 };
 
-// 因子表的目标 (Search/Contract.hpp【目标】, 与 Search 打分同一份 score_of): 该行 stat 在持有期 hold 下的滚动窗统计 (中位 rIC = score).
+// 因子表的目标 (Stat/Roll.hpp, 与 Search 打分同一份 score_of): 该行 stat 在持有期 hold 下的滚动窗统计 (中位 rIC = score).
 // 无 stat / stat 无该持有期 / 无窗 → nullptr
-const factor::search::Roll *RowRoll(const FactorRow &r, int hold);
+const factor::stat::Roll *RowRoll(const FactorRow &r, HoldId hold);
 
 // 一个因子文件 → 行 (每权重一行; 文件级问题一行 widx −1) 追加进 out; 解析 / 校验失败 → error (文件不动). 跨行查重 (dup_of) 不在这里.
 // RunService::scan 逐文件调; Portfolio 按 (文件, 具体规范串) 找回条目的权重也走它
@@ -109,7 +109,7 @@ void DeleteFactorFile(const FactorDir &dir, std::string_view file);
 // weights 为空 → 删 weights 键. 全部 stat 清掉 (调用方随后 Run 重算, 因子表 score / util 等全部由 stat 来), 其他键保留.
 // 文件须存在且是对象 (扫描时已解析过)
 struct SearchWeight {
-  int hold = 0;
+  HoldId hold = kHoldT1;
   int sign = 1;     // ±1
   std::string expr; // 具体规范串 (模板实例, 不含 sign)
 };

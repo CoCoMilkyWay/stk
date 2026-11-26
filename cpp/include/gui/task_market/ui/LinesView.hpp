@@ -100,7 +100,7 @@ inline const float *leg_val(const LinesLeg &lg, int m) { return lg.b->val_of(lg.
 struct LineSrc {
   std::vector<LinesLeg> legs;
   bool cost = false;
-  factor::stat::Fee impact; // 费率 (cost 才有)
+  Fee impact; // 费率 (cost 才有)
   const Quote::Series *price = nullptr;
   const Quote::Series *minutes = nullptr; // minutes->minute
   bool operator==(const LineSrc &) const = default;
@@ -345,7 +345,7 @@ struct LinesDerKey {
   uint64_t gen = 0, items = 0;                  // PortfolioService::result_gen / PortfolioUIState::items_gen
   std::shared_ptr<const Quote::PriceView> view; // 价格库在用的发布
   misc::Ymd live = 0;                           // 当日 (接得上日脊才有)
-  factor::stat::Fee impact;                     // 费率 (冲击 + 税佣)
+  Fee impact;                                   // 费率 (冲击 + 税佣)
   size_t infos = 0;                             // 基本面档案数 (成分行名 / 悬停; 首次载入)
   std::string open;                             // 展开行 (篮子 / 账户)
   std::vector<uint32_t> stocks;                 // 选中的个股 (升序)
@@ -384,7 +384,7 @@ struct LinesViewKey {
 // open / stocks = 展开行 (篮子 / 账户) / 选中的个股 (成分组); watch = 自选键 (自选组; 其中的个股也进成分组); account / hold = 账户行的悬停 / 持仓;
 // d = 上一份 (按线源沿用) → 本份
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
-                      const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, const factor::stat::Fee &fee, const std::string &open,
+                      const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, const Fee &fee, const std::string &open,
                       const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const std::string &account,
                       const std::shared_ptr<const Quote::Holdings> &hold, const StockInfos &infos, LinesDerived &d);
 // 行 id → 行情键 (同 LinesRow::ref): 篮子 = 篮子表里同 id 的, 个股 = id 里的全局 id, 账户 = 账户 0; 因子 / 策略 / 找不到 → 无

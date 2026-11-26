@@ -37,15 +37,15 @@ struct BookLines {
   }
 };
 
-// 逐行批收益 (fold_book 入): x [n][T] = 线 i 行 t 这一批的收益; hold[i] = 持有期键; at_exit[i]: 1 = 平仓行实现 / 0 = 建仓行即付
+// 逐行批收益 (fold_book 入): x [n][T] = 线 i 行 t 这一批的收益; hold[i] = 持有期; at_exit[i]: 1 = 平仓行实现 / 0 = 建仓行即付
 struct RowLines {
   int n = 0, T = 0;
-  std::vector<int> hold;
+  std::vector<HoldId> hold;
   std::vector<uint8_t> at_exit;
   std::vector<float> x;
   void reset(int n_, int T_) {
     n = n_, T = T_;
-    hold.assign(static_cast<size_t>(n), 0);
+    hold.assign(static_cast<size_t>(n), kHoldT1);
     at_exit.assign(static_cast<size_t>(n), 1);
     x.assign(static_cast<size_t>(n) * static_cast<size_t>(T), 0.f);
   }
@@ -76,7 +76,7 @@ inline constexpr int kBookCols = 5;
 //   篮子: col[Ret] = 可成交指数 fold_book; col[Buy] = Sleeve::roll 增仓量; val = 持仓按权平均的七口 (EP / BP / SP / CP / DY / RZ / RQ);
 //         alt = 同成员按另一种权重平均的七口 (篮子加权 → 等权 = 个股均值; 等权 → 加权 = 按市值; Market VAL / MARGIN 逐行切);
 //         cap = 持仓成员 Σ总市值, bal[两融口] = 持仓成员 Σ余额 [亿元] (不看权重)
-//   个股: col[Ret] = 原料带 grow 比 − 1 (后复权); val = 七口; cap = 本只总市值; bal = 本只余额 (非两融标的 NaN)
+//   个股: col[Ret] = 单只的可成交账 (T+1 标签, 建仓须可买 / 续持取名义值, 与篮子同一核); val = 七口; cap = 本只总市值; bal = 本只余额 (非两融标的 NaN)
 struct Book {
   BookLines col[kBookCols];
   BookLines val[kPoolVals];

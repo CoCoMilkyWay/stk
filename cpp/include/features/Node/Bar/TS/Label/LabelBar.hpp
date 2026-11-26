@@ -3,23 +3,24 @@
 // =============================================================================
 // LabelBar - 价格收益标签 (分钟 VWAP 口径; 全部因子层的标签都在这里, 真实冲击成本由 Lob 档 LabelLob 补)
 // =============================================================================
-//   标签 (lb_long_<h> / lb_short_<h>, 组见 Common/Label/LabelGroups.hpp) = 纯价格收益, 不含冲击与税佣:
-//     做多: (exit − entry) / entry        做空: (entry − exit) / entry
+//   标签 (持有期表见 define/Label.hpp) = 纯价格收益, 不含冲击与税佣, 全仓只做多: (exit − entry) / entry
+//     lb_<h>      做多收益: exit = 名义平仓价点, 卖不出 (封跌停) / 停牌则顺延 (LabelHold【平仓顺延】)
+//     lb_nom_<h>  名义收益 (只偏移型: 分钟型 / T+N 同刻): exit = 名义平仓价点本身, 不顺延 —— 下一批交接续持时的估值 (Stat【仓位感知】)
 //   entry(m) = 行 m 之后首个有成交的连续竞价分钟 r ∈ [m+1, kContCloseMin) 的 VWAP (bar1m amount / volume):
 //     行 m 的特征在分钟 m 末才可知, 最早在分钟 m+1 内成交; 无成交分钟顺延 (稀疏 / 盘中停牌),
 //     09:30 前的行 (含 09:25 撮合) 顺延到开盘后首个有成交分钟; 集合竞价 bar 不作 entry (撮合前的堆单不可成交).
 //     之后再无连续竞价成交 (行 m ≥ kContCloseMin − 1 / 尾盘无成交) → 收盘价建仓 (分钟 / 收盘型即建即平 = 0; 同刻型平在 T+n 收盘).
 //   名义平仓:
-//     MIN     行 m 持有 n 分钟 = entry(m+n) (同一基准, 相邻行精确伸缩: Σ 连续 n 个 1m = 一个 nm); m+n 过收盘 → 收盘价 (T0 当日平仓)
-//     CLOSE   当日收盘价 = 末个有成交 bar 的 close (有收盘竞价即撮合价)
-//     OPEN    T+n 开盘价 = 09:25 撮合 bar 的价, 无撮合则首个有成交连续竞价 bar 的 open
-//     SAME_N  T+n 日同一行 m 的 entry 价点 (D+n 日该行建仓的同一价点: 隔 n 日两批交接; 尾部行 / L_1day 行 = T+n 收盘价)
+//     Min     行 m 持有 n 分钟 = entry(m+n) (同一基准, 相邻行精确伸缩: Σ 连续 n 个 1m = 一个 nm); m+n 过收盘 → 收盘价 (T0 当日平仓)
+//     Close   当日收盘价 = 末个有成交 bar 的 close (有收盘竞价即撮合价)
+//     Open    T+n 开盘价 = 09:25 撮合 bar 的价, 无撮合则首个有成交连续竞价 bar 的 open
+//     Same    T+n 日同一行 m 的 entry 价点 (D+n 日该行建仓的同一价点: 隔 n 日两批交接; 尾部行 / L_1day 行 = T+n 收盘价)
 //   可成交: 分钟价点 = Tradable 节点本分钟 can_buy / can_sell (整分钟封板判); 开盘 / 收盘价点按单一价撮合判 (LabelHold::auction_px).
 //     建仓可成交码 (lb_entry_ok) / 平仓顺延 / 环满按最近收盘价结清 见 Common/Label/LabelHold.hpp.
 //   全日无成交 (停牌 / 无 bar1m): 当日行无 entry, 不写; 名义今日到期的组进等待; 因子层 (gui/engine/Load) 把"当日无任何成交"的 asset-day 剔出截面池门控.
 //   价格均为 bar1m 价 × 当日复权比 (Fund adj_ratio, 日内恒定): 日内型与不复权同值, 日级型跨除权日的收益不含除权缺口.
 //   落盘层: L_1min / L_5min / L_15min / L_30min / L_60min / L_1day —— 行 = 该层行的末分钟 m 的标签;
-//     每层只留本层及以上的持有期组 (LABEL_GROUPS_FROM_<LVL>: 5min 层无 1m, L_1day 只有日级型). 逐分钟照算, 粗层只是不落非行末分钟.
+//     每层只留本层及以上的持有期组 (HOLDS_FROM_<LVL>: 5min 层无 1m, L_1day 只有日级型). 逐分钟照算, 粗层只是不落非行末分钟.
 //   1m / 5m 持有的 entry / exit 都是整分钟 VWAP, 相对秒级下单时刻有平滑偏差 (短持有期最明显); 换来全市场全期 (Bar 库) 同一口径.
 //
 // 非 DAG 节点 (未来标签需回填, 不走 Node), CoreTs 驱动:
@@ -28,8 +29,8 @@
 //   finish_all                  回测区间末: 悬挂日全部按最近一次收盘价结清, 全部释放.
 // =============================================================================
 
+#include "define/Label.hpp"
 #include "features/DataDefine.hpp"
-#include "features/Node/Common/Label/LabelGroups.hpp"
 #include "features/Node/Common/Label/LabelHold.hpp"
 
 class LabelBar : public LabelHold {
@@ -75,28 +76,36 @@ private:
 };
 
 // ---- 落盘列 (CMake 扫描汇总到 NodesGenerated.hpp, 格式见 FeaturesDefine.hpp) ----
-// 行序: 每个 hold 一组 [long, short] (组序 = LABEL_GROUPS 序; 层内按 LB(port) 直连 Label::Out 定址回 LB 块偏移), 之后 lb_entry_ok.
-// 英 / 中片段见 LabelGroups.hpp
-#define LBAR_NOTE_MIN(n) "行m+" #n "的entry(其后首个有成交连续竞价分钟的VWAP, 与entry同基准, 相邻行精确伸缩); 过收盘则按当日收盘价"
-#define LBAR_NOTE_CLOSE(n) "当日收盘价(末笔成交价)"
-#define LBAR_NOTE_OPEN(n) "T+" #n "日开盘价(09:25集合竞价撮合价, 无撮合则连续竞价首个有成交bar的开盘价)"
-#define LBAR_NOTE_SAME_N(n) "T+" #n "日同一行m的entry(与该行建仓同一价点, 隔日两批交接; 日线行即T+" #n "日收盘价)"
-#define LBAR_TEX_MIN(n) R"(, \quad P_{exit}=\mathrm{VWAP}_{t_{entry}+)" #n R"(\,\mathrm{min}})"
-#define LBAR_TEX_CLOSE(n) R"(, \quad P_{exit}=P^{close}_{D})"
-#define LBAR_TEX_OPEN(n) R"(, \quad P_{exit}=P^{open}_{D+)" #n "}"
-#define LBAR_TEX_SAME_N(n) R"(, \quad P_{exit}=\mathrm{VWAP}^{D+)" #n R"(}_{entry})"
-#define LBAR_ROW(X, CAT1, side, en, cn, formula, name, kind, n)                                       \
-  X(lb_##side##_##name, CAT1, ret, en " " LABEL_EN_##kind(n) " Return", cn LABEL_CN_##kind(n) "收益", \
-    cn LABEL_CN_##kind(n) "价格收益(比例; 不含冲击与税佣; 后复权). entry: 其后首个有成交连续竞价分钟的VWAP, 无成交顺延, 再无则按收盘价建仓; entry价可否买卖见lb_entry_ok(封板照写, 消费端按持仓判). exit: " LBAR_NOTE_##kind(n) "; 该腿不可成交(封板)或停牌则顺延至之后首个该腿可成交价点, 环满(" LABEL_DELAY_NOTE ")按最近收盘价; 越过区间末则按最后一日收盘价. 冲击与税佣由消费端扣(固定冲击Config::fixed_impact; 有Lob库时建仓可改扣真实冲击lb_cost_*)", formula LBAR_TEX_##kind(n), LB(side##_##name))
-#define LBAR_ROW_LONG(name, kind, n, X, CAT1) LBAR_ROW(X, CAT1, long, "Long", "做多", R"(\frac{P_{exit}-\mathrm{VWAP}_{entry}}{\mathrm{VWAP}_{entry}})", name, kind, n)
-#define LBAR_ROW_SHORT(name, kind, n, X, CAT1) LBAR_ROW(X, CAT1, short, "Short", "做空", R"(\frac{\mathrm{VWAP}_{entry}-P_{exit}}{\mathrm{VWAP}_{entry}})", name, kind, n)
-#define LBAR_GROUP(name, kind, n, X, CAT1) LBAR_ROW_LONG(name, kind, n, X, CAT1) LBAR_ROW_SHORT(name, kind, n, X, CAT1)
+// 行序: HOLDS 序每组 [lb_<h>, (偏移型) lb_nom_<h>] (层内按 LB(port) 直连 LabelHold::Out 定址回 LB 块偏移), 之后 lb_entry_ok.
+// 英 / 中片段见 define/Label.hpp
+#define LBAR_NOTE_Min(n) "行m+" #n "的entry(其后首个有成交连续竞价分钟的VWAP, 与entry同基准, 相邻行精确伸缩); 过收盘则按当日收盘价"
+#define LBAR_NOTE_Close(n) "当日收盘价(末笔成交价)"
+#define LBAR_NOTE_Open(n) "T+" #n "日开盘价(09:25集合竞价撮合价, 无撮合则连续竞价首个有成交bar的开盘价)"
+#define LBAR_NOTE_Same(n) "T+" #n "日同一行m的entry(与该行建仓同一价点, 隔日两批交接; 日线行即T+" #n "日收盘价)"
+#define LBAR_TEX_Min(n) R"(, \quad P_{exit}=\mathrm{VWAP}_{t_{entry}+)" #n R"(\,\mathrm{min}})"
+#define LBAR_TEX_Close(n) R"(, \quad P_{exit}=P^{close}_{D})"
+#define LBAR_TEX_Open(n) R"(, \quad P_{exit}=P^{open}_{D+)" #n "}"
+#define LBAR_TEX_Same(n) R"(, \quad P_{exit}=\mathrm{VWAP}^{D+)" #n R"(}_{entry})"
+#define LBAR_RET_TEX R"(\frac{P_{exit}-\mathrm{VWAP}_{entry}}{\mathrm{VWAP}_{entry}})"
+#define LBAR_RET(tok, kind, n, X, CAT1)                                                                                                                                                                                                                                                                                                                                                                                          \
+  X(lb_##tok, CAT1, ret, "Long " LABEL_EN_##kind(n) " Return", "做多" LABEL_CN_##kind(n) "收益",                                                                                                                                                                                                                                                                                                                                 \
+    "做多" LABEL_CN_##kind(n) "价格收益(比例; 不含冲击与税佣; 后复权). entry: 其后首个有成交连续竞价分钟的VWAP, 无成交顺延, 再无则按收盘价建仓; entry价可否买卖见lb_entry_ok(封板照写, 消费端按持仓判). exit: " LBAR_NOTE_##kind(n) "; 卖不出(封跌停)或停牌则顺延至之后首个可卖价点, 环满(" LABEL_DELAY_NOTE ")按最近收盘价; 越过区间末则按最后一日收盘价. 冲击与税佣由消费端扣(Config 费率; 有Lob库时可改扣真实冲击lb_cost_*)", \
+    LBAR_RET_TEX LBAR_TEX_##kind(n), LB(ret_##tok))
+#define LBAR_NOM(tok, kind, n, X, CAT1)                                                                                                                                                                                      \
+  X(lb_nom_##tok, CAT1, ret, "Nominal " LABEL_EN_##kind(n) " Return", "名义" LABEL_CN_##kind(n) "收益",                                                                                                                      \
+    "名义" LABEL_CN_##kind(n) "价格收益(比例; 不含冲击与税佣; 后复权). entry同lb_" #tok ". exit: " LBAR_NOTE_##kind(n) "; 名义价点即平不顺延(封板照平), 名义日停牌则取之后首个价点. 下一批交接续持时的估值(续持者不必成交)", \
+    LBAR_RET_TEX LBAR_TEX_##kind(n), LB(nom_##tok))
+#define LBAR_NOM_Min(tok, n, X, CAT1) LBAR_NOM(tok, Min, n, X, CAT1)
+#define LBAR_NOM_Close(tok, n, X, CAT1)
+#define LBAR_NOM_Open(tok, n, X, CAT1)
+#define LBAR_NOM_Same(tok, n, X, CAT1) LBAR_NOM(tok, Same, n, X, CAT1)
+#define LBAR_GROUP(Id, tok, kind, n, X, CAT1) LBAR_RET(tok, kind, n, X, CAT1) LBAR_NOM_##kind(tok, n, X, CAT1)
 #define LBAR_ENTRY(X, CAT1) \
   X(lb_entry_ok, CAT1, flag, "Entry Tradable", "建仓可成交", "entry价点可成交码: 可买=1 | 可卖=2 (封涨停=2, 封跌停=1, 两向=3; 分钟价点按Tradable整分钟封板判, 收盘价点按单一价撮合判). 各持有期组共用", LABEL_ENTRY_TEX, LB(entry_ok))
 
-#define FIELDS_L_1min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_1min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
-#define FIELDS_L_5min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_5min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
-#define FIELDS_L_15min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_15min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
-#define FIELDS_L_30min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_30min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
-#define FIELDS_L_60min_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_60min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
-#define FIELDS_L_1day_LabelBar(X, CAT1) LABEL_GROUPS_FROM_L_1day(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
+#define FIELDS_L_1min_LabelBar(X, CAT1) HOLDS_FROM_L_1min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
+#define FIELDS_L_5min_LabelBar(X, CAT1) HOLDS_FROM_L_5min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
+#define FIELDS_L_15min_LabelBar(X, CAT1) HOLDS_FROM_L_15min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
+#define FIELDS_L_30min_LabelBar(X, CAT1) HOLDS_FROM_L_30min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
+#define FIELDS_L_60min_LabelBar(X, CAT1) HOLDS_FROM_L_60min(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)
+#define FIELDS_L_1day_LabelBar(X, CAT1) HOLDS_FROM_L_1day(LBAR_GROUP, X, CAT1) LBAR_ENTRY(X, CAT1)

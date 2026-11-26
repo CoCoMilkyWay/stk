@@ -50,7 +50,7 @@ struct Opened {
 
 struct ViewEnv {
   Engine::FactorScope fsc;
-  int hold = 0;
+  HoldId hold = kHoldT1;
   int first = 0, last = 0; // 当前作用域评估期首末日 YYYYMMDD
   int open = 0;            // 每日开头集合竞价行数
   std::string level;

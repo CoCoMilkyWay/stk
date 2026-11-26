@@ -67,7 +67,8 @@ std::vector<PortfolioEntry> LoadPortfolio(const std::string &name) {
     e.lv = factor_level_of(o["level"].get<std::string>());
     e.file = o["file"].get<std::string>();
     e.expr = o["expr"].get<std::string>();
-    e.hold = o["hold"].get<int>();
+    [[maybe_unused]] const bool hold_ok = hold_parse(o["hold"].get<std::string>(), e.hold);
+    assert(hold_ok && "组合文件: hold 须是持有期 token (5m / close / t1o / t1 …)");
     e.sign = o.value("sign", 1);
     assert((e.sign == 1 || e.sign == -1) && "组合文件: sign 须是 ±1");
     es.push_back(std::move(e));
@@ -84,7 +85,7 @@ void SavePortfolio(const std::string &name, const std::vector<PortfolioEntry> &e
     o["pool"] = e.pool;
     o["level"] = factor_level(e.lv).name;
     o["file"] = e.file;
-    o["hold"] = e.hold;
+    o["hold"] = std::string(hold_token(e.hold));
     o["sign"] = e.sign;
     o["expr"] = e.expr;
     f << (i ? ",\n    " : "\n    ") << o.dump();
@@ -125,8 +126,8 @@ void ResolvePortfolio(const SharedData &data, const std::vector<PortfolioEntry> 
       assert(rit->error.empty() && "有具体规范串的行必是有效权重");
       it.name_cn = rit->name_cn;
       it.frame = rit->frame;
-      if (!find_leg(ft->y.labels, e.hold))
-        it.missing = "持有期 " + factor::stat::hold_name(e.hold) + " 不在该层标签里";
+      if (!ft->y.has(e.hold))
+        it.missing = "持有期 " + hold_name(e.hold) + " 不在该层标签里";
     }
     out.push_back(std::move(it));
   }
@@ -189,14 +190,14 @@ struct BookP : LinesP<kBookCols> {
     LinesP::open(c);
     cap = c.L.cap;
   }
-  void row(int hi, int t, const factor::stat::Row &r, const Ext &) {
+  void row(int hi, int t, const factor::stat::Row &r) {
     at(hi, kBookRet, t) = static_cast<float>(group_abs(r, factor::stat::end_group(factor::stat::kTop), cap));
   }
   void close(const Ctx &c, const RootView &v) {
-    factor::stat::Cost cs[factor::stat::kMaxCost];
+    factor::stat::Cost cs[kAmtCount];
     [[maybe_unused]] const int C = fill_costs(c.c.y, cs);
     assert(C == 1);
-    factor::stat::CostAcc acc[factor::stat::kMaxHold];
+    factor::stat::CostAcc acc[kHoldCount];
     factor::cpu::stat::cost_rows(c.ex, v.ec, c.s(), c.L, cap, cs, 1, *c.w, acc, [&](size_t hi, int t, const factor::stat::CostAcc &r) {
       const factor::stat::CostBook &cl = r.book[factor::stat::kTop];
       at(static_cast<int>(hi), kBookImp, t) = static_cast<float>(cl.imp[factor::stat::kBuy] + cl.imp[factor::stat::kSell]);
@@ -219,7 +220,7 @@ Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
   const FactorScope &sc = ts.front()->scope;
   RootSet rs;
   for (const FactorTask *t : ts) {
-    rs.hd = keys_union(rs.hd, keys_of<Holds>(std::vector<int>{t->hold}));
+    rs.hd = Holds::of(rs.hd.set() | hold_bit(t->hold));
     rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir);
   }
   std::vector<PortfolioProbes> ps(rs.size());
@@ -233,7 +234,7 @@ Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
       if (!why.empty()) {
         b->error = why;
       } else {
-        const int hi = factor::stat::hold_index(o.job.spec.y.hd, t.hold);
+        const int hi = o.job.spec.y.hd.at(t.hold);
         assert(hi >= 0);
         b->dates = o.job.dm.stat_dates();
         b->amt = o.job.spec.y.ad.k[0];

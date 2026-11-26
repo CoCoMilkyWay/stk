@@ -296,17 +296,16 @@ struct Layer {
   double g[kGroups] = {}, cnt[kGroups] = {};
   double tl[2][kTails] = {}, tc[2][kTails] = {};
   Mean ric;
-  void add(const st::Row &w, const Engine::TailRow *tr = nullptr) {
+  void add(const st::Row &w) {
     ++rows;
     if (!w.ok)
       return;
     ++ok;
     for (int k = 0; k < kGroups; ++k)
       g[k] += w.grp[k], cnt[k] += w.cnt[k];
-    if (tr)
-      for (int e = 0; e < 2; ++e)
-        for (int j = 0; j < kTails; ++j)
-          tl[e][j] += tr->sum[e][j], tc[e][j] += tr->cnt[e][j];
+    for (int e = 0; e < 2; ++e)
+      for (int j = 0; j < kTails; ++j)
+        tl[e][j] += w.tail[e][j], tc[e][j] += w.tail_n[e][j];
     ric.add(w.ric);
   }
   void merge(const Layer &o) {
@@ -616,11 +615,10 @@ struct ChunkView {
   const Engine::Job &job;
   const Engine::Block &blk;
   const BarMeta &bm;
-  const std::vector<misc::Ymd> &dates; // stat_dates
-  int u0 = 0, t_lo = 0, t_hi = 0;      // 本块统计行 [t_lo, t_hi) 对应全局统计行 u0 + (t - t_lo)
-  const uint16_t *rx = nullptr;        // [blk.T][A] 已定向 (高 = 做多端)
-  std::span<const st::Row> rows;       // [t_hi - t_lo] 已定向
-  std::span<const Engine::TailRow> tails;
+  const std::vector<misc::Ymd> &dates;             // stat_dates
+  int u0 = 0, t_lo = 0, t_hi = 0;                  // 本块统计行 [t_lo, t_hi) 对应全局统计行 u0 + (t - t_lo)
+  const uint16_t *rx = nullptr;                    // [blk.T][A] 已定向 (高 = 做多端)
+  std::span<const st::Row> rows;                   // [t_hi - t_lo] 已定向 (含尾部 Row::tail)
   std::span<const std::vector<HeldCell>> cells;    // [t_hi - t_lo]
   std::span<const factor::check::Plane *> feat_pl; // 与 feats 对齐 (坏式或解析失败为 nullptr)
 };
@@ -687,7 +685,7 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
     return Engine::Rc::Empty;
   assert(s_lo < s_hi && s_hi <= stat_dates.size());
 
-  const Engine::Holds hd = Engine::keys_of<Engine::Holds>(std::vector<int>{env.hold});
+  const Holds hd = Holds::of(hold_bit(env.hold));
   job.spec.y = Engine::y_spec(ft, job.dm, hd, Engine::Segs::None, env.fsc.max_impact);
   job.spec.ry = cfg.fac != nullptr;
   int look = 0;
@@ -746,76 +744,50 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
     const st::Span span = blk.span();
     const int t_lo = span.t_lo, t_hi = span.t_hi(), n_stat = t_hi - t_lo;
     std::vector<st::Row> rows;
-    std::vector<Engine::TailRow> tails;
     std::vector<std::vector<HeldCell>> cells;
     uint16_t *rx = nullptr;
 
     if (cfg.fac) {
       rows.assign(static_cast<size_t>(n_stat), {});
-      if (cfg.fac->tails)
-        tails.assign(static_cast<size_t>(n_stat), {});
       if (cfg.fac->ends)
         cells.assign(static_cast<size_t>(n_stat), {});
       const st::Labels L = Engine::labels_of(blk.y);
-      const uint8_t *m0 = L.l[0].m;
-      const st::Dir dir = cfg.fac->dir;
-
-      struct Ext {
-        const uint8_t *m0;
-        st::Dir d;
-        bool want_tails, want_ends;
-        int only_end;
-        Engine::TailExt tl;
-        std::vector<std::tuple<size_t, uint8_t, float>> got;
-        void cell(const factor::cpu::stat::RxCell &cl) {
-          if (want_tails)
-            tl.cell(cl);
-          if (!want_ends)
-            return;
-          const int g = st::grp_of(*cl.code);
-          for (int e = 0; e < st::kEnds; ++e) {
-            if ((only_end >= 0 && e != only_end) || g != st::end_group(e ^ d))
-              continue;
-            const auto in = [g](uint16_t v) { return v != st::kRankNone && st::grp_of(v) == g; };
-            if (cl.held(in))
-              got.emplace_back(static_cast<size_t>(cl.m - m0), static_cast<uint8_t>(e), cl.ret(cl.continues(in)));
-          }
-        }
-      };
       struct Sink {
-        const uint8_t *m0;
-        double cap;
-        st::Dir d;
-        int t_lo, A;
-        bool want_tails, want_ends;
-        int only_end;
+        int t_lo;
         std::vector<st::Row> &rows;
-        std::vector<Engine::TailRow> &tails;
-        std::vector<std::vector<HeldCell>> &cells;
-        using Ext = Ext;
-        Ext ext() const { return {m0, d, want_tails, want_ends, only_end, {Engine::kTailThr.v, cap, d}, {}}; }
-        void row(int, int t, const st::Row &raw, const Ext &e) const {
-          const size_t idx = static_cast<size_t>(t - t_lo), base = static_cast<size_t>(t) * static_cast<size_t>(A);
-          const st::Row w = st::oriented(raw, d);
-          rows[idx] = w;
-          if (want_tails)
-            e.tl.finish(w, tails[idx]);
-          if (want_ends)
-            for (const auto &[k, side, ret] : e.got) {
-              assert(k >= base && k < base + static_cast<size_t>(A));
-              cells[idx].push_back({t, static_cast<int>(k - base), side, ret});
-            }
-        }
+        void row(int, int t, const st::Row &r) const { rows[static_cast<size_t>(t - t_lo)] = r; }
       };
       const factor::check::Plane *rp = eng.plane(fr.d.roots[0]);
-      st::Accum acc[st::kMaxHold];
-      rx = eng.stat_run(rp, cfg.fac->frame, span, L, acc,
-                        Sink{m0, L.cap, dir, t_lo, sh.A, cfg.fac->tails, cfg.fac->ends, cfg.fac->only_end, rows, tails, cells});
-      if (dir == st::kRev)
-        F.S.ex.rows(sh.T, [&](int r0, int r1, int) {
-          for (size_t k = static_cast<size_t>(r0) * static_cast<size_t>(sh.A), end = static_cast<size_t>(r1) * static_cast<size_t>(sh.A); k < end; ++k)
-            rx[k] = st::oriented(rx[k], st::kRev);
+      st::Accum acc[kHoldCount];
+      rx = eng.run_root(rp, cfg.fac->frame, cfg.fac->dir, span, L, acc, Sink{t_lo, rows});
+      if (cfg.fac->ends) { // 两端组真持有的格 (契约【仓位感知】; rx 已定向: 高端 = G20)
+        const st::Label &lb = L.l[0];
+        const int only = cfg.fac->only_end;
+        F.S.ex.rows(n_stat, [&](int r0, int r1, int) {
+          for (int t = t_lo + r0; t < t_lo + r1; ++t) {
+            const size_t base = static_cast<size_t>(t) * static_cast<size_t>(sh.A);
+            if (!rows[static_cast<size_t>(t - t_lo)].ok)
+              continue;
+            const st::Chain ch = st::chain_of(t, span, env.hold);
+            for (int a = 0; a < sh.A; ++a) {
+              const size_t k = base + static_cast<size_t>(a);
+              if (rx[k] == st::kRankNone || lb.ry[k] == st::kRankNone)
+                continue;
+              const int g = st::grp_of(rx[k]);
+              for (int e = 0; e < st::kEnds; ++e) {
+                if ((only >= 0 && e != only) || g != st::end_group(e))
+                  continue;
+                float y[2];
+                st::label_cell(lb, static_cast<ptrdiff_t>(k), factor::cpu::stat::H2F{}, y);
+                const st::Cell<uint16_t> cl{ch, rx + k, lb.m + k, lb.eo + k, y};
+                const auto in = [g](uint16_t v) { return v != st::kRankNone && st::grp_of(v) == g; };
+                if (cl.held(in))
+                  cells[static_cast<size_t>(t - t_lo)].push_back({t, a, static_cast<uint8_t>(e), cl.ret(cl.continues(in))});
+              }
+            }
+          }
         });
+      }
     }
 
     std::vector<const factor::check::Plane *> feat_pl;
@@ -823,7 +795,7 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
       for (const FeatSpec &f : *cfg.feats)
         feat_pl.push_back(f.root_idx >= 0 && f.err.empty() ? eng.plane(fr.d.roots[static_cast<size_t>(f.root_idx)]) : nullptr);
 
-    chunk_fn(ChunkView{job, blk, bm, stat_dates, blk.land0() + t_lo, t_lo, t_hi, rx, rows, tails, cells, feat_pl});
+    chunk_fn(ChunkView{job, blk, bm, stat_dates, blk.land0() + t_lo, t_lo, t_hi, rx, rows, cells, feat_pl});
     F.prog.publish(1);
     if (F.cancel.load(std::memory_order_relaxed))
       return Engine::Rc::Cancel;

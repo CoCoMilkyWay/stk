@@ -36,7 +36,7 @@ struct DayLine {
   float turn[kNavLs] = {}; // LS 线年换手 (倍; 整组 = 固定段两端, 尾部 = 该级两端)
 };
 struct DayLines {
-  int hold = 0;                 // 调用方给: 持有期键
+  HoldId hold = kHoldT1;        // 调用方给: 持有期
   std::vector<misc::Ymd> dates; // 评估期交易日
   std::vector<DayLine> rows;    // 与 idx 同序 (算不出的行留空)
 };

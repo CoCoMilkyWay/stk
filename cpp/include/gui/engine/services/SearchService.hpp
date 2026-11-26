@@ -3,8 +3,8 @@
 //   薄线程壳: SearchService (FactorWorker<SearchService, SearchRequest>)
 #pragma once
 
-#include "factor/Search/Contract.hpp"
 #include "factor/Stat/Contract.hpp"
+#include "factor/Stat/Roll.hpp"
 #include "gui/engine/File.hpp"
 #include "gui/engine/Worker.hpp"
 #include "misc/date.hpp"
@@ -23,11 +23,11 @@ namespace GUI::Engine {
 struct SearchSpec {
   std::string file, tmpl;
   factor::stat::Frame frame = factor::stat::Frame::CS;
-  int hold = 0;
+  HoldId hold = kHoldT1;
   bool fresh = false;
 };
 using SearchRequest = Request<SearchSpec>;
-bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, int hold,
+bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, HoldId hold,
                        bool fresh, bool gpu, SearchRequest &req);
 
 // 一个评过的参数点 (已按所评方向; Search 契约【目标】【方向】)
@@ -35,7 +35,7 @@ struct SearchCand {
   std::string expr;                       // 具体规范串 (不含 sign)
   std::vector<double> v;                  // 各槽参数值 (SearchResult::slots 同序; 整数槽取整, k / w 为规范串往返值)
   int sign = 1;                           // +1 正向 / −1 取反
-  factor::search::Roll roll;              // 滚动窗统计 (score = 中位 rIC)
+  factor::stat::Roll roll;                // 滚动窗统计 (score = 中位 rIC)
   std::vector<float> line;                // [日] 窗中位 rIC (SearchResult::dates 同长; 不计入的窗 NaN)
   double mono = 0.0, ls = 0.0, ric = 0.0; // 全期: 分层单调性 / 每期真实毛多空 / rIC 均值 (只展示)
 };
@@ -46,7 +46,7 @@ struct SearchChunk {
 struct SearchResult {
   std::string file, tmpl;
   std::vector<std::string> slots;
-  int hold = 0;
+  HoldId hold = kHoldT1;
   std::vector<misc::Ymd> dates;  // 评估期交易日
   std::vector<SearchCand> cands; // 评过的点, 中位 rIC 降序 (无窗的在末)
   int n_chunk = 0, chunk_days = 0, batch = 0;

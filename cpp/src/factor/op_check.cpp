@@ -15,7 +15,7 @@
 //   本文件只剩 profile × d 全扫 + 汇总. 本 TU 依赖受控浮点, CMake 里整 target -fno-fast-math.
 //   单算子之后一节 Fuse (逐点链融合: 随机表达式树, 融合 DAG 与不融合 DAG 在 cpu / gpu 上各自逐位相等): --op Fuse 单跑.
 //   末尾另有一节 Stat (因子评估算子, factor/Stat; 不在 OpTable, 无流式后端, cpu ↔ gpu 两方 match): --op Stat 单跑.
-//   再一节 Search (参数搜索评估算子, factor/Search; 参考 = Stat CPU, Search cpu / gpu 各与它比 + 分块 ≡ 整块): --op Search 单跑.
+//   再一节 Batch (评估算子的批 = 参数搜索; 参考 = 单候选 CPU, 批 cpu / gpu 各与它比 + 分块 ≡ 整块): --op Batch 单跑.
 // =============================================================================
 
 #include "factor/TS/Cpu.hpp"    // IWYU pragma: keep
@@ -32,7 +32,6 @@
 #include "factor/Expr.hpp" // kOps / op_index (算子下标 = GPU 分派下标; 元数 / in 域 / 参数列)
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
-#include "factor/Search/Check.hpp"
 #include "factor/Stat/Check.hpp"
 
 #include <cassert>
@@ -86,7 +85,7 @@ void emit(Report &rep, const char *name, int S, const Param &p, const char *prof
 
 // 一个算子在一层 (段长 S) 上的全部用例: profile × d (× h) 扫描
 //   d 扫 {1, 5, 20, S, S + 60}: S = 恰一段 (ROLL 窗界与段界重合), S + 60 > 段 (窗跨段, GPU 块界不对齐段界)
-//   h (N 元回归) 扫 {T+1 收盘, 日内 2 行 (有段末尾部) / 日层 T+1 开盘}
+//   h (N 元回归) 扫 {T+1 同刻, 日内 close (有段末尾部) / 日层 T+1 开盘}
 template <class Str, class C, bool IS_CS>
 void check_seg(int op, int S, int A, unsigned seed, Report &rep, bool &op_bad) {
   const factor::expr::OpInfo &o = factor::expr::kOps[op];
@@ -97,7 +96,7 @@ void check_seg(int op, int S, int A, unsigned seed, Report &rep, bool &op_bad) {
   const int ds[] = {1, 5, 20, S, S + 60};
   constexpr int kNd = static_cast<int>(sizeof(ds) / sizeof(ds[0]));
   const bool sweep_h = factor::has_h(o.t, o.arity);
-  const int hs[] = {factor::stat::hold_same(1), S > 1 ? 2 * factor::geo_of(S).N : factor::stat::hold_open(1)};
+  const HoldId hs[] = {kHoldT1, S > 1 ? kHoldClose : kHoldT1O};
   constexpr int kNh = static_cast<int>(sizeof(hs) / sizeof(hs[0]));
 
   for (int pi = 0; pi < kProfiles; ++pi) {
@@ -114,7 +113,7 @@ void check_seg(int op, int S, int A, unsigned seed, Report &rep, bool &op_bad) {
     for (int ci = 0; ci < (sweep_d ? kNd : 1) * (sweep_h ? kNh : 1); ++ci) {
       Param p;
       p.d = sweep_d ? ds[ci % kNd] : 1;
-      p.h = sweep_h ? hs[ci / kNd] : 0;
+      p.h = sweep_h ? hs[ci / kNd] : kHoldT1;
       set_k(nm, p, S);
       set_w(p);
 
@@ -328,8 +327,8 @@ void check_fuse(int A, unsigned seed, Report &rep) {
     std::printf("  ok   %-14s\n", "Fuse");
 }
 
-// Stat 评估算子 (不在 OpTable: 输出是 rows[H][T] + 每持有期标量, 无流式后端): cpu ↔ gpu 两方 match 即过.
-//   层 × 两口径 (CS / TS) × profile 全扫 (无 d; 持有期取本层合法的); 无 GPU 时只跑 cpu 并打印二级汇总 (-v), 不算失败
+// Stat 评估算子 (不在 OpTable: 输出是 rows[H][T] + day[H][D] + 每持有期标量, 无流式后端): cpu ↔ gpu 两方 match 即过.
+//   层 × 两口径 (CS / TS) × 两方向 × profile 全扫 (持有期取本层合法的全部); 无 GPU 时只跑 cpu 并打印三级汇总 (-v), 不算失败
 void check_stat(int A, unsigned seed, Report &rep) {
   namespace sc = factor::stat::check; // 与 factor::check 同名的 Data / Tol 等, 全限定
   ++rep.ops;
@@ -337,39 +336,43 @@ void check_stat(int A, unsigned seed, Report &rep) {
   const int threads = misc::exec::hw();
   for_segs(rep, [&](int S) {
     const int T = rows_of(rep, S);
-    for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
-      const char *fname = factor::stat::frame_name(fr);
-      char tag_rows[32], tag_stat[32];
-      std::snprintf(tag_rows, sizeof(tag_rows), "Stat.%s.rows", fname);
-      std::snprintf(tag_stat, sizeof(tag_stat), "Stat.%s.stat", fname);
-      for (int pi = 0; pi < kProfiles; ++pi) {
-        const Profile pr = static_cast<Profile>(pi);
-        std::mt19937 rng(seed + 1000u * pi);
-        sc::Data d;
-        sc::make(d, fr, pr, T, A, S, rng);
-        sc::Result cpu;
-        sc::run_cpu(d, cpu, threads);
-        if (rep.verbose)
-          for (const factor::stat::HoldStat &s : cpu.stat)
-            std::printf("       Stat.%s cpu    S=%-3d h=%-3d %-8s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
-                        "Sharpe %+.2f beta %+.3f  mono %+.3f  rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f\n",
-                        fname, S, s.hold, kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls.mean, s.ls.t,
-                        s.ls.pos, factor::stat::sharpe_of(s), s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
-        if (!factor::gpu::available())
-          continue;
-        sc::Result gpu;
-        sc::run_gpu(d, gpu);
-        const Tol tol = sc::tol_of(pr);
-        const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
-        const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
-        ++rep.cases;
-        if (!dr.ok() || !ds.ok())
-          ++rep.gpu_bad;
-        Param p;
-        emit(rep, tag_rows, S, p, kProfName[pi], "gpu", dr, op_bad);
-        emit(rep, tag_stat, S, p, kProfName[pi], "gpu", ds, op_bad);
+    for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS})
+      for (const factor::stat::Dir dir : {factor::stat::kFwd, factor::stat::kRev}) {
+        const char *fname = factor::stat::frame_name(fr);
+        char tag_rows[32], tag_day[32], tag_stat[32];
+        std::snprintf(tag_rows, sizeof(tag_rows), "Stat.%s%s.rows", fname, dir ? "-" : "");
+        std::snprintf(tag_day, sizeof(tag_day), "Stat.%s%s.day", fname, dir ? "-" : "");
+        std::snprintf(tag_stat, sizeof(tag_stat), "Stat.%s%s.stat", fname, dir ? "-" : "");
+        for (int pi = 0; pi < kProfiles; ++pi) {
+          const Profile pr = static_cast<Profile>(pi);
+          std::mt19937 rng(seed + 1000u * pi);
+          sc::Data d;
+          sc::make(d, fr, dir, pr, T, A, S, rng);
+          sc::Result cpu;
+          sc::run_cpu(d, cpu, threads);
+          if (rep.verbose)
+            for (const factor::stat::HoldStat &s : cpu.stat)
+              std::printf("       Stat.%s cpu    S=%-3d h=%-5s %-8s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
+                          "Sharpe %+.2f beta %+.3f  mono %+.3f  rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f\n",
+                          fname, S, hold_name(s.hold).c_str(), kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls.mean, s.ls.t,
+                          s.ls.pos, factor::stat::sharpe_of(s), s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
+          if (!factor::gpu::available())
+            continue;
+          sc::Result gpu;
+          sc::run_gpu(d, gpu);
+          const Tol tol = sc::tol_of(pr);
+          const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
+          const Diff dd = sc::compare_days(cpu.day.data(), gpu.day.data(), cpu.day.size(), tol);
+          const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
+          ++rep.cases;
+          if (!dr.ok() || !dd.ok() || !ds.ok())
+            ++rep.gpu_bad;
+          Param p;
+          emit(rep, tag_rows, S, p, kProfName[pi], "gpu", dr, op_bad);
+          emit(rep, tag_day, S, p, kProfName[pi], "gpu", dd, op_bad);
+          emit(rep, tag_stat, S, p, kProfName[pi], "gpu", ds, op_bad);
+        }
       }
-    }
   });
   if (op_bad)
     ++rep.ops_bad;
@@ -377,20 +380,14 @@ void check_stat(int A, unsigned seed, Report &rep) {
     std::printf("  ok   %-14s\n", "Stat");
 }
 
-// Search 评估算子 (factor/Search): 参考 = Stat CPU 对每张候选平面的 HoldStat 与逐行 Tick; Search cpu / gpu 各与它比,
-//   再比 分块 (两块带前后带, merge) ≡ 整块, 分块的 Tick 按绝对行对回参考. 层 × 两口径 × profile 全扫; 无 GPU 时只跑 cpu
-void check_search(int A, unsigned seed, Report &rep) {
-  namespace sk = factor::search::check;
+// Stat 批 (参数搜索的一批候选; 逐候选并行): 参考 = 单候选 CPU 对每张候选平面的三级与逐日; 批 cpu / gpu 各与它比,
+//   再比 分块 (两块带前后带, merge) ≡ 整块, 分块的逐日按绝对日对回参考. 层 × 两口径 × profile 全扫; 无 GPU 时只跑 cpu
+void check_batch(int A, unsigned seed, Report &rep) {
+  namespace sc = factor::stat::check;
   ++rep.ops;
   bool op_bad = false;
   const int threads = misc::exec::hw();
   const Param p;
-  // 一块的输出: Result[kCands] + Tick[kCands][H][rows]
-  struct Blk {
-    int row0 = 0, rows = 0, t_lo = 0, t_hi = 0;
-    factor::search::Result r[sk::kCands];
-    std::vector<factor::search::Tick> tk;
-  };
   for_segs(rep, [&](int S) {
     const int T = rows_of(rep, S);
     for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS}) {
@@ -399,78 +396,46 @@ void check_search(int A, unsigned seed, Report &rep) {
       for (int pi = 0; pi < kProfiles; ++pi) {
         const Profile pr = static_cast<Profile>(pi);
         std::mt19937 rng(seed + 1000u * pi);
-        sk::Data d;
-        sk::make(d, fr, pr, T, A, S, rng);
-        const factor::stat::Holds &hd = d.base.hd;
-        const int H = hd.n;
-        const Tol tol = factor::stat::check::tol_of(pr);
-        const sk::Split sp = sk::split_of(T, hd, S);
-        sk::Ref ref[sk::kCands];
-        for (int c = 0; c < sk::kCands; ++c)
-          sk::reference(d, c, threads, ref[c]);
-        const auto blk = [&](int row0, int rows, int t_lo, int t_back) {
-          Blk b{row0, rows, t_lo, rows - t_back, {}, {}};
-          b.tk.resize(static_cast<size_t>(sk::kCands) * H * rows);
-          return b;
-        };
-        // 一个后端: 整块 vs 参考; 两块 merge vs 整块; 三块的 Tick vs 参考
-        const auto judge = [&](const char *side, const Blk &full, const Blk &c1, const Blk &c2) {
+        sc::Data d;
+        sc::make(d, fr, factor::stat::kFwd, pr, T, A, S, rng);
+        const Tol tol = sc::tol_of(pr);
+        sc::Result ref[sc::kCands];
+        for (int c = 0; c < sc::kCands; ++c)
+          sc::reference(d, c, threads, ref[c]);
+        const auto judge = [&](const char *side, const sc::Block &full, const sc::Block &c1, const sc::Block &c2) {
           bool bad = false;
-          const auto put = [&](const char *what, int c, const Diff &df) {
-            std::snprintf(tag, sizeof(tag), "Search.%s.c%d%s", fname, c, what);
+          const auto put = [&](const char *what, const Diff &df) {
+            std::snprintf(tag, sizeof(tag), "Batch.%s%s", fname, what);
             emit(rep, tag, S, p, kProfName[pi], side, df, op_bad);
             bad = bad || !df.ok();
           };
-          for (int c = 0; c < sk::kCands; ++c) {
-            put("", c, sk::compare(ref[c], full.r[c], hd, S, tol));
-            factor::search::Result m = c1.r[c];
-            m.merge(c2.r[c], H);
-            sk::Ref rf;
-            sk::to_ref(full.r[c], hd, S, rf);
-            put(".chunk", c, sk::compare(rf, m, hd, S, tol));
-            for (const Blk *b : {&full, &c1, &c2})
-              put(b == &full ? ".tick" : ".chunk.tick", c,
-                  sk::compare_ticks(ref[c], b->tk.data() + static_cast<size_t>(c) * H * b->rows, H, T, b->rows, b->row0, b->t_lo, b->t_hi, tol));
-          }
+          put("", sc::compare_block(d, ref, full, tol, true));
+          put(".chunk", sc::compare_merge(d, full, c1, c2, tol));
+          put(".chunk.day", sc::compare_block(d, ref, c1, tol, false));
+          put(".chunk.day", sc::compare_block(d, ref, c2, tol, false));
           return bad;
         };
-        {
-          Blk full = blk(0, T, 0, 0), c1 = blk(0, sp.e1, 0, sp.e1 - sp.T1), c2 = blk(sp.s, T - sp.s, sp.t_lo, 0);
-          for (Blk *b : {&full, &c1, &c2})
-            sk::run_cpu(d, threads, b->row0, b->rows, b->t_lo, b->rows - b->t_hi, b->r, b->tk.data());
-          ++rep.cases;
-          if (judge("cpu", full, c1, c2))
-            ++rep.stream_bad; // cpu 侧失败计在 stream 列 (本节无流式后端)
-        }
+        sc::Block full, c1, c2;
+        sc::split_of(d, full, c1, c2);
+        for (sc::Block *b : {&full, &c1, &c2})
+          sc::run_batch_cpu(d, threads, *b);
+        ++rep.cases;
+        if (judge("cpu", full, c1, c2))
+          ++rep.stream_bad; // cpu 侧失败计在 stream 列 (本节无流式后端)
         if (!factor::gpu::available())
           continue;
-        {
-          std::vector<factor::stat::Label> lab(static_cast<size_t>(H));
-          const float *xv[sk::kCands];
-          const uint8_t *xm[sk::kCands];
-          const auto run = [&](Blk &b) {
-            const size_t off = static_cast<size_t>(b.row0) * A;
-            for (int i = 0; i < H; ++i)
-              lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], d.base.eo, nullptr, off);
-            for (int c = 0; c < sk::kCands; ++c)
-              xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-            factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, b.rows, A, S, b.row0, b.t_lo, b.rows - b.t_hi, hd, d.base.cap,
-                                    lab.data(), b.r, b.tk.data());
-          };
-          Blk full = blk(0, T, 0, 0), c1 = blk(0, sp.e1, 0, sp.e1 - sp.T1), c2 = blk(sp.s, T - sp.s, sp.t_lo, 0);
-          for (Blk *b : {&full, &c1, &c2})
-            run(*b);
-          ++rep.cases;
-          if (judge("gpu", full, c1, c2))
-            ++rep.gpu_bad;
-        }
+        for (sc::Block *b : {&full, &c1, &c2})
+          sc::run_batch_gpu(d, *b);
+        ++rep.cases;
+        if (judge("gpu", full, c1, c2))
+          ++rep.gpu_bad;
       }
     }
   });
   if (op_bad)
     ++rep.ops_bad;
   else if (!rep.verbose)
-    std::printf("  ok   %-14s\n", "Search");
+    std::printf("  ok   %-14s\n", "Batch");
 }
 
 } // namespace
@@ -527,8 +492,8 @@ int main(int argc, char **argv) {
     check_fuse(A, seed, rep);
   if (only.empty() || only == "Stat") // 评估算子: 不在 OpTable, 单独一节
     check_stat(A, seed, rep);
-  if (only.empty() || only == "Search") // 搜索评估算子: 参考 = Stat CPU
-    check_search(A, seed, rep);
+  if (only.empty() || only == "Batch") // 评估算子的批 (参数搜索): 参考 = 单候选 CPU
+    check_batch(A, seed, rep);
 
   std::printf("=== %d 算子 / %d 用例: stream 失败 %d, gpu 失败 %d; 算子级失败 %d ===\n", rep.ops,
               rep.cases, rep.stream_bad, rep.gpu_bad, rep.ops_bad);

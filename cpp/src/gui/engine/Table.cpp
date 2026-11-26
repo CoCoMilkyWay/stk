@@ -39,19 +39,6 @@ std::vector<LeafId> XCols::ids(const std::vector<std::string> &codes) const {
   return out;
 }
 
-const LegCol *find_leg(const std::vector<LegCol> &cols, int key) {
-  for (const LegCol &c : cols)
-    if (c.key == key)
-      return &c;
-  return nullptr;
-}
-
-const LegCol &leg_of(const std::vector<LegCol> &cols, int key) {
-  const LegCol *c = find_leg(cols, key);
-  assert(c && "key 不在字段表两侧列里");
-  return *c;
-}
-
 factor::expr::FeatureLookup FeatureTable::lookup() const {
   factor::expr::FeatureLookup fl;
   fl.feat = [this](std::string_view code) {
@@ -65,15 +52,14 @@ factor::expr::FeatureLookup FeatureTable::lookup() const {
           return factor::expr::FeatState::FINER;
     return factor::expr::FeatState::MISSING;
   };
-  fl.label = [this](int hold) { return label_leaf(hold); };
+  fl.label = [this](HoldId hold) { return label_leaf(hold); };
   return fl;
 }
 
-std::string FeatureTable::label_leaf(int hold) const {
-  const LegCol *lc = find_leg(y.labels, hold);
-  if (!lc)
+std::string FeatureTable::label_leaf(HoldId hold) const {
+  if (!y.has(hold))
     return {};
-  const Col &c = lc->leg[factor::stat::kLong];
+  const Col &c = y.lab[hold].lv;
   return std::string(tier_name(c.tier)) + "." + kLevelToken[c.level] + "." + feature->meta(c.tier).features[c.level][c.col].code;
 }
 
@@ -102,7 +88,7 @@ factor::expr::Expr FeatureTable::reparse(std::string_view canon) const {
   return e;
 }
 
-factor::expr::Expr FeatureTable::reparse_at(std::string_view canon, int hold) const {
+factor::expr::Expr FeatureTable::reparse_at(std::string_view canon, HoldId hold) const {
   const factor::expr::Expr t = reparse(canon);
   return factor::expr::free_hold(t) ? reparse(factor::expr::bind_hold(t, hold)) : t;
 }
@@ -115,29 +101,27 @@ FactorLevelId factor_level_of(std::string_view name) {
   __builtin_unreachable();
 }
 
-HoldPoints hold_points(int hold, FactorLevelId lv) {
+HoldPoints hold_points(HoldId hold, FactorLevelId lv) {
   namespace st = factor::stat;
   const FactorLevel &L = factor_level(lv);
   const bool at_close = st::close_entry(0, L.geo());
   const std::string px = "次分钟VWAP", close_px = "收盘撮合价", open_px = "开盘撮合价";
   const std::string at = at_close ? "C(T)" : "C(" + std::string(L.name) + ")";
   const HoldPoint open{at, at_close ? close_px : px};
-  if (st::hold_intraday(hold))
-    return {open, {at + "+" + std::to_string(hold) + "m", px}};
-  if (hold == st::kHoldClose)
+  if (hold_kind(hold) == HoldKind::Min)
+    return {open, {at + "+" + std::to_string(hold_n(hold)) + "m", px}};
+  if (hold_kind(hold) == HoldKind::Close)
     return {open, {"C(T)", close_px}};
-  const std::string n = std::to_string(st::hold_days(hold));
-  if (st::hold_is_open(hold))
+  const std::string n = std::to_string(hold_days(hold));
+  if (hold_kind(hold) == HoldKind::Open)
     return {open, {"O(T+" + n + ")", open_px}};
   return {open, at_close ? HoldPoint{"C(T+" + n + ")", close_px} : HoldPoint{at + "+" + n + "日 (同刻)", px}};
 }
 
-std::string hold_desc(int hold, FactorLevelId lv) {
+std::string hold_desc(HoldId hold, FactorLevelId lv) {
   const HoldPoints p = hold_points(hold, lv);
   return "开仓: " + p.open.at + " @ " + p.open.px + ", 清仓: " + p.close.at + " @ " + p.close.px;
 }
-
-factor::stat::Fee fee_of(const Config &c) { return {c.fixed_impact, c.commission, c.stamp}; }
 
 std::vector<std::string> row_clocks(FactorLevelId lv) {
   const FactorLevel &l = factor_level(lv);
@@ -225,82 +209,43 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
     assert(it != t.x.index.end() && "估值列不在 bar.1d 叶表里");
     t.val[m] = it->second;
   }
-  struct Lab {
-    bool is_long;
-    int hold;
-    uint32_t col;
+  t.y.entry = named("lb_entry_ok");
+  // 档 tier 层 lvl 的列 code 的下标; 无 → −1
+  const auto find = [&](TierId tier, const std::string &code) {
+    const auto &list = feature.meta(tier).features[lv.lvl];
+    for (size_t i = 0; i < list.size(); ++i)
+      if (code == list[i].code)
+        return static_cast<int>(i);
+    return -1;
   };
-  struct Cost {
-    bool is_buy;
-    int amt;
-    uint32_t col;
-  };
-  std::vector<Lab> labs;
-  std::vector<Cost> costs;
-  std::set<int> holds, amts;
-  t.y.entry = own(kNoCol);
-  const auto &level = meta.features[lv.lvl];
-  for (size_t i = 0; i < level.size(); ++i) {
-    const FeatureMetadata &f = level[i];
-    if (f.data_type != FeatureDataType::LB)
+  // 标签: 本层合法的持有期 (hold_ok) 恰是落了列的 (字段表 HOLDS_FROM_<LVL> 与之一致); 名义列只偏移型
+  for (int i = 0; i < kHoldCount; ++i) {
+    const HoldId h = static_cast<HoldId>(i);
+    const std::string tok(hold_token(h));
+    const int lv_col = find(TierId::Bar, "lb_" + tok);
+    assert((lv_col >= 0) == factor::stat::hold_ok(h, lv.geo()) && "本层的标签列与持有期合法性不符 (HOLDS_FROM_<LVL> ⇄ hold_ok)");
+    if (lv_col < 0)
       continue;
-    if (std::string_view(f.code) == "lb_entry_ok") {
-      t.y.entry = own(static_cast<uint32_t>(i));
-      continue;
-    }
-    char side[8] = {}, name[16] = {};
-    const int got = std::sscanf(f.code, "lb_%7[a-z]_%15[a-z0-9]", side, name);
-    assert(got == 2 && (std::string_view(side) == "long" || std::string_view(side) == "short") && "标签列命名不合 lb_<long|short>_<name>");
-    const int h = factor::stat::hold_from_name(name); // <n>m / close / t<N>o / t<N> → 持有期键 (Stat/Contract.hpp 【持有期键】)
-    labs.push_back({std::string_view(side) == "long", h, static_cast<uint32_t>(i)});
-    holds.insert(h);
-  }
-  assert(!labs.empty() && "字段表无标签列");
-  assert(t.y.entry.has() && "字段表无建仓可成交码 lb_entry_ok");
-  const auto legs = [&](int key) {
-    LegCol lc;
-    lc.key = key;
-    lc.leg[factor::stat::kLong] = lc.leg[factor::stat::kShort] = own(kNoCol);
-    return lc;
-  };
-  const auto full = [](const LegCol &lc) { return lc.leg[factor::stat::kLong].has() && lc.leg[factor::stat::kShort].has(); };
-  for (int h : holds) {
-    if (!factor::stat::hold_ok(h, lv.geo()))
-      continue;
-    LegCol lc = legs(h);
-    for (const Lab &l : labs)
-      if (l.hold == h)
-        lc.leg[l.is_long ? factor::stat::kLong : factor::stat::kShort].col = l.col;
-    assert(full(lc) && "标签列不齐: 某 hold 缺 long 或 short");
-    t.y.labels.push_back(lc);
-  }
-  assert(!t.y.labels.empty() && "本层无合法持有期");
-  for (const LegCol &lc : t.y.labels) {
-    const auto it = t.x.index.find(t.label_leaf(lc.key));
+    t.y.holds |= hold_bit(h);
+    t.y.lab[h].lv = own(static_cast<uint32_t>(lv_col));
+    t.y.lab[h].nv = hold_offset(h) ? named(("lb_nom_" + tok).c_str()) : own(kNoCol);
+    const auto it = t.x.index.find(t.label_leaf(h));
     assert(it != t.x.index.end() && "做多标签列须是本层叶");
     t.x.leaves[it->second].target = true;
   }
-  t.y.costs.push_back(legs(kAmtFixed));
+  assert(t.y.holds && "本层无合法持有期");
+  t.y.list = Holds::of(t.y.holds);
+  // 成本: 固定段恒在; 盘口段 = Lob 档本层的两侧冲击列
+  t.y.amts = amt_bit(kAmtFixed);
   if (has_level(TierId::Lob, lv.lvl)) {
-    const auto &lob = feature.meta(TierId::Lob).features[lv.lvl];
-    for (size_t i = 0; i < lob.size(); ++i) {
-      if (lob[i].data_type != FeatureDataType::LB)
-        continue;
-      char side[8] = {};
-      int amt = 0;
-      const int got = std::sscanf(lob[i].code, "lb_cost_%7[a-z]_%dw", side, &amt);
-      assert(got == 2 && (std::string_view(side) == "buy" || std::string_view(side) == "sell") && amt > 0 && "冲击成本列命名不合 lb_cost_<buy|sell>_<amt>w");
-      costs.push_back({std::string_view(side) == "buy", amt, static_cast<uint32_t>(i)});
-      amts.insert(amt);
+    for (int a = 1; a < kAmtCount; ++a) {
+      const std::string w = std::to_string(kAmtWan[a]) + "w";
+      const int b = find(TierId::Lob, "lb_cost_buy_" + w), sl = find(TierId::Lob, "lb_cost_sell_" + w);
+      assert(b >= 0 && sl >= 0 && "冲击成本列不齐: 某金额段缺 buy 或 sell");
+      t.y.amts |= amt_bit(static_cast<AmtId>(a));
+      t.y.cost[a][factor::stat::kBuy] = Col{TierId::Lob, lv.lvl, static_cast<uint32_t>(b)};
+      t.y.cost[a][factor::stat::kSell] = Col{TierId::Lob, lv.lvl, static_cast<uint32_t>(sl)};
     }
-  }
-  for (int a : amts) {
-    LegCol lc = legs(a);
-    for (const Cost &c : costs)
-      if (c.amt == a)
-        lc.leg[c.is_buy ? factor::stat::kLong : factor::stat::kShort] = Col{TierId::Lob, lv.lvl, c.col};
-    assert(full(lc) && "冲击成本列不齐: 某金额段缺 buy 或 sell");
-    t.y.costs.push_back(lc);
   }
   return t;
 }

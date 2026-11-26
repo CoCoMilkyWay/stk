@@ -950,7 +950,7 @@ void panel(const CtaService &svc, const Progress &lib, CtaState &c, const cta::R
   ImGui::AlignTextToFramePadding();
   ImGui::TextUnformatted("费率 (bp)");
   ImGui::SameLine();
-  ImGui::TextDisabled("佣金 %.3g / 印花税 %.3g / 冲击 %.3g", rates.commission * 1e4, rates.stamp * 1e4, rates.impact * 1e4);
+  ImGui::TextDisabled("佣金 %.3g / 过户费 %.3g / 印花税 %.3g / 冲击 %.3g", rates.commission * 1e4, rates.transfer * 1e4, rates.stamp * 1e4, rates.impact * 1e4);
   if (ImGui::IsItemHovered())
     tip("系统设置 (Settings) 的税佣与固定冲击");
   if (r) {

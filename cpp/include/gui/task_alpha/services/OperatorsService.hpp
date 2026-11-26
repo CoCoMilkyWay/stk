@@ -10,7 +10,7 @@
 // 与整轮完整性, 不过就删文件), 命中的话经 AdoptSnapshot 直接摆成 Done, worker 空等; 只有手动
 // Run (或本地无有效快照) 才真算, 一轮结束由 TaskAlpha 落盘.
 //
-// 对拍口径与 op_check 完全一致 (同一份 factor/Check.hpp, Stat/Check.hpp, Search/Check.hpp): PLAIN profile, 配方按算子,
+// 对拍口径与 op_check 完全一致 (同一份 factor/Check.hpp, Stat/Check.hpp): PLAIN profile, 配方按算子,
 // d/k 按每算子默认表 (kDParams / kKParams), 容差 tol_of(name, gpu, PLAIN). 差别只在
 // op_check 全扫 profile × d, 这里每算子只跑一组默认参数.
 // 计时: cpu / stream = 整段 wall time (steady_clock); gpu = 纯 kernel (cudaEvent, 不含

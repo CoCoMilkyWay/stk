@@ -14,9 +14,7 @@
 #include "factor/EvalCpu.hpp"
 #include "factor/EvalGpu.hpp"
 #include "factor/GpuRun.hpp"
-#include "factor/Search/Contract.hpp" // Result / Tick / hold_reach
-#include "factor/Search/Cpu.hpp"      // LandTicks
-#include "factor/Search/Space.hpp"    // lookback
+#include "factor/Search/Space.hpp" // lookback
 #include "gui/engine/Probe.hpp"
 #include "misc/exec.hpp"
 
@@ -89,14 +87,13 @@ inline Forest plant_forest(const FeatureTable &ft, std::span<const Root> rs, boo
 }
 
 inline Bands bands_of(int look, const factor::stat::Holds &hd, int seg) {
-  const int h = factor::search::hold_reach(hd, seg);
+  const int h = factor::stat::hold_reach(hd, seg);
   return {(look + h + seg - 1) / seg + factor::stat::kChainDays, (h + seg - 1) / seg};
 }
 
-inline bool same_holds(const Holds &a, const Holds &b) { return a.n == b.n && std::equal(a.k, a.k + a.n, b.k); }
-
+// 探针只要三级 + 二级 (Search) → GPU 走批核 (逐候选并行)
 template <class Ps>
-inline constexpr bool kBatched = (Ps::need & ~kNeedTicks) == 0;
+inline constexpr bool kBatched = Ps::need == 0;
 
 // ---- 双后端同构: Backend<Cpu> ⇄ Backend<Gpu> ----
 struct Cpu {};
@@ -151,10 +148,7 @@ private:
       Ps &p = ps[static_cast<size_t>(k)];
       const Ctx cx{ex_, block(), L, w, F.r[static_cast<size_t>(k)].d, last};
       p.open(cx);
-      factor::stat::Accum acc[factor::stat::kMaxHold];
-      const RootView v = self().template view<Ps>(F, k, static_cast<int>(j), cx, need, p, acc);
-      for (int hi = 0; hi < L.hd.n; ++hi)
-        acc[hi] = factor::stat::oriented(acc[hi], cx.d);
+      const RootView v = self().template view<Ps>(F, k, static_cast<int>(j), cx, need, p);
       p.close(cx, v);
       on_step(k);
     }
@@ -188,7 +182,7 @@ public:
     std::vector<const factor::check::Plane *>().swap(in_);
     std::vector<uint16_t>().swap(rx_);
     std::vector<uint8_t>().swap(ec_);
-    std::vector<factor::search::Tick>().swap(tk_);
+    std::vector<factor::stat::Day>().swap(day_);
   }
   void release() {
     drop();
@@ -196,7 +190,7 @@ public:
   }
   double host_bytes() const {
     double b = static_cast<double>(hp_.bytes()) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) + static_cast<double>(ec_.capacity()) +
-               static_cast<double>(tk_.capacity()) * sizeof(factor::search::Tick);
+               static_cast<double>(day_.capacity()) * sizeof(factor::stat::Day);
     for (const factor::check::Arena &a : sc_)
       b += static_cast<double>(a.buf.capacity());
     return b;
@@ -213,15 +207,17 @@ public:
   }
   const factor::check::Plane *plane(int i) const { return factor::cpu::plane_at(*d_, in_, hp_, i); }
 
-  // 供流式观察直接跑一次单因子 Stat, 复用常驻 rx_ / w_
+  // 一个根平面的 Stat (rx_ / day_ / w_ 常驻复用; 探针与流式观察同一条): → 已定向的 rx (块形), acc[H], 逐日 day()[H][D]
   template <class Sink>
-  uint16_t *stat_run(const factor::check::Plane *rp, factor::stat::Frame f, const factor::stat::Span &s, const factor::stat::Labels &L,
+  uint16_t *run_root(const factor::check::Plane *rp, factor::stat::Frame f, factor::stat::Dir d, const factor::stat::Span &s, const factor::stat::Labels &L,
                      factor::stat::Accum *acc, const Sink &sink) {
-    w_.ensure(s.A, L.hd.n, 0, ex_.threads());
+    w_.ensure(s.A, L.hd.n, c_->y.ad.n, ex_.threads());
     rx_.resize(s.n());
-    factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, s, L, rx_.data(), w_, acc, sink);
+    day_.resize(static_cast<size_t>(L.hd.n) * s.days());
+    factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, d, s, L, rx_.data(), w_, acc, day_.data(), sink);
     return rx_.data();
   }
+  const factor::stat::Day *day() const { return day_.data(); }
 
   template <class Ps>
   Forest plant(const FeatureTable &ft, std::span<const Root> rs, int batch, int &C) const {
@@ -243,31 +239,24 @@ private:
     return &w_;
   }
   template <class Ps>
-  RootView view(const Forest &F, int k, int, const Ctx &cx, uint8_t need, Ps &p, factor::stat::Accum *acc) {
+  RootView view(const Forest &F, int k, int, const Ctx &cx, uint8_t need, Ps &p) {
     const int i = F.d.roots[static_cast<size_t>(k)];
     const factor::stat::Frame f = F.r[static_cast<size_t>(k)].f;
     const factor::stat::Span s = c_->span();
     const factor::check::Plane *rp = plane(i);
-    rx_.resize(s.n());
-    const bool ticks = (need & kNeedTicks) != 0;
-    assert(!(ticks && ((need & kNeedRows) != 0 || Ps::cells)) && "逐行 Tick 与一级行不同探");
-    if ((need & kNeedRows) != 0 || Ps::cells) {
-      factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, s, cx.L, rx_.data(), w_, acc, ProbeSink<Ps>{&p, cx.d});
-    } else if (ticks) {
-      tk_.resize(static_cast<size_t>(cx.L.hd.n) * s.T);
-      factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, s, cx.L, rx_.data(), w_, acc, factor::cpu::search::LandTicks{tk_.data(), s.T});
-    } else {
-      factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, s, cx.L, rx_.data(), w_, acc, factor::cpu::stat::DropRows{});
-    }
+    if ((need & kNeedRows) != 0)
+      run_root(rp, f, cx.d, s, cx.L, acc_, ProbeSink<Ps>{&p});
+    else
+      run_root(rp, f, cx.d, s, cx.L, acc_, factor::cpu::stat::DropRows{});
     RootView v;
     v.f = f;
-    v.acc = acc;
+    v.acc = acc_;
+    v.day = day_.data();
     v.x = {(need & kNeedX) != 0 ? rp->v.data() : nullptr, (need & kNeedMask) != 0 ? rp->m.data() : nullptr};
     v.rx = (need & kNeedRx) != 0 ? rx_.data() : nullptr;
-    v.ticks = ticks ? tk_.data() : nullptr;
     if ((need & kNeedEc) != 0) {
       ec_.resize(s.n());
-      factor::cpu::stat::end_codes(ex_, rx_.data(), s, cx.d, ec_.data());
+      factor::cpu::stat::end_codes(ex_, rx_.data(), s, ec_.data());
       v.ec = ec_.data();
     }
     if ((need & kNeedAlpha) != 0) {
@@ -283,7 +272,8 @@ private:
   factor::cpu::stat::Workspace w_;
   std::vector<uint16_t> rx_;
   std::vector<uint8_t> ec_;
-  std::vector<factor::search::Tick> tk_; // [H][T] 逐行 Tick (kNeedTicks)
+  std::vector<factor::stat::Day> day_; // [H][D]
+  factor::stat::Accum acc_[kHoldCount];
 };
 
 template <>
@@ -311,7 +301,7 @@ public:
   }
   static int batch_of(const Plan &P, const Budget &b) {
     const double nmax = P.max_cells(), dv = b.dev - kDevRootBytes * kBatch;
-    return std::clamp(static_cast<int>((P.vram - nmax * dv) / (kDevRootBytes * nmax)), 1, factor::gpu::search_max_batch());
+    return std::clamp(static_cast<int>((P.vram - nmax * dv) / (kDevRootBytes * nmax)), 1, factor::gpu::stat_max_batch());
   }
 
   void bind(const Block &c) {
@@ -334,8 +324,8 @@ public:
   }
   void drop() {
     w_ = factor::cpu::stat::Workspace{};
-    std::vector<factor::search::Result>().swap(out_);
-    std::vector<factor::search::Tick>().swap(tk_);
+    std::vector<factor::stat::Accum>().swap(acc_);
+    std::vector<factor::stat::Day>().swap(day_);
     std::vector<factor::stat::Row>().swap(rows_);
     std::vector<uint16_t>().swap(rx_);
     std::vector<uint8_t>().swap(ec_);
@@ -352,14 +342,14 @@ public:
   double host_bytes() const {
     return static_cast<double>(rows_.capacity()) * sizeof(factor::stat::Row) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) +
            static_cast<double>(ec_.capacity()) + static_cast<double>(xv_.capacity() + av_.capacity()) * sizeof(float) +
-           static_cast<double>(mask_.capacity() + am_.capacity()) + static_cast<double>(tk_.capacity()) * sizeof(factor::search::Tick);
+           static_cast<double>(mask_.capacity() + am_.capacity()) + static_cast<double>(day_.capacity()) * sizeof(factor::stat::Day) +
+           static_cast<double>(acc_.capacity()) * sizeof(factor::stat::Accum);
   }
   double vram_bytes() const {
     if (!sess_)
       return 0.0;
-    return static_cast<double>(factor::gpu::session_bytes(sess_) + dp_.bytes(n_) + (gate_ ? n_ : 0) +
-                               (x_cache_.size() + free_x_.size()) * (sizeof(float) + 1) * n_ + factor::gpu::stat_bytes(stat_) +
-                               factor::gpu::search_bytes(search_));
+    return static_cast<double>(factor::gpu::session_bytes(sess_) + dp_.bytes(n_) + (gate_ ? n_ : 0) + (x_cache_.size() + free_x_.size()) * (sizeof(float) + 1) * n_ +
+                               factor::gpu::stat_bytes(stat_));
   }
 
   template <class Visit>
@@ -380,7 +370,7 @@ public:
     C = std::min(batch, static_cast<int>(rs.size()));
     if constexpr (!kBatched<Ps>)
       return plant_forest(ft, rs.first(static_cast<size_t>(C)), /*keep_roots=*/false);
-    search_session(batch);
+    session(batch);
     while (true) {
       Forest F = plant_forest(ft, rs.first(static_cast<size_t>(C)), /*keep_roots=*/true);
       inputs(F.leaves);
@@ -485,10 +475,7 @@ private:
     dp_.release();
     if (stat_)
       factor::gpu::stat_close(stat_);
-    if (search_)
-      factor::gpu::search_close(search_);
-    stat_ = nullptr, search_ = nullptr;
-    st_gen_ = 0, sr_gen_ = 0;
+    stat_ = nullptr, st_gen_ = 0;
     if (sess_) {
       if (gate_)
         factor::gpu::plane_del(sess_, gate_);
@@ -506,52 +493,76 @@ private:
   factor::stat::Labels labels() const { return labels_of(c_->y); }
   const factor::gpu::DevPlane *at(int i) const { return factor::gpu::plane_at(*d_, dev_, dp_, i); }
 
+  // Stat 常驻会话: 形状 / 持有期 / 满仓 / 批上限变了才重开, 块换了才重传标签
+  void session(int cmax) {
+    assert(cmax >= 1 && cmax <= factor::gpu::stat_max_batch());
+    const YPlanes &y = block().y;
+    const bool same = stat_ && st_T_ == y.sh.T && st_A_ == y.sh.A && st_seg_ == y.sh.seg && st_cmax_ == cmax && st_hd_ == y.hd && st_cap_ == y.n_full;
+    if (!same) {
+      if (stat_)
+        factor::gpu::stat_close(stat_);
+      evict_unused_x(static_cast<size_t>((7 * y.hd.n + 2 + 2 * cmax) * n_));
+      stat_ = factor::gpu::stat_open(y.sh.T, y.sh.A, y.sh.seg, cmax, y.hd, y.n_full);
+      st_T_ = y.sh.T, st_A_ = y.sh.A, st_seg_ = y.sh.seg, st_cmax_ = cmax, st_hd_ = y.hd, st_cap_ = y.n_full, st_gen_ = 0;
+    }
+    if (st_gen_ != c_->gen) {
+      factor::gpu::stat_load(stat_, labels_of(y).l);
+      st_gen_ = c_->gen;
+    }
+  }
+
   template <class Ps>
   factor::cpu::stat::Workspace *ready(const Forest &F, const std::vector<int> &ks) {
+    const YPlanes &y = block().y;
     if constexpr (!kBatched<Ps>) {
-      return &stat_session();
+      if (!stat_ || st_cmax_ < 1)
+        session(1);
+      else
+        session(st_cmax_);
+      w_.ensure(y.sh.A, y.hd.n, y.ad.n, ex_.threads());
+      return &w_;
     } else {
-      assert(search_ && "批核先 plant");
+      assert(stat_ && "批核先 plant");
       const factor::stat::Frame f = F.r[static_cast<size_t>(ks.front())].f;
+      const factor::stat::Dir d = F.r[static_cast<size_t>(ks.front())].d;
       std::vector<const factor::gpu::DevPlane *> roots;
       roots.reserve(ks.size());
       for (const int k : ks) {
         const int r = F.d.roots[static_cast<size_t>(k)];
         assert(F.d.nodes[static_cast<size_t>(r)].slot >= 0);
-        assert(F.r[static_cast<size_t>(k)].f == f && "一批同口径");
+        assert(F.r[static_cast<size_t>(k)].f == f && F.r[static_cast<size_t>(k)].d == d && "一批同口径同方向");
         roots.push_back(at(r));
       }
       const factor::stat::Span s = c_->span();
-      out_.assign(ks.size(), {});
-      tk_.resize(ks.size() * static_cast<size_t>(c_->y.hd.n) * s.T);
-      factor::gpu::search_eval(search_, roots.data(), static_cast<int>(ks.size()), gate_, f, s.t0_abs, s.t_lo, s.t_back, out_.data(), tk_.data());
+      acc_.resize(ks.size() * static_cast<size_t>(y.hd.n));
+      day_.resize(ks.size() * static_cast<size_t>(y.hd.n) * s.days());
+      factor::gpu::stat_eval(stat_, roots.data(), static_cast<int>(ks.size()), gate_, f, d, s.t0_abs, s.t_lo, s.t_back, acc_.data(), day_.data());
       return nullptr;
     }
   }
   template <class Ps>
-  RootView view(const Forest &F, int k, int j, const Ctx &cx, uint8_t need, Ps &p, factor::stat::Accum *acc) {
+  RootView view(const Forest &F, int k, int j, const Ctx &cx, uint8_t need, Ps &p) {
     if constexpr (kBatched<Ps>) {
-      assert(cx.d == factor::stat::kFwd && "批核的根恒正向 (Search 打分时自己定向)");
-      std::copy_n(out_[static_cast<size_t>(j)].acc, cx.L.hd.n, acc);
+      const size_t H = static_cast<size_t>(cx.L.hd.n);
       RootView v;
       v.f = F.r[static_cast<size_t>(k)].f;
-      v.acc = acc;
-      v.ticks = tk_.data() + static_cast<size_t>(j) * cx.L.hd.n * c_->span().T;
+      v.acc = acc_.data() + static_cast<size_t>(j) * H;
+      v.day = day_.data() + static_cast<size_t>(j) * H * c_->span().days();
       return v;
     } else {
-      return stat_root(F, k, cx, need, p, acc);
+      return stat_root(F, k, cx, need, p);
     }
   }
   template <class Ps>
-  RootView stat_root(const Forest &F, int k, const Ctx &cx, uint8_t need, Ps &p, factor::stat::Accum *acc) {
-    static_assert(!Ps::cells && (Ps::need & kNeedTicks) == 0, "逐格扩展只 CPU; 逐行 Tick 只批核");
+  RootView stat_root(const Forest &F, int k, const Ctx &cx, uint8_t need, Ps &p) {
     RootView v;
     v.f = F.r[static_cast<size_t>(k)].f;
-    v.acc = acc;
     const factor::stat::Span s = c_->span();
     const size_t n = s.n();
     const int i = F.d.roots[static_cast<size_t>(k)], H = cx.L.hd.n;
     const bool rows = (need & kNeedRows) != 0, rx = (need & kNeedRx) != 0, ec = (need & kNeedEc) != 0;
+    acc_.resize(static_cast<size_t>(H));
+    day_.resize(static_cast<size_t>(H) * s.days());
     if (rows)
       rows_.resize(static_cast<size_t>(H) * s.T);
     if (rx)
@@ -571,18 +582,18 @@ private:
       factor::gpu::download(sess_, rp, xv, xm);
       v.x = {xv, xm};
     }
-    factor::gpu::stat_eval(stat_, rp, gate_, v.f, cx.d, s.t0_abs, s.t_lo, s.t_back, acc, rows ? rows_.data() : nullptr, ec ? ec_.data() : nullptr,
-                           rx ? rx_.data() : nullptr);
+    factor::gpu::stat_eval(stat_, &rp, 1, gate_, v.f, cx.d, s.t0_abs, s.t_lo, s.t_back, acc_.data(), day_.data(), rows ? rows_.data() : nullptr,
+                           ec ? ec_.data() : nullptr, rx ? rx_.data() : nullptr);
+    v.acc = acc_.data();
+    v.day = day_.data();
     v.rx = rx ? rx_.data() : nullptr;
     v.ec = ec ? ec_.data() : nullptr;
     if (rows) {
-      const ProbeSink<Ps> sink{&p, cx.d};
+      const ProbeSink<Ps> sink{&p};
       ex_.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int) {
         for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t)
-          for (int hi = 0; hi < H; ++hi) {
-            const typename ProbeSink<Ps>::Ext e = sink.ext();
-            sink.row(hi, t, rows_[static_cast<size_t>(hi) * s.T + t], e);
-          }
+          for (int hi = 0; hi < H; ++hi)
+            sink.row(hi, t, rows_[static_cast<size_t>(hi) * s.T + t]);
       });
     }
     if ((need & kNeedAlpha) != 0) {
@@ -598,47 +609,6 @@ private:
     }
     return v;
   }
-  factor::cpu::stat::Workspace &stat_session() {
-    if (search_) {
-      factor::gpu::search_close(search_);
-      search_ = nullptr, sr_gen_ = 0;
-    }
-    const YPlanes &y = block().y;
-    const bool same_shape = stat_ && st_T_ == y.sh.T && st_A_ == y.sh.A && st_seg_ == y.sh.seg && same_holds(st_hd_, y.hd);
-    if (!same_shape) {
-      if (stat_)
-        factor::gpu::stat_close(stat_);
-      evict_unused_x(static_cast<size_t>((7 * y.hd.n + 4) * n_));
-      stat_ = factor::gpu::stat_open(y.sh.T, y.sh.A, y.sh.seg, labels_of(y), nullptr);
-      st_T_ = y.sh.T, st_A_ = y.sh.A, st_seg_ = y.sh.seg, st_hd_ = y.hd, st_gen_ = c_->gen;
-    } else if (st_gen_ != c_->gen) {
-      factor::gpu::stat_load(stat_, labels_of(y), nullptr);
-      st_gen_ = c_->gen;
-    }
-    w_.ensure(y.sh.A, y.hd.n, y.ad.n, ex_.threads());
-    return w_;
-  }
-  void search_session(int batch) {
-    assert(batch >= 1 && batch <= factor::gpu::search_max_batch());
-    if (stat_) {
-      factor::gpu::stat_close(stat_);
-      stat_ = nullptr, st_gen_ = 0;
-    }
-    const YPlanes &y = block().y;
-    const bool same_shape = search_ && sr_T_ == y.sh.T && sr_A_ == y.sh.A && sr_seg_ == y.sh.seg && sr_batch_ == batch &&
-                            same_holds(sr_hd_, y.hd) && sr_cap_ == y.n_full;
-    if (!same_shape) {
-      if (search_)
-        factor::gpu::search_close(search_);
-      evict_unused_x(static_cast<size_t>((7 * y.hd.n + 1 + 2 * batch) * n_));
-      search_ = factor::gpu::search_open(y.sh.T, y.sh.A, y.sh.seg, batch, y.hd, y.n_full);
-      factor::gpu::search_load(search_, labels_of(y).l);
-      sr_T_ = y.sh.T, sr_A_ = y.sh.A, sr_seg_ = y.sh.seg, sr_batch_ = batch, sr_hd_ = y.hd, sr_cap_ = y.n_full, sr_gen_ = c_->gen;
-    } else if (sr_gen_ != c_->gen) {
-      factor::gpu::search_load(search_, labels_of(y).l);
-      sr_gen_ = c_->gen;
-    }
-  }
 
   size_t n_ = 0;
   uint64_t x_gen_ = 0, x_tick_ = 0;
@@ -650,19 +620,14 @@ private:
   factor::gpu::DevPool dp_;
 
   factor::gpu::StatSession *stat_ = nullptr;
-  int st_T_ = 0, st_A_ = 0, st_seg_ = 0;
+  int st_T_ = 0, st_A_ = 0, st_seg_ = 0, st_cmax_ = 0;
+  double st_cap_ = 0.0;
   Holds st_hd_{};
   uint64_t st_gen_ = 0;
 
-  factor::gpu::SearchSession *search_ = nullptr;
-  int sr_T_ = 0, sr_A_ = 0, sr_seg_ = 0, sr_batch_ = 0;
-  double sr_cap_ = 0.0;
-  Holds sr_hd_{};
-  uint64_t sr_gen_ = 0;
-
-  std::vector<factor::search::Result> out_;
-  std::vector<factor::search::Tick> tk_; // [C][H][T] 批核的逐行 Tick
   factor::cpu::stat::Workspace w_;
+  std::vector<factor::stat::Accum> acc_; // [C][H]
+  std::vector<factor::stat::Day> day_;   // [C][H][D]
   std::vector<factor::stat::Row> rows_;
   std::vector<uint16_t> rx_;
   std::vector<uint8_t> ec_;
@@ -701,10 +666,8 @@ EngineSpace &engine_space(Store &S);
 template <class Ps, class Fn>
 auto with_backend(FactorFlow &F, bool use_gpu, Fn &&fn) {
   EngineSpace &es = engine_space(F.S);
-  if constexpr (!Ps::cells) {
-    if (use_gpu)
-      return fn(es.gpu_of(F.S.ex));
-  }
+  if (use_gpu)
+    return fn(es.gpu_of(F.S.ex));
   return fn(es.cpu);
 }
 

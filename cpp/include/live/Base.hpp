@@ -6,6 +6,7 @@
 //   市场由代码前缀定 (market_of), 新浪码 = 前缀 + 代码, AssetInfo 码 = 代码 + 后缀
 #pragma once
 
+#include "define/Fee.hpp"
 #include "live/Sides.hpp"
 #include "live/Trace.hpp"
 
@@ -78,8 +79,7 @@ inline std::string asset_sym(Mkt m, const std::string &code) { return code + kMk
 
 // ---------- 费率 ----------
 
-// 佣金万 1 双向 · 印花税 0.05% 卖 · 过户费 0.001% 双向 (调仓试算与账户日内回推同用)
-inline constexpr double kCommission = 1e-4, kStamp = 5e-4, kTransfer = 1e-5;
-inline double fee(double amt, int s) { return amt * (kCommission + kTransfer + (s == kSell ? kStamp : 0)); }
+// 一笔的税佣 (define/Fee.hpp 同一份费率表; 调仓试算与账户日内回推同用)
+inline double fee(double amt, int s, const Fee &f = Fee{}) { return amt * f.tax(s == kSell); }
 
 } // namespace live

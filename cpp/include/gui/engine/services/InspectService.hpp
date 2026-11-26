@@ -56,11 +56,11 @@ struct InspectResult : EvalStat {
   factor::stat::Holds hd;
   reader::ReadScope read_scope;
   BookLines pool_index;
-  float pool_ann[factor::stat::kMaxHold] = {};
+  float pool_ann[kHoldCount] = {};
   InspectPlanes pl;
   BookLines nav;
-  factor::stat::CostAcc ls_turn[kTails][factor::stat::kMaxHold] = {};
-  AggPdf ic_agg[factor::stat::kMaxHold];
+  factor::stat::CostAcc ls_turn[kTails][kHoldCount] = {};
+  AggPdf ic_agg[kHoldCount];
   AlphaDist alpha_dist;
   std::string error;
 

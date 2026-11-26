@@ -18,7 +18,6 @@ namespace GUI::Layer {
 namespace {
 
 constexpr int K = factor::stat::kGroups;
-using Engine::kTailOfGroup;
 using Engine::kTails;
 using Engine::layer_tail;
 using factor::stat::end_group;
@@ -72,7 +71,7 @@ void plot_section(const LayerDerived &d, const LayerRange &yr, const bool *show,
   const auto tail = [&](int e, int j) {
     Slot &t = s[ns++];
     t = Slot{layer_tail(e, j), e == kTop ? kColTop : kColBottom, kTailLayerWeight[j], hov[1 + j], {}};
-    std::snprintf(t.tag, sizeof(t.tag), "G%d 尾 %g%%", end_group(e) + 1, static_cast<double>(kTailOfGroup[j]) * 100.0);
+    std::snprintf(t.tag, sizeof(t.tag), "G%d 尾 %g%%", end_group(e) + 1, static_cast<double>(factor::stat::tail_frac(j)) * 100.0);
   };
   for (int j = kTails - 1; j >= 0; --j)
     if (show[1 + j])
@@ -308,7 +307,7 @@ void plot_layers(const LayerDerived &d, bool absolute, int &cursor_day, const Im
       const ImVec4 end_col[kEnds] = {kColTop, kColBottom};
       for (int j = 0; j < kTails; ++j) { // 尾部: 一级一个图例项 (默认隐藏) 同时管该级的色带 + 两端分层线 + LS (同名 = 同一 item, 一起显隐; 图例色 = 最后画的 LS 白)
         char tag[8], id[8];
-        std::snprintf(tag, sizeof(tag), "%g%%", static_cast<double>(kTailOfGroup[j]) * 100.0);
+        std::snprintf(tag, sizeof(tag), "%g%%", static_cast<double>(factor::stat::tail_frac(j)) * 100.0);
         std::snprintf(id, sizeof(id), "tls%d", j);
         ls_label(tag, 1 + j, id);
         ImPlot::HideNextItem(true, ImPlotCond_Once);

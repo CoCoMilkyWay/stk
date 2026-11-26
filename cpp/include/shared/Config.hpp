@@ -1,4 +1,5 @@
 #pragma once
+#include "define/Fee.hpp"
 #include "misc/date.hpp"
 
 #include <cassert>
@@ -26,13 +27,9 @@ struct Config {
   bool sync_fundamental = true;
   bool sync_bar1m = true;
 
-  // 交易税佣 (比率, 不分日期, 统一按现行标准): 标签 (LabelBar) 是毛收益不含它, 因子换手成本 (Stat Fee) 与 CTA 两侧按量扣.
-  //   一次往返 = 2 × commission + stamp (印花税只卖出单边)
-  double commission = 0.0001; // 佣金 万 1, 双边各一次
-  double stamp = 0.0005;      // 印花税 万 5, 卖出单边
-  // 固定冲击 (比率, 模拟值, 不按金额变): 标签 exit 是分钟 VWAP (不含冲击), Lob 库建仓冲击按深度精确算成特征 (lb_cost_*),
-  //   固定段 (因子没用 lob 叶时唯一的段) 买卖两侧都按它; 盘口段两侧用真实冲击 (lb_cost_buy / sell_*). 默认 20bp
-  double fixed_impact = 0.0020;
+  // 交易费率 (define/Fee.hpp; 全仓唯一一份: 因子换手成本 / 组合净线 / CTA / 实盘调仓试算 / 账户日内回推同用):
+  //   佣金双边 + 过户费双边 + 印花税卖出单边 + 固定冲击 (无盘口冲击列时两侧都按它; 标签是毛收益不含费)
+  Fee fee;
   // 冲击封顶 (比率): lb_cost_buy / sell_* 装载时 min(·, max_impact) 再进组均 (gui/engine/Load). 深度吃穿 / 涨跌停成交的格冲击可到百分之几,
   //   原值进均值把期限结构净线整体砸穿 (过罚); 封顶后那些格最多扣这么多, 可执行性另议. 两侧同封. 默认 1%
   double max_impact = 0.01;

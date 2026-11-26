@@ -42,7 +42,7 @@ void save_current(PortfolioUIState &ui) {
 } // namespace
 
 std::string EntryLabel(const PortfolioEntry &e) {
-  return "(" + e.pool + ", " + factor::stat::hold_name(e.hold) + "): " + std::filesystem::path(e.file).stem().string();
+  return "(" + e.pool + ", " + hold_name(e.hold) + "): " + std::filesystem::path(e.file).stem().string();
 }
 
 void SyncPortfolioList(PortfolioUIState &ui) {
@@ -52,7 +52,7 @@ void SyncPortfolioList(PortfolioUIState &ui) {
   relist(ui, ui.name);
 }
 
-void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, FactorLevelId lv, int hold) {
+void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, FactorLevelId lv, HoldId hold) {
   const ImGuiStyle &st = ImGui::GetStyle();
   const float h = 3.0f * ImGui::GetFrameHeightWithSpacing() - st.ItemSpacing.y + 2.0f * st.WindowPadding.y;
   constexpr float kW1 = 250.0f, kW2 = 380.0f;
@@ -151,7 +151,7 @@ void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const
     else if (!row_ok)
       tip("先在表格里点一行");
     else
-      tip("把 %s 加进组合 (持有期 = 当前 Hold %s)", view_row->key.c_str(), factor::stat::hold_name(hold).c_str());
+      tip("把 %s 加进组合 (持有期 = 当前 Hold %s)", view_row->key.c_str(), hold_name(hold).c_str());
   }
   ImGui::SameLine();
   const bool sel_ok = ui.sel >= 0 && ui.sel < static_cast<int>(ui.entries.size());

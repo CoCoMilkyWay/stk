@@ -104,14 +104,8 @@
 #include <cstddef>
 #include <cstdint>
 
-// 两后端共用的契约公式: CUDA 编译器下 __host__ __device__, 纯 C++ 下为空 (Stat/Contract.hpp【一份公式】)
-#ifndef FACTOR_HD
-#if defined(__CUDACC__)
-#define FACTOR_HD __host__ __device__
-#else
-#define FACTOR_HD
-#endif
-#endif
+#include "define/HostDev.hpp" // FACTOR_HD: 两后端共用的契约公式 (Stat/Contract.hpp【一份公式】)
+#include "define/Label.hpp"   // HoldId (N 元回归的目标持有期)
 
 namespace factor {
 
@@ -124,7 +118,7 @@ struct Param {
   int d = 0;          // 窗长 / 滞后 (期 = 本层的行)
   float k = 0.f;      // 阈值 / 桶数 / EMA 系数 / 分位 / 岭强度
   float k2 = 0.f;     // 第二阈值 (TodMask 上界)
-  int h = 0;          // 回归目标的持有期键 (stat 持有期键; 只 N 元回归)
+  HoldId h = kHoldT1; // 回归目标的持有期 (只 N 元回归)
   float w[kLrN] = {}; // 各特征元的权 (前 N 个有效; 只 N 元定权)
 };
 

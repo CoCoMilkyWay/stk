@@ -22,7 +22,7 @@
 //   kSnapSemver: 节点 snap 清单 / 跨天口径变而成员布局没变时 +1, 旧快照即不可续算.
 // ============================================================================
 
-inline constexpr uint64_t kSnapSemver = 1;
+inline constexpr uint64_t kSnapSemver = 2;
 
 struct SnapHeader {
   static constexpr uint64_t kMagic = 0x31504e5354414546ULL; // 'F','E','A','T','S','N','P','1' 小端

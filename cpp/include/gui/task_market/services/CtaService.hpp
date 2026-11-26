@@ -25,7 +25,7 @@ struct CtaRequest {
   uint32_t gen = 0;
   Quote::Ref ref;                                      // 标的
   cta::Spec spec;                                      // 模型与回测设定 (UI 编辑)
-  cta::Rates rates;                                    // 成本率 = 系统配置 (Config::commission / stamp / fixed_impact)
+  cta::Rates rates;                                    // 成本率 = 系统配置 (Config::fee)
   Quote::PriceStamp stamp;                             // 价格库发布的戳
   std::shared_ptr<const std::vector<misc::Ymd>> dates; // 该戳的日脊
   std::shared_ptr<const Quote::Series> series;         // 标的在该戳的全史 (连分钟)

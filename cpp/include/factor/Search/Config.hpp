@@ -1,34 +1,29 @@
 #pragma once
 
 // =============================================================================
-// Search 的全部配置 (编译期常量; 语义见 Contract.hpp / Space.hpp 对应章节, 那里只引用不定义)
+// Search 的全部配置 (编译期常量; 目标见 Stat/Roll.hpp, 参数空间见 Space.hpp)
 // =============================================================================
 
-#include "factor/Stat/Contract.hpp" // hold_same
+#include "define/Label.hpp"
 
 #include <cassert>
 #include <cmath>
 
 namespace factor::search {
 
-// ---- 持有期 (Contract【目标】) ----
-// 可搜集合 (持有期键, 按时间序列出全部标签组, 注释掉 = 不搜); 层上合法另看 hold_ok
-inline constexpr int kSearchHolds[] = {
-    // 1,                           // 1m
-    // 5,                           // 5m
-    // 15,                          // 15m
-
-    30,                       // 30m
-    60,                       // 60m
-    factor::stat::kHoldClose, // close
-    // factor::stat::hold_open(1),  // T+1O
-    factor::stat::hold_same(1), // T+1
-                                // factor::stat::hold_same(2), // T+2
-                                // factor::stat::hold_same(3), // T+3
-};
-
-// ---- 目标 (Contract【目标】) ----
-inline constexpr int kRollParts = 10; // 滚动窗长 = 评估期交易日数 / kRollParts (10 年 → 1 年窗)
+// ---- 持有期 (Stat/Roll.hpp 目标; 一次搜索针对一个固定持有期) ----
+// 可搜集合 (按时间序列出全部持有期, 注释掉 = 不搜); 层上合法另看 hold_ok
+inline constexpr HoldSet kSearchHolds = 0
+                                        // | hold_bit(kHoldM1)
+                                        // | hold_bit(kHoldM5)
+                                        // | hold_bit(kHoldM15)
+                                        | hold_bit(kHoldM30) | hold_bit(kHoldM60) | hold_bit(kHoldClose)
+                                        // | hold_bit(kHoldT1O)
+                                        | hold_bit(kHoldT1)
+    // | hold_bit(kHoldT2)
+    // | hold_bit(kHoldT3)
+    ;
+inline constexpr bool search_hold(HoldId h) { return (kSearchHolds & hold_bit(h)) != 0; }
 
 // ---- 预算 ----
 inline constexpr int kInit = 64;       // 单槽采样点数 (Space【采样】; 唯一的预算量, 整数槽取整去重后可能更少)

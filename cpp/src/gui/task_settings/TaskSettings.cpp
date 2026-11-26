@@ -23,7 +23,7 @@ namespace {
 class SettingsTask {
 private:
   // 数值配置上次合法值: 失焦校验越界时回退用 (避免越界值进 cfg/落盘)
-  double last_commission = 0, last_stamp = 0, last_fixed_impact = 0, last_max_impact = 0;
+  double last_commission = 0, last_stamp = 0, last_transfer = 0, last_fixed_impact = 0, last_max_impact = 0;
 
   // Date picker state
   struct DatePickerState {
@@ -192,9 +192,10 @@ private:
     };
     data.config.Initialize();
     ts.initialized = true;
-    last_commission = data.config.commission;
-    last_stamp = data.config.stamp;
-    last_fixed_impact = data.config.fixed_impact;
+    last_commission = data.config.fee.commission;
+    last_stamp = data.config.fee.stamp;
+    last_transfer = data.config.fee.transfer;
+    last_fixed_impact = data.config.fee.impact;
     last_max_impact = data.config.max_impact;
   }
 
@@ -272,14 +273,14 @@ private:
           ImGui::SetTooltip("比率, 万 1 = 0.0001; 买卖各扣一次. 标签 (LabelBar) 不含税佣, Inspect 图 1 事后扣");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
-        ImGui::InputDouble("##commission", &cfg.commission, 0.0, 0.0, "%.5f");
+        ImGui::InputDouble("##commission", &cfg.fee.commission, 0.0, 0.0, "%.5f");
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-          if (cfg.commission >= 0.0 && cfg.commission < 0.01) {
-            last_commission = cfg.commission;
+          if (cfg.fee.commission >= 0.0 && cfg.fee.commission < 0.01) {
+            last_commission = cfg.fee.commission;
             changed = true;
           } else {
             std::cout << "警告: 佣金比率越界 (万 1 = 0.0001), 保留旧值" << std::endl;
-            cfg.commission = last_commission;
+            cfg.fee.commission = last_commission;
           }
         }
 
@@ -291,14 +292,33 @@ private:
           ImGui::SetTooltip("比率, 万 5 = 0.0005; 只卖出单边. 不分日期, 统一按现行标准");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
-        ImGui::InputDouble("##stamp", &cfg.stamp, 0.0, 0.0, "%.5f");
+        ImGui::InputDouble("##stamp", &cfg.fee.stamp, 0.0, 0.0, "%.5f");
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-          if (cfg.stamp >= 0.0 && cfg.stamp < 0.01) {
-            last_stamp = cfg.stamp;
+          if (cfg.fee.stamp >= 0.0 && cfg.fee.stamp < 0.01) {
+            last_stamp = cfg.fee.stamp;
             changed = true;
           } else {
             std::cout << "警告: 印花税比率越界 (万 5 = 0.0005), 保留旧值" << std::endl;
-            cfg.stamp = last_stamp;
+            cfg.fee.stamp = last_stamp;
+          }
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("过户费 (双边)");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("比率, 0.001%% = 0.00001; 买卖各扣一次");
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(120);
+        ImGui::InputDouble("##transfer", &cfg.fee.transfer, 0.0, 0.0, "%.6f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          if (cfg.fee.transfer >= 0.0 && cfg.fee.transfer < 0.01) {
+            last_transfer = cfg.fee.transfer;
+            changed = true;
+          } else {
+            std::cout << "警告: 过户费比率越界 (0.001% = 0.00001), 保留旧值" << std::endl;
+            cfg.fee.transfer = last_transfer;
           }
         }
 
@@ -311,14 +331,14 @@ private:
                             "扣冲击时平仓侧统一扣这一常数 (做多卖出); 固定段 (因子没用 lob 叶时唯一的段) 建仓也按它");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
-        ImGui::InputDouble("##fixed_impact", &cfg.fixed_impact, 0.0, 0.0, "%.5f");
+        ImGui::InputDouble("##fixed_impact", &cfg.fee.impact, 0.0, 0.0, "%.5f");
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-          if (cfg.fixed_impact >= 0.0 && cfg.fixed_impact < 0.05) {
-            last_fixed_impact = cfg.fixed_impact;
+          if (cfg.fee.impact >= 0.0 && cfg.fee.impact < 0.05) {
+            last_fixed_impact = cfg.fee.impact;
             changed = true;
           } else {
             std::cout << "警告: 固定冲击比率越界 (20bp = 0.0020), 保留旧值" << std::endl;
-            cfg.fixed_impact = last_fixed_impact;
+            cfg.fee.impact = last_fixed_impact;
           }
         }
 

@@ -816,11 +816,11 @@ void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
   plot_dist({"因子分布###alpha", "alpha", "alpha(t)", a.pdf, a.series, a.mean, 0.0, &a}, size);
 }
 
-// 右下左半: 日内 rIC — 当前 Hold 的逐行 rIC 按行号沿全部交易日取均值 (InspectDerived::tod_ic, 只计 ok 行; 无样本的行断开); 横轴 = 行末时刻.
-// TS 口径另叠 G20 / G1 各行的平均占用率 (右轴 %; 均匀 = 5%): 时序分位的端组随日内时刻挤满 / 挤空. 悬停报该行读数
+// 右下左半: 日内 rIC — 当前 Hold 的逐行 rIC 按行号沿全部交易日取均值 (InspectDerived::tod_ic, 只计 ok 行), 一行一柱无缝 (无样本的行空着); 横轴 = 行末时刻.
+// TS 口径另叠 G20 / G1 各行的平均占用率 (右轴 %; 均匀 = 5%): 时序分位的端组随日内时刻挤满 / 挤空. 占用线行少时画节点圆点 (日层 = 收盘建仓一点). 悬停报该行读数
 void plot_tod(const InspectDerived &d, const InspectUIState::TodOcc &occ, const std::vector<std::string> &clock, const ImVec2 &size) {
   const int S = static_cast<int>(d.tod_ic.size());
-  assert(S > 1 && clock.size() == static_cast<size_t>(S));
+  assert(S >= 1 && clock.size() == static_cast<size_t>(S));
   const bool has_occ = !occ.top.empty();
   assert(!has_occ || (occ.top.size() == static_cast<size_t>(S) && occ.bot.size() == static_cast<size_t>(S)));
   const char *title = "日内 rIC###tod";
@@ -836,7 +836,7 @@ void plot_tod(const InspectDerived &d, const InspectUIState::TodOcc &occ, const 
   for (int s = 0; s < S; ++s)
     xs[static_cast<size_t>(s)] = s, ic[static_cast<size_t>(s)] = d.tod_ic[static_cast<size_t>(s)];
   for (int i = 0; i < nt; ++i) {
-    const int r = static_cast<int>(std::lround(static_cast<double>(i) * (S - 1) / (nt - 1)));
+    const int r = nt > 1 ? static_cast<int>(std::lround(static_cast<double>(i) * (S - 1) / (nt - 1))) : 0;
     tp.push_back(r);
     tl.push_back(clock[static_cast<size_t>(r)].c_str());
   }
@@ -849,8 +849,18 @@ void plot_tod(const InspectDerived &d, const InspectUIState::TodOcc &occ, const 
   const double zero = 0.0;
   ImPlot::SetNextLineStyle(ImVec4(0.5f, 0.5f, 0.5f, 0.6f), 1.f);
   ImPlot::PlotInfLines("##tod_zero", &zero, 1, ImPlotInfLinesFlags_Horizontal);
-  ImPlot::SetNextLineStyle(kColLS, 2.f);
-  ImPlot::PlotLine("rIC", xs.data(), ic.data(), S);
+  constexpr int kDots = 17; // 行数不多于它 (≥ 15min 层, 日层只一点) 占用线另画节点圆点
+  const auto dots = [&](const ImVec4 &col) {
+    if (S <= kDots)
+      ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.f, col, IMPLOT_AUTO, col);
+  };
+  std::vector<double> bx, by; // 有样本的行: 一行一柱, 柱宽 1 行 (无缝)
+  for (int s = 0; s < S; ++s)
+    if (!std::isnan(ic[static_cast<size_t>(s)]))
+      bx.push_back(s), by.push_back(ic[static_cast<size_t>(s)]);
+  ImPlot::SetNextFillStyle(ImVec4(kColLS.x, kColLS.y, kColLS.z, 0.6f));
+  ImPlot::SetNextLineStyle(ImVec4(0.f, 0.f, 0.f, 0.f));
+  ImPlot::PlotBars("rIC", bx.data(), by.data(), static_cast<int>(bx.size()), 1.0);
   std::vector<double> top, bot;
   if (has_occ) {
     top.resize(static_cast<size_t>(S)), bot.resize(static_cast<size_t>(S));
@@ -858,8 +868,10 @@ void plot_tod(const InspectDerived &d, const InspectUIState::TodOcc &occ, const 
       top[s] = 100.0 * occ.top[s], bot[s] = 100.0 * occ.bot[s];
     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
     ImPlot::SetNextLineStyle(kColTop, 1.f);
+    dots(kColTop);
     ImPlot::PlotLine("G20 占用", xs.data(), top.data(), S);
     ImPlot::SetNextLineStyle(kColBottom, 1.f);
+    dots(kColBottom);
     ImPlot::PlotLine("G1 占用", xs.data(), bot.data(), S);
     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
   }
@@ -906,7 +918,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   std::vector<const char *> labels(static_cast<size_t>(n_hold));
   for (int i = 0; i < n_hold; ++i) {
     pos[static_cast<size_t>(i)] = i;
-    names[static_cast<size_t>(i)] = factor::stat::hold_name(hs[i].hold);
+    names[static_cast<size_t>(i)] = hold_name(hs[i].hold);
     labels[static_cast<size_t>(i)] = names[static_cast<size_t>(i)].c_str();
   }
   tier_names[0] = "无冲击";
@@ -1344,8 +1356,8 @@ void expr_text(std::string_view s) {
 bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
   // 默认高光: 因子表当前 Hold 下 rIC 最高的有效权重 (都无该 Hold 的 stat → 表序第一个); 本作用域的表还没扫出 → 下帧再试
   if (!fui.view_defaulted && fui.view_file.empty()) {
-    const auto &labels = ctx.ft->y.labels;
-    const int hold = labels.empty() ? 0 : labels[static_cast<size_t>(std::clamp(fui.hold_idx, 0, static_cast<int>(labels.size()) - 1))].key;
+    const Holds &hl = ctx.ft->y.list;
+    const HoldId hold = hl.n == 0 ? kHoldT1 : hl.k[std::clamp(fui.hold_idx, 0, hl.n - 1)];
     std::lock_guard<std::mutex> lock(fsvc.mutex);
     if (fsvc.current.scope.dir == ctx.dir) {
       const FactorRow *first = nullptr, *best = nullptr;
@@ -1364,7 +1376,7 @@ bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &
       }
     }
   }
-  if (fui.view_file.empty() || !ctx.axis_ready || ctx.ft->y.labels.empty())
+  if (fui.view_file.empty() || !ctx.axis_ready || ctx.(ft->y.list.n == 0))
     return false;
   if (isvc.busy())
     return false;
@@ -1442,7 +1454,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   ImGui::SameLine();
   ImGui::Text("%s  %s  #%d", row.name_cn.c_str(), row.name_en.c_str(), row.widx);
   if (ImGui::IsItemHovered())
-    tip("%s  (搜自 h %s)\n◂ ▸ 切到表里相邻的权重", row.file.c_str(), row.hold_src > 0 ? factor::stat::hold_name(row.hold_src).c_str() : "- (手填)");
+    tip("%s  (搜自 h %s)\n◂ ▸ 切到表里相邻的权重", row.file.c_str(), row.hold_src >= 0 ? hold_name(static_cast<HoldId>(row.hold_src)).c_str() : "- (手填)");
   if (switching) {
     ImGui::SameLine();
     if (sel.error.empty())
@@ -1479,15 +1491,15 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   const FeatureTable &ft = *ctx.ft;
   const Phase st = isvc.phase.load(std::memory_order_acquire);
   const bool busy = isvc.busy();
-  const int n_hold = static_cast<int>(ft.y.labels.size());
+  const int n_hold = static_cast<int>(static_cast<size_t>(ft.y.list.n));
   if (ui.hold_for != sel.key) { // 换了权重 → Hold 切到它搜出来的持有期 (手填权重无, 不动)
     ui.hold_for = sel.key;
     for (int i = 0; i < n_hold; ++i)
-      if (ft.y.labels[static_cast<size_t>(i)].key == sel.hold_src)
+      if (ft.y.list.k[static_cast<size_t>(i)] == sel.hold_src)
         ui.hold_idx = i;
   }
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, n_hold - 1));
-  const int cur_hold = n_hold ? ft.y.labels[static_cast<size_t>(ui.hold_idx)].key : 0;
+  const HoldId cur_hold = n_hold ? ft.y.list.k[static_cast<size_t>(ui.hold_idx)] : kHoldT1;
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("级别");
   ImGui::SameLine(0.f, 4.f);
@@ -1498,7 +1510,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   if (n_hold) {
     float w_max = 0.f;
     for (int i = 0; i < n_hold; ++i)
-      w_max = std::max(w_max, hold_points_line(hold_points(ft.y.labels[static_cast<size_t>(i)].key, ft.lv), false));
+      w_max = std::max(w_max, hold_points_line(hold_points(ft.y.list.k[static_cast<size_t>(i)], ft.lv), false));
     ImGui::SameLine(0.f, kCtlGap * 0.5f);
     const float x0 = ImGui::GetCursorPosX();
     hold_points_line(hold_points(cur_hold, ft.lv));
@@ -1542,7 +1554,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
     });
     ui.occ.update(ep, [&](InspectUIState::TodOcc &o) {
       o = {};
-      if (res_has && res.frame == factor::stat::Frame::TS && factor_level(res.lv).seg > 1)
+      if (res_has && res.frame == factor::stat::Frame::TS)
         derive_occ(res, o);
     });
     // 右上: 资产轴 (光标日序) / 选中资产 R(t) 列 / K 线请求期望态 —— 都要读 res.pl.rx / read_scope, 在锁内派生, 出锁只留派生
@@ -1802,17 +1814,14 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   } else
     empty_plot("IC 分布###ic", cell, wait_hint);
   ImGui::SameLine();
-  // 右下一格分两半: 日内 rIC | 期限结构 (日层只有一行: 期限结构占满)
-  ImVec2 term = cell;
-  if (factor_level(ft.lv).seg > 1) {
-    term = ImVec2(std::max(50.f, (cell.x - sp) * 0.5f), cell.y);
-    ui.clock.update(ft.lv, [&](std::vector<std::string> &c) { c = Engine::row_clocks(ft.lv); });
-    if (shown && der.valid && der.tod_ic.size() == ui.clock.val.size())
-      plot_tod(der, ui.occ.val, ui.clock.val, term);
-    else
-      empty_plot("日内 rIC###tod", term, wait_hint);
-    ImGui::SameLine();
-  }
+  // 右下一格分两半: 日内 rIC | 期限结构 (日层只一行 = 收盘建仓那一点, 同一张图)
+  const ImVec2 term(std::max(50.f, (cell.x - sp) * 0.5f), cell.y);
+  ui.clock.update(ft.lv, [&](std::vector<std::string> &c) { c = Engine::row_clocks(ft.lv); });
+  if (shown && der.valid && der.tod_ic.size() == ui.clock.val.size())
+    plot_tod(der, ui.occ.val, ui.clock.val, term);
+  else
+    empty_plot("日内 rIC###tod", term, wait_hint);
+  ImGui::SameLine();
   // 期限结构: Inspect 结果优先, 否则 Factors 表的 stat (row.hold + row.costs; 两者都是毛 + 全部金额段, 同一份 CostTier)
   if (shown) {
     plot_term(res_ev.hold, n_hold, res_ev.costs.data(), static_cast<int>(res_ev.costs.size()), res_pool_ann.data(), ctx.fee, ui.hold_idx,

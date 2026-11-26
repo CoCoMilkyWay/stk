@@ -67,7 +67,7 @@ inline std::vector<Trip> trips_of(const Ctx &x, size_t reduce, size_t follow, co
     Follow::with(follow, [&]<class F>() {
       Laddered<K, F> src{K{x}, Ladder<F>{x, z}, vr, vf, on};
       src.lad.log = &o;
-      drive(x.t, Rates{}, src, [](const Fill &) {});
+      drive(x.t, Rates{0.0, 0.0, 0.0, 0.0}, src, [](const Fill &) {});
     });
   });
   return o;
@@ -75,7 +75,7 @@ inline std::vector<Trip> trips_of(const Ctx &x, size_t reduce, size_t follow, co
 
 // 根段 [i0, i1) 内卖出的各笔的中位夏普 (无笔 = NaN); 顺向 s, 费率 u; buf = 暂存
 inline double median_of(const std::vector<Trip> &tr, const Tape &t, size_t i0, size_t i1, float s, const Rates &u, std::vector<double> &buf) {
-  const double one = u.commission + u.impact; // 单边佣金 + 冲击
+  const double one = u.commission + u.transfer + u.impact; // 单边佣金 + 冲击
   buf.clear();
   for (auto it = std::ranges::lower_bound(tr, i0, {}, &Trip::i0); it != tr.end() && it->i0 < i1; ++it) {
     const bool shut = it->i1 < i1;

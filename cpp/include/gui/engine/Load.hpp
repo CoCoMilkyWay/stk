@@ -107,35 +107,6 @@ struct Shape {
   size_t n() const { return static_cast<size_t>(T) * A; }
   bool operator==(const Shape &) const = default;
 };
-using Holds = factor::stat::Holds;
-using Amts = factor::stat::Amts;
-template <class K>
-K keys_of(std::span<const int> keys) {
-  K o;
-  assert(keys.size() <= std::size(o.k) && "键数超 Stat 容量 (kMaxHold / kMaxCost)");
-  o.n = static_cast<int>(keys.size());
-  std::copy(keys.begin(), keys.end(), o.k);
-  return o;
-}
-template <class K>
-K keys_of(const std::vector<int> &keys) { return keys_of<K>(std::span<const int>(keys)); }
-template <class K>
-K keys_of(const std::vector<LegCol> &cols) {
-  std::vector<int> keys;
-  keys.reserve(cols.size());
-  for (const LegCol &c : cols)
-    keys.push_back(c.key);
-  return keys_of<K>(keys);
-}
-template <class K>
-K keys_union(const K &a, const K &b) {
-  std::vector<int> keys(a.k, a.k + a.n);
-  keys.insert(keys.end(), b.k, b.k + b.n);
-  std::sort(keys.begin(), keys.end());
-  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
-  return keys_of<K>(keys);
-}
-
 enum class Segs : uint8_t { None,
                             First,
                             All };
@@ -163,12 +134,13 @@ struct YCore {
   std::vector<uint8_t> eo;
   long long on = 0;
 };
-struct LegPlane {
-  std::vector<uint16_t> v[factor::stat::kLegs];
+// 一个持有期的标签平面: 做多收益 lv / 名义收益 nv (只偏移型, 锚点型空) / 有效位 m
+struct LabPlane {
+  std::vector<uint16_t> lv, nv;
   std::vector<uint8_t> m;
 };
-inline factor::stat::Label label_of(const LegPlane &p, const uint8_t *eo, const uint16_t *ry) {
-  return {{p.v[factor::stat::kLong].data(), p.v[factor::stat::kShort].data()}, p.m.data(), eo, ry};
+inline factor::stat::Label label_of(const LabPlane &p, const uint8_t *eo, const uint16_t *ry) {
+  return {p.lv.data(), p.nv.empty() ? nullptr : p.nv.data(), p.m.data(), eo, ry};
 }
 
 struct XPlanes {
@@ -181,14 +153,14 @@ struct YPlanes {
   const uint8_t *gate = nullptr;
   const uint8_t *eo = nullptr;
   Holds hd;
-  const LegPlane *labels[factor::stat::kMaxHold] = {};
-  const uint16_t *ry[factor::stat::kMaxHold] = {};
+  const LabPlane *labels[kHoldCount] = {};
+  const uint16_t *ry[kHoldCount] = {};
   Amts ad;
-  const uint16_t *costs[factor::stat::kMaxCost] = {}; // 盘口段: [kSides][n] 两侧冲击平面首尾相接 (买 [0, n), 卖 [n, 2n)); 固定段 nullptr
+  const uint16_t *costs[kAmtCount] = {}; // 盘口段: [kSides][n] 两侧冲击平面首尾相接 (买 [0, n), 卖 [n, 2n)); 固定段 nullptr
   float max_impact = 0.f;
   double n_full = 0.0;
 };
-inline int fill_costs(const YPlanes &y, factor::stat::Cost (&out)[factor::stat::kMaxCost]) {
+inline int fill_costs(const YPlanes &y, factor::stat::Cost (&out)[kAmtCount]) {
   const size_t n = y.sh.n();
   for (int k = 0; k < y.ad.n; ++k)
     out[k] = y.costs[k] ? factor::stat::Cost{{y.costs[k], y.costs[k] + n}, y.max_impact} : factor::stat::Cost{};
@@ -205,7 +177,7 @@ struct Io {
   Progress &prog;
 };
 bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vector<Leaf> &out);
-bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LegPlane> &labels,
+bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LabPlane> &labels,
             std::vector<std::vector<uint16_t>> &costs);
 bool n_full_of(const Io &io, const Chunk &k, double &out);
 

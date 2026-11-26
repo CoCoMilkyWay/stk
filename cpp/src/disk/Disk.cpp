@@ -1,7 +1,7 @@
 #include "disk/Disk.hpp"
 #include "misc/cross_platform.hpp"
 
-#include "factor/Stat/Contract.hpp"           // hold_parse / hold_token
+#include "define/Label.hpp"                   // hold_parse
 #include "features/Storage/FeatureLevels.hpp" // TIER_IDS / has_level
 #include "features/Storage/FeatureLib.hpp"    // feature_pools
 #include "fundamental/Spec.hpp"               // SPECS
@@ -244,8 +244,8 @@ bool known(Node n, const Key &k) {
   case Seg::Level:
     return std::any_of(GUI::Engine::kFactorLevels.begin(), GUI::Engine::kFactorLevels.end(), [&](const auto &l) { return k.level == l.name; });
   case Seg::Hold: {
-    int h = 0;
-    return factor::stat::hold_parse(k.hold, h) && factor::stat::hold_token(h) == k.hold;
+    HoldId h = kHoldT1;
+    return hold_parse(k.hold, h);
   }
   case Seg::Table:
     return std::any_of(fundamental::SPECS.begin(), fundamental::SPECS.end(), [&](const fundamental::Spec &s) {

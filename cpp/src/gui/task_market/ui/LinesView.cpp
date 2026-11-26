@@ -250,9 +250,9 @@ struct BookLine {
       c[k] = lg.b->at(k, lg.line);
     assert(!c[kBookImp] == !c[kBookFix] && "成本两列同有同无");
   }
-  double inc(size_t t, bool cost, const factor::stat::Fee &f) const {
+  double inc(size_t t, bool cost, const Fee &f) const {
     const double r = c[kBookRet][t];
-    return cost && c[kBookImp] ? r - c[kBookImp][t] - c[kBookFix][t] * f.fixed - c[kBookBuy][t] * f.tax(factor::stat::kBuy) - c[kBookSell][t] * f.tax(factor::stat::kSell) : r;
+    return cost && c[kBookImp] ? r - f.cost(c[kBookImp][t], c[kBookFix][t], c[kBookBuy][t], c[kBookSell][t]) : r;
   }
   double buy(size_t t) const { return c[kBookBuy] ? c[kBookBuy][t] : 0.0; }
 };
@@ -354,7 +354,7 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
     size_t days = 0;
     for (size_t d = d0; d < D; ++d)
       sum += buy[d], days += n_act[d] > 0;
-    o.turn = sum / static_cast<double>(days) * factor::stat::kDaysPerYear;
+    o.turn = per_year(sum, static_cast<double>(days));
   }
   return o;
 }
@@ -489,9 +489,9 @@ LineTail tail_of(const Line &c, size_t k, const Quote::Day &y, bool minutes) {
   return o;
 }
 // 腿集合成的线源: cost = 扣成本; 腿账都无成本列 → 不扣 (扣与不扣同一线源 ⇒ 两条线共用一份)
-LineSrc mix_src(std::vector<LinesLeg> legs, bool cost, const factor::stat::Fee &fee) {
+LineSrc mix_src(std::vector<LinesLeg> legs, bool cost, const Fee &fee) {
   cost = cost && std::ranges::any_of(legs, [](const LinesLeg &lg) { return lg.b->col[kBookImp].n > 0; });
-  return {std::move(legs), cost, cost ? fee : factor::stat::Fee{}};
+  return {std::move(legs), cost, cost ? fee : Fee{}};
 }
 // 账 b 线键 key 的腿; 账空 / 不在 → 空腿
 LinesLeg leg_of(const std::shared_ptr<const PortfolioBook> &b, uint32_t key) {
@@ -709,7 +709,7 @@ LinesRow account_row(const std::string &hover) {
 // 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘) 再接个股全史 (价格库留着的才有; 无则与可成交同一条)
 //   / 账户 = 账户全史 (无账, 可成交同理想);
 //   两条都带该键的日内形 (全史连分钟才有)
-void push_quote(LinesDerived &d, int g, LinesRow r, const factor::stat::Fee &fee, const Reuse &ru) {
+void push_quote(LinesDerived &d, int g, LinesRow r, const Fee &fee, const Reuse &ru) {
   if (r.ref.side < Quote::kMarkets) {
     r.val = leg_of(d.quotes[r.ref.side], r.ref.key);
     r.src[kTrade] = mix_src(legs_of(r.val), true, fee);
@@ -728,7 +728,7 @@ void push_quote(LinesDerived &d, int g, LinesRow r, const factor::stat::Fee &fee
   push(d, g, std::move(r), ru);
 }
 // 无行情键的行 r (已取名) 进组 g: 可成交 / 理想 = 腿集 legs 扣 / 不扣成本合成
-void push_book(LinesDerived &d, int g, LinesRow r, std::vector<LinesLeg> legs, const factor::stat::Fee &fee, const Reuse &ru) {
+void push_book(LinesDerived &d, int g, LinesRow r, std::vector<LinesLeg> legs, const Fee &fee, const Reuse &ru) {
   r.src[kTrade] = mix_src(legs, true, fee);
   r.src[kIdeal] = mix_src(std::move(legs), false, {});
   push(d, g, std::move(r), ru);
@@ -736,7 +736,7 @@ void push_book(LinesDerived &d, int g, LinesRow r, std::vector<LinesLeg> legs, c
 
 // 有行情键的行: 篮子三组 = 篮子表三段 (段内序); 成分 = 展开行的成分 (篮子 = Census::cons, 权降序; 账户 = 持仓 d.hold 里资产轴上的, 市值降序)
 // + 其余个股 kids (升序)
-void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, const StockInfos &infos, const factor::stat::Fee &fee, const Reuse &ru,
+void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, const StockInfos &infos, const Fee &fee, const Reuse &ru,
                    LinesDerived &d) {
   for (int g = 0; g < kBasketGroups; ++g)
     for (const size_t b : basket_table().of(static_cast<BasketGroup>(g)))
@@ -765,7 +765,7 @@ void derive_quotes(const std::string &open, const std::vector<uint32_t> &kids, c
     push_quote(d, kGroupKid, stock_row(infos, id, share, account ? "仓位" : "权占比"), fee, ru);
 }
 // 无行情键的行: 因子 = [算成的条目序] 各自账的线 (键 0); 策略 = 全部因子的线
-void derive_books(const std::vector<const PortfolioItem *> &its, const std::string &name, const factor::stat::Fee &fee, const Reuse &ru, LinesDerived &d) {
+void derive_books(const std::vector<const PortfolioItem *> &its, const std::string &name, const Fee &fee, const Reuse &ru, LinesDerived &d) {
   std::vector<LinesLeg> all;
   for (size_t q = 0; q < its.size(); ++q) {
     const LinesLeg lg = leg_of(d.books[q], 0);
@@ -834,7 +834,7 @@ LinesSlice slice_of(const LineRef &c, int d0, int d1) {
   const double s1 = c.s1(b) - c.s1(a), s2 = c.s2(b) - c.s2(a);
   const double var = n >= 2.0 ? (s2 - s1 * s1 / n) / (n - 1.0) : 0.0;
   if (var > 0.0)
-    s.sharpe = static_cast<float>(s1 / n / std::sqrt(var) * std::sqrt(static_cast<double>(factor::stat::kDaysPerYear)));
+    s.sharpe = static_cast<float>(ann_ir(s1 / n, std::sqrt(var)));
   return s;
 }
 
@@ -1052,7 +1052,7 @@ Quote::Ref RowRef(const std::string &id) {
 }
 
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
-                      const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, const factor::stat::Fee &fee, const std::string &open,
+                      const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, const Fee &fee, const std::string &open,
                       const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const std::string &account,
                       const std::shared_ptr<const Quote::Holdings> &hold, const StockInfos &infos, LinesDerived &d) {
   LinesDerived o = std::move(d);

@@ -4,15 +4,18 @@
 // Stat 评估算子的 GPU 后端 (CUDA, sm_75 / RTX 2060 6GB / 336 GB·s⁻¹; nvcc)
 // =============================================================================
 //   语义契约见 factor/Stat/Contract.hpp, 行核见 Stat/Dev.cuh (rank_rows / quant_rows / row_stat). 本文件与 Stat/Cpu.hpp 完全独立,
-//   流程同名同参序 (契约【视图】; 出口 Accum[H], 二级 finish_all 在宿主):
-//     prep_label / rank_x (Dev.cuh) · accum_rows (label_rows → fold_rows → reduce_parts) · run = rank_x + accum_rows · end_codes
-//   【label_rows】grid ⌈(t_hi − t_lo)/kWarps⌉ × kWB, **一 warp 一行 t**, 持有期在 warp 内串行 (rx 行一次进寄存器 / L1, H 组标签各读一遍),
-//     每 (t, h) 一次 dev::row_stat → lane 0 落 rows[h][t] (设备). 核内没有块级同步, t ≥ t_hi 的 warp 直接退出.
-//     行先落设备再折, 不在 warp 内攒: 攒要么每 h 一块重读 rx 行 (H 倍 rx 流量), 要么 H 份累加器压寄存器; 落行的读写远小于前者.
-//   【fold_rows】一 warp 一 (h, 行块 tb) (kRows 行): 契约 Accum 的两半, lane 0 攒 Accum::Head, lane q < kGroups 攒 Accum::Grp[q]
-//     (调的就是契约的 add) → 分片 part[h][tb]. 【reduce_parts】每 h 一线程沿 tb 升序 merge (固定序 → 逐次确定) → acc[h].
-//     宿主只拷回 acc[H] (+ 要时 rows / ec), 不拷一级回来做二级.
-//   【end_codes】rx → 端码 ec (契约 end_code 逐格): 换手成本在宿主算 (成本平面上显存装不下), 只回传 u8 端码, 不回 u16 rx.
+//   流程同名同参序 (出口 Accum[C][H] + Day[C][H][D], 三级 finish_all 在宿主). 两种排布, 由候选数定:
+//   【单候选 C = 1: 逐行并行】
+//     label_rows   grid ⌈(t_hi − t_lo)/kWarps⌉ × kWB, 一 warp 一行 t, 持有期在 warp 内串行 → rows[h][t] (设备)
+//     fold_rows    一 warp 一 (h, 行块 tb): lane 0 攒 Accum::Head, lane q < kGroups 攒 Accum::Grp[q] → 分片 part[h][tb]
+//     fold_days    一线程一 (h, 日): 日内各行顺序累加 → day[h][d] (求和序同 CPU, 逐位一致)
+//     reduce_parts 每 h 一线程沿 tb 升序 merge (固定序 → 逐次确定) → acc[h]
+//   【批 C > 1: 逐候选并行】
+//     stat_batch   grid (⌈C/kWarps⌉, NB, H) × kWB, 一 warp 一候选, 一块管整日的 R 行 × 一个持有期:
+//                  每行一次 row_stat → 折进 warp 私有的分片累加器 (Accum 两半) + lane 0 顺序攒当日 Day → 分片 Slice[c][h][tb] / day[c][h][d].
+//                  同 block 的 kWarps 个候选同一 (t, h): 标签行一次进 L1 共用. 不落 Row.
+//     reduce_slices 每 (c, h) 一线程沿 tb 升序 merge → acc[c][h]
+//   【end_codes】rx → 端码 ec: 换手成本在宿主算 (成本平面上显存装不下), 只回传 u8 端码.
 //   【禁用】--use_fast_math.
 // =============================================================================
 
@@ -26,19 +29,23 @@
 namespace factor::gpu::stat {
 
 using factor::stat::Accum;
+using factor::stat::Day;
 using factor::stat::Labels;
-using factor::stat::Plane;
 
-inline constexpr int kRows = 128; // fold_rows 每 warp 的行块长 (分片粒度)
+inline constexpr int kRows = 128; // 分片粒度 (行); 批核一块 = 整日的 ≥ kRows / S 日
+// 批核一块的行数: 整日对齐的 R = S · max(1, ⌊kRows / S⌋)
+inline int batch_rows(int S) { return S * (kRows / S > 0 ? kRows / S : 1); }
 
-// 设备工作区 (调用方按 Span / H 分配, 指针归调用方). NB = n_parts(s) 是 t_lo = t_back = 0 时的上界
+// 设备工作区 (调用方按 Span / H / Cmax 分配, 指针归调用方). NB / NBB = t_lo = t_back = 0 时的上界
 struct Workspace {
-  Row *rows = nullptr;   // [H][T] 一级 (fold 的输入; 调用方要就拷回)
-  Accum *part = nullptr; // [H][NB] 分片
-  Accum *acc = nullptr;  // [H] 出口
-  int H = 0, NB = 0;     // 分配时的容量
+  Row *rows = nullptr;   // [H][T] 一级 (单候选)
+  Accum *part = nullptr; // [Cmax][H][NBB] 分片 (两种排布共用; 单候选用 [H][NB])
+  Accum *acc = nullptr;  // [Cmax][H] 出口
+  Day *day = nullptr;    // [Cmax][H][D] 出口
+  int H = 0, NB = 0, NBB = 0, Cmax = 0, D = 0;
 };
 inline int n_parts(const Span &s) { return (s.t_hi() - s.t_lo + kRows - 1) / kRows; }
+inline int n_batch_parts(const Span &s) { return (s.t_hi() - s.t_lo + batch_rows(s.g.S) - 1) / batch_rows(s.g.S); }
 
 namespace k {
 
@@ -51,10 +58,10 @@ __global__ void __launch_bounds__(kWB, 2) label_rows(Span s, const uint16_t *rx,
   const size_t base = static_cast<size_t>(t) * s.A;
   const uint16_t *xr = rx + base;
   for (int hi = 0; hi < L.hd.n; ++hi) { // warp 一致量, 不发散
-    const int hold = L.hd.k[hi], h = factor::stat::hold_rows(hold, s.g);
-    const Row r = dev::row_stat(xr, t >= h ? xr - static_cast<size_t>(h) * s.A : nullptr, L.l[hi].at(base),
-                                factor::stat::chain_of(t, s, hold), L.cap, factor::stat::tail_masked(s.t0_abs + t, hold, s.g),
-                                sh.gs[warp], sh.gc[warp], lane);
+    const HoldId hold = L.hd.k[hi];
+    const int h = factor::stat::hold_rows(hold, s.g);
+    const Row r = dev::row_stat(xr, t >= h ? xr - static_cast<size_t>(h) * s.A : nullptr, L.l[hi].at(base), factor::stat::chain_of(t, s, hold), L.cap,
+                                factor::stat::tail_masked(s.t0_abs + t, hold, s.g), sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0)
       rows[static_cast<size_t>(hi) * s.T + t] = r;
   }
@@ -82,51 +89,117 @@ __global__ void __launch_bounds__(kWB) fold_rows(Span s, const Row *rows, int H,
     P.head = head;
 }
 
-__global__ void __launch_bounds__(kWB) reduce_parts(const Accum *part, int H, int NB, Accum *acc) {
-  const int hi = blockIdx.x * kWB + threadIdx.x;
-  if (hi >= H)
+__global__ void __launch_bounds__(kWB) fold_days(Span s, const Row *rows, int H, Day *day) {
+  const int D = s.days(), p = blockIdx.x * kWB + threadIdx.x;
+  if (p >= H * D)
+    return;
+  const int hi = p / D, d = p - hi * D, S = s.g.S;
+  const Row *r = rows + static_cast<size_t>(hi) * s.T + s.t_lo + d * S;
+  Day o;
+  for (int t = 0; t < S; ++t)
+    o.add(r[t]);
+  day[p] = o;
+}
+
+__global__ void __launch_bounds__(kWB) reduce_parts(const Accum *part, int P, int NB, Accum *acc) {
+  const int p = blockIdx.x * kWB + threadIdx.x;
+  if (p >= P)
     return;
   Accum a;
   for (int tb = 0; tb < NB; ++tb)
-    a.merge(part[static_cast<size_t>(hi) * NB + tb]);
-  acc[hi] = a;
+    a.merge(part[static_cast<size_t>(p) * NB + tb]);
+  acc[p] = a;
 }
 
-__global__ void __launch_bounds__(kRB) end_codes(const uint16_t *rx, uint8_t *ec, size_t n, int d) {
+__global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, Span s, Labels L, int NB, Accum *part, Day *day) {
+  __shared__ Slots sh;
+  const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+  const int c = blockIdx.x * kWarps + warp;
+  if (c >= C) // warp 一致; 核内没有块级同步, 整 warp 直接退出安全
+    return;
+  const int A = s.A, H = L.hd.n, hi = blockIdx.z, S = s.g.S, R = S * (kRows / S > 0 ? kRows / S : 1), D = s.days();
+  const HoldId hold = L.hd.k[hi];
+  const int h = factor::stat::hold_rows(hold, s.g);
+  const Label lb = L.l[hi];
+  const int tb = blockIdx.y, t_beg = s.t_lo + tb * R, t_end = min(s.t_hi(), t_beg + R);
+  const uint16_t *rxc = rx + static_cast<size_t>(c) * s.n();
+  Day *dy = day + (static_cast<size_t>(c) * H + hi) * D;
+
+  Accum::Head head; // warp 私有分片 (lane 0 攒 head, lane q < kGroups 攒 grp = 组 q)
+  Accum::Grp grp;
+  Day cur;
+  for (int t = t_beg; t < t_end; ++t) {
+    const size_t base = static_cast<size_t>(t) * A;
+    const uint16_t *xr = rxc + base;
+    const uint16_t *xl = t >= h ? xr - static_cast<size_t>(h) * A : nullptr;
+    const Row r = dev::row_stat(xr, xl, lb.at(base), factor::stat::chain_of(t, s, hold), L.cap, factor::stat::tail_masked(s.t0_abs + t, hold, s.g),
+                                sh.gs[warp], sh.gc[warp], lane);
+    if (lane == 0) {
+      head.add(r);
+      cur.add(r);
+      if ((t - s.t_lo + 1) % S == 0) { // 日末: 落当日
+        dy[(t - s.t_lo) / S] = cur;
+        cur = Day{};
+      }
+    }
+    if (r.ok) {
+      float gq = 0.f; // lane q 取 grp[q] / cnt[q] (编译期展开的 select, Row 留在寄存器)
+      unsigned cq = 0;
+#pragma unroll
+      for (int q = 0; q < kGroups; ++q)
+        if (q == lane)
+          gq = r.grp[q], cq = r.cnt[q];
+      grp.add(gq, cq);
+    }
+  }
+  Accum &P = part[(static_cast<size_t>(c) * H + hi) * NB + tb]; // 每字段恰由一个 lane 写
+  if (lane < kGroups)
+    P.grp[lane] = grp;
+  if (lane == 0)
+    P.head = head;
+}
+
+__global__ void __launch_bounds__(kRB) end_codes(const uint16_t *rx, uint8_t *ec, size_t n) {
   for (size_t i = static_cast<size_t>(blockIdx.x) * kRB + threadIdx.x; i < n; i += static_cast<size_t>(gridDim.x) * kRB)
-    ec[i] = factor::stat::end_code(rx[i], d);
+    ec[i] = factor::stat::end_code(rx[i]);
 }
 
 } // namespace k
 
-// 阶段 2: rx × L 组预处理标签 (设备) → 统计行 [t_lo, t_hi) 落 w.rows[h][t] → w.acc[hd.n] (设备, 覆盖)
+// 单候选: rx × L 组预处理标签 (设备) → 统计行 [t_lo, t_hi) 落 w.rows[h][t] → w.acc[hd.n] + w.day[hd.n][D] (设备, 覆盖)
 inline void accum_rows(const Span &s, const uint16_t *rx, const Labels &L, const Workspace &w, cudaStream_t stream) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, s.g.S, true);
-  const int H = L.hd.n, NB = n_parts(s);
-  assert(rx && w.rows && w.part && w.acc && H <= w.H && NB <= w.NB);
+  const int H = L.hd.n, NB = n_parts(s), D = s.days();
+  assert(rx && w.rows && w.part && w.acc && w.day && H <= w.H && NB <= w.NB && D <= w.D);
   k::label_rows<<<(s.t_hi() - s.t_lo + kWarps - 1) / kWarps, kWB, 0, stream>>>(s, rx, L, w.rows);
   FACTOR_CUDA_OK(cudaGetLastError());
   k::fold_rows<<<(H * NB + kWarps - 1) / kWarps, kWB, 0, stream>>>(s, w.rows, H, NB, w.part);
+  FACTOR_CUDA_OK(cudaGetLastError());
+  k::fold_days<<<(H * D + kWB - 1) / kWB, kWB, 0, stream>>>(s, w.rows, H, w.day);
   FACTOR_CUDA_OK(cudaGetLastError());
   k::reduce_parts<<<(H + kWB - 1) / kWB, kWB, 0, stream>>>(w.part, H, NB, w.acc);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 
-// 一个候选的完整评估 = rank_x (→ rx) + accum_rows → w.acc[hd.n] (设备). rx = r16(x) 工作区 [T][A] (跨因子复用)
-inline void run(Plane x, const uint8_t *g, Frame f, const Span &s, const Labels &L, uint16_t *rx, const Workspace &w, cudaStream_t stream) {
-  Batch B;
-  B.C = 1, B.x[0] = x;
-  rank_x(B, g, f, s, rx, stream);
-  accum_rows(s, rx, L, w, stream);
+// 批: C 张已定向的 rx[c] × L → w.acc[c][h] + w.day[c][h][D] (设备, 覆盖)
+inline void accum_batch(const Span &s, const uint16_t *rx, int C, const Labels &L, const Workspace &w, cudaStream_t stream) {
+  factor::stat::assert_span(s);
+  factor::stat::assert_labels(L, s.g.S, true);
+  const int H = L.hd.n, NB = n_batch_parts(s);
+  assert(rx && w.part && w.acc && w.day && C >= 1 && C <= w.Cmax && H <= w.H && NB <= w.NBB && s.days() <= w.D);
+  const dim3 grid(static_cast<unsigned>((C + kWarps - 1) / kWarps), static_cast<unsigned>(NB), static_cast<unsigned>(H));
+  k::stat_batch<<<grid, kWB, 0, stream>>>(rx, C, s, L, NB, w.part, w.day);
+  FACTOR_CUDA_OK(cudaGetLastError());
+  k::reduce_parts<<<(C * H + kWB - 1) / kWB, kWB, 0, stream>>>(w.part, C * H, NB, w.acc);
+  FACTOR_CUDA_OK(cudaGetLastError());
 }
 
-// 端码: rx → ec [T][A] (设备; d = 所评方向)
-inline void end_codes(const uint16_t *rx, const Span &s, int d, uint8_t *ec, cudaStream_t stream) {
-  factor::stat::assert_span(s);
+// 端码: rx (已定向) → ec [T][A] (设备)
+inline void end_codes(const uint16_t *rx, const Span &s, uint8_t *ec, cudaStream_t stream) {
   assert(rx && ec);
   const size_t n = s.n(), nb = (n + kRB - 1) / kRB;
-  k::end_codes<<<static_cast<unsigned>(nb < 4096 ? nb : 4096), kRB, 0, stream>>>(rx, ec, n, d);
+  k::end_codes<<<static_cast<unsigned>(nb < 4096 ? nb : 4096), kRB, 0, stream>>>(rx, ec, n);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 

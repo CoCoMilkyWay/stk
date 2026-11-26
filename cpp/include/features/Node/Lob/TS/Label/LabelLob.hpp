@@ -32,6 +32,7 @@
 //   配置 (LABEL_AMTS) 同时生成 constexpr 数组和落盘字段行, 只改一处.
 // =============================================================================
 
+#include "define/Label.hpp" // LABEL_AMTS (冲击成本的下单金额段, 万元, 升序)
 #include "features/DataDefine.hpp"
 #include "features/Node/Common/Label/LabelHold.hpp" // RowSet / PEND_DAYS / MIN_RING_SLOTS (日句柄环两档同一份)
 #include "features/TimeIndex.hpp"                   // L_1min_to_L_sec (分钟锚定路径)
@@ -43,8 +44,7 @@
 #include <string_view>
 
 // ---- 配置 ----
-#define LABEL_AMTS(X, ...) X(5, __VA_ARGS__) X(30, __VA_ARGS__) // 冲击成本的下单金额段 (万元), 升序
-constexpr size_t LABEL_DELAY_SECONDS = 3;                       // 下单延迟 (秒)
+constexpr size_t LABEL_DELAY_SECONDS = 3; // 下单延迟 (秒)
 
 #define LABEL_LIST_ONE(v, ...) v,
 inline constexpr size_t LABEL_AMOUNT_WAN[] = {LABEL_AMTS(LABEL_LIST_ONE)};
@@ -318,10 +318,10 @@ private:
 // 描述统一四段: 口径 | 吃单 | 边界 | 净收益换算 (买入 / 卖出逐词对应)
 #define LABEL_COST_BUY(a, X, CAT1)                                                         \
   X(lb_cost_buy_##a##w, CAT1, ratio_pos, "Entry Buy Impact " #a "w", "买入冲击(" #a "万)", \
-    "建仓买入冲击(比例≥0; 标签不含). 吃单: 锚点(分钟末)+3s的连续竞价盘口吃ask " #a "万元, 成交VWAP相对中间价的溢价; 空窗则顺延至首个入环簿, 锚点后再无入环簿则按收盘价建仓(冲击0). 边界: 全簿不足余量按涨停价成交; 无卖盘(封涨停, 不可买)则NaN. 做多净收益=lb_long_*−本列−Config::fixed_impact", R"(\frac{\mathrm{VWAP}^{A}_{entry}(A)}{P^{mid}_{entry}}-1, \quad A=)" #a R"(\mathrm{w})", LB(cost_buy_##a##w))
+    "建仓买入冲击(比例≥0; 标签不含). 吃单: 锚点(分钟末)+3s的连续竞价盘口吃ask " #a "万元, 成交VWAP相对中间价的溢价; 空窗则顺延至首个入环簿, 锚点后再无入环簿则按收盘价建仓(冲击0). 边界: 全簿不足余量按涨停价成交; 无卖盘(封涨停, 不可买)则NaN. 建仓买入侧的冲击 (消费端按买入量扣)", R"(\frac{\mathrm{VWAP}^{A}_{entry}(A)}{P^{mid}_{entry}}-1, \quad A=)" #a R"(\mathrm{w})", LB(cost_buy_##a##w))
 #define LABEL_COST_SELL(a, X, CAT1)                                                          \
   X(lb_cost_sell_##a##w, CAT1, ratio_pos, "Entry Sell Impact " #a "w", "卖出冲击(" #a "万)", \
-    "建仓卖出冲击(比例≥0; 标签不含). 吃单: 锚点(分钟末)+3s的连续竞价盘口吃bid " #a "万元, 成交VWAP相对中间价的折价; 空窗则顺延至首个入环簿, 锚点后再无入环簿则按收盘价建仓(冲击0). 边界: 全簿不足余量按跌停价成交; 无买盘(封跌停, 不可卖)则NaN. 做空净收益=lb_short_*−本列−Config::fixed_impact", R"(1-\frac{\mathrm{VWAP}^{B}_{entry}(A)}{P^{mid}_{entry}}, \quad A=)" #a R"(\mathrm{w})", LB(cost_sell_##a##w))
+    "建仓卖出冲击(比例≥0; 标签不含). 吃单: 锚点(分钟末)+3s的连续竞价盘口吃bid " #a "万元, 成交VWAP相对中间价的折价; 空窗则顺延至首个入环簿, 锚点后再无入环簿则按收盘价建仓(冲击0). 边界: 全簿不足余量按跌停价成交; 无买盘(封跌停, 不可卖)则NaN. 平仓卖出侧的冲击 (消费端按卖出量扣)", R"(1-\frac{\mathrm{VWAP}^{B}_{entry}(A)}{P^{mid}_{entry}}, \quad A=)" #a R"(\mathrm{w})", LB(cost_sell_##a##w))
 
 #define FIELDS_L_1min_LabelLob(X, CAT1) LABEL_AMTS(LABEL_COST_BUY, X, CAT1) LABEL_AMTS(LABEL_COST_SELL, X, CAT1)
 #undef LABEL_OUT_BUY

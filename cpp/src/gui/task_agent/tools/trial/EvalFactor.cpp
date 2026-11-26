@@ -97,7 +97,7 @@ std::vector<Daily> days_of(const std::vector<Engine::FactorRow> &rows, const std
       d.cum.push_back(static_cast<float>(s));
     }
     const double mean = m ? s / m : 0.0, var = m > 1 ? (s2 - m * mean * mean) / (m - 1) : 0.0;
-    d.ir = var > 0.0 ? mean / std::sqrt(var) * std::sqrt(static_cast<double>(factor::stat::kDaysPerYear)) : 0.0;
+    d.ir = ann_ir(mean, var > 0.0 ? std::sqrt(var) : 0.0);
     for (int i = 0; i < Engine::kNavExcess; ++i)
       (i < Engine::kNavLayers ? d.lay : d.ls).emplace_back(x.nav.at(i), x.nav.at(i) + x.nav.P);
     d.turn.assign(std::begin(x.turn), std::end(x.turn));

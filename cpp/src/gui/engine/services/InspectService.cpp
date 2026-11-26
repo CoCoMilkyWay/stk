@@ -34,21 +34,11 @@ struct RicP : RowsP<RicP, float> {
   }
 };
 
-void orient_rx(misc::exec::ForkJoin &ex, uint16_t *rx, int T, int A, int d) {
-  if (d == factor::stat::kFwd)
-    return;
-  ex.rows(T, [&](int t0, int t1, int) {
-    for (size_t k = static_cast<size_t>(t0) * A, e = static_cast<size_t>(t1) * A; k < e; ++k)
-      rx[k] = factor::stat::oriented(rx[k], d);
-  });
-}
-
 struct RxP : LandCellsP<uint16_t> {
   static constexpr uint8_t need = kNeedRx;
   void close(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
-    std::copy(v.rx + static_cast<size_t>(s.t_lo) * s.A, v.rx + static_cast<size_t>(s.t_hi()) * s.A, at(c));
-    orient_rx(c.ex, at(c), s.t_hi() - s.t_lo, s.A, c.d);
+    std::copy(v.rx + static_cast<size_t>(s.t_lo) * s.A, v.rx + static_cast<size_t>(s.t_hi()) * s.A, at(c)); // rx 已定向
   }
 };
 
@@ -58,8 +48,7 @@ struct RxAllP : LandCellsP<uint16_t> {
     const factor::stat::Span s = c.s();
     const size_t o = static_cast<size_t>(s.t_lo) * s.A;
     const factor::stat::Plane x{v.x.v + o, v.x.m + o};
-    factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, factor::stat::Span{s.t_hi() - s.t_lo, s.A, s.g}, at(c), *c.w);
-    orient_rx(c.ex, at(c), s.t_hi() - s.t_lo, s.A, c.d);
+    factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, c.d, factor::stat::Span{s.t_hi() - s.t_lo, s.A, s.g}, at(c), *c.w);
   }
 };
 
@@ -233,7 +222,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
   if (req.reload)
     F.S.clear();
 
-  RootSet rs{.hd = keys_of<Holds>(sc.ft->y.labels)};
+  RootSet rs{.hd = Holds::of(sc.ft->y.holds)};
   rs.add(*sc.ft, f.expr, f.frame, f.dir);
   ForestOut o;
   o.job.who = "Inspect";

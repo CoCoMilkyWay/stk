@@ -132,7 +132,8 @@ bool json_cols_are(const J &j, const char *key, const std::vector<std::string> &
 
 inline nlohmann::ordered_json hold_json(const factor::stat::HoldStat &h) {
   nlohmann::ordered_json o = nlohmann::ordered_json::array();
-  for (int v : {h.hold, h.n, h.n_rac, h.n_all, h.n_trig})
+  o.push_back(std::string(hold_token(h.hold)));
+  for (int v : {h.n, h.n_rac, h.n_all, h.n_trig})
     o.push_back(v);
   detail::for_each_field(h, [&](const std::string &, const float &v) { o.push_back(sig4(v)); });
   nlohmann::ordered_json g = nlohmann::ordered_json::array();
@@ -148,7 +149,9 @@ inline bool load_hold(const nlohmann::json &o, int seg, factor::stat::HoldStat &
     return false;
   factor::stat::HoldStat h;
   size_t c = 0;
-  for (int *p : {&h.hold, &h.n, &h.n_rac, &h.n_all, &h.n_trig}) {
+  if (!o[c].is_string() || !hold_parse(o[c++].get<std::string>(), h.hold))
+    return false;
+  for (int *p : {&h.n, &h.n_rac, &h.n_all, &h.n_trig}) {
     const nlohmann::json &e = o[c++];
     if (!e.is_number_integer())
       return false;
@@ -222,7 +225,7 @@ inline bool load_cost_acc(const nlohmann::json &o, factor::stat::CostAcc &dst) {
 // 一个金额段的换手成本 ↔ JSON {amt, acc: [n_hold 个 CostAcc]}
 inline nlohmann::ordered_json cost_json(const CostTier &c, int n_hold) {
   nlohmann::ordered_json o;
-  o["amt"] = c.amt;
+  o["amt"] = kAmtWan[c.amt];
   nlohmann::ordered_json acc = nlohmann::ordered_json::array();
   for (int k = 0; k < n_hold; ++k)
     acc.push_back(cost_acc_json(c.acc[k]));
@@ -233,7 +236,8 @@ inline bool load_cost(const nlohmann::json &o, int n_hold, CostTier &dst) {
   if (!o.is_object())
     return false;
   CostTier t;
-  if (!json_int(o, "amt", t.amt))
+  int wan = 0;
+  if (!json_int(o, "amt", wan) || !amt_of_wan(wan, t.amt))
     return false;
   const auto ait = o.find("acc");
   if (ait == o.end() || !ait->is_array() || ait->size() != static_cast<size_t>(n_hold))
@@ -325,7 +329,7 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   j["years"] = years;
   nlohmann::ordered_json roll = nlohmann::ordered_json::array();
   for (int k = 0; k < st.n_hold; ++k) {
-    const factor::search::Roll &r = st.roll[k];
+    const factor::stat::Roll &r = st.roll[k];
     roll.push_back(nlohmann::ordered_json::array({r.win, r.n, sig4(r.ric_med), sig4(r.ric_mean), sig4(r.ann_med), sig4(r.ann_mean)}));
   }
   j["roll"] = roll;
@@ -372,7 +376,7 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
   if (!json_num(j, "eval_ms", t.eval_ms))
     return false;
   const auto hit = j.find("holds");
-  if (hit == j.end() || !hit->is_array() || hit->empty() || hit->size() > static_cast<size_t>(factor::stat::kMaxHold))
+  if (hit == j.end() || !hit->is_array() || hit->empty() || hit->size() > static_cast<size_t>(kHoldCount))
     return false;
   t.n_hold = static_cast<int>(hit->size());
   const size_t H = hit->size();

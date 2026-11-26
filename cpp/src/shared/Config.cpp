@@ -99,16 +99,15 @@ bool Config::LoadFromFile() {
       log_callback(std::string("警告: ") + msg + ", 保留旧值");
     }
   };
-  double new_commission = j.value("commission", commission);
-  double new_stamp = j.value("stamp", stamp);
-  double new_fixed_impact = j.value("fixed_impact", fixed_impact);
+  double new_commission = j.value("commission", fee.commission);
+  double new_stamp = j.value("stamp", fee.stamp);
+  double new_transfer = j.value("transfer", fee.transfer);
+  double new_impact = j.value("impact", fee.impact);
   double new_max_impact = j.value("max_impact", max_impact);
-  try_assign(commission, new_commission,
-             new_commission >= 0.0 && new_commission < 0.01, "佣金比率越界 (万 1 = 0.0001)");
-  try_assign(stamp, new_stamp,
-             new_stamp >= 0.0 && new_stamp < 0.01, "印花税比率越界 (万 5 = 0.0005)");
-  try_assign(fixed_impact, new_fixed_impact,
-             new_fixed_impact >= 0.0 && new_fixed_impact < 0.05, "固定冲击比率越界 (20bp = 0.0020)");
+  try_assign(fee.commission, new_commission, new_commission >= 0.0 && new_commission < 0.01, "佣金比率越界 (万 1 = 0.0001)");
+  try_assign(fee.stamp, new_stamp, new_stamp >= 0.0 && new_stamp < 0.01, "印花税比率越界 (万 5 = 0.0005)");
+  try_assign(fee.transfer, new_transfer, new_transfer >= 0.0 && new_transfer < 0.01, "过户费比率越界 (0.001% = 0.00001)");
+  try_assign(fee.impact, new_impact, new_impact >= 0.0 && new_impact < 0.05, "固定冲击比率越界 (20bp = 0.0020)");
   try_assign(max_impact, new_max_impact,
              new_max_impact > 0.0 && new_max_impact <= 0.2, "买入冲击封顶越界 (1% = 0.01)");
 
@@ -126,9 +125,10 @@ bool Config::SaveToFile() {
   j["csv_market_order"] = csv_market_order;
   j["sync_fundamental"] = sync_fundamental;
   j["sync_bar1m"] = sync_bar1m;
-  j["commission"] = commission;
-  j["stamp"] = stamp;
-  j["fixed_impact"] = fixed_impact;
+  j["commission"] = fee.commission;
+  j["stamp"] = fee.stamp;
+  j["transfer"] = fee.transfer;
+  j["impact"] = fee.impact;
   j["max_impact"] = max_impact;
   disk::write(disk::SettingsFile, {}, j.dump(2)); // Pretty print with 2 spaces indent
   if (log_callback) {

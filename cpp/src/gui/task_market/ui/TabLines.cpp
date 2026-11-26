@@ -28,7 +28,7 @@ namespace {
 // ---- 头: [folio: 组合 / 成本] [log] Recompute / Cancel / 状态 / Clear (选择与图回默认) / 页说明 + [folio: 失效 / 失败条目原因].
 //      返回 1 = Recompute, -1 = Cancel, 0 = 无 ----
 int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState &ui, const LinesDerived &d, const PortfolioResult &res, const std::string &message,
-         const factor::stat::Fee &fee) {
+         const Fee &fee) {
   const PageDef &pd = kPageDefs[page];
   int action = 0;
   if (pd.folio) {
@@ -66,7 +66,7 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState
           "• 否则固定段: 增仓量 / 平仓量都按固定冲击 %.1f bp\n"
           "• 另扣税佣: 两侧佣金 %.1f bp, 卖出印花税 %.1f bp\n"
           "• 组合只算 G20 多头; 无冲击线不扣",
-          fee.fixed * 1e4, fee.fixed * 1e4, fee.commission * 1e4, fee.stamp * 1e4);
+          fee.impact * 1e4, fee.impact * 1e4, (fee.commission + fee.transfer) * 1e4, fee.stamp * 1e4);
     ImGui::SameLine();
   }
   if (pd.log) {
@@ -192,7 +192,7 @@ void SyncLinesWatch(LinesState &ui) {
         ui.cat[p] = kGroupWatch;
 }
 
-int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, const factor::stat::Fee &fee,
+int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, const Fee &fee,
                    const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
                    const std::shared_ptr<const Quote::Holdings> &hold, const Quote::TradeBins &trades) {
   assert(page >= 0 && page < kPages);

@@ -118,7 +118,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
     const int n_stat = cv.t_hi - cv.t_lo;
     for (int r = 0; r < n_stat; ++r) {
       const int u = cv.u0 + r;
-      all.add(cv.rows[static_cast<size_t>(r)], &cv.tails[static_cast<size_t>(r)]);
+      all.add(cv.rows[static_cast<size_t>(r)]);
       if (split == "tod" && seg > 1)
         by_tod[static_cast<size_t>(pr[static_cast<size_t>(u % seg)])].add(cv.rows[static_cast<size_t>(r)]);
       else if (split == "month")
@@ -194,7 +194,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
   for (int k = 0; k < kGroups; ++k)
     r->held.push_back(all.held(k));
   for (int j = 0; j < kTails; ++j)
-    r->tails.push_back({Engine::kTailOfGroup[j], all.tail(0, j), all.tail_held(0, j), all.tail(1, j), all.tail_held(1, j)});
+    r->tails.push_back({factor::stat::tail_frac(j), all.tail(0, j), all.tail_held(0, j), all.tail(1, j), all.tail_held(1, j)});
   if (split == "tod" && seg > 1)
     for (size_t i = 0; i < ps.size(); ++i)
       r->splits.push_back(row_of(ps[i].name, by_tod[i]));

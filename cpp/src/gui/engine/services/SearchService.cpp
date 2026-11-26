@@ -1,7 +1,8 @@
-// SearchService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Search/Cpu.hpp → Stat/Cpu.hpp), 依赖受控浮点: CMake MATH_PRECISE 源.
+// SearchService — 见头文件. include 因子 CPU 后端头 (EvalCpu → TS/CS Cpu.hpp, Stat/Cpu.hpp), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/services/SearchService.hpp"
 
 #include "factor/Dag.hpp"
+#include "factor/Search/Config.hpp"
 #include "factor/Search/Space.hpp"
 #include "gui/engine/Engine.hpp"
 #include "misc/profiler.hpp"
@@ -105,12 +106,11 @@ Samp samp_of(int t_hi, int t_lo, int t0_abs, int stride) {
   return {t, t < t_hi ? (t_hi - 1 - t) / stride + 1 : 0};
 }
 
-// 逐日 Tick 和 (Search 契约【目标】逐日; Search 恒一个持有期)
-struct TickP : ProbeBase {
-  static constexpr uint8_t need = kNeedTicks;
+// 逐日和 (Stat 二级 Day, 按块拼回评估期; Search 恒一个持有期)
+struct DayP : ProbeBase {
   int seg = 0;
-  std::vector<fsearch::DaySum> day;
-  static double bytes(const Shape &sh, int) { return sizeof(fsearch::DaySum) * static_cast<double>(sh.days); }
+  std::vector<fs::Day> day;
+  static double bytes(const Shape &sh, int) { return sizeof(fs::Day) * static_cast<double>(sh.days); }
   void init(const PassCtx &p) {
     assert(p.hd.n == 1);
     seg = p.seg;
@@ -118,12 +118,12 @@ struct TickP : ProbeBase {
   }
   void close(const Ctx &c, const RootView &v) {
     const fs::Span s = c.s();
-    const int u0 = c.c.land0();
-    for (int t = s.t_lo; t < s.t_hi(); ++t)
-      day[static_cast<size_t>((u0 + t) / seg)].add(v.ticks[t]);
+    const int d0 = (c.c.land0() + s.t_lo) / seg;
+    for (int d = 0; d < s.days(); ++d)
+      day[static_cast<size_t>(d0 + d)] = v.day[d];
   }
 };
-using SearchProbes = Probes<HoldP, TickP>;
+using SearchProbes = Probes<HoldP, DayP>;
 
 struct Entry {
   std::vector<double> u;
@@ -159,8 +159,8 @@ struct Searcher {
   Searcher(const SearchRequest &req, FactorFlow &f, SearchResult &out, std::string &why, SearchLive *lv,
            const std::function<void(const SearchResult &)> &cb)
       : F(f), scope(req.scope), ft(*req.scope.ft), sp(req.spec), live(lv), on_pass(cb), seg(ft.seg),
-        hd(keys_of<fs::Holds>(std::vector<int>{sp.hold})), res(out), why_out(why) {
-    assert(find_leg(ft.y.labels, sp.hold) && "Search 的持有期须是字段表标签组之一");
+        hd(fs::Holds::of(hold_bit(sp.hold))), res(out), why_out(why) {
+    assert(ft.y.has(sp.hold) && "Search 的持有期须是字段表标签组之一");
     assert(fsearch::search_hold(sp.hold) && "Search 只搜 kSearchHolds 档");
     fs::assert_holds(hd, seg);
     if (live)
@@ -183,7 +183,7 @@ struct Searcher {
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
     lg("Search %s  @ %s", sp.file.c_str(), ts);
     lg("模板: %s", sp.tmpl.c_str());
-    lg("后端 %s, 池 %s, 持有期 %s", res.backend.c_str(), scope.pool.c_str(), fs::hold_name(sp.hold).c_str());
+    lg("后端 %s, 池 %s, 持有期 %s", res.backend.c_str(), scope.pool.c_str(), hold_name(sp.hold).c_str());
   }
 
   Rc run() {
@@ -238,7 +238,7 @@ struct Searcher {
       if (en.evaled)
         res.cands.push_back(en.c);
     std::stable_sort(res.cands.begin(), res.cands.end(),
-                     [](const SearchCand &a, const SearchCand &b) { return fsearch::score_of(a.roll) > fsearch::score_of(b.roll); });
+                     [](const SearchCand &a, const SearchCand &b) { return fs::score_of(a.roll) > fs::score_of(b.roll); });
     if (on_pass)
       on_pass(res);
   }
@@ -256,13 +256,13 @@ struct Searcher {
     n_pts = n_slots > 0 ? fsearch::n_init(n_slots) : 1;
     if (!check(Engine::prepare<E, SearchProbes>(F, scope, f0.d, f0.leaves, look, hd, n_pts, job)))
       return false;
-    lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, fsearch::hold_reach(hd, seg), fs::kChainDays, job.bands.front,
+    lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, fs::hold_reach(hd, seg), fs::kChainDays, job.bands.front,
        job.bands.back);
     const std::vector<misc::Ymd> &dates = job.dm.dates;
     const int days = static_cast<int>(job.dm.stat_days());
     A = static_cast<int>(job.dm.rs.axis.size());
     lg("评估期 %s ~ %s (%d 天, 所用库落盘日交集的最近 %d 年) + 预热 %zu 天; 滚动窗 %d 天 (评估期 / %d)", misc::dash(job.dm.first()).c_str(),
-       misc::dash(dates.back()).c_str(), days, scope.years, job.dm.warm, fsearch::roll_win(days), fsearch::kRollParts);
+       misc::dash(dates.back()).c_str(), days, scope.years, job.dm.warm, fs::roll_win(days), fs::kRollParts);
     res.dates = job.dm.stat_dates();
     stride = stride_of(days * seg);
     const Plan &P = job.P;
@@ -453,9 +453,9 @@ struct Searcher {
       if (!dead[k].empty())
         continue;
       SearchCand &c = en.c;
-      const fsearch::Roll fwd = fsearch::roll_of(ps[k].at<TickP>().day, sp.hold, seg, &c.line);
-      c.sign = fsearch::sign_of(fwd);
-      c.roll = c.sign > 0 ? fwd : fsearch::flipped(fwd);
+      const fs::Roll fwd = fs::roll_of(ps[k].at<DayP>().day, sp.hold, seg, &c.line);
+      c.sign = fs::sign_of(fwd);
+      c.roll = c.sign > 0 ? fwd : fs::flipped(fwd);
       if (c.sign < 0)
         for (float &x : c.line)
           x = -x;
@@ -490,7 +490,7 @@ struct Searcher {
     WriteFactorSearch(scope.dir, sp.file, sp.fresh, mk, ws);
     res.wrote = true;
     res.n_weights = static_cast<int>(ws.size());
-    why_out = ws.empty() ? strf("没有一个参数点算得出滚动窗 rIC (每窗 ok 行 ≥ %d), 已清掉该 Hold 的权重", fsearch::kRollMinRows)
+    why_out = ws.empty() ? strf("没有一个参数点算得出滚动窗 rIC (每窗 ok 行 ≥ %d), 已清掉该 Hold 的权重", fs::kRollMinRows)
                          : "weights 已写入 (中位 rIC 最高的 1 个), 自动 Run 重算 stat";
     lg("完成: 写入 %d 个权重, 共评 %d 候选", static_cast<int>(ws.size()), static_cast<int>(res.cands.size()));
     emit_pass();
@@ -499,7 +499,7 @@ struct Searcher {
 
 } // namespace
 
-bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, int hold,
+bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, HoldId hold,
                        bool fresh, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};

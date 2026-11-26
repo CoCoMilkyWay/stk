@@ -1,5 +1,7 @@
 #pragma once
 
+#include "define/Fee.hpp"
+
 // 单资产执行: 逐根链 drive (日 × 根) = 源 (日首 day(d), 逐根出刀) → 成交 Fill (前根仓位 + 本根的刀 + 成本) → 汇 (逐根收 Fill 的可调用);
 //   仓位 = 刀的目标仓位, 按本根收盘价调到; 调参 / 策略 / 买入持有同一条链, 只换源与汇:
 //     源: Hold (买入持有) / Laddered (完整分层: 减仓线核 + 分层 Ladder)
@@ -23,13 +25,8 @@
 
 namespace cta {
 
-// 成本率
-struct Rates {
-  double commission = 0; // 佣金率 (买卖各一次)
-  double stamp = 0;      // 印花税率 (卖出单边)
-  double impact = 0;     // 冲击率 (买卖各一次)
-  bool operator==(const Rates &) const = default;
-};
+// 成本率 = 全仓同一份费率表 (define/Fee.hpp)
+using Rates = Fee;
 
 // 成本分项 (下标; 序 = 净值图上自策略净值向上的叠放序)
 enum : size_t { kCommission,
@@ -56,7 +53,7 @@ inline constexpr CostItem kCosts[kNC] = {{"佣金", "佣金率 × |Δ仓位|"},
 // 一根的成本: 前根仓位 p → 本根的刀 x 的仓位 (本根收盘成交)
 inline Costs costs_of(const Rates &u, const Cut &x, float p) {
   const double dw = std::fabs(x.w - p);
-  return {{u.commission * dw, u.stamp * std::max(0.0f, p - x.w), u.impact * dw, x.chop, x.gap}};
+  return {{(u.commission + u.transfer) * dw, u.stamp * std::max(0.0f, p - x.w), u.impact * dw, x.chop, x.gap}};
 }
 
 // 一根成交: 前根仓位 p → 本根的刀 x (仓位 x.w) + 本根成本 k

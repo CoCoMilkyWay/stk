@@ -11,8 +11,8 @@
 #include "factor/Expr.hpp" // kOps / operand_tex (签名 LaTeX 由表列生成)
 #include "factor/GpuRun.hpp"
 #include "factor/OpTable.hpp"
-#include "factor/Search/Check.hpp"
 #include "factor/Stat/Check.hpp"
+#include "factor/Stat/Roll.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -100,7 +101,7 @@ factor::Param param_of(const OperatorRow &row) {
   p.d = std::strchr(row.params, 'd') != nullptr ? factor::check::default_d(row.e_name) : 1;
   factor::check::set_k(row.e_name, p, factor::kSegMax);
   if (factor::expr::declares(row.params, "h"))
-    p.h = factor::stat::hold_same(1);
+    p.h = kHoldT1;
   if (factor::expr::declares(row.params, "w"))
     factor::check::set_w(p);
   return p;
@@ -197,7 +198,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
   for (const factor::stat::Frame fr : kFrames) {
     std::mt19937 rng(R.rq.seed);
     Data d;
-    make(d, fr, Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
+    make(d, fr, factor::stat::kFwd, Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
     Result cpu;
     run_cpu(d, cpu, misc::exec::hw());
     row.cpu_ms += cpu.eval_ms;
@@ -209,9 +210,8 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
       detail_line(holds,
                   "  h=%-5s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
                   "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f",
-                  factor::stat::hold_name(h.hold).c_str(), h.n, h.n_rac, h.ric.mean, h.ric.sd, h.ric.ir, h.ric.t, h.ric.pos, h.ric.skew, h.ric.kurt,
-                  h.ls.mean, h.ls.t, h.ls.pos, factor::stat::sharpe_of(h), h.beta, h.mono, h.rac.mean, h.rac.sd, h.rac.ir, h.rac.t, h.rac.pos,
-                  h.rac.skew, h.rac.kurt);
+                  hold_name(h.hold).c_str(), h.n, h.n_rac, h.ric.mean, h.ric.sd, h.ric.ir, h.ric.t, h.ric.pos, h.ric.skew, h.ric.kurt, h.ls.mean, h.ls.t,
+                  h.ls.pos, factor::stat::sharpe_of(h), h.beta, h.mono, h.rac.mean, h.rac.sd, h.rac.ir, h.rac.t, h.rac.pos, h.rac.skew, h.rac.kurt);
     }
     if (!has_gpu)
       continue;
@@ -222,110 +222,65 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
     if (fr == factor::stat::Frame::CS)
       prep_gpu = gpu.prep_ms;
     merge_diff(row.gpu_chk, compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol));
+    merge_diff(row.gpu_chk, compare_days(cpu.day.data(), gpu.day.data(), cpu.day.size(), tol));
     merge_diff(row.gpu_chk, compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol));
   }
   detail_prep(row.detail, prep_cpu, prep_gpu);
   row.detail += '\n' + holds;
 }
 
-// Search 批评估算子 (与 op_check check_search 同口径): 两口径各造数 (Stat 造数 + kCands 张派生候选); golden = Stat CPU
-// 每候选 HoldStat 与逐行 Tick. cpu / gpu 各算 整块 + 两块 (带前后带): cpu_chk = cpu 整块 vs golden (二级 + Tick) + 两块 merge vs 整块;
-// gpu_chk = gpu 整块 vs cpu 整块 + gpu 整块 Tick vs golden + 两块 merge vs 整块. 表列耗时 = 两口径整块 eval 之和 (kCands 张候选一批;
-// 分块两趟只对拍不计时); detail = prep 耗时 (CS 那轮) + 两口径每候选每持有期的 cpu 侧 rIC 均值 / 中位 rIC (由整块 Tick 走 roll_of)
+// Stat 批 (参数搜索; 与 op_check check_batch 同口径): 两口径各造数 (kCands 张派生候选); golden = 单候选 CPU 每候选的三级与逐日.
+// cpu / gpu 各算 整块 + 两块 (带前后带): 整块 vs golden (三级 + 逐日) + 两块 merge vs 整块 + 两块逐日 vs golden. 表列耗时 = 两口径整块之和;
+// detail = 两口径每候选每持有期的 cpu 侧 rIC 均值 / 中位 rIC (整块逐日走 roll_of)
 void run_search(RoundCtx &R, OperatorRow &row) {
-  namespace sk = factor::search::check;
+  namespace sc = factor::stat::check;
+  using Clock = std::chrono::steady_clock;
   const bool has_gpu = factor::gpu::available();
   const int threads = misc::exec::hw();
   row.gpu_ms = has_gpu ? 0 : -1;
-  double prep_cpu = 0, prep_gpu = -1;
   std::string scores;
   for (const factor::stat::Frame fr : kFrames) {
     std::mt19937 rng(R.rq.seed);
-    sk::Data d;
-    sk::make(d, fr, sk::Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
-    const int T = d.base.T, A = d.base.A, H = d.base.hd.n;
-    const factor::stat::Holds &hd = d.base.hd;
-    const sk::Tol tol = factor::stat::check::tol_of(sk::Profile::PLAIN);
-    const sk::Split sp = sk::split_of(T, hd, factor::kSegMax);
-    const size_t n_tick = static_cast<size_t>(H) * T;
-    // 一个后端: 整块 vs golden (ref), 两块 merge vs 整块
-    const auto judge = [&](factor::check::Diff &into, const sk::Ref *ref, const factor::search::Result *full,
-                           const factor::search::Result *c1, const factor::search::Result *c2) {
-      for (int c = 0; c < sk::kCands; ++c) {
-        merge_diff(into, sk::compare(ref[c], full[c], hd, factor::kSegMax, tol));
-        factor::search::Result m = c1[c];
-        m.merge(c2[c], hd.n);
-        sk::Ref rf;
-        sk::to_ref(full[c], hd, factor::kSegMax, rf);
-        merge_diff(into, sk::compare(rf, m, hd, factor::kSegMax, tol));
-      }
+    sc::Data d;
+    sc::make(d, fr, factor::stat::kFwd, sc::Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
+    const int H = d.hd.n, days = d.T / factor::kSegMax;
+    const sc::Tol tol = sc::tol_of(sc::Profile::PLAIN);
+    sc::Result ref[sc::kCands];
+    for (int c = 0; c < sc::kCands; ++c)
+      sc::reference(d, c, threads, ref[c]);
+    const auto judge = [&](factor::check::Diff &into, const sc::Block &full, const sc::Block &c1, const sc::Block &c2) {
+      merge_diff(into, sc::compare_block(d, ref, full, tol, true));
+      merge_diff(into, sc::compare_merge(d, full, c1, c2, tol));
+      merge_diff(into, sc::compare_block(d, ref, c1, tol, false));
+      merge_diff(into, sc::compare_block(d, ref, c2, tol, false));
     };
-    const auto judge_ticks = [&](factor::check::Diff &into, const sk::Ref *ref, const std::vector<factor::search::Tick> &tk) {
-      for (int c = 0; c < sk::kCands; ++c)
-        merge_diff(into, sk::compare_ticks(ref[c], tk.data() + static_cast<size_t>(c) * n_tick, H, T, T, 0, 0, T, tol));
-    };
-    sk::Ref ref[sk::kCands];
-    for (int c = 0; c < sk::kCands; ++c)
-      sk::reference(d, c, threads, ref[c]);
-    factor::search::Result full[sk::kCands], c1[sk::kCands], c2[sk::kCands];
-    std::vector<factor::search::Tick> tk(sk::kCands * n_tick), tk1(sk::kCands * static_cast<size_t>(H) * sp.e1),
-        tk2(sk::kCands * static_cast<size_t>(H) * (T - sp.s));
+    sc::Block full, c1, c2;
+    sc::split_of(d, full, c1, c2);
     {
-      double prep_ms = 0, eval_ms = 0;
-      sk::run_cpu(d, threads, 0, T, 0, 0, full, tk.data(), &prep_ms, &eval_ms);
-      row.cpu_ms += eval_ms;
-      if (fr == factor::stat::Frame::CS)
-        prep_cpu = prep_ms;
-      sk::run_cpu(d, threads, 0, sp.e1, 0, sp.e1 - sp.T1, c1, tk1.data());
-      sk::run_cpu(d, threads, sp.s, T - sp.s, sp.t_lo, 0, c2, tk2.data());
-      judge(row.cpu_chk, ref, full, c1, c2);
-      judge_ticks(row.cpu_chk, ref, tk);
+      const Clock::time_point t0 = Clock::now();
+      sc::run_batch_cpu(d, threads, full);
+      row.cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      sc::run_batch_cpu(d, threads, c1);
+      sc::run_batch_cpu(d, threads, c2);
+      judge(row.cpu_chk, full, c1, c2);
     }
     detail_line(scores, "%s", factor::stat::frame_name(fr));
-    const int days = T / factor::kSegMax;
-    for (int c = 0; c < sk::kCands; ++c)
-      for (int hi = 0; hi < hd.n; ++hi) {
-        std::vector<factor::search::DaySum> ds(static_cast<size_t>(days));
-        const factor::search::Tick *k = tk.data() + static_cast<size_t>(c) * n_tick + static_cast<size_t>(hi) * T;
-        for (int t = 0; t < days * factor::kSegMax; ++t)
-          ds[static_cast<size_t>(t / factor::kSegMax)].add(k[t]);
-        const factor::search::Roll rl = factor::search::roll_of(ds, hd.k[hi], factor::kSegMax);
-        const factor::stat::HoldStat h = full[c].acc[hi].finish(hd.k[hi], factor::kSegMax);
-        detail_line(scores, "  c%d  h=%-5s rIC %+.4f  中位 rIC %+.4f (%d 日窗 × %d)", c, factor::stat::hold_name(hd.k[hi]).c_str(), h.ric.mean, rl.ric_med,
-                    rl.win, rl.n);
+    for (int c = 0; c < sc::kCands; ++c)
+      for (int hi = 0; hi < H; ++hi) {
+        const factor::stat::Day *ds = full.day.data() + (static_cast<size_t>(c) * H + hi) * days;
+        const factor::stat::Roll rl = factor::stat::roll_of(std::span<const factor::stat::Day>(ds, static_cast<size_t>(days)), d.hd.k[hi], factor::kSegMax);
+        const factor::stat::HoldStat h = full.acc[static_cast<size_t>(c) * H + hi].finish(d.hd.k[hi], factor::kSegMax);
+        detail_line(scores, "  c%d  h=%-5s rIC %+.4f  中位 rIC %+.4f (%d 日窗 × %d)", c, hold_name(d.hd.k[hi]).c_str(), h.ric.mean, rl.ric_med, rl.win, rl.n);
       }
     if (!has_gpu)
       continue;
-    {
-      std::vector<factor::stat::Label> lab(static_cast<size_t>(H));
-      const float *xv[sk::kCands];
-      const uint8_t *xm[sk::kCands];
-      const auto run = [&](int row0, int rows, int t_lo, int t_back, factor::search::Result *out, std::vector<factor::search::Tick> &ticks, double *prep_ms,
-                           double *eval_ms) {
-        const size_t off = static_cast<size_t>(row0) * A;
-        for (int i = 0; i < H; ++i)
-          lab[static_cast<size_t>(i)] = factor::stat::check::label_of(d.base.lab[static_cast<size_t>(i)], d.base.eo, nullptr, off);
-        for (int c = 0; c < sk::kCands; ++c)
-          xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
-        factor::gpu::run_search(sk::kCands, xv, xm, d.base.g.m.data() + off, fr, rows, A, factor::kSegMax, row0, t_lo, t_back, hd, d.base.cap, lab.data(), out,
-                                ticks.data(), prep_ms, eval_ms);
-      };
-      sk::Ref cpu_ref[sk::kCands]; // gpu 的二级 golden = cpu 整块
-      for (int c = 0; c < sk::kCands; ++c)
-        sk::to_ref(full[c], hd, factor::kSegMax, cpu_ref[c]);
-      factor::search::Result gfull[sk::kCands], gc1[sk::kCands], gc2[sk::kCands];
-      double prep_ms = 0, eval_ms = 0;
-      run(0, T, 0, 0, gfull, tk, &prep_ms, &eval_ms);
-      row.gpu_ms += eval_ms;
-      if (fr == factor::stat::Frame::CS)
-        prep_gpu = prep_ms;
-      run(0, sp.e1, 0, sp.e1 - sp.T1, gc1, tk1, nullptr, nullptr);
-      run(sp.s, T - sp.s, sp.t_lo, 0, gc2, tk2, nullptr, nullptr);
-      judge(row.gpu_chk, cpu_ref, gfull, gc1, gc2);
-      judge_ticks(row.gpu_chk, ref, tk);
-    }
+    const Clock::time_point t0 = Clock::now();
+    sc::run_batch_gpu(d, full);
+    row.gpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    sc::run_batch_gpu(d, c1);
+    sc::run_batch_gpu(d, c2);
+    judge(row.gpu_chk, full, c1, c2);
   }
-  detail_prep(row.detail, prep_cpu, prep_gpu);
   row.detail += '\n' + scores;
 }
 
@@ -380,10 +335,10 @@ OperatorsService::OperatorsService() {
     s.out = factor::Dom::REAL;
     s.op = R"tex(\Sigma_t\,\mathrm{row}_t(x_c, y_h))tex";
     s.note = "挖掘批评估: 每候选每持有期沿 t 累加 (分块带前后带可合并) + 逐行 rIC / 多空; golden = Stat";
-    s.doc = "挖掘批评估算子 (factor/Search)\n"
+    s.doc = "挖掘批评估算子 (factor/Stat 的批: 一 warp 一候选)\n"
             "• 一批候选平面 x_c (c < C) 共用标签 y_h\n"
             "    ◦ 每候选每持有期一份沿 t 可合并的 Accum (= Stat 的 Row 累加)\n"
-            "    ◦ 每行一个 Tick (ok / rIC / 多空), 宿主按日折成滚动窗中位 rIC (Search 的目标)\n"
+            "    ◦ 逐日 Day (ok 行数 / Σ rIC / Σ 多空), 宿主折成滚动窗中位 rIC (Search 的目标, Stat/Roll.hpp)\n"
             "    ◦ 不落 Row\n"
             "• 持有期集合同 Stat (Search 服务只传一个)\n"
             "• 分块流式\n"

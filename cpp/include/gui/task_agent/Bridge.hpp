@@ -56,7 +56,7 @@ inline constexpr int kEvalYears = 1;
 struct Scope {
   std::string pool;
   int level = -1;                     // 因子层下标
-  int hold = 0;                       // 持有期键
+  HoldId hold = kHoldT1;              // 持有期
   bool lob = true;                    // 开放 lob 叶
   int years = kEvalYears;             // 评估期只留最近几年 (≥ 1)
   std::map<std::string, Open> leaves; // 因子层名 → 该层开放的叶; 没有该层 = 全开
@@ -72,7 +72,7 @@ struct Scope {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Scope, pool, level, hold, lob, years, leaves, ops)
 
 struct Choice {
-  int key = 0;
+  HoldId key = kHoldT1;
   std::string name;
 };
 
@@ -103,15 +103,15 @@ struct Year {
 struct Weight {
   std::string expr;
   int sign = 1;
-  int hold_src = 0;
+  int hold_src = -1;             // HoldId; −1 = 手填
   bool has = false;              // 有该持有期的统计且有滚动窗
-  double score = 0.0;            // 中位 rIC (滚动窗 = 评估期 / kRollParts; factor/Search/Contract.hpp【目标】)
+  double score = 0.0;            // 中位 rIC (滚动窗 = 评估期 / kRollParts; factor/Stat/Roll.hpp)
   double ric = 0.0;              // rIC (评估期 ok 行均值)
   double lng = 0.0, sht = 0.0;   // 每期毛多 / 毛空 (超额; 做多端 G20 / 做空端 −G1; 毛多空 = 两者之半)
   double gross = 0.0, net = 0.0; // 每期毛 / 净多空 (净 = 扣固定冲击的换手成本)
   double cost = 0.0;             // 每期成本 (= 毛多空 − 净多空 = 两侧量 × 费率 (冲击 + 税佣))
   double buy = 0.0, sell = 0.0;  // 每期单边换手: 增仓量 / 平仓量 ÷ 一批资金 (两端均; 不交接的批整开整平 = 1 / 1)
-  double impact = 0.0;           // 固定冲击 (Config::fixed_impact)
+  double impact = 0.0;           // 固定冲击 (Config::fee.impact)
   double turn = 0.0;             // 年换手 (倍, 两端单边均) = buy × 每年满仓轮数
   std::vector<double> grp;       // 20 组每期毛收益 (减组间均值)
   std::vector<Year> years;
@@ -220,7 +220,7 @@ void move_pool(SharedData &data, int from, int to);
 std::string pool_cn(const std::string &pool);
 std::vector<Choice> levels();
 std::vector<Choice> holds(const SharedData &data, int level);
-std::string hold_desc(int hold, int level);
+std::string hold_desc(HoldId hold, int level);
 void fit(const SharedData &data, Scope &sc); // 池 / 层 / 持有期不在目录里的取首个 (该层无可搜持有期则持有期不动)
 bool gpu();
 bool ready(const SharedData &data, const Scope &sc, bool gpu);

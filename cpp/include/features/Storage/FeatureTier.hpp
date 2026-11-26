@@ -207,7 +207,7 @@ TIER_LEVELS(GENERATE_LEVEL_SOURCES)
 //   LB 列另折入 kLabelSemver: 标签列名不变但口径变 (LabelBar 的 entry / exit, LabelLob 的建仓盘口定义) 时 +1, 库读取即判废而非静默错义
 //   L_1day 表另折入 kDaySemver: 日行口径变 (列名不变) 时 +1, 同理
 // ============================================================================
-constexpr uint64_t kLabelSemver = 1;
+constexpr uint64_t kLabelSemver = 2;
 constexpr uint64_t kDaySemver = 3;
 constexpr uint64_t fnv1a_str(uint64_t h, const char *s) {
   for (; *s; ++s)

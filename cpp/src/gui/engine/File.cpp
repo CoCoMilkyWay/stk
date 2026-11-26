@@ -1,7 +1,8 @@
 // File — 见头文件. include 因子契约头 (Expr → Contract.hpp: isfinite), CMake 列入 MATH_PRECISE 源.
 #include "gui/engine/File.hpp"
 
-#include "factor/Dag.hpp" // build (n_feats / n_slots 列)
+#include "factor/Dag.hpp"           // build (n_feats / n_slots 列)
+#include "factor/Search/Config.hpp" // search_hold
 #include "gui/engine/StatJson.hpp"
 
 #include "nlohmann/json.hpp"
@@ -51,10 +52,16 @@ std::string stat_block(const ojson &st) {
   return "{" + head + body + "}";
 }
 
+// 持有期键 hold (token) → HoldId; 缺 / 不合 → false
+bool json_hold(const json &o, HoldId &h) {
+  const auto it = o.find("hold");
+  return it != o.end() && it->is_string() && hold_parse(it->get<std::string>(), h);
+}
+
 // search[] 一项 ↔ SearchMark
 ojson search_json(const SearchMark &mk) {
   ojson o;
-  o["hold"] = mk.hold;
+  o["hold"] = std::string(hold_token(mk.hold));
   o["start_date"] = misc::dash(mk.start_date);
   o["end_date"] = misc::dash(mk.end_date);
   o["days"] = mk.days;
@@ -63,7 +70,7 @@ ojson search_json(const SearchMark &mk) {
 
 // search_json 的逆: 不合 → false (派生数据, 略去即可, 下次 Search 覆盖)
 bool load_search(const json &o, SearchMark &mk) {
-  if (!o.is_object() || !json_int(o, "hold", mk.hold) || !json_int(o, "days", mk.days))
+  if (!o.is_object() || !json_hold(o, mk.hold) || !json_int(o, "days", mk.days))
     return false;
   const auto ymd = [&](const char *key, misc::Ymd &out) {
     const auto it = o.find(key);
@@ -147,11 +154,11 @@ bool ValidFactorNameCn(std::string_view name) {
   return n <= 10;
 }
 
-const factor::search::Roll *RowRoll(const FactorRow &r, int hold) {
+const factor::stat::Roll *RowRoll(const FactorRow &r, HoldId hold) {
   const factor::stat::HoldStat *h = r.has_stat ? r.find_hold(hold) : nullptr;
   if (!h)
     return nullptr;
-  const factor::search::Roll &x = r.roll_of(*h);
+  const factor::stat::Roll &x = r.roll_of(*h);
   return x.ok() ? &x : nullptr;
 }
 
@@ -215,11 +222,11 @@ void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTa
   }
   if (const auto sit = j.find("search"); sit != j.end() && sit->is_array())
     for (const json &o : *sit)
-      if (SearchMark mk; load_search(o, mk) && find_leg(ft.y.labels, mk.hold))
+      if (SearchMark mk; load_search(o, mk) && ft.y.has(mk.hold))
         r.searched.push_back(std::move(mk));
   // 权重: weights 数组每项一行; 无 weights 时, 模板具体且没搜过 → 手填唯一权重, 否则 "未搜索 / 无权重" 一行
   struct W {
-    int hold = 0, sign = 1;
+    int hold = -1, sign = 1; // hold = HoldId; −1 = 手填 (hold: null)
     std::string expr, err;
   };
   std::vector<W> ws;
@@ -232,21 +239,24 @@ void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTa
     for (size_t i = 0; i < wit->size(); ++i) {
       const json &o = (*wit)[i];
       W w;
-      if (!o.is_object() || !json_int(o, "hold", w.hold)) {
-        w.err = "weights[" + std::to_string(i) + "] 须是对象且有整数 hold";
-      } else if (w.hold != 0 && !find_leg(ft.y.labels, w.hold)) {
-        w.err = "weights[" + std::to_string(i) + "] 的 hold " + std::to_string(w.hold) + " 不在本层持有期里, 作废";
+      HoldId h = kHoldT1;
+      const bool manual = o.is_object() && o.contains("hold") && o["hold"].is_null();
+      if (!o.is_object() || !(manual || json_hold(o, h))) {
+        w.err = "weights[" + std::to_string(i) + "] 须是对象且 hold 为持有期 token (5m / close / t1o / t1 …) 或 null (手填)";
+      } else if (!manual && !ft.y.has(h)) {
+        w.err = "weights[" + std::to_string(i) + "] 的 hold " + std::string(hold_token(h)) + " 不在本层持有期里, 作废";
       } else if (o.find("sign") != o.end() && !(json_int(o, "sign", w.sign) && (w.sign == 1 || w.sign == -1))) {
         w.err = "weights[" + std::to_string(i) + "] 的 sign 须是 1 或 -1";
       } else if (const auto xit = o.find("expr"); xit == o.end() || !xit->is_string()) {
         w.err = "weights[" + std::to_string(i) + "] 缺 expr 键或不是字串";
       } else {
         w.expr = xit->get<std::string>();
+        w.hold = manual ? -1 : h;
       }
       ws.push_back(std::move(w));
     }
   } else if (!t.is_template() && r.searched.empty()) {
-    ws.push_back(W{0, 1, t.canon, {}});
+    ws.push_back(W{-1, 1, t.canon, {}});
   }
   if (ws.empty()) { // 未搜索 / 无权重
     r.status = RowState::Done;
@@ -273,12 +283,12 @@ void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTa
       emit(w);
       continue;
     }
-    if (factor::expr::free_hold(t) && ws[i].hold == 0) {
+    if (factor::expr::free_hold(t) && ws[i].hold < 0) {
       w.error = "weights[" + std::to_string(i) + "]: 模板的 h 自由, 权重须带搜过的 hold";
       emit(w);
       continue;
     }
-    if (!factor::expr::instance_of(factor::expr::free_hold(t) ? ft.reparse_at(t.canon, ws[i].hold) : t, e)) {
+    if (!factor::expr::instance_of(factor::expr::free_hold(t) ? ft.reparse_at(t.canon, static_cast<HoldId>(ws[i].hold)) : t, e)) {
       w.error = "weights[" + std::to_string(i) + "] 不是模板的实例 (结构 / 固定参数须同模板, 自由参数须落值; 自由 h 落为 hold)";
       emit(w);
       continue;
@@ -368,14 +378,14 @@ void DeleteFactorFile(const FactorDir &dir, std::string_view file) {
 }
 
 void WriteFactorSearch(const FactorDir &dir, std::string_view file, bool fresh, const SearchMark &mk, const std::vector<SearchWeight> &ws) {
-  const int hold = mk.hold;
+  const HoldId hold = mk.hold;
   assert(mk.start_date && mk.end_date && mk.days > 0);
   ojson j = read_json(dir, file);
   erase_stats(j);
   // 别的可搜档 (≠ hold) 的项留; 不合的 weights 项也留 (扫描时 BROKEN, 人处理), 不合的 search 项丢 (派生数据)
   const auto keep = [&](const ojson &o) {
-    return o.is_object() && o.contains("hold") && o["hold"].is_number_integer() && o["hold"].get<int>() != hold &&
-           factor::search::search_hold(o["hold"].get<int>());
+    HoldId h = kHoldT1;
+    return o.is_object() && json_hold(o, h) && h != hold && factor::search::search_hold(h);
   };
   ojson marks = ojson::array();
   if (!fresh && j.contains("search") && j["search"].is_array())
@@ -388,13 +398,13 @@ void WriteFactorSearch(const FactorDir &dir, std::string_view file, bool fresh, 
   if (!fresh && j.contains("weights")) {
     assert(j["weights"].is_array() && "搜索落盘: weights 扫描时已校验过");
     for (const ojson &o : j["weights"])
-      if (!o.is_object() || !o.contains("hold") || !o["hold"].is_number_integer() || keep(o))
+      if (HoldId h = kHoldT1; !o.is_object() || !json_hold(o, h) || keep(o))
         arr.push_back(o);
   }
   for (const SearchWeight &w : ws) {
     assert(w.hold == hold && (w.sign == 1 || w.sign == -1));
     ojson o = ojson::object();
-    o["hold"] = w.hold;
+    o["hold"] = std::string(hold_token(w.hold));
     o["sign"] = w.sign;
     o["expr"] = w.expr;
     arr.push_back(std::move(o));
@@ -411,9 +421,9 @@ void WriteFactorStats(const FactorDir &dir, const std::vector<const FactorRow *>
   const FactorRow &r0 = *rs.front();
   ojson j = read_json(dir, r0.file);
   if (const auto wit = j.find("weights"); wit == j.end() || !wit->is_array() || wit->empty()) {
-    assert(rs.size() == 1 && r0.widx == 0 && r0.hold_src == 0 && r0.sign == 1 && "无 weights 的文件只可能有手填权重 (widx 0, 正向)");
+    assert(rs.size() == 1 && r0.widx == 0 && r0.hold_src < 0 && r0.sign == 1 && "无 weights 的文件只可能有手填权重 (widx 0, 正向)");
     ojson w = ojson::object();
-    w["hold"] = 0;
+    w["hold"] = nullptr;
     w["expr"] = r0.expr;
     j["weights"] = ojson::array({w});
   }

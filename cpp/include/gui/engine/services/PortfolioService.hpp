@@ -32,10 +32,10 @@ struct PortfolioEntry {
   FactorLevelId lv = 0;
   std::string file;
   std::string expr;
-  int hold = 0;
+  HoldId hold = kHoldT1;
   int sign = 1;
   std::string key() const {
-    return pool + "|" + factor_level(lv).name + "|" + file + "|" + expr + "|" + std::to_string(sign) + "|" + std::to_string(hold);
+    return pool + "|" + factor_level(lv).name + "|" + file + "|" + expr + "|" + std::to_string(sign) + "|" + std::string(hold_token(hold));
   }
 };
 std::vector<std::string> ListPortfolios();
@@ -57,7 +57,7 @@ struct FactorTask {
   std::string key;
   FactorScope scope;
   FactorRef f;
-  int hold = 0;
+  HoldId hold = kHoldT1;
   std::string sig() const { return key + "|" + std::to_string(scope.max_impact); }
 };
 inline constexpr FactorLevelId kBasketLevel = factor_level_of(L_1day);
@@ -77,7 +77,7 @@ void MakePortfolioRequest(const SharedData &data, std::vector<PortfolioItem> &it
 struct PortfolioBook : Book {
   std::vector<misc::Ymd> dates;
   FactorLevelId lv = 0;
-  int amt = kAmtFixed;
+  AmtId amt = kAmtFixed;
   std::vector<uint32_t> keys;
   std::string error;
   size_t bytes() const { return Book::bytes() + dates.size() * sizeof(misc::Ymd) + keys.size() * sizeof(uint32_t); }

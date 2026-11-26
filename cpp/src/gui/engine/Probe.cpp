@@ -63,14 +63,14 @@ void cover_rows(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, 
 
 void CostP::close(const Ctx &c, const RootView &v) {
   const YPlanes &y = c.c.y;
-  factor::stat::Cost cs[factor::stat::kMaxCost];
+  factor::stat::Cost cs[kAmtCount];
   const int C = fill_costs(y, cs), H = c.L.hd.n;
   assert(v.ec && C >= 1 && costs.size() == static_cast<size_t>(C));
   assert(day_buy.size() == static_cast<size_t>(H));
   const factor::stat::Span s = c.s();
   const size_t T = static_cast<size_t>(s.T);
   row_buy.assign(static_cast<size_t>(H) * T, 0.0);
-  factor::stat::CostAcc acc[factor::stat::kMaxCost * factor::stat::kMaxHold] = {};
+  factor::stat::CostAcc acc[static_cast<int>(kAmtCount) * static_cast<int>(kHoldCount)] = {};
   factor::cpu::stat::cost_rows(c.ex, v.ec, s, c.L, c.L.cap, cs, C, *c.w, acc, [&](size_t j, int t, const factor::stat::CostAcc &r) {
     if (j < static_cast<size_t>(H)) // 段 0 (j = 段 · H + 持有期)
       row_buy[j * T + static_cast<size_t>(t)] = r.book[factor::stat::kTop].vol[factor::stat::kBuy] + r.book[factor::stat::kBot].vol[factor::stat::kBuy];
@@ -150,7 +150,7 @@ void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, cons
         if (!ok(i))
           continue;
         const float x = val(i);
-        const int g = rev ? K - 1 - factor::stat::grp_of(rx[i]) : factor::stat::grp_of(rx[i]);
+        const int g = factor::stat::grp_of(rx[i]); // rx 已定向
         mn[g] = cnt[g] ? std::min(mn[g], x) : x;
         mx[g] = cnt[g] ? std::max(mx[g], x) : x;
         ++cnt[g];

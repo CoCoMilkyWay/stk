@@ -31,6 +31,6 @@ std::string EntryLabel(const PortfolioEntry &e);
 // GUI 线程每帧 (Alpha / Market 都调): 首次列组合目录, 选第一个 (载入内容, content_gen +1)
 void SyncPortfolioList(PortfolioUIState &ui);
 // Factors 页 1. 区右侧两框. view_row = Factors 表高光行 (nullptr = 无); (pool, lv, hold) = Factors 页当前池 / 层 / Hold
-void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, FactorLevelId lv, int hold);
+void RenderPortfolioBoxes(PortfolioUIState &ui, const FactorRow *view_row, const std::string &pool, FactorLevelId lv, HoldId hold);
 
 } // namespace GUI::Engine

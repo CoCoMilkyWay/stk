@@ -88,7 +88,7 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const Forest &F, std::
 
 Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
   assert(sc.ft && sc.ft->seg == 1 && pool_id(sc.pool) == kAllPool && "池篮子在 all 池日层评估域");
-  assert(find_leg(sc.ft->y.labels, factor::stat::hold_same(1)) && "篮子须有 T+1 标签 (日层: 池指数 C(行) → C(D+1))");
+  assert(sc.ft->y.has(kHoldT1) && "篮子须有 T+1 标签 (日层: 池指数 C(行) → C(D+1))");
   const std::span<const LeafId, kPoolVals> val(sc.ft->val);
   if (!open_job(F, sc, val, j))
     return Rc::Empty;
@@ -100,7 +100,7 @@ Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
       F.S.clear();
     return rc;
   }
-  j.spec.y = {keys_of<Holds>(std::vector<int>{factor::stat::hold_same(1)}), {}, 0.f};
+  j.spec.y = {Holds::of(hold_bit(kHoldT1)), {}, 0.f};
   j.spec.ry = false;
   j.bands = {factor::stat::kChainDays + 1, 1};
   j.b = {.load = cell_bytes(*j.ft, j.spec, val.size()), .work = static_cast<double>(sizeof(PoolMask)), .fixed = BasketPass::fixed_bytes(j.dm)};

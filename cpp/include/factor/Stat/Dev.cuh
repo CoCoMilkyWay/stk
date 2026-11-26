@@ -15,8 +15,8 @@
 //     末级 key + idx 正好顶满静态 shared 上限 48 KB (cub 排序暂存 ≈ 34 KB 与之 union), sm_75 每 SM 只驻 1 块.
 //     同一个核给因子批 (SrcX: 池内 g ∧ m) 与标签 (SrcY: fp16 平面, C = 1) 用, 只换行源; 行源 row(c, 行首) 给出取键器
 //     KeyX / KeyY (行视图, 与 Host.hpp 同名同形).
-//   【quant_rows】TS: 分位直接量化 (r16_quant), 逐格无关, grid (·, C).
-//   【row_stat】= 换手侧 lag_row + 标签侧 label_row (与 Host.hpp 同构). 一 warp 算一 (t, hold) 行 → Row, **全 lane 同值**
+//   【quant_rows】TS: 分位直接量化 (r16_quant), 逐格无关, grid (·, C). 两核出口按方向 d 定向 (契约【方向 Dir】).
+//   【row_stat】= 换手侧 lag_row + 标签侧 label_row (与 Host.hpp 同构; 尾部和在寄存器里攒, 下标编译期定). 一 warp 算一 (t, hold) 行 → Row, **全 lane 同值**
 //     (收尾 finish_row 在 32 lane 冗余算: SIMT 下与 lane 0 独算同耗时,
 //     省掉 lane 间搬运; 消费端 lane 0 落 Row 或 lane k 取 grp[k] 都直接从寄存器拿). 一行只有 A ≤ kMaxA 格, 块级归约是纯栅栏延迟瓶颈,
 //     所以一遍 A 轴 lane 跨步 32, 累加器全在寄存器 + 每 lane **独占**的 smem 分组槽 (Slots, [warp][组][lane] 布局, 32 lane 落 32 连续字,
@@ -48,15 +48,14 @@ namespace factor::gpu::stat {
 
 using factor::stat::Batch;
 using factor::stat::Frame;
+using factor::stat::kEnds;
 using factor::stat::kGroups;
-using factor::stat::kLegs;
-using factor::stat::kLong;
 using factor::stat::kMaxA;
 using factor::stat::kMaxBatch;
 using factor::stat::kNoKey;
 using factor::stat::kRankNone;
-using factor::stat::kShort;
 using factor::stat::kSums;
+using factor::stat::kTails;
 using factor::stat::Label;
 using factor::stat::Row;
 using factor::stat::Span;
@@ -75,6 +74,9 @@ struct Slots {
 namespace dev {
 
 __device__ __forceinline__ float h2f(uint16_t b) { return __half2float(__ushort_as_half(b)); }
+struct H2F {
+  __device__ __forceinline__ float operator()(uint16_t b) const { return h2f(b); }
+};
 
 // shared 有序数组上的二分
 __device__ __forceinline__ int lower_bound(const unsigned *k, int n, unsigned key) {
@@ -137,12 +139,15 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
   }
   unsigned long long s[kSums] = {}; // rIC
   float fs[1] = {};                 // J 上 Σlv (基准)
+  float ts[kEnds * kTails] = {};    // 尾部和 (下标编译期定, 留寄存器)
+  int tc[kEnds * kTails] = {};      // 尾部只数
   for (int a = lane; a < c.A; a += 32) {
     const unsigned x = rx[a], y = lb.ry[a];
     const bool ok = x != kRankNone && y != kRankNone;
     factor::stat::pair_add(s, x, y, ok);
-    const float yv[kLegs] = {h2f(lb.v[kLong][a]), h2f(lb.v[kShort][a])};
-    fs[0] += ok ? yv[kLong] : 0.f;
+    float yv[2];
+    factor::stat::label_cell(lb, a, H2F{}, yv);
+    fs[0] += ok ? yv[0] : 0.f;
     if (!ok)
       continue;
     const int g = factor::stat::grp_of(x);
@@ -152,9 +157,26 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
       gs[g][lane] += cl.ret(cl.continues(in));
       gc[g][lane] += 1;
     }
+#pragma unroll
+    for (int e = 0; e < kEnds; ++e) {
+      if (g != factor::stat::end_group(e))
+        continue;
+#pragma unroll
+      for (int j = 0; j < kTails; ++j) {
+        if (!factor::stat::in_tail(e, x, j))
+          continue;
+        const auto it = [e, j](uint16_t v) { return v != kRankNone && factor::stat::in_tail(e, v, j); };
+        if (cl.held(it)) {
+          ts[e * kTails + j] += cl.ret(cl.continues(it));
+          tc[e * kTails + j] += 1;
+        }
+      }
+    }
   }
   warp_sum(s);
   warp_sum(fs);
+  warp_sum(ts);
+  warp_sum(tc);
   __syncwarp();         // 各 lane 的槽写完, 下面跨 lane 读
   if (lane < kGroups) { // lane q 收组 q: 沿 32 lane 串行加, 起点旋转 → 32 个 lane 落 32 个 bank
     float sg = 0.f;
@@ -169,14 +191,19 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
     gc[lane][0] = static_cast<uint16_t>(cg);
   }
   __syncwarp();
-  double gsd[kGroups];
-  int gci[kGroups];
+  double gsd[kGroups], tsd[kEnds][kTails];
+  int gci[kGroups], tci[kEnds][kTails];
 #pragma unroll
   for (int q = 0; q < kGroups; ++q) { // 广播读 (全 lane 同址, 无冲突)
     gsd[q] = static_cast<double>(gs[q][0]);
     gci[q] = gc[q][0];
   }
-  factor::stat::finish_row(s, static_cast<double>(fs[0]), gsd, gci, cap, r);
+#pragma unroll
+  for (int e = 0; e < kEnds; ++e)
+#pragma unroll
+    for (int j = 0; j < kTails; ++j)
+      tsd[e][j] = static_cast<double>(ts[e * kTails + j]), tci[e][j] = tc[e * kTails + j];
+  factor::stat::finish_row(s, static_cast<double>(fs[0]), gsd, gci, tsd, tci, cap, r);
 }
 
 // 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; cap = 满仓;
@@ -221,7 +248,7 @@ struct SrcY { // 做多标签平面, 单张
 
 // rank_rows: grid (T, C) 一行一 block, 片上基数排序 → 二分 less/eq → r16 → out[c][t][·]
 template <int ITEMS, class Src>
-__global__ void __launch_bounds__(kRB) rank_rows(Src src, uint16_t *out, int T, int A) {
+__global__ void __launch_bounds__(kRB) rank_rows(Src src, uint16_t *out, int T, int A, int d) {
   constexpr int N = kRB * ITEMS;
   using Sort = cub::BlockRadixSort<unsigned, kRB, ITEMS, unsigned short>;
   union Sh { // 排序暂存与排好序的数组分时复用同一块 shared
@@ -266,18 +293,18 @@ __global__ void __launch_bounds__(kRB) rank_rows(Src src, uint16_t *out, int T, 
       const int eq = dev::upper_bound(sh.s.key, n, key) - less;
       r = factor::stat::r16_of(less, eq, n);
     }
-    out[obase + a] = r;
+    out[obase + a] = factor::stat::oriented(r, d);
   }
 }
 
 // quant_rows (TS): 分位直接量化, 逐格 (整平面当一行: plane < 2^31); grid.y = 候选
-__global__ void __launch_bounds__(kRB) quant_rows(SrcX src, uint16_t *out, size_t plane) {
+__global__ void __launch_bounds__(kRB) quant_rows(SrcX src, uint16_t *out, size_t plane, int d) {
   const int c = blockIdx.y;
   uint16_t *o = out + static_cast<size_t>(c) * plane;
   const KeyX key = src.row(c, 0);
   for (size_t i = static_cast<size_t>(blockIdx.x) * kRB + threadIdx.x; i < plane; i += static_cast<size_t>(gridDim.x) * kRB) {
     const int a = static_cast<int>(i);
-    o[i] = key.on(a) ? factor::stat::r16_quant(key.v[a]) : kRankNone;
+    o[i] = factor::stat::oriented(key.on(a) ? factor::stat::r16_quant(key.v[a]) : kRankNone, d);
   }
 }
 
@@ -288,43 +315,43 @@ __global__ void __launch_bounds__(kRB) quant_rows(SrcX src, uint16_t *out, size_
 // -----------------------------------------------------------------------------
 
 template <class Src>
-inline void rank_launch(const Src &src, uint16_t *out, int T, int A, int C, cudaStream_t stream) {
+inline void rank_launch(const Src &src, uint16_t *out, int T, int A, int C, int d, cudaStream_t stream) {
   assert(T >= 1 && A >= 1 && A <= kMaxA && C >= 1 && C <= kMaxBatch && static_cast<long long>(T) * A < (1LL << 31));
   const dim3 grid(static_cast<unsigned>(T), static_cast<unsigned>(C));
   if (A <= kRB * 2)
-    k::rank_rows<2, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
+    k::rank_rows<2, Src><<<grid, kRB, 0, stream>>>(src, out, T, A, d);
   else if (A <= kRB * 6)
-    k::rank_rows<6, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
+    k::rank_rows<6, Src><<<grid, kRB, 0, stream>>>(src, out, T, A, d);
   else if (A <= kRB * 10)
-    k::rank_rows<10, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
+    k::rank_rows<10, Src><<<grid, kRB, 0, stream>>>(src, out, T, A, d);
   else
-    k::rank_rows<16, Src><<<grid, kRB, 0, stream>>>(src, out, T, A);
+    k::rank_rows<16, Src><<<grid, kRB, 0, stream>>>(src, out, T, A, d);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 
-// 阶段 1: 候选批 B (口径 f, 只看池内 g ∧ m) → rx[c][T][A] (块内全部行, 含前后带). 口径分叉只在这里
-inline void rank_x(const Batch &B, const uint8_t *g, Frame f, const Span &s, uint16_t *rx, cudaStream_t stream) {
-  factor::stat::assert_span(s);
+// 阶段 1: 候选批 B (口径 f, 方向 d, 只看池内 g ∧ m) → 已定向的 rx[c][T][A] (块内全部行, 含前后带). 口径分叉 / 定向只在这里
+inline void rank_x(const Batch &B, const uint8_t *g, Frame f, int d, const Span &s, uint16_t *rx, cudaStream_t stream) {
+  assert(s.T >= 1 && s.A >= 1 && s.A <= kMaxA);
   assert(B.C >= 1 && B.C <= kMaxBatch && g && rx);
   for (int c = 0; c < B.C; ++c)
     assert(B.x[c].v && B.x[c].m);
   const k::SrcX src{B, g};
   if (f == Frame::CS) {
-    rank_launch(src, rx, s.T, s.A, B.C, stream);
+    rank_launch(src, rx, s.T, s.A, B.C, d, stream);
     return;
   }
   const size_t plane = s.n();
   const size_t nb = (plane + kRB - 1) / kRB;
   const dim3 grid(static_cast<unsigned>(nb < 4096 ? nb : 4096), static_cast<unsigned>(B.C));
-  k::quant_rows<<<grid, kRB, 0, stream>>>(src, rx, plane);
+  k::quant_rows<<<grid, kRB, 0, stream>>>(src, rx, plane, d);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 
-// 标签预处理: 一组标签的做多侧 (lb.v[kLong] / lb.m) 逐行 r16 → ry. 常驻期 (块内) 算一次, 因子 / 候选共用
+// 标签预处理: 一组标签的做多侧 (lb.lv / lb.m) 逐行 r16 → ry. 常驻期 (块内) 算一次, 因子 / 候选共用
 inline void prep_label(const Label &lb, const Span &s, uint16_t *ry, cudaStream_t stream) {
-  factor::stat::assert_span(s);
-  assert(lb.v[kLong] && lb.m && ry);
-  rank_launch(k::SrcY{lb.v[kLong], lb.m}, ry, s.T, s.A, 1, stream);
+  assert(s.T >= 1 && s.A >= 1 && s.A <= kMaxA);
+  assert(lb.lv && lb.m && ry);
+  rank_launch(k::SrcY{lb.lv, lb.m}, ry, s.T, s.A, 1, factor::stat::kFwd, stream);
 }
 
 } // namespace factor::gpu::stat

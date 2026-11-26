@@ -7,7 +7,8 @@
 
 #include "factor/Expr.hpp"
 #include "factor/GpuRun.hpp"
-#include "factor/Search/Contract.hpp"
+#include "factor/Search/Config.hpp"
+#include "factor/Stat/Roll.hpp"
 #include "features/Storage/FeatureLevels.hpp"
 #include "features/Storage/FeatureLib.hpp"
 #include "fundamental/AssetAxis.hpp"
@@ -165,8 +166,8 @@ struct SpanCache {
 using Fails = std::map<std::string, std::string>;
 
 // fee = Config 费率 (净多空扣固定段换手成本 + 税佣)
-Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, const std::string &file, int hold,
-                 const fs::Fee &fee, const Fails &fails) {
+Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, const std::string &file, HoldId hold,
+                 const Fee &fee, const Fails &fails) {
   std::vector<Engine::FactorRow> rows;
   Engine::ScanFactorFile(dir, file, ft, rows);
   assert(!rows.empty());
@@ -200,14 +201,14 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
     if (w.has_stat)
       fresh = fresh && now.same(w.scope.pool, w.scope.start_date, w.scope.end_date, w.scope.days);
     Weight x{.expr = w.expr, .sign = w.sign, .hold_src = w.hold_src};
-    const fsearch::Roll *rl = Engine::RowRoll(w, hold);
+    const fs::Roll *rl = Engine::RowRoll(w, hold);
     x.has = rl != nullptr;
     if (rl) {
       const fs::HoldStat *h = w.find_hold(hold);
       assert(h && "RowRoll 非空须有该持有期的 HoldStat");
       assert(w.costs.front().amt == Engine::kAmtFixed && "成本段首个是固定段");
       const fs::CostAcc &c = w.turn_of(*h);
-      x.score = fsearch::score_of(*rl);
+      x.score = fs::score_of(*rl);
       x.ric = h->ric.mean;
       x.lng = fs::end_period(*h, fs::kTop), x.sht = -fs::end_period(*h, fs::kBot);
       x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, fee), x.cost = x.gross - x.net;
@@ -216,7 +217,7 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
       const double n = static_cast<double>(h->n_all);
       const auto vol = [&](int s) { return 0.5 * (c.book[fs::kTop].vol[s] + c.book[fs::kBot].vol[s]) / n; };
       x.buy = vol(fs::kBuy), x.sell = vol(fs::kSell);
-      x.impact = fee.fixed;
+      x.impact = fee.impact;
       double mid = 0.0;
       for (const float g : h->grp)
         mid += g / static_cast<double>(fs::kGroups);
@@ -243,7 +244,7 @@ void sort_results(std::vector<Result> &v) {
   });
 }
 
-std::vector<Result> scan(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, int hold, const fs::Fee &fee,
+std::vector<Result> scan(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, HoldId hold, const Fee &fee,
                          const Fails &fails) {
   std::vector<Result> out;
   for (const std::string &file : dir.files())
@@ -385,12 +386,13 @@ std::vector<Choice> levels() {
 }
 std::vector<Choice> holds(const SharedData &data, int level) {
   std::vector<Choice> out;
-  for (const Engine::LegCol &lg : table(data, level)->y.labels)
-    if (fsearch::search_hold(lg.key))
-      out.push_back({lg.key, fs::hold_name(lg.key)});
+  const Holds hl = table(data, level)->y.list;
+  for (int i = 0; i < hl.n; ++i)
+    if (fsearch::search_hold(hl.k[i]))
+      out.push_back({hl.k[i], hold_name(hl.k[i])});
   return out;
 }
-std::string hold_desc(int hold, int level) { return Engine::hold_desc(hold, level_id(level)); }
+std::string hold_desc(HoldId hold, int level) { return Engine::hold_desc(hold, level_id(level)); }
 void fit(const SharedData &data, Scope &sc) {
   if (const std::vector<Choice> ps = pools(); !std::ranges::contains(ps, sc.pool, &Choice::name))
     sc.pool = ps.front().name;
@@ -411,7 +413,7 @@ std::string hold_miss(const SharedData &data, const Scope &sc) {
     return "该层无可搜持有期 (标签未建)";
   if (std::ranges::contains(hs, sc.hold, &Choice::key))
     return {};
-  return "持有期 " + fs::hold_name(sc.hold) + " 在该层不可搜 (可选 " + text::join(hs, " / ", &Choice::name) + ")";
+  return "持有期 " + hold_name(sc.hold) + " 在该层不可搜 (可选 " + text::join(hs, " / ", &Choice::name) + ")";
 }
 std::string open_miss(const SharedData &data, const Scope &sc) {
   const Opened o = opened_of(*table(data, sc.level), sc, false);
@@ -422,10 +424,10 @@ std::string open_miss(const SharedData &data, const Scope &sc) {
   return {};
 }
 std::string label(const Scope &sc) {
-  return sc.pool + " / " + Engine::factor_level(level_id(sc.level)).name + " / " + fs::hold_name(sc.hold);
+  return sc.pool + " / " + Engine::factor_level(level_id(sc.level)).name + " / " + hold_name(sc.hold);
 }
 disk::Key key(const Scope &sc, bool test) {
-  return {.pool = sc.pool, .level = Engine::factor_level(level_id(sc.level)).name, .hold = fs::hold_token(sc.hold), .test = test};
+  return {.pool = sc.pool, .level = Engine::factor_level(level_id(sc.level)).name, .hold = std::string(hold_token(sc.hold)), .test = test};
 }
 
 } // namespace catalog
@@ -448,7 +450,7 @@ struct Desk::Impl {
   std::shared_ptr<const ViewEnv> env_cache;
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
-  fs::Fee fee() const { return Engine::fee_of(data->config); }
+  Fee fee() const { return data->config.fee; }
 
   Engine::FactorScope factor_scope(bool gpu) const {
     Engine::FactorScope fsc;
@@ -573,7 +575,7 @@ void Desk::bind(const SharedData &data, const Scope &sc, bool test) {
   c = Context{};
   c.pool = sc.pool, c.pool_cn = catalog::pool_cn(sc.pool);
   c.level = Engine::factor_level(level_id(sc.level)).name;
-  c.hold = fs::hold_name(sc.hold), c.hold_key = fs::hold_token(sc.hold), c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
+  c.hold = hold_name(sc.hold), c.hold_key = std::string(hold_token(sc.hold)), c.hold_desc = catalog::hold_desc(sc.hold, sc.level);
   Per<Src, bool> on{};
   std::vector<Engine::LeafId> opened_ids;
   for (size_t i = 0; i < ft->x.leaves.size(); ++i) {
@@ -623,7 +625,7 @@ void Desk::bind(const SharedData &data, const Scope &sc, bool test) {
   c.open = open_of(c.clock);
   c.ts_root_d = fs::ts_norm_d(ft->seg);
   c.max_d = factor::kMaxD;
-  c.roll_parts = fsearch::kRollParts;
+  c.roll_parts = fs::kRollParts;
   c.search_pts = fsearch::kInit;
   for (size_t i = 0; i < std::size(fx::kOps); ++i) {
     const fx::OpInfo &o = fx::kOps[i];

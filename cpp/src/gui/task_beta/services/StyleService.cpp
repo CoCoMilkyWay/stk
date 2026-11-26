@@ -1,5 +1,6 @@
 #include "gui/task_beta/services/StyleService.hpp"
 
+#include "define/Annual.hpp"
 #include "features/Storage/FeatureLib.hpp"
 #include "misc/date.hpp"
 #include "misc/median.hpp"
@@ -30,7 +31,7 @@ void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<floa
   l.stat = {};
   if (f >= d1)
     return;
-  const auto years = [&](size_t base, size_t t) { return static_cast<double>((misc::to_days(dates[t]) - misc::to_days(dates[base])).count()) / 365.25; };
+  const auto years = [&](size_t base, size_t t) { return static_cast<double>(t - base) / kDaysPerYear; }; // 交易日口径 (define/Annual.hpp)
   // 前缀和 (下标 = 日 + 1; 起点前为 0): Σ ln(1 + r) / Σ r / Σ r²; 整段回撤 (峰自基日 = 1 起) / 增仓
   std::vector<double> G(d1 + 1, 0.0), S(d1 + 1, 0.0), SS(d1 + 1, 0.0);
   double nav = 1.0, peak = 1.0, mdd = 0.0, b = 0.0;

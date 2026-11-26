@@ -1,10 +1,9 @@
 // Load — 见头文件. include 因子 Stat CPU 头 (标签秩 prep_label), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Load.hpp"
 
-#include "factor/GpuRun.hpp"                        // available / mem_info
-#include "factor/Stat/Cpu.hpp"                      // prep_label / Workspace
-#include "features/MetaFlag.hpp"                    // fmeta::valid / keep / finite
-#include "features/Node/Common/Label/LabelHold.hpp" // 只取 kContCloseMin 对账尾部界
+#include "factor/GpuRun.hpp"     // available / mem_info
+#include "factor/Stat/Cpu.hpp"   // prep_label / Workspace
+#include "features/MetaFlag.hpp" // fmeta::valid / keep / finite
 #include "features/Storage/FeatureRead.hpp"
 #include "features/TimeIndex.hpp"
 #include "misc/cross_platform.hpp" // memory_usage
@@ -37,7 +36,6 @@ static_assert([] {
   return true;
 }(),
               "kFactorLevels 与 factor::kGeos / 特征库层 (行末分钟) 不符");
-static_assert(static_cast<size_t>(factor::stat::kLastAnchorRow) + 2 == LabelHold::kContCloseMin, "Stat 尾部界与 LabelHold 的收盘竞价起点不一致");
 
 namespace GUI::Engine {
 
@@ -216,14 +214,15 @@ YSpec y_spec(const FeatureTable &ft, const Domain &dm, const Holds &hd, Segs sg,
   YSpec s{hd, {}, 0.f};
   if (sg == Segs::None)
     return s;
-  assert(ft.y.costs.front().flat() && "字段表成本段首个是固定段");
-  std::vector<int> amts;
-  for (const LegCol &c : ft.y.costs)
-    if (c.flat() || dm.uses(c.leg[factor::stat::kLong]))
-      amts.push_back(c.key);
-  if (sg == Segs::First)
-    amts = {amts.back() == kAmtFixed ? kAmtFixed : amts[1]};
-  s.ad = keys_of<Amts>(amts);
+  AmtSet amts = amt_bit(kAmtFixed);
+  for (int a = 1; a < kAmtCount; ++a)
+    if ((ft.y.amts & amt_bit(static_cast<AmtId>(a))) && dm.uses(ft.y.cost[a][factor::stat::kBuy]))
+      amts |= amt_bit(static_cast<AmtId>(a));
+  if (sg == Segs::First) { // 有盘口段取最小的一段, 否则固定段
+    const Amts all = Amts::of(amts);
+    amts = amt_bit(all.n > 1 ? all.k[1] : kAmtFixed);
+  }
+  s.ad = Amts::of(amts);
   s.max_impact = static_cast<float>(max_impact);
   return s;
 }
@@ -246,7 +245,7 @@ inline constexpr double kCellBytes = 0.0;
 template <>
 inline constexpr double kCellBytes<YCore> = 2.0;
 template <>
-inline constexpr double kCellBytes<LegPlane> = kPlaneBytes;
+inline constexpr double kCellBytes<LabPlane> = kPlaneBytes;
 template <>
 inline constexpr double kCellBytes<U16> = 2.0;
 template <>
@@ -292,13 +291,15 @@ uint8_t eo_cell(const View &w, size_t a, bool in) {
   assert((c == 0.f || c == 1.f || c == 2.f || c == 3.f) && "lb_entry_ok 须是 kEoBuy | kEoSell");
   return static_cast<uint8_t>(c);
 }
-void leg_cell(const View (&w)[factor::stat::kLegs], size_t a, bool in, uint8_t eo, LegPlane &p, size_t i) {
-  feature_storage_t x[factor::stat::kLegs] = {};
-  bool ok = in;
-  for (int l = 0; l < factor::stat::kLegs; ++l)
-    ok = ok && cell(w[l], a, x[l]) && fmeta::finite(x[l]);
-  for (int l = 0; l < factor::stat::kLegs; ++l)
-    p.v[l][i] = ok ? std::bit_cast<uint16_t>(x[l]) : 0;
+// 一格标签: 做多 (w[0]) 与名义 (w[1], 只偏移型; nom = false 则不读) 都有限才有效
+void lab_cell(const View (&w)[2], bool nom, size_t a, bool in, uint8_t eo, LabPlane &p, size_t i) {
+  feature_storage_t x[2] = {};
+  bool ok = in && cell(w[0], a, x[0]) && fmeta::finite(x[0]);
+  if (nom)
+    ok = ok && cell(w[1], a, x[1]) && fmeta::finite(x[1]);
+  p.lv[i] = ok ? std::bit_cast<uint16_t>(x[0]) : 0;
+  if (nom)
+    p.nv[i] = ok ? std::bit_cast<uint16_t>(x[1]) : 0;
   assert((!ok || eo) && "标签有效格须有建仓可成交码");
   p.m[i] = ok;
 }
@@ -389,8 +390,9 @@ void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, size_t VR, size_t A,
 double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx) {
   int books = 0;
   for (int c = 0; c < s.y.ad.n; ++c)
-    books += !leg_of(ft.y.costs, s.y.ad.k[c]).flat();
-  return kCellBytes<Leaf> * static_cast<double>(nx) + kCellBytes<YCore> + kCellBytes<LegPlane> * s.y.hd.n + kCellBytes<U16> * factor::stat::kSides * books;
+    books += s.y.ad.k[c] != kAmtFixed;
+  (void)ft;
+  return kCellBytes<Leaf> * static_cast<double>(nx) + kCellBytes<YCore> + kCellBytes<LabPlane> * s.y.hd.n + kCellBytes<U16> * factor::stat::kSides * books;
 }
 
 bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vector<Leaf> &out) {
@@ -425,10 +427,9 @@ bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vect
   });
 }
 
-bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LegPlane> &labels,
+bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LabPlane> &labels,
             std::vector<std::vector<uint16_t>> &costs) {
   TraceN("FactorsLoadY");
-  constexpr size_t K = factor::stat::kLegs;
   constexpr size_t kNone = SIZE_MAX;
   const FeatureTable &ft = io.ft;
   const Shape sh = shape_of(io, k);
@@ -442,16 +443,18 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
     assert(cols.refs[ts_i].lib == io.dm.rs.main && "门控 / 标签在标签库");
   }
   std::vector<size_t> lab_at(H), cost_at(C);
-  for (size_t i = 0; i < H; ++i) {
-    lab_at[i] = cols.refs.size();
-    for (const Col &c : leg_of(ft.y.labels, hd.k[i]).leg)
-      cols.add(c);
+  for (size_t i = 0; i < H; ++i) { // 做多 / 名义列相邻 (lab_at[i] + 腿; 锚点型只一列)
+    assert(ft.y.has(hd.k[i]) && "持有期不在本层标签里");
+    const LabCols &lc = ft.y.lab[hd.k[i]];
+    lab_at[i] = cols.add(lc.lv);
+    if (hold_offset(hd.k[i]))
+      cols.add(lc.nv);
   }
   for (size_t c = 0; c < C; ++c) { // 两侧冲击列相邻 (cost_at[c] + side)
-    const LegCol &lc = leg_of(ft.y.costs, ad.k[c]);
-    assert(!lc.flat() && io.dm.uses(lc.leg[factor::stat::kBuy]) && "只装盘口段, 要评估域含 Lob 库 (y_spec)");
-    cost_at[c] = cols.add(lc.leg[factor::stat::kBuy]);
-    cols.add(lc.leg[factor::stat::kSell]);
+    const AmtId a = ad.k[c];
+    assert(a != kAmtFixed && (ft.y.amts & amt_bit(a)) && io.dm.uses(ft.y.cost[a][factor::stat::kBuy]) && "只装盘口段, 要评估域含 Lob 库 (y_spec)");
+    cost_at[c] = cols.add(ft.y.cost[a][factor::stat::kBuy]);
+    cols.add(ft.y.cost[a][factor::stat::kSell]);
   }
 
   if (!have) {
@@ -461,11 +464,11 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
   }
   const YCore &g = have ? *have : core;
   assert(g.gate.size() == n && "门控与块不同形");
-  labels.assign(H, LegPlane{});
-  for (LegPlane &p : labels) {
-    for (std::vector<uint16_t> &v : p.v)
-      v.assign(n, 0);
-    p.m.assign(n, 0);
+  labels.assign(H, LabPlane{});
+  for (size_t i = 0; i < H; ++i) {
+    labels[i].lv.assign(n, 0), labels[i].m.assign(n, 0);
+    if (hold_offset(hd.k[i]))
+      labels[i].nv.assign(n, 0);
   }
   costs.assign(C, std::vector<uint16_t>(factor::stat::kSides * n, 0)); // [side][n]
   constexpr uint16_t kInf = 0x7C00;
@@ -486,11 +489,10 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
           core.eo[row + a] = eo_cell(w, a, core.gate[row + a]);
       }
       for (size_t i = 0; i < H; ++i) {
-        View w[K];
-        for (size_t l = 0; l < K; ++l)
-          w[l] = view(lab_at[i] + l, t);
+        const bool nom = hold_offset(hd.k[i]);
+        const View w[2] = {view(lab_at[i], t), nom ? view(lab_at[i] + 1, t) : View{}};
         for (size_t a = 0; a < A; ++a)
-          leg_cell(w, a, g.gate[row + a], g.eo[row + a], labels[i], row + a);
+          lab_cell(w, nom, a, g.gate[row + a], g.eo[row + a], labels[i], row + a);
       }
       for (size_t c = 0; c < C; ++c)
         for (size_t s = 0; s < static_cast<size_t>(factor::stat::kSides); ++s) {
@@ -686,7 +688,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   const auto key = [&](char role, long long id) { return base + role + std::to_string(id); };
   const YCore *core = nullptr;
   const auto set_core = [&](const YCore &p) { core = &p, y.gate = p.gate.data(), y.eo = p.eo.data(); };
-  const auto set_hold = [&y](int i) { return [&y, i](const LegPlane &p) { y.labels[i] = &p; }; };
+  const auto set_hold = [&y](int i) { return [&y, i](const LabPlane &p) { y.labels[i] = &p; }; };
   const auto set_amt = [&y](int i) { return [&y, i](const U16 &p) { y.costs[i] = p.data(); }; };
   const auto set_rank = [&y](int i) { return [&y, i](const U16 &p) { y.ry[i] = p.data(); }; };
   const auto set_leaf = [&c](LeafId id) { return [&c, id](const Leaf &p) { c.x.v[id] = &p; }; };
@@ -697,19 +699,19 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   std::vector<int> mh_at, ma_at, mr;
   std::vector<LeafId> mx;
   for (int i = 0; i < y.hd.n; ++i) {
-    if (!hit<LegPlane>(c, key('h', y.hd.k[i]), set_hold(i)))
+    if (!hit<LabPlane>(c, key('h', y.hd.k[i]), set_hold(i)))
       mh.k[mh.n++] = y.hd.k[i], mh_at.push_back(i);
     if (s.ry && !hit<U16>(c, key('r', y.hd.k[i]), set_rank(i)))
       mr.push_back(i);
   }
   for (int i = 0; i < y.ad.n; ++i)
-    if (!leg_of(ft.y.costs, y.ad.k[i]).flat() && !hit<U16>(c, key('a', y.ad.k[i]), set_amt(i)))
+    if (y.ad.k[i] != kAmtFixed && !hit<U16>(c, key('a', y.ad.k[i]), set_amt(i)))
       ma.k[ma.n++] = y.ad.k[i], ma_at.push_back(i);
   for (const LeafId id : s.x)
     if (!hit<Leaf>(c, key('x', id), set_leaf(id)))
       mx.push_back(id);
 
-  const double need = n * ((core ? 0.0 : kCellBytes<YCore>)+kCellBytes<LegPlane> * mh.n + kCellBytes<U16> * static_cast<double>(factor::stat::kSides * ma.n + mr.size()) +
+  const double need = n * ((core ? 0.0 : kCellBytes<YCore>)+kCellBytes<LabPlane> * mh.n + kCellBytes<U16> * static_cast<double>(factor::stat::kSides * ma.n + mr.size()) +
                            kCellBytes<Leaf> * static_cast<double>(mx.size()));
   room(need, reserve);
   c.fresh = need > 0.0;
@@ -721,7 +723,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   };
   if (!core || mh.n > 0 || ma.n > 0) {
     YCore got;
-    std::vector<LegPlane> labs;
+    std::vector<LabPlane> labs;
     std::vector<U16> cs;
     if (!load_y(io, k, core, got, mh, ma, labs, cs))
       return end_io(false);
@@ -741,7 +743,6 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   }
   if (!mr.empty()) {
     const factor::stat::Span sp{sh.T, sh.A, factor::geo_of(sh.seg)};
-    factor::stat::assert_span(sp);
     factor::cpu::stat::Workspace w;
     w.ensure(sh.A, 1, 0, ex.threads());
     for (const int i : mr) {

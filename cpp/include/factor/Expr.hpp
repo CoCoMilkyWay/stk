@@ -7,7 +7,7 @@
 //     expr    := Op '(' [expr {',' expr}] {',' param} ')' | feature
 //     feature := ident {'.' [A-Za-z0-9_]+}      (限定名整串交 FeatureLookup::feat 解释, 如 档.层.列)
 //     param   := key '=' number | 'h' '=' hold | 'w' '=' '[' number {',' number} ']' | key      key := 'd' | 'k' | 'k2' | 'h' | 'w'
-//     hold    := 标签列名 token (5m / close / t1o / t2 …, stat::hold_parse)
+//     hold    := 持有期 token (5m / close / t1o / t2 …, define/Label.hpp hold_parse)
 //   d / TOD 的单位是因子层的行 (Contract【层几何】, parse 收 seg)
 //   例:  CsRank(TsMeanRoll(TsLog(bar.5m.amt_todz_5d), d=30))      TsTodMask(k=15, k2=255)      CsRank(TsMeanRoll(TsLog(lob.1m.amt), d))
 //        CsRank(CsLinRankRoll(bar.1d.mcap, bar.1d.sp_neu, bar.1d.cp_neu, d=60, k=0.1, h=t1))
@@ -157,7 +157,7 @@ inline const char *check_params(const OpInfo &o, const Param &p, int seg) {
   assert(is_seg(seg));
   if (has_d(o.t) && (p.d < 1 || p.d > kMaxD))
     return "d 须为 1..kMaxD (255 行) 的整数; 更长的窗口请降到更粗的层上做";
-  if (has_h(o.t, o.arity) && !(stat::hold_key_ok(p.h) && stat::hold_ok(p.h, geo_of(seg))))
+  if (has_h(o.t, o.arity) && !stat::hold_ok(p.h, geo_of(seg)))
     return "h 须为本层合法的持有期 (日内持有期须为本层行宽的整倍数)";
   if (has_w(o.t, o.arity))
     for (const float w : p.w)
@@ -212,7 +212,7 @@ inline void free_value(const OpInfo &o, std::string_view key, Param &p, int seg)
   }
   if (key == "h") {
     assert(has_h(o.t, o.arity));
-    p.h = stat::hold_same(1);
+    p.h = kHoldT1;
     return;
   }
   if (key == "w") {
@@ -402,7 +402,7 @@ inline void to_string_rec(const Expr &e, int i, std::string &s) {
   }
   if (declares(o.params, "h")) {
     sep(s, first);
-    s += (n.free & kFreeH) ? std::string("h") : "h=" + stat::hold_token(n.p.h);
+    s += (n.free & kFreeH) ? std::string("h") : "h=" + std::string(hold_token(n.p.h));
   }
   if (declares(o.params, "w")) {
     sep(s, first);
@@ -471,7 +471,7 @@ enum class FeatState : uint8_t { MISSING,   // 字段表里没有
                                  OK };
 struct FeatureLookup {
   std::function<FeatState(std::string_view code)> feat;
-  std::function<std::string(int hold)> label; // h 持有期的回归目标叶 code (本层做多标签列); 无 → 空串
+  std::function<std::string(HoldId hold)> label; // h 持有期的回归目标叶 code (本层做多标签列); 无 → 空串
 };
 
 // ---- 解析 ----
@@ -690,7 +690,7 @@ private:
           } else if (key == "h") {
             std::string_view tok;
             const size_t pt = (skip_ws(), i_);
-            if (!hold_tok(tok) || !stat::hold_parse(tok, p.h))
+            if (!hold_tok(tok) || !hold_parse(tok, p.h))
               return fail(pt, "h 须为持有期 token (标签列名写法: 5m / close / t1o / t1 …)");
           } else if (key == "w") { // 序列参数已收齐 (命名参数在后), n_args = 特征元数
             if (!eat('['))
@@ -759,7 +759,7 @@ private:
     if (has_h(o.t, o.arity) && !(free & kFreeH)) { // 目标叶: 末元 (前序里排在全部特征子树之后)
       std::string code = fl_.label(p.h);
       if (code.empty())
-        return fail(pos0, std::string(o.name) + ": 本层没有 h=" + stat::hold_token(p.h) + " 的做多标签列");
+        return fail(pos0, std::string(o.name) + ": 本层没有 h=" + std::string(hold_token(p.h)) + " 的做多标签列");
       Node t;
       t.feat = std::move(code);
       t.target = true;
@@ -795,7 +795,7 @@ inline bool free_hold(const Expr &e) {
   return false;
 }
 // 自由 h 落为 hold 后的规范串 (再 parse 即得带目标叶的树; 其余自由参数照留)
-inline std::string bind_hold(const Expr &e, int hold) {
+inline std::string bind_hold(const Expr &e, HoldId hold) {
   Expr x = e;
   for (Node &n : x.nodes)
     if (n.free & kFreeH) {
