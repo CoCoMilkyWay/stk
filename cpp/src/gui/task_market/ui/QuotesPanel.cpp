@@ -19,7 +19,6 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
-#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>

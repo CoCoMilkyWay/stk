@@ -2,7 +2,7 @@
 #include "gui/task_agent/tools/Kit.hpp"
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
-#include "gui/task_agent/tools/All.hpp"
+#include "gui/task_agent/tools/All.hpp" // IWYU pragma: keep (kSpecs 经 AGENT_TOOLS 展开探各结果类型的 load)
 
 #include <cassert>
 #include <numeric>

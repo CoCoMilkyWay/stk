@@ -16,8 +16,6 @@
 
 #include "gui/task_agent/Bridge.hpp"
 #include "gui/task_agent/Llm.hpp"
-#include "gui/task_agent/Notes.hpp"
-#include "gui/task_agent/Tools.hpp"
 #include "gui/task_agent/tools/Kit.hpp"
 
 #include <string>

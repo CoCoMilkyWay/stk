@@ -19,7 +19,6 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
-#include <cstdint>
 #include <future>
 #include <memory>
 #include <optional>
