@@ -73,7 +73,7 @@ void CostP::close(const Ctx &c, const RootView &v) {
   factor::stat::CostAcc acc[factor::stat::kMaxCost * factor::stat::kMaxHold] = {};
   factor::cpu::stat::cost_rows(c.ex, v.ec, s, c.L, c.L.cap, cs, C, *c.w, acc, [&](size_t j, int t, const factor::stat::CostAcc &r) {
     if (j < static_cast<size_t>(H)) // 段 0 (j = 段 · H + 持有期)
-      row_buy[j * T + static_cast<size_t>(t)] = r.book[factor::stat::kTop].buy + r.book[factor::stat::kBot].buy;
+      row_buy[j * T + static_cast<size_t>(t)] = r.book[factor::stat::kTop].vol[factor::stat::kBuy] + r.book[factor::stat::kBot].vol[factor::stat::kBuy];
   });
   for (int k = 0; k < C; ++k)
     for (int i = 0; i < H; ++i)

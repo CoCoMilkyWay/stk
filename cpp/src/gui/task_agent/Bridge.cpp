@@ -164,9 +164,9 @@ struct SpanCache {
 
 using Fails = std::map<std::string, std::string>;
 
-// fixed = Config::fixed_impact (净多空扣固定段换手成本)
+// fee = Config 费率 (净多空扣固定段换手成本 + 税佣)
 Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, const std::string &file, int hold,
-                 double fixed, const Fails &fails) {
+                 const fs::Fee &fee, const Fails &fails) {
   std::vector<Engine::FactorRow> rows;
   Engine::ScanFactorFile(dir, file, ft, rows);
   assert(!rows.empty());
@@ -210,12 +210,13 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
       x.score = fsearch::score_of(*rl);
       x.ric = h->ric.mean;
       x.lng = fs::end_period(*h, fs::kTop), x.sht = -fs::end_period(*h, fs::kBot);
-      x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, fixed), x.cost = x.gross - x.net;
+      x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, fee), x.cost = x.gross - x.net;
       x.turn = fs::turn_annual(*h, c);
       assert(h->n_all > 0 && "有滚动窗须有统计行");
       const double n = static_cast<double>(h->n_all);
-      x.buy = 0.5 * (c.book[fs::kTop].buy + c.book[fs::kBot].buy) / n, x.sell = 0.5 * (c.book[fs::kTop].sell + c.book[fs::kBot].sell) / n;
-      x.impact = fixed;
+      const auto vol = [&](int s) { return 0.5 * (c.book[fs::kTop].vol[s] + c.book[fs::kBot].vol[s]) / n; };
+      x.buy = vol(fs::kBuy), x.sell = vol(fs::kSell);
+      x.impact = fee.fixed;
       double mid = 0.0;
       for (const float g : h->grp)
         mid += g / static_cast<double>(fs::kGroups);
@@ -242,11 +243,11 @@ void sort_results(std::vector<Result> &v) {
   });
 }
 
-std::vector<Result> scan(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, int hold, double fixed,
+std::vector<Result> scan(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, int hold, const fs::Fee &fee,
                          const Fails &fails) {
   std::vector<Result> out;
   for (const std::string &file : dir.files())
-    out.push_back(result_of(ft, spans, open, dir, file, hold, fixed, fails));
+    out.push_back(result_of(ft, spans, open, dir, file, hold, fee, fails));
   sort_results(out);
   return out;
 }
@@ -447,7 +448,7 @@ struct Desk::Impl {
   std::shared_ptr<const ViewEnv> env_cache;
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
-  double fixed() const { return data->config.fixed_impact; }
+  fs::Fee fee() const { return Engine::fee_of(data->config); }
 
   Engine::FactorScope factor_scope(bool gpu) const {
     Engine::FactorScope fsc;
@@ -501,14 +502,14 @@ struct Desk::Impl {
   }
 
   void rescan_all() {
-    results = scan(*ft(), *spans, open, dir, sc.hold, fixed(), fails);
+    results = scan(*ft(), *spans, open, dir, sc.hold, fee(), fails);
     for (Result &r : results)
       attach_extras(r);
     env_cache.reset();
   }
 
   void rescan_one(const std::string &file) {
-    Result got = result_of(*ft(), *spans, open, dir, file, sc.hold, fixed(), fails);
+    Result got = result_of(*ft(), *spans, open, dir, file, sc.hold, fee(), fails);
     attach_extras(got);
     const auto it = std::find_if(results.begin(), results.end(), [&](const Result &x) { return x.file == file; });
     if (it != results.end())
@@ -631,7 +632,7 @@ void Desk::bind(const SharedData &data, const Scope &sc, bool test) {
       c.ops.push_back(x);
     c.all_ops.push_back(std::move(x));
   }
-  c.library = scan(*ft, *impl_->spans, impl_->open, Engine::factor_dir_of(sc.pool, level_id(sc.level)), sc.hold, impl_->fixed(), {});
+  c.library = scan(*ft, *impl_->spans, impl_->open, Engine::factor_dir_of(sc.pool, level_id(sc.level)), sc.hold, impl_->fee(), {});
   impl_->rescan_all();
 }
 
@@ -717,7 +718,7 @@ Adopted Desk::adopt(std::string name, const Gate &g, bool dry) {
   if (std::filesystem::exists(dst))
     return {std::move(name), "正式因子库已有同名文件 `" + r->file + "`"};
   disk::write(formal.file, formal.of(r->file), disk::read(impl_->dir.file, impl_->dir.of(r->file)));
-  impl_->context.library = scan(*impl_->ft(), *impl_->spans, impl_->open, formal, impl_->sc.hold, impl_->fixed(), {});
+  impl_->context.library = scan(*impl_->ft(), *impl_->spans, impl_->open, formal, impl_->sc.hold, impl_->fee(), {});
   return {std::move(name), {}};
 }
 

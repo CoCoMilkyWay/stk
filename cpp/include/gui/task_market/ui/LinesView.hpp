@@ -1,5 +1,5 @@
 // Market 行情页 (NAV / VAL / MARGIN / FLOW / CTA) 的派生层 (GUI 线程, 只算不画): PortfolioService 的账 + 价格库的历史 + 当日 → 三级缓存, TabLines 只读末级画
-//   派生 LinesDerived (结果 / 内容 / fixed_impact / 成分组 / 价格库发布变) → 旁支当日尾 LinesLive (当日变) + 二级两份: 滚动分位 LinesRolls (VAL / MARGIN 标的 / 窗长变)
+//   派生 LinesDerived (结果 / 内容 / 费率 / 成分组 / 价格库发布变) → 旁支当日尾 LinesLive (当日变) + 二级两份: 滚动分位 LinesRolls (VAL / MARGIN 标的 / 窗长变)
 //   + 末点分位 LinesPct (窗长 / 区间末 / 估值行变; 不随区间起点) → 区间视图 LinesView (区间 / 当日尾变)
 //   各级一个入口 MakeLines{Derived, Live, Roll, Pct, View}; 各级的键 = 它读的东西 (上级的部分以 gen 代表; gui/util/Stage.hpp): 来源变 → 本级重算
 //   行只一种 LinesRow (篮子 / 因子 / 策略 / 成分股 / 账户): 两条线 + 可选的行情键 (近况 / 当日 / 资金流 / 日内叠加) + 可选的估值腿 (估值分位 / band);
@@ -100,7 +100,7 @@ inline const float *leg_val(const LinesLeg &lg, int m) { return lg.b->val_of(lg.
 struct LineSrc {
   std::vector<LinesLeg> legs;
   bool cost = false;
-  double impact = 0.0; // fixed_impact (cost 才有)
+  factor::stat::Fee impact; // 费率 (cost 才有)
   const Quote::Series *price = nullptr;
   const Quote::Series *minutes = nullptr; // minutes->minute
   bool operator==(const LineSrc &) const = default;
@@ -201,7 +201,7 @@ struct LinesPaintKey {
   bool operator==(const LinesPaintKey &) const = default;
 };
 
-// 一级: 派生 (结果 / 内容 / fixed_impact / 成分组 / 价格库发布变才重算): 全段. 各线按线源沿用上一份 (LineSrc), 色按配色来源沿用 (LinesPaintKey)
+// 一级: 派生 (结果 / 内容 / 费率 / 成分组 / 价格库发布变才重算): 全段. 各线按线源沿用上一份 (LineSrc), 色按配色来源沿用 (LinesPaintKey)
 struct LinesDerived {
   std::vector<misc::Ymd> dates;                                  // 日并集轴 (横轴 day 下标) = 各账日 ∪ 日脊 ∪ 当日 (live; 接得上日脊才并)
   std::vector<LinesRow> rows[kRowGroups];                        // [RowGroup][行]:
@@ -345,7 +345,7 @@ struct LinesDerKey {
   uint64_t gen = 0, items = 0;                  // PortfolioService::result_gen / PortfolioUIState::items_gen
   std::shared_ptr<const Quote::PriceView> view; // 价格库在用的发布
   misc::Ymd live = 0;                           // 当日 (接得上日脊才有)
-  double impact = 0.0;                          // fixed_impact
+  factor::stat::Fee impact;                     // 费率 (冲击 + 税佣)
   size_t infos = 0;                             // 基本面档案数 (成分行名 / 悬停; 首次载入)
   std::string open;                             // 展开行 (篮子 / 账户)
   std::vector<uint32_t> stocks;                 // 选中的个股 (升序)
@@ -384,7 +384,7 @@ struct LinesViewKey {
 // open / stocks = 展开行 (篮子 / 账户) / 选中的个股 (成分组); watch = 自选键 (自选组; 其中的个股也进成分组); account / hold = 账户行的悬停 / 持仓;
 // d = 上一份 (按线源沿用) → 本份
 void MakeLinesDerived(const std::vector<PortfolioItem> &items, const std::string &name, const PortfolioResult &res,
-                      const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, double fixed_impact, const std::string &open,
+                      const std::shared_ptr<const Quote::PriceView> &view, misc::Ymd live, const factor::stat::Fee &fee, const std::string &open,
                       const std::vector<uint32_t> &stocks, const std::vector<std::string> &watch, const std::string &account,
                       const std::shared_ptr<const Quote::Holdings> &hold, const StockInfos &infos, LinesDerived &d);
 // 行 id → 行情键 (同 LinesRow::ref): 篮子 = 篮子表里同 id 的, 个股 = id 里的全局 id, 账户 = 账户 0; 因子 / 策略 / 找不到 → 无

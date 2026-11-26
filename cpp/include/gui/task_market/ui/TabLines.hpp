@@ -34,11 +34,11 @@
 //     线格 = 色块 + 区间年化, 点色块单独隐 / 显一条, 点名 / 列头开关整行 / 整列; 悬停一行 = 同图上悬停的联动, 名格看名
 //     组合策略线 (有冲击 / 无冲击两条) = 各因子独立回测 (PortfolioService 的账 PortfolioBook,
 //     各自的层, 净值引擎 fold_book: 每行开 1/h̄ 一批 (全日平均满仓), 收益在平仓行实现; 可成交 / 顺延在标签里) 的逐行增量等权聚合: 每个交易日在当日有数据的 n 个因子间等分 (按实现日),
-//     因子增量 = 毛收益 − 建仓冲击 − 固定冲击份数 · fixed_impact (占净值), 记在行末 (收益 = 平仓行, 成本 = 建仓行;
+//     因子增量 = 毛收益 − 建仓冲击 − 固定冲击份数 · 固定冲击 − 两侧量 · 税佣 (占净值), 记在行末 (收益 = 平仓行, 成本 = 建仓行;
 //       已实现口径, 与池指数对齐); 净值 = 同一格 (日, 行末槽) 内各因子的增量 (同因子格内先复利) 按份额加和, 逐格复利连乘.
 //       单因子线 / 篮子可成交线同式 (一腿) ⇒ 单因子线 ≡ 只含它的组合.
 //       只算 G20 多头 (无冲击 = 不扣). 成本按 Δw (Stat 契约【换手成本】), 冲击段 = 各因子自己的主段, 不可选:
-//       用了 lob.* 叶 = 增仓 × 最小金额段建仓冲击 + 平仓量 × Config::fixed_impact; 否则固定段, 增仓量 / 平仓量都按 fixed_impact;
+//       用了 lob.* 叶 = 两侧量 × 最小金额段的买 / 卖冲击; 否则固定段, 两侧量都按 Config::fixed_impact; 另加两侧佣金 + 卖出印花;
 //       年换手 = 自首次建仓起的单边 (倍/年: Σ 增仓量 / 其后交易日数 × 每年交易日; 组合 = 各因子增仓量按当日份额加权, 不计因子间对冲)
 //     篮子线 (指数 / 行业 / 概念) = 篮子表三段 (shared/Basket.hpp BasketTable: 各子池 (全A.等 / 全A.加 起头), 按池参数的权重
 //       / SW2021 一级, 总市值加权 / 东财题材概念 (全A 内切, 成分按最近一份快照倒推全史), 总市值加权):
@@ -276,7 +276,7 @@ void SyncLinesWatch(LinesState &ui);
 // 本页要的个股全历史 / 分钟价登记给它); infos = 基本面档案 (成分行名 / 估值); cta = CTA 页的服务 (算 mk 价格库发布的分钟价, mk 空时同空);
 // account / hold = 账户行的悬停 / 持仓 (成分 + 当日四列; 账户的全史 / 当日走 mk); trades = 账户成交点两档 (「交易」开时叠在日内栏 / 主图的账户线上).
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
-int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
+int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, const factor::stat::Fee &fee,
                    const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
                    const std::shared_ptr<const Quote::Holdings> &hold, const Quote::TradeBins &trades);
 

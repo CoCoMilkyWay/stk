@@ -40,6 +40,7 @@ using factor::stat::kMaxA;
 using factor::stat::kNoKey;
 using factor::stat::kRankNone;
 using factor::stat::kShort;
+using factor::stat::kSides;
 using factor::stat::kSums;
 using factor::stat::Label;
 using factor::stat::Row;
@@ -150,8 +151,8 @@ struct CostHold {
 
 // 换手成本: ec = 本行端码 (块形平面偏到行首, 交接链回看前行); ch[i] = 持有期 i 的输入; c[k] 已偏到行首; cap = 一端满仓 → acc[k·H + i].
 //   端成员 = 端码 ∧ m ∧ 真持有 (契约 held, 与 Row 的端组同一集合); 两批各端只数 → 每只权 1 / max(只数, cap);
-//   逐格 Δ = 本批权 − 前一批权: Δ⁺ 增仓 (付买入冲击; 本格不可买 (续持者封板) → 加不了仓, 记 0), Δ⁻ 减仓.
-//   固定段 (c[k].flat()) 无买入冲击, 增仓量记进固定量 (契约【换手成本】)
+//   逐格 Δ = 本批权 − 前一批权: Δ⁺ 增仓 (本格不可买 (续持者封板) → 加不了仓, 记 0), Δ⁻ 减仓; 不交接的批建仓时一并记整批平仓 (settle).
+//   每侧量 × 本格该侧冲击 (盘口段) 或记进固定量 (固定段) (契约【换手成本】); 税佣在 finish 端按 Fee 乘量
 inline void cost_row(const uint8_t *ec, const CostHold *ch, int H, const Cost *c, int C, int A, double cap, CostAcc *acc) {
   assert(C >= 1 && C <= factor::stat::kMaxCost);
   for (int i = 0; i < H; ++i) {
@@ -185,7 +186,7 @@ inline void cost_row(const uint8_t *ec, const CostHold *ch, int H, const Cost *c
       w[e] = 1.0 / factor::stat::book_den(n[e], cap);
       pw[e] = 1.0 / factor::stat::book_den(pn[e], cap);
     }
-    double imp[factor::stat::kMaxCost][kEnds] = {}, buy[kEnds] = {}, sell[kEnds] = {};
+    double imp[factor::stat::kMaxCost][kEnds][kSides] = {}, vol[kEnds][kSides] = {};
     for (int a = 0; a < A; ++a) {
       const int x = en[a], px = pen[a];
       if (x < 0 && px < 0)
@@ -194,13 +195,15 @@ inline void cost_row(const uint8_t *ec, const CostHold *ch, int H, const Cost *c
         double d = (x == e ? w[e] : 0.0) - (px == e ? pw[e] : 0.0);
         if (d > 0.0 && !(q.eo[a] & factor::stat::kEoBuy))
           d = 0.0;
-        if (d > 0.0) {
-          buy[e] += d;
+        // 本格两侧成交量: 买 = Δ⁺; 卖 = Δ⁻ + 本批整批平仓 (不交接时建仓即记)
+        const double v[kSides] = {d > 0.0 ? d : 0.0, (d < 0.0 ? -d : 0.0) + (q.settle && x == e ? w[e] : 0.0)};
+        for (int s = 0; s < kSides; ++s) {
+          if (v[s] == 0.0)
+            continue;
+          vol[e][s] += v[s];
           for (int k = 0; k < C; ++k)
             if (!c[k].flat())
-              imp[k][e] += d * static_cast<double>(std::min(h2f(c[k].imp[a]), c[k].top));
-        } else {
-          sell[e] -= d;
+              imp[k][e][s] += v[s] * static_cast<double>(std::min(h2f(c[k].imp[s][a]), c[k].top));
         }
       }
     }
@@ -209,9 +212,12 @@ inline void cost_row(const uint8_t *ec, const CostHold *ch, int H, const Cost *c
       ++o.rows;
       for (int e = 0; e < kEnds; ++e) {
         CostBook &b = o.book[e];
-        const double we = n[e] * w[e], out = sell[e] + (q.settle ? we : 0.0);
-        b.imp += imp[k][e], b.buy += buy[e], b.sell += out, b.fix += out + (c[k].flat() ? buy[e] : 0.0);
-        b.w += we, b.n += n[e];
+        for (int s = 0; s < kSides; ++s) {
+          b.vol[s] += vol[e][s];
+          b.imp[s] += imp[k][e][s];
+          b.fix[s] += c[k].flat() ? vol[e][s] : 0.0;
+        }
+        b.w += n[e] * w[e], b.n += n[e];
       }
     }
   }

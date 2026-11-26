@@ -28,7 +28,7 @@ namespace {
 // ---- 头: [folio: 组合 / 成本] [log] Recompute / Cancel / 状态 / Clear (选择与图回默认) / 页说明 + [folio: 失效 / 失败条目原因].
 //      返回 1 = Recompute, -1 = Cancel, 0 = 无 ----
 int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState &ui, const LinesDerived &d, const PortfolioResult &res, const std::string &message,
-         double fixed_impact) {
+         const factor::stat::Fee &fee) {
   const PageDef &pd = kPageDefs[page];
   int action = 0;
   if (pd.folio) {
@@ -62,10 +62,11 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState
       tip("换手成本 = 各因子自己的最小冲击段, 不可选\n"
           "• 每行开 1/h̄ 净值一批 (h̄ = 平均持有行数, 全日平均满仓), 换手按 Δw: 上一批平仓与本批建仓同一价格点时只交接差额 (留仓不成交);\n"
           "  新进成交不了不建仓、续持者封板照持也加不了仓, 平仓成交不了的顺延\n"
-          "• 用了 lob.* 叶: 增仓 × 最小金额段冲击 (封顶 max_impact) + 平仓量 × 固定冲击 %.1f bp\n"
+          "• 用了 lob.* 叶: 增仓 / 平仓量 × 最小金额段的买 / 卖冲击 (封顶 max_impact; 盘口缺按封顶), 固定冲击 %.1f bp 不用\n"
           "• 否则固定段: 增仓量 / 平仓量都按固定冲击 %.1f bp\n"
+          "• 另扣税佣: 两侧佣金 %.1f bp, 卖出印花税 %.1f bp\n"
           "• 组合只算 G20 多头; 无冲击线不扣",
-          fixed_impact * 1e4, fixed_impact * 1e4);
+          fee.fixed * 1e4, fee.fixed * 1e4, fee.commission * 1e4, fee.stamp * 1e4);
     ImGui::SameLine();
   }
   if (pd.log) {
@@ -191,7 +192,7 @@ void SyncLinesWatch(LinesState &ui) {
         ui.cat[p] = kGroupWatch;
 }
 
-int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, double fixed_impact,
+int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, const factor::stat::Fee &fee,
                    const cta::Rates &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
                    const std::shared_ptr<const Quote::Holdings> &hold, const Quote::TradeBins &trades) {
   assert(page >= 0 && page < kPages);
@@ -233,10 +234,10 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
   const std::shared_ptr<const Quote::PriceView> view = mk ? mk->view : nullptr;
   const std::shared_ptr<const Quote::Live> live = mk ? mk->live : nullptr;
   const misc::Ymd today = mk ? mk->joint(Quote::kBasket).today() : 0;
-  ui.der.update(LinesDerKey{gen, pf.items_gen, view, today, fixed_impact, infos.size(), ui.pick.open, stocks, ui.watch, account, hold},
+  ui.der.update(LinesDerKey{gen, pf.items_gen, view, today, fee, infos.size(), ui.pick.open, stocks, ui.watch, account, hold},
                 [&](LinesDerived &dv) {
                   const std::vector<misc::Ymd> old = dv.dates;
-                  MakeLinesDerived(pf.items, pf.name, res, view, today, fixed_impact, ui.pick.open, stocks, ui.watch, account, hold, infos, dv);
+                  MakeLinesDerived(pf.items, pf.name, res, view, today, fee, ui.pick.open, stocks, ui.watch, account, hold, infos, dv);
                   if (dv.dates != old) // 日轴变 → 各页区间回默认
                     for (int p = 0; p < kPages; ++p)
                       ui.range[p] = DefaultLinesRange(p, dv.dates);
@@ -251,7 +252,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
   ui.view.update(LinesViewKey{ui.der.gen, ui.live.gen, ui.roll.gen, ui.pct.gen, pin, rg.d0, rg.d1, ui.flip},
                  [&](LinesView &vw) { MakeLinesView(d, ui.live.val, rg.d0, rg.d1, pin, ui.roll.val, ui.pct.val, ui.flip, vw); });
 
-  const int action = head(page, svc, pf, ui, d, res, message, fixed_impact);
+  const int action = head(page, svc, pf, ui, d, res, message, fee);
 
   // ---- 布局 (PageLayout): 左 = [日内栏 (开日内, 切 1/3 高)] / 主图 (NAV ↔ VAL / MARGIN) / 区间条 自上而下 | 只一张叠加图 | CTA 两图 + 区间条 + 中栏;
   //      最右 = 右图例 (各页同宽 sheet_width; CTA = 中栏与右表各半) ----

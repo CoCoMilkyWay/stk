@@ -109,7 +109,7 @@ struct Weight {
   double ric = 0.0;              // rIC (评估期 ok 行均值)
   double lng = 0.0, sht = 0.0;   // 每期毛多 / 毛空 (超额; 做多端 G20 / 做空端 −G1; 毛多空 = 两者之半)
   double gross = 0.0, net = 0.0; // 每期毛 / 净多空 (净 = 扣固定冲击的换手成本)
-  double cost = 0.0;             // 每期成本 (= 毛多空 − 净多空 = (buy + sell) × impact)
+  double cost = 0.0;             // 每期成本 (= 毛多空 − 净多空 = 两侧量 × 费率 (冲击 + 税佣))
   double buy = 0.0, sell = 0.0;  // 每期单边换手: 增仓量 / 平仓量 ÷ 一批资金 (两端均; 不交接的批整开整平 = 1 / 1)
   double impact = 0.0;           // 固定冲击 (Config::fixed_impact)
   double turn = 0.0;             // 年换手 (倍, 两端单边均) = buy × 每年满仓轮数

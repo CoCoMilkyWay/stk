@@ -184,13 +184,14 @@ struct YPlanes {
   const LegPlane *labels[factor::stat::kMaxHold] = {};
   const uint16_t *ry[factor::stat::kMaxHold] = {};
   Amts ad;
-  const uint16_t *costs[factor::stat::kMaxCost] = {};
+  const uint16_t *costs[factor::stat::kMaxCost] = {}; // 盘口段: [kSides][n] 两侧冲击平面首尾相接 (买 [0, n), 卖 [n, 2n)); 固定段 nullptr
   float max_impact = 0.f;
   double n_full = 0.0;
 };
 inline int fill_costs(const YPlanes &y, factor::stat::Cost (&out)[factor::stat::kMaxCost]) {
+  const size_t n = y.sh.n();
   for (int k = 0; k < y.ad.n; ++k)
-    out[k] = y.costs[k] ? factor::stat::Cost{y.costs[k], y.max_impact} : factor::stat::Cost{};
+    out[k] = y.costs[k] ? factor::stat::Cost{{y.costs[k], y.costs[k] + n}, y.max_impact} : factor::stat::Cost{};
   return y.ad.n;
 }
 factor::stat::Labels labels_of(const YPlanes &y);

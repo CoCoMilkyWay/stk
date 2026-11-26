@@ -390,7 +390,7 @@ double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx) {
   int books = 0;
   for (int c = 0; c < s.y.ad.n; ++c)
     books += !leg_of(ft.y.costs, s.y.ad.k[c]).flat();
-  return kCellBytes<Leaf> * static_cast<double>(nx) + kCellBytes<YCore> + kCellBytes<LegPlane> * s.y.hd.n + kCellBytes<U16> * books;
+  return kCellBytes<Leaf> * static_cast<double>(nx) + kCellBytes<YCore> + kCellBytes<LegPlane> * s.y.hd.n + kCellBytes<U16> * factor::stat::kSides * books;
 }
 
 bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vector<Leaf> &out) {
@@ -447,10 +447,11 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
     for (const Col &c : leg_of(ft.y.labels, hd.k[i]).leg)
       cols.add(c);
   }
-  for (size_t c = 0; c < C; ++c) {
+  for (size_t c = 0; c < C; ++c) { // 两侧冲击列相邻 (cost_at[c] + side)
     const LegCol &lc = leg_of(ft.y.costs, ad.k[c]);
-    assert(!lc.flat() && io.dm.uses(lc.leg[factor::stat::kLong]) && "只装盘口段, 要评估域含 Lob 库 (y_spec)");
-    cost_at[c] = cols.add(lc.leg[factor::stat::kLong]);
+    assert(!lc.flat() && io.dm.uses(lc.leg[factor::stat::kBuy]) && "只装盘口段, 要评估域含 Lob 库 (y_spec)");
+    cost_at[c] = cols.add(lc.leg[factor::stat::kBuy]);
+    cols.add(lc.leg[factor::stat::kSell]);
   }
 
   if (!have) {
@@ -466,7 +467,7 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
       v.assign(n, 0);
     p.m.assign(n, 0);
   }
-  costs.assign(C, std::vector<uint16_t>(n, 0));
+  costs.assign(C, std::vector<uint16_t>(factor::stat::kSides * n, 0)); // [side][n]
   constexpr uint16_t kInf = 0x7C00;
   std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(io.ex.threads()), std::vector<uint8_t>(A));
   std::vector<long long> on(static_cast<size_t>(io.ex.threads()), 0);
@@ -491,16 +492,17 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
         for (size_t a = 0; a < A; ++a)
           leg_cell(w, a, g.gate[row + a], g.eo[row + a], labels[i], row + a);
       }
-      for (size_t c = 0; c < C; ++c) {
-        const View w = view(cost_at[c], t);
-        std::vector<uint16_t> &p = costs[c];
-        for (size_t a = 0; a < A; ++a) {
-          feature_storage_t x = {};
-          const bool fin = cell(w, a, x) && fmeta::finite(x);
-          p[row + a] = !g.gate[row + a] ? 0 : fin ? std::bit_cast<uint16_t>(x)
-                                                  : kInf;
+      for (size_t c = 0; c < C; ++c)
+        for (size_t s = 0; s < static_cast<size_t>(factor::stat::kSides); ++s) {
+          const View w = view(cost_at[c] + s, t);
+          uint16_t *p = costs[c].data() + s * n;
+          for (size_t a = 0; a < A; ++a) {
+            feature_storage_t x = {};
+            const bool fin = cell(w, a, x) && fmeta::finite(x);
+            p[row + a] = !g.gate[row + a] ? 0 : fin ? std::bit_cast<uint16_t>(x)
+                                                    : kInf;
+          }
         }
-      }
     }
   });
   if (!read)
@@ -707,7 +709,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
     if (!hit<Leaf>(c, key('x', id), set_leaf(id)))
       mx.push_back(id);
 
-  const double need = n * ((core ? 0.0 : kCellBytes<YCore>)+kCellBytes<LegPlane> * mh.n + kCellBytes<U16> * static_cast<double>(ma.n + mr.size()) +
+  const double need = n * ((core ? 0.0 : kCellBytes<YCore>)+kCellBytes<LegPlane> * mh.n + kCellBytes<U16> * static_cast<double>(factor::stat::kSides * ma.n + mr.size()) +
                            kCellBytes<Leaf> * static_cast<double>(mx.size()));
   room(need, reserve);
   c.fresh = need > 0.0;
@@ -728,7 +730,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
     for (int j = 0; j < mh.n; ++j)
       land(c, key('h', mh.k[j]), std::move(labs[static_cast<size_t>(j)]), n, set_hold(mh_at[static_cast<size_t>(j)]));
     for (int j = 0; j < ma.n; ++j)
-      land(c, key('a', ma.k[j]), std::move(cs[static_cast<size_t>(j)]), n, set_amt(ma_at[static_cast<size_t>(j)]));
+      land(c, key('a', ma.k[j]), std::move(cs[static_cast<size_t>(j)]), factor::stat::kSides * n, set_amt(ma_at[static_cast<size_t>(j)]));
   }
   if (!mx.empty()) {
     std::vector<Leaf> xs;

@@ -63,15 +63,16 @@ void compound(const R *r, size_t n, Put &&put) {
   }
 }
 
-// 统一账列: 收益 / 买入冲击 / 固定冲击份数 / 增仓量
+// 统一账列: 收益 / 真实冲击 (两侧 Σ 量·冲击) / 固定冲击份数 (两侧) / 增仓量 / 平仓量 (税佣按两侧量现乘, Stat Fee)
 enum BookCol : int { kBookRet,
                      kBookImp,
                      kBookFix,
-                     kBookBuy };
-inline constexpr int kBookCols = 4;
+                     kBookBuy,
+                     kBookSell };
+inline constexpr int kBookCols = 5;
 
 // 账核 (因子 / 篮子 kBasket / 个股 kStock 完全同形; 无该列的 BookLines n = 0):
-//   因子: col[Ret / Imp / Fix / Buy] 齐, val / cap / bal 空
+//   因子: col[Ret / Imp / Fix / Buy / Sell] 齐, val / cap / bal 空
 //   篮子: col[Ret] = 可成交指数 fold_book; col[Buy] = Sleeve::roll 增仓量; val = 持仓按权平均的七口 (EP / BP / SP / CP / DY / RZ / RQ);
 //         alt = 同成员按另一种权重平均的七口 (篮子加权 → 等权 = 个股均值; 等权 → 加权 = 按市值; Market VAL / MARGIN 逐行切);
 //         cap = 持仓成员 Σ总市值, bal[两融口] = 持仓成员 Σ余额 [亿元] (不看权重)

@@ -25,6 +25,7 @@
 #include <vector>
 
 struct SharedData;
+struct Config;
 
 namespace GUI::Engine {
 
@@ -101,6 +102,7 @@ struct HoldPoints {
 HoldPoints hold_points(int hold, FactorLevelId lv);
 std::string hold_desc(int hold, FactorLevelId lv);     // "开仓: C(层) @ 价, 清仓: 点 @ 价"
 std::vector<std::string> row_clocks(FactorLevelId lv); // [seg] 各行的行末时刻 HH:MM (日层 = 15:00)
+factor::stat::Fee fee_of(const Config &c);             // 换手成本费率 = Config 固定冲击 / 佣金 / 印花税 (Stat 契约【换手成本】)
 // 因子目录: 一组因子文件 <名>.json (file 节点, 键定到目录) + 各自的 Search 日志 <名>.log (log 节点, 同键, 在 run/ 下同构位置).
 //   正式 = output/factors/<池>/<层>/; Agent 候选 = 会话作用域的 factors/ (gui/task_agent/Bridge.cpp)
 struct FactorDir {
@@ -254,8 +256,8 @@ struct StatScope {
   double n_full = 0.0;     // 满仓一组只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
 };
 // 一个金额段的换手成本 = Stat 契约【换手成本】的 CostAcc, 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp cost_rows):
-// 两端按 Δw 扣: 盘口段 = 增仓 Δw⁺ 付买入冲击, 平仓量付 fixed_impact; 固定段 = 两者都付 fixed_impact (同一价点交接只算差额); 均摊成本 cost(端) 随 h 变.
-// 买入冲击按 Config::max_impact 封顶后进 (装载时; 盘口缺 = 封顶).
+// 两端按 Δw 扣: 盘口段 = 两侧量付真实买 / 卖冲击; 固定段 = 两侧量都付固定冲击; 税佣两侧另按 Fee (同一价点交接只算差额); 均摊成本 cost(端, Fee) 随 h 变.
+// 两侧冲击按 Config::max_impact 封顶后进 (装载时; 盘口缺 = 封顶).
 // Run 每因子每金额段都攒 (落 stat.costs), 年换手取段 0 (各段同一份 Δw), Inspect 期限结构净线从它算
 struct CostTier {
   int amt = 0;                                            // 万 (= FeatureTable::y.costs[c].key; kAmtFixed = 固定段)

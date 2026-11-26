@@ -7,8 +7,8 @@
 //     cost_buy = VWAP^A(a)/mid − 1,  cost_sell = 1 − VWAP^B(a)/mid.
 //     建仓盘口 = 锚点 (分钟 m 末) + LABEL_DELAY_SECONDS 的可成交盘口 (精确到秒的下单时刻); 行 m 的特征在分钟 m 末才可知, 锚到 m 起始秒会前视一分钟.
 //     收益标签 (Bar 档) 的 entry 是次个有成交分钟的 VWAP, 不含冲击; 消费端 (Run / Inspect / Portfolio) 在毛超额二级上按组池化扣:
-//     组均 lv − 组均 cost_buy(a) − fixed_impact (做空腿 cost_sell); 不进标签再算超额 —— 超额对每 t 去均值, 成本进标签只剩截面相对项, 扣不出绝对成本.
-//     平仓侧冲击 = 固定冲击 Config::fixed_impact (模拟值, 不按金额变). 税佣 (Config::commission / stamp) 同理事后扣.
+//     组均 lv − 组均 (cost_buy(a) 建仓 + cost_sell(a) 平仓) − 税佣; 不进标签再算超额 —— 超额对每 t 去均值, 成本进标签只剩截面相对项, 扣不出绝对成本.
+//     平仓侧冲击 = cost_sell (做多卖出吃 bid); 税佣 (Config::commission / stamp) 消费端按两侧量扣 (Stat Fee).
 //   盘口价点 = 连续竞价时段的盘口 (订单簿 market_state). 集合竞价期 (09:15-09:25 / 14:57-15:00) 的簿只是堆单,
 //     可交叉 (买一 ≥ 卖一) 且撮合前一股不成交, 拿它定冲击 = 假价格, 一律不入环.
 //   锚点在非交易空窗 (09:25 撮合后到 09:30 开盘) / 稀疏盘口 → 顺延到之后首个入环簿 = 最早能下单的时刻 (见 get_snapshot_tradable)

@@ -137,6 +137,8 @@ std::string hold_desc(int hold, FactorLevelId lv) {
   return "开仓: " + p.open.at + " @ " + p.open.px + ", 清仓: " + p.close.at + " @ " + p.close.px;
 }
 
+factor::stat::Fee fee_of(const Config &c) { return {c.fixed_impact, c.commission, c.stamp}; }
+
 std::vector<std::string> row_clocks(FactorLevelId lv) {
   const FactorLevel &l = factor_level(lv);
   std::vector<std::string> out;

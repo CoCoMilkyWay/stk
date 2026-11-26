@@ -182,7 +182,7 @@ struct BookP : LinesP<kBookCols> {
     assert(p.ad.n == 1 && "账: 一个金额段");
     LinesP::init(p);
     for (int hi = 0; hi < p.hd.n; ++hi)
-      for (const int k : {kBookImp, kBookFix, kBookBuy})
+      for (const int k : {kBookImp, kBookFix, kBookBuy, kBookSell})
         x.at_exit[static_cast<size_t>(hi * kBookCols + k)] = 0;
   }
   void open(const Ctx &c) {
@@ -199,9 +199,10 @@ struct BookP : LinesP<kBookCols> {
     factor::stat::CostAcc acc[factor::stat::kMaxHold];
     factor::cpu::stat::cost_rows(c.ex, v.ec, c.s(), c.L, cap, cs, 1, *c.w, acc, [&](size_t hi, int t, const factor::stat::CostAcc &r) {
       const factor::stat::CostBook &cl = r.book[factor::stat::kTop];
-      at(static_cast<int>(hi), kBookImp, t) = static_cast<float>(cl.imp);
-      at(static_cast<int>(hi), kBookFix, t) = static_cast<float>(cl.fix);
-      at(static_cast<int>(hi), kBookBuy, t) = static_cast<float>(cl.buy);
+      at(static_cast<int>(hi), kBookImp, t) = static_cast<float>(cl.imp[factor::stat::kBuy] + cl.imp[factor::stat::kSell]);
+      at(static_cast<int>(hi), kBookFix, t) = static_cast<float>(cl.fix[factor::stat::kBuy] + cl.fix[factor::stat::kSell]);
+      at(static_cast<int>(hi), kBookBuy, t) = static_cast<float>(cl.vol[factor::stat::kBuy]);
+      at(static_cast<int>(hi), kBookSell, t) = static_cast<float>(cl.vol[factor::stat::kSell]);
     });
   }
 };

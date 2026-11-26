@@ -73,6 +73,8 @@
 //     会把封涨停的续持者整格踢出, 系统性漏掉涨停收益 (过罚). 换手成本同一份 held (【换手成本】).
 //
 //   【持有期键 hold】int, 与 features 层 LabelHold 的列名同源 (lb_<side>_<name>); 键的单位是**分钟**, 与因子所在层无关.
+//     两族 (hold_offset): 偏移型 = 分钟型 / T+N 同刻, 平仓价点 = 行 t + h 的建仓价点 ⇒ 两批恒交接 (分钟型另不跨日: 尾部屏蔽);
+//       锚点型 = close / T+N 开盘, 平仓在固定时点 ⇒ 从不交接. 交接 / 平仓行 / 标签可知行只按族分两支.
 //     层上合法 (hold_ok): 分钟型 n 是行长 N 的整数倍且首行 minute(0) + n ≤ kLastAnchorRow (尾部不吞整段); close 要求 S > 1
 //       (日层的行就在收盘, 即建即平); 日级型各层皆可.
 //     独立样本口径的行数 h = hold_rows(hold, geo) (lag / 交接 / 重叠折算 / Sharpe 与换手的年化): 分钟型 = n / N; close 与 T+1O = S
@@ -106,8 +108,8 @@
 //     | 仓位       | 每行一批, 资金 1/h̄, 批内每只 1 / max(只数, cap) (【持仓口径】); 仓位 = 在持各批之和, 全日平均恰为 1       | Stat / 净值   |
 //     |            |   (盘中在 1 上下摆; 组内不足 cap / 封板新进 → 少于 1); 不显示, 只给年化 / 净值定满仓口径                  |               |
 //     | 换手       | Δw 逐格 (微调照计); 只在行 t 建仓与行 t−h 平仓同一价点时交接 (hold_nets: 只交易差额), 否则整建整平        | 【换手成本】  |
-//     | 成本       | 盘口段 (Lob 库): 增仓 Δw⁺ × 买入冲击 (封顶 max_impact) + 平仓量 × fixed_impact; 固定段 (恒有):           | 【换手成本】  |
-//     |            |   增仓量 + 平仓量 × fixed_impact; 各层同一套 CostAcc, 只在扣净线时扣, 标签恒毛                            |               |
+//     | 成本       | 两侧逐格费率: 买 = 佣金 + 冲击, 卖 = 佣金 + 印花 + 冲击 (Fee); 冲击: 盘口段 (Lob 库) = 真实买 / 卖冲击   | 【换手成本】  |
+//     |            |   (封顶 max_impact), 固定段 (恒有) = fixed_impact; 各层同一套 CostAcc, 只在扣净线时扣, 标签恒毛          |               |
 //     | 净值       | 行 t 的批收益在 hold_exit_row 实现 (顺延不改实现行) × 1/h̄, 日内求和, 跨日复利; 显示的 LS / SR 取 HoldStat | 【二级】净值  |
 //     | 复权       | 标签价 × 当日复权比: 跨日收益不含除权缺口                                                                 | 标签          |
 //
@@ -136,13 +138,14 @@
 //     端成员 = 真建了仓的格, 与 Row 的端组同一集合). 增仓 Δ⁺ 要本格可买 (续持者封板加不了仓 → 记 0).
 //     行 t 的批 (资金 1, 【持仓口径】) 每只权 w_t(a) = [a ∈ 端] / max(端样本数, 端满仓) (端满仓由调用方给: 两端 = cap, Inspect 尾部另给). 换手 = 目标仓位之差 Δw (无限细粒度, 微调照计):
 //     【交接】行 t 建仓与行 t−h 平仓同一价点 (hold_nets: 分钟型 / T+N 同刻型恒是; 收盘型 / 开盘型从不)
-//       → 两批在同一时刻对冲, 只交易差额: Δ = w_t − w_{t−h} 逐格, 增仓 Δ⁺ 付建仓冲击, 减仓 Δ⁻ 付平仓固定冲击;
-//       不交接 → 本批整建 (w_t 全付建仓冲击), 前一批的平仓由它自己记 (见下).
-//     本批的平仓若不与下一批交接 (hold_nets(t + h) 假: 下一批尾部不开仓 / 非同一价点) → 建仓时一并记平仓量 w_t (付固定冲击).
-//     金额段 (Cost) 两种, 至少一段, 换手量 (Δw) 各段同一份:
-//       盘口段 = 买入冲击 min(imp[a], top) (top = Config::max_impact; 池内盘口缺 = +inf → 封顶), 平仓量付固定冲击;
-//       固定段 = 无冲击列 (imp 空), 增仓量与平仓量都付固定冲击 fixed_impact.
-//     每 h 一份 CostAcc 沿 t 求和; 每期成本 cost(端) = (Σ Δ⁺·imp + Σ 固定量 · fixed_impact) / n_all (与 ls_period 同分母). 尾部行不攒.
+//       → 两批在同一时刻对冲, 只交易差额: Δ = w_t − w_{t−h} 逐格, 增仓 Δ⁺ 付买入费率, 减仓 Δ⁻ 付卖出费率;
+//       不交接 → 本批整建 (w_t 全付买入费率), 前一批的平仓由它自己记 (见下).
+//     本批的平仓若不与下一批交接 (hold_nets(t + h) 假: 下一批尾部不开仓 / 非同一价点) → 建仓时一并记平仓量 w_t (付卖出费率, 冲击取本格建仓时的卖出冲击).
+//     费率 = 税佣 (Fee::commission 双边, Fee::stamp 卖出) + 冲击; 冲击按金额段 (Cost) 两种, 至少一段, 换手量 (Δw) 各段同一份:
+//       盘口段 = 两侧真实冲击 min(imp[侧][a], top) (top = Config::max_impact; 池内盘口缺 = +inf → 封顶);
+//       固定段 = 无冲击列, 两侧都按 Fee::fixed.
+//     每 h 一份 CostAcc (每侧: 量 / Σ 量·真实冲击 / 付固定冲击的量) 沿 t 求和; 每期成本 cost(端, Fee) = Σ侧 (Σ 量·费率) / n_all (与 ls_period 同分母).
+//     税佣 / 固定冲击在 finish 端按 Fee 现乘 (UI 改费率不重算). 尾部行不攒.
 //     净多空 net_ls_period = ls_period − ½ (cost(kTop) + cost(kBot)) (两本各半资金, 同 ls); 年化 net_ls = × span_per_year (满仓一年).
 //
 //   【视图】两后端 / 全部调用方同一组参数形状 (宿主或设备指针, 由后端定): Plane (因子平面) · Batch (C 个同形候选, Stat = 1) ·
@@ -212,6 +215,8 @@ inline constexpr int hold_same(int n) { return kHoldSameBase + n; } // T+n 同�
 FACTOR_HD inline constexpr bool hold_intraday(int hold) { return hold < kHoldDayBase; }
 FACTOR_HD inline constexpr bool hold_is_open(int hold) { return hold > kHoldDayBase && hold < kHoldSameBase; }
 FACTOR_HD inline constexpr bool hold_is_same_n(int hold) { return hold > kHoldSameBase; }
+// 两族: 偏移型 (分钟型 / T+N 同刻: 平仓 = h 行后那一行的建仓价点, 两批恒交接) ⇄ 锚点型 (close / T+N 开盘: 平仓在固定时点, 从不交接)
+FACTOR_HD inline constexpr bool hold_offset(int hold) { return hold_intraday(hold) || hold_is_same_n(hold); }
 // T+N 的 N (日级型平仓日偏移; 分钟型 / close 为 0)
 FACTOR_HD inline constexpr int hold_days(int hold) { return hold_is_open(hold) ? hold - kHoldDayBase : hold_is_same_n(hold) ? hold - kHoldSameBase
                                                                                                                             : 0; }
@@ -477,7 +482,7 @@ FACTOR_HD inline bool hold_nets(int t, int hold, const Geo &g) {
   const int h = hold_rows(hold, g);
   if (t < h || tail_masked(t, hold, g) || tail_masked(t - h, hold, g))
     return false;
-  return hold_intraday(hold) || hold_is_same_n(hold);
+  return hold_offset(hold);
 }
 
 // ---- 仓位感知 (见文件头【仓位感知】; Row / 换手成本 / Inspect 尾部 / 池指数同一份) ----
@@ -539,7 +544,7 @@ struct Cell {
 // 平仓行 (见文件头【净值】): 行 t 这一批的收益在哪一行实现. t = 绝对行号; 分钟型 / T+N 同刻型 = t + h; 收盘型 = 当日末行;
 // T+N 开盘型 = D+N 日首行 (日层 S = 1: t + N). 顺延不改实现行 (按名义平仓日记)
 FACTOR_HD inline int hold_exit_row(int t, int hold, const Geo &g) {
-  if (hold_intraday(hold) || hold_is_same_n(hold))
+  if (hold_offset(hold))
     return t + hold_rows(hold, g);
   const int d = t / g.S + hold_days(hold);
   return hold_is_open(hold) ? d * g.S : d * g.S + g.S - 1;
@@ -549,7 +554,7 @@ FACTOR_HD inline int hold_exit_row(int t, int hold, const Geo &g) {
 // 收盘 / 开盘撮合价在平仓行内. 顺延不计 (按名义平仓行).
 // 单调不减 ⇒ 行 t 可用的标签行是前缀 {s : label_known(s) ≤ t}. s = 块内行号 (块首对齐段首)
 FACTOR_HD inline int label_known(int s, int hold, const Geo &g) {
-  const bool at_e = hold_intraday(hold) || (hold_is_same_n(hold) && !close_entry(s, g));
+  const bool at_e = hold_offset(hold) && (hold_intraday(hold) || !close_entry(s, g));
   return hold_exit_row(s, hold, g) + (at_e ? 1 : 0);
 }
 // 行 t 可用的最末标签行 u(t) (无 → −1): 从 t 往回走 (步数 ≤ label_reach)
@@ -578,12 +583,22 @@ inline double hold_span(int hold, const Geo &g) {
 
 // ---- 换手成本 (见文件头【换手成本】; Run (stat.costs) / Inspect 期限结构净线 / Portfolio 逐行成本共用) ----
 
-// 一个金额段: 盘口段 = 买入冲击 [T][A] 平面的指针 (宿主或设备, 由后端定; 原值, 池内盘口缺 = +inf) + 封顶 top (取用时 min); 固定段 = 空
+// 成交两侧 (费率 / 冲击列 / 成本账同一下标)
+enum Side : int { kBuy = 0,
+                  kSell = 1 };
+inline constexpr int kSides = 2;
+// 费率 (比率; 消费端 finish 时现乘): 固定冲击 (固定段两侧) + 佣金 (双边) + 印花税 (卖出单边)
+struct Fee {
+  double fixed = 0.0, commission = 0.0, stamp = 0.0;
+  bool operator==(const Fee &) const = default;
+  double tax(int side) const { return commission + (side == kSell ? stamp : 0.0); }
+};
+// 一个金额段: 盘口段 = 两侧冲击 [T][A] 平面的指针 (宿主或设备, 由后端定; 原值, 池内盘口缺 = +inf) + 封顶 top (取用时 min); 固定段 = 空
 struct Cost {
-  const uint16_t *imp = nullptr; // 买入冲击 fp16 位
-  float top = 0.f;               // 封顶 (Config::max_impact; 盘口段 > 0)
-  FACTOR_HD bool flat() const { return !imp; }
-  FACTOR_HD Cost at(size_t i) const { return flat() ? Cost{} : Cost{imp + i, top}; } // 偏到第 i 格 (行首 = t·A)
+  const uint16_t *imp[kSides] = {}; // 买入 / 卖出冲击 fp16 位
+  float top = 0.f;                  // 封顶 (Config::max_impact; 盘口段 > 0)
+  FACTOR_HD bool flat() const { return !imp[kBuy]; }
+  FACTOR_HD Cost at(size_t i) const { return flat() ? Cost{} : Cost{{imp[kBuy] + i, imp[kSell] + i}, top}; } // 偏到第 i 格 (行首 = t·A)
 };
 
 // 端码 (两后端 / Inspect 同一份): r16 → 方向 d 的高端组 kEcTop / 低端组 kEcBot / 其他组 kEcMid / rank 无效 kEcVoid. 前两个与 End 同值:
@@ -599,14 +614,15 @@ FACTOR_HD inline uint8_t end_code(unsigned x, int d) {
                                                     : kEcMid;
 }
 
-// 一本做多账本的换手成本和 (沿行求和; 量按【持仓口径】的权, 每批资金 1)
+// 一本做多账本的换手成本和 (沿行求和; 量按【持仓口径】的权, 每批资金 1); 每侧 [kSides] 三和, 费率在 cost 时按 Fee 现乘
 struct CostBook {
-  double imp = 0.0;  // Σ Δw⁺ · 买入冲击
-  double buy = 0.0;  // Σ Δw⁺ (增仓量)
-  double sell = 0.0; // Σ 平仓量 (交接的 Δw⁻ + 不交接批的整批平仓)
-  double fix = 0.0;  // Σ 付固定冲击的量 (盘口段 = 平仓量; 固定段 = 增仓量 + 平仓量)
-  double w = 0.0;    // Σ w (持仓量)
-  long long n = 0;   // 样本数 (成员格数)
+  double vol[kSides] = {}; // Σ 成交量: 买 = Δw⁺ (增仓), 卖 = 交接的 Δw⁻ + 不交接批的整批平仓
+  double imp[kSides] = {}; // Σ 量 · 真实冲击 (盘口段; 固定段恒 0)
+  double fix[kSides] = {}; // Σ 付固定冲击的量 (固定段 = vol; 盘口段 = 0)
+  double w = 0.0;          // Σ w (持仓量)
+  long long n = 0;         // 样本数 (成员格数)
+  // 一侧的 Σ 量 · 费率
+  double paid(int s, const Fee &f) const { return imp[s] + fix[s] * f.fixed + vol[s] * f.tax(s); }
 };
 // 一个持有期的换手成本累加器 (两端各一本); 可合并
 struct CostAcc {
@@ -614,31 +630,32 @@ struct CostAcc {
   long long rows = 0; // 攒过的行数 (非尾部行各计一次)
   FACTOR_HD void merge(const CostAcc &o) {
     for (int e = 0; e < kEnds; ++e) {
-      book[e].imp += o.book[e].imp, book[e].buy += o.book[e].buy, book[e].sell += o.book[e].sell, book[e].fix += o.book[e].fix;
+      for (int s = 0; s < kSides; ++s)
+        book[e].vol[s] += o.book[e].vol[s], book[e].imp[s] += o.book[e].imp[s], book[e].fix[s] += o.book[e].fix[s];
       book[e].w += o.book[e].w, book[e].n += o.book[e].n;
     }
     rows += o.rows;
   }
-  // 每期真实成本 (端 e): (Σ Δw⁺ · 买入冲击 + Σ 固定量 · 固定冲击) / n_all (与 ls_period 同分母)
-  double cost(int e, double fixed_impact, int n_all) const {
+  // 每期真实成本 (端 e): 两侧 Σ 量 · 费率 / n_all (与 ls_period 同分母)
+  double cost(int e, const Fee &f, int n_all) const {
     const CostBook &c = book[e];
-    return n_all > 0 ? (c.imp + c.fix * fixed_impact) / static_cast<double>(n_all) : 0.0;
+    return n_all > 0 ? (c.paid(kBuy, f) + c.paid(kSell, f)) / static_cast<double>(n_all) : 0.0;
   }
-  // 增仓的平均开仓冲击 (显示用): 盘口段 = 买入冲击均值; 固定段 = fixed_impact (fix − sell = 付固定冲击的增仓量)
-  double entry(int e, double fixed_impact) const {
+  // 一侧的平均费率 (显示用): Σ 量 · 费率 / Σ 量
+  double rate(int e, int s, const Fee &f) const {
     const CostBook &c = book[e];
-    return c.buy > 0.0 ? (c.imp + (c.fix - c.sell) * fixed_impact) / c.buy : 0.0;
+    return c.vol[s] > 0.0 ? c.paid(s, f) / c.vol[s] : 0.0;
   }
 };
 
 // 每期净多空 = ls_period − 两端每期成本的平均 (两本各半资金, 同 ls); 年化 = × span_per_year (s.hold 由 finish 填)
-inline double net_ls_period(const HoldStat &s, const CostAcc &c, double fixed_impact) {
-  return ls_period(s) - 0.5 * (c.cost(kTop, fixed_impact, s.n_all) + c.cost(kBot, fixed_impact, s.n_all));
+inline double net_ls_period(const HoldStat &s, const CostAcc &c, const Fee &f) {
+  return ls_period(s) - 0.5 * (c.cost(kTop, f, s.n_all) + c.cost(kBot, f, s.n_all));
 }
-inline double net_ls(const HoldStat &s, const CostAcc &c, double fixed_impact) { return net_ls_period(s, c, fixed_impact) * span_per_year(s); }
+inline double net_ls(const HoldStat &s, const CostAcc &c, const Fee &f) { return net_ls_period(s, c, f) * span_per_year(s); }
 // 年化换手 (倍/年, 单边, 每本资金 1; 与成本同一份 Δw): 端 e = Σ Δw⁺ / n_all × span_per_year; 两端 = 两端均. 越低越好
 inline double turn_annual(const HoldStat &s, const CostAcc &c, int e) {
-  return s.n_all > 0 ? c.book[e].buy / static_cast<double>(s.n_all) * span_per_year(s) : 0.0;
+  return s.n_all > 0 ? c.book[e].vol[kBuy] / static_cast<double>(s.n_all) * span_per_year(s) : 0.0;
 }
 inline double turn_annual(const HoldStat &s, const CostAcc &c) { return 0.5 * (turn_annual(s, c, kTop) + turn_annual(s, c, kBot)); }
 
