@@ -117,9 +117,9 @@ bool span_of(const FeatureTable &ft, const FactorScope &sc, std::span<const Leaf
   if (sc.years > 0) {
     const misc::Ymd edge = dm.dates.back() - static_cast<misc::Ymd>(sc.years) * 10000;
     s = std::min(keep, static_cast<size_t>(dm.dates.end() - std::upper_bound(dm.dates.begin(), dm.dates.end(), edge)));
-    w = static_cast<size_t>(std::ceil(static_cast<double>(s) * kWarmFrac));
+    w = std::max(static_cast<size_t>(std::ceil(static_cast<double>(s) * kWarmFrac)), warm_days(ft.seg));
     if (s + w > n) {
-      w = std::min(n - 1, static_cast<size_t>(std::ceil(static_cast<double>(n) * kWarmFrac / (1.0 + kWarmFrac))));
+      w = std::min(w, n / 2);
       s = n - w;
     }
   } else {

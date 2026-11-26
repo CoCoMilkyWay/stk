@@ -104,13 +104,13 @@ struct TradesRes : LookRes {
   std::vector<double> hist; // 段超额 p1~p99 分箱的段数
   struct Part {
     std::string name;
-    size_t n = 0;
-    double share = NAN, mean = NAN, up = NAN;
+    size_t n = 0;                             // 段数
+    double share = NAN, mean = NAN, up = NAN; // 段占比 / 格超额均值 (按格加权) / 段胜率
   };
   std::vector<Part> parts;
   struct Tag {
     std::string name;
-    double held = NAN, base = NAN, with = NAN, without = NAN;
+    double held = NAN, base = NAN, with = NAN, without = NAN; // with / without = 格超额均值 (按格加权)
   };
   std::vector<Tag> tags;
   struct Seg {

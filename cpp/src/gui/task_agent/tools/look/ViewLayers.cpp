@@ -62,8 +62,9 @@ std::string LayersRes::text() const {
       s += "没有可用的行 (每行至少要 " + std::to_string(3 * kMinCs) + " 个在池且因子 / 标签 / 条件都有效的格)\n";
     } else {
       s += "条件与因子的截面秩相关 " + r3(cond_rho) + " · 条件自身 rIC " + r3(cond_ric) + "\n";
-      s += "每行按条件值把池子截面三等分 (条件离散时并列落同一段, 三段不均), 段内按因子分位重新分 20 组; 组超额 = 组内 (标签 − 本行在池均值) 等权均值, 建不了仓的格不剔, "
-           "与上面的真持有口径略有出入, 只作这四行之间对照\n\n";
+      s += "抽 " + std::to_string(conds[0].rows) + " 行 (全期 " + std::to_string(all.rows) +
+           " 行) 算; 每行按条件值把池子截面三等分 (条件离散时并列落同一段, 三段不均), 段内按因子分位重新分 20 组; 组超额 = 组内开仓可买的格的 (标签 − 本行在池均值) 等权均值 "
+           "(建不了仓的不计, 续持链不追, 不按满仓只数折算), 与上面的真持有口径略有出入; 抽样行少, 组超额 / 多空噪声大, 段间比较以 rIC 为主, 只作这四行之间对照\n\n";
       text::Table ctbl = layer_table("条件段");
       for (const LayerRow &b : conds)
         add_layer_row(ctbl, b);
@@ -136,7 +137,9 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
 
     F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
       std::vector<double> cval, fxv, ey, rc_v, rf_v, ry_v;
+      std::vector<uint8_t> buy;
       std::array<std::vector<double>, 3> px, py;
+      std::array<std::vector<uint8_t>, 3> pb;
       RankScratch rs;
       st::Row w;
       const size_t ut = static_cast<size_t>(tid);
@@ -148,11 +151,11 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
         if (!std::isfinite(mkt))
           continue;
         const size_t base = static_cast<size_t>(t) * static_cast<size_t>(A);
-        cval.clear(), fxv.clear(), ey.clear();
+        cval.clear(), fxv.clear(), ey.clear(), buy.clear();
         for (int a = 0; a < A; ++a) {
           const size_t k = base + static_cast<size_t>(a);
           if (cv.blk.y.gate[k] && cv.rx[k] != st::kRankNone && lb.m[k] && cp->m[k] && std::isfinite(cp->v[k]))
-            cval.push_back(cp->v[k]), fxv.push_back(rank_of_r16(cv.rx[k])), ey.push_back(static_cast<double>(h2f(lv[k])) - mkt);
+            cval.push_back(cp->v[k]), fxv.push_back(rank_of_r16(cv.rx[k])), ey.push_back(static_cast<double>(h2f(lv[k])) - mkt), buy.push_back(buyable(cv.blk, k));
         }
         const size_t n = cval.size();
         if (n < 3 * static_cast<size_t>(kMinCs))
@@ -160,15 +163,15 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
         rs.rank_into(cval, rc_v), rs.rank_into(fxv, rf_v), rs.rank_into(ey, ry_v);
         trho[ut].add(pearson(rc_v, rf_v)), tric[ut].add(pearson(rc_v, ry_v));
         for (size_t j = 0; j < 3; ++j)
-          px[j].clear(), py[j].clear();
+          px[j].clear(), py[j].clear(), pb[j].clear();
         for (size_t i = 0; i < n; ++i) {
           const size_t j = std::min<size_t>(2, static_cast<size_t>(rc_v[i] * 3.0 / static_cast<double>(n)));
-          px[j].push_back(fxv[i]), py[j].push_back(ey[i]);
+          px[j].push_back(fxv[i]), py[j].push_back(ey[i]), pb[j].push_back(buy[i]);
         }
-        if (rs.approx_ranked(rf_v, ey, ry_v, w))
+        if (rs.approx_ranked(rf_v, ey, ry_v, buy, w))
           tb[ut][0].add(w);
         for (size_t j = 0; j < 3; ++j)
-          if (rs.approx_row(px[j], py[j], w))
+          if (rs.approx_row(px[j], py[j], pb[j], w))
             tb[ut][j + 1].add(w);
       }
     });

@@ -151,6 +151,7 @@ struct Searcher {
   Job job;
   int A = 0, stride = 1;
   int n_chunks = 0, batch = 1;
+  int n_pts = 1; // 采样点数 (fsearch::n_init; 具体式 = 1)
   std::vector<Entry> ents;
   std::map<std::string, int> seen;
   Rc rc_end = Rc::Ok;
@@ -251,7 +252,9 @@ struct Searcher {
     f0 = plant_forest(ft, std::span<const Root>(&r0, 1), /*keep_roots=*/false, {}, /*fuse=*/false);
     job.who = "Search";
     const Clock::time_point t_plan = Clock::now();
-    if (!check(Engine::prepare<E, SearchProbes>(F, scope, f0.d, f0.leaves, look, hd, fsearch::kInit, job)))
+    const int n_slots = space::slot_count(e0);
+    n_pts = n_slots > 0 ? fsearch::n_init(n_slots) : 1;
+    if (!check(Engine::prepare<E, SearchProbes>(F, scope, f0.d, f0.leaves, look, hd, n_pts, job)))
       return false;
     lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, fsearch::hold_reach(hd, seg), fs::kChainDays, job.bands.front,
        job.bands.back);
@@ -392,15 +395,16 @@ struct Searcher {
       ids.push_back(add_cand({}));
       return true;
     }
+    assert(static_cast<int>(slots.size()) == space::slot_count(e0));
     int n_bad = 0;
-    for (const std::vector<double> &u : space::design(slots, fsearch::kInit)) {
+    for (const std::vector<double> &u : space::design(slots, n_pts)) {
       const int id = add_cand(u);
       if (id < 0)
         ++n_bad;
       else if (std::find(ids.begin(), ids.end(), id) == ids.end())
         ids.push_back(id);
     }
-    lg("采样: R_d %d 点 → 不合法 %d, 取整去重后 %d 候选", fsearch::kInit, n_bad, static_cast<int>(ids.size()));
+    lg("采样: %zu 槽 R_d %d 点 → 不合法 %d, 取整去重后 %d 候选", slots.size(), n_pts, n_bad, static_cast<int>(ids.size()));
     if (ids.empty())
       return give_up(Rc::Empty, "采样点无一参数合法 (值域互斥?), 文件不动");
     return true;

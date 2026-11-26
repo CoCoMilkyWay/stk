@@ -12,7 +12,7 @@
 //   MIN     持仓 n 分钟 (名义平仓 = 行 m+n 的 entry 价点)
 //   CLOSE   持有到当日收盘 (n 不用, 写 0)
 //   OPEN    T+n 开盘平仓 (跨日回填)
-//   CLOSE_N T+n 收盘平仓 (跨日回填)
+//   SAME_N  T+n 同刻平仓 = 行 m 在 D+n 日的 entry 价点 (跨日回填; 与 D+n 日行 m 的建仓同一价点 → 两批交接; L_1day 行 = 收盘, 即 T+n 收盘)
 // 按层截取: LABEL_GROUPS_FROM_<LVL> = 本层可落的组 (滤掉比本层行还短的持有期: 5min 层不要 1m; L_1day 只剩日级型), 序同 LABEL_GROUPS
 #define LABEL_GROUPS(X, ...) LABEL_GROUPS_FROM_L_1min(X, __VA_ARGS__)
 #define LABEL_GROUPS_FROM_L_1min(X, ...) X(1m, MIN, 1, __VA_ARGS__) LABEL_GROUPS_FROM_L_5min(X, __VA_ARGS__)
@@ -20,13 +20,13 @@
 #define LABEL_GROUPS_FROM_L_15min(X, ...) X(15m, MIN, 15, __VA_ARGS__) LABEL_GROUPS_FROM_L_30min(X, __VA_ARGS__)
 #define LABEL_GROUPS_FROM_L_30min(X, ...) X(30m, MIN, 30, __VA_ARGS__) LABEL_GROUPS_FROM_L_60min(X, __VA_ARGS__)
 #define LABEL_GROUPS_FROM_L_60min(X, ...) X(60m, MIN, 60, __VA_ARGS__) X(close, CLOSE, 0, __VA_ARGS__) LABEL_GROUPS_FROM_L_1day(X, __VA_ARGS__)
-#define LABEL_GROUPS_FROM_L_1day(X, ...) X(t1o, OPEN, 1, __VA_ARGS__) X(t1c, CLOSE_N, 1, __VA_ARGS__) X(t2c, CLOSE_N, 2, __VA_ARGS__) X(t3c, CLOSE_N, 3, __VA_ARGS__)
+#define LABEL_GROUPS_FROM_L_1day(X, ...) X(t1o, OPEN, 1, __VA_ARGS__) X(t1, SAME_N, 1, __VA_ARGS__) X(t2, SAME_N, 2, __VA_ARGS__) X(t3, SAME_N, 3, __VA_ARGS__)
 
 enum class HoldKind : uint8_t { MIN,
                                 CLOSE,
                                 OPEN,
-                                CLOSE_N };
-constexpr bool hold_daily(HoldKind k) { return k == HoldKind::OPEN || k == HoldKind::CLOSE_N; } // 跨日平仓
+                                SAME_N };
+constexpr bool hold_daily(HoldKind k) { return k == HoldKind::OPEN || k == HoldKind::SAME_N; } // 跨日平仓
 #define LABEL_KIND_ONE(name, kind, n, ...) HoldKind::kind,
 #define LABEL_N_ONE(name, kind, n, ...) n,
 #define LABEL_NAME_ONE(name, kind, n, ...) #name,
@@ -44,8 +44,8 @@ inline constexpr const char *LABEL_NAME[] = {LABEL_GROUPS(LABEL_NAME_ONE)}; // �
 #define LABEL_EN_MIN(n) #n "min"
 #define LABEL_EN_CLOSE(n) "to-Close"
 #define LABEL_EN_OPEN(n) "T+" #n " Open"
-#define LABEL_EN_CLOSE_N(n) "T+" #n " Close"
+#define LABEL_EN_SAME_N(n) "T+" #n " Same-Time"
 #define LABEL_CN_MIN(n) #n "分钟"
 #define LABEL_CN_CLOSE(n) "至收盘"
 #define LABEL_CN_OPEN(n) "至T+" #n "开盘"
-#define LABEL_CN_CLOSE_N(n) "至T+" #n "收盘"
+#define LABEL_CN_SAME_N(n) "至T+" #n "同刻"

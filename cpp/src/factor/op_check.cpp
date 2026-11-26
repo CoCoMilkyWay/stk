@@ -97,7 +97,7 @@ void check_seg(int op, int S, int A, unsigned seed, Report &rep, bool &op_bad) {
   const int ds[] = {1, 5, 20, S, S + 60};
   constexpr int kNd = static_cast<int>(sizeof(ds) / sizeof(ds[0]));
   const bool sweep_h = factor::has_h(o.t, o.arity);
-  const int hs[] = {factor::stat::hold_close(1), S > 1 ? 2 * factor::geo_of(S).N : factor::stat::hold_open(1)};
+  const int hs[] = {factor::stat::hold_same(1), S > 1 ? 2 * factor::geo_of(S).N : factor::stat::hold_open(1)};
   constexpr int kNh = static_cast<int>(sizeof(hs) / sizeof(hs[0]));
 
   for (int pi = 0; pi < kProfiles; ++pi) {

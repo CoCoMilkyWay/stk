@@ -164,11 +164,16 @@ std::string folded(Steps ss, size_t i) {
   return "(已折叠, 只留结论)\n" + body + (ss[i].memo.empty() ? "" : MemoText(ss[i].memo));
 }
 
-// result 消息末尾的 "下一步" 提示 (left = 本段预算还剩多少, 空 = 不限)
-std::string next_step(bool test, const std::string &left) {
+// result 消息末尾的 "下一步" 提示, 按刚做完的调用给 (left = 本段预算还剩多少, 空 = 不限)
+std::string next_step(const Act &a, bool test, const std::string &left) {
   const std::string budget = left.empty() ? "" : "\n\n本段预算还剩 " + left + "; 用完会话即停下, 收手前留出 submit_factor 与 finish 的步数.";
   if (test)
     return "按自检的做法接着调还没调过的工具与取值; 对照工具说明查上面的结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish." + budget;
+  if (a.out.ok && a.call.tool == Tool::SubmitFactor)
+    return "已入库. 没有待解释的现象就 finish; 还要接着研究就继续 (研究出按 \"判优\" 更好的版本可再提交)." + budget;
+  if (a.out.ok && a.call.tool == Tool::EvalFactor)
+    return "先用观察看这个变体说明了什么 (分层在哪个时段 / 条件段变了、剥掉基准还剩多少、预期的方向是否兑现), 再决定下一步; 研究透了按 \"判优\" 挑最好的版本 submit_factor, 再 finish." +
+           budget;
   return "根据结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或回测下一个变体; 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish." + budget;
 }
 
@@ -311,6 +316,7 @@ std::string SystemMessage(const Context &c, const Gate &g, bool ask) {
                             {"window", "最近 " + std::to_string(c.years) + " 年, " + c.window},
                             {"srcs", c.srcs},
                             {"roll_parts", std::to_string(c.roll_parts)},
+                            {"search_pts", std::to_string(c.search_pts)},
                             {"ts_root_d", std::to_string(c.ts_root_d)},
                             {"max_d", std::to_string(c.max_d)},
                             {"gate_ric", num(g.ric)},
@@ -342,7 +348,7 @@ std::string TestMessage(bool ask, const std::string &remark) {
 }
 
 std::string ResultMessage(const Act &a, int step, bool test, const std::string &left) {
-  return fill(Msg::Result, {{"result", ResultText(a, step)}, {"next", next_step(test, left)}});
+  return fill(Msg::Result, {{"result", ResultText(a, step)}, {"next", next_step(a, test, left)}});
 }
 
 std::string RetryMessage(const std::string &error) {

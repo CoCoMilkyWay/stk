@@ -36,8 +36,8 @@ using factor::check::Profile;
 using factor::check::Tol;
 
 // 对拍用的持有期键: 与 features 层 LabelGroups 的 LABEL_GROUPS 同值 (键定义见 Stat/Contract.hpp), 但这里不 include 它 (factor/ 不依赖 features/)
-inline constexpr int kHolds[] = {1, 5, 15, 30, 60, factor::stat::kHoldClose, factor::stat::hold_open(1), factor::stat::hold_close(1), factor::stat::hold_close(2),
-                                 factor::stat::hold_close(3)};
+inline constexpr int kHolds[] = {1, 5, 15, 30, 60, factor::stat::kHoldClose, factor::stat::hold_open(1), factor::stat::hold_same(1), factor::stat::hold_same(2),
+                                 factor::stat::hold_same(3)};
 inline constexpr int kNumHolds = static_cast<int>(sizeof(kHolds) / sizeof(kHolds[0]));
 
 inline uint16_t f2h(float f) {

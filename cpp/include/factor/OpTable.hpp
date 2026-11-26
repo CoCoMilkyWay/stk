@@ -33,7 +33,7 @@
 //
 //   参数 (Contract.hpp struct Param) 不单列, 由 (T, k域, 元数) 推出 (params_str): d ⇔ T = ROLL (窗长 / 滞后, 期 = 本层的行);
 //     k ⇔ k域 ≠ NONE (阈值 / 桶数 / EMA 系数 / 分位 / 岭强度, 含义见各行 operator); k2 ⇔ k域 = TOD (TodMask 上界);
-//     h ⇔ 元数 N × ROLL (回归目标的持有期, 写标签列名 token: 5m / close / t1o / t1c …);
+//     h ⇔ 元数 N × ROLL (回归目标的持有期, 写标签列名 token: 5m / close / t1o / t1 …);
 //     w ⇔ 元数 N × POINT (各特征元的权, 写 w=[w_1, …, w_N], 个数 = 特征元数)
 //   k域 列 = k 的值域 (enum KDom): NONE / ANY ℝ / GE0 ≥0 / GT0 >0 / OPEN01 (0,1) / OPEN0_CLOSED1 (0,1] / OPEN0_HALF (0,1/2) /
 //     POSINT_GROUP 正整数 ≤ kMaxGroup / TOD 0 ≤ k < k2 ≤ S 整数 (S = 本层段长);  parse 按它校验参数值
@@ -70,7 +70,8 @@
 //     max, min, cov, var, corr, pct, floor, clamp  带下标者下标 = 取值域 (窗 W_t / 截面 a / 组 G(a))
 //     pct(v; S)   v 在样本集 S 的并列均秩 pct rank ∈ [0, 1] (Contract pct_of); 省略 S = 全截面
 //     Q_p(S)      样本集 S 的 p 分位 (省略 S = 全截面);  Φ⁻¹  标准正态分位;  G(a)  a 所在组 (整数 id 由 y 或 z 给)
-//     序统计族 (rank / quantile / winsor / bucket) 三后端同用 kBuckets 桶近似, 桶计数整数, 对拍逐位
+//     序统计族: TsRankCum / TsRankRoll / CsRank / CsNormRank 精确秩 (Contract【精确秩】); 其余 (quantile / winsor / bucket / 组秩 / 线性序合成)
+//                三后端同用 kBuckets 桶近似; 两者都是整数计数, 对拍逐位
 //
 //   【核 × 窗 为什么不是满格】格子空不空按"这个统计量在这个时间尺度上有没有意义"定, 不为对称而补:
 //     Cum (段内 = 当日) 专收**日内分布形状**: Hhi / Entropy 只有 Cum —— 度量"当日成交怎么摊在各分钟上",
@@ -105,7 +106,7 @@
   X(TsGt, "时大于", 1, POINT, SELF, MAP, ANY, OP_IN1(REAL), BIN, R"tex(\mathbf{1}[x_t > k])tex", "过阈指示 0/1; 套 Sum 窗得计数, 套 Mean 窗得占比")                                                                        \
   X(TsLog, "时对数", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), REAL, R"tex(\operatorname{sign}(x_t)\,\ln(1+|x_t|))tex", "保号对数压缩; 压长尾")                                                                             \
   X(TsNeg, "时取负", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), REAL, R"tex(-x_t)tex", "取负; 翻转因子方向")                                                                                                                 \
-  X(TsRecip, "时倒数", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), REAL, R"tex(1/x_t)tex", "取倒数; 比率换向")                                                                                                                \
+  X(TsRecip, "时倒数", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), REAL, R"tex(1/x_t)tex", "取倒数; 比率换向; x = 0 记 0")                                                                                                    \
   X(TsRelu, "时正部", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), NONNEG, R"tex(\max(0,\,x_t))tex", "取正部; 只留上行")                                                                                                       \
   X(TsSign, "时符号", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), SIGN3, R"tex(\operatorname{sign}(x_t))tex", "取方向, 弃幅度")                                                                                               \
   X(TsSqrt, "时开方", 1, POINT, SELF, MAP, NONE, OP_IN1(REAL), REAL, R"tex(\operatorname{sign}(x_t)\,|x_t|^{1/2})tex", "保号开方压缩; 比 Log 温和")                                                                        \
@@ -157,14 +158,14 @@
 // ---- 2 元 × SELF (20 = POINT 10 + EXPAND 5 + ROLL 5) ----
 #define OP_TS2(X)                                                                                                                                                                                                \
   X(TsAdd, "时加", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t + y_t)tex", "逐点和; 合并信号")                                                                                                \
-  X(TsDiv, "时除", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t / y_t)tex", "逐点比; 造比率")                                                                                                  \
-  X(TsImb, "时失衡", 2, POINT, SELF, MAP, NONE, OP_IN2(NONNEG, NONNEG), SIGNED, R"tex((x_t - y_t) / (x_t + y_t))tex", "双边失衡度 ∈ [−1,1]; 量买卖力量对比")                                                     \
+  X(TsDiv, "时除", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t / y_t)tex", "逐点比; 造比率; y = 0 记 0 (如高低价相等的 K 线算日内位置得 0, 不是区间中点)")                                    \
+  X(TsImb, "时失衡", 2, POINT, SELF, MAP, NONE, OP_IN2(NONNEG, NONNEG), SIGNED, R"tex((x_t - y_t) / (x_t + y_t))tex", "双边失衡度 ∈ [−1,1]; 量买卖力量对比; 两边都为 0 记 0")                                    \
   X(TsLogRatio, "时对数比", 2, POINT, SELF, MAP, NONE, OP_IN2(POS, POS), REAL, R"tex(\ln\operatorname{clamp}(x_t / y_t,\,\epsilon,\,1/\epsilon))tex", "对数比 (ε = 1e-6, 非正侧饱和到 ∓ln ε); 量正数间相对变化") \
   X(TsMask, "时掩", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t \;\mathrm{where}\; y_t > 0)tex", "按 y > 0 保留 x; 下游窗口只统计子集, 掩码由 TsTodMask / TsGt 造")                           \
   X(TsMax, "时最大", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\max(x_t,\,y_t))tex", "逐点取大; 信号取强")                                                                                      \
   X(TsMin, "时最小", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\min(x_t,\,y_t))tex", "逐点取小; 信号取弱")                                                                                      \
   X(TsMul, "时乘", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t \cdot y_t)tex", "逐点积; 信号交互")                                                                                            \
-  X(TsShare, "时占比", 2, POINT, SELF, MAP, NONE, OP_IN2(NONNEG, NONNEG), UNIT, R"tex(x_t / (x_t + y_t))tex", "占比 ∈ [0,1]; 量单边份额")                                                                        \
+  X(TsShare, "时占比", 2, POINT, SELF, MAP, NONE, OP_IN2(NONNEG, NONNEG), UNIT, R"tex(x_t / (x_t + y_t))tex", "占比 ∈ [0,1]; 量单边份额; 两边都为 0 记 0.5")                                                     \
   X(TsSub, "时减", 2, POINT, SELF, MAP, NONE, OP_IN2(REAL, REAL), REAL, R"tex(x_t - y_t)tex", "逐点差; 量信号差距")                                                                                              \
   X(TsBetaCum, "时累贝塔", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), REAL, R"tex(\beta_t = \mathrm{cov}_{W_t}(x, y) \;/\; \mathrm{var}_{W_t}(y))tex", "当日至今 x 对 y 的回归斜率; 量敏感度")           \
   X(TsCorrCum, "时累相关", 2, EXPAND, SELF, MOMENT, NONE, OP_IN2(REAL, REAL), SIGNED, R"tex(\mathrm{cov}_{W_t}(x, y) \;/\; (\sigma^x_t\,\sigma^y_t))tex", "当日至今的相关系数; 量联动强弱")                      \

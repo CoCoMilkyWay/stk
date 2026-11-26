@@ -7,10 +7,10 @@
 //     expr    := Op '(' [expr {',' expr}] {',' param} ')' | feature
 //     feature := ident {'.' [A-Za-z0-9_]+}      (限定名整串交 FeatureLookup::feat 解释, 如 档.层.列)
 //     param   := key '=' number | 'h' '=' hold | 'w' '=' '[' number {',' number} ']' | key      key := 'd' | 'k' | 'k2' | 'h' | 'w'
-//     hold    := 标签列名 token (5m / close / t1o / t2c …, stat::hold_parse)
+//     hold    := 标签列名 token (5m / close / t1o / t2 …, stat::hold_parse)
 //   d / TOD 的单位是因子层的行 (Contract【层几何】, parse 收 seg)
 //   例:  CsRank(TsMeanRoll(TsLog(bar.5m.amt_todz_5d), d=30))      TsTodMask(k=15, k2=255)      CsRank(TsMeanRoll(TsLog(lob.1m.amt), d))
-//        CsRank(CsLinRankRoll(bar.1d.mcap, bar.1d.sp_neu, bar.1d.cp_neu, d=60, k=0.1, h=t1c))
+//        CsRank(CsLinRankRoll(bar.1d.mcap, bar.1d.sp_neu, bar.1d.cp_neu, d=60, k=0.1, h=t1))
 //        CsRank(CsLinRankFix(bar.1d.mcap, bar.1d.sp_neu, bar.1d.cp_neu, w=[-1, 0.5, 0.5]))
 //   规矩:
 //     序列参数在前 (个数 = 元数; N 元算子 2..kLrN 个), 命名参数在后 (= OpTable 参数列声明的全部字段, 不多不少, 无隐含默认)
@@ -204,7 +204,7 @@ inline const char *check_params(const OpInfo &o, const Param &p, int seg) {
   return nullptr;
 }
 
-// 自由参数的占位值 (过 check_params 的任一合法值; d = 1, k 按 k域, TOD 的 k = 0 / k2 = seg, h = 次日收盘, w = 全 1, 只动该键)
+// 自由参数的占位值 (过 check_params 的任一合法值; d = 1, k 按 k域, TOD 的 k = 0 / k2 = seg, h = T+1 同刻, w = 全 1, 只动该键)
 inline void free_value(const OpInfo &o, std::string_view key, Param &p, int seg) {
   if (key == "d") {
     p.d = 1;
@@ -212,7 +212,7 @@ inline void free_value(const OpInfo &o, std::string_view key, Param &p, int seg)
   }
   if (key == "h") {
     assert(has_h(o.t, o.arity));
-    p.h = stat::hold_close(1);
+    p.h = stat::hold_same(1);
     return;
   }
   if (key == "w") {
@@ -691,7 +691,7 @@ private:
             std::string_view tok;
             const size_t pt = (skip_ws(), i_);
             if (!hold_tok(tok) || !stat::hold_parse(tok, p.h))
-              return fail(pt, "h 须为持有期 token (标签列名写法: 5m / close / t1o / t1c …)");
+              return fail(pt, "h 须为持有期 token (标签列名写法: 5m / close / t1o / t1 …)");
           } else if (key == "w") { // 序列参数已收齐 (命名参数在后), n_args = 特征元数
             if (!eat('['))
               return fail(i_, "w 写成 w=[数字, …], 一元一个权");
@@ -807,7 +807,7 @@ inline std::string bind_hold(const Expr &e, int hold) {
 
 // ---- alpha 因子的口径 (Stat/Contract.hpp【口径 Frame】): 由根算子严格判定, 且根必须是归一算子 ----
 //   CS: 根 ∈ {CsRank, CsNormRank, CsZ} (截面居中 → 因子值 = 仓位, β 隔离)
-//   TS: 根 = TsRankRoll(d = ts_norm_d(seg)) (自身滚动分位, 窗 = ≤ kMaxD 行的最大整交易日数; 整数天窗跨日 deseason)
+//   TS: 根 = TsRankRoll(d = ts_norm_d(seg)) (自身滚动分位, 窗 = ≤ kMaxD 行的最大整交易日数; 整数天窗: 参照集各日内时刻等份)
 //   其他根 (含 TS 包 CS: 截面不再居中, β 漏) → false + err.
 //   再拦 alpha (根的输入) 的两种静态可判退化 (Stat 里必然全并列 / 20 组填不满, 评出来永远是空), 只读 OpTable out 列 + 树结构:
 //     离散值域 (dom_discrete: 0/1 掩码 / 符号 / 桶号, 分位只有几个取值) / 沿资产轴不变异 (varies_a = false: 每 t 截面全相同)

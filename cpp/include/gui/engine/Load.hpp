@@ -44,8 +44,10 @@ inline Rc rc_of(bool ok, const LibReaders &lr) { return ok ? Rc::Ok : lr.stale()
 inline bool aborted(Rc rc) { return rc == Rc::Cancel || rc == Rc::Stale; }
 
 // ---- 评估域 Domain 与分块计划 Plan ----
-// 预热: FactorScope::years > 0 时评估期之前另装 ⌈统计日 · kWarmFrac⌉ 日, 只给时序回看, 不计统计 (库首不够则按比例匀出)
+// 预热: FactorScope::years > 0 时评估期之前另装 max(⌈统计日 · kWarmFrac⌉, warm_days) 日, 只给时序回看, 不计统计 (库首不够则预热至多占一半)
 inline constexpr double kWarmFrac = 0.1;
+// 单窗最长回看 kMaxD 行折成的本层日数: 盖住 TS 口径根 TsRankRoll(ts_norm_d) 与任一单层窗, 统计期首行即满窗
+constexpr size_t warm_days(int seg) { return static_cast<size_t>((factor::kMaxD + seg - 1) / seg); }
 struct Domain {
   PoolId pool = kAllPool;       // 因子池
   LibMask used = 0;             // 所用库: 标签库 ∪ 叶所在库

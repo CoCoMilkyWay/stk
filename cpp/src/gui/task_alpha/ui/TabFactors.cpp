@@ -155,7 +155,7 @@ void set_op(BuildNode &n, int op, int seg) {
   n.p.d = factor::check::default_d(name);
   factor::check::set_k(name, n.p, seg);
   if (factor::expr::declares(o.params, "h")) {
-    n.p.h = factor::stat::hold_close(1);
+    n.p.h = factor::stat::hold_same(1);
     n.free = factor::expr::kFreeH;
   }
   if (factor::expr::declares(o.params, "w")) {
@@ -1303,7 +1303,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       ImGui::EndDisabled();
     // 搜索细节 (Search/Contract.hpp【目标】【方向】): 目标 = 中位 rIC (滚动窗 = 评估期 / kRollParts, 每个交易日收尾一个窗, 取全部窗 rIC 的中位;
     // 不看成本 / 多空 / 分层, 不跨持有期比; 方向 = 正向中位 rIC 的号, < 0 → 取反 sign = -1); 参数区间由已有常数 / 池内有效资产数推出, 阈值类按输入分位;
-    // kInit 个低差异点一趟评完, 中位 rIC 最高的一个写成该 Hold 的权重 (没有一个点算得出窗 → 清掉该 Hold 的权重)
+    // n_init(P) 个低差异点 (按槽数对数增长) 一趟评完, 中位 rIC 最高的一个写成该 Hold 的权重 (没有一个点算得出窗 → 清掉该 Hold 的权重)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       if (!hold_ok)
         tip("Search 只搜 %s 档 (当前 Hold %s)", search_range.c_str(), ft.y.labels.empty() ? "-" : factor::stat::hold_name(cur_hold).c_str());
@@ -1314,7 +1314,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       else
         tip("搜 %s 的自由参数 (只搜当前 Hold %s)\n"
             "• 目标 = 中位 rIC: 滚动窗 (评估期 / %d) rIC 的中位, 不看成本; 方向随它的号\n"
-            "• %d 个采样点里最高的一个替换该 Hold 的权重, 然后自动 Run",
+            "• %d × (1 + log2 自由参数个数) 个采样点里最高的一个替换该 Hold 的权重, 然后自动 Run",
             view_row->file.c_str(), factor::stat::hold_name(cur_hold).c_str(), factor::search::kRollParts, factor::search::kInit);
     }
     // Search all: 各文件首个可搜行 (按文件去重, 表序) × 本层 kSearchHolds 内各档 (标签组序), 不看 Hold 选择

@@ -8,7 +8,7 @@
 //   不依赖任何后端 (否则 cpu↔stream 对拍空转).
 //
 //   CS = 每个时刻 t 一个截面 (行主序 [T][A] 的一行, 内存连续), 各 t 之间完全独立.
-//   【性能】不 gather 拷贝 (直接在掩码上 branchless 归约); 直方图带 exclusive 前缀 → rank O(1) 查询;
+//   【性能】不 gather 拷贝 (直接在掩码上 branchless 归约); 精确秩 = 行内一次排序 + 等值段扫; 直方图带 exclusive 前缀 → rank O(1) 查询;
 //   分组族用扁平数组 (组 id < kMaxGroup), 按上限从调用方暂存切出 (scratch 声明), 跨 t 复用, 内部不分配.
 //
 //   广播型 (Mean/Std/Median/Quantile/Beta/Corr): 对该行所有 A 个资产写同值, 掩码恒真 (空池行 → 中性值),
@@ -223,6 +223,41 @@ struct Hist {
   }
 };
 
+// ---- 精确秩 (CsRank / CsNormRank; 契约【精确秩】) ----
+// 有限 float → 保序 uint32 (±0 归一为 +0, 与 float 判等一致)
+inline uint32_t ukey(float x) {
+  const float z = x + 0.f;
+  uint32_t u;
+  std::memcpy(&u, &z, sizeof u);
+  return (u >> 31) ? ~u : (u | 0x80000000u);
+}
+// 一行: 全部有效格按 (值键, 资产, 在池位) 排序后按等值段扫; 段内池成员数 = eq, 段前池成员数 = less.
+// out[a] (只写有效格) = pct_of(less, eq, n) 夹到 [0, 1]; ks = A 个 u64 暂存. 返回池内样本数 n
+inline int exact_rank(const float *v, const uint8_t *m, const uint8_t *g, int A, uint64_t *ks, float *out) {
+  int k = 0, n = 0;
+  for (int a = 0; a < A; ++a) {
+    if (!m[a])
+      continue;
+    const uint32_t in = g[a] != 0;
+    ks[k++] = (uint64_t{ukey(v[a])} << 32) | (static_cast<uint64_t>(a) << 1) | in;
+    n += static_cast<int>(in);
+  }
+  std::sort(ks, ks + k);
+  int less = 0;
+  for (int i = 0; i < k;) {
+    const uint64_t key = ks[i] >> 32;
+    int j = i, eq = 0;
+    for (; j < k && (ks[j] >> 32) == key; ++j)
+      eq += static_cast<int>(ks[j] & 1u);
+    const float p = std::clamp(pct_of(less, eq, n), 0.f, 1.f);
+    for (int q = i; q < j; ++q)
+      out[(ks[q] & 0xffffffffu) >> 1] = p;
+    less += eq;
+    i = j;
+  }
+  return n;
+}
+
 // ---- 组 id: 格无效 → −1 (不参与); 有效但为负 (未知行业) → kNoGroup (无组, 以全池为组, 槽号 = G); 上限断言在 scan_gid ----
 inline constexpr int kNoGroup = -2;
 inline int gid(const float *v, const uint8_t *m, size_t i) {
@@ -318,32 +353,37 @@ struct CsZ { // σ 退化 → 0 (无尺度可比)
 
 // ===== 一元: 序统计 (HIST) =====
 
-struct CsRank { // 空池 / 全并列 → 0.5 (Hist 内)
-  CP_SCRATCH0
+// 精确秩 (CsRank / CsNormRank): 排序 + 等值段扫 (detail::exact_rank); 其余序统计走直方图
+struct CsRank { // 空池 / 池内全并列 → 0.5
+  static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<uint64_t>(static_cast<size_t>(c.A)), b.take<float>(static_cast<size_t>(c.A))}; }
+  CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
-    detail::Hist h;
+    Bump bp{static_cast<char *>(ws)};
+    const auto [ks, pr] = carve(bp, c);
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
-      h.build(xv + r, xm + r, g + r, A);
+      detail::exact_rank(xv + r, xm + r, g + r, A, ks, pr);
       for (int a = 0; a < A; ++a)
-        detail::put(ov, om, r + a, h.rank(xv[r + a]), xm[r + a]);
+        detail::put(ov, om, r + a, xm[r + a] ? pr[a] : 0.f, xm[r + a]);
     }
   }
 };
 
 struct CsNormRank { // pct 先夹到 (0,1) 开区间再取正态分位, 否则 ±inf; 空池 → Φ⁻¹(0.5) = 0
-  CP_SCRATCH0
+  static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<uint64_t>(static_cast<size_t>(c.A)), b.take<float>(static_cast<size_t>(c.A))}; }
+  CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
-    detail::Hist h;
+    Bump bp{static_cast<char *>(ws)};
+    const auto [ks, pr] = carve(bp, c);
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
-      h.build(xv + r, xm + r, g + r, A);
-      const double lo = 1.0 / (h.n + 1.0), hi = static_cast<double>(h.n) / (h.n + 1.0);
+      const int n = detail::exact_rank(xv + r, xm + r, g + r, A, ks, pr);
+      const double lo = 1.0 / (n + 1.0), hi = static_cast<double>(n) / (n + 1.0);
       for (int a = 0; a < A; ++a) {
         // probit 只在池非空时求值: n = 0 时 lo/hi 倒挂, clamp 的前置条件不成立
-        const double v = h.n >= 1 ? probit(std::clamp<double>(h.rank(xv[r + a]), lo, hi)) : 0.0;
+        const double v = n >= 1 && xm[r + a] ? probit(std::clamp<double>(pr[a], lo, hi)) : 0.0;
         detail::put(ov, om, r + a, v, xm[r + a]);
       }
     }

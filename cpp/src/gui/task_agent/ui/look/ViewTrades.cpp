@@ -23,7 +23,7 @@ void TradesRes::draw() const {
   hist_plot("段超额分布 (p1~p99)##hist", hist, h_lo, h_hi, 130.0f);
   if (!parts.empty()) {
     heading("开仓时段");
-    if (grid("##parts", {"时段", "段数", "占比", "段超额 bp", "胜率"})) {
+    if (grid("##parts", {"时段", "段数", "占比", "格超额 bp", "段胜率"})) {
       for (const Part &p : parts) {
         ImGui::TableNextRow();
         cell(p.name), cell(std::to_string(p.n)), cell_pct(p.share), cell_bp(p.mean), cell_pct(p.up);
@@ -33,7 +33,7 @@ void TradesRes::draw() const {
   }
   if (!tags.empty()) {
     heading("开仓那行的盘面");
-    if (grid("##tags", {"盘面", "本端格占比", "池内格占比", "提升", "带此标签 bp", "不带 bp"})) {
+    if (grid("##tags", {"盘面", "本端格占比", "池内格占比", "提升", "带此标签 格超额 bp", "不带 bp"})) {
       for (const Tag &t : tags) {
         ImGui::TableNextRow();
         cell(t.name), cell_pct(t.held), cell_pct(t.base);

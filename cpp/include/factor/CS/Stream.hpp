@@ -127,6 +127,17 @@ inline void hist_of(stream::Hist &h, std::vector<float> &buf, const float *v, co
   h.build(gather(buf, v, m, g, A));
 }
 
+// 精确秩 (契约【精确秩】): s = 升序的池内样本; x 的 less / eq 二分得, pct_of 夹到 [0, 1]
+inline float exact_pct(const std::vector<float> &s, float x) {
+  const auto lo = std::lower_bound(s.begin(), s.end(), x);
+  const auto hi = std::upper_bound(lo, s.end(), x);
+  return std::clamp(pct_of(static_cast<int>(lo - s.begin()), static_cast<int>(hi - lo), static_cast<int>(s.size())), 0.f, 1.f);
+}
+inline void sorted_of(std::vector<float> &buf, const float *v, const uint8_t *m, const uint8_t *g, int A) {
+  gather(buf, v, m, g, A);
+  std::sort(buf.begin(), buf.end());
+}
+
 // 分位缩尾: w = 逐资产 clamp 后的值 (无效位置原样, 由掩码屏蔽)
 inline const std::vector<float> &winsorize(std::vector<float> &w, const float *v, int A, const stream::Hist &h, double q) {
   const float a = h.quantile(q), b = h.quantile(1.0 - q);
@@ -229,28 +240,27 @@ struct CsCorr { // 任一侧无离散度 → 0
 
 // =========================== 序统计族 (HIST) ===========================
 
-struct CsRank { // 空池 / 全并列 → 0.5 (Hist 内)
+struct CsRank { // 精确秩; 空池 / 池内全并列 → 0.5
   CS_SIG {
     CS_ROW;
-    stream::Hist h;
-    detail::hist_of(h, buf_, xv, xm, g, A);
+    detail::sorted_of(buf_, xv, xm, g, A);
     for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i, mk(h.rank(xv[i]), xm[i]));
+      detail::put(ov, om, i, mk(detail::exact_pct(buf_, xv[i]), xm[i]));
   }
 
 private:
   std::vector<float> buf_;
 };
 
-struct CsNormRank { // pct 先夹到 (0,1) 开区间再取正态分位, 否则 ±inf; 空池 → Φ⁻¹(0.5) = 0
+struct CsNormRank { // 精确秩; pct 先夹到 (0,1) 开区间再取正态分位, 否则 ±inf; 空池 → Φ⁻¹(0.5) = 0
   CS_SIG {
     CS_ROW;
-    stream::Hist h;
-    detail::hist_of(h, buf_, xv, xm, g, A);
-    const double lo = 1.0 / (h.n + 1.0), hi = static_cast<double>(h.n) / (h.n + 1.0);
+    detail::sorted_of(buf_, xv, xm, g, A);
+    const int n = static_cast<int>(buf_.size());
+    const double lo = 1.0 / (n + 1.0), hi = static_cast<double>(n) / (n + 1.0);
     for (int i = 0; i < A; ++i) {
       // probit 只在池非空时求值: n = 0 时 lo/hi 倒挂, clamp 的前置条件不成立
-      const double v = h.n >= 1 ? probit(std::clamp<double>(h.rank(xv[i]), lo, hi)) : 0.0;
+      const double v = n >= 1 ? probit(std::clamp<double>(detail::exact_pct(buf_, xv[i]), lo, hi)) : 0.0;
       detail::put(ov, om, i, mk(v, xm[i]));
     }
   }

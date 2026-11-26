@@ -188,7 +188,7 @@ stk/
 │   │   │   │   ├── EngineHub.hpp                       # 🖥️ 跨任务状态 (Alpha / Market 共用): 后端选择 + 组合 (PortfolioService / 编辑状态 / 重解析)
 │   │   │   │   ├── Table.hpp                           # 🖥️ 因子层公共类型: 层表 FACTOR_LEVELS + 持有期开关仓 HoldPoints / 两侧列 XCols ↔ YCols + K 线与估值七叶 (估值五口 + 两融两口; 每进程代按层一份 table_of) / 作用域与年数上限 / EvalStat
 │   │   │   │   ├── Load.hpp                            # 🖥️ 评估域与装载层: Domain + Plan 分块 + 两侧平面 X ↔ Y (共享 read_days, 统一经 Store::pin 钉成 Block) + 进程唯一计算面 Store
-│   │   │   │   │                                       #    · 门控 / 标签取因子池 Bar 库, 盘口成本取同池 Lob 库; 评估期 span_of = 落盘日交集最近 N 年 + 10% 预热日
+│   │   │   │   │                                       #    · 门控 / 标签取因子池 Bar 库, 盘口成本取同池 Lob 库; 评估期 span_of = 落盘日交集最近 N 年 + 预热日 (10% 与单窗 kMaxD 行取大)
 │   │   │   │   │                                       #    · Store = 线程池 ex + 库 lr + 宿主平面 LRU (misc::Lru, 钉着的不逐) + 常驻执行环境 ExecSpace (CPU/GPU 内存与显存统一预算) + 计算权租约 Lease
 │   │   │   │   ├── Book.hpp                            # 🖥️ 净值与篮子引擎: RowLines → fold_book → BookLines → compound; 统一账核 Book (因子 / 篮子 / 个股同形); 分块归约 BasketPass → Baskets
 │   │   │   │   │                                       #    · 池篮子: 收益 = 可成交指数 (Weigh 2×2 权 × Stat 行核, 母集广播概念零二分); 换手 / 估值 = 篮子账 Sleeve (members 换源 ⇄ 过日漂移, 估值持仓加权)
@@ -347,12 +347,12 @@ stk/
 │   │   │   ├── EvalCpu.hpp                             # 🧬 DAG 的 CPU evaluator + 宿主槽池 (切法只看 A 域, 与单线程逐位一致)
 │   │   │   ├── EvalGpu.hpp                             # 🧬 DAG 的 GPU evaluator + 设备槽池 (中间量不落宿主)
 │   │   │   ├── GpuRun.hpp                              # 🧬 GPU 宿主接口 (POD 指针); 未开 CUDA 为 stub
-│   │   │   ├── StreamHist.hpp                          # 🧬 流式后端分桶直方图 (序统计族)
+│   │   │   ├── StreamHist.hpp                          # 🧬 流式后端分桶直方图 (序统计族; 秩四算子精确计数, 不走它)
 │   │   │   ├── Check.hpp                               # 🧬 TS / CS 对拍公共件
 │   │   │   ├── {TS,CS}/                                # 🧬 时序 / 截面算子三后端 (同名 struct, 缺一编译错): Stream.hpp 实盘流式 / Cpu.hpp 挖掘批算 / Gpu.cuh CUDA
 │   │   │   ├── Stat/                                   # 🧬 因子评估器 (无流式后端): 因子 + 标签 → Row[H][T] (IC / 分组 / 多空) → HoldStat
 │   │   │   │   ├── Contract.hpp                        # 🧬 语义契约: Row / HoldStat + 可合并累加器 + 换手成本
-│   │   │   │   │                                       #    · 【协议表 1】持有期 (1m 5m 15m 30m 60m close T+1O T+1C T+2C T+3C) → 开仓 / 清仓 / 价
+│   │   │   │   │                                       #    · 【协议表 1】持有期 (1m 5m 15m 30m 60m close T+1O T+1 T+2 T+3; T+N = D+N 日同刻平仓, 隔日两批交接) → 开仓 / 清仓 / 价
 │   │   │   │   │                                       #    · 【协议表 2】开关仓策略: 可成交判据 / 建仓作废 / 平仓顺延 / 仓位 / 换手 / 成本 / 净值
 │   │   │   │   │                                       #    · 只做多账本 (分层组 / LS 两端 / 池篮子); 方向 = 评估参数 (权重 sign), 不改写表达式
 │   │   │   │   │                                       #    · 口径 Run / Inspect / Portfolio 同一份; Search 不看成本

@@ -41,7 +41,10 @@
 //        线色按回撤渐变: 新高 = 蓝, 回撤越深越红 (√(回撤 / 全段最大回撤))
 //   左下 两半对仗 (同一张 plot_dist): 左 rIC 分布 = 逐行 rank IC (ok 行) → KLL → PDF (与顶部 stat 同一组样本); 右 因子分布 = 池内有效格的 alpha
 //        → KLL → 截尾 PDF. 各带 PDF 光滑拟合 (λ 自适应 sd) / mean / 时序背景 (rIC(t) | 截面均值 alpha(t)); 右半另按组边界竖切分组 (G1~G20 组色)
-//   右下 期限结构: 全部持有期 (1m … T+3C) 的 G20 / G1 (两端做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
+//   右下 两半 (日层只有一行, 期限结构占满):
+//        左 日内 rIC: 当前 Hold 的逐行 rIC 按行号沿全部交易日取均值 (只计 ok 行), 横轴 = 行末时刻 → 因子一天里哪些时刻有效 (挑调仓时刻);
+//           TS 口径另叠 G20 / G1 各时刻的平均占用率 (右轴 %): 时序分位的端组随日内时刻挤满 / 挤空, 只看 IC 会漏
+//        右 期限结构: 全部持有期 (1m … T+3) 的 G20 / G1 (两端做多超额) / LS 均值折线 (PCHIP 圆滑) → 这个因子预测哪个频段.
 //        三组 × (毛 + 全部金额段) 一次画全, 图例 = 左上矩阵 (行 = G20 / G1 / LS / 池均, 列 = 金额段; 点格 / 行头 / 列头切), 默认只显 LS (固定冲击除外); 另画池均线 ("池均 无冲击"
 //        = InspectResult::pool_ann: 池等权做多的绝对算术年化, 随池一代只算一次, 换因子共享). 口径 = 全库全时刻池化 (Σ 组内超额 / Σ 组样本数), 不是逐资产.
 //        净线 <amt>w = 毛 − 该端该持有期的均摊换手成本 (两端都是做多账本, 成本都使线下移; LS = net_ls_period.
@@ -75,6 +78,7 @@ struct InspectDerived : Layer::LayerDerived {
   std::vector<float> ic_cum;     // [T] 逐行 rank IC 累计 (非 ok 行持平): 右上 K 线右轴叠加
   std::vector<float> ic_dd;      // [T] ic_cum 距此前最高 (含起点 0) 的回撤 ≥ 0: 累计线着色
   float ic_dd_max = 0.f;         // ic_dd 全段最大值 (着色归一)
+  std::vector<float> tod_ic;     // [S] 逐行 rank IC 按行号 (t mod S) 沿交易日的均值 (只计 ok 行; 无样本 NaN): 右下左半 日内 rIC
   AlphaDist adist;               // = InspectResult::alpha_dist (左下右半, 与持有期无关)
   factor::stat::HoldStat hs;     // 选定 hold 的二级
   bool valid = false;
@@ -100,6 +104,12 @@ struct InspectUIState {
     bool operator==(const DerKey &) const = default;
   };
   Stage<DerKey, InspectDerived> der;
+  // 右下左半 日内 rIC 的附件: 端组占用 (与持有期无关, 随结果一代算一次) + 横轴行末时刻 (随层)
+  struct TodOcc {
+    std::vector<float> top, bot; // [S] TS 口径: 各行池内有效格落 G20 / G1 (所评方向) 的占比沿交易日的均值 (无样本 NaN); CS 口径空 (恒 1/20)
+  };
+  Stage<uint64_t, TodOcc> occ;
+  Stage<FactorLevelId, std::vector<std::string>> clock; // [S] 行末时刻 HH:MM (Engine::row_clocks)
   // ---- 右上 资产 K 线 ----
   uint32_t asset_gid = ~0u; // 选中资产 (全局 id; ~0u = 未选 → 光标日 R 最高者); 跨结果经 read_scope.axis.sub_of 找回, 不在 A 轴内 → 重选
   struct AxKey {

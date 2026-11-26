@@ -8,12 +8,12 @@
 //   entry(m) = 行 m 之后首个有成交的连续竞价分钟 r ∈ [m+1, kContCloseMin) 的 VWAP (bar1m amount / volume):
 //     行 m 的特征在分钟 m 末才可知, 最早在分钟 m+1 内成交; 无成交分钟顺延 (稀疏 / 盘中停牌),
 //     09:30 前的行 (含 09:25 撮合) 顺延到开盘后首个有成交分钟; 集合竞价 bar 不作 entry (撮合前的堆单不可成交).
-//     之后再无连续竞价成交 (行 m ≥ kContCloseMin − 1 / 尾盘无成交) → 收盘价建仓 (分钟 / 收盘型即建即平 = 0).
+//     之后再无连续竞价成交 (行 m ≥ kContCloseMin − 1 / 尾盘无成交) → 收盘价建仓 (分钟 / 收盘型即建即平 = 0; 同刻型平在 T+n 收盘).
 //   名义平仓:
 //     MIN     行 m 持有 n 分钟 = entry(m+n) (同一基准, 相邻行精确伸缩: Σ 连续 n 个 1m = 一个 nm); m+n 过收盘 → 收盘价 (T0 当日平仓)
 //     CLOSE   当日收盘价 = 末个有成交 bar 的 close (有收盘竞价即撮合价)
 //     OPEN    T+n 开盘价 = 09:25 撮合 bar 的价, 无撮合则首个有成交连续竞价 bar 的 open
-//     CLOSE_N T+n 收盘价
+//     SAME_N  T+n 日同一行 m 的 entry 价点 (D+n 日该行建仓的同一价点: 隔 n 日两批交接; 尾部行 / L_1day 行 = T+n 收盘价)
 //   可成交: 分钟价点 = Tradable 节点本分钟 can_buy / can_sell (整分钟封板判); 开盘 / 收盘价点按单一价撮合判 (LabelHold::auction_px).
 //     建仓可成交码 (lb_entry_ok) / 平仓顺延 / 环满按最近收盘价结清 见 Common/Label/LabelHold.hpp.
 //   全日无成交 (停牌 / 无 bar1m): 当日行无 entry, 不写; 名义今日到期的组进等待; 因子层 (gui/engine/Load) 把"当日无任何成交"的 asset-day 剔出截面池门控.
@@ -80,11 +80,11 @@ private:
 #define LBAR_NOTE_MIN(n) "行m+" #n "的entry(其后首个有成交连续竞价分钟的VWAP, 与entry同基准, 相邻行精确伸缩); 过收盘则按当日收盘价"
 #define LBAR_NOTE_CLOSE(n) "当日收盘价(末笔成交价)"
 #define LBAR_NOTE_OPEN(n) "T+" #n "日开盘价(09:25集合竞价撮合价, 无撮合则连续竞价首个有成交bar的开盘价)"
-#define LBAR_NOTE_CLOSE_N(n) "T+" #n "日收盘价(末笔成交价)"
+#define LBAR_NOTE_SAME_N(n) "T+" #n "日同一行m的entry(与该行建仓同一价点, 隔日两批交接; 日线行即T+" #n "日收盘价)"
 #define LBAR_TEX_MIN(n) R"(, \quad P_{exit}=\mathrm{VWAP}_{t_{entry}+)" #n R"(\,\mathrm{min}})"
 #define LBAR_TEX_CLOSE(n) R"(, \quad P_{exit}=P^{close}_{D})"
 #define LBAR_TEX_OPEN(n) R"(, \quad P_{exit}=P^{open}_{D+)" #n "}"
-#define LBAR_TEX_CLOSE_N(n) R"(, \quad P_{exit}=P^{close}_{D+)" #n "}"
+#define LBAR_TEX_SAME_N(n) R"(, \quad P_{exit}=\mathrm{VWAP}^{D+)" #n R"(}_{entry})"
 #define LBAR_ROW(X, CAT1, side, en, cn, formula, name, kind, n)                                       \
   X(lb_##side##_##name, CAT1, ret, en " " LABEL_EN_##kind(n) " Return", cn LABEL_CN_##kind(n) "收益", \
     cn LABEL_CN_##kind(n) "价格收益(比例; 不含冲击与税佣; 后复权). entry: 其后首个有成交连续竞价分钟的VWAP, 无成交顺延, 再无则按收盘价建仓; entry价可否买卖见lb_entry_ok(封板照写, 消费端按持仓判). exit: " LBAR_NOTE_##kind(n) "; 该腿不可成交(封板)或停牌则顺延至之后首个该腿可成交价点, 环满(" LABEL_DELAY_NOTE ")按最近收盘价; 越过区间末则按最后一日收盘价. 冲击与税佣由消费端扣(固定冲击Config::fixed_impact; 有Lob库时建仓可改扣真实冲击lb_cost_*)", formula LBAR_TEX_##kind(n), LB(side##_##name))

@@ -63,7 +63,7 @@ BasketPass::BasketPass(const Domain &dm, std::shared_ptr<const pool::Picks> pk, 
          "评估日 = 原料带的连续行");
   const int nl = static_cast<int>(basket_table().size()), A = static_cast<int>(s.A()), P = static_cast<int>(ds_);
   rx_.reset(nl, P);
-  std::fill(rx_.hold.begin(), rx_.hold.end(), factor::stat::hold_close(1));
+  std::fill(rx_.hold.begin(), rx_.hold.end(), factor::stat::hold_same(1));
   Book &bk = out_[Quote::kBasket], &sk = out_[Quote::kStock];
   bk.col[kBookBuy].reset(nl, P);
   sk.col[kBookRet].reset(A, P);
@@ -85,7 +85,7 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
   const BasketTable &bt = basket_table();
   const ConceptTable &ct = concepts();
   const YPlanes &y = c.y;
-  assert(y.sh.seg == 1 && y.hd.n == 1 && y.hd.k[0] == factor::stat::hold_close(1) && y.eo && y.labels[0]);
+  assert(y.sh.seg == 1 && y.hd.n == 1 && y.hd.k[0] == factor::stat::hold_same(1) && y.eo && y.labels[0]);
   const LegPlane &lab = *y.labels[0];
   const factor::stat::Span sp = c.span();
   const size_t T = static_cast<size_t>(sp.T), A = static_cast<size_t>(sp.A), nl = bt.size();

@@ -2,6 +2,7 @@
 #include "gui/engine/Table.hpp"
 
 #include "features/Storage/FeatureLib.hpp"
+#include "features/TimeIndex.hpp" // 行末时刻 (row_clocks)
 #include "misc/epoch.hpp"
 #include "shared/SharedData.hpp"
 
@@ -126,12 +127,33 @@ HoldPoints hold_points(int hold, FactorLevelId lv) {
   if (hold == st::kHoldClose)
     return {open, {"C(T)", close_px}};
   const std::string n = std::to_string(st::hold_days(hold));
-  return {open, st::hold_is_open(hold) ? HoldPoint{"O(T+" + n + ")", open_px} : HoldPoint{"C(T+" + n + ")", close_px}};
+  if (st::hold_is_open(hold))
+    return {open, {"O(T+" + n + ")", open_px}};
+  return {open, at_close ? HoldPoint{"C(T+" + n + ")", close_px} : HoldPoint{at + "+" + n + "日 (同刻)", px}};
 }
 
 std::string hold_desc(int hold, FactorLevelId lv) {
   const HoldPoints p = hold_points(hold, lv);
   return "开仓: " + p.open.at + " @ " + p.open.px + ", 清仓: " + p.close.at + " @ " + p.close.px;
+}
+
+std::vector<std::string> row_clocks(FactorLevelId lv) {
+  const FactorLevel &l = factor_level(lv);
+  std::vector<std::string> out;
+  for (int k = 0; k < l.seg; ++k) {
+    ClockTime c{15, 0, 0};
+    if (l.lvl == L_1min) {
+      const ClockTime m = L_1min_to_Clock(static_cast<size_t>(k));
+      const int total = m.hour * 60 + m.minute + 1;
+      c = {static_cast<uint8_t>(total / 60), static_cast<uint8_t>(total % 60), 0};
+    } else if (l.seg > 1) {
+      c = bin_to_Clock(static_cast<size_t>(240 / (l.seg - 1)), static_cast<size_t>(k));
+    }
+    char b[16];
+    format_time_hm(b, sizeof(b), c);
+    out.emplace_back(b);
+  }
+  return out;
 }
 
 disk::Key FactorDir::of(std::string_view name) const {
@@ -227,7 +249,7 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
     char side[8] = {}, name[16] = {};
     const int got = std::sscanf(f.code, "lb_%7[a-z]_%15[a-z0-9]", side, name);
     assert(got == 2 && (std::string_view(side) == "long" || std::string_view(side) == "short") && "标签列命名不合 lb_<long|short>_<name>");
-    const int h = factor::stat::hold_from_name(name); // <n>m / close / t<N>o / t<N>c → 持有期键 (Stat/Contract.hpp 【持有期键】)
+    const int h = factor::stat::hold_from_name(name); // <n>m / close / t<N>o / t<N> → 持有期键 (Stat/Contract.hpp 【持有期键】)
     labs.push_back({std::string_view(side) == "long", h, static_cast<uint32_t>(i)});
     holds.insert(h);
   }

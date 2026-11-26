@@ -28,7 +28,8 @@
 //     CS  截面: 根是截面归一算子 (CsRank / CsNormRank / CsZ). 每 t 沿 A 轴 rank x (排序) → 20 组 = 截面分位组;
 //         因子值 = 仓位 (每 t 居中 → 多空对冲, β 自然隔离; 超额对 rank 类统计是平移不变的). 大块并列会把相邻组挤空.
 //     TS  时序: 根是 TsRankRoll(d = ts_norm_d(seg), 整数个交易日), 输出已是每资产对自身滚动历史的分位 ∈ [0,1]
-//         (整数天窗跨日 deseason). 不排序, 直接量化 r16 = round(x · kRankMax) (r16_quant) → 20 组 = 自身历史分位组;
+//         (整数天窗: 参照集里每个日内时刻各占同样份数, 参照分布不随 t_D 漂移; 输出本身仍带日内季节性, 季节性强的特征先在特征层去掉).
+//         不排序, 直接量化 r16 = round(x · kRankMax) (r16_quant) → 20 组 = 自身历史分位组;
 //         评的是"个股处于自身高位时是否跑赢市场", β 由超额隔离, 样本间不因共同分量相关.
 //     两口径之后逐字共用: grp_of / rIC / 超额 / 持仓口径 / ls / mkt / rAC / 二级汇总. 组允许空 (那一刻没有资产在该组), 空组收益 0.
 //
@@ -55,7 +56,7 @@
 //     段末尾部 (分钟型 / 收盘型): 行 t 的标签 = 该行末分钟 m = minute(t_seg) (Contract【层几何】) 的 L_1min 标签, entry 锚点 = 分钟 m+1 起始;
 //       最后一个可成交锚点是收盘集合竞价 (14:57 起, 段末 kCloseAuction 分钟) 前一分钟的起始 = L_1min 行 kLastAnchorRow 的锚点.
 //       分钟型 exit = 分钟 m+n 的锚点, m + n 越过它就"持有到收盘", 持有期缩短 → 掩掉 minute(t_seg) + n > kLastAnchorRow 的行 (tail_masked);
-//       收盘型 m 越过它 = 收盘价建仓即平 (标签恒 0) → 同式 n 取 0. 日级型 (T+N 开盘 / 收盘) exit 在次日之后, 无尾部 (该行按收盘价建仓).
+//       收盘型 m 越过它 = 收盘价建仓即平 (标签恒 0) → 同式 n 取 0. 日级型 (T+N 开盘 / 同刻) exit 在次日之后, 无尾部 (该行按收盘价建仓).
 //       尾部行不开仓: 换手成本 / 净值同一判据.
 //     ok / ok_rac 为假时对应字段全 0 (与 Contract 的 valid=false ⇒ v=0 同约).
 //     J / ric / mkt 与可成交无关 (封板格照进截面); grp / cnt 只收真持有的格 (【仓位感知】). 平仓顺延在标签里 (features LabelHold).
@@ -67,15 +68,15 @@
 //       块外 (评估域首尾) 视为断链.
 //     收益 hold_ret: 下一批 (t + h) 交接且同组合 (continues) → 不真平仓, 按名义价点估值: 价点上不可能两向都堵 (封涨停可卖, 封跌停可买,
 //       停牌无价点 = 无行), 名义价点可卖 → lv 即名义值, 否则 = −sv (同一 entry / 同一名义 exit 价点); 不续持 → lv (含顺延).
-//     非交接持有期 (收盘型 / 开盘型 / 盘中建仓的 T+N 收盘型) 无链, 自然退化为"建仓须可买, 平仓顺延".
+//     非交接持有期 (收盘型 / 开盘型) 无链, 自然退化为"建仓须可买, 平仓顺延".
 //     等权组合天然高抛低吸 (封涨停减仓 = 卖, 封跌停加仓 = 买, 都可成交), 封板的只有新进 / 退出成员; 若要求建仓两向可成交,
 //     会把封涨停的续持者整格踢出, 系统性漏掉涨停收益 (过罚). 换手成本同一份 held (【换手成本】).
 //
 //   【持有期键 hold】int, 与 features 层 LabelHold 的列名同源 (lb_<side>_<name>); 键的单位是**分钟**, 与因子所在层无关.
 //     层上合法 (hold_ok): 分钟型 n 是行长 N 的整数倍且首行 minute(0) + n ≤ kLastAnchorRow (尾部不吞整段); close 要求 S > 1
 //       (日层的行就在收盘, 即建即平); 日级型各层皆可.
-//     独立样本口径的行数 h = hold_rows(hold, geo) (lag / 交接 / 重叠折算 / Sharpe 与换手的年化): 分钟型 = n / N; close 与 T+1 = S
-//     (同日各行共一个 exit → 每日一个独立样本); T+N = N · S (相邻 N 日的窗口重叠). L_1min 上 = 分钟数.
+//     独立样本口径的行数 h = hold_rows(hold, geo) (lag / 交接 / 重叠折算 / Sharpe 与换手的年化): 分钟型 = n / N; close 与 T+1O = S
+//     (同日各行共一个 exit → 每日一个独立样本); T+N 同刻 = N · S (同刻各行各自一条链, 隔 N 日一换). L_1min 上 = 分钟数.
 //     资金口径的行数 h̄ = hold_span(hold, geo) (净值每批资金 / 成本 / 均值超额的年化): 一日各开仓行的在持行数 (建仓行起, 平仓行
 //     hold_exit_row 止) 之和 / S, 尾部行不开仓不计 ⇒ 全日平均仓位恰为 1 (盘中在 1 上下摆); 日层 h̄ = h.
 //
@@ -88,7 +89,9 @@
 //     | 5m 15m 30m 60m   | <n>m       | n             | 行长 ≤ n 的分钟层 | C(行) @ E                | C(行)+n @ E (过 14:57 掩)  | n / N         | n / N · J / S                   |
 //     | close            | close      | kHoldClose    | 非 day            | C(行) @ E                | C(D) @ 收盘撮合            | S             | Σ_{j<J} (S − 1 − j) / S         |
 //     | T+1O             | t1o        | hold_open(1)  | 全部              | C(行) @ E; day 层 C(D)   | O(D+1) @ 开盘撮合          | S             | (S + 1) / 2                     |
-//     | T+1C T+2C T+3C   | t<N>c      | hold_close(N) | 全部              | C(行) @ E; day 层 C(D)   | C(D+N) @ 收盘撮合          | N · S         | N · S + (S − 1) / 2             |
+//     | T+1 T+2 T+3      | t<N>       | hold_same(N)  | 全部              | C(行) @ E; day 层 C(D)   | D+N 日同一行 @ E (同刻;    | N · S         | N · S                           |
+//     |                  |            |               |                   |                          |   day 层即 C(D+N))         |               |                                 |
+//       同刻型的平仓价点 = 下一批 (行 t + N·S) 的建仓价点 ⇒ 两批恒交接, 只交易隔 N 日同刻成员的差额 (日内每行各自一条链, 一日一次换仓); 天然满足 T+1
 //
 //   【协议表 2: 开关仓策略】(可成交码 / 顺延在 features 标签里定, 建仓 / 续持按【仓位感知】; 消费端只读标签与 lb_entry_ok)
 //     | 环节       | 规则                                                                                                      | 落在          |
@@ -132,7 +135,7 @@
 //     (u8 平面, 两后端由 rx 逐格派生; GPU 只回传它, 不回 u16 rx) ∧ 该持有期的标签有效位 m ∧ 真持有 (held, 链上成员 = 同端码;
 //     端成员 = 真建了仓的格, 与 Row 的端组同一集合). 增仓 Δ⁺ 要本格可买 (续持者封板加不了仓 → 记 0).
 //     行 t 的批 (资金 1, 【持仓口径】) 每只权 w_t(a) = [a ∈ 端] / max(端样本数, 端满仓) (端满仓由调用方给: 两端 = cap, Inspect 尾部另给). 换手 = 目标仓位之差 Δw (无限细粒度, 微调照计):
-//     【交接】行 t 建仓与行 t−h 平仓同一价点 (hold_nets: 分钟型恒是; T+N 收盘型只在行 t 按收盘价建仓时 (日层恒是); 收盘型 / 开盘型从不)
+//     【交接】行 t 建仓与行 t−h 平仓同一价点 (hold_nets: 分钟型 / T+N 同刻型恒是; 收盘型 / 开盘型从不)
 //       → 两批在同一时刻对冲, 只交易差额: Δ = w_t − w_{t−h} 逐格, 增仓 Δ⁺ 付建仓冲击, 减仓 Δ⁻ 付平仓固定冲击;
 //       不交接 → 本批整建 (w_t 全付建仓冲击), 前一批的平仓由它自己记 (见下).
 //     本批的平仓若不与下一批交接 (hold_nets(t + h) 假: 下一批尾部不开仓 / 非同一价点) → 建仓时一并记平仓量 w_t (付固定冲击).
@@ -176,7 +179,7 @@ inline constexpr int kDaysPerYear = 242;                           // 年化用�
 inline constexpr uint16_t kRankNone = 0xFFFF;                      // r16 无效
 inline constexpr int kRankMax = 65534;                             // r16 = round(pct · kRankMax) ∈ [0, kRankMax]
 inline constexpr unsigned kNoKey = 0xFFFFFFFFu;                    // 排序键的"无效"哨兵 (有限 float 的保序键 ≤ 0xFF800000, 不冲突)
-// TS 口径根 TsRankRoll 的窗长 (行) = ≤ kMaxD 行的最大整交易日数 (整数天窗跨日 deseason; ≤ kMaxD 故分块前带盖得住)
+// TS 口径根 TsRankRoll 的窗长 (行) = ≤ kMaxD 行的最大整交易日数 (整数天窗: 参照集各日内时刻等份; ≤ kMaxD 故分块前带与预热盖得住)
 constexpr int ts_norm_d(int seg) { return kMaxD / seg * seg; }
 
 // ---- 标签侧 / 多空两端 / 方向 (见文件头【只做多】【多空 LS】【方向 Dir】) ----
@@ -200,22 +203,22 @@ enum class Frame : uint8_t { CS,
 inline constexpr const char *frame_name(Frame f) { return f == Frame::CS ? "CS" : "TS"; }
 
 // ---- 持有期键 (见文件头【持有期键】) ----
-inline constexpr int kHoldDayBase = 1000;                             // ≥ 此值为日级型 (含 close)
-inline constexpr int kHoldClose = kHoldDayBase;                       // 持有到当日收盘
-inline constexpr int kHoldCloseBase = 2000;                           // T+N 收盘型的基
-inline constexpr int kHoldDaysMax = 30;                               // T+N 的 N 上限 (键值域 / 断言用)
-inline constexpr int hold_open(int n) { return kHoldDayBase + n; }    // T+n 开盘平仓
-inline constexpr int hold_close(int n) { return kHoldCloseBase + n; } // T+n 收盘平仓
+inline constexpr int kHoldDayBase = 1000;                           // ≥ 此值为日级型 (含 close)
+inline constexpr int kHoldClose = kHoldDayBase;                     // 持有到当日收盘
+inline constexpr int kHoldSameBase = 2000;                          // T+N 同刻型的基
+inline constexpr int kHoldDaysMax = 30;                             // T+N 的 N 上限 (键值域 / 断言用)
+inline constexpr int hold_open(int n) { return kHoldDayBase + n; }  // T+n 开盘平仓
+inline constexpr int hold_same(int n) { return kHoldSameBase + n; } // T+n 同刻平仓 (D+n 日同一行的价点; 日层 = T+n 收盘)
 FACTOR_HD inline constexpr bool hold_intraday(int hold) { return hold < kHoldDayBase; }
-FACTOR_HD inline constexpr bool hold_is_open(int hold) { return hold > kHoldDayBase && hold < kHoldCloseBase; }
-FACTOR_HD inline constexpr bool hold_is_close_n(int hold) { return hold > kHoldCloseBase; }
+FACTOR_HD inline constexpr bool hold_is_open(int hold) { return hold > kHoldDayBase && hold < kHoldSameBase; }
+FACTOR_HD inline constexpr bool hold_is_same_n(int hold) { return hold > kHoldSameBase; }
 // T+N 的 N (日级型平仓日偏移; 分钟型 / close 为 0)
-FACTOR_HD inline constexpr int hold_days(int hold) { return hold_is_open(hold) ? hold - kHoldDayBase : hold_is_close_n(hold) ? hold - kHoldCloseBase
-                                                                                                                             : 0; }
+FACTOR_HD inline constexpr int hold_days(int hold) { return hold_is_open(hold) ? hold - kHoldDayBase : hold_is_same_n(hold) ? hold - kHoldSameBase
+                                                                                                                            : 0; }
 // 键在值域内 (与层无关)
 inline constexpr bool hold_key_ok(int hold) {
   return (hold >= 1 && hold <= kLastAnchorRow) || hold == kHoldClose ||
-         ((hold_is_open(hold) || hold_is_close_n(hold)) && hold_days(hold) <= kHoldDaysMax);
+         ((hold_is_open(hold) || hold_is_same_n(hold)) && hold_days(hold) <= kHoldDaysMax);
 }
 // 持有期在层 g 上是否合法 (见文件头【持有期键】)
 inline constexpr bool hold_ok(int hold, const Geo &g) {
@@ -223,14 +226,14 @@ inline constexpr bool hold_ok(int hold, const Geo &g) {
     return hold >= 1 && hold % g.N == 0 && g.minute(0) + hold <= kLastAnchorRow;
   return hold != kHoldClose || g.S > 1;
 }
-// 独立样本口径的行数 h (层 g 上; lag / 交接 / 重叠折算 / Sharpe 与换手的年化): 分钟型 = n / N; close / T+1 = 一段 S 行; T+N = N 段. 资金口径见 hold_span
+// 独立样本口径的行数 h (层 g 上; lag / 交接 / 重叠折算 / Sharpe 与换手的年化): 分钟型 = n / N; close / T+1O = 一段 S 行; T+N 同刻 = N 段. 资金口径见 hold_span
 FACTOR_HD inline constexpr int hold_rows(int hold, const Geo &g) {
   if (hold_intraday(hold))
     return hold / g.N;
   const int n = hold_days(hold);
   return g.S * (n < 1 ? 1 : n);
 }
-// 列名 token → 键: "<n>m" / "close" / "t<N>o" / "t<N>c" (LabelGroups LABEL_GROUPS 的 name; 表达式 h= 同写法); 不合 / 键越界 → false
+// 列名 token → 键: "<n>m" / "close" / "t<N>o" (T+N 开盘) / "t<N>" (T+N 同刻) (LabelGroups LABEL_GROUPS 的 name; 表达式 h= 同写法); 不合 / 键越界 → false
 inline bool hold_parse(std::string_view name, int &hold) {
   if (name == "close") {
     hold = kHoldClose;
@@ -238,11 +241,10 @@ inline bool hold_parse(std::string_view name, int &hold) {
   }
   if (name.size() < 2)
     return false;
-  const bool day = name.front() == 't';
-  const char tail = name.back();
-  if (!(day ? tail == 'o' || tail == 'c' : tail == 'm'))
+  const bool day = name.front() == 't', open = day && name.back() == 'o';
+  if (!day && name.back() != 'm')
     return false;
-  const std::string_view digits = day ? name.substr(1, name.size() - 2) : name.substr(0, name.size() - 1);
+  const std::string_view digits = !day ? name.substr(0, name.size() - 1) : name.substr(1, name.size() - (open ? 2 : 1));
   if (digits.empty() || digits.size() > 4)
     return false;
   int n = 0;
@@ -251,15 +253,15 @@ inline bool hold_parse(std::string_view name, int &hold) {
       return false;
     n = n * 10 + (c - '0');
   }
-  hold = !day ? n : tail == 'o' ? hold_open(n)
-                                : hold_close(n);
+  hold = !day ? n : open ? hold_open(n)
+                         : hold_same(n);
   return hold_key_ok(hold);
 }
 // 列名 token → 键; 不识别 → 断言
 inline int hold_from_name(std::string_view name) {
   int h = 0;
   const bool ok = hold_parse(name, h);
-  assert(ok && "持有期 token 不合 <n>m / close / t<N>o / t<N>c");
+  assert(ok && "持有期 token 不合 <n>m / close / t<N>o / t<N>");
   (void)ok;
   return h;
 }
@@ -270,15 +272,15 @@ inline std::string hold_token(int hold) {
     return std::to_string(hold) + "m";
   if (hold == kHoldClose)
     return "close";
-  return "t" + std::to_string(hold_days(hold)) + (hold_is_open(hold) ? "o" : "c");
+  return "t" + std::to_string(hold_days(hold)) + (hold_is_open(hold) ? "o" : "");
 }
-// 键 → 显示名: "5m" / "close" / "T+1O" / "T+2C"
+// 键 → 显示名: "5m" / "close" / "T+1O" / "T+2"
 inline std::string hold_name(int hold) {
   if (hold_intraday(hold))
     return std::to_string(hold) + "m";
   if (hold == kHoldClose)
     return "close";
-  return "T+" + std::to_string(hold_days(hold)) + (hold_is_open(hold) ? "O" : "C");
+  return "T+" + std::to_string(hold_days(hold)) + (hold_is_open(hold) ? "O" : "");
 }
 
 // ---- 参数: 键列表 (持有期键 Holds: 每个对应一组标签; 金额段键 Amts: 每个对应一组成本) ----
@@ -303,7 +305,7 @@ inline void assert_holds(const Holds &hd, int seg) {
   assert(hd.n >= 1 && hd.n <= kMaxHold);
   for (int i = 0; i < hd.n; ++i) {
     const int h = hd.k[i];
-    assert(hold_key_ok(h) && "持有期键越界 (close = kHoldClose, T+N = hold_open(N) / hold_close(N))");
+    assert(hold_key_ok(h) && "持有期键越界 (close = kHoldClose, T+N = hold_open(N) / hold_same(N))");
     assert(hold_ok(h, geo_of(seg)) && "持有期在本层不合法 (分钟型须是行长整数倍且尾部不吞整段; 日层无 close)");
     (void)h;
   }
@@ -470,12 +472,12 @@ FACTOR_HD inline bool tail_masked(int t, int hold, const Geo &g) {
 // 行 t 按收盘价建仓: 行末分钟越过最后可成交锚点, 价点 E 退化为 C(D) (协议表 1; 日层每行都是). t = 绝对行号
 FACTOR_HD inline bool close_entry(int t, const Geo &g) { return g.minute(t % g.S) > kLastAnchorRow; }
 // 交接 (见文件头【换手成本】): 行 t 建仓与行 t − h 平仓是同一价点 (两批同刻对冲, 只交易差额). t = 绝对行号;
-// 分钟型 = 行 t−h 的 exit 就是行 t 的 entry; T+N 收盘型 = 行 t 按收盘价建仓 (close_entry); 收盘型 / 开盘型从不
+// 分钟型 / T+N 同刻型 = 行 t−h 的 exit 就是行 t 的 entry (同刻型: D 日同一行的价点); 收盘型 / 开盘型从不
 FACTOR_HD inline bool hold_nets(int t, int hold, const Geo &g) {
   const int h = hold_rows(hold, g);
   if (t < h || tail_masked(t, hold, g) || tail_masked(t - h, hold, g))
     return false;
-  return hold_intraday(hold) || (hold_is_close_n(hold) && close_entry(t, g));
+  return hold_intraday(hold) || hold_is_same_n(hold);
 }
 
 // ---- 仓位感知 (见文件头【仓位感知】; Row / 换手成本 / Inspect 尾部 / 池指数同一份) ----
@@ -534,18 +536,22 @@ struct Cell {
   FACTOR_HD bool continues(const In &in) const { return stat::continues(c, code, m, in); }
   FACTOR_HD float ret(bool cont) const { return hold_ret(cont, cont ? eo[static_cast<ptrdiff_t>(c.h) * c.A] : 0, y); }
 };
-// 平仓行 (见文件头【净值】): 行 t 这一批的收益在哪一行实现. t = 绝对行号; 分钟型 = t + h; 收盘型 = 当日末行;
-// T+N 开盘型 = D+N 日首行; T+N 收盘型 = D+N 日末行 (日层 S = 1: 两者都是 t + N). 顺延不改实现行 (按名义平仓日记)
+// 平仓行 (见文件头【净值】): 行 t 这一批的收益在哪一行实现. t = 绝对行号; 分钟型 / T+N 同刻型 = t + h; 收盘型 = 当日末行;
+// T+N 开盘型 = D+N 日首行 (日层 S = 1: t + N). 顺延不改实现行 (按名义平仓日记)
 FACTOR_HD inline int hold_exit_row(int t, int hold, const Geo &g) {
-  if (hold_intraday(hold))
+  if (hold_intraday(hold) || hold_is_same_n(hold))
     return t + hold_rows(hold, g);
   const int d = t / g.S + hold_days(hold);
   return hold_is_open(hold) ? d * g.S : d * g.S + g.S - 1;
 }
 // 行 s 的标签在哪一行收盘时已实现 (N 元回归的样本行, Contract【N 元回归】): 平仓行的价点成交即知;
-// 分钟型价点 E 是平仓行之后首个连续竞价分钟的 VWAP, 至迟下一行收盘可知 (+1); 收盘 / 开盘撮合价在平仓行内. 顺延不计 (按名义平仓行).
+// 分钟价点 E 是平仓行之后首个连续竞价分钟的 VWAP, 至迟下一行收盘可知 (+1; 分钟型, 及同刻型中不按收盘价建仓的行);
+// 收盘 / 开盘撮合价在平仓行内. 顺延不计 (按名义平仓行).
 // 单调不减 ⇒ 行 t 可用的标签行是前缀 {s : label_known(s) ≤ t}. s = 块内行号 (块首对齐段首)
-FACTOR_HD inline int label_known(int s, int hold, const Geo &g) { return hold_exit_row(s, hold, g) + (hold_intraday(hold) ? 1 : 0); }
+FACTOR_HD inline int label_known(int s, int hold, const Geo &g) {
+  const bool at_e = hold_intraday(hold) || (hold_is_same_n(hold) && !close_entry(s, g));
+  return hold_exit_row(s, hold, g) + (at_e ? 1 : 0);
+}
 // 行 t 可用的最末标签行 u(t) (无 → −1): 从 t 往回走 (步数 ≤ label_reach)
 FACTOR_HD inline int label_last(int t, int hold, const Geo &g) {
   int u = t;

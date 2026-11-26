@@ -889,7 +889,7 @@ __global__ void extreme(const float *xv, const uint8_t *xm, E *ws, float *ov, ui
 }
 
 // =============================================================================
-// 6. HIST: 序统计族 (TsRankCum / TsRankRoll / TsQuantileRoll) —— 块内排序 + wavelet matrix, 桶号与 CPU 逐位一致
+// 6. HIST: 序统计族 (TsRankCum / TsRankRoll 精确秩; TsQuantileRoll 桶号与 CPU 逐位一致) —— 块内排序 + wavelet matrix
 //    **一 block 一 (资产 a, 时间块 [c0, cend))**. 块内所有查询窗 ⊂ [base0, cend), N = cend − base0 ≤ NCAP:
 //      EXPAND: 块 = 一段, base0 = 段首, N ≤ S ≤ kSegMax;  ROLL: 块长 C = NCAP − d + 1, base0 = max(0, c0−d+1).
 //    建 (每块一次, 摊到 C 个查询上):
@@ -899,11 +899,9 @@ __global__ void extreme(const float *xv, const uint8_t *xm, E *ws, float *ov, ui
 //         区间 [l,r) 内 "名次 < v 的个数" (count_less) 与 "第 k 小的名次" (quantile) 都是 L 步 × 2 次 rank1.
 //      3. 有效位向量 vb: 窗内有效数 n = rank1(r) − rank1(l).
 //    查 (一线程一 t, 没有数据相关的循环):
-//      lo / hi = sorted[quantile(1)] / sorted[quantile(n)];  b = bin_of_fast(x_t, lo, hi).
-//      bin_of 对 x 单调不减 ⇒ {x : bin(x) < b} = {x : x < θ_b}, θ_b = 使 bin ≥ b 的最小 float (bin_edge: 解析解
-//      收紧区间后在保序键空间二分, 精确) ⇒ less = count_less(l, r, lower_bound(sorted, key(θ_b))), 与 CPU 直方图
-//      前缀逐个相同. 分位: 第 ⌈k·n⌉ 小的值所在桶 = CPU 的前缀首达桶 (bin 单调 ⇒ 等价), 一次 quantile.
-//    每查询 ≈ 5 次 L 步遍历 + 2 次二分 ≈ 200 次 smem 读, 与 d 无关; 无 warp 发散.
+//      秩: 名次按键升序 ⇒ 键 < key(x_t) 的名次 = [0, lower_bound), ≤ 的 = [0, upper_bound) ⇒ less / le 各一次 count_less.
+//      分位: lo / hi = sorted[quantile(1)] / sorted[quantile(n)]; 第 ⌈k·n⌉ 小的值所在桶 = CPU 的前缀首达桶 (bin 单调 ⇒ 等价), 一次 quantile.
+//    每查询 ≈ 3 次 L 步遍历 + 2 次二分, 与 d 无关; 无 warp 发散.
 //    容量: EXPAND NCAP = 256 (256 线程 × 1); ROLL d ≤ 1024 → 2048 (512 × 4, ≈ 21 KB smem, 每 SM 2 块),
 //          d ≤ 3072 → 4096 (512 × 8, ≈ 43 KB, 每 SM 1 块; 因子侧 d ≤ kMaxD 用不到, op_check 扫边界会到). 键把 ±0 归一为 +0 (与 bin_of / fmin 判等一致).
 // =============================================================================
@@ -928,32 +926,6 @@ __device__ __forceinline__ int lower_bound(const uint32_t *s, int n, uint32_t ke
       hi = mid;
   }
   return lo;
-}
-
-// 使 bin_of(x, lo, hi) ≥ b 的最小 float (1 ≤ b ≤ kBuckets−1). bin_of 对 x 单调不减 (减 / 除正数 / 乘 2⁸ / 截断都单调),
-// 在保序键空间二分 (不变量 bin(kl) < b ≤ bin(kh)), 区间先用解析解 ±1 ulp 收紧 → 常见情形 2 次 bin_of 命中.
-// **不能从解析解逐 ulp 走**: 桶边落在 0 附近时 (对数收益 lo ≈ −hi, 中桶边 ≈ 0), 解析解离真边虽只 ~1e-18,
-// 中间却隔着上亿个 float (0 附近 float 极密, 含全部 denormal), nextafterf 走不完 —— 实测整核卡死
-__device__ __forceinline__ float bin_edge(int b, float lo, float hi) {
-  const float xa = static_cast<float>(lo + (static_cast<double>(hi) - lo) * b / kBuckets);
-  uint32_t kl, kh;
-  if (dev::bin_of(xa, lo, hi) >= b) {
-    kh = fkey(xa);
-    const float xd = nextafterf(xa, -FLT_MAX);
-    kl = dev::bin_of(xd, lo, hi) < b ? fkey(xd) : fkey(lo); // bin(lo) = 0 < b
-  } else {
-    kl = fkey(xa);
-    const float xu = nextafterf(xa, FLT_MAX);
-    kh = dev::bin_of(xu, lo, hi) >= b ? fkey(xu) : fkey(hi); // bin(hi) = 255 ≥ b
-  }
-  while (kh - kl > 1u) { // ≤ 32 步; [key(lo), key(hi)] 内每个键都是有限 float (含 −0 → 与 +0 同桶)
-    const uint32_t km = kl + ((kh - kl) >> 1);
-    if (dev::bin_of(funkey(km), lo, hi) >= b)
-      kh = km;
-    else
-      kl = km;
-  }
-  return funkey(kh);
 }
 
 // ---- 位向量 + 每字前缀: rank1(i) = [0, i) 内 1 的个数 ----
@@ -1066,28 +1038,31 @@ __device__ inline void build_wm(WMat<NCAP> &wm, uint16_t *seq, int N, typename c
   }
 }
 
-// 窗 [l,r) 内 "值 < th" 的有效样本数 (无效样本名次 ≥ nvalid, 二分只在有效段)
-template <int NCAP>
-__device__ __forceinline__ int count_below(const WMat<NCAP> &wm, const uint32_t *sorted, int nvalid, int l, int r, int n, float th) {
-  const int v = lower_bound(sorted, nvalid, fkey(th));
-  return v >= nvalid ? n : wm.count_less(l, r, v);
+// 首个 > key 的下标 ∈ [0, n]
+__device__ __forceinline__ int upper_bound(const uint32_t *s, int n, uint32_t key) {
+  int lo = 0, hi = n;
+  while (lo < hi) {
+    const int mid = (lo + hi) >> 1;
+    if (s[mid] <= key)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo;
 }
 
-// pct rank (并列均秩). 相对型: x_t 无效则无效 (x_t 有效 ⇒ n ≥ 1); 全并列 → 0.5
+// pct rank (并列均秩, 精确: 契约【精确秩】). 键 < key(x_t) / ≤ key(x_t) 的名次界二分得, 窗内计数各一次 count_less;
+// 相对型: x_t 无效则无效 (x_t 有效 ⇒ 窗含它自身); 全并列 → pct_of 自然给 0.5
 struct HRank {
   template <int NCAP>
   __device__ static void emit(const WMat<NCAP> &wm, const uint32_t *sorted, int nvalid, int l, int r, int n, float x, bool xin, const Param &, float &v, bool &m) {
     m = xin;
     if (!m)
       return;
-    const float lo = funkey(sorted[wm.quantile(l, r, 1)]), hi = funkey(sorted[wm.quantile(l, r, n)]);
-    if (!(hi > lo)) {
-      v = 0.5f;
-      return;
-    }
-    const int b = dev::bin_of_fast(x, lo, hi); // 与 bin_of 逐位一致 (见 dev::bin_of_fast)
-    const int less = b == 0 ? 0 : count_below(wm, sorted, nvalid, l, r, n, bin_edge(b, lo, hi));
-    const int le = b == kBuckets - 1 ? n : count_below(wm, sorted, nvalid, l, r, n, bin_edge(b + 1, lo, hi));
+    const uint32_t kx = fkey(x);
+    const int vl = lower_bound(sorted, nvalid, kx), vu = upper_bound(sorted, nvalid, kx);
+    const int less = vl >= nvalid ? n : wm.count_less(l, r, vl);
+    const int le = vu >= nvalid ? n : wm.count_less(l, r, vu);
     v = dev::pct_of(less, le - less, n);
   }
 };

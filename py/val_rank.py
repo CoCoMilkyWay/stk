@@ -28,14 +28,26 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "output" / "features" / "all" / "bar"
-LISTS = ROOT / "output" / "config" / "live" / "lists"  # 调仓名单 (live/Rebal.hpp: 首列 6 位代码, 行序 = 排名)
+LISTS = (
+    ROOT / "output" / "config" / "live" / "lists"
+)  # 调仓名单 (live/Rebal.hpp: 首列 6 位代码, 行序 = 排名)
 LEVEL = "L_1day"
 MAGIC = 0x0000325941445446  # FeatureFileHeader::kMagic
 POOLS = (  # (名单后缀, 子池名; output/config/beta/pools.json)
-    ("A", "size.low.100.day.eq.nost.sh_main+sz_main+star+chinext.nonmargin.nowarn"),  # 小盘100A
-    ("B", "size.low.100.day.eq.nost.sh_main+sz_main+star+chinext.margin.nonew+nowarn"),  # 小盘100B
+    (
+        "A",
+        "size.low.100.day.eq.nost.sh_main+sz_main+star+chinext.nonmargin.nowarn",
+    ),  # 小盘100A
+    (
+        "B",
+        "size.low.100.day.eq.nost.sh_main+sz_main+star+chinext.margin.nonew+nowarn",
+    ),  # 小盘100B
 )
-HIST_YEARS, READY_YEARS, HIST_K = 5, 1, 10.0  # Panel/Fund.cpp kHistYears / kHistReady / kHistK
+HIST_YEARS, READY_YEARS, HIST_K = (
+    5,
+    1,
+    10.0,
+)  # Panel/Fund.cpp kHistYears / kHistReady / kHistK
 CURV_YEARS, CURV_MIN = 3, 120  # Panel/Fund.cpp kCurvYears / kCurvMin
 CONTOUR_TRIM = 0.02  # LinesView.hpp kContourTrim (最低等值线 = 全史倍数的此分位)
 COVER = 0.8  # PoolSelect.hpp kCover
@@ -186,33 +198,47 @@ class History:  # 成分的估值史: 行 = T0 之前的全部落盘日, 列 = �
             x = lib.read(d, HIST_COLS)
             for k in HIST_COLS:
                 c[k][r] = x[k][mem]
-        prev = lambda x: np.vstack([x[:1], x[:-1]]).astype(np.float64)  # 前一行: T ≤ D 的股本 (收盘口) / 复权因子
+        prev = lambda x: np.vstack([x[:1], x[:-1]]).astype(
+            np.float64
+        )  # 前一行: T ≤ D 的股本 (收盘口) / 复权因子
         sh = prev(c["total_shares"])
         mc = c["close_day"] * sh
         with np.errstate(divide="ignore", invalid="ignore"):
             self.bp = np.where(live(c) & (mc > 0), c["bs_eq"] / mc, np.nan)
-            unit = np.where(self.bp > 0, prev(c["adj_factor"]) * c["bs_eq"] / sh, np.nan)  # 等值线的单位 = 后复权 BPS; 倍数 m 的线 = m · 单位
+            unit = np.where(
+                self.bp > 0, prev(c["adj_factor"]) * c["bs_eq"] / sh, np.nan
+            )  # 等值线的单位 = 后复权 BPS; 倍数 m 的线 = m · 单位
         self.ymd = np.array(days)
         self.dd = np.array([ymd_days(d) for d in days])
         self.m_lo = np.array([self.lowest(self.bp[:, j]) for j in range(len(mem))])
         self.curv = np.array([self.bend(unit[:, j], t0) for j in range(len(mem))])
 
     @staticmethod
-    def lowest(bp):  # 最低等值线的倍数: 全史 PB (BP > 0) 的 CONTOUR_TRIM 分位 (同 VAL levels_of 的取点); 无 → NaN
+    def lowest(
+        bp,
+    ):  # 最低等值线的倍数: 全史 PB (BP > 0) 的 CONTOUR_TRIM 分位 (同 VAL levels_of 的取点); 无 → NaN
         m = np.sort(1.0 / bp[bp > 0])
         return m[int(CONTOUR_TRIM * (m.size - 1))] if m.size else math.nan
 
-    def bend(self, u, t0):  # 底线 u 近 3 年二次 OLS 的 2c (年⁻², u 除以窗内均值); 不可算 → NaN
+    def bend(
+        self, u, t0
+    ):  # 底线 u 近 3 年二次 OLS 的 2c (年⁻², u 除以窗内均值); 不可算 → NaN
         win = np.isfinite(u) & (self.ymd > before(t0, CURV_YEARS))
         if win.sum() < CURV_MIN or self.ymd[win][0] > before(t0, READY_YEARS):
             return math.nan
         t = (self.dd[win] - self.dd[win][0]) / 365.25
         return 2.0 * np.polyfit(t, u[win] / u[win].mean(), 2)[0]
 
-    def pct(self, j, t0, now):  # 成分 j 在 T0 实时 BP = now 下的 5 年加权分位 (%); 不可算 = NaN
+    def pct(
+        self, j, t0, now
+    ):  # 成分 j 在 T0 实时 BP = now 下的 5 年加权分位 (%); 不可算 = NaN
         bp = self.bp[:, j]
         ok = np.isfinite(bp)
-        if not math.isfinite(now) or not ok.any() or self.ymd[ok][0] > before(t0, READY_YEARS):
+        if (
+            not math.isfinite(now)
+            or not ok.any()
+            or self.ymd[ok][0] > before(t0, READY_YEARS)
+        ):
             return math.nan
         lo, d0 = before(t0, HIST_YEARS), ymd_days(t0)
         win = ok & (self.ymd > lo)
@@ -337,7 +363,9 @@ def main():
     LISTS.mkdir(parents=True, exist_ok=True)
     out, off = [], 0
     for (tag, pool), m in zip(POOLS, mems):
-        part = sorted(rows[off : off + m.size], key=lambda r: (not math.isfinite(r[0]), r[0]))
+        part = sorted(
+            rows[off : off + m.size], key=lambda r: (not math.isfinite(r[0]), r[0])
+        )
         off += m.size
         ranked = [r for r in part if math.isfinite(r[0])][: a.top]
         path = LISTS / f"{a.list}{tag}.csv"

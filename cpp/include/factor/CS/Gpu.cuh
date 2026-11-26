@@ -16,6 +16,7 @@
 //   【归约】cub::BlockReduce (float) + cub::BlockScan (桶前缀), 自带 warp shfl.
 //     计数用 float 归约: cnt ≤ 2²⁴ 内 float 表示精确, 省一套 TempStorage.
 //   【两遍】高阶矩一律两遍: 第一趟求 μ, 第二趟在 (x−μ) 上求 M2/Cxy (不用 Σx² 单遍式).
+//   【精确秩】CsRank / CsNormRank 另走核 k::exact_rank: 池内保序键 cub::BlockRadixSort (A ≤ kMaxA) → 每格二分 less / eq.
 //   【HIST】片上 256 桶直方图 (shared atomicAdd) + BlockScan 前缀, 一行两套桶 (x / y).
 //   【GROUP】shared 累加槽 kGrpCap = 1024 组 (行业约 30), 无 global atomic 争用; 组极值用保序整数编码 atomicMin/Max.
 //     CsGroupRank 每批 kGB = 16 组一起建 uint16 打包的 256 桶直方图 (一 warp 一组原地前缀), 趟数与 G 无关 (每批 2 趟).
@@ -370,6 +371,76 @@ __global__ void row(const float *xv, const uint8_t *xm, const float *yv, const u
   Op::row(sh, xv, xm, yv, ym, zv, zm, gm, ov, om, blockIdx.x * A, A, p);
 }
 
+// ---- 精确秩 (CsRank / CsNormRank; 契约【精确秩】): 一行一 block, 池内样本的保序键片上基数排序 → 每格二分 less / eq ----
+//   ITEMS (每线程键数) 按 A 分四级 2 / 6 / 10 / 16 (A ≤ 1024 / 3072 / 5120 / 8192 = kMaxA); 排序暂存与排好的键分时共用 shared.
+//   Op::emit(pct, n) = 由夹到 [0, 1] 的 pct 与池内样本数 n 出值
+inline constexpr uint32_t kPadKey = 0xffffffffu; // 池外 / 无效 / 补位格的键 (有限 float 的键 ≤ 0xff7fffff), 排最后
+__device__ __forceinline__ uint32_t ukey(float f) { return static_cast<uint32_t>(ord(f)) ^ 0x80000000u; }
+__device__ __forceinline__ int lower_bound(const uint32_t *s, int n, uint32_t key) { // 首个 ≥ key
+  int lo = 0, hi = n;
+  while (lo < hi) {
+    const int mid = (lo + hi) >> 1;
+    if (s[mid] < key)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo;
+}
+__device__ __forceinline__ int upper_bound(const uint32_t *s, int n, uint32_t key) { // 首个 > key
+  int lo = 0, hi = n;
+  while (lo < hi) {
+    const int mid = (lo + hi) >> 1;
+    if (s[mid] <= key)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo;
+}
+template <int ITEMS, class Op>
+__global__ void __launch_bounds__(kCB) exact_rank(const float *xv, const uint8_t *xm, const uint8_t *gm, float *ov, uint8_t *om, int A) {
+  constexpr int N = kCB * ITEMS;
+  using Sort = cub::BlockRadixSort<uint32_t, kCB, ITEMS>;
+  __shared__ union {
+    typename Sort::TempStorage sort;
+    uint32_t key[N];
+  } sh;
+  const int base = blockIdx.x * A;
+  uint32_t keys[ITEMS];
+#pragma unroll
+  for (int j = 0; j < ITEMS; ++j) {
+    const int a = threadIdx.x * ITEMS + j; // blocked 排布 (cub 要求)
+    keys[j] = (a < A && (xm[base + a] & gm[base + a])) ? ukey(xv[base + a]) : kPadKey;
+  }
+  Sort(sh.sort).Sort(keys);
+  __syncthreads(); // 排序暂存与键数组是同一块 shared, 复用前全员过线
+#pragma unroll
+  for (int j = 0; j < ITEMS; ++j)
+    sh.key[threadIdx.x * ITEMS + j] = keys[j];
+  __syncthreads();
+  const int n = lower_bound(sh.key, N, kPadKey);
+  for (int a = threadIdx.x; a < A; a += kCB) {
+    const int i = base + a;
+    const uint32_t kx = ukey(xv[i]);
+    const int less = lower_bound(sh.key, n, kx), eq = upper_bound(sh.key, n, kx) - less;
+    dev::store(ov, om, i, Op::emit(fminf(fmaxf(dev::pct_of(less, eq, n), 0.f), 1.f), n), xm[i]);
+  }
+}
+template <class Op>
+inline void exact_rank_launch(const Call &c, cudaStream_t stream) {
+  assert(c.g != nullptr && c.o.v && c.o.m && c.A >= 1 && c.A <= factor::stat::kMaxA && static_cast<long long>(c.T) * c.A < (1LL << 31));
+  if (c.A <= kCB * 2)
+    exact_rank<2, Op><<<c.T, kCB, 0, stream>>>(c.x.v, c.x.m, c.g, c.o.v, c.o.m, c.A);
+  else if (c.A <= kCB * 6)
+    exact_rank<6, Op><<<c.T, kCB, 0, stream>>>(c.x.v, c.x.m, c.g, c.o.v, c.o.m, c.A);
+  else if (c.A <= kCB * 10)
+    exact_rank<10, Op><<<c.T, kCB, 0, stream>>>(c.x.v, c.x.m, c.g, c.o.v, c.o.m, c.A);
+  else
+    exact_rank<16, Op><<<c.T, kCB, 0, stream>>>(c.x.v, c.x.m, c.g, c.o.v, c.o.m, c.A);
+  FACTOR_CUDA_OK(cudaGetLastError());
+}
+
 } // namespace k
 
 // =============================================================================
@@ -446,51 +517,25 @@ FACTOR_CS_RED(CsCorr, 2, {
   m = true;
 })
 
-// ---- HIST (5): 片上 256 桶 ----
-//   样本集 S = 本行有效值, lo/hi = min/max(S). 全并列 (!spread) 时按契约给中性值.
+// ---- 序统计 (5): 秩两个走精确核, 分位 / 缩尾 / 分桶走片上 256 桶 ----
+//   样本集 S = 本行池内有效值, lo/hi = min/max(S). 全并列 (!spread) 时按契约给中性值.
 
-// pct rank (并列均秩)
+// pct rank (并列均秩, 精确: k::exact_rank); 空池 / 池内全并列 → 0.5
 struct CsRank {
-  using Self = CsRank;
-  __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, const uint8_t *gm, float *ov, uint8_t *om, int base, int A,
-                             const Param &) {
-    const k::GetX g{xv, xm, gm, base};
-    int cnt;
-    float lo, hi;
-    k::span_row(sh, g, A, cnt, lo, hi);
-    const bool rok = cnt >= 1 && dev::spread(lo, hi);
-    if (rok)
-      k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
-    for (int a = threadIdx.x; a < A; a += kCB) { // 空池 / 全并列 → row_pct 给 0.5
-      const int i = base + a;
-      dev::store(ov, om, i, k::row_pct(sh.cb, sh.pre, cnt, lo, hi, rok, xv[i]), xm[i]);
-    }
-  }
-  FACTOR_CS_RUN()
+  __device__ static float emit(float pct, int) { return pct; }
+  static size_t scratch(const Call &) { return 0; }
+  static void run(const Call &c, void *, cudaStream_t stream) { k::exact_rank_launch<CsRank>(c, stream); }
 };
-// Φ⁻¹(clamp(pct, 1/(N+1), N/(N+1))); 空池 → pct 0.5 夹到 [1/2, 1/2] → Φ⁻¹(0.5) = 0
+// Φ⁻¹(clamp(pct, 1/(N+1), N/(N+1))) (精确秩); 空池 → pct 0.5 夹到 [1/2, 1/2] → Φ⁻¹(0.5) = 0
 //   注: host 侧用 Contract::probit (Wichura AS241), 这里用 CUDA 自带 normcdfinvf, 两者差 ~1e-7
 //   → **本算子对拍容差要单独放宽** (Contract.hpp 的注释里也已写明)
 struct CsNormRank {
-  using Self = CsNormRank;
-  __device__ static void row(k::Sh &sh, const float *xv, const uint8_t *xm, const float *, const uint8_t *, const float *, const uint8_t *, const uint8_t *gm, float *ov, uint8_t *om, int base, int A,
-                             const Param &) {
-    const k::GetX g{xv, xm, gm, base};
-    int cnt;
-    float lo, hi;
-    k::span_row(sh, g, A, cnt, lo, hi);
-    const bool rok = cnt >= 1 && dev::spread(lo, hi);
-    if (rok)
-      k::hist_row(sh, g, A, lo, hi, sh.cb, sh.pre);
-    const float fn = static_cast<float>(max(cnt, 1));
-    for (int a = threadIdx.x; a < A; a += kCB) {
-      const int i = base + a;
-      const float pct = k::row_pct(sh.cb, sh.pre, cnt, lo, hi, rok, xv[i]);
-      const float cl = fminf(fmaxf(pct, 1.f / (fn + 1.f)), fn / (fn + 1.f));
-      dev::store(ov, om, i, normcdfinvf(cl), xm[i]);
-    }
+  __device__ static float emit(float pct, int n) {
+    const float fn = static_cast<float>(max(n, 1));
+    return normcdfinvf(fminf(fmaxf(pct, 1.f / (fn + 1.f)), fn / (fn + 1.f)));
   }
-  FACTOR_CS_RUN()
+  static size_t scratch(const Call &) { return 0; }
+  static void run(const Call &c, void *, cudaStream_t stream) { k::exact_rank_launch<CsNormRank>(c, stream); }
 };
 // 中位数 / k 分位 广播 (桶近似下不做偶数上下平均); 空池 → 0
 #define FACTOR_CS_QUANT(Name, QEXPR)                                                                                                                                                               \

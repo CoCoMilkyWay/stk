@@ -99,7 +99,8 @@ struct HoldPoints {
   HoldPoint open, close;
 };
 HoldPoints hold_points(int hold, FactorLevelId lv);
-std::string hold_desc(int hold, FactorLevelId lv); // "开仓: C(层) @ 价, 清仓: 点 @ 价"
+std::string hold_desc(int hold, FactorLevelId lv);     // "开仓: C(层) @ 价, 清仓: 点 @ 价"
+std::vector<std::string> row_clocks(FactorLevelId lv); // [seg] 各行的行末时刻 HH:MM (日层 = 15:00)
 // 因子目录: 一组因子文件 <名>.json (file 节点, 键定到目录) + 各自的 Search 日志 <名>.log (log 节点, 同键, 在 run/ 下同构位置).
 //   正式 = output/factors/<池>/<层>/; Agent 候选 = 会话作用域的 factors/ (gui/task_agent/Bridge.cpp)
 struct FactorDir {
@@ -203,7 +204,7 @@ struct FeatureTable {
   // 模板的自由 h 落为 hold 再解析 (Search / 权重比对按所评持有期; 无自由 h 即 reparse)
   factor::expr::Expr reparse_at(std::string_view canon, int hold) const;
 };
-// LB 列按 code 识别: Bar 档 lb_<long|short>_<name> 标签 (name = <n>m / close / t<N>o / t<N>c → 持有期键, Stat/Contract.hpp) + lb_entry_ok;
+// LB 列按 code 识别: Bar 档 lb_<long|short>_<name> 标签 (name = <n>m / close / t<N>o / t<N> → 持有期键, Stat/Contract.hpp) + lb_entry_ok;
 // Lob 档 lb_cost_<buy|sell>_<amt>w 建仓冲击 (盘口段)
 FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId lv);
 // 按层缓存的字段表 (每进程代一份, Alpha / Market / Agent 线程安全共享): 首次用到该层时建

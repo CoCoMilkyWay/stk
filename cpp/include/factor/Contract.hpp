@@ -75,12 +75,12 @@
 //          Sum                  n = 0 → 0 (空和)                 Mean / Max / Min / ArgMax / ArgMin / Wma / Quantile   n = 0 → 0
 //          Var / Std            n < 2 或全并列 → 0                Skew (n < 3) / Kurt (n < 4) / 全并列 → 0
 //          Z                    σ 退化 → 0 (x = μ)               Cov (n < 2) / Corr (无离散度) / Beta (y 无离散度) / Slope (n < 2) → 0
-//          Resid                y 无离散度 → β = 0, 即 x − μ^x    Rank   全并列或 n = 0 → 0.5 (pct_of 的 m ≤ 1 同值)
+//          Resid                y 无离散度 → β = 0, 即 x − μ^x    Rank   全并列或 n ≤ 1 → 0.5 (精确秩的 pct_of 自然给出, 见【精确秩】)
 //          Hhi                  Σx 相消 → 1/n (均匀的极限)        Entropy 无正样本 → 0 (单样本熵 = 0 的极限)
 //          WMean                Σy 相消 → Σx/n (等权的极限)       Product 精确算 Π(1+x) − 1 (含 1+x ≤ 0: 零因子 → −1, 负因子计奇偶)
 //          Imb / Share          和相消 → 0 / 0.5                 Div / Recip  除数 0 → 0
 //          Ema                  窗内无有效样本 → 0                 LogRatio 比值夹到 [ε, 1/ε] (ε = kRelEps): x ≤ 0 → −kLogCap, y ≤ 0 → +kLogCap, 双非正 → 0
-//          CS 同表: 空池行广播 0, Demean / Winsor → x 原值, Z → 0, Resid → x − μ^x, Rank / GroupRank → 0.5,
+//          CS 同表: 空池行广播 0, Demean / Winsor → x 原值, Z → 0, Resid → x − μ^x, Rank / GroupRank → 0.5 (Rank 的池外格见【精确秩】),
 //                   NormRank → Φ⁻¹(0.5) = 0, Bucket → floor(0.5·k), GroupMean 组空 → 全池, 全池空 → 0.
 //                   Group*: 组 id 格有效但 < 0 (未知行业) = 无组 → 以全池为组 (GroupMean 全池均值, GroupRank 全池分位, GroupResid 按全池去均值);
 //                           只有组 id 格**无效**才无效.
@@ -543,7 +543,12 @@ inline float probit(double p) {
   return static_cast<float>(q < 0 ? -v : v);
 }
 
-// ---- 分桶规则 (序统计族: 三后端共用同一规则, 故桶计数是整数, 对拍可严格逐位) ----
+// ---- 【精确秩】TsRankCum / TsRankRoll / CsRank / CsNormRank (因子根的归一算子全在其中) ----
+//   less / eq = 样本集里 < x / = x 的个数 (float 判等, ±0 同值), pct = pct_of(less, eq, n); 计数是整数 → 三后端逐位一致.
+//   不用桶近似: 等宽桶的分辨率由极值定, 重尾输入一个离群点就把其余样本压进同一桶, 根的输出成大块并列, Stat 再精确也拆不开.
+//   TS 样本集含 x_t 自身 (eq ≥ 1). CS 样本集 = 池内; 池外格 eq 可为 0 (落在相邻两池样本秩的中点), 夹到 [0, 1].
+//   全并列 → pct_of 自然给 0.5 (池外格按自身位置给 0 / 0.5 / 1).
+// ---- 分桶规则 (其余序统计族: 分位 / 缩尾 / 分桶 / 组秩 / 线性序合成; 三后端共用同一规则, 故桶计数是整数, 对拍可严格逐位) ----
 //   lo/hi = 样本集的 min/max. 全并列 (!spread) → 由各算子给中性值.
 //   误差相对于"真序统计"是桶宽量级 (kBuckets 分辨率), 但三后端之间**没有**误差.
 inline int bin_of(float x, float lo, float hi) {

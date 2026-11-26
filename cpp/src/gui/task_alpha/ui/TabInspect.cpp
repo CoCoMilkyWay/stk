@@ -17,6 +17,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -154,18 +155,53 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   d.ic_cum.resize(static_cast<size_t>(T));
   d.ic_dd.resize(static_cast<size_t>(T));
   double ic_sum = 0.0, ic_peak = 0.0;
+  std::vector<double> tod_s(static_cast<size_t>(S), 0.0);
+  std::vector<int> tod_n(static_cast<size_t>(S), 0);
   for (int t = 0; t < T; ++t) {
     if (!std::isnan(ric[t])) {
       ics.push_back(ric[t]);
       ic_sum += ric[t];
+      tod_s[static_cast<size_t>(t % S)] += ric[t];
+      ++tod_n[static_cast<size_t>(t % S)];
     }
     ic_peak = std::max(ic_peak, ic_sum);
     d.ic_cum[static_cast<size_t>(t)] = static_cast<float>(ic_sum);
     d.ic_dd[static_cast<size_t>(t)] = static_cast<float>(ic_peak - ic_sum);
     d.ic_dd_max = std::max(d.ic_dd_max, d.ic_dd[static_cast<size_t>(t)]);
   }
+  d.tod_ic.assign(static_cast<size_t>(S), std::numeric_limits<float>::quiet_NaN());
+  for (size_t s = 0; s < static_cast<size_t>(S); ++s)
+    if (tod_n[s])
+      d.tod_ic[s] = static_cast<float>(tod_s[s] / tod_n[s]);
   d.ic_pdf = res.ic_agg[sel];
   d.valid = true;
+}
+
+// TS 口径的日内端组占用: 每行池内有效格 (rx 已按所评方向定向) 落 G20 / G1 的占比, 按行号沿交易日取均值 (该行无有效格的日不计)
+void derive_occ(const InspectResult &res, InspectUIState::TodOcc &o) {
+  const int A = res.scope.A, T = res.scope.T, S = factor_level(res.lv).seg;
+  assert(res.pl.rx.size() == static_cast<size_t>(T) * A);
+  std::vector<double> top(static_cast<size_t>(S), 0.0), bot(static_cast<size_t>(S), 0.0);
+  std::vector<int> nd(static_cast<size_t>(S), 0);
+  for (int t = 0; t < T; ++t) {
+    const uint16_t *row = res.pl.rx.data() + static_cast<size_t>(t) * A;
+    int n = 0, nt = 0, nb = 0;
+    for (int a = 0; a < A; ++a) {
+      if (row[a] == factor::stat::kRankNone)
+        continue;
+      const int g = factor::stat::grp_of(row[a]);
+      ++n, nt += g == K - 1, nb += g == 0;
+    }
+    if (!n)
+      continue;
+    const size_t s = static_cast<size_t>(t % S);
+    top[s] += static_cast<double>(nt) / n, bot[s] += static_cast<double>(nb) / n, ++nd[s];
+  }
+  o.top.assign(static_cast<size_t>(S), std::numeric_limits<float>::quiet_NaN());
+  o.bot = o.top;
+  for (size_t s = 0; s < static_cast<size_t>(S); ++s)
+    if (nd[s])
+      o.top[s] = static_cast<float>(top[s] / nd[s]), o.bot[s] = static_cast<float>(bot[s] / nd[s]);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -778,6 +814,63 @@ void plot_ic(const InspectDerived &d, const ImVec2 &size) {
 void plot_alpha(const InspectDerived &d, const ImVec2 &size) {
   const AlphaDist &a = d.adist;
   plot_dist({"因子分布###alpha", "alpha", "alpha(t)", a.pdf, a.series, a.mean, 0.0, &a}, size);
+}
+
+// 右下左半: 日内 rIC — 当前 Hold 的逐行 rIC 按行号沿全部交易日取均值 (InspectDerived::tod_ic, 只计 ok 行; 无样本的行断开); 横轴 = 行末时刻.
+// TS 口径另叠 G20 / G1 各行的平均占用率 (右轴 %; 均匀 = 5%): 时序分位的端组随日内时刻挤满 / 挤空. 悬停报该行读数
+void plot_tod(const InspectDerived &d, const InspectUIState::TodOcc &occ, const std::vector<std::string> &clock, const ImVec2 &size) {
+  const int S = static_cast<int>(d.tod_ic.size());
+  assert(S > 1 && clock.size() == static_cast<size_t>(S));
+  const bool has_occ = !occ.top.empty();
+  assert(!has_occ || (occ.top.size() == static_cast<size_t>(S) && occ.bot.size() == static_cast<size_t>(S)));
+  const char *title = "日内 rIC###tod";
+  fit_on_change(title, ImHashData(d.tod_ic.data(), sizeof(float) * d.tod_ic.size(), ImHashData(occ.top.data(), sizeof(float) * occ.top.size())),
+                {ImAxis_Y1, ImAxis_Y2});
+  if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus))
+    return;
+  CompactLegend cl;
+  constexpr int kTicks = 7;
+  const int nt = std::min(S, kTicks);
+  std::vector<double> xs(static_cast<size_t>(S)), ic(static_cast<size_t>(S)), tp;
+  std::vector<const char *> tl;
+  for (int s = 0; s < S; ++s)
+    xs[static_cast<size_t>(s)] = s, ic[static_cast<size_t>(s)] = d.tod_ic[static_cast<size_t>(s)];
+  for (int i = 0; i < nt; ++i) {
+    const int r = static_cast<int>(std::lround(static_cast<double>(i) * (S - 1) / (nt - 1)));
+    tp.push_back(r);
+    tl.push_back(clock[static_cast<size_t>(r)].c_str());
+  }
+  ImPlot::SetupAxes("行末时刻", "rIC", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
+  ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
+  ImPlot::SetupAxisTicks(ImAxis_X1, tp.data(), nt, tl.data());
+  follow_limits(ImAxis_X1, -0.5, S - 0.5);
+  if (has_occ)
+    ImPlot::SetupAxis(ImAxis_Y2, "端组占用 (%)", ImPlotAxisFlags_AuxDefault);
+  const double zero = 0.0;
+  ImPlot::SetNextLineStyle(ImVec4(0.5f, 0.5f, 0.5f, 0.6f), 1.f);
+  ImPlot::PlotInfLines("##tod_zero", &zero, 1, ImPlotInfLinesFlags_Horizontal);
+  ImPlot::SetNextLineStyle(kColLS, 2.f);
+  ImPlot::PlotLine("rIC", xs.data(), ic.data(), S);
+  std::vector<double> top, bot;
+  if (has_occ) {
+    top.resize(static_cast<size_t>(S)), bot.resize(static_cast<size_t>(S));
+    for (size_t s = 0; s < static_cast<size_t>(S); ++s)
+      top[s] = 100.0 * occ.top[s], bot[s] = 100.0 * occ.bot[s];
+    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+    ImPlot::SetNextLineStyle(kColTop, 1.f);
+    ImPlot::PlotLine("G20 占用", xs.data(), top.data(), S);
+    ImPlot::SetNextLineStyle(kColBottom, 1.f);
+    ImPlot::PlotLine("G1 占用", xs.data(), bot.data(), S);
+    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+  }
+  if (ImPlot::IsPlotHovered()) {
+    const size_t r = static_cast<size_t>(std::clamp(static_cast<int>(std::lround(ImPlot::GetPlotMousePos().x)), 0, S - 1));
+    if (has_occ)
+      ImGui::SetTooltip("%s  rIC %+.4f\nG20 占用 %.1f%%  G1 占用 %.1f%%", clock[r].c_str(), ic[r], top[r], bot[r]);
+    else
+      ImGui::SetTooltip("%s  rIC %+.4f", clock[r].c_str(), ic[r]);
+  }
+  ImPlot::EndPlot();
 }
 
 // 右下: 期限结构 = 全部持有期的 G20 / G1 (两端做多超额) / LS (= ½ (G20 − G1)) 均值, PCHIP 圆滑折线 + 节点圆点.
@@ -1446,6 +1539,11 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
       else
         d = InspectDerived{};
     });
+    ui.occ.update(ep, [&](InspectUIState::TodOcc &o) {
+      o = {};
+      if (res_has && res.frame == factor::stat::Frame::TS && factor_level(res.lv).seg > 1)
+        derive_occ(res, o);
+    });
     // 右上: 资产轴 (光标日序) / 选中资产 R(t) 列 / K 线请求期望态 —— 都要读 res.pl.rx / read_scope, 在锁内派生, 出锁只留派生
     if (res_has && ui.der.val.valid) {
       if (ui.cursor_day < 0 || ui.cursor_day > ui.der.val.days)
@@ -1703,15 +1801,26 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   } else
     empty_plot("IC 分布###ic", cell, wait_hint);
   ImGui::SameLine();
-  // 右下 期限结构: Inspect 结果优先, 否则 Factors 表的 stat (row.hold + row.costs; 两者都是毛 + 全部金额段, 同一份 CostTier)
+  // 右下一格分两半: 日内 rIC | 期限结构 (日层只有一行: 期限结构占满)
+  ImVec2 term = cell;
+  if (factor_level(ft.lv).seg > 1) {
+    term = ImVec2(std::max(50.f, (cell.x - sp) * 0.5f), cell.y);
+    ui.clock.update(ft.lv, [&](std::vector<std::string> &c) { c = Engine::row_clocks(ft.lv); });
+    if (shown && der.valid && der.tod_ic.size() == ui.clock.val.size())
+      plot_tod(der, ui.occ.val, ui.clock.val, term);
+    else
+      empty_plot("日内 rIC###tod", term, wait_hint);
+    ImGui::SameLine();
+  }
+  // 期限结构: Inspect 结果优先, 否则 Factors 表的 stat (row.hold + row.costs; 两者都是毛 + 全部金额段, 同一份 CostTier)
   if (shown) {
     plot_term(res_ev.hold, n_hold, res_ev.costs.data(), static_cast<int>(res_ev.costs.size()), res_pool_ann.data(), ctx.fixed_impact, ui.hold_idx,
-              "Inspect", cell);
+              "Inspect", term);
   } else if (row.has_stat && row.n_hold == n_hold) {
     plot_term(row.hold, n_hold, row.costs.data(), static_cast<int>(row.costs.size()), nullptr, ctx.fixed_impact, ui.hold_idx,
-              row.stat_from_file ? "文件 stat" : "Factors Run", cell);
+              row.stat_from_file ? "文件 stat" : "Factors Run", term);
   } else {
-    empty_plot("期限结构###term", cell, "无 stat (Factors 页 Run 或此处 Recompute)");
+    empty_plot("期限结构###term", term, "无 stat (Factors 页 Run 或此处 Recompute)");
   }
   return action;
 }

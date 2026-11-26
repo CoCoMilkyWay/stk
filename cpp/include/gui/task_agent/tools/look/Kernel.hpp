@@ -160,15 +160,18 @@ struct RankScratch {
     rank_into(x, a), rank_into(y, b);
     return pearson(a, b);
   }
-  bool approx_ranked(std::span<const double> rx, std::span<const double> y, std::span<const double> ry, st::Row &w) const {
+  // 近似分层: 全部格按 rx 的秩分 20 组, 组超额只收开仓价点可买的格 (buy; 与真持有同一建仓判据, 交接续持链不追); ric 用全部格 (同 Row)
+  bool approx_ranked(std::span<const double> rx, std::span<const double> y, std::span<const double> ry, std::span<const uint8_t> buy, st::Row &w) const {
     const size_t n = rx.size();
+    assert(y.size() == n && ry.size() == n && buy.size() == n);
     if (n < static_cast<size_t>(kMinCs))
       return false;
     w = {};
     double s[kGroups] = {};
     for (size_t i = 0; i < n; ++i) {
       const int k = std::min(static_cast<int>(rx[i] * kGroups / static_cast<double>(n)), kG20);
-      s[k] += y[i], ++w.cnt[k];
+      if (buy[i])
+        s[k] += y[i], ++w.cnt[k];
     }
     for (int k = 0; k < kGroups; ++k)
       w.grp[k] = static_cast<float>(w.cnt[k] ? s[k] / w.cnt[k] : 0.0);
@@ -176,11 +179,11 @@ struct RankScratch {
     w.ok = 1;
     return true;
   }
-  bool approx_row(std::span<const double> x, std::span<const double> y, st::Row &w) {
+  bool approx_row(std::span<const double> x, std::span<const double> y, std::span<const uint8_t> buy, st::Row &w) {
     if (x.size() < static_cast<size_t>(kMinCs))
       return false;
     rank_into(x, a), rank_into(y, b);
-    return approx_ranked(a, y, b, w);
+    return approx_ranked(a, y, b, buy, w);
   }
 };
 
@@ -621,6 +624,9 @@ struct ChunkView {
   std::span<const std::vector<HeldCell>> cells;    // [t_hi - t_lo]
   std::span<const factor::check::Plane *> feat_pl; // 与 feats 对齐 (坏式或解析失败为 nullptr)
 };
+
+// 格 k 的开仓价点可买 (真持有的建仓判据, Contract【仓位感知】)
+inline uint8_t buyable(const Engine::Block &blk, size_t k) { return blk.y.eo[k] & st::kEoBuy ? 1 : 0; }
 
 // 一行逐行池内标签均值 mkt(t)
 inline float row_mkt(const Engine::Block &blk, int t) {

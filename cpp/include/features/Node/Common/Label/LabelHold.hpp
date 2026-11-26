@@ -8,7 +8,7 @@
 //     行 m 的 entry 价点 (push_entry): 行末分钟 m 之后首个价点 (有成交连续竞价分钟; 再无 → 收盘价点).
 //     【建仓可成交码】ENTRY_COL (lb_entry_ok) = entry 价点 可买 1 | 可卖 2 (封涨停只可卖, 封跌停只可买). 两腿收益照写 (不作废):
 //       该行能否真建仓 / 已持仓能否续持 由消费端按持仓判 (Stat 契约【仓位感知】). 价点上不可能两向都堵 (无价点 = 无行).
-//     名义平仓价点: MIN = 行 m+n 的 entry 价点 (越过收盘 → 收盘价点); CLOSE = 当日收盘; OPEN = T+n 开盘; CLOSE_N = T+n 收盘.
+//     名义平仓价点: MIN = 行 m+n 的 entry 价点 (越过收盘 → 收盘价点); CLOSE = 当日收盘; OPEN = T+n 开盘; SAME_N = T+n 日行 m 的 entry 价点.
 //     【平仓顺延】名义价点上该腿平不了 (做多腿卖不出 / 做空腿买不回), 或名义日无成交 (停牌) → 该 (行, 组, 腿) 进等待,
 //       之后首个该腿可成交的价点平仓 (盘中价点 / 收盘 / 开盘; 分钟级 / 日级同一规则, 可跨日).
 //       等待到悬挂环满 (行所在日起 PEND_DAYS − 1 个交易日) 仍未平 → 按最近一次收盘价估值结清 (不管可成交).
@@ -196,7 +196,7 @@ protected:
   // 当日已定 entry 的行数 (行按锚点单调, 前缀)
   size_t n_entry() const { return pend_[cur_].n_entry; }
 
-  // 当日下一行的 entry 价点 (days_ago 恒 0): 写可成交码; 行 r 到位 = 行 r−n 的分钟型名义平仓到位; 再喂等待
+  // 当日下一行的 entry 价点 (days_ago 恒 0): 写可成交码; 行 r 到位 = 行 r−n 的分钟型名义平仓到位 = n 日前行 r 的同刻型名义平仓到位; 再喂等待
   template <class Writer>
   inline void push_entry(const LabelPx &e, Writer &&writer) {
     Pend &p = pend_[cur_];
@@ -208,9 +208,16 @@ protected:
       const float code = e.code();
       writer(ENTRY_COL, size_t{1}, r, &code, size_t{0});
     }
-    for (size_t h = 0; h < HOLD_COUNT; ++h)
-      if (LABEL_KIND[h] == HoldKind::MIN && r >= LABEL_N[h] && writer.rows(hold_col(h)).has(r - LABEL_N[h]))
-        exit_row(p, 0, h, r - LABEL_N[h], e, writer);
+    for (size_t h = 0; h < HOLD_COUNT; ++h) {
+      if (LABEL_KIND[h] == HoldKind::MIN) {
+        if (r >= LABEL_N[h] && writer.rows(hold_col(h)).has(r - LABEL_N[h]))
+          exit_row(p, 0, h, r - LABEL_N[h], e, writer);
+      } else if (LABEL_KIND[h] == HoldKind::SAME_N) { // n 日前排着本组 (该日有成交) → 其行 r 按本价点平
+        Pend &q = at(LABEL_N[h]);
+        if ((q.sched >> h & 1u) && writer.rows(hold_col(h)).has(r))
+          exit_row(q, LABEL_N[h], h, r, e, writer);
+      }
+    }
     resolve(e, writer);
   }
 
@@ -238,7 +245,8 @@ protected:
 
   // 收盘结算 (当日有无成交皆调). traded: 当日有收盘价点 close.
   //   尾部行 (其后再无盘中价点) 按收盘价点建仓;
-  //   分钟型尾部 (名义平仓过收盘) / 收盘型全行 → 收盘价点平仓; 名义今日收盘 (或今日开盘未到) 的日级组 → 收盘价点平仓; 再喂等待.
+  //   分钟型尾部 (名义平仓过收盘) / 收盘型全行 → 收盘价点平仓; 名义今日的开盘型 (今日开盘未到) → 收盘价点平仓;
+  //   名义今日的同刻型: 盘中各行已随 push_entry 平, 尾部行随收盘价点补齐; 再喂等待.
   //   无成交: 名义今日到期的日级组全部进等待. 之后环满的最老一日按最近收盘价结清, 写完的日按日序释放
   template <class Writer, class Release>
   inline void close_day(bool traded, const LabelPx &close, Writer &&writer, Release &&release) {
@@ -246,7 +254,7 @@ protected:
     for (size_t age = 1; age < PEND_DAYS; ++age) {
       Pend &q = at(age);
       for (size_t h = 0; h < HOLD_COUNT; ++h)
-        if ((q.sched >> h & 1u) && LABEL_N[h] <= age) { // OPEN 到期未开盘 (n == age) / CLOSE_N 到期 (n == age)
+        if ((q.sched >> h & 1u) && LABEL_N[h] <= age && !(traded && LABEL_KIND[h] == HoldKind::SAME_N)) { // OPEN 到期未开盘 / 无成交日到期
           if (traded)
             exit_rows(q, age, h, close, writer);
           else
@@ -259,6 +267,10 @@ protected:
       has_last_ = true;
       while (p.n_entry < TRADE_MINUTES_PER_DAY)
         push_entry(close, writer);
+      for (size_t age = 1; age < PEND_DAYS; ++age) // 名义今日的同刻型: 全部行已在 push_entry 平 (或进等待)
+        for (size_t h = 0; h < HOLD_COUNT; ++h)
+          if (LABEL_KIND[h] == HoldKind::SAME_N && LABEL_N[h] <= age)
+            at(age).sched &= ~(1u << h);
       for (size_t h = 0; h < HOLD_COUNT; ++h) {
         if (LABEL_KIND[h] == HoldKind::MIN) {
           for (size_t m = TRADE_MINUTES_PER_DAY - std::min(LABEL_N[h], TRADE_MINUTES_PER_DAY); m < TRADE_MINUTES_PER_DAY; ++m)

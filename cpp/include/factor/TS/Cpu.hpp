@@ -13,9 +13,9 @@
 //
 //   【算法】(按定义是 O(T·d·A) 重算, 本文件全部摊到 O(T·A) 或 O(T·A·B)):
 //     POINT   单遍逐元素
-//     EXPAND  沿 t 递推累加 (double 幂和), 段界 reset; 序统计 = 增量直方图 (段内 lo/hi 只扩不缩, 扩时重建)
+//     EXPAND  沿 t 递推累加 (double 幂和), 段界 reset; 秩 = 段内样本缓存上的精确计数 (O(S), 列向量化)
 //     ROLL    滑动加减幂和 (double); spread 判据要求精确 lo/hi → van Herk 分块前后缀滑窗极值;
-//             序统计 = 环形窗缓存 + 直方图 (lo/hi 未变则增量改桶, 变了整窗重建)
+//             秩 = 环形窗缓存上的精确计数 (O(d), 列向量化); 分位 = 环形窗缓存 + 直方图 (lo/hi 未变则增量改桶, 变了整窗重建)
 //     EXPO    沿 t 递推
 //
 //   【数值】滑动加减幂和相对整窗重算有 O(ε_double) 漂移; 近 ulp 简并窗 (真中心矩 ≈ double 舍入噪声)
@@ -611,63 +611,51 @@ struct ExpExt {
   }
 };
 
-// ---- RankCum: 增量直方图 (段内 lo/hi 只扩不缩; 扩时用段内样本缓存重建); 相对型, 全并列 → 0.5 ----
+// ---- RankCum / RankRoll 的精确计数 (契约【精确秩】): 窗内 s 行样本 rv / rm ([s][W] 行主) 对本行 x 数 less / eq,
+//   s 在外、列在内 (列连续, 向量化); 全并列 → pct_of 自然给 0.5. 相对型: x_t 无效则无效 (x_t 有效 ⇒ 样本含它自身) ----
+namespace detail {
+inline void rank_rows(const float *rv, const uint8_t *rm, int rows, const float *x, int W, int *lt, int *eq) {
+  std::fill_n(lt, W, 0);
+  std::fill_n(eq, W, 0);
+  for (int s = 0; s < rows; ++s) {
+    const float *sv = rv + static_cast<size_t>(s) * W;
+    const uint8_t *sm = rm + static_cast<size_t>(s) * W;
+    FACTOR_COLS for (int j = 0; j < W; ++j) {
+      lt[j] += (sm[j] != 0) & (sv[j] < x[j]);
+      eq[j] += (sm[j] != 0) & (sv[j] == x[j]);
+    }
+  }
+}
+} // namespace detail
+
+// ---- RankCum: 段内样本按段内位置缓存, 每行整段精确计数 ----
 struct TsRankCum {
   static auto carve(Bump &b, const Call &c) {
     constexpr size_t W = kTileA;
-    return std::tuple{b.take<float>(W * static_cast<size_t>(c.geo.S)), b.take<int>(W * kBuckets), b.take<int>(W), b.take<float>(W), b.take<float>(W)};
+    const size_t sw = W * static_cast<size_t>(c.geo.S);
+    return std::tuple{b.take<float>(sw), b.take<uint8_t>(sw), b.take<int>(W), b.take<int>(W), b.take<int>(W)};
   }
   CP_SCRATCH
   CP_RUN {
     Bump bp{static_cast<char *>(ws)};
-    const auto [buf, hist, cnt, lo, hi] = carve(bp, c);
+    const auto [rv, rm, n, lt, eq] = carve(bp, c);
     const int S = c.geo.S;
     assert(S >= 1);
     for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
       const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, W] = detail::tile(c, a0, rg.hi);
       for (int seg = 0; seg < T; seg += S) {
-        std::fill_n(cnt, W, 0); // hist 不清: 先有 spread 才读, 而进入 spread 必重建
-        std::fill_n(lo, W, detail::kInf);
-        std::fill_n(hi, W, -detail::kInf);
+        std::fill_n(n, W, 0);
         const int e = std::min(seg + S, T);
         for (int t = seg; t < e; ++t) {
-          const size_t r = static_cast<size_t>(t) * A;
-          for (int j = 0; j < W; ++j) {
-            const float x = xv[r + j];
-            const bool m = xm[r + j] != 0;
-            int *h = hist + static_cast<size_t>(j) * kBuckets;
-            if (m) {
-              buf[static_cast<size_t>(j) * S + cnt[j]] = x;
-              ++cnt[j];
-              const float pl = lo[j], ph = hi[j];
-              const float nl = std::fmin(pl, x), nh = std::fmax(ph, x);
-              lo[j] = nl;
-              hi[j] = nh;
-              if (nh > nl) {
-                if (nl != pl || nh != ph) { // 值域扩了 (含首次进入 spread): 重建
-                  std::fill(h, h + kBuckets, 0);
-                  const float *b = buf + static_cast<size_t>(j) * S;
-                  for (int s = 0; s < cnt[j]; ++s)
-                    ++h[bin_of(b[s], nl, nh)];
-                } else {
-                  ++h[bin_of(x, nl, nh)];
-                }
-              }
-            }
-            double v = 0.0; // 相对型: x_t 无效则无效; x_t 有效 ⇒ cnt ≥ 1
-            if (m) {
-              if (!(hi[j] > lo[j]))
-                v = 0.5;
-              else {
-                const int b = bin_of(x, lo[j], hi[j]);
-                int less = 0;
-                for (int q = 0; q < b; ++q)
-                  less += h[q];
-                v = pct_of(less, h[b], cnt[j]);
-              }
-            }
-            detail::put(ov, om, r + j, v, m);
+          const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(t - seg) * W;
+          FACTOR_COLS for (int j = 0; j < W; ++j) {
+            rv[q + j] = xv[r + j];
+            rm[q + j] = xm[r + j] != 0;
+            n[j] += xm[r + j] != 0;
           }
+          detail::rank_rows(rv, rm, t - seg + 1, xv + r, W, lt, eq);
+          for (int j = 0; j < W; ++j)
+            detail::put(ov, om, r + j, xm[r + j] ? pct_of(lt[j], eq[j], n[j]) : 0.0, xm[r + j]);
         }
       }
     }
@@ -1021,12 +1009,40 @@ struct RollExt {
   }
 };
 
-// ---- Rank / Quantile (Roll): 环形窗缓存 + 直方图 (lo/hi 未变增量改桶, 变了整窗重建) ----
-enum class HistK { RANK,
-                   QUANTILE };
+// ---- RankRoll: 环形窗缓存 (槽 = t % d), 每行整窗精确计数; 未满窗的空槽掩码为 0 (即已有前缀) ----
+struct TsRankRoll {
+  static auto carve(Bump &b, const Call &c) {
+    constexpr size_t W = kTileA;
+    const size_t dw = static_cast<size_t>(c.p.d) * W;
+    return std::tuple{b.take<float>(dw), b.take<uint8_t>(dw), b.take<int>(W), b.take<int>(W), b.take<int>(W)};
+  }
+  CP_SCRATCH
+  CP_RUN {
+    Bump bp{static_cast<char *>(ws)};
+    const auto [rv, rm, n, lt, eq] = carve(bp, c);
+    const int d = c.p.d;
+    assert(d >= 1);
+    for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
+      const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, W] = detail::tile(c, a0, rg.hi);
+      std::fill_n(rm, static_cast<size_t>(d) * W, 0);
+      std::fill_n(n, W, 0);
+      for (int t = 0; t < T; ++t) {
+        const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(t % d) * W;
+        FACTOR_COLS for (int j = 0; j < W; ++j) {
+          n[j] += static_cast<int>(xm[r + j] != 0) - static_cast<int>(rm[q + j]);
+          rv[q + j] = xv[r + j];
+          rm[q + j] = xm[r + j] != 0;
+        }
+        detail::rank_rows(rv, rm, std::min(t + 1, d), xv + r, W, lt, eq);
+        for (int j = 0; j < W; ++j)
+          detail::put(ov, om, r + j, xm[r + j] ? pct_of(lt[j], eq[j], n[j]) : 0.0, xm[r + j]);
+      }
+    }
+  }
+};
 
-template <HistK K>
-struct RollHist {
+// ---- QuantileRoll: 环形窗缓存 + 直方图 (lo/hi 未变增量改桶, 变了整窗重建); 空窗 → 0 ----
+struct TsQuantileRoll {
   static auto carve(Bump &b, const Call &c) {
     constexpr size_t W = kTileA;
     const size_t dw = static_cast<size_t>(c.p.d) * W;
@@ -1078,24 +1094,8 @@ struct RollHist {
           }
           plo[j] = nl;
           phi[j] = nh;
-          if constexpr (K == HistK::RANK) {
-            double v = 0.0; // 相对型: x_t 无效则无效; x_t 有效 ⇒ n ≥ 1; 全并列 → 0.5
-            if (m) {
-              if (!(nh > nl))
-                v = 0.5;
-              else {
-                const int b = bin_of(x, nl, nh);
-                int less = 0;
-                for (int q = 0; q < b; ++q)
-                  less += h[q];
-                v = pct_of(less, h[b], n[j]);
-              }
-            }
-            detail::put(ov, om, r + j, v, m);
-          } else { // QUANTILE: 空窗 → 0
-            const double v = n[j] >= 1 ? detail::hist_quantile(h, n[j], nl, nh, p.k) : 0.0;
-            detail::put(ov, om, r + j, v, true);
-          }
+          const double v = n[j] >= 1 ? detail::hist_quantile(h, n[j], nl, nh, p.k) : 0.0;
+          detail::put(ov, om, r + j, v, true);
         }
       }
     }
@@ -1449,8 +1449,6 @@ using TsArgMaxCum = ExpExt<true, true>;
 using TsArgMaxRoll = RollExt<true, true>;
 using TsArgMinCum = ExpExt<false, true>;
 using TsArgMinRoll = RollExt<false, true>;
-using TsRankRoll = RollHist<HistK::RANK>;
-using TsQuantileRoll = RollHist<HistK::QUANTILE>;
 using TsCovCum = ExpPair<detail::Pair::COV>;
 using TsCovRoll = RollPair<detail::Pair::COV>;
 using TsCorrCum = ExpPair<detail::Pair::CORR>;

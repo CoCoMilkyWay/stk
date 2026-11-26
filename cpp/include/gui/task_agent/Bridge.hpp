@@ -173,6 +173,7 @@ struct Context {
   std::vector<std::string> clock;
   int ts_root_d = 0, max_d = 0;
   int roll_parts = 0; // 滚动窗 = 评估期 / roll_parts
+  int search_pts = 0; // Search 单个自由参数时的采样点数 (P 个 = × (1 + log2 P))
   std::vector<Leaf> leaves, all_leaves;
   std::vector<Op> ops, all_ops;
   std::vector<Result> library;

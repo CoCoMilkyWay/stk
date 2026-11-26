@@ -55,7 +55,7 @@ using sv = std::string_view;
 constexpr ArgDef kOpenArgs[] = {
     {"pool", "池", Arg::Str, Unset{}, 0, 0, {}, "池名 (all 或子池)"},
     {"level", "层", Arg::Str, Unset{}, 0, 0, {}, "层: min / 5min / 15min / 30min / 60min / day"},
-    {"hold", "持有期", Arg::Str, Unset{}, 0, 0, {}, "持有期: 30m / 60m / close / T+1C (该层能用的; 只给 level 且原持有期在该层不可用 = 该层首个)"},
+    {"hold", "持有期", Arg::Str, Unset{}, 0, 0, {}, "持有期: 30m / 60m / close / T+1 (该层能用的; 只给 level 且原持有期在该层不可用 = 该层首个)"},
     {"years", "年数", Arg::Int, Unset{}, 1, 100, {}, "评估期年数"},
     {"lob", "lob", Arg::Bool, Unset{}, 0, 0, {}, "开放 lob 特征叶"},
     {"remark", "本会话要求", Arg::Str, sv{""}, 0, 0, {}, "本会话要求: 用户交代的原话 (只对这一段会话; 与系统提示的做法冲突处以它为准)"},

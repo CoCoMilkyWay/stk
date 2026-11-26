@@ -22,7 +22,7 @@
 //     A = 池内平均有效资产数 (n_full · kGroups). 整数参数 (d / 桶数 / 时段) 取整回去.
 //     中性坐标 u0: 调用方定分位表时, 其他槽取它 (区间中点; 分位 / 阈值 = 中位; 时段 = 全天不掩; 权 = 与首元等权 1).
 //   【采样】评的点 = R_d 低差异序列 (frac(0.5 + n·α), α_j = φ_P^{−j}, φ_P 为 x^{P+1} = x + 1 的正根) 映射到各槽区间:
-//     确定性, 无表无种子, 任意 P 每槽 N 个不同取值 (P 大也不退化). 点数 kInit (Config) 是唯一的预算量.
+//     确定性, 无表无种子, 任意 P 每槽 N 个不同取值 (P 大也不退化). 点数 n_init(P) (Config: kInit 按槽数对数增长) 是唯一的预算量.
 //   出错策略: 只 assert (表达式来自已校验的因子行).
 // =============================================================================
 
@@ -184,6 +184,20 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
         add(Key::W, j);
   }
   return out;
+}
+
+// 模板的可搜槽数 (= slots_of(e, …).size(); 不依赖区间端点, 装库前定采样点数用)
+inline int slot_count(const expr::Expr &e) {
+  int c = 0;
+  for (size_t i = 0; i < e.nodes.size(); ++i) {
+    const expr::Node &n = e.nodes[i];
+    if (n.op < 0 || !n.free)
+      continue;
+    const bool top = e.nodes[0].op >= 0 && e.nodes[0].args[0] == static_cast<int>(i);
+    c += ((n.free & expr::kFreeD) ? 1 : 0) + ((n.free & expr::kFreeK) ? 1 : 0) + ((n.free & expr::kFreeK2) ? 1 : 0) +
+         ((n.free & expr::kFreeW) ? n.n_args - (top ? 1 : 0) : 0);
+  }
+  return c;
 }
 
 // 模板子树 i 的最长回看行数 = 沿各条到叶的路径累加窗长: ROLL 取 d (自由 d 取上界 kMaxD; 用 d 而非 d−1 以盖住 Delay / Delta 的 x_{t−d}),

@@ -20,14 +20,15 @@ std::string TradesRes::text() const {
   s += "格超额均值 " + bp(cell_mean) + "bp (胜率 " + pct(cell_up) + ") · 段超额: 均值 " + bp(seg_mean) + " · 中位 " + bp(seg_med) + " · p10 " + bp(seg_p10) + " · p90 " +
        bp(seg_p90) + " · 胜率 " + pct(seg_up) + "\n";
   s += "集中度 (段贡献 = 段超额 × 行数): 最差 10% 的段占全部亏损 " + pct(worst) + " · 最好 10% 的段占全部盈利 " + pct(best) + "\n";
+  s += "段超额 = 段内各格超额的均值, 段均值不按行数加权 (长段与短段同权), 可与格超额均值异号; 下面两张表的超额按格加权 (加回去即格超额均值, 与分层组超额同口径), 胜率按段\n";
   if (seg > 1) {
-    text::Table ptbl({"开仓时段", "段数", "占比", "段超额均值 bp", "胜率"});
+    text::Table ptbl({"开仓时段", "段数", "占比", "格超额均值 bp", "段胜率"});
     for (const Part &p : parts)
       ptbl.add({p.name, str(p.n), pct(p.share), bp(p.mean), pct(p.up)});
     s += "\n" + ptbl.str();
   }
   if (!tags.empty()) {
-    text::Table ttbl({"开仓那行的盘面", "本端格占比", "池内格占比", "提升", "开仓带此标签的段超额 bp", "不带的 bp"});
+    text::Table ttbl({"开仓那行的盘面", "本端格占比", "池内格占比", "提升", "开仓带此标签的格超额 bp", "不带的 bp"});
     for (const Tag &t : tags)
       ttbl.add({t.name, pct(t.held), pct(t.base), t.base > 0.0 ? fmt("%.2f", t.held / t.base) : "—", bp(t.with), bp(t.without)});
     s += "\n" + ttbl.str();
@@ -202,15 +203,24 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
   R.worst = loss < 0.0 ? worst / loss : kNaN, R.best = gain > 0.0 ? best / gain : kNaN;
   R.hist = hist_of(sx, R.h_lo, R.h_hi);
 
+  // 时段表 / 标签表的超额按格加权 (段超额 × 行数 / 总行数): 各类加回去就是格超额均值, 与分层组超额同口径; 胜率按段
+  struct CellW {
+    double s = 0.0, n = 0.0;
+    void add(const Trade &t) { s += t.ex * t.n, n += t.n; }
+    double mean() const { return n > 0.0 ? s / n : kNaN; }
+  };
   if (seg > 1) {
     const std::vector<Slot> ps = parts_of(seg, env.open, env.clock);
     const std::vector<int> pr = part_of_row(ps, seg);
     std::vector<Mean> by(ps.size());
-    for (size_t i = 0; i < M; ++i)
-      by[static_cast<size_t>(pr[static_cast<size_t>(ts[i].u0 % seg)])].add(ex[i]);
+    std::vector<CellW> byw(ps.size());
+    for (size_t i = 0; i < M; ++i) {
+      const size_t j = static_cast<size_t>(pr[static_cast<size_t>(ts[i].u0 % seg)]);
+      by[j].add(ex[i]), byw[j].add(ts[i]);
+    }
     for (size_t j = 0; j < ps.size(); ++j)
       if (by[j].n)
-        R.parts.push_back({ps[j].name, by[j].n, static_cast<double>(by[j].n) / static_cast<double>(M), by[j].mean(), by[j].up()});
+        R.parts.push_back({ps[j].name, by[j].n, static_cast<double>(by[j].n) / static_cast<double>(M), byw[j].mean(), by[j].up()});
   }
 
   std::array<size_t, kTagCount> held{};
@@ -219,9 +229,9 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
     for (int j = 0; j < kTagCount; ++j)
       held[static_cast<size_t>(j)] += cs[i].mk.m >> j & 1u;
   for (int j = 0; j < kTagCount; ++j) {
-    Mean with, without;
+    CellW with, without;
     for (size_t i = 0; i < M; ++i)
-      (ts[i].mk.m >> j & 1u ? with : without).add(ex[i]);
+      (ts[i].mk.m >> j & 1u ? with : without).add(ts[i]);
     const double fs = static_cast<double>(held[static_cast<size_t>(j)]) / static_cast<double>(nh), fb = nb ? static_cast<double>(base_tags[static_cast<size_t>(j)]) / static_cast<double>(nb) : kNaN;
     if (fs < 0.01 && !(fb >= 0.01))
       continue;

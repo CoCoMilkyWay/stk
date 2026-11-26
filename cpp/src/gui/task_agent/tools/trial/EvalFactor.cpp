@@ -169,7 +169,7 @@ std::string WeightLine(const TrialRes &k, const Weight &w) {
   if (!w.has)
     return head + "无该持有期统计";
   std::string s = head + fmt("rIC %.3f", w.ric) + fmt(" · 中位 rIC %.3f", w.score) + fmt(" · 每期毛多 %+.2fbp", w.lng * 1e4) + fmt(" · 毛空 %+.2fbp", w.sht * 1e4) +
-                  fmt(" · 净多空 %+.2fbp", w.net * 1e4) + fmt(" · 成本 %.2fbp", w.cost * 1e4) + fmt(" (单边换手 买 %.0f%%", w.buy * 100) +
+                  fmt(" · 毛多空 %+.2fbp", w.gross * 1e4) + fmt(" · 净多空 %+.2fbp", w.net * 1e4) + fmt(" · 成本 %.2fbp", w.cost * 1e4) + fmt(" (单边换手 买 %.0f%%", w.buy * 100) +
                   fmt(" / 卖 %.0f%%", w.sell * 100) + fmt(", × 固定冲击 %.0fbp)", w.impact * 1e4);
   if (&w == best)
     s += GateMiss(k.gate, k.st.res).empty() ? " · 达入库门槛" : fmt(" · 未达入库门槛 %.3f", k.gate.ric);

@@ -10,7 +10,6 @@
 #include "factor/Search/Contract.hpp"
 #include "features/Storage/FeatureLevels.hpp"
 #include "features/Storage/FeatureLib.hpp"
-#include "features/TimeIndex.hpp"
 #include "fundamental/AssetAxis.hpp"
 #include "gui/engine/File.hpp"
 #include "gui/engine/Load.hpp"
@@ -101,25 +100,7 @@ Opened opened_of(const Engine::FeatureTable &ft, const Scope &sc, bool has_lob) 
   return o;
 }
 
-// 行的收盘时刻 HH:MM 与竞价段行数
-std::vector<std::string> clocks_of(const Engine::FactorLevel &l) {
-  std::vector<std::string> out;
-  for (int k = 0; k < l.seg; ++k) {
-    ClockTime c{15, 0, 0};
-    if (l.lvl == L_1min) {
-      const ClockTime m = L_1min_to_Clock(static_cast<size_t>(k));
-      const int total = m.hour * 60 + m.minute + 1;
-      c = {static_cast<uint8_t>(total / 60), static_cast<uint8_t>(total % 60), 0};
-    } else if (l.seg > 1) {
-      c = bin_to_Clock(static_cast<size_t>(240 / (l.seg - 1)), static_cast<size_t>(k));
-    }
-    char b[16];
-    format_time_hm(b, sizeof(b), c);
-    out.emplace_back(b);
-  }
-  return out;
-}
-
+// 竞价段行数
 int open_of(const std::vector<std::string> &clock) {
   if (clock.size() == 1)
     return 0;
@@ -637,11 +618,12 @@ void Desk::bind(const SharedData &data, const Scope &sc, bool test) {
   c.window = base.days > 0 ? base.text() : "未就绪";
   c.first = static_cast<int>(base.start), c.last = static_cast<int>(base.end);
   c.seg = ft->seg;
-  c.clock = clocks_of(Engine::factor_level(ft->lv));
+  c.clock = Engine::row_clocks(ft->lv);
   c.open = open_of(c.clock);
   c.ts_root_d = fs::ts_norm_d(ft->seg);
   c.max_d = factor::kMaxD;
   c.roll_parts = fsearch::kRollParts;
+  c.search_pts = fsearch::kInit;
   for (size_t i = 0; i < std::size(fx::kOps); ++i) {
     const fx::OpInfo &o = fx::kOps[i];
     Op x{o.name, o.c_name, fx::operand_tex(o), factor::dom_name(o.out), o.op, o.note};

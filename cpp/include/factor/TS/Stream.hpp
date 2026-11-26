@@ -307,7 +307,7 @@ struct Diff : Oldest { // 最新 − 最旧
   Val get(const Ctx &c) const { return mk(static_cast<double>(c.x.v) - v0.v, v0.m && c.x.m); }
 };
 
-// ---- 序统计族: 窗/段内样本缓存 + 分桶 (规则见 stream::Hist) ----
+// ---- 序统计族: 窗/段内样本缓存; Rank 精确计数 (契约【精确秩】), Quantile 分桶 (规则见 stream::Hist) ----
 using stream::Hist;
 
 // 样本缓存基类: 窗/段内所有有效值
@@ -321,11 +321,14 @@ struct SampleBase {
   }
 };
 
-struct Rank : SampleBase { // 相对型: x_t 有效 ⇒ 样本非空; 全并列 → 0.5 (Hist 内)
+struct Rank : SampleBase { // 相对型: x_t 有效 ⇒ 样本含 x_t 自身; 全并列 → 0.5 (pct_of 自然给出)
   Val get(const Ctx &c) const {
-    Hist h;
-    h.build(s);
-    return mk(h.rank(c.x.v), c.x.m);
+    int less = 0, eq = 0;
+    for (const float v : s) {
+      less += v < c.x.v;
+      eq += v == c.x.v;
+    }
+    return mk(pct_of(less, eq, static_cast<int>(s.size())), c.x.m);
   }
 };
 struct Quantile : SampleBase { // k 分位 (k = 0.5 即中位); 空窗 → 0

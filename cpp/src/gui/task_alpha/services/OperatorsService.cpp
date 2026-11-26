@@ -100,7 +100,7 @@ factor::Param param_of(const OperatorRow &row) {
   p.d = std::strchr(row.params, 'd') != nullptr ? factor::check::default_d(row.e_name) : 1;
   factor::check::set_k(row.e_name, p, factor::kSegMax);
   if (factor::expr::declares(row.params, "h"))
-    p.h = factor::stat::hold_close(1);
+    p.h = factor::stat::hold_same(1);
   if (factor::expr::declares(row.params, "w"))
     factor::check::set_w(p);
   return p;
