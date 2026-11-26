@@ -1,11 +1,10 @@
 // Tab Operators — 见头文件
 #include "gui/task_alpha/ui/TabOperators.hpp"
 #include "disk/Disk.hpp"
-#include "factor/GpuRun.hpp"        // device_name: GPU 型号显示
-#include "factor/Stat/Contract.hpp" // hold_token: operand 的 ⟨h⟩
-#include "gui/Tasks.hpp"            // StatusColor: 全局色表, 行状态着色不自配颜色
-#include "gui/engine/StatJson.hpp"  // sig4 / json_* (与因子文件同一格式)
-#include "gui/util/Latex.hpp"       // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
+#include "factor/GpuRun.hpp"       // device_name: GPU 型号显示
+#include "gui/Tasks.hpp"           // StatusColor: 全局色表, 行状态着色不自配颜色
+#include "gui/engine/StatJson.hpp" // sig4 / json_* (与因子文件同一格式)
+#include "gui/util/Latex.hpp"      // Operands / Operator 列 LaTeX 渲染 (与特征表共用缓存)
 
 #include "imgui.h"
 #include "imgui_internal.h" // TableSetColumnWidthAutoAll (强制列宽贴合)

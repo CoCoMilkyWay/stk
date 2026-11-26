@@ -118,7 +118,7 @@ struct FactorDir {
 };
 FactorDir factor_dir_of(const std::string &pool, FactorLevelId lv);
 // 请求的库清单 (GUI 线程读): 因子池两档库 (Bar = 标签库 / bar.* 叶 / 日频原料; Lob = lob.* 叶 / 盘口段成本); 余库空. 未建库的清单 ready() == false
-PerLib<FeatureLib> factor_libs(const SharedData &data, const std::string &pool);
+PerLib<FeatureLib> factor_libs(const std::string &pool);
 
 // ---- 字段表视图 (GUI 线程从 Feature 建一次, 每层一份全部页共享, worker 只读; 与池无关) ----
 // 一列 = (档, 层, 列下标), 库随因子池定 (lib_id(池, 档)): 叶 / 门控 / 标签 / 成本 / K 线 / 日频原料同一个类型, 进读计划同一个 ref

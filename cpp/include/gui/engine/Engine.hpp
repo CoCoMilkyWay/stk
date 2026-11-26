@@ -6,7 +6,7 @@
 //     walk(cancel, F, need, on_node) / eval<Ps>(cancel, F, need, ps, last, on_node, on_step)
 //   单一分块流式管线:
 //     prepare  → 评估域 + 规格 + 前后带 + 预算 (fit_years / plan_chunks)
-//     run_pass → init(PassCtx) → 逐块 [d_lo, d_hi) load_block → 逐批 plant + plan_forest + eval(open → row → close) → finish(PassCtx)
+//     run_pass → init(PassCtx) → 逐块 load_block → 逐批 plant + plan_forest + eval(open → row → close) → finish(PassCtx)
 //     eval_forest  = 单森林单趟作业 (Run / Inspect / Portfolio)
 //     eval_baskets = 池篮子与个股账作业 (Portfolio 行情两侧)
 #pragma once
@@ -754,7 +754,6 @@ Rc prepare(FactorFlow &F, const FactorScope &sc, const factor::Dag &d, std::span
 int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const Forest &F, std::vector<std::string> &why, std::vector<uint8_t> &need);
 
 struct PassHooks {
-  size_t d_lo = 0, d_hi = SIZE_MAX; // 只执行统计段与 [d_lo, d_hi) 相交的块
   void block(const Block &, size_t, double) {}
   void plan(size_t, const Forest &, const std::vector<std::string> &, const std::vector<uint8_t> &) {}
   void node(size_t, const Forest &, int, double) {}
@@ -772,19 +771,9 @@ Rc run_pass(E &eng, FactorFlow &F, Job &j, std::span<const Root> roots, Plant &&
   for (size_t k = 0; k < R; ++k)
     ps[k].init(j.pass_ctx(eng.ex(), roots[k].d));
 
-  size_t last_ci = n;
+  assert(n >= 1);
   for (size_t ci = 0; ci < n; ++ci) {
-    const Chunk &ck = j.P.chunks[ci];
-    if (ck.s1 > hk.d_lo && ck.s0 < hk.d_hi)
-      last_ci = ci;
-  }
-  assert(last_ci < n && "分块与目标日段无交集");
-
-  for (size_t ci = 0; ci < n; ++ci) {
-    const Chunk &ck = j.P.chunks[ci];
-    if (ck.s1 <= hk.d_lo || ck.s0 >= hk.d_hi)
-      continue;
-    const bool last = ci == last_ci;
+    const bool last = ci + 1 == n;
     const Clock::time_point t_load = Clock::now();
     Block c;
     if (const Rc rc = load_block(F, j, ci, c); rc != Rc::Ok)

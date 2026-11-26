@@ -1,12 +1,10 @@
 #pragma once
 
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <type_traits>
-#include <utility>
 #include <vector>
 
 // ============================================================================

@@ -22,8 +22,6 @@
 #include <limits>
 #include <span>
 #include <tuple>
-#include <type_traits>
-#include <utility>
 #include <vector>
 
 namespace GUI::Engine {

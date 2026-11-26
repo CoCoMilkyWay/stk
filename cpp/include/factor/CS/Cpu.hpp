@@ -34,8 +34,8 @@
 #include <limits>
 #include <tuple>
 
+#include "define/Label.hpp" // 持有期几何 Hold (CsLinRankRoll)
 #include "factor/Contract.hpp"
-#include "factor/Stat/Contract.hpp" // 持有期几何 (CsLinRankRoll)
 
 namespace factor::cpu::cs {
 

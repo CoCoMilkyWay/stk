@@ -201,7 +201,7 @@ stk/
 │   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层 (双层对仗): 趟级 init ⇄ finish × 块级 open → row → close; 落地三形 RowsP / LandCellsP / LinesP; EvalProbes → EvalStat
 │   │   │   │   │                                       #    · 分层 / 尾部 / LS 日净值线 NavP + 尾部换手 TurnP: 全部持有期 (Inspect) 或只一个持有期的超额线 (Agent eval_factor)
 │   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎: Forest (LeafId 一步到位, 因子根 + 纯表达式根) × Backend<Cpu | Gpu> (设备侧按块驻留 Y/X 复用)
-│   │   │   │   │                                       #    · 单一管线: prepare → run_pass (按需日段跳块); 单森林 eval_forest (Run / Inspect / Portfolio) ↔ 篮子 eval_baskets
+│   │   │   │   │                                       #    · 单一管线: prepare → run_pass (逐块); 单森林 eval_forest (Run / Inspect / Portfolio) ↔ 篮子 eval_baskets
 │   │   │   │   ├── Worker.hpp                          # 🖥️ FactorWorker<D, Req>: 薄异步服务骨架 (值句柄 flow() + 统一中断收尾 settle)
 │   │   │   │   ├── File.hpp                            # 🖥️ 因子文件读写 (一因子一文件); Run 只回写 run + stats, Search 只回写 weights / search
 │   │   │   │   ├── StatJson.hpp                        # 🖥️ EvalStat ↔ JSON

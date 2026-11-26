@@ -11,7 +11,6 @@
 #include <cstdio>
 #include <ctime>
 #include <mutex>
-#include <set>
 #include <string_view>
 #include <utility>
 
@@ -159,7 +158,7 @@ std::vector<std::string> FactorDir::files() const {
 
 FactorDir factor_dir_of(const std::string &pool, FactorLevelId lv) { return {.key = {.pool = pool, .level = factor_level(lv).name}}; }
 
-PerLib<FeatureLib> factor_libs(const SharedData &data, const std::string &pool) {
+PerLib<FeatureLib> factor_libs(const std::string &pool) {
   PerLib<FeatureLib> libs;
   for (const TierId t : TIER_IDS) {
     const LibId l = lib_id(pool_id(pool), t);
@@ -274,7 +273,7 @@ bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable>
   sc.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库
-  sc.libs = factor_libs(data, pool);
+  sc.libs = factor_libs(pool);
   return sc.libs[label_lib(pool_id(pool))].ready(); // 标签库未建 → false; 叶所在库未建由评估域报 (span_of)
 }
 

@@ -16,8 +16,8 @@
 //   【precise-math】依赖受控浮点, 编进 -fno-fast-math TU.
 // =============================================================================
 
+#include "define/Label.hpp" // 持有期几何 Hold (CsLinRankRoll)
 #include "factor/Contract.hpp"
-#include "factor/Stat/Contract.hpp" // 持有期几何 (CsLinRankRoll)
 #include "factor/StreamHist.hpp"
 
 #include <algorithm>

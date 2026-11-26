@@ -197,6 +197,7 @@ struct TurnWork {
 
 // 一行一持有期: 两列格位 cur / pre (各按 (a, b) 升序; pre 只交接时非空) → ret[b] += 本批收益, out[k · B + b] += 两侧流水.
 //   settle = 本批平仓不与下一批交接; eo / c[k] 已偏到行首; cap[b] = 本 b 满仓权
+//   冲击: 盘口段取本格该侧冲击 (封顶 top); 本格价点不可卖 (封跌停, 盘口卖出冲击无定义) 的卖出量按固定冲击, 与收益侧的平仓顺延同一语义
 inline void turn_row(const std::vector<Slot> &cur, const std::vector<Slot> &pre, bool settle, const uint8_t *eo, const Cost *c, int C, std::span<const double> cap,
                      TurnWork &w, double *ret, Turn *out) {
   const size_t B = cap.size();
@@ -225,10 +226,11 @@ inline void turn_row(const std::vector<Slot> &cur, const std::vector<Slot> &pre,
     for (int sd = 0; sd < kSides; ++sd) {
       if (u[sd] == 0.0)
         continue;
+      const bool stuck = sd == kSell && !(eo[s.a] & factor::stat::kEoSell); // 本格价点不可卖 (封跌停): 盘口无买盘, 卖出侧按固定冲击
       for (int k = 0; k < C; ++k) {
         Turn &o = out[static_cast<size_t>(k) * B + s.b];
         o.vol[sd] += u[sd];
-        if (c[k].flat())
+        if (c[k].flat() || stuck)
           o.fix[sd] += u[sd];
         else
           o.imp[sd] += u[sd] * static_cast<double>(std::min(h2f(c[k].imp[sd][s.a]), c[k].top));

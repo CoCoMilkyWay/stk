@@ -4,8 +4,6 @@
 #include "gui/task_agent/Config.hpp"
 #include "gui/task_agent/Text.hpp"
 
-#include "factor/Stat/Contract.hpp"
-
 #include <algorithm>
 #include <cassert>
 #include <cctype>

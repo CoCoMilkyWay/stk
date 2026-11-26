@@ -55,7 +55,6 @@
 //   即开算, 不等切页; 缓存命中只补特征); Recompute 按钮 = 弃缓存整体重读.
 #pragma once
 
-#include "factor/Stat/Contract.hpp"
 #include "gui/engine/services/InspectService.hpp"
 #include "gui/engine/services/RunService.hpp"
 #include "gui/task_alpha/services/KlineService.hpp"

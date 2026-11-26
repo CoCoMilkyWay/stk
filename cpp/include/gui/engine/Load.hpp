@@ -18,7 +18,6 @@
 #include "shared/Progress.hpp"    // Progress
 #include "shared/ReadRequest.hpp" // ReadScope
 
-#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <condition_variable>

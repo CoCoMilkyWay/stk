@@ -40,8 +40,6 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
-#include <iterator>
-#include <string_view>
 
 // ---- 配置 ----
 constexpr size_t LABEL_DELAY_SECONDS = 3; // 下单延迟 (秒)
@@ -69,8 +67,8 @@ public:
   static constexpr size_t MIN_LABEL_COUNT = 2 * AMT_COUNT; // LB 块总列数 [cost_buy × 各金额, cost_sell × 各金额]
   static constexpr size_t PEND_DAYS = LabelHold::PEND_DAYS;
   static constexpr size_t MIN_RING_SLOTS = LabelHold::MIN_RING_SLOTS;
-  enum Out : size_t { LABEL_AMTS(LABEL_OUT_BUY) LABEL_AMTS(LABEL_OUT_SELL) };
-  static_assert(Out::cost_sell_5w == AMT_COUNT);
+  enum Out : size_t { LABEL_AMTS(LABEL_OUT_BUY) LABEL_AMTS(LABEL_OUT_SELL) kOutCount };
+  static_assert(Out::kOutCount == MIN_LABEL_COUNT, "LB 块 = [cost_buy × 各金额, cost_sell × 各金额]");
   static_assert([] {
     for (size_t a = 1; a < AMT_COUNT; ++a)
       if (kAmtWan[a + 1] <= kAmtWan[a])
