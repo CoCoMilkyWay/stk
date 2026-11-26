@@ -1,6 +1,6 @@
 // Book — 净值与篮子引擎 (Stat 契约【净值】; Inspect 分层 / Portfolio 因子线 / 池篮子 / 池整体线同一份): Load 之上.
 //   逐行批收益 RowLines → fold_book (每批资金 1/h̄, 收益在平仓行实现 / 成本在建仓行即付; 按 stride 求和) → 期收益 BookLines → compound 净值.
-//   统一账核 Book (col[kBookCols] + val / alt[kPoolVals] + cap + bal[kMarginVals]): 因子账 / 篮子账 / 个股账完全同形; BasketPass 沿 Store::pin 的分块流式归约出 Baskets.
+//   账 Book = 账线 Ledger (col[kBookCols], 一切账都有) + 画像 Profile (val / alt[kPoolVals] + cap + bal[kMarginVals], 只篮子账 / 个股账有); BasketPass 沿 Store::pin 的分块流式归约出 Baskets.
 //   池篮子的成员 / 持仓权 = shared/Basket.hpp members / Weigh (按持仓日对齐, 与行情篮子 / Style 同一份), 换手 / 估值的持仓 = 篮子账 Sleeve (define/Members.hpp)
 #pragma once
 
@@ -77,26 +77,40 @@ inline constexpr int kBookCols = 5;
 //         alt = 同成员按另一种权重平均的七口 (篮子加权 → 等权 = 个股均值; 等权 → 加权 = 按市值; Market VAL / MARGIN 逐行切);
 //         cap = 持仓成员 Σ总市值, bal[两融口] = 持仓成员 Σ余额 [亿元] (不看权重)
 //   个股: col[Ret] = 单只的可成交账 (T+1 标签, 建仓须可买 / 续持取名义值, 与篮子同一核); val = 七口; cap = 本只总市值; bal = 本只余额 (非两融标的 NaN)
-struct Book {
+// 账线 (一切账都有): 收益 + 两侧成本账列 [kBookCols]
+struct Ledger {
   BookLines col[kBookCols];
+  size_t bytes() const {
+    size_t n = 0;
+    for (const BookLines &c : col)
+      n += c.v.size() * sizeof(float);
+    return n;
+  }
+};
+// 篮子 / 个股的画像线 (只篮子账与个股账有): 估值七口 (主权重 val / 另一种权重 alt) + 总市值 cap + 两融余额 bal
+struct Profile {
   BookLines val[kPoolVals];
   BookLines alt[kPoolVals];
   BookLines cap;
   BookLines bal[kMarginVals];
   size_t bytes() const {
     size_t n = cap.v.size() * sizeof(float);
-    for (const BookLines &c : col)
-      n += c.v.size() * sizeof(float);
-    for (const BookLines &c : val)
-      n += c.v.size() * sizeof(float);
-    for (const BookLines &c : alt)
-      n += c.v.size() * sizeof(float);
+    for (const BookLines *g : {val, alt})
+      for (int m = 0; m < kPoolVals; ++m)
+        n += g[m].v.size() * sizeof(float);
     for (const BookLines &c : bal)
       n += c.v.size() * sizeof(float);
     return n;
   }
 };
+struct Book : Ledger {
+  Profile pf;
+  size_t bytes() const { return Ledger::bytes() + pf.bytes(); }
+};
 using Baskets = Quote::PerMarket<Book>;
+
+// 估值七口的日频输入叶 (bar.1d.<kPoolValCols[m]>, 日层叶表里)
+std::array<LeafId, kPoolVals> pool_val_leaves(const FeatureTable &ft);
 
 // 池篮子与个股账的分块归约器 (与 Probe 的 init → chunk → finish 对仗; 消费 Store::pin 的 Block)
 class BasketPass {

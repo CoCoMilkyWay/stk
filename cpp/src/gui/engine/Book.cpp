@@ -13,6 +13,17 @@
 
 namespace GUI::Engine {
 
+std::array<LeafId, kPoolVals> pool_val_leaves(const FeatureTable &ft) {
+  const std::string pre = std::string(tier_name(TierId::Bar)) + "." + kLevelToken[L_1day] + ".";
+  std::array<LeafId, kPoolVals> v{};
+  for (int m = 0; m < kPoolVals; ++m) {
+    const auto it = ft.x.index.find(pre + kPoolValCols[m]);
+    assert(it != ft.x.index.end() && "估值列不在 bar.1d 叶表里");
+    v[static_cast<size_t>(m)] = it->second;
+  }
+  return v;
+}
+
 namespace {
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 } // namespace
@@ -66,16 +77,16 @@ BasketPass::BasketPass(const Domain &dm, std::shared_ptr<const pool::Picks> pk, 
   std::fill(rx_.hold.begin(), rx_.hold.end(), kHoldT1);
   Book &bk = out_[Quote::kBasket], &sk = out_[Quote::kStock];
   bk.col[kBookBuy].reset(nl, P);
-  bk.cap.reset(nl, P, kNaN);
-  sk.cap.reset(A, P, kNaN);
+  bk.pf.cap.reset(nl, P, kNaN);
+  sk.pf.cap.reset(A, P, kNaN);
   for (int j = 0; j < kMarginVals; ++j) {
-    bk.bal[j].reset(nl, P, kNaN);
-    sk.bal[j].reset(A, P, kNaN);
+    bk.pf.bal[j].reset(nl, P, kNaN);
+    sk.pf.bal[j].reset(A, P, kNaN);
   }
   for (int m = 0; m < kPoolVals; ++m) {
-    bk.val[m].reset(nl, P, kNaN);
-    bk.alt[m].reset(nl, P, kNaN);
-    sk.val[m].reset(A, P, kNaN);
+    bk.pf.val[m].reset(nl, P, kNaN);
+    bk.pf.alt[m].reset(nl, P, kNaN);
+    sk.pf.val[m].reset(A, P, kNaN);
   }
 }
 
@@ -202,14 +213,14 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
         const double mc = mcap(r, a);
         if (!(mc > 0.0))
           continue;
-        sk.cap.v[a * ds_ + u] = static_cast<float>(mc);
+        sk.pf.cap.v[a * ds_ + u] = static_cast<float>(mc);
         for (size_t j = 0; j < kMarginVals; ++j)
           if (const Leaf &f = *lf[kValRz + j]; f.m[row + a])
-            sk.bal[j].v[a * ds_ + u] = f.v[row + a];
+            sk.pf.bal[j].v[a * ds_ + u] = f.v[row + a];
         const double dy = r > 0 && mcap(r - 1, a) > 0.0 ? mcap(r - 1, a) : static_cast<double>(kNaN);
         for (int m = 0; m < kPoolVals; ++m)
           if (lf[m]->m[row + a])
-            sk.val[m].v[a * ds_ + u] = static_cast<float>(lf[m]->v[row + a] * (m == kValDy ? dy : 1.0) / mc);
+            sk.pf.val[m].v[a * ds_ + u] = static_cast<float>(lf[m]->v[row + a] * (m == kValDy ? dy : 1.0) / mc);
       }
       if (u == 0 || r == 0)
         continue;
@@ -228,12 +239,12 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
         double x[kPoolVals], bal[kMarginVals];
         bool ok[kPoolVals], has[kMarginVals];
         for (size_t m = 0; m < kPoolVals; ++m) {
-          const float v = sk.val[m].v[a * ds_ + u];
+          const float v = sk.pf.val[m].v[a * ds_ + u];
           ok[m] = std::isfinite(v) || margin_val(static_cast<int>(m));
           x[m] = std::isfinite(v) ? static_cast<double>(v) : 0.0;
         }
         for (size_t j = 0; j < kMarginVals; ++j) {
-          const float v = sk.bal[j].v[a * ds_ + u];
+          const float v = sk.pf.bal[j].v[a * ds_ + u];
           has[j] = std::isfinite(v);
           bal[j] = has[j] ? static_cast<double>(v) : 0.0;
         }
@@ -254,14 +265,14 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
       for (size_t l = 0; l < nl; ++l) {
         if (!(cs[l] > 0.0))
           continue;
-        bk.cap.v[l * ds_ + u] = static_cast<float>(cs[l]);
+        bk.pf.cap.v[l * ds_ + u] = static_cast<float>(cs[l]);
         for (size_t j = 0; j < kMarginVals; ++j)
           if (const size_t i = j * nl + l; mn[i] > 0.0)
-            bk.bal[j].v[l * ds_ + u] = static_cast<float>(mb[i]);
+            bk.pf.bal[j].v[l * ds_ + u] = static_cast<float>(mb[i]);
         for (size_t m = 0; m < kPoolVals; ++m)
           if (const size_t i = m * nl + l; ow[i] > 0.0 && (!margin_val(static_cast<int>(m)) || mn[(m - kValRz) * nl + l] > 0.0)) {
-            bk.val[m].v[l * ds_ + u] = static_cast<float>(os[i] / ow[i]);
-            bk.alt[m].v[l * ds_ + u] = static_cast<float>(xs[i] / xw[i]);
+            bk.pf.val[m].v[l * ds_ + u] = static_cast<float>(os[i] / ow[i]);
+            bk.pf.alt[m].v[l * ds_ + u] = static_cast<float>(xs[i] / xw[i]);
           }
       }
     }

@@ -161,7 +161,7 @@ enum PoolVal : int { kValEp,
                      kValRq };
 inline constexpr int kPoolVals = 7, kMarginVals = kPoolVals - kValRz;
 inline constexpr bool margin_val(int m) { return m >= kValRz; }
-// 各口的日频输入叶 (FeatureTable::val 下标 = PoolVal, bar.1d.<列>): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM
+// 各口的日频输入叶 (Book pool_val_leaves 的下标 = PoolVal, bar.1d.<列>): 归母净利 TTM / 归母普通股权益 MRQ / 营业总收入 TTM / 经营现金流 TTM / 股息率 TTM
 // / 融资余额 / 融券余额
 inline constexpr const char *kPoolValCols[kPoolVals] = {"pl_npp_ttm", "bs_eq", "pl_rev_ttm", "cf_ocf_ttm", "dy_ttm", "rz_bal", "rq_bal"};
 // 一个持有期的标签列: lb_<h> 做多收益 / lb_nom_<h> 名义收益 (只偏移型)
@@ -190,7 +190,6 @@ struct FeatureTable {
   XCols x;
   YCols y;
   BCols b;
-  LeafId val[kPoolVals] = {};                 // [PoolVal] bar.1d 估值七叶 (X 侧复用)
   factor::expr::FeatureLookup lookup() const; // 给 Expr::parse 注入 (比网格细的层 → FINER; 回归目标 = label_leaf)
   // 持有期 hold 的回归目标叶名 (y.lab 的做多列); 本层无该持有期 → 空串
   std::string label_leaf(HoldId hold) const;

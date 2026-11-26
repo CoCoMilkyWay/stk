@@ -90,18 +90,18 @@ struct PortfolioBook : Book {
     assert(line < lines());
     return col[k].n ? col[k].at(static_cast<int>(line)) : nullptr;
   }
-  const float *val_of(size_t line, int m, bool other = false) const { // other = 另一种权重 (Book::alt; 只篮子账有)
-    const BookLines &x = other ? alt[m] : val[m];
+  const float *val_of(size_t line, int m, bool other = false) const { // other = 另一种权重 (Profile::alt; 只篮子账有)
+    const BookLines &x = other ? pf.alt[m] : pf.val[m];
     assert(line < lines() && x.n);
     return x.at(static_cast<int>(line));
   }
   const float *cap_of(size_t line) const {
-    assert(line < lines() && cap.n);
-    return cap.at(static_cast<int>(line));
+    assert(line < lines() && pf.cap.n);
+    return pf.cap.at(static_cast<int>(line));
   }
   const float *bal_of(size_t line, int j) const { // j = 两融口 − kValRz
-    assert(line < lines() && bal[j].n);
-    return bal[j].at(static_cast<int>(line));
+    assert(line < lines() && pf.bal[j].n);
+    return pf.bal[j].at(static_cast<int>(line));
   }
 };
 

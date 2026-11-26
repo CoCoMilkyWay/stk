@@ -89,7 +89,7 @@ int plan_forest(misc::exec::ForkJoin &ex, const Block &c, const Forest &F, std::
 Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
   assert(sc.ft && sc.ft->seg == 1 && pool_id(sc.pool) == kAllPool && "池篮子在 all 池日层评估域");
   assert(sc.ft->y.has(kHoldT1) && "篮子须有 T+1 标签 (日层: 池指数 C(行) → C(D+1))");
-  const std::span<const LeafId, kPoolVals> val(sc.ft->val);
+  const std::array<LeafId, kPoolVals> val = pool_val_leaves(*sc.ft);
   if (!open_job(F, sc, val, j))
     return Rc::Empty;
   assert(j.dm.rs.has(kAllBar));

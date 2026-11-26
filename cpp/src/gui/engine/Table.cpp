@@ -203,12 +203,6 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
   }
   const auto daily = [&](const char *code) { return Col{TierId::Bar, L_1day, static_cast<uint32_t>(meta.col_of(L_1day, code))}; }; // 日频原料 bar.1d
   t.b.adj_factor = daily("adj_factor");
-  const std::string pre1d = std::string(tier_name(TierId::Bar)) + "." + kLevelToken[L_1day] + ".";
-  for (int m = 0; m < kPoolVals; ++m) {
-    const auto it = t.x.index.find(pre1d + kPoolValCols[m]);
-    assert(it != t.x.index.end() && "估值列不在 bar.1d 叶表里");
-    t.val[m] = it->second;
-  }
   t.y.entry = named("lb_entry_ok");
   // 档 tier 层 lvl 的列 code 的下标; 无 → −1
   const auto find = [&](TierId tier, const std::string &code) {
