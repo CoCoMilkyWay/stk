@@ -54,7 +54,7 @@ std::string sweep_line(const Sweep &sw) {
   std::string s = sw.slots.empty() ? std::string("Search: 无自由参数, 只评 1 个点")
                                    : "Search: 自由参数 " + std::to_string(sw.slots.size()) + " 个, 算出滚动窗的点 " + std::to_string(ps.size()) + " 个";
   if (ps.size() >= 2)
-    s += fmt(" · 中位 %s 最高 %.3f", factor::stat::kTargetName, ps[0].score) + fmt(" / 次高 %.3f", ps[1].score) + fmt(" / 各点中位 %.3f", ps[ps.size() / 2].score);
+    s += std::string(" · ") + factor::stat::kScoreName + fmt(" 最高 %.3f", ps[0].score) + fmt(" / 次高 %.3f", ps[1].score) + fmt(" / 各点中位 %.3f", ps[ps.size() / 2].score);
   return s;
 }
 
@@ -168,12 +168,12 @@ std::string WeightLine(const TrialRes &k, const Weight &w) {
   const std::string head = &w == best ? std::string() : "另一权重 `" + Formula(w) + "`: ";
   if (!w.has)
     return head + "无该持有期统计";
-  std::string s = head + fmt("rIC %.3f", w.ric) + fmt(" · mono %.3f", w.mono) + fmt(" · 中位 %s %.3f", factor::stat::kTargetName, w.score) +
+  std::string s = head + fmt("rIC %.3f", w.ric) + fmt(" · mono %.3f", w.mono) + " · " + factor::stat::kScoreName + fmt(" %.3f", w.score) +
                   fmt(" · 每期毛多 %+.2fbp", w.lng * 1e4) + fmt(" · 毛空 %+.2fbp", w.sht * 1e4) +
                   fmt(" · 毛多空 %+.2fbp", w.gross * 1e4) + fmt(" · 净多空 %+.2fbp", w.net * 1e4) + fmt(" · 成本 %.2fbp", w.cost * 1e4) + fmt(" (单边换手 买 %.0f%%", w.buy * 100) +
                   fmt(" / 卖 %.0f%%", w.sell * 100) + fmt(", × 固定冲击 %.0fbp + 税佣)", w.impact * 1e4);
   if (&w == best)
-    s += GateMiss(k.gate, k.st.res).empty() ? " · 达入库门槛" : fmt(" · 未达入库门槛 (%s ≥ %.3f)", kGateName, k.gate.min);
+    s += GateMiss(k.gate, k.st.res).empty() ? " · 达入库门槛" : std::string(" · 未达入库门槛 (") + kGateName + fmt(" ≥ %.3f)", k.gate.min);
   return s;
 }
 
