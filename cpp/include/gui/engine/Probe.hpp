@@ -1,6 +1,6 @@
 // Probe — 探针层 (一个根的一种输出; 双层严格对仗生命周期): Load / Ledger 之上, Engine 之下.
-//   趟级: init(PassCtx) ⇄ finish(PassCtx)    (首块前一次定形/置初值, 末块后好根一次收尾)
-//   块级: open(Ctx)     ⇄ close(Ctx, RootView) (中间夹逐统计行 row(hi, t, r))
+//   趟级: init(PassCtx) ⇄ finish(PassCtx)    (PassCtx = pass_ctx(作业); 首块前一次定形/置初值, 末块后好根一次收尾; 常驻 bytes)
+//   块级: open(Ctx)     ⇄ close(Ctx, RootView) (Ctx 带块上标签 + 逐根评估口径 Mode; 中间夹逐统计行 row(hi, t, r); 暂存 scratch)
 //   落地三形 (行轴 = 评估期 rows_stat): RowsP<D, Got> (逐行暂存 → 折) / LandCellsP<V> (逐格) / LinesP (净值线 → fold_ledger).
 //   通用五探针: HoldP (三级 + 逐日 + 滚动窗) / TurnP (账集流水) / CoverP / AlphaP / IcPdfP → EvalProbes<X...> → fill_eval;
 //   分年一律 by_year (逐日原料取 HoldP / TurnP 两处, 只在 fill_eval 汇成 YearStat).
@@ -54,7 +54,6 @@ enum NeedBit : uint8_t {
 struct RootView {
   factor::stat::Plane x;
   factor::stat::Plane alpha;
-  factor::stat::Frame f = factor::stat::Frame::CS;
   const uint16_t *rx = nullptr;
   const factor::stat::Accum *acc = nullptr; // [H] 本块三级 (已定向)
   const factor::stat::Day *day = nullptr;   // [H][D] 本块二级 (已定向, D = 本块统计日数)
@@ -68,20 +67,24 @@ struct PassCtx {
   Amts ad;
   int seg = 0, A = 0;
   int days_stat = 0, rows_stat = 0;
-  factor::stat::Dir d = factor::stat::kFwd;
 };
+inline PassCtx pass_ctx(const Job &j, misc::exec::ForkJoin &ex) {
+  const int seg = j.ft->seg, ds = static_cast<int>(j.dm.stat_days());
+  return {ex, j.dm, j.spec.y.hd, j.spec.y.ad, seg, static_cast<int>(j.dm.rs.axis.size()), ds, ds * seg};
+}
 
-// 块级上下文 (open / close 共用)
+// 块级上下文 (open / close 共用): 块上的标签 L 同块各根共用, 评估口径 m 逐根
 struct Ctx {
   misc::exec::ForkJoin &ex;
   const Block &c;
   const factor::stat::Labels &L;
   factor::cpu::stat::Workspace *w = nullptr;
-  factor::stat::Dir d = factor::stat::kFwd;
+  factor::stat::Mode m;
   bool last = false;
   factor::stat::Span s() const { return c.span(); }
 };
 
+// 探针组 (本身即 Stat 的行 sink: row(hi, t, r) 逐行收, 行已按所评方向)
 template <class... P>
 struct Probes {
   std::tuple<P...> p;
@@ -94,8 +97,8 @@ struct Probes {
   Q &at() { return std::get<Q>(p); }
   template <class Q>
   const Q &at() const { return std::get<Q>(p); }
-  static double bytes(const Shape &sh, int H) { return (0.0 + ... + P::bytes(sh, H)); }
-  static double scratch(const Shape &sh, int H) { return (0.0 + ... + P::scratch(sh, H)); }
+  static constexpr Bytes bytes(int H) { return (Bytes{} + ... + P::bytes(H)); }
+  static constexpr Bytes scratch(int H) { return (Bytes{} + ... + P::scratch(H)); }
   void init(const PassCtx &c) {
     std::apply([&](P &...q) { (q.init(c), ...); }, p);
   }
@@ -113,19 +116,13 @@ struct Probes {
   }
 };
 
-// 逐行收进探针的 sink (行已按所评方向: rx 源头定向)
-template <class Ps>
-struct ProbeSink {
-  Ps *ps;
-  void row(int i, int t, const factor::stat::Row &r) const { ps->row(i, t, r); }
-};
-
+// bytes = 趟级常驻 (init 定形, 跨块) / scratch = 块级暂存 (open 定形); 都是线性字节式
 struct ProbeBase {
   static constexpr uint8_t need = 0;
   static constexpr uint8_t need_last = 0;
   static constexpr Segs segs = Segs::None;
-  static double bytes(const Shape &, int) { return 0.0; }
-  static double scratch(const Shape &, int) { return 0.0; }
+  static constexpr Bytes bytes(int) { return {}; }
+  static constexpr Bytes scratch(int) { return {}; }
   void init(const PassCtx &) {}
   void open(const Ctx &) {}
   void row(int, int, const factor::stat::Row &) {}
@@ -155,7 +152,7 @@ struct HoldP : ProbeBase {
   factor::stat::HoldStat hold[kHoldCount];
   factor::stat::Roll roll[kHoldCount];
   std::vector<double> wins[kHoldCount]; // [hd][评估期日] 收尾日的窗目标 (Stat/Roll.hpp kTarget; 不计入 = NaN)
-  static double bytes(const Shape &sh, int H) { return sizeof(factor::stat::Day) * static_cast<double>(H) * sh.days; }
+  static constexpr Bytes bytes(int H) { return {.day = static_cast<double>(sizeof(factor::stat::Day)) * H}; }
   void init(const PassCtx &p) {
     seg = p.seg;
     for (int i = 0; i < p.hd.n; ++i)
@@ -195,8 +192,8 @@ struct TurnP : ProbeBase {
   TurnStat turn[kHoldCount];
   std::vector<double> row_buy;              // [块行] 整组两端买量之和 (close 内暂存)
   std::vector<std::vector<double>> day_buy; // [hd][评估期日] 同上按日合
-  static double bytes(const Shape &sh, int H) { return sizeof(double) * static_cast<double>(H) * sh.days; }
-  static double scratch(const Shape &sh, int) { return sizeof(double) * static_cast<double>(sh.T); }
+  static constexpr Bytes bytes(int H) { return {.day = static_cast<double>(sizeof(double)) * H}; }
+  static constexpr Bytes scratch(int) { return {.row = sizeof(double)}; }
   void init(const PassCtx &p) {
     seg = p.seg;
     amts = p.ad;
@@ -231,7 +228,7 @@ struct AlphaP : ProbeBase {
     assert(c.c.ck.d1 == c.c.nd && c.c.t_back == 0 && "末块止于评估期末");
     const factor::stat::Span s = c.s();
     const size_t o = static_cast<size_t>(s.t_lo) * s.A;
-    alpha_dist(c.ex, v.alpha.v + o, v.alpha.m + o, v.rx + o, s.t_hi() - s.t_lo, s.A, c.d, d);
+    alpha_dist(c.ex, v.alpha.v + o, v.alpha.m + o, v.rx + o, s.t_hi() - s.t_lo, s.A, c.m.d, d);
   }
 };
 
@@ -241,7 +238,7 @@ struct RowsP : ProbeBase {
   static constexpr uint8_t need = kNeedRows;
   int t_lo = 0, n = 0;
   std::vector<Got> got;
-  static double scratch(const Shape &sh, int H) { return sizeof(Got) * static_cast<double>(H) * sh.T; }
+  static constexpr Bytes scratch(int H) { return {.row = static_cast<double>(sizeof(Got)) * H}; }
   void open(const Ctx &c) {
     const factor::stat::Span s = c.s();
     t_lo = s.t_lo, n = s.t_hi() - s.t_lo;
@@ -261,7 +258,7 @@ struct RowsP : ProbeBase {
 template <class V>
 struct LandCellsP : ProbeBase {
   std::vector<V> *dst = nullptr;
-  static double bytes(const Shape &sh, int) { return sizeof(V) * static_cast<double>(sh.n()); }
+  static constexpr Bytes bytes(int) { return {.cell = sizeof(V)}; }
   void init(const PassCtx &p) { dst->assign(static_cast<size_t>(p.rows_stat) * p.A, V{}); }
   V *at(const Ctx &c) const { return dst->data() + static_cast<size_t>(c.c.land0() + c.c.t_lo) * c.s().A; }
 };
@@ -358,7 +355,7 @@ struct NavP : LinesP {
   int sel = -1;
   double cap = 0.0;
   factor::stat::Ret ret = factor::stat::Ret::Excess; // 行里组 / 尾部的收益口径 (= 根的)
-  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(kNavLines) * H * sh.T; }
+  static constexpr Bytes bytes(int H) { return {.row = static_cast<double>(sizeof(float)) * kNavLines * H}; }
   void init(const PassCtx &p) {
     sel = only_of(p.hd, only);
     stride = p.seg;
@@ -366,7 +363,7 @@ struct NavP : LinesP {
   }
   void open(const Ctx &c) {
     LinesP::open(c);
-    cap = c.L.cap, ret = c.L.ret;
+    cap = c.L.cap, ret = c.m.r;
   }
   void row(int hi, int t, const factor::stat::Row &r) {
     if (only >= 0 && hi != sel)

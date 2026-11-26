@@ -6,7 +6,7 @@
 //   一条链, 每环一个头: rank (本头: r16) → pos (Pos.hpp: 仓位感知) → row (本头 Row, 行核 Host.hpp ⇄ Dev.cuh) ⇄ book (Book.hpp: 账集 / 换手)
 //     → fold (Fold.hpp: Accum / Day / HoldStat) → roll (Roll.hpp). 持有期几何 / 协议表在 define/Label.hpp (Hold), 费率与成交侧在 define/Fee.hpp.
 //
-//   输入  因子平面 x [T][A] (SoA: float + 有效位) + 口径 Frame + 方向 Dir + H 组常驻标签 (每组一个持有期 HoldId):
+//   输入  因子平面 x [T][A] (SoA: float + 有效位) + 评估口径 Mode (口径 Frame × 方向 Dir × 收益 Ret, 逐根) + H 组常驻标签 (每组一个持有期 HoldId):
 //           lv       做多收益 (features LabelBar lb_<h>, 毛口径, 平仓顺延; fp16 位, 与落盘同格式). 冲击不进标签: 超额对每 t 去均值,
 //                    成本进来只剩截面相对项 —— 消费端在换手账上扣. 分钟型 entry / exit 同为分钟 VWAP (行 m 的 exit = 行 m+h 的
 //                    entry), 相邻行精确伸缩: 留仓成员逐期标签之和 = 连续持有收益, 换手的"留仓不付"才成立
@@ -30,7 +30,7 @@
 //     TS  时序: 根是 TsRankRoll(d = ts_norm_d(seg), 整数个交易日), 输出已是每资产对自身滚动历史的分位 ∈ [0,1];
 //         不排序, 直接量化 r16 = round(x · kRankMax) (r16_quant) → 20 组 = 自身历史分位组.
 //     两口径之后逐字共用: grp_of / rIC / 收益 / 持仓口径 / 尾部 / ls / mkt / rAC / 二级汇总. 组允许空 (空组收益 0).
-//   【收益 Ret】组 / 尾部的持仓收益按因子的收益口径 (因子文件 type, 人定; 标签 Labels::ret, 逐根给):
+//   【收益 Ret】组 / 尾部的持仓收益按因子的收益口径 (因子文件 type, 人定; Mode::r, 逐根给; 标签与之无关):
 //     Excess 超额: e = lv − mkt (mkt = mean_J lv), 每 t 的共同分量 (市场水平 / 市场择时) 被扔掉, 评的是"相对市场";
 //     Abs    绝对: e = lv, 留着市场分量, 评的是"能不能赚绝对收益" (择时).
 //     rIC / rAC / mkt 与口径无关 (截面秩不受每 t 的平移影响); 满仓组两口径只差同一个 mkt, LS / mono 近乎不变, 差别主要在 TS 口径 (组随时间不满).
@@ -54,7 +54,8 @@
 //
 //   【分块流式】超大张量沿 T 切块 (Span): t0_abs 块首绝对行 (Hold::opens / nets 看绝对行); 统计行 [t_lo, T − t_back), 前带只给因子回看 /
 //     rAC lag / 交接链 (≥ 回看 + hold_reach + kChainDays 日), 后带只给续持 (≥ hold_reach); 两者按整日对齐. 分块 ≡ 整张量, 跨块 Accum merge 续攒.
-//   【视图】Plane (因子平面) · Batch (C 个同形候选; 交互 C = 1) · Labels (持有期 hd 与其标签 l[] 同处, 带满仓 cap) · Span.
+//   【视图】Plane (因子平面) · Batch (C 个同形候选; 交互 C = 1) · Mode (评估口径, 逐根) ⇄ Labels (持有期 hd 与其标签 l[] 同处, 带满仓 cap; 同块各根共用) · Span.
+//     流程 (rank_x / accum_* / run / stat_eval) 收 Mode, 行核收它用到的那几个标量.
 //   【数值】整数和精确 (r16 ≤ 65534, A ≤ kMaxA); 浮点和两后端求和序不同, 走对拍容差. 全程 branchless 无 NaN.
 //   【一份公式】契约公式标 FACTOR_HD (define/HostDev.hpp): CPU / GPU 两后端直接调用这一份, 后端只剩访存与并行.
 //   【precise-math】依赖受控浮点, 编进 -fno-fast-math TU.
@@ -103,6 +104,14 @@ enum class Ret : uint8_t { Excess,
                            Abs };
 inline constexpr const char *ret_token(Ret r) { return r == Ret::Excess ? "excess" : "absolute"; } // 因子文件 type / run.ret 的写法
 inline constexpr const char *ret_name(Ret r) { return r == Ret::Excess ? "超额" : "绝对"; }        // 显示
+
+// ---- 评估口径: 一个根怎么评 (口径 × 方向 × 收益口径; 与标签无关, 逐根给) ----
+struct Mode {
+  Frame f = Frame::CS;
+  Dir d = kFwd;
+  Ret r = Ret::Excess;
+  bool operator==(const Mode &) const = default;
+};
 
 // ---- 持有期集合在层上 (几何见 define/Label.hpp Hold) ----
 inline HoldSet holds_on(int seg) {
@@ -157,8 +166,7 @@ struct Batch { // C 个同形候选 (同池 g / 同口径 / 同方向 / 同标�
 struct Labels { // l[i] ↔ hd.k[i]
   Holds hd;
   Label l[kHoldCount];
-  double cap = 0.0;      // 满仓一组只数 (【持仓口径】; 调用方给 n_full)
-  Ret ret = Ret::Excess; // 组 / 尾部的收益口径 (【收益 Ret】; 逐根给)
+  double cap = 0.0; // 满仓一组只数 (【持仓口径】; 调用方给 n_full)
 };
 struct Span { // 块形 + 层几何 + 分块流式; 整张量 t0_abs = t_lo = t_back = 0
   int T = 0, A = 0;
@@ -203,9 +211,9 @@ FACTOR_HD inline constexpr bool in_tail(int e, unsigned r, int j) { return e == 
 struct Row {
   float ric = 0.f, rac = 0.f;
   float mkt = 0.f;                     // J 上做多收益均值 (超额基准)
-  float grp[kGroups] = {};             // 组的持仓收益 Σe / max(cnt, cap) (按 Labels::ret)
+  float grp[kGroups] = {};             // 组的持仓收益 Σe / max(cnt, cap) (按 Mode::r)
   uint16_t cnt[kGroups] = {};          // 组真持有只数 (A ≤ kMaxA < 65536)
-  float tail[kEnds][kTails] = {};      // 两端尾部的持仓收益 Σe / max(n, cap · tail_frac) (按 Labels::ret)
+  float tail[kEnds][kTails] = {};      // 两端尾部的持仓收益 Σe / max(n, cap · tail_frac) (按 Mode::r)
   uint16_t tail_n[kEnds][kTails] = {}; // 两端尾部真持有只数
   uint8_t ok = 0, ok_rac = 0;
 };

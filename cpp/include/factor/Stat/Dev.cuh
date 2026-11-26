@@ -324,21 +324,21 @@ inline void rank_launch(const Src &src, uint16_t *out, int T, int A, int C, int 
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 
-// 阶段 1: 候选批 B (口径 f, 方向 d, 只看池内 g ∧ m) → 已定向的 rx[c][T][A] (块内全部行, 含前后带). 口径分叉 / 定向只在这里
-inline void rank_x(const Batch &B, const uint8_t *g, Frame f, int d, const Span &s, uint16_t *rx, cudaStream_t stream) {
+// 阶段 1: 候选批 B (口径 m.f, 方向 m.d, 只看池内 g ∧ 有效位) → 已定向的 rx[c][T][A] (块内全部行, 含前后带). 口径分叉 / 定向只在这里
+inline void rank_x(const Batch &B, const uint8_t *g, const factor::stat::Mode &m, const Span &s, uint16_t *rx, cudaStream_t stream) {
   assert(s.T >= 1 && s.A >= 1 && s.A <= kMaxA);
   assert(B.C >= 1 && B.C <= kMaxBatch && g && rx);
   for (int c = 0; c < B.C; ++c)
     assert(B.x[c].v && B.x[c].m);
   const k::SrcX src{B, g};
-  if (f == Frame::CS) {
-    rank_launch(src, rx, s.T, s.A, B.C, d, stream);
+  if (m.f == Frame::CS) {
+    rank_launch(src, rx, s.T, s.A, B.C, m.d, stream);
     return;
   }
   const size_t plane = s.n();
   const size_t nb = (plane + kRB - 1) / kRB;
   const dim3 grid(static_cast<unsigned>(nb < 4096 ? nb : 4096), static_cast<unsigned>(B.C));
-  k::quant_rows<<<grid, kRB, 0, stream>>>(src, rx, plane, d);
+  k::quant_rows<<<grid, kRB, 0, stream>>>(src, rx, plane, m.d);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 

@@ -24,7 +24,7 @@ namespace {
 
 struct RicP : RowsP<RicP, float> {
   std::vector<float> *dst = nullptr;
-  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(H) * sh.T; }
+  static constexpr Bytes bytes(int H) { return {.row = static_cast<double>(sizeof(float)) * H}; }
   static float of(const factor::stat::Row &r) { return ric_of(r); }
   void init(const PassCtx &p) {
     dst->assign(static_cast<size_t>(p.hd.n) * p.rows_stat, std::numeric_limits<float>::quiet_NaN());
@@ -48,7 +48,7 @@ struct RxAllP : LandCellsP<uint16_t> {
     const factor::stat::Span s = c.s();
     const size_t o = static_cast<size_t>(s.t_lo) * s.A;
     const factor::stat::Plane x{v.x.v + o, v.x.m + o};
-    factor::cpu::stat::rank_x(c.ex, x, x.m, v.f, c.d, factor::stat::Span{s.t_hi() - s.t_lo, s.A, s.g}, at(c), *c.w);
+    factor::cpu::stat::rank_x(c.ex, x, x.m, c.m, factor::stat::Span{s.t_hi() - s.t_lo, s.A, s.g}, at(c), *c.w);
   }
 };
 
@@ -223,7 +223,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
     F.S.clear();
 
   RootSet rs{.hd = Holds::of(sc.ft->y.holds)};
-  rs.add(*sc.ft, f.expr, f.frame, f.dir, f.ret);
+  rs.add(*sc.ft, f.expr, {f.frame, f.dir, f.ret});
   ForestOut o;
   o.job.who = "Inspect";
   std::vector<InspectProbes> ps(1);
@@ -232,12 +232,11 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
   p.at<RxAllP>().dst = &cache.pl.rx_all;
   p.at<RicP>().dst = &cache.pl.ric;
 
-  const Rc rc = with_backend<InspectProbes>(F, sc.gpu, [&](auto &eng) {
-    return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/true, NoOp{}, [&](const Block &c, size_t, double) {
-      cache.pool.update(c.gen, [&](LedgerLines &b) { b = pool_line(F.S.ex, c); });
-      assert(cache.pool.val.P == c.rows_stat() && cache.pool.val.n == c.y.hd.n);
-    });
-  });
+  const Hooks hk{.before = [&](const Block &c, size_t, double) {
+    cache.pool.update(c.gen, [&](LedgerLines &b) { b = pool_line(F.S.ex, c); });
+    assert(cache.pool.val.P == c.rows_stat() && cache.pool.val.n == c.y.hd.n);
+  }};
+  const Rc rc = with_backend(F, sc.gpu, [&](auto &eng) { return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/true, hk); });
   if (aborted(rc))
     return rc;
 
@@ -248,7 +247,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
   res.lv = sc.lv;
   res.frame = f.frame;
   if (rc != Rc::Ok) {
-    res.error = o.job.why;
+    res.error = o.why(0, rc);
     cache.pl.clear();
     if (on_ready)
       on_ready(res);
@@ -268,7 +267,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
     res.pool_ann[hi] = static_cast<float>(per_year(s, days));
   }
   res.hd = o.job.spec.y.hd;
-  fill_eval(p, o.job.pass_ctx(F.S.ex, f.dir), o.scope(sc), o.eval_ms(0), res);
+  fill_eval(p, pass_ctx(o.job, F.S.ex), o.scope(sc), o.eval_ms(0), res);
   res.alpha_dist = std::move(p.at<AlphaP>().d);
   std::copy_n(p.at<IcPdfP>().pdf, res.hd.n, res.ic_agg);
   res.nav = std::move(p.at<NavP>().out);

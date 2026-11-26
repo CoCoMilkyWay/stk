@@ -32,6 +32,8 @@ namespace factor::gpu::stat {
 using factor::stat::Accum;
 using factor::stat::Day;
 using factor::stat::Labels;
+using factor::stat::Mode;
+using factor::stat::Ret;
 
 inline constexpr int kRows = 128; // 分片粒度 (行); 批核一块 = 整日的 ≥ kRows / S 日
 // 批核一块的行数: 整日对齐的 R = S · max(1, ⌊kRows / S⌋)
@@ -50,7 +52,7 @@ inline int n_batch_parts(const Span &s) { return (s.t_hi() - s.t_lo + batch_rows
 
 namespace k {
 
-__global__ void __launch_bounds__(kWB, 2) label_rows(Span s, const uint16_t *rx, Labels L, Row *rows) {
+__global__ void __launch_bounds__(kWB, 2) label_rows(Span s, const uint16_t *rx, Labels L, Ret ret, Row *rows) {
   __shared__ Slots sh;
   const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
   const int t = s.t_lo + blockIdx.x * kWarps + warp;
@@ -61,7 +63,7 @@ __global__ void __launch_bounds__(kWB, 2) label_rows(Span s, const uint16_t *rx,
   for (int hi = 0; hi < L.hd.n; ++hi) { // warp 一致量, 不发散
     const Hold hd = hold_on(L.hd.k[hi], s.g);
     const Row r = dev::row_stat(xr, t >= hd.h ? xr - static_cast<size_t>(hd.h) * s.A : nullptr, L.l[hi].at(base), factor::stat::chain_of(t, s, hd), L.cap,
-                                L.ret, hd.opens(s.t0_abs + t), sh.gs[warp], sh.gc[warp], lane);
+                                ret, hd.opens(s.t0_abs + t), sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0)
       rows[static_cast<size_t>(hi) * s.T + t] = r;
   }
@@ -111,7 +113,7 @@ __global__ void __launch_bounds__(kWB) reduce_parts(const Accum *part, int P, in
   acc[p] = a;
 }
 
-__global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, Span s, Labels L, int NB, Accum *part, Day *day) {
+__global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, Span s, Labels L, Ret ret, int NB, Accum *part, Day *day) {
   __shared__ Slots sh;
   const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
   const int c = blockIdx.x * kWarps + warp;
@@ -133,7 +135,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
     const size_t base = static_cast<size_t>(t) * A;
     const uint16_t *xr = rxc + base;
     const uint16_t *xl = t >= h ? xr - static_cast<size_t>(h) * A : nullptr;
-    const Row r = dev::row_stat(xr, xl, lb.at(base), factor::stat::chain_of(t, s, hd), L.cap, L.ret, hd.opens(s.t0_abs + t), sh.gs[warp], sh.gc[warp], lane);
+    const Row r = dev::row_stat(xr, xl, lb.at(base), factor::stat::chain_of(t, s, hd), L.cap, ret, hd.opens(s.t0_abs + t), sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0) {
       head.add(r);
       cur.add_head(r);
@@ -166,13 +168,13 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
 
 } // namespace k
 
-// 单候选: rx × L 组预处理标签 (设备) → 统计行 [t_lo, t_hi) 落 w.rows[h][t] → w.acc[hd.n] + w.day[hd.n][D] (设备, 覆盖)
-inline void accum_rows(const Span &s, const uint16_t *rx, const Labels &L, const Workspace &w, cudaStream_t stream) {
+// 单候选: rx × L 组预处理标签 (设备, 收益口径 m.r) → 统计行 [t_lo, t_hi) 落 w.rows[h][t] → w.acc[hd.n] + w.day[hd.n][D] (设备, 覆盖)
+inline void accum_rows(const Span &s, const uint16_t *rx, const Labels &L, const Mode &m, const Workspace &w, cudaStream_t stream) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, s.g.S, true);
   const int H = L.hd.n, NB = n_parts(s), D = s.days();
   assert(rx && w.rows && w.part && w.acc && w.day && H <= w.H && NB <= w.NB && D <= w.D);
-  k::label_rows<<<(s.t_hi() - s.t_lo + kWarps - 1) / kWarps, kWB, 0, stream>>>(s, rx, L, w.rows);
+  k::label_rows<<<(s.t_hi() - s.t_lo + kWarps - 1) / kWarps, kWB, 0, stream>>>(s, rx, L, m.r, w.rows);
   FACTOR_CUDA_OK(cudaGetLastError());
   k::fold_rows<<<(H * NB + kWarps - 1) / kWarps, kWB, 0, stream>>>(s, w.rows, H, NB, w.part);
   FACTOR_CUDA_OK(cudaGetLastError());
@@ -182,14 +184,14 @@ inline void accum_rows(const Span &s, const uint16_t *rx, const Labels &L, const
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 
-// 批: C 张已定向的 rx[c] × L → w.acc[c][h] + w.day[c][h][D] (设备, 覆盖)
-inline void accum_batch(const Span &s, const uint16_t *rx, int C, const Labels &L, const Workspace &w, cudaStream_t stream) {
+// 批: C 张已定向的 rx[c] × L (收益口径 m.r) → w.acc[c][h] + w.day[c][h][D] (设备, 覆盖)
+inline void accum_batch(const Span &s, const uint16_t *rx, int C, const Labels &L, const Mode &m, const Workspace &w, cudaStream_t stream) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, s.g.S, true);
   const int H = L.hd.n, NB = n_batch_parts(s);
   assert(rx && w.part && w.acc && w.day && C >= 1 && C <= w.Cmax && H <= w.H && NB <= w.NBB && s.days() <= w.D);
   const dim3 grid(static_cast<unsigned>((C + kWarps - 1) / kWarps), static_cast<unsigned>(NB), static_cast<unsigned>(H));
-  k::stat_batch<<<grid, kWB, 0, stream>>>(rx, C, s, L, NB, w.part, w.day);
+  k::stat_batch<<<grid, kWB, 0, stream>>>(rx, C, s, L, m.r, NB, w.part, w.day);
   FACTOR_CUDA_OK(cudaGetLastError());
   k::reduce_parts<<<(C * H + kWB - 1) / kWB, kWB, 0, stream>>>(w.part, C * H, NB, w.acc);
   FACTOR_CUDA_OK(cudaGetLastError());

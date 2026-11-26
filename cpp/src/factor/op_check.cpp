@@ -348,7 +348,7 @@ void check_stat(int A, unsigned seed, Report &rep) {
             const Profile pr = static_cast<Profile>(pi);
             std::mt19937 rng(seed + 1000u * pi);
             sc::Data d;
-            sc::make(d, fr, dir, ret, pr, T, A, S, rng);
+            sc::make(d, {fr, dir, ret}, pr, T, A, S, rng);
             sc::Result cpu;
             sc::run_cpu(d, cpu, threads);
             if (rep.verbose)
@@ -398,7 +398,7 @@ void check_batch(int A, unsigned seed, Report &rep) {
         const Profile pr = static_cast<Profile>(pi);
         std::mt19937 rng(seed + 1000u * pi);
         sc::Data d;
-        sc::make(d, fr, factor::stat::kFwd, factor::stat::Ret::Excess, pr, T, A, S, rng);
+        sc::make(d, {.f = fr}, pr, T, A, S, rng);
         const Tol tol = sc::tol_of(pr);
         sc::Result ref[sc::kCands];
         for (int c = 0; c < sc::kCands; ++c)

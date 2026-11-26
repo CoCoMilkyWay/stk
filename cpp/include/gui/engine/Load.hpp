@@ -1,10 +1,12 @@
-// Load — 评估域 / 分块计划 / 两侧特征库装载 / 进程唯一计算面 Store (全部因子服务、篮子账与观察工具共用):
+// Load — 评估域 / 分块计划 / 两侧特征库装载 / 进程唯一计算面 Store / 作业层 (全部因子服务、篮子账与观察工具共用):
 //   结局 Rc; 评估域 Domain (domain_of: 所用库 + 评估期 + 预热 + A 轴) → 预算 Budget + 前后带 Bands → 分块 Plan (plan_chunks);
 //   两侧严格对仗 (共享逐天并行骨架 read_days, 统一经 Store::pin 钉成 Block):
 //     X (特征输入叶: LeafId → Leaf → XPlanes, load_x; 含池篮子复用的 bar.1d 估值七叶)
 //     Y (截面门控 + 建仓可成交码 YCore + 标签两侧 [hold] + 买入冲击 [amt] → YPlanes, load_y)
 //   Store = 进程唯一的计算面 (线程池 ex + 库 lr + 宿主平面 LRU + 常驻算子/评估工作区 ExecSpace + 计算权优先级队列):
 //     计算句柄 FactorFlow + 独占租约 Lease (计算权在手才可碰其余全部资源, 跨文件 / 跨趟零重分配复用).
+//   作业层 = 规格 Need × 块消费者: Need → open_job → Job; 唯一的块循环 run_job: init → { want → 装载 → block } → finish.
+//     块消费者两种对仗 (与探针的 init ⇄ finish 同构): 森林 ForestPass (Engine.hpp, forest_need) ⇄ 篮子 BasketPass (Ledger.hpp, basket_need).
 #pragma once
 
 #include "factor/Check.hpp" // check::Plane
@@ -20,6 +22,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <map>
@@ -78,13 +81,12 @@ struct Chunk {
   size_t d0 = 0, s0 = 0, s1 = 0, d1 = 0;
   int days() const { return static_cast<int>(d1 - d0); }
 };
-// 字节 / 格: load = 宿主块 (X + Y; 篮子 = B); work = 引擎宿主槽与暂存; dev = 显存; fixed = 与格无关的宿主常驻 (字节)
+// 字节 / 格: load = 宿主块 (X + Y); work = 引擎宿主槽与暂存; dev = 显存; fixed = 与格无关的宿主常驻 (字节; 由作业的 Bytes 按评估域形状现乘)
 struct Budget {
   double load = 0.0, work = 0.0, fixed = 0.0, dev = 0.0;
   double host(double n) const { return n * (load + work) + fixed; }
   double vram(double n) const { return n * dev; }
 };
-inline double cells_of(const Domain &dm, int seg) { return static_cast<double>(dm.days.size()) * seg * static_cast<double>(dm.rs.axis.size()); }
 // 前后带日数; front < 0 → 整期一块
 struct Bands {
   int front = -1, back = 0;
@@ -106,6 +108,18 @@ struct Shape {
   int T = 0, A = 0, days = 0, seg = 0;
   size_t n() const { return static_cast<size_t>(T) * A; }
   bool operator==(const Shape &) const = default;
+};
+// 评估域全段 (含预热) 的形状
+inline Shape dom_shape(const Domain &dm, int seg) {
+  const int days = static_cast<int>(dm.days.size());
+  return {days * seg, static_cast<int>(dm.rs.axis.size()), days, seg};
+}
+// 线性字节式 (探针 / 账的常驻与暂存; 按评估域形状现乘): cell · T·A + row · T + day · 日数
+struct Bytes {
+  double cell = 0.0, row = 0.0, day = 0.0;
+  constexpr Bytes operator+(const Bytes &o) const { return {cell + o.cell, row + o.row, day + o.day}; }
+  constexpr Bytes operator*(double k) const { return {cell * k, row * k, day * k}; }
+  double at(const Shape &sh) const { return cell * static_cast<double>(sh.n()) + row * sh.T + day * sh.days; }
 };
 enum class Segs : uint8_t { None,
                             First,
@@ -286,5 +300,73 @@ private:
   Store &S_;
   const bool held_;
 };
+
+// ---- 作业层: Need → open_job → Job → run_job (唯一的块循环) ----
+// 前后带: 前带 = 回看 look 行 + 最长持有期 (rAC lag / 前一批) 折日 + 交接链 kChainDays 日; 后带 = 最长持有期折日 (续持)
+inline Bands bands_of(int look, const Holds &hd, int seg) {
+  const int h = factor::stat::hold_reach(hd, seg);
+  return {(look + h + seg - 1) / seg + kChainDays, (h + seg - 1) / seg};
+}
+
+// 一个作业对装载与预算的全部要求 (森林作业 forest_need ⇄ 篮子作业 basket_need; 唯一消费方 open_job)
+struct Need {
+  std::vector<LeafId> x;  // X 叶
+  Holds hd;               // Y 标签的持有期
+  Segs segs = Segs::None; // Y 成本段
+  bool ry = false;        // Y 标签秩 (Stat 根 · CPU)
+  Bands bands;            // 前后带 (front < 0 = 整期一块: 装不下即封顶年数)
+  Budget cell;            // 每格的 load (两侧规格之外) / work / dev; fixed 由下一项现乘
+  Bytes fixed;            // 与格无关的宿主常驻 (按评估域形状现乘; 年数封顶时随之重算)
+};
+
+struct Job {
+  const char *who = "";
+  const FeatureTable *ft = nullptr;
+  BlockSpec spec;
+  Bands bands;
+  Budget b;
+  Domain dm;
+  Plan P;
+  double n_full = 0.0;
+  std::string why;
+  Io io(FactorFlow &F) const { return F.io(*ft, dm); }
+  double reserve() const { return P.max_cells() * b.work + b.fixed; }
+  StatScope scope(const FactorScope &sc, const char *backend) const { return stat_scope(sc, dm, ft->seg, n_full, backend); }
+};
+
+// 唯一的作业入口: 评估域 → 两侧规格 → 前后带 → 预算 (整期一块装不下即封顶年数, Empty) → 分块计划
+Rc open_job(FactorFlow &F, const FactorScope &sc, Need n, Job &j);
+
+inline Rc load_block(FactorFlow &F, Job &j, size_t k, Block &c) {
+  assert(k < j.P.chunks.size());
+  const Rc rc = F.S.pin(c, j.io(F), j.P.chunks[k], j.spec, j.reserve());
+  if (rc == Rc::Ok)
+    j.n_full = c.y.n_full;
+  return rc;
+}
+
+// 唯一的块循环. 块消费者 p (ForestPass ⇄ BasketPass): init(j) ⇄ finish(j) 首块前 / 末块后各一次; want(块) 挑块;
+//   block(块, 块号, 末块, 装载秒) → Rc. 装载失败 / block 非 Ok / 取消即返回 (不 finish)
+template <class P>
+Rc run_job(FactorFlow &F, Job &j, P &&p) {
+  using Clock = std::chrono::steady_clock;
+  const size_t n = j.P.chunks.size();
+  assert(n >= 1);
+  p.init(j);
+  for (size_t ci = 0; ci < n; ++ci) {
+    if (!p.want(j.P.chunks[ci]))
+      continue;
+    const Clock::time_point t0 = Clock::now();
+    Block c;
+    if (const Rc rc = load_block(F, j, ci, c); rc != Rc::Ok)
+      return rc;
+    if (const Rc rc = p.block(c, ci, ci + 1 == n, std::chrono::duration<double>(Clock::now() - t0).count()); rc != Rc::Ok)
+      return rc;
+    if (F.cancel.load(std::memory_order_relaxed))
+      return Rc::Cancel;
+  }
+  p.finish(j);
+  return Rc::Ok;
+}
 
 } // namespace GUI::Engine

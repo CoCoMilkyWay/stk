@@ -197,14 +197,16 @@ stk/
 │   │   │   │   ├── Load.hpp                            # 🖥️ 评估域与装载层: Domain + Plan 分块 + 两侧平面 X ↔ Y (共享 read_days, 统一经 Store::pin 钉成 Block) + 进程唯一计算面 Store
 │   │   │   │   │                                       #    · 门控 / 标签取因子池 Bar 库, 盘口成本取同池 Lob 库; 评估期 span_of = 落盘日交集最近 N 年 + 预热日 (10% 与单窗 kMaxD 行取大)
 │   │   │   │   │                                       #    · Store = 线程池 ex + 库 lr + 宿主平面 LRU (misc::Lru, 钉着的不逐) + 常驻执行环境 ExecSpace (CPU/GPU 内存与显存统一预算) + 计算权租约 Lease
+│   │   │   │   │                                       #    · 作业层 = 规格 Need × 块消费者: Need → open_job (唯一的作业入口; 预算 = 每格三项 + 线性字节式 Bytes 按评估域形状现乘) → Job;
+│   │   │   │   │                                       #      run_job = 唯一的块循环 (init → { want → 装载 → block } → finish); 块消费者两种对仗: ForestPass (Engine) ⇄ BasketPass (Ledger)
 │   │   │   │   ├── Ledger.hpp                          # 🖥️ 净值与账核: RowLines → fold_ledger → LedgerLines → compound; 账 Ledger = 五列 (收益 | 冲击 / 固定冲击量 / 买 / 卖, 一切账恒齐) + 画像 (篮子 / 个股)
-│   │   │   │   │                                       #    · 收益与换手同一核 (Stat/Book.hpp book_rows): 因子组合 = 顶端整组 (FactorBooks); 池篮子 = 持仓权 Weigh (BasketTable::each 枚举) + 个股 = 自身 (BasketBooks); 池均 = MaskBook; 分块归约 BasketPass → Baskets
-│   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层 (双层对仗): 趟级 init ⇄ finish × 块级 open → row → close; 落地三形 RowsP / LandCellsP / LinesP; EvalProbes → EvalStat
+│   │   │   │   │                                       #    · 收益与换手同一核 (Stat/Book.hpp book_rows): 因子组合 = 顶端整组 (FactorBooks); 池篮子 = 持仓权 Weigh (BasketTable::each 枚举) + 个股 = 自身 (BasketBooks); 池均 = MaskBook; 篮子作业 eval_baskets = basket_need → run_job(BasketPass) → Baskets
+│   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层 (双层对仗): 趟级 init ⇄ finish (常驻 bytes) × 块级 open → row → close (暂存 scratch; Ctx = 块上标签 + 逐根评估口径 Mode; 探针组即 Stat 行 sink); 落地三形 RowsP / LandCellsP / LinesP; EvalProbes → EvalStat
 │   │   │   │   │                                       #    · 通用五探针 HoldP (三级 + 逐日 (含组和) + 滚动窗) / TurnP (账集流水 TurnStat) / CoverP / AlphaP / IcPdfP; 分年只在 fill_eval 由两份逐日汇成
 │   │   │   │   │                                       #    · 分层 / 尾部 / LS 日净值线 NavP: 全部持有期 (Inspect) 或只一个持有期的超额线 (Agent eval_factor)
 │   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎: Forest (LeafId 一步到位, 因子根 + 纯表达式根) × Backend<Cpu | Gpu> (设备侧按块驻留 Y/X 复用)
-│   │   │   │   │                                       #    · 单一管线 (作业层 ⇄ 块层): Need (森林 forest_need ⇄ 篮子 basket_need) → open_job (唯一的作业入口) → for_blocks (唯一的块循环) → eval_block (唯一的块内评估) → run_pass;
-│   │   │   │   │                                       #      单森林 eval_forest (Run / Inspect / Portfolio) ↔ 批 Search ↔ 篮子 eval_baskets ↔ Agent 观察流 (LookP) 同一条
+│   │   │   │   │                                       #    · 森林作业与篮子作业逐件对仗: forest_need ⇄ basket_need / ForestPass ⇄ BasketPass / eval_forest ⇄ eval_baskets; 块内唯一评估 eval_block;
+│   │   │   │   │                                       #      ForestPass 块 = before → bind → 逐批种森林 (定森林: Run / Inspect / Portfolio / Agent 观察 ⇄ 逐批现种: Search) + eval_block → after; 钩子 want / before ⇄ after
 │   │   │   │   ├── Worker.hpp                          # 🖥️ FactorWorker<D, Req>: 薄异步服务骨架 (值句柄 flow() + 统一中断收尾 settle)
 │   │   │   │   ├── File.hpp                            # 🖥️ 因子文件读写 (一因子一文件); Run 只回写 run + stats, Search 只回写 weights / search
 │   │   │   │   ├── StatJson.hpp                        # 🖥️ EvalStat ↔ JSON
@@ -361,7 +363,7 @@ stk/
 │   │   │   ├── {TS,CS}/                                # 🧬 时序 / 截面算子三后端 (同名 struct, 缺一编译错): Stream.hpp 实盘流式 / Cpu.hpp 挖掘批算 / Gpu.cuh CUDA
 │   │   │   ├── Stat/                                   # 🧬 因子评估器 (无流式后端): 因子 + 标签 → 三级出口 Row[H][T] (IC / 分组 / 尾部 / 多空) · Day[H][D] (逐日) · HoldStat
 │   │   │   │   │                                       #    一条链每环一头: rank (Contract) → pos (Pos) → row (Host / Dev 行核) ⇄ book (Book) → fold (Fold) → roll (Roll); 持有期几何与协议表在 define/Label.hpp
-│   │   │   │   ├── Contract.hpp                        # 🧬 语义契约: 视图 / r16 / Row / 尾部 (嵌套层级); 只做多账本, 方向 = 评估参数 (权重 sign), 在 r16 源头一次定向; 收益口径 (超额 / 绝对 = 因子 type) 随标签逐根给, 在行收尾一次定
+│   │   │   │   ├── Contract.hpp                        # 🧬 语义契约: 视图 / r16 / Row / 尾部 (嵌套层级); 只做多账本, 方向 = 评估参数 (权重 sign), 在 r16 源头一次定向; 评估口径 Mode (口径 × 方向 × 收益口径 = 因子 type) 逐根给, 与标签 Labels 分开; 收益口径在行收尾一次定; 两后端流程同参序 (x, g, Mode, Span, …)
 │   │   │   │   ├── Pos.hpp                             # 🧬 仓位感知唯一核: 交接链 Chain + walk (成员层级一次回走 → 真持有 held ⇄ 续持 cont) + 一格唯一出口 cell + 判据族 InRank / InMask / InBit / InInd
 │   │   │   │   ├── Book.hpp                            # 🧬 账集唯一核 (宿主): 账集 = size / cap / each (本 = 判据 × 层级 × 目标权 × 满仓) → book_rows (本批 ⇄ 前一批格位 → turn_row) → 收益 + 流水 Flow
 │   │   │   │   │                                       #    · Flow = 两侧量 / 不可成交量 (各金额段同一份) + 各盘口段冲击, 成本按金额段与 Fee 现乘; 整批平仓恒在撮合价 (盘口冲击 0)

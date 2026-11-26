@@ -15,6 +15,7 @@
 // op_check 全扫 profile × d, 这里每算子只跑一组默认参数.
 // 计时: cpu / stream = 整段 wall time (steady_clock); gpu = 纯 kernel (cudaEvent, 不含
 // cudaMalloc + H2D/D2H —— 搬运是 GpuRun 对拍接口的成本, 不是算子的), 首次调用前做一次热身.
+// OpTable 行每后端至多跑 3 次取最小 (累计过 300 ms 即停); 评估算子 (Stat / Search) 只计评估, 不含标签 prep 与会话开关.
 // 计时之外不留 overhead: 输入张量一轮按 (槽位, Gen) 造一次 (并行 fill) 并上传显存一次, 输出缓冲
 // 预触页后跨算子复用, GPU 走常驻 Session; 算子之间只剩一张输出的 D2H (宿主 pin 过, DMA) 与 compare.
 #pragma once

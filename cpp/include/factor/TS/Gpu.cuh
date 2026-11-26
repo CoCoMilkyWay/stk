@@ -770,7 +770,7 @@ struct FnSlope {
 //    ext[t−d+1, t] = cmb(S[t−d+1], P[t]), P = 所在块内前缀极值, S = 所在块内后缀极值.
 //    一线程一资产: 每块先前向算 P 并输出 (用前一块的 S), 再后向算 S 写进环形区 [d][A] 供下一块;
 //    读 x 两遍 + 环形区读写各一遍, 与 d 无关. 时间上按 C (d 的倍数) 分块, 块首多做一次前块的后缀预热.
-//    工作区 = gridY · d · A · sizeof(E) ≤ T·A·sizeof(E) 的 1/4 量级 (C ≈ 4·240), 没有 log₂d 趟全平面.
+//    工作区 = gridY · d · A · sizeof(E) ≤ T·A·sizeof(E) (默认 C ≈ 4·kSegMax 时为其 1/4 量级; 小张量收短 C, 见 ext_chunk), 没有 log₂d 趟全平面.
 // =============================================================================
 struct FI {
   float v;
@@ -1183,7 +1183,14 @@ inline void launch_order(const float *xv, const uint8_t *xm, float *ov, uint8_t 
   }
 }
 inline int roll_chunk(int d) { return kSegMax * ((d + kSegMax - 1) / kSegMax); } // 块长 ≥ d: 预热开销 ≤ 一趟
-inline int ext_chunk(int d) { return d * hmax(1, (4 * kSegMax) / d); }           // d 的倍数 (块界对齐 d-块界), ≈ 4 × kSegMax
+// EXTREME 块长: d 的倍数 (块界对齐 d-块界), 默认 ≈ 4 × kSegMax; 张量小 (A 列块 × 时间块铺不出 kFillBlocks 个线程块) 时收短到铺得出 (下限 d):
+// 一线程一资产, 池几百只只有一两个列块, 不切时间就只剩个位数线程块, 每块的预热 (≈ 2d 行) 远比 SM 闲着便宜
+inline constexpr int kFillBlocks = 128;
+inline int ext_chunk(int d, int T, int A) {
+  const int base = d * hmax(1, (4 * kSegMax) / d);
+  const int xb = (A + kTB - 1) / kTB, yb = hmax(1, (kFillBlocks + xb - 1) / xb);
+  return hmin(base, d * hmax(1, (T + d * yb - 1) / (d * yb)));
+}
 inline dim3 g_roll(int T, int A, int C) { return dim3(static_cast<unsigned>((A + kTB - 1) / kTB), static_cast<unsigned>((T + C - 1) / C)); }
 
 } // namespace k
@@ -1235,8 +1242,8 @@ FACTOR_TS_POINT(TsMul, 2, { v = x.v * y.v; m = x.m && y.m; })
 FACTOR_TS_POINT(TsDiv, 2, { v = y.v != 0.f ? x.v / y.v : 0.f; m = x.m && y.m; }) // y = 0 → 0; 溢出 → 出口转无效
 FACTOR_TS_POINT(TsMax, 2, { v = fmaxf(x.v, y.v); m = x.m && y.m; })
 FACTOR_TS_POINT(TsMin, 2, { v = fminf(x.v, y.v); m = x.m && y.m; })
-// sign(x)·|x|^y, fp64 pow 同 host; x = 0 → 0 (含负次幂); 溢出 → 出口转无效
-FACTOR_TS_POINT(TsPow, 2, { const double b = x.v; v = x.v != 0.f ? static_cast<float>(copysign(pow(fabs(b), static_cast<double>(y.v)), b)) : 0.f; m = x.m && y.m; })
+// sign(x)·|x|^y, fp32 powf (sm_75 的 fp64 只有 1/32 速率; 误差几 ulp, 远在对拍容差内); x = 0 → 0 (含负次幂); 溢出 → 出口转无效
+FACTOR_TS_POINT(TsPow, 2, { v = x.v != 0.f ? copysignf(powf(fabsf(x.v), y.v), x.v) : 0.f; m = x.m && y.m; })
 // Imb: 和相消 (双边皆 0 / x ≈ −y) → 0
 FACTOR_TS_POINT(TsImb, 2, { v = dev::den_ok(x.v + y.v, fabsf(x.v) + fabsf(y.v)) ? (x.v - y.v) / (x.v + y.v) : 0.f; m = x.m && y.m; })
 FACTOR_TS_POINT(TsLogRatio, 2, { v = dev::log_ratio(x.v, y.v); m = x.m && y.m; }) // 非正侧饱和到 ∓kLogCap
@@ -1335,13 +1342,13 @@ FACTOR_TS_ROLL(TsWMeanRoll, FnWMean)
 #define FACTOR_TS_EXTREME(Name, MAXOP, ELEM)                                                                                                        \
   struct Name {                                                                                                                                     \
     static size_t scratch(const Call &c) {                                                                                                          \
-      const int C = k::ext_chunk(c.p.d);                                                                                                            \
+      const int C = k::ext_chunk(c.p.d, c.T, c.A);                                                                                                  \
       return static_cast<size_t>((c.T + C - 1) / C) * c.p.d * c.A * sizeof(ELEM);                                                                   \
     }                                                                                                                                               \
     FACTOR_TS_RUN {                                                                                                                                 \
       FACTOR_TS_CHECK(c);                                                                                                                           \
       assert(c.p.d >= 1 && c.p.d <= c.T && ws != nullptr);                                                                                          \
-      const int C = k::ext_chunk(c.p.d);                                                                                                            \
+      const int C = k::ext_chunk(c.p.d, c.T, c.A);                                                                                                  \
       k::extreme<MAXOP, ELEM><<<k::g_roll(c.T, c.A, C), kTB, 0, stream>>>(c.x.v, c.x.m, static_cast<ELEM *>(ws), c.o.v, c.o.m, c.T, c.A, c.p.d, C); \
       FACTOR_CUDA_OK(cudaGetLastError());                                                                                                           \
     }                                                                                                                                               \

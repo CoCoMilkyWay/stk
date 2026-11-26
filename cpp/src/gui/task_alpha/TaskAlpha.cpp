@@ -500,6 +500,7 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
           if (Engine::MakeRunRequest(data, ft, state->pool, state->years, /*evaluate=*/action != 2, state->engine->gpu(), req)) {
             if (action == 1)
               req.spec.only_files = state->factors_ui.run_files;
+            req.spec.order = state->factors_ui.shown_files;
             fs.Request(req);
           }
         } else if (action == -1) {

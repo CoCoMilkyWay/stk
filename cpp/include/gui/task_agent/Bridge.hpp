@@ -161,6 +161,7 @@ struct Result {
   std::shared_ptr<const Sweep> sweep;    // 空 = 没有 (共享不可变: 候选台 / 调用结果 / 列表拷 Result 不拷它)
   std::shared_ptr<const DayTrace> daily; // 最佳权重的; 空 = 没有 (同上)
   int ops = 0;
+  factor::stat::Ret ret = factor::stat::Ret::Excess; // 文件 type; agent 只评超额, 绝对口径的不可见
   bool visible = true;
   const Weight *best() const;
 };

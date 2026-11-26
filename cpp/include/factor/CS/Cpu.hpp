@@ -9,7 +9,7 @@
 //
 //   CS = 每个时刻 t 一个截面 (行主序 [T][A] 的一行, 内存连续), 各 t 之间完全独立.
 //   【性能】矩族不 gather 拷贝 (直接在掩码上 branchless 归约); 序统计族全精确 (契约【序统计】):
-//   秩 = 行内一次 64 位键排序 + 等值段扫 (组秩把组 id 拼进键的高位, 同一趟排序), 分位 = 池内样本 nth_element;
+//   秩 = 行内一次 64 位键的稳定基数排序 (只排值键位段) + 等值段扫 (组秩把组 id 拼进键的高位, 同一趟排序), 分位 = 池内样本 nth_element;
 //   缓冲按 A 与 kMaxGroup 上限从调用方暂存切出 (scratch 声明), 跨 t 复用, 内部不分配.
 //
 //   广播型 (Mean/Std/Quantile/Beta/Corr): 对该行所有 A 个资产写同值, 掩码恒真 (空池行 → 中性值),
@@ -181,9 +181,53 @@ inline uint32_t ukey(float x) {
   std::memcpy(&u, &z, sizeof u);
   return (u >> 31) ? ~u : (u | 0x80000000u);
 }
+// 稳定 LSD 基数排序 k[0, n) 按位段 [lo, lo + bits) (8 位一趟, 各趟直方图一遍扫齐; 全同字节的趟跳过); tmp = n 个 u64 暂存.
+// 稳定 ⇒ 位段相等者保持入序: 调用方按资产升序装键 (低位 = 资产 / 在池位), 结果与整键 std::sort 逐位同序.
+// 一行几百个键时比比较排序省一个量级 (无分支误预测, 每趟两遍线性扫)
+inline void radix_sort(uint64_t *k, uint64_t *tmp, int n, int lo, int bits) {
+  constexpr int kMaxPass = 8;
+  const int P = (bits + 7) / 8;
+  assert(lo >= 0 && bits >= 1 && lo + bits <= 64 && P <= kMaxPass);
+  if (n <= 1)
+    return;
+  int cnt[kMaxPass][256];
+  std::fill_n(&cnt[0][0], P * 256, 0);
+  for (int i = 0; i < n; ++i)
+    for (int p = 0; p < P; ++p)
+      ++cnt[p][(k[i] >> (lo + 8 * p)) & 0xffu];
+  uint64_t *src = k, *dst = tmp;
+  for (int p = 0; p < P; ++p) {
+    const int sh = lo + 8 * p;
+    int *c = cnt[p];
+    if (c[(k[0] >> sh) & 0xffu] == n) // 本趟字节全同: 不动
+      continue;
+    for (int b = 0, off = 0; b < 256; ++b) {
+      const int x = c[b];
+      c[b] = off, off += x;
+    }
+    for (int i = 0; i < n; ++i)
+      dst[c[(src[i] >> sh) & 0xffu]++] = src[i];
+    std::swap(src, dst);
+  }
+  if (src != k)
+    std::copy_n(src, n, k);
+}
+
+// 秩族的行缓冲: 键 ks / 基数排序暂存 tmp / 出口 pr, 各 A 个
+struct RankWs {
+  uint64_t *ks, *tmp;
+  float *pr;
+};
+inline RankWs rank_ws(Bump &b, int A) {
+  const size_t n = static_cast<size_t>(A);
+  return {b.take<uint64_t>(n), b.take<uint64_t>(n), b.take<float>(n)};
+}
+
 // 精确秩, 一行: 全部有效格按 (值键, 资产, 在池位) 排序后按等值段扫; 段内池成员数 = eq, 段前池成员数 = less.
-// out[a] (只写有效格) = pct_of(less, eq, n) 夹到 [0, 1]; ks = A 个 u64 暂存. 返回池内样本数 n
-inline int exact_rank(const float *v, const uint8_t *m, const uint8_t *g, int A, uint64_t *ks, float *out) {
+// w.pr[a] (只写有效格) = pct_of(less, eq, n) 夹到 [0, 1]. 返回池内样本数 n
+inline int exact_rank(const float *v, const uint8_t *m, const uint8_t *g, int A, const RankWs &w) {
+  uint64_t *const ks = w.ks;
+  float *const out = w.pr;
   int k = 0, n = 0;
   for (int a = 0; a < A; ++a) {
     if (!m[a])
@@ -192,7 +236,7 @@ inline int exact_rank(const float *v, const uint8_t *m, const uint8_t *g, int A,
     ks[k++] = (uint64_t{ukey(v[a])} << 32) | (static_cast<uint64_t>(a) << 1) | in;
     n += static_cast<int>(in);
   }
-  std::sort(ks, ks + k);
+  radix_sort(ks, w.tmp, k, 32, 32); // 低 32 位按资产升序装入, 只排值键
   int less = 0;
   for (int i = 0; i < k;) {
     const uint64_t key = ks[i] >> 32;
@@ -305,15 +349,16 @@ struct CsZ { // σ 退化 → 0 (无尺度可比)
 
 // 秩族 (CsRank / CsNormRank / CsBucket): 排序 + 等值段扫 (detail::exact_rank); 分位族 (CsQuantile / CsWinsor): 池内样本 nth_element
 struct CsRank { // 空池 / 池内全并列 → 0.5
-  static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<uint64_t>(static_cast<size_t>(c.A)), b.take<float>(static_cast<size_t>(c.A))}; }
+  static auto carve(Bump &b, const Call &c) { return detail::rank_ws(b, c.A); }
   CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
     Bump bp{static_cast<char *>(ws)};
-    const auto [ks, pr] = carve(bp, c);
+    const detail::RankWs rw = carve(bp, c);
+    const float *pr = rw.pr;
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
-      detail::exact_rank(xv + r, xm + r, g + r, A, ks, pr);
+      detail::exact_rank(xv + r, xm + r, g + r, A, rw);
       for (int a = 0; a < A; ++a)
         detail::put(ov, om, r + a, xm[r + a] ? pr[a] : 0.f, xm[r + a]);
     }
@@ -321,15 +366,16 @@ struct CsRank { // 空池 / 池内全并列 → 0.5
 };
 
 struct CsNormRank { // pct 先夹到 (0,1) 开区间再取正态分位, 否则 ±inf; 空池 → Φ⁻¹(0.5) = 0
-  static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<uint64_t>(static_cast<size_t>(c.A)), b.take<float>(static_cast<size_t>(c.A))}; }
+  static auto carve(Bump &b, const Call &c) { return detail::rank_ws(b, c.A); }
   CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
     Bump bp{static_cast<char *>(ws)};
-    const auto [ks, pr] = carve(bp, c);
+    const detail::RankWs rw = carve(bp, c);
+    const float *pr = rw.pr;
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
-      const int n = detail::exact_rank(xv + r, xm + r, g + r, A, ks, pr);
+      const int n = detail::exact_rank(xv + r, xm + r, g + r, A, rw);
       const double lo = 1.0 / (n + 1.0), hi = static_cast<double>(n) / (n + 1.0);
       for (int a = 0; a < A; ++a) {
         // probit 只在池非空时求值: n = 0 时 lo/hi 倒挂, clamp 的前置条件不成立
@@ -380,17 +426,18 @@ struct CsWinsor { // clamp 到 [Q_k, Q_{1−k}]; 空池 → 不缩尾, x 原值
 };
 
 struct CsBucket { // 等频分 k 组: bucket_of(pct, k) ∈ 0..k−1; 空池 / 全并列 → pct = 0.5 → 中间桶
-  static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<uint64_t>(static_cast<size_t>(c.A)), b.take<float>(static_cast<size_t>(c.A))}; }
+  static auto carve(Bump &b, const Call &c) { return detail::rank_ws(b, c.A); }
   CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
     const int k = static_cast<int>(p.k);
     assert(k >= 1);
     Bump bp{static_cast<char *>(ws)};
-    const auto [ks, pr] = carve(bp, c);
+    const detail::RankWs rw = carve(bp, c);
+    const float *pr = rw.pr;
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
-      detail::exact_rank(xv + r, xm + r, g + r, A, ks, pr);
+      detail::exact_rank(xv + r, xm + r, g + r, A, rw);
       for (int a = 0; a < A; ++a) {
         const int b = xm[r + a] ? bucket_of(pr[a], k) : 0;
         detail::put(ov, om, r + a, static_cast<double>(b), xm[r + a]);
@@ -514,14 +561,16 @@ struct CsGroupRank {
   static_assert(kMaxGroup <= (1 << (64 - kGidShift)), "组 id 须放得进键的高 10 位");
   static auto carve(Bump &b, const Call &c) {
     const size_t A = static_cast<size_t>(c.A);
-    return std::tuple{b.take<int>(A), b.take<int>(kMaxGroup), b.take<uint64_t>(A), b.take<float>(A), b.take<float>(A)};
+    return std::tuple{b.take<int>(A), b.take<int>(kMaxGroup), b.take<float>(A), detail::rank_ws(b, c.A)};
   }
   CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
     assert(A < (1 << (kKeyShift - 1)) && "资产下标须放得进键的 21 位");
     Bump bp{static_cast<char *>(ws)};
-    const auto [gq, gn, ks, gr, pr] = carve(bp, c);
+    const auto [gq, gn, gr, rw] = carve(bp, c);
+    uint64_t *const ks = rw.ks;
+    const float *pr = rw.pr;
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
       const int G = detail::scan_gid(yv + r, ym + r, A, gq);
@@ -534,7 +583,7 @@ struct CsGroupRank {
         ks[k++] = (static_cast<uint64_t>(gq[a]) << kGidShift) | (uint64_t{detail::ukey(xv[r + a])} << kKeyShift) | (static_cast<uint64_t>(a) << 1) | in;
         gn[gq[a]] += static_cast<int>(in);
       }
-      std::sort(ks, ks + k);
+      detail::radix_sort(ks, rw.tmp, k, kKeyShift, 64 - kKeyShift); // 低位按资产升序装入, 只排 (组, 值)
       for (int i = 0, less = 0; i < k;) {
         const uint64_t key = ks[i] >> kKeyShift; // (组, 值)
         const int q = static_cast<int>(ks[i] >> kGidShift);
@@ -552,7 +601,7 @@ struct CsGroupRank {
       for (int a = 0; a < A; ++a)
         need = need || (gq[a] != -1 && xm[r + a] && (gq[a] < 0 || gn[gq[a]] < 1));
       if (need)
-        detail::exact_rank(xv + r, xm + r, g + r, A, ks, pr); // 全池 (回退; 含无组的池成员); 全池也空 → 0.5
+        detail::exact_rank(xv + r, xm + r, g + r, A, rw); // 全池 (回退; 含无组的池成员); 全池也空 → 0.5
       for (int a = 0; a < A; ++a) {
         const int q = gq[a];
         const bool ok = q != -1 && xm[r + a];
@@ -651,8 +700,9 @@ struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归
 
 namespace detail {
 // 一元的池内精确秩中心化 x̃ = pct − 1/2 (契约【N 元】); 无效格写 0 (由调用方的掩码屏蔽)
-inline void rank_centered(const In &x, const uint8_t *g, size_t r, int A, uint64_t *ks, float *pr, double *out) {
-  exact_rank(x.v + r, x.m + r, g + r, A, ks, pr);
+inline void rank_centered(const In &x, const uint8_t *g, size_t r, int A, const RankWs &w, double *out) {
+  exact_rank(x.v + r, x.m + r, g + r, A, w);
+  const float *pr = w.pr;
   for (int a = 0; a < A; ++a)
     out[a] = x.m[r + a] ? static_cast<double>(pr[a]) - 0.5 : 0.0;
 }
@@ -661,21 +711,21 @@ inline void rank_centered(const In &x, const uint8_t *g, size_t r, int A, uint64
 struct CsLinRankFix { // xs[0..n) 特征元, 权 p.w[0..n) (Contract【N 元】); 行缓冲 v[A] 按元序累加 Σ w_i x̃_i
   static auto carve(Bump &b, const Call &c) {
     const size_t A = static_cast<size_t>(c.A);
-    return std::tuple{b.take<double>(A), b.take<double>(A), b.take<uint64_t>(A), b.take<float>(A)};
+    return std::tuple{b.take<double>(A), b.take<double>(A), detail::rank_ws(b, c.A)};
   }
   CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
     assert(c.n >= 2 && c.n <= kLrN && "至少 2 个特征元");
     Bump bp{static_cast<char *>(ws)};
-    const auto [v, xi, ks, pr] = carve(bp, c);
+    const auto [v, xi, rw] = carve(bp, c);
     const int n = c.n;
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
       std::fill_n(v, A, 0.0);
       for (int i = 0; i < n; ++i) {
         const double wi = static_cast<double>(p.w[i]);
-        detail::rank_centered(c.xs[i], g, r, A, ks, pr, xi);
+        detail::rank_centered(c.xs[i], g, r, A, rw, xi);
         for (int a = 0; a < A; ++a)
           v[a] += wi * xi[a];
       }
@@ -690,62 +740,66 @@ struct CsLinRankFix { // xs[0..n) 特征元, 权 p.w[0..n) (Contract【N 元】)
 };
 
 struct CsLinRankRoll { // xs[0..n) 特征元, xs[n] = h 持有期做多标签 (Contract【N 元回归】)
-  // 行 [lo, hi) 先补满首行窗 (u(lo) 往前 d 个标签行), 之后每行只算新实现的标签行; 窗和每行按 s 升序从环现加 (无漂移).
-  // 行缓冲 x̃[i][A]: 非样本格置 0, 矩 = 逐对点积
-  static double dot(const double *x, const double *y, int A) {
+  // 一趟: 行 s 秩化全部特征元 (输出要) 与标签 (开仓行才要), 同一份特征秩顺手落本行的矩进环 —— 每行每元只秩化一次.
+  // 环长 R = d + reach (reach = t − last(t) 的上界): 行 t 的窗 [u − d + 1, u] (u = last(t) ≤ t) 此时已全在环里且未被覆盖.
+  // 行 [lo, hi) 先补首行窗所及而 < lo 的行. 窗和每行按 s 升序从环现加 (无漂移).
+  // 行缓冲 x̃[i][A] (无效格 0) + 样本掩码 sm[A] (池内 ∧ 全部元与标签有效): 矩 = 掩码下的逐对点积
+  static double dot(const double *x, const double *y, const uint8_t *sm, int A) {
 #pragma clang fp reassociate(on)
     double s = 0.0;
     for (int a = 0; a < A; ++a)
-      s += x[a] * y[a];
+      s += sm[a] ? x[a] * y[a] : 0.0;
     return s;
   }
+  static int ring_of(const Call &c) { return c.p.d + hold_on(c.p.h, c.geo).reach(); }
   static auto carve(Bump &b, const Call &c) {
-    const size_t A = static_cast<size_t>(c.A), d = static_cast<size_t>(c.p.d);
-    return std::tuple{b.take<double>(kMaxIn * A), b.take<double>(d * lr_moms(c.n - 1)), b.take<uint64_t>(A), b.take<float>(A)};
+    const size_t A = static_cast<size_t>(c.A);
+    return std::tuple{b.take<double>(kMaxIn * A), b.take<double>(static_cast<size_t>(ring_of(c)) * lr_moms(c.n - 1)), b.take<uint8_t>(A), detail::rank_ws(b, c.A)};
   }
   CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
     assert(c.n >= 3 && c.n <= kMaxIn && "至少 2 个特征元 + 目标");
     Bump bp{static_cast<char *>(ws)};
-    const auto [xt, ring, ks, pr] = carve(bp, c);
-    const int n = c.n - 1, M = lr_moms(n), d = p.d;
-    const auto moments = [&](int s, double *out) { // 标签行 s 的矩 (样本 = 池内 ∧ 全部元与标签有效; 段末尾部行恒 0)
-      std::fill_n(out, M, 0.0);
-      if (!hold_on(p.h, c.geo).opens(s))
-        return;
+    const auto [xt, ring, sm, rw] = carve(bp, c);
+    const int n = c.n - 1, M = lr_moms(n), d = p.d, R = ring_of(c);
+    const auto hd = hold_on(p.h, c.geo);
+    const auto row = [&](int s) { // 行 s: 特征元秩进 xt; 开仓行另秩化标签并落矩 (样本 = 池内 ∧ 全部元与标签有效), 否则矩恒 0 (段末尾部行)
       const size_t r = static_cast<size_t>(s) * A;
-      for (int i = 0; i <= n; ++i)
-        detail::rank_centered(c.xs[i], g, r, A, ks, pr, xt + static_cast<size_t>(i) * A);
+      for (int i = 0; i < n; ++i)
+        detail::rank_centered(c.xs[i], g, r, A, rw, xt + static_cast<size_t>(i) * A);
+      double *out = ring + static_cast<size_t>(s % R) * M;
+      std::fill_n(out, M, 0.0);
+      if (!hd.opens(s))
+        return;
+      detail::rank_centered(c.xs[n], g, r, A, rw, xt + static_cast<size_t>(n) * A);
       for (int a = 0; a < A; ++a) {
         bool ok = g[r + a];
         for (int i = 0; i <= n; ++i)
           ok = ok && c.xs[i].m[r + a];
-        for (int i = 0; !ok && i <= n; ++i)
-          xt[static_cast<size_t>(i) * A + a] = 0.0;
+        sm[a] = ok;
       }
       for (int i = 0; i < n; ++i) {
         const double *xi = xt + static_cast<size_t>(i) * A;
         for (int j = i; j < n; ++j)
-          out[lr_ix(i, j, n)] = dot(xi, xt + static_cast<size_t>(j) * A, A);
-        out[n * (n + 1) / 2 + i] = dot(xi, xt + static_cast<size_t>(n) * A, A);
+          out[lr_ix(i, j, n)] = dot(xi, xt + static_cast<size_t>(j) * A, sm, A);
+        out[n * (n + 1) / 2 + i] = dot(xi, xt + static_cast<size_t>(n) * A, sm, A);
       }
     };
-    int done = -1; // 已入环的最末标签行
+    if (rg.lo < rg.hi)
+      for (int s = std::max(0, hd.last(rg.lo) - d + 1); s < rg.lo; ++s)
+        row(s);
     for (int t = rg.lo; t < rg.hi; ++t) {
-      const int u = hold_on(p.h, c.geo).last(t);
-      for (int s = std::max(done + 1, u - d + 1); s <= u; ++s)
-        moments(s, ring + static_cast<size_t>(s % d) * M);
-      done = std::max(done, u);
+      row(t); // xt 留着本行特征秩给下面的输出
+      const int u = hd.last(t);
+      assert(u <= t && (u < 0 || t - u <= R - d) && "窗所及须在环内");
       double acc[kLrMoms] = {};
       for (int s = std::max(0, u - d + 1); s <= u; ++s)
         for (int m = 0; m < M; ++m)
-          acc[m] += ring[static_cast<size_t>(s % d) * M + m];
+          acc[m] += ring[static_cast<size_t>(s % R) * M + m];
       double w[kLrN];
       lr_solve(acc, n, p.k, w);
       const size_t r = static_cast<size_t>(t) * A;
-      for (int i = 0; i < n; ++i)
-        detail::rank_centered(c.xs[i], g, r, A, ks, pr, xt + static_cast<size_t>(i) * A);
       for (int a = 0; a < A; ++a) {
         bool ok = true;
         double v = 0.0;

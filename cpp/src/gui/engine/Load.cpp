@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <type_traits>
@@ -761,6 +762,66 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
       return end_io(false);
     n_full_.emplace(dom, y.n_full);
   }
+  return Rc::Ok;
+}
+
+// ============================================================================
+// 作业层
+// ============================================================================
+
+namespace {
+
+// 整期一块装不下: 评估年数逐年减到装得下 (近期子期 = 整期的后缀), 记作用域年数上限 (UI 随之封顶) 并以 Empty 收场
+template <class B>
+bool fit_years(FactorFlow &F, const FactorScope &sc, Job &j, B &&bud) {
+  const double host = F.S.budget();
+  const double vram = bud().dev > 0.0 ? F.S.vram() : 0.0;
+  const auto fits = [&] {
+    const Budget b = bud();
+    const double n = static_cast<double>(dom_shape(j.dm, j.ft->seg).n());
+    return b.host(n) <= host && (b.dev <= 0.0 || b.vram(n) <= vram);
+  };
+  if (fits())
+    return true;
+  assert(sc.years > 0 && "全期整期一块装不下内存 / 显存预算");
+  const size_t days = j.dm.stat_days();
+  FactorScope s = sc;
+  for (s.years = sc.years - 1; s.years >= 1; --s.years) {
+    std::string why;
+    [[maybe_unused]] const bool ok = domain_of(*sc.ft, s, j.spec.x, SIZE_MAX, j.dm, why);
+    assert(ok && "近期子期是整期的后缀, 评估域必成");
+    if (fits())
+      break;
+  }
+  assert(s.years >= 1 && "1 年的整期装载都放不下内存 / 显存 (因子层太细)");
+  cap_years(sc.pool, sc.lv, s.years);
+  j.why = "评估期近 " + std::to_string(sc.years) + " 年 (" + std::to_string(days) + " 天) 整段装不下内存 / 显存预算, 本作用域最多 " + std::to_string(s.years) + " 年";
+  std::fprintf(stderr, "[factors] %s: %s, 评估年数封顶 %d 年\n", j.who, j.why.c_str(), s.years);
+  return false;
+}
+
+} // namespace
+
+Rc open_job(FactorFlow &F, const FactorScope &sc, Need n, Job &j) {
+  assert(sc.ft && sc.lv == sc.ft->lv && "作用域层与字段表层不符");
+  j.ft = sc.ft.get();
+  j.spec.x = std::move(n.x);
+  if (!domain_of(*sc.ft, sc, j.spec.x, SIZE_MAX, j.dm, j.why))
+    return Rc::Empty;
+  open_libs(sc, F.S.lr);
+  j.spec.y = y_spec(*j.ft, j.dm, n.hd, n.segs, sc.max_impact);
+  j.spec.ry = n.ry;
+  j.bands = n.bands;
+  const auto bud = [&] {
+    Budget b = n.cell;
+    b.load += cell_bytes(j.spec, j.spec.x.size());
+    b.fixed = n.fixed.at(dom_shape(j.dm, j.ft->seg));
+    return b;
+  };
+  if (j.bands.front < 0 && !fit_years(F, sc, j, bud))
+    return Rc::Empty;
+  j.b = bud();
+  j.P = plan_chunks(j.dm, j.ft->seg, j.b, j.bands, F.S.budget(), j.b.dev > 0.0 ? F.S.vram() : 0.0);
   return Rc::Ok;
 }
 

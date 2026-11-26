@@ -174,13 +174,13 @@ struct Searcher {
       Lease l(F);
       if (!l)
         return fail(Rc::Cancel);
-      const bool ok = with_backend<SearchProbes>(F, scope.gpu, [&](auto &eng) {
+      const bool ok = with_backend(F, scope.gpu, [&](auto &eng) {
         std::vector<int> ids;
         if (!plan(eng) || !prepare_qtab() || !design(ids))
           return false;
         if (live)
           live->stage.store(SearchStage::Eval, std::memory_order_relaxed);
-        return check(run_pass(eng, ids));
+        return check(evaluate(eng, ids));
       });
       if (!ok)
         return rc_end;
@@ -231,13 +231,13 @@ struct Searcher {
     e0 = ft.reparse_at(sp.tmpl, sp.hold);
     const int look = space::lookback(e0, seg);
     const factor::expr::Expr ep = e0.placeholder();
-    const Root r0{&ep, sp.frame, fs::kFwd, sp.ret};
+    const Root r0{&ep, mode()};
     f0 = plant_forest(ft, std::span<const Root>(&r0, 1), /*keep_roots=*/false, {}, /*fuse=*/false);
     job.who = "Search";
     const Clock::time_point t_plan = Clock::now();
     const int n_slots = space::slot_count(e0);
     n_pts = n_slots > 0 ? fsearch::n_init(n_slots) : 1;
-    if (!check(open_job(F, scope, forest_need<E, SearchProbes>(ft, f0.d, f0.leaves, look, hd, n_pts), job)))
+    if (!check(open_job(F, scope, forest_need<E, SearchProbes>(ft, f0, n_pts, look, hd), job)))
       return false;
     lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, fs::hold_reach(hd, seg), kChainDays, job.bands.front,
        job.bands.back);
@@ -393,30 +393,34 @@ struct Searcher {
     return true;
   }
 
+  // 正向评 (定向在 roll_of / oriented 改读); 收益口径 = 因子文件 type
+  fs::Mode mode() const { return {sp.frame, fs::kFwd, sp.ret}; }
+
   template <class E>
-  Rc run_pass(E &eng, const std::vector<int> &ids) {
+  Rc evaluate(E &eng, const std::vector<int> &ids) {
     assert(!ids.empty());
     if (live)
       live->chunk.store(0, std::memory_order_relaxed);
     std::vector<Root> roots;
     roots.reserve(ids.size());
     for (const int id : ids)
-      roots.push_back({&ents[static_cast<size_t>(id)].e, sp.frame, fs::kFwd, sp.ret});
+      roots.push_back({&ents[static_cast<size_t>(id)].e, mode()});
     std::vector<SearchProbes> ps(ids.size());
     const Clock::time_point t_pass = Clock::now();
     double load_s = 0.0;
     Forest fr;
-    Pass pass;
-    const auto plant = [&](size_t b0, int &C) -> const Forest & {
+    Fate pass;
+    const Plant plant = [&](size_t b0, int &C) -> const Forest & {
       fr = eng.template plant<SearchProbes>(ft, std::span<const Root>(roots).subspan(b0), batch, C);
       return fr;
     };
-    const Rc rc = Engine::run_pass(eng, F, job, std::span<const Root>(roots), plant, std::span(ps), pass, [&](const Block &c, size_t ci, double s) {
+    const Hooks hk{.before = [&](const Block &c, size_t ci, double s) {
       loaded(c, ci, s);
       load_s += s;
       if (live)
         live->chunk.store(static_cast<int>(ci), std::memory_order_relaxed);
-    });
+    }};
+    const Rc rc = run_job(F, job, ForestPass<E, SearchProbes>(eng, F, roots, plant, std::span(ps), pass, hk));
     if (rc != Rc::Ok)
       return rc;
     if (live)

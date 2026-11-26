@@ -22,6 +22,7 @@ namespace GUI::Engine {
 struct RunSpec {
   bool evaluate = false;               // false = 只扫描解析 (不读库)
   std::vector<std::string> only_files; // 非空 = 只评这些因子文件的权重; 空 = Run all
+  std::vector<std::string> order;      // 逐文件评估的先后 (因子表显示序); 不在其中的排在后面, 按扫描序
 };
 using RunRequest = Request<RunSpec>;
 bool MakeRunRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, bool evaluate, bool gpu, RunRequest &req);

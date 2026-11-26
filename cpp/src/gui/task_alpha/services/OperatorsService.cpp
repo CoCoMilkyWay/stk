@@ -94,6 +94,20 @@ double ms_since(Clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
+// 一个后端的耗时: 至多 kReps 次取最小 (累计过 kRepBudgetMs 即停, 慢后端不翻倍拖长整轮), 压掉单次的调度 / 频率噪声.
+// run() 返回本次 ms; 契约是后端写满每格, 重跑覆盖同一输出
+constexpr int kReps = 3;
+constexpr double kRepBudgetMs = 300.0;
+template <class F>
+double best_ms(F &&run) {
+  double best = run(), sum = best;
+  for (int i = 1; i < kReps && sum < kRepBudgetMs; ++i) {
+    const double ms = run();
+    best = std::min(best, ms), sum += ms;
+  }
+  return best;
+}
+
 // 本轮实际参数: 参数列含 d 才吃默认窗长表 (否则与 op_check 同给 1); k/k2 按 Check.hpp kKParams; h (N 元回归) = T+1 收盘;
 // w (N 元定权) 按 Check.hpp kWParams
 factor::Param param_of(const OperatorRow &row) {
@@ -131,25 +145,31 @@ void run_op(RoundCtx &R, OperatorRow &row) {
   const factor::Param &p = row.param;  // 复位阶段已按请求填好 (见 param_of)
   constexpr int seg = factor::kSegMax; // GUI 表在 L_1min 层
 
-  Clock::time_point t0 = Clock::now();
-  if constexpr (IS_CS)
-    run_cpu_cs<C>(d, p, seg, R.ref);
-  else
-    run_cpu_ts<C>(d, p, seg, R.ref);
-  row.cpu_ms = ms_since(t0);
+  row.cpu_ms = best_ms([&] {
+    const Clock::time_point t0 = Clock::now();
+    if constexpr (IS_CS)
+      run_cpu_cs<C>(d, p, seg, R.ref);
+    else
+      run_cpu_ts<C>(d, p, seg, R.ref);
+    return ms_since(t0);
+  });
 
-  t0 = Clock::now();
-  if constexpr (IS_CS)
-    run_stream_cs<S>(d, p, seg, R.got);
-  else
-    run_stream_ts<S>(d, p, seg, R.got);
-  row.stream_ms = ms_since(t0);
+  row.stream_ms = best_ms([&] {
+    const Clock::time_point t0 = Clock::now();
+    if constexpr (IS_CS)
+      run_stream_cs<S>(d, p, seg, R.got);
+    else
+      run_stream_ts<S>(d, p, seg, R.got);
+    return ms_since(t0);
+  });
   row.cpu_chk = compare(R.ref, R.got, tol_of(nm, false, Profile::PLAIN));
 
   if (R.gpu) {
-    double kms = -1; // 纯 kernel (cudaEvent); 输入已常驻, 这里只剩 kernel + 一张输出 D2H
-    factor::gpu::run(R.gpu, op, dp, NI, IS_CS ? R.dgate : nullptr, R.g.v.data(), R.g.m.data(), d.T, d.A, seg, p, &kms);
-    row.gpu_ms = kms;
+    row.gpu_ms = best_ms([&] { // 纯 kernel (cudaEvent); 输入已常驻, 这里只剩 kernel + 一张输出 D2H
+      double kms = -1;
+      factor::gpu::run(R.gpu, op, dp, NI, IS_CS ? R.dgate : nullptr, R.g.v.data(), R.g.m.data(), d.T, d.A, seg, p, &kms);
+      return kms;
+    });
     row.gpu_chk = compare(R.ref, R.g, tol_of(nm, true, Profile::PLAIN));
   }
 }
@@ -198,7 +218,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
   for (const factor::stat::Frame fr : kFrames) {
     std::mt19937 rng(R.rq.seed);
     Data d;
-    make(d, fr, factor::stat::kFwd, factor::stat::Ret::Excess, Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
+    make(d, {.f = fr}, Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
     Result cpu;
     run_cpu(d, cpu, misc::exec::hw());
     row.cpu_ms += cpu.eval_ms;
@@ -234,7 +254,6 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
 // detail = 两口径每候选每持有期的 cpu 侧 rIC 均值 / 全期 mono / 中位窗目标 (整块逐日走 roll_of)
 void run_search(RoundCtx &R, OperatorRow &row) {
   namespace sc = factor::stat::check;
-  using Clock = std::chrono::steady_clock;
   const bool has_gpu = factor::gpu::available();
   const int threads = misc::exec::hw();
   row.gpu_ms = has_gpu ? 0 : -1;
@@ -242,7 +261,7 @@ void run_search(RoundCtx &R, OperatorRow &row) {
   for (const factor::stat::Frame fr : kFrames) {
     std::mt19937 rng(R.rq.seed);
     sc::Data d;
-    sc::make(d, fr, factor::stat::kFwd, factor::stat::Ret::Excess, sc::Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
+    sc::make(d, {.f = fr}, sc::Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
     const int H = d.hd.n, days = d.T / factor::kSegMax;
     const sc::Tol tol = sc::tol_of(sc::Profile::PLAIN);
     sc::Result ref[sc::kCands];
@@ -257,9 +276,9 @@ void run_search(RoundCtx &R, OperatorRow &row) {
     sc::Block full, c1, c2;
     sc::split_of(d, full, c1, c2);
     {
-      const Clock::time_point t0 = Clock::now();
-      sc::run_batch_cpu(d, threads, full);
-      row.cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+      double ms = 0;
+      sc::run_batch_cpu(d, threads, full, &ms);
+      row.cpu_ms += ms;
       sc::run_batch_cpu(d, threads, c1);
       sc::run_batch_cpu(d, threads, c2);
       judge(row.cpu_chk, full, c1, c2);
@@ -275,9 +294,9 @@ void run_search(RoundCtx &R, OperatorRow &row) {
       }
     if (!has_gpu)
       continue;
-    const Clock::time_point t0 = Clock::now();
-    sc::run_batch_gpu(d, full);
-    row.gpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    double ms = 0;
+    sc::run_batch_gpu(d, full, &ms);
+    row.gpu_ms += ms;
     sc::run_batch_gpu(d, c1);
     sc::run_batch_gpu(d, c2);
     judge(row.gpu_chk, full, c1, c2);

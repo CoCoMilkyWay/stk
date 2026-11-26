@@ -1348,6 +1348,9 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     for (const FactorRow &r : s_rows)
       if (r.key == k && std::find(pick_files.begin(), pick_files.end(), r.file) == pick_files.end())
         pick_files.push_back(r.file);
+  // 批量先后 = 表的显示序 (上一帧画表时记下; 不在其中的排后)
+  const auto shown_rank = [&](const std::string &f) { return std::find(ui.shown_files.begin(), ui.shown_files.end(), f) - ui.shown_files.begin(); };
+  std::stable_sort(pick_files.begin(), pick_files.end(), [&](const std::string &a, const std::string &b) { return shown_rank(a) < shown_rank(b); });
   std::vector<std::string> run_files;
   std::vector<const FactorRow *> search_rows;
   for (const std::string &f : pick_files) {
@@ -1494,11 +1497,12 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
             picked_text(search_rows, search_rows.front()->file).c_str(), hold_name(cur_hold).c_str(), factor::stat::kTargetName, factor::stat::kRollParts,
             factor::stat::kTargetName, factor::search::kInit);
     }
-    // Search all: 各文件首个可搜行 (按文件去重, 表序) × 本层 kSearchHolds 内各档 (标签组序), 不看 Hold 选择
+    // Search all: 各文件首个可搜行 (按文件去重, 表的显示序) × 本层 kSearchHolds 内各档 (标签组序), 不看 Hold 选择
     std::vector<const FactorRow *> all_rows;
     for (const FactorRow &r : s_rows)
       if (searchable(r) && std::none_of(all_rows.begin(), all_rows.end(), [&](const FactorRow *p) { return p->file == r.file; }))
         all_rows.push_back(&r);
+    std::stable_sort(all_rows.begin(), all_rows.end(), [&](const FactorRow *a, const FactorRow *b) { return shown_rank(a->file) < shown_rank(b->file); });
     const bool can_search_all = !busy && !sbusy && !queue_active && ctx.axis_ready && !all_holds.empty() && !all_rows.empty();
     ImGui::SameLine();
     if (!can_search_all)
@@ -1973,6 +1977,9 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       for (int k : korder[static_cast<size_t>(gi)])
         order.push_back({k, RowKind::Child, nk});
     }
+    ui.shown_files.clear(); // 显示序 (按文件去重): 下一帧 Run / Search 的批量先后
+    for (int gi : gorder)
+      ui.shown_files.push_back(s_rows[static_cast<size_t>(groups[static_cast<size_t>(gi)].kids.front())].file);
     const auto is_picked = [&](const std::string &key) { return std::find(ui.picked.begin(), ui.picked.end(), key) != ui.picked.end(); };
     // key 在显示序的位置 (片选的锚点): 本行显示着 → 它; 藏在折叠的父行里 → 父行; 没有 → −1
     const auto shown_at = [&](const std::string &key) {

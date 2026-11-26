@@ -7,7 +7,7 @@
 //   无 golden: cpu ↔ gpu 两方 match 即过. 一级 Row 逐 (h, t) 比 (ok / ok_rac / 计数逐位相等, 有效字段容差内),
 //   二级 Day 逐 (h, 日) 比, 三级 HoldStat 逐字段比 (n / n_rac 逐位相等; 日净值 ann / sharpe 由各自的 Day 折).
 //   批: 候选 = 从 x 派生的 kCands 张平面 (CS {x, −x, x²}; TS {x, 1−x, x²}); 参考 = 单候选 CPU 逐张评; 另比 分块 (两块带前后带, merge) ≡ 整块.
-//   造数沿用 factor/Check.hpp 的 Profile, 两口径各一份 (Data::frame):
+//   造数沿用 factor/Check.hpp 的 Profile, 两口径各一份 (Data::m.f):
 //     x     CS: NORM (按 profile); TS: 同一 NORM 经 Φ 映到 (0,1) 当分位 (TsRankRoll 的输出形状)
 //     标签  每持有期 lv = 0.3·z + NORM 噪声 (IC ≈ 0.3); 偏移型另有 nv = 0.3·z + 0.7·噪声; 掩码取噪声平面的空洞; 值经 fp16 往返;
 //           可成交码 eo 各持有期共用, 10% 单向 (仓位感知的交接链有东西可比)
@@ -57,9 +57,7 @@ inline Label label_of(const LabelHost &L, const std::vector<uint8_t> &eo, const 
 inline constexpr int kCands = 3;
 
 struct Data {
-  Frame frame = Frame::CS;
-  Dir dir = kFwd;
-  Ret ret = Ret::Excess;
+  Mode m; // 评估口径
   Plane x;
   Plane cand[kCands];         // 批的候选平面 (cand[0] = x)
   Plane g;                    // 截面池掩码 (只用 m; factor::check::fill_gate)
@@ -76,15 +74,15 @@ inline Labels labels_of(const Data &d, const std::vector<std::vector<uint16_t>> 
   Labels L;
   L.hd = d.hd;
   L.cap = d.cap;
-  L.ret = d.ret;
   for (int i = 0; i < d.hd.n; ++i)
     L.l[i] = label_of(d.lab[static_cast<size_t>(i)], d.eo, ry.empty() ? nullptr : ry[static_cast<size_t>(i)].data(), off);
   return L;
 }
 
-inline void make(Data &d, Frame f, Dir dir, Ret ret, Profile pr, int T, int A, int seg, std::mt19937 &rng) {
+inline void make(Data &d, const Mode &mode, Profile pr, int T, int A, int seg, std::mt19937 &rng) {
   assert(T % seg == 0 && T >= 2 * seg && "造数按整日, 至少两日 (分块切在日界)");
-  d.frame = f, d.dir = dir, d.ret = ret;
+  const Frame f = mode.f;
+  d.m = mode;
   d.T = T, d.A = A, d.seg = seg;
   d.hd = Holds::of(holds_on(seg));
   assert_holds(d.hd, seg);
@@ -277,8 +275,8 @@ inline void run_cpu(const Data &d, Result &r, int threads) {
   r.day.assign(static_cast<size_t>(H) * s.days(), Day{});
   r.stat.resize(static_cast<size_t>(H));
   t0 = Clock::now();
-  factor::cpu::stat::run(ex, factor::stat::Plane{d.x.v.data(), d.x.m.data()}, d.g.m.data(), d.frame, d.dir, s, labels_of(d, ry), rx.data(), w, acc.data(),
-                         r.day.data(), factor::cpu::stat::LandRows{r.rows.data(), d.T});
+  factor::cpu::stat::run(ex, factor::stat::Plane{d.x.v.data(), d.x.m.data()}, d.g.m.data(), d.m, s, labels_of(d, ry), rx.data(), w, acc.data(), r.day.data(),
+                         factor::cpu::stat::LandRows{r.rows.data(), d.T});
   finish_all(acc.data(), dailies(d, r.day.data(), s.days()).data(), d.hd, d.seg, r.stat.data());
   r.eval_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
@@ -295,8 +293,7 @@ inline void run_gpu(const Data &d, Result &r) {
   r.stat.resize(static_cast<size_t>(H));
   const float *xv = d.x.v.data();
   const uint8_t *xm = d.x.m.data();
-  factor::gpu::run_stat(1, &xv, &xm, d.g.m.data(), d.frame, d.dir, d.ret, d.T, d.A, d.seg, 0, 0, 0, d.hd, d.cap, lab.data(), acc.data(), r.day.data(),
-                        r.rows.data(), &r.prep_ms, &r.eval_ms);
+  factor::gpu::run_stat(1, &xv, &xm, d.g.m.data(), d.m, d.span(), d.hd, d.cap, lab.data(), acc.data(), r.day.data(), r.rows.data(), &r.prep_ms, &r.eval_ms);
   finish_all(acc.data(), dailies(d, r.day.data(), d.span().days()).data(), d.hd, d.seg, r.stat.data());
 }
 
@@ -316,7 +313,8 @@ inline void split_of(const Data &d, Block &full, Block &c1, Block &c2) {
   c2 = {(d1 - front) * S, (days - d1 + front) * S, front * S, 0, {}, {}};
 }
 
-inline void run_batch_cpu(const Data &d, int threads, Block &b) {
+// eval_ms 非空 → 回填评估耗时 (wall; 不含标签 prep 与工作区分配, 与 run_cpu 的 eval_ms 同口径)
+inline void run_batch_cpu(const Data &d, int threads, Block &b, double *eval_ms = nullptr) {
   const int H = d.hd.n;
   const Span all = d.span(), s = b.span(d);
   misc::exec::ForkJoin ex(threads);
@@ -333,10 +331,14 @@ inline void run_batch_cpu(const Data &d, int threads, Block &b) {
   std::vector<uint16_t> rx(s.n());
   b.acc.assign(static_cast<size_t>(kCands) * H, Accum{});
   b.day.assign(static_cast<size_t>(kCands) * H * s.days(), Day{});
-  factor::cpu::stat::run_batch(ex, B, d.g.m.data() + off, d.frame, d.dir, s, labels_of(d, ry, off), rx.data(), w, b.acc.data(), b.day.data());
+  const auto t0 = std::chrono::steady_clock::now();
+  factor::cpu::stat::run_batch(ex, B, d.g.m.data() + off, d.m, s, labels_of(d, ry, off), rx.data(), w, b.acc.data(), b.day.data());
+  if (eval_ms)
+    *eval_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
-inline void run_batch_gpu(const Data &d, Block &b) {
+// eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent; 不含会话开关 / 上传 / 标签 prep, 与 run_gpu 同口径)
+inline void run_batch_gpu(const Data &d, Block &b, double *eval_ms = nullptr) {
   const int H = d.hd.n;
   const Span s = b.span(d);
   const size_t off = static_cast<size_t>(b.row0) * d.A;
@@ -349,8 +351,7 @@ inline void run_batch_gpu(const Data &d, Block &b) {
     xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
   b.acc.assign(static_cast<size_t>(kCands) * H, Accum{});
   b.day.assign(static_cast<size_t>(kCands) * H * s.days(), Day{});
-  factor::gpu::run_stat(kCands, xv, xm, d.g.m.data() + off, d.frame, d.dir, d.ret, b.rows, d.A, d.seg, b.row0, b.t_lo, b.t_back, d.hd, d.cap, lab.data(),
-                        b.acc.data(), b.day.data());
+  factor::gpu::run_stat(kCands, xv, xm, d.g.m.data() + off, d.m, s, d.hd, d.cap, lab.data(), b.acc.data(), b.day.data(), nullptr, nullptr, eval_ms);
 }
 
 // 批的参考: 候选 c 走单候选 CPU (整张量)

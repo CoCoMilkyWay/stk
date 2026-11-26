@@ -61,7 +61,8 @@ struct FactorsUIState {
   // 多选 (行 key, 选序): 恒含锚点 view_file (view_file 空 → 空); 单击 = 只选本行, Ctrl 单击 = 本行进出, Shift 单击 = 锚点到本行 (显示序) 片选 (同按 Ctrl 并进已选).
   // 选中行所在文件 = Run / Search 的批量对象
   std::vector<std::string> picked;
-  std::vector<std::string> expanded; // 展开的多权重因子文件
+  std::vector<std::string> expanded;    // 展开的多权重因子文件
+  std::vector<std::string> shown_files; // 表的显示序 (按文件去重, 每帧画表时更新): Run / Search / Search all 逐文件按它的先后
   // Run (对象 = 选中行所在文件, 只评它们的全部权重) / Run all (整目录): 点 Run 时把文件名记进 run_files (TaskAlpha 据此建请求 only_files)
   std::vector<std::string> run_files;
   // Search 队列 (一个文件的各档搜完且落过盘即只 Run 该文件, 结果立刻进表), 点下时把 (各文件首个可搜行, 档) 拷进队列, TaskAlpha 逐个出队:

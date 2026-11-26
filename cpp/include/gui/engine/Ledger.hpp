@@ -2,7 +2,7 @@
 //   逐行批收益 RowLines → fold_ledger (每批资金 1/h̄, 收益在平仓行 Hold::exit 实现 / 成本在建仓行即付; 按 stride 求和) → 期收益 LedgerLines → compound 净值.
 //   账 Ledger = 五列账线 col[kLedgerCols] (一切账都齐: 收益 / 冲击 / 固定冲击量 / 买量 / 卖量) + 画像 Profile (只篮子账 / 个股账有).
 //   收益与换手同一核 (factor/Stat/Book.hpp 账集 book_rows): 因子组合 = 顶端整组 (FactorBooks); 篮子 = 持仓权 Weigh (shared/Basket.hpp); 个股 = 自身; 池均 = MaskBook.
-//   BasketPass 沿 Store::pin 的分块流式归约出 Baskets.
+//   篮子作业 eval_baskets = basket_need → open_job → run_job(BasketPass) (块消费者, 与森林作业的 ForestPass 对仗) → Baskets.
 #pragma once
 
 #include "features/Panel/PoolSelect.hpp" // pool::Picks
@@ -121,21 +121,30 @@ using Baskets = Quote::PerMarket<Ledger>;
 // 估值七口的日频输入叶 (bar.1d.<kPoolValCols[m]>, 日层叶表里)
 std::array<LeafId, kPoolVals> pool_val_leaves(const FeatureTable &ft);
 
-// 池篮子与个股账的分块归约器 (与 Probe 的 init → chunk → finish 对仗; 消费 Store::pin 的 Block)
+// 篮子作业: all 池日层的估值七叶 + T+1 标签 (无因子根: 不装标签秩 / 盘口段)
+Need basket_need(const FeatureTable &ft);
+
+// 池篮子与个股账的块消费者 (与 ForestPass 对仗: init ⇄ finish × want / block; run_job 驱动) → out
 class BasketPass {
 public:
-  BasketPass(const Domain &dm, std::shared_ptr<const pool::Picks> pk, std::span<const LeafId, kPoolVals> val);
-  static double fixed_bytes(const Domain &dm);
-  void chunk(misc::exec::ForkJoin &ex, const Block &c);
-  Baskets finish(misc::exec::ForkJoin &ex);
+  BasketPass(FactorFlow &F, std::shared_ptr<const pool::Picks> pk, std::span<const LeafId, kPoolVals> val);
+  static Bytes bytes(); // 趟级常驻: 篮子 + 个股的五列账线与画像 (日层)
+  bool want(const Chunk &) const { return true; }
+  void init(const Job &j);
+  Rc block(const Block &c, size_t ci, bool last, double load_s);
+  void finish(const Job &j);
+  Baskets out;
 
 private:
+  FactorFlow &F_;
   std::shared_ptr<const pool::Picks> pk_;
   LeafId val_[kPoolVals] = {};
-  size_t r0_ = 0, warm_ = 0, ds_ = 0;
+  size_t r0_ = 0, warm_ = 0, ds_ = 0, n_ = 0;
   RowLines rx_; // [列][篮子 | 个股] 逐行
-  Baskets out_;
 };
+
+// 篮子作业 (all 池日层, 与森林作业 eval_forest 对仗): open_job(basket_need) → 选股表 → run_job(BasketPass) → out
+Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out);
 
 // 池均线: 池内全部有标签的格各自做多 (Self, 可买才建仓 / 续持取名义值) 等权, 每持有期一条 → fold_ledger
 LedgerLines pool_line(misc::exec::ForkJoin &ex, const Block &c);

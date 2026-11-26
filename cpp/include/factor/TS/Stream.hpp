@@ -441,15 +441,16 @@ public:
       head_ = 0;
     n_ = std::min(n_ + 1, kMaxD);
     const int j0 = n_ < kMaxD ? 0 : head_; // 最旧格
-    int last = -1;                         // 最新有效格距最旧格的位置
-    for (int i = 0; i < n_; ++i)
-      if (bx_[(j0 + i) % kMaxD].m)
-        last = i;
+    int last = n_ - 1;                     // 最新有效格距最旧格的位置: 自最新格 (槽 head_ − 1) 往回找 (通常一步即中)
+    for (int j = head_ == 0 ? kMaxD - 1 : head_ - 1; last >= 0 && !bx_[j].m; j = j == 0 ? kMaxD - 1 : j - 1)
+      --last;
     double s = 0.0, w = 0.0;
-    for (int i = 0; i <= last; ++i) {
-      const Val &v = bx_[(j0 + i) % kMaxD];
+    for (int i = 0, j = j0; i <= last; ++i) { // 环下标回绕计数, 不逐格取模
+      const Val &v = bx_[j];
       s = s * q_ + (v.m ? static_cast<double>(v.v) : 0.0);
       w = w * q_ + (v.m ? 1.0 : 0.0);
+      if (++j == kMaxD)
+        j = 0;
     }
     return mk(last >= 0 ? s / w : 0.0, true);
   }

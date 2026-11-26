@@ -3,7 +3,7 @@
 // =============================================================================
 // Kernel — 观察核的公共件 (10 个 view_* 共用): 格式与日期 / 统计 / 日内时段 / 分层累加器 / K 线直读 / 盘面标签 / 参数解析与日段 / 分块流式观察核
 // =============================================================================
-//   run_stream: 装载前核日段 → 跳过无关块 → 块内 Engine::eval_block (全核 DAG + Stat 进 LookP) → 段内的行交 ChunkView 原地归约 (零中间 [T][A] 平面搬运)
+//   run_stream: 装载前核日段 → 跳过无关块 → 块内 Engine::ForestPass (全核 DAG + Stat 进 LookP) → 段内的行交 ChunkView 原地归约 (零中间 [T][A] 平面搬运)
 //   各 view_* 的入口 (Call, Bay) → ToolOut 与结果结构见 tools/Look.hpp, 实现表在 tools/Kit.cpp
 // =============================================================================
 
@@ -699,7 +699,7 @@ inline float mkt_of(const ChunkView &cv, int t) {
   return w.ok ? w.mkt : NAN;
 }
 
-// 观察流的因子根探针 (块级, Engine::eval_block 进): 本块统计行的 Row (已定向, 含尾部) + rx + 两端组真持有的格 (ends 时; Stat/Pos.hpp cell)
+// 观察流的因子根探针 (块级, Engine::ForestPass 进): 本块统计行的 Row (已定向, 含尾部) + rx + 两端组真持有的格 (ends 时; Stat/Pos.hpp cell)
 struct LookP : Engine::ProbeBase {
   static constexpr uint8_t need = Engine::kNeedRows | Engine::kNeedRx;
   bool ends = false; // 要两端组真持有的格
@@ -708,7 +708,7 @@ struct LookP : Engine::ProbeBase {
   std::vector<st::Row> rows;                // [本块统计行]
   std::vector<std::vector<HeldCell>> cells; // [本块统计行] (不要两端格 = 空)
   const uint16_t *rx = nullptr;             // [blk.T][A] 已定向 (高 = 做多端)
-  static double scratch(const Engine::Shape &sh, int) { return sizeof(st::Row) * static_cast<double>(sh.T); }
+  static constexpr Engine::Bytes scratch(int) { return {.row = sizeof(st::Row)}; }
   void open(const Engine::Ctx &c) {
     const st::Span s = c.s();
     t_lo = s.t_lo;
@@ -749,14 +749,19 @@ struct LookP : Engine::ProbeBase {
 };
 using LookProbes = Engine::Probes<LookP>;
 
+// 观察另加的前后带 (日) / 每格宿主工作量 (字节): 并进作业的 Need
+struct Extra {
+  int front = 0, back = 0;
+  double work = 0.0;
+};
 struct StreamCfg {
   const FactorSpec *fac = nullptr;
   std::vector<FeatSpec> *feats = nullptr;
   uint8_t bars = 0;
-  Engine::Extra extra;
+  Extra extra;
 };
 
-// range_fn 核定统计日段 [s_lo, s_hi) (Window 或按目标日); 只装与它相交的块, 块内 Engine::eval_block 后只把段内的行交给 chunk_fn
+// range_fn 核定统计日段 [s_lo, s_hi) (Window 或按目标日); 只装与它相交的块 (Hooks::want), 块内 ForestPass 评完后 (Hooks::after) 只把段内的行交给 chunk_fn
 // 返回: Ok = 跑完 (body 由调用方填); Empty / Broken = 正常输入错误 (err 已填); Cancel / Stale = 中断
 template <class RangeFn, class ChunkFn>
 Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg &cfg, std::vector<misc::Ymd> &stat_dates, Engine::Job &job,
@@ -767,33 +772,27 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
   std::vector<Engine::Root> fac_roots;
   std::vector<const fx::Expr *> plain_es;
   if (cfg.fac)
-    fac_roots.push_back({&cfg.fac->e, cfg.fac->frame, cfg.fac->dir});
+    fac_roots.push_back({&cfg.fac->e, {cfg.fac->frame, cfg.fac->dir}});
   if (cfg.feats)
     for (FeatSpec &f : *cfg.feats)
       if (f.err.empty()) {
         f.root_idx = static_cast<int>(fac_roots.size() + plain_es.size());
         plain_es.push_back(&f.e);
       }
-  const bool has_dag = !fac_roots.empty() || !plain_es.empty();
-  Engine::Forest fr = has_dag ? Engine::plant_forest(ft, fac_roots, /*keep_roots=*/true, plain_es) : Engine::Forest{};
-  std::vector<Engine::LeafId> leaves = fr.leaves;
-  for (uint8_t b = 0; b < kBarCount; ++b)
-    if ((cfg.bars & (1u << b)) && bm.col[b].id != Engine::kNoCol && std::find(leaves.begin(), leaves.end(), bm.col[b].id) == leaves.end())
-      leaves.push_back(bm.col[b].id);
+  const Engine::Forest fr = !fac_roots.empty() || !plain_es.empty() ? Engine::plant_forest(ft, fac_roots, /*keep_roots=*/true, plain_es) : Engine::Forest{};
 
   Engine::Lease lease(F);
   if (!lease)
     return Engine::Rc::Cancel;
-  const Holds hd = Holds::of(hold_bit(env.hold));
-  int look = 0;
-  if (cfg.fac)
-    look = std::max(look, factor::search::space::lookback(cfg.fac->e, ft.seg));
-  for (const fx::Expr *e : plain_es)
-    look = std::max(look, factor::search::space::lookback(*e, ft.seg));
   using Cpu = Engine::Backend<Engine::Cpu>;
   const int R = static_cast<int>(fac_roots.size());
-  if (const Engine::Rc rc = Engine::open_job(F, env.fsc, Engine::forest_need<Cpu, LookProbes>(ft, fr.d, std::move(leaves), look, hd, R, cfg.extra), job);
-      rc != Engine::Rc::Ok) {
+  Engine::Need need = Engine::forest_need<Cpu, LookProbes>(ft, fr, R, Engine::look_of(fac_roots, plain_es, ft.seg), Holds::of(hold_bit(env.hold)));
+  for (uint8_t b = 0; b < kBarCount; ++b)
+    if ((cfg.bars & (1u << b)) && bm.col[b].id != Engine::kNoCol && std::find(need.x.begin(), need.x.end(), bm.col[b].id) == need.x.end())
+      need.x.push_back(bm.col[b].id);
+  need.bands.front = std::max(need.bands.front, cfg.extra.front), need.bands.back = std::max(need.bands.back, cfg.extra.back);
+  need.cell.work += cfg.extra.work;
+  if (const Engine::Rc rc = Engine::open_job(F, env.fsc, std::move(need), job); rc != Engine::Rc::Ok) {
     err = "没算成: " + job.why;
     return rc;
   }
@@ -805,45 +804,34 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
 
   Cpu &eng = Engine::engine_space(F.S).cpu;
   const size_t want_d0 = job.dm.warm + s_lo, want_d1 = job.dm.warm + s_hi;
-  std::vector<std::string> dead(fr.d.roots.size());
-  std::vector<double> ms(static_cast<size_t>(R), 0.0);
   std::vector<LookProbes> ps(static_cast<size_t>(R));
   const LookP *fp = cfg.fac ? &ps[0].at<LookP>() : nullptr;
   if (cfg.fac)
     ps[0].at<LookP>().ends = cfg.fac->ends, ps[0].at<LookP>().only = cfg.fac->only_end;
-
-  const Engine::Rc rc = Engine::for_blocks(
-      F, job,
-      [&](const Engine::Block &blk, size_t, bool last, double) {
-        eng.bind(blk);
-        if (has_dag && Engine::eval_block(eng, F, blk, fr, std::span(dead), std::span(ps), last, std::span(ms)) != Engine::Rc::Ok)
-          return Engine::Rc::Cancel;
-        if (cfg.fac && !dead[0].empty()) {
-          err = "因子没算成: " + dead[0];
-          return Engine::Rc::Broken;
-        }
-        std::vector<const factor::check::Plane *> feat_pl;
-        if (cfg.feats)
-          for (FeatSpec &f : *cfg.feats) {
-            if (f.root_idx >= 0 && !dead[static_cast<size_t>(f.root_idx)].empty())
-              f.err = dead[static_cast<size_t>(f.root_idx)];
-            feat_pl.push_back(f.root_idx >= 0 && f.err.empty() ? eng.plane(fr.d.roots[static_cast<size_t>(f.root_idx)]) : nullptr);
-          }
-
-        const st::Span span = blk.span();
-        const int t_lo = span.t_lo, n_stat = span.t_hi() - t_lo;
-        const int w0 = static_cast<int>(s_lo) * ft.seg, w1 = static_cast<int>(s_hi) * ft.seg, u_lo = blk.land0() + t_lo;
-        const int c0 = std::max(0, w0 - u_lo), c1 = std::min(n_stat, w1 - u_lo);
-        assert(c0 < c1 && "只装与日段相交的块");
-        const size_t n_in = static_cast<size_t>(c1 - c0);
-        const std::span<const st::Row> rows = fp ? std::span<const st::Row>(fp->rows).subspan(static_cast<size_t>(c0), n_in) : std::span<const st::Row>{};
-        const std::span<const std::vector<HeldCell>> cells =
-            fp && fp->ends ? std::span<const std::vector<HeldCell>>(fp->cells).subspan(static_cast<size_t>(c0), n_in) : std::span<const std::vector<HeldCell>>{};
-        chunk_fn(ChunkView{job, blk, bm, stat_dates, u_lo + c0, t_lo + c0, t_lo + c1, fp ? fp->rx : nullptr, rows, cells, feat_pl, w0, w1});
-        return Engine::Rc::Ok;
-      },
-      [&](const Engine::Chunk &ck) { return ck.s1 > want_d0 && ck.s0 < want_d1; });
-  if (rc == Engine::Rc::Stale)
+  Engine::Fate fate;
+  const Engine::Hooks hk{.want = [&](const Engine::Chunk &ck) { return ck.s1 > want_d0 && ck.s0 < want_d1; },
+                         .after = [&](const Engine::Block &blk) {
+                           std::vector<const factor::check::Plane *> feat_pl;
+                           if (cfg.feats)
+                             for (FeatSpec &f : *cfg.feats) {
+                               if (f.root_idx >= 0 && !fate.dead[static_cast<size_t>(f.root_idx)].empty())
+                                 f.err = fate.dead[static_cast<size_t>(f.root_idx)];
+                               feat_pl.push_back(f.root_idx >= 0 && f.err.empty() ? eng.plane(fr.d.roots[static_cast<size_t>(f.root_idx)]) : nullptr);
+                             }
+                           const st::Span span = blk.span();
+                           const int t_lo = span.t_lo, n_stat = span.t_hi() - t_lo;
+                           const int w0 = static_cast<int>(s_lo) * ft.seg, w1 = static_cast<int>(s_hi) * ft.seg, u_lo = blk.land0() + t_lo;
+                           const int c0 = std::max(0, w0 - u_lo), c1 = std::min(n_stat, w1 - u_lo);
+                           assert(c0 < c1 && "只装与日段相交的块");
+                           const size_t n_in = static_cast<size_t>(c1 - c0);
+                           const std::span<const st::Row> rows = fp ? std::span<const st::Row>(fp->rows).subspan(static_cast<size_t>(c0), n_in) : std::span<const st::Row>{};
+                           const std::span<const std::vector<HeldCell>> cells =
+                               fp && fp->ends ? std::span<const std::vector<HeldCell>>(fp->cells).subspan(static_cast<size_t>(c0), n_in) : std::span<const std::vector<HeldCell>>{};
+                           chunk_fn(ChunkView{job, blk, bm, stat_dates, u_lo + c0, t_lo + c0, t_lo + c1, fp ? fp->rx : nullptr, rows, cells, feat_pl, w0, w1}); }};
+  const Engine::Rc rc = Engine::run_job(F, job, Engine::ForestPass<Cpu, LookProbes>(eng, F, fr, std::span(ps), fate, hk));
+  if (rc == Engine::Rc::Broken)
+    err = "因子没算成: " + job.why;
+  else if (rc == Engine::Rc::Stale)
     err = std::string("没算成: ") + Engine::kStaleMsg;
   return rc;
 }

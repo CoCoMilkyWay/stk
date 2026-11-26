@@ -180,7 +180,7 @@ namespace {
 struct FlowP : LinesP {
   static constexpr uint8_t need = kNeedRx;
   static constexpr Segs segs = Segs::First;
-  static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(kLedgerCols) * H * sh.T; }
+  static constexpr Bytes bytes(int H) { return {.row = static_cast<double>(sizeof(float)) * kLedgerCols * H}; }
   void init(const PassCtx &p) {
     assert(p.ad.n == 1 && "账: 一个金额段");
     lines(p, p.hd.n * kLedgerCols, [&](int i) { return p.hd.k[i / kLedgerCols]; });
@@ -216,31 +216,32 @@ Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
   RootSet rs;
   for (const FactorTask *t : ts) {
     rs.hd = Holds::of(rs.hd.set() | hold_bit(t->hold));
-    rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir, t->f.ret);
+    rs.add(*sc.ft, t->f.expr, {t->f.frame, t->f.dir, t->f.ret});
   }
   std::vector<PortfolioProbes> ps(rs.size());
   ForestOut o;
   o.job.who = "Portfolio";
-  return with_backend<PortfolioProbes>(F, sc.gpu, [&](auto &eng) {
-    return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/false, [&](int e, int k, const std::string &why) {
-      const FactorTask &t = *ts[static_cast<size_t>(e)];
-      auto b = std::make_shared<PortfolioLedger>();
-      b->lv = t.scope.lv;
-      if (!why.empty()) {
-        b->error = why;
-      } else {
-        const int hi = o.job.spec.y.hd.at(t.hold);
-        assert(hi >= 0);
-        b->dates = o.job.dm.stat_dates();
-        b->amt = o.job.spec.y.ad.k[0];
-        b->keys = {0};
-        for (int c = 0; c < kLedgerCols; ++c)
-          b->col[c] = ps[static_cast<size_t>(k)].at<FlowP>().out.slice(hi * kLedgerCols + c, 1);
-      }
-      if (on_book)
-        on_book(static_cast<size_t>(e), std::move(b));
-    });
+  const Rc rc = with_backend(F, sc.gpu, [&](auto &eng) { return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/false); });
+  const std::vector<misc::Ymd> dates = rc == Rc::Ok ? o.job.dm.stat_dates() : std::vector<misc::Ymd>{};
+  o.each(rs, rc, [&](int e, int k, const std::string &why) {
+    const FactorTask &t = *ts[static_cast<size_t>(e)];
+    auto b = std::make_shared<PortfolioLedger>();
+    b->lv = t.scope.lv;
+    if (!why.empty()) {
+      b->error = why;
+    } else {
+      const int hi = o.job.spec.y.hd.at(t.hold);
+      assert(hi >= 0);
+      b->dates = dates;
+      b->amt = o.job.spec.y.ad.k[0];
+      b->keys = {0};
+      for (int c = 0; c < kLedgerCols; ++c)
+        b->col[c] = ps[static_cast<size_t>(k)].at<FlowP>().out.slice(hi * kLedgerCols + c, 1);
+    }
+    if (on_book)
+      on_book(static_cast<size_t>(e), std::move(b));
   });
+  return rc;
 }
 
 Rc EvalBasketLedgers(const BasketTask &t, FactorFlow &F, Quote::PerMarket<std::shared_ptr<const PortfolioLedger>> &out) {

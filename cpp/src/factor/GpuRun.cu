@@ -454,16 +454,16 @@ struct StatSession {
   Timer tm;
 };
 
-StatSession *stat_open(int T, int A, int seg, int Cmax, const Holds &hd, double cap) {
-  assert(T > 0 && A > 0 && A <= factor::stat::kMaxA && Cmax >= 1 && Cmax <= stat::kMaxBatch && cap > 0.0);
+StatSession *stat_open(const factor::stat::Span &sh, int Cmax, const Holds &hd, double cap) {
+  assert(sh.T > 0 && sh.A > 0 && sh.A <= factor::stat::kMaxA && Cmax >= 1 && Cmax <= stat::kMaxBatch && cap > 0.0);
   StatSession *s = new StatSession;
-  s->s = {T, A, geo_of(seg)};
+  s->s = {sh.T, sh.A, sh.g};
   s->Cmax = Cmax;
   const size_t n = s->s.n();
   const int H = hd.n, NB = stat::n_parts(s->s), NBB = stat::n_batch_parts(s->s), D = s->s.days();
-  s->lab.alloc(hd, seg, n, cap);
+  s->lab.alloc(hd, sh.g.S, n, cap);
   s->rx.alloc(static_cast<size_t>(Cmax) * n);
-  s->rows.zalloc(static_cast<size_t>(H) * T);
+  s->rows.zalloc(static_cast<size_t>(H) * sh.T);
   const size_t P = static_cast<size_t>(H) * std::max(static_cast<size_t>(NB), static_cast<size_t>(Cmax) * NBB);
   s->part.zalloc(P), s->acc.zalloc(static_cast<size_t>(Cmax) * H), s->day.zalloc(static_cast<size_t>(Cmax) * H * D);
   s->w = {s->rows.p, s->part.p, s->acc.p, s->day.p, H, NB, NBB, Cmax, D};
@@ -478,13 +478,12 @@ void stat_load(StatSession *s, const factor::stat::Label *lab, double *prep_ms) 
   s->loaded = true;
 }
 
-void stat_eval(StatSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, factor::stat::Dir d, factor::stat::Ret r, int t0_abs,
-               int t_lo, int t_back, factor::stat::Accum *acc, factor::stat::Day *day, factor::stat::Row *rows, uint16_t *rx, double *eval_ms) {
-  assert(s && s->loaded && x && C >= 1 && C <= s->Cmax && g && g->m && acc && day);
+void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane *g, const factor::stat::Mode &m, const factor::stat::Span &s, factor::stat::Accum *acc,
+               factor::stat::Day *day, factor::stat::Row *rows, uint16_t *rx, double *eval_ms) {
+  assert(ss && ss->loaded && x && C >= 1 && C <= ss->Cmax && g && g->m && acc && day);
   assert((C == 1 || (!rows && !rx)) && "一级 / r16 只单候选可拷回");
-  factor::stat::Span sp = s->s; // 分片数随 t_lo / t_back 只减 (open 按两者 = 0 的上界分配)
-  sp.t0_abs = t0_abs, sp.t_lo = t_lo, sp.t_back = t_back;
-  factor::stat::assert_span(sp);
+  assert(s.T == ss->s.T && s.A == ss->s.A && s.g.S == ss->s.g.S && "块形与会话不符"); // 分片数随 t_lo / t_back 只减 (open 按两者 = 0 的上界分配)
+  factor::stat::assert_span(s);
   stat::Batch B;
   B.C = C;
   for (int c = 0; c < C; ++c) {
@@ -492,23 +491,21 @@ void stat_eval(StatSession *s, const DevPlane *const *x, int C, const DevPlane *
     B.x[c] = {x[c]->v, x[c]->m};
   }
   if (eval_ms)
-    s->tm.begin();
-  stat::rank_x(B, g->m, f, d, sp, s->rx.p, nullptr);
-  factor::stat::Labels L = s->lab.L; // 收益口径逐批给, 标签常驻
-  L.ret = r;
+    ss->tm.begin();
+  stat::rank_x(B, g->m, m, s, ss->rx.p, nullptr);
   if (C == 1)
-    stat::accum_rows(sp, s->rx.p, L, s->w, nullptr);
+    stat::accum_rows(s, ss->rx.p, ss->lab.L, m, ss->w, nullptr);
   else
-    stat::accum_batch(sp, s->rx.p, C, L, s->w, nullptr);
+    stat::accum_batch(s, ss->rx.p, C, ss->lab.L, m, ss->w, nullptr);
   if (eval_ms)
-    *eval_ms = s->tm.end();
-  const size_t H = static_cast<size_t>(s->lab.L.hd.n), D = static_cast<size_t>(sp.days());
-  s->acc.down(acc, static_cast<size_t>(C) * H);     // D2H 自带同步; Accum / Day / Row 是 POD, 设备格式 = 宿主格式
-  s->day.down(day, static_cast<size_t>(C) * H * D); // [C][H][D] 按本次统计日数密排
+    *eval_ms = ss->tm.end();
+  const size_t H = static_cast<size_t>(ss->lab.L.hd.n), D = static_cast<size_t>(s.days());
+  ss->acc.down(acc, static_cast<size_t>(C) * H);     // D2H 自带同步; Accum / Day / Row 是 POD, 设备格式 = 宿主格式
+  ss->day.down(day, static_cast<size_t>(C) * H * D); // [C][H][D] 按本次统计日数密排
   if (rows)
-    s->rows.down(rows, H * static_cast<size_t>(s->s.T));
+    ss->rows.down(rows, H * static_cast<size_t>(s.T));
   if (rx)
-    s->rx.down(rx, s->s.n());
+    ss->rx.down(rx, s.n());
 }
 
 void stat_close(StatSession *s) {
@@ -521,29 +518,29 @@ size_t stat_bytes(const StatSession *s) {
   return s ? s->lab.bytes() + s->rx.bytes() + s->rows.bytes() + s->part.bytes() + s->acc.bytes() + s->day.bytes() : 0;
 }
 
-void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, factor::stat::Dir d, factor::stat::Ret r, int T,
-              int A, int seg, int t0_abs, int t_lo, int t_back, const Holds &hd, double cap, const factor::stat::Label *lab, factor::stat::Accum *acc,
-              factor::stat::Day *day, factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
+void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, const factor::stat::Mode &m, const factor::stat::Span &s, const Holds &hd,
+              double cap, const factor::stat::Label *lab, factor::stat::Accum *acc, factor::stat::Day *day, factor::stat::Row *rows, double *prep_ms,
+              double *eval_ms) {
   assert(C >= 1 && C <= stat::kMaxBatch && xv && xm && gm);
-  const size_t n = static_cast<size_t>(T) * A;
-  std::vector<DevBuf<float>> x(static_cast<size_t>(C));
-  std::vector<DevBuf<uint8_t>> m(static_cast<size_t>(C));
+  const size_t n = s.n();
+  std::vector<DevBuf<float>> dv(static_cast<size_t>(C));
+  std::vector<DevBuf<uint8_t>> dm(static_cast<size_t>(C));
   std::vector<DevPlane> xp(static_cast<size_t>(C));
   std::vector<const DevPlane *> xpp(static_cast<size_t>(C));
   for (int c = 0; c < C; ++c) {
-    x[static_cast<size_t>(c)].up(xv[c], n), m[static_cast<size_t>(c)].up(xm[c], n);
-    xp[static_cast<size_t>(c)] = {x[static_cast<size_t>(c)].p, m[static_cast<size_t>(c)].p};
+    dv[static_cast<size_t>(c)].up(xv[c], n), dm[static_cast<size_t>(c)].up(xm[c], n);
+    xp[static_cast<size_t>(c)] = {dv[static_cast<size_t>(c)].p, dm[static_cast<size_t>(c)].p};
     xpp[static_cast<size_t>(c)] = &xp[static_cast<size_t>(c)];
   }
   DevBuf<uint8_t> g;
   g.up(gm, n);
   const DevPlane gp{nullptr, g.p};
-  StatSession *s = stat_open(T, A, seg, C, hd, cap);
-  stat_load(s, lab, prep_ms);
-  stat_eval(s, xpp.data(), C, &gp, f, d, r, t0_abs, t_lo, t_back, acc, day, rows, nullptr, eval_ms);
-  stat_close(s);
+  StatSession *ss = stat_open(s, C, hd, cap);
+  stat_load(ss, lab, prep_ms);
+  stat_eval(ss, xpp.data(), C, &gp, m, s, acc, day, rows, nullptr, eval_ms);
+  stat_close(ss);
   for (int c = 0; c < C; ++c)
-    x[static_cast<size_t>(c)].free_(), m[static_cast<size_t>(c)].free_();
+    dv[static_cast<size_t>(c)].free_(), dm[static_cast<size_t>(c)].free_();
   g.free_();
 }
 

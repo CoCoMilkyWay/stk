@@ -2,8 +2,9 @@
 #include "gui/engine/Ledger.hpp"
 
 #include "define/Members.hpp"
-#include "factor/Stat/Book.hpp" // book_rows / MaskBook
-#include "shared/Basket.hpp"    // basket_table / Weigh / members
+#include "factor/Stat/Book.hpp"            // book_rows / MaskBook
+#include "features/Storage/FeatureLib.hpp" // pool_id
+#include "shared/Basket.hpp"               // basket_table / Weigh / members
 
 #include <algorithm>
 #include <cassert>
@@ -102,16 +103,28 @@ LedgerLines fold_ledger(misc::exec::ForkJoin &ex, int seg, const RowLines &r, in
   return out;
 }
 
-double BasketPass::fixed_bytes(const Domain &dm) {
-  const double nl = static_cast<double>(basket_table().size()), A = static_cast<double>(dm.rs.axis.size());
-  return ((nl + A) * kLedgerCols + nl * (2 + 2 * kPoolVals + kMarginVals) + A * (2 + kPoolVals + kMarginVals)) * static_cast<double>(dm.stat_days()) *
-         sizeof(float);
+Need basket_need(const FeatureTable &ft) {
+  assert(ft.seg == 1 && "篮子账按日");
+  const std::array<LeafId, kPoolVals> val = pool_val_leaves(ft);
+  const Holds hd = Holds::of(hold_bit(kHoldT1));
+  return {{val.begin(), val.end()}, hd, Segs::None, false, bands_of(0, hd, ft.seg), Budget{.work = static_cast<double>(sizeof(PoolMask))}, BasketPass::bytes()};
 }
 
-BasketPass::BasketPass(const Domain &dm, std::shared_ptr<const pool::Picks> pk, std::span<const LeafId, kPoolVals> val)
-    : pk_(std::move(pk)), warm_(dm.warm), ds_(dm.stat_days()) {
-  assert(pk_ && dm.pool == kAllPool && pool_count() <= static_cast<size_t>(kPoolBits));
+Bytes BasketPass::bytes() {
+  const double nl = static_cast<double>(basket_table().size());
+  constexpr double f = sizeof(float);
+  return {.cell = (kLedgerCols + 2 + kPoolVals + kMarginVals) * f, .day = nl * (kLedgerCols + 2 + 2 * kPoolVals + kMarginVals) * f};
+}
+
+BasketPass::BasketPass(FactorFlow &F, std::shared_ptr<const pool::Picks> pk, std::span<const LeafId, kPoolVals> val) : F_(F), pk_(std::move(pk)) {
+  assert(pk_ && pool_count() <= static_cast<size_t>(kPoolBits));
   std::copy(val.begin(), val.end(), val_);
+}
+
+void BasketPass::init(const Job &j) {
+  const Domain &dm = j.dm;
+  assert(dm.pool == kAllPool);
+  warm_ = dm.warm, ds_ = dm.stat_days(), n_ = j.P.chunks.size();
   const pool::Strip &s = *pk_->strip;
   assert(s.axis.hash == dm.rs.axis.hash && s.A() == dm.rs.axis.size() && "选股表与评估域 A 轴不符");
   r0_ = s.row_of(dm.dates.front());
@@ -121,7 +134,8 @@ BasketPass::BasketPass(const Domain &dm, std::shared_ptr<const pool::Picks> pk, 
   rx_.reset(kLedgerCols * B, P); // 线 = 列 · B + 本 (本 = 篮子 | 个股)
   for (int i = 0; i < rx_.n; ++i)
     rx_.at_exit[static_cast<size_t>(i)] = i < B; // 收益列平仓行实现, 其余建仓行即付
-  Ledger &bk = out_[Quote::kBasket], &sk = out_[Quote::kStock];
+  out = Baskets{};
+  Ledger &bk = out[Quote::kBasket], &sk = out[Quote::kStock];
   bk.pf.cap.reset(nl, P, kNaN);
   sk.pf.cap.reset(A, P, kNaN);
   for (int j = 0; j < kMarginVals; ++j) {
@@ -135,7 +149,10 @@ BasketPass::BasketPass(const Domain &dm, std::shared_ptr<const pool::Picks> pk, 
   }
 }
 
-void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
+Rc BasketPass::block(const Block &c, size_t ci, bool, double) {
+  misc::exec::ForkJoin &ex = F_.S.ex;
+  F_.prog.begin(Phase::Running, n_);
+  F_.prog.publish(ci);
   const pool::Strip &s = *pk_->strip;
   const BasketTable &bt = basket_table();
   const ConceptTable &ct = concepts();
@@ -183,7 +200,7 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
     lf[m] = c.x.find(val_[m]);
     assert(lf[m] && "估值叶未钉在块上");
   }
-  Ledger &bk = out_[Quote::kBasket], &sk = out_[Quote::kStock];
+  Ledger &bk = out[Quote::kBasket], &sk = out[Quote::kStock];
   const auto mcap = [&](size_t r, size_t a) { return static_cast<double>(s.mcap[r * A + a]); };
   ex.rows(n_stat, [&](int u0, int u1, int) {
     Members hold;
@@ -257,17 +274,38 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
       }
     }
   });
+  F_.prog.publish(1);
+  return Rc::Ok;
 }
 
-Baskets BasketPass::finish(misc::exec::ForkJoin &ex) {
-  const LedgerLines all = fold_ledger(ex, 1, rx_, 1);
+void BasketPass::finish(const Job &) {
+  const LedgerLines all = fold_ledger(F_.S.ex, 1, rx_, 1);
   const int nl = static_cast<int>(basket_table().size()), B = all.n / kLedgerCols;
   for (int k = 0; k < kLedgerCols; ++k) {
-    out_[Quote::kBasket].col[k] = all.slice(k * B, nl);
-    out_[Quote::kStock].col[k] = all.slice(k * B + nl, B - nl);
+    out[Quote::kBasket].col[k] = all.slice(k * B, nl);
+    out[Quote::kStock].col[k] = all.slice(k * B + nl, B - nl);
   }
   rx_ = RowLines{};
-  return std::move(out_);
+}
+
+Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
+  assert(sc.ft && sc.ft->seg == 1 && pool_id(sc.pool) == kAllPool && "池篮子在 all 池日层评估域");
+  assert(sc.ft->y.has(kHoldT1) && "篮子须有 T+1 标签 (日层: 池指数 C(行) → C(D+1))");
+  if (const Rc rc = open_job(F, sc, basket_need(*sc.ft), j); rc != Rc::Ok)
+    return rc;
+  assert(j.dm.rs.has(kAllBar));
+  std::shared_ptr<const pool::Picks> pk = pool::picks(j.dm.rs.libs[kAllBar], &F.cancel);
+  if (!pk) {
+    const Rc rc = rc_of(false, F.S.lr);
+    if (rc == Rc::Stale)
+      F.S.clear();
+    return rc;
+  }
+  BasketPass p(F, std::move(pk), pool_val_leaves(*sc.ft));
+  if (const Rc rc = run_job(F, j, p); rc != Rc::Ok)
+    return rc;
+  out = std::move(p.out);
+  return Rc::Ok;
 }
 
 LedgerLines pool_line(misc::exec::ForkJoin &ex, const Block &c) {

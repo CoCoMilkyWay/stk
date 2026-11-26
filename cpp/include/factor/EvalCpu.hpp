@@ -8,7 +8,7 @@
 //   run_node      一个算子节点, 并行由 Exec 定 (misc/exec.hpp): Serial = 单线程 (搜索: 因子间并行由上层起线程);
 //                 ForkJoin = 节点内切满核 (Run / Inspect: 共享 DAG 顺序走节点). 与 Dag 计划解耦.
 //                 切法只看 A 域 (不认具体算子), 结果与单线程**逐位一致** (不是近似):
-//                   TS (SELF)        资产列各自独立 (段界 / 窗口历史都在列内) → 按 kTileA 列切任务
+//                   TS (SELF)        资产列各自独立 (段界 / 窗口历史都在列内) → 按列切任务 (宽见 ts_task_width)
 //                   CS (ALL / GROUP) 行独立 → 按 t 切
 //                   融合 (Dag fuse)  kFuseRows 行一个任务, 块内按 kTileA 列逐步跑逐点算子 (中间量只在块缓冲里, 驻 L1/L2),
 //                                    外部输入直接读平面, 末步直接写输出
@@ -56,6 +56,14 @@ inline const Kernel &kernel(int op) {
 }
 
 inline constexpr int kFuseRows = 8; // 融合任务的行数 (块 = kFuseRows × kTileA 格, 每步 5 KB)
+
+// TS 节点的列任务宽: 每线程约两个任务 (动态抢单可均衡), 向上取 kTaskAlign 的倍数, 夹在 [kTaskAlign, kTileA].
+// 池几百只时按 kTileA 只切得出个位数任务, 多核闲着; 列间独立, 宽度不影响结果 (逐位一致). Serial = 1 线程 → kTileA
+inline constexpr int kTaskAlign = 16; // 一条 64B 缓存行的 float 数
+inline int ts_task_width(int A, int threads) {
+  const int per = 2 * threads, w = (A + per - 1) / per;
+  return std::clamp((w + kTaskAlign - 1) / kTaskAlign * kTaskAlign, kTaskAlign, kTileA);
+}
 
 struct HostPool {
   std::vector<check::Plane> slots;
@@ -139,11 +147,12 @@ inline void run_node(Exec &ex, const DagNode &nd, const check::Plane *const in[k
   c.T = T, c.A = A, c.geo = geo_of(seg), c.p = nd.p;
   const Kernel &k = kernel(nd.op);
   const size_t ws = k.scratch(c);
-  if (o.a == A::SELF)
-    ex.tasks((A + kTileA - 1) / kTileA, [&](int b, int tid) {
-      k.run(c, Range{b * kTileA, std::min(A, (b + 1) * kTileA)}, sc[static_cast<size_t>(tid)].get(ws));
+  if (o.a == A::SELF) {
+    const int tw = ts_task_width(A, ex.threads());
+    ex.tasks((A + tw - 1) / tw, [&](int b, int tid) {
+      k.run(c, Range{b * tw, std::min(A, (b + 1) * tw)}, sc[static_cast<size_t>(tid)].get(ws));
     });
-  else
+  } else
     ex.rows(T, [&](int t0, int t1, int tid) { k.run(c, Range{t0, t1}, sc[static_cast<size_t>(tid)].get(ws)); });
 }
 

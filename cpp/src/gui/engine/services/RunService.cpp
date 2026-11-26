@@ -36,7 +36,7 @@ Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows,
              DayLines *day) {
   RootSet rs{.hd = Holds::of(sc.ft->y.holds)};
   for (const size_t i : idx)
-    rs.add(*sc.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign), rows[i].ret);
+    rs.add(*sc.ft, rows[i].expr, {rows[i].frame, factor::stat::dir_of(rows[i].sign), rows[i].ret});
   ForestOut o;
   o.job.who = "Run";
   std::vector<Ps> ps(rs.size());
@@ -45,27 +45,26 @@ Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows,
       p.template at<NavP>().only = day->hold;
   std::vector<size_t> fin;
 
-  const Rc rc = with_backend<Ps>(F, sc.gpu, [&](auto &eng) {
-    return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/false, [&](int e, int k, const std::string &why) {
-      const size_t ri = idx[static_cast<size_t>(e)];
-      FactorRow &r = rows[ri];
-      assert(r.status != RowState::Done && "每行至多收尾一次");
-      r.status = RowState::Done;
-      if (!why.empty()) {
-        r.error = why;
-      } else {
-        const Ps &p = ps[static_cast<size_t>(k)];
-        static_cast<EvalStat &>(r) = EvalStat{};
-        fill_eval(p, o.job.pass_ctx(F.S.ex, rs.r[static_cast<size_t>(k)].d), o.scope(sc), o.eval_ms(k), r);
-        r.has_stat = true;
-        r.stat_from_file = false;
-        fin.push_back(ri);
-        if constexpr (std::is_same_v<Ps, DayProbes>)
-          day->rows[static_cast<size_t>(e)] = day_of(p, r, day->hold);
-      }
-      if (on_row)
-        on_row(ri);
-    });
+  const Rc rc = with_backend(F, sc.gpu, [&](auto &eng) { return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/false); });
+  o.each(rs, rc, [&](int e, int k, const std::string &why) {
+    const size_t ri = idx[static_cast<size_t>(e)];
+    FactorRow &r = rows[ri];
+    assert(r.status != RowState::Done && "每行至多收尾一次");
+    r.status = RowState::Done;
+    if (!why.empty()) {
+      r.error = why;
+    } else {
+      const Ps &p = ps[static_cast<size_t>(k)];
+      static_cast<EvalStat &>(r) = EvalStat{};
+      fill_eval(p, pass_ctx(o.job, F.S.ex), o.scope(sc), o.eval_ms(k), r);
+      r.has_stat = true;
+      r.stat_from_file = false;
+      fin.push_back(ri);
+      if constexpr (std::is_same_v<Ps, DayProbes>)
+        day->rows[static_cast<size_t>(e)] = day_of(p, r, day->hold);
+    }
+    if (on_row)
+      on_row(ri);
   });
   if (rc == Rc::Ok && !fin.empty()) {
     std::vector<const FactorRow *> out;
@@ -149,6 +148,9 @@ bool RunService::run(RunRequest &req) {
       files.emplace_back();
     files.back().push_back(i);
   }
+  const std::vector<std::string> &order = req.spec.order; // 逐文件先后 = 因子表显示序 (不在其中的按扫描序排后)
+  const auto rank = [&](const std::vector<size_t> &f) { return std::find(order.begin(), order.end(), work[f.front()].file) - order.begin(); };
+  std::stable_sort(files.begin(), files.end(), [&](const std::vector<size_t> &a, const std::vector<size_t> &b) { return rank(a) < rank(b); });
   {
     std::lock_guard<std::mutex> lock(mutex);
     for (size_t i = 0; i < work.size(); ++i)

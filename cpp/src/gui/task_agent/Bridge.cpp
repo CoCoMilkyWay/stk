@@ -172,7 +172,7 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
   Engine::ScanFactorFile(dir, file, ft, rows);
   assert(!rows.empty());
   const Engine::FactorRow &r0 = rows.front();
-  Result r{.file = r0.file, .name = r0.name_en, .name_cn = r0.name_cn, .tmpl = r0.tmpl, .note = r0.note};
+  Result r{.file = r0.file, .name = r0.name_en, .name_cn = r0.name_cn, .tmpl = r0.tmpl, .note = r0.note, .ret = r0.ret};
   bool opened = true;
   Period now;
   if (!r0.tmpl.empty()) {
@@ -228,7 +228,7 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
     r.ws.push_back(std::move(x));
   }
   std::stable_sort(r.ws.begin(), r.ws.end(), [](const Weight &a, const Weight &b) { return a.has != b.has ? a.has : a.score > b.score; });
-  r.visible = fresh && r.ops <= kMaxOps && opened;
+  r.visible = fresh && r.ops <= kMaxOps && opened && r.ret == fs::Ret::Excess; // agent 全程超额口径: 正式库里人切成绝对的因子不进它的视野
   const bool null = r.ws.empty() ? mk != r0.searched.end() : run;
   r.verdict = !r.error.empty() ? Verdict::Broken : r.best() ? Verdict::Weights
                                                : null       ? Verdict::Null
@@ -475,7 +475,10 @@ struct Desk::Impl {
     for (const Result &r : results) {
       CandRef cr;
       if (!r.visible) {
-        cr.error = "候选 `" + r.name + "` 不在当前可见范围 (" + (r.ops > kMaxOps ? "算子超上限" : "评估期或开放集不同") + ")";
+        cr.error = "候选 `" + r.name + "` 不在当前可见范围 (" +
+                   (r.ops > kMaxOps ? "算子超上限" : r.ret != fs::Ret::Excess ? "收益口径是绝对, 本系统只按超额评"
+                                                                              : "评估期或开放集不同") +
+                   ")";
       } else if (const Weight *w = r.best()) {
         cr.expr = w->expr, cr.sign = w->sign;
         cr.label = r.name + (w->sign < 0 ? " (反向: " : " (") + w->expr + ")";
