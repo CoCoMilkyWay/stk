@@ -48,13 +48,13 @@ std::string years_ric_text(const std::vector<Year> &ys) {
   return text::vbars("分年 rIC " + std::to_string(ys.front().year) + " → " + std::to_string(ys.back().year) + " (年内 rIC 均值)", v, [](double x) { return fmt("%+.3f", x); });
 }
 
-// Search 概况: 自由参数个数 / 算出滚动窗的点数 / 中位 rIC 最高 · 次高 · 各点中位 (最佳点是孤峰还是一片高地)
+// Search 概况: 自由参数个数 / 算出滚动窗的点数 / score (中位窗目标) 最高 · 次高 · 各点中位 (最佳点是孤峰还是一片高地)
 std::string sweep_line(const Sweep &sw) {
   const std::vector<Point> &ps = sw.pts;
   std::string s = sw.slots.empty() ? std::string("Search: 无自由参数, 只评 1 个点")
                                    : "Search: 自由参数 " + std::to_string(sw.slots.size()) + " 个, 算出滚动窗的点 " + std::to_string(ps.size()) + " 个";
   if (ps.size() >= 2)
-    s += fmt(" · 中位 rIC 最高 %.3f", ps[0].score) + fmt(" / 次高 %.3f", ps[1].score) + fmt(" / 各点中位 %.3f", ps[ps.size() / 2].score);
+    s += fmt(" · 中位 %s 最高 %.3f", factor::stat::kTargetName, ps[0].score) + fmt(" / 次高 %.3f", ps[1].score) + fmt(" / 各点中位 %.3f", ps[ps.size() / 2].score);
   return s;
 }
 
@@ -62,13 +62,13 @@ Sweep sweep_of(const Engine::SearchResult &r) {
   Sweep s{.slots = r.slots};
   for (const misc::Ymd d : r.dates)
     s.dates.push_back(static_cast<int>(d));
-  int sign = 0; // 写进的权重的符号 (cands 按中位 rIC 降序, 首个有窗的即权重)
+  int sign = 0; // 写进的权重的符号 (cands 按 score 降序, 首个有窗的即权重)
   for (const Engine::SearchCand &c : r.cands) {
     if (!c.roll.ok())
       continue;
     if (!sign)
       sign = c.sign;
-    Point p{c.v, c.roll.ric_med, c.line};
+    Point p{c.v, c.roll.med, c.line};
     if (c.sign != sign) {
       p.score = -p.score;
       for (float &x : p.line)
@@ -168,17 +168,18 @@ std::string WeightLine(const TrialRes &k, const Weight &w) {
   const std::string head = &w == best ? std::string() : "另一权重 `" + Formula(w) + "`: ";
   if (!w.has)
     return head + "无该持有期统计";
-  std::string s = head + fmt("rIC %.3f", w.ric) + fmt(" · 中位 rIC %.3f", w.score) + fmt(" · 每期毛多 %+.2fbp", w.lng * 1e4) + fmt(" · 毛空 %+.2fbp", w.sht * 1e4) +
+  std::string s = head + fmt("rIC %.3f", w.ric) + fmt(" · mono %.3f", w.mono) + fmt(" · 中位 %s %.3f", factor::stat::kTargetName, w.score) +
+                  fmt(" · 每期毛多 %+.2fbp", w.lng * 1e4) + fmt(" · 毛空 %+.2fbp", w.sht * 1e4) +
                   fmt(" · 毛多空 %+.2fbp", w.gross * 1e4) + fmt(" · 净多空 %+.2fbp", w.net * 1e4) + fmt(" · 成本 %.2fbp", w.cost * 1e4) + fmt(" (单边换手 买 %.0f%%", w.buy * 100) +
                   fmt(" / 卖 %.0f%%", w.sell * 100) + fmt(", × 固定冲击 %.0fbp + 税佣)", w.impact * 1e4);
   if (&w == best)
-    s += GateMiss(k.gate, k.st.res).empty() ? " · 达入库门槛" : fmt(" · 未达入库门槛 %.3f", k.gate.ric);
+    s += GateMiss(k.gate, k.st.res).empty() ? " · 达入库门槛" : fmt(" · 未达入库门槛 (%s ≥ %.3f)", kGateName, k.gate.min);
   return s;
 }
 
 std::string YearsLine(const std::vector<Year> &ys) {
   assert(!ys.empty());
-  std::string s = "年份(中位rIC,年换手):";
+  std::string s = std::string("年份(中位") + factor::stat::kTargetName + ",年换手):";
   for (size_t i = 0; i < ys.size(); ++i)
     s += (i ? ", " : " ") + std::to_string(ys[i].year) + "(" + text::r3(ys[i].med) + fmt(",%.0f)", ys[i].turn);
   return s;

@@ -73,8 +73,8 @@ double Mine::now() const { return t_end >= 0.0 ? t_end : std::chrono::duration<d
 std::string Mine::make_log_head() const {
   const Context &c = desk.ctx();
   std::string h = "# 会话日志 · " + catalog::label(setup.sc) + " (近 " + std::to_string(setup.sc.years) + " 年)\n\n";
-  h += "- 模式: " + std::string(setup.test ? "自检" : "正式") + " · 大脑: " + brain() + " · 评估: " + (leg.gpu ? "GPU" : "CPU") + " · 门槛: 中位 rIC ≥ " +
-       text::num(setup.gate.ric) + " · 提问: " + (setup.ask ? "可" : "关") + "\n";
+  h += "- 模式: " + std::string(setup.test ? "自检" : "正式") + " · 大脑: " + brain() + " · 评估: " + (leg.gpu ? "GPU" : "CPU") + " · 门槛: " + kGateName + " ≥ " +
+       text::num(setup.gate.min) + " · 提问: " + (setup.ask ? "可" : "关") + "\n";
   h += "- 来源: " + c.srcs + " · 开放: 叶 " + std::to_string(c.leaves.size()) + " 个, 算子 " + std::to_string(c.ops.size()) + " 个 · 评估期: " + c.window + "\n";
   if (!setup.remark.empty())
     h += "- 本会话要求: " + text::flat(setup.remark) + "\n";

@@ -12,6 +12,9 @@
 //   退出: 任务 Destroy 置取消旗, 全部请求 / 重试等待 1 秒内收手 (Devin 子进程即杀; 只剩 Cursor 远端取消, 限时 kCancelTimeoutSeconds)
 // =============================================================================
 
+#include "factor/Stat/Roll.hpp" // kTarget: Search 目标 (入库门槛量 / 文案随它)
+
+#include <string>
 #include <string_view>
 
 namespace GUI::Agent {
@@ -59,8 +62,10 @@ inline constexpr int kMaxRetries = 5;  // 连续这么多步不合协议即停�
 inline constexpr int kCtxChars = 60000;
 inline constexpr int kFoldSteps = 10;
 
-// 入库门槛默认值 (Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重达到才拷进正式因子库
-inline constexpr double kGateRic = 0.03; // 中位 rIC (滚动窗 rIC 的中位, 同 Search 的目标)
+// 入库门槛 (默认值 Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重的门槛量达到才拷进正式因子库;
+//   门槛量随 Search 目标 (factor/Stat/Roll.hpp kTarget): mono → 全期 mono (20 组整期均值的分层单调); rIC → 中位 rIC (同 Search 的目标)
+inline constexpr const char *kGateName = factor::stat::kMonoTarget ? "全期 mono" : "中位 rIC";
+inline constexpr double kGateMin = factor::stat::kMonoTarget ? 0.9 : 0.03;
 
 // ---- 外部 agent 接口 (gui/task_agent/Remote.hpp): 本机 MCP (Streamable HTTP), 程序一开即监听; 外部 agent 经它当会话的大脑 ----
 inline constexpr const char *kRemoteHost = "127.0.0.1";
@@ -71,9 +76,11 @@ inline constexpr int kRemoteWait = 300; // run 执行中至多等多少秒 (未�
 // 常量占位 {{键}} (提示词模板 / 研究工具说明 / 接口工具说明同一张表; 模板另有随作用域的键, 见 gui/task_agent/Prompt.hpp)
 struct ConstDef {
   const char *key;
-  int value;
+  int value = 0;
+  const char *text = nullptr; // 非空 = 文字常量 (不取 value)
+  std::string str() const { return text ? std::string(text) : std::to_string(value); }
 };
-inline constexpr ConstDef kConsts[] = {{"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}, {"max_retries", kMaxRetries}, {"remote_wait", kRemoteWait}};
+inline constexpr ConstDef kConsts[] = {{"max_ops", kMaxOps}, {"good_ops", kGoodOps}, {"out_chars", kOutChars}, {"stock_days", kStockDays}, {"stock_rows", kStockRows}, {"book_mins", kBookMins}, {"book_rows", kBookRows}, {"max_retries", kMaxRetries}, {"remote_wait", kRemoteWait}, {"target", 0, factor::stat::kTargetName}, {"gate_name", 0, kGateName}};
 inline const ConstDef *const_of(std::string_view key) {
   for (const ConstDef &c : kConsts)
     if (key == c.key)

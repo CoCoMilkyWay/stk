@@ -1,4 +1,4 @@
-// list_tried — 列已试: 输入 query / top / skip → TriedRes (本作用域可见、命中 query 的已评候选, score (中位 rIC) 降序) → 原文; 展示见 ui/query/ListTried.cpp
+// list_tried — 列已试: 输入 query / top / skip → TriedRes (本作用域可见、命中 query 的已评候选, score (中位窗目标) 降序) → 原文; 展示见 ui/query/ListTried.cpp
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Feed.hpp"

@@ -1,4 +1,4 @@
-// list_library — 列正式库: 输入 query / top / skip → LibraryRes (同评估期、命中 query、本持有期有统计的正式因子, score (中位 rIC) 降序) → 原文; 展示见 ui/query/ListLibrary.cpp
+// list_library — 列正式库: 输入 query / top / skip → LibraryRes (同评估期、命中 query、本持有期有统计的正式因子, score (中位窗目标) 降序) → 原文; 展示见 ui/query/ListLibrary.cpp
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Feed.hpp"

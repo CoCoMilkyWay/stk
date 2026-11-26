@@ -35,7 +35,7 @@ std::string fill(Msg m, const KV &kv) {
     if (!c)
       std::fprintf(stderr, "[agent] %s.md: 未知占位 {{%.*s}}\n", def(m).id, static_cast<int>(key.size()), key.data());
     assert(c && "模板占位键未知");
-    return std::to_string(c->value);
+    return c->str();
   });
 }
 
@@ -260,7 +260,8 @@ std::string Text(const Weight &w) {
   if (!w.has)
     return "无该持有期统计";
   char b[192];
-  std::snprintf(b, sizeof(b), "中位 rIC %.4f · 每期毛多空 %+.2fbp · 每期净多空 %+.2fbp · 年换手 %.0f 倍", w.score, w.gross * 1e4, w.net * 1e4, w.turn);
+  std::snprintf(b, sizeof(b), "中位 %s %.4f · 全期 mono %.3f · 每期毛多空 %+.2fbp · 每期净多空 %+.2fbp · 年换手 %.0f 倍", factor::stat::kTargetName, w.score, w.mono,
+                w.gross * 1e4, w.net * 1e4, w.turn);
   return b;
 }
 
@@ -298,7 +299,7 @@ std::string Detail(const Result &r) {
     return s;
   }
   case Verdict::Null:
-    return "- Search 无权重 (没有一个参数点算得出该持有期的滚动窗 rIC)\n";
+    return "- Search 无权重 (没有一个参数点算得出该持有期的滚动窗)\n";
   case Verdict::Pending:
     return "- " + std::string(def(r.verdict).cn) + "\n";
   }
@@ -323,7 +324,7 @@ std::string SystemMessage(const Context &c, const Gate &g, bool ask) {
                             {"search_pts", std::to_string(c.search_pts)},
                             {"ts_root_d", std::to_string(c.ts_root_d)},
                             {"max_d", std::to_string(c.max_d)},
-                            {"gate_ric", num(g.ric)},
+                            {"gate", num(g.min)},
                             {"ask", ask ? "遇到关键分岔可用 ask_human 问研究员" : "研究员不参与决策, 没有 ask_human; 疑问写 report_issue"},
                             {"tools", ToolsDoc(ask)},
                             {"leaves", leaves_text(c.leaves)},

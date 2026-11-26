@@ -752,7 +752,7 @@ void memo_entry(Ui &s, const Mine &m, const Cols &c, size_t i) {
   entry(s, m, c, h, static_cast<int>(i) + 1, false, [&] { wrapped(memo); }, [&] { raw_part("memo", "附在消息末尾", MemoText(memo)); });
 }
 
-// 停下汇总 (停着时末一笔停下的展示): 继续会做什么 + 计数 + 本会话有参数组的候选 (入库的在前, 再按 score (中位 rIC) 降序; 先列 kSummaryRows 个, 其余折起)
+// 停下汇总 (停着时末一笔停下的展示): 继续会做什么 + 计数 + 本会话有参数组的候选 (入库的在前, 再按 score (中位窗目标) 降序; 先列 kSummaryRows 个, 其余折起)
 constexpr size_t kSummaryRows = 5;
 void summary_block(const Mine &m) {
   const Tally c = m.tally();
@@ -929,7 +929,7 @@ View view_of(const SharedData &data, Ui &s, const Scope &sc) {
   return {m.desk.ctx(), m.desk.results(), mine ? AdoptedOf(m.timeline) : Names(), mine ? StagedOf(m.timeline) : Names(), m.desk.test(), m.notes, m.desk};
 }
 
-// 候选表: 列头点了排序 (默认 = 本持有期 score (中位 rIC) 降序); 本会话落的标 ●; 点一行在下面看详情与 Search 日志
+// 候选表: 列头点了排序 (默认 = 本持有期 score (中位窗目标) 降序); 本会话落的标 ●; 点一行在下面看详情与 Search 日志
 void results_table(Ui &s, const View &v) {
   const std::vector<Result> &results = v.results;
   s.cand_filter.Draw("过滤##cand", 240);
@@ -946,14 +946,14 @@ void results_table(Ui &s, const View &v) {
   ImGui::TableSetupColumn("名");
   ImGui::TableSetupColumn("中文");
   ImGui::TableSetupColumn("结局");
-  ImGui::TableSetupColumn("中位 rIC", kDesc);
+  ImGui::TableSetupColumn(factor::stat::kScoreName, kDesc);
   ImGui::TableSetupColumn("每期毛多空 bp", kDesc);
   ImGui::TableSetupColumn("每期净多空 bp", kDesc);
   ImGui::TableSetupColumn("年换手");
   ImGui::TableSetupColumn("思路");
   ImGui::TableSetupColumn("模板", ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_NoSort);
   ImGui::TableHeadersRow();
-  // 统计列: 最佳权重 (中位 rIC + 每期毛 / 净多空 + 年换手)
+  // 统计列: 最佳权重 (score + 每期毛 / 净多空 + 年换手)
   std::vector<size_t> ix;
   for (size_t i = 0; i < results.size(); ++i)
     if (const Result &r = results[i]; s.cand_filter.PassFilter((r.name + ' ' + r.name_cn + ' ' + r.tmpl + ' ' + r.note).c_str()))

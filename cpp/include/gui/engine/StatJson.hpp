@@ -72,10 +72,7 @@ template <class H, class F>
 void for_each_field(H &h, F &&f) {
   using P = decltype(&h.mono);
   const std::pair<const char *, P> fs[] = {
-      {"ric_mean", &h.ric.mean}, {"ric_sd", &h.ric.sd}, {"ric_ir", &h.ric.ir}, {"ric_t", &h.ric.t}, {"ric_pos", &h.ric.pos},
-      {"rac_mean", &h.rac.mean}, {"rac_sd", &h.rac.sd},
-      {"ls_mean", &h.ls.mean}, {"ls_sd", &h.ls.sd}, {"ls_ir", &h.ls.ir}, {"ls_t", &h.ls.t}, {"ls_pos", &h.ls.pos},
-      {"beta", &h.beta}, {"mono", &h.mono}, {"end_n", &h.end_n}, {"ann", &h.ann}, {"sharpe", &h.sharpe}};
+      {"ric_mean", &h.ric.mean}, {"ric_sd", &h.ric.sd}, {"ric_ir", &h.ric.ir}, {"ric_t", &h.ric.t}, {"ric_pos", &h.ric.pos}, {"rac_mean", &h.rac.mean}, {"rac_sd", &h.rac.sd}, {"ls_mean", &h.ls.mean}, {"ls_sd", &h.ls.sd}, {"ls_ir", &h.ls.ir}, {"ls_t", &h.ls.t}, {"ls_pos", &h.ls.pos}, {"beta", &h.beta}, {"mono", &h.mono}, {"end_n", &h.end_n}, {"ann", &h.ann}, {"sharpe", &h.sharpe}};
   for (const auto &[k, p] : fs)
     f(std::string(k), *p);
 }
@@ -245,10 +242,11 @@ inline bool load_mini_pdf(const nlohmann::json &o, MiniPdf &dst) {
 }
 
 // 结果作用域头 ↔ 因子文件顶层 run (一轮评估内全部权重同一份; f = 根口径): 只落文件行的读者要的 (作用域比对 / 评估期 / 满仓 cap) 与 stat 的口径键
-// (stat_ver / frame / max_impact: 换了即旧 stat 不再对应); 形状 T / A、后端、评估时刻只 Inspect 现算现显
+// (stat_ver / target / frame / max_impact: 换了即旧 stat 不再对应); 形状 T / A、后端、评估时刻只 Inspect 现算现显
 inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame f) {
   nlohmann::ordered_json j;
   j["stat_ver"] = factor::stat::kStatSemver;
+  j["target"] = factor::stat::kTargetName;
   j["pool"] = s.pool;
   j["start_date"] = misc::dash(s.start_date);
   j["end_date"] = misc::dash(s.end_date);
@@ -261,7 +259,8 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
 }
 
 // 一个根的评估结果 ↔ stats[i] (scope_json 之外的, 同样只落文件行的读者要的): 标量首段, holds / amts (金额段万元, 0 = 固定段) / turn / 小图 /
-// 分年 (years[hold] = [[年, 窗数, rIC, 中位 rIC, 年换手] …]; agent 分年) / 滚动窗 (roll[hold] = [窗数, 中位 rIC]; 父行代表权重 / agent score) 各一段
+// 分年 (years[hold] = [[年, 窗数, rIC, 中位窗目标, 年换手] …]; agent 分年) / 滚动窗 (roll[hold] = [窗数, 中位窗目标]; 父行代表权重 / agent score) 各一段;
+// 窗目标 = Stat/Roll.hpp kTarget (口径键 run.target)
 inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   nlohmann::ordered_json j;
   j["valid_pct"] = sig4(st.valid_pct);
@@ -286,22 +285,22 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   for (int k = 0; k < st.n_hold; ++k) {
     nlohmann::ordered_json ys = nlohmann::ordered_json::array();
     for (const YearStat &y : st.years[k])
-      ys.push_back(nlohmann::ordered_json::array({y.year, y.wins, sig4(y.ric), sig4(y.ric_med), sig4(y.turn)}));
+      ys.push_back(nlohmann::ordered_json::array({y.year, y.wins, sig4(y.ric), sig4(y.med), sig4(y.turn)}));
     years.push_back(ys);
   }
   j["years"] = years;
   nlohmann::ordered_json roll = nlohmann::ordered_json::array();
   for (int k = 0; k < st.n_hold; ++k) {
     const factor::stat::Roll &r = st.roll[k];
-    roll.push_back(nlohmann::ordered_json::array({r.n, sig4(r.ric_med)}));
+    roll.push_back(nlohmann::ordered_json::array({r.n, sig4(r.med)}));
   }
   j["roll"] = roll;
   return j;
 }
 
-// scope_json + eval_json 的逆: run 口径与 f 不符 / stat_ver ≠ kStatSemver / 任一处不合 → false (dst 不动)
+// scope_json + eval_json 的逆: run 口径与 f 不符 / stat_ver ≠ kStatSemver / target ≠ kTarget / 任一处不合 → false (dst 不动)
 inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int seg, factor::stat::Frame f, EvalStat &dst) {
-  if (!run.is_object() || !j.is_object() || !json_str_is(run, "frame", factor::stat::frame_name(f)))
+  if (!run.is_object() || !j.is_object() || !json_str_is(run, "frame", factor::stat::frame_name(f)) || !json_str_is(run, "target", factor::stat::kTargetName))
     return false;
   if (int ver = 0; !json_int(run, "stat_ver", ver) || ver != factor::stat::kStatSemver)
     return false;
@@ -386,7 +385,7 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
       for (size_t i = 0; i < 5; ++i)
         if (i < 2 ? !y[i].is_number_integer() : !y[i].is_number())
           return false;
-      t.years[k].push_back({.year = y[0].get<int>(), .wins = y[1].get<int>(), .ric = y[2].get<float>(), .ric_med = y[3].get<float>(), .turn = y[4].get<float>()});
+      t.years[k].push_back({.year = y[0].get<int>(), .wins = y[1].get<int>(), .ric = y[2].get<float>(), .med = y[3].get<float>(), .turn = y[4].get<float>()});
     }
   }
   const auto rit = j.find("roll");
@@ -396,7 +395,7 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
     const nlohmann::json &r = (*rit)[k];
     if (!r.is_array() || r.size() != 2 || !r[0].is_number_integer() || !r[1].is_number())
       return false;
-    t.roll[k] = {.n = r[0].get<int>(), .ric_med = r[1].get<double>()};
+    t.roll[k] = {.n = r[0].get<int>(), .med = r[1].get<double>()};
   }
   dst = std::move(t);
   return true;

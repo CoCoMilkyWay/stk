@@ -53,7 +53,7 @@ struct Options {
   std::string proxy_host = kProxyHost;
   int proxy_port = kProxyPort;
   int gpu = -1; // -1 = 未定 (有 GPU 默认 GPU)
-  Gate gate{kGateRic};
+  Gate gate;
   Budget budget;
   bool ask = true; // agent 可用 ask_human 向人提问
   int prompt = 0;  // Msg 下标

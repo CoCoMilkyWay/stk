@@ -1,5 +1,5 @@
 // eval_factor 的展示 (头几节与原文对仗; 原文末尾的累计分层 / 分年 rIC 正负柱图这里换成下面的图): 候选 (最佳权重的具体式, 负号前置 / 思路) + 频率 · 预测周期 + 各权重统计 (最佳接门槛; 无权重 = 结局一行) + 分年
-//   → 左栏三图 (各参数点的窗中位 rIC / 写进的权重的累计 rIC / 分层图, Inspect 同一份) | 右栏参数点表 (缺省中位 rIC 降序; 窗中位 rIC 图 ↔ 表悬停联动)
+//   → 左栏三图 (各参数点的窗目标线 / 写进的权重的累计 rIC / 分层图, Inspect 同一份) | 右栏参数点表 (缺省 score 降序; 窗目标线图 ↔ 表悬停联动)
 //   → 20 组柱 (只在没有逐日序列 = 载入的会话时)
 #include "gui/task_agent/Prompt.hpp"
 #include "gui/task_agent/tools/Trial.hpp"
@@ -23,11 +23,12 @@ using namespace ui;
 
 namespace {
 
-constexpr float kSweepH = 200.0f;  // 窗中位 rIC 图的高
-constexpr float kCumH = 150.0f;    // 累计 rIC 图的高
-constexpr float kLayersH = 300.0f; // 分层图的高
-constexpr float kLineA = 0.55f;    // 非悬停线的不透明度
-constexpr float kBestW = 2.0f;     // 中位 rIC 最高的点 (= 写进的权重) 线宽
+constexpr float kSweepH = 200.0f;                                                       // 窗目标线图的高
+constexpr float kCumH = 150.0f;                                                         // 累计 rIC 图的高
+constexpr float kLayersH = 300.0f;                                                      // 分层图的高
+constexpr float kLineA = 0.55f;                                                         // 非悬停线的不透明度
+constexpr float kBestW = 2.0f;                                                          // score 最高的点 (= 写进的权重) 线宽
+constexpr const char *kLineName = factor::stat::kMonoTarget ? "窗 mono" : "窗中位 rIC"; // 窗目标线 (Stat/Roll.hpp roll_of line)
 
 int date_fmt(double v, char *buf, int size, void *ud) {
   const std::vector<int> &ds = *static_cast<const std::vector<int> *>(ud);
@@ -45,10 +46,10 @@ size_t first_of(const std::vector<float> &line) {
   return d;
 }
 
-// 名次色 (pts 已按中位 rIC 降序: 下标即名次, 0 = 最好 绿 → 末 = 红)
+// 名次色 (pts 已按 score 降序: 下标即名次, 0 = 最好 绿 → 末 = 红)
 ImVec4 rank_col(size_t i, size_t n, float a) { return band_col(n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.0, a); }
 
-// 左: 各点的窗中位 rIC (图例只列写进的权重; 纵轴含 0, 画 0 线); 悬停 (本表或上帧图) 的点白粗线画在最上; 返回图上悬停的点 (−1 = 无)
+// 左: 各点的窗目标线 (图例只列写进的权重; 纵轴含 0, 画 0 线); 悬停 (本表或上帧图) 的点白粗线画在最上; 返回图上悬停的点 (−1 = 无)
 int sweep_plot(const Sweep &sw, int hot, const ImVec2 &size) {
   const size_t n = sw.pts.size(), D = sw.dates.size();
   float lo = 0.f, hi = 0.f;
@@ -58,7 +59,7 @@ int sweep_plot(const Sweep &sw, int hot, const ImVec2 &size) {
         lo = std::min(lo, x), hi = std::max(hi, x);
   if (!ImPlot::BeginPlot("##sweep_ric", size, ImPlotFlags_NoTitle | ImPlotFlags_NoMenus))
     return -1;
-  ImPlot::SetupAxes(nullptr, "窗中位 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_None);
+  ImPlot::SetupAxes(nullptr, kLineName, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_None);
   const float m = (hi > lo ? hi - lo : 1.f) * 0.05f;
   ImPlot::SetupAxisLimits(ImAxis_Y1, lo - m, hi + m, ImPlotCond_Always);
   ImPlot::SetupLegend(ImPlotLocation_NorthWest);
@@ -92,7 +93,7 @@ int sweep_plot(const Sweep &sw, int hot, const ImVec2 &size) {
   return near;
 }
 
-// 写进的权重的累计 rIC (逐日 rIC 逐日累加; 图例带年化 IR; 色同窗中位 rIC 图里的权重线)
+// 写进的权重的累计 rIC (逐日 rIC 逐日累加; 图例带年化 IR; 色同窗目标线图里的权重线)
 void cum_plot(const DayTrace &d, size_t n_pts) {
   if (!ImPlot::BeginPlot("##cum_ric", ImVec2(-1, kCumH), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus))
     return;
@@ -124,7 +125,7 @@ void layers_view(const TrialRes &k) {
   Layer::plot_layers(*k.lay, false, k.cursor, ImVec2(-1, kLayersH));
 }
 
-// 右: 参数点表 (列头点了排序, 缺省中位 rIC 降序); plot_hot = 图上悬停的点 (该行底色亮); 返回表上悬停的点 (−1 = 无)
+// 右: 参数点表 (列头点了排序, 缺省 score 降序); plot_hot = 图上悬停的点 (该行底色亮); 返回表上悬停的点 (−1 = 无)
 int sweep_table(const Sweep &sw, int plot_hot, float h) {
   const size_t P = sw.slots.size(), n = sw.pts.size();
   constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollX |
@@ -134,7 +135,7 @@ int sweep_table(const Sweep &sw, int plot_hot, float h) {
   ImGui::TableSetupScrollFreeze(static_cast<int>(P), 1);
   for (const std::string &s : sw.slots)
     ImGui::TableSetupColumn(s.c_str());
-  ImGui::TableSetupColumn("中位 rIC", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending);
+  ImGui::TableSetupColumn(factor::stat::kScoreName, ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending);
   ImGui::TableHeadersRow();
   const auto val = [&](const Point &p, int c) { return c < static_cast<int>(P) ? p.v[static_cast<size_t>(c)] : p.score; };
   std::vector<size_t> ord(n);
@@ -174,7 +175,7 @@ int sweep_table(const Sweep &sw, int plot_hot, float h) {
   return hot;
 }
 
-// 左 = 窗中位 rIC / 累计 rIC / 分层 三图上下叠, 右 = 参数点表 (与左栏等高); 无自由参数只画左栏两图
+// 左 = 窗目标线 / 累计 rIC / 分层 三图上下叠, 右 = 参数点表 (与左栏等高); 无自由参数只画左栏两图
 void charts_view(const TrialRes &k) {
   const Result &r = k.st.res;
   const auto days = [&] {

@@ -450,11 +450,11 @@ struct Searcher {
     for (const Entry &en : ents)
       if (en.evaled && en.c.roll.ok())
         order.push_back(&en);
-    std::stable_sort(order.begin(), order.end(), [](const Entry *a, const Entry *b) { return a->c.roll.ric_med > b->c.roll.ric_med; });
+    std::stable_sort(order.begin(), order.end(), [](const Entry *a, const Entry *b) { return a->c.roll.med > b->c.roll.med; });
     for (size_t i = 0; i < std::min(order.size(), kLogTop); ++i) {
       const SearchCand &c = order[i]->c;
-      lg("  %s 中位 rIC %+.4f (平均 %+.4f, %d 窗 × %d 天) · 年化多空 中位 %+.1f%% · 全期 mono %+.3f 每期毛多空 %.2fbp @ %s", i == 0 ? "*" : " ", c.roll.ric_med,
-         c.roll.ric_mean, c.roll.n, c.roll.win, 100.0 * c.roll.ann_med, c.mono, 1e4 * c.ls, params_at(*order[i]).c_str());
+      lg("  %s 中位 %s %+.4f (平均 %+.4f, %d 窗 × %d 天) · 年化多空 中位 %+.1f%% · 全期 mono %+.3f rIC %+.4f 每期毛多空 %.2fbp @ %s", i == 0 ? "*" : " ",
+         fs::kTargetName, c.roll.med, c.roll.mean, c.roll.n, c.roll.win, 100.0 * c.roll.ann_med, c.mono, c.ric, 1e4 * c.ls, params_at(*order[i]).c_str());
     }
     std::vector<SearchWeight> ws;
     if (!order.empty())
@@ -463,8 +463,8 @@ struct Searcher {
     WriteFactorSearch(scope.dir, sp.file, sp.fresh, mk, ws);
     res.wrote = true;
     res.n_weights = static_cast<int>(ws.size());
-    why_out = ws.empty() ? strf("没有一个参数点算得出滚动窗 rIC (每窗 ok 行 ≥ %d), 已清掉该 Hold 的权重", fs::kRollMinRows)
-                         : "weights 已写入 (中位 rIC 最高的 1 个), 自动 Run 重算 stat";
+    why_out = ws.empty() ? strf("没有一个参数点算得出滚动窗 (每窗 ok 行 ≥ %d), 已清掉该 Hold 的权重", fs::kRollMinRows)
+                         : strf("weights 已写入 (中位 %s 最高的 1 个), 自动 Run 重算 stat", fs::kTargetName);
     lg("完成: 写入 %d 个权重, 共评 %d 候选", static_cast<int>(ws.size()), static_cast<int>(res.cands.size()));
     emit_pass();
   }

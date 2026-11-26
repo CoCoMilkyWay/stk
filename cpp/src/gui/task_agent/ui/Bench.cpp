@@ -208,7 +208,7 @@ void Bench::draw(const SharedData &data, Tool tool, const Scope &sc, const Gate 
   // ---- 工作台: 下一个调用的编号 / 门槛 ----
   ImGui::TextColored(kColHead, "工作台:");
   ImGui::SameLine();
-  ImGui::TextDisabled("下一个 %s · 门槛 中位 rIC ≥ %.3f (Config 页)", StepTag(b.next()).c_str(), gate.ric);
+  ImGui::TextDisabled("下一个 %s · 门槛 %s ≥ %.3f (Config 页)", StepTag(b.next()).c_str(), kGateName, gate.min);
   tip(("作用域 = Mine 页的 " + catalog::label(sc) + " · 评估期 " + ctx.window + "\n会话类工具 (提交 / 记录) 只在内存: 全局记录只给编号不落盘, 提交只查门槛").c_str());
   ImGui::SameLine();
   ImGui::BeginDisabled(held);

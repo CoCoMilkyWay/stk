@@ -62,9 +62,9 @@ struct FactorsUIState {
   SearchJob search_one;
   // Run (对象 = 高光行所在文件, 只评它的全部权重) / Run all (整目录): 点 Run 时把文件名记进 run_file (TaskAlpha 据此建请求 only_file)
   std::string run_file;
-  // Search all (当前池 / 层下全部可搜模板文件 × 本层 kSearchHolds 内各档逐个搜, 不看 Hold 选择; 全部搜完整目录 Run 一次):
+  // Search all (当前池 / 层下全部可搜模板文件 × 本层 kSearchHolds 内各档逐个搜, 不看 Hold 选择; 一个文件的各档搜完且落过盘即只 Run 该文件, 结果立刻进表):
   // 点下时把 (各文件首个可搜行, 档) 拷进队列, TaskAlpha 逐个出队; 每文件首档 fresh (该文件 weights 整份覆盖), 它没落盘 (中途放弃) 则 fresh
-  // 顺延给同文件下一档. Cancel = 取消在跑 + 清空队列. search_all_n > 0 期间视同 Search 在跑 (队列项之间服务短暂空闲, 不许插别的请求 / 换池换层)
+  // 顺延给同文件下一档. Cancel = 取消在跑的 Search + 清空队列. search_all_n > 0 期间视同 Search 在跑 (队列项之间 / 单文件 Run 时服务空闲, 不许插别的请求 / 换池换层)
   std::vector<SearchJob> search_queue;
   SearchJob search_cur;  // 在跑的那一项 (fresh 顺延用)
   int search_all_n = 0;  // 本轮队列项总数; 0 = 没在 Search all

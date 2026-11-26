@@ -1,5 +1,5 @@
 // SearchService — 因子自由参数搜索:
-//   纯计算核: SearchFactor (低差异采样 → 一趟分块评完全部点 → 逐点滚动窗中位 rIC 定向打分 → 最高的一个落盘 WriteFactorSearch, GUI 与 Agent 共用)
+//   纯计算核: SearchFactor (低差异采样 → 一趟分块评完全部点 → 逐点中位窗目标 (Stat/Roll.hpp kTarget) 定向打分 → 最高的一个落盘 WriteFactorSearch, GUI 与 Agent 共用)
 //   薄线程壳: SearchService (FactorWorker<SearchService, SearchRequest>)
 #pragma once
 
@@ -35,8 +35,8 @@ struct SearchCand {
   std::string expr;                       // 具体规范串 (不含 sign)
   std::vector<double> v;                  // 各槽参数值 (SearchResult::slots 同序; 整数槽取整, k / w 为规范串往返值)
   int sign = 1;                           // +1 正向 / −1 取反
-  factor::stat::Roll roll;                // 滚动窗统计 (score = 中位 rIC)
-  std::vector<float> line;                // [日] 窗中位 rIC (SearchResult::dates 同长; 不计入的窗 NaN)
+  factor::stat::Roll roll;                // 滚动窗统计 (score = 中位窗目标)
+  std::vector<float> line;                // [日] 窗目标线 (SearchResult::dates 同长; 不计入的窗 NaN)
   double mono = 0.0, ls = 0.0, ric = 0.0; // 全期: 分层单调性 / 每期真实毛多空 / rIC 均值 (只展示)
 };
 struct SearchChunk {
@@ -48,7 +48,7 @@ struct SearchResult {
   std::vector<std::string> slots;
   HoldId hold = kHoldT1;
   std::vector<misc::Ymd> dates;  // 评估期交易日
-  std::vector<SearchCand> cands; // 评过的点, 中位 rIC 降序 (无窗的在末)
+  std::vector<SearchCand> cands; // 评过的点, score 降序 (无窗的在末)
   int n_chunk = 0, chunk_days = 0, batch = 0;
   int n_assets = 0;
   std::vector<SearchChunk> chunk_plan;

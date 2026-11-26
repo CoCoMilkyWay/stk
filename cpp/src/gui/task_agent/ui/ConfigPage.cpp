@@ -111,8 +111,9 @@ void render_config(Ui &s) {
   ImGui::TextColored(kColHead, "入库门槛");
   ImGui::TextDisabled("agent 提交的候选至少一个权重达到才进正式因子库; 下次开会话生效 (New / 外部 agent 的 open)");
   ImGui::SetNextItemWidth(120);
-  ImGui::InputDouble("中位 rIC >=", &o.gate.ric, 0.0, 0.0, "%.3f");
-  tip("中位 rIC = 滚动窗 (评估期 / 10) rIC 的中位, 同 Search 的目标");
+  ImGui::InputDouble((std::string(kGateName) + " >=").c_str(), &o.gate.min, 0.0, 0.0, "%.3f");
+  tip(factor::stat::kMonoTarget ? "全期 mono = 评估期 20 组每期超额均值对组号的 Spearman (Search 的目标是它的滚动窗版: 中位窗 mono)"
+                                : "中位 rIC = 滚动窗 (评估期 / 10) rIC 的中位, 同 Search 的目标");
 
   ImGui::Spacing();
   ImGui::TextColored(kColHead, "提问");

@@ -13,6 +13,7 @@
 #include "define/Label.hpp"
 #include "disk/Disk.hpp"
 #include "gui/task_agent/Async.hpp"
+#include "gui/task_agent/Config.hpp" // kGateMin / kGateName
 #include "gui/task_agent/Enum.hpp"
 #include "gui/task_agent/Tools.hpp"
 
@@ -98,7 +99,7 @@ struct Op {
 struct Year {
   int year = 0;
   double ric = 0.0;  // 年内 rIC (ok 行均值; 与 Weight::ric 同口径)
-  double med = 0.0;  // 年内收尾的滚动窗 rIC 的中位 (年内无窗 NaN)
+  double med = 0.0;  // 年内收尾的滚动窗目标的中位 (年内无窗 NaN)
   double turn = 0.0; // 年换手 (倍, 两端单边均; 按年内行数年化, 不足一年的同样)
 };
 struct Weight {
@@ -106,8 +107,9 @@ struct Weight {
   int sign = 1;
   int hold_src = -1;             // HoldId; −1 = 手填
   bool has = false;              // 有该持有期的统计且有滚动窗
-  double score = 0.0;            // 中位 rIC (滚动窗 = 评估期 / kRollParts; factor/Stat/Roll.hpp)
+  double score = 0.0;            // 中位窗目标 (滚动窗 = 评估期 / kRollParts; factor/Stat/Roll.hpp kTarget)
   double ric = 0.0;              // rIC (评估期 ok 行均值)
+  double mono = 0.0;             // 全期 mono (20 组整期均值对组号的 Spearman)
   double lng = 0.0, sht = 0.0;   // 每期毛多 / 毛空 (超额; 做多端 G20 / 做空端 −G1; 毛多空 = 两者之半)
   double gross = 0.0, net = 0.0; // 每期毛 / 净多空 (净 = 扣固定冲击的换手成本)
   double cost = 0.0;             // 每期成本 (= 毛多空 − 净多空 = 两侧量 × 费率 (冲击 + 税佣))
@@ -129,17 +131,17 @@ struct VerdictDef {
 inline constexpr VerdictDef kVerdicts[] = {{"unstaged", "未落文件"}, {"broken", "BROKEN"}, {"weights", "有权重"}, {"null", "无权重"}, {"pending", "未评完"}};
 AGENT_ROWS(Verdict, kVerdicts, Pending);
 
-// Search 评过的一个参数点 (按写进的权重的符号读: 符号相反的点中位 rIC 为负)
+// Search 评过的一个参数点 (按写进的权重的符号读: 符号相反的点 score 为负)
 struct Point {
   std::vector<double> v;   // 各自由参数的取值 (Sweep::slots 同序)
-  double score = 0.0;      // 中位 rIC
-  std::vector<float> line; // [日] 窗中位 rIC (Sweep::dates 同长; 不计入的窗 NaN)
+  double score = 0.0;      // 中位窗目标
+  std::vector<float> line; // [日] 窗目标线 (Sweep::dates 同长; 不计入的窗 NaN)
 };
 // 一趟 Search 的全部点 (本进程内存里; 载入的会话没有)
 struct Sweep {
   std::vector<std::string> slots;
   std::vector<int> dates; // 评估期交易日 YYYYMMDD
-  std::vector<Point> pts; // 中位 rIC 降序
+  std::vector<Point> pts; // score 降序
 };
 // 一个权重在本持有期的逐日序列 (Run 顺带, 本进程内存里; 载入的会话没有): 已按权重方向
 struct DayTrace {
@@ -184,11 +186,13 @@ struct Context {
   std::string grid;               // 网格层在叶名里的层段 (档.<层>.列; 同上: 因子须含本层的叶)
 };
 
+// 入库门槛: 门槛量 (Config.hpp kGateName, 随 Search 目标) 的下限
 struct Gate {
-  double ric = 0.0; // 中位 rIC 下限
+  double min = kGateMin;
   bool operator==(const Gate &) const = default;
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, ric)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, min)
+inline double gate_of(const Weight &w) { return factor::stat::kMonoTarget ? w.mono : w.score; } // 一个权重的门槛量
 std::string GateMiss(const Gate &g, const Result &r);
 
 struct Cand {

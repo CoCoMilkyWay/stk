@@ -127,8 +127,8 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
 
   Accum::Head head; // warp 私有分片 (lane 0 攒 head, lane q < kGroups 攒 grp = 组 q)
   Accum::Grp grp;
-  Day cur;          // 当日: lane 0 攒标量三项
-  double gd = 0.0;  // 当日: lane q < kGroups 攒组 q
+  Day cur;         // 当日: lane 0 攒标量三项
+  double gd = 0.0; // 当日: lane q < kGroups 攒组 q
   for (int t = t_beg; t < t_end; ++t) {
     const size_t base = static_cast<size_t>(t) * A;
     const uint16_t *xr = rxc + base;

@@ -208,7 +208,7 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
       assert(h && "RowRoll 非空须有该持有期的 HoldStat");
       const fs::Ends &c = w.turn_of(*h).lv[0];
       x.score = fs::score_of(*rl);
-      x.ric = h->ric.mean;
+      x.ric = h->ric.mean, x.mono = h->mono;
       x.lng = fs::end_period(*h, fs::kTop), x.sht = -fs::end_period(*h, fs::kBot);
       x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, kAmtFixed, fee), x.cost = x.gross - x.net;
       x.turn = fs::turn_annual(*h, c);
@@ -223,7 +223,7 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
       for (const float g : h->grp)
         x.grp.push_back(g - mid);
       for (const Engine::YearStat &y : *w.find_years(hold))
-        x.years.push_back({y.year, y.ric, y.wins ? y.ric_med : std::numeric_limits<double>::quiet_NaN(), y.turn});
+        x.years.push_back({y.year, y.ric, y.wins ? y.med : std::numeric_limits<double>::quiet_NaN(), y.turn});
     }
     r.ws.push_back(std::move(x));
   }
@@ -344,12 +344,12 @@ std::string GateMiss(const Gate &g, const Result &r) {
   if (r.verdict == Verdict::Broken)
     return "BROKEN: " + r.error;
   for (const Weight &w : r.ws)
-    if (w.has && w.score >= g.ric)
+    if (w.has && gate_of(w) >= g.min)
       return "";
   const Weight *w = r.best();
   if (!w)
     return "本持有期无权重";
-  return "最佳权重未达入库门槛: 中位 rIC " + num(w->score) + " < " + num(g.ric);
+  return std::string("最佳权重未达入库门槛: ") + kGateName + " " + num(gate_of(*w)) + " < " + num(g.min);
 }
 
 namespace catalog {

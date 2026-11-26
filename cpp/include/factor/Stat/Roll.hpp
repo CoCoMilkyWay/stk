@@ -34,7 +34,8 @@ enum class Target : uint8_t { Ric,
                               Mono };
 inline constexpr Target kTarget = Target::Mono;
 inline constexpr bool kMonoTarget = kTarget == Target::Mono;
-inline constexpr const char *kTargetName = kMonoTarget ? "mono" : "rIC"; // 文案里的目标名 (中位 <名>)
+inline constexpr const char *kTargetName = kMonoTarget ? "mono" : "rIC";          // 文案里的目标名
+inline constexpr const char *kScoreName = kMonoTarget ? "中位 mono" : "中位 rIC"; // score 的名 (表头 / 图例)
 
 inline constexpr int kRollParts = 10;  // 滚动窗长 = 评估期交易日数 / kRollParts (10 年 → 1 年窗)
 inline constexpr int kRollMinRows = 3; // 一个滚动窗至少的 ok 行数
@@ -65,8 +66,8 @@ inline Roll roll_of(std::span<const Day> d, HoldId hold, int seg, int sign = 1, 
   if (wins)
     wins->assign(static_cast<size_t>(D), std::numeric_limits<double>::quiet_NaN());
   std::vector<double> N(static_cast<size_t>(D) + 1, 0.0), R(kMonoTarget ? 0 : N.size()); // 前缀和 (下标 = 日 + 1)
-  std::vector<std::array<double, kGroups>> G(kMonoTarget ? N.size() : 0);                 // 各组前缀和 (已按方向倒读组号)
-  std::vector<Daily> L(static_cast<size_t>(D) + 1);                                       // 日净值 LS 前缀
+  std::vector<std::array<double, kGroups>> G(kMonoTarget ? N.size() : 0);                // 各组前缀和 (已按方向倒读组号)
+  std::vector<Daily> L(static_cast<size_t>(D) + 1);                                      // 日净值 LS 前缀
   const double span = hold_on(hold, geo_of(seg)).span();
   const size_t lag = static_cast<size_t>(hold_days(hold));
   for (int t = 0; t < D; ++t) {

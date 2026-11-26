@@ -535,6 +535,7 @@ using HS = factor::stat::HoldStat;
 using FR = EvalStat;
 enum class Group : uint8_t { Cover,
                              Shape,
+                             Score,
                              LS,
                              RIC,
                              RAC,
@@ -549,6 +550,7 @@ struct GroupInfo {
 constexpr GroupInfo kGroupInfo[static_cast<size_t>(Group::kCount)] = {
     {"覆盖", "有效 / 可秩 / 触发 / 利用", ImVec4(), false},
     {"形态", "分层单调", ImVec4(0.70f, 0.45f, 0.95f, 0.10f), true},
+    {"目标", factor::stat::kMonoTarget ? "Search 打分: 滚动窗 mono 的中位" : "Search 打分: 滚动窗 rIC 的中位", ImVec4(0.95f, 0.85f, 0.30f, 0.10f), true},
     {"LS", "顶底多空超额 ½ (做多 G20 − 做多 G1)", ImVec4(0.35f, 0.85f, 0.45f, 0.10f), true},
     {"rIC", "因子秩 × 标签秩 截面相关 (rank IC)", ImVec4(0.35f, 0.65f, 1.00f, 0.10f), true},
     {"rAC", "因子秩 lag=h 截面自相关 (rank AC)", ImVec4(1.00f, 0.65f, 0.25f, 0.10f), true},
@@ -590,6 +592,9 @@ constexpr Metric kMetrics[] = {
      [](const HS &h, const FR &r) { return 100.0 * factor::stat::util_of(h, r.scope.n_full); }, band(80, 120)},
     {Group::Shape, "mono", "mono", "分层单调性", "[-1, 1]", "越大, 1 严格单调", "%+.3f",
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
+    {Group::Score, "med", nullptr,
+     factor::stat::kMonoTarget ? "滚动窗 mono 的中位 (窗 = 评估期 / 10; 挑父行代表权重)" : "滚动窗 rIC 的中位 (窗 = 评估期 / 10; 挑父行代表权重)", "[-1, 1]", "越大",
+     "%+.4f", [](const HS &h, const FR &r) { return r.roll_of(h).med; }, factor::stat::kMonoTarget ? line(0.5, 0.8) : line(0.03, 0.05)},
     {Group::LS, "LS%", "LS%", "日净值多空复利年化 %", "(-∞, ∞)", "越大", "%+.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h); }, line(10, 50)},
     {Group::LS, "SR", "SR", "日净值多空 Sharpe", "(-∞, ∞)", "越大", "%+.2f",
@@ -606,8 +611,6 @@ constexpr Metric kMetrics[] = {
      [](const HS &h, const FR &) { return 100.0 * factor::stat::end_period(h, factor::stat::kTop) * factor::stat::span_per_year(h); }},
     {Group::LS, "G1%", nullptr, "做多 G1 的满仓年化超额 %", "(-∞, ∞)", "越小", "%+.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::end_period(h, factor::stat::kBot) * factor::stat::span_per_year(h); }},
-    {Group::RIC, "med", nullptr, "滚动窗 rIC 的中位 (窗 = 评估期 / 10; 挑父行代表权重)", "[-1, 1]", "越大", "%+.4f",
-     [](const HS &h, const FR &r) { return r.roll_of(h).ric_med; }, line(0.03, 0.05)},
     {Group::RIC, "mean", "rIC", "rIC 均值", "[-1, 1]", "越大", "%+.4f", [](const HS &h, const FR &) { return static_cast<double>(h.ric.mean); },
      line(0.03, 0.05)},
     {Group::RIC, "sd", nullptr, "rIC 标准差", "[0, 1]", "越小", "%.4f", [](const HS &h, const FR &) { return static_cast<double>(h.ric.sd); }},
@@ -722,7 +725,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
     {Status, "status",
      "• BROKEN: 文件有错, 悬停看原因\n"
      "• 未搜索: 模板含自由参数, 先 Search\n"
-     "• 无权重: Search 过, 没有一个参数点算得出滚动窗 rIC\n"
+     "• 无权重: Search 过, 没有一个参数点算得出滚动窗\n"
      "• ok: 有 stat\n"
      "• ≠scope: stat 是别的池 / 别的评估年数算的 (整行标灰, 需重跑)\n"
      "• no stat: 还没评估\n"
@@ -930,7 +933,7 @@ void status_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   }
 }
 
-// 一行在选定持有期的目标分 (RowRoll 的中位 rIC; 只挑父行代表权重; hold = 0 即无)
+// 一行在选定持有期的目标分 (RowRoll 的中位窗目标; 只挑父行代表权重; hold = 0 即无)
 struct ScoreCell {
   int hold = -1; // HoldId; −1 = 无
   double score = 0.0;
@@ -1263,7 +1266,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   for (int i = 0; i < kHoldCount; ++i)
     if (factor::search::search_hold(static_cast<HoldId>(i)))
       search_range += (search_range.empty() ? "" : " / ") + hold_name(static_cast<HoldId>(i));
-  // 多权重因子的父行 = 该持有期下 score (中位 rIC, 同 Search) 最高的权重
+  // 多权重因子的父行 = 该持有期下 score (中位窗目标, 同 Search) 最高的权重
   const auto hold_tip = [&] {
     tip("表格 Stat 列与 Search 用哪个持有期 (Run 一次算全部; Search 限 %s, Search all 不看它)\n"
         "%s",
@@ -1373,7 +1376,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       hold_tip();
   }
 
-  // ---- Search: 对高光行所在文件的模板搜全部自由参数, 只搜当前 Hold (限 Search/Config kSearchHolds), 目标 = 该 h 的中位 rIC
+  // ---- Search: 对高光行所在文件的模板搜全部自由参数, 只搜当前 Hold (限 Search/Config kSearchHolds), 目标 = 该 h 的中位窗目标
   //      (Stat/Roll.hpp); 结果替换文件里同 h 的 weights, 随后 TaskAlpha 自动 Run (因子表从新 stat 算) ----
   {
     const auto searchable = [](const FactorRow &r) { return r.error.empty() && !r.tmpl.empty() && r.tmpl != r.expr; }; // 模板有自由参数
@@ -1390,9 +1393,9 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     }
     if (!can_search)
       ImGui::EndDisabled();
-    // 搜索细节 (Stat/Roll.hpp): 目标 = 中位 rIC (滚动窗 = 评估期 / kRollParts, 每个交易日收尾一个窗, 取全部窗 rIC 的中位;
-    // 不看成本 / 多空 / 分层, 不跨持有期比; 方向 = 正向中位 rIC 的号, < 0 → 取反 sign = -1); 参数区间由已有常数 / 池内有效资产数推出, 阈值类按输入分位;
-    // n_init(P) 个低差异点 (按槽数对数增长) 一趟评完, 中位 rIC 最高的一个写成该 Hold 的权重 (没有一个点算得出窗 → 清掉该 Hold 的权重)
+    // 搜索细节 (Stat/Roll.hpp): 目标 = 中位窗目标 (kTarget: 窗 mono | 窗 rIC; 滚动窗 = 评估期 / kRollParts, 每个交易日收尾一个窗, 取全部窗的中位;
+    // 不看成本 / 多空, 不跨持有期比; 方向 = 正向中位窗目标的号, < 0 → 取反 sign = -1); 参数区间由已有常数 / 池内有效资产数推出, 阈值类按输入分位;
+    // n_init(P) 个低差异点 (按槽数对数增长) 一趟评完, 中位窗目标最高的一个写成该 Hold 的权重 (没有一个点算得出窗 → 清掉该 Hold 的权重)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       if (!hold_ok)
         tip("Search 只搜 %s 档 (当前 Hold %s)", search_range.c_str(), (ft.y.list.n == 0) ? "-" : hold_name(cur_hold).c_str());
@@ -1402,9 +1405,10 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
         tip("%s 的模板没有自由参数: 勾选编辑, 把要搜的参数勾成自由, 再 Save", view_row->file.c_str());
       else
         tip("搜 %s 的自由参数 (只搜当前 Hold %s)\n"
-            "• 目标 = 中位 rIC: 滚动窗 (评估期 / %d) rIC 的中位, 不看成本; 方向随它的号\n"
+            "• 目标 = 中位 %s: 滚动窗 (评估期 / %d) %s 的中位, 不看成本; 方向随它的号\n"
             "• %d × (1 + log2 自由参数个数) 个采样点里最高的一个替换该 Hold 的权重, 然后自动 Run",
-            view_row->file.c_str(), hold_name(cur_hold).c_str(), factor::stat::kRollParts, factor::search::kInit);
+            view_row->file.c_str(), hold_name(cur_hold).c_str(), factor::stat::kTargetName, factor::stat::kRollParts, factor::stat::kTargetName,
+            factor::search::kInit);
     }
     // Search all: 各文件首个可搜行 (按文件去重, 表序) × 本层 kSearchHolds 内各档 (标签组序), 不看 Hold 选择
     std::vector<const FactorRow *> all_rows;
@@ -1432,9 +1436,10 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     }
     if (!can_search_all)
       ImGui::EndDisabled();
-    // 各文件 weights 整份覆盖 (只剩本轮搜出的); 跳过无自由参数 / BROKEN; 中间不 Run; Cancel = 取消在跑的并清空队列 (已写入的保留, 不 Run)
+    // 各文件 weights 整份覆盖 (只剩本轮搜出的); 跳过无自由参数 / BROKEN; 一个文件的各档搜完即只 Run 该文件 (结果立刻进表);
+    // Cancel = 取消在跑的 Search 并清空队列 (已写入的保留; 在跑的单文件 Run 照常跑完)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      tip("逐个 Search 全部模板 (%d 个) × 持有期 (%s), 搜完整目录 Run 一次\n"
+      tip("逐个 Search 全部模板 (%d 个) × 持有期 (%s), 每个文件搜完立刻只 Run 该文件, 结果随即进表\n"
           "• 各文件 weights 整份覆盖: 只剩本轮搜出的",
           static_cast<int>(all_rows.size()), holds_desc.empty() ? ("本层无 " + search_range + " 档").c_str() : holds_desc.c_str());
     ImGui::SameLine();
@@ -1496,8 +1501,8 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       break;
     case Phase::Done:
       if (s_sr.wrote && s_sr.n_weights > 0)
-        ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "完成: 写入 %d 个权重 (%d 候选, 中位 rIC 最高 %+.4f, %.0fs)", s_sr.n_weights, n_cand,
-                           s_sr.cands.front().roll.ric_med, s_sr.seconds);
+        ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "完成: 写入 %d 个权重 (%d 候选, 中位 %s 最高 %+.4f, %.0fs)", s_sr.n_weights, n_cand,
+                           factor::stat::kTargetName, s_sr.cands.front().roll.med, s_sr.seconds);
       else if (s_sr.wrote)
         ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "完成: %s (%d 候选, %.0fs)", s_msg.c_str(), n_cand, s_sr.seconds);
       else
@@ -1720,7 +1725,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   // ==========================================================================
   // 3. 表
   // ==========================================================================
-  // 目标分 (挑代表权重): 每行按选定持有期 (Hold) 取 stat 的中位 rIC (RowRoll, 与 Search 同一份目标); 无 stat / 无该持有期 / 无窗 → hold = 0
+  // 目标分 (挑代表权重): 每行按选定持有期 (Hold) 取 stat 的中位窗目标 (RowRoll, 与 Search 同一份目标); 无 stat / 无该持有期 / 无窗 → hold = 0
   static std::vector<ScoreCell> s_score;
   s_score.assign(s_rows.size(), ScoreCell{});
   if (ft.y.list.n > 0)

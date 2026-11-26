@@ -40,7 +40,7 @@ struct TrialRes final : Res {
 std::string Formula(const Weight &w);                       // 权重的具体式, 符号为负 (已整体取反) 即前置 -
 std::string ScopeLine(const TrialRes &k);                   // 频率 · 预测周期
 std::string WeightLine(const TrialRes &k, const Weight &w); // 一个权重的统计: 最佳权重接门槛; 其余先写具体式
-std::string YearsLine(const std::vector<Year> &ys);         // 最佳权重分年: 年份(中位rIC,年换手), …
+std::string YearsLine(const std::vector<Year> &ys);         // 最佳权重分年: 年份(中位窗目标,年换手), …
 std::string GroupsHead();                                   // 最佳权重的 20 组
 std::string SweepHead(const Sweep &sw);                     // 参数扫描 (点数)
 

@@ -231,7 +231,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
 
 // Stat 批 (参数搜索; 与 op_check check_batch 同口径): 两口径各造数 (kCands 张派生候选); golden = 单候选 CPU 每候选的三级与逐日.
 // cpu / gpu 各算 整块 + 两块 (带前后带): 整块 vs golden (三级 + 逐日) + 两块 merge vs 整块 + 两块逐日 vs golden. 表列耗时 = 两口径整块之和;
-// detail = 两口径每候选每持有期的 cpu 侧 rIC 均值 / 中位 rIC (整块逐日走 roll_of)
+// detail = 两口径每候选每持有期的 cpu 侧 rIC 均值 / 全期 mono / 中位窗目标 (整块逐日走 roll_of)
 void run_search(RoundCtx &R, OperatorRow &row) {
   namespace sc = factor::stat::check;
   using Clock = std::chrono::steady_clock;
@@ -270,7 +270,8 @@ void run_search(RoundCtx &R, OperatorRow &row) {
         const factor::stat::Day *ds = full.day.data() + (static_cast<size_t>(c) * H + hi) * days;
         const factor::stat::Roll rl = factor::stat::roll_of(std::span<const factor::stat::Day>(ds, static_cast<size_t>(days)), d.hd.k[hi], factor::kSegMax);
         const factor::stat::HoldStat h = full.acc[static_cast<size_t>(c) * H + hi].finish(d.hd.k[hi], factor::kSegMax);
-        detail_line(scores, "  c%d  h=%-5s rIC %+.4f  中位 rIC %+.4f (%d 日窗 × %d)", c, hold_name(d.hd.k[hi]).c_str(), h.ric.mean, rl.ric_med, rl.win, rl.n);
+        detail_line(scores, "  c%d  h=%-5s rIC %+.4f  mono %+.3f  中位 %s %+.4f (%d 日窗 × %d)", c, hold_name(d.hd.k[hi]).c_str(), h.ric.mean, h.mono,
+                    factor::stat::kTargetName, rl.med, rl.win, rl.n);
       }
     if (!has_gpu)
       continue;
@@ -338,7 +339,7 @@ OperatorsService::OperatorsService() {
     s.doc = "挖掘批评估算子 (factor/Stat 的批: 一 warp 一候选)\n"
             "• 一批候选平面 x_c (c < C) 共用标签 y_h\n"
             "    ◦ 每候选每持有期一份沿 t 可合并的 Accum (= Stat 的 Row 累加)\n"
-            "    ◦ 逐日 Day (ok 行数 / Σ rIC / Σ 多空), 宿主折成滚动窗中位 rIC (Search 的目标, Stat/Roll.hpp)\n"
+            "    ◦ 逐日 Day (ok 行数 / Σ rIC / Σ 多空 / 各组和), 宿主折成中位窗目标 (Search 的目标, Stat/Roll.hpp)\n"
             "    ◦ 不落 Row\n"
             "• 持有期集合同 Stat (Search 服务只传一个)\n"
             "• 分块流式\n"

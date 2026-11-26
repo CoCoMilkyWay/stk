@@ -335,7 +335,7 @@ stk/
 │   │   │       │                                       #    · <类>.hpp 各工具的 Res (Look / Trial / Query / Doc / Note / Misc), <类>/<工具>.cpp 计算与原文 (记录四工具同一个 note/Note.cpp); 观察核 look/Kernel.hpp (零分配 RankScratch)
 │   │   │       │                                       #    · 观察公共头 LookRes: 日段提示 period + 标题 headline, 原文 text_head ⇄ 展示 draw_head 逐字对仗
 │   │   │       │                                       #    · 工作台随机输入 Feed.hpp: 清单一行一个 Sample<工具>(Feed&) (与工具函数同处), 按本作用域取材
-│   │   │       │                                       #    · eval_factor 原文与展示逐节对仗: 最佳权重具体式 (负号前置) → 频率 · 预测周期 → 权重 (rIC · 中位 rIC · 每期毛多 / 毛空 / 净多空 · 成本 = 单边换手 买 / 卖 × 固定冲击) → 分年 (中位 rIC · 年换手) → 原文末尾累计分层 / 分年 rIC 两张正负柱图;
+│   │   │       │                                       #    · eval_factor 原文与展示逐节对仗: 最佳权重具体式 (负号前置) → 频率 · 预测周期 → 权重 (rIC · mono · 中位窗目标 · 每期毛多 / 毛空 / 净多空 · 成本 = 单边换手 买 / 卖 × 固定冲击) → 分年 (中位窗目标 · 年换手) → 原文末尾累计分层 / 分年 rIC 两张正负柱图;
 │   │   │       │                                       #      展示另画写进的权重的累计 rIC (逐日 rIC 累加, 图例带年化 IR) 与分层图 (Run 顺带本持有期的逐日序列, 只在内存)
 │   │   │       ├── ui/                                 # 🤖 工具的展示 ui/<类>/<工具>.cpp (Res::draw, Mine 与 Bench 同源共用) + 三页: MinePage / 工作台 Bench (Agent → Tools, 主栏按类折叠一工具一页, 基于 Rig) / ConfigPage + 共享台面 Pages (Ui) + 控件 Widgets
 │   │   │       ├── Bridge.hpp                          # 🤖 右翼 · 作用域目录 catalog + 候选台 Desk (作用域上下文 / 候选四拍 stage · absorb · adopt · discard / 观察口径快照 ViewEnv) + 单线程工作台 Lab (纯 Async 传输, 与 Chat 同形; Store 共用)
@@ -367,7 +367,7 @@ stk/
 │   │   │   │   │                                       #    · Flow = 两侧量 / 不可成交量 (各金额段同一份) + 各盘口段冲击, 成本按金额段与 Fee 现乘; 整批平仓恒在撮合价 (盘口冲击 0)
 │   │   │   │   │                                       #    · 账集 FactorBooks (两端 × 层级) / MaskBook (池均); 篮子 / 个股 (Ledger.cpp) / Beta 选池 (PoolSelect.cpp) 各写一个账集; 派生 每期成本 / 净多空 / 年换手
 │   │   │   │   ├── Fold.hpp                            # 🧬 二级 Day (建仓日) / 三级 Accum → HoldStat (+ 日净值 LS 的复利年化 / Sharpe, 钱按平仓日 ls_daily); 主机 / 设备两用
-│   │   │   │   ├── Roll.hpp                            # 🧬 滚动窗目标 (Day 的派生): 固定 h 下滚动窗 (评估期 / 10) rIC 的中位 = Search 打分 / 因子表 score; 方向 = 它的号, 按方向直接求 (roll_of sign)
+│   │   │   │   ├── Roll.hpp                            # 🧬 滚动窗目标 (Day 的派生): 固定 h 下滚动窗 (评估期 / 10) 窗目标的中位 = Search 打分 / 因子表 score; 窗目标编译期二选一 kTarget (窗 mono = 窗内组和的分层单调 | 窗 rIC); 方向 = 它的号, 按方向直接求 (roll_of sign)
 │   │   │   │   ├── Host.hpp / Dev.cuh                  # 🧬 行核宿主版 / 设备版 (同名同参序)
 │   │   │   │   └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU / GPU 后端 (单候选逐行并行 / 批逐候选并行同一会话) + 对拍
 │   │   │   └── Search/                                 # 🧬 参数搜索 (评估走 Stat 的批: 只出 Accum + Day, 不落 Row)
@@ -443,7 +443,7 @@ stk/
 │   │       ├── exec.hpp                                # 🔧 执行器 (全仓唯一批内并行抽象): Serial / ForkJoin 逐位一致
 │   │       ├── epoch.hpp                               # 🔧 进程代 + Epochal<T>: 读盘派生的进程级缓存每代重建 (进程内重启换代)
 │   │       ├── lru.hpp                                 # 🔧 最近用留存 Lru<Key, V> (list + map, O(1) 提新 / 淘汰): 条数封顶 get (价格库 / CTA) ⇄ 代价封顶 find + put + trim (宿主平面 / 组合账 / 风格账)
-│   │       ├── median.hpp                              # 🔧 累计中位 RunMedian<T> (双堆, 逐个 push 随时取中位): Beta 选池的累计中位夏普 / Search 的滚动窗中位 rIC
+│   │       ├── median.hpp                              # 🔧 累计中位 RunMedian<T> (双堆, 逐个 push 随时取中位): Beta 选池的累计中位夏普 / Search 的中位窗目标
 │   │       ├── affinity.hpp                            # 🔧 CPU 亲和性 / 线程命名
 │   │       ├── archive.hpp / parquet.hpp               # 🔧 归档操作 / Parquet 读写
 │   │       ├── file_check.hpp / file_repair.hpp        # 🔧 归档核查 ⇄ 修复: 同一份问题分类, 可修项重打包为非固实 RAR 原地原子替换
