@@ -12,6 +12,7 @@
 #include "worker/compute/Stages.hpp" // kRingMemMargin
 
 #include "imgui.h"
+#include "imgui_internal.h" // TableGetHoveredRow
 
 #include <algorithm>
 #include <cassert>
@@ -31,6 +32,7 @@ constexpr ImVec4 kTierText[] = {{1.0f, 0.75f, 0.3f, 1.0f}, {0.35f, 0.7f, 1.0f, 1
 constexpr ImVec4 kTierTint[] = {{1.0f, 0.75f, 0.3f, 0.06f}, {0.35f, 0.7f, 1.0f, 0.06f}};
 static_assert(std::size(kTierText) == TIER_COUNT && std::size(kTierTint) == TIER_COUNT, "档组配色每档一色");
 constexpr ImVec4 kBusyTint{0.7f, 0.4f, 1.0f, 0.18f};
+constexpr ImVec4 kHoverRow{0.26f, 0.59f, 0.98f, 0.25f}; // 库表悬停行的行底 (格底色叠其上)
 // 每档同构子列: 状态 | 规划日期轴 (数据初始 / 数据末日 / 天数) | 落盘 (已落盘 / 未落盘) | 资产轴 (资产 / 轴外) | 操作
 constexpr const char *kLibCols[] = {"状态", "数据初始", "数据末日", "天数", "已落盘", "未落盘", "资产", "轴外", "操作"};
 constexpr int kLibColN = static_cast<int>(std::size(kLibCols));
@@ -320,12 +322,15 @@ static void render_libraries(ComputeState &state, SharedData &data, bool is_runn
 
   Reorder rd("##lib_pool_order");
   const std::vector<PoolId> &po = GUI::pool_order();
+  const int hovered_row = ImGui::TableGetHoveredRow(); // 上帧的表行号 (0 / 1 = 两行表头)
   for (int i = 0; i < static_cast<int>(po.size()); ++i) {
     const PoolId p = po[i];
     if (!shown(p))
       continue;
     const PoolDef &pd = pool_def(p);
     ImGui::TableNextRow();
+    if (ImGui::TableGetRowIndex() == hovered_row)
+      ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(kHoverRow));
     ImGui::TableNextColumn();
     ImGui::Selectable(pd.name.c_str());
     rd.item(i, p >= kPinnedPools);
