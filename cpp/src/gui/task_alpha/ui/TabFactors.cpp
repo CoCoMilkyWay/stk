@@ -740,7 +740,7 @@ constexpr FixedCol kFixedCols[kNumFixed] = {
      "• trig: 触发率, 有持仓的行占比\n"
      "• util: 利用率, 每端平均只数 / 满仓只数 (≈ 100 最好)",
      false},
-    {HoldCmp, "holds", "点按钮: 全部持有期的 Stat 对比卡片", false},
+    {HoldCmp, "##holds", "点按钮: 全部持有期的 Stat 对比卡片", false}, // 表头留空 (列只有按钮宽)
     {Layers, "layer~", "终期分层: G1 → G20 各组每期超额均值 (当前 Hold; 红 > 0, 绿 < 0; 按本行最大幅度缩放); 悬停放大\n• 排序 = mono", true},
     {IcPdf, "ic~", "rIC 分布 (当前 Hold; 红 > 0, 绿 < 0); 悬停放大", false},
     {AlphaPdf, "alpha~", "因子值分布 (归一前; 红 > 0, 绿 < 0); 悬停放大", false},
@@ -820,7 +820,7 @@ const std::string &col_tip(int c) {
       const Metric &m = *col_metric(i);
       const GroupInfo &g = kGroupInfo[static_cast<size_t>(m.group)];
       a[static_cast<size_t>(i)] = std::string(m.desc) + "\n• 范围 " + m.range + ", 最优 " + m.best + "\n• 字色 = 本页截面: 最差红 → 最好绿" +
-                                  (g.tip ? "\n• holds 列按钮看全部持有期" : "");
+                                  (g.tip ? "\n• cover% 后的 … 按钮看全部持有期" : "");
     }
     return a;
   }();
@@ -908,7 +908,7 @@ void stat_card(const FactorRow &r, const FactorsUIContext &ctx) {
   }
   ImGui::EndTable();
 }
-// holds 列一格: 小按钮, 点开对比卡片 (弹窗, 点别处关); 无 stat → "-"
+// holds 列一格: 小按钮, 点开对比卡片 (弹窗, 头行首 ✕ 关); 无 stat → "-"
 void hold_cmp_cell(const FactorRow &r, const FactorsUIContext &ctx) {
   if (!r.has_stat) {
     ImGui::TextDisabled("-");
@@ -919,6 +919,9 @@ void hold_cmp_cell(const FactorRow &r, const FactorsUIContext &ctx) {
     ImGui::OpenPopup("holds");
   ImGui::PopStyleVar();
   if (ImGui::BeginPopup("holds")) {
+    if (ImGui::SmallButton("✕"))
+      ImGui::CloseCurrentPopup();
+    ImGui::SameLine();
     stat_card(r, ctx);
     ImGui::EndPopup();
   }
@@ -1835,7 +1838,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     tip("一行一权重; 多权重因子折成一行 (= 当前 Hold 下最好的权重), ▸ 展开\n"
         "• 点行选中 → Run / Search / Inspect 的对象; Ctrl 点 = 多选, Shift 点 = 片选 (Run / Search 批量跑选中的)\n"
         "• 勾首列 → 编辑\n"
-        "• holds 列按钮看全部持有期; Stat 列字色 = 本页截面最差红 → 最好绿");
+        "• cover% 后的 … 按钮看全部持有期; Stat 列字色 = 本页截面最差红 → 最好绿");
   ImGui::SameLine();
   ImGui::TextDisabled("Stat 列 = h %s (毛价格收益)", hold_name(cur_hold).c_str());
 
