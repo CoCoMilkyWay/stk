@@ -15,11 +15,13 @@
 //     POINT   单遍逐元素
 //     EXPAND  沿 t 递推累加 (double 幂和), 段界 reset; 秩 = 段内样本缓存上的精确计数 (O(S), 列向量化)
 //     ROLL    滑动加减幂和 (double); spread 判据要求精确 lo/hi → van Herk 分块前后缀滑窗极值;
-//             秩 = 环形窗缓存上的精确计数 (O(d), 列向量化); 分位 = 环形窗缓存 + 直方图 (lo/hi 未变则增量改桶, 变了整窗重建)
+//             秩 = 环形窗缓存上的精确计数 (O(d), 列向量化); 分位 = 每列一条有序窗 (出旧入新各一次二分 + 搬移, 取第 q_rank 名)
 //     EXPO    沿 t 递推
 //
 //   【数值】滑动加减幂和相对整窗重算有 O(ε_double) 漂移; 近 ulp 简并窗 (真中心矩 ≈ double 舍入噪声)
 //   下值可能与流式不一致 —— 与 GPU SCAN 后端同一风险等级, 契约的造数与容差刻意避开该带.
+//   高阶矩 (Std / Skew / Kurt / Z) 的幂和累的是 x − ref (ref = 窗 / 段空后进来的首个有效值; 窗非空时不变, 出窗样本按入窗时的 ref 减):
+//   中心矩对平移不变, 幂和的量级从"水平" (价格 1500 的 s4 ~ 1e15) 降到"离 ref 的偏差", 相消误差随之降到与离散度同量级.
 //   中心矩用 fmax(·, 0) 钳掉相消出负; 溢出由 mk 出口转无效 (契约: 溢出是数据属性, 不是 bug).
 //   退化按契约第 6 条给中性值 (select 一支, 掩码不动); 掩码只随输入格 (第 7 条). ROLL 未满窗 = 已有前缀, 无 full 判据.
 //
@@ -45,7 +47,7 @@ inline constexpr int kTileA = 128; // TS 有状态算子的资产列块宽 (状�
 namespace factor::cpu::ts {
 
 // -----------------------------------------------------------------------------
-// detail: 列块 / 输出 / 幂和→中心矩 / 滑窗极值 (van Herk) / 桶分位
+// detail: 列块 / 输出 / 幂和→中心矩 / 滑窗极值 (van Herk)
 // -----------------------------------------------------------------------------
 namespace detail {
 
@@ -245,22 +247,6 @@ private:
   int *sj_ = nullptr, *pj_ = nullptr, *arg_ = nullptr;
 };
 
-// ---- 桶分位 (契约分桶规则): 全并列 (hi ≤ lo) → lo; 其余取首个前缀累计 ≥ ⌈q·n⌉ 的桶心 ----
-inline float hist_quantile(const int *h, int n, float lo, float hi, double q) {
-  if (!(hi > lo) || q <= 0.0)
-    return lo;
-  if (q >= 1.0)
-    return hi;
-  const int need = std::max(1, static_cast<int>(std::ceil(q * n)));
-  int acc = 0;
-  for (int b = 0; b < kBuckets; ++b) {
-    acc += h[b];
-    if (acc >= need)
-      return bin_center(b, lo, hi);
-  }
-  return hi;
-}
-
 // ---- 一元矩核的退化判据与求值 (EXPAND 与 ROLL 共用公式, 窗形只是状态推进方式不同); 退化 → 0 ----
 enum class Mom { STD,
                  SKEW,
@@ -277,8 +263,9 @@ inline bool mom_ok(int n, bool sp) {
     return n >= 2 && sp; // STD / Z
 }
 
+// s1..s4 = (x − ref) 的幂和, x = 当前点的 x − ref (只 Z 用)
 template <Mom K>
-inline double mom_val(double s1, double s2, double s3, double s4, int n, float x) {
+inline double mom_val(double s1, double s2, double s3, double s4, int n, double x) {
   (void)s3, (void)s4, (void)x;
   const double m2 = std::fmax(c2_of(s1, s2, n), 0.0);
   if constexpr (K == Mom::STD)
@@ -559,7 +546,7 @@ struct ExpSum {
   }
 };
 
-// ---- Var / Std / Skew / Kurt: 幂和递推, lo/hi 段内只扩不缩 (精确 spread); 退化 → 0 ----
+// ---- Var / Std / Skew / Kurt: (x − ref) 幂和递推 (ref = 段内首个有效值), lo/hi 段内只扩不缩 (精确 spread); 退化 → 0 ----
 template <detail::Mom K>
 struct ExpMom {
   static constexpr bool kS3 = K == detail::Mom::SKEW || K == detail::Mom::KURT;
@@ -567,12 +554,12 @@ struct ExpMom {
   static auto carve(Bump &b, const Call &) {
     constexpr size_t W = kTileA;
     return std::tuple{b.take<int>(W), b.take<double>(W), b.take<double>(W), b.take<double>(kS3 ? W : 0), b.take<double>(kS4 ? W : 0),
-                      b.take<float>(W), b.take<float>(W)};
+                      b.take<float>(W), b.take<float>(W), b.take<double>(W)};
   }
   CP_SCRATCH
   CP_RUN {
     Bump b{static_cast<char *>(ws)};
-    const auto [n, s1, s2, s3, s4, lo, hi] = carve(b, c);
+    const auto [n, s1, s2, s3, s4, lo, hi, ref] = carve(b, c);
     const int S = c.geo.S;
     assert(S >= 1);
     for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
@@ -587,13 +574,15 @@ struct ExpMom {
           std::fill_n(s4, w, 0.0);
         std::fill_n(lo, w, detail::kInf);
         std::fill_n(hi, w, -detail::kInf);
+        std::fill_n(ref, w, 0.0);
         const int e = std::min(seg + S, T);
         for (int t = seg; t < e; ++t) {
           const size_t r = static_cast<size_t>(t) * A;
           FACTOR_COLS for (int a = 0; a < w; ++a) {
             const float x = xv[r + a];
             const bool m = xm[r + a] != 0;
-            const double dx = m ? static_cast<double>(x) : 0.0;
+            ref[a] = n[a] == 0 && m ? static_cast<double>(x) : ref[a];
+            const double dx = m ? static_cast<double>(x) - ref[a] : 0.0;
             const double q = dx * dx;
             s1[a] += dx;
             s2[a] += q;
@@ -607,7 +596,7 @@ struct ExpMom {
             const bool ok = detail::mom_ok<K>(n[a], hi[a] > lo[a]);
             detail::put(ov, om, r + a,
                         ok ? detail::mom_val<K>(s1[a], s2[a], kS3 ? s3[a] : 0.0, kS4 ? s4[a] : 0.0,
-                                                n[a], x)
+                                                n[a], static_cast<double>(x) - ref[a])
                            : 0.0,
                         true);
           }
@@ -653,7 +642,7 @@ struct ExpExt {
   }
 };
 
-// ---- RankCum / RankRoll 的精确计数 (契约【精确秩】): 窗内 s 行样本 rv / rm ([s][W] 行主) 对本行 x 数 less / eq,
+// ---- RankCum / RankRoll 的精确计数 (契约【序统计】): 窗内 s 行样本 rv / rm ([s][W] 行主) 对本行 x 数 less / eq,
 //   s 在外、列在内 (列连续, 向量化); 全并列 → pct_of 自然给 0.5. 相对型: x_t 无效则无效 (x_t 有效 ⇒ 样本含它自身) ----
 namespace detail {
 inline void rank_rows(const float *rv, const uint8_t *rm, int rows, const float *x, int W, int *lt, int *eq) {
@@ -950,7 +939,8 @@ struct RollSum {
   }
 };
 
-// ---- Var / Std / Skew / Kurt / Z (Roll): 滑动加减幂和 + van Herk 精确 lo/hi; 退化 → 0 ----
+// ---- Var / Std / Skew / Kurt / Z (Roll): 滑动加减 (x − ref) 幂和 + van Herk 精确 lo/hi; 退化 → 0 ----
+//   ref 只在窗空时换 (窗内样本都按同一个 ref 入、出); 窗空即把幂和清成精确 0, 不留滑动残差
 template <detail::Mom K>
 struct RollMom {
   static constexpr bool kS3 = K == detail::Mom::SKEW || K == detail::Mom::KURT;
@@ -958,12 +948,12 @@ struct RollMom {
   static auto carve(Bump &b, const Call &c) {
     constexpr size_t W = kTileA;
     return std::tuple{b.take<int>(W), b.take<double>(W), b.take<double>(W), b.take<double>(kS3 ? W : 0), b.take<double>(kS4 ? W : 0),
-                      detail::RollMinMax(b, c.p.d)};
+                      b.take<double>(W), detail::RollMinMax(b, c.p.d)};
   }
   CP_SCRATCH
   CP_RUN {
     Bump b{static_cast<char *>(ws)};
-    auto [n, s1, s2, s3, s4, mm] = carve(b, c);
+    auto [n, s1, s2, s3, s4, ref, mm] = carve(b, c);
     const int d = c.p.d;
     assert(d >= 1);
     for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
@@ -975,6 +965,7 @@ struct RollMom {
         std::fill_n(s3, w, 0.0);
       if constexpr (kS4)
         std::fill_n(s4, w, 0.0);
+      std::fill_n(ref, w, 0.0);
       mm.reset(w);
       for (int t = 0; t < T; ++t) {
         const auto [lo, hi] = mm.step(xv, xm, nullptr, A, t);
@@ -982,7 +973,7 @@ struct RollMom {
           const size_t q0 = static_cast<size_t>(t - d) * A;
           FACTOR_COLS for (int a = 0; a < w; ++a) {
             const bool m = xm[q0 + a] != 0;
-            const double dx = m ? static_cast<double>(xv[q0 + a]) : 0.0;
+            const double dx = m ? static_cast<double>(xv[q0 + a]) - ref[a] : 0.0;
             const double q = dx * dx;
             s1[a] -= dx;
             s2[a] -= q;
@@ -997,19 +988,21 @@ struct RollMom {
         FACTOR_COLS for (int a = 0; a < w; ++a) {
           const float x = xv[r + a];
           const bool m = xm[r + a] != 0;
-          const double dx = m ? static_cast<double>(x) : 0.0;
+          const bool empty = n[a] == 0;
+          ref[a] = empty && m ? static_cast<double>(x) : ref[a];
+          const double dx = m ? static_cast<double>(x) - ref[a] : 0.0;
           const double q = dx * dx;
-          s1[a] += dx;
-          s2[a] += q;
+          s1[a] = (empty ? 0.0 : s1[a]) + dx;
+          s2[a] = (empty ? 0.0 : s2[a]) + q;
           if constexpr (kS3)
-            s3[a] += q * dx;
+            s3[a] = (empty ? 0.0 : s3[a]) + q * dx;
           if constexpr (kS4)
-            s4[a] += q * q;
+            s4[a] = (empty ? 0.0 : s4[a]) + q * q;
           n[a] += m;
           const bool ok = detail::mom_ok<K>(n[a], hi[a] > lo[a]);
           detail::put(ov, om, r + a,
                       ok ? detail::mom_val<K>(s1[a], s2[a], kS3 ? s3[a] : 0.0, kS4 ? s4[a] : 0.0,
-                                              n[a], x)
+                                              n[a], static_cast<double>(x) - ref[a])
                          : 0.0,
                       K == detail::Mom::Z ? m : true); // Z 相对型: x_t 无效则无效
         }
@@ -1083,61 +1076,39 @@ struct TsRankRoll {
   }
 };
 
-// ---- QuantileRoll: 环形窗缓存 + 直方图 (lo/hi 未变增量改桶, 变了整窗重建); 空窗 → 0 ----
+// ---- QuantileRoll: 每列一条有序窗 sv[j][0..n) (契约【序统计】: 取第 q_rank 名); 出窗 = 行 t−d 的输入格, 二分定位后搬移; 空窗 → 0 ----
+//   每格 O(log d) 比较 + 至多 d 个 float 的连续搬移 (memmove), 与值域无关
 struct TsQuantileRoll {
   static auto carve(Bump &b, const Call &c) {
     constexpr size_t W = kTileA;
-    const size_t dw = static_cast<size_t>(c.p.d) * W;
-    return std::tuple{b.take<float>(dw), b.take<uint8_t>(dw), b.take<int>(W * kBuckets), b.take<int>(W), b.take<float>(W), b.take<float>(W),
-                      detail::RollMinMax(b, c.p.d)};
+    return std::tuple{b.take<float>(static_cast<size_t>(c.p.d) * W), b.take<int>(W)};
   }
   CP_SCRATCH
   CP_RUN {
     Bump bp{static_cast<char *>(ws)};
-    auto [rv, rm, hist, n, plo, phi, mm] = carve(bp, c);
+    const auto [sv, n] = carve(bp, c);
     const Param &p = c.p;
     const int d = p.d;
     assert(d >= 1);
     for (int a0 = rg.lo; a0 < rg.hi; a0 += kTileA) {
       const auto [xv, xm, yv, ym, zv, zm, ov, om, T, A, W] = detail::tile(c, a0, rg.hi);
-      mm.reset(W);
-      std::fill_n(rv, static_cast<size_t>(d) * W, 0.f);
-      std::fill_n(rm, static_cast<size_t>(d) * W, 0);
-      std::fill_n(n, W, 0); // hist 不清: 先有 spread 才读, 而进入 spread 必重建
-      std::fill_n(plo, W, detail::kInf);
-      std::fill_n(phi, W, -detail::kInf);
+      std::fill_n(n, W, 0);
       for (int t = 0; t < T; ++t) {
-        const auto [lo, hi] = mm.step(xv, xm, nullptr, A, t);
-        const int slot = t % d;
-        const size_t r = static_cast<size_t>(t) * A;
+        const size_t r = static_cast<size_t>(t) * A, q = static_cast<size_t>(std::max(t - d, 0)) * A;
         for (int j = 0; j < W; ++j) {
-          const float x = xv[r + j];
-          const bool m = xm[r + j] != 0;
-          const size_t rs = static_cast<size_t>(slot) * W + j;
-          const float xo = rv[rs];
-          const bool mo = rm[rs] != 0;
-          rv[rs] = x;
-          rm[rs] = m ? 1 : 0;
-          n[j] += static_cast<int>(m) - static_cast<int>(mo);
-          const float nl = lo[j], nh = hi[j];
-          int *h = hist + static_cast<size_t>(j) * kBuckets;
-          if (nh > nl) {
-            if (nl != plo[j] || nh != phi[j]) { // 值域变了: 整窗重建
-              std::fill(h, h + kBuckets, 0);
-              for (int s = 0; s < d; ++s)
-                if (rm[static_cast<size_t>(s) * W + j])
-                  ++h[bin_of(rv[static_cast<size_t>(s) * W + j], nl, nh)];
-            } else { // 值域没变: 增量出旧入新
-              if (mo)
-                --h[bin_of(xo, nl, nh)];
-              if (m)
-                ++h[bin_of(x, nl, nh)];
-            }
+          float *s = sv + static_cast<size_t>(j) * d;
+          if (t >= d && xm[q + j]) { // 出窗: 窗里必有它 (±0 判等, 删哪个都一样)
+            float *e = std::lower_bound(s, s + n[j], xv[q + j]);
+            std::copy(e + 1, s + n[j], e);
+            --n[j];
           }
-          plo[j] = nl;
-          phi[j] = nh;
-          const double v = n[j] >= 1 ? detail::hist_quantile(h, n[j], nl, nh, p.k) : 0.0;
-          detail::put(ov, om, r + j, v, true);
+          if (xm[r + j]) { // 入窗
+            float *e = std::upper_bound(s, s + n[j], xv[r + j]);
+            std::copy_backward(e, s + n[j], s + n[j] + 1);
+            *e = xv[r + j];
+            ++n[j];
+          }
+          detail::put(ov, om, r + j, n[j] >= 1 ? static_cast<double>(s[q_rank(p.k, n[j]) - 1]) : 0.0, true);
         }
       }
     }

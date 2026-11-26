@@ -154,7 +154,7 @@ TaskTree CreateAllTasks(SharedData &data) {
   // 因子引擎 (Alpha 写因子 / 编辑组合, Market 画), 账户净值 (Live 交快照、拉资金流水; 当日与券商现价由行情取, Market 画)
   const auto account = std::make_shared<Account::AccountHub>();
   const auto quote = std::make_shared<Quote::QuoteHub>(Quote::QuoteHub::AccountFeed{
-      .today = [account](const auto &view, const auto &live) { return account->today(view, live); },
+      .today = [account](const auto &view, const auto &live, const Fee &fee) { return account->today(view, live, fee); },
       .spot = [account]() -> const auto & { return account->spot(); },
   });
   const auto compute = std::make_shared<Compute::ComputeHub>();

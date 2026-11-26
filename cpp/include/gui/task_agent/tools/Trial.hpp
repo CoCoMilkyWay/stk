@@ -1,16 +1,14 @@
 #pragma once
 
 // =============================================================================
-// 回测 (eval_factor / submit_factor) 的结果: 计算与原文在 tools/trial/<工具>.cpp, 展示在 ui/trial/<工具>.cpp
+// 回测 (eval_factor) 的结果: 计算与原文在 tools/trial/<工具>.cpp, 展示在 ui/trial/<工具>.cpp
 // =============================================================================
 //   eval_factor   Lab 形: 核验落盘 (GUI 备料) → Search + Run (Lab) → 入表封存 (GUI 收尾 Commit); 账本作用 = 落下的候选文件 + 结局; 作废 = 删候选记未落; 存档复原
-//   submit_factor Sync 形: 查门槛并拷进正式库 (自检会话 / 工作台只查门槛); 账本作用 = 入库的英文名
 // =============================================================================
 
 #include "gui/task_agent/tools/Kit.hpp"
 
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -45,15 +43,5 @@ std::string WeightLine(const TrialRes &k, const Weight &w); // 一个权重的�
 std::string YearsLine(const std::vector<Year> &ys);         // 最佳权重分年: 年份(中位rIC,年换手), …
 std::string GroupsHead();                                   // 最佳权重的 20 组
 std::string SweepHead(const Sweep &sw);                     // 参数扫描 (点数)
-
-struct SubmitRes final : Res {
-  std::string name, why; // why 非空 = 未入库
-  bool test = false, dry = false;
-  std::optional<Result> cand;
-  std::string text() const override;
-  std::string title() const override;
-  Effect effect() const override;
-  void draw() const override;
-};
 
 } // namespace GUI::Agent

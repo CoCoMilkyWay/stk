@@ -3,7 +3,7 @@
 // =============================================================================
 // Stat: 因子评估算子的语义契约 (CPU / GPU 两后端唯一共享件; 无流式后端 —— 评估只在挖掘侧)
 // =============================================================================
-//   一条链, 每环一个头: rank (本头: r16) → pos (Pos.hpp: 仓位感知) → row (本头 Row, 行核 Host.hpp ⇄ Dev.cuh) ⇄ turn (Turn.hpp: 换手)
+//   一条链, 每环一个头: rank (本头: r16) → pos (Pos.hpp: 仓位感知) → row (本头 Row, 行核 Host.hpp ⇄ Dev.cuh) ⇄ book (Book.hpp: 账集 / 换手)
 //     → fold (Fold.hpp: Accum / Day / HoldStat) → roll (Roll.hpp). 持有期几何 / 协议表在 define/Label.hpp (Hold), 费率与成交侧在 define/Fee.hpp.
 //
 //   输入  因子平面 x [T][A] (SoA: float + 有效位) + 口径 Frame + 方向 Dir + H 组常驻标签 (每组一个持有期 HoldId):
@@ -68,26 +68,6 @@
 #include <cstdint>
 
 namespace factor::stat {
-
-using ::AmtId;
-using ::Amts;
-using ::AmtSet;
-using ::close_entry;
-using ::Fee;
-using ::Hold;
-using ::hold_ok;
-using ::hold_on;
-using ::HoldId;
-using ::Holds;
-using ::HoldSet;
-using ::kAmtCount;
-using ::kBuy;
-using ::kChainDays;
-using ::kHoldCount;
-using ::kLastAnchorRow;
-using ::kSell;
-using ::kSides;
-using ::Side;
 
 // ---- 常量 ----
 inline constexpr int kGroups = 20;              // 分组数 (等分 pct rank)

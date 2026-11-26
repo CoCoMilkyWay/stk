@@ -33,7 +33,7 @@ void ScanFactors(const FactorScope &sc, std::vector<FactorRow> &out);
 struct DayLine {
   std::vector<float> ric;  // [日] 当日 ok 行 rIC 均值 (无 ok 行 = NaN)
   LedgerLines nav;         // [kNavExcess][日] 日收益 (线序见 Table.hpp kNavExcess)
-  float turn[kNavLs] = {}; // LS 线年换手 (倍; 整组 = 固定段两端, 尾部 = 该级两端)
+  float turn[kNavLs] = {}; // LS 线年换手 (倍; 整组 / 尾部各该级两端)
 };
 struct DayLines {
   HoldId hold = kHoldT1;        // 调用方给: 持有期

@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// 因子算子真相表 (X-macro; 语义契约见 factor/Contract.hpp; 成本与误差见 operator.md)
+// 因子算子真相表 (X-macro; 语义契约见 factor/Contract.hpp)
 // =============================================================================
 //   命名 = 域_核_窗 (代码里 PascalCase, 文档里 snake_case, 一一对应):
 //     域   Ts (A 域 = SELF) / Cs (A 域 = ALL | GROUP) —— 前缀只是 A 域的缩写, 不是独立分类
@@ -31,7 +31,7 @@
 //     核类   MAP 逐元素 / SHIFT 下标平移 / MOMENT 可和分解 (矩族) / EXTREME 极值及 arg 族 /
 //            ORDER 序统计 / RECUR 递推; 复合算子标主导 (最重) 一级
 //
-//   参数 (Contract.hpp struct Param) 不单列, 由 (T, k域, 元数) 推出 (params_str): d ⇔ T = ROLL (窗长 / 滞后, 期 = 本层的行);
+//   参数 (Contract.hpp struct Param) 不单列, 由 (T, k域, 元数) 推出 (params_str): d ⇔ T = ROLL (窗长 / 滞后, 期 = 本层的行; 下限 Contract roll_d_min);
 //     k ⇔ k域 ≠ NONE (阈值 / 桶数 / EMA 系数 / 分位 / 岭强度, 含义见各行 operator); k2 ⇔ k域 = TOD (TodMask 上界);
 //     h ⇔ 元数 N × ROLL (回归目标的持有期, 写标签列名 token: 5m / close / t1o / t1 …);
 //     w ⇔ 元数 N × POINT (各特征元的权, 写 w=[w_1, …, w_N], 个数 = 特征元数)
@@ -49,7 +49,7 @@
 //       x, y, z ∈ dom 在前, 参数 名{=}⟨名⟩ ∈ 值域 在后, ⟨d⟩ ⟨k⟩ ⟨k2⟩ ⟨h⟩ ⟨w⟩ 占位符 GUI 渲染前换成本轮实际值
 //
 //   备注列 = 用途与选型 (给 agent 检索的一句话, 统一 "量什么; 怎么用 / 配什么"):
-//     不写实现 / 近似 / 退化数值细节 (那些在 Contract.hpp 与 operator.md)
+//     不写实现 / 退化数值细节 (那些在 Contract.hpp)
 //
 //   【operator 写法】一律单行 (operand 列同; GUI 表格内联渲染, 行高须齐): 不用 \frac (除法写 X / Y 加括号)、不用大号
 //   \sum \prod \sqrt \lfloor (求和写 \Sigma_下标, 乘积 \Pi_下标, 开方写 ^{1/2}, 取整写 \mathrm{floor}),
@@ -69,9 +69,8 @@
 //     m_k         W_t 内 k 阶中心总体矩 (1/n)·Σ_{W_t}(x_s − μ_t)^k
 //     max, min, cov, var, corr, pct, floor, clamp  带下标者下标 = 取值域 (窗 W_t / 截面 a / 组 G(a))
 //     pct(v; S)   v 在样本集 S 的并列均秩 pct rank ∈ [0, 1] (Contract pct_of); 省略 S = 全截面
-//     Q_p(S)      样本集 S 的 p 分位 (省略 S = 全截面);  Φ⁻¹  标准正态分位;  G(a)  a 所在组 (整数 id 由 y 或 z 给)
-//     序统计族: TsRankCum / TsRankRoll / CsRank / CsNormRank 精确秩 (Contract【精确秩】); 其余 (quantile / winsor / bucket / 组秩 / 线性序合成)
-//                三后端同用 kBuckets 桶近似; 两者都是整数计数, 对拍逐位
+//     Q_p(S)      样本集 S 的 p 分位 = 升序第 ⌈p·n⌉ 个样本 (省略 S = 全截面);  Φ⁻¹  标准正态分位;  G(a)  a 所在组 (整数 id 由 y 或 z 给)
+//     序统计族 (秩 / 分位 / 缩尾 / 分桶 / 组秩 / 线性序合成) 全部精确 (Contract【序统计】), 三后端对拍逐位
 //
 //   【核 × 窗 为什么不是满格】格子空不空按"这个统计量在这个时间尺度上有没有意义"定, 不为对称而补:
 //     Cum (段内 = 当日) 专收**日内分布形状**: Hhi / Entropy 只有 Cum —— 度量"当日成交怎么摊在各分钟上",

@@ -38,8 +38,8 @@ Quote::Day path_day(misc::Ymd d, float ref, std::span<const double> v) {
 
 } // namespace
 
-account::Trade trade_of(const live::Fill &x, int last) {
-  return {std::clamp(Quote::sec_slot(x.sec), 0, last), x.code, x.side * static_cast<double>(x.qty), x.price, -x.side * x.amount - live::fee(x.amount, x.side, Fee{})}; // 历史成交的费用按标准费率估 (define/Fee.hpp)
+account::Trade trade_of(const live::Fill &x, int last, const Fee &fee) {
+  return {std::clamp(Quote::sec_slot(x.sec), 0, last), x.code, x.side * static_cast<double>(x.qty), x.price, -x.side * x.amount - live::fee(x.amount, x.side, fee)};
 }
 
 Quote::TradeMark mark_of(misc::Ymd d, const live::Fill &x) {
@@ -73,7 +73,7 @@ Quote::Day day_of(const account::Day &d, double nav0, double idx0, std::span<con
   return path_day(d.date, static_cast<float>(idx0), is);
 }
 
-Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, const account::Spot &spot, const Minutes &minutes) {
+Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, const account::Spot &spot, const Fee &fee, const Minutes &minutes) {
   Replay o;
   const size_t D = dates.size();
   const size_t i0 = l.rows.empty() ? D : static_cast<size_t>(std::ranges::lower_bound(dates, l.rows.front().date) - dates.begin());
@@ -96,7 +96,7 @@ Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, 
   Quote::Trades marks;
   for (const live::Deal &x : l.deals)
     if (x.date >= ds.front().date && x.date <= ds.back().date) {
-      trades[x.date].push_back(trade_of(x, kSlots - 1));
+      trades[x.date].push_back(trade_of(x, kSlots - 1, fee));
       marks.marks.push_back(mark_of(x.date, x));
     }
   auto block = std::make_shared<std::vector<Quote::Packed>>(ds.size());

@@ -1,4 +1,4 @@
-// view_layers — 看分层: 输入 factor / split / cond → LayersRes (20 组 + 尾部 + 切分 + 条件三段) → 原文; 展示见 ui/look/ViewLayers.cpp
+// view_layers — 看分层: 输入 factor / split / cond / from / to → LayersRes (20 组 + 尾部 + 切分 + 条件三段) → 原文; 展示见 ui/look/ViewLayers.cpp
 #include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
@@ -9,69 +9,62 @@ namespace GUI::Agent {
 using namespace look;
 using json = nlohmann::ordered_json;
 
-std::string LayersRes::headline() const { return "因子 `" + label + "` (组号已定向: G20 = 做多端)"; }
+std::string LayersRes::headline() const { return "因子 `" + label + "` 的分层"; }
 
-std::string LayersRes::text() const {
-  std::string s = text_head();
-  s += "有统计行 " + std::to_string(all.ok) + " / " + std::to_string(all.rows) + " · mono " + r3(all.mono) + " · 每期多空 " + bp(all.ls) + "bp · rIC 均值 " + r3(all.ric) +
-       " (t " + fmt("%.1f", ric_t) + ", 正 " + pct(ric_up) + ")\n";
-  s += "20 组每期超额 G1 → G20: " + spark(all.grp, bp) + " bp\n\n";
-
-  std::vector<std::string> g_head{""}, g_ex{"每期超额 bp"}, g_cnt{"行均真持有只数"};
-  double lo = INFINITY, hi = -INFINITY;
-  for (int k = 0; k < kGroups; ++k) {
-    g_head.push_back(gname(k));
-    g_ex.push_back(bp(all.grp[static_cast<size_t>(k)]));
-    g_cnt.push_back(fmt("%.1f", held[static_cast<size_t>(k)]));
-    lo = std::min(lo, held[static_cast<size_t>(k)]), hi = std::max(hi, held[static_cast<size_t>(k)]);
-  }
-  text::Table gtbl(g_head);
-  gtbl.add(g_ex);
-  if (hi - lo > 0.1 * hi)
-    gtbl.add(g_cnt);
-  s += gtbl.str();
-  if (!(hi - lo > 0.1 * hi))
-    s += "\n各组行均真持有 " + fmt("%.1f", lo) + "–" + fmt("%.1f", hi) + " 只\n";
-
-  double mid = 0.0;
+std::vector<Sec> LayersRes::secs() const {
+  std::vector<Sec> out;
+  Sec &x = out.emplace_back();
+  double mid = 0.0, lo = INFINITY, hi = -INFINITY;
   for (int k = 5; k < 15; ++k)
     mid += all.grp[static_cast<size_t>(k)] / 10.0;
-  s += "\n做多端 G20 " + bp(all.grp[kG20]) + "bp · 最低组 G1 " + bp(all.grp[kG1]) + "bp · 中段 G6–G15 均值 " + bp(mid) + "bp\n";
+  for (const double h : held)
+    lo = std::min(lo, h), hi = std::max(hi, h);
+  const bool even = !(hi - lo > 0.1 * hi);
+  x.lines = {"有统计行 " + std::to_string(all.ok) + " / " + std::to_string(all.rows) + " · mono " + r3(all.mono) + " · 每期多空 " + bp(all.ls) + "bp · rIC " + r3(all.ric) +
+                 " (t " + fmt("%.1f", ric_t) + ", 正 " + pct(ric_up) + ")",
+             "做多端 G20 " + bp(all.grp[kG20]) + "bp · 最低组 G1 " + bp(all.grp[kG1]) + "bp · 中段 G6–G15 均值 " + bp(mid) + "bp" +
+                 (even ? " · 各组行均真持有 " + fmt("%.1f", lo) + "–" + fmt("%.1f", hi) + " 只" : std::string())};
+  x.sparks = {"20 组每期超额 G1 → G20 " + spark(all.grp, bp) + " bp"};
+  x.plot = 0;
+  x.tab.head = {""};
+  std::vector<Num> ex{"每期超额 bp"}, cnt{"行均真持有只数"};
+  for (int k = 0; k < kGroups; ++k) {
+    x.tab.head.push_back(gname(k));
+    ex.push_back(nbp(all.grp[static_cast<size_t>(k)])), cnt.push_back(fmt("%.1f", held[static_cast<size_t>(k)]));
+  }
+  x.tab.rows.push_back(std::move(ex));
+  if (!even)
+    x.tab.rows.push_back(std::move(cnt));
 
-  text::Table ttbl({"截取", "占截面", "G20 端 bp", "G20 行均只数", "G1 端 bp", "G1 行均只数", "多空 bp"});
-  ttbl.add({"整组", fmt("%g%%", 100.0 / kGroups), bp(all.grp[kG20]), fmt("%.1f", held[kG20]), bp(all.grp[kG1]), fmt("%.1f", held[kG1]), bp(all.ls)});
-  for (const Tail &t : tails)
-    ttbl.add({"组内最极端 " + fmt("%g%%", t.frac * 100.0), fmt("%g%%", t.frac * 100.0 / kGroups), bp(t.top), fmt("%.1f", t.top_n), bp(t.bot), fmt("%.1f", t.bot_n),
-              bp((t.top - t.bot) / 2.0)});
-  s += "\n两端组内按池内秩再截更极端的一截 (同一份真持有判据, 满仓按宽度折算, 每期超额口径同上):\n" + ttbl.str();
+  Sec &t = out.emplace_back();
+  t.title = "两端尾部";
+  t.tab.head = {"截取", "占截面", "G20 端 bp", "G20 行均只数", "G1 端 bp", "G1 行均只数", "多空 bp"};
+  t.tab.rows.push_back({"整组", fmt("%g%%", 100.0 / kGroups), nbp(all.grp[kG20]), fmt("%.1f", held[kG20]), nbp(all.grp[kG1]), fmt("%.1f", held[kG1]), nbp(all.ls)});
+  for (const Tail &a : tails)
+    t.tab.rows.push_back({"组内最极端 " + fmt("%g%%", a.frac * 100.0), fmt("%g%%", a.frac * 100.0 / kGroups), nbp(a.top), fmt("%.1f", a.top_n), nbp(a.bot), fmt("%.1f", a.bot_n),
+                          nbp((a.top - a.bot) / 2.0)});
 
-  if (split == "tod" && seg == 1) {
-    s += "\n(日层每天一行, 没有日内时段可切)\n";
-  } else if (split != "none") {
-    text::Table stbl = layer_table(split == "tod" ? "时段" : "月份");
-    for (const LayerRow &b : splits)
-      add_layer_row(stbl, b);
-    s += "\n" + stbl.str();
+  if (split != "none") {
+    Sec &p = out.emplace_back();
+    p.title = split == "tod" ? "按日内时段" : "按月";
+    if (split == "tod" && seg == 1)
+      p.lines = {"日层每天一行, 没有日内时段可切"}, p.warn = true;
+    else
+      p.tab = LayerTab(split == "tod" ? "时段" : "月份", splits), p.plot = 1;
   }
 
   if (!cond.empty()) {
-    s += "\n## 按条件三等分: `" + cond + "`\n";
-    if (!cond_err.empty()) {
-      s += "条件没算成: " + cond_err + "\n";
-    } else if (!has_cond) {
-      s += "没有可用的行 (每行至少要 " + std::to_string(3 * kMinCs) + " 个在池且因子 / 标签 / 条件都有效的格)\n";
-    } else {
-      s += "条件与因子的截面秩相关 " + r3(cond_rho) + " · 条件自身 rIC " + r3(cond_ric) + "\n";
-      s += "抽 " + std::to_string(conds[0].rows) + " 行 (全期 " + std::to_string(all.rows) +
-           " 行) 算; 每行按条件值把池子截面三等分 (条件离散时并列落同一段, 三段不均), 段内按因子分位重新分 20 组; 组超额 = 组内开仓可买的格的 (标签 − 本行在池均值) 等权均值 "
-           "(建不了仓的不计, 续持链不追, 不按满仓只数折算), 与上面的真持有口径略有出入; 抽样行少, 组超额 / 多空噪声大, 段间比较以 rIC 为主, 只作这四行之间对照\n\n";
-      text::Table ctbl = layer_table("条件段");
-      for (const LayerRow &b : conds)
-        add_layer_row(ctbl, b);
-      s += ctbl.str();
-    }
+    Sec &q = out.emplace_back();
+    q.title = "按条件三等分 `" + cond + "`";
+    if (!cond_err.empty())
+      q.lines = {"条件没算成: " + cond_err}, q.warn = true;
+    else if (!has_cond)
+      q.lines = {"没有可用的行 (每行至少要 " + std::to_string(3 * kMinCs) + " 个在池且因子 / 标签 / 条件都有效的格)"}, q.warn = true;
+    else
+      q.lines = {"条件与因子的截面秩相关 " + r3(cond_rho) + " · 条件自身 rIC " + r3(cond_ric) + " · 抽 " + std::to_string(conds[0].rows) + " 行"}, q.tab = LayerTab("条件段", conds),
+      q.plot = 2;
   }
-  return s;
+  return out;
 }
 
 std::string LayersRes::title() const { return "`" + label + "` · mono " + r3(all.mono) + " · 多空 " + bp(all.ls) + "bp · rIC " + r3(all.ric); }
@@ -90,9 +83,10 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
   const ViewEnv &env = bay.env;
   Engine::FactorFlow &F = bay.flow;
   std::string err;
+  Window win;
   FactorSpec fac;
   fac.tails = true;
-  if (!resolve_factor(c.str("factor"), env, fac, err))
+  if (!window_of(c, win, err) || !resolve_factor(c.str("factor"), env, fac, err))
     return Fail(std::move(err));
   const std::string split = c.str("split"), cond = c.str("cond");
   std::vector<FeatSpec> feats;
@@ -114,7 +108,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
   std::vector<misc::Ymd> dates;
   Engine::Job job;
   StreamCfg cfg{.fac = &fac, .feats = feats.empty() ? nullptr : &feats};
-  const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, whole, [&](const ChunkView &cv) {
+  const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, win, [&](const ChunkView &cv) {
     const int n_stat = cv.t_hi - cv.t_lo;
     for (int r = 0; r < n_stat; ++r) {
       const int u = cv.u0 + r;
@@ -126,8 +120,8 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
     }
     if (cond.empty() || !cv.feat_pl[0])
       return;
-    const int A = cv.blk.y.sh.A, total_T = static_cast<int>(cv.dates.size()) * seg;
-    const int rstep = row_step(static_cast<int>(static_cast<size_t>(total_T) * static_cast<size_t>(A) / kCsCells), seg);
+    const int A = cv.blk.y.sh.A;
+    const int rstep = row_step(static_cast<int>(static_cast<size_t>(cv.w_rows()) * static_cast<size_t>(A) / kCsCells), seg);
     const factor::check::Plane *cp = cv.feat_pl[0];
     const Engine::LabPlane &lb = *cv.blk.y.labels[0];
     const uint16_t *lv = lb.lv.data();
@@ -147,7 +141,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
         const int t = cv.t_lo + r, u = cv.u0 + r;
         if (u % rstep != 0 || !opens(u, env))
           continue;
-        const float mkt = row_mkt(cv.blk, t);
+        const float mkt = mkt_of(cv, t);
         if (!std::isfinite(mkt))
           continue;
         const size_t base = static_cast<size_t>(t) * static_cast<size_t>(A);
@@ -191,7 +185,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
     return Fail(std::move(err));
 
   auto r = std::make_shared<LayersRes>();
-  r->period = period_note(dates, env);
+  r->period = period_note(dates, env, win);
   r->label = fac.label, r->split = split, r->cond = cond, r->seg = seg;
   r->all = row_of("全期", all);
   r->ric_t = all.ric.t(), r->ric_up = all.ric.up();
@@ -218,7 +212,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
 
 json SampleViewLayers(Feed &p) {
   static const char *kSplits[] = {"none", "month", "tod"};
-  return {{"factor", p.factor()}, {"split", kSplits[p.below(p.ctx.seg > 1 ? 3 : 2)]}, {"cond", p.coin(0.3) ? p.leaf() : std::string()}};
+  return p.window({{"factor", p.factor()}, {"split", kSplits[p.below(p.ctx.seg > 1 ? 3 : 2)]}, {"cond", p.coin(0.3) ? p.leaf() : std::string()}});
 }
 
 } // namespace GUI::Agent

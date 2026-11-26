@@ -10,10 +10,8 @@ using json = nlohmann::ordered_json;
 
 std::string StockDaysRes::headline() const { return code + " · " + days.front().date + " ~ " + days.back().date + " (" + std::to_string(days.size()) + " 日) · " + level; }
 
-std::string StockDaysRes::text() const {
-  std::string s = text_head();
-  for (const std::string &e : exprs)
-    s += e;
+std::vector<Sec> StockDaysRes::secs() const {
+  Sec x{.lines = exprs, .plot = 0};
   std::vector<double> sc, sg, sf;
   std::vector<std::vector<double>> se(n_feats);
   for (const Day &d : days) {
@@ -21,30 +19,29 @@ std::string StockDaysRes::text() const {
     for (size_t j = 0; j < n_feats; ++j)
       se[j].push_back(j < d.fv.size() ? d.fv[j] : kNaN);
   }
-  s += "\n- 收盘价 " + spark(sc) + "\n- 当日涨跌 " + spark(sg, chg) + "\n";
+  x.sparks = {"收盘价 " + spark(sc), "当日涨跌 " + spark(sg, chg)};
   if (has_fac)
-    s += "- 因子 `" + fac + "` 日均分位 (高 = 做多端) " + spark(sf, rk) + "\n";
+    x.sparks.push_back("因子 `" + fac + "` 日均分位 " + spark(sf, rk));
   for (size_t j = 0; j < n_feats; ++j)
-    s += "- E" + str(j + 1) + " 收盘值 " + spark(se[j]) + "\n";
+    x.sparks.push_back("E" + str(j + 1) + " 收盘值 " + spark(se[j]));
 
-  std::vector<std::string> hs{"日期", "涨跌", "振幅", "成交额 万", "在池行"};
+  x.tab.head = {"日期", "涨跌", "振幅", "成交额 万", "在池行"};
   if (has_fac)
-    hs.push_back("因子日均分位"), hs.push_back("收盘分位"), hs.push_back("多/空行");
-  hs.push_back("收盘开仓超额 bp");
+    x.tab.head.push_back("因子日均分位"), x.tab.head.push_back("收盘分位"), x.tab.head.push_back("多/空行");
+  x.tab.head.push_back("收盘开仓超额 bp");
   for (size_t j = 0; j < n_feats; ++j)
-    hs.push_back("E" + str(j + 1) + " 收盘");
-  text::Table tbl(hs);
+    x.tab.head.push_back("E" + str(j + 1) + " 收盘");
   for (size_t i = 0; i < days.size(); ++i) {
     const Day &d = days[i];
-    std::vector<std::string> row{d.date, chg(d.chg), pct(d.amp), std::isfinite(d.amt) ? fmt("%.0f", d.amt / 1e4) : std::string("—"), std::to_string(d.in)};
+    std::vector<Num> row{d.date, nchg(d.chg), pct(d.amp), std::isfinite(d.amt) ? fmt("%.0f", d.amt / 1e4) : "—", std::to_string(d.in)};
     if (has_fac)
       row.push_back(rk(d.rank)), row.push_back(rk(d.rank_close)), row.push_back(std::to_string(d.up) + "/" + std::to_string(d.dn));
-    row.push_back(bp(d.ex));
+    row.push_back(nbp(d.ex));
     for (size_t j = 0; j < n_feats; ++j)
       row.push_back(num(se[j][i]));
-    tbl.add(row);
+    x.tab.rows.push_back(std::move(row));
   }
-  return s + "\n" + tbl.str();
+  return {std::move(x)};
 }
 
 std::string StockDaysRes::title() const {
@@ -132,7 +129,7 @@ ToolOut ViewStockDays(const Call &c, Bay &bay) {
           rec.chg_d = rec.close / pre - 1.0;
           rec.amp = hi > lo ? (hi - lo) / pre : kNaN;
           const size_t kl = static_cast<size_t>(tl) * static_cast<size_t>(A) + static_cast<size_t>(a);
-          const float mkt = row_mkt(cv.blk, tl);
+          const float mkt = mkt_of(cv, tl);
           rec.close_ex = lb.m[kl] && opens(d * seg + seg - 1, env) ? static_cast<double>(h2f(lv[kl])) - mkt : kNaN;
           if (has_fac)
             rec.fac_mean = mean_of(rks), rec.fac_close = rank_of_r16(cv.rx[kl]);

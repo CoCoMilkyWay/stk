@@ -21,7 +21,7 @@
 //     void reset(const Param &);        窗重置时调, 参数在此落到核里
 //     void add(int i, Val x, Val y);    喂入一个样本, i = 样本在窗/段内的位置 (0 = 最旧)
 //     Val  get(const Ctx &) const;      取当前输出
-//   ROLL 每步 **reset + 整窗重放** (未满窗时重放已有前缀, 位置锚定最新格 = d−1): d ≤ 240 且每分钟只走一次,
+//   ROLL 每步 **reset + 整窗重放** (未满窗时重放已有前缀, 位置锚定最新格 = d−1): d ≤ kMaxD 且每行只走一次,
 //   代价可忽略, 换来零递推漂移 (Welford 在滑出样本时做减法会在长序列上失稳, 不值得).
 //   退化按契约第 6 条给中性值 (全并列用核内追踪的 lo/hi 精确判, 相消用 den_ok); 掩码只随输入格 (第 7 条).
 //
@@ -29,7 +29,6 @@
 // =============================================================================
 
 #include "factor/Contract.hpp"
-#include "factor/StreamHist.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -292,8 +291,7 @@ struct Diff : Oldest { // 最新 − 最旧
   Val get(const Ctx &c) const { return mk(static_cast<double>(c.x.v) - v0.v, v0.m && c.x.m); }
 };
 
-// ---- 序统计族: 窗/段内样本缓存; Rank 精确计数 (契约【精确秩】), Quantile 分桶 (规则见 stream::Hist) ----
-using stream::Hist;
+// ---- 序统计族 (契约【序统计】): 窗/段内样本缓存; Rank 精确计数, Quantile 取第 q_rank 名 ----
 
 // 样本缓存基类: 窗/段内所有有效值
 struct SampleBase {
@@ -318,10 +316,14 @@ struct Rank : SampleBase { // 相对型: x_t 有效 ⇒ 样本含 x_t 自身; �
 };
 struct Quantile : SampleBase { // k 分位 (k = 0.5 即中位); 空窗 → 0
   Val get(const Ctx &) const {
-    Hist h;
-    h.build(s);
-    return mk(s.empty() ? 0.f : h.quantile(p.k), true);
+    if (s.empty())
+      return mk(0.0, true);
+    buf = s;
+    const auto q = buf.begin() + (q_rank(p.k, static_cast<int>(buf.size())) - 1);
+    std::nth_element(buf.begin(), q, buf.end());
+    return mk(*q, true);
   }
+  mutable std::vector<float> buf; // 选择用的副本 (跨步复用容量)
 };
 
 // ---- 二元累加器 (Welford 协方差; 双有效样本上的 x/y 极值给全并列判据) ----

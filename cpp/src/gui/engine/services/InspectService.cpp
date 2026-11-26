@@ -268,12 +268,10 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
     res.pool_ann[hi] = static_cast<float>(per_year(s, days));
   }
   res.hd = o.job.spec.y.hd;
-  fill_eval(p, o.scope(sc), o.eval_ms(0), res);
+  fill_eval(p, o.job.pass_ctx(F.S.ex, f.dir), o.scope(sc), o.eval_ms(0), res);
   res.alpha_dist = std::move(p.at<AlphaP>().d);
   std::copy_n(p.at<IcPdfP>().pdf, res.hd.n, res.ic_agg);
   res.nav = std::move(p.at<NavP>().out);
-  for (int j = 0; j < kTails; ++j)
-    std::copy_n(p.at<TurnP>().tails[j], res.hd.n, res.ls_turn[j]);
 
   std::vector<Leg> legs;
   if (req.spec.ex != InspectExport::None) {

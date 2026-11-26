@@ -102,22 +102,20 @@ Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
   }
   j.spec.y = {Holds::of(hold_bit(kHoldT1)), {}, 0.f};
   j.spec.ry = false;
-  j.bands = {factor::stat::kChainDays + 1, 1};
+  j.bands = {kChainDays + 1, 1};
   j.b = {.load = cell_bytes(j.spec, val.size()), .work = static_cast<double>(sizeof(PoolMask)), .fixed = BasketPass::fixed_bytes(j.dm)};
   j.P = plan_chunks(j.dm, 1, j.b, j.bands, F.S.budget());
   BasketPass pass(j.dm, std::move(pk), val);
   const size_t n = j.P.chunks.size();
-  for (size_t ci = 0; ci < n; ++ci) {
-    Block c;
-    if (const Rc rc = load_block(F, j, ci, c); rc != Rc::Ok)
-      return rc;
-    F.prog.begin(Phase::Running, n);
-    F.prog.publish(ci);
-    pass.chunk(F.S.ex, c);
-    F.prog.publish(1);
-    if (F.cancel.load(std::memory_order_relaxed))
-      return Rc::Cancel;
-  }
+  if (const Rc rc = for_blocks(F, j, [&](const Block &c, size_t ci, bool, double) {
+        F.prog.begin(Phase::Running, n);
+        F.prog.publish(ci);
+        pass.chunk(F.S.ex, c);
+        F.prog.publish(1);
+        return Rc::Ok;
+      });
+      rc != Rc::Ok)
+    return rc;
   out = pass.finish(F.S.ex);
   return Rc::Ok;
 }

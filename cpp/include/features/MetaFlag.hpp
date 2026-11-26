@@ -38,6 +38,8 @@ inline bool finite(_Float16 x) { return (std::bit_cast<uint16_t>(x) & 0x7C00u) !
 inline bool is_nan_sentinel(_Float16 x) { return std::bit_cast<uint16_t>(x) == kNaNBits; }
 // 特征值可进统计: 门控 (gate = 同层 ts_valid) 通过 且 有限
 inline bool keep(float gate, L2::ValidType vt, _Float16 x) { return valid(gate, vt) && finite(x); }
+// 标签格可进账 (评估装载 / 原料带同一判据): 门控 (当日有成交 ∧ 截面内) 过 ∧ 做多收益有限 ∧ (偏移型 nom) 名义收益有限
+inline bool lab_ok(bool gate, _Float16 lv, _Float16 nv, bool nom) { return gate && finite(lv) && (!nom || finite(nv)); }
 
 // 消费端列描述 (流式分析 / 平面 IO 唯一一份): 值列 + 各自门控语义. 任一值列需门控才带同层 ts_valid (读列表末位);
 // 上下文列 (mcap / ind / lim 等) 就是 vt = ALL 的普通值列

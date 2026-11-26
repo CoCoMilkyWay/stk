@@ -13,8 +13,7 @@
 //                   sink 每行一次 (线程内, 行不相交): DropRows 丢弃 / LandRows 落地 rows[i·T + t] / 调用方自定
 //     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
 //     run_batch     一批候选: 候选串行, 候选内全核切日 (C 小也能跑满核, 只留一张 [T][A] 的 r16)
-//     turn_rows     rx × 标签 × C ≥ 1 个金额段 → 因子账集换手 CostAcc[C][H][kLevels]  ← exec.rows(每 t 每 h 一次 factor_slots + turn_row → [tid]) → merge
-//   标签秩 ry / r16(x) 平面 rx 由调用方持有; Workspace (Scratch / Accum / CostAcc / TurnWork 各 [tid]) 由调用方持有, ensure 幂等.
+//   换手 (账集) 走 Stat/Book.hpp book_rows. 标签秩 ry / r16(x) 平面 rx 由调用方持有; Workspace (Scratch / Accum 各 [tid]) 由调用方持有, ensure 幂等.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
 
@@ -25,22 +24,14 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
-#include <type_traits>
 #include <vector>
 
 namespace factor::cpu::stat {
 
 using factor::stat::Accum;
 using factor::stat::Batch;
-using factor::stat::CostAcc;
 using factor::stat::Day;
-using factor::stat::Hold;
-using factor::stat::hold_on;
-using factor::stat::HoldId;
-using factor::stat::Holds;
 using factor::stat::HoldStat;
-using factor::stat::kAmtCount;
-using factor::stat::kHoldCount;
 using factor::stat::Labels;
 using factor::stat::Plane;
 using factor::stat::Span;
@@ -67,15 +58,13 @@ inline void rank_y_rows(const Label &lb, int t0, int t1, int A, uint16_t *ry, Sc
 // 流程 (Exec 出线程, 见 misc/exec.hpp)
 // -----------------------------------------------------------------------------
 
-// 调用方持有; ensure 幂等 (形状对得上零分配). C = 金额段数 (只 turn_rows 用; 不算换手给 0)
+// 调用方持有; ensure 幂等 (形状对得上零分配)
 struct Workspace {
-  std::vector<Scratch> sc;   // [tid]
-  std::vector<Accum> acc;    // [tid][H]
-  std::vector<CostAcc> cacc; // [tid][C][H][kLevels]
-  std::vector<TurnWork> tw;  // [tid]
-  int A = 0, H = 0, C = 0, threads = 0;
-  void ensure(int A_, int H_, int C_, int threads_) {
-    assert(A_ >= 1 && A_ <= kMaxA && H_ >= 1 && H_ <= kHoldCount && C_ >= 0 && threads_ >= 1);
+  std::vector<Scratch> sc; // [tid]
+  std::vector<Accum> acc;  // [tid][H]
+  int A = 0, H = 0, threads = 0;
+  void ensure(int A_, int H_, int threads_) {
+    assert(A_ >= 1 && A_ <= kMaxA && H_ >= 1 && H_ <= kHoldCount && threads_ >= 1);
     if (sc.size() < static_cast<size_t>(threads_))
       sc.resize(static_cast<size_t>(threads_));
     for (Scratch &s : sc)
@@ -83,11 +72,7 @@ struct Workspace {
         s.reserve(A_);
     if (acc.size() < static_cast<size_t>(threads_) * H_)
       acc.resize(static_cast<size_t>(threads_) * H_);
-    if (cacc.size() < static_cast<size_t>(threads_) * C_ * H_ * kLevels)
-      cacc.resize(static_cast<size_t>(threads_) * C_ * H_ * kLevels);
-    if (tw.size() < static_cast<size_t>(threads_))
-      tw.resize(static_cast<size_t>(threads_));
-    A = A_, H = H_, C = C_, threads = threads_;
+    A = A_, H = H_, threads = threads_;
   }
 };
 
@@ -165,60 +150,6 @@ inline void run_batch(Exec &ex, const Batch &B, const uint8_t *g, Frame f, int d
   const size_t H = static_cast<size_t>(L.hd.n), D = static_cast<size_t>(s.days());
   for (int c = 0; c < B.C; ++c)
     run(ex, B.x[c], g, f, d, s, L, rx, w, acc + c * H, day + c * H * D, DropRows{});
-}
-
-// 因子账集的换手 (契约 Turn.hpp; 本 b = e · kLevels + l): rx (已定向) × L 的标签 / 可成交码 × c[C] (块形平面, 未偏)
-//   → out[(k·H + i)·kLevels + l] (CostAcc 两端; 覆盖). 统计行 [t_lo, t_hi), 开仓行 (Hold::opens) 才攒; 交接 Hold::nets(t) → 只交易差额;
-//   本批平仓不交接 (nets(t + h) 假) → settle. 满仓 = L.cap · level_frac(l). land 非 NoLand → 另逐行 land(k, i, t, ret[kBooks], row[kBooks])
-//   (本行该金额段的本批收益与两侧流水; 线程内, 行不相交)
-inline constexpr int kBooks = kEnds * kLevels;
-struct NoLand {
-  void operator()(int, int, int, const double *, const Turn *) const {}
-};
-template <class Exec, class Land = NoLand>
-inline void turn_rows(Exec &ex, const uint16_t *rx, const Span &s, const Labels &L, const Cost *c, int C, Workspace &w, CostAcc *out, const Land &land = {}) {
-  factor::stat::assert_span(s);
-  factor::stat::assert_labels(L, s.g.S, false);
-  const int H = L.hd.n, A = s.A, nt = ex.threads();
-  assert(rx && c && out && C >= 1 && C <= kAmtCount && w.A == A && w.H >= H && w.C >= C && w.threads >= nt);
-  const size_t per = static_cast<size_t>(C) * H * kLevels;
-  std::fill(w.cacc.begin(), w.cacc.begin() + static_cast<size_t>(nt) * per, CostAcc{});
-  double cap[kBooks];
-  for (int b = 0; b < kBooks; ++b)
-    cap[b] = L.cap * factor::stat::level_frac(b % kLevels);
-  ex.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int tid) {
-    CostAcc *acc = w.cacc.data() + static_cast<size_t>(tid) * per;
-    TurnWork &tw = w.tw[static_cast<size_t>(tid)];
-    for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t) {
-      const size_t base = static_cast<size_t>(t) * A;
-      const int ta = s.t0_abs + t;
-      Cost cr[kAmtCount];
-      for (int k = 0; k < C; ++k)
-        cr[k] = c[k].at(base);
-      for (int i = 0; i < H; ++i) {
-        const Hold hd = hold_on(L.hd.k[i], s.g);
-        if (!hd.opens(ta))
-          continue;
-        const Label lb = L.l[i].at(base);
-        const factor::stat::Chain ch = factor::stat::chain_of(t, s, hd);
-        factor_slots(rx + base, lb, ch, ch.nets(t), tw);
-        double ret[kBooks] = {};
-        Turn row[static_cast<size_t>(kAmtCount) * kBooks] = {};
-        turn_row(tw.cur, tw.pre, !hd.nets(ta + hd.h), lb.eo, cr, C, cap, tw, ret, row);
-        for (int k = 0; k < C; ++k) {
-          for (int b = 0; b < kBooks; ++b)
-            acc[(static_cast<size_t>(k) * H + i) * kLevels + b % kLevels].book[b / kLevels].merge(row[k * kBooks + b]);
-          if constexpr (!std::is_same_v<Land, NoLand>)
-            land(k, i, t, ret, row + k * kBooks);
-        }
-      }
-    }
-  });
-  for (size_t j = 0; j < per; ++j) {
-    out[j] = w.cacc[j];
-    for (int tid = 1; tid < nt; ++tid)
-      out[j].merge(w.cacc[static_cast<size_t>(tid) * per + j]);
-  }
 }
 
 } // namespace factor::cpu::stat

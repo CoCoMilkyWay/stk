@@ -1,4 +1,4 @@
-// view_holders — 看常客: 输入 factor / side / n → HoldersRes (集中度 + 资产表) → 原文; 展示见 ui/look/ViewHolders.cpp
+// view_holders — 看常客: 输入 factor / side / n / from / to → HoldersRes (集中度 + 资产表) → 原文; 展示见 ui/look/ViewHolders.cpp
 #include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
@@ -9,15 +9,15 @@ using json = nlohmann::ordered_json;
 
 std::string HoldersRes::headline() const { return "因子 `" + label + "` · " + side + " 的常客"; }
 
-std::string HoldersRes::text() const {
-  std::string s = text_head();
+std::vector<Sec> HoldersRes::secs() const {
   if (!total)
-    return s + "本端没有行\n";
-  s += "本端共 " + str(total) + " 行 · 落过本端的资产 " + str(any) + " / " + std::to_string(active) + " · 前 10 只占 " + pct(top10) + " · 凑满一半要 " + str(half) + " 只\n\n";
-  text::Table tbl({"代码", "本端行", "在池行", "占其在池", "天数", "平均连续行", "本端持仓格", "持仓格均超额 bp"});
+    return {{.lines = {"本端没有行"}, .warn = true}};
+  Sec x{.lines = {"本端共 " + str(total) + " 行 · 落过本端的资产 " + str(any) + " / " + std::to_string(active) + " · 前 10 只占 " + pct(top10) + " · 凑满一半要 " + str(half) + " 只"},
+        .plot = 0};
+  x.tab.head = {"代码", "本端行", "在池行", "占其在池", "天数", "平均连续行", "本端持仓格", "持仓格均超额 bp"};
   for (const Row &w : rows)
-    tbl.add({w.code, std::to_string(w.side), std::to_string(w.in), pct(w.share), std::to_string(w.days), fmt("%.1f", w.run), str(w.held), bp(w.ex)});
-  return s + tbl.str();
+    x.tab.rows.push_back({w.code, std::to_string(w.side), std::to_string(w.in), pct(w.share), std::to_string(w.days), fmt("%.1f", w.run), str(w.held), nbp(w.ex)});
+  return {std::move(x)};
 }
 
 std::string HoldersRes::title() const {
@@ -29,9 +29,10 @@ ToolOut ViewHolders(const Call &c, Bay &bay) {
   Engine::FactorFlow &F = bay.flow;
   std::string err;
   const bool top = c.str("side") == "top";
+  Window win;
   FactorSpec fac;
   fac.ends = true, fac.only_end = top ? st::kTop : st::kBot;
-  if (!resolve_factor(c.str("factor"), env, fac, err))
+  if (!window_of(c, win, err) || !resolve_factor(c.str("factor"), env, fac, err))
     return Fail(std::move(err));
 
   const int g_want = top ? kG20 : kG1, seg = env.fsc.ft->seg;
@@ -45,7 +46,7 @@ ToolOut ViewHolders(const Call &c, Bay &bay) {
   std::vector<misc::Ymd> dates;
   Engine::Job job;
   StreamCfg cfg{.fac = &fac};
-  const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, whole, [&](const ChunkView &cv) {
+  const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, win, [&](const ChunkView &cv) {
     const int A = cv.blk.y.sh.A, n_stat = cv.t_hi - cv.t_lo;
     if (ws.empty()) {
       ws.resize(static_cast<size_t>(A));
@@ -85,7 +86,7 @@ ToolOut ViewHolders(const Call &c, Bay &bay) {
 
   auto res = std::make_shared<HoldersRes>();
   HoldersRes &R = *res;
-  R.period = period_note(dates, env), R.label = fac.label, R.side = top ? "做多端 G20" : "最低组 G1";
+  R.period = period_note(dates, env, win), R.label = fac.label, R.side = top ? "做多端 G20" : "最低组 G1";
   for (const Who &w : ws)
     R.active += w.in > 0;
   std::sort(ws.begin(), ws.end(), [](const Who &x, const Who &y) { return x.side != y.side ? x.side > y.side : x.a < y.a; });
@@ -113,6 +114,6 @@ ToolOut ViewHolders(const Call &c, Bay &bay) {
   return Done(std::move(res));
 }
 
-json SampleViewHolders(Feed &p) { return {{"factor", p.factor()}, {"side", p.pick(Tool::ViewHolders, "side")}, {"n", 10 + p.below(11)}}; }
+json SampleViewHolders(Feed &p) { return p.window({{"factor", p.factor()}, {"side", p.pick(Tool::ViewHolders, "side")}, {"n", 10 + p.below(11)}}); }
 
 } // namespace GUI::Agent

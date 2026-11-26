@@ -1,7 +1,7 @@
 // Ledger — 净值与账核 (Inspect 分层 / Portfolio 因子组合 / 池篮子 / 个股 / 池均线同一份): Load 之上.
 //   逐行批收益 RowLines → fold_ledger (每批资金 1/h̄, 收益在平仓行 Hold::exit 实现 / 成本在建仓行即付; 按 stride 求和) → 期收益 LedgerLines → compound 净值.
 //   账 Ledger = 五列账线 col[kLedgerCols] (一切账都齐: 收益 / 冲击 / 固定冲击量 / 买量 / 卖量) + 画像 Profile (只篮子账 / 个股账有).
-//   收益与换手同一核 (factor/Stat/Pos.hpp walk + Stat/Host.hpp turn_row): 因子组合 = 顶端整组; 篮子 = 持仓权 Weigh (shared/Basket.hpp); 个股 / 池均 = Self.
+//   收益与换手同一核 (factor/Stat/Book.hpp 账集 book_rows): 因子组合 = 顶端整组 (FactorBooks); 篮子 = 持仓权 Weigh (shared/Basket.hpp); 个股 = 自身; 池均 = MaskBook.
 //   BasketPass 沿 Store::pin 的分块流式归约出 Baskets.
 #pragma once
 
@@ -64,20 +64,20 @@ void compound(const R *r, size_t n, Put &&put) {
   }
 }
 
-// 账列: 收益 (平仓行实现) | 真实冲击 (两侧 Σ 量·冲击) / 固定冲击量 (两侧) / 买量 / 卖量 (建仓行即付; 税佣按两侧量现乘, Fee::cost)
+// 账列: 收益 (平仓行实现) | 真实冲击 (两侧 Σ 量·冲击) / 付固定冲击的量 (两侧) / 买量 / 卖量 (建仓行即付; 费率按 Fee::cost 现乘)
 enum LedgerCol : int { kLedgerRet,
                        kLedgerImp,
                        kLedgerFix,
                        kLedgerBuy,
                        kLedgerSell };
 inline constexpr int kLedgerCols = 5;
-// 一行的流水 → 账列 (Stat/Turn.hpp Turn 两侧合计)
-inline float ledger_cell(const factor::stat::Turn &u, int k) {
+// 一行一本的流水在金额段 a 下 → 账列 (Stat/Book.hpp Flow 两侧合计; 与 Flow::cost 同一式)
+inline float ledger_cell(const factor::stat::Flow &u, AmtId a, int k) {
   switch (k) {
   case kLedgerImp:
-    return static_cast<float>(u.imp[kBuy] + u.imp[kSell]);
+    return static_cast<float>(u.imp_of(a, kBuy) + u.imp_of(a, kSell));
   case kLedgerFix:
-    return static_cast<float>(u.fix[kBuy] + u.fix[kSell]);
+    return static_cast<float>(u.fix_of(a, kBuy) + u.fix_of(a, kSell));
   case kLedgerBuy:
     return static_cast<float>(u.vol[kBuy]);
   default:

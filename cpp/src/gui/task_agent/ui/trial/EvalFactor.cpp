@@ -93,7 +93,7 @@ int sweep_plot(const Sweep &sw, int hot, const ImVec2 &size) {
 }
 
 // 写进的权重的累计 rIC (逐日 rIC 逐日累加; 图例带年化 IR; 色同窗中位 rIC 图里的权重线)
-void cum_plot(const Daily &d, size_t n_pts) {
+void cum_plot(const DayTrace &d, size_t n_pts) {
   if (!ImPlot::BeginPlot("##cum_ric", ImVec2(-1, kCumH), ImPlotFlags_NoTitle | ImPlotFlags_NoMenus))
     return;
   ImPlot::SetupAxes(nullptr, "累计 rIC", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
@@ -109,7 +109,7 @@ void cum_plot(const Daily &d, size_t n_pts) {
 
 // 写进的权重的分层图 (与 Inspect 左上同一份, 恒全段): 分层对数累计 / 光标日截面
 void layers_view(const TrialRes &k) {
-  const Daily &d = *k.st.res.daily;
+  const DayTrace &d = *k.st.res.daily;
   assert(d.lay.size() == size_t{Layer::kLayerLines} && d.ls.size() == size_t{Layer::kLsLines} && d.turn.size() == size_t{Layer::kLsLines});
   if (!k.lay) {
     const float *lay[Layer::kLayerLines], *ls[Layer::kLsLines];

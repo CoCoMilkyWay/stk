@@ -45,7 +45,7 @@ Tally TallyOf(Steps ss, double now) {
     t.fails[a.call.tool] += !a.out.ok;
     if (a.out.fx.verdict)
       ++t.verdicts[*a.out.fx.verdict];
-    t.adopted += !a.out.fx.adopted.empty();
+    t.submitted += !a.out.fx.submitted.empty(), t.adopted += !a.out.fx.adopted.empty();
   }
   return t;
 }

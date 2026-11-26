@@ -142,7 +142,7 @@ struct Sweep {
   std::vector<Point> pts; // 中位 rIC 降序
 };
 // 一个权重在本持有期的逐日序列 (Run 顺带, 本进程内存里; 载入的会话没有): 已按权重方向
-struct Daily {
+struct DayTrace {
   std::string expr; // 哪个权重 (Weight::expr / sign)
   int sign = 1;
   std::vector<int> dates;                  // 评估期交易日 YYYYMMDD
@@ -156,8 +156,8 @@ struct Result {
   std::string file, name, name_cn, tmpl, twin, note, error;
   Verdict verdict = Verdict::Pending;
   std::vector<Weight> ws;
-  std::shared_ptr<const Sweep> sweep; // 空 = 没有 (共享不可变: 候选台 / 调用结果 / 列表拷 Result 不拷它)
-  std::shared_ptr<const Daily> daily; // 最佳权重的; 空 = 没有 (同上)
+  std::shared_ptr<const Sweep> sweep;    // 空 = 没有 (共享不可变: 候选台 / 调用结果 / 列表拷 Result 不拷它)
+  std::shared_ptr<const DayTrace> daily; // 最佳权重的; 空 = 没有 (同上)
   int ops = 0;
   bool visible = true;
   const Weight *best() const;
@@ -252,7 +252,7 @@ public:
 
   std::string vet(const Cand &c) const; // stage 落文件前的全部查验 (空 = 可落; 不写盘)
   Staged stage(Cand c);
-  const Result &absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep, std::vector<Daily> days);
+  const Result &absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep, std::vector<DayTrace> days);
   Adopted adopt(std::string name, const Gate &g, bool dry); // dry = 只查门槛不拷进正式库 (工作台; 自检会话恒不拷)
   void discard(const std::string &file);
 

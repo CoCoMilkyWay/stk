@@ -14,13 +14,13 @@
 //       { "hold": "30m", "start_date", "end_date", "days" }, … ], // 评估期 (所用库落盘日交集的最近 N 年)
 //     —— 以下 Run 写 (评估派生, 换掉 / 清空 weights 时一起删; StatJson scope_json / eval_json) ——
 //     "run": { scope… (含 "years"), "frame", "max_impact", "n_full" }, // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
-//     "hold_cols": [...], "acc_cols": [...],                  // holds / acc 数组的列名 (StatJson), 与代码不符 → 全部 stats 忽略
+//     "hold_cols": [...], "turn_cols": [...],                 // holds / turn 数组的列名 (StatJson), 与代码不符 → 全部 stats 忽略
 //     "stats": [                                              // 与 weights 同长同序 (没评的位置 null), 一行一个, 数值表密排
 //       { "time", "valid_pct", "rank_pct", "eval_ms",
 //         "holds": [[HoldStat]…],                             //   全部持有期 (毛收益口径), 载入时显示
-//         "costs": [{amt, acc: [[CostAcc]…]}…],               //   每金额段 (amt 0 = 固定段) × 每持有期换手成本累加器 (年换手 / Inspect 净线从它算)
+//         "amts": [万元…], "turn": [[TurnStat]…],               //   装过的金额段 (0 = 固定段) / 每持有期换手流水 (成本 / 年换手 / Inspect 净线从它算)
 //         "ic_pdf": [{lo, hi, y}…], "alpha_pdf": {lo, hi, y},  //   每持有期逐行 rIC 分布 / alpha 分布 (MiniPdf; 因子表小图)
-//         "years": [[[年, 行, mono, ls, ric]…]…],             //   每持有期分年
+//         "years": [[[年, 行, 窗数, mono, ls, ric, 中位 rIC, 年换手]…]…], // 每持有期分年
 //         "roll": [[窗长, 窗数, 中位 rIC, 平均 rIC, 中位年化多空, 平均年化多空]…] }, … ] } //   每持有期滚动窗 (中位 rIC = 因子表 score)
 //   有效 = type 合法 且 name_cn 合法 且 expr 是字串且 parse 过 (算子 / 元数 / 参数值域 / 特征存在且可作输入)
 //   且根是归一算子 (Expr.hpp root_frame → 口径 CS / TS, 决定 Stat 怎么算; Stat/Contract.hpp【口径 Frame】).

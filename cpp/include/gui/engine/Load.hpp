@@ -8,8 +8,8 @@
 #pragma once
 
 #include "factor/Check.hpp" // check::Plane
+#include "factor/Stat/Book.hpp"
 #include "factor/Stat/Contract.hpp"
-#include "factor/Stat/Turn.hpp"
 #include "features/Storage/FeaturePlane.hpp" // Day / LibReaders
 #include "gui/engine/Table.hpp"              // FeatureTable / FactorScope / StatScope
 #include "misc/epoch.hpp"
@@ -160,11 +160,15 @@ struct YPlanes {
   float max_impact = 0.f;
   double n_full = 0.0;
 };
-inline int fill_costs(const YPlanes &y, factor::stat::Cost (&out)[kAmtCount]) {
+// 块首的盘口段冲击 (账集 Book.hpp; 固定段无平面)
+inline factor::stat::Cost cost_of(const YPlanes &y) {
   const size_t n = y.sh.n();
+  factor::stat::Cost c;
+  c.top = y.max_impact;
   for (int k = 0; k < y.ad.n; ++k)
-    out[k] = y.costs[k] ? factor::stat::Cost{{y.costs[k], y.costs[k] + n}, y.max_impact} : factor::stat::Cost{};
-  return y.ad.n;
+    if (y.costs[k])
+      c.imp[y.ad.k[k] - 1][kBuy] = y.costs[k], c.imp[y.ad.k[k] - 1][kSell] = y.costs[k] + n;
+  return c;
 }
 factor::stat::Labels labels_of(const YPlanes &y);
 

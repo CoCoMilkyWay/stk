@@ -19,6 +19,7 @@
 #include "gui/task_agent/tools/Kit.hpp"
 
 #include <string>
+#include <vector>
 
 namespace GUI::Agent {
 
@@ -35,6 +36,8 @@ std::string Detail(const Result &r); // 有权重: 先一行符号, 再逐权重
 std::string Fills(const std::string &tmpl, const std::string &expr); // 具体式相对模板只写自由参数的取值
 std::string GateLine(const Result &r, const Gate &g);                // 有权重的候选: 是否达入库门槛一行
 std::string ListTail(int all, int skip, int n);                      // 分页列表末尾: 共几个 / 这是第几到第几 / 接着看的 skip
+bool Hits(const Result &r, const std::vector<std::string> &ws);      // 英文名 / 中文名 / 模板 / 思路含全部检索词 (text::words; 空 = 都中)
+std::string ListHead(const std::string &query, int all);             // 列表首行: 给了 query 时的命中数 (没给 = 空)
 
 std::string CallTitle(const Act &a, int step);
 std::string StageOf(const Act &a, double frac); // 在跑的调用此刻在做什么: eval_factor 写阶段 (Search / Run), 后台的带进度

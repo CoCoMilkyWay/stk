@@ -891,14 +891,15 @@ void plot_tod(const InspectDerived &d, const InspectUIState::TodOcc &occ, const 
 // 图例 = 自绘矩阵 (ImPlot 图例只能单列 / 单行), 左上: 行 = 组 (G20 / G1 / LS / 池均), 列 = 金额段 (无冲击 / 固定冲击 / 各金额), 格 = 该线色块;
 //   点格切该线, 点行头 / 列头切整行 / 整列 (有显示的 → 全隐, 否则全显); 悬停格 / 头 → 对应线加粗 (下帧)
 // 口径 = Stat 契约【持仓口径】的每期真实收益 (所评方向; 端 = end_period = HoldStat::grp 两端; ls_period = Σ ls / 全部行, 不触发行记 0).
-// 净线 = 毛二级 − 该端该持有期均摊换手成本 (Stat 换手 (factor/Stat/Turn.hpp)CostAcc::cost(端), 含税佣与冲击 (Fee); 两端都是做多账本, 成本都使线下移;
-// LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (交接与否 / 每期换手量随 h 变), 所以每 (金额段, h) 一份 CostAcc.
+// 净线 = 毛二级 − 该端该持有期均摊换手成本 (Stat 账集流水 (factor/Stat/Book.hpp) cost_period(端, 金额段), 含税佣与冲击 (Fee); 两端都是做多账本, 成本都使线下移;
+// LS = net_ls_period): 纯派生, 现算. 均摊成本随 h 变 (交接与否 / 每期换手量随 h 变), 所以每 h 一份流水 (各金额段同一份量).
 //   毛 G20 / G1 / LS 的样本是 J ∧ ok 行, 成本的样本是端成员 ∧ 标签有效格 (与组计数同口径)
-// hs[n_hold] 毛二级; costs[n_cost] 评估域的金额段 (固定段 + 有 Lob 库时的盘口段). n < 3 的持有期不作节点.
+// hs[n_hold] 毛二级; turn[n_hold] 换手流水; amts 评估域的金额段 (固定段 + 有 Lob 库时的盘口段). n < 3 的持有期不作节点.
 // pool_ann[n_hold] = 池等权指数各持有期的算术年化 (InspectResult::pool_ann, 绝对口径; 与因子无关, 随池一代); nullptr = 不画 (Factors 表 stat 无此项)
 // 悬停: 就近命中一个可见数据点 (组 × 金额段 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 = 画的年化
-void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *costs, int n_cost, const float *pool_ann, const factor::stat::Fee &fee, int sel_hold,
+void plot_term(const factor::stat::HoldStat *hs, int n_hold, const TurnStat *turn, const Amts &amts, const float *pool_ann, const Fee &fee, int sel_hold,
                const char *source, const ImVec2 &size) {
+  const int n_cost = amts.n;
   assert(n_hold >= 1 && n_cost >= 1 && fee.impact >= 0.0);
   char title[128];
   std::snprintf(title, sizeof(title), "期限结构(%s)###term", source);
@@ -912,7 +913,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   if (!ImPlot::BeginPlot(title, size, ImPlotFlags_NoMenus | ImPlotFlags_NoLegend))
     return;
   CompactLegend cl;
-  const int n_tier = n_cost + 1; // q = 0 毛, q ≥ 1 = costs[q − 1]
+  const int n_tier = n_cost + 1; // q = 0 毛, q ≥ 1 = 金额段 amts.k[q − 1]
   std::vector<double> pos(static_cast<size_t>(n_hold));
   std::vector<std::string> names(static_cast<size_t>(n_hold)), tier_names(static_cast<size_t>(n_tier));
   std::vector<const char *> labels(static_cast<size_t>(n_hold));
@@ -923,14 +924,14 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
   }
   tier_names[0] = "无冲击";
   for (int q = 1; q < n_tier; ++q)
-    tier_names[static_cast<size_t>(q)] = costs[q - 1].amt == kAmtFixed ? std::string("固定冲击") : amt_name(costs[q - 1].amt);
+    tier_names[static_cast<size_t>(q)] = amts.k[q - 1] == kAmtFixed ? std::string("固定冲击") : amt_name(amts.k[q - 1]);
   // 线 c (c < kEnds = 端 c, c = kEnds = LS) 在金额段 q 下每期均值 (未年化): 毛原值; 净 = 毛 − 该端该持有期均摊换手成本 (LS 走契约 net_ls_period)
   const auto value = [&](int c, int q, int i) {
     const factor::stat::HoldStat &h = hs[i];
     if (c == kEnds)
-      return q == 0 ? factor::stat::ls_period(h) : factor::stat::net_ls_period(h, costs[q - 1].acc[i], fee);
+      return q == 0 ? factor::stat::ls_period(h) : factor::stat::net_ls_period(h, turn[i].lv[0], amts.k[q - 1], fee);
     const double gross = end_period(h, c);
-    return q == 0 ? gross : gross - costs[q - 1].acc[i].cost(c, fee, h.n_all);
+    return q == 0 ? gross : gross - factor::stat::cost_period(h, turn[i].lv[0].e[c], amts.k[q - 1], fee);
   };
   ImPlot::SetupAxes("hold", "年化均值超额 (%)", ImPlotAxisFlags_None, ImPlotAxisFlags_None);
   ImPlot::SetupAxisFormat(ImAxis_Y1, kYTickFmt);
@@ -980,7 +981,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
       const float wt = (c == kEnds ? 2.5f : 1.5f) * (0.5f + 0.5f * col.w) * hl;
       char name[64];
       line_name(c, q, name);
-      if (c < kEnds || (q > 0 && costs[q - 1].amt == kAmtFixed))
+      if (c < kEnds || (q > 0 && amts.k[q - 1] == kAmtFixed))
         ImPlot::HideNextItem(true, ImPlotCond_Once); // 默认只显 LS (除固定冲击外的金额段), 图例可点开
       ImPlot::SetNextLineStyle(col, wt);
       ImPlot::PlotLine(name, xs.data(), ys.data(), static_cast<int>(xs.size()));
@@ -1146,7 +1147,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     ImGui::Text("%s  h=%s", idx_name, labels[static_cast<size_t>(pi)]);
     ImGui::Separator();
     ImGui::Text("年化 %+.2f %%", 100.0 * pool_ann[pi]);
-    ImGui::TextDisabled("池内全部成分等权做多 (可买才建仓), 每批 1/h̄, 不扣成本; 全期逐行收益和 / 天数 × %d", factor::stat::kDaysPerYear);
+    ImGui::TextDisabled("池内全部成分等权做多 (可买才建仓), 每批 1/h̄, 不扣成本; 全期逐行收益和 / 天数 × %d", kDaysPerYear);
     ImGui::EndTooltip();
   } else if (pc >= 0) {
     // 账 (bp/期): G20 / G1 = 两端做多 (超额, 净 = 毛 − 成本) / LS = ½ (G20 − G1) (契约 ls_period, 成本 Σ cost(端)/2); 净 × 期数 = 画的 y
@@ -1177,27 +1178,28 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const CostTier *cos
     row("毛", v, note);
     double amort = 0.0;
     if (pq > 0) {
-      const factor::stat::CostAcc &ca = costs[pq - 1].acc[pi];
+      const factor::stat::Ends &ca = turn[pi].lv[0];
+      const AmtId amt = amts.k[pq - 1];
       const auto avg = [&](auto f) { return ls ? 0.5 * (f(kTop) + f(kBot)) : f(pc); }; // LS = 两本各半, 否则该端
-      const auto rate_of = [&](int s) { return [&ca, &fee, s](int e) { return ca.rate(e, s, fee); }; };
-      const auto turn = [&](int e) { return factor::stat::turn_annual(h, ca, e); };
-      const auto cost = [&](int e) { return ca.cost(e, fee, h.n_all); };
+      const auto rate_of = [&](int s) { return [&ca, &fee, amt, s](int e) { return ca.e[e].rate(amt, s, fee); }; };
+      const auto turns = [&](int e) { return factor::stat::turn_annual(h, ca.e[e]); };
+      const auto cost = [&](int e) { return factor::stat::cost_period(h, ca.e[e], amt, fee); };
       amort = avg(cost);
       ImGui::Spacing();
       // 买 / 卖费率 = 该侧量加权的 (冲击 + 税佣); 年换手 = 单边 Σ Δw⁺ / 全部行 × 每年满仓轮数 (同一时刻交接的只算差额);
       // 均摊成本 = 两侧 Σ 量 × 费率 / 全部行; LS 两端各算再平均
-      for (int s = 0; s < factor::stat::kSides; ++s) {
+      for (int s = 0; s < kSides; ++s) {
         const auto r = rate_of(s);
         std::snprintf(v, sizeof(v), "%.2f bp", avg(r) * bp);
         if (ls)
           std::snprintf(note, sizeof(note), "G20 %.2f / G1 %.2f", r(kTop) * bp, r(kBot) * bp);
         else
-          std::snprintf(note, sizeof(note), "%s", s == factor::stat::kBuy ? "冲击 + 佣金" : "冲击 + 佣金 + 印花");
-        row(s == factor::stat::kBuy ? "买入费率" : "卖出费率", v, note);
+          std::snprintf(note, sizeof(note), "%s", s == kBuy ? "冲击 + 佣金" : "冲击 + 佣金 + 印花");
+        row(s == kBuy ? "买入费率" : "卖出费率", v, note);
       }
-      std::snprintf(v, sizeof(v), "%.1f 倍/年", avg(turn));
+      std::snprintf(v, sizeof(v), "%.1f 倍/年", avg(turns));
       if (ls)
-        std::snprintf(note, sizeof(note), "G20 %.1f / G1 %.1f", turn(kTop), turn(kBot));
+        std::snprintf(note, sizeof(note), "G20 %.1f / G1 %.1f", turns(kTop), turns(kBot));
       else
         note[0] = '\0';
       row("年换手", v, note);
@@ -1822,12 +1824,12 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   else
     empty_plot("日内 rIC###tod", term, wait_hint);
   ImGui::SameLine();
-  // 期限结构: Inspect 结果优先, 否则 Factors 表的 stat (row.hold + row.costs; 两者都是毛 + 全部金额段, 同一份 CostTier)
+  // 期限结构: Inspect 结果优先, 否则 Factors 表的 stat (row.hold + row.turn; 两者都是毛 + 全部金额段, 同一份 TurnStat)
   if (shown) {
-    plot_term(res_ev.hold, n_hold, res_ev.costs.data(), static_cast<int>(res_ev.costs.size()), res_pool_ann.data(), ctx.fee, ui.hold_idx,
+    plot_term(res_ev.hold, n_hold, res_ev.turn, res_ev.amts, res_pool_ann.data(), ctx.fee, ui.hold_idx,
               "Inspect", term);
   } else if (row.has_stat && row.n_hold == n_hold) {
-    plot_term(row.hold, n_hold, row.costs.data(), static_cast<int>(row.costs.size()), nullptr, ctx.fee, ui.hold_idx,
+    plot_term(row.hold, n_hold, row.turn, row.amts, nullptr, ctx.fee, ui.hold_idx,
               row.stat_from_file ? "文件 stat" : "Factors Run", term);
   } else {
     empty_plot("期限结构###term", term, "无 stat (Factors 页 Run 或此处 Recompute)");

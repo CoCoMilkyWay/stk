@@ -10,64 +10,64 @@ using json = nlohmann::ordered_json;
 
 std::string StockDayRes::headline() const { return code + " · " + date + " · " + level + " (每天 " + std::to_string(seg) + " 行)"; }
 
-std::string StockDayRes::text() const {
-  std::string s = text_head();
+std::vector<Sec> StockDayRes::secs() const {
+  std::vector<Sec> out;
+  Sec &x = out.emplace_back();
   const std::string open_str = first < 0 ? "当日无成交"
                                          : "首个有成交行 (" + clock[static_cast<size_t>(first)] + ") 收 " + num(close[static_cast<size_t>(first)]) + " (" +
                                                chg(close[static_cast<size_t>(first)] / pre - 1.0) + ")";
-  s += "昨收 " + num(pre) + " · " + open_str + " · 高 " + num(hi) + " (" + chg(hi / pre - 1.0) + ") · 低 " + num(lo) + " (" + chg(lo / pre - 1.0) + ") · 收 " + num(last) + " (" +
-       chg(last / pre - 1.0) + ") · 涨停 " + num(lim_up) + " / 跌停 " + num(lim_dn) + " · 成交额 " + wan(amt_sum, amt_n) + " 万 · 在池 " + std::to_string(in) + " / " +
-       std::to_string(seg) + " 行\n";
-  for (const std::string &e : exprs)
-    s += e;
-  s += "\n- 收盘价 " + spark(close) + "\n- 成交量 " + spark(vol) + "\n";
+  x.lines = {"昨收 " + num(pre) + " · " + open_str + " · 高 " + num(hi) + " (" + chg(hi / pre - 1.0) + ") · 低 " + num(lo) + " (" + chg(lo / pre - 1.0) + ") · 收 " + num(last) +
+                 " (" + chg(last / pre - 1.0) + ")",
+             "涨停 " + num(lim_up) + " / 跌停 " + num(lim_dn) + " · 成交额 " + wan(amt_sum, amt_n) + " 万 · 在池 " + std::to_string(in) + " / " + std::to_string(seg) + " 行"};
+  x.lines.insert(x.lines.end(), exprs.begin(), exprs.end());
+  x.sparks = {"收盘价 " + spark(close), "成交量 " + spark(vol)};
   if (has_fac)
-    s += "- 因子 `" + fac + "` 分位 (高 = 做多端) " + spark(rank, rk) + "\n";
+    x.sparks.push_back("因子 `" + fac + "` 分位 " + spark(rank, rk));
   for (size_t i = 0; i < fv.size(); ++i)
-    s += "- E" + str(i + 1) + " " + spark(fv[i]) + "\n";
+    x.sparks.push_back("E" + str(i + 1) + " " + spark(fv[i]));
+  x.plot = 0;
 
-  std::vector<std::string> phs{"时段", "涨跌", "段内高", "段内低", "量占比"};
+  Sec &p = out.emplace_back();
+  p.title = "分段";
+  p.tab.head = {"时段", "涨跌", "段内高", "段内低", "量占比"};
   if (has_fac)
-    phs.push_back("因子分位"), phs.push_back("多/空行");
-  phs.push_back("后续超额 bp");
+    p.tab.head.push_back("因子分位"), p.tab.head.push_back("多/空行");
+  p.tab.head.push_back("后续超额 bp");
   for (size_t i = 0; i < fv.size(); ++i)
-    phs.push_back("E" + str(i + 1) + " 段末");
-  text::Table ptbl(phs);
-  for (const Part &p : parts) {
-    std::vector<std::string> row{p.name, chg(p.chg), chg(p.hi), chg(p.lo), pct(p.vol)};
+    p.tab.head.push_back("E" + str(i + 1) + " 段末");
+  for (const Part &a : parts) {
+    std::vector<Num> row{a.name, nchg(a.chg), nchg(a.hi), nchg(a.lo), pct(a.vol)};
     if (has_fac)
-      row.push_back(rk(p.rank)), row.push_back(std::to_string(p.up) + "/" + std::to_string(p.dn));
-    row.push_back(bp(p.ex));
-    for (const double v : p.end)
+      row.push_back(rk(a.rank)), row.push_back(std::to_string(a.up) + "/" + std::to_string(a.dn));
+    row.push_back(nbp(a.ex));
+    for (const double v : a.end)
       row.push_back(num(v));
-    ptbl.add(row);
+    p.tab.rows.push_back(std::move(row));
   }
-  s += "\n" + ptbl.str();
 
   if (!rows.empty()) {
-    const auto whole_n = [](double x) { return std::isfinite(x) ? fmt("%.0f", x) : std::string("—"); };
-    std::vector<std::string> rhs{"时刻", "收", "涨跌", "当日", "量", "额"};
+    Sec &r = out.emplace_back();
+    r.title = "逐行 " + rows;
+    r.tab.head = {"时刻", "收", "涨跌", "当日", "量", "额 万"};
     if (has_fac)
-      rhs.push_back("因子分位"), rhs.push_back("组");
-    rhs.push_back("后续超额 bp");
+      r.tab.head.push_back("因子分位"), r.tab.head.push_back("组");
+    r.tab.head.push_back("后续超额 bp");
     for (size_t i = 0; i < fv.size(); ++i)
-      rhs.push_back("E" + str(i + 1));
-    text::Table rtbl(rhs);
+      r.tab.head.push_back("E" + str(i + 1));
     for (int k = r0; k < r1; ++k) {
       const size_t q = static_cast<size_t>(k);
       const double prev = k == 0 ? pre : close[q - 1];
-      std::vector<std::string> row{clock[q], num(close[q]), chg(close[q] / prev - 1.0), chg(close[q] / pre - 1.0), whole_n(vol[q]),
-                                   std::isfinite(amt[q]) ? fmt("%.1f", amt[q] / 1e4) : std::string("—")};
+      std::vector<Num> row{clock[q], num(close[q]), nchg(close[q] / prev - 1.0), nchg(close[q] / pre - 1.0), std::isfinite(vol[q]) ? fmt("%.0f", vol[q]) : "—",
+                           std::isfinite(amt[q]) ? fmt("%.1f", amt[q] / 1e4) : "—"};
       if (has_fac)
         row.push_back(rk(rank[q])), row.push_back(grp[q] < 0 ? "—" : gname(grp[q]));
-      row.push_back(bp(ex[q]));
+      row.push_back(nbp(ex[q]));
       for (const std::vector<double> &f : fv)
         row.push_back(num(f[q]));
-      rtbl.add(row);
+      r.tab.rows.push_back(std::move(row));
     }
-    s += "\n逐行 " + rows + " (涨跌 = 对上一行收盘; 当日 = 对昨收; 额 万元):\n" + rtbl.str();
   }
-  return s;
+  return out;
 }
 
 std::string StockDayRes::title() const {
@@ -141,7 +141,7 @@ ToolOut ViewStockDay(const Call &c, Bay &bay) {
             R.amt_sum += R.amt[q], ++R.amt_n;
           last = std::isfinite(R.close[q]) ? R.close[q] : last;
           R.in += cv.blk.y.gate[cell_k];
-          const float mkt = row_mkt(cv.blk, t);
+          const float mkt = mkt_of(cv, t);
           R.ex[q] = lb.m[cell_k] && opens(u0 + k, env) ? static_cast<double>(h2f(lv[cell_k])) - mkt : kNaN;
           if (has_fac)
             R.rank[q] = rank_of_r16(cv.rx[cell_k]), R.grp[q] = grp_of_r16(cv.rx[cell_k]);

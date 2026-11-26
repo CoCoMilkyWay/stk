@@ -250,7 +250,7 @@ struct Result {
 inline std::vector<Daily> dailies(const Data &d, const Day *day, int D) {
   std::vector<Daily> dl(static_cast<size_t>(d.hd.n));
   for (int i = 0; i < d.hd.n; ++i)
-    add_days(dl[static_cast<size_t>(i)], day + static_cast<size_t>(i) * D, D, d.hd.k[i], d.seg);
+    dl[static_cast<size_t>(i)] = ls_daily({day + static_cast<size_t>(i) * D, static_cast<size_t>(D)}, d.hd.k[i], d.seg);
   return dl;
 }
 
@@ -261,7 +261,7 @@ inline void run_cpu(const Data &d, Result &r, int threads) {
   const int H = d.hd.n;
   misc::exec::ForkJoin ex(threads);
   factor::cpu::stat::Workspace w;
-  w.ensure(d.A, H, 0, ex.threads());
+  w.ensure(d.A, H, ex.threads());
   std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(s.n()));
   std::vector<uint16_t> rx(s.n());
   std::vector<Accum> acc(static_cast<size_t>(H));
@@ -317,7 +317,7 @@ inline void run_batch_cpu(const Data &d, int threads, Block &b) {
   const Span all = d.span(), s = b.span(d);
   misc::exec::ForkJoin ex(threads);
   factor::cpu::stat::Workspace w;
-  w.ensure(d.A, H, 0, ex.threads());
+  w.ensure(d.A, H, ex.threads());
   std::vector<std::vector<uint16_t>> ry(static_cast<size_t>(H), std::vector<uint16_t>(all.n()));
   for (int i = 0; i < H; ++i)
     factor::cpu::stat::prep_label(ex, label_of(d.lab[static_cast<size_t>(i)], d.eo, nullptr), all, ry[static_cast<size_t>(i)].data(), w);

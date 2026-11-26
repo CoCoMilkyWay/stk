@@ -1,4 +1,4 @@
-// view_response — 看响应: 输入 factor / side / split → ResponseRes (开仓前后各时点的累计超额 / 因子分位 / 与此前收益的相关 / 按开仓时段) → 原文; 展示见 ui/look/ViewResponse.cpp
+// view_response — 看响应: 输入 factor / side / split / from / to → ResponseRes (开仓前后各时点的累计超额 / 因子分位 / 与此前收益的相关 / 按开仓时段) → 原文; 展示见 ui/look/ViewResponse.cpp
 #include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
@@ -47,34 +47,33 @@ std::vector<RespPt> points_of(int seg) {
 
 std::string ResponseRes::headline() const { return "因子 `" + label + "` · " + side + " · 开仓前后的累计超额"; }
 
-std::string ResponseRes::text() const {
-  std::string s = text_head();
+std::vector<Sec> ResponseRes::secs() const {
   if (!events)
-    return s + "本端没有真持有过的格\n";
-  s += "事件 = 真持有段 (同 view_trades merge=run) 的开仓行, 共 " + str(events) + " 段" + (kept < events ? " (等距抽 " + str(kept) + " 段)" : "") + " · 零点 = 开仓行收盘价\n";
-  s += "累计超额 = 对数收益减同行在池均值逐行累计 (跨日按昨收接, 不含除权缺口; 没价的行记 0); 开仓前的点 = 该点到开仓的涨跌, 开仓后的点 = 开仓到该点; 标准误按开仓日聚类\n\n";
-  text::Table ptbl({"时点", "段数", "累计超额 bp", "± 标准误", "为正占比", "因子分位 (高 = 做多端)"});
-  for (const Pt &p : pts)
-    ptbl.add({p.name, str(p.n), p.zero ? "0" : bp(p.ex), p.zero ? "—" : fmt("%.1f", p.se * 1e4), p.zero ? "—" : pct(p.up), rk(p.rank)});
-  s += ptbl.str();
-  s += "\n开仓行的因子分位与此前收益的截面 rank 相关 (抽 " + std::to_string(kCorrRows) + " 行取均值; 接近 −1 = 因子主要是短期反转的代理, 接近 +1 = 动量的代理):";
+    return {{.lines = {"本端没有真持有过的格"}, .warn = true}};
+  std::string lag = "开仓行因子分位与此前收益的截面秩相关:";
   for (size_t i = 0; i < lags.size(); ++i)
-    s += (i ? " · " : " ") + lags[i].first + " " + r3(lags[i].second);
-  s += "\n";
+    lag += (i ? " · " : " ") + lags[i].first + " " + r3(lags[i].second);
+  std::vector<Sec> out;
+  Sec &x = out.emplace_back();
+  x.lines = {"真持有段 " + str(events) + " 段" + (kept < events ? " (等距抽 " + str(kept) + " 段)" : ""), lag};
+  x.plot = 0;
+  x.tab.head = {"时点", "段数", "累计超额 bp", "± 标准误", "为正占比", "因子分位"};
+  for (const Pt &p : pts)
+    x.tab.rows.push_back({p.name, str(p.n), p.zero ? Num("0") : nbp(p.ex), p.zero ? "—" : fmt("%.1f", p.se * 1e4), p.zero ? "—" : pct(p.up), rk(p.rank)});
   if (tod) {
-    std::vector<std::string> hs{"开仓时段", "段数"};
+    Sec &t = out.emplace_back();
+    t.title = "按开仓时段 (各时点的累计超额 bp)";
+    t.tab.head = {"开仓时段", "段数"};
     for (const Pt &p : pts)
-      hs.push_back(p.name);
-    text::Table ttbl(hs);
+      t.tab.head.push_back(p.name);
     for (const Part &q : parts) {
-      std::vector<std::string> row{q.name, str(q.n)};
+      std::vector<Num> row{q.name, str(q.n)};
       for (size_t j = 0; j < pts.size(); ++j)
-        row.push_back(pts[j].zero ? "0" : bp(q.ex[j]));
-      ttbl.add(row);
+        row.push_back(pts[j].zero ? Num("0") : nbp(q.ex[j]));
+      t.tab.rows.push_back(std::move(row));
     }
-    s += "\n按开仓时段 (各时点的累计超额 bp):\n" + ttbl.str();
   }
-  return s;
+  return out;
 }
 
 std::string ResponseRes::title() const {
@@ -86,9 +85,10 @@ ToolOut ViewResponse(const Call &c, Bay &bay) {
   Engine::FactorFlow &F = bay.flow;
   std::string err;
   const bool top = c.str("side") == "top";
+  Window win;
   FactorSpec fac;
   fac.ends = true, fac.only_end = top ? st::kTop : st::kBot;
-  if (!resolve_factor(c.str("factor"), env, fac, err))
+  if (!window_of(c, win, err) || !resolve_factor(c.str("factor"), env, fac, err))
     return Fail(std::move(err));
 
   const int seg = env.fsc.ft->seg;
@@ -119,7 +119,7 @@ ToolOut ViewResponse(const Call &c, Bay &bay) {
   std::vector<misc::Ymd> dates;
   Engine::Job job;
   StreamCfg cfg{.fac = &fac, .bars = bit(Close) | bit(PreClose), .extra_front = seg == 1 ? 20 : 1, .extra_back = seg == 1 ? 5 : 2, .extra_work = sizeof(float)};
-  const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, whole, [&](const ChunkView &cv) {
+  const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, win, [&](const ChunkView &cv) {
     const int A = cv.blk.y.sh.A, n_stat = cv.t_hi - cv.t_lo, total_T = static_cast<int>(cv.dates.size()) * seg;
     const Px px(cv.blk, cv.bm, cfg.bars, env.open);
     const std::vector<float> e = block_excess_steps(F.S.ex, cv.blk, px, cv.blk.land0());
@@ -163,7 +163,7 @@ ToolOut ViewResponse(const Call &c, Bay &bay) {
     // 开仓行因子分位与此前收益的截面秩相关
     const int nt = F.S.ex.threads();
     for (size_t li = 0; li < lags.size(); ++li) {
-      const int w = lags[li].second, rstep = row_step((total_T - w) / kCorrRows, seg);
+      const int w = lags[li].second, rstep = row_step((cv.w_rows() - w) / kCorrRows, seg);
       std::vector<Mean> tr(static_cast<size_t>(nt));
       F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
         std::vector<double> xs, ys;
@@ -191,7 +191,7 @@ ToolOut ViewResponse(const Call &c, Bay &bay) {
 
   auto res = std::make_shared<ResponseRes>();
   ResponseRes &R = *res;
-  R.period = period_note(dates, env), R.label = fac.label, R.side = top ? "做多端 G20" : "最低组 G1", R.tod = tod;
+  R.period = period_note(dates, env, win), R.label = fac.label, R.side = top ? "做多端 G20" : "最低组 G1", R.tod = tod;
   R.events = all_ev.size();
   if (all_ev.empty())
     return Done(std::move(res));
@@ -235,7 +235,7 @@ ToolOut ViewResponse(const Call &c, Bay &bay) {
 }
 
 json SampleViewResponse(Feed &p) {
-  return {{"factor", p.factor()}, {"side", p.pick(Tool::ViewResponse, "side")}, {"split", p.ctx.seg > 1 && p.coin(0.3) ? "tod" : "none"}};
+  return p.window({{"factor", p.factor()}, {"side", p.pick(Tool::ViewResponse, "side")}, {"split", p.ctx.seg > 1 && p.coin(0.3) ? "tod" : "none"}});
 }
 
 } // namespace GUI::Agent

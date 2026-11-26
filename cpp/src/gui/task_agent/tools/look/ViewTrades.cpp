@@ -1,4 +1,4 @@
-// view_trades — 看交割单: 输入 factor / side / sort / n / merge / from / to / tod → TradesRes (段收益分布 / 开仓时段 / 盘面标签 / 明细) → 原文; 展示见 ui/look/ViewTrades.cpp
+// view_trades — 看交割单: 输入 factor / side / sort / n / merge / tod / from / to → TradesRes (段收益分布 / 开仓时段 / 盘面标签 / 明细) → 原文; 展示见 ui/look/ViewTrades.cpp
 #include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
@@ -11,35 +11,39 @@ using json = nlohmann::ordered_json;
 
 std::string TradesRes::headline() const { return "因子 `" + label + "` · " + side + " · 合并 " + merge + win; }
 
-std::string TradesRes::text() const {
-  std::string s = text_head();
+std::vector<Sec> TradesRes::secs() const {
   if (!cells)
-    return s + "本端没有真持有过的格\n";
-  s += "真持有 " + str(cells) + " 格 (每行平均 " + fmt("%.1f", static_cast<double>(cells) / win_rows) + " 只) → " + str(segs) + " 段, 段均 " +
-       fmt("%.1f", static_cast<double>(cells) / static_cast<double>(segs)) + " 行\n";
-  s += "格超额均值 " + bp(cell_mean) + "bp (胜率 " + pct(cell_up) + ") · 段超额: 均值 " + bp(seg_mean) + " · 中位 " + bp(seg_med) + " · p10 " + bp(seg_p10) + " · p90 " +
-       bp(seg_p90) + " · 胜率 " + pct(seg_up) + "\n";
-  s += "集中度 (段贡献 = 段超额 × 行数): 最差 10% 的段占全部亏损 " + pct(worst) + " · 最好 10% 的段占全部盈利 " + pct(best) + "\n";
-  s += "段超额 = 段内各格超额的均值, 段均值不按行数加权 (长段与短段同权), 可与格超额均值异号; 下面两张表的超额按格加权 (加回去即格超额均值, 与分层组超额同口径), 胜率按段\n";
+    return {{.lines = {"本端没有真持有过的格"}, .warn = true}};
+  std::vector<Sec> out;
+  Sec &x = out.emplace_back();
+  x.lines = {"真持有 " + str(cells) + " 格 (每行平均 " + fmt("%.1f", static_cast<double>(cells) / win_rows) + " 只) → " + str(segs) + " 段, 段均 " +
+                 fmt("%.1f", static_cast<double>(cells) / static_cast<double>(segs)) + " 行",
+             "格超额均值 " + bp(cell_mean) + "bp (胜率 " + pct(cell_up) + ") · 段超额 均值 " + bp(seg_mean) + " / 中位 " + bp(seg_med) + " / p10 " + bp(seg_p10) + " / p90 " +
+                 bp(seg_p90) + "bp · 段胜率 " + pct(seg_up),
+             "集中度: 最差 10% 的段占全部亏损 " + pct(worst) + " · 最好 10% 的段占全部盈利 " + pct(best)};
+  x.plot = 0;
   if (seg > 1) {
-    text::Table ptbl({"开仓时段", "段数", "占比", "格超额均值 bp", "段胜率"});
-    for (const Part &p : parts)
-      ptbl.add({p.name, str(p.n), pct(p.share), bp(p.mean), pct(p.up)});
-    s += "\n" + ptbl.str();
+    Sec &p = out.emplace_back();
+    p.title = "开仓时段";
+    p.tab.head = {"时段", "段数", "占比", "格超额 bp", "段胜率"};
+    for (const Part &a : parts)
+      p.tab.rows.push_back({a.name, str(a.n), pct(a.share), nbp(a.mean), pct(a.up)});
   }
   if (!tags.empty()) {
-    text::Table ttbl({"开仓那行的盘面", "本端格占比", "池内格占比", "提升", "开仓带此标签的格超额 bp", "不带的 bp"});
-    for (const Tag &t : tags)
-      ttbl.add({t.name, pct(t.held), pct(t.base), t.base > 0.0 ? fmt("%.2f", t.held / t.base) : "—", bp(t.with), bp(t.without)});
-    s += "\n" + ttbl.str();
+    Sec &t = out.emplace_back();
+    t.title = "开仓那行的盘面";
+    t.tab.head = {"盘面", "本端格占比", "池内格占比", "提升", "带此标签的格超额 bp", "不带的 bp"};
+    for (const Tag &a : tags)
+      t.tab.rows.push_back({a.name, pct(a.held), pct(a.base), a.base > 0.0 ? fmt("%.2f", a.held / a.base) : "—", nbp(a.with), nbp(a.without)});
   }
-  text::Table dtbl({"#", "代码", "日期", "时刻", "行", "开仓分位", "段超额 bp", "开仓时当日涨跌", "开仓时日内位置", "盘面"});
+  Sec &d = out.emplace_back();
+  d.title = "明细 (" + sort + ")";
+  d.tab.head = {"#", "代码", "日期", "时刻", "行", "开仓分位", "段超额 bp", "开仓时当日涨跌", "开仓时日内位置", "盘面"};
   for (size_t q = 0; q < list.size(); ++q) {
-    const Seg &x = list[q];
-    dtbl.add({str(q + 1), x.code, x.date, x.time, std::to_string(x.rows), rk(x.rank), bp(x.ex), chg(x.chg), pos2(x.pos), x.tags});
+    const Seg &a = list[q];
+    d.tab.rows.push_back({str(q + 1), a.code, a.date, a.time, std::to_string(a.rows), rk(a.rank), nbp(a.ex), nchg(a.chg), pos2(a.pos), a.tags});
   }
-  s += "\n明细 (" + sort + (sort == "random" ? "" : "; 尾部个例, 多是个股事件或数据缺失, 不代表信号") + "):\n" + dtbl.str();
-  return s;
+  return out;
 }
 
 std::string TradesRes::title() const {
@@ -50,10 +54,11 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
   const ViewEnv &env = bay.env;
   Engine::FactorFlow &F = bay.flow;
   std::string err;
-  if (!date_arg_ok(c, "from", err) || !date_arg_ok(c, "to", err))
+  Window win;
+  if (!window_of(c, win, err))
     return Fail(std::move(err));
   const int seg = env.fsc.ft->seg;
-  const std::string from = c.str("from"), to = c.str("to"), tod = c.str("tod");
+  const std::string tod = c.str("tod");
   int k0 = 0, k1 = seg;
   if (!tod.empty()) {
     if (seg == 1)
@@ -67,7 +72,6 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
   if (!resolve_factor(c.str("factor"), env, fac, err))
     return Fail(std::move(err));
 
-  const int ymd0 = from.empty() ? 0 : ymd_of(from), ymd1 = to.empty() ? 99999999 : ymd_of(to);
   const std::string merge = c.str("merge"), sort = c.str("sort");
   const std::string side_cn = top ? "做多端 G20" : "最低组 G1";
 
@@ -88,19 +92,9 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
   const Engine::Rc rc = run_stream(
       env, F, cfg, dates, job, err,
       [&](const std::vector<misc::Ymd> &ds, size_t &lo, size_t &hi, std::string &why) {
-        size_t a = ds.size(), b = 0;
-        for (size_t d = 0; d < ds.size(); ++d)
-          if (ds[d] >= ymd0 && ds[d] <= ymd1)
-            a = std::min(a, d), b = d + 1;
-        if (a >= b || k0 >= k1) {
-          std::string win = (!from.empty() || !to.empty() ? (from.empty() ? "…" : from) + " ~ " + (to.empty() ? "…" : to) + " " : "") +
-                            (!tod.empty() ? "行末 " + tod + " " : "");
-          why = "## 因子 `" + fac.label + "` · " + side_cn + " · 合并 " + merge + " · 只看 " + win + "的行 (0 行)\n窗口里没有行 (观察的日段 " + misc::dash(ds.front()) +
-                " ~ " + misc::dash(ds.back()) + ")";
+        if (!win(ds, lo, hi, why))
           return false;
-        }
-        lo = a, hi = b;
-        win_rows = static_cast<int>(b - a) * (k1 - k0);
+        win_rows = static_cast<int>(hi - lo) * (k1 - k0);
         return true;
       },
       [&](const ChunkView &cv) {
@@ -110,8 +104,8 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
 
         std::vector<std::pair<int, HeldCell>> flat;
         for (int r = 0; r < n_stat; ++r) {
-          const int u = cv.u0 + r, ymd = cv.dates[static_cast<size_t>(u / seg)], k = u % seg;
-          if (ymd < ymd0 || ymd > ymd1 || k < k0 || k >= k1)
+          const int k = (cv.u0 + r) % seg;
+          if (k < k0 || k >= k1)
             continue;
           for (const HeldCell &hc : cv.cells[static_cast<size_t>(r)])
             flat.push_back({r, hc});
@@ -126,12 +120,12 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
           }
         });
 
-        // 池内基准抽样 (按本块所占统计行比例抽)
-        const size_t want_b = std::max<size_t>(1, kBase * static_cast<size_t>(n_stat) / std::max<size_t>(1, cv.dates.size() * static_cast<size_t>(seg)));
+        // 池内基准抽样 (按本块占日段统计行的比例抽)
+        const size_t want_b = std::max<size_t>(1, kBase * static_cast<size_t>(n_stat) / static_cast<size_t>(cv.w_rows()));
         std::uniform_int_distribution<int> pick_r(0, n_stat - 1), pick_a(0, A - 1);
         for (size_t got = 0, tries = 0; got < want_b && nb < kBase && tries < want_b * 20; ++tries) {
-          const int r = pick_r(rng), u = cv.u0 + r, ymd = cv.dates[static_cast<size_t>(u / seg)], kr = u % seg;
-          if (ymd < ymd0 || ymd > ymd1 || kr < k0 || kr >= k1 || !opens(u, env))
+          const int r = pick_r(rng), u = cv.u0 + r, kr = u % seg;
+          if (kr < k0 || kr >= k1 || !opens(u, env))
             continue;
           const int t = cv.t_lo + r, a = pick_a(rng);
           const size_t k = static_cast<size_t>(t) * static_cast<size_t>(A) + static_cast<size_t>(a);
@@ -149,15 +143,10 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
 
   auto res = std::make_shared<TradesRes>();
   TradesRes &R = *res;
-  R.period = period_note(dates, env);
+  R.period = period_note(dates, env, win);
   R.label = fac.label, R.side = side_cn, R.merge = merge, R.sort = sort, R.seg = seg, R.win_rows = win_rows;
-  std::string win;
-  if (!from.empty() || !to.empty())
-    win += (from.empty() ? "…" : from) + " ~ " + (to.empty() ? "…" : to) + " ";
   if (!tod.empty())
-    win += "行末 " + tod + " ";
-  if (!win.empty())
-    R.win = " · 只看 " + win + "的行 (" + std::to_string(win_rows) + " 行)";
+    R.win = " · 只看行末 " + tod + " 的行 (" + std::to_string(win_rows) + " 行)";
   R.cells = cs.size();
   if (cs.empty())
     return Done(std::move(res));
@@ -259,13 +248,9 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
 json SampleViewTrades(Feed &p) {
   constexpr Tool T = Tool::ViewTrades;
   json j = {{"factor", p.factor()}, {"side", p.pick(T, "side")}, {"sort", p.pick(T, "sort")}, {"n", 6 + p.below(10)}, {"merge", p.pick(T, "merge")}};
-  if (p.coin(0.3) && !p.ctx.days.empty()) {
-    const auto [a, b] = p.span(20, 60);
-    j["from"] = a, j["to"] = b;
-  }
   if (p.coin(0.2) && p.ctx.seg > 1)
     j["tod"] = p.tod(std::max(1, (p.ctx.seg - p.ctx.open) / 4));
-  return j;
+  return p.window(std::move(j));
 }
 
 } // namespace GUI::Agent

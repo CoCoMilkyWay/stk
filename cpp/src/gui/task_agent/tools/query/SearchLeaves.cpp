@@ -18,7 +18,7 @@ std::string LeavesRes::text() const {
     tbl.add({r.leaf, r.name_cn, r.formula, r.desc, r.value});
   return (loose ? "没有同时含全部词的叶, 下列含其中任一词 (各词单独命中: " + alone + "). " : std::string()) + "命中 " + std::to_string(hit) + " 个叶, 在 " +
          std::to_string(groups) + " 组里" + (groups > static_cast<size_t>(n) ? ", 列前 " + std::to_string(n) + " 组" : std::string()) +
-         ". 同组的叶只差计量 (amt 额 / vol 量 / n 笔) 或阈值 / 窗口 (带数字的词), 列出整组; 公式与说明按组内首个命中的写, 其余照族卡换词\n\n" + tbl.str();
+         "\n\n" + tbl.str();
 }
 
 std::string LeavesRes::title() const {

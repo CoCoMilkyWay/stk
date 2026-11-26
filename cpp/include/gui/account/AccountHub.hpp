@@ -10,6 +10,7 @@
 //   三级键控缓存 (GUI::Stage, 下级键含上级 gen): 快照 → 现价; (回放, 快照) → 持仓 / 悬停 / 成交点; (持仓, 新浪的当日) → 账户的当日
 #pragma once
 
+#include "define/Fee.hpp"
 #include "gui/quote/Quote.hpp"
 #include "gui/util/Stage.hpp"
 #include "live/Broker.hpp"
@@ -17,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <utility>
 
 namespace GUI::Account {
@@ -29,7 +31,7 @@ public:
   // ---------- 行情侧 (GUI 线程每帧, QuoteHub::frame 取) ----------
   const account::Spot &spot() const { return fed_.val.spot; } // 库轴外持仓 (ETF / LOF) 的券商现价, 记于今日 (无快照 → 空; 随 feed)
   // 账户的当日 (空 = 无); view / live 可空
-  std::shared_ptr<const Quote::Day> today(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live);
+  std::shared_ptr<const Quote::Day> today(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live, const Fee &fee);
 
   // ---------- Market 侧 ----------
   const std::string &note() const { return held_.val.note; }                                // 账户行的悬停 (口径 + 持仓 + 累计盈亏; 随 today)
@@ -48,9 +50,9 @@ private:
     std::string note;
     Quote::TradeBins trades;
   };
-  Stage<const void *, Fed> fed_;                                                // 快照 →
-  Stage<std::pair<const void *, uint64_t>, Held> held_;                         // (回放, fed_ 的 gen) →
-  Stage<std::pair<uint64_t, uint64_t>, std::shared_ptr<const Quote::Day>> day_; // (held_ 的 gen, Live::ver) →
+  Stage<const void *, Fed> fed_;                                                      // 快照 →
+  Stage<std::pair<const void *, uint64_t>, Held> held_;                               // (回放, fed_ 的 gen) →
+  Stage<std::tuple<uint64_t, uint64_t, Fee>, std::shared_ptr<const Quote::Day>> day_; // (held_ 的 gen, Live::ver, 费率) →
 };
 
 } // namespace GUI::Account

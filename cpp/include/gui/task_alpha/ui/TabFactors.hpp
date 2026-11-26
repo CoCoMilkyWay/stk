@@ -85,7 +85,7 @@ struct FactorsUIContext {
   Engine::FactorDir dir;                          // factor_dir_of(pool, lv) = output/factors/<池>/<层名>
   std::string pool;                               // 本页已生效的池名
   int years = 0;                                  // 本页已生效的评估年数 (评估期只留最近几年)
-  factor::stat::Fee fee;                          // Config 费率 (Inspect 期限结构净线的冲击 + 税佣; 纯显示平移, 不进请求, 改了即时生效)
+  Fee fee;                                        // Config 费率 (Inspect 期限结构净线的冲击 + 税佣; 纯显示平移, 不进请求, 改了即时生效)
   bool axis_ready = false;                        // 资产轴就绪 (数据库扫过) 才能读特征库评估
   const std::vector<AssetItem> *assets = nullptr; // 全局资产轴 (data.asset.items): Inspect 右上按全局 id 显示代码 / 名称
 };

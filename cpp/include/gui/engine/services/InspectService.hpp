@@ -53,20 +53,19 @@ struct InspectResult : EvalStat {
   FactorLevelId lv = 0;
   factor::stat::Frame frame = factor::stat::Frame::CS;
   std::vector<misc::Ymd> dates;
-  factor::stat::Holds hd;
+  Holds hd;
   reader::ReadScope read_scope;
   LedgerLines pool_index;
   float pool_ann[kHoldCount] = {};
   InspectPlanes pl;
   LedgerLines nav;
-  factor::stat::CostAcc ls_turn[kTails][kHoldCount] = {};
   AggPdf ic_agg[kHoldCount];
   AlphaDist alpha_dist;
   std::string error;
 
   const float *ric_at(int hi) const { return pl.ric.data() + static_cast<size_t>(hi) * scope.T; }
   const float *nav_at(int hi, int line) const { return nav.at(hi * kNavLines + line); }
-  const factor::stat::CostAcc &ls_turn_of(int line, int hi) const { return line == 0 ? costs.front().acc[hi] : ls_turn[line - 1][hi]; }
+  const factor::stat::Ends &ls_turn_of(int line, int hi) const { return turn[hi].lv[line]; } // LS 线 line (0 = 整组, 1 + j = 尾部 j) 的两端流水
 };
 
 struct InspectCache {

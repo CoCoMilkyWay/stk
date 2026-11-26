@@ -1,10 +1,9 @@
-// Ledger — 见头文件. include 因子 Stat 行核头 (walk / turn_row / h2f), 依赖受控浮点: CMake MATH_PRECISE 源.
+// Ledger — 见头文件. include 因子 Stat 账集头 (book_rows), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Ledger.hpp"
 
 #include "define/Members.hpp"
-#include "factor/Stat/Host.hpp" // h2f / turn_row
-#include "factor/Stat/Pos.hpp"
-#include "shared/Basket.hpp" // basket_table / Weigh / members
+#include "factor/Stat/Book.hpp" // book_rows / MaskBook
+#include "shared/Basket.hpp"    // basket_table / Weigh / members
 
 #include <algorithm>
 #include <cassert>
@@ -15,7 +14,6 @@
 namespace GUI::Engine {
 
 namespace st = factor::stat;
-namespace cs = factor::cpu::stat;
 
 std::array<LeafId, kPoolVals> pool_val_leaves(const FeatureTable &ft) {
   const std::string pre = std::string(tier_name(TierId::Bar)) + "." + kLevelToken[L_1day] + ".";
@@ -32,17 +30,44 @@ namespace {
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
-// 篮子判据 (Pos.hpp 判据族之一): 子池 = 位集含 bit; 行业 = 含母集且源行行业同 k
-struct InBit {
-  const PoolMask *in;
-  PoolMask bit;
-  int level(ptrdiff_t o) const { return (in[o] & bit) ? 0 : -1; }
-};
-struct InInd {
-  const PoolMask *in;
-  const uint8_t *ind;
-  uint8_t k;
-  int level(ptrdiff_t o) const { return (in[o] & pool_bit(kBasketBase)) && ind[o] == k ? 0 : -1; }
+// 篮子 + 个股账集 (Stat/Book.hpp): 本 = 篮子号 b (BasketTable::each 枚举, 持仓权 Weigh) | 个股 nl + a (自身, 权 1); 一律按真持有权和归一
+//   判据: 子池 = 位集含该池; 行业 = 含母集且源行行业同; 概念 = 含母集 (概念成分恒定)
+struct BasketBooks {
+  const BasketTable &bt;
+  const ConceptTable &ct;
+  const pool::Strip &s;
+  const PoolMask *in; // 块首 [T][A] 各建仓行对应持仓日的子池位集 (门控外 0)
+  const uint8_t *ind; // 块首 [T][A] 源行行业
+  const uint8_t *m;   // 块首 [T][A] 标签有效位
+  const std::vector<Weigh> &wt;
+  int t_w = 0, A = 0;
+  size_t size() const { return bt.size() + static_cast<size_t>(A); }
+  double cap(size_t) const { return 0.0; }
+  template <class Put>
+  void each(int t, uint32_t a, Put &&put) const {
+    const size_t i = static_cast<size_t>(t) * A + a;
+    const Weigh::Cell wc = wt[static_cast<size_t>(t - t_w)].of(a);
+    const PoolMask base = pool_bit(kBasketBase);
+    bt.each(in[i], ind[i], ct.concepts_of(s.axis.global(a)), [&](size_t b) {
+      const float w = wc(bt, b);
+      if (!(w > 0.f))
+        return;
+      const uint32_t k = static_cast<uint32_t>(b);
+      switch (bt.group(b)) {
+      case kGroupPool:
+        put(k, w, st::InBit<PoolMask>{in + i, pool_bit(bt.pool_of(b))});
+        break;
+      case kGroupInd:
+        put(k, w, st::InInd<PoolMask>{in + i, base, ind + i, ind[i]});
+        break;
+      case kGroupConcept:
+        put(k, w, st::InBit<PoolMask>{in + i, base});
+        break;
+      }
+    });
+    if (m[i])
+      put(static_cast<uint32_t>(bt.size() + a), 1.f, st::InMask{m + i});
+  }
 };
 
 } // namespace
@@ -141,74 +166,14 @@ void BasketPass::chunk(misc::exec::ForkJoin &ex, const Block &c) {
   for (int t = t_w; t < t_hi; ++t)
     wt.emplace_back(*pk_, s.holding_after(rc + static_cast<size_t>(t)));
 
-  // 2. 篮子账 + 个股账 (同一核): 一行的两列格位 (本批 / 交接的前一批) → turn_row → 收益 (平仓行) / 四列流水 (建仓行)
-  const uint8_t *ind_base = s.ind.data() + rc * A;
-  const PoolMask base_bit = pool_bit(kBasketBase);
-  const std::vector<double> cap(B, 0.0);
-  const st::Cost flat{};
-  ex.rows(n_stat, [&](int u0, int u1, int) {
-    cs::TurnWork tw;
-    std::vector<double> ret(B);
-    std::vector<st::Turn> flow(B);
-    // 行 t 的格 a 进各本: r(Pos) = 该本的收益口径 (本批 = 续持口径; 前一批 = 到交接点的名义收益)
-    const auto slots = [&](const st::Chain &ch, int t, size_t a, std::vector<st::Slot> &out, auto &&r_of) {
-      const size_t i = static_cast<size_t>(t) * A + a;
-      if (!lab.m[i])
-        return;
-      const ptrdiff_t o = static_cast<ptrdiff_t>(i);
-      const Weigh::Cell wc = wt[static_cast<size_t>(t - t_w)].of(a);
-      const auto put = [&](size_t b, double w, const st::Pos &p) {
-        if (p.held >= 0 && w > 0.0)
-          out.push_back({static_cast<uint32_t>(a), static_cast<uint32_t>(b), static_cast<float>(w), r_of(p, o)});
-      };
-      const PoolMask pm = in[i];
-      st::Pos base{};
-      for (PoolMask m = pm; m; m &= m - 1) {
-        const PoolId p = pool_first(m);
-        const st::Pos q = st::walk(ch, lab.m.data() + i, y.eo + i, InBit{in.data() + i, pool_bit(p)});
-        if (p == kBasketBase)
-          base = q;
-        const size_t l = bt.at_pool(p);
-        put(l, wc(bt, l), q);
-      }
-      if (pm & base_bit) {
-        const double om = wc(pool::kRebalDay, pool::kWeightCap);
-        if (const uint8_t ind = ind_base[i]; ind > 0)
-          put(bt.at_ind(ind), om, st::walk(ch, lab.m.data() + i, y.eo + i, InInd{in.data() + i, ind_base + i, ind}));
-        for (const uint16_t k : ct.concepts_of(s.axis.global(static_cast<uint32_t>(a))))
-          put(bt.at_concept(k), om, base);
-      }
-      put(nl + a, 1.0, st::walk(ch, lab.m.data() + i, y.eo + i, st::InMask{lab.m.data() + i}));
-    };
-    for (int t = t_lo + u0; t < t_lo + u1; ++t) {
-      const st::Chain ch = st::chain_of(t, sp, hd);
-      const bool net = ch.nets(t);
-      const size_t row = static_cast<size_t>(t) * A;
-      tw.cur.clear(), tw.pre.clear();
-      for (size_t a = 0; a < A; ++a) {
-        slots(ch, t, a, tw.cur, [&](const st::Pos &p, ptrdiff_t o) {
-          float yv[2];
-          st::label_cell(lb, o, cs::H2F{}, yv);
-          return st::ret_at(p, 0, yv);
-        });
-        if (net)
-          slots(ch.back(), t - hd.h, a, tw.pre, [&](const st::Pos &, ptrdiff_t o) {
-            float yv[2];
-            st::label_cell(lb, o, cs::H2F{}, yv);
-            return st::hold_ret(true, y.eo[row + a], yv);
-          });
-      }
-      std::ranges::sort(tw.cur, {}, [](const st::Slot &x) { return std::pair(x.a, x.b); });
-      std::ranges::sort(tw.pre, {}, [](const st::Slot &x) { return std::pair(x.a, x.b); });
-      std::fill(ret.begin(), ret.end(), 0.0);
-      std::fill(flow.begin(), flow.end(), st::Turn{});
-      cs::turn_row(tw.cur, tw.pre, !hd.nets(sp.t0_abs + t + hd.h), y.eo + row, &flat, 1, cap, tw, ret.data(), flow.data());
-      const size_t u = static_cast<size_t>(c.land0() + t);
-      for (size_t b = 0; b < B; ++b) {
-        rx_.x[(kLedgerRet * B + b) * ds_ + u] = static_cast<float>(ret[b]);
-        for (int k = kLedgerImp; k < kLedgerCols; ++k)
-          rx_.x[(static_cast<size_t>(k) * B + b) * ds_ + u] = ledger_cell(flow[b], k);
-      }
+  // 2. 篮子账 + 个股账 (同一账集): 收益 (平仓行) / 四列流水 (建仓行); 只付固定冲击
+  const BasketBooks bk{bt, ct, s, in.data(), s.ind.data() + rc * A, lab.m.data(), wt, t_w, static_cast<int>(A)};
+  st::book_rows(ex, sp, hd, lb, bk, st::Cost{}, [&](int, int t, const double *ret, const st::Flow *flow) {
+    const size_t u = static_cast<size_t>(c.land0() + t);
+    for (size_t b = 0; b < B; ++b) {
+      rx_.x[(kLedgerRet * B + b) * ds_ + u] = static_cast<float>(ret[b]);
+      for (int k = kLedgerImp; k < kLedgerCols; ++k)
+        rx_.x[(static_cast<size_t>(k) * B + b) * ds_ + u] = ledger_cell(flow[b], kAmtFixed, k);
     }
   });
 
@@ -309,35 +274,16 @@ LedgerLines pool_line(misc::exec::ForkJoin &ex, const Block &c) {
   const YPlanes &y = c.y;
   assert(y.hd.n >= 1 && y.eo && "Y 未钉");
   const st::Span sp = c.span();
-  const int r0 = sp.t_lo, r1 = sp.t_hi();
-  const size_t nT = static_cast<size_t>(r1 - r0), nA = static_cast<size_t>(sp.A), H = static_cast<size_t>(y.hd.n);
+  const int r0 = sp.t_lo;
+  const size_t nT = static_cast<size_t>(sp.t_hi() - r0);
   RowLines x;
-  x.reset(y.hd.n, r1 - r0);
-  std::copy_n(y.hd.k, H, x.hold.begin());
-  ex.rows(r1 - r0, [&](int u0, int u1, int) {
-    for (int t = r0 + u0; t < r0 + u1; ++t) {
-      const size_t row = static_cast<size_t>(t) * nA;
-      for (size_t hi = 0; hi < H; ++hi) {
-        const LabPlane &lab = *y.labels[hi];
-        const st::Label lb = label_of(lab, y.eo, nullptr);
-        const st::Chain ch = st::chain_of(t, sp, hold_on(y.hd.k[hi], sp.g));
-        double sum = 0.0, n = 0.0;
-        for (size_t a = 0; a < nA; ++a) {
-          const size_t i = row + a;
-          if (!lab.m[i])
-            continue;
-          const st::Pos p = st::walk(ch, lab.m.data() + i, y.eo + i, st::InMask{lab.m.data() + i});
-          if (p.held < 0)
-            continue;
-          float yv[2];
-          st::label_cell(lb, static_cast<ptrdiff_t>(i), cs::H2F{}, yv);
-          sum += st::ret_at(p, 0, yv), n += 1.0;
-        }
-        if (n > 0.0)
-          x.x[hi * nT + static_cast<size_t>(t - r0)] = static_cast<float>(sum / n);
-      }
-    }
-  });
+  x.reset(y.hd.n, sp.t_hi() - r0);
+  std::copy_n(y.hd.k, y.hd.n, x.hold.begin());
+  for (int hi = 0; hi < y.hd.n; ++hi) {
+    const LabPlane &lab = *y.labels[hi];
+    st::book_rows(ex, sp, hold_on(y.hd.k[hi], sp.g), label_of(lab, y.eo, nullptr), st::MaskBook{lab.m.data(), sp.A}, st::Cost{},
+                  [&](int, int t, const double *ret, const st::Flow *) { x.x[static_cast<size_t>(hi) * nT + static_cast<size_t>(t - r0)] = static_cast<float>(ret[0]); });
+  }
   return fold_ledger(ex, y.sh.seg, x, 1);
 }
 

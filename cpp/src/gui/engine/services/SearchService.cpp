@@ -106,24 +106,7 @@ Samp samp_of(int t_hi, int t_lo, int t0_abs, int stride) {
   return {t, t < t_hi ? (t_hi - 1 - t) / stride + 1 : 0};
 }
 
-// 逐日和 (Stat 二级 Day, 按块拼回评估期; Search 恒一个持有期)
-struct DayP : ProbeBase {
-  int seg = 0;
-  std::vector<fs::Day> day;
-  static double bytes(const Shape &sh, int) { return sizeof(fs::Day) * static_cast<double>(sh.days); }
-  void init(const PassCtx &p) {
-    assert(p.hd.n == 1);
-    seg = p.seg;
-    day.assign(static_cast<size_t>(p.days_stat), {});
-  }
-  void close(const Ctx &c, const RootView &v) {
-    const fs::Span s = c.s();
-    const int d0 = (c.c.land0() + s.t_lo) / seg;
-    for (int d = 0; d < s.days(); ++d)
-      day[static_cast<size_t>(d0 + d)] = v.day[d];
-  }
-};
-using SearchProbes = Probes<HoldP, DayP>;
+using SearchProbes = Probes<HoldP>; // 三级 + 逐日 (HoldP::day, 按块拼回评估期; Search 恒一个持有期)
 
 struct Entry {
   std::vector<double> u;
@@ -140,7 +123,7 @@ struct Searcher {
   SearchLive *live;
   const std::function<void(const SearchResult &)> &on_pass;
   const int seg;
-  const fs::Holds hd;
+  const Holds hd;
   const Clock::time_point t_start = Clock::now();
   SearchResult &res;
   std::string &why_out;
@@ -159,7 +142,7 @@ struct Searcher {
   Searcher(const SearchRequest &req, FactorFlow &f, SearchResult &out, std::string &why, SearchLive *lv,
            const std::function<void(const SearchResult &)> &cb)
       : F(f), scope(req.scope), ft(*req.scope.ft), sp(req.spec), live(lv), on_pass(cb), seg(ft.seg),
-        hd(fs::Holds::of(hold_bit(sp.hold))), res(out), why_out(why) {
+        hd(Holds::of(hold_bit(sp.hold))), res(out), why_out(why) {
     assert(ft.y.has(sp.hold) && "Search 的持有期须是字段表标签组之一");
     assert(fsearch::search_hold(sp.hold) && "Search 只搜 kSearchHolds 档");
     fs::assert_holds(hd, seg);
@@ -256,7 +239,7 @@ struct Searcher {
     n_pts = n_slots > 0 ? fsearch::n_init(n_slots) : 1;
     if (!check(Engine::prepare<E, SearchProbes>(F, scope, f0.d, f0.leaves, look, hd, n_pts, job)))
       return false;
-    lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, fs::hold_reach(hd, seg), fs::kChainDays, job.bands.front,
+    lg("前带: 模板回看 %d 行 + 持有期 %d 行 + 交接链 %d 天 → %d 天; 后带 %d 天", look, fs::hold_reach(hd, seg), kChainDays, job.bands.front,
        job.bands.back);
     const std::vector<misc::Ymd> &dates = job.dm.dates;
     const int days = static_cast<int>(job.dm.stat_days());
@@ -453,14 +436,12 @@ struct Searcher {
       if (!dead[k].empty())
         continue;
       SearchCand &c = en.c;
-      const fs::Roll fwd = fs::roll_of(ps[k].at<DayP>().day, sp.hold, seg, &c.line);
-      c.sign = fs::sign_of(fwd);
-      c.roll = c.sign > 0 ? fwd : fs::flipped(fwd);
-      if (c.sign < 0)
-        for (float &x : c.line)
-          x = -x;
       const HoldP &hp = ps[k].at<HoldP>();
       assert(hp.n_hold == 1);
+      const std::vector<fs::Day> &day = hp.day[0];
+      const fs::Roll fwd = fs::roll_of(day, sp.hold, seg, 1, &c.line);
+      c.sign = fs::sign_of(fwd);
+      c.roll = c.sign > 0 ? fwd : fs::roll_of(day, sp.hold, seg, -1, &c.line);
       const fs::HoldStat h = fs::oriented(hp.acc[0], fs::dir_of(c.sign)).finish(sp.hold, seg);
       c.mono = h.mono, c.ls = fs::ls_period(h), c.ric = h.ric.mean;
       n_ok += c.roll.ok();

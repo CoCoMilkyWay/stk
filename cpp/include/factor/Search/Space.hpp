@@ -8,7 +8,7 @@
 //     写了数字的参数固定不搜 (TS 口径根的 d 必是数字).
 //     h (N 元回归的持有期) 不是槽: 调用方先落到所搜持有期 (expr::bind_hold), 这里只收 h 已具体的树.
 //   【坐标与区间】每槽一维坐标 u, 单调; 区间两端全由已有常数推出 (不设跨度常数). 变换按参数含义选 (见 to_v):
-//       d (ROLL 窗长)              log2      [1, kMaxD]
+//       d (ROLL 窗长)              log2      [d_min, kMaxD]            (d_min = Contract roll_d_min: 更短的窗恒为中性值; 绑定组取各处之大)
 //       TsMeanEma 系数             log2      [2/(kMaxD+1), 1]          (对标窗长 ≤ kMaxD, 与 d 同口径)
 //       CsWinsor 缩尾              log2      [1/A, 1/2)                (少于一只等于不缩)
 //       CsBucket 桶数              log2      [1, min(kMaxGroup, A)]
@@ -130,6 +130,10 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
         for (Slot &q : out)
           if (q.key == key && q.wi == wi && q.tag == tg) {
             q.peers.push_back(static_cast<int>(i));
+            if (key == Key::D) { // 同绑一维的窗长取各处下限之大
+              q.u_lo = std::max(q.u_lo, std::log2(static_cast<double>(roll_d_min(o.name))));
+              q.u0 = 0.5 * (q.u_lo + q.u_hi);
+            }
             return;
           }
       Slot s;
@@ -141,7 +145,7 @@ inline std::vector<Slot> slots_of(const expr::Expr &e, int seg, double a) {
       s.name = std::string(o.name) + "." + key_name(key) + (key == Key::W ? std::to_string(wi + 1) : "") + expr::tag_text(tg);
       if (key == Key::D) {
         s.integer = true;
-        s.u_lo = 0.0, s.u_hi = std::log2(static_cast<double>(kMaxD));
+        s.u_lo = std::log2(static_cast<double>(roll_d_min(o.name))), s.u_hi = std::log2(static_cast<double>(kMaxD));
       } else if (key == Key::W) {
         s.top = top;
         s.u_hi = top ? std::atan(a) : 1.0, s.u_lo = -s.u_hi;

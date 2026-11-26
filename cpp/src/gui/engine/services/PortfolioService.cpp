@@ -175,7 +175,7 @@ std::string PortfolioRequest::sig() const {
 
 namespace {
 
-// 因子组合账 = 顶端整组那一本 (Stat/Turn.hpp 因子账集, 与 Run 换手同一核): 收益 (平仓行) + 四列流水 (建仓行) 逐行落地
+// 因子组合账 = 顶端整组那一本 (Stat/Book.hpp 因子账集, 与 Run 换手同一核): 收益 (平仓行) + 四列流水 (建仓行) 逐行落地
 struct FlowP : LinesP {
   static constexpr uint8_t need = kNeedRx;
   static constexpr Segs segs = Segs::First;
@@ -187,16 +187,18 @@ struct FlowP : LinesP {
       x.at_exit[static_cast<size_t>(i)] = i % kLedgerCols == kLedgerRet;
   }
   void close(const Ctx &c, const RootView &v) {
-    factor::stat::Cost cs[kAmtCount];
-    [[maybe_unused]] const int C = fill_costs(c.c.y, cs);
-    assert(C == 1);
-    std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(c.L.hd.n) * factor::stat::kLevels);
-    constexpr int kOwn = factor::stat::kTop * factor::stat::kLevels; // 顶端整组
-    factor::cpu::stat::turn_rows(c.ex, v.rx, c.s(), c.L, cs, 1, *c.w, acc.data(), [&](int, int hi, int t, const double *ret, const factor::stat::Turn *row) {
-      at(hi * kLedgerCols + kLedgerRet, t) = static_cast<float>(ret[kOwn]);
-      for (int k = kLedgerImp; k < kLedgerCols; ++k)
-        at(hi * kLedgerCols + k, t) = ledger_cell(row[kOwn], k);
-    });
+    namespace st = factor::stat;
+    const YPlanes &y = c.c.y;
+    assert(y.ad.n == 1);
+    const st::Span s = c.s();
+    const st::FactorBooks bk{v.rx, s.A, c.L.cap};
+    constexpr int kOwn = st::kTop * st::kLevels; // 顶端整组
+    for (int hi = 0; hi < c.L.hd.n; ++hi)
+      st::book_rows(c.ex, s, hold_on(c.L.hd.k[hi], s.g), c.L.l[hi], bk, cost_of(y), [&](int, int t, const double *ret, const st::Flow *flow) {
+        at(hi * kLedgerCols + kLedgerRet, t) = static_cast<float>(ret[kOwn]);
+        for (int k = kLedgerImp; k < kLedgerCols; ++k)
+          at(hi * kLedgerCols + k, t) = ledger_cell(flow[kOwn], y.ad.k[0], k);
+      });
   }
 };
 using PortfolioProbes = Probes<FlowP>;

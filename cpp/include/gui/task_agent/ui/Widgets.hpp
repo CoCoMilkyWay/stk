@@ -65,6 +65,7 @@ void cell_dim(const std::string &s);
 void cell_num(double v, const char *fmt, bool tint = false); // tint: 正红负绿
 void cell_bp(double r);                                      // 收益 → bp, 正红负绿
 void cell_pct(double x);
+void cell_tint(const std::string &s, double tint);                                                  // 成文的格: tint 有限 = 按它的号着色 (正红负绿); "—" 暗显
 void groups_plot(const char *id, const std::vector<double> &grp, float h, const char *unit = "bp"); // 20 组柱 G1 → G20 (收益按 bp 画)
 void line_plot(const char *id, const std::vector<double> &ys, float h, const char *label, const std::vector<std::string> *ticks = nullptr);
 void hist_plot(const char *id, const std::vector<double> &hist, double lo, double hi, float h);

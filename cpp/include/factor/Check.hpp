@@ -53,7 +53,7 @@ constexpr bool all_known(const Row (&t)[N]) {
 //     CONSTCOL 整列常值 (全并列退化, 全程)
 //     CONSTSEG 某资产只在第 1 段常值, 其余段正常 (滑窗跨段进出常值区: 打 GPU 的 Chg 精确追踪);
 //              另一资产全程常值只在一格跳变 (窗含该格才非退化)
-//     HEAVY    t(2.5) 重尾 (极值 / 缩尾 / 直方图桶宽)
+//     HEAVY    t(2.5) 重尾 (极值 / 缩尾 / 分位)
 //     TINY     量级 ×1e−4 (契约无绝对 eps: 小量级下掩码与值都不得变)
 enum class Gen { NORM,
                  POS,

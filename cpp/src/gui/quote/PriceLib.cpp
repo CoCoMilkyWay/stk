@@ -1255,8 +1255,8 @@ bool PriceLib::run(PriceRequest &req) {
     return false;
   if (!(built_ == at_))
     rebuild();
-  if (!account_ || ledger_ != req.ledger || !(spot_ == req.spot))
-    replay(req.ledger, req.spot);
+  if (!account_ || ledger_ != req.ledger || !(spot_ == req.spot) || !(fee_ == req.fee))
+    replay(req.ledger, req.spot, req.fee);
   for (const Want &w : req.wants) {
     if (cancel_.load(std::memory_order_relaxed))
       return false;
@@ -1384,9 +1384,9 @@ bool PriceLib::series(Ref ref, bool minute, Series &out, size_t from) const {
   return !out.daily.empty();
 }
 
-void PriceLib::replay(uint64_t ledger, const account::Spot &spot) {
-  ledger_ = ledger, spot_ = spot;
-  Account::Replay r = Account::replay(live::flows::load(), dates_, spot, [&](uint32_t id, size_t from, Series &s) { return series({kStock, id}, true, s, from); });
+void PriceLib::replay(uint64_t ledger, const account::Spot &spot, const Fee &fee) {
+  ledger_ = ledger, spot_ = spot, fee_ = fee;
+  Account::Replay r = Account::replay(live::flows::load(), dates_, spot, fee, [&](uint32_t id, size_t from, Series &s) { return series({kStock, id}, true, s, from); });
   auto t = std::make_shared<Tape>();
   t->keys = {0};
   t->list = {std::move(r.se)};

@@ -8,7 +8,7 @@ namespace GUI::Agent {
 using namespace ui;
 
 void TriedRes::draw() const {
-  heading("已试候选 " + std::to_string(all) + " 个 · 这里第 " + std::to_string(skip + 1) + " 个起 " + std::to_string(rows.size()) + " 个");
+  heading("已试候选 " + (query.empty() ? std::string() : "· query " + query + " 命中 ") + std::to_string(all) + " 个 · 这里第 " + std::to_string(skip + 1) + " 个起 " + std::to_string(rows.size()) + " 个");
   if (rows.empty() || !begin_table("##tried", {"名", "中文", "结局", "中位 rIC", "每期毛多空 bp", "每期净多空 bp", "年换手", "门槛", "模板"}, 0.0f))
     return;
   for (const Result &r : rows) {

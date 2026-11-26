@@ -166,15 +166,12 @@ std::string folded(Steps ss, size_t i) {
 
 // result 消息末尾的 "下一步" 提示, 按刚做完的调用给 (left = 本段预算还剩多少, 空 = 不限)
 std::string next_step(const Act &a, bool test, const std::string &left) {
-  const std::string budget = left.empty() ? "" : "\n\n本段预算还剩 " + left + "; 用完会话即停下, 收手前留出 submit_factor 与 finish 的步数.";
+  const std::string budget = left.empty() ? "" : "\n\n本段预算还剩 " + left + "; 用完会话即停下, 收手前留出 finish 的一步.";
   if (test)
     return "按自检的做法接着调还没调过的工具与取值; 对照工具说明查上面的结果, 有问题即 report_issue. 全部调过后 report_issue 写总评, 再 finish." + budget;
-  if (a.out.ok && a.call.tool == Tool::SubmitFactor)
-    return "已入库. 没有待解释的现象就 finish; 还要接着研究就继续 (研究出按 \"判优\" 更好的版本可再提交)." + budget;
   if (a.out.ok && a.call.tool == Tool::EvalFactor)
-    return "先用观察看这个变体说明了什么 (分层在哪个时段 / 条件段变了、剥掉基准还剩多少、预期的方向是否兑现), 再决定下一步; 研究透了按 \"判优\" 挑最好的版本 submit_factor, 再 finish." +
-           budget;
-  return "根据结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或回测下一个变体; 研究透了按系统提示 \"判优\" 挑最好的版本 submit_factor, 再 finish." + budget;
+    return "先用观察看这个变体说明了什么 (分层在哪个时段 / 条件段变了、剥掉基准还剩多少、预期的方向是否兑现), 再决定下一步; 研究透了按 \"判优\" 挑最好的版本 finish 收尾." + budget;
+  return "根据结果继续推进: 观察诊断机制、记录关键发现 / 缺口、或回测下一个变体; 研究透了按系统提示 \"判优\" 挑最好的版本 finish 收尾." + budget;
 }
 
 // 第 2..fold 条消息 (下标 [1, fold)) 折成结论, 0 = 不折; 原样留着的 = 第 fold 条起的消息与回复 (首条恒原样, 不计); fold 取 kFoldSteps 的倍数里使之不超 kCtxChars 的最小者, 末条恒原样
@@ -248,6 +245,13 @@ std::string ListTail(int all, int skip, int n) {
             : "(共 " + std::to_string(all) + " 个, 这里是第 " + std::to_string(skip + 1) + "–" + std::to_string(skip + n) + " 个" +
                   (skip + n < all ? "; 接着看给 skip=" + std::to_string(skip + n) : std::string()) + ")\n";
 }
+
+bool Hits(const Result &r, const std::vector<std::string> &ws) {
+  const std::string hay = text::lower(r.name + '\n' + r.name_cn + '\n' + r.tmpl + '\n' + r.note);
+  return std::all_of(ws.begin(), ws.end(), [&](const std::string &w) { return text::has_word(hay, w); });
+}
+
+std::string ListHead(const std::string &query, int all) { return query.empty() ? "" : "query `" + query + "` 命中 " + std::to_string(all) + " 个\n"; }
 
 std::string LoadPrompt(Msg m) { return disk::read(disk::PromptFile, {.name = def(m).id}); }
 void SavePrompt(Msg m, const std::string &text) { disk::write(disk::PromptFile, {.name = def(m).id}, text); }
@@ -329,7 +333,7 @@ std::string SystemMessage(const Context &c, const Gate &g, bool ask) {
 std::string FirstMessage(const Context &c, int tried, const std::string &notes, bool ask, const std::string &remark, const std::string &left) {
   return fill(Msg::First, {{"hold", c.hold},
                            {"remark", remark_text(remark)},
-                           {"budget", left.empty() ? "不限" : left + " (用完会话即停下, 收手前留出 submit_factor 与 finish 的步数)"},
+                           {"budget", left.empty() ? "不限" : left + " (用完会话即停下, 收手前留出 finish 的一步)"},
                            {"tried", std::to_string(tried)},
                            {"library", std::to_string(visible(c.library))},
                            {"notes", notes},

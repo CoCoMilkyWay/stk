@@ -29,8 +29,9 @@ struct LeavesRes : Res {
 };
 
 struct TriedRes : Res {
+  std::string query;
   std::vector<Result> rows;
-  int all = 0, skip = 0;
+  int all = 0, skip = 0; // all = 命中 query 的个数
   Gate gate;
   std::string text() const override;
   std::string title() const override;
@@ -38,8 +39,9 @@ struct TriedRes : Res {
 };
 
 struct LibraryRes : Res {
+  std::string query;
   std::vector<Result> rows;
-  int all = 0, skip = 0, none = 0; // none = 本持有期无统计 (不列) 的个数
+  int all = 0, skip = 0, none = 0; // all = 命中 query 的个数; none = 其中本持有期无统计 (不列) 的个数
   std::string text() const override;
   std::string title() const override;
   void draw() const override;

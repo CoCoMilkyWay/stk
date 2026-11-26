@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Pos — 仓位感知唯一核 (Row 组 / 尾部 / 换手账 / 池篮子 / 单只 / Beta 选池 / Agent 观察同一份; 契约 factor/Stat/Contract.hpp)
+// Pos — 仓位感知唯一核 (Row 组 / 尾部 / 账集 Book.hpp / Agent 观察同一份; 契约 factor/Stat/Contract.hpp)
 // =============================================================================
 //   一个组合 (成员判据 In 由调用方给) 每行一批 (做多), 格 a 在行 t 的批里:
 //     真持有 held: 行 t 价点可买 (eo & kEoBuy), 或 与前一批交接 (Hold::nets) 且前一批同组合 (m ∧ 成员) 并真持有 —— 续持者不必成交, 封板也照持.
@@ -11,7 +11,8 @@
 //       不续持 → lv (含顺延). 非交接持有期 (收盘型 / 开盘型) 无链, 自然退化为"建仓须可买, 平仓顺延".
 //   【成员层级】判据给层级而非真假: In::level(o) = 偏 o 格 (o = 行偏移 · A) 的层级, −1 = 非成员, 0..L 嵌套 (层级 j 的成员 ⊂ j − 1 的).
 //     层级 j 真持有 ⟺ 链上 (本批起至首个可买价点) 各批层级 ≥ j ⟺ walk 出的 held ≥ j; 续持同理 (cont ≥ j). 嵌套集合一次回走同出各级.
-//   判据族 (全仓只此几种): InRank 因子组 (端组再按尾深分层) / InMask 成员位平面 (单只 / 池均 / Beta 选池) / 篮子判据 (gui/engine/Book.cpp)
+//   一格的唯一出口 cell: 标签有效 → walk → 两腿 {lv, nv}; 判据族 (全仓只此几种): InRank 因子组 (端组再按尾深分层) / InMask 成员位平面 /
+//     InBit 位集含某位 / InInd 母集内某行业
 // =============================================================================
 
 #include "factor/Stat/Contract.hpp"
@@ -72,8 +73,19 @@ FACTOR_HD inline float hold_ret(bool cont, uint8_t eo_next, const float *y) { re
 // 层级 j 上的收益
 FACTOR_HD inline float ret_at(const Pos &p, int j, const float *y) { return hold_ret(p.cont >= j, p.eo_next, y); }
 
-// ---- 判据族 ----
-// 因子组: 本格的组 g (rx 已定向); 同组 → 0, 端组再按尾部深度 1..kTails (Contract【尾部】嵌套); 他组 / 无秩 → −1. rx 已偏到本格
+// 一格的唯一出口: lb 已偏到 c 的行首, a = 本行格, in 已偏到本格; 标签无效 → 未持有; 真持有才取两腿 y = {lv, nv}
+template <class In, class H2F>
+FACTOR_HD inline Pos cell(const Chain &c, const Label &lb, ptrdiff_t a, const In &in, const H2F &h2f, float (&y)[2]) {
+  if (!lb.m[a])
+    return {};
+  const Pos p = walk(c, lb.m + a, lb.eo + a, in);
+  if (p.held >= 0)
+    label_cell(lb, a, h2f, y);
+  return p;
+}
+
+// ---- 判据族 (in 已偏到本格) ----
+// 因子组: 本格的组 g (rx 已定向); 同组 → 0, 端组再按尾部深度 1..kTails (Contract【尾部】嵌套); 他组 / 无秩 → −1
 struct InRank {
   const uint16_t *rx;
   int g;
@@ -90,10 +102,26 @@ struct InRank {
     return l;
   }
 };
-// 成员位平面: 非 0 = 成员 (层级 0). p 已偏到本格
+// 成员位平面: 非 0 = 成员 (层级 0)
 struct InMask {
   const uint8_t *p;
   FACTOR_HD int level(ptrdiff_t o) const { return p[o] ? 0 : -1; }
+};
+// 位集平面含 bit
+template <class M>
+struct InBit {
+  const M *in;
+  M bit;
+  int level(ptrdiff_t o) const { return (in[o] & bit) ? 0 : -1; }
+};
+// 位集含母集 base 且行业平面 = k
+template <class M>
+struct InInd {
+  const M *in;
+  M base;
+  const uint8_t *ind;
+  uint8_t k;
+  int level(ptrdiff_t o) const { return (in[o] & base) && ind[o] == k ? 0 : -1; }
 };
 
 } // namespace factor::stat

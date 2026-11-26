@@ -462,7 +462,6 @@ set(MATH_PRECISE
     gui/task_agent/tools/query/ListTried.cpp
     gui/task_agent/tools/query/SearchLeaves.cpp
     gui/task_agent/tools/trial/EvalFactor.cpp
-    gui/task_agent/tools/trial/SubmitFactor.cpp
     gui/task_agent/ui/Bench.cpp
     gui/task_agent/ui/ConfigPage.cpp
     gui/task_agent/ui/MinePage.cpp
@@ -470,6 +469,7 @@ set(MATH_PRECISE
     gui/task_agent/ui/doc/ReadDoc.cpp
     gui/task_agent/ui/doc/SearchDocs.cpp
     gui/task_agent/ui/doc/SearchFactors.cpp
+    gui/task_agent/ui/look/Look.cpp
     gui/task_agent/ui/look/ViewBook.cpp
     gui/task_agent/ui/look/ViewExplain.cpp
     gui/task_agent/ui/look/ViewFeature.cpp
@@ -488,7 +488,6 @@ set(MATH_PRECISE
     gui/task_agent/ui/query/ListTried.cpp
     gui/task_agent/ui/query/SearchLeaves.cpp
     gui/task_agent/ui/trial/EvalFactor.cpp
-    gui/task_agent/ui/trial/SubmitFactor.cpp
     # factor: 因子契约头的消费者 = GPU 后端与 op_check 本体
     factor/GpuRun.cu
     factor/GpuRunStub.cpp

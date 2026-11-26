@@ -23,8 +23,8 @@ std::string DocsRes::text() const {
   std::string ys;
   for (const auto &[y, n] : years)
     ys += (ys.empty() ? "" : " · ") + y + " " + std::to_string(n);
-  out += "\n### 年份\n" + ys + "\n\n### 价值 (high 可直接复用 / medium 有参考 / low 有水分)\n" + ranked_text(values, kTop) + "\n";
-  out += "\n### 研报 (前 " + std::to_string(docs.size()) + " 篇; " + (full ? "命中处多的在前, 再按" : "按") + "价值高在前, 同价值新在前)\n";
+  out += "\n### 年份\n" + ys + "\n\n### 价值\n" + ranked_text(values, kTop) + "\n";
+  out += "\n### 研报 (前 " + std::to_string(docs.size()) + " 篇)\n";
   for (const Doc &d : docs) {
     out += "- `" + d.id + "` · 价值 " + d.value + " · 主阶段 " + d.primary + " · 流派 " + d.approaches;
     if (d.factors)

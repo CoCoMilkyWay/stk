@@ -5,8 +5,9 @@
 //     bind(blk) / release() / drop()
 //     walk(cancel, F, need, on_node) / eval<Ps>(cancel, F, need, ps, last, on_node, on_step)
 //   单一分块流式管线:
-//     prepare  → 评估域 + 规格 + 前后带 + 预算 (fit_years / plan_chunks)
-//     run_pass → init(PassCtx) → 逐块 load_block → 逐批 plant + plan_forest + eval(open → row → close) → finish(PassCtx)
+//     prepare    → 评估域 + 规格 + 前后带 (+ 调用方另加的 Extra) + 预算 (fit_years / plan_chunks)
+//     for_blocks → 逐块 load_block → on_block (唯一的块循环: run_pass / eval_baskets / Agent 观察流同一条)
+//     run_pass   → init(PassCtx) → for_blocks { 逐批 plant + plan_forest + eval(open → row → close) } → finish(PassCtx)
 //     eval_forest  = 单森林单趟作业 (Run / Inspect / Portfolio)
 //     eval_baskets = 池篮子与个股账作业 (Portfolio 行情两侧)
 #pragma once
@@ -86,9 +87,9 @@ inline Forest plant_forest(const FeatureTable &ft, std::span<const Root> rs, boo
   return o;
 }
 
-inline Bands bands_of(int look, const factor::stat::Holds &hd, int seg) {
+inline Bands bands_of(int look, const Holds &hd, int seg) {
   const int h = factor::stat::hold_reach(hd, seg);
-  return {(look + h + seg - 1) / seg + factor::stat::kChainDays, (h + seg - 1) / seg};
+  return {(look + h + seg - 1) / seg + kChainDays, (h + seg - 1) / seg};
 }
 
 // 探针只要三级 + 二级 (Search) → GPU 走批核 (逐候选并行)
@@ -210,7 +211,7 @@ public:
   template <class Sink>
   uint16_t *run_root(const factor::check::Plane *rp, factor::stat::Frame f, factor::stat::Dir d, const factor::stat::Span &s, const factor::stat::Labels &L,
                      factor::stat::Accum *acc, const Sink &sink) {
-    w_.ensure(s.A, L.hd.n, c_->y.ad.n, ex_.threads());
+    w_.ensure(s.A, L.hd.n, ex_.threads());
     rx_.resize(s.n());
     day_.resize(static_cast<size_t>(L.hd.n) * s.days());
     factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, f, d, s, L, rx_.data(), w_, acc, day_.data(), sink);
@@ -234,7 +235,7 @@ private:
   template <class Ps>
   factor::cpu::stat::Workspace *ready(const Forest &, const std::vector<int> &) {
     const YPlanes &y = block().y;
-    w_.ensure(y.sh.A, y.hd.n, y.ad.n, ex_.threads());
+    w_.ensure(y.sh.A, y.hd.n, ex_.threads());
     return &w_;
   }
   template <class Ps>
@@ -511,7 +512,7 @@ private:
         session(1);
       else
         session(st_cmax_);
-      w_.ensure(y.sh.A, y.hd.n, y.ad.n, ex_.threads());
+      w_.ensure(y.sh.A, y.hd.n, ex_.threads());
       return &w_;
     } else {
       assert(stat_ && "批核先 plant");
@@ -735,19 +736,57 @@ inline Rc load_block(FactorFlow &F, Job &j, size_t k, Block &c) {
   return rc;
 }
 
+// 调用方另加的前后带 (日) / 每格宿主工作量 (字节)
+struct Extra {
+  int front = 0, back = 0;
+  double work = 0.0;
+};
+
+// R = 因子根数 (0 = 只有纯表达式根: 不装标签秩, 前带只够回看); look < 0 = 整期一块
 template <class E, class Ps>
-Rc prepare(FactorFlow &F, const FactorScope &sc, const factor::Dag &d, std::span<const LeafId> leaves, int look, const Holds &hd, int R, Job &j) {
+Rc prepare(FactorFlow &F, const FactorScope &sc, const factor::Dag &d, std::span<const LeafId> leaves, int look, const Holds &hd, int R, Job &j, const Extra &x = {}) {
   if (!open_job(F, sc, leaves, j))
     return Rc::Empty;
+  const int seg = j.ft->seg;
   j.spec.y = y_spec(*j.ft, j.dm, hd, Ps::segs, sc.max_impact);
-  j.spec.ry = E::kRanks;
-  if (look >= 0)
-    j.bands = bands_of(look, hd, j.ft->seg);
-  const auto bud = [&] { return budget_of<E, Ps>(j, d, j.spec.x.size(), hd.n, R); };
+  j.spec.ry = E::kRanks && R > 0;
+  if (look >= 0) {
+    j.bands = R > 0 ? bands_of(look, hd, seg) : Bands{(look + seg - 1) / seg, 0};
+    j.bands.front = std::max(j.bands.front, x.front), j.bands.back = std::max(j.bands.back, x.back);
+  }
+  const auto bud = [&] {
+    Budget b = budget_of<E, Ps>(j, d, j.spec.x.size(), hd.n, R);
+    b.work += x.work;
+    return b;
+  };
   if (j.bands.front < 0 && !fit_years(F, sc, j, bud))
     return Rc::Empty;
   j.b = bud();
-  j.P = plan_chunks(j.dm, j.ft->seg, j.b, j.bands, F.S.budget(), j.b.dev > 0.0 ? F.S.vram() : 0.0);
+  j.P = plan_chunks(j.dm, seg, j.b, j.bands, F.S.budget(), j.b.dev > 0.0 ? F.S.vram() : 0.0);
+  return Rc::Ok;
+}
+
+// 唯一的块循环: 计划里 want(块) 的块逐个 load_block → on_block(块, 块号, 末块, 装载秒) → Rc; 装载失败 / on_block 非 Ok / 取消即返回
+struct AllChunks {
+  bool operator()(const Chunk &) const { return true; }
+};
+template <class OnBlock, class Want = AllChunks>
+Rc for_blocks(FactorFlow &F, Job &j, OnBlock &&on_block, Want &&want = {}) {
+  using Clock = std::chrono::steady_clock;
+  const size_t n = j.P.chunks.size();
+  assert(n >= 1);
+  for (size_t ci = 0; ci < n; ++ci) {
+    if (!want(j.P.chunks[ci]))
+      continue;
+    const Clock::time_point t0 = Clock::now();
+    Block c;
+    if (const Rc rc = load_block(F, j, ci, c); rc != Rc::Ok)
+      return rc;
+    if (const Rc rc = on_block(c, ci, ci + 1 == n, std::chrono::duration<double>(Clock::now() - t0).count()); rc != Rc::Ok)
+      return rc;
+    if (F.cancel.load(std::memory_order_relaxed))
+      return Rc::Cancel;
+  }
   return Rc::Ok;
 }
 
@@ -761,24 +800,17 @@ struct PassHooks {
   void root(int) {}
 };
 
-// 单趟分块流式执行: init → 逐块 load_block → 逐批 plant + plan_forest + eval(open → row → close) → 好根 finish
+// 单趟分块流式执行: init → for_blocks { 逐批 plant + plan_forest + eval(open → row → close) } → 好根 finish
 template <class E, class Plant, class Ps, class H>
 Rc run_pass(E &eng, FactorFlow &F, Job &j, std::span<const Root> roots, Plant &&plant, std::span<Ps> ps, std::vector<std::string> &dead, H &&hk) {
-  using Clock = std::chrono::steady_clock;
-  const size_t n = j.P.chunks.size(), R = roots.size();
+  const size_t R = roots.size();
   assert(ps.size() == R);
   dead.assign(R, {});
   for (size_t k = 0; k < R; ++k)
     ps[k].init(j.pass_ctx(eng.ex(), roots[k].d));
 
-  assert(n >= 1);
-  for (size_t ci = 0; ci < n; ++ci) {
-    const bool last = ci + 1 == n;
-    const Clock::time_point t_load = Clock::now();
-    Block c;
-    if (const Rc rc = load_block(F, j, ci, c); rc != Rc::Ok)
-      return rc;
-    hk.block(c, ci, std::chrono::duration<double>(Clock::now() - t_load).count());
+  const Rc rc = for_blocks(F, j, [&](const Block &c, size_t ci, bool last, double load_s) {
+    hk.block(c, ci, load_s);
     eng.bind(c);
     for (size_t b0 = 0; b0 < R;) {
       int C = 0;
@@ -797,9 +829,10 @@ Rc run_pass(E &eng, FactorFlow &F, Job &j, std::span<const Root> roots, Plant &&
       j.why = dead[0];
       return Rc::Broken;
     }
-    if (F.cancel.load(std::memory_order_relaxed))
-      return Rc::Cancel;
-  }
+    return Rc::Ok;
+  });
+  if (rc != Rc::Ok)
+    return rc;
 
   for (size_t k = 0; k < R; ++k)
     if (dead[k].empty()) {

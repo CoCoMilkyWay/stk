@@ -1,4 +1,4 @@
-// Probe — 见头文件. include Stat CPU 流程头 (turn_rows), 依赖受控浮点: CMake MATH_PRECISE 源.
+// Probe — 见头文件. include Stat 账集头 (book_rows), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Probe.hpp"
 
 #include <algorithm>
@@ -62,54 +62,69 @@ void cover_rows(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, 
 }
 
 void TurnP::close(const Ctx &c, const RootView &v) {
+  namespace st = factor::stat;
   const YPlanes &y = c.c.y;
-  factor::stat::Cost cs[kAmtCount];
-  const int C = fill_costs(y, cs), H = c.L.hd.n;
-  assert(v.rx && C >= 1 && costs.size() == static_cast<size_t>(C));
-  assert(day_buy.size() == static_cast<size_t>(H));
-  const factor::stat::Span s = c.s();
-  const size_t T = static_cast<size_t>(s.T);
-  row_buy.assign(static_cast<size_t>(H) * T, 0.0);
-  std::vector<factor::stat::CostAcc> acc(static_cast<size_t>(C) * H * factor::stat::kLevels);
-  factor::cpu::stat::turn_rows(c.ex, v.rx, s, c.L, cs, C, *c.w, acc.data(), [&](int k, int i, int t, const double *, const factor::stat::Turn *row) {
-    if (k == 0) // 段 0 整组两端 (本 = 端 · kLevels)
-      row_buy[static_cast<size_t>(i) * T + static_cast<size_t>(t)] =
-          row[factor::stat::kTop * factor::stat::kLevels].vol[kBuy] + row[factor::stat::kBot * factor::stat::kLevels].vol[kBuy];
-  });
-  const auto at = [&](int k, int i, int l) -> const factor::stat::CostAcc & { return acc[(static_cast<size_t>(k) * H + i) * factor::stat::kLevels + l]; };
-  for (int k = 0; k < C; ++k)
-    for (int i = 0; i < H; ++i)
-      costs[static_cast<size_t>(k)].acc[i].merge(at(k, i, 0));
-  for (int j = 0; j < kTails; ++j)
-    for (int i = 0; i < H; ++i)
-      tails[j][i].merge(at(0, i, 1 + j));
+  assert(v.rx && amts == y.ad && day_buy.size() == static_cast<size_t>(c.L.hd.n));
+  const st::Span s = c.s();
+  const st::Cost cost = cost_of(y);
+  const st::FactorBooks bk{v.rx, s.A, c.L.cap};
   const int u0 = c.c.land0();
-  for (int i = 0; i < H; ++i)
+  std::vector<TurnStat> part(static_cast<size_t>(c.ex.threads()));
+  for (int i = 0; i < c.L.hd.n; ++i) {
+    std::fill(part.begin(), part.end(), TurnStat{});
+    row_buy.assign(static_cast<size_t>(s.T), 0.0);
+    st::book_rows(c.ex, s, hold_on(c.L.hd.k[i], s.g), c.L.l[i], bk, cost, [&](int tid, int t, const double *, const st::Flow *flow) {
+      TurnStat &o = part[static_cast<size_t>(tid)];
+      for (int b = 0; b < st::kFactorBooks; ++b)
+        o.lv[b % st::kLevels].e[b / st::kLevels].merge(flow[b]);
+      row_buy[static_cast<size_t>(t)] = flow[st::kTop * st::kLevels].vol[kBuy] + flow[st::kBot * st::kLevels].vol[kBuy];
+    });
+    for (const TurnStat &o : part)
+      for (int l = 0; l < st::kLevels; ++l)
+        turn[i].lv[l].merge(o.lv[l]);
     for (int t = s.t_lo; t < s.t_hi(); ++t) {
       const size_t d = static_cast<size_t>((u0 + t) / seg);
       assert(u0 + t >= 0 && d < day_buy[static_cast<size_t>(i)].size() && "统计行落在评估期内");
-      day_buy[static_cast<size_t>(i)][d] += row_buy[static_cast<size_t>(i) * T + static_cast<size_t>(t)];
+      day_buy[static_cast<size_t>(i)][d] += row_buy[static_cast<size_t>(t)];
     }
+  }
   if (c.last)
     std::vector<double>().swap(row_buy);
 }
 
-void TurnP::finish(const PassCtx &p) {
-  const std::vector<misc::Ymd> dates = p.dm.stat_dates();
-  for (int hi = 0; hi < p.hd.n; ++hi) {
-    const std::vector<double> &ds = day_buy[static_cast<size_t>(hi)];
-    assert(ds.size() == dates.size() && "逐日增仓量与评估期日期不齐");
-    const double spy = factor::stat::span_per_year(p.hd.k[hi], seg);
-    std::vector<YearTurn> &out = year_turn[hi];
-    out.clear();
-    by_year(dates, [&](int y, size_t a, size_t b) {
-      double buy = 0.0;
-      for (size_t i = a; i < b; ++i)
-        buy += ds[i];
-      out.push_back({y, static_cast<float>(0.5 * buy / (static_cast<double>(b - a) * seg) * spy)});
-    });
-  }
-  std::vector<std::vector<double>>().swap(day_buy);
+std::vector<YearStat> years_of(const std::vector<misc::Ymd> &dates, const HoldP &h, const GrpP &g, const TurnP &c, int hi, HoldId hold) {
+  const std::vector<factor::stat::Day> &ds = h.day[hi];
+  const std::vector<std::array<double, factor::stat::kGroups>> &gs = g.day[static_cast<size_t>(hi)];
+  const std::vector<double> &buy = c.day_buy[static_cast<size_t>(hi)], &wins = h.wins[hi];
+  assert(ds.size() == dates.size() && gs.size() == dates.size() && buy.size() == dates.size() && wins.size() == dates.size() && "逐日原料与评估期日期不齐");
+  const double spy = factor::stat::span_per_year(hold, h.seg);
+  std::vector<YearStat> out;
+  by_year(dates, [&](int y, size_t a, size_t b) {
+    factor::stat::Day s;
+    double gy[factor::stat::kGroups] = {}, by = 0.0;
+    std::vector<double> w;
+    for (size_t i = a; i < b; ++i) {
+      s.merge(ds[i]);
+      for (int k = 0; k < factor::stat::kGroups; ++k)
+        gy[k] += gs[i][static_cast<size_t>(k)];
+      by += buy[i];
+      if (!std::isnan(wins[i]))
+        w.push_back(wins[i]);
+    }
+    if (s.n < 3)
+      return;
+    std::sort(w.begin(), w.end());
+    const double med = w.empty() ? 0.0 : 0.5 * (w[(w.size() - 1) / 2] + w[w.size() / 2]);
+    out.push_back({.year = y,
+                   .n = s.n,
+                   .wins = static_cast<int>(w.size()),
+                   .mono = static_cast<float>(factor::stat::mono_of(gy, factor::stat::kGroups)),
+                   .ls = static_cast<float>(s.ls / s.n),
+                   .ric = static_cast<float>(s.ric / s.n),
+                   .ric_med = static_cast<float>(med),
+                   .turn = static_cast<float>(0.5 * by / (static_cast<double>(b - a) * h.seg) * spy)});
+  });
+  return out;
 }
 
 void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, int d, AlphaDist &o) {

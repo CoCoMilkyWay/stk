@@ -171,7 +171,7 @@ void session_row(const SharedData &data, Ui &s, const Scope &active_sc) {
   ImGui::EndDisabled();
   tip(why_not ? why_not
               : "开一段自检会话: 同样的系统提示, 首条换成 test 模板, 让 agent 把每个工具都调一遍, 问题记 report_issue, 末了总评\n"
-                "候选 / 日志 / 全局记录进 agent/test 目录, submit_factor 只查门槛不拷进正式库");
+                "候选 / 日志 / 全局记录进 agent/test 目录, finish 的提交只查门槛不拷进正式库");
   ImGui::SameLine();
   ImGui::BeginDisabled(m.live() || !m.idle() || bench_busy(s));
   if (ImGui::Button("载入", ImVec2(60, 0))) {
@@ -410,7 +410,7 @@ void now_row(Ui &s, const Mine &m, const Flow &f) {
   tip_long("用时 " + dur(t) + " (LLM " + dur(all.llm_s) + " · 执行 " + dur(all.act_s) + ")\ntoken 输入 " + kilo(all.usage.prompt) + " (缓存 " + kilo(all.usage.cached) + ") / 输出 " +
            kilo(all.usage.completion) + "\n" + std::to_string(m.timeline.size()) + " 步 · 调用 " + std::to_string(all.all()) + " (观察 " + std::to_string(all.n(Cat::Look)) +
            " · 查研报 " + std::to_string(all.n(Cat::Doc)) + " · 没做成 " + std::to_string(all.failed()) + ")\n候选 " + std::to_string(all.staged()) + " (有参数组 " +
-           std::to_string(all.n(Verdict::Weights)) + ") · 提交 " + std::to_string(all.n(Tool::SubmitFactor)) + " · 入库 " + std::to_string(all.adopted) +
+           std::to_string(all.n(Verdict::Weights)) + ") · 提交 " + std::to_string(all.submitted) + " · 入库 " + std::to_string(all.adopted) +
            (m.memo.empty() ? "" : "\n插话已排队, 随下一条发出"));
   tools_bar(all);
 }
@@ -768,7 +768,7 @@ void summary_block(const Mine &m) {
   wrapped(color(TaskStatus::Kind::Ready), m.reason + " · +" + dur(m.now()));
   wrapped_dim("按 继续 = " + m.hint() + "; 右键某一条的标题可回退到那一步; 关闭 = 放下这段 (已存盘, 可再载入)");
   ImGui::TextDisabled("%zu 步 · 调用 %d (观察 %d · 查研报 %d) · 候选 %d · 有参数组 %d · 提交 %d · 入库 %d", m.timeline.size(), c.all(), c.n(Cat::Look), c.n(Cat::Doc), c.staged(), c.n(Verdict::Weights),
-                      c.n(Tool::SubmitFactor), c.adopted);
+                      c.submitted, c.adopted);
   const auto row = [&](size_t i) {
     const Result &r = *hits[i];
     ImGui::Bullet();

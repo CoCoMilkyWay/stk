@@ -1,13 +1,16 @@
 #pragma once
 
 // =============================================================================
-// 观察 (view_*) 的结果: 每个工具一个 Res; 计算与原文在 tools/look/<工具>.cpp (计算核 tools/look/Kernel.hpp), 展示在 ui/look/<工具>.cpp
+// 观察 (view_*) 的结果: 每个工具一个 Res; 计算与节在 tools/look/<工具>.cpp (计算核 tools/look/Kernel.hpp), 展示的图在 ui/look/<工具>.cpp
 // =============================================================================
 //   全部纯后台 (Pure 形): 读台面 Bay 的观察口径, 在本件的计算流上分块流式全核归约; view_book 逐笔重放进 worker 线程常驻的订单簿
 //   收益一律是超额 (毛 − 本行在池均值); 分位 / 组号已定向 (高 = 做多端 G20)
-//   公共头 LookRes: 日段提示 period + 标题 headline, 原文 text_head ⇄ 展示 draw_head 逐字对仗
+//   原文 ⇄ 展示同一组节 (同 eval_factor): 各工具只给 标题 headline + 节 secs + 展示的图 plot; 原文 text / 展示 draw 由 LookRes 按节统一成文 / 画
+//     原文骨架: [日段提示] ## 标题 → 各节 (### 节名 → "- " 概况行 → 字符图行 → 表); 结果里只有数与短标签, 口径与读法写在工具说明里
+//     折叠后留的一行 gist 缺省 = 标题行 title
 // =============================================================================
 
+#include "gui/task_agent/Text.hpp"
 #include "gui/task_agent/tools/Kit.hpp"
 
 #include <array>
@@ -21,6 +24,30 @@ namespace GUI::Agent {
 inline constexpr int kGroupN = 20; // 分层组数
 inline constexpr const char *kBookKinds[] = {"新挂", "撤单", "被吃完", "扫单"};
 
+// ---- 节 ----
+struct Num { // 表的一格: 原文 = s; 展示 = s, tint 有限时按它的号着色 (正红负绿)
+  std::string s;
+  double tint = NAN;
+  Num(std::string x, double t = NAN) : s(std::move(x)), tint(t) {}
+  Num(const char *x) : s(x) {}
+};
+inline Num nbp(double r) { return {text::bp(r), r}; }   // 收益 bp
+inline Num nr3(double x) { return {text::r3(x), x}; }   // 相关 / rIC / mono
+inline Num nchg(double x) { return {text::chg(x), x}; } // 涨跌 %
+struct Tab {
+  std::vector<std::string> head; // 空 = 没有表
+  std::vector<std::vector<Num>> rows;
+  int mark = -1; // 展示: 底色标出的一行 (对照行; -1 = 无)
+};
+struct Sec {
+  std::string title;               // 节名 (空 = 接在标题下)
+  std::vector<std::string> lines;  // 概况行
+  std::vector<std::string> sparks; // 只进原文的字符图行 (展示换成 plot)
+  int plot = -1;                   // 展示: 本节的图 (LookRes::plot 的编号; -1 = 无)
+  Tab tab;
+  bool warn = false; // 概况行是 没算成 / 没有数 的说明
+};
+
 // 一行分层 (分时段 / 分月 / 条件段 / 剥离对照同一口径)
 struct LayerRow {
   std::string name;
@@ -28,16 +55,44 @@ struct LayerRow {
   double mono = NAN, ls = NAN, ric = NAN;
   std::vector<double> grp; // [kGroupN] 每期超额 G1 → G20
 };
-void DrawLayerTable(const char *id, const std::vector<LayerRow> &rows); // ui/look/ViewLayers.cpp
+// 分层行的表 (列: 名 / 行 / 有统计 / mono / 多空 / rIC / G1 / G10 / G20 / 20 组字符柱)
+inline Tab LayerTab(const char *first, const std::vector<LayerRow> &rows) {
+  Tab t{{first, "行", "有统计", "mono", "多空 bp", "rIC", "G1 bp", "G10 bp", "G20 bp", "20 组"}, {}};
+  for (const LayerRow &b : rows)
+    t.rows.push_back({b.name, std::to_string(b.rows), std::to_string(b.ok), nr3(b.mono), nbp(b.ls), nr3(b.ric), nbp(b.grp[0]), nbp(b.grp[kGroupN / 2 - 1]),
+                      nbp(b.grp[kGroupN - 1]), "`" + text::bars(b.grp) + "`"});
+  return t;
+}
 
 struct LookRes : Res {
-  std::string period;                                 // 观察的日段与评估期不同时的提示 (同则空)
-  virtual std::string headline() const { return {}; } // 标题一行 (空 = 没有)
-  std::string text_head() const {
-    const std::string h = headline();
-    return period + (h.empty() ? "" : "## " + h + "\n");
+  std::string period;                       // 日段提示 (给了 from / to, 或观察的日段与评估期不同; 都不是 = 空)
+  virtual std::string headline() const = 0; // 标题一行
+  virtual std::vector<Sec> secs() const = 0;
+  virtual void plot(int) const {} // 展示: 节里点名的图 (ui/look/<工具>.cpp)
+  std::string text_head() const { return period + "## " + headline() + "\n"; }
+  std::string text() const final {
+    std::string s = text_head();
+    for (const Sec &x : secs()) {
+      s += x.title.empty() ? "" : "\n### " + x.title + "\n";
+      for (const std::string &l : x.lines)
+        s += "- " + l + "\n";
+      for (const std::string &l : x.sparks)
+        s += "- " + l + "\n";
+      if (x.tab.head.empty())
+        continue;
+      text::Table t(x.tab.head);
+      for (const std::vector<Num> &r : x.tab.rows) {
+        std::vector<std::string> v;
+        for (const Num &c : r)
+          v.push_back(c.s);
+        t.add(v);
+      }
+      s += t.str();
+    }
+    return s;
   }
-  void draw_head() const; // ui/look/ViewLayers.cpp
+  std::string gist() const override { return title(); }
+  void draw() const final; // ui/look/Look.cpp
 };
 
 struct FeatureRes : LookRes {
@@ -66,10 +121,11 @@ struct FeatureRes : LookRes {
   std::vector<Feat> feats;
   std::vector<size_t> good; // 有统计的式子
   std::vector<double> corr; // [good × good] 两两截面秩相关
-  std::string text() const override;
+  std::string headline() const override;
+  std::vector<Sec> secs() const override;
+  void plot(int i) const override; // i = 式子下标
   std::string gist() const override;
   std::string title() const override;
-  void draw() const override;
 };
 
 struct LayersRes : LookRes {
@@ -89,10 +145,10 @@ struct LayersRes : LookRes {
   double cond_rho = NAN, cond_ric = NAN;
   std::vector<LayerRow> conds; // 全体 (同口径) / 低 / 中 / 高
   std::string headline() const override;
-  std::string text() const override;
+  std::vector<Sec> secs() const override;
+  void plot(int i) const override; // 0 = 20 组 + 各组只数 / 1 = 各段 mono / 2 = 条件三段的 20 组
   std::string gist() const override;
   std::string title() const override;
-  void draw() const override;
 };
 
 struct TradesRes : LookRes {
@@ -120,9 +176,9 @@ struct TradesRes : LookRes {
   };
   std::vector<Seg> list;
   std::string headline() const override;
-  std::string text() const override;
+  std::vector<Sec> secs() const override;
+  void plot(int) const override; // 段超额分布
   std::string title() const override;
-  void draw() const override;
 };
 
 struct HoldersRes : LookRes {
@@ -139,9 +195,9 @@ struct HoldersRes : LookRes {
   };
   std::vector<Row> rows;
   std::string headline() const override;
-  std::string text() const override;
+  std::vector<Sec> secs() const override;
+  void plot(int) const override; // 各资产本端行数
   std::string title() const override;
-  void draw() const override;
 };
 
 struct ResponseRes : LookRes {
@@ -163,9 +219,9 @@ struct ResponseRes : LookRes {
   };
   std::vector<Part> parts;
   std::string headline() const override;
-  std::string text() const override;
+  std::vector<Sec> secs() const override;
+  void plot(int) const override; // 累计超额路径 (± 标准误, 各开仓时段) + 各时点因子分位
   std::string title() const override;
-  void draw() const override;
 };
 
 struct ExplainRes : LookRes {
@@ -179,12 +235,11 @@ struct ExplainRes : LookRes {
   };
   std::vector<Base> bases;
   LayerRow orig, rest;
-  std::string lead() const; // 头 + E 行
   std::string headline() const override;
-  std::string text() const override;
+  std::vector<Sec> secs() const override;
+  void plot(int i) const override; // 0 = 与因子的相关 / 1 = 原因子与剩余部分的 20 组
   std::string gist() const override;
   std::string title() const override;
-  void draw() const override;
 };
 
 struct SnapshotRes : LookRes {
@@ -206,9 +261,9 @@ struct SnapshotRes : LookRes {
   };
   std::vector<Cell> cells; // 高 n 只 + 池中位 + 低 n 只
   std::string headline() const override;
-  std::string text() const override;
+  std::vector<Sec> secs() const override;
+  void plot(int) const override; // 与因子分位的相关
   std::string title() const override;
-  void draw() const override;
 };
 
 struct StockDayRes : LookRes {
@@ -235,9 +290,9 @@ struct StockDayRes : LookRes {
   std::string rows; // 逐行时段 (空 = 不附逐行表)
   int r0 = 0, r1 = 0;
   std::string headline() const override;
-  std::string text() const override;
+  std::vector<Sec> secs() const override;
+  void plot(int) const override; // 价 (高低带) / 量 / 因子分位 / 特征的逐行图
   std::string title() const override;
-  void draw() const override;
 };
 
 struct StockDaysRes : LookRes {
@@ -255,9 +310,9 @@ struct StockDaysRes : LookRes {
   std::vector<Day> days;
   size_t n_feats = 0;
   std::string headline() const override;
-  std::string text() const override;
+  std::vector<Sec> secs() const override;
+  void plot(int) const override; // 收盘价 / 当日涨跌 / 因子日均分位的日级图
   std::string title() const override;
-  void draw() const override;
 };
 
 struct BookRes : LookRes {
@@ -298,9 +353,9 @@ struct BookRes : LookRes {
   };
   std::vector<Level> profile; // 卖 (远 → 近) 再买 (近 → 远)
   std::string headline() const override;
-  std::string text() const override;
+  std::vector<Sec> secs() const override;
+  void plot(int i) const override; // 0 = 逐秒成交价 / 累计主动净额; 1 = 全簿剖面
   std::string title() const override;
-  void draw() const override;
 };
 
 } // namespace GUI::Agent

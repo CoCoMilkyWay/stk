@@ -29,7 +29,7 @@ namespace {
 namespace fx = factor::expr;
 
 // 累计分层: 20 组各自超额日收益的对数累计 Σ ln(1 + r) (评估期全段; 与展示的分层图同口径)
-std::string layers_text(const Daily &d) {
+std::string layers_text(const DayTrace &d) {
   std::vector<double> v;
   for (int k = 0; k < factor::stat::kGroups; ++k) {
     double c = 0.0;
@@ -81,14 +81,14 @@ Sweep sweep_of(const Engine::SearchResult &r) {
 }
 
 // Run 顺带的逐日序列 → 每个算出来的权重一份
-std::vector<Daily> days_of(const std::vector<Engine::FactorRow> &rows, const std::vector<size_t> &idx, const Engine::DayLines &dl) {
-  std::vector<Daily> out;
+std::vector<DayTrace> days_of(const std::vector<Engine::FactorRow> &rows, const std::vector<size_t> &idx, const Engine::DayLines &dl) {
+  std::vector<DayTrace> out;
   for (size_t e = 0; e < idx.size(); ++e) {
     const Engine::DayLine &x = dl.rows[e];
     if (x.nav.n == 0)
       continue;
     assert(x.nav.n == Engine::kNavExcess && x.nav.P == static_cast<int>(dl.dates.size()) && x.ric.size() == dl.dates.size());
-    Daily d{.expr = rows[idx[e]].expr, .sign = rows[idx[e]].sign, .dates = dl.dates};
+    DayTrace d{.expr = rows[idx[e]].expr, .sign = rows[idx[e]].sign, .dates = dl.dates};
     double s = 0.0, s2 = 0.0;
     int m = 0;
     for (const float v : x.ric) {
@@ -107,7 +107,7 @@ std::vector<Daily> days_of(const std::vector<Engine::FactorRow> &rows, const std
 }
 
 // GUI 线程收尾: 候选目录按这趟的结局重扫, 入表封存 (BROKEN 之外都算做成)
-Commit absorb(bool ok, std::string err, Sweep sweep, std::vector<Daily> days) {
+Commit absorb(bool ok, std::string err, Sweep sweep, std::vector<DayTrace> days) {
   return [ok, err = std::move(err), sweep = std::move(sweep), days = std::move(days)](ToolOut &o, Desk &desk) mutable {
     auto r = std::static_pointer_cast<TrialRes>(o.res);
     assert(r);

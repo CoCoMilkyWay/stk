@@ -26,7 +26,7 @@ namespace GUI::Quote {
 struct QuoteHub {
   // 账户一侧 (AccountHub 给, frame 时取): today = (本帧历史, 新浪的当日; 皆可空) → 账户的当日 Day (空 = 无); spot = 回放用的券商现价
   struct AccountFeed {
-    std::function<std::shared_ptr<const Day>(const std::shared_ptr<const PriceView> &, const std::shared_ptr<const Live> &)> today;
+    std::function<std::shared_ptr<const Day>(const std::shared_ptr<const PriceView> &, const std::shared_ptr<const Live> &, const Fee &)> today;
     std::function<const account::Spot &()> spot;
   };
   explicit QuoteHub(AccountFeed acct) : acct_(std::move(acct)) {}

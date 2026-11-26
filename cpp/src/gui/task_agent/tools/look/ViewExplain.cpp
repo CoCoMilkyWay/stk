@@ -1,4 +1,4 @@
-// view_explain — 看成分: 输入 factor / exprs → ExplainRes (各基准的相关 / 自身 rIC / 只剥它后的 rIC + 全剥离对照) → 原文; 展示见 ui/look/ViewExplain.cpp
+// view_explain — 看成分: 输入 factor / exprs / from / to → ExplainRes (各基准的相关 / 自身 rIC / 只剥它后的 rIC + 全剥离对照) → 原文; 展示见 ui/look/ViewExplain.cpp
 #include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
@@ -45,23 +45,21 @@ void resid_into(const std::vector<std::vector<double>> &X, std::span<const doubl
 
 std::string ExplainRes::headline() const { return "因子 `" + label + "` 的成分"; }
 
-std::string ExplainRes::lead() const { return text_head() + text::join(exprs, ""); }
-
-std::string ExplainRes::text() const {
-  std::string s = lead();
-  s += "抽 " + str(rows) + " 行, 每行取在池、标签有效且全部基准有值的格; 收益类基准是对数收益减同行在池均值 (跨日按昨收接); 相关与 rIC 都是逐行截面 Spearman 的均值\n";
-  s += "因子 rIC (同口径) " + r3(fric) + "\n\n";
-  text::Table btbl({"基准", "与因子的截面秩相关", "基准自身 rIC", "只剥它后的因子 rIC"});
+std::vector<Sec> ExplainRes::secs() const {
+  std::vector<Sec> out;
+  Sec &x = out.emplace_back();
+  x.lines = exprs;
+  x.lines.push_back("抽 " + str(rows) + " 行 · 因子 rIC " + r3(fric));
+  x.plot = 0;
+  x.tab.head = {"基准", "与因子的截面秩相关", "基准自身 rIC", "只剥它后的因子 rIC"};
   for (const Base &b : bases)
-    btbl.add({b.name, r3(b.corr), r3(b.ric), r3(b.rest)});
-  s += btbl.str();
-  s += "\n全部基准一起剥 (每行把因子秩对全部基准秩做截面回归, 取残差): 平均 R² " + r3(r2) + " · 因子 rIC " + r3(fric) + " → 剩余部分 " + r3(rric) + "\n";
-  s += "20 组按标签逐行近似分 (组超额 = 组内开仓可买的格的 (标签 − 本行在池均值) 等权均值; 建不了仓的不计, 续持链不追, 不按满仓只数折算), 与回测 / view_layers "
-       "的真持有口径略有出入, 只作两行之间对照\n\n";
-  text::Table ltbl = layer_table("");
-  add_layer_row(ltbl, orig);
-  add_layer_row(ltbl, rest);
-  return s + ltbl.str();
+    x.tab.rows.push_back({b.name, nr3(b.corr), nr3(b.ric), nr3(b.rest)});
+  Sec &r = out.emplace_back();
+  r.title = "全部基准一起剥";
+  r.lines = {"平均 R² " + r3(r2) + " · 因子 rIC " + r3(fric) + " → 剩余部分 " + r3(rric)};
+  r.plot = 1;
+  r.tab = LayerTab("", {orig, rest});
+  return out;
 }
 
 std::string ExplainRes::title() const { return "`" + label + "` · " + gist(); }
@@ -74,8 +72,9 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
   const ViewEnv &env = bay.env;
   Engine::FactorFlow &F = bay.flow;
   std::string err;
+  Window win;
   FactorSpec fac;
-  if (!resolve_factor(c.str("factor"), env, fac, err))
+  if (!window_of(c, win, err) || !resolve_factor(c.str("factor"), env, fac, err))
     return Fail(std::move(err));
   std::vector<FeatSpec> feats;
   resolve_feats(c.strs("exprs"), env, feats);
@@ -117,12 +116,12 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
                 .extra_work = sizeof(double) + (seg > 1 ? 3.0 * sizeof(float) : 0.0)};
   const Engine::Rc rc = run_stream(
       env, F, cfg, dates, job, err,
-      [&](const std::vector<misc::Ymd> &ds, size_t &, size_t &, std::string &why) {
+      [&](const std::vector<misc::Ymd> &ds, size_t &lo, size_t &hi, std::string &why) {
         if (static_cast<int>(ds.size()) * seg <= lag) {
           why = "## 因子 `" + fac.label + "` 的成分\n观察的日段太短: 基准要回看 " + std::to_string(lag) + " 行\n";
           return false;
         }
-        return true;
+        return win(ds, lo, hi, why);
       },
       [&](const ChunkView &cv) {
         if (!cols_fixed) {
@@ -137,8 +136,8 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
           cols_fixed = true;
         }
         const size_t m = b_names.size();
-        const int T = cv.blk.y.sh.T, A = cv.blk.y.sh.A, n_stat = cv.t_hi - cv.t_lo, total_T = static_cast<int>(cv.dates.size()) * seg;
-        const int rstep = row_step((total_T - lag) / kExplainRows, seg);
+        const int T = cv.blk.y.sh.T, A = cv.blk.y.sh.A, n_stat = cv.t_hi - cv.t_lo;
+        const int rstep = row_step((cv.w_rows() - lag) / kExplainRows, seg);
         const Px px(cv.blk, cv.bm, cfg.bars, env.open);
         const std::vector<float> e = block_excess_steps(F.S.ex, cv.blk, px, cv.blk.land0());
         std::vector<double> cum(e.size());
@@ -193,7 +192,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
             const int t = cv.t_lo + r, u = cv.u0 + r;
             if (u < lag || (u - lag) % rstep != 0 || !opens(u, env))
               continue;
-            const float mkt = row_mkt(cv.blk, t);
+            const float mkt = mkt_of(cv, t);
             if (!std::isfinite(mkt))
               continue;
             assert(t >= lag);
@@ -289,11 +288,11 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
 
   auto res = std::make_shared<ExplainRes>();
   ExplainRes &R = *res;
-  R.period = period_note(dates, env), R.label = fac.label;
+  R.period = period_note(dates, env, win), R.label = fac.label;
   for (size_t i = 0; i < feats.size(); ++i)
     R.exprs.push_back(expr_line(i, feats[i], "没算成, 不进基准"));
   if (!fric.n)
-    return Fail(R.lead() + "没有可用的行 (每行至少要 " + std::to_string(kMinCs) + " 个在池、标签有效且全部基准有值的格)\n");
+    return Fail(R.text_head() + text::join(R.exprs, "\n") + "\n没有可用的行 (每行至少要 " + std::to_string(kMinCs) + " 个在池、标签有效且全部基准有值的格)\n");
   R.rows = fric.n, R.fric = fric.mean(), R.r2 = r2.mean(), R.rric = rric.mean();
   for (size_t j = 0; j < b_names.size(); ++j)
     R.bases.push_back({b_names[j], corr[j].mean(), bric[j].mean(), sric[j].mean()});
@@ -301,6 +300,6 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
   return Done(std::move(res));
 }
 
-json SampleViewExplain(Feed &p) { return {{"factor", p.factor()}, {"exprs", p.leaves(p.below(3))}}; }
+json SampleViewExplain(Feed &p) { return p.window({{"factor", p.factor()}, {"exprs", p.leaves(p.below(3))}}); }
 
 } // namespace GUI::Agent

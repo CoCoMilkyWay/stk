@@ -433,10 +433,12 @@ std::string Mine::report_of(const std::string &why) const {
                   (setup.remark.empty() ? "" : "- 本会话要求: " + setup.remark + "\n") + "\n";
   std::string in, out;
   for (size_t i = 0; i < timeline.size(); ++i)
-    if (const std::optional<Act> &a = timeline[i].act; a && a->span.ended() && a->call.tool == Tool::SubmitFactor)
-      (a->out.ok ? in : out) += "- " + StepTag(static_cast<int>(i) + 1) + " " + a->call.str("name") + (a->out.ok ? "" : " — " + a->out.text) + "\n";
+    if (const std::optional<Act> &a = timeline[i].act; a && a->span.ended() && !a->out.fx.submitted.empty()) {
+      const bool adopted = !a->out.fx.adopted.empty();
+      (adopted ? in : out) += "- " + StepTag(static_cast<int>(i) + 1) + " " + a->out.fx.submitted + (adopted ? "" : " — " + a->out.text.substr(0, a->out.text.find('\n'))) + "\n";
+    }
   r += std::string(test ? "## 达门槛 (" : "## 入库 (") + std::to_string(c.adopted) + ")\n\n" + (in.empty() ? "(无)\n" : in) + "\n";
-  r += "## 未入库的提交 (" + std::to_string(c.n(Tool::SubmitFactor) - c.adopted) + ")\n\n" + (out.empty() ? "(无)\n" : out);
+  r += "## 未入库的提交 (" + std::to_string(c.submitted - c.adopted) + ")\n\n" + (out.empty() ? "(无)\n" : out);
   const std::vector<const Note *> filed = notes.filed(log.dir());
   for (const NoteKind k : kVals<NoteKind>) {
     std::string s;

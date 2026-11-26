@@ -1,48 +1,40 @@
 #pragma once
 
 // =============================================================================
-// Stat 行核的宿主版 (CPU; 契约 factor/Stat/Contract.hpp): 一行的 rank / 一 (t, hold) 的 Row / 一行一持有期的换手
+// Stat 行核的宿主版 (CPU; 契约 factor/Stat/Contract.hpp): 一行的 rank / 一 (t, hold) 的 Row
 // =============================================================================
 //   Stat/Cpu.hpp 用, 与 Stat/Dev.cuh 对仗 (同一组行核同名同参序, 一边宿主一边设备). 单线程, 无流程 / 无分配.
 //     KeyX / KeyY 取键器 (行视图, 与 Dev.cuh 同名同形): 因子一行 (只看池内 g ∧ m 的格) / 做多收益一行 (fp16 位) → 保序键 / kNoKey
 //     rank_row    精确并列均秩: key(a) → LSD 基数排序 (n ≤ 1024 用 8 位 × 4 趟, 否则 11 位 × 3 趟) → 等值段均秩 → out
 //     rank_x_row  因子一行: CS rank_row(KeyX) / TS 直接量化 —— 口径分叉只在这里; 方向在此一次定 (契约【方向 Dir】)
 //     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t) + 标签侧 label_row (t → t+h, 开仓行才算):
-//                 整数五和 / 基准浮点和 / 分组和 / 尾部和一遍 A 轴 (仓位感知 Pos.hpp: 每格一次链回走同出组与各级尾部), 收尾 finish_row
-//     turn_row    一行一持有期的换手 (契约 Turn.hpp): 本批 ⇄ 前一批两列格位 → 每本每金额段两侧流水 + 本批收益
-//     factor_slots 因子账集 (端 × 层级) 一行的两列格位 (InRank 一次回走)
+//                 整数五和 / 基准浮点和 / 分组和 / 尾部和一遍 A 轴 (仓位感知 Pos.hpp cell: 每格一次链回走同出组与各级尾部), 收尾 finish_row
+//   换手 (账集) 在 Stat/Book.hpp (只有宿主版).
 //   【标签】fp16 位 → float 用 _Float16 (clang, F16C), 精确转换, 与 GPU __half2float 逐位一致.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
 
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Pos.hpp"
-#include "factor/Stat/Turn.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
-#include <span>
 #include <vector>
 
 namespace factor::cpu::stat {
 
-using factor::stat::Cost;
 using factor::stat::Frame;
 using factor::stat::kEnds;
 using factor::stat::kGroups;
-using factor::stat::kLevels;
 using factor::stat::kMaxA;
 using factor::stat::kNoKey;
 using factor::stat::kRankNone;
-using factor::stat::kSides;
 using factor::stat::kSums;
 using factor::stat::kTails;
 using factor::stat::Label;
 using factor::stat::Row;
-using factor::stat::Slot;
-using factor::stat::Turn;
 
 inline float h2f(uint16_t b) {
   _Float16 h;
@@ -146,7 +138,7 @@ inline void lag_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
 }
 
 // 标签侧 (t → t+h): rx = 本行 r16 (已定向), lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓
-//   → r 的 ric / mkt / grp / cnt / tail / ok. ric / mkt 在 J 上 (与可成交无关); 组与尾部只收真持有的格 (一次 walk 出层级), 收益按续持取名义值
+//   → r 的 ric / mkt / grp / cnt / tail / ok. ric / mkt 在 J 上 (与可成交无关); 组与尾部只收真持有的格 (一格一次 cell 出层级), 收益按续持取名义值
 inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, Row &r) {
   unsigned long long s[kSums] = {};
   double sm = 0.0, gs[kGroups] = {}, ts[kEnds][kTails] = {};
@@ -154,13 +146,12 @@ inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::C
   for (int a = 0; a < c.A; ++a) {
     const bool ok = rx[a] != kRankNone && lb.ry[a] != kRankNone;
     factor::stat::pair_add(s, rx[a], lb.ry[a], ok);
-    float y[2];
-    factor::stat::label_cell(lb, a, H2F{}, y);
-    sm += ok ? y[0] : 0.f;
     if (!ok)
       continue;
+    sm += h2f(lb.lv[a]);
     const int g = factor::stat::grp_of(rx[a]);
-    const factor::stat::Pos p = factor::stat::walk(c, lb.m + a, lb.eo + a, factor::stat::InRank{rx + a, g});
+    float y[2];
+    const factor::stat::Pos p = factor::stat::cell(c, lb, a, factor::stat::InRank{rx + a, g}, H2F{}, y);
     if (p.held < 0)
       continue;
     gs[g] += factor::stat::ret_at(p, 0, y);
@@ -185,87 +176,6 @@ inline Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, c
   if (opens)
     label_row(rx, lb, c, cap, r);
   return r;
-}
-
-// ---- 换手 (契约 Turn.hpp) ----
-
-// 每线程的账集工作区 (本数 B 定形, 跨行复用)
-struct TurnWork {
-  std::vector<double> W, PW, V, PV; // [B] 本批 / 前一批的目标权和与资金 (1 + Σ w̄ r)
-  std::vector<Slot> cur, pre;       // 一行的两列格位
-};
-
-// 一行一持有期: 两列格位 cur / pre (各按 (a, b) 升序; pre 只交接时非空) → ret[b] += 本批收益, out[k · B + b] += 两侧流水.
-//   settle = 本批平仓不与下一批交接; eo / c[k] 已偏到行首; cap[b] = 本 b 满仓权
-//   冲击: 盘口段取本格该侧冲击 (封顶 top); 本格价点不可卖 (封跌停, 盘口卖出冲击无定义) 的卖出量按固定冲击, 与收益侧的平仓顺延同一语义
-inline void turn_row(const std::vector<Slot> &cur, const std::vector<Slot> &pre, bool settle, const uint8_t *eo, const Cost *c, int C, std::span<const double> cap,
-                     TurnWork &w, double *ret, Turn *out) {
-  const size_t B = cap.size();
-  w.W.assign(B, 0.0), w.PW.assign(B, 0.0), w.V.assign(B, 1.0), w.PV.assign(B, 1.0);
-  for (const Slot &s : cur)
-    w.W[s.b] += s.w;
-  for (const Slot &s : pre)
-    w.PW[s.b] += s.w;
-  const auto wt = [&](const Slot &s, const std::vector<double> &W) { return s.w / factor::stat::book_den(W[s.b], cap[s.b]); };
-  for (const Slot &s : cur) {
-    const double x = wt(s, w.W) * s.r;
-    w.V[s.b] += x, ret[s.b] += x;
-  }
-  for (const Slot &s : pre)
-    w.PV[s.b] += wt(s, w.PW) * s.r;
-  const auto key = [](const Slot &s) { return static_cast<uint64_t>(s.a) << 32 | s.b; };
-  for (size_t i = 0, j = 0; i < cur.size() || j < pre.size();) {
-    const bool has_c = i < cur.size() && (j == pre.size() || key(cur[i]) <= key(pre[j]));
-    const bool has_p = j < pre.size() && (i == cur.size() || key(pre[j]) <= key(cur[i]));
-    const Slot &s = has_c ? cur[i] : pre[j];
-    const double x = has_c ? wt(s, w.W) : 0.0, px = has_p ? wt(pre[j], w.PW) * (1.0 + pre[j].r) / w.PV[s.b] : 0.0;
-    double d = x - px;
-    if (d > 0.0 && !(eo[s.a] & factor::stat::kEoBuy))
-      d = 0.0;
-    const double u[kSides] = {d > 0.0 ? d : 0.0, (d < 0.0 ? -d : 0.0) + (settle && has_c ? x * (1.0 + s.r) / w.V[s.b] : 0.0)};
-    for (int sd = 0; sd < kSides; ++sd) {
-      if (u[sd] == 0.0)
-        continue;
-      const bool stuck = sd == kSell && !(eo[s.a] & factor::stat::kEoSell); // 本格价点不可卖 (封跌停): 盘口无买盘, 卖出侧按固定冲击
-      for (int k = 0; k < C; ++k) {
-        Turn &o = out[static_cast<size_t>(k) * B + s.b];
-        o.vol[sd] += u[sd];
-        if (c[k].flat() || stuck)
-          o.fix[sd] += u[sd];
-        else
-          o.imp[sd] += u[sd] * static_cast<double>(std::min(h2f(c[k].imp[sd][s.a]), c[k].top));
-      }
-    }
-    i += has_c, j += has_p;
-  }
-}
-
-// 因子账集 (b = e · kLevels + l) 一行的两列格位: rx (已定向) / lb 已偏到行首; c = 本行交接链; net = 与前一批交接
-//   本批: 端组真持有的格进其各级 (l ≤ held), r = 该级续持口径收益; 前一批 (net): 行 t − h 端组真持有的格, r = 到交接点的名义收益
-inline void factor_slots(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, bool net, TurnWork &w) {
-  w.cur.clear(), w.pre.clear();
-  const ptrdiff_t back = -static_cast<ptrdiff_t>(c.hd.h) * c.A;
-  const factor::stat::Chain pc = c.back();
-  for (int a = 0; a < c.A; ++a) {
-    for (int e = 0; e < kEnds; ++e) {
-      const int g = factor::stat::end_group(e);
-      float y[2];
-      if (rx[a] != kRankNone && factor::stat::grp_of(rx[a]) == g && lb.m[a]) {
-        const factor::stat::Pos p = factor::stat::walk(c, lb.m + a, lb.eo + a, factor::stat::InRank{rx + a, g});
-        factor::stat::label_cell(lb, a, H2F{}, y);
-        for (int l = 0; l <= p.held; ++l)
-          w.cur.push_back({static_cast<uint32_t>(a), static_cast<uint32_t>(e * kLevels + l), 1.f, factor::stat::ret_at(p, l, y)});
-      }
-      const ptrdiff_t q = back + a;
-      if (net && rx[q] != kRankNone && factor::stat::grp_of(rx[q]) == g && lb.m[q]) {
-        const factor::stat::Pos p = factor::stat::walk(pc, lb.m + q, lb.eo + q, factor::stat::InRank{rx + q, g});
-        factor::stat::label_cell(lb, q, H2F{}, y);
-        const float r = factor::stat::hold_ret(true, lb.eo[a], y);
-        for (int l = 0; l <= p.held; ++l)
-          w.pre.push_back({static_cast<uint32_t>(a), static_cast<uint32_t>(e * kLevels + l), 1.f, r});
-      }
-    }
-  }
 }
 
 } // namespace factor::cpu::stat

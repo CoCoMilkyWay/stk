@@ -18,7 +18,6 @@
 
 #include "define/Label.hpp" // 持有期几何 Hold (CsLinRankRoll)
 #include "factor/Contract.hpp"
-#include "factor/StreamHist.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -123,29 +122,19 @@ inline M2 comoments(const float *xv, const uint8_t *xm, const float *yv, const u
   return r;
 }
 
-inline void hist_of(stream::Hist &h, std::vector<float> &buf, const float *v, const uint8_t *m, const uint8_t *g, int A) {
-  h.build(gather(buf, v, m, g, A));
-}
-
-// 精确秩 (契约【精确秩】): s = 升序的池内样本; x 的 less / eq 二分得, pct_of 夹到 [0, 1]
+// 序统计 (契约【序统计】): s = 升序的池内样本
+// 秩: x 的 less / eq 二分得, pct_of 夹到 [0, 1] (空 → 0.5)
 inline float exact_pct(const std::vector<float> &s, float x) {
   const auto lo = std::lower_bound(s.begin(), s.end(), x);
   const auto hi = std::upper_bound(lo, s.end(), x);
   return std::clamp(pct_of(static_cast<int>(lo - s.begin()), static_cast<int>(hi - lo), static_cast<int>(s.size())), 0.f, 1.f);
 }
-inline void sorted_of(std::vector<float> &buf, const float *v, const uint8_t *m, const uint8_t *g, int A) {
+// k 分位: 第 q_rank(k, n) 名 (调用方保证 s 非空)
+inline float exact_quantile(const std::vector<float> &s, double k) { return s[static_cast<size_t>(q_rank(k, static_cast<int>(s.size())) - 1)]; }
+inline const std::vector<float> &sorted_of(std::vector<float> &buf, const float *v, const uint8_t *m, const uint8_t *g, int A) {
   gather(buf, v, m, g, A);
   std::sort(buf.begin(), buf.end());
-}
-
-// 分位缩尾: w = 逐资产 clamp 后的值 (无效位置原样, 由掩码屏蔽)
-inline const std::vector<float> &winsorize(std::vector<float> &w, const float *v, int A, const stream::Hist &h, double q) {
-  const float a = h.quantile(q), b = h.quantile(1.0 - q);
-  const float lo = std::fmin(a, b), hi = std::fmax(a, b);
-  w.resize(static_cast<size_t>(A));
-  for (int i = 0; i < A; ++i)
-    w[i] = std::fmin(std::fmax(v[i], lo), hi);
-  return w;
+  return buf;
 }
 
 // 组 id: 格无效 → −1 (不参与); 有效但为负 (未知行业) → kNoGroup (无组, 以全池为组, 槽号 = G)
@@ -229,7 +218,7 @@ struct CsCorr { // 任一侧无离散度 → 0
   }
 };
 
-// =========================== 序统计族 (HIST) ===========================
+// =========================== 序统计族 (精确, 契约【序统计】) ===========================
 
 struct CsRank { // 精确秩; 空池 / 池内全并列 → 0.5
   CS_SIG {
@@ -263,40 +252,36 @@ private:
 struct CsQuantile { // k 分位 (k = 0.5 即中位); 空池 → 0
   CS_SIG {
     CS_ROW;
-    stream::Hist h;
-    detail::hist_of(h, buf_, xv, xm, g, A);
-    detail::broadcast(ov, om, A, mk(h.n >= 1 ? h.quantile(p.k) : 0.f, true));
+    const auto &s = detail::sorted_of(buf_, xv, xm, g, A);
+    detail::broadcast(ov, om, A, mk(s.empty() ? 0.f : detail::exact_quantile(s, p.k), true));
   }
 
 private:
   std::vector<float> buf_;
 };
 
-struct CsWinsor { // 空池 → 不缩尾, x 原值
+struct CsWinsor { // clamp 到 [Q_k, Q_{1−k}]; 空池 → 不缩尾, x 原值
   CS_SIG {
     CS_ROW;
-    stream::Hist h;
-    detail::hist_of(h, buf_, xv, xm, g, A);
-    const auto &w = detail::winsorize(w_, xv, A, h, p.k);
+    const auto &s = detail::sorted_of(buf_, xv, xm, g, A);
+    const float lo = s.empty() ? 0.f : detail::exact_quantile(s, p.k);
+    const float hi = s.empty() ? 0.f : detail::exact_quantile(s, 1.0 - static_cast<double>(p.k));
     for (int i = 0; i < A; ++i)
-      detail::put(ov, om, i, mk(h.n >= 1 ? w[i] : xv[i], xm[i]));
+      detail::put(ov, om, i, mk(s.empty() ? xv[i] : std::fmin(std::fmax(xv[i], lo), hi), xm[i]));
   }
 
 private:
-  std::vector<float> buf_, w_;
+  std::vector<float> buf_;
 };
 
-struct CsBucket { // 等频分 k 组: floor(pct·k) ∈ 0..k−1; 值域退化 / 空池 → pct = 0.5 → 中间桶
+struct CsBucket { // 等频分 k 组: bucket_of(pct, k) ∈ 0..k−1; 空池 / 全并列 → pct = 0.5 → 中间桶
   CS_SIG {
     CS_ROW;
-    stream::Hist h;
-    detail::hist_of(h, buf_, xv, xm, g, A);
+    const auto &s = detail::sorted_of(buf_, xv, xm, g, A);
     const int k = static_cast<int>(p.k);
     assert(k >= 1);
-    for (int i = 0; i < A; ++i) {
-      const int b = std::clamp(static_cast<int>(std::floor(h.rank(xv[i]) * k)), 0, k - 1);
-      detail::put(ov, om, i, mk(b, xm[i]));
-    }
+    for (int i = 0; i < A; ++i)
+      detail::put(ov, om, i, mk(bucket_of(detail::exact_pct(s, xv[i]), k), xm[i]));
   }
 
 private:
@@ -334,35 +319,32 @@ private:
   std::vector<int> n_;
 };
 
-struct CsGroupRank { // 组内 pct rank
+struct CsGroupRank { // 组内精确 pct rank (样本 = 本组池成员)
   CS_SIG {
     CS_ROW;
     const int G = detail::max_gid(yv, ym, A) + 1;
-    const size_t GS = static_cast<size_t>(std::max(G, 1));
-    if (bucket_.size() < GS)
-      bucket_.resize(GS), h_.resize(GS);
-    for (size_t q = 0; q < GS; ++q)
-      bucket_[q].clear();
+    if (grp_.size() < static_cast<size_t>(G))
+      grp_.resize(static_cast<size_t>(G));
+    for (int q = 0; q < G; ++q)
+      grp_[q].clear();
     for (int i = 0; i < A; ++i) {
       const int q = detail::gid(yv, ym, i);
       if (q >= 0 && xm[i] && g[i])
-        bucket_[q].push_back(xv[i]);
+        grp_[q].push_back(xv[i]);
     }
     for (int q = 0; q < G; ++q)
-      h_[q].build(bucket_[q]);
-    stream::Hist ha;
-    detail::hist_of(ha, buf_, xv, xm, g, A); // 全池 (回退; 含无组的池成员)
-    for (int i = 0; i < A; ++i) {            // 无组 / 组空 → 全池直方图; 全池也空 → Hist 给 0.5
+      std::sort(grp_[q].begin(), grp_[q].end());
+    const auto &all = detail::sorted_of(buf_, xv, xm, g, A); // 全池 (回退; 含无组的池成员)
+    for (int i = 0; i < A; ++i) {                            // 无组 / 组空 → 全池; 全池也空 → 0.5
       const int q = detail::gid(yv, ym, i);
       const bool ok = q != -1 && xm[i];
-      const float v = !ok ? 0.f : (q >= 0 && h_[q].n >= 1 ? h_[q].rank(xv[i]) : ha.rank(xv[i]));
+      const float v = !ok ? 0.f : detail::exact_pct(q >= 0 && !grp_[q].empty() ? grp_[q] : all, xv[i]);
       detail::put(ov, om, i, mk(v, ok));
     }
   }
 
 private:
-  std::vector<std::vector<float>> bucket_;
-  std::vector<stream::Hist> h_;
+  std::vector<std::vector<float>> grp_; // [组] 升序的池成员
   std::vector<float> buf_;
 };
 
@@ -442,21 +424,20 @@ struct CsLinRankFix {
     const int n = c.n, A = c.A;
     const size_t r = static_cast<size_t>(t) * A;
     for (int i = 0; i < n; ++i)
-      detail::hist_of(h_[i], buf_, c.xs[i].v + r, c.xs[i].m + r, c.g + r, A);
+      detail::sorted_of(s_[i], c.xs[i].v + r, c.xs[i].m + r, c.g + r, A);
     for (int a = 0; a < A; ++a) {
       bool ok = true;
       double v = 0.0;
       for (int i = 0; i < n; ++i) {
         ok = ok && c.xs[i].m[r + a];
-        v += static_cast<double>(c.p.w[i]) * (static_cast<double>(h_[i].rank(c.xs[i].v[r + a])) - 0.5);
+        v += static_cast<double>(c.p.w[i]) * (static_cast<double>(detail::exact_pct(s_[i], c.xs[i].v[r + a])) - 0.5);
       }
       detail::put(c.o.v + r, c.o.m + r, a, mk(v, ok));
     }
   }
 
 private:
-  stream::Hist h_[kLrN];
-  std::vector<float> buf_;
+  std::vector<float> s_[kLrN]; // 各元升序的池内样本
 };
 
 // xs[0..n) 特征元, xs[n] = h 持有期做多标签 (Contract【N 元回归】). 自 t = 0 逐行顺序推: 行 t 新实现的标签行 s
@@ -483,13 +464,13 @@ struct CsLinRankRoll {
     lr_solve(acc, n, c.p.k, w);
     const size_t r = static_cast<size_t>(t) * A;
     for (int i = 0; i < n; ++i)
-      detail::hist_of(h_[i], buf_, c.xs[i].v + r, c.xs[i].m + r, c.g + r, A);
+      detail::sorted_of(s_[i], c.xs[i].v + r, c.xs[i].m + r, c.g + r, A);
     for (int a = 0; a < A; ++a) {
       bool ok = true;
       double v = 0.0;
       for (int i = 0; i < n; ++i) {
         ok = ok && c.xs[i].m[r + a];
-        v += w[i] * (static_cast<double>(h_[i].rank(c.xs[i].v[r + a])) - 0.5);
+        v += w[i] * (static_cast<double>(detail::exact_pct(s_[i], c.xs[i].v[r + a])) - 0.5);
       }
       detail::put(c.o.v + r, c.o.m + r, a, mk(v, ok));
     }
@@ -504,7 +485,7 @@ private:
       return;
     const size_t r = static_cast<size_t>(s) * A;
     for (int i = 0; i <= n; ++i)
-      detail::hist_of(h_[i], buf_, c.xs[i].v + r, c.xs[i].m + r, c.g + r, A);
+      detail::sorted_of(s_[i], c.xs[i].v + r, c.xs[i].m + r, c.g + r, A);
     double x[kMaxIn];
     for (int a = 0; a < A; ++a) {
       bool ok = c.g[r + a];
@@ -513,7 +494,7 @@ private:
       if (!ok)
         continue;
       for (int i = 0; i <= n; ++i)
-        x[i] = static_cast<double>(h_[i].rank(c.xs[i].v[r + a])) - 0.5;
+        x[i] = static_cast<double>(detail::exact_pct(s_[i], c.xs[i].v[r + a])) - 0.5;
       for (int i = 0; i < n; ++i) {
         for (int j = i; j < n; ++j)
           out[lr_ix(i, j, n)] += x[i] * x[j];
@@ -521,10 +502,9 @@ private:
       }
     }
   }
-  stream::Hist h_[kMaxIn];
-  std::vector<float> buf_;
-  std::vector<double> ring_; // [d][M]: 标签行 s 在槽 s % d
-  int next_ = 0, done_ = -1; // 下一行 / 已入环的最末标签行
+  std::vector<float> s_[kMaxIn]; // 各元升序的池内样本
+  std::vector<double> ring_;     // [d][M]: 标签行 s 在槽 s % d
+  int next_ = 0, done_ = -1;     // 下一行 / 已入环的最末标签行
 };
 
 #undef CS_ROW

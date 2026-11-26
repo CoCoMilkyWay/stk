@@ -589,7 +589,7 @@ constexpr Metric kMetrics[] = {
     {Group::Shape, "mono", "mono", "分层单调性", "[-1, 1]", "越大, 1 严格单调", "%+.3f",
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
     {Group::Shape, "turn", "turn", "年化单边换手 (倍/年)", "[0, ∞)", "越小", "%.1f",
-     [](const HS &h, const FR &r) { return factor::stat::turn_annual(h, r.turn_of(h)); }, line(1000, 100)},
+     [](const HS &h, const FR &r) { return factor::stat::turn_annual(h, r.turn_of(h).lv[0]); }, line(1000, 100)},
     {Group::LS, "LS%", "LS%", "日净值多空复利年化 %", "(-∞, ∞)", "越大", "%+.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h); }, line(10, 50)},
     {Group::LS, "SR", "SR", "日净值多空 Sharpe", "(-∞, ∞)", "越大", "%+.2f",

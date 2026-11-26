@@ -138,7 +138,8 @@ __global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, in
 #define G_FUSE_EXPO(Name, ar)
 #define G_FUSE(Name, c_name, ar, t, a, kern, kdom, in_dom, out_dom, op_tex, note) G_FUSE_##t(Name, ar)
         OP_TS0(G_FUSE)
-        OP_TS1(G_FUSE) OP_TS2(G_FUSE) OP_TS3(G_FUSE)
+        OP_TS1(G_FUSE)
+        OP_TS2(G_FUSE) OP_TS3(G_FUSE)
 #undef G_FUSE
 #undef G_FUSE_EXPO
 #undef G_FUSE_ROLL
@@ -368,8 +369,6 @@ struct DevBuf {
   }
 };
 
-using factor::stat::kHoldCount;
-
 struct Timer {
   cudaEvent_t e0, e1;
   Timer() {
@@ -397,7 +396,7 @@ struct DevLabels {
   DevBuf<uint16_t> lv[kHoldCount], nv[kHoldCount], ry[kHoldCount];
   DevBuf<uint8_t> m[kHoldCount], eo; // eo 各持有期共用一张
   factor::stat::Labels L;
-  void alloc(const factor::stat::Holds &hd, int seg, size_t n, double cap) {
+  void alloc(const Holds &hd, int seg, size_t n, double cap) {
     factor::stat::assert_holds(hd, seg);
     H = hd.n, L.hd = hd, L.cap = cap;
     eo.alloc(n);
@@ -453,7 +452,7 @@ struct StatSession {
   Timer tm;
 };
 
-StatSession *stat_open(int T, int A, int seg, int Cmax, const factor::stat::Holds &hd, double cap) {
+StatSession *stat_open(int T, int A, int seg, int Cmax, const Holds &hd, double cap) {
   assert(T > 0 && A > 0 && A <= factor::stat::kMaxA && Cmax >= 1 && Cmax <= stat::kMaxBatch && cap > 0.0);
   StatSession *s = new StatSession;
   s->s = {T, A, geo_of(seg)};
@@ -519,7 +518,7 @@ size_t stat_bytes(const StatSession *s) {
 }
 
 void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, factor::stat::Dir d, int T, int A, int seg,
-              int t0_abs, int t_lo, int t_back, const factor::stat::Holds &hd, double cap, const factor::stat::Label *lab, factor::stat::Accum *acc,
+              int t0_abs, int t_lo, int t_back, const Holds &hd, double cap, const factor::stat::Label *lab, factor::stat::Accum *acc,
               factor::stat::Day *day, factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
   assert(C >= 1 && C <= stat::kMaxBatch && xv && xm && gm);
   const size_t n = static_cast<size_t>(T) * A;

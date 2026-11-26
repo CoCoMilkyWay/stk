@@ -410,6 +410,15 @@ void cell_num(double v, const char *fmt, bool tint) {
 }
 void cell_bp(double r) { cell_num(r * 1e4, "%+.1f", true); }
 void cell_pct(double x) { cell_num(x * 100.0, "%.0f%%"); }
+void cell_tint(const std::string &s, double tint) {
+  ImGui::TableNextColumn();
+  if (s == "—")
+    ImGui::TextDisabled("—");
+  else if (std::isfinite(tint))
+    ImGui::TextColored(GUI::tint(tint, 0.0), "%s", s.c_str());
+  else
+    ImGui::TextUnformatted(s.c_str());
+}
 
 void groups_plot(const char *id, const std::vector<double> &grp, float h, const char *unit) {
   if (grp.empty() || !ImPlot::BeginPlot(id, ImVec2(-1, h), ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))

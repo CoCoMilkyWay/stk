@@ -257,8 +257,9 @@ struct LedgerLine {
 
 // 腿集合成 (线源 s 的 legs): 稠密格 [日并集轴][M] (M = 各腿层的行末槽之并; 行末分钟经 row_slot, 竞价段并入首根), 腿的行 t 落进 (所在日, 行末槽) 的格;
 //   腿的日在轴范围外 → 弃, 范围内而轴上没有 → 整日并进下一个轴上的日的该腿首格 (同 project: 收益并进下一个轴上的日);
-//   同格同腿复利, 跨腿按份额 1 / 当日有数据的腿数加和 ⇒ 一腿 = 该账线自身逐行复利
-// 点位 = 首个有增量的格所在日首根前的起点 1 + 有增量的格逐格复利; 年换手 = 增仓量同份额累加到日, 自首个有增仓的日起在有腿的日上的日均 × 每年交易日
+//   净值约定同 define/Label.hpp 协议表 2 (日内求和, 跨日复利): 一腿一日的路径 = 并入的轴外日逐日复利 × (1 + 当日行增量的累计和) − 1,
+//   跨腿按份额 1 / 当日有数据的腿数加和 ⇒ 一腿 = 该账线自身 (与 Inspect fold_ledger 的日净值同一口径)
+// 点位 = 首个有增量的格所在日首根前的起点 1, 各日 = 前日末点位 × (1 + 当日至该格的累计组合收益); 年换手 = 增仓量同份额累加到日, 自首个有增仓的日起在有腿的日上的日均 × 每年交易日
 struct Mix {
   Levels lv;
   double turn = kNaN; // 倍/年; 无增仓 = NaN
@@ -296,7 +297,7 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
       }
     }
   }
-  std::vector<double> acc(X, 0.0);
+  std::vector<double> acc(X, 0.0); // [格] 份额加权的当日累计组合收益增量 (同日各格之和 = 当日组合收益)
   std::vector<uint8_t> hit(X, 0);
   std::vector<double> buy(D, 0.0);
   for (size_t q = 0; q < legs.size(); ++q) {
@@ -305,44 +306,47 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
     const size_t S = static_cast<size_t>(g.S);
     assert(static_cast<size_t>(b.col[kLedgerRet].P) == b.dates.size() * S);
     const LedgerLine bl(legs[q]);
-    size_t at = SIZE_MAX; // 在攒的格
-    double k = 0.0;       // 其份额
-    double run = 0.0;     // 本腿在该格的复利增长 Π (1 + r) − 1
-    const auto flush = [&] {
-      if (at == SIZE_MAX)
-        return;
-      acc[at] += run * k, run = 0.0;
-      hit[at] = 1;
-    };
+    size_t cur = SIZE_MAX; // 在攒的轴日
+    double pend = 1.0;     // 本腿并入该轴日的轴外日的复利乘数
     for (size_t i = 0; i < b.dates.size(); ++i) {
       const size_t d = dix[q][i];
       if (d == SIZE_MAX)
         continue;
-      const bool on = axis[d] == b.dates[i];
+      if (d != cur)
+        cur = d, pend = 1.0;
+      const double k = 1.0 / n_act[d];
+      if (axis[d] != b.dates[i]) { // 轴外日: 整日一笔并进该轴日的本腿首格
+        double day = 0.0;
+        for (size_t ts = 0; ts < S; ++ts)
+          day += bl.inc(i * S + ts, s.cost, s.impact), buy[d] += bl.buy(i * S + ts) * k;
+        const size_t c = d * M + static_cast<size_t>(col[slot_of(g, 0)]);
+        acc[c] += k * pend * day, hit[c] = 1;
+        pend *= 1.0 + day;
+        continue;
+      }
       for (size_t ts = 0; ts < S; ++ts) {
-        const size_t t = i * S + ts, c = d * M + static_cast<size_t>(col[slot_of(g, on ? static_cast<int>(ts) : 0)]);
-        if (c != at) {
-          flush();
-          at = c, k = 1.0 / n_act[d];
-        }
-        const double r = bl.inc(t, s.cost, s.impact);
-        run += r + run * r;
+        const size_t t = i * S + ts, c = d * M + static_cast<size_t>(col[slot_of(g, static_cast<int>(ts))]);
+        acc[c] += k * pend * bl.inc(t, s.cost, s.impact), hit[c] = 1;
         buy[d] += bl.buy(t) * k;
       }
     }
-    flush();
   }
   Mix o;
-  std::vector<size_t> xs; // 有增量的格
-  for (size_t c = 0; c < X; ++c)
-    if (hit[c])
-      xs.push_back(c);
-  if (!xs.empty()) {
-    std::vector<double> r(xs.size());
-    for (size_t i = 0; i < xs.size(); ++i)
-      r[i] = acc[xs[i]];
-    o.lv.push(axis[xs.front() / M], -kStartDx, 1.0);
-    compound(r.data(), xs.size(), [&](size_t i, double v) { o.lv.push(axis[xs[i] / M], static_cast<double>(slots[xs[i] % M]), v); });
+  size_t c0 = 0;
+  while (c0 < X && !hit[c0])
+    ++c0;
+  if (c0 < X) {
+    o.lv.push(axis[c0 / M], -kStartDx, 1.0);
+    double base = 1.0;
+    for (size_t d = c0 / M; d < D; ++d) {
+      double cum = 0.0;
+      for (size_t m = 0; m < M; ++m)
+        if (const size_t c = d * M + m; hit[c]) {
+          cum += acc[c];
+          o.lv.push(axis[d], static_cast<double>(slots[m]), base * (1.0 + cum));
+        }
+      base *= 1.0 + cum;
+    }
   }
   size_t d0 = 0;
   while (d0 < D && !(buy[d0] > 0))

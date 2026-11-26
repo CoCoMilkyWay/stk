@@ -2,14 +2,14 @@
 // (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 逐行量的 Moments 展平为 <ric|rac|ls>_<矩>, 标量 beta / mono / end_n / ann / sharpe,
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
-// 换手成本累加器 (CostAcc, 因子文件 stats[i].costs[].acc[]) 同款 cost_acc_json / load_cost_acc: 一行 = acc_cols() 列序 (两端各 vol / imp / fix × 买卖);
-// 一个金额段 (CostTier) cost_json / load_cost; 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf; 分年 (YearStat) / 滚动窗 (Roll) 在 eval_json 内联;
+// 换手流水 (TurnStat, 因子文件 stats[i].turn[hold]) 同款 turn_json / load_turn: 一行 = turn_cols() 列序 (层级 × 两端 × Flow 字段), 装过的金额段 stats[i].amts;
+// 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf; 分年 (YearStat) / 滚动窗 (Roll) 在 eval_json 内联;
 // 一个根的评估结果 (EvalStat) 两半写 scope_json (文件顶层 run) + eval_json (stats[i]), 一次读 load_eval.
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Fold.hpp"
-#include "gui/engine/Table.hpp" // CostTier / MiniPdf / EvalStat
+#include "gui/engine/Table.hpp" // TurnStat / MiniPdf / EvalStat
 #include "misc/date.hpp"
 
 #include "nlohmann/json.hpp"
@@ -63,9 +63,10 @@ inline bool json_ll(const nlohmann::json &j, const char *key, long long &out) {
 inline constexpr const char *kSeriesKeys[] = {"ric", "rac", "ls"};
 inline constexpr const char *kMomentKeys[] = {"mean", "sd", "ir", "t", "pos", "skew", "kurt"};
 inline constexpr const char *kScalarKeys[] = {"beta", "mono", "end_n", "ann", "sharpe"};
-// CostAcc 的两端 (与 factor::stat::End 同序) × 每本字段 (与 Turn 同序)
+// TurnStat 的层级 (整组 / 尾部 j) × 两端 (与 factor::stat::End 同序) × Flow 字段 (量 / 不可成交量 / 各盘口段冲击, 各两侧)
+inline constexpr const char *kLevelKeys[factor::stat::kLevels] = {"all", "tail0", "tail1", "tail2"};
 inline constexpr const char *kEndKeys[factor::stat::kEnds] = {"top", "bot"};
-inline constexpr const char *kTurnKeys[] = {"vol_buy", "vol_sell", "imp_buy", "imp_sell", "fix_buy", "fix_sell"};
+inline constexpr const char *kSideKeys[kSides] = {"buy", "sell"};
 
 namespace detail {
 template <class M>
@@ -97,7 +98,7 @@ void for_each_field(H &h, F &&f) {
 }
 } // namespace detail
 
-// 行式表的列名 (因子文件顶层 hold_cols / acc_cols): 与 hold_json / cost_acc_json 的元素一一对应
+// 行式表的列名 (因子文件顶层 hold_cols / turn_cols): 与 hold_json / turn_json 的元素一一对应
 inline std::vector<std::string> hold_cols() {
   std::vector<std::string> c = {"hold", "n", "n_rac", "n_all", "n_trig"};
   factor::stat::HoldStat h{};
@@ -105,11 +106,22 @@ inline std::vector<std::string> hold_cols() {
   c.push_back("grp");
   return c;
 }
-inline std::vector<std::string> acc_cols() {
+inline std::vector<std::string> flow_keys() {
   std::vector<std::string> c;
-  for (const char *e : kEndKeys)
-    for (const char *k : kTurnKeys)
-      c.push_back(std::string(e) + "." + k);
+  for (const char *f : {"vol", "stuck"})
+    for (const char *sd : kSideKeys)
+      c.push_back(std::string(f) + "_" + sd);
+  for (int k = 0; k < factor::stat::kLobAmts; ++k)
+    for (const char *sd : kSideKeys)
+      c.push_back("imp" + std::to_string(kAmtWan[k + 1]) + "w_" + sd);
+  return c;
+}
+inline std::vector<std::string> turn_cols() {
+  std::vector<std::string> c;
+  for (const char *l : kLevelKeys)
+    for (const char *e : kEndKeys)
+      for (const std::string &f : flow_keys())
+        c.push_back(std::string(l) + "." + e + "." + f);
   return c;
 }
 inline nlohmann::ordered_json cols_json(const std::vector<std::string> &cols) {
@@ -179,58 +191,43 @@ inline bool load_hold(const nlohmann::json &o, int seg, factor::stat::HoldStat &
   return true;
 }
 
-// 换手成本累加器 (Stat/Turn.hpp CostAcc; 因子文件 stat.costs[].acc[]): 量 / 冲击和 4 位有效
-inline nlohmann::ordered_json cost_acc_json(const factor::stat::CostAcc &c) {
+namespace detail {
+// 一本流水的字段 (与 flow_keys 同序)
+template <class F, class Fn>
+void for_each_flow(F &f, Fn &&fn) {
+  for (int s = 0; s < kSides; ++s)
+    fn(f.vol[s]);
+  for (int s = 0; s < kSides; ++s)
+    fn(f.stuck[s]);
+  for (int k = 0; k < factor::stat::kLobAmts; ++k)
+    for (int s = 0; s < kSides; ++s)
+      fn(f.imp[k][s]);
+}
+} // namespace detail
+
+// 一个持有期的换手流水 (Table.hpp TurnStat; 因子文件 stat.turn[hold]): 量 / 冲击和 4 位有效
+inline nlohmann::ordered_json turn_json(const TurnStat &t) {
   nlohmann::ordered_json o = nlohmann::ordered_json::array();
-  for (const factor::stat::Turn &g : c.book)
-    for (const double *f : {g.vol, g.imp, g.fix})
-      for (int s = 0; s < kSides; ++s)
-        o.push_back(sig4(f[s]));
+  for (const factor::stat::Ends &l : t.lv)
+    for (const factor::stat::Flow &f : l.e)
+      detail::for_each_flow(f, [&](double v) { o.push_back(sig4(v)); });
   return o;
 }
-
-inline bool load_cost_acc(const nlohmann::json &o, factor::stat::CostAcc &dst) {
-  if (!o.is_array() || o.size() != acc_cols().size())
+inline bool load_turn(const nlohmann::json &o, TurnStat &dst) {
+  if (!o.is_array() || o.size() != turn_cols().size())
     return false;
-  factor::stat::CostAcc c;
+  TurnStat t;
   size_t i = 0;
-  const auto num = [&](double &v) {
-    const nlohmann::json &e = o[i++];
-    v = e.is_number() ? e.get<double>() : 0.0;
-    return e.is_number();
-  };
-  for (factor::stat::Turn &g : c.book)
-    for (double *f : {g.vol, g.imp, g.fix})
-      for (int s = 0; s < kSides; ++s)
-        if (!num(f[s]))
-          return false;
-  dst = c;
-  return true;
-}
-
-// 一个金额段的换手成本 ↔ JSON {amt, acc: [n_hold 个 CostAcc]}
-inline nlohmann::ordered_json cost_json(const CostTier &c, int n_hold) {
-  nlohmann::ordered_json o;
-  o["amt"] = kAmtWan[c.amt];
-  nlohmann::ordered_json acc = nlohmann::ordered_json::array();
-  for (int k = 0; k < n_hold; ++k)
-    acc.push_back(cost_acc_json(c.acc[k]));
-  o["acc"] = acc;
-  return o;
-}
-inline bool load_cost(const nlohmann::json &o, int n_hold, CostTier &dst) {
-  if (!o.is_object())
+  bool ok = true;
+  for (factor::stat::Ends &l : t.lv)
+    for (factor::stat::Flow &f : l.e)
+      detail::for_each_flow(f, [&](double &v) {
+        const nlohmann::json &e = o[i++];
+        ok = ok && e.is_number();
+        v = ok ? e.get<double>() : 0.0;
+      });
+  if (!ok)
     return false;
-  CostTier t;
-  int wan = 0;
-  if (!json_int(o, "amt", wan) || !amt_of_wan(wan, t.amt))
-    return false;
-  const auto ait = o.find("acc");
-  if (ait == o.end() || !ait->is_array() || ait->size() != static_cast<size_t>(n_hold))
-    return false;
-  for (int k = 0; k < n_hold; ++k)
-    if (!load_cost_acc((*ait)[static_cast<size_t>(k)], t.acc[k]))
-      return false;
   dst = t;
   return true;
 }
@@ -285,7 +282,7 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   return j;
 }
 
-// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / costs / 小图 / 分年 (years[hold] = [[年, 行, 窗数, mono, ls, ric, 中位 rIC, 年换手] …]) /
+// 一个根的评估结果 ↔ stats[i] (scope_json 之外的全部): 标量首段, holds / amts (金额段万元, 0 = 固定段) / turn / 小图 / 分年 (years[hold] = [[年, 行, 窗数, mono, ls, ric, 中位 rIC, 年换手] …]) /
 // 滚动窗 (roll[hold] = [窗长, 窗数, 中位 rIC, 平均 rIC, 中位年化多空, 平均年化多空]) 各一段
 inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   nlohmann::ordered_json j;
@@ -299,10 +296,13 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
     ic.push_back(mini_pdf_json(st.ic_pdf[k]));
   }
   j["holds"] = holds;
-  nlohmann::ordered_json costs = nlohmann::ordered_json::array();
-  for (const CostTier &c : st.costs)
-    costs.push_back(cost_json(c, st.n_hold));
-  j["costs"] = costs;
+  nlohmann::ordered_json amts = nlohmann::ordered_json::array(), turn = nlohmann::ordered_json::array();
+  for (int k = 0; k < st.amts.n; ++k)
+    amts.push_back(kAmtWan[st.amts.k[k]]);
+  for (int k = 0; k < st.n_hold; ++k)
+    turn.push_back(turn_json(st.turn[k]));
+  j["amts"] = amts;
+  j["turn"] = turn;
   j["ic_pdf"] = ic;
   j["alpha_pdf"] = mini_pdf_json(st.alpha_pdf);
   nlohmann::ordered_json years = nlohmann::ordered_json::array();
@@ -369,12 +369,24 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
   for (size_t k = 0; k < H; ++k)
     if (!load_hold((*hit)[k], seg, t.hold[k]))
       return false;
-  const auto cit = j.find("costs");
-  if (cit == j.end() || !cit->is_array() || cit->empty())
+  const auto mit = j.find("amts");
+  if (mit == j.end() || !mit->is_array() || mit->empty() || mit->size() > static_cast<size_t>(kAmtCount))
     return false;
-  t.costs.resize(cit->size());
-  for (size_t c = 0; c < cit->size(); ++c)
-    if (!load_cost((*cit)[c], t.n_hold, t.costs[c]))
+  AmtSet amts = 0;
+  for (const nlohmann::json &w : *mit) {
+    AmtId a = kAmtFixed;
+    if (!w.is_number_integer() || !amt_of_wan(w.get<int>(), a))
+      return false;
+    amts |= amt_bit(a);
+  }
+  t.amts = Amts::of(amts);
+  if (!(amts & amt_bit(kAmtFixed)))
+    return false;
+  const auto tit = j.find("turn");
+  if (tit == j.end() || !tit->is_array() || tit->size() != H)
+    return false;
+  for (size_t k = 0; k < H; ++k)
+    if (!load_turn((*tit)[k], t.turn[k]))
       return false;
   const auto pit = j.find("ic_pdf");
   if (pit == j.end() || !pit->is_array() || pit->size() != H)

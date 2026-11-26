@@ -206,17 +206,16 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
     if (rl) {
       const fs::HoldStat *h = w.find_hold(hold);
       assert(h && "RowRoll 非空须有该持有期的 HoldStat");
-      assert(w.costs.front().amt == kAmtFixed && "成本段首个是固定段");
-      const fs::CostAcc &c = w.turn_of(*h);
+      const fs::Ends &c = w.turn_of(*h).lv[0];
       x.score = fs::score_of(*rl);
       x.ric = h->ric.mean;
       x.lng = fs::end_period(*h, fs::kTop), x.sht = -fs::end_period(*h, fs::kBot);
-      x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, fee), x.cost = x.gross - x.net;
+      x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, kAmtFixed, fee), x.cost = x.gross - x.net;
       x.turn = fs::turn_annual(*h, c);
       assert(h->n_all > 0 && "有滚动窗须有统计行");
       const double n = static_cast<double>(h->n_all);
-      const auto vol = [&](int s) { return 0.5 * (c.book[fs::kTop].vol[s] + c.book[fs::kBot].vol[s]) / n; };
-      x.buy = vol(fs::kBuy), x.sell = vol(fs::kSell);
+      const auto vol = [&](int s) { return 0.5 * (c.e[fs::kTop].vol[s] + c.e[fs::kBot].vol[s]) / n; };
+      x.buy = vol(kBuy), x.sell = vol(kSell);
       x.impact = fee.impact;
       double mid = 0.0;
       for (const float g : h->grp)
@@ -446,7 +445,7 @@ struct Desk::Impl {
   std::vector<Result> results;
   Fails fails;
   std::map<std::string, std::shared_ptr<const Sweep>> sweeps;
-  std::map<std::string, std::vector<std::shared_ptr<const Daily>>> days;
+  std::map<std::string, std::vector<std::shared_ptr<const DayTrace>>> days;
   std::shared_ptr<const ViewEnv> env_cache;
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
@@ -498,7 +497,7 @@ struct Desk::Impl {
       r.sweep = it->second;
     const Weight *w = r.best();
     if (const auto it = days.find(r.file); it != days.end() && w)
-      for (const std::shared_ptr<const Daily> &d : it->second)
+      for (const std::shared_ptr<const DayTrace> &d : it->second)
         if (d->expr == w->expr && d->sign == w->sign)
           r.daily = d;
   }
@@ -689,17 +688,17 @@ Staged Desk::stage(Cand c) {
   return {std::move(c), file, result(file)};
 }
 
-const Result &Desk::absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep, std::vector<Daily> days) {
+const Result &Desk::absorb(const std::string &file, bool ok, const std::string &err, Sweep sweep, std::vector<DayTrace> days) {
   assert(impl_->data && !file.empty());
   if (ok)
     impl_->fails.erase(file);
   else
     impl_->fails[file] = err;
   impl_->sweeps[file] = std::make_shared<const Sweep>(std::move(sweep));
-  std::vector<std::shared_ptr<const Daily>> &ds = impl_->days[file];
+  std::vector<std::shared_ptr<const DayTrace>> &ds = impl_->days[file];
   ds.clear();
-  for (Daily &d : days)
-    ds.push_back(std::make_shared<const Daily>(std::move(d)));
+  for (DayTrace &d : days)
+    ds.push_back(std::make_shared<const DayTrace>(std::move(d)));
   impl_->rescan_one(file);
   return result(file);
 }

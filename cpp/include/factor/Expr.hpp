@@ -26,7 +26,7 @@
 //     无标量常量元 (OpTable 无常量输入; 阈值一律走 k)
 //     PascalCase 算子 / snake_case 特征, 大小写敏感, 词法上无歧义 (裸 d / k / k2 / h / w 是参数关键字, 不作特征名)
 //   静态校验 (parse 内一次做完):
-//     算子在 OpTable / 算子在本层有意义 (layer_ok: 日层拒 Cum 与日内时段) / 元数对 / 参数声明齐且无多余 / 参数值域 (d ∈ [1, kMaxD]; k 按 OpTable k域 列; h 本层合法且有标签列; w 有限) /
+//     算子在 OpTable / 算子在本层有意义 (layer_ok: 日层拒 Cum 与日内时段) / 元数对 / 参数声明齐且无多余 / 参数值域 (d ∈ [窗长下限 roll_d_min, kMaxD]; k 按 OpTable k域 列; h 本层合法且有标签列; w 有限) /
 //     特征存在且可作输入 (LB 标签 / META 门控列不许: 前视) / 逐元值域: 父算子该元 in 为严格域 (INT, 即组 id) 时
 //     子算子 out ⊆ in (OpTable in / out 列; 特征叶放行 —— 其整数性与 [0, kMaxGroup) 值域在 eval 前按数据查)
 //   类型信息只读 OpTable 的 (k域, in, out) 列, 本头不点任何算子名 (根归一算子集除外: 那是口径定义, 不是类型)
@@ -136,6 +136,14 @@ constexpr bool table_consistent() {
   return true;
 }
 static_assert(table_consistent(), "OpTable in / k域 列与 A 域 / 元数不一致");
+// 窗长下限表 (Contract kRollDMin) 的名字须是 OpTable 的 ROLL 行
+constexpr bool d_min_consistent() {
+  for (const RollDMin &r : kRollDMin)
+    if (op_index(r.name) < 0 || kOps[op_index(r.name)].t != T::ROLL)
+      return false;
+  return true;
+}
+static_assert(d_min_consistent(), "kRollDMin 的算子名须是 OpTable 的 ROLL 行");
 
 inline bool is_int(float v) { return std::isfinite(v) && std::floor(v) == v; }
 
@@ -182,6 +190,8 @@ inline const char *check_params(const OpInfo &o, const Param &p, int seg) {
   assert(is_seg(seg));
   if (has_d(o.t) && (p.d < 1 || p.d > kMaxD))
     return "d 须为 1..kMaxD (255 行) 的整数; 更长的窗口请降到更粗的层上做";
+  if (has_d(o.t) && p.d < roll_d_min(o.name))
+    return roll_d_min(o.name) == 2 ? "d 须 ≥ 2: 单样本窗恒为中性值" : (roll_d_min(o.name) == 3 ? "d 须 ≥ 3: 偏度要 3 个样本, 更短恒为 0" : "d 须 ≥ 4: 峰度要 4 个样本, 更短恒为 0");
   if (has_h(o.t, o.arity) && !hold_ok(p.h, geo_of(seg)))
     return "h 须为本层合法的持有期 (日内持有期须为本层行宽的整倍数)";
   if (has_w(o.t, o.arity))
@@ -229,10 +239,10 @@ inline const char *check_params(const OpInfo &o, const Param &p, int seg) {
   return nullptr;
 }
 
-// 自由参数的占位值 (过 check_params 的任一合法值; d = 1, k 按 k域, TOD 的 k = 0 / k2 = seg, h = T+1 同刻, w = 全 1, 只动该键)
+// 自由参数的占位值 (过 check_params 的任一合法值; d = 窗长下限, k 按 k域, TOD 的 k = 0 / k2 = seg, h = T+1 同刻, w = 全 1, 只动该键)
 inline void free_value(const OpInfo &o, std::string_view key, Param &p, int seg) {
   if (key == "d") {
-    p.d = 1;
+    p.d = roll_d_min(o.name);
     return;
   }
   if (key == "h") {

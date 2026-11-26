@@ -87,6 +87,14 @@ std::pair<std::string, std::string> Feed::span(int lo, int hi) {
   return {misc::dash(ctx.days[static_cast<size_t>(d0)]), misc::dash(ctx.days[static_cast<size_t>(d0 + n - 1)])};
 }
 
+json Feed::window(json j) {
+  if (coin(0.3) && !ctx.days.empty()) {
+    const auto [a, b] = span(20, 60);
+    j["from"] = a, j["to"] = b;
+  }
+  return j;
+}
+
 std::string Feed::code() { return ctx.codes.empty() ? std::string("000001.SZ") : one(ctx.codes); }
 std::string Feed::clock() {
   if (ctx.clock.size() <= 1)

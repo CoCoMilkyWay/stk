@@ -54,7 +54,7 @@ void run_fused(Session *, const Fuse &, const DevPlane *const *, int, DevPlane *
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
 
-StatSession *stat_open(int, int, int, int, const factor::stat::Holds &, double) {
+StatSession *stat_open(int, int, int, int, const Holds &, double) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
   return nullptr;
 }
@@ -66,7 +66,7 @@ void stat_eval(StatSession *, const DevPlane *const *, int, const DevPlane *, fa
 void stat_close(StatSession *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
 size_t stat_bytes(const StatSession *) { return 0; }
 void run_stat(int, const float *const *, const uint8_t *const *, const uint8_t *, factor::stat::Frame, factor::stat::Dir, int, int, int, int, int, int,
-              const factor::stat::Holds &, double, const factor::stat::Label *, factor::stat::Accum *, factor::stat::Day *, factor::stat::Row *, double *,
+              const Holds &, double, const factor::stat::Label *, factor::stat::Accum *, factor::stat::Day *, factor::stat::Row *, double *,
               double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }

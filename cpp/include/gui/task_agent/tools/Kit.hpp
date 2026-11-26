@@ -68,11 +68,12 @@ AGENT_ROWS(Msg, kMsgs, Retry);
 // 一个调用对会话账本的作用 (由结果给出: 开拍即取一次, 做完再取; 账本 / 回退 / 作废只读它)
 struct Effect {
   std::string staged;             // 落下的候选文件 (回退 / 作废时删)
+  std::string submitted;          // 收尾提交的候选英文名 (入库与否都记)
   std::string adopted;            // 入库 (自检 / 工作台 = 达门槛) 的候选英文名
   std::optional<Verdict> verdict; // 回测结局
-  bool finish = false;            // 宣布挖完
+  bool finish = false;            // 收尾: 本条做完即会话结束
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Effect, staged, adopted, verdict, finish)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Effect, staged, submitted, adopted, verdict, finish)
 
 // 工具的结构化结果 (唯一载体: Mine 时间线与 Bench 工作台共用); 要存档的另给 static ResPtr load(Call, json, Seat) (实现表按清单的结果类型探到)
 struct Res {
@@ -155,7 +156,7 @@ inline Msg KindOf(Steps ss, size_t i) { return i == 0 ? Msg::First : ss[i - 1].a
 struct Tally {
   Per<Tool, int> calls{}, fails{};
   Per<Verdict, int> verdicts{};
-  int adopted = 0;
+  int submitted = 0, adopted = 0;
   double llm_s = 0.0, act_s = 0.0;
   llm::Usage usage;
 
@@ -169,8 +170,8 @@ struct Tally {
   int staged() const { return n(Tool::EvalFactor) - n(Verdict::Unstaged); }
 };
 
-Tally TallyOf(Steps ss, double now);       // 发出的回复与开始的调用 (在跑的计到 now; 失败 / 结局 / 入库只计做完的)
-bool Finished(Steps ss);                   // 末个发出的一步之前 finish 已做完: 会话结束 (再发出一条即作罢)
+Tally TallyOf(Steps ss, double now);       // 发出的回复与开始的调用 (在跑的计到 now; 失败 / 结局 / 提交 / 入库只计做完的)
+bool Finished(Steps ss);                   // 末个发出的一步之前 finish 已做完且收了尾: 会话结束 (再发出一条即作罢)
 std::set<std::string> AdoptedOf(Steps ss); // 做成的入库的英文名
 std::set<std::string> StagedOf(Steps ss);  // 开拍了的调用落下的候选文件 (回测备料即落, 在跑的也算)
 
@@ -181,7 +182,7 @@ struct Seat {
   const Gate &gate;
   int me; // 本调用的编号 (= 步)
   std::string scope, session;
-  bool dry = false; // 不落记录: 全局记录只给编号不写, submit_factor 只查门槛不入库 (工作台)
+  bool dry = false; // 不落记录: 全局记录只给编号不写, finish 的提交只查门槛不入库 (工作台)
   bool gpu = false; // eval_factor 的回测上 GPU
 };
 

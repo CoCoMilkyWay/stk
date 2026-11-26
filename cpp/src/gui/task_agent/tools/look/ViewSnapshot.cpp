@@ -7,42 +7,37 @@ namespace GUI::Agent {
 using namespace look;
 using json = nlohmann::ordered_json;
 
-std::string SnapshotRes::headline() const { return "因子 `" + label + "` · " + when + " 那一行的截面 (" + level + "; 分位 / 组号已定向: G20 = 做多端)"; }
+std::string SnapshotRes::headline() const { return "因子 `" + label + "` · " + when + " 那一行的截面 (" + level + ")"; }
 
-std::string SnapshotRes::text() const {
-  std::string s = text_head();
-  s += "在池且有秩 " + str(n) + " 只 · 本行" +
-       (row_ok ? "有统计: rIC " + r3(ric) + " · G20 超额 " + bp(g20) + "bp (真持有 " + std::to_string(c20) + " 只) · G1 超额 " + bp(g1) + "bp (" + std::to_string(c1) + " 只)"
-               : std::string("无统计 (建不了仓 / 标签无效)")) +
-       " · 后续超额 = 本行开仓的持有期收益 − 在池均值\n";
-  for (const std::string &e : exprs)
-    s += e;
-  s += "与因子分位的截面秩相关:";
+std::vector<Sec> SnapshotRes::secs() const {
+  std::string cs = "与因子分位的截面秩相关:";
   for (size_t i = 0; i < corr.size(); ++i)
-    s += (i ? " · " : " ") + corr[i].first + " " + r3(corr[i].second);
-  s += "\n\n";
-
-  std::vector<std::string> hs{"端", "代码", "分位", "组", "真持有", "当日涨跌"};
+    cs += (i ? " · " : " ") + corr[i].first + " " + r3(corr[i].second);
+  Sec x{.lines = {"在池且有秩 " + str(n) + " 只 · " +
+                  (row_ok ? "rIC " + r3(ric) + " · G20 超额 " + bp(g20) + "bp (真持有 " + std::to_string(c20) + " 只) · G1 超额 " + bp(g1) + "bp (" + std::to_string(c1) + " 只)"
+                          : std::string("本行无统计 (建不了仓 / 标签无效)"))},
+        .plot = 0};
+  x.lines.insert(x.lines.end(), exprs.begin(), exprs.end());
+  x.lines.push_back(cs);
+  x.tab.head = {"端", "代码", "分位", "组", "真持有", "当日涨跌"};
   if (seg > 1)
-    hs.push_back("本行涨跌"), hs.push_back("日内位置");
-  hs.push_back("至此额 万"), hs.push_back("后续超额 bp"), hs.push_back("盘面");
+    x.tab.head.push_back("本行涨跌"), x.tab.head.push_back("日内位置");
+  x.tab.head.push_back("至此额 万"), x.tab.head.push_back("后续超额 bp"), x.tab.head.push_back("盘面");
   for (size_t i = 0; i < exprs.size(); ++i)
-    hs.push_back("E" + str(i + 1));
-  text::Table tbl(hs);
-  for (const Cell &x : cells) {
-    std::vector<std::string> row{x.end, x.code, x.mid ? std::string("50") : rk(x.rank), x.mid ? std::string() : gname(x.grp),
-                                 x.mid ? std::string() : x.held > 0 ? "多"
-                                                     : x.held < 0   ? "空"
-                                                                    : "",
-                                 chg(x.chg)};
+    x.tab.head.push_back("E" + str(i + 1));
+  for (const Cell &c : cells) {
+    if (c.mid)
+      x.tab.mark = static_cast<int>(x.tab.rows.size());
+    std::vector<Num> row{c.end, c.code, c.mid ? "50" : rk(c.rank), c.mid ? std::string() : gname(c.grp),
+                         c.mid || !c.held ? Num("") : Num(c.held > 0 ? "多" : "空", c.held), nchg(c.chg)};
     if (seg > 1)
-      row.push_back(chg(x.step)), row.push_back(pos2(x.pos));
-    row.push_back(fmt("%.0f", x.amt / 1e4)), row.push_back(bp(x.ex)), row.push_back(x.tags);
-    for (const double v : x.fv)
+      row.push_back(nchg(c.step)), row.push_back(pos2(c.pos));
+    row.push_back(fmt("%.0f", c.amt / 1e4)), row.push_back(nbp(c.ex)), row.push_back(c.tags);
+    for (const double v : c.fv)
       row.push_back(num(v));
-    tbl.add(row);
+    x.tab.rows.push_back(std::move(row));
   }
-  return s + tbl.str();
+  return {std::move(x)};
 }
 
 std::string SnapshotRes::title() const {
@@ -90,7 +85,7 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
         const Px px(cv.blk, cv.bm, cfg.bars, env.open);
         const Engine::LabPlane &lb = *cv.blk.y.labels[0];
         const uint16_t *lv = lb.lv.data();
-        const float mkt = row_mkt(cv.blk, t);
+        const float mkt = mkt_of(cv, t);
 
         struct Cell {
           int a = 0, grp = -1, held = 0;

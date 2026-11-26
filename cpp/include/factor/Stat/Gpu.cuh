@@ -15,7 +15,7 @@
 //                  每行一次 row_stat → 折进 warp 私有的分片累加器 (Accum 两半) + lane 0 顺序攒当日 Day → 分片 Slice[c][h][tb] / day[c][h][d].
 //                  同 block 的 kWarps 个候选同一 (t, h): 标签行一次进 L1 共用. 不落 Row.
 //     reduce_slices 每 (c, h) 一线程沿 tb 升序 merge → acc[c][h]
-//   换手在宿主算 (成本平面上显存装不下), 回传已定向的 rx 即可 (Stat/Cpu.hpp turn_rows).
+//   换手在宿主算 (成本平面上显存装不下), 回传已定向的 rx 即可 (Stat/Book.hpp book_rows).
 //   【禁用】--use_fast_math.
 // =============================================================================
 
@@ -31,8 +31,6 @@ namespace factor::gpu::stat {
 
 using factor::stat::Accum;
 using factor::stat::Day;
-using factor::stat::Hold;
-using factor::stat::hold_on;
 using factor::stat::Labels;
 
 inline constexpr int kRows = 128; // 分片粒度 (行); 批核一块 = 整日的 ≥ kRows / S 日

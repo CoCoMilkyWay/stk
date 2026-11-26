@@ -20,11 +20,13 @@ using DayProbes = EvalProbes<NavP>;
 DayLine day_of(const DayProbes &p, const EvalStat &st, HoldId hold) {
   const factor::stat::HoldStat *h = st.find_hold(hold);
   assert(h && "逐日序列的持有期须是本层标签组之一");
-  const TurnP &tp = p.at<TurnP>();
-  DayLine o{.ric = p.at<YearP>().day_ric[h - st.hold], .nav = p.at<NavP>().out};
-  o.turn[0] = static_cast<float>(factor::stat::turn_annual(*h, st.turn_of(*h)));
-  for (int j = 0; j < kTails; ++j)
-    o.turn[1 + j] = static_cast<float>(factor::stat::turn_annual(*h, tp.tails[j][h - st.hold]));
+  const int hi = static_cast<int>(h - st.hold);
+  const HoldP &hp = p.at<HoldP>();
+  DayLine o{.ric = {}, .nav = p.at<NavP>().out};
+  for (size_t i = 0; i < hp.day[hi].size(); ++i)
+    o.ric.push_back(hp.day_ric(hi, i));
+  for (int l = 0; l < kNavLs; ++l)
+    o.turn[l] = static_cast<float>(factor::stat::turn_annual(*h, st.turn_of(*h).lv[l]));
   return o;
 }
 
@@ -57,7 +59,7 @@ Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows,
           } else {
             if (k != k_st) {
               st = EvalStat{};
-              fill_eval(ps[static_cast<size_t>(k)], o.scope(sc), o.eval_ms(k), st);
+              fill_eval(ps[static_cast<size_t>(k)], o.job.pass_ctx(F.S.ex, rs.r[static_cast<size_t>(k)].d), o.scope(sc), o.eval_ms(k), st);
               k_st = k;
             }
             static_cast<EvalStat &>(r) = st;

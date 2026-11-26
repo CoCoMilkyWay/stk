@@ -3,29 +3,26 @@
 // =============================================================================
 // Fold — Stat 的二级 / 三级 (契约 factor/Stat/Contract.hpp): Day (逐日) / Accum → HoldStat (每持有期) + 派生量 (毛 ⇄ 净)
 // =============================================================================
-//   【二级 Day】逐统计日: ok 行数 / Σ rIC / Σ ls_row (行序累加, 两后端逐位同); 块内统计行按整日对齐.
-//     日净值 LS 的日收益 = Σ ls_row / h̄ (每批资金 1/h̄, 不 ok 行记 0) → Daily (define/Annual.hpp): 复利年化 ann / Sharpe (全仓同一口径)
+//   【二级 Day】逐统计日 (建仓日): ok 行数 / Σ rIC / Σ ls_row (行序累加, 两后端逐位同); 块内统计行按整日对齐.
+//     日净值 LS 的日收益 (钱按平仓日, define/Label.hpp 协议表 2【记日】) = 建仓日 i − hold_days 的 Σ ls_row / h̄ (每批资金 1/h̄, 不 ok 行记 0)
+//     → Daily (define/Annual.hpp): 复利年化 ann / Sharpe (全仓同一口径)
 //   【三级 HoldStat (每 hold)】只用 ok 行 (n) / ok_rac 行 (n_rac); n_all = 攒过的全部行:
 //     ric / rac / ls  逐行量沿 t 的矩 (Moments, MomAcc): mean / sd (ddof=1) / ir / pos / skew / kurt; t = ir · √(n/h) (重叠折算)
 //     每期真实收益 (派生): 不 ok 的行记 0 补满 n_all 行 —— ls_period = Σls / n_all; ann / sharpe = 日净值 LS 的复利年化 / Sharpe
 //     beta = ls 对 mkt 的 OLS 斜率; grp[k] = Σ grp / n_all; mono = Spearman(组号, grp[k]); n_trig / end_n 诊断.
 //     n < 3 → 标签侧全 0; n_rac < 3 → rac 全 0. Accum = Head + Grp[kGroups] 可合并 (GPU 一 warp 一候选: lane 0 攒 Head, lane k 攒 Grp[k]).
-//   【换手 (每 hold)】Row / HoldStat 全是毛口径; 净多空 = ls_period − ½ (cost(kTop) + cost(kBot)) (Turn.hpp CostAcc, 费率在此现乘; Search 不看成本)
+//   Row / HoldStat 全是毛口径; 净多空 / 换手 (账集流水的派生) 在 Stat/Book.hpp. 主机 / 设备两用 (Gpu.cuh 引入)
 // =============================================================================
 
 #include "define/Annual.hpp"
 #include "factor/Stat/Contract.hpp"
-#include "factor/Stat/Turn.hpp"
 
 #include <cassert>
 #include <cmath>
+#include <span>
 #include <utility>
 
 namespace factor::stat {
-
-using ::ann_log;
-using ::Daily;
-using ::kDaysPerYear;
 
 // ---- 二级输出 (逐日): 一个统计日的 ok 行数 / Σ rIC / Σ 多空 ----
 struct Day {
@@ -37,16 +34,21 @@ struct Day {
   }
   void merge(const Day &o) { n += o.n, ric += o.ric, ls += o.ls; }
 };
-// 日净值 LS: 逐日 Σ ls_row / h̄ 折进 Daily
-inline void add_days(Daily &dl, const Day *d, int D, HoldId hold, int seg) {
+// 日净值 LS 第 i 日的收益 (钱按平仓日): 建仓日 i − n 的 Σ ls_row / h̄ (n = hold_days, 序列首 n 日为 0; 平仓越过序列末的不计)
+inline double ls_day(std::span<const Day> d, size_t i, size_t n, double span) { return i >= n ? d[i - n].ls / span : 0.0; }
+// 逐日 d → 日净值 LS 的 Daily
+inline Daily ls_daily(std::span<const Day> d, HoldId hold, int seg) {
   const double span = hold_on(hold, geo_of(seg)).span();
-  for (int i = 0; i < D; ++i)
-    dl.add(d[i].ls / span);
+  const size_t n = static_cast<size_t>(hold_days(hold));
+  Daily dl;
+  for (size_t i = 0; i < d.size(); ++i)
+    dl.add(ls_day(d, i, n, span));
+  return dl;
 }
 
 // ---- 三级输出: 每持有期一份 ----
 // 口径戳: 字段不变但口径变时 +1, 落盘 stat 与之不符读取即作废 (下次 Run 重算)
-inline constexpr int kStatSemver = 7;
+inline constexpr int kStatSemver = 8;
 struct Moments {
   float mean = 0.f, sd = 0.f, ir = 0.f, t = 0.f, pos = 0.f, skew = 0.f, kurt = 0.f;
 };
@@ -77,17 +79,6 @@ inline double util_of(const HoldStat &s, double cap) {
   assert(cap > 0.0);
   return static_cast<double>(s.end_n) / cap;
 }
-// 每期净多空 = ls_period − 两端每期成本的平均; 年化 = × span_per_year
-inline double net_ls_period(const HoldStat &s, const CostAcc &c, const Fee &f) {
-  return ls_period(s) - 0.5 * (c.cost(kTop, f, s.n_all) + c.cost(kBot, f, s.n_all));
-}
-inline double net_ls(const HoldStat &s, const CostAcc &c, const Fee &f) { return net_ls_period(s, c, f) * span_per_year(s); }
-// 年化换手 (倍/年, 单边, 每本资金 1): 端 e = Σ Δ⁺ / n_all × span_per_year; 两端 = 两端均
-inline double turn_annual(const HoldStat &s, const CostAcc &c, int e) {
-  return s.n_all > 0 ? c.book[e].vol[kBuy] / static_cast<double>(s.n_all) * span_per_year(s) : 0.0;
-}
-inline double turn_annual(const HoldStat &s, const CostAcc &c) { return 0.5 * (turn_annual(s, c, kTop) + turn_annual(s, c, kBot)); }
-
 // ---- 三级汇总 (主机, double; 两后端共用) ----
 
 // 组号 0..K−1 与 g[k] 的 Spearman (g 并列均秩); g 全并列 → 0

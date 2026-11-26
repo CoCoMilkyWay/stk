@@ -445,14 +445,14 @@ int RenderTabOperators(OperatorsService &svc, OperatorsUIState &ui) {
         "• n / N      窗内 / 截面有效样本数\n"
         "• μ_t σ_t    窗内均值 / 样本标准差 (ddof=1); m_k k 阶中心矩\n"
         "• Σ Π        窗内求和 / 乘积 (变量 s 或 b); max min cov var corr 下标 = 取值域\n"
-        "• pct(v; S)  并列均秩 pct rank ∈ [0,1]; Q_p(S) p 分位; Φ⁻¹ 正态分位; G(a) 组\n"
+        "• pct(v; S)  并列均秩 pct rank ∈ [0,1]; Q_p(S) p 分位 (升序第 ⌈p·n⌉ 个); Φ⁻¹ 正态分位; G(a) 组\n"
         "• 只计有效样本\n"
-        "• 序统计族三后端同用 256 桶近似",
+        "• 序统计族全精确, 三后端逐位一致",
         // Note
         "用途与选型一句话 (给 agent 检索)\n"
         "• 写: 量什么; 怎么用 / 配什么\n"
-        "• 不含实现 / 近似 / 退化细节\n"
-        "• 退化与数值契约 → factor/Contract.hpp; 成本与误差 → operator.md",
+        "• 不含实现 / 退化细节\n"
+        "• 退化与数值契约 → factor/Contract.hpp",
     };
     for (int c = 0; c < kNumCols; c++) {
       ImGui::TableSetColumnIndex(c);

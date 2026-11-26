@@ -26,7 +26,7 @@ namespace pool {
 size_t bar_col(size_t level, std::string_view code, ts::TfId tf = ts::TfId::None);
 
 // all.bar L_1day 日行 (原料带 / 行情篮子合成同一张列表): 列序 = DayCol; 行情篮子的日根只读前 kQuoteCols 列; 过滤项 f 的列 = kColFilter0 + f;
-// 末三列 = T+1 标签 (lb_t1 做多 / lb_nom_t1 名义 / lb_entry_ok 建仓可成交码, define/Label.hpp): 选池回测的可成交账
+// 末四列 = 截面门控 cs_valid + T+1 标签 (lb_t1 做多 / lb_nom_t1 名义 / lb_entry_ok 建仓可成交码, define/Label.hpp): 选池回测的可成交账 (标签有效判据与评估装载同一份 fmeta::lab_ok)
 enum DayCol : size_t { kColTs,
                        kColOpen,
                        kColHigh,
@@ -44,7 +44,8 @@ enum DayCol : size_t { kColTs,
                        kColBoard,
                        kColMargin,
                        kColFilter0,
-                       kColLab = kColFilter0 + kFilters,
+                       kColCs = kColFilter0 + kFilters,
+                       kColLab,
                        kColNom,
                        kColEntry,
                        kDayCols };
@@ -126,8 +127,8 @@ struct Strip {
   std::vector<uint8_t> ind;     // [行 · A] 申万一级 (0 = 未知; 在市者已知)
   std::vector<float> mcap;      // [行 · A] 收盘总市值 = close_day × total_shares (缺 → 0)
   std::vector<float> grow;      // [行 · A] 累计增长 Π_{0 < k ≤ 行} (1 + 日收益) (首行 1) = 后复权收盘价 (除权除息日不断)
-  std::vector<_Float16> lv, nv; // [行 · A] 行收盘建仓的 T+1 做多 / 名义收益 (无标签 = NaN)
-  std::vector<uint8_t> eo;      // [行 · A] 行收盘建仓价点的可成交码 (kEoBuy | kEoSell; 无 = 0)
+  std::vector<uint16_t> lv, nv; // [行 · A] 行收盘建仓的 T+1 做多 / 名义收益 (fp16 位, 与评估端标签平面同格式; 无效 = 0)
+  std::vector<uint8_t> m, eo;   // [行 · A] 标签有效位 (fmeta::lab_ok) / 建仓价点的可成交码 (kEoBuy | kEoSell; 门控外 = 0)
   std::vector<float> pre;       // [A] 末行前收 (续行的收益)
   size_t A() const { return axis.size(); }
   size_t days() const { return dates.size(); }
@@ -163,7 +164,7 @@ private:
   std::vector<uint16_t> cls_; // 切片内的类
 };
 
-// 篮子账 (两种权重同一趟, 键 = 权重; 账核 = factor/Stat 仓位感知 walk + 换手 turn_row, 与因子账 / 行情篮子同一份): 行 r 收盘建仓的一批
+// 篮子账 (两种权重同一趟, 键 = 权重; 账集 = factor/Stat/Book.hpp book_rows, 与因子账 / 行情篮子同一份): 行 r 收盘建仓的一批
 //   (持仓日 r + 1) 的成员 = pick(源行 src_of(rb, 行, r + 1 日)) (换源才重选), 目标权 = Strip::omega (源行目标权随价漂移到行 r 收盘);
 //   收益 = 真持有成员 (建仓价点可买, 或沿交接链回走 ≤ kChainDays 日到可买) 按目标权归一的 T+1 标签 (次日仍是成员 = 续持取名义值);
 //   买量 = 本批目标权对前一批漂移到交接点的增仓 Σ Δ⁺ (本格不可买记 0)

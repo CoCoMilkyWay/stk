@@ -6,10 +6,10 @@
 
 #include "disk/Disk.hpp"
 #include "factor/Expr.hpp"
+#include "factor/Stat/Book.hpp" // Ends (账集流水)
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Fold.hpp"            // HoldStat
 #include "factor/Stat/Roll.hpp"            // Roll (因子表 score)
-#include "factor/Stat/Turn.hpp"            // CostAcc
 #include "features/Storage/FeatureLib.hpp" // FeatureLib (请求的库清单)
 #include "math/distribution/PdfSnap.hpp"   // AggPdf
 #include "orders/L2DataType.hpp"           // L2::ValidType
@@ -251,13 +251,11 @@ struct StatScope {
   double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)
   double n_full = 0.0;     // 满仓一组只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
 };
-// 一个金额段的换手成本 = Stat/Turn.hpp 的 CostAcc (整组层级), 每持有期一份 (Run / Inspect 同一份代码: Stat/Cpu.hpp turn_rows):
-// 两端按 Δw 扣: 盘口段 = 两侧量付真实买 / 卖冲击; 固定段 = 两侧量都付固定冲击; 税佣两侧另按 Fee (同一价点交接只算差额); 均摊成本 cost(端, Fee) 随 h 变.
-// 两侧冲击按 Config::max_impact 封顶后进 (装载时; 盘口缺 = 封顶).
-// Run 每因子每金额段都攒 (落 stat.costs), 年换手取段 0 (各段同一份 Δw), Inspect 期限结构净线从它算
-struct CostTier {
-  AmtId amt = kAmtFixed;                      // 金额段 (kAmtFixed = 固定段)
-  factor::stat::CostAcc acc[kHoldCount] = {}; // [hd.n], 与 hold 同序
+// 一个持有期的换手 = Stat/Book.hpp 因子账集的流水: 层级 l (0 = 整组, 1 + j = 尾部 j) × 两端各一本 (Run / Inspect 同一份 book_rows):
+// 两端按 Δw 记两侧成交量; 各金额段同一份量 + 不可成交量, 盘口段另各一份真实冲击 (Config::max_impact 封顶, 盘口缺 = 封顶);
+// 成本 / 净多空 / 年换手由 Book.hpp 的派生量按金额段与 Fee 现算 (落 stat.turn; Inspect 期限结构净线从它算)
+struct TurnStat {
+  factor::stat::Ends lv[factor::stat::kLevels];
 };
 // 因子表迷你 PDF: Inspect 同款 KLL PDF (AggPdf) 线性插值到 [lo, hi] 上等距 kMiniPdfPts 点, y 按峰值归一到 [0, 1]; lo == hi → 无 (不画)
 inline constexpr int kMiniPdfPts = 32;
@@ -287,12 +285,12 @@ struct AlphaDist {
   float gmean[factor::stat::kGroups] = {};            // 组均值
   std::vector<float> series;                          // 逐行截面均值 (有样本的行, 时序)
 };
-// 一个持有期一个自然年的分层统计 (Probe YearP 逐日攒、按年合; 已定向, 毛收益): 与 HoldStat 同口径, 只取判稳定性的几项
+// 一个持有期一个自然年的分层统计 (Probe years_of: HoldP / GrpP / TurnP 的逐日按年合; 已定向, 毛收益): 与 HoldStat 同口径, 只取判稳定性的几项
 struct YearStat {
   int year = 0, n = 0, wins = 0;         // 年 / 年内有统计 (ok) 的行数 / 年内收尾的滚动窗数
   float mono = 0.f, ls = 0.f, ric = 0.f; // 分层单调性 / 每期毛多空均值 / rIC 均值
   float ric_med = 0.f;                   // 年内收尾的滚动窗 rIC 的中位 (wins = 0 → 0)
-  float turn = 0.f;                      // 年换手 (Probe TurnP; 倍, 两端单边均, 段 0): 年内 Σ Δw⁺ / 年内统计行 × span_per_year, 不足一年的年同样年化
+  float turn = 0.f;                      // 年换手 (Probe TurnP; 倍, 整组两端单边均): 年内 Σ Δw⁺ / 年内统计行 × span_per_year, 不足一年的年同样年化
 };
 // 一个根的评估结果 (Run 行 / Inspect 结果同一份; Probe fill_eval 填全部: scope / eval_ms 由调用方给, 其余取探针;
 // StatJson scope_json + eval_json ⇄ load_eval)
@@ -302,10 +300,11 @@ struct EvalStat {
   float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (Probe CoverP)
   int n_hold = 0;
   factor::stat::HoldStat hold[kHoldCount]; // [hold], 毛收益口径
-  std::vector<CostTier> costs;             // 金额段升序 (首个 = 固定段), 每金额段 [n_hold] CostAcc (年换手 / Inspect 净线从它算)
+  Amts amts;                               // 装过的金额段 (首个 = 固定段): 成本可按其中任一段现算
+  TurnStat turn[kHoldCount];               // [hold] 换手流水 (年换手 / 成本 / Inspect 净线从它算)
   MiniPdf ic_pdf[kHoldCount];              // [hold] 逐行 rIC (ok 行) 分布 (Probe IcPdfP; 因子表小图)
   std::vector<YearStat> years[kHoldCount]; // [hold] 分年 (年升序, 只列有统计行 ≥ 3 的年)
-  factor::stat::Roll roll[kHoldCount];     // [hold] 滚动窗统计 (Probe YearP; 中位 rIC = 因子表 score, Stat/Roll.hpp)
+  factor::stat::Roll roll[kHoldCount];     // [hold] 滚动窗统计 (Probe HoldP; 中位 rIC = 因子表 score, Stat/Roll.hpp)
   MiniPdf alpha_pdf;                       // alpha 分布 (截尾; Probe AlphaP; 与持有期无关)
   const factor::stat::HoldStat *find_hold(HoldId hold_m) const {
     for (int j = 0; j < n_hold; ++j)
@@ -325,9 +324,9 @@ struct EvalStat {
     const factor::stat::HoldStat *h = find_hold(hold_m);
     return h ? &years[h - hold] : nullptr;
   }
-  const factor::stat::CostAcc &turn_of(const factor::stat::HoldStat &h) const { // h = 本行 hold[] 之一; 换手量各段同一份, 取段 0
-    assert(&h >= hold && &h < hold + n_hold && !costs.empty());
-    return costs.front().acc[&h - hold];
+  const TurnStat &turn_of(const factor::stat::HoldStat &h) const { // h = 本行 hold[] 之一
+    assert(&h >= hold && &h < hold + n_hold && amts.n > 0);
+    return turn[&h - hold];
   }
 };
 

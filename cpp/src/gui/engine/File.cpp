@@ -24,11 +24,11 @@ using ojson = nlohmann::ordered_json;
 void erase_stats(ojson &j) {
   j.erase("run");
   j.erase("hold_cols");
-  j.erase("acc_cols");
+  j.erase("turn_cols");
   j.erase("stats");
 }
 
-// 一个 stat: 标量 (time / valid_pct / …) 首行, 其余结构值各一行 (holds 一行), costs 每金额段一行
+// 一个 stat: 标量 (time / valid_pct / …) 首行, 其余结构值各一行 (holds 一行), turn 每持有期一行
 std::string stat_block(const ojson &st) {
   if (!st.is_object())
     return st.dump();
@@ -36,7 +36,7 @@ std::string stat_block(const ojson &st) {
   for (auto it = st.begin(); it != st.end(); ++it) {
     const ojson &v = it.value();
     const std::string kv = ojson(it.key()).dump() + ":";
-    if (it.key() == "costs" && v.is_array() && !v.empty()) {
+    if (it.key() == "turn" && v.is_array() && !v.empty()) {
       body += ",\n   " + kv + "[";
       for (size_t c = 0; c < v.size(); ++c)
         body += "\n    " + v[c].dump() + (c + 1 < v.size() ? "," : "");
@@ -83,10 +83,10 @@ bool load_search(const json &o, SearchMark &mk) {
 }
 
 // 因子文件排版 (给人看, 合法 JSON): 顶层一键一行, 人写的键 (type / name_cn / expr / note / …) 在前, 之后 weights → search → 评估派生
-// (run / hold_cols / acc_cols / stats); weights / search 一元素一行, stats 一元素一块 (stat_block; stats[i] ↔ weights[i]), 数值表密排不展开
+// (run / hold_cols / turn_cols / stats); weights / search 一元素一行, stats 一元素一块 (stat_block; stats[i] ↔ weights[i]), 数值表密排不展开
 std::string format_factor(const ojson &j) {
   assert(j.is_object());
-  static constexpr std::string_view kTail[] = {"weights", "search", "run", "hold_cols", "acc_cols", "stats"};
+  static constexpr std::string_view kTail[] = {"weights", "search", "run", "hold_cols", "turn_cols", "stats"};
   std::vector<std::string> top; // 顶层一键一段 (段间 ",\n")
   const auto add = [&](const std::string &k, const ojson &v) {
     std::string s = " " + ojson(k).dump() + ": ";
@@ -266,7 +266,7 @@ void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTa
   // run + 表头对得上当前代码且 stats 与 weights 同长才吃 stats[i] (否则全部忽略, 下次 Run 覆盖)
   const json *run = nullptr, *stats = nullptr;
   if (const auto rit = j.find("run"), sit = j.find("stats"); rit != j.end() && sit != j.end() && sit->is_array() && sit->size() == ws.size() &&
-                                                             json_cols_are(j, "hold_cols", hold_cols()) && json_cols_are(j, "acc_cols", acc_cols()))
+                                                             json_cols_are(j, "hold_cols", hold_cols()) && json_cols_are(j, "turn_cols", turn_cols()))
     run = &*rit, stats = &*sit;
   for (size_t i = 0; i < ws.size(); ++i) {
     FactorRow w = r;
@@ -431,7 +431,7 @@ void WriteFactorStats(const FactorDir &dir, const std::vector<const FactorRow *>
   const ojson run = scope_json(r0.scope, r0.frame);
   const auto old_run = j.find("run");
   const auto old_stats = j.find("stats");
-  const bool keep = old_run != j.end() && *old_run == run && json_cols_are(j, "hold_cols", hold_cols()) && json_cols_are(j, "acc_cols", acc_cols()) &&
+  const bool keep = old_run != j.end() && *old_run == run && json_cols_are(j, "hold_cols", hold_cols()) && json_cols_are(j, "turn_cols", turn_cols()) &&
                     old_stats != j.end() && old_stats->is_array() && old_stats->size() == nw;
   ojson stats = keep ? *old_stats : ojson::array();
   while (stats.size() < nw)
@@ -445,7 +445,7 @@ void WriteFactorStats(const FactorDir &dir, const std::vector<const FactorRow *>
   }
   j["run"] = run;
   j["hold_cols"] = cols_json(hold_cols());
-  j["acc_cols"] = cols_json(acc_cols());
+  j["turn_cols"] = cols_json(turn_cols());
   j["stats"] = std::move(stats);
   write_json(dir, r0.file, j);
 }

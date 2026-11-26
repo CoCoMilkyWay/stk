@@ -1,22 +1,14 @@
-// view_response 的展示: 累计超额路径 (带 ± 标准误) + 各时点因子分位 + 与此前收益的相关 + 按开仓时段的路径
+// view_response 的图: 累计超额路径 (带 ± 标准误, 各开仓时段) + 各时点因子分位 (节与表见 tools/look/ViewResponse.cpp)
 #include "gui/task_agent/tools/Look.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
 #include "implot.h"
 
-#include <cstdio>
-
 namespace GUI::Agent {
 
 using namespace ui;
 
-void ResponseRes::draw() const {
-  draw_head();
-  if (!events) {
-    ImGui::TextDisabled("本端没有真持有过的格");
-    return;
-  }
-  ImGui::Text("事件 %zu 段%s", events, kept < events ? (" (等距抽 " + std::to_string(kept) + " 段)").c_str() : "");
+void ResponseRes::plot(int) const {
   const size_t P = pts.size();
   std::vector<double> xs(P), ys(P), es(P), rk(P);
   std::vector<const char *> names(P);
@@ -41,26 +33,6 @@ void ResponseRes::draw() const {
     ImPlot::SetupAxisTicks(ImAxis_X1, xs.data(), static_cast<int>(P), names.data());
     ImPlot::PlotLine("分位", xs.data(), rk.data(), static_cast<int>(P));
     ImPlot::EndPlot();
-  }
-  if (grid("##pts", {"时点", "段数", "累计超额 bp", "± 标准误", "为正占比", "因子分位"})) {
-    for (const Pt &p : pts) {
-      ImGui::TableNextRow();
-      cell(p.name), cell(std::to_string(p.n));
-      if (p.zero)
-        cell("0"), cell_dim("—"), cell_dim("—");
-      else
-        cell_bp(p.ex), cell_num(p.se * 1e4, "%.1f"), cell_pct(p.up);
-      cell_num(p.rank * 100.0, "%.0f");
-    }
-    ImGui::EndTable();
-  }
-  heading("开仓行因子分位与此前收益的截面秩相关 (≈ −1 反转代理 / ≈ +1 动量代理)");
-  if (grid("##lags", {"窗口", "相关"})) {
-    for (const auto &[n, v] : lags) {
-      ImGui::TableNextRow();
-      cell(n), cell_num(v, "%.3f", true);
-    }
-    ImGui::EndTable();
   }
 }
 

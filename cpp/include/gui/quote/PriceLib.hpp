@@ -44,6 +44,7 @@
 #pragma once
 
 #include "account/Nav.hpp" // Spot
+#include "define/Fee.hpp"
 #include "define/Members.hpp"
 #include "disk/Disk.hpp"
 #include "gui/quote/Quote.hpp" // Side / PerMarket / Series / Tape / PriceView
@@ -82,6 +83,7 @@ struct PriceRequest {
   misc::Ymd live = 0;      // 新浪行情日 (换日 = 可能多一份归档)
   uint64_t ledger = 0;     // 账本代 (live::flows::generation)
   account::Spot spot;      // 库外持仓的券商现价 (AccountHub::spot)
+  Fee fee;                 // 账户回放的税佣费率 (Config::fee)
   bool operator==(const PriceRequest &) const = default;
 };
 
@@ -156,8 +158,8 @@ private:
   void cut(size_t D); // 日脊截到 D 日 (删两侧其后的单日段)
   // 一行自第 from 日起的全史 (minute = 连分钟根); 无根 → false
   bool series(Ref ref, bool minute, Series &s, size_t from = 0) const;
-  void rebuild();                                          // 库变了: 日脊 / 篮子全表 (+ 普查) / 个股日脊末段
-  void replay(uint64_t ledger, const account::Spot &spot); // 账本 × 本戳日脊 (+ 券商现价) → account_
+  void rebuild();                                                          // 库变了: 日脊 / 篮子全表 (+ 普查) / 个股日脊末段
+  void replay(uint64_t ledger, const account::Spot &spot, const Fee &fee); // 账本 × 本戳日脊 (+ 券商现价, 费率) → account_
 
   const std::shared_ptr<const Calendar> cal_;
   const std::function<void(const Handoff &)> bind_;
@@ -189,6 +191,7 @@ private:
   Equity equity_;                       // account_ 的摘要
   uint64_t ledger_ = 0;                 // account_ 所依的账本代
   account::Spot spot_;                  // account_ 所依的券商现价
+  Fee fee_;                             // account_ 所依的费率
   misc::Lru<uint32_t, Series> daily_;   // 本戳个股日根全史 (留 kKeep 个; 换戳即清)
   misc::Lru<Ref, Series> minute_;       // 本戳连分钟的全史 (两侧; 留 kKeepMinutes 个; 换戳即清)
 };

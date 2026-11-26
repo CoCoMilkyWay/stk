@@ -18,23 +18,23 @@ namespace {
 using live::strf;
 
 // 今日成交 → 日内回推的成交 (槽至多到此刻的槽 last)
-std::vector<account::Trade> trades_in(const live::Fills &f, int last) {
+std::vector<account::Trade> trades_in(const live::Fills &f, int last, const Fee &fee) {
   std::vector<account::Trade> out;
   out.reserve(f.rows.size());
   for (const live::Fill &x : f.rows)
-    out.push_back(trade_of(x, last));
+    out.push_back(trade_of(x, last, fee));
   return out;
 }
 
 // 当日: 回放末日 (指数 idx0, 回放摘要 e) 之后, 持仓 h 按 y 的分钟收盘, 末槽 = h.now; 券商持仓时今日成交 f 按时刻回推 (与历史回放同一核 day_of)
-std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, const Quote::Holdings &h, const live::Fills *f, const Quote::Live &y) {
+std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, const Quote::Holdings &h, const live::Fills *f, const Quote::Live &y, const Fee &fee) {
   const size_t n = static_cast<size_t>(std::clamp(Quote::sec_slot(y.sec), 0, Quote::kSlots - 1)) + 1;
   account::Day d{y.date, h.now(&y), h.broker ? e.after : 0, 1, std::vector<account::Hold>(h.list.begin(), h.list.end())};
   std::unordered_map<std::string, uint32_t> id; // 代码 → 全局 id (资产轴上的)
   for (const Quote::Holding &x : h.list)
     if (x.id != Quote::Ref::kNone)
       id.emplace(x.code, x.id);
-  const std::vector<account::Trade> trades = h.broker && f ? trades_in(*f, static_cast<int>(n) - 1) : std::vector<account::Trade>{};
+  const std::vector<account::Trade> trades = h.broker && f ? trades_in(*f, static_cast<int>(n) - 1, fee) : std::vector<account::Trade>{};
   for (const account::Trade &t : trades)
     if (const Quote::Holding x = holding({t.code}); x.id != Quote::Ref::kNone)
       id.emplace(t.code, x.id);
@@ -118,7 +118,7 @@ void AccountHub::feed(const std::shared_ptr<const live::Snapshot> &snap) {
   fed_.update(snap.get(), [&](Fed &f) { f = {snap, snap ? spot_of(*snap) : account::Spot{}}; });
 }
 
-std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live) {
+std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const Quote::PriceView> &view, const std::shared_ptr<const Quote::Live> &live, const Fee &fee) {
   const std::shared_ptr<const Quote::Tape> t = view && view->lack.empty() ? view->tape[Quote::kAccount] : nullptr;
   const Fed &f = fed_.val;
   held_.update({t.get(), fed_.gen}, [&](Held &x) {
@@ -131,9 +131,9 @@ std::shared_ptr<const Quote::Day> AccountHub::today(const std::shared_ptr<const 
     x.trades = trades_of(t ? view->equity.trades.get() : nullptr, f.snap ? &f.snap->fills : nullptr);
   });
   const Held &x = held_.val;
-  day_.update({held_.gen, live ? live->ver : 0}, [&](std::shared_ptr<const Quote::Day> &d) {
+  day_.update({held_.gen, live ? live->ver : 0, fee}, [&](std::shared_ptr<const Quote::Day> &d) {
     d = x.hold && live && view->equity.nav > 0 && view->joins(live->prev)
-            ? today_of(view->equity, x.tape->line(0)->daily.back().close, *x.hold, f.snap ? &f.snap->fills : nullptr, *live)
+            ? today_of(view->equity, x.tape->line(0)->daily.back().close, *x.hold, f.snap ? &f.snap->fills : nullptr, *live, fee)
             : nullptr;
   });
   return day_.val;

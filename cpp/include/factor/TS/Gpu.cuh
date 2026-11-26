@@ -24,9 +24,8 @@
 //             再加 pre/suf 两级就是 3.8 GB, 6 GB 卡上放不下. 滑窗差分等价且 ws = 0.
 //     EXTREME: 滑窗极值 van Herk / Gil-Werman: 以 d 为块长, 块内前缀极值 + 前一块后缀极值合并.
 //             一线程一资产串行, 与 d 无关的常数趟; 工作区只存前一块的后缀 (环形 [d][A]), 没有 log₂d 趟全平面.
-//     HIST  : **一 block 一 (资产, 时间块)**: 块内样本按值排序 + 在时间序上建 wavelet matrix, 每个输出是
-//             O(log N) 次 smem 位运算, 无数据相关分支, 代价与 d 无关. (逐 lane 的"增量直方图 + 偶尔重建"在
-//             SIMT 上退化: 任一 lane 重建整个 warp 都等, P(warp 重建) = 1−(1−p)³² ≈ 85%, 实测 d = 1275 跑 1 s.)
+//     ORDER : **一 block 一 (资产, 时间块)**: 块内样本按值排序 + 在时间序上建 wavelet matrix, 每个输出 (秩 / 第 k 名) 是
+//             O(log N) 次 smem 位运算, 无数据相关分支, 代价与 d 无关.
 //     RECUR : 仿射复合 (a,b)∘(c,d) = (a·c, b·c+d) 的分块 scan (块内 → 块间 → 回填).
 //
 //   【数值】幂和 fp64, 按段/按块重建; 高阶矩两遍: 第一遍扫出块内 (μ,σ) 作参考,
@@ -94,28 +93,6 @@ __device__ __forceinline__ float pct_of(int less, int eq, int m) {
   const double avg = static_cast<double>(less) + (static_cast<double>(eq) + 1.0) * 0.5;
   return static_cast<float>((avg - 1.0) / static_cast<double>(m - 1));
 }
-// 分桶 (double 除法, 与 host 逐位一致)
-__device__ __forceinline__ int bin_of(float x, float lo, float hi) {
-  const int b = static_cast<int>((static_cast<double>(x) - lo) / (static_cast<double>(hi) - lo) * kBuckets);
-  return b < 0 ? 0 : (b >= kBuckets ? kBuckets - 1 : b);
-}
-__device__ __forceinline__ float bin_center(int b, float lo, float hi) {
-  return static_cast<float>(lo + (static_cast<double>(hi) - lo) * (b + 0.5) / kBuckets);
-}
-
-// bin_of 的热路径版: sm_75 上 fp64 只有 1/32 速率, 每样本一次 double 除法会吃掉 HIST 族全部时间.
-// float 快路径算出的 u 与 double 版的绝对偏差 ≤ ~3e-5 (u ∈ [0,256], 两次舍入),
-// 故只有落在桶边界 ±1e-3 带内 (≈0.2% 样本) 才回退 double 定夺 → 桶号与 bin_of() 逐位一致.
-__device__ __forceinline__ int bin_of_fast(float x, float lo, float hi) {
-  const float u = (x - lo) / (hi - lo) * static_cast<float>(kBuckets);
-  const float f = floorf(u);
-  const float r = u - f;
-  if (r < 1e-3f || r > 1.f - 1e-3f)
-    return bin_of(x, lo, hi);
-  const int b = static_cast<int>(f);
-  return b < 0 ? 0 : (b >= kBuckets ? kBuckets - 1 : b);
-}
-
 // 出口 = Contract::mk(): 无效或非有限 (溢出) → {0, 0}
 __device__ __forceinline__ void store(float *ov, uint8_t *om, int i, float v, bool m) {
   const bool f = m && fin(v);
@@ -135,7 +112,7 @@ inline int hmax(int a, int b) { return a > b ? a : b; }
 namespace factor::gpu::ts {
 
 // 线程块尺寸: 逐点 / 一线程一资产 都用 256 (20 个 block 覆盖 A=5000, 合并访存 1KB/warp-row);
-// HIST 的 block 尺寸随容量走, 见第 6 节
+// ORDER 的 block 尺寸随容量走, 见第 6 节
 inline constexpr int kPB = 256;
 inline constexpr int kTB = 256;
 
@@ -871,7 +848,7 @@ __global__ void extreme(const float *xv, const uint8_t *xm, E *ws, float *ov, ui
 }
 
 // =============================================================================
-// 6. HIST: 序统计族 (TsRankCum / TsRankRoll 精确秩; TsQuantileRoll 桶号与 CPU 逐位一致) —— 块内排序 + wavelet matrix
+// 6. ORDER: 序统计族 (TsRankCum / TsRankRoll / TsQuantileRoll, 契约【序统计】全精确) —— 块内排序 + wavelet matrix
 //    **一 block 一 (资产 a, 时间块 [c0, cend))**. 块内所有查询窗 ⊂ [base0, cend), N = cend − base0 ≤ NCAP:
 //      EXPAND: 块 = 一段, base0 = 段首, N ≤ S ≤ kSegMax;  ROLL: 块长 C = NCAP − d + 1, base0 = max(0, c0−d+1).
 //    建 (每块一次, 摊到 C 个查询上):
@@ -882,10 +859,10 @@ __global__ void extreme(const float *xv, const uint8_t *xm, E *ws, float *ov, ui
 //      3. 有效位向量 vb: 窗内有效数 n = rank1(r) − rank1(l).
 //    查 (一线程一 t, 没有数据相关的循环):
 //      秩: 名次按键升序 ⇒ 键 < key(x_t) 的名次 = [0, lower_bound), ≤ 的 = [0, upper_bound) ⇒ less / le 各一次 count_less.
-//      分位: lo / hi = sorted[quantile(1)] / sorted[quantile(n)]; 第 ⌈k·n⌉ 小的值所在桶 = CPU 的前缀首达桶 (bin 单调 ⇒ 等价), 一次 quantile.
-//    每查询 ≈ 3 次 L 步遍历 + 2 次二分, 与 d 无关; 无 warp 发散.
+//      分位: 第 q_rank(k, n) 小 = sorted[quantile(q_rank)], 一次 quantile.
+//    每查询 ≈ 2 次 L 步遍历 + 2 次二分, 与 d 无关; 无 warp 发散.
 //    容量: EXPAND NCAP = 256 (256 线程 × 1); ROLL d ≤ 1024 → 2048 (512 × 4, ≈ 21 KB smem, 每 SM 2 块),
-//          d ≤ 3072 → 4096 (512 × 8, ≈ 43 KB, 每 SM 1 块; 因子侧 d ≤ kMaxD 用不到, op_check 扫边界会到). 键把 ±0 归一为 +0 (与 bin_of / fmin 判等一致).
+//          d ≤ 3072 → 4096 (512 × 8, ≈ 43 KB, 每 SM 1 块; 因子侧 d ≤ kMaxD 用不到, op_check 扫边界会到). 键把 ±0 归一为 +0 (与 float 判等一致).
 // =============================================================================
 constexpr int ilog2(int n) { return n <= 1 ? 0 : 1 + ilog2(n >> 1); }
 inline constexpr uint32_t kBadKey = 0xffffffffu; // 无效样本的键 (有限 float 的键 ≤ 0xff800000)
@@ -1033,9 +1010,9 @@ __device__ __forceinline__ int upper_bound(const uint32_t *s, int n, uint32_t ke
   return lo;
 }
 
-// pct rank (并列均秩, 精确: 契约【精确秩】). 键 < key(x_t) / ≤ key(x_t) 的名次界二分得, 窗内计数各一次 count_less;
+// pct rank (并列均秩, 契约【序统计】). 键 < key(x_t) / ≤ key(x_t) 的名次界二分得, 窗内计数各一次 count_less;
 // 相对型: x_t 无效则无效 (x_t 有效 ⇒ 窗含它自身); 全并列 → pct_of 自然给 0.5
-struct HRank {
+struct ORank {
   template <int NCAP>
   __device__ static void emit(const WMat<NCAP> &wm, const uint32_t *sorted, int nvalid, int l, int r, int n, float x, bool xin, const Param &, float &v, bool &m) {
     m = xin;
@@ -1048,33 +1025,17 @@ struct HRank {
     v = dev::pct_of(less, le - less, n);
   }
 };
-// k 分位 (k = 0.5 即中位): 第 ⌈k·n⌉ 小的值所在桶的中心; 空窗 → 0; 全并列 / k ≤ 0 → lo; k ≥ 1 → hi (同 CPU hist_quantile)
-struct HQuantile {
+// k 分位 (k = 0.5 即中位): 窗内第 q_rank(k, n) 小的样本 (无效样本名次在最后, k 名 ≤ n 必落在有效样本上); 空窗 → 0
+struct OQuantile {
   template <int NCAP>
   __device__ static void emit(const WMat<NCAP> &wm, const uint32_t *sorted, int, int l, int r, int n, float, bool, const Param &p, float &v, bool &m) {
     m = true;
-    if (n < 1) {
-      v = 0.f;
-      return;
-    }
-    const float lo = funkey(sorted[wm.quantile(l, r, 1)]), hi = funkey(sorted[wm.quantile(l, r, n)]);
-    if (!(hi > lo) || p.k <= 0.f) {
-      v = lo;
-      return;
-    }
-    if (p.k >= 1.f) {
-      v = hi;
-      return;
-    }
-    // ⌈k·n⌉ 必须在 double 下取整: float 的末位会把边界样本推到邻桶, 与 host 差一个桶
-    const int tg = max(1, static_cast<int>(ceil(static_cast<double>(p.k) * n)));
-    const float q = funkey(sorted[wm.quantile(l, r, tg)]);
-    v = dev::bin_center(dev::bin_of_fast(q, lo, hi), lo, hi);
+    v = n >= 1 ? funkey(sorted[wm.quantile(l, r, q_rank(p.k, n))]) : 0.f;
   }
 };
 
 template <int NCAP>
-struct HistSh {       // 建完后的常驻结构 (与排序暂存共用一段 smem: 排完才建)
+struct OrderSh {      // 建完后的常驻结构 (与排序暂存共用一段 smem: 排完才建)
   uint16_t seq[NCAP]; // 名次序列 (建树时原地划分)
   uint16_t rk[NCAP];  // 时间位 → 名次
   WMat<NCAP> wm;
@@ -1083,14 +1044,14 @@ struct HistSh {       // 建完后的常驻结构 (与排序暂存共用一段 s
 
 // MODE 0 = EXPAND (块 = 一段, 窗 = [段首, t]), 1 = ROLL (块长 C = NCAP − d + 1; 窗 = [max(0, t−d+1), t], 未满窗即前缀)
 template <int MODE, int NCAP, int NT, class Op>
-__global__ void __launch_bounds__(NT, (NCAP <= 256 ? 4 : (NCAP <= 2048 ? 2 : 1))) hist(const float *xv, const uint8_t *xm, float *ov, uint8_t *om, int T, int A, int d, int C, Param p) {
+__global__ void __launch_bounds__(NT, (NCAP <= 256 ? 4 : (NCAP <= 2048 ? 2 : 1))) order(const float *xv, const uint8_t *xm, float *ov, uint8_t *om, int T, int A, int d, int C, Param p) {
   constexpr int IPT = NCAP / NT;
   static_assert(NCAP % NT == 0 && NCAP <= 65536, "块容量须为线程数整数倍, 且名次放得进 uint16");
   using Sort = cub::BlockRadixSort<uint32_t, NT, IPT, uint16_t>;
   using Scan = cub::BlockScan<int, NT>;
   __shared__ union {
     typename Sort::TempStorage sort;
-    HistSh<NCAP> h;
+    OrderSh<NCAP> h;
   } sh;
   __shared__ typename Scan::TempStorage scan;
   __shared__ uint32_t sorted[NCAP];
@@ -1202,22 +1163,22 @@ __global__ void ema_roll(const float *xv, const uint8_t *xm, float *ov, uint8_t 
 // ---- 启动配置 ----
 inline dim3 g_pt(int T, int A) { return dim3(static_cast<unsigned>((A + kPB - 1) / kPB), static_cast<unsigned>(hmin(T, 512))); }
 inline dim3 g_seg(int T, int A, int S) { return dim3(static_cast<unsigned>((A + kTB - 1) / kTB), static_cast<unsigned>((T + S - 1) / S)); } // 一线程一 (资产, 长 S 的块)
-inline dim3 g_hist(int T, int A, int C) { return dim3(static_cast<unsigned>(A), static_cast<unsigned>((T + C - 1) / C)); }                  // 一 block 一 (资产, 块)
-// HIST 启动: 模板函数里 if constexpr 才会丢弃另一支 (宏展开的非模板 run 里不丢弃, nvcc 会去找没实例化的核).
+inline dim3 g_order(int T, int A, int C) { return dim3(static_cast<unsigned>(A), static_cast<unsigned>((T + C - 1) / C)); }                 // 一 block 一 (资产, 块)
+// ORDER 启动: 模板函数里 if constexpr 才会丢弃另一支 (宏展开的非模板 run 里不丢弃, nvcc 会去找没实例化的核).
 // S = 段长, 只 EXPAND 用 (块 = 一段, 块长是运行期参数)
 template <int MODE, class H>
-inline void launch_hist(const float *xv, const uint8_t *xm, float *ov, uint8_t *om, int T, int A, int S, const Param &p, cudaStream_t stream) {
+inline void launch_order(const float *xv, const uint8_t *xm, float *ov, uint8_t *om, int T, int A, int S, const Param &p, cudaStream_t stream) {
   static_assert(kSegMax <= 256, "EXPAND 块容量 256 须盖住一段");
   if constexpr (MODE == 0) {
-    hist<0, 256, 256, H><<<g_hist(T, A, S), 256, 0, stream>>>(xv, xm, ov, om, T, A, 0, S, p);
+    order<0, 256, 256, H><<<g_order(T, A, S), 256, 0, stream>>>(xv, xm, ov, om, T, A, 0, S, p);
   } else {
     assert(p.d >= 1 && p.d <= T && p.d <= 4096 - 1024 && "ROLL 块容量 4096 下 d 过大");
     if (p.d <= 1024) {
       const int C = 2048 - p.d + 1;
-      hist<1, 2048, 512, H><<<g_hist(T, A, C), 512, 0, stream>>>(xv, xm, ov, om, T, A, p.d, C, p);
+      order<1, 2048, 512, H><<<g_order(T, A, C), 512, 0, stream>>>(xv, xm, ov, om, T, A, p.d, C, p);
     } else {
       const int C = 4096 - p.d + 1;
-      hist<1, 4096, 512, H><<<g_hist(T, A, C), 512, 0, stream>>>(xv, xm, ov, om, T, A, p.d, C, p);
+      order<1, 4096, 512, H><<<g_order(T, A, C), 512, 0, stream>>>(xv, xm, ov, om, T, A, p.d, C, p);
     }
   }
 }
@@ -1390,20 +1351,20 @@ FACTOR_TS_EXTREME(TsMinRoll, false, float)
 FACTOR_TS_EXTREME(TsArgMaxRoll, true, k::FI) // (d−1)−i, 并列保留最旧
 FACTOR_TS_EXTREME(TsArgMinRoll, false, k::FI)
 
-// ---- HIST (3): EXPAND 一段一块 (容量 256); ROLL 块长 C = NCAP − d + 1, 容量按 d 选 2048 / 4096 (见第 6 节) ----
-#define FACTOR_TS_HIST(Name, MODE, H)                                                         \
-  struct Name {                                                                               \
-    FACTOR_TS_NOWS                                                                            \
-    FACTOR_TS_RUN {                                                                           \
-      (void)ws;                                                                               \
-      FACTOR_TS_CHECK(c);                                                                     \
-      k::launch_hist<MODE, k::H>(c.x.v, c.x.m, c.o.v, c.o.m, c.T, c.A, c.geo.S, c.p, stream); \
-      FACTOR_CUDA_OK(cudaGetLastError());                                                     \
-    }                                                                                         \
+// ---- ORDER (3): EXPAND 一段一块 (容量 256); ROLL 块长 C = NCAP − d + 1, 容量按 d 选 2048 / 4096 (见第 6 节) ----
+#define FACTOR_TS_ORDER(Name, MODE, H)                                                         \
+  struct Name {                                                                                \
+    FACTOR_TS_NOWS                                                                             \
+    FACTOR_TS_RUN {                                                                            \
+      (void)ws;                                                                                \
+      FACTOR_TS_CHECK(c);                                                                      \
+      k::launch_order<MODE, k::H>(c.x.v, c.x.m, c.o.v, c.o.m, c.T, c.A, c.geo.S, c.p, stream); \
+      FACTOR_CUDA_OK(cudaGetLastError());                                                      \
+    }                                                                                          \
   };
-FACTOR_TS_HIST(TsRankCum, 0, HRank)
-FACTOR_TS_HIST(TsRankRoll, 1, HRank)
-FACTOR_TS_HIST(TsQuantileRoll, 1, HQuantile)
+FACTOR_TS_ORDER(TsRankCum, 0, ORank)
+FACTOR_TS_ORDER(TsRankRoll, 1, ORank)
+FACTOR_TS_ORDER(TsQuantileRoll, 1, OQuantile)
 
 // ---- EXPO (1) ----
 struct TsMeanEma {

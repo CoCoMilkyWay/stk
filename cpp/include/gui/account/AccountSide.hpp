@@ -5,6 +5,7 @@
 //   成交 (历史成交 / 今日成交同形) 两用: 日内回推的成交 (trade_of) / 成交点 (mark_of, 一笔一点; 聚合见 Quote::rebin)
 #pragma once
 
+#include "define/Fee.hpp"
 #include "gui/quote/Quote.hpp"
 #include "live/Flows.hpp"
 #include "misc/date.hpp"
@@ -22,8 +23,8 @@ namespace GUI::Account {
 // 回放口径的一只持仓 + 全局 id (按流水代码在资产轴上查, 不在 = Ref::kNone)
 Quote::Holding holding(account::Hold h);
 
-// 一笔成交 → 日内回推的成交: 槽 = 所在分钟根 (竞价并入首根), 至多到 last (券商时钟领先新浪也算已发生); 费用按费率估 (live::fee)
-account::Trade trade_of(const live::Fill &x, int last);
+// 一笔成交 → 日内回推的成交: 槽 = 所在分钟根 (竞价并入首根), 至多到 last (券商时钟领先新浪也算已发生); 税佣按费率 fee 估 (live::fee; = Config::fee)
+account::Trade trade_of(const live::Fill &x, int last, const Fee &fee);
 // d 日的一笔成交 → 成交点 (一分钟一档)
 Quote::TradeMark mark_of(misc::Ymd d, const live::Fill &x);
 
@@ -42,6 +43,6 @@ struct Replay {
 };
 // minutes(全局 id, 自日脊第 from 日, out) = 个股连分钟的全史 (价格库给; 无 → false)
 using Minutes = std::function<bool(uint32_t id, size_t from, Quote::Series &out)>;
-Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, const account::Spot &spot, const Minutes &minutes);
+Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, const account::Spot &spot, const Fee &fee, const Minutes &minutes);
 
 } // namespace GUI::Account

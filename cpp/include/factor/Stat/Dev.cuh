@@ -146,13 +146,12 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
     const unsigned x = rx[a], y = lb.ry[a];
     const bool ok = x != kRankNone && y != kRankNone;
     factor::stat::pair_add(s, x, y, ok);
-    float yv[2];
-    factor::stat::label_cell(lb, a, H2F{}, yv);
-    fs[0] += ok ? yv[0] : 0.f;
     if (!ok)
       continue;
+    fs[0] += h2f(lb.lv[a]);
     const int g = factor::stat::grp_of(x);
-    const factor::stat::Pos p = factor::stat::walk(c, lb.m + a, lb.eo + a, factor::stat::InRank{rx + a, g});
+    float yv[2];
+    const factor::stat::Pos p = factor::stat::cell(c, lb, a, factor::stat::InRank{rx + a, g}, H2F{}, yv);
     if (p.held < 0)
       continue;
     gs[g][lane] += factor::stat::ret_at(p, 0, yv); // 自己的槽, 无竞争

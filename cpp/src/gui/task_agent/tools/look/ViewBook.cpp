@@ -96,71 +96,77 @@ float quantile_of(const L2::FrameView &v, float q) {
 
 } // namespace
 
-std::string BookRes::headline() const { return what + " (额 万元; 价差 / 距盘口按 0.01 元一跳)"; }
+std::string BookRes::headline() const { return what; }
 
-std::string BookRes::text() const {
-  std::string s = text_head();
-  s += "当日: 逐笔 " + str(orders) + " 条 · " +
-       (traded ? "开 " + px2(open) + " 高 " + px2(high) + " 低 " + px2(low) + " 收 " + px2(close) + " · 成交额 " + w4(amt) : std::string("无成交")) + " · 大单门槛 " + w4(big) +
-       (big_given ? " (给定)" : " (当日新挂单额 " + fmt("%.0f", kBigQuantile * 100.0) + " 分位)") + "\n";
-  s += "窗口: 主动买 " + w4(taker[0]) + " / 主动卖 " + w4(taker[1]) + " · 新挂 买 " + w4(maker[0]) + " / 卖 " + w4(maker[1]) + " · 撤单 买 " + w4(cancel[0]) + " / 卖 " +
-       w4(cancel[1]) + (last > 0.0 ? " · 成交价 " + px2(first) + " → " + px2(last) : std::string(" · 无成交")) +
-       (std::isfinite(spread) ? " · 平均价差 " + fmt("%.1f", spread) + " 跳" : std::string()) + "\n";
-  s += "- 逐秒成交价 " + spark(price) + "\n- 累计主动买 − 主动卖 (万) " + spark(net) + "\n";
+std::vector<Sec> BookRes::secs() const {
+  std::vector<Sec> out;
+  Sec &x = out.emplace_back();
+  x.lines = {"当日: 逐笔 " + str(orders) + " 条 · " +
+                 (traded ? "开 " + px2(open) + " 高 " + px2(high) + " 低 " + px2(low) + " 收 " + px2(close) + " · 成交额 " + w4(amt) : std::string("无成交")) + " · 大单门槛 " +
+                 w4(big) + (big_given ? " (给定)" : " (当日新挂单额 " + fmt("%.0f", kBigQuantile * 100.0) + " 分位)"),
+             "窗口: 主动买 " + w4(taker[0]) + " / 主动卖 " + w4(taker[1]) + " · 新挂 买 " + w4(maker[0]) + " / 卖 " + w4(maker[1]) + " · 撤单 买 " + w4(cancel[0]) + " / 卖 " +
+                 w4(cancel[1]) + (last > 0.0 ? " · 成交价 " + px2(first) + " → " + px2(last) : std::string(" · 无成交")) +
+                 (std::isfinite(spread) ? " · 平均价差 " + fmt("%.1f", spread) + " 跳" : std::string())};
+  x.sparks = {"逐秒成交价 " + spark(price), "累计主动买 − 主动卖 " + spark(net)};
+  x.plot = 0;
 
-  s += "\n逐时表 (每行 " + std::to_string(step) + " 秒; 主买 / 主卖 = 主动成交额, 挂 / 撤 = 新挂 / 撤单额, 五档 = 前 5 价位挂单额" +
-       (call ? std::string("; 竞价段: 参考价 / 匹配额 / 未匹配额 (+ 买剩 − 卖剩)") : std::string()) + ")\n";
-  std::vector<std::string> ths{"起", "末价", "买一", "卖一", "价差", "主买", "主卖", "挂买", "挂卖", "撤买", "撤卖", "买五档", "卖五档"};
+  Sec &t = out.emplace_back();
+  t.title = "逐时表 (每行 " + std::to_string(step) + " 秒)";
+  t.tab.head = {"起", "末价", "买一", "卖一", "价差", "主买", "主卖", "挂买", "挂卖", "撤买", "撤卖", "买五档", "卖五档"};
   if (call)
-    ths.push_back("参考价"), ths.push_back("匹配"), ths.push_back("未匹配");
-  text::Table ttbl(ths);
+    t.tab.head.push_back("参考价"), t.tab.head.push_back("匹配"), t.tab.head.push_back("未匹配");
   for (const Row &z : rows) {
-    std::vector<std::string> row{hms(z.clock), px2(z.last), px2(z.bid), px2(z.ask), z.bid > 0.0 && z.ask > 0.0 ? fmt("%.0f", std::round((z.ask - z.bid) * 100.0)) : std::string("—"),
-                                 w4(z.taker[0]), w4(z.taker[1]), w4(z.maker[0]), w4(z.maker[1]), w4(z.cancel[0]), w4(z.cancel[1]), w4(z.depth[0]), w4(z.depth[1])};
+    std::vector<Num> row{hms(z.clock), px2(z.last), px2(z.bid), px2(z.ask), z.bid > 0.0 && z.ask > 0.0 ? fmt("%.0f", std::round((z.ask - z.bid) * 100.0)) : "—",
+                         w4(z.taker[0]), w4(z.taker[1]), w4(z.maker[0]), w4(z.maker[1]), w4(z.cancel[0]), w4(z.cancel[1]), w4(z.depth[0]), w4(z.depth[1])};
     if (call)
-      row.push_back(px2(z.ref)), row.push_back(w4(z.matched)), row.push_back(w4(z.imbalance));
-    ttbl.add(row);
+      row.push_back(px2(z.ref)), row.push_back(w4(z.matched)), row.push_back({w4(z.imbalance), z.imbalance});
+    t.tab.rows.push_back(std::move(row));
   }
-  s += ttbl.str();
 
-  s += "\n大单事件 (窗口内共 " + str(events) + " 起; 侧 = 委托所在侧, 扫单 = 主动方; 寿命 = 挂出到撤 / 吃完的交易秒):\n";
+  Sec &e = out.emplace_back();
+  e.title = "大单事件 (窗口内共 " + str(events) + " 起)";
+  e.tab.head = {"事件", "买 起", "买 额", "卖 起", "卖 额", "备注"};
   for (size_t k = 0; k < kBookKindCount; ++k) {
-    s += "- " + std::string(kBookKinds[k]) + ": 买 " + std::to_string(count[k][0]) + " 起 " + w4(amount[k][0]) + " / 卖 " + std::to_string(count[k][1]) + " 起 " + w4(amount[k][1]);
+    std::string note;
     if (k == BkSweep && count[k][0] + count[k][1] > 0)
-      s += " · 平均吃 买 " + (count[k][0] ? fmt("%.1f", levels[0] / count[k][0]) : std::string("—")) + " / 卖 " + (count[k][1] ? fmt("%.1f", levels[1] / count[k][1]) : std::string("—")) +
-           " 价位";
+      note = "平均吃 买 " + (count[k][0] ? fmt("%.1f", levels[0] / count[k][0]) : std::string("—")) + " / 卖 " + (count[k][1] ? fmt("%.1f", levels[1] / count[k][1]) : std::string("—")) +
+             " 价位";
     if (k == BkCancel && (std::isfinite(life[0]) || std::isfinite(life[1])))
-      s += " · 寿命中位 买 " + (std::isfinite(life[0]) ? fmt("%.1f", life[0]) : std::string("—")) + " / 卖 " + (std::isfinite(life[1]) ? fmt("%.1f", life[1]) : std::string("—")) + " 秒";
-    s += "\n";
+      note = "寿命中位 买 " + (std::isfinite(life[0]) ? fmt("%.1f", life[0]) : std::string("—")) + " / 卖 " + (std::isfinite(life[1]) ? fmt("%.1f", life[1]) : std::string("—")) + " 秒";
+    e.tab.rows.push_back({kBookKinds[k], std::to_string(count[k][0]), w4(amount[k][0]), std::to_string(count[k][1]), w4(amount[k][1]), note});
   }
   if (!top.empty()) {
-    s += "\n额最大的 " + str(top.size()) + " 起 (按时序; 距盘口 = 与上一秒末同侧最优价差几跳: 0 在盘口, + 在盘口后方, − 越过盘口):\n";
-    text::Table etbl({"时刻", "事件", "侧", "价", "距盘口", "额", "寿命 秒"});
-    for (const Event &e : top) {
-      const bool sweep = e.kind == BkSweep;
-      const std::string dist = sweep        ? "吃 " + std::to_string(e.levels) + " 价位"
-                               : e.best > 0 ? fmt("%+.0f", std::round((e.side == 0 ? e.best - e.price : e.price - e.best) * 100.0))
+    Sec &m = out.emplace_back();
+    m.title = "额最大的 " + str(top.size()) + " 起 (按时序)";
+    m.tab.head = {"时刻", "事件", "侧", "价", "距盘口", "额", "寿命 秒"};
+    for (const Event &a : top) {
+      const bool sweep = a.kind == BkSweep;
+      const std::string dist = sweep        ? "吃 " + std::to_string(a.levels) + " 价位"
+                               : a.best > 0 ? fmt("%+.0f", std::round((a.side == 0 ? a.best - a.price : a.price - a.best) * 100.0))
                                             : std::string("—");
-      etbl.add({hms(e.clock) + fmt(".%02.0f", e.cs), kBookKinds[e.kind], e.side == 0 ? "买" : "卖", sweep ? px2(e.first) + "→" + px2(e.price) : px2(e.price), dist, w4(e.amount),
-                e.life >= 0.0 ? fmt("%.1f", e.life) : "—"});
+      m.tab.rows.push_back({hms(a.clock) + fmt(".%02.0f", a.cs), kBookKinds[a.kind], a.side == 0 ? "买" : "卖", sweep ? px2(a.first) + "→" + px2(a.price) : px2(a.price), dist,
+                            w4(a.amount), a.life >= 0.0 ? fmt("%.1f", a.life) : "—"});
     }
-    s += etbl.str();
   }
 
-  s += "\n全簿剖面 @ " + hms(at) + " 秒末 (全簿 买 " + w4(book_bid) + " / 卖 " + w4(book_ask) + "; 列盘口两侧各至多 " + str(kProfile) + " 价位):\n";
-  if (profile.empty())
-    return s + "簿空\n";
+  Sec &p = out.emplace_back();
+  p.title = "全簿剖面 @ " + hms(at) + " 秒末 (全簿 买 " + w4(book_bid) + " / 卖 " + w4(book_ask) + ")";
+  if (profile.empty()) {
+    p.lines = {"簿空"}, p.warn = true;
+    return out;
+  }
   double mx = 0.0;
   for (const Level &l : profile)
     mx = std::max(mx, l.amount);
-  text::Table ptbl({"档", "价", "额", ""});
+  p.plot = 1;
+  p.tab.head = {"档", "价", "额", ""};
   for (const Level &l : profile) {
     std::string bar;
     for (long k = std::lround(l.amount / mx * kBarCells); k > 0; --k)
       bar += "█";
-    ptbl.add({std::string(l.bid ? "买" : "卖") + std::to_string(l.rank), px2(l.price), w4(l.amount), bar});
+    p.tab.rows.push_back({std::string(l.bid ? "买" : "卖") + std::to_string(l.rank), px2(l.price), w4(l.amount), bar});
   }
-  return s + ptbl.str();
+  return out;
 }
 
 std::string BookRes::title() const {
@@ -209,10 +215,19 @@ ToolOut ViewBook(const Call &c, Bay &bay) {
     view = DayReader(date).get(ref, R.decoder);
   if (view.head.count == 0) {
     const std::vector<misc::Ymd> &ds = env.orders->days;
+    const auto near = [&] { // 前后最近的有逐笔日
+      const auto it = std::lower_bound(ds.begin(), ds.end(), date);
+      std::string s;
+      if (it != ds.begin())
+        s += "前 " + misc::dash(*(it - 1));
+      if (it != ds.end())
+        s += (s.empty() ? "" : " / ") + std::string("后 ") + misc::dash(*it);
+      return s;
+    };
     const std::string why = didx != OrdersCatalog::kNoDay ? (ref.tombstone() ? "当日该股逐笔为空 (停牌或没有委托)" : "当日日文件里没有该股 (未上市 / 已退市, 或未编码)")
                             : ds.empty()                  ? "逐笔库没有任何日文件"
                                                           : "逐笔日文件里没有这一天 (逐笔共 " + str(ds.size()) + " 天: " + misc::dash(ds.front()) + " ~ " +
-                                                                misc::dash(ds.back()) + "; 非交易日或该日未编码)";
+                                                                misc::dash(ds.back()) + "; 非交易日或该日未编码); 最近的有逐笔日: " + near();
     return Fail("## " + what + "\n没重放成: " + why);
   }
 

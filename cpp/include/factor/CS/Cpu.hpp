@@ -1,17 +1,18 @@
 #pragma once
 
 // =============================================================================
-// CS 算子的挖掘 CPU 后端 (factor::cpu::cs, OP_CS* 全 17 个; 语义契约见 factor/Contract.hpp)
+// CS 算子的挖掘 CPU 后端 (factor::cpu::cs, OP_CS* 全 16 个; 语义契约见 factor/Contract.hpp)
 // =============================================================================
 //   定位: 因子挖掘无 GPU 时的 fallback —— 整张量批量直算, 吞吐必须 ≥ stream.
-//   独立第二实现: 除 Contract.hpp (共享数学件: mk/spread/den_ok/pct_of/probit/分桶规则) 外
+//   独立第二实现: 除 Contract.hpp (共享数学件: mk/spread/den_ok/pct_of/probit/q_rank/bucket_of) 外
 //   不依赖任何后端 (否则 cpu↔stream 对拍空转).
 //
 //   CS = 每个时刻 t 一个截面 (行主序 [T][A] 的一行, 内存连续), 各 t 之间完全独立.
-//   【性能】不 gather 拷贝 (直接在掩码上 branchless 归约); 精确秩 = 行内一次排序 + 等值段扫; 直方图带 exclusive 前缀 → rank O(1) 查询;
-//   分组族用扁平数组 (组 id < kMaxGroup), 按上限从调用方暂存切出 (scratch 声明), 跨 t 复用, 内部不分配.
+//   【性能】矩族不 gather 拷贝 (直接在掩码上 branchless 归约); 序统计族全精确 (契约【序统计】):
+//   秩 = 行内一次 64 位键排序 + 等值段扫 (组秩把组 id 拼进键的高位, 同一趟排序), 分位 = 池内样本 nth_element;
+//   缓冲按 A 与 kMaxGroup 上限从调用方暂存切出 (scratch 声明), 跨 t 复用, 内部不分配.
 //
-//   广播型 (Mean/Std/Median/Quantile/Beta/Corr): 对该行所有 A 个资产写同值, 掩码恒真 (空池行 → 中性值),
+//   广播型 (Mean/Std/Quantile/Beta/Corr): 对该行所有 A 个资产写同值, 掩码恒真 (空池行 → 中性值),
 //     哪怕该资产自己的 x 缺失 —— 它描述的是截面, 不是资产.
 //   相对型 (其余): 描述资产自身, 该资产 x 缺失 (二元还要 ym) 即输出无效; 统计量退化 → 契约第 6 条中性值.
 //   统计口径: 方差 ddof=1; 样本 = 池内 g ∧ 有效 (一元 xm, 二元 xm && ym; 契约【截面池 g】); 输出 = 池内统计量作用于每个有效 x.
@@ -60,7 +61,7 @@ inline void bcast(float *ov, uint8_t *om, size_t r, int A, double v, bool m) {
 
 // ---- 浮点极值的单调整数键: 位型按符号翻转后整数序 = 浮点序 (有限值; 契约保证无 NaN) ----
 //   fmin/fmax 归约 LLVM 不向量化, smin/smax 归约可以. 键与值互逆 (fval ∘ fkey = id), 位级精确;
-//   唯一差别 ±0 键不同 (−0 < +0), 但下游 spread / bin_of 只做算术比较, −0 与 +0 等价.
+//   唯一差别 ±0 键不同 (−0 < +0), 但下游 spread 只做算术比较, −0 与 +0 等价.
 //   无有效样本时哨兵解回来是 NaN 位型, 调用方按 n == 0 置 lo = hi = 0 (与原语义同).
 inline int32_t fkey(float x) {
   int32_t u;
@@ -172,58 +173,7 @@ inline M2 comoments(const float *xv, const uint8_t *xm, const float *yv, const u
   return r;
 }
 
-// ---- 序统计族直方图 (契约分桶规则 + exclusive 前缀 → rank O(1)) ----
-struct Hist {
-  int cnt[kBuckets];
-  int pre[kBuckets + 1]; // pre[b] = Σ_{j<b} cnt[j]
-  float lo = 0.f, hi = 0.f;
-  int n = 0;
-  bool ok = false; // n ≥ 1 且非全并列
-
-  void build(const float *v, const uint8_t *m, const uint8_t *g, int A) {
-    n = 0;
-    ok = false;
-    int32_t klo = kKeyMax, khi = kKeyMin;
-    for (int i = 0; i < A; ++i) {
-      const bool b = (m[i] & g[i]) != 0;
-      const int32_t k = fkey(v[i]);
-      klo = std::min(klo, b ? k : kKeyMax);
-      khi = std::max(khi, b ? k : kKeyMin);
-      n += b;
-    }
-    lo = n >= 1 ? fval(klo) : 0.f;
-    hi = n >= 1 ? fval(khi) : 0.f;
-    ok = n >= 1 && spread(lo, hi);
-    if (!ok)
-      return;
-    std::fill(cnt, cnt + kBuckets, 0);
-    for (int i = 0; i < A; ++i)
-      if (m[i] & g[i])
-        ++cnt[bin_of(v[i], lo, hi)];
-    pre[0] = 0;
-    for (int b = 0; b < kBuckets; ++b)
-      pre[b + 1] = pre[b] + cnt[b];
-  }
-  float rank(float x) const { // 并列均秩的 pct rank; 全并列 → 0.5
-    if (!ok)
-      return 0.5f;
-    const int b = bin_of(x, lo, hi);
-    return pct_of(pre[b], cnt[b], n);
-  }
-  float quantile(double q) const { // 最小的桶使前缀累计 ≥ ⌈q·n⌉
-    if (!ok || q <= 0.0)
-      return lo;
-    if (q >= 1.0)
-      return hi;
-    const int need = std::max(1, static_cast<int>(std::ceil(q * n)));
-    for (int b = 0; b < kBuckets; ++b)
-      if (pre[b + 1] >= need)
-        return bin_center(b, lo, hi);
-    return hi;
-  }
-};
-
-// ---- 精确秩 (CsRank / CsNormRank; 契约【精确秩】) ----
+// ---- 序统计 (契约【序统计】) ----
 // 有限 float → 保序 uint32 (±0 归一为 +0, 与 float 判等一致)
 inline uint32_t ukey(float x) {
   const float z = x + 0.f;
@@ -231,7 +181,7 @@ inline uint32_t ukey(float x) {
   std::memcpy(&u, &z, sizeof u);
   return (u >> 31) ? ~u : (u | 0x80000000u);
 }
-// 一行: 全部有效格按 (值键, 资产, 在池位) 排序后按等值段扫; 段内池成员数 = eq, 段前池成员数 = less.
+// 精确秩, 一行: 全部有效格按 (值键, 资产, 在池位) 排序后按等值段扫; 段内池成员数 = eq, 段前池成员数 = less.
 // out[a] (只写有效格) = pct_of(less, eq, n) 夹到 [0, 1]; ks = A 个 u64 暂存. 返回池内样本数 n
 inline int exact_rank(const float *v, const uint8_t *m, const uint8_t *g, int A, uint64_t *ks, float *out) {
   int k = 0, n = 0;
@@ -256,6 +206,19 @@ inline int exact_rank(const float *v, const uint8_t *m, const uint8_t *g, int A,
     i = j;
   }
   return n;
+}
+// 池内有效样本收进 s, 返回个数 (分位用; 之后在 s 上 nth_element)
+inline int gather_pool(const float *v, const uint8_t *m, const uint8_t *g, int A, float *s) {
+  int n = 0;
+  for (int a = 0; a < A; ++a)
+    if (m[a] & g[a])
+      s[n++] = v[a];
+  return n;
+}
+// s[lo, n) 里第 r 名 (1 起, r − 1 ≥ lo) 的值; 选择后 s[0, r) ≤ 它 ≤ s[r, n), 同一缓冲上再选更高名次只需从 r 起
+inline float select_rank(float *s, int lo, int n, int r) {
+  std::nth_element(s + lo, s + r - 1, s + n);
+  return s[r - 1];
 }
 
 // ---- 组 id: 格无效 → −1 (不参与); 有效但为负 (未知行业) → kNoGroup (无组, 以全池为组, 槽号 = G); 上限断言在 scan_gid ----
@@ -338,9 +301,9 @@ struct CsZ { // σ 退化 → 0 (无尺度可比)
   }
 };
 
-// ===== 一元: 序统计 (HIST) =====
+// ===== 一元: 序统计 (精确, 契约【序统计】) =====
 
-// 精确秩 (CsRank / CsNormRank): 排序 + 等值段扫 (detail::exact_rank); 其余序统计走直方图
+// 秩族 (CsRank / CsNormRank / CsBucket): 排序 + 等值段扫 (detail::exact_rank); 分位族 (CsQuantile / CsWinsor): 池内样本 nth_element
 struct CsRank { // 空池 / 池内全并列 → 0.5
   static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<uint64_t>(static_cast<size_t>(c.A)), b.take<float>(static_cast<size_t>(c.A))}; }
   CP_SCRATCH
@@ -378,28 +341,36 @@ struct CsNormRank { // pct 先夹到 (0,1) 开区间再取正态分位, 否则 �
 };
 
 struct CsQuantile { // k 分位 (k = 0.5 即中位); 空池 → 0
-  CP_SCRATCH0
+  static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<float>(static_cast<size_t>(c.A))}; }
+  CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
-    detail::Hist h;
+    Bump bp{static_cast<char *>(ws)};
+    float *const s = std::get<0>(carve(bp, c));
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
-      h.build(xv + r, xm + r, g + r, A);
-      detail::bcast(ov, om, r, A, h.n >= 1 ? h.quantile(p.k) : 0.f, true);
+      const int n = detail::gather_pool(xv + r, xm + r, g + r, A, s);
+      detail::bcast(ov, om, r, A, n >= 1 ? detail::select_rank(s, 0, n, q_rank(p.k, n)) : 0.f, true);
     }
   }
 };
 
-struct CsWinsor { // 空池 → 不缩尾, x 原值
-  CP_SCRATCH0
+struct CsWinsor { // clamp 到 [Q_k, Q_{1−k}]; 空池 → 不缩尾, x 原值
+  static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<float>(static_cast<size_t>(c.A))}; }
+  CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
-    detail::Hist h;
+    Bump bp{static_cast<char *>(ws)};
+    float *const s = std::get<0>(carve(bp, c));
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
-      h.build(xv + r, xm + r, g + r, A);
-      const float qa = h.quantile(p.k), qb = h.quantile(1.0 - static_cast<double>(p.k));
-      const float w_lo = h.n >= 1 ? std::fmin(qa, qb) : -detail::kInfF, w_hi = h.n >= 1 ? std::fmax(qa, qb) : detail::kInfF;
+      const int n = detail::gather_pool(xv + r, xm + r, g + r, A, s);
+      float w_lo = -detail::kInfF, w_hi = detail::kInfF;
+      if (n >= 1) { // 下名次 ≤ 上名次 (k < 1/2); 先选下, 上名次只在其后段里选
+        const int rl = q_rank(p.k, n), rh = q_rank(1.0 - static_cast<double>(p.k), n);
+        w_lo = detail::select_rank(s, 0, n, rl);
+        w_hi = rh == rl ? w_lo : detail::select_rank(s, rl, n, rh);
+      }
       FACTOR_COLS for (int a = 0; a < A; ++a)
           detail::put(ov, om, r + a,
                       static_cast<double>(std::fmin(std::fmax(xv[r + a], w_lo), w_hi)),
@@ -408,18 +379,20 @@ struct CsWinsor { // 空池 → 不缩尾, x 原值
   }
 };
 
-struct CsBucket { // 等频分 k 组: floor(pct·k) ∈ 0..k−1; 值域退化 / 空池 → pct = 0.5 → 中间桶
-  CP_SCRATCH0
+struct CsBucket { // 等频分 k 组: bucket_of(pct, k) ∈ 0..k−1; 空池 / 全并列 → pct = 0.5 → 中间桶
+  static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<uint64_t>(static_cast<size_t>(c.A)), b.take<float>(static_cast<size_t>(c.A))}; }
+  CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
     const int k = static_cast<int>(p.k);
     assert(k >= 1);
-    detail::Hist h;
+    Bump bp{static_cast<char *>(ws)};
+    const auto [ks, pr] = carve(bp, c);
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
-      h.build(xv + r, xm + r, g + r, A);
+      detail::exact_rank(xv + r, xm + r, g + r, A, ks, pr);
       for (int a = 0; a < A; ++a) {
-        const int b = std::clamp(static_cast<int>(std::floor(h.rank(xv[r + a]) * k)), 0, k - 1);
+        const int b = xm[r + a] ? bucket_of(pr[a], k) : 0;
         detail::put(ov, om, r + a, static_cast<double>(b), xm[r + a]);
       }
     }
@@ -534,68 +507,56 @@ struct CsGroupMean { // y = 组 id (行业等); 组均值广播到组员 (无组
   }
 };
 
-struct CsGroupRank { // 组内 pct rank (每组独立定 lo/hi 与直方图; 组无池成员 → 全池直方图)
+// 组内精确 pct rank (契约【序统计】; 样本 = 本组池成员; 无组 / 组无池成员 → 全池精确秩)
+//   有组的有效格按 (组 id, 值键, 资产, 在池位) 一次排序: 组段内按等值段扫 (同 exact_rank), 段前同组池成员数 = less
+struct CsGroupRank {
+  static constexpr int kGidShift = 54, kKeyShift = 22; // 键: 组 id 10 位 | 值键 32 位 | 资产 21 位 | 在池 1 位
+  static_assert(kMaxGroup <= (1 << (64 - kGidShift)), "组 id 须放得进键的高 10 位");
   static auto carve(Bump &b, const Call &c) {
-    constexpr size_t GS = kMaxGroup;
-    return std::tuple{b.take<int>(static_cast<size_t>(c.A)), b.take<int>(GS), b.take<int>(GS * kBuckets), b.take<int>(GS * (kBuckets + 1)),
-                      b.take<float>(GS), b.take<float>(GS)};
+    const size_t A = static_cast<size_t>(c.A);
+    return std::tuple{b.take<int>(A), b.take<int>(kMaxGroup), b.take<uint64_t>(A), b.take<float>(A), b.take<float>(A)};
   }
   CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
+    assert(A < (1 << (kKeyShift - 1)) && "资产下标须放得进键的 21 位");
     Bump bp{static_cast<char *>(ws)};
-    const auto [gq, gn, gh, gpre, glo, ghi] = carve(bp, c);
-    detail::Hist ha;
+    const auto [gq, gn, ks, gr, pr] = carve(bp, c);
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
       const int G = detail::scan_gid(yv + r, ym + r, A, gq);
-      const size_t GS = static_cast<size_t>(std::max(G, 1));
-      std::fill_n(gn, GS, 0);
-      std::fill_n(glo, GS, 0.f);
-      std::fill_n(ghi, GS, 0.f);
-      for (int a = 0; a < A; ++a) // 逐组 lo/hi/计数 (池内)
-        if (gq[a] >= 0 && xm[r + a] && g[r + a]) {
-          const int q = gq[a];
-          glo[q] = gn[q] == 0 ? xv[r + a] : std::fmin(glo[q], xv[r + a]);
-          ghi[q] = gn[q] == 0 ? xv[r + a] : std::fmax(ghi[q], xv[r + a]);
-          ++gn[q];
-        }
-      std::fill_n(gh, GS * kBuckets, 0); // 逐组直方图 + exclusive 前缀; 顺手查有没有资产无组 / 落在空组
-      bool need = false;
+      std::fill_n(gn, std::max(G, 1), 0);
+      int k = 0;
       for (int a = 0; a < A; ++a) {
-        if (gq[a] == -1 || !xm[r + a])
+        if (gq[a] < 0 || !xm[r + a])
           continue;
-        if (gq[a] < 0) { // 无组 → 要全池
-          need = true;
-          continue;
-        }
-        need = need || gn[gq[a]] < 1;
-        if (g[r + a] && spread(glo[gq[a]], ghi[gq[a]]))
-          ++gh[static_cast<size_t>(gq[a]) * kBuckets + bin_of(xv[r + a], glo[gq[a]], ghi[gq[a]])];
+        const uint64_t in = g[r + a] != 0;
+        ks[k++] = (static_cast<uint64_t>(gq[a]) << kGidShift) | (uint64_t{detail::ukey(xv[r + a])} << kKeyShift) | (static_cast<uint64_t>(a) << 1) | in;
+        gn[gq[a]] += static_cast<int>(in);
       }
-      for (size_t q = 0; q < GS; ++q)
-        gpre[q * (kBuckets + 1)] = 0;
-      for (size_t q = 0; q < GS; ++q)
-        for (int b = 0; b < kBuckets; ++b)
-          gpre[q * (kBuckets + 1) + b + 1] = gpre[q * (kBuckets + 1) + b] + gh[q * kBuckets + b];
-      if (need) // 全池 (回退; 含无组的池成员), 只在有资产无组 / 落在空组时建 (正常日子行业全在池里, 不走)
-        ha.build(xv + r, xm + r, g + r, A);
+      std::sort(ks, ks + k);
+      for (int i = 0, less = 0; i < k;) {
+        const uint64_t key = ks[i] >> kKeyShift; // (组, 值)
+        const int q = static_cast<int>(ks[i] >> kGidShift);
+        less = i > 0 && (ks[i - 1] >> kGidShift) == static_cast<uint64_t>(q) ? less : 0; // 进新组段归零
+        int j = i, eq = 0;
+        for (; j < k && (ks[j] >> kKeyShift) == key; ++j)
+          eq += static_cast<int>(ks[j] & 1u);
+        const float pq = std::clamp(pct_of(less, eq, gn[q]), 0.f, 1.f);
+        for (int u = i; u < j; ++u)
+          gr[(ks[u] >> 1) & ((uint64_t{1} << (kKeyShift - 1)) - 1)] = pq;
+        less += eq;
+        i = j;
+      }
+      bool need = false; // 有资产无组 / 落在空组才算全池秩 (正常日子行业全在池里, 不走)
+      for (int a = 0; a < A; ++a)
+        need = need || (gq[a] != -1 && xm[r + a] && (gq[a] < 0 || gn[gq[a]] < 1));
+      if (need)
+        detail::exact_rank(xv + r, xm + r, g + r, A, ks, pr); // 全池 (回退; 含无组的池成员); 全池也空 → 0.5
       for (int a = 0; a < A; ++a) {
         const int q = gq[a];
         const bool ok = q != -1 && xm[r + a];
-        double v = 0.0;
-        if (ok) {
-          if (q < 0 || gn[q] < 1)
-            v = ha.rank(xv[r + a]); // 无组 / 组无池成员 → 全池; 全池也空 → Hist 给 0.5
-          else if (!spread(glo[q], ghi[q]))
-            v = 0.5; // 组内全并列
-          else {
-            const int b = bin_of(xv[r + a], glo[q], ghi[q]);
-            v = pct_of(gpre[static_cast<size_t>(q) * (kBuckets + 1) + b],
-                       gh[static_cast<size_t>(q) * kBuckets + b], gn[q]);
-          }
-        }
-        detail::put(ov, om, r + a, v, ok);
+        detail::put(ov, om, r + a, ok ? (q >= 0 && gn[q] >= 1 ? gr[a] : pr[a]) : 0.0, ok);
       }
     }
   }
@@ -688,25 +649,35 @@ struct CsGroupResid { // FWL: 按 z 分组, x/y 组内 demean 后 x 对 y 回归
 
 // ===== N 元 =====
 
+namespace detail {
+// 一元的池内精确秩中心化 x̃ = pct − 1/2 (契约【N 元】); 无效格写 0 (由调用方的掩码屏蔽)
+inline void rank_centered(const In &x, const uint8_t *g, size_t r, int A, uint64_t *ks, float *pr, double *out) {
+  exact_rank(x.v + r, x.m + r, g + r, A, ks, pr);
+  for (int a = 0; a < A; ++a)
+    out[a] = x.m[r + a] ? static_cast<double>(pr[a]) - 0.5 : 0.0;
+}
+} // namespace detail
+
 struct CsLinRankFix { // xs[0..n) 特征元, 权 p.w[0..n) (Contract【N 元】); 行缓冲 v[A] 按元序累加 Σ w_i x̃_i
-  static auto carve(Bump &b, const Call &c) { return std::tuple{b.take<double>(static_cast<size_t>(c.A))}; }
+  static auto carve(Bump &b, const Call &c) {
+    const size_t A = static_cast<size_t>(c.A);
+    return std::tuple{b.take<double>(A), b.take<double>(A), b.take<uint64_t>(A), b.take<float>(A)};
+  }
   CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
     assert(c.n >= 2 && c.n <= kLrN && "至少 2 个特征元");
     Bump bp{static_cast<char *>(ws)};
-    double *const v = std::get<0>(carve(bp, c));
+    const auto [v, xi, ks, pr] = carve(bp, c);
     const int n = c.n;
-    detail::Hist h;
     for (int t = rg.lo; t < rg.hi; ++t) {
       const size_t r = static_cast<size_t>(t) * A;
       std::fill_n(v, A, 0.0);
       for (int i = 0; i < n; ++i) {
-        const In &x = c.xs[i];
         const double wi = static_cast<double>(p.w[i]);
-        h.build(x.v + r, x.m + r, g + r, A);
+        detail::rank_centered(c.xs[i], g, r, A, ks, pr, xi);
         for (int a = 0; a < A; ++a)
-          v[a] += wi * (static_cast<double>(h.rank(x.v[r + a])) - 0.5);
+          v[a] += wi * xi[a];
       }
       for (int a = 0; a < A; ++a) {
         bool ok = true;
@@ -730,29 +701,22 @@ struct CsLinRankRoll { // xs[0..n) 特征元, xs[n] = h 持有期做多标签 (C
   }
   static auto carve(Bump &b, const Call &c) {
     const size_t A = static_cast<size_t>(c.A), d = static_cast<size_t>(c.p.d);
-    return std::tuple{b.take<double>(kMaxIn * A), b.take<double>(d * lr_moms(c.n - 1))};
+    return std::tuple{b.take<double>(kMaxIn * A), b.take<double>(d * lr_moms(c.n - 1)), b.take<uint64_t>(A), b.take<float>(A)};
   }
   CP_SCRATCH
   CP_SIG {
     CP_UNPACK;
     assert(c.n >= 3 && c.n <= kMaxIn && "至少 2 个特征元 + 目标");
     Bump bp{static_cast<char *>(ws)};
-    const auto cv = carve(bp, c);
-    double *const xt = std::get<0>(cv), *const ring = std::get<1>(cv);
+    const auto [xt, ring, ks, pr] = carve(bp, c);
     const int n = c.n - 1, M = lr_moms(n), d = p.d;
-    detail::Hist h;
     const auto moments = [&](int s, double *out) { // 标签行 s 的矩 (样本 = 池内 ∧ 全部元与标签有效; 段末尾部行恒 0)
       std::fill_n(out, M, 0.0);
       if (!hold_on(p.h, c.geo).opens(s))
         return;
       const size_t r = static_cast<size_t>(s) * A;
-      for (int i = 0; i <= n; ++i) {
-        const In &x = c.xs[i];
-        double *xi = xt + static_cast<size_t>(i) * A;
-        h.build(x.v + r, x.m + r, g + r, A);
-        for (int a = 0; a < A; ++a)
-          xi[a] = static_cast<double>(h.rank(x.v[r + a])) - 0.5;
-      }
+      for (int i = 0; i <= n; ++i)
+        detail::rank_centered(c.xs[i], g, r, A, ks, pr, xt + static_cast<size_t>(i) * A);
       for (int a = 0; a < A; ++a) {
         bool ok = g[r + a];
         for (int i = 0; i <= n; ++i)
@@ -780,13 +744,8 @@ struct CsLinRankRoll { // xs[0..n) 特征元, xs[n] = h 持有期做多标签 (C
       double w[kLrN];
       lr_solve(acc, n, p.k, w);
       const size_t r = static_cast<size_t>(t) * A;
-      for (int i = 0; i < n; ++i) {
-        const In &x = c.xs[i];
-        double *xi = xt + static_cast<size_t>(i) * A;
-        h.build(x.v + r, x.m + r, g + r, A);
-        for (int a = 0; a < A; ++a)
-          xi[a] = static_cast<double>(h.rank(x.v[r + a])) - 0.5;
-      }
+      for (int i = 0; i < n; ++i)
+        detail::rank_centered(c.xs[i], g, r, A, ks, pr, xt + static_cast<size_t>(i) * A);
       for (int a = 0; a < A; ++a) {
         bool ok = true;
         double v = 0.0;

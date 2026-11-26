@@ -1,4 +1,4 @@
-// view_feature — 看特征: 输入 exprs → FeatureRes (分布 / 方差来源 / 持续性 / 日内轮廓 / rIC / 两两相关) → 原文; 展示见 ui/look/ViewFeature.cpp
+// view_feature — 看特征: 输入 exprs / from / to → FeatureRes (分布 / 方差来源 / 持续性 / 日内轮廓 / rIC / 两两相关) → 原文; 展示见 ui/look/ViewFeature.cpp
 #include "gui/task_agent/tools/Feed.hpp"
 #include "gui/task_agent/tools/look/Kernel.hpp"
 
@@ -7,67 +7,63 @@ namespace GUI::Agent {
 using namespace look;
 using json = nlohmann::ordered_json;
 
-std::string FeatureRes::text() const {
-  std::string s = text_head();
+std::string FeatureRes::headline() const { return "特征 " + str(feats.size()) + " 个式子"; }
+
+std::vector<Sec> FeatureRes::secs() const {
+  std::vector<Sec> out;
   for (size_t i = 0; i < feats.size(); ++i) {
     const Feat &f = feats[i];
-    s += "## E" + str(i + 1) + " `" + f.raw + "`\n";
-    if (!f.err.empty()) {
-      s += "没算成: " + f.err + "\n\n";
+    Sec &x = out.emplace_back();
+    x.title = "E" + str(i + 1) + " `" + f.raw + "`";
+    if (!f.err.empty() || f.ok < 100) {
+      x.lines = {!f.err.empty() ? "没算成: " + f.err : "池内有效格太少 (" + str(f.ok) + " / " + str(f.in) + ")"}, x.warn = true;
       continue;
     }
-    if (f.ok < 100) {
-      s += "池内有效格太少 (" + str(f.ok) + " / " + str(f.in) + ")\n\n";
-      continue;
-    }
-    s += "池内有效 " + pct(static_cast<double>(f.ok) / static_cast<double>(f.in)) + " (" + str(f.ok) + " 格) · 均值 " + num(f.mean) + " · 标准差 " + num(f.sd) + "\n";
-    s += "分位 1/5/25/50/75/95/99%:";
-    for (const double q : f.q)
-      s += " " + num(q);
-    s += "\n";
-    if (f.levels)
-      s += "离散: 抽样里只有 " + str(f.levels) + " 种取值\n";
-    if (f.zero >= 0.05)
-      s += "零值占 " + pct(f.zero) + "\n";
+    x.lines.push_back("池内有效 " + pct(static_cast<double>(f.ok) / static_cast<double>(f.in)) + " (" + str(f.ok) + " 格) · 均值 " + num(f.mean) + " · 标准差 " + num(f.sd) +
+                      (f.zero >= 0.05 ? " · 零值占 " + pct(f.zero) : std::string()) + (f.levels ? " · 离散: 只有 " + str(f.levels) + " 种取值" : std::string()));
     if (f.var)
-      s += "方差来自 (截到 1~99% 分位): 资产间 " + pct(f.v_asset) + " · 日间 (同一资产) " + pct(f.v_day) + (seg > 1 ? " · 日内 " + pct(f.v_intra) : std::string()) + "\n";
-    s += "持续性 (去资产均值, 同一资产自相关):";
+      x.lines.push_back("方差来自: 资产间 " + pct(f.v_asset) + " · 日间 " + pct(f.v_day) + (seg > 1 ? " · 日内 " + pct(f.v_intra) : std::string()));
+    std::string lag = "持续性:";
     for (size_t li = 0; li < lags.size(); ++li)
-      s += " " + lags[li] + " " + r3(f.lag[li]);
-    s += "\n";
-    if (seg > 1 && f.slow) {
-      s += "日内轮廓: 日内方差不到 " + fmt("%g%%", kIntraNone * 100.0) + " (日频慢变量), 不列\n";
-    } else if (seg > 1) {
-      s += "日内轮廓 (各行截面中位数, 取日间中位数): " + spark(f.prof) + "\n  ";
-      for (const int k : part_end)
-        s += " " + clock[static_cast<size_t>(k)] + " " + num(f.prof[static_cast<size_t>(k)]);
-      s += "\n";
-    } else {
-      s += "截面中位数逐日: " + spark(f.prof) + "\n";
-    }
-    s += "与本持有期收益的截面 rIC (原向): 均值 " + r3(f.ric) + " · t " + fmt("%.1f", f.ric_t) + " (行间重叠未折算, 偏大) · 正 rIC 行 " + pct(f.ric_up) + "\n";
+      lag += " " + lags[li] + " " + r3(f.lag[li]);
+    x.lines.push_back(lag);
+    x.lines.push_back("rIC " + r3(f.ric) + " · t " + fmt("%.1f", f.ric_t) + " · 正 rIC 行 " + pct(f.ric_up));
     if (seg > 1) {
-      s += "  分时段:";
+      std::string part = "分时段 rIC:";
       for (size_t j = 0; j < parts.size(); ++j)
-        s += " " + parts[j] + " " + r3(f.ric_part[j]);
-      s += "\n";
+        part += " " + parts[j] + " " + r3(f.ric_part[j]);
+      x.lines.push_back(part);
     }
-    s += "\n";
+    if (seg > 1 && f.slow) {
+      x.lines.push_back("日内轮廓: 日内方差不到 " + fmt("%g%%", kIntraNone * 100.0) + " (日频慢变量), 不列");
+    } else if (seg > 1) {
+      std::string ticks;
+      for (const int k : part_end)
+        ticks += " " + clock[static_cast<size_t>(k)] + " " + num(f.prof[static_cast<size_t>(k)]);
+      x.sparks.push_back("日内轮廓 " + spark(f.prof) + " ·" + ticks);
+    } else {
+      x.sparks.push_back("截面中位数逐日 " + spark(f.prof));
+    }
+    x.plot = static_cast<int>(i);
+    x.tab.head = {"p1", "p5", "p25", "p50", "p75", "p95", "p99"};
+    x.tab.rows.emplace_back();
+    for (const double q : f.q)
+      x.tab.rows.back().push_back(num(q));
   }
   if (good.size() >= 2) {
-    std::vector<std::string> hs{""};
+    Sec &x = out.emplace_back();
+    x.title = "两两截面秩相关";
+    x.tab.head = {""};
     for (const size_t idx : good)
-      hs.push_back("E" + str(idx + 1));
-    text::Table tbl(hs);
+      x.tab.head.push_back("E" + str(idx + 1));
     for (size_t i = 0; i < good.size(); ++i) {
-      std::vector<std::string> row{"E" + str(good[i] + 1)};
+      std::vector<Num> row{"E" + str(good[i] + 1)};
       for (size_t j = 0; j < good.size(); ++j)
-        row.push_back(j == i ? "1" : r3(corr[i * good.size() + j]));
-      tbl.add(row);
+        row.push_back(j == i ? Num("1") : nr3(corr[i * good.size() + j]));
+      x.tab.rows.push_back(std::move(row));
     }
-    s += "## 两两截面秩相关 (逐行 Spearman 的均值)\n" + tbl.str();
   }
-  return s;
+  return out;
 }
 
 std::string FeatureRes::title() const {
@@ -88,9 +84,12 @@ std::string FeatureRes::gist() const {
 ToolOut ViewFeature(const Call &c, Bay &bay) {
   const ViewEnv &env = bay.env;
   Engine::FactorFlow &F = bay.flow;
+  std::string err;
+  Window win;
+  if (!window_of(c, win, err))
+    return Fail(std::move(err));
   std::vector<FeatSpec> feats;
   if (!resolve_feats(c.strs("exprs"), env, feats)) {
-    std::string err;
     for (size_t i = 0; i < feats.size(); ++i)
       err += (i ? "; " : "") + ("exprs[" + str(i) + "]: " + feats[i].err);
     return Fail(std::move(err));
@@ -126,15 +125,14 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
 
   std::vector<misc::Ymd> dates;
   Engine::Job job;
-  std::string err;
   StreamCfg cfg{.feats = &feats, .extra_front = seg > 1 ? 5 : 20};
-  const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, whole, [&](const ChunkView &cv) {
+  const Engine::Rc rc = run_stream(env, F, cfg, dates, job, err, win, [&](const ChunkView &cv) {
     const int A = cv.blk.y.sh.A, n_stat = cv.t_hi - cv.t_lo, days_stat = n_stat / seg;
     const int total_T = static_cast<int>(cv.dates.size()) * seg;
-    const size_t total_N = static_cast<size_t>(total_T) * static_cast<size_t>(A);
-    const size_t st_smp = std::max<size_t>(1, total_N / kSample);
-    const int rstep = row_step(static_cast<int>(total_N / kCsCells), seg);
-    const int cstep = row_step(total_T / kCorrRows, seg);
+    const size_t win_N = static_cast<size_t>(cv.w_rows()) * static_cast<size_t>(A);
+    const size_t st_smp = std::max<size_t>(1, win_N / kSample);
+    const int rstep = row_step(static_cast<int>(win_N / kCsCells), seg);
+    const int cstep = row_step(cv.w_rows() / kCorrRows, seg);
     const Engine::LabPlane &lb = *cv.blk.y.labels[0];
     const uint16_t *lv = lb.lv.data();
     const int nt = F.S.ex.threads();
@@ -303,14 +301,14 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
     return Fail(std::move(err));
 
   auto r = std::make_shared<FeatureRes>();
-  r->period = period_note(dates, env);
+  r->period = period_note(dates, env, win);
   r->seg = seg;
   r->clock = env.clock;
   for (const Slot &p : ps)
     r->parts.push_back(p.name), r->part_end.push_back(p.k1 - 1);
   for (const auto &[lag, name] : lags)
     r->lags.emplace_back(name);
-  const int D = static_cast<int>(dates.size());
+  const int d_lo = static_cast<int>(win.lo), d_hi = static_cast<int>(win.hi);
   for (size_t i = 0; i < F_n; ++i) {
     FeatureRes::Feat &f = r->feats.emplace_back();
     f.raw = feats[i].raw, f.err = feats[i].err;
@@ -370,15 +368,15 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
 
     f.slow = seg > 1 && intra < kIntraNone;
     if (seg > 1 && !f.slow) {
-      std::vector<double> col(static_cast<size_t>(D));
+      std::vector<double> col(static_cast<size_t>(d_hi - d_lo));
       f.prof.assign(static_cast<size_t>(seg), kNaN);
       for (int k = 0; k < seg; ++k) {
-        for (int d = 0; d < D; ++d)
-          col[static_cast<size_t>(d)] = ac.med[static_cast<size_t>(d * seg + k)];
+        for (int d = d_lo; d < d_hi; ++d)
+          col[static_cast<size_t>(d - d_lo)] = ac.med[static_cast<size_t>(d * seg + k)];
         f.prof[static_cast<size_t>(k)] = median_of(col);
       }
     } else if (seg == 1) {
-      f.prof = ac.med;
+      f.prof.assign(ac.med.begin() + d_lo, ac.med.begin() + d_hi);
     }
     f.ric = ac.ric.mean(), f.ric_t = ac.ric.t(), f.ric_up = ac.ric.up();
     for (const Mean &m : ac.ric_part)
@@ -393,6 +391,6 @@ ToolOut ViewFeature(const Call &c, Bay &bay) {
   return Done(std::move(r));
 }
 
-json SampleViewFeature(Feed &p) { return {{"exprs", p.leaves(1 + p.below(3))}}; }
+json SampleViewFeature(Feed &p) { return p.window({{"exprs", p.leaves(1 + p.below(3))}}); }
 
 } // namespace GUI::Agent

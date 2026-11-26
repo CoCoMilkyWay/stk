@@ -1,9 +1,9 @@
 #pragma once
 
 // =============================================================================
-// Kernel — 观察核的公共件 (10 个 view_* 共用): 格式与日期 / 统计 / 日内时段 / 分层累加器 / K 线直读 / 盘面标签 / 参数解析 / 分块流式观察核
+// Kernel — 观察核的公共件 (10 个 view_* 共用): 格式与日期 / 统计 / 日内时段 / 分层累加器 / K 线直读 / 盘面标签 / 参数解析与日段 / 分块流式观察核
 // =============================================================================
-//   run_stream: 装载前核日期 → 跳过无关块 → 块内全核 DAG + Stat → 交 ChunkView 原地归约 (零中间 [T][A] 平面搬运)
+//   run_stream: 装载前核日段 → 跳过无关块 → 块内全核 DAG + Stat → 段内的行交 ChunkView 原地归约 (零中间 [T][A] 平面搬运)
 //   各 view_* 的入口 (Call, Bay) → ToolOut 与结果结构见 tools/Look.hpp, 实现表在 tools/Kit.cpp
 // =============================================================================
 
@@ -134,6 +134,13 @@ inline double pearson(std::span<const double> a, std::span<const double> b) {
   return saa > 0.0 && sbb > 0.0 ? sab / std::sqrt(saa * sbb) : kNaN;
 }
 
+// 子截面的并列均秩 rv (rank_into, 0 起: rv = less + (eq − 1) / 2) → Stat 同口径组号 (r16_of 的同一整数式 → grp_of)
+inline int grp_of_rank(double rv, size_t n) {
+  assert(n >= 2);
+  const long long num = std::llround(2.0 * rv) * st::kRankMax, den = 2LL * (static_cast<long long>(n) - 1);
+  return st::grp_of(static_cast<unsigned>((2 * num + den) / (2 * den)));
+}
+
 // 线程内复用的零堆分配秩 / 相关 / 近似分层工作区
 struct RankScratch {
   std::vector<size_t> ix;
@@ -161,8 +168,9 @@ struct RankScratch {
     rank_into(x, a), rank_into(y, b);
     return pearson(a, b);
   }
-  // 子截面分层: 格按 rx 的秩分 20 组, 组超额只收全截面分组下真持有的格 (held; hy = 其做多收益 − mkt, 续持取名义值,
-  //   Stat 仓位感知); 组收益 = Σ hy / max(真持有只数, 子截面满仓 n / 20) (与 Stat【持仓口径】同式); ric 用全部格 (同 Row)
+  // 子截面分层: 格按 rx 的并列均秩 (rank_into, 0 起) 经 Stat 同一式 (r16_of → grp_of) 分 20 组, 组超额只收全截面分组下真持有的格
+  //   (held; hy = 其做多收益 − mkt, 续持取名义值, Stat 仓位感知); 组收益 = Σ hy / max(真持有只数, 子截面满仓 n / 20) (与 Stat【持仓口径】同式);
+  //   ric 用全部格 (同 Row)
   bool approx_ranked(std::span<const double> rx, std::span<const double> hy, std::span<const double> ry, std::span<const uint8_t> held, st::Row &w) const {
     const size_t n = rx.size();
     assert(hy.size() == n && ry.size() == n && held.size() == n);
@@ -171,7 +179,7 @@ struct RankScratch {
     w = {};
     double s[kGroups] = {};
     for (size_t i = 0; i < n; ++i) {
-      const int k = std::min(static_cast<int>(rx[i] * kGroups / static_cast<double>(n)), kG20);
+      const int k = grp_of_rank(rx[i], n);
       if (held[i])
         s[k] += hy[i], ++w.cnt[k];
     }
@@ -343,13 +351,6 @@ struct Layer {
 };
 
 inline LayerRow row_of(std::string name, const Layer &b) { return {std::move(name), b.rows, b.ok, b.mono(), b.ls(), b.ric.mean(), b.grps()}; }
-
-// 分层行的原文表 (列: 名 / 行 / 有统计 / mono / 多空 / rIC / G1 / G10 / G20 / 20 组火花线)
-inline text::Table layer_table(const char *first) { return text::Table({first, "行", "有统计", "mono", "多空 bp", "rIC", "G1 bp", "G10 bp", "G20 bp", "20 组"}); }
-inline void add_layer_row(text::Table &tbl, const LayerRow &b) {
-  tbl.add({b.name, std::to_string(b.rows), std::to_string(b.ok), r3(b.mono), bp(b.ls), r3(b.ric), bp(b.grp[kG1]), bp(b.grp[kGroups / 2 - 1]), bp(b.grp[kG20]),
-           "`" + bars(b.grp) + "`"});
-}
 
 // ---- K 线直读视图 (直接读 Block::x 的叶平面并按需做逆落盘变换, 零平面拷贝) ----
 enum Bar : uint8_t { Close,
@@ -608,6 +609,38 @@ inline bool date_arg_ok(const Call &c, const char *k, std::string &err) {
   return true;
 }
 
+// 观察日段 from / to (统计全期的 view_* 同一对参数; 含两端, 不必是交易日): 作 run_stream 的日段核定, 定下统计日下标 [lo, hi)
+struct Window {
+  std::string from, to;
+  int ymd0 = 0, ymd1 = 99999999;
+  size_t lo = 0, hi = 0;
+  bool cut() const { return !from.empty() || !to.empty(); }
+  std::string text() const { return (from.empty() ? "…" : from) + " ~ " + (to.empty() ? "…" : to); }
+  bool operator()(const std::vector<misc::Ymd> &ds, size_t &l, size_t &h, std::string &why) {
+    l = ds.size(), h = 0;
+    for (size_t d = 0; d < ds.size(); ++d)
+      if (ds[d] >= ymd0 && ds[d] <= ymd1)
+        l = std::min(l, d), h = d + 1;
+    if (l >= h) {
+      why = "from / to: " + text() + " 里没有交易日 (观察的日段 " + misc::dash(ds.front()) + " ~ " + misc::dash(ds.back()) + ")";
+      return false;
+    }
+    lo = l, hi = h;
+    return true;
+  }
+};
+inline bool window_of(const Call &c, Window &w, std::string &err) {
+  if (!date_arg_ok(c, "from", err) || !date_arg_ok(c, "to", err))
+    return false;
+  w.from = c.str("from"), w.to = c.str("to");
+  w.ymd0 = w.from.empty() ? 0 : ymd_of(w.from), w.ymd1 = w.to.empty() ? 99999999 : ymd_of(w.to);
+  if (w.ymd0 > w.ymd1) {
+    err = "from / to: " + w.text() + " 须先后有序";
+    return false;
+  }
+  return true;
+}
+
 // ---- 分块流式观察核: 装载前核日期 → 跳过无关块 → 块内全核 DAG + Stat → 原地归约 ----
 struct HeldCell {
   int t = 0, a = 0; // t = 块内行, a = 池轴列
@@ -620,30 +653,31 @@ struct ChunkView {
   const Engine::Block &blk;
   const BarMeta &bm;
   const std::vector<misc::Ymd> &dates;             // stat_dates
-  int u0 = 0, t_lo = 0, t_hi = 0;                  // 本块统计行 [t_lo, t_hi) 对应全局统计行 u0 + (t - t_lo)
+  int u0 = 0, t_lo = 0, t_hi = 0;                  // 本块落在日段内的统计行 [t_lo, t_hi) 对应全局统计行 u0 + (t - t_lo)
   const uint16_t *rx = nullptr;                    // [blk.T][A] 已定向 (高 = 做多端)
   std::span<const st::Row> rows;                   // [t_hi - t_lo] 已定向 (含尾部 Row::tail)
-  std::span<const std::vector<HeldCell>> cells;    // [t_hi - t_lo]
+  std::span<const std::vector<HeldCell>> cells;    // [t_hi - t_lo] (不要两端格 = 空)
   std::span<const factor::check::Plane *> feat_pl; // 与 feats 对齐 (坏式或解析失败为 nullptr)
+  int w0 = 0, w1 = 0;                              // 日段的全局统计行 [w0, w1) (抽样步长按它定)
+  int w_rows() const { return w1 - w0; }
 };
 
-// 格 k (块内行 t) 在全截面分组 (rx 已定向) 下是否真持有; 是 → ret = 其做多收益 (续持取名义值). Stat 仓位感知 (factor/Stat/Pos.hpp)同一份
+// 格 k (块内行 t) 在全截面分组 (rx 已定向) 下是否真持有; 是 → ret = 其做多收益 (续持取名义值). Stat 仓位感知唯一出口 (factor/Stat/Pos.hpp cell)
 inline bool held_cell(const Engine::Block &blk, const uint16_t *rx, HoldId hold, int t, size_t k, float &ret) {
-  const st::Label lb = Engine::label_of(*blk.y.labels[0], blk.y.eo, nullptr);
-  if (rx[k] == st::kRankNone || !lb.m[k])
+  if (rx[k] == st::kRankNone)
     return false;
-  float y[2];
-  st::label_cell(lb, static_cast<ptrdiff_t>(k), factor::cpu::stat::H2F{}, y);
+  const st::Label lb = Engine::label_of(*blk.y.labels[0], blk.y.eo, nullptr);
   const st::Chain ch = st::chain_of(t, blk.span(), hold_on(hold, geo_of(blk.y.sh.seg)));
-  const st::Pos p = st::walk(ch, lb.m + k, lb.eo + k, st::InRank{rx + k, st::grp_of(rx[k])});
+  float y[2];
+  const st::Pos p = st::cell(ch, lb, static_cast<ptrdiff_t>(k), st::InRank{rx + k, st::grp_of(rx[k])}, factor::cpu::stat::H2F{}, y);
   if (p.held < 0)
     return false;
   ret = st::ret_at(p, 0, y);
   return true;
 }
 
-// 一行逐行池内标签均值 mkt(t)
-inline float row_mkt(const Engine::Block &blk, int t) {
+// 一行的池均值 (门控 ∧ 标签有效格的做多收益均值; 无因子观察的超额基准)
+inline float pool_mkt(const Engine::Block &blk, int t) {
   const int A = blk.y.sh.A;
   const size_t base = static_cast<size_t>(t) * static_cast<size_t>(A);
   const Engine::LabPlane &lb = *blk.y.labels[0];
@@ -655,6 +689,15 @@ inline float row_mkt(const Engine::Block &blk, int t) {
       sum += h2f(lv[base + static_cast<size_t>(a)]), ++cnt;
   return cnt ? static_cast<float>(sum / static_cast<double>(cnt)) : NAN;
 }
+// 一行的超额基准: 有因子 = Stat 的 J 均值 (Row::mkt: 因子有秩 ∧ 标签有秩, 与 rIC / 分组同一样本; 行不 ok = NaN); 无因子 = pool_mkt
+inline float mkt_of(const ChunkView &cv, int t) {
+  if (cv.rows.empty())
+    return pool_mkt(cv.blk, t);
+  const int r = t - cv.t_lo;
+  assert(r >= 0 && r < static_cast<int>(cv.rows.size()) && "行须在本块的日段内");
+  const st::Row &w = cv.rows[static_cast<size_t>(r)];
+  return w.ok ? w.mkt : NAN;
+}
 
 struct StreamCfg {
   const FactorSpec *fac = nullptr;
@@ -664,6 +707,7 @@ struct StreamCfg {
   double extra_work = 0.0;
 };
 
+// range_fn 核定统计日段 [s_lo, s_hi) (Window 或按目标日); 只装与它相交的块, 块内只把段内的行交给 chunk_fn
 // 返回: Ok = 跑完 (body 由调用方填); Empty / Broken = 正常输入错误 (err 已填); Cancel / Stale = 中断
 template <class RangeFn, class ChunkFn>
 Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg &cfg, std::vector<misc::Ymd> &stat_dates, Engine::Job &job,
@@ -691,9 +735,18 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
   Engine::Lease lease(F);
   if (!lease)
     return Engine::Rc::Cancel;
-  if (!Engine::open_job(F, env.fsc, leaves, job)) {
+  const Holds hd = Holds::of(hold_bit(env.hold));
+  int look = 0;
+  if (cfg.fac)
+    look = std::max(look, factor::search::space::lookback(cfg.fac->e, ft.seg));
+  for (const fx::Expr *e : plain_es)
+    look = std::max(look, factor::search::space::lookback(*e, ft.seg));
+  using Cpu = Engine::Backend<Engine::Cpu>;
+  if (const Engine::Rc rc = Engine::prepare<Cpu, Engine::ProbeBase>(F, env.fsc, fr.d, leaves, look, hd, cfg.fac ? 1 : 0, job,
+                                                                    {cfg.extra_front, cfg.extra_back, cfg.extra_work});
+      rc != Engine::Rc::Ok) {
     err = "没算成: " + job.why;
-    return Engine::Rc::Empty;
+    return rc;
   }
   stat_dates = job.dm.stat_dates();
   size_t s_lo = 0, s_hi = stat_dates.size();
@@ -701,135 +754,120 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
     return Engine::Rc::Empty;
   assert(s_lo < s_hi && s_hi <= stat_dates.size());
 
-  const Holds hd = Holds::of(hold_bit(env.hold));
-  job.spec.y = Engine::y_spec(ft, job.dm, hd, Engine::Segs::None, env.fsc.max_impact);
-  job.spec.ry = cfg.fac != nullptr;
-  int look = 0;
-  if (cfg.fac)
-    look = std::max(look, factor::search::space::lookback(cfg.fac->e, ft.seg));
-  for (const fx::Expr *e : plain_es)
-    look = std::max(look, factor::search::space::lookback(*e, ft.seg));
-  job.bands = cfg.fac ? Engine::bands_of(look, hd, ft.seg) : Engine::Bands{(look + ft.seg - 1) / ft.seg, 0};
-  job.bands.front = std::max(job.bands.front, cfg.extra_front);
-  job.bands.back = std::max(job.bands.back, cfg.extra_back);
-  job.b = Engine::budget_of<Engine::Backend<Engine::Cpu>, Engine::ProbeBase>(job, fr.d, job.spec.x.size(), 1, 0);
-  job.b.work += cfg.extra_work;
-  job.P = Engine::plan_chunks(job.dm, ft.seg, job.b, job.bands, F.S.budget());
-
-  Engine::Backend<Engine::Cpu> &eng = Engine::engine_space(F.S).cpu;
+  Cpu &eng = Engine::engine_space(F.S).cpu;
   const size_t want_d0 = job.dm.warm + s_lo, want_d1 = job.dm.warm + s_hi;
   std::vector<std::string> dead(fr.d.roots.size());
 
-  for (size_t ci = 0; ci < job.P.chunks.size(); ++ci) {
-    const Engine::Chunk &ck = job.P.chunks[ci];
-    if (ck.s1 <= want_d0 || ck.s0 >= want_d1)
-      continue;
-    Engine::Block blk;
-    if (const Engine::Rc rc = Engine::load_block(F, job, ci, blk); rc != Engine::Rc::Ok) {
-      if (rc == Engine::Rc::Stale)
-        err = std::string("没算成: ") + Engine::kStaleMsg;
-      return rc;
-    }
-    eng.bind(blk);
-    const Engine::Shape &sh = blk.y.sh;
-    if (has_dag) {
-      std::vector<std::string> why = dead;
-      std::vector<uint8_t> need;
-      const int good = Engine::plan_forest(eng.ex(), blk, fr, why, need);
-      dead = std::move(why);
-      if (cfg.fac && !dead[0].empty()) {
-        err = "因子没算成: " + dead[0];
-        return Engine::Rc::Broken;
-      }
-      if (cfg.feats)
-        for (FeatSpec &f : *cfg.feats)
-          if (f.root_idx >= 0 && !dead[static_cast<size_t>(f.root_idx)].empty())
-            f.err = dead[static_cast<size_t>(f.root_idx)];
-      size_t n_ops = 0;
-      for (size_t i = 0; i < fr.d.nodes.size(); ++i)
-        n_ops += need[i] && fr.d.nodes[i].op >= 0;
-      F.prog.begin(Phase::Running, n_ops + 1);
-      if (good > 0 && !eng.walk_dag(F.cancel, fr.d, fr.leaves, need.data(), [&](int i, double) {
-            if (fr.d.nodes[static_cast<size_t>(i)].op >= 0)
-              F.prog.publish(1);
-            return true;
-          }))
-        return Engine::Rc::Cancel;
-    }
-
-    const st::Span span = blk.span();
-    const int t_lo = span.t_lo, t_hi = span.t_hi(), n_stat = t_hi - t_lo;
-    std::vector<st::Row> rows;
-    std::vector<std::vector<HeldCell>> cells;
-    uint16_t *rx = nullptr;
-
-    if (cfg.fac) {
-      rows.assign(static_cast<size_t>(n_stat), {});
-      if (cfg.fac->ends)
-        cells.assign(static_cast<size_t>(n_stat), {});
-      const st::Labels L = Engine::labels_of(blk.y);
-      struct Sink {
-        int t_lo;
-        std::vector<st::Row> &rows;
-        void row(int, int t, const st::Row &r) const { rows[static_cast<size_t>(t - t_lo)] = r; }
-      };
-      const factor::check::Plane *rp = eng.plane(fr.d.roots[0]);
-      st::Accum acc[kHoldCount];
-      rx = eng.run_root(rp, cfg.fac->frame, cfg.fac->dir, span, L, acc, Sink{t_lo, rows});
-      if (cfg.fac->ends) { // 两端组真持有的格 (Stat/Pos.hpp; rx 已定向: 高端 = G20)
-        const st::Label &lb = L.l[0];
-        const int only = cfg.fac->only_end;
-        F.S.ex.rows(n_stat, [&](int r0, int r1, int) {
-          for (int t = t_lo + r0; t < t_lo + r1; ++t) {
-            const size_t base = static_cast<size_t>(t) * static_cast<size_t>(sh.A);
-            if (!rows[static_cast<size_t>(t - t_lo)].ok)
-              continue;
-            const st::Chain ch = st::chain_of(t, span, hold_on(env.hold, span.g));
-            for (int a = 0; a < sh.A; ++a) {
-              const size_t k = base + static_cast<size_t>(a);
-              if (rx[k] == st::kRankNone || lb.ry[k] == st::kRankNone)
-                continue;
-              const int g = st::grp_of(rx[k]);
-              for (int e = 0; e < st::kEnds; ++e) {
-                if ((only >= 0 && e != only) || g != st::end_group(e))
-                  continue;
-                float y[2];
-                st::label_cell(lb, static_cast<ptrdiff_t>(k), factor::cpu::stat::H2F{}, y);
-                const st::Pos p = st::walk(ch, lb.m + k, lb.eo + k, st::InRank{rx + k, g});
-                if (p.held >= 0)
-                  cells[static_cast<size_t>(t - t_lo)].push_back({t, a, static_cast<uint8_t>(e), st::ret_at(p, 0, y)});
-              }
-            }
+  const Engine::Rc rc = Engine::for_blocks(
+      F, job,
+      [&](const Engine::Block &blk, size_t, bool, double) {
+        eng.bind(blk);
+        const Engine::Shape &sh = blk.y.sh;
+        if (has_dag) {
+          std::vector<std::string> why = dead;
+          std::vector<uint8_t> need;
+          const int good = Engine::plan_forest(eng.ex(), blk, fr, why, need);
+          dead = std::move(why);
+          if (cfg.fac && !dead[0].empty()) {
+            err = "因子没算成: " + dead[0];
+            return Engine::Rc::Broken;
           }
-        });
-      }
-    }
+          if (cfg.feats)
+            for (FeatSpec &f : *cfg.feats)
+              if (f.root_idx >= 0 && !dead[static_cast<size_t>(f.root_idx)].empty())
+                f.err = dead[static_cast<size_t>(f.root_idx)];
+          size_t n_ops = 0;
+          for (size_t i = 0; i < fr.d.nodes.size(); ++i)
+            n_ops += need[i] && fr.d.nodes[i].op >= 0;
+          F.prog.begin(Phase::Running, n_ops + 1);
+          if (good > 0 && !eng.walk_dag(F.cancel, fr.d, fr.leaves, need.data(), [&](int i, double) {
+                if (fr.d.nodes[static_cast<size_t>(i)].op >= 0)
+                  F.prog.publish(1);
+                return true;
+              }))
+            return Engine::Rc::Cancel;
+        }
 
-    std::vector<const factor::check::Plane *> feat_pl;
-    if (cfg.feats)
-      for (const FeatSpec &f : *cfg.feats)
-        feat_pl.push_back(f.root_idx >= 0 && f.err.empty() ? eng.plane(fr.d.roots[static_cast<size_t>(f.root_idx)]) : nullptr);
+        const st::Span span = blk.span();
+        const int t_lo = span.t_lo, t_hi = span.t_hi(), n_stat = t_hi - t_lo;
+        std::vector<st::Row> rows;
+        std::vector<std::vector<HeldCell>> cells;
+        uint16_t *rx = nullptr;
 
-    chunk_fn(ChunkView{job, blk, bm, stat_dates, blk.land0() + t_lo, t_lo, t_hi, rx, rows, cells, feat_pl});
-    F.prog.publish(1);
-    if (F.cancel.load(std::memory_order_relaxed))
-      return Engine::Rc::Cancel;
-  }
-  return Engine::Rc::Ok;
+        if (cfg.fac) {
+          rows.assign(static_cast<size_t>(n_stat), {});
+          if (cfg.fac->ends)
+            cells.assign(static_cast<size_t>(n_stat), {});
+          const st::Labels L = Engine::labels_of(blk.y);
+          struct Sink {
+            int t_lo;
+            std::vector<st::Row> &rows;
+            void row(int, int t, const st::Row &r) const { rows[static_cast<size_t>(t - t_lo)] = r; }
+          };
+          const factor::check::Plane *rp = eng.plane(fr.d.roots[0]);
+          st::Accum acc[kHoldCount];
+          rx = eng.run_root(rp, cfg.fac->frame, cfg.fac->dir, span, L, acc, Sink{t_lo, rows});
+          if (cfg.fac->ends) { // 两端组真持有的格 (Stat/Pos.hpp cell; rx 已定向: 高端 = G20)
+            const int only = cfg.fac->only_end;
+            F.S.ex.rows(n_stat, [&](int r0, int r1, int) {
+              for (int t = t_lo + r0; t < t_lo + r1; ++t) {
+                if (!rows[static_cast<size_t>(t - t_lo)].ok)
+                  continue;
+                const size_t base = static_cast<size_t>(t) * static_cast<size_t>(sh.A);
+                const st::Label lb = L.l[0].at(base);
+                const st::Chain ch = st::chain_of(t, span, hold_on(env.hold, span.g));
+                for (int a = 0; a < sh.A; ++a) {
+                  const uint16_t *x = rx + base + static_cast<size_t>(a);
+                  if (*x == st::kRankNone || lb.ry[a] == st::kRankNone)
+                    continue;
+                  const int g = st::grp_of(*x);
+                  for (int e = 0; e < st::kEnds; ++e) {
+                    if ((only >= 0 && e != only) || g != st::end_group(e))
+                      continue;
+                    float y[2];
+                    const st::Pos p = st::cell(ch, lb, a, st::InRank{x, g}, factor::cpu::stat::H2F{}, y);
+                    if (p.held >= 0)
+                      cells[static_cast<size_t>(t - t_lo)].push_back({t, a, static_cast<uint8_t>(e), st::ret_at(p, 0, y)});
+                  }
+                }
+              }
+            });
+          }
+        }
+
+        std::vector<const factor::check::Plane *> feat_pl;
+        if (cfg.feats)
+          for (const FeatSpec &f : *cfg.feats)
+            feat_pl.push_back(f.root_idx >= 0 && f.err.empty() ? eng.plane(fr.d.roots[static_cast<size_t>(f.root_idx)]) : nullptr);
+
+        const int w0 = static_cast<int>(s_lo) * ft.seg, w1 = static_cast<int>(s_hi) * ft.seg, u_lo = blk.land0() + t_lo;
+        const int c0 = std::max(0, w0 - u_lo), c1 = std::min(n_stat, w1 - u_lo);
+        assert(c0 < c1 && "只装与日段相交的块");
+        const size_t n_in = static_cast<size_t>(c1 - c0);
+        const std::span<const std::vector<HeldCell>> in_cells = cells.empty() ? std::span<const std::vector<HeldCell>>{} : std::span<const std::vector<HeldCell>>(cells).subspan(static_cast<size_t>(c0), n_in);
+        chunk_fn(ChunkView{job, blk, bm, stat_dates, u_lo + c0, t_lo + c0, t_lo + c1, rx, std::span<const st::Row>(rows).subspan(static_cast<size_t>(c0), n_in), in_cells, feat_pl, w0, w1});
+        F.prog.publish(1);
+        return Engine::Rc::Ok;
+      },
+      [&](const Engine::Chunk &ck) { return ck.s1 > want_d0 && ck.s0 < want_d1; });
+  if (rc == Engine::Rc::Stale)
+    err = std::string("没算成: ") + Engine::kStaleMsg;
+  return rc;
 }
 
-// 全期观察的整期范围 (不截日段)
-inline bool whole(const std::vector<misc::Ymd> &, size_t &, size_t &, std::string &) { return true; }
-
-inline std::string period_note(const std::vector<misc::Ymd> &dates, const ViewEnv &env) {
-  if (dates.front() == env.first && dates.back() == env.last)
-    return {};
-  return "注意: 本观察的日段为 " + misc::dash(dates.front()) + " ~ " + misc::dash(dates.back()) + " (" + str(dates.size()) +
-         " 天), 与评估期不同 (用到的叶落盘日更短), 与别的观察不可直接比\n\n";
+// 日段提示: 给了 from / to 写截下的一段; 用到的叶落盘日更短 (观察的日段与评估期不同) 另写两端
+inline std::string period_note(const std::vector<misc::Ymd> &dates, const ViewEnv &env, const Window &w = {}) {
+  const bool short_ = dates.front() != env.first || dates.back() != env.last;
+  const std::string eval = "评估期 " + misc::dash(env.first) + " ~ " + misc::dash(env.last);
+  const std::string lib = "观察的日段 " + misc::dash(dates.front()) + " ~ " + misc::dash(dates.back()) + " (" + str(dates.size()) + " 天; 用到的叶落盘日更短, 与" + eval + "不同)";
+  if (w.cut())
+    return "注意: 本观察只看 " + misc::dash(dates[w.lo]) + " ~ " + misc::dash(dates[w.hi - 1]) + " (" + str(w.hi - w.lo) + " 天), 是" + (short_ ? lib : eval) +
+           " 里的一段, 只与同段的结果比\n\n";
+  return short_ ? "注意: " + lib + ", 与别的观察不可直接比\n\n" : std::string();
 }
 
 inline std::string expr_line(size_t i, const FeatSpec &f, const char *miss = "没算成") {
-  return "E" + str(i + 1) + " = `" + f.raw + "`" + (f.err.empty() ? "" : std::string(" (") + miss + ": " + f.err + ")") + "\n";
+  return "E" + str(i + 1) + " = `" + f.raw + "`" + (f.err.empty() ? "" : std::string(" (") + miss + ": " + f.err + ")");
 }
 
 // 块内逐格超额对数步长 (F.S.ex 全核并行; view_response / view_explain)

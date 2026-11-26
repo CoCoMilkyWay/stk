@@ -2,11 +2,13 @@
 //   趟级: init(PassCtx) ⇄ finish(PassCtx)    (首块前一次定形/置初值, 末块后好根一次收尾)
 //   块级: open(Ctx)     ⇄ close(Ctx, RootView) (中间夹逐统计行 row(hi, t, r))
 //   落地三形 (行轴 = 评估期 rows_stat): RowsP<D, Got> (逐行暂存 → 折) / LandCellsP<V> (逐格) / LinesP (净值线 → fold_ledger).
-//   通用六探针: HoldP / TurnP / CoverP / AlphaP / IcPdfP / YearP → EvalProbes<X...> → fill_eval; 分年一律 by_year.
+//   通用六探针: HoldP (三级 + 逐日 + 滚动窗) / TurnP (账集流水) / CoverP / AlphaP / IcPdfP / GrpP (逐日组和) → EvalProbes<X...> → fill_eval;
+//   分年一律 by_year (逐日原料取 HoldP / GrpP / TurnP 三处, 只在 fill_eval 汇成 YearStat).
 #pragma once
 
+#include "factor/Stat/Book.hpp" // book_rows / FactorBooks
 #include "factor/Stat/Contract.hpp"
-#include "factor/Stat/Cpu.hpp" // Workspace / turn_rows
+#include "factor/Stat/Cpu.hpp" // Workspace
 #include "factor/Stat/Fold.hpp"
 #include "factor/Stat/Roll.hpp"  // Day / roll_of
 #include "gui/engine/Ledger.hpp" // RowLines / fold_ledger
@@ -16,6 +18,7 @@
 #include "misc/exec.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -144,58 +147,63 @@ void by_year(const std::vector<misc::Ymd> &dates, Fn &&fn) {
   }
 }
 
-// 三级 HoldStat[H] (毛): 块间 Accum 续攒 + 二级 Day 折日净值 LS (Daily) → finish_all
+// 三级 HoldStat[H] (毛) + 逐日 Day[H][评估期日] + 滚动窗: 块间 Accum 续攒, 各块二级 Day 拼回评估期 →
+//   日净值 LS (Fold ls_daily: 钱按平仓日) → finish_all; 滚动窗 roll_of (正向, 行已按所评方向) + 收尾日的窗 rIC wins
 struct HoldP : ProbeBase {
+  int seg = 0, n_hold = 0;
   factor::stat::Accum acc[kHoldCount];
-  factor::stat::Daily dl[kHoldCount];
-  int n_hold = 0;
+  std::vector<factor::stat::Day> day[kHoldCount]; // [hd][评估期日]
   factor::stat::HoldStat hold[kHoldCount];
+  factor::stat::Roll roll[kHoldCount];
+  std::vector<double> wins[kHoldCount]; // [hd][评估期日] 收尾日的窗 rIC (不计入 = NaN)
+  static double bytes(const Shape &sh, int H) { return sizeof(factor::stat::Day) * static_cast<double>(H) * sh.days; }
+  void init(const PassCtx &p) {
+    seg = p.seg;
+    for (int i = 0; i < p.hd.n; ++i)
+      day[i].assign(static_cast<size_t>(p.days_stat), {});
+  }
   void close(const Ctx &c, const RootView &v) {
-    const int D = c.s().days();
+    const factor::stat::Span s = c.s();
+    const int D = s.days(), d0 = (c.c.land0() + s.t_lo) / seg;
     for (int i = 0; i < c.L.hd.n; ++i) {
       acc[i].merge(v.acc[i]);
-      factor::stat::add_days(dl[i], v.day + static_cast<size_t>(i) * D, D, c.L.hd.k[i], c.s().g.S);
+      std::copy_n(v.day + static_cast<size_t>(i) * D, D, day[i].begin() + d0);
     }
   }
   void finish(const PassCtx &p) {
     n_hold = p.hd.n;
+    Daily dl[kHoldCount];
+    for (int i = 0; i < n_hold; ++i) {
+      dl[i] = factor::stat::ls_daily(day[i], p.hd.k[i], seg);
+      roll[i] = factor::stat::roll_of(day[i], p.hd.k[i], seg, 1, nullptr, &wins[i]);
+    }
     factor::stat::finish_all(acc, dl, p.hd, p.seg, hold);
+  }
+  // 持有期 hi 第 i 日 ok 行 rIC 均值 (无 ok 行 = NaN)
+  float day_ric(int hi, size_t i) const {
+    const factor::stat::Day &d = day[hi][i];
+    return d.n > 0 ? static_cast<float>(d.ric / d.n) : std::numeric_limits<float>::quiet_NaN();
   }
 };
 
-// 换手 (Stat/Turn.hpp 因子账集, 一趟 turn_rows): 各金额段 × 各持有期 × 各层级 → costs[C] (整组层级) / tails[j][hd] (尾部层级, 段 0);
-//   另按日攒段 0 整组两端买量 → finish 折成分年年换手 (YearStat::turn 同口径)
+// 换手 (Stat/Book.hpp 因子账集, 每块每持有期一趟 book_rows): 各持有期 × 层级 × 两端的流水 turn[H] (各金额段同一份量, 盘口段另各一份冲击);
+//   另按日攒整组两端买量 day_buy → fill_eval 折成分年年换手 (YearStat::turn)
 struct TurnP : ProbeBase {
   static constexpr uint8_t need = kNeedRx;
   static constexpr Segs segs = Segs::All;
-  struct YearTurn {
-    int year = 0;
-    float turn = 0.f;
-  };
-  std::vector<CostTier> costs;
-  factor::stat::CostAcc tails[kTails][kHoldCount] = {};
   int seg = 0;
-  std::vector<double> row_buy;                 // [hd][块行] 段 0 整组两端买量之和 (close 内暂存)
-  std::vector<std::vector<double>> day_buy;    // [hd][日] 同上按日合
-  std::vector<YearTurn> year_turn[kHoldCount]; // [hd] 年升序
+  Amts amts;
+  TurnStat turn[kHoldCount];
+  std::vector<double> row_buy;              // [块行] 整组两端买量之和 (close 内暂存)
+  std::vector<std::vector<double>> day_buy; // [hd][评估期日] 同上按日合
   static double bytes(const Shape &sh, int H) { return sizeof(double) * static_cast<double>(H) * sh.days; }
-  static double scratch(const Shape &sh, int H) { return sizeof(double) * static_cast<double>(H) * sh.T; }
+  static double scratch(const Shape &sh, int) { return sizeof(double) * static_cast<double>(sh.T); }
   void init(const PassCtx &p) {
-    costs.assign(static_cast<size_t>(p.ad.n), CostTier{});
-    for (int k = 0; k < p.ad.n; ++k)
-      costs[static_cast<size_t>(k)].amt = p.ad.k[k];
     seg = p.seg;
+    amts = p.ad;
     day_buy.assign(static_cast<size_t>(p.hd.n), std::vector<double>(static_cast<size_t>(p.days_stat), 0.0));
   }
   void close(const Ctx &c, const RootView &v);
-  void finish(const PassCtx &p);
-  float turn_in(int hi, int year) const {
-    for (const YearTurn &y : year_turn[hi])
-      if (y.year == year)
-        return y.turn;
-    assert(false && "分年换手缺该年");
-    return 0.f;
-  }
 };
 
 // 池内有效率 / 可秩率
@@ -311,81 +319,31 @@ struct IcPdfP : RowsP<IcPdfP, float> {
   }
 };
 
-// 分年分层统计 + 滚动窗统计 (同一份逐日和; 行已按所评方向, 见 ProbeSink)
-struct YearRow {
+// 逐日组和 (分年 mono 的原料; 行已按所评方向, 见 ProbeSink): ok 行的 Row::grp 按日合
+struct GrpRow {
   bool ok = false;
-  float ric = 0.f, ls = 0.f, g[factor::stat::kGroups] = {};
+  float g[factor::stat::kGroups] = {};
 };
-struct YearP : RowsP<YearP, YearRow> {
-  struct DayG {
-    int n = 0;
-    double ric = 0.0, ls = 0.0, g[factor::stat::kGroups] = {};
-  };
+struct GrpP : RowsP<GrpP, GrpRow> {
   int seg = 0;
-  std::vector<std::vector<DayG>> day;
-  std::vector<YearStat> years[kHoldCount];
-  factor::stat::Roll roll[kHoldCount];
-  std::vector<float> day_ric[kHoldCount]; // [日] 当日 ok 行 rIC 均值 (无 ok 行 = NaN)
-  static double bytes(const Shape &sh, int H) { return sizeof(DayG) * static_cast<double>(H) * sh.days; }
-  static YearRow of(const factor::stat::Row &r) {
-    YearRow x{r.ok != 0, r.ric, factor::stat::ls_row(r), {}};
+  std::vector<std::vector<std::array<double, factor::stat::kGroups>>> day; // [hd][评估期日][组]
+  static double bytes(const Shape &sh, int H) { return sizeof(double) * factor::stat::kGroups * static_cast<double>(H) * sh.days; }
+  static GrpRow of(const factor::stat::Row &r) {
+    GrpRow x{r.ok != 0, {}};
     std::copy_n(r.grp, factor::stat::kGroups, x.g);
     return x;
   }
   void init(const PassCtx &p) {
     seg = p.seg;
-    day.assign(static_cast<size_t>(p.hd.n), std::vector<DayG>(static_cast<size_t>(p.days_stat)));
+    day.assign(static_cast<size_t>(p.hd.n), std::vector<std::array<double, factor::stat::kGroups>>(static_cast<size_t>(p.days_stat)));
   }
-  void fold(const Ctx &, int hi, int u0, std::span<const YearRow> g) {
-    for (size_t i = 0; i < g.size(); ++i) {
-      const YearRow &x = g[i];
-      if (!x.ok)
-        continue;
-      DayG &d = day[static_cast<size_t>(hi)][static_cast<size_t>((u0 + static_cast<int>(i)) / seg)];
-      ++d.n, d.ric += x.ric, d.ls += x.ls;
-      for (int k = 0; k < factor::stat::kGroups; ++k)
-        d.g[k] += x.g[k];
-    }
-  }
-  void finish(const PassCtx &p) {
-    const std::vector<misc::Ymd> dates = p.dm.stat_dates();
-    for (int hi = 0; hi < p.hd.n; ++hi) {
-      const std::vector<DayG> &ds = day[static_cast<size_t>(hi)];
-      assert(ds.size() == dates.size() && "逐日累加与评估期日期不齐");
-      std::vector<factor::stat::Day> sums(ds.size());
-      day_ric[hi].resize(ds.size());
-      for (size_t i = 0; i < ds.size(); ++i) {
-        sums[i] = {ds[i].n, ds[i].ric, ds[i].ls};
-        day_ric[hi][i] = ds[i].n > 0 ? static_cast<float>(ds[i].ric / ds[i].n) : std::numeric_limits<float>::quiet_NaN();
+  void fold(const Ctx &, int hi, int u0, std::span<const GrpRow> g) {
+    for (size_t i = 0; i < g.size(); ++i)
+      if (g[i].ok) {
+        std::array<double, factor::stat::kGroups> &d = day[static_cast<size_t>(hi)][static_cast<size_t>((u0 + static_cast<int>(i)) / seg)];
+        for (int k = 0; k < factor::stat::kGroups; ++k)
+          d[static_cast<size_t>(k)] += g[i].g[k];
       }
-      std::vector<double> wins;
-      roll[hi] = factor::stat::roll_of(sums, p.hd.k[hi], seg, nullptr, &wins);
-      std::vector<YearStat> &out = years[hi];
-      out.clear();
-      by_year(dates, [&](int y, size_t a, size_t b) {
-        DayG s;
-        std::vector<double> w;
-        for (size_t i = a; i < b; ++i) {
-          s.n += ds[i].n, s.ric += ds[i].ric, s.ls += ds[i].ls;
-          for (int k = 0; k < factor::stat::kGroups; ++k)
-            s.g[k] += ds[i].g[k];
-          if (!std::isnan(wins[i]))
-            w.push_back(wins[i]);
-        }
-        if (s.n < 3)
-          return;
-        std::sort(w.begin(), w.end());
-        const double med = w.empty() ? 0.0 : 0.5 * (w[(w.size() - 1) / 2] + w[w.size() / 2]);
-        out.push_back({.year = y,
-                       .n = s.n,
-                       .wins = static_cast<int>(w.size()),
-                       .mono = static_cast<float>(factor::stat::mono_of(s.g, factor::stat::kGroups)),
-                       .ls = static_cast<float>(s.ls / s.n),
-                       .ric = static_cast<float>(s.ric / s.n),
-                       .ric_med = static_cast<float>(med)});
-      });
-    }
-    std::vector<std::vector<DayG>>().swap(day);
   }
 };
 
@@ -451,28 +409,31 @@ struct NavP : LinesP {
 };
 
 template <class... X>
-using EvalProbes = Probes<HoldP, TurnP, CoverP, AlphaP, IcPdfP, YearP, X...>;
+using EvalProbes = Probes<HoldP, TurnP, CoverP, AlphaP, IcPdfP, GrpP, X...>;
+
+// 一个持有期的分年 (评估期日 dates 按自然年; 只列 ok 行 ≥ 3 的年): 逐日 Day + 窗 rIC (HoldP) / 组和 (GrpP) / 整组两端买量 (TurnP)
+std::vector<YearStat> years_of(const std::vector<misc::Ymd> &dates, const HoldP &h, const GrpP &g, const TurnP &c, int hi, HoldId hold);
 
 template <class Ps>
-void fill_eval(const Ps &p, const StatScope &scope, double eval_ms, EvalStat &st) {
+void fill_eval(const Ps &p, const PassCtx &pc, const StatScope &scope, double eval_ms, EvalStat &st) {
   const HoldP &h = p.template at<HoldP>();
   const TurnP &c = p.template at<TurnP>();
   const IcPdfP &ic = p.template at<IcPdfP>();
   const CoverP &cv = p.template at<CoverP>();
-  const YearP &yr = p.template at<YearP>();
+  const GrpP &g = p.template at<GrpP>();
+  const std::vector<misc::Ymd> dates = pc.dm.stat_dates();
   st.scope = scope;
   st.eval_ms = eval_ms;
   st.valid_pct = cv.valid_pct;
   st.rank_pct = cv.rank_pct;
   st.n_hold = h.n_hold;
   std::copy_n(h.hold, h.n_hold, st.hold);
-  st.costs = c.costs;
+  st.amts = c.amts;
+  std::copy_n(c.turn, h.n_hold, st.turn);
   for (int hi = 0; hi < h.n_hold; ++hi) {
     st.ic_pdf[hi] = mini_pdf_of(ic.pdf[hi]);
-    st.years[hi] = yr.years[hi];
-    for (YearStat &y : st.years[hi])
-      y.turn = c.turn_in(hi, y.year);
-    st.roll[hi] = yr.roll[hi];
+    st.years[hi] = years_of(dates, h, g, c, hi, pc.hd.k[hi]);
+    st.roll[hi] = h.roll[hi];
   }
   st.alpha_pdf = mini_pdf_of(p.template at<AlphaP>().d.pdf);
 }

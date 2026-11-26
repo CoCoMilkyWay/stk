@@ -5,7 +5,7 @@
 // =============================================================================
 //   回复 = 一个调用 {"tool": 名, "args": {...}}; 系统执行后, 下一条消息交回它的结果
 //   形 Form (清单一列 = 工具函数的签名, 见 tools/Kit.hpp; 也是执行的唯一分派轴, lab = 交右翼后台):
-//     Sync   当场   GUI 线程当场做完 (查特征叶 / 列候选与正式库 / 全局记录 / 提交 / 结束)
+//     Sync   当场   GUI 线程当场做完 (查特征叶 / 列候选与正式库 / 全局记录 / 收尾)
 //     Pure   后台   纯后台: 交右翼 worker 算完即是结果 (观察 view_* / 盘口重放 view_book / 研报库 search_docs · search_factors · read_doc)
 //     Lab    后台   GUI 备料 → 后台 → GUI 收尾 (回测 eval_factor)
 //     Human  等人   等研究员点选答案 (ask_human)
@@ -46,7 +46,7 @@ inline constexpr FormDef kForms[] = {{"当场", false}, {"后台", true}, {"后�
 AGENT_ROWS(Form, kForms, Human);
 
 enum class Cat : uint8_t { Look,   // view_*
-                           Trial,  // eval_factor / submit_factor
+                           Trial,  // eval_factor
                            Query,  // search_leaves / list_*
                            Doc,    // search_docs / search_factors / read_doc
                            Note,   // request_* / note_insight / report_issue
@@ -77,12 +77,11 @@ AGENT_ROWS(Cat, kCats, Misc);
   X(ListTried, "list_tried", "列已试", Sync, Query, false, TriedRes)                 \
   X(ListLibrary, "list_library", "列正式库", Sync, Query, false, LibraryRes)         \
   X(ListNotes, "list_notes", "查全局记录", Sync, Query, false, NotesRes)             \
-  X(SubmitFactor, "submit_factor", "提交入库", Sync, Trial, true, SubmitRes)         \
   X(RequestFeature, "request_feature", "申请特征", Sync, Note, true, NoteRes)        \
   X(RequestTool, "request_tool", "申请工具", Sync, Note, true, NoteRes)              \
   X(NoteInsight, "note_insight", "记发现", Sync, Note, true, NoteRes)                \
   X(ReportIssue, "report_issue", "报问题", Sync, Note, true, NoteRes)                \
-  X(Finish, "finish", "结束", Sync, Misc, true, FinishRes)                           \
+  X(Finish, "finish", "收尾", Sync, Misc, true, FinishRes)                           \
   X(AskHuman, "ask_human", "问研究员", Human, Misc, true, AskRes)
 
 #define AGENT_TOOL_ID(T, id, cn, F, C, keep, R) T,
