@@ -191,9 +191,9 @@ void write_legs(const InspectSpec &sp, std::vector<Leg> &legs, const std::vector
 
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, bool reload,
                         bool gpu, InspectExport ex, int top_n, InspectRequest &req) {
-  assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效 alpha 行");
+  assert(row.error.empty() && !row.expr.empty() && "Inspect 只接有效权重行");
   req = InspectRequest{};
-  req.spec.f = FactorRef{row.expr, row.frame, factor::stat::dir_of(row.sign)};
+  req.spec.f = factor_ref(row);
   req.spec.row = row.key;
   req.reload = reload;
   if (!MakeFactorScope(data, std::move(ft), pool, years, gpu, req.scope))
@@ -223,7 +223,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
     F.S.clear();
 
   RootSet rs{.hd = Holds::of(sc.ft->y.holds)};
-  rs.add(*sc.ft, f.expr, f.frame, f.dir);
+  rs.add(*sc.ft, f.expr, f.frame, f.dir, f.ret);
   ForestOut o;
   o.job.who = "Inspect";
   std::vector<InspectProbes> ps(1);
@@ -242,7 +242,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
     return rc;
 
   res = InspectResult{};
-  res.key = inspect_key(sc.lv, sc.pool, sc.years, req.spec.row, f.expr, f.dir);
+  res.key = inspect_key(sc.lv, sc.pool, sc.years, req.spec.row, f);
   res.row = req.spec.row;
   res.expr = f.expr;
   res.lv = sc.lv;

@@ -76,7 +76,9 @@ struct TaskAlphaState {
   // 页顶层按钮后的因子文件数 (所选池各因子层目录): 池变 / 因子服务进 Done (扫描 / Run / Add / 删除后的 Rescan) 时重数
   std::string counted_key; // 所选池; 空 = 没数过. 变 (进页 / 换池) → 按因子文件数重定默认层
   Engine::PerFactorLevel<size_t> level_files;
-  std::vector<size_t> pool_files; // [PoolId] 页顶池下拉里各池因子文件数 (该池各因子层之和): 每次打开下拉重数
+  std::vector<size_t> pool_files; // [PoolId] 页顶池下拉里各池因子文件数 (该池各因子层之和): 首次进页 / 每次打开下拉重数
+  std::vector<uint8_t> pool_bar;  // [PoolId] 该池 Bar 库已建 (标签库在, 可评估; 池名绿): 同上
+  bool pool_defaulted = false;    // 首次进页已把所选池定成因子最多的池
   Phase prev_factors_phase = Phase::Idle;
   std::unique_ptr<Engine::RunService> run_service;
   Phase prev_run_phase = Phase::Idle; // Update 每帧: 进 Done → EngineHub::files_gen +1
@@ -122,7 +124,7 @@ static void reset_level_services(TaskAlphaState &s) {
 }
 
 // Search 队列推进一步 (上一项搜完 / 单文件 Run 完时调): 当前文件的档都搜完且落过盘 → 只 Run 该文件 (结果立刻进因子表), Run 完再回来接着出队;
-// 否则出队一个发 Search; 队空 = 收尾. 请求建不成 (资产轴 / 区间) = 整轮放弃.
+// 否则出队一个发 Search; 队空 = 收尾 (重扫一次). 请求建不成 (资产轴 / 区间) = 整轮放弃.
 // wrote = 上一项落盘了 (Run 完回来给 false); 没落盘的 fresh 项把 fresh 顺延给同文件下一档 (该文件仍须整份覆盖)
 static void search_next(const SharedData &data, TaskAlphaState &s, bool wrote) {
   Alpha::FactorsUIState &ui = s.factors_ui;
@@ -146,8 +148,11 @@ static void search_next(const SharedData &data, TaskAlphaState &s, bool wrote) {
     s.run_service->Request(req);
     return;
   }
-  if (ui.search_queue.empty()) {
+  if (ui.search_queue.empty()) { // 收尾重扫一次 (换收益口径后一个权重都没搜出的文件, 表也随盘换掉)
     ui.search_n = 0;
+    Engine::RunRequest req;
+    Engine::MakeRunRequest(data, level_table(data, s), s.pool, s.years, /*evaluate=*/false, false, req);
+    s.run_service->Request(req);
     return;
   }
   ui.search_cur = std::move(ui.search_queue.front());
@@ -307,20 +312,28 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
       // 页顶条选 (want_pool, want_lv); 已生效的 (pool, lv) 在所有服务空闲时追上: 换层 = 层服务整体重建
       // (目录 / Inspect 缓存都随层, 字段表按层常驻); 同层换池只换目录 (下方自动重扫); 有服务在跑 = 取消旧作用域, 停下再切
       {
+        const auto recount = [&] {
+          state->pool_files.clear(), state->pool_bar.clear();
+          for (const PoolDef &d : feature_pools()) {
+            state->pool_files.push_back(disk::list(disk::FactorFile, {.pool = d.name}).size()); // 层段未定 → 逐层展开
+            state->pool_bar.push_back(load_lib(lib_id(pool_id(d.name), TierId::Bar)).ready());
+          }
+        };
+        if (!state->pool_defaulted) { // 首次进页: 默认池 = 因子最多的池 (并列取池表序在前的; 都没有 → 不动)
+          state->pool_defaulted = true;
+          recount();
+          size_t best = 0;
+          for (const PoolId p : pool_order())
+            if (state->pool_files[p] > best)
+              best = state->pool_files[p], state->want_pool = p;
+        }
         ImGui::BeginGroup();
         ImGui::TextUnformatted("Pool:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(140);
         if (ImGui::BeginCombo("##factor_pool", pool_def(state->want_pool).name_cn.c_str())) {
-          if (ImGui::IsWindowAppearing()) {
-            state->pool_files.clear();
-            for (const PoolDef &d : feature_pools()) {
-              size_t n = 0;
-              for (const Engine::FactorLevel &l : Engine::kFactorLevels)
-                n += Engine::factor_dir_of(d.name, l.id).files().size();
-              state->pool_files.push_back(n);
-            }
-          }
+          if (ImGui::IsWindowAppearing())
+            recount();
           assert(state->pool_files.size() == feature_pools().size());
           float cn_x = 0.0f; // 因子数列起点 (对齐最长池名)
           for (const PoolDef &d : feature_pools())
@@ -332,13 +345,20 @@ TaskHandle CreateAlphaTask(std::shared_ptr<Compute::ComputeHub> compute, std::sh
             const PoolId p = po[i];
             const PoolDef &d = pool_def(p);
             const bool selected = state->want_pool == p;
+            if (state->pool_bar[p]) // 绿 = Bar 库已建 (可评估)
+              ImGui::PushStyleColor(ImGuiCol_Text, StatusColor(TaskStatus::Kind::Ready));
             if (ImGui::Selectable((d.name_cn + "###" + d.name).c_str(), selected))
               state->want_pool = p;
+            if (state->pool_bar[p])
+              ImGui::PopStyleColor();
             rd.item(i, p >= kPinnedPools);
             if (ImGui::IsItemHovered())
               pool_tip(p);
             ImGui::SameLine(cn_x);
-            ImGui::TextDisabled("(%zu)", state->pool_files[p]);
+            if (state->pool_files[p] > 0)
+              ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "(%zu)", state->pool_files[p]);
+            else
+              ImGui::TextDisabled("(0)");
             if (selected)
               ImGui::SetItemDefaultFocus();
           }

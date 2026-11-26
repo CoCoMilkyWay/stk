@@ -361,7 +361,7 @@ stk/
 │   │   │   ├── {TS,CS}/                                # 🧬 时序 / 截面算子三后端 (同名 struct, 缺一编译错): Stream.hpp 实盘流式 / Cpu.hpp 挖掘批算 / Gpu.cuh CUDA
 │   │   │   ├── Stat/                                   # 🧬 因子评估器 (无流式后端): 因子 + 标签 → 三级出口 Row[H][T] (IC / 分组 / 尾部 / 多空) · Day[H][D] (逐日) · HoldStat
 │   │   │   │   │                                       #    一条链每环一头: rank (Contract) → pos (Pos) → row (Host / Dev 行核) ⇄ book (Book) → fold (Fold) → roll (Roll); 持有期几何与协议表在 define/Label.hpp
-│   │   │   │   ├── Contract.hpp                        # 🧬 语义契约: 视图 / r16 / Row / 尾部 (嵌套层级); 只做多账本, 方向 = 评估参数 (权重 sign), 在 r16 源头一次定向
+│   │   │   │   ├── Contract.hpp                        # 🧬 语义契约: 视图 / r16 / Row / 尾部 (嵌套层级); 只做多账本, 方向 = 评估参数 (权重 sign), 在 r16 源头一次定向; 收益口径 (超额 / 绝对 = 因子 type) 随标签逐根给, 在行收尾一次定
 │   │   │   │   ├── Pos.hpp                             # 🧬 仓位感知唯一核: 交接链 Chain + walk (成员层级一次回走 → 真持有 held ⇄ 续持 cont) + 一格唯一出口 cell + 判据族 InRank / InMask / InBit / InInd
 │   │   │   │   ├── Book.hpp                            # 🧬 账集唯一核 (宿主): 账集 = size / cap / each (本 = 判据 × 层级 × 目标权 × 满仓) → book_rows (本批 ⇄ 前一批格位 → turn_row) → 收益 + 流水 Flow
 │   │   │   │   │                                       #    · Flow = 两侧量 / 不可成交量 (各金额段同一份) + 各盘口段冲击, 成本按金额段与 Fee 现乘; 整批平仓恒在撮合价 (盘口冲击 0)
@@ -509,7 +509,7 @@ stk/
     │                                                   #    / price/ 历史价格库 (PriceLib): head.bin 日脊 + 库段 / 基本面段 / 篮子侧日数 + 篮子表指纹 + 各篮子身份 + 两侧封块数 + 因子链 / <侧>/b<日>.bin 64 日一块 · <侧>/d<日>.bin 单日段
     │                                                   #      (段 = 段头 (篮子侧记篮子表指纹) + 行表 (键升序) + 日根 + 分钟根, 只存有根的行日)
     ├── factors/<pool>/<层>/*.json                      # ③ 因子文件 (一因子一文件, 可手写); <层> = min / 5min / 15min / 30min / 60min / day
-    │                                                   #    · 必填: type / name_cn / expr (模板, 自由参数用裸键名)
+    │                                                   #    · 必填: type (收益口径 excess 超额 | absolute 绝对, 人定; 表里按钮切, 切了即清结果按新口径重搜) / name_cn / expr (模板, 自由参数用裸键名)
     │                                                   #    · 可选: note / run / hold_cols / acc_cols
     │                                                   #    · weights: [{hold, sign?, expr (具体)}]; hold = 持有期 token ("30m" / "t1" …, null = 手填); sign = 所评方向; Search 整体替换, 改 expr 即清空
     │                                                   #    · search: [{hold (token), start_date, end_date, days, top?}]; Search 结局, 改 expr 即清空

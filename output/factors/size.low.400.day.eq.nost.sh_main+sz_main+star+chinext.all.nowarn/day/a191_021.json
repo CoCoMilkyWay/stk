@@ -1,5 +1,5 @@
 {
- "type": "alpha",
+ "type": "excess",
  "name_cn": "A191#021",
  "expr": "CsRank(TsSlopeRoll(TsMeanRoll(bar.1d.close_adj_day, d), d))",
  "note": "均价对期序的斜率：短期趋势斜率，赚趋势延续或回复",
@@ -9,7 +9,7 @@
  "search": [
   {"hold":"t1","start_date":"2021-11-26","end_date":"2026-11-25","days":1211}
  ],
- "run": {"stat_ver":8,"target":"mono","pool":"size.low.400.day.eq.nost.sh_main+sz_main+star+chinext.all.nowarn","start_date":"2021-11-26","end_date":"2026-11-25","years":5,"days":1211,"frame":"CS","max_impact":0.01,"n_full":20.0},
+ "run": {"stat_ver":8,"target":"mono","pool":"size.low.400.day.eq.nost.sh_main+sz_main+star+chinext.all.nowarn","start_date":"2021-11-26","end_date":"2026-11-25","years":5,"days":1211,"frame":"CS","ret":"excess","max_impact":0.01,"n_full":20.0},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","rac_mean","rac_sd","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","beta","mono","end_n","ann","sharpe","grp"],
  "turn_cols": ["top.vol_buy","top.vol_sell","top.stuck_buy","top.stuck_sell","top.imp5w_buy","top.imp5w_sell","top.imp30w_buy","top.imp30w_sell","bot.vol_buy","bot.vol_sell","bot.stuck_buy","bot.stuck_sell","bot.imp5w_buy","bot.imp5w_sell","bot.imp30w_buy","bot.imp30w_sell"],
  "stats": [

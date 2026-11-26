@@ -124,7 +124,7 @@ Commit run_eval(const Engine::FactorScope &fsc, const std::string &file, const s
   std::string dummy;
   [[maybe_unused]] const bool ok_rf = fx::root_frame(ft.reparse_at(tmpl, bay.env.hold), ft.seg, frame, dummy);
   assert(ok_rf);
-  const Engine::SearchSpec ssp{file, tmpl, frame, bay.env.hold, true};
+  const Engine::SearchSpec ssp{file, tmpl, frame, factor::stat::Ret::Excess, bay.env.hold, true}; // 候选一律超额 (AddFactorFile 默认 type)
   Engine::SearchResult sres;
   std::string why;
   const Engine::Rc src = Engine::SearchFactor({fsc, ssp}, bay.flow, sres, why);

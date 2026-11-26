@@ -235,11 +235,12 @@ struct Request {
   Spec spec;
   bool reload = false; // 弃作用域缓存整体重读 (特征库重算过 / 手动 Recompute; 每轮本就重读的服务不看)
 };
-// 一个因子 (Inspect 请求 / Portfolio 条目同一份): 具体规范串 (已校验, worker 用 scope.ft->reparse 再解析) + 口径 + 所评方向 (权重行的 sign)
+// 一个因子 (Inspect 请求 / Portfolio 条目同一份): 具体规范串 (已校验, worker 用 scope.ft->reparse 再解析) + 口径 + 所评方向 (权重行的 sign) + 收益口径 (文件 type)
 struct FactorRef {
   std::string expr;
   factor::stat::Frame frame = factor::stat::Frame::CS;
   factor::stat::Dir dir = factor::stat::kFwd;
+  factor::stat::Ret ret = factor::stat::Ret::Excess;
 };
 
 // ---- 评估结果 (Run 行 / Inspect 结果同一份) ----

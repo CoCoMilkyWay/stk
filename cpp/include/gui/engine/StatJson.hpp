@@ -241,9 +241,9 @@ inline bool load_mini_pdf(const nlohmann::json &o, MiniPdf &dst) {
   return true;
 }
 
-// 结果作用域头 ↔ 因子文件顶层 run (一轮评估内全部权重同一份; f = 根口径): 只落文件行的读者要的 (作用域比对 / 评估期 / 满仓 cap) 与 stat 的口径键
-// (stat_ver / target / frame / max_impact: 换了即旧 stat 不再对应); 形状 T / A、后端、评估时刻只 Inspect 现算现显
-inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame f) {
+// 结果作用域头 ↔ 因子文件顶层 run (一轮评估内全部权重同一份; f = 根口径, ret = 收益口径): 只落文件行的读者要的 (作用域比对 / 评估期 / 满仓 cap) 与 stat 的口径键
+// (stat_ver / target / frame / ret / max_impact: 换了即旧 stat 不再对应); 形状 T / A、后端、评估时刻只 Inspect 现算现显
+inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame f, factor::stat::Ret ret) {
   nlohmann::ordered_json j;
   j["stat_ver"] = factor::stat::kStatSemver;
   j["target"] = factor::stat::kTargetName;
@@ -253,6 +253,7 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   j["years"] = s.years;
   j["days"] = s.days;
   j["frame"] = factor::stat::frame_name(f);
+  j["ret"] = factor::stat::ret_token(ret);
   j["max_impact"] = s.max_impact;
   j["n_full"] = sig4(s.n_full);
   return j;
@@ -298,9 +299,10 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   return j;
 }
 
-// scope_json + eval_json 的逆: run 口径与 f 不符 / stat_ver ≠ kStatSemver / target ≠ kTarget / 任一处不合 → false (dst 不动)
-inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int seg, factor::stat::Frame f, EvalStat &dst) {
-  if (!run.is_object() || !j.is_object() || !json_str_is(run, "frame", factor::stat::frame_name(f)) || !json_str_is(run, "target", factor::stat::kTargetName))
+// scope_json + eval_json 的逆: run 口径与 f / ret 不符 / stat_ver ≠ kStatSemver / target ≠ kTarget / 任一处不合 → false (dst 不动)
+inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int seg, factor::stat::Frame f, factor::stat::Ret ret, EvalStat &dst) {
+  if (!run.is_object() || !j.is_object() || !json_str_is(run, "frame", factor::stat::frame_name(f)) || !json_str_is(run, "ret", factor::stat::ret_token(ret)) ||
+      !json_str_is(run, "target", factor::stat::kTargetName))
     return false;
   if (int ver = 0; !json_int(run, "stat_ver", ver) || ver != factor::stat::kStatSemver)
     return false;

@@ -166,7 +166,7 @@ struct Searcher {
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
     lg("Search %s  @ %s", sp.file.c_str(), ts);
     lg("模板: %s", sp.tmpl.c_str());
-    lg("后端 %s, 池 %s, 持有期 %s", res.backend.c_str(), scope.pool.c_str(), hold_name(sp.hold).c_str());
+    lg("后端 %s, 池 %s, 持有期 %s, 收益口径 %s", res.backend.c_str(), scope.pool.c_str(), hold_name(sp.hold).c_str(), fs::ret_name(sp.ret));
   }
 
   Rc run() {
@@ -231,7 +231,7 @@ struct Searcher {
     e0 = ft.reparse_at(sp.tmpl, sp.hold);
     const int look = space::lookback(e0, seg);
     const factor::expr::Expr ep = e0.placeholder();
-    const Root r0{&ep, sp.frame, fs::kFwd};
+    const Root r0{&ep, sp.frame, fs::kFwd, sp.ret};
     f0 = plant_forest(ft, std::span<const Root>(&r0, 1), /*keep_roots=*/false, {}, /*fuse=*/false);
     job.who = "Search";
     const Clock::time_point t_plan = Clock::now();
@@ -401,7 +401,7 @@ struct Searcher {
     std::vector<Root> roots;
     roots.reserve(ids.size());
     for (const int id : ids)
-      roots.push_back({&ents[static_cast<size_t>(id)].e, sp.frame, fs::kFwd});
+      roots.push_back({&ents[static_cast<size_t>(id)].e, sp.frame, fs::kFwd, sp.ret});
     std::vector<SearchProbes> ps(ids.size());
     const Clock::time_point t_pass = Clock::now();
     double load_s = 0.0;
@@ -476,7 +476,7 @@ bool MakeSearchRequest(const SharedData &data, std::shared_ptr<const FeatureTabl
                        bool fresh, bool gpu, SearchRequest &req) {
   assert(!row.tmpl.empty() && "Search 只接模板解析过的因子");
   req = SearchRequest{};
-  req.spec = SearchSpec{row.file, row.tmpl, row.frame, hold, fresh};
+  req.spec = SearchSpec{row.file, row.tmpl, row.frame, row.ret, hold, fresh};
   return MakeFactorScope(data, std::move(ft), pool, years, gpu, req.scope);
 }
 

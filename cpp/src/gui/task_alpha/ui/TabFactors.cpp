@@ -579,17 +579,21 @@ struct Metric {
   bool lag = false;
 };
 // 各指标的精确定义 (UI 只写一句话):
-//   val%  池内格中根平面有效的占比;  rank%  并列块 ≤ ⌈有效数/20⌉ 只的格 / 有效格;  trig%  至少一端非空的行 / ok 行;  util%  触发行平均每端只数 / 满仓 cap
+//   覆盖四项逐级收窄, 前项的分子即后项的分母 (格 → 格 → 行 → 只):
+//     val%   有值格 / 在池格      有值 = 根平面有效位; 全评估期合计求比
+//     rank%  可秩格 / 有值格      可秩 = 所在并列块 ≤ ⌈有值数/20⌉ 只 (不超一组, 不把整块挤进中间组); 逐行求比再行均
+//     trig%  有仓行 / 可评行      可评 = ok 行; 有仓 = G20 / G1 至少一端真持有 ≥ 1 只
+//     util%  每端只数 / 满仓只数  有仓行上两端平均真持有只数 / cap, 不封顶 (一端常空 ≈ 50)
 //   mono  组均值对组号 Spearman;  turn  两端均 Σ Δw⁺ / 行数 × 每年满仓轮数 (单边)
 //   LS% / SR  日净值 LS 的复利年化 / Sharpe: LS = ½ (做多 G20 − 做多 G1), 不触发记 0, 每批 1/h̄, 全日平均满仓;  LS 组 mean .. β 都只统计 ok 行
 constexpr Metric kMetrics[] = {
-    {Group::Cover, "val%", nullptr, "有效率: 池内格中因子有值的占比", "[0, 100]", "越大", "%.1f",
+    {Group::Cover, "val%", nullptr, "有效率: 有值格 / 在池格", "[0, 100]", "越大", "%.1f",
      [](const HS &, const FR &r) { return static_cast<double>(r.valid_pct); }, line(90, 100)},
-    {Group::Cover, "rank%", nullptr, "可秩率: 并列不过多的格占比", "[0, 100]", "越大", "%.1f",
+    {Group::Cover, "rank%", nullptr, "可秩率: 可秩格 / 有值格 (并列不超一组)", "[0, 100]", "越大", "%.1f",
      [](const HS &, const FR &r) { return static_cast<double>(r.rank_pct); }, line(60, 90)},
-    {Group::Cover, "trig%", nullptr, "触发率: 有持仓的行占比", "[0, 100]", "越大", "%.1f",
+    {Group::Cover, "trig%", nullptr, "触发率: 有仓行 / 可评行", "[0, 100]", "越大", "%.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::trigger_of(h); }, line(80, 90)},
-    {Group::Cover, "util%", nullptr, "利用率: 每端平均只数 / 满仓只数", "[0, ∞)", "≈ 100", "%.1f",
+    {Group::Cover, "util%", nullptr, "利用率: 每端只数 / 满仓只数", "[0, ∞)", "≈ 100", "%.1f",
      [](const HS &h, const FR &r) { return 100.0 * factor::stat::util_of(h, r.scope.n_full); }, band(80, 120)},
     {Group::Shape, "mono", "mono", "分层单调性", "[-1, 1]", "越大, 1 严格单调", "%+.3f",
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
@@ -713,7 +717,12 @@ struct FixedCol {
 //   slots: 内存 / 显存 = slots × T·A × 5B
 constexpr FixedCol kFixedCols[kNumFixed] = {
     {Edit, "edit", "勾选 = 载入上方构建器编辑 (同时只勾一个)", true},
-    {Type, "type", "因子类型: alpha / beta (beta 未实现)", true},
+    {Type, "type",
+     "收益口径 (人定)\n"
+     "• 超额: 组收益减截面均值, 评选股 (默认)\n"
+     "• 绝对: 不减, 评能否赚绝对收益 (择时; CS 因子两口径近乎相同, 差别在 TS)\n"
+     "• 点按钮切换: 确认后清空该因子的权重 / 搜索 / 统计, 按新口径重新 Search (本层各可搜持有期) + Run",
+     true},
     {NameEn, "name_en", "英文名 (= 文件名); 悬停看备注", true},
     {NameCn, "name_cn", "中文名; 悬停看备注", true},
     {HoldSrc, "*h", "该权重是在哪个持有期下搜出来的 (绿 = 与当前 Hold 同, 红 = 不同)", true},
@@ -1118,12 +1127,8 @@ void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool e
       tip("%s", r.note.c_str());
   };
   switch (c) {
-  case Type:
-    if (r.kind == FactorKind::Beta)
-      ImGui::TextColored(StatusColor(TaskStatus::Kind::Muted), "%s", kind_name(r.kind));
-    else
-      ImGui::TextUnformatted(kind_name(r.kind));
-    return;
+  case Type: // 子行 / 文件解析前就坏了的行只显示 (可切的在表循环里画按钮)
+    return r.tmpl.empty() ? ImGui::TextDisabled("-") : ImGui::TextDisabled("%s", factor::stat::ret_name(r.ret));
   case NameEn:
     if (kind == RowKind::Child) { // 子行: 权重号 (持有期见 *h 列)
       ImGui::TextDisabled("  #%d", r.widx);
@@ -1443,6 +1448,19 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
 
   // ---- Search: 对选中行所在文件的模板逐个搜全部自由参数, 只搜当前 Hold (限 Search/Config kSearchHolds), 目标 = 该 h 的中位窗目标
   //      (Stat/Roll.hpp); 结果替换文件里同 h 的 weights, 每个文件搜完 TaskAlpha 自动只 Run 它 (因子表从新 stat 算) ----
+  // 本层可搜的各档 (标签组序; Search all / 换收益口径后的重搜同用)
+  std::vector<HoldId> all_holds;
+  std::string holds_desc;
+  for (int li = 0; li < ft.y.list.n; ++li)
+    if (const HoldId lh = ft.y.list.k[li]; factor::search::search_hold(lh)) {
+      all_holds.push_back(lh);
+      holds_desc += (holds_desc.empty() ? "" : " ") + hold_name(lh);
+    }
+  // 一个文件 × 本层各可搜档进 Search 队列 (首档 fresh: 该文件 weights 整份覆盖)
+  const auto queue_file = [&](const FactorRow &r) {
+    for (const HoldId h : all_holds)
+      ui.search_queue.push_back(SearchJob{r, h, h == all_holds.front()});
+  };
   {
     const bool hold_ok = !(ft.y.list.n == 0) && factor::search::search_hold(cur_hold);
     const bool can_search = !busy && !sbusy && !queue_active && ctx.axis_ready && hold_ok && !search_rows.empty();
@@ -1481,13 +1499,6 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     for (const FactorRow &r : s_rows)
       if (searchable(r) && std::none_of(all_rows.begin(), all_rows.end(), [&](const FactorRow *p) { return p->file == r.file; }))
         all_rows.push_back(&r);
-    std::vector<HoldId> all_holds;
-    std::string holds_desc;
-    for (int li = 0; li < ft.y.list.n; ++li)
-      if (const HoldId lh = ft.y.list.k[li]; factor::search::search_hold(lh)) {
-        all_holds.push_back(lh);
-        holds_desc += (holds_desc.empty() ? "" : " ") + hold_name(lh);
-      }
     const bool can_search_all = !busy && !sbusy && !queue_active && ctx.axis_ready && !all_holds.empty() && !all_rows.empty();
     ImGui::SameLine();
     if (!can_search_all)
@@ -1495,8 +1506,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     if (ImGui::Button("Search all", ImVec2(90, 0))) {
       ui.search_queue.clear();
       for (const FactorRow *p : all_rows)
-        for (const HoldId h : all_holds)
-          ui.search_queue.push_back(SearchJob{*p, h, h == all_holds.front()});
+        queue_file(*p);
       ui.search_n = static_cast<int>(ui.search_queue.size());
       action = 4;
     }
@@ -1838,7 +1848,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     tip("一行一权重; 多权重因子折成一行 (= 当前 Hold 下最好的权重), ▸ 展开\n"
         "• 点行选中 → Run / Search / Inspect 的对象; Ctrl 点 = 多选, Shift 点 = 片选 (Run / Search 批量跑选中的)\n"
         "• 勾首列 → 编辑\n"
-        "• cover% 后的 … 按钮看全部持有期; Stat 列字色 = 本页截面最差红 → 最好绿");
+        "• cover%% 后的 … 按钮看全部持有期; Stat 列字色 = 本页截面最差红 → 最好绿");
   ImGui::SameLine();
   ImGui::TextDisabled("Stat 列 = h %s (毛价格收益)", hold_name(cur_hold).c_str());
 
@@ -1914,7 +1924,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
           return metric_key(hold_of(r, cur_hold), *m, r);
         switch (sf) {
         case Type:
-          return static_cast<double>(r.kind);
+          return static_cast<double>(r.ret);
         case HoldSrc:
           return r.widx >= 0 ? r.hold_src : -1.0;
         case Frame:
@@ -2077,6 +2087,17 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
             ImGui::PopStyleVar();
             ImGui::SameLine(0, 2);
           }
+          if (cr.fixed == Type && kind != RowKind::Child && !r.tmpl.empty()) { // 收益口径按钮: 点 → 确认弹窗 (EndTable 后开)
+            ImGui::BeginDisabled(busy || sbusy || queue_active);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 0.0f));
+            if (ImGui::SmallButton(factor::stat::ret_name(r.ret))) {
+              ui.type_row = r;
+              ui.popup = 4;
+            }
+            ImGui::PopStyleVar();
+            ImGui::EndDisabled();
+            continue;
+          }
           fixed_cell(static_cast<Fixed>(cr.fixed), r, ctx, editing, kind, cur_hold);
         } else {
           const Metric &m = *col_metric(c);
@@ -2103,7 +2124,38 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     ImGui::OpenPopup("删除因子");
   else if (ui.popup == 3)
     ImGui::OpenPopup("不能添加");
+  else if (ui.popup == 4)
+    ImGui::OpenPopup("切换收益口径");
   ui.popup = 0;
+
+  if (ImGui::BeginPopupModal("切换收益口径", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const FactorRow &r = ui.type_row;
+    const factor::stat::Ret to = r.ret == factor::stat::Ret::Excess ? factor::stat::Ret::Abs : factor::stat::Ret::Excess;
+    ImGui::Text("%s: %s → %s ?", r.file.c_str(), factor::stat::ret_name(r.ret), factor::stat::ret_name(to));
+    ImGui::TextDisabled("清掉全部权重 / 搜索结局 / 统计, 按%s口径重新 Search (%s) + Run", factor::stat::ret_name(to),
+                        all_holds.empty() ? ("本层无 " + search_range + " 档, 只换口径").c_str() : holds_desc.c_str());
+    const bool can = !busy && !sbusy && !queue_active;
+    ImGui::BeginDisabled(!can);
+    if (ImGui::Button("切换", ImVec2(80, 0))) {
+      SetFactorType(ctx.dir, r.file, to);
+      if (all_holds.empty() || !ctx.axis_ready) {
+        action = 2;
+      } else {
+        FactorRow row = r;
+        row.ret = to;
+        ui.search_queue.clear();
+        queue_file(row);
+        ui.search_n = static_cast<int>(ui.search_queue.size());
+        action = 4;
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("取消", ImVec2(80, 0)))
+      ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
 
   if (ImGui::BeginPopupModal("保存改动", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::Text("覆盖 %s/%s:", ctx.dir.dir().c_str(), ui.edit_file.c_str());

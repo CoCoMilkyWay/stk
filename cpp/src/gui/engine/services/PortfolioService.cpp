@@ -126,6 +126,7 @@ void ResolvePortfolio(const SharedData &data, const std::vector<PortfolioEntry> 
       assert(rit->error.empty() && "有具体规范串的行必是有效权重");
       it.name_cn = rit->name_cn;
       it.frame = rit->frame;
+      it.ret = rit->ret;
       if (!ft->y.has(e.hold))
         it.missing = "持有期 " + hold_name(e.hold) + " 不在该层标签里";
     }
@@ -146,7 +147,7 @@ void MakePortfolioRequest(const SharedData &data, std::vector<PortfolioItem> &it
       continue;
     }
     t.key = it.e.key();
-    t.f = FactorRef{it.e.expr, it.frame, factor::stat::dir_of(it.e.sign)};
+    t.f = FactorRef{it.e.expr, it.frame, factor::stat::dir_of(it.e.sign), it.ret};
     t.hold = it.e.hold;
     req.factors.push_back(std::move(t));
   }
@@ -215,7 +216,7 @@ Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
   RootSet rs;
   for (const FactorTask *t : ts) {
     rs.hd = Holds::of(rs.hd.set() | hold_bit(t->hold));
-    rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir);
+    rs.add(*sc.ft, t->f.expr, t->f.frame, t->f.dir, t->f.ret);
   }
   std::vector<PortfolioProbes> ps(rs.size());
   ForestOut o;
@@ -313,7 +314,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
     groups[group_of(*t)].push_back(t);
   for (auto &[g, ts] : groups)
     std::sort(ts.begin(), ts.end(), [](const FactorTask *a, const FactorTask *b) {
-      return std::tie(a->f.expr, a->f.frame, a->f.dir) < std::tie(b->f.expr, b->f.frame, b->f.dir);
+      return std::tie(a->f.expr, a->f.frame, a->f.dir, a->f.ret) < std::tie(b->f.expr, b->f.frame, b->f.dir, b->f.ret);
     });
   const bool todo_b = req.baskets && !keep_b;
   jobs_done.store(0, std::memory_order_relaxed);

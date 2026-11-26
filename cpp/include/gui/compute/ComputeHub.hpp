@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
 
 struct SharedData;
 
@@ -39,9 +40,11 @@ struct ComputeState {
 
   // 库表 (plan_libs; 未扫 = 空): 一行一池, 每池各档一库
   std::optional<PerLib<LibPlan>> libs;
-  bool libs_dirty = true;    // 下一帧重扫
-  uint64_t generation = 0;   // 对应的 Asset::generation (数据换进即重扫)
-  char pool_filter[32] = {}; // 库表行过滤 (池名 / 中文名子串; 空 = 全部)
+  bool libs_dirty = true;           // 下一帧重扫
+  uint64_t generation = 0;          // 对应的 Asset::generation (数据换进即重扫)
+  char pool_filter[32] = {};        // 库表行过滤 (池名 / 中文名子串; 空 = 全部)
+  std::vector<size_t> factor_files; // [PoolId] 库表因子列: 该池各因子层的因子文件数 (盘上现数, 每 kFactorRecount 秒重数)
+  double factor_files_at = -1e9;    // 上次重数的 ImGui 时刻
 
   // 自动续算: 数据换进即起, 依次 Append 可续算且未判废的库 (一轮收尾即进程内重启, 新一代接着找); 无可续算 / 取消即止
   bool auto_append = false;

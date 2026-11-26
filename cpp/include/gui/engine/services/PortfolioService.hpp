@@ -49,6 +49,7 @@ struct PortfolioItem {
   PortfolioEntry e;
   std::string name_en, name_cn;
   factor::stat::Frame frame = factor::stat::Frame::CS;
+  factor::stat::Ret ret = factor::stat::Ret::Excess; // 因子文件 type
   std::string missing;
 };
 void ResolvePortfolio(const SharedData &data, const std::vector<PortfolioEntry> &es, std::vector<PortfolioItem> &out);
@@ -58,7 +59,7 @@ struct FactorTask {
   FactorScope scope;
   FactorRef f;
   HoldId hold = kHoldT1;
-  std::string sig() const { return key + "|" + std::to_string(scope.max_impact); }
+  std::string sig() const { return key + "|" + factor::stat::ret_token(f.ret) + "|" + std::to_string(scope.max_impact); }
 };
 inline constexpr FactorLevelId kBasketLevel = factor_level_of(L_1day);
 struct BasketTask {

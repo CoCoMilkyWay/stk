@@ -9,5 +9,5 @@ If:
   PathMatch: .*\.cuh?
 CompileFlags:
   Compiler: clang++
-  Remove: [/std:c++latest, -forward-unknown-to-host-compiler, --generate-code=*, -Xcompiler=*]
-  Add: [-xcuda, -isystem/usr/local/cuda/include/cccl]
+  Remove: [/std:c++latest, -forward-unknown-to-host-compiler, --generate-code=*, -Xcompiler=*, -arch=*]
+  Add: [-xcuda, --cuda-gpu-arch=sm_75, --cuda-host-only, -isystem/usr/local/cuda/include/cccl]

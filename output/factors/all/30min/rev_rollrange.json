@@ -1,5 +1,5 @@
 {
- "type": "alpha",
+ "type": "excess",
  "name_cn": "反转加滚动幅度",
  "expr": "CsRank(CsLinRankFix(TsLogRatio(bar.30m.close_30min, TsDelayRoll(bar.30m.close_30min, d=1)), TsMeanRoll(TsLogRatio(bar.30m.high_30min, bar.30m.low_30min), d=21), w))",
  "note": "相对 rev_ivol_rollrange (#17) 消融一项: 去掉 bar.1d.ivol, 滚动幅度 d 固定 21, 只搜其权. 依据 #19: 因子与滚动幅度秩相关 -0.73、与 ivol -0.64, 剥幅度剩 0.041、剥 ivol 剩 0.056, ivol 可能只是更慢的波动刻画. 预期: 若中位 rIC 掉出 0.065 的 5% 噪声 (<0.062), 说明日频特质波动 (长窗、剥市场) 与 2 日高低幅互补; 若持平, ivol 可删",

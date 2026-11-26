@@ -36,7 +36,7 @@ Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows,
              DayLines *day) {
   RootSet rs{.hd = Holds::of(sc.ft->y.holds)};
   for (const size_t i : idx)
-    rs.add(*sc.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign));
+    rs.add(*sc.ft, rows[i].expr, rows[i].frame, factor::stat::dir_of(rows[i].sign), rows[i].ret);
   ForestOut o;
   o.job.who = "Run";
   std::vector<Ps> ps(rs.size());

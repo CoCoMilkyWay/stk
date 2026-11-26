@@ -72,8 +72,9 @@ struct FactorsUIState {
   std::vector<SearchJob> search_queue;
   SearchJob search_cur;  // 在跑的那一项 (fresh 顺延用)
   int search_n = 0;      // 本轮队列项总数; 0 = 队列没在跑
-  int popup = 0;         // 本帧要开的弹窗: 1 Save 确认, 2 删除确认, 3 不能加 (表格里置, EndTable 后开)
+  int popup = 0;         // 本帧要开的弹窗: 1 Save 确认, 2 删除确认, 3 不能加, 4 换收益口径确认 (表格里置, EndTable 后开)
   std::string popup_msg; // 弹窗正文
+  FactorRow type_row;    // type 列点下的行 (换收益口径确认弹窗的对象; 确认后清空该文件结果, 按新口径重搜)
   // 表列宽贴合 (对仗 TabOperators)
   uint64_t fit_epoch = ~0ull;
   double fit_last_time = 0.0;

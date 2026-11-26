@@ -1,5 +1,5 @@
 {
- "type": "alpha",
+ "type": "excess",
  "name_cn": "反转加波动双项",
  "expr": "CsRank(CsLinRankFix(TsLogRatio(bar.30m.close_30min, TsDelayRoll(bar.30m.close_30min, d=1)), bar.1d.ivol, TsLogRatio(TsMaxCum(bar.30m.high_30min), TsMinCum(bar.30m.low_30min)), w))",
  "note": "相对 rev_absmove_ivol_amp 减一项 |本行收益| (消融). 依据 #20: 加入当日振幅后 |本行收益| 的权从 0.53 (#18) 降到 0.10, 推测本行幅度只是当日已实现波动的一个噪声版本. 预期: 中位 rIC 与 0.058 持平 (5% 内); 若明显下降则本行幅度含振幅之外的信息 (如刚发生的冲击)",

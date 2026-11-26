@@ -30,7 +30,6 @@
 #include <deque>
 #include <functional>
 #include <map>
-#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -44,6 +43,7 @@ struct Root {
   const factor::expr::Expr *e = nullptr;
   factor::stat::Frame f = factor::stat::Frame::CS;
   factor::stat::Dir d = factor::stat::kFwd;
+  factor::stat::Ret r = factor::stat::Ret::Excess; // 收益口径 (因子文件 type; Stat 契约【收益 Ret】)
 };
 
 struct RootSet {
@@ -51,12 +51,12 @@ struct RootSet {
   std::deque<factor::expr::Expr> es;
   std::vector<Root> r;
   std::vector<int> of; // [条目] → 唯一根下标
-  void add(const FeatureTable &ft, const std::string &canon, factor::stat::Frame f, factor::stat::Dir d) {
+  void add(const FeatureTable &ft, const std::string &canon, factor::stat::Frame f, factor::stat::Dir d, factor::stat::Ret ret) {
     size_t k = 0;
-    while (k < r.size() && (r[k].e->canon != canon || r[k].f != f || r[k].d != d))
+    while (k < r.size() && (r[k].e->canon != canon || r[k].f != f || r[k].d != d || r[k].r != ret))
       ++k;
     if (k == r.size())
-      r.push_back({&es.emplace_back(ft.reparse(canon)), f, d});
+      r.push_back({&es.emplace_back(ft.reparse(canon)), f, d, ret});
     of.push_back(static_cast<int>(k));
   }
   size_t size() const { return r.size(); }
@@ -145,11 +145,12 @@ private:
   template <class Ps, class Step>
   void roots(const Forest &F, const std::vector<int> &ks, std::span<Ps> ps, bool last, Step &on_step) {
     factor::cpu::stat::Workspace *w = self().template ready<Ps>(F, ks);
-    const factor::stat::Labels L = self().labels();
+    factor::stat::Labels L = self().labels();
     const uint8_t need = Ps::need_at(last);
     for (size_t j = 0; j < ks.size(); ++j) {
       const int k = ks[j];
       Ps &p = ps[static_cast<size_t>(k)];
+      L.ret = F.r[static_cast<size_t>(k)].r; // 标签同块共用, 收益口径逐根
       const Ctx cx{ex_, block(), L, w, F.r[static_cast<size_t>(k)].d, last};
       p.open(cx);
       const RootView v = self().template view<Ps>(F, k, static_cast<int>(j), cx, need, p);
@@ -518,18 +519,19 @@ private:
       assert(stat_ && "批核先 plant");
       const factor::stat::Frame f = F.r[static_cast<size_t>(ks.front())].f;
       const factor::stat::Dir d = F.r[static_cast<size_t>(ks.front())].d;
+      const factor::stat::Ret ret = F.r[static_cast<size_t>(ks.front())].r;
       std::vector<const factor::gpu::DevPlane *> roots;
       roots.reserve(ks.size());
       for (const int k : ks) {
         const int r = F.d.roots[static_cast<size_t>(k)];
         assert(F.d.nodes[static_cast<size_t>(r)].slot >= 0);
-        assert(F.r[static_cast<size_t>(k)].f == f && F.r[static_cast<size_t>(k)].d == d && "一批同口径同方向");
+        assert(F.r[static_cast<size_t>(k)].f == f && F.r[static_cast<size_t>(k)].d == d && F.r[static_cast<size_t>(k)].r == ret && "一批同口径同方向同收益口径");
         roots.push_back(at(r));
       }
       const factor::stat::Span s = c_->span();
       acc_.resize(ks.size() * static_cast<size_t>(y.hd.n));
       day_.resize(ks.size() * static_cast<size_t>(y.hd.n) * s.days());
-      factor::gpu::stat_eval(stat_, roots.data(), static_cast<int>(ks.size()), gate_, f, d, s.t0_abs, s.t_lo, s.t_back, acc_.data(), day_.data());
+      factor::gpu::stat_eval(stat_, roots.data(), static_cast<int>(ks.size()), gate_, f, d, ret, s.t0_abs, s.t_lo, s.t_back, acc_.data(), day_.data());
       return nullptr;
     }
   }
@@ -573,7 +575,7 @@ private:
       factor::gpu::download(sess_, rp, xv, xm);
       v.x = {xv, xm};
     }
-    factor::gpu::stat_eval(stat_, &rp, 1, gate_, v.f, cx.d, s.t0_abs, s.t_lo, s.t_back, acc_.data(), day_.data(), rows ? rows_.data() : nullptr,
+    factor::gpu::stat_eval(stat_, &rp, 1, gate_, v.f, cx.d, cx.L.ret, s.t0_abs, s.t_lo, s.t_back, acc_.data(), day_.data(), rows ? rows_.data() : nullptr,
                            rx ? rx_.data() : nullptr);
     v.acc = acc_.data();
     v.day = day_.data();

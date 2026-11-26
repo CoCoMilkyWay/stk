@@ -1,5 +1,6 @@
 // Tab Compute Implementation
 #include "gui/compute/ui/TabCompute.hpp"
+#include "disk/Disk.hpp" // 因子列: output/factors/<池>/ 下的因子文件
 #include "features/Storage/FeatureLib.hpp"
 #include "features/Storage/FeatureRead.hpp"
 #include "fundamental/Spec.hpp"
@@ -290,7 +291,14 @@ static void render_libraries(ComputeState &state, SharedData &data, bool is_runn
     ImGui::TextDisabled("%zu / %zu 池", n_shown, n_side);
   }
 
-  constexpr int kPoolColN = 2;
+  constexpr double kFactorRecount = 2.0; // 因子列重数间隔 (秒; 逐池逐层列目录, 不每帧做)
+  if (const double now = ImGui::GetTime(); now - state.factor_files_at >= kFactorRecount) {
+    state.factor_files_at = now;
+    state.factor_files.clear();
+    for (const PoolDef &d : feature_pools())
+      state.factor_files.push_back(disk::list(disk::FactorFile, {.pool = d.name}).size()); // 层段未定 → 逐层展开
+  }
+  constexpr int kPoolColN = 3;
   const int n_cols = kPoolColN + kLibColN * static_cast<int>(tiers.size());
   const float height = ImGui::GetFrameHeightWithSpacing() * (static_cast<float>(std::min<size_t>(n_shown, 24)) + 2.5f);
   if (!ImGui::BeginTable("Libraries", n_cols,
@@ -301,6 +309,7 @@ static void render_libraries(ComputeState &state, SharedData &data, bool is_runn
   ImGui::TableSetupScrollFreeze(kPoolColN, 2);
   ImGui::TableSetupColumn("池");
   ImGui::TableSetupColumn("中文名");
+  ImGui::TableSetupColumn("因子");
   for (const TierId t : tiers)
     for (const char *c : kLibCols)
       ImGui::TableSetupColumn((std::string(c) + "##" + tier_name(t)).c_str());
@@ -340,6 +349,12 @@ static void render_libraries(ComputeState &state, SharedData &data, bool is_runn
     ImGui::TextUnformatted(pd.name_cn.c_str());
     if (ImGui::IsItemHovered())
       GUI::pool_tip(p);
+    ImGui::TableNextColumn();
+    if (const size_t nf = state.factor_files[p]; nf > 0)
+      ImGui::TextColored(StatusColor(TaskStatus::Kind::Ready), "%zu", nf);
+    else
+      ImGui::TextDisabled("0");
+    hover_tip("output/factors/%s/ 下各因子层的因子文件数", pd.name.c_str());
     for (const TierId t : tiers) {
       const LibId l = lib_id(p, t);
       const bool computing = is_running && state.config.lib == l;

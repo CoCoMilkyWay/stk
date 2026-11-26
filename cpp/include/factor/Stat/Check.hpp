@@ -59,6 +59,7 @@ inline constexpr int kCands = 3;
 struct Data {
   Frame frame = Frame::CS;
   Dir dir = kFwd;
+  Ret ret = Ret::Excess;
   Plane x;
   Plane cand[kCands];         // 批的候选平面 (cand[0] = x)
   Plane g;                    // 截面池掩码 (只用 m; factor::check::fill_gate)
@@ -75,14 +76,15 @@ inline Labels labels_of(const Data &d, const std::vector<std::vector<uint16_t>> 
   Labels L;
   L.hd = d.hd;
   L.cap = d.cap;
+  L.ret = d.ret;
   for (int i = 0; i < d.hd.n; ++i)
     L.l[i] = label_of(d.lab[static_cast<size_t>(i)], d.eo, ry.empty() ? nullptr : ry[static_cast<size_t>(i)].data(), off);
   return L;
 }
 
-inline void make(Data &d, Frame f, Dir dir, Profile pr, int T, int A, int seg, std::mt19937 &rng) {
+inline void make(Data &d, Frame f, Dir dir, Ret ret, Profile pr, int T, int A, int seg, std::mt19937 &rng) {
   assert(T % seg == 0 && T >= 2 * seg && "造数按整日, 至少两日 (分块切在日界)");
-  d.frame = f, d.dir = dir;
+  d.frame = f, d.dir = dir, d.ret = ret;
   d.T = T, d.A = A, d.seg = seg;
   d.hd = Holds::of(holds_on(seg));
   assert_holds(d.hd, seg);
@@ -293,8 +295,8 @@ inline void run_gpu(const Data &d, Result &r) {
   r.stat.resize(static_cast<size_t>(H));
   const float *xv = d.x.v.data();
   const uint8_t *xm = d.x.m.data();
-  factor::gpu::run_stat(1, &xv, &xm, d.g.m.data(), d.frame, d.dir, d.T, d.A, d.seg, 0, 0, 0, d.hd, d.cap, lab.data(), acc.data(), r.day.data(), r.rows.data(),
-                        &r.prep_ms, &r.eval_ms);
+  factor::gpu::run_stat(1, &xv, &xm, d.g.m.data(), d.frame, d.dir, d.ret, d.T, d.A, d.seg, 0, 0, 0, d.hd, d.cap, lab.data(), acc.data(), r.day.data(),
+                        r.rows.data(), &r.prep_ms, &r.eval_ms);
   finish_all(acc.data(), dailies(d, r.day.data(), d.span().days()).data(), d.hd, d.seg, r.stat.data());
 }
 
@@ -347,7 +349,7 @@ inline void run_batch_gpu(const Data &d, Block &b) {
     xv[c] = d.cand[c].v.data() + off, xm[c] = d.cand[c].m.data() + off;
   b.acc.assign(static_cast<size_t>(kCands) * H, Accum{});
   b.day.assign(static_cast<size_t>(kCands) * H * s.days(), Day{});
-  factor::gpu::run_stat(kCands, xv, xm, d.g.m.data() + off, d.frame, d.dir, b.rows, d.A, d.seg, b.row0, b.t_lo, b.t_back, d.hd, d.cap, lab.data(),
+  factor::gpu::run_stat(kCands, xv, xm, d.g.m.data() + off, d.frame, d.dir, d.ret, b.rows, d.A, d.seg, b.row0, b.t_lo, b.t_back, d.hd, d.cap, lab.data(),
                         b.acc.data(), b.day.data());
 }
 

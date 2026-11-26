@@ -23,6 +23,7 @@ namespace GUI::Engine {
 struct SearchSpec {
   std::string file, tmpl;
   factor::stat::Frame frame = factor::stat::Frame::CS;
+  factor::stat::Ret ret = factor::stat::Ret::Excess; // 因子文件 type
   HoldId hold = kHoldT1;
   bool fresh = false;
 };

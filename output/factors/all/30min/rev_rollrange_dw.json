@@ -1,5 +1,5 @@
 {
- "type": "alpha",
+ "type": "excess",
  "name_cn": "反转加滚动幅度联搜",
  "expr": "CsRank(CsLinRankFix(TsLogRatio(bar.30m.close_30min, TsDelayRoll(bar.30m.close_30min, d=1)), TsMeanRoll(TsLogRatio(bar.30m.high_30min, bar.30m.low_30min), d), w))",
  "note": "重建可比基准: 已试候选全部 BROKEN (R3), rev_rollrange 同式不能重评. 相对 rev_rollrange 只把滚动幅度窗 d=21 放开与权一起搜. I2 说 d 不敏感 (各点中位 0.064), 预期中位 rIC 与 0.066 持平 (5% 内), 搜出的 d 在 10~40 行; 若明显低于 0.062 则 I2 的结论在当前数据上不复现",
@@ -9,7 +9,7 @@
  "search": [
   {"hold":"30m","start_date":"2025-11-26","end_date":"2026-11-25","days":242}
  ],
- "run": {"stat_ver":8,"pool":"all","start_date":"2025-11-26","end_date":"2026-11-25","years":1,"days":242,"frame":"CS","max_impact":0.01,"n_full":274.6},
+ "run": {"stat_ver":8,"pool":"all","start_date":"2025-11-26","end_date":"2026-11-25","years":1,"days":242,"frame":"CS","ret":"excess","max_impact":0.01,"n_full":274.6},
  "hold_cols": ["hold","n","n_rac","n_all","n_trig","ric_mean","ric_sd","ric_ir","ric_t","ric_pos","rac_mean","rac_sd","ls_mean","ls_sd","ls_ir","ls_t","ls_pos","beta","mono","end_n","ann","sharpe","grp"],
  "turn_cols": ["top.vol_buy","top.vol_sell","top.stuck_buy","top.stuck_sell","top.imp5w_buy","top.imp5w_sell","top.imp30w_buy","top.imp30w_sell","bot.vol_buy","bot.vol_sell","bot.stuck_buy","bot.stuck_sell","bot.imp5w_buy","bot.imp5w_sell","bot.imp30w_buy","bot.imp30w_sell"],
  "stats": [

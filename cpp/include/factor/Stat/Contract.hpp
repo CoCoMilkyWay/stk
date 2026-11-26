@@ -25,12 +25,15 @@
 //     二级 Day[H][D]  每 (持有期, 统计日) 的 ok 行数 / Σ rIC / Σ 多空 / 各组 Σ grp (滚动窗 / 日净值 Sharpe / 分年的原料); 恒出
 //     三级 HoldStat   每持有期沿 T 轴汇总 (Fold.hpp; 主机 double, 两后端共用同一份代码); 恒出
 //
-//   【口径 Frame】alpha 因子分两种坐标系, 由因子表达式的根算子决定 (Expr.hpp root_frame). 标签**统一超额语义**:
-//     e = lv − mean_J lv, 每 t 的共同分量 (市场水平 / 市场择时) 被扔掉, 评的都是"相对市场";
+//   【口径 Frame】因子分两种坐标系, 由因子表达式的根算子决定 (Expr.hpp root_frame):
 //     CS  截面: 根是截面归一算子 (CsRank / CsNormRank / CsZ). 每 t 沿 A 轴 rank x (排序) → 20 组 = 截面分位组;
 //     TS  时序: 根是 TsRankRoll(d = ts_norm_d(seg), 整数个交易日), 输出已是每资产对自身滚动历史的分位 ∈ [0,1];
 //         不排序, 直接量化 r16 = round(x · kRankMax) (r16_quant) → 20 组 = 自身历史分位组.
-//     两口径之后逐字共用: grp_of / rIC / 超额 / 持仓口径 / 尾部 / ls / mkt / rAC / 二级汇总. 组允许空 (空组收益 0).
+//     两口径之后逐字共用: grp_of / rIC / 收益 / 持仓口径 / 尾部 / ls / mkt / rAC / 二级汇总. 组允许空 (空组收益 0).
+//   【收益 Ret】组 / 尾部的持仓收益按因子的收益口径 (因子文件 type, 人定; 标签 Labels::ret, 逐根给):
+//     Excess 超额: e = lv − mkt (mkt = mean_J lv), 每 t 的共同分量 (市场水平 / 市场择时) 被扔掉, 评的是"相对市场";
+//     Abs    绝对: e = lv, 留着市场分量, 评的是"能不能赚绝对收益" (择时).
+//     rIC / rAC / mkt 与口径无关 (截面秩不受每 t 的平移影响); 满仓组两口径只差同一个 mkt, LS / mono 近乎不变, 差别主要在 TS 口径 (组随时间不满).
 //
 //   【持仓口径】每组资金固定为 1, 满仓 cap = Labels::cap 只 (调用方给 n_full = 池内平均有效资产数 / kGroups, 与因子无关), 每只 1/cap:
 //     真持有 n 只 → 持仓 min(n, cap) / cap, 超过 cap 满仓在 n 只里均分 → 组收益 = Σe / max(n, cap) (book_den); 未持有 → 0.
@@ -38,11 +41,11 @@
 //   【rank 口径】精确并列均秩 (排序, 不用桶近似): r16 = round(pct · kRankMax) ∈ [0, kRankMax], 全整数公式 (r16_of), 两后端逐位一致;
 //     kRankNone = 无效. 行有效样本 n < 2 或全并列 → 整行 kRankNone. rank(x) 只看 x 的有效集, rank(y) 只看 y 的有效集; 两者的联合集 J 上算统计.
 //
-//   【一级 Row (每 h, t)】J = {a : rx ≠ None ∧ ry ≠ None}; e = 超额标签 lv − mkt
+//   【一级 Row (每 h, t)】J = {a : rx ≠ None ∧ ry ≠ None}; e = 按【收益 Ret】的标签 (超额 lv − mkt / 绝对 lv)
 //     ric    rank IC = Pearson(r16_x, r16_y) over J (整数五和 → pearson_int, 两后端逐位一致)
 //     grp[k] 第 k 组 (k = grp_of(r16_x)) 的持仓收益 Σe / max(cnt, cap); cnt[k] = 组真持有只数 (Pos.hpp)
 //     tail   两端组内更极端的一截 (【尾部】), 同口径 Σe / max(n, cap · tail_frac(j))
-//     ls_row 多空 = ½ (grp[K−1] − grp[0]); mkt = J 上 lv 均值 (超额基准, 二级回归 beta 用)
+//     ls_row 多空 = ½ (grp[K−1] − grp[0]); mkt = J 上 lv 均值 (超额基准, 二级回归 beta 用; 两口径都出)
 //     ok     标签侧有效: 开仓行 (Hold::opens) ∧ ric 可算 (n ≥ 2, 两侧方差 > 0). rac = Pearson(r16_x(t), r16_x(t−h)) (lag = h 行), ok_rac 同理.
 //     ok / ok_rac 为假时对应字段全 0. J / ric / mkt 与可成交无关; grp / cnt / tail 只收真持有的格.
 //
@@ -94,6 +97,12 @@ inline constexpr uint8_t kEoBuy = 1, kEoSell = 2;
 enum class Frame : uint8_t { CS,
                              TS };
 inline constexpr const char *frame_name(Frame f) { return f == Frame::CS ? "CS" : "TS"; }
+
+// ---- 收益口径 (【收益 Ret】) ----
+enum class Ret : uint8_t { Excess,
+                           Abs };
+inline constexpr const char *ret_token(Ret r) { return r == Ret::Excess ? "excess" : "absolute"; } // 因子文件 type / run.ret 的写法
+inline constexpr const char *ret_name(Ret r) { return r == Ret::Excess ? "超额" : "绝对"; }        // 显示
 
 // ---- 持有期集合在层上 (几何见 define/Label.hpp Hold) ----
 inline HoldSet holds_on(int seg) {
@@ -148,7 +157,8 @@ struct Batch { // C 个同形候选 (同池 g / 同口径 / 同方向 / 同标�
 struct Labels { // l[i] ↔ hd.k[i]
   Holds hd;
   Label l[kHoldCount];
-  double cap = 0.0; // 满仓一组只数 (【持仓口径】; 调用方给 n_full)
+  double cap = 0.0;      // 满仓一组只数 (【持仓口径】; 调用方给 n_full)
+  Ret ret = Ret::Excess; // 组 / 尾部的收益口径 (【收益 Ret】; 逐根给)
 };
 struct Span { // 块形 + 层几何 + 分块流式; 整张量 t0_abs = t_lo = t_back = 0
   int T = 0, A = 0;
@@ -193,9 +203,9 @@ FACTOR_HD inline constexpr bool in_tail(int e, unsigned r, int j) { return e == 
 struct Row {
   float ric = 0.f, rac = 0.f;
   float mkt = 0.f;                     // J 上做多收益均值 (超额基准)
-  float grp[kGroups] = {};             // 组的超额持仓收益 Σe / max(cnt, cap)
+  float grp[kGroups] = {};             // 组的持仓收益 Σe / max(cnt, cap) (按 Labels::ret)
   uint16_t cnt[kGroups] = {};          // 组真持有只数 (A ≤ kMaxA < 65536)
-  float tail[kEnds][kTails] = {};      // 两端尾部的超额持仓收益 Σe / max(n, cap · tail_frac)
+  float tail[kEnds][kTails] = {};      // 两端尾部的持仓收益 Σe / max(n, cap · tail_frac) (按 Labels::ret)
   uint16_t tail_n[kEnds][kTails] = {}; // 两端尾部真持有只数
   uint8_t ok = 0, ok_rac = 0;
 };
@@ -265,31 +275,35 @@ FACTOR_HD inline float pearson_int(const unsigned long long *s, bool &ok) {
 
 // 持仓分母 = max(只数, cap)
 FACTOR_HD inline double book_den(double n, double cap) { return n > cap ? n : cap; }
-// 一本的超额持仓收益 = (Σlv − 只数 · 基准) / 分母; 空 → 0
-FACTOR_HD inline double book_excess(double sum, double n, double base, double cap) { return (sum - n * base) / book_den(n, cap); }
-// 超额持仓收益 → 绝对持仓收益
-inline double book_abs(double excess, double n, double base, double cap) { return excess + n * base / book_den(n, cap); }
+// 一本的持仓收益 = (Σlv − 只数 · 基准) / 分母 (基准 = mkt → 超额, 0 → 绝对); 空 → 0
+FACTOR_HD inline double book_ret(double sum, double n, double base, double cap) { return (sum - n * base) / book_den(n, cap); }
+// 一本的持仓收益从口径 from 改读成 to (两口径只差 只数 · mkt / 分母)
+inline double book_as(double v, double n, double mkt, double cap, Ret from, Ret to) {
+  const double shift = n * mkt / book_den(n, cap);
+  return from == to ? v : to == Ret::Abs ? v + shift
+                                         : v - shift;
+}
 
-// 一行标签侧的收尾 (两后端同一份): J 上整数五和 s → ric; 组和 gs / gc + 尾部和 ts / tc → grp / cnt / tail / tail_n; 基准 → mkt.
+// 一行标签侧的收尾 (两后端同一份): J 上整数五和 s → ric; 组和 gs / gc + 尾部和 ts / tc → grp / cnt / tail / tail_n (按口径 ret); 基准 → mkt.
 //   sm = J 上 Σlv; cap = 满仓. 不 ok → r 标签侧字段保持 0
 FACTOR_HD inline void finish_row(const unsigned long long *s, double sm, const double *gs, const int *gc, const double (*ts)[kTails], const int (*tc)[kTails],
-                                 double cap, Row &r) {
+                                 double cap, Ret ret, Row &r) {
   bool icok = false;
   const float ric = pearson_int(s, icok);
   if (!icok)
     return;
-  const double mkt = sm / static_cast<double>(s[kSn]);
+  const double mkt = sm / static_cast<double>(s[kSn]), base = ret == Ret::Excess ? mkt : 0.0;
   r.ok = 1;
   r.ric = ric;
   r.mkt = static_cast<float>(mkt);
   for (int k = 0; k < kGroups; ++k) {
     r.cnt[k] = static_cast<uint16_t>(gc[k]);
-    r.grp[k] = static_cast<float>(book_excess(gs[k], gc[k], mkt, cap));
+    r.grp[k] = static_cast<float>(book_ret(gs[k], gc[k], base, cap));
   }
   for (int e = 0; e < kEnds; ++e)
     for (int j = 0; j < kTails; ++j) {
       r.tail_n[e][j] = static_cast<uint16_t>(tc[e][j]);
-      r.tail[e][j] = static_cast<float>(book_excess(ts[e][j], tc[e][j], mkt, cap * tail_frac(j)));
+      r.tail[e][j] = static_cast<float>(book_ret(ts[e][j], tc[e][j], base, cap * tail_frac(j)));
     }
 }
 

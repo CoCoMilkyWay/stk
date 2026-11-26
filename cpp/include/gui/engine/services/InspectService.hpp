@@ -34,8 +34,9 @@ struct InspectSpec {
 };
 using InspectRequest = Request<InspectSpec>;
 
-inline std::string inspect_key(FactorLevelId lv, const std::string &pool, int years, const std::string &row, const std::string &expr, factor::stat::Dir dir) {
-  return std::string(factor_level(lv).name) + "|" + row + "|" + expr + (dir == factor::stat::kRev ? "|-" : "|+") + "|" + pool + "|" + std::to_string(years) + "y";
+inline std::string inspect_key(FactorLevelId lv, const std::string &pool, int years, const std::string &row, const FactorRef &f) {
+  return std::string(factor_level(lv).name) + "|" + row + "|" + f.expr + (f.dir == factor::stat::kRev ? "|-" : "|+") + "|" + factor::stat::ret_token(f.ret) + "|" +
+         pool + "|" + std::to_string(years) + "y";
 }
 bool MakeInspectRequest(const SharedData &data, std::shared_ptr<const FeatureTable> ft, const std::string &pool, int years, const FactorRow &row, bool reload,
                         bool gpu, InspectExport ex, int top_n, InspectRequest &req);

@@ -146,7 +146,8 @@ __global__ void fused(const FuseArgs a, float *ov, uint8_t *om, int T, int A, in
 #undef G_FUSE_ROLL
 #undef G_FUSE_EXPAND
 #undef G_FUSE_POINT
-            default : assert(false && "融合步只装定元 POINT × SELF 算子");
+      default:
+        assert(false && "融合步只装定元 POINT × SELF 算子");
       }
     }
     ov[i] = r[a.f.n - 1].v;
@@ -477,8 +478,8 @@ void stat_load(StatSession *s, const factor::stat::Label *lab, double *prep_ms) 
   s->loaded = true;
 }
 
-void stat_eval(StatSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, factor::stat::Dir d, int t0_abs, int t_lo, int t_back,
-               factor::stat::Accum *acc, factor::stat::Day *day, factor::stat::Row *rows, uint16_t *rx, double *eval_ms) {
+void stat_eval(StatSession *s, const DevPlane *const *x, int C, const DevPlane *g, factor::stat::Frame f, factor::stat::Dir d, factor::stat::Ret r, int t0_abs,
+               int t_lo, int t_back, factor::stat::Accum *acc, factor::stat::Day *day, factor::stat::Row *rows, uint16_t *rx, double *eval_ms) {
   assert(s && s->loaded && x && C >= 1 && C <= s->Cmax && g && g->m && acc && day);
   assert((C == 1 || (!rows && !rx)) && "一级 / r16 只单候选可拷回");
   factor::stat::Span sp = s->s; // 分片数随 t_lo / t_back 只减 (open 按两者 = 0 的上界分配)
@@ -493,10 +494,12 @@ void stat_eval(StatSession *s, const DevPlane *const *x, int C, const DevPlane *
   if (eval_ms)
     s->tm.begin();
   stat::rank_x(B, g->m, f, d, sp, s->rx.p, nullptr);
+  factor::stat::Labels L = s->lab.L; // 收益口径逐批给, 标签常驻
+  L.ret = r;
   if (C == 1)
-    stat::accum_rows(sp, s->rx.p, s->lab.L, s->w, nullptr);
+    stat::accum_rows(sp, s->rx.p, L, s->w, nullptr);
   else
-    stat::accum_batch(sp, s->rx.p, C, s->lab.L, s->w, nullptr);
+    stat::accum_batch(sp, s->rx.p, C, L, s->w, nullptr);
   if (eval_ms)
     *eval_ms = s->tm.end();
   const size_t H = static_cast<size_t>(s->lab.L.hd.n), D = static_cast<size_t>(sp.days());
@@ -518,8 +521,8 @@ size_t stat_bytes(const StatSession *s) {
   return s ? s->lab.bytes() + s->rx.bytes() + s->rows.bytes() + s->part.bytes() + s->acc.bytes() + s->day.bytes() : 0;
 }
 
-void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, factor::stat::Dir d, int T, int A, int seg,
-              int t0_abs, int t_lo, int t_back, const Holds &hd, double cap, const factor::stat::Label *lab, factor::stat::Accum *acc,
+void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, factor::stat::Frame f, factor::stat::Dir d, factor::stat::Ret r, int T,
+              int A, int seg, int t0_abs, int t_lo, int t_back, const Holds &hd, double cap, const factor::stat::Label *lab, factor::stat::Accum *acc,
               factor::stat::Day *day, factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
   assert(C >= 1 && C <= stat::kMaxBatch && xv && xm && gm);
   const size_t n = static_cast<size_t>(T) * A;
@@ -537,7 +540,7 @@ void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uin
   const DevPlane gp{nullptr, g.p};
   StatSession *s = stat_open(T, A, seg, C, hd, cap);
   stat_load(s, lab, prep_ms);
-  stat_eval(s, xpp.data(), C, &gp, f, d, t0_abs, t_lo, t_back, acc, day, rows, nullptr, eval_ms);
+  stat_eval(s, xpp.data(), C, &gp, f, d, r, t0_abs, t_lo, t_back, acc, day, rows, nullptr, eval_ms);
   stat_close(s);
   for (int c = 0; c < C; ++c)
     x[static_cast<size_t>(c)].free_(), m[static_cast<size_t>(c)].free_();

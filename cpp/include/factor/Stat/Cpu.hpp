@@ -119,7 +119,7 @@ inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels
         for (int i = 0; i < H; ++i) {
           const Hold hd = hold_on(L.hd.k[i], s.g);
           const Row r = row_stat(rx + base, t >= hd.h ? rx + base - static_cast<size_t>(hd.h) * A : nullptr, L.l[i].at(base), factor::stat::chain_of(t, s, hd), L.cap,
-                                 hd.opens(s.t0_abs + t));
+                                 L.ret, hd.opens(s.t0_abs + t));
           sink.row(i, t, r);
           a[i].add(r);
           day[static_cast<size_t>(i) * D + dd].add(r);

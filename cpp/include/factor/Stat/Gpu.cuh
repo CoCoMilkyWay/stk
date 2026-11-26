@@ -61,7 +61,7 @@ __global__ void __launch_bounds__(kWB, 2) label_rows(Span s, const uint16_t *rx,
   for (int hi = 0; hi < L.hd.n; ++hi) { // warp 一致量, 不发散
     const Hold hd = hold_on(L.hd.k[hi], s.g);
     const Row r = dev::row_stat(xr, t >= hd.h ? xr - static_cast<size_t>(hd.h) * s.A : nullptr, L.l[hi].at(base), factor::stat::chain_of(t, s, hd), L.cap,
-                                hd.opens(s.t0_abs + t), sh.gs[warp], sh.gc[warp], lane);
+                                L.ret, hd.opens(s.t0_abs + t), sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0)
       rows[static_cast<size_t>(hi) * s.T + t] = r;
   }
@@ -133,7 +133,7 @@ __global__ void __launch_bounds__(kWB, 2) stat_batch(const uint16_t *rx, int C, 
     const size_t base = static_cast<size_t>(t) * A;
     const uint16_t *xr = rxc + base;
     const uint16_t *xl = t >= h ? xr - static_cast<size_t>(h) * A : nullptr;
-    const Row r = dev::row_stat(xr, xl, lb.at(base), factor::stat::chain_of(t, s, hd), L.cap, hd.opens(s.t0_abs + t), sh.gs[warp], sh.gc[warp], lane);
+    const Row r = dev::row_stat(xr, xl, lb.at(base), factor::stat::chain_of(t, s, hd), L.cap, L.ret, hd.opens(s.t0_abs + t), sh.gs[warp], sh.gc[warp], lane);
     if (lane == 0) {
       head.add(r);
       cur.add_head(r);

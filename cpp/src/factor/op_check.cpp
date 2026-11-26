@@ -328,7 +328,7 @@ void check_fuse(int A, unsigned seed, Report &rep) {
 }
 
 // Stat 评估算子 (不在 OpTable: 输出是 rows[H][T] + day[H][D] + 每持有期标量, 无流式后端): cpu ↔ gpu 两方 match 即过.
-//   层 × 两口径 (CS / TS) × 两方向 × profile 全扫 (持有期取本层合法的全部); 无 GPU 时只跑 cpu 并打印三级汇总 (-v), 不算失败
+//   层 × 两口径 (CS / TS) × 两方向 × 两收益口径 (超额 / 绝对) × profile 全扫 (持有期取本层合法的全部); 无 GPU 时只跑 cpu 并打印三级汇总 (-v), 不算失败
 void check_stat(int A, unsigned seed, Report &rep) {
   namespace sc = factor::stat::check; // 与 factor::check 同名的 Data / Tol 等, 全限定
   ++rep.ops;
@@ -337,42 +337,43 @@ void check_stat(int A, unsigned seed, Report &rep) {
   for_segs(rep, [&](int S) {
     const int T = rows_of(rep, S);
     for (const factor::stat::Frame fr : {factor::stat::Frame::CS, factor::stat::Frame::TS})
-      for (const factor::stat::Dir dir : {factor::stat::kFwd, factor::stat::kRev}) {
-        const char *fname = factor::stat::frame_name(fr);
-        char tag_rows[32], tag_day[32], tag_stat[32];
-        std::snprintf(tag_rows, sizeof(tag_rows), "Stat.%s%s.rows", fname, dir ? "-" : "");
-        std::snprintf(tag_day, sizeof(tag_day), "Stat.%s%s.day", fname, dir ? "-" : "");
-        std::snprintf(tag_stat, sizeof(tag_stat), "Stat.%s%s.stat", fname, dir ? "-" : "");
-        for (int pi = 0; pi < kProfiles; ++pi) {
-          const Profile pr = static_cast<Profile>(pi);
-          std::mt19937 rng(seed + 1000u * pi);
-          sc::Data d;
-          sc::make(d, fr, dir, pr, T, A, S, rng);
-          sc::Result cpu;
-          sc::run_cpu(d, cpu, threads);
-          if (rep.verbose)
-            for (const factor::stat::HoldStat &s : cpu.stat)
-              std::printf("       Stat.%s cpu    S=%-3d h=%-5s %-8s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
-                          "Sharpe %+.2f beta %+.3f  mono %+.3f  rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f\n",
-                          fname, S, hold_name(s.hold).c_str(), kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls.mean, s.ls.t,
-                          s.ls.pos, factor::stat::sharpe_of(s), s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
-          if (!factor::gpu::available())
-            continue;
-          sc::Result gpu;
-          sc::run_gpu(d, gpu);
-          const Tol tol = sc::tol_of(pr);
-          const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
-          const Diff dd = sc::compare_days(cpu.day.data(), gpu.day.data(), cpu.day.size(), tol);
-          const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
-          ++rep.cases;
-          if (!dr.ok() || !dd.ok() || !ds.ok())
-            ++rep.gpu_bad;
-          Param p;
-          emit(rep, tag_rows, S, p, kProfName[pi], "gpu", dr, op_bad);
-          emit(rep, tag_day, S, p, kProfName[pi], "gpu", dd, op_bad);
-          emit(rep, tag_stat, S, p, kProfName[pi], "gpu", ds, op_bad);
+      for (const factor::stat::Dir dir : {factor::stat::kFwd, factor::stat::kRev})
+        for (const factor::stat::Ret ret : {factor::stat::Ret::Excess, factor::stat::Ret::Abs}) {
+          const char *fname = factor::stat::frame_name(fr), *rs = ret == factor::stat::Ret::Abs ? ".abs" : "";
+          char tag_rows[32], tag_day[32], tag_stat[32];
+          std::snprintf(tag_rows, sizeof(tag_rows), "Stat.%s%s%s.rows", fname, dir ? "-" : "", rs);
+          std::snprintf(tag_day, sizeof(tag_day), "Stat.%s%s%s.day", fname, dir ? "-" : "", rs);
+          std::snprintf(tag_stat, sizeof(tag_stat), "Stat.%s%s%s.stat", fname, dir ? "-" : "", rs);
+          for (int pi = 0; pi < kProfiles; ++pi) {
+            const Profile pr = static_cast<Profile>(pi);
+            std::mt19937 rng(seed + 1000u * pi);
+            sc::Data d;
+            sc::make(d, fr, dir, ret, pr, T, A, S, rng);
+            sc::Result cpu;
+            sc::run_cpu(d, cpu, threads);
+            if (rep.verbose)
+              for (const factor::stat::HoldStat &s : cpu.stat)
+                std::printf("       Stat.%s cpu    S=%-3d h=%-5s %-8s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f  LS %+.5f t %+.2f pos %.2f "
+                            "Sharpe %+.2f beta %+.3f  mono %+.3f  rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f\n",
+                            fname, S, hold_name(s.hold).c_str(), kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls.mean, s.ls.t,
+                            s.ls.pos, factor::stat::sharpe_of(s), s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
+            if (!factor::gpu::available())
+              continue;
+            sc::Result gpu;
+            sc::run_gpu(d, gpu);
+            const Tol tol = sc::tol_of(pr);
+            const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
+            const Diff dd = sc::compare_days(cpu.day.data(), gpu.day.data(), cpu.day.size(), tol);
+            const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);
+            ++rep.cases;
+            if (!dr.ok() || !dd.ok() || !ds.ok())
+              ++rep.gpu_bad;
+            Param p;
+            emit(rep, tag_rows, S, p, kProfName[pi], "gpu", dr, op_bad);
+            emit(rep, tag_day, S, p, kProfName[pi], "gpu", dd, op_bad);
+            emit(rep, tag_stat, S, p, kProfName[pi], "gpu", ds, op_bad);
+          }
         }
-      }
   });
   if (op_bad)
     ++rep.ops_bad;
@@ -397,7 +398,7 @@ void check_batch(int A, unsigned seed, Report &rep) {
         const Profile pr = static_cast<Profile>(pi);
         std::mt19937 rng(seed + 1000u * pi);
         sc::Data d;
-        sc::make(d, fr, factor::stat::kFwd, pr, T, A, S, rng);
+        sc::make(d, fr, factor::stat::kFwd, factor::stat::Ret::Excess, pr, T, A, S, rng);
         const Tol tol = sc::tol_of(pr);
         sc::Result ref[sc::kCands];
         for (int c = 0; c < sc::kCands; ++c)

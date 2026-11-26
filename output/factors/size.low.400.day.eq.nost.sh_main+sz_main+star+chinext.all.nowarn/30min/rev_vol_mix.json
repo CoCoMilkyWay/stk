@@ -1,5 +1,5 @@
 {
- "type": "alpha",
+ "type": "excess",
  "name_cn": "反转加低波",
  "expr": "CsRank(CsLinRankFix(TsLogRatio(TsMul(bar.30m.close_30min, bar.1d.adj_factor), TsDelayRoll(TsMul(bar.30m.close_30min, bar.1d.adj_factor), d)), TsStdRoll(TsLogRatio(bar.30m.close_30min, bar.30m.open_30min), d), w))",
  "note": "相对 rev_adj_d 加一项: 近 d 行 30 分钟 K 线内收益的标准差 (短窗波动). #8 view_explain 显示 rev_adj_d 与波动 / 成交额几乎不相关 (秩相关 0.03), 而短窗波动自身 rIC -0.061 (#9 E4), 剥它不伤反转; 机制: 小盘里价格过度反应回吐 + 高波彩票票被高估两路独立证据. 预期中位 rIC 明显高于 0.048, w 搜出同号 (两者都取反)",

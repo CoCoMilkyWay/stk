@@ -137,9 +137,9 @@ inline void lag_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   r.ok_rac = ok ? 1u : 0u;
 }
 
-// 标签侧 (t → t+h): rx = 本行 r16 (已定向), lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓
+// 标签侧 (t → t+h): rx = 本行 r16 (已定向), lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓, ret = 收益口径
 //   → r 的 ric / mkt / grp / cnt / tail / ok. ric / mkt 在 J 上 (与可成交无关); 组与尾部只收真持有的格 (一格一次 cell 出层级), 收益按续持取名义值
-inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, Row &r) {
+inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, factor::stat::Ret ret, Row &r) {
   unsigned long long s[kSums] = {};
   double sm = 0.0, gs[kGroups] = {}, ts[kEnds][kTails] = {};
   int gc[kGroups] = {}, tc[kEnds][kTails] = {};
@@ -165,16 +165,16 @@ inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::C
       ++tc[e][j];
     }
   }
-  factor::stat::finish_row(s, sm, gs, gc, ts, tc, cap, r);
+  factor::stat::finish_row(s, sm, gs, gc, ts, tc, cap, ret, r);
 }
 
-// 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; opens = 开仓行 (Hold::opens)
-inline Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, double cap, bool opens) {
+// 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; ret = 收益口径; opens = 开仓行 (Hold::opens)
+inline Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, double cap, factor::stat::Ret ret, bool opens) {
   Row r;
   if (rlag)
     lag_row(rx, rlag, c.A, r);
   if (opens)
-    label_row(rx, lb, c, cap, r);
+    label_row(rx, lb, c, cap, ret, r);
   return r;
 }
 

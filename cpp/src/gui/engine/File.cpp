@@ -52,6 +52,20 @@ std::string stat_block(const ojson &st) {
   return "{" + head + body + "}";
 }
 
+// type 键 (收益口径 token) → Ret; 缺 / 不合 → false (J = json / ordered_json)
+template <class J>
+bool json_ret(const J &o, factor::stat::Ret &r) {
+  const auto it = o.find("type");
+  if (it == o.end() || !it->is_string())
+    return false;
+  for (const factor::stat::Ret x : {factor::stat::Ret::Excess, factor::stat::Ret::Abs})
+    if (it->template get_ref<const std::string &>() == factor::stat::ret_token(x)) {
+      r = x;
+      return true;
+    }
+  return false;
+}
+
 // 持有期键 hold (token) → HoldId; 缺 / 不合 → false
 bool json_hold(const json &o, HoldId &h) {
   const auto it = o.find("hold");
@@ -200,15 +214,8 @@ void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTa
     return;
   }
   r.expr_raw = eit->get<std::string>();
-  // type: 必填; beta 不评估
-  if (json_str_is(j, "type", kind_name(FactorKind::Beta))) {
-    r.kind = FactorKind::Beta;
-    r.error = "beta 类因子不评估";
-    emit(r);
-    return;
-  }
-  if (!json_str_is(j, "type", kind_name(FactorKind::Alpha))) {
-    r.error = "缺 type 键或值不合 (alpha | beta)";
+  if (!json_ret(j, r.ret)) {
+    r.error = "缺 type 键或值不合 (excess | absolute)";
     emit(r);
     return;
   }
@@ -302,7 +309,7 @@ void ScanFactorFile(const FactorDir &dir, std::string_view file, const FeatureTa
     w.n_feats = static_cast<int>(d.feats.size());
     w.n_slots = d.n_slots;
     // stat 是派生数据: 不合 / 口径与当前根不符 → 整块忽略 (不算 BROKEN, 下次 Run 覆盖)
-    if (stats && load_eval(*run, (*stats)[i], ft.seg, w.frame, w))
+    if (stats && load_eval(*run, (*stats)[i], ft.seg, w.frame, w.ret, w))
       w.has_stat = w.stat_from_file = true;
     emit(w);
   }
@@ -324,7 +331,7 @@ std::string AddFactorFile(const FactorDir &dir, const FeatureTable &feats, std::
     return "";
   }
   ojson j;
-  j["type"] = kind_name(FactorKind::Alpha);
+  j["type"] = factor::stat::ret_token(factor::stat::Ret::Excess);
   j["name_cn"] = std::string(name_cn);
   j["expr"] = e.canon;
   if (!note.empty())
@@ -349,7 +356,8 @@ std::string UpdateFactorFile(const FactorDir &dir, const FeatureTable &feats, st
   ojson j = ojson::parse(disk::read(dir.file, dir.of(file)), nullptr, /*allow_exceptions=*/false);
   if (!j.is_object())
     j = ojson::object();
-  j["type"] = kind_name(FactorKind::Alpha); // 构建器只造 alpha
+  if (factor::stat::Ret r; !json_ret(j, r))
+    j["type"] = factor::stat::ret_token(factor::stat::Ret::Excess);
   j["name_cn"] = std::string(name_cn);
   bool expr_changed = true; // 按规范串比 (文件原串可能是非规范写法)
   if (const auto old_expr = j.find("expr"); old_expr != j.end() && old_expr->is_string()) {
@@ -377,6 +385,15 @@ std::string UpdateFactorFile(const FactorDir &dir, const FeatureTable &feats, st
 void DeleteFactorFile(const FactorDir &dir, std::string_view file) {
   assert(disk::exists(dir.file, dir.of(file)));
   disk::remove(dir.file, dir.of(file));
+}
+
+void SetFactorType(const FactorDir &dir, std::string_view file, factor::stat::Ret ret) {
+  ojson j = read_json(dir, file);
+  j["type"] = factor::stat::ret_token(ret);
+  j.erase("weights");
+  j.erase("search");
+  erase_stats(j);
+  write_json(dir, file, j);
 }
 
 void WriteFactorSearch(const FactorDir &dir, std::string_view file, bool fresh, const SearchMark &mk, const std::vector<SearchWeight> &ws) {
@@ -435,7 +452,7 @@ void WriteFactorStats(const FactorDir &dir, const std::vector<const FactorRow *>
     j["weights"] = ojson::array({w});
   }
   const size_t nw = j["weights"].size();
-  const ojson run = scope_json(r0.scope, r0.frame);
+  const ojson run = scope_json(r0.scope, r0.frame, r0.ret);
   const auto old_run = j.find("run");
   const auto old_stats = j.find("stats");
   const bool keep = old_run != j.end() && *old_run == run && json_cols_are(j, "hold_cols", hold_cols()) && json_cols_are(j, "turn_cols", turn_cols()) &&
@@ -447,7 +464,7 @@ void WriteFactorStats(const FactorDir &dir, const std::vector<const FactorRow *>
     const size_t w = static_cast<size_t>(r->widx);
     assert(r->widx >= 0 && !r->expr.empty() && r->has_stat && !r->stat_from_file && r->file == r0.file);
     assert(w < nw && j["weights"][w].is_object() && "权重项与扫描时不符");
-    assert(scope_json(r->scope, r->frame) == run && "同文件一轮评估同一 run 口径");
+    assert(scope_json(r->scope, r->frame, r->ret) == run && "同文件一轮评估同一 run 口径");
     stats[w] = eval_json(*r);
   }
   j["run"] = run;

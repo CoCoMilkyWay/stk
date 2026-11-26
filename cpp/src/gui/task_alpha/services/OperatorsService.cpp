@@ -198,7 +198,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
   for (const factor::stat::Frame fr : kFrames) {
     std::mt19937 rng(R.rq.seed);
     Data d;
-    make(d, fr, factor::stat::kFwd, Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
+    make(d, fr, factor::stat::kFwd, factor::stat::Ret::Excess, Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
     Result cpu;
     run_cpu(d, cpu, misc::exec::hw());
     row.cpu_ms += cpu.eval_ms;
@@ -242,7 +242,7 @@ void run_search(RoundCtx &R, OperatorRow &row) {
   for (const factor::stat::Frame fr : kFrames) {
     std::mt19937 rng(R.rq.seed);
     sc::Data d;
-    sc::make(d, fr, factor::stat::kFwd, sc::Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
+    sc::make(d, fr, factor::stat::kFwd, factor::stat::Ret::Excess, sc::Profile::PLAIN, R.rq.times, R.rq.A, factor::kSegMax, rng);
     const int H = d.hd.n, days = d.T / factor::kSegMax;
     const sc::Tol tol = sc::tol_of(sc::Profile::PLAIN);
     sc::Result ref[sc::kCands];

@@ -17,7 +17,6 @@
 #include "misc/exec.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -38,8 +37,9 @@ struct Cover {
 void cover_rows(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, const uint8_t *gate, int t0, int t1, int A, Cover &o);
 void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, int d, AlphaDist &o);
 MiniPdf mini_pdf_of(const AggPdf &p);
-inline double group_abs(const factor::stat::Row &r, int k, double cap) {
-  return r.ok ? factor::stat::book_abs(r.grp[k], r.cnt[k], r.mkt, cap) : 0.0;
+// 行 r (组 / 尾部按口径 from 存) 的第 k 组持仓收益改读成口径 to; 不 ok → 0
+inline double group_as(const factor::stat::Row &r, int k, double cap, factor::stat::Ret from, factor::stat::Ret to) {
+  return r.ok ? factor::stat::book_as(r.grp[k], r.cnt[k], r.mkt, cap, from, to) : 0.0;
 }
 
 // ---- 探针契约与折叠容器 Probes<P...> ----
@@ -319,27 +319,27 @@ struct IcPdfP : RowsP<IcPdfP, float> {
 };
 
 // 分层 / 尾部 / LS 的逐行批收益 → fold_ledger 日净值线 (Inspect: 全部持有期 × kNavLines; agent eval_factor: 一个持有期 × kNavExcess)
-inline double tail_abs(const factor::stat::Row &r, int e, int j, double cap) {
-  return r.ok ? factor::stat::book_abs(r.tail[e][j], r.tail_n[e][j], r.mkt, cap * factor::stat::tail_frac(j)) : 0.0;
+inline double tail_as(const factor::stat::Row &r, int e, int j, double cap, factor::stat::Ret from, factor::stat::Ret to) {
+  return r.ok ? factor::stat::book_as(r.tail[e][j], r.tail_n[e][j], r.mkt, cap * factor::stat::tail_frac(j), from, to) : 0.0;
 }
-// 线 i ∈ [0, kNavLines) 在行 r 的批收益 (线序见 Table.hpp kNavLines)
-inline double nav_value(const factor::stat::Row &r, int i, double cap) {
+// 线 i ∈ [0, kNavLines) 在行 r 的批收益 (线序见 Table.hpp kNavLines; 行的组 / 尾部按因子的收益口径 ret 存, 线按自己的口径改读)
+inline double nav_value(const factor::stat::Row &r, int i, double cap, factor::stat::Ret ret) {
   if (!r.ok)
     return 0.0;
-  using factor::stat::kBot, factor::stat::kTop, factor::stat::end_group;
+  using factor::stat::kBot, factor::stat::kTop, factor::stat::end_group, factor::stat::Ret;
   if (i >= 2 * kNavLayers) {
-    const bool absolute = i < 2 * kNavLayers + kNavLs;
-    const int j = i - 2 * kNavLayers - (absolute ? 0 : kNavLs);
+    const Ret to = i < 2 * kNavLayers + kNavLs ? Ret::Abs : Ret::Excess;
+    const int j = i - 2 * kNavLayers - (to == Ret::Abs ? 0 : kNavLs);
     if (j == 0)
-      return absolute ? 0.5 * (group_abs(r, end_group(kTop), cap) - group_abs(r, end_group(kBot), cap)) : factor::stat::ls_row(r);
-    return absolute ? 0.5 * (tail_abs(r, kTop, j - 1, cap) - tail_abs(r, kBot, j - 1, cap)) : 0.5 * (r.tail[kTop][j - 1] - r.tail[kBot][j - 1]);
+      return 0.5 * (group_as(r, end_group(kTop), cap, ret, to) - group_as(r, end_group(kBot), cap, ret, to));
+    return 0.5 * (tail_as(r, kTop, j - 1, cap, ret, to) - tail_as(r, kBot, j - 1, cap, ret, to));
   }
-  const bool absolute = i < kNavLayers;
-  const int k = absolute ? i : i - kNavLayers;
+  const Ret to = i < kNavLayers ? Ret::Abs : Ret::Excess;
+  const int k = to == Ret::Abs ? i : i - kNavLayers;
   if (k < factor::stat::kGroups)
-    return absolute ? group_abs(r, k, cap) : r.grp[k];
+    return group_as(r, k, cap, ret, to);
   const int e = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
-  return absolute ? tail_abs(r, e, j, cap) : r.tail[e][j];
+  return tail_as(r, e, j, cap, ret, to);
 }
 // 超额线 i ∈ [0, kNavExcess) 在 kNavLines 线序里的号
 inline constexpr int nav_excess(int i) { return i < kNavLayers ? kNavLayers + i : kNavLayers + kNavLs + i; }
@@ -357,6 +357,7 @@ struct NavP : LinesP {
   int only = -1; // 调用方给: HoldId → 只出它的 kNavExcess 条超额线; −1 = 全部持有期 × kNavLines
   int sel = -1;
   double cap = 0.0;
+  factor::stat::Ret ret = factor::stat::Ret::Excess; // 行里组 / 尾部的收益口径 (= 根的)
   static double bytes(const Shape &sh, int H) { return sizeof(float) * static_cast<double>(kNavLines) * H * sh.T; }
   void init(const PassCtx &p) {
     sel = only_of(p.hd, only);
@@ -365,17 +366,17 @@ struct NavP : LinesP {
   }
   void open(const Ctx &c) {
     LinesP::open(c);
-    cap = c.L.cap;
+    cap = c.L.cap, ret = c.L.ret;
   }
   void row(int hi, int t, const factor::stat::Row &r) {
     if (only >= 0 && hi != sel)
       return;
     if (only < 0)
       for (int i = 0; i < kNavLines; ++i)
-        at(hi * kNavLines + i, t) = static_cast<float>(nav_value(r, i, cap));
+        at(hi * kNavLines + i, t) = static_cast<float>(nav_value(r, i, cap, ret));
     else
       for (int i = 0; i < kNavExcess; ++i)
-        at(i, t) = static_cast<float>(nav_value(r, nav_excess(i), cap));
+        at(i, t) = static_cast<float>(nav_value(r, nav_excess(i), cap, ret));
   }
 };
 
