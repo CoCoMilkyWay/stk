@@ -5,6 +5,7 @@
 //   持仓权 (篮子账 / 行情篮子 / 回测池篮子同一份, Strip::omega): 源行的目标权 (等权 1 / 加权 收盘总市值) 随其后各日收益漂移; 日频 = 目标权
 //   交易日 d 的收益 = close_d / 前收 − 1 (前收 = 行 d−1 的 pre_close, 已除权; d 无成交 → 0) ⇒ grow = 后复权收盘价, 不看可成交 (与行情侧价格指数同口径)
 #include "define/Csr.hpp"
+#include "factor/Stat/Contract.hpp" // LabelPlanes
 #include "features/Panel/PoolSpec.hpp"
 #include "features/Storage/FeatureLib.hpp"
 #include "misc/date.hpp"
@@ -127,8 +128,8 @@ struct Strip {
   std::vector<uint8_t> ind;     // [行 · A] 申万一级 (0 = 未知; 在市者已知)
   std::vector<float> mcap;      // [行 · A] 收盘总市值 = close_day × total_shares (缺 → 0)
   std::vector<float> grow;      // [行 · A] 累计增长 Π_{0 < k ≤ 行} (1 + 日收益) (首行 1) = 后复权收盘价 (除权除息日不断)
-  std::vector<uint16_t> lv, nv; // [行 · A] 行收盘建仓的 T+1 做多 / 名义收益 (fp16 位, 与评估端标签平面同格式; 无效 = 0)
-  std::vector<uint8_t> m, eo;   // [行 · A] 标签有效位 (fmeta::lab_ok) / 建仓价点的可成交码 (kEoBuy | kEoSell; 门控外 = 0)
+  factor::stat::LabelPlanes t1; // 行收盘建仓的 T+1 标签 (与评估端标签平面同一型; 有效位 fmeta::lab_ok, 无效 = 0)
+  std::vector<uint8_t> eo;      // [行 · A] 建仓价点的可成交码 (kEoBuy | kEoSell; 门控外 = 0)
   std::vector<float> pre;       // [A] 末行前收 (续行的收益)
   size_t A() const { return axis.size(); }
   size_t days() const { return dates.size(); }

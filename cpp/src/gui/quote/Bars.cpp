@@ -67,6 +67,17 @@ double unpack_net(const Slot &x) {
   return x.n / kNet * amount_of(x.a);
 }
 
+bool unpack(const Packed &m, Scale k, double a, Bars &b, int lo, int hi) {
+  assert(0 <= lo && lo <= hi && hi <= kSlots);
+  b.has.reset(), b.hole.reset(), b.guess.reset();
+  for (size_t s = static_cast<size_t>(lo); s < static_cast<size_t>(hi); ++s)
+    if (const Slot &x = m.s[s]; x.c != kNoBar)
+      b.cell[s] = unpack(x, k, a), b.net[s] = unpack_net(x), b.has.set(s);
+    else
+      b.net[s] = 0;
+  return b.has.any();
+}
+
 void guess_holes(Bars &b, float open, float ref) {
   b.guess.reset();
   float pa = open > 0 ? open : ref; // 段前末收 (点 l = 槽 l − 1 收; 点 0 = 今开)

@@ -55,6 +55,7 @@ using text::spark;
 inline constexpr int kGroups = st::kGroups;
 static_assert(kGroups == kGroupN);
 inline constexpr int kG1 = 0, kG20 = kGroups - 1;
+inline constexpr int kAllGroups = -2; // FactorSpec::only_end: 全部组的真持有格
 inline constexpr int kTails = Engine::kTails;
 inline constexpr double kNaN = NAN;
 inline constexpr size_t kSample = 200000;
@@ -302,12 +303,12 @@ inline int row_at(const std::vector<std::string> &clock, const std::string &hm) 
   return it == clock.end() ? -1 : static_cast<int>(it - clock.begin());
 }
 
-// 分层行 (行和 = Stat 的全量行和 Sums, 与三级同分母)
-inline LayerRow row_of(std::string name, const st::Sums &b) {
+// 分层行 (行和 = Stat 的唯一累加 Sum, 与三级同分母)
+inline LayerRow row_of(std::string name, const st::Sum &b) {
   std::vector<double> g(kGroups);
   for (int k = 0; k < kGroups; ++k)
     g[static_cast<size_t>(k)] = b.grp_of(k);
-  return {std::move(name), b.rows, b.n, b.mono(), b.ls_of(), b.ric_mean(), std::move(g)};
+  return {std::move(name), b.h.rows, b.ok(), b.mono(), b.ls_of(), b.ric_mean(), std::move(g)};
 }
 
 // ---- K 线直读视图 (直接读 Block::x 的叶平面并按需做逆落盘变换, 零平面拷贝) ----
@@ -494,8 +495,8 @@ struct FactorSpec {
   st::Frame frame = st::Frame::CS;
   st::Dir dir = st::kFwd;
   std::string label;
-  bool tails = false, ends = false;
-  int only_end = -1; // -1 = 两端, 0 = kTop, 1 = kBot
+  bool tails = false, cells = false; // cells = 要真持有的格 (行核 walk 时同出)
+  int only_end = -1;                 // 格的范围: kAllGroups = 全部组, -1 = 两端, 0 = kTop, 1 = kBot
 };
 
 inline bool resolve_factor(const std::string &arg, const ViewEnv &env, FactorSpec &out, std::string &err) {
@@ -602,8 +603,8 @@ inline bool window_of(const Call &c, Window &w, std::string &err) {
 // ---- 分块流式观察核: 装载前核日期 → 跳过无关块 → 块内全核 DAG + Stat → 原地归约 ----
 struct HeldCell {
   int t = 0, a = 0; // t = 块内行, a = 池轴列
-  uint8_t e = 0;    // st::kTop / kBot (已定向)
-  float ret = 0.f;
+  int g = 0;        // 组号 (已定向)
+  float ret = 0.f;  // 做多收益 (续持取名义值)
 };
 
 struct ChunkView {
@@ -614,23 +615,19 @@ struct ChunkView {
   int u0 = 0, t_lo = 0, t_hi = 0;                  // 本块落在日段内的统计行 [t_lo, t_hi) 对应全局统计行 u0 + (t - t_lo)
   const uint16_t *rx = nullptr;                    // [blk.T][A] 已定向 (高 = 做多端)
   std::span<const st::Row> rows;                   // [t_hi - t_lo] 已定向 (含尾部 Row::tail)
-  std::span<const std::vector<HeldCell>> cells;    // [t_hi - t_lo] (不要两端格 = 空)
+  std::span<const std::vector<HeldCell>> cells;    // [t_hi - t_lo] 真持有的格 (行内 a 升序; 不要格 = 空)
   std::span<const factor::check::Plane *> feat_pl; // 与 feats 对齐 (坏式或解析失败为 nullptr)
   int w0 = 0, w1 = 0;                              // 日段的全局统计行 [w0, w1) (抽样步长按它定)
   int w_rows() const { return w1 - w0; }
 };
 
-// 格 k (块内行 t) 在全截面分组 (rx 已定向) 下是否真持有; 是 → ret = 其做多收益 (续持取名义值). Stat 仓位感知唯一出口 (factor/Stat/Pos.hpp cell)
-inline bool held_cell(const Engine::Block &blk, const uint16_t *rx, HoldId hold, int t, size_t k, float &ret) {
-  if (rx[k] == st::kRankNone)
+// 本行 (cells = ChunkView::cells 的一行) 里格 a 是否在全截面分组 (rx 已定向) 下真持有; 是 → ret = 其做多收益 (续持取名义值).
+//   格由行核 walk 时同出 (Stat 仓位感知唯一出口 factor/Stat/Pos.hpp cell), 这里只查
+inline bool held_cell(const std::vector<HeldCell> &cells, int a, float &ret) {
+  const auto it = std::lower_bound(cells.begin(), cells.end(), a, [](const HeldCell &c, int x) { return c.a < x; });
+  if (it == cells.end() || it->a != a)
     return false;
-  const st::Label lb = Engine::label_of(*blk.y.labels[0], blk.y.eo, nullptr);
-  const st::Chain ch = st::chain_of(t, blk.span(), hold_on(hold, geo_of(blk.y.sh.seg)));
-  float y[2];
-  const st::Pos p = st::cell(ch, lb, static_cast<ptrdiff_t>(k), st::InRank{rx + k, st::grp_of(rx[k])}, factor::cpu::stat::H2F{}, y);
-  if (p.held < 0)
-    return false;
-  ret = st::ret_at(p, 0, y);
+  ret = it->ret;
   return true;
 }
 
@@ -644,31 +641,28 @@ inline float mkt_of(const ChunkView &cv, int t) {
   return cv.rows[static_cast<size_t>(r)].ok ? mk : NAN;
 }
 
-// 观察流的因子根探针 (块级, Engine::ForestPass 进, 只 CPU): 本块统计行的 Row (已定向, 含尾部) + rx + 两端组真持有的格
-//   (ends 时; 行核 walk 时同出 sink.cell, 不另走链)
+// 观察流的因子根探针 (块级, Engine::ForestPass 进, 只 CPU): 本块统计行的 Row (已定向, 含尾部) + rx + 真持有的格
+//   (cells 时; 行核 walk 时同出 sink.cell, 不另走链)
 struct LookP : Engine::ProbeBase {
   static constexpr uint8_t need = Engine::kNeedRows | Engine::kNeedRx;
   static constexpr bool kCells = true;
-  bool ends = false; // 要两端组真持有的格
-  int only = -1;     // 只要一端 (st::kTop / kBot); −1 = 两端
+  bool want = false; // 要真持有的格
+  int only = -1;     // 格的范围 (FactorSpec::only_end)
   int t_lo = 0;
   std::vector<st::Row> rows;                // [本块统计行]
-  std::vector<std::vector<HeldCell>> cells; // [本块统计行] (不要两端格 = 空)
+  std::vector<std::vector<HeldCell>> cells; // [本块统计行] (不要格 = 空)
   const uint16_t *rx = nullptr;             // [blk.T][A] 已定向 (高 = 做多端)
-  static constexpr Engine::Bytes scratch(int) { return {.row = sizeof(st::Row)}; }
+  static constexpr Engine::Bytes scratch(int) { return {.cell = sizeof(HeldCell), .row = sizeof(st::Row)}; }
   void open(const Engine::Ctx &c) {
     const st::Span s = c.s();
     t_lo = s.t_lo;
     rows.assign(static_cast<size_t>(s.t_hi() - s.t_lo), {});
-    cells.assign(ends ? rows.size() : 0, {});
+    cells.assign(want ? rows.size() : 0, {});
   }
   void row(int, int t, const st::Row &r) { rows[static_cast<size_t>(t - t_lo)] = r; }
   void cell(int, int t, int a, int g, const st::Pos &p, const float *y) { // 观察只一个持有期; 行内格按 a 升序到 (同行同线程)
-    if (!ends)
-      return;
-    for (int e = 0; e < st::kEnds; ++e)
-      if ((only < 0 || e == only) && g == st::end_group(e))
-        cells[static_cast<size_t>(t - t_lo)].push_back({t, a, static_cast<uint8_t>(e), st::ret_at(p, 0, y)});
+    if (want && (only == kAllGroups || (only < 0 ? g == st::end_group(st::kTop) || g == st::end_group(st::kBot) : g == st::end_group(only))))
+      cells[static_cast<size_t>(t - t_lo)].push_back({t, a, g, st::ret_at(p, 0, y)});
   }
   void close(const Engine::Ctx &, const Engine::RootView &v) {
     rx = v.rx;
@@ -716,7 +710,7 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
     return Engine::Rc::Cancel;
   using Cpu = Engine::Backend<Engine::Cpu>;
   const int R = static_cast<int>(fac_roots.size());
-  Engine::Need need = Engine::forest_need<Cpu, LookProbes>(ft, fr, R, Engine::look_of(fac_roots, plain_es, ft.seg), Holds::of(hold_bit(env.hold)));
+  Engine::Need need = Engine::forest_need<Cpu, LookProbes>(ft, fr, R, Engine::look_of(fac_roots, plain_es, ft.seg), Holds::of({env.hold}));
   for (uint8_t b = 0; b < kBarCount; ++b)
     if ((cfg.bars & (1u << b)) && bm.col[b].id != Engine::kNoCol && std::find(need.x.begin(), need.x.end(), bm.col[b].id) == need.x.end())
       need.x.push_back(bm.col[b].id);
@@ -737,7 +731,7 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
   std::vector<LookProbes> ps(static_cast<size_t>(R));
   const LookP *fp = cfg.fac ? &ps[0].at<LookP>() : nullptr;
   if (cfg.fac)
-    ps[0].at<LookP>().ends = cfg.fac->ends, ps[0].at<LookP>().only = cfg.fac->only_end;
+    ps[0].at<LookP>().want = cfg.fac->cells, ps[0].at<LookP>().only = cfg.fac->only_end;
   Engine::Fate fate;
   const Engine::Hooks hk{.want = [&](const Engine::Chunk &ck) { return ck.s1 > want_d0 && ck.s0 < want_d1; },
                          .after = [&](const Engine::Block &blk) {
@@ -756,7 +750,7 @@ Engine::Rc run_stream(const ViewEnv &env, Engine::FactorFlow &F, const StreamCfg
                            const size_t n_in = static_cast<size_t>(c1 - c0);
                            const std::span<const st::Row> rows = fp ? std::span<const st::Row>(fp->rows).subspan(static_cast<size_t>(c0), n_in) : std::span<const st::Row>{};
                            const std::span<const std::vector<HeldCell>> cells =
-                               fp && fp->ends ? std::span<const std::vector<HeldCell>>(fp->cells).subspan(static_cast<size_t>(c0), n_in) : std::span<const std::vector<HeldCell>>{};
+                               fp && fp->want ? std::span<const std::vector<HeldCell>>(fp->cells).subspan(static_cast<size_t>(c0), n_in) : std::span<const std::vector<HeldCell>>{};
                            chunk_fn(ChunkView{job, blk, bm, stat_dates, u_lo + c0, t_lo + c0, t_lo + c1, fp ? fp->rx : nullptr, rows, cells, feat_pl, w0, w1}); }};
   const Engine::Rc rc = Engine::run_job(F, job, Engine::ForestPass<Cpu, LookProbes>(eng, F, fr, std::span(ps), fate, hk));
   if (rc == Engine::Rc::Broken)

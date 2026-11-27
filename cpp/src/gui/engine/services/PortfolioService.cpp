@@ -176,30 +176,24 @@ std::string PortfolioRequest::sig() const {
 
 namespace {
 
-// 因子组合账 = 顶端整组那一本 (Stat/Book.hpp 因子账集, 与 Run 换手同一核): 收益 (平仓行) + 四列流水 (建仓行) 逐行落地
+// 因子组合账 = 顶端整组那一本 (Stat/Book.hpp 因子账集, 与 Run 换手同一核): 收益 (平仓行) + 流水各列 (建仓行) 逐行落地
 struct FlowP : LinesP {
   static constexpr uint8_t need = kNeedRx;
   static constexpr Segs segs = Segs::Spec;
   static constexpr Bytes bytes(int H) { return {.row = static_cast<double>(sizeof(float)) * kLedgerCols * H}; }
   static constexpr Bytes scratch(int H) { return {.row = static_cast<double>(sizeof(float)) * kLedgerCols * H}; }
   void init(const PassCtx &p) {
-    assert(p.ad.n == 1 && "账: 一个金额段");
-    lines(p, p.hd.n * kLedgerCols, 1, [&](int i) { return p.hd.k[i / kLedgerCols]; });
-    for (int i = 0; i < rz.out.n; ++i)
-      rz.at_exit[static_cast<size_t>(i)] = i % kLedgerCols == kLedgerRet;
+    lines(p, p.hd.n * kLedgerCols, 1, [&](int i) { return p.hd.k[i / kLedgerCols]; }, [](int i) { return i % kLedgerCols == kLedgerRet; });
   }
   void close(const Ctx &c, const RootView &v) {
     namespace st = factor::stat;
-    const YPlanes &y = c.c.y;
-    assert(y.ad.n == 1);
     const st::Span s = c.s();
-    const st::FactorBooks bk{v.rx, s.A, c.L.cap};
     constexpr int kOwn = st::kTop * st::kLevels; // 顶端整组
     for (int hi = 0; hi < c.L.hd.n; ++hi)
-      st::book_rows(c.ex, s, hold_on(c.L.hd.k[hi], s.g), c.L.l[hi], bk, cost_of(y), [&](int, int t, const double *ret, const st::Flow *flow) {
+      st::book_rows(c.ex, s, hold_on(c.L.hd.k[hi], s.g), c.L.l[hi], st::FactorBooks{v.rx, s.A, c.L.l[hi].cap}, cost_of(c.c.y), [&](int, int t, const double *ret, const TurnFlow *flow) {
         at(hi * kLedgerCols + kLedgerRet, t) = static_cast<float>(ret[kOwn]);
-        for (int k = kLedgerImp; k < kLedgerCols; ++k)
-          at(hi * kLedgerCols + k, t) = ledger_cell(flow[kOwn], y.ad.k[0], k);
+        for (int k = kLedgerBuy; k < kLedgerCols; ++k)
+          at(hi * kLedgerCols + k, t) = ledger_cell(flow[kOwn], k);
       });
     LinesP::close(c, v);
   }
@@ -217,7 +211,7 @@ Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
   const FactorScope &sc = ts.front()->scope;
   RootSet rs;
   for (const FactorTask *t : ts) {
-    rs.hd = Holds::of(rs.hd.set() | hold_bit(t->hold));
+    rs.hd = rs.hd.with(t->hold);
     rs.add(*sc.ft, t->f.expr, {t->f.frame, t->f.dir, t->f.ret});
   }
   std::vector<PortfolioProbes> ps(rs.size());
@@ -235,10 +229,12 @@ Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
       const int hi = o.job.spec.y.hd.at(t.hold);
       assert(hi >= 0);
       b->dates = dates;
-      b->amt = o.job.spec.y.ad.k[0];
+      b->amt = t.scope.cost.amt;
       b->keys = {0};
+      const Amts &ad = o.job.spec.y.ad;
       for (int c = 0; c < kLedgerCols; ++c)
-        b->col[c] = ps[static_cast<size_t>(k)].at<FlowP>().out.slice(hi * kLedgerCols + c, 1);
+        if (c < kLedgerImp || ad.has(static_cast<AmtId>(1 + (c - kLedgerImp) / 2)))
+          b->col[c] = ps[static_cast<size_t>(k)].at<FlowP>().out.slice(hi * kLedgerCols + c, 1);
     }
     if (on_book)
       on_book(static_cast<size_t>(e), std::move(b));

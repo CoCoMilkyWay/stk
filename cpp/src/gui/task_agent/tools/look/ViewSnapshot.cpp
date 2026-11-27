@@ -56,7 +56,7 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
     return Fail("time: 写成本层某一行的行末时刻 HH:MM (本层 " + env.clock.front() + ", " + env.clock[1] + " … " + env.clock.back() + ")");
 
   FactorSpec fac;
-  fac.ends = true;
+  fac.cells = true;
   if (!resolve_factor(c.str("factor"), env, fac, err))
     return Fail(std::move(err));
   std::vector<FeatSpec> feats;
@@ -95,7 +95,7 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
         };
         std::vector<int> held(static_cast<size_t>(A), 0);
         for (const HeldCell &hc : cv.cells[static_cast<size_t>(r_idx)])
-          held[static_cast<size_t>(hc.a)] = hc.e == st::kTop ? 1 : -1;
+          held[static_cast<size_t>(hc.a)] = hc.g == st::end_group(st::kTop) ? 1 : -1;
 
         std::vector<Cell> cs;
         for (int a = 0; a < A; ++a) {

@@ -392,33 +392,34 @@ struct Timer {
   }
 };
 
-// 一组设备常驻标签 (lv / nv (只偏移型) / m / 可成交码 eo 拷入, ry 预处理); L = 给算子的设备指针视图 (契约 Labels)
+// 一组设备常驻标签 (lv / nv (只偏移型) / m / 可成交码 eo / 逐行池基准 mk 与满仓 cap 拷入, ry 预处理); L = 给算子的设备指针视图 (契约 Labels)
 struct DevLabels {
   int H = 0;
   DevBuf<uint16_t> lv[kHoldCount], nv[kHoldCount], ry[kHoldCount];
-  DevBuf<uint8_t> m[kHoldCount], eo; // eo 各持有期共用一张
-  DevBuf<float> mk[kHoldCount];      // [T] 池基准 (宿主装载时算好, 原样拷入)
+  DevBuf<uint8_t> m[kHoldCount], eo;             // eo 各持有期共用一张
+  DevBuf<float> mk[kHoldCount], cap[kHoldCount]; // [T] 池基准 / 满仓 (宿主装载时算好, 原样拷入)
   factor::stat::Labels L;
-  void alloc(const Holds &hd, int seg, int T, size_t n, double cap) {
+  void alloc(const Holds &hd, int seg, int T, size_t n) {
     factor::stat::assert_holds(hd, seg);
-    H = hd.n, L.hd = hd, L.cap = cap;
+    H = hd.n, L.hd = hd;
     eo.alloc(n);
     for (int i = 0; i < H; ++i) {
-      lv[i].alloc(n), m[i].alloc(n), ry[i].alloc(n), mk[i].alloc(static_cast<size_t>(T));
+      lv[i].alloc(n), m[i].alloc(n), ry[i].alloc(n), mk[i].alloc(static_cast<size_t>(T)), cap[i].alloc(static_cast<size_t>(T));
       if (hold_offset(hd.k[i]))
         nv[i].alloc(n);
-      L.l[i] = {lv[i].p, nv[i].p, m[i].p, eo.p, ry[i].p, mk[i].p};
+      L.l[i] = {lv[i].p, nv[i].p, m[i].p, eo.p, ry[i].p, mk[i].p, cap[i].p};
     }
   }
   // 宿主标签 (与 alloc 的持有期同序) 拷入 + ry 预处理 (纯 kernel 计时)
   double load(const factor::stat::Label *host, const factor::stat::Span &s, Timer &tm) {
     for (int i = 0; i < H; ++i)
-      assert(host[i].lv && host[i].m && host[i].mk && host[i].eo == host[0].eo && (!nv[i].p || host[i].nv) && "宿主标签不全 / 可成交码须是同一张");
+      assert(host[i].lv && host[i].m && host[i].mk && host[i].cap && host[i].eo == host[0].eo && (!nv[i].p || host[i].nv) && "宿主标签不全 / 可成交码须是同一张");
     eo.put(host[0].eo, s.n());
     for (int i = 0; i < H; ++i) {
       lv[i].put(host[i].lv, s.n());
       m[i].put(host[i].m, s.n());
       mk[i].put(host[i].mk, static_cast<size_t>(s.T));
+      cap[i].put(host[i].cap, static_cast<size_t>(s.T));
       if (nv[i].p)
         nv[i].put(host[i].nv, s.n());
     }
@@ -429,46 +430,44 @@ struct DevLabels {
   }
   void free_() {
     for (int i = 0; i < H; ++i)
-      lv[i].free_(), nv[i].free_(), m[i].free_(), ry[i].free_(), mk[i].free_();
+      lv[i].free_(), nv[i].free_(), m[i].free_(), ry[i].free_(), mk[i].free_(), cap[i].free_();
     eo.free_();
   }
   size_t bytes() const {
     size_t b = eo.bytes();
     for (int i = 0; i < H; ++i)
-      b += lv[i].bytes() + nv[i].bytes() + m[i].bytes() + ry[i].bytes() + mk[i].bytes();
+      b += lv[i].bytes() + nv[i].bytes() + m[i].bytes() + ry[i].bytes() + mk[i].bytes() + cap[i].bytes();
     return b;
   }
 };
 
 } // namespace
 
-// Stat 常驻会话: 标签 + rx[Cmax] 工作区 + 一级 / 分片 / 出口, open 时全部就位, load 可按同形状新块覆盖标签
+// Stat 常驻会话: 标签 + rx[Cmax] 工作区 + 一级 / 出口, open 时全部就位, load 可按同形状新块覆盖标签
 struct StatSession {
   factor::stat::Span s;
   int Cmax = 0;
   DevLabels lab;
   DevBuf<uint16_t> rx;
   DevBuf<factor::stat::Row> rows;
-  DevBuf<factor::stat::Accum> part, acc;
-  DevBuf<factor::stat::Day> day;
+  DevBuf<factor::stat::Sum> day;
   stat::Workspace w;
   bool loaded = false;
   Timer tm;
 };
 
-StatSession *stat_open(const factor::stat::Span &sh, int Cmax, const Holds &hd, double cap) {
-  assert(sh.T > 0 && sh.A > 0 && sh.A <= factor::stat::kMaxA && Cmax >= 1 && Cmax <= stat::kMaxBatch && cap > 0.0);
+StatSession *stat_open(const factor::stat::Span &sh, int Cmax, const Holds &hd) {
+  assert(sh.T > 0 && sh.A > 0 && sh.A <= factor::stat::kMaxA && Cmax >= 1 && Cmax <= stat::kMaxBatch);
   StatSession *s = new StatSession;
   s->s = {sh.T, sh.A, sh.g};
   s->Cmax = Cmax;
   const size_t n = s->s.n();
-  const int H = hd.n, NB = stat::n_parts(s->s), NBB = stat::n_batch_parts(s->s), D = s->s.days();
-  s->lab.alloc(hd, sh.g.S, sh.T, n, cap);
+  const int H = hd.n, D = s->s.days();
+  s->lab.alloc(hd, sh.g.S, sh.T, n);
   s->rx.alloc(static_cast<size_t>(Cmax) * n);
   s->rows.zalloc(static_cast<size_t>(H) * sh.T);
-  const size_t P = static_cast<size_t>(H) * std::max(static_cast<size_t>(NB), static_cast<size_t>(Cmax) * NBB);
-  s->part.zalloc(P), s->acc.zalloc(static_cast<size_t>(Cmax) * H), s->day.zalloc(static_cast<size_t>(Cmax) * H * D);
-  s->w = {s->rows.p, s->part.p, s->acc.p, s->day.p, H, NB, NBB, Cmax, D};
+  s->day.zalloc(static_cast<size_t>(Cmax) * H * D);
+  s->w = {s->rows.p, s->day.p, H, Cmax, D};
   return s;
 }
 
@@ -480,11 +479,11 @@ void stat_load(StatSession *s, const factor::stat::Label *lab, double *prep_ms) 
   s->loaded = true;
 }
 
-void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane *g, const factor::stat::Mode &m, const factor::stat::Span &s, factor::stat::Accum *acc,
-               factor::stat::Day *day, factor::stat::Row *rows, uint16_t *rx, double *eval_ms) {
-  assert(ss && ss->loaded && x && C >= 1 && C <= ss->Cmax && g && g->m && acc && day);
+void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane *g, const factor::stat::Mode &m, const factor::stat::Span &s, factor::stat::Sum *day,
+               factor::stat::Row *rows, uint16_t *rx, double *eval_ms) {
+  assert(ss && ss->loaded && x && C >= 1 && C <= ss->Cmax && g && g->m && day);
   assert((C == 1 || (!rows && !rx)) && "一级 / r16 只单候选可拷回");
-  assert(s.T == ss->s.T && s.A == ss->s.A && s.g.S == ss->s.g.S && "块形与会话不符"); // 分片数随 t_lo / t_back 只减 (open 按两者 = 0 的上界分配)
+  assert(s.T == ss->s.T && s.A == ss->s.A && s.g.S == ss->s.g.S && "块形与会话不符"); // 统计日数随 t_lo / t_back 只减 (open 按两者 = 0 的上界分配)
   factor::stat::assert_span(s);
   stat::Batch B;
   B.C = C;
@@ -502,8 +501,7 @@ void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane 
   if (eval_ms)
     *eval_ms = ss->tm.end();
   const size_t H = static_cast<size_t>(ss->lab.L.hd.n), D = static_cast<size_t>(s.days());
-  ss->acc.down(acc, static_cast<size_t>(C) * H);     // D2H 自带同步; Accum / Day / Row 是 POD, 设备格式 = 宿主格式
-  ss->day.down(day, static_cast<size_t>(C) * H * D); // [C][H][D] 按本次统计日数密排
+  ss->day.down(day, static_cast<size_t>(C) * H * D); // D2H 自带同步; Sum / Row 是 POD, 设备格式 = 宿主格式; [C][H][D] 按本次统计日数密排
   if (rows)
     ss->rows.down(rows, H * static_cast<size_t>(s.T));
   if (rx)
@@ -512,17 +510,16 @@ void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane 
 
 void stat_close(StatSession *s) {
   assert(s);
-  s->day.free_(), s->acc.free_(), s->part.free_(), s->rows.free_(), s->rx.free_(), s->lab.free_();
+  s->day.free_(), s->rows.free_(), s->rx.free_(), s->lab.free_();
   delete s;
 }
 
 size_t stat_bytes(const StatSession *s) {
-  return s ? s->lab.bytes() + s->rx.bytes() + s->rows.bytes() + s->part.bytes() + s->acc.bytes() + s->day.bytes() : 0;
+  return s ? s->lab.bytes() + s->rx.bytes() + s->rows.bytes() + s->day.bytes() : 0;
 }
 
 void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, const factor::stat::Mode &m, const factor::stat::Span &s, const Holds &hd,
-              double cap, const factor::stat::Label *lab, factor::stat::Accum *acc, factor::stat::Day *day, factor::stat::Row *rows, double *prep_ms,
-              double *eval_ms) {
+              const factor::stat::Label *lab, factor::stat::Sum *day, factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
   assert(C >= 1 && C <= stat::kMaxBatch && xv && xm && gm);
   const size_t n = s.n();
   std::vector<DevBuf<float>> dv(static_cast<size_t>(C));
@@ -537,9 +534,9 @@ void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uin
   DevBuf<uint8_t> g;
   g.up(gm, n);
   const DevPlane gp{nullptr, g.p};
-  StatSession *ss = stat_open(s, C, hd, cap);
+  StatSession *ss = stat_open(s, C, hd);
   stat_load(ss, lab, prep_ms);
-  stat_eval(ss, xpp.data(), C, &gp, m, s, acc, day, rows, nullptr, eval_ms);
+  stat_eval(ss, xpp.data(), C, &gp, m, s, day, rows, nullptr, eval_ms);
   stat_close(ss);
   for (int c = 0; c < C; ++c)
     dv[static_cast<size_t>(c)].free_(), dm[static_cast<size_t>(c)].free_();

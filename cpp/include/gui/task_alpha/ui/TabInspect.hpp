@@ -84,7 +84,7 @@ struct InspectDerived : Layer::LayerDerived {
 };
 
 struct InspectUIState {
-  int hold_idx = 0;         // FeatureTable y.list 下标 (与 Factors 页独立)
+  int hold_idx = 0;         // FeatureTable y.holds 下标 (与 Factors 页独立)
   std::string hold_for;     // hold_idx 已按其搜索持有期切过的权重行 key (换权重才切, 之后手动改 Hold 不被覆盖)
   bool absolute = false;    // 左上: 超额 (false) | 绝对 (true)
   int cursor_day = -1;      // 左上时序的光标日 (0 = 起点 … days = 末日); -1 / 越界 → 末日. 右侧截面柱按它取值

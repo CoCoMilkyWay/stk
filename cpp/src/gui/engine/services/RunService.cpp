@@ -34,7 +34,7 @@ DayLine day_of(const DayProbes &p, const EvalStat &st, HoldId hold) {
 template <class Ps>
 Rc eval_file(const FactorScope &sc, FactorFlow &F, std::vector<FactorRow> &rows, std::span<const size_t> idx, const std::function<void(size_t)> &on_row,
              DayLines *day) {
-  RootSet rs{.hd = Holds::of(sc.ft->y.holds)};
+  RootSet rs{.hd = sc.ft->y.holds};
   for (const size_t i : idx)
     rs.add(*sc.ft, rows[i].expr, {rows[i].frame, factor::stat::dir_of(rows[i].sign), rows[i].ret});
   ForestOut o;

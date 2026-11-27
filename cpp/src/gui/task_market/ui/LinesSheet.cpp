@@ -649,7 +649,7 @@ void table(LinesState &ui, const Quote::QuoteHub *mk, const StockInfos &infos, c
   const std::vector<size_t> order = listing(ui, ps, d, g, on);
   ImGui::PushID(static_cast<int>(ps.nc)); // 列数可变 (资金流段随档位)
   sheet(
-      kPageDefs[page].table, cols_of(name, segs), kPageDefs[page].weigh, ui, d, g, order, ps, on, [&](size_t t) { pick(ui, page, d.row(ps.at[t])); },
+      kPageDefs[page].table, cols_of(name, segs), kPageDefs[page].weigh(), ui, d, g, order, ps, on, [&](size_t t) { pick(ui, page, d.row(ps.at[t])); },
       [&](size_t t, int k) {
         for (const Seg &s : segs) {
           const int n = static_cast<int>(s.cols.size());
@@ -887,7 +887,7 @@ Seg flow_seg(bool ends, std::vector<misc::Ymd> days) {
   s.tip = [nd](const LinesSheet &p, size_t row, int k) {
     const Flow &x = p.flow[row][std::min(static_cast<size_t>(k), nd)]; // 合计两列同一段
     if (x.amount > 0)
-      tip("净流入 %s / 成交额 %s = %+.2f%%", yi_text(x.net / 1e8, true).c_str(), yi_text(x.amount / 1e8).c_str(), 100.0 * x.net / x.amount);
+      tip("净流入 %s / 成交额 %s = %+.2f%%", money_text(x.net, true).c_str(), money_text(x.amount).c_str(), 100.0 * x.net / x.amount);
   };
   return s;
 }

@@ -13,17 +13,16 @@ namespace factor::search {
 
 // ---- 持有期 (Stat/Roll.hpp 目标; 一次搜索针对一个固定持有期) ----
 // 可搜集合 (按时间序列出全部持有期, 注释掉 = 不搜); 层上合法另看 hold_ok
-inline constexpr HoldSet kSearchHolds = 0
-                                        // | hold_bit(kHoldM1)
-                                        // | hold_bit(kHoldM5)
-                                        // | hold_bit(kHoldM15)
-                                        | hold_bit(kHoldM30) | hold_bit(kHoldM60) | hold_bit(kHoldClose)
-                                        // | hold_bit(kHoldT1O)
-                                        | hold_bit(kHoldT1)
-    // | hold_bit(kHoldT2)
-    // | hold_bit(kHoldT3)
-    ;
-inline constexpr bool search_hold(HoldId h) { return (kSearchHolds & hold_bit(h)) != 0; }
+inline constexpr Holds kSearchHolds = Holds::of({
+    // kHoldM1, kHoldM5, kHoldM15,
+    kHoldM30,
+    kHoldM60,
+    kHoldClose,
+    // kHoldT1O,
+    kHoldT1,
+    // kHoldT2, kHoldT3,
+});
+inline constexpr bool search_hold(HoldId h) { return kSearchHolds.has(h); }
 
 // ---- 预算 ----
 inline constexpr int kInit = 64;       // 单槽采样点数 (Space【采样】; 唯一的预算量, 整数槽取整去重后可能更少)

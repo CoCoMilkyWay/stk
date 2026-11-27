@@ -130,6 +130,8 @@ Scale pack(const Bars &b, std::span<const double, kSlots> net, bool half, Packed
 // 一槽 (须有根) → 一根, 价 × a / 净流入 [元]
 Cell unpack(const Slot &x, Scale k, double a);
 double unpack_net(const Slot &x);
+// 一日的紧凑根 m 的槽 [lo, hi) → b (价 × a; 段内 cell / net / has 逐槽写, 段外 cell / net 不动; 标记先清空). 返回段内有根
+bool unpack(const Packed &m, Scale k, double a, Bars &b, int lo = 0, int hi = kSlots);
 
 // 分钟涨跌法的方向: 收 > 上一价 → +1, < → −1, 平 → 随上一方向 dir (之前无方向 = 0, 不计)
 constexpr int tick_dir(double close, double px, int dir) {

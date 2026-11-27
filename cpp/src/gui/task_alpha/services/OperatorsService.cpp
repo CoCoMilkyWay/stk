@@ -231,7 +231,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
                   "  h=%-5s n=%d/%d  rIC %+.4f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f | LS %+.5f t %+.2f pos %.2f "
                   "SR %+.2f β %+.3f | mono %+.3f | rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f skew %+.2f kurt %+.2f",
                   hold_name(h.hold).c_str(), h.n, h.n_rac, h.ric.mean, h.ric.sd, h.ric.ir, h.ric.t, h.ric.pos, h.ric.skew, h.ric.kurt, h.ls.mean, h.ls.t,
-                  h.ls.pos, factor::stat::sharpe_of(h), h.beta, h.mono, h.rac.mean, h.rac.sd, h.rac.ir, h.rac.t, h.rac.pos, h.rac.skew, h.rac.kurt);
+                  h.ls.pos, h.sharpe, h.beta, h.mono, h.rac.mean, h.rac.sd, h.rac.ir, h.rac.t, h.rac.pos, h.rac.skew, h.rac.kurt);
     }
     if (!has_gpu)
       continue;
@@ -286,9 +286,9 @@ void run_search(RoundCtx &R, OperatorRow &row) {
     detail_line(scores, "%s", factor::stat::frame_name(fr));
     for (int c = 0; c < sc::kCands; ++c)
       for (int hi = 0; hi < H; ++hi) {
-        const factor::stat::Day *ds = full.day.data() + (static_cast<size_t>(c) * H + hi) * days;
-        const factor::stat::Roll rl = factor::stat::roll_of(std::span<const factor::stat::Day>(ds, static_cast<size_t>(days)), d.hd.k[hi], factor::kSegMax);
-        const factor::stat::HoldStat h = full.acc[static_cast<size_t>(c) * H + hi].finish(d.hd.k[hi], factor::kSegMax);
+        const std::span<const factor::stat::Sum> ds(full.day.data() + (static_cast<size_t>(c) * H + hi) * days, static_cast<size_t>(days));
+        const factor::stat::Roll rl = factor::stat::roll_of(ds, d.hd.k[hi], factor::kSegMax);
+        const factor::stat::HoldStat h = factor::stat::stat_of(ds, d.hd.k[hi], factor::kSegMax);
         detail_line(scores, "  c%d  h=%-5s rIC %+.4f  mono %+.3f  中位 %s %+.4f (%d 日窗 × %d)", c, hold_name(d.hd.k[hi]).c_str(), h.ric.mean, h.mono,
                     factor::stat::kTargetName, rl.med, rl.win, rl.n);
       }
@@ -357,13 +357,12 @@ OperatorsService::OperatorsService() {
     s.note = "挖掘批评估: 每候选每持有期沿 t 累加 (分块带前后带可合并) + 逐行 rIC / 多空; golden = Stat";
     s.doc = "挖掘批评估算子 (factor/Stat 的批: 一 warp 一候选)\n"
             "• 一批候选平面 x_c (c < C) 共用标签 y_h\n"
-            "    ◦ 每候选每持有期一份沿 t 可合并的 Accum (= Stat 的 Row 累加)\n"
-            "    ◦ 逐日 Day (ok 行数 / Σ rIC / Σ 多空 / 各组和), 宿主折成中位窗目标 (Search 的目标, Stat/Roll.hpp)\n"
+            "    ◦ 每候选每持有期逐日一份 Sum (= Row 的可合并和), 宿主按日序合成三级 / 中位窗 mono (Search 的目标, Stat/Roll.hpp)\n"
             "    ◦ 不落 Row\n"
             "• 持有期集合同 Stat (Search 服务只传一个)\n"
             "• 分块流式\n"
             "    ◦ 块带前带 (≥ 最长持有期 + 交接链 8 日) / 后带 (≥ 最长持有期), 统计 [t_lo, T − t_back)\n"
-            "    ◦ 各块 Result merge ≡ 整块一次算\n"
+            "    ◦ 各块逐日拼回 ≡ 整块一次算\n"
             "• 对拍: golden = Stat CPU 对每张候选的 HoldStat 与 Row 折成的 Tick (Stat 自身已 gpu ↔ cpu 对拍过)\n"
             "    ◦ CPU 列 Diff = cpu 整块 vs golden (二级 + Tick) + 两块 merge vs 整块\n"
             "    ◦ GPU 列 Diff = gpu 整块 vs cpu 整块 + gpu 整块 Tick vs golden + 两块 merge vs 整块\n"

@@ -1,9 +1,9 @@
 // Stat 二级汇总 (factor::stat::HoldStat) 的 JSON 编解码: 因子文件 stats[i].holds[] 每项 = 按 hold_cols() 列序的数组
-// (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 逐行量的矩 <ric|rac|ls>_<矩>, 标量 beta / mono / end_n / ann / sharpe,
+// (列名 = HoldStat 字段名: 计数 hold / n / n_rac / n_all / n_trig, 逐行量的矩 <ric|rac|ls>_<矩>, 标量 beta / mono / end_n / cap / ann / sharpe,
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // 文件只落读文件行的地方 (因子表列 / 悬停表 / Inspect 期限结构 / agent 结果) 用得到的字段, 不多不少; 没落的字段载入后为 0, 文件行上不可读.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
-// 换手流水 (TurnStat, 因子文件 stats[i].turn[hold]) 同款 turn_json / load_turn: 一行 = turn_cols() 列序 (整组两端 × Flow 字段), 装过的金额段 stats[i].amts;
+// 换手流水 (TurnStat, 因子文件 stats[i].turn[hold]) 同款 turn_json / load_turn: 一行 = turn_cols() 列序 (整组两端 × TurnFlow 字段), 装过的金额段 stats[i].amts;
 // 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf; 分年 (YearStat) / 滚动窗 (Roll) 在 eval_json 内联;
 // 一个根的评估结果 (EvalStat) 两半写 scope_json (文件顶层 run) + eval_json (stats[i]), 一次读 load_eval.
 #pragma once
@@ -61,7 +61,7 @@ inline bool json_ll(const nlohmann::json &j, const char *key, long long &out) {
   return true;
 }
 
-// TurnStat 整组 (lv[0]) 的两端 (与 factor::stat::End 同序) × Flow 字段 (量 / 不可成交量 / 各盘口段冲击, 各两侧)
+// TurnStat 整组 (lv[0]) 的两端 (与 factor::stat::End 同序) × TurnFlow 字段 (两侧量 / 卖不出的量 / 各盘口段两侧冲击)
 inline constexpr const char *kEndKeys[factor::stat::kEnds] = {"top", "bot"};
 inline constexpr const char *kSideKeys[kSides] = {"buy", "sell"};
 
@@ -72,7 +72,7 @@ template <class H, class F>
 void for_each_field(H &h, F &&f) {
   using P = decltype(&h.mono);
   const std::pair<const char *, P> fs[] = {
-      {"ric_mean", &h.ric.mean}, {"ric_sd", &h.ric.sd}, {"ric_ir", &h.ric.ir}, {"ric_t", &h.ric.t}, {"ric_pos", &h.ric.pos}, {"rac_mean", &h.rac.mean}, {"rac_sd", &h.rac.sd}, {"ls_mean", &h.ls.mean}, {"ls_sd", &h.ls.sd}, {"ls_ir", &h.ls.ir}, {"ls_t", &h.ls.t}, {"ls_pos", &h.ls.pos}, {"beta", &h.beta}, {"mono", &h.mono}, {"end_n", &h.end_n}, {"ann", &h.ann}, {"sharpe", &h.sharpe}};
+      {"ric_mean", &h.ric.mean}, {"ric_sd", &h.ric.sd}, {"ric_ir", &h.ric.ir}, {"ric_t", &h.ric.t}, {"ric_pos", &h.ric.pos}, {"rac_mean", &h.rac.mean}, {"rac_sd", &h.rac.sd}, {"ls_mean", &h.ls.mean}, {"ls_sd", &h.ls.sd}, {"ls_ir", &h.ls.ir}, {"ls_t", &h.ls.t}, {"ls_pos", &h.ls.pos}, {"beta", &h.beta}, {"mono", &h.mono}, {"end_n", &h.end_n}, {"cap", &h.cap}, {"ann", &h.ann}, {"sharpe", &h.sharpe}};
   for (const auto &[k, p] : fs)
     f(std::string(k), *p);
 }
@@ -88,10 +88,10 @@ inline std::vector<std::string> hold_cols() {
 }
 inline std::vector<std::string> flow_keys() {
   std::vector<std::string> c;
-  for (const char *f : {"vol", "stuck"})
-    for (const char *sd : kSideKeys)
-      c.push_back(std::string(f) + "_" + sd);
-  for (int k = 0; k < factor::stat::kLobAmts; ++k)
+  for (const char *sd : kSideKeys)
+    c.push_back(std::string("vol_") + sd);
+  c.push_back("stuck");
+  for (int k = 0; k < kLobAmts; ++k)
     for (const char *sd : kSideKeys)
       c.push_back("imp" + std::to_string(kAmtWan[k + 1]) + "w_" + sd);
   return c;
@@ -176,9 +176,8 @@ template <class F, class Fn>
 void for_each_flow(F &f, Fn &&fn) {
   for (int s = 0; s < kSides; ++s)
     fn(f.vol[s]);
-  for (int s = 0; s < kSides; ++s)
-    fn(f.stuck[s]);
-  for (int k = 0; k < factor::stat::kLobAmts; ++k)
+  fn(f.stuck);
+  for (int k = 0; k < kLobAmts; ++k)
     for (int s = 0; s < kSides; ++s)
       fn(f.imp[k][s]);
 }
@@ -187,7 +186,7 @@ void for_each_flow(F &f, Fn &&fn) {
 // 一个持有期的换手流水 (Table.hpp TurnStat; 因子文件 stat.turn[hold]): 只落整组 lv[0] (年换手 / 成本 / 期限结构净线; 尾部级只 Inspect 现算现用), 量 / 冲击和 4 位有效
 inline nlohmann::ordered_json turn_json(const TurnStat &t) {
   nlohmann::ordered_json o = nlohmann::ordered_json::array();
-  for (const factor::stat::Flow &f : t.lv[0].e)
+  for (const TurnFlow &f : t.lv[0].e)
     detail::for_each_flow(f, [&](double v) { o.push_back(sig4(v)); });
   return o;
 }
@@ -197,7 +196,7 @@ inline bool load_turn(const nlohmann::json &o, TurnStat &dst) {
   TurnStat t;
   size_t i = 0;
   bool ok = true;
-  for (factor::stat::Flow &f : t.lv[0].e)
+  for (TurnFlow &f : t.lv[0].e)
     detail::for_each_flow(f, [&](double &v) {
       const nlohmann::json &e = o[i++];
       ok = ok && e.is_number();
@@ -241,12 +240,11 @@ inline bool load_mini_pdf(const nlohmann::json &o, MiniPdf &dst) {
   return true;
 }
 
-// 结果作用域头 ↔ 因子文件顶层 run (一轮评估内全部权重同一份; f = 根口径, ret = 收益口径): 只落文件行的读者要的 (作用域比对 / 评估期 / 满仓 cap) 与 stat 的口径键
-// (stat_ver / target / frame / ret / cost_top: 换了即旧 stat 不再对应); 形状 T / A、后端、评估时刻只 Inspect 现算现显
+// 结果作用域头 ↔ 因子文件顶层 run (一轮评估内全部权重同一份; f = 根口径, ret = 收益口径): 只落文件行的读者要的 (作用域比对 / 评估期) 与 stat 的口径键
+// (stat_ver / frame / ret / cost_top: 换了即旧 stat 不再对应); 形状 T / A、后端、评估时刻只 Inspect 现算现显
 inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame f, factor::stat::Ret ret) {
   nlohmann::ordered_json j;
   j["stat_ver"] = factor::stat::kStatSemver;
-  j["target"] = factor::stat::kTargetName;
   j["pool"] = s.pool;
   j["start_date"] = misc::dash(s.start_date);
   j["end_date"] = misc::dash(s.end_date);
@@ -255,13 +253,11 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   j["frame"] = factor::stat::frame_name(f);
   j["ret"] = factor::stat::ret_token(ret);
   j["cost_top"] = s.cost_top;
-  j["n_full"] = sig4(s.n_full);
   return j;
 }
 
 // 一个根的评估结果 ↔ stats[i] (scope_json 之外的, 同样只落文件行的读者要的): 标量首段, holds / amts (金额段万元, 0 = 固定段) / turn / 小图 /
-// 分年 (years[hold] = [[年, 窗数, rIC, 中位窗目标, 年换手] …]; agent 分年) / 滚动窗 (roll[hold] = [窗数, 中位窗目标]; 父行代表权重 / agent score) 各一段;
-// 窗目标 = Stat/Roll.hpp kTarget (口径键 run.target)
+// 分年 (years[hold] = [[年, 窗数, rIC, 中位窗 mono, 年换手] …]; agent 分年) / 滚动窗 (roll[hold] = [窗数, 中位窗 mono]; 父行代表权重 / agent score) 各一段
 inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   nlohmann::ordered_json j;
   j["valid_pct"] = sig4(st.valid_pct);
@@ -299,10 +295,9 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   return j;
 }
 
-// scope_json + eval_json 的逆: run 口径与 f / ret 不符 / stat_ver ≠ kStatSemver / target ≠ kTarget / 任一处不合 → false (dst 不动)
+// scope_json + eval_json 的逆: run 口径与 f / ret 不符 / stat_ver ≠ kStatSemver / 任一处不合 → false (dst 不动)
 inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int seg, factor::stat::Frame f, factor::stat::Ret ret, EvalStat &dst) {
-  if (!run.is_object() || !j.is_object() || !json_str_is(run, "frame", factor::stat::frame_name(f)) || !json_str_is(run, "ret", factor::stat::ret_token(ret)) ||
-      !json_str_is(run, "target", factor::stat::kTargetName))
+  if (!run.is_object() || !j.is_object() || !json_str_is(run, "frame", factor::stat::frame_name(f)) || !json_str_is(run, "ret", factor::stat::ret_token(ret)))
     return false;
   if (int ver = 0; !json_int(run, "stat_ver", ver) || ver != factor::stat::kStatSemver)
     return false;
@@ -327,7 +322,7 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
     return false;
   if (!json_int(run, "years", sc.years) || sc.years < 0 || !json_int(run, "days", sc.days))
     return false;
-  if (!json_num(run, "cost_top", sc.cost_top) || !json_num(run, "n_full", sc.n_full) || !(sc.n_full > 0.0))
+  if (!json_num(run, "cost_top", sc.cost_top))
     return false;
   double v = 0;
   if (!json_num(j, "valid_pct", v))
@@ -349,16 +344,12 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
   const auto mit = j.find("amts");
   if (mit == j.end() || !mit->is_array() || mit->empty() || mit->size() > static_cast<size_t>(kAmtCount))
     return false;
-  AmtSet amts = 0;
   for (const nlohmann::json &w : *mit) {
     AmtId a = kAmtFixed;
     if (!w.is_number_integer() || !amt_of_wan(w.get<int>(), a))
       return false;
-    amts |= amt_bit(a);
+    t.amts = t.amts.with(a);
   }
-  t.amts = Amts::of(amts);
-  if (!(amts & amt_bit(kAmtFixed)))
-    return false;
   const auto tit = j.find("turn");
   if (tit == j.end() || !tit->is_array() || tit->size() != H)
     return false;

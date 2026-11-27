@@ -143,7 +143,7 @@ struct Searcher {
   Searcher(const SearchRequest &req, FactorFlow &f, SearchResult &out, std::string &why, SearchLive *lv,
            const std::function<void(const SearchResult &)> &cb)
       : F(f), scope(req.scope), ft(*req.scope.ft), sp(req.spec), live(lv), on_pass(cb), seg(ft.seg),
-        hd(Holds::of(hold_bit(sp.hold))), res(out), why_out(why) {
+        hd(Holds::of({sp.hold})), res(out), why_out(why) {
     assert(ft.y.has(sp.hold) && "Search 的持有期须是字段表标签组之一");
     assert(fsearch::search_hold(sp.hold) && "Search 只搜 kSearchHolds 档");
     fs::assert_holds(hd, seg);
@@ -294,8 +294,15 @@ struct Searcher {
         return check(Rc::Broken);
       }
     }
-    res.n_full = c.y.n_full;
-    lg("满仓一组 %.1f 只 (全期池内平均有效资产数 / %d 组, 各块共用)", res.n_full, fs::kGroups);
+    {
+      const factor::stat::Span s0 = c.span();
+      const std::vector<float> &cap = c.y.labels[0]->cap;
+      double sum = 0.0;
+      for (int t = s0.t_lo; t < s0.t_hi(); ++t)
+        sum += cap[static_cast<size_t>(t)];
+      res.n_full = sum / (s0.t_hi() - s0.t_lo);
+    }
+    lg("满仓一组 %.1f 只 (首块统计行逐行满仓 = 池内标签有效格数 / %d 组的均值; 定参数区间用)", res.n_full, fs::kGroups);
     const double a_eff = res.n_full * fs::kGroups;
     slots = space::slots_of(e0, seg, a_eff);
     assert(slots.empty() == !e0.is_template());
@@ -436,11 +443,13 @@ struct Searcher {
       SearchCand &c = en.c;
       const HoldP &hp = ps[k].at<HoldP>();
       assert(hp.n_hold == 1);
-      const std::vector<fs::Day> &day = hp.day[0];
-      const fs::Roll fwd = fs::roll_of(day, sp.hold, seg, 1, &c.line);
+      const std::vector<fs::Sum> &day = hp.day[0];
+      std::vector<double> wins;
+      const fs::Roll fwd = fs::roll_of(day, sp.hold, seg, 1, &wins);
       c.sign = fs::sign_of(fwd);
-      c.roll = c.sign > 0 ? fwd : fs::roll_of(day, sp.hold, seg, -1, &c.line);
-      const fs::HoldStat h = fs::oriented(hp.acc[0], fs::dir_of(c.sign)).finish(sp.hold, seg);
+      c.roll = c.sign > 0 ? fwd : fs::roll_of(day, sp.hold, seg, -1, &wins);
+      c.line.assign(wins.begin(), wins.end());
+      const fs::HoldStat h = fs::stat_of(fs::oriented(day, c.sign), sp.hold, seg);
       c.mono = h.mono, c.ls = fs::ls_period(h), c.ric = h.ric.mean;
       n_ok += c.roll.ok();
     }
@@ -460,7 +469,7 @@ struct Searcher {
     for (size_t i = 0; i < std::min(order.size(), kLogTop); ++i) {
       const SearchCand &c = order[i]->c;
       lg("  %s 中位 %s %+.4f (平均 %+.4f, %d 窗 × %d 天) · 年化多空 中位 %+.1f%% · 全期 mono %+.3f rIC %+.4f 每期毛多空 %.2fbp @ %s", i == 0 ? "*" : " ",
-         fs::kTargetName, c.roll.med, c.roll.mean, c.roll.n, c.roll.win, 100.0 * c.roll.ann_med, c.mono, c.ric, 1e4 * c.ls, params_at(*order[i]).c_str());
+         "mono", c.roll.med, c.roll.mean, c.roll.n, c.roll.win, 100.0 * c.roll.ann_med, c.mono, c.ric, 1e4 * c.ls, params_at(*order[i]).c_str());
     }
     std::vector<SearchWeight> ws;
     if (!order.empty())
@@ -470,7 +479,7 @@ struct Searcher {
     res.wrote = true;
     res.n_weights = static_cast<int>(ws.size());
     why_out = ws.empty() ? strf("没有一个参数点算得出滚动窗 (每窗 ok 行 ≥ %d), 已清掉该 Hold 的权重", fs::kRollMinRows)
-                         : strf("weights 已写入 (中位 %s 最高的 1 个), 自动 Run 重算 stat", fs::kTargetName);
+                         : std::string("weights 已写入 (中位窗 mono 最高的 1 个), 自动 Run 重算 stat");
     lg("完成: 写入 %d 个权重, 共评 %d 候选", static_cast<int>(ws.size()), static_cast<int>(res.cands.size()));
     emit_pass();
   }

@@ -219,27 +219,24 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
     assert((lv_col >= 0) == hold_ok(h, lv.geo()) && "本层的标签列与持有期合法性不符 (HOLDS_FROM_<LVL> ⇄ hold_ok)");
     if (lv_col < 0)
       continue;
-    t.y.holds |= hold_bit(h);
+    t.y.holds = t.y.holds.with(h);
     t.y.lab[h].lv = own(static_cast<uint32_t>(lv_col));
     t.y.lab[h].nv = hold_offset(h) ? named(("lb_nom_" + tok).c_str()) : own(kNoCol);
     const auto it = t.x.index.find(t.label_leaf(h));
     assert(it != t.x.index.end() && "做多标签列须是本层叶");
     t.x.leaves[it->second].target = true;
   }
-  assert(t.y.holds && "本层无合法持有期");
-  t.y.list = Holds::of(t.y.holds);
-  // 成本: 固定段恒在; 盘口段 = Lob 档 L_1min 的两侧冲击列 (分钟各层的行 = 其行末分钟那一行, 读计划 level_asof 投影; 日层只有收盘建仓, 无盘口段)
-  t.y.amts = amt_bit(kAmtFixed);
-  if (lv.lvl != L_1day) {
+  assert(t.y.holds.n > 0 && "本层无合法持有期");
+  // 成本: 各层都有全部金额段; 盘口段的平面 = Lob 档 L_1min 的两侧冲击列 (分钟各层的行 = 其行末分钟那一行, 读计划 level_asof 投影);
+  //   日层每行都是收盘撮合建仓 (盘口冲击 0, 与分钟层的收盘建仓尾行同约) → 无平面
+  if (lv.lvl != L_1day)
     for (int a = 1; a < kAmtCount; ++a) {
       const std::string w = std::to_string(kAmtWan[a]) + "w";
       const int b = find_at(TierId::Lob, L_1min, "lb_cost_buy_" + w), sl = find_at(TierId::Lob, L_1min, "lb_cost_sell_" + w);
       assert(b >= 0 && sl >= 0 && "冲击成本列不齐: 某金额段缺 buy 或 sell");
-      t.y.amts |= amt_bit(static_cast<AmtId>(a));
       t.y.cost[a][kBuy] = Col{TierId::Lob, L_1min, static_cast<uint32_t>(b)};
       t.y.cost[a][kSell] = Col{TierId::Lob, L_1min, static_cast<uint32_t>(sl)};
     }
-  }
   return t;
 }
 

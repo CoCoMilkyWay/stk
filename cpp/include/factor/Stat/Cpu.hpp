@@ -5,16 +5,16 @@
 // =============================================================================
 //   定位: 无 GPU 时的评估路径, 与 GPU 后端对拍 (无 golden, 两边必须 match). 不 include Gpu.cuh.
 //   【分层】算子 = 行核 (Host.hpp) + 流程 (本文件), 无线程 / 无分配 / 无所有权; 谁出线程由 Exec 定 (misc/exec.hpp).
-//   与 Stat/Gpu.cuh 同名同参序 (契约【视图】Plane / Batch / Mode / Labels / Span; 出口 Accum[H] + Day[H][D]):
+//   与 Stat/Gpu.cuh 同名同参序 (契约【视图】Plane / Batch / Mode / Labels / Span; 出口逐日 Sum[H][D]):
 //     rank_x_rows / rank_y_rows   行区间核 [t0,t1) (单线程, 绝对 t)
 //     prep_label    ry[T][A]                                     ← exec.rows(rank_y_rows)
 //     rank_x        rx[T][A] (按 Mode 口径 / 方向, 已定向)       ← exec.rows(rank_x_rows)
-//     accum_rows    rx × 标签集 (按 Mode 收益口径) → 统计日 [0, D) 的 Row 折进 Accum[H] + Day[H][D]  ← exec.rows(按日切: 每 t 每 h row_stat → sink → Accum[tid]) → merge
+//     accum_rows    rx × 标签集 (按 Mode 收益口径) → 统计日 [0, D) 的 Row 折进 Sum[H][D]  ← exec.rows(按日切: 每日由一个线程独占, 日内行序累加)
 //                   sink.row(i, t, r) 每行一次 (线程内, 行不相交): DropRows 丢弃 / LandRows 落地 rows[i·T + t] / 调用方自定 (引擎直接给探针组);
 //                   sink 带 kCells = true 时另收真持有格 sink.cell(i, t, a, g, pos, y) (行核内一次 walk 同出, 不另走链)
-//     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
+//     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由 Fold stat_of
 //     run_batch     一批候选: 候选串行, 候选内全核切日 (C 小也能跑满核, 只留一张 [T][A] 的 r16)
-//   换手 (账集) 走 Stat/Book.hpp book_rows. 标签秩 ry / r16(x) 平面 rx 由调用方持有; Workspace (Scratch / Accum 各 [tid]) 由调用方持有, ensure 幂等.
+//   换手 (账集) 走 Stat/Book.hpp book_rows. 标签秩 ry / r16(x) 平面 rx 由调用方持有; Workspace (Scratch [tid]) 由调用方持有, ensure 幂等.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
 
@@ -30,14 +30,13 @@
 
 namespace factor::cpu::stat {
 
-using factor::stat::Accum;
 using factor::stat::Batch;
-using factor::stat::Day;
 using factor::stat::HoldStat;
 using factor::stat::Labels;
 using factor::stat::Mode;
 using factor::stat::Plane;
 using factor::stat::Span;
+using factor::stat::Sum;
 
 // -----------------------------------------------------------------------------
 // 行区间核 (单线程, 绝对 t; 下标同 [T][A] 布局)
@@ -64,18 +63,15 @@ inline void rank_y_rows(const Label &lb, int t0, int t1, int A, uint16_t *ry, Sc
 // 调用方持有; ensure 幂等 (形状对得上零分配)
 struct Workspace {
   std::vector<Scratch> sc; // [tid]
-  std::vector<Accum> acc;  // [tid][H]
-  int A = 0, H = 0, threads = 0;
-  void ensure(int A_, int H_, int threads_) {
-    assert(A_ >= 1 && A_ <= kMaxA && H_ >= 1 && H_ <= kHoldCount && threads_ >= 1);
+  int A = 0, threads = 0;
+  void ensure(int A_, int threads_) {
+    assert(A_ >= 1 && A_ <= kMaxA && threads_ >= 1);
     if (sc.size() < static_cast<size_t>(threads_))
       sc.resize(static_cast<size_t>(threads_));
     for (Scratch &s : sc)
       if (s.a.size() != static_cast<size_t>(A_))
         s.reserve(A_);
-    if (acc.size() < static_cast<size_t>(threads_) * H_)
-      acc.resize(static_cast<size_t>(threads_) * H_);
-    A = A_, H = H_, threads = threads_;
+    A = A_, threads = threads_;
   }
 };
 
@@ -121,55 +117,45 @@ inline void rank_x(Exec &ex, Plane x, const uint8_t *g, const Mode &m, const Spa
   ex.rows(s.T, [&](int t0, int t1, int tid) { rank_x_rows(x, g, m.f, m.d, t0, t1, s.A, rx, w.sc[static_cast<size_t>(tid)]); });
 }
 
-// 阶段 2: rx × L 组标签 (收益口径 m.r) → 统计行 [t_lo, t_hi) 的 Row, 每行先 sink.row 再折进 acc[hd.n] (覆盖) 与 day[i·D + 日] (覆盖; D = s.days())
+// 阶段 2: rx × L 组标签 (收益口径 m.r) → 统计行 [t_lo, t_hi) 的 Row, 每行先 sink.row 再折进 day[i·D + 日] (覆盖; D = s.days(); 一日一线程, 行序累加)
 template <class Exec, class Sink>
-inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels &L, const Mode &m, Workspace &w, Accum *acc, Day *day, Sink &&sink) {
+inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels &L, const Mode &m, Sum *day, Sink &&sink) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, s.g.S, true);
-  const int H = L.hd.n, A = s.A, nt = ex.threads(), S = s.g.S, D = s.days();
-  assert(rx && acc && day && w.A == A && w.H >= H && w.threads >= nt);
-  std::fill(w.acc.begin(), w.acc.begin() + static_cast<size_t>(nt) * H, Accum{});
-  ex.rows(D, [&](int d0, int d1, int tid) {
-    Accum *a = w.acc.data() + static_cast<size_t>(tid) * H;
+  const int H = L.hd.n, A = s.A, S = s.g.S, D = s.days();
+  assert(rx && day);
+  ex.rows(D, [&](int d0, int d1, int) {
     for (int dd = d0; dd < d1; ++dd) {
       for (int i = 0; i < H; ++i)
-        day[static_cast<size_t>(i) * D + dd] = Day{};
+        day[static_cast<size_t>(i) * D + dd] = Sum{};
       for (int t = s.t_lo + dd * S; t < s.t_lo + (dd + 1) * S; ++t) {
         const size_t base = static_cast<size_t>(t) * A;
         for (int i = 0; i < H; ++i) {
           const Hold hd = hold_on(L.hd.k[i], s.g);
-          const Row r = row_stat(rx + base, t >= hd.h ? rx + base - static_cast<size_t>(hd.h) * A : nullptr, L.l[i].at(base), factor::stat::chain_of(t, s, hd), L.cap,
-                                 m.r, hd.opens(t), SinkCells<std::remove_reference_t<Sink>>{sink, i});
+          const Row r = row_stat(rx + base, t >= hd.h ? rx + base - static_cast<size_t>(hd.h) * A : nullptr, L.l[i].at(base), factor::stat::chain_of(t, s, hd), m.r,
+                                 hd.opens(t), SinkCells<std::remove_reference_t<Sink>>{sink, i});
           sink.row(i, t, r);
-          a[i].add(r);
           day[static_cast<size_t>(i) * D + dd].add(r);
         }
       }
     }
   });
-  for (int i = 0; i < H; ++i) {
-    acc[i] = w.acc[static_cast<size_t>(i)];
-    for (int tid = 1; tid < nt; ++tid)
-      acc[i].merge(w.acc[static_cast<size_t>(tid) * H + i]);
-  }
 }
 
-// 一个候选的完整评估 = rank_x (→ rx) + accum_rows → acc[hd.n] + day[hd.n][D]
+// 一个候选的完整评估 = rank_x (→ rx) + accum_rows → day[hd.n][D]
 template <class Exec, class Sink>
-inline void run(Exec &ex, Plane x, const uint8_t *g, const Mode &m, const Span &s, const Labels &L, uint16_t *rx, Workspace &w, Accum *acc, Day *day,
-                Sink &&sink) {
+inline void run(Exec &ex, Plane x, const uint8_t *g, const Mode &m, const Span &s, const Labels &L, uint16_t *rx, Workspace &w, Sum *day, Sink &&sink) {
   rank_x(ex, x, g, m, s, rx, w);
-  accum_rows(ex, s, rx, L, m, w, acc, day, sink);
+  accum_rows(ex, s, rx, L, m, day, sink);
 }
 
-// 一批候选 (同口径 m): B.x[c] 各一张 [T][A] (块形) → acc[c·H + i] + day[(c·H + i)·D + 日]; rx = r16 工作平面 (候选间复用, 跑完是最后一个候选的秩)
+// 一批候选 (同口径 m): B.x[c] 各一张 [T][A] (块形) → day[(c·H + i)·D + 日]; rx = r16 工作平面 (候选间复用, 跑完是最后一个候选的秩)
 template <class Exec>
-inline void run_batch(Exec &ex, const Batch &B, const uint8_t *g, const Mode &m, const Span &s, const Labels &L, uint16_t *rx, Workspace &w, Accum *acc,
-                      Day *day) {
-  assert(B.C >= 1 && g && rx && acc && day);
+inline void run_batch(Exec &ex, const Batch &B, const uint8_t *g, const Mode &m, const Span &s, const Labels &L, uint16_t *rx, Workspace &w, Sum *day) {
+  assert(B.C >= 1 && g && rx && day);
   const size_t H = static_cast<size_t>(L.hd.n), D = static_cast<size_t>(s.days());
   for (int c = 0; c < B.C; ++c)
-    run(ex, B.x[c], g, m, s, L, rx, w, acc + c * H, day + c * H * D, DropRows{});
+    run(ex, B.x[c], g, m, s, L, rx, w, day + c * H * D, DropRows{});
 }
 
 } // namespace factor::cpu::stat

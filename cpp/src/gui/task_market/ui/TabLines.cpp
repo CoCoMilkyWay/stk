@@ -69,7 +69,7 @@ int head(int page, PortfolioService &svc, const PortfolioUIState &pf, LinesState
           fee.impact * 1e4, fee.impact * 1e4, (fee.commission + fee.transfer) * 1e4, fee.stamp * 1e4);
     ImGui::SameLine();
   }
-  if (pd.log) {
+  if (pd.log()) {
     if (toggle_button("log", ui.log_y))
       ui.log_y = !ui.log_y;
     if (ImGui::IsItemHovered())
@@ -193,7 +193,7 @@ void SyncLinesWatch(LinesState &ui) {
 }
 
 int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, const Fee &fee,
-                   const Fee &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
+                   Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
                    const std::shared_ptr<const Quote::Holdings> &hold, const Quote::TradeBins &trades) {
   assert(page >= 0 && page < kPages);
   const PageDef &pd = kPageDefs[page];
@@ -308,7 +308,7 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
   case kLayoutCta: {
     const float pw = std::floor((lw - st.ItemSpacing.x) / 2.0f);
     if (cta)
-      RenderLinesCta(*cta, *mk, ui, rates, pin.g >= 0 ? d.row(pin).cn.c_str() : nullptr, ImVec2(left, av.y), pw);
+      RenderLinesCta(*cta, *mk, ui, fee, pin, ImVec2(left, av.y), pw);
     else {
       ImGui::BeginChild("##cta_wait", ImVec2(left, av.y));
       ImGui::TextDisabled("行情等基本面就绪…");

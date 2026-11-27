@@ -242,17 +242,23 @@ struct Levels {
   void push(misc::Ymd d, double s, double v) { date.push_back(d), slot.push_back(s), lv.push_back(v); }
 };
 
-// 腿 (Realize 已实现口径, 与池指数对齐; 账五列恒齐): 行 t 的增量 (cost: 毛 − 真实冲击 − 固定份数 · 固定冲击 − 两侧量 · 税佣; 否则 = 毛) / 增仓量
+// 腿 (Realize 已实现口径, 与池指数对齐): 行 t 的增量 (cost: 毛 − Fee::parts(该期流水, 账的金额段); 否则 = 毛) / 增仓量
 struct LedgerLine {
-  const float *c[kLedgerCols];
-  explicit LedgerLine(const LinesLeg &lg) {
+  const float *c[kLedgerCols]; // 没装的冲击列空
+  AmtId amt = kAmtFixed;
+  explicit LedgerLine(const LinesLeg &lg) : amt(lg.b->amt) {
     for (int k = 0; k < kLedgerCols; ++k)
       c[k] = lg.b->at(k, lg.line);
   }
-  double inc(size_t t, bool cost, const Fee &f) const {
-    const double r = c[kLedgerRet][t];
-    return cost ? r - f.cost(c[kLedgerImp][t], c[kLedgerFix][t], c[kLedgerBuy][t], c[kLedgerSell][t]) : r;
+  TurnFlow flow(size_t t) const {
+    TurnFlow f;
+    f.vol[kBuy] = c[kLedgerBuy][t], f.vol[kSell] = c[kLedgerSell][t], f.stuck = c[kLedgerStuck][t];
+    for (int k = kLedgerImp; k < kLedgerCols; ++k)
+      if (c[k])
+        f.imp[(k - kLedgerImp) / 2][(k - kLedgerImp) % 2] = c[k][t];
+    return f;
   }
+  double inc(size_t t, bool cost, const Fee &f) const { return cost ? c[kLedgerRet][t] - f.cost(flow(t), amt) : c[kLedgerRet][t]; }
   double buy(size_t t) const { return c[kLedgerBuy][t]; }
 };
 
@@ -1115,8 +1121,8 @@ void MakeLinesLive(const LinesDerived &d, const Quote::Live *y, LinesLive &t) {
         t.tail[g][r] = tail_of(*w.line[kIdeal], di, *day, w.src[kIdeal].minutes != nullptr);
       }
     }
-  if (!d.rows[kGroupAccount].empty() && t.tail[kGroupAccount][0].k >= 0 && d.hold)
-    t.acct_now = d.hold->now(y);
+  const bool joined = !d.rows[kGroupAccount].empty() && t.tail[kGroupAccount][0].k >= 0; // 账户线接上当日
+  t.acct_now = d.view->equity.now(d.hold.get(), joined ? y : nullptr);
 }
 
 void MakeLinesRoll(const LinesDerived &d, const LinesLeg &lg, int years, LinesRolls &r) {
@@ -1176,50 +1182,24 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
       rank_col(n, -1, [&](size_t i) -> Ranked & { return v.margin[g][i][static_cast<size_t>(kMarPct + j)]; });
   }
 
-  // ---- 账户前复权净资产与区间回撤 (与账户理想线切片逐点对仗, 从当前净资产往前推) ----
-  v.acct = {};
-  if (!d.rows[kGroupAccount].empty() && d.view && d.view->equity.days && !d.view->equity.days->empty() && t.acct_now > 0.0) {
+  // ---- 账户线的读数 (与账户理想线切片逐点对仗, 从此刻净资产往前推; 起点 = 首日前收, 前收即该点) ----
+  v.acct.clear();
+  if (!d.rows[kGroupAccount].empty() && d.view && d.view->equity.ok() && t.acct_now > 0.0) {
     const LinesSlice &sl = v.slice[kGroupAccount][0][kIdeal];
-    const size_t n = sl.size();
     const double idx_now = sl.c.size() > 0 ? sl.c.y(sl.c.size() - 1) : 0.0;
-    if (n > 0 && idx_now > 0.0) {
-      const Quote::Equity &eq = d.view->equity;
-      const std::vector<Quote::EquityDay> &ed = *eq.days;
-      const double today_base = eq.today_base(d.hold && d.hold->broker);
-      const size_t hist_n = sl.c.c->x.size();
-      v.acct.scale = t.acct_now * sl.base / idx_now;
-      v.acct.adj_hi.resize(n), v.acct.pnl.resize(n), v.acct.pnl_hi.resize(n);
-      size_t ei = 0;
-      double ahi = -std::numeric_limits<double>::infinity(), phi = -std::numeric_limits<double>::infinity();
-      for (size_t i = 0; i < n; ++i) {
-        const size_t j = sl.j0 + i;
+    if (sl.size() > 0 && idx_now > 0.0) {
+      Quote::EquityWalk w{d.view->equity, t.acct_now / idx_now, d.hold && d.hold->broker};
+      for (size_t j = sl.j0; j < sl.j1; ++j) {
         const double idx = sl.c.y(j);
-        double p = 0.0;
-        if (j >= hist_n) {
-          const double ref = sl.c.c->e.back();
-          p = ed.back().pnl + (today_base > 0.0 && ref > 0.0 ? today_base * (idx / ref - 1.0) : 0.0);
-        } else if (j > 0) {
-          const int k = sl.c.day(j);
-          const misc::Ymd day = d.dates[static_cast<size_t>(k)];
-          while (ei + 1 < ed.size() && ed[ei].date < day)
-            ++ei;
-          assert(ed[ei].date == day && "账户线点所属日须在回放日内");
-          if (ei > 0) {
-            const double ref = sl.c.c->end(k);
-            p = ed[ei].base > 0.0 && ref > 0.0 ? ed[ei - 1].pnl + ed[ei].base * (idx / ref - 1.0) : ed[ei].pnl;
-          }
-        }
-        const double adj = v.acct.scale * sl.y(i);
-        ahi = std::max(ahi, adj), phi = std::max(phi, p);
-        v.acct.adj_hi[i] = ahi, v.acct.pnl[i] = p, v.acct.pnl_hi[i] = phi;
+        const int k = j == 0 ? sl.c.c->f : sl.c.day(j);
+        v.acct.push_back(w.step(d.dates[static_cast<size_t>(k)], idx, j == 0 ? idx : sl.c.c->end(k)));
       }
     }
   }
 
-  // ---- VAL / MARGIN 标的各口 band: 标的理想线切片的日末点 (起点 + 各日末点);
-  //      估值口: y = P · v / q (v = 当日收益率; v ≤ 0 / q ≤ 0 → 价格无解, 断开; 窗内有任一无解点 → 不画);
-  //        等值线单位点位 unit = P · v (只看当日, 不看滚动分位; v ≤ 0 → 断开), 档 = 二级的全史倍数档;
-  //      两融口: 不换算成价格, y = 窗内分位档的占比本身 (%, 窗就绪即画), ratio = 当日占比 (%) ----
+  // ---- VAL / MARGIN 标的各口 band (BandSrc::band): 标的理想线切片的日末点 (起点 + 各日末点);
+  //      估值口: y = P · m (价格空间); 等值线单位点位 unit = P · v (只看当日, 不看滚动分位; v ≤ 0 → 断开), 档 = 二级的全史倍数档;
+  //      两融口: 不换算成价格, y = 100 · m (占比 %), ratio = 当日占比 (%) ----
   v.band_x.clear(), v.band_p.clear();
   for (LinesBand &bd : v.band)
     bd = {};
@@ -1233,59 +1213,33 @@ void MakeLinesView(const LinesDerived &d, const LinesLive &t, int d0, int d1, co
       v.band_x.push_back(sl.x(i)), v.band_p.push_back(sl.y(i)), day.push_back(k);
   const size_t n = day.size();
   for (int b = 0; b < kPoolVals; ++b) {
-    const LinesRoll &r = roll[b];
-    assert(r.pct.size() == d.dates.size());
+    const BandSrc src = band_src(d, lg, b, roll);
+    assert(src.roll.pct.size() == d.dates.size());
     LinesBand &bd = v.band[b];
-    const bool mg = margin_val(b);
-    const float *hv = leg_val(lg, b);
-    for (std::vector<double> &y : bd.y)
-      y.assign(n, kNaN);
-    (mg ? bd.ratio : bd.unit).assign(n, kNaN);
-    if (!mg)
-      bd.levels = r.levels;
+    bd.lines = BandLines(n);
+    (src.margin ? bd.ratio : bd.unit).assign(n, kNaN);
+    if (!src.margin)
+      bd.levels = src.roll.levels;
     int last = -1; // 末个有分位的日
-    const auto seg = [&](size_t i) {
-      const int ii = static_cast<int>(i);
-      if (bd.segs.empty() || bd.segs.back().second != ii)
-        bd.segs.push_back({ii, ii + 1});
-      else
-        ++bd.segs.back().second;
-    };
+    double m[kBandQ];
     for (size_t i = 0; i < n; ++i) {
       const int k = day[i];
-      const int32_t t = k >= 0 ? d.val_at[static_cast<size_t>(k)] : -1;
-      const double x = t >= 0 ? hv[t] : kNaN;
-      if (mg) {
+      const double x = src.v_at(k);
+      if (src.margin)
         bd.ratio[i] = 100.0 * x;
-        if (t >= 0 && std::isfinite(r.pct[static_cast<size_t>(k)]))
-          last = k;
-        if (k < 0 || !std::isfinite(r.q[0][static_cast<size_t>(k)]))
-          continue;
-        for (int q = 0; q < kBandQ; ++q) // q 按贵度升 = 占比降: 反过来即占比升序
-          bd.y[q][i] = 100.0 * r.q[kBandQ - 1 - q][static_cast<size_t>(k)];
-        seg(i);
-        continue;
-      }
-      if (x > 0.0)
+      else if (x > 0.0)
         bd.unit[i] = v.band_p[i] * x;
-      if (t < 0 || !std::isfinite(r.pct[static_cast<size_t>(k)]))
-        continue;
-      last = k;
-      if (!(x > 0.0) || !r.band[static_cast<size_t>(k)])
-        continue;
-      for (int q = 0; q < kBandQ; ++q)
-        if (const float qk = r.q[q][static_cast<size_t>(k)]; qk > 0.f)
-          bd.y[q][i] = v.band_p[i] * x / qk;
-      if (r.q[kBandQ - 1][static_cast<size_t>(k)] > 0.f) // q 降序: 最贵档 > 0 ⇔ 各档全可画 (填色只画全有限段)
-        seg(i);
+      if (std::isfinite(src.pct(k)))
+        last = k;
+      if (src.band(k, m))
+        bd.lines.put(i, src.margin ? 100.0 : v.band_p[i], m);
     }
     if (last < 0)
       continue;
     bd.ok = true;
-    const int32_t tl = d.val_at[static_cast<size_t>(last)];
-    bd.now = hv[tl], bd.pct = r.pct[static_cast<size_t>(last)];
-    if (mg)
-      bd.bal = lg.b->bal_of(lg.line, b - kValRz)[tl];
+    bd.now = src.v_at(last), bd.pct = src.pct(last);
+    if (src.margin)
+      bd.bal = lg.b->bal_of(lg.line, b - kValRz)[d.val_at[static_cast<size_t>(last)]];
   }
 }
 

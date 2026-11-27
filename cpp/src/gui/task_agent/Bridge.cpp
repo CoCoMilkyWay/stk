@@ -210,7 +210,7 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
       x.score = fs::score_of(*rl);
       x.ric = h->ric.mean, x.mono = h->mono;
       x.lng = fs::end_period(*h, fs::kTop), x.sht = -fs::end_period(*h, fs::kBot);
-      const AmtId amt = w.amts.at(ft.y.amt_of(cost)) >= 0 ? ft.y.amt_of(cost) : kAmtFixed;
+      const AmtId amt = w.amts.has(cost.amt) ? cost.amt : kAmtFixed;
       x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, amt, fee), x.cost = x.gross - x.net;
       x.turn = fs::turn_annual(*h, c);
       assert(h->n_all > 0 && "有滚动窗须有统计行");
@@ -386,7 +386,7 @@ std::vector<Choice> levels() {
 }
 std::vector<Choice> holds(const SharedData &data, int level) {
   std::vector<Choice> out;
-  const Holds hl = table(data, level)->y.list;
+  const Holds hl = table(data, level)->y.holds;
   for (int i = 0; i < hl.n; ++i)
     if (fsearch::search_hold(hl.k[i]))
       out.push_back({hl.k[i], hold_name(hl.k[i])});

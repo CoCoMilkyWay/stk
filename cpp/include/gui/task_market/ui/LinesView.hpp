@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -316,33 +317,87 @@ enum MarginNum : int { kMarCap,
                        kMarBal,
                        kMarPct = kMarBal + kMarginVals };
 inline constexpr int kMarginNums = kMarPct + kMarginVals;
+// 一口 band 的档线 (VAL / MARGIN 主图 / CTA 价格图同一形同一画法 PlotBand): y[j] 逐点升序 (下 → 上; NaN = 断开),
+// segs = y 全有限的连续段 [i0, i1) (填色按段画: PlotShaded 不跳 NaN)
+struct BandLines {
+  std::vector<double> y[kBandQ];
+  std::vector<std::pair<int, int>> segs;
+  explicit BandLines(size_t n = 0) {
+    for (std::vector<double> &v : y)
+      v.assign(n, std::numeric_limits<double>::quiet_NaN());
+  }
+  size_t size() const { return y[0].size(); }
+  // 点 i (升序逐点放) 的各档 = s · m_j (m 见 BandSrc::band); 各档全有限 → 并进连续段
+  void put(size_t i, double s, const double (&m)[kBandQ]) {
+    bool all = true;
+    for (int j = 0; j < kBandQ; ++j)
+      y[j][i] = s * m[j], all &= std::isfinite(y[j][i]);
+    if (!all)
+      return;
+    const int ii = static_cast<int>(i);
+    if (segs.empty() || segs.back().second != ii)
+      segs.push_back({ii, ii + 1});
+    else
+      ++segs.back().second;
+  }
+};
+// 一口 band 的源 (VAL / MARGIN 标的 band / CTA PB Band 与估值线同一份): 日并集轴 + 轴日 → 估值账行 + 该口 v [账行] + 该口滚动分位
+struct BandSrc {
+  const std::vector<misc::Ymd> &dates;
+  const std::vector<int32_t> &at;
+  const float *v; // nullptr = 无估值腿
+  const LinesRoll &roll;
+  bool margin; // 两融口
+  // 日 day 的轴下标 (不在轴上 → −1)
+  int k_of(misc::Ymd day) const {
+    const auto it = std::ranges::lower_bound(dates, day);
+    return it != dates.end() && *it == day ? static_cast<int>(it - dates.begin()) : -1;
+  }
+  // 轴日 k 的 v / 估值分位 (k < 0 / 账无该日 / 不可算 = NaN)
+  double v_at(int k) const { return v && k >= 0 && at[static_cast<size_t>(k)] >= 0 ? v[at[static_cast<size_t>(k)]] : std::numeric_limits<double>::quiet_NaN(); }
+  bool rolled(int k) const { return k >= 0 && static_cast<size_t>(k) < roll.pct.size(); } // 滚动分位覆盖轴日 k (空腿 = 全不覆盖)
+  double pct(int k) const { return rolled(k) ? roll.pct[static_cast<size_t>(k)] : std::numeric_limits<double>::quiet_NaN(); }
+  // 轴日 k 的 band 各档 m (升序 = 下 → 上): 估值口 = 对价格的倍数 v / q_j (便宜 → 贵; 价格档 = P · m; v ≤ 0 / 窗内有无解点 → false, q_j ≤ 0 的档 NaN);
+  //   两融口 = 分位档的占比本身 (低 → 高). 无分位 → false
+  bool band(int k, double (&m)[kBandQ]) const {
+    if (!rolled(k) || !std::isfinite(roll.q[0][static_cast<size_t>(k)]))
+      return false;
+    const size_t kk = static_cast<size_t>(k);
+    if (margin) { // q 按贵度升 = 占比降: 反过来即占比升序
+      for (int j = 0; j < kBandQ; ++j)
+        m[j] = roll.q[kBandQ - 1 - j][kk];
+      return true;
+    }
+    const double x = v_at(k);
+    if (!(x > 0.0) || !roll.band[kk])
+      return false;
+    for (int j = 0; j < kBandQ; ++j)
+      m[j] = roll.q[j][kk] > 0.f ? x / roll.q[j][kk] : std::numeric_limits<double>::quiet_NaN();
+    return true;
+  }
+};
+// 估值腿 lg (空 = 无) 第 b 口的 band 源; r = 该腿的滚动分位 (MakeLinesRoll)
+inline BandSrc band_src(const LinesDerived &d, const LinesLeg &lg, int b, const LinesRolls &r) {
+  return {d.dates, d.val_at, lg.b ? leg_val(lg, b) : nullptr, r[static_cast<size_t>(b)], margin_val(b)};
+}
+
 // VAL / MARGIN 标的的一口 band (PoolVal): 标的理想线切片的日末点上, x = LinesView::band_x
 //   估值口 = 价格空间 (y 与价格线同轴); 两融口 = 占比空间 (%, 与价格线分轴: 余额不随价格走, 不换算)
 struct LinesBand {
   bool ok = false;                                       // 区间内有分位点 (否则其余空)
-  std::vector<double> y[kBandQ];                         // 升序 (下 → 上): 估值口 = P · v / q_j (v = 当日收益率; v ≤ 0 / q_j ≤ 0 / 无分位 = NaN), 便宜 → 贵;
-                                                         //   两融口 = 分位档的占比 (%; 无分位 = NaN), 占比低 → 高
-  std::vector<std::pair<int, int>> segs;                 // y 全有限的连续段 [i0, i1) (填色按段画: PlotShaded 不跳 NaN)
+  BandLines lines;                                       // 估值口 = P · v / q_j (v = 当日收益率), 便宜 → 贵; 两融口 = 分位档的占比 (%), 占比低 → 高
   std::vector<double> unit;                              // 估值口: P · v (v ≤ 0 / 不可算 = NaN; 不看分位): 倍数 m (= 1 / v) 的绝对估值等值线 y = unit · m
   std::vector<double> levels;                            // 估值口: 等值线倍数 (= LinesRoll::levels)
   std::vector<double> ratio;                             // 两融口: 当日占比 (%; 不可算 = NaN)
   double now = 0.0, pct = 0.0;                           // 区间末个有分位点的收益率 / 余额占比 · 估值分位 (%, 见 LinesRoll::pct)
   double bal = std::numeric_limits<double>::quiet_NaN(); // 两融口: 同日余额 (亿元, Ledger::bal)
 };
-// 账户前复权净资产与区间回撤 (与账户理想线切片逐点对仗, 起始点 = 当前区间起点):
-//   前复权净资产 E_adj(i) = scale · sl.y(i) (= E_now · I(i) / I_now, 末点对齐此刻净资产 E_now);
-//   复权回撤 = 对区间内最高复权净资产 adj_hi[i]; 真正回撤 = 剔除出入金后的累计真实盈亏 pnl[i] 对区间内最高值 pnl_hi[i]
-struct AccountView {
-  double scale = 0.0; // E_now · sl.base / I_now (≤ 0 = 无)
-  std::vector<double> adj_hi, pnl, pnl_hi;
-  bool ok() const { return scale > 0.0 && !adj_hi.empty(); }
-};
 struct LinesView {
   std::vector<std::array<LinesSlice, kPairLines>> slice[kRowGroups]; // [RowGroup][行][PairLine]
   std::vector<std::array<Ranked, kNavNums>> num[kRowGroups];         // [RowGroup][行][NavNum] NAV 右表数值列
   std::vector<std::array<Ranked, kPoolVals>> pct[kRowGroups];        // [RowGroup][行][PoolVal] VAL / MARGIN 表格: 区间末个可算日的估值分位 (%)
   std::vector<std::array<Ranked, kMarginNums>> margin[kRowGroups];   // [RowGroup][行][MarginNum] MARGIN 表格: 区间末数
-  AccountView acct;                                                  // 账户前复权净资产与区间回撤 (悬停读数)
+  std::vector<Quote::EquityPt> acct;                                 // 账户线的读数 [账户理想线切片点] (悬停; 窗 = 区间, Quote::EquityWalk; 空 = 无)
   std::vector<double> band_x, band_p;                                // VAL / MARGIN 标的理想线切片的日末点 x / 点位 (各口 band 共用; 未选 → 空)
   LinesBand band[kPoolVals];                                         // [PoolVal] 标的的
 };

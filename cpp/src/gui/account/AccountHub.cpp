@@ -29,7 +29,7 @@ std::vector<account::Trade> trades_in(const live::Fills &f, int last, const Fee 
 // 当日: 回放末日 (指数 idx0, 回放摘要 e) 之后, 持仓 h 按 y 的分钟收盘, 末槽 = h.now; 券商持仓时今日成交 f 按时刻回推 (与历史回放同一核 day_of)
 std::shared_ptr<const Quote::Day> today_of(const Quote::Equity &e, float idx0, const Quote::Holdings &h, const live::Fills *f, const Quote::Live &y, const Fee &fee) {
   const size_t n = static_cast<size_t>(std::clamp(Quote::sec_slot(y.sec), 0, Quote::kSlots - 1)) + 1;
-  account::Day d{y.date, h.now(&y), h.broker ? e.after : 0, 1, std::vector<account::Hold>(h.list.begin(), h.list.end())};
+  account::Day d{y.date, h.now(&y), e.today_flow(h.broker), 1, std::vector<account::Hold>(h.list.begin(), h.list.end())};
   std::unordered_map<std::string, uint32_t> id; // 代码 → 全局 id (资产轴上的)
   for (const Quote::Holding &x : h.list)
     if (x.id != Quote::Ref::kNone)

@@ -100,9 +100,8 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
       if (!state->cta_service)
         state->cta_service = std::make_unique<Market::CtaService>();
     }
-    const int action = Market::RenderTabLines(idx - kTabLines, *e.portfolio_service, state->cta_service.get(), e.portfolio_ui, ui, data.config.fee,
-                                              data.config.fee, mk, data.asset_info.stocks,
-                                              state->account->note(), state->account->holdings(), state->account->trades());
+    const int action = Market::RenderTabLines(idx - kTabLines, *e.portfolio_service, state->cta_service.get(), e.portfolio_ui, ui, data.config.fee, mk,
+                                              data.asset_info.stocks, state->account->note(), state->account->holdings(), state->account->trades());
     if (action == -1)
       e.portfolio_service->RequestCancel();
     Engine::SyncPortfolio(data, e, action == 1);

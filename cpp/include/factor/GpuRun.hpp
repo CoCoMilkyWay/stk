@@ -60,23 +60,22 @@ void run_fused(Session *s, const Fuse &f, const DevPlane *const *in, int n_in, D
 void run(int op, int n_in, const float *const *v, const uint8_t *const *m, const uint8_t *gm, float *ov, uint8_t *om, int T, int A,
          int seg, const Param &p, double *kernel_ms = nullptr);
 
-// Stat 评估算子 (factor/Stat/Gpu.cuh; 契约 factor/Stat/Contract.hpp): 一个常驻会话 = 一块 (chunk) 的形状 (Span 的 T / A / g) + 候选上限 Cmax + 持有期 + 满仓 cap,
-// 显存 open 时一次分配 (标签 / ry / rx[Cmax] / 一级 / 分片 / 出口). 流程: open → 每块 load (上传宿主标签 hd.n 组, ry 预处理; 各候选共用) →
+// Stat 评估算子 (factor/Stat/Gpu.cuh; 契约 factor/Stat/Contract.hpp): 一个常驻会话 = 一块 (chunk) 的形状 (Span 的 T / A / g) + 候选上限 Cmax + 持有期,
+// 显存 open 时一次分配 (标签 / ry / rx[Cmax] / 一级 / 出口). 流程: open → 每块 load (上传宿主标签 hd.n 组 (含逐行 mk / cap), ry 预处理; 各候选共用) →
 // 每批 eval (C ≤ Cmax 张设备常驻候选平面 (DAG 根槽) + 池掩码 g (只用 g->m), 评估口径 m 逐批给) → close.
 //   与 CPU cpu::stat::run 同参序 (x, g, m, s, …): s = 本块 Span (形状同会话; t_lo / t_back = 契约【分块流式】, 整日对齐).
-//   出口 acc[C][hd.n] 宿主 + day[C][hd.n][D] 宿主 (D = 统计日数, 契约二级 Day); C = 1 走逐行并行, 另可拷回一级 rows[hd.n][T] /
-//   已定向 r16 rx [T][A] (宿主侧账集 book_rows 与探针要); C > 1 走逐候选并行, 只出 acc / day. prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent).
+//   出口 day[C][hd.n][D] 宿主 (D = 统计日数, 契约二级逐日 Sum); C = 1 走逐行并行, 另可拷回一级 rows[hd.n][T] /
+//   已定向 r16 rx [T][A] (宿主侧账集 book_rows 与探针要); C > 1 走逐候选并行, 只出 day. prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent).
 // run_stat 一次性版 (op_check 用): 宿主指针进出, 内部 open + 上传 + load + eval + close.
 int stat_max_batch(); // 一批候选上限 (= Stat/Contract.hpp kMaxBatch); 未编译 CUDA → 0
 struct StatSession;
-StatSession *stat_open(const factor::stat::Span &s, int Cmax, const Holds &hd, double cap);
+StatSession *stat_open(const factor::stat::Span &s, int Cmax, const Holds &hd);
 void stat_load(StatSession *s, const factor::stat::Label *lab, double *prep_ms = nullptr);
-void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane *g, const factor::stat::Mode &m, const factor::stat::Span &s, factor::stat::Accum *acc,
-               factor::stat::Day *day, factor::stat::Row *rows = nullptr, uint16_t *rx = nullptr, double *eval_ms = nullptr);
+void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane *g, const factor::stat::Mode &m, const factor::stat::Span &s, factor::stat::Sum *day,
+               factor::stat::Row *rows = nullptr, uint16_t *rx = nullptr, double *eval_ms = nullptr);
 void stat_close(StatSession *s);
 size_t stat_bytes(const StatSession *s);
 void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, const factor::stat::Mode &m, const factor::stat::Span &s, const Holds &hd,
-              double cap, const factor::stat::Label *lab, factor::stat::Accum *acc, factor::stat::Day *day, factor::stat::Row *rows = nullptr, double *prep_ms = nullptr,
-              double *eval_ms = nullptr);
+              const factor::stat::Label *lab, factor::stat::Sum *day, factor::stat::Row *rows = nullptr, double *prep_ms = nullptr, double *eval_ms = nullptr);
 
 } // namespace factor::gpu

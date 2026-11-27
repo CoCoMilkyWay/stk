@@ -30,21 +30,33 @@ inline ImVec4 tint(double v, double ref) { return v > ref ? kUp : v < ref ? kDn
 inline constexpr ImVec4 kHead(0.4f, 0.8f, 1.0f, 1.0f);       // 节标题
 inline constexpr ImVec4 kStratCol(1.0f, 0.55f, 0.15f, 1.0f); // 强调 (策略线 / 新选)
 
-// 金额 [元] 显示 (账户净资产 / 回撤 / 盈亏): ≥ 1 亿按亿, ≥ 1 万按万, 其余按元; sign = 正数带 "+"; |v| < 0.5 视作 0
-inline std::string yuan_text(double v, bool sign = false) {
+// 金额 [元] 的显示 (各表 / 图 / 轴 / 提示同一份): 按 万亿 / 亿 / 万 / 元 取档, 档内三位有效 (≥ 100 → 0 位小数, ≥ 10 → 1 位, 其余 2 位; 元档 0 位);
+//   sign = 正数带 "+"; |v| < 0.5 视作 0; 不可算 → "-"
+inline std::string money_text(double v, bool sign = false) {
+  if (!std::isfinite(v))
+    return "-";
   const double a = std::abs(v);
   if (a < 0.5)
     return "0";
-  const char *pm = v < 0 ? "-" : sign ? "+"
-                                      : "";
+  struct Tier {
+    double unit;
+    const char *name;
+  };
+  constexpr Tier kTiers[] = {{1e12, "万亿"}, {1e8, "亿"}, {1e4, "万"}, {1, "元"}};
+  const Tier &t = *std::ranges::find_if(kTiers, [&](const Tier &x) { return a >= x.unit || x.unit == 1; });
+  const double x = a / t.unit;
+  const int prec = t.unit == 1 || x >= 100 ? 0 : x >= 10 ? 1
+                                                         : 2;
   char s[32];
-  if (a >= 1e8)
-    std::snprintf(s, sizeof(s), "%s%.2f亿", pm, a / 1e8);
-  else if (a >= 1e4)
-    std::snprintf(s, sizeof(s), "%s%.2f万", pm, a / 1e4);
-  else
-    std::snprintf(s, sizeof(s), "%s%.0f元", pm, a);
+  std::snprintf(s, sizeof(s), "%s%.*f%s", v < 0 ? "-" : sign ? "+"
+                                                             : "",
+                prec, x, t.name);
   return s;
+}
+
+// 日 y 的短写 YY/MM/DD (日轴刻度 / 鼠标读数 / 区间条同一写法)
+inline int ymd_text(char *buf, int size, misc::Ymd y) {
+  return std::snprintf(buf, static_cast<size_t>(size), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
 }
 
 // 好 → 差色: u ∈ [0, 1] (0 = 最便宜 / 名次最好 绿 → 1 = 最贵 / 最差 红) 按色相渐变 (VAL band / 各右表名次底色同一份)
@@ -388,7 +400,7 @@ inline void range_bar(DayRange &rg, const std::vector<misc::Ymd> &dates, double 
 //   档 = 视野内刻度数不超过 kDayTickMax、且按平均间距排得下各标签 (刻度数 × kDayLabelGap 个标签宽 ≤ 图宽) 的最细一档, 都不行取年
 //   (一档内不隔日 / 隔周地抽); 标签 日 / 周 = YY/MM/DD, 月 = YYYY/MM, 年 = YYYY,
 //   离上个刻度不足 kDayLabelGap 个标签宽的整条略去 (只在节假日短周 / 短月挤在一起时), 竖线恒带标签.
-//   日 d 的日界 x = d · w + at; xs 非空则取 xs[d] (不等宽的轴, 升序). fmt / ud = 该轴自己的格式 (鼠标读数用; 刻度标签不经它). 须活到 EndPlot
+//   日 d 的日界 x = d · w + at; xs 非空则取 xs[d] (不等宽的轴, 升序). fmt / ud = 该轴自己的格式 (鼠标读数用; 刻度标签不经它; 空 = 所在日 YY/MM/DD). 须活到 EndPlot
 struct DayAxis {
   std::span<const misc::Ymd> dates;
   double w = 1, at = 0;
@@ -453,19 +465,46 @@ inline void day_locator(ImPlotTicker &t, const ImPlotRange &r, float px, bool, I
     else if (u == kTickMonth)
       std::snprintf(s, sizeof(s), "%04d/%02d", y / 10000, y / 100 % 100);
     else
-      std::snprintf(s, sizeof(s), "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
+      ymd_text(s, sizeof(s), y);
     t.AddTick(a.x(d), true, 0, true, s);
   }
 }
+// 鼠标读数: 轴自己的格式; 无 = v 所在日 (日界 ≤ v 的末日, 轴首日之前取首日) 的 YY/MM/DD
 inline int day_axis_fmt(double v, char *buf, int size, void *ud) {
   const DayAxis &a = *static_cast<const DayAxis *>(ud);
-  return a.fmt(v, buf, size, a.ud);
+  if (a.fmt)
+    return a.fmt(v, buf, size, a.ud);
+  if (a.dates.empty())
+    return std::snprintf(buf, static_cast<size_t>(size), " ");
+  const auto ix = std::views::iota(size_t{0}, a.dates.size());
+  const size_t d = static_cast<size_t>(std::ranges::partition_point(ix, [&](size_t k) { return a.x(k) <= v; }) - ix.begin());
+  return ymd_text(buf, size, a.dates[d > 0 ? d - 1 : 0]);
 }
 // 当前图的 X1 设为日轴 (SetupAxis 之后, SetupFinish 之前)
 inline void setup_day_axis(DayAxis &a) {
-  assert(a.fmt != nullptr);
   ImPlot::SetupAxisFormat(ImAxis_X1, day_axis_fmt, &a);
   ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].Locator = day_locator;
+}
+
+// 区间条一整张 (NAV / VAL / MARGIN / CTA 同一件; 高 size): x = 日下标 · day_w, 全段 [0, D · day_w]; 底线 = line() (图内画, 进 y 贴合);
+//   y 可 log; 选段 rg 见 range_bar
+template <class Line>
+void range_plot(const char *id, DayRange &rg, const std::vector<misc::Ymd> &dates, double day_w, const ImVec2 &size, bool log, const Line &line) {
+  push_range_style();
+  if (ImPlot::BeginPlot(id, size, ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText)) {
+    ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoTickLabels, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
+    if (!dates.empty())
+      ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(dates.size()) * day_w, ImPlotCond_Always);
+    DayAxis ax{dates, day_w};
+    setup_day_axis(ax);
+    if (log)
+      ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+    line();
+    x_ticks_inside();
+    range_bar(rg, dates, day_w);
+    ImPlot::EndPlot();
+  }
+  ImPlot::PopStyleVar();
 }
 
 } // namespace GUI

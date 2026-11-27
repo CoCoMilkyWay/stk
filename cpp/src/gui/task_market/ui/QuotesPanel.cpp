@@ -55,13 +55,8 @@ int fmt_lots(char *buf, int size, double vol) {
          : h >= 1e4 ? std::snprintf(buf, size, "%.1f万手", h / 1e4)
                     : std::snprintf(buf, size, "%.0f手", h);
 }
-// 额 [元]
-int fmt_amount(char *buf, int size, double a) {
-  return a >= 1e8   ? std::snprintf(buf, size, "%.2f亿", a / 1e8)
-         : a >= 1e4 ? std::snprintf(buf, size, "%.0f万", a / 1e4)
-                    : std::snprintf(buf, size, "%.0f", a);
-}
-int amount_tick(double v, char *buf, int size, void *) { return v <= 0 ? std::snprintf(buf, size, "0") : fmt_amount(buf, size, v); }
+// 额轴: 金额 [元]
+int amount_tick(double v, char *buf, int size, void *) { return std::snprintf(buf, static_cast<size_t>(size), "%s", money_text(std::max(v, 0.0)).c_str()); }
 // 右轴: 涨跌幅; 无基准 → 空刻度 (轴照留, 图框不变)
 int pct_tick(double v, char *buf, int size, void *ud) {
   return *static_cast<const double *>(ud) > 0 ? std::snprintf(buf, size, "%.1f%%", v) : std::snprintf(buf, size, " ");
@@ -145,7 +140,7 @@ void fmt_when(char *buf, int size, const PlotBars &s, size_t i) {
 
 void tooltip(const PlotBars &s, int i) {
   const Candle &b = s.bars[static_cast<size_t>(i)];
-  char when[32], amt[32], chg[48] = "";
+  char when[32], chg[48] = "";
   fmt_when(when, sizeof(when), s, static_cast<size_t>(i));
   if (b.ref > 0)
     std::snprintf(chg, sizeof(chg), "\n涨跌 %+.2f  %+.2f%%", b.close - b.ref, (b.close / b.ref - 1.0) * 100.0);
@@ -153,8 +148,7 @@ void tooltip(const PlotBars &s, int i) {
     ImGui::SetTooltip("%s\n竞价匹配价 %.2f%s", when, b.close, chg);
     return;
   }
-  fmt_amount(amt, sizeof(amt), b.amount);
-  ImGui::SetTooltip("%s\n高 %.2f  低 %.2f\n收 %.2f%s\n额 %s", when, b.high, b.low, b.close, chg, amt);
+  ImGui::SetTooltip("%s\n高 %.2f  低 %.2f\n收 %.2f%s\n额 %s", when, b.high, b.low, b.close, chg, money_text(b.amount).c_str());
 }
 
 // 一根蜡烛 (当前轴坐标): 实体 from → close, 涨红跌绿 (close vs from), 体至少 1 px; 影线 low → high, 半宽 half; hollow = 空心 (竞价根)
@@ -449,13 +443,6 @@ void plot_chart(const char *id, const PlotBars &s, double win_lo, double win_hi,
   }
 }
 
-// 一档金额 [元] → "XX万" / "X.XX亿"
-int fmt_wan(char *buf, int size, double a) {
-  const double w = a / 1e4;
-  return w >= 1e4 ? std::snprintf(buf, size, "%.2f亿", w / 1e4) : w >= 100 ? std::snprintf(buf, size, "%.0f万", w)
-                                                                           : std::snprintf(buf, size, "%.1f万", w);
-}
-
 // 五档 (卖5 → 卖1 / 买1 → 买5): 价 / 涨幅按昨收着色, 额 = 价 × 量, 底条 = 该档额 / 十档最大; 下接摘要. date = 行情日
 void render_book(const sina::Quote *p, misc::Ymd date) {
   if (!p || p->sym.empty()) {
@@ -492,9 +479,7 @@ void render_book(const sina::Quote *p, misc::Ymd date) {
         const float w = ImGui::GetContentRegionAvail().x * static_cast<float>(px * vol / wmax);
         ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + w, p.y + ImGui::GetTextLineHeight()), IM_COL32(86, 156, 214, 56));
       }
-      char amt[24];
-      fmt_wan(amt, sizeof(amt), px * vol);
-      ImGui::TextUnformatted(amt);
+      ImGui::TextUnformatted(money_text(px * vol).c_str());
       ImGui::TableSetColumnIndex(3);
       if (ref > 0)
         ImGui::TextColored(c, "%+.2f%%", (px / ref - 1.0) * 100.0);
@@ -515,9 +500,8 @@ void render_book(const sina::Quote *p, misc::Ymd date) {
     ImGui::TableSetupColumn("v0", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("k1", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("v1", ImGuiTableColumnFlags_WidthStretch);
-    char vol[32], amt[32];
+    char vol[32];
     fmt_lots(vol, sizeof(vol), q.volume);
-    fmt_amount(amt, sizeof(amt), q.amount);
     const auto px = [&](const char *k, float v) {
       ImGui::TableNextColumn();
       ImGui::TextDisabled("%s", k);
@@ -541,7 +525,7 @@ void render_book(const sina::Quote *p, misc::Ymd date) {
     ImGui::TableNextColumn();
     ImGui::Text("%.2f", q.last_close);
     txt("量", vol);
-    txt("额", amt);
+    txt("额", money_text(q.amount).c_str());
     char amp[16] = "-";
     if (ref > 0 && q.high > 0)
       std::snprintf(amp, sizeof(amp), "%.2f%%", (q.high - q.low) / ref * 100.0);
@@ -759,11 +743,8 @@ void charts(const char *name, StockData &c, uint64_t id, ChartState &st, const s
 // 篮子日内叠加的一条 (线): x = 日轴第 k 日 · kSlots + 槽, y = 收对本条在日轴内首日前收 (base) 的涨跌幅 [%] (各条同一零点, 跨日接续);
 //   缺口处一点 y = NaN, 线断开; est = 估值点 (缺口的估价, 与 x 逐点; 空 = 无), 挨着估值点的段淡色画. cross = 带现价十字 (只一条时): chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x;
 //   dots = 线上的成交点 (m 指进 OverlayPick::trades, 缓存键里的 picks 保活);
-//   acct = 账户前复权净资产与窗内回撤 (与 x / y 逐点对应; 非账户空)
+//   acct = 账户线的读数 (与 x / y 逐点对应, 窗 = 日轴; 非账户空)
 struct Overlay {
-  struct AcctPt {
-    double adj = 0, dd_pct = 0, dd_adj = 0, dd_real = 0;
-  };
   size_t pick = 0; // picks 下标
   std::string name;
   ImVec4 col;
@@ -773,22 +754,8 @@ struct Overlay {
   double chg = 0;
   int now = 0;
   std::vector<TradeDot> dots;
-  std::vector<AcctPt> acct;
+  std::vector<EquityPt> acct;
 };
-// 成交点落到线 l 上: 成交日在日轴里才有, x = 档的中间; y = 线在该处的值 (相邻点插值; 越过末点 = 末点值, 首点前 / 缺口里 = 不画)
-void dots_of(const Trades &t, std::span<const misc::Ymd> days, Overlay &l) {
-  if (l.x.empty())
-    return;
-  for (const TradeMark &m : t.marks) {
-    const auto k = std::ranges::find(days, m.date);
-    if (k == days.end())
-      continue;
-    const double x = static_cast<double>(static_cast<size_t>(k - days.begin()) * kSlots) + m.mid();
-    const double y = x >= l.x.back() ? l.y.back() : line_at(l.x.size(), x, [&](size_t j) { return ImPlotPoint(l.x[j], l.y[j]); });
-    if (std::isfinite(y))
-      l.dots.push_back({x, y, &m});
-  }
-}
 constexpr float kDotMin = 2.5f, kDotMax = 4.5f; // 成交点三角的半边长 [px]: 买卖总额 0 → 图内最大 (按平方根)
 constexpr float kEstA = 0.35f;                  // 叠加图估值段的 alpha (乘线色)
 
@@ -814,12 +781,6 @@ NetBars net_bars(const Source &src, std::string name, std::span<const misc::Ymd>
         }
   return n;
 }
-// 金额带符号: "+1.23亿" / "-456万"
-void fmt_signed(char *buf, int size, double a) {
-  buf[0] = a < 0 ? '-' : '+';
-  fmt_amount(buf + 1, size - 1, std::abs(a));
-}
-
 // 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线, 0 轴居中 (上下取两侧较大者对称); 刻度区全空 (图框不变), 不画图例:
 //   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格 y 值 (带单位 unit) 以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
 //   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠; 挨着估值点 (Overlay::est) 的段同色淡画 (kEstA), 提示里该点标 "估".
@@ -969,11 +930,8 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         const ImVec2 hs = font->CalcTextSizeA(fs, FLT_MAX, 0.f, head.c_str());
         const ImVec2 at(pos.x + 4.f, pos.y + psz.y - hs.y - 2.f);
         dl->AddText(font, fs, at, col, head.c_str());
-        if (!net->v.empty()) {
-          char now[24];
-          fmt_signed(now, sizeof(now), net->v.back());
-          dl->AddText(font, fs, ImVec2(at.x + hs.x + 6.f, at.y), ImGui::ColorConvertFloat4ToU32(tint(net->v.back(), 0)), now);
-        }
+        if (!net->v.empty())
+          dl->AddText(font, fs, ImVec2(at.x + hs.x + 6.f, at.y), ImGui::ColorConvertFloat4ToU32(tint(net->v.back(), 0)), money_text(net->v.back(), true).c_str());
       }
     }
     if (ImPlot::IsPlotHovered()) {
@@ -1006,20 +964,16 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
           ImGui::TextDisabled("估 (缺口待补)");
         }
         if (!l->acct.empty()) {
-          const Overlay::AcctPt &a = l->acct[j];
-          ImGui::TextDisabled("  复权净资产 %s", yuan_text(a.adj).c_str());
-          ImGui::TextColored(a.dd_adj < -0.5 ? kDn : kFlat, "  复权回撤 %.2f%% (%s)", 100.0 * a.dd_pct, yuan_text(a.dd_adj).c_str());
-          ImGui::SameLine();
-          ImGui::TextColored(a.dd_real < -0.5 ? kDn : kFlat, "真正回撤 %s", yuan_text(a.dd_real).c_str());
+          ImGui::Indent();
+          EquityTip(l->acct[j]);
+          ImGui::Unindent();
         }
       }
       if (net) { // 光标所在分钟的净流入
         const auto it = std::lower_bound(net->x.begin(), net->x.end(), x);
         if (it != net->x.end() && *it == x) {
           const double v = net->v[static_cast<size_t>(it - net->x.begin())];
-          char amt[24];
-          fmt_signed(amt, sizeof(amt), v);
-          ImGui::TextColored(tint(v, 0), "净流入 · %s %s", net->name.c_str(), amt);
+          ImGui::TextColored(tint(v, 0), "净流入 · %s %s", net->name.c_str(), money_text(v, true).c_str());
         }
       }
       if (dot) {
@@ -1117,26 +1071,13 @@ bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Ove
     l.now = static_cast<int>(s.x.back());
   }
   const Equity &eq = cx.view.equity;
-  const std::vector<EquityDay> *ed = p.ref.is(kAccount) && eq.days && !eq.days->empty() ? eq.days.get() : nullptr;
-  const double e_now = ed ? (src.joined && p.hold ? p.hold->now(cx.live) : eq.nav) : 0.0;
-  const double idx_now = ed && src.last() ? src.last()->close : 0.0;
-  const bool acct = ed && e_now > 0.0 && idx_now > 0.0;
-  const double today_base = acct ? eq.today_base(p.hold && p.hold->broker) : 0.0;
-  const misc::Ymd today_d = src.joined ? src.today->candle.date : 0;
-  double ahi = 0.0, phi = 0.0;
-  size_t ei = 0;
-  if (acct) {
-    ahi = e_now * (base / idx_now);
-    const misc::Ymd d0 = s.bars.front().date;
-    if (d0 == today_d) {
-      phi = ed->back().pnl;
-    } else {
-      const auto it = std::ranges::lower_bound(*ed, d0, {}, &EquityDay::date);
-      assert(it != ed->end() && it->date == d0 && "日内账户点所属日须在回放日内");
-      ei = static_cast<size_t>(it - ed->begin());
-      phi = ei > 0 ? (*ed)[ei - 1].pnl : 0.0;
-    }
-  }
+  const bool acct_side = p.ref.is(kAccount) && eq.ok();
+  const double e_now = acct_side ? eq.now(p.hold.get(), src.joined ? cx.live : nullptr) : 0.0;
+  const double idx_now = acct_side && src.last() ? src.last()->close : 0.0;
+  const bool acct = e_now > 0.0 && idx_now > 0.0;
+  EquityWalk w{eq, acct ? e_now / idx_now : 0.0, p.hold && p.hold->broker};
+  if (acct) // 窗首点 = 首日前收
+    w.step(s.bars.front().date, base, base);
   for (size_t i = 0, c = 0; i < s.bars.size(); ++i) {
     const bool cut = c < s.cut.size() && s.cut[c] < s.x[i];
     if (cut && i > 0) {
@@ -1146,22 +1087,10 @@ bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Ove
     }
     while (c < s.cut.size() && s.cut[c] < s.x[i])
       ++c;
-    l.x.push_back(s.x[i]), l.y.push_back(pct(s.bars[i].close)), l.est.push_back(s.est[i]);
-    if (acct) {
-      const Candle &b = s.bars[i];
-      double pnl = 0.0;
-      if (b.date == today_d) {
-        pnl = ed->back().pnl + (today_base > 0.0 && b.ref > 0.0 ? today_base * (b.close / b.ref - 1.0) : 0.0);
-      } else {
-        while (ei + 1 < ed->size() && (*ed)[ei].date < b.date)
-          ++ei;
-        assert((*ed)[ei].date == b.date && "日内账户点所属日须在回放日内");
-        pnl = ei > 0 && (*ed)[ei].base > 0.0 && b.ref > 0.0 ? (*ed)[ei - 1].pnl + (*ed)[ei].base * (b.close / b.ref - 1.0) : (*ed)[ei].pnl;
-      }
-      const double adj = e_now * (b.close / idx_now);
-      ahi = std::max(ahi, adj), phi = std::max(phi, pnl);
-      l.acct.push_back({adj, ahi > 0.0 ? adj / ahi - 1.0 : 0.0, adj - ahi, pnl - phi});
-    }
+    const Candle &b = s.bars[i];
+    l.x.push_back(s.x[i]), l.y.push_back(pct(b.close)), l.est.push_back(s.est[i]);
+    if (acct)
+      l.acct.push_back(w.step(b.date, b.close, b.ref));
   }
   return true;
 }
@@ -1316,7 +1245,7 @@ int RenderOverlay(OverlayKind kind, QuoteHub &mk, OverlayState &st, const std::v
       Overlay l{.pick = i, .name = p.name, .col = ImGui::ColorConvertU32ToFloat4(p.col)};
       if (def.line(cx, p, src, l)) {
         if (p.trades)
-          dots_of(*p.trades, c.days, l);
+          l.dots = TradeDots(*p.trades, c.days, l.x.size(), [&](size_t j) { return ImPlotPoint(l.x[j], l.y[j]); });
         c.ls.push_back(std::move(l));
       }
     }
@@ -1373,16 +1302,18 @@ const TradeDot *PlotTradeDots(std::span<const TradeDot> dots, bool tiny) {
 
 void TradeTip(const TradeMark &m) {
   const int t0 = slot_label(m.slot) - 1, t1 = slot_label(m.slot + m.span - 1);
-  char b[24], s[24];
-  fmt_amount(b, sizeof(b), m.amount[live::kBuy]);
-  fmt_amount(s, sizeof(s), m.amount[live::kSell]);
-  ImGui::Text("成交 %02d-%02d %02d:%02d–%02d:%02d · 买 %s / 卖 %s", m.date / 100 % 100, m.date % 100, t0 / 60, t0 % 60, t1 / 60, t1 % 60, b, s);
+  ImGui::Text("成交 %02d-%02d %02d:%02d–%02d:%02d · 买 %s / 卖 %s", m.date / 100 % 100, m.date % 100, t0 / 60, t0 % 60, t1 / 60, t1 % 60,
+              money_text(m.amount[live::kBuy]).c_str(), money_text(m.amount[live::kSell]).c_str());
   for (const TradeSec &x : m.secs)
     for (const int side : live::kSides)
-      if (const double a = x.amount[side]; a > 0) {
-        fmt_amount(b, sizeof(b), a);
-        ImGui::TextColored(side > 0 ? kUp : kDn, "%s %s %s %s (%.0f股)", side > 0 ? "买" : "卖", x.code.c_str(), x.name.c_str(), b, x.qty[side]);
-      }
+      if (const double a = x.amount[side]; a > 0)
+        ImGui::TextColored(side > 0 ? kUp : kDn, "%s %s %s %s (%.0f股)", side > 0 ? "买" : "卖", x.code.c_str(), x.name.c_str(), money_text(a).c_str(), x.qty[side]);
+}
+
+void EquityTip(const EquityPt &p) {
+  ImGui::Text("复权净资产 %s", money_text(p.adj).c_str());
+  ImGui::TextColored(p.dd_adj < -0.5 ? kDn : kFlat, "复权回撤 %.2f%% (%s)", 100.0 * p.dd_pct, money_text(p.dd_adj).c_str());
+  ImGui::TextColored(p.dd_real < -0.5 ? kDn : kFlat, "真正回撤 %s", money_text(p.dd_real).c_str());
 }
 
 std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const OverlayState &st) {

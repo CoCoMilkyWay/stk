@@ -334,12 +334,11 @@ Candle candle_of(const DayRec &r, misc::Ymd d) {
 
 // 一只一日 (个股侧存的日根 d + 分钟根 m, nullptr = 无) → 篮子合成的 Leg (基准 = 存的前收, 根 = 存价即原价); 分钟根只解槽 [lo, hi)
 Leg leg_of(const DayRec &d, const Packed *m, Cell &c, Bars &b, int lo, int hi) {
-  b.has.reset();
   c = cell(d.open, d.high, d.low, d.close, d.amount);
   if (m)
-    for (int s = lo; s < hi; ++s)
-      if (const Slot &y = m->s[static_cast<size_t>(s)]; y.c != kNoBar)
-        b.add(s, unpack(y, d.k, 1.0));
+    unpack(*m, d.k, 1.0, b, lo, hi);
+  else
+    b.has.reset();
   return {d.ref, &c, &b};
 }
 
@@ -458,11 +457,7 @@ struct DayBuild {
       if (keep) {
         if (full.size() < mins.size())
           full.emplace_back();
-        Bars &u = full[mins.size() - 1];
-        u.has.reset();
-        for (int s = 0; s < kSlots; ++s)
-          if (const Slot &y = mins.back().s[static_cast<size_t>(s)]; y.c != kNoBar)
-            u.add(s, unpack(y, r.k, 1.0));
+        unpack(mins.back(), r.k, 1.0, full[mins.size() - 1]);
       }
     }
     keys.push_back(key), recs.push_back(r), at.push_back(m ? static_cast<int32_t>(mins.size()) - 1 : -1);

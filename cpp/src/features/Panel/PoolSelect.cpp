@@ -148,10 +148,11 @@ void fill_row(const FeatureRead::DayColumns &c, Strip &t, size_t r, float *pre, 
     pre[a] = v(kColPre) > 0.0f ? v(kColPre) : 0.0f;
     const bool gate = fmeta::data_valid(v(kColTs)) && fmeta::data_valid(v(kColCs));
     const _Float16 lv = c.get(0, kColLab, a), nv = c.get(0, kColNom, a);
-    t.m[i] = fmeta::lab_ok(gate, lv, nv, true);
-    t.lv[i] = t.m[i] ? std::bit_cast<uint16_t>(lv) : 0, t.nv[i] = t.m[i] ? std::bit_cast<uint16_t>(nv) : 0;
+    factor::stat::LabelPlanes &l = t.t1;
+    l.m[i] = fmeta::lab_ok(gate, lv, nv, true);
+    l.lv[i] = l.m[i] ? std::bit_cast<uint16_t>(lv) : 0, l.nv[i] = l.m[i] ? std::bit_cast<uint16_t>(nv) : 0;
     t.eo[i] = gate && std::isfinite(v(kColEntry)) ? static_cast<uint8_t>(v(kColEntry) + 0.5f) : 0;
-    assert((!t.m[i] || t.eo[i]) && "标签有效格须有建仓可成交码");
+    assert((!l.m[i] || t.eo[i]) && "标签有效格须有建仓可成交码");
     close[a] = v(kColTs) > 0.5f && px > 0.0f ? px : 0.0f;
     cls[a] = kOut;
     if (!(mc > 0.0f && v(kColListAge) >= 0.0f && !(v(kColDelistAge) >= 0.0f) && !flag(v(kColSusp)) && t.ind[i]))
@@ -166,6 +167,7 @@ void fill_row(const FeatureRead::DayColumns &c, Strip &t, size_t r, float *pre, 
     cls[a] = static_cast<uint16_t>(id);
     ++cnt[id];
   }
+  factor::cpu::stat::pool_row(t.t1, r);
 }
 
 // 保序键: 浮点位翻转 (−0 归 +0)
@@ -376,7 +378,8 @@ std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel, 
   t->axis = lib.axis, t->dates = std::move(rows);
   if (!keep)
     t->line = ++lines;
-  t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->ind.resize(R * A), t->mcap.resize(R * A), t->grow.resize(R * A), t->lv.resize(R * A), t->nv.resize(R * A), t->m.resize(R * A), t->eo.resize(R * A);
+  t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->ind.resize(R * A), t->mcap.resize(R * A), t->grow.resize(R * A), t->eo.resize(R * A);
+  t->t1.lv.resize(R * A), t->t1.nv.resize(R * A), t->t1.m.resize(R * A), t->t1.mk.resize(R), t->t1.cap.resize(R);
   t->pre.resize(A);
   std::vector<float> pre((R - lo) * A), close((R - lo) * A); // [新行 · A]
   const FeatureRead rd(lib);
@@ -490,7 +493,7 @@ struct PickBooks {
   const size_t *src;
   int A = 0;
   size_t size() const { return kWeights; }
-  double cap(size_t) const { return 0.0; }
+  double cap(int, size_t) const { return 0.0; }
   template <class Put>
   void each(int r, uint32_t a, Put &&put) const {
     const size_t i = static_cast<size_t>(r) * A + a;
@@ -526,15 +529,15 @@ void perf(const Strip &t, Rebal rb, const Pick &pick, Perf &b) {
       mem[r * A + a] = 1;
   }
   // 篮子账 (键 = 权重; Stat 账集同一核): 收益 (持仓日 r + 1) / 买量; 只付固定冲击
-  //   日层每行一批 (h̄ = 1), 钱记平仓日 (Hold::money_day, 协议表 2【记日】); 买量同记 (与行情账同口径)
+  //   日层每行一批 (h̄ = 1), 钱记平仓日 (Realize, 协议表 2【记日】); 买量同记 (与行情账同口径)
   const st::Span sp{static_cast<int>(D), static_cast<int>(A), geo_of(1)};
   const Hold hd = hold_on(kHoldT1, sp.g);
-  const st::Label lb{t.lv.data(), t.nv.data(), t.m.data(), t.eo.data()};
+  const st::Label lb = st::label_of(t.t1, t.eo.data());
   misc::exec::Serial ex;
-  st::book_rows(ex, sp, hd, lb, PickBooks{t, mem.data(), src.data(), static_cast<int>(A)}, st::Cost{}, [&](int, int r, const double *ret, const st::Flow *flow) {
-    if (const size_t u = static_cast<size_t>(hd.money_day(r)); u < D)
-      for (int w = 0; w < kWeights; ++w)
-        b.ret[w][u] = static_cast<float>(ret[w]), b.buy[w][u] = static_cast<float>(flow[w].vol[kBuy]);
+  const st::Realize rz(kHoldT1, 1, 1, static_cast<int>(D));
+  st::book_rows(ex, sp, hd, lb, PickBooks{t, mem.data(), src.data(), static_cast<int>(A)}, st::Cost{}, [&](int, int r, const double *ret, const TurnFlow *flow) {
+    for (int w = 0; w < kWeights; ++w)
+      rz.fold(r, &ret[w], 1, b.ret[w].data()), rz.fold(r, &flow[w].vol[kBuy], 1, b.buy[w].data());
   });
 }
 

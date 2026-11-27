@@ -149,7 +149,12 @@ void derive(const InspectResult &res, int sel, bool absolute, InspectDerived &d)
   d.adist = res.alpha_dist;
   assert(res.pool_index.n == res.hd.n && res.pool_index.P == T);
   d.pool_index.resize(static_cast<size_t>(T));
-  compound(res.pool_index.at(sel), static_cast<size_t>(T), [&](size_t t, double l) { d.pool_index[t] = static_cast<float>(l); });
+  {
+    Path pi;
+    const float *r = res.pool_index.at(sel);
+    for (int t = 0; t < T; ++t)
+      pi.add(r[t]), d.pool_index[static_cast<size_t>(t)] = static_cast<float>(pi.nav);
+  }
   std::vector<float> &ics = d.ic_series;
   ics.reserve(static_cast<size_t>(T));
   d.ic_cum.resize(static_cast<size_t>(T));
@@ -1181,7 +1186,7 @@ void plot_term(const factor::stat::HoldStat *hs, int n_hold, const TurnStat *tur
       const factor::stat::Ends &ca = turn[pi].lv[0];
       const AmtId amt = amts.k[pq - 1];
       const auto avg = [&](auto f) { return ls ? 0.5 * (f(kTop) + f(kBot)) : f(pc); }; // LS = 两本各半, 否则该端
-      const auto rate_of = [&](int s) { return [&ca, &fee, amt, s](int e) { return ca.e[e].rate(amt, s, fee); }; };
+      const auto rate_of = [&](int s) { return [&ca, &fee, amt, s](int e) { return fee.rate(ca.e[e], amt, static_cast<Side>(s)); }; };
       const auto turns = [&](int e) { return factor::stat::turn_annual(h, ca.e[e]); };
       const auto cost = [&](int e) { return factor::stat::cost_period(h, ca.e[e], amt, fee); };
       amort = avg(cost);
@@ -1358,7 +1363,7 @@ void expr_text(std::string_view s) {
 bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &fui, InspectUIState &ui, const FactorsUIContext &ctx) {
   // 默认高光: 因子表当前 Hold 下 rIC 最高的有效权重 (都无该 Hold 的 stat → 表序第一个); 本作用域的表还没扫出 → 下帧再试
   if (!fui.view_defaulted && fui.view_file.empty()) {
-    const Holds &hl = ctx.ft->y.list;
+    const Holds &hl = ctx.ft->y.holds;
     const HoldId hold = hl.n == 0 ? kHoldT1 : hl.k[std::clamp(fui.hold_idx, 0, hl.n - 1)];
     std::lock_guard<std::mutex> lock(fsvc.mutex);
     if (fsvc.current.scope.dir == ctx.dir) {
@@ -1378,7 +1383,7 @@ bool InspectAutoRequest(RunService &fsvc, InspectService &isvc, FactorsUIState &
       }
     }
   }
-  if (fui.view_file.empty() || !ctx.axis_ready || ctx.ft->y.list.n == 0)
+  if (fui.view_file.empty() || !ctx.axis_ready || ctx.ft->y.holds.n == 0)
     return false;
   if (isvc.busy())
     return false;
@@ -1493,15 +1498,15 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   const FeatureTable &ft = *ctx.ft;
   const Phase st = isvc.phase.load(std::memory_order_acquire);
   const bool busy = isvc.busy();
-  const int n_hold = static_cast<int>(static_cast<size_t>(ft.y.list.n));
+  const int n_hold = static_cast<int>(static_cast<size_t>(ft.y.holds.n));
   if (ui.hold_for != sel.key) { // 换了权重 → Hold 切到它搜出来的持有期 (手填权重无, 不动)
     ui.hold_for = sel.key;
     for (int i = 0; i < n_hold; ++i)
-      if (ft.y.list.k[static_cast<size_t>(i)] == sel.hold_src)
+      if (ft.y.holds.k[static_cast<size_t>(i)] == sel.hold_src)
         ui.hold_idx = i;
   }
   ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, n_hold - 1));
-  const HoldId cur_hold = n_hold ? ft.y.list.k[static_cast<size_t>(ui.hold_idx)] : kHoldT1;
+  const HoldId cur_hold = n_hold ? ft.y.holds.k[static_cast<size_t>(ui.hold_idx)] : kHoldT1;
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("级别");
   ImGui::SameLine(0.f, 4.f);
@@ -1512,7 +1517,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   if (n_hold) {
     float w_max = 0.f;
     for (int i = 0; i < n_hold; ++i)
-      w_max = std::max(w_max, hold_points_line(hold_points(ft.y.list.k[static_cast<size_t>(i)], ft.lv), false));
+      w_max = std::max(w_max, hold_points_line(hold_points(ft.y.holds.k[static_cast<size_t>(i)], ft.lv), false));
     ImGui::SameLine(0.f, kCtlGap * 0.5f);
     const float x0 = ImGui::GetCursorPosX();
     hold_points_line(hold_points(cur_hold, ft.lv));
@@ -1605,7 +1610,7 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "算不了: %s", res_error.c_str());
   } else if (shown) {
     ImGui::TextDisabled("%s  %s..%s  %d 天 × %d 资产  满仓 %.1f%s", sc.pool.c_str(), misc::dash(sc.start_date).c_str(), misc::dash(sc.end_date).c_str(),
-                        sc.days, sc.A, sc.n_full, match ? "" : "  (旧结果, 新请求计算中…)");
+                        sc.days, sc.A, res_ev.n_hold ? static_cast<double>(res_ev.hold[0].cap) : 0.0, match ? "" : "  (旧结果, 新请求计算中…)");
     if (ImGui::IsItemHovered())
       tip("有效率 %.1f%%  可秩率 %.1f%%\n耗时 %.0f ms (%s, %s)", res_ev.valid_pct, res_ev.rank_pct, res_ev.eval_ms, sc.backend.c_str(), sc.time.c_str());
   } else {

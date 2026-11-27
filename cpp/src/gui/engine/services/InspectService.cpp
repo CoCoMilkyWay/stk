@@ -211,7 +211,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
   if (req.reload)
     F.S.clear();
 
-  RootSet rs{.hd = Holds::of(sc.ft->y.holds)};
+  RootSet rs{.hd = sc.ft->y.holds};
   rs.add(*sc.ft, f.expr, {f.frame, f.dir, f.ret});
   ForestOut o;
   o.job.who = "Inspect";

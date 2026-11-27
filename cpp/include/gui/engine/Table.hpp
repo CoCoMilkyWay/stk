@@ -41,7 +41,7 @@ enum class RowState : uint8_t { Pending,
 //   标签库 (门控 ts / cs_valid + 标签 + K 线, 恒取网格层本层列, 同行) = 因子池的 Bar 库 (label_lib); 截面 = 该库 cs_valid
 //   (all: 当日活跃; 子池: 当日成员 = all Bar 库选股表在 D 之前调仓行选出的).
 //   特征叶写全名 档.层.列 (kLevelToken): bar.* / lob.* = 因子池的 Bar / Lob 库; 叶可来自任意不细于网格的层 (level_asof 投影).
-//   成本: 固定段恒有; 作用域的成本口径 (Config::cost) 取盘口段时另有盘口段 (Lob 库 L_1min 的建仓冲击列, 分钟各层按行末分钟取; 日层无), 评估域并入 Lob 库
+//   成本: 各层都有全部金额段; 盘口段的冲击平面 = Lob 库 L_1min 的建仓冲击列 (分钟各层按行末分钟取; 日层收盘撮合建仓, 冲击 0 无平面), 要装时评估域并入 Lob 库
 //   评估期 = 标签库 + 所用库 落盘日的交集的最近 N 年 (FactorScope::years; 不看 config 区间)
 //   层间的差别全在表里 (网格层 / 名 / K 线列名式); 层几何 Geo 由网格层定 (行数 = level_valid_rows, 行末分钟与 level_end_sec 对账),
 //   服务 / 装载 / UI 不按层分支
@@ -174,14 +174,12 @@ struct YCols {
   Col ts;                      // ts_valid (当日有成交)
   Col cs;                      // cs_valid (标签 + 截面门控平面)
   Col entry;                   // lb_entry_ok 建仓可成交码 (各持有期共用; Stat 仓位感知 (factor/Stat/Pos.hpp))
-  HoldSet holds = 0;           // 本层合法 (hold_ok) 的持有期 = 有标签列的
-  Holds list;                  // holds 的有序视图 (UI 按下标切持有期)
+  Holds holds;                 // 本层合法 (hold_ok) 的持有期 = 有标签列的 (UI 按下标切持有期)
   LabCols lab[kHoldCount];     // [HoldId]
-  AmtSet amts = 0;             // 固定段 (恒在) + 盘口段 (非日层; 作用域成本口径取盘口段才装, 见 y_spec)
-  Col cost[kAmtCount][kSides]; // [AmtId][买 / 卖] Lob 档 L_1min 冲击列 lb_cost_<buy|sell>_<a>w; 固定段无列
-  bool has(HoldId h) const { return (holds & hold_bit(h)) != 0; }
-  // 成本口径在本层落成的金额段: 所选盘口段本层没有 (日层) → 固定段
-  AmtId amt_of(const CostSpec &c) const { return (amts & amt_bit(c.amt)) ? c.amt : kAmtFixed; }
+  Col cost[kAmtCount][kSides]; // [AmtId][买 / 卖] Lob 档 L_1min 冲击列 lb_cost_<buy|sell>_<a>w; 固定段无列; 日层无列 (收盘撮合建仓, 盘口冲击 0)
+  bool has(HoldId h) const { return holds.has(h); }
+  // 金额段 a 有盘口冲击平面要装 (盘口段 ∧ 非日层)
+  bool priced(AmtId a) const { return cost[a][kBuy].has(); }
 };
 struct BCols {
   Col ohlc[4];    // open high low close (K 线, 不复权; 列名 FactorLevel::kline)
@@ -251,13 +249,16 @@ struct StatScope {
   int years = 0;                          // = FactorScope::years (0 = 全期)
   int days = 0, T = 0, A = 0;
   double cost_top = 0.0; // 盘口冲击封顶 (Config::cost.top, 账集逐格生效)
-  double n_full = 0.0;   // 满仓一组只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
 };
 // 一个持有期的换手 = Stat/Book.hpp 因子账集的流水: 层级 l (0 = 整组, 1 + j = 尾部 j) × 两端各一本 (Run / Inspect 同一份 book_rows):
 // 两端按 Δw 记两侧成交量; 各金额段同一份量 + 不可成交量, 盘口段另各一份真实冲击 (Config::cost.top 封顶, 盘口缺 = 封顶);
 // 成本 / 净多空 / 年换手由 Book.hpp 的派生量按金额段与 Fee 现算 (整组 lv[0] 落 stat.turn; Inspect 期限结构净线从它算)
 struct TurnStat {
   factor::stat::Ends lv[factor::stat::kLevels];
+  void merge(const TurnStat &o) {
+    for (int l = 0; l < factor::stat::kLevels; ++l)
+      lv[l].merge(o.lv[l]);
+  }
 };
 // 因子表迷你 PDF: Inspect 同款 KLL PDF (AggPdf) 线性插值到 [lo, hi] 上等距 kMiniPdfPts 点, y 按峰值归一到 [0, 1]; lo == hi → 无 (不画)
 inline constexpr int kMiniPdfPts = 32;
@@ -287,12 +288,12 @@ struct AlphaDist {
   float gmean[factor::stat::kGroups] = {};            // 组均值
   std::vector<float> series;                          // 逐行截面均值 (有样本的行, 时序)
 };
-// 一个持有期一个自然年的分层统计 (Probe years_of: HoldP / TurnP 的逐日按年合; 已定向, 毛收益): 与 HoldStat 同口径, 只取判稳定性的几项
+// 一个持有期一个自然年的分层统计 (Probe years_of: 年内逐日 Sum / 流水之和, 与全期同一 stat_of / turn_annual; 已定向, 毛收益): 只取判稳定性的几项
 struct YearStat {
   int year = 0, n = 0, wins = 0;         // 年 / 年内有统计 (ok) 的行数 / 年内收尾的滚动窗数
   float mono = 0.f, ls = 0.f, ric = 0.f; // 分层单调性 / 每期毛多空均值 / rIC 均值
-  float med = 0.f;                       // 年内收尾的滚动窗目标 (Stat/Roll.hpp kTarget) 的中位 (wins = 0 → 0)
-  float turn = 0.f;                      // 年换手 (Probe TurnP; 倍, 整组两端单边均): 年内 Σ Δw⁺ / 年内统计行 × span_per_year, 不足一年的年同样年化
+  float med = 0.f;                       // 年内收尾的滚动窗 mono 的中位 (wins = 0 → 0)
+  float turn = 0.f;                      // 年换手 (倍, 整组两端单边均; turn_annual 同式, 不足一年的年同样年化)
 };
 // 一个根的评估结果 (Run 行 / Inspect 结果同一份; Probe fill_eval 填全部: scope / eval_ms 由调用方给, 其余取探针;
 // StatJson scope_json + eval_json ⇄ load_eval)
@@ -306,7 +307,7 @@ struct EvalStat {
   TurnStat turn[kHoldCount];               // [hold] 换手流水 (年换手 / 成本 / Inspect 净线从它算)
   MiniPdf ic_pdf[kHoldCount];              // [hold] 逐行 rIC (ok 行) 分布 (Probe IcPdfP; 因子表小图)
   std::vector<YearStat> years[kHoldCount]; // [hold] 分年 (年升序, 只列有统计行 ≥ 3 的年)
-  factor::stat::Roll roll[kHoldCount];     // [hold] 滚动窗统计 (Probe HoldP; 中位窗目标 = 父行代表权重的 score, Stat/Roll.hpp)
+  factor::stat::Roll roll[kHoldCount];     // [hold] 滚动窗统计 (Probe HoldP; 中位窗 mono = 父行代表权重的 score, Stat/Roll.hpp)
   MiniPdf alpha_pdf;                       // alpha 分布 (截尾; Probe AlphaP; 与持有期无关)
   const factor::stat::HoldStat *find_hold(HoldId hold_m) const {
     for (int j = 0; j < n_hold; ++j)

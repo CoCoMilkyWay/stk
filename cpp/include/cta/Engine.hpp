@@ -50,7 +50,9 @@ inline constexpr CostItem kCosts[kNC] = {{"佣金", "佣金率 × |Δ仓位|"},
 // 一根的成本: 前根仓位 p → 本根的刀 x 的仓位 (本根收盘成交)
 inline Costs costs_of(const Fee &u, const Cut &x, float p) {
   const double dw = std::fabs(x.w - p), sell = std::max(0.0f, p - x.w);
-  const CostParts c = u.parts(0.0, dw, dw - sell, sell); // 一刀 = 买 / 卖两侧之一, 全量付固定冲击
+  TurnFlow f; // 一刀 = 买 / 卖两侧之一, 全量付固定冲击
+  f.vol[kBuy] = dw - sell, f.vol[kSell] = sell;
+  const CostParts c = u.parts(f, kAmtFixed);
   return {{c.v[kCostTax], c.v[kCostStamp], c.v[kCostImpact], x.chop, x.gap}};
 }
 

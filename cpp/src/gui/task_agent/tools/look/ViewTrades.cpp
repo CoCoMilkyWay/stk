@@ -68,7 +68,7 @@ ToolOut ViewTrades(const Call &c, Bay &bay) {
   }
   const bool top = c.str("side") == "top";
   FactorSpec fac;
-  fac.ends = true, fac.only_end = top ? st::kTop : st::kBot;
+  fac.cells = true, fac.only_end = top ? st::kTop : st::kBot;
   if (!resolve_factor(c.str("factor"), env, fac, err))
     return Fail(std::move(err));
 

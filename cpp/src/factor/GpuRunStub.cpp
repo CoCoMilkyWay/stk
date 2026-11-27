@@ -54,19 +54,19 @@ void run_fused(Session *, const Fuse &, const DevPlane *const *, int, DevPlane *
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
 
-StatSession *stat_open(const factor::stat::Span &, int, const Holds &, double) {
+StatSession *stat_open(const factor::stat::Span &, int, const Holds &) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
   return nullptr;
 }
 void stat_load(StatSession *, const factor::stat::Label *, double *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
-void stat_eval(StatSession *, const DevPlane *const *, int, const DevPlane *, const factor::stat::Mode &, const factor::stat::Span &, factor::stat::Accum *,
-               factor::stat::Day *, factor::stat::Row *, uint16_t *, double *) {
+void stat_eval(StatSession *, const DevPlane *const *, int, const DevPlane *, const factor::stat::Mode &, const factor::stat::Span &, factor::stat::Sum *,
+               factor::stat::Row *, uint16_t *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
 void stat_close(StatSession *) { assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)"); }
 size_t stat_bytes(const StatSession *) { return 0; }
-void run_stat(int, const float *const *, const uint8_t *const *, const uint8_t *, const factor::stat::Mode &, const factor::stat::Span &, const Holds &, double,
-              const factor::stat::Label *, factor::stat::Accum *, factor::stat::Day *, factor::stat::Row *, double *, double *) {
+void run_stat(int, const float *const *, const uint8_t *const *, const uint8_t *, const factor::stat::Mode &, const factor::stat::Span &, const Holds &,
+              const factor::stat::Label *, factor::stat::Sum *, factor::stat::Row *, double *, double *) {
   assert(false && "GPU 后端未编译 (cmake -DGPU_BACKEND=CUDA)");
 }
 

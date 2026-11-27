@@ -88,6 +88,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
   fac.tails = true;
   if (!window_of(c, win, err) || !resolve_factor(c.str("factor"), env, fac, err))
     return Fail(std::move(err));
+  fac.cells = true, fac.only_end = kAllGroups;
   const std::string split = c.str("split"), cond = c.str("cond");
   std::vector<FeatSpec> feats;
   if (!cond.empty()) {
@@ -99,10 +100,10 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
   const std::vector<Slot> ps = parts_of(seg, env.open, env.clock);
   const std::vector<int> pr = part_of_row(ps, seg);
 
-  st::Sums all;
-  std::vector<st::Sums> by_tod(ps.size());
-  std::map<int, st::Sums> by_month;
-  std::array<st::Sums, 4> cond_b;
+  st::Sum all;
+  std::vector<st::Sum> by_tod(ps.size());
+  std::map<int, st::Sum> by_month;
+  std::array<st::Sum, 4> cond_b;
   Mean cond_rho, cond_ric;
 
   std::vector<misc::Ymd> dates;
@@ -126,7 +127,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
     const Engine::LabPlane &lb = *cv.blk.y.labels[0];
     const uint16_t *lv = lb.lv.data();
     const int nt = F.S.ex.threads();
-    std::vector<std::array<st::Sums, 4>> tb(static_cast<size_t>(nt));
+    std::vector<std::array<st::Sum, 4>> tb(static_cast<size_t>(nt));
     std::vector<Mean> trho(static_cast<size_t>(nt)), tric(static_cast<size_t>(nt));
 
     F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
@@ -150,7 +151,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
           const size_t k = base + static_cast<size_t>(a);
           if (cv.blk.y.gate[k] && cv.rx[k] != st::kRankNone && lb.m[k] && cp->m[k] && std::isfinite(cp->v[k])) {
             float hr = 0.f;
-            const bool h = held_cell(cv.blk, cv.rx, env.hold, t, k, hr);
+            const bool h = held_cell(cv.cells[static_cast<size_t>(r)], a, hr);
             cval.push_back(cp->v[k]), fxv.push_back(rank_of_r16(cv.rx[k])), ey.push_back(static_cast<double>(h2f(lv[k])) - mkt);
             hy.push_back(h ? static_cast<double>(hr) - mkt : 0.0), buy.push_back(h ? 1 : 0);
           }
@@ -201,7 +202,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
       r->splits.push_back(row_of(misc::dash_ym(m), b));
   if (!cond.empty()) {
     r->cond_err = feats[0].err;
-    r->has_cond = cond_b[0].n > 0;
+    r->has_cond = cond_b[0].ok() > 0;
     r->cond_rho = cond_rho.mean(), r->cond_ric = cond_ric.mean();
     const char *names[] = {"全体 (同口径)", "低 1/3", "中 1/3", "高 1/3"};
     for (size_t j = 0; j < 4; ++j)

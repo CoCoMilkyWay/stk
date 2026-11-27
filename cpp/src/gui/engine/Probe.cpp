@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <span>
 
 namespace GUI::Engine {
 
@@ -66,62 +67,53 @@ void cover_rows(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, 
 void TurnP::close(const Ctx &c, const RootView &v) {
   namespace st = factor::stat;
   const YPlanes &y = c.c.y;
-  assert(v.rx && amts == y.ad && day_buy.size() == static_cast<size_t>(c.L.hd.n));
+  assert(v.rx && amts == y.ad);
   const st::Span s = c.s();
   const st::Cost cost = cost_of(y);
-  const st::FactorBooks bk{v.rx, s.A, c.L.cap};
-  const int u0 = c.c.land0();
-  std::vector<TurnStat> part(static_cast<size_t>(c.ex.threads()));
+  const int u0 = c.c.land0() + s.t_lo, D = s.days(), d0 = u0 / seg;
+  std::vector<TurnStat> part(static_cast<size_t>(c.ex.threads()) * D); // [tid][本块统计日]: 同日的行可落在不同线程, 先各攒再按线程序合
   for (int i = 0; i < c.L.hd.n; ++i) {
     std::fill(part.begin(), part.end(), TurnStat{});
-    row_buy.assign(static_cast<size_t>(s.T), 0.0);
-    st::book_rows(c.ex, s, hold_on(c.L.hd.k[i], s.g), c.L.l[i], bk, cost, [&](int tid, int t, const double *, const st::Flow *flow) {
-      TurnStat &o = part[static_cast<size_t>(tid)];
+    st::book_rows(c.ex, s, hold_on(c.L.hd.k[i], s.g), c.L.l[i], st::FactorBooks{v.rx, s.A, c.L.l[i].cap}, cost, [&](int tid, int t, const double *, const TurnFlow *flow) {
+      TurnStat &o = part[static_cast<size_t>(tid) * D + (t - s.t_lo) / seg];
       for (int b = 0; b < st::kFactorBooks; ++b)
         o.lv[b % st::kLevels].e[b / st::kLevels].merge(flow[b]);
-      row_buy[static_cast<size_t>(t)] = flow[st::kTop * st::kLevels].vol[kBuy] + flow[st::kBot * st::kLevels].vol[kBuy];
     });
-    for (const TurnStat &o : part)
-      for (int l = 0; l < st::kLevels; ++l)
-        turn[i].lv[l].merge(o.lv[l]);
-    for (int t = s.t_lo; t < s.t_hi(); ++t) {
-      const size_t d = static_cast<size_t>((u0 + t) / seg);
-      assert(u0 + t >= 0 && d < day_buy[static_cast<size_t>(i)].size() && "统计行落在评估期内");
-      day_buy[static_cast<size_t>(i)][d] += row_buy[static_cast<size_t>(t)];
-    }
+    std::vector<TurnStat> &dd = day[i];
+    assert(d0 >= 0 && static_cast<size_t>(d0 + D) <= dd.size() && "统计日落在评估期内");
+    for (int tid = 0; tid < c.ex.threads(); ++tid)
+      for (int d = 0; d < D; ++d)
+        dd[static_cast<size_t>(d0 + d)].merge(part[static_cast<size_t>(tid) * D + d]);
   }
-  if (c.last)
-    std::vector<double>().swap(row_buy);
 }
 
 std::vector<YearStat> years_of(const std::vector<misc::Ymd> &dates, const HoldP &h, const TurnP &c, int hi, HoldId hold) {
-  const std::vector<factor::stat::Day> &ds = h.day[hi];
-  const std::vector<double> &buy = c.day_buy[static_cast<size_t>(hi)], &wins = h.wins[hi];
-  assert(ds.size() == dates.size() && buy.size() == dates.size() && wins.size() == dates.size() && "逐日原料与评估期日期不齐");
-  const double spy = factor::stat::span_per_year(hold, h.seg);
+  const std::vector<factor::stat::Sum> &ds = h.day[hi];
+  const std::vector<TurnStat> &td = c.day[static_cast<size_t>(hi)];
+  const std::vector<double> &wins = h.wins[hi];
+  assert(ds.size() == dates.size() && td.size() == dates.size() && wins.size() == dates.size() && "逐日原料与评估期日期不齐");
   std::vector<YearStat> out;
   by_year(dates, [&](int y, size_t a, size_t b) {
-    factor::stat::Day s;
-    double by = 0.0;
+    const factor::stat::HoldStat s = factor::stat::stat_of(std::span(ds).subspan(a, b - a), hold, h.seg);
+    if (s.n < 3)
+      return;
+    TurnStat tt;
     std::vector<double> w;
     for (size_t i = a; i < b; ++i) {
-      s.merge(ds[i]);
-      by += buy[i];
+      tt.merge(td[i]);
       if (!std::isnan(wins[i]))
         w.push_back(wins[i]);
     }
-    if (s.n < 3)
-      return;
     std::sort(w.begin(), w.end());
     const double med = w.empty() ? 0.0 : 0.5 * (w[(w.size() - 1) / 2] + w[w.size() / 2]);
     out.push_back({.year = y,
                    .n = s.n,
                    .wins = static_cast<int>(w.size()),
-                   .mono = static_cast<float>(factor::stat::mono_of(s.grp, factor::stat::kGroups)),
-                   .ls = static_cast<float>(s.ls / s.n),
-                   .ric = static_cast<float>(s.ric / s.n),
+                   .mono = s.mono,
+                   .ls = static_cast<float>(factor::stat::ls_period(s)),
+                   .ric = s.ric.mean,
                    .med = static_cast<float>(med),
-                   .turn = static_cast<float>(0.5 * by / (static_cast<double>(b - a) * h.seg) * spy)});
+                   .turn = static_cast<float>(factor::stat::turn_annual(s, tt.lv[0]))});
   });
   return out;
 }

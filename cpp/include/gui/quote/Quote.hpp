@@ -132,12 +132,16 @@ struct Census {
   Csr<Constituent> cons;           // 成分 (权降序)
   std::vector<float> overlap;      // [篮子 × 篮子] 两篮子权重向量的余弦 (成员重合; 无成员 = 0)
 };
-// 账户回放的一日摘要 (与账户 Series::daily 同序): 当日资金基数 (前日末净值 + max(外部进出, 0); 首日 / ≤ 0 为 0) / 收后累计真实盈亏 (首日末 = 0)
+// 一日的资金基数 (回放各日 / 当日同一式): 前日末净值 nav0 + max(当日外部进出 flow, 0), ≤ 0 为 0
+inline double fund_base(double nav0, double flow) { return std::max(nav0 + std::max(flow, 0.0), 0.0); }
+// 账户回放的一日摘要 (与账户 Series::daily 同序): 当日资金基数 (fund_base; 首日 0) / 收后累计真实盈亏 (首日末 = 0)
 struct EquityDay {
   misc::Ymd date = 0;
   double base = 0, pnl = 0;
 };
-struct Trades; // 账户的成交点 (见下)
+struct Trades;   // 账户的成交点 (见下)
+struct Holdings; // 账户的持仓 (见下)
+struct Live;     // 当日 (见下)
 // 账户回放的摘要 (PriceView 给; 随账户侧的 Tape 一并换): 回放末日净值 / 其后账本里的外部进出 / 回放各日外部进出之和 (累计净转入) / 末日收后持仓 / 逐日基数与累计真实盈亏;
 //   账户全史 = 时间加权指数 (前收 = 前一日指数, 恒带分钟); 当日 = 末日指数 × growth(nav, 净资产_s, 进出) (account::intraday)
 struct Equity {
@@ -145,8 +149,32 @@ struct Equity {
   std::vector<Holding> hold; // 计价 = 末日收盘
   std::shared_ptr<const std::vector<EquityDay>> days;
   std::shared_ptr<const Trades> trades; // 回放各日的历史成交点 (一分钟一档; 无账本 = 空)
-  // 当日资金基数 (同 account::growth: 券商持仓计入末日后进出 after, 回放持仓不计)
-  double today_base(bool broker) const { return std::max(nav + std::max(broker ? after : 0.0, 0.0), 0.0); }
+  bool ok() const { return days && !days->empty(); }
+  // 当日的外部进出 (同 account::growth: 券商持仓计入末日后进出 after, 回放持仓不计) / 资金基数
+  double today_flow(bool broker) const { return broker ? after : 0.0; }
+  double today_base(bool broker) const { return fund_base(nav, today_flow(broker)); }
+  // 此刻净资产: 当日接上 (y = 接上的当日; 空 = 未接) 且有持仓 = 持仓 × 当日 (Holdings::now), 否则回放末日净值
+  double now(const Holdings *h, const Live *y) const;
+  // 日 day 指数 idx (该日前收指数 ref) 时的累计真实盈亏 (剔除出入金; 须 ok): 前日末累计 + 当日资金基数 × (idx / ref − 1);
+  //   day 在回放日内 = 回放, 之后 = 当日 (基数 today_base(broker)); 基数 / 前收缺 → 当日末 (回放) / 前日末 (当日)
+  double pnl(misc::Ymd day, double idx, double ref, bool broker) const;
+};
+// 账户线上一点的读数 (NAV 主图 / 日内栏同一份): 前复权净资产 (从此刻净资产往前推) / 累计真实盈亏 + 对窗内前高的复权回撤 (比 / 金额) / 真正回撤 (盈亏对其前高)
+struct EquityPt {
+  double adj = 0, pnl = 0, dd_pct = 0, dd_adj = 0, dd_real = 0;
+};
+// 沿账户线自窗首点 (前收也算一点) 逐点推: adj = scale · 指数 (scale = 此刻净资产 / 此刻指数), 前高自窗首点起
+struct EquityWalk {
+  const Equity &eq;
+  double scale;
+  bool broker;
+  double ahi = -std::numeric_limits<double>::infinity(), phi = -std::numeric_limits<double>::infinity();
+  // 下一点: 所属日 day / 指数 idx / 该日前收指数 ref
+  EquityPt step(misc::Ymd day, double idx, double ref) {
+    const double adj = scale * idx, p = eq.pnl(day, idx, ref, broker);
+    ahi = std::max(ahi, adj), phi = std::max(phi, p);
+    return {adj, p, ahi > 0.0 ? adj / ahi - 1.0 : 0.0, adj - ahi, p - phi};
+  }
 };
 // 价格库的戳 = 日脊的摘要: 库轴指纹 + 篮子表指纹 + 末日 / 日数 / 库段日数 / 基本面段日数 (对得上 = 读出的序列可沿用, 换戳即清)
 struct PriceStamp {

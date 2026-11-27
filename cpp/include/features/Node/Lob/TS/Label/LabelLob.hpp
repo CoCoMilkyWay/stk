@@ -7,7 +7,7 @@
 //     cost_buy = VWAP^A(a)/mid − 1,  cost_sell = 1 − VWAP^B(a)/mid.
 //     建仓盘口 = 锚点 (分钟 m 末) + LABEL_DELAY_SECONDS 的可成交盘口 (精确到秒的下单时刻); 行 m 的特征在分钟 m 末才可知, 锚到 m 起始秒会前视一分钟.
 //     收益标签 (Bar 档) 的 entry 是次个有成交分钟的 VWAP, 不含冲击; 消费端 (Run / Inspect / Portfolio) 在账集流水上扣 (factor/Stat/Book.hpp):
-//     两侧按 Δw 的成交量 × 本格该侧冲击 (交接点的买入 cost_buy / 卖出 cost_sell), 整批平仓在撮合价 (冲击 0); 税佣按两侧量另扣 (define/Fee.hpp).
+//     两侧按 Δw 的成交量 × 本格该侧冲击 (交接点的买入 cost_buy / 卖出 cost_sell), 整批平仓按平仓价点 (E = 平仓行的 cost_sell, 撮合价 = 0); 税佣按两侧量另扣 (define/Fee.hpp).
 //     不进标签再算超额 —— 超额对每 t 去均值, 成本进标签只剩截面相对项, 扣不出绝对成本.
 //   盘口价点 = 连续竞价时段的盘口 (订单簿 market_state). 集合竞价期 (09:15-09:25 / 14:57-15:00) 的簿只是堆单,
 //     可交叉 (买一 ≥ 卖一) 且撮合前一股不成交, 拿它定冲击 = 假价格, 一律不入环.

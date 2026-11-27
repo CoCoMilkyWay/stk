@@ -76,6 +76,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
   FactorSpec fac;
   if (!window_of(c, win, err) || !resolve_factor(c.str("factor"), env, fac, err))
     return Fail(std::move(err));
+  fac.cells = true, fac.only_end = kAllGroups;
   std::vector<FeatSpec> feats;
   resolve_feats(c.strs("exprs"), env, feats);
 
@@ -103,7 +104,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
   // 由于运行期可能有坏根特征, 在首块 plan_forest 后按实际有效特征定列
   Mean fric, r2, rric;
   std::vector<Mean> corr, bric, sric;
-  st::Sums orig, rest;
+  st::Sum orig, rest;
   std::vector<size_t> active_feats;
   bool cols_fixed = false;
 
@@ -174,7 +175,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
         struct ThreadAcc {
           Mean fric, r2, rric;
           std::vector<Mean> corr, bric, sric;
-          st::Sums orig, rest;
+          st::Sum orig, rest;
         };
         std::vector<ThreadAcc> ta(static_cast<size_t>(nt));
         for (ThreadAcc &x : ta)
@@ -235,7 +236,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
               fxv.push_back(rank_of_r16(cv.rx[k]));
               ey.push_back(static_cast<double>(h2f(lv[k])) - mkt);
               float hr = 0.f;
-              const bool h = held_cell(cv.blk, cv.rx, env.hold, t, k, hr);
+              const bool h = held_cell(cv.cells[static_cast<size_t>(r)], a, hr);
               hy.push_back(h ? static_cast<double>(hr) - mkt : 0.0), buy.push_back(h ? 1 : 0);
               for (size_t j = 0; j < m; ++j)
                 bv[j].push_back(one[j]);

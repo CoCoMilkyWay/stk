@@ -12,7 +12,7 @@
 //   退出: 任务 Destroy 置取消旗, 全部请求 / 重试等待 1 秒内收手 (Devin 子进程即杀; 只剩 Cursor 远端取消, 限时 kCancelTimeoutSeconds)
 // =============================================================================
 
-#include "factor/Stat/Roll.hpp" // kTarget: Search 目标 (入库门槛量 / 文案随它)
+#include "factor/Stat/Roll.hpp" // kTargetName: Search 目标 (文案)
 
 #include <string>
 #include <string_view>
@@ -63,9 +63,9 @@ inline constexpr int kCtxChars = 60000;
 inline constexpr int kFoldSteps = 10;
 
 // 入库门槛 (默认值 Config 页可改, 下次 New 生效): agent 提交的候选至少一个权重的门槛量达到才拷进正式因子库;
-//   门槛量随 Search 目标 (factor/Stat/Roll.hpp kTarget): mono → 全期 mono (20 组整期均值的分层单调); rIC → 中位 rIC (同 Search 的目标)
-inline constexpr const char *kGateName = factor::stat::kMonoTarget ? "全期 mono" : "中位 rIC";
-inline constexpr double kGateMin = factor::stat::kMonoTarget ? 0.9 : 0.03;
+//   门槛量 = 全期 mono (20 组整期均值的分层单调; Search 的目标是它的滚动窗版)
+inline constexpr const char *kGateName = "全期 mono";
+inline constexpr double kGateMin = 0.9;
 
 // ---- 外部 agent 接口 (gui/task_agent/Remote.hpp): 本机 MCP (Streamable HTTP), 程序一开即监听; 外部 agent 经它当会话的大脑 ----
 inline constexpr const char *kRemoteHost = "127.0.0.1";

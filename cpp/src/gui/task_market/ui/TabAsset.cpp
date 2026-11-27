@@ -2,7 +2,6 @@
 //   列定义一张表 (kCols): 列 (表头 + 说明) / 取值 / 文本 / 格 / 悬停; 格 / 排序 / 名次底色 / 截面分析都只读它
 
 #include "gui/task_market/ui/TabAsset.hpp"
-#include "gui/task_market/ui/CrossSectionAnalysis.hpp"
 #include "gui/util/AssetFilter.hpp" // 筛选控件 (与 OrderFlow 共用)
 #include "gui/util/Board.hpp"
 #include "gui/util/Chart.hpp" // tint / band_col / rank_by / sort_less
@@ -17,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -682,6 +682,60 @@ void data_table(const Asset &asset_data, const StockInfos &stock_info, AssetStat
   ImGui::EndTable();
 }
 
+// ---- 截面统计 (Statistics 页; 行 = 表格的视图): 板块按代码前缀; 非有限值 / 空类别不计 ----
+// 一组数 (升序) 的统计
+struct Stats {
+  float mean = 0, median = 0, sd = 0;
+  size_t n = 0;
+};
+Stats stats_of(const std::vector<float> &v) {
+  Stats s{.n = v.size()};
+  if (v.empty())
+    return s;
+  const size_t mid = s.n / 2;
+  s.mean = std::accumulate(v.begin(), v.end(), 0.0f) / static_cast<float>(s.n);
+  s.median = s.n % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2.0f;
+  float sq = 0.0f;
+  for (const float x : v)
+    sq += (x - s.mean) * (x - s.mean);
+  s.sd = std::sqrt(sq / static_cast<float>(s.n));
+  return s;
+}
+// 代码的板块名; 未知板块 → 空
+std::string board_of(const std::string &code) {
+  const BoardType b = GetBoardType(code);
+  return b == BoardType::All || b == BoardType::Unknown ? std::string{} : GetBoardName(b);
+}
+bool counted(float v) { return std::isfinite(v); }
+bool counted(const std::string &c) { return !c.empty(); }
+// codes[i] ↔ xs[i] 按板块分组 (板块名序; 不计的项丢掉)
+template <class T>
+std::map<std::string, std::vector<T>> by_board(const std::vector<std::string> &codes, const std::vector<T> &xs) {
+  assert(codes.size() == xs.size());
+  std::map<std::string, std::vector<T>> by;
+  for (size_t i = 0; i < codes.size(); ++i)
+    if (std::string b = board_of(codes[i]); !b.empty() && counted(xs[i]))
+      by[std::move(b)].push_back(xs[i]);
+  return by;
+}
+// 一类的只数
+struct CategoryCount {
+  std::string label;
+  size_t count = 0;
+};
+// 各类只数, 多 → 少
+std::vector<CategoryCount> counts_of(const std::vector<std::string> &cs) {
+  std::map<std::string, size_t> by;
+  for (const std::string &c : cs)
+    if (counted(c))
+      ++by[c];
+  std::vector<CategoryCount> o;
+  for (const auto &[label, count] : by)
+    o.push_back({label, count});
+  std::ranges::stable_sort(o, std::greater{}, &CategoryCount::count);
+  return o;
+}
+
 // 数值列的截面分析: 分板块统计 + 分布 (去首尾 5%; 直方 / 拟合正态 / 经验 CDF) + 首尾 10 名. 行 = 表格的视图 (只取有值的)
 void numeric_analysis(const Asset &asset_data, const StockInfos &stock_info, const AssetState &asset_state, const Column &col) {
   std::vector<std::string> names;
@@ -703,8 +757,6 @@ void numeric_analysis(const Asset &asset_data, const StockInfos &stock_info, con
   }
 
   ImGui::TextColored(kSecCol, "Board Statistics");
-  auto board_stats = GroupNumericByBoard(codes, values);
-
   if (ImGui::BeginTable("BoardStatsTable", 5,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
                             ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
@@ -714,19 +766,20 @@ void numeric_analysis(const Asset &asset_data, const StockInfos &stock_info, con
     ImGui::TableSetupColumn("StdDev");
     ImGui::TableSetupColumn("Count");
     ImGui::TableHeadersRow();
-
-    for (const auto &bs : board_stats) {
+    for (auto &[board, v] : by_board(codes, values)) {
+      std::ranges::sort(v);
+      const Stats s = stats_of(v);
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      ImGui::Text("%s", bs.board_name.c_str());
+      ImGui::Text("%s", board.c_str());
       ImGui::TableSetColumnIndex(1);
-      ImGui::Text("%.2f", bs.mean);
+      ImGui::Text("%.2f", s.mean);
       ImGui::TableSetColumnIndex(2);
-      ImGui::Text("%.2f", bs.median);
+      ImGui::Text("%.2f", s.median);
       ImGui::TableSetColumnIndex(3);
-      ImGui::Text("%.2f", bs.std_dev);
+      ImGui::Text("%.2f", s.sd);
       ImGui::TableSetColumnIndex(4);
-      ImGui::Text("%zu", bs.count);
+      ImGui::Text("%zu", s.n);
     }
     ImGui::EndTable();
   }
@@ -734,16 +787,15 @@ void numeric_analysis(const Asset &asset_data, const StockInfos &stock_info, con
   ImGui::Spacing();
 
   ImGui::TextColored(kSecCol, "Distribution (Outliers Removed)");
-  const std::vector<float> kept = RemoveOutliers(values, 5.0f); // 升序
-  if (!kept.empty()) {
+  std::vector<float> kept = values; // 升序, 去首尾各 5%
+  std::ranges::sort(kept);
+  if (const size_t cut = kept.size() / 20; kept.size() > 2 * cut + 1)
+    kept = std::vector<float>(kept.begin() + static_cast<std::ptrdiff_t>(cut), kept.end() - static_cast<std::ptrdiff_t>(cut));
+  {
     constexpr int kBins = 100, kCurve = 200; // 直方格数 / 曲线点数
     const float lo = kept.front(), hi = kept.back(), range = hi - lo, bin = range / kBins;
-    const float n = static_cast<float>(kept.size());
-    const float mean = std::accumulate(kept.begin(), kept.end(), 0.0f) / n;
-    float var = 0.0f;
-    for (const float v : kept)
-      var += (v - mean) * (v - mean);
-    const float sd = std::sqrt(var / n);
+    const Stats st = stats_of(kept);
+    const float n = static_cast<float>(st.n), mean = st.mean, sd = st.sd;
 
     // 直方 (密度) / 拟合正态 / 经验 CDF (右轴)
     std::vector<float> hx(kBins), hy(kBins, 0.0f);
@@ -779,12 +831,16 @@ void numeric_analysis(const Asset &asset_data, const StockInfos &stock_info, con
 
   ImGui::Spacing();
   const float half = ImGui::GetContentRegionAvail().x * 0.48f;
+  std::vector<size_t> rank(values.size()); // 值降序
+  std::iota(rank.begin(), rank.end(), size_t{0});
+  std::ranges::stable_sort(rank, std::greater{}, [&](size_t i) { return values[i]; });
   const auto top = [&](const char *id, const char *title, const ImVec4 &c, bool desc) {
     ImGui::BeginChild(id, ImVec2(half, 250), true);
     ImGui::TextColored(c, "%s", title);
-    const std::vector<std::pair<std::string, float>> t = GetTopN(names, values, 10, desc);
-    for (size_t i = 0; i < t.size(); ++i)
-      ImGui::Text("%zu. %s: %.2f", i + 1, t[i].first.c_str(), t[i].second);
+    for (size_t k = 0, n = std::min<size_t>(10, rank.size()); k < n; ++k) {
+      const size_t i = rank[desc ? k : rank.size() - 1 - k];
+      ImGui::Text("%zu. %s: %.2f", k + 1, names[i].c_str(), values[i]);
+    }
     ImGui::EndChild();
   };
   top("Top10", "Top 10", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), true);
@@ -818,19 +874,19 @@ void category_analysis(const Asset &asset_data, const StockInfos &stock_info, co
   }
 
   ImGui::TextColored(kSecCol, "Overall Distribution");
-  pie("##OverallPie", CountCategories(categories), 250, 0.4);
+  pie("##OverallPie", counts_of(categories), 250, 0.4);
   ImGui::Spacing();
 
   ImGui::TextColored(kSecCol, "Board Breakdown");
   constexpr int kPerRow = 2;
   const float w = ImGui::GetContentRegionAvail().x / kPerRow - 10;
-  const std::vector<BoardCategoryBreakdown> boards = GroupCategoricalByBoard(codes, categories);
-  for (size_t i = 0; i < boards.size(); ++i) {
+  size_t i = 0;
+  for (const auto &[board, cs] : by_board(codes, categories)) {
     if (i % kPerRow != 0)
       ImGui::SameLine();
-    ImGui::BeginChild(("BoardPie_" + std::to_string(i)).c_str(), ImVec2(w, 220), true);
-    ImGui::Text("%s", boards[i].board_name.c_str());
-    pie("##BoardPie", boards[i].categories, 180, 0.35);
+    ImGui::BeginChild(("BoardPie_" + std::to_string(i++)).c_str(), ImVec2(w, 220), true);
+    ImGui::Text("%s", board.c_str());
+    pie("##BoardPie", counts_of(cs), 180, 0.35);
     ImGui::EndChild();
   }
 }

@@ -88,16 +88,16 @@ bool cycler(const char *label, int &idx, const char *const *values, int n) {
 }
 
 bool hold_cycler(int &hold_idx, const FeatureTable &ft) {
-  const int n = static_cast<int>(static_cast<size_t>(ft.y.list.n));
+  const int n = static_cast<int>(static_cast<size_t>(ft.y.holds.n));
   if (n < 2) {
     ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("Hold %s", n ? hold_name(ft.y.list.k[0]).c_str() : "-");
+    ImGui::TextDisabled("Hold %s", n ? hold_name(ft.y.holds.k[0]).c_str() : "-");
     return false;
   }
   std::vector<std::string> names(static_cast<size_t>(n));
   std::vector<const char *> cs(static_cast<size_t>(n));
   for (size_t i = 0; i < names.size(); ++i) {
-    names[i] = hold_name(ft.y.list.k[i]);
+    names[i] = hold_name(ft.y.holds.k[i]);
     cs[i] = names[i].c_str();
   }
   return cycler("Hold", hold_idx, cs.data(), n);
@@ -447,8 +447,8 @@ void render_node(BuildNode &n, const FeatureTable &ft, char *filter, size_t filt
       ImGui::SetNextItemWidth(90);
       ImGui::BeginDisabled(f);
       if (ImGui::BeginCombo("h", hold_name(n.p.h).c_str())) {
-        for (int li = 0; li < ft.y.list.n; ++li)
-          if (const HoldId lh = ft.y.list.k[li]; ImGui::Selectable(hold_name(lh).c_str(), lh == n.p.h))
+        for (int li = 0; li < ft.y.holds.n; ++li)
+          if (const HoldId lh = ft.y.holds.k[li]; ImGui::Selectable(hold_name(lh).c_str(), lh == n.p.h))
             n.p.h = lh;
         ImGui::EndCombo();
       }
@@ -525,7 +525,7 @@ std::string period_text(misc::Ymd lo, misc::Ymd hi) {
 //          卡片按组出标题行, 主表列同序; 组底色 (bg) 主表列 / 卡片行共用; 覆盖组只在主表的 cover% 列 (四项合一格, 无底色, 不进卡片)
 //   col    非空 = 进主表 (列名), 空 = 只在卡片 (覆盖组: 只在 cover% 列)
 //   desc / range / best  说明 / 取值范围 / 最优 (卡片三列, 主表列提示也由它们拼); 文案压短, 卡片宽度由它们定
-//   get    (HoldStat, 该行 FactorRow: 满仓 cap = scope.n_full, 行级 val% / rank%) → double (整数计数也走这里, fmt 用 %.0f)
+//   get    (HoldStat (含平均满仓 cap), 该行 FactorRow: 行级 val% / rank%) → double (整数计数也走这里, fmt 用 %.0f)
 //   grade  line(差端, 好端) (好端 < 差端 即越小越好); band(a, b) 中点最好 → 两端差; 默认不着色 (诊断量 / 尺度随 h 变的).
 //          固定区间着色 (区间外钳位到端色): cover% 列 / 卡片 / Inspect 面板; 主表 Stat 列只取 line 的好坏方向, 按本页截面最差 → 最好渐变
 //   lag    样本 = ok_rac 行 (n_rac; rAC 系), 否则 ok 行 (n); 对应行数 < 3 → 空
@@ -551,7 +551,7 @@ struct GroupInfo {
 constexpr GroupInfo kGroupInfo[static_cast<size_t>(Group::kCount)] = {
     {"覆盖", "有效 / 可秩 / 触发 / 利用", ImVec4(), false},
     {"形态", "分层单调", ImVec4(0.70f, 0.45f, 0.95f, 0.10f), true},
-    {"目标", factor::stat::kMonoTarget ? "Search 打分: 滚动窗 mono 的中位" : "Search 打分: 滚动窗 rIC 的中位", ImVec4(0.95f, 0.85f, 0.30f, 0.10f), true},
+    {"目标", "Search 打分: 滚动窗 mono 的中位", ImVec4(0.95f, 0.85f, 0.30f, 0.10f), true},
     {"LS", "顶底多空超额 ½ (做多 G20 − 做多 G1)", ImVec4(0.35f, 0.85f, 0.45f, 0.10f), true},
     {"rIC", "因子秩 × 标签秩 截面相关 (rank IC)", ImVec4(0.35f, 0.65f, 1.00f, 0.10f), true},
     {"rAC", "因子秩 lag=h 截面自相关 (rank AC)", ImVec4(1.00f, 0.65f, 0.25f, 0.10f), true},
@@ -594,16 +594,16 @@ constexpr Metric kMetrics[] = {
     {Group::Cover, "trig%", nullptr, "触发率: 有仓行 / 可评行", "[0, 100]", "越大", "%.1f",
      [](const HS &h, const FR &) { return 100.0 * factor::stat::trigger_of(h); }, line(80, 90)},
     {Group::Cover, "util%", nullptr, "利用率: 每端只数 / 满仓只数", "[0, ∞)", "≈ 100", "%.1f",
-     [](const HS &h, const FR &r) { return 100.0 * factor::stat::util_of(h, r.scope.n_full); }, band(80, 120)},
+     [](const HS &h, const FR &) { return 100.0 * factor::stat::util_of(h); }, band(80, 120)},
     {Group::Shape, "mono", "mono", "分层单调性", "[-1, 1]", "越大, 1 严格单调", "%+.3f",
      [](const HS &h, const FR &) { return static_cast<double>(h.mono); }, line(0.9, 1)},
     {Group::Score, "med", nullptr,
-     factor::stat::kMonoTarget ? "滚动窗 mono 的中位 (窗 = 评估期 / 10; 挑父行代表权重)" : "滚动窗 rIC 的中位 (窗 = 评估期 / 10; 挑父行代表权重)", "[-1, 1]", "越大",
-     "%+.4f", [](const HS &h, const FR &r) { return r.roll_of(h).med; }, factor::stat::kMonoTarget ? line(0.5, 0.8) : line(0.03, 0.05)},
+     "滚动窗 mono 的中位 (窗 = 评估期 / 10; 挑父行代表权重)", "[-1, 1]", "越大",
+     "%+.4f", [](const HS &h, const FR &r) { return r.roll_of(h).med; }, line(0.5, 0.8)},
     {Group::LS, "LS%", "LS%", "日净值多空复利年化 %", "(-∞, ∞)", "越大", "%+.1f",
-     [](const HS &h, const FR &) { return 100.0 * factor::stat::ls_annual(h); }, line(10, 50)},
+     [](const HS &h, const FR &) { return 100.0 * h.ann; }, line(10, 50)},
     {Group::LS, "SR", "SR", "日净值多空 Sharpe", "(-∞, ∞)", "越大", "%+.2f",
-     [](const HS &h, const FR &) { return factor::stat::sharpe_of(h); }, line(5, 10)},
+     [](const HS &h, const FR &) { return static_cast<double>(h.sharpe); }, line(5, 10)},
     {Group::LS, "mean", nullptr, "每期多空 均值", "(-∞, ∞)", "越大", "%+.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.mean); }},
     {Group::LS, "sd", nullptr, "每期多空 标准差", "[0, ∞)", "越小", "%.5f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.sd); }},
     {Group::LS, "IR", nullptr, "每期多空 均值 / 标准差", "(-∞, ∞)", "越大", "%+.3f", [](const HS &h, const FR &) { return static_cast<double>(h.ls.ir); }},
@@ -877,7 +877,7 @@ std::optional<ImVec4> spread_color(const Metric &m, const HS *h, const FR &r, co
 void stat_card(const FactorRow &r, const FactorsUIContext &ctx) {
   ImGui::TextDisabled("%s%s | %s | %s %s %s..%s | 满仓 %.1f | %.3f ms", r.stat_from_file ? "文件" : "本轮",
                       !scope_matches(r, ctx) ? " (作用域≠当前, 需重跑)" : "", factor::stat::frame_name(r.frame), r.scope.pool.c_str(),
-                      years_text(r.scope.years).c_str(), misc::dash(r.scope.start_date).c_str(), misc::dash(r.scope.end_date).c_str(), r.scope.n_full,
+                      years_text(r.scope.years).c_str(), misc::dash(r.scope.start_date).c_str(), misc::dash(r.scope.end_date).c_str(), r.n_hold ? static_cast<double>(r.hold[0].cap) : 0.0,
                       r.eval_ms);
   if (!ImGui::BeginTable("HoldStatTip", kTipFixedCols + r.n_hold, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
     return;
@@ -1190,7 +1190,7 @@ void fixed_cell(Fixed c, const FactorRow &r, const FactorsUIContext &ctx, bool e
 void DefaultHold(RunService &svc, FactorsUIState &ui, const FactorsUIContext &ctx) {
   if (ui.hold_defaulted)
     return;
-  const Holds &hl = ctx.ft->y.list;
+  const Holds &hl = ctx.ft->y.holds;
   std::lock_guard<std::mutex> lock(svc.mutex);
   if (!(svc.current.scope.dir == ctx.dir))
     return;
@@ -1267,8 +1267,8 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     backend = 0;
   else if (backend < 0)
     backend = 1; // 有 GPU 默认 GPU
-  ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, static_cast<int>(static_cast<size_t>(ft.y.list.n)) - 1));
-  const HoldId cur_hold = (ft.y.list.n == 0) ? kHoldT1 : ft.y.list.k[static_cast<size_t>(ui.hold_idx)];
+  ui.hold_idx = std::clamp(ui.hold_idx, 0, std::max(0, static_cast<int>(static_cast<size_t>(ft.y.holds.n)) - 1));
+  const HoldId cur_hold = (ft.y.holds.n == 0) ? kHoldT1 : ft.y.holds.k[static_cast<size_t>(ui.hold_idx)];
 
   // ==========================================================================
   // 1. 作用域 + 后端 / Hold + Run / Cancel / Rescan + 状态 / 开清仓规则 / Search; 右侧 组合两小框 (TabLines)
@@ -1364,7 +1364,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   const auto picked_text = [](const auto &v, const std::string &one) { return v.size() == 1 ? one : "选中的 " + std::to_string(v.size()) + " 个因子"; };
 
   // Run (选中行所在文件) / Run all (整目录): 同一份评估, 对象不同
-  const bool can_run_all = !busy && !sbusy && !queue_active && ctx.axis_ready && !(ft.y.list.n == 0);
+  const bool can_run_all = !busy && !sbusy && !queue_active && ctx.axis_ready && !(ft.y.holds.n == 0);
   const bool can_run = can_run_all && !run_files.empty();
   if (!can_run)
     ImGui::BeginDisabled();
@@ -1441,7 +1441,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(TaskStatus::Kind::Warn), "| %s", message.c_str());
   }
-  if (!(ft.y.list.n == 0)) {
+  if (!(ft.y.holds.n == 0)) {
     ImGui::BeginGroup();
     hold_points_line(hold_points(cur_hold, ft.lv));
     ImGui::EndGroup();
@@ -1454,8 +1454,8 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   // 本层可搜的各档 (标签组序; Search all / 换收益口径后的重搜同用)
   std::vector<HoldId> all_holds;
   std::string holds_desc;
-  for (int li = 0; li < ft.y.list.n; ++li)
-    if (const HoldId lh = ft.y.list.k[li]; factor::search::search_hold(lh)) {
+  for (int li = 0; li < ft.y.holds.n; ++li)
+    if (const HoldId lh = ft.y.holds.k[li]; factor::search::search_hold(lh)) {
       all_holds.push_back(lh);
       holds_desc += (holds_desc.empty() ? "" : " ") + hold_name(lh);
     }
@@ -1465,7 +1465,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
       ui.search_queue.push_back(SearchJob{r, h, h == all_holds.front()});
   };
   {
-    const bool hold_ok = !(ft.y.list.n == 0) && factor::search::search_hold(cur_hold);
+    const bool hold_ok = !(ft.y.holds.n == 0) && factor::search::search_hold(cur_hold);
     const bool can_search = !busy && !sbusy && !queue_active && ctx.axis_ready && hold_ok && !search_rows.empty();
     ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "   Search:");
     ImGui::SameLine();
@@ -1480,12 +1480,12 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
     }
     if (!can_search)
       ImGui::EndDisabled();
-    // 搜索细节 (Stat/Roll.hpp): 目标 = 中位窗目标 (kTarget: 窗 mono | 窗 rIC; 滚动窗 = 评估期 / kRollParts, 每个交易日收尾一个窗, 取全部窗的中位;
+    // 搜索细节 (Stat/Roll.hpp): 目标 = 中位窗 mono (滚动窗 = 评估期 / kRollParts, 每个交易日收尾一个窗, 取全部窗的中位;
     // 不看成本 / 多空, 不跨持有期比; 方向 = 正向中位窗目标的号, < 0 → 取反 sign = -1); 参数区间由已有常数 / 池内有效资产数推出, 阈值类按输入分位;
     // n_init(P) 个低差异点 (按槽数对数增长) 一趟评完, 中位窗目标最高的一个写成该 Hold 的权重 (没有一个点算得出窗 → 清掉该 Hold 的权重)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       if (!hold_ok)
-        tip("Search 只搜 %s 档 (当前 Hold %s)", search_range.c_str(), (ft.y.list.n == 0) ? "-" : hold_name(cur_hold).c_str());
+        tip("Search 只搜 %s 档 (当前 Hold %s)", search_range.c_str(), (ft.y.holds.n == 0) ? "-" : hold_name(cur_hold).c_str());
       else if (pick_files.empty())
         tip("先在表格里点一行 (Ctrl 多选 / Shift 片选)");
       else if (search_rows.empty())
@@ -1807,7 +1807,7 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
   // 目标分 (挑代表权重): 每行按选定持有期 (Hold) 取 stat 的中位窗目标 (RowRoll, 与 Search 同一份目标); 无 stat / 无该持有期 / 无窗 → hold = 0
   static std::vector<ScoreCell> s_score;
   s_score.assign(s_rows.size(), ScoreCell{});
-  if (ft.y.list.n > 0)
+  if (ft.y.holds.n > 0)
     for (size_t i = 0; i < s_rows.size(); ++i) {
       const factor::stat::Roll *rl = RowRoll(s_rows[i], cur_hold);
       if (!rl)
@@ -2047,8 +2047,8 @@ int RenderTabFactors(RunService &svc, SearchService &ss, FactorsUIState &ui, int
           ui.picked.clear();
           if (!only) {
             ui.picked.push_back(r.key);
-            for (size_t i = 0; i < static_cast<size_t>(ft.y.list.n); ++i)
-              if (ft.y.list.k[i] == r.hold_src)
+            for (size_t i = 0; i < static_cast<size_t>(ft.y.holds.n); ++i)
+              if (ft.y.holds.k[i] == r.hold_src)
                 ui.hold_idx = static_cast<int>(i);
           }
         }

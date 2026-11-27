@@ -64,8 +64,8 @@ LibMask used_libs(const FeatureTable &ft, PoolId pool, std::span<const LeafId> l
   const LibId lab = label_lib(pool);
   assert(ft.y.ts.ref(pool).lib == lab && ft.y.cs.ref(pool).lib == lab && "门控 / 标签 / K 线在标签库");
   LibMask m = lib_bit(lab);
-  if (const AmtId a = ft.y.amt_of(cost); a != kAmtFixed)
-    m |= lib_bit(ft.y.cost[a][kBuy].ref(pool).lib);
+  if (ft.y.priced(cost.amt))
+    m |= lib_bit(ft.y.cost[cost.amt][kBuy].ref(pool).lib);
   for (const LeafId id : leaves) {
     const FeatCol &c = ft.x.leaves[id];
     assert(c.allowed || c.target);
@@ -145,7 +145,7 @@ bool domain_of(const FeatureTable &ft, const FactorScope &sc, std::span<const Le
   return true;
 }
 
-StatScope stat_scope(const FactorScope &sc, const Domain &dm, int seg, double n_full, const char *backend) {
+StatScope stat_scope(const FactorScope &sc, const Domain &dm, int seg, const char *backend) {
   StatScope o;
   o.pool = sc.pool;
   o.start_date = dm.first();
@@ -153,7 +153,6 @@ StatScope stat_scope(const FactorScope &sc, const Domain &dm, int seg, double n_
   o.years = sc.years;
   o.days = static_cast<int>(dm.stat_days()), o.T = o.days * seg, o.A = static_cast<int>(dm.rs.axis.size());
   o.cost_top = sc.cost.top;
-  o.n_full = n_full;
   o.backend = backend;
   o.time = now_string();
   return o;
@@ -217,12 +216,8 @@ YSpec y_spec(const FeatureTable &ft, const Domain &dm, const Holds &hd, Segs sg,
   YSpec s{hd, {}};
   if (sg == Segs::None)
     return s;
-  const AmtId spec = ft.y.amt_of(cost);
-  assert((spec == kAmtFixed || dm.uses(ft.y.cost[spec][kBuy])) && "盘口段口径的评估域须含 Lob 库 (used_libs)");
-  AmtSet amts = amt_bit(spec);
-  if (sg == Segs::All && spec != kAmtFixed) // 口径取盘口段: 本域全部段 (固定段恒在, 对照用)
-    amts = ft.y.amts;
-  s.ad = Amts::of(amts);
+  assert((!ft.y.priced(cost.amt) || dm.uses(ft.y.cost[cost.amt][kBuy])) && "盘口段口径的评估域须含 Lob 库 (used_libs)");
+  s.ad = sg == Segs::All && cost.amt != kAmtFixed ? kAllAmts : Amts::of({cost.amt}); // 口径取盘口段: 全部段 (含固定段, 对照用)
   return s;
 }
 
@@ -249,17 +244,6 @@ template <>
 inline constexpr double kCellBytes<U16> = 2.0;
 template <>
 inline constexpr double kCellBytes<Leaf> = kPlaneBytes;
-
-long long gate_on(const uint8_t *g, size_t n) {
-  long long k = 0;
-  for (size_t i = 0; i < n; ++i)
-    k += g[i] != 0;
-  return k;
-}
-// 因子层 × 评估域 (标签库 + 轴) 上某日的门控计数键
-std::string gate_key(const FeatureTable &ft, const Domain &dm, misc::Ymd d) {
-  return std::string(factor_level(ft.lv).name) + "|" + dm.rs.lib().dir + "#" + std::to_string(dm.rs.axis.hash) + "|" + std::to_string(d);
-}
 
 struct View {
   const feature_storage_t *v = nullptr, *g = nullptr;
@@ -384,10 +368,10 @@ void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, size_t VR, size_t A,
 
 } // namespace
 
-double cell_bytes(const BlockSpec &s, size_t nx) {
+double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx) {
   int books = 0;
   for (int c = 0; c < s.y.ad.n; ++c)
-    books += s.y.ad.k[c] != kAmtFixed;
+    books += ft.y.priced(s.y.ad.k[c]);
   return kCellBytes<Leaf> * static_cast<double>(nx) + kCellBytes<YCore> + kCellBytes<LabPlane> * s.y.hd.n + kCellBytes<U16> * kSides * books;
 }
 
@@ -448,7 +432,7 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
   }
   for (size_t c = 0; c < C; ++c) { // 两侧冲击列相邻 (cost_at[c] + side)
     const AmtId a = ad.k[c];
-    assert(a != kAmtFixed && (ft.y.amts & amt_bit(a)) && io.dm.uses(ft.y.cost[a][kBuy]) && "只装盘口段, 要评估域含 Lob 库 (y_spec)");
+    assert(ft.y.priced(a) && io.dm.uses(ft.y.cost[a][kBuy]) && "只装有平面的盘口段, 要评估域含 Lob 库 (y_spec)");
     cost_at[c] = cols.add(ft.y.cost[a][kBuy]);
     cols.add(ft.y.cost[a][kSell]);
   }
@@ -461,23 +445,15 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
   const YCore &g = have ? *have : core;
   assert(g.gate.size() == n && "门控与块不同形");
   labels.assign(H, LabPlane{});
-  for (size_t i = 0; i < H; ++i) {
-    labels[i].lv.assign(n, 0), labels[i].m.assign(n, 0), labels[i].mk.assign(static_cast<size_t>(sh.T), 0.f);
-    if (hold_offset(hd.k[i]))
-      labels[i].nv.assign(n, 0);
-  }
+  for (size_t i = 0; i < H; ++i)
+    labels[i].assign(static_cast<size_t>(sh.T), A, hold_offset(hd.k[i]));
   costs.assign(C, std::vector<uint16_t>(kSides * n, 0)); // [side][n]
   constexpr uint16_t kInf = 0x7C00;
   std::vector<std::vector<uint8_t>> has_data(static_cast<size_t>(io.ex.threads()), std::vector<uint8_t>(A));
-  if (!have)
-    core.on_day.assign(static_cast<size_t>(sh.days), 0);
 
   const bool read = read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &, size_t d, size_t tid) {
-    if (!have) {
-      uint8_t *gate = core.gate.data() + d * VR * A;
-      gate_day(view, ts_i, cs_i, VR, A, has_data[tid], gate);
-      core.on_day[d] = gate_on(gate, VR * A);
-    }
+    if (!have)
+      gate_day(view, ts_i, cs_i, VR, A, has_data[tid], core.gate.data() + d * VR * A);
     for (size_t t = 0; t < VR; ++t) {
       const size_t row = (d * VR + t) * A;
       if (!have) {
@@ -490,7 +466,7 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
         const View w[2] = {view(lab_at[i], t), nom ? view(lab_at[i] + 1, t) : View{}};
         for (size_t a = 0; a < A; ++a)
           lab_cell(w, nom, a, g.gate[row + a], g.eo[row + a], labels[i], row + a);
-        labels[i].mk[d * VR + t] = factor::cpu::stat::pool_mkt(labels[i].lv.data() + row, labels[i].m.data() + row, static_cast<int>(A));
+        factor::cpu::stat::pool_row(labels[i], d * VR + t);
       }
       for (size_t c = 0; c < C; ++c)
         for (size_t s = 0; s < static_cast<size_t>(kSides); ++s) {
@@ -508,27 +484,10 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
   return read;
 }
 
-bool gate_days(const Io &io, const Chunk &k, std::vector<long long> &on_day) {
-  TraceN("FactorsGateDays");
-  const FeatureTable &ft = io.ft;
-  const Shape sh = shape_of(io, k);
-  const size_t A = static_cast<size_t>(sh.A), VR = static_cast<size_t>(ft.seg), nt = static_cast<size_t>(io.ex.threads());
-  ColList cols{io.dm.pool, {}};
-  const size_t ts_i = cols.add(ft.y.ts), cs_i = cols.add(ft.y.cs);
-  assert(cols.refs[ts_i].lib == io.dm.rs.main && "门控在标签库");
-  std::vector<std::vector<uint8_t>> has(nt, std::vector<uint8_t>(A)), gate(nt, std::vector<uint8_t>(VR * A));
-  on_day.assign(static_cast<size_t>(sh.days), 0);
-  return read_days(io, k, std::move(cols.refs), [&](const auto &view, const Day &, size_t d, size_t tid) {
-    gate_day(view, ts_i, cs_i, VR, A, has[tid], gate[tid].data());
-    on_day[d] = gate_on(gate[tid].data(), VR * A);
-  });
-}
-
 factor::stat::Labels labels_of(const YPlanes &y) {
   assert(y.hd.n > 0 && y.eo && "标签未钉");
   factor::stat::Labels out;
   out.hd = y.hd;
-  out.cap = y.n_full;
   for (int h = 0; h < y.hd.n; ++h) {
     assert(y.labels[h]);
     out.l[h] = label_of(*y.labels[h], y.eo, y.ry[h]);
@@ -644,7 +603,6 @@ void Store::room(double need, double reserve) {
 void Store::clear() {
   own();
   cache_.clear();
-  gate_day_.clear();
   if (exec_)
     exec_->clear();
   ++epoch_;
@@ -693,7 +651,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
       mr.push_back(i);
   }
   for (int i = 0; i < y.ad.n; ++i)
-    if (y.ad.k[i] != kAmtFixed && !hit<U16>(c, key('a', y.ad.k[i]), set_amt(i)))
+    if (ft.y.priced(y.ad.k[i]) && !hit<U16>(c, key('a', y.ad.k[i]), set_amt(i)))
       ma.k[ma.n++] = y.ad.k[i], ma_at.push_back(i);
   for (const LeafId id : s.x)
     if (!hit<Leaf>(c, key('x', id), set_leaf(id)))
@@ -732,36 +690,13 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   if (!mr.empty()) {
     const factor::stat::Span sp{sh.T, sh.A, factor::geo_of(sh.seg)};
     factor::cpu::stat::Workspace w;
-    w.ensure(sh.A, 1, ex.threads());
+    w.ensure(sh.A, ex.threads());
     for (const int i : mr) {
       U16 r(sh.n());
       factor::cpu::stat::prep_label(ex, label_of(*y.labels[i], y.eo, nullptr), sp, r.data(), w);
       land(c, key('r', y.hd.k[i]), std::move(r), n, set_rank(i));
     }
   }
-  // 满仓 n_full = 评估域全段 (含预热) 每行平均门控格数 / kGroups: 各日门控计数按 (库, 日) 留存, 本块的日先记, 缺日才补读全域门控
-  const Domain &dm = io.dm;
-  for (size_t d = k.d0; d < k.d1; ++d)
-    gate_day_[gate_key(ft, dm, dm.dates[d])] = core->on_day[d - k.d0];
-  const size_t nd = dm.days.size();
-  const auto missing = [&] {
-    for (const misc::Ymd d : dm.dates)
-      if (!gate_day_.contains(gate_key(ft, dm, d)))
-        return true;
-    return false;
-  };
-  if (missing()) {
-    std::vector<long long> on_day;
-    if (!gate_days(io, Chunk{0, 0, nd, nd}, on_day))
-      return end_io(false);
-    for (size_t d = 0; d < nd; ++d)
-      gate_day_[gate_key(ft, dm, dm.dates[d])] = on_day[d];
-  }
-  long long on = 0;
-  for (const misc::Ymd d : dm.dates)
-    on += gate_day_.at(gate_key(ft, dm, d));
-  y.n_full = static_cast<double>(on) / (static_cast<double>(nd) * sh.seg) / factor::stat::kGroups;
-  assert(y.n_full > 0.0 && "池内无有效资产");
   return Rc::Ok;
 }
 
@@ -815,7 +750,7 @@ Rc open_job(FactorFlow &F, const FactorScope &sc, Need n, Job &j) {
   j.bands = n.bands;
   const auto bud = [&] {
     Budget b = n.cell;
-    b.load += cell_bytes(j.spec, j.spec.x.size());
+    b.load += cell_bytes(*j.ft, j.spec, j.spec.x.size());
     b.fixed = n.fixed.at(dom_shape(j.dm, j.ft->seg));
     return b;
   };

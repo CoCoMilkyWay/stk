@@ -390,7 +390,6 @@ set(MATH_PRECISE
     gui/task_live/TaskLive.cpp
     gui/task_live/ui/TabBoard.cpp
     gui/task_live/ui/TabClient.cpp
-    gui/task_market/ui/CrossSectionAnalysis.cpp
     gui/task_market/ui/QuotesPanel.cpp
     gui/task_market/ui/TabAsset.cpp
     # gui: 因子契约头 (Contract.hpp: isfinite 入口/出口) / CTA 模型 (cta/: NaN = 未就绪) 的消费者; Tasks 经 EngineHub 建因子引擎

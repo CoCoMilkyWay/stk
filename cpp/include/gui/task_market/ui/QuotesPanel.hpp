@@ -19,8 +19,11 @@
 #pragma once
 
 #include "gui/quote/QuoteHub.hpp"
-#include "gui/util/Chart.hpp" // XZoom
+#include "gui/util/Chart.hpp"     // XZoom
+#include "gui/util/HoverSync.hpp" // line_at (成交点落线)
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -78,11 +81,33 @@ struct TradeDot {
   double x = 0, y = 0;
   const TradeMark *m = nullptr;
 };
+// t 的各档落到线上 (日内栏 / NAV 主图同一核): 档的日在日轴 days (升序) 第 k 日 → x = k · kSlots + 档中间;
+//   y = 线 (n 点, x 升序, pt(i) = 第 i 点; 横轴同 x) 在该处的值 (相邻点插值; 越过末点而同日 = 末点值); 首点前 / 落空 / 不可算 = 不画
+template <class Pt>
+std::vector<TradeDot> TradeDots(const Trades &t, std::span<const misc::Ymd> days, size_t n, const Pt &pt) {
+  std::vector<TradeDot> out;
+  if (n == 0)
+    return out;
+  const ImPlotPoint last = pt(n - 1);
+  for (const TradeMark &m : t.marks) {
+    const auto k = std::ranges::lower_bound(days, m.date);
+    if (k == days.end() || *k != m.date)
+      continue;
+    const size_t di = static_cast<size_t>(k - days.begin());
+    const double x = static_cast<double>(di * kSlots) + m.mid();
+    const double y = x > last.x && std::floor(last.x / kSlots) == static_cast<double>(di) ? last.y : line_at(n, x, pt);
+    if (std::isfinite(y))
+      out.push_back({x, y, &m});
+  }
+  return out;
+}
 // 当前图里画成交点: 日内栏 = 小三角, 净买红 ▲ / 净卖绿 ▼, 大小随买卖总额 (0 → dots 里最大, 按平方根);
 //   tiny (NAV 主图, 点密) = 定大的小圆点, 净买红 / 净卖绿; 返回鼠标近的一点 (图悬停且 kNearPx 内; 无 = nullptr)
 const TradeDot *PlotTradeDots(std::span<const TradeDot> dots, bool tiny);
 // 悬停提示里一档成交: 日 时段 · 买 / 卖合计, 再逐只
 void TradeTip(const TradeMark &m);
+// 悬停提示里账户线一点的读数 (NAV 主图 / 日内栏同一份): 复权净资产 / 复权回撤 (比 + 金额) / 真正回撤
+void EquityTip(const EquityPt &p);
 
 // 叠加的一条: 标的 + 线色 (ImU32) + 线名 + 线上叠的成交点 (日内栏一档) / 持仓 (只日内栏的账户线有, 其余空)
 struct OverlayPick {

@@ -28,18 +28,8 @@ namespace GUI::Market {
 
 namespace {
 
-// 横轴读数 (主图): x = 日下标 · kDayW + 槽 → YY/MM/DD, 只到日 (user_data = 日并集轴)
-int day_formatter(double v, char *buf, int size, void *ud) {
-  const auto &dates = *static_cast<const std::vector<misc::Ymd> *>(ud);
-  if (dates.empty() || v < 0)
-    return std::snprintf(buf, size, " ");
-  const misc::Ymd y = dates[std::min(static_cast<size_t>(v) / kDayW, dates.size() - 1)];
-  return std::snprintf(buf, size, "%02d/%02d/%02d", y / 10000 % 100, y / 100 % 100, y % 100);
-}
-// 横轴 = 日并集轴 (主图 / 区间条同一份): 日界 = 首根前半格 (前收点位所在)
-DayAxis day_axis(const std::vector<misc::Ymd> &dates) {
-  return {dates, static_cast<double>(kDayW), -0.5, {}, day_formatter, const_cast<std::vector<misc::Ymd> *>(&dates)};
-}
+// 主图横轴 = 日并集轴 (x = 日下标 · kDayW + 槽; 读数只到日): 日界 = 首根前半格 (前收点位所在)
+DayAxis day_axis(const std::vector<misc::Ymd> &dates) { return {dates, static_cast<double>(kDayW), -0.5}; }
 
 // 主图 y 恒贴合视野内进 fit 的线 (AutoFit | RangeFit), 上下各留跨度 × kFitMargin (log 轴按对数跨度)
 constexpr double kFitMargin = 0.2;
@@ -402,45 +392,20 @@ void acct_hover(const LinesDerived &d, const LinesView &v, size_t n_lim, bool cr
   }
   const int f0 = as.day(0);
   const std::string from = f0 >= 0 ? misc::dash(d.dates[static_cast<size_t>(f0)]) : misc::dash(d.dates[static_cast<size_t>(as.c.c->f)]) + " 前收";
-  const double adj = v.acct.scale * py, ahi = v.acct.adj_hi[i];
-  const double dd_pct = ahi > 0.0 ? adj / ahi - 1.0 : 0.0, dd_adj = adj - ahi;
-  const double dd_real = v.acct.pnl[i] - v.acct.pnl_hi[i];
-  const double seg_chg = py - 1.0, seg_pnl = v.acct.pnl[i] - v.acct.pnl[0];
+  const double seg_chg = py - 1.0, seg_pnl = v.acct[i].pnl - v.acct[0].pnl;
   ImGui::BeginTooltip();
   ImGui::TextUnformatted(when);
   ImGui::SameLine();
   ImGui::TextDisabled("起 %s", from.c_str());
-  ImGui::Text("复权净资产 %s", yuan_text(adj).c_str());
-  ImGui::SameLine();
-  ImGui::TextColored(tint(seg_chg, 0.0), "%+.2f%%", 100.0 * seg_chg);
-  ImGui::TextColored(dd_adj < -0.5 ? kDn : kFlat, "复权回撤 %.2f%% (%s)", 100.0 * dd_pct, yuan_text(dd_adj).c_str());
-  ImGui::TextColored(dd_real < -0.5 ? kDn : kFlat, "真正回撤 %s", yuan_text(dd_real).c_str());
-  ImGui::SameLine();
-  ImGui::TextDisabled("区间盈亏");
+  EquityTip(v.acct[i]);
+  ImGui::TextDisabled("区间");
   ImGui::SameLine(0, 4);
-  ImGui::TextColored(tint(seg_pnl, 0.0), "%s", yuan_text(seg_pnl, true).c_str());
+  ImGui::TextColored(tint(seg_chg, 0.0), "%+.2f%%", 100.0 * seg_chg);
+  ImGui::SameLine();
+  ImGui::TextDisabled("盈亏");
+  ImGui::SameLine(0, 4);
+  ImGui::TextColored(tint(seg_pnl, 0.0), "%s", money_text(seg_pnl, true).c_str());
   ImGui::EndTooltip();
-}
-
-// 账户线 s 上的成交点: 各档 (日在日轴里) 画在档的中间, 只取切片内的; y = 切片在该处的值 (相邻点插值)
-std::vector<TradeDot> nav_dots(const LinesDerived &d, const LinesSlice &s, const Quote::Trades &t) {
-  std::vector<TradeDot> out;
-  const size_t n = s.size();
-  if (n == 0)
-    return out;
-  const auto r = std::views::iota(size_t{0}, n);
-  for (const Quote::TradeMark &m : t.marks) {
-    const auto di = std::ranges::lower_bound(d.dates, m.date);
-    if (di == d.dates.end() || *di != m.date)
-      continue;
-    const double x = x_of(static_cast<size_t>(di - d.dates.begin()), m.mid());
-    if (x < s.x(0) || x > s.x(n - 1))
-      continue;
-    const size_t j = static_cast<size_t>(std::ranges::partition_point(r, [&](size_t k) { return s.x(k) < x; }) - r.begin());
-    const double y = j == 0 || s.x(j) == x ? s.y(j) : s.y(j - 1) + (s.y(j) - s.y(j - 1)) * (x - s.x(j - 1)) / (s.x(j) - s.x(j - 1));
-    out.push_back({x, y, &m});
-  }
-  return out;
 }
 
 // ---- NAV 主图: 画选中行的两条线, 按组表画层 (for_each_layer; 策略在最上层) + 图例矩阵 (最上层, nav_legend);
@@ -497,7 +462,7 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
   if (k >= 0) {
     const LinesRow &r = *on[static_cast<size_t>(k)].row;
     ui.hover.plot = r.id;
-    if (!hit_acct || !v.acct.ok())
+    if (!hit_acct || v.acct.empty())
       row_tip(r);
   }
   const std::optional<std::string> &hot = ui.hover.hot();
@@ -510,7 +475,7 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
     }
   bool on_dot = false;
   if (const auto a = std::ranges::find_if(on, [](const On &x) { return x.row->ref.is(Quote::kAccount); }); trades && a != on.end()) {
-    const std::vector<TradeDot> dots = nav_dots(d, *a->s, *trades);
+    const std::vector<TradeDot> dots = TradeDots(*trades, d.dates, a->s->size(), [&](size_t i) { return slice_pt(*a->s, i); });
     if (const TradeDot *dot = PlotTradeDots(dots, true); dot && !in_box) {
       on_dot = true;
       ImGui::BeginTooltip();
@@ -518,7 +483,7 @@ void plot_nav(LinesState &ui, const LinesDerived &d, const LinesView &v, PlotFra
       ImGui::EndTooltip();
     }
   }
-  if (v.acct.ok() && ImPlot::IsPlotHovered() && !in_box && !on_dot && (only_acct || hit_acct))
+  if (!v.acct.empty() && ImPlot::IsPlotHovered() && !in_box && !on_dot && (only_acct || hit_acct))
     acct_hover(d, v, hit_acct ? on[static_cast<size_t>(k)].s->size() : v.slice[kGroupAccount][0][kIdeal].size(), only_acct, ui.log_y);
   s_box = nav_legend(ui, rows);
 }
@@ -668,28 +633,6 @@ void wheel_x(LinesRange &rg) {
   rg.d0 = rg.d1 - std::clamp(m, 1, rg.d1);
 }
 
-// 一口 band 进 item lb (当前 y 轴): 色块 c ∈ [0, kBandQ]: 0 = 最下档以下 (到图底), kBandQ = 最上档以上 (到图顶), 其余 = 相邻两档之间 (下绿 → 上红; 填色不进 fit)
-// + kBandQ 条档线 (中位档加粗; 线宽 × hw)
-void plot_band(const char *lb, const LinesBand &bd, const double *bx, int bn, float hw) {
-  for (const auto &[i0, i1] : bd.segs) {
-    const int n = i1 - i0;
-    const double *x = bx + i0;
-    for (int c = 0; c <= kBandQ; ++c) {
-      ImPlot::SetNextFillStyle(band_col(static_cast<double>(c) / kBandQ, 1.0f), kBandFillA);
-      if (c == 0)
-        ImPlot::PlotShaded(lb, x, bd.y[0].data() + i0, n, -HUGE_VAL, ImPlotItemFlags_NoFit);
-      else if (c == kBandQ)
-        ImPlot::PlotShaded(lb, x, bd.y[kBandQ - 1].data() + i0, n, HUGE_VAL, ImPlotItemFlags_NoFit);
-      else
-        ImPlot::PlotShaded(lb, x, bd.y[c - 1].data() + i0, bd.y[c].data() + i0, n, ImPlotItemFlags_NoFit);
-    }
-  }
-  for (int j = 0; j < kBandQ; ++j) {
-    ImPlot::SetNextLineStyle(band_col((j + 0.5) / kBandQ, kBandLineA), (j == kBandQ / 2 ? 1.5f : 1.0f) * hw);
-    ImPlot::PlotLine(lb, bx, bd.y[j].data(), bn, ImPlotLineFlags_SkipNaN);
-  }
-}
-
 // ---- VAL 主图: 标的各口滚动 band (日末点; 填色 + kBandQ 条线共一个 item, 一键开关; 首次默认只开 BP)
 //      + 各口绝对估值等值线 (同口各档共一个 item, 首次默认关) + 标的理想线 (常显; 有分钟价则画到分钟) + 悬停等值线高亮 + 图例矩阵 (最上层) + 横向框选;
 //      标的日内形未到 (minute_wait) 整图不画, 到了一次画成;
@@ -704,7 +647,7 @@ void plot_val(LinesState &ui, LinesRange &rg, const LinesDerived &d, const Lines
     const std::string lbs = val_item(kLgBand, b);
     if (b != vs.show)
       ImPlot::HideNextItem(true, ImPlotCond_Once);
-    plot_band(lbs.c_str(), v.band[b], bx, bn, s_hl.at(b - vs.lo, kLgBand) ? kHiScale : 1.0f);
+    PlotBand(lbs.c_str(), v.band[b].lines, bx, s_hl.at(b - vs.lo, kLgBand) ? kHiScale : 1.0f);
   }
   // 等值线: 每档一条 (同一 item; 无档也登记)
   bool on[kPoolVals] = {};
@@ -776,7 +719,7 @@ void plot_margin(LinesState &ui, LinesRange &rg, const LinesDerived &d, const Li
     const float hw = s_hl.at(b - vs.lo, kLgBand) ? kHiScale : 1.0f;
     if (b != vs.show)
       ImPlot::HideNextItem(true, ImPlotCond_Once);
-    plot_band(lb, bd, bx, bn, hw);
+    PlotBand(lb, bd.lines, bx, hw);
     ImPlot::SetNextLineStyle(ink, 1.5f * hw);
     ImPlot::PlotLine(lb, bx, bd.ratio.data(), bn, ImPlotLineFlags_SkipNaN);
     if (!item(b)->Show)
@@ -801,6 +744,26 @@ void plot_margin(LinesState &ui, LinesRange &rg, const LinesDerived &d, const Li
 }
 
 } // namespace
+
+void PlotBand(const char *lb, const BandLines &bd, const double *x, float hw) {
+  for (const auto &[i0, i1] : bd.segs) {
+    const int n = i1 - i0;
+    const double *xs = x + i0;
+    for (int c = 0; c <= kBandQ; ++c) {
+      ImPlot::SetNextFillStyle(band_col(static_cast<double>(c) / kBandQ, 1.0f), kBandFillA);
+      if (c == 0)
+        ImPlot::PlotShaded(lb, xs, bd.y[0].data() + i0, n, -HUGE_VAL, ImPlotItemFlags_NoFit);
+      else if (c == kBandQ)
+        ImPlot::PlotShaded(lb, xs, bd.y[kBandQ - 1].data() + i0, n, HUGE_VAL, ImPlotItemFlags_NoFit);
+      else
+        ImPlot::PlotShaded(lb, xs, bd.y[c - 1].data() + i0, bd.y[c].data() + i0, n, ImPlotItemFlags_NoFit);
+    }
+  }
+  for (int j = 0; j < kBandQ; ++j) {
+    ImPlot::SetNextLineStyle(band_col((j + 0.5) / kBandQ, kBandLineA), (j == kBandQ / 2 ? 1.5f : 1.0f) * hw);
+    ImPlot::PlotLine(lb, x, bd.y[j].data(), static_cast<int>(bd.size()), ImPlotLineFlags_SkipNaN);
+  }
+}
 
 LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates) {
   const int D = static_cast<int>(dates.size());
@@ -893,29 +856,13 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
 void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size) {
   const LinesDerived &d = ui.der.val;
   const bool nav = page == kPageNav;
-  const int D = static_cast<int>(d.dates.size());
-  push_range_style();
-  if (!ImPlot::BeginPlot("##pf_range", size,
-                         ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText)) {
-    ImPlot::PopStyleVar();
-    return;
-  }
-  ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoTickLabels, ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_AutoFit);
-  if (D > 0)
-    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, x_of(d.dates.size(), kOpen), ImPlotCond_Always);
-  DayAxis ax = day_axis(d.dates);
-  setup_day_axis(ax);
-  if (ui.log_y)
-    ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
   const Line none;
   const Line &rc = nav ? *d.rows[kGroupStrat][0].line[kTrade] : pin.g >= 0 ? *d.row(pin).line[kIdeal]
                                                                            : none;
-  ImPlot::SetNextLineStyle(nav || pin.g < 0 ? kStratCol : row_color(d, pin, kTrade), 1.0f);
-  ImPlot::PlotLineG("##pf_range_line", day_end_pt, const_cast<Line *>(&rc), static_cast<int>(rc.e.size()));
-  x_ticks_inside();
-  range_bar(ui.range[page], d.dates, static_cast<double>(kDayW));
-  ImPlot::EndPlot();
-  ImPlot::PopStyleVar();
+  range_plot("##pf_range", ui.range[page], d.dates, static_cast<double>(kDayW), size, ui.log_y, [&] {
+    ImPlot::SetNextLineStyle(nav || pin.g < 0 ? kStratCol : row_color(d, pin, kTrade), 1.0f);
+    ImPlot::PlotLineG("##pf_range_line", day_end_pt, const_cast<Line *>(&rc), static_cast<int>(rc.e.size()));
+  });
 }
 
 } // namespace GUI::Market

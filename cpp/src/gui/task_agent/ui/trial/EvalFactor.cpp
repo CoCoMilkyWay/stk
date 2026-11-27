@@ -23,12 +23,12 @@ using namespace ui;
 
 namespace {
 
-constexpr float kSweepH = 200.0f;                                                       // 窗目标线图的高
-constexpr float kCumH = 150.0f;                                                         // 累计 rIC 图的高
-constexpr float kLayersH = 300.0f;                                                      // 分层图的高
-constexpr float kLineA = 0.55f;                                                         // 非悬停线的不透明度
-constexpr float kBestW = 2.0f;                                                          // score 最高的点 (= 写进的权重) 线宽
-constexpr const char *kLineName = factor::stat::kMonoTarget ? "窗 mono" : "窗中位 rIC"; // 窗目标线 (Stat/Roll.hpp roll_of line)
+constexpr float kSweepH = 200.0f;            // 窗目标线图的高
+constexpr float kCumH = 150.0f;              // 累计 rIC 图的高
+constexpr float kLayersH = 300.0f;           // 分层图的高
+constexpr float kLineA = 0.55f;              // 非悬停线的不透明度
+constexpr float kBestW = 2.0f;               // score 最高的点 (= 写进的权重) 线宽
+constexpr const char *kLineName = "窗 mono"; // 窗 mono 线 (Stat/Roll.hpp roll_of wins)
 
 int date_fmt(double v, char *buf, int size, void *ud) {
   const std::vector<int> &ds = *static_cast<const std::vector<int> *>(ud);

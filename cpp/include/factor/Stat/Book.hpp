@@ -5,16 +5,15 @@
 // =============================================================================
 //   一本做多账 = 成员判据 (Pos.hpp) × 目标权 × 满仓; 一行一持有期的若干本 = 账集 (使用方唯一要写的, 鸭子类型):
 //     size()           本数 B
-//     cap(b)           本 b 的满仓权 (0 = 按真持有权和归一)
+//     cap(t, b)        块内行 t 本 b 的满仓权 (0 = 按真持有权和归一)
 //     each(t, a, put)  块内行 t 格 a 所属的本 (本号升序): put(b0, w, in) — 目标权原值 w, in 已偏到本格; 层级 l ≤ held 落本 b0 + l
 //   格位 Slot = 资产 a 在本 b 里的一格: 本批 cur (r = 本批收益, 续持口径) ⇄ 前一批 pre (只交接时; r = 到交接点的名义收益)
 //   目标权 w̄ = w / max(Σ_b w, cap_b); 前一批漂移到交接点 w̃ = w̄' (1 + r') / V', V' = 1 + Σ w̄' r'; Δ = w̄ − w̃ 逐格:
 //     Δ⁺ 买 (本格不可买 → 加不了仓, 记 0) ⇄ Δ⁻ 卖; 本批平仓不与下一批交接 (settle) → 建仓时一并记整批平仓 w̄ (1 + r) / V (随价漂移)
-//   本批收益 ret[b] = Σ w̄ r (实现于 Hold::exit 行). 流水 Flow 两侧: 成交量 vol + 付固定冲击的不可成交量 stuck (各金额段同一份)
-//     + 各盘口段的真实冲击 imp (量 × 本格该侧冲击, 封顶 top). 交接点价点不可卖 (封跌停) 的卖出量记 stuck;
-//     整批平仓恒在撮合价点 (define/Label.hpp 协议表 2): 盘口冲击 0
-//   费率在 Flow::cost 现乘 (define/Fee.hpp 唯一一式): 固定段 = 全量付固定冲击, 盘口段 a = imp[a] + stuck 付固定冲击; 两侧另付税佣
-//   派生量 (三级 HoldStat × 流水): 每期成本 / 净多空 / 年换手, 费率与金额段现选.
+//   本批收益 ret[b] = Σ w̄ r (实现于 Hold::exit 行). 流水 TurnFlow (define/Fee.hpp) 两侧: 成交量 vol + 卖不出的量 stuck (各金额段同一份)
+//     + 各盘口段的真实冲击 imp (量 × 该价点该侧冲击, 封顶 top). 交接点在本行价点; 整批平仓在平仓价点 (define/Label.hpp 协议表 2):
+//     E (Hold::exit_e) 取平仓行的卖出冲击 (卖不出记 stuck), 撮合价冲击 0
+//   费率在 Fee::parts 现乘 (define/Fee.hpp 唯一一式). 派生量 (三级 HoldStat × 流水): 每期成本 / 净多空 / 年换手, 费率与金额段现选.
 //   宿主专用 (换手不上设备). 出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
 
@@ -27,14 +26,11 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
-#include <span>
 #include <vector>
 
 namespace factor::stat {
 
-inline constexpr int kLobAmts = kAmtCount - 1; // 盘口段数 (AmtId a ≥ 1 ↔ 下标 a − 1)
-
-// 块内的盘口段冲击: imp[a − 1][侧] = [T][A] 平面 (原值 fp16 位, 池内盘口缺 = +inf); 未装的段为空. 封顶 top
+// 块内的盘口段冲击: imp[a − 1][侧] = [T][A] 平面 (原值 fp16 位, 池内盘口缺 = +inf); 未装 / 无平面 (日层) 的段为空 = 冲击 0. 封顶 top
 struct Cost {
   const uint16_t *imp[kLobAmts][kSides] = {};
   float top = 0.f;
@@ -45,29 +41,12 @@ struct Cost {
         p = p ? p + i : nullptr;
     return c;
   }
+  double of(int k, int s, uint32_t a) const { return std::min(static_cast<double>(cpu::stat::h2f(imp[k][s][a])), static_cast<double>(top)); }
 };
 
-// 一本账两侧的流水和 (沿行求和; 可合并)
-struct Flow {
-  double vol[kSides] = {}, stuck[kSides] = {}, imp[kLobAmts][kSides] = {};
-  void merge(const Flow &o) {
-    for (int s = 0; s < kSides; ++s) {
-      vol[s] += o.vol[s], stuck[s] += o.stuck[s];
-      for (int k = 0; k < kLobAmts; ++k)
-        imp[k][s] += o.imp[k][s];
-    }
-  }
-  // 金额段 a 一侧的真实冲击和 / 付固定冲击的量
-  double imp_of(AmtId a, int s) const { return a == kAmtFixed ? 0.0 : imp[a - 1][s]; }
-  double fix_of(AmtId a, int s) const { return a == kAmtFixed ? vol[s] : stuck[s]; }
-  // 金额段 a 一侧的成本 (含税佣) / 两侧合计 / 一侧平均费率 (显示)
-  double paid(AmtId a, int s, const Fee &f) const { return f.cost(imp_of(a, s), fix_of(a, s), s == kBuy ? vol[s] : 0.0, s == kSell ? vol[s] : 0.0); }
-  double cost(AmtId a, const Fee &f) const { return paid(a, kBuy, f) + paid(a, kSell, f); }
-  double rate(AmtId a, int s, const Fee &f) const { return vol[s] > 0.0 ? paid(a, s, f) / vol[s] : 0.0; }
-};
 // 多空两端各一本 (下标 = End)
 struct Ends {
-  Flow e[kEnds];
+  TurnFlow e[kEnds];
   void merge(const Ends &o) {
     for (int k = 0; k < kEnds; ++k)
       e[k].merge(o.e[k]);
@@ -81,8 +60,8 @@ struct Slot {
 };
 // 每线程的行工作区 (跨行复用)
 struct Work {
-  std::vector<double> W, PW, V, PV; // [B] 本批 / 前一批的目标权和与资金 (1 + Σ w̄ r)
-  std::vector<Slot> cur, pre;       // 一行的两列格位
+  std::vector<double> W, PW, V, PV, cap; // [B] 本批 / 前一批的目标权和与资金 (1 + Σ w̄ r) / 本行满仓
+  std::vector<Slot> cur, pre;            // 一行的两列格位
 };
 
 // 行 c.t 的两列格位 (各按 (a, b) 升序): lb = 块首的标签视图
@@ -112,15 +91,26 @@ inline void book_slots(const Bk &bk, const Chain &c, const Label &lb, Work &w) {
   (void)key;
 }
 
-// 一行: 两列格位 → ret[b] += 本批收益, out[b] += 两侧流水. settle = 本批平仓不与下一批交接; eo / c 已偏到行首; cap[b] = 本 b 满仓权
-inline void turn_row(Work &w, bool settle, const uint8_t *eo, const Cost &c, std::span<const double> cap, double *ret, Flow *out) {
-  const size_t B = cap.size();
+// 价点 (eo / c 已偏到其行首) 上卖出 v: 可卖 → 各盘口段冲击; 卖不出 → stuck
+inline void sell_at(TurnFlow &o, double v, const uint8_t *eo, const Cost &c, uint32_t a) {
+  if (!(eo[a] & kEoSell)) {
+    o.stuck += v;
+    return;
+  }
+  for (int k = 0; k < kLobAmts; ++k)
+    if (c.imp[k][kSell])
+      o.imp[k][kSell] += v * c.of(k, kSell, a);
+}
+
+// 一行: 两列格位 → ret[b] += 本批收益, out[b] += 两侧流水. eo / c = 本行价点 (交接 / 建仓); xe / xc = 整批平仓的 E 价点 (平仓行; 不平仓或撮合价 → xe 空)
+inline void turn_row(Work &w, const uint8_t *eo, const Cost &c, const uint8_t *xe, const Cost &xc, bool settle, double *ret, TurnFlow *out) {
+  const size_t B = w.cap.size();
   w.W.assign(B, 0.0), w.PW.assign(B, 0.0), w.V.assign(B, 1.0), w.PV.assign(B, 1.0);
   for (const Slot &s : w.cur)
     w.W[s.b] += s.w;
   for (const Slot &s : w.pre)
     w.PW[s.b] += s.w;
-  const auto wt = [&](const Slot &s, const std::vector<double> &W) { return s.w / book_den(W[s.b], cap[s.b]); };
+  const auto wt = [&](const Slot &s, const std::vector<double> &W) { return s.w / book_den(W[s.b], w.cap[s.b]); };
   for (const Slot &s : w.cur) {
     const double x = wt(s, w.W) * s.r;
     w.V[s.b] += x, ret[s.b] += x;
@@ -128,68 +118,69 @@ inline void turn_row(Work &w, bool settle, const uint8_t *eo, const Cost &c, std
   for (const Slot &s : w.pre)
     w.PV[s.b] += wt(s, w.PW) * s.r;
   const auto key = [](const Slot &s) { return static_cast<uint64_t>(s.a) << 32 | s.b; };
-  const auto imp = [&](int k, int sd, uint32_t a) { return static_cast<double>(std::min(cpu::stat::h2f(c.imp[k][sd][a]), c.top)); };
   for (size_t i = 0, j = 0; i < w.cur.size() || j < w.pre.size();) {
     const bool has_c = i < w.cur.size() && (j == w.pre.size() || key(w.cur[i]) <= key(w.pre[j]));
     const bool has_p = j < w.pre.size() && (i == w.cur.size() || key(w.pre[j]) <= key(w.cur[i]));
     const Slot &s = has_c ? w.cur[i] : w.pre[j];
     const double x = has_c ? wt(s, w.W) : 0.0, px = has_p ? wt(w.pre[j], w.PW) * (1.0 + w.pre[j].r) / w.PV[s.b] : 0.0;
     const double d = x - px;
-    Flow &o = out[s.b];
+    TurnFlow &o = out[s.b];
     if (d > 0.0 && (eo[s.a] & kEoBuy)) {
       o.vol[kBuy] += d;
       for (int k = 0; k < kLobAmts; ++k)
         if (c.imp[k][kBuy])
-          o.imp[k][kBuy] += d * imp(k, kBuy, s.a);
+          o.imp[k][kBuy] += d * c.of(k, kBuy, s.a);
     } else if (d < 0.0) {
       o.vol[kSell] -= d;
-      if (!(eo[s.a] & kEoSell))
-        o.stuck[kSell] -= d;
-      else
-        for (int k = 0; k < kLobAmts; ++k)
-          if (c.imp[k][kSell])
-            o.imp[k][kSell] -= d * imp(k, kSell, s.a);
+      sell_at(o, -d, eo, c, s.a);
     }
-    if (settle && has_c)
-      o.vol[kSell] += x * (1.0 + s.r) / w.V[s.b];
+    if (settle && has_c) {
+      const double v = x * (1.0 + s.r) / w.V[s.b];
+      o.vol[kSell] += v;
+      if (xe)
+        sell_at(o, v, xe, xc, s.a);
+    }
     i += has_c, j += has_p;
   }
 }
 
 // 账集一趟: 统计行 [t_lo, t_hi) 的开仓行 (Hold::opens) 逐行 book_slots + turn_row → sink(tid, t, ret[B], flow[B]) (线程内, 行不相交).
-//   lb = 块首的标签视图 (一个持有期 hd); c = 块首的盘口段 (只付固定冲击 = Cost{})
+//   lb = 块首的标签视图 (一个持有期 hd); c = 块首的盘口段 (只付固定冲击 = Cost{}); 整批平仓的 E 价点在后带内 (平仓行 < T)
 template <class Exec, class Bk, class Sink>
 inline void book_rows(Exec &ex, const Span &s, const Hold &hd, const Label &lb, const Bk &bk, const Cost &c, Sink &&sink) {
   const size_t B = bk.size();
-  std::vector<double> cap(B);
-  for (size_t b = 0; b < B; ++b)
-    cap[b] = bk.cap(b);
   ex.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int tid) {
     Work w;
+    w.cap.resize(B);
     std::vector<double> ret(B);
-    std::vector<Flow> flow(B);
+    std::vector<TurnFlow> flow(B);
     for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t) {
       if (!hd.opens(t))
         continue;
       const size_t row = static_cast<size_t>(t) * s.A;
       book_slots(bk, chain_of(t, s, hd), lb, w);
+      for (size_t b = 0; b < B; ++b)
+        w.cap[b] = bk.cap(t, b);
       std::fill(ret.begin(), ret.end(), 0.0);
-      std::fill(flow.begin(), flow.end(), Flow{});
-      turn_row(w, !hd.nets(t + hd.h), lb.eo + row, c.at(row), cap, ret.data(), flow.data());
+      std::fill(flow.begin(), flow.end(), TurnFlow{});
+      const bool settle = !hd.nets(t + hd.h), at_e = settle && hd.exit_e(t);
+      const size_t xrow = at_e ? static_cast<size_t>(hd.exit(t)) * s.A : row;
+      assert((!at_e || hd.exit(t) < s.T) && "整批平仓的 E 价点须在块内 (后带 ≥ hold_reach)");
+      turn_row(w, lb.eo + row, c.at(row), at_e ? lb.eo + xrow : nullptr, c.at(xrow), settle, ret.data(), flow.data());
       sink(tid, t, ret.data(), flow.data());
     }
   });
 }
 
 // ---- 常用账集 ----
-// 因子两端 × 层级 (本号 b = e · kLevels + l): rx = 块首的已定向 r16, 满仓 = n_full · level_frac(l)
+// 因子两端 × 层级 (本号 b = e · kLevels + l): rx = 块首的已定向 r16, cap = 块首的逐行满仓 (Label::cap), 层级满仓 = cap · level_frac(l)
 inline constexpr int kFactorBooks = kEnds * kLevels;
 struct FactorBooks {
   const uint16_t *rx = nullptr;
   int A = 0;
-  double n_full = 0.0;
+  const float *cap_ = nullptr;
   size_t size() const { return kFactorBooks; }
-  double cap(size_t b) const { return n_full * level_frac(static_cast<int>(b % kLevels)); }
+  double cap(int t, size_t b) const { return static_cast<double>(cap_[t]) * level_frac(static_cast<int>(b % kLevels)); }
   template <class Put>
   void each(int t, uint32_t a, Put &&put) const {
     const size_t i = static_cast<size_t>(t) * A + a;
@@ -206,7 +197,7 @@ struct MaskBook {
   const uint8_t *m = nullptr;
   int A = 0;
   size_t size() const { return 1; }
-  double cap(size_t) const { return 0.0; }
+  double cap(int, size_t) const { return 0.0; }
   template <class Put>
   void each(int t, uint32_t a, Put &&put) const {
     const size_t i = static_cast<size_t>(t) * A + a;
@@ -217,14 +208,14 @@ struct MaskBook {
 
 // ---- 派生量 (三级 HoldStat × 账集流水; 金额段与费率现选) ----
 // 一本的每期成本 (与 ls_period 同分母 n_all)
-inline double cost_period(const HoldStat &s, const Flow &f, AmtId a, const Fee &fee) { return s.n_all > 0 ? f.cost(a, fee) / static_cast<double>(s.n_all) : 0.0; }
+inline double cost_period(const HoldStat &s, const TurnFlow &f, AmtId a, const Fee &fee) { return s.n_all > 0 ? fee.cost(f, a) / static_cast<double>(s.n_all) : 0.0; }
 // 每期净多空 = ls_period − 两端每期成本的平均; 年化 = × span_per_year
 inline double net_ls_period(const HoldStat &s, const Ends &c, AmtId a, const Fee &f) {
   return ls_period(s) - 0.5 * (cost_period(s, c.e[kTop], a, f) + cost_period(s, c.e[kBot], a, f));
 }
 inline double net_ls(const HoldStat &s, const Ends &c, AmtId a, const Fee &f) { return net_ls_period(s, c, a, f) * span_per_year(s); }
 // 年化换手 (倍/年, 单边, 每本资金 1) = Σ Δ⁺ / n_all × span_per_year; 两端 = 两端均
-inline double turn_annual(const HoldStat &s, const Flow &f) { return s.n_all > 0 ? f.vol[kBuy] / static_cast<double>(s.n_all) * span_per_year(s) : 0.0; }
+inline double turn_annual(const HoldStat &s, const TurnFlow &f) { return s.n_all > 0 ? f.vol[kBuy] / static_cast<double>(s.n_all) * span_per_year(s) : 0.0; }
 inline double turn_annual(const HoldStat &s, const Ends &c) { return 0.5 * (turn_annual(s, c.e[kTop]) + turn_annual(s, c.e[kBot])); }
 
 } // namespace factor::stat

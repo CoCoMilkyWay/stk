@@ -273,12 +273,11 @@ void SavePick(const LinesPick &pick); // 原子替换
 
 // GUI 线程每帧: 首次读自选文件 (有自选 → 各页右表类别条先选自选)
 void SyncLinesWatch(LinesState &ui);
-// 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); mk = 行情 (本帧已 frame; nullptr = AssetInfo 未建, 日内栏 / 指数行业近况 / 成分行当日空着;
+// 行情页 page (LinesPage). pf = 当前组合 (名 / 解析结果); fee = 费率 (冲击 + 税佣; 账的可成交线 / CTA 成本同一份); mk = 行情 (本帧已 frame; nullptr = AssetInfo 未建, 日内栏 / 指数行业近况 / 成分行当日空着;
 // 本页要的个股全历史 / 分钟价登记给它); infos = 基本面档案 (成分行名 / 估值); cta = CTA 页的服务 (算 mk 价格库发布的分钟价, mk 空时同空);
 // account / hold = 账户行的悬停 / 持仓 (成分 + 当日四列; 账户的全史 / 当日走 mk); trades = 账户成交点两档 (「交易」开时叠在日内栏 / 主图的账户线上).
 // 返回值: 1 = Recompute (弃缓存重算), -1 = Cancel, 0 = 无
-int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, const Fee &fee,
-                   const Fee &rates, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
+int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const PortfolioUIState &pf, LinesState &ui, const Fee &fee, Quote::QuoteHub *mk, const StockInfos &infos, const std::string &account,
                    const std::shared_ptr<const Quote::Holdings> &hold, const Quote::TradeBins &trades);
 
 } // namespace GUI::Market

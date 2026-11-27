@@ -107,7 +107,7 @@ struct Weight {
   int sign = 1;
   int hold_src = -1;             // HoldId; −1 = 手填
   bool has = false;              // 有该持有期的统计且有滚动窗
-  double score = 0.0;            // 中位窗目标 (滚动窗 = 评估期 / kRollParts; factor/Stat/Roll.hpp kTarget)
+  double score = 0.0;            // 中位窗 mono (滚动窗 = 评估期 / kRollParts; factor/Stat/Roll.hpp)
   double ric = 0.0;              // rIC (评估期 ok 行均值)
   double mono = 0.0;             // 全期 mono (20 组整期均值对组号的 Spearman)
   double lng = 0.0, sht = 0.0;   // 每期毛多 / 毛空 (超额; 做多端 G20 / 做空端 −G1; 毛多空 = 两者之半)
@@ -193,7 +193,7 @@ struct Gate {
   bool operator==(const Gate &) const = default;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Gate, min)
-inline double gate_of(const Weight &w) { return factor::stat::kMonoTarget ? w.mono : w.score; } // 一个权重的门槛量
+inline double gate_of(const Weight &w) { return w.mono; } // 一个权重的门槛量
 std::string GateMiss(const Gate &g, const Result &r);
 
 struct Cand {

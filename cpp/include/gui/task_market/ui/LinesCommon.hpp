@@ -90,10 +90,13 @@ struct PageDef {
   PageLayout layout;      // 左栏布局
   SpanId span;            // 区间默认档 (日轴变 / Clear 回它; 不看页区间的页 = 全段)
   OverlayKind overlay;    // 叠加图: kLayoutPlot = 日内栏, kLayoutOverlay = 整张
-  bool log, folio;        // 头: log 开关 / 组合 (名 + 失效 / 失败条目)
+  bool folio;             // 头: 组合 (名 + 失效 / 失败条目)
   PageWork work, rest;    // Tab 状态: work 在忙 → 它, 否则 rest; 页发 work 的请求
   ValSetId vals;          // 估值口集: kLayoutPlot 页有 = 主图画标的 + 该集 band, 无 = NAV 资金曲线
-  bool weigh;             // 右表名列后一列权重钮 (篮子行 等 / 加, 默认 = 篮子自己的; 点 = 该行估值 / 两融换另一种权重, ui.flip)
+  // 头的 log 开关 = 有主图的页
+  constexpr bool log() const { return layout == kLayoutPlot; }
+  // 右表名列后一列权重钮 = 有估值口集的页 (篮子行 等 / 加, 默认 = 篮子自己的; 点 = 该行估值 / 两融换另一种权重, ui.flip)
+  constexpr bool weigh() const { return vals != kSetNone; }
 };
 inline constexpr PageDef kPageDefs[kPages] = {
     {"NAV",
@@ -146,11 +149,9 @@ inline constexpr PageDef kPageDefs[kPages] = {
      kSpanMonth,
      kOverlayIntra,
      true,
-     true,
      kWorkPrice,
      kWorkPortfolio,
-     kSetNone,
-     false},
+     kSetNone},
     {"VAL",
      "VAL = 估值 (Valuation)\n"
      "• 右侧单选一个池 / 申万一级行业 / 概念 / 自选 / 成分股 (▸ 展开行): 主图 = 它的指数 (成分股 = 后复权收盘) + 估值 Band\n"
@@ -194,12 +195,10 @@ inline constexpr PageDef kPageDefs[kPages] = {
      kLayoutPlot,
      kSpanDecade,
      kOverlayNone,
-     true,
      false,
      kWorkPrice,
      kWorkPortfolio,
-     kSetVal,
-     true},
+     kSetVal},
     {"MARGIN",
      "MARGIN = 两融 (Margin Trading)\n"
      "• 右侧单选一个池 / 申万一级行业 / 概念 / 自选 / 成分股 (▸ 展开行; 与 VAL / CTA 同一份选中)\n"
@@ -231,12 +230,10 @@ inline constexpr PageDef kPageDefs[kPages] = {
      kLayoutPlot,
      kSpanDecade,
      kOverlayNone,
-     true,
      false,
      kWorkPrice,
      kWorkPortfolio,
-     kSetMargin,
-     true},
+     kSetMargin},
     {"FLOW",
      "FLOW = 资金流 (Money Flow): 指数 / 行业 / 概念 / 自选的日内净流入, 当日随新浪快照实时动\n"
      "• 净流入 = Σ 成分 Σ 分钟 ± 该分钟额 (分钟涨跌法): 收 > 上一分钟收 (首分钟对昨收) 记 +, < 记 −, 平随上一分钟; 成分之和不加权, 分不出大单\n"
@@ -268,11 +265,9 @@ inline constexpr PageDef kPageDefs[kPages] = {
      kSpanAll,
      kOverlayFlow,
      false,
-     false,
      kWorkPortfolio,
      kWorkPortfolio,
-     kSetNone,
-     false},
+     kSetNone},
     {"CTA",
      "CTA = 单标的 band + 减仓 + 跟随 分层择时 (方向 long / short)\n"
      "• 右侧单选一个指数 / 行业 / 概念 / 自选 / 成分股 (与 VAL 同一份选中), 回测它的 1 分钟价\n"
@@ -303,11 +298,9 @@ inline constexpr PageDef kPageDefs[kPages] = {
      kSpanAll,
      kOverlayNone,
      false,
-     false,
      kWorkCta,
      kWorkCta,
-     kSetNone,
-     false},
+     kSetNone},
 };
 
 // 线 ID 后缀 [PairLine]: 线的 ImGui ID = 行 id + 后缀 (主图例显隐 / 行刚选中回默认显隐同一份)
@@ -333,20 +326,8 @@ inline ImVec4 row_color(const LinesDerived &d, int g, size_t r, int l) {
 }
 inline ImVec4 row_color(const LinesDerived &d, const LinesAt &a, int l) { return row_color(d, a.g, a.r, l); }
 
-// 金额 y [亿元] 的显示 (右表 / MARGIN 主图例同一份): ≥ 1 万亿按万亿, 其余按亿 (越大小数越少); 带符号 sign
-inline std::string yi_text(double y, bool sign = false) {
-  const double a = std::abs(y);
-  char s[32];
-  const char *pm = !sign ? "" : y < 0 ? "-"
-                                      : "+";
-  if (a >= 1e4)
-    std::snprintf(s, sizeof(s), a >= 1e6 ? "%s%.0f万亿" : "%s%.1f万亿", pm, a / 1e4);
-  else
-    std::snprintf(s, sizeof(s), a >= 10 ? "%s%.0f亿" : a >= 1 ? "%s%.1f亿"
-                                                              : "%s%.2f亿",
-                  pm, a);
-  return s;
-}
+// 金额 y [亿元] 的显示 (右表 / MARGIN 主图例: 篮子账 / 普查 / 当日的金额以亿元计): 同 money_text
+inline std::string yi_text(double y, bool sign = false) { return money_text(1e8 * y, sign); }
 
 // 页 page 的行选中 (按页表的选中方式; NAV / FLOW 同一份)
 inline bool picked(const LinesState &ui, int page, const LinesRow &r) { return ui.pick.rows[kPageDefs[page].pick].contains(r.id); }
@@ -559,11 +540,13 @@ LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates);
 void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size, const Quote::Trades *trades);
 // 页 page 的区间条 (size): 全段策略线 (NAV) / VAL · MARGIN 标的理想线上拖选 ui.range[page]
 void RenderLinesRange(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size);
+// 一口 band 进 item lb (当前图当前 y 轴; x = 各点横坐标, 同 bd 点数): 色块 c ∈ [0, kBandQ]: 0 = 最下档以下 (到图底), kBandQ = 最上档以上 (到图顶),
+// 其余 = 相邻两档之间 (下绿 → 上红; 填色不进 fit) + kBandQ 条档线 (中位档加粗; 线宽 × hw). VAL / MARGIN 主图 / CTA 价格图同一画法
+void PlotBand(const char *lb, const BandLines &bd, const double *x, float hw = 1.0f);
 
 // ---- CTA 页 (LinesCta.cpp) ----
-// 标的 (kPickOne) / 设定 / 成本率 (系统配置) 变 → 发请求; 画两图 + 区间条 (plots_size) + 其右中栏 (宽 panel_w, 同高: 设定 + 光标处参数 + 指标); name = 标的行名 (nullptr = 未选)
-void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, const Fee &rates, const char *name, const ImVec2 &plots_size,
-                    float panel_w);
+// 标的 pin (kPickOne 那一行) / 设定 / 费率 (系统配置) 变 → 发请求; 画三图 + 区间条 (plots_size) + 其右中栏 (宽 panel_w, 同高: 设定 + 光标处参数 + 指标)
+void RenderLinesCta(CtaService &svc, const Quote::QuoteHub &mk, LinesState &ui, const Fee &fee, const LinesAt &pin, const ImVec2 &plots_size, float panel_w);
 
 // ---- 右表 (LinesSheet.cpp) ----
 // 页 page 的右图例 (各页同一条, 按页表): 类别条 + 页件 + 表 (名 + 页的段); mk = 行情 (资金流段的日轴; nullptr = 未起); infos = 成分行的近况 / 当日

@@ -196,7 +196,7 @@ public:
     std::vector<factor::check::Arena>().swap(sc_);
     std::vector<const factor::check::Plane *>().swap(in_);
     std::vector<uint16_t>().swap(rx_);
-    std::vector<factor::stat::Day>().swap(day_);
+    std::vector<factor::stat::Sum>().swap(day_);
   }
   void release() {
     drop();
@@ -204,7 +204,7 @@ public:
   }
   double host_bytes() const {
     double b = static_cast<double>(hp_.bytes()) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) +
-               static_cast<double>(day_.capacity()) * sizeof(factor::stat::Day);
+               static_cast<double>(day_.capacity()) * sizeof(factor::stat::Sum);
     for (const factor::check::Arena &a : sc_)
       b += static_cast<double>(a.buf.capacity());
     return b;
@@ -232,10 +232,10 @@ private:
   template <class Ps>
   factor::cpu::stat::Workspace *work() {
     const YPlanes &y = block().y;
-    w_.ensure(y.sh.A, y.hd.n, ex_.threads());
+    w_.ensure(y.sh.A, ex_.threads());
     return &w_;
   }
-  // 一个根平面的 Stat (rx_ / day_ / w_ 常驻复用; 探针组 p 即行 sink): → 已定向的 rx_ (块形), acc_[H], 逐日 day_[H][D]
+  // 一个根平面的 Stat (rx_ / day_ / w_ 常驻复用; 探针组 p 即行 sink): → 已定向的 rx_ (块形), 逐日 day_[H][D]
   template <class Ps>
   RootView view(const Forest &F, int k, int, const Ctx &cx, uint8_t need, Ps &p) {
     const int i = F.d.roots[static_cast<size_t>(k)];
@@ -243,9 +243,8 @@ private:
     const factor::check::Plane *rp = plane(i);
     rx_.resize(s.n());
     day_.resize(static_cast<size_t>(cx.L.hd.n) * s.days());
-    factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, cx.m, s, cx.L, rx_.data(), w_, acc_, day_.data(), p);
+    factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, cx.m, s, cx.L, rx_.data(), w_, day_.data(), p);
     RootView v;
-    v.acc = acc_;
     v.day = day_.data();
     v.x = {(need & kNeedX) != 0 ? rp->v.data() : nullptr, (need & kNeedMask) != 0 ? rp->m.data() : nullptr};
     v.rx = (need & kNeedRx) != 0 ? rx_.data() : nullptr;
@@ -261,8 +260,7 @@ private:
   std::vector<factor::check::Arena> sc_;
   factor::cpu::stat::Workspace w_;
   std::vector<uint16_t> rx_;
-  std::vector<factor::stat::Day> day_; // [H][D]
-  factor::stat::Accum acc_[kHoldCount];
+  std::vector<factor::stat::Sum> day_; // [H][D]
 };
 
 template <>
@@ -313,8 +311,7 @@ public:
   }
   void drop() {
     w_ = factor::cpu::stat::Workspace{};
-    std::vector<factor::stat::Accum>().swap(acc_);
-    std::vector<factor::stat::Day>().swap(day_);
+    std::vector<factor::stat::Sum>().swap(day_);
     std::vector<factor::stat::Row>().swap(rows_);
     std::vector<uint16_t>().swap(rx_);
     std::vector<float>().swap(xv_);
@@ -330,8 +327,7 @@ public:
   double host_bytes() const {
     return static_cast<double>(rows_.capacity()) * sizeof(factor::stat::Row) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) +
            static_cast<double>(xv_.capacity() + av_.capacity()) * sizeof(float) +
-           static_cast<double>(mask_.capacity() + am_.capacity()) + static_cast<double>(day_.capacity()) * sizeof(factor::stat::Day) +
-           static_cast<double>(acc_.capacity()) * sizeof(factor::stat::Accum);
+           static_cast<double>(mask_.capacity() + am_.capacity()) + static_cast<double>(day_.capacity()) * sizeof(factor::stat::Sum);
   }
   double vram_bytes() const {
     if (!sess_)
@@ -480,17 +476,17 @@ private:
 
   const factor::gpu::DevPlane *at(int i) const { return factor::gpu::plane_at(*d_, dev_, dp_, i); }
 
-  // Stat 常驻会话: 形状 / 持有期 / 满仓 / 批上限变了才重开, 块换了才重传标签
+  // Stat 常驻会话: 形状 / 持有期 / 批上限变了才重开, 块换了才重传标签
   void session(int cmax) {
     assert(cmax >= 1 && cmax <= factor::gpu::stat_max_batch());
     const YPlanes &y = block().y;
-    const bool same = stat_ && st_T_ == y.sh.T && st_A_ == y.sh.A && st_seg_ == y.sh.seg && st_cmax_ == cmax && st_hd_ == y.hd && st_cap_ == y.n_full;
+    const bool same = stat_ && st_T_ == y.sh.T && st_A_ == y.sh.A && st_seg_ == y.sh.seg && st_cmax_ == cmax && st_hd_ == y.hd;
     if (!same) {
       if (stat_)
         factor::gpu::stat_close(stat_);
       evict_unused_x(static_cast<size_t>((7 * y.hd.n + 2 + 2 * cmax) * n_));
-      stat_ = factor::gpu::stat_open(c_->span(), cmax, y.hd, y.n_full);
-      st_T_ = y.sh.T, st_A_ = y.sh.A, st_seg_ = y.sh.seg, st_cmax_ = cmax, st_hd_ = y.hd, st_cap_ = y.n_full, st_gen_ = 0;
+      stat_ = factor::gpu::stat_open(c_->span(), cmax, y.hd);
+      st_T_ = y.sh.T, st_A_ = y.sh.A, st_seg_ = y.sh.seg, st_cmax_ = cmax, st_hd_ = y.hd, st_gen_ = 0;
     }
     if (st_gen_ != c_->gen) {
       factor::gpu::stat_load(stat_, labels_of(y).l);
@@ -498,7 +494,7 @@ private:
     }
   }
 
-  // 批核: 一批到根的候选 ks (同一评估口径) 一次 stat_eval → acc_[C][H] / day_[C][H][D]; 各根的 view 只切片
+  // 批核: 一批到根的候选 ks (同一评估口径) 一次 stat_eval → day_[C][H][D]; 各根的 view 只切片
   void stat_batch(const Forest &F, const std::vector<int> &ks) {
     assert(stat_ && "批核先 plant");
     const YPlanes &y = block().y;
@@ -512,9 +508,8 @@ private:
       roots.push_back(at(r));
     }
     const factor::stat::Span s = c_->span();
-    acc_.resize(ks.size() * static_cast<size_t>(y.hd.n));
     day_.resize(ks.size() * static_cast<size_t>(y.hd.n) * s.days());
-    factor::gpu::stat_eval(stat_, roots.data(), static_cast<int>(ks.size()), gate_, m, s, acc_.data(), day_.data());
+    factor::gpu::stat_eval(stat_, roots.data(), static_cast<int>(ks.size()), gate_, m, s, day_.data());
   }
   // 逐根的会话 + 宿主工作区 (批核无逐根宿主工作)
   template <class Ps>
@@ -524,7 +519,7 @@ private:
     } else {
       const YPlanes &y = block().y;
       session(stat_ ? st_cmax_ : 1);
-      w_.ensure(y.sh.A, y.hd.n, ex_.threads());
+      w_.ensure(y.sh.A, ex_.threads());
       return &w_;
     }
   }
@@ -536,14 +531,12 @@ private:
     const factor::stat::Span s = c_->span();
     const int H = cx.L.hd.n;
     if constexpr (kBatched<Ps>) {
-      v.acc = acc_.data() + static_cast<size_t>(j) * H;
       v.day = day_.data() + static_cast<size_t>(j) * H * s.days();
       return v;
     }
     const size_t n = s.n();
     const int i = F.d.roots[static_cast<size_t>(k)];
     const bool rows = (need & kNeedRows) != 0, rx = (need & kNeedRx) != 0;
-    acc_.resize(static_cast<size_t>(H));
     day_.resize(static_cast<size_t>(H) * s.days());
     if (rows)
       rows_.resize(static_cast<size_t>(H) * s.T);
@@ -562,8 +555,7 @@ private:
       factor::gpu::download(sess_, rp, xv, xm);
       v.x = {xv, xm};
     }
-    factor::gpu::stat_eval(stat_, &rp, 1, gate_, cx.m, s, acc_.data(), day_.data(), rows ? rows_.data() : nullptr, rx ? rx_.data() : nullptr);
-    v.acc = acc_.data();
+    factor::gpu::stat_eval(stat_, &rp, 1, gate_, cx.m, s, day_.data(), rows ? rows_.data() : nullptr, rx ? rx_.data() : nullptr);
     v.day = day_.data();
     v.rx = rx ? rx_.data() : nullptr;
     if (rows)
@@ -597,13 +589,11 @@ private:
 
   factor::gpu::StatSession *stat_ = nullptr;
   int st_T_ = 0, st_A_ = 0, st_seg_ = 0, st_cmax_ = 0;
-  double st_cap_ = 0.0;
   Holds st_hd_{};
   uint64_t st_gen_ = 0;
 
   factor::cpu::stat::Workspace w_;
-  std::vector<factor::stat::Accum> acc_; // [C][H]
-  std::vector<factor::stat::Day> day_;   // [C][H][D]
+  std::vector<factor::stat::Sum> day_; // [C][H][D]
   std::vector<factor::stat::Row> rows_;
   std::vector<uint16_t> rx_;
   std::vector<float> xv_;

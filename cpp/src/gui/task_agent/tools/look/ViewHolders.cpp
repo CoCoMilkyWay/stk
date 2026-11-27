@@ -31,7 +31,7 @@ ToolOut ViewHolders(const Call &c, Bay &bay) {
   const bool top = c.str("side") == "top";
   Window win;
   FactorSpec fac;
-  fac.ends = true, fac.only_end = top ? st::kTop : st::kBot;
+  fac.cells = true, fac.only_end = top ? st::kTop : st::kBot;
   if (!window_of(c, win, err) || !resolve_factor(c.str("factor"), env, fac, err))
     return Fail(std::move(err));
 

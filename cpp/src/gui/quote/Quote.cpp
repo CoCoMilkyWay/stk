@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <iterator>
 #include <map>
 #include <utility>
 
@@ -41,18 +42,11 @@ bool Series::bar(size_t i, int s, Cell &c) const {
 }
 
 bool Series::bars(size_t i, Bars &b) const {
+  if (has(i))
+    return unpack(*mins[i].p, mins[i].k, mins[i].a, b);
   b.has.reset(), b.hole.reset(), b.guess.reset();
   b.net.fill(0);
-  if (!has(i))
-    return false;
-  const Mins &m = mins[i];
-  for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
-    if (const Slot &x = m.p->s[s]; x.c != kNoBar) {
-      b.cell[s] = unpack(x, m.k, m.a);
-      b.net[s] = unpack_net(x);
-      b.has.set(s);
-    }
-  return b.has.any();
+  return false;
 }
 
 size_t Source::find(misc::Ymd d) const {
@@ -126,6 +120,20 @@ const sina::Quote *Live::watched(std::string_view sym) const {
     return nullptr;
   const auto it = std::ranges::lower_bound(*watch, sym, {}, [](const sina::Quote &q) { return std::string_view(q.sym); });
   return it != watch->end() && it->sym == sym ? &*it : nullptr;
+}
+
+double Equity::now(const Holdings *h, const Live *y) const { return h && y ? h->now(y) : nav; }
+
+double Equity::pnl(misc::Ymd day, double idx, double ref, bool broker) const {
+  assert(ok());
+  const std::vector<EquityDay> &ed = *days;
+  if (day > ed.back().date) {
+    const double b = today_base(broker);
+    return ed.back().pnl + (b > 0.0 && ref > 0.0 ? b * (idx / ref - 1.0) : 0.0);
+  }
+  const auto it = std::ranges::lower_bound(ed, day, {}, &EquityDay::date);
+  assert(it != ed.end() && it->date == day && "账户线点所属日须在回放日内");
+  return it != ed.begin() && it->base > 0.0 && ref > 0.0 ? std::prev(it)->pnl + it->base * (idx / ref - 1.0) : it->pnl;
 }
 
 double Holdings::now(const Live *y) const {

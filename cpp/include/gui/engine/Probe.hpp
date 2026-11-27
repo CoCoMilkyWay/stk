@@ -1,9 +1,9 @@
 // Probe — 探针层 (一个根的一种输出; 双层严格对仗生命周期): Load / Ledger 之上, Engine 之下.
 //   趟级: init(PassCtx) ⇄ finish(PassCtx)    (PassCtx = pass_ctx(作业); 首块前一次定形/置初值, 末块后好根一次收尾; 常驻 bytes)
 //   块级: open(Ctx)     ⇄ close(Ctx, RootView) (Ctx 带块上标签 + 逐根评估口径 Mode; 中间夹逐统计行 row(hi, t, r); 暂存 scratch)
-//   落地三形 (行轴 = 评估期 rows_stat): RowsP<D, Got> (逐行暂存 → 折) / LandCellsP<V> (逐格) / LinesP (净值线: 块内逐行暂存 → Realize).
-//   通用五探针: HoldP (三级 + 逐日 + 滚动窗) / TurnP (账集流水) / CoverP / AlphaP / IcPdfP → EvalProbes<X...> → fill_eval;
-//   分年一律 by_year (逐日原料取 HoldP / TurnP 两处, 只在 fill_eval 汇成 YearStat).
+//   落地三形 (行轴 = 评估期 rows_stat): RowsP<D, Got> (逐行暂存 → 折) / LandCellsP<V> (逐格) / LinesP (净值线: RowLines).
+//   通用五探针: HoldP (逐日 Sum + 三级 + 滚动窗) ⇄ TurnP (逐日账集流水) / CoverP / AlphaP / IcPdfP → EvalProbes<X...> → fill_eval;
+//   全期 / 分年同一 finish: 逐日 Sum 之和 stat_of ⇄ 逐日流水之和 turn_annual (分年一律 by_year, 只在 fill_eval 汇成 YearStat).
 #pragma once
 
 #include "factor/Stat/Contract.hpp"
@@ -38,8 +38,8 @@ void cover_rows(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, 
 void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, const uint16_t *rx, int T, int A, int d, AlphaDist &o);
 MiniPdf mini_pdf_of(const AggPdf &p);
 // 行 r (组 / 尾部按口径 from 存) 的第 k 组持仓收益改读成口径 to; 不 ok → 0
-inline double group_as(const factor::stat::Row &r, int k, double cap, factor::stat::Ret from, factor::stat::Ret to) {
-  return r.ok ? factor::stat::book_as(r.grp[k], r.cnt[k], r.mkt, cap, from, to) : 0.0;
+inline double group_as(const factor::stat::Row &r, int k, factor::stat::Ret from, factor::stat::Ret to) {
+  return r.ok ? factor::stat::book_as(r.grp[k], r.cnt[k], r.mkt, r.cap, from, to) : 0.0;
 }
 
 // ---- 探针契约与折叠容器 Probes<P...> ----
@@ -55,8 +55,7 @@ struct RootView {
   factor::stat::Plane x;
   factor::stat::Plane alpha;
   const uint16_t *rx = nullptr;
-  const factor::stat::Accum *acc = nullptr; // [H] 本块三级 (已定向)
-  const factor::stat::Day *day = nullptr;   // [H][D] 本块二级 (已定向, D = 本块统计日数)
+  const factor::stat::Sum *day = nullptr; // [H][D] 本块逐日 Sum (已定向, D = 本块统计日数)
 };
 
 // 趟级上下文 (init / finish 共用)
@@ -149,16 +148,14 @@ void by_year(const std::vector<misc::Ymd> &dates, Fn &&fn) {
   }
 }
 
-// 三级 HoldStat[H] (毛) + 逐日 Day[H][评估期日] + 滚动窗: 块间 Accum 续攒, 各块二级 Day 拼回评估期 →
-//   日净值 LS (Fold ls_daily: 钱按平仓日) → finish_all; 滚动窗 roll_of (正向, 行已按所评方向) + 收尾日的窗目标 wins
+// 逐日 Sum[H][评估期日] (各块按绝对日拼回) → 三级 HoldStat[H] (毛; Fold stat_of: 全期之和 + 日净值 LS) + 滚动窗 roll_of (正向, 行已按所评方向) + 收尾日的窗 mono wins
 struct HoldP : ProbeBase {
   int seg = 0, n_hold = 0;
-  factor::stat::Accum acc[kHoldCount];
-  std::vector<factor::stat::Day> day[kHoldCount]; // [hd][评估期日]
+  std::vector<factor::stat::Sum> day[kHoldCount]; // [hd][评估期日]
   factor::stat::HoldStat hold[kHoldCount];
   factor::stat::Roll roll[kHoldCount];
-  std::vector<double> wins[kHoldCount]; // [hd][评估期日] 收尾日的窗目标 (Stat/Roll.hpp kTarget; 不计入 = NaN)
-  static constexpr Bytes bytes(int H) { return {.day = static_cast<double>(sizeof(factor::stat::Day)) * H}; }
+  std::vector<double> wins[kHoldCount]; // [hd][评估期日] 收尾日的窗 mono (不计入 = NaN)
+  static constexpr Bytes bytes(int H) { return {.day = static_cast<double>(sizeof(factor::stat::Sum)) * H}; }
   void init(const PassCtx &p) {
     seg = p.seg;
     for (int i = 0; i < p.hd.n; ++i)
@@ -167,45 +164,44 @@ struct HoldP : ProbeBase {
   void close(const Ctx &c, const RootView &v) {
     const factor::stat::Span s = c.s();
     const int D = s.days(), d0 = (c.c.land0() + s.t_lo) / seg;
-    for (int i = 0; i < c.L.hd.n; ++i) {
-      acc[i].merge(v.acc[i]);
+    for (int i = 0; i < c.L.hd.n; ++i)
       std::copy_n(v.day + static_cast<size_t>(i) * D, D, day[i].begin() + d0);
-    }
   }
   void finish(const PassCtx &p) {
     n_hold = p.hd.n;
-    Daily dl[kHoldCount];
     for (int i = 0; i < n_hold; ++i) {
-      dl[i] = factor::stat::ls_daily(day[i], p.hd.k[i], seg);
-      roll[i] = factor::stat::roll_of(day[i], p.hd.k[i], seg, 1, nullptr, &wins[i]);
+      hold[i] = factor::stat::stat_of(day[i], p.hd.k[i], seg);
+      roll[i] = factor::stat::roll_of(day[i], p.hd.k[i], seg, 1, &wins[i]);
     }
-    factor::stat::finish_all(acc, dl, p.hd, p.seg, hold);
   }
   // 持有期 hi 第 i 日 ok 行 rIC 均值 (无 ok 行 = NaN)
-  float day_ric(int hi, size_t i) const {
-    const factor::stat::Day &d = day[hi][i];
-    return d.n > 0 ? static_cast<float>(d.ric / d.n) : std::numeric_limits<float>::quiet_NaN();
-  }
+  float day_ric(int hi, size_t i) const { return static_cast<float>(day[hi][i].ric_mean()); }
 };
 
-// 换手 (Stat/Book.hpp 因子账集, 每块每持有期一趟 book_rows): 各持有期 × 层级 × 两端的流水 turn[H] (各金额段同一份量, 盘口段另各一份冲击);
-//   另按日攒整组两端买量 day_buy → fill_eval 折成分年年换手 (YearStat::turn)
+// 换手 (Stat/Book.hpp 因子账集, 每块每持有期一趟 book_rows): 逐日 (建仓日) 各层级 × 两端的流水 day[H][评估期日] (各金额段同一份量, 盘口段另各一份冲击)
+//   → 全期 turn[H] = 逐日之和 (与 HoldP 的逐日 Sum 对仗; 分年 = 年内之和)
 struct TurnP : ProbeBase {
   static constexpr uint8_t need = kNeedRx;
   static constexpr Segs segs = Segs::All;
   int seg = 0;
   Amts amts;
+  std::vector<TurnStat> day[kHoldCount]; // [hd][评估期日]
   TurnStat turn[kHoldCount];
-  std::vector<double> row_buy;              // [块行] 整组两端买量之和 (close 内暂存)
-  std::vector<std::vector<double>> day_buy; // [hd][评估期日] 同上按日合
-  static constexpr Bytes bytes(int H) { return {.day = static_cast<double>(sizeof(double)) * H}; }
-  static constexpr Bytes scratch(int) { return {.row = sizeof(double)}; }
+  static constexpr Bytes bytes(int H) { return {.day = static_cast<double>(sizeof(TurnStat)) * H}; }
   void init(const PassCtx &p) {
     seg = p.seg;
     amts = p.ad;
-    day_buy.assign(static_cast<size_t>(p.hd.n), std::vector<double>(static_cast<size_t>(p.days_stat), 0.0));
+    for (int i = 0; i < p.hd.n; ++i)
+      day[i].assign(static_cast<size_t>(p.days_stat), TurnStat{});
   }
   void close(const Ctx &c, const RootView &v);
+  void finish(const PassCtx &p) {
+    for (int i = 0; i < p.hd.n; ++i) {
+      turn[i] = TurnStat{};
+      for (const TurnStat &d : day[i])
+        turn[i].merge(d);
+    }
+  }
 };
 
 // 池内有效率 / 可秩率
@@ -269,38 +265,33 @@ struct LandCellsP : ProbeBase {
   V *at(const Ctx &c) const { return dst->data() + static_cast<size_t>(c.c.land0() + c.c.t_lo) * c.s().A; }
 };
 
-// 落地基类 3: 净值线 (init 由派生类 lines() 定形; 块内逐行暂存 at(线, 行), close 时本块逐线折进 Realize; finish 交出期收益)
+// 落地基类 3: 净值线 (init 由派生类 lines() 定形; 块内逐行暂存 at(线, 行), close 时本块逐线折进 RowLines; finish 交出期线)
 struct LinesP : ProbeBase {
   static constexpr uint8_t need = kNeedRows;
-  Realize rz;
+  RowLines rl;
   LedgerLines out;
-  int t_lo = 0, nb = 0, u0 = 0;
-  std::vector<float> blk; // [线][本块统计行]
-  // n 条线, 线 i 的持有期 hold_of(i); stride = 每几行并一期
-  template <class HoldOf>
-  void lines(const PassCtx &p, int n, int stride, HoldOf &&hold_of) {
-    rz.reset(n, p.rows_stat, p.seg, stride);
+  // n 条线, 线 i 的持有期 hold_of(i) / 是否平仓行实现 at_exit(i); stride = 每几行并一期
+  template <class HoldOf, class AtExit>
+  void lines(const PassCtx &p, int n, int stride, HoldOf &&hold_of, AtExit &&at_exit) {
+    std::vector<factor::stat::Realize> rz;
     for (int i = 0; i < n; ++i)
-      rz.hold[static_cast<size_t>(i)] = hold_of(i);
+      rz.emplace_back(hold_of(i), p.seg, stride, p.rows_stat, at_exit(i));
+    rl.reset(std::move(rz));
   }
   void open(const Ctx &c) {
-    assert(rz.T == c.c.rows_stat() && "净值线与作用域不符");
+    assert(rl.rz[0].T == c.c.rows_stat() && "净值线与作用域不符");
     const factor::stat::Span s = c.s();
-    t_lo = s.t_lo, nb = s.t_hi() - s.t_lo, u0 = c.c.land0() + s.t_lo;
-    blk.assign(static_cast<size_t>(rz.out.n) * static_cast<size_t>(nb), 0.f);
+    rl.open(s.t_lo, s.t_hi(), c.c.land0() + s.t_lo);
   }
-  float &at(int i, int t) { return blk[static_cast<size_t>(i) * static_cast<size_t>(nb) + static_cast<size_t>(t - t_lo)]; }
+  float &at(int i, int t) { return rl.at(i, t); }
   void close(const Ctx &c, const RootView &) {
-    c.ex.rows(rz.out.n, [&](int i0, int i1, int) {
-      for (int i = i0; i < i1; ++i)
-        rz.fold(i, u0, blk.data() + static_cast<size_t>(i) * static_cast<size_t>(nb), nb);
-    });
+    rl.close(c.ex);
     if (c.last)
-      std::vector<float>().swap(blk);
+      rl.drop();
   }
   void finish(const PassCtx &) {
-    out = std::move(rz.out);
-    rz = Realize{};
+    out = std::move(rl.out);
+    rl = RowLines{};
   }
 };
 
@@ -338,11 +329,11 @@ struct IcPdfP : RowsP<IcPdfP, float> {
 };
 
 // 分层 / 尾部 / LS 的逐行批收益 → Realize 日净值线 (Inspect: 全部持有期 × kNavLines; agent eval_factor: 一个持有期 × kNavExcess)
-inline double tail_as(const factor::stat::Row &r, int e, int j, double cap, factor::stat::Ret from, factor::stat::Ret to) {
-  return r.ok ? factor::stat::book_as(r.tail[e][j], r.tail_n[e][j], r.mkt, cap * factor::stat::tail_frac(j), from, to) : 0.0;
+inline double tail_as(const factor::stat::Row &r, int e, int j, factor::stat::Ret from, factor::stat::Ret to) {
+  return r.ok ? factor::stat::book_as(r.tail[e][j], r.tail_n[e][j], r.mkt, r.cap * factor::stat::tail_frac(j), from, to) : 0.0;
 }
 // 线 i ∈ [0, kNavLines) 在行 r 的批收益 (线序见 Table.hpp kNavLines; 行的组 / 尾部按因子的收益口径 ret 存, 线按自己的口径改读)
-inline double nav_value(const factor::stat::Row &r, int i, double cap, factor::stat::Ret ret) {
+inline double nav_value(const factor::stat::Row &r, int i, factor::stat::Ret ret) {
   if (!r.ok)
     return 0.0;
   using factor::stat::kBot, factor::stat::kTop, factor::stat::end_group, factor::stat::Ret;
@@ -350,15 +341,15 @@ inline double nav_value(const factor::stat::Row &r, int i, double cap, factor::s
     const Ret to = i < 2 * kNavLayers + kNavLs ? Ret::Abs : Ret::Excess;
     const int j = i - 2 * kNavLayers - (to == Ret::Abs ? 0 : kNavLs);
     if (j == 0)
-      return 0.5 * (group_as(r, end_group(kTop), cap, ret, to) - group_as(r, end_group(kBot), cap, ret, to));
-    return 0.5 * (tail_as(r, kTop, j - 1, cap, ret, to) - tail_as(r, kBot, j - 1, cap, ret, to));
+      return 0.5 * (group_as(r, end_group(kTop), ret, to) - group_as(r, end_group(kBot), ret, to));
+    return 0.5 * (tail_as(r, kTop, j - 1, ret, to) - tail_as(r, kBot, j - 1, ret, to));
   }
   const Ret to = i < kNavLayers ? Ret::Abs : Ret::Excess;
   const int k = to == Ret::Abs ? i : i - kNavLayers;
   if (k < factor::stat::kGroups)
-    return group_as(r, k, cap, ret, to);
+    return group_as(r, k, ret, to);
   const int e = (k - factor::stat::kGroups) / kTails, j = (k - factor::stat::kGroups) % kTails;
-  return tail_as(r, e, j, cap, ret, to);
+  return tail_as(r, e, j, ret, to);
 }
 // 超额线 i ∈ [0, kNavExcess) 在 kNavLines 线序里的号
 inline constexpr int nav_excess(int i) { return i < kNavLayers ? kNavLayers + i : kNavLayers + kNavLs + i; }
@@ -375,34 +366,33 @@ inline int only_of(const Holds &hd, int only) {
 struct NavP : LinesP {
   int only = -1; // 调用方给: HoldId → 只出它的 kNavExcess 条超额线; −1 = 全部持有期 × kNavLines
   int sel = -1;
-  double cap = 0.0;
   factor::stat::Ret ret = factor::stat::Ret::Excess; // 行里组 / 尾部的收益口径 (= 根的)
   static constexpr Bytes bytes(int H) { return {.day = static_cast<double>(sizeof(float)) * kNavLines * H}; }
   static constexpr Bytes scratch(int H) { return {.row = static_cast<double>(sizeof(float)) * kNavLines * H}; }
   void init(const PassCtx &p) {
     sel = only_of(p.hd, only);
-    lines(p, only < 0 ? p.hd.n * kNavLines : kNavExcess, p.seg, [&](int i) { return only < 0 ? p.hd.k[i / kNavLines] : static_cast<HoldId>(only); });
+    lines(p, only < 0 ? p.hd.n * kNavLines : kNavExcess, p.seg, [&](int i) { return only < 0 ? p.hd.k[i / kNavLines] : static_cast<HoldId>(only); }, [](int) { return true; });
   }
   void open(const Ctx &c) {
     LinesP::open(c);
-    cap = c.L.cap, ret = c.m.r;
+    ret = c.m.r;
   }
   void row(int hi, int t, const factor::stat::Row &r) {
     if (only >= 0 && hi != sel)
       return;
     if (only < 0)
       for (int i = 0; i < kNavLines; ++i)
-        at(hi * kNavLines + i, t) = static_cast<float>(nav_value(r, i, cap, ret));
+        at(hi * kNavLines + i, t) = static_cast<float>(nav_value(r, i, ret));
     else
       for (int i = 0; i < kNavExcess; ++i)
-        at(i, t) = static_cast<float>(nav_value(r, nav_excess(i), cap, ret));
+        at(i, t) = static_cast<float>(nav_value(r, nav_excess(i), ret));
   }
 };
 
 template <class... X>
 using EvalProbes = Probes<HoldP, TurnP, CoverP, AlphaP, IcPdfP, X...>;
 
-// 一个持有期的分年 (评估期日 dates 按自然年; 只列 ok 行 ≥ 3 的年): 逐日 Day (含组和) + 窗目标 (HoldP) / 整组两端买量 (TurnP)
+// 一个持有期的分年 (评估期日 dates 按自然年; 只列 ok 行 ≥ 3 的年): 年内逐日 Sum 之和 stat_of + 窗 mono (HoldP) / 年内逐日流水之和 (TurnP)
 std::vector<YearStat> years_of(const std::vector<misc::Ymd> &dates, const HoldP &h, const TurnP &c, int hi, HoldId hold);
 
 template <class Ps>

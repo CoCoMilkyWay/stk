@@ -7,7 +7,7 @@
 //   持有期的身份 = HoldId (表下标 = LB 组序 = 时间序); 族 / 天数由 hold_kind / hold_n 取 (主机 / 设备两用), 文字由 token 表取;
 //   落在一层上的全部几何 (行数 / 开仓 / 交接 / 平仓行 / 记日 / 可知行 / 资金口径) = Hold (hold_on; 扫出的导出量 span / reach 查表 hold_geom).
 //   行号一律取段内行 (seg_row): 张量与分块都以段首起, 与张量从哪一日起无关.
-//   集合 = 位集 HoldSet / AmtSet, 有序视图 = IdList (Holds / Amts: 下标 i ↔ 第 i 个成员, 评估端的紧凑数组按它排).
+//   集合 = IdList (Holds / Amts: 成员升序, 下标 i ↔ 第 i 个成员, 评估端的紧凑数组按它排).
 // =============================================================================
 
 #include "define/Geo.hpp"
@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 
@@ -119,40 +120,55 @@ inline bool amt_of_wan(int wan, AmtId &a) {
   return false;
 }
 
-// ---- 集合 (位集) 与有序视图 (IdList: 成员按 id 升序) ----
-using HoldSet = uint16_t;
-using AmtSet = uint8_t;
-static_assert(kHoldCount <= 16 && kAmtCount <= 8);
-constexpr HoldSet hold_bit(HoldId h) { return static_cast<HoldSet>(1u << h); }
-constexpr AmtSet amt_bit(AmtId a) { return static_cast<AmtSet>(1u << a); }
+// ---- 集合 = IdList (唯一表示: 成员按 id 升序, 下标 i ↔ 第 i 个成员; 评估端的紧凑数组按它排) ----
 template <class Id, int N>
 struct IdList {
   int n = 0;
   Id k[N] = {};
   // id 的下标; 不在 → −1
-  int at(Id id) const {
+  FACTOR_HD constexpr int at(Id id) const {
     for (int i = 0; i < n; ++i)
       if (k[i] == id)
         return i;
     return -1;
   }
-  uint32_t set() const {
-    uint32_t s = 0;
-    for (int i = 0; i < n; ++i)
-      s |= 1u << k[i];
-    return s;
-  }
-  bool operator==(const IdList &o) const { return set() == o.set(); }
-  static IdList of(uint32_t set) {
+  FACTOR_HD constexpr bool has(Id id) const { return at(id) >= 0; }
+  // 并入 id (保持升序; 已在 → 不变)
+  constexpr IdList with(Id id) const {
+    if (has(id))
+      return *this;
     IdList o;
-    for (int i = 0; i < N; ++i)
-      if (set >> i & 1u)
-        o.k[o.n++] = static_cast<Id>(i);
+    for (int i = 0; i < n && k[i] < id; ++i)
+      o.k[o.n++] = k[i];
+    o.k[o.n++] = id;
+    for (int i = 0; i < n; ++i)
+      if (k[i] > id)
+        o.k[o.n++] = k[i];
+    return o;
+  }
+  constexpr bool operator==(const IdList &o) const {
+    if (n != o.n)
+      return false;
+    for (int i = 0; i < n; ++i)
+      if (k[i] != o.k[i])
+        return false;
+    return true;
+  }
+  static constexpr IdList of(std::initializer_list<Id> ids) {
+    IdList o;
+    for (const Id id : ids)
+      o = o.with(id);
     return o;
   }
 };
 using Holds = IdList<HoldId, kHoldCount>;
 using Amts = IdList<AmtId, kAmtCount>;
+inline constexpr Amts kAllAmts = [] {
+  Amts a;
+  for (int i = 0; i < kAmtCount; ++i)
+    a = a.with(static_cast<AmtId>(i));
+  return a;
+}();
 
 // ---- 交易时钟 (L_1min 行号) ----
 inline constexpr int kAuctionMin = 10;                   // 09:25 开盘撮合 bar
@@ -197,7 +213,8 @@ static_assert(kPendDays == 9, "LABEL_DELAY_NOTE 的天数随 kPendDays − 1 改
 //     | 仓位       | 每行一批, 资金 1/h̄, 批内按目标权 (等权 1 / max(只数, cap) 或外给权); 全日平均满仓                        | Stat【换手】/ 净值 |
 //     | 换手       | 前一批的权随价漂移到交接点, 与本批目标权逐格之差 (只在交接时; 否则整建整平, 平仓量亦随价漂移)            | Stat【换手】      |
 //     | 成本       | 两侧逐格费率: 税佣 (Fee::tax) + 冲击 (盘口段 = 真实买 / 卖冲击封顶 CostSpec::top; 固定段 = Fee::impact);     | Stat【换手】      |
-//     |            | 整批平仓 (不交接) 恒在撮合价点: 盘口段冲击 0, 固定段照付 Fee::impact                                     |                   |
+//     |            | 撮合价点 (收盘 / 开盘; 日层每行) 盘口冲击 0; 整批平仓 (不交接) 按平仓价点: E (Hold::exit_e) 付平仓行卖出冲击,   |                   |
+//     |            | 撮合价 0; 价点卖不出 (封跌停) 的卖出量付固定冲击; 固定段一律照付 Fee::impact                              |                   |
 //     | 净值       | 行 t 的批收益在 exit(t) 实现 × 1/h̄, 日内求和, 跨日复利; 成本在建仓行即付                                  | 净值 Realize      |
 //     | 记日       | 排序统计 (rIC / 分组) 记在建仓日 stat_day; 钱 (日收益 / 净值 / 年化) 记在平仓日 money_day = 建仓日 + hold_days | Hold              |
 //     | 复权       | 标签价 × 当日复权比: 跨日收益不含除权缺口                                                                 | 标签              |
@@ -251,11 +268,10 @@ struct Hold {
   // 记日一对 (协议表 2【记日】的唯一实现): 排序统计记建仓日 ⇄ 钱记平仓日
   FACTOR_HD constexpr int stat_day(int t) const { return t / g.S; }
   FACTOR_HD constexpr int money_day(int t) const { return exit(t) / g.S; }
+  // 行 t 这一批的平仓价点是分钟价点 E (连续竞价, 付盘口冲击) 而非撮合价 (收盘 / 开盘, 冲击 0): 偏移型且平仓行不是收盘建仓行
+  FACTOR_HD constexpr bool exit_e(int t) const { return hold_offset(id) && (hold_kind(id) == HoldKind::Min || !close_entry(t, g)); }
   // 行 s 的标签在哪一行收盘时已实现 (N 元回归的样本行): 撮合价点在平仓行收盘即知; 分钟价点 E 至迟下一行收盘可知 (+1)
-  FACTOR_HD constexpr int known(int s) const {
-    const bool at_e = hold_offset(id) && (hold_kind(id) == HoldKind::Min || !close_entry(s, g));
-    return exit(s) + (at_e ? 1 : 0);
-  }
+  FACTOR_HD constexpr int known(int s) const { return exit(s) + (exit_e(s) ? 1 : 0); }
   // 行 t 可用的最末标签行 (无 → −1)
   FACTOR_HD constexpr int last(int t) const {
     int u = t;

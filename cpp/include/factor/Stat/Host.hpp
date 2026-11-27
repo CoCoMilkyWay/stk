@@ -143,10 +143,10 @@ struct NoCells {
   void cell(int, int, int, const factor::stat::Pos &, const float *) const {}
 };
 
-// 标签侧 (t → t+h): rx = 本行 r16 (已定向), lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓, ret = 收益口径, mkt = 本行池基准
-//   → r 的 ric / mkt / grp / cnt / tail / ok. ric 在 J 上 (与可成交无关); 组与尾部只收真持有的格 (一格一次 cell 出层级), 收益按续持取名义值
+// 标签侧 (t → t+h): rx = 本行 r16 (已定向), lb 已偏到行首 (交接链回看 / 前看同块其他行; 本行池基准 mk / 满仓 cap 按 c.t 取), c = 本行交接链, ret = 收益口径
+//   → r 的 ric / mkt / cap / grp / cnt / tail / ok. ric 在 J 上 (与可成交无关); 组与尾部只收真持有的格 (一格一次 cell 出层级), 收益按续持取名义值
 template <class Cells = NoCells>
-inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, factor::stat::Ret ret, double mkt, Row &r, const Cells &cs = {}) {
+inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, factor::stat::Ret ret, Row &r, const Cells &cs = {}) {
   unsigned long long s[kSums] = {};
   double gs[kGroups] = {}, ts[kEnds][kTails] = {};
   int gc[kGroups] = {}, tc[kEnds][kTails] = {};
@@ -173,29 +173,30 @@ inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::C
       ++tc[e][j];
     }
   }
-  factor::stat::finish_row(s, mkt, gs, gc, ts, tc, cap, ret, r);
+  factor::stat::finish_row(s, lb.mk[c.t], gs, gc, ts, tc, lb.cap[c.t], ret, r);
 }
 
 // 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; ret = 收益口径; opens = 开仓行 (Hold::opens)
 template <class Cells = NoCells>
-inline Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, double cap, factor::stat::Ret ret, bool opens,
-                    const Cells &cs = {}) {
+inline Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, factor::stat::Ret ret, bool opens, const Cells &cs = {}) {
   Row r;
   if (rlag)
     lag_row(rx, rlag, c.A, r);
   if (opens)
-    label_row(rx, lb, c, cap, ret, lb.mk[c.t], r, cs);
+    label_row(rx, lb, c, ret, r, cs);
   return r;
 }
 
-// 一行的池基准: 标签有效格 (m) 的做多收益均值; 无 → 0
-inline float pool_mkt(const uint16_t *lv, const uint8_t *m, int A) {
+// 平面 p 第 t 行的池属性 (lv / m 已填): 池基准 mk = 标签有效格的做多收益均值 (无 → 0) / 满仓 cap = 有效格数 / kGroups
+inline void pool_row(factor::stat::LabelPlanes &p, size_t t) {
+  const size_t A = p.A(), o = t * A;
   double s = 0.0;
   int n = 0;
-  for (int a = 0; a < A; ++a)
-    if (m[a])
-      s += h2f(lv[a]), ++n;
-  return n ? static_cast<float>(s / n) : 0.f;
+  for (size_t a = 0; a < A; ++a)
+    if (p.m[o + a])
+      s += h2f(p.lv[o + a]), ++n;
+  p.mk[t] = n ? static_cast<float>(s / n) : 0.f;
+  p.cap[t] = static_cast<float>(n) / factor::stat::kGroups;
 }
 
 } // namespace factor::cpu::stat
