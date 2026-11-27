@@ -148,6 +148,7 @@ QuoteService::QuoteService(const std::vector<uint32_t> &ids, misc::Ymd fund_end,
   order_ = ids;
   std::ranges::shuffle(order_, std::mt19937{});
   poll_ = std::thread(&QuoteService::poll, this);
+  watcher_ = std::thread(&QuoteService::rewatch, this);
   fillers_.reserve(kFillers);
   for (int k = 0; k < kFillers; ++k)
     fillers_.emplace_back(&QuoteService::fill, this);
@@ -160,7 +161,9 @@ QuoteService::~QuoteService() {
   }
   cv_.notify_all();
   wake_.notify_all();
+  rewatch_cv_.notify_all();
   poll_.join();
+  watcher_.join();
   for (std::thread &t : fillers_)
     t.join();
   if (map_)
@@ -197,9 +200,61 @@ void QuoteService::watch(std::vector<std::string> syms) {
     if (syms == watch_)
       return;
     watch_ = std::move(syms);
+    watch_ids_.clear();
+    for (const std::string &s : watch_)
+      if (const auto it = index_.find(s); it != index_.end())
+        watch_ids_.push_back(it->second);
     rewatch_ = true;
+    schedule();
+    post();
   }
-  wake_.notify_all();
+  rewatch_cv_.notify_all();
+  cv_.notify_all();
+}
+
+void QuoteService::see(std::vector<sina::Quote> fresh) {
+  std::ranges::sort(fresh, {}, &sina::Quote::sym);
+  const auto at = [](const std::vector<sina::Quote> &v, const std::string &s) -> const sina::Quote * {
+    const auto it = std::ranges::lower_bound(v, s, {}, &sina::Quote::sym);
+    return it != v.end() && it->sym == s ? &*it : nullptr;
+  };
+  const auto when = [](const sina::Quote &q) { return std::pair(q.date, q.sec); };
+  auto seen = std::make_shared<std::vector<sina::Quote>>();
+  for (const std::string &s : watch_) {
+    const sina::Quote *f = at(fresh, s), *o = seen_ ? at(*seen_, s) : nullptr;
+    if (f || o)
+      seen->push_back(*(f && (!o || when(*f) >= when(*o)) ? f : o));
+  }
+  const auto key = [](const sina::Quote &q) { return std::tuple(std::string_view(q.sym), q.date, q.sec); };
+  dirty_ = dirty_ || !seen_ || !std::ranges::equal(*seen, *seen_, {}, key, key);
+  seen_ = std::move(seen);
+}
+
+void QuoteService::rewatch() {
+  TraceThread("SinaWatch");
+  sina::Client c(sina::kQuoteHost);
+  while (true) {
+    std::vector<std::string> syms;
+    {
+      std::unique_lock<std::mutex> lock(mu_);
+      rewatch_cv_.wait(lock, [&] { return stop_ || rewatch_; });
+      if (stop_)
+        return;
+      rewatch_ = false;
+      syms = watch_;
+    }
+    if (syms.empty())
+      continue;
+    assert(syms.size() <= static_cast<size_t>(sina::kQuoteMax) && "订阅码超出一批");
+    std::vector<sina::Quote> got = c.quotes(syms);
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (stop_)
+        return;
+      see(std::move(got));
+    }
+    publish();
+  }
 }
 
 QuoteStatus QuoteService::status() const {
@@ -366,7 +421,6 @@ void QuoteService::poll() {
     {
       std::lock_guard<std::mutex> lock(mu_);
       watch = watch_;
-      rewatch_ = false;
     }
     chunks.back().clear();
     for (const std::string &s : watch)
@@ -429,19 +483,10 @@ void QuoteService::poll() {
         }
       }
       last_ = std::move(last);
-      std::ranges::sort(outside, {}, &sina::Quote::sym);
-      auto seen = std::make_shared<std::vector<sina::Quote>>();
-      for (const std::string &s : watch) {
-        if (const auto it = index_.find(s); it != index_.end()) {
-          if (const sina::Quote *q = (*last_)[it->second].get())
-            seen->push_back(*q);
-        } else if (const auto jt = std::ranges::lower_bound(outside, s, {}, &sina::Quote::sym); jt != outside.end() && jt->sym == s) {
-          seen->push_back(std::move(*jt));
-        }
-      }
-      const auto key = [](const sina::Quote &q) { return std::tuple(std::string_view(q.sym), q.date, q.sec); };
-      dirty_ = dirty_ || !seen_ || !std::ranges::equal(*seen, *seen_, {}, key, key);
-      seen_ = std::move(seen);
+      for (const uint32_t i : watch_ids_) // 订阅码里全市场内的 = 本轮全市场快照
+        if (const sina::Quote *q = (*last_)[i].get())
+          outside.push_back(*q);
+      see(std::move(outside));
       std::atomic_ref<int32_t>(file_rec(map_).sec).store(sec_, std::memory_order_release); // 本轮各只落定之后
       schedule();
       post();
@@ -452,15 +497,13 @@ void QuoteService::poll() {
     const auto due = t0 + std::chrono::seconds(in_session(clock_now()) ? kTick : kIdleTick);
     std::unique_lock<std::mutex> lock(mu_);
     while (true) {
-      wake_.wait_until(lock, std::min(due, std::chrono::steady_clock::now() + std::chrono::seconds(kFoldGap)), [&] { return stop_ || rewatch_; });
+      wake_.wait_until(lock, std::min(due, std::chrono::steady_clock::now() + std::chrono::seconds(kFoldGap)), [&] { return stop_; });
       if (stop_)
         return;
-      if (!wake_.wait_until(lock, due, [&] { return stop_ || stale() || rewatch_; }))
+      if (!wake_.wait_until(lock, due, [&] { return stop_ || stale(); }))
         break;
       if (stop_)
         return;
-      if (rewatch_)
-        break;
       lock.unlock();
       publish();
       lock.lock();
@@ -557,6 +600,11 @@ void QuoteService::schedule() {
       holed ? todo_.push_front(i) : todo_.push_back(i);
     }
   }
+  for (const uint32_t i : watch_ids_) // 订阅码 (Board 持仓 / 名单) 插队, 仅次于选中
+    if (tracks_[i].fill == Fill::Queued) {
+      todo_.erase(std::ranges::find(todo_, i));
+      todo_.push_front(i);
+    }
   if (sel_ != ~0u && tracks_[sel_].fill == Fill::Queued && todo_.front() != sel_) { // 选中插队
     todo_.erase(std::find(todo_.begin(), todo_.end(), sel_));
     todo_.push_front(sel_);
