@@ -487,7 +487,7 @@ bool pipeline(const PipelineArgs &args) {
   const size_t num_io = static_cast<size_t>(L.num_io);
   const size_t tail = args.tail;
   assert(!dates.empty() && num_assets >= 1);
-  assert(tail < dates.size() && tail <= CoreOf<T>::Label::PEND_DAYS && "续算: 尾窗之后须有新日, 且不超过悬挂日环");
+  assert(tail < dates.size() && tail <= static_cast<size_t>(kPendDays) && "续算: 尾窗之后须有新日, 且不超过悬挂日环");
   assert(args.members.axis().hash == lib.axis.hash && std::ranges::equal(args.members.dates(), dates) && "池面板须是本库 A 轴 × 管线日期轴");
 
   TierFeed<T> feed(args);
@@ -521,7 +521,7 @@ bool pipeline(const PipelineArgs &args) {
 
   // 日环深 P 启动时一次定死 (定长序号环, 无扩格, 见 FeatureStore.hpp):
   //   上限 = 内存预算 (一格 = 张量 + 源格; 此刻已用与常驻开销之外, 用到总内存 1 − kRingMemMargin) ∧ kMaxRingSlots ∧ 日期轴天数
-  //   下限 = MIN_RING_SLOTS (标签悬挂 + 时序下一日 + 截面跨日) + 截面/落盘在飞核数 + 1, 不足死锁;
+  //   下限 = kMinRingSlots (标签悬挂 + 时序下一日 + 截面跨日) + 截面/落盘在飞核数 + 1, 不足死锁;
   //   预算不到下限则按下限开 (余量让给下限, 只要实际可用内存装得下);
   //   日期轴整根装得下 (P = 天数, 格不复用) 则无需下限 (如续算短轴)
   const size_t per_slot = FeatureStore<T>::Slot::bytes(num_assets) + TierFeed<T>::cell_bytes(num_assets);
@@ -654,5 +654,5 @@ bool pipeline(const PipelineArgs &args) {
 
 template <class T>
 constexpr TierOps tier_ops_of() {
-  return {TierFeed<T>::kUnit, CoreOf<T>::Label::PEND_DAYS, &TierFeed<T>::source_dates, &snap_header<T>, &pipeline<T>};
+  return {TierFeed<T>::kUnit, static_cast<size_t>(kPendDays), &TierFeed<T>::source_dates, &snap_header<T>, &pipeline<T>};
 }

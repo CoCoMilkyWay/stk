@@ -18,6 +18,7 @@
 #include <ctime>
 #include <filesystem>
 #include <iterator>
+#include <random>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -144,6 +145,8 @@ QuoteService::QuoteService(const std::vector<uint32_t> &ids, misc::Ymd fund_end,
     [[maybe_unused]] const bool fresh = index_.emplace(syms_[id], id).second;
     assert(fresh && "QuoteService: 新浪码重复");
   }
+  order_ = ids;
+  std::ranges::shuffle(order_, std::mt19937{});
   poll_ = std::thread(&QuoteService::poll, this);
   fillers_.reserve(kFillers);
   for (int k = 0; k < kFillers; ++k)
@@ -263,6 +266,7 @@ void QuoteService::publish() {
       } else {
         d->candle = {candle_of(q), date_, q.last_close};
         d->bars = tracks_[i].bars;
+        guess_holes(d->bars, q.open, q.last_close);
         net_flow(d->bars, d->candle.ref);
         d->candle.flow = day_flow(d->bars);
       }
@@ -273,13 +277,13 @@ void QuoteService::publish() {
       slots = std::max(live_slot(), sec_slot(sec_)) + 1;
       fz = std::min(settled() + 1, slots);
     }
-    const bool fill = date_ > fund_end_; // 待补的根还会被分钟 K 改写
+    const bool fill = date_ > fund_end_; // 待补的根还会被分钟 K 改写; 不取分钟 K 的日, 缺口的估值也随段后首根变
     freeze.resize(tracks_.size()), touched.resize(tracks_.size());
     for (size_t i = 0; i < tracks_.size(); ++i) {
       Track &t = tracks_[i];
       if (traded(qs[i].get()) || call_px(qs[i].get()) > 0)
         (*stocks)[i] = t.day;
-      freeze[i] = fill && t.gap() ? std::min(fz, t.lo) : fz;
+      freeze[i] = t.gap() && (fill || t.bars.hole.any()) ? std::min(fz, t.lo) : fz;
       touched[i] = std::exchange(t.touched, kSlots);
     }
   }
@@ -543,7 +547,7 @@ void QuoteService::schedule() {
       put(sel_);
     }
   }
-  for (uint32_t i = 0; i < tracks_.size(); ++i) { // 有缺口的排在补精确的之前
+  for (const uint32_t i : order_) { // 有缺口的排在补精确的之前
     Track &t = tracks_[i];
     if (t.fill != Fill::Idle || t.lo > t.hi)
       continue;
@@ -700,7 +704,7 @@ void archived_day(misc::Ymd d, size_t N, std::vector<Candle> &px, std::vector<Ba
   px.assign(N, Candle{});
   bars.resize(N);
   for (Bars &b : bars)
-    b.has.reset(), b.hole.reset();
+    b.has.reset(), b.hole.reset(), b.guess.reset();
   for (uint32_t k = 0; k < std::min<size_t>(c.size(), N); ++k) {
     const AssetRec r = c.asset(k);
     if (r.vol < 0)

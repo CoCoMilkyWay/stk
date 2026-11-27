@@ -92,6 +92,7 @@ struct PlotBars {
   std::vector<Candle> bars;
   std::vector<double> x;
   std::vector<double> cut;     // 缺口槽的 x (升序; Bars::hole): 不画根, 线在此断开, 并根时含缺口的组整组不画
+  std::vector<bool> est;       // [bars] 估值根 (缺口的估价, Bars::guess; 只 intraday 带估值时收, 否则空)
   std::vector<misc::Ymd> days; // [k]
   double ref = 0;              // 涨跌幅轴基准 (末日前收); 0 = 无
   int g = 1;
@@ -620,9 +621,9 @@ double flow_ref(const Source &src) {
   return d.empty() ? 0.0 : s / static_cast<double>(d.size());
 }
 
-// 日内的根 = 日轴各日的分钟 (源的日序列; 某日无源 → 留空; 缺口记进 cut), x = 第 k 日 · kSlots + 槽;
+// 日内的根 = 日轴各日的分钟 (源的日序列; 某日无源 → 留空; 缺口记进 cut, guess = 带估值的缺口改收作估值根), x = 第 k 日 · kSlots + 槽;
 //   价前复权到末个有根日 (末日真价; Source::adj); 分钟根的前收 = 同日日根的 (同乘); 涨跌基准 = 末个有根日的前收
-void intraday(const Source &src, std::span<const misc::Ymd> days, PlotBars &s) {
+void intraday(const Source &src, std::span<const misc::Ymd> days, PlotBars &s, bool guess) {
   s.intraday = true;
   s.days.assign(days.begin(), days.end());
   const size_t nd = days.size();
@@ -644,11 +645,17 @@ void intraday(const Source &src, std::span<const misc::Ymd> days, PlotBars &s) {
     const double a = src.adj(at[k]) / end;
     const float ref = static_cast<float>(src.candle(at[k]).ref * a);
     s.ref = ref;
-    for (int j = 0; j < kSlots; ++j)
-      if (b.has[static_cast<size_t>(j)])
-        s.push({scaled(b.cell[static_cast<size_t>(j)], a), days[k], ref}, static_cast<double>(k) * kSlots + j);
-      else if (b.hole[static_cast<size_t>(j)])
-        s.cut.push_back(static_cast<double>(k) * kSlots + j);
+    for (size_t j = 0; j < static_cast<size_t>(kSlots); ++j) {
+      const double x = static_cast<double>(k * kSlots + j);
+      const bool est = guess && b.guess[j];
+      if (b.has[j] || est) {
+        s.push({scaled(b.cell[j], a), days[k], ref}, x);
+        if (guess)
+          s.est.push_back(est);
+      } else if (b.hole[j]) {
+        s.cut.push_back(x);
+      }
+    }
   }
 }
 
@@ -750,7 +757,7 @@ void charts(const char *name, StockData &c, uint64_t id, ChartState &st, const s
 }
 
 // 篮子日内叠加的一条 (线): x = 日轴第 k 日 · kSlots + 槽, y = 收对本条在日轴内首日前收 (base) 的涨跌幅 [%] (各条同一零点, 跨日接续);
-//   缺口处一点 y = NaN, 线断开. cross = 带现价十字 (只一条时): chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x;
+//   缺口处一点 y = NaN, 线断开; est = 估值点 (缺口的估价, 与 x 逐点; 空 = 无), 挨着估值点的段淡色画. cross = 带现价十字 (只一条时): chg = 当日涨跌幅 [%] (定色), now = 末个有根的槽 x;
 //   dots = 线上的成交点 (m 指进 OverlayPick::trades, 缓存键里的 picks 保活);
 //   acct = 账户前复权净资产与窗内回撤 (与 x / y 逐点对应; 非账户空)
 struct Overlay {
@@ -761,6 +768,7 @@ struct Overlay {
   std::string name;
   ImVec4 col;
   std::vector<double> x, y;
+  std::vector<bool> est;
   bool cross = false;
   double chg = 0;
   int now = 0;
@@ -782,6 +790,7 @@ void dots_of(const Trades &t, std::span<const misc::Ymd> days, Overlay &l) {
   }
 }
 constexpr float kDotMin = 2.5f, kDotMax = 4.5f; // 成交点三角的半边长 [px]: 买卖总额 0 → 图内最大 (按平方根)
+constexpr float kEstA = 0.35f;                  // 叠加图估值段的 alpha (乘线色)
 
 // 叠加图 0 轴上的净流入柱: 标的在日轴各日的每分钟净流入 (Bars::net, 分钟涨跌法) [元], x 同叠加图;
 //   历史日 = 历史分钟根, 当日 = 快照合成的根 (此刻所在根随快照动, 走完即与分钟 K 同值).
@@ -813,7 +822,7 @@ void fmt_signed(char *buf, int size, double a) {
 
 // 叠加图: x 视野 = 档窗口 (不缩放), y 贴合全部线, 0 轴居中 (上下取两侧较大者对称); 刻度区全空 (图框不变), 不画图例:
 //   x 只留网格; y 网格约每 kGridPx 一格 (步长 1 / 2 / 2.5 / 5 × 10^e, 0 恰在格上), 每格 y 值 (带单位 unit) 以小字内标在右壁 (格线上方, 顶格放不下 → 下方);
-//   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠.
+//   线名 (线色小字) 贴各线末点右侧, 不越过刻度字列, 按 y 排开不重叠; 挨着估值点 (Overlay::est) 的段同色淡画 (kEstA), 提示里该点标 "估".
 //   带 cross 的线另画现价十字: 过末点的横 / 竖虚线 (当日涨跌色), 右壁标末点涨跌幅 (同 y 口径), 底壁标时刻 (色底黑字).
 //   十字光标: 竖线吸附到分钟, 横线随鼠标; 提示 = 时刻 + 光标处 y + 该处各条读数 (高 → 低).
 //   悬停联动 (HoverSync): hot = 白粗线画在最上的条 (pick; −1 = 无), near = 图上悬停的条 (pick; −1 = 无).
@@ -882,11 +891,27 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
       ImPlot::EndItem();
     }
     for (size_t i = 0; i < ls.size(); ++i) {
+      const Overlay &l = ls[i];
+      const size_t n = l.x.size();
       ImGui::PushID(static_cast<int>(i));
-      ImPlot::SetNextLineStyle(ls[i].col, 1.5f);
-      if (ls[i].x.size() == 1) // 只一点 (竞价根 / 首根) 连不成线: 画点
-        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.f, ls[i].col, IMPLOT_AUTO, ls[i].col);
-      ImPlot::PlotLine("##l", ls[i].x.data(), ls[i].y.data(), static_cast<int>(ls[i].x.size()));
+      std::vector<double> real; // 有估值点时: 估值点 NaN (实线只连两个真点); 挨着估值点的段先淡色画
+      if (std::ranges::find(l.est, true) != l.est.end()) {
+        constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+        std::vector<double> est(n, kNaN);
+        real = l.y;
+        for (size_t j = 0; j < n; ++j)
+          if (l.est[j]) {
+            real[j] = kNaN;
+            for (size_t t = j ? j - 1 : 0; t <= std::min(j + 1, n - 1); ++t)
+              est[t] = l.y[t];
+          }
+        ImPlot::SetNextLineStyle(ImVec4(l.col.x, l.col.y, l.col.z, l.col.w * kEstA), 1.5f);
+        ImPlot::PlotLine("##e", l.x.data(), est.data(), static_cast<int>(n));
+      }
+      ImPlot::SetNextLineStyle(l.col, 1.5f);
+      if (n == 1) // 只一点 (竞价根 / 首根) 连不成线: 画点
+        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.f, l.col, IMPLOT_AUTO, l.col);
+      ImPlot::PlotLine("##l", l.x.data(), real.empty() ? l.y.data() : real.data(), static_cast<int>(n));
       ImGui::PopID();
     }
     const int k = near_line(ls.size(), [&](size_t i, double x) {
@@ -976,6 +1001,10 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
         ImGui::TextColored(l->col, "%s", l->name.c_str());
         ImGui::SameLine();
         ImGui::TextColored(tint(y, 0), "%+.2f%s", y, unit);
+        if (!l->est.empty() && l->est[j]) {
+          ImGui::SameLine();
+          ImGui::TextDisabled("估 (缺口待补)");
+        }
         if (!l->acct.empty()) {
           const Overlay::AcctPt &a = l->acct[j];
           ImGui::TextDisabled("  复权净资产 %s", yuan_text(a.adj).c_str());
@@ -1073,10 +1102,10 @@ struct OverlayCtx {
   bool one;
 };
 
-// 涨跌幅: y = 收对本条在日轴内首日前收的涨跌幅 [%] (收盘线, 缺口处插 NaN 断开); 只一条另带现价十字; 账户线同步算前复权净资产与窗内回撤
+// 涨跌幅: y = 收对本条在日轴内首日前收的涨跌幅 [%] (收盘线, 缺口的估值照收作估值点, 无估值的缺口处插 NaN 断开); 只一条另带现价十字; 账户线同步算前复权净资产与窗内回撤
 bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Overlay &l) {
   PlotBars s;
-  intraday(src, cx.days, s);
+  intraday(src, cx.days, s, true);
   if (s.bars.empty() || !(s.bars.front().ref > 0))
     return false;
   const double base = s.bars.front().ref;
@@ -1111,13 +1140,13 @@ bool pct_line(const OverlayCtx &cx, const OverlayPick &p, const Source &src, Ove
   for (size_t i = 0, c = 0; i < s.bars.size(); ++i) {
     const bool cut = c < s.cut.size() && s.cut[c] < s.x[i];
     if (cut && i > 0) {
-      l.x.push_back(s.cut[c]), l.y.push_back(std::numeric_limits<double>::quiet_NaN());
+      l.x.push_back(s.cut[c]), l.y.push_back(std::numeric_limits<double>::quiet_NaN()), l.est.push_back(false);
       if (acct)
         l.acct.push_back({});
     }
     while (c < s.cut.size() && s.cut[c] < s.x[i])
       ++c;
-    l.x.push_back(s.x[i]), l.y.push_back(pct(s.bars[i].close));
+    l.x.push_back(s.x[i]), l.y.push_back(pct(s.bars[i].close)), l.est.push_back(s.est[i]);
     if (acct) {
       const Candle &b = s.bars[i];
       double pnl = 0.0;
@@ -1242,7 +1271,7 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
     st.series = std::make_shared<StockSeries>();
   st.series->update({j.tape(), j.live, id, st.chart.intraday}, [&](StockData &d) {
     d = {.view = j.view, .src = src, .days = k_days(src)};
-    intraday(src, day_axis(mk.calendar().days, j.live ? j.live->date : 0, kIntraDays[st.chart.intraday]), d.intra);
+    intraday(src, day_axis(mk.calendar().days, j.live ? j.live->date : 0, kIntraDays[st.chart.intraday]), d.intra, false);
   });
   StockData &c = st.series->val;
 

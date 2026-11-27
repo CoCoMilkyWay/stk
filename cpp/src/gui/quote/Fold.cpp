@@ -6,13 +6,13 @@ namespace GUI::Quote {
 
 namespace {
 
-// 一根 → 一格的比 (价 / 基准) + 额, 净流入 / 缺口待填 0; 无根 → 平于 at, 额 0
+// 一根 → 一格的比 (价 / 基准) + 额, 净流入 / 缺口 / 估值待填 0; 无根 → 平于 at, 额 0
 void ratio(const Cell *c, double inv, double at, double *q) {
   if (c)
     q[0] = c->open * inv, q[1] = c->high * inv, q[2] = c->low * inv, q[3] = c->close * inv, q[4] = c->amount;
   else
     q[0] = q[1] = q[2] = q[3] = at, q[4] = 0;
-  q[5] = q[6] = 0;
+  q[5] = q[6] = q[7] = 0;
 }
 
 // 一格 (比 × 权之和) → 一根 (× f = 1 / Σ w)
@@ -27,7 +27,7 @@ void rebase(Day &y, double level) {
   static_cast<Cell &>(y.candle) = scaled(y.candle, level);
   y.candle.ref = static_cast<float>(level);
   for (size_t s = 0; s < static_cast<size_t>(kSlots); ++s)
-    if (y.bars.has[s])
+    if (y.bars.has[s] || y.bars.guess[s])
       y.bars.cell[s] = scaled(y.bars.cell[s], level);
 }
 
@@ -80,14 +80,18 @@ int Fold::row(const Leg &g, float base, int freeze, Carry &k, Row &r, int &end, 
   for (int s = k.at; s < slots_; ++s) {
     if (s == freeze)
       k = {base, freeze, dir, c, px};
-    const Cell *b = g.bars->has[static_cast<size_t>(s)] ? &g.bars->cell[static_cast<size_t>(s)] : nullptr;
-    double *q = r.data() + (1 + static_cast<size_t>(s)) * kQ;
+    const size_t j = static_cast<size_t>(s);
+    const bool gs = g.bars->guess[j];
+    const Cell *b = g.bars->has[j] || gs ? &g.bars->cell[j] : nullptr;
+    double *q = r.data() + (1 + j) * kQ;
     ratio(b, inv, c, q);
-    q[6] = g.bars->hole[static_cast<size_t>(s)];
+    q[6] = g.bars->hole[j] && !gs, q[7] = gs;
     if (b) {
       c = q[3], end = std::max(end, s);
       if (s < freeze)
         fend = std::max(fend, s);
+    }
+    if (b && !gs) {
       dir = tick_dir(b->close, px, dir);
       q[5] = dir * b->amount, px = b->close;
     }
@@ -133,7 +137,7 @@ void Fold::finish(misc::Ymd d, std::span<Day> out) {
     const double w = 1.0 / sw_[b];
     o.candle = {weighed(l, w), d, 1.f};
     o.call = !(l[4] > 0);
-    o.bars.has.reset(), o.bars.hole.reset();
+    o.bars.has.reset(), o.bars.hole.reset(), o.bars.guess.reset();
     o.bars.net.fill(0);
     for (int s = 0; s <= end_; ++s) {
       const size_t j = (1 + static_cast<size_t>(s)) * kQ;
@@ -142,6 +146,11 @@ void Fold::finish(misc::Ymd d, std::span<Day> out) {
         q[i] = f[j + i] + l[j + i];
       if (q[6] > 0) {
         o.bars.hole.set(static_cast<size_t>(s));
+        continue;
+      }
+      if (q[7] > 0) {
+        o.bars.hole.set(static_cast<size_t>(s)), o.bars.guess.set(static_cast<size_t>(s));
+        o.bars.cell[static_cast<size_t>(s)] = weighed(q, w);
         continue;
       }
       o.bars.add(s, weighed(q, w));

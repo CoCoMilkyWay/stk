@@ -73,41 +73,11 @@ struct BasketBooks {
 
 } // namespace
 
-LedgerLines fold_ledger(misc::exec::ForkJoin &ex, int seg, const RowLines &r, int stride) {
-  const Geo g = geo_of(seg);
-  const int n = r.n, T = r.T;
-  assert(n >= 1 && stride >= 1 && T % stride == 0 && T % g.S == 0);
-  assert(r.hold.size() == static_cast<size_t>(n) && r.at_exit.size() == r.hold.size() && r.x.size() == static_cast<size_t>(n) * T);
-  LedgerLines out;
-  out.reset(n, T / stride);
-  ex.rows(n, [&](int i0, int i1, int) {
-    std::vector<double> inc(static_cast<size_t>(T));
-    for (int i = i0; i < i1; ++i) {
-      const Hold hd = hold_on(r.hold[static_cast<size_t>(i)], g);
-      const bool at_exit = r.at_exit[static_cast<size_t>(i)];
-      const double h = hd.span();
-      const float *x = r.x.data() + static_cast<size_t>(i) * T;
-      std::fill(inc.begin(), inc.end(), 0.0);
-      for (int t = 0; t < T; ++t)
-        if (const int u = at_exit ? hd.exit(t) : t; u < T)
-          inc[static_cast<size_t>(u)] += x[t] / h;
-      float *dst = out.at(i);
-      for (int p = 0; p < out.P; ++p) {
-        double s = 0.0;
-        for (int u = p * stride; u < (p + 1) * stride; ++u)
-          s += inc[static_cast<size_t>(u)];
-        dst[p] = static_cast<float>(s);
-      }
-    }
-  });
-  return out;
-}
-
 Need basket_need(const FeatureTable &ft) {
   assert(ft.seg == 1 && "篮子账按日");
   const std::array<LeafId, kPoolVals> val = pool_val_leaves(ft);
-  const Holds hd = Holds::of(hold_bit(kHoldT1));
-  return {{val.begin(), val.end()}, hd, Segs::None, false, bands_of(0, hd, ft.seg), Budget{.work = static_cast<double>(sizeof(PoolMask))}, BasketPass::bytes()};
+  // Y 只装门控 (标签取原料带 Strip, 与 Beta 选池账同一份); 前后带按 T+1 的交接链
+  return {{val.begin(), val.end()}, Holds{}, Segs::None, false, bands_of(0, Holds::of(hold_bit(kHoldT1)), ft.seg), Budget{.work = static_cast<double>(sizeof(PoolMask))}, BasketPass::bytes()};
 }
 
 Bytes BasketPass::bytes() {
@@ -131,9 +101,9 @@ void BasketPass::init(const Job &j) {
   assert(r0_ + dm.dates.size() <= s.days() && std::equal(dm.dates.begin(), dm.dates.end(), s.dates.begin() + static_cast<std::ptrdiff_t>(r0_)) &&
          "评估日 = 原料带的连续行");
   const int nl = static_cast<int>(basket_table().size()), A = static_cast<int>(s.A()), P = static_cast<int>(ds_), B = nl + A;
-  rx_.reset(kLedgerCols * B, P); // 线 = 列 · B + 本 (本 = 篮子 | 个股)
-  for (int i = 0; i < rx_.n; ++i)
-    rx_.at_exit[static_cast<size_t>(i)] = i < B; // 收益列平仓行实现, 其余建仓行即付
+  rz_.reset(kLedgerCols * B, P, 1, 1); // 线 = 列 · B + 本 (本 = 篮子 | 个股)
+  for (int i = 0; i < rz_.out.n; ++i)
+    rz_.at_exit[static_cast<size_t>(i)] = i < B; // 收益列平仓行实现, 其余建仓行即付
   out = Baskets{};
   Ledger &bk = out[Quote::kBasket], &sk = out[Quote::kStock];
   bk.pf.cap.reset(nl, P, kNaN);
@@ -157,13 +127,13 @@ Rc BasketPass::block(const Block &c, size_t ci, bool, double) {
   const BasketTable &bt = basket_table();
   const ConceptTable &ct = concepts();
   const YPlanes &y = c.y;
-  assert(y.sh.seg == 1 && y.hd.n == 1 && y.hd.k[0] == kHoldT1 && y.eo && y.labels[0]);
-  const LabPlane &lab = *y.labels[0];
-  const st::Label lb = label_of(lab, y.eo, nullptr);
+  assert(y.sh.seg == 1 && y.hd.n == 0 && y.gate);
   const st::Span sp = c.span();
   const Hold hd = hold_on(kHoldT1, sp.g);
   const size_t T = static_cast<size_t>(sp.T), A = static_cast<size_t>(sp.A), nl = bt.size(), B = nl + A;
   const size_t rc = r0_ + c.ck.d0, r_stat = r0_ + warm_;
+  const size_t o = rc * A; // 块首在原料带上的格
+  const st::Label lb{s.lv.data() + o, s.nv.data() + o, s.m.data() + o, s.eo.data() + o};
   const int t_lo = sp.t_lo, t_hi = sp.t_hi(), n_stat = t_hi - t_lo;
 
   // 1. 块内各建仓行 t 对应次一交易日持仓的子池位集 in [T][A] + 持仓权 Weigh (统计行与其前一行: 交接的前一批)
@@ -183,15 +153,21 @@ Rc BasketPass::block(const Block &c, size_t ci, bool, double) {
   for (int t = t_w; t < t_hi; ++t)
     wt.emplace_back(*pk_, s.holding_after(rc + static_cast<size_t>(t)));
 
-  // 2. 篮子账 + 个股账 (同一账集): 收益 (平仓行) / 四列流水 (建仓行); 只付固定冲击
-  const BasketBooks books{bt, ct, s, in.data(), s.ind.data() + rc * A, lab.m.data(), wt, t_w, static_cast<int>(A)};
+  // 2. 篮子账 + 个股账 (同一账集): 收益 (平仓行) / 四列流水 (建仓行); 只付固定冲击. 本块逐行暂存 → Realize
+  const BasketBooks books{bt, ct, s, in.data(), s.ind.data() + o, lb.m, wt, t_w, static_cast<int>(A)};
+  const size_t nb = static_cast<size_t>(n_stat);
+  blk_.assign(kLedgerCols * B * nb, 0.f);
   st::book_rows(ex, sp, hd, lb, books, st::Cost{}, [&](int, int t, const double *ret, const st::Flow *flow) {
-    const size_t u = static_cast<size_t>(c.land0() + t);
+    const size_t r = static_cast<size_t>(t - t_lo);
     for (size_t b = 0; b < B; ++b) {
-      rx_.x[(kLedgerRet * B + b) * ds_ + u] = static_cast<float>(ret[b]);
+      blk_[(kLedgerRet * B + b) * nb + r] = static_cast<float>(ret[b]);
       for (int k = kLedgerImp; k < kLedgerCols; ++k)
-        rx_.x[(static_cast<size_t>(k) * B + b) * ds_ + u] = ledger_cell(flow[b], kAmtFixed, k);
+        blk_[(static_cast<size_t>(k) * B + b) * nb + r] = ledger_cell(flow[b], kAmtFixed, k);
     }
+  });
+  ex.rows(rz_.out.n, [&](int i0, int i1, int) {
+    for (int i = i0; i < i1; ++i)
+      rz_.fold(i, c.land0() + t_lo, blk_.data() + static_cast<size_t>(i) * nb, n_stat);
   });
 
   // 3. 画像: 个股七口 / 市值 / 余额 + 篮子按持仓权 (成员表 members ⇄ 随价漂移到当日收盘) 平均的七口
@@ -279,18 +255,19 @@ Rc BasketPass::block(const Block &c, size_t ci, bool, double) {
 }
 
 void BasketPass::finish(const Job &) {
-  const LedgerLines all = fold_ledger(F_.S.ex, 1, rx_, 1);
+  const LedgerLines &all = rz_.out;
   const int nl = static_cast<int>(basket_table().size()), B = all.n / kLedgerCols;
   for (int k = 0; k < kLedgerCols; ++k) {
     out[Quote::kBasket].col[k] = all.slice(k * B, nl);
     out[Quote::kStock].col[k] = all.slice(k * B + nl, B - nl);
   }
-  rx_ = RowLines{};
+  rz_ = Realize{};
+  std::vector<float>().swap(blk_);
 }
 
 Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
   assert(sc.ft && sc.ft->seg == 1 && pool_id(sc.pool) == kAllPool && "池篮子在 all 池日层评估域");
-  assert(sc.ft->y.has(kHoldT1) && "篮子须有 T+1 标签 (日层: 池指数 C(行) → C(D+1))");
+  assert(sc.ft->y.has(kHoldT1) && "篮子须有 T+1 标签 (日层: 池指数 C(行) → C(D+1); 标签取原料带)");
   if (const Rc rc = open_job(F, sc, basket_need(*sc.ft), j); rc != Rc::Ok)
     return rc;
   assert(j.dm.rs.has(kAllBar));
@@ -312,17 +289,19 @@ LedgerLines pool_line(misc::exec::ForkJoin &ex, const Block &c) {
   const YPlanes &y = c.y;
   assert(y.hd.n >= 1 && y.eo && "Y 未钉");
   const st::Span sp = c.span();
-  const int r0 = sp.t_lo;
-  const size_t nT = static_cast<size_t>(sp.t_hi() - r0);
-  RowLines x;
-  x.reset(y.hd.n, sp.t_hi() - r0);
-  std::copy_n(y.hd.k, y.hd.n, x.hold.begin());
+  const int r0 = sp.t_lo, nT = sp.t_hi() - r0;
+  Realize rz;
+  rz.reset(y.hd.n, nT, y.sh.seg, 1);
+  std::copy_n(y.hd.k, y.hd.n, rz.hold.begin());
+  std::vector<float> x(static_cast<size_t>(nT));
   for (int hi = 0; hi < y.hd.n; ++hi) {
     const LabPlane &lab = *y.labels[hi];
+    std::fill(x.begin(), x.end(), 0.f);
     st::book_rows(ex, sp, hold_on(y.hd.k[hi], sp.g), label_of(lab, y.eo, nullptr), st::MaskBook{lab.m.data(), sp.A}, st::Cost{},
-                  [&](int, int t, const double *ret, const st::Flow *) { x.x[static_cast<size_t>(hi) * nT + static_cast<size_t>(t - r0)] = static_cast<float>(ret[0]); });
+                  [&](int, int t, const double *ret, const st::Flow *) { x[static_cast<size_t>(t - r0)] = static_cast<float>(ret[0]); });
+    rz.fold(hi, 0, x.data(), nT);
   }
-  return fold_ledger(ex, y.sh.seg, x, 1);
+  return std::move(rz.out);
 }
 
 } // namespace GUI::Engine

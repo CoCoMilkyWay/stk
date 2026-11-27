@@ -50,17 +50,13 @@ inline constexpr std::array<size_t, kHoldCount + 1> kLabelCol = [] {
     c[h + 1] = c[h] + (hold_offset(static_cast<HoldId>(h)) ? 2 : 1);
   return c;
 }();
-constexpr size_t label_legs(size_t h) { return kLabelCol[h + 1] - kLabelCol[h]; }
-constexpr size_t label_col(size_t h) { return kLabelCol[h]; }
 
 class LabelHold {
 public:
-  using RowSet = LabelRows;
-  static constexpr size_t HOLD_COUNT = kHoldCount;
   static constexpr size_t LEG_MAX = 2; // [做多, 名义]
-  static constexpr size_t legs(size_t h) { return label_legs(h); }
-  static constexpr size_t hold_col(size_t h) { return label_col(h); }
-  static constexpr size_t ENTRY_COL = label_col(HOLD_COUNT); // lb_entry_ok (建仓可成交码)
+  static constexpr size_t legs(size_t h) { return kLabelCol[h + 1] - kLabelCol[h]; }
+  static constexpr size_t hold_col(size_t h) { return kLabelCol[h]; }
+  static constexpr size_t ENTRY_COL = kLabelCol[kHoldCount]; // lb_entry_ok (建仓可成交码)
   static constexpr size_t MIN_LABEL_COUNT = ENTRY_COL + 1;   // LB 块总列数
 
 // LB 块输出口 (字段表 LB(port) 的 port): 枚举值 = LB 块偏移 (组序 = HOLDS 序, 组内 [ret, nom], 末位 entry_ok)
@@ -85,11 +81,6 @@ public:
   }(),
                 "分钟型 / 日级型的 n 须 ≥ 1");
 
-  static constexpr size_t PEND_DAYS = kPendDays;
-  // FeatureStore 日环下限: 悬挂日全 BUSY 时同日的 TS 还要 1 个 slot 才能推进; 再 +1: IO(d) 等 CS(d+1) close (截面跨日读 d−1 槽位,
-  // 见 FeatureStore::io_try_open), d 的 slot 要多持到 d+1 结清 (其余 CS / IO 阶段的 slot 另算, 只影响吞吐不致死锁)
-  static constexpr size_t MIN_RING_SLOTS = PEND_DAYS + 2;
-
   static_assert(kAuctionMin == (L2::MORNING_MATCHING_START_HOUR * 60 + L2::MORNING_MATCHING_START_MINUTE) - MORNING_START_MIN);
   static_assert(kContOpenMin == (L2::CONTINUOUS_TRADING_MORNING_START_HOUR * 60 + L2::CONTINUOUS_TRADING_MORNING_START_MINUTE) - MORNING_START_MIN);
   static_assert(static_cast<size_t>(kContCloseMin) == MORNING_MINUTES + (AFTERNOON_END_MIN - AFTERNOON_START_MIN));
@@ -97,7 +88,7 @@ public:
   // 落盘行约束 (CoreTs 编译期查; rows[c] = LB 块偏移 c 的落盘行): 骨架按组结算, 一组各列落盘行须相同
   template <class Rows>
   static constexpr bool rows_ok(const Rows &rows) {
-    for (size_t h = 0; h < HOLD_COUNT; ++h)
+    for (size_t h = 0; h < kHoldCount; ++h)
       for (size_t s = 1; s < legs(h); ++s)
         if (!(rows[hold_col(h) + s] == rows[hold_col(h)]))
           return false;
@@ -108,7 +99,7 @@ public:
 
   // 新的一日: 悬挂环前进. 被顶掉的槽必已结清 (close_day 每日按环满结清最老一日)
   inline void day_begin() {
-    cur_ = (cur_ + 1) % PEND_DAYS;
+    cur_ = (cur_ + 1) % kPendDays;
     Pend &p = pend_[cur_];
     assert(!p.held && "悬挂日环被顶掉的日尚未结清");
     p.held = true;
@@ -119,7 +110,7 @@ public:
   // 回测区间末: 悬挂日全部按最近一次收盘价结清 (持有到最后一日收盘), 全部释放
   template <class Writer, class Release>
   inline void finish_all(Writer &&writer, Release &&release) {
-    for (size_t age = PEND_DAYS; age-- > 0;)
+    for (size_t age = kPendDays; age-- > 0;)
       mark_close(age, writer);
     release_settled(release);
     assert(n_wait_[0] == 0 && n_wait_[1] == 0);
@@ -137,7 +128,7 @@ public:
     ar(last_close_);
     ar(has_last_);
   }
-  bool held(size_t age) const { return pend_[(cur_ + PEND_DAYS - age) % PEND_DAYS].held; }
+  bool held(size_t age) const { return pend_[(cur_ + kPendDays - age) % kPendDays].held; }
 
 protected:
   float px_scale_ = 1.0f;               // 价格缩放 = 当日复权比 (派生类 reset 时设; 跨日收益不含除权缺口)
@@ -161,7 +152,7 @@ protected:
       const float code = e.code();
       writer(ENTRY_COL, size_t{1}, r, &code, size_t{0});
     }
-    for (size_t h = 0; h < HOLD_COUNT; ++h) {
+    for (size_t h = 0; h < kHoldCount; ++h) {
       const HoldId id = static_cast<HoldId>(h);
       const size_t n = static_cast<size_t>(hold_n(id));
       if (hold_kind(id) == HoldKind::Min) {
@@ -186,9 +177,9 @@ protected:
       return cont;
     open_ok_ = true;
     const LabelPx o = auction_px(t_min == static_cast<size_t>(kAuctionMin) ? md.close : md.open);
-    for (size_t age = 1; age < PEND_DAYS; ++age) {
+    for (size_t age = 1; age < kPendDays; ++age) {
       Pend &q = at(age);
-      for (size_t h = 0; h < HOLD_COUNT; ++h)
+      for (size_t h = 0; h < kHoldCount; ++h)
         if (hold_kind(static_cast<HoldId>(h)) == HoldKind::Open && static_cast<size_t>(hold_n(static_cast<HoldId>(h))) == age && (q.sched >> h & 1u)) {
           exit_rows(q, age, h, o, writer);
           q.sched &= ~(1u << h);
@@ -206,9 +197,9 @@ protected:
   template <class Writer, class Release>
   inline void close_day(bool traded, const LabelPx &close, Writer &&writer, Release &&release) {
     Pend &p = pend_[cur_];
-    for (size_t age = 1; age < PEND_DAYS; ++age) {
+    for (size_t age = 1; age < kPendDays; ++age) {
       Pend &q = at(age);
-      for (size_t h = 0; h < HOLD_COUNT; ++h) {
+      for (size_t h = 0; h < kHoldCount; ++h) {
         const HoldId id = static_cast<HoldId>(h);
         if ((q.sched >> h & 1u) && static_cast<size_t>(hold_n(id)) <= age && !(traded && hold_kind(id) == HoldKind::Same)) { // Open 到期未开盘 / 无成交日到期
           if (traded)
@@ -224,11 +215,11 @@ protected:
       has_last_ = true;
       while (p.n_entry < TRADE_MINUTES_PER_DAY)
         push_entry(close, writer);
-      for (size_t age = 1; age < PEND_DAYS; ++age) // 名义今日的同刻型: 全部行已在 push_entry 平 (或进等待)
-        for (size_t h = 0; h < HOLD_COUNT; ++h)
+      for (size_t age = 1; age < kPendDays; ++age) // 名义今日的同刻型: 全部行已在 push_entry 平 (或进等待)
+        for (size_t h = 0; h < kHoldCount; ++h)
           if (hold_kind(static_cast<HoldId>(h)) == HoldKind::Same && static_cast<size_t>(hold_n(static_cast<HoldId>(h))) <= age)
             at(age).sched &= ~(1u << h);
-      for (size_t h = 0; h < HOLD_COUNT; ++h) {
+      for (size_t h = 0; h < kHoldCount; ++h) {
         const HoldId id = static_cast<HoldId>(h);
         if (hold_kind(id) == HoldKind::Min) {
           const size_t n = std::min(static_cast<size_t>(hold_n(id)), TRADE_MINUTES_PER_DAY);
@@ -242,14 +233,14 @@ protected:
       resolve(close, writer);
       p.sched = kDailyMask;
     }
-    mark_close(PEND_DAYS - 1, writer);
+    mark_close(kPendDays - 1, writer);
     release_settled(release);
   }
 
 private:
   static constexpr uint32_t kDailyMask = [] {
     uint32_t m = 0;
-    for (size_t h = 0; h < HOLD_COUNT; ++h)
+    for (size_t h = 0; h < kHoldCount; ++h)
       if (hold_daily(static_cast<HoldId>(h)))
         m |= 1u << h;
     return m;
@@ -261,19 +252,19 @@ private:
     uint32_t sched = 0;                   // 名义平仓未到的日级组 (位 = h)
     size_t n_entry = 0;                   // 已定 entry 的行数
     LabelPx entry[TRADE_MINUTES_PER_DAY]; // 各行 entry 价点
-    RowSet wait[HOLD_COUNT][LEG_MAX];     // 名义价点平不了, 等之后首个该腿可平价点 (名义腿只在名义日停牌时等)
+    LabelRows wait[kHoldCount][LEG_MAX];  // 名义价点平不了, 等之后首个该腿可平价点 (名义腿只在名义日停牌时等)
     bool busy() const {
       if (sched)
         return true;
       for (const auto &hw : wait)
-        for (const RowSet &s : hw)
+        for (const LabelRows &s : hw)
           if (s.any())
             return true;
       return false;
     }
   };
 
-  Pend &at(size_t age) { return pend_[(cur_ + PEND_DAYS - age) % PEND_DAYS]; }
+  Pend &at(size_t age) { return pend_[(cur_ + kPendDays - age) % kPendDays]; }
 
   // 做多价格收益率 (两腿同式, 只差平仓价点)
   static inline float calc_return(float entry_px, float exit_px) {
@@ -306,8 +297,8 @@ private:
   }
 
   // 组 h 名义平仓日无成交: 全部落盘行 (rows) 各腿进等待
-  inline void wait_rows(Pend &q, size_t h, const RowSet &rows) {
-    const RowSet r = rows.below(q.n_entry);
+  inline void wait_rows(Pend &q, size_t h, const LabelRows &rows) {
+    const LabelRows r = rows.below(q.n_entry);
     for (size_t s = 0; s < legs(h); ++s)
       n_wait_[s] += q.wait[h][s].merge(r);
   }
@@ -318,9 +309,9 @@ private:
     for (size_t s = 0; s < LEG_MAX; ++s) {
       if (!n_wait_[s] || !x.exits(s))
         continue;
-      for (size_t age = 0; age < PEND_DAYS; ++age) {
+      for (size_t age = 0; age < kPendDays; ++age) {
         Pend &q = at(age);
-        for (size_t h = 0; h < HOLD_COUNT; ++h)
+        for (size_t h = 0; h < kHoldCount; ++h)
           if (s < legs(h))
             q.wait[h][s].drain([&](size_t m) { write_leg(age, h, s, m, q.entry[m].px, x.px, writer); });
       }
@@ -336,11 +327,11 @@ private:
       return;
     assert(has_last_ && "悬挂日必有 entry ⇒ 必有过成交 ⇒ last_close_ 有值");
     const LabelPx mk{last_close_, true, true};
-    for (size_t h = 0; h < HOLD_COUNT; ++h)
+    for (size_t h = 0; h < kHoldCount; ++h)
       if (q.sched >> h & 1u)
         exit_rows(q, age, h, mk, writer);
     q.sched = 0;
-    for (size_t h = 0; h < HOLD_COUNT; ++h)
+    for (size_t h = 0; h < kHoldCount; ++h)
       for (size_t s = 0; s < legs(h); ++s)
         n_wait_[s] -= q.wait[h][s].drain([&](size_t m) { write_leg(age, h, s, m, q.entry[m].px, mk.px, writer); });
   }
@@ -348,7 +339,7 @@ private:
   // 写完的日按日序 release (老日先; 遇到未写完的日即停)
   template <class Release>
   inline void release_settled(Release &&release) {
-    for (size_t age = PEND_DAYS; age-- > 0;) {
+    for (size_t age = kPendDays; age-- > 0;) {
       Pend &q = at(age);
       if (!q.held)
         continue;
@@ -362,8 +353,8 @@ private:
   bool open_ok_ = false; // 当日已截到开盘价点 (reset 清)
 
   // 跨日状态 (reset 不清)
-  std::array<Pend, PEND_DAYS> pend_; // 悬挂日环, pend_[cur_] = 当日; 日 D 的槽 = (cur_ − age) mod PEND_DAYS
-  size_t cur_ = PEND_DAYS - 1;       // 首个 day_begin 推到 0
+  std::array<Pend, kPendDays> pend_; // 悬挂日环, pend_[cur_] = 当日; 日 D 的槽 = (cur_ − age) mod kPendDays
+  size_t cur_ = kPendDays - 1;       // 首个 day_begin 推到 0
   size_t n_wait_[LEG_MAX] = {};      // 各腿等待中的 (日, 组, 行) 数 (0 → resolve 跳过)
   float last_close_ = 0.0f;          // 最近一次收盘价 (后复权), 环满 / 区间末的估值价
   bool has_last_ = false;

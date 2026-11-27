@@ -103,14 +103,17 @@ bool Config::LoadFromFile() {
   double new_stamp = j.value("stamp", fee.stamp);
   double new_transfer = j.value("transfer", fee.transfer);
   double new_impact = j.value("impact", fee.impact);
-  double new_max_impact = j.value("max_impact", max_impact);
+  double new_top = j.value("cost_top", cost.top);
   try_assign(fee.commission, new_commission, new_commission >= 0.0 && new_commission < 0.01, "佣金比率越界 (万 1 = 0.0001)");
   try_assign(fee.stamp, new_stamp, new_stamp >= 0.0 && new_stamp < 0.01, "印花税比率越界 (万 5 = 0.0005)");
   try_assign(fee.transfer, new_transfer, new_transfer >= 0.0 && new_transfer < 0.01, "过户费比率越界 (0.001% = 0.00001)");
   try_assign(fee.impact, new_impact, new_impact >= 0.0 && new_impact < 0.05, "固定冲击比率越界 (20bp = 0.0020)");
-  try_assign(max_impact, new_max_impact,
-             new_max_impact > 0.0 && new_max_impact <= 0.2, "买入冲击封顶越界 (1% = 0.01)");
-  lob_cost = j.value("lob_cost", lob_cost);
+  try_assign(cost.top, new_top, new_top > 0.0 && new_top <= 0.2, "盘口冲击封顶越界 (1% = 0.01)");
+  AmtId amt = kAmtFixed;
+  if (amt_of_wan(j.value("cost_amt", kAmtWan[cost.amt]), amt))
+    cost.amt = amt;
+  else if (log_callback)
+    log_callback("警告: 成本金额段不在 LABEL_AMTS 里, 保留旧值");
 
   return true;
 }
@@ -130,8 +133,8 @@ bool Config::SaveToFile() {
   j["stamp"] = fee.stamp;
   j["transfer"] = fee.transfer;
   j["impact"] = fee.impact;
-  j["max_impact"] = max_impact;
-  j["lob_cost"] = lob_cost;
+  j["cost_amt"] = kAmtWan[cost.amt];
+  j["cost_top"] = cost.top;
   disk::write(disk::SettingsFile, {}, j.dump(2)); // Pretty print with 2 spaces indent
   if (log_callback) {
     log_callback("Config auto-saved to: " + filepath);

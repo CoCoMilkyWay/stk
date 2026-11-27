@@ -99,10 +99,10 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
   const std::vector<Slot> ps = parts_of(seg, env.open, env.clock);
   const std::vector<int> pr = part_of_row(ps, seg);
 
-  Layer all;
-  std::vector<Layer> by_tod(ps.size());
-  std::map<int, Layer> by_month;
-  std::array<Layer, 4> cond_b;
+  st::Sums all;
+  std::vector<st::Sums> by_tod(ps.size());
+  std::map<int, st::Sums> by_month;
+  std::array<st::Sums, 4> cond_b;
   Mean cond_rho, cond_ric;
 
   std::vector<misc::Ymd> dates;
@@ -126,7 +126,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
     const Engine::LabPlane &lb = *cv.blk.y.labels[0];
     const uint16_t *lv = lb.lv.data();
     const int nt = F.S.ex.threads();
-    std::vector<std::array<Layer, 4>> tb(static_cast<size_t>(nt));
+    std::vector<std::array<st::Sums, 4>> tb(static_cast<size_t>(nt));
     std::vector<Mean> trho(static_cast<size_t>(nt)), tric(static_cast<size_t>(nt));
 
     F.S.ex.rows(n_stat, [&](int r0, int r1, int tid) {
@@ -188,11 +188,11 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
   r->period = period_note(dates, env, win);
   r->label = fac.label, r->split = split, r->cond = cond, r->seg = seg;
   r->all = row_of("全期", all);
-  r->ric_t = all.ric.t(), r->ric_up = all.ric.up();
+  r->ric_t = all.ric_t(), r->ric_up = all.ric_up();
   for (int k = 0; k < kGroups; ++k)
     r->held.push_back(all.held(k));
   for (int j = 0; j < kTails; ++j)
-    r->tails.push_back({factor::stat::tail_frac(j), all.tail(0, j), all.tail_held(0, j), all.tail(1, j), all.tail_held(1, j)});
+    r->tails.push_back({factor::stat::tail_frac(j), all.tail_of(0, j), all.tail_held(0, j), all.tail_of(1, j), all.tail_held(1, j)});
   if (split == "tod" && seg > 1)
     for (size_t i = 0; i < ps.size(); ++i)
       r->splits.push_back(row_of(ps[i].name, by_tod[i]));
@@ -201,7 +201,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
       r->splits.push_back(row_of(misc::dash_ym(m), b));
   if (!cond.empty()) {
     r->cond_err = feats[0].err;
-    r->has_cond = cond_b[0].ok > 0;
+    r->has_cond = cond_b[0].n > 0;
     r->cond_rho = cond_rho.mean(), r->cond_ric = cond_ric.mean();
     const char *names[] = {"全体 (同口径)", "低 1/3", "中 1/3", "高 1/3"};
     for (size_t j = 0; j < 4; ++j)

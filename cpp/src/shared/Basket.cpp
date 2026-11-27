@@ -13,18 +13,10 @@ Weigh::Weigh(const pool::Picks &pk, misc::Ymd d) : s_(pk.strip.get()) {
 Weigh::Cell Weigh::of(size_t a) const {
   assert(q_ < s_->days());
   Cell c;
-  const size_t A = s_->A();
-  const float mc = s_->mcap[q_ * A + a];
-  c.v[pool::kRebalDay][pool::kWeightEq] = 1.0f;
-  c.v[pool::kRebalDay][pool::kWeightCap] = mc;
-  if (const size_t r = src_[pool::kRebalWeek]; r == q_) {
-    c.v[pool::kRebalWeek][pool::kWeightEq] = 1.0f;
-    c.v[pool::kRebalWeek][pool::kWeightCap] = mc;
-  } else if (r != SIZE_MAX) {
-    const double path = static_cast<double>(s_->grow[q_ * A + a]) / s_->grow[r * A + a];
-    c.v[pool::kRebalWeek][pool::kWeightEq] = static_cast<float>(path);
-    c.v[pool::kRebalWeek][pool::kWeightCap] = static_cast<float>(s_->mcap[r * A + a] * path);
-  }
+  for (int rb = 0; rb < pool::kRebals; ++rb)
+    if (const size_t r = src_[static_cast<size_t>(rb)]; r != SIZE_MAX)
+      for (int w = 0; w < pool::kWeights; ++w)
+        c.v[rb][w] = s_->omega(r, q_, a, static_cast<pool::Weight>(w));
   return c;
 }
 

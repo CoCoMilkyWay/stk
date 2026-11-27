@@ -1,7 +1,7 @@
 // Probe — 探针层 (一个根的一种输出; 双层严格对仗生命周期): Load / Ledger 之上, Engine 之下.
 //   趟级: init(PassCtx) ⇄ finish(PassCtx)    (PassCtx = pass_ctx(作业); 首块前一次定形/置初值, 末块后好根一次收尾; 常驻 bytes)
 //   块级: open(Ctx)     ⇄ close(Ctx, RootView) (Ctx 带块上标签 + 逐根评估口径 Mode; 中间夹逐统计行 row(hi, t, r); 暂存 scratch)
-//   落地三形 (行轴 = 评估期 rows_stat): RowsP<D, Got> (逐行暂存 → 折) / LandCellsP<V> (逐格) / LinesP (净值线 → fold_ledger).
+//   落地三形 (行轴 = 评估期 rows_stat): RowsP<D, Got> (逐行暂存 → 折) / LandCellsP<V> (逐格) / LinesP (净值线: 块内逐行暂存 → Realize).
 //   通用五探针: HoldP (三级 + 逐日 + 滚动窗) / TurnP (账集流水) / CoverP / AlphaP / IcPdfP → EvalProbes<X...> → fill_eval;
 //   分年一律 by_year (逐日原料取 HoldP / TurnP 两处, 只在 fill_eval 汇成 YearStat).
 #pragma once
@@ -10,7 +10,7 @@
 #include "factor/Stat/Cpu.hpp" // Workspace
 #include "factor/Stat/Fold.hpp"
 #include "factor/Stat/Roll.hpp"  // Day / roll_of
-#include "gui/engine/Ledger.hpp" // RowLines / fold_ledger
+#include "gui/engine/Ledger.hpp" // Realize
 #include "gui/engine/Load.hpp"
 #include "math/distribution/PdfSnap.hpp" // AggPdf / KLLcache
 #include "misc/date.hpp"
@@ -93,6 +93,7 @@ struct Probes {
   static constexpr uint8_t need = need_each | need_last;
   static constexpr uint8_t need_at(bool last) { return last ? need : need_each; }
   static constexpr Segs segs = std::max({Segs::None, P::segs...});
+  static constexpr bool kCells = (false || ... || P::kCells); // 有探针要真持有格 (只 CPU 路径交; Stat/Cpu.hpp sink.cell)
   template <class Q>
   Q &at() { return std::get<Q>(p); }
   template <class Q>
@@ -108,6 +109,9 @@ struct Probes {
   void row(int hi, int t, const factor::stat::Row &r) {
     std::apply([&](P &...q) { (q.row(hi, t, r), ...); }, p);
   }
+  void cell(int hi, int t, int a, int g, const factor::stat::Pos &x, const float *y) {
+    std::apply([&](P &...q) { (q.cell(hi, t, a, g, x, y), ...); }, p);
+  }
   void close(const Ctx &c, const RootView &v) {
     std::apply([&](P &...q) { (q.close(c, v), ...); }, p);
   }
@@ -121,11 +125,13 @@ struct ProbeBase {
   static constexpr uint8_t need = 0;
   static constexpr uint8_t need_last = 0;
   static constexpr Segs segs = Segs::None;
+  static constexpr bool kCells = false;
   static constexpr Bytes bytes(int) { return {}; }
   static constexpr Bytes scratch(int) { return {}; }
   void init(const PassCtx &) {}
   void open(const Ctx &) {}
   void row(int, int, const factor::stat::Row &) {}
+  void cell(int, int, int, int, const factor::stat::Pos &, const float *) {}
   void close(const Ctx &, const RootView &) {}
   void finish(const PassCtx &) {}
 };
@@ -263,44 +269,60 @@ struct LandCellsP : ProbeBase {
   V *at(const Ctx &c) const { return dst->data() + static_cast<size_t>(c.c.land0() + c.c.t_lo) * c.s().A; }
 };
 
-// 落地基类 3: 净值线 (init 由派生类 lines() 定形, finish 一次 fold_ledger; stride = 每几行并一点)
+// 落地基类 3: 净值线 (init 由派生类 lines() 定形; 块内逐行暂存 at(线, 行), close 时本块逐线折进 Realize; finish 交出期收益)
 struct LinesP : ProbeBase {
   static constexpr uint8_t need = kNeedRows;
-  RowLines x;
+  Realize rz;
   LedgerLines out;
-  int stride = 1, t0 = 0;
-  // n 条线, 线 i 的持有期 hold_of(i)
+  int t_lo = 0, nb = 0, u0 = 0;
+  std::vector<float> blk; // [线][本块统计行]
+  // n 条线, 线 i 的持有期 hold_of(i); stride = 每几行并一期
   template <class HoldOf>
-  void lines(const PassCtx &p, int n, HoldOf &&hold_of) {
-    x.reset(n, p.rows_stat);
+  void lines(const PassCtx &p, int n, int stride, HoldOf &&hold_of) {
+    rz.reset(n, p.rows_stat, p.seg, stride);
     for (int i = 0; i < n; ++i)
-      x.hold[static_cast<size_t>(i)] = hold_of(i);
+      rz.hold[static_cast<size_t>(i)] = hold_of(i);
   }
   void open(const Ctx &c) {
-    assert(x.T == c.c.rows_stat() && "净值线与作用域不符");
-    t0 = c.c.land0();
+    assert(rz.T == c.c.rows_stat() && "净值线与作用域不符");
+    const factor::stat::Span s = c.s();
+    t_lo = s.t_lo, nb = s.t_hi() - s.t_lo, u0 = c.c.land0() + s.t_lo;
+    blk.assign(static_cast<size_t>(rz.out.n) * static_cast<size_t>(nb), 0.f);
   }
-  float &at(int i, int t) { return x.x[static_cast<size_t>(i) * x.T + static_cast<size_t>(t0 + t)]; }
-  void finish(const PassCtx &p) {
-    out = fold_ledger(p.ex, p.seg, x, stride);
-    x = RowLines{};
+  float &at(int i, int t) { return blk[static_cast<size_t>(i) * static_cast<size_t>(nb) + static_cast<size_t>(t - t_lo)]; }
+  void close(const Ctx &c, const RootView &) {
+    c.ex.rows(rz.out.n, [&](int i0, int i1, int) {
+      for (int i = i0; i < i1; ++i)
+        rz.fold(i, u0, blk.data() + static_cast<size_t>(i) * static_cast<size_t>(nb), nb);
+    });
+    if (c.last)
+      std::vector<float>().swap(blk);
+  }
+  void finish(const PassCtx &) {
+    out = std::move(rz.out);
+    rz = Realize{};
   }
 };
 
 inline float ric_of(const factor::stat::Row &r) { return r.ok ? r.ric : std::numeric_limits<float>::quiet_NaN(); }
 
-// 逐行 rIC 分布
+// 逐行 rIC 分布; dst 非空 → 另把逐行 rIC 落地 [hd][rows_stat] (无 ok = NaN; Inspect 的 rIC 时序)
 struct IcPdfP : RowsP<IcPdfP, float> {
   std::vector<KLLcache> kll;
   AggPdf pdf[kHoldCount];
+  std::vector<float> *dst = nullptr;
   static float of(const factor::stat::Row &r) { return ric_of(r); }
   void init(const PassCtx &p) {
     kll.clear();
     kll.reserve(static_cast<size_t>(p.hd.n));
     for (int i = 0; i < p.hd.n; ++i)
       kll.emplace_back(kAggKllCapacity, kAggKllResolution);
+    if (dst)
+      dst->assign(static_cast<size_t>(p.hd.n) * static_cast<size_t>(p.rows_stat), std::numeric_limits<float>::quiet_NaN());
   }
-  void fold(const Ctx &, int hi, int, std::span<const float> g) {
+  void fold(const Ctx &c, int hi, int u0, std::span<const float> g) {
+    if (dst)
+      std::copy(g.begin(), g.end(), dst->begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(hi) * static_cast<size_t>(c.c.rows_stat()) + static_cast<size_t>(u0)));
     std::vector<float> ok;
     ok.reserve(g.size());
     for (const float v : g)
@@ -315,7 +337,7 @@ struct IcPdfP : RowsP<IcPdfP, float> {
   }
 };
 
-// 分层 / 尾部 / LS 的逐行批收益 → fold_ledger 日净值线 (Inspect: 全部持有期 × kNavLines; agent eval_factor: 一个持有期 × kNavExcess)
+// 分层 / 尾部 / LS 的逐行批收益 → Realize 日净值线 (Inspect: 全部持有期 × kNavLines; agent eval_factor: 一个持有期 × kNavExcess)
 inline double tail_as(const factor::stat::Row &r, int e, int j, double cap, factor::stat::Ret from, factor::stat::Ret to) {
   return r.ok ? factor::stat::book_as(r.tail[e][j], r.tail_n[e][j], r.mkt, cap * factor::stat::tail_frac(j), from, to) : 0.0;
 }
@@ -355,11 +377,11 @@ struct NavP : LinesP {
   int sel = -1;
   double cap = 0.0;
   factor::stat::Ret ret = factor::stat::Ret::Excess; // 行里组 / 尾部的收益口径 (= 根的)
-  static constexpr Bytes bytes(int H) { return {.row = static_cast<double>(sizeof(float)) * kNavLines * H}; }
+  static constexpr Bytes bytes(int H) { return {.day = static_cast<double>(sizeof(float)) * kNavLines * H}; }
+  static constexpr Bytes scratch(int H) { return {.row = static_cast<double>(sizeof(float)) * kNavLines * H}; }
   void init(const PassCtx &p) {
     sel = only_of(p.hd, only);
-    stride = p.seg;
-    lines(p, only < 0 ? p.hd.n * kNavLines : kNavExcess, [&](int i) { return only < 0 ? p.hd.k[i / kNavLines] : static_cast<HoldId>(only); });
+    lines(p, only < 0 ? p.hd.n * kNavLines : kNavExcess, p.seg, [&](int i) { return only < 0 ? p.hd.k[i / kNavLines] : static_cast<HoldId>(only); });
   }
   void open(const Ctx &c) {
     LinesP::open(c);

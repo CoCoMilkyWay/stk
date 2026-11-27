@@ -242,7 +242,7 @@ inline bool load_mini_pdf(const nlohmann::json &o, MiniPdf &dst) {
 }
 
 // 结果作用域头 ↔ 因子文件顶层 run (一轮评估内全部权重同一份; f = 根口径, ret = 收益口径): 只落文件行的读者要的 (作用域比对 / 评估期 / 满仓 cap) 与 stat 的口径键
-// (stat_ver / target / frame / ret / max_impact: 换了即旧 stat 不再对应); 形状 T / A、后端、评估时刻只 Inspect 现算现显
+// (stat_ver / target / frame / ret / cost_top: 换了即旧 stat 不再对应); 形状 T / A、后端、评估时刻只 Inspect 现算现显
 inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame f, factor::stat::Ret ret) {
   nlohmann::ordered_json j;
   j["stat_ver"] = factor::stat::kStatSemver;
@@ -254,7 +254,7 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   j["days"] = s.days;
   j["frame"] = factor::stat::frame_name(f);
   j["ret"] = factor::stat::ret_token(ret);
-  j["max_impact"] = s.max_impact;
+  j["cost_top"] = s.cost_top;
   j["n_full"] = sig4(s.n_full);
   return j;
 }
@@ -327,7 +327,7 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
     return false;
   if (!json_int(run, "years", sc.years) || sc.years < 0 || !json_int(run, "days", sc.days))
     return false;
-  if (!json_num(run, "max_impact", sc.max_impact) || !json_num(run, "n_full", sc.n_full) || !(sc.n_full > 0.0))
+  if (!json_num(run, "cost_top", sc.cost_top) || !json_num(run, "n_full", sc.n_full) || !(sc.n_full > 0.0))
     return false;
   double v = 0;
   if (!json_num(j, "valid_pct", v))

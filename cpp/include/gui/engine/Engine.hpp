@@ -531,6 +531,7 @@ private:
   // 批核: 切 stat_batch 的第 j 份; 逐根: 一个根平面单候选 stat_eval (按 need 拷回一级 / rx / 平面; 一级逐行交探针组 p)
   template <class Ps>
   RootView view(const Forest &F, int k, int j, const Ctx &cx, uint8_t need, Ps &p) {
+    static_assert(!Ps::kCells, "真持有格只在宿主行核里交 (Stat/Cpu.hpp sink.cell)");
     RootView v;
     const factor::stat::Span s = c_->span();
     const int H = cx.L.hd.n;

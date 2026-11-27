@@ -10,7 +10,8 @@
 //     prep_label    ry[T][A]                                     ← exec.rows(rank_y_rows)
 //     rank_x        rx[T][A] (按 Mode 口径 / 方向, 已定向)       ← exec.rows(rank_x_rows)
 //     accum_rows    rx × 标签集 (按 Mode 收益口径) → 统计日 [0, D) 的 Row 折进 Accum[H] + Day[H][D]  ← exec.rows(按日切: 每 t 每 h row_stat → sink → Accum[tid]) → merge
-//                   sink.row(i, t, r) 每行一次 (线程内, 行不相交): DropRows 丢弃 / LandRows 落地 rows[i·T + t] / 调用方自定 (引擎直接给探针组)
+//                   sink.row(i, t, r) 每行一次 (线程内, 行不相交): DropRows 丢弃 / LandRows 落地 rows[i·T + t] / 调用方自定 (引擎直接给探针组);
+//                   sink 带 kCells = true 时另收真持有格 sink.cell(i, t, a, g, pos, y) (行核内一次 walk 同出, 不另走链)
 //     run           = rank_x + accum_rows (一个候选的完整评估); HoldStat 由契约 finish_all
 //     run_batch     一批候选: 候选串行, 候选内全核切日 (C 小也能跑满核, 只留一张 [T][A] 的 r16)
 //   换手 (账集) 走 Stat/Book.hpp book_rows. 标签秩 ry / r16(x) 平面 rx 由调用方持有; Workspace (Scratch / Accum 各 [tid]) 由调用方持有, ensure 幂等.
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 namespace factor::cpu::stat {
@@ -77,6 +79,23 @@ struct Workspace {
   }
 };
 
+// sink 要不要真持有格 (Sink::kCells; 不声明 = 不要)
+template <class S>
+inline constexpr bool kSinkCells = [] {
+  if constexpr (requires { S::kCells; })
+    return S::kCells;
+  else
+    return false;
+}();
+// 持有期 i 的格回调转给 sink.cell
+template <class S>
+struct SinkCells {
+  S &s;
+  int i;
+  static constexpr bool on = kSinkCells<S>;
+  void cell(int t, int a, int g, const factor::stat::Pos &p, const float *y) const { s.cell(i, t, a, g, p, y); }
+};
+
 // sink 的两个常用件: 丢弃 / 落地 rows[i·T + t] (rows = Row[H][T])
 struct DropRows {
   void row(int, int, const Row &) const {}
@@ -120,7 +139,7 @@ inline void accum_rows(Exec &ex, const Span &s, const uint16_t *rx, const Labels
         for (int i = 0; i < H; ++i) {
           const Hold hd = hold_on(L.hd.k[i], s.g);
           const Row r = row_stat(rx + base, t >= hd.h ? rx + base - static_cast<size_t>(hd.h) * A : nullptr, L.l[i].at(base), factor::stat::chain_of(t, s, hd), L.cap,
-                                 m.r, hd.opens(s.t0_abs + t));
+                                 m.r, hd.opens(t), SinkCells<std::remove_reference_t<Sink>>{sink, i});
           sink.row(i, t, r);
           a[i].add(r);
           day[static_cast<size_t>(i) * D + dd].add(r);

@@ -27,14 +27,14 @@
 //   minute_closed(t_min, writer)   CoreTs 分钟结算口 (冲击只看盘口, 不用分钟 bar)
 //   day_begin / day_end         日历: 日期轴每一日各调一次 (无数据日也调, 由 CoreTs 保证). day_end 写尾部行 (收盘价建仓) 并归还当日句柄.
 //   finish_all                  回测区间末: 无悬挂 (每日 day_end 已归还)
-//   日句柄环 / 日环下限与 Bar 档同一份 (LabelHold::PEND_DAYS / MIN_RING_SLOTS): 续算尾窗与计算配置两档一致.
+//   日句柄环 / 日环下限与 Bar 档同一份 (define/Label.hpp kPendDays): 续算尾窗与计算配置两档一致.
 // 落盘列 (LB 块, 连续): [cost_buy × 各金额, cost_sell × 各金额]; writer(col, n, t_min, values, days_ago) 写 LB 块内偏移 col 起的 n 列.
 //   配置 (LABEL_AMTS) 同时生成 constexpr 数组和落盘字段行, 只改一处.
 // =============================================================================
 
 #include "define/Label.hpp" // LABEL_AMTS (冲击成本的下单金额段, 万元, 升序)
 #include "features/DataDefine.hpp"
-#include "features/Node/Common/Label/LabelHold.hpp" // RowSet / PEND_DAYS / MIN_RING_SLOTS (日句柄环两档同一份)
+#include "features/Node/Common/Label/LabelHold.hpp" // LabelRows
 #include "features/TimeIndex.hpp"                   // L_1min_to_L_sec (分钟锚定路径)
 #include <algorithm>
 #include <array>
@@ -62,11 +62,8 @@ class LabelLob {
   using Snapshot = LobSnapshot;
 
 public:
-  using RowSet = LabelHold::RowSet;
   static constexpr size_t AMT_COUNT = LABEL_AMT_COUNT;
   static constexpr size_t MIN_LABEL_COUNT = 2 * AMT_COUNT; // LB 块总列数 [cost_buy × 各金额, cost_sell × 各金额]
-  static constexpr size_t PEND_DAYS = LabelHold::PEND_DAYS;
-  static constexpr size_t MIN_RING_SLOTS = LabelHold::MIN_RING_SLOTS;
   enum Out : size_t { LABEL_AMTS(LABEL_OUT_BUY) LABEL_AMTS(LABEL_OUT_SELL) kOutCount };
   static_assert(Out::kOutCount == MIN_LABEL_COUNT, "LB 块 = [cost_buy × 各金额, cost_sell × 各金额]");
   static_assert([] {

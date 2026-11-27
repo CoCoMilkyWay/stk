@@ -5,13 +5,15 @@
 // =============================================================================
 //   写端 (features 标签节点; 字段表宏经 FieldsGenerated 引入本头) 与评估端 (factor Stat / 算子 / gui engine) 同一份, 本头只依赖标准库与 define/Geo.hpp.
 //   持有期的身份 = HoldId (表下标 = LB 组序 = 时间序); 族 / 天数由 hold_kind / hold_n 取 (主机 / 设备两用), 文字由 token 表取;
-//   落在一层上的全部几何 (行数 / 开仓 / 交接 / 平仓行 / 可知行 / 资金口径) = Hold (hold_on).
+//   落在一层上的全部几何 (行数 / 开仓 / 交接 / 平仓行 / 记日 / 可知行 / 资金口径) = Hold (hold_on; 扫出的导出量 span / reach 查表 hold_geom).
+//   行号一律取段内行 (seg_row): 张量与分块都以段首起, 与张量从哪一日起无关.
 //   集合 = 位集 HoldSet / AmtSet, 有序视图 = IdList (Holds / Amts: 下标 i ↔ 第 i 个成员, 评估端的紧凑数组按它排).
 // =============================================================================
 
 #include "define/Geo.hpp"
 #include "define/HostDev.hpp"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -194,15 +196,20 @@ static_assert(kPendDays == 9, "LABEL_DELAY_NOTE 的天数随 kPendDays − 1 改
 //     | 尾部       | 分钟型 / 收盘型 minute(t) + n > kLastAnchorRow 的行不开仓 (opens 为假)                                    | Hold              |
 //     | 仓位       | 每行一批, 资金 1/h̄, 批内按目标权 (等权 1 / max(只数, cap) 或外给权); 全日平均满仓                        | Stat【换手】/ 净值 |
 //     | 换手       | 前一批的权随价漂移到交接点, 与本批目标权逐格之差 (只在交接时; 否则整建整平, 平仓量亦随价漂移)            | Stat【换手】      |
-//     | 成本       | 两侧逐格费率: 税佣 (Fee::tax) + 冲击 (盘口段 = 真实买 / 卖冲击封顶 max_impact; 固定段 = Fee::impact);     | Stat【换手】      |
+//     | 成本       | 两侧逐格费率: 税佣 (Fee::tax) + 冲击 (盘口段 = 真实买 / 卖冲击封顶 CostSpec::top; 固定段 = Fee::impact);     | Stat【换手】      |
 //     |            | 整批平仓 (不交接) 恒在撮合价点: 盘口段冲击 0, 固定段照付 Fee::impact                                     |                   |
-//     | 净值       | 行 t 的批收益在 exit(t) 实现 × 1/h̄, 日内求和, 跨日复利; 成本在建仓行即付                                  | 净值 fold_ledger  |
-//     | 记日       | 排序统计 (rIC / 分组) 记在建仓日 (预测时点); 钱 (日收益 / 净值 / 年化) 记在平仓日 = 建仓日 + hold_days      | Stat Fold / 净值  |
+//     | 净值       | 行 t 的批收益在 exit(t) 实现 × 1/h̄, 日内求和, 跨日复利; 成本在建仓行即付                                  | 净值 Realize      |
+//     | 记日       | 排序统计 (rIC / 分组) 记在建仓日 stat_day; 钱 (日收益 / 净值 / 年化) 记在平仓日 money_day = 建仓日 + hold_days | Hold              |
 //     | 复权       | 标签价 × 当日复权比: 跨日收益不含除权缺口                                                                 | 标签              |
 // =============================================================================
 
-// 行 t 按收盘价建仓: 行末分钟越过最后可成交锚点, 价点 E 退化为 C(D) (日层每行都是). t = 绝对行号
-FACTOR_HD constexpr bool close_entry(int t, const Geo &g) { return g.minute(t % g.S) > kLastAnchorRow; }
+// 行号约定: 张量 / 分块恒以段首起 (整日对齐), 行 t 的段内行 = t mod S 与张量从哪一日起无关; 负行 (前一批越过块首) 照取模
+FACTOR_HD constexpr int seg_row(int t, const Geo &g) {
+  const int j = t % g.S;
+  return j < 0 ? j + g.S : j;
+}
+// 行 t 按收盘价建仓: 行末分钟越过最后可成交锚点, 价点 E 退化为 C(D) (日层每行都是)
+FACTOR_HD constexpr bool close_entry(int t, const Geo &g) { return g.minute(seg_row(t, g)) > kLastAnchorRow; }
 // 开盘撮合价 O(D) 所在的段内行: 末分钟不早于 09:25 撮合 bar 的首行 (L_1min = 行 10; 分钟箱 / 日 = 行 0)
 FACTOR_HD constexpr int open_row(const Geo &g) {
   int j = 0;
@@ -227,20 +234,23 @@ struct Hold {
   Geo g;
   int h = 1; // 独立样本口径的行数 (lag / 交接间距 / 重叠折算): 分钟型 = n / N; close / T+1O = 一段 S 行; T+N 同刻 = N 段
 
-  // 行 t 开仓 (非段末尾部): 分钟型 exit 锚点越过最后可成交锚点 (持有期缩短) / 收盘型 entry 越过 (即建即平) → 不开仓; 日级型恒开. t = 绝对行号
+  // 行 t 开仓 (非段末尾部): 分钟型 exit 锚点越过最后可成交锚点 (持有期缩短) / 收盘型 entry 越过 (即建即平) → 不开仓; 日级型恒开
   FACTOR_HD constexpr bool opens(int t) const {
     const HoldKind k = hold_kind(id);
-    return !((k == HoldKind::Min || k == HoldKind::Close) && g.minute(t % g.S) + (k == HoldKind::Min ? hold_n(id) : 0) > kLastAnchorRow);
+    return !((k == HoldKind::Min || k == HoldKind::Close) && g.minute(seg_row(t, g)) + (k == HoldKind::Min ? hold_n(id) : 0) > kLastAnchorRow);
   }
-  // 交接: 行 t 建仓与行 t − h 平仓是同一价点 (偏移型恒是, 锚点型从不). t = 绝对行号
-  FACTOR_HD constexpr bool nets(int t) const { return hold_offset(id) && t >= h && opens(t) && opens(t - h); }
-  // 平仓行: 行 t 这一批的平仓价点所在行 (收益在此实现). 偏移型 = t + h; 收盘型 = 当日末行; T+N 开盘型 = D+N 日 open_row. 顺延不改实现行
+  // 交接: 行 t 建仓与行 t − h 平仓是同一价点 (偏移型恒是, 锚点型从不); 行 t − h 在不在块内由调用方 (Stat Chain) 判
+  FACTOR_HD constexpr bool nets(int t) const { return hold_offset(id) && opens(t) && opens(t - h); }
+  // 平仓行: 行 t (≥ 0) 这一批的平仓价点所在行 (收益在此实现). 偏移型 = t + h; 收盘型 = 当日末行; T+N 开盘型 = D+N 日 open_row. 顺延不改实现行
   FACTOR_HD constexpr int exit(int t) const {
     if (hold_offset(id))
       return t + h;
     const int d = t / g.S + hold_days(id);
     return hold_kind(id) == HoldKind::Open ? d * g.S + open_row(g) : d * g.S + g.S - 1;
   }
+  // 记日一对 (协议表 2【记日】的唯一实现): 排序统计记建仓日 ⇄ 钱记平仓日
+  FACTOR_HD constexpr int stat_day(int t) const { return t / g.S; }
+  FACTOR_HD constexpr int money_day(int t) const { return exit(t) / g.S; }
   // 行 s 的标签在哪一行收盘时已实现 (N 元回归的样本行): 撮合价点在平仓行收盘即知; 分钟价点 E 至迟下一行收盘可知 (+1)
   FACTOR_HD constexpr int known(int s) const {
     const bool at_e = hold_offset(id) && (hold_kind(id) == HoldKind::Min || !close_entry(s, g));
@@ -253,26 +263,42 @@ struct Hold {
       --u;
     return u;
   }
-  // t − last(t) 的上界 (行): N 元回归的回看 = d + 它
-  constexpr int reach() const {
-    const int t0 = (hold_days(id) + 2) * g.S + h + 1;
-    int r = 0;
-    for (int t = t0; t < t0 + g.S; ++t)
-      r = t - last(t) > r ? t - last(t) : r;
-    return r;
-  }
-  // 资金口径行数 h̄: 一日各开仓行的在持行数 (建仓行起, exit 止; 尾部行不开仓不计) 之和 / S
-  constexpr double span() const {
-    int s = 0;
-    for (int j = 0; j < g.S; ++j)
-      s += opens(j) ? exit(j) - j : 0;
-    return static_cast<double>(s) / g.S;
-  }
+  // t − last(t) 的上界 (行): N 元回归的回看 = d + 它 (查表)
+  int reach() const;
+  // 资金口径行数 h̄: 一日各开仓行的在持行数 (建仓行起, exit 止; 尾部行不开仓不计) 之和 / S (查表)
+  double span() const;
 };
 FACTOR_HD constexpr Hold hold_on(HoldId id, const Geo &g) {
   const int n = hold_days(id);
   return {id, g, hold_kind(id) == HoldKind::Min ? hold_n(id) / g.N : g.S * (n < 1 ? 1 : n)};
 }
+
+// ---- 持有期 × 层的导出几何表 (各层各持有期一次扫出, 首次用到时建; 不合法的格不用) ----
+struct HoldGeom {
+  int reach = 0;
+  double span = 0.0;
+};
+inline const HoldGeom &hold_geom(HoldId id, const Geo &g) {
+  static const auto tab = [] {
+    std::array<std::array<HoldGeom, kHoldCount>, kGeoCount> t{};
+    for (int i = 0; i < kGeoCount; ++i)
+      for (int k = 0; k < kHoldCount; ++k) {
+        const Hold x = hold_on(static_cast<HoldId>(k), kGeos[i]);
+        HoldGeom &o = t[static_cast<size_t>(i)][static_cast<size_t>(k)];
+        const int t0 = (hold_days(x.id) + 2) * x.g.S + x.h + 1;
+        for (int u = t0; u < t0 + x.g.S; ++u)
+          o.reach = u - x.last(u) > o.reach ? u - x.last(u) : o.reach;
+        int s = 0;
+        for (int j = 0; j < x.g.S; ++j)
+          s += x.opens(j) ? x.exit(j) - j : 0;
+        o.span = static_cast<double>(s) / x.g.S;
+      }
+    return t;
+  }();
+  return tab[static_cast<size_t>(geo_index(g.S))][id];
+}
+inline int Hold::reach() const { return hold_geom(id, g).reach; }
+inline double Hold::span() const { return hold_geom(id, g).span; }
 
 // ---- 字段描述片段 (英 / 中, 按族 token 拼) ----
 #define LABEL_ENTRY_TEX R"(\mathbf{1}[\mathrm{buy}_{entry}] + 2\cdot\mathbf{1}[\mathrm{sell}_{entry}])"

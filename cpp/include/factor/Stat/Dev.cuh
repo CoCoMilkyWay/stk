@@ -127,10 +127,10 @@ __device__ __forceinline__ void lag_row(const uint16_t *rx, const uint16_t *rlag
   r.ok_rac = ok ? 1 : 0;
 }
 
-// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓, ret = 收益口径
+// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓, ret = 收益口径, mkt = 本行池基准
 // → r 的 ric / mkt / grp / cnt / ok (全 lane 同值; 组与尾部按 Pos.hpp 一次 walk 出层级, 与 Host.hpp 同式). gs / gc = 本 warp 的分组槽,
 // 连续调用间的槽复用由函数内首个 __syncwarp 保护. 调用方已排除段末尾部
-__device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, factor::stat::Ret ret, Row &r,
+__device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, factor::stat::Ret ret, double mkt, Row &r,
                                           float (*gs)[32], uint16_t (*gc)[32], int lane) {
   __syncwarp(); // 上一行的广播读 (gs[q][0]) 全部结束, 才能清槽
 #pragma unroll
@@ -139,7 +139,6 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
     gc[q][lane] = 0;
   }
   unsigned long long s[kSums] = {}; // rIC
-  float fs[1] = {};                 // J 上 Σlv (基准)
   float ts[kEnds * kTails] = {};    // 尾部和 (下标编译期定, 留寄存器)
   int tc[kEnds * kTails] = {};      // 尾部只数
   for (int a = lane; a < c.A; a += 32) {
@@ -148,7 +147,6 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
     factor::stat::pair_add(s, x, y, ok);
     if (!ok)
       continue;
-    fs[0] += h2f(lb.lv[a]);
     const int g = factor::stat::grp_of(x);
     float yv[2];
     const factor::stat::Pos p = factor::stat::cell(c, lb, a, factor::stat::InRank{rx + a, g}, H2F{}, yv);
@@ -169,7 +167,6 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
     }
   }
   warp_sum(s);
-  warp_sum(fs);
   warp_sum(ts);
   warp_sum(tc);
   __syncwarp();         // 各 lane 的槽写完, 下面跨 lane 读
@@ -198,7 +195,7 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
 #pragma unroll
     for (int j = 0; j < kTails; ++j)
       tsd[e][j] = static_cast<double>(ts[e * kTails + j]), tci[e][j] = tc[e * kTails + j];
-  factor::stat::finish_row(s, static_cast<double>(fs[0]), gsd, gci, tsd, tci, cap, ret, r);
+  factor::stat::finish_row(s, mkt, gsd, gci, tsd, tci, cap, ret, r);
 }
 
 // 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; cap = 满仓; ret = 收益口径;
@@ -209,7 +206,7 @@ __device__ __forceinline__ Row row_stat(const uint16_t *rx, const uint16_t *rlag
   if (rlag)
     lag_row(rx, rlag, c.A, r, lane);
   if (opens)
-    label_row(rx, lb, c, cap, ret, r, gs, gc, lane);
+    label_row(rx, lb, c, cap, ret, lb.mk[c.t], r, gs, gc, lane);
   return r;
 }
 

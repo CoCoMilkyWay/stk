@@ -81,9 +81,10 @@ struct Candle : Cell {
   DayFlow flow;
 };
 
-// 一个标的一日的分钟根: kSlots 格稠密, has = 有成交的根, hole = 缺口 (当日: 快照没盯住、分钟 K 尚未补到; 有无成交未知, 不画; 恒无 has)
+// 一个标的一日的分钟根: kSlots 格稠密, has = 有成交的根, hole = 缺口 (当日: 快照没盯住、分钟 K 尚未补到; 有无成交未知; 恒无 has);
+//   guess ⊂ hole = 缺口里的估值 (cell = 估价, 无额; 只供画价格路径, 资金流 / K 线照当缺口)
 struct Bars {
-  std::bitset<kSlots> has, hole;
+  std::bitset<kSlots> has, hole, guess;
   std::array<Cell, kSlots> cell;
   std::array<double, kSlots> net{}; // 各根净流入 [元]: 篮子 = 成员之和 (Fold), 个股 = 本只 (net_flow)
 
@@ -135,6 +136,9 @@ constexpr int tick_dir(double close, double px, int dir) {
   return close > px ? 1 : close < px ? -1
                                      : dir;
 }
+// 个股当日缺口的估值 (按最可能的路径): 各段缺口 [l, h] 自段前末收 (首根前 = 今开 open, 无 → 前收 ref) 起,
+//   段后有根 → 按槽线性走到段后首根收, 段后无根 → 持平; 起点价 ≤ 0 → 不估
+void guess_holes(Bars &b, float open, float ref);
 // 个股一日的净流入: 逐个有成交的根 net[s] = 方向 × 该根额 (首根对基准 base = 当日前收; 无根 = 0); base ≤ 0 → 全 0
 void net_flow(const Bars &b, float base, std::span<double, kSlots> net);
 inline void net_flow(Bars &b, float base) { net_flow(b, base, b.net); }

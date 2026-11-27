@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cassert>
 #include <map>
 #include <span>
@@ -15,21 +16,25 @@ namespace {
 
 using Quote::kSlots;
 
-// 逐槽收 out[s] (槽 [0, out.size())): 有根取收, 无根沿用上一根, 首根前 = ref
+// 逐槽收 out[s] (槽 [0, out.size())): 有根 / 缺口的估值取收, 无根沿用上一根, 首根前 = ref
 void closes(const Quote::Bars &b, float ref, std::span<float> out) {
   float c = ref;
   for (size_t s = 0; s < out.size(); ++s)
-    out[s] = c = b.has[s] ? b.cell[s].close : c;
+    out[s] = c = b.has[s] || b.guess[s] ? b.cell[s].close : c;
 }
 
-// 一条逐槽点位 v (前收 ref) 成一日 (见文件头)
-Quote::Day path_day(misc::Ymd d, float ref, std::span<const double> v) {
+// 一条逐槽点位 v (前收 ref) 成一日 (见文件头); guess 的槽成估值 (缺口带估价)
+Quote::Day path_day(misc::Ymd d, float ref, std::span<const double> v, const std::bitset<kSlots> &guess = {}) {
   assert(v.size() <= static_cast<size_t>(kSlots));
   Quote::Day y;
   float prev = ref, hi = ref, lo = ref;
   for (size_t s = 0; s < v.size(); ++s) {
     const float x = static_cast<float>(v[s]);
-    y.bars.add(static_cast<int>(s), Quote::cell(prev, std::max(prev, x), std::min(prev, x), x, 0));
+    const Quote::Cell c = Quote::cell(prev, std::max(prev, x), std::min(prev, x), x, 0);
+    if (guess[s])
+      y.bars.cell[s] = c, y.bars.hole.set(s), y.bars.guess.set(s);
+    else
+      y.bars.add(static_cast<int>(s), c);
     hi = std::max(hi, x), lo = std::min(lo, x), prev = x;
   }
   y.candle = {Quote::cell(ref, hi, lo, prev, 0), d, ref, {}};
@@ -61,16 +66,18 @@ Quote::Day day_of(const account::Day &d, double nav0, double idx0, std::span<con
   std::array<float, kSlots> p;
   std::array<double, kSlots> idx;
   const std::span<float> ps = std::span(p).first(n);
+  std::bitset<kSlots> guess; // 有一只取了估值的槽
   const auto path = [&](const std::string &code) -> std::span<const float> {
     const Quote::Day *s = of(code);
     if (!s)
       return {};
     closes(s->bars, s->candle.ref, ps);
+    guess |= s->bars.guess;
     return ps;
   };
   const std::span<double> is = std::span(idx).first(n);
   account::intraday(d, nav0, idx0, trades, path, is);
-  return path_day(d.date, static_cast<float>(idx0), is);
+  return path_day(d.date, static_cast<float>(idx0), is, guess);
 }
 
 Replay replay(const live::flows::Cache &l, const std::vector<misc::Ymd> &dates, const account::Spot &spot, const Fee &fee, const Minutes &minutes) {

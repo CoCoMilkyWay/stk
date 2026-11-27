@@ -41,7 +41,7 @@ bool Series::bar(size_t i, int s, Cell &c) const {
 }
 
 bool Series::bars(size_t i, Bars &b) const {
-  b.has.reset(), b.hole.reset();
+  b.has.reset(), b.hole.reset(), b.guess.reset();
   b.net.fill(0);
   if (!has(i))
     return false;
@@ -67,7 +67,7 @@ bool Source::bars(size_t i, Bars &b) const {
     return false;
   if (i == daily.size()) {
     b = today->bars;
-    return b.has.any();
+    return (b.has | b.guess).any();
   }
   return se && se->minute && se->bars(i, b);
 }

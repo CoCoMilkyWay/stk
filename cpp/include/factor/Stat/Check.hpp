@@ -44,14 +44,17 @@ inline uint16_t f2h(float f) {
   return b;
 }
 
-// 一组宿主标签 (fp16 位 + 掩码); ry 由各后端自己预处理, 不在此
+// 一组宿主标签 (fp16 位 + 掩码 + 池基准 [T]); ry 由各后端自己预处理, 不在此
 struct LabelHost {
   std::vector<uint16_t> lv, nv; // nv 只偏移型
   std::vector<uint8_t> m;
+  std::vector<float> mk; // [T]
 };
-// 宿主标签 + 可成交码 eo + 预处理 ry → 契约 Label (偏 off 格; ry 为空 = 未预处理)
+// 宿主标签 + 可成交码 eo + 预处理 ry → 契约 Label (偏 off 格 = 整行 off / A 行; ry 为空 = 未预处理)
 inline Label label_of(const LabelHost &L, const std::vector<uint8_t> &eo, const uint16_t *ry, size_t off = 0) {
-  return {L.lv.data() + off, L.nv.empty() ? nullptr : L.nv.data() + off, L.m.data() + off, eo.data() + off, ry ? ry + off : nullptr};
+  const size_t A = L.lv.size() / L.mk.size();
+  assert(off % A == 0 && "块首在行首");
+  return {L.lv.data() + off, L.nv.empty() ? nullptr : L.nv.data() + off, L.m.data() + off, eo.data() + off, ry ? ry + off : nullptr, L.mk.data() + off / A};
 }
 
 inline constexpr int kCands = 3;
@@ -129,6 +132,9 @@ inline void make(Data &d, const Mode &mode, Profile pr, int T, int A, int seg, s
         L.nv[i] = f2h(0.3f * z.v[i] + 0.7f * e.v[i]);
       L.m[i] = e.m[i];
     }
+    L.mk.resize(static_cast<size_t>(T));
+    for (int t = 0; t < T; ++t)
+      L.mk[static_cast<size_t>(t)] = factor::cpu::stat::pool_mkt(L.lv.data() + static_cast<size_t>(t) * A, L.m.data() + static_cast<size_t>(t) * A, A);
   }
 }
 
@@ -297,12 +303,12 @@ inline void run_gpu(const Data &d, Result &r) {
   finish_all(acc.data(), dailies(d, r.day.data(), d.span().days()).data(), d.hd, d.seg, r.stat.data());
 }
 
-// ---- 批: 一块 = 行 [row0, row0 + rows), 统计 [t_lo, rows − t_back) (t0_abs = row0; 全按整日) ----
+// ---- 批: 一块 = 行 [row0, row0 + rows), 统计 [t_lo, rows − t_back) (全按整日) ----
 struct Block {
   int row0 = 0, rows = 0, t_lo = 0, t_back = 0;
   std::vector<Accum> acc; // [kCands][H]
   std::vector<Day> day;   // [kCands][H][D]
-  Span span(const Data &d) const { return {rows, d.A, geo_of(d.seg), row0, t_lo, t_back}; }
+  Span span(const Data &d) const { return {rows, d.A, geo_of(d.seg), t_lo, t_back}; }
 };
 // 分块切法 (造数无因子回看): 块 1 = 前一半日 + 后带 (hold_reach 取整日), 块 2 = 后一半日 + 前带 (hold_reach + kChainDays 日)
 inline void split_of(const Data &d, Block &full, Block &c1, Block &c2) {

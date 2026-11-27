@@ -169,14 +169,13 @@ inline void book_rows(Exec &ex, const Span &s, const Hold &hd, const Label &lb, 
     std::vector<double> ret(B);
     std::vector<Flow> flow(B);
     for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t) {
-      const int ta = s.t0_abs + t;
-      if (!hd.opens(ta))
+      if (!hd.opens(t))
         continue;
       const size_t row = static_cast<size_t>(t) * s.A;
       book_slots(bk, chain_of(t, s, hd), lb, w);
       std::fill(ret.begin(), ret.end(), 0.0);
       std::fill(flow.begin(), flow.end(), Flow{});
-      turn_row(w, !hd.nets(ta + hd.h), lb.eo + row, c.at(row), cap, ret.data(), flow.data());
+      turn_row(w, !hd.nets(t + hd.h), lb.eo + row, c.at(row), cap, ret.data(), flow.data());
       sink(tid, t, ret.data(), flow.data());
     }
   });

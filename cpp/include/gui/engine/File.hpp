@@ -13,7 +13,7 @@
 //     "search": [                                             // 可选: Search 的结局, 每持有期至多一项, 一行一个 (换模板即丢)
 //       { "hold": "30m", "start_date", "end_date", "days" }, … ], // 评估期 (所用库落盘日交集的最近 N 年)
 //     —— 以下 Run 写 (评估派生, 换掉 / 清空 weights 时一起删; StatJson scope_json / eval_json; 只落读文件行的地方用得到的, 不多不少) ——
-//     "run": { "stat_ver", "target", "pool", "start_date", "end_date", "years", "days", "frame", "ret", "max_impact", "n_full" }, // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
+//     "run": { "stat_ver", "target", "pool", "start_date", "end_date", "years", "days", "frame", "ret", "cost_top", "n_full" }, // 全部 stats 共用的口径; 回写时变了 → 别的权重 stat 清成 null
 //     "hold_cols": [...], "turn_cols": [...],                 // holds / turn 数组的列名 (StatJson), 与代码不符 → 全部 stats 忽略
 //     "stats": [                                              // 与 weights 同长同序 (没评的位置 null), 一行一个, 数值表密排
 //       { "valid_pct", "rank_pct", "eval_ms",                 //   因子表 覆盖 / time 列

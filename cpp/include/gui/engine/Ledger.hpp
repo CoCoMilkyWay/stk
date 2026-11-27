@@ -1,5 +1,6 @@
 // Ledger — 净值与账核 (Inspect 分层 / Portfolio 因子组合 / 池篮子 / 个股 / 池均线同一份): Load 之上.
-//   逐行批收益 RowLines → fold_ledger (每批资金 1/h̄, 收益在平仓行 Hold::exit 实现 / 成本在建仓行即付; 按 stride 求和) → 期收益 LedgerLines → compound 净值.
+//   逐行批收益 → Realize (协议表 2【净值】【记日】的唯一实现: 每批资金 1/h̄, 收益在平仓行 Hold::exit 实现 / 成本在建仓行即付; 按 stride 并期;
+//   行逐块交, 常驻只有期收益) → LedgerLines → compound 净值.
 //   账 Ledger = 五列账线 col[kLedgerCols] (一切账都齐: 收益 / 冲击 / 固定冲击量 / 买量 / 卖量) + 画像 Profile (只篮子账 / 个股账有).
 //   收益与换手同一核 (factor/Stat/Book.hpp 账集 book_rows): 因子组合 = 顶端整组 (FactorBooks); 篮子 = 持仓权 Weigh (shared/Basket.hpp); 个股 = 自身; 池均 = MaskBook.
 //   篮子作业 eval_baskets = basket_need → open_job → run_job(BasketPass) (块消费者, 与森林作业的 ForestPass 对仗) → Baskets.
@@ -38,22 +39,31 @@ struct LedgerLines {
   }
 };
 
-// 逐行批收益 (fold_ledger 入): x [n][T] = 线 i 行 t 这一批的量; hold[i] = 持有期; at_exit[i]: 1 = 平仓行实现 / 0 = 建仓行即付
-struct RowLines {
-  int n = 0, T = 0;
-  std::vector<HoldId> hold;
-  std::vector<uint8_t> at_exit;
-  std::vector<float> x;
-  void reset(int n_, int T_) {
-    n = n_, T = T_;
+// 净值的实现核: 线 i 评估期行 u 这一批的量 x → 期 (实现行 / stride) 累加 x / h̄; 实现行 = 平仓行 Hold::exit (收益列) | 建仓行 (成本列, 即付);
+//   实现行越过评估期末的不计. 行可分块交 (fold), 线间可并行, 同线串行
+struct Realize {
+  int seg = 1, stride = 1, T = 0; // 层 / 每期行数 / 评估期行数 (整除 stride)
+  std::vector<HoldId> hold;       // [线] 持有期
+  std::vector<uint8_t> at_exit;   // [线] 1 = 平仓行实现 / 0 = 建仓行即付
+  LedgerLines out;                // [线][期]
+  void reset(int n, int T_, int seg_, int stride_) {
+    assert(n >= 1 && stride_ >= 1 && T_ % stride_ == 0 && T_ % seg_ == 0);
+    seg = seg_, stride = stride_, T = T_;
     hold.assign(static_cast<size_t>(n), kHoldT1);
     at_exit.assign(static_cast<size_t>(n), 1);
-    x.assign(static_cast<size_t>(n) * static_cast<size_t>(T), 0.f);
+    out.reset(n, T / stride);
   }
-  float *at(int i) { return x.data() + static_cast<size_t>(i) * static_cast<size_t>(T); }
+  // 线 i 自评估期行 u0 起的连续 m 行批量 x[0, m)
+  void fold(int i, int u0, const float *x, int m) {
+    const Hold hd = hold_on(hold[static_cast<size_t>(i)], geo_of(seg));
+    const double h = hd.span();
+    const bool ex = at_exit[static_cast<size_t>(i)];
+    float *dst = out.at(i);
+    for (int k = 0; k < m; ++k)
+      if (const int u = ex ? hd.exit(u0 + k) : u0 + k; u < T)
+        dst[u / stride] += static_cast<float>(x[k] / h);
+  }
 };
-
-LedgerLines fold_ledger(misc::exec::ForkJoin &ex, int seg, const RowLines &r, int stride);
 
 template <class R, class Put>
 void compound(const R *r, size_t n, Put &&put) {
@@ -140,13 +150,14 @@ private:
   std::shared_ptr<const pool::Picks> pk_;
   LeafId val_[kPoolVals] = {};
   size_t r0_ = 0, warm_ = 0, ds_ = 0, n_ = 0;
-  RowLines rx_; // [列][篮子 | 个股] 逐行
+  Realize rz_;             // [列 · B + 本] 期收益 (本 = 篮子 | 个股)
+  std::vector<float> blk_; // [列 · B + 本][块统计行] 本块逐行暂存
 };
 
 // 篮子作业 (all 池日层, 与森林作业 eval_forest 对仗): open_job(basket_need) → 选股表 → run_job(BasketPass) → out
 Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out);
 
-// 池均线: 池内全部有标签的格各自做多 (Self, 可买才建仓 / 续持取名义值) 等权, 每持有期一条 → fold_ledger
+// 池均线: 池内全部有标签的格各自做多 (Self, 可买才建仓 / 续持取名义值) 等权, 每持有期一条 → Realize
 LedgerLines pool_line(misc::exec::ForkJoin &ex, const Block &c);
 
 } // namespace GUI::Engine

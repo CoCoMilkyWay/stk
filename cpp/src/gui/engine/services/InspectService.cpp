@@ -22,18 +22,6 @@ namespace GUI::Engine {
 
 namespace {
 
-struct RicP : RowsP<RicP, float> {
-  std::vector<float> *dst = nullptr;
-  static constexpr Bytes bytes(int H) { return {.row = static_cast<double>(sizeof(float)) * H}; }
-  static float of(const factor::stat::Row &r) { return ric_of(r); }
-  void init(const PassCtx &p) {
-    dst->assign(static_cast<size_t>(p.hd.n) * p.rows_stat, std::numeric_limits<float>::quiet_NaN());
-  }
-  void fold(const Ctx &c, int hi, int u0, std::span<const float> g) {
-    std::copy(g.begin(), g.end(), dst->begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(hi) * c.c.rows_stat() + u0));
-  }
-};
-
 struct RxP : LandCellsP<uint16_t> {
   static constexpr uint8_t need = kNeedRx;
   void close(const Ctx &c, const RootView &v) {
@@ -52,7 +40,7 @@ struct RxAllP : LandCellsP<uint16_t> {
   }
 };
 
-using InspectProbes = EvalProbes<RxP, RxAllP, RicP, NavP>;
+using InspectProbes = EvalProbes<RxP, RxAllP, NavP>;
 
 struct Leg {
   uint32_t a = 0;
@@ -156,6 +144,7 @@ void write_legs(const InspectSpec &sp, std::vector<Leg> &legs, const std::vector
     std::snprintf(b, sizeof(b), "%s %02d:%02d", misc::dash(dates[static_cast<size_t>(t / g.S)]).c_str(), m / 60, m % 60);
     return std::string(b);
   };
+  // px_ret = 行收盘价 × 复权因子的进出比 (价格参考; 评估口径的收益走标签: entry VWAP + 平仓顺延, 见 define/Label.hpp)
   const auto ret_of = [](const Leg &l) { return static_cast<double>(l.px_out) * l.adj_out / (static_cast<double>(l.px_in) * l.adj_in) - 1.0; };
   const auto who = [&](const Leg &l) {
     const uint32_t gid = axis.global(l.a);
@@ -166,7 +155,7 @@ void write_legs(const InspectSpec &sp, std::vector<Leg> &legs, const std::vector
   const double w = 1.0 / sp.top_n;
   char b[192];
   if (sp.ex == InspectExport::Log) {
-    f << "code,name,in_time,in_rank,in_px,out_time,out_rank,out_px,ret,w\n";
+    f << "code,name,in_time,in_rank,in_px,out_time,out_rank,out_px,px_ret,w\n";
     for (const Leg &l : legs) {
       std::snprintf(b, sizeof(b), ",%s,%d,%.3f,%s,%s,%.3f,%.6f,%.6g\n", when(l.t_in).c_str(), l.rank_in, static_cast<double>(l.px_in),
                     when(l.t_out < 0 ? t_last : l.t_out).c_str(), l.t_out < 0 ? "" : std::to_string(l.rank_out).c_str(), static_cast<double>(l.px_out),
@@ -177,7 +166,7 @@ void write_legs(const InspectSpec &sp, std::vector<Leg> &legs, const std::vector
     assert(std::all_of(legs.begin(), legs.end(), [](const Leg &l) { return l.t_out < 0; }));
     std::sort(legs.begin(), legs.end(), [](const Leg &x, const Leg &y) { return x.rank_out < y.rank_out; });
     const std::string now = when(t_last);
-    f << "time,rank,code,name,px,in_time,in_rank,in_px,ret,w\n";
+    f << "time,rank,code,name,px,in_time,in_rank,in_px,px_ret,w\n";
     for (const Leg &l : legs) {
       std::snprintf(b, sizeof(b), ",%.3f,%s,%d,%.3f,%.6f,%.6g\n", static_cast<double>(l.px_out), when(l.t_in).c_str(), l.rank_in,
                     static_cast<double>(l.px_in), ret_of(l), w);
@@ -230,7 +219,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
   InspectProbes &p = ps[0];
   p.at<RxP>().dst = &cache.pl.rx;
   p.at<RxAllP>().dst = &cache.pl.rx_all;
-  p.at<RicP>().dst = &cache.pl.ric;
+  p.at<IcPdfP>().dst = &cache.pl.ric; // 逐行 rIC 落地 (与小图同一份暂存)
 
   const Hooks hk{.before = [&](const Block &c, size_t, double) {
     cache.pool.update(c.gen, [&](LedgerLines &b) { b = pool_line(F.S.ex, c); });

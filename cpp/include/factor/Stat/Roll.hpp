@@ -11,7 +11,7 @@
 //     · 滚动窗   窗长 W = round(D / kRollParts) 个交易日 (≥ 1; D = 评估期交易日数), 以每个交易日收尾一个窗 (满 W 日才计);
 //                ok 行 < kRollMinRows 的窗不计. 中位压得住少数窗的极端行情
 //     · 窗目标线 收尾日 t 的值 (不计入的窗 NaN); 只作展示: mono = 该窗的窗 mono; rIC = 该窗内逐日 rIC (当日 ok 行 rIC 均值) 的中位
-//     · 年化多空 窗内日净值 LS (Fold ls_day: 钱按平仓日) 的复利年化 (与 ls_annual 同口径), 取各窗的中位 / 平均; 只作展示
+//     · 年化多空 窗内日净值 LS (Fold LsDays: 钱按平仓日) 的复利年化 (与 ls_annual 同口径), 取各窗的中位 / 平均; 只作展示
 //   【方向】Search 自动定向: 方向 = 正向中位窗目标的号 (sign_of); 所评方向 sign 直接进 roll_of (逐日 rIC / 多空先乘 sign, 组号倒读, 再求窗;
 //     窗 mono 精确变号, 复利年化随之精确). sign 落进 weights, Run 按 sign 评一致.
 // =============================================================================
@@ -20,7 +20,6 @@
 #include "misc/median.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -55,7 +54,7 @@ struct Roll {
 };
 
 // 正向攒的逐日 d[D] 按方向 sign (±1) → 滚动窗统计 (hold / seg = 持有期 / 因子所在层); line 非空 → 窗目标线 [D]; wins 非空 → 收尾日的窗目标 [D]
-//   (都是不计入的窗 NaN)
+//   (都是不计入的窗 NaN). 窗 = 逐日 Day 的前缀之差 (组和 / rIC) 与日净值 LS 的 Path 之差 (年化)
 inline Roll roll_of(std::span<const Day> d, HoldId hold, int seg, int sign = 1, std::vector<float> *line = nullptr, std::vector<double> *wins = nullptr) {
   assert(sign == 1 || sign == -1);
   const int D = static_cast<int>(d.size());
@@ -65,52 +64,41 @@ inline Roll roll_of(std::span<const Day> d, HoldId hold, int seg, int sign = 1, 
     line->assign(static_cast<size_t>(D), std::numeric_limits<float>::quiet_NaN());
   if (wins)
     wins->assign(static_cast<size_t>(D), std::numeric_limits<double>::quiet_NaN());
-  std::vector<double> N(static_cast<size_t>(D) + 1, 0.0), R(kMonoTarget ? 0 : N.size()); // 前缀和 (下标 = 日 + 1)
-  std::vector<std::array<double, kGroups>> G(kMonoTarget ? N.size() : 0);                // 各组前缀和 (已按方向倒读组号)
-  std::vector<Daily> L(static_cast<size_t>(D) + 1);                                      // 日净值 LS 前缀
-  const double span = hold_on(hold, geo_of(seg)).span();
-  const size_t lag = static_cast<size_t>(hold_days(hold));
-  for (int t = 0; t < D; ++t) {
-    const size_t i = static_cast<size_t>(t);
-    N[i + 1] = N[i] + d[i].n;
-    if constexpr (kMonoTarget) {
-      for (int k = 0; k < kGroups; ++k)
-        G[i + 1][static_cast<size_t>(k)] = G[i][static_cast<size_t>(k)] + d[i].grp[sign > 0 ? k : kGroups - 1 - k];
-    } else {
-      R[i + 1] = R[i] + sign * d[i].ric;
-    }
-    L[i + 1] = L[i];
-    L[i + 1].add(sign * ls_day(d, i, lag, span));
+  std::vector<Day> o(d.begin(), d.end()); // 按所评方向改读
+  if (sign < 0)
+    for (Day &x : o)
+      x = x.reversed();
+  std::vector<Day> P(static_cast<size_t>(D) + 1); // 前缀 (下标 = 日 + 1)
+  Path L;                                         // 日净值 LS
+  const LsDays ls(o, hold, seg);
+  for (size_t i = 0; i < o.size(); ++i) {
+    P[i + 1] = P[i];
+    P[i + 1].merge(o[i]);
+    L.add(ls[i]);
   }
-  // 窗 [a, b) (前缀下标) 的窗目标; n = 窗内 ok 行数
-  const auto win_of = [&](size_t a, size_t b, double n) {
-    if constexpr (kMonoTarget) {
-      double g[kGroups];
-      for (int k = 0; k < kGroups; ++k)
-        g[k] = G[b][static_cast<size_t>(k)] - G[a][static_cast<size_t>(k)];
-      (void)n;
-      return mono_of(g, kGroups);
-    } else {
-      return (R[b] - R[a]) / n;
-    }
+  const auto win_of = [](const Day &w) {
+    if constexpr (kMonoTarget)
+      return mono_of(w.grp, kGroups);
+    else
+      return w.ric / w.n;
   };
-  const auto day_ric = [&](int t) { return sign * d[static_cast<size_t>(t)].ric / d[static_cast<size_t>(t)].n; };
+  const auto day_ric = [&](int t) { return o[static_cast<size_t>(t)].ric / o[static_cast<size_t>(t)].n; };
   misc::RunMedian<double> med_m, ann_m;
   std::vector<double> in_win; // 窗内有 ok 行的日的逐日 rIC (升序; 只 rIC 目标的 line 用)
   double med_s = 0.0, ann_s = 0.0;
   for (int t = 0; t < D; ++t) {
     if (!kMonoTarget && line) {
-      if (d[static_cast<size_t>(t)].n > 0)
+      if (o[static_cast<size_t>(t)].n > 0)
         in_win.insert(std::lower_bound(in_win.begin(), in_win.end(), day_ric(t)), day_ric(t));
-      if (const int o = t - r.win; o >= 0 && d[static_cast<size_t>(o)].n > 0)
-        in_win.erase(std::lower_bound(in_win.begin(), in_win.end(), day_ric(o)));
+      if (const int x = t - r.win; x >= 0 && o[static_cast<size_t>(x)].n > 0)
+        in_win.erase(std::lower_bound(in_win.begin(), in_win.end(), day_ric(x)));
     }
     if (t < r.win - 1)
       continue;
     const size_t a = static_cast<size_t>(t + 1 - r.win), b = static_cast<size_t>(t) + 1;
-    const double n = N[b] - N[a];
-    if (n >= kRollMinRows) {
-      const double w = win_of(a, b, n), w_ann = (L[b] - L[a]).ann();
+    const Day wd = P[b] - P[a];
+    if (wd.n >= kRollMinRows) {
+      const double w = win_of(wd), w_ann = L.win(a, b).ann();
       ++r.n, med_s += w, ann_s += w_ann;
       med_m.push(w), ann_m.push(w_ann);
       if (wins)

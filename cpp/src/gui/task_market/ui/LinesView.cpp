@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -241,7 +242,7 @@ struct Levels {
   void push(misc::Ymd d, double s, double v) { date.push_back(d), slot.push_back(s), lv.push_back(v); }
 };
 
-// 腿 (fold_ledger 已实现口径, 与池指数对齐; 账五列恒齐): 行 t 的增量 (cost: 毛 − 真实冲击 − 固定份数 · 固定冲击 − 两侧量 · 税佣; 否则 = 毛) / 增仓量
+// 腿 (Realize 已实现口径, 与池指数对齐; 账五列恒齐): 行 t 的增量 (cost: 毛 − 真实冲击 − 固定份数 · 固定冲击 − 两侧量 · 税佣; 否则 = 毛) / 增仓量
 struct LedgerLine {
   const float *c[kLedgerCols];
   explicit LedgerLine(const LinesLeg &lg) {
@@ -258,7 +259,7 @@ struct LedgerLine {
 // 腿集合成 (线源 s 的 legs): 稠密格 [日并集轴][M] (M = 各腿层的行末槽之并; 行末分钟经 row_slot, 竞价段并入首根), 腿的行 t 落进 (所在日, 行末槽) 的格;
 //   腿的日在轴范围外 → 弃, 范围内而轴上没有 → 整日并进下一个轴上的日的该腿首格 (同 project: 收益并进下一个轴上的日);
 //   净值约定同 define/Label.hpp 协议表 2 (日内求和, 跨日复利): 一腿一日的路径 = 并入的轴外日逐日复利 × (1 + 当日行增量的累计和) − 1,
-//   跨腿按份额 1 / 当日有数据的腿数加和 ⇒ 一腿 = 该账线自身 (与 Inspect fold_ledger 的日净值同一口径)
+//   跨腿按份额 1 / 当日有数据的腿数加和 ⇒ 一腿 = 该账线自身 (与 Inspect Realize 的日净值同一口径)
 // 点位 = 首个有增量的格所在日首根前的起点 1, 各日 = 前日末点位 × (1 + 当日至该格的累计组合收益); 年换手 = 增仓量同份额累加到日, 自首个有增仓的日起在有腿的日上的日均 × 每年交易日
 struct Mix {
   Levels lv;
@@ -468,8 +469,8 @@ Line build_line(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
     intraday(axis, *s.minutes, c);
   return c;
 }
-// 线 c 接当日 y 于日轴第 k 日 (y 接得上日脊 ⇒ c 止于 k 之前) 的尾: 锚 = 末点, 点位 = 锚 × 收 / 前收; minutes = 各有根槽一点 (同日内形),
-// 否则此刻 (末个有根槽; 无根 = 末根) 一点. 空线 / 无前收 → 无尾
+// 线 c 接当日 y 于日轴第 k 日 (y 接得上日脊 ⇒ c 止于 k 之前) 的尾: 锚 = 末点, 点位 = 锚 × 收 / 前收; minutes = 各有根 / 估值槽一点 (同日内形),
+// 否则此刻 (末个有根 / 估值槽; 都无 = 末根) 一点. 空线 / 无前收 → 无尾
 LineTail tail_of(const Line &c, size_t k, const Quote::Day &y, bool minutes) {
   LineTail o;
   if (c.e.empty() || !(y.candle.ref > 0))
@@ -478,12 +479,13 @@ LineTail tail_of(const Line &c, size_t k, const Quote::Day &y, bool minutes) {
   o.k = static_cast<int>(k);
   const double a = c.y.back() / y.candle.ref;
   const Quote::Bars &b = y.bars;
+  const std::bitset<Quote::kSlots> at = b.has | b.guess;
   int last = static_cast<int>(kClose);
-  while (last >= 0 && !b.has[static_cast<size_t>(last)])
+  while (last >= 0 && !at[static_cast<size_t>(last)])
     --last;
   if (minutes && last >= 0) {
     for (int s = 0; s <= last; ++s)
-      if (b.has[static_cast<size_t>(s)])
+      if (at[static_cast<size_t>(s)])
         o.x.push_back(x_of(k, s)), o.y.push_back(a * b.cell[static_cast<size_t>(s)].close);
   } else {
     o.x.push_back(x_of(k, last >= 0 ? last : static_cast<double>(kClose))), o.y.push_back(a * y.candle.close);

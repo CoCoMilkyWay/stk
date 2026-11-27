@@ -30,11 +30,9 @@ struct Config {
   // 交易费率 (define/Fee.hpp; 全仓唯一一份: 因子换手成本 / 组合净线 / CTA / 实盘调仓试算 / 账户日内回推同用):
   //   佣金双边 + 过户费双边 + 印花税卖出单边 + 固定冲击 (无盘口冲击列时两侧都按它; 标签是毛收益不含费)
   Fee fee;
-  // 冲击封顶 (比率): lb_cost_buy / sell_* 装载时 min(·, max_impact) 再进组均 (gui/engine/Load). 深度吃穿 / 涨跌停成交的格冲击可到百分之几,
-  //   原值进均值把期限结构净线整体砸穿 (过罚); 封顶后那些格最多扣这么多, 可执行性另议. 两侧同封. 默认 1%
-  double max_impact = 0.01;
-  // 成本口径: false = 固定段 (两侧量 × Fee::impact); true = 盘口段 (Lob 库 L_1min 的买 / 卖冲击列, 分钟层各层按行末分钟取; 评估域并入 Lob 库)
-  bool lob_cost = false;
+  // 成本口径 (define/Fee.hpp CostSpec): 金额段 amt (固定段 = 两侧量 × Fee::impact; 盘口段 = Lob 库 L_1min 的买 / 卖冲击列, 评估域并入 Lob 库) +
+  //   盘口冲击封顶 top (深度吃穿 / 涨跌停成交的格冲击可到百分之几, 原值进均值把净线整体砸穿; 封顶后那些格最多扣这么多; 两侧同封, 默认 1%)
+  CostSpec cost;
 
   // Config file path (output/config/settings/settings.json)
   std::string filepath;

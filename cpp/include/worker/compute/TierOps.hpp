@@ -43,7 +43,7 @@ struct PipelineArgs {
 // ============================================================================
 struct TierOps {
   const char *unit;                                           // 时序工作量单位 (TierFeed::kUnit)
-  size_t pend_days;                                           // 悬挂日环 = 续算尾窗上限 (LabelHold::PEND_DAYS)
+  size_t pend_days;                                           // 悬挂日环 = 续算尾窗上限 (define/Label.hpp kPendDays)
   std::vector<misc::Ymd> (*source_dates)(const SharedData &); // 源日历: 本档原始数据现在能服务的交易日 (TierFeed::source_dates)
   SnapHeader (*snap_header)(const FeatureLib &, misc::Ymd);   // 续算点头: 库截到某日可续算的全部前提 (见 FeatureSnap.hpp)
   bool (*pipeline)(const PipelineArgs &);                     // 管线, 返回 = 未取消

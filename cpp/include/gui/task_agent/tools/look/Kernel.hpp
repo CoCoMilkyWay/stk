@@ -302,55 +302,13 @@ inline int row_at(const std::vector<std::string> &clock, const std::string &hm) 
   return it == clock.end() ? -1 : static_cast<int>(it - clock.begin());
 }
 
-// ---- 分层累加器 ----
-struct Layer {
-  int rows = 0, ok = 0;
-  double g[kGroups] = {}, cnt[kGroups] = {};
-  double tl[2][kTails] = {}, tc[2][kTails] = {};
-  Mean ric;
-  void add(const st::Row &w) {
-    ++rows;
-    if (!w.ok)
-      return;
-    ++ok;
-    for (int k = 0; k < kGroups; ++k)
-      g[k] += w.grp[k], cnt[k] += w.cnt[k];
-    for (int e = 0; e < 2; ++e)
-      for (int j = 0; j < kTails; ++j)
-        tl[e][j] += w.tail[e][j], tc[e][j] += w.tail_n[e][j];
-    ric.add(w.ric);
-  }
-  void merge(const Layer &o) {
-    rows += o.rows, ok += o.ok;
-    for (int k = 0; k < kGroups; ++k)
-      g[k] += o.g[k], cnt[k] += o.cnt[k];
-    for (int e = 0; e < 2; ++e)
-      for (int j = 0; j < kTails; ++j)
-        tl[e][j] += o.tl[e][j], tc[e][j] += o.tc[e][j];
-    ric.merge(o.ric);
-  }
-  double grp(int k) const { return ok ? g[k] / rows : kNaN; }
-  double tail(int e, int j) const { return rows ? tl[e][j] / rows : kNaN; }
-  double tail_held(int e, int j) const { return ok ? tc[e][j] / ok : kNaN; }
-  std::vector<double> grps() const {
-    std::vector<double> v(kGroups);
-    for (int k = 0; k < kGroups; ++k)
-      v[static_cast<size_t>(k)] = grp(k);
-    return v;
-  }
-  double mono() const {
-    if (!ok)
-      return kNaN;
-    double v[kGroups];
-    for (int k = 0; k < kGroups; ++k)
-      v[k] = grp(k);
-    return st::mono_of(v, kGroups);
-  }
-  double ls() const { return (grp(kG20) - grp(kG1)) / 2.0; }
-  double held(int k) const { return ok ? cnt[k] / ok : kNaN; }
-};
-
-inline LayerRow row_of(std::string name, const Layer &b) { return {std::move(name), b.rows, b.ok, b.mono(), b.ls(), b.ric.mean(), b.grps()}; }
+// 分层行 (行和 = Stat 的全量行和 Sums, 与三级同分母)
+inline LayerRow row_of(std::string name, const st::Sums &b) {
+  std::vector<double> g(kGroups);
+  for (int k = 0; k < kGroups; ++k)
+    g[static_cast<size_t>(k)] = b.grp_of(k);
+  return {std::move(name), b.rows, b.n, b.mono(), b.ls_of(), b.ric_mean(), std::move(g)};
+}
 
 // ---- K 线直读视图 (直接读 Block::x 的叶平面并按需做逆落盘变换, 零平面拷贝) ----
 enum Bar : uint8_t { Close,
@@ -676,32 +634,21 @@ inline bool held_cell(const Engine::Block &blk, const uint16_t *rx, HoldId hold,
   return true;
 }
 
-// 一行的池均值 (门控 ∧ 标签有效格的做多收益均值; 无因子观察的超额基准)
-inline float pool_mkt(const Engine::Block &blk, int t) {
-  const int A = blk.y.sh.A;
-  const size_t base = static_cast<size_t>(t) * static_cast<size_t>(A);
-  const Engine::LabPlane &lb = *blk.y.labels[0];
-  const uint16_t *lv = lb.lv.data();
-  double sum = 0.0;
-  size_t cnt = 0;
-  for (int a = 0; a < A; ++a)
-    if (blk.y.gate[base + static_cast<size_t>(a)] && lb.m[base + static_cast<size_t>(a)])
-      sum += h2f(lv[base + static_cast<size_t>(a)]), ++cnt;
-  return cnt ? static_cast<float>(sum / static_cast<double>(cnt)) : NAN;
-}
-// 一行的超额基准: 有因子 = Stat 的 J 均值 (Row::mkt: 因子有秩 ∧ 标签有秩, 与 rIC / 分组同一样本; 行不 ok = NaN); 无因子 = pool_mkt
+// 一行的超额基准 = 池基准 (契约 Label::mk: 标签有效格的做多收益均值, 与因子无关); 有因子时行不 ok (rIC 不可算) = NaN
 inline float mkt_of(const ChunkView &cv, int t) {
+  const float mk = cv.blk.y.labels[0]->mk[static_cast<size_t>(t)];
   if (cv.rows.empty())
-    return pool_mkt(cv.blk, t);
+    return mk;
   const int r = t - cv.t_lo;
   assert(r >= 0 && r < static_cast<int>(cv.rows.size()) && "行须在本块的日段内");
-  const st::Row &w = cv.rows[static_cast<size_t>(r)];
-  return w.ok ? w.mkt : NAN;
+  return cv.rows[static_cast<size_t>(r)].ok ? mk : NAN;
 }
 
-// 观察流的因子根探针 (块级, Engine::ForestPass 进): 本块统计行的 Row (已定向, 含尾部) + rx + 两端组真持有的格 (ends 时; Stat/Pos.hpp cell)
+// 观察流的因子根探针 (块级, Engine::ForestPass 进, 只 CPU): 本块统计行的 Row (已定向, 含尾部) + rx + 两端组真持有的格
+//   (ends 时; 行核 walk 时同出 sink.cell, 不另走链)
 struct LookP : Engine::ProbeBase {
   static constexpr uint8_t need = Engine::kNeedRows | Engine::kNeedRx;
+  static constexpr bool kCells = true;
   bool ends = false; // 要两端组真持有的格
   int only = -1;     // 只要一端 (st::kTop / kBot); −1 = 两端
   int t_lo = 0;
@@ -716,35 +663,18 @@ struct LookP : Engine::ProbeBase {
     cells.assign(ends ? rows.size() : 0, {});
   }
   void row(int, int t, const st::Row &r) { rows[static_cast<size_t>(t - t_lo)] = r; }
-  void close(const Engine::Ctx &c, const Engine::RootView &v) {
-    rx = v.rx;
+  void cell(int, int t, int a, int g, const st::Pos &p, const float *y) { // 观察只一个持有期; 行内格按 a 升序到 (同行同线程)
     if (!ends)
       return;
-    const st::Span s = c.s();
-    const Hold hd = hold_on(c.L.hd.k[0], s.g);
-    c.ex.rows(static_cast<int>(rows.size()), [&](int r0, int r1, int) {
-      for (int t = t_lo + r0; t < t_lo + r1; ++t) {
-        if (!rows[static_cast<size_t>(t - t_lo)].ok)
-          continue;
-        const size_t base = static_cast<size_t>(t) * static_cast<size_t>(s.A);
-        const st::Label lb = c.L.l[0].at(base);
-        const st::Chain ch = st::chain_of(t, s, hd);
-        for (int a = 0; a < s.A; ++a) {
-          const uint16_t *x = rx + base + static_cast<size_t>(a);
-          if (*x == st::kRankNone || lb.ry[a] == st::kRankNone)
-            continue;
-          const int g = st::grp_of(*x);
-          for (int e = 0; e < st::kEnds; ++e) {
-            if ((only >= 0 && e != only) || g != st::end_group(e))
-              continue;
-            float y[2];
-            const st::Pos p = st::cell(ch, lb, a, st::InRank{x, g}, factor::cpu::stat::H2F{}, y);
-            if (p.held >= 0)
-              cells[static_cast<size_t>(t - t_lo)].push_back({t, a, static_cast<uint8_t>(e), st::ret_at(p, 0, y)});
-          }
-        }
-      }
-    });
+    for (int e = 0; e < st::kEnds; ++e)
+      if ((only < 0 || e == only) && g == st::end_group(e))
+        cells[static_cast<size_t>(t - t_lo)].push_back({t, a, static_cast<uint8_t>(e), st::ret_at(p, 0, y)});
+  }
+  void close(const Engine::Ctx &, const Engine::RootView &v) {
+    rx = v.rx;
+    for (size_t r = 0; r < cells.size(); ++r) // 行不 ok (rIC 不可算) 不收格
+      if (!rows[r].ok)
+        cells[r].clear();
   }
 };
 using LookProbes = Engine::Probes<LookP>;

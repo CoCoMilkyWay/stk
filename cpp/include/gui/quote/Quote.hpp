@@ -236,7 +236,7 @@ struct Source {
   const Candle &candle(size_t i) const { return i < daily.size() ? daily[i] : today->candle; }
   const Candle *last() const { return size() ? &candle(size() - 1) : nullptr; } // 最新一根; 无 → nullptr
   size_t find(misc::Ymd d) const;                                               // d 在日序列的下标; 无 → size()
-  // 第 i 项 (≥ size() = 无) 的分钟根 (当日有根 / 全史带分钟) 填进 b; 无 → false
+  // 第 i 项 (≥ size() = 无) 的分钟根 (当日有根或估值 / 全史带分钟) 填进 b; 无 → false
   bool bars(size_t i, Bars &b) const;
   // 第 i 项的复权倍数 (价 × adj 跨日连续; 前复权到末项 = adj(i) / adj(size() − 1)): 全史 = Series::adj, 日脊末段自首项 1 起;
   //   其后逐项 × 上一项收 / 本项前收 (前收缺 → 不变; 接上的当日同此)

@@ -165,9 +165,9 @@ struct SpanCache {
 
 using Fails = std::map<std::string, std::string>;
 
-// fee = Config 费率 (净多空扣固定段换手成本 + 税佣)
+// fee / cost = Config 费率与成本口径 (净多空扣口径那一段的换手成本 + 税佣; stat 没装该段 → 固定段)
 Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, const std::string &file, HoldId hold,
-                 const Fee &fee, const Fails &fails) {
+                 const Fee &fee, const CostSpec &cost, const Fails &fails) {
   std::vector<Engine::FactorRow> rows;
   Engine::ScanFactorFile(dir, file, ft, rows);
   assert(!rows.empty());
@@ -210,7 +210,8 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
       x.score = fs::score_of(*rl);
       x.ric = h->ric.mean, x.mono = h->mono;
       x.lng = fs::end_period(*h, fs::kTop), x.sht = -fs::end_period(*h, fs::kBot);
-      x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, kAmtFixed, fee), x.cost = x.gross - x.net;
+      const AmtId amt = w.amts.at(ft.y.amt_of(cost)) >= 0 ? ft.y.amt_of(cost) : kAmtFixed;
+      x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, amt, fee), x.cost = x.gross - x.net;
       x.turn = fs::turn_annual(*h, c);
       assert(h->n_all > 0 && "有滚动窗须有统计行");
       const double n = static_cast<double>(h->n_all);
@@ -243,11 +244,11 @@ void sort_results(std::vector<Result> &v) {
   });
 }
 
-std::vector<Result> scan(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, HoldId hold, const Fee &fee,
+std::vector<Result> scan(const Engine::FeatureTable &ft, const SpanCache &spans, const Opened &open, const Engine::FactorDir &dir, HoldId hold, const Fee &fee, const CostSpec &cost,
                          const Fails &fails) {
   std::vector<Result> out;
   for (const std::string &file : dir.files())
-    out.push_back(result_of(ft, spans, open, dir, file, hold, fee, fails));
+    out.push_back(result_of(ft, spans, open, dir, file, hold, fee, cost, fails));
   sort_results(out);
   return out;
 }
@@ -450,6 +451,7 @@ struct Desk::Impl {
 
   std::shared_ptr<const Engine::FeatureTable> ft() const { return table(*data, sc.level); }
   Fee fee() const { return data->config.fee; }
+  CostSpec cost() const { return data->config.cost; }
 
   Engine::FactorScope factor_scope(bool gpu) const {
     Engine::FactorScope fsc;
@@ -506,14 +508,14 @@ struct Desk::Impl {
   }
 
   void rescan_all() {
-    results = scan(*ft(), *spans, open, dir, sc.hold, fee(), fails);
+    results = scan(*ft(), *spans, open, dir, sc.hold, fee(), cost(), fails);
     for (Result &r : results)
       attach_extras(r);
     env_cache.reset();
   }
 
   void rescan_one(const std::string &file) {
-    Result got = result_of(*ft(), *spans, open, dir, file, sc.hold, fee(), fails);
+    Result got = result_of(*ft(), *spans, open, dir, file, sc.hold, fee(), cost(), fails);
     attach_extras(got);
     const auto it = std::find_if(results.begin(), results.end(), [&](const Result &x) { return x.file == file; });
     if (it != results.end())
@@ -636,7 +638,7 @@ void Desk::bind(const SharedData &data, const Scope &sc, bool test) {
       c.ops.push_back(x);
     c.all_ops.push_back(std::move(x));
   }
-  c.library = scan(*ft, *impl_->spans, impl_->open, Engine::factor_dir_of(sc.pool, level_id(sc.level)), sc.hold, impl_->fee(), {});
+  c.library = scan(*ft, *impl_->spans, impl_->open, Engine::factor_dir_of(sc.pool, level_id(sc.level)), sc.hold, impl_->fee(), impl_->cost(), {});
   impl_->rescan_all();
 }
 
@@ -722,7 +724,7 @@ Adopted Desk::adopt(std::string name, const Gate &g, bool dry) {
   if (std::filesystem::exists(dst))
     return {std::move(name), "正式因子库已有同名文件 `" + r->file + "`"};
   disk::write(formal.file, formal.of(r->file), disk::read(impl_->dir.file, impl_->dir.of(r->file)));
-  impl_->context.library = scan(*impl_->ft(), *impl_->spans, impl_->open, formal, impl_->sc.hold, impl_->fee(), {});
+  impl_->context.library = scan(*impl_->ft(), *impl_->spans, impl_->open, formal, impl_->sc.hold, impl_->fee(), impl_->cost(), {});
   return {std::move(name), {}};
 }
 

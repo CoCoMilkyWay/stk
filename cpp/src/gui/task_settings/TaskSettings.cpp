@@ -23,7 +23,7 @@ namespace {
 class SettingsTask {
 private:
   // 数值配置上次合法值: 失焦校验越界时回退用 (避免越界值进 cfg/落盘)
-  double last_commission = 0, last_stamp = 0, last_transfer = 0, last_fixed_impact = 0, last_max_impact = 0;
+  double last_commission = 0, last_stamp = 0, last_transfer = 0, last_fixed_impact = 0, last_top = 0;
 
   // Date picker state
   struct DatePickerState {
@@ -196,7 +196,7 @@ private:
     last_stamp = data.config.fee.stamp;
     last_transfer = data.config.fee.transfer;
     last_fixed_impact = data.config.fee.impact;
-    last_max_impact = data.config.max_impact;
+    last_top = data.config.cost.top;
   }
 
   // 每帧维护 (无论选中): 状态标签 + 自动落盘 —— 切走 Settings 后 dirty 配置照样落盘
@@ -345,31 +345,39 @@ private:
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("买入冲击封顶");
+        ImGui::Text("盘口冲击封顶");
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("比率, 1%% = 0.01. 建仓买入冲击 (lb_cost_buy_*) 装载时按此封顶再进组均: 深度吃穿 / 涨停成交的格原值可达百分之几,\n"
-                            "会把期限结构净线整体砸穿 (过罚); 封顶后最多扣这么多, 可执行性另议. 卖出侧不封. Inspect / Search 下次计算生效");
+          ImGui::SetTooltip("比率, 1%% = 0.01. 盘口段的买 / 卖冲击 (lb_cost_*) 进账时逐格按此封顶: 深度吃穿 / 涨跌停成交的格原值可达百分之几,\n"
+                            "会把净线整体砸穿 (过罚); 封顶后最多扣这么多, 可执行性另议. 两侧同封. Run / Inspect / 组合下次计算生效");
         ImGui::TableNextColumn();
         ImGui::SetNextItemWidth(120);
-        ImGui::InputDouble("##max_impact", &cfg.max_impact, 0.0, 0.0, "%.4f");
+        ImGui::InputDouble("##cost_top", &cfg.cost.top, 0.0, 0.0, "%.4f");
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-          if (cfg.max_impact > 0.0 && cfg.max_impact <= 0.2) {
-            last_max_impact = cfg.max_impact;
+          if (cfg.cost.top > 0.0 && cfg.cost.top <= 0.2) {
+            last_top = cfg.cost.top;
             changed = true;
           } else {
-            std::cout << "警告: 买入冲击封顶越界 (1% = 0.01), 保留旧值" << std::endl;
-            cfg.max_impact = last_max_impact;
+            std::cout << "警告: 盘口冲击封顶越界 (1% = 0.01), 保留旧值" << std::endl;
+            cfg.cost.top = last_top;
           }
         }
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("盘口成本");
+        ImGui::Text("成本金额段");
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("关 = 固定冲击 (两侧量 × 固定冲击); 开 = 盘口段 (Lob 库 L_1min 的买 / 卖冲击列, 分钟各层按行末分钟取, 日层无盘口段),\n"
-                            "评估域并入同池 Lob 库 (须已算, 落盘日取交集). Run / Inspect / 组合下次计算生效");
+          ImGui::SetTooltip("固定 = 两侧量 × 固定冲击; 5w / 30w … = 盘口段 (Lob 库 L_1min 的买 / 卖冲击列, 分钟各层按行末分钟取, 日层无盘口段 → 固定),\n"
+                            "评估域并入同池 Lob 库 (须已算, 落盘日取交集). Run / Inspect / 组合 / Agent 同一段, 下次计算生效");
         ImGui::TableNextColumn();
-        changed |= ImGui::Checkbox("##lob_cost", &cfg.lob_cost);
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::BeginCombo("##cost_amt", amt_name(cfg.cost.amt).c_str())) {
+          for (int a = 0; a < kAmtCount; ++a)
+            if (ImGui::Selectable(amt_name(static_cast<AmtId>(a)).c_str(), cfg.cost.amt == a) && cfg.cost.amt != a) {
+              cfg.cost.amt = static_cast<AmtId>(a);
+              changed = true;
+            }
+          ImGui::EndCombo();
+        }
 
         ImGui::EndTable();
       }

@@ -39,7 +39,7 @@ std::tuple<FactorLevelId, std::string, LibMask> group_of(const FactorTask &t) {
   for (const factor::expr::Node &n : ft.reparse(t.f.expr).nodes)
     if (n.op < 0)
       feats.push_back(n.feat);
-  return {t.scope.lv, t.scope.pool, used_libs(ft, pool_id(t.scope.pool), ft.x.ids(feats), t.scope.lob_cost)};
+  return {t.scope.lv, t.scope.pool, used_libs(ft, pool_id(t.scope.pool), ft.x.ids(feats), t.scope.cost)};
 }
 
 } // namespace
@@ -179,13 +179,14 @@ namespace {
 // 因子组合账 = 顶端整组那一本 (Stat/Book.hpp 因子账集, 与 Run 换手同一核): 收益 (平仓行) + 四列流水 (建仓行) 逐行落地
 struct FlowP : LinesP {
   static constexpr uint8_t need = kNeedRx;
-  static constexpr Segs segs = Segs::First;
+  static constexpr Segs segs = Segs::Spec;
   static constexpr Bytes bytes(int H) { return {.row = static_cast<double>(sizeof(float)) * kLedgerCols * H}; }
+  static constexpr Bytes scratch(int H) { return {.row = static_cast<double>(sizeof(float)) * kLedgerCols * H}; }
   void init(const PassCtx &p) {
     assert(p.ad.n == 1 && "账: 一个金额段");
-    lines(p, p.hd.n * kLedgerCols, [&](int i) { return p.hd.k[i / kLedgerCols]; });
-    for (int i = 0; i < x.n; ++i)
-      x.at_exit[static_cast<size_t>(i)] = i % kLedgerCols == kLedgerRet;
+    lines(p, p.hd.n * kLedgerCols, 1, [&](int i) { return p.hd.k[i / kLedgerCols]; });
+    for (int i = 0; i < rz.out.n; ++i)
+      rz.at_exit[static_cast<size_t>(i)] = i % kLedgerCols == kLedgerRet;
   }
   void close(const Ctx &c, const RootView &v) {
     namespace st = factor::stat;
@@ -200,6 +201,7 @@ struct FlowP : LinesP {
         for (int k = kLedgerImp; k < kLedgerCols; ++k)
           at(hi * kLedgerCols + k, t) = ledger_cell(flow[kOwn], y.ad.k[0], k);
       });
+    LinesP::close(c, v);
   }
 };
 using PortfolioProbes = Probes<FlowP>;

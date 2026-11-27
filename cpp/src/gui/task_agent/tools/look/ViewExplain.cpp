@@ -103,7 +103,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
   // 由于运行期可能有坏根特征, 在首块 plan_forest 后按实际有效特征定列
   Mean fric, r2, rric;
   std::vector<Mean> corr, bric, sric;
-  Layer orig, rest;
+  st::Sums orig, rest;
   std::vector<size_t> active_feats;
   bool cols_fixed = false;
 
@@ -174,7 +174,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
         struct ThreadAcc {
           Mean fric, r2, rric;
           std::vector<Mean> corr, bric, sric;
-          Layer orig, rest;
+          st::Sums orig, rest;
         };
         std::vector<ThreadAcc> ta(static_cast<size_t>(nt));
         for (ThreadAcc &x : ta)

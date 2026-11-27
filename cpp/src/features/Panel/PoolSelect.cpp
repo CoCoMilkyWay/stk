@@ -526,15 +526,16 @@ void perf(const Strip &t, Rebal rb, const Pick &pick, Perf &b) {
       mem[r * A + a] = 1;
   }
   // 篮子账 (键 = 权重; Stat 账集同一核): 收益 (持仓日 r + 1) / 买量; 只付固定冲击
+  //   日层每行一批 (h̄ = 1), 钱记平仓日 (Hold::money_day, 协议表 2【记日】); 买量同记 (与行情账同口径)
   const st::Span sp{static_cast<int>(D), static_cast<int>(A), geo_of(1)};
-  const st::Label lb{t.lv.data(), t.nv.data(), t.m.data(), t.eo.data(), nullptr};
+  const Hold hd = hold_on(kHoldT1, sp.g);
+  const st::Label lb{t.lv.data(), t.nv.data(), t.m.data(), t.eo.data()};
   misc::exec::Serial ex;
-  st::book_rows(ex, sp, hold_on(kHoldT1, sp.g), lb, PickBooks{t, mem.data(), src.data(), static_cast<int>(A)}, st::Cost{},
-                [&](int, int r, const double *ret, const st::Flow *flow) {
-                  if (static_cast<size_t>(r) + 1 < D)
-                    for (int w = 0; w < kWeights; ++w)
-                      b.ret[w][r + 1] = static_cast<float>(ret[w]), b.buy[w][r + 1] = static_cast<float>(flow[w].vol[kBuy]);
-                });
+  st::book_rows(ex, sp, hd, lb, PickBooks{t, mem.data(), src.data(), static_cast<int>(A)}, st::Cost{}, [&](int, int r, const double *ret, const st::Flow *flow) {
+    if (const size_t u = static_cast<size_t>(hd.money_day(r)); u < D)
+      for (int w = 0; w < kWeights; ++w)
+        b.ret[w][u] = static_cast<float>(ret[w]), b.buy[w][u] = static_cast<float>(flow[w].vol[kBuy]);
+  });
 }
 
 size_t Picks::src(PoolId p, misc::Ymd d) const {

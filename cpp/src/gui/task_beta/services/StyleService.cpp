@@ -31,17 +31,12 @@ void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<floa
   l.stat = {};
   if (f >= d1)
     return;
-  // 前缀 (下标 = 日 + 1; 起点前为空) + 整段回撤 (峰自基日 = 1 起) / 增仓
-  std::vector<Daily> P(d1 + 1);
-  double nav = 1.0, peak = 1.0, mdd = 0.0, b = 0.0;
-  for (size_t d = f; d < d1; ++d) {
-    const double x = r[d];
-    P[d + 1] = P[d];
-    P[d + 1].add(x);
-    nav *= 1.0 + x, peak = std::max(peak, nav), mdd = std::max(mdd, 1.0 - nav / peak);
-    b += buy[d];
-  }
-  l.stat.mdd = static_cast<float>(mdd), l.stat.turn = static_cast<float>(per_year(b, static_cast<double>(d1 - f)));
+  // 逐日序列 Path (前缀下标 = 日 − f + 1) + 整段回撤 (峰自基日 = 1 起) / 增仓
+  Path P;
+  double b = 0.0;
+  for (size_t d = f; d < d1; ++d)
+    P.add(r[d]), b += buy[d];
+  l.stat.mdd = static_cast<float>(P.mdd), l.stat.turn = static_cast<float>(per_year(b, static_cast<double>(d1 - f)));
   misc::RunMedian<float> ann_m, shp_m; // 年化 = 对数年化
   double ann_s = 0.0, shp_s = 0.0;
   size_t ys = 0; // 首个晚于 dates[t] 前推一年的日 = 窗起
@@ -52,7 +47,7 @@ void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<floa
       continue;
     if (l.from == d1)
       l.from = t;
-    const Daily w = P[t + 1] - P[ys];
+    const Daily w = P.win(ys - f, t + 1 - f);
     const float a = static_cast<float>(w.log_ann()), h = static_cast<float>(w.sharpe());
     ann_s += a, shp_s += h;
     ann_m.push(a), shp_m.push(h);

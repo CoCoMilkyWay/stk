@@ -14,6 +14,7 @@
 //           m        标签有效位
 //           eo       建仓可成交码 kEoBuy | kEoSell (features lb_entry_ok; 各持有期共用一张)
 //           ry       预处理: 做多标签逐行截面 rank (r16), 与因子无关, 常驻期算一次 (prep_label)
+//           mk       池基准 [T]: 逐行 标签有效格 (截面池内 ∧ 当日有成交 ∧ 标签有限) 的做多收益均值, 与因子无关, 装载时一次 (超额的基准)
 //
 //   【只做多】一切组合 (组 / 尾部 / 多空两端 / 池篮子 / 单只) 都是做多账本: 收益取 lv (续持取名义值), 建仓要价点可买, 冲击取买入冲击.
 //   【多空 LS】两端 End = 最高组 G20 (kTop) 与最低组 G1 (kBot), 各是一本做多账本; 多空 = ½ (G20 − G1) (资金 1 两本各半, 不做空).
@@ -31,9 +32,10 @@
 //         不排序, 直接量化 r16 = round(x · kRankMax) (r16_quant) → 20 组 = 自身历史分位组.
 //     两口径之后逐字共用: grp_of / rIC / 收益 / 持仓口径 / 尾部 / ls / mkt / rAC / 二级汇总. 组允许空 (空组收益 0).
 //   【收益 Ret】组 / 尾部的持仓收益按因子的收益口径 (因子文件 type, 人定; Mode::r, 逐根给; 标签与之无关):
-//     Excess 超额: e = lv − mkt (mkt = mean_J lv), 每 t 的共同分量 (市场水平 / 市场择时) 被扔掉, 评的是"相对市场";
+//     Excess 超额: e = lv − mkt (mkt = 池基准 mk[t]), 每 t 的共同分量 (市场水平 / 市场择时) 被扔掉, 评的是"相对池";
 //     Abs    绝对: e = lv, 留着市场分量, 评的是"能不能赚绝对收益" (择时).
-//     rIC / rAC / mkt 与口径无关 (截面秩不受每 t 的平移影响); 满仓组两口径只差同一个 mkt, LS / mono 近乎不变, 差别主要在 TS 口径 (组随时间不满).
+//     rIC / rAC / mkt 与口径无关 (截面秩不受每 t 的平移影响; mkt 与因子无关, 各因子同一基准); 满仓组两口径只差同一个 mkt, LS / mono 近乎不变,
+//     差别主要在 TS 口径 (组随时间不满).
 //
 //   【持仓口径】每组资金固定为 1, 满仓 cap = Labels::cap 只 (调用方给 n_full = 池内平均有效资产数 / kGroups, 与因子无关), 每只 1/cap:
 //     真持有 n 只 → 持仓 min(n, cap) / cap, 超过 cap 满仓在 n 只里均分 → 组收益 = Σe / max(n, cap) (book_den); 未持有 → 0.
@@ -45,14 +47,14 @@
 //     ric    rank IC = Pearson(r16_x, r16_y) over J (整数五和 → pearson_int, 两后端逐位一致)
 //     grp[k] 第 k 组 (k = grp_of(r16_x)) 的持仓收益 Σe / max(cnt, cap); cnt[k] = 组真持有只数 (Pos.hpp)
 //     tail   两端组内更极端的一截 (【尾部】), 同口径 Σe / max(n, cap · tail_frac(j))
-//     ls_row 多空 = ½ (grp[K−1] − grp[0]); mkt = J 上 lv 均值 (超额基准, 二级回归 beta 用; 两口径都出)
+//     ls_row 多空 = ½ (grp[K−1] − grp[0]); mkt = 池基准 mk[t] (超额基准, 二级回归 beta 用; 两口径都出)
 //     ok     标签侧有效: 开仓行 (Hold::opens) ∧ ric 可算 (n ≥ 2, 两侧方差 > 0). rac = Pearson(r16_x(t), r16_x(t−h)) (lag = h 行), ok_rac 同理.
-//     ok / ok_rac 为假时对应字段全 0. J / ric / mkt 与可成交无关; grp / cnt / tail 只收真持有的格.
+//     ok / ok_rac 为假时对应字段全 0. J / ric 与可成交无关; grp / cnt / tail 只收真持有的格.
 //
 //   【尾部】两端组 (顶 / 底) 内更极端的一截, 占该组 tail_frac(j) (= 整截面 2.5% / 1% / 0.25%), j 越大越极端; 阈值按 r16 定 (tail_thr),
 //     与 grp_of 的组边界同口径. 尾部集合嵌套 (组 ⊃ 尾 0 ⊃ 尾 1 ⊃ 尾 2) = 成员层级 (Pos.hpp InRank), 一次链回走同出各级. 不进二级.
 //
-//   【分块流式】超大张量沿 T 切块 (Span): t0_abs 块首绝对行 (Hold::opens / nets 看绝对行); 统计行 [t_lo, T − t_back), 前带只给因子回看 /
+//   【分块流式】超大张量沿 T 切块 (Span; 块首恒在段首, Hold 只看段内行): 统计行 [t_lo, T − t_back), 前带只给因子回看 /
 //     rAC lag / 交接链 (≥ 回看 + hold_reach + kChainDays 日), 后带只给续持 (≥ hold_reach); 两者按整日对齐. 分块 ≡ 整张量, 跨块 Accum merge 续攒.
 //   【视图】Plane (因子平面) · Batch (C 个同形候选; 交互 C = 1) · Mode (评估口径, 逐根) ⇄ Labels (持有期 hd 与其标签 l[] 同处, 带满仓 cap; 同块各根共用) · Span.
 //     流程 (rank_x / accum_* / run / stat_eval) 收 Mode, 行核收它用到的那几个标量.
@@ -142,8 +144,9 @@ struct Label {
   const uint8_t *m = nullptr;          // 有效位
   const uint8_t *eo = nullptr;         // 建仓可成交码 (各持有期共用同一张)
   const uint16_t *ry = nullptr;        // 做多收益逐行 r16 (后端 prep_label 填; 与因子无关, 常驻期一次)
-  FACTOR_HD Label at(size_t i) const { // 偏到第 i 格 (行首 = t·A)
-    return {lv + i, nv ? nv + i : nullptr, m + i, eo + i, ry ? ry + i : nullptr};
+  const float *mk = nullptr;           // [T] 池基准 (逐行, 不随格偏; 装载时一次)
+  FACTOR_HD Label at(size_t i) const { // 格平面偏到第 i 格 (行首 = t·A); mk 按行取, 不偏
+    return {lv + i, nv ? nv + i : nullptr, m + i, eo + i, ry ? ry + i : nullptr, mk};
   }
 };
 // 本格两侧标签 {lv, nv} (fp16 位 → float; nv 空 = 0)
@@ -168,10 +171,10 @@ struct Labels { // l[i] ↔ hd.k[i]
   Label l[kHoldCount];
   double cap = 0.0; // 满仓一组只数 (【持仓口径】; 调用方给 n_full)
 };
-struct Span { // 块形 + 层几何 + 分块流式; 整张量 t0_abs = t_lo = t_back = 0
+struct Span { // 块形 + 层几何 + 分块流式; 整张量 t_lo = t_back = 0
   int T = 0, A = 0;
   Geo g;
-  int t0_abs = 0, t_lo = 0, t_back = 0;
+  int t_lo = 0, t_back = 0;
   FACTOR_HD size_t n() const { return static_cast<size_t>(T) * A; }
   FACTOR_HD int t_hi() const { return T - t_back; }            // 统计行 [t_lo, t_hi)
   FACTOR_HD int days() const { return (t_hi() - t_lo) / g.S; } // 统计日数 (二级 Day 的条数)
@@ -180,14 +183,14 @@ struct Span { // 块形 + 层几何 + 分块流式; 整张量 t0_abs = t_lo = t_
 inline void assert_span(const Span &s) {
   assert(s.T >= 1 && s.A >= 1 && s.A <= kMaxA && static_cast<long long>(s.T) * s.A < (1LL << 31));
   assert(is_seg(s.g.S) && geo_of(s.g.S).N == s.g.N && geo_of(s.g.S).M0 == s.g.M0 && "Span::g 须是 kGeos 之一");
-  assert(s.t0_abs >= 0 && s.t_lo >= 0 && s.t_back >= 0 && s.t_lo < s.t_hi());
-  assert(s.t_lo % s.g.S == 0 && (s.t_hi() - s.t_lo) % s.g.S == 0 && s.t0_abs % s.g.S == 0 && "统计行按整日对齐");
+  assert(s.t_lo >= 0 && s.t_back >= 0 && s.t_lo < s.t_hi());
+  assert(s.T % s.g.S == 0 && s.t_lo % s.g.S == 0 && (s.t_hi() - s.t_lo) % s.g.S == 0 && "块与统计行按整日对齐");
 }
 // prepped = ry 已由 prep_label 填 (评估入口); 假 = 只要标签 + 掩码 (宿主输入). seg = 因子所在层
 inline void assert_labels(const Labels &L, int seg, bool prepped) {
   assert_holds(L.hd, seg);
   for (int i = 0; i < L.hd.n; ++i)
-    assert(L.l[i].lv && (!hold_offset(L.hd.k[i]) || L.l[i].nv) && L.l[i].m && L.l[i].eo && (!prepped || L.l[i].ry) && "标签不全 / 未预处理 (prep_label)");
+    assert(L.l[i].lv && (!hold_offset(L.hd.k[i]) || L.l[i].nv) && L.l[i].m && L.l[i].eo && L.l[i].mk && (!prepped || L.l[i].ry) && "标签不全 / 未预处理 (prep_label)");
   assert(L.cap > 0.0 && "满仓 cap 未给 (Labels::cap = n_full)");
 }
 
@@ -210,7 +213,7 @@ FACTOR_HD inline constexpr bool in_tail(int e, unsigned r, int j) { return e == 
 // ---- 一级输出: 每 (持有期, 时刻) 一行; 布局 rows[h_idx * T + t] ----
 struct Row {
   float ric = 0.f, rac = 0.f;
-  float mkt = 0.f;                     // J 上做多收益均值 (超额基准)
+  float mkt = 0.f;                     // 池基准 (超额基准; 本行 ok 才填)
   float grp[kGroups] = {};             // 组的持仓收益 Σe / max(cnt, cap) (按 Mode::r)
   uint16_t cnt[kGroups] = {};          // 组真持有只数 (A ≤ kMaxA < 65536)
   float tail[kEnds][kTails] = {};      // 两端尾部的持仓收益 Σe / max(n, cap · tail_frac) (按 Mode::r)
@@ -292,15 +295,15 @@ inline double book_as(double v, double n, double mkt, double cap, Ret from, Ret 
                                          : v - shift;
 }
 
-// 一行标签侧的收尾 (两后端同一份): J 上整数五和 s → ric; 组和 gs / gc + 尾部和 ts / tc → grp / cnt / tail / tail_n (按口径 ret); 基准 → mkt.
-//   sm = J 上 Σlv; cap = 满仓. 不 ok → r 标签侧字段保持 0
-FACTOR_HD inline void finish_row(const unsigned long long *s, double sm, const double *gs, const int *gc, const double (*ts)[kTails], const int (*tc)[kTails],
+// 一行标签侧的收尾 (两后端同一份): J 上整数五和 s → ric; 组和 gs / gc + 尾部和 ts / tc → grp / cnt / tail / tail_n (按口径 ret); 池基准 mkt → mkt.
+//   cap = 满仓. 不 ok → r 标签侧字段保持 0
+FACTOR_HD inline void finish_row(const unsigned long long *s, double mkt, const double *gs, const int *gc, const double (*ts)[kTails], const int (*tc)[kTails],
                                  double cap, Ret ret, Row &r) {
   bool icok = false;
   const float ric = pearson_int(s, icok);
   if (!icok)
     return;
-  const double mkt = sm / static_cast<double>(s[kSn]), base = ret == Ret::Excess ? mkt : 0.0;
+  const double base = ret == Ret::Excess ? mkt : 0.0;
   r.ok = 1;
   r.ric = ric;
   r.mkt = static_cast<float>(mkt);

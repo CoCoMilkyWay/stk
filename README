@@ -77,12 +77,13 @@ stk/
 │   │   ├── define/                                     # 🔷 底层数据结构 + 全仓共用的协议表
 │   │   │   ├── Geo.hpp                                 # 🔷 层几何 Geo (S 每日行数 / N 每行分钟 / M0 首行末分钟; kGeos 一行一层): 算子 / 标签协议 / 评估 / 引擎同一份
 │   │   │   ├── Label.hpp                               # 🔷 标签协议 (写端 features / 评估端 factor 同一份): 持有期表 HOLDS (HoldId / HoldSet / Holds) + 冲击金额段 (AmtId) + 交易时钟 + 结清窗 (kPendDays / kChainDays)
-│   │   │   │                                           #    · 持有期 × 层 = Hold (hold_on): 行数 h / 开仓 opens / 交接 nets / 平仓行 exit (开盘型 = D+N 日 09:25 撮合所在行 open_row) / 可知行 known · last / 资金口径 span;
+│   │   │   │                                           #    · 持有期 × 层 = Hold (hold_on): 行数 h / 开仓 opens / 交接 nets / 平仓行 exit (开盘型 = D+N 日 09:25 撮合所在行 open_row) / 记日一对 stat_day ⇄ money_day / 可知行 known · last /
+│   │   │   │                                           #      资金口径 span · 回看 reach (查表 hold_geom); 行号一律取段内行 (张量 / 分块恒以段首起);
 │   │   │   │                                           #      协议表 1 (开清仓价点) / 2 (开关仓策略; 整批平仓恒在撮合价; 记日: 排序统计记建仓日, 钱记平仓日)
 │   │   │   │                                           #    · token (1m 5m 15m 30m 60m close t1o t1 t2 t3) = 列名片段 (lb_<h> / lb_nom_<h>) = 落盘写法 = 表达式 h= 写法
-│   │   │   ├── Fee.hpp                                 # 🔷 成交侧 Side (kBuy / kSell) + 费率 (佣金 / 印花税 / 过户费 / 固定冲击; Config 持有一份): tax / rate / cost (成本唯一一式); 因子换手 / 组合与篮子净线 / CTA / 实盘调仓同用
-│   │   │   ├── Annual.hpp                              # 🔷 年化口径 (一年 242 个交易日): per_year / ann_ir / ann_log / ann_geo + 逐日收益序列 Daily (可合并, 前缀相减即窗: 复利年化 / Sharpe ddof 1);
-│   │   │   │                                           #    因子表 / Inspect / Market 线 / Beta Style 的年化与夏普全走它
+│   │   │   ├── Fee.hpp                                 # 🔷 成交侧 Side (kBuy / kSell) + 费率 (佣金 / 印花税 / 过户费 / 固定冲击; Config 持有一份): tax / rate / parts → cost (成本唯一一式: 税佣 / 印花 / 冲击三项) + 成本口径 CostSpec (金额段 + 盘口冲击封顶); 因子换手 / 组合与篮子净线 / CTA / 实盘调仓同用
+│   │   │   ├── Annual.hpp                              # 🔷 年化口径 (一年 242 个交易日): per_year / ann_ir / ann_log / ann_geo + 逐日收益 Daily (可合并, 前缀相减即窗: 复利年化 / Sharpe ddof 1) + 一条逐日序列 Path (前缀 + 净值 / 回撤);
+│   │   │   │                                           #    因子表 / Inspect / Market 线 / Beta Style / CTA 的年化与夏普全走它
 │   │   │   ├── HostDev.hpp                             # 🔷 主机 / 设备两用函数标注 FACTOR_HD
 │   │   │   ├── CBuffer.hpp                             # 🔷 循环缓冲区
 │   │   │   ├── Csr.hpp                                 # 🔷 压缩行 (off + v) + 计数排序分桶
@@ -199,8 +200,8 @@ stk/
 │   │   │   │   │                                       #    · Store = 线程池 ex + 库 lr + 宿主平面 LRU (misc::Lru, 钉着的不逐) + 常驻执行环境 ExecSpace (CPU/GPU 内存与显存统一预算) + 计算权租约 Lease
 │   │   │   │   │                                       #    · 作业层 = 规格 Need × 块消费者: Need → open_job (唯一的作业入口; 预算 = 每格三项 + 线性字节式 Bytes 按评估域形状现乘) → Job;
 │   │   │   │   │                                       #      run_job = 唯一的块循环 (init → { want → 装载 → block } → finish); 块消费者两种对仗: ForestPass (Engine) ⇄ BasketPass (Ledger)
-│   │   │   │   ├── Ledger.hpp                          # 🖥️ 净值与账核: RowLines → fold_ledger → LedgerLines → compound; 账 Ledger = 五列 (收益 | 冲击 / 固定冲击量 / 买 / 卖, 一切账恒齐) + 画像 (篮子 / 个股)
-│   │   │   │   │                                       #    · 收益与换手同一核 (Stat/Book.hpp book_rows): 因子组合 = 顶端整组 (FactorBooks); 池篮子 = 持仓权 Weigh (BasketTable::each 枚举) + 个股 = 自身 (BasketBooks); 池均 = MaskBook; 篮子作业 eval_baskets = basket_need → run_job(BasketPass) → Baskets
+│   │   │   │   ├── Ledger.hpp                          # 🖥️ 净值与账核: 逐行批量 → Realize (块内暂存逐块折进期收益; 实现行 = Hold::exit / 建仓行) → LedgerLines → compound; 账 Ledger = 五列 (收益 | 冲击 / 固定冲击量 / 买 / 卖, 一切账恒齐) + 画像 (篮子 / 个股)
+│   │   │   │   │                                       #    · 收益与换手同一核 (Stat/Book.hpp book_rows): 因子组合 = 顶端整组 (FactorBooks); 池篮子 = 持仓权 Weigh (BasketTable::each 枚举) + 个股 = 自身 (BasketBooks); 池均 = MaskBook; 篮子作业 eval_baskets = basket_need → run_job(BasketPass; 标签取原料带 Strip, 与 Beta 选池账同一份) → Baskets
 │   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层 (双层对仗): 趟级 init ⇄ finish (常驻 bytes) × 块级 open → row → close (暂存 scratch; Ctx = 块上标签 + 逐根评估口径 Mode; 探针组即 Stat 行 sink); 落地三形 RowsP / LandCellsP / LinesP; EvalProbes → EvalStat
 │   │   │   │   │                                       #    · 通用五探针 HoldP (三级 + 逐日 (含组和) + 滚动窗) / TurnP (账集流水 TurnStat) / CoverP / AlphaP / IcPdfP; 分年只在 fill_eval 由两份逐日汇成
 │   │   │   │   │                                       #    · 分层 / 尾部 / LS 日净值线 NavP: 全部持有期 (Inspect) 或只一个持有期的超额线 (Agent eval_factor)
@@ -242,7 +243,8 @@ stk/
 │   │   │   │   └── services/
 │   │   │   │       └── QuoteService.hpp                # 🖥️ 新浪全市场当日行情: 快照合成分钟 K, 落 output/data/quote/live.bin (收完的往日转作归档); 篮子当日按交接的成员表增量合成;
 │   │   │   │                                           #    各只按全局 id 下标 (live.bin 头记资产轴前缀指纹); 一轮发布一份不可变 Live (个股 / 篮子的 Day + 逐只共享的快照 (只换变了的) + 订阅码的快照;
-│   │   │   │                                           #    GUI 只拷指针), 状态计数增量维护 (O(1)); 分钟 K 补到即唤醒合成 (≥ 1 秒一趟);
+│   │   │   │                                           #    GUI 只拷指针), 状态计数增量维护 (O(1)); 分钟 K 补到即唤醒合成 (≥ 1 秒一趟); 补缺口按打散序;
+│   │   │   │                                           #    缺口按最可能的路径估值 (个股段中线性 / 段尾持平, 篮子 / 账户按成员估价合成), 日内图淡色画, 补到即换真根;
 │   │   │   │                                           #    开盘集合竞价撮合段 (9:15–9:25) 发布竞价的 Day (Day::call: 虚拟匹配价, 无额; 只进 Live, 篮子照合), 首笔成交即由真实的根取代;
 │   │   │   │                                           #    订阅码 (全市场内外皆可, 如 Live 的 ETF / LOF) 并在同一轮取, 改了即提前一轮
 │   │   │   ├── task_settings/TaskSettings.hpp          # 🖥️ 设置: 配置管理
@@ -284,7 +286,7 @@ stk/
 │   │   │   │       ├── TabLines.hpp                    # 🖥️ 行情页 Lines: NAV / VAL / MARGIN / FLOW / CTA (一行一对线 Line, 五页同一份派生 / 选中 / 区间; NAV 账户线叠成交点: 日内栏 5 分钟 / 主图 30 分钟一档)
 │   │   │   │       │                                   #    · 右表 = 指数 / 行业 / 概念 / 自选 / 因子 / 策略 行 (篮子行可展开成分股); 左 = 主图 + 日内栏 + 区间条
 │   │   │   │       │                                   #    · 横轴 = 槽 (日 × 240 + 分钟槽; 集合竞价并入首槽): 日线 / 分钟线同一轴
-│   │   │   │       ├── LinesView.hpp                   # 🖥️ 行情页纯计算层 (无 ImGui): 账 → 线 (腿集合成 mix: 日内求和 · 跨日复利, 与 fold_ledger 同约 / 价格指数) → 日并集轴 → 当日尾 / 估值分位 → 视图; 行一种 LinesRow
+│   │   │   │       ├── LinesView.hpp                   # 🖥️ 行情页纯计算层 (无 ImGui): 账 → 线 (腿集合成 mix: 日内求和 · 跨日复利, 与 Realize 同约 / 价格指数) → 日并集轴 → 当日尾 / 估值分位 → 视图; 行一种 LinesRow
 │   │   │   │       ├── LinesCommon.hpp                 # 🖥️ 行情页内部件; 实现分 LinesPlot.cpp (主图) / LinesSheet.cpp (右表) / LinesCta.cpp (CTA 页)
 │   │   │   │       │                                   #    · 页表 kPageDefs = 页的一切差异: 右表段 (近况 / 当日 / 数值 / 估值分位 / 两融 / 资金流) / 页件 / 布局 / 叠加图 / 头 / 状态的 worker / 估值口集
 │   │   │   │       │                                   #    · 主图例矩阵 (NAV / VAL / MARGIN 同一件, 只填行列表) / 右表 (各页同一条 RenderLinesSheet)

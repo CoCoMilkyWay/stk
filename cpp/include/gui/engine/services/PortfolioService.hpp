@@ -59,7 +59,7 @@ struct FactorTask {
   FactorScope scope;
   FactorRef f;
   HoldId hold = kHoldT1;
-  std::string sig() const { return key + "|" + factor::stat::ret_token(f.ret) + "|" + std::to_string(scope.max_impact); }
+  std::string sig() const { return key + "|" + std::to_string(kAmtWan[scope.cost.amt]) + "|" + std::to_string(scope.cost.top); }
 };
 inline constexpr FactorLevelId kBasketLevel = factor_level_of(L_1day);
 struct BasketTask {

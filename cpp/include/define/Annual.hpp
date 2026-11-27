@@ -1,10 +1,13 @@
 #pragma once
 
 // 年化口径 (全仓唯一一份: 一年 = kDaysPerYear 个交易日; 因子评估 / 组合 / 行情 / Beta 选池 / Agent 同用)
-//   逐日收益序列一律走 Daily (可合并 / 前缀相减即窗): 复利年化 ann = expm1(Σ ln(1 + r) / 日数 × 每年交易日), Sharpe = mean / sd (ddof = 1) × √每年交易日
+//   逐日收益序列一律走 Daily (可合并 / 前缀相减即窗): 复利年化 ann = expm1(Σ ln(1 + r) / 日数 × 每年交易日), Sharpe = mean / sd (ddof = 1) × √每年交易日;
+//   一条逐日序列 = Path (前缀 Daily + 净值 / 回撤): 任意窗 = 两前缀之差 (Stat 滚动窗 / Beta 选池滚动窗同一份)
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 inline constexpr int kDaysPerYear = 242;
 
@@ -37,4 +40,20 @@ struct Daily {
   double log_ann() const { return n > 0.0 ? lg / n * kDaysPerYear : 0.0; } // 对数年化 (跨窗平均 / 取中位在对数空间)
   double ann() const { return n > 0.0 ? ann_log(lg, n) : 0.0; }            // 复利年化
   double sharpe() const { return ann_ir(mean(), sd()); }
+};
+
+// 逐日收益序列: pre[i] = 前 i 日的 Daily (pre[0] 空), 窗 [a, b) = win(a, b); 净值 / 历史峰 / 最大回撤 (≥ 0; 峰自基日 = 1 起) 随 add 推进
+struct Path {
+  std::vector<Daily> pre = std::vector<Daily>(1);
+  double nav = 1.0, peak = 1.0, mdd = 0.0;
+  void add(double r) {
+    pre.push_back(pre.back());
+    pre.back().add(r);
+    nav *= 1.0 + r, peak = std::max(peak, nav), mdd = std::max(mdd, 1.0 - nav / peak);
+  }
+  size_t days() const { return pre.size() - 1; }
+  Daily win(size_t a, size_t b) const {
+    assert(a <= b && b <= days());
+    return pre[b] - pre[a];
+  }
 };

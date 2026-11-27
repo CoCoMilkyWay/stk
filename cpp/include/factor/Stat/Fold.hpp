@@ -19,6 +19,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <utility>
 
@@ -44,22 +45,44 @@ struct Day {
     for (int k = 0; k < kGroups; ++k)
       grp[k] += o.grp[k];
   }
+  Day operator-(const Day &o) const { // 前缀相减 = 窗
+    Day w = *this;
+    w.n -= o.n, w.ric -= o.ric, w.ls -= o.ls;
+    for (int k = 0; k < kGroups; ++k)
+      w.grp[k] -= o.grp[k];
+    return w;
+  }
+  Day reversed() const { // 改读反向: rIC / 多空变号, 组倒序
+    Day w = *this;
+    w.ric = -ric, w.ls = -ls;
+    for (int k = 0; k < kGroups; ++k)
+      w.grp[k] = grp[kGroups - 1 - k];
+    return w;
+  }
 };
-// 日净值 LS 第 i 日的收益 (钱按平仓日): 建仓日 i − n 的 Σ ls_row / h̄ (n = hold_days, 序列首 n 日为 0; 平仓越过序列末的不计)
-inline double ls_day(std::span<const Day> d, size_t i, size_t n, double span) { return i >= n ? d[i - n].ls / span : 0.0; }
+// 日净值 LS 的逐日收益 (钱按平仓日 Hold::money_day): 第 i 日 = 建仓日 i − lag 的 Σ ls_row / h̄ (序列首 lag 日为 0; 平仓越过序列末的不计)
+struct LsDays {
+  std::span<const Day> d;
+  size_t lag = 0;
+  double span = 1.0;
+  LsDays(std::span<const Day> d_, HoldId hold, int seg) : d(d_) {
+    const Hold hd = hold_on(hold, geo_of(seg));
+    lag = static_cast<size_t>(hd.money_day(0)), span = hd.span();
+  }
+  double operator[](size_t i) const { return i >= lag ? d[i - lag].ls / span : 0.0; }
+};
 // 逐日 d → 日净值 LS 的 Daily
 inline Daily ls_daily(std::span<const Day> d, HoldId hold, int seg) {
-  const double span = hold_on(hold, geo_of(seg)).span();
-  const size_t n = static_cast<size_t>(hold_days(hold));
+  const LsDays ls(d, hold, seg);
   Daily dl;
   for (size_t i = 0; i < d.size(); ++i)
-    dl.add(ls_day(d, i, n, span));
+    dl.add(ls[i]);
   return dl;
 }
 
 // ---- 三级输出: 每持有期一份 ----
 // 口径戳: 字段不变但口径变时 +1, 落盘 stat 与之不符读取即作废 (下次 Run 重算)
-inline constexpr int kStatSemver = 8;
+inline constexpr int kStatSemver = 9;
 struct Moments {
   float mean = 0.f, sd = 0.f, ir = 0.f, t = 0.f, pos = 0.f, skew = 0.f, kurt = 0.f;
 };
@@ -113,6 +136,57 @@ inline double mono_of(const double *g, int K) {
   }
   return vy > 0.0 ? cxy / std::sqrt(vx * vy) : 0.0;
 }
+
+// 宿主侧的全量行和 = Day + 行数 / rIC 二阶与正号数 / 组真持有只数 / 两端尾部 (分段观察: 全期 / 月 / 时段 / 条件同一份; 可合并)
+//   每期量与三级同分母: 组 / 尾部 = Σ / 全部行 (不 ok 行记 0), 只数 = Σ / ok 行
+struct Sums : Day {
+  int rows = 0, ric_pos = 0;
+  double ric2 = 0.0;
+  double cnt[kGroups] = {}, tail[kEnds][kTails] = {}, tail_n[kEnds][kTails] = {};
+  void add(const Row &r) {
+    ++rows;
+    Day::add(r);
+    if (!r.ok)
+      return;
+    ric2 += static_cast<double>(r.ric) * r.ric, ric_pos += r.ric > 0.f;
+    for (int k = 0; k < kGroups; ++k)
+      cnt[k] += r.cnt[k];
+    for (int e = 0; e < kEnds; ++e)
+      for (int j = 0; j < kTails; ++j)
+        tail[e][j] += r.tail[e][j], tail_n[e][j] += r.tail_n[e][j];
+  }
+  void merge(const Sums &o) {
+    rows += o.rows, ric_pos += o.ric_pos, ric2 += o.ric2;
+    Day::merge(o);
+    for (int k = 0; k < kGroups; ++k)
+      cnt[k] += o.cnt[k];
+    for (int e = 0; e < kEnds; ++e)
+      for (int j = 0; j < kTails; ++j)
+        tail[e][j] += o.tail[e][j], tail_n[e][j] += o.tail_n[e][j];
+  }
+  static constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  double grp_of(int k) const { return n ? grp[k] / rows : kNaN; }
+  double tail_of(int e, int j) const { return rows ? tail[e][j] / rows : kNaN; }
+  double held(int k) const { return n ? cnt[k] / n : kNaN; }
+  double tail_held(int e, int j) const { return n ? tail_n[e][j] / n : kNaN; }
+  double ls_of() const { return (grp_of(end_group(kTop)) - grp_of(end_group(kBot))) / 2.0; }
+  double mono() const {
+    if (!n)
+      return kNaN;
+    double g[kGroups];
+    for (int k = 0; k < kGroups; ++k)
+      g[k] = grp_of(k);
+    return mono_of(g, kGroups);
+  }
+  double ric_mean() const { return n ? ric / n : kNaN; }
+  double ric_t() const { // mean / sd (ddof 1) · √n
+    if (n < 2)
+      return kNaN;
+    const double m = ric / n, v = (ric2 - n * m * m) / (n - 1);
+    return v > 0.0 ? m / std::sqrt(v) * std::sqrt(static_cast<double>(n)) : kNaN;
+  }
+  double ric_up() const { return n ? static_cast<double>(ric_pos) / n : kNaN; }
+};
 
 // 一个逐行量 (rIC / rAC / LS 同一份) 的幂和 → Moments; n < 3 → 全 0
 struct MomAcc {

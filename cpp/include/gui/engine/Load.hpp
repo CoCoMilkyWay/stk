@@ -65,7 +65,7 @@ struct Domain {
   bool uses(const Col &c) const { return used & lib_bit(lib_id(pool, c.tier)); }
 };
 void open_libs(const FactorScope &sc, LibReaders &lr);
-LibMask used_libs(const FeatureTable &ft, PoolId pool, std::span<const LeafId> leaves, bool lob_cost);
+LibMask used_libs(const FeatureTable &ft, PoolId pool, std::span<const LeafId> leaves, const CostSpec &cost);
 bool span_of(const FeatureTable &ft, const FactorScope &sc, std::span<const LeafId> leaves, size_t keep, Domain &dm, std::string &why);
 bool domain_of(const FeatureTable &ft, const FactorScope &sc, std::span<const LeafId> leaves, size_t keep, Domain &dm, std::string &why);
 StatScope stat_scope(const FactorScope &sc, const Domain &dm, int seg, double n_full, const char *backend);
@@ -121,21 +121,22 @@ struct Bytes {
   constexpr Bytes operator*(double k) const { return {cell * k, row * k, day * k}; }
   double at(const Shape &sh) const { return cell * static_cast<double>(sh.n()) + row * sh.T + day * sh.days; }
 };
+// 成本段的要求 (探针声明; 落成哪几段由作用域成本口径 CostSpec 定): 不要 / 口径那一段 / 口径取盘口段时本域全部段 (固定段恒在)
 enum class Segs : uint8_t { None,
-                            First,
+                            Spec,
                             All };
-struct YSpec {
+struct YSpec { // Y 的身份 (装载 / 缓存 / 设备标签会话按它): 持有期 + 金额段
   Holds hd;
   Amts ad;
-  float max_impact = 0.f;
   std::string key() const;
 };
-YSpec y_spec(const FeatureTable &ft, const Domain &dm, const Holds &hd, Segs sg, double max_impact);
+YSpec y_spec(const FeatureTable &ft, const Domain &dm, const Holds &hd, Segs sg, const CostSpec &cost);
 
 struct BlockSpec {
   std::vector<LeafId> x;
   YSpec y;
   bool ry = false;
+  float top = 0.f; // 盘口冲击封顶 (只进账集 Cost, 不进 Y 的身份)
 };
 inline constexpr double kPlaneBytes = 5.0;
 double cell_bytes(const BlockSpec &s, size_t nx);
@@ -146,15 +147,16 @@ struct Leaf : factor::check::Plane {
 struct YCore {
   std::vector<uint8_t> gate;
   std::vector<uint8_t> eo;
-  long long on = 0;
+  std::vector<long long> on_day; // [块日] 门控格数 (满仓 n_full 的原料, Store 按 (库, 日) 留存)
 };
-// 一个持有期的标签平面: 做多收益 lv / 名义收益 nv (只偏移型, 锚点型空) / 有效位 m
+// 一个持有期的标签平面: 做多收益 lv / 名义收益 nv (只偏移型, 锚点型空) / 有效位 m / 池基准 mk [T] (逐行 m 格的 lv 均值, 契约 Label::mk)
 struct LabPlane {
   std::vector<uint16_t> lv, nv;
   std::vector<uint8_t> m;
+  std::vector<float> mk;
 };
 inline factor::stat::Label label_of(const LabPlane &p, const uint8_t *eo, const uint16_t *ry) {
-  return {p.lv.data(), p.nv.empty() ? nullptr : p.nv.data(), p.m.data(), eo, ry};
+  return {p.lv.data(), p.nv.empty() ? nullptr : p.nv.data(), p.m.data(), eo, ry, p.mk.data()};
 }
 
 struct XPlanes {
@@ -171,14 +173,14 @@ struct YPlanes {
   const uint16_t *ry[kHoldCount] = {};
   Amts ad;
   const uint16_t *costs[kAmtCount] = {}; // 盘口段: [kSides][n] 两侧冲击平面首尾相接 (买 [0, n), 卖 [n, 2n)); 固定段 nullptr
-  float max_impact = 0.f;
+  float top = 0.f;                       // 盘口冲击封顶 (BlockSpec::top)
   double n_full = 0.0;
 };
 // 块首的盘口段冲击 (账集 Book.hpp; 固定段无平面)
 inline factor::stat::Cost cost_of(const YPlanes &y) {
   const size_t n = y.sh.n();
   factor::stat::Cost c;
-  c.top = y.max_impact;
+  c.top = y.top;
   for (int k = 0; k < y.ad.n; ++k)
     if (y.costs[k])
       c.imp[y.ad.k[k] - 1][kBuy] = y.costs[k], c.imp[y.ad.k[k] - 1][kSell] = y.costs[k] + n;
@@ -197,7 +199,7 @@ struct Io {
 bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vector<Leaf> &out);
 bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LabPlane> &labels,
             std::vector<std::vector<uint16_t>> &costs);
-bool n_full_of(const Io &io, const Chunk &k, double &out);
+bool gate_days(const Io &io, const Chunk &k, std::vector<long long> &on_day); // 只读门控: 块日 [d0, d1) 各日门控格数
 
 // 块视图: 评估域日段 ck 的钉住平面 (x_gen = 层|域|日段|代, gen = x_gen + YSpec)
 struct Block {
@@ -209,7 +211,7 @@ struct Block {
   XPlanes x;
   YPlanes y;
   std::vector<std::shared_ptr<const void>> pins;
-  factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), static_cast<int>(ck.d0) * y.sh.seg, t_lo, t_back}; }
+  factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), t_lo, t_back}; }
   int rows_stat() const { return static_cast<int>(nd - warm) * y.sh.seg; }
   int land0() const { return (static_cast<int>(ck.d0) - static_cast<int>(warm)) * y.sh.seg; }
 };
@@ -270,8 +272,8 @@ private:
   bool busy_ = false;
   int waiting_[2] = {};
   std::thread::id owner_;
-  misc::Lru<std::string, void> cache_; // 宿主平面 (代价 = 字节; 钉着的不逐)
-  std::map<std::string, double> n_full_;
+  misc::Lru<std::string, void> cache_;        // 宿主平面 (代价 = 字节; 钉着的不逐)
+  std::map<std::string, long long> gate_day_; // (标签库 + 轴, 日) → 该日门控格数: 满仓 n_full 跨评估域 / 跨块复用, 缺日才补读
   std::unique_ptr<ExecSpace> exec_;
   uint64_t epoch_ = 0;
 };

@@ -268,8 +268,7 @@ bool MakeFactorScope(const SharedData &data, std::shared_ptr<const FeatureTable>
   sc.dir = factor_dir_of(pool, lv);
   sc.ft = std::move(ft);
   sc.years = years;
-  sc.max_impact = data.config.max_impact;
-  sc.lob_cost = data.config.lob_cost;
+  sc.cost = data.config.cost;
   sc.gpu = gpu;
   if (data.asset.items.empty())
     return false; // 资产轴未就绪 (数据库未扫), 读不了特征库

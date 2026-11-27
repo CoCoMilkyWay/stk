@@ -67,6 +67,33 @@ double unpack_net(const Slot &x) {
   return x.n / kNet * amount_of(x.a);
 }
 
+void guess_holes(Bars &b, float open, float ref) {
+  b.guess.reset();
+  float pa = open > 0 ? open : ref; // 段前末收 (点 l = 槽 l − 1 收; 点 0 = 今开)
+  for (int s = 0; s < kSlots;) {
+    const size_t i = static_cast<size_t>(s);
+    if (!b.hole[i]) {
+      if (b.has[i])
+        pa = b.cell[i].close;
+      ++s;
+      continue;
+    }
+    int h = s; // 段 [s, h]
+    while (h + 1 < kSlots && b.hole[static_cast<size_t>(h + 1)])
+      ++h;
+    int e = h + 1; // 段后首根 (槽 t 收 = 点 t + 1)
+    while (e < kSlots && !b.has[static_cast<size_t>(e)])
+      ++e;
+    if (pa > 0)
+      for (int t = s; t <= h; ++t) {
+        const float p = e < kSlots ? pa + (b.cell[static_cast<size_t>(e)].close - pa) * static_cast<float>(t + 1 - s) / static_cast<float>(e + 1 - s) : pa;
+        b.cell[static_cast<size_t>(t)] = {p, p, p, p, 0};
+        b.guess.set(static_cast<size_t>(t));
+      }
+    s = h + 1;
+  }
+}
+
 void net_flow(const Bars &b, float base, std::span<double, kSlots> net) {
   std::ranges::fill(net, 0.0);
   if (!(base > 0))

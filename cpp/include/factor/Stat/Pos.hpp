@@ -22,12 +22,12 @@
 
 namespace factor::stat {
 
-// 行 t 的批沿交接链的几何: t = 块内行号, 交接按绝对行 t0 + u 判; 前一批越过 t 前 kChainDays 日 / 块外视为断链
+// 行 t 的批沿交接链的几何: t = 块内行号; 前一批越过 t 前 kChainDays 日 / 块外视为断链
 struct Chain {
   Hold hd;
-  int t = 0, T = 0, A = 0, t0 = 0;
+  int t = 0, T = 0, A = 0;
   FACTOR_HD bool nets(int u) const { // 行 u 的批与行 u − h 的批交接
-    return u >= hd.h && u < T && t - (u - hd.h) <= kChainDays * hd.g.S && hd.nets(t0 + u);
+    return u >= hd.h && u < T && t - (u - hd.h) <= kChainDays * hd.g.S && hd.nets(u);
   }
   FACTOR_HD Chain back() const { // 前一批 (行 t − h) 的链
     Chain c = *this;
@@ -35,7 +35,7 @@ struct Chain {
     return c;
   }
 };
-FACTOR_HD inline Chain chain_of(int t, const Span &s, const Hold &hd) { return {hd, t, s.T, s.A, s.t0_abs}; }
+FACTOR_HD inline Chain chain_of(int t, const Span &s, const Hold &hd) { return {hd, t, s.T, s.A}; }
 
 // 一格在行 t 的仓位: held = 真持有的最深层级 (−1 未持有), cont = 下一批续持的最深层级 (−1 不续持), eo_next = 下一批价点码 (续持时)
 struct Pos {

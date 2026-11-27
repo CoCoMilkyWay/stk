@@ -397,26 +397,28 @@ struct DevLabels {
   int H = 0;
   DevBuf<uint16_t> lv[kHoldCount], nv[kHoldCount], ry[kHoldCount];
   DevBuf<uint8_t> m[kHoldCount], eo; // eo 各持有期共用一张
+  DevBuf<float> mk[kHoldCount];      // [T] 池基准 (宿主装载时算好, 原样拷入)
   factor::stat::Labels L;
-  void alloc(const Holds &hd, int seg, size_t n, double cap) {
+  void alloc(const Holds &hd, int seg, int T, size_t n, double cap) {
     factor::stat::assert_holds(hd, seg);
     H = hd.n, L.hd = hd, L.cap = cap;
     eo.alloc(n);
     for (int i = 0; i < H; ++i) {
-      lv[i].alloc(n), m[i].alloc(n), ry[i].alloc(n);
+      lv[i].alloc(n), m[i].alloc(n), ry[i].alloc(n), mk[i].alloc(static_cast<size_t>(T));
       if (hold_offset(hd.k[i]))
         nv[i].alloc(n);
-      L.l[i] = {lv[i].p, nv[i].p, m[i].p, eo.p, ry[i].p};
+      L.l[i] = {lv[i].p, nv[i].p, m[i].p, eo.p, ry[i].p, mk[i].p};
     }
   }
   // 宿主标签 (与 alloc 的持有期同序) 拷入 + ry 预处理 (纯 kernel 计时)
   double load(const factor::stat::Label *host, const factor::stat::Span &s, Timer &tm) {
     for (int i = 0; i < H; ++i)
-      assert(host[i].lv && host[i].m && host[i].eo == host[0].eo && (!nv[i].p || host[i].nv) && "宿主标签不全 / 可成交码须是同一张");
+      assert(host[i].lv && host[i].m && host[i].mk && host[i].eo == host[0].eo && (!nv[i].p || host[i].nv) && "宿主标签不全 / 可成交码须是同一张");
     eo.put(host[0].eo, s.n());
     for (int i = 0; i < H; ++i) {
       lv[i].put(host[i].lv, s.n());
       m[i].put(host[i].m, s.n());
+      mk[i].put(host[i].mk, static_cast<size_t>(s.T));
       if (nv[i].p)
         nv[i].put(host[i].nv, s.n());
     }
@@ -427,13 +429,13 @@ struct DevLabels {
   }
   void free_() {
     for (int i = 0; i < H; ++i)
-      lv[i].free_(), nv[i].free_(), m[i].free_(), ry[i].free_();
+      lv[i].free_(), nv[i].free_(), m[i].free_(), ry[i].free_(), mk[i].free_();
     eo.free_();
   }
   size_t bytes() const {
     size_t b = eo.bytes();
     for (int i = 0; i < H; ++i)
-      b += lv[i].bytes() + nv[i].bytes() + m[i].bytes() + ry[i].bytes();
+      b += lv[i].bytes() + nv[i].bytes() + m[i].bytes() + ry[i].bytes() + mk[i].bytes();
     return b;
   }
 };
@@ -461,7 +463,7 @@ StatSession *stat_open(const factor::stat::Span &sh, int Cmax, const Holds &hd, 
   s->Cmax = Cmax;
   const size_t n = s->s.n();
   const int H = hd.n, NB = stat::n_parts(s->s), NBB = stat::n_batch_parts(s->s), D = s->s.days();
-  s->lab.alloc(hd, sh.g.S, n, cap);
+  s->lab.alloc(hd, sh.g.S, sh.T, n, cap);
   s->rx.alloc(static_cast<size_t>(Cmax) * n);
   s->rows.zalloc(static_cast<size_t>(H) * sh.T);
   const size_t P = static_cast<size_t>(H) * std::max(static_cast<size_t>(NB), static_cast<size_t>(Cmax) * NBB);

@@ -41,7 +41,7 @@ enum class RowState : uint8_t { Pending,
 //   标签库 (门控 ts / cs_valid + 标签 + K 线, 恒取网格层本层列, 同行) = 因子池的 Bar 库 (label_lib); 截面 = 该库 cs_valid
 //   (all: 当日活跃; 子池: 当日成员 = all Bar 库选股表在 D 之前调仓行选出的).
 //   特征叶写全名 档.层.列 (kLevelToken): bar.* / lob.* = 因子池的 Bar / Lob 库; 叶可来自任意不细于网格的层 (level_asof 投影).
-//   成本: 固定段恒有; 作用域开盘口成本 (Config::lob_cost) 时另有盘口段 (Lob 库 L_1min 的建仓冲击列, 分钟各层按行末分钟取; 日层无), 评估域并入 Lob 库
+//   成本: 固定段恒有; 作用域的成本口径 (Config::cost) 取盘口段时另有盘口段 (Lob 库 L_1min 的建仓冲击列, 分钟各层按行末分钟取; 日层无), 评估域并入 Lob 库
 //   评估期 = 标签库 + 所用库 落盘日的交集的最近 N 年 (FactorScope::years; 不看 config 区间)
 //   层间的差别全在表里 (网格层 / 名 / K 线列名式); 层几何 Geo 由网格层定 (行数 = level_valid_rows, 行末分钟与 level_end_sec 对账),
 //   服务 / 装载 / UI 不按层分支
@@ -177,9 +177,11 @@ struct YCols {
   HoldSet holds = 0;           // 本层合法 (hold_ok) 的持有期 = 有标签列的
   Holds list;                  // holds 的有序视图 (UI 按下标切持有期)
   LabCols lab[kHoldCount];     // [HoldId]
-  AmtSet amts = 0;             // 固定段 (恒在) + 盘口段 (非日层; 作用域开盘口成本才装, 见 y_spec)
+  AmtSet amts = 0;             // 固定段 (恒在) + 盘口段 (非日层; 作用域成本口径取盘口段才装, 见 y_spec)
   Col cost[kAmtCount][kSides]; // [AmtId][买 / 卖] Lob 档 L_1min 冲击列 lb_cost_<buy|sell>_<a>w; 固定段无列
   bool has(HoldId h) const { return (holds & hold_bit(h)) != 0; }
+  // 成本口径在本层落成的金额段: 所选盘口段本层没有 (日层) → 固定段
+  AmtId amt_of(const CostSpec &c) const { return (amts & amt_bit(c.amt)) ? c.amt : kAmtFixed; }
 };
 struct BCols {
   Col ohlc[4];    // open high low close (K 线, 不复权; 列名 FactorLevel::kline)
@@ -220,8 +222,7 @@ struct FactorScope {
   std::shared_ptr<const FeatureTable> ft; // 该层字段表 (每层建一次, 各请求共享; worker 只读)
   PerLib<FeatureLib> libs;                // factor_libs
   int years = 0;                          // 评估期只留最近几年 (0 = 全期: Market 组合)
-  double max_impact = 0.0;                // Config::max_impact (买入冲击封顶, 成本装载时生效)
-  bool lob_cost = false;                  // Config::lob_cost (盘口段成本; 评估域并入 Lob 库)
+  CostSpec cost;                          // Config::cost (成本金额段 + 盘口冲击封顶; 盘口段时评估域并入 Lob 库)
   bool gpu = false;
 };
 // 层 / 池 / 目录 / 字段表 / 年数 / 封顶 / 成本口径 / 后端恒填; 资产轴未就绪 (数据库未扫) / 标签库未建 → false (libs 不可用)
@@ -249,11 +250,11 @@ struct StatScope {
   misc::Ymd start_date = 0, end_date = 0; // 评估期首末 (所用库落盘日交集的最近 years 年)
   int years = 0;                          // = FactorScope::years (0 = 全期)
   int days = 0, T = 0, A = 0;
-  double max_impact = 0.0; // 买入冲击封顶 (Config::max_impact, 成本装载时生效)
-  double n_full = 0.0;     // 满仓一组只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
+  double cost_top = 0.0; // 盘口冲击封顶 (Config::cost.top, 账集逐格生效)
+  double n_full = 0.0;   // 满仓一组只数 = 池内平均有效资产数 / kGroups (Stat 契约【持仓口径】的 cap, util 分母; 池宽决定, 与因子无关)
 };
 // 一个持有期的换手 = Stat/Book.hpp 因子账集的流水: 层级 l (0 = 整组, 1 + j = 尾部 j) × 两端各一本 (Run / Inspect 同一份 book_rows):
-// 两端按 Δw 记两侧成交量; 各金额段同一份量 + 不可成交量, 盘口段另各一份真实冲击 (Config::max_impact 封顶, 盘口缺 = 封顶);
+// 两端按 Δw 记两侧成交量; 各金额段同一份量 + 不可成交量, 盘口段另各一份真实冲击 (Config::cost.top 封顶, 盘口缺 = 封顶);
 // 成本 / 净多空 / 年换手由 Book.hpp 的派生量按金额段与 Fee 现算 (整组 lv[0] 落 stat.turn; Inspect 期限结构净线从它算)
 struct TurnStat {
   factor::stat::Ends lv[factor::stat::kLevels];

@@ -1,9 +1,11 @@
 #pragma once
 
+#include "define/Label.hpp" // kPendDays (悬挂日环)
 #include "features/DataDefine.hpp"
-#include "features/GraphNode.hpp"             // graph::BIN_DATA (分钟箱层 + L_1day 输入)
-#include "features/Node/Common/Meta/Meta.hpp" // MetaTracker (ts_valid)
-#include "features/Panel/Fund.hpp"            // fund::Panel
+#include "features/GraphNode.hpp"                // graph::BIN_DATA (分钟箱层 + L_1day 输入)
+#include "features/Node/Common/Label/RowSet.hpp" // LabelRows (标签列落盘行)
+#include "features/Node/Common/Meta/Meta.hpp"    // MetaTracker (ts_valid)
+#include "features/Panel/Fund.hpp"               // fund::Panel
 #include "features/Sample/Sample.hpp"
 #include "features/Storage/FeatureStore.hpp"
 #include "fundamental/AssetAxis.hpp" // PoolAxis
@@ -70,8 +72,8 @@ TIER_LEVELS(CORE_LAB_COLS)
 //         (哪层有哪些标签列由字段表定, 层内直连标签类 enum Out 定址: Lob 冲击成本只 L_1min; Bar 收益标签 L_1min 及以上, 每层只留本层及以上的持有期组);
 //         writer.rows(col) = 该列落盘的行 (编译期 kLabRows), LabelHold 只结算这些行;
 //         releaser(days_ago) = 该日标签全部结清, 本资产对该日 ts_close (计数攒齐全轴后 CS 放行).
-//   日句柄环与标签悬挂日环同步前进 (Label::PEND_DAYS): Bar 日级型 / 平仓顺延回填旧日张量, 旧日句柄持到结清才 ts_close; Lob 冲击成本只写当日.
-//   续算: snap = 区间末日的跨天态 (节点 + 标签), resume = 下一轮把尾窗日 (≤ PEND_DAYS, 张量已从盘读回) 的句柄接回环, 之后同一路径.
+//   日句柄环与标签悬挂日环同步前进 (define/Label.hpp kPendDays): Bar 日级型 / 平仓顺延回填旧日张量, 旧日句柄持到结清才 ts_close; Lob 冲击成本只写当日.
+//   续算: snap = 区间末日的跨天态 (节点 + 标签), resume = 下一轮把尾窗日 (≤ kPendDays, 张量已从盘读回) 的句柄接回环, 之后同一路径.
 //   档钩子 (Derived 实现):
 //     auto &resampler()        源 → MinuteData 的重采样器 (Lob tick2min / Bar bar2min: reset / roll / accumulate)
 // ============================================================================
@@ -82,8 +84,9 @@ public:
   using Day = typename Store::Day;
   using Graph = Dag;
   using Label = decltype(Dag::label);
-  using LabelRows = typename Label::RowSet;
-  static constexpr size_t kMinRingSlots = Label::MIN_RING_SLOTS; // 日环下限 (见 LabelHold)
+  // FeatureStore 日环下限: 悬挂日全 BUSY 时同日的 TS 还要 1 个 slot 才能推进; 再 +1: IO(d) 等 CS(d+1) close (截面跨日读 d−1 槽位,
+  //   见 FeatureStore::io_try_open), d 的 slot 要多持到 d+1 结清 (其余 CS / IO 阶段的 slot 另算, 只影响吞吐不致死锁)
+  static constexpr size_t kMinRingSlots = kPendDays + 2;
 
   void begin_day(misc::Ymd date, const Day &day) {
     push_day(day);
@@ -178,8 +181,6 @@ protected:
   std::array<ResamplerMin2Bin, std::size(graph::BIN_DATA)> min2bin_;
 
 private:
-  static constexpr size_t kPendDays = Label::PEND_DAYS;
-
   Derived &self() { return static_cast<Derived &>(*this); }
 
   template <size_t... I>

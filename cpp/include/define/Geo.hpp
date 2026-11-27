@@ -42,10 +42,11 @@ constexpr bool is_seg(int S) {
       return true;
   return false;
 }
-constexpr Geo geo_of(int S) {
-  for (const Geo &g : kGeos)
-    if (g.S == S)
-      return g;
+constexpr int geo_index(int S) {
+  for (int i = 0; i < kGeoCount; ++i)
+    if (kGeos[i].S == S)
+      return i;
   assert(false && "seg 不是任何层的每日行数 (kGeos)");
-  return {};
+  return 0;
 }
+constexpr Geo geo_of(int S) { return kGeos[geo_index(S)]; }

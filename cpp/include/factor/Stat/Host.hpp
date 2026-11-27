@@ -137,23 +137,31 @@ inline void lag_row(const uint16_t *rx, const uint16_t *rlag, int A, Row &r) {
   r.ok_rac = ok ? 1u : 0u;
 }
 
-// 标签侧 (t → t+h): rx = 本行 r16 (已定向), lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓, ret = 收益口径
-//   → r 的 ric / mkt / grp / cnt / tail / ok. ric / mkt 在 J 上 (与可成交无关); 组与尾部只收真持有的格 (一格一次 cell 出层级), 收益按续持取名义值
-inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, factor::stat::Ret ret, Row &r) {
+// 真持有格的回调 (宿主路径的可选出口, 观察工具要两端组的格时给): cell(t, a, g, p, y) = 行 t 格 a 在组 g 真持有, 仓位 p, 两腿 y; on = false 整段编译期消失
+struct NoCells {
+  static constexpr bool on = false;
+  void cell(int, int, int, const factor::stat::Pos &, const float *) const {}
+};
+
+// 标签侧 (t → t+h): rx = 本行 r16 (已定向), lb 已偏到行首 (交接链回看 / 前看同块其他行), c = 本行交接链, cap = 满仓, ret = 收益口径, mkt = 本行池基准
+//   → r 的 ric / mkt / grp / cnt / tail / ok. ric 在 J 上 (与可成交无关); 组与尾部只收真持有的格 (一格一次 cell 出层级), 收益按续持取名义值
+template <class Cells = NoCells>
+inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, double cap, factor::stat::Ret ret, double mkt, Row &r, const Cells &cs = {}) {
   unsigned long long s[kSums] = {};
-  double sm = 0.0, gs[kGroups] = {}, ts[kEnds][kTails] = {};
+  double gs[kGroups] = {}, ts[kEnds][kTails] = {};
   int gc[kGroups] = {}, tc[kEnds][kTails] = {};
   for (int a = 0; a < c.A; ++a) {
     const bool ok = rx[a] != kRankNone && lb.ry[a] != kRankNone;
     factor::stat::pair_add(s, rx[a], lb.ry[a], ok);
     if (!ok)
       continue;
-    sm += h2f(lb.lv[a]);
     const int g = factor::stat::grp_of(rx[a]);
     float y[2];
     const factor::stat::Pos p = factor::stat::cell(c, lb, a, factor::stat::InRank{rx + a, g}, H2F{}, y);
     if (p.held < 0)
       continue;
+    if constexpr (Cells::on)
+      cs.cell(c.t, a, g, p, y);
     gs[g] += factor::stat::ret_at(p, 0, y);
     ++gc[g];
     const int e = g == factor::stat::end_group(factor::stat::kTop) ? factor::stat::kTop : g == factor::stat::end_group(factor::stat::kBot) ? factor::stat::kBot
@@ -165,17 +173,29 @@ inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::C
       ++tc[e][j];
     }
   }
-  factor::stat::finish_row(s, sm, gs, gc, ts, tc, cap, ret, r);
+  factor::stat::finish_row(s, mkt, gs, gc, ts, tc, cap, ret, r);
 }
 
 // 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; ret = 收益口径; opens = 开仓行 (Hold::opens)
-inline Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, double cap, factor::stat::Ret ret, bool opens) {
+template <class Cells = NoCells>
+inline Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, double cap, factor::stat::Ret ret, bool opens,
+                    const Cells &cs = {}) {
   Row r;
   if (rlag)
     lag_row(rx, rlag, c.A, r);
   if (opens)
-    label_row(rx, lb, c, cap, ret, r);
+    label_row(rx, lb, c, cap, ret, lb.mk[c.t], r, cs);
   return r;
+}
+
+// 一行的池基准: 标签有效格 (m) 的做多收益均值; 无 → 0
+inline float pool_mkt(const uint16_t *lv, const uint8_t *m, int A) {
+  double s = 0.0;
+  int n = 0;
+  for (int a = 0; a < A; ++a)
+    if (m[a])
+      s += h2f(lv[a]), ++n;
+  return n ? static_cast<float>(s / n) : 0.f;
 }
 
 } // namespace factor::cpu::stat

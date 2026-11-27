@@ -99,9 +99,10 @@ int stride_of(int T) { return std::max(1, T / factor::search::kQtabRows); }
 struct Samp {
   int t_first = 0, n_rows = 0;
 };
-Samp samp_of(int t_hi, int t_lo, int t0_abs, int stride) {
+// 块 0 (首块, 块首 = 评估域首行) 的统计行上每 stride 行取一行
+Samp samp_of(int t_hi, int t_lo, int stride) {
   int t = t_lo;
-  while ((t0_abs + t) % stride != 0)
+  while (t % stride != 0)
     ++t;
   return {t, t < t_hi ? (t_hi - 1 - t) / stride + 1 : 0};
 }
@@ -324,7 +325,8 @@ struct Searcher {
     std::vector<uint8_t> prefix(dc.nodes.size(), 0);
     std::fill_n(prefix.begin(), want + 1, static_cast<uint8_t>(1));
     const fs::Span s = c.span();
-    const Samp sm = samp_of(s.t_hi(), s.t_lo, s.t0_abs, stride);
+    assert(c.ck.d0 == 0 && "分位表只取首块");
+    const Samp sm = samp_of(s.t_hi(), s.t_lo, stride);
     std::vector<float> tab;
     Backend<Cpu> &qe = engine_space(F.S).cpu;
     qe.bind(c);
