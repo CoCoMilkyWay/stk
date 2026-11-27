@@ -988,17 +988,12 @@ ImVec2 plot_overlay(const std::vector<Overlay> &ls, const std::vector<misc::Ymd>
   return corner;
 }
 
-// 篮子图的前置: 价格库用不了 / 未发布 → 画提示, false
+// 篮子图的前置: 价格库用不了 / 未发布 → 画状态, false
 bool basket_ready(const QuoteHub &mk) {
-  if (!mk.view) {
-    ImGui::TextDisabled("备价格库 (all.bar 特征库 + 补段)… %zu / %zu", mk.progress().done.load(std::memory_order_relaxed), mk.progress().total.load(std::memory_order_relaxed));
-    return false;
-  }
-  if (!mk.view->lack.empty()) {
-    ImGui::TextWrapped("%s (建好即自动接上)", mk.view->lack.c_str());
-    return false;
-  }
-  return true;
+  if (mk.view && mk.view->lack.empty())
+    return true;
+  ImGui::TextWrapped("%s", QuoteWait(mk, {}).c_str());
+  return false;
 }
 
 // 当日分钟的完整度, 接在上一项行尾 (完整且无事不画): 有缺口 → 警示色进度条 "缺口 N 只 · 补分钟 已取 / 共";
@@ -1009,11 +1004,14 @@ void fill_chip(const QuoteStatus &qs) {
   ImGui::SameLine(0, 8);
   if (qs.pending > 0 || qs.holes > 0) {
     const size_t n = qs.fetched + qs.pending;
-    char s[96];
+    const double per = qs.net_ms + qs.lock_ms; // 一路一只的用时 [ms]
+    char s[128], r[32] = "";
+    if (per > 0)
+      std::snprintf(r, sizeof(r), " · %.0f 只/秒", QuoteService::kFillers * 1000.0 / per);
     if (qs.holes > 0)
-      std::snprintf(s, sizeof(s), "缺口 %zu 只 · 补分钟 %zu / %zu", qs.holes, qs.fetched, n);
+      std::snprintf(s, sizeof(s), "缺口 %zu 只 · 补分钟 %zu / %zu%s", qs.holes, qs.fetched, n, r);
     else
-      std::snprintf(s, sizeof(s), "新浪补分钟 %zu / %zu", qs.fetched, n);
+      std::snprintf(s, sizeof(s), "新浪补分钟 %zu / %zu%s", qs.fetched, n, r);
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, StatusColor(qs.holes > 0 ? TaskStatus::Kind::Warn : TaskStatus::Kind::Busy));
     ImGui::ProgressBar(n > 0 ? static_cast<float>(qs.fetched) / static_cast<float>(n) : 0.f, ImVec2(ImGui::CalcTextSize(s).x + 16, ImGui::GetTextLineHeight()), s);
     ImGui::PopStyleColor();
@@ -1022,9 +1020,10 @@ void fill_chip(const QuoteStatus &qs) {
   }
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("当日分钟补取: 在取 %zu 只 / 已取 %zu; 待补 %zu 只, 其中有缺口 %zu 只\n"
-                      "• 缺口 = 快照没盯住的分钟 (启动 / 断网 / 停机重启), 有无成交未知: 个股与含它的篮子该分钟不画 (线断开), 立即补取, 补到即画\n"
+                      "• 一只用时 (近期均值): 网络 %.0f ms + 回包等锁 %.0f ms, %d 路并发 (网络高 = 新浪慢 / 限流重试, 终端有 sina retry; 等锁高 = 快照 / 发布占锁)\n"
+                      "• 缺口 = 快照没盯住的分钟 (启动 / 断网 / 停机重启), 有无成交未知: 日内栏按估值淡色画 (个股段中线性 / 段尾持平, 篮子按成员估价), 立即补取, 补到即换真根\n"
                       "• 待定稿 = 已有图, 等新浪那根分钟 K 不再变 (约 %d 秒) 后再取一次补成精确",
-                      qs.pending, qs.fetched, qs.gaps, qs.holes, QuoteService::kSettle);
+                      qs.pending, qs.fetched, qs.gaps, qs.holes, qs.net_ms, qs.lock_ms, QuoteService::kFillers, QuoteService::kSettle);
 }
 
 // 叠加图左上角 (corner; < 0 = 图没起来): bars() 画档位条, 再来源 (悬停看 note), 行尾新浪补分钟进度 (fill_chip);
@@ -1184,13 +1183,11 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
     else
       ImGui::TextDisabled("新浪 %02d:%02d:%02d", qs.sec / 3600, qs.sec / 60 % 60, qs.sec % 60);
     fill_chip(qs);
+    const Ref r{kStock, st.want};
     if (st.want == Ref::kNone)
       ImGui::TextWrapped("点表格中的一行查看行情.");
-    else if (!mk.view)
-      ImGui::TextWrapped("读取历史… 备价格库 (all.bar 特征库 + 补段) %zu / %zu", mk.progress().done.load(std::memory_order_relaxed),
-                         mk.progress().total.load(std::memory_order_relaxed));
     else
-      ImGui::TextWrapped("读取历史…");
+      ImGui::TextWrapped("读取历史… %s", QuoteWait(mk, {&r, 1}).c_str());
     return;
   }
   const uint32_t id = st.shown;
@@ -1256,11 +1253,18 @@ int RenderOverlay(OverlayKind kind, QuoteHub &mk, OverlayState &st, const std::v
     }
   });
   OverlayData &c = st.cache[kind]->val;
+  std::vector<Ref> refs; // 各条 + 0 轴净流入柱的标的
+  for (const OverlayPick &p : picks)
+    refs.push_back(p.ref);
+  if (def.net && picks.size() != 1)
+    refs.push_back({kBasket, static_cast<uint32_t>(all_eq)});
+  const std::string wait = QuoteWait(mk, refs);
   ImGui::PushID(def.id);
   int near = -1;
   const ImVec2 corner = plot_overlay(c.ls, c.days, ImGui::GetContentRegionAvail(), def.unit(st), hot, near, def.net ? &c.net : nullptr);
-  overlay_tools(corner, c.note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : c.gap ? c.note
-                                                                                                 : nullptr,
+  overlay_tools(corner, c.note, picks.empty() ? "在右表选指数 / 行业 / 概念行或其成分股" : !wait.empty() ? wait.c_str()
+                                                                                       : c.gap           ? c.note
+                                                                                                         : nullptr,
                 mk.status, [&] {
                   button_bar(kIntraName, kIntras, st.span[kind]);
                   if (def.tools)
@@ -1314,6 +1318,42 @@ void EquityTip(const EquityPt &p) {
   ImGui::Text("复权净资产 %s", money_text(p.adj).c_str());
   ImGui::TextColored(p.dd_adj < -0.5 ? kDn : kFlat, "复权回撤 %.2f%% (%s)", 100.0 * p.dd_pct, money_text(p.dd_adj).c_str());
   ImGui::TextColored(p.dd_real < -0.5 ? kDn : kFlat, "真正回撤 %s", money_text(p.dd_real).c_str());
+}
+
+std::string PriceDoing(const QuoteHub &mk) {
+  const size_t d = mk.progress().done.load(std::memory_order_relaxed), n = mk.progress().total.load(std::memory_order_relaxed);
+  char b[96];
+  switch (mk.doing()) {
+  case PriceLib::Step::Idle:
+    return "价格库空闲";
+  case PriceLib::Step::Sync:
+    if (n == 0)
+      return "价格库核对…";
+    std::snprintf(b, sizeof(b), "价格库续算 %zu / %zu 天", d, n);
+    return b;
+  case PriceLib::Step::Wait:
+    return "价格库等 all.bar 落完新日 (算完自动接上)";
+  case PriceLib::Step::Rebuild:
+    return "价格库重建日脊 / 篮子全表…";
+  case PriceLib::Step::Replay:
+    return "价格库回放账户…";
+  case PriceLib::Step::Read:
+    std::snprintf(b, sizeof(b), "价格库读全史 %zu / %zu", d, n);
+    return b;
+  }
+  assert(false && "PriceLib::Step 未覆盖");
+  return {};
+}
+
+std::string QuoteWait(const QuoteHub &mk, std::span<const Ref> refs) {
+  if (!mk.view)
+    return "备价格库 (all.bar 特征库 + 补段) · " + PriceDoing(mk);
+  if (!mk.view->lack.empty())
+    return mk.view->lack + " (建好即自动接上)";
+  std::string s = mk.status.date == 0 ? "新浪: 等待首轮快照…" : "";
+  if (const auto n = std::ranges::count_if(refs, [&](const Ref &r) { return !mk.view->covers(r, true); }); n > 0)
+    s += (s.empty() ? "" : " · ") + std::string("分钟全史未到 ") + std::to_string(n) + " 条 · " + PriceDoing(mk);
+  return s;
 }
 
 std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const OverlayState &st) {

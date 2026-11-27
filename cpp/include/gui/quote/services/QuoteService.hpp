@@ -80,6 +80,8 @@ struct QuoteStatus {
   bool fill = false;     // 行情日 > fund_end (取分钟 K)
   size_t bytes = 0;      // 盘上缓存字节; 0 = 未建 (尚无行情日)
   std::time_t saved = 0; // 盘上缓存的末次写入时刻
+  double net_ms = 0;     // 分钟 K 一请求的网络用时 [ms] (近期指数均值; 0 = 尚无)
+  double lock_ms = 0;    // 其回包后等 mu_ 的用时 [ms] (同上; 高 = 被快照 / 发布占锁拖慢)
 };
 
 // 一只当日落盘的状态 (live.bin 一条原子条目, 内存里即 Track 的头): 待补区间 + 上一快照累计基线; busy = 写到一半 (内存里恒 0)
@@ -99,6 +101,7 @@ public:
   static constexpr int kLag = (kSettle + 59) / 60 + 1; // 此刻所在根 − 定稿线 的上界 [根]
   static constexpr int kGap = 10;                      // 断档判据: 两轮快照跨根时其间连续竞价时长 [s]
   static constexpr int kFillers = 16;                  // 分钟 K 并发 (再高新浪会 RST)
+  static constexpr double kEma = 0.05;                 // 分钟 K 用时 (QuoteStatus::net_ms / lock_ms) 的指数均值权
   static constexpr int kFoldGap = 1;                   // 补根后发布的最小间隔 [s]
   static constexpr int kFoldThreads = 8;               // 发布的并行 (重建个股 Day / 篮子按段合成)
   static constexpr int kCallOpen = 9 * 3600 + 15 * 60; // 开盘集合竞价撮合段 [kCallOpen, kCallEnd) [当日秒]
@@ -204,10 +207,11 @@ private:
   std::deque<uint32_t> todo_;
   uint32_t sel_ = ~0u;
   size_t inflight_ = 0, fetched_ = 0;
-  size_t gaps_ = 0, holes_ = 0; // 有待补区间 / 有缺口的只 (QuoteStatus::gaps / holes)
-  int sec_ = 0;                 // 行情日最新快照时刻 (断档判据的上轮时刻)
-  std::byte *map_ = nullptr;    // 盘上缓存的映射 (bytes_ 字节; 空 = 尚无行情日)
-  size_t bytes_ = 0;            // QuoteStatus::bytes / saved
+  double net_ms_ = 0, lock_ms_ = 0; // QuoteStatus::net_ms / lock_ms
+  size_t gaps_ = 0, holes_ = 0;     // 有待补区间 / 有缺口的只 (QuoteStatus::gaps / holes)
+  int sec_ = 0;                     // 行情日最新快照时刻 (断档判据的上轮时刻)
+  std::byte *map_ = nullptr;        // 盘上缓存的映射 (bytes_ 字节; 空 = 尚无行情日)
+  size_t bytes_ = 0;                // QuoteStatus::bytes / saved
   std::time_t saved_ = 0;
   std::shared_ptr<const Basis> basis_;                       // 空 = 未 bind
   bool dirty_ = false;                                       // 上次发布后当日有变 (快照 / 补根 / 换日 / bind)

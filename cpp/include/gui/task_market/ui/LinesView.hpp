@@ -322,7 +322,8 @@ inline constexpr int kMarginNums = kMarPct + kMarginVals;
 struct BandLines {
   std::vector<double> y[kBandQ];
   std::vector<std::pair<int, int>> segs;
-  explicit BandLines(size_t n = 0) {
+  BandLines() = default;
+  explicit BandLines(size_t n) {
     for (std::vector<double> &v : y)
       v.assign(n, std::numeric_limits<double>::quiet_NaN());
   }

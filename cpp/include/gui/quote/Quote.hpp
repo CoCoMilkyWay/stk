@@ -168,7 +168,7 @@ struct EquityWalk {
   const Equity &eq;
   double scale;
   bool broker;
-  double ahi = -std::numeric_limits<double>::infinity(), phi = -std::numeric_limits<double>::infinity();
+  double ahi = std::numeric_limits<double>::lowest(), phi = std::numeric_limits<double>::lowest();
   // 下一点: 所属日 day / 指数 idx / 该日前收指数 ref
   EquityPt step(misc::Ymd day, double idx, double ref) {
     const double adj = scale * idx, p = eq.pnl(day, idx, ref, broker);

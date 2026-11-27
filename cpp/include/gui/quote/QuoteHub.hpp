@@ -46,12 +46,13 @@ struct QuoteHub {
 
   // 服务 (任意时刻; 以下除 started 须已起)
   bool started() const { return quote_ != nullptr; }
-  QuoteStatus sina() const { return quote_->status(); }                         // 新浪此刻的状态 (不等 frame)
-  const Progress &progress() const { return *price_; }                          // 价格库的进度
-  const Calendar &calendar() const { return *cal_; }                            // 交易日历
-  bool listed(uint32_t id) const { return quote_->listed(id); }                 // 在新浪全市场
-  void select(uint32_t id) { quote_->select(id); }                              // 选中标的 (~0u = 无): 新浪先补它的分钟 K
-  void watch(std::vector<std::string> syms) { quote_->watch(std::move(syms)); } // 订阅码 (新浪码): 快照进 Live::watch
+  QuoteStatus sina() const { return quote_->status(); }                                  // 新浪此刻的状态 (不等 frame)
+  const Progress &progress() const { return *price_; }                                   // 价格库的进度
+  PriceLib::Step doing() const { return price_->doing.load(std::memory_order_relaxed); } // 价格库此刻在做
+  const Calendar &calendar() const { return *cal_; }                                     // 交易日历
+  bool listed(uint32_t id) const { return quote_->listed(id); }                          // 在新浪全市场
+  void select(uint32_t id) { quote_->select(id); }                                       // 选中标的 (~0u = 无): 新浪先补它的分钟 K
+  void watch(std::vector<std::string> syms) { quote_->watch(std::move(syms)); }          // 订阅码 (新浪码): 快照进 Live::watch
 
 private:
   const AccountFeed acct_;

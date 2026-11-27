@@ -298,7 +298,8 @@ int RenderTabLines(int page, PortfolioService &svc, CtaService *cta, const Portf
     ImGui::BeginGroup();
     if (ih > 0.0f)
       overlay_child("##pf_overlay", ImVec2(left, ih), pd.overlay);
-    RenderLinesPlot(ui, page, pin, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph), ui.trades ? trades[Quote::kBinDay].get() : nullptr); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
+    RenderLinesPlot(ui, page, pin, ImVec2(left, ih > 0.0f ? ph - ih - st.ItemSpacing.y : ph), ui.trades ? trades[Quote::kBinDay].get() : nullptr,
+                    mk ? PriceDoing(*mk) : std::string()); // fit 只作用于紧接的 BeginPlot: 须在日内栏之后
     RenderLinesRange(ui, page, pin, ImVec2(left, kRangeH));
     ImGui::EndGroup();
     break;

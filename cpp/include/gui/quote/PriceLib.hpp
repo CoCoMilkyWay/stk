@@ -39,7 +39,8 @@
 // 账户: 资金流水账本 × 个股连分钟的全史回放 (gui/account/AccountSide.hpp, 与当日同一核); 账本代 / 券商现价 / 戳变了重算
 // 服务 (gui/util/Service.hpp, 随对象): 请求 = 要的全史 (标的 × 连不连分钟) + 基本面段末日 + 行情日 + 账本代 + 券商现价 (QuoteHub 每帧并成; 变了即补);
 //   每趟: 补库 (只析构中断, 新请求不打断) → 库变了重建日脊 / 篮子全表 (+ 交接的普查) / 个股日脊末段 → 账户 → 读要的 (按 (标的, 戳) 沿用; 新请求打断)
-//   → 发布 PriceView (与上份同则不发). 进度: Loading = 合成天 (库段 + 补段 + 篮子侧重排 / 合成, 一趟一次 begin)
+//   → 发布 PriceView (与上份同则不发). 进度: Loading = 合成天 (库段 + 补段 + 篮子侧重排 / 合成, 一趟一次 begin), Running = 读要的全史 (只);
+//   此刻在做哪一步 = doing (GUI 状态行)
 // 线程: 库只 worker 读写, 外面只经 PriceView 读; 合成线程池随对象 (全部核, 按可用内存封顶; 两侧按日并行合成, 篮子全表按篮子并行读)
 #pragma once
 
@@ -116,6 +117,14 @@ public:
   ~PriceLib();
 
   std::shared_ptr<const PriceView> result; // 持 mutex 读 (latest); 空 = 未发布
+  // worker 此刻在做 (GUI 免锁读, 状态行; 计数 = 进度面 done / total)
+  enum class Step : uint8_t { Idle,    // 闲: 发布即最新请求的
+                              Sync,    // 补库 (合成天; total 0 = 核对)
+                              Wait,    // all.bar 库在落新日: 等下一请求再补
+                              Rebuild, // 库变了: 日脊 / 篮子全表 / 个股日脊末段
+                              Replay,  // 账户回放
+                              Read };  // 读要的全史 (只)
+  std::atomic<Step> doing{Step::Idle};
 
 private:
   static constexpr Phase kStart = Phase::Loading;

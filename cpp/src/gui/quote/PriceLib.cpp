@@ -785,8 +785,10 @@ bool PriceLib::sync(const FeatureLib &lib, const std::vector<misc::Ymd> &dates, 
     return true;
   at_ = {};
   const std::shared_ptr<const pool::Picks> pk = pool::picks(lib, &quit_);
-  if (!pk || pk->strip->dates != dates) // 库在落新日: 下趟再补
+  if (!pk || pk->strip->dates != dates) { // 库在落新日: 下趟再补
+    doing.store(Step::Wait, std::memory_order_relaxed);
     return false;
+  }
   if (dates_.size() > lib_days_ + keep)
     cut(lib_days_ + keep);
   if (rekey && bdays_ > lib_days_) // 篮子侧的补段日 (冻结成员) 随后由 fold 重合
@@ -1241,17 +1243,26 @@ bool PriceLib::run(PriceRequest &req) {
          std::ranges::count(req.wants, true, &Want::minute) <= static_cast<ptrdiff_t>(kKeepMinutes) && "请求超出留存");
   assert(std::ranges::none_of(req.wants, [](const Want &w) { return w.ref.side == kAccount; }) && "账户一侧整条随发布");
   const pool::AllBar ab = pool::all_bar("行情历史由 all.bar 特征库合成");
+  const auto to = [&](Step s) { doing.store(s, std::memory_order_relaxed); };
   if (!ab.lack.empty()) {
+    to(Step::Idle);
     if (!result || result->lack != ab.lack)
       put(std::make_shared<PriceView>(PriceView{.lack = ab.lack}));
     return true;
   }
+  to(Step::Sync);
   if (!sync(ab.lib, ab.dates, req.mark))
     return false;
-  if (!(built_ == at_))
+  if (!(built_ == at_)) {
+    to(Step::Rebuild);
     rebuild();
-  if (!account_ || ledger_ != req.ledger || !(spot_ == req.spot) || !(fee_ == req.fee))
+  }
+  if (!account_ || ledger_ != req.ledger || !(spot_ == req.spot) || !(fee_ == req.fee)) {
+    to(Step::Replay);
     replay(req.ledger, req.spot, req.fee);
+  }
+  to(Step::Read);
+  begin(Phase::Running, req.wants.size());
   for (const Want &w : req.wants) {
     if (cancel_.load(std::memory_order_relaxed))
       return false;
@@ -1263,7 +1274,9 @@ bool PriceLib::run(PriceRequest &req) {
       minute_.get(w.ref, read, kKeepMinutes);
     else if (w.ref.side == kStock)
       daily_.get(w.ref.key, read, kKeep);
+    publish(1);
   }
+  to(Step::Idle);
   // 发布 = 本戳留着的全部 (不只本次要的: 切页不闪), 键升序; 连分钟的盖过不连的
   using Item = std::pair<uint32_t, std::shared_ptr<const Series>>;
   std::vector<Item> ks, bm;

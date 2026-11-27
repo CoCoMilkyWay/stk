@@ -774,7 +774,7 @@ LinesRange DefaultLinesRange(int page, const std::vector<misc::Ymd> &dates) {
 // ---- 主图: NAV (plot_nav) ↔ VAL (plot_val) ↔ MARGIN (plot_margin: 左轴占比 + 右轴价格) 同一框: 贴边 (窄内边距, 不标轴名); y 恒贴合 + 留白 (fit_margin, 各轴各留);
 //      x: 恒贴合 (视野只随区间; 滚轮 = 钉住右端缩放区间, wheel_x); x 右端留出线尾小字 / 刻度 / 十字标签;
 //      左上角 = 区间档位条 (span_bar) + 其下图例矩阵 ----
-void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size, const Quote::Trades *trades) {
+void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 &size, const Quote::Trades *trades, const std::string &doing) {
   const LinesDerived &d = ui.der.val;
   const LinesView &v = ui.view.val;
   const ValSetId vals = kPageDefs[page].vals;
@@ -822,7 +822,7 @@ void RenderLinesPlot(LinesState &ui, int page, const LinesAt &pin, const ImVec2 
       plot_val(ui, range, d, v, pin, pf);
     wheel_x(range);
     if (wait)
-      plot_hint("分钟线载入中…");
+      plot_hint(doing.empty() ? "分钟线载入中…" : ("分钟线载入中… · " + doing).c_str());
     fit_margin(px, ui.log_y);
     if (mg)
       fit_margin(ImAxis_Y1, false);

@@ -215,7 +215,7 @@ std::shared_ptr<const Live> QuoteService::live() const {
 void QuoteService::post() {
   const bool fill = date_ > fund_end_;
   std::lock_guard<std::mutex> lock(pub_mu_);
-  status_ = {date_, prev_, sec_, todo_.size() + inflight_, fetched_, fill ? gaps_ : 0, fill ? holes_ : 0, fill, bytes_, saved_};
+  status_ = {date_, prev_, sec_, todo_.size() + inflight_, fetched_, fill ? gaps_ : 0, fill ? holes_ : 0, fill, bytes_, saved_, net_ms_, lock_ms_};
 }
 
 void QuoteService::recount() {
@@ -587,8 +587,13 @@ void QuoteService::fill() {
       ++inflight_;
       post();
     }
+    const auto t0 = std::chrono::steady_clock::now();
     const std::vector<sina::Bar> bars = c.kline(syms_[i], n);
+    const auto t1 = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(mu_);
+    const auto ms = [](auto d) { return std::chrono::duration<double, std::milli>(d).count(); };
+    const auto ema = [](double o, double x) { return o > 0 ? o + kEma * (x - o) : x; };
+    net_ms_ = ema(net_ms_, ms(t1 - t0)), lock_ms_ = ema(lock_ms_, ms(std::chrono::steady_clock::now() - t1));
     --inflight_;
     if (gen != gen_) { // 取的途中换了日 (Track 已重置)
       post();

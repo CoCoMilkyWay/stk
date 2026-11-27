@@ -141,6 +141,11 @@ void RenderStockPanel(const QuoteHub &mk, StockState &st, const std::string &tit
 //   各条 (与 0 轴净流入柱的标的) 登记连分钟全史, 到了才有历史日.
 // hot = 白粗线画在最上的条 (picks 下标, −1 = 无; gui/util/HoverSync.hpp). 返回图上悬停的条 (鼠标 x 处纵向最近; −1 = 无)
 int RenderOverlay(OverlayKind kind, QuoteHub &mk, OverlayState &st, const std::vector<OverlayPick> &picks, int hot);
+// 价格库此刻在做 (状态行): 续算 n / N 天 / 核对 / 等 all.bar 落新日 / 重建 / 回放账户 / 读全史 n / N / 空闲
+std::string PriceDoing(const QuoteHub &mk);
+// refs 各条的行情未就绪 → 一行状态 (价格库未发布 (+ 在做) / 用不了 / 新浪首轮快照未到 / 分钟全史未到 n 条 + 价格库在做); 就绪 → 空.
+//   就绪之前各图恒显它, 不留空白
+std::string QuoteWait(const QuoteHub &mk, std::span<const Ref> refs);
 // kind 档的日轴: 行情日及其前 n − 1 个交易日 (升序); 当日未到 (首份 Live 前) → 空
 std::vector<misc::Ymd> OverlayDays(OverlayKind kind, const QuoteHub &mk, const OverlayState &st);
 } // namespace GUI::Market
