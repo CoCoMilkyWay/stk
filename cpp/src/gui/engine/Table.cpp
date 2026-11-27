@@ -231,7 +231,7 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
   //   日层每行都是收盘撮合建仓 (盘口冲击 0, 与分钟层的收盘建仓尾行同约) → 无平面
   if (lv.lvl != L_1day)
     for (int a = 1; a < kAmtCount; ++a) {
-      const std::string w = std::to_string(kAmtWan[a]) + "w";
+      const std::string w = std::to_string(amt_wan(static_cast<AmtId>(a))) + "w";
       const int b = find_at(TierId::Lob, L_1min, "lb_cost_buy_" + w), sl = find_at(TierId::Lob, L_1min, "lb_cost_sell_" + w);
       assert(b >= 0 && sl >= 0 && "冲击成本列不齐: 某金额段缺 buy 或 sell");
       t.y.cost[a][kBuy] = Col{TierId::Lob, L_1min, static_cast<uint32_t>(b)};

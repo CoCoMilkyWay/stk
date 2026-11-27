@@ -83,7 +83,7 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
           return;
         const int r_idx = u_want - cv.u0, t = cv.t_lo + r_idx, t0 = t - k_row, A = cv.blk.y.sh.A;
         const Px px(cv.blk, cv.bm, cfg.bars, env.open);
-        const Engine::LabPlane &lb = *cv.blk.y.labels[0];
+        const Engine::LabelPlanes &lb = *cv.blk.y.labels[0];
         const uint16_t *lv = lb.lv.data();
         const float mkt = mkt_of(cv, t);
 
@@ -126,7 +126,7 @@ ToolOut ViewSnapshot(const Call &c, Bay &bay) {
         R.label = fac.label, R.when = when, R.level = env.level, R.seg = seg, R.n = cs.size();
         const st::Row &w = cv.rows[static_cast<size_t>(r_idx)];
         R.row_ok = w.ok;
-        R.ric = w.ric, R.g20 = w.grp[kG20], R.g1 = w.grp[kG1], R.c20 = static_cast<int>(w.cnt[kG20]), R.c1 = static_cast<int>(w.cnt[kG1]);
+        R.ric = w.ric, R.g20 = w.ok ? static_cast<float>(st::grp_as(w, kG20, st::Ret::Excess)) : 0.f, R.g1 = w.ok ? static_cast<float>(st::grp_as(w, kG1, st::Ret::Excess)) : 0.f, R.c20 = static_cast<int>(w.cnt[kG20]), R.c1 = static_cast<int>(w.cnt[kG1]);
         for (size_t i = 0; i < feats.size(); ++i)
           R.exprs.push_back(expr_line(i, feats[i]));
 

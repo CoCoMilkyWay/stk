@@ -1,5 +1,7 @@
 #include "live/Book.hpp"
 
+#include "define/Sweep.hpp"
+
 #include <algorithm>
 
 namespace live {
@@ -16,16 +18,10 @@ double reach(const std::vector<Level> &side, double notional) {
   return side.back().px;
 }
 
+// 吃 notional 元 (define/Sweep.hpp 吃单核, 与写端建仓冲击同一份; 余量不补): {均价 (一股没吃到 → 无), 5 档吃满}
 std::pair<std::optional<double>, bool> eat(const std::vector<Level> &side, double notional) {
-  double spent = 0, shares = 0;
-  for (const Level &l : side) {
-    const double take = std::min(l.vol, (notional - spent) / l.px);
-    spent += take * l.px;
-    shares += take;
-    if (spent >= notional - 1e-6)
-      break;
-  }
-  return {shares ? std::optional<double>(spent / shares) : std::nullopt, spent >= notional - 1e-6};
+  const Swept<double> o = sweep<double>(static_cast<int>(side.size()), [&](int i, double &p, double &q) { p = side[static_cast<size_t>(i)].px, q = side[static_cast<size_t>(i)].vol; }, notional, 0.0);
+  return {o.px > 0 ? std::optional<double>(o.px) : std::nullopt, o.left <= 1e-6};
 }
 
 } // namespace

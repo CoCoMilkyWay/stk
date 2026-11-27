@@ -76,14 +76,15 @@ stk/
 │   │   │                                               #    · 行映射: AsOf (网格行 gather) / Tail (尾部行 scatter, OrderFlow)
 │   │   ├── define/                                     # 🔷 底层数据结构 + 全仓共用的协议表
 │   │   │   ├── Geo.hpp                                 # 🔷 层几何 Geo (S 每日行数 / N 每行分钟 / M0 首行末分钟; kGeos 一行一层): 算子 / 标签协议 / 评估 / 引擎同一份
-│   │   │   ├── Label.hpp                               # 🔷 标签协议 (写端 features / 评估端 factor 同一份): 持有期表 HOLDS (HoldId / 集合唯一表示 IdList: Holds / Amts) + 冲击金额段 (AmtId) + 交易时钟 + 结清窗 (kPendDays / kChainDays)
+│   │   │   ├── Label.hpp                               # 🔷 标签协议 (写端 features / 评估端 factor 同一份): 持有期表 HOLDS (HoldId / 集合唯一表示 IdList: Holds / Amts) + 冲击金额段 (盘口段 LobAmt = 落盘列 ⇄ 口径段 AmtId = 固定段 + 盘口段) + 交易时钟 + 结清窗 (kPendDays / kChainDays)
 │   │   │   │                                           #    · 持有期 × 层 = Hold (hold_on): 行数 h / 开仓 opens / 交接 nets / 平仓行 exit (开盘型 = D+N 日 09:25 撮合所在行 open_row) / 记日一对 stat_day ⇄ money_day / 可知行 known · last /
 │   │   │   │                                           #      资金口径 span · 回看 reach (查表 hold_geom); 行号一律取段内行 (张量 / 分块恒以段首起);
 │   │   │   │                                           #      协议表 1 (开清仓价点) / 2 (开关仓策略; 整批平仓恒在撮合价; 记日: 排序统计记建仓日, 钱记平仓日)
 │   │   │   │                                           #    · token (1m 5m 15m 30m 60m close t1o t1 t2 t3) = 列名片段 (lb_<h> / lb_nom_<h>) = 落盘写法 = 表达式 h= 写法
-│   │   │   ├── Fee.hpp                                 # 🔷 成本 = 量 × 率: 成交侧 Side + 两侧流水 TurnFlow (两侧量 / 卖不出的量 / 各盘口段冲击, 可合并) × 费率 Fee (佣金 / 印花税 / 过户费 / 固定冲击; Config 持有一份) → parts (唯一一式: 税佣 / 印花 / 冲击三项) + 成本口径 CostSpec (金额段 + 盘口冲击封顶); 因子换手 / 组合与篮子净线 / CTA / 实盘调仓同用
-│   │   │   ├── Annual.hpp                              # 🔷 年化口径 (一年 242 个交易日): per_year / ann_ir / ann_log / ann_geo + 逐日收益 Daily (可合并, 前缀相减即窗: 复利年化 / Sharpe ddof 1) + 一条逐日序列 Path (前缀 + 净值 / 回撤);
-│   │   │   │                                           #    因子表 / Inspect / Market 线 / Beta Style / CTA 的年化与夏普全走它
+│   │   │   ├── Fee.hpp                                 # 🔷 成本 = 量 × 率: 成交侧 Side + 两侧流水 TurnFlow (一张字段表 FlowField: 两侧量 / 卖不出的量 / 各盘口段冲击, 可合并; 账线列 / 落盘同一张) × 费率 Fee (佣金 / 印花税 / 过户费 / 固定冲击; Config 持有一份) → parts (唯一一式: 税佣 / 印花 / 冲击三项) + 成本口径 CostSpec (口径段 + 盘口冲击封顶); 因子换手 / 组合与篮子净线 / CTA / 实盘调仓同用
+│   │   │   ├── Sweep.hpp                               # 🔷 吃单核 sweep (逐档吃 n 元 → 均价 + 余额; 余额可按涨跌停补): 写端 LabelLob 建仓冲击 (float, 逐位同落盘) / 实盘滑点 (double) 同一份
+│   │   │   ├── Annual.hpp                              # 🔷 年化口径 (一年 242 个交易日): per_year / ann_ir / ann_log / ann_geo + 逐日收益 Daily (可合并, 前缀相减即窗: 复利年化 / 波动 / Sharpe ddof 1 / Sortino) + 一条逐日序列 Path (前缀 + 净值 / 回撤);
+│   │   │   │                                           #    因子表 / Inspect / Market 线 / Beta Style / CTA (日内各根复利成逐日) 的年化与夏普全走它
 │   │   │   ├── HostDev.hpp                             # 🔷 主机 / 设备两用函数标注 FACTOR_HD
 │   │   │   ├── CBuffer.hpp                             # 🔷 循环缓冲区
 │   │   │   ├── Csr.hpp                                 # 🔷 压缩行 (off + v) + 计数排序分桶
@@ -133,9 +134,9 @@ stk/
 │   │   │   │   │                                       #    · Grid = 各维勾选位集 (Style 页参数网格), specs_of 展开成一组 Spec (集合维 = 各位单独 + 整体; 过滤维另加不剔, 划分维不另测全)
 │   │   │   │   ├── PoolSelect.hpp                      # 🧮 选池引擎: all.bar L_1day 日行 → 原料带 Strip (进程内一份, 增量补; 类号 / 行业 / 市值 / 后复权 grow) → 次序 Order → 逐行成员 (一组 Spec)
 │   │   │   │   │                                       #    · 次序 = 风格键升序 (同风格的池共用), 选股 Selector 自一端取前 N; 调优 rank (次序整列留存) 与落地 picks (当行即选) 同一条行扫
-│   │   │   │   │                                       #    · 调仓日历 src_of / rebal_at (日频 / 周频) + 持仓权 Strip::omega (源行目标权随价漂移): 选股表 / 篮子账 / 行情篮子 / 回测池篮子同一份
+│   │   │   │   │                                       #    · 调仓日历 src_of / rebal_at (日频 / 周频) + 持仓权 Strip::omega (源行目标权随漂移序列: 价 grow = 行情价格指数 / 画像 ⇄ 账 gain = 账集前一批的续持收益链, 不换源的日无交易): 选股表 / 篮子账 / 行情篮子 / 回测池篮子同一份
 │   │   │   │   │                                       #    · 选股表 Picks (带原料带): 子池表各池在原料带每行的成员 → 子池库 / 篮子成员 (shared/Basket.hpp members: 行情篮子 / 回测池篮子)
-│   │   │   │   │                                       #    · 篮子账 perf → Perf (键为权重; factor/Stat/Book.hpp 账集同一核, 标签有效判据 fmeta::lab_ok 与评估装载同一份): Beta → Style 的参数网格回测; all_bar = Style / 行情篮子 / CTA 同一段开场
+│   │   │   │   │                                       #    · 篮子账 perf → Perf (键为权重; factor/Stat/Book.hpp 账集同一核, 标签解码 fmeta::lab_bits / 池基准 pool_mean 与评估装载同一份): Beta → Style 的参数网格回测; all_bar = Style / 行情篮子 / CTA 同一段开场
 │   │   │   │   └── Pool.hpp                            # 🧮 pool::Panel 池日频面板: 本库 A 轴 + 逐日成员 (→ cs_valid) + 轴外
 │   │   │   │                                           #    · 成员沿库树来自上游: all.bar = 当日活跃 (在市 ∧ 行业已知, 含 ST / 次新 / 北交所);
 │   │   │   │                                           #      子池 Bar = all.bar 选股表 (D 之前的调仓行选出); Lob = 同池 Bar 库当日 cs_valid (Lob 轴 ⊆ 同池 Bar 轴)
@@ -200,10 +201,10 @@ stk/
 │   │   │   │   │                                       #    · Store = 线程池 ex + 库 lr + 宿主平面 LRU (misc::Lru, 钉着的不逐) + 常驻执行环境 ExecSpace (CPU/GPU 内存与显存统一预算) + 计算权租约 Lease
 │   │   │   │   │                                       #    · 作业层 = 规格 Need × 块消费者: Need → open_job (唯一的作业入口; 预算 = 每格三项 + 线性字节式 Bytes 按评估域形状现乘) → Job;
 │   │   │   │   │                                       #      run_job = 唯一的块循环 (init → { want → 装载 → block } → finish); 块消费者两种对仗: ForestPass (Engine) ⇄ BasketPass (Ledger)
-│   │   │   │   ├── Ledger.hpp                          # 🖥️ 净值与账核: 逐行批量 → RowLines (块内暂存逐块经 Stat Realize 折进期线; 实现行 = Hold::exit / 建仓行) → LedgerLines; 账 Ledger = 收益线 + 流水 TurnFlow 各字段线 (成本按 Fee::parts 现乘) + 画像 (篮子 / 个股)
-│   │   │   │   │                                       #    · 收益与换手同一核 (Stat/Book.hpp book_rows): 因子组合 = 顶端整组 (FactorBooks); 池篮子 = 持仓权 Weigh (BasketTable::each 枚举) + 个股 = 自身 (BasketBooks); 池均 = MaskBook; 篮子作业 eval_baskets = basket_need → run_job(BasketPass; 标签取原料带 Strip, 与 Beta 选池账同一份) → Baskets
-│   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层 (双层对仗): 趟级 init ⇄ finish (常驻 bytes) × 块级 open → row → close (暂存 scratch; Ctx = 块上标签 + 逐根评估口径 Mode; 探针组即 Stat 行 sink); 落地三形 RowsP / LandCellsP / LinesP (RowLines); EvalProbes → EvalStat; 全期 / 分年同一 finish (逐日 Sum ⇄ 逐日流水之和)
-│   │   │   │   │                                       #    · 通用五探针 HoldP (三级 + 逐日 (含组和) + 滚动窗) / TurnP (账集流水 TurnStat) / CoverP / AlphaP / IcPdfP; 分年只在 fill_eval 由两份逐日汇成
+│   │   │   │   ├── Ledger.hpp                          # 🖥️ 净值与账核: 逐行批量 → Lines (经 Stat Realize 直落期线, 按日切线程无竞争; 实现行 = Hold::exit / 建仓行) → LedgerLines; 账 Ledger = 收益线 + 流水 TurnFlow 各字段线 (成本按 Fee::parts 现乘) + 画像 (篮子 / 个股)
+│   │   │   │   │                                       #    · 收益与换手同一核 (Stat/Book.hpp book_rows): 因子组合 = 顶端整组 (FactorBooks); 池篮子 = 持仓权 Weigh (BasketTable::each 枚举) + 个股 = 自身 (BasketBooks); 池均线 = 标签的池基准 mk 直接记日; 篮子作业 eval_baskets = basket_need → run_job(BasketPass; 标签取原料带 Strip, 与 Beta 选池账同一份) → Baskets
+│   │   │   │   ├── Probe.hpp                           # 🖥️ 探针层 (双层对仗): 趟级 init ⇄ finish (常驻 bytes) × 块级 open → row → close (暂存 scratch; Ctx = 块上标签 + 逐根评估口径 Mode; 探针组即 Stat 行 sink); 落地两形 LandCellsP / LinesP (Lines 直落); EvalProbes → EvalStat; 全期 / 分年同一 finish (逐日 Sum ⇄ 逐日流水之和)
+│   │   │   │   │                                       #    · 通用五探针 HoldP (三级 + 逐日 (含组和) + 滚动窗) / TurnP (账集流水 TurnStat = BookP 逐日形; 逐行形 FlowP = 组合账线) / CoverP / AlphaP / IcPdfP; 分年只在 fill_eval 由两份逐日汇成
 │   │   │   │   │                                       #    · 分层 / 尾部 / LS 日净值线 NavP: 全部持有期 (Inspect) 或只一个持有期的超额线 (Agent eval_factor)
 │   │   │   │   ├── Engine.hpp                          # 🖥️ 评估引擎: Forest (LeafId 一步到位, 因子根 + 纯表达式根) × Backend<Cpu | Gpu> (设备侧按块驻留 Y/X 复用)
 │   │   │   │   │                                       #    · 森林作业与篮子作业逐件对仗: forest_need ⇄ basket_need / ForestPass ⇄ BasketPass / eval_forest ⇄ eval_baskets; 块内唯一评估 eval_block;
@@ -368,15 +369,15 @@ stk/
 │   │   │   ├── {TS,CS}/                                # 🧬 时序 / 截面算子三后端 (同名 struct, 缺一编译错): Stream.hpp 实盘流式 / Cpu.hpp 挖掘批算 / Gpu.cuh CUDA
 │   │   │   ├── Stat/                                   # 🧬 因子评估器 (无流式后端): 因子 + 标签 → 三级出口 Row[H][T] (IC / 分组 / 尾部 / 多空) · 逐日 Sum[H][D] (唯一累加) · HoldStat
 │   │   │   │   │                                       #    一条链每环一头: rank (Contract) → pos (Pos) → row (Host / Dev 行核) ⇄ book (Book) → fold (Fold) → roll (Roll); 持有期几何与协议表在 define/Label.hpp
-│   │   │   │   ├── Contract.hpp                        # 🧬 语义契约: 视图 / r16 / Row / 尾部 (嵌套层级); 只做多账本, 方向 = 评估参数 (权重 sign), 在 r16 源头一次定向; 评估口径 Mode (口径 × 方向 × 收益口径 = 因子 type) 逐根给, 与标签 Labels 分开; 收益口径在行收尾一次定; 两后端流程同参序 (x, g, Mode, Span, …)
-│   │   │   │   ├── Pos.hpp                             # 🧬 仓位感知唯一核: 交接链 Chain + walk (成员层级一次回走 → 真持有 held ⇄ 续持 cont) + 一格唯一出口 cell + 判据族 InRank / InMask / InBit / InInd
+│   │   │   │   ├── Contract.hpp                        # 🧬 语义契约: 视图 / r16 / Row / 尾部 (嵌套层级); 只做多账本, 方向 = 评估参数 (权重 sign), 在 r16 源头一次定向; 评估口径 Mode (口径 × 方向 × 收益口径 = 因子 type) 逐根给, 与标签 Labels (含共用 eo) 分开; Row 恒绝对, 收益口径只在折进 Sum / 逐行读法 (唯一换算式 ret_as) 选; 两后端流程同参序 (x, g, Mode, Span, …)
+│   │   │   │   ├── Pos.hpp                             # 🧬 仓位感知唯一核: 交接链 Chain + walk (成员层级一次回走 → 真持有 held ⇄ 续持 cont) + 一格唯一出口 cell + 判据族 InRank / InMask / InBit / InInd; 池基准 (超额基准) = 池内全部有标签的格各自做多的等权批收益
 │   │   │   │   ├── Book.hpp                            # 🧬 账集唯一核 (宿主): 账集 = size / cap / each (本 = 判据 × 层级 × 目标权 × 满仓) → book_rows (本批 ⇄ 前一批格位 → turn_row) → 收益 + 流水 TurnFlow (整批平仓按平仓价点: E 付平仓行卖出冲击, 撮合价 0)
-│   │   │   │   │                                       #    · Flow = 两侧量 / 不可成交量 (各金额段同一份) + 各盘口段冲击, 成本按金额段与 Fee 现乘; 整批平仓恒在撮合价 (盘口冲击 0)
-│   │   │   │   │                                       #    · 账集 FactorBooks (两端 × 层级) / MaskBook (池均); 篮子 / 个股 (Ledger.cpp) / Beta 选池 (PoolSelect.cpp) 各写一个账集; 派生 每期成本 / 净多空 / 年换手
+│   │   │   │   │                                       #    · Flow = 两侧量 / 不可成交量 (各口径段同一份) + 各盘口段冲击 (已实现: ÷ h̄, 记建仓日), 成本按口径段与 Fee 现乘; 整批平仓恒在撮合价 (盘口冲击 0)
+│   │   │   │   │                                       #    · 账集 FactorBooks (两端 × 层级; 与 Row 端组 / 尾部对拍) + 池基准 pool_mean; 篮子 / 个股 (Ledger.cpp) / Beta 选池 (PoolSelect.cpp) 各写一个账集; 派生 每期成本 / 净多空 / 年换手
 │   │   │   │   ├── Fold.hpp                            # 🧬 唯一累加单元 Sum (Row 的可合并和, 逐建仓日一份; 任一日段 merge / 前缀差) → stat_of → HoldStat + 净值记日 Realize (协议表 2【净值】【记日】唯一实现: 日净值 LS / 账线 / 选池账同一份); 主机 / 设备两用
 │   │   │   │   ├── Roll.hpp                            # 🧬 滚动窗目标 (逐日 Sum 的派生): 固定 h 下滚动窗 (评估期 / 10) 窗 mono (窗内组和的分层单调) 的中位 = Search 打分 / 因子表 score; 方向 = 它的号, 按方向直接求 (roll_of sign)
 │   │   │   │   ├── Host.hpp / Dev.cuh                  # 🧬 行核宿主版 / 设备版 (同名同参序)
-│   │   │   │   └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU / GPU 后端 (单候选逐行并行 / 批逐候选并行同一会话) + 对拍
+│   │   │   │   └── Cpu.hpp / Gpu.cuh / Check.hpp       # 🧬 CPU / GPU 后端 (GPU 唯一累加核: 一 warp 一 (候选, 整日段, 持有期); 单候选按日撒满 / 批同块共标签行) + 对拍 (含 账集 ↔ 行核)
 │   │   │   └── Search/                                 # 🧬 参数搜索 (评估走 Stat 的批: 只出逐日 Sum, 不落 Row)
 │   │   │       ├── Config.hpp                          # 🧬 编译期常量: 可搜持有期 kSearchHolds / 采样点数
 │   │   │       └── Space.hpp                           # 🧬 参数空间: 可搜槽 → 单调坐标 + 区间 → 低差异采样
@@ -390,7 +391,7 @@ stk/
 │   │   │   ├── Engine.hpp                              # 📈 执行: 源 (Hold 买入持有 / Laddered 完整分层; 中线 mid_of) → 唯一一条逐根链 drive (日 × 根: 源 → 成交 → 汇 = 收 Fill 的可调用) → 损益列 Run; 五项成本 Costs
 │   │   │   ├── Tune.hpp                                # 📈 调参目标 (打分一律跑日线; 一个配置一份记录, 根段 → 分, NaN = 不可打分): 减仓 = 少穿线 (只看中线, 逐根前缀 Terms: −穿线次数) /
 │   │   │   │                                           #    跟随 = 每笔中位夏普 (Laddered 定参完整分层录逐笔); 参数网格 Grid + 岭回归曲面 (细格预铺)
-│   │   │   ├── Metrics.hpp                             # 📈 指标: 收益统计 / 仓位换手 / 年成本分项; 一本账 Book (分层净值: 净 → 逐项叠回成本 → 毛)
+│   │   │   ├── Metrics.hpp                             # 📈 指标: 收益统计 (日内各根复利成逐日, define/Annual.hpp Daily / Path) / 仓位换手 / 年成本分项; 一本账 Book (分层净值: 净 → 逐项叠回成本 → 毛)
 │   │   │   └── Trace.hpp                               # 📈 设定 Spec (band / 减仓 / 跟随 各一 Pick) + 滚动调参全期轨迹: 格点并行打分 → 减仓 / 跟随各一 Tuner 逐日选参 (以此前窗口拟曲面取连续最高点 → 5 日阻尼) → 两条变参线 + 分层一遍跑出 Cuts 与策略账 ↔ 买入持有账
 │   │   ├── math/                                       # 📐 数学工具
 │   │   │   ├── Step.hpp                                # 📐 变换步元数据 / 定义 (编译期注册)

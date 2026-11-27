@@ -40,6 +40,22 @@ inline bool is_nan_sentinel(_Float16 x) { return std::bit_cast<uint16_t>(x) == k
 inline bool keep(float gate, L2::ValidType vt, _Float16 x) { return valid(gate, vt) && finite(x); }
 // 标签格可进账 (评估装载 / 原料带同一判据): 门控 (当日有成交 ∧ 截面内) 过 ∧ 做多收益有限 ∧ (偏移型 nom) 名义收益有限
 inline bool lab_ok(bool gate, _Float16 lv, _Float16 nv, bool nom) { return gate && finite(lv) && (!nom || finite(nv)); }
+// 一格标签的解码 (评估装载 / 原料带同一份): 可进账 → 做多 / 名义 (只 nom) 的 f16 位 + 有效位; 否则全 0
+struct LabBits {
+  uint16_t lv = 0, nv = 0;
+  uint8_t m = 0;
+};
+inline LabBits lab_bits(bool gate, _Float16 lv, _Float16 nv, bool nom) {
+  if (!lab_ok(gate, lv, nv, nom))
+    return {};
+  return {std::bit_cast<uint16_t>(lv), nom ? std::bit_cast<uint16_t>(nv) : uint16_t{0}, 1};
+}
+// 建仓可成交码 lb_entry_ok (kEoBuy | kEoSell): 门控外 / 非有限 = 0
+inline uint8_t entry_code(bool gate, _Float16 x) {
+  const float c = gate && finite(x) ? static_cast<float>(x) : 0.f;
+  assert((c == 0.f || c == 1.f || c == 2.f || c == 3.f) && "lb_entry_ok 须是 kEoBuy | kEoSell");
+  return static_cast<uint8_t>(c);
+}
 
 // 消费端列描述 (流式分析 / 平面 IO 唯一一份): 值列 + 各自门控语义. 任一值列需门控才带同层 ts_valid (读列表末位);
 // 上下文列 (mcap / ind / lim 等) 就是 vt = ALL 的普通值列

@@ -113,18 +113,18 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
     const int n_stat = cv.t_hi - cv.t_lo;
     for (int r = 0; r < n_stat; ++r) {
       const int u = cv.u0 + r;
-      all.add(cv.rows[static_cast<size_t>(r)]);
+      all.add(cv.rows[static_cast<size_t>(r)], st::Ret::Excess);
       if (split == "tod" && seg > 1)
-        by_tod[static_cast<size_t>(pr[static_cast<size_t>(u % seg)])].add(cv.rows[static_cast<size_t>(r)]);
+        by_tod[static_cast<size_t>(pr[static_cast<size_t>(u % seg)])].add(cv.rows[static_cast<size_t>(r)], st::Ret::Excess);
       else if (split == "month")
-        by_month[cv.dates[static_cast<size_t>(u / seg)] / 100].add(cv.rows[static_cast<size_t>(r)]);
+        by_month[cv.dates[static_cast<size_t>(u / seg)] / 100].add(cv.rows[static_cast<size_t>(r)], st::Ret::Excess);
     }
     if (cond.empty() || !cv.feat_pl[0])
       return;
     const int A = cv.blk.y.sh.A;
     const int rstep = row_step(static_cast<int>(static_cast<size_t>(cv.w_rows()) * static_cast<size_t>(A) / kCsCells), seg);
     const factor::check::Plane *cp = cv.feat_pl[0];
-    const Engine::LabPlane &lb = *cv.blk.y.labels[0];
+    const Engine::LabelPlanes &lb = *cv.blk.y.labels[0];
     const uint16_t *lv = lb.lv.data();
     const int nt = F.S.ex.threads();
     std::vector<std::array<st::Sum, 4>> tb(static_cast<size_t>(nt));
@@ -153,7 +153,7 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
             float hr = 0.f;
             const bool h = held_cell(cv.cells[static_cast<size_t>(r)], a, hr);
             cval.push_back(cp->v[k]), fxv.push_back(rank_of_r16(cv.rx[k])), ey.push_back(static_cast<double>(h2f(lv[k])) - mkt);
-            hy.push_back(h ? static_cast<double>(hr) - mkt : 0.0), buy.push_back(h ? 1 : 0);
+            hy.push_back(h ? static_cast<double>(hr) : 0.0), buy.push_back(h ? 1 : 0);
           }
         }
         const size_t n = cval.size();
@@ -167,11 +167,11 @@ ToolOut ViewLayers(const Call &c, Bay &bay) {
           const size_t j = std::min<size_t>(2, static_cast<size_t>(rc_v[i] * 3.0 / static_cast<double>(n)));
           px[j].push_back(fxv[i]), py[j].push_back(ey[i]), ph[j].push_back(hy[i]), pb[j].push_back(buy[i]);
         }
-        if (rs.approx_ranked(rf_v, hy, ry_v, buy, w))
-          tb[ut][0].add(w);
+        if (rs.approx_ranked(rf_v, hy, ry_v, buy, mkt, w))
+          tb[ut][0].add(w, st::Ret::Excess);
         for (size_t j = 0; j < 3; ++j)
-          if (rs.approx_row(px[j], py[j], ph[j], pb[j], w))
-            tb[ut][j + 1].add(w);
+          if (rs.approx_row(px[j], py[j], ph[j], pb[j], mkt, w))
+            tb[ut][j + 1].add(w, st::Ret::Excess);
       }
     });
     for (int tid = 0; tid < nt; ++tid) {

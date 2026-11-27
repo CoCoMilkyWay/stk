@@ -13,6 +13,7 @@
 //     层级 j 真持有 ⟺ 链上 (本批起至首个可买价点) 各批层级 ≥ j ⟺ walk 出的 held ≥ j; 续持同理 (cont ≥ j). 嵌套集合一次回走同出各级.
 //   一格的唯一出口 cell: 标签有效 → walk → 两腿 {lv, nv}; 判据族 (全仓只此几种): InRank 因子组 (端组再按尾深分层) / InMask 成员位平面 /
 //     InBit 位集含某位 / InInd 母集内某行业
+//   池基准 pool_mean (与因子无关, 装载 / 原料带 / 造数同一份): 池内全部有标签的格各自做多 (InMask), 逐行等权 = 池均线的批收益 mk + 满仓 cap
 // =============================================================================
 
 #include "factor/Stat/Contract.hpp"
@@ -73,12 +74,12 @@ FACTOR_HD inline float hold_ret(bool cont, uint8_t eo_next, const float *y) { re
 // 层级 j 上的收益
 FACTOR_HD inline float ret_at(const Pos &p, int j, const float *y) { return hold_ret(p.cont >= j, p.eo_next, y); }
 
-// 一格的唯一出口: lb 已偏到 c 的行首, a = 本行格, in 已偏到本格; 标签无效 → 未持有; 真持有才取两腿 y = {lv, nv}
+// 一格的唯一出口: lb / eo 已偏到 c 的行首, a = 本行格, in 已偏到本格; 标签无效 → 未持有; 真持有才取两腿 y = {lv, nv}
 template <class In, class H2F>
-FACTOR_HD inline Pos cell(const Chain &c, const Label &lb, ptrdiff_t a, const In &in, const H2F &h2f, float (&y)[2]) {
+FACTOR_HD inline Pos cell(const Chain &c, const Label &lb, const uint8_t *eo, ptrdiff_t a, const In &in, const H2F &h2f, float (&y)[2]) {
   if (!lb.m[a])
     return {};
-  const Pos p = walk(c, lb.m + a, lb.eo + a, in);
+  const Pos p = walk(c, lb.m + a, eo + a, in);
   if (p.held >= 0)
     label_cell(lb, a, h2f, y);
   return p;

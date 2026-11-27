@@ -119,7 +119,7 @@ ToolOut ViewStockDay(const Call &c, Bay &bay) {
         assert(col_a < static_cast<size_t>(cv.blk.y.sh.A));
         const int a = static_cast<int>(col_a), A = cv.blk.y.sh.A, t0 = cv.t_lo + (u0 - cv.u0);
         const Px px(cv.blk, cv.bm, cfg.bars, env.open);
-        const Engine::LabPlane &lb = *cv.blk.y.labels[0];
+        const Engine::LabelPlanes &lb = *cv.blk.y.labels[0];
         const uint16_t *lv = lb.lv.data();
         const size_t S = static_cast<size_t>(seg);
         R.close.assign(S, kNaN), R.high.assign(S, kNaN), R.low.assign(S, kNaN), R.vol.assign(S, kNaN), R.amt.assign(S, kNaN), R.ex.assign(S, kNaN), R.rank.assign(S, kNaN);

@@ -50,7 +50,7 @@ struct OperatorsRequest {
 // 评估算子 Stat / Search (factor/Stat, factor/Search; 不在 OpTable, 前两行) 各自一个手写跑手, worker 一视同仁.
 // 字段名 = JSON 键 = UI 表头 (全库统一叫法); 唯一例外: operator 是 C++ 保留字, 字段退而叫 op
 // 对拍统一两格, 各挂在自己的时间列上:
-//   cpu_chk = cpu 对该行的 golden: OpTable 行 = stream (实盘路径); Search = Stat CPU 参考 (+ 分块 ≡ 整块); Stat 的 cpu 即 golden → 空 (恒 ok)
+//   cpu_chk = cpu 对该行的 golden: OpTable 行 = stream (实盘路径); Search = Stat CPU 参考 (+ 分块 ≡ 整块); Stat 的 cpu 即 golden, cpu_chk = 账集 ↔ 行核 (compare_book)
 //   gpu_chk = gpu 对 cpu (Search 另加 分块 ≡ 整块); gpu_ms < 0 (无后端) 时无意义
 // 没有的后端耗时 = -1 (stream: 评估算子无; gpu: 没编 / 没卡); classified = false → T / A / Kernel / out 列空着.
 struct OperatorRow {

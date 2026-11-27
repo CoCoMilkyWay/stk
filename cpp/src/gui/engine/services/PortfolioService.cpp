@@ -176,28 +176,7 @@ std::string PortfolioRequest::sig() const {
 
 namespace {
 
-// 因子组合账 = 顶端整组那一本 (Stat/Book.hpp 因子账集, 与 Run 换手同一核): 收益 (平仓行) + 流水各列 (建仓行) 逐行落地
-struct FlowP : LinesP {
-  static constexpr uint8_t need = kNeedRx;
-  static constexpr Segs segs = Segs::Spec;
-  static constexpr Bytes bytes(int H) { return {.row = static_cast<double>(sizeof(float)) * kLedgerCols * H}; }
-  static constexpr Bytes scratch(int H) { return {.row = static_cast<double>(sizeof(float)) * kLedgerCols * H}; }
-  void init(const PassCtx &p) {
-    lines(p, p.hd.n * kLedgerCols, 1, [&](int i) { return p.hd.k[i / kLedgerCols]; }, [](int i) { return i % kLedgerCols == kLedgerRet; });
-  }
-  void close(const Ctx &c, const RootView &v) {
-    namespace st = factor::stat;
-    const st::Span s = c.s();
-    constexpr int kOwn = st::kTop * st::kLevels; // 顶端整组
-    for (int hi = 0; hi < c.L.hd.n; ++hi)
-      st::book_rows(c.ex, s, hold_on(c.L.hd.k[hi], s.g), c.L.l[hi], st::FactorBooks{v.rx, s.A, c.L.l[hi].cap}, cost_of(c.c.y), [&](int, int t, const double *ret, const TurnFlow *flow) {
-        at(hi * kLedgerCols + kLedgerRet, t) = static_cast<float>(ret[kOwn]);
-        for (int k = kLedgerBuy; k < kLedgerCols; ++k)
-          at(hi * kLedgerCols + k, t) = ledger_cell(flow[kOwn], k);
-      });
-    LinesP::close(c, v);
-  }
-};
+// 因子组合账 = 顶端整组那一本 (Probe.hpp FlowP: 与 Run 换手同一核 BookP 的逐行形): 收益 (平仓行) + 流水各字段 (建仓行)
 using PortfolioProbes = Probes<FlowP>;
 
 constexpr double kKeepBytes = static_cast<double>(size_t{1} << 30);
@@ -232,9 +211,11 @@ Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
       b->amt = t.scope.cost.amt;
       b->keys = {0};
       const Amts &ad = o.job.spec.y.ad;
-      for (int c = 0; c < kLedgerCols; ++c)
-        if (c < kLedgerImp || ad.has(static_cast<AmtId>(1 + (c - kLedgerImp) / 2)))
-          b->col[c] = ps[static_cast<size_t>(k)].at<FlowP>().out.slice(hi * kLedgerCols + c, 1);
+      const LedgerLines &ln = ps[static_cast<size_t>(k)].at<FlowP>().out;
+      b->ret = ln.slice(FlowP::line(hi, 0, 0), 1);
+      for (int f = 0; f < kFlowFields; ++f)
+        if (!flow_priced(f) || ad.has(amt_of(flow_lob(f))))
+          b->flow[f] = ln.slice(FlowP::line(hi, 0, 1 + f), 1);
     }
     if (on_book)
       on_book(static_cast<size_t>(e), std::move(b));

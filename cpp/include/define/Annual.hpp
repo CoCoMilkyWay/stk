@@ -1,7 +1,8 @@
 #pragma once
 
-// 年化口径 (全仓唯一一份: 一年 = kDaysPerYear 个交易日; 因子评估 / 组合 / 行情 / Beta 选池 / Agent 同用)
-//   逐日收益序列一律走 Daily (可合并 / 前缀相减即窗): 复利年化 ann = expm1(Σ ln(1 + r) / 日数 × 每年交易日), Sharpe = mean / sd (ddof = 1) × √每年交易日;
+// 年化口径 (全仓唯一一份: 一年 = kDaysPerYear 个交易日; 因子评估 / 组合 / 行情 / Beta 选池 / CTA / Agent 同用)
+//   逐日收益序列一律走 Daily (可合并 / 前缀相减即窗): 复利年化 ann = expm1(Σ ln(1 + r) / 日数 × 每年交易日), Sharpe = mean / sd (ddof = 1) × √每年交易日,
+//   Sortino = mean / 下行波动 √E[min(r, 0)²] × √每年交易日;
 //   一条逐日序列 = Path (前缀 Daily + 净值 / 回撤): 任意窗 = 两前缀之差 (Stat 滚动窗 / Beta 选池滚动窗同一份)
 #include <algorithm>
 #include <cassert>
@@ -26,20 +27,23 @@ inline double ann_log(double log_sum, double days) {
 // 净值几何年化: 净值 nav (起点 1) 历经 days 个交易日; nav ≤ 0 (亏光) → −1
 inline double ann_geo(double nav, double days) { return nav > 0.0 ? ann_log(std::log(nav), days) : -1.0; }
 
-// 逐日收益序列的可合并和: 日数 / Σr / Σr² / Σ ln(1 + r) (r ≤ −1 = 爆仓 → −∞); 前缀 b − 前缀 a = 窗 [a, b)
+// 逐日收益序列的可合并和: 日数 / Σr / Σr² / Σmin(r, 0)² / Σ ln(1 + r) (r ≤ −1 = 爆仓 → −∞); 前缀 b − 前缀 a = 窗 [a, b)
 struct Daily {
-  double n = 0.0, s1 = 0.0, s2 = 0.0, lg = 0.0;
+  double n = 0.0, s1 = 0.0, s2 = 0.0, dn = 0.0, lg = 0.0;
   void add(double r) {
-    n += 1.0, s1 += r, s2 += r * r;
+    n += 1.0, s1 += r, s2 += r * r, dn += r < 0.0 ? r * r : 0.0;
     lg += r > -1.0 ? std::log1p(r) : -std::numeric_limits<double>::infinity();
   }
-  void merge(const Daily &o) { n += o.n, s1 += o.s1, s2 += o.s2, lg += o.lg; }
-  Daily operator-(const Daily &a) const { return {n - a.n, s1 - a.s1, s2 - a.s2, lg - a.lg}; }
+  void merge(const Daily &o) { n += o.n, s1 += o.s1, s2 += o.s2, dn += o.dn, lg += o.lg; }
+  Daily operator-(const Daily &a) const { return {n - a.n, s1 - a.s1, s2 - a.s2, dn - a.dn, lg - a.lg}; }
   double mean() const { return n > 0.0 ? s1 / n : 0.0; }
   double sd() const { return n >= 2.0 ? std::sqrt(std::fmax(s2 - s1 * s1 / n, 0.0) / (n - 1.0)) : 0.0; }
-  double log_ann() const { return n > 0.0 ? lg / n * kDaysPerYear : 0.0; } // 对数年化 (跨窗平均 / 取中位在对数空间)
-  double ann() const { return n > 0.0 ? ann_log(lg, n) : 0.0; }            // 复利年化
+  double down() const { return n > 0.0 ? std::sqrt(dn / n) : 0.0; }                  // 下行波动 √E[min(r, 0)²]
+  double vol() const { return sd() * std::sqrt(static_cast<double>(kDaysPerYear)); } // 年化波动
+  double log_ann() const { return n > 0.0 ? lg / n * kDaysPerYear : 0.0; }           // 对数年化 (跨窗平均 / 取中位在对数空间)
+  double ann() const { return n > 0.0 ? ann_log(lg, n) : 0.0; }                      // 复利年化
   double sharpe() const { return ann_ir(mean(), sd()); }
+  double sortino() const { return ann_ir(mean(), down()); }
 };
 
 // 逐日收益序列: pre[i] = 前 i 日的 Daily (pre[0] 空), 窗 [a, b) = win(a, b); 净值 / 历史峰 / 最大回撤 (≥ 0; 峰自基日 = 1 起) 随 add 推进

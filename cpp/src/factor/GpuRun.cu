@@ -403,25 +403,28 @@ struct DevLabels {
     factor::stat::assert_holds(hd, seg);
     H = hd.n, L.hd = hd;
     eo.alloc(n);
+    L.eo = eo.p;
     for (int i = 0; i < H; ++i) {
       lv[i].alloc(n), m[i].alloc(n), ry[i].alloc(n), mk[i].alloc(static_cast<size_t>(T)), cap[i].alloc(static_cast<size_t>(T));
       if (hold_offset(hd.k[i]))
         nv[i].alloc(n);
-      L.l[i] = {lv[i].p, nv[i].p, m[i].p, eo.p, ry[i].p, mk[i].p, cap[i].p};
+      L.l[i] = {lv[i].p, nv[i].p, m[i].p, ry[i].p, mk[i].p, cap[i].p};
     }
   }
-  // 宿主标签 (与 alloc 的持有期同序) 拷入 + ry 预处理 (纯 kernel 计时)
-  double load(const factor::stat::Label *host, const factor::stat::Span &s, Timer &tm) {
+  // 宿主标签 (与 alloc 同持有期) 拷入 + ry 预处理 (纯 kernel 计时)
+  double load(const factor::stat::Labels &host, const factor::stat::Span &s, Timer &tm) {
+    assert(host.hd == L.hd && host.eo && "宿主标签与会话的持有期不符 / 缺可成交码");
     for (int i = 0; i < H; ++i)
-      assert(host[i].lv && host[i].m && host[i].mk && host[i].cap && host[i].eo == host[0].eo && (!nv[i].p || host[i].nv) && "宿主标签不全 / 可成交码须是同一张");
-    eo.put(host[0].eo, s.n());
+      assert(host.l[i].lv && host.l[i].m && host.l[i].mk && host.l[i].cap && (!nv[i].p || host.l[i].nv) && "宿主标签不全");
+    eo.put(host.eo, s.n());
     for (int i = 0; i < H; ++i) {
-      lv[i].put(host[i].lv, s.n());
-      m[i].put(host[i].m, s.n());
-      mk[i].put(host[i].mk, static_cast<size_t>(s.T));
-      cap[i].put(host[i].cap, static_cast<size_t>(s.T));
+      const factor::stat::Label &h = host.l[i];
+      lv[i].put(h.lv, s.n());
+      m[i].put(h.m, s.n());
+      mk[i].put(h.mk, static_cast<size_t>(s.T));
+      cap[i].put(h.cap, static_cast<size_t>(s.T));
       if (nv[i].p)
-        nv[i].put(host[i].nv, s.n());
+        nv[i].put(h.nv, s.n());
     }
     tm.begin();
     for (int i = 0; i < H; ++i)
@@ -471,8 +474,8 @@ StatSession *stat_open(const factor::stat::Span &sh, int Cmax, const Holds &hd) 
   return s;
 }
 
-void stat_load(StatSession *s, const factor::stat::Label *lab, double *prep_ms) {
-  assert(s && lab);
+void stat_load(StatSession *s, const factor::stat::Labels &lab, double *prep_ms) {
+  assert(s);
   const double pms = s->lab.load(lab, s->s, s->tm);
   if (prep_ms)
     *prep_ms = pms;
@@ -494,10 +497,7 @@ void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane 
   if (eval_ms)
     ss->tm.begin();
   stat::rank_x(B, g->m, m, s, ss->rx.p, nullptr);
-  if (C == 1)
-    stat::accum_rows(s, ss->rx.p, ss->lab.L, m, ss->w, nullptr);
-  else
-    stat::accum_batch(s, ss->rx.p, C, ss->lab.L, m, ss->w, nullptr);
+  stat::accum(s, ss->rx.p, C, ss->lab.L, m.r, ss->w, rows != nullptr, nullptr);
   if (eval_ms)
     *eval_ms = ss->tm.end();
   const size_t H = static_cast<size_t>(ss->lab.L.hd.n), D = static_cast<size_t>(s.days());
@@ -518,8 +518,8 @@ size_t stat_bytes(const StatSession *s) {
   return s ? s->lab.bytes() + s->rx.bytes() + s->rows.bytes() + s->day.bytes() : 0;
 }
 
-void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, const factor::stat::Mode &m, const factor::stat::Span &s, const Holds &hd,
-              const factor::stat::Label *lab, factor::stat::Sum *day, factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
+void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, const factor::stat::Mode &m, const factor::stat::Span &s,
+              const factor::stat::Labels &lab, factor::stat::Sum *day, factor::stat::Row *rows, double *prep_ms, double *eval_ms) {
   assert(C >= 1 && C <= stat::kMaxBatch && xv && xm && gm);
   const size_t n = s.n();
   std::vector<DevBuf<float>> dv(static_cast<size_t>(C));
@@ -534,7 +534,7 @@ void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uin
   DevBuf<uint8_t> g;
   g.up(gm, n);
   const DevPlane gp{nullptr, g.p};
-  StatSession *ss = stat_open(s, C, hd);
+  StatSession *ss = stat_open(s, C, lab.hd);
   stat_load(ss, lab, prep_ms);
   stat_eval(ss, xpp.data(), C, &gp, m, s, day, rows, nullptr, eval_ms);
   stat_close(ss);

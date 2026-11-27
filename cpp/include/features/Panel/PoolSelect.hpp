@@ -2,7 +2,8 @@
 // 选池引擎: all.bar L_1day 日行 → 原料带 Strip (每进程代一份) → 次序 Order → 逐行成员 (features/Panel/PoolSpec.hpp 的一组参数) → 篮子账 Perf (Style 页) / 选股表 Picks (池表各子池)
 //   行 r = all.bar 第 r 个已落盘日; 行 r 的键 / 资产态 = L_1day 行 r (= r+1 盘前态); 交易日 d 的成员 = 源行 src_of(周期, d) 选出的, 无前视
 //   次序 (选股只看次序) = 风格键升序 (现排, 同风格的池共用); 调优 (Style 页) 与落地 (选股表) 同一条行扫: 调优次序整列留存 (rank), 落地当行即选 (picks)
-//   持仓权 (篮子账 / 行情篮子 / 回测池篮子同一份, Strip::omega): 源行的目标权 (等权 1 / 加权 收盘总市值) 随其后各日收益漂移; 日频 = 目标权
+//   持仓权 (篮子账 / 行情篮子 / 回测池篮子同一份, Strip::omega): 源行的目标权 (等权 1 / 加权 收盘总市值) 随其后各日收益漂移; 日频 = 目标权;
+//     漂移两份各自自洽: 价 (grow, 行情价格指数 / 画像) ⇄ 账 (gain = 账集前一批的续持收益, 账集目标权; 不换源的日无交易)
 //   交易日 d 的收益 = close_d / 前收 − 1 (前收 = 行 d−1 的 pre_close, 已除权; d 无成交 → 0) ⇒ grow = 后复权收盘价, 不看可成交 (与行情侧价格指数同口径)
 #include "define/Csr.hpp"
 #include "factor/Stat/Contract.hpp" // LabelPlanes
@@ -107,6 +108,9 @@ struct Order {
 };
 
 struct Strip;
+// 持仓权的漂移序列: 价 = 收盘价链 grow ⇄ 账 = 标签续持收益链 gain (与 Stat 账集前一批的漂移同式)
+enum class Drift : uint8_t { Price,
+                             Book };
 // 一个风格逐行的次序 (行宽 A)
 struct Orders {
   std::vector<Aid> seq;      // [行 · A]
@@ -128,7 +132,8 @@ struct Strip {
   std::vector<uint8_t> ind;     // [行 · A] 申万一级 (0 = 未知; 在市者已知)
   std::vector<float> mcap;      // [行 · A] 收盘总市值 = close_day × total_shares (缺 → 0)
   std::vector<float> grow;      // [行 · A] 累计增长 Π_{0 < k ≤ 行} (1 + 日收益) (首行 1) = 后复权收盘价 (除权除息日不断)
-  factor::stat::LabelPlanes t1; // 行收盘建仓的 T+1 标签 (与评估端标签平面同一型; 有效位 fmeta::lab_ok, 无效 = 0)
+  std::vector<float> gain;      // [行 · A] 账的累计增长 Π_{0 < k ≤ 行} (1 + 行 k−1 的续持收益) (首行 1; 行 k−1 无标签 → 不变): 账集前一批漂移的同一式
+  factor::stat::LabelPlanes t1; // 行收盘建仓的 T+1 标签 (与评估端标签平面同一型; 解码 fmeta::lab_bits, 池基准 pool_mean)
   std::vector<uint8_t> eo;      // [行 · A] 建仓价点的可成交码 (kEoBuy | kEoSell; 门控外 = 0)
   std::vector<float> pre;       // [A] 末行前收 (续行的收益)
   size_t A() const { return axis.size(); }
@@ -141,8 +146,8 @@ struct Strip {
     const size_t n = A();
     return grow[q * n + a] / grow[r * n + a];
   }
-  // 资产 a 在行 q 收盘的持仓权 = 源行 r 的目标权 (等权 1 / 加权 mcap) × rel(r, q) (r ≤ q; r = q → 目标权)
-  float omega(size_t r, size_t q, size_t a, Weight w) const;
+  // 资产 a 在行 q 收盘的持仓权 = 源行 r 的目标权 (等权 1 / 加权 mcap) × 漂移 d 的 r → q 增长比 (r ≤ q; r = q → 目标权)
+  float omega(size_t r, size_t q, size_t a, Weight w, Drift d) const;
 };
 // all.bar 库 lib 的原料带: 每进程代一份, 已落盘日多出的行增量补 (轴变 / 旧行不再是前缀 → 重建); 取消 / 库判废 → nullptr
 std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel = nullptr, const Tick &tick = {});

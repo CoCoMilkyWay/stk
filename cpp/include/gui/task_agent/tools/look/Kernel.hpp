@@ -169,10 +169,10 @@ struct RankScratch {
     rank_into(x, a), rank_into(y, b);
     return pearson(a, b);
   }
-  // 子截面分层: 格按 rx 的并列均秩 (rank_into, 0 起) 经 Stat 同一式 (r16_of → grp_of) 分 20 组, 组超额只收全截面分组下真持有的格
-  //   (held; hy = 其做多收益 − mkt, 续持取名义值, Stat 仓位感知); 组收益 = Σ hy / max(真持有只数, 子截面满仓 n / 20) (与 Stat【持仓口径】同式);
-  //   ric 用全部格 (同 Row)
-  bool approx_ranked(std::span<const double> rx, std::span<const double> hy, std::span<const double> ry, std::span<const uint8_t> held, st::Row &w) const {
+  // 子截面分层: 格按 rx 的并列均秩 (rank_into, 0 起) 经 Stat 同一式 (r16_of → grp_of) 分 20 组, 组收益只收全截面分组下真持有的格
+  //   (held; hy = 其做多收益, 续持取名义值, Stat 仓位感知); 组收益 = Σ hy / max(真持有只数, 子截面满仓 n / 20) (与 Stat【持仓口径】同式, 绝对;
+  //   池基准 mkt / 满仓照录, 超额由 Sum::add 按契约 ret_as 读); ric 用全部格 (同 Row)
+  bool approx_ranked(std::span<const double> rx, std::span<const double> hy, std::span<const double> ry, std::span<const uint8_t> held, double mkt, st::Row &w) const {
     const size_t n = rx.size();
     assert(hy.size() == n && ry.size() == n && held.size() == n);
     if (n < static_cast<size_t>(kMinCs))
@@ -187,16 +187,17 @@ struct RankScratch {
     const double cap = static_cast<double>(n) / kGroups;
     for (int k = 0; k < kGroups; ++k)
       w.grp[k] = static_cast<float>(s[k] / st::book_den(w.cnt[k], cap));
+    w.mkt = static_cast<float>(mkt), w.cap = static_cast<float>(cap);
     w.ric = static_cast<float>(pearson(rx, ry));
     w.ok = 1;
     return true;
   }
-  // y = 做多标签超额 (只定 ric 的秩), hy / held 同 approx_ranked
-  bool approx_row(std::span<const double> x, std::span<const double> y, std::span<const double> hy, std::span<const uint8_t> held, st::Row &w) {
+  // y = 做多标签超额 (只定 ric 的秩), hy / held / mkt 同 approx_ranked
+  bool approx_row(std::span<const double> x, std::span<const double> y, std::span<const double> hy, std::span<const uint8_t> held, double mkt, st::Row &w) {
     if (x.size() < static_cast<size_t>(kMinCs))
       return false;
     rank_into(x, a), rank_into(y, b);
-    return approx_ranked(a, hy, b, held, w);
+    return approx_ranked(a, hy, b, held, mkt, w);
   }
 };
 
@@ -383,7 +384,7 @@ struct Px {
   } b[kBarCount];
   int A = 0, seg = 1, open = 0;
 
-  Px(const Engine::Block &blk, const BarMeta &bm, uint8_t mask, int open_) : A(blk.y.sh.A), seg(blk.y.sh.seg), open(open_) {
+  Px(const Engine::Block &blk, const BarMeta &bm, uint8_t mask, int open_) : A(blk.y.sh.A), seg(blk.y.sh.g.S), open(open_) {
     for (uint8_t i = 0; i < kBarCount; ++i)
       if ((mask & (1u << i)) && bm.col[i].id != Engine::kNoCol)
         if (const Engine::Leaf *lf = blk.x.find(bm.col[i].id))
@@ -777,7 +778,7 @@ inline std::string expr_line(size_t i, const FeatSpec &f, const char *miss = "�
 
 // 块内逐格超额对数步长 (F.S.ex 全核并行; view_response / view_explain)
 inline std::vector<float> block_excess_steps(misc::exec::ForkJoin &ex, const Engine::Block &blk, const Px &px, int u_blk0) {
-  const int T = blk.y.sh.T, A = blk.y.sh.A, seg = blk.y.sh.seg;
+  const int T = blk.y.sh.T, A = blk.y.sh.A, seg = blk.y.sh.g.S;
   std::vector<float> e(static_cast<size_t>(T) * static_cast<size_t>(A));
   ex.rows(T, [&](int t0, int t1, int) {
     std::vector<double> stp(static_cast<size_t>(A));

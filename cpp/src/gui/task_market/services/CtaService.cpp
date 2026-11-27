@@ -1,6 +1,5 @@
 #include "gui/task_market/services/CtaService.hpp"
 
-#include "define/Annual.hpp"
 #include "misc/date.hpp"
 
 #include <algorithm>
@@ -72,8 +71,7 @@ bool CtaService::run(CtaRequest &req) {
   auto out = std::make_shared<CtaResult>();
   out->dates = spine;
   out->se = se;
-  const double bpy = static_cast<double>(kDaysPerYear) * static_cast<double>(S); // 每年根数 (一年 kDaysPerYear 个交易日, define/Annual.hpp)
-  cta::Col hi(nd, cta::kNaN), lo(nd, cta::kNaN);                                 // 估值线 [日]: 日 d 盘中用前一个有根的日收盘时的 (收盘 × 倍数), 不看当日
+  cta::Col hi(nd, cta::kNaN), lo(nd, cta::kNaN); // 估值线 [日]: 日 d 盘中用前一个有根的日收盘时的 (收盘 × 倍数), 不看当日
   if (req.up && req.dn) {
     assert(req.up->size() == spine.size() && req.dn->size() == spine.size() && "估值线 [日脊]");
     const size_t d0 = se->t.front() / S;
@@ -88,7 +86,7 @@ bool CtaService::run(CtaRequest &req) {
   }
   begin(Phase::Running, nd - 1);
   std::optional<cta::Track> tr = cta::trace(
-      *se, S, sp, req.rates, bpy, hi, lo, pool_, [&] { return cancel_.load(std::memory_order_relaxed); }, [&] { Progress::publish(1); });
+      *se, S, sp, req.rates, hi, lo, pool_, [&] { return cancel_.load(std::memory_order_relaxed); }, [&] { Progress::publish(1); });
   if (!tr)
     return false;
   out->tr = std::make_shared<const cta::Track>(std::move(*tr));

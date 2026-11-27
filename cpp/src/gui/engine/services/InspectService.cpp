@@ -222,7 +222,7 @@ Rc InspectFactor(const InspectRequest &req, FactorFlow &F, InspectCache &cache, 
   p.at<IcPdfP>().dst = &cache.pl.ric; // 逐行 rIC 落地 (与小图同一份暂存)
 
   const Hooks hk{.before = [&](const Block &c, size_t, double) {
-    cache.pool.update(c.gen, [&](LedgerLines &b) { b = pool_line(F.S.ex, c); });
+    cache.pool.update(c.gen, [&](LedgerLines &b) { b = pool_line(c); });
     assert(cache.pool.val.P == c.rows_stat() && cache.pool.val.n == c.y.hd.n);
   }};
   const Rc rc = with_backend(F, sc.gpu, [&](auto &eng) { return eval_forest(eng, F, sc, rs, std::span(ps), o, /*whole=*/true, hk); });

@@ -4,9 +4,10 @@
 // Fold — Stat 的二级 / 三级 (契约 factor/Stat/Contract.hpp): 唯一累加单元 Sum → HoldStat + 净值记日 Realize + 派生量
 // =============================================================================
 //   【二级 Sum】一份 Row 的可合并和 (行序累加, 两后端逐位同; 逐统计日一份 = 建仓日 Hold::stat_day): 任一日段 = merge / 前缀相减,
-//     全期 / 分年 / 滚动窗 / 观察分段同一 finish. 头 Head (GPU 批核 lane 0 攒) + 组 grp / cnt (lane q 攒组 q).
+//     全期 / 分年 / 滚动窗 / 观察分段同一 finish. 头 Head (GPU 核 lane 0 攒) + 组 grp / cnt (lane q 攒组 q). 收益口径在折进时定 (add(r, ret), Row 恒绝对).
 //   【净值 Realize】协议表 2【净值】【记日】的唯一实现: 行 u 这一批的量 → 期 (实现行 / stride), 每批资金 1/h̄;
-//     实现行 = 平仓行 Hold::exit (收益, 钱按平仓日) | 建仓行 (成本, 即付). 日净值 LS / 账线 / 选池账 / 净值探针同一份
+//     实现行 = 平仓行 Hold::exit (收益, 钱按平仓日) | 建仓行 (成本, 即付). 日净值 LS / 账线 / 选池账 / 净值探针同一份.
+//     一期只收一个交易日开的批 (同日各开仓行同一平仓日; 跨日平仓日与建仓日一一对应) ⇒ 按日切线程直落期线无竞争
 //   【三级 HoldStat (每 hold)】只用 ok 行 (n) / ok_rac 行 (n_rac); n_all = 攒过的全部行:
 //     ric / rac / ls  逐行量沿 t 的矩 (MomAcc → Moments): mean / sd (ddof=1) / ir / pos / skew / kurt; t = ir · √(n/h) (重叠折算)
 //     每期真实收益 (派生): 不 ok 的行记 0 补满 n_all 行 —— ls_period = Σls / n_all; ann / sharpe = 日净值 LS (Realize) 的复利年化 / Sharpe
@@ -74,7 +75,7 @@ struct MomAcc {
 
 // ---- 三级输出: 每持有期一份 ----
 // 口径戳: 字段不变但口径变时 +1, 落盘 stat 与之不符读取即作废 (下次 Run 重算)
-inline constexpr int kStatSemver = 10;
+inline constexpr int kStatSemver = 11;
 struct HoldStat {
   int seg = 0; // 因子所在层的每段行数 (finish 填; 不落文件, 载入时由因子目录的层给): 年化 / 换手折算用
   HoldId hold = kHoldM1;
@@ -117,18 +118,18 @@ struct Sum {
     MomAcc ric, rac, ls;
     double smk = 0.0, smk2 = 0.0, slm = 0.0, cap = 0.0;          // mkt 幂和 + ls·mkt 交叉 (beta) / 满仓和
     double tail[kEnds][kTails] = {}, tail_n[kEnds][kTails] = {}; // 两端尾部的持仓收益和 / 真持有只数和
-    FACTOR_HD void add(const Row &r) {
+    FACTOR_HD void add(const Row &r, Ret ret) {
       ++rows;
       if (r.ok) {
         ric.add(r.ric);
-        const float v = ls_row(r);
+        const float v = static_cast<float>(ls_row(r, ret));
         const double mk = r.mkt;
         ls.add(v);
         smk += mk, smk2 += mk * mk, slm += static_cast<double>(v) * mk, cap += r.cap;
         n_trig += r.cnt[end_group(kTop)] + r.cnt[end_group(kBot)] > 0;
         for (int e = 0; e < kEnds; ++e)
           for (int j = 0; j < kTails; ++j)
-            tail[e][j] += r.tail[e][j], tail_n[e][j] += r.tail_n[e][j];
+            tail[e][j] += static_cast<float>(tail_as(r, e, j, ret)), tail_n[e][j] += r.tail_n[e][j];
       }
       if (r.ok_rac)
         rac.add(r.rac);
@@ -147,11 +148,12 @@ struct Sum {
   double cnt[kGroups] = {}; // 组真持有只数和 (ok 行)
 
   FACTOR_HD void add_grp(int k, float g, unsigned c) { grp[k] += g, cnt[k] += c; }
-  FACTOR_HD void add(const Row &r) {
-    h.add(r);
+  // 行 r 按收益口径 ret 折进 (组 / 尾部 / 多空经 grp_as / tail_as / ls_row 改读; GPU 核 lane q 同式取组 q)
+  FACTOR_HD void add(const Row &r, Ret ret) {
+    h.add(r, ret);
     if (r.ok)
       for (int k = 0; k < kGroups; ++k)
-        add_grp(k, r.grp[k], r.cnt[k]);
+        add_grp(k, static_cast<float>(grp_as(r, k, ret)), r.cnt[k]);
   }
   FACTOR_HD void merge(const Sum &o) {
     h.merge(o.h);
@@ -245,30 +247,25 @@ inline std::vector<Sum> oriented(std::span<const Sum> d, int sign) {
 }
 
 // ---- 净值记日 (协议表 2【净值】【记日】唯一实现) ----
-// 行 u 这一批的量 x → 期 (实现行 / stride) 累加 x / h̄; 实现行 = 平仓行 Hold::exit (at_exit, 收益) | 建仓行 (成本, 即付); 越过末期的不计.
-//   行可分块交 (fold), 线间可并行, 同线串行
+// 行 u (评估期行) 这一批的量 x → 期 (实现行 / stride) 累加 x / h̄; 实现行 = 平仓行 Hold::exit (exit, 收益) ⇄ 建仓行 (成本, 即付); 越过末期的不计
 struct Realize {
   Hold hd;
   double span = 1.0; // h̄
   int stride = 1, T = 0;
-  bool at_exit = true;
   Realize() = default;
-  Realize(HoldId h, int seg, int stride_, int T_, bool at_exit_ = true)
-      : hd(hold_on(h, geo_of(seg))), span(hd.span()), stride(stride_), T(T_), at_exit(at_exit_) {
+  Realize(HoldId h, int seg, int stride_, int T_) : hd(hold_on(h, geo_of(seg))), span(hd.span()), stride(stride_), T(T_) {
     assert(stride >= 1 && T % stride == 0 && T % seg == 0);
   }
   int periods() const { return T / stride; }
   // 行 u 的实现期 (越过末期 → −1)
-  int period(int u) const {
-    const int v = at_exit ? hd.exit(u) : u;
+  int period(int u, bool exit) const {
+    const int v = exit ? hd.exit(u) : u;
     return v < T ? v / stride : -1;
   }
-  // 自行 u0 起连续 m 行的量 x[0, m) 累加进期线 dst[periods]
-  template <class X, class D>
-  void fold(int u0, const X *x, int m, D *dst) const {
-    for (int k = 0; k < m; ++k)
-      if (const int p = period(u0 + k); p >= 0)
-        dst[p] += static_cast<D>(static_cast<double>(x[k]) / span);
+  template <class D>
+  void add(int u, double x, bool exit, D *dst) const {
+    if (const int p = period(u, exit); p >= 0)
+      dst[p] += static_cast<D>(x / span);
   }
 };
 // 逐日 d → 日净值 LS 的逐日收益: 建仓日 i 的 Σ ls_row 经 Realize 落到平仓日 (一日各开仓行同一平仓日, 喂日首行即可; 序列首几日为 0, 越过末日的不计)
@@ -277,7 +274,7 @@ inline std::vector<double> ls_days(std::span<const Sum> d, HoldId hold, int seg)
   const Realize rz(hold, seg, seg, D * seg);
   std::vector<double> o(static_cast<size_t>(D), 0.0);
   for (int i = 0; i < D; ++i)
-    rz.fold(i * seg, &d[static_cast<size_t>(i)].h.ls.s1, 1, o.data());
+    rz.add(i * seg, d[static_cast<size_t>(i)].h.ls.s1, true, o.data());
   return o;
 }
 inline Daily ls_daily(std::span<const Sum> d, HoldId hold, int seg) {

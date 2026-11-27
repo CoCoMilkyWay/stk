@@ -93,7 +93,7 @@ inline std::vector<std::string> flow_keys() {
   c.push_back("stuck");
   for (int k = 0; k < kLobAmts; ++k)
     for (const char *sd : kSideKeys)
-      c.push_back("imp" + std::to_string(kAmtWan[k + 1]) + "w_" + sd);
+      c.push_back("imp" + std::to_string(kLobWan[k]) + "w_" + sd);
   return c;
 }
 inline std::vector<std::string> turn_cols() {
@@ -171,19 +171,15 @@ inline bool load_hold(const nlohmann::json &o, int seg, factor::stat::HoldStat &
 }
 
 namespace detail {
-// 一本流水的字段 (与 flow_keys 同序)
+// 一本流水的字段 (= define/Fee.hpp 字段表序, 与 flow_keys 同序)
 template <class F, class Fn>
 void for_each_flow(F &f, Fn &&fn) {
-  for (int s = 0; s < kSides; ++s)
-    fn(f.vol[s]);
-  fn(f.stuck);
-  for (int k = 0; k < kLobAmts; ++k)
-    for (int s = 0; s < kSides; ++s)
-      fn(f.imp[k][s]);
+  for (auto &v : f.v)
+    fn(v);
 }
 } // namespace detail
 
-// 一个持有期的换手流水 (Table.hpp TurnStat; 因子文件 stat.turn[hold]): 只落整组 lv[0] (年换手 / 成本 / 期限结构净线; 尾部级只 Inspect 现算现用), 量 / 冲击和 4 位有效
+// 一个持有期的换手流水 (Table.hpp TurnStat; 因子文件 stat.turn[hold]): 只落整组 lv[0] (年换手 / 成本 / 期限结构净线; 尾部级只 Inspect 现算现用), 已实现的量 / 冲击和 (逐日 ÷ h̄, 记建仓日) 4 位有效
 inline nlohmann::ordered_json turn_json(const TurnStat &t) {
   nlohmann::ordered_json o = nlohmann::ordered_json::array();
   for (const TurnFlow &f : t.lv[0].e)
@@ -271,7 +267,7 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   j["holds"] = holds;
   nlohmann::ordered_json amts = nlohmann::ordered_json::array(), turn = nlohmann::ordered_json::array();
   for (int k = 0; k < st.amts.n; ++k)
-    amts.push_back(kAmtWan[st.amts.k[k]]);
+    amts.push_back(amt_wan(st.amts.k[k]));
   for (int k = 0; k < st.n_hold; ++k)
     turn.push_back(turn_json(st.turn[k]));
   j["amts"] = amts;

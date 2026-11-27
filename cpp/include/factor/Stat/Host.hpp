@@ -8,8 +8,8 @@
 //     rank_row    精确并列均秩: key(a) → LSD 基数排序 (n ≤ 1024 用 8 位 × 4 趟, 否则 11 位 × 3 趟) → 等值段均秩 → out
 //     rank_x_row  因子一行: CS rank_row(KeyX) / TS 直接量化 —— 口径分叉只在这里; 方向在此一次定 (契约【方向 Dir】)
 //     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t) + 标签侧 label_row (t → t+h, 开仓行才算):
-//                 整数五和 / 基准浮点和 / 分组和 / 尾部和一遍 A 轴 (仓位感知 Pos.hpp cell: 每格一次链回走同出组与各级尾部), 收尾 finish_row
-//   换手 (账集) 在 Stat/Book.hpp (只有宿主版).
+//                 整数五和 / 分组和 / 尾部和一遍 A 轴 (仓位感知 Pos.hpp cell: 每格一次链回走同出组与各级尾部), 收尾 finish_row (绝对口径)
+//   换手 (账集) 与池基准 pool_mean 在 Stat/Book.hpp (只有宿主版).
 //   【标签】fp16 位 → float 用 _Float16 (clang, F16C), 精确转换, 与 GPU __half2float 逐位一致.
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
@@ -143,10 +143,10 @@ struct NoCells {
   void cell(int, int, int, const factor::stat::Pos &, const float *) const {}
 };
 
-// 标签侧 (t → t+h): rx = 本行 r16 (已定向), lb 已偏到行首 (交接链回看 / 前看同块其他行; 本行池基准 mk / 满仓 cap 按 c.t 取), c = 本行交接链, ret = 收益口径
+// 标签侧 (t → t+h): rx = 本行 r16 (已定向), lb / eo 已偏到行首 (交接链回看 / 前看同块其他行; 本行池基准 mk / 满仓 cap 按 c.t 取), c = 本行交接链
 //   → r 的 ric / mkt / cap / grp / cnt / tail / ok. ric 在 J 上 (与可成交无关); 组与尾部只收真持有的格 (一格一次 cell 出层级), 收益按续持取名义值
 template <class Cells = NoCells>
-inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, factor::stat::Ret ret, Row &r, const Cells &cs = {}) {
+inline void label_row(const uint16_t *rx, const Label &lb, const uint8_t *eo, const factor::stat::Chain &c, Row &r, const Cells &cs = {}) {
   unsigned long long s[kSums] = {};
   double gs[kGroups] = {}, ts[kEnds][kTails] = {};
   int gc[kGroups] = {}, tc[kEnds][kTails] = {};
@@ -157,7 +157,7 @@ inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::C
       continue;
     const int g = factor::stat::grp_of(rx[a]);
     float y[2];
-    const factor::stat::Pos p = factor::stat::cell(c, lb, a, factor::stat::InRank{rx + a, g}, H2F{}, y);
+    const factor::stat::Pos p = factor::stat::cell(c, lb, eo, a, factor::stat::InRank{rx + a, g}, H2F{}, y);
     if (p.held < 0)
       continue;
     if constexpr (Cells::on)
@@ -173,30 +173,18 @@ inline void label_row(const uint16_t *rx, const Label &lb, const factor::stat::C
       ++tc[e][j];
     }
   }
-  factor::stat::finish_row(s, lb.mk[c.t], gs, gc, ts, tc, lb.cap[c.t], ret, r);
+  factor::stat::finish_row(s, lb.mk[c.t], gs, gc, ts, tc, lb.cap[c.t], r);
 }
 
-// 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; ret = 收益口径; opens = 开仓行 (Hold::opens)
+// 一 (t, hold) 完整行: rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb / eo 已偏到行首; c = 本行交接链; opens = 开仓行 (Hold::opens)
 template <class Cells = NoCells>
-inline Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, factor::stat::Ret ret, bool opens, const Cells &cs = {}) {
+inline Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const uint8_t *eo, const factor::stat::Chain &c, bool opens, const Cells &cs = {}) {
   Row r;
   if (rlag)
     lag_row(rx, rlag, c.A, r);
   if (opens)
-    label_row(rx, lb, c, ret, r, cs);
+    label_row(rx, lb, eo, c, r, cs);
   return r;
-}
-
-// 平面 p 第 t 行的池属性 (lv / m 已填): 池基准 mk = 标签有效格的做多收益均值 (无 → 0) / 满仓 cap = 有效格数 / kGroups
-inline void pool_row(factor::stat::LabelPlanes &p, size_t t) {
-  const size_t A = p.A(), o = t * A;
-  double s = 0.0;
-  int n = 0;
-  for (size_t a = 0; a < A; ++a)
-    if (p.m[o + a])
-      s += h2f(p.lv[o + a]), ++n;
-  p.mk[t] = n ? static_cast<float>(s / n) : 0.f;
-  p.cap[t] = static_cast<float>(n) / factor::stat::kGroups;
 }
 
 } // namespace factor::cpu::stat

@@ -2,7 +2,7 @@
 //   结局 Rc; 评估域 Domain (domain_of: 所用库 + 评估期 + 预热 + A 轴) → 预算 Budget + 前后带 Bands → 分块 Plan (plan_chunks);
 //   两侧严格对仗 (共享逐天并行骨架 read_days, 统一经 Store::pin 钉成 Block):
 //     X (特征输入叶: LeafId → Leaf → XPlanes, load_x; 含池篮子复用的 bar.1d 估值七叶)
-//     Y (截面门控 + 建仓可成交码 YCore + 标签平面 [hold] (含逐行池基准 / 满仓) + 盘口冲击 [amt] → YPlanes, load_y)
+//     Y (截面门控 + 建仓可成交码 YCore + 标签平面 [hold] (含逐行池基准 / 满仓: 钉时 pool_mean) + 盘口冲击 [盘口段] → YPlanes, load_y)
 //   Store = 进程唯一的计算面 (线程池 ex + 库 lr + 宿主平面 LRU + 常驻算子/评估工作区 ExecSpace + 计算权优先级队列):
 //     计算句柄 FactorFlow + 独占租约 Lease (计算权在手才可碰其余全部资源, 跨文件 / 跨趟零重分配复用).
 //   作业层 = 规格 Need × 块消费者: Need → open_job → Job; 唯一的块循环 run_job: init → { want → 装载 → block } → finish.
@@ -103,23 +103,16 @@ struct Plan {
 };
 Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double host, double vram = 0.0);
 
-// ---- 两侧规格与平面: X ↔ Y 同形 ----
-struct Shape {
-  int T = 0, A = 0, days = 0, seg = 0;
-  size_t n() const { return static_cast<size_t>(T) * A; }
-  bool operator==(const Shape &) const = default;
-};
+// ---- 两侧规格与平面: X ↔ Y 同形 (形状 = 契约 Span, 整块 t_lo = t_back = 0) ----
+using factor::stat::Span;
 // 评估域全段 (含预热) 的形状
-inline Shape dom_shape(const Domain &dm, int seg) {
-  const int days = static_cast<int>(dm.days.size());
-  return {days * seg, static_cast<int>(dm.rs.axis.size()), days, seg};
-}
+inline Span dom_shape(const Domain &dm, int seg) { return {static_cast<int>(dm.days.size()) * seg, static_cast<int>(dm.rs.axis.size()), factor::geo_of(seg)}; }
 // 线性字节式 (探针 / 账的常驻与暂存; 按评估域形状现乘): cell · T·A + row · T + day · 日数
 struct Bytes {
   double cell = 0.0, row = 0.0, day = 0.0;
   constexpr Bytes operator+(const Bytes &o) const { return {cell + o.cell, row + o.row, day + o.day}; }
   constexpr Bytes operator*(double k) const { return {cell * k, row * k, day * k}; }
-  double at(const Shape &sh) const { return cell * static_cast<double>(sh.n()) + row * sh.T + day * sh.days; }
+  double at(const Span &sh) const { return cell * static_cast<double>(sh.n()) + row * sh.T + day * sh.days(); }
 };
 // 成本段的要求 (探针声明; 落成哪几段由作用域成本口径 CostSpec 定): 不要 / 口径那一段 / 口径取盘口段时本域全部段 (固定段恒在)
 enum class Segs : uint8_t { None,
@@ -149,23 +142,22 @@ struct YCore {
   std::vector<uint8_t> eo;
 };
 // 一个持有期的标签平面 = 契约 LabelPlanes (做多 lv / 名义 nv (只偏移型) / 有效位 m + 逐行池基准 mk / 满仓 cap)
-using LabPlane = factor::stat::LabelPlanes;
-using factor::stat::label_of;
+using factor::stat::LabelPlanes;
 
 struct XPlanes {
-  Shape sh;
+  Span sh;
   std::vector<const Leaf *> v; // [LeafId] 钉住的叶; nullptr = 不在块上
   const Leaf *find(LeafId id) const { return id < v.size() ? v[id] : nullptr; }
 };
 struct YPlanes {
-  Shape sh;
+  Span sh;
   const uint8_t *gate = nullptr;
   const uint8_t *eo = nullptr;
   Holds hd;
-  const LabPlane *labels[kHoldCount] = {};
+  const LabelPlanes *labels[kHoldCount] = {};
   const uint16_t *ry[kHoldCount] = {};
   Amts ad;
-  const uint16_t *costs[kAmtCount] = {}; // 盘口段: [kSides][n] 两侧冲击平面首尾相接 (买 [0, n), 卖 [n, 2n)); 固定段 / 无平面 (日层) nullptr
+  const uint16_t *costs[kAmtCount] = {}; // [ad 下标] 盘口段: [kSides][n] 两侧冲击平面首尾相接 (买 [0, n), 卖 [n, 2n)); 固定段 / 无平面 (日层) nullptr
   float top = 0.f;                       // 盘口冲击封顶 (BlockSpec::top)
 };
 // 块首的盘口段冲击 (账集 Book.hpp; 固定段无平面)
@@ -175,9 +167,10 @@ inline factor::stat::Cost cost_of(const YPlanes &y) {
   c.top = y.top;
   for (int k = 0; k < y.ad.n; ++k)
     if (y.costs[k])
-      c.imp[y.ad.k[k] - 1][kBuy] = y.costs[k], c.imp[y.ad.k[k] - 1][kSell] = y.costs[k] + n;
+      c.imp[lob_of(y.ad.k[k])][kBuy] = y.costs[k], c.imp[lob_of(y.ad.k[k])][kSell] = y.costs[k] + n;
   return c;
 }
+// 块上的标签 (契约 Labels: 各持有期标签 + 共用的 eo)
 factor::stat::Labels labels_of(const YPlanes &y);
 
 struct Io {
@@ -189,7 +182,7 @@ struct Io {
   Progress &prog;
 };
 bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vector<Leaf> &out);
-bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LabPlane> &labels,
+bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LabelPlanes> &labels,
             std::vector<std::vector<uint16_t>> &costs);
 
 // 块视图: 评估域日段 ck 的钉住平面 (x_gen = 层|域|日段|代, gen = x_gen + YSpec)
@@ -202,9 +195,9 @@ struct Block {
   XPlanes x;
   YPlanes y;
   std::vector<std::shared_ptr<const void>> pins;
-  factor::stat::Span span() const { return {y.sh.T, y.sh.A, factor::geo_of(y.sh.seg), t_lo, t_back}; }
-  int rows_stat() const { return static_cast<int>(nd - warm) * y.sh.seg; }
-  int land0() const { return (static_cast<int>(ck.d0) - static_cast<int>(warm)) * y.sh.seg; }
+  Span span() const { return {y.sh.T, y.sh.A, y.sh.g, t_lo, t_back}; }
+  int rows_stat() const { return static_cast<int>(nd - warm) * y.sh.g.S; }
+  int land0() const { return (static_cast<int>(ck.d0) - static_cast<int>(warm)) * y.sh.g.S; }
 };
 std::vector<const factor::check::Plane *> leaves_of(const Block &c, std::span<const LeafId> ids);
 

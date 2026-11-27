@@ -1,4 +1,4 @@
-// Probe — 见头文件. include Stat 账集头 (book_rows), 依赖受控浮点: CMake MATH_PRECISE 源.
+// Probe — 见头文件. include Stat 账集头 (book_rows, 经 Probe.hpp), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Probe.hpp"
 
 #include "factor/Stat/Book.hpp" // book_rows / FactorBooks
@@ -64,43 +64,18 @@ void cover_rows(misc::exec::ForkJoin &ex, const uint16_t *rx, const uint8_t *m, 
     o.merge(c);
 }
 
-void TurnP::close(const Ctx &c, const RootView &v) {
-  namespace st = factor::stat;
-  const YPlanes &y = c.c.y;
-  assert(v.rx && amts == y.ad);
-  const st::Span s = c.s();
-  const st::Cost cost = cost_of(y);
-  const int u0 = c.c.land0() + s.t_lo, D = s.days(), d0 = u0 / seg;
-  std::vector<TurnStat> part(static_cast<size_t>(c.ex.threads()) * D); // [tid][本块统计日]: 同日的行可落在不同线程, 先各攒再按线程序合
-  for (int i = 0; i < c.L.hd.n; ++i) {
-    std::fill(part.begin(), part.end(), TurnStat{});
-    st::book_rows(c.ex, s, hold_on(c.L.hd.k[i], s.g), c.L.l[i], st::FactorBooks{v.rx, s.A, c.L.l[i].cap}, cost, [&](int tid, int t, const double *, const TurnFlow *flow) {
-      TurnStat &o = part[static_cast<size_t>(tid) * D + (t - s.t_lo) / seg];
-      for (int b = 0; b < st::kFactorBooks; ++b)
-        o.lv[b % st::kLevels].e[b / st::kLevels].merge(flow[b]);
-    });
-    std::vector<TurnStat> &dd = day[i];
-    assert(d0 >= 0 && static_cast<size_t>(d0 + D) <= dd.size() && "统计日落在评估期内");
-    for (int tid = 0; tid < c.ex.threads(); ++tid)
-      for (int d = 0; d < D; ++d)
-        dd[static_cast<size_t>(d0 + d)].merge(part[static_cast<size_t>(tid) * D + d]);
-  }
-}
-
 std::vector<YearStat> years_of(const std::vector<misc::Ymd> &dates, const HoldP &h, const TurnP &c, int hi, HoldId hold) {
   const std::vector<factor::stat::Sum> &ds = h.day[hi];
-  const std::vector<TurnStat> &td = c.day[static_cast<size_t>(hi)];
   const std::vector<double> &wins = h.wins[hi];
-  assert(ds.size() == dates.size() && td.size() == dates.size() && wins.size() == dates.size() && "逐日原料与评估期日期不齐");
+  assert(ds.size() == dates.size() && static_cast<size_t>(c.out.P) == dates.size() && wins.size() == dates.size() && "逐日原料与评估期日期不齐");
   std::vector<YearStat> out;
   by_year(dates, [&](int y, size_t a, size_t b) {
     const factor::stat::HoldStat s = factor::stat::stat_of(std::span(ds).subspan(a, b - a), hold, h.seg);
     if (s.n < 3)
       return;
-    TurnStat tt;
+    const TurnStat tt = c.turn(hi, a, b);
     std::vector<double> w;
     for (size_t i = a; i < b; ++i) {
-      tt.merge(td[i]);
       if (!std::isnan(wins[i]))
         w.push_back(wins[i]);
     }

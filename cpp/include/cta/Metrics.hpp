@@ -1,10 +1,11 @@
 #pragma once
 
-// 指标: 收益序列统计 (策略 / 买入持有同一份) + 仓位 / 成本统计
-//   平均仓位 = 逐根 |w| 的均值; 年换手 = Σ |Δw| / 年数
+// 指标: 收益统计 (策略 / 买入持有同一份; 逐日 = 日内各根净收益复利, 年化 / 波动 / 夏普 / 索提诺 / 回撤全走 define/Annual.hpp Daily / Path) + 仓位 / 成本统计
+//   平均仓位 = 逐根 |w| 的均值; 年换手 = Σ |Δw| / 年数 (年数 = 日数 / 每年交易日)
 //   年成本 = 成本分项各自 Σ / 年数 (Engine.hpp kCosts), 及其和
 //   一本账 Book = 一条逐根链的 Run → 全期指标 + 分层复利净值 (逐项叠回成本: 净值 → … → 毛, 画成压在净值之上的成本带; 策略 / 买入持有同一份)
 #include "cta/Engine.hpp"
+#include "define/Annual.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,34 +18,36 @@
 namespace cta {
 
 struct Stat {
-  double years = 0, cagr = 0, vol = 0, sharpe = 0, sortino = 0, mdd = 0; // 索提诺 = 均值 / 下行波动 √E[min(r, 0)²]
+  double years = 0, cagr = 0, vol = 0, sharpe = 0, sortino = 0, mdd = 0; // 回撤 ≤ 0 (净值自前高的最大回落)
   double expo = 0, turn = 0;                                             // 平均仓位 / 年换手 (单边)
   double cost = 0;                                                       // 年成本 (分项之和)
   Costs costs{};                                                         // 年成本分项
 };
 
-inline Stat returns_stat(std::span<const double> r, double bpy) {
-  Stat s;
-  const double n = static_cast<double>(r.size());
-  s.years = n / bpy;
-  double sum = 0, sq = 0, dq = 0, nav = 1, peak = 1;
-  for (const double x : r) {
-    sum += x, sq += x * x, dq += std::min(x, 0.0) * std::min(x, 0.0);
-    nav *= 1 + x, peak = std::max(peak, nav);
-    s.mdd = std::min(s.mdd, nav / peak - 1);
+// 根段 [i0, i1) 的逐日净收益 (日内各根复利; 段首 / 段末的日只计段内的根; 无根的日不计) → Path
+inline Path daily_path(std::span<const double> r, const Days &days, size_t i0, size_t i1) {
+  Path p;
+  size_t d = static_cast<size_t>(std::upper_bound(days.off.begin(), days.off.end(), i0) - days.off.begin()) - 1;
+  for (; d < days.size() && days.off[d] < i1; ++d) {
+    const size_t lo = std::max(days.off[d], i0), hi = std::min(days.off[d + 1], i1);
+    if (lo >= hi)
+      continue;
+    double g = 1;
+    for (size_t i = lo; i < hi; ++i)
+      g *= 1 + r[i];
+    p.add(g - 1);
   }
-  const double mean = sum / n, sd = std::sqrt(std::max(0.0, sq / n - mean * mean)), dd = std::sqrt(dq / n);
-  s.vol = sd * std::sqrt(bpy);
-  s.sharpe = sd > 0 ? mean / sd * std::sqrt(bpy) : 0;
-  s.sortino = dd > 0 ? mean / dd * std::sqrt(bpy) : 0;
-  s.cagr = std::pow(nav, 1 / s.years) - 1;
-  return s;
+  return p;
 }
 
-// 根段 [i0, i1) 的指标 (i0 < i1; 段首的调仓量按前一根的仓位算); bpy = 每年根数
-inline Stat stat_of(const Run &run, size_t i0, size_t i1, double bpy) {
+// 根段 [i0, i1) 的指标 (i0 < i1; 段首的调仓量按前一根的仓位算)
+inline Stat stat_of(const Run &run, const Days &days, size_t i0, size_t i1) {
   assert(i0 < i1 && i1 <= run.w.size() && "指标根段");
-  Stat s = returns_stat(std::span<const double>(run.r).subspan(i0, i1 - i0), bpy);
+  const Path p = daily_path(run.r, days, i0, i1);
+  const Daily w = p.win(0, p.days());
+  Stat s;
+  s.years = static_cast<double>(p.days()) / kDaysPerYear;
+  s.cagr = w.ann(), s.vol = w.vol(), s.sharpe = w.sharpe(), s.sortino = w.sortino(), s.mdd = -p.mdd;
   const size_t n = i1 - i0;
   double expo = 0, turn = 0;
   for (size_t i = i0; i < i1; ++i) {
@@ -66,11 +69,11 @@ struct Book {
   std::array<std::vector<double>, kNC + 1> nav; // [层][根] Π(1 + 净 + 前 j 项成本): 层 0 = 净值, 层 kNC = 毛
 };
 
-// run = 回测, bpy = 每年根数
-inline Book book_of(const Tape &t, Run run, double bpy) {
+// run = 回测
+inline Book book_of(const Tape &t, Run run) {
   assert(run.w.size() == t.n && "回测长度");
   Book b{std::move(run), {}, {}};
-  b.st = stat_of(b.run, 0, t.n, bpy);
+  b.st = stat_of(b.run, t.days, 0, t.n);
   std::array<double, kNC + 1> v;
   v.fill(1);
   for (std::vector<double> &o : b.nav)

@@ -99,21 +99,36 @@ inline bool hold_parse(std::string_view s, HoldId &h) {
   return false;
 }
 
-// ---- 冲击金额段: 固定段 (无盘口列, 恒有) + 盘口段 LABEL_AMTS (万元, 升序; Lob 档 lb_cost_{buy,sell}_<a>w) ----
+// ---- 冲击金额段: 盘口段 LobAmt (= Lob 档落盘列 lb_cost_{buy,sell}_<a>w, 万元升序) ⇄ 成本口径段 AmtId (固定段 + 各盘口段) ----
+//   盘口段 k ↔ 口径段 k + 1 (amt_of / lob_of); 固定段无盘口列, 恒有 (全量 × Fee::impact)
 #define LABEL_AMTS(X, ...) X(5, __VA_ARGS__) X(30, __VA_ARGS__)
+#define LOB_AMT_ONE(a, ...) kLob##a##w,
+enum LobAmt : uint8_t { LABEL_AMTS(LOB_AMT_ONE) kLobAmts };
+#undef LOB_AMT_ONE
 #define AMT_ID_ONE(a, ...) kAmt##a##w,
 enum AmtId : uint8_t { kAmtFixed,
                        LABEL_AMTS(AMT_ID_ONE) kAmtCount };
 #undef AMT_ID_ONE
-#define AMT_WAN_ONE(a, ...) a,
-inline constexpr int kAmtWan[] = {0, LABEL_AMTS(AMT_WAN_ONE)};
-#undef AMT_WAN_ONE
-static_assert(sizeof(kAmtWan) / sizeof(kAmtWan[0]) == kAmtCount);
-inline std::string amt_name(AmtId a) { return a == kAmtFixed ? std::string("固定") : std::to_string(kAmtWan[a]) + "w"; }
-// 万元 → 金额段 (0 = 固定段); 不在表里 → false
+#define LOB_WAN_ONE(a, ...) a,
+inline constexpr int kLobWan[] = {LABEL_AMTS(LOB_WAN_ONE)};
+#undef LOB_WAN_ONE
+static_assert(sizeof(kLobWan) / sizeof(kLobWan[0]) == kLobAmts && kAmtCount == kLobAmts + 1);
+static_assert([] {
+  for (int k = 1; k < kLobAmts; ++k)
+    if (kLobWan[k] <= kLobWan[k - 1])
+      return false;
+  return true;
+}(),
+              "LABEL_AMTS 须严格升序");
+FACTOR_HD constexpr bool is_lob(AmtId a) { return a != kAmtFixed; }
+constexpr LobAmt lob_of(AmtId a) { return static_cast<LobAmt>(a - 1); }
+constexpr AmtId amt_of(LobAmt k) { return static_cast<AmtId>(k + 1); }
+constexpr int amt_wan(AmtId a) { return is_lob(a) ? kLobWan[lob_of(a)] : 0; } // 万元 (固定段 0)
+inline std::string amt_name(AmtId a) { return is_lob(a) ? std::to_string(amt_wan(a)) + "w" : std::string("固定"); }
+// 万元 → 口径段 (0 = 固定段); 不在表里 → false
 inline bool amt_of_wan(int wan, AmtId &a) {
   for (int i = 0; i < kAmtCount; ++i)
-    if (kAmtWan[i] == wan) {
+    if (amt_wan(static_cast<AmtId>(i)) == wan) {
       a = static_cast<AmtId>(i);
       return true;
     }

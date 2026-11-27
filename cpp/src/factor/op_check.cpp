@@ -340,7 +340,8 @@ void check_stat(int A, unsigned seed, Report &rep) {
       for (const factor::stat::Dir dir : {factor::stat::kFwd, factor::stat::kRev})
         for (const factor::stat::Ret ret : {factor::stat::Ret::Excess, factor::stat::Ret::Abs}) {
           const char *fname = factor::stat::frame_name(fr), *rs = ret == factor::stat::Ret::Abs ? ".abs" : "";
-          char tag_rows[32], tag_day[32], tag_stat[32];
+          char tag_rows[32], tag_day[32], tag_stat[32], tag_book[32];
+          std::snprintf(tag_book, sizeof(tag_book), "Stat.%s%s%s.book", fname, dir ? "-" : "", rs);
           std::snprintf(tag_rows, sizeof(tag_rows), "Stat.%s%s%s.rows", fname, dir ? "-" : "", rs);
           std::snprintf(tag_day, sizeof(tag_day), "Stat.%s%s%s.day", fname, dir ? "-" : "", rs);
           std::snprintf(tag_stat, sizeof(tag_stat), "Stat.%s%s%s.stat", fname, dir ? "-" : "", rs);
@@ -357,11 +358,16 @@ void check_stat(int A, unsigned seed, Report &rep) {
                             "Sharpe %+.2f beta %+.3f  mono %+.3f  rAC %+.3f sd %.4f IR %+.3f t %+.2f pos %.2f\n",
                             fname, S, hold_name(s.hold).c_str(), kProfName[pi], s.n, s.n_rac, s.ric.mean, s.ric.sd, s.ric.ir, s.ric.t, s.ric.pos, s.ls.mean, s.ls.t,
                             s.ls.pos, s.sharpe, s.beta, s.mono, s.rac.mean, s.rac.sd, s.rac.ir, s.rac.t, s.rac.pos);
+            const Tol tol = sc::tol_of(pr);
+            const Diff db = sc::compare_book(d, cpu, tol); // 账集 ↔ 行核 (cpu 侧, 计在 stream 列)
+            ++rep.cases;
+            if (!db.ok())
+              ++rep.stream_bad;
+            emit(rep, tag_book, S, Param{}, kProfName[pi], "cpu", db, op_bad);
             if (!factor::gpu::available())
               continue;
             sc::Result gpu;
             sc::run_gpu(d, gpu);
-            const Tol tol = sc::tol_of(pr);
             const Diff dr = sc::compare_rows(cpu.rows.data(), gpu.rows.data(), cpu.rows.size(), tol);
             const Diff dd = sc::compare_days(cpu.day.data(), gpu.day.data(), cpu.day.size(), tol);
             const Diff ds = sc::compare_stat(cpu.stat.data(), gpu.stat.data(), d.hd.n, tol);

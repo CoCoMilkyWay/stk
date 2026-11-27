@@ -32,7 +32,8 @@
 //   配置 (LABEL_AMTS) 同时生成 constexpr 数组和落盘字段行, 只改一处.
 // =============================================================================
 
-#include "define/Label.hpp" // LABEL_AMTS (冲击成本的下单金额段, 万元, 升序)
+#include "define/Label.hpp" // 盘口段 LobAmt / kLobWan (冲击成本的下单金额段, 万元, 升序)
+#include "define/Sweep.hpp" // 吃单核 sweep (与实盘调仓滑点同一份)
 #include "features/DataDefine.hpp"
 #include "features/Node/Common/Label/LabelHold.hpp" // LabelRows
 #include "features/TimeIndex.hpp"                   // L_1min_to_L_sec (分钟锚定路径)
@@ -44,15 +45,14 @@
 // ---- 配置 ----
 constexpr size_t LABEL_DELAY_SECONDS = 3; // 下单延迟 (秒)
 
-inline constexpr size_t LABEL_AMT_COUNT = kAmtCount - 1; // 盘口段 (kAmtWan[1..], 固定段无列)
 // LB 块输出口 (字段表 LB(port) 的 port): 枚举值 = LB 块偏移 [cost_buy × 各金额, cost_sell × 各金额]
 #define LABEL_OUT_BUY(a, ...) cost_buy_##a##w,
 #define LABEL_OUT_SELL(a, ...) cost_sell_##a##w,
 
 // 连续竞价盘口快照 (建仓价点用): 可买 / 可卖 + 各金额段吃单冲击
 struct LobSnapshot {
-  float cost_buy[LABEL_AMT_COUNT] = {};  // 吃 ask a 万: VWAP^A/mid − 1 (≥0; 不可买 NaN)
-  float cost_sell[LABEL_AMT_COUNT] = {}; // 吃 bid a 万: 1 − VWAP^B/mid (≥0; 不可卖 NaN)
+  float cost_buy[kLobAmts] = {};  // 吃 ask a 万: VWAP^A/mid − 1 (≥0; 不可买 NaN)
+  float cost_sell[kLobAmts] = {}; // 吃 bid a 万: 1 − VWAP^B/mid (≥0; 不可卖 NaN)
   size_t sec_index = 0;
   bool valid = false;             // 入环 (有中间价, 见 materialize)
   bool buy = false, sell = false; // 卖一侧有挂单 = 可买, 买一侧有挂单 = 可卖 (封板该侧全空)
@@ -62,17 +62,10 @@ class LabelLob {
   using Snapshot = LobSnapshot;
 
 public:
-  static constexpr size_t AMT_COUNT = LABEL_AMT_COUNT;
+  static constexpr size_t AMT_COUNT = kLobAmts;
   static constexpr size_t MIN_LABEL_COUNT = 2 * AMT_COUNT; // LB 块总列数 [cost_buy × 各金额, cost_sell × 各金额]
   enum Out : size_t { LABEL_AMTS(LABEL_OUT_BUY) LABEL_AMTS(LABEL_OUT_SELL) kOutCount };
   static_assert(Out::kOutCount == MIN_LABEL_COUNT, "LB 块 = [cost_buy × 各金额, cost_sell × 各金额]");
-  static_assert([] {
-    for (size_t a = 1; a < AMT_COUNT; ++a)
-      if (kAmtWan[a + 1] <= kAmtWan[a])
-        return false;
-    return true;
-  }(),
-                "LABEL_AMTS 须严格升序");
 
   // 落盘行约束 (CoreTs 编译期查): 一行的冲击成本整组一次写 (write_cost), 各列落盘行须相同
   template <class Rows>
@@ -217,7 +210,7 @@ private:
     snap.buy = has_a;
     snap.sell = has_b;
     for (size_t a = 0; a < AMT_COUNT; ++a) {
-      const float amt = static_cast<float>(kAmtWan[a + 1]) * 10000.0f;
+      const float amt = static_cast<float>(kLobWan[a]) * 10000.0f;
       const float vb = has_a ? calc_vwap(ask_price_, ask_qty_, amt, true, lim_up_) : 0.0f;  // 吃 ask (买入): 余量按涨停
       const float vs = has_b ? calc_vwap(bid_price_, bid_qty_, amt, false, lim_dn_) : 0.0f; // 吃 bid (卖出): 余量按跌停
       assert((!has_a || vb > 1e-6f) && (!has_b || vs > 1e-6f) && "materialize: 有挂单的一侧须吃得到");
@@ -264,26 +257,13 @@ private:
     return nullptr;
   }
 
-  // 模拟吃单: 遍历盘口深度算 VWAP (返回; 吃不到一股 → 0). is_buy: 吃 ask (qty 存负值); 否则吃 bid (正值)
+  // 模拟吃单 (define/Sweep.hpp 吃单核): 均价 (吃不到一股 → 0). is_buy: 吃 ask (qty 存负值); 否则吃 bid (正值)
   // limit_px: 全簿吃不完时余量的成交价 (买 → 涨停, 卖 → 跌停), 与 Book 的吃单成本同约;
   //           涨跌停封板 (该侧全空, 如涨停无卖盘) 也走这条; 边界 NaN (无限制股) 不补 → 该侧全空时 0 (materialize 已判不可成交)
   static inline float calc_vwap(const DepthPorts &price, const DepthPorts &qty, float amount, bool is_buy, float limit_px) {
-    float cost = 0.0f, sh = 0.0f;
-    for (size_t i = 0; i < L2::LOB_DEPTH && amount > 1e-6f; ++i) {
-      const float p = price[i];
-      const float q = is_buy ? -qty[i] : qty[i];
-      if (p < 1e-6f || q < 1e-6f)
-        continue;
-      const float fill = std::min(amount, p * q); // 本档成交金额
-      cost += fill;
-      sh += fill / p;
-      amount -= fill;
-    }
-    if (amount > 1e-6f && limit_px > 0.0f) { // 余量按涨跌停价成交 (边界 NaN = 无限制股 → 比较恒 false, 不补)
-      cost += amount;
-      sh += amount / limit_px;
-    }
-    return sh > 1e-6f ? cost / sh : 0.0f;
+    return sweep<float>(
+               static_cast<int>(L2::LOB_DEPTH), [&](int i, float &p, float &q) { p = price[i], q = is_buy ? -qty[i] : qty[i]; }, amount, limit_px)
+        .px;
   }
 
   const TickData &td_;          // market_state: 当前簿可成交与否

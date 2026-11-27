@@ -242,24 +242,23 @@ struct Levels {
   void push(misc::Ymd d, double s, double v) { date.push_back(d), slot.push_back(s), lv.push_back(v); }
 };
 
-// 腿 (Realize 已实现口径, 与池指数对齐): 行 t 的增量 (cost: 毛 − Fee::parts(该期流水, 账的金额段); 否则 = 毛) / 增仓量
+// 腿 (Realize 已实现口径, 与池指数对齐): 行 t 的增量 (cost: 毛 − Fee::parts(该期流水, 账的口径段); 否则 = 毛) / 增仓量
 struct LedgerLine {
-  const float *c[kLedgerCols]; // 没装的冲击列空
+  const float *ret;
+  const float *flow_[kFlowFields]; // 没装的字段空
   AmtId amt = kAmtFixed;
-  explicit LedgerLine(const LinesLeg &lg) : amt(lg.b->amt) {
-    for (int k = 0; k < kLedgerCols; ++k)
-      c[k] = lg.b->at(k, lg.line);
+  explicit LedgerLine(const LinesLeg &lg) : ret(lg.b->ret_of(lg.line)), amt(lg.b->amt) {
+    for (int f = 0; f < kFlowFields; ++f)
+      flow_[f] = lg.b->flow_of(f, lg.line);
   }
   TurnFlow flow(size_t t) const {
-    TurnFlow f;
-    f.vol[kBuy] = c[kLedgerBuy][t], f.vol[kSell] = c[kLedgerSell][t], f.stuck = c[kLedgerStuck][t];
-    for (int k = kLedgerImp; k < kLedgerCols; ++k)
-      if (c[k])
-        f.imp[(k - kLedgerImp) / 2][(k - kLedgerImp) % 2] = c[k][t];
-    return f;
+    TurnFlow o;
+    for (int f = 0; f < kFlowFields; ++f)
+      o[f] = flow_[f] ? flow_[f][t] : 0.0;
+    return o;
   }
-  double inc(size_t t, bool cost, const Fee &f) const { return cost ? c[kLedgerRet][t] - f.cost(flow(t), amt) : c[kLedgerRet][t]; }
-  double buy(size_t t) const { return c[kLedgerBuy][t]; }
+  double inc(size_t t, bool cost, const Fee &f) const { return cost ? ret[t] - f.cost(flow(t), amt) : ret[t]; }
+  double buy(size_t t) const { return flow_[kFlowBuy][t]; }
 };
 
 // 腿集合成 (线源 s 的 legs): 稠密格 [日并集轴][M] (M = 各腿层的行末槽之并; 行末分钟经 row_slot, 竞价段并入首根), 腿的行 t 落进 (所在日, 行末槽) 的格;
@@ -311,7 +310,7 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
     const PortfolioLedger &b = *legs[q].b;
     const factor::Geo g = factor_level(b.lv).geo();
     const size_t S = static_cast<size_t>(g.S);
-    assert(static_cast<size_t>(b.col[kLedgerRet].P) == b.dates.size() * S);
+    assert(static_cast<size_t>(b.ret.P) == b.dates.size() * S);
     const LedgerLine bl(legs[q]);
     size_t cur = SIZE_MAX; // 在攒的轴日
     double pend = 1.0;     // 本腿并入该轴日的轴外日的复利乘数

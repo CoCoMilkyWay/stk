@@ -517,11 +517,11 @@ struct StatRow {
 const StatRow kStatRows[] = {
     {"年换手", &cta::Stat::turn, "%.1f", 1, 0, "单边: Σ |Δ仓位| / 年数"},
     {"平均仓位", &cta::Stat::expo, "%.2f", 1, 0, "逐根 |仓位| 的均值 (满多 / 满空 = 1)"},
-    {"年化波动", &cta::Stat::vol, "%.1f%%", 100, -1, "逐根净收益标准差 × √每年根数"},
-    {"夏普", &cta::Stat::sharpe, "%.2f", 1, 1, "逐根净收益 均值 / 标准差 × √每年根数"},
-    {"索提诺", &cta::Stat::sortino, "%.2f", 1, 1, "逐根净收益 均值 / 下行波动 √E[min(r, 0)²] × √每年根数"},
+    {"年化波动", &cta::Stat::vol, "%.1f%%", 100, -1, "逐日净收益 (日内各根复利) 标准差 × √每年交易日"},
+    {"夏普", &cta::Stat::sharpe, "%.2f", 1, 1, "逐日净收益 均值 / 标准差 (ddof 1) × √每年交易日"},
+    {"索提诺", &cta::Stat::sortino, "%.2f", 1, 1, "逐日净收益 均值 / 下行波动 √E[min(r, 0)²] × √每年交易日"},
     {"年化", &cta::Stat::cagr, "%+.1f%%", 100, 1, "视野内净值按年数复利折算"},
-    {"最大回撤", &cta::Stat::mdd, "%.1f%%", 100, 1, "净值自前高的最大回落"},
+    {"最大回撤", &cta::Stat::mdd, "%.1f%%", 100, 1, "日末净值自前高的最大回落"},
     {"年成本", &cta::Stat::cost, "%.2f%%", 100, -1, "佣金 + 印花税 + 冲击 + 震荡 + 跳空, 每年占净值; 展开看各分项"},
 };
 
@@ -532,14 +532,13 @@ void right(const char *s, const ImVec4 &col) {
 }
 
 // 名 | 持有 (灰, 作对照) | 策略 (比持有好 → kUp / 差 → kDn, 不论优劣的行 = 文字色); 数值右对齐
-//   指标 = 视野 [x0, x1] 内的根段 (同左侧三图 / 区间条), 每年根数沿用全期的 (根数 / 年数); 段变了才重算 (CtaState::seg 缓存)
+//   指标 = 视野 [x0, x1] 内的根段 (同左侧三图 / 区间条), 按日复利成逐日收益再年化 (define/Annual.hpp); 段变了才重算 (CtaState::seg 缓存)
 void stat_table(CtaState &c, const CtaResult &r) {
   const size_t n = r.se->c.size();
   const size_t i0 = static_cast<size_t>(std::clamp(std::ceil(c.x0), 0.0, static_cast<double>(n - 1)));
   const size_t i1 = static_cast<size_t>(std::clamp(std::floor(c.x1), static_cast<double>(i0), static_cast<double>(n - 1))) + 1;
   if (c.seg.of != &r || c.seg.gen != r.gen || c.seg.i0 != i0 || c.seg.i1 != i1) {
-    const double bpy = static_cast<double>(n) / r.tr->strat.st.years;
-    c.seg = {&r, r.gen, i0, i1, cta::stat_of(r.tr->hold.run, i0, i1, bpy), cta::stat_of(r.tr->strat.run, i0, i1, bpy)};
+    c.seg = {&r, r.gen, i0, i1, cta::stat_of(r.tr->hold.run, r.tr->days, i0, i1), cta::stat_of(r.tr->strat.run, r.tr->days, i0, i1)};
   }
   constexpr int nc = 2; // 数值列: 持有 / 策略
   if (!ImGui::BeginTable("##cta_stat", 1 + nc, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))

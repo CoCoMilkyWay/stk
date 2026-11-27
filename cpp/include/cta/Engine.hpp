@@ -51,7 +51,7 @@ inline constexpr CostItem kCosts[kNC] = {{"佣金", "佣金率 × |Δ仓位|"},
 inline Costs costs_of(const Fee &u, const Cut &x, float p) {
   const double dw = std::fabs(x.w - p), sell = std::max(0.0f, p - x.w);
   TurnFlow f; // 一刀 = 买 / 卖两侧之一, 全量付固定冲击
-  f.vol[kBuy] = dw - sell, f.vol[kSell] = sell;
+  f[kFlowBuy] = dw - sell, f[kFlowSell] = sell;
   const CostParts c = u.parts(f, kAmtFixed);
   return {{c.v[kCostTax], c.v[kCostStamp], c.v[kCostImpact], x.chop, x.gap}};
 }

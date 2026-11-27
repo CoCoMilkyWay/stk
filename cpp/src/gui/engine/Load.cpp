@@ -1,7 +1,8 @@
-// Load — 见头文件. include 因子 Stat CPU 头 (标签秩 prep_label), 依赖受控浮点: CMake MATH_PRECISE 源.
+// Load — 见头文件. include 因子 Stat CPU 头 (标签秩 prep_label / 池基准 pool_mean), 依赖受控浮点: CMake MATH_PRECISE 源.
 #include "gui/engine/Load.hpp"
 
 #include "factor/GpuRun.hpp"     // available / mem_info
+#include "factor/Stat/Book.hpp"  // pool_mean
 #include "factor/Stat/Cpu.hpp"   // prep_label / Workspace
 #include "features/MetaFlag.hpp" // fmeta::valid / keep / finite
 #include "features/Storage/FeatureRead.hpp"
@@ -239,7 +240,7 @@ inline constexpr double kCellBytes = 0.0;
 template <>
 inline constexpr double kCellBytes<YCore> = 2.0;
 template <>
-inline constexpr double kCellBytes<LabPlane> = kPlaneBytes;
+inline constexpr double kCellBytes<LabelPlanes> = kPlaneBytes;
 template <>
 inline constexpr double kCellBytes<U16> = 2.0;
 template <>
@@ -269,20 +270,19 @@ bool cell(const View &w, size_t a, feature_storage_t &x, float &g) {
 }
 uint8_t eo_cell(const View &w, size_t a, bool in) {
   feature_storage_t x = {};
-  const float c = in && cell(w, a, x) && fmeta::finite(x) ? static_cast<float>(x) : 0.f;
-  assert((c == 0.f || c == 1.f || c == 2.f || c == 3.f) && "lb_entry_ok 须是 kEoBuy | kEoSell");
-  return static_cast<uint8_t>(c);
+  const bool got = in && cell(w, a, x);
+  return fmeta::entry_code(got, x);
 }
-// 一格标签: 做多 (w[0]) 与名义 (w[1], 只偏移型; nom = false 则不读) 按 fmeta::lab_ok (原料带同一判据)
-void lab_cell(const View (&w)[2], bool nom, size_t a, bool in, uint8_t eo, LabPlane &p, size_t i) {
+// 一格标签: 做多 (w[0]) 与名义 (w[1], 只偏移型; nom = false 则不读), 解码同原料带 (fmeta::lab_bits)
+void lab_cell(const View (&w)[2], bool nom, size_t a, bool in, uint8_t eo, LabelPlanes &p, size_t i) {
   feature_storage_t x[2] = {};
   const bool got = cell(w[0], a, x[0]) && (!nom || cell(w[1], a, x[1]));
-  const bool ok = got && fmeta::lab_ok(in, x[0], x[1], nom);
-  p.lv[i] = ok ? std::bit_cast<uint16_t>(x[0]) : 0;
+  const fmeta::LabBits b = fmeta::lab_bits(in && got, x[0], x[1], nom);
+  p.lv[i] = b.lv;
   if (nom)
-    p.nv[i] = ok ? std::bit_cast<uint16_t>(x[1]) : 0;
-  assert((!ok || eo) && "标签有效格须有建仓可成交码");
-  p.m[i] = ok;
+    p.nv[i] = b.nv;
+  assert((!b.m || eo) && "标签有效格须有建仓可成交码");
+  p.m[i] = b.m;
 }
 
 struct ColList {
@@ -294,13 +294,12 @@ struct ColList {
   }
 };
 
-Shape shape_of(const Io &io, const Chunk &k) {
+Span shape_of(const Io &io, const Chunk &k) {
   assert(k.d0 < k.d1 && k.d1 <= io.dm.days.size());
-  Shape s;
-  s.days = k.days();
+  Span s;
   s.A = static_cast<int>(io.dm.rs.axis.size());
-  s.seg = io.ft.seg;
-  s.T = s.days * s.seg;
+  s.g = factor::geo_of(io.ft.seg);
+  s.T = k.days() * io.ft.seg;
   assert(s.A >= 2 && s.A <= factor::stat::kMaxA && "资产轴超 Stat 容量 (kMaxA)");
   assert(static_cast<long long>(s.T) * s.A < (1LL << 31));
   return s;
@@ -372,13 +371,13 @@ double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx) {
   int books = 0;
   for (int c = 0; c < s.y.ad.n; ++c)
     books += ft.y.priced(s.y.ad.k[c]);
-  return kCellBytes<Leaf> * static_cast<double>(nx) + kCellBytes<YCore> + kCellBytes<LabPlane> * s.y.hd.n + kCellBytes<U16> * kSides * books;
+  return kCellBytes<Leaf> * static_cast<double>(nx) + kCellBytes<YCore> + kCellBytes<LabelPlanes> * s.y.hd.n + kCellBytes<U16> * kSides * books;
 }
 
 bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vector<Leaf> &out) {
   TraceN("FactorsLoadX");
   const FeatureTable &ft = io.ft;
-  const Shape sh = shape_of(io, k);
+  const Span sh = shape_of(io, k);
   const size_t A = static_cast<size_t>(sh.A), n = sh.n(), VR = static_cast<size_t>(ft.seg), nf = ids.size();
   ColList cols{io.dm.pool, {}};
   out.assign(nf, Leaf{});
@@ -407,12 +406,12 @@ bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vect
   });
 }
 
-bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LabPlane> &labels,
+bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LabelPlanes> &labels,
             std::vector<std::vector<uint16_t>> &costs) {
   TraceN("FactorsLoadY");
   constexpr size_t kNone = SIZE_MAX;
   const FeatureTable &ft = io.ft;
-  const Shape sh = shape_of(io, k);
+  const Span sh = shape_of(io, k);
   const size_t A = static_cast<size_t>(sh.A), n = sh.n(), VR = static_cast<size_t>(ft.seg);
   const size_t H = static_cast<size_t>(hd.n), C = static_cast<size_t>(ad.n);
   assert((!have || H + C > 0) && "无可装");
@@ -444,7 +443,7 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
   }
   const YCore &g = have ? *have : core;
   assert(g.gate.size() == n && "门控与块不同形");
-  labels.assign(H, LabPlane{});
+  labels.assign(H, LabelPlanes{});
   for (size_t i = 0; i < H; ++i)
     labels[i].assign(static_cast<size_t>(sh.T), A, hold_offset(hd.k[i]));
   costs.assign(C, std::vector<uint16_t>(kSides * n, 0)); // [side][n]
@@ -466,7 +465,6 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
         const View w[2] = {view(lab_at[i], t), nom ? view(lab_at[i] + 1, t) : View{}};
         for (size_t a = 0; a < A; ++a)
           lab_cell(w, nom, a, g.gate[row + a], g.eo[row + a], labels[i], row + a);
-        factor::cpu::stat::pool_row(labels[i], d * VR + t);
       }
       for (size_t c = 0; c < C; ++c)
         for (size_t s = 0; s < static_cast<size_t>(kSides); ++s) {
@@ -488,9 +486,10 @@ factor::stat::Labels labels_of(const YPlanes &y) {
   assert(y.hd.n > 0 && y.eo && "标签未钉");
   factor::stat::Labels out;
   out.hd = y.hd;
+  out.eo = y.eo;
   for (int h = 0; h < y.hd.n; ++h) {
     assert(y.labels[h]);
-    out.l[h] = label_of(*y.labels[h], y.eo, y.ry[h]);
+    out.l[h] = factor::stat::label_of(*y.labels[h], y.ry[h]);
   }
   return out;
 }
@@ -616,7 +615,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   const FeatureTable &ft = io.ft;
   const std::string dom = std::string(factor_level(ft.lv).name) + "|" + io.dm.key();
   const std::string base = dom + "|" + std::to_string(k.d0) + "-" + std::to_string(k.d1) + "|";
-  const Shape sh = shape_of(io, k);
+  const Span sh = shape_of(io, k);
   const double n = static_cast<double>(sh.n());
   c = Block{};
   c.ck = k, c.nd = io.dm.days.size(), c.warm = io.dm.warm;
@@ -629,12 +628,12 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   y.sh = sh;
   y.hd = s.y.hd, y.ad = s.y.ad, y.top = s.top;
   if (y.hd.n > 0)
-    factor::stat::assert_holds(y.hd, sh.seg);
+    factor::stat::assert_holds(y.hd, sh.g.S);
 
   const auto key = [&](char role, long long id) { return base + role + std::to_string(id); };
   const YCore *core = nullptr;
   const auto set_core = [&](const YCore &p) { core = &p, y.gate = p.gate.data(), y.eo = p.eo.data(); };
-  const auto set_hold = [&y](int i) { return [&y, i](const LabPlane &p) { y.labels[i] = &p; }; };
+  const auto set_hold = [&y](int i) { return [&y, i](const LabelPlanes &p) { y.labels[i] = &p; }; };
   const auto set_amt = [&y](int i) { return [&y, i](const U16 &p) { y.costs[i] = p.data(); }; };
   const auto set_rank = [&y](int i) { return [&y, i](const U16 &p) { y.ry[i] = p.data(); }; };
   const auto set_leaf = [&c](LeafId id) { return [&c, id](const Leaf &p) { c.x.v[id] = &p; }; };
@@ -645,7 +644,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   std::vector<int> mh_at, ma_at, mr;
   std::vector<LeafId> mx;
   for (int i = 0; i < y.hd.n; ++i) {
-    if (!hit<LabPlane>(c, key('h', y.hd.k[i]), set_hold(i)))
+    if (!hit<LabelPlanes>(c, key('h', y.hd.k[i]), set_hold(i)))
       mh.k[mh.n++] = y.hd.k[i], mh_at.push_back(i);
     if (s.ry && !hit<U16>(c, key('r', y.hd.k[i]), set_rank(i)))
       mr.push_back(i);
@@ -657,7 +656,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
     if (!hit<Leaf>(c, key('x', id), set_leaf(id)))
       mx.push_back(id);
 
-  const double need = n * ((core ? 0.0 : kCellBytes<YCore>)+kCellBytes<LabPlane> * mh.n + kCellBytes<U16> * static_cast<double>(kSides * ma.n + mr.size()) +
+  const double need = n * ((core ? 0.0 : kCellBytes<YCore>)+kCellBytes<LabelPlanes> * mh.n + kCellBytes<U16> * static_cast<double>(kSides * ma.n + mr.size()) +
                            kCellBytes<Leaf> * static_cast<double>(mx.size()));
   room(need, reserve);
   c.fresh = need > 0.0;
@@ -669,10 +668,13 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   };
   if (!core || mh.n > 0 || ma.n > 0) {
     YCore got;
-    std::vector<LabPlane> labs;
+    std::vector<LabelPlanes> labs;
     std::vector<U16> cs;
     if (!load_y(io, k, core, got, mh, ma, labs, cs))
       return end_io(false);
+    const uint8_t *eo = (core ? *core : got).eo.data();
+    for (int j = 0; j < mh.n; ++j) // 池基准 / 满仓 (与因子无关; 交接链在块内走, 统计行由前后带盖住)
+      factor::stat::pool_mean(ex, labs[static_cast<size_t>(j)], eo, hold_on(mh.k[j], sh.g), 0, sh.T);
     if (!core)
       land(c, key('g', 0), std::move(got), n, set_core);
     for (int j = 0; j < mh.n; ++j)
@@ -688,12 +690,11 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
       land(c, key('x', mx[j]), std::move(xs[j]), n, set_leaf(mx[j]));
   }
   if (!mr.empty()) {
-    const factor::stat::Span sp{sh.T, sh.A, factor::geo_of(sh.seg)};
     factor::cpu::stat::Workspace w;
     w.ensure(sh.A, ex.threads());
     for (const int i : mr) {
       U16 r(sh.n());
-      factor::cpu::stat::prep_label(ex, label_of(*y.labels[i], y.eo, nullptr), sp, r.data(), w);
+      factor::cpu::stat::prep_label(ex, factor::stat::label_of(*y.labels[i]), sh, r.data(), w);
       land(c, key('r', y.hd.k[i]), std::move(r), n, set_rank(i));
     }
   }

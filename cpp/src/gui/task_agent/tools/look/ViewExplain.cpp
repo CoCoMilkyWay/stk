@@ -169,7 +169,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
           return cum[static_cast<size_t>(t1) * static_cast<size_t>(A) + static_cast<size_t>(a)] - cum[static_cast<size_t>(t0) * static_cast<size_t>(A) + static_cast<size_t>(a)];
         };
 
-        const Engine::LabPlane &lb = *cv.blk.y.labels[0];
+        const Engine::LabelPlanes &lb = *cv.blk.y.labels[0];
         const uint16_t *lv = lb.lv.data();
         const int nt = F.S.ex.threads();
         struct ThreadAcc {
@@ -237,7 +237,7 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
               ey.push_back(static_cast<double>(h2f(lv[k])) - mkt);
               float hr = 0.f;
               const bool h = held_cell(cv.cells[static_cast<size_t>(r)], a, hr);
-              hy.push_back(h ? static_cast<double>(hr) - mkt : 0.0), buy.push_back(h ? 1 : 0);
+              hy.push_back(h ? static_cast<double>(hr) : 0.0), buy.push_back(h ? 1 : 0);
               for (size_t j = 0; j < m; ++j)
                 bv[j].push_back(one[j]);
             }
@@ -269,10 +269,10 @@ ToolOut ViewExplain(const Call &c, Bay &bay) {
               loc.r2.add(1.0 - dot(res, res) / tot);
             rs.rank_into(res, rs.a);
             loc.rric.add(pearson(rs.a, ry));
-            if (rs.approx_ranked(rf_raw, hy, ry, buy, w))
-              loc.orig.add(w);
-            if (rs.approx_ranked(rs.a, hy, ry, buy, w))
-              loc.rest.add(w);
+            if (rs.approx_ranked(rf_raw, hy, ry, buy, mkt, w))
+              loc.orig.add(w, st::Ret::Excess);
+            if (rs.approx_ranked(rs.a, hy, ry, buy, mkt, w))
+              loc.rest.add(w, st::Ret::Excess);
           }
         });
         for (const ThreadAcc &loc : ta) {

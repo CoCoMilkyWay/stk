@@ -135,10 +135,10 @@ struct Tuner {
   std::vector<P> used() const { return used_of(p); }
 };
 
-// se = 有效根 (t = 日下标 · S + 槽), 须跨 2 日以上; S = 每日根数; sp = 设定; u = 费率; bpy = 每年根数; hi / lo [日] = 日 d 盘中所用的估值贵线 / 便宜线 (价格; NaN = 无)
+// se = 有效根 (t = 日下标 · S + 槽), 须跨 2 日以上; S = 每日根数; sp = 设定; u = 费率; hi / lo [日] = 日 d 盘中所用的估值贵线 / 便宜线 (价格; NaN = 无)
 // ex = 执行器 (tasks); stop() → true = 放弃 (返回空), 由并行任务调用; tick() 选参每过一日 (共 days_of(se, S).size() − 1 日)
 template <class Exec, class Stop, class Tick>
-std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Fee &u, double bpy, const Col &hi, const Col &lo, Exec &ex, Stop stop, Tick tick) {
+std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Fee &u, const Col &hi, const Col &lo, Exec &ex, Stop stop, Tick tick) {
   const Tape t(se, S);
   const Days &days = t.days;
   const size_t n = t.n, nd = days.size(), Wr = win_of(sp.reduce.win), Wf = win_of(sp.follow.win);
@@ -207,7 +207,7 @@ std::optional<Track> trace(const Series &se, size_t S, const Spec &sp, const Fee
   });
   drive(t, u, Hold{}, [&](const Fill &f) { hold.put(t, f); });
   out.cut.s = s, out.cut.units = sp.rule.units;
-  out.strat = book_of(t, std::move(strat), bpy), out.hold = book_of(t, std::move(hold), bpy);
+  out.strat = book_of(t, std::move(strat)), out.hold = book_of(t, std::move(hold));
   return out;
 }
 

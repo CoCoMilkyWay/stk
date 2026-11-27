@@ -208,7 +208,7 @@ void detail_prep(std::string &s, double cpu_ms, double gpu_ms) {
 constexpr factor::stat::Frame kFrames[2] = {factor::stat::Frame::CS, factor::stat::Frame::TS};
 
 // Stat 评估算子: 两口径 (CS / TS) 各造数 (PLAIN, 与 op_check 同口径) → cpu (全核) / gpu 各计时 → gpu 对 cpu 一级 + 二级对拍.
-// cpu 即 golden (cpu_chk 空). 表列耗时 = 两口径 eval 之和; detail = prep 耗时 (CS 那轮) + 两口径每持有期的 cpu 侧二级汇总
+// cpu 即 golden; cpu_chk = 账集 ↔ 行核 (compare_book). 表列耗时 = 两口径 eval 之和; detail = prep 耗时 (CS 那轮) + 两口径每持有期的 cpu 侧二级汇总
 void run_stat(RoundCtx &R, OperatorRow &row) {
   using namespace factor::stat::check;
   const bool has_gpu = factor::gpu::available();
@@ -224,6 +224,7 @@ void run_stat(RoundCtx &R, OperatorRow &row) {
     row.cpu_ms += cpu.eval_ms;
     if (fr == factor::stat::Frame::CS)
       prep_cpu = cpu.prep_ms;
+    merge_diff(row.cpu_chk, compare_book(d, cpu, tol_of(Profile::PLAIN)));
     detail_line(holds, "%s", factor::stat::frame_name(fr));
     for (int i = 0; i < d.hd.n; ++i) {
       const factor::stat::HoldStat &h = cpu.stat[static_cast<size_t>(i)];

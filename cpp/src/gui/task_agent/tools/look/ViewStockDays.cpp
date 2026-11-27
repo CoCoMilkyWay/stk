@@ -100,7 +100,7 @@ ToolOut ViewStockDays(const Call &c, Bay &bay) {
         assert(col_a < static_cast<size_t>(cv.blk.y.sh.A));
         const int a = static_cast<int>(col_a), A = cv.blk.y.sh.A, days_stat = (cv.t_hi - cv.t_lo) / seg, chunk_d0 = cv.u0 / seg;
         const Px px(cv.blk, cv.bm, cfg.bars, env.open);
-        const Engine::LabPlane &lb = *cv.blk.y.labels[0];
+        const Engine::LabelPlanes &lb = *cv.blk.y.labels[0];
         const uint16_t *lv = lb.lv.data();
 
         for (int cd = 0; cd < days_stat; ++cd) {

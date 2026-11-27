@@ -147,11 +147,10 @@ void fill_row(const FeatureRead::DayColumns &c, Strip &t, size_t r, float *pre, 
     t.ind[i] = ind >= 1.0f && ind < static_cast<float>(fund::SW2021_L1_COUNT) ? static_cast<uint8_t>(ind + 0.5f) : 0;
     pre[a] = v(kColPre) > 0.0f ? v(kColPre) : 0.0f;
     const bool gate = fmeta::data_valid(v(kColTs)) && fmeta::data_valid(v(kColCs));
-    const _Float16 lv = c.get(0, kColLab, a), nv = c.get(0, kColNom, a);
     factor::stat::LabelPlanes &l = t.t1;
-    l.m[i] = fmeta::lab_ok(gate, lv, nv, true);
-    l.lv[i] = l.m[i] ? std::bit_cast<uint16_t>(lv) : 0, l.nv[i] = l.m[i] ? std::bit_cast<uint16_t>(nv) : 0;
-    t.eo[i] = gate && std::isfinite(v(kColEntry)) ? static_cast<uint8_t>(v(kColEntry) + 0.5f) : 0;
+    const fmeta::LabBits lb = fmeta::lab_bits(gate, c.get(0, kColLab, a), c.get(0, kColNom, a), true);
+    l.lv[i] = lb.lv, l.nv[i] = lb.nv, l.m[i] = lb.m;
+    t.eo[i] = fmeta::entry_code(gate, c.get(0, kColEntry, a));
     assert((!l.m[i] || t.eo[i]) && "标签有效格须有建仓可成交码");
     close[a] = v(kColTs) > 0.5f && px > 0.0f ? px : 0.0f;
     cls[a] = kOut;
@@ -167,7 +166,6 @@ void fill_row(const FeatureRead::DayColumns &c, Strip &t, size_t r, float *pre, 
     cls[a] = static_cast<uint16_t>(id);
     ++cnt[id];
   }
-  factor::cpu::stat::pool_row(t.t1, r);
 }
 
 // 保序键: 浮点位翻转 (−0 归 +0)
@@ -354,10 +352,11 @@ Order Strip::row(size_t r) const {
   return {cls.data() + r * n, cnt.data() + r * kClasses, nullptr, 0, nullptr, nullptr, n};
 }
 
-float Strip::omega(size_t r, size_t q, size_t a, Weight w) const {
+float Strip::omega(size_t r, size_t q, size_t a, Weight w, Drift d) const {
   assert(r <= q && q < days());
   const size_t n = A();
-  return static_cast<float>(pool::omega(w, mcap[r * n + a], static_cast<double>(grow[q * n + a]) / grow[r * n + a]));
+  const std::vector<float> &g = d == Drift::Price ? grow : gain;
+  return static_cast<float>(pool::omega(w, mcap[r * n + a], static_cast<double>(g[q * n + a]) / g[r * n + a]));
 }
 
 std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel, const Tick &tick) {
@@ -378,7 +377,7 @@ std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel, 
   t->axis = lib.axis, t->dates = std::move(rows);
   if (!keep)
     t->line = ++lines;
-  t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->ind.resize(R * A), t->mcap.resize(R * A), t->grow.resize(R * A), t->eo.resize(R * A);
+  t->cls.resize(R * A), t->cnt.resize(R * kClasses), t->ind.resize(R * A), t->mcap.resize(R * A), t->grow.resize(R * A), t->gain.resize(R * A), t->eo.resize(R * A);
   t->t1.lv.resize(R * A), t->t1.nv.resize(R * A), t->t1.m.resize(R * A), t->t1.mk.resize(R), t->t1.cap.resize(R);
   t->pre.resize(A);
   std::vector<float> pre((R - lo) * A), close((R - lo) * A); // [新行 · A]
@@ -409,6 +408,22 @@ std::shared_ptr<const Strip> strip(const FeatureLib &lib, const Cancel *cancel, 
     const float *p = r == lo ? t->pre.data() : pre.data() + (r - 1 - lo) * A, *c = close.data() + (r - lo) * A, *g0 = g - A;
     for (size_t a = 0; a < A; ++a)
       g[a] = p[a] > 0.0f && c[a] > 0.0f ? static_cast<float>(static_cast<double>(g0[a]) * c[a] / p[a]) : g0[a];
+  }
+  // 池基准: 新行 + 前一行 (其续持前看到了新行)
+  factor::stat::pool_mean(ex, t->t1, t->eo.data(), hold_on(kHoldT1, geo_of(1)), static_cast<int>(lo > 0 ? lo - 1 : 0), static_cast<int>(R));
+  // 账的增长: 行 r−1 的续持收益 (行 r 价点可卖 → 做多值, 否则名义值; 与账集前一批的漂移同式)
+  for (size_t r = lo; r < R; ++r) {
+    float *g = t->gain.data() + r * A;
+    if (r == 0) {
+      std::fill(g, g + A, 1.0f);
+      continue;
+    }
+    const float *g0 = g - A;
+    const size_t p = (r - 1) * A;
+    for (size_t a = 0; a < A; ++a) {
+      const float y[2] = {factor::cpu::stat::h2f(t->t1.lv[p + a]), factor::cpu::stat::h2f(t->t1.nv[p + a])};
+      g[a] = t->t1.m[p + a] ? static_cast<float>(static_cast<double>(g0[a]) * (1.0 + factor::stat::hold_ret(true, t->eo[r * A + a], y))) : g0[a];
+    }
   }
   t->pre.assign(pre.end() - static_cast<std::ptrdiff_t>(A), pre.end());
   cur = std::move(t);
@@ -486,7 +501,7 @@ void Selector::at(const Order &o, std::vector<Aid> &out) const {
 
 namespace {
 
-// 选池账集 (Stat/Book.hpp): 本 = 权重 w; 行 r 的成员 mem (源行 src[r] 选出) 按 Strip::omega 定目标权, 一律按真持有权和归一
+// 选池账集 (Stat/Book.hpp): 本 = 权重 w; 行 r 的成员 mem (源行 src[r] 选出) 按 Strip::omega (账的漂移) 定目标权, 一律按真持有权和归一
 struct PickBooks {
   const Strip &t;
   const uint8_t *mem;
@@ -500,7 +515,7 @@ struct PickBooks {
     if (!mem[i])
       return;
     for (int w = 0; w < kWeights; ++w)
-      if (const float om = t.omega(src[r], static_cast<size_t>(r), a, static_cast<Weight>(w)); om > 0.0f)
+      if (const float om = t.omega(src[r], static_cast<size_t>(r), a, static_cast<Weight>(w), Drift::Book); om > 0.0f)
         put(static_cast<uint32_t>(w), om, factor::stat::InMask{mem + i});
   }
 };
@@ -529,15 +544,15 @@ void perf(const Strip &t, Rebal rb, const Pick &pick, Perf &b) {
       mem[r * A + a] = 1;
   }
   // 篮子账 (键 = 权重; Stat 账集同一核): 收益 (持仓日 r + 1) / 买量; 只付固定冲击
-  //   日层每行一批 (h̄ = 1), 钱记平仓日 (Realize, 协议表 2【记日】); 买量同记 (与行情账同口径)
+  //   日层每行一批 (h̄ = 1), 收益记平仓日 ⇄ 买量记建仓日 (Realize, 协议表 2【记日】; 与行情账同口径)
   const st::Span sp{static_cast<int>(D), static_cast<int>(A), geo_of(1)};
   const Hold hd = hold_on(kHoldT1, sp.g);
-  const st::Label lb = st::label_of(t.t1, t.eo.data());
+  const st::Label lb = st::label_of(t.t1);
   misc::exec::Serial ex;
   const st::Realize rz(kHoldT1, 1, 1, static_cast<int>(D));
-  st::book_rows(ex, sp, hd, lb, PickBooks{t, mem.data(), src.data(), static_cast<int>(A)}, st::Cost{}, [&](int, int r, const double *ret, const TurnFlow *flow) {
+  st::book_rows(ex, sp, hd, lb, t.eo.data(), PickBooks{t, mem.data(), src.data(), static_cast<int>(A)}, st::Cost{}, [&](int, int r, const double *ret, const TurnFlow *flow) {
     for (int w = 0; w < kWeights; ++w)
-      rz.fold(r, &ret[w], 1, b.ret[w].data()), rz.fold(r, &flow[w].vol[kBuy], 1, b.buy[w].data());
+      rz.add(r, ret[w], true, b.ret[w].data()), rz.add(r, flow[w][kFlowBuy], false, b.buy[w].data());
   });
 }
 

@@ -127,10 +127,10 @@ __device__ __forceinline__ void lag_row(const uint16_t *rx, const uint16_t *rlag
   r.ok_rac = ok ? 1 : 0;
 }
 
-// 标签侧 (t → t+h): rx = 本行 r16, lb 已偏到行首 (交接链回看 / 前看同块其他行; 本行池基准 mk / 满仓 cap 按 c.t 取), c = 本行交接链, ret = 收益口径
-// → r 的 ric / mkt / cap / grp / cnt / ok (全 lane 同值; 组与尾部按 Pos.hpp 一次 walk 出层级, 与 Host.hpp 同式). gs / gc = 本 warp 的分组槽,
+// 标签侧 (t → t+h): rx = 本行 r16, lb / eo 已偏到行首 (交接链回看 / 前看同块其他行; 本行池基准 mk / 满仓 cap 按 c.t 取), c = 本行交接链
+// → r 的 ric / mkt / cap / grp / cnt / ok (全 lane 同值, 绝对口径; 组与尾部按 Pos.hpp 一次 walk 出层级, 与 Host.hpp 同式). gs / gc = 本 warp 的分组槽,
 // 连续调用间的槽复用由函数内首个 __syncwarp 保护. 调用方已排除段末尾部
-__device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, const factor::stat::Chain &c, factor::stat::Ret ret, Row &r, float (*gs)[32],
+__device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, const uint8_t *eo, const factor::stat::Chain &c, Row &r, float (*gs)[32],
                                           uint16_t (*gc)[32], int lane) {
   __syncwarp(); // 上一行的广播读 (gs[q][0]) 全部结束, 才能清槽
 #pragma unroll
@@ -149,7 +149,7 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
       continue;
     const int g = factor::stat::grp_of(x);
     float yv[2];
-    const factor::stat::Pos p = factor::stat::cell(c, lb, a, factor::stat::InRank{rx + a, g}, H2F{}, yv);
+    const factor::stat::Pos p = factor::stat::cell(c, lb, eo, a, factor::stat::InRank{rx + a, g}, H2F{}, yv);
     if (p.held < 0)
       continue;
     gs[g][lane] += factor::stat::ret_at(p, 0, yv); // 自己的槽, 无竞争
@@ -195,18 +195,18 @@ __device__ __forceinline__ void label_row(const uint16_t *rx, const Label &lb, c
 #pragma unroll
     for (int j = 0; j < kTails; ++j)
       tsd[e][j] = static_cast<double>(ts[e * kTails + j]), tci[e][j] = tc[e * kTails + j];
-  factor::stat::finish_row(s, lb.mk[c.t], gsd, gci, tsd, tci, lb.cap[c.t], ret, r);
+  factor::stat::finish_row(s, lb.mk[c.t], gsd, gci, tsd, tci, lb.cap[c.t], r);
 }
 
-// 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb 已偏到行首; c = 本行交接链; ret = 收益口径;
+// 一 (t, hold) 完整行 (全 lane 同值): rlag = t−h 行 r16 (没有 → nullptr, 无 rAC); lb / eo 已偏到行首; c = 本行交接链;
 // opens = 开仓行 (Hold::opens)
-__device__ __forceinline__ Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const factor::stat::Chain &c, factor::stat::Ret ret, bool opens,
+__device__ __forceinline__ Row row_stat(const uint16_t *rx, const uint16_t *rlag, const Label &lb, const uint8_t *eo, const factor::stat::Chain &c, bool opens,
                                         float (*gs)[32], uint16_t (*gc)[32], int lane) {
   Row r;
   if (rlag)
     lag_row(rx, rlag, c.A, r, lane);
   if (opens)
-    label_row(rx, lb, c, ret, r, gs, gc, lane);
+    label_row(rx, lb, eo, c, r, gs, gc, lane);
   return r;
 }
 

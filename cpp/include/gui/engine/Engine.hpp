@@ -141,7 +141,7 @@ protected:
   // 块上的标签 (同块各根共用; 评估口径逐根在 Ctx::m)
   factor::stat::Labels labels() const {
     const factor::stat::Labels L = labels_of(block().y);
-    factor::stat::assert_labels(L, block().y.sh.seg, false);
+    factor::stat::assert_labels(L, block().y.sh.g.S, false);
     return L;
   }
 
@@ -214,8 +214,8 @@ public:
   bool walk_dag(const std::atomic<bool> &cancel, const factor::Dag &d, std::span<const LeafId> leaves, const uint8_t *need, Visit &&visit) {
     in_ = leaves_of(block(), leaves);
     d_ = &d;
-    const Shape &sh = c_->y.sh;
-    return factor::cpu::walk(ex_, d, in_, hp_, sc_, sh.T, sh.A, sh.seg, c_->y.gate, need, [&](int i, const auto &, double ms) {
+    const Span &sh = c_->y.sh;
+    return factor::cpu::walk(ex_, d, in_, hp_, sc_, sh.T, sh.A, sh.g.S, c_->y.gate, need, [&](int i, const auto &, double ms) {
       return visit(i, ms) && !cancel.load(std::memory_order_relaxed);
     });
   }
@@ -342,8 +342,8 @@ public:
     if (d.n_slots > static_cast<int>(dp_.slots.size()))
       evict_unused_x((static_cast<size_t>(d.n_slots) - dp_.slots.size()) * (sizeof(float) + 1) * n_);
     d_ = &d;
-    const Shape &sh = c_->y.sh;
-    return factor::gpu::walk(sess_, d, dev_, dp_, sh.T, sh.A, sh.seg, gate_, need, [&](int i, const auto &, double ms) {
+    const Span &sh = c_->y.sh;
+    return factor::gpu::walk(sess_, d, dev_, dp_, sh.T, sh.A, sh.g.S, gate_, need, [&](int i, const auto &, double ms) {
       return visit(i, ms) && !cancel.load(std::memory_order_relaxed);
     });
   }
@@ -480,16 +480,16 @@ private:
   void session(int cmax) {
     assert(cmax >= 1 && cmax <= factor::gpu::stat_max_batch());
     const YPlanes &y = block().y;
-    const bool same = stat_ && st_T_ == y.sh.T && st_A_ == y.sh.A && st_seg_ == y.sh.seg && st_cmax_ == cmax && st_hd_ == y.hd;
+    const bool same = stat_ && st_T_ == y.sh.T && st_A_ == y.sh.A && st_seg_ == y.sh.g.S && st_cmax_ == cmax && st_hd_ == y.hd;
     if (!same) {
       if (stat_)
         factor::gpu::stat_close(stat_);
       evict_unused_x(static_cast<size_t>((7 * y.hd.n + 2 + 2 * cmax) * n_));
       stat_ = factor::gpu::stat_open(c_->span(), cmax, y.hd);
-      st_T_ = y.sh.T, st_A_ = y.sh.A, st_seg_ = y.sh.seg, st_cmax_ = cmax, st_hd_ = y.hd, st_gen_ = 0;
+      st_T_ = y.sh.T, st_A_ = y.sh.A, st_seg_ = y.sh.g.S, st_cmax_ = cmax, st_hd_ = y.hd, st_gen_ = 0;
     }
     if (st_gen_ != c_->gen) {
-      factor::gpu::stat_load(stat_, labels_of(y).l);
+      factor::gpu::stat_load(stat_, labels_of(y));
       st_gen_ = c_->gen;
     }
   }
@@ -558,9 +558,9 @@ private:
     factor::gpu::stat_eval(stat_, &rp, 1, gate_, cx.m, s, day_.data(), rows ? rows_.data() : nullptr, rx ? rx_.data() : nullptr);
     v.day = day_.data();
     v.rx = rx ? rx_.data() : nullptr;
-    if (rows)
-      ex_.rows(s.t_hi() - s.t_lo, [&](int r0, int r1, int) {
-        for (int t = s.t_lo + r0; t < s.t_lo + r1; ++t)
+    if (rows) // 与 CPU 行核同交法: 按日切线程, 同日的行同一线程行序
+      ex_.rows(s.days(), [&](int d0, int d1, int) {
+        for (int t = s.t_lo + d0 * s.g.S; t < s.t_lo + d1 * s.g.S; ++t)
           for (int hi = 0; hi < H; ++hi)
             p.row(hi, t, rows_[static_cast<size_t>(hi) * s.T + t]);
       });

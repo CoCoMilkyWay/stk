@@ -214,8 +214,7 @@ Result result_of(const Engine::FeatureTable &ft, const SpanCache &spans, const O
       x.gross = fs::ls_period(*h), x.net = fs::net_ls_period(*h, c, amt, fee), x.cost = x.gross - x.net;
       x.turn = fs::turn_annual(*h, c);
       assert(h->n_all > 0 && "有滚动窗须有统计行");
-      const double n = static_cast<double>(h->n_all);
-      const auto vol = [&](int s) { return 0.5 * (c.e[fs::kTop].vol[s] + c.e[fs::kBot].vol[s]) / n; };
+      const auto vol = [&](int s) { return fs::per_period(*h, 0.5 * (c.e[fs::kTop].vol(static_cast<Side>(s)) + c.e[fs::kBot].vol(static_cast<Side>(s)))); };
       x.buy = vol(kBuy), x.sell = vol(kSell);
       x.impact = fee.impact;
       double mid = 0.0;

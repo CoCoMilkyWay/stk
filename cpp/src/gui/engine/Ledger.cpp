@@ -2,7 +2,7 @@
 #include "gui/engine/Ledger.hpp"
 
 #include "define/Members.hpp"
-#include "factor/Stat/Book.hpp"            // book_rows / MaskBook
+#include "factor/Stat/Book.hpp"            // book_rows
 #include "features/Storage/FeatureLib.hpp" // pool_id
 #include "shared/Basket.hpp"               // basket_table / Weigh / members
 
@@ -30,6 +30,7 @@ std::array<LeafId, kPoolVals> pool_val_leaves(const FeatureTable &ft) {
 namespace {
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+constexpr int kBasketFields = 1 + kFlowImp; // 篮子 / 个股账的线字段: 收益 + 两侧量 + 卖不出的量 (只付固定冲击)
 
 // 篮子 + 个股账集 (Stat/Book.hpp): 本 = 篮子号 b (BasketTable::each 枚举, 持仓权 Weigh) | 个股 nl + a (自身, 权 1); 一律按真持有权和归一
 //   判据: 子池 = 位集含该池; 行业 = 含母集且源行行业同; 概念 = 含母集 (概念成分恒定)
@@ -83,7 +84,7 @@ Need basket_need(const FeatureTable &ft) {
 Bytes BasketPass::bytes() {
   const double nl = static_cast<double>(basket_table().size());
   constexpr double f = sizeof(float);
-  return {.cell = (kLedgerImp + 2 + kPoolVals + kMarginVals) * f, .day = nl * (kLedgerImp + 2 + 2 * kPoolVals + kMarginVals) * f};
+  return {.cell = (kBasketFields + 2 + kPoolVals + kMarginVals) * f, .day = nl * (kBasketFields + 2 + 2 * kPoolVals + kMarginVals) * f};
 }
 
 BasketPass::BasketPass(FactorFlow &F, std::shared_ptr<const pool::Picks> pk, std::span<const LeafId, kPoolVals> val) : F_(F), pk_(std::move(pk)) {
@@ -101,10 +102,8 @@ void BasketPass::init(const Job &j) {
   assert(r0_ + dm.dates.size() <= s.days() && std::equal(dm.dates.begin(), dm.dates.end(), s.dates.begin() + static_cast<std::ptrdiff_t>(r0_)) &&
          "评估日 = 原料带的连续行");
   const int nl = static_cast<int>(basket_table().size()), A = static_cast<int>(s.A()), P = static_cast<int>(ds_), B = nl + A;
-  std::vector<st::Realize> rz; // 线 = 列 · B + 本 (本 = 篮子 | 个股; 列 < kLedgerImp: 只付固定冲击); 收益列平仓行实现, 其余建仓行即付
-  for (int i = 0; i < kLedgerImp * B; ++i)
-    rz.emplace_back(kHoldT1, 1, 1, P, i < B);
-  lines_.reset(std::move(rz));
+  // 线 = 字段 · B + 本 (本 = 篮子 | 个股; 字段 0 = 收益 (平仓行实现), 1 + f = 流水字段 f < kFlowImp (建仓行即付, 只付固定冲击))
+  lines_.reset(kBasketFields * B, 1, 1, P, [](int) { return kHoldT1; }, [B](int i) { return i < B; });
   out = Baskets{};
   Ledger &bk = out[Quote::kBasket], &sk = out[Quote::kStock];
   bk.pf.cap.reset(nl, P, kNaN);
@@ -128,13 +127,14 @@ Rc BasketPass::block(const Block &c, size_t ci, bool, double) {
   const BasketTable &bt = basket_table();
   const ConceptTable &ct = concepts();
   const YPlanes &y = c.y;
-  assert(y.sh.seg == 1 && y.hd.n == 0 && y.gate);
+  assert(y.sh.g.S == 1 && y.hd.n == 0 && y.gate);
   const st::Span sp = c.span();
   const Hold hd = hold_on(kHoldT1, sp.g);
   const size_t T = static_cast<size_t>(sp.T), A = static_cast<size_t>(sp.A), nl = bt.size(), B = nl + A;
   const size_t rc = r0_ + c.ck.d0, r_stat = r0_ + warm_;
   const size_t o = rc * A; // 块首在原料带上的格
-  const st::Label lb = st::label_of(s.t1, s.eo.data(), nullptr, rc);
+  const st::Label lb = st::label_of(s.t1, nullptr, rc);
+  const uint8_t *eo = s.eo.data() + o;
   const int t_lo = sp.t_lo, t_hi = sp.t_hi(), n_stat = t_hi - t_lo;
 
   // 1. 块内各建仓行 t 对应次一交易日持仓的子池位集 in [T][A] + 持仓权 Weigh (统计行与其前一行: 交接的前一批)
@@ -152,19 +152,18 @@ Rc BasketPass::block(const Block &c, size_t ci, bool, double) {
   std::vector<Weigh> wt;
   wt.reserve(static_cast<size_t>(t_hi - t_w));
   for (int t = t_w; t < t_hi; ++t)
-    wt.emplace_back(*pk_, s.holding_after(rc + static_cast<size_t>(t)));
+    wt.emplace_back(*pk_, s.holding_after(rc + static_cast<size_t>(t)), pool::Drift::Book);
 
-  // 2. 篮子账 + 个股账 (同一账集): 收益 (平仓行) / 流水 (建仓行); 只付固定冲击. 本块逐行暂存 → RowLines
+  // 2. 篮子账 + 个股账 (同一账集): 收益 (平仓行) / 流水 (建仓行); 只付固定冲击. 逐行直落期线 (按日切线程)
   const BasketBooks books{bt, ct, s, in.data(), s.ind.data() + o, lb.m, wt, t_w, static_cast<int>(A)};
-  lines_.open(t_lo, t_hi, c.land0() + t_lo);
-  st::book_rows(ex, sp, hd, lb, books, st::Cost{}, [&](int, int t, const double *ret, const TurnFlow *flow) {
+  const int u0 = c.land0();
+  st::book_rows(ex, sp, hd, lb, eo, books, st::Cost{}, [&](int, int t, const double *ret, const TurnFlow *flow) {
     for (size_t b = 0; b < B; ++b) {
-      lines_.at(static_cast<int>(kLedgerRet * B + b), t) = static_cast<float>(ret[b]);
-      for (int k = kLedgerBuy; k < kLedgerImp; ++k)
-        lines_.at(static_cast<int>(static_cast<size_t>(k) * B + b), t) = ledger_cell(flow[b], k);
+      lines_.add(static_cast<int>(b), u0 + t, ret[b]);
+      for (int f = 0; f < kFlowImp; ++f)
+        lines_.add(static_cast<int>(static_cast<size_t>(1 + f) * B + b), u0 + t, flow[b][f]);
     }
   });
-  lines_.close(ex);
 
   // 3. 画像: 个股七口 / 市值 / 余额 + 篮子按持仓权 (成员表 members ⇄ 随价漂移到当日收盘) 平均的七口
   const Leaf *lf[kPoolVals] = {};
@@ -252,12 +251,14 @@ Rc BasketPass::block(const Block &c, size_t ci, bool, double) {
 
 void BasketPass::finish(const Job &) {
   const LedgerLines &all = lines_.out;
-  const int nl = static_cast<int>(basket_table().size()), B = all.n / kLedgerImp;
-  for (int k = 0; k < kLedgerImp; ++k) {
-    out[Quote::kBasket].col[k] = all.slice(k * B, nl);
-    out[Quote::kStock].col[k] = all.slice(k * B + nl, B - nl);
+  const int nl = static_cast<int>(basket_table().size()), B = all.n / kBasketFields;
+  for (Ledger *l : {&out[Quote::kBasket], &out[Quote::kStock]}) {
+    const int i0 = l == &out[Quote::kBasket] ? 0 : nl, m = l == &out[Quote::kBasket] ? nl : B - nl;
+    l->ret = all.slice(i0, m);
+    for (int f = 0; f < kFlowImp; ++f)
+      l->flow[f] = all.slice((1 + f) * B + i0, m);
   }
-  lines_ = RowLines{};
+  lines_ = Lines{};
 }
 
 Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
@@ -280,24 +281,20 @@ Rc eval_baskets(FactorFlow &F, const FactorScope &sc, Job &j, Baskets &out) {
   return Rc::Ok;
 }
 
-LedgerLines pool_line(misc::exec::ForkJoin &ex, const Block &c) {
+LedgerLines pool_line(const Block &c) {
   const YPlanes &y = c.y;
   assert(y.hd.n >= 1 && y.eo && "Y 未钉");
   const st::Span sp = c.span();
-  const int nT = sp.t_hi() - sp.t_lo;
-  RowLines rl;
-  std::vector<st::Realize> rz;
-  for (int hi = 0; hi < y.hd.n; ++hi)
-    rz.emplace_back(y.hd.k[hi], y.sh.seg, 1, nT);
-  rl.reset(std::move(rz));
-  rl.open(sp.t_lo, sp.t_hi(), 0);
+  Lines l;
+  l.reset(y.hd.n, sp.g.S, 1, sp.t_hi() - sp.t_lo, [&](int i) { return y.hd.k[i]; }, [](int) { return true; });
   for (int hi = 0; hi < y.hd.n; ++hi) {
-    const LabPlane &lab = *y.labels[hi];
-    st::book_rows(ex, sp, hold_on(y.hd.k[hi], sp.g), label_of(lab, y.eo), st::MaskBook{lab.m.data(), sp.A}, st::Cost{},
-                  [&](int, int t, const double *ret, const TurnFlow *) { rl.at(hi, t) = static_cast<float>(ret[0]); });
+    const Hold hd = hold_on(y.hd.k[hi], sp.g);
+    const float *mk = y.labels[hi]->mk.data();
+    for (int t = sp.t_lo; t < sp.t_hi(); ++t)
+      if (hd.opens(t))
+        l.add(hi, t - sp.t_lo, mk[t]);
   }
-  rl.close(ex);
-  return std::move(rl.out);
+  return std::move(l.out);
 }
 
 } // namespace GUI::Engine

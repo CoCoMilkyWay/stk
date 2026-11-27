@@ -105,7 +105,7 @@ inline const BasketTable &basket_table() {
   return t.get();
 }
 
-// 交易日 d 的持仓权 (权落在 d 之前的末行 q = D−1 收盘; 行情价格指数 / 回测池篮子同一式):
+// 交易日 d 的持仓权 (权落在 d 之前的末行 q = D−1 收盘; 行情价格指数 / 回测池篮子同一式; 漂移 dr: 价 = 价格指数 / 画像 ⇄ 账 = 篮子账集):
 //   源行只按调仓周期分两档 src_[Rebal] (无 → SIZE_MAX); 一只资产至多 2×2 四个权 Cell, 按篮子 (周期, 权重) O(1) 查表
 class Weigh {
 public:
@@ -114,13 +114,14 @@ public:
     float operator()(pool::Rebal rb, pool::Weight w) const { return v[rb][w]; }
     float operator()(const BasketTable &bt, size_t b) const { return v[bt.rebal(b)][bt.weight(b)]; }
   };
-  Weigh(const pool::Picks &pk, misc::Ymd d);
+  Weigh(const pool::Picks &pk, misc::Ymd d, pool::Drift dr);
   bool empty() const { return q_ == SIZE_MAX; }
   size_t row() const { return q_; }
   Cell of(size_t a) const;
 
 private:
   const pool::Strip *s_;
+  pool::Drift dr_;
   size_t q_;
   std::array<size_t, pool::kRebals> src_{};
 };

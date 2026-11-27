@@ -250,9 +250,9 @@ struct StatScope {
   int days = 0, T = 0, A = 0;
   double cost_top = 0.0; // 盘口冲击封顶 (Config::cost.top, 账集逐格生效)
 };
-// 一个持有期的换手 = Stat/Book.hpp 因子账集的流水: 层级 l (0 = 整组, 1 + j = 尾部 j) × 两端各一本 (Run / Inspect 同一份 book_rows):
-// 两端按 Δw 记两侧成交量; 各金额段同一份量 + 不可成交量, 盘口段另各一份真实冲击 (Config::cost.top 封顶, 盘口缺 = 封顶);
-// 成本 / 净多空 / 年换手由 Book.hpp 的派生量按金额段与 Fee 现算 (整组 lv[0] 落 stat.turn; Inspect 期限结构净线从它算)
+// 一个持有期的换手 = Stat/Book.hpp 因子账集的流水 (Probe.hpp BookP 逐日形之和): 层级 l (0 = 整组, 1 + j = 尾部 j) × 两端各一本 (Run / Inspect 同一份 book_rows):
+// 两端按 Δw 记两侧成交量; 各口径段同一份量 + 不可成交量, 盘口段另各一份真实冲击 (Config::cost.top 封顶, 盘口缺 = 封顶); 已实现 (÷ h̄, 记建仓日, 与 Realize 同约);
+// 成本 / 净多空 / 年换手由 Book.hpp 的派生量按口径段与 Fee 现算 (整组 lv[0] 落 stat.turn; Inspect 期限结构净线从它算)
 struct TurnStat {
   factor::stat::Ends lv[factor::stat::kLevels];
   void merge(const TurnStat &o) {

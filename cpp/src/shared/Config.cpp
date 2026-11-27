@@ -110,7 +110,7 @@ bool Config::LoadFromFile() {
   try_assign(fee.impact, new_impact, new_impact >= 0.0 && new_impact < 0.05, "固定冲击比率越界 (20bp = 0.0020)");
   try_assign(cost.top, new_top, new_top > 0.0 && new_top <= 0.2, "盘口冲击封顶越界 (1% = 0.01)");
   AmtId amt = kAmtFixed;
-  if (amt_of_wan(j.value("cost_amt", kAmtWan[cost.amt]), amt))
+  if (amt_of_wan(j.value("cost_amt", amt_wan(cost.amt)), amt))
     cost.amt = amt;
   else if (log_callback)
     log_callback("警告: 成本金额段不在 LABEL_AMTS 里, 保留旧值");
@@ -133,7 +133,7 @@ bool Config::SaveToFile() {
   j["stamp"] = fee.stamp;
   j["transfer"] = fee.transfer;
   j["impact"] = fee.impact;
-  j["cost_amt"] = kAmtWan[cost.amt];
+  j["cost_amt"] = amt_wan(cost.amt);
   j["cost_top"] = cost.top;
   disk::write(disk::SettingsFile, {}, j.dump(2)); // Pretty print with 2 spaces indent
   if (log_callback) {

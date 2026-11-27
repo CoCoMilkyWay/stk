@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <vector>
 
-Weigh::Weigh(const pool::Picks &pk, misc::Ymd d) : s_(pk.strip.get()) {
+Weigh::Weigh(const pool::Picks &pk, misc::Ymd d, pool::Drift dr) : s_(pk.strip.get()), dr_(dr) {
   for (int rb = 0; rb < pool::kRebals; ++rb)
     src_[static_cast<size_t>(rb)] = pool::src_of(static_cast<pool::Rebal>(rb), s_->dates, d);
   q_ = src_[pool::kRebalDay];
@@ -16,13 +16,13 @@ Weigh::Cell Weigh::of(size_t a) const {
   for (int rb = 0; rb < pool::kRebals; ++rb)
     if (const size_t r = src_[static_cast<size_t>(rb)]; r != SIZE_MAX)
       for (int w = 0; w < pool::kWeights; ++w)
-        c.v[rb][w] = s_->omega(r, q_, a, static_cast<pool::Weight>(w));
+        c.v[rb][w] = s_->omega(r, q_, a, static_cast<pool::Weight>(w), dr_);
   return c;
 }
 
 void members(const pool::Picks &pk, misc::Ymd d, Members &m, bool global, std::span<const uint8_t> only) {
   m.clear();
-  const Weigh w(pk, d);
+  const Weigh w(pk, d, pool::Drift::Price);
   if (w.empty())
     return;
   const pool::Strip &s = *pk.strip;

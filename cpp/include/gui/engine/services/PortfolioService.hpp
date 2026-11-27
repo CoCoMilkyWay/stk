@@ -59,7 +59,7 @@ struct FactorTask {
   FactorScope scope;
   FactorRef f;
   HoldId hold = kHoldT1;
-  std::string sig() const { return key + "|" + std::to_string(kAmtWan[scope.cost.amt]) + "|" + std::to_string(scope.cost.top); }
+  std::string sig() const { return key + "|" + std::to_string(amt_wan(scope.cost.amt)) + "|" + std::to_string(scope.cost.top); }
 };
 inline constexpr FactorLevelId kBasketLevel = factor_level_of(L_1day);
 struct BasketTask {
@@ -87,9 +87,13 @@ struct PortfolioLedger : Ledger {
     const auto it = std::lower_bound(keys.begin(), keys.end(), key);
     return it != keys.end() && *it == key ? static_cast<size_t>(it - keys.begin()) : lines();
   }
-  const float *at(int k, size_t line) const {
+  const float *ret_of(size_t line) const {
+    assert(line < lines() && ret.n);
+    return ret.at(static_cast<int>(line));
+  }
+  const float *flow_of(int f, size_t line) const { // 流水字段 f (没装 → nullptr)
     assert(line < lines());
-    return col[k].n ? col[k].at(static_cast<int>(line)) : nullptr;
+    return flow[f].n ? flow[f].at(static_cast<int>(line)) : nullptr;
   }
   const float *val_of(size_t line, int m, bool other = false) const { // other = 另一种权重 (Profile::alt; 只篮子账有)
     const LedgerLines &x = other ? pf.alt[m] : pf.val[m];
