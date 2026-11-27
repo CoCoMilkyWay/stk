@@ -48,43 +48,42 @@ struct Quote {
   double bid_vol[kLevels] = {}, ask_vol[kLevels] = {};
 };
 
-// K 线一根 (quotes.sina.cn getKLineData). 1 分钟 K (scale=1): 标号 = bar 结束分钟 (09:31 … 11:30, 13:01 … 15:00),
-// 首根含开盘集合竞价, 无成交的分钟没有这根; 日 K (scale=240): 标号 15:00
+// 1 分钟 K 一根 (quotes.sina.cn getKLineData, scale=1): 标号 = bar 结束分钟 (09:31 … 11:30, 13:01 … 15:00),
+// 首根含开盘集合竞价, 无成交的分钟没有这根
 struct Bar {
   misc::Ymd date = 0;
   int minute = 0; // 标号: hh · 60 + mm
   float open = 0, high = 0, low = 0, close = 0;
-  double volume = 0, amount = 0; // [股] [元]; 日 K 无额 (0)
+  double volume = 0, amount = 0; // [股] [元]
 };
 
 // 新浪行情 HTTP 客户端 — 与 bigquant / tushare::Client 对仗: 纯传输, 不知资产轴与缓存.
 //   一个对象 = 一条 keep-alive 连接 (单线程用; 并发 = 每线程一个对象). 闲置超 kIdle 先重建 (对端会关闲连接),
-//   要 gzip (批量快照 99K→29K、240 根分钟线 30K→5K). 复用的连接断了立即换新连接重发, 其余网络错隔 1s 无限重试 (诊断见 netlog); 回包不符 → assert. 唯 try_quotes 有界、不符即空 (实盘下单路径).
+//   要 gzip (批量快照 99K→29K、240 根分钟线 30K→5K).
+//   一次调用 = 一试 (≤ kTimeoutSeconds; 复用的连接被对端关了即换新连接重发, 不算失败): 网络错 / 非 200 / 回包不认识 → 空
+//   (诊断见 netlog: 连着失败只记头一回, 恢复时记一行),
+//   不重试、不等; 再来与否、何时再来归调用方 (行情各路按节拍再来, 缺的由其补齐机制补回). 回包认得但字段不符 → assert.
 class Client {
 public:
   explicit Client(std::string host); // kQuoteHost / kBarHost
 
   // 批量快照 (≤ kQuoteMax 只); 回包里查无此码 (空串) 的不出现, 顺序同回包
-  std::vector<Quote> quotes(const std::vector<std::string> &syms);
-  // 同上, 但有界 (下单路径用: 不卡、不崩): 网络错至多试 tries 次 (每次 ≤ kTimeoutSeconds), 网络错 / 非 200 / 回包不认识 → 空
-  std::optional<std::vector<Quote>> try_quotes(const std::vector<std::string> &syms, int tries);
-
+  std::optional<std::vector<Quote>> quotes(const std::vector<std::string> &syms);
   // sym 最近 n 根 1 分钟 K, 旧在前 (可跨日)
-  std::vector<Bar> kline(std::string_view sym, int n);
-  // sym 最近 n 根日 K (不复权, 标号 15:00), 旧在前
-  std::vector<Bar> daily(std::string_view sym, int n);
+  std::optional<std::vector<Bar>> kline(std::string_view sym, int n);
 
 private:
-  std::string get(const std::string &target);                             // 回包不符 → assert
-  std::optional<std::string> fetch(const std::string &target, int tries); // 网络错隔 1s 重试 (tries < 0 = 无限); 回包不符 → 空
+  std::optional<std::string> fetch(const std::string &target);
+  std::nullopt_t fail(const std::string &why); // 记一行 (连着失败只记头一回) → 空
+  void ok();                                   // 一次取成: 之前在失败里则记 "恢复"
   static std::string list_target(const std::vector<std::string> &syms);
   static std::optional<std::vector<Quote>> parse_quotes(std::string_view body, size_t n);
-  std::vector<Bar> bars(std::string_view sym, int scale, int n);
 
   std::string host_;
   boost::asio::io_context ioc_;
   std::optional<boost::beast::tcp_stream> stream_;
   std::chrono::steady_clock::time_point used_{};
+  bool down_ = false; // 在连着失败里
 };
 
 } // namespace sina

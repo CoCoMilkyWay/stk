@@ -136,11 +136,9 @@ void take(Core &c, const std::shared_ptr<const live::Snapshot> &snap, std::share
   });
 }
 
-constexpr int kQuoteTries = 2; // 事务现取行情: 网络错至多试几次 (有界, 不卡在半路)
-
-// 现取 secs 的行情 (事务要此刻的价, 不等订阅那一路) 换上; 取不到 → Fail
+// 现取 secs 的行情 (事务要此刻的价, 不等订阅那一路) 换上; 取不到 → Fail (一试, 不卡在半路)
 void fetch(Core &c, sina::Client &cl, const std::shared_ptr<const live::Snapshot> &snap, const std::vector<live::Sec> &secs) {
-  std::optional<live::Quotes> q = quotes_of(cl, secs, kQuoteTries);
+  std::optional<live::Quotes> q = quotes_of(cl, secs);
   live::need(q.has_value(), "新浪取不到行情 (%zu 只)", secs.size());
   take(c, snap, std::make_shared<const live::Quotes>(std::move(*q)));
 }

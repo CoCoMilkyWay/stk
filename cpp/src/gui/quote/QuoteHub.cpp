@@ -38,6 +38,8 @@ void QuoteHub::frame(const SharedData &data) {
   }
   status = quote_->status();
   std::vector<Want> &ws = want_.wants;
+  if (ws.empty() && sent_) // 上帧没有页登记 (切走了): 照旧要, 价格库留着的不换
+    ws = sent_->wants;
   std::ranges::sort(ws, {}, [](const Want &w) { return std::tuple(w.ref.side, w.ref.key, !w.minute); });
   ws.erase(std::ranges::unique(ws, {}, &Want::ref).begin(), ws.end());
   want_.mark = mark;

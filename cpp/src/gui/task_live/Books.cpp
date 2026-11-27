@@ -22,13 +22,13 @@ void merge(live::Quotes &q, const std::vector<sina::Quote> &xs) {
     q[x.sym.substr(2)] = live::quote_of(x);
 }
 
-std::optional<live::Quotes> quotes_of(sina::Client &cl, const std::vector<live::Sec> &secs, int tries) {
+std::optional<live::Quotes> quotes_of(sina::Client &cl, const std::vector<live::Sec> &secs) {
   live::Quotes q;
   std::vector<std::string> syms;
   for (size_t i = 0; i < secs.size(); ++i) {
     syms.push_back(live::sina_sym(secs[i].mkt, secs[i].code));
     if (syms.size() == static_cast<size_t>(sina::kQuoteMax) || i + 1 == secs.size()) {
-      const std::optional<std::vector<sina::Quote>> got = cl.try_quotes(syms, tries);
+      const std::optional<std::vector<sina::Quote>> got = cl.quotes(syms);
       if (!got)
         return std::nullopt;
       merge(q, *got);
@@ -63,7 +63,7 @@ Books::Books(const std::vector<live::Sec> &secs) : feed_(std::make_shared<Feed>(
     while (!f->stop) {
       lk.unlock();
       std::optional<live::Quotes> got;
-      std::ignore = live::guard([&] { got = quotes_of(cl, uniq, 1); });
+      std::ignore = live::guard([&] { got = quotes_of(cl, uniq); });
       const Clock::time_point now = Clock::now();
       lk.lock();
       if (got)
@@ -93,7 +93,7 @@ Books::Book Books::get(const live::Sec &s) {
   live::need(!down_ || Clock::now() - *down_ > kStale, "新浪 %.0fs 内刚取不到行情, 本单不再现取", kStale.count());
   if (!cl_)
     cl_.emplace(sina::kQuoteHost);
-  const std::optional<live::Quotes> got = quotes_of(*cl_, {s}, 1);
+  const std::optional<live::Quotes> got = quotes_of(*cl_, {s});
   if (!got)
     down_ = Clock::now();
   live::need(got.has_value(), "新浪取不到行情");

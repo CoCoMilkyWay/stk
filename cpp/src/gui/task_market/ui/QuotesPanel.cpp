@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -996,9 +997,19 @@ bool basket_ready(const QuoteHub &mk) {
   return false;
 }
 
-// 当日分钟的完整度, 接在上一项行尾 (完整且无事不画): 有缺口 → 警示色进度条 "缺口 N 只 · 补分钟 已取 / 共";
+// 当日分钟的完整度, 接在上一项行尾 (完整且无事不画): 快照停滞 (最久一批超 kStall + 节拍未取到) → 红字 "快照停滞 Ns" 恒显;
+// 有缺口 → 警示色进度条 "缺口 N 只 · 补分钟 已取 / 共";
 // 无缺口在取 → 进行中色进度条 "新浪补分钟 已取 / 共"; 只剩等定稿的 → 灰字只数; 悬停看说明
 void fill_chip(const QuoteStatus &qs) {
+  const long age = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - qs.oldest).count();
+  if (qs.date && age > QuoteService::kStall + QuoteService::tick().count()) {
+    ImGui::SameLine(0, 8);
+    ImGui::TextColored(StatusColor(TaskStatus::Kind::Error), "快照停滞 %lds", age);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("最久的一批快照已 %ld 秒没取到 (新浪不通 / 限流; 终端有 [sina] 失败日志), 其余批照常;\n"
+                        "取到即按断档把这段分钟补回 (那时出现补分钟进度属正常)",
+                        age);
+  }
   if (qs.pending == 0 && qs.gaps == 0)
     return;
   ImGui::SameLine(0, 8);
@@ -1020,7 +1031,7 @@ void fill_chip(const QuoteStatus &qs) {
   }
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("当日分钟补取: 在取 %zu 只 / 已取 %zu; 待补 %zu 只, 其中有缺口 %zu 只\n"
-                      "• 一只用时 (近期均值): 网络 %.0f ms + 回包等锁 %.0f ms, %d 路并发 (网络高 = 新浪慢 / 限流重试, 终端有 sina retry; 等锁高 = 快照 / 发布占锁)\n"
+                      "• 一只用时 (近期均值): 网络 %.0f ms + 回包等锁 %.0f ms, %d 路并发 (网络高 = 新浪慢 / 限流, 终端有 [sina] 失败日志; 等锁高 = 快照 / 发布占锁)\n"
                       "• 缺口 = 快照没盯住的分钟 (启动 / 断网 / 停机重启), 有无成交未知: 日内栏按估值淡色画 (个股段中线性 / 段尾持平, 篮子按成员估价), 立即补取, 补到即换真根\n"
                       "• 待定稿 = 已有图, 等新浪那根分钟 K 不再变 (约 %d 秒) 后再取一次补成精确",
                       qs.pending, qs.fetched, qs.gaps, qs.holes, qs.net_ms, qs.lock_ms, QuoteService::kFillers, QuoteService::kSettle);

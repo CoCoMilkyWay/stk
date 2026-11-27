@@ -51,6 +51,12 @@ TaskHandle CreateMarketTask(std::shared_ptr<Quote::QuoteHub> quote, std::shared_
   for (const Market::PageDef &p : Market::kPageDefs)
     handle.tabs.emplace_back(p.name);
 
+  // 每帧 (无论选中): 行情起了即推进 QuoteHub (价格库请求 / 基本面段末日 / 账户当日), 切走页面后台照常备好, 切回即最新
+  handle.Update = [state](SharedData &data) {
+    if (state->quote->started() && data.task_state.database.asset_info_ready)
+      state->quote->frame(data);
+  };
+
   handle.Enabled = [](const SharedData &data, int idx) {
     if (idx != kTabAsset)
       return true;

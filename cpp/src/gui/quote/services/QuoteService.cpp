@@ -17,7 +17,6 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
-#include <iterator>
 #include <random>
 #include <string_view>
 #include <tuple>
@@ -147,8 +146,19 @@ QuoteService::QuoteService(const std::vector<uint32_t> &ids, misc::Ymd fund_end,
   }
   order_ = ids;
   std::ranges::shuffle(order_, std::mt19937{});
-  poll_ = std::thread(&QuoteService::poll, this);
+  for (const std::string &s : syms_)
+    if (!s.empty()) {
+      if (chunks_.empty() || chunks_.back().size() == static_cast<size_t>(sina::kQuoteMax))
+        chunks_.emplace_back();
+      chunks_.back().push_back(s);
+    }
+  bsec_.assign(chunks_.size(), 0);
+  bseen_.assign(chunks_.size(), std::chrono::steady_clock::now());
+  snaps_.reserve(chunks_.size());
+  for (size_t k = 0; k < chunks_.size(); ++k)
+    snaps_.emplace_back(&QuoteService::snap, this, k);
   watcher_ = std::thread(&QuoteService::rewatch, this);
+  pub_ = std::thread(&QuoteService::publisher, this);
   fillers_.reserve(kFillers);
   for (int k = 0; k < kFillers; ++k)
     fillers_.emplace_back(&QuoteService::fill, this);
@@ -162,8 +172,11 @@ QuoteService::~QuoteService() {
   cv_.notify_all();
   wake_.notify_all();
   rewatch_cv_.notify_all();
-  poll_.join();
+  rest_.notify_all();
+  for (std::thread &t : snaps_)
+    t.join();
   watcher_.join();
+  pub_.join();
   for (std::thread &t : fillers_)
     t.join();
   if (map_)
@@ -233,27 +246,53 @@ void QuoteService::see(std::vector<sina::Quote> fresh) {
 void QuoteService::rewatch() {
   TraceThread("SinaWatch");
   sina::Client c(sina::kQuoteHost);
+  auto due = std::chrono::steady_clock::now();
   while (true) {
     std::vector<std::string> syms;
+    bool fresh = false; // 订阅码刚换: 取到即当场发布 (不等发布线程的间隔)
     {
       std::unique_lock<std::mutex> lock(mu_);
-      rewatch_cv_.wait(lock, [&] { return stop_ || rewatch_; });
+      rewatch_cv_.wait_until(lock, due, [&] { return stop_ || rewatch_; });
       if (stop_)
         return;
-      rewatch_ = false;
+      fresh = std::exchange(rewatch_, false);
       syms = watch_;
     }
+    due = std::chrono::steady_clock::now() + tick();
     if (syms.empty())
       continue;
     assert(syms.size() <= static_cast<size_t>(sina::kQuoteMax) && "订阅码超出一批");
-    std::vector<sina::Quote> got = c.quotes(syms);
+    std::optional<std::vector<sina::Quote>> got = c.quotes(syms);
     {
       std::lock_guard<std::mutex> lock(mu_);
       if (stop_)
         return;
-      see(std::move(got));
+      if (got)
+        see(std::move(*got));
     }
+    if (fresh)
+      publish();
+    else
+      wake_.notify_one();
+  }
+}
+
+std::chrono::seconds QuoteService::tick() { return std::chrono::seconds(in_session(clock_now()) ? kTick : kIdleTick); }
+
+void QuoteService::publisher() {
+  TraceThread("SinaPublish");
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lock(mu_);
+      wake_.wait(lock, [&] { return stop_ || stale(); });
+      if (stop_)
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
     publish();
+    std::unique_lock<std::mutex> lock(mu_);
+    if (rest_.wait_until(lock, t0 + std::chrono::seconds(kFoldGap), [&] { return stop_; }))
+      return;
   }
 }
 
@@ -270,7 +309,7 @@ std::shared_ptr<const Live> QuoteService::live() const {
 void QuoteService::post() {
   const bool fill = date_ > fund_end_;
   std::lock_guard<std::mutex> lock(pub_mu_);
-  status_ = {date_, prev_, sec_, todo_.size() + inflight_, fetched_, fill ? gaps_ : 0, fill ? holes_ : 0, fill, bytes_, saved_, net_ms_, lock_ms_};
+  status_ = {date_, prev_, sec_, todo_.size() + inflight_, fetched_, fill ? gaps_ : 0, fill ? holes_ : 0, fill, bytes_, saved_, net_ms_, lock_ms_, *std::ranges::min_element(bseen_)};
 }
 
 void QuoteService::recount() {
@@ -398,117 +437,85 @@ void QuoteService::fold(Live &y, const Days &stocks, const std::shared_ptr<const
 // ---------------------------------------------------------------------------
 // 快照
 // ---------------------------------------------------------------------------
-void QuoteService::poll() {
-  TraceThread("SinaPoll");
-  std::vector<std::vector<std::string>> chunks; // 一批一路: 各自一条连接
-  for (const std::string &s : syms_)
-    if (!s.empty()) {
-      if (chunks.empty() || chunks.back().size() == static_cast<size_t>(sina::kQuoteMax))
-        chunks.emplace_back();
-      chunks.back().push_back(s);
-    }
-  const int batches = static_cast<int>(chunks.size());
-  chunks.emplace_back(); // 末批 = 订阅码中全市场外的
-  std::deque<sina::Client> clients;
-  for (int k = 0; k <= batches; ++k)
-    clients.emplace_back(sina::kQuoteHost);
-  misc::exec::ForkJoin ex(batches + 1);
-  std::vector<std::vector<sina::Quote>> parts(chunks.size());
-  std::vector<sina::Quote> qs;
+void QuoteService::snap(size_t k) {
+  TraceThread("SinaSnap");
+  sina::Client c(sina::kQuoteHost);
   while (true) {
     const auto t0 = std::chrono::steady_clock::now();
-    std::vector<std::string> watch;
+    const std::optional<std::vector<sina::Quote>> got = c.quotes(chunks_[k]);
     {
       std::lock_guard<std::mutex> lock(mu_);
-      watch = watch_;
-    }
-    chunks.back().clear();
-    for (const std::string &s : watch)
-      if (!index_.contains(s))
-        chunks.back().push_back(s);
-    assert(chunks.back().size() <= static_cast<size_t>(sina::kQuoteMax) && "订阅码超出一批");
-    const int n = batches + !chunks.back().empty();
-    parts.back().clear();
-    ex.tasks(n, [&](int k, int) { parts[static_cast<size_t>(k)] = clients[static_cast<size_t>(k)].quotes(chunks[static_cast<size_t>(k)]); });
-    std::vector<sina::Quote> outside = std::move(parts.back());
-    qs.clear();
-    for (size_t k = 0; k < static_cast<size_t>(batches); ++k)
-      std::move(parts[k].begin(), parts[k].end(), std::back_inserter(qs));
-    misc::Ymd d = 0;
-    for (const sina::Quote &q : qs)
-      d = std::max(d, q.date);
-    assert(d > 0 && "sina: 全市场快照一只都没回");
-    {
-      std::unique_lock<std::mutex> lock(mu_);
       if (stop_)
         return;
-      if (d > date_) { // 换日 (含启动首轮): 从零, 盘上有同日缓存则续上
-        date_ = d;
-        prev_ = cal_->prev(d);
-        ++gen_;
-        for (Track &t : tracks_)
-          t = Track{};
-        todo_.clear();
-        sec_ = 0;
-        dirty_ = true;
-        load();
-      }
-      int cur = 0;
-      for (const sina::Quote &q : qs)
-        if (q.date == date_)
-          cur = std::max(cur, q.sec);
-      const int gap = sec_ > 0 && sec_slot(cur) != sec_slot(sec_) && trading_sec(cur) - trading_sec(sec_) > kGap ? sec_slot(sec_) : -1;
-      auto last = std::make_shared<Quotes>(*last_);
-      for (const sina::Quote &q : qs) {
-        const uint32_t i = index_.at(q.sym);
-        std::shared_ptr<const sina::Quote> &o = (*last)[i];
-        if (o && o->date == q.date && o->sec == q.sec) // 快照时刻没动 = 本只没变
-          continue;
-        o = std::make_shared<const sina::Quote>(q);
-        dirty_ = true;       // 盘口随快照时刻
-        if (q.date != date_) // 停牌等: 只留快照
-          continue;
-        sec_ = std::max(sec_, q.sec);
-        const bool first = tracks_[i].vol < 0;
-        bool changed = false;
-        touch(i, [&](Track &t) { return changed = t.absorb(q, gap); });
-        if (changed) {
-          const int s = sec_slot(q.sec), from = first ? 0 : gap >= 0 ? gap
-                                                                     : s; // 改到的根: 首快照 / 断档的缺口起
-          for (int k = from; k <= s; ++k)
-            put(i, k);
-          put(i);
-          dirty_ = true;
-          tracks_[i].touched = std::min(tracks_[i].touched, from);
-        }
-      }
-      last_ = std::move(last);
-      for (const uint32_t i : watch_ids_) // 订阅码里全市场内的 = 本轮全市场快照
-        if (const sina::Quote *q = (*last_)[i].get())
-          outside.push_back(*q);
-      see(std::move(outside));
-      std::atomic_ref<int32_t>(file_rec(map_).sec).store(sec_, std::memory_order_release); // 本轮各只落定之后
-      schedule();
-      post();
+      if (got)
+        take(k, *got);
     }
     cv_.notify_all();
-    publish();
-    // 到下一轮快照之前: 补根改了当日 → 距上次发布满 kFoldGap 即发布
-    const auto due = t0 + std::chrono::seconds(in_session(clock_now()) ? kTick : kIdleTick);
+    wake_.notify_one();
     std::unique_lock<std::mutex> lock(mu_);
-    while (true) {
-      wake_.wait_until(lock, std::min(due, std::chrono::steady_clock::now() + std::chrono::seconds(kFoldGap)), [&] { return stop_; });
-      if (stop_)
-        return;
-      if (!wake_.wait_until(lock, due, [&] { return stop_ || stale(); }))
-        break;
-      if (stop_)
-        return;
-      lock.unlock();
-      publish();
-      lock.lock();
+    if (rest_.wait_until(lock, t0 + tick(), [&] { return stop_; }))
+      return;
+  }
+}
+
+void QuoteService::take(size_t k, const std::vector<sina::Quote> &qs) {
+  misc::Ymd d = 0;
+  for (const sina::Quote &q : qs)
+    d = std::max(d, q.date);
+  if (d == 0) // 本批一只都没回
+    return;
+  if (d > date_) { // 换日 (含启动首轮): 从零, 盘上有同日缓存则续上
+    date_ = d;
+    prev_ = cal_->prev(d);
+    ++gen_;
+    for (Track &t : tracks_)
+      t = Track{};
+    todo_.clear();
+    sec_ = 0;
+    dirty_ = true;
+    load();
+    std::ranges::fill(bsec_, sec_);
+  }
+  int cur = 0;
+  for (const sina::Quote &q : qs)
+    if (q.date == date_)
+      cur = std::max(cur, q.sec);
+  const int was = bsec_[k];
+  const int gap = was > 0 && cur > 0 && sec_slot(cur) != sec_slot(was) && trading_sec(cur) - trading_sec(was) > kGap ? sec_slot(was) : -1;
+  auto last = std::make_shared<Quotes>(*last_);
+  for (const sina::Quote &q : qs) {
+    const uint32_t i = index_.at(q.sym);
+    std::shared_ptr<const sina::Quote> &o = (*last)[i];
+    if (o && o->date == q.date && o->sec == q.sec) // 快照时刻没动 = 本只没变
+      continue;
+    o = std::make_shared<const sina::Quote>(q);
+    dirty_ = true;       // 盘口随快照时刻
+    if (q.date != date_) // 停牌等: 只留快照
+      continue;
+    sec_ = std::max(sec_, q.sec);
+    const bool first = tracks_[i].vol < 0;
+    bool changed = false;
+    touch(i, [&](Track &t) { return changed = t.absorb(q, gap); });
+    if (changed) {
+      const int s = sec_slot(q.sec), from = first ? 0 : gap >= 0 ? gap
+                                                                 : s; // 改到的根: 首快照 / 断档的缺口起
+      for (int j = from; j <= s; ++j)
+        put(i, j);
+      put(i);
+      dirty_ = true;
+      tracks_[i].touched = std::min(tracks_[i].touched, from);
     }
   }
+  last_ = std::move(last);
+  bsec_[k] = std::max(was, cur);
+  bseen_[k] = std::chrono::steady_clock::now();
+  int low = 0; // 落盘的末轮时刻 = 各批取到过的之最早 (重启按它判断档; 都没取到过 = 0)
+  for (const int s : bsec_)
+    if (s > 0)
+      low = low > 0 ? std::min(low, s) : s;
+  std::atomic_ref<int32_t>(file_rec(map_).sec).store(low, std::memory_order_release); // 本批各只落定之后
+  schedule();
+  post();
 }
 
 void QuoteService::Track::hole(int l, int h) {
@@ -636,7 +643,7 @@ void QuoteService::fill() {
       post();
     }
     const auto t0 = std::chrono::steady_clock::now();
-    const std::vector<sina::Bar> bars = c.kline(syms_[i], n);
+    const std::optional<std::vector<sina::Bar>> bars = c.kline(syms_[i], n);
     const auto t1 = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(mu_);
     const auto ms = [](auto d) { return std::chrono::duration<double, std::milli>(d).count(); };
@@ -648,9 +655,13 @@ void QuoteService::fill() {
       continue;
     }
     tracks_[i].fill = Fill::Idle;
+    if (!bars) { // 没取到: 待补区间原样留着, 下次排队 (schedule) 再入队
+      post();
+      continue;
+    }
     const int st = settled();
     int end = 0;
-    touch(i, [&](Track &t) { return end = t.merge(lo, st, live, date_, bars), true; });
+    touch(i, [&](Track &t) { return end = t.merge(lo, st, live, date_, *bars), true; });
     for (int s = lo; s <= end; ++s)
       put(i, s);
     put(i);

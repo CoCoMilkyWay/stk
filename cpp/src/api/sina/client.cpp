@@ -12,7 +12,6 @@
 #include <charconv>
 #include <chrono>
 #include <string>
-#include <thread>
 
 namespace sina {
 
@@ -23,8 +22,6 @@ using tcp = boost::asio::ip::tcp;
 namespace {
 
 constexpr auto kIdle = std::chrono::seconds(10);
-constexpr int kDayScale = 240;        // getKLineData 的日 K 档
-constexpr int kCloseMinute = 15 * 60; // 日 K 的标号 = 收盘分钟
 
 // 解不开 (回包截断 / 坏) → 空
 std::optional<std::string> gunzip(const std::string &in) {
@@ -90,14 +87,21 @@ std::string_view json_str(yyjson_val *o, const char *k) {
 
 Client::Client(std::string host) : host_(std::move(host)) {}
 
-std::string Client::get(const std::string &target) {
-  std::optional<std::string> body = fetch(target, -1);
-  assert(body && "sina: 回包不符 (非 200 / 未知编码 / gzip 解不开)");
-  return std::move(*body);
+std::nullopt_t Client::fail(const std::string &why) {
+  if (!down_)
+    netlog::fail("sina", host_, why + " (之后的失败不再逐次记, 恢复时记一行)");
+  down_ = true;
+  return std::nullopt;
 }
 
-std::optional<std::string> Client::fetch(const std::string &target, int tries) {
-  for (int fails = 0;;) {
+void Client::ok() {
+  if (down_)
+    netlog::fail("sina", host_, "恢复");
+  down_ = false;
+}
+
+std::optional<std::string> Client::fetch(const std::string &target) {
+  while (true) {
     const bool reused = stream_ && std::chrono::steady_clock::now() - used_ <= kIdle;
     try {
       if (!reused) {
@@ -119,29 +123,22 @@ std::optional<std::string> Client::fetch(const std::string &target, int tries) {
       used_ = std::chrono::steady_clock::now();
       if (!res.keep_alive())
         stream_.reset();
-      if (res.result() != http::status::ok) {
-        netlog::fail("sina", host_, "HTTP " + std::to_string(res.result_int()) + " " + netlog::clip(target));
-        return std::nullopt;
-      }
+      if (res.result() != http::status::ok)
+        return fail("HTTP " + std::to_string(res.result_int()) + " " + netlog::clip(target));
       const auto enc = res[http::field::content_encoding];
       if (enc.empty())
         return std::move(res.body());
-      if (enc != "gzip") {
-        netlog::fail("sina", host_, "未知的 Content-Encoding " + std::string(enc.data(), enc.size()));
-        return std::nullopt;
-      }
+      if (enc != "gzip")
+        return fail("未知的 Content-Encoding " + std::string(enc.data(), enc.size()));
       std::optional<std::string> out = gunzip(res.body());
       if (!out)
-        netlog::fail("sina", host_, "gzip 回包解不开 " + netlog::clip(target));
+        return fail("gzip 回包解不开 " + netlog::clip(target));
       return out;
     } catch (const boost::system::system_error &e) {
       stream_.reset();
       if (reused) // keep-alive 连接被对端关了: 立即换新连接重发
         continue;
-      netlog::retry("sina", host_, e.code().message(), fails++, 1);
-      if (tries >= 0 && fails >= tries)
-        return std::nullopt;
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      return fail(e.code().message());
     }
   }
 }
@@ -216,34 +213,27 @@ std::string Client::list_target(const std::vector<std::string> &syms) {
   return target;
 }
 
-std::vector<Quote> Client::quotes(const std::vector<std::string> &syms) {
-  std::optional<std::vector<Quote>> out = parse_quotes(get(list_target(syms)), syms.size());
-  assert(out && "sina: 快照行不认识");
-  return std::move(*out);
-}
-
-std::optional<std::vector<Quote>> Client::try_quotes(const std::vector<std::string> &syms, int tries) {
-  assert(tries > 0);
-  const std::optional<std::string> body = fetch(list_target(syms), tries);
+std::optional<std::vector<Quote>> Client::quotes(const std::vector<std::string> &syms) {
+  const std::optional<std::string> body = fetch(list_target(syms));
   if (!body)
     return std::nullopt;
   std::optional<std::vector<Quote>> out = parse_quotes(*body, syms.size());
   if (!out)
-    netlog::fail("sina", host_, "快照回包不认识");
+    return fail("快照回包不认识");
+  ok();
   return out;
 }
 
-std::vector<Bar> Client::kline(std::string_view sym, int n) { return bars(sym, 1, n); }
-
-std::vector<Bar> Client::daily(std::string_view sym, int n) { return bars(sym, kDayScale, n); }
-
-// JSON 列表 [{day, open, high, low, close, volume, amount}] (值皆字符串; day 分钟 K "YYYY-MM-DD HH:MM:SS" / 日 K "YYYY-MM-DD", 日 K 无 amount); 查无 → null
-std::vector<Bar> Client::bars(std::string_view sym, int scale, int n) {
+// JSON 列表 [{day, open, high, low, close, volume, amount}] (值皆字符串; day "YYYY-MM-DD HH:MM:SS"); 查无 → null
+std::optional<std::vector<Bar>> Client::kline(std::string_view sym, int n) {
   assert(n > 0);
-  const std::string body = get("/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=" + std::string(sym) +
-                               "&scale=" + std::to_string(scale) + "&ma=no&datalen=" + std::to_string(n));
-  yyjson_doc *doc = yyjson_read(body.data(), body.size(), 0);
-  assert(doc && "sina: K 线回包不是 JSON");
+  const std::optional<std::string> body =
+      fetch("/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=" + std::string(sym) + "&scale=1&ma=no&datalen=" + std::to_string(n));
+  if (!body)
+    return std::nullopt;
+  yyjson_doc *doc = yyjson_read(body->data(), body->size(), 0);
+  if (!doc) // 限流页等非 JSON 回包
+    return fail("K 线回包不是 JSON: " + netlog::clip(*body));
   yyjson_val *root = yyjson_doc_get_root(doc);
   std::vector<Bar> out;
   if (yyjson_is_arr(root)) {
@@ -252,24 +242,24 @@ std::vector<Bar> Client::bars(std::string_view sym, int scale, int n) {
     yyjson_val *o;
     yyjson_arr_foreach(root, i, m, o) {
       const std::string_view day = json_str(o, "day");
-      assert(day.size() == (scale == kDayScale ? 10u : 19u) && "sina: K 线标号不是 YYYY-MM-DD[ HH:MM:SS]");
+      assert(day.size() == 19u && "sina: 分钟 K 标号不是 YYYY-MM-DD HH:MM:SS");
       Bar b;
       b.date = misc::parse_ymd(day.substr(0, 10));
       assert(b.date > 0);
-      b.minute = scale == kDayScale ? kCloseMinute : clock_sec(day.substr(11)) / 60;
+      b.minute = clock_sec(day.substr(11)) / 60;
       b.open = static_cast<float>(num(json_str(o, "open")));
       b.high = static_cast<float>(num(json_str(o, "high")));
       b.low = static_cast<float>(num(json_str(o, "low")));
       b.close = static_cast<float>(num(json_str(o, "close")));
       b.volume = num(json_str(o, "volume"));
-      if (scale != kDayScale)
-        b.amount = num(json_str(o, "amount"));
+      b.amount = num(json_str(o, "amount"));
       out.push_back(b);
     }
   } else {
     assert(yyjson_is_null(root) && "sina: K 线回包既非列表也非 null");
   }
   yyjson_doc_free(doc);
+  ok();
   return out;
 }
 
