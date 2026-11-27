@@ -1,4 +1,5 @@
 // 实盘: 券商无关的一层. 各客户端适配 (live/<客户端>/) 实现 Driver 并登记进 live/Clients.hpp, 上层 (gui/task_live) 只认这里的类型与 Broker
+//   类型按 读 (Snapshot 五样) / 拉 (两融条款 / 账本) / 写 (请求 → 回报) 分节, 末了接口
 //   Driver (一个客户端一份): 同步, 调用线程跑完; 刷新线程与事务线程会同时调, 自身线程安全
 //     接: connect 接上客户端 (换了进程即重接, 接上即可读) → 是谁
 //     读: read 一问读齐 Snapshot 的五样 (fills / pos / pends / debts / acct; 适配可让几张表同时在途, 一趟往返)
@@ -9,8 +10,8 @@
 //       成交与持仓读的那一刻之间又有成交即对不上, 重读至多几遍仍不对照样发布, 留给上层逐只标出 (synced).
 //       一轮失败 = 不发布、保留上一份完整的, 原因记在 err / down. 有人在看 (touch) 才转
 //       起因: request 要一轮 (不等) / sync 要一轮并等完 / 有人在看而还没刷过或距上轮满 every 秒 /
-//       下单成功后隔几秒 (限价单可能稍后才成交). 失败不自动重试, 等下一个起因
-//       batch (批量下单期间不扫客户端): 只认 request / sync, 不自起、不排下单后的; 单件事务不抑制
+//       写 (下单 / 现金还款) 成功后隔几秒 (限价单可能稍后才成交). 失败不自动重试, 等下一个起因
+//       batch (批量下单期间不扫客户端): 只认 request / sync, 不自起、不排写后的; 单件事务不抑制
 //   错误边界 / 当日秒 / 市场见 live/Base.hpp
 #pragma once
 
@@ -36,6 +37,8 @@ struct Sec {
   Mkt mkt = Mkt::SZ;
 };
 
+// ---------- 读: Snapshot 五样 ----------
+
 // 一只持仓 (券商口径); financed / collateral 精简视图没有
 struct Position : Sec {
   int64_t balance = 0, available = 0;                    // 证券数量 / 可卖 [股]
@@ -57,11 +60,6 @@ struct Entrust : Sec {
 struct Fill : Entrust {
   double amount = 0; // [元]
   std::string fill_id;
-};
-
-// 一笔历史成交 (券商口径, 截至上一交易日): 成交日 + 同当日成交
-struct Deal : Fill {
-  misc::Ymd date = 0;
 };
 
 // 还挂着的委托
@@ -122,6 +120,8 @@ std::vector<const Sec *> held(const Snapshot &s);
 // 已清仓仍负债: 融资负债里本只已无持仓 (余额 0) 的, 负债金额升序 (现金还款按此序还)
 std::vector<const Debt *> orphans(const Snapshot &s);
 
+// ---------- 拉: 两融条款 / 账本 ----------
+
 // 两融条款 (一只)
 struct Term {
   std::string name;
@@ -143,20 +143,18 @@ struct CashFlow {
   double amount = 0, balance = 0;
 };
 
+// 一笔历史成交 (券商口径, 截至上一交易日): 成交日 + 同当日成交
+struct Deal : Fill {
+  misc::Ymd date = 0;
+};
+
 // 资金流水账本的一段 (同段同拉, 截至上一交易日): 资金流水 (原序) + 历史成交 ((日, 时刻) 序); 资金流水没有时刻, 历史成交没有现金 / 负债 / 利息 / 转账, 缺一不可
 struct Ledger {
   std::vector<CashFlow> flows;
   std::vector<Deal> deals;
 };
 
-// 刷新进度
-struct Refresh {
-  trace::Spot at;   // 刷新线程此刻在哪 (段栈空 = 闲)
-  std::string who;  // 最近一次接入的客户端标识
-  std::string err;  // 上一轮失败原因
-  std::string down; // 上一轮接不上原因 (空 = 在线)
-  double every = 0; // 定时周期 [s], 0 = 不定时
-};
+// ---------- 写: 下单 / 现金还款 (请求 → 回报) ----------
 
 enum class Credit : uint8_t { Plain,    // 普通 (担保品买卖)
                               Margin }; // 融资买入
@@ -171,12 +169,6 @@ struct OrderReq : Sec {
 };
 nlohmann::json to_json(const OrderReq &o);
 
-// 下单的各步: 各步名 (即其段名, 序即其序) + 前 unsent 步不报出委托 (place 停在其中 = 什么都没报, 原样重下不会重复)
-struct Steps {
-  std::vector<std::string> names;
-  size_t unsent = 0;
-};
-
 // 委托回报: 实际股数 / 价, 回报原文
 struct Placed {
   int64_t qty = 0;
@@ -184,12 +176,21 @@ struct Placed {
   std::string msg;
 };
 
-// 现金还款 (指定合约) 的一笔: 证券 / 合约编号 / 该合约应还 (本金 + 费用 + 利息) / 实还 [元] / 回报原文
+// 现金还款: codes 各只 (按给的序) 的融资合约逐笔指定合约还, 至多共 cap 元 (∞ = 各合约还到应还; 客户端另以其可用金额封顶)
+struct RepayReq {
+  std::vector<std::string> codes;
+  double cap = 0;
+};
+nlohmann::json to_json(const RepayReq &r);
+
+// 还款回报 (一笔): 证券 / 合约编号 / 该合约应还 (本金 + 费用 + 利息) / 实还 [元] / 回报原文
 struct Repaid : Sec {
   std::string contract;
   double due = 0, amount = 0;
   std::string msg;
 };
+
+// ---------- 接口 ----------
 
 // 客户端适配 (见文件头); 同步, 自身线程安全; 外部失败 → Fail
 class Driver {
@@ -200,14 +201,23 @@ public:
 
   virtual Snapshot read() = 0; // 成交 / 持仓 / 挂单 / 融资负债 / 信用账户
 
-  virtual Terms terms() = 0;                   // 两融条款全表
-  virtual Ledger ledger(misc::Ymd from) = 0;   // from 日起 (含; 0 = 开户起) 至昨日的账本
-  virtual Placed place(const OrderReq &o) = 0; // 停在失败的那一步
-  // 现金还款: codes 各只 (按给的序) 的融资合约逐笔指定合约还, 至多共 cap 元 (∞ = 各合约还到应还); 停在失败的那一笔 (此前各笔已还, 各记一条)
-  virtual std::vector<Repaid> repay(const std::vector<std::string> &codes, double cap) = 0;
+  virtual Terms terms() = 0;                                // 两融条款全表
+  virtual Ledger ledger(misc::Ymd from) = 0;                // from 日起 (含; 0 = 开户起) 至昨日的账本
+  virtual Placed place(const OrderReq &o) = 0;              // 停在失败的那一步
+  virtual std::vector<Repaid> repay(const RepayReq &r) = 0; // 停在失败的那一笔 (此前各笔已还, 各记一条)
 
-  virtual Steps steps() const = 0;                             // place 的各步
+  // place 的各步名 (即其段名, 序即其序); 只有末步报出委托 (place 停在此前 = 什么都没报, 原样重下不会重复)
+  virtual std::vector<std::string> steps() const = 0;
   virtual std::unique_ptr<Mirror> mirror() { return nullptr; } // 不支持复现画面 = 空
+};
+
+// 刷新进度
+struct Refresh {
+  trace::Spot at;   // 刷新线程此刻在哪 (段栈空 = 闲)
+  std::string who;  // 最近一次接入的客户端标识
+  std::string err;  // 上一轮失败原因
+  std::string down; // 上一轮接不上原因 (空 = 在线)
+  double every = 0; // 定时周期 [s], 0 = 不定时
 };
 
 // 券商无关的客户端 (见文件头); 刷新线程持核心的 shared_ptr, 析构只置停 (在途的一问做完即退)
@@ -231,11 +241,11 @@ public:
   Terms terms();
   Ledger ledger(misc::Ymd from);
   Placed place(const OrderReq &o);
-  std::vector<Repaid> repay(const std::vector<std::string> &codes, double cap);
-  // 批量下单期间: 只跑要的轮 (request / sync), 不自起刷新、不排下单后的; fn 跑完 (成败都) 即恢复
+  std::vector<Repaid> repay(const RepayReq &r);
+  // 批量下单期间: 只跑要的轮 (request / sync), 不自起刷新、不排写后的; fn 跑完 (成败都) 即恢复
   void batch(const std::function<void()> &fn);
 
-  Steps steps() const;
+  std::vector<std::string> steps() const;
   std::unique_ptr<Mirror> mirror() const;
 
 private:

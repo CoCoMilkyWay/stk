@@ -85,12 +85,12 @@ public:
     const auto g = gate();
     return flash::place(o);
   }
-  std::vector<Repaid> repay(const std::vector<std::string> &codes, double cap) override {
+  std::vector<Repaid> repay(const RepayReq &r) override {
     const auto g = gate();
     ui::show_bar();
-    return tdx::repay::run(codes, cap);
+    return tdx::repay::run(r);
   }
-  Steps steps() const override { return flash::steps(); }
+  std::vector<std::string> steps() const override { return flash::steps(); }
   std::unique_ptr<Mirror> mirror() override { return std::make_unique<TdxMirror>(); }
 
 private:

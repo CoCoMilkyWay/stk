@@ -1,4 +1,4 @@
-// 通达信适配: 下单 = 闪电下单窗 UI 自动化, 一步一函数 (Driver::steps 即其名称, 每步一段 trace::Span, 填单后 trace::live 报本单概要):
+// 通达信适配: 下单 = 闪电下单窗 UI 自动化, 一步一函数, 并排成 ui::Stage 表 (Driver::steps 即其名称, 每步一段 trace::Span, 填单后 trace::live 报本单概要):
 //   切换  图表切到该只 (闪电窗只认图表当前证券): 向主窗投通达信外部联动消息, 等标题换过来;
 //         其间冒出的本适配框 (上一单开窗超时后迟到的闪电窗: 模态, 主窗被禁用即不理联动) 即关掉、重投联动
 //   开窗  主窗 WM_COMMAND 打开闪电窗 (盘口还没到、客户端报价格档位为空即关掉提示再开)
@@ -15,7 +15,7 @@
 
 namespace live::tdx::flash {
 
-Steps steps();                   // 回报之前的各步不报出委托 (回报一步才点确认报出)
-Placed place(const OrderReq &o); // 当前线程跑完 (须持界面锁)
+std::vector<std::string> steps(); // 只有末步回报报出委托 (回报一步才点确认)
+Placed place(const OrderReq &o);  // 当前线程跑完 (须持界面锁)
 
 } // namespace live::tdx::flash

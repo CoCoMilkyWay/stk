@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 namespace live {
 
@@ -34,6 +35,8 @@ nlohmann::json to_json(const OrderReq &o) {
   return {{"code", o.code}, {"name", o.name}, {"side", side_name(o.side)}, {"credit", credit_name(o.credit)}, {"px", o.px}, {"qty", o.qty}};
 }
 
+nlohmann::json to_json(const RepayReq &r) { return {{"codes", r.codes}, {"cap", r.cap}}; }
+
 // ---------- Broker ----------
 
 namespace {
@@ -43,7 +46,7 @@ using Clock = std::chrono::steady_clock;
 
 constexpr auto kTick = 100ms;
 constexpr double kEvery = 60;     // 定时刷新周期缺省 [s]
-constexpr int kKicks[] = {1, 6};  // 下单成功后隔几秒各刷新一次 (限价单可能稍后才成交)
+constexpr int kKicks[] = {1, 6};  // 写成功后隔几秒各刷新一次 (限价单可能稍后才成交)
 constexpr int kSyncTries = 2;     // 一轮里成交与持仓对不上 (读的那一刻之间又成交) 时最多读几遍
 constexpr auto kWatchLinger = 1s; // touch 之后算有人在看的时长
 
@@ -73,7 +76,7 @@ struct Broker::Core {
     return n;
   }
 
-  // 刚下过单: 隔几秒各刷一次 (批量下单期间不排)
+  // 刚写过: 隔几秒各刷一次 (批量下单期间不排)
   void kick() {
     std::lock_guard lk(mu);
     if (hushed)
@@ -100,6 +103,14 @@ struct Broker::Core {
     return fn();
   }
 
+  // 一件写: 同 txn, 成了即排写后的几轮
+  template <class F>
+  auto write(const char *name, trace::Kw kw, F &&fn) {
+    auto r = txn(name, std::move(kw), std::forward<F>(fn));
+    kick();
+    return r;
+  }
+
   // ---------- 刷新线程 ----------
 
   // 该刷新一轮了 → 起因; 不该 → 空 (须持 mu)
@@ -110,7 +121,7 @@ struct Broker::Core {
       return nullptr;
     if (!kicks.empty() && now >= kicks.front()) {
       kicks.erase(kicks.begin());
-      return "下单后";
+      return "写后";
     }
     if (!last)
       return "首轮";
@@ -235,13 +246,11 @@ Ledger Broker::ledger(misc::Ymd from) {
 }
 
 Placed Broker::place(const OrderReq &o) {
-  const Placed p = c_->txn("下单", to_json(o), [&] { return c_->d->place(o); });
-  c_->kick();
-  return p;
+  return c_->write("下单", to_json(o), [&] { return c_->d->place(o); });
 }
 
-std::vector<Repaid> Broker::repay(const std::vector<std::string> &codes, double cap) {
-  return c_->txn("现金还款", {{"codes", codes}, {"cap", cap}}, [&] { return c_->d->repay(codes, cap); });
+std::vector<Repaid> Broker::repay(const RepayReq &r) {
+  return c_->write("现金还款", to_json(r), [&] { return c_->d->repay(r); });
 }
 
 void Broker::batch(const std::function<void()> &fn) {
@@ -261,7 +270,7 @@ void Broker::batch(const std::function<void()> &fn) {
   fn();
 }
 
-Steps Broker::steps() const { return c_->d->steps(); }
+std::vector<std::string> Broker::steps() const { return c_->d->steps(); }
 
 std::unique_ptr<Mirror> Broker::mirror() const { return c_->d->mirror(); }
 

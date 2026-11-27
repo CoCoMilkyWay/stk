@@ -222,21 +222,12 @@ void confirm(Ctx &c) {
 // 提交、读回报; 等回报框、确认框、闪电窗都关了才算完 (下一单紧接着切图表、开窗)
 void reply(Ctx &c) { c.msg = ui::submit(c.box, c.sent, "合同号", "委托", {c.dlg}); }
 
-struct Stage {
-  std::string_view name;
-  void (*run)(Ctx &);
-};
-constexpr Stage kStages[] = {{"切换", switch_to}, {"开窗", open}, {"填单", form}, {"确认", confirm}, {"回报", reply}};
+constexpr ui::Stage<Ctx> kStages[] = {{"切换", switch_to}, {"开窗", open}, {"填单", form}, {"确认", confirm}, {"回报", reply}};
+static_assert(kStages[std::size(kStages) - 1].name == "回报"); // 只有末步报出委托 (Driver::steps)
 
 } // namespace
 
-Steps steps() {
-  static_assert(kStages[std::size(kStages) - 1].name == "回报");
-  Steps s{.unsent = std::size(kStages) - 1};
-  for (const Stage &x : kStages)
-    s.names.emplace_back(x.name);
-  return s;
-}
+std::vector<std::string> steps() { return ui::names(kStages); }
 
 Placed place(const OrderReq &o) {
   const Kind *k = kind_of(o.side, o.credit);
@@ -244,12 +235,7 @@ Placed place(const OrderReq &o) {
   need(o.qty > 0 && o.px > 0, "委托量 %lld / 价 %g 不为正", static_cast<long long>(o.qty), o.px);
   Ctx c{.o = o, .k = *k};
   ui::sweep(kOurs);
-  const std::string err = ui::attempt(c.sent, "先查委托再重下", [&] {
-    for (const Stage &s : kStages) {
-      trace::Span span(std::string(s.name));
-      s.run(c);
-    }
-  });
+  const std::string err = ui::attempt(c.sent, "先查委托再重下", [&] { ui::run(c, kStages); });
   need(err.empty(), err);
   trace::ev("placed", {{"qty", c.n}, {"px", c.px}, {"msg", c.msg}});
   return {c.n, c.px, c.msg};

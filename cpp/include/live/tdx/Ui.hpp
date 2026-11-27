@@ -10,10 +10,13 @@
 //   账户数据不经界面读 (一律直发, Tables.hpp); 界面只用于引导 (让插件发一次各功能) 与下单
 #pragma once
 
+#include "live/Trace.hpp"
 #include "live/tdx/Win.hpp"
 
+#include <cstddef>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace live::tdx::ui {
@@ -64,9 +67,31 @@ void close_new(const win::Tops &before);
 // 框正文 text 里首个「label 空格* 数字串 unit」的数字串 (dots: 可含小数点); take > 0 = 只取开头 take 位 (须够, 不看 unit); 没有 → Fail
 std::string field(const std::string &text, const std::string &label, bool dots, size_t take = 0, const std::string &unit = "");
 
-// ---------- 提交 (闪电下单 / 现金还款同形: 清场 → 各步 → 确认框 → 提交 → 回报; 一笔一个边界) ----------
+// ---------- 提交 (闪电下单 / 现金还款同形: 清场 → 各步 (Stage 表) → 确认框 → 提交 → 回报; 一笔一个边界) ----------
 
 inline constexpr const char *kResult = "提示"; // 回报框 (及客户端别的提示框) 的标题
+
+// 一笔的一步: 步名 (即其段名) + 做法 (结果写进本笔上下文 C); 一笔的各步并排成表
+template <class C>
+struct Stage {
+  std::string_view name;
+  void (*run)(C &);
+};
+// 依次跑表里各步, 每步一段 trace::Span
+template <class C, size_t N>
+void run(C &c, const Stage<C> (&ss)[N]) {
+  for (const Stage<C> &s : ss) {
+    trace::Span span(std::string(s.name));
+    s.run(c);
+  }
+}
+template <class C, size_t N>
+std::vector<std::string> names(const Stage<C> (&ss)[N]) {
+  std::vector<std::string> out;
+  for (const Stage<C> &s : ss)
+    out.emplace_back(s.name);
+  return out;
+}
 
 // 标题在 ours (本适配开的框) 里的、上一笔收尾之后才显示出来的先关掉 (留着则主窗一直禁用); 关不掉 → Fail
 void sweep(const std::vector<std::string> &ours);

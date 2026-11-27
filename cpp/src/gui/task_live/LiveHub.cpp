@@ -23,7 +23,7 @@ using live::strf;
 
 struct LiveHub::Core {
   std::unique_ptr<live::Broker> broker; // connect 时建一次, 之后只读
-  live::Steps steps;                    // 下单各步: 「行情」+ broker 的各步, 同 broker 建一次
+  std::vector<std::string> steps;       // 下单各步: 「行情」+ broker 的各步, 同 broker 建一次; 只有末步报出委托
   live::trace::Track track;             // 事务线程此刻在哪
 
   // mu: 三份快照 (改 = 抄一份改了换上)
@@ -227,7 +227,7 @@ std::string failed(const OrderJob &j) { return strf("%s %s 下单失败: %s", j.
 // 买单被最大可买封顶少买的重下余量 (够起买量): 前面的卖单陆续成交, 回款与腾出的保证金随之到账
 std::optional<live::OrderReq> redo(const Core &c, const OrderJob &j) {
   if (j.st == JobSt::Err)
-    return j.at < c.steps.unsent ? std::optional<live::OrderReq>(j.o) : std::nullopt;
+    return j.at + 1 < c.steps.size() ? std::optional<live::OrderReq>(j.o) : std::nullopt;
   const int64_t rest = j.o.qty - j.got.qty;
   if (j.o.side != live::kBuy || rest < live::lot(j.o.code).first)
     return std::nullopt;
@@ -376,7 +376,7 @@ void rebal_task(Core &c) {
   live::need(after.empty(), "各单已下, 末了刷新失败: %s", after.c_str());
 }
 
-// 现金还款: 刷新后的已清仓仍负债各只 (欠款少的先还), 共至多 cap 元 (∞ = 全部还清; 另以现金封顶); 各笔 broker 各记一条; 末了的刷新失败只记进结局
+// 现金还款: 刷新后的已清仓仍负债各只 (欠款少的先还), 共至多 cap 元 (∞ = 全部还清; 客户端另以可用金额封顶); 各笔 broker 各记一条; 末了的刷新失败只记进结局
 void repay_task(Core &c, double cap) {
   const auto snap = sync(c);
   std::vector<std::string> codes;
@@ -388,7 +388,7 @@ void repay_task(Core &c, double cap) {
   const bool full = std::isinf(cap);
   live::trace::note("repay", strf("已清仓仍负债 %zu 只共 %s, 现金还%s", codes.size(), wan(owe).c_str(), full ? "清" : ("至多 " + wan(cap)).c_str()),
                     {{"codes", codes}, {"owe", owe}, {"full", full}});
-  const std::vector<live::Repaid> r = c.broker->repay(codes, full ? cap : std::min(cap, snap->acct.cash));
+  const std::vector<live::Repaid> r = c.broker->repay({codes, cap});
   double sum = 0;
   for (const live::Repaid &x : r)
     sum += x.amount;
@@ -431,7 +431,7 @@ bool start(const std::shared_ptr<Core> &c, const char *name, std::function<void(
               x.log.pop_front();
           }); },
         .on_span = [&](std::string_view s) {
-          const std::vector<std::string> &n = c->steps.names;
+          const std::vector<std::string> &n = c->steps;
           if (const auto it = std::find(n.begin(), n.end(), s); it != n.end())
             ordering(*c, [&](OrderJob &j) { j.at = static_cast<size_t>(it - n.begin()); }); },
         .on_live = [&](std::string line) {
@@ -483,14 +483,13 @@ void LiveHub::connect(size_t client) {
   client_ = &live::clients()[client];
   c_->broker = std::make_unique<live::Broker>(client_->make());
   c_->steps = c_->broker->steps();
-  c_->steps.names.insert(c_->steps.names.begin(), "行情");
-  ++c_->steps.unsent;
+  c_->steps.insert(c_->steps.begin(), "行情");
   peek();
 }
 
 const std::vector<std::string> &LiveHub::steps() const {
   assert(connected());
-  return c_->steps.names;
+  return c_->steps;
 }
 
 const live::Client &LiveHub::client() const {

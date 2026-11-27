@@ -9,7 +9,7 @@
 //   实时位置 Track: 线程在 Watch 作用域内时, 其段栈 (各段名 + 进入时刻)、实时一行 (live) 与最近发给客户端的命令 (sent) 另镜像进一个 Track,
 //     别的线程 (GUI) 随时可读作进度 (不落盘, 与段内有无事件无关); Watch 可带 Hooks, 本线程的 note / 进段 / live 即同步回调
 //   段: 刷新 {why 起因, n 轮号} › 接入 (› 引导) / 读 (成交 / 持仓 / 挂单 / 融资负债 / 信用资产一趟直发, 对不上即再读一遍);
-//     下单 {委托} › 接入 / 切换 / 开窗 / 填单 / 确认 / 回报;
+//     下单 {委托} › 接入 / 切换 / 开窗 / 填单 / 确认 / 回报;  现金还款 {codes, cap} › 接入 / 开页 / 第 n 笔 › 选约 / 填额 / 确认 / 回报;
 //     两融条款 › 接入 / 引导 (两表一并翻页);  资金流水 {from} › 接入 / 引导 / 第 n 窗 {lo, hi};
 //     界面件: 点「文字」/ 功能树「项」/ 开页「页」{col} / 弹框 {titles}
 //     事务 (LiveHub): 事务名 › 刷新 / 试算 / 行情 / 核对 + 上面各段
@@ -24,8 +24,9 @@
 //     popup {title, hwnd}                等到的弹框                        form {px, dflt, unit, cap0, cap, n}  填单的价、默认价、单位、最大量、股数
 //     gate {ms}                          界面锁被占着, 等了 ms             unsynced {try}  持仓与成交对不上
 //     acct {assets, line, debt, net, avail, cash}  读到的信用账户      placed {qty, px, msg}  委托回报
+//     cap {cap, avail, left}             现金还款的额度、页上可用金额、取小后的额度    avail {want, seen, now}  还一笔后等可用金额减下来
 //     terms {n}  两融条款只数            ledger {flows, deals}  账本一段的资金流水条数 / 历史成交笔数
-//     note 各条 (事务里): order / quote / job / acct / plan / terms / window / flows / ok / err {…, text}
+//     note 各条 (事务里): order / quote / job / acct / plan / terms / window / flows / repay / repaid / ok / err {…, text}
 #pragma once
 
 #include "nlohmann/json.hpp"

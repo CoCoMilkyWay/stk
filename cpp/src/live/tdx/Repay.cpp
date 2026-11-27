@@ -186,10 +186,13 @@ void reply(Ctx &c) {
   trace::ev("avail", {{"want", want}, {"seen", seen}, {"now", win::text(c.avail)}});
 }
 
+// 选约之后的各步 (选约定有没有这一笔, 在表外)
+constexpr ui::Stage<Ctx> kStages[] = {{"填额", fill}, {"确认", confirm}, {"回报", reply}};
+
 } // namespace
 
-std::vector<Repaid> run(const std::vector<std::string> &codes, double cap) {
-  need(!codes.empty() && cap > 0, "现金还款: 没有要还的合约 / 额度 %.2f", cap);
+std::vector<Repaid> run(const RepayReq &req) {
+  need(!req.codes.empty() && req.cap > 0, "现金还款: 没有要还的合约 / 额度 %.2f", req.cap);
   ui::sweep(kOurs);
   const Hwnd dlg = ui::form(kPage, kParent, kMark, kMarkText);
   const auto ids = win::ctls(dlg, {{"amount", kAmount}, {"ok", kOk}, {"pick", kPick}, {"avail", kAvail}});
@@ -197,20 +200,21 @@ std::vector<Repaid> run(const std::vector<std::string> &codes, double cap) {
   const std::optional<double> avail = until([&] { return "可用金额填上, 现为「" + win::text(ids.at("avail")) + "」"; }, [&] { return parse_num(win::text(ids.at("avail"))); }, kFieldWait);
   std::set<std::string> done;
   std::vector<Repaid> out;
-  double left = std::min(cap, *avail), cash = *avail;
-  trace::note("repay", strf("现金还款 %zu 只, 额度 %.2f (可用金额 %.2f)", codes.size(), left, *avail), {{"codes", codes}, {"cap", cap}, {"avail", *avail}});
+  double left = std::min(req.cap, *avail), cash = *avail;
+  trace::ev("cap", {{"cap", req.cap}, {"avail", *avail}, {"left", left}});
   while (left >= 0.01) {
-    Ctx c{dlg, ids.at("amount"), ids.at("ok"), ids.at("pick"), ids.at("avail"), codes, done, left, cash, {}, {}, {}, false};
+    Ctx c{dlg, ids.at("amount"), ids.at("ok"), ids.at("pick"), ids.at("avail"), req.codes, done, left, cash, {}, {}, {}, false};
     bool more = true;
     const std::string err = ui::attempt(
         c.sent, "先查负债再重还",
         [&] {
           trace::Span span(strf("第 %zu 笔", out.size() + 1));
-          if (!(more = choose(c)))
-            return;
-          fill(c);
-          confirm(c);
-          reply(c);
+          {
+            trace::Span sp("选约");
+            more = choose(c);
+          }
+          if (more)
+            ui::run(c, kStages);
         },
         [&] { unpick(c.pick); });
     need(err.empty(), "%s %s: %s", c.r.code.c_str(), c.r.contract.c_str(), err.c_str());
