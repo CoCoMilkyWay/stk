@@ -66,7 +66,7 @@ LibMask used_libs(const FeatureTable &ft, PoolId pool, std::span<const LeafId> l
   assert(ft.y.ts.ref(pool).lib == lab && ft.y.cs.ref(pool).lib == lab && "门控 / 标签 / K 线在标签库");
   LibMask m = lib_bit(lab);
   if (ft.y.priced(cost.amt))
-    m |= lib_bit(ft.y.cost[cost.amt][kBuy].ref(pool).lib);
+    m |= lib_bit(ft.y.cost[lob_of(cost.amt)][kBuy].ref(pool).lib);
   for (const LeafId id : leaves) {
     const FeatCol &c = ft.x.leaves[id];
     assert(c.allowed || c.target);
@@ -214,11 +214,11 @@ Plan plan_chunks(const Domain &dm, int seg, const Budget &b, Bands bd, double ho
 // ============================================================================
 
 YSpec y_spec(const FeatureTable &ft, const Domain &dm, const Holds &hd, Segs sg, const CostSpec &cost) {
-  YSpec s{hd, {}};
-  if (sg == Segs::None)
+  YSpec s{hd, 0};
+  if (sg == Segs::None || !is_lob(cost.amt))
     return s;
-  assert((!ft.y.priced(cost.amt) || dm.uses(ft.y.cost[cost.amt][kBuy])) && "盘口段口径的评估域须含 Lob 库 (used_libs)");
-  s.ad = sg == Segs::All && cost.amt != kAmtFixed ? kAllAmts : Amts::of({cost.amt}); // 口径取盘口段: 全部段 (含固定段, 对照用)
+  assert((!ft.y.priced(cost.amt) || dm.uses(ft.y.cost[lob_of(cost.amt)][kBuy])) && "盘口段口径的评估域须含 Lob 库 (used_libs)");
+  s.lob = sg == Segs::All ? kAllLob : lob_bit(lob_of(cost.amt)); // 口径取盘口段: 全部盘口段 (与固定段对照用)
   return s;
 }
 
@@ -226,10 +226,7 @@ std::string YSpec::key() const {
   std::string k = "h";
   for (int i = 0; i < hd.n; ++i)
     k += "," + std::to_string(hd.k[i]);
-  k += "|a";
-  for (int i = 0; i < ad.n; ++i)
-    k += "," + std::to_string(ad.k[i]);
-  return k;
+  return k + "|a" + std::to_string(lob);
 }
 
 namespace {
@@ -368,9 +365,7 @@ void gate_day(const ViewFn &view, size_t ts_i, size_t cs_i, size_t VR, size_t A,
 } // namespace
 
 double cell_bytes(const FeatureTable &ft, const BlockSpec &s, size_t nx) {
-  int books = 0;
-  for (int c = 0; c < s.y.ad.n; ++c)
-    books += ft.y.priced(s.y.ad.k[c]);
+  const int books = std::popcount(static_cast<unsigned>(s.y.lob & ft.y.planes()));
   return kCellBytes<Leaf> * static_cast<double>(nx) + kCellBytes<YCore> + kCellBytes<LabelPlanes> * s.y.hd.n + kCellBytes<U16> * kSides * books;
 }
 
@@ -406,14 +401,18 @@ bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vect
   });
 }
 
-bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LabelPlanes> &labels,
+bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, LobMask lob, std::vector<LabelPlanes> &labels,
             std::vector<std::vector<uint16_t>> &costs) {
   TraceN("FactorsLoadY");
   constexpr size_t kNone = SIZE_MAX;
   const FeatureTable &ft = io.ft;
   const Span sh = shape_of(io, k);
   const size_t A = static_cast<size_t>(sh.A), n = sh.n(), VR = static_cast<size_t>(ft.seg);
-  const size_t H = static_cast<size_t>(hd.n), C = static_cast<size_t>(ad.n);
+  std::vector<LobAmt> ad; // 要装的盘口段 (升序)
+  for (int q = 0; q < kLobAmts; ++q)
+    if (lob_has(lob, static_cast<LobAmt>(q)))
+      ad.push_back(static_cast<LobAmt>(q));
+  const size_t H = static_cast<size_t>(hd.n), C = ad.size();
   assert((!have || H + C > 0) && "无可装");
   ColList cols{io.dm.pool, {}};
   size_t ts_i = kNone, cs_i = kNone, eo_i = kNone;
@@ -430,10 +429,10 @@ bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const 
       cols.add(lc.nv);
   }
   for (size_t c = 0; c < C; ++c) { // 两侧冲击列相邻 (cost_at[c] + side)
-    const AmtId a = ad.k[c];
-    assert(ft.y.priced(a) && io.dm.uses(ft.y.cost[a][kBuy]) && "只装有平面的盘口段, 要评估域含 Lob 库 (y_spec)");
-    cost_at[c] = cols.add(ft.y.cost[a][kBuy]);
-    cols.add(ft.y.cost[a][kSell]);
+    const LobAmt q = ad[c];
+    assert(ft.y.cost[q][kBuy].has() && io.dm.uses(ft.y.cost[q][kBuy]) && "只装有平面的盘口段, 要评估域含 Lob 库 (y_spec)");
+    cost_at[c] = cols.add(ft.y.cost[q][kBuy]);
+    cols.add(ft.y.cost[q][kSell]);
   }
 
   if (!have) {
@@ -626,7 +625,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   c.x.v.assign(ft.x.leaves.size(), nullptr);
   YPlanes &y = c.y;
   y.sh = sh;
-  y.hd = s.y.hd, y.ad = s.y.ad, y.top = s.top;
+  y.hd = s.y.hd, y.lob = s.y.lob, y.cost.top = s.top;
   if (y.hd.n > 0)
     factor::stat::assert_holds(y.hd, sh.g.S);
 
@@ -634,14 +633,14 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
   const YCore *core = nullptr;
   const auto set_core = [&](const YCore &p) { core = &p, y.gate = p.gate.data(), y.eo = p.eo.data(); };
   const auto set_hold = [&y](int i) { return [&y, i](const LabelPlanes &p) { y.labels[i] = &p; }; };
-  const auto set_amt = [&y](int i) { return [&y, i](const U16 &p) { y.costs[i] = p.data(); }; };
+  const auto set_imp = [&y, n](int q) { return [&y, q, n](const U16 &p) { y.cost.imp[q][kBuy] = p.data(), y.cost.imp[q][kSell] = p.data() + static_cast<size_t>(n); }; };
   const auto set_rank = [&y](int i) { return [&y, i](const U16 &p) { y.ry[i] = p.data(); }; };
   const auto set_leaf = [&c](LeafId id) { return [&c, id](const Leaf &p) { c.x.v[id] = &p; }; };
 
   hit<YCore>(c, key('g', 0), set_core);
   Holds mh;
-  Amts ma;
-  std::vector<int> mh_at, ma_at, mr;
+  LobMask ma = 0;
+  std::vector<int> mh_at, mr;
   std::vector<LeafId> mx;
   for (int i = 0; i < y.hd.n; ++i) {
     if (!hit<LabelPlanes>(c, key('h', y.hd.k[i]), set_hold(i)))
@@ -649,14 +648,14 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
     if (s.ry && !hit<U16>(c, key('r', y.hd.k[i]), set_rank(i)))
       mr.push_back(i);
   }
-  for (int i = 0; i < y.ad.n; ++i)
-    if (ft.y.priced(y.ad.k[i]) && !hit<U16>(c, key('a', y.ad.k[i]), set_amt(i)))
-      ma.k[ma.n++] = y.ad.k[i], ma_at.push_back(i);
+  for (int q = 0; q < kLobAmts; ++q)
+    if (lob_has(y.lob & ft.y.planes(), static_cast<LobAmt>(q)) && !hit<U16>(c, key('a', q), set_imp(q)))
+      ma |= lob_bit(static_cast<LobAmt>(q));
   for (const LeafId id : s.x)
     if (!hit<Leaf>(c, key('x', id), set_leaf(id)))
       mx.push_back(id);
 
-  const double need = n * ((core ? 0.0 : kCellBytes<YCore>)+kCellBytes<LabelPlanes> * mh.n + kCellBytes<U16> * static_cast<double>(kSides * ma.n + mr.size()) +
+  const double need = n * ((core ? 0.0 : kCellBytes<YCore>)+kCellBytes<LabelPlanes> * mh.n + kCellBytes<U16> * static_cast<double>(kSides * std::popcount(static_cast<unsigned>(ma)) + mr.size()) +
                            kCellBytes<Leaf> * static_cast<double>(mx.size()));
   room(need, reserve);
   c.fresh = need > 0.0;
@@ -666,7 +665,7 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
       clear();
     return rc;
   };
-  if (!core || mh.n > 0 || ma.n > 0) {
+  if (!core || mh.n > 0 || ma != 0) {
     YCore got;
     std::vector<LabelPlanes> labs;
     std::vector<U16> cs;
@@ -679,8 +678,9 @@ Rc Store::pin(Block &c, const Io &io, const Chunk &k, const BlockSpec &s, double
       land(c, key('g', 0), std::move(got), n, set_core);
     for (int j = 0; j < mh.n; ++j)
       land(c, key('h', mh.k[j]), std::move(labs[static_cast<size_t>(j)]), n, set_hold(mh_at[static_cast<size_t>(j)]));
-    for (int j = 0; j < ma.n; ++j)
-      land(c, key('a', ma.k[j]), std::move(cs[static_cast<size_t>(j)]), kSides * n, set_amt(ma_at[static_cast<size_t>(j)]));
+    for (int q = 0, j = 0; q < kLobAmts; ++q)
+      if (lob_has(ma, static_cast<LobAmt>(q)))
+        land(c, key('a', q), std::move(cs[static_cast<size_t>(j++)]), kSides * n, set_imp(q));
   }
   if (!mx.empty()) {
     std::vector<Leaf> xs;

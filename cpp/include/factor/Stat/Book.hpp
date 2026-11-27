@@ -178,23 +178,25 @@ inline void book_rows(Exec &ex, const Span &s, const Hold &hd, const Label &lb, 
 }
 
 // ---- 常用账集 ----
-// 因子两端 × 层级 (本号 b = e · kLevels + l): rx = 块首的已定向 r16, cap = 块首的逐行满仓 (Label::cap), 层级满仓 = cap · level_frac(l)
+// 因子两端 × 层级 (本号 b = e · levels + l): rx = 块首的已定向 r16, cap = 块首的逐行满仓 (Label::cap), 层级满仓 = cap · level_frac(l);
+//   只要前 ends 端 (kTop 起) × 前 levels 级的本 (组合账 = 顶端整组一本: ends = levels = 1), 不算用不到的本
 inline constexpr int kFactorBooks = kEnds * kLevels;
 struct FactorBooks {
   const uint16_t *rx = nullptr;
   int A = 0;
   const float *cap_ = nullptr;
-  size_t size() const { return kFactorBooks; }
-  double cap(int t, size_t b) const { return static_cast<double>(cap_[t]) * level_frac(static_cast<int>(b % kLevels)); }
+  int ends = kEnds, levels = kLevels;
+  size_t size() const { return static_cast<size_t>(ends * levels); }
+  double cap(int t, size_t b) const { return static_cast<double>(cap_[t]) * level_frac(static_cast<int>(b % static_cast<size_t>(levels))); }
   template <class Put>
   void each(int t, uint32_t a, Put &&put) const {
     const size_t i = static_cast<size_t>(t) * A + a;
     if (rx[i] == kRankNone)
       return;
     const int g = grp_of(rx[i]);
-    for (int e = 0; e < kEnds; ++e)
+    for (int e = 0; e < ends; ++e)
       if (g == end_group(e))
-        put(static_cast<uint32_t>(e * kLevels), 1.f, InRank{rx + i, g});
+        put(static_cast<uint32_t>(e * levels), 1.f, InCap<InRank>{InRank{rx + i, g}, levels - 1});
   }
 };
 
@@ -230,7 +232,7 @@ inline void pool_mean(Exec &ex, LabelPlanes &p, const uint8_t *eo, const Hold &h
 
 // ---- 派生量 (三级 HoldStat × 账集流水; 流水已实现: 逐日 ÷ h̄ 记建仓日, 与 Realize 同约; 口径段与费率现选) ----
 // 已实现的量 x (全期之和) 折成每期 (一批) 均值, 与 ls_period 同分母 n_all
-inline double per_period(const HoldStat &s, double x) { return s.n_all > 0 ? x * hold_on(s.hold, geo_of(s.seg)).span() / static_cast<double>(s.n_all) : 0.0; }
+inline double per_period(const HoldStat &s, double x) { return s.n_all > 0 ? x * s.hd().span() / static_cast<double>(s.n_all) : 0.0; }
 // 一本的每期成本
 inline double cost_period(const HoldStat &s, const TurnFlow &f, AmtId a, const Fee &fee) { return per_period(s, fee.cost(f, a)); }
 // 每期净多空 = ls_period − 两端每期成本的平均; 年化 = × span_per_year

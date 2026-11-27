@@ -92,7 +92,7 @@ inline const ConstDef *const_of(std::string_view key) {
 //   output/agent/<模式>/sessions/<池>/<层>/<持有期>/
 //     factors/                          候选因子文件 (与正式因子同格式)
 //     chat/<时间>/                      一段会话的存档与可读日志 (session.json / brief.json / system.md / log.md / report.md)
-//   output/agent/<模式>/notes/<类>.jsonl 全局记录, 一类一个文件 (特征申请 / 工具申请 / 发现 / 建议与 bug; gui/task_agent/Notes.hpp)
+//   output/agent/<模式>/notes/<类>.jsonl 全局记录, 一类一个文件 (发现 / 反馈 / 特征申请 / 工具申请; gui/task_agent/Notes.hpp)
 //   output/run/agent/
 //     remote.json                       外部 agent 的 MCP 地址 {"url": …} (程序一开即写; py/agent.py 读它)
 //     <模式>/sessions/<池>/<层>/<持有期>/search/ 候选的 Search 日志

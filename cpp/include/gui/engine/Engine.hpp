@@ -242,10 +242,14 @@ private:
     const factor::stat::Span s = c_->span();
     const factor::check::Plane *rp = plane(i);
     rx_.resize(s.n());
-    day_.resize(static_cast<size_t>(cx.L.hd.n) * s.days());
-    factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, cx.m, s, cx.L, rx_.data(), w_, day_.data(), p);
     RootView v;
-    v.day = day_.data();
+    if constexpr (Ps::kStat) {
+      day_.resize(static_cast<size_t>(cx.L.hd.n) * s.days());
+      factor::cpu::stat::run(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, cx.m, s, cx.L, rx_.data(), w_, day_.data(), p);
+      v.day = day_.data();
+    } else {
+      factor::cpu::stat::rank_x(ex_, {rp->v.data(), rp->m.data()}, c_->y.gate, cx.m, s, rx_.data(), w_);
+    }
     v.x = {(need & kNeedX) != 0 ? rp->v.data() : nullptr, (need & kNeedMask) != 0 ? rp->m.data() : nullptr};
     v.rx = (need & kNeedRx) != 0 ? rx_.data() : nullptr;
     if ((need & kNeedAlpha) != 0) {
@@ -313,6 +317,7 @@ public:
     w_ = factor::cpu::stat::Workspace{};
     std::vector<factor::stat::Sum>().swap(day_);
     std::vector<factor::stat::Row>().swap(rows_);
+    std::vector<float>().swap(ric_);
     std::vector<uint16_t>().swap(rx_);
     std::vector<float>().swap(xv_);
     std::vector<uint8_t>().swap(mask_);
@@ -326,7 +331,7 @@ public:
   }
   double host_bytes() const {
     return static_cast<double>(rows_.capacity()) * sizeof(factor::stat::Row) + static_cast<double>(rx_.capacity()) * sizeof(uint16_t) +
-           static_cast<double>(xv_.capacity() + av_.capacity()) * sizeof(float) +
+           static_cast<double>(xv_.capacity() + av_.capacity() + ric_.capacity()) * sizeof(float) +
            static_cast<double>(mask_.capacity() + am_.capacity()) + static_cast<double>(day_.capacity()) * sizeof(factor::stat::Sum);
   }
   double vram_bytes() const {
@@ -536,10 +541,13 @@ private:
     }
     const size_t n = s.n();
     const int i = F.d.roots[static_cast<size_t>(k)];
-    const bool rows = (need & kNeedRows) != 0, rx = (need & kNeedRx) != 0;
-    day_.resize(static_cast<size_t>(H) * s.days());
+    const bool rows = (need & kNeedRows) != 0, ric = !rows && (need & kNeedRic) != 0, rx = (need & kNeedRx) != 0;
+    if constexpr (Ps::kStat)
+      day_.resize(static_cast<size_t>(H) * s.days());
     if (rows)
       rows_.resize(static_cast<size_t>(H) * s.T);
+    if (ric)
+      ric_.resize(static_cast<size_t>(H) * s.T);
     if (rx)
       rx_.resize(n);
     if ((need & kNeedX) != 0)
@@ -555,14 +563,20 @@ private:
       factor::gpu::download(sess_, rp, xv, xm);
       v.x = {xv, xm};
     }
-    factor::gpu::stat_eval(stat_, &rp, 1, gate_, cx.m, s, day_.data(), rows ? rows_.data() : nullptr, rx ? rx_.data() : nullptr);
-    v.day = day_.data();
+    factor::gpu::stat_eval(stat_, &rp, 1, gate_, cx.m, s, Ps::kStat ? day_.data() : nullptr, rows ? rows_.data() : nullptr, ric ? ric_.data() : nullptr,
+                           rx ? rx_.data() : nullptr);
+    v.day = Ps::kStat ? day_.data() : nullptr;
     v.rx = rx ? rx_.data() : nullptr;
-    if (rows) // 与 CPU 行核同交法: 按日切线程, 同日的行同一线程行序
+    if (rows || ric) // 与 CPU 行核同交法: 按日切线程, 同日的行同一线程行序
       ex_.rows(s.days(), [&](int d0, int d1, int) {
         for (int t = s.t_lo + d0 * s.g.S; t < s.t_lo + d1 * s.g.S; ++t)
-          for (int hi = 0; hi < H; ++hi)
-            p.row(hi, t, rows_[static_cast<size_t>(hi) * s.T + t]);
+          for (int hi = 0; hi < H; ++hi) {
+            const size_t at = static_cast<size_t>(hi) * s.T + t;
+            if (rows)
+              p.row(hi, t, rows_[at]);
+            else
+              p.ric(hi, t, ric_[at]);
+          }
       });
     if ((need & kNeedAlpha) != 0) {
       const int in0 = F.d.nodes[static_cast<size_t>(i)].in[0];
@@ -595,6 +609,7 @@ private:
   factor::cpu::stat::Workspace w_;
   std::vector<factor::stat::Sum> day_; // [C][H][D]
   std::vector<factor::stat::Row> rows_;
+  std::vector<float> ric_;
   std::vector<uint16_t> rx_;
   std::vector<float> xv_;
   std::vector<uint8_t> mask_;

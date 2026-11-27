@@ -171,15 +171,22 @@ struct LabCols {
   Col lv, nv;
 };
 struct YCols {
-  Col ts;                      // ts_valid (当日有成交)
-  Col cs;                      // cs_valid (标签 + 截面门控平面)
-  Col entry;                   // lb_entry_ok 建仓可成交码 (各持有期共用; Stat 仓位感知 (factor/Stat/Pos.hpp))
-  Holds holds;                 // 本层合法 (hold_ok) 的持有期 = 有标签列的 (UI 按下标切持有期)
-  LabCols lab[kHoldCount];     // [HoldId]
-  Col cost[kAmtCount][kSides]; // [AmtId][买 / 卖] Lob 档 L_1min 冲击列 lb_cost_<buy|sell>_<a>w; 固定段无列; 日层无列 (收盘撮合建仓, 盘口冲击 0)
+  Col ts;                     // ts_valid (当日有成交)
+  Col cs;                     // cs_valid (标签 + 截面门控平面)
+  Col entry;                  // lb_entry_ok 建仓可成交码 (各持有期共用; Stat 仓位感知 (factor/Stat/Pos.hpp))
+  Holds holds;                // 本层合法 (hold_ok) 的持有期 = 有标签列的 (UI 按下标切持有期)
+  LabCols lab[kHoldCount];    // [HoldId]
+  Col cost[kLobAmts][kSides]; // [盘口段][买 / 卖] Lob 档 L_1min 冲击列 lb_cost_<buy|sell>_<a>w; 日层无列 (收盘撮合建仓, 盘口冲击 0)
   bool has(HoldId h) const { return holds.has(h); }
-  // 金额段 a 有盘口冲击平面要装 (盘口段 ∧ 非日层)
-  bool priced(AmtId a) const { return cost[a][kBuy].has(); }
+  // 口径段 a 有盘口冲击平面要装 (盘口段 ∧ 非日层)
+  bool priced(AmtId a) const { return is_lob(a) && cost[lob_of(a)][kBuy].has(); }
+  // 有平面的盘口段 (日层 0)
+  LobMask planes() const {
+    LobMask m = 0;
+    for (int k = 0; k < kLobAmts; ++k)
+      m |= cost[k][kBuy].has() ? lob_bit(static_cast<LobAmt>(k)) : LobMask{0};
+    return m;
+  }
 };
 struct BCols {
   Col ohlc[4];    // open high low close (K 线, 不复权; 列名 FactorLevel::kline)
@@ -303,7 +310,7 @@ struct EvalStat {
   float valid_pct = 0.f, rank_pct = 0.f; // 池内有效率 / 可秩率 (Probe CoverP)
   int n_hold = 0;
   factor::stat::HoldStat hold[kHoldCount]; // [hold], 毛收益口径
-  Amts amts;                               // 装过的金额段 (首个 = 固定段): 成本可按其中任一段现算
+  LobMask lob = 0;                         // 可算的盘口段 (固定段恒可算): 成本可按其中任一段现算 (each_amt)
   TurnStat turn[kHoldCount];               // [hold] 换手流水 (年换手 / 成本 / Inspect 净线从它算)
   MiniPdf ic_pdf[kHoldCount];              // [hold] 逐行 rIC (ok 行) 分布 (Probe IcPdfP; 因子表小图)
   std::vector<YearStat> years[kHoldCount]; // [hold] 分年 (年升序, 只列有统计行 ≥ 3 的年)
@@ -328,7 +335,7 @@ struct EvalStat {
     return h ? &years[h - hold] : nullptr;
   }
   const TurnStat &turn_of(const factor::stat::HoldStat &h) const { // h = 本行 hold[] 之一
-    assert(&h >= hold && &h < hold + n_hold && amts.n > 0);
+    assert(&h >= hold && &h < hold + n_hold);
     return turn[&h - hold];
   }
 };

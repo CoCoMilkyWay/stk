@@ -20,7 +20,7 @@ using json = nlohmann::ordered_json;
 disk::Key note_key(bool test, NoteKind k) { return {.test = test, .name = def(k).id}; }
 
 json line_of(const Note &x) {
-  return {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"step", x.step}, {"ref", x.ref}, {"state", x.state}, {"reply", x.reply}, {"fields", x.fields}};
+  return {{"id", x.id}, {"time", x.time}, {"scope", x.scope}, {"session", x.session}, {"step", x.step}, {"ref", x.ref}, {"fields", x.fields}};
 }
 
 } // namespace
@@ -54,8 +54,6 @@ void Notes::load(bool test) {
                    .session = j.at("session").get<std::string>(),
                    .ref = j.at("ref").get<std::string>(),
                    .step = j.at("step").get<int>(),
-                   .state = j.at("state").get<NoteState>(),
-                   .reply = j.at("reply").get<std::string>(),
                    .fields = j.at("fields")});
       assert(v.back().fields.contains("title"));
     }
@@ -71,11 +69,6 @@ const Note *Notes::find(NoteKind k, const std::string &id) const {
 int Notes::backers(const Note &n) const {
   const std::vector<Note> &v = of(n.kind);
   return static_cast<int>(std::count_if(v.begin(), v.end(), [&](const Note &x) { return x.ref == n.id; }));
-}
-
-int Notes::open(NoteKind k) const {
-  const std::vector<Note> &v = of(k);
-  return static_cast<int>(std::count_if(v.begin(), v.end(), [](const Note &x) { return x.state == NoteState::Open; }));
 }
 
 std::string Notes::next(NoteKind k) const {
@@ -111,12 +104,14 @@ void Notes::rewrite(NoteKind k) const {
   disk::write(disk::AgentNoteFile, note_key(test_, k), s);
 }
 
-void Notes::set(NoteKind k, const std::string &id, NoteState s, std::string reply) {
+void Notes::erase(NoteKind k, const std::string &id) {
   assert(test_ >= 0 && "先 load");
   std::vector<Note> &v = notes_[k];
-  const auto it = std::find_if(v.begin(), v.end(), [&](const Note &x) { return x.id == id; });
-  assert(it != v.end());
-  it->state = s, it->reply = std::move(reply);
+  const size_t n = std::erase_if(v, [&](const Note &x) { return x.id == id; });
+  assert(n == 1);
+  for (Note &x : v)
+    if (x.ref == id)
+      x.ref.clear();
   rewrite(k);
 }
 
@@ -141,11 +136,10 @@ std::string NotesBrief(const Notes &notes, const std::string &scope) {
   bool first = true;
   for (const NoteKind k : kVals<NoteKind>) {
     const std::vector<Note> &v = notes.of(k);
-    s += (first ? "" : " · ") + std::string(def(k).cn) + " " + std::to_string(v.size()) + " (待办 " + std::to_string(notes.open(k));
+    s += (first ? "" : " · ") + std::string(def(k).cn) + " " + std::to_string(v.size());
     first = false;
     if (k == NoteKind::Insight)
-      s += ", 本作用域 " + std::to_string(std::count_if(v.begin(), v.end(), [&](const Note &x) { return x.scope == scope; }));
-    s += ")";
+      s += " (本作用域 " + std::to_string(std::count_if(v.begin(), v.end(), [&](const Note &x) { return x.scope == scope; })) + ")";
   }
   return s;
 }

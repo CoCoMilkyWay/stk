@@ -3,7 +3,7 @@
 // 末列 grp 数组; 数值 4 位有效). 列名只在文件顶层 hold_cols 写一次, 载入先比表头 (json_cols_are), 对不上整份 stat 作废.
 // 文件只落读文件行的地方 (因子表列 / 悬停表 / Inspect 期限结构 / agent 结果) 用得到的字段, 不多不少; 没落的字段载入后为 0, 文件行上不可读.
 // load_hold 是 Save 的逆: 长度 / 类型不对 → false (不 assert: 文件是上次运行留下的, 可能半截崩的 / 人手改的; 不合的 stat 即作废重算).
-// 换手流水 (TurnStat, 因子文件 stats[i].turn[hold]) 同款 turn_json / load_turn: 一行 = turn_cols() 列序 (整组两端 × TurnFlow 字段), 装过的金额段 stats[i].amts;
+// 换手流水 (TurnStat, 因子文件 stats[i].turn[hold]) 同款 turn_json / load_turn: 一行 = turn_cols() 列序 (整组两端 × TurnFlow 字段), 可算的盘口段 stats[i].lob;
 // 因子表迷你 PDF (MiniPdf) mini_pdf_json / load_mini_pdf; 分年 (YearStat) / 滚动窗 (Roll) 在 eval_json 内联;
 // 一个根的评估结果 (EvalStat) 两半写 scope_json (文件顶层 run) + eval_json (stats[i]), 一次读 load_eval.
 #pragma once
@@ -252,7 +252,7 @@ inline nlohmann::ordered_json scope_json(const StatScope &s, factor::stat::Frame
   return j;
 }
 
-// 一个根的评估结果 ↔ stats[i] (scope_json 之外的, 同样只落文件行的读者要的): 标量首段, holds / amts (金额段万元, 0 = 固定段) / turn / 小图 /
+// 一个根的评估结果 ↔ stats[i] (scope_json 之外的, 同样只落文件行的读者要的): 标量首段, holds / lob (可算的盘口段万元; 固定段恒可算) / turn / 小图 /
 // 分年 (years[hold] = [[年, 窗数, rIC, 中位窗 mono, 年换手] …]; agent 分年) / 滚动窗 (roll[hold] = [窗数, 中位窗 mono]; 父行代表权重 / agent score) 各一段
 inline nlohmann::ordered_json eval_json(const EvalStat &st) {
   nlohmann::ordered_json j;
@@ -265,12 +265,13 @@ inline nlohmann::ordered_json eval_json(const EvalStat &st) {
     ic.push_back(mini_pdf_json(st.ic_pdf[k]));
   }
   j["holds"] = holds;
-  nlohmann::ordered_json amts = nlohmann::ordered_json::array(), turn = nlohmann::ordered_json::array();
-  for (int k = 0; k < st.amts.n; ++k)
-    amts.push_back(amt_wan(st.amts.k[k]));
+  nlohmann::ordered_json lob = nlohmann::ordered_json::array(), turn = nlohmann::ordered_json::array();
+  for (int q = 0; q < kLobAmts; ++q)
+    if (lob_has(st.lob, static_cast<LobAmt>(q)))
+      lob.push_back(kLobWan[q]);
   for (int k = 0; k < st.n_hold; ++k)
     turn.push_back(turn_json(st.turn[k]));
-  j["amts"] = amts;
+  j["lob"] = lob;
   j["turn"] = turn;
   j["ic_pdf"] = ic;
   j["alpha_pdf"] = mini_pdf_json(st.alpha_pdf);
@@ -337,14 +338,14 @@ inline bool load_eval(const nlohmann::json &run, const nlohmann::json &j, int se
   for (size_t k = 0; k < H; ++k)
     if (!load_hold((*hit)[k], seg, t.hold[k]))
       return false;
-  const auto mit = j.find("amts");
-  if (mit == j.end() || !mit->is_array() || mit->empty() || mit->size() > static_cast<size_t>(kAmtCount))
+  const auto mit = j.find("lob");
+  if (mit == j.end() || !mit->is_array() || mit->size() > static_cast<size_t>(kLobAmts))
     return false;
   for (const nlohmann::json &w : *mit) {
     AmtId a = kAmtFixed;
-    if (!w.is_number_integer() || !amt_of_wan(w.get<int>(), a))
+    if (!w.is_number_integer() || !amt_of_wan(w.get<int>(), a) || !is_lob(a))
       return false;
-    t.amts = t.amts.with(a);
+    t.lob |= lob_bit(lob_of(a));
   }
   const auto tit = j.find("turn");
   if (tit == j.end() || !tit->is_array() || tit->size() != H)

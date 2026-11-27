@@ -904,7 +904,7 @@ void timeline_panel(Ui &s, Mine &m, const Flow &f, bool to_end, float bottom) {
 }
 
 // 特征 / 算子 / 候选 三页的数据 = 候选台 Desk (会话中候选随评估实时更新). 无会话时随作用域重绑; 绑不上 (该层无可搜持有期 / 评估在收尾) = 空表
-// 全局记录不随作用域, 随候选台的候选目录 (自检的 / 正式的) 读; 研究员在记录页标处理
+// 全局记录不随作用域, 随候选台的候选目录 (自检的 / 正式的) 读
 struct View {
   const Context &ctx;
   const std::vector<Result> &results;
@@ -1053,26 +1053,19 @@ void results_table(Ui &s, const View &v) {
   ImGui::EndChild();
 }
 
-// 一类全局记录, 新到旧; 研究员逐条标处理 (待办 / 已做 / 不做 / 搁置) 并可回一句, agent 在 list_notes 里看得到; 编号悬浮看出处
+// 一类全局记录, 新到旧; 看过的可删 (确认后改写文件, 附议它的改为独立一条); 编号悬浮看出处
 void notes_table(Ui &s, const View &v, NoteKind k) {
   const std::vector<Note> &all = v.notes.of(k);
   s.note_filter.Draw("过滤##note", 240);
   ImGui::SameLine();
-  ImGui::Checkbox("只看待办", &s.only_open);
-  ImGui::SameLine();
-  ImGui::TextDisabled("%zu 条 · 待办 %d (%s, 新到旧); 标的处理与回复 agent 在 list_notes 里看得到", all.size(), v.notes.open(k), v.test ? "自检的 agent/test 目录" : "agent/main 目录");
-  if (!begin_table("##notes", {"编号", "时间", "作用域", "附议", "处理", "内容"}))
+  ImGui::TextDisabled("%zu 条 (%s, 新到旧)", all.size(), v.test ? "自检的 agent/test 目录" : "agent/main 目录");
+  if (!begin_table("##notes", {"编号", "时间", "作用域", "附议", "", "内容"}))
     return;
-  struct Change {
-    std::string id;
-    NoteState st;
-    std::string reply;
-  };
-  std::optional<Change> change; // 表画完再改 (改写文件)
+  std::optional<std::string> gone; // 表画完再删 (改写文件)
   for (auto it = all.rbegin(); it != all.rend(); ++it) {
     const Note &x = *it;
     const std::string title = x.title(), body = x.body();
-    if ((s.only_open && x.state != NoteState::Open) || !s.note_filter.PassFilter((x.id + ' ' + x.scope + ' ' + title + ' ' + body + ' ' + x.reply).c_str()))
+    if (!s.note_filter.PassFilter((x.id + ' ' + x.scope + ' ' + title + ' ' + body).c_str()))
       continue;
     ImGui::PushID(x.id.c_str());
     ImGui::TableNextRow();
@@ -1090,23 +1083,12 @@ void notes_table(Ui &s, const View &v, NoteKind k) {
     if (const int b = v.notes.backers(x); b > 0)
       ImGui::TextColored(color(TaskStatus::Kind::Ready), "%d 条附议", b);
     ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4.0f);
-    if (ImGui::BeginCombo("##state", def(x.state).cn)) {
-      for (const NoteState st : kVals<NoteState>)
-        if (ImGui::Selectable(def(st).cn, x.state == st))
-          change = Change{x.id, st, x.reply};
-      ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("回复")) {
-      s.reply = x.reply;
-      ImGui::OpenPopup("##reply");
-    }
-    if (ImGui::BeginPopup("##reply")) {
-      ImGui::TextDisabled("给 agent 的一句回复 (list_notes 里随处理一起给; 空 = 不回)");
-      input_multiline("##reply_text", s.reply, ImVec2(ImGui::GetFontSize() * 30.0f, ImGui::GetTextLineHeightWithSpacing() * 4.0f));
-      if (ImGui::Button("保存", ImVec2(80, 0))) {
-        change = Change{x.id, x.state, std::string(text::trim(s.reply))};
+    if (ImGui::SmallButton("删除"))
+      ImGui::OpenPopup("##erase");
+    if (ImGui::BeginPopup("##erase")) {
+      ImGui::Text("删除 %s %s ?", x.id.c_str(), text::head(title, 24).c_str());
+      if (ImGui::Button("删除", ImVec2(80, 0))) {
+        gone = x.id;
         ImGui::CloseCurrentPopup();
       }
       ImGui::SameLine();
@@ -1117,13 +1099,11 @@ void notes_table(Ui &s, const View &v, NoteKind k) {
     ImGui::TableNextColumn();
     wrapped(kColHead, title);
     wrapped_dim(body);
-    if (x.state != NoteState::Open || !x.reply.empty())
-      wrapped(color(x.state == NoteState::Done ? TaskStatus::Kind::Ready : TaskStatus::Kind::Warn), "研究员: " + std::string(def(x.state).cn) + (x.reply.empty() ? "" : " · " + x.reply));
     ImGui::PopID();
   }
   ImGui::EndTable();
-  if (change)
-    v.notes.set(k, change->id, change->st, std::move(change->reply));
+  if (gone)
+    v.notes.erase(k, *gone);
 }
 
 // 插话栏 (过程页底): 草稿 → 排队, 随下一条发出的消息附上; 排着的可撤回. memo_height = 它占的高
@@ -1392,7 +1372,7 @@ void follow(Ui &s) {
   s.fold_remark = true, s.pinned = true;
 }
 
-// 过程 (本会话要求 + 全宽时间线 + 插话栏) / 候选表 / 特征表 / 算子表 (这三页不必开会话, 随作用域) / 工具表 (固定);
+// 过程 (本会话要求 + 全宽时间线 + 插话栏) / 因子 (候选表) / 发现 · 反馈 · 特征申请 · 工具申请 (全局记录) / 特征 · 算子 (随作用域) / 工具 (固定); 过程之外不必开会话;
 // 刚进 Choose 切回过程并滚到底 (问题在那); 回退确认框浮在页上. 大脑是大模型还是外部 agent, 这里都一样
 void render_mine(SharedData &data, Ui &s) {
   ImGui::TextDisabled("外部 agent 的 MCP 接口 %s: open 同这里按 New 开新会话, 无参 run 接上已有外部会话", s.remote->listen().c_str());
@@ -1419,23 +1399,17 @@ void render_mine(SharedData &data, Ui &s) {
     ImGui::EndTabItem();
   }
   const View v = view_of(data, s, sc);
-  if (ImGui::BeginTabItem("候选###cands")) {
-    if (ImGui::BeginTabBar("##cand_tabs")) {
-      const std::string factors = "因子 (" + std::to_string(v.results.size()) + ")###factors";
-      if (ImGui::BeginTabItem(factors.c_str())) {
-        results_table(s, v);
-        ImGui::EndTabItem();
-      }
-      for (const NoteKind k : kVals<NoteKind>) {
-        const std::string label = std::string(def(k).cn) + " (" + std::to_string(v.notes.open(k)) + "/" + std::to_string(v.notes.of(k).size()) + ")###" + def(k).id;
-        if (ImGui::BeginTabItem(label.c_str())) {
-          notes_table(s, v, k);
-          ImGui::EndTabItem();
-        }
-      }
-      ImGui::EndTabBar();
-    }
+  const std::string factors = "因子 (" + std::to_string(v.results.size()) + ")###factors";
+  if (ImGui::BeginTabItem(factors.c_str())) {
+    results_table(s, v);
     ImGui::EndTabItem();
+  }
+  for (const NoteKind k : kVals<NoteKind>) {
+    const std::string label = std::string(def(k).cn) + " (" + std::to_string(v.notes.of(k).size()) + ")###" + def(k).id;
+    if (ImGui::BeginTabItem(label.c_str())) {
+      notes_table(s, v, k);
+      ImGui::EndTabItem();
+    }
   }
   const Open &leaves_open = sc.leaves_of(v.ctx.level);
   int leaves_n = 0, leaves_on = 0, ops_on = 0;

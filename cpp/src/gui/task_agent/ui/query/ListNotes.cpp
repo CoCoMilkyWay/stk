@@ -1,4 +1,4 @@
-// list_notes 的展示: 每类一节 (条数 + 逐条: 编号 / 时间 / 作用域 / 附议 / 研究员处理 / 正文)
+// list_notes 的展示: 每类一节 (条数 + 逐条: 编号 / 时间 / 作用域 / 附议 / 正文)
 #include "gui/task_agent/tools/Query.hpp"
 #include "gui/task_agent/ui/Widgets.hpp"
 
@@ -20,8 +20,8 @@ void NotesRes::draw() const {
       cell(x.id), cell(x.time), cell_dim(x.scope);
       ImGui::TableNextColumn();
       wrapped(kColHead, x.title);
-      if (!x.relation.empty() || !x.handled.empty())
-        wrapped(color(TaskStatus::Kind::Warn), x.relation + x.handled);
+      if (!x.relation.empty())
+        wrapped(color(TaskStatus::Kind::Warn), x.relation);
       for (const std::string &b : x.body)
         wrapped_dim(b);
     }

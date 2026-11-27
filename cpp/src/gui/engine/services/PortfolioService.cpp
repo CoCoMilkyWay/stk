@@ -33,13 +33,14 @@ disk::Key portfolio_key(const std::string &name) {
   return {.name = name};
 }
 
-std::tuple<FactorLevelId, std::string, LibMask> group_of(const FactorTask &t) {
+// 同组 = 同评估域且同持有期 (一张森林只评这一个持有期; 跨持有期的因子不陪评别人的持有期)
+std::tuple<FactorLevelId, std::string, LibMask, HoldId> group_of(const FactorTask &t) {
   const FeatureTable &ft = *t.scope.ft;
   std::vector<std::string> feats;
   for (const factor::expr::Node &n : ft.reparse(t.f.expr).nodes)
     if (n.op < 0)
       feats.push_back(n.feat);
-  return {t.scope.lv, t.scope.pool, used_libs(ft, pool_id(t.scope.pool), ft.x.ids(feats), t.scope.cost)};
+  return {t.scope.lv, t.scope.pool, used_libs(ft, pool_id(t.scope.pool), ft.x.ids(feats), t.scope.cost), t.hold};
 }
 
 } // namespace
@@ -188,9 +189,9 @@ Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
   TraceN("PortfolioForest");
   assert(!ts.empty());
   const FactorScope &sc = ts.front()->scope;
-  RootSet rs;
+  RootSet rs{.hd = Holds::of({ts.front()->hold})};
   for (const FactorTask *t : ts) {
-    rs.hd = rs.hd.with(t->hold);
+    assert(t->hold == ts.front()->hold && "一组同持有期 (group_of)");
     rs.add(*sc.ft, t->f.expr, {t->f.frame, t->f.dir, t->f.ret});
   }
   std::vector<PortfolioProbes> ps(rs.size());
@@ -210,12 +211,12 @@ Rc EvalPortfolioGroup(std::span<const FactorTask *const> ts, FactorFlow &F,
       b->dates = dates;
       b->amt = t.scope.cost.amt;
       b->keys = {0};
-      const Amts &ad = o.job.spec.y.ad;
+      const LobMask lob = o.job.spec.y.lob;
       const LedgerLines &ln = ps[static_cast<size_t>(k)].at<FlowP>().out;
       b->ret = ln.slice(FlowP::line(hi, 0, 0), 1);
       for (int f = 0; f < kFlowFields; ++f)
-        if (!flow_priced(f) || ad.has(amt_of(flow_lob(f))))
-          b->flow[f] = ln.slice(FlowP::line(hi, 0, 1 + f), 1);
+        if (!flow_priced(f) || lob_has(lob, flow_lob(f)))
+          b->flow[f] = ln.slice(FlowP::flow_line(hi, 0, f), 1);
     }
     if (on_book)
       on_book(static_cast<size_t>(e), std::move(b));
@@ -289,7 +290,7 @@ bool PortfolioService::run(PortfolioRequest &req) {
   cache_.trim([](double c) { return c > kKeepBytes; });
   publish();
 
-  std::map<std::tuple<FactorLevelId, std::string, LibMask>, std::vector<const FactorTask *>> groups;
+  std::map<std::tuple<FactorLevelId, std::string, LibMask, HoldId>, std::vector<const FactorTask *>> groups;
   for (const FactorTask *t : todo_f)
     groups[group_of(*t)].push_back(t);
   for (auto &[g, ts] : groups)

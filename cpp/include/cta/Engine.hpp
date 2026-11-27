@@ -8,10 +8,11 @@
 //     跟随调参 = Laddered (定参, 录逐笔) → 空汇 (Tune.hpp); 策略 = Laddered (变参) → Run + Cuts (Trace.hpp); 买入持有 = Hold → Run; 减仓调参只看中线 (mid_of, 不走链)
 //   成本无状态, 前根仓位只在 drive 里记; 汇只读 Fill + Tape
 //   仓位 w ∈ [−1, 1]: 正 = 多, 负 = 空
-//   损益: 实际按本根收盘成交, 净 r = p · a − 佣金 − 印花税 − 冲击; p = 前根收盘调到的仓位, w = 本根收盘调到的, a = 资产本根收益
+//   损益: 实际按本根收盘成交, 净 r = p · a − 税佣 − 印花税 − 冲击; p = 前根收盘调到的仓位, w = 本根收盘调到的, a = 资产本根收益
 //         毛 = 按档线价成交的理想毛 = p · a + 越线差 (收盘成交比档线价成交少挣的已在 p · a 里, 越线差把它拆出来), 故 净 = 毛 − 五项成本
 //   成本 (占净值比例) 分五项 Costs 逐根记, 五项之和 = 毛 − 净:
-//     佣金 = 佣金率 × |w − p|; 印花税 = 印花税率 × 卖出量 max(p − w, 0) (多头减仓 / 融券卖出); 冲击 = 冲击率 × |w − p| (固定, 不按金额变)
+//     税佣 = (佣金率 + 过户费率) × |w − p|; 印花税 = 印花税率 × 卖出量 max(p − w, 0) (多头减仓 / 融券卖出); 冲击 = 冲击率 × |w − p| (固定, 不按金额变);
+//     前三项 = define/Fee.hpp Fee::side 唯一一式
 //     越线差 = 刀的震荡 / 跳空 (分层按档线定的成交, 见 Model.hpp)
 #include "cta/Model.hpp"
 
@@ -25,11 +26,11 @@
 
 namespace cta {
 
-// 成本分项 (下标; 序 = 净值图上自策略净值向上的叠放序)
-enum : size_t { kCommission,
-                kStamp,
-                kImpact,
-                kChop,
+// 成本分项 (下标; 序 = 净值图上自策略净值向上的叠放序): 前三项 = define/Fee.hpp CostParts 同序, 后两项 = 越线差
+enum : size_t { kTax = kCostTax,
+                kStamp = kCostStamp,
+                kImpact = kCostImpact,
+                kChop = kCostParts,
                 kGap,
                 kNC };
 
@@ -41,7 +42,7 @@ struct Costs : std::array<double, kNC> {
 struct CostItem {
   const char *name, *tip;
 };
-inline constexpr CostItem kCosts[kNC] = {{"佣金", "佣金率 × |Δ仓位|"},
+inline constexpr CostItem kCosts[kNC] = {{"税佣", "(佣金率 + 过户费率) × |Δ仓位|"},
                                          {"印花税", "印花税率 × 卖出量 (多头减仓 / 融券卖出)"},
                                          {"冲击", "冲击率 × |Δ仓位|"},
                                          {"震荡", "越线差的震荡部分: 分层按收盘成交比按档线价成交多付的差, 每份都按离收盘最近那档的差计 (只越过一档 = 全归震荡)"},
@@ -49,11 +50,10 @@ inline constexpr CostItem kCosts[kNC] = {{"佣金", "佣金率 × |Δ仓位|"},
 
 // 一根的成本: 前根仓位 p → 本根的刀 x 的仓位 (本根收盘成交)
 inline Costs costs_of(const Fee &u, const Cut &x, float p) {
-  const double dw = std::fabs(x.w - p), sell = std::max(0.0f, p - x.w);
-  TurnFlow f; // 一刀 = 买 / 卖两侧之一, 全量付固定冲击
-  f[kFlowBuy] = dw - sell, f[kFlowSell] = sell;
-  const CostParts c = u.parts(f, kAmtFixed);
-  return {{c.v[kCostTax], c.v[kCostStamp], c.v[kCostImpact], x.chop, x.gap}};
+  const double dw = std::fabs(x.w - p), sell = std::max(0.0f, p - x.w), buy = dw - sell; // 一刀 = 买 / 卖两侧之一, 全量付固定冲击
+  CostParts c = u.side(buy, kBuy, 0.0, buy);
+  c += u.side(sell, kSell, 0.0, sell);
+  return {{c.v[kTax], c.v[kStamp], c.v[kImpact], x.chop, x.gap}};
 }
 
 // 一根成交: 前根仓位 p → 本根的刀 x (仓位 x.w) + 本根成本 k

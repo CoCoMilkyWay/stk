@@ -902,7 +902,7 @@ void plot_tod(const InspectDerived &d, const InspectUIState::TodOcc &occ, const 
 // hs[n_hold] 毛二级; turn[n_hold] 换手流水; amts 评估域的金额段 (固定段 + 有 Lob 库时的盘口段). n < 3 的持有期不作节点.
 // pool_ann[n_hold] = 池等权指数各持有期的算术年化 (InspectResult::pool_ann, 绝对口径; 与因子无关, 随池一代); nullptr = 不画 (Factors 表 stat 无此项)
 // 悬停: 就近命中一个可见数据点 (组 × 金额段 × 持有期, 像素距 ≤ kPick) → 高亮圈 + 该点的账 (bp/期): 毛 → 开仓冲击 / 关仓 / 换手 → 均摊 → 净 → × 期数 = 画的年化
-void plot_term(const factor::stat::HoldStat *hs, int n_hold, const TurnStat *turn, const Amts &amts, const float *pool_ann, const Fee &fee, int sel_hold,
+void plot_term(const factor::stat::HoldStat *hs, int n_hold, const TurnStat *turn, const AmtList &amts, const float *pool_ann, const Fee &fee, int sel_hold,
                const char *source, const ImVec2 &size) {
   const int n_cost = amts.n;
   assert(n_hold >= 1 && n_cost >= 1 && fee.impact >= 0.0);
@@ -1831,10 +1831,10 @@ int RenderTabInspect(RunService &fsvc, InspectService &isvc, KlineService &ksvc,
   ImGui::SameLine();
   // 期限结构: Inspect 结果优先, 否则 Factors 表的 stat (row.hold + row.turn; 两者都是毛 + 全部金额段, 同一份 TurnStat)
   if (shown) {
-    plot_term(res_ev.hold, n_hold, res_ev.turn, res_ev.amts, res_pool_ann.data(), ctx.fee, ui.hold_idx,
+    plot_term(res_ev.hold, n_hold, res_ev.turn, amts_of(res_ev.lob), res_pool_ann.data(), ctx.fee, ui.hold_idx,
               "Inspect", term);
   } else if (row.has_stat && row.n_hold == n_hold) {
-    plot_term(row.hold, n_hold, row.turn, row.amts, nullptr, ctx.fee, ui.hold_idx,
+    plot_term(row.hold, n_hold, row.turn, amts_of(row.lob), nullptr, ctx.fee, ui.hold_idx,
               row.stat_from_file ? "文件 stat" : "Factors Run", term);
   } else {
     empty_plot("期限结构###term", term, "无 stat (Factors 页 Run 或此处 Recompute)");

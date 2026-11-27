@@ -103,6 +103,16 @@ struct InRank {
     return l;
   }
 };
+// 层级封顶: 只要前 top + 1 级 (更深的并入第 top 级)
+template <class In>
+struct InCap {
+  In in;
+  int top;
+  FACTOR_HD int level(ptrdiff_t o) const {
+    const int l = in.level(o);
+    return l < top ? l : top;
+  }
+};
 // 成员位平面: 非 0 = 成员 (层级 0)
 struct InMask {
   const uint8_t *p;

@@ -52,11 +52,11 @@ struct NotesRes : Res {
   bool here = false, query = false;
   int n = 0;
   struct Item {
-    std::string id, time, scope, title, relation, handled;
+    std::string id, time, scope, title, relation;
     std::vector<std::string> body;
   };
   struct Group {
-    NoteKind kind = NoteKind::Feature;
+    NoteKind kind = NoteKind::Insight;
     size_t hit = 0;
     std::vector<Item> items;
   };

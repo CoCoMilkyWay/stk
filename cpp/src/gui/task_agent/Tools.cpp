@@ -45,7 +45,7 @@ constexpr sv kFamilies[] = {"size", "value", "growth", "quality", "dividend", "c
 constexpr sv kPeriods[] = {"second", "intraday", "daily", "weekly", "monthly", "quarterly", "event", "na"};
 constexpr sv kFactorSorts[] = {"ic", "icir", "ls", "new"};
 constexpr sv kReadParts[] = {"card", "outline", "text"};
-constexpr sv kNoteKindChoices[] = {"feature", "tool", "insight", "issue"};
+constexpr sv kNoteKindChoices[] = {"insight", "issue", "feature", "tool"};
 constexpr sv kNoteScopes[] = {"all", "here"};
 constexpr sv kIssueTypes[] = {"bug", "idea", "question"};
 
@@ -143,7 +143,7 @@ constexpr ArgDef kFinishArgs[] = {
     {"name", "英文名", Arg::Str, sv{""}, 0, 0, {}, "提交入库的已评候选英文名 (本作用域历次会话的都可以); 空 = 不提交只结束 (没有可交的候选时)"}};
 constexpr ArgDef kNotesArgs[] = {
     {"kind", "类", Arg::Str, sv{""}, 0, 0, kNoteKindChoices,
-     "哪类: feature 特征申请 / tool 工具申请 / insight 发现 / issue 建议与 bug; 空 = 各类的条数与最近几条的标题"},
+     "哪类: insight 发现 / issue 反馈 / feature 特征申请 / tool 工具申请; 空 = 各类的条数与最近几条的标题"},
     {"scope", "范围", Arg::Str, sv{"all"}, 0, 0, kNoteScopes, "all = 全部 / here = 只看本作用域 (池 / 层 / 持有期) 提的"},
     {"query", "关键词", Arg::Str, sv{""}, 0, 0, {}, "关键词, 查标题与正文; 空格隔开的几个须同时出现 (英文不分大小写); 空 = 不限"},
     {"n", "条数", Arg::Int, int{15}, 1, kNotesTop, {}, "列几条 (新到旧)"}};
@@ -254,9 +254,8 @@ constexpr ToolDoc kDocs[] = {
      "列正式因子库里同一评估期、超额口径且算子不超上限、在本持有期有统计的因子, 按 score (中位 {{target}}) 降序; 给 query 只列命中的; 可作起点接着做",
      "每个因子: 模板 + 思路 + 最佳权重; 本持有期无统计的只报个数; 没列完时末尾给总数与接着看的 skip"},
     {Tool::ListNotes, kNotesArgs,
-     "查历次会话 (各作用域) 留下的全局记录: 特征申请 / 工具申请 / 发现 / 建议与 bug. 起步时看前人的发现 (别重走证伪过的路); 提交记录前先查同类, 已有的用 ref 附议或补充, 不要重提; "
-     "研究员处理过的标着 已做 / 不做 / 搁置 (带他的回复): 已做的申请可以直接用上, 不做的别再提",
-     "不给 kind: 各类条数 + 每类最近几条的标题; 给 kind: 逐条全文 (编号 / 时间 / 作用域 / 附议关系 / 研究员的处理 / 各字段)"},
+     "查历次会话 (各作用域) 留下的全局记录: 发现 / 反馈 / 特征申请 / 工具申请. 起步时看前人的发现 (别重走证伪过的路); 提交记录前先查同类, 已有的用 ref 附议或补充, 不要重提",
+     "不给 kind: 各类条数 + 每类最近几条的标题; 给 kind: 逐条全文 (编号 / 时间 / 作用域 / 附议关系 / 各字段)"},
     {Tool::RequestFeature, kFeatureReqArgs,
      "申请一个新特征叶: 想刻画的量 (lob / bar / fund 任一类) 现有叶没有、只能近似, 或信号卡在天花板要新信息源. 全局记录, 研究员据此加叶; 提完本会话照常用现有的叶接着做",
      "编号"},

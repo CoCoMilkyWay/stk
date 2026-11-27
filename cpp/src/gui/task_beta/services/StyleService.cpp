@@ -21,10 +21,13 @@ namespace {
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
-// 日收益 r / 日增仓量 buy (首个有仓日 first) 在区间 [d0, d1) 内: 各满一年的滚动窗的年化 / 夏普 → 平均 / 中位 + 累计中位夏普; 整段回撤 / 换手.
+// 账 b 的线 w: 日净收益 (= 毛 − 固定段成本, 与行情篮子的可成交线同口径) / 日增仓量 (首个有仓日 first) 在区间 [d0, d1) 内:
+// 各满一年的滚动窗的年化 / 夏普 → 平均 / 中位 + 累计中位夏普; 整段回撤 / 换手.
 // 窗 = 日收益前缀 Daily 之差 (define/Annual.hpp; 夏普全仓同一口径); 年化在对数空间平均 / 取中位再换回简单收益; 一年前的边界随收尾日单调右移
-void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<float> &r, const std::vector<float> &buy, size_t first, size_t d0, size_t d1) {
-  const size_t D = dates.size(), f = std::max(first, d0 + 1);
+void fill(StyleLine &l, std::span<const misc::Ymd> dates, const pool::Perf &b, int w, const Fee &fee, size_t d0, size_t d1) {
+  const size_t D = dates.size(), first = b.first, f = std::max(first, d0 + 1);
+  const float *buy = b.flow[kFlowBuy].at(w);
+  const auto r = [&](size_t d) { return b.net(w, static_cast<int>(d), fee, kAmtFixed); };
   l.first = first;
   l.from = d1;
   l.med.assign(D, kNaN);
@@ -33,10 +36,10 @@ void fill(StyleLine &l, std::span<const misc::Ymd> dates, const std::vector<floa
     return;
   // 逐日序列 Path (前缀下标 = 日 − f + 1) + 整段回撤 (峰自基日 = 1 起) / 增仓
   Path P;
-  double b = 0.0;
+  double bs = 0.0;
   for (size_t d = f; d < d1; ++d)
-    P.add(r[d]), b += buy[d];
-  l.stat.mdd = static_cast<float>(P.mdd), l.stat.turn = static_cast<float>(per_year(b, static_cast<double>(d1 - f)));
+    P.add(r(d)), bs += buy[d];
+  l.stat.mdd = static_cast<float>(P.mdd), l.stat.turn = static_cast<float>(per_year(bs, static_cast<double>(d1 - f)));
   misc::RunMedian<float> ann_m, shp_m; // 年化 = 对数年化
   double ann_s = 0.0, shp_s = 0.0;
   size_t ys = 0; // 首个晚于 dates[t] 前推一年的日 = 窗起
@@ -190,9 +193,9 @@ bool StyleService::run(StyleRequest &req) {
   out->nav.assign(D, 1.0f);
   double nav = 1.0;
   for (size_t d = bb.first; d < D; ++d)
-    out->nav[d] = static_cast<float>(nav *= 1.0 + bb.ret[pool::kWeightEq][d]);
+    out->nav[d] = static_cast<float>(nav *= 1.0 + bb.net(pool::kWeightEq, static_cast<int>(d), req.fee, kAmtFixed));
   for (int w = 0; w < pool::kWeights; ++w)
-    fill(out->bench[w], dates, bb.ret[w], bb.buy[w], bb.first, d0, d1);
+    fill(out->bench[w], dates, bb, w, req.fee, d0, d1);
   std::vector<size_t> src; // [线] 所属成员
   for (size_t i = 0; i < specs.size(); ++i) {
     if (perfs[set_of[i]]->first >= dates.size()) {
@@ -206,7 +209,7 @@ bool StyleService::run(StyleRequest &req) {
     StyleLine &l = out->lines[static_cast<size_t>(k)];
     const pool::Perf &b = *perfs[src[static_cast<size_t>(k)]];
     const pool::Weight w = l.spec.weight();
-    fill(l, dates, b.ret[w], b.buy[w], b.first, d0, d1);
+    fill(l, dates, b, w, req.fee, d0, d1);
   });
   rank_pct(out->lines, d0, d1);
   out->dates = dates;

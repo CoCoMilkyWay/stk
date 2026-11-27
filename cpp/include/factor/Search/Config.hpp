@@ -12,16 +12,8 @@
 namespace factor::search {
 
 // ---- 持有期 (Stat/Roll.hpp 目标; 一次搜索针对一个固定持有期) ----
-// 可搜集合 (按时间序列出全部持有期, 注释掉 = 不搜); 层上合法另看 hold_ok
-inline constexpr Holds kSearchHolds = Holds::of({
-    // kHoldM1, kHoldM5, kHoldM15,
-    kHoldM30,
-    kHoldM60,
-    kHoldClose,
-    // kHoldT1O,
-    kHoldT1,
-    // kHoldT2, kHoldT3,
-});
+// 可搜集合 (持有期表 HOLDS 的子集); 层上合法另看 hold_ok
+inline constexpr Holds kSearchHolds = Holds::of({kHoldM30, kHoldM60, kHoldClose, kHoldT1});
 inline constexpr bool search_hold(HoldId h) { return kSearchHolds.has(h); }
 
 // ---- 预算 ----

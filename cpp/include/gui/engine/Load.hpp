@@ -114,13 +114,13 @@ struct Bytes {
   constexpr Bytes operator*(double k) const { return {cell * k, row * k, day * k}; }
   double at(const Span &sh) const { return cell * static_cast<double>(sh.n()) + row * sh.T + day * sh.days(); }
 };
-// 成本段的要求 (探针声明; 落成哪几段由作用域成本口径 CostSpec 定): 不要 / 口径那一段 / 口径取盘口段时本域全部段 (固定段恒在)
+// 成本段的要求 (探针声明; 落成哪几段由作用域成本口径 CostSpec 定): 不要 / 口径那一段 / 口径取盘口段时全部盘口段 (固定段恒可算)
 enum class Segs : uint8_t { None,
                             Spec,
                             All };
-struct YSpec { // Y 的身份 (装载 / 缓存 / 设备标签会话按它): 持有期 + 金额段
+struct YSpec { // Y 的身份 (装载 / 缓存 / 设备标签会话按它): 持有期 + 可算的盘口段 (有平面的才装平面; 日层无平面 = 冲击 0)
   Holds hd;
-  Amts ad;
+  LobMask lob = 0;
   std::string key() const;
 };
 YSpec y_spec(const FeatureTable &ft, const Domain &dm, const Holds &hd, Segs sg, const CostSpec &cost);
@@ -154,22 +154,11 @@ struct YPlanes {
   const uint8_t *gate = nullptr;
   const uint8_t *eo = nullptr;
   Holds hd;
-  const LabelPlanes *labels[kHoldCount] = {};
-  const uint16_t *ry[kHoldCount] = {};
-  Amts ad;
-  const uint16_t *costs[kAmtCount] = {}; // [ad 下标] 盘口段: [kSides][n] 两侧冲击平面首尾相接 (买 [0, n), 卖 [n, 2n)); 固定段 / 无平面 (日层) nullptr
-  float top = 0.f;                       // 盘口冲击封顶 (BlockSpec::top)
+  const LabelPlanes *labels[kHoldCount] = {}; // [hd 下标]
+  const uint16_t *ry[kHoldCount] = {};        // [hd 下标]
+  LobMask lob = 0;                            // 可算的盘口段 (YSpec::lob)
+  factor::stat::Cost cost;                    // 块首的盘口段冲击 [盘口段][侧] (账集 Book.hpp; 无平面 = 冲击 0) + 封顶 (BlockSpec::top)
 };
-// 块首的盘口段冲击 (账集 Book.hpp; 固定段无平面)
-inline factor::stat::Cost cost_of(const YPlanes &y) {
-  const size_t n = y.sh.n();
-  factor::stat::Cost c;
-  c.top = y.top;
-  for (int k = 0; k < y.ad.n; ++k)
-    if (y.costs[k])
-      c.imp[lob_of(y.ad.k[k])][kBuy] = y.costs[k], c.imp[lob_of(y.ad.k[k])][kSell] = y.costs[k] + n;
-  return c;
-}
 // 块上的标签 (契约 Labels: 各持有期标签 + 共用的 eo)
 factor::stat::Labels labels_of(const YPlanes &y);
 
@@ -182,7 +171,8 @@ struct Io {
   Progress &prog;
 };
 bool load_x(const Io &io, const Chunk &k, std::span<const LeafId> ids, std::vector<Leaf> &out);
-bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, const Amts &ad, std::vector<LabelPlanes> &labels,
+// lob = 要装平面的盘口段 (每段一份 [kSides][n], 两侧首尾相接)
+bool load_y(const Io &io, const Chunk &k, const YCore *have, YCore &core, const Holds &hd, LobMask lob, std::vector<LabelPlanes> &labels,
             std::vector<std::vector<uint16_t>> &costs);
 
 // 块视图: 评估域日段 ck 的钉住平面 (x_gen = 层|域|日段|代, gen = x_gen + YSpec)
@@ -287,10 +277,14 @@ private:
 };
 
 // ---- 作业层: Need → open_job → Job → run_job (唯一的块循环) ----
-// 前后带: 前带 = 回看 look 行 + 最长持有期 (rAC lag / 前一批) 折日 + 交接链 kChainDays 日; 后带 = 最长持有期折日 (续持 / 整批平仓的 E 价点)
+// 前后带: 前带 = 回看 look 行 + 最长持有期 (rAC lag / 前一批) 折日 + 交接链 kChainDays 日 (只同刻型的链跨日; 分钟型的链不出当日, 锚点型不交接);
+//   后带 = 最长持有期折日 (续持 / 整批平仓的 E 价点)
 inline Bands bands_of(int look, const Holds &hd, int seg) {
   const int h = factor::stat::hold_reach(hd, seg);
-  return {(look + h + seg - 1) / seg + kChainDays, (h + seg - 1) / seg};
+  bool same = false;
+  for (int i = 0; i < hd.n; ++i)
+    same = same || hold_kind(hd.k[i]) == HoldKind::Same;
+  return {(look + h + seg - 1) / seg + (same ? kChainDays : 0), (h + seg - 1) / seg};
 }
 
 // 一个作业对装载与预算的全部要求 (森林作业 forest_need ⇄ 篮子作业 basket_need; 唯一消费方 open_job)

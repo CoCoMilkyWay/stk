@@ -6,6 +6,7 @@
 // 线程模型 (gui/util/Service.hpp, 随对象): UI 持 mutex 读 result (shared_ptr 拷出即放锁)
 #pragma once
 
+#include "define/Fee.hpp"
 #include "features/Panel/PoolSelect.hpp"
 #include "gui/util/Service.hpp"
 #include "misc/date.hpp"
@@ -26,6 +27,7 @@ struct StyleRequest {
   uint32_t gen = 0;
   pool::Grid grid;
   misc::Ymd lo = 0, hi = 0; // 回测区间 [lo, hi] (0 = 不限: 自首日 / 到末日)
+  Fee fee;                  // Config::fee: 篮子线一律净 (毛 − 固定段成本, 与行情篮子的可成交线同口径); 只改费率 = 账全在, 只重算绩效
 };
 
 // 区间 [d0, d1) 内: 起点 = max(首个有仓日, d0 + 1) (基日 d0 = 区间首日, 净值 1);

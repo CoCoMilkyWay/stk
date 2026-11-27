@@ -30,12 +30,6 @@ std::string relation(const Notes &notes, const Note &x) {
   return s;
 }
 
-std::string handled(const Note &x) {
-  if (x.state == NoteState::Open && x.reply.empty())
-    return "";
-  return " · 研究员: " + std::string(def(x.state).cn) + (x.reply.empty() ? "" : " (" + x.reply + ")");
-}
-
 } // namespace
 
 std::string NotesRes::text() const {
@@ -48,7 +42,7 @@ std::string NotesRes::text() const {
     for (const Group &g : groups) {
       s += head(g);
       for (const Item &x : g.items)
-        s += "- " + x.id + " · " + x.time.substr(0, 10) + " · " + x.scope + " · " + x.title + x.relation + x.handled + "\n";
+        s += "- " + x.id + " · " + x.time.substr(0, 10) + " · " + x.scope + " · " + x.title + x.relation + "\n";
       s += g.items.empty() ? "(无)\n\n" : "\n";
     }
     return s + "要看全文就给 kind\n";
@@ -58,7 +52,7 @@ std::string NotesRes::text() const {
   if (g.items.empty())
     return s + "(无)\n";
   for (const Item &x : g.items) {
-    s += "\n### " + x.id + " " + x.title + "\n- " + x.time + " · " + x.scope + x.relation + x.handled + "\n";
+    s += "\n### " + x.id + " " + x.title + "\n- " + x.time + " · " + x.scope + x.relation + "\n";
     for (const std::string &b : x.body)
       s += "- " + b + "\n";
   }
@@ -87,7 +81,7 @@ ToolOut ListNotes(const Call &c, Seat &s) {
         continue;
       if (g.hit++ >= static_cast<size_t>(R.n))
         continue;
-      NotesRes::Item x{it->id, it->time, it->scope, it->title(), relation(s.notes, *it), handled(*it), {}};
+      NotesRes::Item x{it->id, it->time, it->scope, it->title(), relation(s.notes, *it), {}};
       const std::string b = it->body();
       for (size_t a = 0, e; a < b.size(); a = e + 1) {
         e = b.find('\n', a);

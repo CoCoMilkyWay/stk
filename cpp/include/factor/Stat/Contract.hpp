@@ -67,6 +67,7 @@
 // =============================================================================
 
 #include "define/Label.hpp"
+#include "define/Ord.hpp"
 #include "factor/Contract.hpp"
 
 #include <algorithm>
@@ -246,11 +247,8 @@ FACTOR_HD inline uint16_t oriented(uint16_t x, int d) { return x == kRankNone ||
 
 // ---- 共享公式 (FACTOR_HD: 两后端同一份) ----
 
-// float → 保序无符号键 (a < b ⟺ ord(a) < ord(b)); ±0 先归一为 +0
-FACTOR_HD inline unsigned ord(float f) {
-  const unsigned u = __builtin_bit_cast(unsigned, f + 0.f);
-  return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
-}
+// float → 保序无符号键 (define/Ord.hpp)
+using ::ord;
 
 // 并列均秩 r16: pct = (avg_rank − 1)/(n − 1), avg_rank = less + (eq + 1)/2, r16 = round(pct · kRankMax) (全整数)
 FACTOR_HD inline uint16_t r16_of(int less, int eq, int n) {

@@ -242,23 +242,13 @@ struct Levels {
   void push(misc::Ymd d, double s, double v) { date.push_back(d), slot.push_back(s), lv.push_back(v); }
 };
 
-// 腿 (Realize 已实现口径, 与池指数对齐): 行 t 的增量 (cost: 毛 − Fee::parts(该期流水, 账的口径段); 否则 = 毛) / 增仓量
+// 腿 (Realize 已实现口径, 与池指数对齐): 行 t 的净增量 (BookLines::net: 毛 − Fee::cost(该期流水, 账的口径段)) / 增仓量
 struct LedgerLine {
-  const float *ret;
-  const float *flow_[kFlowFields]; // 没装的字段空
-  AmtId amt = kAmtFixed;
-  explicit LedgerLine(const LinesLeg &lg) : ret(lg.b->ret_of(lg.line)), amt(lg.b->amt) {
-    for (int f = 0; f < kFlowFields; ++f)
-      flow_[f] = lg.b->flow_of(f, lg.line);
-  }
-  TurnFlow flow(size_t t) const {
-    TurnFlow o;
-    for (int f = 0; f < kFlowFields; ++f)
-      o[f] = flow_[f] ? flow_[f][t] : 0.0;
-    return o;
-  }
-  double inc(size_t t, bool cost, const Fee &f) const { return cost ? ret[t] - f.cost(flow(t), amt) : ret[t]; }
-  double buy(size_t t) const { return flow_[kFlowBuy][t]; }
+  const PortfolioLedger &b;
+  int line;
+  LedgerLine(const LinesLeg &lg) : b(*lg.b), line(static_cast<int>(lg.line)) {}
+  double inc(size_t t, const Fee &f) const { return b.net(line, static_cast<int>(t), f, b.amt); }
+  double buy(size_t t) const { return b.flow_of(kFlowBuy, static_cast<size_t>(line))[t]; }
 };
 
 // 腿集合成 (线源 s 的 legs): 稠密格 [日并集轴][M] (M = 各腿层的行末槽之并; 行末分钟经 row_slot, 竞价段并入首根), 腿的行 t 落进 (所在日, 行末槽) 的格;
@@ -324,7 +314,7 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
       if (axis[d] != b.dates[i]) { // 轴外日: 整日一笔并进该轴日的本腿首格
         double day = 0.0;
         for (size_t ts = 0; ts < S; ++ts)
-          day += bl.inc(i * S + ts, s.cost, s.impact), buy[d] += bl.buy(i * S + ts) * k;
+          day += bl.inc(i * S + ts, s.fee), buy[d] += bl.buy(i * S + ts) * k;
         const size_t c = d * M + static_cast<size_t>(col[slot_of(g, 0)]);
         acc[c] += k * pend * day, hit[c] = 1;
         pend *= 1.0 + day;
@@ -332,7 +322,7 @@ Mix mix(const std::vector<misc::Ymd> &axis, const LineSrc &s) {
       }
       for (size_t ts = 0; ts < S; ++ts) {
         const size_t t = i * S + ts, c = d * M + static_cast<size_t>(col[slot_of(g, static_cast<int>(ts))]);
-        acc[c] += k * pend * bl.inc(t, s.cost, s.impact), hit[c] = 1;
+        acc[c] += k * pend * bl.inc(t, s.fee), hit[c] = 1;
         buy[d] += bl.buy(t) * k;
       }
     }
@@ -498,9 +488,10 @@ LineTail tail_of(const Line &c, size_t k, const Quote::Day &y, bool minutes) {
   o.r = c.e.back() > 0 ? o.y.back() / c.e.back() - 1.0 : 0.0;
   return o;
 }
-// 腿集合成的线源: cost = 扣成本 (不扣时费率记默认, 线源相等 ⇒ 同一份线)
-LineSrc mix_src(std::vector<LinesLeg> legs, bool cost, const Fee &fee) {
-  return {std::move(legs), cost, cost ? fee : Fee{}};
+// 腿集合成的线源 (恒净, 费率 fee; 无腿 → 费率记默认, 线源相等 ⇒ 同一份线)
+LineSrc mix_src(std::vector<LinesLeg> legs, const Fee &fee) {
+  const Fee f = legs.empty() ? Fee{} : fee;
+  return {std::move(legs), f};
 }
 // 账 b 线键 key 的腿; 账空 / 不在 → 空腿
 LinesLeg leg_of(const std::shared_ptr<const PortfolioLedger> &b, uint32_t key) {
@@ -714,16 +705,12 @@ LinesRow account_row(const std::string &hover) {
   return r;
 }
 
-// 有行情键的行 r (已取名) 进组 g: 腿 / 估值腿 = 该侧账的键线; 可成交 = 腿扣成本合成 (两侧账都无成本列 ⇒ 不扣);
-// 理想 = 该侧的价格线: 篮子 = 价格指数的该线 (未就绪 → 空线) / 个股 = 腿不扣成本合成 (个股账即后复权收盘) 再接个股全史 (价格库留着的才有; 无则与可成交同一条)
-//   / 账户 = 账户全史 (无账, 可成交同理想);
-//   两条都带该键的日内形 (全史连分钟才有)
+// 有行情键的行 r (已取名) 进组 g: 腿 / 估值腿 = 该侧账的键线; 可成交 = 腿集合成 (恒净); 理想 = 该侧的价格全史 (篮子 = 价格指数 / 个股 = 后复权;
+//   未就绪 → 空线); 账户 = 只有价格 (账户全史), 可成交位放主线 (同理想); 两条都带该键的日内形 (全史连分钟才有)
 void push_quote(LinesDerived &d, int g, LinesRow r, const Fee &fee, const Reuse &ru) {
   if (r.ref.side < Quote::kMarkets) {
     r.val = leg_of(d.quotes[r.ref.side], r.ref.key);
-    r.src[kTrade] = mix_src(legs_of(r.val), true, fee);
-    if (r.ref.is(Quote::kStock))
-      r.src[kIdeal] = mix_src(legs_of(r.val), false, {});
+    r.src[kTrade] = mix_src(legs_of(r.val), fee);
   }
   if (d.view) {
     const Quote::Series *se = d.view->series(r.ref);
@@ -736,10 +723,10 @@ void push_quote(LinesDerived &d, int g, LinesRow r, const Fee &fee, const Reuse 
     r.src[kTrade] = r.src[kIdeal];
   push(d, g, std::move(r), ru);
 }
-// 无行情键的行 r (已取名) 进组 g: 可成交 / 理想 = 腿集 legs 扣 / 不扣成本合成
+// 无行情键的行 r (已取名) 进组 g: 可成交 = 腿集 legs 合成 (恒净); 无价格, 理想位放主线 (同可成交)
 void push_book(LinesDerived &d, int g, LinesRow r, std::vector<LinesLeg> legs, const Fee &fee, const Reuse &ru) {
-  r.src[kTrade] = mix_src(legs, true, fee);
-  r.src[kIdeal] = mix_src(std::move(legs), false, {});
+  r.src[kTrade] = mix_src(std::move(legs), fee);
+  r.src[kIdeal] = r.src[kTrade];
   push(d, g, std::move(r), ru);
 }
 

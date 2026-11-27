@@ -40,12 +40,14 @@ void alpha_dist(misc::exec::ForkJoin &ex, const float *v, const uint8_t *m, cons
 MiniPdf mini_pdf_of(const AggPdf &p);
 
 // ---- 探针契约与折叠容器 Probes<P...> ----
+// 根要交给探针的东西: 一级整行 (含 rIC) / 只逐行 rIC / 已定向秩 / 因子掩码 / alpha 平面 / 因子值
 enum NeedBit : uint8_t {
   kNeedRows = 1,
   kNeedRx = 2,
   kNeedMask = 4,
   kNeedAlpha = 8,
-  kNeedX = 16
+  kNeedX = 16,
+  kNeedRic = 32
 };
 
 struct RootView {
@@ -60,13 +62,13 @@ struct PassCtx {
   misc::exec::ForkJoin &ex;
   const Domain &dm;
   Holds hd;
-  Amts ad;
+  LobMask lob = 0;
   int seg = 0, A = 0;
   int days_stat = 0, rows_stat = 0;
 };
 inline PassCtx pass_ctx(const Job &j, misc::exec::ForkJoin &ex) {
   const int seg = j.ft->seg, ds = static_cast<int>(j.dm.stat_days());
-  return {ex, j.dm, j.spec.y.hd, j.spec.y.ad, seg, static_cast<int>(j.dm.rs.axis.size()), ds, ds * seg};
+  return {ex, j.dm, j.spec.y.hd, j.spec.y.lob, seg, static_cast<int>(j.dm.rs.axis.size()), ds, ds * seg};
 }
 
 // 块级上下文 (open / close 共用): 块上的标签 L 同块各根共用, 评估口径 m 逐根
@@ -80,7 +82,7 @@ struct Ctx {
   factor::stat::Span s() const { return c.span(); }
 };
 
-// 探针组 (本身即 Stat 的行 sink: row(hi, t, r) 逐行收, 行已按所评方向)
+// 探针组 (本身即 Stat 的行 sink: row(hi, t, r) 逐行收, 行已按所评方向; 逐行 rIC 另经 ric(hi, t, v) 交, 整行时由 row 顺带)
 template <class... P>
 struct Probes {
   std::tuple<P...> p;
@@ -90,6 +92,8 @@ struct Probes {
   static constexpr uint8_t need_at(bool last) { return last ? need : need_each; }
   static constexpr Segs segs = std::max({Segs::None, P::segs...});
   static constexpr bool kCells = (false || ... || P::kCells); // 有探针要真持有格 (只 CPU 路径交; Stat/Cpu.hpp sink.cell)
+  // 要 Stat 行核 (逐日 Sum / 一级行 / 逐行 rIC); 否则一个根只秩化 (组合账只要已定向秩)
+  static constexpr bool kStat = (false || ... || P::kStat) || (need & (kNeedRows | kNeedRic)) != 0;
   template <class Q>
   Q &at() { return std::get<Q>(p); }
   template <class Q>
@@ -104,6 +108,10 @@ struct Probes {
   }
   void row(int hi, int t, const factor::stat::Row &r) {
     std::apply([&](P &...q) { (q.row(hi, t, r), ...); }, p);
+    ric(hi, t, r.ok ? r.ric : std::numeric_limits<float>::quiet_NaN());
+  }
+  void ric(int hi, int t, float v) {
+    std::apply([&](P &...q) { (q.ric(hi, t, v), ...); }, p);
   }
   void cell(int hi, int t, int a, int g, const factor::stat::Pos &x, const float *y) {
     std::apply([&](P &...q) { (q.cell(hi, t, a, g, x, y), ...); }, p);
@@ -122,11 +130,13 @@ struct ProbeBase {
   static constexpr uint8_t need_last = 0;
   static constexpr Segs segs = Segs::None;
   static constexpr bool kCells = false;
+  static constexpr bool kStat = false;
   static constexpr Bytes bytes(int) { return {}; }
   static constexpr Bytes scratch(int) { return {}; }
   void init(const PassCtx &) {}
   void open(const Ctx &) {}
   void row(int, int, const factor::stat::Row &) {}
+  void ric(int, int, float) {}
   void cell(int, int, int, int, const factor::stat::Pos &, const float *) {}
   void close(const Ctx &, const RootView &) {}
   void finish(const PassCtx &) {}
@@ -147,6 +157,7 @@ void by_year(const std::vector<misc::Ymd> &dates, Fn &&fn) {
 
 // 逐日 Sum[H][评估期日] (各块按绝对日拼回) → 三级 HoldStat[H] (毛; Fold stat_of: 全期之和 + 日净值 LS) + 滚动窗 roll_of (正向, 行已按所评方向) + 收尾日的窗 mono wins
 struct HoldP : ProbeBase {
+  static constexpr bool kStat = true;
   int seg = 0, n_hold = 0;
   std::vector<factor::stat::Sum> day[kHoldCount]; // [hd][评估期日]
   factor::stat::HoldStat hold[kHoldCount];
@@ -235,10 +246,9 @@ struct LinesP : ProbeBase {
   }
 };
 
-// 因子账集流水 (Stat/Book.hpp FactorBooks, 每块每持有期一趟 book_rows) → 期线 [持有期][本][字段]: 字段 0 = 收益 (平仓行实现), 1 + f = 流水字段 f
-//   (建仓行即付); 都已实现 (÷ h̄, 与 Realize 同约). 两形对仗:
-//     逐日 Days (Run / Inspect / Agent): 两端 × 层级全部本, 本域全部口径段 → 逐日 TurnStat (全期 / 分年 = 日段之和)
-//     逐行 Rows (组合): 顶端整组一本, 口径那一段 → 账线 (Ledger 收益 + 流水)
+// 因子账集流水 (Stat/Book.hpp FactorBooks, 每块每持有期一趟 book_rows) → 期线 [持有期][本][字段]; 都已实现 (÷ h̄, 与 Realize 同约). 两形对仗:
+//     逐日 Days (Run / Inspect / Agent): 两端 × 层级全部本, 全部盘口段; 字段 = 流水字段 f (建仓行即付; 收益由行核出, 不重记) → 逐日 TurnStat (全期 / 分年 = 日段之和)
+//     逐行 Rows (组合): 只算顶端整组一本, 口径那一段; 字段 0 = 收益 (平仓行实现), 1 + f = 流水字段 f → 账线 (Ledger 收益 + 流水)
 enum class BookForm : uint8_t { Days,
                                 Rows };
 template <BookForm F>
@@ -246,29 +256,32 @@ struct BookP : LinesP {
   static constexpr bool kDays = F == BookForm::Days;
   static constexpr uint8_t need = kNeedRx;
   static constexpr Segs segs = kDays ? Segs::All : Segs::Spec;
-  static constexpr int kBooks = kDays ? factor::stat::kFactorBooks : 1; // 逐行形 = 本 0 (顶端整组, b = kTop · kLevels)
-  static constexpr int kFields = 1 + kFlowFields;
+  static constexpr int kEnds = kDays ? factor::stat::kEnds : 1, kLevels = kDays ? factor::stat::kLevels : 1; // 逐行形 = 顶端整组
+  static constexpr int kBooks = kEnds * kLevels;
+  static constexpr int kRet = kDays ? 0 : 1; // 收益字段数 (流水字段自 kRet 起)
+  static constexpr int kFields = kRet + kFlowFields;
   static constexpr int line(int hi, int b, int f) { return (hi * kBooks + b) * kFields + f; }
+  static constexpr int flow_line(int hi, int b, int f) { return line(hi, b, kRet + f); }
   static constexpr Bytes bytes(int H) {
     const double n = static_cast<double>(sizeof(float)) * kBooks * kFields * H;
     return kDays ? Bytes{.day = n} : Bytes{.row = n};
   }
-  Amts amts;
+  LobMask lob = 0;
   void init(const PassCtx &p) {
-    amts = p.ad;
-    lines(p, p.hd.n * kBooks * kFields, kDays ? p.seg : 1, [&](int i) { return p.hd.k[i / (kBooks * kFields)]; }, [](int i) { return i % kFields == 0; });
+    lob = p.lob;
+    lines(p, p.hd.n * kBooks * kFields, kDays ? p.seg : 1, [&](int i) { return p.hd.k[i / (kBooks * kFields)]; }, [](int i) { return i % kFields < kRet; });
   }
   void close(const Ctx &c, const RootView &v) {
     namespace st = factor::stat;
     const st::Span s = c.s();
-    const st::Cost cost = cost_of(c.c.y);
     for (int hi = 0; hi < c.L.hd.n; ++hi)
-      st::book_rows(c.ex, s, hold_on(c.L.hd.k[hi], s.g), c.L.l[hi], c.L.eo, st::FactorBooks{v.rx, s.A, c.L.l[hi].cap}, cost,
+      st::book_rows(c.ex, s, hold_on(c.L.hd.k[hi], s.g), c.L.l[hi], c.L.eo, st::FactorBooks{v.rx, s.A, c.L.l[hi].cap, kEnds, kLevels}, c.c.y.cost,
                     [&](int, int t, const double *ret, const TurnFlow *flow) {
                       for (int b = 0; b < kBooks; ++b) {
-                        add(line(hi, b, 0), t, ret[b]);
+                        if constexpr (!kDays)
+                          add(line(hi, b, 0), t, ret[b]);
                         for (int f = 0; f < kFlowFields; ++f)
-                          add(line(hi, b, 1 + f), t, flow[b][f]);
+                          add(flow_line(hi, b, f), t, flow[b][f]);
                       }
                     });
   }
@@ -278,7 +291,7 @@ struct BookP : LinesP {
     TurnStat o;
     for (int b = 0; b < kBooks; ++b)
       for (int f = 0; f < kFlowFields; ++f) {
-        const float *x = out.at(line(hi, b, 1 + f));
+        const float *x = out.at(flow_line(hi, b, f));
         double v = 0.0;
         for (size_t d = d0; d < d1; ++d)
           v += x[d];
@@ -290,11 +303,9 @@ struct BookP : LinesP {
 using TurnP = BookP<BookForm::Days>;
 using FlowP = BookP<BookForm::Rows>;
 
-inline float ric_of(const factor::stat::Row &r) { return r.ok ? r.ric : std::numeric_limits<float>::quiet_NaN(); }
-
 // 逐行 rIC 分布 (块内逐行暂存, close 折进 KLL; 末块即释放暂存); dst 非空 → 另把逐行 rIC 落地 [hd][rows_stat] (无 ok = NaN; Inspect 的 rIC 时序)
 struct IcPdfP : ProbeBase {
-  static constexpr uint8_t need = kNeedRows;
+  static constexpr uint8_t need = kNeedRic;
   static constexpr Bytes scratch(int H) { return {.row = static_cast<double>(sizeof(float)) * H}; }
   int t_lo = 0, n = 0;
   std::vector<float> got; // [hd][本块统计行]
@@ -314,7 +325,7 @@ struct IcPdfP : ProbeBase {
     t_lo = s.t_lo, n = s.t_hi() - s.t_lo;
     got.assign(static_cast<size_t>(c.L.hd.n) * static_cast<size_t>(n), std::numeric_limits<float>::quiet_NaN());
   }
-  void row(int hi, int t, const factor::stat::Row &r) { got[static_cast<size_t>(hi) * static_cast<size_t>(n) + static_cast<size_t>(t - t_lo)] = ric_of(r); }
+  void ric(int hi, int t, float v) { got[static_cast<size_t>(hi) * static_cast<size_t>(n) + static_cast<size_t>(t - t_lo)] = v; }
   void close(const Ctx &c, const RootView &) {
     const int u0 = c.c.land0() + t_lo;
     for (int hi = 0; hi < c.L.hd.n; ++hi) {
@@ -407,7 +418,7 @@ void fill_eval(const Ps &p, const PassCtx &pc, const StatScope &scope, double ev
   st.rank_pct = cv.rank_pct;
   st.n_hold = h.n_hold;
   std::copy_n(h.hold, h.n_hold, st.hold);
-  st.amts = c.amts;
+  st.lob = c.lob;
   for (int hi = 0; hi < h.n_hold; ++hi) {
     st.turn[hi] = c.turn(hi, 0, dates.size());
     st.ic_pdf[hi] = mini_pdf_of(ic.pdf[hi]);

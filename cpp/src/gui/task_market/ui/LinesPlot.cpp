@@ -59,9 +59,9 @@ void plot_hint(const char *s) {
 
 // 组线宽: 强调组 (kGroupDefs::accent) 加粗
 float row_width(int g) { return kGroupDefs[g].accent ? 2.0f : 1.0f; }
-// 成对线表 [口径][PairLine] (口径 = pair_kind: 0 = 有行情键 (篮子 / 成分 / 账户), 1 = 因子 / 策略): 主图例口径列 / 线尾小字后缀
-constexpr const char *kPairName[2][kPairLines] = {{"可成交", "理想"}, {"有冲击", "无冲击"}};
-constexpr const char *kPairTag[2][kPairLines] = {{" 可成交", " 理想"}, {"", " 无冲击"}};
+// 成对线表 [口径][PairLine] (口径 = pair_kind: 0 = 有行情键 (篮子 / 成分 / 账户), 1 = 因子 / 策略 = 只有可成交账, 理想位即主线 = 同一条): 主图例口径列 / 线尾小字后缀
+constexpr const char *kPairName[2][kPairLines] = {{"可成交", "理想"}, {"可成交", "可成交"}};
+constexpr const char *kPairTag[2][kPairLines] = {{" 可成交", " 理想"}, {"", ""}};
 int pair_kind(const LinesRow &r) { return !r.ref.ok(); }
 
 // VAL 线尾刻度的 alpha (band 填色 / 线的见 LinesCommon.hpp)
@@ -289,7 +289,7 @@ ImRect nav_legend(LinesState &ui, const std::vector<NavRow> &rows) {
     return it;
   });
   if (h.on && h.r < 0)
-    tip("%s线 (因子 / 策略行 = %s): 色块 = 显隐, 数 = 区间年化\n点 = 整列开关", kPairName[0][h.t], kPairName[1][h.t]);
+    tip("%s线 (可成交 = 账扣成本, 理想 = 价格; 因子 / 策略行只有可成交, 两列同一条): 色块 = 显隐, 数 = 区间年化\n点 = 整列开关", kPairName[0][h.t]);
   else if (h.on && h.t < 0)
     row_tip(*rows[static_cast<size_t>(h.r)].row);
   else if (h.on)

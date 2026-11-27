@@ -5,7 +5,7 @@
 // =============================================================================
 //   Stat/Cpu.hpp 用, 与 Stat/Dev.cuh 对仗 (同一组行核同名同参序, 一边宿主一边设备). 单线程, 无流程 / 无分配.
 //     KeyX / KeyY 取键器 (行视图, 与 Dev.cuh 同名同形): 因子一行 (只看池内 g ∧ m 的格) / 做多收益一行 (fp16 位) → 保序键 / kNoKey
-//     rank_row    精确并列均秩: key(a) → LSD 基数排序 (n ≤ 1024 用 8 位 × 4 趟, 否则 11 位 × 3 趟) → 等值段均秩 → out
+//     rank_row    精确并列均秩: key(a) → 稳定基数排序 (factor/Radix.hpp, CPU 后端内与 CS 序统计族同一份) → 等值段均秩 → out
 //     rank_x_row  因子一行: CS rank_row(KeyX) / TS 直接量化 —— 口径分叉只在这里; 方向在此一次定 (契约【方向 Dir】)
 //     row_stat    一 (t, hold) 完整行 = 换手侧 lag_row (t−h → t) + 标签侧 label_row (t → t+h, 开仓行才算):
 //                 整数五和 / 分组和 / 尾部和一遍 A 轴 (仓位感知 Pos.hpp cell: 每格一次链回走同出组与各级尾部), 收尾 finish_row (绝对口径)
@@ -14,6 +14,7 @@
 //   出错策略: 只 assert. 【precise-math】编进 -fno-fast-math TU.
 // =============================================================================
 
+#include "factor/Radix.hpp"
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Pos.hpp"
 
@@ -58,11 +59,9 @@ struct KeyY { // 做多收益一行 (fp16 位)
   unsigned key(int a) const { return m[a] ? factor::stat::ord(h2f(v[a])) : kNoKey; }
 };
 
-// 每线程排序暂存 (2 × A × 8B + 桶计数), 跨行 / 跨因子复用
-inline constexpr int kRadixMaxBits = 11;
+// 每线程排序暂存 (2 × A × 8B), 跨行 / 跨因子复用
 struct Scratch {
   std::vector<uint64_t> a, b; // (key << 16) | idx
-  int cnt[1 << kRadixMaxBits];
   void reserve(int A) {
     assert(A >= 1 && A <= kMaxA);
     a.resize(static_cast<size_t>(A));
@@ -83,24 +82,9 @@ inline void rank_row(const Key &key, int A, uint16_t *out, Scratch &sc) {
   std::fill(out, out + A, kRankNone);
   if (n < 2)
     return;
-  // LSD 基数排序: 键在位 16..47 (32 位), 稳定. 小 n 时桶清零 / 前缀和是固定开销, 用窄桶多趟
-  const int bits = n <= 1024 ? 8 : kRadixMaxBits, passes = (32 + bits - 1) / bits, radix = 1 << bits, mask = radix - 1;
-  uint64_t *src = sc.a.data(), *dst = sc.b.data();
-  for (int p = 0; p < passes; ++p) {
-    const int shift = 16 + bits * p;
-    std::fill(sc.cnt, sc.cnt + radix, 0);
-    for (int i = 0; i < n; ++i)
-      ++sc.cnt[(src[i] >> shift) & mask];
-    int run = 0;
-    for (int d = 0; d < radix; ++d) {
-      const int c = sc.cnt[d];
-      sc.cnt[d] = run;
-      run += c;
-    }
-    for (int i = 0; i < n; ++i)
-      dst[sc.cnt[(src[i] >> shift) & mask]++] = src[i];
-    std::swap(src, dst);
-  }
+  // 稳定基数排序 (factor/Radix.hpp, 与 CS 序统计族同一份): 键在位 16..47 (32 位)
+  factor::cpu::radix_sort(sc.a.data(), sc.b.data(), n, 16, 32);
+  const uint64_t *src = sc.a.data();
   const auto key_at = [&](int i) { return static_cast<unsigned>(src[i] >> 16); };
   if (!(key_at(n - 1) > key_at(0))) // 全并列 = spread 为假
     return;

@@ -2,7 +2,8 @@
 
 #include "define/Label.hpp" // AmtId / LobAmt
 
-// 交易成本 = 量 (TurnFlow) × 率 (Fee) → 钱 (CostParts); 全仓唯一一式 Fee::parts (因子换手 / 组合与篮子净线 / CTA / 实盘调仓试算 / 账户日内回推同用)
+// 交易成本 = 量 × 率 (Fee) → 钱 (CostParts); 全仓唯一一式 Fee::side (一侧), 流水 TurnFlow 的 Fee::parts = 两侧之和 (因子换手 / 组合与篮子净线 / CTA 同用);
+//   实盘调仓试算 / 账户日内回推只要税佣 (冲击取真实吃单, define/Sweep.hpp) = Fee::tax
 //   成交两侧 Side (下标; Stat 账集流水 / 冲击列 / 费率同一下标); 实盘的方向 ±1 经 live::side_of 映到它
 //   税佣: 佣金双边 + 过户费双边 + 印花税卖出单边; 冲击: 口径段 a 的固定段 = 全量 × 固定冲击 Fee::impact,
 //   盘口段 = 真实冲击 Σ 量·冲击 (Lob 库建仓冲击列, 封顶 CostSpec::top) + 卖不出的量 stuck × 固定冲击
@@ -60,10 +61,12 @@ struct Fee {
   // 一侧的税佣率 / 全部费率 (税佣 + 固定冲击)
   double tax(Side s) const { return commission + transfer + (s == kSell ? stamp : 0.0); }
   double rate(Side s) const { return tax(s) + impact; }
-  // 流水 f 在口径段 a 下一侧 / 两侧的成本分项
-  CostParts parts(const TurnFlow &f, AmtId a, Side s) const {
-    return {{f.vol(s) * (commission + transfer), s == kSell ? f.vol(s) * stamp : 0.0, f.impact(a, s) + f.fixed(a, s) * impact}};
+  // 一侧的成本分项 (唯一一式): 成交量 vol, 已乘好的盘口冲击和 imp, 付固定冲击的量 fixed
+  CostParts side(double vol, Side s, double imp, double fixed) const {
+    return {{vol * (commission + transfer), s == kSell ? vol * stamp : 0.0, imp + fixed * impact}};
   }
+  // 流水 f 在口径段 a 下一侧 / 两侧的成本分项
+  CostParts parts(const TurnFlow &f, AmtId a, Side s) const { return side(f.vol(s), s, f.impact(a, s), f.fixed(a, s)); }
   CostParts parts(const TurnFlow &f, AmtId a) const {
     CostParts c = parts(f, a, kBuy);
     c += parts(f, a, kSell);

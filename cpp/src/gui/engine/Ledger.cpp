@@ -252,11 +252,13 @@ Rc BasketPass::block(const Block &c, size_t ci, bool, double) {
 void BasketPass::finish(const Job &) {
   const LedgerLines &all = lines_.out;
   const int nl = static_cast<int>(basket_table().size()), B = all.n / kBasketFields;
+  BookLines books;
+  books.take(all, B, kFlowImp);
   for (Ledger *l : {&out[Quote::kBasket], &out[Quote::kStock]}) {
     const int i0 = l == &out[Quote::kBasket] ? 0 : nl, m = l == &out[Quote::kBasket] ? nl : B - nl;
-    l->ret = all.slice(i0, m);
+    l->ret = books.ret.slice(i0, m);
     for (int f = 0; f < kFlowImp; ++f)
-      l->flow[f] = all.slice((1 + f) * B + i0, m);
+      l->flow[f] = books.flow[f].slice(i0, m);
   }
   lines_ = Lines{};
 }

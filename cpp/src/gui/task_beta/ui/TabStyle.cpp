@@ -720,13 +720,13 @@ void SyncStylePools(StyleUIState &ui) {
   ++ui.pick_gen;
 }
 
-bool RenderTabStyle(StyleService &svc, StyleUIState &s) {
+bool RenderTabStyle(StyleService &svc, StyleUIState &s, const Fee &fee) {
   const ImVec2 av = ImGui::GetContentRegionAvail();
   const float right = sheet_width(av.x), left = av.x - right - ImGui::GetStyle().ItemSpacing.x, h = av.y;
   if (s.open >= 0)
     s.grid.bits[pool::kDimStyle] = static_cast<uint16_t>(1u << s.open);
-  if (s.open >= 0 && !(s.sent.gen && s.sent.grid == s.grid && s.sent.lo == s.lo && s.sent.hi == s.hi)) {
-    s.sent = {s.sent.gen + 1, s.grid, s.lo, s.hi};
+  if (s.open >= 0 && !(s.sent.gen && s.sent.grid == s.grid && s.sent.lo == s.lo && s.sent.hi == s.hi && s.sent.fee == fee)) {
+    s.sent = {s.sent.gen + 1, s.grid, s.lo, s.hi, fee};
     svc.Request(s.sent);
   }
   std::shared_ptr<const StyleResult> r;

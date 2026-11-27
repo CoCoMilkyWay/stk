@@ -64,15 +64,16 @@ void run(int op, int n_in, const float *const *v, const uint8_t *const *m, const
 // 显存 open 时一次分配 (标签 / ry / rx[Cmax] / 一级 / 出口). 流程: open → 每块 load (上传宿主标签 hd.n 组 (含逐行 mk / cap) + 共用的 eo, ry 预处理; 各候选共用) →
 // 每批 eval (C ≤ Cmax 张设备常驻候选平面 (DAG 根槽) + 池掩码 g (只用 g->m), 评估口径 m 逐批给) → close.
 //   与 CPU cpu::stat::run 同参序 (x, g, m, s, …): s = 本块 Span (形状同会话; t_lo / t_back = 契约【分块流式】, 整日对齐).
-//   出口 day[C][hd.n][D] 宿主 (D = 统计日数, 契约二级逐日 Sum; 收益口径 m.r 在折进时定); C = 1 另可拷回一级 rows[hd.n][T] /
-//   已定向 r16 rx [T][A] (宿主侧账集 book_rows 与探针要); C > 1 只出 day. prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent).
+//   出口 day[C][hd.n][D] 宿主 (D = 统计日数, 契约二级逐日 Sum; 收益口径 m.r 在折进时定; day 空 = 只秩化, 不跑行核); C = 1 另可拷回一级 rows[hd.n][T] /
+//   逐行 rIC ric[hd.n][T] (不 ok = NaN; 只要 rIC 时不搬整行) / 已定向 r16 rx [T][A] (宿主侧账集 book_rows 与探针要); C > 1 只出 day.
+//   prep_ms / eval_ms 非空 → 回填纯 kernel 耗时 (cudaEvent).
 // run_stat 一次性版 (op_check 用): 宿主指针进出, 内部 open + 上传 + load + eval + close.
 int stat_max_batch(); // 一批候选上限 (= Stat/Contract.hpp kMaxBatch); 未编译 CUDA → 0
 struct StatSession;
 StatSession *stat_open(const factor::stat::Span &s, int Cmax, const Holds &hd);
 void stat_load(StatSession *s, const factor::stat::Labels &lab, double *prep_ms = nullptr);
 void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane *g, const factor::stat::Mode &m, const factor::stat::Span &s, factor::stat::Sum *day,
-               factor::stat::Row *rows = nullptr, uint16_t *rx = nullptr, double *eval_ms = nullptr);
+               factor::stat::Row *rows = nullptr, float *ric = nullptr, uint16_t *rx = nullptr, double *eval_ms = nullptr);
 void stat_close(StatSession *s);
 size_t stat_bytes(const StatSession *s);
 void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, const factor::stat::Mode &m, const factor::stat::Span &s,

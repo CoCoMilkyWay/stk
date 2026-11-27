@@ -181,32 +181,38 @@ inline Diff compare_rows(const Row *ref, const Row *got, size_t n, Tol tol) {
   return d;
 }
 
-// 二级: 逐 (h, 日) 的 Sum (计数逐位相等, 和在容差内)
+// 二级: 逐 (h, 日) 的 Sum, 按字段表 SUM_HEAD_FIELDS / SUM_BODY_FIELDS 逐项 (整数计数逐位相等, 浮点和在容差内)
+namespace detail {
+struct SumCmp {
+  Diff &d;
+  Tol tol;
+  int at;
+  bool cnt_ok = true;
+  void operator()(int a, int b) { cnt_ok = cnt_ok && a == b; }
+  void operator()(double a, double b) { cmp1(d, a, b, tol, at); }
+  void operator()(const MomAcc &a, const MomAcc &b) {
+    (*this)(a.n, b.n), (*this)(a.npos, b.npos), (*this)(a.nneg, b.nneg);
+    (*this)(a.s1, b.s1), (*this)(a.s2, b.s2), (*this)(a.s3, b.s3), (*this)(a.s4, b.s4);
+  }
+  template <class T, size_t N>
+  void operator()(const T (&a)[N], const T (&b)[N]) {
+    for (size_t i = 0; i < N; ++i)
+      (*this)(a[i], b[i]);
+  }
+};
+} // namespace detail
 inline Diff compare_days(const Sum *ref, const Sum *got, size_t n, Tol tol) {
   Diff d;
   for (size_t i = 0; i < n; ++i) {
-    const int at = static_cast<int>(i);
-    const Sum::Head &a = ref[i].h, &b = got[i].h;
-    bool cnt_ok = a.rows == b.rows && a.n_trig == b.n_trig && a.ric.n == b.ric.n && a.rac.n == b.rac.n && a.ric.npos == b.ric.npos;
-    for (int k = 0; k < kGroups; ++k)
-      cnt_ok = cnt_ok && ref[i].cnt[k] == got[i].cnt[k];
-    for (int e = 0; e < kEnds; ++e)
-      for (int j = 0; j < kTails; ++j)
-        cnt_ok = cnt_ok && a.tail_n[e][j] == b.tail_n[e][j];
-    if (!cnt_ok) {
-      detail::bad(d, at);
-      continue;
-    }
-    for (const auto m : {&MomAcc::s1, &MomAcc::s2})
-      detail::cmp1(d, a.ric.*m, b.ric.*m, tol, at), detail::cmp1(d, a.rac.*m, b.rac.*m, tol, at), detail::cmp1(d, a.ls.*m, b.ls.*m, tol, at);
-    detail::cmp1(d, a.smk, b.smk, tol, at);
-    detail::cmp1(d, a.slm, b.slm, tol, at);
-    detail::cmp1(d, a.cap, b.cap, tol, at);
-    for (int e = 0; e < kEnds; ++e)
-      for (int j = 0; j < kTails; ++j)
-        detail::cmp1(d, a.tail[e][j], b.tail[e][j], tol, at);
-    for (int k = 0; k < kGroups; ++k)
-      detail::cmp1(d, ref[i].grp[k], got[i].grp[k], tol, at);
+    detail::SumCmp c{d, tol, static_cast<int>(i)};
+#define SUM_CMP_H(f) c(ref[i].h.f, got[i].h.f);
+#define SUM_CMP(f) c(ref[i].f, got[i].f);
+    SUM_HEAD_FIELDS(SUM_CMP_H)
+    SUM_BODY_FIELDS(SUM_CMP)
+#undef SUM_CMP_H
+#undef SUM_CMP
+    if (!c.cnt_ok)
+      detail::bad(d, c.at);
   }
   return d;
 }

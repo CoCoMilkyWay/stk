@@ -1,5 +1,7 @@
 #include "features/Panel/PoolSelect.hpp"
 
+#include "define/Ord.hpp"
+#include "factor/Radix.hpp"
 #include "factor/Stat/Book.hpp" // 篮子账: 账集 book_rows (Stat 同一核)
 
 #include "features/MetaFlag.hpp"   // fmeta::lab_ok (标签有效判据, 与评估装载同一份)
@@ -168,32 +170,14 @@ void fill_row(const FeatureRead::DayColumns &c, Strip &t, size_t r, float *pre, 
   }
 }
 
-// 保序键: 浮点位翻转 (−0 归 +0)
-uint32_t ord(float x) {
-  const uint32_t u = std::bit_cast<uint32_t>(x + 0.0f);
-  return u & 0x80000000u ? ~u : u | 0x80000000u;
-}
-
 // 一行的键 k [A] → 有限键资产按 (键, 下标) 升序写进 seq, 返回个数;
-//   稳定 LSD 基数排序 ((键 << 16 | 下标), 键 32 位分 3 趟 11 位): 输入下标升序 ⇒ 并列按下标升序; a / b = 两条 [A] 暂存带
+//   稳定基数排序 ((键 << 16 | 下标), factor/Radix.hpp): 输入下标升序 ⇒ 并列按下标升序; a / b = 两条 [A] 暂存带
 size_t sort_keys(const float *k, size_t A, Aid *seq, uint64_t *a, uint64_t *b) {
-  constexpr int kBits = 11, kRadix = 1 << kBits;
   size_t n = 0;
   for (size_t i = 0; i < A; ++i)
     if (std::isfinite(k[i]))
       a[n++] = (static_cast<uint64_t>(ord(k[i])) << 16) | i;
-  for (int shift = 16; shift < 48; shift += kBits) {
-    uint32_t at[kRadix] = {};
-    for (size_t i = 0; i < n; ++i)
-      ++at[(a[i] >> shift) & (kRadix - 1)];
-    for (uint32_t d = 0, s = 0; d < kRadix; ++d) {
-      const uint32_t c = at[d];
-      at[d] = s, s += c;
-    }
-    for (size_t i = 0; i < n; ++i)
-      b[at[(a[i] >> shift) & (kRadix - 1)]++] = a[i];
-    std::swap(a, b);
-  }
+  factor::cpu::radix_sort(a, b, static_cast<int>(n), 16, 32);
   for (size_t i = 0; i < n; ++i)
     seq[i] = static_cast<Aid>(a[i]);
   return n;
@@ -525,8 +509,6 @@ struct PickBooks {
 void perf(const Strip &t, Rebal rb, const Pick &pick, Perf &b) {
   namespace st = factor::stat;
   const size_t D = t.days(), A = t.A();
-  for (int w = 0; w < kWeights; ++w)
-    b.ret[w].assign(D, 0.0f), b.buy[w].assign(D, 0.0f);
   b.first = D;
   // 批 = 行 r 收盘建仓 (持仓日 r + 1): 成员位 mem / 源行 src
   std::vector<uint8_t> mem(D * A, 0);
@@ -543,17 +525,23 @@ void perf(const Strip &t, Rebal rb, const Pick &pick, Perf &b) {
     for (const Aid a : o)
       mem[r * A + a] = 1;
   }
-  // 篮子账 (键 = 权重; Stat 账集同一核): 收益 (持仓日 r + 1) / 买量; 只付固定冲击
-  //   日层每行一批 (h̄ = 1), 收益记平仓日 ⇄ 买量记建仓日 (Realize, 协议表 2【记日】; 与行情账同口径)
+  // 篮子账 (键 = 权重; Stat 账集同一核): 收益 (持仓日 r + 1) / 流水; 只付固定冲击
+  //   日层每行一批 (h̄ = 1), 期线 Lines [字段 · B + 本] 与行情篮子账同一排布 (收益记平仓日 ⇄ 流水记建仓日, 协议表 2【记日】)
   const st::Span sp{static_cast<int>(D), static_cast<int>(A), geo_of(1)};
   const Hold hd = hold_on(kHoldT1, sp.g);
   const st::Label lb = st::label_of(t.t1);
   misc::exec::Serial ex;
-  const st::Realize rz(kHoldT1, 1, 1, static_cast<int>(D));
+  constexpr int B = kWeights, nf = kFlowImp;
+  st::Lines ln;
+  ln.reset((1 + nf) * B, 1, 1, static_cast<int>(D), [](int) { return kHoldT1; }, [](int i) { return i < B; });
   st::book_rows(ex, sp, hd, lb, t.eo.data(), PickBooks{t, mem.data(), src.data(), static_cast<int>(A)}, st::Cost{}, [&](int, int r, const double *ret, const TurnFlow *flow) {
-    for (int w = 0; w < kWeights; ++w)
-      rz.add(r, ret[w], true, b.ret[w].data()), rz.add(r, flow[w][kFlowBuy], false, b.buy[w].data());
+    for (int w = 0; w < B; ++w) {
+      ln.add(w, r, ret[w]);
+      for (int f = 0; f < nf; ++f)
+        ln.add((1 + f) * B + w, r, flow[w][f]);
+    }
   });
+  b.take(ln.out, B, nf);
 }
 
 size_t Picks::src(PoolId p, misc::Ymd d) const {

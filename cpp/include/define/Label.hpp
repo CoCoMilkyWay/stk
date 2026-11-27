@@ -5,9 +5,9 @@
 // =============================================================================
 //   写端 (features 标签节点; 字段表宏经 FieldsGenerated 引入本头) 与评估端 (factor Stat / 算子 / gui engine) 同一份, 本头只依赖标准库与 define/Geo.hpp.
 //   持有期的身份 = HoldId (表下标 = LB 组序 = 时间序); 族 / 天数由 hold_kind / hold_n 取 (主机 / 设备两用), 文字由 token 表取;
-//   落在一层上的全部几何 (行数 / 开仓 / 交接 / 平仓行 / 记日 / 可知行 / 资金口径) = Hold (hold_on; 扫出的导出量 span / reach 查表 hold_geom).
+//   落在一层上的全部几何 (行数 / 开仓 / 交接 / 平仓行 / 记日 / 可知行 / 资金口径) = Hold (hold_on; 扫出的导出量 span / reach 查编译期表 kHoldGeom).
 //   行号一律取段内行 (seg_row): 张量与分块都以段首起, 与张量从哪一日起无关.
-//   集合 = IdList (Holds / Amts: 成员升序, 下标 i ↔ 第 i 个成员, 评估端的紧凑数组按它排).
+//   持有期集合 = IdList Holds (成员升序, 下标 i ↔ 第 i 个成员, 评估端的紧凑数组按它排); 盘口段集合 = 位集 LobMask.
 // =============================================================================
 
 #include "define/Geo.hpp"
@@ -18,6 +18,7 @@
 #include <initializer_list>
 #include <string>
 #include <string_view>
+#include <utility>
 
 // ---- 持有期表: X(Id, token, Kind, n) ----
 //   token = 列名片段 (lb_<token> 做多收益 / lb_nom_<token> 名义收益) = 落盘写法 = 表达式 h= 写法
@@ -99,8 +100,8 @@ inline bool hold_parse(std::string_view s, HoldId &h) {
   return false;
 }
 
-// ---- 冲击金额段: 盘口段 LobAmt (= Lob 档落盘列 lb_cost_{buy,sell}_<a>w, 万元升序) ⇄ 成本口径段 AmtId (固定段 + 各盘口段) ----
-//   盘口段 k ↔ 口径段 k + 1 (amt_of / lob_of); 固定段无盘口列, 恒有 (全量 × Fee::impact)
+// ---- 冲击金额段: 盘口段 LobAmt (= Lob 档落盘列 lb_cost_{buy,sell}_<a>w, 万元升序; 平面 / 流水 / 装载一律按它索引) ⇄ 成本口径段 AmtId (固定段 + 各盘口段; 只作口径选择) ----
+//   盘口段 k ↔ 口径段 k + 1 (amt_of / lob_of); 固定段无盘口列, 恒有 (全量 × Fee::impact); 装了哪些盘口段 = 位集 LobMask
 #define LABEL_AMTS(X, ...) X(5, __VA_ARGS__) X(30, __VA_ARGS__)
 #define LOB_AMT_ONE(a, ...) kLob##a##w,
 enum LobAmt : uint8_t { LABEL_AMTS(LOB_AMT_ONE) kLobAmts };
@@ -134,6 +135,14 @@ inline bool amt_of_wan(int wan, AmtId &a) {
     }
   return false;
 }
+// 盘口段位集 (位 k = 盘口段 k)
+using LobMask = uint8_t;
+static_assert(kLobAmts <= 8, "LobMask 用 uint8_t");
+inline constexpr LobMask kAllLob = static_cast<LobMask>((1u << kLobAmts) - 1);
+constexpr LobMask lob_bit(LobAmt k) { return static_cast<LobMask>(1u << k); }
+constexpr bool lob_has(LobMask m, LobAmt k) { return (m >> k & 1u) != 0; }
+// 口径段 a 在装了 m 的作用域上可算 (固定段恒可算)
+constexpr bool amt_in(LobMask m, AmtId a) { return !is_lob(a) || lob_has(m, lob_of(a)); }
 
 // ---- 集合 = IdList (唯一表示: 成员按 id 升序, 下标 i ↔ 第 i 个成员; 评估端的紧凑数组按它排) ----
 template <class Id, int N>
@@ -177,13 +186,15 @@ struct IdList {
   }
 };
 using Holds = IdList<HoldId, kHoldCount>;
-using Amts = IdList<AmtId, kAmtCount>;
-inline constexpr Amts kAllAmts = [] {
-  Amts a;
+// 盘口段位集 m 下可算的口径段 (固定段起, 升序; 只给 UI 逐段列举, 存储一律 LobMask)
+using AmtList = IdList<AmtId, kAmtCount>;
+constexpr AmtList amts_of(LobMask m) {
+  AmtList o;
   for (int i = 0; i < kAmtCount; ++i)
-    a = a.with(static_cast<AmtId>(i));
-  return a;
-}();
+    if (amt_in(m, static_cast<AmtId>(i)))
+      o.k[o.n++] = static_cast<AmtId>(i);
+  return o;
+}
 
 // ---- 交易时钟 (L_1min 行号) ----
 inline constexpr int kAuctionMin = 10;                   // 09:25 开盘撮合 bar
@@ -280,9 +291,10 @@ struct Hold {
     const int d = t / g.S + hold_days(id);
     return hold_kind(id) == HoldKind::Open ? d * g.S + open_row(g) : d * g.S + g.S - 1;
   }
-  // 记日一对 (协议表 2【记日】的唯一实现): 排序统计记建仓日 ⇄ 钱记平仓日
+  // 记日一对 (协议表 2【记日】的唯一实现): 排序统计记建仓日 ⇄ 钱记平仓日; 开仓行恒有 平仓日 = 建仓日 + hold_days (编译期表核), 按日的钱线直接平移
   FACTOR_HD constexpr int stat_day(int t) const { return t / g.S; }
   FACTOR_HD constexpr int money_day(int t) const { return exit(t) / g.S; }
+  FACTOR_HD constexpr int money_lag() const { return hold_days(id); }
   // 行 t 这一批的平仓价点是分钟价点 E (连续竞价, 付盘口冲击) 而非撮合价 (收盘 / 开盘, 冲击 0): 偏移型且平仓行不是收盘建仓行
   FACTOR_HD constexpr bool exit_e(int t) const { return hold_offset(id) && (hold_kind(id) == HoldKind::Min || !close_entry(t, g)); }
   // 行 s 的标签在哪一行收盘时已实现 (N 元回归的样本行): 撮合价点在平仓行收盘即知; 分钟价点 E 至迟下一行收盘可知 (+1)
@@ -294,42 +306,61 @@ struct Hold {
       --u;
     return u;
   }
-  // t − last(t) 的上界 (行): N 元回归的回看 = d + 它 (查表)
-  int reach() const;
-  // 资金口径行数 h̄: 一日各开仓行的在持行数 (建仓行起, exit 止; 尾部行不开仓不计) 之和 / S (查表)
-  double span() const;
+  // t − last(t) 的上界 (行): N 元回归的回看 = d + 它 (查编译期表, 宿主)
+  constexpr int reach() const;
+  // 资金口径行数 h̄: 一日各开仓行的在持行数 (建仓行起, exit 止; 尾部行不开仓不计) 之和 / S (查编译期表, 宿主)
+  constexpr double span() const;
 };
 FACTOR_HD constexpr Hold hold_on(HoldId id, const Geo &g) {
   const int n = hold_days(id);
   return {id, g, hold_kind(id) == HoldKind::Min ? hold_n(id) / g.N : g.S * (n < 1 ? 1 : n)};
 }
 
-// ---- 持有期 × 层的导出几何表 (各层各持有期一次扫出, 首次用到时建; 不合法的格不用) ----
+// ---- 持有期 × 层的导出几何表 (编译期一次扫出; 不合法的格不用) ----
+//   reach: known 沿行单调不减 (表内核) ⇒ [known(s), known(s + 1)) 内的行 u 都有 last(u) = s, 沿 s 一趟扫 (每行 known 只算一次);
+//   ok: known 单调 ∧ 开仓行的平仓日 = 建仓日 + hold_days
 struct HoldGeom {
   int reach = 0;
   double span = 0.0;
+  bool ok = true;
 };
-inline const HoldGeom &hold_geom(HoldId id, const Geo &g) {
-  static const auto tab = [] {
-    std::array<std::array<HoldGeom, kHoldCount>, kGeoCount> t{};
-    for (int i = 0; i < kGeoCount; ++i)
-      for (int k = 0; k < kHoldCount; ++k) {
-        const Hold x = hold_on(static_cast<HoldId>(k), kGeos[i]);
-        HoldGeom &o = t[static_cast<size_t>(i)][static_cast<size_t>(k)];
-        const int t0 = (hold_days(x.id) + 2) * x.g.S + x.h + 1;
-        for (int u = t0; u < t0 + x.g.S; ++u)
-          o.reach = u - x.last(u) > o.reach ? u - x.last(u) : o.reach;
-        int s = 0;
-        for (int j = 0; j < x.g.S; ++j)
-          s += x.opens(j) ? x.exit(j) - j : 0;
-        o.span = static_cast<double>(s) / x.g.S;
-      }
-    return t;
-  }();
-  return tab[static_cast<size_t>(geo_index(g.S))][id];
+constexpr HoldGeom hold_geom_of(const Hold &x) {
+  HoldGeom o;
+  const int t0 = (hold_days(x.id) + 2) * x.g.S + x.h + 1, t1 = t0 + x.g.S; // 扫的行 [t0, t1)
+  int k0 = -1 << 30;                                                       // known(s), s = −1 时为 −∞
+  for (int s = -1; k0 < t1; ++s) {
+    const int k1 = x.known(s + 1);
+    o.ok = o.ok && k1 >= k0;
+    const int lo = k0 > t0 ? k0 : t0, hi = k1 < t1 ? k1 : t1; // last(u) = s 的行 ∩ 扫的行
+    if (lo < hi && hi - 1 - s > o.reach)
+      o.reach = hi - 1 - s;
+    k0 = k1;
+  }
+  int s = 0;
+  for (int j = 0; j < x.g.S; ++j) {
+    o.ok = o.ok && (!x.opens(j) || x.money_day(j) == x.stat_day(j) + x.money_lag());
+    s += x.opens(j) ? x.exit(j) - j : 0;
+  }
+  o.span = static_cast<double>(s) / x.g.S;
+  return o;
 }
-inline int Hold::reach() const { return hold_geom(id, g).reach; }
-inline double Hold::span() const { return hold_geom(id, g).span; }
+// 一格一个常量求值 (各自的求值步数预算), 再拼成表 [层 · kHoldCount + 持有期]
+template <int G, int K>
+inline constexpr HoldGeom kHoldGeomAt = hold_ok(static_cast<HoldId>(K), kGeos[G]) ? hold_geom_of(hold_on(static_cast<HoldId>(K), kGeos[G])) : HoldGeom{};
+template <size_t... I>
+constexpr std::array<HoldGeom, sizeof...(I)> hold_geom_table(std::index_sequence<I...>) {
+  return {kHoldGeomAt<static_cast<int>(I / kHoldCount), static_cast<int>(I % kHoldCount)>...};
+}
+inline constexpr auto kHoldGeom = hold_geom_table(std::make_index_sequence<static_cast<size_t>(kGeoCount) * kHoldCount>{});
+static_assert([] {
+  for (const HoldGeom &x : kHoldGeom)
+    if (!x.ok)
+      return false;
+  return true;
+}(),
+              "持有期几何: known 须沿行单调, 开仓行平仓日须 = 建仓日 + hold_days");
+constexpr int Hold::reach() const { return kHoldGeom[static_cast<size_t>(geo_index(g.S)) * kHoldCount + id].reach; }
+constexpr double Hold::span() const { return kHoldGeom[static_cast<size_t>(geo_index(g.S)) * kHoldCount + id].span; }
 
 // ---- 字段描述片段 (英 / 中, 按族 token 拼) ----
 #define LABEL_ENTRY_TEX R"(\mathbf{1}[\mathrm{buy}_{entry}] + 2\cdot\mathbf{1}[\mathrm{sell}_{entry}])"

@@ -149,11 +149,8 @@ struct Ui {
     Mine::Loss loss;
     bool open = false;
   } rewind;
-  // 候选页: 选中的候选文件与它的 Search 日志 (换了选中才重读)
+  // 因子页: 选中的候选文件与它的 Search 日志 (换了选中才重读)
   std::string pick, pick_log, pick_log_of;
-  // 记录页: 只看待办 / 在写的回复草稿
-  bool only_open = false;
-  std::string reply;
 };
 
 // ---- 嗅探 / 评估后端 / 工作台 (TaskAgent.cpp) ----

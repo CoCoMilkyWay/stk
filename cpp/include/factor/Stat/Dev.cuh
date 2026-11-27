@@ -9,10 +9,9 @@
 //
 //   【布局】SoA 行主序 [T][A]; 一行 = 一个截面. 候选批 Batch = C 张 Plane (kernel 参数区, 128 × 16 B = 2 KB);
 //           r16 工作区 rx[c][T][A] (u16). Stat 是 C = 1 的特例.
-//   【rank_rows】grid (T, C) 一行一 block (kRB = 512 线程, 前三级每 SM 驻 2 块): 一行的 (保序键, 资产号) 进 cub::BlockRadixSort (寄存器 + 片上),
-//     排好写回 shared, 每个元素二分查 less / eq → r16. 无效键 = kNoKey 排最后, n = 首个 kNoKey 的位置.
-//     ITEMS (每线程元素数) 按 A 分四级 2 / 6 / 10 / 16 (A ≤ 1024 / 3072 / 5120 / 8192), shared 6 / 18 / 30 / 48 KB;
-//     末级 key + idx 正好顶满静态 shared 上限 48 KB (cub 排序暂存 ≈ 34 KB 与之 union), sm_75 每 SM 只驻 1 块.
+//   【rank_rows】grid (T, C) 一行一 block (kRB = 512 线程): 一行的保序键经 CS 的片上排序核 cs::k::sort_keys (cub::BlockRadixSort, 只排键)
+//     排好进 shared, 每格以自己的键二分查 less / eq → r16. 无效键 = kNoKey (= cs::k::kPadKey) 排最后, n = 首个 kNoKey 的位置.
+//     ITEMS (每线程元素数) 按 A 分四级 2 / 6 / 10 / 16 (A ≤ 1024 / 3072 / 5120 / 8192).
 //     同一个核给因子批 (SrcX: 池内 g ∧ m) 与标签 (SrcY: fp16 平面, C = 1) 用, 只换行源; 行源 row(c, 行首) 给出取键器
 //     KeyX / KeyY (行视图, 与 Host.hpp 同名同形).
 //   【quant_rows】TS: 分位直接量化 (r16_quant), 逐格无关, grid (·, C). 两核出口按方向 d 定向 (契约【方向 Dir】).
@@ -26,6 +25,7 @@
 //   【禁用】--use_fast_math: pearson_int 的除法 / 开方要与 host 逐位一致.
 // =============================================================================
 
+#include "factor/CS/Gpu.cuh" // 片上排序核 cs::k::sort_keys (GPU 后端内 CS 序统计族与 Stat 秩同一份)
 #include "factor/Stat/Contract.hpp"
 #include "factor/Stat/Pos.hpp"
 
@@ -78,30 +78,6 @@ __device__ __forceinline__ float h2f(uint16_t b) { return __half2float(__ushort_
 struct H2F {
   __device__ __forceinline__ float operator()(uint16_t b) const { return h2f(b); }
 };
-
-// shared 有序数组上的二分
-__device__ __forceinline__ int lower_bound(const unsigned *k, int n, unsigned key) {
-  int lo = 0, hi = n;
-  while (lo < hi) {
-    const int mid = (lo + hi) >> 1;
-    if (k[mid] < key)
-      lo = mid + 1;
-    else
-      hi = mid;
-  }
-  return lo;
-}
-__device__ __forceinline__ int upper_bound(const unsigned *k, int n, unsigned key) {
-  int lo = 0, hi = n;
-  while (lo < hi) {
-    const int mid = (lo + hi) >> 1;
-    if (k[mid] <= key)
-      lo = mid + 1;
-    else
-      hi = mid;
-  }
-  return lo;
-}
 
 // warp 内 D 路求和 (每 lane 一份 v[D]), xor 蝶形 → 全 lane 拿到总和; 求和序固定 → 逐次确定
 template <class T, int D>
@@ -238,51 +214,29 @@ struct SrcY { // 做多标签平面, 单张
   __device__ __forceinline__ KeyY row(int, size_t base) const { return {v + base, m + base}; }
 };
 
-// rank_rows: grid (T, C) 一行一 block, 片上基数排序 → 二分 less/eq → r16 → out[c][t][·]
+// rank_rows: grid (T, C) 一行一 block, 片上排序 (GPU 后端内与 CS 序统计族同一核 cs::k::sort_keys) → 每格二分 less / eq → r16 → out[c][t][·]
+static_assert(kRB == cs::kCB && kNoKey == cs::k::kPadKey, "与 CS 片上排序核同块宽 / 同补位键");
 template <int ITEMS, class Src>
 __global__ void __launch_bounds__(kRB) rank_rows(Src src, uint16_t *out, int T, int A, int d) {
-  constexpr int N = kRB * ITEMS;
-  using Sort = cub::BlockRadixSort<unsigned, kRB, ITEMS, unsigned short>;
-  union Sh { // 排序暂存与排好序的数组分时复用同一块 shared
-    typename Sort::TempStorage sort;
-    struct {
-      unsigned key[N];
-      unsigned short idx[N];
-    } s;
-  };
-  __shared__ Sh sh;
+  __shared__ cs::k::SortSh<ITEMS> sh;
   const int t = blockIdx.x, c = blockIdx.y;
   const size_t base = static_cast<size_t>(t) * A;
   const size_t obase = (static_cast<size_t>(c) * T + t) * A;
   const auto key = src.row(c, base);
-  unsigned keys[ITEMS];
-  unsigned short idx[ITEMS];
+  uint32_t keys[ITEMS];
 #pragma unroll
   for (int j = 0; j < ITEMS; ++j) {
     const int a = threadIdx.x * ITEMS + j; // blocked 排布 (cub 要求)
     keys[j] = a < A ? key.key(a) : kNoKey;
-    idx[j] = static_cast<unsigned short>(a);
   }
-  Sort(sh.sort).Sort(keys, idx);
-  __syncthreads(); // TempStorage 与排好序的数组是同一块 shared, 复用前必须全员过线
-#pragma unroll
-  for (int j = 0; j < ITEMS; ++j) {
-    const int p = threadIdx.x * ITEMS + j;
-    sh.s.key[p] = keys[j];
-    sh.s.idx[p] = idx[j];
-  }
-  __syncthreads();
-  const int n = dev::lower_bound(sh.s.key, N, kNoKey);     // 有效键数 (kNoKey 排最后; 有效键绝不等于它)
-  const bool ok = n >= 2 && sh.s.key[n - 1] > sh.s.key[0]; // 全并列 = spread 为假
-  for (int p = threadIdx.x; p < N; p += kRB) {
-    const int a = sh.s.idx[p];
-    if (a >= A)
-      continue; // 补位
+  const int n = cs::k::sort_keys(sh, keys);            // 有效键数 (kNoKey 排最后; 有效键绝不等于它)
+  const bool ok = n >= 2 && sh.key[n - 1] > sh.key[0]; // 全并列 = spread 为假
+  for (int a = threadIdx.x; a < A; a += kRB) {
+    const unsigned k = key.key(a);
     unsigned short r = kRankNone;
-    if (ok && p < n) {
-      const unsigned key = sh.s.key[p];
-      const int less = dev::lower_bound(sh.s.key, n, key);
-      const int eq = dev::upper_bound(sh.s.key, n, key) - less;
+    if (ok && k != kNoKey) {
+      const int less = cs::k::lower_bound(sh.key, n, k);
+      const int eq = cs::k::upper_bound(sh.key, n, k) - less;
       r = factor::stat::r16_of(less, eq, n);
     }
     out[obase + a] = factor::stat::oriented(r, d);

@@ -59,7 +59,7 @@ TaskHandle CreateBetaTask(std::shared_ptr<Compute::ComputeHub> compute) {
       Beta::SyncStylePools(state->style_ui);
       if (!state->style_service)
         state->style_service = std::make_unique<Beta::StyleService>();
-      if (Beta::RenderTabStyle(*state->style_service, state->style_ui))
+      if (Beta::RenderTabStyle(*state->style_service, state->style_ui, data.config.fee))
         data.reinit = {.requested = true, .online = false}; // 池表变了: 进程内重启, 库表 / 各页按新池表重建
     }
     ImGui::EndChild();

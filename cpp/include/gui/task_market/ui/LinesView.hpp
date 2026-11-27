@@ -86,10 +86,11 @@ struct LineRef {
   }
 };
 
-// 成对线的两条 (一行两条, 同色, 理想列淡): 有行情键的行 (篮子 / 成分股) = 可成交 / 理想; 因子 / 策略 = 有冲击 / 无冲击.
+// 成对线的两条 (一行两条, 同色, 理想列淡), 按来源分两种, 成本不是开关: 可成交 = 账 (能否成交 + 恒扣成本) / 理想 = 价格 (不看成交, 不扣成本).
+//   有行情键的行 (篮子 / 成分股) 两种都有; 因子 / 策略只有账, 账户只有价格: 缺的那一位放另一条 (主线), 两位同一条.
 // 行选中 → 主图例里理想列显、可成交列隐 (点图例再显)
-enum PairLine : int { kTrade,   // 可成交 / 有冲击
-                      kIdeal }; // 理想 / 无冲击
+enum PairLine : int { kTrade,   // 可成交 (账, 净)
+                      kIdeal }; // 理想 (价格; 无价格 = 主线即账)
 inline constexpr int kPairLines = 2;
 
 // 腿 = 账的一线 (逐行增量 + 增仓量 + 估值); b = nullptr = 无; alt = 估值取另一种权重 (Ledger::alt; 只篮子行的估值腿, 见 val_leg)
@@ -101,14 +102,13 @@ struct LinesLeg {
 };
 // 估值腿 lg 第 m 口 [账日]
 inline const float *leg_val(const LinesLeg &lg, int m) { return lg.b->val_of(lg.line, m, lg.alt); }
-// 线源 (线的身份): 腿集合成 legs (cost = 扣成本: 毛 − 冲击 − 固定份数 · impact; 腿账都无成本列 → 恒不扣) / 价格 price; 都空 = 空线.
-//   price = 该标的的全史 (前收链接续): legs 空 = 全由它 (篮子 = 价格指数), 否则接在腿集之后 (账末之后各日, 个股 = 后复权)
+// 线源 (线的身份): 腿集合成 legs (恒净: 毛 − Fee::cost(该期流水, 账的口径段), 费率 fee) / 价格 price; 都空 = 空线.
+//   price = 该标的的全史 (前收链接续): legs 空 = 全由它 (篮子 = 价格指数, 个股 = 后复权), 否则接在腿集之后 (账末之后各日)
 //   minutes = 日内形 (该标的连分钟的全史; 有行情键的行两条都带, 见 LinesDerived::rows): 有该日分钟根的日子按它画到分钟
 // 源对象由 LinesDerived 持有 (价格库发布), 地址活过下一次派生 ⇒ 按地址比即按对象比; 日轴不变时同线源的线沿用上一份
 struct LineSrc {
   std::vector<LinesLeg> legs;
-  bool cost = false;
-  Fee impact; // 费率 (cost 才有)
+  Fee fee; // 腿集扣成本的费率 (无腿 = 默认, 线源相等 ⇒ 同一份线)
   const Quote::Series *price = nullptr;
   const Quote::Series *minutes = nullptr; // minutes->minute
   bool operator==(const LineSrc &) const = default;

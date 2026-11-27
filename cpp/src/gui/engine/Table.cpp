@@ -230,12 +230,12 @@ FeatureTable BuildFeatureTable(const Feature &feature, FactorLevelId id) {
   // 成本: 各层都有全部金额段; 盘口段的平面 = Lob 档 L_1min 的两侧冲击列 (分钟各层的行 = 其行末分钟那一行, 读计划 level_asof 投影);
   //   日层每行都是收盘撮合建仓 (盘口冲击 0, 与分钟层的收盘建仓尾行同约) → 无平面
   if (lv.lvl != L_1day)
-    for (int a = 1; a < kAmtCount; ++a) {
-      const std::string w = std::to_string(amt_wan(static_cast<AmtId>(a))) + "w";
+    for (int k = 0; k < kLobAmts; ++k) {
+      const std::string w = std::to_string(kLobWan[k]) + "w";
       const int b = find_at(TierId::Lob, L_1min, "lb_cost_buy_" + w), sl = find_at(TierId::Lob, L_1min, "lb_cost_sell_" + w);
       assert(b >= 0 && sl >= 0 && "冲击成本列不齐: 某金额段缺 buy 或 sell");
-      t.y.cost[a][kBuy] = Col{TierId::Lob, L_1min, static_cast<uint32_t>(b)};
-      t.y.cost[a][kSell] = Col{TierId::Lob, L_1min, static_cast<uint32_t>(sl)};
+      t.y.cost[k][kBuy] = Col{TierId::Lob, L_1min, static_cast<uint32_t>(b)};
+      t.y.cost[k][kSell] = Col{TierId::Lob, L_1min, static_cast<uint32_t>(sl)};
     }
   return t;
 }

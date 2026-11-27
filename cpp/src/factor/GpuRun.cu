@@ -453,6 +453,7 @@ struct StatSession {
   DevLabels lab;
   DevBuf<uint16_t> rx;
   DevBuf<factor::stat::Row> rows;
+  DevBuf<float> ric;
   DevBuf<factor::stat::Sum> day;
   stat::Workspace w;
   bool loaded = false;
@@ -469,8 +470,9 @@ StatSession *stat_open(const factor::stat::Span &sh, int Cmax, const Holds &hd) 
   s->lab.alloc(hd, sh.g.S, sh.T, n);
   s->rx.alloc(static_cast<size_t>(Cmax) * n);
   s->rows.zalloc(static_cast<size_t>(H) * sh.T);
+  s->ric.zalloc(static_cast<size_t>(H) * sh.T);
   s->day.zalloc(static_cast<size_t>(Cmax) * H * D);
-  s->w = {s->rows.p, s->day.p, H, Cmax, D};
+  s->w = {s->rows.p, s->ric.p, s->day.p, H, Cmax, D};
   return s;
 }
 
@@ -483,9 +485,9 @@ void stat_load(StatSession *s, const factor::stat::Labels &lab, double *prep_ms)
 }
 
 void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane *g, const factor::stat::Mode &m, const factor::stat::Span &s, factor::stat::Sum *day,
-               factor::stat::Row *rows, uint16_t *rx, double *eval_ms) {
-  assert(ss && ss->loaded && x && C >= 1 && C <= ss->Cmax && g && g->m && day);
-  assert((C == 1 || (!rows && !rx)) && "一级 / r16 只单候选可拷回");
+               factor::stat::Row *rows, float *ric, uint16_t *rx, double *eval_ms) {
+  assert(ss && ss->loaded && x && C >= 1 && C <= ss->Cmax && g && g->m && (day || (!rows && !ric)));
+  assert((C == 1 || (!rows && !ric && !rx)) && "一级 / rIC / r16 只单候选可拷回");
   assert(s.T == ss->s.T && s.A == ss->s.A && s.g.S == ss->s.g.S && "块形与会话不符"); // 统计日数随 t_lo / t_back 只减 (open 按两者 = 0 的上界分配)
   factor::stat::assert_span(s);
   stat::Batch B;
@@ -497,25 +499,29 @@ void stat_eval(StatSession *ss, const DevPlane *const *x, int C, const DevPlane 
   if (eval_ms)
     ss->tm.begin();
   stat::rank_x(B, g->m, m, s, ss->rx.p, nullptr);
-  stat::accum(s, ss->rx.p, C, ss->lab.L, m.r, ss->w, rows != nullptr, nullptr);
+  if (day)
+    stat::accum(s, ss->rx.p, C, ss->lab.L, m.r, ss->w, rows != nullptr, ric != nullptr, nullptr);
   if (eval_ms)
     *eval_ms = ss->tm.end();
   const size_t H = static_cast<size_t>(ss->lab.L.hd.n), D = static_cast<size_t>(s.days());
-  ss->day.down(day, static_cast<size_t>(C) * H * D); // D2H 自带同步; Sum / Row 是 POD, 设备格式 = 宿主格式; [C][H][D] 按本次统计日数密排
+  if (day)
+    ss->day.down(day, static_cast<size_t>(C) * H * D); // D2H 自带同步; Sum / Row 是 POD, 设备格式 = 宿主格式; [C][H][D] 按本次统计日数密排
   if (rows)
     ss->rows.down(rows, H * static_cast<size_t>(s.T));
+  if (ric)
+    ss->ric.down(ric, H * static_cast<size_t>(s.T));
   if (rx)
     ss->rx.down(rx, s.n());
 }
 
 void stat_close(StatSession *s) {
   assert(s);
-  s->day.free_(), s->rows.free_(), s->rx.free_(), s->lab.free_();
+  s->day.free_(), s->rows.free_(), s->ric.free_(), s->rx.free_(), s->lab.free_();
   delete s;
 }
 
 size_t stat_bytes(const StatSession *s) {
-  return s ? s->lab.bytes() + s->rx.bytes() + s->rows.bytes() + s->day.bytes() : 0;
+  return s ? s->lab.bytes() + s->rx.bytes() + s->rows.bytes() + s->ric.bytes() + s->day.bytes() : 0;
 }
 
 void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uint8_t *gm, const factor::stat::Mode &m, const factor::stat::Span &s,
@@ -536,7 +542,7 @@ void run_stat(int C, const float *const *xv, const uint8_t *const *xm, const uin
   const DevPlane gp{nullptr, g.p};
   StatSession *ss = stat_open(s, C, lab.hd);
   stat_load(ss, lab, prep_ms);
-  stat_eval(ss, xpp.data(), C, &gp, m, s, day, rows, nullptr, eval_ms);
+  stat_eval(ss, xpp.data(), C, &gp, m, s, day, rows, nullptr, nullptr, eval_ms);
   stat_close(ss);
   for (int c = 0; c < C; ++c)
     dv[static_cast<size_t>(c)].free_(), dm[static_cast<size_t>(c)].free_();

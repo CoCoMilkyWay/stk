@@ -33,14 +33,15 @@ inline int n_parts(const Span &s, int C) { return (s.t_hi() - s.t_lo + part_rows
 
 // 设备工作区 (调用方按 Span / H / Cmax 分配, 指针归调用方)
 struct Workspace {
-  Row *rows = nullptr; // [H][T] 一级 (单候选)
-  Sum *day = nullptr;  // [Cmax][H][D] 出口
+  Row *rows = nullptr;  // [H][T] 一级 (单候选)
+  float *ric = nullptr; // [H][T] 逐行 rIC (单候选; 不 ok = NaN): 只要 rIC 时不搬整行
+  Sum *day = nullptr;   // [Cmax][H][D] 出口
   int H = 0, Cmax = 0, D = 0;
 };
 
 namespace k {
 
-__global__ void __launch_bounds__(kWB, 2) stat_days(const uint16_t *rx, int C, Span s, Labels L, Ret ret, int R, int NB, Sum *day, Row *rows) {
+__global__ void __launch_bounds__(kWB, 2) stat_days(const uint16_t *rx, int C, Span s, Labels L, Ret ret, int R, int NB, Sum *day, Row *rows, float *ric) {
   __shared__ Slots sh;
   const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
   const int w = blockIdx.x * kWarps + warp;
@@ -66,6 +67,8 @@ __global__ void __launch_bounds__(kWB, 2) stat_days(const uint16_t *rx, int C, S
       head.add(r, ret);
       if (rows)
         rows[static_cast<size_t>(hi) * s.T + t] = r;
+      if (ric)
+        ric[static_cast<size_t>(hi) * s.T + t] = r.ok ? r.ric : __int_as_float(0x7fc00000);
     }
     if (r.ok) {
       float gq = 0.f; // lane q 取 grp[q] / cnt[q] (编译期展开的 select, Row 留在寄存器)
@@ -89,14 +92,15 @@ __global__ void __launch_bounds__(kWB, 2) stat_days(const uint16_t *rx, int C, S
 
 } // namespace k
 
-// C 张已定向的 rx[c] × L 组预处理标签 (设备, 收益口径 ret) → 统计行 [t_lo, t_hi) 的 w.day[c][hd.n][D] (设备, 覆盖); rows (只 C = 1) → 另落 w.rows[h][t]
-inline void accum(const Span &s, const uint16_t *rx, int C, const Labels &L, Ret ret, const Workspace &w, bool rows, cudaStream_t stream) {
+// C 张已定向的 rx[c] × L 组预处理标签 (设备, 收益口径 ret) → 统计行 [t_lo, t_hi) 的 w.day[c][hd.n][D] (设备, 覆盖);
+//   rows / ric (只 C = 1) → 另落 w.rows[h][t] 整行 / w.ric[h][t] 逐行 rIC
+inline void accum(const Span &s, const uint16_t *rx, int C, const Labels &L, Ret ret, const Workspace &w, bool rows, bool ric, cudaStream_t stream) {
   factor::stat::assert_span(s);
   factor::stat::assert_labels(L, s.g.S, true);
   const int H = L.hd.n, R = part_rows(s.g.S, C), NB = n_parts(s, C);
-  assert(rx && w.day && C >= 1 && C <= w.Cmax && H <= w.H && s.days() <= w.D && (!rows || (C == 1 && w.rows)));
+  assert(rx && w.day && C >= 1 && C <= w.Cmax && H <= w.H && s.days() <= w.D && (!rows || (C == 1 && w.rows)) && (!ric || (C == 1 && w.ric)));
   const dim3 grid(static_cast<unsigned>((C * NB + kWarps - 1) / kWarps), static_cast<unsigned>(H));
-  k::stat_days<<<grid, kWB, 0, stream>>>(rx, C, s, L, ret, R, NB, w.day, rows ? w.rows : nullptr);
+  k::stat_days<<<grid, kWB, 0, stream>>>(rx, C, s, L, ret, R, NB, w.day, rows ? w.rows : nullptr, ric ? w.ric : nullptr);
   FACTOR_CUDA_OK(cudaGetLastError());
 }
 
